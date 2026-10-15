@@ -92,6 +92,17 @@ type crlView struct {
 	this, next  time.Time
 	entries     map[string][]crlEntry // by serial number (decimal)
 	expiredFrom time.Time             // expiredCertsOnCRL date; zero when absent
+	delta       bool                  // a delta CRL: merged with a base for evidence of absence
+	baseNumber  *big.Int              // for a delta: the CRL number of the base it is cumulative since
+	parts       [][32]byte            // for a merged view: the hashes of the base and the delta
+}
+
+// hashes are the CRLs this view rests on.
+func (v *crlView) hashes() [][32]byte {
+	if v.parts != nil {
+		return v.parts
+	}
+	return [][32]byte{v.hash}
 }
 
 // CRLInfo describes a CRL accepted into a StatusSnapshot.
@@ -186,8 +197,10 @@ func (s *StatusSnapshot) Len() int {
 // "not revoked": a signature algorithm outside the profile (never SHA-1), no CRL number, no
 // nextUpdate (RFC 5280 requires it; absent means unknown), an issuing distribution point (partitioned
 // CRLs), an indirect CRL (a certificateIssuer entry extension), any critical extension bide does
-// not process, removeFromCRL in a full CRL, a malformed invalidity date, and a delta CRL (merging
-// them is a separate step). The signature is not checked here: that needs the issuing certificate,
+// not process, removeFromCRL in a full CRL, a malformed invalidity date, and a malformed delta
+// indicator (a delta CRL must carry a critical delta CRL indicator, a DER INTEGER: the number of the
+// base it is cumulative since; it is merged with a base when a chain is evaluated and never gives
+// evidence of absence alone). The signature is not checked here: that needs the issuing certificate,
 // which belongs to a chain (see CertIdentity.EvaluateStatus).
 func (s *StatusSnapshot) AddCRL(der []byte) (CRLInfo, error) {
 	if len(der) == 0 || len(der) > s.maxBytes {
@@ -387,7 +400,11 @@ func parseCRL(der []byte, hash [32]byte, maxEntries int) (*crlView, error) {
 		case e.Id.Equal(oidIssuingDistPoint):
 			return unreadable("the CRL carries an issuing distribution point (a partitioned CRL cannot be matched correctly)")
 		case e.Id.Equal(oidDeltaIndicator):
-			return unreadable("the CRL is a delta CRL, which is merged with its base and never read alone")
+			base := new(big.Int)
+			if rest, err := asn1.Unmarshal(e.Value, &base); err != nil || len(rest) != 0 || base.Sign() < 0 || !e.Critical {
+				return unreadable("the delta CRL indicator must be a critical, non-negative DER INTEGER (the base CRL number)")
+			}
+			v.delta, v.baseNumber = true, base
 		case e.Id.Equal(oidExpiredCertsOnCRL):
 			var t time.Time
 			if rest, err := asn1.Unmarshal(e.Value, &t); err != nil || len(rest) != 0 {
@@ -410,7 +427,7 @@ func parseCRL(der []byte, hash [32]byte, maxEntries int) (*crlView, error) {
 		switch {
 		case re.ReasonCode == 7 || re.ReasonCode < 0 || re.ReasonCode > 10:
 			return unreadable("entry %d has the undefined reason code %d", i, re.ReasonCode)
-		case re.ReasonCode == 8:
+		case re.ReasonCode == 8 && !v.delta:
 			return unreadable("entry %d is removeFromCRL in a full CRL", i)
 		}
 		entrySeen := map[string]bool{}
@@ -713,15 +730,26 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, evict
 	key := cert.SerialNumber.String()
 
 	// A listing in any CRL of the series is a revocation from its time on, whatever the CRL's date;
-	// a later CRL that no longer lists the serial does not undo it.
+	// a later CRL that no longer lists the serial does not undo it, and neither does a delta's
+	// removeFromCRL (a release never validates a decision made during the hold). Every CRL that
+	// verifies under the issuer is read for its listings, a delta that has no base included: a listing
+	// can only take trust away. A removeFromCRL entry exists only for a certificate that was on hold,
+	// so it is read as evidence of a hold of unknown start that ended on its date: a decision made
+	// no later than that date is refused.
 	for _, v := range all {
 		for _, e := range v.entries[key] {
-			ev := effective(cert, e)
-			if ev.After(a) || (isRoutine(e.code) && p.RoutineGrace > 0 && a.Before(ev.Add(p.RoutineGrace))) {
+			ev, code := effective(cert, e), e.code
+			if code == 8 {
+				if a.After(e.revoked) {
+					continue
+				}
+				ev, code = cert.NotBefore, 6
+			}
+			if ev.After(a) || (isRoutine(code) && p.RoutineGrace > 0 && a.Before(ev.Add(p.RoutineGrace))) {
 				continue
 			}
 			if !st.Revoked || ev.Before(st.E) {
-				st.Revoked, st.E, st.ReasonCode, st.Compromise, st.RevokedBy = true, ev, e.code, isCompromise(e.code), v.hash
+				st.Revoked, st.E, st.ReasonCode, st.Compromise, st.RevokedBy = true, ev, code, isCompromise(code), v.hash
 			}
 		}
 	}
@@ -729,18 +757,39 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, evict
 		return st
 	}
 
-	// Number order: a CRL dated later than another with a higher number is not a legitimate successor.
-	var views []*crlView
+	// Number order: one sequence across bases and deltas. A CRL dated later than another with a
+	// higher number is not a legitimate successor.
+	var ordered []*crlView
 	maxNum := big.NewInt(-1)
 	for _, v := range all {
 		if v.number.Cmp(maxNum) < 0 {
 			continue // a rollback: kept for its listings only
 		}
-		if v.number.Cmp(maxNum) == 0 && len(views) > 0 && views[len(views)-1].hash != v.hash {
+		if v.number.Cmp(maxNum) == 0 && len(ordered) > 0 && ordered[len(ordered)-1].hash != v.hash {
 			continue // two different CRLs, one number
 		}
 		maxNum = v.number
-		views = append(views, v)
+		ordered = append(ordered, v)
+	}
+	// The evidence of absence is the full CRLs and the merged views: each delta with its base, as of
+	// the delta. A delta with no base to merge with gives none.
+	paired := pairDeltas(ordered)
+	var views []*crlView
+	for _, v := range ordered {
+		if !v.delta {
+			views = append(views, v)
+			continue
+		}
+		if b := paired[v]; b != nil {
+			m := &crlView{hash: v.hash, number: v.number, this: v.this, next: v.next, expiredFrom: v.expiredFrom, parts: [][32]byte{b.hash, v.hash}}
+			if v.next.After(b.next) {
+				m.next = b.next // the earlier nextUpdate governs: a stale base does not make a fresh delta fresh
+			}
+			if m.expiredFrom.IsZero() {
+				m.expiredFrom = b.expiredFrom
+			}
+			views = append(views, m)
+		}
 	}
 
 	// How consecutive CRLs of the series are shown to have nothing between them: issued within the
@@ -825,7 +874,7 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, evict
 	}
 	usable = usable[:reached+1]
 	for _, v := range usable {
-		st.Used = append(st.Used, v.hash)
+		st.Used = append(st.Used, v.hashes()...)
 	}
 	sView := usable[len(usable)-1]
 	st.S = sView.this
@@ -936,4 +985,36 @@ func joinWarning(a, b string) string {
 		return b
 	}
 	return a + "; " + b
+}
+
+// pairDeltas matches each delta CRL in vs with the base it is merged with (RFC 5280 sections 5.2.4
+// and 6.3.3). A base B qualifies for a delta D when D.baseNumber <= B.number < D.number and D was
+// issued no earlier than B. Of the qualifying bases the highest numbered is used, the freshest one
+// that is still a valid partner (the delta is cumulative since the base it names, so a newer base
+// carries everything). A delta with no qualifying base is absent from the result: it gives no
+// evidence of absence, never a partial answer (its listings are read all the same). All the CRLs in
+// vs are already known to verify under one issuer, and the snapshot bounds how many there are.
+func pairDeltas(vs []*crlView) map[*crlView]*crlView {
+	var bases []*crlView
+	for _, v := range vs {
+		if !v.delta {
+			bases = append(bases, v)
+		}
+	}
+	// vs is the series after the number-order rule, so the bases are already in increasing number.
+	out := map[*crlView]*crlView{}
+	for _, d := range vs {
+		if !d.delta {
+			continue
+		}
+		// The first base numbered at or above the delta is too high; walk down from the one before it.
+		i := sort.Search(len(bases), func(i int) bool { return bases[i].number.Cmp(d.number) >= 0 })
+		for i--; i >= 0 && bases[i].number.Cmp(d.baseNumber) >= 0; i-- {
+			if !d.this.Before(bases[i].this) { // implied by the number order; kept as the RFC states it
+				out[d] = bases[i]
+				break
+			}
+		}
+	}
+	return out
 }
