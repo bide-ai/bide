@@ -1,6 +1,7 @@
 // Command flow shows an m-of-n approval gate on a plan flow node, loaded from a declarative config
 // (refund.json): lookup -> refund -> notify, where refund needs 2 of 3 named approvers (ops,
-// finance, risk). The flow pauses before refund runs, exactly as a gated agent tool call does;
+// finance, risk) within 48 hours (`timeout`), after which the gate expires and the refund
+// never runs. The flow pauses before refund runs, exactly as a gated agent tool call does;
 // approvers sign the node and its input with their own keys; the refund runs once at 2 of 3; and an
 // auditor verifies the decisions offline. It uses the same approver keys as the agent example
 // beside it (../main.go), and the same predictable demo keys warning applies.
@@ -57,7 +58,7 @@ const (
 )
 
 // policy is the gate refund.json declares, as the auditor expects it.
-var policy = agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}
+var policy = agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}, Timeout: 48 * time.Hour}
 
 // Order is the flow's input, Refund the gated node's input (what approvers sign), Receipt its output.
 type Order struct {
@@ -132,6 +133,10 @@ func cmdRun(ctx context.Context, j *agent.Journal, refunds *int) error {
 		q := pend.Quorum
 		fmt.Printf("  paused before %s (%s) with input %s: %d of %d approved, %d needed; waiting on %s\n",
 			pend.ToolName, pend.ToolUseID, pend.Args, q.Approved, len(q.Approvers), q.Need, strings.Join(q.Pending, ", "))
+		return nil
+	case errors.Is(err, plan.ErrApprovalExpired):
+		// checked first: an expiry also wraps ErrApprovalDenied
+		fmt.Printf("  expired: %v\n", err)
 		return nil
 	case errors.Is(err, plan.ErrApprovalDenied):
 		fmt.Printf("  denied: %v\n", err)

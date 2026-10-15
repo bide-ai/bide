@@ -81,7 +81,8 @@ A resumed run decides from its journal, never from configuration that may have c
 the journal holds, and so what a resume cannot be talked out of by a redeploy:
 
 - every model turn and tool result, each call's attempt marker, and every approval decision
-  (a recorded denial is final even if the tool's gate is removed later) and terminal m-of-n tally;
+  (a recorded denial or expiry is final even if the tool's gate is removed later) and terminal m-of-n tally,
+  and the deadline of a gate with a timeout, fixed once (`approval-deadline:<call>`);
 - signals, interrupt answers, timer wake times, `AwaitFor` outcomes, channel messages and acks,
   and `WithRetrieval` documents;
 - the run's input (a message, images included) and whether it runs as a saga (`run:start`), and
@@ -144,9 +145,18 @@ the run paused at the gate (`ApprovalWait.RecordedAt`) or recorded a flow gate's
 (`ApprovalRequest.RecordedAt`) and, on each signed m-of-n decision, when
 the approver decided (`decided_at`, by the approver's clock, inside the signature) and when it
 was journaled (`recorded_at`, by the submitting process's clock: its claim, not signed, anchored
-by the Merkle trail once a signed head covers it). The gate never reads those: it checks `decided_at`
-only as signed bytes, orders decisions by journal position, and counts the same whatever the times
-say.
+by the Merkle trail once a signed head covers it). A gate without a timeout never reads those: it
+checks `decided_at` only as signed bytes, orders decisions by journal position, and counts the same
+whatever the times say. A gate with a timeout (`ApprovalPolicy.Timeout`) reads the request time, which
+fixes its deadline once, and a decision's `recorded_at`; the run's clock says whether the deadline has passed. Its expiry is the
+gate's outcome, recorded insert-once under the name a passing tally or a single decision would take, so
+an expiry and a pass cannot both be recorded: whichever outcome is recorded first stands. A gate that
+expired never runs its call (the model reads `agent.ExpiredResult`; a plan flow returns
+`plan.ErrApprovalExpired`), and a decision recorded after the deadline, or written after the expiry
+was recorded, is shown as not counted and does not count (`agent.ReasonLate`, `agent.ReasonAfterExpiry`),
+even if its signed `decided_at` is on time (`decided_at` is the approver's clock and does not decide it).
+Skew between the run's clock and a deciding process's moves the edge by the skew
+([deadlines](guides/hitl-approval.md#deadlines)).
 
 Configuration is live by design: it governs what a drive does next, not what the journal already
 says happened. A drive uses the configuration it is given for:
@@ -161,12 +171,14 @@ says happened. A drive uses the configuration it is given for:
   answer;
 - the tool set offered to new turns, and each tool's spec (`Safety`, approval gate, timeout, read
   once when the agent is built) and tool middleware for a call that has not run yet (a pending call to a tool no longer registered fails with `ErrUnknownTool`);
-- the approval gate for a call with no recorded denial, under the gate's current policy;
+- the approval gate for a call with no recorded denial or expiry, under the gate's current policy
+  (but not its deadline, once recorded: a redeploy that changes `Timeout` does not move a gate
+  already waiting);
 - the agent's `WithMaxTurns` and `WithTokenBudget` limits, where the run journaled none of its
   own, compared with the turns and tokens the journal records, so raising a limit lets a stopped run
   continue (a journaled limit is raised by a later drive's amendment);
-- the clock (`WithClock`), for whether a timer or an `AwaitFor` deadline is due and for
-  `WithMinHaltAge`;
+- the clock (`WithClock`), for whether a timer, an `AwaitFor` deadline or an approval deadline is due
+  and for `WithMinHaltAge`;
 - the identity's `Actor` and the grant the drive is given (the `WithIdentity` option, or the run's
   context), which the tools a drive runs see, with the principal the run journaled;
 - a governor's policy (`govern`): governed state is the shared event log replayed under the

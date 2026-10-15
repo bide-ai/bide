@@ -438,6 +438,8 @@ refund := agent.MustFunc("refund", "refund the order", doRefund,
 
 发起人是部署启动该运行时所用 `agent.Identity` 的 `OnBehalfOf`，其上层各运行的主体同样计入。被排除的决定仍留在记录中并被标明。Bide 比较的是 id，无法看出同一个人持有两个 id。参见[职责分离](../../docs/guides/hitl-approval.md#separation-of-duties)。
 
+**期限**：在策略中设置 `Timeout`（计划配置的 `approval` 块中写 `timeout: 48h`），到期仍未通过的关卡会过期，而不是无限等待。期限从已记录的请求起算，且只记录一次，因此重新部署不会改变它。过期是关卡的结果，与通过一样只写入一次，先记录的那个生效：调用不会执行（模型读到 `agent.ExpiredResult`；`plan` 流程返回 `plan.ErrApprovalExpired`），期限之后记录的决定显示为未计入并被拒绝（`agent.ErrApprovalExpired`）。通知器发送 `approval_expired`。参见[期限](../../docs/guides/hitl-approval.md#deadlines)。
+
 **在终端中决定**：不写 Go 的批准人使用 `bide approve`。它从日志中读取调用，显示其参数和签名所绑定的 SHA-256，请求确认，用批准人的密钥签名，记录该决定并写下一份回执：
 
 ```
