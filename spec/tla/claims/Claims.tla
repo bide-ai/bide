@@ -622,7 +622,10 @@ Call:
     if gp # "none" /\ ~SufficientFor(CallOf[self], gp) then badFire := TRUE; end if;
     if gp \notin {"none", "one"} /\ Policies[gp].sod /\ ~SoDHeld(CallOf[self]) then badSoD := TRUE; end if;
     if loadDenied then badDeny := TRUE; end if;
-    if gp # "none" /\ (one[CallOf[self]] \in {"exp", "late"} \/ (tally[CallOf[self]].rec /\ tally[CallOf[self]].exp)) then
+    \* The expiry of the firing drive's own gate: the one-decision gate's record, or the m-of-n tally
+    \* (a redeploy may give another process the other kind of gate, which decides on its own record).
+    if \/ gp = "one" /\ one[CallOf[self]] \in {"exp", "late"}
+       \/ gp \notin {"none", "one"} /\ tally[CallOf[self]].rec /\ tally[CallOf[self]].exp then
       badExp := TRUE;
     end if;
     if CallOf[self] \in PauseCalls then
@@ -1627,7 +1630,8 @@ Call(self) == /\ pc[self] = "Call"
                           THEN /\ badDeny' = TRUE
                           ELSE /\ TRUE
                                /\ UNCHANGED badDeny
-                    /\ IF gp[self] # "none" /\ (one[CallOf[self]] \in {"exp", "late"} \/ (tally[CallOf[self]].rec /\ tally[CallOf[self]].exp))
+                    /\ IF \/ gp[self] = "one" /\ one[CallOf[self]] \in {"exp", "late"}
+                          \/ gp[self] \notin {"none", "one"} /\ tally[CallOf[self]].rec /\ tally[CallOf[self]].exp
                           THEN /\ badExp' = TRUE
                           ELSE /\ TRUE
                                /\ UNCHANGED badExp
@@ -2362,9 +2366,10 @@ NoDenyWithoutDenials ==
                      => Cardinality(Policies[tally[c].pol].apprs) - tally[c].denials
                           < Policies[tally[c].pol].need
 
-\* Approval deadlines. An expired gate never runs its call: no drive under a gate fires the effect
-\* of a call whose recorded outcome is an expiry (the one-decision gate's expiry or late decision,
-\* or the tally's). A deployment with no gate runs the call as an ungated one, as for a denial.
+\* Approval deadlines. An expired gate never runs its call: no drive fires the effect of a call whose
+\* gate, as the drive's deployment has it, recorded an expiry as its outcome (a one-decision gate's
+\* expiry or late decision, or an m-of-n gate's tally). A deployment with no gate, or with the other
+\* kind of gate after a redeploy, decides on its own record, as for a denial.
 ExpiredNeverRuns == ~badExp
 
 \* An expiry is recorded only once the deadline has passed.
