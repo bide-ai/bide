@@ -1,0 +1,7 @@
+# Goroutines that send or close and also have a deferred call that is not a plain signal, where the
+# order is safe. One per line: path|enclosing function|first deferred call # why. An entry that
+# matches no goroutine is an error. See internal/tools/sendcheck.
+agent/stream.go|startStream|func() { mu.Lock() closed = true close(as.ch) mu.Unlock() }(... # the result is sent before the events channel closes, and a receiver drains the events channel to its close before it reads the result, so it never sees a half-closed stream
+agent/subagent.go|Call|func() { if r := recover(); r != nil { ch <- result{err: fmt... # the deferred func only turns a panic into the answer; there is no bookkeeping behind the send
+audit/audited_event_store.go|anchorTrail|release() # release is a sync.OnceFunc that has already run before the answer is sent; the deferred call is the panic and Goexit path
+store/postgres/nextseq_behaviour_test.go|TestPostgres_NextSeqQueuesWithEarlierVersions|tx.Rollback() # the transaction was committed before the answer, so the rollback is a no-op; no state is left for the receiver to see

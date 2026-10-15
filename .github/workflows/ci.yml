@@ -287,6 +287,12 @@ jobs:
         # ResolveHaltRef, agent.Durable, the pause aliases, ...) appears in Go code, godoc or docs,
         # outside the historical records (CHANGELOG.md, docs/releases, docs/design). -godoc checks `go doc -all` of every public package too.
         run: go run ./internal/tools/oldnames -godoc
+      - name: no result sent before its bookkeeping
+        # A goroutine that sends or closes a result and only then runs a deferred decrement, release
+        # or unlock lets the receiver act on state it has not yet put right (a flaky test at best, a
+        # lost attempt at worst). The order is checked in every .go file, tests included; a safe
+        # order goes in .sendcheck-allow with its reason. See internal/tools/sendcheck.
+        run: go run ./internal/tools/sendcheck
       - name: govulncheck (all modules)
         if: needs.changes.outputs.code != 'false'
         # Known vulnerabilities in dependencies or the standard library that bide's code can reach

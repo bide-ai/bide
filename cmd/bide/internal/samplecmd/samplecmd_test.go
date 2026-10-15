@@ -216,7 +216,11 @@ func start(wait time.Duration, args ...string) (link string, stop func() int, er
 	out := &syncBuffer{}
 	done := make(chan int, 1)
 	running.Add(1)
-	go func() { defer running.Add(-1); done <- Main(args, out, out) }()
+	go func() {
+		code := Main(args, out, out)
+		running.Add(-1) // before the answer: whoever gets it may check the count at once
+		done <- code
+	}()
 	var once sync.Once
 	var code int
 	stop = func() int {
