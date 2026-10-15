@@ -221,7 +221,19 @@ signed decision time in canonical form, and the signature verifies for this call
   or a record written straight into the journal is ignored, and the approver's real decision still
   counts when it arrives.
 - **A later decision does not override an earlier valid one.** A change of mind is superseded, the
-  same rule as 1-of-1. Resubmitting the identical decision is a no-op.
+  same rule as 1-of-1. Resubmitting a decision is a no-op: its journal step is named by the decision
+  (call, approver, verdict, scheme and `decided_at`, `agent.DecisionStep`), never by its signature bytes, so a
+  randomized scheme such as `ecdsa-p256`, which signs one decision differently each time, still journals it
+  once, even when two submissions race. Exactly: an identical resubmission (same signature), including of a
+  decision a version that named by signature journaled, is a no-op with or without `WithDecisionCheck`;
+  a re-signing under different bytes is found and not rewritten only with `WithDecisionCheck`, which reads
+  the signatures (without it the library cannot tell a re-signing from a bad record, and writes the
+  second under a signature-derived name, which the counting rule supersedes). A record that is not the
+  approver's valid decision never takes the decision's name. `agent.HeldDecisionStep` finds the record
+  that holds a decision (signature included) wherever it is; held is not valid, and with the approvers'
+  resolver it also says whether the record verifies and, in a flow gate, follows the request (a record
+  written before it is held and never verified); `agent.DecisionStep` is only the name
+  written first, not a lookup key.
 - **Only valid denials can deny.** Invalid records never count toward "k is unreachable", so they
   cannot force a denial either.
 - **One key is one seat.** An approver whose verifier shares a key identity with another approver's,
@@ -766,7 +778,16 @@ the gate; what it signs is the subject captured when it displayed the call. If t
 decision does not count (another decision of yours does), the command exits 1 as the local flow does.
 The receipt it writes is the one the endpoint returns, checked against the decision signed and against
 the approver's key, and refused if it carries an anchoring proof (only your own `verify-receipts -update`
-adds one); its record, position and leaf
+adds one), or names a record that does not have the shape of a decision record of that approver on that
+call (`agent.IsDecisionStepName`: the call's approval prefix, the approver and 64 lowercase hex). After a
+retry of a randomized scheme's decision (`ecdsa-p256`) the endpoint answers from the decision journaled
+first, whose signature differs from the one just sent; the receipt then holds the recorded signature,
+which must verify under your key, and the command prints one line saying so. The scheme's verifiers
+refuse a high-S signature, so an endpoint cannot return the malleable twin `(r, n-s)` of a signature
+(every P-256 signer here, software, KMS, Azure Key Vault, Cloud KMS and PKCS#11, emits low-S). A request
+whose bytes equal a record that verifies under no current key and that the gate does not count is
+refused as an invalid approval, not answered as a replay, and a replay answered from the recorded tally
+after a key rotation carries no `receipt`; its record, position and leaf
 hash are the application's word until a signed head covers them (`bide audit verify-receipts -update`).
 If the request fails with no answer, run the command again: the decision may have been recorded, and one
 of yours that counts is refused as already decided.

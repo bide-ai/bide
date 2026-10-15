@@ -261,6 +261,13 @@ and an audit then reports that re-tally as the gate's outcome; drain the old pro
 relying on the exclusion. See
 [Separation of duties](guides/hitl-approval.md#separation-of-duties).
 
+**Journals written before the decision step was keyed by identity.** A decision recorded by an earlier
+version is named by its signature (`approval:<call>:<approver>:<hash with the signature>`). It reads,
+counts and verifies as before, and `bide audit` and evidence read it unchanged; an identical resubmission is a no-op with or without a check, and a re-signing under different bytes
+(`WithDecisionCheck`) finds it by what it says and writes nothing more. Only a randomized
+scheme re-signing submitted without `WithDecisionCheck` can still add a duplicate record, which the counting
+rule supersedes. See [Human approval](guides/hitl-approval.md).
+
 **A decision's time is the approver's claim.** Each signed decision carries when the approver
 decided (`decided_at`, by their clock, inside the signature) and when it was journaled
 (`recorded_at`, by the clock of the process that submitted it, not signed). The signature stops

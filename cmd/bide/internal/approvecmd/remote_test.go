@@ -2,6 +2,7 @@ package approvecmd
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -405,7 +406,7 @@ func TestRemote_BadReceiptIsNotWritten(t *testing.T) {
 					if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 						t.Error(err)
 					}
-					tamper(&resp.Receipt)
+					tamper(resp.Receipt)
 					writeTestJSON(w, resp)
 				})
 			})
@@ -548,4 +549,29 @@ func TestRemote_UncountedDecisionIsNotSuccess(t *testing.T) {
 // livePolicy is approvals.WithGatePolicy for the fixture: the policy its "refund" tool is built with.
 func (f *fixture) livePolicy() approvals.Option {
 	return approvals.WithGatePolicy(func(tool string) (*agent.ApprovalPolicy, bool) { return f.policy, tool == "refund" })
+}
+
+// A bad record holding the decision's identity name must not stop the genuine decision from being
+// recorded and returned: the endpoint finds the real record under its other name, and the client
+// accepts it and writes the receipt.
+func TestRemote_DecisionWhoseIdentityNameIsHeldByABadRecord(t *testing.T) {
+	at := time.Date(2026, 10, 13, 12, 0, 1, 0, time.UTC)
+	old := now
+	now = func() time.Time { return at }
+	defer func() { now = old }()
+	f := newFixture(t, twoOfThree, refundArgs)
+	j, closeJ := f.store()
+	if err := agent.SubmitDecision(context.Background(), j, agent.Decision{RunID: f.run, ToolUseID: f.call, ApproverID: "ops", Approved: true,
+		DecidedAt: at, Alg: audit.AlgEd25519, Signature: make([]byte, 64)}); err != nil {
+		t.Fatal(err)
+	}
+	closeJ()
+	srv := f.intake(nil)
+	code, _, errs := f.runTo("", f.to(srv.URL, "ops", "-yes")...)
+	if code != 0 {
+		t.Fatalf("exit %d\n%s", code, errs)
+	}
+	if m, _ := filepath.Glob(filepath.Join(f.dir, "*.receipt.json")); len(m) != 1 {
+		t.Fatalf("receipts: %v", m)
+	}
 }
