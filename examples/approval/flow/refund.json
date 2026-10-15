@@ -6,7 +6,7 @@
   "entry": "lookup",
   "nodes": [
     {"name": "lookup", "block": "lookup"},
-    {"name": "refund", "block": "refund", "approval": {"need": 2, "approvers": ["ops", "finance", "risk"]}},
+    {"name": "refund", "block": "refund", "approval": {"need": 2, "approvers": ["ops", "finance", "risk"], "timeout": "48h"}},
     {"name": "notify", "block": "notify"}
   ],
   "wiring": [

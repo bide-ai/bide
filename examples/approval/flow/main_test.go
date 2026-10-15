@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/store/sqlite"
@@ -41,6 +42,15 @@ func TestFlowGateStory(t *testing.T) {
 		}
 		if refunds != 1 {
 			t.Fatalf("refunds = %d, want 1", refunds)
+		}
+		// refund.json's timeout was read: the gate recorded its deadline when it first waited.
+		recs, err := j.History(ctx, runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dl, _, ok := agent.RecordedDeadline(recs, gateKey)
+		if !ok || dl.TimeoutMS != (48*time.Hour).Milliseconds() {
+			t.Fatalf("recorded deadline = %+v (ok=%v), want a 48h timeout", dl, ok)
 		}
 		dir := t.TempDir()
 		if err := cmdEvidence(ctx, j, filepath.Join(dir, "e.json"), filepath.Join(dir, "k.json")); err != nil {

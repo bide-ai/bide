@@ -612,6 +612,8 @@ refund := agent.MustFunc("refund", "refund the order", doRefund,
 
 The requester is the `OnBehalfOf` of the `agent.Identity` the deployment starts the run with, and the principals of the runs above it count too. An excluded decision stays on the record, marked. Bide compares ids; it cannot see one person holding two of them. See [separation of duties](guides/hitl-approval.md#separation-of-duties).
 
+**Deadlines**: give the policy a `Timeout` (`timeout: 48h` in a plan config's `approval` block) and a gate that has not passed by then expires instead of waiting forever. The deadline is measured from the recorded request and recorded once, so a redeploy does not move it. The expiry is the gate's outcome, recorded insert-once like a pass, so whichever is recorded first stands: the call never runs (the model reads `agent.ExpiredResult`; a plan flow returns `plan.ErrApprovalExpired`), and a decision recorded after the deadline is shown as not counted and is refused (`agent.ErrApprovalExpired`). The notifier sends `approval_expired`. See [deadlines](guides/hitl-approval.md#deadlines).
+
 **Deciding from a terminal**: an approver who does not write Go uses `bide approve`. It reads the call from the journal, shows its arguments and the SHA-256 the signature binds, asks for confirmation, signs with the approver's key, records the decision and writes a receipt:
 
 ```

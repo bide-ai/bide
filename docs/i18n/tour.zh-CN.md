@@ -305,7 +305,7 @@ sig, _ := audit.Sign(head, audit.Ed25519Signer{Priv: priv}) // anchor it: sign /
 
 ### 运行查看器
 
-`bide view` 为单次运行打开一个只读页面，在 `127.0.0.1` 上提供，数据来自 SQLite 或 Postgres 日志或导出的日志。安装：`go install github.com/bide-ai/bide/cmd/bide@latest`。`bide view -config flow.yaml` 以同样方式展示流程定义，并在图上标出问题；`-check` 在 CI 中运行同一检查。`bide check flow.yaml -diff main` 在图上比较流程的两个版本（新增为绿色，删除为红色虚线，变更为琥珀色），并单独标出被削弱的审批策略。页面按崩溃对每个节点的影响为其着色（副作用会停下并询问，只读或幂等节点会重新运行），并判定配置中的 `assert` 行，例如 `every path to charge passes approval >= 2 of 3`，违反时以红色画出反例路径。它展示运行的时间线（模型轮次、工具调用及其 `Safety`、尝试、审批），被暂停的操作及记录其结果的 `ResolveHalt` 调用，每个审批关卡的 k-of-n 状态，`plan` 流程在其声明拓扑上走过的路径，以及日志能否通过签名树头或证据包验证。它从不写入存储。运行仍在进行时，页面（来自 SQLite 或 Postgres 日志）会随新记录写入而更新，直到运行结束。不带 `-run` 时，它打开运行列表，可按状态、类型和运行 ID 过滤。参见[运行查看器指南](../../docs/guides/run-viewer.md)（英文）。
+`bide view` 为单次运行打开一个只读页面，在 `127.0.0.1` 上提供，数据来自 SQLite 或 Postgres 日志或导出的日志。安装：`go install github.com/bide-ai/bide/cmd/bide@latest`。`bide view -config flow.yaml` 以同样方式展示流程定义，并在图上标出问题；`-check` 在 CI 中运行同一检查。`bide check flow.yaml -diff main` 在图上比较流程的两个版本（新增为绿色，删除为红色虚线，变更为琥珀色），并单独标出被削弱的审批策略（关卡被移除、所需人数降低、去掉了 `exclude_principal`，或 `timeout` 被移除或加长）。页面按崩溃对每个节点的影响为其着色（副作用会停下并询问，只读或幂等节点会重新运行），并判定配置中的 `assert` 行，例如 `every path to charge passes approval >= 2 of 3`，违反时以红色画出反例路径。它展示运行的时间线（模型轮次、工具调用及其 `Safety`、尝试、审批），被暂停的操作及记录其结果的 `ResolveHalt` 调用，每个审批关卡的 k-of-n 状态，`plan` 流程在其声明拓扑上走过的路径，以及日志能否通过签名树头或证据包验证。它从不写入存储。运行仍在进行时，页面（来自 SQLite 或 Postgres 日志）会随新记录写入而更新，直到运行结束。不带 `-run` 时，它打开运行列表，可按状态、类型和运行 ID 过滤。参见[运行查看器指南](../../docs/guides/run-viewer.md)（英文）。
 
 <table>
 <tr>
@@ -437,6 +437,8 @@ refund := agent.MustFunc("refund", "refund the order", doRefund,
 ```
 
 发起人是部署启动该运行时所用 `agent.Identity` 的 `OnBehalfOf`，其上层各运行的主体同样计入。被排除的决定仍留在记录中并被标明。Bide 比较的是 id，无法看出同一个人持有两个 id。参见[职责分离](../../docs/guides/hitl-approval.md#separation-of-duties)。
+
+**期限**：在策略中设置 `Timeout`（计划配置的 `approval` 块中写 `timeout: 48h`），到期仍未通过的关卡会过期，而不是无限等待。期限从已记录的请求起算，且只记录一次，因此重新部署不会改变它。过期是关卡的结果，与通过一样只写入一次，先记录的那个生效：调用不会执行（模型读到 `agent.ExpiredResult`；`plan` 流程返回 `plan.ErrApprovalExpired`），期限之后记录的决定显示为未计入并被拒绝（`agent.ErrApprovalExpired`）。通知器发送 `approval_expired`。参见[期限](../../docs/guides/hitl-approval.md#deadlines)。
 
 **在终端中决定**：不写 Go 的批准人使用 `bide approve`。它从日志中读取调用，显示其参数和签名所绑定的 SHA-256，请求确认，用批准人的密钥签名，记录该决定并写下一份回执：
 

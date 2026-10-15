@@ -204,6 +204,6 @@ See [module structure](reference/module-structure.md) for the layout and [CONTRI
 - Complete flows to copy and run (a refund with a 2-of-3 approval, invoice approval, ticket triage, a safe record update, an ambient agent, a webhook that tells a person when a run needs them): the [recipes](recipes/index.md).
 - The vocabulary: [Concepts](CONCEPTS.md).
 - Authoring flows as typed topology instead of plain Go: the [plan flows guide](guides/plan-flows.md) (the optional `plan` builder and declarative config).
-- People in control: [human approval](guides/hitl-approval.md) (k-of-n signed, with separation of duties), [notifications](guides/notifications.md), and [key custody](guides/key-custody.md) (signing keys in an HSM or a cloud KMS).
+- People in control: [human approval](guides/hitl-approval.md) (k-of-n signed, with deadlines and separation of duties), [notifications](guides/notifications.md), and [key custody](guides/key-custody.md) (signing keys in an HSM or a cloud KMS).
 - The precise guarantee and its bounds: [Guarantee](GUARANTEE.md), [Known limitations](KNOWN-LIMITATIONS.md).
 - The full map: the [docs index](README.md).

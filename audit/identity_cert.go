@@ -36,6 +36,10 @@ func SPKIHashOf(c *x509.Certificate) SPKIHash { return sha256.Sum256(c.RawSubjec
 // IdentityPolicy is the certificate rules of one gate. It is configuration, change-controlled by the
 // bank: whoever can edit it can enroll. Compile checks it and fixes it into a CertIdentity.
 //
+// This is a building block for certificate-bound approvers (docs/design/approver-identity.md). No
+// gate, approvals endpoint or command uses an IdentityPolicy yet: an approver is still a bare key
+// until it is wired in.
+//
 // The zero value of Skew, AnchorGrace and MaxChain selects the default.
 type IdentityPolicy struct {
 	// Anchors are the CA certificates this gate trusts: not the system roots. Each must be a CA with

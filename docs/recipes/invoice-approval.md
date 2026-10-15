@@ -167,6 +167,9 @@ use an `agent.ApprovalPolicy` with `Need` and `Approvers` and give the flow thei
 [refund recipe](refund-approval.md). Those approvers decide from a terminal with `bide approve`; a
 single-approver gate takes it too, unsigned, with no `-as` or `-key`.
 
+A gate can also expire: give the policy a `Timeout` (on `agent.SingleApproval()` too) and an invoice nobody
+approves in time is never booked. See [Deadlines](../guides/hitl-approval.md#deadlines).
+
 ## See also
 
 [Plan flows](../guides/plan-flows.md), [Human approval](../guides/hitl-approval.md), and

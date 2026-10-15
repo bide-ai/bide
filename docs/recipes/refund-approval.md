@@ -136,6 +136,16 @@ terminal](../guides/hitl-approval.md#deciding-from-the-terminal). An approver wh
 runs `bide-hsm approve` with `-key` naming it by reference instead of a file ([Key
 custody](../guides/key-custody.md#deciding-from-the-terminal-bide-hsm)).
 
+## Give the gate a deadline
+
+A gate waits as long as it takes unless its policy has a `Timeout`: set it in Go (`Timeout: 48 * time.Hour` on the
+`agent.ApprovalPolicy`) or as `timeout: 48h` in the `approval` block of a flow config. The deadline is measured
+from the recorded request and fixed once, so a redeploy does not move it. A gate that reaches it without enough
+approvals expires: the refund never runs, the flow returns `plan.ErrApprovalExpired`, and an approval recorded
+after the deadline is refused and shown as not counted. The outcome is whichever is recorded first, so approvals
+already written by the deadline still win when the run is driven later. `bide view` shows the deadline and the time
+left, and `examples/approval/flow` sets one. See [Deadlines](../guides/hitl-approval.md#deadlines).
+
 ## What a crash does
 
 A crash while the run waits for approvals loses nothing: the requests and decisions are in the journal,
