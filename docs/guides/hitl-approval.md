@@ -531,7 +531,11 @@ refund := agent.MustFunc("refund", "refund an order", doRefund,
   approvals already written by the deadline win when the run is driven later. A decision whose
   write lands after the expiry does not count, even if it was stamped on time; readers label it
   "not counted: written after the gate expired" (`agent.ReasonAfterExpiry`).
-- **Seen by readers.** `agent.EvaluateGate` reports `Expired` and the `Deadline`; the approvals
+- **Seen by readers.** `bide view` shows a waiting gate's deadline and the time left, an expired gate as
+  `expired` with the deadline, and a late decision as not counted; its Needs attention list puts gates
+  with a deadline first, nearest first, and flags one due within the hour
+  ([Run viewer](run-viewer.md#needs-attention)); `bide approve -list` shows the deadline too, and
+  offers no command for a gate past it. `agent.EvaluateGate` reports `Expired` and the `Deadline`; the approvals
   endpoint's `GET /pending` gives `expires_at` and the state `expired`; the notifier sends
   `approval_expired` and closes the pending approval with the reason `expired`
   ([Notifications](notifications.md)).
