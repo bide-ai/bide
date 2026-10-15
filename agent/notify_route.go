@@ -452,7 +452,25 @@ func (e *notifyEngine) fillDetail(ctx context.Context, ev *notifyEvent) {
 	}
 	switch {
 	case ev.approval != nil && ev.approval.ToolName == "":
-		rec, ok, err := e.j.Get(ctx, run, ApprovalPendingStep(ev.approval.ToolUseID))
+		call := ev.approval.ToolUseID
+		var rec Record
+		var ok bool
+		var err error
+		if reask := ev.approval.Reask; reask == "" {
+			rec, ok, err = e.j.Get(ctx, run, ApprovalPendingStep(call))
+		} else {
+			// A re-ask event shows the policy the gate asks again under: its own note, if the journal
+			// proves it (ValidReaskNote).
+			recs, herr := e.j.History(ctx, run)
+			if herr != nil {
+				return
+			}
+			byName := valuesByName(recs)
+			if rec, ok = byName[ApprovalReaskStep(call, reask == PendingSoDReapproval)]; ok {
+				var rw ApprovalWait
+				ok = json.Unmarshal(rec.Result, &rw) == nil && ValidReaskNote(byName, call, rec.Name, rw)
+			}
+		}
 		if err != nil || !ok {
 			return
 		}

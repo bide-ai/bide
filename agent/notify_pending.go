@@ -196,6 +196,7 @@ func (e *notifyEngine) pendingEvents(runID string, recs []Record) []notifyEvent 
 		have[r.Name] = true
 	}
 	now := e.cfg.now()
+	byName := valuesByName(recs)
 	var out []notifyEvent
 
 	for _, r := range recs {
@@ -210,9 +211,9 @@ func (e *notifyEngine) pendingEvents(runID string, recs []Record) []notifyEvent 
 		// The first pause note, or a re-ask note (ApprovalReaskStep): each is its own ask, decided by
 		// its own outcome.
 		key, decided := ApprovalKey(runID, w.ToolUseID, 0), gateDecidedNames(w.ToolUseID)
-		if w.Reask != "" {
+		if w.Reask != "" || r.Name != ApprovalPendingStep(w.ToolUseID) {
 			sod := w.Reask == PendingSoDReapproval
-			if r.Name != ApprovalReaskStep(w.ToolUseID, sod) {
+			if !ValidReaskNote(byName, w.ToolUseID, r.Name, w) {
 				continue
 			}
 			key, decided = ApprovalReaskKey(runID, w.ToolUseID, sod), reaskDecidedNames(w.ToolUseID, sod)
