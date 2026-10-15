@@ -107,8 +107,10 @@ type Pending struct {
 	ArgsText       string          `json:"args_text,omitempty"` // the arguments when they are not JSON: shown as text
 	ArgsSHA256     string          `json:"args_sha256"`         // SHA-256 of the canonical arguments, lowercase hex: what a signature binds
 	DecisionFormat string          `json:"decision_format"`     // agent.DecisionFormat: the format a signature must be in
-	State          string          `json:"state"`               // StateWaiting, StateDecided, StateEnded, StateSingle or StateError
+	State          string          `json:"state"`               // StateWaiting, StateDecided, StateExpired, StateEnded, StateSingle or StateError
 	AskedAt        string          `json:"asked_at,omitempty"`  // when the run paused at the gate, by the run's clock
+	// ExpiresAt is the gate's recorded deadline (agent.ApprovalDeadline), empty for a gate with none.
+	ExpiresAt string `json:"expires_at,omitempty"`
 	// Reason says why the call waits again after a tally: agent.PendingReapproval or
 	// agent.PendingSoDReapproval. Empty on a call's first ask.
 	Reason string `json:"reason,omitempty"`
@@ -125,6 +127,10 @@ const (
 	StateEnded = "ended"
 	// StateSingle: a one-decision gate (agent.Approve), which takes no signed decision.
 	StateSingle = "single"
+	// StateExpired: the gate's deadline (agent.ApprovalPolicy.Timeout) has passed, by the handler's
+	// clock, or its recorded outcome is the expiry; it takes no more decisions, and the call never
+	// runs.
+	StateExpired = "expired"
 	// StateError: the gate would refuse to evaluate (an invalid policy, approvers on one key, a
 	// requester the run does not record): the run fails at the call, and the intake takes no
 	// decision. Pending.Reason says why.
@@ -142,6 +148,7 @@ type Gate struct {
 	Excluded  []string       `json:"excluded,omitempty"` // approvers who fill no seat (separation of duties, or a key problem)
 	Passed    bool           `json:"passed"`             // approved >= need
 	Failed    bool           `json:"failed"`             // too few approvers left to reach need
+	Expired   bool           `json:"expired,omitempty"`  // the gate's recorded outcome is its expiry
 	Decisions []GateDecision `json:"decisions,omitempty"`
 }
 
@@ -715,6 +722,9 @@ func policyOfNote(w agent.ApprovalWait) *agent.ApprovalPolicy {
 // (agent.EvaluateGate): waiting, decided, a one-decision gate the intake does not serve, a gate that
 // would refuse to evaluate, or a run that ended while the gate waited.
 func (h *Handler) state(ctx context.Context, g *gateRecords) (string, error) {
+	if g.st.Expired || g.st.Status == agent.GateWaiting && !g.st.Deadline.IsZero() && !h.now().Before(g.st.Deadline) {
+		return StateExpired, nil
+	}
 	switch g.st.Status {
 	case agent.GateDecided, agent.GateUngated:
 		return StateDecided, nil
@@ -749,7 +759,7 @@ func (h *Handler) gateChecks(g *gateRecords) (Gate, []agent.DecisionCheck) {
 		need, approvers = g.pol.Need, slices.Clone(g.pol.Approvers)
 	}
 	out := Gate{Need: need, Approvers: approvers, Approved: t.Approved, Denied: t.Denied,
-		Pending: slices.Clone(t.Pending), Excluded: slices.Clone(t.Excluded), Passed: t.Passed(), Failed: t.Unreachable()}
+		Pending: slices.Clone(t.Pending), Excluded: slices.Clone(t.Excluded), Passed: t.Passed(), Failed: t.Unreachable(), Expired: g.st.Expired}
 	for _, c := range checks {
 		out.Decisions = append(out.Decisions, GateDecision{Approver: c.Approver, Approved: c.Approved, Counted: c.Counted, Reason: c.Reason})
 	}
@@ -783,6 +793,9 @@ func (h *Handler) pending(w http.ResponseWriter, r *http.Request) {
 	}
 	p := Pending{Run: run, Call: call, Tool: g.subject.ToolName, ArgsSHA256: audit.ApprovalArgsDigest(g.subject),
 		DecisionFormat: agent.DecisionFormat, State: st, AskedAt: g.wait.RecordedAt, Gate: h.gate(g)}
+	if !g.st.Deadline.IsZero() {
+		p.ExpiresAt = agent.FormatTimestamp(g.st.Deadline)
+	}
 	switch st {
 	case StateWaiting:
 		p.Reason = g.st.Reason
@@ -913,6 +926,9 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 		// requests, in this process or another, exactly one does.
 		err = agent.SubmitDecision(ctx, h.j, d, agent.WithDecisionCheck(h.verifiers), agent.WithClock(h.now), agent.ReportWritten(&wrote))
 		switch {
+		case errors.Is(err, agent.ErrApprovalExpired):
+			writeError(w, http.StatusConflict, "not_waiting", "the gate takes no more decisions: "+StateExpired)
+			return
 		case errors.Is(err, agent.ErrAlreadyDecided):
 			writeError(w, http.StatusConflict, "already_decided", "this approver already has a decision on the call that counts")
 			return
