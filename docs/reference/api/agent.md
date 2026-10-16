@@ -68,6 +68,7 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `var ErrResponseTooLarge`: ErrResponseTooLarge is a streamed response with a line longer than the adapter reads, or longer in all than its adapter's cap (see MaxSSELine and LimitResponse in model/provider).
 - `var ErrBudgetExceeded`, `var ErrMaxTurns`: Condition sentinels, specific causes, each wrapping its category.
 - `var ErrInvalidApproval`: ErrInvalidApproval is an approver decision rejected at submission by SubmitDecision's WithDecisionCheck: no such tool call, an unknown approver, or a signature that does not verify for this exact call.
+- `var ErrStatusUnavailable`: ErrStatusUnavailable is a certificate-bound decision submitted (with WithDecisionCheck) while the revocation status of its chain is missing or stale: the decision is not refused, the gate cannot judge it yet, and nothing is written.
 - `var ErrAlreadyDecided`: ErrAlreadyDecided is a decision submitted (with WithDecisionCheck) by an approver whose earlier valid decision on the same call already counts; the new one would be ignored.
 - `var ErrAlreadyResolved`: ErrAlreadyResolved is the condition of a resolution refused because the operation already has a different recorded outcome (see HaltAlreadyResolved).
 - `var ErrApprovalExpired = errors.New("approval expired")`: ErrApprovalExpired is returned (wrapped) when an approval gate's deadline has passed: by Approve and SubmitDecision for a decision on such a gate (also ErrConfig: nothing is recorded), and by a plan flow for a node whose gate expired (also plan.ErrApprovalDenied).
@@ -113,6 +114,7 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `func Cancel(ctx context.Context, j *Journal, runID, reason string, opts ...CancelOption) error`: Cancel cancels runID's run (D1), recording reason.
 - `func Capability[T any](store Store) (T, bool)`: Capability returns store's implementation of the optional capability T (Lister, Leaser, or any other interface a store may implement beyond Store), looking through wrappers.
 - `func CertLeafHash(der []byte) [32]byte`: CertLeafHash is the SHA-256 of a leaf certificate's DER: what a v4 decision signs in place of the certificate itself.
+- `func CertRecordVerifies(iv CertIntakeVerifier, s ApprovalSubject, r Record) bool`: CertRecordVerifies reports whether r is a valid decision of a certificate-bound approver for s as the intake judges (CertIntakeVerifier): its chain, identity, scheme and signature hold now and nothing in its chain is revoked.
 - `func DecisionStep(d Decision) string`: DecisionStep returns the journal name SubmitDecision gives the record of d first: distinct for each distinct decision (call, approver, verdict, scheme and decision time), and the same for every resubmission of it, whatever its signature bytes, which is why that is a no-op.
 - `func DigestKey(bucket string) string`: DigestKey is the event key of the digest for time bucket (an opaque, stable label).
 - `func EncodeRecord(r Record) ([]byte, error)`: EncodeRecord returns the journal encoding of r: the bytes a store persists for it and the bytes an audit leaf commits to.
@@ -640,6 +642,17 @@ type CertExecVerifier interface {
 
 CertExecVerifier is implemented by the verifier of a certificate-bound approver that can be asked, immediately before the call it authorizes executes, whether a counted decision still holds.
 
+## type CertIntakeVerifier
+
+```go
+type CertIntakeVerifier interface {
+	CertDecisionVerifier
+	VerifyCertIntake(cd CertDecision) CertCheck
+}
+```
+
+CertIntakeVerifier is implemented by the verifier of a certificate-bound approver that can check a decision before it is written (audit.CertApprover).
+
 ## type CertRevocation
 
 ```go
@@ -1163,6 +1176,8 @@ IdentityPolicyRecord is the certificate policy and status values in force when a
 type IdentityRoster interface {
 	HasIdentity(approverID string) bool
 
+	Identifier(approverID string) (identifier string, ok bool)
+
 	RequesterIdentifier(principal string) (identifier string, ok bool)
 
 	IdentityMappingConfigured() bool
@@ -1228,6 +1243,7 @@ Journal is the durable journal the engine writes through: it owns everything a r
 - `func (j *Journal) Get(ctx context.Context, runID, name string) (Record, bool, error)`: Get returns the record named name in runID's journal, if there is one.
 - `func (j *Journal) History(ctx context.Context, runID string) ([]Record, error)`: History returns runID's records in journal order, the header first (see Records).
 - `func (j *Journal) Parallel[T any](ctx context.Context, runID string, tasks []Task[T], opts ...ParallelOption) ([]T, error)`: Parallel runs tasks concurrently, each as a durable named step (see Step), and returns their results in task order.
+- `func (j *Journal) Reanchor(ctx context.Context, runID string) (anchored bool, err error)`: Reanchor asks the journal's store, if it can (a Reanchorer such as audit.AuditedStore), to publish a signed head over runID's journal now, and reports whether it could.
 - `func (j *Journal) Records(ctx context.Context, runID string) iter.Seq2[Record, error]`: Records yields runID's records in journal order, the header first.
 - `func (j *Journal) Signal[T any](ctx context.Context, runID, name string, payload T, opts ...AnswerOption) error`: Signal delivers a single-shot signal to a run, journaled at-most-once by name: a redelivery (a retried webhook, an at-least-once queue) is a no-op and the first payload wins.
 - `func (j *Journal) Step[T any](ctx context.Context, runID, name string, fn func(context.Context) (T, error), opts ...StepOption) (T, error)`: Step runs fn as a named durable step and returns its typed result.

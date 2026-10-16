@@ -908,6 +908,41 @@ work on the journal at once; more get 503 with `Retry-After`. Errors are `{"erro
 with stable codes, and a store error is reported to `WithOnError`, never to the caller. A request for
 a run or call that is not there and one for a call with no gate read the same.
 
+**A certificate-bound approver's decision.** For an approver whose verifier is an `audit.CertApprover`
+([operating certificate-bound approvers](certificate-approvers.md)), `POST /decisions` also takes `cert`: the
+leaf-first DER chain, a JSON array of base64 strings (standard alphabet, padded; Go: `Request.Cert`, a
+`[][]byte`), and `signature` is then over `agent.ApprovalDecisionBytesCert` (`bide.approval.v4`: the SHA-256 of
+`cert[0]` is signed with the decision, `alg` is the leaf key's scheme). The chain is bounded before anything is
+parsed: at most `agent.MaxDecisionCertChain` (8) certificates of 1 to `agent.MaxDecisionCertDER` (16 KiB)
+bytes each, else 400; the request body bound (`WithMaxBodyBytes`, 64 KiB by default) still applies to the whole
+request, so a deployment whose chains approach the limits raises it. The chain is verified **before the
+write**, by the approver's own verifier, the rule the gate counts by (`agent.WithDecisionCheck`): the chain
+is accepted for the approver at the time of the write, the signature verifies under the leaf's key, and the
+status of every certificate is usable now by the execution ages. Nothing is written on any failure:
+
+| Status | Code | Meaning |
+|---|---|---|
+| 422 | `invalid_approval` | the chain, the identity, the scheme, the signature or the validity fails, a certificate is revoked, a certificate-bound approver sent no chain (a bare signature is a downgrade and is refused), or a bare-key approver sent one |
+| 503 | `status_unavailable` | revocation status is missing or stale, so the gate cannot judge the certificate yet; `Retry-After: 5`; the decision is not refused, retry |
+| 400 | `bad_request` | more than 8 certificates, or one empty or over 16 KiB |
+| 409 | `already_decided` | the approver already has a decision on the call that counts |
+
+A replay of a decision the journal already holds is answered from the record even while status is
+unavailable (200, `recorded: false`). After the write the intake asks the store to anchor (`AuditedStore`
+signs a head with the write itself); a decision no signed head covers does not count until one does, and the
+response says so: `anchored: false`, with `counted: false` and the reason. **`counted: true` on a certificate-bound
+decision is not final.** Each `gate.decisions` entry of a certificate-bound decision carries `tier`,
+`provisional` and `basis`: at intake the status in hand usually predates the decision, so the count is a live,
+`provisional` one (`basis`: `live-before-decision`); only a `logclock-final` or `independent-final` tier is
+final, and `bide audit verify-approvals` recomputes it. The same holds for `OnRecorded`'s `Decided`: it means
+the gate has an outcome, not that the identity behind it is final. The receipt in the response carries the
+journaled chain (`cert`); verify it with `audit.DecisionReceipt.VerifyCertificate`, not `Verify`.
+
+`GET /pending` shows, for each certificate-bound approver, the canonical identifier its certificate must carry
+(`gate.identity`: approver id to identifier), so a client can check its own certificate before it signs. These
+are person identifiers: they are behind the same `WithAuth` check as the rest of the gate read, so restrict who
+may `GET` a gate (a deployment that must not show them to every approver authorizes the read per approver).
+
 **Who may reach it, and who may read.** `GET /pending` shows a call's arguments to any caller the
 handler lets through, and anyone who can reach `POST /decisions` can make the application do a
 signature check and, for a valid decision, a journal write. If the arguments are confidential, or the

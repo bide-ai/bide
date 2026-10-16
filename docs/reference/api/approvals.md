@@ -68,6 +68,8 @@ type Gate struct {
 	Failed    bool           `json:"failed"`
 	Expired   bool           `json:"expired,omitempty"`
 	Decisions []GateDecision `json:"decisions,omitempty"`
+
+	Identity map[string]string `json:"identity,omitempty"`
 }
 ```
 
@@ -81,6 +83,10 @@ type GateDecision struct {
 	Approved bool   `json:"approved"`
 	Counted  bool   `json:"counted"`
 	Reason   string `json:"reason,omitempty"`
+
+	Tier        string `json:"tier,omitempty"`
+	Provisional bool   `json:"provisional,omitempty"`
+	Basis       string `json:"basis,omitempty"`
 }
 ```
 
@@ -197,6 +203,8 @@ type Request struct {
 	DecidedAt string `json:"decided_at"`
 	Alg       string `json:"alg"`
 	Signature []byte `json:"signature"`
+
+	Cert [][]byte `json:"cert,omitempty"`
 }
 ```
 
@@ -214,6 +222,8 @@ type Response struct {
 
 	Counted bool   `json:"counted"`
 	Reason  string `json:"reason,omitempty"`
+
+	Anchored *bool `json:"anchored,omitempty"`
 
 	Receipt *audit.DecisionReceipt `json:"receipt,omitempty"`
 }

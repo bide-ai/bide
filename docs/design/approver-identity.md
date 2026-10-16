@@ -1353,6 +1353,12 @@ meanwhile, and the verifier-kind rule is exactly the note's: the counting rule d
 verifier, so a v4 signature fails under a bare-key verifier and a v3 decision that carries a chain counts
 as a bare-key decision.
 
+The intake of a certificate-bound decision landed with step 2 (S2a): `WithDecisionCheck` and `SubmitDecision` verify a
+decision that carries a chain through the approver's verifier (`agent.CertIntakeVerifier`, `audit.CertApprover.VerifyCertIntake`: the
+chain at the time of the write, the v4 signature, status usable now) before writing, status that cannot be judged is
+`agent.ErrStatusUnavailable` (the intake's 503, nothing written), and the approvals intake takes the chain in the request
+(`cert`), reports `tier`, `provisional` and `anchored` beside `counted`, and shows the identity rule on `GET /pending`.
+
 The gate records landed next (E2a): a gate with a certificate-bound approver anchors a decision that verifies but
 has no covering head (`Reanchorer`, rate-limited), writes phase notes, and journals the status bytes by hash, the
 `approval-identity:<id>:<generation>` record bound to its tally by a digest of the stored bytes, and the policy

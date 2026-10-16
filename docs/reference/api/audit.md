@@ -419,6 +419,7 @@ CertApprover is the verifier of a certificate-bound approver (docs/design/approv
 - `func (c *CertApprover) ArchiveStatus(ctx context.Context, hash string, der []byte) error`: ArchiveStatus implements agent.StatusArchiver with the verifier's StatusArchive, if any.
 - `func (c *CertApprover) DescribeIdentity() agent.IdentityPolicyRecord`: DescribeIdentity implements agent.IdentityDescriber: the certificate policy and status values in force, every one that reaches a verdict, as the identity record keeps them (defaults filled in).
 - `func (c *CertApprover) HasIdentity(approverID string) bool`: HasIdentity implements agent.IdentityRoster: whether the policy's identity map names the approver id.
+- `func (c *CertApprover) Identifier(approverID string) (string, bool)`: Identifier implements agent.IdentityRoster: the canonical identifier the policy gives the approver id.
 - `func (c *CertApprover) IdentityMappingConfigured() bool`: IdentityMappingConfigured implements agent.IdentityRoster: whether RequesterIdentity is set.
 - `func (c *CertApprover) KeyIDs() []string`: KeyIDs is the approver's seat, "ident:" and the canonical identifier the policy's identity map gives the approver id, so two approver ids of one person fill one seat.
 - `func (c *CertApprover) PolicyDigest() string`: PolicyDigest implements agent.IdentityDescriber: the SHA-256 (lowercase hex) of the JSON of DescribeIdentity, written with encoding/json without HTML escaping, fields in declaration order and map keys sorted, which the pause note and the identity record both carry.
@@ -429,6 +430,7 @@ CertApprover is the verifier of a certificate-bound approver (docs/design/approv
 - `func (*CertApprover) Verify(message, sig []byte) bool`: Verify is always false: a bare signature over bytes, with no certificate, is never a certificate-bound approver's decision.
 - `func (c *CertApprover) VerifyCertDecision(cd agent.CertDecision) agent.CertCheck`: VerifyCertDecision implements agent.CertDecisionVerifier.
 - `func (c *CertApprover) VerifyCertExec(cd agent.CertDecision) agent.CertCheck`: VerifyCertExec implements agent.CertExecVerifier: the check a gate runs on a counted decision immediately before the call it authorizes executes.
+- `func (c *CertApprover) VerifyCertIntake(cd agent.CertDecision) agent.CertCheck`: VerifyCertIntake implements agent.CertIntakeVerifier: the check a decision passes before it is written (agent.WithDecisionCheck, so the approvals intake and `bide approve`).
 
 ## type CertError
 
