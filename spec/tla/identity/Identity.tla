@@ -64,6 +64,10 @@ CONSTANTS
   DedupSeat,    \* a seat is an identifier: two decisions of one identifier are one seat
   Cov,          \* series coverage for the final tier: "none" | "time" | "number"
   CountLive,    \* a fresh CRL issued before A(d) may count a decision (provisional)
+  LBoundCount,  \* the count reads a CRL beyond notAfter only if it is L(C), shown to follow its predecessor
+  LBoundExec,   \* the pre-execution check applies the same rule to the status it reads
+  DeadGuard,    \* a decision removed by a revocation is never counted again
+  TallyRecheck, \* the tally forms only when no counted decision is listed in the archive
   \* The adversary and the CA's options.
   Prune,        \* the CA may drop a revoked certificate's entry after one CRL beyond its notAfter
   CanRevoke,    \* the CA may revoke a certificate
@@ -72,6 +76,7 @@ CONSTANTS
   CanRollback,  \* an older published CRL may be delivered after a newer one
   CanSkew,      \* a head may be stamped out of order
   CanBackdate,  \* a decision may carry a decided_at earlier than its true time
+  CanCrash,     \* the gate may crash: the counted set is lost, the journal (heads, the tally) is not
   CanMisbind    \* a decision may name an approver id other than its certificate's identifier
 
 ASSUME NaSet \subseteq 0..MaxT /\ IssueMax \in Nat
@@ -143,6 +148,8 @@ HeadOK(d) == ~NonDec \/ \A h \in Smallest(d) : ~Implicated(h)
 (***************************************************************************)
 (* Status                                                                  *)
 (***************************************************************************)
+\* The first received CRL beyond c's notAfter (0 if none).
+LRcv(c) == IF \E k \in rcvd : ctu[k] > na[c] THEN MinOf({k \in rcvd : ctu[k] > na[c]}) ELSE 0
 \* The E the CRLs of set S list for certificate c (NoE if none does).
 KnownE(S, c) == IF S = {} THEN NoE ELSE MinOf({clst[k][c] : k \in S})
 \* Published CRLs older than age: a fresh-enough cache cannot have missed their listing.
@@ -150,11 +157,25 @@ Old(age) == {k \in 1..np : ctu[k] <= now - age}
 Seen(age) == rcvd \cup Old(age)
 
 FreshSnap(age) == snap # 0 /\ now - ctu[snap] <= age
+\* The series shows nothing was published between a CRL and its predecessor in the archive: the
+\* number follows (Cov "number") or, with Cov "time", it was issued within the declared Period; either
+\* way within the predecessor's nextUpdate. With Cov "none" nothing is shown.
+Follows(p, k) ==
+  /\ Cov # "none" /\ ctu[k] <= ctu[p] + Period
+  /\ (Cov = "number" => k = p + 1)
+\* L(C): the first received CRL beyond notAfter, established when the archive has a predecessor it
+\* follows. A CRL beyond notAfter is read for absence only if it is L(C) (RFC 5280 section 3.3: a CA
+\* may have dropped the entry from any later one).
+LOK(c, k) ==
+  \/ ctu[k] <= na[c]
+  \/ /\ k \in rcvd /\ k = LRcv(c)
+     /\ \E q \in rcvd : q < k /\ (\A j \in rcvd : j < k => j <= q) /\ Follows(q, k)
 \* Usable for counting d: a cache, fresh (with Fresh), issued at or after A(d) (or live-counted).
 StatusUsable(d) ==
   /\ snap # 0
   /\ (~Fresh \/ FreshSnap(MaxAge))
   /\ (ctu[snap] >= AOf(d) \/ CountLive)
+  /\ (~LBoundCount \/ LOK(dc[d], snap))
 \* Rule 5: the leaf has no E <= (A(d), or with RevByClaim the signed decided_at) in the status.
 NotListed(d) ==
   clst[snap][dc[d]] > IF RevByClaim THEN dt[d] ELSE AOf(d)
@@ -178,12 +199,14 @@ Countable(d) ==
   /\ ChainOK(d) /\ Window(d)
   /\ StatusUsable(d) /\ NotListed(d)
 
+\* A counted decision whose leaf the archive lists with E <= A(d).
+Listed(d) == KnownE(rcvd, dc[d]) <= cA[d]
+
 Seats(S) == IF DedupSeat THEN Cardinality({da[d] : d \in S}) ELSE Cardinality(S)
 
 (***************************************************************************)
 (* The final tier (offline): a witness S for decision d                    *)
 (***************************************************************************)
-LRcv(c) == MinOf({k \in rcvd : ctu[k] > na[c]})
 CovOK(d, S) ==
   LET a == AOf(d)
       F == {k \in rcvd : ctu[k] <= a}
@@ -339,7 +362,7 @@ GateOpen ==
 
 \* The gate counts a decision.
 Count(d) ==
-  /\ waiting /\ tl = {} /\ d \in 1..nd /\ d \notin cn /\ d \notin dead
+  /\ waiting /\ tl = {} /\ d \in 1..nd /\ d \notin cn /\ (~DeadGuard \/ d \notin dead)
   /\ Countable(d)
   /\ cn' = cn \cup {d}
   /\ cA' = [cA EXCEPT ![d] = AOf(d)]
@@ -354,7 +377,7 @@ Count(d) ==
 \* recounted (with StickyTally).
 DropRevoked(d) ==
   /\ waiting /\ d \in cn /\ (tl = {} \/ ~StickyTally)
-  /\ KnownE(rcvd, dc[d]) <= cA[d]
+  /\ Listed(d)
   /\ dead' = dead \cup {d}
   /\ cn' = cn \ {d}
   /\ tl' = IF tl # {} THEN tl \ {d} ELSE tl
@@ -371,6 +394,7 @@ DropStale(d) ==
 
 Tally ==
   /\ waiting /\ tl = {} /\ Seats(cn) >= K
+  /\ (~TallyRecheck \/ \A d \in cn : ~Listed(d))
   /\ tl' = cn
   /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, rcvd, snap, heads, nd, da, dc, dt,
                  waiting, cn, dead, execd, cA, cRb, cNb, cOk, eb>>
@@ -379,7 +403,7 @@ Tally ==
 \* E <= A(d) in the archive.
 ExecOK ==
   /\ FreshSnap(ExecAge)
-  /\ \A d \in tl : KnownE(rcvd, dc[d]) > cA[d]
+  /\ \A d \in tl : ~Listed(d) /\ (~LBoundExec \/ LOK(dc[d], snap))
 
 Exec ==
   /\ tl # {} /\ ~execd /\ (~ExecRecheck \/ ExecOK)
@@ -387,6 +411,14 @@ Exec ==
   /\ eb' = (~FreshSnap(ExecAge) \/ \E d \in tl : KnownE(Seen(ExecAge), dc[d]) <= cA[d])
   /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, rcvd, snap, heads, nd, da, dc, dt,
                  waiting, cn, dead, tl, cA, cRb, cNb, cOk>>
+
+\* The gate crashes and restarts: the counted set and the wait are lost; the journal (the heads and the
+\* terminal tally) and the archive are not. The decisions are counted again.
+Crash ==
+  /\ CanCrash /\ (waiting \/ cn # {})
+  /\ waiting' = FALSE /\ cn' = {}
+  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, rcvd, snap, heads, nd, da, dc, dt,
+                 dead, tl, execd, cA, cRb, cNb, cOk, eb>>
 
 Next ==
   \/ ClockTick
@@ -401,6 +433,7 @@ Next ==
   \/ \E d \in Decs : Count(d) \/ DropRevoked(d) \/ DropStale(d)
   \/ Tally
   \/ Exec
+  \/ Crash
 
 Spec == Init /\ [][Next]_vars
 
@@ -450,9 +483,11 @@ SeatPerIdentifier ==
   tl # {} => Cardinality({da[d] : d \in tl}) >= K
 
 \* Action properties.
+\* A crash loses the counted set (the decisions are counted again).
+Crashed == waiting /\ ~waiting'
 TerminalStable == [][tl # {} => tl' = tl]_vars
 StaleNeverUncounts ==
-  [][\A d \in Decs : (d \in cn /\ d \notin dead') => d \in cn']_vars
+  [][\A d \in Decs : (d \in cn /\ d \notin dead' /\ ~Crashed) => d \in cn']_vars
 
 \* The call never ran on stale status, or while a counted decision's chain showed E <= A(d) in
 \* status the verifier had (or that was old enough to have).
@@ -472,9 +507,18 @@ AbsenceOnlyInWindow ==
       \/ \E L \in 1..np : ctu[L] > na[dc[d]] /\ ctu[S] <= ctu[L]
                           /\ \A j \in 1..np : ctu[j] > na[dc[d]] => ctu[L] <= ctu[j]
 
-\* Liveness: a decision written while the gate waits is eventually covered by a head, so the gate
-\* can count it (the pause is not a deadlock).
-NoStuckPause == \A d \in Decs : [](d <= nd => <>Covered(d))
+\* A tally forms only from decisions none of which the archive lists with E <= A(d) at that moment.
+TallyClean ==
+  [][(tl = {} /\ tl' # {}) => \A d \in tl' : KnownE(rcvd', dc[d]) > cA[d]]_vars
+
+\* A decision a revocation removed is in neither the counted set nor the tally.
+DeadStaysOut == dead \cap Counted = {}
+
+\* Liveness, and only this: a decision written while the gate waits is eventually covered by a head,
+\* so the gate's anchor step supplies the head a direct write lacks. It does not say the decision is
+\* then counted: a covering head that contradicts another (NonDec) or status that never arrives
+\* leaves the gate paused by design.
+EventuallyCovered == \A d \in Decs : [](d <= nd => <>Covered(d))
 
 \* Vacuity (check.sh): the call is reachable.
 EffectNotReachable == ~execd
@@ -489,6 +533,10 @@ DropNotReachable == dead = {}
 TwoSeatsNotReachable == ~(tl # {} /\ Cardinality(tl) >= 2)
 \* A decision counts although a head carries a time that is not the real one.
 SkewedCountNotReachable == ~(Counted # {} /\ \E h \in heads : h.tm # h.rl)
+\* The gate crashed after the tally formed (the wait is lost, the tally is not).
+CrashAfterTallyNotReachable == ~(tl # {} /\ ~waiting)
+\* The call ran after a crash.
+ExecAfterCrashNotReachable == ~(execd /\ ~waiting)
 \* A withheld or rolled-back CRL leaves the cache behind the CA's series, and a decision counts.
 BehindCountNotReachable == ~(Counted # {} /\ snap # np)
 =============================================================================
