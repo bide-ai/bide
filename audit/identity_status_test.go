@@ -690,7 +690,7 @@ func TestRevokedIntermediateRevokesTheChain(t *testing.T) {
 	// An intermediate revoked AFTER the decision does not touch it.
 	cs = s.eval(s.snap(
 		s.lcrl(1, now, 30*min),
-		s.rcrl(1, now, 30*min, testca.Revoked(s.inter.Cert, s.a.Add(hour), 0)),
+		s.rcrl(1, now, 3*hour, testca.Revoked(s.inter.Cert, s.a.Add(hour), 0)),
 	), audit.StatusParams{})
 	if cs.Revoked {
 		t.Fatalf("%+v", cs)
@@ -1420,9 +1420,14 @@ func TestMalformedCRLCatalogue(t *testing.T) {
 		}(), false},
 		"entry revoked after thisUpdate": {func() testca.RawCRLOpts {
 			o := base()
-			o.Entries = []testca.RawEntry{{Serial: big.NewInt(5), Time: this.Add(time.Hour)}}
+			o.Entries = []testca.RawEntry{{Serial: big.NewInt(5), Time: this.Add(time.Minute)}}
 			return o
 		}(), false},
+		"entry revoked after nextUpdate": {func() testca.RawCRLOpts {
+			o := base()
+			o.Entries = []testca.RawEntry{{Serial: big.NewInt(5), Time: next.Add(time.Second)}}
+			return o
+		}(), true},
 		"duplicate entry extension": {func() testca.RawCRLOpts {
 			o := base()
 			o.Entries = []testca.RawEntry{{Serial: big.NewInt(5), Time: this, Exts: []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 21}, Value: []byte{0x0a, 0x01, 0x01}}, {Id: asn1.ObjectIdentifier{2, 5, 29, 21}, Value: []byte{0x0a, 0x01, 0x02}}}}}
