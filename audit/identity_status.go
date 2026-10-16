@@ -557,9 +557,9 @@ type CertStatus struct {
 	EvictionGap bool
 }
 
-// Final reports whether the finding is a verified one: not revoked, and final under the status rule.
+// IsFinal reports whether the finding is a verified one: not revoked, and final under the status rule.
 // Provisional and no-information findings are not, and neither is a live count.
-func (c CertStatus) Final() bool { return !c.Revoked && c.Tier == TierFinal }
+func (c CertStatus) IsFinal() bool { return !c.Revoked && c.Tier == TierFinal }
 
 // ChainStatus is the finding for every non-anchor certificate of an accepted chain, leaf first.
 type ChainStatus struct {
@@ -568,15 +568,15 @@ type ChainStatus struct {
 	Tier    StatusTier // the weakest certificate's tier (meaningful when not Revoked)
 }
 
-// Final reports whether every certificate of the chain is final and none is revoked. Err() == nil does
+// IsFinal reports whether every certificate of the chain is final and none is revoked. Err() == nil does
 // not mean that: it means the status is usable (a live count may proceed on it) and nothing is
-// revoked. Only Final is verification.
-func (cs ChainStatus) Final() bool {
+// revoked. Only IsFinal is verification.
+func (cs ChainStatus) IsFinal() bool {
 	if cs.Revoked || len(cs.Certs) == 0 {
 		return false
 	}
 	for _, c := range cs.Certs {
-		if !c.Final() {
+		if !c.IsFinal() {
 			return false
 		}
 	}
@@ -584,7 +584,7 @@ func (cs ChainStatus) Final() bool {
 }
 
 // Err is nil when the chain has usable status and no revocation (a provisional or live-count finding
-// included: check Final before calling a decision verified). Otherwise it is a *StatusError:
+// included: check IsFinal before calling a decision verified). Otherwise it is a *StatusError:
 // ReasonRevoked, ReasonStatusStale (usable-in-time status exists but is too old) or
 // ReasonStatusUnknown.
 func (cs ChainStatus) Err() error {

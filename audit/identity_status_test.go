@@ -1242,7 +1242,7 @@ func TestLiveCountingUsesStatusBeforeA(t *testing.T) {
 	}
 	live := audit.StatusParams{Now: now, MaxStatusAge: hour, CountLive: true}
 	st := s.leafStatus(sn, live)
-	if st.Tier != audit.TierProvisional || !st.S.Equal(s.a.Add(-time.Second)) || st.Final() {
+	if st.Tier != audit.TierProvisional || !st.S.Equal(s.a.Add(-time.Second)) || st.IsFinal() {
 		t.Fatalf("live: %+v", st)
 	}
 	if st.Basis != "live count: status issued before the decision (provisional only)" {
@@ -1265,8 +1265,8 @@ func TestLiveCountingUsesStatusBeforeA(t *testing.T) {
 	// The chain says the same: a usable, provisional live count has Err() == nil but is not Final.
 	root := s.rcrl(1, s.a.Add(-time.Second), 30*min)
 	cs := s.eval(s.snap(before, root), live)
-	if cs.Err() != nil || cs.Final() || cs.Tier != audit.TierProvisional {
-		t.Fatalf("chain: err %v final %v tier %v", cs.Err(), cs.Final(), cs.Tier)
+	if cs.Err() != nil || cs.IsFinal() || cs.Tier != audit.TierProvisional {
+		t.Fatalf("chain: err %v final %v tier %v", cs.Err(), cs.IsFinal(), cs.Tier)
 	}
 }
 
@@ -1276,16 +1276,16 @@ func TestFinalAndBasis(t *testing.T) {
 	c1, c2, cL := series(s)
 	sn := s.snap(c1, c2, cL)
 	st := s.leafStatus(sn, audit.StatusParams{})
-	if !st.Final() || st.Basis != "status issued at or after the decision" || st.Caveat == "" {
+	if !st.IsFinal() || st.Basis != "status issued at or after the decision" || st.Caveat == "" {
 		t.Fatalf("%+v", st)
 	}
-	if prov := s.leafStatus(s.snap(c1, c2), audit.StatusParams{}); prov.Final() || prov.Tier != audit.TierProvisional {
+	if prov := s.leafStatus(s.snap(c1, c2), audit.StatusParams{}); prov.IsFinal() || prov.Tier != audit.TierProvisional {
 		t.Fatalf("provisional: %+v", prov)
 	}
-	if rev := s.leafStatus(s.snap(s.lcrl(9, s.a.Add(time.Second), hour, testca.Revoked(s.leaf.Cert, s.a.Add(-time.Minute), 0))), audit.StatusParams{}); rev.Final() {
+	if rev := s.leafStatus(s.snap(s.lcrl(9, s.a.Add(time.Second), hour, testca.Revoked(s.leaf.Cert, s.a.Add(-time.Minute), 0))), audit.StatusParams{}); rev.IsFinal() {
 		t.Fatalf("revoked: %+v", rev)
 	}
-	if none := s.leafStatus(s.snap(), audit.StatusParams{}); none.Final() || none.Basis != "" {
+	if none := s.leafStatus(s.snap(), audit.StatusParams{}); none.IsFinal() || none.Basis != "" {
 		t.Fatalf("no status: %+v", none)
 	}
 	// The chain is final only when every certificate is: the leaf's CRLs every 40 minutes, the
@@ -1295,14 +1295,14 @@ func TestFinalAndBasis(t *testing.T) {
 	r0 := s.rcrl(1, idT0, 25*hour)
 	r1 := s.rcrl(2, idT0.Add(24*hour+time.Minute), 24*hour)
 	cs := s.c.EvaluateStatus(s.ac, s.a, s.snap(c1, c2, cL, r0, r1), per)
-	if !cs.Final() || !cs.Certs[0].Final() || !cs.Certs[1].Final() {
+	if !cs.IsFinal() || !cs.Certs[0].IsFinal() || !cs.Certs[1].IsFinal() {
 		t.Fatalf("every certificate final: %+v", cs)
 	}
 	rMid := s.rcrl(3, idT0.Add(30*min), 24*hour)
-	if cs2 := s.c.EvaluateStatus(s.ac, s.a, s.snap(c1, c2, cL, r0, rMid), per); cs2.Final() || cs2.Err() != nil || cs2.Certs[1].Tier != audit.TierProvisional {
-		t.Fatalf("the intermediate only provisional: final %v err %v", cs2.Final(), cs2.Err())
+	if cs2 := s.c.EvaluateStatus(s.ac, s.a, s.snap(c1, c2, cL, r0, rMid), per); cs2.IsFinal() || cs2.Err() != nil || cs2.Certs[1].Tier != audit.TierProvisional {
+		t.Fatalf("the intermediate only provisional: final %v err %v", cs2.IsFinal(), cs2.Err())
 	}
-	if s.eval(s.snap(c1, c2, cL), audit.StatusParams{}).Final() {
+	if s.eval(s.snap(c1, c2, cL), audit.StatusParams{}).IsFinal() {
 		t.Fatal("a chain with no status for the intermediate was final")
 	}
 }
@@ -1474,7 +1474,7 @@ func TestEvictionIsVisible(t *testing.T) {
 	if whole.Evicted() != 0 || whole.Len() != 6 {
 		t.Fatalf("unbounded: %d held, %d evicted", whole.Len(), whole.Evicted())
 	}
-	if st := s.leafStatus(whole, p); !st.Final() || st.EvictionGap {
+	if st := s.leafStatus(whole, p); !st.IsFinal() || st.EvictionGap {
 		t.Fatalf("unbounded: %+v", st)
 	}
 	small := mk(audit.WithMaxCRLs(3))
@@ -1482,7 +1482,7 @@ func TestEvictionIsVisible(t *testing.T) {
 		t.Fatalf("evicted %d", small.Evicted())
 	}
 	st := s.leafStatus(small, p)
-	if !st.EvictionGap || st.Final() || st.Tier == audit.TierFinal || st.Warning == "" {
+	if !st.EvictionGap || st.IsFinal() || st.Tier == audit.TierFinal || st.Warning == "" {
 		t.Fatalf("a verdict that needed evicted CRLs: %+v", st)
 	}
 	// A verdict that does not reach back to what was evicted is unaffected: decide at a later A.
@@ -1498,7 +1498,7 @@ func TestObservedGapWarning(t *testing.T) {
 	c0 := s.lcrl(1, idT0, 3*hour)
 	c1 := s.lcrl(2, idT0.Add(45*min), 3*hour)
 	st := s.leafStatus(s.snap(c0, c1), audit.StatusParams{CAPeriod: 20 * min, W: 10 * min, MinW: 5 * min})
-	if !strings.Contains(st.Warning, "gap") || st.Final() {
+	if !strings.Contains(st.Warning, "gap") || st.IsFinal() {
 		t.Fatalf("%+v", st)
 	}
 	ok := s.leafStatus(s.snap(c0, s.lcrl(2, idT0.Add(15*min), 3*hour)), audit.StatusParams{CAPeriod: 20 * min, W: 10 * min, MinW: 5 * min})

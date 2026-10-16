@@ -370,7 +370,7 @@ short-lived certificates this design recommends. So, for a certificate `C` and a
   `thisUpdate >= A(d)`. Such status is `provisional` and never `final`, and its `Basis` says "live count:
   status issued before the decision (provisional only)". A CRL dated more than a tolerance in the future
   is not fresh. An evaluation whose `Err()` is nil has usable status and no revocation; it is **verified
-  only if `Final()`**. The snapshot is bounded (a refresher) or unbounded (an audit tool); eviction is
+  only if `IsFinal()`**. The snapshot is bounded (a refresher) or unbounded (an audit tool); eviction is
   counted and a verdict that needed an evicted CRL says so and is at most provisional. A series whose
   observed gap exceeds the declared `CAPeriod` carries a warning. The kit-hash record is tamper evidence (the bundle was
   not changed after it was assembled), **not completeness evidence**. A pilot CA is checked for its number
