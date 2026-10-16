@@ -132,7 +132,9 @@ type certLike struct {
 func (certLike) Alg() agent.Alg                  { return agent.AlgCertificate }
 func (certLike) Verify(message, sig []byte) bool { return false }
 func (c certLike) KeyIDs() []string              { return []string{"ident:" + c.id} }
-func (c certLike) VerifyCertExec(cd agent.CertDecision) agent.CertCheck { return c.VerifyCertDecision(cd) }
+func (c certLike) VerifyCertExec(cd agent.CertDecision) agent.CertCheck {
+	return c.VerifyCertDecision(cd)
+}
 func (c certLike) VerifyCertDecision(cd agent.CertDecision) agent.CertCheck {
 	decidedAt, err := agent.ParseTimestamp(cd.Record.DecidedAt())
 	if err != nil || !ed25519.Verify(c.pub, agent.ApprovalDecisionBytes(cd.Subject, cd.Record.Approver(), cd.Record.Approved, decidedAt), cd.Record.Signature()) {

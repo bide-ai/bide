@@ -29,7 +29,7 @@ type certGate struct {
 	heads   []audit.SignedTreeHead
 	params  audit.StatusParams
 	now     func() time.Time
-	crlsAt  time.Time // when the status CRLs are issued
+	crlsAt  time.Time        // when the status CRLs are issued
 	execNow func() time.Time // the execution check's clock, when a test sets it
 	pending bool
 	archive audit.StatusArchive // the verifier's status archive, when set

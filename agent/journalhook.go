@@ -63,6 +63,23 @@ func init() {
 		return flowGate(ctx, d, runID, key, node, args, pol, vf)
 	}
 	// protocol:flows end
+	journalhook.PreExec = func(ctx context.Context, j any, runID, key string, policy any, verifiers any) error {
+		d, ok := j.(*Journal)
+		if !ok {
+			return fmt.Errorf("journalhook.PreExec: %T is not a journal: %w", j, ErrConfig)
+		}
+		pol, ok := policy.(*ApprovalPolicy)
+		if !ok {
+			return fmt.Errorf("journalhook.PreExec: policy is %T, not an *agent.ApprovalPolicy: %w", policy, ErrConfig)
+		}
+		var vf ApproverVerifierFor
+		if verifiers != nil {
+			if vf, ok = verifiers.(ApproverVerifierFor); !ok {
+				return fmt.Errorf("journalhook.PreExec: verifiers is %T, not an agent.ApproverVerifierFor: %w", verifiers, ErrConfig)
+			}
+		}
+		return preExecute(ctx, d, runID, runID, key, pol, vf, ApprovalRequestStep(key))
+	}
 	journalhook.CheckRunID = checkRunID
 	journalhook.RunIdentity = flowRunIdentity
 	journalhook.Marshal = marshalJournal

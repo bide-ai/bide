@@ -14,7 +14,8 @@ type fakeCertVerifier struct {
 	check func(cd CertDecision) CertCheck
 	// execCheck, when set, answers VerifyCertExec (the check before the call runs); else check does.
 	execCheck func(cd CertDecision) CertCheck
-	calls []CertDecision
+	execSeen  *CertDecision // the last decision VerifyCertExec was given
+	calls     []CertDecision
 }
 
 func (f *fakeCertVerifier) Alg() Alg                        { return AlgCertificate }
@@ -26,6 +27,7 @@ func (f *fakeCertVerifier) VerifyCertDecision(cd CertDecision) CertCheck {
 }
 
 func (f *fakeCertVerifier) VerifyCertExec(cd CertDecision) CertCheck {
+	f.execSeen = &cd
 	if f.execCheck != nil {
 		return f.execCheck(cd)
 	}

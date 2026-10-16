@@ -1,9 +1,9 @@
 package audit
 
 import (
-	"crypto/x509"
 	"bytes"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
