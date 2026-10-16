@@ -124,3 +124,15 @@ type IdentityDescriber interface {
 	// environment at startup (audit.CheckDeclaredGoDebug).
 	VerifierInfo() (revision, goDebug, buildGoDebug string)
 }
+
+// CertIntakeVerifier is implemented by the verifier of a certificate-bound approver that can check a
+// decision before it is written (audit.CertApprover). SubmitDecision with WithDecisionCheck calls it, for a
+// decision that carries a chain, in place of the bare-key check: the chain is accepted for the approver at
+// the time of the write, the signature verifies over the v4 bytes under the leaf's key, and status is
+// usable now. A Reason of ReasonStatusUnknown or ReasonStatusStale means the status could not be judged
+// (SubmitDecision returns ErrStatusUnavailable and writes nothing); any other Reason refuses the decision
+// (ErrInvalidApproval). Nothing is written on any failure.
+type CertIntakeVerifier interface {
+	CertDecisionVerifier
+	VerifyCertIntake(cd CertDecision) CertCheck
+}

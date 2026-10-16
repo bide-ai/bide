@@ -236,14 +236,14 @@ func TestSubmitDecision_CertValidation(t *testing.T) {
 	}
 }
 
-// WithDecisionCheck verifies a decision against the approver's bare key; this version has no check
-// for a certificate-bound decision, so it refuses one rather than writing what it cannot vouch for.
-func TestSubmitDecision_CertWithDecisionCheckIsRefused(t *testing.T) {
+// WithDecisionCheck knows the approver's kind: a bare-key approver's decision carries no certificate chain
+// (a chain on one is refused, ErrInvalidApproval, where the kind is known), and nothing is written.
+func TestSubmitDecision_ChainOnABareKeyApproverIsRefused(t *testing.T) {
 	ctx := context.Background()
 	j, vf, _ := pausedOne(t)
 	d, _ := certDecision(t, j, [][]byte{[]byte("leaf")})
 	err := SubmitDecision(ctx, j, d, WithDecisionCheck(vf))
-	if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "certificate") {
+	if !errors.Is(err, ErrInvalidApproval) || !strings.Contains(err.Error(), "bare-key") {
 		t.Fatalf("%v", err)
 	}
 	recs, _ := j.History(ctx, "r")
