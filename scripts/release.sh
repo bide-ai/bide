@@ -495,6 +495,13 @@ self_test_proxy() {
     DIRECT_OK_AT=$((1000 + 200 * 60)) PROXY_OK_AT=999999999
     if PW_DEADLINE=$((1000 + 240 * 60)) PW_DIRECT_MAX=$((240 * 60)) PW_MAX=$((240 * 60)) run m v1 ""; then echo "self-test: an unanswering proxy was accepted"; exit 1; fi
     [ $((CLOCK - 1000)) -le $((240 * 60)) ] || { echo "self-test: waited $((CLOCK - 1000))s against a deadline of $((240 * 60))s"; exit 1; }
+    # The deadline also cuts the settle delay and the direct wait short; the proxy is not asked.
+    DIRECT_OK_AT=0 PROXY_OK_AT=0
+    if PW_DEADLINE=1100 run m v1 1000; then echo "self-test: a settle delay past the deadline was waited out"; exit 1; fi
+    echo "$LOG" | grep -q 'p@' && { echo "self-test: the proxy was asked past the deadline: [$LOG ]"; exit 1; }
+    DIRECT_OK_AT=999999999
+    if PW_DEADLINE=1100 PW_DIRECT_MAX=99999 run m v1 ""; then echo "self-test: an unfetchable tag was accepted"; exit 1; fi
+    [ $((CLOCK - 1000)) -le 130 ] || { echo "self-test: the direct wait ran $((CLOCK - 1000))s past a 100s deadline"; exit 1; }
     # A tag that is never fetchable is not an answer from the proxy: the proxy is never asked.
     DIRECT_OK_AT=999999999
     if run m v1 1000; then echo "self-test: an unfetchable tag was accepted"; exit 1; fi
