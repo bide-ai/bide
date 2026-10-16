@@ -76,6 +76,15 @@ func judged(c *certGate) ([]string, string) {
 	return countedSet(checks), r
 }
 
+// tallyOf is the gate's recorded tally of c1: under the identity-bound name (the first generation), or the
+// plain one for a gate that is not.
+func tallyOf(c *certGate) (agent.Record, bool) {
+	if r, ok := c.recordByName(agent.ApprovalIdentTallyStep("c1", 0)); ok {
+		return r, true
+	}
+	return c.recordByName(agent.ApprovalTallyStep("c1"))
+}
+
 // snap builds a status snapshot from CRLs, bounded as a gate with no status archive requires.
 func snap(t *testing.T, ders ...[]byte) *audit.StatusSnapshot {
 	t.Helper()
@@ -91,6 +100,24 @@ func snap(t *testing.T, ders ...[]byte) *audit.StatusSnapshot {
 // revokedAlice is the entry that lists alice's leaf with the effective time e.
 func revokedAlice(c *certGate, e time.Time) x509.RevocationListEntry {
 	return testca.Revoked(c.leaves["alice"].Cert, e, 0)
+}
+
+// execRuns is what the check before execution says about alice's counted decision: {alice} when the call
+// may run, nothing (and the reason it is held) when it may not. It also drives the gate itself over the same
+// journal and clocks and requires the call to have run exactly when the check passes, so the scenario is a
+// statement about the gate's one pre-execution path and not only about the verifier.
+func execRuns(c *certGate) ([]string, string) {
+	got := c.execCheck()
+	before := c.charged
+	err := c.run()
+	ran := err == nil && c.charged == before+1
+	if ran != (got.Reason == "") {
+		c.t.Fatalf("the check says %q but the gate's call ran=%v (err %v): the pre-execution path and the check disagree", got.Reason, ran, err)
+	}
+	if got.Reason == "" {
+		return []string{"alice"}, ""
+	}
+	return nil, got.Reason
 }
 
 // rootRevokesCA is a status series in which the root's CRL lists the issuing CA with the effective time
@@ -300,8 +327,10 @@ func TestModel15Refinement(t *testing.T) {
 		// consecutively) is not final.
 		"regress/final-no-coverage": {want: nil, run: func(t *testing.T, ctl bool) ([]string, string) {
 			c := aliceGate(t)
-			c.params.ConsecutiveNumbers, c.params.CAPeriod = true, 0 // no declared period: only consecutive numbers show nothing lies between
-			nums := []int64{1, 3}                                    // number 2 withheld
+			// The declared period (ten minutes) is shorter than the 40 minute gap, so only consecutive numbers can
+			// show that nothing lies between two CRLs (a CA must declare a period: the harness gives the issuer one).
+			c.params.ConsecutiveNumbers, c.params.CAPeriod = true, 10*time.Minute
+			nums := []int64{1, 3} // number 2 withheld
 			if ctl {
 				nums = []int64{1, 2}
 			}
@@ -353,7 +382,7 @@ func TestModel15Refinement(t *testing.T) {
 			if err := c.run(); err != nil || c.charged != 1 {
 				t.Fatalf("%v %d", err, c.charged)
 			}
-			before, _ := c.recordByName(agent.ApprovalTallyStep("c1"))
+			before, _ := tallyOf(c)
 			if !ctl {
 				c.status = c.buildStatus(revokedAlice(c, certA.Add(-time.Minute))) // learned after the count
 				if got, _ := judged(c); len(got) != 0 {
@@ -361,7 +390,7 @@ func TestModel15Refinement(t *testing.T) {
 				}
 			}
 			_ = c.run()
-			after, _ := c.recordByName(agent.ApprovalTallyStep("c1"))
+			after, _ := tallyOf(c)
 			if string(before.Result) != string(after.Result) || c.charged != 1 {
 				t.Fatalf("the recorded tally moved: %s -> %s (charged %d)", before.Result, after.Result, c.charged)
 			}
@@ -381,7 +410,7 @@ func TestModel15Refinement(t *testing.T) {
 			if err := c.run(); err != nil || c.charged != 1 {
 				t.Fatalf("%v %d", err, c.charged)
 			}
-			before, _ := c.recordByName(agent.ApprovalTallyStep("c1"))
+			before, _ := tallyOf(c)
 			if !ctl {
 				c.now = func() time.Time { return certA.Add(72 * time.Hour) } // the status is now stale
 				if got, why := judged(c); len(got) != 0 || why != agent.ReasonStatusStale {
@@ -389,7 +418,7 @@ func TestModel15Refinement(t *testing.T) {
 				}
 			}
 			_ = c.run()
-			after, _ := c.recordByName(agent.ApprovalTallyStep("c1"))
+			after, _ := tallyOf(c)
 			if string(before.Result) != string(after.Result) {
 				t.Fatalf("stale status changed a recorded tally: %s -> %s", before.Result, after.Result)
 			}
@@ -416,7 +445,7 @@ func TestModel15Refinement(t *testing.T) {
 			c.decideCert("bob", nil)
 			c.anchor(certA.Add(time.Second))
 			err := c.run()
-			_, hasTally := c.recordByName(agent.ApprovalTallyStep("c1"))
+			_, hasTally := tallyOf(c)
 			if ctl && (err != nil || c.charged != 1 || !hasTally) {
 				t.Fatalf("control: %v charged %d tally %v", err, c.charged, hasTally)
 			}
@@ -438,6 +467,98 @@ func TestModel15Refinement(t *testing.T) {
 			c.now = func() time.Time { return testDecidedAt.Add(now) }
 			c.status = cleanSeries(t, c, offs...)
 			return judged(c)
+		}},
+		// The pre-execution check (E2b), the exec configurations. An execution scenario returns {alice} when the
+		// check lets the call run on alice's counted decision and nothing when it holds the call.
+		"regress/no-exec-recheck": {want: nil, why: agent.ReasonStatusStale, run: func(t *testing.T, ctl bool) ([]string, string) {
+			c := execGate(t)
+			c.at(3 * time.Hour) // the newest CRL is three hours old, ExecStatusAge is two
+			if ctl {
+				c.at(5 * time.Minute)
+			}
+			return execRuns(c)
+		}},
+		"regress/no-exec-recheck-revoked": {want: nil, why: agent.ReasonRevoked, run: func(t *testing.T, ctl bool) ([]string, string) {
+			c := execGate(t) // counted; status never stale at execution
+			later := c.crlsAt.Add(5 * time.Minute)
+			e := certA.Add(-time.Minute) // a revocation published after the count, effective before A
+			if ctl {
+				e = certA.Add(time.Minute) // effective after A: the decision stands
+			}
+			c.addCRLs(3, later, []x509.RevocationListEntry{testca.Revoked(c.leaves["alice"].Cert, e, 4)}, nil)
+			c.execNow = func() time.Time { return later.Add(time.Minute) }
+			return execRuns(c)
+		}},
+		// The L(C) rule at execution: with the CRL that lists the leaf withheld, a pruned CRL beyond notAfter
+		// (the leaf is valid for an hour) with a gap before it does not satisfy the check; with the series
+		// filled in, L(C) follows its predecessor and the check passes.
+		"regress/prune-no-lc-exec": {want: nil, why: agent.ReasonStatusStale, run: func(t *testing.T, ctl bool) ([]string, string) {
+			c := execGate(t)
+			if ctl {
+				c.addCRLs(3, testDecidedAt.Add(50*time.Minute), nil, nil)
+				c.addCRLs(4, testDecidedAt.Add(100*time.Minute), nil, nil) // L(C): the first beyond notAfter, after a CRL
+				c.execNow = func() time.Time { return testDecidedAt.Add(110 * time.Minute) }
+			} else {
+				c.addCRLs(3, testDecidedAt.Add(3*time.Hour), nil, nil) // pruned, long after notAfter, with a gap before it
+				c.execNow = func() time.Time { return testDecidedAt.Add(3*time.Hour + time.Minute) }
+			}
+			return execRuns(c)
+		}},
+		// The CA tier at execution: the leaf's issuer is fresh and the root's CRL (which would list the CA) is
+		// older than the root tier's ExecStatusAgeFor (here 20 minutes, with a 10 minute period).
+		"regress/exec-no-ca-tier": {want: nil, why: agent.ReasonStatusStale, run: func(t *testing.T, ctl bool) ([]string, string) {
+			c := execGate(t)
+			rk := audit.SPKIHashOf(c.root.Cert)
+			c.params.CAPeriodFor = map[audit.SPKIHash]time.Duration{rk: 10 * time.Minute}
+			c.tweak = func(a *audit.CertApprover) { a.ExecStatusAgeFor[rk] = 20 * time.Minute }
+			later := testDecidedAt.Add(45 * time.Minute) // before the leaf's notAfter (+1h)
+			if _, err := c.status.AddCRL(c.inter.NewCRL(t, testca.CRLOpts{Number: 3, ThisUpdate: later, NextUpdate: later.Add(48 * time.Hour)})); err != nil {
+				t.Fatal(err)
+			}
+			if ctl {
+				if _, err := c.status.AddCRL(c.root.NewCRL(t, testca.CRLOpts{Number: 3, ThisUpdate: later, NextUpdate: later.Add(48 * time.Hour)})); err != nil {
+					t.Fatal(err)
+				}
+			}
+			c.execNow = func() time.Time { return later.Add(5 * time.Minute) }
+			got, why := execRuns(c)
+			if !ctl && !strings.Contains(c.execCheck().Detail, "certificate 1 of the chain") {
+				t.Fatalf("the hold is not the CA tier's: %q", c.execCheck().Detail)
+			}
+			return got, why
+		}},
+		// The two tiers' ages are not confused: the leaf's status is judged by ExecStatusAge even though the
+		// root tier's ExecStatusAgeFor is long.
+		"regress/exec-leaf-age-from-ca": {want: nil, why: agent.ReasonStatusStale, run: func(t *testing.T, ctl bool) ([]string, string) {
+			c := execGate(t)
+			ik := audit.SPKIHashOf(c.inter.Cert)
+			c.params.MaxStatusAgeFor = map[audit.SPKIHash]time.Duration{ik: 24 * time.Hour}
+			c.tweak = func(a *audit.CertApprover) { a.ExecStatusAgeFor[ik] = 24 * time.Hour } // a long CA-tier age for the leaf's issuer key
+			c.at(3 * time.Hour)                                                               // the leaf's CRL is three hours old (ExecStatusAge two); a 24 hour CA tier would accept it
+			if ctl {
+				c.at(time.Hour)
+			}
+			got, why := execRuns(c)
+			if !ctl && !strings.Contains(c.execCheck().Detail, "certificate 0 of the chain") {
+				t.Fatalf("the hold is not the leaf tier's: %q", c.execCheck().Detail)
+			}
+			return got, why
+		}},
+		"regress/exec-no-recheck-ca-revoked": {want: nil, why: agent.ReasonRevoked, run: func(t *testing.T, ctl bool) ([]string, string) {
+			c := execGate(t)
+			later := c.crlsAt.Add(5 * time.Minute)
+			e := certA.Add(-time.Hour) // the root lists the CA after the count, effective before A
+			if ctl {
+				e = certA.Add(2 * time.Minute) // after A (and not after the CRL that lists it)
+			}
+			// Reason 4 (superseded): a compromise reason with no invalidity date would be dated to notBefore.
+			c.addCRLs(3, later, nil, []x509.RevocationListEntry{testca.Revoked(c.inter.Cert, e, 4)})
+			c.execNow = func() time.Time { return later.Add(time.Minute) }
+			got, why := execRuns(c)
+			if !ctl && c.execCheck().Revocation == nil {
+				t.Fatal("no revocation reported for the revoked CA")
+			}
+			return got, why
 		}},
 		// CA tier: the root's CRL listing the issuing CA with E <= A(d) removes the leaf's decision; with a
 		// clean root series it counts and is final.
@@ -474,7 +595,7 @@ func TestModel15Refinement(t *testing.T) {
 			c.decideCert("bob", nil)
 			c.anchor(certA.Add(time.Second))
 			err := c.run()
-			_, hasTally := c.recordByName(agent.ApprovalTallyStep("c1"))
+			_, hasTally := tallyOf(c)
 			if ctl && (err != nil || c.charged != 1 || !hasTally) {
 				t.Fatalf("control: %v charged %d tally %v", err, c.charged, hasTally)
 			}
@@ -495,13 +616,7 @@ func TestModel15Refinement(t *testing.T) {
 
 	// pending lists the model's configurations whose Go counterpart is a later change.
 	pending := map[string]string{
-		"regress/no-exec-recheck":            "the status check before execution (E2b)",
-		"regress/no-exec-recheck-revoked":    "the status check before execution (E2b)",
-		"regress/prune-no-lc-exec":           "the status check before execution (E2b)",
-		"regress/exec-no-ca-tier":            "the status check before execution (E2b)",
-		"regress/exec-leaf-age-from-ca":      "the status check before execution (E2b)",
-		"regress/exec-no-recheck-ca-revoked": "the status check before execution (E2b)",
-		"limits/alias-two-seats":             "a known limit: see TestModel15AliasLimit",
+		"limits/alias-two-seats": "a known limit: see TestModel15AliasLimit",
 	}
 
 	// Drift guard: the scenarios and the pending list are exactly the model's regress and limits configs.
@@ -618,6 +733,7 @@ func TestModel15SeriesNotSnapshot(t *testing.T) {
 func TestModel15PruneFallback(t *testing.T) {
 	c := aliceGate(t)
 	c.params.CountLive, c.params.MaxStatusAge, c.params.CAPeriod = true, 6*time.Hour, time.Hour
+	c.params.MaxStatusAgeFor = map[audit.SPKIHash]time.Duration{audit.SPKIHashOf(c.inter.Cert): 6 * time.Hour}
 	c.now = func() time.Time { return testDecidedAt.Add(3 * time.Hour) }
 	c.status = snap(t,
 		c.inter.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: testDecidedAt.Add(-5 * time.Minute), NextUpdate: testDecidedAt.Add(10 * time.Hour)}),  // fresh, before A
