@@ -13,9 +13,14 @@ $In = (Resolve-Path $In).Path
 $issuingName = 'Fixture ADCS Approver CA'
 
 Import-Certificate -FilePath (Join-Path $In 'root.cer') -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
+# The root's CRL, where chain building on this machine finds it (the certificates' CRL distribution point
+# is a file:// path on the root's machine).
+certutil -addstore -f Root (Join-Path $In 'rootcrl.pem') | Out-Null
 $pw = ConvertTo-SecureString (Get-Content (Join-Path $In 'pfx-password.txt')).Trim() -AsPlainText -Force
 Install-WindowsFeature ADCS-Cert-Authority -IncludeManagementTools | Out-Null
 Install-AdcsCertificationAuthority -CAType StandaloneSubordinateCa -CertFile (Join-Path $In 'issuing.pfx') -CertFilePassword $pw -Force | Out-Null
+# An offline root's revocation server is not reachable from here: the CA ignores an offline CRL.
+certutil -setreg CA\CRLFlags +CRLF_REVCHECK_IGNORE_OFFLINE | Out-Null
 Save-Defaults $issuingName (Join-Path $Out 'DEFAULTS.txt')
 
 # 24 hour certificates; a base CRL every day and a delta every 30 minutes; request extensions honoured.
@@ -26,7 +31,11 @@ certutil -setreg CA\CRLPeriodUnits 1 | Out-Null
 certutil -setreg CA\CRLDeltaPeriod 'Minutes' | Out-Null
 certutil -setreg CA\CRLDeltaPeriodUnits 30 | Out-Null
 certutil -setreg policy\EditFlags +EDITF_ENABLEREQUESTEXTENSIONS | Out-Null
-Restart-Service certsvc
+try { Restart-Service certsvc } catch {
+  Get-WinEvent -LogName Application -MaxEvents 30 -ErrorAction SilentlyContinue | Where-Object { $_.ProviderName -match 'CertSvc|Certificate' } | Format-List TimeCreated, Message | Out-String | Write-Host
+  certutil -verify (Join-Path $In 'issuing-by-root.pem') | Write-Host
+  throw
+}
 Start-Sleep -Seconds 10
 $config = "$env:COMPUTERNAME\$issuingName"
 
