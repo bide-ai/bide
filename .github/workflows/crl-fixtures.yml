@@ -1,0 +1,55 @@
+name: CRL fixtures
+
+# Captures certificates and CRLs, true delta CRLs included, from EJBCA Community Edition and from
+# Microsoft AD CS, for the approver identity status rule's conformance tests (docs/design/approver-identity.md,
+# test plan item 32). It is dispatched by hand, never on a pull request, and its output is checked in
+# under audit/testdata/{ejbca,adcs} so the tests run offline. Download the artifacts, review them, and
+# commit them.
+on:
+  workflow_dispatch:
+  push: # TEMPORARY while the AD CS capture is developed: removed before the pull request is final
+    branches: [ident-c3]
+    paths: ['.github/workflows/crl-fixtures.yml', 'audit/testdata/adcs/capture.ps1', 'audit/testdata/ejbca/capture.sh']
+
+permissions:
+  contents: read
+
+jobs:
+  ejbca:
+    name: EJBCA Community
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start EJBCA
+        run: |
+          # The image is pinned by digest so a capture is reproducible.
+          docker run -d --name ejbca -p 8080:8080 -e TLS_SETUP_ENABLED=simple \
+            keyfactor/ejbca-ce@sha256:ef574ed81c1e2bb335902f1097b09f9408fe32f2c3abbccfe80999d1c9b50164
+          for i in $(seq 1 120); do
+            if curl -fs http://localhost:8080/ejbca/publicweb/healthcheck/ejbcahealth | grep -q ALLOK; then echo ready; exit 0; fi
+            sleep 5
+          done
+          docker logs ejbca | tail -50
+          exit 1
+      - name: Capture
+        run: sh audit/testdata/ejbca/capture.sh ejbca out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ejbca-fixtures
+          path: out/
+
+  adcs:
+    name: Microsoft AD CS
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Capture
+        shell: pwsh
+        run: ./audit/testdata/adcs/capture.ps1 -Out out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: adcs-fixtures
+          path: out/
