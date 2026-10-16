@@ -21,7 +21,9 @@ Package flowedit is the edit engine of the flow editor (docs/design/visual-edito
 **Functions**
 
 - `func Listen(addr string) (net.Listener, error)`: Listen listens on addr, which must name a loopback IP or localhost, as bide view does.
+- `func RemovedComments(old, new []byte) []string`: RemovedComments lists the lines the diff from old to new removes that are comments: a line whose first non-blank character is "#" (YAML), and the trailing comment of a removed or changed line.
 - `func ToJSON(data []byte) ([]byte, error)`: ToJSON converts a YAML flow config to the JSON plan reads, as bide check does: the document is decoded into plain values (a duplicate key is an error, as plan's strict JSON reading refuses one), every mapping key must be a string, and a second document is an error rather than ignored.
+- `func UnifiedDiff(name string, old, new []byte) string`: UnifiedDiff is the plain unified diff that turns old into new, the bytes the editor would write over the file shown as `diff -u` shows them ("--- a/name", "+++ b/name", hunks), or "" when the two are the same.
 - `func Verify(old, out []byte, op Op) (err error)`: Verify checks that out is old with op applied and nothing else: the data, the key order, the lines outside the operated entry, and which entry each comment belongs to.
 
 ### type Applied
@@ -51,6 +53,21 @@ type Approval struct {
 ```
 
 Approval is a node's approval gate as the config writes it: Need decisions from the Approvers, never counting the run's requester when ExcludePrincipal is set, and a deadline (a Go duration such as "48h", "" for none).
+
+### type Conflict
+
+```go
+type Conflict struct {
+	Hash string
+	Diff string
+}
+```
+
+Conflict is the error of a save over a file that changed on disk since the page read it.
+
+**Methods**
+
+- `func (c *Conflict) Error() string`: Error says the file changed on disk and was not overwritten.
 
 ### type Doc
 
@@ -107,6 +124,18 @@ type Map []KV
 ```
 
 Map is an ordered map value.
+
+### type NeedsConfirmation
+
+```go
+type NeedsConfirmation struct{ Items []string }
+```
+
+NeedsConfirmation is the error of a save of a weakened text that did not carry the confirmation of exactly the items the server computed for it.
+
+**Methods**
+
+- `func (n *NeedsConfirmation) Error() string`: Error lists the items the save needs confirmed.
 
 ### type Node
 
@@ -169,6 +198,28 @@ Option configures New.
 
 - `func WithBase(rev string) Option`: WithBase compares edits with the file at the git revision rev (a branch, tag or commit, as `git show rev:./file` takes it) instead of at HEAD.
 
+### type Preview
+
+```go
+type Preview struct {
+	Diff string `json:"diff"`
+
+	RemovedComments []string `json:"removed_comments,omitempty"`
+
+	Changed bool `json:"changed"`
+
+	Hash     string `json:"hash"`
+	Conflict bool   `json:"conflict,omitempty"`
+
+	NeedsConfirmation []string `json:"needs_confirmation,omitempty"`
+
+	Errors   int `json:"errors"`
+	Warnings int `json:"warnings"`
+}
+```
+
+Preview is what the editor shows before it writes: the plain unified diff of the bytes it would write against the file on disk now, the comments that diff removes, what the save needs the author to confirm, and whether the file changed on disk since the page read it.
+
 ### type Refusal
 
 ```go
@@ -216,6 +267,8 @@ Server is the editor for one config file.
 - `func (s *Server) BaselineNote() string`: BaselineNote is "" when the baseline is what it should be, and otherwise says why git HEAD was not used although the file may be in a repository; bide edit prints it at startup.
 - `func (s *Server) Doc() (*Doc, error)`: Doc reads the file and returns its View with the hash of the bytes read.
 - `func (s *Server) Handler() http.Handler`: Handler serves the editor: the page at /, its files under /assets/, and the API under /api/.
+- `func (s *Server) Preview(text []byte, hash string) (*Preview, error)`: Preview describes saving text over the file whose bytes the page read as hash.
+- `func (s *Server) Save(text []byte, hash string, confirmed []string) (*Doc, error)`: Save writes text over the file, if and only if: the file on disk is still the bytes the page read (hash), the text is a config the editor will write (at most MaxFileSize bytes, no NUL), and, when the text is weaker than the baseline or could not be compared, confirmed is exactly the list Preview named.
 - `func (s *Server) Token() string`: Token is the session token the page sends in TokenHeader.
 
 ### type Stat

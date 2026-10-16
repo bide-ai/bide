@@ -404,6 +404,8 @@ merge names and the types are checked when a program loads the flow with its `pl
 or a safety a block declares in Go is not visible. A clean page is not `plan.Load` accepting the flow, and a
 changed `block` on an ungated effect node is reported as weakened because the new block may carry no gate.
 
+**A file with any YAML anchor or alias is refused by the editor.** `plan` reads such a file (the YAML converter resolves anchors, aliases and merge keys), but the editor's splice cannot place an edit inside an alias, and a walk that follows aliases can overflow the stack or expand exponentially, so it refuses the whole document and says why; edit that file in your text editor. It likewise refuses a repeated key, a key that is not a string, NaN and infinity, which the loader refuses too.
+
 **The weakening classifier is a check, not a proof.** The banner and the confirmation show what `bide check
 -diff` classifies: a gate removed or loosened, an `assert` line removed, loosened or no longer holding, an
 node newly reachable without a gate, whatever its safety (a lowered `safety` label is itself reported). The

@@ -146,7 +146,8 @@ func TestSaveOfAWeakenedTextNeedsTheConfirmation(t *testing.T) {
 	hash := hashOf([]byte(weakFlow))
 	lower := strings.Replace(weakFlow, "need: 2", "need: 1", 1)
 	items := s.confirmations([]byte(lower))
-	if len(items) != 1 || !strings.Contains(items[0], "charge: approval 2 of 3") {
+	// the gate, and the assertion that held and is violated now (#329)
+	if len(items) != 2 || !strings.Contains(items[0], "charge: approval 2 of 3") || !strings.Contains(items[1], "assertion no longer holds") {
 		t.Fatalf("items %q", items)
 	}
 	// No confirmation, a partial one, a wrong one and a stale one (for another weakening): refused, 422, nothing written.
