@@ -51,11 +51,7 @@ func scalar(v any, q byte, flow, js bool) (string, error) {
 		}
 		dq := func() string {
 			b, _ := yaml.Marshal(&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: x, Style: yaml.DoubleQuotedStyle})
-			out := strings.TrimSuffix(string(b), "\n")
-			for _, r := range []rune{'\u2028', '\u2029', '\u0085', '\ufeff'} { // the library leaves some raw
-				out = strings.ReplaceAll(out, string(r), fmt.Sprintf(`\u%04x`, r))
-			}
-			return out
+			return strings.TrimSuffix(string(b), "\n")
 		}
 		// A rune a YAML 1.1 reader reads as a line break, or that is a control or format character,
 		// is written escaped in double quotes, never raw in a single-quoted or plain scalar.
