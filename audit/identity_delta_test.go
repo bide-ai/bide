@@ -202,7 +202,7 @@ func TestDeltaPairingRules(t *testing.T) {
 	b1 := s.lcrl(1, idT0, 20*min)
 	b3 := s.lcrl(3, idT0.Add(10*min), 24*hour)
 	d = s.delta(4, 1, idT0.Add(30*min), 3*hour)
-	st := s.leafStatus(s.snap(b1, b3, d), audit.StatusParams{Now: idT0.Add(40 * min), MaxStatusAge: 5 * hour})
+	st := s.leafStatus(s.snap(b1, b3, d), audit.StatusParams{Now: idT0.Add(40 * min), MaxStatusAge: 5 * hour, CountLive: true})
 	if !has(st.Used, hashOf(t, b3)) || has(st.Used, hashOf(t, b1)) || st.Tier == audit.TierNoInformation {
 		t.Fatalf("the freshest qualifying base was not the one merged: %+v", st)
 	}
@@ -215,7 +215,7 @@ func TestMergedNextUpdateIsTheEarlier(t *testing.T) {
 	d := s.delta(2, 1, idT0.Add(30*min), 3*hour) // next T0+3h30m
 	sn := s.snap(base, d)
 	live := func(now time.Time) audit.CertStatus {
-		return s.leafStatus(sn, audit.StatusParams{Now: now, MaxStatusAge: 5 * hour})
+		return s.leafStatus(sn, audit.StatusParams{Now: now, MaxStatusAge: 5 * hour, CountLive: true})
 	}
 	if st := live(idT0.Add(35 * min)); st.Tier == audit.TierNoInformation {
 		t.Fatalf("both current: %+v", st)
@@ -372,7 +372,7 @@ func TestMergedViewInheritsRetention(t *testing.T) {
 	base := s.inter.NewCRL(t, testca.CRLOpts{Number: 2, ThisUpdate: idT0.Add(140 * min), NextUpdate: idT0.Add(140*min + day),
 		Extra: []pkix.Extension{ext(asn1.ObjectIdentifier{2, 5, 29, 60}, false, genTime(t, idT0.Add(-24*hour)))}})
 	d := s.delta(3, 2, idT0.Add(150*min), 30*min)
-	st := s.leafStatus(s.snap(pre, base, d), audit.StatusParams{Interval: 3 * hour, W: 10 * min, MinW: 5 * min})
+	st := s.leafStatus(s.snap(pre, base, d), audit.StatusParams{CAPeriod: 3 * hour, W: 10 * min, MinW: 5 * min})
 	if !st.S.Equal(idT0.Add(150*min)) || !st.Unbounded || st.Tier != audit.TierFinal {
 		t.Fatalf("the delta merged with a retaining base: %+v", st)
 	}
@@ -389,7 +389,7 @@ func TestOmittedFirstDeltaBeyondNotAfter(t *testing.T) {
 	d2 := s.delta(3, 1, idT0.Add(40*min), day)
 	d3 := s.delta(4, 1, idT0.Add(70*min), day, rev) // the first beyond notAfter (T0+60m) lists the leaf
 	d4 := s.delta(5, 1, idT0.Add(90*min), day)      // pruned
-	p := audit.StatusParams{Interval: 30 * min}
+	p := audit.StatusParams{CAPeriod: 30 * min}
 	if st := s.leafStatus(s.snap(base, d1, d2, d3, d4), p); !st.Revoked {
 		t.Fatalf("complete: %+v", st)
 	}
@@ -454,11 +454,22 @@ func TestPairingAtScale(t *testing.T) {
 		}
 	}
 	start := time.Now()
-	st := s.leafStatus(sn, audit.StatusParams{Interval: 2 * min, W: 5 * min, MinW: 2 * min})
+	st := s.leafStatus(sn, audit.StatusParams{CAPeriod: 2 * min, W: 5 * min, MinW: 2 * min})
 	if time.Since(start) > 5*time.Second {
 		t.Fatalf("evaluating %d CRLs took %v", n, time.Since(start))
 	}
 	if st.Revoked {
+		t.Fatalf("%+v", st)
+	}
+}
+
+// Deltas are not bases: a run of deltas with no base pairs with nothing.
+func TestDeltasAreNotBases(t *testing.T) {
+	s := newStFx(t)
+	d1 := s.delta(2, 1, s.a.Add(time.Second), hour)
+	d2 := s.delta(3, 2, s.a.Add(2*time.Second), hour)
+	st := s.leafStatus(s.snap(d1, d2), audit.StatusParams{})
+	if st.Tier != audit.TierNoInformation || len(st.Used) != 0 {
 		t.Fatalf("%+v", st)
 	}
 }

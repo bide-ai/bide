@@ -96,7 +96,7 @@ func (f *osslFx) leaf(sn *audit.StatusSnapshot, cert, id string, a time.Time, p 
 func TestOpenSSLFixtures(t *testing.T) {
 	f := newOSSLFx(t)
 	sn := f.snap("crl1", "crl2", "crl3", "crl4", "crl5", "crl6", "rootcrl")
-	short := audit.StatusParams{W: 30 * time.Minute, MinW: 10 * time.Minute, Interval: 30 * time.Minute}
+	short := audit.StatusParams{W: 30 * time.Minute, MinW: 10 * time.Minute, CAPeriod: 30 * time.Minute}
 	a := osslAt(12, 0).Add(5 * time.Second)
 
 	// An unrevoked certificate: final, over coverage from the CRL in force at A (crl1) to crl5 (13:40).
@@ -151,7 +151,7 @@ func TestOpenSSLFixtures(t *testing.T) {
 func TestOpenSSLOverlappingCRLsWithAnOmittedCRL(t *testing.T) {
 	f := newOSSLFx(t)
 	a := osslAt(12, 0).Add(5 * time.Second)
-	p := audit.StatusParams{Interval: 30 * time.Minute} // default W and MinW
+	p := audit.StatusParams{CAPeriod: 30 * time.Minute} // default W and MinW
 	if st := f.leaf(f.snap("crl1", "crl2", "crl3", "crl4", "crl5"), "late", "late", a, p); !st.Revoked || !st.Compromise {
 		t.Fatalf("complete series: %+v", st)
 	}
@@ -183,12 +183,12 @@ func TestOpenSSLRefusalsAndTheDeltaIndicatorEncoding(t *testing.T) {
 	f := newOSSLFx(t)
 	a := osslAt(11, 45)
 	sn := f.snap("crl1", "pseudo-delta")
-	st := f.leaf(sn, "good", "good", a, audit.StatusParams{Interval: 30 * time.Minute})
+	st := f.leaf(sn, "good", "good", a, audit.StatusParams{CAPeriod: 30 * time.Minute})
 	if !has(st.Used, hashOf(t, fixturePEM(t, "crl1"))) || !has(st.Used, hashOf(t, fixturePEM(t, "pseudo-delta"))) {
 		t.Fatalf("base and delta should both be relied on: %+v", st)
 	}
 	// Without its base it is no evidence of absence.
-	if st := f.leaf(f.snap("pseudo-delta"), "good", "good", a, audit.StatusParams{Interval: 30 * time.Minute}); st.Tier != audit.TierNoInformation {
+	if st := f.leaf(f.snap("pseudo-delta"), "good", "good", a, audit.StatusParams{CAPeriod: 30 * time.Minute}); st.Tier != audit.TierNoInformation {
 		t.Fatalf("delta alone: %+v", st)
 	}
 }
