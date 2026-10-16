@@ -304,7 +304,8 @@ delivered it; each archived CRL records its source URL and fetch time as provena
 **Transport.** HTTP and HTTPS only; `ldap://` is refused with a message saying LDAP is not supported
 (publish the CRL over HTTP). GET only, a response size limit (the snapshot's, 16 MiB by default), timeouts on
 every stage, no compression, and redirects only to the same host and port, at most three, never from https to
-http. The library reads no proxy from the environment; `bide identity fetch-crl` does, and an application passes
+http; the one exception is the usual move to TLS, an http URL on port 80 redirected to the same host over https on
+port 443. The library reads no proxy from the environment; `bide identity fetch-crl` does, and an application passes
 its own `*http.Client` for mTLS or a proxy (then the proxy and DNS rules are the application's). A CRL is signed,
 so plain HTTP is the normal profile; a man in the middle can withhold or replay a CRL, which the rules below
 bound, but not forge one. **With a single URL and plain HTTP a replayed CRL stays acceptable until its
@@ -361,7 +362,13 @@ restart forgets rollback protection, and the refresher says so at start.
 restarts its numbering, would make every later real CRL a rollback. `bide identity reset-high-water` (or
 `CRLRefresher.ResetHighWater`) sets that CRL aside: it appends a `RESET-<time>.json` record to the archive (what
 is set aside, the reason, the operator, the time), removes the CRL from the live snapshot and recomputes the
-mark; the CRL stays in the archive, and a restart honours the record. A listing on a CRL set aside no longer
+mark; the CRL stays in the archive, and a restart honours the record. A reset made with the command reaches a
+running daemon (or a gate's embedded refresher on a shared archive) at its next attempt, with no restart, and a
+source that keeps serving the set-aside CRL has it archived with a `setaside` marker and never added
+(`set-aside-served`). The CRL set aside is normally the issuer's newest real one, so a reset that would drop a
+revocation no remaining CRL lists, and so make status look better until the CA publishes it again, is refused
+unless you pass `-accept-lost-listings` (`ResetRequest.AcceptLostListings`); the serials it dropped are written
+into the record's `lost_serials`, which is the audit trail. A listing on a CRL set aside no longer
 reaches the gate: the record is your statement that the CRL was wrong. A forged record could lower a mark, so
 every start reports an unacknowledged reset (`high-water-reset`, `Health().UnackedResets`) until an operator
 runs `bide identity ack-reset`.
@@ -379,7 +386,10 @@ warning only. Start-up events print the effective URLs and each issuer's limit, 
 cron (`-once` exits 1 unless every issuer holds a fresh CRL) or as a daemon, printing one JSON line per event
 and a health line per issuer. `ca.json` is a copy of the timings the gate declares (`ca_period`,
 `max_status_age`, `exec_status_age`, `this_update_skew`, and per issuer `ca_period`, `max_status_age`,
-`exec_status_age`, `ca_overlap`, `this_update_skew`, `delta_period`); it must match the gate's declaration. A
+`exec_status_age`, `ca_overlap`, `this_update_skew`, `delta_period`); it must match the gate's declaration: the command prints the policy digest of the approver it built in its
+start-up events, and you compare it with the digest the gate records (a mismatch means the schedule and the alarm
+follow other numbers than the gate). A delta outage is reported as an event and does not fail `-once`; a base that
+is not fresh does. A
 gate process embeds the refresher itself; the command is for the archive an audit reads and for monitoring.
 `bide approve -cert` does not fetch CRLs: its local check is a convenience before signing, and the gate decides.
 
