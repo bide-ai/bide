@@ -78,6 +78,15 @@ func init() {
 				return fmt.Errorf("journalhook.PreExec: verifiers is %T, not an agent.ApproverVerifierFor: %w", verifiers, ErrConfig)
 			}
 		}
+		if pol == nil || pol.single() || vf == nil || !isBound(pol, vf) {
+			return nil // no certificate-bound approver: nothing to re-check, and no read
+		}
+		// A node whose result is recorded replays and runs nothing: the check is for a body about to run.
+		if _, done, err := d.Get(ctx, runID, key); err != nil {
+			return fmt.Errorf("read the result of %s (run %s): %w (%w)", key, runID, err, ErrStorage)
+		} else if done {
+			return nil
+		}
 		return preExecute(ctx, d, runID, runID, key, pol, vf, ApprovalRequestStep(key))
 	}
 	journalhook.CheckRunID = checkRunID

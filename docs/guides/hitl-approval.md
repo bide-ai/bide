@@ -155,9 +155,9 @@ len32(approver id)  approver id
 len32(decided_at)   decided_at, 24 bytes, e.g. "2026-10-13T12:14:03.123Z"
 ```
 
-`len32` is a 4-byte big-endian length. (A certificate-bound approver, once that feature ships, signs
-`bide.approval.v4`: the same layout with the SHA-256 of its leaf certificate before `decided_at`. This
-version defines and journals that format but counts none; bare-key approvers are unchanged. See the
+`len32` is a 4-byte big-endian length. (A certificate-bound approver signs
+`bide.approval.v4`: the same layout with the SHA-256 of its leaf certificate before `decided_at`; bare-key
+approvers are unchanged. See the [operator guide](certificate-approvers.md) and the
 [design](../design/design-mofn-approval.md#v4-certificate-bound-decisions-format-only).) The version tag is part of the signed bytes, so a decision
 signed under an earlier version (`bide.approval.v2`, which had no decision time) does not verify:
 the gate and `VerifyApprovals` ignore it with `agent.ReasonNoDecidedAt`. Re-sign such a decision.
@@ -338,9 +338,10 @@ expiry included, never under the plain name. The identity record of the count
   tally it replaces. Decisions are not invalidated by a hold: the new count verifies them again, so one
   whose certificate was revoked since fails there and the others count. A hold counts only over a
   passed tally of its own generation; a hold of another call or generation, one that does not read as a
-  hold, one with no tally under it, and one over a denial are ignored. This build reads exec holds. The
-  pre-execution status check that writes them is a later step of the approver-identity work, so until it
-  lands no run writes one.
+  hold, one with no tally under it, and one over a denial are ignored. The pre-execution status check writes
+  them (see the [operator guide](certificate-approvers.md#before-the-call-runs)): a hold for a counted
+  approval that is revoked or no longer verifies for good, and only a pause (`agent.PendingIdentityStatus`,
+  nothing authoritative written) for status that is missing or stale.
 - **The outcome** (`agent.RecordedTally`, the one rule every reader goes by) is the newest identity
   tally that is not held. Over a hold there is no outcome until the next generation is counted, and a
   plain-name tally beside an identity tally is never the outcome.

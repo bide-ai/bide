@@ -57,17 +57,14 @@ func runGate(ctx context.Context, store *agent.Journal, runID string, c *builder
 		return fmt.Errorf("plan: run %q: step %q (%s): %w", c.flowName, node.name, key, ErrApprovalDenied)
 	}
 	// The pre-execution status check of a gate with certificate-bound approvers, immediately before the
-	// node would run: not for a node whose result is already recorded (it replays and runs nothing).
-	if _, done, err := store.Get(ctx, runID, key); err != nil {
-		return fmt.Errorf("plan: run %q: read the result of step %q: %w", c.flowName, node.name, err)
-	} else if !done {
-		if err := journalhook.PreExec(ctx, store, runID, key, node.approval, verifiers); err != nil {
-			var pend *agent.ApprovalPending
-			if errors.As(err, &pend) {
-				return err
-			}
-			return fmt.Errorf("plan: run %q: the check before step %q runs: %w", c.flowName, node.name, err)
+	// node would run (it does nothing for any other gate, and for a node whose result is recorded, which
+	// replays and runs nothing).
+	if err := journalhook.PreExec(ctx, store, runID, key, node.approval, verifiers); err != nil {
+		var pend *agent.ApprovalPending
+		if errors.As(err, &pend) {
+			return err
 		}
+		return fmt.Errorf("plan: run %q: the check before step %q runs: %w", c.flowName, node.name, err)
 	}
 	return nil
 }

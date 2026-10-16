@@ -76,6 +76,7 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `func ECDSAP256PublicKeyFromSPKI(spki []byte) ([]byte, error)`: ECDSAP256PublicKeyFromSPKI returns the 65-byte uncompressed SEC1 point (the encoding NewVerifier reads) from a DER SubjectPublicKeyInfo, which is what KMS GetPublicKey and Key Vault return.
 - `func ECDSAP256SignatureFromDER(der []byte) ([]byte, error)`: ECDSAP256SignatureFromDER turns an ASN.1 DER ECDSA-Sig-Value (SEQUENCE { r INTEGER, s INTEGER }, what AWS KMS returns) into the canonical 64-byte low-S r||s.
 - `func ECDSAP256SignatureFromRaw(rs []byte) ([]byte, error)`: ECDSAP256SignatureFromRaw turns a 64-byte r||s signature (what Azure Key Vault and PKCS#11 CKM\_ECDSA return) into the canonical form this package verifies: the same r and the low s.
+- `func ExecLatencyBound(publishDelay, period, overlap, execAge time.Duration) time.Duration`: ExecLatencyBound is the published revocation latency of the execution-time re-check for one CA tier: the longest time from the CA recording a revocation to a gate refusing to execute on it, publishDelay (the time the CA takes to publish a CRL after the revocation; AD CS stamps a revocation at publication, so publish right after revoking) plus period (the CRL or delta period) plus overlap plus execAge.
 - `func FormatPublicKey(alg Alg, pub []byte) string`: FormatPublicKey returns the text form of a public key that ParsePublicKey reads: the scheme, a colon, and the encoded key in lowercase hex ("ed25519:1a2b...").
 - `func GovernedPolicyDigest(result json.RawMessage) (string, error)`: GovernedPolicyDigest returns the policy digest a governed-action payload (a tool result, as an attested govern.EventTool journals it) carries.
 - `func GrantFrom(ctx context.Context) (SignedGrant, Signer, bool)`: GrantFrom returns the acting signed grant and signer bound to ctx, and whether one was set.
@@ -392,9 +393,15 @@ type CertApprover struct {
 
 	Now func() time.Time
 
+	ExecNow func() time.Time
+
 	RequesterIdentity func(principal string) (identifier string, ok bool)
 
 	ExecStatusAge time.Duration
+
+	ExecStatusAgeFor map[SPKIHash]time.Duration
+
+	CAOverlapFor map[SPKIHash]time.Duration
 
 	PolicyEffectiveFrom time.Time
 
@@ -421,6 +428,7 @@ CertApprover is the verifier of a certificate-bound approver (docs/design/approv
 - `func (c *CertApprover) VerifierInfo() (revision, goDebug, buildGoDebug string)`: VerifierInfo implements agent.IdentityDescriber: the build's vcs.revision, if the binary has one, the x509 GODEBUG settings the operator declares (CertApprover.GoDebug), and the build's baked-in DefaultGODEBUG (the toolchain's go line fixes many x509 behaviours), read from the build info and not from the environment.
 - `func (*CertApprover) Verify(message, sig []byte) bool`: Verify is always false: a bare signature over bytes, with no certificate, is never a certificate-bound approver's decision.
 - `func (c *CertApprover) VerifyCertDecision(cd agent.CertDecision) agent.CertCheck`: VerifyCertDecision implements agent.CertDecisionVerifier.
+- `func (c *CertApprover) VerifyCertExec(cd agent.CertDecision) agent.CertCheck`: VerifyCertExec implements agent.CertExecVerifier: the check a gate runs on a counted decision immediately before the call it authorizes executes.
 
 ## type CertError
 

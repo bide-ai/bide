@@ -36,6 +36,7 @@ const PendingIdentityStatus = "approval paused before execution: the revocation 
 // root is the run tree's root for the pending value, since is a flow gate's request step ("" for a tool
 // call), and a gate without a certificate-bound approver returns nil at once. Every error is a refusal:
 // the call does not run.
+// protocol:claims begin ApExec
 func preExecute(ctx context.Context, j *Journal, runID, root, id string, pol *ApprovalPolicy, vf ApproverVerifierFor, since string) error {
 	if pol == nil || pol.single() || vf == nil || !isBound(pol, vf) {
 		return nil
@@ -90,6 +91,8 @@ func preExecute(ctx context.Context, j *Journal, runID, root, id string, pol *Ap
 	}
 	return fmt.Errorf("run %s: the approval gate on %q was held again and again before its call could run (%d rounds): %w", runID, id, maxExecRounds, ErrConfig)
 }
+
+// protocol:claims end
 
 // execPending is the pause of a gate that does not run its call after the pre-execution check: the running
 // count tally, and the reason (the tally's own re-ask reason unless one is given).

@@ -1357,10 +1357,10 @@ The gate records landed next (E2a): a gate with a certificate-bound approver anc
 has no covering head (`Reanchorer`, rate-limited), writes phase notes, and journals the status bytes by hash, the
 `approval-identity:<id>:<generation>` record bound to its tally by a digest of the stored bytes, and the policy
 in force with every verdict-affecting parameter; `StatusParams.Validate` and `CertApprover.ValidateConfig`
-(`CAPeriod <= ExecStatusAge/2` for the leaf's issuing CA, with the per-CA tiers `CAPeriodFor + overlap <= ExecStatusAgeFor <= MaxStatusAgeFor` to follow with the execution-time check; a status archive or a bounded snapshot) run at configuration. The tally name
-(`:ident`), the supersede of a plain-name tally, the execution-time status check and the operator guide are the
-next changes; until the last, a gate refuses a policy with a certificate-bound approver (`ErrConfig`), so the
-half-built gate cannot be configured. The records are specified in `identity-record` form in the types'
+(`CAPeriod <= ExecStatusAge/2` for the leaf's issuing CA and, for each CA tier above it, `CAPeriodFor + CAOverlapFor <= ExecStatusAgeFor <= MaxStatusAgeFor`; a status archive or a bounded snapshot) run at configuration. The tally name
+(`:ident`), the supersede of a plain-name tally and the generations after an exec hold landed with E2c; the
+execution-time status check (`preExecute`, on every path to the call, with the two tiers) and the operator guide
+(`docs/guides/certificate-approvers.md`) with E2b, which turned the gate switch on. The records are specified in `identity-record` form in the types'
 godoc (`agent.ApprovalIdentity` and neighbours).
 
 Requirements this step leaves to the gate changes (E), because the format layer cannot enforce them:
@@ -1478,6 +1478,25 @@ Decisions 1, 2, 5, 6 (delta CRLs), 12, 13, 15 and 17.
     collision on signed content, a real risk, and it stays refused. The weaker binding stays visible: a `Result` that relied
     on it has `ESSV1` set and the verdict prints it. SHA-1 as the CMS digest algorithm (Apple) stays refused
     whatever the policy says, and a SHA-1 attribute beside `signingCertificateV2` is checked for consistency only.
+
+### Decided by the user, 2026-10-16
+
+The execution-time status check has two tiers, classified by position in the accepted chain and never by
+the issuer's key. The leaf's issuing CA uses `ExecStatusAge`, with `CAPeriod <= ExecStatusAge / 2`. Every CA
+above it (an offline root, a policy CA) must declare `ExecStatusAgeFor`, `CAPeriodFor` and `MaxStatusAgeFor`
+(and `CAOverlapFor` if its CRL has an overlap), and startup refuses a CA tier without them, with
+`CAPeriodFor + CAOverlapFor <= ExecStatusAgeFor <= MaxStatusAgeFor`: the `/2` ratio is the wrong rule for a
+root whose CRL period is a week, and the root CRL's `nextUpdate` is the binding limit. With intermediates
+pinned the trust anchors are CA tiers; a middle CA of a three-tier chain is known as a tier only from the
+accepted chain, so an undeclared one holds the call at its first check with a message naming the missing
+declaration. `VerifyCertExec` applies the ages per tier, and a per-issuer `MaxStatusAgeFor` (a count's age)
+never stretches an execution age. `ExecStatusAgeFor`, `CAOverlapFor` and `MaxStatusAgeFor` are in the
+recorded policy and its digest. The operator guide publishes two latency bounds: the leaf tier (CA
+publication delay + the leaf CA's period + `ExecStatusAge`, minutes) and the CA tier through the root's CRL
+(ceremony delay + the root's period + overlap + `ExecStatusAgeFor`, days to a week, never worded as
+minutes). The fast path for a compromised issuing CA is a policy change (removing the pin or
+`Distrust`), to be rehearsed; the root CRL's validity should be at least two publication periods with an
+alarm at 50 percent; and a decision is only as fresh as the oldest status in its chain.
 
 ### Decided by recommendation (technical, 2026-10-15)
 
