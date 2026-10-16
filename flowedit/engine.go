@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"reflect"
 	"sort"
 	"strings"
@@ -150,6 +151,9 @@ func parse(src []byte) (*doc, error) {
 	}
 	if n.Kind != yaml.DocumentNode || len(n.Content) != 1 || n.Content[0].Kind != yaml.MappingNode {
 		return nil, refuse("the document is not a mapping")
+	}
+	if err := strictDoc(n.Content[0]); err != nil {
+		return nil, err
 	}
 	d := &doc{src: src, root: n.Content[0], indent: 2}
 	d.lineStart = append(d.lineStart, 0)
@@ -917,4 +921,46 @@ func (d *doc) itemLines(p *yaml.Node, step int) (string, bool) {
 		prev = l
 	}
 	return ind, true
+}
+
+// strictDoc refuses a document the loader would refuse or the engine cannot reason about, wherever
+// in it the problem is: an anchor or an alias (a self-referential alias would overflow the stack of
+// any walk that follows it, an alias chain expands exponentially, and a splice inside an alias is
+// ambiguous), a merge key, a key that is not a plain string (yamlToJSON refuses a mapping key that
+// is not a string), and a key that a mapping repeats (the loader refuses it and a last-wins reader
+// would see a different value than the edit changed). Parse runs it on the text before an edit and
+// Verify on the text after, so an operation cannot produce what the loader would refuse either.
+func strictDoc(n *yaml.Node) error {
+	if n.Anchor != "" || n.Kind == yaml.AliasNode {
+		return refuse("anchors and aliases")
+	}
+	if n.Kind == yaml.ScalarNode && n.ShortTag() == "!!float" {
+		var f float64
+		if n.Decode(&f) == nil && (math.IsNaN(f) || math.IsInf(f, 0)) {
+			return refuse("NaN or infinity (the loader cannot represent it as JSON, and NaN is not equal to itself)")
+		}
+	}
+	if n.Kind == yaml.MappingNode {
+		seen := make(map[string]bool, len(n.Content)/2)
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			k := n.Content[i]
+			switch {
+			case k.Kind != yaml.ScalarNode:
+				return refuse("non-scalar keys")
+			case k.Value == "<<":
+				return refuse("merge keys")
+			case k.ShortTag() != "!!str":
+				return refuse("a key that is not a string (%q)", k.Value)
+			case seen[k.Value]:
+				return refuse("the key %q is repeated in a mapping", k.Value)
+			}
+			seen[k.Value] = true
+		}
+	}
+	for _, c := range n.Content {
+		if err := strictDoc(c); err != nil {
+			return err
+		}
+	}
+	return nil
 }

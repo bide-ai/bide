@@ -9,6 +9,10 @@ import (
 // decodes to what the independent oracle says, and never panics.
 func FuzzApply(f *testing.F) {
 	f.Add([]byte(sample), uint16(0))
+	f.Add([]byte("a: &x [*x]\nb: 1\n"), uint16(0))
+	f.Add([]byte(bombYAML(8)), uint16(0))
+	f.Add([]byte("a: 1\nb: 2\na: 3\n"), uint16(1))
+	f.Add([]byte("a: .nan\nb: 1\n"), uint16(2))
 	for i, g := range generated(20) {
 		f.Add([]byte(g.text), uint16(i*37))
 	}

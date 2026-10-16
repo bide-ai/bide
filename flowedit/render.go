@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -28,6 +30,9 @@ func scalar(v any, q byte, flow, js bool) (string, error) {
 	case bool:
 		return strconv.FormatBool(x), nil
 	case string:
+		if !utf8.ValidString(x) {
+			return "", refuse("a string that is not valid UTF-8")
+		}
 		if strings.ContainsAny(x, "\n\r\t") {
 			return "", refuse("a string with a line break or tab")
 		}
@@ -38,11 +43,22 @@ func scalar(v any, q byte, flow, js bool) (string, error) {
 			if err := e.Encode(x); err != nil {
 				return "", err
 			}
-			return strings.TrimSuffix(b.String(), "\n"), nil
+			out := strings.TrimSuffix(b.String(), "\n")
+			for _, r := range []rune{'\u2028', '\u2029', '\u0085', '\ufeff'} { // raw, they are line breaks or a mark to some readers
+				out = strings.ReplaceAll(out, string(r), fmt.Sprintf(`\u%04x`, r))
+			}
+			return out, nil
 		}
 		dq := func() string {
 			b, _ := yaml.Marshal(&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: x, Style: yaml.DoubleQuotedStyle})
 			return strings.TrimSuffix(string(b), "\n")
+		}
+		// A rune a YAML 1.1 reader reads as a line break, or that is a control or format character,
+		// is written escaped in double quotes, never raw in a single-quoted or plain scalar.
+		if strings.ContainsFunc(x, func(r rune) bool {
+			return unicode.IsControl(r) || r == '\u2028' || r == '\u2029' || r == '\ufeff' || unicode.Is(unicode.Cf, r)
+		}) {
+			return dq(), nil
 		}
 		switch {
 		case q == '"':
