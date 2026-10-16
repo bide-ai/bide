@@ -356,6 +356,17 @@ func approverSeats(p ApprovalPolicy, verifierFor ApproverVerifierFor) (map[strin
 			}
 			continue
 		}
+		if cv, ok := v.(interface{ ValidateConfig() error }); ok {
+			// A verifier that can check its own configuration does, so a bad value fails here, at
+			// build and on every evaluation, not at the first decision.
+			if err := cv.ValidateConfig(); err != nil {
+				bad[id] = ReasonNoKeyID
+				if first == nil {
+					first = fmt.Errorf("approval policy approver %q: %w", id, err)
+				}
+				continue
+			}
+		}
 		keys := v.KeyIDs()
 		if len(keys) == 0 || slices.Contains(keys, "") {
 			bad[id] = ReasonNoKeyID
@@ -902,6 +913,22 @@ type ApprovalWait struct {
 	// policy fields of such a note are the policy the gate asks again under.
 	Reask      string `json:"reask,omitempty"`
 	Supersedes string `json:"supersedes,omitempty"`
+	// IdentityBound says the gate has a certificate-bound approver. IdentityApprovers lists them in
+	// policy order, IdentityKinds is the SHA-256 of the sorted "approver=bare|cert" lines of the
+	// eligible approvers joined by newlines, and IdentityPolicyDigest the SHA-256 of the certificate
+	// policy in force (ApprovalIdentity.PolicyDigest). An auditor requires the ApprovalIdentity record
+	// of a gate whose note says it was bound, and reports a missing one as stripped. A note written by
+	// a process that predates the feature has none of these and looks like a bare-key gate: for a
+	// gate the bank classifies as identity-required the auditor's expected policy of record is a
+	// required input.
+	IdentityBound        bool     `json:"identity_bound,omitempty"`
+	IdentityApprovers    []string `json:"identity_approvers,omitempty"`
+	IdentityKinds        string   `json:"identity_kinds,omitempty"`
+	IdentityPolicyDigest string   `json:"identity_policy_digest,omitempty"`
+	// Pause is why the gate waits (the Pause* constants; empty is PauseAwaitingDecisions), and
+	// PauseDetail one sentence for a person. A newer note replaces an older one (LatestPauseNote).
+	Pause       string `json:"pause,omitempty"`
+	PauseDetail string `json:"pause_detail,omitempty"`
 }
 
 // ApprovalReaskStep is the journal name of the pause note a gate writes when it asks again over a
@@ -1525,6 +1552,7 @@ func (a *Agent) notePending(ctx context.Context, runID string, tu ToolUse, pol *
 		if pol.ExcludePrincipal {
 			w.Requesters = requestersFrom(ctx)
 		}
+		addIdentityFields(&w, pol, a.approverVerifiers)
 	}
 	b, err := json.Marshal(w)
 	if err != nil {

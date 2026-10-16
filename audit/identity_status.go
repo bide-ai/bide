@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"encoding/hex"
 	"fmt"
 	"math/big"
 	"slices"
@@ -1134,4 +1135,24 @@ func pairDeltas(vs []*crlView) map[*crlView]*crlView {
 		}
 	}
 	return out
+}
+
+// evidence returns the CRL with the given hash as the record a gate stores it in
+// (agent.ApprovalStatusBytes), issued by the key issuer, or false when the snapshot no longer holds it.
+func (s *StatusSnapshot) evidence(hash [32]byte, issuer SPKIHash) (agent.ApprovalStatusBytes, bool) {
+	s.mu.Lock()
+	v, ok := s.by[hash]
+	s.mu.Unlock()
+	if !ok || v.rl == nil {
+		return agent.ApprovalStatusBytes{}, false
+	}
+	ev := agent.ApprovalStatusBytes{Format: agent.ApprovalStatusFormat, Kind: "crl", Issuer: hex.EncodeToString(issuer[:]),
+		ThisUpdate: v.this.UTC().Format(time.RFC3339), DER: slices.Clone(v.rl.Raw)}
+	if v.number != nil {
+		ev.Number = v.number.String()
+	}
+	if !v.next.IsZero() {
+		ev.NextUpdate = v.next.UTC().Format(time.RFC3339)
+	}
+	return ev, true
 }

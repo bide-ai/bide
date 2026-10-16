@@ -3,6 +3,7 @@ package audit
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -226,4 +227,16 @@ func (sth SignedTreeHead) Verify(v Verifier) error {
 		return notVerified("audit: the %s head of run %q does not verify under this key", sth.Kind, sth.RunID)
 	}
 	return nil
+}
+
+// Hash is the SHA-256 of the signed head's canonical encoding followed by its signature, length
+// prefixed: what identifies this head, so two heads with the same size and root but different
+// timestamps or signatures differ.
+func (h SignedTreeHead) Hash() [32]byte {
+	c := h.TreeHead.canonical(h.Alg)
+	b := binary.BigEndian.AppendUint32(nil, uint32(len(c)))
+	b = append(b, c...)
+	b = binary.BigEndian.AppendUint32(b, uint32(len(h.Signature)))
+	b = append(b, h.Signature...)
+	return sha256.Sum256(b)
 }
