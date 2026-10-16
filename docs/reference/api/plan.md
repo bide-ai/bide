@@ -23,6 +23,7 @@ Package plan is rung-1 of the expression-surfaces stack: a handle-based flow bui
 **Functions**
 
 - `func CompareAssertions(a, b string) string`: CompareAssertions relates two assertion lines of a config, for comparing two versions of it.
+- `func RenameAssertion(text string, rename func(string) string) string`: RenameAssertion is the assertion line with each node name it holds replaced by rename(name) and every name written in double quotes, so two spellings of one assertion (a bare name or a quoted one, extra spaces) are the same string.
 - `func TopologyDigest(t Topology) (string, error)`: TopologyDigest returns the v2 topology digest of t, the value Flow.Digest returns for a flow whose Topology is t: the same canonical, insertion-ordered serialization of the flow name, the boundary and node types with their package paths (the Canonical fields), every node's name, block and kind, every edge, every Switch arm with its predicate name, and every loop.
 - `func Validate(data []byte, reg *Registry) error`: Validate parses and checks a config against reg without producing a Flow, so config-vs-registry drift is catchable in a unit test or CI rather than only at process start.
 
@@ -55,6 +56,8 @@ type AssertionResult struct {
 	Holds bool `json:"holds"`
 
 	Invalid bool `json:"invalid,omitempty"`
+
+	Vacuous bool `json:"vacuous,omitempty"`
 
 	Undecided bool `json:"undecided,omitempty"`
 

@@ -796,11 +796,19 @@ weakened):
   changed is a removal of the old line and an added line. A new line that matches none removed is
   listed as added, not as a weakening.
 - **An `assert` line kept and no longer holding.** A line the new config keeps as it was (spacing
-  and quoting aside) that held in the old config and is now violated, cannot be decided, or no
-  longer reads (it names a node the new config dropped) is reported as weakened, with the
-  counterexample path when there is one: `assertion no longer holds: every path to a terminal
-  passes charge (violated, counterexample: validate -> audit)`. A line that did not hold before is
-  not reported; `bide check` already lists it as a violation.
+  and quoting aside, in every assertion form) that held in the old config and is now violated,
+  cannot be decided, or no longer reads (it names a node the new config dropped) is reported as
+  weakened, with the counterexample path when there is one: `assertion no longer holds: every path
+  to a terminal passes charge (violated, counterexample: validate -> audit)`. So is a line that
+  held and now holds only vacuously, because nothing it is about is reachable (a new edge made the
+  flow cyclic, so it has no terminal, or the path to the node is gone): `assertion now holds only
+  vacuously: every path to a terminal passes charge (no path from the entry reaches a node this
+  assertion is about)`. A line that did not hold before, or was already vacuous, is not reported;
+  `bide check` already lists a violation. A line written twice is one assertion. A line that names a
+  node the diff pairs as renamed (the same block, kind and edges under the new name) follows the
+  node: renaming a node and its line together is not a removed assertion, and the line is still
+  decided under the new name. When the rename is not certain (the node's edges changed too) the
+  line reads as removed and added, which is the conservative report.
 
 The check still does not read predicates (above), does not reason about nodes that are not effects,
 and compares assert lines as written, apart from a kept line that stopped holding (above). An effect node's safety comes from the
