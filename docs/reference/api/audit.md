@@ -162,6 +162,10 @@ Alg names a signature scheme.
 - `const AlgEd25519 Alg = "ed25519"`, `const AlgMLDSA65 Alg = "ml-dsa-65"`, `const AlgHybrid Alg = "ed25519+ml-dsa-65"`: The signature schemes.
 - `const AlgECDSAP256 Alg = "ecdsa-p256"`: AlgECDSAP256 is the ECDSA P-256 scheme.
 
+**Constructors and functions**
+
+- `func CertDecisionKey(leaf *x509.Certificate) (Alg, []byte, error)`: CertDecisionKey returns the decision scheme of a leaf certificate's public key and the key in the encoding NewVerifier and a signer's PublicKey use, so a command that is about to sign with a key can check, before it signs, that the key is the certificate's.
+
 ## type Anchor
 
 ```go
