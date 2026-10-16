@@ -38,7 +38,12 @@
 # pushed (a pull request merged meanwhile), as long as the root tag points at the commit released.
 #
 # Nobody should `go get`, `go run` or `go list` a version before its tag is pushed: the module proxy
-# caches the miss (for about 30 minutes), and the release then waits until the cached miss expires.
+# caches the miss for 30 to 60 minutes, however often it is asked again, and the release then waits
+# until the cached miss expires. So after a push the script checks each tag with GOPROXY=direct (the
+# proxy and the checksum database never hear of it), does not ask the proxy until PW_SETTLE seconds
+# (300) after the push, then asks with growing waits (5, 10, 15 minutes) for at most PW_MAX seconds
+# (5400), saying what it waits for; scripts/proxy-wait.sh has the rules and the variables. A run that
+# gave up is run again with the same arguments.
 #
 # Without --push nothing leaves the machine: the same steps run in a scratch clone, "pushing" to a
 # scratch bare repository that stands in for GitHub, and the go command resolves the bide modules
@@ -50,6 +55,8 @@ set -euo pipefail
 ROOT_MODULE=github.com/bide-ai/bide
 GITHUB_REPO=${BIDE_GITHUB_REPO:-bide-ai/bide}
 PROXY=https://proxy.golang.org
+# shellcheck source=scripts/proxy-wait.sh
+. "$(cd "$(dirname "$0")" && pwd)/proxy-wait.sh"
 
 # Libraries users import. Each is tagged <dir>/vX.Y.Z at every release.
 PUBLISHED="govern store/sqlite store/postgres mcptools trace codec/gcf govern/sqlitelog govern/redislog govern/postgreslog signer/pkcs11 signer/awskms signer/azurekv signer/gcpkms cmd/bide cmd/bide/bide-hsm cmd/bide-view"
@@ -289,6 +296,7 @@ push_tags() {
     batch+=("$1"); shift
     if [ ${#batch[@]} -eq "$MAX_TAGS_PER_PUSH" ] || [ $# -eq 0 ]; then
       git -C "$CLONE" push --quiet "$TARGET" "${batch[@]/#/refs/tags/}" || die "pushing ${batch[*]} failed; re-run to resume"
+      PUSHED_AT=$(date +%s)
       if $PUSH; then note "pushed ${batch[*]}"; else note "pushed to the scratch origin: ${batch[*]}"; fi
       batch=()
     fi
@@ -439,6 +447,75 @@ self_test_changelog() {
   $ok
 }
 
+# self_test_proxy: proxy_wait_resolve (scripts/proxy-wait.sh) on a fake clock and fake go commands.
+# The proxy is never asked before the tag is fetchable directly or before the settle delay has
+# passed; its waits grow 5, 10, 15, 15 minutes; it gives up at the stated maximum; and the dry run
+# (no push) asks once.
+self_test_proxy() {
+  local ok=true
+  (
+    set +e
+    # A fake clock: sleeping advances it.
+    CLOCK=1000; LOG=""; DIRECT_OK_AT=0; PROXY_OK_AT=0
+    fake_now() { echo "$CLOCK"; }
+    fake_sleep() { CLOCK=$((CLOCK + $1)); SLEPT="$SLEPT $1"; }
+    pw_direct() { LOG="$LOG d@$CLOCK"; [ "$CLOCK" -ge "$DIRECT_OK_AT" ]; }
+    pw_proxy() { LOG="$LOG p@$CLOCK"; [ "$CLOCK" -ge "$PROXY_OK_AT" ]; }
+    pw_log() { :; }
+    export PW_SLEEP=fake_sleep PW_NOW=fake_now PW_SETTLE=300 PW_STEP=300 PW_MAX=5400 PW_DIRECT_POLL=15 PW_DIRECT_MAX=900
+    run() { CLOCK=1000; LOG=""; SLEPT=""; proxy_wait_resolve "$@" >/dev/null; }
+    # Fetchable at once, pushed 10 seconds ago: the proxy waits out the settle delay, then answers.
+    DIRECT_OK_AT=0 PROXY_OK_AT=0
+    run m v1 990 || { echo "self-test: a version that resolves was not accepted"; exit 1; }
+    [ "$LOG" = " d@1000 p@1290" ] || { echo "self-test: expected the direct check at 1000 and the proxy at 1290 (990+300), got [$LOG ]"; exit 1; }
+    # Pushed long ago: the proxy is asked at once.
+    run m v1 100 || exit 1
+    [ "$LOG" = " d@1000 p@1000" ] || { echo "self-test: an old tag was not asked at once: [$LOG ]"; exit 1; }
+    # The tag becomes fetchable after 60 seconds: the proxy is not asked before that, nor before the
+    # settle delay that starts when it appears.
+    DIRECT_OK_AT=1060 PROXY_OK_AT=0
+    run m v1 "" || exit 1
+    case "$LOG" in " d@1000 d@1015 d@1030 d@1045 d@1060 p@"*) ;; *) echo "self-test: the direct check did not poll to the tag: [$LOG ]"; exit 1 ;; esac
+    case "$LOG" in *" p@1360") ;; *) echo "self-test: the proxy was not asked a settle delay (300s) after the tag appeared: [$LOG ]"; exit 1 ;; esac
+    # The proxy says no four times: waits of 5, 10, 15 and 15 minutes, then it answers.
+    DIRECT_OK_AT=0 PROXY_OK_AT=$((1000 + 300 + 300 + 600 + 900 + 900))
+    run m v1 1000 || { echo "self-test: a proxy that answers after four misses was given up on"; exit 1; }
+    [ "$SLEPT" = " 300 300 600 900 900" ] || { echo "self-test: the waits were [$SLEPT ], want the settle then 300 600 900 900"; exit 1; }
+    # It never answers: it gives up within the maximum, having asked only a few times.
+    PROXY_OK_AT=999999999
+    if run m v1 1000; then echo "self-test: a proxy that never answers was accepted"; exit 1; fi
+    [ $((CLOCK - 1000)) -le $((300 + 5400)) ] || { echo "self-test: waited $((CLOCK - 1000))s, over the settle plus the 5400s maximum"; exit 1; }
+    [ "$(echo "$LOG" | tr ' ' '\n' | grep -c '^p@')" -le 8 ] || { echo "self-test: the proxy was asked too often: [$LOG ]"; exit 1; }
+    # A resumed run (no push time) does not ask the proxy within the settle delay of its own start.
+    DIRECT_OK_AT=0 PROXY_OK_AT=0
+    PW_FLOOR=1000 run m v1 "" || exit 1
+    [ "$LOG" = " d@1000 p@1300" ] || { echo "self-test: a run with no push time asked the proxy before PW_FLOOR+settle: [$LOG ]"; exit 1; }
+    # One deadline bounds the whole wait: a tag fetchable after 200 minutes and a proxy that never
+    # answers does not wait 200 + 5 + 90 minutes against a 240 minute allowance.
+    DIRECT_OK_AT=$((1000 + 200 * 60)) PROXY_OK_AT=999999999
+    if PW_DEADLINE=$((1000 + 240 * 60)) PW_DIRECT_MAX=$((240 * 60)) PW_MAX=$((240 * 60)) run m v1 ""; then echo "self-test: an unanswering proxy was accepted"; exit 1; fi
+    [ $((CLOCK - 1000)) -le $((240 * 60)) ] || { echo "self-test: waited $((CLOCK - 1000))s against a deadline of $((240 * 60))s"; exit 1; }
+    # The deadline also cuts the settle delay and the direct wait short; the proxy is not asked.
+    DIRECT_OK_AT=0 PROXY_OK_AT=0
+    if PW_DEADLINE=1100 run m v1 1000; then echo "self-test: a settle delay past the deadline was waited out"; exit 1; fi
+    echo "$LOG" | grep -q 'p@' && { echo "self-test: the proxy was asked past the deadline: [$LOG ]"; exit 1; }
+    DIRECT_OK_AT=999999999
+    if PW_DEADLINE=1100 PW_DIRECT_MAX=99999 run m v1 ""; then echo "self-test: an unfetchable tag was accepted"; exit 1; fi
+    [ $((CLOCK - 1000)) -le 130 ] || { echo "self-test: the direct wait ran $((CLOCK - 1000))s past a 100s deadline"; exit 1; }
+    # A tag that appears 10 minutes into the run: the settle counts from when it appeared, not from
+    # the run's start (already more than the settle delay ago).
+    DIRECT_OK_AT=1600 PROXY_OK_AT=0
+    PW_FLOOR=1000 PW_DIRECT_MAX=900 run m v1 "" || exit 1
+    case "$LOG" in *" p@1900") ;; *) echo "self-test: the proxy was not asked a settle delay after the tag appeared (run start 1000, tag at 1600): [$LOG ]"; exit 1 ;; esac
+    # A tag that is never fetchable is not an answer from the proxy: the proxy is never asked.
+    DIRECT_OK_AT=999999999
+    if run m v1 1000; then echo "self-test: an unfetchable tag was accepted"; exit 1; fi
+    echo "$LOG" | grep -q 'p@' && { echo "self-test: the proxy was asked about a tag that is not fetchable: [$LOG ]"; exit 1; }
+    exit 0
+  ) || ok=false
+  $ok
+}
+
 self_test() {
   local tmp fail=false; tmp=$(mktemp -d)
   printf 'module %s/x\n\ngo 1.27\n\nrequire %s v0.0.0\n\nreplace %s => ../\n' "$ROOT_MODULE" "$ROOT_MODULE" "$ROOT_MODULE" > "$tmp/go.mod"
@@ -496,6 +573,7 @@ self_test() {
   self_test_push || fail=true
   self_test_ci || fail=true
   self_test_changelog || fail=true
+  self_test_proxy || fail=true
   $fail && return 1
   echo "self-test: ok"
 }
@@ -592,7 +670,7 @@ done
 CLONE=$WORK/repo
 git clone --quiet --no-local --no-checkout "$REPO" "$CLONE"
 git -C "$CLONE" checkout --quiet --detach "$SHA"
-mkdir -p "$WORK/modcache" "$WORK/empty"
+mkdir -p "$WORK/modcache" "$WORK/directcache" "$WORK/empty"
 if $PUSH; then
   TARGET=$(git -C "$REPO" remote get-url "$REMOTE")
   # Only the public proxy and checksum database: the release is resolved the way a user resolves it.
@@ -613,16 +691,32 @@ else
   }
 fi
 
+# pw_direct and pw_proxy are what proxy_wait_resolve (scripts/proxy-wait.sh) asks: whether the tag is
+# fetchable from the repository without the proxy or the checksum database hearing of it (a miss
+# there is cached for 30 to 60 minutes), and whether the proxy serves it.
+pw_direct() {
+  (cd "$WORK/empty" && env GOWORK=off GOFLAGS=-mod=mod GOMODCACHE="$WORK/directcache" GOPROXY=direct GOSUMDB=off GOPRIVATE= GONOPROXY= GONOSUMDB= GOINSECURE= go list -m "$1")
+}
+pw_proxy() { (cd "$WORK/empty" && gorun list -m "$1"); }
+
+# push_epoch: when the last tags were pushed; wait_resolve does not ask the proxy for them sooner.
+PUSHED_AT=""
+RUN_START=$(date +%s)
+
 # wait_resolve module version: the module proxy (or, in a dry run, the scratch origin) serves it.
+# After a push the tag is first checked without the proxy and the proxy is not asked until it has had
+# time to settle, then asked with growing waits (scripts/proxy-wait.sh).
 wait_resolve() {
-  local mod=$1 ver=$2 tries=1 i
-  $PUSH && tries=60
-  for i in $(seq 1 "$tries"); do
-    if (cd "$WORK/empty" && gorun list -m "$mod@$ver" >/dev/null 2>&1); then
-      note "resolves: $mod@$ver"; return 0
-    fi
-    [ "$i" -lt "$tries" ] && sleep 10
-  done
+  local mod=$1 ver=$2
+  if $PUSH; then
+    note "waiting for $mod@$ver to resolve on $PROXY (a ${PW_SETTLE:-300}s settle since the push, then up to ${PW_MAX:-5400}s of asking, in all for the stage's modules)"
+    # One budget per push (the stage's tags share it): the settle delay and the asking, from the push; a
+    # resumed run counts from its own start.
+    if PW_FLOOR=$RUN_START PW_DEADLINE=$(( ${PUSHED_AT:-$RUN_START} + ${PW_SETTLE:-300} + ${PW_MAX:-5400} )) proxy_wait_resolve "$mod" "$ver" "$PUSHED_AT"; then note "resolves: $mod@$ver"; return 0; fi
+    (cd "$WORK/empty" && gorun list -m "$mod@$ver") || true
+    die "$mod@$ver does not resolve; re-run the same command to resume, once the proxy serves it"
+  fi
+  if (cd "$WORK/empty" && gorun list -m "$mod@$ver" >/dev/null 2>&1); then note "resolves: $mod@$ver"; return 0; fi
   (cd "$WORK/empty" && gorun list -m "$mod@$ver") || true
   die "$mod@$ver does not resolve"
 }
