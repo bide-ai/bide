@@ -1259,7 +1259,23 @@ func TestLeafLifetimeAndToleranceCeilings(t *testing.T) {
 	if _, err := verifyAs(mustCompile(t, p), "alice", f.leaf(t, life(72*time.Hour))); err != nil {
 		t.Fatalf("configured lifetime: %v", err)
 	}
+	// A CA that back-dates notBefore by ten minutes issues a 24 hour certificate that spans 24h10m.
+	backdated := f.leaf(t, life(24*time.Hour+10*time.Minute))
+	if _, err := verifyAs(c, "alice", backdated); err == nil {
+		t.Fatal("back-dated certificate accepted with no back-dating declared")
+	}
+	pb := f.policy()
+	pb.NotBeforeBackdate = 10 * time.Minute
+	cb := mustCompile(t, pb)
+	if _, err := verifyAs(cb, "alice", backdated); err != nil {
+		t.Fatalf("declared back-dating: %v", err)
+	}
+	// Only by the declared amount.
+	_, err = verifyAs(cb, "alice", f.leaf(t, life(24*time.Hour+10*time.Minute+time.Second)))
+	wantReason(t, err, agent.ReasonCertWindow)
 	for name, mut := range map[string]func(*audit.IdentityPolicy){
+		"backdate over an hour":     func(p *audit.IdentityPolicy) { p.NotBeforeBackdate = time.Hour + time.Second },
+		"negative backdate":         func(p *audit.IdentityPolicy) { p.NotBeforeBackdate = -time.Minute },
 		"lifetime over the ceiling": func(p *audit.IdentityPolicy) { p.MaxLeafLifetime = 32 * 24 * time.Hour },
 		"negative lifetime":         func(p *audit.IdentityPolicy) { p.MaxLeafLifetime = -time.Hour },
 		"skew over 10 minutes":      func(p *audit.IdentityPolicy) { p.Skew = 10*time.Minute + time.Second },

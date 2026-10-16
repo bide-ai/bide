@@ -1252,11 +1252,86 @@ a retroactive compromise reported after the decisions, entry pruning after expir
 and refusals on real output (SHA-1, issuing distribution point, `removeFromCRL` in a full CRL, a
 critical delta indicator). OpenSSL cannot issue true deltas.
 
-**Step-1 exit criterion (assessor's condition).** Delta conformance against a CA that issues true delta
-CRLs, EJBCA and Microsoft AD CS, must pass before any gate relies on deltas; their fixtures are captured
-by a manually dispatched workflow and checked in, and the AD CS defaults (CRLNumber scheme, prune
-timing, hold handling, and what each CA writes in a `removeFromCRL` entry's revocation date) are recorded
-here when captured.
+**Step-1 exit criterion (assessor's condition), met on 2026-10-16.** Delta conformance against CAs that issue
+true delta CRLs passed on checked-in captures (`audit/testdata/ejbca`, `audit/testdata/adcs`, from the
+manually dispatched workflow `.github/workflows/crl-fixtures.yml`; `VERSION`, `DEFAULTS.txt` and the dumps
+record what produced them). Each capture is a two-tier approver PKI, so the tests run `VerifyChain` and the
+status rule on what the real CAs wrote, not on hand-built chains: an RSA-3072 root that asserts the approver
+policy and an issuing CA under it, four approver certificates with the bank EKU, the policy OID, a URI subject
+alternative name and digitalSignature, and the CRLs of both CAs.
+
+- *EJBCA Community 9.6.3* (image pinned by digest): root RSA-3072, issuing CA ECDSA P-256, and an `Approver`
+  certificate profile built with EJBCA's own classes (`ProfileGen.java`). The approvers generate their own
+  ECDSA P-256 keys; EJBCA issues from their requests.
+- *Microsoft AD CS on Windows Server 2025*: a standalone root and a standalone subordinate, both RSA-3072
+  with SHA-256, installed one after the other on one CI machine (a machine runs one CA): the root issues the
+  issuing CA's certificate for a key generated on that machine, publishes its CRL and is uninstalled, then the
+  issuing CA is installed on that certificate. No key is exported, uploaded or checked in. An
+  enterprise CA and its certificate templates need an Active Directory domain, which a CI runner does not
+  have, so the issuing CA is a standalone subordinate that takes the same extensions from the request
+  (`EDITF_ENABLEREQUESTEXTENSIONS`). It is not an enterprise CA with a template, and what a template adds
+  (template extensions, the CDP and AIA of a domain) is not captured and is listed in `docs/KNOWN-LIMITATIONS.md`; the leaves do carry AD CS's
+  non-critical authority information access and CRL distribution point extensions (`file://` paths) and a
+  critical `basicConstraints` with `cA` false.
+
+What the two CAs do, as observed (the tests pin it):
+
+- *CRL numbers.* Both use one increasing sequence across bases and deltas, as RFC 5280 section 5.2.3 requires.
+- *Which base a delta names.* EJBCA names the latest base issued before the delta. AD CS keeps naming the
+  first base after deltas were switched on for every later delta, and its deltas are cumulative since that
+  base, so each delta also lists everything revoked since: pairing with the highest qualifying base
+  (`baseNumber <= B.number < D.number`, issued no later than the delta) is what makes both work.
+- *Time stamps.* AD CS back-dates `thisUpdate` by about ten minutes, so a revocation date can be later than the
+  `thisUpdate` of the CRL that lists it. It stamps a revocation with the time of the next publication, not the
+  time of the `certutil -revoke`: revocations queued before a publication all carry that publication's time,
+  so an operator who revokes a compromised certificate should publish a CRL at once, because until then
+  nothing records the revocation and its date moves with the publication. Evidence of absence needs
+  `thisUpdate >= A`, so on AD CS a decision waits about ten minutes longer for a CRL to be usable; the live
+  count (`CountLive`) is what keeps the gate from waiting, and `ThisUpdateSkew` (per issuing CA) declares the
+  back-dating so that the age of a CRL and the end of a hold are measured from when it was issued.
+- *Certificate lifetimes.* AD CS back-dates `notBefore` by ten minutes (`ClockSkewMinutes`) and counts the
+  24 hour validity from the issue, so a certificate is valid for 24 hours and ten minutes, over the default
+  `MaxLeafLifetime`: `IdentityPolicy.NotBeforeBackdate` (at most an hour) declares the back-dating and widens
+  only that check. EJBCA's `Approver` profile enables its certificate validity offset (the fixed profiles
+  have it off); with it the notBefore is ten minutes early but never earlier than the issuing CA's own
+  `notBefore`, and the validity counts from the shifted time, so the certificate is valid for 24 hours less a
+  second and needs no allowance. A capture waits eleven minutes after creating the CAs so that the clamp does
+  not hide the offset.
+- *Holds.* Both write the release as a `removeFromCRL` entry in the next delta whose date is the time of the
+  release (not the original hold date); the next base no longer lists the certificate. Neither stamps the
+  original hold date, so the opt-in `AllowHolds` reading is consistent with both, but the default still
+  refuses holds because the field is not defined by the RFC.
+- *Entries dated after the CRL.* A CA that back-dates `thisUpdate` stamps a revocation with the real
+  publication time, so with a period shorter than the back-dating (a five minute delta, a ten minute offset) an
+  entry is later than the CRL's own `nextUpdate`. A CRL with an entry dated more than 30 minutes (the largest
+  declarable skew) after its `nextUpdate` is refused as unreadable; it is not clipped to `thisUpdate`.
+- *The root's CRL.* A root that issues one CA certificate publishes its CRL rarely (AD CS: weekly, from
+  `CRLPeriod`), and it predates every decision. The status of the issuing CA certificate is therefore a live
+  count on a CRL days old, which needs `StatusParams.MaxStatusAgeFor` (and `CAPeriodFor`) for the root;
+  offline it has no evidence of absence until the root publishes a CRL after the decision.
+- *Signature algorithm.* A CA installed from a PFX straight into AD CS signs with SHA-1 (it uses a legacy
+  provider whose default hash is SHA-1); `AddCRL` and `VerifyChain` refuse that. The first capture run produced exactly
+  that, and its certificate and CRLs are kept as a refusal fixture (`audit/testdata/adcs-sha1`, with the
+  provider settings). The capture puts the key in the CNG provider, which gives SHA-256.
+- *Defaults.* A standalone AD CS subordinate defaults to a one week base CRL, a one day delta, overlap 0 hours,
+  one year certificates and `CRLFlags` 2 (`DEFAULTS.txt`, `DEFAULTS-root.txt`); the capture set 24 hour
+  certificates, a one day base and a thirty minute delta, which gave a `nextUpdate` of about a day and 2 hours 45 minutes
+  after `thisUpdate` for bases and one hour twenty for deltas. EJBCA: hour base, ten minute delta in the capture, no
+  automatic issuing.
+- *Windows.* The AD CS capture runs on `windows-2025`; actions are pinned by commit. The workflow uploads
+  certificates, CRLs and settings only, a test fails on any private key, PFX or password under `audit/testdata`,
+  and the CAs of the fixtures are test anchors that must never be reused or trusted anywhere.
+- *Operating notes (for the policy and the CA operator; the operator guide is written with build step E2).*
+  Publish a CRL right after revoking a certificate, because AD CS dates the revocation at the publication.
+  Declare from the capture of your own CA, per issuing CA, `ThisUpdateSkew` (its clock-skew allowance),
+  `NotBeforeBackdate` (policy-wide) and, for an offline root, `MaxStatusAgeFor` and `CAPeriodFor` set to the
+  root's CRL period; never assume them. Before go-live a bank's own CA, an enterprise CA with its templates
+  included, must be captured with the dispatch workflow and the conformance tests run on it (pilot
+  checklist). The `CAPeriod <= ExecStatusAge / 2` startup check is a requirement on the gate configuration
+  (E2), not yet in code.
+- *Not captured, still open.* The cadence of a scheduled CA (the captures issue every CRL by hand), pruning of
+  expired entries (a capture across a certificate's expiry), a re-key, and a restore from backup. The
+  assessor asked for those with the pilot CA's own checks (test plan item 32).
 
 **Requirements this puts on the later changes (v4 decision, gate, audit).** The `approval-identity` record
 stores, for each counted decision, the tier, `S` and the basis, not just "counted". The offline verifier

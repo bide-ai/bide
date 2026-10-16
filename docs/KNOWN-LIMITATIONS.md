@@ -353,6 +353,8 @@ unfinished until it is cancelled. See [Plan flows](guides/plan-flows.md#approval
 apply to free-form output. Agreement lowers the risk of one model's mistake, but models can be wrong
 together. A tie is never agreement. See [Quorum](guides/quorum.md#what-a-quorum-does-not-do).
 
+**Certificate status is conformance-tested against EJBCA and a standalone Microsoft AD CS, not an enterprise AD CS CA.** The building blocks for certificate-bound approvers (`audit.IdentityPolicy`, the CRL status rule) are checked in under `audit/testdata` against captures from EJBCA Community and from an AD CS standalone root and subordinate. An enterprise AD CS CA with certificate templates needs an Active Directory domain and has not been captured. A bank must capture its own CA with the `crl-fixtures.yml` workflow before go-live. Nothing in the approval gate uses these blocks yet.
+
 ## Flows
 
 **Fan-in has fixed arity.** `Join2` and `Join3` combine two or three branches; there is no join over

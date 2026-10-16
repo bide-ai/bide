@@ -1,0 +1,13 @@
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\CertSvc\Configuration\Fixture ADCS Approver CA\CSP:
+
+Values:
+  ProviderType             REG_DWORD = 1
+  Provider                 REG_SZ = Microsoft Strong Cryptographic Provider
+  HashAlgorithm            REG_DWORD = 8004 (32772)
+    CALG_SHA1
+    Algorithm Class: 0x8000(4) ALG_CLASS_HASH
+    Algorithm Type: 0x0(0) ALG_TYPE_ANY
+    Algorithm Sub-id: 0x4(4) ALG_SID_SHA1
+
+  MachineKeyset            REG_DWORD = 1
+CertUtil: -getreg command completed successfully.

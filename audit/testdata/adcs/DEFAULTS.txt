@@ -1,0 +1,10 @@
+CRLPeriod = Weeks
+CRLPeriodUnits = 1
+CRLDeltaPeriod = Days
+CRLDeltaPeriodUnits = 1
+CRLOverlapPeriod = Hours
+CRLOverlapUnits = 0
+CRLFlags = 2
+ValidityPeriod = Years
+ValidityPeriodUnits = 1
+ClockSkewMinutes = 10

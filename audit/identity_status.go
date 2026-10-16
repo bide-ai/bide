@@ -37,6 +37,8 @@ const (
 	defaultMinW = 30 * time.Minute // floor on the window for a final verdict
 	// maxThisUpdateSkew caps a declared ThisUpdateSkew: a larger value would make a stale CRL look fresh.
 	maxThisUpdateSkew = 30 * time.Minute
+	// maxStatusAgeFor caps a declared MaxStatusAgeFor: an offline root's CRL period is weeks, not years.
+	maxStatusAgeFor = 400 * 24 * time.Hour
 )
 
 // finalityNeedsLC chooses how a certificate that is still unexpired at the latest usable status is
@@ -425,6 +427,12 @@ func parseCRL(der []byte, hash [32]byte, maxEntries int) (*crlView, error) {
 		if re.SerialNumber == nil || re.RevocationTime.IsZero() {
 			return unreadable("entry %d has no serial number or revocation time", i)
 		}
+		// A CA that back-dates thisUpdate stamps a revocation at the real publication time, which can be
+		// later than nextUpdate when its period is shorter than the back-dating: allow up to the largest
+		// skew a policy may declare.
+		if re.RevocationTime.After(rl.NextUpdate.Add(maxThisUpdateSkew)) {
+			return unreadable("entry %d is dated more than %s after the CRL's own nextUpdate", i, maxThisUpdateSkew)
+		}
 		ce := crlEntry{revoked: re.RevocationTime, code: re.ReasonCode}
 		switch {
 		case re.ReasonCode == 7 || re.ReasonCode < 0 || re.ReasonCode > 10:
@@ -504,6 +512,11 @@ type StatusParams struct {
 	// zero for an offline audit, which judges the series against the decision, not the clock.
 	Now          time.Time
 	MaxStatusAge time.Duration
+	// MaxStatusAgeFor overrides MaxStatusAge for the issuing CA with the given key. An offline root
+	// publishes the CRL that covers its issuing CA rarely (Microsoft AD CS: weekly), so the status of
+	// that CA certificate rests on a CRL days old; the policy says so for that issuer only, and the leaf's
+	// CRLs keep the global limit. Zero means the global limit, never unlimited; a negative value or one over 400 days makes the status unknown.
+	MaxStatusAgeFor map[SPKIHash]time.Duration
 	// CountLive is the live gate's counting mode and needs Now: a fresh CRL issued before the decision
 	// is accepted, so a decision is not held for a CRL period. A verdict resting on status issued
 	// before the decision is provisional, never final (its Basis says so): a revocation effective
@@ -669,8 +682,14 @@ func (c *CertIdentity) EvaluateStatus(ac *ApproverCert, a time.Time, s *StatusSn
 		p.CoverageTolerance = defaultCoverageTolerance
 	}
 	out := ChainStatus{Tier: TierFinal}
+	bad := p.configNote()
 	for i := 0; i+1 < len(ac.Chain); i++ {
 		cert, issuer := ac.Chain[i], ac.Chain[i+1]
+		if bad != "" {
+			out.Certs = append(out.Certs, CertStatus{Serial: cert.SerialNumber, Tier: TierNoInformation, Note: bad})
+			out.Tier = TierNoInformation
+			continue
+		}
 		views, evictedNew := s.viewsFor(issuer, c.distrustFor(issuer, p.Distrust))
 		st := evalCert(cert, issuer, a, views, evictedNew, p)
 		out.Certs = append(out.Certs, st)
@@ -686,6 +705,31 @@ func (c *CertIdentity) EvaluateStatus(ac *ApproverCert, a time.Time, s *StatusSn
 }
 
 // protocol:identity end
+
+// configNote names a declared parameter outside its range, or is empty. A mistyped declaration must not
+// make stale evidence look fresh, so the status is unknown rather than computed on it.
+func (p StatusParams) configNote() string {
+	if p.ThisUpdateSkew < 0 || p.ThisUpdateSkew > maxThisUpdateSkew {
+		return fmt.Sprintf("the declared ThisUpdateSkew %s is outside 0 to %s", p.ThisUpdateSkew, maxThisUpdateSkew)
+	}
+	// Map order is random: name the smallest offending key, so the message is the same on every run.
+	var notes []string
+	for k, d := range p.ThisUpdateSkewFor {
+		if d < 0 || d > maxThisUpdateSkew {
+			notes = append(notes, fmt.Sprintf("the declared ThisUpdateSkewFor[%x] %s is outside 0 to %s", k[:4], d, maxThisUpdateSkew))
+		}
+	}
+	for k, d := range p.MaxStatusAgeFor {
+		if d < 0 || d > maxStatusAgeFor {
+			notes = append(notes, fmt.Sprintf("the declared MaxStatusAgeFor[%x] %s is outside 0 to %s", k[:4], d, maxStatusAgeFor))
+		}
+	}
+	if len(notes) == 0 {
+		return ""
+	}
+	slices.Sort(notes)
+	return notes[0]
+}
 
 // distrustFor is the earliest distrust date for issuer's key, from the policy and the overlay.
 func (c *CertIdentity) distrustFor(issuer *x509.Certificate, overlay map[SPKIHash]time.Time) time.Time {
@@ -795,9 +839,9 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, evict
 	if sk, ok := p.ThisUpdateSkewFor[SPKIHashOf(issuer)]; ok {
 		skew = sk
 	}
-	if skew < 0 || skew > maxThisUpdateSkew {
-		st.Note = fmt.Sprintf("the declared ThisUpdateSkew %s is outside 0 to %s", skew, maxThisUpdateSkew)
-		return st
+	maxAge := p.MaxStatusAge
+	if m := p.MaxStatusAgeFor[SPKIHashOf(issuer)]; m > 0 {
+		maxAge = m
 	}
 	retains := func(v *crlView) bool {
 		return p.Retained || (!v.expiredFrom.IsZero() && !cert.NotAfter.Before(v.expiredFrom))
@@ -965,7 +1009,7 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, evict
 	}
 	fresh := usable[:0:0]
 	for _, v := range usable {
-		if live && (p.MaxStatusAge <= 0 || !p.Now.Before(v.next) || p.Now.Sub(v.this) > p.MaxStatusAge+skew || v.this.After(p.Now.Add(p.CoverageTolerance))) {
+		if live && (maxAge <= 0 || !p.Now.Before(v.next) || p.Now.Sub(v.this) > maxAge+skew || v.this.After(p.Now.Add(p.CoverageTolerance))) {
 			continue
 		}
 		fresh = append(fresh, v)

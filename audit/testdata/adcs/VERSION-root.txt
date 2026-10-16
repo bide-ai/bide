@@ -1,0 +1,5 @@
+
+OsName    : Microsoft Windows Server 2025 Datacenter
+OsVersion : 10.0.26100
+
+

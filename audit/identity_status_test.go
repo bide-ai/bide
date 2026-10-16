@@ -690,7 +690,7 @@ func TestRevokedIntermediateRevokesTheChain(t *testing.T) {
 	// An intermediate revoked AFTER the decision does not touch it.
 	cs = s.eval(s.snap(
 		s.lcrl(1, now, 30*min),
-		s.rcrl(1, now, 30*min, testca.Revoked(s.inter.Cert, s.a.Add(hour), 0)),
+		s.rcrl(1, now, 3*hour, testca.Revoked(s.inter.Cert, s.a.Add(hour), 0)),
 	), audit.StatusParams{})
 	if cs.Revoked {
 		t.Fatalf("%+v", cs)
@@ -1420,9 +1420,14 @@ func TestMalformedCRLCatalogue(t *testing.T) {
 		}(), false},
 		"entry revoked after thisUpdate": {func() testca.RawCRLOpts {
 			o := base()
-			o.Entries = []testca.RawEntry{{Serial: big.NewInt(5), Time: this.Add(time.Hour)}}
+			o.Entries = []testca.RawEntry{{Serial: big.NewInt(5), Time: this.Add(time.Minute)}}
 			return o
 		}(), false},
+		"entry revoked after nextUpdate": {func() testca.RawCRLOpts {
+			o := base()
+			o.Entries = []testca.RawEntry{{Serial: big.NewInt(5), Time: next.Add(31 * time.Minute)}}
+			return o
+		}(), true},
 		"duplicate entry extension": {func() testca.RawCRLOpts {
 			o := base()
 			o.Entries = []testca.RawEntry{{Serial: big.NewInt(5), Time: this, Exts: []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 21}, Value: []byte{0x0a, 0x01, 0x01}}, {Id: asn1.ObjectIdentifier{2, 5, 29, 21}, Value: []byte{0x0a, 0x01, 0x02}}}}}
@@ -1706,5 +1711,94 @@ func TestLiveCountRefusesPrunedCRLWhenLCWasWithheld(t *testing.T) {
 		if st.LCKnown || !st.S.Equal(idT0.Add(40*min)) || st.Tier == audit.TierFinal {
 			t.Errorf("%s: the status rests on the pruned CRL or is final: %+v", name, st)
 		}
+	}
+}
+
+// An entry dated far after the CRL's own nextUpdate is not something a CA produces: the CRL is refused
+// rather than clipped to thisUpdate. A CA that back-dates thisUpdate stamps a revocation with the real
+// publication time, so a period shorter than the back-dating puts the entry after nextUpdate: that real
+// case (a five minute CRL, a ten minute offset) is accepted, up to the largest declarable skew.
+func TestEntryDatedAfterNextUpdateIsRefused(t *testing.T) {
+	s := newStFx(t)
+	sn := audit.NewStatusSnapshot()
+	if _, err := sn.AddCRL(s.lcrl(1, idT0, 5*time.Minute, testca.Revoked(s.leaf.Cert, idT0.Add(10*time.Minute), 1))); err != nil {
+		t.Fatalf("a five minute CRL listing a revocation stamped at the publication, ten minutes after thisUpdate: %v", err)
+	}
+	if _, err := sn.AddCRL(s.lcrl(2, idT0, time.Hour, testca.Revoked(s.leaf.Cert, idT0.Add(time.Hour+30*time.Minute), 1))); err != nil {
+		t.Fatalf("an entry exactly the largest skew after nextUpdate: %v", err)
+	}
+	if _, err := sn.AddCRL(s.lcrl(3, idT0, time.Hour, testca.Revoked(s.leaf.Cert, idT0.Add(time.Hour+30*time.Minute+time.Second), 1))); err == nil {
+		t.Fatal("an entry dated beyond nextUpdate plus the largest skew was accepted")
+	}
+}
+
+// Declared parameters outside their range make the status unknown, whichever issuer they name.
+func TestStatusParamsRangeIsChecked(t *testing.T) {
+	s := newStFx(t)
+	sn := s.snap(s.lcrl(1, idT0, hour))
+	other := audit.SPKIHash{1}
+	for name, p := range map[string]audit.StatusParams{
+		"negative global skew":     {ThisUpdateSkew: -min},
+		"huge per-issuer skew":     {ThisUpdateSkewFor: map[audit.SPKIHash]time.Duration{other: 31 * min}},
+		"negative per-issuer skew": {ThisUpdateSkewFor: map[audit.SPKIHash]time.Duration{audit.SPKIHashOf(s.inter.Cert): -min}},
+		"negative max age":         {MaxStatusAgeFor: map[audit.SPKIHash]time.Duration{other: -hour}},
+		"max age over the cap":     {MaxStatusAgeFor: map[audit.SPKIHash]time.Duration{other: 401 * 24 * hour}},
+	} {
+		cs := s.eval(sn, p)
+		for i, c := range cs.Certs {
+			if c.Tier != audit.TierNoInformation || !strings.Contains(c.Note, "declared") {
+				t.Fatalf("%s: certificate %d: %+v", name, i, c)
+			}
+		}
+	}
+	// Several bad entries give the same message on every run.
+	multi := audit.StatusParams{ThisUpdateSkewFor: map[audit.SPKIHash]time.Duration{{1}: -min, {2}: -min, {3}: -min, {4}: -min}}
+	first := s.eval(sn, multi).Certs[0].Note
+	for i := 0; i < 20; i++ {
+		if n := s.eval(sn, multi).Certs[0].Note; n != first {
+			t.Fatalf("the note differs between runs: %q and %q", first, n)
+		}
+	}
+	if !strings.Contains(first, "ThisUpdateSkewFor[01000000]") {
+		t.Fatalf("the note does not name the issuer key: %q", first)
+	}
+	ok := audit.StatusParams{ThisUpdateSkewFor: map[audit.SPKIHash]time.Duration{other: 30 * min}, MaxStatusAgeFor: map[audit.SPKIHash]time.Duration{other: 400 * 24 * hour}}
+	if cs := s.eval(sn, ok); cs.Certs[0].Note != "" && strings.Contains(cs.Certs[0].Note, "declared") {
+		t.Fatalf("values at the caps were refused: %+v", cs.Certs[0])
+	}
+}
+
+// An offline root publishes a CRL for its issuing CA rarely (AD CS: weekly), so a live count of the CA
+// certificate's status rests on a CRL days old. MaxStatusAgeFor lets the policy say so for that issuer
+// only; the leaf's CRLs keep the global limit.
+func TestMaxStatusAgeForIsPerIssuer(t *testing.T) {
+	s := newStFx(t)
+	week := 7 * 24 * hour
+	now := idT0.Add(-10 * min)
+	rootCRL := s.rcrl(1, now.Add(-5*24*hour), week)
+	leafCRL := s.lcrl(1, now.Add(-10*min), 3*hour)
+	sn := s.snap(rootCRL, leafCRL)
+	p := audit.StatusParams{Now: now, MaxStatusAge: hour, CountLive: true}
+	cs := s.eval(sn, p)
+	if cs.Certs[1].Tier != audit.TierNoInformation || !cs.Certs[1].Stale {
+		t.Fatalf("a five day old root CRL at a one hour limit: %+v", cs.Certs[1])
+	}
+	p.MaxStatusAgeFor = map[audit.SPKIHash]time.Duration{audit.SPKIHashOf(s.root.Cert): week}
+	cs = s.eval(sn, p)
+	if cs.Certs[1].Tier == audit.TierNoInformation || cs.Certs[1].Revoked {
+		t.Fatalf("the root's own limit declared: %+v", cs.Certs[1])
+	}
+	if cs.Certs[0].Tier == audit.TierNoInformation {
+		t.Fatalf("the leaf's fresh CRL: %+v", cs.Certs[0])
+	}
+	// The root's allowance does not stretch the intermediate's CRLs.
+	stale := s.snap(rootCRL, s.lcrl(1, now.Add(-2*hour), 6*hour))
+	if cs := s.eval(stale, p); cs.Certs[0].Tier != audit.TierNoInformation {
+		t.Fatalf("a two hour old leaf CRL under the intermediate's one hour limit: %+v", cs.Certs[0])
+	}
+	// A declared limit of zero or less is the global one, never unlimited.
+	p.MaxStatusAgeFor = map[audit.SPKIHash]time.Duration{audit.SPKIHashOf(s.root.Cert): 0}
+	if cs := s.eval(sn, p); cs.Certs[1].Tier != audit.TierNoInformation {
+		t.Fatalf("a zero per-issuer limit: %+v", cs.Certs[1])
 	}
 }

@@ -1,0 +1,53 @@
+name: CRL fixtures
+
+# Captures two-tier approver PKIs, certificates and CRLs (true delta CRLs included) from EJBCA Community
+# Edition and from Microsoft AD CS, for the approver identity status rule's conformance tests
+# (docs/design/approver-identity.md, test plan item 32). It is dispatched by hand, never on a pull
+# request, and its output is checked in under audit/testdata/{ejbca,adcs} so the tests run offline.
+# Download the artifacts, review them, and commit them.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ejbca:
+    name: EJBCA Community
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Start EJBCA
+        run: |
+          # The image is pinned by digest so a capture is reproducible.
+          docker run -d --name ejbca -p 8080:8080 -e TLS_SETUP_ENABLED=simple \
+            keyfactor/ejbca-ce@sha256:ef574ed81c1e2bb335902f1097b09f9408fe32f2c3abbccfe80999d1c9b50164
+          for i in $(seq 1 120); do
+            if curl -fs http://localhost:8080/ejbca/publicweb/healthcheck/ejbcahealth | grep -q ALLOK; then echo ready; exit 0; fi
+            sleep 5
+          done
+          docker logs ejbca | tail -50
+          exit 1
+      - name: Capture
+        run: sh audit/testdata/ejbca/capture.sh ejbca out
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ejbca-fixtures
+          path: out/
+
+  adcs:
+    name: Microsoft AD CS
+    runs-on: windows-2025
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Capture
+        shell: pwsh
+        run: ./audit/testdata/adcs/capture.ps1 -Out out
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          # Certificates, CRLs and settings only: the capture writes no private key or password.
+          name: adcs-fixtures
+          path: out/
