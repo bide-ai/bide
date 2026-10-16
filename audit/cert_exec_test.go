@@ -549,7 +549,10 @@ func TestVerifyCertExec_AcceptsStatusIssuedBeforeTheDecision(t *testing.T) {
 	}
 	c.status = sn
 	c.execNow = func() time.Time { return certA.Add(10 * time.Second) }
-	got := c.execCheck()
+	// The count's own parameters do not set CountLive here: the execution check does.
+	a := c.approver("alice")
+	a.StatusParams.CountLive = false
+	got := a.VerifyCertExec(c.execDecision("alice"))
 	if got.Reason != "" || got.Tier != "provisional" {
 		t.Fatalf("%+v", got)
 	}
