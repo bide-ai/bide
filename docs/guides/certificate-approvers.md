@@ -25,6 +25,74 @@ with that workflow, and run the conformance tests on the capture before any gate
 captures show what that CA stamps (the back-dating of `thisUpdate` and `notBefore`, the real CRL period,
 the overlap, how a revoked certificate is dated) and the values below are declared from them, never assumed.
 
+## Walkthrough: from the CA's certificate to an approved call
+
+This is the path of one approver, `ops`, on a gate whose policy names `ops` as certificate-bound. Four
+people are involved: the **CA operator** (issues certificates, one identifier per person, with the bank's
+EKU and policy OID), the **platform team** (writes the certificate policy and runs the application), the
+**approver** (holds a key and a certificate), and the **application** (runs the gate).
+
+1. **The platform team writes the certificate policy file**, the same file the application's
+   `audit.IdentityPolicy` is built from and `bide approve` reads with `-identity-policy`: the trust anchors
+   (PEM files next to it), the pinned intermediates, the approver-to-identity map (one identifier per
+   approver, `ops` included) and the EKU and policy OID the CA asserts. Its format is in
+   [Human approval](hitl-approval.md#deciding-from-the-terminal). The application's side (an
+   `audit.CertApprover` for `ops`, with the CA's facts declared as above) is Go configuration: see the
+   sections below.
+2. **The approver makes a key.** A key file: `bide keygen -out ops.key -as ops` (Ed25519, or `-alg
+   ecdsa-p256`; both have a certificate scheme; ML-DSA-65 does too, a hybrid does not). A key in an HSM or a
+   KMS: `bide-hsm pubkey -as ops -key <key reference>`. Either prints the public key. The private key never
+   leaves its file, token or KMS.
+3. **The CA issues a certificate for that public key**, after the bank's own identification of the person
+   (single sign-on with step-up, say), with one subject alternative name that is the person's identifier,
+   the bank's EKU and the bank's policy OID. How the request is made is the CA's procedure: bide asks the CA
+   for nothing, and it cannot know how the person was identified. For a KMS key the request's proof of
+   possession is signed by the KMS key with the KMS vendor's tooling.
+4. **The approver assembles the chain**: a PEM file with the leaf first, then the intermediates up to but
+   not including the trust anchor (the policy holds the anchor), at most 8 certificates:
+   `cat ops-leaf.pem issuing-ca.pem > chain.pem`. Only CERTIFICATE blocks: a file with a private key block is
+   refused unread.
+5. **The approver decides.** The command shows the call, then the certificate it will use and the identity
+   the policy derives from it, and asks for confirmation; answering no records nothing, which is also how to
+   try a certificate:
+
+   ```
+   bide approve -db app.db -run refund-1049 -call c2 -as ops -key ops.key \
+       -cert chain.pem -identity-policy policy.json
+   ```
+
+   Through the application's approval intake instead of a database, add `-to https://approvals.bank.example`
+   (and `-tls-ca`, `-client-cert`, `-token-env` as for any `-to`); with a key in an HSM or KMS, `bide-hsm
+   approve` takes the same flags with `-key` a key reference. Before it signs anything the command refuses
+   if: the file is not a clean chain; the key is not the leaf's key (the keys themselves are compared, not
+   only a signature); the certificate is not valid now or has less than `-cert-min-left` (60 seconds) left;
+   or the policy does not accept the chain for `ops` (wrong CA, wrong EKU or policy, a name that is not
+   `ops`'s identifier). The HSM or KMS is opened only after the file, the policy and the validity pass. There
+   is no fallback: a failure never produces a bare-key decision. `-unverified` signs without the policy
+   check and says so loudly; the gate will still refuse a chain it does not accept.
+6. **The decision is recorded** with the chain, signed over the `bide.approval.v4` bytes, which bind the
+   SHA-256 of the leaf, and a receipt is written (with the chain). `bide approve` does not say that the gate
+   counted it, and cannot: counting needs a signed tree head over the decision (the application's audited
+   store makes one with the write; the gate anchors before it counts) and current revocation status. Through
+   the intake, status the application cannot judge yet answers HTTP 503 and records nothing: run the same
+   command again.
+7. **The gate counts and the call runs.** When enough approvers have decided, the application re-runs the run
+   (or `RecoverLoop` does): the gate counts the decision, and immediately before the call runs the status of
+   the counted certificates is checked again (below). The run viewer and `bide approve -list` show the gate's
+   phase and each counted decision's identity, tier and status time.
+8. **Anyone can check the receipt later**: `bide approve -verify-receipt ops.receipt.json -identity-policy
+   policy.json -log-key <log public key>` checks the chain and identity at the time the log's head made the
+   decision provable (and, as it says, not revocation status); `bide audit verify-receipts` checks it against
+   the journal and its signed heads.
+
+When it refuses, the message says why. The common ones: "is not the key of the certificate's leaf" (the key
+file is not the one the certificate was issued for); "the certificate has expired" or "less than the 1m0s a
+decision needs left" (ask the CA for a new certificate); "not accepted for ops by the policy" with the
+reason (the chain does not end at a pinned anchor, the identifier is not the one the policy maps to `ops`,
+EKU or policy OID missing); "is a certificate-bound approver of this gate" (give `-cert`) or "is a bare-key
+approver of this gate" (drop it). The approve page in the browser cannot hold a certificate: it tells a
+certificate-bound approver to use `bide approve -to ... -cert`.
+
 ## Declare the CA's facts
 
 Every value is a statement about your CA. A wrong one is a wrong verdict, so each is read from the capture
