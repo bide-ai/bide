@@ -383,3 +383,31 @@ func TestCertApprover_WarnsAboutAGapBeyondTheDeclaredPeriod(t *testing.T) {
 		t.Fatalf("%+v %+v", tally, checks[0].Cert)
 	}
 }
+
+// A record that is not in the journal (position -1) or lies past it is never provable, though a head
+// covers every real position.
+func TestCertApprover_ARecordNotInTheJournalIsNotProvable(t *testing.T) {
+	c := newCertGate(t, 1, "alice")
+	c.pause()
+	c.decideCert("alice", nil)
+	c.anchor(certA)
+	recs, _ := c.store.History(context.Background(), gateRun)
+	var rec agent.Record
+	idx := -1
+	for i, r := range recs {
+		if r.Kind == agent.StepApproval && r.Approver() == "alice" {
+			rec, idx = r, i
+		}
+	}
+	a := c.approver("alice")
+	cd := agent.CertDecision{Subject: c.subject(t), Record: rec, Journal: recs, Index: idx}
+	if got := a.VerifyCertDecision(cd); got.Reason != "" {
+		t.Fatalf("control: %+v", got)
+	}
+	for _, bad := range []int{-1, len(recs)} {
+		cd.Index = bad
+		if got := a.VerifyCertDecision(cd); got.Reason != agent.ReasonNoCoveringHead {
+			t.Fatalf("position %d: %+v", bad, got)
+		}
+	}
+}
