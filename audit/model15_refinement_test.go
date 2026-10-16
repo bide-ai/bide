@@ -182,6 +182,30 @@ func TestModel15Refinement(t *testing.T) {
 			c.anchor(certA)
 			return judged(c)
 		}},
+		// The CA tier: the root's CRL that lists the issuing CA with E <= A(d) takes the leaf's decision with it.
+		"regress/count-no-ca-tier": {want: nil, why: agent.ReasonRevoked, run: func(t *testing.T) ([]string, string) {
+			c := aliceGate(t)
+			c.status = rootRevokesCA(t, c, certA.Add(-time.Hour))
+			return judged(c)
+		}},
+		"regress/tally-no-recheck-ca": {want: nil, why: agent.ReasonRevoked, run: func(t *testing.T) ([]string, string) {
+			c := aliceGate(t)
+			c.status = rootRevokesCA(t, c, certA.Add(-time.Hour))
+			if err := c.run(); err == nil || c.charged != 0 {
+				t.Fatalf("a decision under a revoked CA ran the call: %v charged %d", err, c.charged)
+			}
+			if _, ok := c.recordByName(agent.ApprovalTallyStep("c1")); ok {
+				t.Fatal("a tally formed on a decision under a revoked CA")
+			}
+			return judged(c)
+		}},
+		// A final verdict reads the CA tier too: with the root's CRL that lists the CA, nothing is final.
+		"regress/final-no-ca-tier": {want: nil, run: func(t *testing.T) ([]string, string) {
+			c := aliceGate(t)
+			c.status = rootRevokesCA(t, c, certA.Add(-time.Hour))
+			_, checks := c.tally()
+			return finalSet(checks), ""
+		}},
 		// Coverage of the series: a gap in the CRL series (an omitted CRL) leaves the status provisional, not final.
 		"regress/final-no-coverage": {want: nil, run: func(t *testing.T) ([]string, string) {
 			c := aliceGate(t)
@@ -285,9 +309,12 @@ func TestModel15Refinement(t *testing.T) {
 
 	// pending lists the model's configurations whose Go counterpart is a later change.
 	pending := map[string]string{
-		"regress/no-exec-recheck":         "the status check before execution (E2b)",
-		"regress/no-exec-recheck-revoked": "the status check before execution (E2b)",
-		"regress/prune-no-lc-exec":        "the status check before execution (E2b)",
+		"regress/no-exec-recheck":            "the status check before execution (E2b)",
+		"regress/exec-no-ca-tier":            "the status check before execution (E2b)",
+		"regress/exec-leaf-age-from-ca":      "the status check before execution (E2b)",
+		"regress/exec-no-recheck-ca-revoked": "the status check before execution (E2b)",
+		"regress/no-exec-recheck-revoked":    "the status check before execution (E2b)",
+		"regress/prune-no-lc-exec":           "the status check before execution (E2b)",
 		// The injectivity limit is a control the bank evidences; Go refuses what it can see (below).
 		"limits/alias-two-seats": "see TestModel15AliasLimit",
 	}
@@ -368,4 +395,22 @@ func TestModel15SeriesNotSnapshot(t *testing.T) {
 	if len(got) != 0 || reason != agent.ReasonRevoked {
 		t.Fatalf("counted %v, reason %q", got, reason)
 	}
+}
+
+// rootRevokesCA is a status series in which the root's CRL lists the issuing CA with the given effective
+// time, and the leaf's issuer publishes a clean series: the CA tier is revoked, the leaf tier is not.
+func rootRevokesCA(t *testing.T, c *certGate, e time.Time) *audit.StatusSnapshot {
+	t.Helper()
+	sn := audit.NewStatusSnapshot(audit.WithLimits(agent.MaxStatusInline, 1_000_000))
+	for _, der := range [][]byte{
+		c.inter.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: testDecidedAt, NextUpdate: testDecidedAt.Add(time.Hour)}),
+		c.inter.NewCRL(t, testca.CRLOpts{Number: 2, ThisUpdate: c.crlsAt, NextUpdate: c.crlsAt.Add(time.Hour)}),
+		c.root.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: c.crlsAt, NextUpdate: c.crlsAt.Add(time.Hour),
+			Entries: []x509.RevocationListEntry{testca.Revoked(c.inter.Cert, e, 2)}}),
+	} {
+		if _, err := sn.AddCRL(der); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return sn
 }
