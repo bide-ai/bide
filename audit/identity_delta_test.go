@@ -599,3 +599,23 @@ func sameHoldAt(t *testing.T, at time.Duration) {
 		t.Fatalf("a decision %v from T0 was refused: %+v", at, st)
 	}
 }
+
+// The same hold in two full CRLs (no deltas), and the release in two deltas: before, during and after.
+func TestSameHoldInTwoFullCRLs(t *testing.T) {
+	for _, tc := range []struct {
+		at      time.Duration
+		revoked bool
+	}{{5 * min, false}, {20 * min, true}, {45 * min, false}} {
+		s := newStFxAt(t, idT0.Add(tc.at))
+		hold := testca.Revoked(s.leaf.Cert, idT0.Add(10*min), 6)
+		rel := testca.Revoked(s.leaf.Cert, idT0.Add(30*min), 8)
+		b1 := s.lcrl(1, idT0.Add(12*min), 24*hour, hold)
+		b2 := s.lcrl(2, idT0.Add(25*min), 24*hour, hold) // the same hold again
+		d1 := s.delta(3, 2, idT0.Add(31*min), 30*min, rel)
+		d2 := s.delta(4, 2, idT0.Add(32*min), 30*min, rel) // the same release again
+		st := s.leafStatus(s.snap(b1, b2, d1, d2), audit.StatusParams{AllowHolds: true})
+		if st.Revoked != tc.revoked {
+			t.Fatalf("decision at T0+%v: revoked=%v want %v: %+v", tc.at, st.Revoked, tc.revoked, st)
+		}
+	}
+}
