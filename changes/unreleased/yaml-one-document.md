@@ -1,3 +1,0 @@
-Section: Fixed
-
-`bide check`, `bide view -config` and the YAML flow of a `bide init` project now refuse a YAML flow config that holds more than one document (error `more than one YAML document`), where the converter read the first document and silently ignored the rest, so a second flow or policy in the same file was read by no check and no loader; the JSON path already refused data after the value. This is a behaviour change: a multi-document YAML flow file that was accepted is now an error, and a leading `---` with a closing `...` is still one document. Programs that convert YAML themselves (as the scaffold did) should decode with a `yaml.Decoder` and require the next decode to return `io.EOF`.

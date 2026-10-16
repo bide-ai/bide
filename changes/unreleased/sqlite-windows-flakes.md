@@ -1,3 +1,0 @@
-Section: Fixed
-
-The SQLite store's and the shared store suite's timing assumptions no longer break on a slow disk: the lease-under-load test sizes its TTL from the commit time it measures and tells a disk stall from a starved renewal, the suite's "writes inside a Runs loop" deadline scales with the store's measured write cost (a shared Windows runner took 30ms and more per commit, which exceeded the fixed one minute), and `docs/KNOWN-LIMITATIONS.md` and the `AcquireLease` godoc now say that a lease TTL must exceed the disk's worst commit latency, since a renewal is a committed write that cannot finish faster than the disk.
