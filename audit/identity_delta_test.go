@@ -482,7 +482,7 @@ func TestHoldsAreRefusedByDefault(t *testing.T) {
 	// default policy a hold is refused wholesale.
 	later := s.lcrl(1, idT0, 24*hour, testca.Revoked(s.leaf.Cert, s.a.Add(30*min), 6))
 	st := s.leafStatus(s.snap(later), audit.StatusParams{})
-	if !st.Revoked || !strings.Contains(st.Note, "AllowHolds") || st.Final() {
+	if !st.Revoked || !strings.Contains(st.Note, "AllowHolds") || st.IsFinal() {
 		t.Fatalf("default: %+v", st)
 	}
 	if st := s.leafStatus(s.snap(later), audit.StatusParams{AllowHolds: true}); st.Revoked {
