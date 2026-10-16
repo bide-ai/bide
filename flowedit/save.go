@@ -175,6 +175,17 @@ var osFS = fileSystem{
 	remove: func(root *os.Root, n string) error { return root.Remove(n) },
 }
 
+// isTempName reports a name the editor's temporary files have: tempPrefix and 16 hexadecimal
+// digits, nothing else, so a user's own file that starts the same way is never taken for one.
+func isTempName(name string) bool {
+	rest, ok := strings.CutPrefix(name, tempPrefix)
+	if !ok || len(rest) != 16 {
+		return false
+	}
+	_, err := hex.DecodeString(rest)
+	return err == nil
+}
+
 // staleAge is how old a leftover temporary file must be to be removed at start: a save in another
 // bide edit on a file in the same directory is not interrupted.
 const staleAge = 10 * time.Minute
@@ -188,7 +199,7 @@ func cleanStale(root *os.Root, now time.Time) []string {
 	}
 	var gone []string
 	for _, e := range ents {
-		if !strings.HasPrefix(e.Name(), tempPrefix) {
+		if !isTempName(e.Name()) {
 			continue
 		}
 		fi, err := root.Lstat(e.Name())

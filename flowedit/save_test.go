@@ -271,7 +271,7 @@ func TestSaveRefusesATargetThatChanged(t *testing.T) {
 	os.WriteFile(same, []byte(weakFlow), 0o600)
 	os.Remove(p)
 	os.Symlink(same, p)
-	if _, err := s.Save([]byte(mine), hashOf([]byte(weakFlow)), nil); err == nil || !strings.Contains(err.Error(), "escapes from parent") {
+	if _, err := s.Save([]byte(mine), hashOf([]byte(weakFlow)), nil); err == nil || !strings.Contains(err.Error(), "not a regular file") {
 		t.Errorf("a link to a file with the same bytes: %v", err)
 	}
 	if readFile(t, same) != weakFlow {
@@ -561,7 +561,9 @@ func TestStartRemovesStaleTemporaryFiles(t *testing.T) {
 	mk(tempPrefix+"deadbeef00000002", old)
 	mk(tempPrefix+"recent", time.Now())
 	mk("keep-me.yaml", old)
-	mk(".bide-edit", old) // no dash after "edit": not ours
+	mk(tempPrefix+"notes.txt", old)        // a user's own file that starts the same way
+	mk(tempPrefix+"DEADBEEF0000000g", old) // 16 characters, not all hex
+	mk(".bide-edit", old)                  // no dash after "edit": not ours
 	if err := os.Mkdir(filepath.Join(dir, tempPrefix+"dir"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -571,7 +573,7 @@ func TestStartRemovesStaleTemporaryFiles(t *testing.T) {
 	}
 	defer s.Close()
 	got := dirFiles(t, dir)
-	want := []string{".bide-edit", tempPrefix + "dir", tempPrefix + "recent", "keep-me.yaml", "refund.yaml"}
+	want := []string{".bide-edit", tempPrefix + "dir", tempPrefix + "recent", tempPrefix + "notes.txt", tempPrefix + "DEADBEEF0000000g", "keep-me.yaml", "refund.yaml"}
 	slices.Sort(want)
 	if !slices.Equal(got, want) {
 		t.Errorf("the directory holds %q, want %q", got, want)
@@ -605,5 +607,36 @@ func TestTemporaryFileIsPrivateAndGone(t *testing.T) {
 	}
 	if names := dirFiles(t, filepath.Dir(p)); !slices.Equal(names, []string{"refund.yaml"}) {
 		t.Errorf("debris: %q", names)
+	}
+}
+
+// Another tool replacing the file by a rename (vim, an IDE, sed -i, git, another bide edit) leaves a
+// new file at the name. It is read, and a save from the hash of the old one is a conflict that shows
+// the diff, never a dead editor.
+func TestReplacedFileIsAConflictNotADeadEditor(t *testing.T) {
+	s, p := newTestServer(t, "refund.yaml", weakFlow)
+	other := strings.Replace(weakFlow, "flow: refund", "flow: replaced", 1)
+	swp := p + ".swp"
+	if err := os.WriteFile(swp, []byte(other), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(swp, p); err != nil {
+		t.Fatal(err)
+	}
+	d, err := s.Doc()
+	if err != nil || d.Text != other || d.Hash != hashOf([]byte(other)) {
+		t.Fatalf("the replaced file is not read: %v", err)
+	}
+	var c *Conflict
+	_, err = s.Save([]byte(strings.Replace(weakFlow, "flow: refund", "flow: mine", 1)), hashOf([]byte(weakFlow)), nil)
+	if !errors.As(err, &c) || !strings.Contains(c.Diff, "-flow: replaced") {
+		t.Errorf("%v", err)
+	}
+	// Reloading from the new hash saves, and later reads follow the saved file too.
+	if _, err := s.Save([]byte(strings.Replace(weakFlow, "flow: refund", "flow: mine", 1)), d.Hash, nil); err != nil {
+		t.Fatal(err)
+	}
+	if d2, err := s.Doc(); err != nil || !strings.Contains(d2.Text, "flow: mine") {
+		t.Errorf("%v", err)
 	}
 }
