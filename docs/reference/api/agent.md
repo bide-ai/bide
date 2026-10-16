@@ -872,6 +872,10 @@ type IdentityRoster interface {
 	HasIdentity(approverID string) bool
 
 	RequesterIdentifier(principal string) (identifier string, ok bool)
+
+	IdentityMappingConfigured() bool
+
+	RosterDigest() string
 }
 ```
 

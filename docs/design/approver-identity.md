@@ -1269,8 +1269,11 @@ approver outside the map could be a person who also holds a certificate and woul
 separation of duties covers two threats with two checks: the exclusion by approver id (the policy's own, a
 requester that is an approver id) and the exclusion by identifier (the verified identity of the counted decision
 against the requesters, mapped through the roster: a principal equal to an approver id maps to that approver's
-identifier, or through `CertApprover.RequesterIdentity`); a requester that cannot be mapped is excluded by approver
-id only, and the finding carries a warning. Until the gate change is complete the gate refuses any policy with a
+identifier, or through `CertApprover.RequesterIdentity`). The default roster mapping only repeats the exclusion by
+approver id (`Compile` refuses two ids with one identifier), so a bank that wants a requester who holds no
+approver id (a login that maps to a person) excluded by identity **must supply `RequesterIdentity`**; when it does,
+a requester it cannot map is excluded by approver id only and the finding carries a warning. A gate has one
+identity map: certificate-bound approvers whose policies report different `RosterDigest()`s are refused. Until the gate change is complete the gate refuses any policy with a
 certificate-bound approver at configuration (`internal/identitygate`, `ErrConfig`), so merging the counting rule
 alone does not make it reachable; `TallyApprovals` itself, the counting rule, is not a gate and still counts.
 

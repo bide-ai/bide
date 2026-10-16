@@ -126,8 +126,13 @@ func TestTally_ExcludePrincipalMatchesTheVerifiedIdentity(t *testing.T) {
 // rosterVerifier is a certificate-bound verifier that knows the policy's identity map.
 type rosterVerifier struct {
 	fakeCertVerifier
-	named map[string]string // approver id -> identifier
+	named      map[string]string // approver id -> identifier
+	configured bool              // the bank supplied the requester mapping
+	digest     string
 }
+
+func (r *rosterVerifier) IdentityMappingConfigured() bool { return r.configured }
+func (r *rosterVerifier) RosterDigest() string            { return r.digest }
 
 func (r *rosterVerifier) HasIdentity(id string) bool { _, ok := r.named[id]; return ok }
 func (r *rosterVerifier) RequesterIdentifier(p string) (string, bool) {
@@ -180,7 +185,14 @@ func TestTally_ExcludePrincipalMapsRequestersThroughTheRoster(t *testing.T) {
 	if got.Passed() || checks[0].Reason != ReasonRequester {
 		t.Fatalf("%+v %+v", got, checks)
 	}
-	// A requester the roster does not know is not excluded by identity, and the finding says so.
+	// With no mapping supplied by the bank, a requester the roster does not know is simply not excluded by
+	// identity (the default mapping only repeats the exclusion by approver id): no warning.
+	got, checks = TallyApprovals([]Record{run("zed"), certRec("approval:c1:approver-7:00", "approver-7")}, timesSubject, pol, resolve)
+	if !got.Passed() || checks[0].Cert == nil || len(checks[0].Cert.Warnings) != 0 {
+		t.Fatalf("no mapping configured: %+v %+v", got, checks)
+	}
+	// With the bank's mapping configured, a requester it cannot map is named in a warning.
+	v.configured = true
 	got, checks = TallyApprovals([]Record{run("zed"), certRec("approval:c1:approver-7:00", "approver-7")}, timesSubject, pol, resolve)
 	if !got.Passed() || checks[0].Cert == nil || len(checks[0].Cert.Warnings) != 1 || !strings.Contains(checks[0].Cert.Warnings[0], `"zed"`) {
 		t.Fatalf("%+v %+v", got, checks)

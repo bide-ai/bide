@@ -2,9 +2,13 @@ package audit
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"time"
 
@@ -48,8 +52,10 @@ type CertApprover struct {
 	// RequesterIdentity, when set, maps a requester principal (as the run records it) to the canonical
 	// identifier of the person, so separation of duties can exclude the requester by identifier. Without
 	// it the roster is used: a principal equal (ASCII case folded) to an approver id of the identity map
-	// maps to that approver's identifier. A principal it cannot map is excluded by approver id only, and
-	// the finding carries a warning.
+	// maps to that approver's identifier, which only repeats the exclusion by approver id: a bank that
+	// wants a requester who holds no approver id (a login that maps to a person) excluded by identity
+	// must supply this function. A requester it cannot map is then excluded by approver id only, and
+	// the finding carries a warning; without the function no warning is made.
 	RequesterIdentity func(principal string) (identifier string, ok bool)
 }
 
@@ -271,4 +277,26 @@ func (c *CertApprover) RequesterIdentifier(principal string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// IdentityMappingConfigured implements agent.IdentityRoster: whether RequesterIdentity is set.
+func (c *CertApprover) IdentityMappingConfigured() bool {
+	return c != nil && c.RequesterIdentity != nil
+}
+
+// RosterDigest implements agent.IdentityRoster: the SHA-256 over the whole identity map (bare-key
+// approvers included) in sorted approver order, each entry len32(approver) approver len32(identifier)
+// identifier, so an id or identifier containing '=' or a newline cannot collide with another entry.
+func (c *CertApprover) RosterDigest() string {
+	h := sha256.New()
+	if c != nil && c.Policy != nil {
+		for _, id := range slices.Sorted(maps.Keys(c.Policy.identity)) {
+			ident := c.Policy.identity[id]
+			h.Write(binary.BigEndian.AppendUint32(nil, uint32(len(id))))
+			h.Write([]byte(id))
+			h.Write(binary.BigEndian.AppendUint32(nil, uint32(len(ident))))
+			h.Write([]byte(ident))
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }

@@ -390,6 +390,16 @@ func approverSeats(p ApprovalPolicy, verifierFor ApproverVerifierFor) (map[strin
 	}
 	if roster != nil {
 		for _, id := range p.Approvers {
+			// One identity map per gate: seats match across approvers only if every certificate-bound
+			// approver reads the same map.
+			if r, ok := vs[id].(IdentityRoster); ok && r.RosterDigest() != roster.RosterDigest() {
+				bad[id] = ReasonNoKeyID
+				if first == nil {
+					first = fmt.Errorf("approval policy approver %q: its certificate policy has a different identity map from the other certificate-bound approvers of the gate; a gate has one identity map: %w", id, ErrConfig)
+				}
+			}
+		}
+		for _, id := range p.Approvers {
 			if _, isBad := bad[id]; !isBad && !roster.HasIdentity(id) {
 				bad[id] = ReasonNoKeyID
 				if first == nil {
@@ -1570,6 +1580,9 @@ func excludedByIdentity(v ApproverVerifier, cc *CertCheck, requesters []string) 
 			if SameApprover(cc.Identity, ident) {
 				return true
 			}
+			continue
+		}
+		if !roster.IdentityMappingConfigured() {
 			continue
 		}
 		cc.Warnings = append(cc.Warnings, fmt.Sprintf("requester %q cannot be mapped to an identifier, so separation of duties could not check it by identity (the exclusion by approver id still applies)", q))

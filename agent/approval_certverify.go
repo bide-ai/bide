@@ -74,4 +74,12 @@ type IdentityRoster interface {
 	// of the person it names, so separation of duties can exclude the requester by identifier. ok is
 	// false when the principal cannot be mapped.
 	RequesterIdentifier(principal string) (identifier string, ok bool)
+	// IdentityMappingConfigured reports whether the bank supplied the mapping from requesters to
+	// identifiers. Without it the roster's default mapping (a principal equal to an approver id) only
+	// repeats the exclusion by approver id, so a requester it cannot map is not worth a warning; with
+	// it, a requester it cannot map is.
+	IdentityMappingConfigured() bool
+	// RosterDigest is the SHA-256 over the whole identity map (see CertApprover.RosterDigest). The
+	// certificate-bound approvers of one gate must report one value: a gate has one identity map.
+	RosterDigest() string
 }

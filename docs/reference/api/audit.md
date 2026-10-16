@@ -401,8 +401,10 @@ CertApprover is the verifier of a certificate-bound approver (docs/design/approv
 
 - `func (*CertApprover) Alg() agent.Alg`: Alg reports agent.AlgCertificate: the scheme is the leaf key's, known only from the certificate.
 - `func (c *CertApprover) HasIdentity(approverID string) bool`: HasIdentity implements agent.IdentityRoster: whether the policy's identity map names the approver id.
+- `func (c *CertApprover) IdentityMappingConfigured() bool`: IdentityMappingConfigured implements agent.IdentityRoster: whether RequesterIdentity is set.
 - `func (c *CertApprover) KeyIDs() []string`: KeyIDs is the approver's seat, "ident:" and the canonical identifier the policy's identity map gives the approver id, so two approver ids of one person fill one seat.
 - `func (c *CertApprover) RequesterIdentifier(principal string) (string, bool)`: RequesterIdentifier implements agent.IdentityRoster: RequesterIdentity if set; else the principal canonicalized as an identifier of the policy's kind, if it is one; else the roster's identifier of the approver id the principal equals.
+- `func (c *CertApprover) RosterDigest() string`: RosterDigest implements agent.IdentityRoster: the SHA-256 over the whole identity map (bare-key approvers included) in sorted approver order, each entry len32(approver) approver len32(identifier) identifier, so an id or identifier containing '=' or a newline cannot collide with another entry.
 - `func (*CertApprover) Verify(message, sig []byte) bool`: Verify is always false: a bare signature over bytes, with no certificate, is never a certificate-bound approver's decision.
 - `func (c *CertApprover) VerifyCertDecision(cd agent.CertDecision) agent.CertCheck`: VerifyCertDecision implements agent.CertDecisionVerifier.
 
