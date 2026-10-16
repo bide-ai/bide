@@ -75,7 +75,7 @@ func JournalNotifyEvents(runID string, recs []Record) []JournalNotifyEvent {
 			if !ValidReaskNote(byName, w.ToolUseID, r.Name, w) {
 				continue
 			}
-			gen, _ := identReaskGen(w.ToolUseID, r.Name)
+			gen, _ := IdentReaskGen(w.ToolUseID, r.Name)
 			ev.Key = reaskKeyFor(runID, w.ToolUseID, w.Reask, gen)
 			ev.Current = !slices.ContainsFunc(reaskDecidedNames(w.ToolUseID, w.Reask, gen), func(n string) bool { return have[n] })
 			first = i + 1 // the decisions that resolve it come after the note

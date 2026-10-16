@@ -71,16 +71,47 @@ func execHeld(byName map[string]Record, toolUseID string, g int) bool {
 	return json.Unmarshal(r.Result, &h) == nil && h.Format == ApprovalExecHoldFormat && h.ToolUseID == toolUseID && h.Generation == g
 }
 
+// ExecHoldGen parses the generation out of name, which must be ApprovalExecHoldStep of toolUseID; ok is
+// false for any other name.
+func ExecHoldGen(toolUseID, name string) (int, bool) {
+	prefix := "approval-exec-hold:" + encodeID(toolUseID) + ":"
+	if !strings.HasPrefix(name, prefix) {
+		return 0, false
+	}
+	n, err := strconv.Atoi(strings.TrimPrefix(name, prefix))
+	if err != nil || n < 0 || ApprovalExecHoldStep(toolUseID, n) != name {
+		return 0, false
+	}
+	return n, true
+}
+
+// IdentTallyGen parses the generation out of name, which must be ApprovalIdentTallyStep of toolUseID;
+// ok is false for any other name.
+func IdentTallyGen(toolUseID, name string) (int, bool) {
+	if name == ApprovalIdentTallyStep(toolUseID, 0) {
+		return 0, true
+	}
+	prefix := ApprovalTallyStep(toolUseID) + ":ident-reask:"
+	if !strings.HasPrefix(name, prefix) {
+		return 0, false
+	}
+	n, err := strconv.Atoi(strings.TrimPrefix(name, prefix))
+	if err != nil || n < 1 || ApprovalIdentTallyStep(toolUseID, n) != name {
+		return 0, false
+	}
+	return n, true
+}
+
 // identGen returns the generation of toolUseID's gate in recs: of its recorded outcome, or of the count
 // it awaits after an exec hold.
 func identGen(recs []Record, toolUseID string) int {
-	return identChain(gateTallyValues(recs, toolUseID), toolUseID).gen
+	return identChain(GateTallyValues(recs, toolUseID), toolUseID).gen
 }
 
-// gateTallyValues returns the StepValue records of recs that decide the gate of toolUseID, by name,
+// GateTallyValues returns the StepValue records of recs that decide the gate of toolUseID, by name,
 // first writer winning: the plain-name tallies (ApprovalTallyStep, ApprovalRetallyStep,
 // ApprovalSoDRetallyStep), the identity tally chain and the exec holds.
-func gateTallyValues(recs []Record, toolUseID string) map[string]Record {
+func GateTallyValues(recs []Record, toolUseID string) map[string]Record {
 	plain := map[string]bool{ApprovalTallyStep(toolUseID): true, ApprovalRetallyStep(toolUseID): true, ApprovalSoDRetallyStep(toolUseID): true}
 	identPrefix := ApprovalTallyStep(toolUseID) + ":ident"
 	holdPrefix := "approval-exec-hold:" + encodeID(toolUseID) + ":"
@@ -98,8 +129,9 @@ func gateTallyValues(recs []Record, toolUseID string) map[string]Record {
 	return m
 }
 
-// identReaskGen parses the generation out of name, which must be ApprovalIdentReaskStep of toolUseID.
-func identReaskGen(toolUseID, name string) (int, bool) {
+// IdentReaskGen parses the generation out of name, which must be ApprovalIdentReaskStep of toolUseID;
+// ok is false for any other name.
+func IdentReaskGen(toolUseID, name string) (int, bool) {
 	prefix := ApprovalPendingStep(toolUseID) + ":ident:"
 	if !strings.HasPrefix(name, prefix) {
 		return 0, false
@@ -115,7 +147,7 @@ func identReaskGen(toolUseID, name string) (int, bool) {
 // supersedes a plain-name tally that passed (the gate would ask again over it), generation n >= 1's the
 // passed generation n-1 tally that a valid exec hold of that generation holds.
 func validIdentReaskNote(byName map[string]Record, toolUseID, name string, w ApprovalWait) bool {
-	n, ok := identReaskGen(toolUseID, name)
+	n, ok := IdentReaskGen(toolUseID, name)
 	if !ok || w.ToolUseID != toolUseID {
 		return false
 	}

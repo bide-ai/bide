@@ -85,13 +85,9 @@ func ApprovalEvidence(ctx context.Context, store *agent.Journal, runID, toolUseI
 	// The gate's outcome, as the runtime reads it (agent.RecordedTally): a re-approval tally over a
 	// tally it supersedes (one that predates agent.DecisionFormat, or one that passed without
 	// excluding the requester when the gate's policy came to exclude it), else its tally.
-	tallyNames := []string{agent.ApprovalTallyStep(toolUseID), agent.ApprovalRetallyStep(toolUseID), agent.ApprovalSoDRetallyStep(toolUseID)}
-	byName := make(map[string]agent.Record, len(tallyNames))
-	for _, n := range tallyNames {
-		if i, ok := index[n]; ok && recs[i].Kind == agent.StepValue {
-			byName[n] = recs[i]
-		}
-	}
+	// A gate with a certificate-bound approver records under agent.ApprovalIdentTallyStep, and an exec
+	// hold supersedes the tally of its generation: the holds are part of what decides the outcome.
+	byName := agent.GateTallyValues(recs, toolUseID)
 	rt, ok := agent.RecordedTally(byName, toolUseID)
 	if !ok {
 		return nil, fmt.Errorf("audit: no journaled approval tally for call %q in run %s (not m-of-n gated, or its gate has not decided)", toolUseID, runID)
@@ -166,8 +162,19 @@ func ApprovalEvidence(ctx context.Context, store *agent.Journal, runID, toolUseI
 	// A re-approval tally travels with the tallies it supersedes, in journal order: VerifyApprovals
 	// honors it only over the tally it supersedes, which it can tell only from that tally.
 	var superseded []int
+	holds := map[int]bool{}
 	for _, n := range agent.SupersededTallies(byName, tallyName) {
 		superseded = append(superseded, index[n])
+	}
+	// An exec hold travels with the identity tally it superseded (Kind "step"): without it the
+	// superseded tally would read as the outcome.
+	for _, n := range agent.SupersededTallies(byName, tallyName) {
+		if g, ok := agent.IdentTallyGen(toolUseID, n); ok {
+			if i, ok := index[agent.ApprovalExecHoldStep(toolUseID, g)]; ok && recs[i].Kind == agent.StepValue {
+				superseded = append(superseded, i)
+				holds[i] = true
+			}
+		}
 	}
 	slices.Sort(superseded)
 	for _, i := range superseded {
@@ -175,11 +182,21 @@ func ApprovalEvidence(ctx context.Context, store *agent.Journal, runID, toolUseI
 		if err != nil {
 			return nil, err
 		}
+		if holds[i] {
+			out = append(out, EvidenceAction{Label: recs[i].Name, Kind: KindStep, Ref: recs[i].Name, Bundle: pb})
+			continue
+		}
 		out = append(out, EvidenceAction{Label: "approval tally (superseded)", Kind: KindApprovalTally, Ref: recs[i].Name, Bundle: pb})
 	}
 	// The gate's re-ask notes (agent.ApprovalReaskStep), when it asked again: when, why, and the
 	// policy it asked under (Kind "step").
-	for _, n := range []string{agent.ApprovalReaskStep(toolUseID, false), agent.ApprovalReaskStep(toolUseID, true)} {
+	reaskNames := []string{agent.ApprovalReaskStep(toolUseID, false), agent.ApprovalReaskStep(toolUseID, true)}
+	for _, r := range recs { // a certificate-bound gate's re-asks, one per generation
+		if _, ok := agent.IdentReaskGen(toolUseID, r.Name); ok && r.Kind == agent.StepValue {
+			reaskNames = append(reaskNames, r.Name)
+		}
+	}
+	for _, n := range reaskNames {
 		if i, ok := index[n]; ok && recs[i].Kind == agent.StepValue {
 			pb, err := prove(i)
 			if err != nil {
@@ -345,7 +362,10 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 	byName := make(map[string]agent.Record, 3)
 	tallyAt := map[string]int{}
 	for i, a := range actions {
-		if a.Kind != KindApprovalTally {
+		// An exec hold (Kind "step") supersedes the identity tally of its generation, so it decides
+		// which tally is the outcome like a tally does.
+		_, isHold := agent.ExecHoldGen(toolUseID, recs[i].Name)
+		if a.Kind != KindApprovalTally && !(a.Kind == KindStep && isHold && recs[i].Kind == agent.StepValue) {
 			continue
 		}
 		if _, dup := byName[recs[i].Name]; !dup {
@@ -382,6 +402,11 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 	superseded := agent.SupersededTallies(byName, tallyName)
 	for _, n := range superseded {
 		mustProve = append(mustProve, &actions[tallyAt[n]])
+		if g, ok := agent.IdentTallyGen(toolUseID, n); ok {
+			if at, ok := tallyAt[agent.ApprovalExecHoldStep(toolUseID, g)]; ok {
+				mustProve = append(mustProve, &actions[at])
+			}
+		}
 	}
 	for _, a := range mustProve {
 		if err := a.Bundle.Verify(logV); err != nil {
@@ -412,6 +437,15 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 	for _, n := range superseded {
 		if at := actions[tallyAt[n]].Bundle.Inclusion.Index; at >= tallyIdx {
 			problem("the superseded tally %q is at %d, not before the tally that supersedes it at %d", n, at, tallyIdx)
+		}
+		if g, ok := agent.IdentTallyGen(toolUseID, n); ok {
+			// The hold of that generation must be journaled after the tally it holds and before the
+			// tally that replaces it.
+			if hi, held := tallyAt[agent.ApprovalExecHoldStep(toolUseID, g)]; held {
+				if at := actions[hi].Bundle.Inclusion.Index; at >= tallyIdx || at <= actions[tallyAt[n]].Bundle.Inclusion.Index {
+					problem("the exec hold of generation %d is at %d, not between the tally it holds and the tally that replaces it at %d", g, at, tallyIdx)
+				}
+			}
 		}
 	}
 	if tally.Need != policy.Need || !slices.Equal(tally.Approvers, policy.Approvers) {

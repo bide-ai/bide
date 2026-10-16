@@ -99,7 +99,7 @@ func evaluateGate(recs []Record, s ApprovalSubject, pol *ApprovalPolicy, verifie
 			denial := r.Kind == StepToolResult && r.IsError && (string(r.Result) == `"tool call denied by human"` || string(r.Result) == ExpiredResult)
 			st := GateStanding{Status: GateDecided, Ran: true, Denied: denial, Expired: denial && string(r.Result) == ExpiredResult}
 			// The tally the gate recorded, for a reader that shows how it was decided.
-			byName := gateTallyValues(recs, s.ToolUseID)
+			byName := GateTallyValues(recs, s.ToolUseID)
 			if rt, ok := RecordedTally(byName, s.ToolUseID); ok {
 				if t, err := decodeTally(s.RunID, rt); err == nil {
 					st.Tally, st.Recorded, st.Checks = t, true, recountFor(recs, s, t, pol, verifierFor)
@@ -114,7 +114,7 @@ func evaluateGate(recs []Record, s ApprovalSubject, pol *ApprovalPolicy, verifie
 			singleDecided, singleApproved, single = true, r.Approved, r // the last one, as the loop reads it
 		}
 	}
-	byName := gateTallyValues(recs, s.ToolUseID)
+	byName := GateTallyValues(recs, s.ToolUseID)
 	// A recorded denial is final, whatever the gate is now: a human's Approve(false) or a tally that
 	// did not pass.
 	if singleDecided && singleExpired(single, expAt, hasDeadline) {

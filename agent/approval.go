@@ -1015,7 +1015,7 @@ func LatestPauseNote(byName map[string]Record, toolUseID string) (r Record, ok b
 // recorded, else the tally) under a policy that excludes the requester. The gate writes a note only
 // at such a point, so a note without it was not written by the gate.
 func ValidReaskNote(byName map[string]Record, toolUseID, name string, w ApprovalWait) bool {
-	if _, ok := identReaskGen(toolUseID, name); ok {
+	if _, ok := IdentReaskGen(toolUseID, name); ok {
 		return validIdentReaskNote(byName, toolUseID, name, w)
 	}
 	sod := name == ApprovalReaskStep(toolUseID, true)

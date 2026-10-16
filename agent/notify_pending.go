@@ -215,7 +215,7 @@ func (e *notifyEngine) pendingEvents(runID string, recs []Record) []notifyEvent 
 			if !ValidReaskNote(byName, w.ToolUseID, r.Name, w) {
 				continue
 			}
-			gen, _ := identReaskGen(w.ToolUseID, r.Name)
+			gen, _ := IdentReaskGen(w.ToolUseID, r.Name)
 			key, decided = reaskKeyFor(runID, w.ToolUseID, w.Reask, gen), reaskDecidedNames(w.ToolUseID, w.Reask, gen)
 			ap.Reask, ap.reaskGen = w.Reask, gen
 		}

@@ -197,7 +197,7 @@ func countGate(recs []Record, runID string, s ApprovalSubject, pol *ApprovalPoli
 		return gateCount{}, err
 	}
 	rp, _ := RecordedPrincipal(recs)
-	byName := gateTallyValues(recs, s.ToolUseID)
+	byName := GateTallyValues(recs, s.ToolUseID)
 	name, supersedes, gen, reask := ApprovalTallyStep(s.ToolUseID), "", 0, ""
 	dl, expiresAt, hasDeadline := RecordedDeadline(recs, s.ToolUseID)
 	if st := identChain(byName, s.ToolUseID); st.present {
