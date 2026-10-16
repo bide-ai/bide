@@ -235,6 +235,10 @@ func TestCertReceipt_VerifyCertificateUsesTheReceiptsAnchor(t *testing.T) {
 	if err := ok.VerifyCertificate(f.ci, olk); err != nil {
 		t.Fatal(err)
 	}
+	// No log key at all is a configuration error, not a panic or a pass.
+	if err := ok.VerifyCertificate(f.ci, nil); !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("nil log key: %v", err)
+	}
 	// The wrong log key does not vouch for the proof.
 	if err := ok.VerifyCertificate(f.ci, audit.Ed25519Verifier{Pub: f.leaf.Cert.PublicKey.(ed25519.PublicKey)}); !errors.Is(err, audit.ErrNotVerified) {
 		t.Fatalf("under the wrong log key: %v", err)
