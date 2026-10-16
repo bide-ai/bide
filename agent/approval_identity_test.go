@@ -42,8 +42,4 @@ func TestApprovalIdentityRecordsJSON(t *testing.T) {
 		ApprovalIdentityDigestStep("c1", 0, "0123456789abcdef0123") != "approval-identity:c1:0:0123456789abcdef" {
 		t.Fatal("step names")
 	}
-	recs := []Record{{Kind: StepValue, Name: ApprovalExecHoldStep("c1", 0)}, {Kind: StepValue, Name: ApprovalExecHoldStep("c2", 0)}, {Kind: StepValue, Name: ApprovalExecHoldStep("c1", 1)}}
-	if identGen(recs, "c1") != 2 || identGen(recs, "c2") != 1 || identGen(recs, "c3") != 0 {
-		t.Fatal("identGen")
-	}
 }

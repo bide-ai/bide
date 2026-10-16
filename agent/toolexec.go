@@ -139,16 +139,23 @@ func tallyGateOnce(ctx context.Context, store *Journal, runID string, s Approval
 		tally.Expired = true
 	}
 	tally.DecisionFormat = DecisionFormat
-	// The step the count is recorded under, by its constructor: the first count under the tally's own
-	// step, a count that supersedes another under its re-tally step.
+	// The step the count is recorded under (countGate chose it from the constructors): the first
+	// count under the tally's own step, a count that supersedes another under its re-tally step, and a
+	// gate with a certificate-bound approver under its identity tally's.
 	name := ApprovalTallyStep(s.ToolUseID)
 	switch c.name {
 	case ApprovalRetallyStep(s.ToolUseID):
 		name = ApprovalRetallyStep(s.ToolUseID)
 	case ApprovalSoDRetallyStep(s.ToolUseID):
 		name = ApprovalSoDRetallyStep(s.ToolUseID)
+	case ApprovalTallyStep(s.ToolUseID):
+		if isBound(pol, verifierFor) {
+			name = ApprovalIdentTallyStep(s.ToolUseID, 0)
+		}
+	default: // countGate chose the identity tally of its generation
+		name = ApprovalIdentTallyStep(s.ToolUseID, c.gen)
 	}
-	if err := recordIdentity(ctx, store, runID, s, pol, verifierFor, identGen(recs, s.ToolUseID), name, tally, c.checks); err != nil {
+	if err := recordIdentity(ctx, store, runID, s, pol, verifierFor, c.gen, name, tally, c.checks); err != nil {
 		return ApprovalTally{}, false, false, err
 	}
 	tally, err = step(ctx, store, runID, name, func(context.Context) (ApprovalTally, error) { return tally, nil }, WithSafety(Safety{ReadOnly: true}))
@@ -163,6 +170,12 @@ func tallyGateOnce(ctx context.Context, store *Journal, runID string, s Approval
 	return tally, true, false, nil
 }
 
+// isBound reports whether pol has an approver whose verifier is certificate-bound.
+func isBound(pol *ApprovalPolicy, verifierFor ApproverVerifierFor) bool {
+	ids, _ := identityApprovers(pol, verifierFor)
+	return len(ids) > 0
+}
+
 // gateCount is the evaluation of an m-of-n gate over a journal, before anything is recorded: what
 // the gate (tallyGateOnce) records and acts on, and what EvaluateGate reports, from one function, so
 // the two cannot disagree.
@@ -171,6 +184,7 @@ type gateCount struct {
 	checks   []DecisionCheck // how each decision record was classified (nil for a recorded outcome)
 	recorded bool            // tally is the gate's recorded, final outcome
 	name     string          // the step a terminal count is recorded under
+	gen      int             // the generation of a gate with a certificate-bound approver (identGen)
 }
 
 // countGate evaluates the m-of-n gate for s over recs, runID's records (see tallyGateOnce for the
@@ -183,17 +197,27 @@ func countGate(recs []Record, runID string, s ApprovalSubject, pol *ApprovalPoli
 		return gateCount{}, err
 	}
 	rp, _ := RecordedPrincipal(recs)
-	byName := map[string]Record{}
-	for _, r := range recs {
-		if r.Kind == StepValue && (r.Name == ApprovalTallyStep(s.ToolUseID) || r.Name == ApprovalRetallyStep(s.ToolUseID) || r.Name == ApprovalSoDRetallyStep(s.ToolUseID)) {
-			if _, dup := byName[r.Name]; !dup {
-				byName[r.Name] = r
-			}
-		}
-	}
-	name, supersedes := ApprovalTallyStep(s.ToolUseID), ""
+	byName := gateTallyValues(recs, s.ToolUseID)
+	name, supersedes, gen, reask := ApprovalTallyStep(s.ToolUseID), "", 0, ""
 	dl, expiresAt, hasDeadline := RecordedDeadline(recs, s.ToolUseID)
-	if rt, ok := RecordedTally(byName, s.ToolUseID); ok {
+	if st := identChain(byName, s.ToolUseID); st.present {
+		// The identity tally chain: the newest tally not held is the outcome, and over a hold the gate
+		// counts the next generation, which supersedes the held tally.
+		if st.decided {
+			t, err := decodeTally(runID, st.outcome)
+			if err != nil {
+				return gateCount{}, err
+			}
+			switch {
+			case t.ExcludePrincipal && !slices.Equal(t.Requesters, rp.Requesters()):
+				return gateCount{}, fmt.Errorf("run %s: the approval tally %s excluded requesters %q, but the run's run:principal names %q: %w", runID, st.outcome.Name, t.Requesters, rp.Requesters(), ErrConfig)
+			case supersededForSoD(t, pol):
+				return gateCount{}, fmt.Errorf("run %s: the approval tally %s of a certificate-bound gate passed without excluding the requester, whom the gate now excludes; the call did not run, and the gate cannot count again in place (cancel the run, or re-run the call as a new one): %w", runID, st.outcome.Name, ErrConfig)
+			}
+			return gateCount{tally: t, recorded: true, name: st.outcome.Name, gen: st.gen}, nil
+		}
+		name, supersedes, gen, reask = ApprovalIdentTallyStep(s.ToolUseID, st.gen), st.prev, st.gen, PendingExecHoldReapproval
+	} else if rt, ok := RecordedTally(byName, s.ToolUseID); ok {
 		t, err := decodeTally(runID, rt)
 		if err != nil {
 			return gateCount{}, err
@@ -201,6 +225,11 @@ func countGate(recs []Record, runID string, s ApprovalSubject, pol *ApprovalPoli
 		switch {
 		case t.ExcludePrincipal && !slices.Equal(t.Requesters, rp.Requesters()):
 			return gateCount{}, fmt.Errorf("run %s: the approval tally %s excluded requesters %q, but the run's run:principal names %q: %w", runID, rt.Name, t.Requesters, rp.Requesters(), ErrConfig)
+		case t.Passed() && isBound(pol, verifierFor):
+			// A plain-name tally on a gate with a certificate-bound approver was counted without the
+			// approvers' certificates: it is superseded, the call does not run on it, and the gate
+			// counts again under the identity tally name. (A denial stays final, as on any gate.)
+			supersedes, name, reask = rt.Name, ApprovalIdentTallyStep(s.ToolUseID, 0), PendingIdentReapproval
 		case rt.Name == ApprovalTallyStep(s.ToolUseID) && predatesFormat(t):
 			// A tally an earlier version journaled passed on decisions this format does not accept:
 			// the call does not run on it. The gate asks again, and records its new outcome under
@@ -247,14 +276,16 @@ func countGate(recs []Record, runID string, s ApprovalSubject, pol *ApprovalPoli
 		tally.ExpiresAt = dl.ExpiresAt
 	}
 	if !tally.Passed() && !tally.Unreachable() {
-		switch name {
-		case ApprovalRetallyStep(s.ToolUseID):
+		switch {
+		case reask != "":
+			tally.reapproval, tally.reaskGen = reask, gen
+		case name == ApprovalRetallyStep(s.ToolUseID):
 			tally.reapproval = PendingReapproval
-		case ApprovalSoDRetallyStep(s.ToolUseID):
+		case name == ApprovalSoDRetallyStep(s.ToolUseID):
 			tally.reapproval = PendingSoDReapproval
 		}
 	}
-	return gateCount{tally: tally, checks: checks, name: name}, nil
+	return gateCount{tally: tally, checks: checks, name: name, gen: gen}, nil
 }
 
 // supersededForSoD reports whether pol, a policy that excludes the requester, supersedes the

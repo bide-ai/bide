@@ -991,11 +991,11 @@ func (e *notifyEngine) gateExpired(ctx context.Context, run, call string) bool {
 	if r, ok, err := e.j.Get(ctx, run, ToolResultStep(call)); err == nil && ok && string(r.Result) == ExpiredResult {
 		return true
 	}
-	for _, name := range []string{ApprovalTallyStep(call), ApprovalRetallyStep(call), ApprovalSoDRetallyStep(call)} {
-		if r, ok, err := e.j.Get(ctx, run, name); err == nil && ok {
-			if t, err := decodeTally(run, r); err == nil && t.Expired {
-				return true
-			}
+	// A read error counts as not expired, as above.
+	tallies, _ := gateTallyRecords(func(name string) (Record, bool, error) { return e.j.Get(ctx, run, name) }, call)
+	for _, r := range tallies {
+		if t, err := decodeTally(run, r); err == nil && t.Expired {
+			return true
 		}
 	}
 	var expiresAt time.Time

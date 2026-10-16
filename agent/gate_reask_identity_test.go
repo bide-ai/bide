@@ -1,0 +1,305 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"slices"
+	"testing"
+)
+
+// The tally names of an identity-bound gate and its re-asks (docs/design/approver-identity.md): the
+// terminal tally is approval-tally:<id>:ident, a plain-name tally on such a gate is superseded, and an
+// exec hold of generation g supersedes the generation-g tally so the next count is generation g+1.
+
+func tallyJSON(t *testing.T, tl ApprovalTally) []byte {
+	t.Helper()
+	b, err := json.Marshal(tl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func passedTally() ApprovalTally {
+	return ApprovalTally{Need: 1, Approved: 1, Approvers: []string{"alice", "bob"}, ApprovedBy: []string{"alice"}, DecisionFormat: DecisionFormat}
+}
+
+func deniedTally() ApprovalTally {
+	return ApprovalTally{Need: 2, Denied: 1, Approvers: []string{"alice", "bob"}, DeniedBy: []string{"alice"}, DecisionFormat: DecisionFormat}
+}
+
+func valueRec(t *testing.T, name string, v any) Record {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return Record{Kind: StepValue, Name: name, Result: b}
+}
+
+func holdFor(t *testing.T, call string, g int) Record {
+	return valueRec(t, ApprovalExecHoldStep(call, g), ExecHold{Format: ApprovalExecHoldFormat, ToolUseID: call, Generation: g, Reason: ReasonRevoked, Detail: "d", ReasonCode: -1})
+}
+
+func namesOf(recs ...Record) map[string]Record {
+	m := map[string]Record{}
+	for _, r := range recs {
+		m[r.Name] = r
+	}
+	return m
+}
+
+func TestIdentChain(t *testing.T) {
+	g0 := valueRec(t, ApprovalIdentTallyStep("c1", 0), passedTally())
+	g1 := valueRec(t, ApprovalIdentTallyStep("c1", 1), passedTally())
+	g2 := valueRec(t, ApprovalIdentTallyStep("c1", 2), deniedTally())
+	for _, tc := range []struct {
+		name    string
+		recs    []Record
+		present bool
+		decided bool
+		gen     int
+		prev    string
+		outcome string
+	}{
+		{"nothing", nil, false, false, 0, "", ""},
+		{"gen 0 tally", []Record{g0}, true, true, 0, "", g0.Name},
+		{"a hold supersedes it", []Record{g0, holdFor(t, "c1", 0)}, true, false, 1, g0.Name, ""},
+		{"gen 1 decided", []Record{g0, holdFor(t, "c1", 0), g1}, true, true, 1, g0.Name, g1.Name},
+		{"held again", []Record{g0, holdFor(t, "c1", 0), g1, holdFor(t, "c1", 1)}, true, false, 2, g1.Name, ""},
+		{"a denial at gen 2 is final", []Record{g0, holdFor(t, "c1", 0), g1, holdFor(t, "c1", 1), g2}, true, true, 2, g1.Name, g2.Name},
+		{"a hold on a denial is ignored", []Record{valueRec(t, ApprovalIdentTallyStep("c1", 0), deniedTally()), holdFor(t, "c1", 0)}, true, true, 0, "", ApprovalIdentTallyStep("c1", 0)},
+		{"a hold without its tally is ignored", []Record{holdFor(t, "c1", 0)}, false, false, 0, "", ""},
+		{"a tally past a missing generation is ignored", []Record{g0, g2}, true, true, 0, "", g0.Name},
+		{"a hold of another call is ignored", []Record{g0, holdFor(t, "c2", 0)}, true, true, 0, "", g0.Name},
+		{"a hold of the wrong generation is ignored", []Record{g0, holdFor(t, "c1", 1)}, true, true, 0, "", g0.Name},
+		{"a hold that does not read as one is ignored", []Record{g0, {Kind: StepValue, Name: ApprovalExecHoldStep("c1", 0), Result: json.RawMessage(`{"format":"x"}`)}}, true, true, 0, "", g0.Name},
+	} {
+		st := identChain(namesOf(tc.recs...), "c1")
+		if st.present != tc.present || st.decided != tc.decided || st.gen != tc.gen || st.prev != tc.prev || st.outcome.Name != tc.outcome {
+			t.Errorf("%s: %+v", tc.name, st)
+		}
+		if got := identGen(tc.recs, "c1"); got != tc.gen {
+			t.Errorf("%s: identGen %d", tc.name, got)
+		}
+	}
+}
+
+// RecordedTally reads the identity chain first: the newest unsuperseded tally is the outcome, a
+// plain-name tally beside it is not, and over a hold there is no outcome yet.
+func TestRecordedTally_IdentityChain(t *testing.T) {
+	plain := valueRec(t, ApprovalTallyStep("c1"), passedTally())
+	g0 := valueRec(t, ApprovalIdentTallyStep("c1", 0), passedTally())
+	g1 := valueRec(t, ApprovalIdentTallyStep("c1", 1), passedTally())
+	if r, ok := RecordedTally(namesOf(plain), "c1"); !ok || r.Name != plain.Name {
+		t.Fatalf("plain only: %v %v", r.Name, ok)
+	}
+	if r, ok := RecordedTally(namesOf(plain, g0), "c1"); !ok || r.Name != g0.Name {
+		t.Fatalf("plain and ident: %v %v", r.Name, ok)
+	}
+	if r, ok := RecordedTally(namesOf(plain, g0, holdFor(t, "c1", 0)), "c1"); ok {
+		t.Fatalf("held: the outcome is %v", r.Name)
+	}
+	if r, ok := RecordedTally(namesOf(plain, g0, holdFor(t, "c1", 0), g1), "c1"); !ok || r.Name != g1.Name {
+		t.Fatalf("re-counted: %v %v", r.Name, ok)
+	}
+}
+
+func TestSupersededTallies_IdentityChain(t *testing.T) {
+	g0 := valueRec(t, ApprovalIdentTallyStep("c1", 0), func() ApprovalTally { x := passedTally(); x.Supersedes = ApprovalTallyStep("c1"); return x }())
+	g1t := passedTally()
+	g1t.Supersedes = g0.Name
+	g1 := valueRec(t, ApprovalIdentTallyStep("c1", 1), g1t)
+	g2t := passedTally()
+	g2t.Supersedes = g1.Name
+	g2 := valueRec(t, ApprovalIdentTallyStep("c1", 2), g2t)
+	by := namesOf(valueRec(t, ApprovalTallyStep("c1"), passedTally()), g0, g1, g2)
+	got := SupersededTallies(by, g2.Name)
+	want := []string{ApprovalTallyStep("c1"), g0.Name, g1.Name}
+	if !slices.Equal(got, want) {
+		t.Fatalf("%v, want %v", got, want)
+	}
+}
+
+// ---- the live gate ----
+
+// boundGate is a gate of two certificate-bound approvers, alice and bob, where a test chooses what the
+// verifier finds for each at the time of the check.
+type boundGate struct {
+	t       *testing.T
+	store   *Journal
+	pol     *ApprovalPolicy
+	alice   *fakeCertVerifier
+	bob     *fakeCertVerifier
+	charged int
+	first   bool
+}
+
+func newBoundGate(t *testing.T) *boundGate {
+	t.Helper()
+	ok := func(id string, k byte) *fakeCertVerifier {
+		return &fakeCertVerifier{id: id, check: func(CertDecision) CertCheck {
+			return CertCheck{Identity: id, KeyHash: [32]byte{k}, Tier: "final", Basis: "b"}
+		}}
+	}
+	g := &boundGate{t: t, store: memJournal(), pol: &ApprovalPolicy{Need: 1, Approvers: []string{"alice", "bob"}}, alice: ok("alice", 1), bob: ok("bob", 2), first: true}
+	return g
+}
+
+func (g *boundGate) run() (Message, error) {
+	g.t.Helper()
+	vf := certResolver(map[string]ApproverVerifier{"alice": g.alice, "bob": g.bob})
+	m, err := mofnRun(g.store, "r1", g.first, g.pol, vf, &g.charged)
+	g.first = false
+	return m, err
+}
+
+func (g *boundGate) decide(approver string) {
+	g.t.Helper()
+	writeRaw(g.t, g.store, "r1", "approval:c1:"+approver+":00", certRec("approval:c1:"+approver+":00", approver))
+}
+
+func (g *boundGate) has(name string) bool {
+	_, ok := hasStep(g.t, g.store, "r1", name)
+	return ok
+}
+
+func (g *boundGate) tally(name string) ApprovalTally {
+	g.t.Helper()
+	r, ok := hasStep(g.t, g.store, "r1", name)
+	if !ok {
+		g.t.Fatalf("no %s", name)
+	}
+	var tl ApprovalTally
+	if err := json.Unmarshal(r.Result, &tl); err != nil {
+		g.t.Fatal(err)
+	}
+	return tl
+}
+
+func wantReason(t *testing.T, err error, reason string) *ApprovalPending {
+	t.Helper()
+	var pend *ApprovalPending
+	if !errors.As(err, &pend) || pend.Reason != reason {
+		t.Fatalf("err = %v, want a pending gate with reason %q", err, reason)
+	}
+	return pend
+}
+
+// The terminal tally of a bound gate is recorded under the :ident name, with its identity record,
+// and the plain name is never written.
+func TestBoundGate_TallyIsIdentNamed(t *testing.T) {
+	g := newBoundGate(t)
+	if _, err := g.run(); err == nil {
+		t.Fatal("the gate ran with no decision")
+	}
+	g.decide("alice")
+	if _, err := g.run(); err != nil || g.charged != 1 {
+		t.Fatalf("%v charged %d", err, g.charged)
+	}
+	if !g.has(ApprovalIdentTallyStep("c1", 0)) || !g.has(ApprovalIdentityStep("c1", 0)) || g.has(ApprovalTallyStep("c1")) {
+		t.Fatal("want the :ident tally and identity record and no plain tally")
+	}
+}
+
+// A plain-name tally that passed is superseded on a bound gate: the call does not run on it, the gate
+// asks again, and the new count names what it supersedes.
+func TestBoundGate_PlainTallyIsSuperseded(t *testing.T) {
+	g := newBoundGate(t)
+	_, _ = g.run()
+	writeRaw(t, g.store, "r1", ApprovalTallyStep("c1"), valueRec(t, ApprovalTallyStep("c1"), passedTally()))
+	_, err := g.run()
+	pend := wantReason(t, err, PendingIdentReapproval)
+	if g.charged != 0 || pend.Quorum == nil {
+		t.Fatalf("charged %d, quorum %v", g.charged, pend.Quorum)
+	}
+	g.decide("bob")
+	if _, err := g.run(); err != nil || g.charged != 1 {
+		t.Fatalf("%v charged %d", err, g.charged)
+	}
+	if got := g.tally(ApprovalIdentTallyStep("c1", 0)).Supersedes; got != ApprovalTallyStep("c1") {
+		t.Fatalf("Supersedes %q", got)
+	}
+	// The re-ask note is the ask of its own, and the journal proves it.
+	recs, _ := g.store.History(context.Background(), "r1")
+	by := valuesByName(recs)
+	n, ok := by[ApprovalIdentReaskStep("c1", 0)]
+	var w ApprovalWait
+	if !ok || json.Unmarshal(n.Result, &w) != nil || w.Reask != PendingIdentReapproval || w.Supersedes != ApprovalTallyStep("c1") || !ValidReaskNote(by, "c1", n.Name, w) {
+		t.Fatalf("note %v %+v", ok, w)
+	}
+}
+
+// A plain-name denial stays final on a bound gate, as on any gate.
+func TestBoundGate_PlainDenialStaysFinal(t *testing.T) {
+	g := newBoundGate(t)
+	_, _ = g.run()
+	writeRaw(t, g.store, "r1", ApprovalTallyStep("c1"), valueRec(t, ApprovalTallyStep("c1"), deniedTally()))
+	g.decide("alice")
+	_, _ = g.run()
+	if g.charged != 0 {
+		t.Fatalf("charged %d after a recorded denial", g.charged)
+	}
+}
+
+// An exec hold supersedes the tally of its generation: the call does not run, the gate asks again, and
+// the next count is the next generation's, recorded under :ident-reask:<n> with its own identity record.
+func TestBoundGate_ExecHoldReasks(t *testing.T) {
+	g := newBoundGate(t)
+	_, _ = g.run()
+	g.decide("alice")
+	// Count without running the tool: the tally is recorded by the gate's own count.
+	vf := certResolver(map[string]ApproverVerifier{"alice": g.alice, "bob": g.bob})
+	if _, final, err := tallyGate(context.Background(), g.store, "r1", subjectOf(t, g.store, "r1", "c1"), g.pol, vf, ""); err != nil || !final {
+		t.Fatalf("%v %v", final, err)
+	}
+	writeRaw(t, g.store, "r1", ApprovalExecHoldStep("c1", 0), holdFor(t, "c1", 0))
+	// Alice's decision no longer holds (revoked since); bob has not decided.
+	g.alice.check = func(CertDecision) CertCheck { return CertCheck{Reason: ReasonRevoked, Detail: "d"} }
+	_, err := g.run()
+	pend := wantReason(t, err, PendingExecHoldReapproval)
+	if g.charged != 0 || pend.Quorum == nil || pend.Quorum.Approved != 0 {
+		t.Fatalf("charged %d, quorum %+v", g.charged, pend.Quorum)
+	}
+	g.decide("bob")
+	if _, err := g.run(); err != nil || g.charged != 1 {
+		t.Fatalf("%v charged %d", err, g.charged)
+	}
+	t1 := g.tally(ApprovalIdentTallyStep("c1", 1))
+	if t1.Supersedes != ApprovalIdentTallyStep("c1", 0) || !slices.Equal(t1.ApprovedBy, []string{"bob"}) || !g.has(ApprovalIdentityStep("c1", 1)) {
+		t.Fatalf("%+v", t1)
+	}
+}
+
+// A hold written by someone with no tally under it does not re-ask the gate (it is not a hold).
+func TestBoundGate_HoldWithoutTallyIsIgnored(t *testing.T) {
+	g := newBoundGate(t)
+	_, _ = g.run()
+	writeRaw(t, g.store, "r1", ApprovalExecHoldStep("c1", 0), holdFor(t, "c1", 0))
+	g.decide("alice")
+	if _, err := g.run(); err != nil || g.charged != 1 {
+		t.Fatalf("%v charged %d", err, g.charged)
+	}
+	if !g.has(ApprovalIdentTallyStep("c1", 0)) {
+		t.Fatal("the count is generation 0")
+	}
+}
+
+// A bare-key gate is unchanged: its tally keeps the plain name.
+func TestBareGate_KeepsPlainTallyName(t *testing.T) {
+	store := memJournal()
+	pol := &ApprovalPolicy{Need: 1, Approvers: []string{"alice"}}
+	var charged int
+	_, _ = mofnRun(store, "r1", true, pol, fakeVerifiers("alice"), &charged)
+	approveAs(t, store, "r1", "c1", "alice", true)
+	if _, err := mofnRun(store, "r1", false, pol, fakeVerifiers("alice"), &charged); err != nil || charged != 1 {
+		t.Fatalf("%v %d", err, charged)
+	}
+	if _, ok := hasStep(t, store, "r1", ApprovalTallyStep("c1")); !ok {
+		t.Fatal("no plain tally")
+	}
+	if _, ok := hasStep(t, store, "r1", ApprovalIdentTallyStep("c1", 0)); ok {
+		t.Fatal("an :ident tally on a bare-key gate")
+	}
+}
