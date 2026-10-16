@@ -1264,7 +1264,9 @@ alternative name and digitalSignature, and the CRLs of both CAs.
   certificate profile built with EJBCA's own classes (`ProfileGen.java`). The approvers generate their own
   ECDSA P-256 keys; EJBCA issues from their requests.
 - *Microsoft AD CS on Windows Server 2025*: a standalone root and a standalone subordinate, both RSA-3072
-  with SHA-256, installed on two CI machines (an offline root and its issuing CA do not share one). An
+  with SHA-256, installed one after the other on one CI machine (a machine runs one CA): the root issues the
+  issuing CA's certificate for a key generated on that machine, publishes its CRL and is uninstalled, then the
+  issuing CA is installed on that certificate. No key is exported, uploaded or checked in. An
   enterprise CA and its certificate templates need an Active Directory domain, which a CI runner does not
   have, so the issuing CA is a standalone subordinate that takes the same extensions from the request
   (`EDITF_ENABLEREQUESTEXTENSIONS`). It is not an enterprise CA with a template, and what a template adds
@@ -1299,22 +1301,26 @@ What the two CAs do, as observed (the tests pin it):
   release (not the original hold date); the next base no longer lists the certificate. Neither stamps the
   original hold date, so the opt-in `AllowHolds` reading is consistent with both, but the default still
   refuses holds because the field is not defined by the RFC.
-- *Entries dated after the CRL.* No captured CRL has an entry dated after its own `nextUpdate`, and a CRL that
-  does is refused as unreadable (not clipped to `thisUpdate`: a back-dated `thisUpdate` is a normal reason
-  for an entry to be later than it).
+- *Entries dated after the CRL.* A CA that back-dates `thisUpdate` stamps a revocation with the real
+  publication time, so with a period shorter than the back-dating (a five minute delta, a ten minute offset) an
+  entry is later than the CRL's own `nextUpdate`. A CRL with an entry dated more than 30 minutes (the largest
+  declarable skew) after its `nextUpdate` is refused as unreadable; it is not clipped to `thisUpdate`.
 - *The root's CRL.* A root that issues one CA certificate publishes its CRL rarely (AD CS: weekly, from
   `CRLPeriod`), and it predates every decision. The status of the issuing CA certificate is therefore a live
   count on a CRL days old, which needs `StatusParams.MaxStatusAgeFor` (and `CAPeriodFor`) for the root;
   offline it has no evidence of absence until the root publishes a CRL after the decision.
 - *Signature algorithm.* A CA installed from a PFX straight into AD CS signs with SHA-1 (it uses a legacy
-  provider whose default hash is SHA-1); `AddCRL` and `VerifyChain` refuse that. The capture puts the key in the
-  CNG provider and installs the CA on that certificate, which gives SHA-256.
+  provider whose default hash is SHA-1); `AddCRL` and `VerifyChain` refuse that. The first capture run produced exactly
+  that, and its certificate and CRLs are kept as a refusal fixture (`audit/testdata/adcs-sha1`, with the
+  provider settings). The capture puts the key in the CNG provider, which gives SHA-256.
 - *Defaults.* A standalone AD CS subordinate defaults to a one week base CRL, a one day delta, overlap 0 hours,
   one year certificates and `CRLFlags` 2 (`DEFAULTS.txt`, `DEFAULTS-root.txt`); the capture set 24 hour
   certificates, a one day base and a thirty minute delta, which gave a `nextUpdate` of about a day and 2 hours 45 minutes
   after `thisUpdate` for bases and one hour twenty for deltas. EJBCA: hour base, ten minute delta in the capture, no
   automatic issuing.
-- *Windows.* The two AD CS parts run on `windows-2025`; actions are pinned by commit.
+- *Windows.* The AD CS capture runs on `windows-2025`; actions are pinned by commit. The workflow uploads
+  certificates, CRLs and settings only, a test fails on any private key, PFX or password under `audit/testdata`,
+  and the CAs of the fixtures are test anchors that must never be reused or trusted anywhere.
 - *Operating notes (for the policy and the CA operator; the operator guide is written with build step E2).*
   Publish a CRL right after revoking a certificate, because AD CS dates the revocation at the publication.
   Declare from the capture of your own CA, per issuing CA, `ThisUpdateSkew` (its clock-skew allowance),

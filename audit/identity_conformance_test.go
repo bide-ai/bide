@@ -8,9 +8,11 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/internal/testca"
 )
@@ -413,5 +415,64 @@ func TestADCSRealisticWindows(t *testing.T) {
 	aged.ThisUpdateSkewFor = nil
 	if st := c.status("u4", a, aged); st.Tier != audit.TierNoInformation {
 		t.Fatalf("u4 without the skew: %+v", st)
+	}
+}
+
+// A real AD CS CA that signs with SHA-1 (installed from a PFX into a legacy provider; testdata/adcs-sha1)
+// is refused, certificates and CRLs alike, not accepted with a warning.
+func TestADCSSHA1OutputIsRefused(t *testing.T) {
+	dir := filepath.Join("testdata", "adcs-sha1")
+	root, ca := parseCert(t, filepath.Join(dir, "root.pem")), parseCert(t, filepath.Join(dir, "ca.pem"))
+	leaf := parseCert(t, filepath.Join(dir, "u1.pem"))
+	if leaf.SignatureAlgorithm != x509.SHA1WithRSA {
+		t.Fatalf("the fixture leaf is signed with %v, expected SHA-1", leaf.SignatureAlgorithm)
+	}
+	ci := mustCompile(t, audit.IdentityPolicy{
+		Anchors: []*x509.Certificate{root}, Inter: []audit.SPKIHash{audit.SPKIHashOf(ca)},
+		Identity: map[string]string{"u1": testca.Person(1)}, IDKind: audit.IDPersonURI, EKU: testca.EKU, Policy: testca.PolicyOID,
+		Canonical: audit.NewCanonicalizer(audit.CanonicalConfig{Host: "idp.bank.example"}), NotBeforeBackdate: 10 * time.Minute,
+	})
+	if _, err := ci.VerifyChain("u1", [][]byte{leaf.Raw, ca.Raw, root.Raw}, leaf.NotBefore.Add(time.Hour), leaf.NotBefore.Add(time.Hour)); err == nil {
+		t.Fatal("a SHA-1 signed leaf was accepted")
+	}
+	snap := audit.NewStatusSnapshot()
+	for _, n := range []string{"base1", "delta1"} {
+		_, err := snap.AddCRL(readPEM(t, filepath.Join(dir, n+".pem")))
+		if err == nil {
+			t.Fatalf("a SHA-1 signed CRL (%s) was accepted", n)
+		}
+		wantStatusErr(t, err, agent.ReasonStatusUnknown)
+	}
+	// The root's own SHA-256 CRL from the same capture is fine: the refusal is the algorithm, not the source.
+	if _, err := snap.AddCRL(readPEM(t, filepath.Join(dir, "rootcrl.pem"))); err != nil {
+		t.Fatalf("the SHA-256 root CRL: %v", err)
+	}
+}
+
+// No private key or password may be checked in with the captures: they are certificates, CRLs and
+// settings only (the fixture CAs are test anchors that must never be reused).
+func TestNoPrivateKeyMaterialInTestdata(t *testing.T) {
+	err := filepath.WalkDir("testdata", func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		switch ext := strings.ToLower(filepath.Ext(path)); ext {
+		case ".pfx", ".p12", ".key", ".jks", ".keystore", ".rsp", ".req", ".csr":
+			t.Errorf("%s: key material or a request file under testdata", path)
+		}
+		if strings.Contains(strings.ToLower(filepath.Base(path)), "password") {
+			t.Errorf("%s: a password file under testdata", path)
+		}
+		b, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		if strings.Contains(string(b), "PRIVATE KEY") || strings.Contains(string(b), "ENCRYPTED") && strings.Contains(string(b), "-----BEGIN") {
+			t.Errorf("%s: private key material", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

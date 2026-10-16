@@ -1425,7 +1425,7 @@ func TestMalformedCRLCatalogue(t *testing.T) {
 		}(), false},
 		"entry revoked after nextUpdate": {func() testca.RawCRLOpts {
 			o := base()
-			o.Entries = []testca.RawEntry{{Serial: big.NewInt(5), Time: next.Add(time.Second)}}
+			o.Entries = []testca.RawEntry{{Serial: big.NewInt(5), Time: next.Add(31 * time.Minute)}}
 			return o
 		}(), true},
 		"duplicate entry extension": {func() testca.RawCRLOpts {
@@ -1714,14 +1714,47 @@ func TestLiveCountRefusesPrunedCRLWhenLCWasWithheld(t *testing.T) {
 
 // An entry dated after the CRL's own nextUpdate is not something a CA produces: the CRL is refused
 // rather than clipped to thisUpdate (a CA may stamp a revocation after a back-dated thisUpdate).
+
+// An entry dated far after the CRL's own nextUpdate is not something a CA produces: the CRL is refused
+// rather than clipped to thisUpdate. A CA that back-dates thisUpdate stamps a revocation with the real
+// publication time, so a period shorter than the back-dating puts the entry after nextUpdate: that real
+// case (a five minute CRL, a ten minute offset) is accepted, up to the largest declarable skew.
 func TestEntryDatedAfterNextUpdateIsRefused(t *testing.T) {
 	s := newStFx(t)
 	sn := audit.NewStatusSnapshot()
-	if _, err := sn.AddCRL(s.lcrl(1, idT0, time.Hour, testca.Revoked(s.leaf.Cert, idT0.Add(time.Hour+time.Second), 1))); err == nil {
-		t.Fatal("an entry dated after nextUpdate was accepted")
+	if _, err := sn.AddCRL(s.lcrl(1, idT0, 5*time.Minute, testca.Revoked(s.leaf.Cert, idT0.Add(10*time.Minute), 1))); err != nil {
+		t.Fatalf("a five minute CRL listing a revocation stamped at the publication, ten minutes after thisUpdate: %v", err)
 	}
-	if _, err := sn.AddCRL(s.lcrl(1, idT0, time.Hour, testca.Revoked(s.leaf.Cert, idT0.Add(5*time.Minute), 1))); err != nil {
-		t.Fatalf("an entry after a back-dated thisUpdate but before nextUpdate: %v", err)
+	if _, err := sn.AddCRL(s.lcrl(2, idT0, time.Hour, testca.Revoked(s.leaf.Cert, idT0.Add(time.Hour+30*time.Minute), 1))); err != nil {
+		t.Fatalf("an entry exactly the largest skew after nextUpdate: %v", err)
+	}
+	if _, err := sn.AddCRL(s.lcrl(3, idT0, time.Hour, testca.Revoked(s.leaf.Cert, idT0.Add(time.Hour+30*time.Minute+time.Second), 1))); err == nil {
+		t.Fatal("an entry dated beyond nextUpdate plus the largest skew was accepted")
+	}
+}
+
+// Declared parameters outside their range make the status unknown, whichever issuer they name.
+func TestStatusParamsRangeIsChecked(t *testing.T) {
+	s := newStFx(t)
+	sn := s.snap(s.lcrl(1, idT0, hour))
+	other := audit.SPKIHash{1}
+	for name, p := range map[string]audit.StatusParams{
+		"negative global skew":     {ThisUpdateSkew: -min},
+		"huge per-issuer skew":     {ThisUpdateSkewFor: map[audit.SPKIHash]time.Duration{other: 31 * min}},
+		"negative per-issuer skew": {ThisUpdateSkewFor: map[audit.SPKIHash]time.Duration{audit.SPKIHashOf(s.inter.Cert): -min}},
+		"negative max age":         {MaxStatusAgeFor: map[audit.SPKIHash]time.Duration{other: -hour}},
+		"max age over the cap":     {MaxStatusAgeFor: map[audit.SPKIHash]time.Duration{other: 401 * 24 * hour}},
+	} {
+		cs := s.eval(sn, p)
+		for i, c := range cs.Certs {
+			if c.Tier != audit.TierNoInformation || c.Note == "" {
+				t.Fatalf("%s: certificate %d: %+v", name, i, c)
+			}
+		}
+	}
+	ok := audit.StatusParams{ThisUpdateSkewFor: map[audit.SPKIHash]time.Duration{other: 30 * min}, MaxStatusAgeFor: map[audit.SPKIHash]time.Duration{other: 400 * 24 * hour}}
+	if cs := s.eval(sn, ok); cs.Certs[0].Note != "" && strings.Contains(cs.Certs[0].Note, "declared") {
+		t.Fatalf("values at the caps were refused: %+v", cs.Certs[0])
 	}
 }
 

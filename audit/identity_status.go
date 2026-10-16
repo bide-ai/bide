@@ -37,6 +37,8 @@ const (
 	defaultMinW = 30 * time.Minute // floor on the window for a final verdict
 	// maxThisUpdateSkew caps a declared ThisUpdateSkew: a larger value would make a stale CRL look fresh.
 	maxThisUpdateSkew = 30 * time.Minute
+	// maxStatusAgeFor caps a declared MaxStatusAgeFor: an offline root's CRL period is weeks, not years.
+	maxStatusAgeFor = 400 * 24 * time.Hour
 )
 
 // finalityNeedsLC chooses how a certificate that is still unexpired at the latest usable status is
@@ -425,8 +427,11 @@ func parseCRL(der []byte, hash [32]byte, maxEntries int) (*crlView, error) {
 		if re.SerialNumber == nil || re.RevocationTime.IsZero() {
 			return unreadable("entry %d has no serial number or revocation time", i)
 		}
-		if re.RevocationTime.After(rl.NextUpdate) {
-			return unreadable("entry %d is dated after the CRL's own nextUpdate", i)
+		// A CA that back-dates thisUpdate stamps a revocation at the real publication time, which can be
+		// later than nextUpdate when its period is shorter than the back-dating: allow up to the largest
+		// skew a policy may declare.
+		if re.RevocationTime.After(rl.NextUpdate.Add(maxThisUpdateSkew)) {
+			return unreadable("entry %d is dated more than %s after the CRL's own nextUpdate", i, maxThisUpdateSkew)
 		}
 		ce := crlEntry{revoked: re.RevocationTime, code: re.ReasonCode}
 		switch {
@@ -510,7 +515,7 @@ type StatusParams struct {
 	// MaxStatusAgeFor overrides MaxStatusAge for the issuing CA with the given key. An offline root
 	// publishes the CRL that covers its issuing CA rarely (Microsoft AD CS: weekly), so the status of
 	// that CA certificate rests on a CRL days old; the policy says so for that issuer only, and the leaf's
-	// CRLs keep the global limit. A value of zero or less means the global limit, never unlimited.
+	// CRLs keep the global limit. Zero means the global limit, never unlimited; a negative value or one over 400 days makes the status unknown.
 	MaxStatusAgeFor map[SPKIHash]time.Duration
 	// CountLive is the live gate's counting mode and needs Now: a fresh CRL issued before the decision
 	// is accepted, so a decision is not held for a CRL period. A verdict resting on status issued
@@ -677,8 +682,14 @@ func (c *CertIdentity) EvaluateStatus(ac *ApproverCert, a time.Time, s *StatusSn
 		p.CoverageTolerance = defaultCoverageTolerance
 	}
 	out := ChainStatus{Tier: TierFinal}
+	bad := p.configNote()
 	for i := 0; i+1 < len(ac.Chain); i++ {
 		cert, issuer := ac.Chain[i], ac.Chain[i+1]
+		if bad != "" {
+			out.Certs = append(out.Certs, CertStatus{Serial: cert.SerialNumber, Tier: TierNoInformation, Note: bad})
+			out.Tier = TierNoInformation
+			continue
+		}
 		views, evictedNew := s.viewsFor(issuer, c.distrustFor(issuer, p.Distrust))
 		st := evalCert(cert, issuer, a, views, evictedNew, p)
 		out.Certs = append(out.Certs, st)
@@ -694,6 +705,28 @@ func (c *CertIdentity) EvaluateStatus(ac *ApproverCert, a time.Time, s *StatusSn
 }
 
 // protocol:identity end
+
+// configNote names a declared parameter outside its range, or is empty. A mistyped declaration must not
+// make stale evidence look fresh, so the status is unknown rather than computed on it.
+func (p StatusParams) configNote() string {
+	skews := map[string]time.Duration{"ThisUpdateSkew": p.ThisUpdateSkew}
+	i := 0
+	for _, d := range p.ThisUpdateSkewFor {
+		i++
+		skews[fmt.Sprintf("ThisUpdateSkewFor[%d]", i)] = d
+	}
+	for name, d := range skews {
+		if d < 0 || d > maxThisUpdateSkew {
+			return fmt.Sprintf("the declared %s %s is outside 0 to %s", name, d, maxThisUpdateSkew)
+		}
+	}
+	for _, d := range p.MaxStatusAgeFor {
+		if d < 0 || d > maxStatusAgeFor {
+			return fmt.Sprintf("a declared MaxStatusAgeFor %s is outside 0 to %s", d, maxStatusAgeFor)
+		}
+	}
+	return ""
+}
 
 // distrustFor is the earliest distrust date for issuer's key, from the policy and the overlay.
 func (c *CertIdentity) distrustFor(issuer *x509.Certificate, overlay map[SPKIHash]time.Time) time.Time {
@@ -802,10 +835,6 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, evict
 	skew := p.ThisUpdateSkew
 	if sk, ok := p.ThisUpdateSkewFor[SPKIHashOf(issuer)]; ok {
 		skew = sk
-	}
-	if skew < 0 || skew > maxThisUpdateSkew {
-		st.Note = fmt.Sprintf("the declared ThisUpdateSkew %s is outside 0 to %s", skew, maxThisUpdateSkew)
-		return st
 	}
 	maxAge := p.MaxStatusAge
 	if m := p.MaxStatusAgeFor[SPKIHashOf(issuer)]; m > 0 {
