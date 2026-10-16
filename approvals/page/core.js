@@ -146,6 +146,9 @@ export function preflight(fields, approver) {
   if (fields.state !== 'waiting') return `the call is not waiting for a decision (the endpoint says it is ${safeText(String(fields.state))})`;
   const g = fields.gate;
   if (!g.approvers.includes(approver)) return `${safeText(approver)} is not an approver of this gate; its approvers are: ${safeText(g.approvers.join(', '))}`;
+  // A certificate-bound approver signs with a certificate chain, which this page cannot hold: the endpoint
+  // would refuse a bare signature, so say where to decide instead of letting it be sent.
+  if (g.identity && Object.prototype.hasOwnProperty.call(g.identity, approver)) return `${safeText(approver)} is a certificate-bound approver of this gate: decide with bide approve -to <this endpoint> -cert <your chain>, which signs with your certificate; this page signs with a bare key only`;
   for (const d of g.decisions ?? []) if (d.approver === approver && d.counted) return `${safeText(approver)} already decided on this call: ${d.approved ? 'approved' : 'denied'}`;
   if (g.passed) return 'the gate already has its approvals (as the endpoint counts them); nothing more is needed';
   if (g.failed) return 'the gate can no longer pass (as the endpoint counts them)';

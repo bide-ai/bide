@@ -62,6 +62,12 @@ test('preflight refuses what the endpoint says cannot be decided', async () => {
   assert.match(preflight(f({ gate: { approvers: ['alice'], decisions: [{ approver: 'alice', counted: true, approved: true }] } }), 'alice'), /already decided/);
   assert.match(preflight(f({ gate: { approvers: ['alice'], passed: true } }), 'alice'), /already has its approvals/);
   assert.match(preflight(f({ gate: { approvers: ['alice'], failed: true } }), 'alice'), /can no longer pass/);
+  // A certificate-bound approver cannot decide here: say where, before a bare signature is sent. A bare-key
+  // approver of the same gate (and the gate's __proto__-named keys) are not affected.
+  const bound = f({ gate: { approvers: ['alice', 'bob'], decisions: [], identity: { alice: 'https://idp.example/person/1' } } });
+  assert.match(preflight(bound, 'alice'), /certificate-bound approver.*bide approve -to.*-cert/);
+  assert.equal(preflight(bound, 'bob'), null);
+  assert.equal(preflight(f({ gate: { approvers: ['toString'], decisions: [], identity: {} } }), 'toString'), null);
 });
 
 test('a change in the call or its gate between display and signature is named', () => {
