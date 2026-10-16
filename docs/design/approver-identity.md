@@ -1268,7 +1268,7 @@ alternative name and digitalSignature, and the CRLs of both CAs.
   enterprise CA and its certificate templates need an Active Directory domain, which a CI runner does not
   have, so the issuing CA is a standalone subordinate that takes the same extensions from the request
   (`EDITF_ENABLEREQUESTEXTENSIONS`). It is not an enterprise CA with a template, and what a template adds
-  (template extensions, the CDP and AIA of a domain) is not captured; the leaves do carry AD CS's
+  (template extensions, the CDP and AIA of a domain) is not captured and is listed in `docs/KNOWN-LIMITATIONS.md`; the leaves do carry AD CS's
   non-critical authority information access and CRL distribution point extensions (`file://` paths) and a
   critical `basicConstraints` with `cA` false.
 
@@ -1315,6 +1315,14 @@ What the two CAs do, as observed (the tests pin it):
   after `thisUpdate` for bases and one hour twenty for deltas. EJBCA: hour base, ten minute delta in the capture, no
   automatic issuing.
 - *Windows.* The two AD CS parts run on `windows-2025`; actions are pinned by commit.
+- *Operating notes (for the policy and the CA operator; the operator guide is written with build step E2).*
+  Publish a CRL right after revoking a certificate, because AD CS dates the revocation at the publication.
+  Declare from the capture of your own CA, per issuing CA, `ThisUpdateSkew` (its clock-skew allowance),
+  `NotBeforeBackdate` (policy-wide) and, for an offline root, `MaxStatusAgeFor` and `CAPeriodFor` set to the
+  root's CRL period; never assume them. Before go-live a bank's own CA, an enterprise CA with its templates
+  included, must be captured with the dispatch workflow and the conformance tests run on it (pilot
+  checklist). The `CAPeriod <= ExecStatusAge / 2` startup check is a requirement on the gate configuration
+  (E2), not yet in code.
 - *Not captured, still open.* The cadence of a scheduled CA (the captures issue every CRL by hand), pruning of
   expired entries (a capture across a certificate's expiry), a re-key, and a restore from backup. The
   assessor asked for those with the pilot CA's own checks (test plan item 32).
