@@ -56,7 +56,7 @@ func scalar(v any, q byte, flow, js bool) (string, error) {
 		// A rune a YAML 1.1 reader reads as a line break, or that is a control or format character,
 		// is written escaped in double quotes, never raw in a single-quoted or plain scalar.
 		if strings.ContainsFunc(x, func(r rune) bool {
-			return unicode.IsControl(r) || r == '\u2028' || r == '\u2029' || r == '\ufeff' || unicode.Is(unicode.Cf, r)
+			return unicode.IsControl(r) || r == '\u2028' || r == '\u2029' || r == '\ufeff'
 		}) {
 			return dq(), nil
 		}
