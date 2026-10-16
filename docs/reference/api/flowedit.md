@@ -24,6 +24,34 @@ Package flowedit is the edit engine of the flow editor (docs/design/visual-edito
 - `func ToJSON(data []byte) ([]byte, error)`: ToJSON converts a YAML flow config to the JSON plan reads, as bide check does: the document is decoded into plain values (a duplicate key is an error, as plan's strict JSON reading refuses one), every mapping key must be a string, and a second document is an error rather than ignored.
 - `func Verify(old, out []byte, op Op) (err error)`: Verify checks that out is old with op applied and nothing else: the data, the key order, the lines outside the operated entry, and which entry each comment belongs to.
 
+### type Applied
+
+```go
+type Applied struct {
+	Text    []byte
+	Changed bool
+}
+```
+
+Applied is the result of an operation: the new text and whether it differs from the old.
+
+**Constructors and functions**
+
+- `func ApplyOperation(name string, src []byte, op Operation) (*Applied, error)`: ApplyOperation applies op to the config text src, which is YAML or JSON as name's extension says.
+
+### type Approval
+
+```go
+type Approval struct {
+	Need             int      `json:"need"`
+	Approvers        []string `json:"approvers"`
+	ExcludePrincipal bool     `json:"exclude_principal"`
+	Timeout          string   `json:"timeout,omitempty"`
+}
+```
+
+Approval is a node's approval gate as the config writes it: Need decisions from the Approvers, never counting the run's requester when ExcludePrincipal is set, and a deadline (a Go duration such as "48h", "" for none).
+
 ### type Doc
 
 ```go
@@ -35,6 +63,17 @@ type Doc struct {
 ```
 
 Doc is the config file as the server read it.
+
+### type Edited
+
+```go
+type Edited struct {
+	View
+	Changed bool `json:"changed"`
+}
+```
+
+Edited is the answer to an operation: the View of the new text, and whether the operation changed the text (one that sets a value to what it already is does not).
 
 ### type KV
 
@@ -102,6 +141,34 @@ type Op struct {
 
 Op is one operation.
 
+### type Operation
+
+```go
+type Operation struct {
+	Op string `json:"op"`
+
+	Node string `json:"node"`
+
+	Value string `json:"value,omitempty"`
+
+	Approval *Approval `json:"approval,omitempty"`
+}
+```
+
+Operation is one edit the page asks for, in the closed vocabulary of docs/design/visual-editor.md ("Operations").
+
+### type Option
+
+```go
+type Option func(*options)
+```
+
+Option configures New.
+
+**Constructors and functions**
+
+- `func WithBase(rev string) Option`: WithBase compares edits with the file at the git revision rev (a branch, tag or commit, as `git show rev:./file` takes it) instead of at HEAD.
+
 ### type Refusal
 
 ```go
@@ -142,7 +209,7 @@ Server is the editor for one config file.
 
 **Constructors and functions**
 
-- `func New(path string) (*Server, error)`: New returns the editor for the file at path.
+- `func New(path string, opts ...Option) (*Server, error)`: New returns the editor for the file at path.
 
 **Methods**
 
@@ -204,6 +271,8 @@ type View struct {
 	Wiring []string `json:"wiring,omitempty"`
 
 	Graph string `json:"graph,omitempty"`
+
+	Weakening *Weakening `json:"weakening,omitempty"`
 }
 ```
 
@@ -212,3 +281,28 @@ View is what the editor page shows of one version of the config text: the same a
 **Constructors and functions**
 
 - `func BuildView(name string, text []byte) *View`: BuildView is the View of text, the contents of the file called name.
+
+### type Weakening
+
+```go
+type Weakening struct {
+	Baseline string `json:"baseline"`
+
+	Weakened []string `json:"weakened,omitempty"`
+
+	Word string `json:"word,omitempty"`
+	Line string `json:"line,omitempty"`
+
+	Strengthened []string `json:"strengthened,omitempty"`
+
+	Changes []string `json:"changes,omitempty"`
+
+	CompareError string `json:"compare_error,omitempty"`
+}
+```
+
+Weakening is the answer to "is this text a weaker flow than the one we started from": the classifier `bide check -diff` runs (runview.BuildDiff), on the text and the baseline.
+
+**Constructors and functions**
+
+- `func Compare(name, source string, baseline, text []byte) *Weakening`: Compare classifies text against baseline, both the contents of a config file called name.
