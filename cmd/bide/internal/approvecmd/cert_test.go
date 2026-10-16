@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -631,4 +632,175 @@ func TestCertRemote_ABadReceiptIsNotWritten(t *testing.T) {
 	if len(f.decisions()) != 1 {
 		t.Fatalf("%d decisions", len(f.decisions()))
 	}
+}
+
+// ---- the checks that stand behind the first ones ----
+
+// A certificate of exactly the largest size is read (and fails to parse, being junk); one byte more is
+// refused as too large, before parsing.
+func TestReadChain_TheSizeBoundary(t *testing.T) {
+	dir := t.TempDir()
+	one := func(n int) error {
+		path := filepath.Join(dir, "c.pem")
+		os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: bytes.Repeat([]byte{0x30}, n)}), 0o600)
+		_, err := readChain(path)
+		return err
+	}
+	if err := one(agent.MaxDecisionCertDER); err == nil || !strings.Contains(err.Error(), "does not parse") {
+		t.Fatalf("exactly the limit: %v", err)
+	}
+	if err := one(agent.MaxDecisionCertDER + 1); err == nil || !strings.Contains(err.Error(), "is larger than") {
+		t.Fatalf("one over: %v", err)
+	}
+}
+
+// The wrong key is refused before the approver is asked anything: no prompt, no signing.
+func TestCert_AWrongKeyIsRefusedBeforeThePrompt(t *testing.T) {
+	atT0(t, time.Minute)
+	f, p := newCertFixture(t)
+	code, out, errs := f.run_("", set("-key", f.keys["finance"])(f.certArgs("ops", p))...)
+	if code != 1 || !strings.Contains(errs, "is not the key of the certificate's leaf") || strings.Contains(out, "Approve this call?") {
+		t.Fatalf("journal: %d\n%s\n%s", code, out, errs)
+	}
+	g, q, _ := certIntakeFixture(t, nil)
+	srv := g.intake(nil)
+	code, out, errs = g.runTo("", "-to", srv.URL, "-run", g.run, "-call", g.call, "-as", "ops", "-key", g.keys["finance"], "-cert", q.chain, "-identity-policy", q.policy)
+	if code != 1 || !strings.Contains(errs, "is not the key of the certificate's leaf") || strings.Contains(out, "Approve this call?") {
+		t.Fatalf("-to: %d\n%s\n%s", code, out, errs)
+	}
+}
+
+// brokenSigner reports the leaf's key but signs with another: the signature is checked under the
+// certificate's key before it is used.
+type brokenSigner struct{ audit.Signer }
+
+func (b brokenSigner) Sign(msg []byte) ([]byte, error) { return make([]byte, 64), nil }
+
+func TestCert_ASignatureNotUnderTheLeafKeyIsNeverUsed(t *testing.T) {
+	atT0(t, time.Minute)
+	f, p, _ := certIntakeFixture(t, nil)
+	src := FileKeys()
+	load := src.Load
+	src.Load = func(ref string) (audit.Signer, error) {
+		sg, err := load(ref)
+		return brokenSigner{sg}, err
+	}
+	var out, errb bytes.Buffer
+	srv := f.intake(nil)
+	hits := 0
+	counting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			hits++
+		}
+		srv.Config.Handler.ServeHTTP(w, r)
+	}))
+	defer counting.Close()
+	code := MainWith([]string{"-color", "never", "-to", counting.URL, "-run", f.run, "-call", f.call, "-as", "ops", "-key", f.keys["ops"], "-cert", p.chain, "-identity-policy", p.policy, "-yes"}, strings.NewReader(""), &out, &errb, stores, src)
+	if code != 1 || !strings.Contains(errb.String(), "does not verify under the certificate's key") || hits != 0 {
+		t.Fatalf("-to: %d %s (posts %d)", code, errb.String(), hits)
+	}
+	g, q := newCertFixture(t)
+	errb.Reset()
+	code = MainWith(append([]string{"-db", g.db, "-color", "never"}, g.certArgs("ops", q, "-yes")...), strings.NewReader(""), &out, &errb, stores, src)
+	if code != 1 || len(g.decisions()) != 0 {
+		t.Fatalf("journal: %d %s, %d decisions", code, errb.String(), len(g.decisions()))
+	}
+}
+
+// The window is checked again at the time that is signed: a certificate that expired while the approver
+// sat at the prompt signs nothing.
+func TestCert_ExpiryWhileAtThePrompt(t *testing.T) {
+	f, p := newCertFixture(t)
+	var late atomic.Bool
+	old := now
+	now = func() time.Time {
+		if late.Load() { // the approver confirmed after the leaf's life
+			return testca.T0.Add(3 * time.Hour)
+		}
+		return testca.T0.Add(time.Minute)
+	}
+	t.Cleanup(func() { now = old })
+	var out, errb bytes.Buffer
+	in := readHook{r: strings.NewReader("ops\n"), onRead: func() { late.Store(true) }}
+	code := Main(append([]string{"-db", f.db, "-color", "never"}, f.certArgs("ops", p)...), in, &out, &errb, stores)
+	if code != 1 || !strings.Contains(errb.String(), "has expired") || len(f.decisions()) != 0 {
+		t.Fatalf("%d\n%s\n%s", code, out.String(), errb.String())
+	}
+}
+
+// readHook calls onRead when the reader is first read.
+type readHook struct {
+	r      io.Reader
+	onRead func()
+}
+
+func (h readHook) Read(p []byte) (int, error) {
+	h.onRead()
+	return h.r.Read(p)
+}
+
+// localIntake judges a record on its own: the approver, the chain, the policy and the signature.
+func TestLocalIntake_JudgesTheRecord(t *testing.T) {
+	atT0(t, time.Minute)
+	f, p := newCertFixture(t)
+	signer := mustSigner(t, f.keys["ops"])
+	c := &cmd{f: flags{as: "ops", cert: p.chain, identityPolicy: p.policy, certMinLeft: defaultCertMinLeft}}
+	cd, err := c.loadCert()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := agent.ApprovalSubject{RunID: "r", ToolUseID: "c", ToolName: "t", Args: []byte(`{}`)}
+	at := testca.T0.Add(time.Minute)
+	d, _, err := cd.sign(signer, s, "r", "c", "ops", true, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := func(mod func(*agent.Record)) agent.CertDecision {
+		r := agent.Record{Kind: agent.StepApproval, ToolUseID: "c", Approved: true, ApproverSignature: &agent.ApproverSignature{Approver: "ops", ApproverAlg: d.Alg, Signature: d.Signature, DecidedAt: agent.FormatTimestamp(at), ApproverCert: d.Cert}}
+		if mod != nil {
+			mod(&r)
+		}
+		return agent.CertDecision{Subject: s, Record: r}
+	}
+	li := localIntake{cd: cd, as: "ops"}
+	if got := li.VerifyCertIntake(rec(nil)); got.Reason != "" || got.Identity != testca.Person(1) {
+		t.Fatalf("a valid record: %+v", got)
+	}
+	for name, mod := range map[string]func(*agent.Record){
+		"another approver": func(r *agent.Record) { r.ApproverSignature.Approver = "finance" },
+		"a stripped chain": func(r *agent.Record) { r.ApproverSignature.ApproverCert = r.ApproverSignature.ApproverCert[:1] },
+		"another chain":    func(r *agent.Record) { r.ApproverSignature.ApproverCert = [][]byte{p.inter.DER} },
+		"a bad signature":  func(r *agent.Record) { r.ApproverSignature.Signature = make([]byte, 64) },
+		"another scheme":   func(r *agent.Record) { r.ApproverSignature.ApproverAlg = audit.AlgECDSAP256 },
+		"a bad time":       func(r *agent.Record) { r.ApproverSignature.DecidedAt = "yesterday" },
+		"a time past the life": func(r *agent.Record) {
+			r.ApproverSignature.DecidedAt = agent.FormatTimestamp(testca.T0.Add(5 * time.Hour))
+		},
+	} {
+		if got := li.VerifyCertIntake(rec(mod)); got.Reason == "" {
+			t.Errorf("%s was accepted", name)
+		}
+	}
+	// With no policy the chain is not judged, but the signature still is.
+	cd2 := &certDecision{chain: cd.chain}
+	li2 := localIntake{cd: cd2, as: "ops"}
+	if got := li2.VerifyCertIntake(rec(nil)); got.Reason != "" {
+		t.Fatalf("no policy: %+v", got)
+	}
+	if got := li2.VerifyCertIntake(rec(func(r *agent.Record) { r.ApproverSignature.Signature = make([]byte, 64) })); got.Reason == "" {
+		t.Fatal("no policy: a bad signature was accepted")
+	}
+	// The decision check is the same function as the verifier: it is its own VerifyCertDecision.
+	if got := li.VerifyCertDecision(rec(nil)); got.Reason != "" {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func mustSigner(t *testing.T, path string) audit.Signer {
+	t.Helper()
+	sg, err := LoadSigner(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sg
 }
