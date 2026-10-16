@@ -533,3 +533,65 @@ func TestIdentity_LongDisplayNameIsCut(t *testing.T) {
 		t.Fatalf("shorten = %q", got)
 	}
 }
+
+// The identity records' times are RFC 3339 with trimmed nanoseconds: shown as times, not as "not canonical".
+func TestIdentity_RecordTimesWithoutMilliseconds(t *testing.T) {
+	if got := displayStamp("2026-10-16T18:35:22Z"); got != "2026-10-16 18:35:22.000" {
+		t.Fatalf("displayStamp = %q", got)
+	}
+	if got := displayStamp("2026-10-16T18:35:22.123456789Z"); got != "2026-10-16 18:35:22.123" {
+		t.Fatalf("displayStamp = %q", got)
+	}
+}
+
+// A counted gate whose newest phase note says exec-hold, with no hold record and no result, is paused for status, never final.
+func TestIdentity_ExecHoldNoteWithoutARecordIsHeld(t *testing.T) {
+	fx := identRecs(t, agent.TierLogclockFinal, true, nil)
+	note, _ := json.Marshal(agent.ApprovalWait{ToolUseID: "c1", ToolName: "refund", Need: 1, Approvers: []string{"alice"}, IdentityBound: true, Pause: agent.PauseExecHold, PauseDetail: "the status is older than the execution bound"})
+	recs := append(fx.recs, agent.Record{Name: agent.ApprovalPauseStep("c1", 1), Kind: agent.StepValue, Result: note})
+	g := identGate(t, recs)
+	if !g.Identity.Paused || g.Identity.Hold != nil || !g.Held || g.Identity.Class != "wait" || !strings.Contains(g.Identity.PhaseText, "paused before execution: waiting for current status") ||
+		!strings.Contains(g.Identity.PhaseText, "older than the execution bound") {
+		t.Fatalf("identity = %+v", g.Identity)
+	}
+}
+
+// The bare-key command is shown only for bare-key approvers, and not at all when every pending approver is certificate-bound.
+func TestIdentity_AttentionCommandIsForBareKeyApproversOnly(t *testing.T) {
+	cmdOpts := Options{ApproveCommand: func(run, call string, single bool) (string, error) {
+		return "bide approve -run " + run + " -call " + call, nil
+	}}
+	mk := func(approvers, bound []string) AttentionItem {
+		w, _ := json.Marshal(agent.ApprovalWait{ToolUseID: "c1", ToolName: "refund", Need: 2, Approvers: approvers, IdentityBound: true, IdentityApprovers: bound, IdentityPolicyDigest: strings.Repeat("a", 64)})
+		recs := []agent.Record{
+			{Name: "@llm/0", Kind: agent.StepModel, Message: &agent.Message{Role: agent.RoleAssistant, Parts: []agent.Part{agent.ToolUse{ID: "c1", Name: "refund", Args: json.RawMessage(`{}`)}}}},
+			rec(agent.ApprovalPendingStep("c1"), json.RawMessage(w)),
+		}
+		v := Options{}.viewOf(context.Background(), "r1", recs, nil)
+		items := cmdOpts.runItems(v, recs)
+		if len(items) != 1 {
+			t.Fatalf("items = %+v", items)
+		}
+		return items[0]
+	}
+	mixed := mk([]string{"ops", "risk"}, []string{"ops"})
+	if mixed.Command == "" || !strings.Contains(mixed.CommandNote, "bare-key approvers only (risk)") || !strings.Contains(mixed.CommandNote, "ops") {
+		t.Fatalf("mixed: %+v", mixed)
+	}
+	certOnly := mk([]string{"ops", "finance"}, []string{"ops", "finance"})
+	if certOnly.Command != "" || !certOnly.CertOnly || !strings.Contains(certOnly.CommandNote, "sign with your certificate") || !strings.Contains(certOnly.CommandNote, "ops, finance") {
+		t.Fatalf("cert only: %+v", certOnly)
+	}
+}
+
+// The paused-for-status summary says the detail once.
+func TestIdentity_PausedSummaryDoesNotRepeatTheDetail(t *testing.T) {
+	fx := identRecs(t, agent.TierLogclockFinal, true, nil)
+	note, _ := json.Marshal(agent.ApprovalWait{ToolUseID: "c1", ToolName: "refund", Need: 1, Approvers: []string{"alice"}, IdentityBound: true, Pause: agent.PauseExecHold, PauseDetail: "status is old"})
+	recs := append(fx.recs, agent.Record{Name: agent.ApprovalPauseStep("c1", 1), Kind: agent.StepValue, Result: note})
+	v := Options{}.viewOf(context.Background(), "r1", recs, nil)
+	items := Options{}.runItems(v, recs)
+	if len(items) != 1 || strings.Count(items[0].Summary, "status is old") != 1 {
+		t.Fatalf("items = %+v", items)
+	}
+}

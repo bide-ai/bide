@@ -71,6 +71,11 @@ type AttentionItem struct {
 	// NoCommand says why an approval has none although the viewer writes them: an id that cannot be
 	// shown or pasted safely (approveline.ErrUnsafe).
 	NoCommand string `json:"no_command,omitempty"`
+	// CommandNote qualifies Command on a gate with certificate-bound approvers: the command signs a bare
+	// key, so it is for the bare-key approvers only, and a bare-key decision does not count for the
+	// certificate-bound ones. CertOnly: every pending approver is certificate-bound, so no command is shown.
+	CommandNote string `json:"command_note,omitempty"`
+	CertOnly    bool   `json:"cert_only,omitempty"`
 	// Notify says whether the item was notified and acknowledged; nil without the notify trail.
 	Notify *NotifyStatus `json:"notify,omitempty"`
 }
@@ -353,7 +358,7 @@ func (o Options) runItems(v *View, recs []agent.Record) []AttentionItem {
 		if gi := g.Identity; gi != nil && gi.PhaseText != "" {
 			// The phase leads: it is why a person is needed, and what to do differs from a plain wait.
 			it.Summary = "Approval for " + cmp.Or(g.ToolName, g.ToolUseID) + " is " + cond(g.Held, "not running", "waiting") + ": " + gi.PhaseText
-			if gi.Detail != "" && gi.Hold == nil {
+			if gi.Detail != "" && gi.Hold == nil && !gi.Paused {
 				it.Summary += " (" + gi.Detail + ")"
 			}
 			it.Summary += "."
@@ -382,6 +387,23 @@ func (o Options) runItems(v *View, recs []agent.Record) []AttentionItem {
 				it.NoCommand = "no command"
 			default:
 				it.Command = cmd
+			}
+			if gi := g.Identity; gi != nil && gi.Bound && !g.Single {
+				var bare, bound []string
+				for _, a := range g.Pending {
+					if slices.Contains(gi.Approvers, a) {
+						bound = append(bound, a)
+					} else {
+						bare = append(bare, a)
+					}
+				}
+				switch {
+				case len(bare) == 0:
+					it.Command, it.NoCommand, it.CertOnly = "", "", true
+					it.CommandNote = "certificate-bound (" + strings.Join(bound, ", ") + "): sign with your certificate (see the certificate approvers guide, docs/guides/certificate-approvers.md); a bare-key decision does not count for them, so no bare-key command is shown"
+				case len(bound) > 0 && it.Command != "":
+					it.CommandNote = "for the bare-key approvers only (" + strings.Join(bare, ", ") + "): a bare-key decision does not count for " + strings.Join(bound, ", ") + ", who are certificate-bound"
+				}
 			}
 		}
 		out = append(out, it)

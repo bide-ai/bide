@@ -40,10 +40,14 @@ type GateIdentity struct {
 	Detail    string `json:"detail,omitempty"`
 	// Unchecked are certificate-bound approvers who decided on a gate that has not counted yet: the
 	// decision is recorded, and nothing here says it counts.
-	Unchecked                 []string       `json:"unchecked,omitempty"`
-	Cards                     []IdentityCard `json:"cards,omitempty"`
-	Hold                      *IdentityHold  `json:"hold,omitempty"`
-	tallyDigest, recordPolicy string         // the current count's, for matching an audit result
+	Unchecked []string       `json:"unchecked,omitempty"`
+	Cards     []IdentityCard `json:"cards,omitempty"`
+	Hold      *IdentityHold  `json:"hold,omitempty"`
+	// Paused: the newest phase note says exec-hold but the journal holds no hold record, which is the
+	// gate waiting for current status before it runs the call (nothing authoritative is written; the same
+	// approvals run once status is fresh), not a revoked or no-longer-verifying decision.
+	Paused                    bool   `json:"paused,omitempty"`
+	tallyDigest, recordPolicy string // the current count's, for matching an audit result
 	// Generation is the gate's newest count (0 is the first); Reasked says a call was held before
 	// execution and the gate asked again, so earlier counts are history.
 	Generation int  `json:"generation,omitempty"`
@@ -326,6 +330,12 @@ func identityOf(recs []agent.Record, byName map[string]agent.Record, id string, 
 			gi.PhaseText = "held before execution: " + cmpStr(gi.Hold.Detail, gi.Hold.Reason)
 		}
 	}
+	// The phase note is a hint, but a counted gate whose newest note says exec-hold and whose call has no
+	// result is shown paused even when the hold record is absent: never as final.
+	if gi.Hold == nil && haveTally && !resulted && gi.Phase == agent.PauseExecHold {
+		gi.Paused = true
+		gi.PhaseText = "paused before execution: waiting for current status" + cond(gi.Detail != "", " ("+gi.Detail+")", "")
+	}
 	gi.Class, gi.Line = identityClass(gi, g)
 	return gi
 }
@@ -341,6 +351,11 @@ func cmpStr(a, b string) string {
 func displayStamp(s string) string {
 	if s == "" {
 		return ""
+	}
+	// The identity records write RFC 3339 times with nanoseconds, trimmed of trailing zeros (so
+	// "2026-10-16T18:35:22Z" is canonical there), unlike the decision times (agent.FormatTimestamp).
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return t.UTC().Format("2006-01-02 15:04:05.000")
 	}
 	return printable(displayTime(s))
 }
@@ -360,6 +375,8 @@ func identityClass(gi *GateIdentity, g Gate) (class, line string) {
 			return identWait, "decision recorded, identity not checked yet"
 		}
 		return identWait, "waiting for decisions"
+	case gi.Paused:
+		return identWait, gi.PhaseText
 	case gi.Hold != nil:
 		return identBad, gi.PhaseText + cond(gi.Reasked, " (re-asked after an earlier hold)", "")
 	}
