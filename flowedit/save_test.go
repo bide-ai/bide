@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func readFile(t *testing.T, p string) string {
@@ -302,9 +303,10 @@ func TestSaveRefusesWhatItWillNotWrite(t *testing.T) {
 		"too large": weakFlow + "# " + strings.Repeat("a", MaxFileSize) + "\n",
 		"a NUL":     weakFlow + "# a\x00b\n",
 	} {
-		_, err := s.Save([]byte(text), hashOf([]byte(weakFlow)), nil)
-		if err == nil {
-			t.Errorf("%s: saved", name)
+		// Even with whatever confirmation the text needs, so the refusal is the size's or the NUL's own.
+		_, err := s.Save([]byte(text), hashOf([]byte(weakFlow)), s.confirmations([]byte(text)))
+		if err == nil || !strings.Contains(err.Error(), map[string]string{"too large": "larger than", "a NUL": "NUL"}[name]) {
+			t.Errorf("%s: %v", name, err)
 		}
 	}
 	// The same guards as every /api call, and no unknown field.
@@ -467,4 +469,58 @@ func TestBodyCapAllowsAMaximalConfig(t *testing.T) {
 		t.Errorf("a text over the limit: %d", w.Code)
 	}
 	_ = p
+}
+
+// A save of the text the file already holds writes nothing: the file is not touched.
+func TestSaveOfTheSameTextTouchesNothing(t *testing.T) {
+	s, p := newTestServer(t, "refund.yaml", weakFlow)
+	old := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	if err := os.Chtimes(p, old, old); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.Stat(p)
+	if _, err := s.Save([]byte(weakFlow), hashOf([]byte(weakFlow)), nil); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.Stat(p)
+	if !after.ModTime().Equal(before.ModTime()) || !os.SameFile(before, after) {
+		t.Errorf("a save of the same text wrote the file: %v -> %v", before.ModTime(), after.ModTime())
+	}
+}
+
+// The directory is checked again too: one that has become a link to another place is refused, and
+// nothing is written there.
+func TestSaveRefusesADirectoryThatBecameALink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating a symbolic link needs a privilege on Windows")
+	}
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(parent, "flows")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, "refund.yaml")
+	if err := os.WriteFile(p, []byte(weakFlow), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(dir, dir+".real"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(dir+".real", dir); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.Save([]byte(strings.Replace(weakFlow, "flow: refund", "flow: other", 1)), hashOf([]byte(weakFlow)), nil)
+	if err == nil || !strings.Contains(err.Error(), "no longer the one resolved") {
+		t.Errorf("%v", err)
+	}
+	if readFile(t, filepath.Join(dir+".real", "refund.yaml")) != weakFlow {
+		t.Error("written through the link")
+	}
 }
