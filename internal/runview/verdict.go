@@ -92,14 +92,14 @@ func runVerdict(v *View) Verdict {
 		}
 	case finished && identityBad(v):
 		d = Verdict{Class: "bad", Word: "FAILED", Icon: "x", Line: "The run finished, but an approval gate's identity data does not check out: " + identityLine(v, identBad) + "."}
-	case finished && identityNotFinal(v):
-		d = Verdict{Class: "wait", Word: "IDENTITY NOT FINAL", Icon: "wait", Line: "The run finished, but an approval gate's identity is not final: " + identityLine(v, identProv) + ". Nothing here is verified until status makes it final."}
-	case finished && identityNotAudited(v):
-		d = Verdict{Class: "info", Word: "COMPLETED", Icon: "ok", Line: "The run finished and each certificate-bound approver's identity is final as recorded by the gate at counting; no audit result was given, so nothing is verified here: " + identityLine(v, identFinal) + "."}
 	case finished && v.Proof != nil && !v.Proof.OK:
 		d = Verdict{Class: "bad", Word: "FAILED", Icon: "x", Line: "The run finished, but its audit proof does not verify: " + v.Proof.Summary + "."}
 	case finished && badSigs:
 		d = Verdict{Class: "bad", Word: "FAILED", Icon: "x", Line: "The run finished, but an approval gate's signatures did not verify."}
+	case finished && identityNotFinal(v):
+		d = Verdict{Class: "wait", Word: "IDENTITY NOT FINAL", Icon: "wait", Line: "The run finished, but an approval gate's identity is not final: " + identityLine(v, identProv) + ". Nothing here is verified until an audit re-checks it with later status."}
+	case finished && identityNotAudited(v):
+		d = Verdict{Class: "info", Word: "COMPLETED", Icon: "ok", Line: "The run finished and each certificate-bound approver's identity is final as recorded by the gate at counting; no audit result was given, so nothing is verified here: " + identityLine(v, identFinal) + "."}
 	case finished && v.Proof != nil:
 		d = Verdict{Class: "good", Word: "VERIFIED", Icon: "approval", Line: "Signatures and audit proof check out: " + strings.TrimPrefix(v.Proof.Summary, "verifies: ") + "."}
 	case v.State == "resolved":

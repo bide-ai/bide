@@ -18,10 +18,13 @@ func TestVerifyReceipts_CertBoundWithPolicy(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("%s: %d\n%s\n%s", name, code, out, errs)
 		}
-		for _, want := range []string{"PASS  alice approved", f.Identifier, f.DisplayName, "2026-10-13T12:15:03", "log-signer clock", "revocation status not checked", "not the gate's verdict"} {
+		for _, want := range []string{"IDENTITY  alice approved", f.Identifier, f.DisplayName, "2026-10-13T12:15:03", "log-signer clock", "revocation status NOT checked", "not the gate's verdict"} {
 			if !strings.Contains(out, want) {
 				t.Fatalf("%s: missing %q in\n%s", name, want, out)
 			}
+		}
+		if strings.Contains(out, "PASS  alice") || !strings.Contains(out, "0 receipt(s) verified") || !strings.Contains(out, "1 certificate-bound receipt(s)") {
+			t.Fatalf("%s: the identity-only result is counted as verified:\n%s", name, out)
 		}
 		// The identity check is not a verdict: the output never says the decision counted or is final.
 		for _, bad := range []string{"final", "provisional", "counted"} {
@@ -57,5 +60,14 @@ func TestVerifyReceipts_CertBoundRefusals(t *testing.T) {
 	// A policy file that does not load is a usage-class failure, never a weaker check.
 	if code, _, errs := runCLI(certArgs(f, f.Receipt, "-identity-policy", f.Dir+"/absent.json")...); code == 0 || errs == "" {
 		t.Fatalf("absent policy: %d %s", code, errs)
+	}
+}
+
+// A is the earlier of the receipt's own anchoring head and the heads the caller supplied.
+func TestVerifyReceipts_CertBoundTakesTheEarlierHead(t *testing.T) {
+	f := testcertreceipt.New(t)
+	code, out, errs := runCLI(certArgs(f, f.ReceiptLate, "-identity-policy", f.Policy)...)
+	if code != 0 || !strings.Contains(out, "accepted at 2026-10-13T12:15:03") || strings.Contains(out, "13:15:03") {
+		t.Fatalf("%d\n%s\n%s", code, out, errs)
 	}
 }

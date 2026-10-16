@@ -25,9 +25,10 @@ import (
 var identT0 = time.Date(2026, 10, 15, 9, 0, 0, 0, time.UTC)
 
 type identFx struct {
-	recs   []agent.Record
-	digest string
-	leaf   string
+	recs        []agent.Record
+	digest      string
+	leaf        string
+	tallyDigest string
 }
 
 // identRecs is a run paused at a one-approver gate on c1 whose approver "alice" is certificate-bound,
@@ -63,7 +64,7 @@ func identRecs(t *testing.T, tier string, tally bool, edit func(*agent.ApprovalI
 	if tally {
 		recs = append(recs, agent.Record{Name: agent.ApprovalIdentTallyStep("c1", 0), Kind: agent.StepValue, Result: tl}, rec(agent.ApprovalIdentityStep("c1", 0), id))
 	}
-	return identFx{recs: recs, digest: digest, leaf: hex.EncodeToString(lh[:])}
+	return identFx{recs: recs, digest: digest, leaf: hex.EncodeToString(lh[:]), tallyDigest: hex.EncodeToString(td[:])}
 }
 
 func identGate(t *testing.T, recs []agent.Record) Gate {
@@ -203,12 +204,12 @@ func TestIdentity_DisputedAndAuditedNeedAnAuditResult(t *testing.T) {
 		t.Fatalf("no audit: %+v", g.Identity)
 	}
 	// An audit that agrees makes it the only green.
-	g := view(map[string]IdentityAudit{"alice": {OK: true}}).Gates[0]
+	g := view(map[string]IdentityAudit{"alice": {OK: true, TallyDigest: fx.tallyDigest, PolicyDigest: fx.digest, CheckedAt: "2026-10-15T10:00:00.000Z"}}).Gates[0]
 	if g.Identity.Class != "audited" || !g.Identity.Cards[0].Audited || g.Class() != "good" {
 		t.Fatalf("audited: %+v / %q", g.Identity, g.Class())
 	}
 	// An audit that disputes it: red, and it says why.
-	v := view(map[string]IdentityAudit{"alice": {Disputed: true, Detail: "keyCompromise effective 2026-10-15T08:59:00Z"}})
+	v := view(map[string]IdentityAudit{"alice": {Disputed: true, Detail: "keyCompromise effective 2026-10-15T08:59:00Z", TallyDigest: fx.tallyDigest, PolicyDigest: fx.digest}})
 	g = v.Gates[0]
 	c := g.Identity.Cards[0]
 	if g.Identity.Class != "bad" || !c.Disputed || c.Class != "bad" || g.Class() == "good" {
@@ -430,5 +431,85 @@ func TestIdentity_AttentionPage(t *testing.T) {
 	body := html.UnescapeString(w.Body.String())
 	if w.Code != 200 || !strings.Contains(body, "paused: identity status unknown") || !strings.Contains(body, "attn-id id-wait") {
 		t.Fatalf("%d %s", w.Code, body)
+	}
+}
+
+// An audit result for another count is not applied.
+func TestIdentity_AuditResultForAnotherCountIsIgnored(t *testing.T) {
+	fx := identRecs(t, agent.TierLogclockFinal, true, nil)
+	v := Options{Provers: []Prover{func(context.Context, string, []agent.Record) *Proof {
+		return &Proof{OK: true, Summary: "verifies: 9 records", Approvals: map[string]ApprovalCheck{"c1": {Identity: map[string]IdentityAudit{
+			"alice": {OK: true, TallyDigest: strings.Repeat("0", 64), PolicyDigest: fx.digest}}}}}
+	}}}.viewOf(context.Background(), "r1", fx.recs, nil)
+	if g := v.Gates[0]; g.Identity.Cards[0].Audited || g.Identity.Class == "audited" || g.Identity.Class == "final" {
+		t.Fatalf("an audit of another tally applied: %+v", g.Identity)
+	}
+	// The green line names when the audit ran.
+	ok := Options{Provers: []Prover{func(context.Context, string, []agent.Record) *Proof {
+		return &Proof{OK: true, Summary: "verifies: 9 records", Approvals: map[string]ApprovalCheck{"c1": {Identity: map[string]IdentityAudit{
+			"alice": {OK: true, TallyDigest: fx.tallyDigest, PolicyDigest: fx.digest, CheckedAt: "2026-10-15T10:00:00.000Z"}}}}}
+	}}}.viewOf(context.Background(), "r1", fx.recs, nil)
+	if l := ok.Gates[0].Identity.Line; !strings.Contains(l, "2026-10-15 10:00:00.000 UTC") || !strings.Contains(l, "not covered") {
+		t.Fatalf("line = %q", l)
+	}
+}
+
+// A finished run with a final-as-recorded identity and a failing proof is FAILED, not COMPLETED.
+func TestIdentity_VerdictDoesNotMaskAFailedProof(t *testing.T) {
+	fx := identRecs(t, agent.TierLogclockFinal, true, nil)
+	recs := append(fx.recs, agent.Record{Name: "tool:c1", Kind: agent.StepToolResult, ToolUseID: "c1", Result: []byte(`"ok"`)}, agent.Record{Name: "run:complete", Kind: agent.StepValue, Result: []byte(`"done"`)})
+	v := Options{}.viewOf(context.Background(), "r1", recs, nil)
+	if v.Verdict.Word != "COMPLETED" {
+		t.Fatalf("no proof: %+v", v.Verdict)
+	}
+	v.Proof = &Proof{OK: false, Summary: "does not verify"}
+	if d := runVerdict(v); d.Word != "FAILED" {
+		t.Fatalf("failed proof: %+v", d)
+	}
+	v.Proof = &Proof{OK: true, Summary: "verifies: 9 records"}
+	if d := runVerdict(v); d.Class == "good" {
+		t.Fatalf("final as recorded under a good proof is %+v", d)
+	}
+}
+
+// A certificate chain in a decision with nothing marking the gate bound: stripped, not a bare-key gate.
+func TestIdentity_DowngradedGateIsNotBareKey(t *testing.T) {
+	fx := identRecs(t, agent.TierLogclockFinal, false, nil)
+	var kept []agent.Record
+	for _, r := range fx.recs {
+		if r.Name != agent.ApprovalPendingStep("c1") {
+			kept = append(kept, r)
+		}
+	}
+	plain, _ := json.Marshal(agent.ApprovalWait{ToolUseID: "c1", ToolName: "refund", Need: 1, Approvers: []string{"alice"}})
+	kept = append(kept, rec(agent.ApprovalPendingStep("c1"), json.RawMessage(plain)))
+	g := identGate(t, kept)
+	if g.Identity == nil || g.Identity.Class != "bad" || !strings.Contains(strings.Join(g.Identity.Problems, "|"), "identity data stripped") {
+		t.Fatalf("identity = %+v", g.Identity)
+	}
+}
+
+// An executed call with no identity tally is a problem, not "waiting for decisions".
+func TestIdentity_ExecutedWithoutAnIdentityTally(t *testing.T) {
+	fx := identRecs(t, agent.TierLogclockFinal, false, nil)
+	recs := append(fx.recs, agent.Record{Name: "tool:c1", Kind: agent.StepToolResult, ToolUseID: "c1", Result: []byte(`"ok"`)})
+	if g := identGate(t, recs); g.Identity.Class != "bad" || !strings.Contains(strings.Join(g.Identity.Problems, "|"), "the call ran") {
+		t.Fatalf("identity = %+v", g.Identity)
+	}
+}
+
+// Only status at or after the decision is final; a missing or unknown basis is bad.
+func TestIdentity_FinalNeedsTheAtOrAfterBasis(t *testing.T) {
+	for _, kind := range []string{"", "something-new"} {
+		fx := identRecs(t, agent.TierLogclockFinal, true, func(id *agent.ApprovalIdentity, _ *agent.ApprovalWait) { id.Decisions[0].BasisKind = kind })
+		if g := identGate(t, fx.recs); g.Identity.Class != "bad" {
+			t.Fatalf("basis %q: %+v", kind, g.Identity)
+		}
+	}
+}
+
+func TestIdentity_LongDisplayNameIsCut(t *testing.T) {
+	if got := shorten(strings.Repeat("a", 80), 48); len([]rune(got)) != 51 || !strings.HasSuffix(got, "...") {
+		t.Fatalf("shorten = %q", got)
 	}
 }

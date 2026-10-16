@@ -692,12 +692,10 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 		}
 		_, singleDecided := singleDecision(g)
 		g.Waiting = (paused || g.Reapproval) && !resulted && !g.Tallied && !(g.Single && singleDecided)
-		if bound {
-			if g.Identity = identityOf(recs, byName, id, wait, g, resulted); g.Identity != nil {
-				g.Identity.Unchecked = unchecked
-				g.Identity.Class, g.Identity.Line = identityClass(g.Identity, g)
-				g.Held = g.Identity.Hold != nil && g.Tallied && !resulted
-			}
+		if g.Identity = identityOf(recs, byName, id, wait, g, resulted); g.Identity != nil {
+			g.Identity.Unchecked = unchecked
+			g.Identity.Class, g.Identity.Line = identityClass(g.Identity, g)
+			g.Held = g.Identity.Hold != nil && g.Tallied && !resulted
 		}
 		g.Status = gateStatus(g)
 		out = append(out, g)

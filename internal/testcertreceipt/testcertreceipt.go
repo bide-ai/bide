@@ -31,6 +31,8 @@ type Fixture struct {
 	// Receipt holds the anchored receipt, NoProof the same receipt without its anchoring proof, and
 	// Bare a bare-key receipt of another decision.
 	Receipt, NoProof string
+	// ReceiptLate is the receipt anchored under a head an hour later than the one in Heads.
+	ReceiptLate string
 	Journal          string
 	// Heads are the signed heads (before and after the decision), HeadsBefore only the first.
 	Heads, HeadsBefore string
@@ -174,6 +176,16 @@ func New(t testing.TB) *Fixture {
 	}
 	f.Receipt = filepath.Join(f.Dir, "anchored.receipt.json")
 	writeJSON(t, f.Receipt, anchored)
+	late, err := audit.NewTreeHead(ctx, store, runID, f.AnchoredAt.Add(time.Hour).UnixNano())
+	if err != nil {
+		t.Fatal(err)
+	}
+	lateAnchored, err := audit.AnchorReceipt(rc, recs, []audit.SignedTreeHead{sign(late)}, audit.Ed25519Verifier{Pub: logPub})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.ReceiptLate = filepath.Join(f.Dir, "late.receipt.json")
+	writeJSON(t, f.ReceiptLate, lateAnchored)
 	f.NoProof = filepath.Join(f.Dir, "noproof.receipt.json")
 	writeJSON(t, f.NoProof, rc)
 	exp, err := audit.ExportJournal(ctx, store, runID)

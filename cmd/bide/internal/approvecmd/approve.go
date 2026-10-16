@@ -1372,10 +1372,10 @@ func (c *cmd) verifyCertReceipt(r audit.DecisionReceipt) error {
 	if id.DisplayName != "" {
 		name = fmt.Sprintf(" (certificate name %q, not part of the identity)", safe(id.DisplayName))
 	}
-	fmt.Fprintf(c.out, "%sidentity %s%s accepted for %s, who %s call %s (tool %s) of run %s at %s\n", st.Pass(), st.Bold(safe(id.Identifier)), name, st.Bold(safe(r.Approver)), approvedWord(r.Approved), safe(r.ToolUseID), safe(r.ToolName), safe(r.RunID), safe(r.DecidedAt))
+	fmt.Fprintf(c.out, "IDENTITY %s%s%s accepted for %s, who %s call %s (tool %s) of run %s at %s\n", "", st.Bold(safe(id.Identifier)), name, st.Bold(safe(r.Approver)), approvedWord(r.Approved), safe(r.ToolUseID), safe(r.ToolName), safe(r.RunID), safe(r.DecidedAt))
 	fmt.Fprintf(c.out, "  accepted at %s (%s); certificate valid %s to %s\n  leaf %s, trust anchor key %s\n", agent.FormatTimestamp(id.AnchoredAt), id.TimeSource, agent.FormatTimestamp(id.NotBefore), agent.FormatTimestamp(id.NotAfter), id.LeafHash, id.AnchorKey)
 	fmt.Fprintf(c.out, "  args SHA-256 %s\n  journal record %s at position %d, recorded %s\n", r.ArgsSHA, safe(r.Record), r.Index, safe(r.RecordedAt))
-	fmt.Fprintf(c.out, "%s\n", st.Dim("revocation status was not checked, so this is the identity check, not the gate's verdict (final or provisional); the receipt alone does not show the journal kept the decision: bide audit verify-receipts checks that"))
+	fmt.Fprintln(c.out, "revocation status was NOT checked, so this is the identity check, not the gate's verdict (final or provisional); the receipt alone does not show the journal kept the decision: bide audit verify-receipts checks that")
 	return nil
 }
 

@@ -463,16 +463,16 @@ The rule the page keeps: **nothing is green, and nothing is called "verified", u
 was given re-checked it.** The journal alone gives, at best, *final as recorded*, drawn in a neutral blue style.
 Provisional is amber with a dashed edge and a hatched ground and says `PROVISIONAL`; a decision the gate has
 recorded but not counted is `recorded, not counted`; neither makes the gate, the card or the run's verdict green.
-A finished run is `VERIFIED` only when its audit proof verifies and no gate is in these states: a gate whose
+A finished run whose proof fails or whose signatures are bad is `FAILED` whatever its identity says; it is `VERIFIED` only when its audit proof verifies and no gate is in these states: a gate whose
 identity is only final as recorded reads `COMPLETED`, and one that is provisional, waiting or held reads `IDENTITY
-NOT FINAL`. A result in `ApprovalCheck.Identity` (what an audit recomputed from the decision records, heads,
+NOT FINAL`. A result in `ApprovalCheck.Identity` (keyed by approver, with the digests of the tally and policy it examined, which must be the journal's current ones, and when it ran; what an audit recomputed from the decision records, heads,
 chains and status bytes) turns a final decision green (`audited`), or marks it `DISPUTED` in red: newer status shows
 a `keyCompromise` revocation effective at or before the decision became provable, which voids the count back to the
 certificate's `notBefore`. The live gate never writes a dispute, so the journal cannot show one. These are shown in the
 bad (red) style, with the reason: `incomplete identity data` (an identity tally with no `approval-identity` record that
 names it), `policy differs` (the record's policy digest is not the one the gate paused under), `policy changed` (the
 gate's notes state different digests), a certificate that is not the one the record names, a tier the page does not know
-(or a final tier on a live count of status issued before the decision), and `superseded (counted without identity)` (a
+(or a final tier whose basis is not status at or after the decision), and `identity data stripped` (a decision carries a certificate chain but nothing marks the gate identity-bound, so it is not shown as a bare-key gate), a call that ran with no identity tally, and `superseded (counted without identity)` (a
 tally under the plain name on an identity-bound gate, which the gate ignores). The page reads the journal alone: it does
 not recompute the policy digest, verify a chain or fetch status. That is the gate's work when it counts and the
 auditor's when it re-checks.

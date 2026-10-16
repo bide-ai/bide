@@ -22,9 +22,9 @@ func TestVerifyReceipt_CertBound(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("%d\n%s\n%s", code, out, errs)
 	}
-	contains(t, "identity path", out, "identity "+f.Identifier, f.DisplayName, "not part of the identity", "accepted for alice", "2026-10-13T12:15:03", "log-signer clock",
-		"revocation status was not checked", "not the gate's verdict")
-	for _, bad := range []string{"signature verifies", "provisional "} {
+	contains(t, "identity path", out, "IDENTITY "+f.Identifier, f.DisplayName, "not part of the identity", "accepted for alice", "2026-10-13T12:15:03", "log-signer clock",
+		"revocation status was NOT checked", "not the gate's verdict")
+	for _, bad := range []string{"signature verifies", "provisional ", "PASS", "\u2713"} {
 		if strings.Contains(out, bad) {
 			t.Fatalf("%q in\n%s", bad, out)
 		}

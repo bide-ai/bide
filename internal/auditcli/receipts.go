@@ -98,7 +98,7 @@ func (c *cli) verifyReceipts(args []string) {
 		return
 	}
 
-	failed, pending := 0, 0
+	failed, pending, accepted := 0, 0, 0
 	for i, r := range rs {
 		what := fmt.Sprintf("%s %s on call %s of run %s (record %s)", cleanText(r.Approver), approvedWord(r.Approved), cleanText(r.ToolUseID), cleanText(r.RunID), cleanText(r.Record))
 		if len(r.Cert) > 0 {
@@ -107,6 +107,8 @@ func (c *cli) verifyReceipts(args []string) {
 				failed++
 			case certPending:
 				pending++
+			case certAccepted:
+				accepted++
 			}
 			continue
 		}
@@ -153,11 +155,17 @@ func (c *cli) verifyReceipts(args []string) {
 		c.fail("%d of %d receipt(s) did not verify or are not committed to by the signed heads", failed, len(rs))
 		return
 	}
+	// A certificate-bound receipt is counted apart: its identity was accepted at A, with revocation not checked.
+	verified := len(rs) - accepted - pending
+	note := ""
+	if accepted > 0 {
+		note = fmt.Sprintf("; %d certificate-bound receipt(s) had their identity accepted at the time the decision became provable, revocation status not checked (not verified decisions)", accepted)
+	}
 	if pending > 0 {
-		c.printf("PASS: %d receipt(s) verified; %d not yet signed into a head (the application's next write to the run, or a recovery pass, does it)\n", len(rs), pending)
+		c.printf("PASS: %d receipt(s) verified%s; %d not yet signed into a head (the application's next write to the run, or a recovery pass, does it)\n", verified, note, pending)
 		return
 	}
-	c.printf("PASS: %d receipt(s) verified and committed to by signed heads\n", len(rs))
+	c.printf("PASS: %d receipt(s) verified and committed to by signed heads%s\n", verified, note)
 }
 
 // anchorReceiptFile adds the anchoring proof to the receipt file at path, by writing a temporary file
@@ -269,6 +277,7 @@ func (c *cli) readHeads(path string) ([]audit.SignedTreeHead, error) {
 // Outcomes of checking one certificate-bound receipt.
 const (
 	certOK = iota
+	certAccepted
 	certFailed
 	certPending
 )
@@ -296,13 +305,22 @@ func (c *cli) certReceipt(what string, r audit.DecisionReceipt, ci *audit.CertId
 		c.printf("FAIL  %s: %s: %s\n", what, f.Verdict, cleanText(f.Detail))
 		return certFailed
 	}
-	if r.Anchor == nil {
-		anchored, err := audit.AnchorReceipt(r, journal, heads, logKey)
-		if err != nil {
-			c.printf("FAIL  %s: %s\n", what, cleanText(err.Error()))
-			return certFailed
+	// A comes from the heads the caller supplied too, and the earlier of that and the receipt's own
+	// anchoring proof is used: the auditor's own list is the better source, and a later head only fails closed.
+	own := r.Anchor
+	bare := r
+	bare.Anchor = nil
+	fromHeads, err := audit.AnchorReceipt(bare, journal, heads, logKey)
+	switch {
+	case err == nil && own == nil:
+		r = fromHeads
+	case err == nil:
+		if a1, e1 := r.AnchorTime(logKey); e1 != nil || fromHeads.Anchor.STH.TimestampNanos < a1.UnixNano() {
+			r = fromHeads
 		}
-		r = anchored
+	case own == nil:
+		c.printf("FAIL  %s: %s\n", what, cleanText(err.Error()))
+		return certFailed
 	}
 	id, err := r.VerifyIdentity(ci, logKey)
 	if err != nil {
@@ -313,7 +331,7 @@ func (c *cli) certReceipt(what string, r audit.DecisionReceipt, ci *audit.CertId
 	if id.DisplayName != "" {
 		name = fmt.Sprintf(" (certificate name %s, not part of the identity)", strconv.Quote(cleanText(id.DisplayName)))
 	}
-	c.printf("PASS  %s: %s; identity %s%s accepted at %s (%s), certificate valid %s to %s, leaf %s; revocation status not checked, so this is not the gate's verdict\n", what, f.Verdict,
+	c.printf("IDENTITY  %s: %s; identity %s%s accepted at %s (%s), certificate valid %s to %s, leaf %s; revocation status NOT checked, so this is not the gate's verdict\n", what, f.Verdict,
 		cleanText(id.Identifier), name, agent.FormatTimestamp(id.AnchoredAt), id.TimeSource, agent.FormatTimestamp(id.NotBefore), agent.FormatTimestamp(id.NotAfter), id.LeafHash[:16])
-	return certOK
+	return certAccepted
 }

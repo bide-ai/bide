@@ -43,6 +43,7 @@ type GateIdentity struct {
 	Unchecked []string       `json:"unchecked,omitempty"`
 	Cards     []IdentityCard `json:"cards,omitempty"`
 	Hold      *IdentityHold  `json:"hold,omitempty"`
+	tallyDigest, recordPolicy string // the current count's, for matching an audit result
 	// Generation is the gate's newest count (0 is the first); Reasked says a call was held before
 	// execution and the gate asked again, so earlier counts are history.
 	Generation int  `json:"generation,omitempty"`
@@ -180,7 +181,7 @@ func displayName(byName map[string]agent.Record, step, leaf string) (name, probl
 	if err != nil {
 		return "", ""
 	}
-	return printable(c.Subject.CommonName), ""
+	return shorten(printable(c.Subject.CommonName), 48), ""
 }
 
 // latestIdentTally returns the :ident tally of the gate's newest count and its generation: the highest
@@ -242,7 +243,10 @@ func identNotes(recs []agent.Record, byName map[string]agent.Record, id string, 
 func identityOf(recs []agent.Record, byName map[string]agent.Record, id string, latest agent.ApprovalWait, g Gate, resulted bool) *GateIdentity {
 	bound, approvers, digest, changed := identNotes(recs, byName, id, latest)
 	tally, gen, haveTally := latestIdentTally(byName, id)
-	if !bound && !haveTally {
+	certInDecision := slices.ContainsFunc(recs, func(r agent.Record) bool {
+		return r.Kind == agent.StepApproval && r.ToolUseID == id && len(r.ApproverCert()) > 0
+	})
+	if !bound && !haveTally && !certInDecision {
 		return nil
 	}
 	gi := &GateIdentity{Bound: true, Approvers: approvers, PolicyDigest: printable(digest), Generation: gen, Reasked: gen > 0}
@@ -253,6 +257,12 @@ func identityOf(recs []agent.Record, byName map[string]agent.Record, id string, 
 	}
 	gi.PhaseText = printable(phaseWords(gi.Phase, gi.Detail))
 	problem := func(s string) { gi.Problems = append(gi.Problems, s) }
+	if !bound && !haveTally {
+		problem("identity data stripped: a decision carries a certificate chain, but the gate records no identity (no note marks it identity-bound and there is no identity tally)")
+	}
+	if resulted && !haveTally {
+		problem("the call ran, but the journal holds no identity tally for its gate")
+	}
 	if changed {
 		problem("policy changed: the gate's notes state different policy digests")
 	}
@@ -278,7 +288,9 @@ func identityOf(recs []agent.Record, byName map[string]agent.Record, id string, 
 		case digest == "":
 			problem("policy of record missing: the pause notes state no policy digest to check the identity record against")
 		}
+		gi.tallyDigest = want
 		if found {
+			gi.recordPolicy = rec.PolicyDigest
 			gi.PolicyDigest = cmpStr(gi.PolicyDigest, printable(rec.PolicyDigest))
 			for _, d := range rec.Decisions {
 				text, class := tierWords(d.Tier)
@@ -288,8 +300,8 @@ func identityOf(recs []agent.Record, byName map[string]agent.Record, id string, 
 				}
 				c := IdentityCard{Approver: printable(d.Approver), Identifier: printable(d.Identifier), DisplayName: name, Tier: printable(d.Tier), TierText: text, Class: class,
 					BasisKind: printable(d.BasisKind), Basis: printable(d.Basis), Window: printable(d.Window), TimeSource: sourceWords(d.TimeSource, d.TimeEvidence), statusAt: d.StatusTime}
-				if d.BasisKind == agent.BasisLiveBeforeDecision && class == identFinal {
-					problem("a final tier on a live count of status issued before the decision: a live count is provisional only")
+				if class == identFinal && d.BasisKind != agent.BasisAtOrAfterDecision {
+					problem("a final tier whose basis is " + cmpStr("missing", "\""+printable(d.BasisKind)+"\"") + " rather than status at or after the decision: only that basis is final (a live count is provisional only)")
 					c.Class = identBad
 				}
 				c.StatusTime, c.AnchoredAt = displayStamp(d.StatusTime), displayStamp(d.AnchoredAt)
@@ -394,24 +406,32 @@ func applyIdentityAudit(g *Gate, res map[string]IdentityAudit) {
 		return
 	}
 	all := len(gi.Cards) > 0
+	var audited []string
 	for i := range gi.Cards {
 		c := &gi.Cards[i]
 		r, ok := res[c.Approver]
 		switch {
+		case ok && (r.TallyDigest != gi.tallyDigest || r.PolicyDigest != gi.recordPolicy):
+			// An audit of another count (an older tally, another generation or policy) says nothing of this one.
+			gi.Problems = append(gi.Problems, "an audit result for "+printable(c.Approver)+" is for another count or policy than the journal's current one, and is not applied")
+			all = false
 		case !ok:
 			all = false
 		case r.Disputed:
 			c.Class, c.Disputed, all = identBad, true, false
-			gi.Problems = append(gi.Problems, "DISPUTED: "+printable(cmpStr(r.Detail, "newer status shows a revocation effective at or before the decision became provable (keyCompromise voids it back to the certificate's notBefore)")))
+			gi.Problems = append(gi.Problems, "DISPUTED: "+shorten(printable(cmpStr(r.Detail, "newer status shows a revocation effective at or before the decision became provable (keyCompromise voids it back to the certificate's notBefore)")), 200))
 		case r.OK && c.Class == identFinal:
 			c.Audited = true
+			if r.CheckedAt != "" {
+				audited = append(audited, printable(c.Approver)+" at "+displayStamp(r.CheckedAt)+" UTC")
+			}
 		default:
 			all = false
 		}
 	}
 	gi.Class, gi.Line = identityClass(gi, *g)
 	if gi.Class == identFinal && all {
-		gi.Class, gi.Line = identAudited, "identity re-checked by an audit and found as recorded"
+		gi.Class, gi.Line = identAudited, "identity re-checked by an audit ("+strings.Join(audited, ", ")+"), status as of S; revocations first reported after S are not covered"
 	}
 }
 
@@ -430,4 +450,12 @@ func markStatusAges(gates []Gate, now time.Time) {
 			}
 		}
 	}
+}
+
+// shorten cuts s to at most n runes, marking the cut.
+func shorten(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n]) + "..."
+	}
+	return s
 }
