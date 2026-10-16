@@ -350,7 +350,20 @@ func gateLines(gt Gate) (line, class, sig string) {
 	case "denied", "closed, not approved", "expired":
 		class = "bad"
 	}
+	// An approved gate whose identity is not final is never drawn in the good style, and says so.
+	if gi := gt.Identity; gi != nil && gi.Bound && state == "approved" && gi.Class != identFinal {
+		class = "wait"
+		line += ", identity not final"
+		if gi.Class == identBad {
+			class = "bad"
+			line = strings.TrimSuffix(line, ", identity not final") + ", identity NOT VERIFIED"
+		}
+	}
 	switch {
+	case gt.Identity != nil && gt.Identity.Bound:
+		// The identity block says what the count rests on; the signature line of a bare-key gate would
+		// claim more than this page checked.
+		sig = "identity: " + gt.Identity.Line
 	case gt.Single:
 		sig = "one unsigned decision"
 	case gt.SignaturesOK:
