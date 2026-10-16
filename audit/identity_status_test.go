@@ -1747,7 +1747,7 @@ func TestStatusParamsRangeIsChecked(t *testing.T) {
 	} {
 		cs := s.eval(sn, p)
 		for i, c := range cs.Certs {
-			if c.Tier != audit.TierNoInformation || c.Note == "" {
+			if c.Tier != audit.TierNoInformation || !strings.Contains(c.Note, "declared") {
 				t.Fatalf("%s: certificate %d: %+v", name, i, c)
 			}
 		}
