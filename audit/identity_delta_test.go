@@ -504,9 +504,17 @@ func TestHoldsAreRefusedByDefault(t *testing.T) {
 	if st := s.leafStatus(s.snap(s.lcrl(1, idT0, 24*hour)), audit.StatusParams{}); st.Revoked {
 		t.Fatalf("%+v", st)
 	}
-	// The chain's error names the reason.
+	// The chain's error names the reason, and says it is a policy refusal, not a recorded revocation.
 	cs := s.eval(s.snap(later), audit.StatusParams{})
 	wantStatusErr(t, cs.Err(), agent.ReasonRevoked)
+	if !cs.Certs[0].PolicyRefusal || !strings.Contains(cs.Err().Error(), "status policy") {
+		t.Fatalf("%v", cs.Err())
+	}
+	// A recorded revocation is not a policy refusal.
+	rev := s.lcrl(5, s.a.Add(time.Second), hour, testca.Revoked(s.leaf.Cert, s.a.Add(-time.Minute), 1))
+	if st := s.leafStatus(s.snap(rev), audit.StatusParams{}); !st.Revoked || st.PolicyRefusal {
+		t.Fatalf("%+v", st)
+	}
 }
 
 // Where a listing bounds the hold's start, only decisions inside [start, release] are refused: not

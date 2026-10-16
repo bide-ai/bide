@@ -569,6 +569,10 @@ type CertStatus struct {
 	// Caveat is stated with the verdict: what the status does not cover. Empty only when there is no
 	// status.
 	Caveat string
+	// PolicyRefusal: the finding is the status policy refusing a certificate that was ever on hold
+	// (StatusParams.AllowHolds off), not a revocation the CA recorded for the decision's time. It
+	// refuses even a decision made before a later hold, so it must not be read as "revoked at E".
+	PolicyRefusal bool
 	// Basis says what the status rests on: "status issued at or after the decision", or "live count:
 	// status issued before the decision (provisional only)". A tier is not a verification: only Final
 	// is, and a live count never is. Empty when there is no status.
@@ -614,6 +618,9 @@ func (cs ChainStatus) IsFinal() bool {
 // ReasonStatusUnknown.
 func (cs ChainStatus) Err() error {
 	for i, c := range cs.Certs {
+		if c.Revoked && c.PolicyRefusal {
+			return statusErr(agent.ReasonRevoked, "certificate %d of the chain (serial %s) is refused by the status policy, not by a recorded revocation: %s", i, c.Serial, c.Note)
+		}
 		if c.Revoked {
 			return statusErr(agent.ReasonRevoked, "certificate %d of the chain (serial %s) is revoked with effective time %s, reason code %d",
 				i, c.Serial, c.E.UTC().Format(time.RFC3339), c.ReasonCode)
@@ -749,6 +756,7 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, evict
 				if !p.AllowHolds {
 					st.Revoked, st.E, st.ReasonCode, st.RevokedBy = true, cert.NotBefore, e.code, v.hash
 					st.Note = "the certificate has been on hold (certificateHold or removeFromCRL), which this policy does not accept (StatusParams.AllowHolds)"
+					st.PolicyRefusal = true
 					return st
 				}
 				if e.code == 6 {
