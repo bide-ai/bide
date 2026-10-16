@@ -881,24 +881,24 @@ func RecordedTally(byName map[string]Record, toolUseID string) (r Record, ok boo
 // the outcome.
 func SupersededTallies(byName map[string]Record, outcome string) []string {
 	var out []string
-	for cur := outcome; len(out) < maxSuperseded; {
+	// The whole chain: a certificate-bound gate has one tally per generation, and a shorter list would
+	// show an evidence of a long chain as complete. A name seen twice ends it (a journal that loops).
+	seen := map[string]bool{outcome: true}
+	for cur := outcome; ; {
 		var t ApprovalTally
 		r, ok := byName[cur]
-		if !ok || json.Unmarshal(r.Result, &t) != nil || t.Supersedes == "" || t.Supersedes == cur {
+		if !ok || json.Unmarshal(r.Result, &t) != nil || t.Supersedes == "" || seen[t.Supersedes] {
 			break
 		}
 		if _, ok := byName[t.Supersedes]; !ok {
 			break
 		}
+		seen[t.Supersedes] = true
 		out = append([]string{t.Supersedes}, out...)
 		cur = t.Supersedes
 	}
 	return out
 }
-
-// maxSuperseded bounds the chain SupersededTallies follows: the format and separation-of-duties
-// re-tallies, a plain-name tally superseded by an identity one, and the exec-hold generations.
-const maxSuperseded = 64
 
 // predatesFormat reports whether t is a tally that passed on decisions signed before
 // DecisionFormat: a terminal tally journaled by an earlier version, which carries no format. Its

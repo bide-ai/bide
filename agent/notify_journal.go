@@ -66,7 +66,7 @@ func JournalNotifyEvents(runID string, recs []Record) []JournalNotifyEvent {
 		at, _ := time.Parse(time.RFC3339Nano, w.RecordedAt)
 		ev := JournalNotifyEvent{
 			Key: ApprovalKey(runID, w.ToolUseID, 0), Kind: NotificationApprovalPending, RunID: root, At: at,
-			Current: !slices.ContainsFunc(gateDecidedNames(w.ToolUseID), func(n string) bool { return have[n] }),
+			Current: !slices.ContainsFunc(gateDecidedNamesIn(recs, w.ToolUseID), func(n string) bool { return have[n] }),
 		}
 		first := 0
 		if w.Reask != "" || r.Name != ApprovalPendingStep(w.ToolUseID) {

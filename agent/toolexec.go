@@ -196,6 +196,9 @@ func countGate(recs []Record, runID string, s ApprovalSubject, pol *ApprovalPoli
 	if err := checkRequester(*pol, recs, runID, s.ToolUseID); err != nil {
 		return gateCount{}, err
 	}
+	if err := checkBoundPolicy(recs, runID, s.ToolUseID, pol, verifierFor); err != nil {
+		return gateCount{}, err
+	}
 	rp, _ := RecordedPrincipal(recs)
 	byName := GateTallyValues(recs, s.ToolUseID)
 	name, supersedes, gen, reask := ApprovalTallyStep(s.ToolUseID), "", 0, ""
@@ -212,7 +215,7 @@ func countGate(recs []Record, runID string, s ApprovalSubject, pol *ApprovalPoli
 			case t.ExcludePrincipal && !slices.Equal(t.Requesters, rp.Requesters()):
 				return gateCount{}, fmt.Errorf("run %s: the approval tally %s excluded requesters %q, but the run's run:principal names %q: %w", runID, st.outcome.Name, t.Requesters, rp.Requesters(), ErrConfig)
 			case supersededForSoD(t, pol):
-				return gateCount{}, fmt.Errorf("run %s: the approval tally %s of a certificate-bound gate passed without excluding the requester, whom the gate now excludes; the call did not run, and the gate cannot count again in place (cancel the run, or re-run the call as a new one): %w", runID, st.outcome.Name, ErrConfig)
+				return gateCount{}, fmt.Errorf("run %s: the approval tally %s of a certificate-bound gate passed without excluding the requester, whom the gate now excludes; the call did not run, and the gate cannot count again in place (cancel the run, or re-run the call as a new one): %w (%w)", runID, st.outcome.Name, ErrConfig, ErrGateNeedsNewRun)
 			}
 			return gateCount{tally: t, recorded: true, name: st.outcome.Name}, nil
 		}

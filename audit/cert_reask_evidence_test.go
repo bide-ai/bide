@@ -2,6 +2,8 @@ package audit_test
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/json"
 	"slices"
 	"testing"
@@ -117,6 +119,26 @@ func TestApprovalEvidence_BoundGateNamesItsTally(t *testing.T) {
 	}
 }
 
+// certLike makes a bare Ed25519 approver certificate-bound for the gate (it implements
+// agent.CertDecisionVerifier, so the gate files its tally under the identity names), and checks the decision
+// the way the bare-key verifier does: no chain, no status, the v3 signature over the call. It stands in for
+// audit.CertApprover where a test needs only the gate's naming and the chain's evidence.
+type certLike struct {
+	id  string
+	pub ed25519.PublicKey
+}
+
+func (certLike) Alg() agent.Alg                 { return agent.AlgCertificate }
+func (certLike) Verify(message, sig []byte) bool { return false }
+func (c certLike) KeyIDs() []string              { return []string{"ident:" + c.id} }
+func (c certLike) VerifyCertDecision(cd agent.CertDecision) agent.CertCheck {
+	decidedAt, err := agent.ParseTimestamp(cd.Record.DecidedAt())
+	if err != nil || !ed25519.Verify(c.pub, agent.ApprovalDecisionBytes(cd.Subject, cd.Record.Approver(), cd.Record.Approved, decidedAt), cd.Record.Signature()) {
+		return agent.CertCheck{Reason: agent.ReasonBadSig}
+	}
+	return agent.CertCheck{Identity: c.id, KeyHash: sha256.Sum256(c.pub), Tier: "final"}
+}
+
 // holdChainGate is a gate of bare-key approvers whose journal carries an identity tally chain written by
 // hand (the verdict's recount is the bare-key one): generation 0 counted alice, an exec hold of
 // generation 0 superseded it, bob's decision is counted at generation 1 and the tool ran on that.
@@ -127,6 +149,10 @@ func holdChainGate(t *testing.T, holdLate bool) *gate { return holdChainGateAt(t
 func holdChainGateAt(t *testing.T, holdLate, holdEarly bool) *gate {
 	t.Helper()
 	g := newGate(1, []string{"alice", "bob"}, []string{"alice", "bob"})
+	g.custom = func(id string) (agent.ApproverVerifier, bool) {
+		pub, ok := g.pubs[id]
+		return certLike{id: id, pub: pub}, ok
+	}
 	wantPaused(t, g.run(), 0)
 	g.decide(t, "alice", true, false)
 	g.decide(t, "bob", true, false)

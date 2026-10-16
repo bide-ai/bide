@@ -445,3 +445,149 @@ func TestGateTallyRecords(t *testing.T) {
 		t.Fatalf("%v, want %v", gotNames, want)
 	}
 }
+
+// ---- a bound gate is never counted with bare keys ----
+
+// bareRun resumes the gate under a policy whose resolver knows only bare keys for both approvers.
+func (g *boundGate) bareRun() error {
+	g.t.Helper()
+	_, err := mofnRun(g.store, "r1", false, g.pol, fakeVerifiers("alice", "bob"), &g.charged)
+	return err
+}
+
+// The journal says the gate is certificate-bound after its first pause, after its first count and
+// after a hold; in each case a policy that lost the certificate-bound approvers is refused, and the
+// call does not run.
+func TestBoundGate_DowngradeIsRefused(t *testing.T) {
+	// after the pause note
+	g := newBoundGate(t)
+	_, _ = g.run()
+	approveAs(t, g.store, "r1", "c1", "alice", true) // a bare-key decision on a bare resolver
+	if err := g.bareRun(); !errors.Is(err, ErrConfig) || g.charged != 0 {
+		t.Fatalf("after the note: %v charged %d", err, g.charged)
+	}
+	// after the first count (no pause note is needed: the identity tally says it)
+	g = newBoundGate(t)
+	_, _ = g.run()
+	g.decide("alice")
+	vf := certResolver(map[string]ApproverVerifier{"alice": g.alice, "bob": g.bob})
+	if _, final, err := tallyGate(context.Background(), g.store, "r1", subjectOf(t, g.store, "r1", "c1"), g.pol, vf, ""); err != nil || !final {
+		t.Fatalf("%v %v", final, err)
+	}
+	if err := g.bareRun(); !errors.Is(err, ErrConfig) || g.charged != 0 {
+		t.Fatalf("after the tally: %v charged %d", err, g.charged)
+	}
+	// after a hold: the generation-1 count must not be made with bare keys
+	g = newBoundGate(t)
+	g.holdGenerationZero()
+	approveAs(t, g.store, "r1", "c1", "bob", true)
+	if err := g.bareRun(); !errors.Is(err, ErrConfig) || g.charged != 0 {
+		t.Fatalf("after the hold: %v charged %d", err, g.charged)
+	}
+	if g.has(ApprovalIdentTallyStep("c1", 1)) || g.has(ApprovalTallyStep("c1")) {
+		t.Fatal("a tally was recorded by the downgraded policy")
+	}
+}
+
+// A policy with other approver kinds than the gate was asked under (here bob became bare) is refused too.
+func TestBoundGate_ChangedKindsAreRefused(t *testing.T) {
+	g := newBoundGate(t)
+	_, _ = g.run()
+	vf := func(id string) (ApproverVerifier, bool) {
+		if id == "alice" {
+			return g.alice, true
+		}
+		return fakeVerifier{id: id}, true
+	}
+	if _, err := mofnRun(g.store, "r1", false, g.pol, vf, &g.charged); !errors.Is(err, ErrConfig) || g.charged != 0 {
+		t.Fatalf("%v charged %d", err, g.charged)
+	}
+}
+
+// A bare-key gate is not affected by the check: no note says bound.
+func TestBareGate_IsNotRefused(t *testing.T) {
+	store := memJournal()
+	pol := &ApprovalPolicy{Need: 1, Approvers: []string{"alice"}}
+	var charged int
+	_, _ = mofnRun(store, "r1", true, pol, fakeVerifiers("alice"), &charged)
+	if bound, _ := journalBound(mustHistory(t, store, "r1"), "c1"); bound {
+		t.Fatal("a bare-key gate reads as bound")
+	}
+}
+
+// A flow gate never takes a plain-name pass as its outcome, and never the pass of a stale replica over an
+// identity tally: with a policy that has no certificate approver (a downgrade) it is refused, not run.
+func TestFlowGate_PlainPassOverBoundJournalIsNotTaken(t *testing.T) {
+	ctx := context.Background()
+	for name, setup := range map[string]func(*Journal, string){
+		"ident tally held": func(j *Journal, key string) {
+			writeRaw(t, j, "r1", ApprovalIdentTallyStep(key, 0), valueRec(t, ApprovalIdentTallyStep(key, 0), passedTally()))
+			writeRaw(t, j, "r1", ApprovalExecHoldStep(key, 0), holdFor(t, key, 0))
+		},
+		"ident denial": func(j *Journal, key string) {
+			writeRaw(t, j, "r1", ApprovalIdentTallyStep(key, 0), valueRec(t, ApprovalIdentTallyStep(key, 0), deniedTally()))
+		},
+		"bound note": func(j *Journal, key string) {
+			w := ApprovalWait{ToolUseID: key, ToolName: "pay", Need: 1, Approvers: []string{"alice", "bob"}, IdentityBound: true, Pause: PauseAwaitingAnchor}
+			writeRaw(t, j, "r1", ApprovalPauseStep(key, 1), valueRec(t, ApprovalPauseStep(key, 1), w))
+		},
+	} {
+		j := memJournal()
+		g := newBoundGate(t)
+		args := json.RawMessage(`{"amount":1}`)
+		bare := fakeVerifiers("alice", "bob")
+		_, _ = flowGate(ctx, j, "r1", "node:pay", "pay", args, g.pol, bare)
+		setup(j, "node:pay")
+		writeRaw(t, j, "r1", ApprovalTallyStep("node:pay"), valueRec(t, ApprovalTallyStep("node:pay"), passedTally()))
+		ok, err := flowGate(ctx, j, "r1", "node:pay", "pay", args, g.pol, bare)
+		if name == "ident denial" {
+			// an identity denial is the outcome whatever the policy says: the node does not run
+			if ok {
+				t.Errorf("%s: the node ran", name)
+			}
+			continue
+		}
+		if ok || !errors.Is(err, ErrConfig) {
+			t.Errorf("%s: ok %v err %v", name, ok, err)
+		}
+	}
+}
+
+// A long chain of generations is listed whole.
+func TestSupersededTallies_LongChainIsWhole(t *testing.T) {
+	var recs []Record
+	for g := 0; g < 100; g++ {
+		tl := passedTally()
+		if g > 0 {
+			tl.Supersedes = ApprovalIdentTallyStep("c1", g-1)
+		}
+		recs = append(recs, valueRec(t, ApprovalIdentTallyStep("c1", g), tl))
+	}
+	if got := SupersededTallies(namesOf(recs...), ApprovalIdentTallyStep("c1", 99)); len(got) != 99 || got[0] != ApprovalIdentTallyStep("c1", 0) {
+		t.Fatalf("%d names", len(got))
+	}
+	// A journal that loops ends the walk.
+	a, b := passedTally(), passedTally()
+	a.Supersedes, b.Supersedes = "y", "x"
+	loop := namesOf(valueRec(t, "x", a), valueRec(t, "y", b))
+	if got := SupersededTallies(loop, "x"); len(got) != 1 {
+		t.Fatalf("%v", got)
+	}
+}
+
+// The read paths report the separation-of-duties dead end by its sentinel.
+func TestEvaluateGate_BoundNeedsNewRun(t *testing.T) {
+	g := newBoundGate(t)
+	vf := certResolver(map[string]ApproverVerifier{"alice": g.alice, "bob": g.bob})
+	var charged int
+	_, _ = sodRun(g.store, "r1", true, g.pol, vf, &charged, Identity{OnBehalfOf: "zed"})
+	g.decide("alice")
+	if _, final, err := tallyGate(context.Background(), g.store, "r1", subjectOf(t, g.store, "r1", "c1"), g.pol, vf, ""); err != nil || !final {
+		t.Fatalf("%v %v", final, err)
+	}
+	pol := &ApprovalPolicy{Need: 1, Approvers: []string{"alice", "bob"}, ExcludePrincipal: true}
+	st := EvaluateGate(mustHistory(t, g.store, "r1"), subjectOf(t, g.store, "r1", "c1"), pol, vf)
+	if st.Status != GateMisconfigured || !errors.Is(st.Err, ErrGateNeedsNewRun) || !errors.Is(st.Err, ErrConfig) {
+		t.Fatalf("%+v", st)
+	}
+}

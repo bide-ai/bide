@@ -357,9 +357,22 @@ expiry included, never under the plain name. The identity record of the count
   hold that is not between the tally it holds and the tally that replaces it. Evidence is a selection the
   producer makes: a verifier cannot tell that a hold and the tally that replaced it were left out, which a
   check of the complete journal does.
+- **A bound gate is never counted with bare keys.** Whether a gate is certificate-bound is read from its
+  journal as well as from the policy: an identity tally, an exec hold, or a pause or pending note that says
+  `identity_bound`. A policy or resolver that has since lost the certificate-bound approvers (a downgrade, or
+  a replica configured without them), or that names other approver kinds than the gate was asked under, is
+  refused with `ErrConfig` on every evaluation, so no generation is counted and the call does not run. To
+  drop the certificate-bound approvers deliberately, cancel the run and start the call again.
 - **Separation of duties cannot be turned on after the count.** If a certificate-bound gate's recorded tally
   passed without excluding the requester and the policy now excludes it, the gate refuses with `ErrConfig`
-  instead of asking again in place (it has no re-tally name for that case); the call does not run.
+  instead of asking again in place (it has no re-tally name for that case); the call does not run. The error
+  also wraps `agent.ErrGateNeedsNewRun`, which `agent.EvaluateGate` and the approvals views carry in
+  `GateStanding.Err` (status `GateMisconfigured`) so a reader can say "needs a new run": cancel the run and
+  start the call again.
+- **A hold is a journal value, like a tally.** Anyone who can write the journal can write a plain-name tally
+  or an exec hold: the first forces a re-ask of a bound gate, the second makes the gate count again. Both
+  are availability effects within the journal's own trust boundary; a hold cannot undo a denial or skip one,
+  and the new count passes again if nothing changed.
 
 ### A decision written by another process
 

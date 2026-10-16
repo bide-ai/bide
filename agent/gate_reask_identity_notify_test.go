@@ -108,6 +108,15 @@ func TestIdentReask_PlainSupersededNotification(t *testing.T) {
 	if decided, _ := e.gateDecided(context.Background(), "r1", "c1", PendingIdentReapproval, 0); decided {
 		t.Fatal("the plain tally it asks over ends the re-ask")
 	}
+	// A plain-name tally on a certificate-bound gate (a stale replica wrote it) does not end its first ask.
+	if decided, _ := e.gateDecided(context.Background(), "r1", "c1", "", 0); decided {
+		t.Fatal("a superseded plain tally ends the first ask")
+	}
+	for _, v := range JournalNotifyEvents("r1", mustHistory(t, g.store, "r1")) {
+		if v.Key == ApprovalKey("r1", "c1", 0) && !v.Current {
+			t.Fatal("the journal reads the first ask as decided by a superseded plain tally")
+		}
+	}
 }
 
 // Forged or stale notes are not read: a hold-less generation-1 note, a note whose Supersedes does not

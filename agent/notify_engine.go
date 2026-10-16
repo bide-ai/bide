@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"slices"
 	"sync"
 	"time"
 )
@@ -1028,11 +1029,37 @@ func (e *notifyEngine) gateDecided(ctx context.Context, run, call, reask string,
 		names = reaskDecidedNames(call, reask, gen)
 	}
 	for _, name := range names {
-		if ok, err := e.hasRecord(ctx, run, name); err != nil || ok {
-			return ok, err
+		ok, err := e.hasRecord(ctx, run, name)
+		if err != nil {
+			return false, err
 		}
+		if !ok {
+			continue
+		}
+		if reask == "" && name == ApprovalTallyStep(call) {
+			// A plain-name tally on a certificate-bound gate is superseded (a stale replica wrote it): it
+			// does not end the gate's first ask.
+			recs, err := e.j.History(ctx, run)
+			if err != nil {
+				return false, err
+			}
+			if bound, _ := journalBound(recs, call); bound {
+				continue
+			}
+		}
+		return true, nil
 	}
 	return false, nil
+}
+
+// gateDecidedNamesIn is gateDecidedNames for a reader that holds the run's records: without the
+// plain-name tally when the journal says the gate is certificate-bound, since that tally is superseded.
+func gateDecidedNamesIn(recs []Record, call string) []string {
+	names := gateDecidedNames(call)
+	if bound, _ := journalBound(recs, call); bound {
+		names = slices.DeleteFunc(names, func(n string) bool { return n == ApprovalTallyStep(call) })
+	}
+	return names
 }
 
 // gateDecidedNames are the journal names whose presence ends the gate of call.

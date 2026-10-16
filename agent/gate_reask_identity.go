@@ -2,6 +2,8 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -195,4 +197,55 @@ func gateTallyRecords(get func(name string) (Record, bool, error), toolUseID str
 		}
 		out = append(out, r)
 	}
+}
+
+// ErrGateNeedsNewRun is wrapped (with ErrConfig) by the error of a certificate-bound gate that cannot go
+// on in place: its recorded count passed without excluding the requester and the policy now excludes
+// them, so no re-ask can be named. The drive refuses; a reader of the gate (EvaluateGate) reports the
+// same error as GateMisconfigured, and an operator cancels the run and starts the call again.
+var ErrGateNeedsNewRun = errors.New("the gate needs a new run")
+
+// journalBound reports what the journal says of the gate of toolUseID, whatever the policy is now: that
+// it is certificate-bound (an identity tally, an exec hold, or a pending or phase note with
+// identity_bound), and the identity_kinds digest of the newest note that says so ("" when none does).
+// A gate that is bound is never counted with bare keys: a policy or resolver that lost its
+// certificate-bound approvers (a downgrade, a replica configured without them) is refused.
+func journalBound(recs []Record, toolUseID string) (bound bool, kinds string) {
+	pending := ApprovalPendingStep(toolUseID)
+	pausePrefix := "approval-pause:" + encodeID(toolUseID) + ":"
+	tallyPrefix := ApprovalTallyStep(toolUseID) + ":ident"
+	holdPrefix := "approval-exec-hold:" + encodeID(toolUseID) + ":"
+	for _, r := range recs {
+		if r.Kind != StepValue {
+			continue
+		}
+		switch {
+		case r.Name == tallyPrefix || strings.HasPrefix(r.Name, tallyPrefix+"-reask:") || strings.HasPrefix(r.Name, holdPrefix):
+			bound = true
+		case r.Name == pending || strings.HasPrefix(r.Name, pending+":") || strings.HasPrefix(r.Name, pausePrefix):
+			var w ApprovalWait
+			if json.Unmarshal(r.Result, &w) == nil && w.ToolUseID == toolUseID && w.IdentityBound {
+				bound, kinds = true, w.IdentityKinds
+			}
+		}
+	}
+	return bound, kinds
+}
+
+// checkBoundPolicy refuses (ErrConfig) a policy that does not match what the journal says of the gate: the
+// gate is certificate-bound and pol has no certificate-bound approver, or the approvers' kinds
+// (bare or certificate) differ from those the gate's note recorded.
+func checkBoundPolicy(recs []Record, runID, toolUseID string, pol *ApprovalPolicy, verifierFor ApproverVerifierFor) error {
+	bound, kinds := journalBound(recs, toolUseID)
+	if !bound {
+		return nil
+	}
+	ids, _ := identityApprovers(pol, verifierFor)
+	switch {
+	case len(ids) == 0:
+		return fmt.Errorf("run %s: the approval gate on %s is certificate-bound (its journal says so), but the policy now has no certificate-bound approver; a gate is never counted with bare keys after it was bound, so the call does not run (cancel the run and start the call again if the downgrade is intended): %w", runID, toolUseID, ErrConfig)
+	case kinds != "" && identityKinds(pol, ids) != kinds:
+		return fmt.Errorf("run %s: the approval gate on %s was asked with other certificate-bound approvers than the policy now names (its recorded approver kinds differ); the call does not run (cancel the run and start the call again if the change is intended): %w", runID, toolUseID, ErrConfig)
+	}
+	return nil
 }

@@ -170,21 +170,29 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 		if err != nil {
 			return false, fmt.Errorf("read %s (run %s): %w (%w)", ApprovalTallyStep(key), runID, err, ErrStorage)
 		}
-		// A gate with a certificate-bound approver does not take a plain-name tally as its outcome: it
-		// is superseded (tallyGate below counts under the identity tally name).
-		if ok && r.Kind == StepValue && !isBound(pol, verifierFor) {
-			t, err := decodeTally(runID, r)
+		// A gate with a certificate-bound approver records under ApprovalIdentTallyStep, and a plain-name
+		// tally beside an identity tally, or on a gate whose notes say it is bound, is superseded:
+		// tallyGate decides that from the whole journal, whatever the policy is now. So the plain tally is
+		// taken here only when the gate has no identity tally and its first note does not say it is bound.
+		if ok && r.Kind == StepValue {
+			bound, err := flowBound(ctx, d, runID, key)
 			if err != nil {
 				return false, err
 			}
-			// A denial is final. A pass is final unless it predates this format, or separation of
-			// duties is in play (the policy or the tally excludes the requester): tallyGate then
-			// decides, below, from the whole journal (a re-approval tally may supersede this one).
-			if t.Expired {
-				return false, expiredErr(node, t.ExpiresAt)
-			}
-			if !t.Passed() || !predatesFormat(t) && !pol.ExcludePrincipal && !t.ExcludePrincipal {
-				return t.Passed(), nil
+			if !bound {
+				t, err := decodeTally(runID, r)
+				if err != nil {
+					return false, err
+				}
+				// A denial is final. A pass is final unless it predates this format, or separation of
+				// duties is in play (the policy or the tally excludes the requester): tallyGate then
+				// decides, below, from the whole journal (a re-approval tally may supersede this one).
+				if t.Expired {
+					return false, expiredErr(node, t.ExpiresAt)
+				}
+				if !t.Passed() || !predatesFormat(t) && !pol.ExcludePrincipal && !t.ExcludePrincipal {
+					return t.Passed(), nil
+				}
 			}
 		}
 	}
@@ -258,6 +266,7 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 	if !single {
 		w.Need, w.Approvers = pol.Need, slices.Clone(pol.Approvers)
 		w.ExcludePrincipal, w.Requesters = pol.ExcludePrincipal, requesters
+		addIdentityFields(&w, pol, verifierFor)
 	}
 	if b, err := json.Marshal(w); err == nil {
 		_, _ = d.put(ctx, runID, ApprovalPendingStep(key), Record{Kind: StepValue, Result: b})
@@ -271,6 +280,24 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 }
 
 // protocol:flows end
+
+// flowBound reports, with point reads, whether the journal says the flow gate on key is certificate-bound:
+// an identity tally of generation 0, or a first note (ApprovalPendingStep) with identity_bound.
+func flowBound(ctx context.Context, d *Journal, runID, key string) (bool, error) {
+	_, ok, err := d.Get(ctx, runID, ApprovalIdentTallyStep(key, 0))
+	if err != nil {
+		return false, fmt.Errorf("read %s (run %s): %w (%w)", ApprovalIdentTallyStep(key, 0), runID, err, ErrStorage)
+	}
+	if ok {
+		return true, nil
+	}
+	n, ok, err := d.Get(ctx, runID, ApprovalPendingStep(key))
+	if err != nil {
+		return false, fmt.Errorf("read %s (run %s): %w (%w)", ApprovalPendingStep(key), runID, err, ErrStorage)
+	}
+	var w ApprovalWait
+	return ok && json.Unmarshal(n.Result, &w) == nil && w.IdentityBound, nil
+}
 
 // approvalAfterRequestStep is the second name a plan flow node's one-decision gate takes a decision
 // under, when a record written before the gate's request holds its first name (approvalStep): that

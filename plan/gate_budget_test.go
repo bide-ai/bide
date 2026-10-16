@@ -52,7 +52,9 @@ func TestGate_StoreBudget(t *testing.T) {
 	}
 	want("the outcome", c, 3, 2, 1)
 	c, _ = eval()
-	want("a decided gate", c, 1, 0, 0)
+	// The plain tally, then two point reads that tell a bare gate from a certificate-bound one (an identity
+	// tally of generation 0, the first note): never a Load or an Insert.
+	want("a decided gate", c, 3, 0, 0)
 
 	// The first pause, in a run whose journal is open (as Run's has been by then).
 	if _, err := journaltest.Put(ctx, j, "r3", "flow:digest", agent.Record{Kind: agent.StepValue, Result: []byte(`"x"`)}); err != nil {
