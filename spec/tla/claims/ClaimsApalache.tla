@@ -160,6 +160,8 @@ VARIABLES
   tally,
   \* @type: Str -> { rec: Bool, passed: Bool, pol: Str, signers: Set(Str), excl: Int, denials: Int, seated: Set(Str), exp: Bool, late: Bool, lfs: Set(Str) };
   stally,
+  \* @type: Str -> Seq({ rec: Bool, passed: Bool, pol: Str, signers: Set(Str), excl: Int, denials: Int, seated: Set(Str), exp: Bool, late: Bool, lfs: Set(Str) });
+  rt,
   \* @type: Str -> (Str -> Str);
   policy,
   \* @type: Int;
@@ -216,6 +218,8 @@ VARIABLES
   loadDenied,
   \* @type: Str -> Bool;
   exr,
+  \* @type: Str -> Bool;
+  checked,
   \* @type: Str -> Str;
   rc,
   \* @type: Str -> Int;

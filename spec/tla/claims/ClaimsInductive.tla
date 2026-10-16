@@ -94,6 +94,7 @@ TypeCommon ==
   /\ dlog = [c \in Calls |-> <<>>]
   /\ tally = [c \in Calls |-> NoTally]
   /\ stally = [c \in Calls |-> NoTally]
+  /\ rt = [c \in Calls |-> <<>>]
   /\ policy = [p \in Procs |-> Policy0]
   /\ approves1 = 0
   /\ submits = 0
@@ -124,6 +125,7 @@ TypeCommon ==
   /\ qt = [d \in Drivers |-> NoTally]
   /\ loadDenied = [d \in Drivers |-> FALSE]
   /\ exr = [d \in Drivers |-> FALSE]
+  /\ checked = [d \in Drivers |-> FALSE]
   /\ rc \in [ResolverSet -> Calls \cup {None}]
   /\ rg \in [ResolverSet -> Gens]
   /\ rreply \in [ResolverSet -> Replies]

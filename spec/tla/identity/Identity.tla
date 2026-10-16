@@ -157,12 +157,14 @@ Old(age) == {k \in 1..np : ctu[k] <= now - age}
 Seen(age) == rcvd \cup Old(age)
 
 FreshSnap(age) == snap # 0 /\ now - ctu[snap] <= age
-\* The series shows nothing was published between a CRL and its predecessor in the archive: the
-\* number follows (Cov "number") or, with Cov "time", it was issued within the declared Period; either
-\* way within the predecessor's nextUpdate. With Cov "none" nothing is shown.
+\* The series shows nothing was published between a CRL and its predecessor in the archive: with Cov
+\* "number" the number follows; with Cov "time" it was issued within the declared Period (and the CA
+\* publishes no more often than that). With Cov "none" nothing is shown. (The nextUpdate condition of
+\* the Go rule guards against a certificateHold placed and released unseen; holds are not modelled.)
 Follows(p, k) ==
-  /\ Cov # "none" /\ ctu[k] <= ctu[p] + Period
+  /\ Cov # "none"
   /\ (Cov = "number" => k = p + 1)
+  /\ (Cov = "time" => ctu[k] <= ctu[p] + Period)
 \* L(C): the first received CRL beyond notAfter, established when the archive has a predecessor it
 \* follows. A CRL beyond notAfter is read for absence only if it is L(C) (RFC 5280 section 3.3: a CA
 \* may have dropped the entry from any later one).
