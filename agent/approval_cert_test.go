@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -308,5 +309,54 @@ func TestSubmitDecision_CheckSameDecisionIncludesTheLeaf(t *testing.T) {
 	d := Decision{RunID: "r", ToolUseID: "c1", ApproverID: "a", Approved: true, DecidedAt: testDecidedAt, Alg: fakeAlg, Signature: v3sig}
 	if err := SubmitDecision(ctx, j, d, WithDecisionCheck(vf)); !errors.Is(err, ErrAlreadyDecided) {
 		t.Fatalf("a bare decision beside a chain-carrying record of the approver: %v", err)
+	}
+}
+
+// L3: HeldDecisionStep compares the leaf too. A record at the signature-derived name that carries
+// another leaf (or a chain where the decision has none) is not the decision being asked about.
+func TestHeldDecisionStep_ComparesTheLeaf(t *testing.T) {
+	ctx := context.Background()
+	j, vf, v3sig := pausedOne(t)
+	d := Decision{RunID: "r", ToolUseID: "c1", ApproverID: "a", Approved: true, DecidedAt: testDecidedAt, Alg: fakeAlg, Signature: v3sig}
+	at := FormatTimestamp(testDecidedAt)
+	name := approvalDecisionStep("c1", "a", true, fakeAlg, at, v3sig)
+	rec := Record{Kind: StepApproval, ToolUseID: "c1", Approved: true, ApproverSignature: &ApproverSignature{
+		Approver: "a", ApproverAlg: fakeAlg, Signature: v3sig, DecidedAt: at, ApproverCert: [][]byte{[]byte("leaf")}}}
+	if _, err := j.put(ctx, "r", name, rec); err != nil {
+		t.Fatal(err)
+	}
+	if n, held, _, err := HeldDecisionStep(ctx, j, d, vf); err != nil || held {
+		t.Fatalf("a bare decision held by a record that carries a chain: %q %v %v", n, held, err)
+	}
+	d.Cert = [][]byte{[]byte("leaf")}
+	// The identity name now differs (it carries the leaf), the signature-derived one is the record's.
+	if n, held, _, err := HeldDecisionStep(ctx, j, d, vf); err != nil || !held || n != name {
+		t.Fatalf("the same leaf: %q %v %v", n, held, err)
+	}
+	d.Cert = [][]byte{[]byte("another leaf")}
+	if _, held, _, err := HeldDecisionStep(ctx, j, d, vf); err != nil || held {
+		t.Fatalf("another leaf held: %v %v", held, err)
+	}
+}
+
+// L4: a bare-key (v3) signature can be journaled under any number of chains, each a record under its
+// own name (the leaf is in the name). The counting rule still counts the approver once, so this fills
+// the journal but never counts one decision as several. Refusing a chain for an approver whose kind is
+// known to be bare-key needs the kind, which the resolver does not carry in this version: that check
+// is the certificate-bound verifier's (design note, build step E).
+func TestTally_OneBareKeyDecisionUnderManyChainsCountsOnce(t *testing.T) {
+	j, vf, v3sig := pausedOne(t)
+	s := subjectOf(t, j, "r", "c1")
+	at := FormatTimestamp(testDecidedAt)
+	v3sig = append([]byte{1}, v3sig...)
+	var recs []Record
+	for i := range 3 {
+		recs = append(recs, Record{Name: fmt.Sprintf("approval:c1:a:%02d", i), Kind: StepApproval, ToolUseID: "c1", Approved: true,
+			ApproverSignature: &ApproverSignature{Approver: "a", ApproverAlg: fakeAlg, Signature: v3sig, DecidedAt: at, ApproverCert: [][]byte{{byte(i + 1)}}}})
+	}
+	pol := ApprovalPolicy{Need: 2, Approvers: []string{"a", "b"}}
+	got, _ := TallyApprovals(recs, s, pol, vf)
+	if got.Passed() || got.Approved != 1 {
+		t.Fatalf("one decision under three chains counted as %+v", got)
 	}
 }

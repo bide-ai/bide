@@ -53,6 +53,7 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `var ErrMalformed`: ErrMalformed reports an artifact that cannot be read as what it claims to be.
 - `var ErrFormat`: ErrFormat reports an artifact whose "format" is missing or is not the one this version of the package reads: an artifact produced by an older (or newer) release.
 - `var ErrNotVerified = errors.New("audit: not verified")`: ErrNotVerified reports an artifact that was read and understood and does not hold.
+- `var ErrCertificateBound`: ErrCertificateBound reports a certificate-bound decision receipt given to DecisionReceipt.Verify, which knows only a key: use DecisionReceipt.VerifyCertificate.
 - `var ErrRedacted`: ErrRedacted reports a journal holding a redacted record (agent.Record.Redacted) given to a producer that projects what the records say (an absence key set, a used-policy set, the event stream): the redacted record's content is gone, so the projection would silently omit it, and a key set without it would prove absent a call the journal tree commits.
 - `var EarnedRules`: EarnedRules is the ScopeRules an earned grant attenuates its root under.
 - `var ErrRootMismatch`: ErrRootMismatch is wrapped by the error of a proof or check that finds a signed tree head's root is not the root of the run's journal at the head's size: the journal was changed after the head was signed, or the head is for another history.
@@ -604,9 +605,9 @@ DecisionReceipt is one signed approver decision, with the journal record that ho
 
 **Methods**
 
-- `func (r DecisionReceipt) AnchorTime(logKey Verifier) (time.Time, error)`: AnchorTime is the time of the head that anchors the receipt: the timestamp of the smallest signed head covering the decision, which is when the decision became provable (A in the design note), as logKey vouches for the proof.
+- `func (r DecisionReceipt) AnchorTime(logKey Verifier) (time.Time, error)`: AnchorTime is the timestamp of the signed head the receipt's proof carries, as logKey vouches for it.
 - `func (r DecisionReceipt) Verify(v Verifier) error`: Verify checks the receipt on its own: it is of ReceiptFormat, its arguments hash to ArgsSHA, and Signature is a valid signature, by the approver's key v, over the decision bytes (agent.ApprovalDecisionBytes) of exactly this run, call, tool, arguments, approver, decision and time.
-- `func (r DecisionReceipt) VerifyCertificate(ci *CertIdentity, a time.Time) error`: VerifyCertificate checks a certificate-bound receipt against the gate's certificate policy: the chain it carries is accepted for r.Approver at a, the time the decision became provable (the anchoring head's time, see AnchorTime), by exactly the rules CertIdentity.VerifyChain applies to a decision the gate counts; the receipt's scheme is the one the leaf's key has; and the signature verifies under that key over the v4 bytes.
+- `func (r DecisionReceipt) VerifyCertificate(ci *CertIdentity, logKey Verifier) error`: VerifyCertificate checks a certificate-bound receipt against the gate's certificate policy: the chain it carries is accepted for r.Approver at a, the time of the head the receipt's anchoring proof carries as logKey vouches for it (see AnchorTime; a receipt with no proof fails, and the caller cannot choose the time), by exactly the rules CertIdentity.VerifyChain applies to a decision the gate counts; the receipt's scheme is the one the leaf's key has; and the signature verifies under that key over the v4 bytes.
 
 ## type DecisionTime
 

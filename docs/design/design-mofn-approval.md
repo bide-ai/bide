@@ -207,9 +207,19 @@ are later changes. A bare-key approver's decision stays `bide.approval.v3`, unch
   happens to carry a chain counts as the bare-key decision it is.
 - **`WithDecisionCheck` refuses a decision that carries a chain** (`ErrConfig`): this version has no
   check for it, and it will not write what it cannot vouch for.
-- **Receipts.** A decision receipt carries the chain (`cert`); `DecisionReceipt.Verify` checks the
-  signature over the v4 bytes, and `VerifyCertificate` checks the chain and the identifier against the
-  gate's certificate policy at the time the decision became provable (`AnchorTime`).
+- **Receipts.** A decision receipt carries the chain (`cert`). `DecisionReceipt.Verify(v)` refuses a
+  receipt that carries a chain (`ErrCertificateBound`, wrapping `ErrNotVerified`) under any verifier: a
+  key proves no identity. `VerifyCertificate(ci, logKey)` checks the chain and the identifier against the
+  gate's certificate policy at the time of the head the receipt's own anchoring proof carries (`AnchorTime`,
+  as `logKey` vouches for it), then the signature under the leaf's key; the caller does not choose the
+  time, and a receipt with no proof fails. `AnchorTime` is an upper bound on when the decision became
+  provable: the proof is not shown to carry the first covering head.
+- **Same decision.** A decision is its approver, verdict, scheme, time and leaf: `WithDecisionCheck`,
+  `HeldDecisionStep` and `SubmitDecision` treat a record with another leaf (or a chain where the
+  decision has none) as another decision.
+- **Size.** A record at the chain limits (8 certificates of 16 KiB, about 175 KB of base64) and one with
+  post-quantum sizes (four ML-DSA-87 certificates of about 7.5 KB, a 4.6 KB signature) are stored and
+  replayed intact by the memory, SQLite and Postgres stores (the store suite's `Journal_CertChainDecision`).
 
 ```
 "bide.approval.v4\n"

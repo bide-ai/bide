@@ -1030,9 +1030,10 @@ func IsDecisionStepName(name, toolUseID, approverID string) bool {
 // HeldDecisionStep reports whether the journal holds a record of exactly the decision d (signature
 // included) and the name of the record that does: under the identity name (DecisionStep), under the
 // signature-derived name a bad record at the identity name pushes a decision to, or under the name a
-// version that named by signature gave it. A record under another signature is not d, even when it
-// is the same approver's decision of the same verdict and time: a randomized scheme's re-signing is
-// found by SubmitDecision's WithDecisionCheck, which reads the signatures, not here.
+// version that named by signature gave it. A record under another signature, or under another leaf
+// certificate (or a chain where d has none), is not d, even when it is the same approver's decision
+// of the same verdict and time: a randomized scheme's re-signing is found by SubmitDecision's
+// WithDecisionCheck, which reads the signatures, not here.
 //
 // held does not mean valid. It compares the record's fields and signature bytes and verifies nothing:
 // a junk signature written without a check is held. With a verifierFor (the resolver the agent
@@ -1048,7 +1049,7 @@ func HeldDecisionStep(ctx context.Context, store *Journal, d Decision, verifierF
 			return "", false, false, fmt.Errorf("HeldDecisionStep: read %s (run %s): %w (%w)", n, d.RunID, err, ErrStorage)
 		}
 		if !ok || !IsApprovalDecision(r, d.ToolUseID) || r.Approver() != d.ApproverID || r.Approved != d.Approved ||
-			r.ApproverAlg() != d.Alg || r.DecidedAt() != at || !bytes.Equal(r.Signature(), d.Signature) {
+			r.ApproverAlg() != d.Alg || r.DecidedAt() != at || !bytes.Equal(r.Signature(), d.Signature) || !sameLeaf(r, d) {
 			continue
 		}
 		if verifierFor == nil {
@@ -1366,10 +1367,20 @@ type decisionCheckResult struct {
 }
 
 // validSame reports whether r is the approver's valid record of this decision: valid for the
-// recorded call, with the same approver, verdict, scheme and decision time.
+// recorded call, with the same approver, verdict, scheme, decision time and leaf certificate.
 func (c decisionCheckResult) validSame(r Record) bool {
 	return IsApprovalDecision(r, c.d.ToolUseID) && r.Approver() == c.d.ApproverID && decisionReason(r, c.s, c.v) == "" &&
-		r.Approved == c.d.Approved && r.ApproverAlg() == c.d.Alg && r.DecidedAt() == c.at
+		r.Approved == c.d.Approved && r.ApproverAlg() == c.d.Alg && r.DecidedAt() == c.at && sameLeaf(r, c.d)
+}
+
+// sameLeaf reports whether record r and decision d carry the same leaf certificate (or both none): the
+// leaf is part of what a decision is, as it is part of the step name and the v4 bytes.
+func sameLeaf(r Record, d Decision) bool {
+	var rl []byte
+	if c := r.ApproverCert(); len(c) > 0 {
+		rl = c[0]
+	}
+	return bytes.Equal(rl, d.leafOf())
 }
 
 // checkDecision is WithDecisionCheck's pre-flight: the decision verifies for the recorded
@@ -1411,7 +1422,7 @@ func checkDecision(ctx context.Context, store *Journal, op string, d Decision, d
 			continue
 		}
 		if decisionReason(r, s, v) == "" {
-			if r.Approved == d.Approved && r.ApproverAlg() == d.Alg && r.DecidedAt() == decidedAt {
+			if r.Approved == d.Approved && r.ApproverAlg() == d.Alg && r.DecidedAt() == decidedAt && sameLeaf(r, d) {
 				return decisionCheckResult{same: r.Name, s: s, v: v, d: d, at: decidedAt}, nil
 			}
 			return none, fmt.Errorf("%s: approver %q already decided on call %q: %w", op, d.ApproverID, d.ToolUseID, ErrAlreadyDecided)

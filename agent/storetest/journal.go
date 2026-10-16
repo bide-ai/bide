@@ -1,6 +1,7 @@
 package storetest
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -763,5 +764,67 @@ func checkWrapper(t reporter, wrap func(agent.Store) agent.Store, ctxs ...contex
 		if !found {
 			t.Errorf("the Lister reached through %T does not list run %q, which was written through it", w, id)
 		}
+	}
+}
+
+// certChainDecision checks that a certificate-bound decision at the limits agent.SubmitDecision
+// accepts (agent.MaxDecisionCertChain certificates of agent.MaxDecisionCertDER bytes: about 175 KB
+// of base64 in one record), and one with post-quantum sizes (ML-DSA-87 certificates are about 7.5 KB
+// each, four deep, with a 4.6 KB signature), are stored, read back and replayed with their chain
+// intact and byte for byte.
+func certChainDecision(t *testing.T, s agent.Store) {
+	t.Helper()
+	ctx := context.Background()
+	j := journal(t, s)
+	chain := func(n, size int) [][]byte {
+		out := make([][]byte, n)
+		for i := range out {
+			out[i] = bytes.Repeat([]byte{byte(0x80 + i), 0, '<', 0xff}, size/4)
+		}
+		return out
+	}
+	for i, c := range []struct {
+		name  string
+		chain [][]byte
+		sig   int
+	}{
+		{"the chain limits", chain(agent.MaxDecisionCertChain, agent.MaxDecisionCertDER), 64},
+		{"post-quantum sizes", chain(4, 7500), 4627},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			id := runID(t)
+			msg := agent.Message{Role: agent.RoleAssistant, Parts: []agent.Part{agent.ToolUse{ID: "c1", Name: "t", Args: []byte(`{"n":1}`)}}}
+			if _, err := journaltest.Do(ctx, j, id, "model", func(context.Context) (agent.Record, error) {
+				return agent.Record{Kind: agent.StepModel, Message: &msg}, nil
+			}); err != nil {
+				t.Fatalf("record the call: %v", err)
+			}
+			d := agent.Decision{RunID: id, ToolUseID: "c1", ApproverID: "a", Approved: true, DecidedAt: time.Date(2026, 10, 13, 12, 14, 3, 0, time.UTC),
+				Alg: "ed25519", Signature: bytes.Repeat([]byte{byte(i + 1)}, c.sig), Cert: c.chain}
+			if err := agent.SubmitDecision(ctx, j, d); err != nil {
+				t.Fatalf("SubmitDecision: %v", err)
+			}
+			// A fresh journal over the store replays what is stored, as a resumed run does.
+			for _, jj := range []*agent.Journal{j, journal(t, s)} {
+				recs, err := jj.History(ctx, id)
+				if err != nil {
+					t.Fatalf("History: %v", err)
+				}
+				var got [][]byte
+				for _, r := range recs {
+					if r.Kind == agent.StepApproval {
+						got = r.ApproverCert()
+					}
+				}
+				if len(got) != len(c.chain) {
+					t.Fatalf("read back %d certificates, wrote %d", len(got), len(c.chain))
+				}
+				for k := range got {
+					if !bytes.Equal(got[k], c.chain[k]) {
+						t.Fatalf("certificate %d differs after the round trip", k)
+					}
+				}
+			}
+		})
 	}
 }
