@@ -19,6 +19,8 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `const ReasonRevoked`: ReasonRevoked: a certificate of the chain has an effective revocation time at or before A(d).
 - `const ReasonStatusUnknown`: ReasonStatusUnknown: no usable status covers a certificate of the chain.
 - `const ReasonStatusStale`: ReasonStatusStale: the status available is past nextUpdate or older than the policy allows.
+- `const ReasonNoCoveringHead`: ReasonNoCoveringHead: no signed tree head of the run covers the decision yet, so the time it became provable is not known.
+- `const ReasonHeadTimes`: ReasonHeadTimes: the head that first covers the decision is implicated in a contradiction among the run's head times (a larger head stamped earlier than a smaller one, beyond the tolerance).
 - `const DecisionFormat = "bide.approval.v3"`: DecisionFormat names the signed decision format this version writes and accepts: the domain tag of ApprovalDecisionBytes without its newline.
 - `const DecisionFormatCert = "bide.approval.v4"`: DecisionFormatCert names the signed decision format of a certificate-bound approver: the v3 layout plus the SHA-256 of the signer's leaf certificate (ApprovalDecisionBytesCert).
 - `const DefaultReceiver = "default"`: DefaultReceiver is the name of the receiver WithNotifier's Notifier is, in Notification.Receiver and in WithNotifyRoute, WithNotifyApproverRoute and EscalationStep.
@@ -221,6 +223,10 @@ type Alg string
 ```
 
 Alg names a signature scheme: "ed25519", "ecdsa-p256", "ml-dsa-65", or "ed25519+ml-dsa-65".
+
+**Constants**
+
+- `const AlgCertificate Alg = "x509"`: AlgCertificate is the Alg a certificate-bound verifier reports.
 
 ## type AnswerOption
 
@@ -471,6 +477,57 @@ type CancelOption interface {
 
 CancelOption configures Cancel: WithClock, the clock that stamps the record's RecordedAt.
 
+## type CertCheck
+
+```go
+type CertCheck struct {
+	Reason string
+	Detail string
+
+	Identity string
+
+	KeyHash [32]byte
+
+	Anchored time.Time
+	Time     string
+
+	Tier       string
+	Basis      string
+	StatusTime string
+
+	Warnings []string
+}
+```
+
+CertCheck is a certificate-bound verifier's finding about one decision.
+
+## type CertDecision
+
+```go
+type CertDecision struct {
+	Subject ApprovalSubject
+
+	Record Record
+
+	Journal []Record
+	Index   int
+}
+```
+
+CertDecision is one decision record presented to a certificate-bound approver's verifier.
+
+## type CertDecisionVerifier
+
+```go
+type CertDecisionVerifier interface {
+	ApproverVerifier
+
+	VerifyCertDecision(cd CertDecision) CertCheck
+}
+```
+
+CertDecisionVerifier is implemented by the verifier of a certificate-bound approver.
+
 ## type ClockOption
 
 ```go
@@ -543,6 +600,8 @@ type DecisionCheck struct {
 	Approved bool
 	Counted  bool
 	Reason   string
+
+	Cert *CertCheck
 }
 ```
 
@@ -805,6 +864,22 @@ Identity is the accountability binding for a run: which agent instance acted, on
 **Methods**
 
 - `func (i Identity) Empty() bool`: Empty reports whether the identity carries no attribution at all.
+
+## type IdentityRoster
+
+```go
+type IdentityRoster interface {
+	HasIdentity(approverID string) bool
+
+	RequesterIdentifier(principal string) (identifier string, ok bool)
+
+	IdentityMappingConfigured() bool
+
+	RosterDigest() string
+}
+```
+
+IdentityRoster is implemented by the verifier of a certificate-bound approver that knows the policy's identity map.
 
 ## type Image
 

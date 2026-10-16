@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/bide-ai/bide/internal/identitygate"
 	"reflect"
 	"slices"
 	"strings"
@@ -346,6 +347,15 @@ func approverSeats(p ApprovalPolicy, verifierFor ApproverVerifierFor) (map[strin
 			continue
 		}
 		vs[id] = v
+		if _, cert := v.(CertDecisionVerifier); cert && !identitygate.Enabled.Load() {
+			// The gate for certificate-bound approvers is built in several changes; none is reachable
+			// until the last makes it safe (internal/identitygate), so a half-built gate cannot be configured.
+			bad[id] = ReasonNoKeyID
+			if first == nil {
+				first = fmt.Errorf("approval policy approver %q: certificate-bound approvers are not available in this version: the gate that anchors, re-asks and re-checks status before execution is not complete: %w", id, ErrConfig)
+			}
+			continue
+		}
 		keys := v.KeyIDs()
 		if len(keys) == 0 || slices.Contains(keys, "") {
 			bad[id] = ReasonNoKeyID
@@ -366,6 +376,35 @@ func approverSeats(p ApprovalPolicy, verifierFor ApproverVerifierFor) (map[strin
 			bad[o], bad[id] = ReasonSharedKey, ReasonSharedKey
 			if first == nil {
 				first = fmt.Errorf("approval policy approvers %q and %q resolve to one signing key (%s), so one person would fill two seats: %w", o, id, k, ErrConfig)
+			}
+		}
+	}
+	// With a certificate-bound approver the identity map must name every approver of the policy: one
+	// person with a bare key outside the map and a certificate inside it would fill two seats.
+	var roster IdentityRoster
+	for _, id := range p.Approvers {
+		if r, ok := vs[id].(IdentityRoster); ok {
+			roster = r
+			break
+		}
+	}
+	if roster != nil {
+		for _, id := range p.Approvers {
+			// One identity map per gate: seats match across approvers only if every certificate-bound
+			// approver reads the same map.
+			if r, ok := vs[id].(IdentityRoster); ok && r.RosterDigest() != roster.RosterDigest() {
+				bad[id] = ReasonNoKeyID
+				if first == nil {
+					first = fmt.Errorf("approval policy approver %q: its certificate policy has a different identity map from the other certificate-bound approvers of the gate; a gate has one identity map: %w", id, ErrConfig)
+				}
+			}
+		}
+		for _, id := range p.Approvers {
+			if _, isBad := bad[id]; !isBad && !roster.HasIdentity(id) {
+				bad[id] = ReasonNoKeyID
+				if first == nil {
+					first = fmt.Errorf("approval policy approver %q is not named in the certificate policy's identity map, so one person could fill two seats (the map must name every approver of a gate with a certificate-bound approver, bare-key ones included): %w", id, ErrConfig)
+				}
 			}
 		}
 	}
@@ -440,6 +479,9 @@ type DecisionCheck struct {
 	Approved bool
 	Counted  bool   // this is the approver's decision: their first valid one
 	Reason   string // why it did not count; empty when Counted
+	// Cert is set for a decision of a certificate-bound approver, whatever its outcome: what the
+	// verifier found. Nil for a bare-key approver's decision.
+	Cert *CertCheck
 }
 
 // Reasons a decision record does not count.
@@ -476,6 +518,12 @@ const (
 	ReasonStatusUnknown = "no usable revocation status covers a certificate of the chain"
 	// ReasonStatusStale: the status available is past nextUpdate or older than the policy allows.
 	ReasonStatusStale = "the revocation status available is older than the policy allows"
+	// ReasonNoCoveringHead: no signed tree head of the run covers the decision yet, so the time it
+	// became provable is not known. Live, the gate anchors and retries; offline it is not verified.
+	ReasonNoCoveringHead = "no signed tree head covers the decision yet, so when it became provable is not known"
+	// ReasonHeadTimes: the head that first covers the decision is implicated in a contradiction among
+	// the run's head times (a larger head stamped earlier than a smaller one, beyond the tolerance).
+	ReasonHeadTimes = "the head that first covers the decision has a time contradicted by another head of the run"
 )
 
 // protocol:claims begin QCount
@@ -514,6 +562,14 @@ const (
 // validate p (see ApprovalPolicy.ValidateKeys, which the gate runs first and which refuses a
 // policy this rule would count short); a nil verifierFor counts nothing.
 func TallyApprovals(recs []Record, s ApprovalSubject, p ApprovalPolicy, verifierFor ApproverVerifierFor) (ApprovalTally, []DecisionCheck) {
+	return tallyApprovals(recs, recs, s, p, verifierFor)
+}
+
+// tallyApprovals is TallyApprovals over recs, the records the gate counts (the run's journal, less
+// what it leaves out: a flow gate's earlier records, decisions after a deadline), with journal the
+// run's whole journal from its first record, which a certificate-bound approver's verifier needs to
+// find the head that first covers a decision.
+func tallyApprovals(recs, journal []Record, s ApprovalSubject, p ApprovalPolicy, verifierFor ApproverVerifierFor) (ApprovalTally, []DecisionCheck) {
 	t := ApprovalTally{Need: p.Need, Approvers: append([]string(nil), p.Approvers...)}
 	eligible := make(map[string]bool, len(p.Approvers))
 	for _, id := range p.Approvers {
@@ -541,6 +597,8 @@ func TallyApprovals(recs []Record, s ApprovalSubject, p ApprovalPolicy, verifier
 	}
 	decided := make(map[string]bool, len(p.Approvers))
 	var checks []DecisionCheck
+	counted := map[[32]byte]string{} // leaf key hash -> the approver id whose certificate-bound decision counted under it
+	var journalIdx map[string]int
 	for _, r := range recs {
 		if !IsApprovalDecision(r, s.ToolUseID) {
 			continue
@@ -559,7 +617,41 @@ func TallyApprovals(recs []Record, s ApprovalSubject, p ApprovalPolicy, verifier
 		case !ok:
 			c.Reason = ReasonNoKey
 		default:
-			if c.Reason = decisionReason(r, s, v); c.Reason != "" {
+			if cv, isCert := v.(CertDecisionVerifier); isCert {
+				// The kind of the approver's verifier decides how the record is checked, never what the
+				// record carries.
+				if journalIdx == nil {
+					journalIdx = make(map[string]int, len(journal))
+					for i, x := range journal {
+						if _, dup := journalIdx[x.Name]; !dup {
+							journalIdx[x.Name] = i
+						}
+					}
+				}
+				idx, found := journalIdx[r.Name]
+				if !found || !sameDecisionRecord(journal[idx], r) {
+					idx = -1 // the record is not at that position of the journal given: it has no position
+				}
+				cc := cv.VerifyCertDecision(CertDecision{Subject: s, Record: r, Journal: journal, Index: idx})
+				c.Cert = &cc
+				if c.Reason = cc.Reason; c.Reason == "" {
+					// One key, one seat: another approver id's decision already counted under this
+					// leaf key (a key under two certificates, or two ids on one key) takes it.
+					if other, taken := counted[cc.KeyHash]; taken && other != r.Approver() {
+						c.Reason = ReasonSharedKey
+					}
+				}
+				if c.Reason == "" && p.ExcludePrincipal && excludedByIdentity(v, &cc, t.Requesters) {
+					// Separation of duties by identity: the requester's identifier, whatever approver id
+					// this person holds. A requester that cannot be mapped to an identifier is excluded by
+					// approver id only, and the finding says so.
+					c.Reason = ReasonRequester
+				}
+				if c.Reason != "" {
+					break
+				}
+				counted[cc.KeyHash] = r.Approver()
+			} else if c.Reason = decisionReason(r, s, v); c.Reason != "" {
 				break
 			}
 			c.Counted = true
@@ -1453,4 +1545,51 @@ func (a *Agent) notePending(ctx context.Context, runID string, tu ToolUse, pol *
 		return
 	}
 	_, _ = a.store.put(ctx, runID, ApprovalPendingStep(tu.ID), Record{Kind: StepValue, Result: b})
+}
+
+// sameDecisionRecord reports whether a and b are one decision record: the same name, approver, verdict,
+// scheme, signed time, signature and chain. A verifier is given a record and its position in the journal;
+// this keeps a caller from lending one record's position to another.
+func sameDecisionRecord(a, b Record) bool {
+	return a.Name == b.Name && a.Kind == b.Kind && a.ToolUseID == b.ToolUseID && a.Approved == b.Approved && a.Approver() == b.Approver() &&
+		a.ApproverAlg() == b.ApproverAlg() && a.DecidedAt() == b.DecidedAt() && bytes.Equal(a.Signature(), b.Signature()) &&
+		len(a.ApproverCert()) == len(b.ApproverCert()) && sameCerts(a.ApproverCert(), b.ApproverCert())
+}
+
+func sameCerts(a, b [][]byte) bool {
+	for i := range a {
+		if !bytes.Equal(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// excludedByIdentity reports whether the verified identity of a certificate-bound decision is one of the
+// run's requesters: the requester spelled as the identifier, or mapped to it by the verifier's roster
+// (principal, then approver id, then identifier). Exclusion by approver id (a requester that is an
+// approver id) is the policy's own check and still applies; this one is for the same person under
+// another approver id or a certificate that names them by identifier. A requester that neither matches
+// nor maps is recorded as a warning on the finding: the exclusion could not be checked by identity for it.
+func excludedByIdentity(v ApproverVerifier, cc *CertCheck, requesters []string) bool {
+	roster, _ := v.(IdentityRoster)
+	for _, q := range requesters {
+		if SameApprover(cc.Identity, q) {
+			return true
+		}
+		if roster == nil {
+			continue
+		}
+		if ident, ok := roster.RequesterIdentifier(q); ok {
+			if SameApprover(cc.Identity, ident) {
+				return true
+			}
+			continue
+		}
+		if !roster.IdentityMappingConfigured() {
+			continue
+		}
+		cc.Warnings = append(cc.Warnings, fmt.Sprintf("requester %q cannot be mapped to an identifier, so separation of duties could not check it by identity (the exclusion by approver id still applies)", q))
+	}
+	return false
 }

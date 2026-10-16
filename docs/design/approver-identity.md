@@ -1296,6 +1296,29 @@ Requirements this step leaves to the gate changes (E), because the format layer 
   step name) when counting for certificate-bound approvers lands: two chains for one leaf are one
   decision, two leaves are two.
 
+The counting rule landed next, for a certificate-bound approver: `agent.CertDecisionVerifier` (the
+resolver's kind decides how a record is checked), `audit.CertApprover` (a decision counts when it carries
+a chain and is signed over the v4 bytes, a signed head of the run covers it and fixes `A(d)`, the chain is
+accepted at `A(d)` and the status allows it), the seat as `ident:` plus the canonical identity, the
+dynamic one-key-one-seat check, and separation of duties by the verified identifier. Each
+`DecisionCheck` of such a decision carries the finding (identity, tier, basis, `S`, `A(d)`). Nothing in a
+gate yet reaches this path: no policy holds a `CertApprover` until the gate change wires one in, so the
+behaviour of every existing policy is unchanged.
+
+Two rules the review added. A gate with a certificate-bound approver requires the policy's identity map to name
+**every** approver of the gate, bare-key ones included (`agent.IdentityRoster`, checked with the approver seats), because an
+approver outside the map could be a person who also holds a certificate and would fill a second seat. And
+separation of duties covers two threats with two checks: the exclusion by approver id (the policy's own, a
+requester that is an approver id) and the exclusion by identifier (the verified identity of the counted decision
+against the requesters, mapped through the roster: a principal equal to an approver id maps to that approver's
+identifier, or through `CertApprover.RequesterIdentity`). The default roster mapping only repeats the exclusion by
+approver id (`Compile` refuses two ids with one identifier), so a bank that wants a requester who holds no
+approver id (a login that maps to a person) excluded by identity **must supply `RequesterIdentity`**; when it does,
+a requester it cannot map is excluded by approver id only and the finding carries a warning. A gate has one
+identity map: certificate-bound approvers whose policies report different `RosterDigest()`s are refused. Until the gate change is complete the gate refuses any policy with a
+certificate-bound approver at configuration (`internal/identitygate`, `ErrConfig`), so merging the counting rule
+alone does not make it reachable; `TallyApprovals` itself, the counting rule, is not a gate and still counts.
+
 Every step updates the guides it touches. The approvals guide states the post-quantum gap (decision 15: a
 certificate-bound approver gives up the hybrid scheme's protection) where it first describes
 certificate-bound approvers.

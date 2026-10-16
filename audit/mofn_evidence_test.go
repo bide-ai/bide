@@ -61,6 +61,8 @@ type gate struct {
 	clock   func() time.Time // the run's clock (agent.WithClock), when set
 	// p256 holds approvers that sign with ECDSA P-256 instead of their (unused) Ed25519 key.
 	p256 map[string]audit.ECDSAP256Signer
+	// custom, when set, is the resolver instead of the bare-key one (a test of certificate-bound approvers).
+	custom agent.ApproverVerifierFor
 }
 
 // newGate registers a key for every id in registered (eligible or not).
@@ -80,6 +82,9 @@ func newGate(need int, approvers, registered []string) *gate {
 
 // resolver maps approver ids to keys, the same shape the gate uses at run time.
 func (g *gate) resolver() agent.ApproverVerifierFor {
+	if g.custom != nil {
+		return g.custom
+	}
 	return func(id string) (agent.ApproverVerifier, bool) {
 		if k, ok := g.p256[id]; ok {
 			v, err := audit.VerifierOf(k)
