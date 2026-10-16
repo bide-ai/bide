@@ -44,8 +44,28 @@ type CertCheck struct {
 	Tier       string
 	Basis      string
 	StatusTime string
+	// Window is W', the compromise-reporting window the status rule left the decision (a duration string).
+	Window string
 	// Warnings are findings that do not change the outcome (a series gap against the declared period).
 	Warnings []string
+	// Chain is the SHA-256 (lowercase hex) of each certificate of the accepted chain, leaf first,
+	// Anchor that of the trust anchor's SubjectPublicKeyInfo the chain ends at, and HeadSize the size
+	// of the signed head that first covers the decision: what the gate records in ApprovalIdentity.
+	Chain    []string
+	Anchor   string
+	HeadSize int
+	// HeadRoot is the Merkle root of that head (hex) and HeadHash the SHA-256 of its signed canonical
+	// encoding (hex), so an independent verifier can tell which head the time rests on.
+	HeadRoot, HeadHash string
+	// TimeEvidence is the SHA-256 (hex) of the RFC 3161 token or anchor receipt behind A(d); empty when
+	// the time is the log signer's clock.
+	TimeEvidence string
+	// BasisKind is the status basis as a value a viewer can branch on: BasisAtOrAfterDecision or
+	// BasisLiveBeforeDecision.
+	BasisKind string
+	// Evidence are the revocation status records (CRLs) the finding rests on, each once: the gate
+	// stores them by hash (ApprovalStatusStep) so what it knew survives the loss of an archive.
+	Evidence []ApprovalStatusBytes
 }
 
 // CertDecisionVerifier is implemented by the verifier of a certificate-bound approver. It extends
@@ -81,5 +101,17 @@ type IdentityRoster interface {
 	IdentityMappingConfigured() bool
 	// RosterDigest is the SHA-256 over the whole identity map (see CertApprover.RosterDigest). The
 	// certificate-bound approvers of one gate must report one value: a gate has one identity map.
+	RosterDigest() string
+}
+
+// IdentityDescriber is implemented by the verifier of a certificate-bound approver that can describe
+// the certificate policy in force, for the identity record a gate journals with its terminal count:
+// DescribeIdentity is the policy and status values, PolicyDigest the SHA-256 (lowercase hex) of the
+// JSON of that description (the value the pause note and the record both carry), and RosterDigest the
+// SHA-256 over the whole identity map in sorted approver order, each entry len32(approver) approver
+// len32(identifier) identifier.
+type IdentityDescriber interface {
+	DescribeIdentity() IdentityPolicyRecord
+	PolicyDigest() string
 	RosterDigest() string
 }

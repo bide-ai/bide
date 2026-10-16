@@ -21,6 +21,13 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `const ReasonStatusStale`: ReasonStatusStale: the status available is past nextUpdate or older than the policy allows.
 - `const ReasonNoCoveringHead`: ReasonNoCoveringHead: no signed tree head of the run covers the decision yet, so the time it became provable is not known.
 - `const ReasonHeadTimes`: ReasonHeadTimes: the head that first covers the decision is implicated in a contradiction among the run's head times (a larger head stamped earlier than a smaller one, beyond the tolerance).
+- `const ApprovalIdentityFormat = "bide.approval-identity.v2"`, `const ApprovalStatusFormat = "bide.approval-status.v2"`, `const ApprovalExecHoldFormat = "bide.approval-exec-hold.v2"`, `const ApprovalIdentityRulesVer = "v1"`: Formats of the identity records.
+- `const EvaluatedLive = "live"`: EvaluatedLive is ApprovalIdentity.Evaluated of a record the live gate wrote.
+- `const MaxStatusInline = 256 << 10`: MaxStatusInline is the largest status record (a CRL's DER) stored in the journal; above it the record holds the metadata and the hash, and the bytes go to the policy's status archive.
+- `const PauseAwaitingDecisions = "awaiting-decisions"`, `const PauseAwaitingAnchor = "awaiting-anchor"`, `const PauseAwaitingStatus = "awaiting-status"`, `const PauseHeldUntilFinal = "held-until-final"`, `const PauseExecHold = "exec-hold"`: Pause phases (ApprovalWait.Pause): why a gate with a certificate-bound approver is waiting.
+- `const TierIndependentFinal = "independent-final"`, `const TierLogclockFinal = "logclock-final"`, `const TierProvisional = "provisional"`: Identity tiers (IdentityDecision.Tier).
+- `const BasisAtOrAfterDecision = "at-or-after-decision"`, `const BasisLiveBeforeDecision = "live-before-decision"`: Status bases (IdentityDecision.BasisKind).
+- `const TimeSourceLogSignerClock = "log-signer-clock"`, `const TimeSourceRFC3161 = "rfc3161"`, `const TimeSourceAnchorReceipt = "anchor-receipt"`: Time sources (IdentityDecision.TimeSource).
 - `const DecisionFormat = "bide.approval.v3"`: DecisionFormat names the signed decision format this version writes and accepts: the domain tag of ApprovalDecisionBytes without its newline.
 - `const DecisionFormatCert = "bide.approval.v4"`: DecisionFormatCert names the signed decision format of a certificate-bound approver: the v3 layout plus the SHA-256 of the signer's leaf certificate (ApprovalDecisionBytesCert).
 - `const DefaultReceiver = "default"`: DefaultReceiver is the name of the receiver WithNotifier's Notifier is, in Notification.Receiver and in WithNotifyRoute, WithNotifyApproverRoute and EscalationStep.
@@ -32,6 +39,7 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `const OpenFirstYear = 2026`: OpenFirstYear is the first year an open-trail index can exist: the year the open trail began.
 - `const PendingReapproval`: PendingReapproval is ApprovalPending.Reason for a gate that passed under decisions signed before DecisionFormat (a run journaled by an earlier version): its call did not run, and it runs once approvers decide again under DecisionFormat with SubmitDecision.
 - `const PendingSoDReapproval`: PendingSoDReapproval is ApprovalPending.Reason for a gate whose recorded tally passed without excluding the requester (ApprovalPolicy.ExcludePrincipal) while its policy now excludes it: the call did not run, and it runs once enough approvers who are not requesters have decided.
+- `const ReanchorMinInterval = 10 * time.Second`: ReanchorMinInterval is the least time between two forced heads of one run: anchoring signs with the log key, which may be an HSM or KMS key with quotas and cost, so the gate rate-limits it.
 - `const SaltSize = 32`: SaltSize is the length of Record.Salt: 32 bytes (256 bits) from crypto/rand.
 
 **Variables**
@@ -79,13 +87,19 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `func ApprovalDeadlineStep(toolUseID string) string`: ApprovalDeadlineStep is the journal name of the record that fixes the deadline of the gate on toolUseID (a tool call's ID, or a plan flow node's key).
 - `func ApprovalDecisionBytes(s ApprovalSubject, approverID string, approved bool, decidedAt time.Time) []byte`: ApprovalDecisionBytes returns the canonical bytes an approver signs and every verifier checks.
 - `func ApprovalDecisionBytesCert(s ApprovalSubject, approverID string, approved bool, decidedAt time.Time, leafHash [32]byte) []byte`: ApprovalDecisionBytesCert returns the canonical bytes a certificate-bound approver signs (bide.approval.v4): the layout of ApprovalDecisionBytes with the domain tag "bide.approval.v4\\n" and, between the verdict byte and the decision time,
+- `func ApprovalExecHoldStep(toolUseID string, gen int) string`: ApprovalExecHoldStep is the journal name of the ExecHold record of generation gen of toolUseID's gate.
+- `func ApprovalIdentTallyStep(toolUseID string, gen int) string`: ApprovalIdentTallyStep is the journal name of the terminal tally of an identity-bound gate at generation gen: ApprovalTallyStep plus ":ident" for generation 0 and ":ident-reask:&lt;gen&gt;" for a gate re-asked after an exec hold.
+- `func ApprovalIdentityDigestStep(toolUseID string, gen int, digest string) string`: ApprovalIdentityDigestStep is the name of the identity record of generation gen when the plain name already holds a record of a different tally (a crash between the record and the tally, then a different count): the record whose TallyDigest is the one the gate then writes is found under this name, digest being the first 16 hex digits of that digest.
+- `func ApprovalIdentityStep(toolUseID string, gen int) string`: ApprovalIdentityStep is the journal name of the ApprovalIdentity record of toolUseID's gate at generation gen.
 - `func ApprovalKey(runID, call string, reminder int) string`: ApprovalKey is the event key of the approval gate for call on runID.
+- `func ApprovalPauseStep(toolUseID string, n int) string`: ApprovalPauseStep is the journal name of the n-th phase note of the gate on toolUseID (an ApprovalWait with Pause set), n counting from 1 in the order the gate wrote them.
 - `func ApprovalPendingStep(toolUseID string) string`: ApprovalPendingStep is the journal name of the record that a run paused at the approval gate of the call toolUseID (see ApprovalWait).
 - `func ApprovalReaskKey(runID, call string, sod bool) string`: ApprovalReaskKey is the event key of the approval gate for call on runID asking again over a recorded tally it does not act on (ApprovalPending.Reason): with sod, because its policy now excludes the requester (PendingSoDReapproval); without, because the tally predates DecisionFormat (PendingReapproval).
 - `func ApprovalReaskStep(toolUseID string, sod bool) string`: ApprovalReaskStep is the journal name of the pause note a gate writes when it asks again over a recorded tally it does not act on: with sod, a tally that passed without excluding the requester under a policy that now excludes it (its outcome is recorded under ApprovalSoDRetallyStep); without, a tally that passed on decisions predating DecisionFormat (ApprovalRetallyStep).
 - `func ApprovalRequestStep(toolUseID string) string`: ApprovalRequestStep is the journal name of the request a plan flow node's approval gate records when the run first reaches it (see ApprovalRequest).
 - `func ApprovalRetallyStep(toolUseID string) string`: ApprovalRetallyStep is the journal name of the terminal tally a gate records when it re-asks for approval because the tally under ApprovalTallyStep passed on decisions that predate DecisionFormat (see ApprovalTally.Supersedes).
 - `func ApprovalSoDRetallyStep(toolUseID string) string`: ApprovalSoDRetallyStep is the journal name of the terminal tally a gate records when it re-asks for approval because the tally it would otherwise go by passed without excluding the requester, and the gate's policy now excludes it (ApprovalPolicy.ExcludePrincipal: a redeploy added the exclusion, or a drive still running the old policy recorded first).
+- `func ApprovalStatusStep(hash string) string`: ApprovalStatusStep is the journal name of the ApprovalStatusBytes record whose DER hashes (SHA-256, lowercase hex) to hash.
 - `func ApprovalTallyStep(toolUseID string) string`: ApprovalTallyStep is the journal name of the gate's terminal tally for toolUseID.
 - `func Approve(ctx context.Context, d *Journal, runID, toolUseID string, approved bool, opts ...ApproveOption) error`: Approve durably records a human approve/deny decision for a tool call (HITL).
 - `func Await[T any](ctx context.Context, name string) (T, error)`: Await blocks the current run until a single-shot signal named `name` is delivered, then returns its payload.
@@ -255,6 +269,37 @@ ApprovalDeadline is what the record named ApprovalDeadlineStep holds.
 
 - `func RecordedDeadline(recs []Record, toolUseID string) (d ApprovalDeadline, expiresAt time.Time, ok bool)`: RecordedDeadline returns the deadline the gate on toolUseID recorded in recs (a run's records), and its parsed ExpiresAt, or ok=false when the gate has none.
 
+## type ApprovalIdentity
+
+```go
+type ApprovalIdentity struct {
+	Format      string               `json:"format"`
+	ToolUseID   string               `json:"tool_use_id"`
+	Generation  int                  `json:"generation"`
+	Tally       string               `json:"tally"`
+	TallyDigest string               `json:"tally_digest"`
+	Evaluated   string               `json:"evaluated"`
+	EvaluatedAt string               `json:"evaluated_at"`
+	Policy      IdentityPolicyRecord `json:"policy"`
+
+	PolicyDigest string `json:"policy_digest"`
+
+	RosterDigest string             `json:"roster_digest"`
+	Decisions    []IdentityDecision `json:"decisions"`
+	Rules        string             `json:"rules"`
+	Verifier     string             `json:"verifier"`
+	VerifierRev  string             `json:"verifier_rev,omitempty"`
+	GoDebug      string             `json:"godebug,omitempty"`
+	RecordedAt   string             `json:"recorded_at,omitempty"`
+}
+```
+
+ApprovalIdentity is what the record named ApprovalIdentityStep holds: the identity environment of a terminal count.
+
+**Constructors and functions**
+
+- `func IdentityRecordFor(recs []Record, toolUseID string, gen int, tally Record) (ApprovalIdentity, bool)`: IdentityRecordFor returns the identity record of generation gen that belongs to tally, the recorded tally of toolUseID's gate at that generation: the record whose TallyDigest equals the SHA-256 of tally's stored bytes, looked up under ApprovalIdentityStep first and then under ApprovalIdentityDigestStep (two drives racing, or a count that differed from an earlier attempt, can produce either).
+
 ## type ApprovalPending
 
 ```go
@@ -332,6 +377,23 @@ type ApprovalRequired struct {
 
 ApprovalRequired fires immediately before the run pauses for a human decision on a tool that requires approval.
 
+## type ApprovalStatusBytes
+
+```go
+type ApprovalStatusBytes struct {
+	Format     string `json:"format"`
+	Kind       string `json:"kind"`
+	Issuer     string `json:"issuer"`
+	Number     string `json:"number,omitempty"`
+	ThisUpdate string `json:"this_update"`
+	NextUpdate string `json:"next_update,omitempty"`
+	Size       int    `json:"size"`
+	DER        []byte `json:"der,omitempty"`
+}
+```
+
+ApprovalStatusBytes is what an ApprovalStatusStep record holds: one CRL (or OCSP response) a gate relied on.
+
 ## type ApprovalSubject
 
 ```go
@@ -397,10 +459,22 @@ type ApprovalWait struct {
 
 	Reask      string `json:"reask,omitempty"`
 	Supersedes string `json:"supersedes,omitempty"`
+
+	IdentityBound        bool     `json:"identity_bound,omitempty"`
+	IdentityApprovers    []string `json:"identity_approvers,omitempty"`
+	IdentityKinds        string   `json:"identity_kinds,omitempty"`
+	IdentityPolicyDigest string   `json:"identity_policy_digest,omitempty"`
+
+	Pause       string `json:"pause,omitempty"`
+	PauseDetail string `json:"pause_detail,omitempty"`
 }
 ```
 
 ApprovalWait is what the record named ApprovalPendingStep holds: that a run paused at a call's approval gate, the gate it waits on, and when (RecordedAt), which is when approvers are asked.
+
+**Constructors and functions**
+
+- `func LatestPausePhase(recs []Record, toolUseID string) (ApprovalWait, bool)`: LatestPausePhase returns the newest phase note of toolUseID's gate among recs (ApprovalPauseStep), decoded, and ok=false when the gate has written none (its phase is then PauseAwaitingDecisions).
 
 ## type ApproveOption
 
@@ -495,7 +569,21 @@ type CertCheck struct {
 	Basis      string
 	StatusTime string
 
+	Window string
+
 	Warnings []string
+
+	Chain    []string
+	Anchor   string
+	HeadSize int
+
+	HeadRoot, HeadHash string
+
+	TimeEvidence string
+
+	BasisKind string
+
+	Evidence []ApprovalStatusBytes
 }
 ```
 
@@ -674,6 +762,29 @@ type Event interface {
 ```
 
 Event is a normalized streamed model event.
+
+## type ExecHold
+
+```go
+type ExecHold struct {
+	Format       string   `json:"format"`
+	ToolUseID    string   `json:"tool_use_id"`
+	Generation   int      `json:"generation"`
+	Reason       string   `json:"reason"`
+	Detail       string   `json:"detail"`
+	Approvers    []string `json:"approvers,omitempty"`
+	CheckedAt    string   `json:"checked_at"`
+	StatusTime   string   `json:"status_time,omitempty"`
+	Serial       string   `json:"serial,omitempty"`
+	E            string   `json:"e,omitempty"`
+	ReasonCode   int      `json:"reason_code"`
+	CRLHash      string   `json:"crl_hash,omitempty"`
+	AnchoredAt   string   `json:"anchored_at,omitempty"`
+	PolicyDigest string   `json:"policy_digest,omitempty"`
+}
+```
+
+ExecHold is what an ApprovalExecHoldStep record holds: the pre-execution status check found that the call may not run, with the evidence an operator decides on.
 
 ## type Finish
 
@@ -864,6 +975,90 @@ Identity is the accountability binding for a run: which agent instance acted, on
 **Methods**
 
 - `func (i Identity) Empty() bool`: Empty reports whether the identity carries no attribution at all.
+
+## type IdentityDecision
+
+```go
+type IdentityDecision struct {
+	Approver   string   `json:"approver"`
+	Step       string   `json:"step"`
+	Identifier string   `json:"identifier"`
+	LeafHash   string   `json:"leaf_hash"`
+	Chain      []string `json:"chain"`
+	Anchor     string   `json:"anchor"`
+
+	AnchoredAt   string   `json:"anchored_at"`
+	TimeSource   string   `json:"time_source"`
+	TimeEvidence string   `json:"time_evidence,omitempty"`
+	HeadSize     int      `json:"head_size"`
+	HeadRoot     string   `json:"head_root"`
+	HeadHash     string   `json:"head_hash"`
+	Tier         string   `json:"tier"`
+	BasisKind    string   `json:"basis_kind"`
+	Basis        string   `json:"basis"`
+	StatusTime   string   `json:"status_time,omitempty"`
+	Window       string   `json:"window,omitempty"`
+	Status       []string `json:"status,omitempty"`
+	Warnings     []string `json:"warnings,omitempty"`
+}
+```
+
+IdentityDecision is one counted certificate-bound decision in an ApprovalIdentity.
+
+## type IdentityDescriber
+
+```go
+type IdentityDescriber interface {
+	DescribeIdentity() IdentityPolicyRecord
+	PolicyDigest() string
+	RosterDigest() string
+}
+```
+
+IdentityDescriber is implemented by the verifier of a certificate-bound approver that can describe the certificate policy in force, for the identity record a gate journals with its terminal count: DescribeIdentity is the policy and status values, PolicyDigest the SHA-256 (lowercase hex) of the JSON of that description (the value the pause note and the record both carry), and RosterDigest the SHA-256 over the whole identity map in sorted approver order, each entry len32(approver) approver len32(identifier) identifier.
+
+## type IdentityPolicyRecord
+
+```go
+type IdentityPolicyRecord struct {
+	EffectiveFrom           string            `json:"effective_from"`
+	Anchors                 []string          `json:"anchors"`
+	Intermediates           []string          `json:"intermediates"`
+	Distrust                map[string]string `json:"distrust,omitempty"`
+	EKU                     string            `json:"eku"`
+	PolicyOID               string            `json:"policy_oid,omitempty"`
+	IDKind                  string            `json:"id_kind"`
+	Canonical               string            `json:"canonical"`
+	AllowEmailProtectionEKU bool              `json:"allow_email_protection_eku,omitempty"`
+	RequireNameConstraints  bool              `json:"require_name_constraints,omitempty"`
+	RequirePolicyOnCAs      bool              `json:"require_policy_on_cas,omitempty"`
+	RSA2048Until            string            `json:"rsa2048_until,omitempty"`
+	MaxChain                int               `json:"max_chain"`
+	MaxLeafLifetime         string            `json:"max_leaf_lifetime"`
+	Skew                    string            `json:"skew"`
+	AnchorGrace             string            `json:"anchor_grace"`
+	ClockTolerance          string            `json:"clock_tolerance"`
+	W                       string            `json:"w"`
+	MinW                    string            `json:"min_w"`
+	RoutineGrace            string            `json:"routine_grace,omitempty"`
+	MaxStatusAge            string            `json:"max_status_age"`
+	ExecStatusAge           string            `json:"exec_status_age"`
+	ExecStatusAgeFor        map[string]string `json:"exec_status_age_for,omitempty"`
+	MaxStatusAgeFor         map[string]string `json:"max_status_age_for,omitempty"`
+	CAPeriod                string            `json:"ca_period"`
+	CAPeriodFor             map[string]string `json:"ca_period_for,omitempty"`
+	CoverageTolerance       string            `json:"coverage_tolerance"`
+	ThisUpdateSkew          string            `json:"this_update_skew"`
+	ThisUpdateSkewFor       map[string]string `json:"this_update_skew_for,omitempty"`
+	AllowHolds              bool              `json:"allow_holds,omitempty"`
+	ConsecutiveNumbers      bool              `json:"consecutive_numbers,omitempty"`
+	CountLive               bool              `json:"count_live,omitempty"`
+	Retained                bool              `json:"retained,omitempty"`
+	IndependentTime         bool              `json:"independent_time,omitempty"`
+}
+```
+
+IdentityPolicyRecord is the certificate policy and status values in force when a gate counted, every one that reaches a verdict.
 
 ## type IdentityRoster
 
@@ -2464,6 +2659,16 @@ SignalPending is returned by Run when a tool called Await, AwaitFor or Receive a
 **Methods**
 
 - `func (e *SignalPending) Error() string`: Error names the run and the signal or channel it awaits.
+
+## type StatusArchiver
+
+```go
+type StatusArchiver interface {
+	ArchiveStatus(ctx context.Context, hash string, der []byte) error
+}
+```
+
+StatusArchiver is implemented by the verifier of a certificate-bound approver that has a status archive: ArchiveStatus stores the bytes of a CRL larger than MaxStatusInline under its hash, so what the gate relied on survives although the journal holds only its hash.
 
 ## type StepKind
 

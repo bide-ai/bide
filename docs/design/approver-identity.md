@@ -1137,7 +1137,7 @@ asserting the same counted set and the same reason:
 31. **confirmation-pass gaps** (each a test): `W'` near zero gives `provisional (short window)` below
     `MinW`; a producer omitting a listing CRL from the middle of `[A + W, L(C)]` cannot reach `final`
     (the series must have time coverage to the CRL at `L(C)`, and `L(C)` is the first CRL strictly after
-    `notAfter`); startup refuses `CAPeriod > ExecStatusAge / 2`, and a 30 min CRL against a 15 min
+    `notAfter`); startup refuses `CAPeriod > ExecStatusAge / 2` for the leaf's issuer (CA tiers: `CAPeriodFor + overlap <= ExecStatusAgeFor <= MaxStatusAgeFor`), and a 30 min CRL against a 15 min
     `ExecStatusAge` is refused rather than pausing half the time; the alarm is at 50% everywhere; the
     post-terminal hold: stale status holds without writing a tally, a revoked-before-execution decision
     writes `approval-exec-hold` and re-asks through `approval-tally:<id>:ident-reask`, and a crash
@@ -1347,6 +1347,16 @@ meanwhile, and the verifier-kind rule is exactly the note's: the counting rule d
 verifier, so a v4 signature fails under a bare-key verifier and a v3 decision that carries a chain counts
 as a bare-key decision.
 
+The gate records landed next (E2a): a gate with a certificate-bound approver anchors a decision that verifies but
+has no covering head (`Reanchorer`, rate-limited), writes phase notes, and journals the status bytes by hash, the
+`approval-identity:<id>:<generation>` record bound to its tally by a digest of the stored bytes, and the policy
+in force with every verdict-affecting parameter; `StatusParams.Validate` and `CertApprover.ValidateConfig`
+(`CAPeriod <= ExecStatusAge/2` for the leaf's issuing CA, with the per-CA tiers `CAPeriodFor + overlap <= ExecStatusAgeFor <= MaxStatusAgeFor` to follow with the execution-time check; a status archive or a bounded snapshot) run at configuration. The tally name
+(`:ident`), the supersede of a plain-name tally, the execution-time status check and the operator guide are the
+next changes; until the last, a gate refuses a policy with a certificate-bound approver (`ErrConfig`), so the
+half-built gate cannot be configured. The records are specified in `identity-record` form in the types'
+godoc (`agent.ApprovalIdentity` and neighbours).
+
 Requirements this step leaves to the gate changes (E), because the format layer cannot enforce them:
 
 - A record counts only if its chain verifies as well as its signature: a record whose chain fails (a
@@ -1477,7 +1487,7 @@ These are engineering choices the design settles; each can be reopened if the us
    `ClockTolerance` 60 s; a `final` verdict needs `W' >= MinW` (30 min) and a series complete to the CRL at
    `L(C)` (derived from the archived series, first CRL strictly after `notAfter`).
 6. (rest) **Latency and CRL policy.** `MaxStatusAge` default 1 h; `ExecStatusAge` set from the CA's actual
-   period (startup refuses `CAPeriod > ExecStatusAge / 2`) with a status re-check immediately before the
+   period (startup refuses `CAPeriod > ExecStatusAge / 2` for the leaf's issuer; CA tiers `CAPeriodFor + overlap <= ExecStatusAgeFor <= MaxStatusAgeFor`) with a status re-check immediately before the
    call runs on every execution path, a published latency number, monotonic CRL numbers, alarm at 50%; CRLs fetched only from configured URLs by the refresher; `Status: NotRequired` only by explicit
    policy for short-lived certificates (default off).
 7. **Stale or missing status.** The live gate pauses with a named needs-attention reason (at count time
