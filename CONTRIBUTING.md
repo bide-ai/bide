@@ -237,12 +237,12 @@ tree between releases.
    ```
 
    The script
-   1. tags the core `vX.Y.Z` at HEAD, pushes the tag and waits until `proxy.golang.org` serves it;
+   1. tags the core `vX.Y.Z` at HEAD, pushes the tag and waits until `proxy.golang.org` serves it (see below for how it waits);
    2. for the modules that need only the core (`govern`, the stores, `mcptools`, `trace`, `codec/gcf`, and `cmd/bide-view`, which needs none),
       sets their `require` on the core to `vX.Y.Z`, drops the `replace`, runs `go mod tidy`
       against the proxy, builds, vets and tests each one with `GOWORK=off`, commits (signed off),
       tags each `<dir>/vX.Y.Z` at that commit, pushes the tags at most three per push and waits
-      for the proxy;
+      for the proxy the same way;
    3. does the same for the governed-event logs, which also require `govern` at `vX.Y.Z`, and for
       the `bide` command, which requires the stores;
    3a. then for `bide-hsm`, which requires `bide`, the stores and the two signers; it is installed
@@ -266,6 +266,16 @@ tree between releases.
    which fails if the tagged `go.mod` still requires `v0.0.0` or replaces a bide module, or does
    not build with `GOWORK=off`. Check both, the release assets and the Homebrew formula: every
    nested tag has its own Release modules run.
+
+   **How the script waits for the proxy.** `proxy.golang.org` caches a miss for 30 to 60 minutes, and
+   asking again keeps the cached miss fresh; the v0.18.0 release lost hours to it. So after a push the
+   script first checks each tag with `GOPROXY=direct` (git, with the checksum database off, so neither
+   the proxy nor the database hears of the version), does not ask the proxy until five minutes after
+   the push, then asks with waits of 5, 10, then 15 minutes, for at most 90 minutes, printing what it
+   waits for. If it gives up, run the same command again once the proxy serves the tag
+   (`go list -m <module>@vX.Y.Z` shows it); do not poll sooner. `PW_SETTLE`, `PW_STEP` and `PW_MAX`
+   (seconds) change the delays (`scripts/proxy-wait.sh`); `--self-test` checks the rules on a fake
+   clock. The `module-sbom` job waits the same way, for up to four hours.
 
    GitHub creates no push event, so runs no workflow, for the tags of a push that carries more
    than three tags. The script therefore never pushes more than three at once (its `--self-test`,

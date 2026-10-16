@@ -38,7 +38,12 @@
 # pushed (a pull request merged meanwhile), as long as the root tag points at the commit released.
 #
 # Nobody should `go get`, `go run` or `go list` a version before its tag is pushed: the module proxy
-# caches the miss (for about 30 minutes), and the release then waits until the cached miss expires.
+# caches the miss for 30 to 60 minutes, however often it is asked again, and the release then waits
+# until the cached miss expires. So after a push the script checks each tag with GOPROXY=direct (the
+# proxy and the checksum database never hear of it), does not ask the proxy until PW_SETTLE seconds
+# (300) after the push, then asks with growing waits (5, 10, 15 minutes) for at most PW_MAX seconds
+# (5400), saying what it waits for; scripts/proxy-wait.sh has the rules and the variables. A run that
+# gave up is run again with the same arguments.
 #
 # Without --push nothing leaves the machine: the same steps run in a scratch clone, "pushing" to a
 # scratch bare repository that stands in for GitHub, and the go command resolves the bide modules
