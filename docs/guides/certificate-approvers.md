@@ -154,8 +154,8 @@ documented procedure, and `bide-hsm approve -cert` signs with the same key once 
 These procedures were not run for this guide (the repository's KMS emulators implement the key and signing calls,
 not the vendors' request tooling), so none is reproduced here:
 
-- AWS KMS has no operation that builds a certificate request, and AWS publishes no procedure or PKCS#11 library
-  for one. The request is the key's signature (the [Sign](https://docs.aws.amazon.com/kms/latest/APIReference/API_Sign.html)
+- AWS KMS has no operation that builds a certificate request, and no AWS procedure or PKCS#11 library for one
+  was found when this guide was written. The request is the key's signature (the [Sign](https://docs.aws.amazon.com/kms/latest/APIReference/API_Sign.html)
   operation) over the request's bytes, which a tool you trust must assemble; third-party PKCS#11 libraries for
   KMS exist, and this guide neither tested nor endorses them.
 - Google Cloud KMS: the
