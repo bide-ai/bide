@@ -203,3 +203,30 @@ func TestTally_CertVerifierGetsNoPositionForADifferentRecord(t *testing.T) {
 		t.Fatalf("indexes %v", []int{v.calls[0].Index, v.calls[1].Index, v.calls[2].Index})
 	}
 }
+
+// Every part of a decision record counts as "the same record": a journal entry of that name that differs
+// in the verdict, approver, scheme, signed time, signature or chain is not it.
+func TestSameDecisionRecord(t *testing.T) {
+	base := certRec("approval:c1:alice:00", "alice")
+	if !sameDecisionRecord(base, certRec("approval:c1:alice:00", "alice")) {
+		t.Fatal("equal records differ")
+	}
+	for name, mut := range map[string]func(*Record){
+		"name":      func(r *Record) { r.Name = "approval:c1:alice:01" },
+		"kind":      func(r *Record) { r.Kind = StepValue },
+		"tool call": func(r *Record) { r.ToolUseID = "c2" },
+		"verdict":   func(r *Record) { r.Approved = false },
+		"approver":  func(r *Record) { r.ApproverSignature.Approver = "bob" },
+		"scheme":    func(r *Record) { r.ApproverSignature.ApproverAlg = "ecdsa-p256" },
+		"time":      func(r *Record) { r.ApproverSignature.DecidedAt = "2026-10-13T12:14:04.000Z" },
+		"signature": func(r *Record) { r.ApproverSignature.Signature = []byte("x") },
+		"chain":     func(r *Record) { r.ApproverSignature.ApproverCert = [][]byte{[]byte("other")} },
+		"longer":    func(r *Record) { r.ApproverSignature.ApproverCert = append(r.ApproverSignature.ApproverCert, []byte("x")) },
+	} {
+		o := certRec("approval:c1:alice:00", "alice")
+		mut(&o)
+		if sameDecisionRecord(base, o) {
+			t.Fatalf("a record that differs in %s is the same", name)
+		}
+	}
+}
