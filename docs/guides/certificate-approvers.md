@@ -70,7 +70,12 @@ EKU and policy OID), the **platform team** (writes the certificate policy and ru
    or the policy does not accept the chain for `ops` (wrong CA, wrong EKU or policy, a name that is not
    `ops`'s identifier). The HSM or KMS is opened only after the file, the policy and the validity pass. There
    is no fallback: a failure never produces a bare-key decision. `-unverified` signs without the policy
-   check and says so loudly; the gate will still refuse a chain it does not accept.
+   check and says so loudly; the gate will still refuse a chain it does not accept, and the decision is then
+   recorded and never counts. The command tells a certificate-bound approver from a bare-key one by the gate's
+   pause note in the journal: if that note was written by a process that does not have the certificate-bound
+   approvers configured, the gate reads as bare, and a bare decision for a bound approver would be recorded and
+   never counted (the gate itself stays safe), so run the application with the same approver configuration on
+   every process that drives the gate.
 6. **The decision is recorded** with the chain, signed over the `bide.approval.v4` bytes, which bind the
    SHA-256 of the leaf, and a receipt is written (with the chain). `bide approve` does not say that the gate
    counted it, and cannot: counting needs a signed tree head over the decision (the application's audited
