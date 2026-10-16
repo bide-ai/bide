@@ -2,12 +2,16 @@ package flowedit
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 )
 
 // Preview is what the editor shows before it writes: the plain unified diff of the bytes it would
@@ -74,7 +78,7 @@ func (s *Server) confirmations(text []byte) []string {
 func (s *Server) Preview(text []byte, hash string) (*Preview, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	disk, err := readConfig(s.path)
+	disk, err := readConfig(s.root, s.base, s.path)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +121,7 @@ func (s *Server) Save(text []byte, hash string, confirmed []string) (*Doc, error
 	// succeeds and the others are conflicts.
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	disk, err := readConfig(s.path)
+	disk, err := readConfig(s.root, s.base, s.path)
 	if err != nil {
 		return nil, err
 	}
@@ -136,24 +140,73 @@ func (s *Server) Save(text []byte, hash string, confirmed []string) (*Doc, error
 }
 
 // fileSystem is the part of the file system a save uses, as a value so that a test can make the
-// write or the rename fail the way a full disk or a permission does.
+// write or the rename fail the way a full disk or a permission does. Everything goes through the
+// os.Root opened on the config's directory at startup, so a directory swapped for a link afterwards
+// cannot redirect a write: the handle is the directory.
 type fileSystem struct {
-	createTemp func(dir, pattern string) (*os.File, error)
+	createTemp func(root *os.Root) (*os.File, string, error)
 	write      func(f *os.File, b []byte) error
-	rename     func(oldpath, newpath string) error
+	rename     func(root *os.Root, oldname, newname string) error
+	remove     func(root *os.Root, name string) error
 }
+
+// tempPrefix starts the name of the temporary file of a save; a file of that name left by a killed
+// process is removed at the next start (cleanStale).
+const tempPrefix = ".bide-edit-"
 
 var osFS = fileSystem{
-	createTemp: os.CreateTemp,
-	write:      func(f *os.File, b []byte) error { _, err := f.Write(b); return err },
-	rename:     os.Rename,
+	createTemp: func(root *os.Root) (*os.File, string, error) {
+		for range 100 {
+			var b [8]byte
+			if _, err := rand.Read(b[:]); err != nil {
+				return nil, "", err
+			}
+			name := tempPrefix + hex.EncodeToString(b[:])
+			f, err := root.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+			if errors.Is(err, os.ErrExist) {
+				continue
+			}
+			return f, name, err
+		}
+		return nil, "", errors.New("no unused temporary file name")
+	},
+	write:  func(f *os.File, b []byte) error { _, err := f.Write(b); return err },
+	rename: func(root *os.Root, o, n string) error { return root.Rename(o, n) },
+	remove: func(root *os.Root, n string) error { return root.Remove(n) },
 }
 
-// write replaces the file with text by an atomic rename of a temporary file in its directory. The
-// target is checked again here, not only at startup: a path that has become a symbolic link, or a
-// directory that is no longer the one resolved at startup, is refused.
+// staleAge is how old a leftover temporary file must be to be removed at start: a save in another
+// bide edit on a file in the same directory is not interrupted.
+const staleAge = 10 * time.Minute
+
+// cleanStale removes the temporary files a killed save left in the config's directory: regular
+// files named tempPrefix*, owned by this user, older than staleAge. It reports what it removed.
+func cleanStale(root *os.Root, now time.Time) []string {
+	ents, err := fs.ReadDir(root.FS(), ".")
+	if err != nil {
+		return nil
+	}
+	var gone []string
+	for _, e := range ents {
+		if !strings.HasPrefix(e.Name(), tempPrefix) {
+			continue
+		}
+		fi, err := root.Lstat(e.Name())
+		if err != nil || !fi.Mode().IsRegular() || !ownedByUs(fi) || now.Sub(fi.ModTime()) < staleAge {
+			continue
+		}
+		if root.Remove(e.Name()) == nil {
+			gone = append(gone, e.Name())
+		}
+	}
+	return gone
+}
+
+// write replaces the file with text by an atomic rename of a temporary file in its directory, all
+// through the directory handle. The target is checked again here: a name that has become a symbolic
+// link or anything but a regular file is refused.
 func (s *Server) write(text []byte, hash string) (err error) {
-	fi, err := os.Lstat(s.path)
+	fi, err := s.root.Lstat(s.base)
 	if err != nil {
 		return fmt.Errorf("flowedit: %w", err)
 	}
@@ -169,22 +222,18 @@ func (s *Server) write(text []byte, hash string) (err error) {
 	if n := linkCount(fi); n > 1 {
 		return fmt.Errorf("flowedit: %s has %d names (hard links); a save replaces the file and would leave the others with the old text, so nothing was written", s.path, n)
 	}
-	dir := filepath.Dir(s.path)
-	if real, err := filepath.EvalSymlinks(dir); err != nil || real != dir {
-		return fmt.Errorf("flowedit: the directory of %s is no longer the one resolved at startup; nothing was written", s.path)
-	}
-	tmp, err := s.fs.createTemp(dir, ".bide-edit-*")
+	tmp, tmpName, err := s.fs.createTemp(s.root)
 	if err != nil {
 		return fmt.Errorf("flowedit: cannot write beside %s: %w", s.path, err)
 	}
 	defer func() {
 		if err != nil {
 			tmp.Close()
-			os.Remove(tmp.Name())
+			_ = s.fs.remove(s.root, tmpName)
 		}
 	}()
 	if err := s.fs.write(tmp, text); err != nil {
-		return fmt.Errorf("flowedit: writing %s: %w", tmp.Name(), err)
+		return fmt.Errorf("flowedit: writing %s: %w", tmpName, err)
 	}
 	if err := tmp.Chmod(fi.Mode().Perm()); err != nil && !isUnsupported(err) {
 		return fmt.Errorf("flowedit: %w", err)
@@ -198,16 +247,16 @@ func (s *Server) write(text []byte, hash string) (err error) {
 	}
 	// The hash is checked again just before the rename, so the window another process has is the
 	// rename's own.
-	if cur, rerr := readConfig(s.path); rerr != nil || hashOf(cur) != hash {
+	if cur, rerr := readConfig(s.root, s.base, s.path); rerr != nil || hashOf(cur) != hash {
 		if rerr != nil {
 			return rerr
 		}
 		return &Conflict{Hash: hashOf(cur), Diff: UnifiedDiff(filepath.Base(s.name), cur, text)}
 	}
-	if err := s.fs.rename(tmp.Name(), s.path); err != nil {
+	if err := s.fs.rename(s.root, tmpName, s.base); err != nil {
 		return fmt.Errorf("flowedit: replacing %s: %w", s.path, err)
 	}
-	syncDir(dir)
+	syncDir(s.root)
 	return nil
 }
 
@@ -215,8 +264,8 @@ func (s *Server) write(text []byte, hash string) (err error) {
 func isUnsupported(err error) bool { return errors.Is(err, errors.ErrUnsupported) }
 
 // syncDir makes the rename durable where the platform allows; a failure is not one of the save.
-func syncDir(dir string) {
-	d, err := os.Open(dir)
+func syncDir(root *os.Root) {
+	d, err := root.Open(".")
 	if err != nil {
 		return
 	}

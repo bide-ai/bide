@@ -23,3 +23,9 @@ func carryOwner(tmp *os.File, fi os.FileInfo) {
 		_ = tmp.Chown(int(st.Uid), int(st.Gid))
 	}
 }
+
+// ownedByUs reports the file is owned by the user running the editor.
+func ownedByUs(fi os.FileInfo) bool {
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	return ok && int(st.Uid) == os.Getuid()
+}

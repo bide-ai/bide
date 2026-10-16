@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bide-ai/bide/internal/runview"
 )
@@ -62,7 +63,9 @@ type Server struct {
 	path  string // the file, absolute, with symlinks resolved at startup
 	name  string // the name the page shows: the path as given
 	token string
-	mu    sync.Mutex // one read or save at a time; guards a save
+	mu    sync.Mutex // one read or save at a time; guards id
+	root  *os.Root   // the config's directory, opened at startup
+	base  string     // the config's name in it
 	// baseline is the text every version is compared with for weakening, and baselineSource says
 	// where it came from. They are fixed at startup: the baseline is the committed policy, not the
 	// session, so weakening in two saves is still weakening against it.
@@ -102,23 +105,31 @@ func New(path string, opts ...Option) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("flowedit: %w", err)
 	}
-	if _, err := readConfig(real); err != nil {
-		return nil, err
-	}
-	text, err := readConfig(real)
+	dir, base := filepath.Split(real)
+	// The directory is opened once, here: every read and write is through this handle, so a
+	// directory swapped for a link later cannot redirect them.
+	root, err := os.OpenRoot(dir)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("flowedit: %w", err)
 	}
+	fail := func(err error) (*Server, error) { root.Close(); return nil, err }
+	if _, err := readConfig(root, base, real); err != nil {
+		return fail(err)
+	}
+	text, err := readConfig(root, base, real)
+	if err != nil {
+		return fail(err)
+	}
+	cleanStale(root, time.Now())
 	// The baseline: the file at the revision asked for, else at HEAD when the file is committed,
 	// else the file as it is now. The editor reads git only for this, with the same `git show` that
 	// bide check -diff makes.
-	dir, base := filepath.Split(real)
 	var baseline []byte
 	var source, note string
 	switch {
 	case o.base != "":
 		if baseline, err = gitShow(dir, o.base, base); err != nil {
-			return nil, fmt.Errorf("flowedit: -base: %w", err)
+			return fail(fmt.Errorf("flowedit: -base: %w", err))
 		}
 		source = "git " + o.base
 	default:
@@ -140,28 +151,31 @@ func New(path string, opts ...Option) (*Server, error) {
 	if _, err := rand.Read(tok[:]); err != nil {
 		return nil, fmt.Errorf("flowedit: no randomness for the session token: %w", err)
 	}
-	return &Server{path: real, name: path, token: hex.EncodeToString(tok[:]), baseline: baseline, baselineSource: source, baselineNote: note, fs: osFS}, nil
+	return &Server{path: real, root: root, base: base, name: path, token: hex.EncodeToString(tok[:]), baseline: baseline, baselineSource: source, baselineNote: note, fs: osFS}, nil
 }
 
 // BaselineNote is "" when the baseline is what it should be, and otherwise says why git HEAD was not
 // used although the file may be in a repository; bide edit prints it at startup.
 func (s *Server) BaselineNote() string { return s.baselineNote }
 
+// Close releases the directory handle. A Server must not be used after.
+func (s *Server) Close() error { return s.root.Close() }
+
 // Token is the session token the page sends in TokenHeader. bide edit prints it in the address's
 // fragment (#t=...), which a browser does not send to the server or in a Referer.
 func (s *Server) Token() string { return s.token }
 
 // readConfig reads the file, which must be a regular file of at most MaxFileSize bytes.
-func readConfig(path string) ([]byte, error) {
+func readConfig(root *os.Root, base, path string) ([]byte, error) {
 	// Not a symbolic link or anything but a regular file at the name: a link put there since startup
 	// is refused, not followed. A file another tool replaced by a rename is the file at the name now
 	// and is read; the hash compare-and-swap of a save is what notices it changed.
-	if lfi, err := os.Lstat(path); err != nil {
+	if lfi, err := root.Lstat(base); err != nil {
 		return nil, fmt.Errorf("flowedit: %w", err)
 	} else if lfi.Mode()&os.ModeSymlink != 0 || !lfi.Mode().IsRegular() {
 		return nil, fmt.Errorf("flowedit: %s is not a regular file (a link or another kind of file is not read)", path)
 	}
-	f, err := os.Open(path)
+	f, err := root.Open(base)
 	if err != nil {
 		return nil, fmt.Errorf("flowedit: %w", err)
 	}
@@ -198,7 +212,7 @@ func (s *Server) Doc() (*Doc, error) {
 }
 
 func (s *Server) docLocked() (*Doc, error) {
-	b, err := readConfig(s.path)
+	b, err := readConfig(s.root, s.base, s.path)
 	if err != nil {
 		return nil, err
 	}

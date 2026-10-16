@@ -213,9 +213,9 @@ func TestFailedSaveLeavesTheFileAndNoDebris(t *testing.T) {
 		"the write fails (a full disk)": {createTemp: good.createTemp, write: func(f *os.File, b []byte) error {
 			_, _ = f.Write(b[:len(b)/2])
 			return errors.New("no space left on device")
-		}, rename: good.rename},
-		"the rename fails":                  {createTemp: good.createTemp, write: good.write, rename: func(string, string) error { return errors.New("permission denied") }},
-		"the temporary file cannot be made": {createTemp: func(string, string) (*os.File, error) { return nil, errors.New("read-only file system") }, write: good.write, rename: good.rename},
+		}, rename: good.rename, remove: good.remove},
+		"the rename fails":                  {createTemp: good.createTemp, write: good.write, rename: func(*os.Root, string, string) error { return errors.New("permission denied") }, remove: good.remove},
+		"the temporary file cannot be made": {createTemp: func(*os.Root) (*os.File, string, error) { return nil, "", errors.New("read-only file system") }, write: good.write, rename: good.rename, remove: good.remove},
 	} {
 		s, p := newTestServer(t, "refund.yaml", weakFlow)
 		s.fs = fs
@@ -271,7 +271,7 @@ func TestSaveRefusesATargetThatChanged(t *testing.T) {
 	os.WriteFile(same, []byte(weakFlow), 0o600)
 	os.Remove(p)
 	os.Symlink(same, p)
-	if _, err := s.Save([]byte(mine), hashOf([]byte(weakFlow)), nil); err == nil || !strings.Contains(err.Error(), "no longer the file") {
+	if _, err := s.Save([]byte(mine), hashOf([]byte(weakFlow)), nil); err == nil || !strings.Contains(err.Error(), "escapes from parent") {
 		t.Errorf("a link to a file with the same bytes: %v", err)
 	}
 	if readFile(t, same) != weakFlow {
@@ -491,12 +491,10 @@ func TestSaveOfTheSameTextTouchesNothing(t *testing.T) {
 	}
 }
 
-// The directory is checked again too: one that has become a link to another place is refused, and
-// nothing is written there.
-func TestSaveRefusesADirectoryThatBecameALink(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("creating a symbolic link needs a privilege on Windows")
-	}
+// Every read and write goes through the directory handle opened at startup. A directory moved away
+// and another one put at its path (with a file of the same name) is not written to: the save lands in
+// the directory the editor was started on, and nothing, a temporary file included, in the new one.
+func TestSaveGoesToTheDirectoryItWasStartedOn(t *testing.T) {
 	parent, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -513,17 +511,99 @@ func TestSaveRefusesADirectoryThatBecameALink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Rename(dir, dir+".real"); err != nil {
+	defer s.Close()
+	moved := dir + ".moved"
+	if err := os.Rename(dir, moved); err != nil {
+		t.Skipf("cannot move a directory that is open here: %v", err) // Windows
+	}
+	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(dir+".real", dir); err != nil {
+	if err := os.WriteFile(p, []byte("attacker: 1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.Save([]byte(strings.Replace(weakFlow, "flow: refund", "flow: other", 1)), hashOf([]byte(weakFlow)), nil)
-	if err == nil || !strings.Contains(err.Error(), "no longer the one resolved") {
-		t.Errorf("%v", err)
+	// Reading and saving see the original directory's file, by the handle.
+	if d, err := s.Doc(); err != nil || d.Text != weakFlow {
+		t.Fatalf("the read left the directory it was started on: %v", err)
 	}
-	if readFile(t, filepath.Join(dir+".real", "refund.yaml")) != weakFlow {
-		t.Error("written through the link")
+	mine := strings.Replace(weakFlow, "flow: refund", "flow: other", 1)
+	if _, err := s.Save([]byte(mine), hashOf([]byte(weakFlow)), nil); err != nil {
+		t.Fatal(err)
+	}
+	if readFile(t, filepath.Join(moved, "refund.yaml")) != mine {
+		t.Error("the save did not land in the directory the editor was started on")
+	}
+	if readFile(t, p) != "attacker: 1\n" || !slices.Equal(dirFiles(t, dir), []string{"refund.yaml"}) {
+		t.Errorf("the directory now at the path was written to: %q", dirFiles(t, dir))
+	}
+}
+
+// A temporary file a killed save left (mode 0600, the config's text, ours, old enough) is removed at
+// the next start; a recent one (another editor's save in progress), another name, a directory, or a
+// file that is not ours stays.
+func TestStartRemovesStaleTemporaryFiles(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "refund.yaml")
+	if err := os.WriteFile(p, []byte(weakFlow), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour)
+	mk := func(name string, age time.Time) {
+		f := filepath.Join(dir, name)
+		if err := os.WriteFile(f, []byte(weakFlow), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(f, age, age); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk(tempPrefix+"deadbeef00000001", old)
+	mk(tempPrefix+"deadbeef00000002", old)
+	mk(tempPrefix+"recent", time.Now())
+	mk("keep-me.yaml", old)
+	mk(".bide-edit", old) // no dash after "edit": not ours
+	if err := os.Mkdir(filepath.Join(dir, tempPrefix+"dir"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	got := dirFiles(t, dir)
+	want := []string{".bide-edit", tempPrefix + "dir", tempPrefix + "recent", "keep-me.yaml", "refund.yaml"}
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Errorf("the directory holds %q, want %q", got, want)
+	}
+	if readFile(t, p) != weakFlow {
+		t.Error("the config changed")
+	}
+}
+
+// A save leaves no temporary file under its prefix, and the one it creates is private.
+func TestTemporaryFileIsPrivateAndGone(t *testing.T) {
+	s, p := newTestServer(t, "refund.yaml", weakFlow)
+	var mode os.FileMode
+	var name string
+	fs := osFS
+	fs.createTemp = func(root *os.Root) (*os.File, string, error) {
+		f, n, err := osFS.createTemp(root)
+		if err == nil {
+			if st, serr := f.Stat(); serr == nil {
+				mode, name = st.Mode().Perm(), n
+			}
+		}
+		return f, n, err
+	}
+	s.fs = fs
+	if _, err := s.Save([]byte(weakFlow+"# x\n"), hashOf([]byte(weakFlow)), nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(name, tempPrefix) || runtime.GOOS != "windows" && mode != 0o600 {
+		t.Errorf("temporary file %q with mode %v", name, mode)
+	}
+	if names := dirFiles(t, filepath.Dir(p)); !slices.Equal(names, []string{"refund.yaml"}) {
+		t.Errorf("debris: %q", names)
 	}
 }

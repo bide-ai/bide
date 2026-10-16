@@ -116,8 +116,11 @@ Windows, it cannot replace a file another program holds open without sharing del
 are kept, and so are the owner and group where the user may set them. A save is refused, and nothing
 is written, for a file that is read-only (the editor does not replace what its owner protected) and,
 on Unix, for a file that has other names (hard links), which would be left with the old text. Saves
-in one editor are serialized: of two over the same hash exactly one succeeds. A process killed
-mid-save leaves a `.bide-edit-*` file beside the config.
+in one editor are serialized: of two over the same hash exactly one succeeds. The directory is opened
+once at startup and every read and write goes through that handle, so a directory swapped for a link
+later cannot redirect a save, and a file swapped in at the config's name is refused. A process killed
+mid-save leaves a private `.bide-edit-*` file beside the config, which the next `bide edit` in that
+directory removes when it is ours and over ten minutes old.
 
 A file that is not a readable config (invalid YAML, a duplicate key, more than one YAML document)
 shows `CONFIG DOES NOT PARSE` and the reason, and no graph.
