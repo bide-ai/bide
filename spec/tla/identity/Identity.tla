@@ -42,6 +42,11 @@ CONSTANTS
   MaxCert,      \* certificates the CA issues
   MaxDec,       \* decisions submitted
   MaxCRL,       \* CRLs the CA publishes
+  CATier,       \* the leaf's issuing CA is itself certified by a root: a second tier with its own CRL series
+  MaxRCRL,      \* CRLs the root publishes (the CA tier's series)
+  RootSpacing,  \* the least time between two root CRLs
+  MaxAgeCA,     \* live: oldest usable root CRL when a decision is counted
+  ExecAgeCA,    \* oldest usable root CRL immediately before the call executes (ExecStatusAgeFor of the CA)
   MaxHeads,     \* signed heads
   K,            \* seats a tally needs
   MaxAge,       \* live: oldest usable status (now - thisUpdate) when a decision is counted
@@ -69,6 +74,9 @@ CONSTANTS
   LBoundExec,   \* the pre-execution check applies the same rule to the status it reads
   DeadGuard,    \* a decision removed by a revocation is never counted again
   TallyRecheck, \* the tally forms only when no counted decision is listed in the archive
+  CountCATier,  \* the count reads the CA tier's status (fresh within MaxAgeCA, not listing the CA with E <= A(d))
+  ExecCATier,   \* the pre-execution check reads the CA tier's status (fresh within ExecAgeCA, no such listing)
+  LeafAgeFromCA,\* wrongly, the pre-execution check ages the leaf's status by ExecAgeCA instead of ExecAge
   \* The adversary and the CA's options.
   Prune,        \* the CA may drop a revoked certificate's entry after one CRL beyond its notAfter
   CanRevoke,    \* the CA may revoke a certificate
@@ -77,6 +85,7 @@ CONSTANTS
   CanRollback,  \* an older published CRL may be delivered after a newer one
   CanSkew,      \* a head may be stamped out of order
   CanBackdate,  \* a decision may carry a decided_at earlier than its true time
+  CanRevokeCA,  \* the root may revoke the CA (the whole chain below it)
   CanCrash,     \* the gate may crash: the counted set is lost, the journal (heads, the tally) is not
   CanMisbind    \* a decision may name an approver id other than its certificate's identifier
 
@@ -84,6 +93,8 @@ ASSUME NaSet \subseteq 0..MaxT /\ IssueMax \in Nat
 ASSUME MaxT \in Nat /\ MaxCert \in Nat /\ MaxDec \in Nat /\ MaxCRL \in Nat /\ MaxHeads \in Nat
 ASSUME K \in Nat /\ MaxAge \in Nat /\ ExecAge \in Nat /\ Period \in Nat /\ MinSpacing \in Nat
 ASSUME MinSpacing >= 1
+ASSUME CATier \in BOOLEAN /\ MaxRCRL \in Nat /\ RootSpacing \in Nat /\ MaxAgeCA \in Nat /\ ExecAgeCA \in Nat
+ASSUME RootSpacing >= 1
 ASSUME Skew \in Nat /\ Grace \in Nat /\ W \in Nat
 ASSUME Cov \in {"none", "time", "number"}
 ASSUME IdOwner \in [Idents -> Persons]
@@ -93,6 +104,7 @@ NoE == MaxT + 1     \* "no revocation" / "not listed"
 Certs == 1..MaxCert
 Decs == 1..MaxDec
 CRLs == 1..MaxCRL
+RCRLs == 1..MaxRCRL
 
 VARIABLES
   now,        \* the clock
@@ -100,6 +112,9 @@ VARIABLES
   nc, hold, idn, nb, na, rev,   \* certificates: count, holder, identifier, notBefore, notAfter, E or NoE
   np, ctu, clst,                \* CRLs: count, thisUpdate, cert -> the E it lists or NoE
   \* The verifier.
+  caRev,      \* the root's revocation of the CA: its effective time E, or NoE
+  rnp, rtu, rrl,  \* the root's CRLs: count, thisUpdate, the E each lists for the CA (NoE if none)
+  rrcvd,      \* the root CRLs the verifier received
   rcvd,       \* the archived series: numbers of the CRLs the verifier has received
   snap,       \* the latest CRL received (0: none); the number rule (NumRule) keeps the higher number
               \* when an older one arrives later. The count reads the archive, so only a probe reads it
@@ -114,10 +129,11 @@ VARIABLES
   cRb,        \* a CRL the verifier received, or that is older than MaxAge, lists the chain with E <= A(d)
   cNb,        \* the same, against a head that precedes the decision's record
   cOk,        \* status was fresh, in window
-  eb          \* at execution, status was stale or showed E <= A(d) of a counted decision
+  eb,         \* at execution, the leaf tier's status was stale or showed E <= A(d) of a counted decision
+  ebC         \* the same for the CA tier
 
-vars == <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, rcvd, snap, heads, nd, da, dc, dt,
-          waiting, cn, dead, tl, execd, cA, cRb, cNb, cOk, eb>>
+vars == <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, caRev, rnp, rtu, rrl, rrcvd, rcvd, snap, heads, nd, da, dc, dt,
+          waiting, cn, dead, tl, execd, cA, cRb, cNb, cOk, eb, ebC>>
 
 \* vocabulary: begin
 \* The journal records the model reads and writes: a cert-bound approval decision, a signed head
@@ -159,6 +175,13 @@ Old(age) == {k \in 1..np : ctu[k] <= now - age}
 Seen(age) == rcvd \cup Old(age)
 
 FreshSnap(age) == snap # 0 /\ now - ctu[snap] <= age
+\* The CA tier: the root's CRLs list the CA (the chain below it) with the E the root gave. The E a set
+\* of root CRLs lists (NoE if none), the root CRLs published longer ago than age (a fresh-enough
+\* archive cannot have missed their listing), and a fresh one for d: received within age and, as for the
+\* leaf, issued at or after A(d) (or live-counted).
+KnownRE(S) == IF S = {} THEN NoE ELSE MinOf({rrl[k] : k \in S})
+RSeen(age) == rrcvd \cup {k \in 1..rnp : rtu[k] <= now - age}
+CAFresh(d, age) == \E k \in rrcvd : now - rtu[k] <= age /\ (rtu[k] >= AOf(d) \/ CountLive)
 \* The series shows nothing was published between a CRL and its predecessor in the archive: with Cov
 \* "number" the number follows; with Cov "time" it was issued within the declared Period (and the CA
 \* publishes no more often than that). With Cov "none" nothing is shown. (The nextUpdate condition of
@@ -179,10 +202,11 @@ UsableCRL(d, k, age) ==
   /\ k \in rcvd /\ (~Fresh \/ now - ctu[k] <= age)
   /\ (ctu[k] >= AOf(d) \/ CountLive)
   /\ (~LBoundCount \/ LOK(dc[d], k))
-StatusUsable(d) == \E k \in rcvd : UsableCRL(d, k, MaxAge)
+StatusUsable(d) == (\E k \in rcvd : UsableCRL(d, k, MaxAge)) /\ (~CATier \/ ~CountCATier \/ CAFresh(d, MaxAgeCA))
 \* Rule 5: the leaf has no E <= (A(d), or with RevByClaim the signed decided_at) in the status.
 NotListed(d) ==
-  KnownE(rcvd, dc[d]) > IF RevByClaim THEN dt[d] ELSE AOf(d)
+  /\ KnownE(rcvd, dc[d]) > IF RevByClaim THEN dt[d] ELSE AOf(d)
+  /\ (~CATier \/ ~CountCATier \/ KnownRE(rrcvd) > AOf(d))
 
 (***************************************************************************)
 (* The counting rule (rules 1 to 5)                                        *)
@@ -204,7 +228,7 @@ Countable(d) ==
   /\ StatusUsable(d) /\ NotListed(d)
 
 \* A counted decision whose leaf the archive lists with E <= A(d).
-Listed(d) == KnownE(rcvd, dc[d]) <= cA[d]
+Listed(d) == KnownE(rcvd, dc[d]) <= cA[d] \/ (CATier /\ KnownRE(rrcvd) <= cA[d])
 
 Seats(S) == IF DedupSeat THEN Cardinality({da[d] : d \in S}) ELSE Cardinality(S)
 
@@ -242,13 +266,14 @@ Init ==
   /\ idn = [c \in Certs |-> CHOOSE i \in Idents : TRUE]
   /\ nb = [c \in Certs |-> 0] /\ na = [c \in Certs |-> 0] /\ rev = [c \in Certs |-> NoE]
   /\ np = 0 /\ ctu = [k \in CRLs |-> 0] /\ clst = [k \in CRLs |-> [c \in Certs |-> NoE]]
+  /\ caRev = NoE /\ rnp = 0 /\ rtu = [k \in RCRLs |-> 0] /\ rrl = [k \in RCRLs |-> NoE] /\ rrcvd = {}
   /\ rcvd = {} /\ snap = 0
   /\ heads = {}
   /\ nd = 0 /\ da = [d \in Decs |-> CHOOSE i \in Idents : TRUE]
   /\ dc = [d \in Decs |-> 1] /\ dt = [d \in Decs |-> 0]
   /\ waiting = FALSE /\ cn = {} /\ dead = {} /\ tl = {} /\ execd = FALSE
   /\ cA = [d \in Decs |-> 0] /\ cRb = [d \in Decs |-> FALSE] /\ cNb = [d \in Decs |-> FALSE]
-  /\ cOk = [d \in Decs |-> TRUE] /\ eb = FALSE
+  /\ cOk = [d \in Decs |-> TRUE] /\ eb = FALSE /\ ebC = FALSE
 
 Issue(p, i, e) ==
   /\ nc < MaxCert /\ now <= IssueMax /\ e \in NaSet /\ e >= now
@@ -257,8 +282,8 @@ Issue(p, i, e) ==
   /\ idn' = [idn EXCEPT ![nc + 1] = i]
   /\ nb' = [nb EXCEPT ![nc + 1] = now]
   /\ na' = [na EXCEPT ![nc + 1] = e]
-  /\ UNCHANGED <<now, rev, np, ctu, clst, rcvd, snap, heads, nd, da, dc, dt, waiting, cn, dead, tl,
-                 execd, cA, cRb, cNb, cOk, eb>>
+  /\ UNCHANGED <<now, rev, np, ctu, clst, caRev, rnp, rtu, rrl, rrcvd, rcvd, snap, heads, nd, da, dc, dt, waiting, cn, dead, tl,
+                 execd, cA, cRb, cNb, cOk, eb, ebC>>
 
 \* The CA issues a certificate under its name constraint: the identifier is the holder's own.
 IssueCert(p, i, e) == IdOwner[i] = p /\ Issue(p, i, e)
@@ -270,8 +295,8 @@ MisIssue(p, i, e) == CanMisIssue /\ IdOwner[i] # p /\ Issue(p, i, e)
 Revoke(c, e) ==
   /\ CanRevoke /\ c <= nc /\ rev[c] = NoE /\ e \in 0..now
   /\ rev' = [rev EXCEPT ![c] = e]
-  /\ UNCHANGED <<now, nc, hold, idn, nb, na, np, ctu, clst, rcvd, snap, heads, nd, da, dc, dt,
-                 waiting, cn, dead, tl, execd, cA, cRb, cNb, cOk, eb>>
+  /\ UNCHANGED <<now, nc, hold, idn, nb, na, np, ctu, clst, caRev, rnp, rtu, rrl, rrcvd, rcvd, snap, heads, nd, da, dc, dt,
+                 waiting, cn, dead, tl, execd, cA, cRb, cNb, cOk, eb, ebC>>
 
 \* The entries a CRL published now carries. With pr, the CA drops the entries RFC 5280 section 3.3
 \* lets it drop: a certificate whose notAfter an earlier CRL already follows.
@@ -293,15 +318,15 @@ CRLPublish(pr) ==
   /\ Publish(pr)
   /\ rcvd' = rcvd \cup {np + 1}
   /\ snap' = np + 1
-  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, heads, nd, da, dc, dt, waiting, cn, dead, tl,
-                 execd, cA, cRb, cNb, cOk, eb>>
+  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, caRev, rnp, rtu, rrl, rrcvd, heads, nd, da, dc, dt, waiting, cn, dead, tl,
+                 execd, cA, cRb, cNb, cOk, eb, ebC>>
 
 \* A CRL is published and the verifier never gets it (yet).
 WithholdCRL(pr) ==
   /\ CanWithhold /\ (pr => Prune)
   /\ Publish(pr)
-  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, rcvd, snap, heads, nd, da, dc, dt, waiting, cn,
-                 dead, tl, execd, cA, cRb, cNb, cOk, eb>>
+  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, caRev, rnp, rtu, rrl, rrcvd, rcvd, snap, heads, nd, da, dc, dt, waiting, cn,
+                 dead, tl, execd, cA, cRb, cNb, cOk, eb, ebC>>
 
 \* An older published CRL is delivered after newer ones. With NumRule the cache keeps the higher
 \* number; the archive keeps both.
@@ -309,13 +334,13 @@ RollbackCRL(k) ==
   /\ CanRollback /\ k \in 1..np /\ k # snap
   /\ rcvd' = rcvd \cup {k}
   /\ snap' = IF NumRule /\ snap > k THEN snap ELSE k
-  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, heads, nd, da, dc, dt, waiting,
-                 cn, dead, tl, execd, cA, cRb, cNb, cOk, eb>>
+  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, caRev, rnp, rtu, rrl, rrcvd, heads, nd, da, dc, dt, waiting,
+                 cn, dead, tl, execd, cA, cRb, cNb, cOk, eb, ebC>>
 
 ClockTick ==
   /\ now < MaxT /\ now' = now + 1
-  /\ UNCHANGED <<nc, hold, idn, nb, na, rev, np, ctu, clst, rcvd, snap, heads, nd, da, dc, dt,
-                 waiting, cn, dead, tl, execd, cA, cRb, cNb, cOk, eb>>
+  /\ UNCHANGED <<nc, hold, idn, nb, na, rev, np, ctu, clst, caRev, rnp, rtu, rrl, rrcvd, rcvd, snap, heads, nd, da, dc, dt,
+                 waiting, cn, dead, tl, execd, cA, cRb, cNb, cOk, eb, ebC>>
 
 \* A decision is signed with the key of certificate c, for approver a, claiming decided_at t.
 \* Whether the key is its holder's or a thief's is not distinguished. Backdate: t is earlier than
@@ -327,8 +352,8 @@ SubmitCert(c, a, t) ==
   /\ da' = [da EXCEPT ![nd + 1] = a]
   /\ dc' = [dc EXCEPT ![nd + 1] = c]
   /\ dt' = [dt EXCEPT ![nd + 1] = t]
-  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, rcvd, snap, heads, waiting, cn,
-                 dead, tl, execd, cA, cRb, cNb, cOk, eb>>
+  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, caRev, rnp, rtu, rrl, rrcvd, rcvd, snap, heads, waiting, cn,
+                 dead, tl, execd, cA, cRb, cNb, cOk, eb, ebC>>
 
 MakeHead(t) ==
   [sz |-> nd, tm |-> t, rl |-> now]
@@ -339,8 +364,8 @@ Anchor ==
   /\ ~waiting /\ nd > 0 /\ Cardinality(heads) < MaxHeads
   /\ ~\E h \in heads : h.sz = nd
   /\ heads' = heads \cup {MakeHead(now)}
-  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, rcvd, snap, nd, da, dc, dt,
-                 waiting, cn, dead, tl, execd, cA, cRb, cNb, cOk, eb>>
+  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, caRev, rnp, rtu, rrl, rrcvd, rcvd, snap, nd, da, dc, dt,
+                 waiting, cn, dead, tl, execd, cA, cRb, cNb, cOk, eb, ebC>>
 
 \* The gate's own step before tallying: it asks the store to sign a head over a journal no head
 \* covers (AuditedStore.Reanchor).
@@ -348,21 +373,21 @@ GateAnchorStep ==
   /\ GateAnchor /\ waiting /\ nd > 0 /\ Cardinality(heads) < MaxHeads
   /\ ~Covered(nd)
   /\ heads' = heads \cup {MakeHead(now)}
-  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, rcvd, snap, nd, da, dc, dt,
-                 waiting, cn, dead, tl, execd, cA, cRb, cNb, cOk, eb>>
+  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, caRev, rnp, rtu, rrl, rrcvd, rcvd, snap, nd, da, dc, dt,
+                 waiting, cn, dead, tl, execd, cA, cRb, cNb, cOk, eb, ebC>>
 
 \* A head over the journal so far, stamped with a time that is not the real one.
 SkewHead(t) ==
   /\ CanSkew /\ nd > 0 /\ Cardinality(heads) < MaxHeads
   /\ t \in Time /\ t # now
   /\ heads' = heads \cup {MakeHead(t)}
-  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, rcvd, snap, nd, da, dc, dt,
-                 waiting, cn, dead, tl, execd, cA, cRb, cNb, cOk, eb>>
+  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, caRev, rnp, rtu, rrl, rrcvd, rcvd, snap, nd, da, dc, dt,
+                 waiting, cn, dead, tl, execd, cA, cRb, cNb, cOk, eb, ebC>>
 
 GateOpen ==
   /\ ~waiting /\ waiting' = TRUE
-  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, rcvd, snap, heads, nd, da, dc, dt,
-                 cn, dead, tl, execd, cA, cRb, cNb, cOk, eb>>
+  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, caRev, rnp, rtu, rrl, rrcvd, rcvd, snap, heads, nd, da, dc, dt,
+                 cn, dead, tl, execd, cA, cRb, cNb, cOk, eb, ebC>>
 
 \* The gate counts a decision.
 Count(d) ==
@@ -370,12 +395,14 @@ Count(d) ==
   /\ Countable(d)
   /\ cn' = cn \cup {d}
   /\ cA' = [cA EXCEPT ![d] = AOf(d)]
-  /\ cRb' = [cRb EXCEPT ![d] = KnownE(Seen(MaxAge), dc[d]) <= AOf(d)]
+  /\ cRb' = [cRb EXCEPT ![d] = KnownE(Seen(MaxAge), dc[d]) <= AOf(d)
+                              \/ (CATier /\ KnownRE(RSeen(MaxAgeCA)) <= AOf(d))]
   /\ cNb' = [cNb EXCEPT ![d] =
               \E h \in heads : h.sz < d /\ KnownE(Seen(MaxAge), dc[d]) <= h.tm]
-  /\ cOk' = [cOk EXCEPT ![d] = \E k \in rcvd : now - ctu[k] <= MaxAge /\ (ctu[k] >= AOf(d) \/ CountLive)]
-  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, rcvd, snap, heads, nd, da, dc, dt,
-                 waiting, dead, tl, execd, eb>>
+  /\ cOk' = [cOk EXCEPT ![d] = (\E k \in rcvd : now - ctu[k] <= MaxAge /\ (ctu[k] >= AOf(d) \/ CountLive))
+                                 /\ (~CATier \/ CAFresh(d, MaxAgeCA))]
+  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, caRev, rnp, rtu, rrl, rrcvd, rcvd, snap, heads, nd, da, dc, dt,
+                 waiting, dead, tl, execd, eb, ebC>>
 
 \* A revocation with E <= A(d) in the archive removes a decision for good. A terminal tally is not
 \* recounted (with StickyTally).
@@ -385,43 +412,70 @@ DropRevoked(d) ==
   /\ dead' = dead \cup {d}
   /\ cn' = cn \ {d}
   /\ tl' = IF tl # {} THEN tl \ {d} ELSE tl
-  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, rcvd, snap, heads, nd, da, dc, dt,
-                 waiting, execd, cA, cRb, cNb, cOk, eb>>
+  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, caRev, rnp, rtu, rrl, rrcvd, rcvd, snap, heads, nd, da, dc, dt,
+                 waiting, execd, cA, cRb, cNb, cOk, eb, ebC>>
 
 \* Without StaleSticky: stale or missing status removes a counted decision.
 DropStale(d) ==
   /\ ~StaleSticky /\ waiting /\ d \in cn /\ tl = {}
   /\ ~StatusUsable(d)
   /\ cn' = cn \ {d}
-  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, rcvd, snap, heads, nd, da, dc, dt,
-                 waiting, dead, tl, execd, cA, cRb, cNb, cOk, eb>>
+  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, caRev, rnp, rtu, rrl, rrcvd, rcvd, snap, heads, nd, da, dc, dt,
+                 waiting, dead, tl, execd, cA, cRb, cNb, cOk, eb, ebC>>
 
 Tally ==
   /\ waiting /\ tl = {} /\ Seats(cn) >= K
   /\ (~TallyRecheck \/ \A d \in cn : ~Listed(d))
   /\ tl' = cn
-  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, rcvd, snap, heads, nd, da, dc, dt,
-                 waiting, cn, dead, execd, cA, cRb, cNb, cOk, eb>>
+  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, caRev, rnp, rtu, rrl, rrcvd, rcvd, snap, heads, nd, da, dc, dt,
+                 waiting, cn, dead, execd, cA, cRb, cNb, cOk, eb, ebC>>
 
 \* The pre-execution check: a status no older than ExecAge, and no counted decision's chain with
 \* E <= A(d) in the archive.
 ExecOK ==
-  /\ \A d \in tl : ~Listed(d) /\ \E k \in rcvd : now - ctu[k] <= ExecAge /\ (~LBoundExec \/ LOK(dc[d], k))
+  /\ \A d \in tl : ~Listed(d) /\ \E k \in rcvd : now - ctu[k] <= (IF LeafAgeFromCA THEN ExecAgeCA ELSE ExecAge) /\ (~LBoundExec \/ LOK(dc[d], k))
+  /\ (~CATier \/ ~ExecCATier \/ \E k \in rrcvd : now - rtu[k] <= ExecAgeCA)
 
 Exec ==
   /\ tl # {} /\ ~execd /\ (~ExecRecheck \/ ExecOK)
   /\ execd' = TRUE
   /\ eb' = (~(\E k \in rcvd : now - ctu[k] <= ExecAge) \/ \E d \in tl : KnownE(Seen(ExecAge), dc[d]) <= cA[d])
-  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, rcvd, snap, heads, nd, da, dc, dt,
+  /\ ebC' = (CATier /\ (~(\E k \in rrcvd : now - rtu[k] <= ExecAgeCA)
+                        \/ \E d \in tl : KnownRE(RSeen(ExecAgeCA)) <= cA[d]))
+  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, caRev, rnp, rtu, rrl, rrcvd, rcvd, snap, heads, nd, da, dc, dt,
                  waiting, cn, dead, tl, cA, cRb, cNb, cOk>>
+
+\* The root revokes the CA with effective time E (which may lie in the past): every chain below it.
+RevokeCA(e) ==
+  /\ CATier /\ CanRevokeCA /\ caRev = NoE /\ e \in 0..now
+  /\ caRev' = e
+  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, rnp, rtu, rrl, rrcvd, rcvd, snap, heads, nd, da, dc, dt,
+                 waiting, cn, dead, tl, execd, cA, cRb, cNb, cOk, eb, ebC>>
+
+CanPublishRoot == CATier /\ rnp < MaxRCRL /\ IF rnp = 0 THEN TRUE ELSE now - rtu[rnp] >= RootSpacing
+PublishRoot ==
+  /\ CanPublishRoot
+  /\ rnp' = rnp + 1
+  /\ rtu' = [rtu EXCEPT ![rnp + 1] = now]
+  /\ rrl' = [rrl EXCEPT ![rnp + 1] = caRev]
+
+\* A root CRL is published and the verifier gets it, or (withheld) never does.
+RootCRL ==
+  /\ PublishRoot /\ rrcvd' = rrcvd \cup {rnp + 1}
+  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, caRev, rcvd, snap, heads, nd, da, dc, dt,
+                 waiting, cn, dead, tl, execd, cA, cRb, cNb, cOk, eb, ebC>>
+WithholdRootCRL ==
+  /\ CanWithhold /\ PublishRoot
+  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, caRev, rrcvd, rcvd, snap, heads, nd, da, dc, dt,
+                 waiting, cn, dead, tl, execd, cA, cRb, cNb, cOk, eb, ebC>>
 
 \* The gate crashes and restarts: the counted set and the wait are lost; the journal (the heads and the
 \* terminal tally) and the archive are not. The decisions are counted again.
 Crash ==
   /\ CanCrash /\ (waiting \/ cn # {})
   /\ waiting' = FALSE /\ cn' = {}
-  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, rcvd, snap, heads, nd, da, dc, dt,
-                 dead, tl, execd, cA, cRb, cNb, cOk, eb>>
+  /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, caRev, rnp, rtu, rrl, rrcvd, rcvd, snap, heads, nd, da, dc, dt,
+                 dead, tl, execd, cA, cRb, cNb, cOk, eb, ebC>>
 
 Next ==
   \/ ClockTick
@@ -437,6 +491,8 @@ Next ==
   \/ Tally
   \/ Exec
   \/ Crash
+  \/ \E e \in Time : RevokeCA(e)
+  \/ RootCRL \/ WithholdRootCRL
 
 Spec == Init /\ [][Next]_vars
 
@@ -453,6 +509,7 @@ TypeOK ==
   /\ \A c \in Certs : rev[c] \in 0..NoE /\ nb[c] \in Time /\ na[c] \in Time
   /\ \A h \in heads : h.sz \in 1..MaxDec /\ h.tm \in Time /\ h.rl \in Time
   /\ waiting \in BOOLEAN /\ execd \in BOOLEAN
+  /\ rnp \in 0..MaxRCRL /\ rrcvd \subseteq RCRLs /\ caRev \in 0..NoE
 
 Counted == cn \cup tl
 
@@ -494,7 +551,13 @@ StaleNeverUncounts ==
 
 \* The call never ran on stale status, or while a counted decision's chain showed E <= A(d) in
 \* status the verifier had (or that was old enough to have).
-NoExecAfterKnownRevocation == execd => ~eb
+NoExecAfterKnownRevocation == execd => ~eb /\ ~ebC
+
+\* The same per tier: the leaf's issuer is read at ExecAge, the CA above it at ExecAgeCA (its own,
+\* longer age: the root publishes rarely), and each must be fresh in its own series and not list its
+\* certificate with E <= A(d).
+NoExecAfterLeafTierRevocation == execd => ~eb
+NoExecAfterCATierRevocation == execd => ~ebC
 
 \* The final tier is sound against the CA's whole published series: nothing published up to the
 \* witness's thisUpdate lists the chain with E <= A(d).
