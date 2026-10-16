@@ -25,6 +25,7 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/internal/approveline"
+	"github.com/bide-ai/bide/internal/policyfile"
 	"github.com/bide-ai/bide/internal/runview"
 	"github.com/bide-ai/bide/internal/term"
 )
@@ -1352,7 +1353,7 @@ func (c *cmd) verifyCertReceipt(r audit.DecisionReceipt) error {
 	if c.f.identityPolicy == "" {
 		return refuse("the receipt is certificate-bound (it carries the approver's certificate chain): pass -identity-policy and -log-key to check its chain and identity")
 	}
-	ci, err := audit.ReadIdentityPolicy(c.f.identityPolicy)
+	ci, err := policyfile.Read(c.f.identityPolicy)
 	if err != nil {
 		return err
 	}

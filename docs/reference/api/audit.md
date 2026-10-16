@@ -449,7 +449,7 @@ CertIdentity is a compiled IdentityPolicy: immutable, safe for concurrent use. *
 
 **Constructors and functions**
 
-- `func ReadIdentityPolicy(path string) (*CertIdentity, error)`: ReadIdentityPolicy reads a certificate policy file (see identityPolicyFile for its members) and compiles it.
+- `func ParseIdentityPolicy(name string, b []byte, readAnchor func(rel string) ([]byte, error)) (*CertIdentity, error)`: ParseIdentityPolicy compiles a certificate policy file's bytes (see identityPolicyFile for its members).
 
 **Methods**
 

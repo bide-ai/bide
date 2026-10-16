@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -44,17 +43,17 @@ type identityPolicyFile struct {
 	RequirePolicyOnCAs bool   `json:"require_policy_on_cas"`
 }
 
-// ReadIdentityPolicy reads a certificate policy file (see identityPolicyFile for its members) and
-// compiles it. Every failure wraps agent.ErrConfig: a check against a policy that did not load must
-// not fall back to a weaker one.
-func ReadIdentityPolicy(path string) (*CertIdentity, error) {
+// ParseIdentityPolicy compiles a certificate policy file's bytes (see identityPolicyFile for its
+// members). name labels errors; readAnchor returns the bytes of a PEM anchor file the policy names, by
+// its path relative to the policy file's directory (the caller reads files: this package does none). Every
+// failure wraps agent.ErrConfig: a check against a policy that did not load must not fall back to a
+// weaker one.
+func ParseIdentityPolicy(name string, b []byte, readAnchor func(rel string) ([]byte, error)) (*CertIdentity, error) {
+	path := name
 	cfgErr := func(format string, args ...any) (*CertIdentity, error) {
 		return nil, fmt.Errorf("audit: identity policy file %s: "+format+": %w", append(append([]any{path}, args...), agent.ErrConfig)...)
 	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return cfgErr("%v", err)
-	}
+	var err error
 	var f identityPolicyFile
 	if err := UnmarshalStrict(b, &f); err != nil {
 		return cfgErr("%v", err)
@@ -63,12 +62,11 @@ func ReadIdentityPolicy(path string) (*CertIdentity, error) {
 		Identity: f.Identity, IDKind: IDKind(f.IDKind), AllowEmailProtectionEKU: f.AllowEmailEKU, MaxChain: f.MaxChain,
 		RequireNameConstraints: f.RequireNameConstr, RequirePolicyOnCAs: f.RequirePolicyOnCAs,
 	}
-	dir := filepath.Dir(path)
 	for _, a := range f.Anchors {
 		if filepath.IsAbs(a) || !filepath.IsLocal(a) {
 			return cfgErr("anchor %q must be a file inside the policy file's directory", a)
 		}
-		pemBytes, err := os.ReadFile(filepath.Join(dir, a))
+		pemBytes, err := readAnchor(a)
 		if err != nil {
 			return cfgErr("%v", err)
 		}

@@ -15,6 +15,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/policyfile"
 	"github.com/bide-ai/bide/internal/testca"
 )
 
@@ -102,7 +103,7 @@ func TestReadIdentityPolicy(t *testing.T) {
 	root := testca.NewRoot(t, "root", testca.Opts{})
 	inter := root.NewIntermediate(t, "inter", testca.Opts{})
 	path := writePolicy(t, root, inter, nil)
-	ci, err := audit.ReadIdentityPolicy(path)
+	ci, err := policyfile.Read(path)
 	if err != nil {
 		t.Fatalf("ReadIdentityPolicy: %v", err)
 	}
@@ -138,13 +139,13 @@ func TestReadIdentityPolicyRefusals(t *testing.T) {
 	}
 	for name, edit := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := audit.ReadIdentityPolicy(writePolicy(t, root, inter, edit))
+			_, err := policyfile.Read(writePolicy(t, root, inter, edit))
 			if err == nil || !errors.Is(err, agent.ErrConfig) {
 				t.Fatalf("want ErrConfig, got %v", err)
 			}
 		})
 	}
-	if _, err := audit.ReadIdentityPolicy(filepath.Join(t.TempDir(), "absent.json")); err == nil {
+	if _, err := policyfile.Read(filepath.Join(t.TempDir(), "absent.json")); err == nil {
 		t.Fatal("a missing policy file loaded")
 	}
 }

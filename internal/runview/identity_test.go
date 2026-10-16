@@ -520,7 +520,9 @@ func TestIdentity_AuditResultWithoutDigestsIsIgnored(t *testing.T) {
 }
 
 func TestIdentity_LiveBasisOnAFinalTierIsNamed(t *testing.T) {
-	fx := identRecs(t, agent.TierLogclockFinal, true, func(id *agent.ApprovalIdentity, _ *agent.ApprovalWait) { id.Decisions[0].BasisKind = agent.BasisLiveBeforeDecision })
+	fx := identRecs(t, agent.TierLogclockFinal, true, func(id *agent.ApprovalIdentity, _ *agent.ApprovalWait) {
+		id.Decisions[0].BasisKind = agent.BasisLiveBeforeDecision
+	})
 	if g := identGate(t, fx.recs); !strings.Contains(strings.Join(g.Identity.Problems, "|"), agent.BasisLiveBeforeDecision) {
 		t.Fatalf("problems = %v", g.Identity.Problems)
 	}

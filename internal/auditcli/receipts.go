@@ -15,6 +15,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/policyfile"
 )
 
 // receiptSuffix is how bide approve names the receipts it writes; a directory given to -receipt is
@@ -48,7 +49,7 @@ func (c *cli) verifyReceipts(args []string) {
 	var ci *audit.CertIdentity
 	if *policyPath != "" {
 		var perr error
-		if ci, perr = audit.ReadIdentityPolicy(*policyPath); perr != nil {
+		if ci, perr = policyfile.Read(*policyPath); perr != nil {
 			ok = c.note(unusable(perr)) && ok
 		}
 	}
