@@ -677,7 +677,7 @@ type describedVerifier struct{ *fakeCertVerifier }
 func (describedVerifier) DescribeIdentity() IdentityPolicyRecord { return IdentityPolicyRecord{} }
 func (describedVerifier) PolicyDigest() string                   { return "digest-of-the-policy" }
 func (describedVerifier) RosterDigest() string                   { return "roster" }
-func (describedVerifier) VerifierInfo() (string, string)         { return "", "" }
+func (describedVerifier) VerifierInfo() (string, string, string) { return "", "", "" }
 
 // The hold names the failure that cannot mend (a revocation first), carries its evidence, and the policy
 // digest; without a revocation the reason code is -1.

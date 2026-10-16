@@ -279,7 +279,7 @@ func TestIdentityPolicyRecordCoversEveryField(t *testing.T) {
 		"StatusParams.CAPeriodFor": "CAPeriodFor", "StatusParams.ConsecutiveNumbers": "ConsecutiveNumbers", "StatusParams.CoverageTolerance": "CoverageTolerance",
 		"StatusParams.ThisUpdateSkew": "ThisUpdateSkew", "StatusParams.ThisUpdateSkewFor": "ThisUpdateSkewFor", "StatusParams.AllowHolds": "AllowHolds",
 		"CertApprover.ClockTolerance": "ClockTolerance", "CertApprover.ExecStatusAgeFor": "ExecStatusAgeFor", "CertApprover.CAOverlapFor": "CAOverlapFor",
-		"StatusParams.MaxStatusAgeFor": "MaxStatusAgeFor", "IdentityPolicy.NotBeforeBackdate": "NotBeforeBackdate", "CertApprover.ExecStatusAge": "ExecStatusAge", "CertApprover.PolicyEffectiveFrom": "EffectiveFrom",
+		"CertApprover.ExecStatusAge": "ExecStatusAge", "CertApprover.PolicyEffectiveFrom": "EffectiveFrom",
 	}
 	notVerdict := map[string]string{
 		"IdentityPolicy.Identity":        "the roster, committed by RosterDigest",
