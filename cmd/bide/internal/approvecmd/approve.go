@@ -154,6 +154,7 @@ type flags struct {
 	reject, yes, full         bool
 	unverified                bool
 	receipt, verifyReceipt    string
+	identityPolicy, logKey    string
 	list, asJSON              bool
 	to                        string // an approval intake's base URL (package approvals): decide through it
 	tlsCA                     string
@@ -190,6 +191,8 @@ func MainWith(args []string, in io.Reader, stdout, stderr io.Writer, stores Stor
 	fs.BoolVar(&f.unverified, "unverified", false, "decide an m-of-n gate without -approver-keys: the key is not checked against the one enrolled for you, and the tally is not verified")
 	fs.StringVar(&f.receipt, "receipt", "", src.ReceiptHelp)
 	fs.StringVar(&f.verifyReceipt, "verify-receipt", "", "verify a decision receipt on its own, against -approver-keys, instead of deciding anything: its signature over the exact call it states")
+	fs.StringVar(&f.identityPolicy, "identity-policy", "", "with -verify-receipt, for a certificate-bound receipt: the certificate policy file (trust anchors, pinned intermediates, the approver-to-identity map; see docs/guides/hitl-approval.md). The chain and identity are checked against it at the time the receipt's anchoring head was signed; revocation status is not checked")
+	fs.StringVar(&f.logKey, "log-key", "", "with -verify-receipt, for a certificate-bound receipt: the audit log's public key (ed25519:<hex>, or a file holding it), which vouches for the receipt's anchoring proof")
 	fs.BoolVar(&f.reject, "reject", false, "record a rejection instead of an approval")
 	fs.BoolVar(&f.yes, "yes", false, "do not ask for confirmation (for scripts); what is signed is still shown")
 	fs.BoolVar(&f.full, "full", false, "show all of the call's arguments, not the first lines")
@@ -253,8 +256,11 @@ func (f flags) check() string {
 		return approveline.NotAnEnvName
 	}
 	if f.verifyReceipt != "" {
-		if f.approverKeys == "" {
-			return "-verify-receipt needs -approver-keys, the file of enrolled approver public keys"
+		if f.approverKeys == "" && f.identityPolicy == "" {
+			return "-verify-receipt needs -approver-keys, the file of enrolled approver public keys (or -identity-policy and -log-key for a certificate-bound receipt)"
+		}
+		if (f.identityPolicy == "") != (f.logKey == "") {
+			return "-identity-policy and -log-key go together: a certificate-bound receipt is checked against the policy at the time the log's anchoring head was signed"
 		}
 		for name, set := range map[string]bool{"-db": f.db != "", "-postgres": f.postgres != "", "-postgres-env": f.postgresEnv != "", "-run": f.run != "", "-call": f.call != "", "-as": f.as != "", "-key": f.key != "", "-reject": f.reject, "-yes": f.yes, "-full": f.full, "-list": f.list, "-json": f.asJSON, "-unverified": f.unverified, "-receipt": f.receipt != "", "-to": f.to != ""} {
 			if set {
@@ -262,6 +268,9 @@ func (f flags) check() string {
 			}
 		}
 		return ""
+	}
+	if f.identityPolicy != "" || f.logKey != "" {
+		return "-identity-policy and -log-key go with -verify-receipt only"
 	}
 	if f.receipt != "" && f.list {
 		return "-receipt does not go with -list"
@@ -1222,6 +1231,12 @@ func (c *cmd) verifyReceiptFile() error {
 	if err := audit.UnmarshalStrict(b, &r); err != nil {
 		return fmt.Errorf("receipt %s: %w", c.f.verifyReceipt, err)
 	}
+	if len(r.Cert) > 0 {
+		return c.verifyCertReceipt(r)
+	}
+	if c.f.approverKeys == "" {
+		return refuse("the receipt is of a bare-key decision: -verify-receipt needs -approver-keys for it")
+	}
 	keys, err := approverKeys(c.f.approverKeys)
 	if err != nil {
 		return err
@@ -1238,6 +1253,56 @@ func (c *cmd) verifyReceiptFile() error {
 	fmt.Fprintf(c.out, "  args SHA-256 %s\n  journal record %s at position %d, recorded %s\n", r.ArgsSHA, safe(r.Record), r.Index, safe(r.RecordedAt))
 	fmt.Fprintf(c.out, "%s\n", st.Dim("this checks the receipt alone; bide audit verify-receipts checks that the signed heads of the journal commit to the decision"))
 	return nil
+}
+
+// verifyCertReceipt checks a certificate-bound receipt on its own: its anchoring proof under the log's
+// key fixes the time A the decision became provable, and the policy accepts the chain, the identity and
+// the signature at A. Revocation status is not checked, and the output says so.
+func (c *cmd) verifyCertReceipt(r audit.DecisionReceipt) error {
+	if c.f.identityPolicy == "" {
+		return refuse("the receipt is certificate-bound (it carries the approver's certificate chain): pass -identity-policy and -log-key to check its chain and identity")
+	}
+	ci, err := audit.ReadIdentityPolicy(c.f.identityPolicy)
+	if err != nil {
+		return err
+	}
+	logKey, err := readLogKey(c.f.logKey)
+	if err != nil {
+		return err
+	}
+	if r.Anchor == nil {
+		return refuse("the receipt has no anchoring proof, so the time the decision became provable is not known: bide audit verify-receipts -update adds one once a signed head covers it")
+	}
+	id, err := r.VerifyIdentity(ci, logKey)
+	if err != nil {
+		return refuse("the receipt does not verify: %s", safe(err.Error()))
+	}
+	st := c.st
+	name := ""
+	if id.DisplayName != "" {
+		name = fmt.Sprintf(" (certificate name %q, not part of the identity)", safe(id.DisplayName))
+	}
+	fmt.Fprintf(c.out, "%sidentity %s%s accepted for %s, who %s call %s (tool %s) of run %s at %s\n", st.Pass(), st.Bold(safe(id.Identifier)), name, st.Bold(safe(r.Approver)), approvedWord(r.Approved), safe(r.ToolUseID), safe(r.ToolName), safe(r.RunID), safe(r.DecidedAt))
+	fmt.Fprintf(c.out, "  accepted at %s (%s); certificate valid %s to %s\n  leaf %s, trust anchor key %s\n", agent.FormatTimestamp(id.AnchoredAt), id.TimeSource, agent.FormatTimestamp(id.NotBefore), agent.FormatTimestamp(id.NotAfter), id.LeafHash, id.AnchorKey)
+	fmt.Fprintf(c.out, "  args SHA-256 %s\n  journal record %s at position %d, recorded %s\n", r.ArgsSHA, safe(r.Record), r.Index, safe(r.RecordedAt))
+	fmt.Fprintf(c.out, "%s\n", st.Dim("revocation status was not checked, so this is the identity check, not the gate's verdict (final or provisional); the receipt alone does not show the journal kept the decision: bide audit verify-receipts checks that"))
+	return nil
+}
+
+// readLogKey reads the log's public key given as key text or as a file holding it.
+func readLogKey(s string) (audit.Verifier, error) {
+	if v, err := audit.ParsePublicKey(s); err == nil {
+		return v, nil
+	}
+	b, err := os.ReadFile(s)
+	if err != nil {
+		return nil, refuse("-log-key is neither a public key (ed25519:<hex>) nor a readable file: %s", safe(unwrapPath(err).Error()))
+	}
+	v, err := audit.ParsePublicKey(strings.TrimSpace(string(b)))
+	if err != nil {
+		return nil, refuse("-log-key %s: %s", safe(s), safe(err.Error()))
+	}
+	return v, nil
 }
 
 func approvedWord(approved bool) string {
