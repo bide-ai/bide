@@ -561,3 +561,13 @@ func TestMergedRetentionComesFromTheBase(t *testing.T) {
 		t.Fatalf("only the delta claimed retention: %+v", st)
 	}
 }
+
+// A release that predates a hold does not close it.
+func TestEarlierReleaseDoesNotCloseALaterHold(t *testing.T) {
+	s := newStFxAt(t, idT0.Add(25*min))
+	base := s.lcrl(1, idT0.Add(22*min), 24*hour, testca.Revoked(s.leaf.Cert, idT0.Add(20*min), 6))
+	early := s.delta(2, 1, idT0.Add(23*min), 30*min, testca.Revoked(s.leaf.Cert, idT0.Add(10*min), 8))
+	if st := s.leafStatus(s.snap(base, early), audit.StatusParams{AllowHolds: true}); !st.Revoked {
+		t.Fatalf("a release dated before the hold closed it: %+v", st)
+	}
+}
