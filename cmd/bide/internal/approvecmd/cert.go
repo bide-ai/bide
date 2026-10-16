@@ -134,9 +134,11 @@ type certDecision struct {
 	policy *audit.CertIdentity // nil only under -unverified
 }
 
-// prepareCert reads and checks everything about the certificate that does not need the call: the chain
-// file, the policy, the key, the validity. It returns nil when -cert is not given.
-func (c *cmd) prepareCert(sg audit.Signer) (*certDecision, error) {
+// loadCert reads and checks everything about the certificate that needs neither the key nor the call: the
+// chain file, the policy, the validity now and, with a policy, the chain's acceptance for -as. It runs
+// before the key is opened (an HSM login, a billed KMS call), so a bad file costs neither. It returns nil
+// when -cert is not given. checkSigner then holds the key against the leaf.
+func (c *cmd) loadCert() (*certDecision, error) {
 	if c.f.cert == "" {
 		return nil, nil
 	}
@@ -149,9 +151,6 @@ func (c *cmd) prepareCert(sg audit.Signer) (*certDecision, error) {
 		if cd.policy, err = policyfile.Read(c.f.identityPolicy); err != nil {
 			return nil, refuse("%s", safe(err.Error()))
 		}
-	}
-	if err := cc.checkKeyIsLeaf(sg); err != nil {
-		return nil, err
 	}
 	if err := cd.check(c.f.as, now(), c.f.certMinLeft); err != nil {
 		return nil, err

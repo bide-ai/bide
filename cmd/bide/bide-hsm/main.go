@@ -122,6 +122,12 @@ decision itself is signed only after you confirm. A refusal on the gate (you are
 you already decided the other way) and a repeat of a decision that already counts happen before
 the key is opened.
 
+A certificate-bound approver uses -cert <chain.pem> (and -identity-policy <policy file>), exactly as with
+bide approve: the key stays in the HSM or KMS, the certificate is issued for its public key (bide-hsm pubkey
+prints it; the CA's request is signed by the key), and the command refuses a key that is not the key of the
+certificate's leaf before it asks the HSM or KMS to sign anything. The chain is a PEM file; a certificate
+object on the token is not read. The file, the policy and the validity are checked before the key is opened.
+
 ` + keyRefHelp + `
 Flags:
 `

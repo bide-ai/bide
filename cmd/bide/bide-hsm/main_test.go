@@ -3,11 +3,16 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -27,6 +32,7 @@ import (
 	"github.com/bide-ai/bide/cmd/bide/bide-hsm/internal/fakekms"
 	"github.com/bide-ai/bide/cmd/bide/internal/approvecmd"
 	"github.com/bide-ai/bide/internal/auditcli"
+	"github.com/bide-ai/bide/internal/testca"
 	"github.com/bide-ai/bide/signer/pkcs11/pkcs11test"
 	"github.com/bide-ai/bide/store/sqlite"
 )
@@ -839,4 +845,184 @@ func TestApproveWithAKeyThatAuthenticatesEachSignature(t *testing.T) {
 	if r.code != 0 || !strings.Contains(r.out, "signed and recorded") || !strings.Contains(r.out, "verified tally: 1 of 2") {
 		t.Fatalf("%d\n%s", r.code, r.all())
 	}
+}
+
+// ---- certificate-bound decisions with a key in a token or a KMS ----
+
+// publicKeyOf decodes the key text bide-hsm pubkey prints into the public key a certificate carries.
+func publicKeyOf(t *testing.T, text string) crypto.PublicKey {
+	t.Helper()
+	scheme, hexKey, _ := strings.Cut(text, ":")
+	b, err := hex.DecodeString(hexKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	switch scheme {
+	case "ed25519":
+		return ed25519.PublicKey(b)
+	case "ecdsa-p256":
+		k, err := ecdsa.ParseUncompressedPublicKey(elliptic.P256(), b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return k
+	}
+	t.Fatalf("scheme %q", scheme)
+	return nil
+}
+
+// issued is a CA that has issued a certificate to a key the test does not hold, with the chain and policy
+// files bide-hsm approve reads.
+type issued struct {
+	chain, policy string
+	leaf          *testca.Leaf
+}
+
+func issue(t *testing.T, pub crypto.PublicKey, as string) issued {
+	t.Helper()
+	root := testca.NewRoot(t, "root", testca.Opts{})
+	inter := root.NewIntermediate(t, "inter", testca.Opts{})
+	leaf := inter.NewLeaf(t, testca.Opts{Pub: pub, Mutate: func(c *x509.Certificate) {
+		c.NotBefore, c.NotAfter = time.Now().Add(-time.Hour), time.Now().Add(time.Hour)
+	}})
+	dir := t.TempDir()
+	var cb bytes.Buffer
+	for _, der := range leaf.Chain() {
+		cb.Write(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+	}
+	chain := filepath.Join(dir, "chain.pem")
+	if err := os.WriteFile(chain, cb.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "root.pem"), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: root.Cert.Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	spki := audit.SPKIHashOf(inter.Cert)
+	pj, _ := json.Marshal(map[string]any{
+		"anchors": []string{"root.pem"}, "intermediates": []string{hex.EncodeToString(spki[:])},
+		"identity": map[string]string{as: testca.Person(1)}, "id_kind": "person-uri",
+		"eku": testca.EKU.String(), "policy_oid": testca.PolicyOID.String(), "canonical": map[string]string{"host": "idp.bank.example"},
+	})
+	policy := filepath.Join(dir, "policy.json")
+	if err := os.WriteFile(policy, pj, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return issued{chain: chain, policy: policy, leaf: leaf}
+}
+
+// A certificate-bound decision with a key that stays in a token or a KMS: the key is checked against the
+// certificate's before it signs, the HSM or KMS signs the v4 bytes, and the chain is recorded with the
+// decision. A key that is not the leaf's signs nothing.
+func TestApproveWithACertificate(t *testing.T) {
+	tok := pkcs11test.Require(t)
+	for _, tc := range []struct {
+		name, tokenLabel string
+		kmsARN           string
+		addKMS           func(*fakekms.KMS, string)
+		scheme           string
+	}{
+		{"ed25519", edLabel, kmsEd, (*fakekms.KMS).AddEd25519, "ed25519"},
+		{"ecdsa-p256", p256Label, kmsP256, (*fakekms.KMS).AddP256, "ecdsa-p256"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			kms := fakekms.New()
+			tc.addKMS(kms, tc.kmsARN)
+			pin := "file:" + pinFile(t, tok)
+			for kind, ref := range map[string]string{"token": uri(tok, tc.tokenLabel, pin), "kms": "awskms:" + tc.kmsARN} {
+				t.Run(kind, func(t *testing.T) {
+					key := enrol(t, kms, "ops", ref)
+					other := "awskms:" + tc.kmsARN
+					if kind == "kms" {
+						other = uri(tok, tc.tokenLabel, pin)
+					}
+					c := issue(t, publicKeyOf(t, key), "ops")
+					f := newFixture(t, map[string]string{"ops": key, "finance": randomKeyText(t), "risk": randomKeyText(t)})
+					args := func(keyRef string, extra ...string) []string {
+						return append([]string{"approve", "-db", f.db, "-run", runID, "-call", callID, "-as", "ops", "-key", keyRef, "-cert", c.chain, "-identity-policy", c.policy, "-yes",
+							"-receipt", filepath.Join(t.TempDir(), "r.json")}, extra...)
+					}
+					// The other key (the other kind of HSM holding the other key) is not the leaf's: refused.
+					if r := hsm(t, kms, "", args(other)...); r.code != 1 || !strings.Contains(r.errOut, "is not the key of the certificate's leaf") {
+						t.Fatalf("wrong key: %d\n%s", r.code, r.all())
+					}
+					if n := len(decisionRecords(t, f)); n != 0 {
+						t.Fatalf("%d decisions recorded by a wrong key", n)
+					}
+					r := hsm(t, kms, "", args(ref)...)
+					if r.code != 0 || !strings.Contains(r.out, "signed and recorded") || !strings.Contains(r.out, "accepted for ops by the policy now") {
+						t.Fatalf("%d\n%s", r.code, r.all())
+					}
+					recs := decisionRecords(t, f)
+					if len(recs) != 1 || len(recs[0].ApproverCert()) != len(c.leaf.Chain()) || !bytes.Equal(recs[0].ApproverCert()[0], c.leaf.DER) {
+						t.Fatalf("%d records", len(recs))
+					}
+					// The token or KMS signed the v4 bytes: the signature verifies under the leaf's key.
+					rec := recs[0]
+					at, err := agent.ParseTimestamp(rec.DecidedAt())
+					if err != nil {
+						t.Fatal(err)
+					}
+					v, err := audit.NewVerifier(audit.Alg(tc.scheme), mustKeyBytes(t, key))
+					if err != nil {
+						t.Fatal(err)
+					}
+					s := f.subject(t)
+					if !v.Verify(agent.ApprovalDecisionBytesCert(s, "ops", true, at, agent.CertLeafHash(c.leaf.DER)), rec.Signature()) {
+						t.Fatal("the signature is not over the v4 bytes")
+					}
+					if v.Verify(agent.ApprovalDecisionBytes(s, "ops", true, at), rec.Signature()) {
+						t.Fatal("the signature also verifies over the bare bytes")
+					}
+				})
+			}
+		})
+	}
+}
+
+func mustKeyBytes(t *testing.T, text string) []byte {
+	t.Helper()
+	_, h, _ := strings.Cut(text, ":")
+	b, err := hex.DecodeString(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func decisionRecords(t *testing.T, f *fixture) []agent.Record {
+	t.Helper()
+	s, err := sqlite.Open(f.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	recs, err := agenttest.MustJournal(s).History(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []agent.Record
+	for _, r := range recs {
+		if agent.IsApprovalDecision(r, callID) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func (f *fixture) subject(t *testing.T) agent.ApprovalSubject {
+	t.Helper()
+	s, err := sqlite.Open(f.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	recs, err := agenttest.MustJournal(s).History(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, call, ok := agent.FindToolCall(recs, callID)
+	if !ok {
+		t.Fatal("no call")
+	}
+	return agent.ApprovalSubject{RunID: runID, ToolUseID: callID, ToolName: call.Name, Args: call.Args}
 }

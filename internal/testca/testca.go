@@ -96,6 +96,7 @@ func NewKey(tb testing.TB, k KeyKind) crypto.Signer {
 type Opts struct {
 	Key     KeyKind                 // the new certificate's key kind (default P-256)
 	KeyWith crypto.Signer           // use this key instead of generating one
+	Pub     crypto.PublicKey        // a leaf for this public key, whose private half the test does not hold (an HSM's); Leaf.Key is then nil
 	Mutate  func(*x509.Certificate) // last word on the template, before signing
 	SigAlg  x509.SignatureAlgorithm // the signature algorithm, when the default is not wanted
 }
@@ -200,8 +201,14 @@ func (c *CA) NewLeaf(tb testing.TB, o Opts) *Leaf {
 func (c *CA) TryLeaf(tb testing.TB, o Opts) (*Leaf, error) {
 	tb.Helper()
 	key := o.KeyWith
-	if key == nil {
+	if key == nil && o.Pub == nil {
 		key = NewKey(tb, o.Key)
+	}
+	var pub crypto.PublicKey
+	if o.Pub != nil {
+		pub = o.Pub
+	} else {
+		pub = key.Public()
 	}
 	u, err := url.Parse(Person(1))
 	if err != nil {
@@ -216,7 +223,7 @@ func (c *CA) TryLeaf(tb testing.TB, o Opts) (*Leaf, error) {
 	if o.Mutate != nil {
 		o.Mutate(tpl)
 	}
-	der, cert, err := tryCreate(tpl, c.Cert, key.Public(), c.Key)
+	der, cert, err := tryCreate(tpl, c.Cert, pub, c.Key)
 	if err != nil {
 		return nil, err
 	}

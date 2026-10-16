@@ -435,3 +435,31 @@ func TestReadChain(t *testing.T) {
 	}
 	_ = x509.Certificate{}
 }
+
+// The key is opened (for an HSM, a login; for a KMS, a billed call) only after the certificate file, the
+// policy and the validity passed: a bad -cert opens nothing.
+func TestCert_ABadCertificateOpensNoKey(t *testing.T) {
+	atT0(t, time.Minute)
+	f, p := newCertFixture(t)
+	opened := 0
+	src := FileKeys()
+	load := src.Load
+	src.Load = func(ref string) (audit.Signer, error) { opened++; return load(ref) }
+	run := func(args ...string) int {
+		var out, errb bytes.Buffer
+		return MainWith(append([]string{"-db", f.db, "-color", "never"}, args...), strings.NewReader(""), &out, &errb, stores, src)
+	}
+	if code := run(set("-cert", filepath.Join(p.dir, "absent.pem"))(f.certArgs("ops", p, "-yes"))...); code != 1 || opened != 0 {
+		t.Fatalf("a missing chain file: code %d, key opened %d times", code, opened)
+	}
+	atT0(t, 3*time.Hour)
+	if code := run(f.certArgs("ops", p, "-yes")...); code != 1 || opened != 0 {
+		t.Fatalf("an expired certificate: code %d, key opened %d times", code, opened)
+	}
+	atT0(t, time.Minute)
+	// A wrong key is found after it is opened (the key's public half is what is compared), and signs nothing.
+	bad := set("-key", f.keys["finance"])(f.certArgs("ops", p, "-yes"))
+	if code := run(bad...); code != 1 || opened != 1 || len(f.decisions()) != 0 {
+		t.Fatalf("a wrong key: code %d, opened %d, decisions %d", code, opened, len(f.decisions()))
+	}
+}

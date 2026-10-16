@@ -115,6 +115,21 @@ the one the endpoint returns, checked against what you signed and against your k
 written. If the request fails with no answer, the decision may or may not have been recorded: run
 the command again, and a decision of yours that counts is refused as already decided.
 
+-cert <chain.pem> signs a certificate-bound decision: the approver is identified by a certificate from the
+bank's CA, not by an enrolled key. The decision is signed over the bide.approval.v4 bytes (which bind the
+SHA-256 of your leaf certificate) with the key of the leaf, and travels with the chain, which the gate
+checks when it counts the decision. The file holds CERTIFICATE blocks only, the leaf first (at most 8
+certificates); a private key block in it is refused. Before anything is signed the command checks that the
+key (-key, a key file, or an HSM or KMS key for bide-hsm) is the key of the leaf, by comparing the keys, that
+the certificate is valid now and has at least -cert-min-left (60 seconds) left, and, with -identity-policy
+<policy file> (the certificate policy: trust anchors, pinned intermediates, the approver-to-identity map),
+that the policy accepts the chain for -as; -unverified signs without the policy check and says so. No
+failure falls back to a bare-key decision. A certificate-bound approver of the gate (the journal's pause
+note says who) must use -cert, and a bare-key approver of such a gate must not: the other would be recorded
+and never counted. -approver-keys does not apply to a certificate-bound decision. The command cannot tell
+you the gate counted it: the gate needs a signed tree head over the decision and current revocation status;
+see docs/guides/certificate-approvers.md.
+
 After the decision is recorded, re-run the run's root run ID (agent.Run with the same ID) or let
 RecoverLoop pick it up: the gate counts the decisions and the call runs or is denied. bide approve
 never runs the call.
@@ -683,6 +698,15 @@ func (c *cmd) approve(ctx context.Context) error {
 	}
 	var signer audit.Signer
 	if !single {
+		if f.cert != "" {
+			// The certificate is read and checked before the key is opened: a bad file costs no HSM login.
+			if err := g.refuseCertForBare(f.as); err != nil {
+				return err
+			}
+			if c.cert, err = c.loadCert(); err != nil {
+				return err
+			}
+		}
 		if signer, err = c.src.Load(f.key); err != nil {
 			// The source's error may hold text from a vendor library: show it escaped.
 			return errors.New(safe(err.Error()))
@@ -697,13 +721,8 @@ func (c *cmd) approve(ctx context.Context) error {
 			if err := g.refuseBoundWithoutCert(f.as); err != nil {
 				return err
 			}
-		} else {
-			if err := g.refuseCertForBare(f.as); err != nil {
-				return err
-			}
-			if c.cert, err = c.prepareCert(signer); err != nil {
-				return err
-			}
+		} else if err := c.cert.chain.checkKeyIsLeaf(signer); err != nil {
+			return err
 		}
 	}
 
