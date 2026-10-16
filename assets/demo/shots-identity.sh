@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # shots-identity.sh: regenerate the run viewer guide's screenshots of approver identity:
-# docs/guides/img/run-viewer-identity-run (a run page: one approver counted final on an independent
-# time, one counted only provisionally, shown in a different style, never green) and
+# docs/guides/img/run-viewer-identity-run (a run page: one approver counted final as recorded on the log
+# signer's clock, one counted only provisionally, shown in a different style, never green) and
 # run-viewer-identity-attention (the Needs attention list: gates paused for identity status, waiting
-# for a covering signed head). assets/demo/setup/identity.go writes the journal
-# with the real agent runtime; the pages are captured with a headless Chromium-based browser at 1200
+# for a covering signed head, and a call held before execution). cmd/bide/internal/identitydemo writes the journal
+# with the real agent runtime and a real certificate-bound gate, so every state shown is one the gate produces; the pages are captured with a headless Chromium-based browser at 1200
 # pixels wide, as shots.sh does.
 #
 #   assets/demo/shots-identity.sh              # dark, into docs/guides/img
@@ -51,7 +51,7 @@ wait_for() { # url: retry for up to 30 s
   for _ in $(seq 300); do curl -sf -o /dev/null "$1" && return 0; sleep 0.1; done
   echo "shots-identity.sh: timed out waiting for $1" >&2; exit 1
 }
-(cd "$root/cmd/bide" && GOWORK=off go run ../../assets/demo/setup/identity.go -dir "$work")
+(cd "$root/cmd/bide" && BIDE_IDENTITY_DEMO_DIR="$work" GOWORK=off go test ./internal/identitydemo -run TestWriteDemoJournal -count=1 > /dev/null)
 
 serve() { # port args...: bide view, read-only, on a loopback port
   local p=$1; shift
@@ -59,7 +59,7 @@ serve() { # port args...: bide view, read-only, on a loopback port
   wait_for "http://127.0.0.1:$p/"
 }
 serve "$port" -db identity.db
-shot run-viewer-identity-attention "http://127.0.0.1:$port/attention" 1500
+shot run-viewer-identity-attention "http://127.0.0.1:$port/attention" 1900
 shot run-viewer-identity-run "http://127.0.0.1:$port/run?id=refund-3001" 2200
 # Keep the page from the Approval gate cards to the Approvers section's end, as a palette PNG.
 python3 - "$out/run-viewer-identity-run-$theme.png" <<'PY'

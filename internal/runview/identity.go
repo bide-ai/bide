@@ -326,6 +326,12 @@ func identityOf(recs []agent.Record, byName map[string]agent.Record, id string, 
 			gi.PhaseText = "held before execution: " + cmpStr(gi.Hold.Detail, gi.Hold.Reason)
 		}
 	}
+	// The phase note is a hint, but a counted gate whose newest note says exec-hold and whose call has no
+	// result is shown held even when the hold record is absent: never as final.
+	if gi.Hold == nil && haveTally && !resulted && gi.Phase == agent.PauseExecHold {
+		gi.Hold = &IdentityHold{Reason: "exec-hold", Detail: gi.Detail}
+		gi.PhaseText = "held before execution: " + cmpStr(gi.Detail, "the phase note says the pre-execution status check holds the call (no hold record in the journal)")
+	}
 	gi.Class, gi.Line = identityClass(gi, g)
 	return gi
 }
@@ -341,6 +347,11 @@ func cmpStr(a, b string) string {
 func displayStamp(s string) string {
 	if s == "" {
 		return ""
+	}
+	// The identity records write RFC 3339 times with nanoseconds, trimmed of trailing zeros (so
+	// "2026-10-16T18:35:22Z" is canonical there), unlike the decision times (agent.FormatTimestamp).
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return t.UTC().Format("2006-01-02 15:04:05.000")
 	}
 	return printable(displayTime(s))
 }

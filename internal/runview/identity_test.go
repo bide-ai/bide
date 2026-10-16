@@ -533,3 +533,24 @@ func TestIdentity_LongDisplayNameIsCut(t *testing.T) {
 		t.Fatalf("shorten = %q", got)
 	}
 }
+
+// The identity records' times are RFC 3339 with trimmed nanoseconds: shown as times, not as "not canonical".
+func TestIdentity_RecordTimesWithoutMilliseconds(t *testing.T) {
+	if got := displayStamp("2026-10-16T18:35:22Z"); got != "2026-10-16 18:35:22.000" {
+		t.Fatalf("displayStamp = %q", got)
+	}
+	if got := displayStamp("2026-10-16T18:35:22.123456789Z"); got != "2026-10-16 18:35:22.123" {
+		t.Fatalf("displayStamp = %q", got)
+	}
+}
+
+// A counted gate whose newest phase note says exec-hold, with no hold record and no result, is held, not final.
+func TestIdentity_ExecHoldNoteWithoutARecordIsHeld(t *testing.T) {
+	fx := identRecs(t, agent.TierLogclockFinal, true, nil)
+	note, _ := json.Marshal(agent.ApprovalWait{ToolUseID: "c1", ToolName: "refund", Need: 1, Approvers: []string{"alice"}, IdentityBound: true, Pause: agent.PauseExecHold, PauseDetail: "the status is older than the execution bound"})
+	recs := append(fx.recs, agent.Record{Name: agent.ApprovalPauseStep("c1", 1), Kind: agent.StepValue, Result: note})
+	g := identGate(t, recs)
+	if g.Identity.Hold == nil || !g.Held || g.Identity.Class == "final" || !strings.Contains(g.Identity.PhaseText, "older than the execution bound") {
+		t.Fatalf("identity = %+v", g.Identity)
+	}
+}

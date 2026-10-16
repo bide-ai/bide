@@ -1,0 +1,3 @@
+Section: Changed
+
+The run viewer guide's approver identity screenshots now come from records the real certificate-bound gate writes (a real audit.CertApprover on the agent runtime, in a test that runs only on request: cmd/bide/internal/identitydemo), not hand-written ones, and show only states the gate produces: a log-signer-clock final count, a provisional live count, a gate paused for revocation status, one waiting for a covering signed head, and a call held before execution. The viewer reads the identity records' RFC 3339 times with trimmed nanoseconds (they showed as "not a canonical time") and shows a counted gate whose newest phase note says exec-hold, with no hold record and no result, as held rather than final.
