@@ -35,6 +35,8 @@ try {
   const source = await text('#source');
   const assertions = await page.$$eval('#assertions .assert', (a) => a.map((e) => e.textContent.trim()));
   const inspectorBefore = await text('#inspector');
+  const banner = await page.$eval('#weakened', (e) => ({ text: e.textContent, role: e.querySelector('section')?.getAttribute('role') ?? '', controls: e.querySelectorAll('button, a, [tabindex]').length }));
+  const baselineLine = await text('#baseline');
 
   // The pointer: click a node in the graph.
   await page.click('#canvas g.node[data-id="charge"]');
@@ -57,7 +59,7 @@ try {
   await page.keyboard.press('Enter');
   const byKeyboardGraph = await text('#inspector h3');
 
-  out = { ok: true, verdict, outline, graphNodes, svgNamespace, source, assertions, inspectorBefore, byPointer, current, reached, byKeyboard, byKeyboardGraph, live, console: console_, failed, offOrigin };
+  out = { ok: true, banner, baselineLine, verdict, outline, graphNodes, svgNamespace, source, assertions, inspectorBefore, byPointer, current, reached, byKeyboard, byKeyboardGraph, live, console: console_, failed, offOrigin };
 } catch (e) {
   out = { ok: false, error: String(e && e.message || e), console: console_, failed, offOrigin };
 }

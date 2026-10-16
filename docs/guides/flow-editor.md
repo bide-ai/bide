@@ -46,6 +46,32 @@ with every request, and it is not sent to the server as part of the address or i
   are checked by `bide check` and in CI, not at run time: `plan.Load` ignores `assert` lines.
 - **The problems** `bide check` lists, and **the source** as the file is on disk.
 
+## The baseline and the weakened banner
+
+Every version of the file the page shows is compared with a **baseline**, the committed policy: the
+file at git `HEAD`, or at the revision `-base` names (a branch, tag or commit; `bide edit -base
+main flow.yaml`), or, when the file is not in git, the file as it was when `bide edit` opened it.
+The baseline is fixed when `bide edit` starts, so weakening in two edits is still weakening
+against the commit. The editor reads git only for this, with the same `git show rev:./file` that
+`bide check -diff` makes.
+
+The comparison is the classifier `bide check -diff -check -fail-on-weaken` runs, not a second one:
+the editor shows what it returns. When the text is weaker than the baseline (a gate removed, its
+need lowered, an approver added without raising the need or replaced, `exclude_principal` or a
+deadline dropped or lengthened, an `assert` line removed, loosened or no longer holding, a node
+newly reachable without a gate (whatever its safety label; a lowered `safety` is itself reported), a block changed on an ungated effect node) the page shows a banner
+at the top: a glyph, `APPROVAL GATE WEAKENED` (or `SAFETY CHECK WEAKENED` when no gate policy itself
+changed), and each item (`charge: approval 2 of 3 -> 1 of 3`). **The banner has no close control**:
+a banner that can be closed is a warning that can be missed. It stays until the text no longer
+weakens, and it is announced to a screen reader as an alert. Below the verdict a line says what the
+file is compared with and how many changes there are. If the text cannot be read as a config, the
+page says it cannot say whether it is weaker, which is not the same as not weaker.
+
+What the classifier does not see applies here as it does in CI: from the command line a gate a
+block declares in Go is invisible on both sides, and a change of block on an ungated effect node
+is reported as weakened for that reason (see [Compare two versions of a
+flow](run-viewer.md#compare-two-versions-of-a-flow)).
+
 A file that is not a readable config (invalid YAML, a duplicate key, more than one YAML document)
 shows `CONFIG DOES NOT PARSE` and the reason, and no graph.
 
@@ -74,6 +100,7 @@ reader and writes no files.
 
 | Flag | Meaning |
 |---|---|
+| `-base` | Compare with the file at this git revision instead of at `HEAD`; the file must be in it, or `bide edit` exits 1. |
 | `-addr` | Address to serve on: a loopback IP (`127.0.0.1` or `::1`) or `localhost`, with a port. Default `127.0.0.1:8585`. |
 | `-color` | `auto`, `always` or `never`, for the line it prints. |
 
@@ -85,4 +112,10 @@ error (including a non-loopback address).
 The command is a thin wrapper over package `github.com/bide-ai/bide/flowedit`: `flowedit.New(path)`
 returns a `*Server` whose `Handler()` is an `http.Handler` that does not depend on a listener or on
 the address, so another host can serve the same page. `flowedit.BuildView` is the page's data for
-a text: the same answers `bide check` gives, as a value.
+a text: the same answers `bide check` gives, as a value. `flowedit.Compare` is the weakening verdict
+for a text against a baseline, and `flowedit.WithBase` is the `-base` option of `flowedit.New`.
+`flowedit.ApplyOperation` applies one editor operation (set a node's safety or block, set or clear
+its approval gate: `need`, approvers, `exclude_principal`, `timeout`) to a config's text by splicing,
+so comments, blank lines and key order stay and the diff of an edit is the edit; each result is
+verified, and what cannot be spliced safely is a `*flowedit.Refusal` with the text untouched. The
+page does not offer these operations yet.

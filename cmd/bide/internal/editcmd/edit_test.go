@@ -32,15 +32,17 @@ func TestUsageErrors(t *testing.T) {
 		args []string
 		code int
 	}{
-		"no file":             {nil, 2},
-		"two files":           {[]string{good, good}, 2},
-		"an unknown flag":     {[]string{"-nope", good}, 2},
-		"a public address":    {[]string{"-addr", "0.0.0.0:8585", good}, 2},
-		"an empty host":       {[]string{"-addr", ":8585", good}, 2},
-		"a name, not an IP":   {[]string{"-addr", "example.com:8585", good}, 2},
-		"a missing file":      {[]string{filepath.Join(t.TempDir(), "none.yaml")}, 1},
-		"a wrong file suffix": {[]string{write(t, "f.txt", flow)}, 1},
-		"help":                {[]string{"-h"}, 0},
+		"no file":                      {nil, 2},
+		"two files":                    {[]string{good, good}, 2},
+		"an unknown flag":              {[]string{"-nope", good}, 2},
+		"a public address":             {[]string{"-addr", "0.0.0.0:8585", good}, 2},
+		"an empty host":                {[]string{"-addr", ":8585", good}, 2},
+		"a name, not an IP":            {[]string{"-addr", "example.com:8585", good}, 2},
+		"a missing file":               {[]string{filepath.Join(t.TempDir(), "none.yaml")}, 1},
+		"a wrong file suffix":          {[]string{write(t, "f.txt", flow)}, 1},
+		"help":                         {[]string{"-h"}, 0},
+		"a revision git does not have": {[]string{"-base", "nosuchrev", good}, 1},
+		"a base that is an option":     {[]string{"-base", "--output=/tmp/x", good}, 1},
 	} {
 		var out, errb bytes.Buffer
 		if got := run(context.Background(), c.args, &out, &errb); got != c.code {

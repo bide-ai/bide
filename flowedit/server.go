@@ -55,12 +55,31 @@ type Server struct {
 	path  string // the file, absolute, with symlinks resolved at startup
 	name  string // the name the page shows: the path as given
 	token string
+	// baseline is the text every version is compared with for weakening, and baselineSource says
+	// where it came from. They are fixed at startup: the baseline is the committed policy, not the
+	// session, so weakening in two saves is still weakening against it.
+	baseline       []byte
+	baselineSource string
+	baselineNote   string // why git HEAD was not the baseline, when that is not just "not in git"
 }
+
+// Option configures New.
+type Option func(*options)
+
+type options struct{ base string }
+
+// WithBase compares edits with the file at the git revision rev (a branch, tag or commit, as `git
+// show rev:./file` takes it) instead of at HEAD. New fails if the file is not there.
+func WithBase(rev string) Option { return func(o *options) { o.base = rev } }
 
 // New returns the editor for the file at path. The file must be an existing regular file of at
 // most MaxFileSize bytes whose name ends in .yaml, .yml or .json; it is the only file the editor
 // reads or writes. A symbolic link is resolved once, here.
-func New(path string) (*Server, error) {
+func New(path string, opts ...Option) (*Server, error) {
+	var o options
+	for _, f := range opts {
+		f(&o)
+	}
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".yaml", ".yml", ".json":
 	default:
@@ -77,12 +96,47 @@ func New(path string) (*Server, error) {
 	if _, err := readConfig(real); err != nil {
 		return nil, err
 	}
+	text, err := readConfig(real)
+	if err != nil {
+		return nil, err
+	}
+	// The baseline: the file at the revision asked for, else at HEAD when the file is committed,
+	// else the file as it is now. The editor reads git only for this, with the same `git show` that
+	// bide check -diff makes.
+	dir, base := filepath.Split(real)
+	var baseline []byte
+	var source, note string
+	switch {
+	case o.base != "":
+		if baseline, err = gitShow(dir, o.base, base); err != nil {
+			return nil, fmt.Errorf("flowedit: -base: %w", err)
+		}
+		source = "git " + o.base
+	default:
+		if baseline, err = gitShow(dir, "HEAD", base); err == nil {
+			source = "git HEAD"
+		} else {
+			baseline, source = text, "the file as it was when the editor opened it"
+			// Only "the file is not in git" (an untracked file, not a repository) is an ordinary reason
+			// to compare with the opened file. Anything else (git missing, a safe.directory refusal, a
+			// corrupt repository) would quietly turn the guard into "weaker than what was opened", so
+			// the reason is part of the baseline's name, which the page shows every time.
+			if !gitNotThere(err) {
+				source += " (git HEAD was not used: " + firstLine(err.Error()) + ")"
+				note = source
+			}
+		}
+	}
 	var tok [16]byte
 	if _, err := rand.Read(tok[:]); err != nil {
 		return nil, fmt.Errorf("flowedit: no randomness for the session token: %w", err)
 	}
-	return &Server{path: real, name: path, token: hex.EncodeToString(tok[:])}, nil
+	return &Server{path: real, name: path, token: hex.EncodeToString(tok[:]), baseline: baseline, baselineSource: source, baselineNote: note}, nil
 }
+
+// BaselineNote is "" when the baseline is what it should be, and otherwise says why git HEAD was not
+// used although the file may be in a repository; bide edit prints it at startup.
+func (s *Server) BaselineNote() string { return s.baselineNote }
 
 // Token is the session token the page sends in TokenHeader. bide edit prints it in the address's
 // fragment (#t=...), which a browser does not send to the server or in a Referer.
@@ -123,13 +177,20 @@ func readConfig(path string) ([]byte, error) {
 	return b, nil
 }
 
+// view is BuildView with the text compared against the baseline.
+func (s *Server) view(text []byte) *View {
+	v := BuildView(s.name, text)
+	v.Weakening = Compare(s.name, s.baselineSource, s.baseline, text)
+	return v
+}
+
 // Doc reads the file and returns its View with the hash of the bytes read.
 func (s *Server) Doc() (*Doc, error) {
 	b, err := readConfig(s.path)
 	if err != nil {
 		return nil, err
 	}
-	return &Doc{View: *BuildView(s.name, b), Hash: hashOf(b)}, nil
+	return &Doc{View: *s.view(b), Hash: hashOf(b)}, nil
 }
 
 // Handler serves the editor: the page at /, its files under /assets/, and the API under /api/. It
@@ -143,6 +204,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /assets/{name}", s.asset)
 	mux.Handle("POST /api/doc", s.apiGuard(s.doc))
 	mux.Handle("POST /api/report", s.apiGuard(s.report))
+	mux.Handle("POST /api/apply", s.apiGuard(s.apply))
 	return secure(mux)
 }
 
@@ -294,5 +356,34 @@ func (s *Server) report(w http.ResponseWriter, r *http.Request) {
 	if !readBody(w, r, &req) {
 		return
 	}
-	reply(w, BuildView(s.name, []byte(req.Text)))
+	reply(w, s.view([]byte(req.Text)))
+}
+
+// Edited is the answer to an operation: the View of the new text, and whether the operation changed
+// the text (one that sets a value to what it already is does not).
+type Edited struct {
+	View
+	Changed bool `json:"changed"`
+}
+
+// apply answers /api/apply: the operation applied to the text in the request. A refusal is a 422
+// with {"error": reason}, and the page keeps the text it had.
+func (s *Server) apply(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Text      string    `json:"text"`
+		Operation Operation `json:"operation"`
+	}
+	if !readBody(w, r, &req) {
+		return
+	}
+	res, err := ApplyOperation(s.name, []byte(req.Text), req.Operation)
+	var rf *Refusal
+	switch {
+	case errors.As(err, &rf):
+		fail(w, http.StatusUnprocessableEntity, rf.Reason)
+	case err != nil:
+		fail(w, http.StatusInternalServerError, err.Error())
+	default:
+		reply(w, Edited{View: *s.view(res.Text), Changed: res.Changed})
+	}
 }
