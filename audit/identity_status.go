@@ -425,6 +425,9 @@ func parseCRL(der []byte, hash [32]byte, maxEntries int) (*crlView, error) {
 		if re.SerialNumber == nil || re.RevocationTime.IsZero() {
 			return unreadable("entry %d has no serial number or revocation time", i)
 		}
+		if re.RevocationTime.After(rl.NextUpdate) {
+			return unreadable("entry %d is dated after the CRL's own nextUpdate", i)
+		}
 		ce := crlEntry{revoked: re.RevocationTime, code: re.ReasonCode}
 		switch {
 		case re.ReasonCode == 7 || re.ReasonCode < 0 || re.ReasonCode > 10:

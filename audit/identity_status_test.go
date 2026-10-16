@@ -1706,5 +1706,16 @@ func TestLiveCountRefusesPrunedCRLWhenLCWasWithheld(t *testing.T) {
 		if st.LCKnown || !st.S.Equal(idT0.Add(40*min)) || st.Tier == audit.TierFinal {
 			t.Errorf("%s: the status rests on the pruned CRL or is final: %+v", name, st)
 		}
+
+// An entry dated after the CRL's own nextUpdate is not something a CA produces: the CRL is refused
+// rather than clipped to thisUpdate (a CA may stamp a revocation after a back-dated thisUpdate).
+func TestEntryDatedAfterNextUpdateIsRefused(t *testing.T) {
+	s := newStFx(t)
+	sn := audit.NewStatusSnapshot()
+	if _, err := sn.AddCRL(s.lcrl(1, idT0, time.Hour, testca.Revoked(s.leaf.Cert, idT0.Add(time.Hour+time.Second), 1))); err == nil {
+		t.Fatal("an entry dated after nextUpdate was accepted")
+	}
+	if _, err := sn.AddCRL(s.lcrl(1, idT0, time.Hour, testca.Revoked(s.leaf.Cert, idT0.Add(5*time.Minute), 1))); err != nil {
+		t.Fatalf("an entry after a back-dated thisUpdate but before nextUpdate: %v", err)
 	}
 }

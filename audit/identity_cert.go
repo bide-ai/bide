@@ -86,8 +86,15 @@ type IdentityPolicy struct {
 	// became provable) is strictly before it; many bank roots are still RSA-2048. Zero refuses them,
 	// and anything under 2048 bits is always refused: the default is RSA-3072 or better. The field has
 	// the same meaning and name in the RFC 3161 verifier's policy.
-	RSA2048Until           time.Time
-	MaxLeafLifetime        time.Duration
+	RSA2048Until time.Time
+	// MaxLeafLifetime bounds notAfter minus notBefore. Zero means 24 hours; at most 31 days.
+	MaxLeafLifetime time.Duration
+	// NotBeforeBackdate is how much earlier than the real issue a CA stamps notBefore (Microsoft AD CS
+	// and EJBCA both back-date it by about ten minutes to absorb clock skew), added to MaxLeafLifetime
+	// so that a certificate the CA issued for exactly that lifetime is not refused. It widens only the
+	// lifetime check: it moves no validity bound, and the certificate is valid from its notBefore as
+	// stamped. Zero declares no back-dating and is never assumed; at most one hour.
+	NotBeforeBackdate      time.Duration
 	RequireNameConstraints bool
 	// RequirePolicyOnCAs refuses a path in which an issuing CA carries no certificatePolicies
 	// extension (an anchor that does not issue the leaf directly is not required to). Without it a
@@ -105,6 +112,7 @@ const (
 	maxTolerance       = 10 * time.Minute // ceiling on Skew and AnchorGrace
 	defaultLeafLife    = 24 * time.Hour
 	maxLeafLife        = 31 * 24 * time.Hour
+	maxBackdate        = time.Hour
 	maxCertDER         = 16 << 10 // a larger certificate is refused before parsing
 	maxSerialBits      = 159      // RFC 5280: at most 20 octets, positive
 	maxDetail          = 160
@@ -127,6 +135,7 @@ type CertIdentity struct {
 	grace    time.Duration
 	rsa2048  time.Time
 	maxLife  time.Duration
+	backdate time.Duration
 	needNC   bool
 	needPol  bool
 }
@@ -142,7 +151,7 @@ func (p IdentityPolicy) Compile() (*CertIdentity, error) {
 		inter: map[SPKIHash]bool{}, distrust: map[SPKIHash]time.Time{}, identity: map[string]string{},
 		kind: p.IDKind, eku: slices.Clone(p.EKU), emailEKU: p.AllowEmailProtectionEKU, policy: p.Policy,
 		canon: p.Canonical, maxChain: p.MaxChain, skew: p.Skew, grace: p.AnchorGrace, rsa2048: p.RSA2048Until,
-		maxLife: p.MaxLeafLifetime, needNC: p.RequireNameConstraints, needPol: p.RequirePolicyOnCAs,
+		maxLife: p.MaxLeafLifetime, backdate: p.NotBeforeBackdate, needNC: p.RequireNameConstraints, needPol: p.RequirePolicyOnCAs,
 	}
 	if !p.IDKind.valid() {
 		return cfgErr("identifier kind %q is not %q or %q", p.IDKind, IDPersonURI, IDEmail)
@@ -176,6 +185,9 @@ func (p IdentityPolicy) Compile() (*CertIdentity, error) {
 		return cfgErr("MaxLeafLifetime %s is outside 0 to %s", c.maxLife, maxLeafLife)
 	case c.maxLife == 0:
 		c.maxLife = defaultLeafLife
+	}
+	if c.backdate < 0 || c.backdate > maxBackdate {
+		return cfgErr("NotBeforeBackdate %s is outside 0 to %s", c.backdate, maxBackdate)
 	}
 	if c.canon == nil {
 		if p.IDKind != IDEmail {
@@ -445,8 +457,8 @@ func (c *CertIdentity) checkLeaf(leaf *x509.Certificate) (Alg, []byte, error) {
 	if extra := leaf.KeyUsage &^ allowedKU; extra != 0 {
 		return "", nil, certErr(agent.ReasonCertUsage, "the leaf's key usage has bits beyond digitalSignature and contentCommitment (0x%x)", int(extra))
 	}
-	if leaf.NotAfter.Sub(leaf.NotBefore) > c.maxLife {
-		return "", nil, certErr(agent.ReasonCertWindow, "the leaf is valid for %s, over the limit of %s", leaf.NotAfter.Sub(leaf.NotBefore), c.maxLife)
+	if leaf.NotAfter.Sub(leaf.NotBefore) > c.maxLife+c.backdate {
+		return "", nil, certErr(agent.ReasonCertWindow, "the leaf is valid for %s, over the limit of %s plus %s of declared back-dating", leaf.NotAfter.Sub(leaf.NotBefore), c.maxLife, c.backdate)
 	}
 	if _, err := c.leafEKUMode(leaf); err != nil {
 		return "", nil, err
