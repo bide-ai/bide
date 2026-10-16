@@ -741,6 +741,8 @@ resolution all run around it.
   leaf was revoked (`checked`, set at the end of `ApExec`), so a path that skips the check is caught
   even though the check never ran (`Bug = "ExecBypass"`). A revocation after the check and before the
   call is the published latency bound, not modelled.
+  `ApExec` has no error branch: a storage or configuration error inside the check (as against a hold or a
+  pause) is not modelled, so what the loop records for it is a Go test.
   Outside the model: the 1-of-1 gate (`one`) and step and flow calls go to the claim without `ApExec`
   and `SubmitCert` writes only m-of-n records, so a certificate-bound approver on the 1-of-1 path is not
   modelled; `RevokeLeaf` kills every decision under the leaf, so the `E > A(d)` case (a decision that
@@ -2812,7 +2814,7 @@ certificate-bound approver (see [Model 1b](#model-1b-the-approval-gate)): the tw
   (`CountCATier`), the tally rechecks the root archive, and the call runs only on a root CRL no older
   than `ExecAgeCA` (`ExecCATier`). The ghosts are `eb` (the leaf tier) and `ebC` (the CA tier);
   `NoExecAfterKnownRevocation` is both, `NoExecAfterLeafTierRevocation` and
-  `NoExecAfterCATierRevocation` one each. One CA tier only: no CA validity interval, no pruning by the
+  `NoExecAfterCATierRevocation` one each; `TallyClean` covers the root archive too. One CA tier only: no CA validity interval, no pruning by the
   root (so a withheld, older root CRL never hides a listing a later one lacks), no root `L(C)`.
 - **A gate crash** (`Crash`, `CanCrash`): the gate restarts, losing the counted set and the wait; the
   journal (the heads and the terminal tally) and the archive are not lost. The decisions are counted
@@ -2928,10 +2930,12 @@ Each is in `identity/regress/`, is the same model with one rule switched off by 
 | `final-time-hourly` | `FinalNeedsCompleteSeries` | coverage by `nextUpdate` alone with a CA that publishes more often than its declared period does not show that nothing lies between two CRLs | 47,931 | 1 s |
 | `prune-no-lc-count` | `RevocationSound` | the live count does not apply the `L(C)` rule: with the first CRL beyond `notAfter` withheld or unread, the pruned CRL after it counts a revoked leaf | 373,253 | 8 s |
 | `prune-no-lc-exec` | `NoExecAfterKnownRevocation` | the pre-execution check does not apply the `L(C)` rule: a decision counted before `notAfter`, the CRL that lists the leaf withheld, and a pruned CRL satisfies the freshness check, so the call runs | 789,789 | 21 s |
-| `exec-no-ca-tier` | `NoExecAfterCATierRevocation` | the pre-execution check reads only the leaf tier: the call runs on a stale or unpublished root status | 663,149 | 4 s |
+| `exec-no-ca-tier` | `NoExecAfterCATierRevocation` | the pre-execution check does not require a fresh root CRL (the stale arm: the call runs on a root status older than `ExecAgeCA`) | 663,149 | 4 s |
+| `exec-no-recheck-ca-revoked` | `NoExecAfterCATierRevocation` | no pre-execution check, with the ages covering the run: a root CRL published after the count lists the CA with a past `E`, and the call runs (the revocation arm) | 1,014,913 | 5 s |
+| `tally-no-recheck-ca` | `TallyClean` | the tally forms without looking at the archive: a decision counted before the root's CRL listing the CA reached the gate is in the tally (the CA arm) | 902,519 | 3 s |
 | `count-no-ca-tier` | `RevocationSound` | the count does not read the CA tier: a decision counts while the root's CRL lists the CA with `E <= A(d)` | 24,411 | 1 s |
 | `exec-leaf-age-from-ca` | `NoExecAfterLeafTierRevocation` | the tiers' ages confused: the leaf's status is aged by the CA tier's longer age | 312,713 | 3 s |
-| `tally-no-recheck` | `TallyClean` | the tally forms without looking at the archive: a decision counted before the revocation reached the gate is in the terminal tally | 62,571 | 1 s |
+| `tally-no-recheck` | `TallyClean` | the tally forms without looking at the archive: a decision counted before the revocation reached the gate is in the terminal tally | 77,588 | 1 s |
 | `recount-dead` | `DeadStaysOut` | without the dead set a decision a revocation removed is counted again when a head stamped earlier moves `A(d)` before the revocation | 723,213 | 6 s |
 | `no-anchor` | `EventuallyCovered` (liveness) | no gate `Anchor` step: a decision written while the gate waits is never covered, and the gate pauses for ever | 364 | <1 s |
 
@@ -2961,6 +2965,9 @@ Each is in `identity/regress/`, is the same model with one rule switched off by 
 - **What a crash loses.** `Crash` models the gate's counted set and wait; the process, the store and
   the tool call are model 1b's and model 10's. A crash during the call is the unknown-outcome path
   (models 9 and 13), not here.
+- **The final tier is leaf-tier only.** `FinalWit` reads the leaf's issuer's series; the root's series
+  and the CA tier are not part of a final verdict here (the `CATier` configurations check the live count
+  and the pre-execution check). A decision can be final in the model while the root revoked the CA.
 - **One clock.** The CA, the verifier and the gate share one clock, so skew between them is not modelled
   (`Skew` bounds `decided_at` against the head only). Time is advanced only by `ClockTick`.
 - **Atomic execution.** `Exec` is one step with its check, so a revocation between them is not modelled.

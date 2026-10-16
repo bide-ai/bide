@@ -575,7 +575,9 @@ AbsenceOnlyInWindow ==
 
 \* A tally forms only from decisions none of which the archive lists with E <= A(d) at that moment.
 TallyClean ==
-  [][(tl = {} /\ tl' # {}) => \A d \in tl' : KnownE(rcvd', dc[d]) > cA[d]]_vars
+  [][(tl = {} /\ tl' # {}) =>
+       \A d \in tl' : /\ KnownE(rcvd', dc[d]) > cA[d]
+                     /\ (~CATier \/ KnownRE(rrcvd') > cA[d])]_vars
 
 \* A decision a revocation removed is in neither the counted set nor the tally.
 DeadStaysOut == dead \cap Counted = {}
