@@ -81,9 +81,9 @@ func eventFromKey(es *NotifyEvent) (notifyEvent, bool) {
 		}
 		ev.opRun, ev.halt = run, &NotifyHalt{Op: OpRef{Kind: OpKind(kind), ID: op}}
 	case NotificationApprovalPending: // approval:<run>:<call>:<reminder>, or :reask-sod, :reask-v3
-		reask := reaskOfKey(parts)
+		reask, gen := reaskOfKey(parts)
 		if es.OpID != "" && es.OpKind == "gate" {
-			ev.opRun, ev.approval = es.OpRun, &NotifyApproval{ToolUseID: es.OpID, Reask: reask}
+			ev.opRun, ev.approval = es.OpRun, &NotifyApproval{ToolUseID: es.OpID, Reask: reask, reaskGen: gen}
 			return ev, true
 		}
 		run, ok1 := dec(1)
@@ -91,7 +91,7 @@ func eventFromKey(es *NotifyEvent) (notifyEvent, bool) {
 		if len(parts) != 4 || parts[0] != "approval" || !ok1 || !ok2 {
 			return notifyEvent{}, false
 		}
-		ev.opRun, ev.approval = run, &NotifyApproval{ToolUseID: call, Reask: reask}
+		ev.opRun, ev.approval = run, &NotifyApproval{ToolUseID: call, Reask: reask, reaskGen: gen}
 	case NotificationRecoveryFailing: // recovery:<run>:<episode>
 		episode, err := strconv.Atoi(parts[len(parts)-1])
 		if len(parts) != 3 || parts[0] != "recovery" || err != nil {
@@ -104,19 +104,29 @@ func eventFromKey(es *NotifyEvent) (notifyEvent, bool) {
 	return ev, true
 }
 
-// reaskOfKey is the ApprovalPending.Reason an approval key's parts name: PendingSoDReapproval or
-// PendingReapproval for the key of a re-ask (ApprovalReaskKey), "" for the first ask or a reminder.
-func reaskOfKey(parts []string) string {
+// reaskOfKey is the ApprovalPending.Reason an approval key's parts name, and for a certificate-bound
+// gate the generation of the count it asks for: PendingSoDReapproval, PendingReapproval,
+// PendingIdentReapproval or PendingExecHoldReapproval for the key of a re-ask (ApprovalReaskKey,
+// ApprovalIdentReaskKey), "" for the first ask or a reminder.
+func reaskOfKey(parts []string) (string, int) {
 	if len(parts) != 4 || parts[0] != "approval" {
-		return ""
+		return "", 0
 	}
 	switch parts[3] {
 	case "reask-sod":
-		return PendingSoDReapproval
+		return PendingSoDReapproval, 0
 	case "reask-v3":
-		return PendingReapproval
+		return PendingReapproval, 0
 	}
-	return ""
+	if n, ok := strings.CutPrefix(parts[3], "reask-ident-"); ok {
+		if g, err := strconv.Atoi(n); err == nil && g >= 0 && strconv.Itoa(g) == n {
+			if g == 0 {
+				return PendingIdentReapproval, 0
+			}
+			return PendingExecHoldReapproval, g
+		}
+	}
+	return "", 0
 }
 
 // scanRound runs the catch-up scan of ev.runID's trail as a round of the worker.

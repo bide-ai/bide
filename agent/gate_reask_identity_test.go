@@ -160,6 +160,21 @@ func (g *boundGate) decide(approver string) {
 	writeRaw(g.t, g.store, "r1", "approval:c1:"+approver+":00", certRec("approval:c1:"+approver+":00", approver))
 }
 
+// holdGenerationZero pauses the call, has alice decide, records the gate's generation-0 count without
+// running the tool, then records an exec hold of generation 0 (what the pre-execution check writes)
+// and makes alice's decision fail the verifier (revoked since).
+func (g *boundGate) holdGenerationZero() {
+	g.t.Helper()
+	_, _ = g.run()
+	g.decide("alice")
+	vf := certResolver(map[string]ApproverVerifier{"alice": g.alice, "bob": g.bob})
+	if _, final, err := tallyGate(context.Background(), g.store, "r1", subjectOf(g.t, g.store, "r1", "c1"), g.pol, vf, ""); err != nil || !final {
+		g.t.Fatalf("%v %v", final, err)
+	}
+	writeRaw(g.t, g.store, "r1", ApprovalExecHoldStep("c1", 0), holdFor(g.t, "c1", 0))
+	g.alice.check = func(CertDecision) CertCheck { return CertCheck{Reason: ReasonRevoked, Detail: "d"} }
+}
+
 func (g *boundGate) has(name string) bool {
 	_, ok := hasStep(g.t, g.store, "r1", name)
 	return ok
@@ -247,16 +262,7 @@ func TestBoundGate_PlainDenialStaysFinal(t *testing.T) {
 // the next count is the next generation's, recorded under :ident-reask:<n> with its own identity record.
 func TestBoundGate_ExecHoldReasks(t *testing.T) {
 	g := newBoundGate(t)
-	_, _ = g.run()
-	g.decide("alice")
-	// Count without running the tool: the tally is recorded by the gate's own count.
-	vf := certResolver(map[string]ApproverVerifier{"alice": g.alice, "bob": g.bob})
-	if _, final, err := tallyGate(context.Background(), g.store, "r1", subjectOf(t, g.store, "r1", "c1"), g.pol, vf, ""); err != nil || !final {
-		t.Fatalf("%v %v", final, err)
-	}
-	writeRaw(t, g.store, "r1", ApprovalExecHoldStep("c1", 0), holdFor(t, "c1", 0))
-	// Alice's decision no longer holds (revoked since); bob has not decided.
-	g.alice.check = func(CertDecision) CertCheck { return CertCheck{Reason: ReasonRevoked, Detail: "d"} }
+	g.holdGenerationZero()
 	_, err := g.run()
 	pend := wantReason(t, err, PendingExecHoldReapproval)
 	if g.charged != 0 || pend.Quorum == nil || pend.Quorum.Approved != 0 {

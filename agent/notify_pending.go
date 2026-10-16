@@ -212,12 +212,12 @@ func (e *notifyEngine) pendingEvents(runID string, recs []Record) []notifyEvent 
 		// its own outcome.
 		key, decided := ApprovalKey(runID, w.ToolUseID, 0), gateDecidedNames(w.ToolUseID)
 		if w.Reask != "" || r.Name != ApprovalPendingStep(w.ToolUseID) {
-			sod := w.Reask == PendingSoDReapproval
 			if !ValidReaskNote(byName, w.ToolUseID, r.Name, w) {
 				continue
 			}
-			key, decided = ApprovalReaskKey(runID, w.ToolUseID, sod), reaskDecidedNames(w.ToolUseID, sod)
-			ap.Reask = w.Reask
+			gen, _ := identReaskGen(w.ToolUseID, r.Name)
+			key, decided = reaskKeyFor(runID, w.ToolUseID, w.Reask, gen), reaskDecidedNames(w.ToolUseID, w.Reask, gen)
+			ap.Reask, ap.reaskGen = w.Reask, gen
 		}
 		if slices.ContainsFunc(decided, func(n string) bool { return have[n] }) {
 			continue

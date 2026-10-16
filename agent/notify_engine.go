@@ -972,7 +972,7 @@ func (e *notifyEngine) current(ctx context.Context, ev notifyEvent, st NotifySta
 		return true, "", nil
 	}
 	if ev.approval != nil {
-		decided, err := e.gateDecided(ctx, opRun, ev.approval.ToolUseID, ev.approval.Reask)
+		decided, err := e.gateDecided(ctx, opRun, ev.approval.ToolUseID, ev.approval.Reask, ev.approval.reaskGen)
 		if err != nil || decided {
 			if err == nil && e.gateExpired(ctx, opRun, ev.approval.ToolUseID) {
 				return false, "expired", nil
@@ -1022,10 +1022,10 @@ func (e *notifyEngine) hasRecord(ctx context.Context, run, name string) (bool, e
 //
 // For a re-ask (reask set), the gate's re-tally or the call's result instead: the recorded tally it
 // asks again over is what it does not act on.
-func (e *notifyEngine) gateDecided(ctx context.Context, run, call, reask string) (bool, error) {
+func (e *notifyEngine) gateDecided(ctx context.Context, run, call, reask string, gen int) (bool, error) {
 	names := gateDecidedNames(call)
 	if reask != "" {
-		names = reaskDecidedNames(call, reask == PendingSoDReapproval)
+		names = reaskDecidedNames(call, reask, gen)
 	}
 	for _, name := range names {
 		if ok, err := e.hasRecord(ctx, run, name); err != nil || ok {
@@ -1037,15 +1037,19 @@ func (e *notifyEngine) gateDecided(ctx context.Context, run, call, reask string)
 
 // gateDecidedNames are the journal names whose presence ends the gate of call.
 func gateDecidedNames(call string) []string {
-	return []string{approvalStep(call), approvalAfterRequestStep(call), ApprovalTallyStep(call), ToolResultStep(call), call}
+	return []string{approvalStep(call), approvalAfterRequestStep(call), ApprovalTallyStep(call), ApprovalIdentTallyStep(call, 0), ToolResultStep(call), call}
 }
 
 // reaskDecidedNames are the records that end a re-ask of call's gate (see ApprovalReaskStep): its
-// re-tally, or the call's result.
-func reaskDecidedNames(call string, sod bool) []string {
+// re-tally, or the call's result. For a certificate-bound gate's re-ask (PendingIdentReapproval,
+// PendingExecHoldReapproval) the re-tally is the identity tally of generation gen.
+func reaskDecidedNames(call, reason string, gen int) []string {
 	re := ApprovalRetallyStep(call)
-	if sod {
+	switch reason {
+	case PendingSoDReapproval:
 		re = ApprovalSoDRetallyStep(call)
+	case PendingIdentReapproval, PendingExecHoldReapproval:
+		re = ApprovalIdentTallyStep(call, gen)
 	}
 	return []string{re, ToolResultStep(call), call}
 }

@@ -39,7 +39,10 @@ func (e *notifyEngine) eventFromErr(runID string, err error) (notifyEvent, bool)
 		}
 		key := ApprovalKey(p.RunID, p.ToolUseID, 0)
 		if p.Reason != "" { // the gate asks again: a new ask, not a repeat of the first
-			key = ApprovalReaskKey(p.RunID, p.ToolUseID, p.Reason == PendingSoDReapproval)
+			if p.Quorum != nil {
+				ap.reaskGen = p.Quorum.reaskGen
+			}
+			key = reaskKeyFor(p.RunID, p.ToolUseID, p.Reason, ap.reaskGen)
 			ap.Reask = p.Reason
 		}
 		return notifyEvent{
