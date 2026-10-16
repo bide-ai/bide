@@ -2763,10 +2763,13 @@ certificate-bound approver (see [Model 1b](#model-1b-the-approval-gate)): the tw
   their own (the name constraint); `MisIssue` (`CanMisIssue`) gives one an identifier of another
   person. The verifier rejects a mis-issued certificate only with `NameCons`.
 - **A CRL series and the verifier's two views.** The CA publishes CRLs (number, `thisUpdate`, the
-  revocations it knows, each with its `E`). The verifier keeps a **cache** (`snap`, the CRL the live
-  count reads) and an **archive** (`rcvd`, the series the final tier and the pre-execution check read).
-  `CRLPublish` delivers a CRL to both; `WithholdCRL` publishes one the verifier never gets;
-  `RollbackCRL` delivers an older one later (the cache keeps the higher number only with `NumRule`).
+  revocations it knows, each with its `E`). The verifier keeps an **archive** (`rcvd`, every CRL it
+  received), which the live count, the pre-execution check and the final tier all read: a listing in any
+  received CRL revokes, and absence is read from any received CRL that is fresh enough and passes the
+  `L(C)` rule (as `EvaluateStatus` does, which falls back to an earlier usable CRL). `snap` is only the
+  latest received CRL, kept for a probe (`NumRule` keeps the higher number when an older one arrives
+  later). `CRLPublish` delivers a CRL; `WithholdCRL` publishes one the verifier never gets;
+  `RollbackCRL` delivers an older one later.
   `Prune` lets the CA drop an expired certificate's entry after one CRL beyond its `notAfter` (RFC 5280
   section 3.3).
 - **A journal with signed heads.** Each decision is a journal record; `Anchor` is the application's
@@ -2782,8 +2785,8 @@ certificate-bound approver (see [Model 1b](#model-1b-the-approval-gate)): the tw
   same submission: no rule reads who held the key.
 - **The counting rule** (`Count`): the head covers the record and is not contradictory; the leaf's
   identifier is the approver's (`IdBind`) and, with `NameCons`, its holder's own; `nb <= A(d)`;
-  `nb <= decided_at <= na` and `decided_at <= A(d) + Skew`; `A(d) <= na + Grace`; and the cached status
-  is usable (no older than `MaxAge` with `Fresh`, issued at or after `A(d)` unless `CountLive`; and,
+  `nb <= decided_at <= na` and `decided_at <= A(d) + Skew`; `A(d) <= na + Grace`; and some
+  received CRL is usable (no older than `MaxAge` with `Fresh`, issued at or after `A(d)` unless `CountLive`; and,
   with `LBoundCount`, a CRL beyond the leaf's `na` only if it is `L(C)`: the first archived CRL beyond
   `na`, with a predecessor in the archive that it follows, the next number with `Cov = "number"`,
   within `Period` with `"time"`, and nothing with `"none"`, because the CA may have dropped the entry
@@ -2792,8 +2795,8 @@ certificate-bound approver (see [Model 1b](#model-1b-the-approval-gate)): the tw
   signed `decided_at`). A seat is an identifier (`DedupSeat`); the gate tallies at `K` seats, and only
   when no counted decision is listed in the archive (`TallyRecheck`); the terminal tally is not
   recounted (`StickyTally`); a revocation with `E <= A(d)` in the archive removes a decision for good
-  (`DropRevoked`; with `DeadGuard` the decision is not counted again, which matters when the cache
-  regresses); stale status never does (`StaleSticky`, else `DropStale`).
+  (`DropRevoked`; with `DeadGuard` the decision is not counted again, which matters when a head
+  stamped earlier moves `A(d)` before the revocation); stale status never does (`StaleSticky`, else `DropStale`).
   `DropRevoked` is not needed for safety beyond the tally recheck (`Tally` refuses while a counted
   decision is listed, and `Exec` re-checks the archive); it is what lets a tally form past a revoked
   decision, which `id-revocation-reach` shows is reachable.
@@ -2853,9 +2856,12 @@ through `TallyApprovals` comes with that code.
 drops an expired certificate's entry makes a CRL beyond `L(C)` silent about a revocation it once listed,
 so the live count (and the pre-execution check) reads a CRL beyond `na` only if it is `L(C)` and shown
 to follow its predecessor. With the first CRL beyond `na` withheld, the pruned CRL after it is not
-`L(C)` and nothing counts or runs on it (`regress/prune-no-lc-count`, `regress/prune-no-lc-exec`). The
-rule is conservative against the Go rule: the model has one cache, so a count whose cache has moved past
-`L(C)` pauses, where `EvaluateStatus` falls back to the latest usable CRL before it.
+`L(C)` and nothing counts or runs on it (`regress/prune-no-lc-count`, `regress/prune-no-lc-exec`). A
+count with the pruned CRL present falls back to an earlier fresh CRL, provisionally, as `EvaluateStatus`
+does. Since a listing in any received CRL revokes, a rollback (an older CRL delivered later) can no
+longer make the count miss a listing; the number rule's remaining job in the Go code, refusing the
+silence of a lower-numbered CRL dated later (a CA restored from a backup), is not modelled, so
+`rollback-no-number` is gone and `NumRule` only shapes `snap`.
 
 ### Configurations
 
@@ -2863,18 +2869,18 @@ Pull requests (`ci`): two people and two identifiers, one or two certificates an
 
 | Config | Group | What | States | Time |
 |---|---|---|---|---|
-| `id-revocation` | ci | one certificate, one decision, three CRLs; the CA revokes with a past `E`; a CRL may be withheld or an older one delivered; freshness, the number rule and the pre-execution check on. `RevocationSound`, `FailClosed`, `NoExecAfterKnownRevocation`, `IdentityBound`, `TerminalStable`, `StaleNeverUncounts`, `TallyClean`, `DeadStaysOut` | 269,258 | 8 s |
+| `id-revocation` | ci | one certificate, one decision, three CRLs; the CA revokes with a past `E`; a CRL may be withheld or an older one delivered; freshness and the pre-execution check on, an older CRL may be delivered later. `RevocationSound`, `FailClosed`, `NoExecAfterKnownRevocation`, `IdentityBound`, `TerminalStable`, `StaleNeverUncounts`, `TallyClean`, `DeadStaysOut` | 269,258 | 8 s |
 | `id-seats` | ci | two certificates, two decisions, two seats; a mis-issued certificate (the name constraint enforced) and an approver id that does not match the leaf. `IdentityBound`, `SeatPerPerson`, `SeatPerIdentifier` | 402,942 | 11 s |
-| `id-prune` | ci | the CA drops an expired certificate's entry after one CRL beyond `notAfter`; a CRL may be withheld or an older one delivered; the live count and the pre-execution check read a CRL beyond `notAfter` only if it is `L(C)` and follows its predecessor (by number). The live invariants `RevocationSound`, `FailClosed`, `NoExecAfterKnownRevocation`, `IdentityBound`, `TallyClean`, `DeadStaysOut` | 815,400 | 53 s |
+| `id-prune` | ci | the CA drops an expired certificate's entry after one CRL beyond `notAfter`; a CRL may be withheld or an older one delivered; the live count and the pre-execution check read a CRL beyond `notAfter` only if it is `L(C)` and follows its predecessor (by number). The live invariants `RevocationSound`, `FailClosed`, `NoExecAfterKnownRevocation`, `IdentityBound`, `TallyClean`, `DeadStaysOut` | 817,688 | 53 s |
 | `id-prune-live` | ci | the same with `CountLive`: a fresh CRL issued before `A(d)` may count (provisional), never one beyond `L(C)` | 829,648 | 53 s |
 | `id-prune-time` | ci | the same with coverage by time: the CA publishes no more often than its declared period, and a CRL beyond `notAfter` is `L(C)` only within that period of its predecessor | 231,988 | 7 s |
-| `id-validity` | ci | the CA issues the certificate at any time up to 2 with any `notAfter`; a head stamped out of order and a decided_at earlier than the true time try a decision before `notBefore`, after `notAfter` or beyond the grace: `IdentityBound` (rules 1 to 3), `FailClosed`, `NoBackdate` | 525,198 | 15 s |
+| `id-validity` | ci | the CA issues the certificate at any time up to 2 with any `notAfter`; a head stamped out of order and a decided_at earlier than the true time try a decision before `notBefore`, after `notAfter` or beyond the grace: `IdentityBound` (rules 1 to 3), `FailClosed`, `NoBackdate` | 543,440 | 15 s |
 | `id-seats-revocation` | ci | two seats (`K = 2`) with revocation and a gate crash: two certificates, two decisions, the CA revokes one with a past `E`, the gate may crash and recount; a revoked decision does not fill a seat in the tally, the tally is not recounted, the call does not run on a revoked leaf. `SeatPerPerson`, `SeatPerIdentifier`, `RevocationSound`, `NoExecAfterKnownRevocation`, `TallyClean`, `TerminalStable` | 714,004 | 36 s |
-| `id-rollback-dead` | ci | the number rule off: an older, silent CRL replaces the cache after a decision was removed by a revocation; `DeadStaysOut` (the dead set keeps it from being counted again) | 117,018 | 5 s |
+| `id-dead-skew` | ci | the non-decreasing head rule off: a head stamped earlier moves `A(d)` before a revocation; `DeadStaysOut` (the dead set keeps a removed decision from being counted again; `RevocationSound` and `NoBackdate` are what the non-decreasing rule protects) | 1,191,012 | 16 s |
 | `id-crash-reach` | ci | reachability: the gate crashes after the terminal tally formed (`CrashAfterTallyNotReachable` violated) | 265,172 | 10 s |
 | `id-crash-exec-reach` | ci | reachability: the call runs after the gate crashed and restarted (`ExecAfterCrashNotReachable` violated) | 382,230 | 16 s |
 | `id-heads` | ci | two decisions, a head stamped out of order, a decided_at earlier than the true time. `NoBackdate`, `RevocationSound`, `IdentityBound` | 890,956 | 23 s |
-| `id-final-number` | ci | the CA prunes an expired certificate's entry; the series is complete by CRL number. `FinalNeedsCompleteSeries`, `AbsenceOnlyInWindow` | 525,778 | 26 s |
+| `id-final-number` | ci | the CA prunes an expired certificate's entry; the series is complete by CRL number. `FinalNeedsCompleteSeries`, `AbsenceOnlyInWindow` | 527,626 | 26 s |
 | `id-final-time` | ci | the same with coverage by `nextUpdate` and the CA publishing no more often than its declared period | 128,528 | 6 s |
 | `id-live` | ci | a decision written while the gate waits is covered by a head the gate asks for (`EventuallyCovered`, liveness) | 364 | <1 s |
 | `id-final-reach` | ci | reachability: a decision becomes final (`FinalNotReachable` violated) | 1,945 | <1 s |
@@ -2894,7 +2900,6 @@ Each is in `identity/regress/`, is the same model with one rule switched off by 
 | Config | Violates | Rule switched off | States | Time |
 |---|---|---|---|---|
 | `withhold-no-fresh` | `RevocationSound` | no freshness rule: a withheld CRL leaves the gate counting on status that predates the revocation | 121,139 | 2 s |
-| `rollback-no-number` | `RevocationSound` | no number rule: an older CRL, still fresh, replaces the cached one that listed the certificate | 23,034 | <1 s |
 | `backdate-by-claim` | `RevocationSound` | `E` compared with the signed `decided_at` instead of `A(d)`: a backdated decision signed after the revocation counts | 24,573 | 1 s |
 | `stale-status` | `FailClosed` | no freshness rule: a decision counts on status older than `MaxAge` | 1,823 | <1 s |
 | `skew-no-nondecreasing` | `NoBackdate` | no non-decreasing head-time rule: a head stamped before an earlier head pulls `A(d)` before the revocation | 219,804 | 3 s |
@@ -2908,10 +2913,10 @@ Each is in `identity/regress/`, is the same model with one rule switched off by 
 | `final-no-coverage` | `FinalNeedsCompleteSeries` | the N2 sequence: no series coverage, a CRL omitted from the middle hides a listing that a later, pruned CRL no longer carries | 24,969 | 1 s |
 | `final-no-window` | `AbsenceOnlyInWindow` | the same series read for absence from a CRL later than the first one after `notAfter` | 11,820 | <1 s |
 | `final-time-hourly` | `FinalNeedsCompleteSeries` | coverage by `nextUpdate` alone with a CA that publishes more often than its declared period does not show that nothing lies between two CRLs | 47,931 | 1 s |
-| `prune-no-lc-count` | `RevocationSound` | the live count does not apply the `L(C)` rule: with the first CRL beyond `notAfter` withheld or unread, the pruned CRL after it counts a revoked leaf | 169,316 | 4 s |
-| `prune-no-lc-exec` | `NoExecAfterKnownRevocation` | the pre-execution check does not apply the `L(C)` rule: a decision counted before `notAfter`, the CRL that lists the leaf withheld, and a pruned CRL satisfies the freshness check, so the call runs | 789,295 | 21 s |
+| `prune-no-lc-count` | `RevocationSound` | the live count does not apply the `L(C)` rule: with the first CRL beyond `notAfter` withheld or unread, the pruned CRL after it counts a revoked leaf | 373,253 | 8 s |
+| `prune-no-lc-exec` | `NoExecAfterKnownRevocation` | the pre-execution check does not apply the `L(C)` rule: a decision counted before `notAfter`, the CRL that lists the leaf withheld, and a pruned CRL satisfies the freshness check, so the call runs | 789,789 | 21 s |
 | `tally-no-recheck` | `TallyClean` | the tally forms without looking at the archive: a decision counted before the revocation reached the gate is in the terminal tally | 62,571 | 1 s |
-| `recount-dead` | `DeadStaysOut` | without the dead set a decision a revocation removed is counted again when an older, silent CRL replaces the cache | 92,845 | 2 s |
+| `recount-dead` | `DeadStaysOut` | without the dead set a decision a revocation removed is counted again when a head stamped earlier moves `A(d)` before the revocation | 723,213 | 6 s |
 | `no-anchor` | `EventuallyCovered` (liveness) | no gate `Anchor` step: a decision written while the gate waits is never covered, and the gate pauses for ever | 364 | <1 s |
 
 ### Limits

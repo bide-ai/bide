@@ -862,8 +862,11 @@ Properties that must hold (invariants unless noted):
 - **IdentityBound**: a counted decision's certificate chains to a trust anchor of the gate, through
   pinned intermediates, with exactly the approver's SAN, valid at `A(d)`.
 - **RevocationSound**: a counted decision's chain has no `E <= A(d)` in the status series the count used.
-  With `WithholdCRL` or `RollbackCRL` enabled and no freshness and number rule the property must
-  **fail** (documented counterexamples), and hold once the rules are in.
+  With `WithholdCRL` enabled and no freshness rule the property must **fail** (a documented
+  counterexample), and hold once the rule is in. A rollback alone cannot defeat it in the model, because
+  the count reads the whole archive and a listing in any received CRL revokes; what the number rule
+  still does in the Go code (refusing the silence of a lower-numbered CRL dated later, as from a CA
+  restored from a backup) is a Go test, not modelled.
 - **FailClosed**: unknown, stale or out-of-window status never counts.
 - **NoBackdate**: a decision signed after `E` and first covered after `E` never counts, however its
   `decided_at` reads; with `SkewHead` and no non-decreasing rule the property **fails**, and holds with it.
@@ -911,14 +914,14 @@ configuration breaks the rule and must fail with that property (the mutation che
 | Property | Checked in | Passing configuration | Counterexample configuration (rule switched off) |
 |---|---|---|---|
 | `IdentityBound` | model 15 | `id-seats` | `misbind-no-idbind` (the approver id is not tied to the leaf's identifier) |
-| `RevocationSound` | model 15 | `id-revocation`, `id-prune`, `id-prune-live`, `id-prune-time` | `withhold-no-fresh` (no freshness rule), `rollback-no-number` (no number rule), `backdate-by-claim` (E compared with the signed `decided_at`), `prune-no-lc-count` (the live count reads a CRL beyond `L(C)` that a pruning CA may have emptied) |
+| `RevocationSound` | model 15 | `id-revocation`, `id-prune`, `id-prune-live`, `id-prune-time` | `withhold-no-fresh` (no freshness rule), `backdate-by-claim` (E compared with the signed `decided_at`), `prune-no-lc-count` (the live count reads a CRL beyond `L(C)` that a pruning CA may have emptied) |
 | `FailClosed` | model 15 | `id-revocation` | `stale-status` (no freshness rule) |
 | `NoBackdate` | model 15 | `id-heads` | `skew-no-nondecreasing` (no non-decreasing head-time rule) |
 | `SeatPerPerson` | model 15 | `id-seats` | `misissue-no-name-constraints` (no name constraints); `limits/alias-two-seats` states the accepted limit when identifiers are not injective |
 | `SeatPerIdentifier` | model 15 | `id-seats` | `no-dedup-seat` (seats counted by decision, not identifier) |
 | `TerminalStable` | model 15 and 1b (`OutcomeOnce`) | `id-revocation`, `id-seats-revocation` | `recount-terminal` |
 | `TallyClean` (a tally forms only from decisions the archive does not list) | model 15 | `id-revocation`, `id-seats-revocation` | `tally-no-recheck` |
-| `DeadStaysOut` (a decision a revocation removed is not counted again) | model 15 | `id-rollback-dead`, `id-revocation` | `recount-dead` |
+| `DeadStaysOut` (a decision a revocation removed is not counted again) | model 15 | `id-dead-skew`, `id-revocation` | `recount-dead` |
 | `ReplacementSupersedes` (the hold on a revoked leaf is not permanent: the identity re-ask) | **model 1b** | `ap-cert`, `ap-cert-cross` (`ap-cert-replaced`: a replacement executes) | `regress/ap-no-reask` |
 | `StaleNeverUncounts` | model 15 | `id-revocation` | `stale-uncounts` |
 | `NoExecAfterKnownRevocation` | model 15 (the check itself, with a status age) and **model 1b** (every path to the tool: first execution, a drive restarted after a crash or redeploy, a retry) | model 15: `id-revocation`, `id-prune`, `id-seats-revocation` (with a gate crash); 1b: `ap-cert`, `ap-cert-cross` | model 15: `no-exec-recheck`, `no-exec-recheck-revoked`, `prune-no-lc-exec` (the check ignores the `L(C)` rule); 1b: `regress/ap-no-exec-recheck`, `regress/ap-exec-bypass` (one path skips the check; the ghost is the leaf's state at the call, not the check's result) |
@@ -1159,7 +1162,7 @@ asserting the same counted set and the same reason:
     CS-style cadence (weekly base, hourly delta, 8 h certificates) gives `final` for a decision whose
     window the deltas cover; a delta replayed from before a revocation is refused by the number rule.
 30. model 1b: the configurations above, including the expected counterexamples (`WithholdCRL` and
-    `RollbackCRL` without the freshness and number rules; `SkewHead` without the non-decreasing rule;
+    `WithholdCRL` without the freshness rule; `SkewHead` without the non-decreasing rule;
     `MisIssue` without name constraints; the direct-write deadlock without the gate's `Anchor` step), and
     the Go refinement test.
 

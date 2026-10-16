@@ -11,9 +11,10 @@
 (* whose key it certifies), an identifier (its SAN), a validity interval   *)
 (* [nb, na] and, once the CA revokes it, an effective time E that may lie  *)
 (* in the past. The CA publishes CRLs (number, thisUpdate, the revocations *)
-(* it knows). The verifier holds a cache (snap, the CRL the live count     *)
-(* reads) and an archive (rcvd, the series the offline tier reads). An     *)
-(* adversary can withhold a CRL from the verifier, deliver an older one,   *)
+(* it knows). The verifier holds an archive (rcvd, every CRL it received)  *)
+(* that the live count, the pre-execution check and the offline tier read: *)
+(* a listing in any received CRL revokes, and absence is read from any     *)
+(* fresh CRL that passes the L(C) rule. An adversary can withhold a CRL from the verifier, deliver an older one,   *)
 (* publish a head stamped out of order, write a decision with an earlier   *)
 (* decided_at, and (when the CA's name constraint is not enforced) get a   *)
 (* certificate for another person's identifier.                            *)
@@ -100,7 +101,8 @@ VARIABLES
   np, ctu, clst,                \* CRLs: count, thisUpdate, cert -> the E it lists or NoE
   \* The verifier.
   rcvd,       \* the archived series: numbers of the CRLs the verifier has received
-  snap,       \* the cache: the CRL the live count reads (0: none)
+  snap,       \* the latest CRL received (0: none); the number rule (NumRule) keeps the higher number
+              \* when an older one arrives later. The count reads the archive, so only a probe reads it
   \* The journal and its heads.
   heads,      \* signed heads: [sz, tm (the signed time), rl (ghost: when it was really made)]
   \* Decisions (a decision's journal position is its index).
@@ -173,14 +175,14 @@ LOK(c, k) ==
   \/ /\ k \in rcvd /\ k = LRcv(c)
      /\ \E q \in rcvd : q < k /\ (\A j \in rcvd : j < k => j <= q) /\ Follows(q, k)
 \* Usable for counting d: a cache, fresh (with Fresh), issued at or after A(d) (or live-counted).
-StatusUsable(d) ==
-  /\ snap # 0
-  /\ (~Fresh \/ FreshSnap(MaxAge))
-  /\ (ctu[snap] >= AOf(d) \/ CountLive)
-  /\ (~LBoundCount \/ LOK(dc[d], snap))
+UsableCRL(d, k, age) ==
+  /\ k \in rcvd /\ (~Fresh \/ now - ctu[k] <= age)
+  /\ (ctu[k] >= AOf(d) \/ CountLive)
+  /\ (~LBoundCount \/ LOK(dc[d], k))
+StatusUsable(d) == \E k \in rcvd : UsableCRL(d, k, MaxAge)
 \* Rule 5: the leaf has no E <= (A(d), or with RevByClaim the signed decided_at) in the status.
 NotListed(d) ==
-  clst[snap][dc[d]] > IF RevByClaim THEN dt[d] ELSE AOf(d)
+  KnownE(rcvd, dc[d]) > IF RevByClaim THEN dt[d] ELSE AOf(d)
 
 (***************************************************************************)
 (* The counting rule (rules 1 to 5)                                        *)
@@ -371,7 +373,7 @@ Count(d) ==
   /\ cRb' = [cRb EXCEPT ![d] = KnownE(Seen(MaxAge), dc[d]) <= AOf(d)]
   /\ cNb' = [cNb EXCEPT ![d] =
               \E h \in heads : h.sz < d /\ KnownE(Seen(MaxAge), dc[d]) <= h.tm]
-  /\ cOk' = [cOk EXCEPT ![d] = FreshSnap(MaxAge) /\ (ctu[snap] >= AOf(d) \/ CountLive)]
+  /\ cOk' = [cOk EXCEPT ![d] = \E k \in rcvd : now - ctu[k] <= MaxAge /\ (ctu[k] >= AOf(d) \/ CountLive)]
   /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, rcvd, snap, heads, nd, da, dc, dt,
                  waiting, dead, tl, execd, eb>>
 
@@ -404,13 +406,12 @@ Tally ==
 \* The pre-execution check: a status no older than ExecAge, and no counted decision's chain with
 \* E <= A(d) in the archive.
 ExecOK ==
-  /\ FreshSnap(ExecAge)
-  /\ \A d \in tl : ~Listed(d) /\ (~LBoundExec \/ LOK(dc[d], snap))
+  /\ \A d \in tl : ~Listed(d) /\ \E k \in rcvd : now - ctu[k] <= ExecAge /\ (~LBoundExec \/ LOK(dc[d], k))
 
 Exec ==
   /\ tl # {} /\ ~execd /\ (~ExecRecheck \/ ExecOK)
   /\ execd' = TRUE
-  /\ eb' = (~FreshSnap(ExecAge) \/ \E d \in tl : KnownE(Seen(ExecAge), dc[d]) <= cA[d])
+  /\ eb' = (~(\E k \in rcvd : now - ctu[k] <= ExecAge) \/ \E d \in tl : KnownE(Seen(ExecAge), dc[d]) <= cA[d])
   /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, rcvd, snap, heads, nd, da, dc, dt,
                  waiting, cn, dead, tl, cA, cRb, cNb, cOk>>
 
