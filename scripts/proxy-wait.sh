@@ -17,9 +17,9 @@
 #
 # proxy_wait_resolve MODULE VERSION [PUSHED_AT]
 #   PUSHED_AT is the epoch second of the push, or empty when the tag may have been there a while. The
-#   settle delay then counts from PW_FLOOR, the epoch second the calling run started (a run resumed
-#   a minute after one that pushed must not ask the proxy at once), or, with no floor, applies only
-#   if the direct check had to wait for the tag to appear. Needs
+#   settle delay counts from the latest of PUSHED_AT, PW_FLOOR (the epoch second the calling run
+#   started: a run resumed a minute after one that pushed must not ask the proxy at once) and, when
+#   the direct check had to wait for the tag, the moment it appeared. Needs
 #   pw_direct MOD@VER and pw_proxy MOD@VER (commands that succeed when the version resolves). It
 #   returns 1 when the version does not resolve in time; the caller says what failed.
 #
@@ -53,8 +53,12 @@ proxy_wait_resolve() {
     $sleeper "$dpoll"
   done
   # 2. Let the proxy settle.
-  if [ -z "$pushed" ]; then pushed=$floor; fi
-  if $waited && [ -z "$pushed" ]; then pushed=$($clock); fi
+  # The settle counts from the latest of what is known: the push, the run's start, and the moment the
+  # tag appeared when the direct check had to wait for it.
+  local c
+  for c in "$floor" "$($waited && $clock || true)"; do
+    if [ -n "$c" ] && { [ -z "$pushed" ] || [ "$c" -gt "$pushed" ]; }; then pushed=$c; fi
+  done
   if [ -n "$pushed" ]; then
     now=$($clock)
     if [ $((now - pushed)) -lt "$settle" ]; then

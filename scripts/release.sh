@@ -502,6 +502,11 @@ self_test_proxy() {
     DIRECT_OK_AT=999999999
     if PW_DEADLINE=1100 PW_DIRECT_MAX=99999 run m v1 ""; then echo "self-test: an unfetchable tag was accepted"; exit 1; fi
     [ $((CLOCK - 1000)) -le 130 ] || { echo "self-test: the direct wait ran $((CLOCK - 1000))s past a 100s deadline"; exit 1; }
+    # A tag that appears 10 minutes into the run: the settle counts from when it appeared, not from
+    # the run's start (already more than the settle delay ago).
+    DIRECT_OK_AT=1600 PROXY_OK_AT=0
+    PW_FLOOR=1000 PW_DIRECT_MAX=900 run m v1 "" || exit 1
+    case "$LOG" in *" p@1900") ;; *) echo "self-test: the proxy was not asked a settle delay after the tag appeared (run start 1000, tag at 1600): [$LOG ]"; exit 1 ;; esac
     # A tag that is never fetchable is not an answer from the proxy: the proxy is never asked.
     DIRECT_OK_AT=999999999
     if run m v1 1000; then echo "self-test: an unfetchable tag was accepted"; exit 1; fi
