@@ -199,3 +199,37 @@ func TestFor_KeysByFileIdentity(t *testing.T) {
 		t.Fatal("a different file under the same relative name shared a gate")
 	}
 }
+
+func TestWaiting_CountsTheQueue(t *testing.T) {
+	g := For(filepath.Join(t.TempDir(), "w.db"))
+	defer g.Close()
+	if n := g.Waiting(); n != 0 {
+		t.Fatalf("Waiting on a free gate = %d", n)
+	}
+	leave, err := g.Enter(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for range 3 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			l, err := g.Enter(context.Background())
+			if err == nil {
+				l()
+			}
+		}()
+	}
+	for i := 0; g.Waiting() != 3; i++ {
+		if i > 5000 {
+			t.Fatalf("Waiting = %d, want 3", g.Waiting())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	leave()
+	wg.Wait()
+	if n := g.Waiting(); n != 0 {
+		t.Errorf("Waiting after the queue drained = %d", n)
+	}
+}

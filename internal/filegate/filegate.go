@@ -137,6 +137,17 @@ func (h *Gate) enter(ctx context.Context, first bool) (func(), error) {
 	}
 }
 
+// Waiting is the number of writers queued behind the one inside, in Enter and EnterFirst. A test
+// uses it to hold the gate until every writer it started is queued.
+func (h *Gate) Waiting() int {
+	if h == nil || h.g == nil {
+		return 0
+	}
+	h.g.mu.Lock()
+	defer h.g.mu.Unlock()
+	return h.g.first.Len() + h.g.rest.Len()
+}
+
 // leave ends a turn and admits the next waiter.
 func (g *gate) leave() {
 	g.mu.Lock()
