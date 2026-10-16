@@ -532,7 +532,8 @@ ApExec:
   if exr /\ Bug # "NoExecRecheck" then
     outcome := "pause_approval"; goto Finish;
   else
-    checked := TRUE; goto Claim;
+    \* The ghost only where leaves exist, so the other configurations' state spaces stay as they were.
+    checked := CertKeys # {}; goto Claim;
   end if;
 Deny:
   \* The denial is recorded as the call's result, and the model reads it.
@@ -1330,7 +1331,7 @@ ApExec(self) == /\ pc[self] = "ApExec"
                       THEN /\ outcome' = [outcome EXCEPT ![self] = "pause_approval"]
                            /\ pc' = [pc EXCEPT ![self] = "Finish"]
                            /\ UNCHANGED checked
-                      ELSE /\ checked' = [checked EXCEPT ![self] = TRUE]
+                      ELSE /\ checked' = [checked EXCEPT ![self] = CertKeys # {}]
                            /\ pc' = [pc EXCEPT ![self] = "Claim"]
                            /\ UNCHANGED outcome
                 /\ UNCHANGED << marker, nsSet, heldSet, result, toolFail, 

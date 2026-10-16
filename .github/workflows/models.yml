@@ -49,7 +49,8 @@ env:
     notify: notify
     notify-live: notify/ci-live
     notify-regress: notify/regress notify/limits
-    identity: identity identity/regress identity/limits
+    identity: identity identity/limits
+    identity-regress: identity/regress
 
 jobs:
   plan:
