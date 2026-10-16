@@ -1,0 +1,13 @@
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\CertSvc\Configuration\Fixture ADCS Approver CA\CSP:
+
+Values:
+  ProviderType             REG_DWORD = 0
+  Provider                 REG_SZ = Microsoft Software Key Storage Provider
+  HashAlgorithm            REG_DWORD = ffffffff (-1)
+    CALG_OID_INFO_CNG_ONLY
+
+  CNGPublicKeyAlgorithm    REG_SZ = RSA
+  CNGHashAlgorithm         REG_SZ = SHA256
+
+  MachineKeyset            REG_DWORD = 1
+CertUtil: -getreg command completed successfully.

@@ -1,0 +1,131 @@
+X509 Certificate:
+Version: 3
+Serial Number: 4300000003cc6df94ba4911a2a000000000003
+Signature Algorithm:
+    Algorithm ObjectId: 1.2.840.113549.1.1.11 sha256RSA
+    Algorithm Parameters:
+    05 00
+Issuer:
+    CN=Fixture ADCS Root
+  Name Hash(sha1): 4c530214a473d71eb933301af24f8df1ac7b60b3
+  Name Hash(md5): 804afa6a8abcca4a6be90e61850ec626
+
+ NotBefore: 10/16/2026 2:18 AM
+ NotAfter: 10/16/2027 2:28 AM
+
+Subject:
+    CN=Fixture ADCS Approver CA
+  Name Hash(sha1): 1a26ba55bf6ecde3028986d14f6a81f8e9cc8c1c
+  Name Hash(md5): 13002f1b92d6e15a9e85afc894680ebb
+
+Public Key Algorithm:
+    Algorithm ObjectId: 1.2.840.113549.1.1.1 RSA
+    Algorithm Parameters:
+    05 00
+Public Key Length: 3072 bits
+Public Key: UnusedBits = 0
+    0000  30 82 01 8a 02 82 01 81  00 cb fc c5 19 3b 3c 2f
+    0010  e6 d4 3a 77 c6 5c 62 6a  d5 cf 2d 81 f0 d0 1b 78
+    0020  63 2e a2 f6 23 4a 0e 9f  69 26 7c a9 a8 72 33 e6
+    0030  0d 35 7a ad 42 37 cf ca  e0 08 2e 66 38 fb c0 4b
+    0040  16 37 b1 28 e6 2d 2a a0  4a 55 38 42 5c 00 6d 63
+    0050  92 17 df ea 92 0a 82 45  09 d3 f3 29 b3 dc ef 15
+    0060  d3 90 88 2b 20 2b b0 b5  0e b5 c2 47 86 19 46 2a
+    0070  46 34 6a 9f 32 50 58 a5  1a fc 60 0c ad a5 77 db
+    0080  c3 c7 26 e7 3e d9 c8 22  ae a8 82 83 ec 98 c1 06
+    0090  55 c3 91 63 af 6e c7 5d  89 02 64 44 1a 22 47 31
+    00a0  d6 70 43 21 54 b7 d5 ed  ef 7f a7 56 d6 3b f3 bd
+    00b0  f8 5a f0 9e 76 7f 35 e4  4c a9 10 fe 8b 09 2d 4f
+    00c0  1d fe a1 64 22 75 93 6b  e2 1e 6c 26 f4 37 53 bc
+    00d0  ab d9 7b e9 55 85 8c ac  97 ec 0a 46 8d fe 98 e8
+    00e0  fe 2e af 32 bf 9e f0 53  4e 8b 6b 34 87 e4 8f 42
+    00f0  f4 1c 6e 28 c6 07 0c 64  86 ae 7d a0 d3 e6 db fb
+    0100  d1 18 69 3d 44 e4 db b6  15 f6 10 e4 bf 76 3e e5
+    0110  86 f1 a0 99 68 92 61 ec  4c ac 46 d7 b6 2b 24 ca
+    0120  3c 6f 33 4f e7 51 2c 93  d1 3a fe 00 a8 5d 4f e4
+    0130  a0 c4 46 b2 eb ec 05 39  14 a2 67 1d c9 14 58 a8
+    0140  f5 af eb 4e 19 92 01 28  a5 89 28 d0 13 2a 80 c6
+    0150  0c 3d d0 2f d0 a0 1f 61  5f 04 65 cf c8 32 b4 56
+    0160  8f f9 43 ce ca ad e6 fe  a2 18 bc 9d 12 41 5e 46
+    0170  6a 08 15 44 45 f4 e0 64  62 d8 63 4b 14 e6 81 20
+    0180  fc e3 f8 b4 a6 a7 b8 8c  45 02 03 01 00 01
+Certificate Extensions: 7
+    2.5.29.15: Flags = 0, Length = 4
+    Key Usage
+        Digital Signature, Certificate Signing, Off-line CRL Signing, CRL Signing (86)
+
+    2.5.29.19: Flags = 1(Critical), Length = 8
+    Basic Constraints
+        Subject Type=CA
+        Path Length Constraint=0
+
+    2.5.29.32: Flags = 0, Length = 10
+    Certificate Policies
+        [1]Certificate Policy:
+             Policy Identifier=1.3.6.1.4.1.99999.2.1
+
+    2.5.29.14: Flags = 0, Length = 16
+    Subject Key Identifier
+        dcc5a78b46d08806ba167630e4964c80ac364f23
+
+    2.5.29.35: Flags = 0, Length = 18
+    Authority Key Identifier
+        KeyID=639819837ef06f7dd7d714e574d9c9bb562baf84
+
+    2.5.29.31: Flags = 0, Length = 45
+    CRL Distribution Points
+        [1]CRL Distribution Point
+             Distribution Point Name:
+                  Full Name:
+                       URL=file:////runnervm0xl3a/CertEnroll/Fixture ADCS Root.crl (file:////runnervm0xl3a/CertEnroll/Fixture%20ADCS%20Root.crl)
+
+    1.3.6.1.5.5.7.1.1: Flags = 0, Length = 59
+    Authority Information Access
+        [1]Authority Info Access
+             Access Method=Certification Authority Issuer (1.3.6.1.5.5.7.48.2)
+             Alternative Name:
+                  URL=file:////runnervm0xl3a/CertEnroll/runnervm0xl3a_Fixture ADCS Root.crt (file:////runnervm0xl3a/CertEnroll/runnervm0xl3a_Fixture%20ADCS%20Root.crt)
+
+Signature Algorithm:
+    Algorithm ObjectId: 1.2.840.113549.1.1.11 sha256RSA
+    Algorithm Parameters:
+    05 00
+Signature: UnusedBits=0
+    0000  c2 6a ce da b1 3e 98 ae  98 4c 47 ee ff 8f 1d c7
+    0010  a3 bc 3a cb db 58 05 9f  08 1b 34 4b ea df 76 7f
+    0020  52 87 69 ee e4 d3 35 a1  27 01 07 1e 57 70 3a 2f
+    0030  ca 1e b9 bd df 57 b1 75  b0 c1 04 3c a7 cb 1d f6
+    0040  2c 26 31 ec d8 19 52 47  79 e1 54 0a 68 29 a1 b3
+    0050  69 a6 53 c2 3c f8 62 12  53 8c d0 a5 89 c2 1c f6
+    0060  b3 0c 3c 3c 78 14 3f a8  8c 0a dd bf 1e a1 99 9d
+    0070  be 84 e0 ba 67 b6 f4 db  a7 0d ac d5 2a 28 32 39
+    0080  9f 08 e1 a2 15 39 4f 5e  ff ea 7a fd 67 aa f6 47
+    0090  e5 74 10 f6 a1 5f fd e2  1b 70 50 cc 92 6c f3 07
+    00a0  11 21 7d 26 0b ea 41 64  bf 09 3e a3 3e 4e fa 28
+    00b0  57 b7 15 e9 18 6a df e3  65 42 af d9 29 4e fb f8
+    00c0  da 61 d0 0e be 43 d3 43  a6 7a e5 57 ff 5b b9 06
+    00d0  80 f4 a6 59 e6 d8 88 0f  7d 2b c3 2e b7 20 61 b5
+    00e0  3d c4 01 5f c4 9a 2e ca  43 08 31 55 0f d6 3c 2b
+    00f0  38 40 53 fa 65 64 d0 ae  ab cd 2e 6e 35 2e 82 ff
+    0100  73 90 7b f0 67 d9 2b 0e  f8 b5 48 28 34 d8 45 65
+    0110  72 1c ab 8b 9e b7 04 20  22 66 35 47 02 ae 2f d9
+    0120  58 74 df 18 e9 d8 22 8f  4c e3 38 f7 eb 78 eb d5
+    0130  c6 85 cf 95 d3 82 45 ea  2c 10 ef 2d ea b3 0d 0e
+    0140  69 71 69 0f 94 e0 a7 50  1d 59 25 ae b6 dd 98 9b
+    0150  86 bc 23 18 de 17 3b 9b  68 5f da 66 a9 7a 70 c5
+    0160  41 67 2f 73 e8 15 7b 63  c9 30 25 d2 0a 40 58 a6
+    0170  9f 47 c8 f5 37 a8 62 28  36 de bc 84 cc 4b 71 aa
+Non-root Certificate
+Key Id Hash(rfc-sha1): dcc5a78b46d08806ba167630e4964c80ac364f23
+Key Id Hash(sha1): 99bd2e3ff58c43b9c124569578a876ad10576725
+Key Id Hash(bcrypt-sha1): c01c157421a60ea5746264615bb3048af3993199
+Key Id Hash(bcrypt-sha256): 718bbd9404a4276c39500eb64bf42259c05866e3c282658d98a91e4a02077627
+Key Id Hash(md5): 5fa11cae4205e9dc9056e38ae748cbb5
+Key Id Hash(sha256): 24c18b4a1443493f9df63652ac99af8143e9d877467dac8b837f8cdda3f0ff78
+Key Id Hash(pin-sha256): oHvacGlO2O7iJm6G7BXecg53bGgUZTFiHo7Ig7kr/gM=
+Key Id Hash(pin-sha256-hex): a07bda70694ed8eee2266e86ec15de720e776c68146531621e8ec883b92bfe03
+Cert Hash(md5): e158c27b64893cc0d925f53b321e2758
+Cert Hash(sha1): 0eb0e271dea0c21517612ec090f62f50a2537c37
+Cert Hash(sha256): 496a3cf11887476d6b4ae2c31f950d7569ea834dbcfda8111e3abb004c472c31
+Signature Hash: cf9858394597d83f76b07fc82c7507f5a795afdd1f208770f8e900973eb6dabd
+CertUtil: -dump command completed successfully.

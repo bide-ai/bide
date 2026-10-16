@@ -108,6 +108,18 @@ func (c *capture) chainStatus(leaf string, a time.Time, p audit.StatusParams) au
 	return c.ci.EvaluateStatus(ac, a, c.snap, p)
 }
 
+// liveParams is the live count at now: the issuing CA's CRLs must be at most an hour old, the offline
+// root's (rootAge: its CRL period) may be as old as that period, and skew is the issuing CA's declared
+// thisUpdate back-dating.
+func (c *capture) liveParams(now time.Time, rootAge, skew time.Duration) audit.StatusParams {
+	return audit.StatusParams{
+		CAPeriod: 90 * time.Minute, Now: now, MaxStatusAge: time.Hour, CountLive: true,
+		ThisUpdateSkewFor: map[audit.SPKIHash]time.Duration{audit.SPKIHashOf(c.ca): skew},
+		MaxStatusAgeFor:   map[audit.SPKIHash]time.Duration{audit.SPKIHashOf(c.root): rootAge},
+		CAPeriodFor:       map[audit.SPKIHash]time.Duration{audit.SPKIHashOf(c.root): rootAge},
+	}
+}
+
 func (c *capture) status(leaf string, a time.Time, p audit.StatusParams) audit.CertStatus {
 	c.t.Helper()
 	return c.chainStatus(leaf, a, p).Certs[0]
@@ -191,7 +203,8 @@ func TestEJBCAConformance(t *testing.T) {
 	if !u4.NotBefore.Before(b1.Add(-9 * time.Minute)) {
 		t.Fatalf("expected the ten minute notBefore offset: notBefore %v, first CRL %v", u4.NotBefore, b1)
 	}
-	cs := c.chainStatus("u4", a, short)
+	live := c.liveParams(c.crls["delta3"].ThisUpdate.Add(5*time.Minute), 24*time.Hour, 0)
+	cs := c.chainStatus("u4", a, live)
 	if len(cs.Certs) != 2 || cs.Certs[1].Revoked || cs.Certs[1].Tier == audit.TierNoInformation {
 		t.Fatalf("the issuing CA's status from the root's CRL: %+v", cs)
 	}
@@ -249,12 +262,16 @@ func TestADCSConformance(t *testing.T) {
 			t.Fatalf("CRL numbers are not one increasing sequence: %s=%v %s=%v", order[i-1], c.crls[order[i-1]].Number, order[i], c.crls[order[i]].Number)
 		}
 	}
-	// Every delta names the same, older base.
+	// Every delta names the same base, the first full CRL after the CA's deltas were switched on, and keeps
+	// naming it after later bases are published.
 	first := deltaBase(t, c.crls["delta1"])
 	for _, d := range []string{"delta1", "delta2", "delta3"} {
-		if n := deltaBase(t, c.crls[d]); n == nil || n.Cmp(first) != 0 || n.Cmp(c.crls["base1"].Number) >= 0 {
-			t.Fatalf("%s names base %v; expected the CA's first base %v, below %v", d, n, first, c.crls["base1"].Number)
+		if n := deltaBase(t, c.crls[d]); n == nil || n.Cmp(first) != 0 || n.Cmp(c.crls["base1"].Number) != 0 {
+			t.Fatalf("%s names base %v; expected the first captured base %v", d, n, c.crls["base1"].Number)
 		}
+	}
+	if c.crls["delta3"].Number.Cmp(c.crls["base3"].Number) <= 0 {
+		t.Fatal("delta3 is not numbered after base3")
 	}
 	// Cumulative: the later deltas still list the revocations of the earlier ones.
 	for _, u := range []string{"u1", "u3"} {
@@ -278,6 +295,32 @@ func TestADCSConformance(t *testing.T) {
 	// The back-dating: revocations are dated after the thisUpdate of the CRL that first lists them.
 	if !hold.RevocationTime.After(c.crls["delta1"].ThisUpdate) {
 		t.Fatalf("expected AD CS to back-date thisUpdate (%v) before the revocation (%v)", c.crls["delta1"].ThisUpdate, hold.RevocationTime)
+	}
+
+	// The certificates are valid for 24 hours plus the ten minutes notBefore is back-dated by, which is
+	// over the default 24 hour lifetime limit: refused unless the back-dating is declared.
+	u4 := c.leaf("u4")
+	if span := u4.NotAfter.Sub(u4.NotBefore); span != 24*time.Hour+10*time.Minute {
+		t.Fatalf("expected AD CS to back-date notBefore by ten minutes under a 24 hour validity: valid for %v", span)
+	}
+	strict := loadCapture(t, "adcs", 0, "base1")
+	if _, err := strict.verify("u4", c.crls["base1"].ThisUpdate.Add(time.Second)); err == nil {
+		t.Fatal("a 24h10m certificate passed with no back-dating declared")
+	}
+	// The root's CRL was published before any decision and is good for a week: the issuing CA certificate's
+	// status is a live count on it, with the root's own age limit, and no better than provisional.
+	live := c.liveParams(c.crls["delta3"].ThisUpdate.Add(5*time.Minute), 7*24*time.Hour, 10*time.Minute)
+	cs := c.chainStatus("u4", c.crls["base1"].ThisUpdate.Add(time.Second), live)
+	if len(cs.Certs) != 2 || cs.Certs[1].Revoked || cs.Certs[1].Tier != audit.TierProvisional {
+		t.Fatalf("the issuing CA's status from the root's CRL: %+v", cs)
+	}
+	if c.crls["rootcrl"].ThisUpdate.After(c.crls["base1"].ThisUpdate) {
+		t.Fatal("the root's CRL was expected to predate the issuing CA's first CRL")
+	}
+	// Offline, with no later root CRL, there is no evidence of absence for the CA certificate.
+	off := c.chainStatus("u4", c.crls["base1"].ThisUpdate.Add(time.Second), audit.StatusParams{CAPeriod: time.Hour})
+	if off.Certs[1].Tier != audit.TierNoInformation {
+		t.Fatalf("offline, the root's CRL predates the decision: %+v", off.Certs[1])
 	}
 
 	// The status rule on this output. The revocation of u1, u2, u3 was recorded at hold.RevocationTime.
@@ -325,7 +368,8 @@ func TestEJBCARealisticWindows(t *testing.T) {
 	c := loadCapture(t, "ejbca", 0, "base1", "delta1", "base2", "delta2", "base3", "delta3")
 	a := c.crls["base1"].ThisUpdate.Add(time.Second)
 	last := c.crls["delta3"].ThisUpdate
-	p := audit.StatusParams{CAPeriod: time.Hour, Now: last.Add(5 * time.Minute), MaxStatusAge: time.Hour, CountLive: true}
+	p := c.liveParams(last.Add(5*time.Minute), 24*time.Hour, 0)
+	p.CAPeriod = time.Hour
 	if st := c.status("u4", a, p); st.Revoked || st.Tier != audit.TierProvisional {
 		t.Fatalf("u4: %+v", st)
 	}
@@ -342,5 +386,32 @@ func TestEJBCARealisticWindows(t *testing.T) {
 	off := audit.StatusParams{CAPeriod: time.Hour}
 	if st := c.status("u4", a, off); st.IsFinal() || st.Revoked {
 		t.Fatalf("u4 offline: %+v", st)
+	}
+}
+
+// AD CS with realistic windows and its declared thisUpdate back-dating: the default compromise window and
+// minimum window, the live count with a one hour age limit, and the declared ten minute skew, which is
+// what lets a CRL stamped ten minutes before it was issued count as fresh for as long as it was issued.
+func TestADCSRealisticWindows(t *testing.T) {
+	c := loadCapture(t, "adcs", 10*time.Minute, "base1", "delta1", "base2", "delta2", "base3", "delta3")
+	a := c.crls["base1"].ThisUpdate.Add(time.Second)
+	last := c.crls["delta3"].ThisUpdate
+	p := c.liveParams(last.Add(5*time.Minute), 7*24*time.Hour, 10*time.Minute)
+	if st := c.status("u4", a, p); st.Revoked || st.Tier != audit.TierProvisional {
+		t.Fatalf("u4: %+v", st)
+	}
+	if st := c.status("u1", a, p); !st.Revoked || !st.Compromise {
+		t.Fatalf("u1: %+v", st)
+	}
+	// A CRL stamped 62 minutes ago was issued 52 minutes ago: fresh against a one hour limit only with the
+	// skew declared.
+	aged := p
+	aged.Now = last.Add(62 * time.Minute)
+	if st := c.status("u4", a, aged); st.Tier == audit.TierNoInformation {
+		t.Fatalf("u4 with the skew declared: %+v", st)
+	}
+	aged.ThisUpdateSkewFor = nil
+	if st := c.status("u4", a, aged); st.Tier != audit.TierNoInformation {
+		t.Fatalf("u4 without the skew: %+v", st)
 	}
 }

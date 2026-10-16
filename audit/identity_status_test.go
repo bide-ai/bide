@@ -1724,3 +1724,38 @@ func TestEntryDatedAfterNextUpdateIsRefused(t *testing.T) {
 		t.Fatalf("an entry after a back-dated thisUpdate but before nextUpdate: %v", err)
 	}
 }
+
+// An offline root publishes a CRL for its issuing CA rarely (AD CS: weekly), so a live count of the CA
+// certificate's status rests on a CRL days old. MaxStatusAgeFor lets the policy say so for that issuer
+// only; the leaf's CRLs keep the global limit.
+func TestMaxStatusAgeForIsPerIssuer(t *testing.T) {
+	s := newStFx(t)
+	week := 7 * 24 * hour
+	now := idT0.Add(-10 * min)
+	rootCRL := s.rcrl(1, now.Add(-5*24*hour), week)
+	leafCRL := s.lcrl(1, now.Add(-10*min), 3*hour)
+	sn := s.snap(rootCRL, leafCRL)
+	p := audit.StatusParams{Now: now, MaxStatusAge: hour, CountLive: true}
+	cs := s.eval(sn, p)
+	if cs.Certs[1].Tier != audit.TierNoInformation || !cs.Certs[1].Stale {
+		t.Fatalf("a five day old root CRL at a one hour limit: %+v", cs.Certs[1])
+	}
+	p.MaxStatusAgeFor = map[audit.SPKIHash]time.Duration{audit.SPKIHashOf(s.root.Cert): week}
+	cs = s.eval(sn, p)
+	if cs.Certs[1].Tier == audit.TierNoInformation || cs.Certs[1].Revoked {
+		t.Fatalf("the root's own limit declared: %+v", cs.Certs[1])
+	}
+	if cs.Certs[0].Tier == audit.TierNoInformation {
+		t.Fatalf("the leaf's fresh CRL: %+v", cs.Certs[0])
+	}
+	// The root's allowance does not stretch the intermediate's CRLs.
+	stale := s.snap(rootCRL, s.lcrl(1, now.Add(-2*hour), 6*hour))
+	if cs := s.eval(stale, p); cs.Certs[0].Tier != audit.TierNoInformation {
+		t.Fatalf("a two hour old leaf CRL under the intermediate's one hour limit: %+v", cs.Certs[0])
+	}
+	// A declared limit of zero or less is the global one, never unlimited.
+	p.MaxStatusAgeFor = map[audit.SPKIHash]time.Duration{audit.SPKIHashOf(s.root.Cert): 0}
+	if cs := s.eval(sn, p); cs.Certs[1].Tier != audit.TierNoInformation {
+		t.Fatalf("a zero per-issuer limit: %+v", cs.Certs[1])
+	}
+}

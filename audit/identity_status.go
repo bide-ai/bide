@@ -507,6 +507,11 @@ type StatusParams struct {
 	// zero for an offline audit, which judges the series against the decision, not the clock.
 	Now          time.Time
 	MaxStatusAge time.Duration
+	// MaxStatusAgeFor overrides MaxStatusAge for the issuing CA with the given key. An offline root
+	// publishes the CRL that covers its issuing CA rarely (Microsoft AD CS: weekly), so the status of
+	// that CA certificate rests on a CRL days old; the policy says so for that issuer only, and the leaf's
+	// CRLs keep the global limit. A value of zero or less means the global limit, never unlimited.
+	MaxStatusAgeFor map[SPKIHash]time.Duration
 	// CountLive is the live gate's counting mode and needs Now: a fresh CRL issued before the decision
 	// is accepted, so a decision is not held for a CRL period. A verdict resting on status issued
 	// before the decision is provisional, never final (its Basis says so): a revocation effective
@@ -802,6 +807,10 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, evict
 		st.Note = fmt.Sprintf("the declared ThisUpdateSkew %s is outside 0 to %s", skew, maxThisUpdateSkew)
 		return st
 	}
+	maxAge := p.MaxStatusAge
+	if m := p.MaxStatusAgeFor[SPKIHashOf(issuer)]; m > 0 {
+		maxAge = m
+	}
 	retains := func(v *crlView) bool {
 		return p.Retained || (!v.expiredFrom.IsZero() && !cert.NotAfter.Before(v.expiredFrom))
 	}
@@ -968,7 +977,7 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, evict
 	}
 	fresh := usable[:0:0]
 	for _, v := range usable {
-		if live && (p.MaxStatusAge <= 0 || !p.Now.Before(v.next) || p.Now.Sub(v.this) > p.MaxStatusAge+skew || v.this.After(p.Now.Add(p.CoverageTolerance))) {
+		if live && (maxAge <= 0 || !p.Now.Before(v.next) || p.Now.Sub(v.this) > maxAge+skew || v.this.After(p.Now.Add(p.CoverageTolerance))) {
 			continue
 		}
 		fresh = append(fresh, v)

@@ -48,13 +48,20 @@ ej ca editca --caname "$ca" --field deltaCRLPeriod --value 600000 >/dev/null
 # issuing CA is older than the offset, so the captured certificates show the CA's real behaviour.
 sleep "${CA_AGE_SECONDS:-660}"
 
+# The approvers generate their own ECDSA P-256 keys (the key stays in a temporary directory, never in the
+# output) and EJBCA issues from their certificate requests.
+keys=$(mktemp -d)
+trap 'rm -rf "$keys"' EXIT
 for n in 1 2 3 4; do
-  ej ra addendentity --username "$ca-u$n" --password foo123 --dn "CN=u$n" --caname "$ca" --type 1 --token P12 \
+  ej ra addendentity --username "$ca-u$n" --password foo123 --dn "CN=u$n" --caname "$ca" --type 1 --token USERGENERATED \
     --eeprofile Approver --certprofile Approver \
     --altname "uri=https://idp.bank.example/person/$(printf '%032x' "$n")" >/dev/null
-  ej ra setclearpwd "$ca-u$n" foo123 >/dev/null
+  openssl ecparam -name prime256v1 -genkey -noout -out "$keys/u$n.key"
+  openssl req -new -key "$keys/u$n.key" -subj "/CN=u$n" -out "$keys/u$n.csr"
+  docker cp "$keys/u$n.csr" "$ctr:/tmp/u$n.csr"
+  ej createcert "$ca-u$n" foo123 "/tmp/u$n.csr" "/tmp/u$n.pem" >/dev/null
+  docker cp "$ctr:/tmp/u$n.pem" "$out/u$n.pem"
 done
-ej batch >/dev/null
 
 crl() { # name caname [-delta]
   name=$1; cn=$2; shift 2
@@ -78,11 +85,6 @@ crl delta3 "$ca" -delta
 for pair in "root:$root" "ca:$ca"; do
   ej ca getcacert --caname "${pair#*:}" -f "/tmp/${pair%%:*}.pem" >/dev/null
   docker cp "$ctr:/tmp/${pair%%:*}.pem" "$out/${pair%%:*}.pem"
-done
-for n in 1 2 3 4; do
-  docker cp "$ctr:/opt/keyfactor/p12/$ca-u$n.p12" "$out/u$n.p12"
-  openssl pkcs12 -in "$out/u$n.p12" -passin pass:foo123 -nokeys -clcerts -out "$out/u$n.pem" 2>/dev/null
-  rm -f "$out/u$n.p12"
 done
 docker exec "$ctr" /opt/keyfactor/bin/version.sh > "$out/VERSION" 2>&1 || true
 docker inspect --format '{{.Image}}' "$ctr" >> "$out/VERSION"
