@@ -2819,7 +2819,10 @@ certificate-bound approver (see [Model 1b](#model-1b-the-approval-gate)): the tw
 - **A gate crash** (`Crash`, `CanCrash`): the gate restarts, losing the counted set and the wait; the
   journal (the heads and the terminal tally) and the archive are not lost. The decisions are counted
   again, and the pre-execution check runs on the journaled tally.
-- **The final tier** (`FinalWit`): a decision is final with a witness CRL `S` issued at least `W`
+- **The final tier** (`FinalWit`): with a CA tier (`CATier`, `FinalCATier`) a decision is final only with a received root CRL at
+  least `W` after `A(d)` and no received root CRL listing the CA with `E <= A(d)` (the root never prunes, so
+  a witness needs no coverage of the root's series between); `FinalNeedsCompleteSeries` covers the root
+  (`id-final-ca`, `regress/final-no-ca-tier`). On the leaf side a decision is final with a witness CRL `S` issued at least `W`
   after `A(d)` when no CRL of the archive lists a leaf with `E <= A(d)`, `S` beyond `na` is the first
   archived CRL after `na` (`L(C)`), and the series is covered from `A(d)` to `S` by `Cov`: `"number"`
   (consecutive numbers), `"time"` (each CRL within the declared `Period` of its predecessor and the one
@@ -2889,6 +2892,8 @@ Pull requests (`ci`): two people and two identifiers, one or two certificates an
 | `id-prune-live` | ci | the same with `CountLive`: a fresh CRL issued before `A(d)` may count (provisional), never one beyond `L(C)` | 829,648 | 53 s |
 | `id-prune-time` | ci | the same with coverage by time: the CA publishes no more often than its declared period, and a CRL beyond `notAfter` is `L(C)` only within that period of its predecessor | 231,988 | 7 s |
 | `id-ca-tier` | ci | the CA tier: a root that publishes rarely and revokes the CA with a past `E`, a root CRL that may be withheld, the leaf's CRL at `ExecAge` and the root's at `ExecAgeCA`; `RevocationSound`, `FailClosed`, `NoExecAfterKnownRevocation` per tier | 1,056,618 | 9 s |
+| `id-final-ca` | ci | the final tier with a CA tier (the leaf side one CRL, no series coverage): a final verdict needs a root CRL a window past `A(d)` and no root CRL listing the CA; `FinalNeedsCompleteSeries` over the root | 523,466 | 6 s |
+| `id-final-ca-reach` | ci | reachability: a decision becomes final with a CA tier (`FinalNotReachable` violated) | 4,171 | <1 s |
 | `id-validity` | ci | the CA issues the certificate at any time up to 2 with any `notAfter`; a head stamped out of order and a decided_at earlier than the true time try a decision before `notBefore`, after `notAfter` or beyond the grace: `IdentityBound` (rules 1 to 3), `FailClosed`, `NoBackdate` | 543,440 | 15 s |
 | `id-seats-revocation` | ci | two seats (`K = 2`) with revocation and a gate crash: two certificates, two decisions, the CA revokes one with a past `E`, the gate may crash and recount; a revoked decision does not fill a seat in the tally, the tally is not recounted, the call does not run on a revoked leaf. `SeatPerPerson`, `SeatPerIdentifier`, `RevocationSound`, `NoExecAfterKnownRevocation`, `TallyClean`, `TerminalStable` | 714,004 | 36 s |
 | `id-dead-skew` | ci | the non-decreasing head rule off: a head stamped earlier moves `A(d)` before a revocation; `DeadStaysOut` (the dead set keeps a removed decision from being counted again; `RevocationSound` and `NoBackdate` are what the non-decreasing rule protects) | 1,191,012 | 16 s |
@@ -2930,6 +2935,7 @@ Each is in `identity/regress/`, is the same model with one rule switched off by 
 | `final-time-hourly` | `FinalNeedsCompleteSeries` | coverage by `nextUpdate` alone with a CA that publishes more often than its declared period does not show that nothing lies between two CRLs | 47,931 | 1 s |
 | `prune-no-lc-count` | `RevocationSound` | the live count does not apply the `L(C)` rule: with the first CRL beyond `notAfter` withheld or unread, the pruned CRL after it counts a revoked leaf | 373,253 | 8 s |
 | `prune-no-lc-exec` | `NoExecAfterKnownRevocation` | the pre-execution check does not apply the `L(C)` rule: a decision counted before `notAfter`, the CRL that lists the leaf withheld, and a pruned CRL satisfies the freshness check, so the call runs | 789,789 | 21 s |
+| `final-no-ca-tier` | `FinalNeedsCompleteSeries` | a final verdict ignores the CA tier: the root revoked the CA at or before `A(d)` and the decision is final on the leaf's series | 15,076 | <1 s |
 | `exec-no-ca-tier` | `NoExecAfterCATierRevocation` | the pre-execution check does not require a fresh root CRL (the stale arm: the call runs on a root status older than `ExecAgeCA`) | 663,149 | 4 s |
 | `exec-no-recheck-ca-revoked` | `NoExecAfterCATierRevocation` | no pre-execution check, with the ages covering the run: a root CRL published after the count lists the CA with a past `E`, and the call runs (the revocation arm) | 1,014,913 | 5 s |
 | `tally-no-recheck-ca` | `TallyClean` | the tally forms without looking at the archive: a decision counted before the root's CRL listing the CA reached the gate is in the tally (the CA arm) | 902,519 | 3 s |
@@ -2965,9 +2971,6 @@ Each is in `identity/regress/`, is the same model with one rule switched off by 
 - **What a crash loses.** `Crash` models the gate's counted set and wait; the process, the store and
   the tool call are model 1b's and model 10's. A crash during the call is the unknown-outcome path
   (models 9 and 13), not here.
-- **The final tier is leaf-tier only.** `FinalWit` reads the leaf's issuer's series; the root's series
-  and the CA tier are not part of a final verdict here (the `CATier` configurations check the live count
-  and the pre-execution check). A decision can be final in the model while the root revoked the CA.
 - **One clock.** The CA, the verifier and the gate share one clock, so skew between them is not modelled
   (`Skew` bounds `decided_at` against the head only). Time is advanced only by `ClockTick`.
 - **Atomic execution.** `Exec` is one step with its check, so a revocation between them is not modelled.

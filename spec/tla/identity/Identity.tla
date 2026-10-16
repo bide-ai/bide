@@ -575,6 +575,7 @@ FinalNeedsCompleteSeries ==
     FinalWit(d, S) =>
       /\ \A k \in 1..np : ctu[k] <= ctu[S] => clst[k][dc[d]] > AOf(d)
       \* and the root: no root CRL published up to a witness root CRL lists the CA
+      /\ (CATier /\ FinalCATier => \E kr \in rrcvd : AOf(d) + W <= rtu[kr])
       /\ (CATier => \A j \in 1..rnp :
             (\E kr \in rrcvd : AOf(d) + W <= rtu[kr] /\ rtu[j] <= rtu[kr]) => rrl[j] > AOf(d))
 
