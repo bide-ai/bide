@@ -81,8 +81,12 @@ type Node struct {
 	// the class the check derives ("side effect", "read-only", "idempotent", "safety unknown").
 	Safety string `json:"safety,omitempty"`
 	Risk   string `json:"risk,omitempty"`
-	// Gate is the node's approval gate in words ("2 of 3: ops, finance, risk"), "" for none.
+	// Gate is the node's approval gate in words ("2 of 3: ops, finance, risk"), "" for none. It is
+	// the effective gate, a gate a block declares in Go included when the editor knows the Registry.
 	Gate string `json:"gate,omitempty"`
+	// Approval is the gate the config itself declares on the node, which is the one the forms edit;
+	// nil when the config declares none.
+	Approval *Approval `json:"approval,omitempty"`
 	// Problems are this node's problems, as text.
 	Problems []string `json:"problems,omitempty"`
 }
@@ -155,15 +159,26 @@ func parseFailure(v *View, msg string) *View {
 // reads as; r its report.
 func outline(data []byte, r plan.ConfigReport) []Node {
 	var cfg struct {
-		Nodes []struct {
-			Name   string `json:"name"`
-			Safety string `json:"safety"`
-		} `json:"nodes"`
+		Nodes []json.RawMessage `json:"nodes"`
 	}
 	_ = json.Unmarshal(data, &cfg) // InspectConfig has read it strictly; a config it could not read has no nodes
 	safety := map[string]string{}
-	for _, n := range cfg.Nodes {
+	approval := map[string]*Approval{}
+	for _, raw := range cfg.Nodes {
+		var n struct {
+			Name   string `json:"name"`
+			Safety string `json:"safety"`
+		}
+		if json.Unmarshal(raw, &n) != nil {
+			continue
+		}
 		safety[n.Name] = n.Safety
+		var a struct {
+			Approval *Approval `json:"approval"`
+		}
+		if json.Unmarshal(raw, &a) == nil { // an approval that is not a mapping is left to the check to report
+			approval[n.Name] = a.Approval
+		}
 	}
 	problems := map[string][]string{}
 	for _, p := range r.Problems {
@@ -175,7 +190,7 @@ func outline(data []byte, r plan.ConfigReport) []Node {
 	for _, n := range r.Topology.Nodes {
 		out = append(out, Node{
 			Name: n.Name, Kind: string(n.Kind), Block: n.Block, Safety: safety[n.Name],
-			Risk: string(r.Safety[n.Name]), Gate: runview.GateText(n.Gate), Problems: problems[n.Name],
+			Risk: string(r.Safety[n.Name]), Gate: runview.GateText(n.Gate), Approval: approval[n.Name], Problems: problems[n.Name],
 		})
 	}
 	return out

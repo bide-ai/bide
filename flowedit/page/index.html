@@ -6,7 +6,7 @@
 <script type="module" src="/assets/editor.js"></script>
 </head>
 <body>{{.Sprite}}
-<header class="top"><span class="brand">bide edit</span><span class="ro" id="state-tag">saved</span><span class="grow"></span><span class="muted small" id="file"></span><button type="button" class="btn" id="revert" disabled>Revert</button><button type="button" class="btn primary" id="save" disabled>Save&hellip;</button><button type="button" class="btn" id="theme" aria-label="Switch between light and dark">Theme</button></header>
+<header class="top"><span class="brand">bide edit</span><span class="ro" id="state-tag">saved</span><span class="grow"></span><span class="muted small" id="file"></span><button type="button" class="btn" id="undo" disabled>Undo</button><button type="button" class="btn" id="redo" disabled>Redo</button><button type="button" class="btn" id="revert" disabled>Revert</button><button type="button" class="btn primary" id="save" disabled>Save&hellip;</button><button type="button" class="btn" id="theme" aria-label="Switch between light and dark">Theme</button></header>
 <main>
 <div id="live" class="sr-only" role="status" aria-live="polite"></div>
 <noscript><p class="bad">bide edit needs script: the page draws what the server computes.</p></noscript>
