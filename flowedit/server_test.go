@@ -420,7 +420,7 @@ func TestPageContract(t *testing.T) {
 		}
 	}
 	js, _ := fs.ReadFile(pageFS, "page/editor.js")
-	for _, k := range []string{"d.icon", "d.word", "d.line", "v.nodes", "v.wiring", "v.assertions", "v.problems", "v.graph", "v.parse_error", "v.verdict", "a.holds", "a.invalid", "a.undecided", "a.path", "a.message", "p.severity", "p.message", "n.gate", "n.risk", "w.weakened", "w.word", "w.line", "w.baseline", "w.changes", "w.strengthened", "w.compare_error", "n.approval", "cur.need", "cur.approvers", "cur.exclude_principal", "cur.timeout", "n.safety", "n.block", "e.changed", "e.text"} {
+	for _, k := range []string{"d.icon", "d.word", "d.line", "v.nodes", "v.wiring", "v.assertions", "v.problems", "v.graph", "v.parse_error", "v.verdict", "a.holds", "a.invalid", "a.undecided", "a.path", "a.message", "p.severity", "p.message", "n.gate", "n.risk", "w.weakened", "w.word", "w.line", "w.baseline", "w.changes", "w.strengthened", "w.compare_error", "v.assertion_forms", "e.refused", "n.approval", "cur.need", "cur.approvers", "cur.exclude_principal", "cur.timeout", "n.safety", "n.block", "e.changed", "e.text"} {
 		if !strings.Contains(string(js), k) {
 			t.Errorf("the script no longer reads %s: update this list with it", k)
 		}
@@ -555,7 +555,7 @@ func TestApplyEndpoint(t *testing.T) {
 	if e.Nodes[2].Gate != "one of 1: ops, times out after 24h" && !strings.Contains(e.Nodes[2].Gate, "ops") {
 		t.Errorf("the view is of the new text: gate %q", e.Nodes[2].Gate)
 	}
-	// A no-op changes nothing and says so; a refusal is a 422 that names why.
+	// A no-op changes nothing and says so; a refusal is a 200 that names why and carries no text.
 	w = call(h, s, "/api/apply", applyReq(testFlow, Operation{Op: "set_safety", Node: "validate", Value: "readonly"}), nil)
 	if err := json.Unmarshal(w.Body.Bytes(), &e); err != nil || w.Code != 200 || e.Changed || e.Text != testFlow {
 		t.Errorf("no-op: %d %v changed %v", w.Code, err, e.Changed)
@@ -566,7 +566,7 @@ func TestApplyEndpoint(t *testing.T) {
 		"a document the engine will not splice": applyReq(testFlow+"---\nversion: 1\n", Operation{Op: "set_safety", Node: "charge", Value: "readonly"}),
 	} {
 		w := call(h, s, "/api/apply", body, nil)
-		if w.Code != 422 || !strings.Contains(w.Body.String(), `"error"`) {
+		if w.Code != 200 || !strings.Contains(w.Body.String(), `"refused"`) || strings.Contains(w.Body.String(), `"text"`) {
 			t.Errorf("%s: %d %s", name, w.Code, w.Body)
 		}
 	}

@@ -10,7 +10,8 @@ import (
 // (Apply), each verified, so the diff of an edit is the edit: comments, ordering and blank lines
 // stay. An operation the text cannot take, or that Verify refuses, changes nothing.
 type Operation struct {
-	// Op names the operation: "set_safety", "set_block", "set_approval" or "clear_approval".
+	// Op names the operation: "set_safety", "set_block", "set_approval", "clear_approval",
+	// "add_assertion", "set_assertion" or "remove_assertion".
 	Op string `json:"op"`
 	// Node is the node the operation is on, by its name in the config.
 	Node string `json:"node"`
@@ -20,6 +21,11 @@ type Operation struct {
 	Value string `json:"value,omitempty"`
 	// Approval is the node's approval gate for set_approval.
 	Approval *Approval `json:"approval,omitempty"`
+	// Assertion and Index are for the assertion operations: add_assertion appends Assertion to the
+	// config's assert list, set_assertion replaces the line at Index with it and remove_assertion
+	// removes the line at Index. They name no node: Node is ignored.
+	Assertion *Assertion `json:"assertion,omitempty"`
+	Index     int        `json:"index,omitempty"`
 }
 
 // Approval is a node's approval gate as the config writes it: Need decisions from the Approvers,
@@ -64,6 +70,9 @@ func ApplyOperation(name string, src []byte, op Operation) (*Applied, error) {
 		if data, err = ToJSON(src); err != nil {
 			return nil, refuse("the text does not parse: %v", err)
 		}
+	}
+	if isAssertionOp(op.Op) {
+		return applyAssertion(src, data, op)
 	}
 	var cfg struct {
 		Nodes []json.RawMessage `json:"nodes"`

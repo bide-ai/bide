@@ -8,7 +8,8 @@ today.
 
 **You can edit a node's approval gate, safety and block with forms, or edit the file's source, see
 what `bide check` says about it as you type, see whether the edit weakens the flow, and save.** The
-forms mean a policy owner need not write YAML.
+forms mean a policy owner need not write YAML, and an assertion is built from a template and shows its
+verdict before it is added.
 
 The editor is an authoring tool and nothing else. It reads and writes the file `plan.Load`
 reads, adds no key to it, starts no run and holds no state of its own: the run is the run `plan`
@@ -75,6 +76,36 @@ A form change is an undoable step (the history keeps the last 100 steps; each is
 text, and a burst of typing in the source is one step. After a change the focus returns to the
 control you changed. A changed gate, safety or block is compared with the baseline like any other
 edit, so the weakened banner appears when the change weakens the flow, with the same words as in CI.
+
+## The assertions panel
+
+Below the flow, the panel lists the config's `assert` lines, each with its verdict (`holds`,
+`violated` with the counterexample path, `undecided`, `invalid`), and a form to add one. **An
+assertion is built from a form, not typed.** The six forms of the grammar are the templates:
+
+| Template | Writes |
+|---|---|
+| Every path to a node passes an approval gate of at least K decisions | `every path to <node> passes approval >= K [of N] [excluding the requester]` |
+| Every path to a node passes another node | `every path to <node> passes <node>` |
+| Every path to a terminal passes a node | `every path to a terminal passes <node>` |
+| No side effect after a node | `no side effect after <node>` |
+| A node is reachable / unreachable | `<node> reachable`, `<node> unreachable` |
+
+The page sends the form's parameters and the server writes the line, in the grammar `plan` reads,
+with a node name that has a space in double quotes; a name the grammar cannot hold (one with a double
+quote or a tab, or two spaces in a row) is refused, and only declared nodes can be chosen. **While you
+fill the form, each change asks the server what the check says of the line and shows the verdict**,
+the counterexample path of a violation included, before anything is added: the same call as an
+edit, not kept. A line the config already has is refused. **Add assertion** appends a line (creating
+the `assert` list if there is none), **Edit** (for a line that is one of the six forms) replaces it in
+place, **Remove** removes it (and the list, with its last line). Each is a splice, so a comment above
+a removed line goes with it and a trailing comment on a replaced one stays.
+
+**Assertions are checked by `bide check` and in CI, not at run time:** `plan.Load` ignores `assert`
+lines and they are not in the digest, so adding one adds a check CI can fail on and not a guard on
+the run. The panel says so beside the list. Removing or loosening one is weakening, and the banner
+says so like any other weakening; an `assert` line that stops holding because of another edit is too
+(see [The baseline and the weakened banner](#the-baseline-and-the-weakened-banner)).
 
 ## The baseline and the weakened banner
 
@@ -196,7 +227,8 @@ the address, so another host can serve the same page. `flowedit.BuildView` is th
 a text: the same answers `bide check` gives, as a value. `flowedit.Compare` is the weakening verdict
 for a text against a baseline, and `flowedit.WithBase` is the `-base` option of `flowedit.New`.
 `flowedit.ApplyOperation` applies one editor operation (set a node's safety or block, set or clear
-its approval gate: `need`, approvers, `exclude_principal`, `timeout`) to a config's text by splicing,
+its approval gate: `need`, approvers, `exclude_principal`, `timeout`; add, replace or remove an
+assertion from one of the six forms, `flowedit.Assertion`) to a config's text by splicing,
 so comments, blank lines and key order stay and the diff of an edit is the edit; each result is
 verified, and what cannot be spliced safely is a `*flowedit.Refusal` with the text untouched. It is
 what the forms call, through `POST /api/apply`. `flowedit.UnifiedDiff` is the diff the dialog shows, and

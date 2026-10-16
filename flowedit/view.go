@@ -41,6 +41,9 @@ type View struct {
 	Warnings   int                    `json:"warnings"`
 	Problems   []plan.ConfigProblem   `json:"problems,omitempty"`
 	Assertions []plan.AssertionResult `json:"assertions,omitempty"`
+	// AssertionForms are the assert lines read as one of the six forms, aligned with Assertions: null
+	// for a line that is none of them, which the page shows without an edit form.
+	AssertionForms []*Assertion `json:"assertion_forms,omitempty"`
 	// Nodes are the declared nodes in config order (order is data: the digest commits to it) and
 	// Wiring the edges, switches and joins in config order.
 	Nodes  []Node   `json:"nodes,omitempty"`
@@ -144,6 +147,11 @@ func BuildView(name string, text []byte) *View {
 			return '\uFFFD'
 		}, v.Graph)
 	}
+	var lines []string
+	for _, a := range r.Assertions {
+		lines = append(lines, a.Text)
+	}
+	v.AssertionForms = assertionFormsOf(lines)
 	v.Nodes = outline(data, r)
 	v.Wiring = wiring(r.Topology)
 	return v
