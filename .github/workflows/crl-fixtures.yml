@@ -7,13 +7,6 @@ name: CRL fixtures
 # Download the artifacts, review them, and commit them.
 on:
   workflow_dispatch:
-  push:
-    branches: [ident-c3]
-    paths:
-      - .github/workflows/crl-fixtures.yml
-      - audit/testdata/ejbca/capture.sh
-      - audit/testdata/ejbca/ProfileGen.java
-      - audit/testdata/adcs/*.ps1
 
 permissions:
   contents: read
