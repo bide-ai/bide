@@ -128,7 +128,7 @@ type certLike struct {
 	pub ed25519.PublicKey
 }
 
-func (certLike) Alg() agent.Alg                 { return agent.AlgCertificate }
+func (certLike) Alg() agent.Alg                  { return agent.AlgCertificate }
 func (certLike) Verify(message, sig []byte) bool { return false }
 func (c certLike) KeyIDs() []string              { return []string{"ident:" + c.id} }
 func (c certLike) VerifyCertDecision(cd agent.CertDecision) agent.CertCheck {

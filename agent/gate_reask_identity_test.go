@@ -373,7 +373,9 @@ func TestIdentReask_NoteValidityByGeneration(t *testing.T) {
 	plain := valueRec(t, ApprovalTallyStep("c1"), passedTally())
 	g0 := valueRec(t, ApprovalIdentTallyStep("c1", 0), passedTally())
 	g1 := valueRec(t, ApprovalIdentTallyStep("c1", 1), passedTally())
-	n := func(reask, sup string) ApprovalWait { return ApprovalWait{ToolUseID: "c1", Reask: reask, Supersedes: sup} }
+	n := func(reask, sup string) ApprovalWait {
+		return ApprovalWait{ToolUseID: "c1", Reask: reask, Supersedes: sup}
+	}
 	// generation 0
 	by := namesOf(plain)
 	if !ValidReaskNote(by, "c1", ApprovalIdentReaskStep("c1", 0), n(PendingIdentReapproval, plain.Name)) {
