@@ -15,6 +15,9 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `const ReasonNotEligible = "not an eligible approver"`, `const ReasonSuperseded`, `const ReasonNoKey = "no key for this approver"`, `const ReasonBadSig`, `const ReasonSharedKey`, `const ReasonNoKeyID`, `const ReasonAlg`, `const ReasonNoDecidedAt`, `const ReasonDecidedAt`, `const ReasonRequester`, `const ReasonNoRequester`, `const ReasonLate`: Reasons a decision record does not count.
 - `const ReasonAfterExpiry`: ReasonAfterExpiry: the decision's write landed after the gate recorded its expiry, even if it was stamped before the deadline.
 - `const ReasonNoCert`, `const ReasonCertChain`, `const ReasonCertIdentity`, `const ReasonCertUsage`, `const ReasonCertWindow`: Reasons a certificate-bound approver's decision does not count (docs/design/approver-identity.md). *(building block, not yet used by approval gates)*
+- `const ReasonRevoked`: ReasonRevoked: a certificate of the chain has an effective revocation time at or before A(d).
+- `const ReasonStatusUnknown`: ReasonStatusUnknown: no usable status covers a certificate of the chain.
+- `const ReasonStatusStale`: ReasonStatusStale: the status available is past nextUpdate or older than the policy allows.
 - `const DecisionFormat = "bide.approval.v3"`: DecisionFormat names the signed decision format this version writes and accepts: the domain tag of ApprovalDecisionBytes without its newline.
 - `const DefaultReceiver = "default"`: DefaultReceiver is the name of the receiver WithNotifier's Notifier is, in Notification.Receiver and in WithNotifyRoute, WithNotifyApproverRoute and EscalationStep.
 - `const ExpiredResult`: ExpiredResult is the result an agent's model reads for a call whose approval gate expired: an error result, as for a denial.
