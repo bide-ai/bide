@@ -709,23 +709,26 @@ func (c *CertIdentity) EvaluateStatus(ac *ApproverCert, a time.Time, s *StatusSn
 // configNote names a declared parameter outside its range, or is empty. A mistyped declaration must not
 // make stale evidence look fresh, so the status is unknown rather than computed on it.
 func (p StatusParams) configNote() string {
-	skews := map[string]time.Duration{"ThisUpdateSkew": p.ThisUpdateSkew}
-	i := 0
-	for _, d := range p.ThisUpdateSkewFor {
-		i++
-		skews[fmt.Sprintf("ThisUpdateSkewFor[%d]", i)] = d
+	if p.ThisUpdateSkew < 0 || p.ThisUpdateSkew > maxThisUpdateSkew {
+		return fmt.Sprintf("the declared ThisUpdateSkew %s is outside 0 to %s", p.ThisUpdateSkew, maxThisUpdateSkew)
 	}
-	for name, d := range skews {
+	// Map order is random: name the smallest offending key, so the message is the same on every run.
+	var notes []string
+	for k, d := range p.ThisUpdateSkewFor {
 		if d < 0 || d > maxThisUpdateSkew {
-			return fmt.Sprintf("the declared %s %s is outside 0 to %s", name, d, maxThisUpdateSkew)
+			notes = append(notes, fmt.Sprintf("the declared ThisUpdateSkewFor[%x] %s is outside 0 to %s", k[:4], d, maxThisUpdateSkew))
 		}
 	}
-	for _, d := range p.MaxStatusAgeFor {
+	for k, d := range p.MaxStatusAgeFor {
 		if d < 0 || d > maxStatusAgeFor {
-			return fmt.Sprintf("a declared MaxStatusAgeFor %s is outside 0 to %s", d, maxStatusAgeFor)
+			notes = append(notes, fmt.Sprintf("the declared MaxStatusAgeFor[%x] %s is outside 0 to %s", k[:4], d, maxStatusAgeFor))
 		}
 	}
-	return ""
+	if len(notes) == 0 {
+		return ""
+	}
+	slices.Sort(notes)
+	return notes[0]
 }
 
 // distrustFor is the earliest distrust date for issuer's key, from the policy and the overlay.

@@ -432,8 +432,15 @@ func TestADCSSHA1OutputIsRefused(t *testing.T) {
 		Identity: map[string]string{"u1": testca.Person(1)}, IDKind: audit.IDPersonURI, EKU: testca.EKU, Policy: testca.PolicyOID,
 		Canonical: audit.NewCanonicalizer(audit.CanonicalConfig{Host: "idp.bank.example"}), NotBeforeBackdate: 10 * time.Minute,
 	})
-	if _, err := ci.VerifyChain("u1", [][]byte{leaf.Raw, ca.Raw, root.Raw}, leaf.NotBefore.Add(time.Hour), leaf.NotBefore.Add(time.Hour)); err == nil {
+	_, err := ci.VerifyChain("u1", [][]byte{leaf.Raw, ca.Raw, root.Raw}, leaf.NotBefore.Add(time.Hour), leaf.NotBefore.Add(time.Hour))
+	if err == nil {
 		t.Fatal("a SHA-1 signed leaf was accepted")
+	}
+	// The leaf is refused as a chain that does not verify, by Go's own refusal of a SHA-1 signature (the
+	// fixture leaf is also RSA, which bide's key profile would refuse): the cause is pinned, not just an error.
+	wantReason(t, err, agent.ReasonCertChain)
+	if !strings.Contains(err.Error(), "insecure algorithm SHA1-RSA") {
+		t.Fatalf("the leaf was refused for another reason: %v", err)
 	}
 	snap := audit.NewStatusSnapshot()
 	for _, n := range []string{"base1", "delta1"} {
@@ -442,6 +449,9 @@ func TestADCSSHA1OutputIsRefused(t *testing.T) {
 			t.Fatalf("a SHA-1 signed CRL (%s) was accepted", n)
 		}
 		wantStatusErr(t, err, agent.ReasonStatusUnknown)
+		if !strings.Contains(err.Error(), "signature algorithm") || !strings.Contains(err.Error(), "not in the accepted profile") {
+			t.Fatalf("%s: refused for another reason: %v", n, err)
+		}
 	}
 	// The root's own SHA-256 CRL from the same capture is fine: the refusal is the algorithm, not the source.
 	if _, err := snap.AddCRL(readPEM(t, filepath.Join(dir, "rootcrl.pem"))); err != nil {

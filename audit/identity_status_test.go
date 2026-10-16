@@ -1752,6 +1752,17 @@ func TestStatusParamsRangeIsChecked(t *testing.T) {
 			}
 		}
 	}
+	// Several bad entries give the same message on every run.
+	multi := audit.StatusParams{ThisUpdateSkewFor: map[audit.SPKIHash]time.Duration{{1}: -min, {2}: -min, {3}: -min, {4}: -min}}
+	first := s.eval(sn, multi).Certs[0].Note
+	for i := 0; i < 20; i++ {
+		if n := s.eval(sn, multi).Certs[0].Note; n != first {
+			t.Fatalf("the note differs between runs: %q and %q", first, n)
+		}
+	}
+	if !strings.Contains(first, "ThisUpdateSkewFor[01000000]") {
+		t.Fatalf("the note does not name the issuer key: %q", first)
+	}
 	ok := audit.StatusParams{ThisUpdateSkewFor: map[audit.SPKIHash]time.Duration{other: 30 * min}, MaxStatusAgeFor: map[audit.SPKIHash]time.Duration{other: 400 * 24 * hour}}
 	if cs := s.eval(sn, ok); cs.Certs[0].Note != "" && strings.Contains(cs.Certs[0].Note, "declared") {
 		t.Fatalf("values at the caps were refused: %+v", cs.Certs[0])
