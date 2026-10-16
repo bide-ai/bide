@@ -324,6 +324,6 @@ text), CONCEPTS, changelog fragment.
 5. `bide identity fetch-crl` in this PR (with `-once` and a daemon mode); `approve -cert` stays
    fetch-free; `bide identity check` is a separate later PR [yes].
 6. HTTP/HTTPS only; LDAP stated as unsupported [yes]. OCSP out of scope [yes].
+7. Interval default tightened to `min(CAPeriod/2, min(MaxStatusAge, ExecStatusAge)/4)` [yes].
 8. Review by pki-auditor-2 (2026-10-16) folded in: supplied intermediate certificates, TBS comparison,
    high-water reset, query-all-URLs, alarm cap and age definition, seeding rules, transport additions.
-7. Interval default tightened to `min(CAPeriod/2, min(MaxStatusAge, ExecStatusAge)/4)` [yes].
