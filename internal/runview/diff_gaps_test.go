@@ -303,3 +303,36 @@ func TestDiffAssertionNoLongerHoldsReported(t *testing.T) {
 		t.Errorf("verdict word %q", w)
 	}
 }
+
+// A new node that uses a block every node used only behind a gate, reachable without one, is a bypass
+// whatever its name and safety label (the effect of a block is the config's own claim).
+func TestDiffNewNodeOfGuardedBlock(t *testing.T) {
+	base := gapCfg("", "")
+	pay := func(safety string) string {
+		return gapCfg(`, {"name": "pay", "block": "charge", "safety": "`+safety+`"}`, `, {"edge": ["validate", "pay"]}`)
+	}
+	got := weakenedOf(t, base, pay("readonly"))
+	if len(got) != 1 || !strings.HasPrefix(got[0], "pay: new node, reachable without an approval gate (validate -> pay)") || !strings.Contains(got[0], "its block charge was reached only through an approval gate before (charge)") {
+		t.Errorf("weakened %q", got)
+	}
+	// Not when the block was already used ungated, or the new node sits behind the gate.
+	open := strings.Replace(base, `, "approval": {"need": 2, "approvers": ["ops", "finance", "risk"]}`, "", 1)
+	withPay := strings.Replace(open, `"wiring": [`, `"wiring": [{"edge": ["validate", "pay"]}, `, 1)
+	withPay = strings.Replace(withPay, `"nodes": [`, `"nodes": [{"name": "pay", "block": "charge", "safety": "readonly"}, `, 1)
+	if got := weakenedOf(t, open, withPay); len(got) != 0 {
+		t.Errorf("block already ungated: %q", got)
+	}
+	behind := gapCfg(`, {"name": "pay", "block": "charge", "safety": "readonly"}`, `, {"edge": ["charge", "pay"]}`)
+	if got := weakenedOf(t, base, behind); len(got) != 0 {
+		t.Errorf("behind the gate: %q", got)
+	}
+}
+
+// An unreachable effect replaced by a read-only node of its block that is wired in is a bypass.
+func TestDiffUnreachableEffectReplacedByRelabeledCopy(t *testing.T) {
+	old := gapCfg(`, {"name": "orphan", "block": "orphan", "safety": "side_effect"}`, ``)
+	new := gapCfg(`, {"name": "orphan2", "block": "orphan", "safety": "readonly"}`, `, {"edge": ["validate", "orphan2"]}`)
+	if got := weakenedOf(t, old, new); len(got) != 1 || !strings.HasPrefix(got[0], "orphan2: new node, reachable without an approval gate") {
+		t.Errorf("weakened %q", got)
+	}
+}

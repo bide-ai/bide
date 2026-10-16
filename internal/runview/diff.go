@@ -341,6 +341,9 @@ func diffChanges(o, n plan.ConfigReport, oldSafety, newSafety map[string]string)
 				notes = append(notes, "new node, "+ungatedWhy(n, x.Name))
 				c.Weakening = "path"
 			}
+			if g := guardedBlock(o, reachable(o), x); uNew[x.Name] && len(g) > 0 {
+				notes = append(notes, "its block "+x.Block+" was reached only through an approval gate before ("+strings.Join(g, ", ")+")")
+			}
 			// The node may be a removed one rewired and relabeled.
 			for _, from := range successorsOf(o, n, renRev, x.Name) {
 				if safetyLowered(o, n, from, x.Name) {

@@ -375,6 +375,14 @@ so give a pause inside a loop body a name unique per iteration. See [Plan flows]
 model with structured output (`model/openai`, `model/gemini`) is sent the type's JSON schema; for
 any other (`model/anthropic`), prompt the model for JSON. See [Plan flows](guides/plan-flows.md#limits).
 
+**`bide check -diff` cannot see an effect the config does not state.** Without the `plan.Registry` (the
+command-line check), a node's `safety` and its block's own approval gate (`ToolSpec.Approval`, set in Go)
+are the config's claim or invisible. A gate bypass is reported whatever the label, and a lowered label
+is itself reported, but a new block the config labels `readonly` while its Go code has an effect, wired
+in where no gate and no earlier node of that block stood, looks like any new read-only node and is not
+reported. Check with the Registry (`plan/planview`) where the blocks are registered. See [Compare two
+versions of a flow](guides/run-viewer.md#compare-two-versions-of-a-flow).
+
 ## Audit and proofs
 
 **Tamper evidence needs an anchor outside your database.** Hash chains, Merkle roots and signed tree

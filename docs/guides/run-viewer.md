@@ -777,7 +777,11 @@ weakened):
   `side_effect` or dropped. A new read-only or idempotent node, one already reachable ungated, one
   behind a gate, and one the entry cannot reach are not reported. A new node with the same block and
   kind as a removed one is judged against that one as well (it may be the same node, rewired and
-  renamed), so a gated node replaced by an ungated read-only copy is reported.
+  renamed), so a gated node replaced by an ungated read-only copy is reported. A new node that uses
+  a block every node used only behind a gate before, and that is reachable without one, is reported
+  whatever its name and `safety` (`its block charge was reached only through an approval gate
+  before (charge)`). Raising the `safety` of a node that was already reachable without a gate (read-only to
+  side effect) is reported as well: it is an effect that is newly ungated.
 - **A safety lowered.** A node whose `safety` moved toward read-only (side effect or unknown to
   idempotent or read-only, idempotent to read-only) is reported as `safety lowered side effect ->
   read-only`, on its own and also when it is reachable ungated, since every effect check trusts the

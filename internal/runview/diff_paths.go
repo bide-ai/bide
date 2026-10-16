@@ -94,6 +94,25 @@ func successorsOf(o, n plan.ConfigReport, renRev map[string]string, node string)
 	return out
 }
 
+// guardedBlock names the nodes of o that use x's block and kind when there are some and every one of
+// them was reached only through an approval gate (and reachable), else nil. A node n adds that uses
+// such a block and is reachable without a gate is a bypass of what guarded the block, whatever name
+// and safety label it carries: the label is the config's own claim, and a block's effect is not
+// visible without the plan.Registry.
+func guardedBlock(o plan.ConfigReport, oldReach map[string]bool, x plan.TopologyNode) []string {
+	var names []string
+	for _, y := range o.Topology.Nodes {
+		if y.Block != x.Block || y.Kind != x.Kind {
+			continue
+		}
+		if !oldReach[y.Name] || !o.Gated[y.Name] {
+			return nil
+		}
+		names = append(names, y.Name)
+	}
+	return names
+}
+
 // ungatedNodes are the nodes of n that a path from the entry reaches without passing an approval
 // gate (ConfigReport.Gated is false for them) and that count as a gate bypass, by their name in n:
 //   - a node o reaches only through a gate (every path passes one) whatever its safety in either
@@ -128,7 +147,7 @@ func ungatedNodes(o, n plan.ConfigReport, renRev map[string]string) map[string]b
 			for _, c := range successorsOf(o, n, renRev, x.Name) {
 				hit = hit || oldReach[c] && o.Gated[c] || mayHaveEffect(o, c)
 			}
-			if hit {
+			if hit || len(guardedBlock(o, oldReach, x)) > 0 {
 				out[x.Name] = true
 			}
 		case oldReach[from] && o.Gated[from]:
