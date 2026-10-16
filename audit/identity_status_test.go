@@ -1558,7 +1558,8 @@ func TestPSSParametersOutsideTheProfile(t *testing.T) {
 		}
 		return mustM(asn1.RawValue{Class: asn1.ClassUniversal, Tag: asn1.TagSequence, IsCompound: true, Bytes: inner}, "")
 	}
-	mgf := func(hash asn1.ObjectIdentifier) []byte { return alg(mgf1, alg(hash)) }
+	mgfOID := mgf1
+	mgf := func(hash asn1.ObjectIdentifier) []byte { return alg(mgfOID, alg(hash)) }
 	params := func(hash asn1.ObjectIdentifier, mgfHash asn1.ObjectIdentifier, salt, trailer int) []byte {
 		var b []byte
 		b = append(b, mustM(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 0, IsCompound: true, Bytes: alg(hash)}, "")...)
@@ -1567,13 +1568,15 @@ func TestPSSParametersOutsideTheProfile(t *testing.T) {
 		b = append(b, mustM(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 3, IsCompound: true, Bytes: mustM(trailer, "")}, "")...)
 		return mustM(asn1.RawValue{Class: asn1.ClassUniversal, Tag: asn1.TagSequence, IsCompound: true, Bytes: b}, "")
 	}
+	notMGF := func() []byte { mgfOID = sha256; defer func() { mgfOID = mgf1 }(); return params(sha256, sha256, 32, 1) }()
 	for name, p := range map[string][]byte{
-		"sha-1 hash":           params(sha1, sha1, 20, 1),
-		"salt not the digest":  params(sha256, sha256, 20, 1),
-		"mgf1 over another":    params(sha256, sha384, 32, 1),
-		"trailer other than 1": params(sha256, sha256, 32, 2),
-		"garbage":              {0x30, 0x01, 0xff},
-		"no parameters":        nil,
+		"a mask function other than mgf1": notMGF,
+		"sha-1 hash":                      params(sha1, sha1, 20, 1),
+		"salt not the digest":             params(sha256, sha256, 20, 1),
+		"mgf1 over another":               params(sha256, sha384, 32, 1),
+		"trailer other than 1":            params(sha256, sha256, 32, 2),
+		"garbage":                         {0x30, 0x01, 0xff},
+		"no parameters":                   nil,
 	} {
 		o := testca.RawCRLOpts{Number: big.NewInt(1), This: this, Next: next, InnerAlg: pssOID, OuterAlg: pssOID, OuterParams: p,
 			Entries: []testca.RawEntry{{Serial: big.NewInt(5), Time: this, Exts: []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 29}, Critical: true, Value: []byte{0x30, 0x00}}}}}}
