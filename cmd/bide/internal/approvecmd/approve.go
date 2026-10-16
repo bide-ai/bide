@@ -989,6 +989,13 @@ type waiting struct {
 	// only when Verified.
 	Settled  string   `json:"settled,omitempty"`
 	Commands []string `json:"commands"`
+	// Identity is the gate's approver identity, for a gate with a certificate-bound approver
+	// (runview.GateIdentity): what it is paused for and the identity, tier, basis and status time of
+	// each counted decision. Such a gate is never Verified here: the keys -approver-keys holds cannot
+	// check a certificate-bound decision, the gate does.
+	Identity *runview.GateIdentity `json:"identity,omitempty"`
+	// Held: the gate counted and the call is held before execution by the identity status re-check.
+	Held bool `json:"held,omitempty"`
 }
 
 // list prints the calls that wait for a decision in the journal.
@@ -1027,15 +1034,16 @@ func (c *cmd) list(ctx context.Context) error {
 		v := runview.Build(ctx, run, recs, nil)
 		runview.MarkDeadlines(v.Gates, now())
 		for _, g := range v.Gates {
-			if !g.Waiting || v.State == string(agent.RunCompleted) || v.State == string(agent.RunAborted) || v.State == string(agent.RunCancelled) {
+			if !(g.Waiting || g.Held) || v.State == string(agent.RunCompleted) || v.State == string(agent.RunAborted) || v.State == string(agent.RunCancelled) {
 				continue
 			}
 			w := waiting{Run: run, Call: g.ToolUseID, Tool: g.ToolName, Single: g.Single, Need: g.Need, Approvers: g.Approvers, ApprovedBy: g.ApprovedBy, DeniedBy: g.DeniedBy, Pending: g.Pending, AskedAt: g.AskedAt,
-				ExpiresAt: g.ExpiresAt, Timeout: g.Timeout, Due: g.Due, Overdue: g.Overdue}
+				ExpiresAt: g.ExpiresAt, Timeout: g.Timeout, Due: g.Due, Overdue: g.Overdue, Identity: g.Identity, Held: g.Held}
+			bound := g.Identity != nil && g.Identity.Bound
 			if g.ExcludePrincipal {
 				w.Requesters, w.Excluded = g.Requesters, g.Excluded
 			}
-			if _, tu, found := agent.FindToolCall(recs, g.ToolUseID); found && verifierFor != nil && !g.Single && g.Need > 0 {
+			if _, tu, found := agent.FindToolCall(recs, g.ToolUseID); found && verifierFor != nil && !g.Single && g.Need > 0 && !bound {
 				// The gate's own count, with the approvers' keys: records that do not verify count for
 				// nothing, and a pending approver is one with no valid decision.
 				t, _ := agent.TallyApprovals(recs, agent.ApprovalSubject{RunID: run, ToolUseID: g.ToolUseID, ToolName: tu.Name, Args: tu.Args}, gatePolicy(g), verifierFor)
@@ -1058,11 +1066,15 @@ func (c *cmd) list(ctx context.Context) error {
 			}
 			switch {
 			case g.Overdue: // the gate refuses decisions
+			case g.Held: // counted: no decision is wanted
 			case g.Single:
 				line("")
 			case w.Settled != "":
 			default:
 				for _, id := range w.Pending { // a requester is never pending: the gate excludes them
+					if bound && slices.Contains(g.Identity.Approvers, id) {
+						continue // a bare-key decision does not count for a certificate-bound approver
+					}
 					line(id)
 				}
 			}
@@ -1103,7 +1115,10 @@ func (c *cmd) list(ctx context.Context) error {
 		}
 		if !w.Single {
 			label := ""
-			if !w.Verified {
+			switch {
+			case w.Identity != nil && w.Identity.Bound:
+				label = " (identity-bound: certificate-bound decisions count only when the gate checks them; this command does not)"
+			case !w.Verified:
 				label = " (decisions as recorded, unverified: give -approver-keys)"
 			}
 			fmt.Fprintf(c.out, "    %d of %d: %s%s%s\n", w.Need, len(w.Approvers), safe(strings.Join(w.Approvers, ", ")), names("; approved by", w.ApprovedBy)+names("; denied by", w.DeniedBy), label)
@@ -1119,6 +1134,7 @@ func (c *cmd) list(ctx context.Context) error {
 				fmt.Fprintf(c.out, "    pending: %s\n", safe(strings.Join(w.Pending, ", ")))
 			}
 		}
+		c.listIdentity(w)
 		for _, cmdline := range w.Commands {
 			fmt.Fprintf(c.out, "    %s\n", st.Path(safe(cmdline)))
 		}
@@ -1128,6 +1144,74 @@ func (c *cmd) list(ctx context.Context) error {
 	}
 	fmt.Fprintf(c.out, "\n%s\n", st.Dim(c.src.ListHint))
 	return nil
+}
+
+// listIdentity prints a gate's approver identity under its -list entry. Only a final tier is printed in
+// the OK style; a provisional tier is warned, anything else is a failure, and the words say the
+// tier either way. Every value comes from the journal and is printed through safe.
+func (c *cmd) listIdentity(w waiting) {
+	gi, st := w.Identity, c.st
+	if gi == nil || !gi.Bound {
+		return
+	}
+	style := st.Warn
+	switch gi.Class {
+	case "final":
+		style = st.OK
+	case "bad":
+		style = st.Fail
+	}
+	fmt.Fprintf(c.out, "    approver identity: %s\n", style(safe(gi.Line)))
+	if gi.PhaseText != "" {
+		fmt.Fprintf(c.out, "      %s\n", style(safe(gi.PhaseText)))
+	}
+	if gi.Detail != "" && gi.Hold == nil {
+		fmt.Fprintf(c.out, "      %s\n", safe(gi.Detail))
+	}
+	for _, p := range gi.Problems {
+		fmt.Fprintf(c.out, "      %s\n", st.Fail(safe(p)))
+	}
+	if h := gi.Hold; h != nil {
+		fmt.Fprintf(c.out, "      held %s UTC: %s%s\n", safe(h.CheckedAt), safe(h.Reason), cond(h.Detail != "", ": "+safe(h.Detail), ""))
+	}
+	for _, ic := range gi.Cards {
+		tier := safe(ic.TierText)
+		switch ic.Class {
+		case "final":
+			tier = st.OK(tier)
+		case "prov":
+			tier = st.Warn(tier)
+		default:
+			tier = st.Fail(tier)
+		}
+		name := ""
+		if ic.DisplayName != "" {
+			name = " (" + safe(ic.DisplayName) + ")"
+		}
+		fmt.Fprintf(c.out, "      %s: %s%s  %s\n", safe(ic.Approver), safe(ic.Identifier), name, tier)
+		if ic.Disputed {
+			fmt.Fprintf(c.out, "        %s\n", st.Fail("DISPUTED: newer status shows a revocation (keyCompromise) that voids this count back to the certificate's notBefore"))
+		}
+		if ic.Basis != "" {
+			fmt.Fprintf(c.out, "        basis: %s\n", safe(ic.Basis))
+		}
+		if ic.StatusTime != "" {
+			fmt.Fprintf(c.out, "        status time (S) %s UTC\n", safe(ic.StatusTime))
+		}
+		if ic.AnchoredAt != "" {
+			fmt.Fprintf(c.out, "        provable at %s UTC (%s)\n", safe(ic.AnchoredAt), safe(ic.TimeSource))
+		}
+	}
+	if gi.PolicyDigest != "" {
+		fmt.Fprintf(c.out, "      policy %s %s\n", safe(gi.PolicyDigest), st.Dim("(as the journal records it; not recomputed here)"))
+	}
+}
+
+func cond(b bool, yes, no string) string {
+	if b {
+		return yes
+	}
+	return no
 }
 
 // auditLine says when a recorded decision is signed into the audit log. It is the same whatever the

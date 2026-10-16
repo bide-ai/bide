@@ -123,14 +123,16 @@ func TestReadIdentityPolicyRefusals(t *testing.T) {
 	root := testca.NewRoot(t, "root", testca.Opts{})
 	inter := root.NewIntermediate(t, "inter", testca.Opts{})
 	cases := map[string]func(m map[string]any){
-		"unknown field":      func(m map[string]any) { m["trust_system_roots"] = true },
-		"no anchors":         func(m map[string]any) { m["anchors"] = []string{} },
-		"missing anchor":     func(m map[string]any) { m["anchors"] = []string{"nope.pem"} },
-		"bad id kind":        func(m map[string]any) { m["id_kind"] = "phone" },
-		"bad eku":            func(m map[string]any) { m["eku"] = "not-an-oid" },
-		"bad pin":            func(m map[string]any) { m["intermediates"] = []string{"abcd"} },
-		"bad duration":       func(m map[string]any) { m["skew"] = "soon" },
-		"distrust of nobody": func(m map[string]any) { m["distrust"] = map[string]string{strings.Repeat("ab", 32): "2026-01-01T00:00:00Z"} },
+		"unknown field":  func(m map[string]any) { m["trust_system_roots"] = true },
+		"no anchors":     func(m map[string]any) { m["anchors"] = []string{} },
+		"missing anchor": func(m map[string]any) { m["anchors"] = []string{"nope.pem"} },
+		"bad id kind":    func(m map[string]any) { m["id_kind"] = "phone" },
+		"bad eku":        func(m map[string]any) { m["eku"] = "not-an-oid" },
+		"bad pin":        func(m map[string]any) { m["intermediates"] = []string{"abcd"} },
+		"bad duration":   func(m map[string]any) { m["skew"] = "soon" },
+		"distrust of nobody": func(m map[string]any) {
+			m["distrust"] = map[string]string{strings.Repeat("ab", 32): "2026-01-01T00:00:00Z"}
+		},
 		"no identity map":    func(m map[string]any) { m["identity"] = map[string]string{} },
 		"anchor path escape": func(m map[string]any) { m["anchors"] = []string{"../root.pem"} },
 	}

@@ -1,11 +1,12 @@
 package runview
 
 import (
-	"html"
 	"context"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"html"
+	"net/http/httptest"
 	"regexp"
 	"strings"
 	"testing"
@@ -173,7 +174,9 @@ func TestIdentity_MissingOrMismatchedRecordIsAProblem(t *testing.T) {
 		t.Fatalf("unknown tier: %+v", g.Identity)
 	}
 	// A certificate in the decision record that is not the one the identity record names.
-	wrongLeaf := identRecs(t, agent.TierLogclockFinal, true, func(id *agent.ApprovalIdentity, _ *agent.ApprovalWait) { id.Decisions[0].LeafHash = strings.Repeat("0", 64) })
+	wrongLeaf := identRecs(t, agent.TierLogclockFinal, true, func(id *agent.ApprovalIdentity, _ *agent.ApprovalWait) {
+		id.Decisions[0].LeafHash = strings.Repeat("0", 64)
+	})
 	g = identGate(t, wrongLeaf.recs)
 	if g.Identity.Class != "bad" || g.Identity.Cards[0].DisplayName != "" {
 		t.Fatalf("leaf mismatch: %+v", g.Identity)
@@ -282,5 +285,25 @@ func TestIdentity_NoControlCharactersSurviveIntoThePage(t *testing.T) {
 	html := page(t, fx.recs)
 	if strings.ContainsAny(html, "\x1b\x07") {
 		t.Fatal("a control character reached the page")
+	}
+}
+
+func TestIdentity_AttentionPage(t *testing.T) {
+	fx := identRecs(t, agent.TierProvisional, false, func(_ *agent.ApprovalIdentity, w *agent.ApprovalWait) {
+		w.Pause, w.PauseDetail = agent.PauseAwaitingStatus, "no CRL for the issuing CA yet"
+	})
+	v := Options{}.viewOf(context.Background(), "r1", fx.recs, nil)
+	items := Options{}.runItems(v, fx.recs)
+	if len(items) != 1 || items[0].Gate == nil || items[0].Gate.Identity == nil {
+		t.Fatalf("items = %+v", items)
+	}
+	if !strings.Contains(items[0].Summary, "paused: identity status unknown") || !strings.Contains(items[0].Summary, "no CRL for the issuing CA yet") {
+		t.Fatalf("summary = %q", items[0].Summary)
+	}
+	w := httptest.NewRecorder()
+	render(w, "attention.html", AttentionList{Status: StatusAttention, Items: items, Now: identT0, Runs: 1, Coverage: Coverage{Listable: true}})
+	body := html.UnescapeString(w.Body.String())
+	if w.Code != 200 || !strings.Contains(body, "paused: identity status unknown") || !strings.Contains(body, "attn-id id-wait") {
+		t.Fatalf("%d %s", w.Code, body)
 	}
 }
