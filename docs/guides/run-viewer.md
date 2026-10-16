@@ -257,7 +257,7 @@ has an item. An aborted or cancelled run is listed too, since a halt outlives ei
 | `-check` | With `-config`: serve nothing, print each problem as `file:node: message`, and exit 1 if any is an error. `bide check <file>...` is the same check, for several files. |
 | `-strict` | With `-check`: exit 1 on a warning too (`bide check -strict`). |
 | `-diff <old>` | With `-config`: compare it with an earlier version, a file or a git revision; see [Compare two versions of a flow](#compare-two-versions-of-a-flow). With `-check`, print the changes instead of serving the page. |
-| `-fail-on-weaken` | With `-diff -check`: exit 1 if an approval gate was removed or weakened (its need lowered, an approver added without raising the need, `exclude_principal` dropped, or its timeout removed or lengthened), an effect became reachable without a gate, a Switch condition changed beside an ungated effect, or an `assert` line was removed, loosened, or kept and no longer holds. |
+| `-fail-on-weaken` | With `-diff -check`: exit 1 if an approval gate was removed or weakened (its need lowered, an approver added without raising the need, `exclude_principal` dropped, or its timeout removed or lengthened), a node became reachable without a gate that every path reached through one before (whatever its safety), a new effect has no gate, a node's `safety` was lowered, a Switch condition changed beside an ungated effect, or an `assert` line was removed, loosened, or kept and no longer holds. |
 | `-addr <host:port>` | Where to listen: a loopback IP or `localhost`, with a port. Default `127.0.0.1:8484`. Any other host is refused. |
 | `-color <when>` | `auto` (the default), `always` or `never`: whether the text output (the address to open, and `-check`'s lines) is colored. `auto` colors a terminal only, unless `NO_COLOR` is set to any value or `TERM` is `dumb`; see [Color](#color). |
 
@@ -763,27 +763,42 @@ Two more kinds of change are weakenings, reported with the gate changes (`-fail-
 on them too, and the page's verdict reads `SAFETY CHECK WEAKENED` when no gate policy itself was
 weakened):
 
-- **An effect no gate guards.** A node that may have an effect (its `safety` is `side_effect`, or is
-  not known: a config checked without its `plan.Registry` does not state it) and that a path from the
-  entry reaches without passing an approval gate (the reading behind the Side effects card,
-  `ConfigReport.Gated`) is reported when it was not such a node before, with the path:
-  `receipt: reachable without an approval gate (validate -> receipt), not before`. That covers a new
-  arm or edge around a gate, a gate removed upstream, a read-only or idempotent node whose `safety`
-  was raised to `side_effect` or dropped, and a node that is new (`new node, reachable without ...`):
-  a new effect with no approval in front of it. A node that is read-only or idempotent, one already
-  reachable ungated, one behind a gate, and one the entry cannot reach are not reported. A rename is
-  not a new node: a removed node and an added node with the same block, kind and safety and the
-  same edges and Switch arms (under the new names) are one node, listed as `renamed`; a gate that
-  changed with the rename is reported on it (`renamed node pay: was charge; approval 2 of 3 -> 1 of 3
-  (weakened)`); one that also changes the block, safety or edges is judged on those changes (a
-  renamed node whose route changed is reported). A gate removed upstream of a renamed node is still reported for it.
+- **A node newly reachable without a gate.** A node that every path from the entry reached through an
+  approval gate before (`ConfigReport.Gated`, and reachable at all), and that some path now reaches
+  without one, is reported whatever its `safety`: read-only and idempotent nodes count, because the
+  `safety` label is the new config's own claim and an edit can relabel a node and route around its
+  gate together. The report names the node, its safety and the shortest ungated path:
+  `receipt: reachable without an approval gate (validate -> receipt), not before; its safety is side
+  effect`. That covers a new arm or edge around a gate and a gate removed upstream. Two cases have no
+  earlier gate to lose and are judged by whether the node may have an effect (its `safety` is
+  `side_effect`, or is not known: a config checked without its `plan.Registry` does not state it), in
+  either config: a node that is new (`new node, reachable without ...`), and one the entry did not
+  reach before; and a node already reached without a gate is reported when its `safety` is raised to
+  `side_effect` or dropped. A new read-only or idempotent node, one already reachable ungated, one
+  behind a gate, and one the entry cannot reach are not reported. A new node with the same block and
+  kind as a removed one is judged against that one as well (it may be the same node, rewired and
+  renamed), so a gated node replaced by an ungated read-only copy is reported. A new node that uses
+  a block every node used only behind a gate before, and that is reachable without one, is reported
+  whatever its name and `safety` (`its block charge was reached only through an approval gate
+  before (charge)`), a read-only block included, and so is an existing node edited in place onto such a block. Raising the `safety` of a node that was already reachable without a gate (read-only to
+  side effect) is reported as well: it is an effect that is newly ungated.
+- **A safety lowered.** A node whose `safety` moved toward read-only (side effect or unknown to
+  idempotent or read-only, idempotent to read-only) is reported as `safety lowered side effect ->
+  read-only`, on its own and also when it is reachable ungated, since every effect check trusts the
+  label. Raising a `safety` is not a weakening by itself.
+- **A rename.** A removed node and an added node with the same block and kind, and the same edges and
+  Switch arms (under the new names), are one node, listed as `renamed`; a gate that changed with the
+  rename is reported on it (`renamed node pay: was charge; approval 2 of 3 -> 1 of 3 (weakened)`), and
+  so are a lowered safety and a gate removed upstream. One that also changes the block or edges is
+  judged on those changes (a renamed node whose route changed is reported).
 - **A Switch condition changed beside an ungated effect.** The check cannot read a predicate, so it
   cannot tell which inputs now take which arm. When a Switch gains, loses or changes an arm
   condition and another arm of it leads, without a gate, to an effect (a node reported above as
   possibly having one), it reports `arm conditions changed (...) while another arm reaches an ungated
   effect (small): review which inputs take which arm`, as a weakening. It is conservative: it asks for
   a review and does not say the change is wrong, and it fires on a condition edit even when the
-  ungated arm was there before.
+  ungated arm was there before. A node's old safety counts as well as its new, so relabeling the
+  other arm's effect read-only does not silence it.
 - **A block changed without the Registry.** Without a `plan.Registry` (the command-line check) a
   block's own approval gate (`ToolSpec.Approval`, set in Go) is not visible, so a block changed on an
   effect node that no gate in the config guards is reported as weakened: the new block may have no

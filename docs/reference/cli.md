@@ -218,8 +218,8 @@ With -diff it compares the -config flow with an earlier version of it: the page 
 with added nodes and edges in green, removed ones as dashed red ghosts and changed nodes in amber,
 and calls out an approval gate whose policy was weakened (removed, its need lowered, an approver
 added without raising the need, exclude_principal dropped, or its timeout removed or lengthened),
-an effect (a new one included) reachable without passing an approval gate that was not before, a Switch
-condition changed beside an ungated effect, a block changed on an ungated effect node without the Registry,
+a node that every path reached through a gate before and some path now reaches without one (whatever
+its safety), a new effect no gate guards, a lowered safety, a Switch condition changed beside an ungated effect, a block changed on an ungated effect node without the Registry,
 or an assert line removed, loosened, or kept and no longer holding (violated, undecided, or holding only
 vacuously);
 a gate made stricter (including a timeout added or shortened, which makes it fail closed sooner)
@@ -747,13 +747,13 @@ With -diff it compares the config with an earlier version of it instead, and ser
 local page (like bide view) that draws the new flow with added nodes and edges in green, removed
 ones as dashed red ghosts and changed nodes in amber, and calls out a weakened approval policy (a
 gate removed, its need lowered, an approver added without raising the need, exclude_principal
-dropped, or its timeout removed or lengthened), an effect (a new one included) that no gate guards and none did before, a Switch condition changed
+dropped, or its timeout removed or lengthened), a node that every path reached through a gate before and some path now reaches without one (whatever its safety), a new effect no gate guards, a lowered safety, a Switch condition changed
 beside an ungated effect, a block changed on an ungated effect node (without the Registry), or an assert
 line removed, loosened, or kept and no longer holding (violated, undecided, or holding only vacuously). -diff takes a file; when no file has that name, a git revision read with git show: <rev>:<path>
 (git's own form), or a bare <rev> for the config's own path at that revision (bide check
 flows/refund.yaml -diff main). With -check it serves nothing, prints one line per change and a
 summary line, and exits 0: a diff is not a failure, unless -fail-on-weaken finds an approval gate
-removed or weakened. Flags may follow the file names.
+removed or weakened, or another weakening named above. Flags may follow the file names.
 
 On a terminal the output is colored (a red cross on each error and its counterexample path in red,
 a green check on assertions that all hold); piped or redirected it is plain text. -color=never, or
@@ -768,7 +768,7 @@ NO_COLOR set to any value, turns color off; -color=always keeps it on.
   -diff string
     	compare the one config given with this earlier version: a file, or else a git revision (<rev>:<path>, or <rev> for the config's path at rev)
   -fail-on-weaken
-    	with -diff -check: exit 1 if an approval gate was removed or weakened (its need lowered, an approver added without raising the need, exclude_principal dropped, its timeout removed or lengthened, an effect that no gate guards and none did before, a Switch condition changed beside one, or an assert line removed, loosened, or kept and no longer holding)
+    	with -diff -check: exit 1 if an approval gate was removed or weakened (its need lowered, an approver added without raising the need, exclude_principal dropped, its timeout removed or lengthened, a node newly reachable without a gate or a lowered safety, a Switch condition changed beside an ungated effect, or an assert line removed, loosened, or kept and no longer holding)
   -strict
     	exit 1 on a warning too
 

@@ -29,14 +29,14 @@ func weakenedOf(t *testing.T, from, to string) []string {
 func TestDiffNewUngatedPathIsWeakened(t *testing.T) {
 	base := gapCfg("", "")
 	got := weakenedOf(t, base, gapCfg("", `, {"edge": ["validate", "receipt"]}`))
-	want := "receipt: reachable without an approval gate (validate -> receipt), not before"
+	want := "receipt: reachable without an approval gate (validate -> receipt), not before; its safety is side effect"
 	if !slices.Equal(got, []string{want}) {
 		t.Fatalf("weakened = %q; want %q", got, []string{want})
 	}
 	// The same through an intermediate node, and the gate itself removed: reported for the node
 	// whose gate went (as a gate change) and for each effect that became reachable ungated.
 	v := diffOf(t, base, gapCfg(`, {"name": "skip", "block": "skip", "safety": "readonly"}`, `, {"edge": ["validate", "skip"]}, {"edge": ["skip", "receipt"]}`), nil, nil)
-	if !slices.Equal(v.Weakened, []string{"receipt: reachable without an approval gate (validate -> skip -> receipt), not before"}) {
+	if !slices.Equal(v.Weakened, []string{"receipt: reachable without an approval gate (validate -> skip -> receipt), not before; its safety is side effect"}) {
 		t.Errorf("bypass through skip: %q", v.Weakened)
 	}
 	// Dropping the gate on charge is the gate's own change (not also a path change for charge), and
@@ -53,7 +53,7 @@ func TestDiffNewUngatedPathIsWeakened(t *testing.T) {
 func TestDiffNewUngatedEffectNodeIsWeakened(t *testing.T) {
 	base := gapCfg("", "")
 	got := weakenedOf(t, base, gapCfg(`, {"name": "notify", "block": "notify", "safety": "side_effect"}`, `, {"edge": ["validate", "notify"]}`))
-	if want := []string{"notify: new node, reachable without an approval gate (validate -> notify), not before"}; !slices.Equal(got, want) {
+	if want := []string{"notify: new node, reachable without an approval gate (validate -> notify), not before; its safety is side effect"}; !slices.Equal(got, want) {
 		t.Errorf("new ungated effect: weakened %q; want %q", got, want)
 	}
 	// Unknown safety counts, and says so; the node is also listed as added.
@@ -73,7 +73,7 @@ func TestDiffNewUngatedEffectNodeIsWeakened(t *testing.T) {
 	}
 }
 
-// Not flagged: a bypass to a node that is not an effect, a new route that is gated, an effect that
+// Not flagged: a new node that is not an effect, a new route that is gated, an effect that
 // was already ungated, and a change that gates more.
 func TestDiffUngatedPathNotFalselyFlagged(t *testing.T) {
 	base := gapCfg("", "")
@@ -87,13 +87,6 @@ func TestDiffUngatedPathNotFalselyFlagged(t *testing.T) {
 			t.Errorf("%s: weakened %q", name, got)
 		}
 	}
-	// A read-only node behind the gate that a new route reaches ungated is no effect.
-	withAudit := func(wiring string) string {
-		return gapCfg(`, {"name": "audit", "block": "audit", "safety": "readonly"}`, `, {"edge": ["charge", "audit"]}`+wiring)
-	}
-	if got := weakenedOf(t, withAudit(""), withAudit(`, {"edge": ["validate", "audit"]}`)); len(got) != 0 {
-		t.Errorf("read-only node: weakened %q", got)
-	}
 	// receipt was ungated before and after: not newly ungated.
 	open := strings.Replace(gapCfg("", ""), `, "approval": {"need": 2, "approvers": ["ops", "finance", "risk"]}`, "", 1)
 	if got := weakenedOf(t, open, strings.Replace(open, `"wiring": [`, `"wiring": [{"edge": ["validate", "receipt"]}, `, 1)); len(got) != 0 {
@@ -103,6 +96,66 @@ func TestDiffUngatedPathNotFalselyFlagged(t *testing.T) {
 	gated := strings.Replace(open, `"name": "receipt", "block": "receipt", "safety": "side_effect"`, `"name": "receipt", "block": "receipt", "safety": "side_effect", "approval": {"need": 1, "approvers": ["ops"]}`, 1)
 	if got := weakenedOf(t, open, gated); len(got) != 0 {
 		t.Errorf("gate added: weakened %q", got)
+	}
+}
+
+// G3 is broad: a node every path reached through a gate before, and a path now reaches without one, is
+// weakened whatever its safety, and the report names the node, its safety and the path.
+func TestDiffBroadBypassIsWeakened(t *testing.T) {
+	withAudit := func(safety, wiring string) string {
+		return gapCfg(`, {"name": "audit", "block": "audit", "safety": "`+safety+`"}`, `, {"edge": ["charge", "audit"]}`+wiring)
+	}
+	for _, safety := range []string{"readonly", "idempotent", "side_effect"} {
+		got := weakenedOf(t, withAudit(safety, ""), withAudit(safety, `, {"edge": ["validate", "audit"]}`))
+		name := map[string]string{"readonly": "read-only", "idempotent": "idempotent", "side_effect": "side effect"}[safety]
+		want := "audit: reachable without an approval gate (validate -> audit), not before; its safety is " + name
+		if !slices.Equal(got, []string{want}) {
+			t.Errorf("%s: weakened %q; want %q", safety, got, want)
+		}
+	}
+}
+
+// A relabel to read-only cannot hide the bypass: the old label counts, and the lowered safety is a
+// weakening on its own.
+func TestDiffSafetyLoweredIsWeakened(t *testing.T) {
+	base := gapCfg("", "")
+	relabeled := strings.Replace(base, `"name": "receipt", "block": "receipt", "safety": "side_effect"`, `"name": "receipt", "block": "receipt", "safety": "readonly"`, 1)
+	got := weakenedOf(t, base, relabeled)
+	if want := []string{"receipt: safety lowered side effect -> read-only"}; !slices.Equal(got, want) {
+		t.Errorf("relabel alone: weakened %q; want %q", got, want)
+	}
+	bypass := strings.Replace(relabeled, `"wiring": [`, `"wiring": [{"edge": ["validate", "receipt"]}, `, 1)
+	got = weakenedOf(t, base, bypass)
+	if want := []string{"receipt: reachable without an approval gate (validate -> receipt), not before; its safety is read-only; safety lowered side effect -> read-only"}; !slices.Equal(got, want) {
+		t.Errorf("relabel and bypass: weakened %q; want %q", got, want)
+	}
+	idem := strings.Replace(base, `"name": "receipt", "block": "receipt", "safety": "side_effect"`, `"name": "receipt", "block": "receipt", "safety": "idempotent"`, 1)
+	if got := weakenedOf(t, base, idem); len(got) != 1 {
+		t.Errorf("side effect -> idempotent: weakened %q", got)
+	}
+	if got := weakenedOf(t, idem, base); len(got) != 0 {
+		t.Errorf("idempotent -> side effect: weakened %q", got)
+	}
+	// Renamed and relabeled together is still the same node.
+	moved := strings.NewReplacer(`"name": "receipt", "block": "receipt", "safety": "side_effect"`, `"name": "receipt2", "block": "receipt", "safety": "readonly"`, `["charge", "receipt"]`, `["charge", "receipt2"]`).Replace(base)
+	got = weakenedOf(t, base, moved)
+	if want := []string{"receipt2: safety lowered side effect -> read-only"}; !slices.Equal(got, want) {
+		t.Errorf("renamed and relabeled: weakened %q; want %q", got, want)
+	}
+}
+
+// A node that was unreachable has no gate to lose, but one that could act and is wired in around the
+// gate is a bypass even when the same edit relabels it read-only.
+func TestDiffUnreachableEffectRelabeledAndWired(t *testing.T) {
+	orphan := func(safety, wiring string) string {
+		return gapCfg(`, {"name": "orphan", "block": "orphan", "safety": "`+safety+`"}`, wiring)
+	}
+	got := weakenedOf(t, orphan("side_effect", ""), orphan("readonly", `, {"edge": ["validate", "orphan"]}`))
+	if len(got) != 1 || !strings.HasPrefix(got[0], "orphan: reachable without an approval gate (validate -> orphan)") {
+		t.Errorf("weakened %q", got)
+	}
+	if got := weakenedOf(t, orphan("readonly", ""), orphan("readonly", `, {"edge": ["validate", "orphan"]}`)); len(got) != 0 {
+		t.Errorf("a read-only node wired in that was never an effect: weakened %q", got)
 	}
 }
 
@@ -248,5 +301,53 @@ func TestDiffAssertionNoLongerHoldsReported(t *testing.T) {
 	}
 	if w := diffOf(t, oldCfg, newCfg, nil, nil).Verdict.Word; w != "SAFETY CHECK WEAKENED" {
 		t.Errorf("verdict word %q", w)
+	}
+}
+
+// A new node that uses a block every node used only behind a gate, reachable without one, is a bypass
+// whatever its name and safety label (the effect of a block is the config's own claim).
+func TestDiffNewNodeOfGuardedBlock(t *testing.T) {
+	base := gapCfg("", "")
+	pay := func(safety string) string {
+		return gapCfg(`, {"name": "pay", "block": "charge", "safety": "`+safety+`"}`, `, {"edge": ["validate", "pay"]}`)
+	}
+	got := weakenedOf(t, base, pay("readonly"))
+	if len(got) != 1 || !strings.HasPrefix(got[0], "pay: new node, reachable without an approval gate (validate -> pay)") || !strings.Contains(got[0], "its block charge was reached only through an approval gate before (charge)") {
+		t.Errorf("weakened %q", got)
+	}
+	// Not when the block was already used ungated, or the new node sits behind the gate.
+	open := strings.Replace(base, `, "approval": {"need": 2, "approvers": ["ops", "finance", "risk"]}`, "", 1)
+	withPay := strings.Replace(open, `"wiring": [`, `"wiring": [{"edge": ["validate", "pay"]}, `, 1)
+	withPay = strings.Replace(withPay, `"nodes": [`, `"nodes": [{"name": "pay", "block": "charge", "safety": "readonly"}, `, 1)
+	if got := weakenedOf(t, open, withPay); len(got) != 0 {
+		t.Errorf("block already ungated: %q", got)
+	}
+	behind := gapCfg(`, {"name": "pay", "block": "charge", "safety": "readonly"}`, `, {"edge": ["charge", "pay"]}`)
+	if got := weakenedOf(t, base, behind); len(got) != 0 {
+		t.Errorf("behind the gate: %q", got)
+	}
+}
+
+// An unreachable effect replaced by a read-only node of its block that is wired in is a bypass.
+func TestDiffUnreachableEffectReplacedByRelabeledCopy(t *testing.T) {
+	old := gapCfg(`, {"name": "orphan", "block": "orphan", "safety": "side_effect"}`, ``)
+	new := gapCfg(`, {"name": "orphan2", "block": "orphan", "safety": "readonly"}`, `, {"edge": ["validate", "orphan2"]}`)
+	if got := weakenedOf(t, old, new); len(got) != 1 || !strings.HasPrefix(got[0], "orphan2: new node, reachable without an approval gate") {
+		t.Errorf("weakened %q", got)
+	}
+}
+
+// A node edited in place onto a block that only ever sat behind a gate, keeping its name and a
+// read-only label, is a bypass of that block's gate.
+func TestDiffNodeEditedOntoGuardedBlock(t *testing.T) {
+	audit := func(block string) string {
+		return gapCfg(`, {"name": "audit", "block": "`+block+`", "safety": "readonly"}`, `, {"edge": ["validate", "audit"]}`)
+	}
+	got := weakenedOf(t, audit("audit"), audit("charge"))
+	if len(got) != 1 || !strings.HasPrefix(got[0], "audit: reachable without an approval gate") || !strings.Contains(got[0], "its block charge was reached only through an approval gate before (charge)") {
+		t.Errorf("weakened %q", got)
+	}
+	if got := weakenedOf(t, audit("audit"), audit("other")); len(got) != 0 {
+		t.Errorf("a block no gate guarded: %q", got)
 	}
 }

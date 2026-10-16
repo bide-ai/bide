@@ -43,9 +43,13 @@ type Change struct {
 	// gate did not change. A removed node's gate counts as removed.
 	Gate string `json:"gate,omitempty"`
 	// Weakening says what a weakened change weakened: "gate" (an approval policy: the gate was
-	// removed, loosened, or lost its exclusion of the requester or its deadline), "path" (an
-	// effect node newly reachable without passing an approval gate) or "assertion" (an assert line
-	// removed or loosened, or kept and no longer holding). Empty for a change that weakened nothing.
+	// removed, loosened, or lost its exclusion of the requester or its deadline), "path" (a node
+	// newly reachable without passing an approval gate: one every path reached through a gate
+	// before, whatever its safety, or a new or newly wired-in effect), "safety" (a node's safety
+	// lowered toward read-only), "block" (a block changed on an ungated effect node, without the
+	// Registry), "condition" (a Switch condition changed beside an ungated effect) or "assertion"
+	// (an assert line removed or loosened, or kept and no longer holding). Empty for a change that
+	// weakened nothing.
 	Weakening string `json:"weakening,omitempty"`
 	// summary, when set, is the Weakened entry for this change (an assert line that stopped
 	// holding says why, which a Details cut at its first parenthesis would lose).
@@ -85,8 +89,8 @@ type DiffView struct {
 	Changes   []Change `json:"changes"`
 	// Weakened and Strengthened name each change that made the flow's approval checks weaker or
 	// stronger, with how: "charge: approval 2 of 3 -> 1 of 3" for a gate, "receipt: reachable
-	// without an approval gate (validate -> receipt), not before" for a new ungated path to an
-	// effect, "assertion removed: every path to charge passes approval >= 2 of 3" for an assert line.
+	// without an approval gate (validate -> receipt), not before; its safety is side effect" for a
+	// node newly reachable around a gate, "assertion removed: every path to charge passes approval >= 2 of 3" for an assert line.
 	Weakened     []string `json:"weakened,omitempty"`
 	Strengthened []string `json:"strengthened,omitempty"`
 	Counts       Counts   `json:"counts"`
@@ -297,7 +301,8 @@ func diffChanges(o, n plan.ConfigReport, oldSafety, newSafety map[string]string)
 	for from, to := range ren {
 		renRev[to] = from
 	}
-	uOld, uNew := ungatedEffects(o), ungatedEffects(n)
+	uNew := ungatedNodes(o, n, renRev)
+	eNow := effectsNow(o, n, renRev)
 	newNode := map[string]bool{}
 	for _, x := range nt.Nodes {
 		newNode[x.Name] = true
@@ -312,14 +317,14 @@ func diffChanges(o, n plan.ConfigReport, oldSafety, newSafety map[string]string)
 					c.Weakening = "gate"
 				}
 				c.Details = append(c.Details, gateMove(old.Gate, x.Gate)+" ("+g+")")
-			} else {
+			} else if o.Safety[from] == n.Safety[x.Name] {
 				c.Details[0] += ", with the same block, safety, gate and edges"
 			}
-			// The node is the same, but a gate upstream of it may be gone.
-			if c.Gate == "" && uNew[x.Name] && !uOld[from] {
-				c.Gate, c.Weakening = "weakened", "path"
-				c.Details = append(c.Details, ungatedWhy(n, x.Name)+" (weakened)")
+			if o.Safety[from] != n.Safety[x.Name] {
+				c.Details = append(c.Details, fmt.Sprintf("safety %s -> %s", safetyName(o, from), safetyName(n, x.Name)))
 			}
+			// The node is the same, but a gate upstream of it may be gone, or its label lowered.
+			weakenNode(&c, o, n, from, x.Name, uNew[x.Name] && c.Gate != "weakened")
 			cs = append(cs, c)
 			continue
 		}
@@ -331,9 +336,27 @@ func diffChanges(o, n plan.ConfigReport, oldSafety, newSafety map[string]string)
 			if x.Gate != nil {
 				c.Details = append(c.Details, "approval "+gateFull(x.Gate))
 			}
+			var notes []string
 			if uNew[x.Name] {
-				c.Gate, c.Weakening = "weakened", "path"
-				c.Details = append(c.Details, "new node, "+ungatedWhy(n, x.Name)+" (weakened)")
+				notes = append(notes, "new node, "+ungatedWhy(n, x.Name))
+				c.Weakening = "path"
+			}
+			if g := guardedBlock(o, reachable(o), x); uNew[x.Name] && len(g) > 0 {
+				notes = append(notes, "its block "+x.Block+" was reached only through an approval gate before ("+strings.Join(g, ", ")+")")
+			}
+			// The node may be a removed one rewired and relabeled.
+			for _, from := range successorsOf(o, n, renRev, x.Name) {
+				if safetyLowered(o, n, from, x.Name) {
+					notes = append(notes, fmt.Sprintf("safety lowered %s -> %s, if it is the removed node %s", safetyName(o, from), safetyName(n, x.Name), from))
+					c.Weakening = cmp.Or(c.Weakening, "safety")
+					break
+				}
+			}
+			if len(notes) > 0 {
+				c.Gate, c.summary = "weakened", x.Name+": "+strings.Join(notes, "; ")
+				for _, s := range notes {
+					c.Details = append(c.Details, s+" (weakened)")
+				}
 			}
 			cs = append(cs, c)
 			continue
@@ -361,12 +384,8 @@ func diffChanges(o, n plan.ConfigReport, oldSafety, newSafety map[string]string)
 			}
 			c.Details = append(c.Details, gateMove(was.Gate, x.Gate)+" ("+g+")")
 		}
-		switch {
-		case c.Gate == "weakened":
-		case uNew[x.Name] && !uOld[x.Name]:
-			c.Gate, c.Weakening = "weakened", "path"
-			c.Details = append(c.Details, ungatedWhy(n, x.Name)+" (weakened)")
-		case uNew[x.Name] && was.Block != x.Block && !(o.Typed && n.Typed):
+		weakenNode(&c, o, n, x.Name, x.Name, uNew[x.Name] && c.Gate != "weakened")
+		if c.Gate != "weakened" && eNow[x.Name] && was.Block != x.Block && !(o.Typed && n.Typed) {
 			// Without the Registry the block's own approval gate (ToolSpec.Approval) is not visible: a new
 			// block on a node no config gate guards may have none.
 			c.Gate, c.Weakening = "weakened", "block"
@@ -400,9 +419,52 @@ func diffChanges(o, n plan.ConfigReport, oldSafety, newSafety map[string]string)
 			cs = append(cs, edgeChange("removed", k, oe.label[k]))
 		}
 	}
-	cs = append(cs, switchChanges(o, n, uNew)...)
+	cs = append(cs, switchChanges(o, n, eNow)...)
 	cs = append(cs, assertionChanges(o, n, ren)...)
 	return append(cs, assertionRegressions(o, n, ren)...)
+}
+
+// weakenNode adds to c the weakenings of a node beyond its gate: it is newly reachable without an
+// approval gate (ungated: the node was reachable only through one, or is an effect that was not
+// reachable), or its safety was lowered toward read-only (from is its name in o, to in n). A gate
+// weakening already on c keeps its kind, and the notes join its summary.
+func weakenNode(c *Change, o, n plan.ConfigReport, from, to string, ungated bool) {
+	var notes []string
+	if ungated {
+		notes = append(notes, ungatedWhy(n, to))
+		var was, now plan.TopologyNode
+		for _, x := range o.Topology.Nodes {
+			if x.Name == from {
+				was = x
+			}
+		}
+		for _, x := range n.Topology.Nodes {
+			if x.Name == to {
+				now = x
+			}
+		}
+		if g := guardedBlock(o, reachable(o), now); (was.Block != now.Block || was.Kind != now.Kind) && len(g) > 0 {
+			notes = append(notes, "its block "+now.Block+" was reached only through an approval gate before ("+strings.Join(g, ", ")+")")
+		}
+	}
+	if safetyLowered(o, n, from, to) {
+		notes = append(notes, fmt.Sprintf("safety lowered %s -> %s", safetyName(o, from), safetyName(n, to)))
+	}
+	if len(notes) == 0 {
+		return
+	}
+	for _, s := range notes {
+		c.Details = append(c.Details, s+" (weakened)")
+	}
+	if c.Gate == "weakened" {
+		c.summary = c.Node + ": " + gateDetail(*c) + "; " + strings.Join(notes, "; ")
+		return
+	}
+	c.Gate, c.Weakening = "weakened", "safety"
+	if ungated {
+		c.Weakening = "path"
+	}
+	c.summary = c.Node + ": " + strings.Join(notes, "; ")
 }
 
 // assertionChanges compares the config's assert lines. A line the new config lacks is removed
@@ -558,7 +620,7 @@ func changeSummary(c Change, loosened string) string {
 		}
 		return "assertion " + loosened + ": " + detail
 	}
-	if c.Weakening == "path" || c.Weakening == "block" || c.Weakening == "condition" {
+	if c.Weakening == "path" || c.Weakening == "safety" || c.Weakening == "block" || c.Weakening == "condition" {
 		d := c.Details[len(c.Details)-1]
 		d = strings.TrimSuffix(d, " (weakened)")
 		return c.Node + ": " + d

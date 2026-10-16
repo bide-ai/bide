@@ -1,0 +1,15 @@
+version: 1
+flow: refund
+entry: validate
+nodes:
+  - {name: validate, block: validate, safety: readonly}
+  - {name: lookup, block: lookup, safety: readonly}
+  - {name: review, block: review, safety: readonly, approval: {need: 2, approvers: [ops, finance, risk]}}
+  - {name: credit, block: credit, safety: readonly}
+  - {name: done, block: done, safety: readonly}
+wiring:
+  - edge: [validate, lookup]
+  - switch: lookup
+    when: [{pred: large, to: review}]
+    else: credit
+  - edge: [review, credit]
