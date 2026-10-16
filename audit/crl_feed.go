@@ -93,6 +93,7 @@ type cand struct {
 	tbs  [32]byte
 	url  string
 	hash [32]byte
+	val  validator
 }
 
 // attempt asks every URL of the feed, concurrently and under one deadline, and adds the highest-numbered
@@ -102,6 +103,7 @@ func (f *feed) attempt(ctx context.Context) (bool, error) {
 	f.attemptMu.Lock()
 	defer f.attemptMu.Unlock()
 	r := f.iss.r
+	f.iss.syncResets(ctx, false)
 	now := r.now()
 	actx, cancel := context.WithTimeout(ctx, f.attemptTimeout)
 	defer cancel()
@@ -127,6 +129,9 @@ func (f *feed) attempt(ctx context.Context) (bool, error) {
 	confirmed := false
 	for n, x := range res {
 		outcomes = append(outcomes, x.URLOutcome)
+		if x.Kind != outNotModified {
+			r.setValidator(f.urls[n], validator{}) // set again only if this CRL is accepted
+		}
 		retry = max(retry, x.retryAfter)
 		if !x.date.IsZero() {
 			if d := now.Sub(x.date); d > dateSkewWarnAt || -d > dateSkewWarnAt {
@@ -153,7 +158,7 @@ func (f *feed) attempt(ctx context.Context) (bool, error) {
 				continue
 			}
 			tbs, _ := tbsHash(x.der)
-			cands = append(cands, cand{v: v, der: x.der, tbs: tbs, url: f.urls[n], hash: hash})
+			cands = append(cands, cand{v: v, der: x.der, tbs: tbs, url: f.urls[n], hash: hash, val: x.val})
 		case outNotModified:
 			confirmed = true
 		case outOversize:
@@ -174,6 +179,7 @@ func (f *feed) attempt(ctx context.Context) (bool, error) {
 	for _, c := range cands {
 		if f.consider(ctx, c, now, outcomes) {
 			obtained = true
+			r.setValidator(c.url, c.val)
 		}
 	}
 	f.flushQueue(ctx)
@@ -193,16 +199,38 @@ func (f *feed) attempt(ctx context.Context) (bool, error) {
 // current one (newly accepted, or the one already held).
 func (f *feed) consider(ctx context.Context, c cand, now time.Time, outcomes []URLOutcome) bool {
 	r := f.iss.r
+	n := c.v.number
+	if c.v.delta && !f.iss.basePaired(c.v) {
+		// The delta names a base we do not hold: get the base first, then add the delta whether or not
+		// the base arrived (a delta never gives evidence of absence alone, and its listings only take
+		// trust away). This runs before the reset lock is taken: a base attempt takes it too.
+		f.iss.base.attempt(ctx)
+		if !f.iss.basePaired(c.v) {
+			r.emit(Event{Kind: EventUnpairedDelta, Issuer: f.iss.key, Feed: f.kind, URL: redactURL(c.url), Number: n, Hash: c.hash, At: now,
+				Detail: fmt.Sprintf("no base numbered %s to %s is held for delta %s", c.v.baseNumber, new(big.Int).Sub(n, big.NewInt(1)), n)})
+		}
+	}
+	// The set-aside check, the number rules, the add and the mark update are one step against a
+	// concurrent reset (which takes the write side): otherwise a reset could remove the poisoned CRL
+	// just before this adds it back.
+	f.iss.resetMu.RLock()
+	defer f.iss.resetMu.RUnlock()
 	f.mu.Lock()
 	mark, markTBS := f.mark, f.markTBS
 	f.mu.Unlock()
-	n := c.v.number
 	ev := func(k EventKind, detail string) Event {
 		return Event{Kind: k, Issuer: f.iss.key, Feed: f.kind, URL: redactURL(c.url), Number: n, Held: mark, Hash: c.hash, Detail: detail, At: now}
 	}
+	archived := func(marker string) ArchivedCRL {
+		return ArchivedCRL{Number: n, ThisUpdate: c.v.this, Marker: marker, Source: redactURL(c.url), Fetched: now}
+	}
 	switch {
+	case f.iss.setAside[hex.EncodeToString(c.hash[:])]:
+		f.putArchive(ctx, archived(MarkerSetAside), c.der)
+		r.emit(ev(EventSetAsideServed, "the source serves a CRL an operator set aside (a high-water reset); not added"))
+		return false
 	case mark != nil && n.Cmp(mark) < 0:
-		f.putArchive(ctx, ArchivedCRL{Number: n, ThisUpdate: c.v.this, Marker: MarkerRollback, Source: redactURL(c.url), Fetched: now}, c.der)
+		f.putArchive(ctx, archived(MarkerRollback), c.der)
 		r.emit(ev(EventRollback, fmt.Sprintf("CRL number %s is below the high-water mark %s; not added", n, mark)))
 		return false
 	case mark != nil && n.Cmp(mark) == 0:
@@ -210,20 +238,11 @@ func (f *feed) consider(ctx context.Context, c cand, now time.Time, outcomes []U
 			r.emit(ev(EventUnchanged, "the newest CRL is unchanged"))
 			return true
 		}
-		f.putArchive(ctx, ArchivedCRL{Number: n, ThisUpdate: c.v.this, Marker: MarkerConflict, Source: redactURL(c.url), Fetched: now}, c.der)
+		f.putArchive(ctx, archived(MarkerConflict), c.der)
 		r.emit(ev(EventConflict, fmt.Sprintf("CRL number %s was seen with another TBSCertList; not added (the CA, or a source, is equivocating)", n)))
 		return false
 	}
-	if c.v.delta && !f.iss.basePaired(c.v) {
-		// The delta names a base we do not hold: get the base first, then add the delta whether or not
-		// the base arrived (a delta never gives evidence of absence alone, and its listings only take
-		// trust away).
-		f.iss.base.attempt(ctx)
-		if !f.iss.basePaired(c.v) {
-			r.emit(ev(EventUnpairedDelta, fmt.Sprintf("no base numbered %s to %s is held for delta %s", c.v.baseNumber, new(big.Int).Sub(n, big.NewInt(1)), n)))
-		}
-	}
-	f.putArchive(ctx, ArchivedCRL{Number: n, ThisUpdate: c.v.this, Source: redactURL(c.url), Fetched: now}, c.der)
+	f.putArchive(ctx, archived(""), c.der)
 	if _, err := r.appr.Status.AddCRL(c.der); err != nil {
 		r.emit(ev(EventUnsupportedCRL, err.Error()))
 		return false
@@ -461,10 +480,7 @@ func (r *CRLRefresher) Seed(ctx context.Context) error {
 
 func (i *issuerRT) seed(ctx context.Context) error {
 	r := i.r
-	setAside, err := i.setAside(ctx, true)
-	if err != nil {
-		return err
-	}
+	i.syncResets(ctx, true)
 	for _, f := range []*feed{i.base, i.delta} {
 		if f != nil {
 			f.mu.Lock()
@@ -472,7 +488,7 @@ func (i *issuerRT) seed(ctx context.Context) error {
 			f.mu.Unlock()
 		}
 	}
-	if err := i.scan(ctx, setAside, true); err != nil {
+	if err := i.scan(ctx, i.setAsideCopy(), true); err != nil {
 		return err
 	}
 	for _, f := range []*feed{i.base, i.delta} {
@@ -497,30 +513,91 @@ func (f *feed) finishSeed() {
 	f.mu.Unlock()
 }
 
-// setAside is the set of CRL hashes the issuer's reset records name. With report, an unacknowledged
-// record is reported as a security event.
-func (i *issuerRT) setAside(ctx context.Context, report bool) (map[string]bool, error) {
-	set := map[string]bool{}
-	resets, err := i.r.archive.Resets(ctx, i.key)
-	if err != nil {
-		return nil, err
+func (i *issuerRT) setAsideCopy() map[string]bool {
+	i.resetMu.RLock()
+	defer i.resetMu.RUnlock()
+	out := make(map[string]bool, len(i.setAside))
+	for k := range i.setAside {
+		out[k] = true
 	}
+	return out
+}
+
+// syncResets reads the issuer's RESET records. A record that appeared since the last read (written by
+// ResetHighWater here, or by another process on a shared archive) takes effect: its CRLs are removed from
+// the snapshot, its validators are dropped, and the marks are recomputed without them. It runs at the
+// start of every attempt, so a reset from the command reaches a running daemon. With report, an
+// unacknowledged record is reported (every start does).
+func (i *issuerRT) syncResets(ctx context.Context, report bool, local ...bool) {
+	r := i.r
+	if r.archive == nil {
+		return
+	}
+	resets, err := r.archive.Resets(ctx, i.key)
+	if err != nil {
+		r.emit(Event{Kind: EventArchiveError, Issuer: i.key, Err: err, Detail: "cannot read the reset records", At: r.now()})
+		return
+	}
+	var names []string
+	set := map[string]bool{}
 	unacked := 0
 	for _, rec := range resets {
+		names = append(names, rec.Name)
 		for _, it := range rec.SetAside {
 			set[it.Hash] = true
 		}
 		if !rec.Acked {
 			unacked++
 			if report {
-				i.r.emit(Event{Kind: EventHighWaterReset, Issuer: i.key, Detail: fmt.Sprintf("unacknowledged high-water reset %s by %q at %s: %q; %d CRL(s) set aside", rec.Name, rec.Operator, rec.Time.Format(time.RFC3339), rec.Reason, len(rec.SetAside))})
+				r.emit(Event{Kind: EventHighWaterReset, Issuer: i.key, At: r.now(), Detail: fmt.Sprintf("unacknowledged high-water reset %s by %q at %s: %q; %d CRL(s) set aside", rec.Name, rec.Operator, rec.Time.Format(time.RFC3339), rec.Reason, len(rec.SetAside))})
 			}
 		}
 	}
+	key := strings.Join(names, ",")
 	i.mu.Lock()
 	i.unacked = unacked
 	i.mu.Unlock()
-	return set, nil
+	i.resetMu.Lock()
+	defer i.resetMu.Unlock()
+	switch {
+	case !i.resetInit && (report || key == ""):
+		// The first read: Seed computes the marks and fills the snapshot itself.
+		i.resetInit, i.resetSeen, i.setAside = true, key, set
+		return
+	case i.resetInit && key == i.resetSeen:
+		return
+	}
+	i.resetSeen, i.setAside, i.resetInit = key, set, true
+	for h := range set {
+		if raw, err := hex.DecodeString(h); err == nil && len(raw) == 32 {
+			r.appr.Status.remove([32]byte(raw))
+		}
+	}
+	r.clearValidators(i.base.urls)
+	if i.delta != nil {
+		r.clearValidators(i.delta.urls)
+	}
+	for _, f := range []*feed{i.base, i.delta} {
+		if f != nil {
+			f.mu.Lock()
+			f.mark, f.markTBS = nil, [32]byte{}
+			f.mu.Unlock()
+		}
+	}
+	if err := i.scan(ctx, set, false); err != nil {
+		r.emit(Event{Kind: EventArchiveError, Issuer: i.key, Err: err, Detail: "cannot recompute the high-water mark after a reset", At: r.now()})
+	}
+	for _, f := range []*feed{i.base, i.delta} {
+		if f != nil {
+			f.finishSeed()
+		}
+	}
+	if len(local) > 0 && local[0] {
+		i.checkAlarm(r.now())
+		return
+	}
+	r.emit(Event{Kind: EventHighWaterReset, Issuer: i.key, At: r.now(), Detail: fmt.Sprintf("a high-water reset is in force: %d CRL(s) set aside and removed from the live snapshot, the mark recomputed", len(set))})
+	i.checkAlarm(r.now())
 }
 
 // scan reads the archive newest number first. It takes marks from verified CRLs and, with intoSnapshot,
@@ -627,29 +704,39 @@ func (r *CRLRefresher) AckReset(ctx context.Context, issuer SPKIHash, name strin
 	return fmt.Errorf("audit: CRL refresher: no reset record %q", name)
 }
 
+// ResetRequest is an operator's request to reset an issuer's high-water mark.
+type ResetRequest struct {
+	// Reason and Operator are required and recorded in the archive.
+	Reason, Operator string
+	// SetAside are the SHA-256 hashes of the archived CRLs to set aside. With none, the archived CRL at
+	// the current mark.
+	SetAside [][32]byte
+	// AcceptLostListings allows the reset when a CRL set aside lists a certificate that no CRL left in the
+	// snapshot lists: the reset would drop that revocation from the live gate until the CA publishes it
+	// again. Without it such a reset is refused; with it the serials are written into the record.
+	AcceptLostListings bool
+}
+
 // ResetHighWater is the operator's way out of a poisoned high-water mark: a CA that issued one CRL with a
 // mistaken huge number, or was restored from a backup and restarted its numbering, would otherwise leave
-// every later real CRL a rollback. It sets aside the CRLs given (hashes; with none, the archived CRL at
-// the current mark), appends a durable RESET record (issuer, what is set aside, reason, operator, time)
-// to the archive, removes them from the snapshot and recomputes the mark from the rest. The set-aside
-// files stay in the archive. A listing on a CRL set aside no longer reaches the live gate: the record
-// is the operator's statement that the CRL was wrong. It needs an archive, because the reset must
-// survive a restart.
-func (r *CRLRefresher) ResetHighWater(ctx context.Context, issuer SPKIHash, reason, operator string, setAside ...[32]byte) error {
+// every later real CRL a rollback. It sets aside the CRLs named (or the archived CRL at the mark), appends
+// a durable RESET record (issuer, what is set aside, the serials that no remaining CRL lists, reason,
+// operator, time) to the archive, removes them from the snapshot and recomputes the mark from the rest.
+// The set-aside files stay in the archive, and a source that keeps serving one has it archived with a
+// marker and never added. A running refresher on a shared archive (another process) applies the record
+// at its next attempt. It needs an archive, because the reset must survive a restart.
+//
+// A CRL set aside may be the newest real one. If it lists a revocation no remaining CRL lists, the reset
+// would make status look better, so it is refused unless AcceptLostListings is set.
+func (r *CRLRefresher) ResetHighWater(ctx context.Context, issuer SPKIHash, req ResetRequest) error {
 	i := r.byKey[issuer]
 	switch {
 	case i == nil:
 		return fmt.Errorf("audit: CRL refresher: %x is not an issuer of this refresher", issuer[:4])
 	case r.archive == nil:
 		return errors.New("audit: CRL refresher: a reset needs an archive: it must survive a restart")
-	case strings.TrimSpace(reason) == "" || strings.TrimSpace(operator) == "":
+	case strings.TrimSpace(req.Reason) == "" || strings.TrimSpace(req.Operator) == "":
 		return errors.New("audit: CRL refresher: a reset needs a reason and an operator")
-	}
-	for _, f := range []*feed{i.base, i.delta} {
-		if f != nil {
-			f.attemptMu.Lock()
-			defer f.attemptMu.Unlock()
-		}
 	}
 	list, err := r.archive.List(ctx, issuer)
 	if err != nil {
@@ -665,17 +752,31 @@ func (r *CRLRefresher) ResetHighWater(ctx context.Context, issuer SPKIHash, reas
 			f.mu.Unlock()
 		}
 	}
-	var items []ResetItem
-	add := func(h [32]byte, n *big.Int) {
-		items = append(items, ResetItem{Hash: hex.EncodeToString(h[:]), Number: n.String()})
+	// The CRLs to set aside, as parsed views.
+	type aside struct {
+		hash [32]byte
+		num  *big.Int
+		v    *crlView
 	}
-	if len(setAside) > 0 {
-		for _, h := range setAside {
+	var set []aside
+	load := func(e ArchivedCRL) (aside, bool) {
+		der, err := r.archive.Read(ctx, issuer, e)
+		if err != nil {
+			return aside{}, false
+		}
+		h := sha256.Sum256(der)
+		v, err := parseCRL(der, h, r.appr.Status.maxEntries)
+		if err != nil {
+			return aside{hash: h, num: e.Number}, true
+		}
+		return aside{hash: h, num: e.Number, v: v}, true
+	}
+	if len(req.SetAside) > 0 {
+		for _, h := range req.SetAside {
 			found := false
 			for _, e := range list {
-				if der, err := r.archive.Read(ctx, issuer, e); err == nil && sha256.Sum256(der) == h {
-					add(h, e.Number)
-					found = true
+				if a, ok := load(e); ok && a.hash == h {
+					set, found = append(set, a), true
 					break
 				}
 			}
@@ -688,48 +789,55 @@ func (r *CRLRefresher) ResetHighWater(ctx context.Context, issuer SPKIHash, reas
 			if e.Marker != "" || mark == nil || e.Number.Cmp(mark) != 0 {
 				continue
 			}
-			if der, err := r.archive.Read(ctx, issuer, e); err == nil {
-				add(sha256.Sum256(der), e.Number)
+			if a, ok := load(e); ok {
+				set = append(set, a)
 			}
 		}
-		if len(items) == 0 {
+		if len(set) == 0 {
 			return errors.New("audit: CRL refresher: no archived CRL at the high-water mark to set aside; name the CRLs by hash")
 		}
 	}
+	// The listings that would be lost: serials in the CRLs set aside that no remaining CRL of the snapshot lists.
+	gone := map[[32]byte]bool{}
+	for _, a := range set {
+		gone[a.hash] = true
+	}
+	remaining := map[string]bool{}
+	for _, v := range r.appr.Status.held(i.cert) {
+		if !gone[v.hash] {
+			for k := range v.entries {
+				remaining[k] = true
+			}
+		}
+	}
+	lostSet := map[string]bool{}
+	for _, a := range set {
+		if a.v != nil {
+			for k := range a.v.entries {
+				if !remaining[k] {
+					lostSet[k] = true
+				}
+			}
+		}
+	}
+	lost := slices.Sorted(mapKeys(lostSet))
+	if len(lost) > 0 && !req.AcceptLostListings {
+		return fmt.Errorf("audit: CRL refresher: setting these CRLs aside would drop %d revocation(s) no remaining CRL lists, so status would look better until the CA publishes them again; pass AcceptLostListings (bide identity reset-high-water -accept-lost-listings) to record that decision", len(lost))
+	}
 	now := r.now()
-	rec := ResetRecord{Issuer: hex.EncodeToString(issuer[:]), SetAside: items, Reason: reason, Operator: operator, Time: now}
+	rec := ResetRecord{Issuer: hex.EncodeToString(issuer[:]), Reason: req.Reason, Operator: req.Operator, Time: now, LostSerials: lost}
+	for _, a := range set {
+		rec.SetAside = append(rec.SetAside, ResetItem{Hash: hex.EncodeToString(a.hash[:]), Number: a.num.String()})
+	}
 	if err := r.archive.PutReset(ctx, issuer, rec); err != nil {
 		return err
 	}
-	set, err := i.setAside(ctx, false)
-	if err != nil {
-		return err
-	}
-	for _, it := range items {
-		raw, _ := hex.DecodeString(it.Hash)
-		r.appr.Status.remove([32]byte(raw))
-	}
-	for _, f := range []*feed{i.base, i.delta} {
-		if f != nil {
-			f.mu.Lock()
-			f.mark, f.markTBS = nil, [32]byte{}
-			f.mu.Unlock()
-		}
-	}
-	if err := i.scan(ctx, set, false); err != nil {
-		return err
-	}
-	for _, f := range []*feed{i.base, i.delta} {
-		if f != nil {
-			f.finishSeed()
-		}
-	}
+	i.syncResets(ctx, false, true)
 	old := "none"
 	if mark != nil {
 		old = mark.String()
 	}
 	r.emit(Event{Kind: EventHighWaterReset, Issuer: issuer, Held: mark, At: now,
-		Detail: fmt.Sprintf("high-water mark reset by %q: %s (old mark %s, %d CRL(s) set aside, kept in the archive)", operator, reason, old, len(items))})
-	i.checkAlarm(now)
+		Detail: fmt.Sprintf("high-water mark reset by %q: %s (old mark %s, %d CRL(s) set aside and kept in the archive, %d listing(s) no remaining CRL carries)", req.Operator, req.Reason, old, len(rec.SetAside), len(lost))})
 	return nil
 }

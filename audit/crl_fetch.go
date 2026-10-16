@@ -70,6 +70,10 @@ type fetched struct {
 	der        []byte
 	retryAfter time.Duration
 	date       time.Time // the server's Date header, advisory only
+	// val is the validator the server offered for this body. It is stored for the next conditional request
+	// only if the CRL is then accepted (or is the one already held): a refused CRL must not be hidden
+	// behind a 304.
+	val validator
 }
 
 type validator struct{ etag, lastModified string }
@@ -161,9 +165,7 @@ func (r *CRLRefresher) fetchOne(ctx context.Context, raw string, maxBytes int) f
 		body = blk.Bytes
 	}
 	out.Kind, out.der = outOK, body
-	r.mu.Lock()
-	r.validators[raw] = validator{etag: resp.Header.Get("ETag"), lastModified: resp.Header.Get("Last-Modified")}
-	r.mu.Unlock()
+	out.val = validator{etag: resp.Header.Get("ETag"), lastModified: resp.Header.Get("Last-Modified")}
 	return out
 }
 
@@ -173,12 +175,20 @@ func redirectRefusal(origin, next *url.URL, hops int) string {
 	switch {
 	case hops > maxRedirects:
 		return "more than 3 redirects"
-	case hostPort(next) != hostPort(origin):
+	case hostPort(next) != hostPort(origin) && !isHTTPSUpgrade(origin, next):
 		return "redirect to another host or port: " + hostPort(next)
 	case strings.EqualFold(origin.Scheme, "https") && !strings.EqualFold(next.Scheme, "https"):
 		return "redirect from https to " + next.Scheme
 	}
 	return ""
+}
+
+// isHTTPSUpgrade is an http URL on its default port redirected to the same host over https on its default
+// port: the usual way a CRL server moves to TLS.
+func isHTTPSUpgrade(origin, next *url.URL) bool {
+	return strings.EqualFold(origin.Scheme, "http") && strings.EqualFold(next.Scheme, "https") &&
+		strings.EqualFold(origin.Hostname(), next.Hostname()) &&
+		(origin.Port() == "" || origin.Port() == "80") && (next.Port() == "" || next.Port() == "443")
 }
 
 func hostPort(u *url.URL) string {

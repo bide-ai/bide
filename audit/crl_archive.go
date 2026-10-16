@@ -23,6 +23,8 @@ import (
 const (
 	MarkerRollback = "rollback"
 	MarkerConflict = "conflict"
+	// MarkerSetAside marks a CRL a source served after an operator set it aside.
+	MarkerSetAside = "setaside"
 )
 
 // ArchivedCRL describes one CRL file of the archive. The number and time come from the file name and
@@ -44,10 +46,13 @@ type ResetRecord struct {
 	Name     string      `json:"-"`
 	Issuer   string      `json:"issuer"`
 	SetAside []ResetItem `json:"set_aside"`
-	Reason   string      `json:"reason"`
-	Operator string      `json:"operator"`
-	Time     time.Time   `json:"time"`
-	Acked    bool        `json:"-"`
+	// LostSerials are the certificate serials (decimal) the CRLs set aside listed and no CRL left in the
+	// snapshot lists: the revocations the reset dropped from the live gate, for an auditor.
+	LostSerials []string  `json:"lost_serials,omitempty"`
+	Reason      string    `json:"reason"`
+	Operator    string    `json:"operator"`
+	Time        time.Time `json:"time"`
+	Acked       bool      `json:"-"`
 }
 
 // ResetItem is one CRL a reset sets aside.
@@ -116,10 +121,13 @@ func (d DirCRLArchive) PutCRL(_ context.Context, issuer SPKIHash, a ArchivedCRL,
 		// Two different CRLs under one series name would be a conflict; the caller marks those. A
 		// file that is already there must hold these bytes.
 		if old, err := os.ReadFile(filepath.Join(dir, name)); err == nil {
-			if sha256.Sum256(old) == hash {
+			// The same CRL re-signed (same TBSCertList, other signature bytes) is already archived.
+			have, ok1 := tbsHash(old)
+			want, ok2 := tbsHash(der)
+			if sha256.Sum256(old) == hash || (ok1 && ok2 && have == want) {
 				return nil
 			}
-			return fmt.Errorf("audit: CRL archive: %s exists with other bytes", name)
+			return fmt.Errorf("audit: CRL archive: %s exists with a different TBSCertList", name)
 		}
 	}
 	meta, _ := json.Marshal(struct {

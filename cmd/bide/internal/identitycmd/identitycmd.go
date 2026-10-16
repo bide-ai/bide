@@ -68,7 +68,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 func usage(w io.Writer) {
 	fmt.Fprint(w, `usage: bide identity fetch-crl -policy <file> -params <file> -cache <dir> [-once]
-       bide identity reset-high-water -policy <file> -params <file> -cache <dir> -issuer <hex> -reason <text> -operator <name> [-set-aside <hash>]...
+       bide identity reset-high-water -policy <file> -params <file> -cache <dir> -issuer <hex> -reason <text> -operator <name> [-set-aside <hash>]... [-accept-lost-listings]
        bide identity ack-reset -policy <file> -params <file> -cache <dir> -issuer <hex> -name <RESET-...json>
 
 Keep the CRLs of a certificate policy's issuing CAs current and archived:
@@ -332,7 +332,7 @@ func runReset(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fs := flag.NewFlagSet("bide identity reset-high-water", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: bide identity reset-high-water -policy <file> -params <file> -cache <dir> -issuer <hex> -reason <text> -operator <name> [-set-aside <sha256 hex>]...")
+		fmt.Fprintln(fs.Output(), "usage: bide identity reset-high-water -policy <file> -params <file> -cache <dir> -issuer <hex> -reason <text> -operator <name> [-set-aside <sha256 hex>]... [-accept-lost-listings]")
 		fs.PrintDefaults()
 	}
 	var c common
@@ -340,6 +340,7 @@ func runReset(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	issuer := issuerFlag(fs)
 	reason := fs.String("reason", "", "why the mark is reset (recorded in the archive)")
 	operator := fs.String("operator", "", "who resets it (recorded in the archive)")
+	accept := fs.Bool("accept-lost-listings", false, "allow the reset although a CRL set aside lists a revocation that no remaining CRL lists (the serials are recorded)")
 	var set hashList
 	fs.Var(&set, "set-aside", "the SHA-256 (hex) of an archived CRL to set aside; repeatable. Without it, the archived CRL at the current mark")
 	if st := parse(fs, args); st >= 0 {
@@ -368,7 +369,7 @@ func runReset(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if err := r.Seed(ctx); err != nil {
 		return failure("reset-high-water", stderr, "reading the archive: %v", err)
 	}
-	if err := r.ResetHighWater(ctx, ih, *reason, *operator, hashes...); err != nil {
+	if err := r.ResetHighWater(ctx, ih, audit.ResetRequest{Reason: *reason, Operator: *operator, SetAside: hashes, AcceptLostListings: *accept}); err != nil {
 		return failure("reset-high-water", stderr, "%v", err)
 	}
 	return 0

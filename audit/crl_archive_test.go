@@ -57,10 +57,10 @@ func TestPoisonedHighWaterMarkResetSurvivesARestart(t *testing.T) {
 		t.Fatal("a real CRL after a poisoned number was accepted without a reset")
 	}
 	ctx := context.Background()
-	if err := g.r.ResetHighWater(ctx, g.intK, "", "ops"); err == nil {
+	if err := g.r.ResetHighWater(ctx, g.intK, audit.ResetRequest{Operator: "ops"}); err == nil {
 		t.Fatal("a reset without a reason")
 	}
-	if err := g.r.ResetHighWater(ctx, g.intK, "CA issued number 1000000 by mistake", "dayna"); err != nil {
+	if err := g.r.ResetHighWater(ctx, g.intK, audit.ResetRequest{Reason: "CA issued number 1000000 by mistake", Operator: "dayna"}); err != nil {
 		t.Fatal(err)
 	}
 	if len(g.kinds(audit.EventHighWaterReset)) != 1 {

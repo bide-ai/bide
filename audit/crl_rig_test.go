@@ -345,3 +345,20 @@ func bigInt(n int64) *big.Int { return big.NewInt(n) }
 func pemCert(der []byte) []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }
+
+// rigRefresherFor builds a second refresher over the same PKI and archive with its own snapshot: another
+// process.
+func rigRefresherFor(t *testing.T, g *crig, arch audit.CRLArchive) *audit.CRLRefresher {
+	t.Helper()
+	snap := audit.NewStatusSnapshot(g.soFull...)
+	ap := *g.ap
+	ap.Status = snap
+	opts := g.opts
+	opts.Archive = arch
+	opts.Hooks = audit.RefresherHooks{}
+	r, err := audit.NewCRLRefresher(&ap, g.sources, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}

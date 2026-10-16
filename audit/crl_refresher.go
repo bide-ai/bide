@@ -105,6 +105,7 @@ const (
 	EventArchiveCorrupt   EventKind = "archive-corrupt"
 	EventClockSkew        EventKind = "clock-skew"
 	EventHighWaterReset   EventKind = "high-water-reset"
+	EventSetAsideServed   EventKind = "set-aside-served"
 	EventSourcesChanged   EventKind = "sources"
 	EventPanic            EventKind = "panic"
 	EventSeedStopped      EventKind = "seed-stopped"
@@ -172,6 +173,13 @@ type issuerRT struct {
 	timing issuerTiming
 	base   *feed
 	delta  *feed // nil when the CA publishes no deltas
+
+	// resetMu guards setAside and resetSeen: a fetched CRL is checked against the set under the read lock, a
+	// reset applies under the write lock.
+	resetMu   sync.RWMutex
+	setAside  map[string]bool // hex SHA-256 of CRLs an operator set aside
+	resetSeen string          // the reset records last applied
+	resetInit bool
 
 	mu       sync.Mutex
 	alarm    bool
@@ -415,6 +423,7 @@ func (r *CRLRefresher) startupEvents(clientGiven bool, warnings []string) {
 			Detail: fmt.Sprintf("urls=%v delta_urls=%v interval=%v limit=%v alarm_age=%v margin=%v",
 				redactAll(i.base.urls), redactAll(i.deltaURLs()), iv, i.timing.Limit, i.timing.alarmAge(iv), i.timing.margin())})
 	}
+	r.emit(Event{Kind: EventStartup, Detail: "policy digest " + r.appr.PolicyDigest() + ": compare it with the digest the gate records, so a copy of the declared values (bide identity -params) that differs from the gate's is noticed"})
 	if r.archive == nil {
 		r.emit(Event{Kind: EventStartup, Detail: "no archive: a restart forgets rollback protection and no dated series is kept"})
 	}
@@ -470,6 +479,22 @@ func (r *CRLRefresher) alarm(a Alarm) {
 	}
 	defer func() { _ = recover() }()
 	r.hooks.OnAlarm(a)
+}
+
+func (r *CRLRefresher) setValidator(url string, v validator) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if v == (validator{}) {
+		delete(r.validators, url)
+		return
+	}
+	r.validators[url] = v
+}
+
+func (r *CRLRefresher) clearValidators(urls []string) {
+	for _, u := range urls {
+		r.setValidator(u, validator{})
+	}
 }
 
 // Ready is closed once every issuer holds a fresh CRL. Nothing requires waiting for it: until then the
@@ -566,12 +591,14 @@ func (r *CRLRefresher) RefreshOnce(ctx context.Context) []IssuerResult {
 			defer wg.Done()
 			var err error
 			if i.delta != nil {
+				// A delta outage is reported, not failed: the base CRL alone is a complete status, and
+				// the freshness check below judges the merged view.
 				if _, e := i.delta.attempt(ctx); e != nil {
-					err = e
+					r.emit(Event{Kind: EventFetchFailed, Issuer: i.key, Feed: "delta", Err: e, Detail: "the delta feed failed; the pass is judged on the base and the freshness of what is held", At: r.now()})
 				}
 			}
 			if _, e := i.base.attempt(ctx); e != nil {
-				err = errors.Join(err, e)
+				err = e
 			}
 			if err == nil {
 				if h := i.health(r.now()); h.NewestThisUpdate.IsZero() || h.Critical {
