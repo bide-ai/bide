@@ -3,6 +3,7 @@
 package policyfile
 
 import (
+	"crypto/x509"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,4 +25,15 @@ func Read(path string) (*audit.CertIdentity, error) {
 	}
 	dir := filepath.Dir(path)
 	return audit.ParseIdentityPolicy(path, b, func(rel string) ([]byte, error) { return os.ReadFile(filepath.Join(dir, rel)) })
+}
+
+// ReadSources reads the refresher members of the policy file at path: where each issuing CA's CRLs are
+// fetched from, and the certificates of the pinned intermediates (audit.ParseCRLSources).
+func ReadSources(path string) (audit.CRLSources, []*x509.Certificate, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, configErr(path, err)
+	}
+	dir := filepath.Dir(path)
+	return audit.ParseCRLSources(path, b, func(rel string) ([]byte, error) { return os.ReadFile(filepath.Join(dir, rel)) })
 }

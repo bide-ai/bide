@@ -13,6 +13,7 @@ import (
 	"github.com/bide-ai/bide/cmd/bide/internal/demo"
 	"github.com/bide-ai/bide/cmd/bide/internal/doctor"
 	"github.com/bide-ai/bide/cmd/bide/internal/editcmd"
+	"github.com/bide-ai/bide/cmd/bide/internal/identitycmd"
 	"github.com/bide-ai/bide/cmd/bide/internal/initcmd"
 	"github.com/bide-ai/bide/cmd/bide/internal/migratecmd"
 	"github.com/bide-ai/bide/cmd/bide/internal/notifycmd"
@@ -83,6 +84,13 @@ func fullCommands() []command {
 				return approvecmd.Main(args, os.Stdin, stdout, stderr, approveStores)
 			},
 			exits: commonExits,
+		},
+		{
+			name:    "identity",
+			summary: "keep the CRLs of a certificate policy's issuers current and archived (fetch-crl), and reset a poisoned rollback mark",
+			run:     identitycmd.Main,
+			exits:   commonExits,
+			verbs:   identitycmd.Verbs(),
 		},
 		{
 			name:    "keygen",
