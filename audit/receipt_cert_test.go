@@ -211,3 +211,21 @@ func TestCertReceipt_AnchorTime(t *testing.T) {
 		t.Fatal("anchor time under the wrong log key")
 	}
 }
+
+// A receipt is of one record: the same decision journaled under another chain (or none) is not it.
+func TestCertReceipt_RefusesARecordWithAnotherChain(t *testing.T) {
+	f := newCertReceiptFx(t)
+	other := testca.NewRoot(t, "root2", testca.Opts{}).NewLeaf(t, testca.Opts{KeyWith: f.leaf.Key}).Chain()
+	for name, chain := range map[string][][]byte{
+		"another leaf":  other,
+		"no chain":      nil,
+		"a longer one":  append(append([][]byte{}, f.chain...), f.chain[0]),
+		"a shorter one": f.chain[:1],
+	} {
+		d := f.d
+		d.Cert = chain
+		if _, err := audit.NewDecisionReceipt(f.g.subject(t), d, f.rec, f.idx); !errors.Is(err, agent.ErrConfig) {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+}
