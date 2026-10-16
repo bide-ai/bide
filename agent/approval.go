@@ -1684,19 +1684,6 @@ func checkCertDecision(op string, d Decision, decidedAt string, flow bool, recs 
 	if !ok {
 		return none, fmt.Errorf("%s: approver %q: its certificate-bound verifier %T has no intake check (CertIntakeVerifier), so a decision cannot be vouched for before it is written: %w", op, d.ApproverID, cv, ErrConfig)
 	}
-	if len(d.Cert) == 0 {
-		return none, fmt.Errorf("%s: approver %q: %s: %w", op, d.ApproverID, ReasonNoCert, ErrInvalidApproval)
-	}
-	rec := Record{Name: "intake", Kind: StepApproval, ToolUseID: d.ToolUseID, Approved: d.Approved, ApproverSignature: &ApproverSignature{
-		Approver: d.ApproverID, ApproverAlg: d.Alg, Signature: d.Signature, DecidedAt: decidedAt, ApproverCert: d.Cert}}
-	cc := iv.VerifyCertIntake(CertDecision{Subject: s, Record: rec, Index: -1})
-	switch cc.Reason {
-	case "":
-	case ReasonStatusUnknown, ReasonStatusStale:
-		return none, fmt.Errorf("%s: approver %q: %s (%s): %w", op, d.ApproverID, cc.Reason, cc.Detail, ErrStatusUnavailable)
-	default:
-		return none, fmt.Errorf("%s: approver %q: %s (%s): %w", op, d.ApproverID, cc.Reason, cc.Detail, ErrInvalidApproval)
-	}
 	if flow {
 		i := slices.IndexFunc(recs, func(r Record) bool { return r.Name == ApprovalRequestStep(d.ToolUseID) })
 		recs = recs[i+1:]
@@ -1709,6 +1696,20 @@ func checkCertDecision(op string, d Decision, decidedAt string, flow bool, recs 
 			return decisionCheckResult{same: r.Name, s: s, v: cv, d: d, at: decidedAt, iv: iv}, nil
 		}
 		return none, fmt.Errorf("%s: approver %q already decided on call %q: %w", op, d.ApproverID, d.ToolUseID, ErrAlreadyDecided)
+	}
+	// No valid decision of the approver's is held: this one is judged before it is written.
+	if len(d.Cert) == 0 {
+		return none, fmt.Errorf("%s: approver %q: %s: %w", op, d.ApproverID, ReasonNoCert, ErrInvalidApproval)
+	}
+	rec := Record{Name: "intake", Kind: StepApproval, ToolUseID: d.ToolUseID, Approved: d.Approved, ApproverSignature: &ApproverSignature{
+		Approver: d.ApproverID, ApproverAlg: d.Alg, Signature: d.Signature, DecidedAt: decidedAt, ApproverCert: d.Cert}}
+	cc := iv.VerifyCertIntake(CertDecision{Subject: s, Record: rec, Index: -1})
+	switch cc.Reason {
+	case "":
+	case ReasonStatusUnknown, ReasonStatusStale:
+		return none, fmt.Errorf("%s: approver %q: %s (%s): %w", op, d.ApproverID, cc.Reason, cc.Detail, ErrStatusUnavailable)
+	default:
+		return none, fmt.Errorf("%s: approver %q: %s (%s): %w", op, d.ApproverID, cc.Reason, cc.Detail, ErrInvalidApproval)
 	}
 	return decisionCheckResult{s: s, v: cv, d: d, at: decidedAt, iv: iv}, nil
 }

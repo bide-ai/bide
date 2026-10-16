@@ -240,3 +240,84 @@ func TestIntake_SecondDecisionIsAlreadyDecided(t *testing.T) {
 		t.Fatalf("%d decision records", n)
 	}
 }
+
+// A decision already recorded is the same decision again even while status cannot be judged: the replay is a
+// no-op (nothing written), not a 503, so a client's retry loop ends.
+func TestIntake_ReplayDuringAStatusOutageIsStillTheSameDecision(t *testing.T) {
+	c := intakeGate(t)
+	if err := c.submit(c.decision("alice", nil), nil); err != nil {
+		t.Fatal(err)
+	}
+	c.status = nil // the outage
+	var wrote bool
+	if err := c.submit(c.decision("alice", nil), &wrote); err != nil || wrote {
+		t.Fatalf("replay during an outage: %v wrote=%v", err, wrote)
+	}
+	if n := c.decisionRecords(); n != 1 {
+		t.Fatalf("%d decision records", n)
+	}
+	// A different decision during the outage is still unavailable, not already decided or written.
+	deny := c.decision("alice", func(d *agent.Decision) {
+		d.Approved = false
+		l := c.leaves["alice"]
+		d.Signature = ed25519.Sign(l.Key.(ed25519.PrivateKey), agent.ApprovalDecisionBytesCert(c.subject(c.t), "alice", false, testDecidedAt, agent.CertLeafHash(l.DER)))
+	})
+	if err := c.submit(deny, nil); !errors.Is(err, agent.ErrAlreadyDecided) {
+		t.Fatalf("a different decision after one is held: %v", err)
+	}
+}
+
+// The same verdict and time under another leaf (a reissued certificate) is another decision, not the same
+// one, and the approver has already decided.
+func TestIntake_AnotherLeafIsAnotherDecision(t *testing.T) {
+	c := intakeGate(t)
+	if err := c.submit(c.decision("alice", nil), nil); err != nil {
+		t.Fatal(err)
+	}
+	reissued := c.inter.NewLeaf(t, testca.Opts{Key: testca.Ed25519, Mutate: validAround(t, 1)})
+	d := c.decision("alice", func(d *agent.Decision) {
+		d.Cert = reissued.Chain()
+		d.Signature = ed25519.Sign(reissued.Key.(ed25519.PrivateKey), agent.ApprovalDecisionBytesCert(c.subject(c.t), "alice", true, testDecidedAt, agent.CertLeafHash(reissued.DER)))
+	})
+	var wrote bool
+	if err := c.submit(d, &wrote); !errors.Is(err, agent.ErrAlreadyDecided) || wrote {
+		t.Fatalf("%v wrote=%v", err, wrote)
+	}
+	if n := c.decisionRecords(); n != 1 {
+		t.Fatalf("%d decision records", n)
+	}
+}
+
+// A record of the approver's that does not verify (a junk decision written without a check) does not hold
+// the approver's decision hostage: a valid one is still accepted.
+func TestIntake_AJunkRecordDoesNotBlockTheRealDecision(t *testing.T) {
+	c := intakeGate(t)
+	junk := c.decision("alice", func(d *agent.Decision) { d.Signature = append([]byte{}, d.Signature...); d.Signature[0] ^= 0xff })
+	if err := agent.SubmitDecision(context.Background(), c.store, junk); err != nil { // unchecked: as a direct writer could
+		t.Fatal(err)
+	}
+	if n := c.decisionRecords(); n != 1 {
+		t.Fatalf("setup: %d records", n)
+	}
+	var wrote bool
+	good := c.decision("alice", nil)
+	if err := c.submit(good, &wrote); err != nil || !wrote {
+		t.Fatalf("%v wrote=%v", err, wrote)
+	}
+}
+
+// The chain is judged at the time of the write, not at the signed time: a certificate valid when the
+// approver decided and expired since is refused.
+func TestIntake_JudgedAtTheTimeOfTheWriteNotTheSignedTime(t *testing.T) {
+	c := intakeGate(t)
+	late := testDecidedAt.Add(3 * time.Hour) // the leaf is valid until testDecidedAt+1h
+	c.now = func() time.Time { return late }
+	c.execNow = c.now
+	err := c.submit(c.decision("alice", nil), nil)
+	if !errors.Is(err, agent.ErrInvalidApproval) || !strings.Contains(err.Error(), "validity") {
+		t.Fatalf("%v", err)
+	}
+	if n := c.decisionRecords(); n != 0 {
+		t.Fatalf("%d records", n)
+	}
+}

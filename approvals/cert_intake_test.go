@@ -240,6 +240,19 @@ func TestCertIntake_AValidChainIsRecordedCountedAndReceipted(t *testing.T) {
 	if out["counted"] != true || gate["passed"] != true {
 		t.Fatalf("not counted: %v", out)
 	}
+	// Counted is not final: the status in hand predates the decision, so the count is a live, provisional
+	// one, and the response says so (tier, provisional, basis) beside counted: true.
+	decs, _ := gate["decisions"].([]any)
+	if len(decs) != 1 {
+		t.Fatalf("decisions: %v", gate["decisions"])
+	}
+	gd, _ := decs[0].(map[string]any)
+	if gd["tier"] != agent.TierProvisional || gd["provisional"] != true || gd["basis"] != agent.BasisLiveBeforeDecision {
+		t.Fatalf("a count on status that predates the decision is shown as final: %v", gd)
+	}
+	if out["anchored"] != true {
+		t.Fatalf("anchored: %v", out["anchored"])
+	}
 	// The receipt carries the chain.
 	rc, _ := out["receipt"].(map[string]any)
 	certs, _ := rc["cert"].([]any)
@@ -406,5 +419,120 @@ func TestCertIntake_BareKeyApproverUnchanged(t *testing.T) {
 		Signature: base64.StdEncoding.EncodeToString(sig)})
 	if status != http.StatusOK || out["recorded"] != true || out["counted"] != true {
 		t.Fatalf("%d %v", status, out)
+	}
+}
+
+// A bare-key decision's response carries no tier and no anchored member.
+func TestCertIntake_BareKeyResponseHasNoIdentityMembers(t *testing.T) {
+	r := newCertRig(t)
+	sig := ed25519.Sign(r.bobKey, agent.ApprovalDecisionBytes(r.subject(), "bob", true, r.base))
+	_, _, out := r.post(certBody{Run: runID, Call: "c1", Approver: "bob", Approved: true, DecidedAt: agent.FormatTimestamp(r.base), Alg: string(audit.AlgEd25519),
+		Signature: base64.StdEncoding.EncodeToString(sig)})
+	if _, ok := out["anchored"]; ok {
+		t.Fatalf("anchored on a bare-key response: %v", out)
+	}
+	gate, _ := out["gate"].(map[string]any)
+	for _, d := range gate["decisions"].([]any) {
+		m := d.(map[string]any)
+		if _, ok := m["tier"]; ok {
+			t.Fatalf("tier on a bare-key decision: %v", m)
+		}
+	}
+}
+
+// A replay of a recorded decision during a status outage is answered from the record (200, recorded false),
+// not 503: the decision is held, and a client retrying ends.
+func TestCertIntake_ReplayDuringAStatusOutageIsAnswered(t *testing.T) {
+	r := newCertRig(t)
+	if status, _, out := r.post(r.aliceBody()); status != 200 || out["recorded"] != true {
+		t.Fatalf("%d %v", status, out)
+	}
+	r.appr.Status = nil
+	before := r.records()
+	status, _, out := r.post(r.aliceBody())
+	if status != http.StatusOK || out["recorded"] != false || r.records() != before {
+		t.Fatalf("%d %v (records %d -> %d)", status, out, before, r.records())
+	}
+	// A replay that carries a different chain for the same leaf is the same decision and the receipt is of
+	// the journaled record (its chain), not of the request's.
+	b := r.aliceBody()
+	b.Cert = b.Cert[:1]
+	status, _, out = r.post(b)
+	rc, _ := out["receipt"].(map[string]any)
+	if status != http.StatusOK || out["recorded"] != false || len(rc["cert"].([]any)) != 2 {
+		t.Fatalf("%d %v", status, out)
+	}
+}
+
+// After the write the intake asks the store to anchor, and a failing anchor is not an error to the client:
+// the decision is recorded, and the response says whether a head covers it.
+type reanchorSpy struct {
+	agent.Store
+	calls int
+	err   error
+}
+
+func (s *reanchorSpy) Unwrap() agent.Store { return s.Store }
+func (s *reanchorSpy) Reanchor(context.Context, string) error {
+	s.calls++
+	return s.err
+}
+
+func TestCertIntake_AnchorsAfterTheWriteAndSaysWhenNotCovered(t *testing.T) {
+	r := newCertRig(t)
+	spy := &reanchorSpy{Store: agent.NewMemStore(), err: context.DeadlineExceeded}
+	j, err := agent.NewJournal(spy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A journal whose store can anchor (and fails to) and publishes no head the verifier can find.
+	r.app = j
+	r.appr.Heads = func(string) ([]audit.SignedTreeHead, error) { return nil, nil }
+	if err := r.run(); !agent.IsPause(err) {
+		t.Fatalf("%v", err)
+	}
+	h, err := approvals.New(j, r.verifiers, approvals.WithOnError(func(error) {}),
+		approvals.WithGatePolicy(func(string) (*agent.ApprovalPolicy, bool) { return r.policy(), true }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	r.srv = srv
+	status, _, out := r.post(r.aliceBody())
+	if status != http.StatusOK || out["recorded"] != true || spy.calls != 1 {
+		t.Fatalf("%d %v (anchor calls %d)", status, out, spy.calls)
+	}
+	if out["anchored"] != false || out["counted"] != false || out["reason"] != agent.ReasonNoCoveringHead {
+		t.Fatalf("a decision no head covers is presented as covered: %v", out)
+	}
+	// A bare-key decision does not ask the store to anchor.
+	sig := ed25519.Sign(r.bobKey, agent.ApprovalDecisionBytes(r.subject(), "bob", true, r.base))
+	r.post(certBody{Run: runID, Call: "c1", Approver: "bob", Approved: true, DecidedAt: agent.FormatTimestamp(r.base), Alg: string(audit.AlgEd25519), Signature: base64.StdEncoding.EncodeToString(sig)})
+	if spy.calls != 1 {
+		t.Fatalf("a bare-key decision made %d anchor calls", spy.calls)
+	}
+}
+
+// Gate.Identity lists person identifiers: it is behind the same authorization as the gate read, and a client
+// the hook denies learns none.
+func TestCertIntake_IdentityRuleIsBehindTheGateReadAuthorization(t *testing.T) {
+	deny := func(r *http.Request, a approvals.Access) error {
+		if a.Method == http.MethodGet && a.RunID != "" {
+			return approvals.ErrForbidden
+		}
+		return nil
+	}
+	r := newCertRig(t, approvals.WithAuth(deny))
+	req, _ := http.NewRequest(http.MethodGet, r.srv.URL+"/pending?run="+runID+"&call=c1", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(resp.Body)
+	if resp.StatusCode != http.StatusForbidden || bytes.Contains(buf.Bytes(), []byte(testca.Person(1))) {
+		t.Fatalf("%d %s", resp.StatusCode, buf.String())
 	}
 }

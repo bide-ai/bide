@@ -97,6 +97,10 @@ type Response struct {
 	// client that reports success must check it.
 	Counted bool   `json:"counted"`
 	Reason  string `json:"reason,omitempty"`
+	// Anchored is, for a certificate-bound decision, whether a signed head of the run covers it yet. A
+	// decision no head covers is recorded and does not count until one does (Counted false, Reason says
+	// so); the gate anchors before it tallies, so it is not lost. Absent for a bare-key decision.
+	Anchored *bool `json:"anchored,omitempty"`
 	// Receipt is the decision's receipt (audit.DecisionReceipt), built from the journal record, for
 	// the approver to keep: it carries the signed decision, the call's arguments, and where the
 	// journal holds the record. Record, Index, RecordedAt and LeafHash are the application's word. It
@@ -170,6 +174,15 @@ type GateDecision struct {
 	Approved bool   `json:"approved"`
 	Counted  bool   `json:"counted"`
 	Reason   string `json:"reason,omitempty"` // why it does not count
+	// For a decision of a certificate-bound approver, what the count rests on. Counted is true for a
+	// decision the gate counts, and that is not the same as final: Provisional says a later status could
+	// still change the answer (the status in hand predates the decision, as it usually does at intake, or
+	// its window is short), and Tier ("provisional", "logclock-final" or "independent-final") and Basis
+	// ("at-or-after-decision" or "live-before-decision") say how. Only a final tier is a verified one; an
+	// audit (bide audit verify-approvals) recomputes it. Absent for a bare-key approver's decision.
+	Tier        string `json:"tier,omitempty"`
+	Provisional bool   `json:"provisional,omitempty"`
+	Basis       string `json:"basis,omitempty"`
 }
 
 // Recorded is what OnRecorded is told about a decision this handler wrote.
@@ -773,7 +786,12 @@ func (h *Handler) gateChecks(g *gateRecords) (Gate, []agent.DecisionCheck) {
 	out := Gate{Need: need, Approvers: approvers, Approved: t.Approved, Denied: t.Denied,
 		Pending: slices.Clone(t.Pending), Excluded: slices.Clone(t.Excluded), Passed: t.Passed(), Failed: t.Unreachable(), Expired: g.st.Expired}
 	for _, c := range checks {
-		out.Decisions = append(out.Decisions, GateDecision{Approver: c.Approver, Approved: c.Approved, Counted: c.Counted, Reason: c.Reason})
+		gd := GateDecision{Approver: c.Approver, Approved: c.Approved, Counted: c.Counted, Reason: c.Reason}
+		if c.Counted && c.Cert != nil {
+			gd.Tier, gd.Basis = certTier(c.Cert), c.Cert.BasisKind
+			gd.Provisional = gd.Tier == agent.TierProvisional
+		}
+		out.Decisions = append(out.Decisions, gd)
 	}
 	for _, id := range approvers {
 		v, ok := h.verifiers(id)
@@ -1028,6 +1046,10 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 			resp.Recorded = false
 		}
 	}
+	if i := slices.IndexFunc(checks, func(c agent.DecisionCheck) bool { return c.Step == step }); i >= 0 && checks[i].Cert != nil {
+		anchored := checks[i].Reason != agent.ReasonNoCoveringHead
+		resp.Anchored = &anchored
+	}
 	resp.Record = step
 	writeJSON(w, http.StatusOK, resp)
 	if wrote {
@@ -1149,4 +1171,15 @@ func sameLeaf(a, b [][]byte) bool {
 		return len(a) == len(b)
 	}
 	return bytes.Equal(a[0], b[0])
+}
+
+// certTier is the tier the identity record would give a counted decision's finding.
+func certTier(c *agent.CertCheck) string {
+	switch {
+	case c.Tier != "final":
+		return agent.TierProvisional
+	case c.Time != "" && !strings.HasPrefix(c.Time, "log signer clock"):
+		return agent.TierIndependentFinal
+	}
+	return agent.TierLogclockFinal
 }
