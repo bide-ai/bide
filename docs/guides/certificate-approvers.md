@@ -154,15 +154,18 @@ documented procedure, and `bide-hsm approve -cert` signs with the same key once 
 These procedures were not run for this guide (the repository's KMS emulators implement the key and signing calls,
 not the vendors' request tooling), so none is reproduced here:
 
-- AWS KMS has no request call. AWS's PKCS#11 library, [aws-kms-pkcs11](https://github.com/AWS/aws-kms-pkcs11),
-  presents the key as a token key, to be used with the GnuTLS or OpenSSL commands above.
-- Google Cloud KMS: the PKCS#11 library `libkmsp11` in
-  [GoogleCloudPlatform/kms-integrations](https://github.com/GoogleCloudPlatform/kms-integrations) does the same,
-  and the library's documentation there covers using it with OpenSSL.
-- Azure Key Vault and Managed HSM: Microsoft's documentation, "Create and merge a CSR in Key Vault"
-  (<https://learn.microsoft.com/azure/key-vault/certificates/create-certificate-signing-request>), describes a
-  request generated inside the vault for a vault key. Check whether it puts a subject in the request; if so,
-  the CA replaces it.
+- AWS KMS has no operation that builds a certificate request, and AWS publishes no procedure or PKCS#11 library
+  for one. The request is the key's signature (the [Sign](https://docs.aws.amazon.com/kms/latest/APIReference/API_Sign.html)
+  operation) over the request's bytes, which a tool you trust must assemble; third-party PKCS#11 libraries for
+  KMS exist, and this guide neither tested nor endorses them.
+- Google Cloud KMS: the
+  [Cloud KMS PKCS #11 library with OpenSSL](https://cloud.google.com/kms/docs/reference/pkcs11-openssl) page has
+  a "Create a new certificate signing request" section for a Cloud HSM signing key (`openssl req -new` with the
+  library's engine). It shows a subject in the request; bide needs none, and the CA replaces it.
+- Azure Key Vault and Managed HSM: [Create and merge a CSR in Key Vault](https://learn.microsoft.com/azure/key-vault/certificates/create-certificate-signing-request)
+  generates the key pair in the vault and a request for it. The page has you enter a subject; the CA replaces it.
+
+The links were fetched and their content read on 2026-10-16, and the procedures were not run.
 
 After any of these, run the `bide-hsm pubkey` comparison above with the KMS key reference. A `bide-hsm csr` command
 that signs the request through the same key sources `bide-hsm approve` uses is on the [roadmap](../ROADMAP.md).
