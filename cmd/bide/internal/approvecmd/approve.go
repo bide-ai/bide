@@ -1151,6 +1151,10 @@ func (c *cmd) list(ctx context.Context) error {
 			}
 			line := func(approver string) {
 				cmdline, err := approveline.Command(tgt, run, g.ToolUseID, approver, "", "", g.Single)
+				if bound && slices.Contains(g.Identity.Approvers, approver) {
+					// A bare-key decision does not count for a certificate-bound approver.
+					cmdline, err = approveline.CertCommand(tgt, run, g.ToolUseID, approver)
+				}
 				if err == nil {
 					cmdline = c.src.rewriteLine(cmdline)
 				} else {
@@ -1166,9 +1170,6 @@ func (c *cmd) list(ctx context.Context) error {
 			case w.Settled != "":
 			default:
 				for _, id := range w.Pending { // a requester is never pending: the gate excludes them
-					if bound && slices.Contains(g.Identity.Approvers, id) {
-						continue // a bare-key decision does not count for a certificate-bound approver
-					}
 					line(id)
 				}
 			}
@@ -1192,6 +1193,7 @@ func (c *cmd) list(ctx context.Context) error {
 		return nil
 	}
 	fmt.Fprintf(c.out, "%s\n", st.Heading(fmt.Sprintf("%d call(s) wait for a decision:", len(out))))
+	anyCert := false
 	for _, w := range out {
 		fmt.Fprintf(c.out, "\n  run %s  call %s  tool %s\n", st.Bold(safe(w.Run)), st.Bold(safe(w.Call)), st.Bold(safe(w.Tool)))
 		if w.Single {
@@ -1231,12 +1233,16 @@ func (c *cmd) list(ctx context.Context) error {
 		c.listIdentity(w)
 		for _, cmdline := range w.Commands {
 			fmt.Fprintf(c.out, "    %s\n", st.Path(safe(cmdline)))
+			anyCert = anyCert || strings.Contains(cmdline, " -cert ")
 		}
 	}
 	if c.f.postgres != "" {
 		fmt.Fprintf(c.out, "\n%s\n", st.Dim("Set $"+defaultPostgresEnv+" to the DSN, or use -postgres-env with your own variable: the commands above never carry the DSN."))
 	}
 	fmt.Fprintf(c.out, "\n%s\n", st.Dim(c.src.ListHint))
+	if anyCert {
+		fmt.Fprintf(c.out, "%s\n", st.Dim("A command with -cert is for a certificate-bound approver (a bare-key decision does not count for them): replace '"+approveline.CertFilePlaceholder+"' with the PEM file of your certificate chain, leaf first, and '"+approveline.PolicyFilePlaceholder+"' with the identity policy file (docs/guides/certificate-approvers.md)."))
+	}
 	return nil
 }
 

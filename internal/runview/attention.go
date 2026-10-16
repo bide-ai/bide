@@ -76,6 +76,10 @@ type AttentionItem struct {
 	// certificate-bound ones. CertOnly: every pending approver is certificate-bound, so no command is shown.
 	CommandNote string `json:"command_note,omitempty"`
 	CertOnly    bool   `json:"cert_only,omitempty"`
+	// CertCommand is the bide approve -cert command for a gate with a pending certificate-bound approver
+	// (Options.ApproveCertCommand). When every pending approver is certificate-bound (CertOnly) it is the
+	// only command (Command is empty): a bare-key decision does not count for them.
+	CertCommand string `json:"cert_command,omitempty"`
 	// Notify says whether the item was notified and acknowledged; nil without the notify trail.
 	Notify *NotifyStatus `json:"notify,omitempty"`
 }
@@ -378,6 +382,17 @@ func (o Options) runItems(v *View, recs []agent.Record) []AttentionItem {
 			out = append(out, it)
 			continue
 		}
+		var bare, bound []string // the pending approvers of a gate with a certificate-bound approver, by kind
+		isBound := g.Identity != nil && g.Identity.Bound && !g.Single
+		if isBound {
+			for _, a := range g.Pending {
+				if slices.Contains(g.Identity.Approvers, a) {
+					bound = append(bound, a)
+				} else {
+					bare = append(bare, a)
+				}
+			}
+		}
 		if o.ApproveCommand != nil {
 			cmd, err := o.ApproveCommand(v.RunID, g.ToolUseID, g.Single)
 			switch {
@@ -388,15 +403,7 @@ func (o Options) runItems(v *View, recs []agent.Record) []AttentionItem {
 			default:
 				it.Command = cmd
 			}
-			if gi := g.Identity; gi != nil && gi.Bound && !g.Single {
-				var bare, bound []string
-				for _, a := range g.Pending {
-					if slices.Contains(gi.Approvers, a) {
-						bound = append(bound, a)
-					} else {
-						bare = append(bare, a)
-					}
-				}
+			if isBound {
 				switch {
 				case len(bare) == 0:
 					it.Command, it.NoCommand, it.CertOnly = "", "", true
@@ -404,6 +411,17 @@ func (o Options) runItems(v *View, recs []agent.Record) []AttentionItem {
 				case len(bound) > 0 && it.Command != "":
 					it.CommandNote = "for the bare-key approvers only (" + strings.Join(bare, ", ") + "): a bare-key decision does not count for " + strings.Join(bound, ", ") + ", who are certificate-bound"
 				}
+			}
+		}
+		if len(bound) > 0 && o.ApproveCertCommand != nil {
+			// The command that does count for them: bide approve -cert, with placeholders.
+			switch cmd, err := o.ApproveCertCommand(v.RunID, g.ToolUseID); {
+			case errors.Is(err, approveline.ErrUnsafe):
+				it.NoCommand = "no command (unsafe id)"
+			case err != nil:
+				it.NoCommand = "no command"
+			default:
+				it.CertCommand = cmd
 			}
 		}
 		out = append(out, it)
