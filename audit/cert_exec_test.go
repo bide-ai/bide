@@ -433,7 +433,7 @@ func TestVerifyCertExec_TierIsThePositionInTheChain(t *testing.T) {
 	}
 	// bob: certificate 0 is issued by interY (five hours old against one hour: stale there, at position 0), so
 	// give interY a fresh CRL; then interX, now at position 1 (a tier), passes under its 24 hours.
-	for n, at := int64(3), c.crlsAt.Add(30*time.Minute); !at.After(c.crlsAt.Add(5*time.Hour)); n, at = n+1, at.Add(30*time.Minute) {
+	for n, at := int64(3), c.crlsAt.Add(30*time.Minute); !at.After(c.crlsAt.Add(5 * time.Hour)); n, at = n+1, at.Add(30*time.Minute) {
 		add(interY, n, at) // interY keeps publishing every 30 minutes
 	}
 	got = approver("bob").VerifyCertExec(c.execDecision("bob"))
