@@ -242,7 +242,7 @@ func TestHoldReleasedByDeltaStaysRevoked(t *testing.T) {
 	base := s.lcrl(1, idT0, 24*hour, testca.Revoked(s.leaf.Cert, s.a.Add(-time.Minute), 6))
 	rel := testca.Revoked(s.leaf.Cert, s.a.Add(10*min), 8)
 	d := s.delta(2, 1, s.a.Add(20*min), 30*min, rel)
-	st := s.leafStatus(s.snap(base, d), audit.StatusParams{})
+	st := s.leafStatus(s.snap(base, d), audit.StatusParams{AllowHolds: true})
 	if !st.Revoked || st.ReasonCode != 6 {
 		t.Fatalf("%+v", st)
 	}
@@ -250,7 +250,7 @@ func TestHoldReleasedByDeltaStaysRevoked(t *testing.T) {
 	clean := s.lcrl(1, idT0, 24*hour)
 	rel = testca.Revoked(s.leaf.Cert, s.a.Add(-time.Minute), 8)
 	d = s.delta(2, 1, s.a.Add(20*min), 30*min, rel)
-	if st := s.leafStatus(s.snap(clean, d), audit.StatusParams{}); st.Revoked {
+	if st := s.leafStatus(s.snap(clean, d), audit.StatusParams{AllowHolds: true}); st.Revoked {
 		t.Fatalf("removeFromCRL read as a revocation: %+v", st)
 	}
 }
@@ -344,22 +344,22 @@ func TestRemoveFromCRLIsEvidenceOfAHold(t *testing.T) {
 	s := newStFx(t)
 	clean := s.lcrl(1, idT0, 24*hour)
 	during := s.delta(2, 1, s.a.Add(20*min), 30*min, testca.Revoked(s.leaf.Cert, s.a.Add(10*min), 8))
-	st := s.leafStatus(s.snap(clean, during), audit.StatusParams{})
+	st := s.leafStatus(s.snap(clean, during), audit.StatusParams{AllowHolds: true})
 	if !st.Revoked || st.ReasonCode != 6 || !st.E.Equal(s.leaf.Cert.NotBefore) {
 		t.Fatalf("a release dated after the decision: %+v", st)
 	}
 	after := s.delta(2, 1, s.a.Add(20*min), 30*min, testca.Revoked(s.leaf.Cert, s.a.Add(-time.Minute), 8))
-	if st := s.leafStatus(s.snap(clean, after), audit.StatusParams{}); st.Revoked {
+	if st := s.leafStatus(s.snap(clean, after), audit.StatusParams{AllowHolds: true}); st.Revoked {
 		t.Fatalf("a release dated before the decision: %+v", st)
 	}
 	// Exactly at the decision counts as during.
 	at := s.delta(2, 1, s.a.Add(20*min), 30*min, testca.Revoked(s.leaf.Cert, s.a, 8))
-	if st := s.leafStatus(s.snap(clean, at), audit.StatusParams{}); !st.Revoked {
+	if st := s.leafStatus(s.snap(clean, at), audit.StatusParams{AllowHolds: true}); !st.Revoked {
 		t.Fatalf("a release at the decision: %+v", st)
 	}
 	// Read even when the delta cannot be paired.
 	lone := s.delta(2, 1, s.a.Add(20*min), 30*min, testca.Revoked(s.leaf.Cert, s.a.Add(10*min), 8))
-	if st := s.leafStatus(s.snap(lone), audit.StatusParams{}); !st.Revoked {
+	if st := s.leafStatus(s.snap(lone), audit.StatusParams{AllowHolds: true}); !st.Revoked {
 		t.Fatalf("a lone release: %+v", st)
 	}
 }
@@ -471,5 +471,93 @@ func TestDeltasAreNotBases(t *testing.T) {
 	st := s.leafStatus(s.snap(d1, d2), audit.StatusParams{})
 	if st.Tier != audit.TierNoInformation || len(st.Used) != 0 {
 		t.Fatalf("%+v", st)
+	}
+}
+
+// Holds are off by default. A removeFromCRL date is the CA's own and RFC 5280 does not define it as
+// the release time, so a policy that has not opted in refuses any certificate that was ever on hold.
+func TestHoldsAreRefusedByDefault(t *testing.T) {
+	s := newStFx(t)
+	// A hold that begins after the decision: a revocation like any other would not touch it; under the
+	// default policy a hold is refused wholesale.
+	later := s.lcrl(1, idT0, 24*hour, testca.Revoked(s.leaf.Cert, s.a.Add(30*min), 6))
+	st := s.leafStatus(s.snap(later), audit.StatusParams{})
+	if !st.Revoked || !strings.Contains(st.Note, "AllowHolds") || st.Final() {
+		t.Fatalf("default: %+v", st)
+	}
+	if st := s.leafStatus(s.snap(later), audit.StatusParams{AllowHolds: true}); st.Revoked {
+		t.Fatalf("opted in, a hold after the decision: %+v", st)
+	}
+	// The fail-open case: the listing CRLs are omitted and the CA stamped the release entry with the
+	// original hold date, before the decision. Opted in, the entry reads as an old release and the
+	// decision passes; by default the entry alone refuses the certificate.
+	base := s.lcrl(1, idT0, 24*hour)
+	d := s.delta(2, 1, s.a.Add(20*min), 30*min, testca.Revoked(s.leaf.Cert, s.a.Add(-time.Hour), 8))
+	st = s.leafStatus(s.snap(base, d), audit.StatusParams{})
+	if !st.Revoked || !strings.Contains(st.Note, "AllowHolds") {
+		t.Fatalf("default, release entry alone: %+v", st)
+	}
+	if st := s.leafStatus(s.snap(base, d), audit.StatusParams{AllowHolds: true}); st.Revoked {
+		t.Fatalf("opted in, release entry dated before the decision: %+v", st)
+	}
+	// A certificate that was never on hold is unaffected.
+	if st := s.leafStatus(s.snap(s.lcrl(1, idT0, 24*hour)), audit.StatusParams{}); st.Revoked {
+		t.Fatalf("%+v", st)
+	}
+	// The chain's error names the reason.
+	cs := s.eval(s.snap(later), audit.StatusParams{})
+	wantStatusErr(t, cs.Err(), agent.ReasonRevoked)
+}
+
+// Where a listing bounds the hold's start, only decisions inside [start, release] are refused: not
+// everything from notBefore, and not everything after.
+func TestHoldIntervalIsBounded(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		at      time.Duration
+		revoked bool
+	}{
+		{"before the hold", 5 * min, false},
+		{"during the hold", 20 * min, true},
+		{"at the release", 30 * min, true},
+		{"after the release", 40 * min, false},
+	} {
+		s := newStFxAt(t, idT0.Add(tc.at))
+		base := s.lcrl(1, idT0.Add(12*min), 24*hour, testca.Revoked(s.leaf.Cert, idT0.Add(10*min), 6))
+		rel := s.delta(2, 1, idT0.Add(31*min), 30*min, testca.Revoked(s.leaf.Cert, idT0.Add(30*min), 8))
+		st := s.leafStatus(s.snap(base, rel), audit.StatusParams{AllowHolds: true})
+		if st.Revoked != tc.revoked {
+			t.Fatalf("%s: revoked=%v %+v", tc.name, st.Revoked, st)
+		}
+	}
+	// A second hold with no release is open-ended; the release of the first does not close it.
+	s := newStFxAt(t, idT0.Add(50*min))
+	base := s.lcrl(1, idT0.Add(12*min), 24*hour,
+		testca.Revoked(s.leaf.Cert, idT0.Add(10*min), 6), testca.Revoked(s.leaf.Cert, idT0.Add(40*min), 6))
+	rel := s.delta(2, 1, idT0.Add(31*min), 30*min, testca.Revoked(s.leaf.Cert, idT0.Add(30*min), 8))
+	if st := s.leafStatus(s.snap(base, rel), audit.StatusParams{AllowHolds: true}); !st.Revoked {
+		t.Fatalf("second, open hold: %+v", st)
+	}
+	// A release with no listing bounds nothing at the start: refused from notBefore to its date.
+	s = newStFxAt(t, idT0.Add(5*min))
+	only := s.delta(2, 1, idT0.Add(31*min), 30*min, testca.Revoked(s.leaf.Cert, idT0.Add(30*min), 8))
+	if st := s.leafStatus(s.snap(s.lcrl(1, idT0, 24*hour), only), audit.StatusParams{AllowHolds: true}); !st.Revoked {
+		t.Fatalf("release only: %+v", st)
+	}
+}
+
+// The merged view keeps the base's retention of expired entries, not the delta's alone.
+func TestMergedRetentionComesFromTheBase(t *testing.T) {
+	s := newStFx(t)
+	day := 24 * hour
+	pre := s.lcrl(1, idT0, 3*hour)
+	base := s.lcrl(2, idT0.Add(140*min), day) // no expiredCertsOnCRL
+	ind, _ := asn1.Marshal(big.NewInt(2))
+	d := s.inter.NewCRL(t, testca.CRLOpts{Number: 3, ThisUpdate: idT0.Add(150 * min), NextUpdate: idT0.Add(180 * min),
+		Extra: []pkix.Extension{ext(asn1.ObjectIdentifier{2, 5, 29, 27}, true, ind),
+			ext(asn1.ObjectIdentifier{2, 5, 29, 60}, false, genTime(t, idT0.Add(-24*hour)))}})
+	st := s.leafStatus(s.snap(pre, base, d), audit.StatusParams{CAPeriod: 3 * hour, W: 10 * min, MinW: 5 * min})
+	if st.S.Equal(idT0.Add(150*min)) || st.Unbounded {
+		t.Fatalf("only the delta claimed retention: %+v", st)
 	}
 }

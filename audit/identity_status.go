@@ -531,6 +531,14 @@ type StatusParams struct {
 	ConsecutiveNumbers bool
 	// CoverageTolerance absorbs publication jitter in time coverage (default one minute).
 	CoverageTolerance time.Duration
+	// AllowHolds accepts certificates that have been on hold (certificateHold, removeFromCRL). Off by
+	// default: a removeFromCRL entry's date is the CA's own (RFC 5280 does not define it as the
+	// release time), so a CA that stamps the original hold date makes a release look old and could hide
+	// a decision made during the hold when the CRLs that list the hold are missing. Without it any
+	// hold or release entry for the certificate refuses it wholesale. Banks should not use holds on
+	// approver certificates (revoke and re-issue); opt in only for a CA whose release dates have been
+	// checked (the conformance captures record what EJBCA and AD CS write).
+	AllowHolds bool
 }
 
 // CertStatus is the status finding for one certificate of a chain.
@@ -730,26 +738,64 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, evict
 	key := cert.SerialNumber.String()
 
 	// A listing in any CRL of the series is a revocation from its time on, whatever the CRL's date;
-	// a later CRL that no longer lists the serial does not undo it, and neither does a delta's
-	// removeFromCRL (a release never validates a decision made during the hold). Every CRL that
-	// verifies under the issuer is read for its listings, a delta that has no base included: a listing
-	// can only take trust away. A removeFromCRL entry exists only for a certificate that was on hold,
-	// so it is read as evidence of a hold of unknown start that ended on its date: a decision made
-	// no later than that date is refused.
+	// a later CRL that no longer lists the serial does not undo it. Every CRL that verifies under the
+	// issuer is read for its listings, a delta that has no base included: a listing can only take trust
+	// away. Holds are the exception to "from its time on", and are off by default (AllowHolds).
+	var holdStarts, releases []time.Time
+	var holdBy [32]byte
 	for _, v := range all {
 		for _, e := range v.entries[key] {
-			ev, code := effective(cert, e), e.code
-			if code == 8 {
-				if a.After(e.revoked) {
-					continue
+			if e.code == 6 || e.code == 8 {
+				if !p.AllowHolds {
+					st.Revoked, st.E, st.ReasonCode, st.RevokedBy = true, cert.NotBefore, e.code, v.hash
+					st.Note = "the certificate has been on hold (certificateHold or removeFromCRL), which this policy does not accept (StatusParams.AllowHolds)"
+					return st
 				}
-				ev, code = cert.NotBefore, 6
+				if e.code == 6 {
+					holdStarts = append(holdStarts, effective(cert, e))
+				} else {
+					releases = append(releases, e.revoked)
+				}
+				holdBy = v.hash
+				continue
 			}
-			if ev.After(a) || (isRoutine(code) && p.RoutineGrace > 0 && a.Before(ev.Add(p.RoutineGrace))) {
+			ev := effective(cert, e)
+			if ev.After(a) || (isRoutine(e.code) && p.RoutineGrace > 0 && a.Before(ev.Add(p.RoutineGrace))) {
 				continue
 			}
 			if !st.Revoked || ev.Before(st.E) {
-				st.Revoked, st.E, st.ReasonCode, st.Compromise, st.RevokedBy = true, ev, code, isCompromise(code), v.hash
+				st.Revoked, st.E, st.ReasonCode, st.Compromise, st.RevokedBy = true, ev, e.code, isCompromise(e.code), v.hash
+			}
+		}
+	}
+	// Opted in: a decision is refused inside a hold, [start, release]. A listing bounds the start; the
+	// release is the earliest removeFromCRL date at or after it, else the hold is open. A release with
+	// no listing before it is a hold of unknown start: refused from notBefore to its date.
+	if p.AllowHolds && !st.Revoked {
+		sort.Slice(holdStarts, func(i, j int) bool { return holdStarts[i].Before(holdStarts[j]) })
+		sort.Slice(releases, func(i, j int) bool { return releases[i].Before(releases[j]) })
+		used := make([]bool, len(releases))
+		inHold := func(start time.Time) {
+			if !st.Revoked || start.Before(st.E) {
+				st.Revoked, st.E, st.ReasonCode, st.RevokedBy = true, start, 6, holdBy
+				st.Note = "the decision falls inside a certificateHold"
+			}
+		}
+		for _, hs := range holdStarts {
+			end := time.Time{}
+			for i, r := range releases {
+				if !used[i] && !r.Before(hs) {
+					end, used[i] = r, true
+					break
+				}
+			}
+			if !a.Before(hs) && (end.IsZero() || !a.After(end)) {
+				inHold(hs)
+			}
+		}
+		for i, r := range releases {
+			if !used[i] && !a.After(r) {
+				inHold(cert.NotBefore)
 			}
 		}
 	}
@@ -781,12 +827,11 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, evict
 			continue
 		}
 		if b := paired[v]; b != nil {
-			m := &crlView{hash: v.hash, number: v.number, this: v.this, next: v.next, expiredFrom: v.expiredFrom, parts: [][32]byte{b.hash, v.hash}}
+			// Retention comes from the base alone: the delta lists what changed since it, and a
+			// retaining delta says nothing about the entries a pruning base already dropped.
+			m := &crlView{hash: v.hash, number: v.number, this: v.this, next: v.next, expiredFrom: b.expiredFrom, parts: [][32]byte{b.hash, v.hash}}
 			if v.next.After(b.next) {
 				m.next = b.next // the earlier nextUpdate governs: a stale base does not make a fresh delta fresh
-			}
-			if m.expiredFrom.IsZero() {
-				m.expiredFrom = b.expiredFrom
 			}
 			views = append(views, m)
 		}

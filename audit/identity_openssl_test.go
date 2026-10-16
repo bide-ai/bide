@@ -119,11 +119,16 @@ func TestOpenSSLFixtures(t *testing.T) {
 	if !st.Revoked || !st.E.Equal(osslAt(0, 0)) || !st.Compromise {
 		t.Fatalf("nodate: %+v", st)
 	}
-	// A hold counts as a revocation from its time on.
-	if st := f.leaf(sn, "held", "held", a, short); !st.Revoked || st.ReasonCode != 6 {
+	// Holds are refused by default; opted in, a hold counts as a revocation from its time on.
+	if st := f.leaf(sn, "held", "held", osslAt(11, 35), short); !st.Revoked || st.ReasonCode != 6 {
+		t.Fatalf("held, default policy: %+v", st)
+	}
+	holds := short
+	holds.AllowHolds = true
+	if st := f.leaf(sn, "held", "held", a, holds); !st.Revoked || st.ReasonCode != 6 {
 		t.Fatalf("held: %+v", st)
 	}
-	if st := f.leaf(sn, "held", "held", osslAt(11, 35), short); st.Revoked {
+	if st := f.leaf(sn, "held", "held", osslAt(11, 35), holds); st.Revoked {
 		t.Fatalf("held, decision before the hold: %+v", st)
 	}
 	// A routine reason inside RoutineGrace still counts; outside it does not.
