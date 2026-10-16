@@ -1012,6 +1012,8 @@ type IdentityDescriber interface {
 	DescribeIdentity() IdentityPolicyRecord
 	PolicyDigest() string
 	RosterDigest() string
+
+	VerifierInfo() (revision, goDebug string)
 }
 ```
 

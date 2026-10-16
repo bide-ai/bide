@@ -215,6 +215,7 @@ func TestCertGate_PendingNoteCarriesTheIdentityFields(t *testing.T) {
 // CRLs by hash.
 func TestCertGate_RecordsTheIdentityEnvironment(t *testing.T) {
 	c := newCertGate(t, 1, "alice")
+	c.goDebug = "x509sha1=1"
 	c.pause()
 	c.decideCert("alice", nil)
 	c.anchor(certA)

@@ -7,9 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"runtime"
-	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -262,9 +260,10 @@ func recordIdentity(ctx context.Context, j *Journal, runID string, s ApprovalSub
 	td := sha256.Sum256(tb)
 	rec := ApprovalIdentity{Format: ApprovalIdentityFormat, ToolUseID: s.ToolUseID, Generation: gen, Tally: tallyName, TallyDigest: hex.EncodeToString(td[:]),
 		Evaluated: EvaluatedLive, EvaluatedAt: clockFrom(ctx)().UTC().Format(time.RFC3339Nano), Rules: ApprovalIdentityRulesVer, Verifier: runtime.Version(),
-		VerifierRev: buildRevision(), GoDebug: x509GoDebug(), RecordedAt: noteStamp(clockFrom(ctx)), Decisions: []IdentityDecision{}}
+		RecordedAt: noteStamp(clockFrom(ctx)), Decisions: []IdentityDecision{}}
 	if desc != nil {
 		rec.Policy, rec.PolicyDigest, rec.RosterDigest = desc.DescribeIdentity(), desc.PolicyDigest(), desc.RosterDigest()
+		rec.VerifierRev, rec.GoDebug = desc.VerifierInfo()
 	}
 	byApprover := map[string]DecisionCheck{}
 	for _, c := range checks {
@@ -325,29 +324,6 @@ func recordIdentity(ctx context.Context, j *Journal, runID string, s ApprovalSub
 		return fmt.Errorf("record %s (run %s): %w (%w)", name, runID, err, ErrStorage)
 	}
 	return nil
-}
-
-// buildRevision is the vcs.revision the running binary was built from, or "".
-func buildRevision() string {
-	if bi, ok := debug.ReadBuildInfo(); ok {
-		for _, s := range bi.Settings {
-			if s.Key == "vcs.revision" {
-				return s.Value
-			}
-		}
-	}
-	return ""
-}
-
-// x509GoDebug is the x509 settings of GODEBUG in force (they change how certificates verify), or "".
-func x509GoDebug() string {
-	var keep []string
-	for _, kv := range strings.Split(os.Getenv("GODEBUG"), ",") {
-		if strings.HasPrefix(strings.TrimSpace(kv), "x509") {
-			keep = append(keep, strings.TrimSpace(kv))
-		}
-	}
-	return strings.Join(keep, ",")
 }
 
 // timeSource names where A(d) came from, as a TimeSource constant.

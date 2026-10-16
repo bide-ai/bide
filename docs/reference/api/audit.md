@@ -392,6 +392,14 @@ type CertApprover struct {
 	Now func() time.Time
 
 	RequesterIdentity func(principal string) (identifier string, ok bool)
+
+	ExecStatusAge time.Duration
+
+	PolicyEffectiveFrom time.Time
+
+	StatusArchive StatusArchive
+
+	GoDebug string
 }
 ```
 
@@ -400,11 +408,16 @@ CertApprover is the verifier of a certificate-bound approver (docs/design/approv
 **Methods**
 
 - `func (*CertApprover) Alg() agent.Alg`: Alg reports agent.AlgCertificate: the scheme is the leaf key's, known only from the certificate.
+- `func (c *CertApprover) ArchiveStatus(ctx context.Context, hash string, der []byte) error`: ArchiveStatus implements agent.StatusArchiver with the verifier's StatusArchive, if any.
+- `func (c *CertApprover) DescribeIdentity() agent.IdentityPolicyRecord`: DescribeIdentity implements agent.IdentityDescriber: the certificate policy and status values in force, every one that reaches a verdict, as the identity record keeps them (defaults filled in).
 - `func (c *CertApprover) HasIdentity(approverID string) bool`: HasIdentity implements agent.IdentityRoster: whether the policy's identity map names the approver id.
 - `func (c *CertApprover) IdentityMappingConfigured() bool`: IdentityMappingConfigured implements agent.IdentityRoster: whether RequesterIdentity is set.
 - `func (c *CertApprover) KeyIDs() []string`: KeyIDs is the approver's seat, "ident:" and the canonical identifier the policy's identity map gives the approver id, so two approver ids of one person fill one seat.
+- `func (c *CertApprover) PolicyDigest() string`: PolicyDigest implements agent.IdentityDescriber: the SHA-256 (lowercase hex) of the JSON of DescribeIdentity, written with encoding/json without HTML escaping, fields in declaration order and map keys sorted, which the pause note and the identity record both carry.
 - `func (c *CertApprover) RequesterIdentifier(principal string) (string, bool)`: RequesterIdentifier implements agent.IdentityRoster: RequesterIdentity if set; else the principal canonicalized as an identifier of the policy's kind, if it is one; else the roster's identifier of the approver id the principal equals.
 - `func (c *CertApprover) RosterDigest() string`: RosterDigest implements agent.IdentityRoster: the SHA-256 over the whole identity map (bare-key approvers included) in sorted approver order, each entry len32(approver) approver len32(identifier) identifier, so an id or identifier containing '=' or a newline cannot collide with another entry.
+- `func (c *CertApprover) ValidateConfig() error`: ValidateConfig checks the verifier's configuration when the gate is configured (agent calls it from the approver seat check, at build and on every evaluation): the policy and approver id, the status parameters (StatusParams.Validate), and the rule that the pre-execution status check cannot be fresher than the CA publishes: every CA period, the default and each per-issuer one, is at most half of ExecStatusAge (for the leaf's issuing CA; the per-CA tiers follow with the execution-time check), so the newest CRL available at execution is always fresh enough.
+- `func (c *CertApprover) VerifierInfo() (revision, goDebug string)`: VerifierInfo implements agent.IdentityDescriber: the build's vcs.revision, if the binary has one, and the x509 GODEBUG settings the operator declares (CertApprover.GoDebug).
 - `func (*CertApprover) Verify(message, sig []byte) bool`: Verify is always false: a bare signature over bytes, with no certificate, is never a certificate-bound approver's decision.
 - `func (c *CertApprover) VerifyCertDecision(cd agent.CertDecision) agent.CertCheck`: VerifyCertDecision implements agent.CertDecisionVerifier.
 
@@ -1674,6 +1687,7 @@ SignedTreeHead is a TreeHead with a signature over its canonical encoding under 
 
 **Methods**
 
+- `func (h SignedTreeHead) Hash() [32]byte`: Hash is the SHA-256 of the signed head's canonical encoding followed by its signature, length prefixed: what identifies this head, so two heads with the same size and root but different timestamps or signatures differ.
 - `func (sth SignedTreeHead) Verify(v Verifier) error`: Verify returns nil if the STH's signature is valid under v: the head is of format STHFormat, of a known kind and shape, signed under v's scheme, and its signature over its canonical encoding (scheme included) verifies.
 
 ## type Signer
@@ -1704,6 +1718,16 @@ SnapshotOption configures NewStatusSnapshot.
 - `func WithLimits(maxBytes, maxEntries int) SnapshotOption`: WithLimits sets the largest CRL accepted in bytes and in entries (defaults 16 MiB and 1,000,000).
 - `func WithMaxCRLs(n int) SnapshotOption`: WithMaxCRLs bounds how many CRLs the snapshot keeps (default 1024; a value below 1 keeps the default).
 - `func WithUnboundedCRLs() SnapshotOption`: WithUnboundedCRLs removes the bound on how many CRLs the snapshot keeps, for an audit tool that loads an archived series and must not lose any of it.
+
+## type StatusArchive
+
+```go
+type StatusArchive interface {
+	PutStatus(ctx context.Context, hash string, der []byte) error
+}
+```
+
+StatusArchive stores the bytes of a CRL too large for the journal (agent.MaxStatusInline) under its SHA-256 (lowercase hex), durably, before the gate records its hash.
 
 ## type StatusError
 
@@ -1757,6 +1781,10 @@ type StatusParams struct {
 ```
 
 StatusParams are the knobs of the status rule.
+
+**Methods**
+
+- `func (p StatusParams) Validate() error`: Validate checks the status parameters when a gate is configured, so a bad value fails at startup and not at the first decision.
 
 ## type StatusSnapshot
 

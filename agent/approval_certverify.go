@@ -114,4 +114,8 @@ type IdentityDescriber interface {
 	DescribeIdentity() IdentityPolicyRecord
 	PolicyDigest() string
 	RosterDigest() string
+	// VerifierInfo is the revision the verifier was built from (vcs.revision) and the x509 GODEBUG
+	// settings it runs under, for the record: the settings are explicit configuration, never read from
+	// the process environment by the engine.
+	VerifierInfo() (revision, goDebug string)
 }

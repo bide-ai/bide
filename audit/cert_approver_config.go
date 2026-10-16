@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"runtime/debug"
 	"slices"
 	"time"
 
@@ -195,4 +196,17 @@ func (c *CertApprover) ArchiveStatus(ctx context.Context, hash string, der []byt
 // SHA-256 (lowercase hex), durably, before the gate records its hash. Put must be idempotent.
 type StatusArchive interface {
 	PutStatus(ctx context.Context, hash string, der []byte) error
+}
+
+// VerifierInfo implements agent.IdentityDescriber: the build's vcs.revision, if the binary has one, and
+// the x509 GODEBUG settings the operator declares (CertApprover.GoDebug).
+func (c *CertApprover) VerifierInfo() (revision, goDebug string) {
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		for _, s := range bi.Settings {
+			if s.Key == "vcs.revision" {
+				revision = s.Value
+			}
+		}
+	}
+	return revision, c.GoDebug
 }

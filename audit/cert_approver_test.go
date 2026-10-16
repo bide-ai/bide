@@ -32,6 +32,7 @@ type certGate struct {
 	crlsAt  time.Time // when the status CRLs are issued
 	pending bool
 	archive audit.StatusArchive // the verifier's status archive, when set
+	goDebug string              // the x509 GODEBUG settings the verifier declares
 }
 
 // head times: the decision is signed at testDecidedAt and the head that first covers it is stamped
@@ -89,7 +90,7 @@ func (c *certGate) approver(id string) *audit.CertApprover {
 	return &audit.CertApprover{
 		ApproverID: id, Policy: c.ci, LogKey: audit.Ed25519Verifier{Pub: c.logPub},
 		Heads:  func(string) ([]audit.SignedTreeHead, error) { return c.heads, nil },
-		Status: c.status, StatusParams: c.params, Now: c.now, ExecStatusAge: 2 * time.Hour, StatusArchive: c.archive,
+		Status: c.status, StatusParams: c.params, Now: c.now, ExecStatusAge: 2 * time.Hour, StatusArchive: c.archive, GoDebug: c.goDebug,
 		PolicyEffectiveFrom: certA.Add(-24 * time.Hour),
 	}
 }

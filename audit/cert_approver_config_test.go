@@ -277,6 +277,7 @@ func TestIdentityPolicyRecordCoversEveryField(t *testing.T) {
 		"CertApprover.StatusParams":      "recorded field by field",
 		"CertApprover.Now":               "the evaluation clock",
 		"CertApprover.StatusArchive":     "where large CRLs go, not a verdict parameter",
+		"CertApprover.GoDebug":           "recorded in ApprovalIdentity.GoDebug, not a policy parameter",
 		"CertApprover.RequesterIdentity": "a function mapping requesters to identifiers; its default is the roster, committed by RosterDigest",
 	}
 	rec := reflect.TypeOf(agent.IdentityPolicyRecord{})

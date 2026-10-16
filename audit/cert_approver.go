@@ -67,6 +67,10 @@ type CertApprover struct {
 	// StatusArchive receives the bytes of a CRL above agent.MaxStatusInline, which the journal records
 	// by hash only. Without one the gate refuses to count on such a CRL.
 	StatusArchive StatusArchive
+	// GoDebug is the x509 settings of GODEBUG the process runs under (they change how certificates
+	// verify), as the operator declares them; the engine does not read the environment. It is recorded
+	// in the identity record.
+	GoDebug string
 }
 
 // Alg reports agent.AlgCertificate: the scheme is the leaf key's, known only from the certificate.
