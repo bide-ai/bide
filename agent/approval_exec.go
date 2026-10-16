@@ -85,7 +85,7 @@ func CheckExec(counted []CountedDecision, verifierFor ApproverVerifierFor) ExecV
 	for _, c := range counted {
 		var chk CertCheck
 		var ev CertExecVerifier
-		if av, ok := verifierFor(c.Approver); ok && av != nil {
+		if av, ok := verifierFor(c.Approver); ok {
 			ev, _ = av.(CertExecVerifier)
 		}
 		if ev == nil {

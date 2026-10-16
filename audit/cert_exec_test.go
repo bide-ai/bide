@@ -181,7 +181,7 @@ func TestVerifyCertExec_UndeclaredTierHolds(t *testing.T) {
 	}
 	a = c.approver("alice")
 	a.ExecStatusAge = 0
-	if got := a.VerifyCertExec(c.execDecision("alice")); got.Reason != agent.ReasonStatusUnknown || !strings.Contains(got.Detail, "ExecStatusAge") {
+	if got := a.VerifyCertExec(c.execDecision("alice")); got.Reason != agent.ReasonStatusUnknown || !strings.Contains(got.Detail, "declares no ExecStatusAge,") {
 		t.Fatalf("no ExecStatusAge: %+v", got)
 	}
 }
@@ -200,13 +200,13 @@ func TestVerifyCertExec_RevokedAfterCount(t *testing.T) {
 	} {
 		c := execGate(t)
 		later := c.crlsAt.Add(5 * time.Minute)
-		c.addCRLs(3, later, []x509.RevocationListEntry{testca.Revoked(c.leaves["alice"].Cert, tc.at, 0)}, nil)
+		c.addCRLs(3, later, []x509.RevocationListEntry{testca.Revoked(c.leaves["alice"].Cert, tc.at, 4)}, nil)
 		c.execNow = func() time.Time { return later.Add(time.Minute) }
 		got := c.execCheck()
 		if got.Reason != tc.want {
 			t.Fatalf("%s: %+v", tc.name, got)
 		}
-		if tc.want != "" && (got.Revocation == nil || got.Revocation.Serial != c.leaves["alice"].Cert.SerialNumber.String() || got.Revocation.ReasonCode != 0 ||
+		if tc.want != "" && (got.Revocation == nil || got.Revocation.Serial != c.leaves["alice"].Cert.SerialNumber.String() || got.Revocation.ReasonCode != 4 ||
 			len(got.Revocation.CRL) != 64 || got.Revocation.E == "") {
 			t.Fatalf("%s: revocation %+v", tc.name, got.Revocation)
 		}
@@ -313,8 +313,18 @@ func TestCertApprover_ValidateConfigTiers(t *testing.T) {
 		t.Fatalf("a weekly root tier: %v", err)
 	}
 	for name, mod := range map[string]func(*audit.CertApprover){
-		"the anchor declares nothing":             func(c *audit.CertApprover) { delete(c.ExecStatusAgeFor, rk) },
-		"the pinned intermediate declares none":   func(c *audit.CertApprover) { delete(c.ExecStatusAgeFor, ik) },
+		"the anchor declares nothing": func(c *audit.CertApprover) {
+			delete(c.ExecStatusAgeFor, rk)
+			delete(c.CAOverlapFor, rk)
+			delete(c.StatusParams.CAPeriodFor, rk)
+			delete(c.StatusParams.MaxStatusAgeFor, rk)
+		},
+		"the pinned intermediate declares nothing": func(c *audit.CertApprover) {
+			delete(c.ExecStatusAgeFor, ik)
+			delete(c.CAOverlapFor, ik)
+			delete(c.StatusParams.CAPeriodFor, ik)
+			delete(c.StatusParams.MaxStatusAgeFor, ik)
+		},
 		"no ExecStatusAgeFor at all":              func(c *audit.CertApprover) { c.ExecStatusAgeFor = nil },
 		"non-positive age":                        func(c *audit.CertApprover) { c.ExecStatusAgeFor[rk] = 0 },
 		"no CAPeriodFor for the root":             func(c *audit.CertApprover) { delete(c.StatusParams.CAPeriodFor, rk) },
@@ -326,7 +336,10 @@ func TestCertApprover_ValidateConfigTiers(t *testing.T) {
 		"period plus overlap above age":           func(c *audit.CertApprover) { c.ExecStatusAgeFor[rk] = 7*day + 12*time.Hour - time.Nanosecond },
 		"age above MaxStatusAgeFor":               func(c *audit.CertApprover) { c.StatusParams.MaxStatusAgeFor[rk] = 8*day - time.Nanosecond },
 		"negative overlap":                        func(c *audit.CertApprover) { c.CAOverlapFor[rk] = -time.Nanosecond },
-		"overlap above the period":                func(c *audit.CertApprover) { c.CAOverlapFor[ik] = time.Hour + time.Nanosecond },
+		"overlap above the period": func(c *audit.CertApprover) {
+			c.ExecStatusAgeFor[ik] = 3 * time.Hour // room, so only the overlap rule can refuse it
+			c.CAOverlapFor[ik] = time.Hour + time.Nanosecond
+		},
 		"a stray weekly CA with no tier": func(c *audit.CertApprover) {
 			c.StatusParams.CAPeriodFor[audit.SPKIHash{9}] = 2*time.Hour/2 + time.Nanosecond
 		},
@@ -336,6 +349,17 @@ func TestCertApprover_ValidateConfigTiers(t *testing.T) {
 		err := mk(mod).ValidateConfig()
 		if err == nil || !errors.Is(err, agent.ErrConfig) {
 			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// Each refusal says what is wrong, in its own words.
+	for want, mod := range map[string]func(*audit.CertApprover){
+		"no MaxStatusAgeFor":         func(c *audit.CertApprover) { delete(c.StatusParams.MaxStatusAgeFor, rk) },
+		"a declared age is positive": func(c *audit.CertApprover) { c.ExecStatusAgeFor[rk] = 0 },
+		"no CAPeriodFor":             func(c *audit.CertApprover) { delete(c.StatusParams.CAPeriodFor, rk) },
+		"no CAOverlapFor":            func(c *audit.CertApprover) { delete(c.CAOverlapFor, rk) },
+	} {
+		if err := mk(mod).ValidateConfig(); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("want %q: %v", want, err)
 		}
 	}
 	// The boundaries are accepted exactly: period plus overlap equal to the age, the age equal to
@@ -512,3 +536,21 @@ func TestCertApprover_TierValuesAreInTheDigest(t *testing.T) {
 }
 
 func hexOf(k audit.SPKIHash) string { return hex.EncodeToString(k[:]) }
+
+// Status issued before the decision counts at execution as in a live count (provisionally): the execution
+// check is not stricter about which CRLs are evidence, only about their age.
+func TestVerifyCertExec_AcceptsStatusIssuedBeforeTheDecision(t *testing.T) {
+	c := execGate(t)
+	sn := audit.NewStatusSnapshot(audit.WithLimits(agent.MaxStatusInline, 1_000_000))
+	for _, ca := range []*testca.CA{c.inter, c.root} {
+		if _, err := sn.AddCRL(ca.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: certA.Add(-time.Second), NextUpdate: certA.Add(48 * time.Hour)})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c.status = sn
+	c.execNow = func() time.Time { return certA.Add(10 * time.Second) }
+	got := c.execCheck()
+	if got.Reason != "" || got.Tier != "provisional" {
+		t.Fatalf("%+v", got)
+	}
+}

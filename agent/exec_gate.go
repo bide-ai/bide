@@ -52,7 +52,7 @@ func preExecute(ctx context.Context, j *Journal, runID, root, id string, pol *Ap
 		}
 		s := ApprovalSubject{RunID: runID, ToolUseID: id, ToolName: call.Name, Args: call.Args}
 		st := identChain(GateTallyValues(recs, id), id)
-		if !st.present || !st.decided {
+		if !st.decided {
 			// The gate holds, or has no outcome: count (which records the next generation when it passes).
 			tally, final, err := tallyGate(ctx, j, runID, s, pol, vf, since)
 			if err != nil {

@@ -85,3 +85,17 @@ func TestCheckExec(t *testing.T) {
 		t.Fatalf("%+v", f)
 	}
 }
+
+// A revocation found first is not downgraded to a wait by a stale status found later.
+func TestCheckExec_AReaskIsNotDowngradedByALaterWait(t *testing.T) {
+	var n int
+	stubs := map[string]agent.ApproverVerifier{
+		"rev":   execStub{calls: &n, check: agent.CertCheck{Reason: agent.ReasonRevoked}},
+		"stale": execStub{calls: &n, check: agent.CertCheck{Reason: agent.ReasonStatusStale}},
+	}
+	vf := func(id string) (agent.ApproverVerifier, bool) { v, ok := stubs[id]; return v, ok }
+	got := agent.CheckExec([]agent.CountedDecision{{Approver: "rev"}, {Approver: "stale"}}, vf)
+	if got.Outcome != agent.ExecReask || len(got.Failed) != 2 {
+		t.Fatalf("%+v", got)
+	}
+}

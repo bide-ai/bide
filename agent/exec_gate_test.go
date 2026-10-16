@@ -2,11 +2,15 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"go/ast"
 	"go/token"
+	"iter"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -551,3 +555,192 @@ func TestPreExecute_IsOnTheOnlyPathToTheTool(t *testing.T) {
 // allowedToolCallSites are functions of package agent that call a Call(ctx, args) method on something that
 // is not a tool registered with an Agent (a model, an adapter of the package's own).
 var allowedToolCallSites = map[string]bool{}
+
+// ---- errors before the call is begun record nothing ----
+
+// loadFailStore fails Load once, after the identity tally of generation 0 is inserted: the History read
+// that preExecute makes immediately before the call.
+type loadFailStore struct {
+	Store
+	afterTally string
+	armed      atomic.Bool
+	failed     atomic.Bool
+}
+
+func (s *loadFailStore) Unwrap() Store { return s.Store }
+func (s *loadFailStore) Insert(ctx context.Context, runID, name string, data []byte) (Entry, bool, error) {
+	e, ok, err := s.Store.Insert(ctx, runID, name, data)
+	if err == nil && name == s.afterTally {
+		s.armed.Store(true)
+	}
+	return e, ok, err
+}
+func (s *loadFailStore) Load(ctx context.Context, runID string, after int64) iter.Seq2[Entry, error] {
+	if s.armed.Load() && s.failed.CompareAndSwap(false, true) {
+		return func(yield func(Entry, error) bool) { yield(Entry{}, errors.New("store blip")) }
+	}
+	return s.Store.Load(ctx, runID, after)
+}
+
+// A store fault in the check before the call is not the tool's result: the run fails, nothing is recorded as
+// the call's result, the tool is not called, and a re-drive runs it.
+func TestPreExecute_AStoreFaultRecordsNothing(t *testing.T) {
+	g := newBoundGate(t)
+	st := &loadFailStore{Store: NewMemStore(), afterTally: ApprovalIdentTallyStep("c1", 0)}
+	g.store = mustJournal(st)
+	_, _ = g.run()
+	g.decide("alice")
+	_, err := g.run()
+	if !errors.Is(err, ErrStorage) || g.charged != 0 {
+		t.Fatalf("the faulty drive: %v charged %d", err, g.charged)
+	}
+	if _, ok := hasStep(t, g.store, "r1", ToolResultStep("c1")); ok {
+		t.Fatal("the store fault was recorded as the tool's result")
+	}
+	if _, err := g.run(); err != nil || g.charged != 1 {
+		t.Fatalf("the re-drive: %v charged %d", err, g.charged)
+	}
+}
+
+// A misconfiguration in the check (a tally with no identity record to re-check) is not the tool's result
+// either: the run fails with ErrConfig and the call is not recorded as failed.
+func TestPreExecute_AMisconfigurationRecordsNothing(t *testing.T) {
+	g := newBoundGate(t)
+	_, _ = g.run()
+	g.decide("alice")
+	writeRaw(t, g.store, "r1", ApprovalIdentTallyStep("c1", 0), valueRec(t, ApprovalIdentTallyStep("c1", 0), passedTally()))
+	_, err := g.run()
+	if !errors.Is(err, ErrConfig) || g.charged != 0 {
+		t.Fatalf("%v charged %d", err, g.charged)
+	}
+	if _, ok := hasStep(t, g.store, "r1", ToolResultStep("c1")); ok {
+		t.Fatal("the misconfiguration was recorded as the tool's result")
+	}
+}
+
+// ---- the pieces ----
+
+// identityRecordFor takes exactly the record that belongs to the tally: its generation, tally name, digest,
+// format and call must all agree.
+func TestIdentityRecordFor_MatchesEveryField(t *testing.T) {
+	tally := valueRec(t, ApprovalIdentTallyStep("c1", 2), passedTally())
+	sum := sha256.Sum256(tally.Result)
+	good := ApprovalIdentity{Format: ApprovalIdentityFormat, ToolUseID: "c1", Generation: 2, Tally: tally.Name, TallyDigest: hex.EncodeToString(sum[:])}
+	rec := func(name string, ir ApprovalIdentity) []Record { return []Record{valueRec(t, name, ir)} }
+	if _, ok := identityRecordFor(rec(ApprovalIdentityStep("c1", 2), good), "c1", 2, tally); !ok {
+		t.Fatal("the matching record")
+	}
+	// The digest-named variant (a crash left another record under the plain name) is found too.
+	other := good
+	other.TallyDigest = "00"
+	both := append(rec(ApprovalIdentityStep("c1", 2), other), valueRec(t, ApprovalIdentityDigestStep("c1", 2, good.TallyDigest), good))
+	if _, ok := identityRecordFor(both, "c1", 2, tally); !ok {
+		t.Fatal("the digest-named record")
+	}
+	for name, mod := range map[string]func(*ApprovalIdentity){
+		"generation": func(x *ApprovalIdentity) { x.Generation = 1 },
+		"tally name": func(x *ApprovalIdentity) { x.Tally = ApprovalIdentTallyStep("c1", 1) },
+		"digest":     func(x *ApprovalIdentity) { x.TallyDigest = "ab" },
+		"format":     func(x *ApprovalIdentity) { x.Format = "bide.approval-identity.v1" },
+		"call":       func(x *ApprovalIdentity) { x.ToolUseID = "c2" },
+	} {
+		bad := good
+		mod(&bad)
+		if _, ok := identityRecordFor(rec(ApprovalIdentityStep("c1", 2), bad), "c1", 2, tally); ok {
+			t.Errorf("a record with another %s is taken", name)
+		}
+	}
+	// A record under another name (a different generation's) is not looked at.
+	if _, ok := identityRecordFor(rec(ApprovalIdentityStep("c1", 3), good), "c1", 2, tally); ok {
+		t.Error("a record named for another generation is taken")
+	}
+}
+
+// A decision is found by its step name, kind and approver; a record that only shares a name is not one.
+func TestCountedDecisions_MatchEveryField(t *testing.T) {
+	ir := ApprovalIdentity{Decisions: []IdentityDecision{{Approver: "alice", Step: "approval:c1:alice:00"}}}
+	s := ApprovalSubject{ToolUseID: "c1"}
+	notDecision := Record{Name: "approval:c1:alice:00", Kind: StepValue, ToolUseID: "c1"}
+	otherCall := certRec("approval:c1:alice:00", "alice")
+	otherCall.ToolUseID = "c2"
+	otherName := certRec("approval:c1:alice:01", "alice")
+	for name, r := range map[string]Record{"a value record": notDecision, "another call": otherCall, "another name": otherName, "another approver": certRec("approval:c1:alice:00", "bob")} {
+		if cds := countedDecisions([]Record{r}, s, ir); cds[0].Decision.Index != -1 {
+			t.Errorf("%s is taken", name)
+		}
+	}
+}
+
+// describedVerifier makes a fake verifier describe its policy, for the exec hold's digest.
+type describedVerifier struct{ *fakeCertVerifier }
+
+func (describedVerifier) DescribeIdentity() IdentityPolicyRecord { return IdentityPolicyRecord{} }
+func (describedVerifier) PolicyDigest() string                   { return "digest-of-the-policy" }
+func (describedVerifier) RosterDigest() string                   { return "roster" }
+func (describedVerifier) VerifierInfo() (string, string)         { return "", "" }
+
+// The hold names the failure that cannot mend (a revocation first), carries its evidence, and the policy
+// digest; without a revocation the reason code is -1.
+func TestWriteExecHold_Content(t *testing.T) {
+	ctx := context.Background()
+	g := newBoundGate(t)
+	_, _ = g.run()
+	s := subjectOf(t, g.store, "r1", "c1")
+	vf := func(id string) (ApproverVerifier, bool) {
+		switch id {
+		case "alice":
+			return describedVerifier{g.alice}, true
+		case "bob":
+			return g.bob, true
+		}
+		return nil, false
+	}
+	read := func(gen int) ExecHold {
+		r, ok := hasStep(t, g.store, "r1", ApprovalExecHoldStep("c1", gen))
+		if !ok {
+			t.Fatal("no hold")
+		}
+		var h ExecHold
+		if err := json.Unmarshal(r.Result, &h); err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+	rev := &CertRevocation{Serial: "9", E: "2026-10-13T12:00:00Z", ReasonCode: 5, CRL: "cd"}
+	// A wait first, then a bad signature, then a revocation: the revocation names the hold.
+	v := ExecVerdict{Outcome: ExecReask, Checked: 3, Failed: []ExecFailure{
+		{Approver: "a", Reason: ReasonStatusStale}, {Approver: "b", Reason: ReasonBadSig}, {Approver: "c", Reason: ReasonRevoked, Revocation: rev, Anchored: "2026-10-13T12:14:13Z", StatusTime: "s"}}}
+	if err := writeExecHold(ctx, g.store, "r1", s, g.pol, vf, 0, v); err != nil {
+		t.Fatal(err)
+	}
+	h := read(0)
+	if h.Reason != ReasonRevoked || h.Serial != "9" || h.E != "2026-10-13T12:00:00Z" || h.ReasonCode != 5 || h.CRLHash != "cd" || h.AnchoredAt != "2026-10-13T12:14:13Z" ||
+		h.StatusTime != "s" || !slices.Equal(h.Approvers, []string{"a", "b", "c"}) || h.PolicyDigest != "digest-of-the-policy" || h.Generation != 0 {
+		t.Fatalf("%+v", h)
+	}
+	// A wait is never the reason, and without a revocation the reason code is -1.
+	v2 := ExecVerdict{Outcome: ExecReask, Checked: 2, Failed: []ExecFailure{{Approver: "a", Reason: ReasonStatusStale}, {Approver: "b", Reason: ReasonBadSig}}}
+	if err := writeExecHold(ctx, g.store, "r1", s, g.pol, vf, 1, v2); err != nil {
+		t.Fatal(err)
+	}
+	if h := read(1); h.Reason != ReasonBadSig || h.ReasonCode != -1 || h.Serial != "" || h.Generation != 1 {
+		t.Fatalf("%+v", h)
+	}
+}
+
+// A recorded denial that has an identity record and no decisions to re-check still does not approve the
+// call: the check refuses it, whatever the records around it say.
+func TestPreExecute_ADeniedTallyWithItsIdentityRecordDoesNotRun(t *testing.T) {
+	g := newBoundGate(t)
+	_, _ = g.run()
+	vf := certResolver(map[string]ApproverVerifier{"alice": g.alice, "bob": g.bob})
+	name := ApprovalIdentTallyStep("c1", 0)
+	writeRaw(t, g.store, "r1", name, valueRec(t, name, deniedTally()))
+	tr, _ := hasStep(t, g.store, "r1", name)
+	sum := sha256.Sum256(tr.Result)
+	ir := ApprovalIdentity{Format: ApprovalIdentityFormat, ToolUseID: "c1", Generation: 0, Tally: name, TallyDigest: hex.EncodeToString(sum[:])}
+	writeRaw(t, g.store, "r1", ApprovalIdentityStep("c1", 0), valueRec(t, ApprovalIdentityStep("c1", 0), ir))
+	if err := preExecute(context.Background(), g.store, "r1", "r1", "c1", g.pol, vf, ""); !errors.Is(err, ErrConfig) {
+		t.Fatalf("%v", err)
+	}
+}
