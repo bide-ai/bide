@@ -206,7 +206,7 @@ func gateTallyRecords(get func(name string) (Record, bool, error), toolUseID str
 var ErrGateNeedsNewRun = errors.New("the gate needs a new run")
 
 // journalBound reports what the journal says of the gate of toolUseID, whatever the policy is now: that
-// it is certificate-bound (an identity tally, an exec hold, or a pending or phase note with
+// it is certificate-bound (an identity tally, an identity record, an exec hold, or a pending or phase note with
 // identity_bound), and the identity_kinds digest of the newest note that says so ("" when none does).
 // A gate that is bound is never counted with bare keys: a policy or resolver that lost its
 // certificate-bound approvers (a downgrade, a replica configured without them) is refused.
@@ -215,11 +215,14 @@ func journalBound(recs []Record, toolUseID string) (bound bool, kinds string) {
 	pausePrefix := "approval-pause:" + encodeID(toolUseID) + ":"
 	tallyPrefix := ApprovalTallyStep(toolUseID) + ":ident"
 	holdPrefix := "approval-exec-hold:" + encodeID(toolUseID) + ":"
+	identityPrefix := "approval-identity:" + encodeID(toolUseID) + ":"
 	for _, r := range recs {
 		if r.Kind != StepValue {
 			continue
 		}
 		switch {
+		case strings.HasPrefix(r.Name, identityPrefix):
+			bound = true
 		case r.Name == tallyPrefix || strings.HasPrefix(r.Name, tallyPrefix+"-reask:") || strings.HasPrefix(r.Name, holdPrefix):
 			bound = true
 		case r.Name == pending || strings.HasPrefix(r.Name, pending+":") || strings.HasPrefix(r.Name, pausePrefix):

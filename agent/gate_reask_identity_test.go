@@ -591,3 +591,14 @@ func TestEvaluateGate_BoundNeedsNewRun(t *testing.T) {
 		t.Fatalf("%+v", st)
 	}
 }
+
+// An identity record alone (a crash after it, before the tally) makes the gate bound.
+func TestBoundGate_IdentityRecordMakesItBound(t *testing.T) {
+	recs := []Record{valueRec(t, ApprovalIdentityStep("c1", 0), ApprovalIdentity{Format: ApprovalIdentityFormat, ToolUseID: "c1"})}
+	if bound, _ := journalBound(recs, "c1"); !bound {
+		t.Fatal("an identity record does not make the gate bound")
+	}
+	if bound, _ := journalBound(recs, "c2"); bound {
+		t.Fatal("another call's identity record makes the gate bound")
+	}
+}
