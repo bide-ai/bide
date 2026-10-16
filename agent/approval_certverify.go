@@ -48,6 +48,9 @@ type CertCheck struct {
 	Window string
 	// Warnings are findings that do not change the outcome (a series gap against the declared period).
 	Warnings []string
+	// Revocation says which certificate of the chain is revoked, when Reason is ReasonRevoked and the
+	// verifier can tell: it goes into the exec hold the pre-execution check writes.
+	Revocation *CertRevocation
 	// Chain is the SHA-256 (lowercase hex) of each certificate of the accepted chain, leaf first,
 	// Anchor that of the trust anchor's SubjectPublicKeyInfo the chain ends at, and HeadSize the size
 	// of the signed head that first covers the decision: what the gate records in ApprovalIdentity.

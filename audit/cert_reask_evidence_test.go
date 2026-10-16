@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"slices"
 	"testing"
@@ -131,6 +132,9 @@ type certLike struct {
 func (certLike) Alg() agent.Alg                  { return agent.AlgCertificate }
 func (certLike) Verify(message, sig []byte) bool { return false }
 func (c certLike) KeyIDs() []string              { return []string{"ident:" + c.id} }
+func (c certLike) VerifyCertExec(cd agent.CertDecision) agent.CertCheck {
+	return c.VerifyCertDecision(cd)
+}
 func (c certLike) VerifyCertDecision(cd agent.CertDecision) agent.CertCheck {
 	decidedAt, err := agent.ParseTimestamp(cd.Record.DecidedAt())
 	if err != nil || !ed25519.Verify(c.pub, agent.ApprovalDecisionBytes(cd.Subject, cd.Record.Approver(), cd.Record.Approved, decidedAt), cd.Record.Signature()) {
@@ -185,6 +189,18 @@ func holdChainGateAt(t *testing.T, holdLate, holdEarly bool) *gate {
 	// The gate's re-ask note for generation 1, as the pause at the hold wrote it.
 	put(agent.ApprovalIdentReaskStep("c1", 1), agent.ApprovalWait{ToolUseID: "c1", Need: 1, Approvers: []string{"alice", "bob"}, RecordedAt: "2026-10-16T04:26:58.000Z", Reask: agent.PendingExecHoldReapproval, Supersedes: agent.ApprovalIdentTallyStep("c1", 0)})
 	put(agent.ApprovalIdentTallyStep("c1", 1), t1)
+	// The identity record of generation 1, which the pre-execution check reads to find the counted decisions.
+	history, _ := g.store.History(context.Background(), gateRun)
+	for _, r := range history {
+		if r.Name == agent.ApprovalIdentTallyStep("c1", 1) {
+			sum := sha256.Sum256(r.Result)
+			ir := agent.ApprovalIdentity{Format: agent.ApprovalIdentityFormat, ToolUseID: "c1", Generation: 1, Tally: r.Name, TallyDigest: hex.EncodeToString(sum[:])}
+			for i, a := range []string{"alice", "bob"} {
+				ir.Decisions = append(ir.Decisions, agent.IdentityDecision{Approver: a, Step: steps[i]})
+			}
+			put(agent.ApprovalIdentityStep("c1", 1), ir)
+		}
+	}
 	if holdLate {
 		put(agent.ApprovalExecHoldStep("c1", 0), hold)
 	}

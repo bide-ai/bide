@@ -58,9 +58,14 @@ func TestStatusParams_Validate(t *testing.T) {
 
 func TestCertApprover_ValidateConfig(t *testing.T) {
 	cg := newCertGate(t, 1, "alice")
+	rk, ik := audit.SPKIHashOf(cg.root.Cert), audit.SPKIHashOf(cg.inter.Cert)
 	mk := func(mod func(*audit.CertApprover)) *audit.CertApprover {
-		c := &audit.CertApprover{ApproverID: "alice", Policy: cg.ci, StatusParams: audit.StatusParams{CAPeriod: time.Hour, MaxStatusAge: time.Hour},
-			ExecStatusAge: 2 * time.Hour, PolicyEffectiveFrom: testDecidedAt}
+		// The policy pins the intermediate, so the intermediate and the root declare their tier values.
+		c := &audit.CertApprover{ApproverID: "alice", Policy: cg.ci, StatusParams: audit.StatusParams{CAPeriod: time.Hour, MaxStatusAge: time.Hour,
+			CAPeriodFor:     map[audit.SPKIHash]time.Duration{rk: 24 * time.Hour, ik: time.Hour},
+			MaxStatusAgeFor: map[audit.SPKIHash]time.Duration{rk: 14 * 24 * time.Hour, ik: 4 * time.Hour}},
+			ExecStatusAge: 2 * time.Hour, ExecStatusAgeFor: map[audit.SPKIHash]time.Duration{rk: 7 * 24 * time.Hour, ik: 2 * time.Hour},
+			CAOverlapFor: map[audit.SPKIHash]time.Duration{rk: 0, ik: 0}, PolicyEffectiveFrom: testDecidedAt}
 		mod(c)
 		return c
 	}
@@ -73,7 +78,8 @@ func TestCertApprover_ValidateConfig(t *testing.T) {
 		t.Fatalf("CAPeriod above ExecStatusAge/2: %v", err)
 	}
 	err = mk(func(c *audit.CertApprover) {
-		c.StatusParams.CAPeriodFor = map[audit.SPKIHash]time.Duration{audit.SPKIHashOf(cg.inter.Cert): 4 * time.Hour}
+		// an issuer that is no declared tier: a stray period above ExecStatusAge/2 is refused
+		c.StatusParams.CAPeriodFor[audit.SPKIHash{9}] = 4 * time.Hour
 	}).ValidateConfig()
 	if err == nil || !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("a per-issuer CAPeriod above ExecStatusAge/2: %v", err)
@@ -97,7 +103,12 @@ func TestCertApprover_ValidateConfig(t *testing.T) {
 // stops the policy from validating, naming the approver.
 func TestApprovalPolicy_ValidateKeysRunsTheVerifiersConfigCheck(t *testing.T) {
 	cg := newCertGate(t, 1, "alice")
-	bad := &audit.CertApprover{ApproverID: "alice", Policy: cg.ci, StatusParams: audit.StatusParams{CAPeriod: time.Hour}, ExecStatusAge: time.Hour, PolicyEffectiveFrom: testDecidedAt}
+	rk, ik := audit.SPKIHashOf(cg.root.Cert), audit.SPKIHashOf(cg.inter.Cert)
+	bad := &audit.CertApprover{ApproverID: "alice", Policy: cg.ci, StatusParams: audit.StatusParams{CAPeriod: time.Hour,
+		CAPeriodFor:     map[audit.SPKIHash]time.Duration{rk: time.Hour, ik: time.Hour},
+		MaxStatusAgeFor: map[audit.SPKIHash]time.Duration{rk: 24 * time.Hour, ik: 4 * time.Hour}},
+		ExecStatusAge: time.Hour, ExecStatusAgeFor: map[audit.SPKIHash]time.Duration{rk: 24 * time.Hour, ik: 2 * time.Hour},
+		CAOverlapFor: map[audit.SPKIHash]time.Duration{rk: 0, ik: 0}, PolicyEffectiveFrom: testDecidedAt}
 	pol := agent.ApprovalPolicy{Need: 1, Approvers: []string{"alice"}}
 	vf := func(id string) (agent.ApproverVerifier, bool) { return bad, id == "alice" }
 	err := pol.ValidateKeys(vf)
@@ -267,7 +278,8 @@ func TestIdentityPolicyRecordCoversEveryField(t *testing.T) {
 		"StatusParams.CountLive": "CountLive", "StatusParams.Distrust": "Distrust", "StatusParams.Retained": "Retained", "StatusParams.CAPeriod": "CAPeriod",
 		"StatusParams.CAPeriodFor": "CAPeriodFor", "StatusParams.ConsecutiveNumbers": "ConsecutiveNumbers", "StatusParams.CoverageTolerance": "CoverageTolerance",
 		"StatusParams.ThisUpdateSkew": "ThisUpdateSkew", "StatusParams.ThisUpdateSkewFor": "ThisUpdateSkewFor", "StatusParams.AllowHolds": "AllowHolds",
-		"CertApprover.ClockTolerance": "ClockTolerance", "CertApprover.ExecStatusAge": "ExecStatusAge", "CertApprover.PolicyEffectiveFrom": "EffectiveFrom",
+		"CertApprover.ClockTolerance": "ClockTolerance", "CertApprover.ExecStatusAgeFor": "ExecStatusAgeFor", "CertApprover.CAOverlapFor": "CAOverlapFor",
+		"CertApprover.ExecStatusAge": "ExecStatusAge", "CertApprover.PolicyEffectiveFrom": "EffectiveFrom",
 	}
 	notVerdict := map[string]string{
 		"IdentityPolicy.Identity":        "the roster, committed by RosterDigest",
@@ -279,6 +291,7 @@ func TestIdentityPolicyRecordCoversEveryField(t *testing.T) {
 		"CertApprover.Status":            "the CRLs, recorded by hash",
 		"CertApprover.StatusParams":      "recorded field by field",
 		"CertApprover.Now":               "the evaluation clock",
+		"CertApprover.ExecNow":           "the execution check's clock",
 		"CertApprover.StatusArchive":     "where large CRLs go, not a verdict parameter",
 		"CertApprover.GoDebug":           "recorded in ApprovalIdentity.GoDebug, not a policy parameter",
 		"CertApprover.RequesterIdentity": "a function mapping requesters to identifiers; its default is the roster, committed by RosterDigest",

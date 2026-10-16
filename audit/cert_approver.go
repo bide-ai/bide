@@ -3,6 +3,7 @@ package audit
 import (
 	"bytes"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -50,6 +51,10 @@ type CertApprover struct {
 	StatusParams StatusParams
 	// Now, when set, is read for each decision to set StatusParams.Now.
 	Now func() time.Time
+	// ExecNow, when set, is the clock of the execution-time check (VerifyCertExec); otherwise Now, and
+	// when that is nil too, the wall clock. It exists so a test or a deterministic simulation can move the
+	// execution check in time apart from the count.
+	ExecNow func() time.Time
 	// RequesterIdentity, when set, maps a requester principal (as the run records it) to the canonical
 	// identifier of the person, so separation of duties can exclude the requester by identifier. Without
 	// it the roster is used: a principal equal (ASCII case folded) to an approver id of the identity map
@@ -58,9 +63,21 @@ type CertApprover struct {
 	// must supply this function. A requester it cannot map is then excluded by approver id only, and
 	// the finding carries a warning; without the function no warning is made.
 	RequesterIdentity func(principal string) (identifier string, ok bool)
-	// ExecStatusAge is how old the newest CRL may be when the call is about to run (the status check
-	// before execution). ValidateConfig requires every CA period to be at most half of it.
+	// ExecStatusAge is how old the newest CRL of the leaf's issuing CA may be when the call is about to
+	// run (the status check before execution). ValidateConfig requires that CA's period to be at most
+	// half of it. It is set from the CA's actual period; there is no default.
 	ExecStatusAge time.Duration
+	// ExecStatusAgeFor is the same age for each CA tier above the leaf's issuing CA, by issuer key: the
+	// status of an intermediate rests on its issuer's CRL, which an offline root publishes rarely. Every
+	// CA in an accepted chain above the leaf's issuer must be named here (the execution check holds the
+	// call otherwise), and ValidateConfig requires, for each: CAPeriodFor + CAOverlapFor <=
+	// ExecStatusAgeFor <= StatusParams.MaxStatusAgeFor. A CA's tier is its position in the accepted
+	// chain, never its key: the leaf's issuing CA always uses ExecStatusAge.
+	ExecStatusAgeFor map[SPKIHash]time.Duration
+	// CAOverlapFor is, for a CA tier, how long after its period ends the CA may still be publishing the
+	// next CRL (an offline root's ceremony slack, AD CS's CRL overlap); the oldest status a gate can hold
+	// for that CA is CAPeriodFor plus this. Zero is allowed.
+	CAOverlapFor map[SPKIHash]time.Duration
 	// PolicyEffectiveFrom is when the certificate policy took effect (the bank's change record), kept in
 	// the identity record so the mapping at A(d) is knowable years later. ValidateConfig requires it.
 	PolicyEffectiveFrom time.Time
@@ -97,6 +114,23 @@ func (c *CertApprover) KeyIDs() []string {
 
 // VerifyCertDecision implements agent.CertDecisionVerifier.
 func (c *CertApprover) VerifyCertDecision(cd agent.CertDecision) agent.CertCheck {
+	return c.verify(cd, false)
+}
+
+// VerifyCertExec implements agent.CertExecVerifier: the check a gate runs on a counted decision
+// immediately before the call it authorizes executes. It is the counting check again at the current time
+// with the execution ages instead of MaxStatusAge: the newest status of the leaf's issuing CA must be no
+// older than ExecStatusAge, and that of each CA tier above it no older than its ExecStatusAgeFor (an
+// undeclared tier holds the call). The clock is Now or, when Now is nil, the wall clock: an execution
+// check never runs without one (a check that judged the series against the decision would accept any
+// old CRL), and status issued before the decision counts, as in a live count. A decision whose
+// certificate now shows a revocation with E <= A(d), or whose status is stale or unknown, fails with the
+// same Reason constants as at count time. ValidateConfig checks the ages at configuration time.
+func (c *CertApprover) VerifyCertExec(cd agent.CertDecision) agent.CertCheck {
+	return c.verify(cd, true)
+}
+
+func (c *CertApprover) verify(cd agent.CertDecision, exec bool) agent.CertCheck {
 	fail := func(reason, format string, args ...any) agent.CertCheck {
 		return agent.CertCheck{Reason: reason, Detail: fmt.Sprintf(format, args...)}
 	}
@@ -164,13 +198,29 @@ func (c *CertApprover) VerifyCertDecision(cd agent.CertDecision) agent.CertCheck
 		return out
 	}
 	p := c.StatusParams
-	if c.Now != nil {
+	if exec && c.ExecNow != nil {
+		p.Now = c.ExecNow()
+	} else if c.Now != nil {
 		p.Now = c.Now()
 	}
-	cs := c.Policy.EvaluateStatus(ac, a, c.Status, p)
+	var perCert func(int, *x509.Certificate, StatusParams) StatusParams
+	if exec {
+		var reason, detail string
+		if perCert, reason, detail = c.execTiers(ac, &p); reason != "" {
+			out.Reason, out.Detail = reason, detail
+			return out
+		}
+	}
+	cs := c.Policy.evaluateStatus(ac, a, c.Status, p, perCert)
 	for _, f := range cs.Certs {
 		if f.Warning != "" {
 			out.Warnings = append(out.Warnings, f.Warning)
+		}
+	}
+	for _, f := range cs.Certs {
+		if f.Revoked {
+			out.Revocation = &agent.CertRevocation{Serial: f.Serial.String(), E: f.E.UTC().Format(time.RFC3339Nano), ReasonCode: f.ReasonCode, CRL: hex.EncodeToString(f.RevokedBy[:])}
+			break
 		}
 	}
 	if err := cs.Err(); err != nil {

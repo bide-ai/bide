@@ -39,6 +39,12 @@ var Step func(ctx context.Context, j any, runID, name string, safety any, fn fun
 // call does.
 var Gate func(ctx context.Context, j any, runID, key, node string, args json.RawMessage, policy any, verifiers any) (approved bool, err error)
 
+// PreExec is the pre-execution status check of a gated plan flow node, with Gate's arguments. It runs
+// immediately before the node's body would execute (not when its recorded result replays), and returns nil
+// when the node may run; a gate with certificate-bound approvers whose counted approvals no longer hold
+// returns an *agent.ApprovalPending (or an error) and the node does not run.
+var PreExec func(ctx context.Context, j any, runID, key string, policy any, verifiers any) error
+
 // Begin is a flow drive's first step. It holds the run to start, an agent.RunStart: start is
 // recorded as the run's run:start if it has none, and a drive whose kind, flow, saga flag or input
 // differs from the recorded one is ErrConfig (see agent.RunStart). A run whose completion marker

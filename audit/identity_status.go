@@ -673,6 +673,14 @@ func (cs ChainStatus) Err() error {
 // issuing CA in the chain; one signed by any other key is ignored, and so are entries for the same
 // serial number from another issuer.
 func (c *CertIdentity) EvaluateStatus(ac *ApproverCert, a time.Time, s *StatusSnapshot, p StatusParams) ChainStatus {
+	return c.evaluateStatus(ac, a, s, p, nil)
+}
+
+// evaluateStatus is EvaluateStatus with an optional per-certificate adjustment of the parameters: perCert,
+// when set, gets the position i of the certificate in the chain (0 is the leaf, whose issuer is the leaf's
+// issuing CA, higher positions are the CA tiers above it) and its issuer, and returns the parameters to
+// judge that certificate's status by. The execution-time check uses it to give each tier its own age.
+func (c *CertIdentity) evaluateStatus(ac *ApproverCert, a time.Time, s *StatusSnapshot, p StatusParams, perCert func(i int, issuer *x509.Certificate, p StatusParams) StatusParams) ChainStatus {
 	if p.W <= 0 {
 		p.W = defaultW
 	}
@@ -692,7 +700,11 @@ func (c *CertIdentity) EvaluateStatus(ac *ApproverCert, a time.Time, s *StatusSn
 			continue
 		}
 		views, evictedNew := s.viewsFor(issuer, c.distrustFor(issuer, p.Distrust))
-		st := evalCert(cert, issuer, a, views, evictedNew, p)
+		pc := p
+		if perCert != nil {
+			pc = perCert(i, issuer, p)
+		}
+		st := evalCert(cert, issuer, a, views, evictedNew, pc)
 		out.Certs = append(out.Certs, st)
 		if st.Revoked {
 			out.Revoked = true

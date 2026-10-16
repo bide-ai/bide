@@ -39,6 +39,7 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `const OpenFirstYear = 2026`: OpenFirstYear is the first year an open-trail index can exist: the year the open trail began.
 - `const PendingExecHoldReapproval`: PendingExecHoldReapproval is ApprovalPending.Reason for a certificate-bound gate whose counted approvals were held before execution (ExecHold: a counted decision no longer holds): the call did not run, and it runs once approvers decide again and a new count passes (ApprovalIdentTallyStep of the next generation).
 - `const PendingIdentReapproval`: PendingIdentReapproval is ApprovalPending.Reason for a certificate-bound gate whose recorded tally is a plain-name one (approval-tally:&lt;id&gt;), counted without the approvers' certificates: the gate does not run the call on it, and asks again; the new count is recorded under ApprovalIdentTallyStep.
+- `const PendingIdentityStatus`: PendingIdentityStatus is ApprovalPending.Reason for a certificate-bound gate whose counted approvals cannot be shown to hold right now (the status of a certificate is missing or stale, or a decision no signed head covers): the call did not run and nothing authoritative was written.
 - `const PendingReapproval`: PendingReapproval is ApprovalPending.Reason for a gate that passed under decisions signed before DecisionFormat (a run journaled by an earlier version): its call did not run, and it runs once approvers decide again under DecisionFormat with SubmitDecision.
 - `const PendingSoDReapproval`: PendingSoDReapproval is ApprovalPending.Reason for a gate whose recorded tally passed without excluding the requester (ApprovalPolicy.ExcludePrincipal) while its policy now excludes it: the call did not run, and it runs once enough approvers who are not requesters have decided.
 - `const ReanchorMinInterval = 10 * time.Second`: ReanchorMinInterval is the least time between two forced heads of one run: anchoring signs with the log key, which may be an HSM or KMS key with quotas and cost, so the gate rate-limits it.
@@ -583,6 +584,8 @@ type CertCheck struct {
 
 	Warnings []string
 
+	Revocation *CertRevocation
+
 	Chain    []string
 	Anchor   string
 	HeadSize int
@@ -625,6 +628,30 @@ type CertDecisionVerifier interface {
 ```
 
 CertDecisionVerifier is implemented by the verifier of a certificate-bound approver.
+
+## type CertExecVerifier
+
+```go
+type CertExecVerifier interface {
+	CertDecisionVerifier
+	VerifyCertExec(cd CertDecision) CertCheck
+}
+```
+
+CertExecVerifier is implemented by the verifier of a certificate-bound approver that can be asked, immediately before the call it authorizes executes, whether a counted decision still holds.
+
+## type CertRevocation
+
+```go
+type CertRevocation struct {
+	Serial     string
+	E          string
+	ReasonCode int
+	CRL        string
+}
+```
+
+CertRevocation describes the revocation behind a CertCheck whose Reason is ReasonRevoked.
 
 ## type ClockOption
 
@@ -670,6 +697,17 @@ ConcurrencyOption is a concurrency cap that applies to an agent's tool calls (Op
 **Constructors and functions**
 
 - `func WithMaxConcurrency(n int) ConcurrencyOption`: WithMaxConcurrency caps how many tool calls of one turn run at once (for an agent or a run), or how many of Parallel's tasks do.
+
+## type CountedDecision
+
+```go
+type CountedDecision struct {
+	Approver string
+	Decision CertDecision
+}
+```
+
+CountedDecision is one counted certificate-bound decision the execution check must re-verify.
 
 ## type Decision
 
@@ -773,6 +811,21 @@ type Event interface {
 
 Event is a normalized streamed model event.
 
+## type ExecFailure
+
+```go
+type ExecFailure struct {
+	Approver   string
+	Reason     string
+	Detail     string
+	Revocation *CertRevocation
+	Anchored   string
+	StatusTime string
+}
+```
+
+ExecFailure is a counted decision that does not hold.
+
 ## type ExecHold
 
 ```go
@@ -795,6 +848,36 @@ type ExecHold struct {
 ```
 
 ExecHold is what an ApprovalExecHoldStep record holds: the pre-execution status check found that the call may not run, with the evidence an operator decides on.
+
+## type ExecOutcome
+
+```go
+type ExecOutcome int
+```
+
+ExecOutcome is what the pre-execution check decided.
+
+**Constants**
+
+- `const ExecProceed ExecOutcome`: ExecProceed: every counted certificate-bound decision still holds; the call may run.
+- `const ExecWait ExecOutcome`: ExecWait: status is missing or stale, or the decision cannot be proven now (no covering head at hand).
+- `const ExecReask ExecOutcome`: ExecReask: a counted decision no longer holds and cannot hold again (its certificate is revoked with E &lt;= A(d), or it no longer verifies for a reason that is not a wait).
+
+## type ExecVerdict
+
+```go
+type ExecVerdict struct {
+	Outcome ExecOutcome
+	Failed  []ExecFailure
+	Checked int
+}
+```
+
+ExecVerdict is the result of CheckExec.
+
+**Constructors and functions**
+
+- `func CheckExec(counted []CountedDecision, verifierFor ApproverVerifierFor) ExecVerdict`: CheckExec re-verifies every counted decision through its approver's CertExecVerifier.
 
 ## type Finish
 

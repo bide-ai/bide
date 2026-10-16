@@ -94,6 +94,7 @@ export default defineConfig({
         items: [
           { text: 'Audit', link: '/guides/audit' },
           { text: 'Human approval (HITL)', link: '/guides/hitl-approval' },
+          { text: 'Certificate-bound approvers', link: '/guides/certificate-approvers' },
           { text: 'Notifications', link: '/guides/notifications' },
           { text: 'Security model', link: '/guides/security-model' },
           { text: 'Key custody (HSM, KMS)', link: '/guides/key-custody' },
