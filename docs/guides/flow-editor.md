@@ -58,8 +58,8 @@ against the commit. The editor reads git only for this, with the same `git show 
 The comparison is the classifier `bide check -diff -check -fail-on-weaken` runs, not a second one:
 the editor shows what it returns. When the text is weaker than the baseline (a gate removed, its
 need lowered, an approver added without raising the need or replaced, `exclude_principal` or a
-deadline dropped or lengthened, an `assert` line removed, loosened or no longer holding, an effect
-newly reachable without a gate, a block changed on an ungated effect node) the page shows a banner
+deadline dropped or lengthened, an `assert` line removed, loosened or no longer holding, a node
+newly reachable without a gate (whatever its safety label; a lowered `safety` is itself reported), a block changed on an ungated effect node) the page shows a banner
 at the top: a glyph, `APPROVAL GATE WEAKENED` (or `SAFETY CHECK WEAKENED` when no gate policy itself
 changed), and each item (`charge: approval 2 of 3 -> 1 of 3`). **The banner has no close control**:
 a banner that can be closed is a warning that can be missed. It stays until the text no longer
