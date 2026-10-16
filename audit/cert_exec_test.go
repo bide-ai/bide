@@ -610,3 +610,28 @@ func TestCertApprover_ValidateConfigSomeLeafIssuerFits(t *testing.T) {
 		t.Fatal("above the boundary")
 	}
 }
+
+// With no intermediate pinned, a leaf is issued directly by an anchor, which is then the leaf's issuing CA
+// and must fit ExecStatusAge.
+func TestCertApprover_ValidateConfigAnchorIssuerMustFit(t *testing.T) {
+	cg := newCertGate(t, 1, "alice")
+	direct, err := audit.IdentityPolicy{
+		Anchors: []*x509.Certificate{cg.root.Cert}, Identity: map[string]string{"alice": testca.Person(1)},
+		IDKind: audit.IDPersonURI, EKU: testca.EKU, Policy: testca.PolicyOID,
+		Canonical: audit.NewCanonicalizer(audit.CanonicalConfig{Host: "idp.bank.example"}),
+	}.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rk := audit.SPKIHashOf(cg.root.Cert)
+	mk := func(period time.Duration) *audit.CertApprover {
+		return &audit.CertApprover{ApproverID: "alice", Policy: direct, PolicyEffectiveFrom: testDecidedAt, ExecStatusAge: time.Hour,
+			StatusParams: audit.StatusParams{CAPeriod: 30 * time.Minute, MaxStatusAge: time.Hour, CAPeriodFor: map[audit.SPKIHash]time.Duration{rk: period}}}
+	}
+	if err := mk(30 * time.Minute).ValidateConfig(); err != nil {
+		t.Fatalf("a fitting anchor: %v", err)
+	}
+	if err := mk(24 * time.Hour).ValidateConfig(); err == nil || !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("a daily anchor issuing leaves under a one hour age: %v", err)
+	}
+}
