@@ -72,6 +72,18 @@ and as `audit.CRLSources` (a map with the same shape) for a program that does no
   Each archived CRL records the URL it came from instead. Moving a URL cannot change a verdict: the
   signature (against the supplied issuer certificate), the number rules and the freshness rules do not
   depend on where the bytes came from.
+  Conditions for that (pki-auditor-2): (1) the URL is provenance only and never evidence; the
+  evidence of a verdict is the CRL itself (hash and bytes: inline, `StatusArchive`, or the dated
+  archive), which the gate records in the identity record independent of any URL. (2) Each archived
+  CRL records its source URL and fetch time, and the effective URL list (after `from_pinned_cdp`) is
+  logged at startup and reported through the hook as a security event on every change, because a URL
+  moved to a mirror that replays old CRLs is a withholding path (it can only make status staler,
+  never fresher). (3) Everything that changes a verdict stays in the digest or is pinned: the
+  supplied intermediate certificates must match the pinned SPKI hashes (refused otherwise), and
+  `CAPeriodFor`, `ExecStatusAgeFor`, `MaxStatusAgeFor`, `CAOverlapFor`, `ThisUpdateSkew` and
+  `DistrustAfter` are already in it. The refresher's interval, retry and alarm tuning are outside it
+  and affect timeliness only. (4) The skew in the future-dating refusal is the declared
+  `ThisUpdateSkew`, not a separate refresher value.
 
 ### 2. Transport
 
