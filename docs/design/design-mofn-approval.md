@@ -180,6 +180,49 @@ Future work: an RFC 3161 trusted timestamp per decision, a third time vouched fo
 authority, would bound `decided_at` independently of both the approver and bide. It is not part of
 v3.
 
+## v4: certificate-bound decisions (format only)
+
+The approver identity feature ([design](approver-identity.md)) binds an approver to an X.509
+certificate from the bank's PKI. This version defines the signed format and the journal fields for such
+a decision and counts none: the verifier of a certificate-bound approver, and the gate that uses it,
+are later changes. A bare-key approver's decision stays `bide.approval.v3`, unchanged.
+
+- **Signed bytes.** `ApprovalDecisionBytesCert` (`bide.approval.v4`) is the v3 layout with the domain
+  tag `"bide.approval.v4\n"` (the same 17 bytes as the v3 tag) and, between the decision byte and
+  `decided_at`, `len32(leaf_hash) leaf_hash`, where `leaf_hash` is the SHA-256 of the signer's leaf
+  certificate (`agent.CertLeafHash`). A signature is therefore valid only in the context of that
+  certificate: another valid certificate for the same key, or a swapped-in one, cannot be attached to
+  someone else's signature, and an old binary that rebuilds v3 bytes never counts a v4 decision.
+- **Record.** `ApproverSignature` gains `approver_cert`, the leaf-first DER chain (a JSON array of
+  base64 strings), present only on a certificate-bound decision. A chain is at most 8 certificates of
+  at most 16 KiB each (`agent.MaxDecisionCertChain`, `agent.MaxDecisionCertDER`). A reader that does not
+  know the member ignores it, so a rolling deploy is safe; the chain is stored so the journal is
+  self-contained and its Merkle trail covers it.
+- **Name.** The decision's journal name (`DecisionStep`) adds the leaf hash, so two decisions at one
+  time under two certificates are two decisions, and a junk record cannot take a bound decision's name
+  by guessing its time. A bare-key decision's name is what it was. Only the leaf is signed: the same
+  decision submitted with different intermediates is one decision (the first record's chain is kept).
+- **The counting rule decides by the approver's verifier, never by what the record carries.** Under a
+  bare-key verifier a v4 signature is `ReasonBadSig` (the verifier rebuilds v3), and a v3 decision that
+  happens to carry a chain counts as the bare-key decision it is.
+- **`WithDecisionCheck` refuses a decision that carries a chain** (`ErrConfig`): this version has no
+  check for it, and it will not write what it cannot vouch for.
+- **Receipts.** A decision receipt carries the chain (`cert`); `DecisionReceipt.Verify` checks the
+  signature over the v4 bytes, and `VerifyCertificate` checks the chain and the identifier against the
+  gate's certificate policy at the time the decision became provable (`AnchorTime`).
+
+```
+"bide.approval.v4\n"
+len32(run id)       run id
+len32(call id)      call id
+len32(tool name)    tool name
+SHA-256(canonical arguments), 32 bytes
+len32(approver id)  approver id
+1 byte              1 approved, 0 denied
+len32(leaf hash)    SHA-256 of the signer's leaf certificate, 32 bytes
+len32(decided_at)   decided_at, 24 bytes
+```
+
 ## Gates on plan flow nodes
 
 A plan flow node may carry a gate: `plan.Approval(policy)` in Go, a wrapped agent tool's own

@@ -1193,6 +1193,14 @@ recomputes the verdict with `Now` zero and never inherits a live tier from the r
 `bide approve -list` never show a verified or green state for a provisional or live-count decision: they
 show the tier, its basis and `S`, and "provisional" is visibly not "verified".
 
+The decision format landed after the certificate core (`bide.approval.v4` bytes, `approver_cert` in the
+record, the leaf hash in the step name, the chain in a receipt with `VerifyCertificate` and `AnchorTime`);
+it is specified in [the m-of-n design](design-mofn-approval.md#v4-certificate-bound-decisions-format-only)
+and counts nothing until the gate change. `WithDecisionCheck` refuses a decision that carries a chain
+meanwhile, and the verifier-kind rule is exactly the note's: the counting rule decides by the approver's
+verifier, so a v4 signature fails under a bare-key verifier and a v3 decision that carries a chain counts
+as a bare-key decision.
+
 Every step updates the guides it touches. The approvals guide states the post-quantum gap (decision 15: a
 certificate-bound approver gives up the hybrid scheme's protection) where it first describes
 certificate-bound approvers.

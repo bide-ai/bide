@@ -35,6 +35,11 @@ type DecisionReceipt struct {
 	DecidedAt string          `json:"decided_at"` // the approver's clock, signed (agent.FormatTimestamp form)
 	Alg       Alg             `json:"alg"`
 	Signature []byte          `json:"signature"`
+	// Cert is the leaf-first DER certificate chain of a certificate-bound decision (base64 in JSON),
+	// signed under agent.DecisionFormatCert: the signature binds the leaf's hash, so a receipt whose
+	// chain is stripped or swapped does not verify. Empty for a bare-key decision. Certificates are
+	// public values; a receipt still holds no key material.
+	Cert [][]byte `json:"cert,omitempty"`
 	// Record is the journal record's name, Index its position in the run's journal (0 is the
 	// journal header), and RecordedAt when it was journaled, by the clock of the process that wrote
 	// it (not signed by the approver).
@@ -71,7 +76,7 @@ func NewDecisionReceipt(s agent.ApprovalSubject, d agent.Decision, rec agent.Rec
 	r := DecisionReceipt{
 		Format: ReceiptFormat, RunID: s.RunID, ToolUseID: s.ToolUseID, ToolName: s.ToolName, Args: bytes.Clone(s.Args),
 		ArgsSHA: ApprovalArgsDigest(s), Approver: d.ApproverID, Approved: d.Approved, DecidedAt: agent.FormatTimestamp(d.DecidedAt),
-		Alg: d.Alg, Signature: bytes.Clone(d.Signature), Record: rec.Name, Index: index, RecordedAt: rec.RecordedAt(),
+		Alg: d.Alg, Signature: bytes.Clone(d.Signature), Cert: cloneCert(d.Cert), Record: rec.Name, Index: index, RecordedAt: rec.RecordedAt(),
 	}
 	if index < 0 || !r.isRecord(rec) {
 		return DecisionReceipt{}, fmt.Errorf("audit: the journal record %q is not this decision: %w", rec.Name, agent.ErrConfig)
@@ -88,13 +93,40 @@ func NewDecisionReceipt(s agent.ApprovalSubject, d agent.Decision, rec agent.Rec
 func (r DecisionReceipt) isRecord(rec agent.Record) bool {
 	return rec.Kind == agent.StepApproval && rec.Name == r.Record && rec.ToolUseID == r.ToolUseID &&
 		rec.Approver() == r.Approver && rec.Approved == r.Approved && rec.DecidedAt() == r.DecidedAt &&
-		rec.ApproverAlg() == r.Alg && bytes.Equal(rec.Signature(), r.Signature)
+		rec.ApproverAlg() == r.Alg && bytes.Equal(rec.Signature(), r.Signature) && sameChain(rec.ApproverCert(), r.Cert)
+}
+
+func cloneCert(chain [][]byte) [][]byte {
+	if len(chain) == 0 {
+		return nil
+	}
+	out := make([][]byte, len(chain))
+	for i, c := range chain {
+		out[i] = bytes.Clone(c)
+	}
+	return out
+}
+
+func sameChain(a, b [][]byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !bytes.Equal(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // Verify checks the receipt on its own: it is of ReceiptFormat, its arguments hash to ArgsSHA, and
 // Signature is a valid signature, by the approver's key v, over the decision bytes
 // (agent.ApprovalDecisionBytes) of exactly this run, call, tool, arguments, approver, decision and
 // time. It does not look at the journal. An error wraps ErrNotVerified, or ErrFormat.
+//
+// A receipt that carries a chain (Cert) is a certificate-bound decision: the bytes are
+// agent.ApprovalDecisionBytesCert with the hash of Cert[0], and v is the verifier of the leaf's key.
+// Verify checks the signature, not the chain: VerifyCertificate checks the chain and the identity.
 func (r DecisionReceipt) Verify(v Verifier) error {
 	if err := formatOf(r, r.Format); err != nil {
 		return err
@@ -113,10 +145,61 @@ func (r DecisionReceipt) Verify(v Verifier) error {
 	if r.Alg != v.Alg() {
 		return fmt.Errorf("audit: receipt: signed under %q, the approver's key is %q: %w", r.Alg, v.Alg(), ErrNotVerified)
 	}
-	if !v.Verify(agent.ApprovalDecisionBytes(s, r.Approver, r.Approved, at), r.Signature) {
+	msg := agent.ApprovalDecisionBytes(s, r.Approver, r.Approved, at)
+	if len(r.Cert) > 0 {
+		msg = agent.ApprovalDecisionBytesCert(s, r.Approver, r.Approved, at, agent.CertLeafHash(r.Cert[0]))
+	}
+	if !v.Verify(msg, r.Signature) {
 		return fmt.Errorf("audit: receipt: the signature does not verify for approver %q on this exact call: %w", r.Approver, ErrNotVerified)
 	}
 	return nil
+}
+
+// VerifyCertificate checks a certificate-bound receipt against the gate's certificate policy: the
+// chain it carries is accepted for r.Approver at a, the time the decision became provable (the
+// anchoring head's time, see AnchorTime), by exactly the rules CertIdentity.VerifyChain applies to a
+// decision the gate counts; the receipt's scheme is the one the leaf's key has; and the signature
+// verifies under that key over the v4 bytes. A receipt with no chain, a chain to another anchor, the
+// wrong identifier, or a time outside the certificate's validity fails with an error wrapping both
+// ErrNotVerified and the *CertError that says why. It does not check revocation status (see
+// CertIdentity.EvaluateStatus), and "verified" here is the identity check at a, not the verdict.
+func (r DecisionReceipt) VerifyCertificate(ci *CertIdentity, a time.Time) error {
+	if err := formatOf(r, r.Format); err != nil {
+		return err
+	}
+	if ci == nil {
+		return fmt.Errorf("audit: receipt: no certificate policy: %w", agent.ErrConfig)
+	}
+	at, err := agent.ParseTimestamp(r.DecidedAt)
+	if err != nil {
+		return fmt.Errorf("audit: receipt decided_at: %v: %w", err, ErrNotVerified)
+	}
+	ac, err := ci.VerifyChain(r.Approver, r.Cert, at, a)
+	if err != nil {
+		return fmt.Errorf("audit: receipt: %w (%w)", err, ErrNotVerified)
+	}
+	if r.Alg != ac.Scheme {
+		return fmt.Errorf("audit: receipt: signed under %q, the certificate's key is %q: %w", r.Alg, ac.Scheme, ErrNotVerified)
+	}
+	v, err := NewVerifier(ac.Scheme, ac.PublicKey)
+	if err != nil {
+		return fmt.Errorf("audit: receipt: the certificate's key: %v: %w", err, ErrNotVerified)
+	}
+	return r.Verify(v)
+}
+
+// AnchorTime is the time of the head that anchors the receipt: the timestamp of the smallest signed
+// head covering the decision, which is when the decision became provable (A in the design note), as
+// logKey vouches for the proof. It fails if the receipt has no proof or the proof does not hold. The
+// time is the log signer's clock; an independent time source is a separate attestation.
+func (r DecisionReceipt) AnchorTime(logKey Verifier) (time.Time, error) {
+	if r.Anchor == nil {
+		return time.Time{}, fmt.Errorf("audit: receipt: no anchoring proof: %w", ErrNotVerified)
+	}
+	if _, _, err := r.checkAnchor(logKey); err != nil {
+		return time.Time{}, fmt.Errorf("audit: receipt: the anchoring proof does not hold: %v: %w", err, ErrNotVerified)
+	}
+	return time.Unix(0, r.Anchor.STH.TimestampNanos).UTC(), nil
 }
 
 // ReceiptVerdict is what CheckReceipt finds about one receipt.

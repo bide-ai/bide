@@ -117,6 +117,52 @@ const approvalDomain = DecisionFormat + "\n"
 // of ApprovalDecisionBytes without its newline. A gate's journaled tally records it.
 const DecisionFormat = "bide.approval.v3"
 
+// DecisionFormatCert names the signed decision format of a certificate-bound approver: the v3
+// layout plus the SHA-256 of the signer's leaf certificate (ApprovalDecisionBytesCert). A bare-key
+// approver's decision stays v3, and no verifier of one accepts v4.
+const DecisionFormatCert = "bide.approval.v4"
+
+// approvalDomainCert tags the bytes a certificate-bound approver signs.
+const approvalDomainCert = DecisionFormatCert + "\n"
+
+// MaxDecisionCertChain and MaxDecisionCertDER bound the certificate chain a decision carries: at most
+// this many certificates, each at most this many bytes of DER. SubmitDecision refuses more (ErrConfig),
+// and the identity verifier applies its own, usually tighter, limits.
+const (
+	MaxDecisionCertChain = 8
+	MaxDecisionCertDER   = 16 << 10
+)
+
+// CertLeafHash is the SHA-256 of a leaf certificate's DER: what a v4 decision signs in place of the
+// certificate itself.
+func CertLeafHash(der []byte) [32]byte { return sha256.Sum256(der) }
+
+// ApprovalDecisionBytesCert returns the canonical bytes a certificate-bound approver signs
+// (bide.approval.v4): the layout of ApprovalDecisionBytes with the domain tag
+// "bide.approval.v4\n" and, between the verdict byte and the decision time,
+//
+//	len32(leafHash) leafHash     (the 32-byte CertLeafHash of the signer's leaf certificate)
+//
+// so a signature is valid only in the context of that certificate: another valid certificate for the
+// same key, or a swapped-in one, cannot be attached to someone else's signature. decidedAt is signed
+// in FormatTimestamp's form, as in v3.
+func ApprovalDecisionBytesCert(s ApprovalSubject, approverID string, approved bool, decidedAt time.Time, leafHash [32]byte) []byte {
+	return decisionBytesCert(s, approverID, approved, FormatTimestamp(decidedAt), leafHash)
+}
+
+func decisionBytesCert(s ApprovalSubject, approverID string, approved bool, decidedAt string, leafHash [32]byte) []byte {
+	v3 := decisionBytes(s, approverID, approved, decidedAt)
+	// v3 ends len32(decidedAt) decidedAt; v4 puts len32(leafHash) leafHash just before that.
+	tail := 4 + len(decidedAt)
+	head := v3[len(approvalDomain) : len(v3)-tail]
+	b := make([]byte, 0, len(v3)+4+len(leafHash))
+	b = append(b, approvalDomainCert...)
+	b = append(b, head...)
+	b = binary.BigEndian.AppendUint32(b, uint32(len(leafHash)))
+	b = append(b, leafHash[:]...)
+	return append(b, v3[len(v3)-tail:]...)
+}
+
 // ApprovalDecisionBytes returns the canonical bytes an approver signs and every verifier
 // checks. decidedAt is when the approver decided, by their own clock; it is signed in
 // FormatTimestamp's form, so pass the same time as Decision.DecidedAt. The layout, stable and
@@ -907,7 +953,12 @@ func FindToolCall(recs []Record, toolUseID string) (idx int, call ToolUse, ok bo
 // bytes' subject digest are fixed by the call id. Every re-signing of one decision, whatever the
 // scheme (ECDSA from a KMS or HSM signs the same decision differently each time), maps to one name,
 // so concurrent submissions race on one key and the first writer wins.
-func decisionIdentityStep(toolUseID, approverID string, approved bool, alg Alg, decidedAt string) string {
+//
+// A certificate-bound decision (leaf non-empty, the DER of Cert[0]) adds the leaf hash, so two
+// decisions at one time under two certificates are two decisions with two names, and a junk record
+// cannot take the name of a bound decision by guessing its time. A bare-key decision's name is what it
+// always was.
+func decisionIdentityStep(toolUseID, approverID string, approved bool, alg Alg, decidedAt string, leaf []byte) string {
 	h := sha256.New()
 	h.Write([]byte("identity\x00"))
 	if approved {
@@ -919,7 +970,20 @@ func decisionIdentityStep(toolUseID, approverID string, approved bool, alg Alg, 
 	h.Write([]byte(alg))
 	h.Write(binary.BigEndian.AppendUint32(nil, uint32(len(decidedAt))))
 	h.Write([]byte(decidedAt))
+	if len(leaf) > 0 {
+		lh := CertLeafHash(leaf)
+		h.Write([]byte("cert\x00"))
+		h.Write(lh[:])
+	}
 	return approvalStep(toolUseID) + ":" + approverID + ":" + hex.EncodeToString(h.Sum(nil))
+}
+
+// leafOf returns the DER of the decision's leaf certificate, or nil for a bare-key decision.
+func (d Decision) leafOf() []byte {
+	if len(d.Cert) == 0 {
+		return nil
+	}
+	return d.Cert[0]
 }
 
 // approvalDecisionStep is the signature-derived journal name of one decision: the approved flag, the
@@ -978,7 +1042,7 @@ func IsDecisionStepName(name, toolUseID, approverID string) bool {
 // request is held, and never verified.
 func HeldDecisionStep(ctx context.Context, store *Journal, d Decision, verifierFor ApproverVerifierFor) (name string, held, verified bool, err error) {
 	at := FormatTimestamp(d.DecidedAt)
-	for _, n := range []string{decisionIdentityStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, at), approvalDecisionStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, at, d.Signature)} {
+	for _, n := range []string{decisionIdentityStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, at, d.leafOf()), approvalDecisionStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, at, d.Signature)} {
 		r, ok, err := store.Get(ctx, d.RunID, n)
 		if err != nil {
 			return "", false, false, fmt.Errorf("HeldDecisionStep: read %s (run %s): %w (%w)", n, d.RunID, err, ErrStorage)
@@ -1015,7 +1079,7 @@ func HeldDecisionStep(ctx context.Context, store *Journal, d Decision, verifierF
 // HeldDecisionStep, ReportWritten, or WithDecisionCheck. A zero or non-canonical d.DecidedAt has no record
 // (SubmitDecision refuses it); the name is then of FormatTimestamp's rendering of it.
 func DecisionStep(d Decision) string {
-	return decisionIdentityStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, FormatTimestamp(d.DecidedAt))
+	return decisionIdentityStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, FormatTimestamp(d.DecidedAt), d.leafOf())
 }
 
 // ReportWritten makes SubmitDecision set *wrote to whether this call stored the decision's record:
@@ -1101,6 +1165,12 @@ type Decision struct {
 	DecidedAt  time.Time // when the approver decided, by their clock; signed
 	Alg        Alg       // the signature scheme, e.g. audit.AlgEd25519
 	Signature  []byte
+	// Cert is the leaf-first DER certificate chain of a certificate-bound approver, whose Signature
+	// is over ApprovalDecisionBytesCert with the CertLeafHash of Cert[0]. Empty for a bare-key
+	// approver (the v3 bytes). SubmitDecision journals it (ApproverSignature.ApproverCert) and names
+	// the record by the leaf hash; it does not verify it: that is the identity verifier's, and
+	// WithDecisionCheck refuses a decision that carries one in this version.
+	Cert [][]byte
 }
 
 // protocol:claims begin Submit
@@ -1162,6 +1232,9 @@ func submitDecision(ctx context.Context, store *Journal, op string, d Decision, 
 	if !canonicalTimestamp(decidedAt) {
 		return fmt.Errorf("%s: decision time %s has no canonical form (years 0001 to 9999): %w", op, d.DecidedAt, ErrConfig)
 	}
+	if err := checkDecisionCert(op, d.Cert); err != nil {
+		return err
+	}
 	o := approveOptions{now: clockFrom(ctx)}
 	for _, opt := range opts {
 		if opt == nil {
@@ -1174,6 +1247,9 @@ func submitDecision(ctx context.Context, store *Journal, op string, d Decision, 
 	if o.wrote != nil {
 		ctx = context.WithValue(ctx, wroteKey{}, o.wrote)
 	}
+	if len(d.Cert) > 0 && o.verifierFor != nil {
+		return fmt.Errorf("%s: approver %q: WithDecisionCheck verifies a bare-key decision; this version has no check for a decision that carries a certificate chain, so it is not written: %w", op, d.ApproverID, ErrConfig)
+	}
 	reqSeq, flow, err := flowDecision(ctx, store, op, d.RunID, d.ToolUseID)
 	if err != nil {
 		return err
@@ -1181,7 +1257,7 @@ func submitDecision(ctx context.Context, store *Journal, op string, d Decision, 
 	if err := checkNotExpired(ctx, store, op, d.RunID, d.ToolUseID, o.now); err != nil {
 		return err
 	}
-	name := decisionIdentityStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, decidedAt)
+	name := decisionIdentityStep(d.ToolUseID, d.ApproverID, d.Approved, d.Alg, decidedAt, d.leafOf())
 	var chk *decisionCheckResult
 	if o.verifierFor != nil {
 		c, err := checkDecision(ctx, store, op, d, decidedAt, flow, o.verifierFor)
@@ -1210,6 +1286,7 @@ func submitDecision(ctx context.Context, store *Journal, op string, d Decision, 
 			}
 			return Record{Kind: StepApproval, ToolUseID: d.ToolUseID, Approved: d.Approved, ApproverSignature: &ApproverSignature{
 				Approver: d.ApproverID, ApproverAlg: d.Alg, Signature: d.Signature, DecidedAt: decidedAt, RecordedAt: recordedAt,
+				ApproverCert: cloneChain(d.Cert),
 			}}, nil
 		})
 	}
@@ -1252,6 +1329,30 @@ func submitDecision(ctx context.Context, store *Journal, op string, d Decision, 
 		return staleDecision(ctx, store, op, d.RunID, d.ToolUseID, name, reqSeq, false)
 	}
 	return nil
+}
+
+// checkDecisionCert bounds the chain a decision carries.
+func checkDecisionCert(op string, chain [][]byte) error {
+	if len(chain) > MaxDecisionCertChain {
+		return fmt.Errorf("%s: the decision carries %d certificates, over the limit of %d: %w", op, len(chain), MaxDecisionCertChain, ErrConfig)
+	}
+	for i, c := range chain {
+		if len(c) == 0 || len(c) > MaxDecisionCertDER {
+			return fmt.Errorf("%s: certificate %d of the decision is %d bytes, outside 1 to %d: %w", op, i, len(c), MaxDecisionCertDER, ErrConfig)
+		}
+	}
+	return nil
+}
+
+func cloneChain(chain [][]byte) [][]byte {
+	if len(chain) == 0 {
+		return nil
+	}
+	out := make([][]byte, len(chain))
+	for i, c := range chain {
+		out[i] = bytes.Clone(c)
+	}
+	return out
 }
 
 // decisionCheckResult is what WithDecisionCheck's pre-flight found: the name of the approver's

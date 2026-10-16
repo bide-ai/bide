@@ -155,7 +155,10 @@ len32(approver id)  approver id
 len32(decided_at)   decided_at, 24 bytes, e.g. "2026-10-13T12:14:03.123Z"
 ```
 
-`len32` is a 4-byte big-endian length. The version tag is part of the signed bytes, so a decision
+`len32` is a 4-byte big-endian length. (A certificate-bound approver, once that feature ships, signs
+`bide.approval.v4`: the same layout with the SHA-256 of its leaf certificate before `decided_at`. This
+version defines and journals that format but counts none; bare-key approvers are unchanged. See the
+[design](../design/design-mofn-approval.md#v4-certificate-bound-decisions-format-only).) The version tag is part of the signed bytes, so a decision
 signed under an earlier version (`bide.approval.v2`, which had no decision time) does not verify:
 the gate and `VerifyApprovals` ignore it with `agent.ReasonNoDecidedAt`. Re-sign such a decision.
 
