@@ -3,6 +3,7 @@ package audit_test
 import (
 	"crypto/ed25519"
 	"crypto/x509"
+	"encoding/json"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -15,12 +16,20 @@ import (
 )
 
 // Refinement of model 15 (spec/tla/identity): every counterexample configuration switches one rule of
-// the counting rule off and the model shows the property that rule guards failing. This test runs the
-// same scenario through the real counting rule (agent.TallyApprovals with audit.CertApprover, a stdlib
-// CA, signed heads and CRLs) with the rule on, and compares the set of counted approvers with what the
-// model says the rule gives: the decision the broken model counts is not counted. A configuration with no
-// scenario here, or one named here that the model does not have, fails the test, so the model and the code
-// cannot drift apart unnoticed. Scenarios of the pre-execution check (E2b) are listed as pending.
+// the counting rule off, and the model shows the property that rule guards failing. This test runs the
+// same situation through the real counting rule (agent.TallyApprovals with audit.CertApprover, a stdlib
+// CA, signed heads and CRLs) twice:
+//
+//   - with the situation the broken model mishandles, and the counted set (or, for the tier
+//     configurations, the final set) must be what the model's rule gives: the decision the broken
+//     model counts is not counted;
+//   - with a positive control, the same setup with the rule satisfied (the gap closed, no
+//     revocation, the anchor available), and the decision must count (or be final). Without it a
+//     scenario would pass for any other reason a decision might not count.
+//
+// A model configuration with no scenario here (and not listed as pending), or a scenario that names no
+// configuration, fails the test, so the model and the code cannot drift apart unnoticed. Scenarios of
+// the pre-execution check (E2b) are pending until that check exists.
 
 // countedSet is the approvers whose decision counts, sorted.
 func countedSet(checks []agent.DecisionCheck) []string {
@@ -32,23 +41,6 @@ func countedSet(checks []agent.DecisionCheck) []string {
 	}
 	slices.Sort(out)
 	return out
-}
-
-type refScenario struct {
-	// run builds the scenario and returns the counted set and the reason alice's decision did not count
-	// ("" when it counted, or no decision of alice's is judged).
-	run  func(t *testing.T) (counted []string, reason string)
-	want []string // the counted set the model's rule gives
-	why  string   // the reason expected for alice, when the scenario judges her decision
-}
-
-// aliceGate is a one-seat gate with alice's valid, anchored decision.
-func aliceGate(t *testing.T) *certGate {
-	c := newCertGate(t, 1, "alice")
-	c.pause()
-	c.decideCert("alice", nil)
-	c.anchor(certA)
-	return c
 }
 
 // finalSet is the approvers whose decision counts with a final status (the tier the model calls final).
@@ -63,6 +55,16 @@ func finalSet(checks []agent.DecisionCheck) []string {
 	return out
 }
 
+// aliceGate is a one-seat gate with alice's valid, anchored decision.
+func aliceGate(t *testing.T) *certGate {
+	c := newCertGate(t, 1, "alice")
+	c.pause()
+	c.decideCert("alice", nil)
+	c.anchor(certA)
+	return c
+}
+
+// judged is the counted set of c's gate and the reason alice's decision did not count ("" if it did).
 func judged(c *certGate) ([]string, string) {
 	_, checks := c.tally()
 	r := ""
@@ -74,103 +76,191 @@ func judged(c *certGate) ([]string, string) {
 	return countedSet(checks), r
 }
 
-func TestModel15Refinement(t *testing.T) {
-	revokedBeforeA := func(c *certGate) x509.RevocationListEntry {
-		return testca.Revoked(c.leaves["alice"].Cert, certA.Add(-time.Minute), 0)
+// snap builds a status snapshot from CRLs, bounded as a gate with no status archive requires.
+func snap(t *testing.T, ders ...[]byte) *audit.StatusSnapshot {
+	t.Helper()
+	sn := audit.NewStatusSnapshot(audit.WithLimits(agent.MaxStatusInline, 1_000_000))
+	for _, der := range ders {
+		if _, err := sn.AddCRL(der); err != nil {
+			t.Fatal(err)
+		}
 	}
+	return sn
+}
+
+// revokedAlice is the entry that lists alice's leaf with the effective time e.
+func revokedAlice(c *certGate, e time.Time) x509.RevocationListEntry {
+	return testca.Revoked(c.leaves["alice"].Cert, e, 0)
+}
+
+// rootRevokesCA is a status series in which the root's CRL lists the issuing CA with the effective time
+// e (the CA tier), and the leaf's issuer publishes a clean series (the leaf tier).
+func rootRevokesCA(t *testing.T, c *certGate, e time.Time) *audit.StatusSnapshot {
+	t.Helper()
+	return snap(t,
+		c.inter.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: testDecidedAt, NextUpdate: testDecidedAt.Add(time.Hour)}),
+		c.inter.NewCRL(t, testca.CRLOpts{Number: 2, ThisUpdate: c.crlsAt, NextUpdate: c.crlsAt.Add(time.Hour)}),
+		c.root.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: c.crlsAt, NextUpdate: c.crlsAt.Add(time.Hour),
+			Entries: []x509.RevocationListEntry{testca.Revoked(c.inter.Cert, e, 2)}}))
+}
+
+// cleanSeries is a CRL series by the leaf's issuer at the given offsets from testDecidedAt (numbers
+// 1, 2, ...), each valid for a hour, plus a clean one by the root.
+func cleanSeries(t *testing.T, c *certGate, offsets ...time.Duration) *audit.StatusSnapshot {
+	t.Helper()
+	var ders [][]byte
+	for i, off := range offsets {
+		ders = append(ders, c.inter.NewCRL(t, testca.CRLOpts{Number: int64(i + 1), ThisUpdate: testDecidedAt.Add(off), NextUpdate: testDecidedAt.Add(off + time.Hour)}))
+	}
+	ders = append(ders,
+		c.root.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: testDecidedAt, NextUpdate: testDecidedAt.Add(400 * time.Hour)}),
+		c.root.NewCRL(t, testca.CRLOpts{Number: 2, ThisUpdate: c.crlsAt, NextUpdate: testDecidedAt.Add(400 * time.Hour)}))
+	return snap(t, ders...)
+}
+
+// refScenario is one model configuration's scenario. run(t, false) builds the situation the broken model
+// mishandles and run(t, true) the same setup with the rule satisfied.
+type refScenario struct {
+	run     func(t *testing.T, control bool) (got []string, reason string)
+	want    []string // the set the model's rule gives in the situation
+	why     string   // the reason expected for alice, when the scenario judges her decision
+	ctlWant []string // the set with the rule satisfied; alice alone when nil
+}
+
+func TestModel15Refinement(t *testing.T) {
+	alice := []string{"alice"}
 	scenarios := map[string]refScenario{
-		// The freshness rule: status older than MaxStatusAge never counts a decision.
-		"regress/withhold-no-fresh": {want: nil, why: agent.ReasonStatusStale, run: func(t *testing.T) ([]string, string) {
+		// The freshness rule: status older than MaxStatusAge never counts a decision (the live count).
+		"regress/withhold-no-fresh": {want: nil, why: agent.ReasonStatusStale, run: func(t *testing.T, ctl bool) ([]string, string) {
 			c := aliceGate(t)
 			c.params.CountLive, c.params.MaxStatusAge = true, time.Hour
 			c.now = func() time.Time { return certA.Add(3 * time.Hour) }
+			if ctl {
+				c.now = func() time.Time { return certA.Add(30 * time.Second) }
+			}
 			return judged(c)
 		}},
-		"regress/stale-status": {want: nil, why: agent.ReasonStatusStale, run: func(t *testing.T) ([]string, string) {
+		"regress/stale-status": {want: nil, why: agent.ReasonStatusStale, run: func(t *testing.T, ctl bool) ([]string, string) {
 			c := aliceGate(t)
 			c.params.CountLive, c.params.MaxStatusAge = true, time.Hour
 			c.now = func() time.Time { return certA.Add(2 * time.Hour) }
-			return judged(c)
-		}},
-		"regress/recount-dead": {want: nil, why: agent.ReasonRevoked, run: func(t *testing.T) ([]string, string) {
-			c := aliceGate(t)
-			e := revokedBeforeA(c)
-			c.status = c.buildStatus(e) // CRL 2 lists it; a still later CRL that no longer lists it does not undo it
-			if _, err := c.status.AddCRL(c.inter.NewCRL(t, testca.CRLOpts{Number: 3, ThisUpdate: c.crlsAt.Add(time.Minute), NextUpdate: c.crlsAt.Add(time.Hour)})); err != nil {
-				t.Fatal(err)
+			if ctl {
+				c.now = func() time.Time { return certA.Add(10 * time.Minute) }
 			}
 			return judged(c)
 		}},
-		"regress/tally-no-recheck": {want: nil, why: agent.ReasonRevoked, run: func(t *testing.T) ([]string, string) {
-			c := aliceGate(t)
-			c.status = c.buildStatus(revokedBeforeA(c))
-			if err := c.run(); err == nil || c.charged != 0 {
-				t.Fatalf("a revoked decision ran the call: %v charged %d", err, c.charged)
+		// A(d) is the head's time, not the decision's claim: a decision signed after the revocation, whose
+		// claimed time precedes it, is judged at the time it became provable.
+		"regress/backdate-by-claim": {want: nil, why: agent.ReasonRevoked, run: func(t *testing.T, ctl bool) ([]string, string) {
+			c := aliceGate(t)                   // decided_at is testDecidedAt; the head (A) is ten seconds later
+			e := testDecidedAt.Add(time.Second) // after the claim, before A
+			if ctl {
+				e = certA.Add(time.Minute) // after A: the revocation does not reach the decision
 			}
-			if _, ok := c.recordByName(agent.ApprovalTallyStep("c1")); ok {
-				t.Fatal("a tally formed on a revoked decision")
-			}
+			c.status = c.buildStatus(revokedAlice(c, e))
 			return judged(c)
 		}},
-		// A(d) is the head's time, not the decision's claim: a decision signed after the revocation counts as such.
-		"regress/backdate-by-claim": {want: nil, why: agent.ReasonRevoked, run: func(t *testing.T) ([]string, string) {
-			c := aliceGate(t) // decided_at is testDecidedAt; the head is certA, ten seconds later
-			c.status = c.buildStatus(testca.Revoked(c.leaves["alice"].Cert, testDecidedAt.Add(time.Second), 0))
-			return judged(c)
-		}},
-		// The non-decreasing head-time rule: a larger head stamped earlier implicates the covering head.
-		"regress/skew-no-nondecreasing": {want: nil, why: agent.ReasonHeadTimes, run: func(t *testing.T) ([]string, string) {
+		// The non-decreasing head-time rule: a larger head stamped earlier than the covering head would pull
+		// A(d) before a revocation; the decision is refused.
+		"regress/skew-no-nondecreasing": {want: nil, why: agent.ReasonHeadTimes, run: func(t *testing.T, ctl bool) ([]string, string) {
 			c := aliceGate(t)
-			c.decideBare2() // grow the journal
-			c.heads = append(c.heads, c.sth(t, certA.Add(-time.Hour).UnixNano()))
+			c.decideBare2() // grow the journal so a larger head exists
+			if ctl {
+				c.heads = append(c.heads, c.sth(t, certA.Add(-30*time.Second).UnixNano())) // inside the tolerance
+				return judged(c)
+			}
+			c.heads = append(c.heads, c.sth(t, certA.Add(-2*time.Minute).UnixNano()))
+			c.status = c.buildStatus(revokedAlice(c, certA.Add(-time.Minute))) // between the early stamp and A
 			return judged(c)
 		}},
-		// The gate's Anchor step: with a store that can anchor, the decision counts; without, it waits.
-		"regress/no-anchor": {want: []string{"alice"}, run: func(t *testing.T) ([]string, string) {
+		// DeadStaysOut: a decision a revocation removed is not counted again when a head stamped earlier
+		// would move A(d) before the revocation. The count keeps no state: the same journal and heads give
+		// the same answer, before and after the skewed head arrives.
+		"regress/recount-dead": {want: nil, why: agent.ReasonHeadTimes, run: func(t *testing.T, ctl bool) ([]string, string) {
+			c := aliceGate(t)
+			c.status = c.buildStatus(revokedAlice(c, certA.Add(-time.Minute)))
+			if got, why := judged(c); len(got) != 0 || why != agent.ReasonRevoked {
+				t.Fatalf("before the skewed head: counted %v, reason %q", got, why)
+			}
+			c.decideBare2()
+			if ctl { // the later head is in order: the decision stays out because it is revoked, nothing else
+				c.heads = append(c.heads, c.sth(t, certA.Add(time.Minute).UnixNano()))
+				got, why := judged(c)
+				if why != agent.ReasonRevoked {
+					t.Fatalf("control: %q", why)
+				}
+				return got, "" // not counted, as the revocation says; the control's want below is that
+			}
+			c.heads = append(c.heads, c.sth(t, certA.Add(-2*time.Minute).UnixNano()))
+			return judged(c)
+		}, ctlWant: nil},
+		// The gate's Anchor step: with a store that can anchor, a decision journaled directly counts;
+		// without, it waits (and says so).
+		"regress/no-anchor": {want: nil, why: agent.ReasonNoCoveringHead, run: func(t *testing.T, ctl bool) ([]string, string) {
 			c := newCertGate(t, 1, "alice")
-			c.withReanchoring(true)
+			if ctl {
+				c.withReanchoring(true)
+			}
 			c.pause()
 			c.decideCert("alice", nil)
-			if err := c.run(); err != nil || c.charged != 1 {
+			err := c.run()
+			if ctl && (err != nil || c.charged != 1) {
 				t.Fatalf("the gate did not anchor and count: %v charged %d", err, c.charged)
 			}
+			if !ctl && (err == nil || c.charged != 0) {
+				t.Fatalf("an unanchored decision ran the call: %v charged %d", err, c.charged)
+			}
 			return judged(c)
 		}},
-		// The identifier binding: a decision naming an approver id other than its leaf's identifier does not count.
-		"regress/misbind-no-idbind": {want: []string{"alice"}, run: func(t *testing.T) ([]string, string) {
+		// The identifier binding: a decision that names an approver id other than its leaf's identifier
+		// does not count.
+		"regress/misbind-no-idbind": {want: alice, why: "", ctlWant: []string{"alice", "bob"}, run: func(t *testing.T, ctl bool) ([]string, string) {
 			c := newCertGate(t, 2, "alice", "bob")
 			c.pause()
 			c.decideCert("alice", nil)
-			c.decideCert("bob", func(d *agent.Decision) { // bob's id, alice's certificate and key
-				l := c.leaves["alice"]
-				d.Cert = l.Chain()
-				d.Signature = ed25519.Sign(l.Key.(ed25519.PrivateKey), agent.ApprovalDecisionBytesCert(c.subject(t), "bob", true, testDecidedAt, agent.CertLeafHash(l.DER)))
-			})
+			if ctl {
+				c.decideCert("bob", nil)
+			} else {
+				c.decideCert("bob", func(d *agent.Decision) { // bob's id, alice's certificate and key
+					l := c.leaves["alice"]
+					d.Cert = l.Chain()
+					d.Signature = ed25519.Sign(l.Key.(ed25519.PrivateKey), agent.ApprovalDecisionBytesCert(c.subject(t), "bob", true, testDecidedAt, agent.CertLeafHash(l.DER)))
+				})
+			}
 			c.anchor(certA)
 			_, checks := c.tally()
-			if r := reasonOf(t, checks, "bob"); r == "" || r == agent.ReasonSharedKey {
-				t.Fatalf("bob's misbound decision: %q", r)
+			if r := reasonOf(t, checks, "bob"); !ctl && (r == "" || r == agent.ReasonSharedKey) {
+				t.Fatalf("bob's misbound decision was refused for %q, not for the identifier", r)
 			}
 			return countedSet(checks), ""
 		}},
-		// One seat per person: counting identifiers, not decisions (one key under two approver ids).
-		"regress/no-dedup-seat": {want: []string{"alice"}, run: func(t *testing.T) ([]string, string) {
+		// One seat per identifier: one identifier under two certificates (a reissue) fills one seat, however
+		// many decisions it makes.
+		"regress/no-dedup-seat": {want: alice, ctlWant: []string{"alice", "bob"}, run: func(t *testing.T, ctl bool) ([]string, string) {
 			c := newCertGate(t, 2, "alice", "bob")
-			c.leaves["bob"] = c.inter.NewLeaf(t, testca.Opts{KeyWith: c.leaves["alice"].Key, Mutate: validAround(t, 2)})
 			c.pause()
 			c.decideCert("alice", nil)
-			c.decideCert("bob", nil)
+			if ctl {
+				c.decideCert("bob", nil)
+			} else { // alice again, under a second certificate for her identifier and another key
+				c.leaves["alice"] = c.inter.NewLeaf(t, testca.Opts{Key: testca.Ed25519, Mutate: validAround(t, 1)})
+				c.decideCert("alice", nil)
+				c.status = c.buildStatus()
+			}
 			c.anchor(certA)
-			_, checks := c.tally()
+			tally, checks := c.tally()
+			if !ctl && (tally.Approved != 1 || tally.Passed()) {
+				t.Fatalf("one identifier under two certificates filled %d seats: %+v", tally.Approved, tally)
+			}
 			return countedSet(checks), ""
 		}},
-		// Name constraints: a CA that may issue any identifier is refused when the policy requires constraints.
-		"regress/misissue-no-name-constraints": {want: nil, why: agent.ReasonCertChain, run: func(t *testing.T) ([]string, string) {
+		// Name constraints: with the policy requiring them, a CA that may issue any identifier is refused.
+		"regress/misissue-no-name-constraints": {want: nil, why: agent.ReasonCertChain, run: func(t *testing.T, ctl bool) ([]string, string) {
 			c := newCertGate(t, 1, "alice")
 			ci, err := audit.IdentityPolicy{
 				Anchors: []*x509.Certificate{c.root.Cert}, Inter: []audit.SPKIHash{audit.SPKIHashOf(c.inter.Cert)},
 				Identity: map[string]string{"alice": testca.Person(1), "bob": testca.Person(2), "carol": testca.Person(3), "dave": testca.Person(4)},
-				IDKind:   audit.IDPersonURI, EKU: testca.EKU, Policy: testca.PolicyOID, RequireNameConstraints: true,
+				IDKind:   audit.IDPersonURI, EKU: testca.EKU, Policy: testca.PolicyOID, RequireNameConstraints: !ctl,
 				Canonical: audit.NewCanonicalizer(audit.CanonicalConfig{Host: "idp.bank.example"}),
 			}.Compile()
 			if err != nil {
@@ -182,91 +272,80 @@ func TestModel15Refinement(t *testing.T) {
 			c.anchor(certA)
 			return judged(c)
 		}},
-		// The CA tier: the root's CRL that lists the issuing CA with E <= A(d) takes the leaf's decision with it.
-		"regress/count-no-ca-tier": {want: nil, why: agent.ReasonRevoked, run: func(t *testing.T) ([]string, string) {
+		// FinalNeedsCompleteSeries (N2): a series with a CRL missing from the middle (the CA numbers its CRLs
+		// consecutively) is not final.
+		"regress/final-no-coverage": {want: nil, run: func(t *testing.T, ctl bool) ([]string, string) {
 			c := aliceGate(t)
-			c.status = rootRevokesCA(t, c, certA.Add(-time.Hour))
-			return judged(c)
-		}},
-		"regress/tally-no-recheck-ca": {want: nil, why: agent.ReasonRevoked, run: func(t *testing.T) ([]string, string) {
-			c := aliceGate(t)
-			c.status = rootRevokesCA(t, c, certA.Add(-time.Hour))
-			if err := c.run(); err == nil || c.charged != 0 {
-				t.Fatalf("a decision under a revoked CA ran the call: %v charged %d", err, c.charged)
+			c.params.ConsecutiveNumbers = true
+			offs := []time.Duration{0, 20 * time.Minute, 40 * time.Minute}
+			c.status = cleanSeries(t, c, offs...)
+			if !ctl { // number 2 withheld: 1 then 3
+				c.status = snap(t,
+					c.inter.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: testDecidedAt, NextUpdate: testDecidedAt.Add(time.Hour)}),
+					c.inter.NewCRL(t, testca.CRLOpts{Number: 3, ThisUpdate: testDecidedAt.Add(40 * time.Minute), NextUpdate: testDecidedAt.Add(100 * time.Minute)}),
+					c.root.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: testDecidedAt, NextUpdate: testDecidedAt.Add(400 * time.Hour)}))
 			}
-			if _, ok := c.recordByName(agent.ApprovalTallyStep("c1")); ok {
-				t.Fatal("a tally formed on a decision under a revoked CA")
-			}
-			return judged(c)
-		}},
-		// A final verdict reads the CA tier too: with the root's CRL that lists the CA, nothing is final.
-		"regress/final-no-ca-tier": {want: nil, run: func(t *testing.T) ([]string, string) {
-			c := aliceGate(t)
-			c.status = rootRevokesCA(t, c, certA.Add(-time.Hour))
 			_, checks := c.tally()
 			return finalSet(checks), ""
-		}},
-		// Coverage of the series: a gap in the CRL series (an omitted CRL) leaves the status provisional, not final.
-		"regress/final-no-coverage": {want: nil, run: func(t *testing.T) ([]string, string) {
+		}, ctlWant: alice},
+		// Coverage by nextUpdate alone does not show that nothing lies between two CRLs: a CA that issues
+		// hourly with 24 hour validity needs its declared period.
+		"regress/final-time-hourly": {want: nil, run: func(t *testing.T, ctl bool) ([]string, string) {
+			c := aliceGate(t)
+			c.params.CAPeriod = 10 * time.Minute // declared: a CRL at least every ten minutes
+			if ctl {
+				c.params.CAPeriod = time.Hour // declared: matches the series below
+			}
+			c.status = snap(t,
+				c.inter.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: testDecidedAt, NextUpdate: testDecidedAt.Add(24 * time.Hour)}),
+				c.inter.NewCRL(t, testca.CRLOpts{Number: 3, ThisUpdate: testDecidedAt.Add(40 * time.Minute), NextUpdate: testDecidedAt.Add(24*time.Hour + 40*time.Minute)}),
+				c.root.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: testDecidedAt, NextUpdate: testDecidedAt.Add(400 * time.Hour)}),
+				c.root.NewCRL(t, testca.CRLOpts{Number: 2, ThisUpdate: c.crlsAt, NextUpdate: testDecidedAt.Add(400 * time.Hour)}))
+			_, checks := c.tally()
+			return finalSet(checks), ""
+		}, ctlWant: alice},
+		// AbsenceOnlyInWindow: silence from a CRL beyond the first one after notAfter (L(C)) is no evidence;
+		// here the CRLs between are not in the series, so the later CRL has no predecessor it follows.
+		"regress/final-no-window": {want: nil, run: func(t *testing.T, ctl bool) ([]string, string) {
 			c := aliceGate(t)
 			c.params.CAPeriod = time.Hour
-			sn := audit.NewStatusSnapshot(audit.WithLimits(agent.MaxStatusInline, 1_000_000))
-			for _, der := range [][]byte{
-				c.root.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: testDecidedAt, NextUpdate: c.crlsAt.Add(24 * time.Hour)}),
-				c.inter.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: testDecidedAt, NextUpdate: testDecidedAt.Add(24 * time.Hour)}),
-				// number 2 omitted: the next CRL comes three hours after the first
-				c.inter.NewCRL(t, testca.CRLOpts{Number: 3, ThisUpdate: testDecidedAt.Add(3 * time.Hour), NextUpdate: testDecidedAt.Add(27 * time.Hour)}),
-			} {
-				if _, err := sn.AddCRL(der); err != nil {
-					t.Fatal(err)
-				}
+			offs := []time.Duration{0, 5 * time.Hour} // the leaf is valid until +1h: the second is beyond notAfter
+			if ctl {
+				offs = []time.Duration{0, 50 * time.Minute, 100 * time.Minute, 150 * time.Minute} // L(C) follows its predecessor
 			}
-			c.status = sn
+			c.status = cleanSeries(t, c, offs...)
 			_, checks := c.tally()
 			return finalSet(checks), ""
-		}},
-		"regress/final-time-hourly": {want: nil, run: func(t *testing.T) ([]string, string) {
-			c := aliceGate(t)
-			c.params.CAPeriod = time.Hour // coverage by nextUpdate alone (24 h) does not show nothing lies between two CRLs
-			sn := audit.NewStatusSnapshot(audit.WithLimits(agent.MaxStatusInline, 1_000_000))
-			for _, der := range [][]byte{
-				c.root.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: testDecidedAt, NextUpdate: testDecidedAt.Add(48 * time.Hour)}),
-				c.inter.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: testDecidedAt, NextUpdate: testDecidedAt.Add(24 * time.Hour)}),
-				c.inter.NewCRL(t, testca.CRLOpts{Number: 3, ThisUpdate: testDecidedAt.Add(2 * time.Hour), NextUpdate: testDecidedAt.Add(26 * time.Hour)}),
-			} {
-				if _, err := sn.AddCRL(der); err != nil {
-					t.Fatal(err)
-				}
-			}
-			c.status = sn
-			_, checks := c.tally()
-			return finalSet(checks), ""
-		}},
-		"regress/final-no-window": {want: nil, run: func(t *testing.T) ([]string, string) {
-			// Status that ends before A+W' is provisional: only a CRL at or after A+W' (or L(C)) is final.
-			c := aliceGate(t)
-			c.params.W, c.params.MinW, c.params.CAPeriod = 24*time.Hour, time.Minute, time.Hour
-			_, checks := c.tally()
-			return finalSet(checks), ""
-		}},
-		// Terminal stability: a recorded tally is not changed by a later revocation or by status going stale.
-		"regress/recount-terminal": {want: []string{"alice"}, run: func(t *testing.T) ([]string, string) {
+		}, ctlWant: alice},
+		// Terminal stability: a recorded tally is not changed by a later revocation. The fresh count after
+		// the revocation differs (nothing counts); the recorded tally stands.
+		"regress/recount-terminal": {want: alice, run: func(t *testing.T, ctl bool) ([]string, string) {
 			c := aliceGate(t)
 			if err := c.run(); err != nil || c.charged != 1 {
 				t.Fatalf("%v %d", err, c.charged)
 			}
 			before, _ := c.recordByName(agent.ApprovalTallyStep("c1"))
-			c.status = c.buildStatus(revokedBeforeA(c)) // a revocation dated before the decision, learned after
+			if !ctl {
+				c.status = c.buildStatus(revokedAlice(c, certA.Add(-time.Minute))) // learned after the count
+				if got, _ := judged(c); len(got) != 0 {
+					t.Fatalf("a fresh count after the revocation still counts %v", got)
+				}
+			}
 			_ = c.run()
 			after, _ := c.recordByName(agent.ApprovalTallyStep("c1"))
 			if string(before.Result) != string(after.Result) || c.charged != 1 {
 				t.Fatalf("the recorded tally moved: %s -> %s (charged %d)", before.Result, after.Result, c.charged)
 			}
-			tally, _ := agent.RecordedTally(map[string]agent.Record{after.Name: after}, "c1")
-			_ = tally
-			return []string{"alice"}, ""
+			var tl agent.ApprovalTally
+			if err := json.Unmarshal(after.Result, &tl); err != nil {
+				t.Fatal(err)
+			}
+			got := slices.Clone(tl.ApprovedBy)
+			slices.Sort(got)
+			return got, ""
 		}},
-		"regress/stale-uncounts": {want: []string{"alice"}, run: func(t *testing.T) ([]string, string) {
+		// A decision counted on fresh status is not uncounted when the status goes stale.
+		"regress/stale-uncounts": {want: alice, run: func(t *testing.T, ctl bool) ([]string, string) {
 			c := aliceGate(t)
 			c.params.CountLive, c.params.MaxStatusAge = true, 24*time.Hour
 			c.now = func() time.Time { return certA.Add(time.Minute) }
@@ -274,49 +353,126 @@ func TestModel15Refinement(t *testing.T) {
 				t.Fatalf("%v %d", err, c.charged)
 			}
 			before, _ := c.recordByName(agent.ApprovalTallyStep("c1"))
-			c.now = func() time.Time { return certA.Add(72 * time.Hour) } // the status is now stale
+			if !ctl {
+				c.now = func() time.Time { return certA.Add(72 * time.Hour) } // the status is now stale
+				if got, why := judged(c); len(got) != 0 || why != agent.ReasonStatusStale {
+					t.Fatalf("a fresh count on stale status: %v %q", got, why)
+				}
+			}
 			_ = c.run()
 			after, _ := c.recordByName(agent.ApprovalTallyStep("c1"))
 			if string(before.Result) != string(after.Result) {
 				t.Fatalf("stale status changed a recorded tally: %s -> %s", before.Result, after.Result)
 			}
-			return []string{"alice"}, ""
+			var tl agent.ApprovalTally
+			if err := json.Unmarshal(after.Result, &tl); err != nil {
+				t.Fatal(err)
+			}
+			return slices.Clone(tl.ApprovedBy), ""
 		}},
-		// A CRL past the first one after notAfter (L(C)) is listing-only: its silence is not evidence of absence.
-		"regress/prune-no-lc-count": {want: nil, run: func(t *testing.T) ([]string, string) {
-			c := newCertGate(t, 1, "alice")
-			c.params.CAPeriod = time.Hour
+		// The tally looks at the archive: a decision counted before the revocation reached the gate does not
+		// enter the terminal tally. K=2: alice counts on clean status, the listing arrives, then bob completes
+		// the quorum.
+		"regress/tally-no-recheck": {want: []string{"bob"}, ctlWant: []string{"alice", "bob"}, run: func(t *testing.T, ctl bool) ([]string, string) {
+			c := newCertGate(t, 2, "alice", "bob")
 			c.pause()
 			c.decideCert("alice", nil)
 			c.anchor(certA)
-			// The CRLs that list the revocation (the one before notAfter and L(C)) are withheld; only one issued
-			// well after notAfter (the leaf is valid to testDecidedAt+1h), with the entry pruned, is delivered.
-			sn := audit.NewStatusSnapshot(audit.WithLimits(agent.MaxStatusInline, 1_000_000))
-			late := testDecidedAt.Add(5 * time.Hour)
-			for _, der := range [][]byte{
-				c.root.NewCRL(t, testca.CRLOpts{Number: 9, ThisUpdate: late, NextUpdate: late.Add(time.Hour)}),
-				c.inter.NewCRL(t, testca.CRLOpts{Number: 9, ThisUpdate: late, NextUpdate: late.Add(time.Hour)}),
-			} {
-				if _, err := sn.AddCRL(der); err != nil {
-					t.Fatal(err)
-				}
+			if got, _ := judged(c); !slices.Equal(got, alice) {
+				t.Fatalf("alice should count on clean status before the listing: %v", got)
 			}
-			c.status = sn
+			if !ctl {
+				c.status = c.buildStatus(revokedAlice(c, certA.Add(-time.Minute))) // the listing reaches the gate
+			}
+			c.decideCert("bob", nil)
+			c.anchor(certA.Add(time.Second))
+			err := c.run()
+			_, hasTally := c.recordByName(agent.ApprovalTallyStep("c1"))
+			if ctl && (err != nil || c.charged != 1 || !hasTally) {
+				t.Fatalf("control: %v charged %d tally %v", err, c.charged, hasTally)
+			}
+			if !ctl && (err == nil || c.charged != 0 || hasTally) {
+				t.Fatalf("a decision revoked before the tally ran the call or formed a tally: %v charged %d tally %v", err, c.charged, hasTally)
+			}
+			_, checks := c.tally()
+			return countedSet(checks), ""
+		}},
+		// A CRL past L(C) with no predecessor it follows is no evidence of absence, so the decision does not
+		// count on it (the live count does not read it); with the series filled it counts.
+		"regress/prune-no-lc-count": {want: nil, why: agent.ReasonStatusUnknown, run: func(t *testing.T, ctl bool) ([]string, string) {
+			c := aliceGate(t)
+			c.params.CountLive, c.params.MaxStatusAge, c.params.CAPeriod = true, 6*time.Hour, time.Hour
+			c.now = func() time.Time { return testDecidedAt.Add(100 * time.Minute) }
+			offs := []time.Duration{90 * time.Minute} // only a CRL after notAfter (+1h), with no predecessor it follows
+			if ctl {
+				offs = []time.Duration{20 * time.Minute, 70 * time.Minute} // L(C) (the first after notAfter) follows a CRL
+			}
+			c.status = cleanSeries(t, c, offs...)
+			return judged(c)
+		}},
+		// CA tier: the root's CRL listing the issuing CA with E <= A(d) removes the leaf's decision; with a
+		// clean root series it counts and is final.
+		"regress/count-no-ca-tier": {want: nil, why: agent.ReasonRevoked, run: func(t *testing.T, ctl bool) ([]string, string) {
+			c := aliceGate(t)
+			c.status = rootRevokesCA(t, c, certA.Add(-time.Hour))
+			if ctl {
+				c.status = c.buildStatus()
+			}
+			return judged(c)
+		}},
+		"regress/final-no-ca-tier": {want: nil, run: func(t *testing.T, ctl bool) ([]string, string) {
+			c := aliceGate(t)
+			c.status = rootRevokesCA(t, c, certA.Add(-time.Hour))
+			if ctl {
+				c.status = c.buildStatus()
+			}
 			_, checks := c.tally()
 			return finalSet(checks), ""
+		}, ctlWant: alice},
+		// The tally looks at the CA tier too: alice counts on a clean root series, the root's listing of the CA
+		// arrives, then bob completes the quorum.
+		"regress/tally-no-recheck-ca": {want: nil, ctlWant: []string{"alice", "bob"}, run: func(t *testing.T, ctl bool) ([]string, string) {
+			c := newCertGate(t, 2, "alice", "bob")
+			c.pause()
+			c.decideCert("alice", nil)
+			c.anchor(certA)
+			if got, _ := judged(c); !slices.Equal(got, alice) {
+				t.Fatalf("alice should count on a clean root series: %v", got)
+			}
+			if !ctl {
+				c.status = rootRevokesCA(t, c, certA.Add(-time.Hour)) // the root's CRL reaches the gate
+			}
+			c.decideCert("bob", nil)
+			c.anchor(certA.Add(time.Second))
+			err := c.run()
+			_, hasTally := c.recordByName(agent.ApprovalTallyStep("c1"))
+			if ctl && (err != nil || c.charged != 1 || !hasTally) {
+				t.Fatalf("control: %v charged %d tally %v", err, c.charged, hasTally)
+			}
+			if !ctl && (err == nil || c.charged != 0 || hasTally) {
+				t.Fatalf("a decision under a revoked CA ran the call or formed a tally: %v charged %d tally %v", err, c.charged, hasTally)
+			}
+			_, checks := c.tally()
+			return countedSet(checks), ""
 		}},
+	}
+	// Scenarios whose expected set is empty and whose control is alice alone use the defaults.
+	for name, sc := range scenarios {
+		if sc.ctlWant == nil && name != "regress/recount-dead" {
+			sc.ctlWant = alice
+			scenarios[name] = sc
+		}
 	}
 
 	// pending lists the model's configurations whose Go counterpart is a later change.
 	pending := map[string]string{
 		"regress/no-exec-recheck":            "the status check before execution (E2b)",
+		"regress/no-exec-recheck-revoked":    "the status check before execution (E2b)",
+		"regress/prune-no-lc-exec":           "the status check before execution (E2b)",
 		"regress/exec-no-ca-tier":            "the status check before execution (E2b)",
 		"regress/exec-leaf-age-from-ca":      "the status check before execution (E2b)",
 		"regress/exec-no-recheck-ca-revoked": "the status check before execution (E2b)",
-		"regress/no-exec-recheck-revoked":    "the status check before execution (E2b)",
-		"regress/prune-no-lc-exec":           "the status check before execution (E2b)",
-		// The injectivity limit is a control the bank evidences; Go refuses what it can see (below).
-		"limits/alias-two-seats": "see TestModel15AliasLimit",
+		"limits/alias-two-seats":             "a known limit: see TestModel15AliasLimit",
 	}
 
 	// Drift guard: the scenarios and the pending list are exactly the model's regress and limits configs.
@@ -349,22 +505,34 @@ func TestModel15Refinement(t *testing.T) {
 
 	for name, sc := range scenarios {
 		t.Run(strings.ReplaceAll(name, "/", "_"), func(t *testing.T) {
-			got, reason := sc.run(t)
+			got, reason := sc.run(t, false)
 			if !slices.Equal(got, sc.want) {
 				t.Fatalf("counted %v, the model's rule gives %v", got, sc.want)
 			}
 			if sc.why != "" && reason != sc.why {
 				t.Fatalf("alice's decision was refused for %q, want %q", reason, sc.why)
 			}
+			cgot, creason := sc.run(t, true)
+			if !slices.Equal(cgot, sc.ctlWant) {
+				t.Fatalf("control (the rule satisfied): counted %v, want %v (reason %q)", cgot, sc.ctlWant, creason)
+			}
 		})
 	}
 }
 
-// The injectivity limit (limits/alias-two-seats): two approver ids for one identifier are refused when the
-// policy is compiled, which is the part of "one person, one seat" the code can see; that a person has one
-// identifier is the bank's evidenced control, as the model states.
+// The limit model 15 states (limits/alias-two-seats): two different identifiers owned by one person fill two
+// seats. The code takes injectivity from identifier to person as the bank's evidenced control: both count and
+// a two-of-two gate passes. What it does refuse is the same identifier under two approver ids (at compile).
 func TestModel15AliasLimit(t *testing.T) {
-	c := newCertGate(t, 1, "alice")
+	c := newCertGate(t, 2, "alice", "bob") // Person(1) and Person(2): say both are one person's aliases
+	c.pause()
+	c.decideCert("alice", nil)
+	c.decideCert("bob", nil)
+	c.anchor(certA)
+	tally, checks := c.tally()
+	if !tally.Passed() || !slices.Equal(countedSet(checks), []string{"alice", "bob"}) {
+		t.Fatalf("two identifiers did not fill two seats: %+v", tally)
+	}
 	_, err := audit.IdentityPolicy{
 		Anchors: []*x509.Certificate{c.root.Cert}, Inter: []audit.SPKIHash{audit.SPKIHashOf(c.inter.Cert)},
 		Identity: map[string]string{"alice": testca.Person(1), "bob": testca.Person(1)},
@@ -376,41 +544,60 @@ func TestModel15AliasLimit(t *testing.T) {
 	}
 }
 
-// The series rule (the model's RollbackCRL, folded into the status rule): a listing in any CRL stays,
-// whatever an older CRL that arrives later says.
-func TestModel15SeriesNotSnapshot(t *testing.T) {
-	c := aliceGate(t)
-	sn := audit.NewStatusSnapshot(audit.WithLimits(agent.MaxStatusInline, 1_000_000))
-	add := func(der []byte) {
-		if _, err := sn.AddCRL(der); err != nil {
-			t.Fatal(err)
+// The number rule: a CRL dated later than another with a higher number is not a legitimate successor (a CA
+// restored from a backup), and its silence is not evidence of absence. With the only CRL at or after A the
+// restored one, the decision has no usable status; with a proper successor it counts.
+func TestModel15NumberRule(t *testing.T) {
+	for _, ctl := range []bool{false, true} {
+		c := aliceGate(t)
+		second := int64(3) // number 5 was issued before A; number 3 is dated after it: a restored backup
+		if ctl {
+			second = 6
+		}
+		c.status = snap(t,
+			c.inter.NewCRL(t, testca.CRLOpts{Number: 5, ThisUpdate: testDecidedAt.Add(-time.Hour), NextUpdate: testDecidedAt.Add(time.Hour)}),
+			c.inter.NewCRL(t, testca.CRLOpts{Number: second, ThisUpdate: c.crlsAt, NextUpdate: c.crlsAt.Add(time.Hour)}),
+			c.root.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: testDecidedAt, NextUpdate: testDecidedAt.Add(400 * time.Hour)}),
+			c.root.NewCRL(t, testca.CRLOpts{Number: 2, ThisUpdate: c.crlsAt, NextUpdate: testDecidedAt.Add(400 * time.Hour)}))
+		got, why := judged(c)
+		if ctl && !slices.Equal(got, []string{"alice"}) {
+			t.Fatalf("control: counted %v (%q)", got, why)
+		}
+		if !ctl && (len(got) != 0 || why != agent.ReasonStatusUnknown) {
+			t.Fatalf("silence from a lower-numbered CRL dated later counted: %v (%q)", got, why)
 		}
 	}
-	e := testca.Revoked(c.leaves["alice"].Cert, certA.Add(-time.Minute), 0)
-	add(c.root.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: testDecidedAt, NextUpdate: c.crlsAt.Add(time.Hour)}))
-	add(c.inter.NewCRL(t, testca.CRLOpts{Number: 2, ThisUpdate: c.crlsAt, NextUpdate: c.crlsAt.Add(time.Hour), Entries: []x509.RevocationListEntry{e}}))
-	add(c.inter.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: testDecidedAt, NextUpdate: testDecidedAt.Add(time.Hour)})) // the older CRL arrives last
-	c.status = sn
+}
+
+// A listing in any CRL stays whatever an older CRL that arrives later says (the series, not a snapshot).
+func TestModel15SeriesNotSnapshot(t *testing.T) {
+	c := aliceGate(t)
+	e := revokedAlice(c, certA.Add(-time.Minute))
+	c.status = snap(t,
+		c.root.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: testDecidedAt, NextUpdate: c.crlsAt.Add(time.Hour)}),
+		c.inter.NewCRL(t, testca.CRLOpts{Number: 2, ThisUpdate: c.crlsAt, NextUpdate: c.crlsAt.Add(time.Hour), Entries: []x509.RevocationListEntry{e}}),
+		c.inter.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: testDecidedAt, NextUpdate: testDecidedAt.Add(time.Hour)})) // the older CRL arrives last
 	got, reason := judged(c)
 	if len(got) != 0 || reason != agent.ReasonRevoked {
 		t.Fatalf("counted %v, reason %q", got, reason)
 	}
 }
 
-// rootRevokesCA is a status series in which the root's CRL lists the issuing CA with the given effective
-// time, and the leaf's issuer publishes a clean series: the CA tier is revoked, the leaf tier is not.
-func rootRevokesCA(t *testing.T, c *certGate, e time.Time) *audit.StatusSnapshot {
-	t.Helper()
-	sn := audit.NewStatusSnapshot(audit.WithLimits(agent.MaxStatusInline, 1_000_000))
-	for _, der := range [][]byte{
-		c.inter.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: testDecidedAt, NextUpdate: testDecidedAt.Add(time.Hour)}),
-		c.inter.NewCRL(t, testca.CRLOpts{Number: 2, ThisUpdate: c.crlsAt, NextUpdate: c.crlsAt.Add(time.Hour)}),
-		c.root.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: c.crlsAt, NextUpdate: c.crlsAt.Add(time.Hour),
-			Entries: []x509.RevocationListEntry{testca.Revoked(c.inter.Cert, e, 2)}}),
-	} {
-		if _, err := sn.AddCRL(der); err != nil {
-			t.Fatal(err)
-		}
+// id-prune: with a pruning CA, the first CRL beyond notAfter withheld and the pruned one delivered, the live
+// count falls back to an earlier fresh CRL: the decision counts provisionally, never final.
+func TestModel15PruneFallback(t *testing.T) {
+	c := aliceGate(t)
+	c.params.CountLive, c.params.MaxStatusAge, c.params.CAPeriod = true, 6*time.Hour, time.Hour
+	c.now = func() time.Time { return testDecidedAt.Add(3 * time.Hour) }
+	c.status = snap(t,
+		c.inter.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: testDecidedAt.Add(-5 * time.Minute), NextUpdate: testDecidedAt.Add(10 * time.Hour)}),  // fresh, before A
+		c.inter.NewCRL(t, testca.CRLOpts{Number: 4, ThisUpdate: testDecidedAt.Add(170 * time.Minute), NextUpdate: testDecidedAt.Add(10 * time.Hour)}), // the pruned one, long after notAfter
+		c.root.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: testDecidedAt.Add(-5 * time.Minute), NextUpdate: testDecidedAt.Add(400 * time.Hour)}))
+	_, checks := c.tally()
+	if got := countedSet(checks); !slices.Equal(got, []string{"alice"}) {
+		t.Fatalf("the earlier fresh CRL did not count the decision: %v (%+v)", got, checks[0])
 	}
-	return sn
+	if cc := checks[0].Cert; cc == nil || cc.Tier == "final" || cc.BasisKind != agent.BasisLiveBeforeDecision {
+		t.Fatalf("a count that fell back to status before the decision is final or mislabelled: %+v", cc)
+	}
 }
