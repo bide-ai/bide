@@ -749,4 +749,9 @@ func TestFreshnessAllowsTheThisUpdateSkew(t *testing.T) {
 	if st := age(10 * min); st.Tier == audit.TierNoInformation {
 		t.Fatalf("55 minutes after thisUpdate is 45 after issue: %+v", st)
 	}
+	// ...but only by the declared skew: 65 minutes after thisUpdate is 55 after issue, over the 50 budget.
+	late := s.leafStatus(sn, audit.StatusParams{Now: idT0.Add(10*time.Second + 65*min), MaxStatusAge: 50 * min, ThisUpdateSkew: 10 * min, CountLive: true})
+	if late.Tier != audit.TierNoInformation || !late.Stale {
+		t.Fatalf("%+v", late)
+	}
 }
