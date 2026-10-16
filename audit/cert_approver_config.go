@@ -10,6 +10,7 @@ import (
 	"maps"
 	"runtime/debug"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
@@ -198,15 +199,45 @@ type StatusArchive interface {
 	PutStatus(ctx context.Context, hash string, der []byte) error
 }
 
-// VerifierInfo implements agent.IdentityDescriber: the build's vcs.revision, if the binary has one, and
-// the x509 GODEBUG settings the operator declares (CertApprover.GoDebug).
-func (c *CertApprover) VerifierInfo() (revision, goDebug string) {
+// VerifierInfo implements agent.IdentityDescriber: the build's vcs.revision, if the binary has one, the
+// x509 GODEBUG settings the operator declares (CertApprover.GoDebug), and the build's baked-in
+// DefaultGODEBUG (the toolchain's go line fixes many x509 behaviours), read from the build info and not
+// from the environment.
+func (c *CertApprover) VerifierInfo() (revision, goDebug, buildGoDebug string) {
 	if bi, ok := debug.ReadBuildInfo(); ok {
 		for _, s := range bi.Settings {
-			if s.Key == "vcs.revision" {
+			switch s.Key {
+			case "vcs.revision":
 				revision = s.Value
+			case "DefaultGODEBUG":
+				buildGoDebug = s.Value
 			}
 		}
 	}
-	return revision, c.GoDebug
+	return revision, c.GoDebug, buildGoDebug
+}
+
+// x509Settings returns the x509 entries of a GODEBUG string, sorted.
+func x509Settings(godebug string) []string {
+	var out []string
+	for _, kv := range strings.Split(godebug, ",") {
+		if kv = strings.TrimSpace(kv); strings.HasPrefix(kv, "x509") {
+			out = append(out, kv)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// CheckDeclaredGoDebug compares the x509 GODEBUG settings an operator declares (CertApprover.GoDebug)
+// with the process's real environment value, which the caller reads (os.Getenv("GODEBUG"): the engine
+// itself reads no environment), and returns an error wrapping agent.ErrConfig when they differ. An
+// application with a certificate-bound approver calls it at startup, and generates the declaration from
+// the real settings, so the identity record's declared settings are the ones in force.
+func CheckDeclaredGoDebug(declared, environment string) error {
+	d, e := x509Settings(declared), x509Settings(environment)
+	if !slices.Equal(d, e) {
+		return fmt.Errorf("audit: the declared x509 GODEBUG settings %q differ from the process's %q: declare what the process runs under: %w", strings.Join(d, ","), strings.Join(e, ","), agent.ErrConfig)
+	}
+	return nil
 }

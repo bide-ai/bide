@@ -21,7 +21,9 @@ func (fakeCertApprover) VerifyCertDecision(CertDecision) CertCheck { return Cert
 func (fakeCertApprover) DescribeIdentity() IdentityPolicyRecord    { return IdentityPolicyRecord{} }
 func (fakeCertApprover) PolicyDigest() string                      { return "pd" }
 func (fakeCertApprover) RosterDigest() string                      { return "rd" }
-func (fakeCertApprover) VerifierInfo() (string, string)            { return "rev", "x509sha1=1" }
+func (fakeCertApprover) VerifierInfo() (string, string, string) {
+	return "rev", "x509sha1=1", "x509usefallbackroots=0"
+}
 
 // The identity record's tally digest is the SHA-256 of the bytes the journal stores for the tally, which
 // is not json.Marshal's encoding of it: an approver id may contain '&', '<' and '>' (printable ASCII),

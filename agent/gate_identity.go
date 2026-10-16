@@ -263,7 +263,7 @@ func recordIdentity(ctx context.Context, j *Journal, runID string, s ApprovalSub
 		RecordedAt: noteStamp(clockFrom(ctx)), Decisions: []IdentityDecision{}}
 	if desc != nil {
 		rec.Policy, rec.PolicyDigest, rec.RosterDigest = desc.DescribeIdentity(), desc.PolicyDigest(), desc.RosterDigest()
-		rec.VerifierRev, rec.GoDebug = desc.VerifierInfo()
+		rec.VerifierRev, rec.GoDebug, rec.BuildGoDebug = desc.VerifierInfo()
 	}
 	byApprover := map[string]DecisionCheck{}
 	for _, c := range checks {

@@ -115,7 +115,9 @@ type IdentityDescriber interface {
 	PolicyDigest() string
 	RosterDigest() string
 	// VerifierInfo is the revision the verifier was built from (vcs.revision) and the x509 GODEBUG
-	// settings it runs under, for the record: the settings are explicit configuration, never read from
-	// the process environment by the engine.
-	VerifierInfo() (revision, goDebug string)
+	// settings the operator declares it runs under (goDebug), and the build's baked-in default settings
+	// (buildGoDebug, from the build info), for the record: the declaration is explicit configuration, never
+	// read from the process environment by the engine, so the application compares it with its own
+	// environment at startup (audit.CheckDeclaredGoDebug).
+	VerifierInfo() (revision, goDebug, buildGoDebug string)
 }

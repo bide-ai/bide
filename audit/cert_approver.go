@@ -68,8 +68,9 @@ type CertApprover struct {
 	// by hash only. Without one the gate refuses to count on such a CRL.
 	StatusArchive StatusArchive
 	// GoDebug is the x509 settings of GODEBUG the process runs under (they change how certificates
-	// verify), as the operator declares them; the engine does not read the environment. It is recorded
-	// in the identity record.
+	// verify), as the operator DECLARES them: the engine does not read the environment, so this is a
+	// declaration, recorded as such in the identity record. Generate it from the real process settings and
+	// check it at startup with CheckDeclaredGoDebug(declared, os.Getenv("GODEBUG")).
 	GoDebug string
 }
 

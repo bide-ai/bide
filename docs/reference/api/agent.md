@@ -289,7 +289,8 @@ type ApprovalIdentity struct {
 	Rules        string             `json:"rules"`
 	Verifier     string             `json:"verifier"`
 	VerifierRev  string             `json:"verifier_rev,omitempty"`
-	GoDebug      string             `json:"godebug,omitempty"`
+	GoDebug      string             `json:"godebug_declared,omitempty"`
+	BuildGoDebug string             `json:"godebug_build,omitempty"`
 	RecordedAt   string             `json:"recorded_at,omitempty"`
 }
 ```
@@ -1013,7 +1014,7 @@ type IdentityDescriber interface {
 	PolicyDigest() string
 	RosterDigest() string
 
-	VerifierInfo() (revision, goDebug string)
+	VerifierInfo() (revision, goDebug, buildGoDebug string)
 }
 ```
 

@@ -338,3 +338,25 @@ func TestIdentityDigestsArePinned(t *testing.T) {
 		t.Fatalf("roster digest %s, want %s", got, want)
 	}
 }
+
+// The declared x509 GODEBUG settings are compared with the process's real ones by the application at
+// startup: only x509 entries count, order does not.
+func TestCheckDeclaredGoDebug(t *testing.T) {
+	for _, tc := range []struct {
+		declared, env string
+		ok            bool
+	}{
+		{"", "", true},
+		{"x509sha1=1", "x509sha1=1", true},
+		{"x509sha1=1,x509usefallbackroots=1", "x509usefallbackroots=1, x509sha1=1", true},
+		{"", "panicnil=1,http2client=0", true}, // other settings are not the verifier's concern
+		{"", "x509sha1=1", false},
+		{"x509sha1=1", "", false},
+		{"x509sha1=1", "x509sha1=0", false},
+	} {
+		err := audit.CheckDeclaredGoDebug(tc.declared, tc.env)
+		if (err == nil) != tc.ok || err != nil && !errors.Is(err, agent.ErrConfig) {
+			t.Fatalf("declared %q, environment %q: %v", tc.declared, tc.env, err)
+		}
+	}
+}

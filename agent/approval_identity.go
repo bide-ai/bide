@@ -135,9 +135,10 @@ type ApprovalIdentity struct {
 	RosterDigest string             `json:"roster_digest"`
 	Decisions    []IdentityDecision `json:"decisions"` // the counted certificate-bound decisions, in policy order
 	Rules        string             `json:"rules"`
-	Verifier     string             `json:"verifier"`               // runtime.Version() of the verifier
-	VerifierRev  string             `json:"verifier_rev,omitempty"` // the build's vcs.revision, when known
-	GoDebug      string             `json:"godebug,omitempty"`      // the x509 GODEBUG settings in force
+	Verifier     string             `json:"verifier"`                   // runtime.Version() of the verifier
+	VerifierRev  string             `json:"verifier_rev,omitempty"`     // the build's vcs.revision, when known
+	GoDebug      string             `json:"godebug_declared,omitempty"` // the x509 GODEBUG settings the operator DECLARED; not observed (the engine reads no environment)
+	BuildGoDebug string             `json:"godebug_build,omitempty"`    // the build's baked-in DefaultGODEBUG (the toolchain's go line), from the build info
 	RecordedAt   string             `json:"recorded_at,omitempty"`
 }
 
