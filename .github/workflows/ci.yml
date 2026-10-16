@@ -211,6 +211,8 @@ jobs:
           # workflow for the tags of a larger push). The same go.mod check runs on every pushed
           # nested tag (release-modules.yml).
           scripts/release.sh --self-test
+          # The module SBOM script writes its output where the caller names it, from any directory.
+          scripts/module-sbom.sh --self-test
           scripts/release.sh --check-classification
           # The Homebrew formula the release workflow writes pins a sha256 per archive and refuses
           # a checksums file that lacks one.
