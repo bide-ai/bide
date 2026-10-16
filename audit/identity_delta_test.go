@@ -671,3 +671,24 @@ func TestFullCRLOnlyHoldReleaseByAbsence(t *testing.T) {
 		t.Fatalf("listed again: %+v", st)
 	}
 }
+
+// Two holds on one certificate are told apart by their start: the first is closed by the CRL that
+// stops listing it even though a later CRL lists the second.
+func TestTwoHoldsAreToldApart(t *testing.T) {
+	for _, tc := range []struct {
+		at      time.Duration
+		revoked bool
+	}{{20 * min, true}, {42 * min, false}, {50 * min, true}} {
+		s := newStFxAt(t, idT0.Add(tc.at))
+		a := testca.Revoked(s.leaf.Cert, idT0.Add(10*min), 6)
+		b := testca.Revoked(s.leaf.Cert, idT0.Add(45*min), 6)
+		b1 := s.lcrl(1, idT0.Add(12*min), 15*min, a)
+		b2 := s.lcrl(2, idT0.Add(25*min), 15*min, a)
+		b3 := s.lcrl(3, idT0.Add(40*min), 15*min)
+		b4 := s.lcrl(4, idT0.Add(55*min), 15*min, b)
+		st := s.leafStatus(s.snap(b1, b2, b3, b4), audit.StatusParams{AllowHolds: true, CAPeriod: 20 * min})
+		if st.Revoked != tc.revoked {
+			t.Fatalf("decision at T0+%v: revoked=%v want %v: %+v", tc.at, st.Revoked, tc.revoked, st)
+		}
+	}
+}
