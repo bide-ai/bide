@@ -104,6 +104,8 @@ Repo-only (never tagged; they keep their `replace` directives): `examples/approv
 `examples/plan`, `examples/mcp`, `examples/observability`, `examples/govern`, `integration`,
 `benchmarks`.
 
+The exported API of every package in the published modules is listed in the generated [SDK API reference](api/index.md), one page per module (the core module, one per package), with each package's [stability label](../trust/stability.md#package-stability). The reference reads the Repo-only and command lists from `scripts/release.sh`, so a module added to the release is documented and a repo-only module is not.
+
 The procedure is in [CONTRIBUTING.md](../../CONTRIBUTING.md#releasing). The Lint job fails if a
 module is in neither list, and a pushed nested tag fails its check if the tagged `go.mod` still
 requires `v0.0.0` or replaces a bide module.

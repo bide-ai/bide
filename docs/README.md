@@ -59,6 +59,7 @@ For security and risk reviewers. Read with the guarantee and the known limitatio
 ## Reference
 
 - **[CLI reference](reference/cli.md)**: every `bide` command (`init`, `demo`, `doctor`, `sample`, `view`, `notify`, `approve`, `keygen`, `migrate`, `check`, `audit`, `version`), its flags and its exit statuses, generated from the flag sets.
+- **[SDK API reference](reference/api/index.md)**: every exported symbol of every published package, with its declaration, the first sentence of its doc comment and a [stability label](trust/stability.md#package-stability), generated from the Go sources (`go test ./internal/tools/apiref -run TestAPIReference -update`; CI fails when it is stale).
 - **[bide-hsm reference](reference/bide-hsm.md)**: `bide-hsm approve` and `pubkey`, for approvers whose keys are in an HSM, on a smart card or in a cloud KMS: the key references, flags and exit statuses.
 - **[Extension points](reference/extension-points.md)**: the ports and adapters (`Model`, `Store`, `Tool`, ...) and an "implement your own store" walkthrough.
 - **[Module structure](reference/module-structure.md)**: the multi-module repo layout.

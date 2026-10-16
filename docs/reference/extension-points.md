@@ -7,7 +7,8 @@ backend. Every built-in adapter asserts its contract with a `var _ Port = (*Adap
 line, so a breaking change to a port fails to compile against the adapters.
 
 This page documents each port: its method set, what an implementer provides, and the
-reference adapters that ship with it.
+reference adapters that ship with it. The full exported API of each package, with its
+stability label, is in the generated [SDK API reference](api/index.md).
 
 | Port | Package | What it abstracts | Reference adapter(s) |
 |---|---|---|---|

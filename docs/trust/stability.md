@@ -16,6 +16,55 @@ This page states what bide promises about versions today, derived from what the 
 - A change that alters a documented guarantee also updates [the guarantee](../GUARANTEE.md) and [known limitations](../KNOWN-LIMITATIONS.md) in the same pull request.
 - Security fixes use the `Security` section. Vulnerabilities are reported privately ([SECURITY.md](../../SECURITY.md)).
 
+## Package stability
+
+Every package of the published modules carries one of three labels. The labels are declared in one table in `internal/tools/apiref/labels.go`, and the [SDK API reference](../reference/api/index.md) is generated with them. A test fails when this table and that one differ, or when a package has no label.
+
+- **core**: breaking changes only in a minor release, listed under Changed in the changelog with a migration note.
+- **experimental**: may change in any release.
+- **building block, not yet used by approval gates**: implemented and tested, but no approval gate calls it yet, so no guarantee rests on it. Its API may change before a gate uses it.
+
+Two groups of symbols are labelled apart from their package. In `audit`, the certificate verification core (`IdentityPolicy`, `CertIdentity`, `ApproverCert`, `CertError`, `SPKIHash`, the canonicalizer types) and, in `agent`, the `ReasonNoCert`, `ReasonCertChain`, `ReasonCertIdentity`, `ReasonCertUsage` and `ReasonCertWindow` reasons are a building block: the approval gates do not count certificate-bound decisions yet. The API reference marks each such symbol.
+
+| Package | Stability |
+|---|---|
+| `agent` | core |
+| `agent/agenttest` | core |
+| `agent/storetest` | core |
+| `approvals` | core |
+| `audit` | core |
+| `audit/eventstoretest` | core |
+| `audit/rfc3161` | building block, not yet used by approval gates |
+| `audit/verify` | core |
+| `chaos` | experimental |
+| `codec/gcf` | core |
+| `eval` | experimental |
+| `govern` | experimental |
+| `govern/eventlogtest` | experimental |
+| `govern/postgreslog` | experimental |
+| `govern/redislog` | experimental |
+| `govern/sqlitelog` | experimental |
+| `mcptools` | core |
+| `middleware` | core |
+| `model/anthropic` | core |
+| `model/gemini` | core |
+| `model/modeltest` | core |
+| `model/openai` | core |
+| `model/provider` | core |
+| `notify` | core |
+| `notify/relay` | experimental |
+| `plan` | experimental |
+| `plan/planview` | experimental |
+| `schema` | core |
+| `signer/awskms` | core |
+| `signer/azurekv` | core |
+| `signer/gcpkms` | core |
+| `signer/pkcs11` | core |
+| `signer/pkcs11/pkcs11test` | core |
+| `store/postgres` | core |
+| `store/sqlite` | core |
+| `trace` | core |
+
 ## Journal and proof formats
 
 Formats carry their own version tags, and a reader refuses what it does not read rather than guessing.

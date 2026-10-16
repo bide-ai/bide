@@ -288,6 +288,7 @@ gsm، ProofBundle). ويُذكَر ضمان المعمورية الدقيق في
 **المرجع والبنية الداخلية**
 
 - **[مرجع سطر الأوامر](../../docs/reference/cli.md)**: كل أمر `bide` وكل راية وحالة خروج.
+- **[مرجع واجهة SDK البرمجية](../../docs/reference/api/index.md)**: كل رمز مُصدَّر في كل حزمة منشورة، مع تعريفه وأول جملة من تعليقه وتصنيف الاستقرار، مُولَّد من شيفرة Go.
 - **[بنية الوحدات](../../docs/reference/module-structure.md)**: تخطيط الوحدات المتعددة.
 - **[نقاط التوسعة](../../docs/reference/extension-points.md)**: المنافذ والمُحوّلات (`Model`، `Store`،
   `Tool`، `Compensator`، `Retriever`، `Anchor`، `EventStore`)، مع جولة «نفّذ مخزنك الخاص».

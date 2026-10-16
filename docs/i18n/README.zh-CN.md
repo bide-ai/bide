@@ -179,6 +179,7 @@ Temporal 借助一个服务器和一支 worker 机群提供持久化执行。而
 **参考与内部机制**
 
 - **[CLI 参考](../../docs/reference/cli.md)**：每个 `bide` 命令、标志和退出状态。
+- **[SDK API 参考](../../docs/reference/api/index.md)**：每个已发布包的每个导出符号，附声明、文档注释的第一句和稳定性标签，由 Go 源码生成。
 - **[模块结构](../../docs/reference/module-structure.md)**：多模块布局。
 - **[扩展点](../../docs/reference/extension-points.md)**：端口与适配器（`Model`、`Store`、`Tool`、`Compensator`、`Retriever`、`Anchor`、`EventStore`），附一个"实现你自己的存储"的演练。
 - **[bide 如何被验证](../../docs/testing/verification.md)**：没有失败测试就没有修复、变异检查、崩溃与取消扫描、强制交错、一致性测试套件、协调协议的 TLA+ 模型检验，以及 CI 强制执行的内容。

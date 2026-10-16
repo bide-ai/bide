@@ -252,3 +252,24 @@ func TestElide(t *testing.T) {
 		}
 	}
 }
+
+// TestGeneratedAPIReferenceIsSkipped: a directory search leaves out docs/reference/api, the
+// generated API reference, whose blocks are declarations of the packages themselves.
+func TestGeneratedAPIReferenceIsSkipped(t *testing.T) {
+	dir := t.TempDir()
+	for _, f := range []string{"docs/guide.md", "docs/reference/api/agent.md", "docs/reference/cli.md"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, f)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := markdownFiles(dir, []string{"docs"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "docs/guide.md docs/reference/cli.md"; strings.Join(got, " ") != want {
+		t.Fatalf("markdownFiles = %v, want %s", got, want)
+	}
+}
