@@ -7,6 +7,9 @@ name: CRL fixtures
 # Download the artifacts, review them, and commit them.
 on:
   workflow_dispatch:
+  push:
+    branches: [ident-c3]
+    paths: ['audit/testdata/adcs/*.ps1']
 
 permissions:
   contents: read
@@ -36,39 +39,18 @@ jobs:
           name: ejbca-fixtures
           path: out/
 
-  adcs-root:
-    name: Microsoft AD CS offline root
+  adcs:
+    name: Microsoft AD CS
     runs-on: windows-2025
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Capture
         shell: pwsh
-        run: ./audit/testdata/adcs/capture-root.ps1 -Out root
+        run: ./audit/testdata/adcs/capture.ps1 -Out out
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
-          # Contains the issuing CA's throwaway key for the next job: never a fixture.
-          name: adcs-root
-          path: root/
-          retention-days: 1
-
-  adcs-issuing:
-    name: Microsoft AD CS issuing CA
-    needs: adcs-root
-    runs-on: windows-2025
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: adcs-root
-          path: root
-      - name: Capture
-        shell: pwsh
-        run: ./audit/testdata/adcs/capture-issuing.ps1 -Out out -In root
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
-        with:
+          # Certificates, CRLs and settings only: the capture writes no private key or password.
           name: adcs-fixtures
           path: out/
