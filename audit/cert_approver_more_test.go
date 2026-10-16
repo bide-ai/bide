@@ -168,7 +168,7 @@ func TestCertApprover_Status(t *testing.T) {
 	c.pause()
 	c.decideCert("alice", nil)
 	c.anchor(certA)
-	sn := audit.NewStatusSnapshot()
+	sn := audit.NewStatusSnapshot(audit.WithLimits(agent.MaxStatusInline, 1_000_000))
 	for _, der := range [][]byte{
 		c.inter.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: testDecidedAt, NextUpdate: testDecidedAt.Add(time.Hour)}),
 		c.inter.NewCRL(t, testca.CRLOpts{Number: 2, ThisUpdate: c.crlsAt, NextUpdate: c.crlsAt.Add(time.Hour)}),
@@ -188,7 +188,7 @@ func TestCertApprover_Status(t *testing.T) {
 	if _, checks := c.tally(); reasonOf(t, checks, "alice") != agent.ReasonStatusUnknown {
 		t.Fatalf("no status: %+v", checks)
 	}
-	c.status = audit.NewStatusSnapshot()
+	c.status = audit.NewStatusSnapshot(audit.WithLimits(agent.MaxStatusInline, 1_000_000))
 	if _, checks := c.tally(); reasonOf(t, checks, "alice") != agent.ReasonStatusUnknown {
 		t.Fatalf("empty status: %+v", checks)
 	}
@@ -216,7 +216,7 @@ func TestCertApprover_LiveCountIsProvisional(t *testing.T) {
 	c.decideCert("alice", nil)
 	c.anchor(certA)
 	// Only CRLs issued before A: offline there is no status; live they count, provisionally.
-	sn := audit.NewStatusSnapshot()
+	sn := audit.NewStatusSnapshot(audit.WithLimits(agent.MaxStatusInline, 1_000_000))
 	for _, der := range [][]byte{
 		c.inter.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: certA.Add(-time.Second), NextUpdate: certA.Add(time.Hour)}),
 		c.root.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: certA.Add(-time.Second), NextUpdate: certA.Add(time.Hour)}),
@@ -285,7 +285,12 @@ func TestCertApprover_EarlyRefusals(t *testing.T) {
 	c := newCertGate(t, 1, "alice")
 	a := c.approver("alice")
 	rec := func(mut func(*agent.ApproverSignature)) agent.Record {
-		sig := &agent.ApproverSignature{Approver: "alice", ApproverAlg: audit.AlgEd25519, Signature: []byte("s"),
+		// A valid v4 signature over this subject: the verifier reports "not provable yet" (which makes
+		// the gate anchor) only for a decision that verifies.
+		l := c.leaves["alice"]
+		subj := agent.ApprovalSubject{RunID: gateRun, ToolUseID: "c1"}
+		good := ed25519.Sign(l.Key.(ed25519.PrivateKey), agent.ApprovalDecisionBytesCert(subj, "alice", true, testDecidedAt, agent.CertLeafHash(l.DER)))
+		sig := &agent.ApproverSignature{Approver: "alice", ApproverAlg: audit.AlgEd25519, Signature: good,
 			DecidedAt: agent.FormatTimestamp(testDecidedAt), ApproverCert: c.leaves["alice"].Chain()}
 		if mut != nil {
 			mut(sig)
@@ -312,7 +317,7 @@ func TestCertApprover_EarlyRefusals(t *testing.T) {
 	// No head source at all.
 	noHeads := c.approver("alice")
 	noHeads.Heads = nil
-	got := noHeads.VerifyCertDecision(agent.CertDecision{Record: rec(nil), Journal: []agent.Record{{}}, Index: 0})
+	got := noHeads.VerifyCertDecision(agent.CertDecision{Subject: agent.ApprovalSubject{RunID: gateRun, ToolUseID: "c1"}, Record: rec(nil), Journal: []agent.Record{{}}, Index: 0})
 	if got.Reason != agent.ReasonNoCoveringHead {
 		t.Fatalf("no heads: %+v", got)
 	}
@@ -336,7 +341,7 @@ func TestCertApprover_TierIsTheWeakestCertificate(t *testing.T) {
 	c.pause()
 	c.decideCert("alice", nil)
 	c.anchor(certA)
-	sn := audit.NewStatusSnapshot()
+	sn := audit.NewStatusSnapshot(audit.WithLimits(agent.MaxStatusInline, 1_000_000))
 	for _, der := range [][]byte{
 		c.inter.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: testDecidedAt, NextUpdate: testDecidedAt.Add(time.Hour)}),
 		c.inter.NewCRL(t, testca.CRLOpts{Number: 2, ThisUpdate: c.crlsAt, NextUpdate: c.crlsAt.Add(time.Hour)}),

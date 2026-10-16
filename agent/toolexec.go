@@ -113,6 +113,19 @@ func tallyGateOnce(ctx context.Context, store *Journal, runID string, s Approval
 	if c.recorded {
 		return c.tally, true, false, nil
 	}
+	// A decision of a certificate-bound approver counts only once a signed head covers it. One that
+	// verifies but has none is anchored by the gate (the store publishes a head), then counted again.
+	if anchorFirst(ctx, store, runID, c.checks) {
+		if recs, err = store.History(ctx, runID); err != nil {
+			return ApprovalTally{}, false, false, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
+		}
+		if c, err = countGate(recs, runID, s, pol, verifierFor, since); err != nil {
+			return ApprovalTally{}, false, false, err
+		}
+		if c.recorded {
+			return c.tally, true, false, nil
+		}
+	}
 	tally := c.tally
 	if !tally.Passed() && !tally.Unreachable() {
 		// A gate whose recorded deadline the clock has reached records its expiry as its outcome,
@@ -120,6 +133,7 @@ func tallyGateOnce(ctx context.Context, store *Journal, runID string, s Approval
 		// recorded: the first writer is the outcome.
 		_, expiresAt, ok := RecordedDeadline(recs, s.ToolUseID)
 		if !ok || !pastDeadline(now, expiresAt) {
+			notePause(ctx, store, runID, s, pol, verifierFor, recs, c.checks)
 			return tally, false, false, nil
 		}
 		tally.Expired = true
@@ -133,6 +147,9 @@ func tallyGateOnce(ctx context.Context, store *Journal, runID string, s Approval
 		name = ApprovalRetallyStep(s.ToolUseID)
 	case ApprovalSoDRetallyStep(s.ToolUseID):
 		name = ApprovalSoDRetallyStep(s.ToolUseID)
+	}
+	if err := recordIdentity(ctx, store, runID, s, pol, verifierFor, identGen(recs, s.ToolUseID), name, tally, c.checks); err != nil {
+		return ApprovalTally{}, false, false, err
 	}
 	tally, err = step(ctx, store, runID, name, func(context.Context) (ApprovalTally, error) { return tally, nil }, WithSafety(Safety{ReadOnly: true}))
 	if err != nil {

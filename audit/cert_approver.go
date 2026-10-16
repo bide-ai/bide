@@ -10,6 +10,7 @@ import (
 	"maps"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
@@ -57,6 +58,20 @@ type CertApprover struct {
 	// must supply this function. A requester it cannot map is then excluded by approver id only, and
 	// the finding carries a warning; without the function no warning is made.
 	RequesterIdentity func(principal string) (identifier string, ok bool)
+	// ExecStatusAge is how old the newest CRL may be when the call is about to run (the status check
+	// before execution). ValidateConfig requires every CA period to be at most half of it.
+	ExecStatusAge time.Duration
+	// PolicyEffectiveFrom is when the certificate policy took effect (the bank's change record), kept in
+	// the identity record so the mapping at A(d) is knowable years later. ValidateConfig requires it.
+	PolicyEffectiveFrom time.Time
+	// StatusArchive receives the bytes of a CRL above agent.MaxStatusInline, which the journal records
+	// by hash only. Without one the gate refuses to count on such a CRL.
+	StatusArchive StatusArchive
+	// GoDebug is the x509 settings of GODEBUG the process runs under (they change how certificates
+	// verify), as the operator DECLARES them: the engine does not read the environment, so this is a
+	// declaration, recorded as such in the identity record. Generate it from the real process settings and
+	// check it at startup with CheckDeclaredGoDebug(declared, os.Getenv("GODEBUG")).
+	GoDebug string
 }
 
 // Alg reports agent.AlgCertificate: the scheme is the leaf key's, known only from the certificate.
@@ -104,8 +119,16 @@ func (c *CertApprover) VerifyCertDecision(cd agent.CertDecision) agent.CertCheck
 	if err != nil {
 		return fail(agent.ReasonDecidedAt, "decided_at: %v", err)
 	}
-	a, source, _, hwarn, why, err := c.provableAt(cd)
+	a, source, head, hwarn, why, err := c.provableAt(cd)
 	if err != nil {
+		if why == agent.ReasonNoCoveringHead {
+			// "Not provable yet" makes the gate anchor, which signs a head with the log key. Report it
+			// only for a decision that verifies if the signed time were the provable time, so a junk
+			// decision gets its own reason and never causes a head to be signed.
+			if pre := c.verifies(cd, decidedAt); pre.Reason != "" {
+				return pre
+			}
+		}
 		return agent.CertCheck{Reason: why, Detail: err.Error(), Warnings: hwarn}
 	}
 	ac, err := c.Policy.VerifyChain(c.ApproverID, r.ApproverCert(), decidedAt, a)
@@ -128,7 +151,14 @@ func (c *CertApprover) VerifyCertDecision(cd agent.CertDecision) agent.CertCheck
 		return agent.CertCheck{Reason: agent.ReasonBadSig, Detail: "the signature does not verify over the bide.approval.v4 bytes of this call under the certificate's key", Anchored: a, Time: source}
 	}
 
-	out := agent.CertCheck{Identity: ac.Identity, KeyHash: ac.KeyHash, Anchored: a, Time: source, Warnings: hwarn}
+	out := agent.CertCheck{Identity: ac.Identity, KeyHash: ac.KeyHash, Anchored: a, Time: source, Warnings: hwarn, HeadSize: head.Size,
+		Anchor: hex.EncodeToString(ac.Anchor[:]), HeadRoot: hex.EncodeToString(head.Root)}
+	hh := head.Hash()
+	out.HeadHash = hex.EncodeToString(hh[:])
+	for _, x := range ac.Chain {
+		sum := sha256.Sum256(x.Raw)
+		out.Chain = append(out.Chain, hex.EncodeToString(sum[:]))
+	}
 	if c.Status == nil {
 		out.Reason, out.Detail = agent.ReasonStatusUnknown, "the verifier has no revocation status"
 		return out
@@ -156,6 +186,18 @@ func (c *CertApprover) VerifyCertDecision(cd agent.CertDecision) agent.CertCheck
 		out.Reason, out.Detail = agent.ReasonStatusUnknown, "the status rule returned no finding for the chain"
 		return out
 	}
+	seen := map[[32]byte]bool{}
+	for i, f := range cs.Certs {
+		for _, h := range f.Used {
+			if seen[h] || i+1 >= len(ac.Chain) {
+				continue
+			}
+			seen[h] = true
+			if ev, ok := c.Status.evidence(h, SPKIHashOf(ac.Chain[i+1])); ok {
+				out.Evidence = append(out.Evidence, ev)
+			}
+		}
+	}
 	// The weakest certificate's finding states the decision's: its tier, what it rests on, and S.
 	weakest := cs.Certs[0]
 	for _, f := range cs.Certs[1:] {
@@ -163,7 +205,11 @@ func (c *CertApprover) VerifyCertDecision(cd agent.CertDecision) agent.CertCheck
 			weakest = f
 		}
 	}
-	out.Tier, out.Basis = weakest.Tier.String(), weakest.Basis
+	out.Tier, out.Basis, out.Window = weakest.Tier.String(), weakest.Basis, weakest.Window.String()
+	out.BasisKind = agent.BasisAtOrAfterDecision
+	if strings.HasPrefix(weakest.Basis, "live count") {
+		out.BasisKind = agent.BasisLiveBeforeDecision
+	}
 	if !weakest.S.IsZero() {
 		out.StatusTime = weakest.S.UTC().Format(time.RFC3339)
 	}
@@ -242,6 +288,35 @@ func (c *CertApprover) provableAt(cd agent.CertDecision) (a time.Time, source st
 	}
 	h := good[cover]
 	return time.Unix(0, h.TimestampNanos).UTC(), "log signer clock: head of size " + fmt.Sprint(h.Size) + " root " + hex.EncodeToString(h.Root[:min(8, len(h.Root))]), h, warnings, "", nil
+}
+
+// verifies checks the decision's chain, identifier, scheme and signature taking at as the time it became
+// provable, and returns the failure, or an empty finding when it verifies. It says nothing of status.
+func (c *CertApprover) verifies(cd agent.CertDecision, at time.Time) agent.CertCheck {
+	r := cd.Record
+	if len(r.ApproverCert()) == 0 {
+		return agent.CertCheck{Reason: agent.ReasonNoCert, Detail: "the decision carries no certificate chain"}
+	}
+	ac, err := c.Policy.VerifyChain(c.ApproverID, r.ApproverCert(), at, at)
+	if err != nil {
+		var ce *CertError
+		if errors.As(err, &ce) {
+			return agent.CertCheck{Reason: ce.Reason, Detail: ce.Detail}
+		}
+		return agent.CertCheck{Reason: agent.ReasonCertChain, Detail: err.Error()}
+	}
+	if r.ApproverAlg() != ac.Scheme {
+		return agent.CertCheck{Reason: agent.ReasonAlg, Detail: fmt.Sprintf("signed under %q, the certificate's key is %q", r.ApproverAlg(), ac.Scheme)}
+	}
+	v, err := NewVerifier(ac.Scheme, ac.PublicKey)
+	if err != nil {
+		return agent.CertCheck{Reason: agent.ReasonCertUsage, Detail: "the certificate's key: " + err.Error()}
+	}
+	at2, err := agent.ParseTimestamp(r.DecidedAt())
+	if err != nil || !v.Verify(agent.ApprovalDecisionBytesCert(cd.Subject, r.Approver(), r.Approved, at2, ac.LeafHash), r.Signature()) {
+		return agent.CertCheck{Reason: agent.ReasonBadSig, Detail: "the signature does not verify over the bide.approval.v4 bytes of this call under the certificate's key"}
+	}
+	return agent.CertCheck{}
 }
 
 // HasIdentity implements agent.IdentityRoster: whether the policy's identity map names the approver id.

@@ -31,6 +31,8 @@ type certGate struct {
 	now     func() time.Time
 	crlsAt  time.Time // when the status CRLs are issued
 	pending bool
+	archive audit.StatusArchive // the verifier's status archive, when set
+	goDebug string              // the x509 GODEBUG settings the verifier declares
 }
 
 // head times: the decision is signed at testDecidedAt and the head that first covers it is stamped
@@ -71,7 +73,7 @@ func newCertGate(t *testing.T, need int, approvers ...string) *certGate {
 // buildStatus is a clean series for the leaf's issuer and the intermediate's: a CRL in force at A and
 // one issued after it, so the decision's status is final.
 func (c *certGate) buildStatus(revoked ...x509.RevocationListEntry) *audit.StatusSnapshot {
-	sn := audit.NewStatusSnapshot()
+	sn := audit.NewStatusSnapshot(audit.WithLimits(agent.MaxStatusInline, 1_000_000))
 	add := func(der []byte) {
 		if _, err := sn.AddCRL(der); err != nil {
 			c.t.Fatal(err)
@@ -88,7 +90,8 @@ func (c *certGate) approver(id string) *audit.CertApprover {
 	return &audit.CertApprover{
 		ApproverID: id, Policy: c.ci, LogKey: audit.Ed25519Verifier{Pub: c.logPub},
 		Heads:  func(string) ([]audit.SignedTreeHead, error) { return c.heads, nil },
-		Status: c.status, StatusParams: c.params, Now: c.now,
+		Status: c.status, StatusParams: c.params, Now: c.now, ExecStatusAge: 2 * time.Hour, StatusArchive: c.archive, GoDebug: c.goDebug,
+		PolicyEffectiveFrom: certA.Add(-24 * time.Hour),
 	}
 }
 
