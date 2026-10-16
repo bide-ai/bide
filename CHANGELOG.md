@@ -11,7 +11,7 @@ journal format can change between pre-releases without a version bump. Curated h
 
 Unreleased changes are in `changes/unreleased/`.
 
-## [0.19.0] - 2026-10-17
+## [0.19.0] - 2026-10-16
 
 ### Added
 
