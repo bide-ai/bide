@@ -53,6 +53,12 @@ SYFT
     case "$out" in /*) want=$out ;; *) want=$tmp/cwd/$out ;; esac
     [ -s "$want" ] || { echo "self-test: the SBOM for OUT=$out is not at $want"; ok=false; }
   done
+  # A relative TMPDIR: the scratch directory is still found after the script changes directory.
+  (cd "$tmp/cwd" && mkdir -p rel && PATH="$tmp/bin:$PATH" TMPDIR=rel FAKE_VERSION=v9.9.9 FAKE_MODULES="$mods" "$here/module-sbom.sh" v9.9.9 rel.json >"$tmp/log" 2>&1) \
+    && [ -s "$tmp/cwd/rel.json" ] || { echo "self-test: a relative TMPDIR broke the run:"; sed 's/^/    /' "$tmp/log"; ok=false; }
+  if (cd "$tmp/cwd" && PATH="$tmp/bin:$PATH" FAKE_VERSION=v9.9.9 FAKE_MODULES="$mods" "$here/module-sbom.sh" v9.9.9 - >"$tmp/log" 2>&1); then
+    echo "self-test: OUT - was accepted"; ok=false
+  fi
   rm -rf "$tmp"
   $ok && echo "self-test: ok"
 }
@@ -62,6 +68,7 @@ SYFT
 VERSION=$1 OUT=$2; shift 2
 # The script changes directory (to the consumer module it builds), so OUT is made absolute now: the
 # caller's relative path names a file in the caller's directory.
+[ "$OUT" != - ] || die "OUT must be a file name; the SBOM is not written to standard output"
 case "$OUT" in /*) ;; *) OUT=$PWD/$OUT ;; esac
 WAIT=0
 while [ $# -gt 0 ]; do
@@ -76,6 +83,8 @@ done
 command -v syft >/dev/null || die "syft is not on the path"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/bide-module-sbom.XXXXXX")
+# Absolute, like OUT: a relative TMPDIR would break every $WORK path after the cd.
+WORK=$(cd "$WORK" && pwd)
 # The module cache is read-only (a downloaded toolchain even under -modcacherw).
 trap 'chmod -R u+w "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/consumer" "$WORK/empty"
