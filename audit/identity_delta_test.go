@@ -574,13 +574,20 @@ func TestEarlierReleaseDoesNotCloseALaterHold(t *testing.T) {
 
 // The same hold is listed by the base and by every delta since: it is one hold, closed by one release.
 func TestSameHoldListedByBaseAndDeltasIsOneHold(t *testing.T) {
-	s := newStFxAt(t, idT0.Add(40*min))
+	for _, at := range []time.Duration{5 * min, 40 * min} { // before the hold, after the release
+		sameHoldAt(t, at)
+	}
+}
+
+func sameHoldAt(t *testing.T, at time.Duration) {
+	t.Helper()
+	s := newStFxAt(t, idT0.Add(at))
 	hold := testca.Revoked(s.leaf.Cert, idT0.Add(10*min), 6)
 	base := s.lcrl(1, idT0.Add(12*min), 24*hour, hold)
 	d1 := s.delta(2, 1, idT0.Add(20*min), 30*min, hold)
 	d2 := s.delta(3, 1, idT0.Add(31*min), 30*min, hold, testca.Revoked(s.leaf.Cert, idT0.Add(30*min), 8))
 	d3 := s.delta(4, 1, idT0.Add(32*min), 30*min, testca.Revoked(s.leaf.Cert, idT0.Add(30*min), 8))
 	if st := s.leafStatus(s.snap(base, d1, d2, d3), audit.StatusParams{AllowHolds: true}); st.Revoked {
-		t.Fatalf("a decision after the release was refused: %+v", st)
+		t.Fatalf("a decision %v from T0 was refused: %+v", at, st)
 	}
 }
