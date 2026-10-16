@@ -1,0 +1,3 @@
+Section: Changed
+
+The certificate verification core in `audit` (`IdentityPolicy`, `CertIdentity`, `ApproverCert`, `CertError`, `SPKIHash`, the canonicalizer types) and the `agent` reasons `ReasonNoCert`, `ReasonCertChain`, `ReasonCertIdentity`, `ReasonCertUsage` and `ReasonCertWindow` are no longer labelled "building block, not yet used by approval gates" in the SDK API reference and the stability page: since the gate change for certificate-bound approvers, approval gates use them, so they carry their packages' label (core). `audit/rfc3161` keeps the building block label, since no gate or command calls it.

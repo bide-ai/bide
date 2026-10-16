@@ -72,12 +72,10 @@ type SymbolRule struct {
 }
 
 // SymbolRules label the parts of a package that are further along, or less far along, than the
-// package. The certificate verification core (#313) lives in package audit, which is core as a
-// whole; the approval gates do not yet count a certificate-bound decision.
-var SymbolRules = []SymbolRule{
-	{Package: "audit", Files: []string{"identity_cert.go", "identity_canonical.go"}, Label: BuildingBlock},
-	{Package: "agent", Names: []string{"ReasonNoCert", "ReasonCertChain", "ReasonCertIdentity", "ReasonCertUsage", "ReasonCertWindow"}, Label: BuildingBlock},
-}
+// package. None is needed now: the certificate verification core (#313) was labelled a building
+// block while package audit was core as a whole and the approval gates did not count a
+// certificate-bound decision; since the gate change (#351) they do.
+var SymbolRules = []SymbolRule{}
 
 // labelOf is the label of a symbol: a matching rule's, else the package's.
 func (c Config) labelOf(pkg *Package, name, file string) string {

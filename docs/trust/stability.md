@@ -24,7 +24,7 @@ Every package of the published modules carries one of three labels. The labels a
 - **experimental**: may change in any release.
 - **building block, not yet used by approval gates**: implemented and tested, but no approval gate calls it yet, so no guarantee rests on it. Its API may change before a gate uses it.
 
-Two groups of symbols are labelled apart from their package. In `audit`, the certificate verification core (`IdentityPolicy`, `CertIdentity`, `ApproverCert`, `CertError`, `SPKIHash`, the canonicalizer types) and, in `agent`, the `ReasonNoCert`, `ReasonCertChain`, `ReasonCertIdentity`, `ReasonCertUsage` and `ReasonCertWindow` reasons are a building block: the approval gates do not count certificate-bound decisions yet. The API reference marks each such symbol.
+The certificate verification core in `audit` and the certificate-bound approver in `agent` carry the label of their packages (core): approval gates count a certificate-bound decision. `audit/rfc3161` is the one building block left: no gate or command calls it.
 
 | Package | Stability |
 |---|---|
