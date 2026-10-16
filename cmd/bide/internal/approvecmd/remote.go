@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -190,7 +191,7 @@ func (r *remote) pending(ctx context.Context, run, call string) (*approvals.Pend
 }
 
 // remotePreflight refuses a decision the endpoint's own report says cannot be made.
-func remotePreflight(p *approvals.Pending, as string) error {
+func remotePreflight(p *approvals.Pending, as string, cd *certDecision, at time.Time) error {
 	switch p.State {
 	case approvals.StateWaiting:
 	default:
@@ -202,6 +203,24 @@ func remotePreflight(p *approvals.Pending, as string) error {
 	for _, d := range p.Gate.Decisions {
 		if d.Approver == as && d.Counted {
 			return refuse("%s already decided on call %s: %s", safe(as), safe(p.Call), verdict(d.Approved))
+		}
+	}
+	// The gate's identity rule, as the endpoint reports it (the identity each certificate-bound approver's
+	// certificate must carry): an approver it lists decides with -cert and the others do not; and with a
+	// policy of our own, the identity our certificate has must be the one the rule names. The endpoint's
+	// word is not what makes the decision count (its verifier checks the chain); this saves a refused or
+	// uncounted decision.
+	if len(p.Gate.Identity) > 0 {
+		want, bound := p.Gate.Identity[as]
+		switch {
+		case bound && cd == nil:
+			return refuse("%s is a certificate-bound approver of this gate: its decision carries your certificate chain and is signed over bide.approval.v4. Give -cert (and -identity-policy); a bare-key decision would be refused", safe(as))
+		case !bound && cd != nil:
+			return refuse("%s is a bare-key approver of this gate (its certificate-bound approvers are: %s): a decision carrying a certificate would be refused. Drop -cert", safe(as), safe(strings.Join(slices.Sorted(maps.Keys(p.Gate.Identity)), ", ")))
+		case bound && cd != nil:
+			if got := cd.identity(as, at); got != "" && got != want {
+				return refuse("your certificate carries the identity %s, and the gate expects %s for %s: the decision would be refused; check which certificate you are using", safe(got), safe(want), safe(as))
+			}
 		}
 	}
 	switch {
@@ -234,7 +253,10 @@ func (c *cmd) showRemote(p *approvals.Pending, s agent.ApprovalSubject, sg audit
 	}
 	row("pending", safe(strings.Join(p.Gate.Pending, ", ")))
 	row("you", fmt.Sprintf("%s, with %s key %s", st.Bold(c.f.as), sg.Alg(), keyName(sg)))
-	if c.f.approverKeys == "" {
+	switch {
+	case c.cert != nil:
+		c.cert.show(row, st, c.f.as, now())
+	case c.f.approverKeys == "":
 		row("", st.BoldFail("UNVERIFIED")+" "+st.Warn("this key is not checked against the key enrolled for you (-unverified): if the application enrols another, the decision is refused"))
 	}
 	if p.AskedAt != "" {
@@ -253,7 +275,11 @@ func (c *cmd) showRemote(p *approvals.Pending, s agent.ApprovalSubject, sg audit
 		fmt.Fprintf(c.out, "    %s\n", st.Warn(fmt.Sprintf("[%d more bytes not shown; the signature binds all of them; -full shows everything]", hidden)))
 	}
 	fmt.Fprintf(c.out, "\n  %s %s\n", "args SHA-256", st.Bold(audit.ApprovalArgsDigest(s)))
-	fmt.Fprintf(c.out, "  %s\n\n", st.Dim("computed here from the arguments above; your signature binds this digest with the run, call, tool and your id, your decision and its time, and nothing else"))
+	bound := "computed here from the arguments above; your signature binds this digest with the run, call, tool and your id, your decision and its time, and nothing else"
+	if c.cert != nil {
+		bound = "computed here from the arguments above; your signature binds this digest with the run, call, tool and your id, your decision and its time, and the hash of your certificate, and nothing else"
+	}
+	fmt.Fprintf(c.out, "  %s\n\n", st.Dim(bound))
 	return hidden > 0
 }
 
@@ -280,6 +306,10 @@ func (c *cmd) approveRemote(ctx context.Context) error {
 			return err
 		}
 	}
+	// The certificate is read and checked before the key is opened: a bad file costs no HSM login.
+	if c.cert, err = c.loadCert(); err != nil {
+		return err
+	}
 	signer, err := c.src.Load(f.key)
 	if err != nil {
 		// The source's error may hold text from a vendor library: show it escaped.
@@ -288,7 +318,11 @@ func (c *cmd) approveRemote(ctx context.Context) error {
 	if cl, ok := signer.(io.Closer); ok {
 		defer cl.Close()
 	}
-	if err := checkEnrolled(keys, f.as, signer); err != nil {
+	if c.cert != nil {
+		if err := c.cert.chain.checkKeyIsLeaf(signer); err != nil {
+			return err
+		}
+	} else if err := checkEnrolled(keys, f.as, signer); err != nil {
 		return err
 	}
 	receiptPath, err := c.receiptTarget()
@@ -300,7 +334,7 @@ func (c *cmd) approveRemote(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := remotePreflight(p, f.as); err != nil {
+	if err := remotePreflight(p, f.as, c.cert, now()); err != nil {
 		return err
 	}
 	shown := audit.ApprovalArgsDigest(s)
@@ -318,7 +352,7 @@ func (c *cmd) approveRemote(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("the endpoint changed while you were deciding; nothing was signed: %w", err)
 	}
-	if err := remotePreflight(p2, f.as); err != nil {
+	if err := remotePreflight(p2, f.as, c.cert, now()); err != nil {
 		return fmt.Errorf("the endpoint changed while you were deciding; nothing was signed: %w", err)
 	}
 	if s2.ToolName != s.ToolName || audit.ApprovalArgsDigest(s2) != shown || s2.RunID != s.RunID || s2.ToolUseID != s.ToolUseID ||
@@ -327,23 +361,44 @@ func (c *cmd) approveRemote(ctx context.Context) error {
 	}
 
 	at := now()
-	msg := agent.ApprovalDecisionBytes(s, f.as, !f.reject, at)
+	var d agent.Decision
+	var msg []byte
+	if c.cert != nil {
+		// Checked again at the time that will be signed; no failure falls back to a bare-key decision.
+		if err := c.cert.chain.checkKeyIsLeaf(signer); err != nil {
+			return err
+		}
+		if err := c.cert.check(f.as, at, f.certMinLeft); err != nil {
+			return err
+		}
+		if d, msg, err = c.cert.sign(signer, s, f.run, f.call, f.as, !f.reject, at); err != nil {
+			return err
+		}
+		if err := c.cert.verifySigned(d, msg); err != nil {
+			return err
+		}
+	} else {
+		msg = agent.ApprovalDecisionBytes(s, f.as, !f.reject, at)
+		sig, err := signer.Sign(msg)
+		if err != nil {
+			return fmt.Errorf("sign the decision (nothing was sent): %w", err)
+		}
+		d = agent.Decision{RunID: f.run, ToolUseID: f.call, ApproverID: f.as, Approved: !f.reject, DecidedAt: at, Alg: signer.Alg(), Signature: sig}
+	}
 	if !digestAt(msg, s, shown) {
-		return errors.New("internal error: the decision bytes do not carry the shown arguments digest; nothing was signed")
+		return errors.New("internal error: the decision bytes do not carry the shown arguments digest; nothing was sent")
 	}
-	sig, err := signer.Sign(msg)
-	if err != nil {
-		return fmt.Errorf("sign the decision (nothing was sent): %w", err)
-	}
-	d := agent.Decision{RunID: f.run, ToolUseID: f.call, ApproverID: f.as, Approved: !f.reject, DecidedAt: at, Alg: signer.Alg(), Signature: sig}
 	body, err := json.Marshal(approvals.Request{Run: f.run, Call: f.call, Approver: f.as, Approved: !f.reject,
-		DecidedAt: agent.FormatTimestamp(at), Alg: string(signer.Alg()), Signature: sig})
+		DecidedAt: agent.FormatTimestamp(at), Alg: string(d.Alg), Signature: d.Signature, Cert: d.Cert})
 	if err != nil {
 		return err
 	}
 	status, rb, err := rem.do(ctx, http.MethodPost, "/decisions", nil, body)
 	if err != nil {
 		return fmt.Errorf("the request failed, and the decision may or may not have been recorded: run the same command again to see the gate (a decision already recorded for you is refused as already decided): %w", err)
+	}
+	if status == http.StatusServiceUnavailable && c.cert != nil {
+		return refuse("the endpoint cannot judge your certificate's revocation status right now (HTTP 503): nothing was recorded; wait a few minutes and run the same command again")
 	}
 	if status != http.StatusOK {
 		return refusedBy(status, rb)
@@ -409,7 +464,14 @@ func (c *cmd) remoteReceipt(rcp *audit.DecisionReceipt, record string, d agent.D
 	// The recorded signature may differ from the one just sent (a retry of a randomized scheme's
 	// decision answers from the record journaled first); it must verify under the approver's own key
 	// for the same decision, which Verify checks.
-	if err := rc.Verify(own); err != nil {
+	if c.cert != nil {
+		// A certificate-bound receipt carries the chain and is signed over the v4 bytes: it must carry
+		// the chain that was sent and verify under the leaf's key. (Its identity check, against the
+		// policy and the anchoring head, is bide approve -verify-receipt -identity-policy -log-key.)
+		if err := c.cert.verifyReceipt(rc, s); err != nil {
+			return fmt.Errorf("the decision was recorded, but the receipt the endpoint returned does not verify, so none was written: %w", err)
+		}
+	} else if err := rc.Verify(own); err != nil {
 		return fmt.Errorf("the decision was recorded, but the receipt the endpoint returned does not verify, so none was written: %w", err)
 	}
 	if !bytes.Equal(rc.Signature, d.Signature) {

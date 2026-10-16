@@ -587,6 +587,21 @@ the one the endpoint returns, checked against what you signed and against your k
 written. If the request fails with no answer, the decision may or may not have been recorded: run
 the command again, and a decision of yours that counts is refused as already decided.
 
+-cert <chain.pem> signs a certificate-bound decision: the approver is identified by a certificate from the
+bank's CA, not by an enrolled key. The decision is signed over the bide.approval.v4 bytes (which bind the
+SHA-256 of your leaf certificate) with the key of the leaf, and travels with the chain, which the gate
+checks when it counts the decision. The file holds CERTIFICATE blocks only, the leaf first (at most 8
+certificates); a private key block in it is refused. Before anything is signed the command checks that the
+key (-key, a key file, or an HSM or KMS key for bide-hsm) is the key of the leaf, by comparing the keys, that
+the certificate is valid now and has at least -cert-min-left (60 seconds) left, and, with -identity-policy
+<policy file> (the certificate policy: trust anchors, pinned intermediates, the approver-to-identity map),
+that the policy accepts the chain for -as; -unverified signs without the policy check and says so. No
+failure falls back to a bare-key decision. A certificate-bound approver of the gate (the journal's pause
+note says who) must use -cert, and a bare-key approver of such a gate must not: the other would be recorded
+and never counted. -approver-keys does not apply to a certificate-bound decision. The command cannot tell
+you the gate counted it: the gate needs a signed tree head over the decision and current revocation status;
+see docs/guides/certificate-approvers.md.
+
 After the decision is recorded, re-run the run's root run ID (agent.Run with the same ID) or let
 RecoverLoop pick it up: the gate counts the decisions and the call runs or is denied. bide approve
 never runs the call.
@@ -615,6 +630,10 @@ Flags:
     	your approver id, exactly as the gate's policy lists it (not for a single-approver gate)
   -call string
     	the call's tool-use ID (for a plan flow node, its key, such as node:review)
+  -cert string
+    	sign a certificate-bound decision (bide.approval.v4) with your certificate chain: a PEM file, leaf first, the leaf being the certificate of -key. The key must be the leaf's key (checked before anything is signed), and with -identity-policy the chain must be accepted for -as at this moment. Never falls back to a bare-key decision
+  -cert-min-left duration
+    	with -cert: the least validity the leaf must have left, so the decision is provable before the certificate expires (default 1m0s)
   -client-cert string
     	with -to: a PEM client certificate for mutual TLS (with -client-key)
   -client-key string
@@ -626,7 +645,7 @@ Flags:
   -full
     	show all of the call's arguments, not the first lines
   -identity-policy string
-    	with -verify-receipt, for a certificate-bound receipt: the certificate policy file (trust anchors, pinned intermediates, the approver-to-identity map; see docs/guides/hitl-approval.md). The chain and identity are checked against it at the time the receipt's anchoring head was signed; revocation status is not checked
+    	the certificate policy file (trust anchors, pinned intermediates, the approver-to-identity map; see docs/guides/certificate-approvers.md). With -cert: your chain must be accepted for -as by it at this moment, before anything is signed. With -verify-receipt, for a certificate-bound receipt: the chain and identity are checked against it at the time the receipt's anchoring head was signed; revocation status is not checked
   -json
     	with -list: print the waiting calls as JSON
   -key string
@@ -670,7 +689,7 @@ Exit status:
 Create an approver key pair for bide approve and print the public key policies and verifiers use.
 
 ```text
-usage: bide keygen -out <key-file> [-as <approver id>] [-alg ed25519|ecdsa-p256|ml-dsa-65|ed25519+ml-dsa-65] [-color auto|always|never]
+usage: bide keygen -out <key-file> [-as <approver id>] [-alg ed25519|ecdsa-p256|ml-dsa-65|ed25519+ml-dsa-65] [-csr <request.pem>] [-color auto|always|never]
 
 Creates an approver key pair for bide approve. The private key is written to <key-file> (the key's
 seed as hex: 64 characters for ed25519, the default; "ecdsa-p256:" and the 32-byte private
@@ -689,7 +708,13 @@ Enroll that public key as the approver's verifier in the application that runs t
 -approver-keys read: {"ops": "<scheme>:<hex>"}. With -as, bide keygen prints that JSON entry for
 the id.
 
-It refuses to overwrite a file. The private key file is not encrypted; keep it on the approver's
+With -csr, bide keygen also writes a PKCS#10 certificate signing request for the new key (Ed25519
+or ECDSA P-256 only) to the file, as PEM. It proves possession of the key and names nothing: the
+subject is empty and there are no extensions, so the CA or identity provider sets the name (SAN)
+and the key usage. Send it to the CA that issues the approver's certificate; the issued chain is
+what bide approve -cert reads.
+
+It refuses to overwrite a file (the key, its .pub or the request). The private key file is not encrypted; keep it on the approver's
 own machine, readable only by the approver. Anyone who can read it can sign as the approver.
 
 Flags:
@@ -699,6 +724,8 @@ Flags:
     	the approver id the key is for: prints the approver-keys entry for it
   -color when
     	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
+  -csr string
+    	also write a certificate signing request for the new key to this PEM file (ed25519 or ecdsa-p256; no names in it, the CA sets them). It must not exist
   -out string
     	file to write the private key to (mode 0600); the public key goes to <file>.pub. It must not exist
 

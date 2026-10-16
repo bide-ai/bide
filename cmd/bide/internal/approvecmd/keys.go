@@ -275,7 +275,7 @@ func keyName(sg audit.Signer) string {
 }
 
 // keygenUsage heads bide keygen's -h output.
-const keygenUsage = `usage: bide keygen -out <key-file> [-as <approver id>] [-alg ed25519|ecdsa-p256|ml-dsa-65|ed25519+ml-dsa-65] [-color auto|always|never]
+const keygenUsage = `usage: bide keygen -out <key-file> [-as <approver id>] [-alg ed25519|ecdsa-p256|ml-dsa-65|ed25519+ml-dsa-65] [-csr <request.pem>] [-color auto|always|never]
 
 Creates an approver key pair for bide approve. The private key is written to <key-file> (the key's
 seed as hex: 64 characters for ed25519, the default; "ecdsa-p256:" and the 32-byte private
@@ -294,7 +294,13 @@ Enroll that public key as the approver's verifier in the application that runs t
 -approver-keys read: {"ops": "<scheme>:<hex>"}. With -as, bide keygen prints that JSON entry for
 the id.
 
-It refuses to overwrite a file. The private key file is not encrypted; keep it on the approver's
+With -csr, bide keygen also writes a PKCS#10 certificate signing request for the new key (Ed25519
+or ECDSA P-256 only) to the file, as PEM. It proves possession of the key and names nothing: the
+subject is empty and there are no extensions, so the CA or identity provider sets the name (SAN)
+and the key usage. Send it to the CA that issues the approver's certificate; the issued chain is
+what bide approve -cert reads.
+
+It refuses to overwrite a file (the key, its .pub or the request). The private key file is not encrypted; keep it on the approver's
 own machine, readable only by the approver. Anyone who can read it can sign as the approver.
 
 Flags:
@@ -312,6 +318,7 @@ func KeygenMain(args []string, stdout, stderr io.Writer) int {
 	out := fs.String("out", "", "file to write the private key to (mode 0600); the public key goes to <file>.pub. It must not exist")
 	as := fs.String("as", "", "the approver id the key is for: prints the approver-keys entry for it")
 	alg := fs.String("alg", string(audit.AlgEd25519), "signature scheme: ed25519, ecdsa-p256, ml-dsa-65 or ed25519+ml-dsa-65 (hybrid)")
+	csr := fs.String("csr", "", "also write a certificate signing request for the new key to this PEM file (ed25519 or ecdsa-p256; no names in it, the CA sets them). It must not exist")
 	color := term.Flag(fs)
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -340,7 +347,13 @@ func KeygenMain(args []string, stdout, stderr io.Writer) int {
 	if !slices.Contains(algs, audit.Alg(*alg)) {
 		return usage(fmt.Sprintf("-alg %q: want one of %v", *alg, algs))
 	}
-	priv, err := writeKeyPair(*out, audit.Alg(*alg))
+	if *csr != "" && audit.Alg(*alg) != audit.AlgEd25519 && audit.Alg(*alg) != audit.AlgECDSAP256 {
+		return usage(fmt.Sprintf("-csr: a certificate-bound approver signs with ed25519 or ecdsa-p256, not %s", *alg))
+	}
+	if *csr != "" && (*csr == *out || *csr == *out+".pub") {
+		return usage("-csr names the same file as the key")
+	}
+	priv, err := writeKeyPairCSR(*out, *csr, audit.Alg(*alg))
 	if err != nil {
 		fmt.Fprintln(stderr, es.ErrorPrefix()+"bide keygen:", err)
 		return 1
@@ -348,6 +361,9 @@ func KeygenMain(args []string, stdout, stderr io.Writer) int {
 	pub := publicKeyText(priv)
 	fmt.Fprintf(stdout, "%swrote private key %s %s\n", st.Pass(), st.Path(*out), st.Dim("(mode 0600; keep it secret, it is not encrypted)"))
 	fmt.Fprintf(stdout, "%swrote public key  %s\n", st.Pass(), st.Path(*out+".pub"))
+	if *csr != "" {
+		fmt.Fprintf(stdout, "%swrote certificate signing request  %s\n", st.Pass(), st.Path(*csr))
+	}
 	fmt.Fprintf(stdout, "\npublic key  %s\n", st.Bold(pub))
 	if *as != "" {
 		fmt.Fprintf(stdout, "approver-keys entry  %s\n", st.Bold(fmt.Sprintf("{%q: %q}", *as, pub)))
@@ -360,7 +376,18 @@ func KeygenMain(args []string, stdout, stderr io.Writer) int {
 // private key is written first and the check that neither file exists runs before either is
 // created, so a refusal leaves nothing behind.
 func writeKeyPair(path string, alg audit.Alg) (audit.Signer, error) {
-	for _, p := range []string{path, path + ".pub"} {
+	return writeKeyPairCSR(path, "", alg)
+}
+
+// writeKeyPairCSR is writeKeyPair that also writes a certificate signing request for the new key to
+// csrPath (if not empty; see csr.go). The request is built before any file is created, so a refusal
+// (an existing file, or a scheme that has no request) leaves nothing behind.
+func writeKeyPairCSR(path, csrPath string, alg audit.Alg) (audit.Signer, error) {
+	paths := []string{path, path + ".pub"}
+	if csrPath != "" {
+		paths = append(paths, csrPath)
+	}
+	for _, p := range paths {
 		if _, err := os.Lstat(p); err == nil {
 			return nil, fmt.Errorf("%s exists; bide keygen does not overwrite a file (remove it, or choose another -out)", p)
 		}
@@ -369,11 +396,22 @@ func writeKeyPair(path string, alg audit.Alg) (audit.Signer, error) {
 	if err != nil {
 		return nil, err
 	}
+	var csr []byte
+	if csrPath != "" {
+		if csr, err = certificateRequest(priv); err != nil {
+			return nil, err
+		}
+	}
 	if err := writeExclusive(path, []byte(line+"\n"), 0o600); err != nil {
 		return nil, err
 	}
 	if err := writeExclusive(path+".pub", []byte(publicKeyText(priv)+"\n"), 0o644); err != nil {
 		return nil, fmt.Errorf("%w (the private key %s was written; its public key is derived from it, bide approve prints it)", err, path)
+	}
+	if csr != nil {
+		if err := writeExclusive(csrPath, csr, 0o644); err != nil {
+			return nil, fmt.Errorf("%w (the private key %s was written; make a request for it with your CA's tooling)", err, path)
+		}
 	}
 	return priv, nil
 }

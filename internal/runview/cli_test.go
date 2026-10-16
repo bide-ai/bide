@@ -122,6 +122,9 @@ func TestOptionsStore(t *testing.T) {
 	if _, ok := o.Source.(JournalSource); !ok {
 		t.Fatalf("source = %T, want JournalSource", o.Source)
 	}
+	if o.ApproveCommand == nil || o.ApproveCertCommand == nil {
+		t.Fatal("a store source writes both the bare-key and the -cert approve commands")
+	}
 	if viewOf(t, Handler(o), "g1").State == "" {
 		t.Fatal("the run read through the store has no state")
 	}

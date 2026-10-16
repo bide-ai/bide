@@ -36,6 +36,9 @@ func (f *fixture) intake(wrap func(http.Handler) http.Handler, opts ...approvals
 	j, closeJ := f.store()
 	f.t.Cleanup(closeJ)
 	verify := func(id string) (agent.ApproverVerifier, bool) {
+		if stub, ok := f.intakeBound[id]; ok {
+			return stub, true
+		}
 		v, ok := f.pubs[id]
 		return v, ok
 	}

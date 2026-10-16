@@ -333,6 +333,7 @@ func options(f flags, stores Stores) (Options, io.Closer, error) {
 		}
 		o.Source, closer = JournalSource{J: j}, c
 		o.ApproveCommand = approveCommand(f)
+		o.ApproveCertCommand = approveCertCommand(f)
 		if stores.Events != nil {
 			o.Events = stores.Events(s)
 		}
@@ -493,6 +494,14 @@ func readKey(s string) (audit.Verifier, error) {
 // approver's own id, key and keys files are left as placeholders (approveline.Command). It refuses an
 // id with a control, bidirectional or invisible character (approveline.ErrUnsafe).
 func approveCommand(f flags) func(runID, toolUseID string, single bool) (string, error) {
+	j := journalOf(f)
+	return func(runID, toolUseID string, single bool) (string, error) {
+		return approveline.Command(j, runID, toolUseID, "", "", "", single)
+	}
+}
+
+// journalOf names the journal the flags give for a command line (see approveCommand).
+func journalOf(f flags) approveline.Journal {
 	var j approveline.Journal
 	switch {
 	case f.db != "":
@@ -505,7 +514,14 @@ func approveCommand(f flags) func(runID, toolUseID string, single bool) (string,
 	default:
 		j.PostgresEnv = "<VAR>"
 	}
-	return func(runID, toolUseID string, single bool) (string, error) {
-		return approveline.Command(j, runID, toolUseID, "", "", "", single)
+	return j
+}
+
+// approveCertCommand writes the bide approve -cert line for a gate with a certificate-bound approver
+// (approveline.CertCommand), for the same journal as approveCommand.
+func approveCertCommand(f flags) func(runID, toolUseID string) (string, error) {
+	j := journalOf(f)
+	return func(runID, toolUseID string) (string, error) {
+		return approveline.CertCommand(j, runID, toolUseID, "")
 	}
 }

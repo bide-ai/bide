@@ -73,3 +73,33 @@ func TestValidEnvName(t *testing.T) {
 		}
 	}
 }
+
+func TestCertCommand(t *testing.T) {
+	for _, tc := range []struct {
+		name, run, call, approver string
+		j                         Journal
+		want                      string
+	}{
+		{"sqlite", "refund-1049", "c2", "ops", Journal{SQLite: "run.db"},
+			`bide approve -db run.db -run refund-1049 -call c2 -as ops -key '<key-file>' -cert '<chain.pem>' -identity-policy '<identity-policy.json>'`},
+		{"placeholder approver, postgres variable", "r", "c", "", Journal{PostgresEnv: "BIDE_DSN"},
+			`bide approve -postgres-env BIDE_DSN -run r -call c -as '<approver>' -key '<key-file>' -cert '<chain.pem>' -identity-policy '<identity-policy.json>'`},
+		{"quoting", "r'; id #", "c$(id)", "ops", Journal{SQLite: "my run.db"},
+			`bide approve -db 'my run.db' -run 'r'\''; id #' -call 'c$(id)' -as ops -key '<key-file>' -cert '<chain.pem>' -identity-policy '<identity-policy.json>'`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := CertCommand(tc.j, tc.run, tc.call, tc.approver)
+			if err != nil || got != tc.want {
+				t.Fatalf("got\n  %s (%v)\nwant\n  %s", got, err, tc.want)
+			}
+		})
+	}
+	for i, args := range [][3]string{{"r\n", "c", "ops"}, {"r", "c‮", "ops"}, {"r", "c", "o\x1bps"}} {
+		if got, err := CertCommand(Journal{SQLite: "j.db"}, args[0], args[1], args[2]); err == nil {
+			t.Errorf("unsafe argument %d accepted: %s", i, got)
+		}
+	}
+	if _, err := CertCommand(Journal{SQLite: "j\x1b.db"}, "r", "c", "ops"); err == nil {
+		t.Error("a control character in the journal path accepted")
+	}
+}

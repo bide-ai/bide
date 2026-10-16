@@ -65,3 +65,30 @@ func TestPostgresEnvIsNotADSN(t *testing.T) {
 		}
 	}
 }
+
+// TestApproveCertCommandForTheJournal: the -cert command names the journal as approveCommand does (a
+// SQLite file by its absolute path, a Postgres journal by the variable, a raw DSN by a placeholder), and
+// carries the placeholders for the key, the chain and the policy file, never a DSN.
+func TestApproveCertCommandForTheJournal(t *testing.T) {
+	const dsn = "postgres://app:hunter2@db.internal:5432/bide"
+	abs, _ := filepath.Abs("run.db")
+	if strings.ContainsAny(abs, "\\ ") {
+		abs = "'" + abs + "'"
+	}
+	for name, c := range map[string]struct {
+		f    flags
+		want string
+	}{
+		"sqlite":  {flags{db: "run.db"}, "bide approve -db " + abs + " -run r1 -call c1 -as '<approver>' "},
+		"env":     {flags{postgresEnv: "ORDERS_DSN"}, "bide approve -postgres-env ORDERS_DSN -run r1 -call c1 -as '<approver>' "},
+		"raw dsn": {flags{postgres: dsn}, "bide approve -postgres-env '<VAR>' -run r1 -call c1 -as '<approver>' "},
+	} {
+		got, err := approveCertCommand(c.f)("r1", "c1")
+		if err != nil || !strings.HasPrefix(got, c.want) || !strings.HasSuffix(got, " -key '<key-file>' -cert '<chain.pem>' -identity-policy '<identity-policy.json>'") {
+			t.Errorf("%s: %q, %v; want it to start %q", name, got, err, c.want)
+		}
+		if strings.Contains(got, "hunter2") || strings.Contains(got, "postgres://") {
+			t.Errorf("%s: the command carries the DSN: %q", name, got)
+		}
+	}
+}

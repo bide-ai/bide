@@ -115,6 +115,21 @@ the one the endpoint returns, checked against what you signed and against your k
 written. If the request fails with no answer, the decision may or may not have been recorded: run
 the command again, and a decision of yours that counts is refused as already decided.
 
+-cert <chain.pem> signs a certificate-bound decision: the approver is identified by a certificate from the
+bank's CA, not by an enrolled key. The decision is signed over the bide.approval.v4 bytes (which bind the
+SHA-256 of your leaf certificate) with the key of the leaf, and travels with the chain, which the gate
+checks when it counts the decision. The file holds CERTIFICATE blocks only, the leaf first (at most 8
+certificates); a private key block in it is refused. Before anything is signed the command checks that the
+key (-key, a key file, or an HSM or KMS key for bide-hsm) is the key of the leaf, by comparing the keys, that
+the certificate is valid now and has at least -cert-min-left (60 seconds) left, and, with -identity-policy
+<policy file> (the certificate policy: trust anchors, pinned intermediates, the approver-to-identity map),
+that the policy accepts the chain for -as; -unverified signs without the policy check and says so. No
+failure falls back to a bare-key decision. A certificate-bound approver of the gate (the journal's pause
+note says who) must use -cert, and a bare-key approver of such a gate must not: the other would be recorded
+and never counted. -approver-keys does not apply to a certificate-bound decision. The command cannot tell
+you the gate counted it: the gate needs a signed tree head over the decision and current revocation status;
+see docs/guides/certificate-approvers.md.
+
 After the decision is recorded, re-run the run's root run ID (agent.Run with the same ID) or let
 RecoverLoop pick it up: the gate counts the decisions and the call runs or is denied. bide approve
 never runs the call.
@@ -161,6 +176,8 @@ type flags struct {
 	tlsCA                     string
 	clientCert, clientKey     string
 	tokenEnv                  string
+	cert                      string        // -cert: the approver's certificate chain (PEM, leaf first): sign a certificate-bound decision
+	certMinLeft               time.Duration // -cert-min-left: the least validity the leaf must have left
 }
 
 // Main is the bide approve command: it parses args and decides on, or lists, calls that wait for
@@ -192,7 +209,9 @@ func MainWith(args []string, in io.Reader, stdout, stderr io.Writer, stores Stor
 	fs.BoolVar(&f.unverified, "unverified", false, "decide an m-of-n gate without -approver-keys: the key is not checked against the one enrolled for you, and the tally is not verified")
 	fs.StringVar(&f.receipt, "receipt", "", src.ReceiptHelp)
 	fs.StringVar(&f.verifyReceipt, "verify-receipt", "", "verify a decision receipt on its own, against -approver-keys, instead of deciding anything: its signature over the exact call it states")
-	fs.StringVar(&f.identityPolicy, "identity-policy", "", "with -verify-receipt, for a certificate-bound receipt: the certificate policy file (trust anchors, pinned intermediates, the approver-to-identity map; see docs/guides/hitl-approval.md). The chain and identity are checked against it at the time the receipt's anchoring head was signed; revocation status is not checked")
+	fs.StringVar(&f.identityPolicy, "identity-policy", "", "the certificate policy file (trust anchors, pinned intermediates, the approver-to-identity map; see docs/guides/certificate-approvers.md). With -cert: your chain must be accepted for -as by it at this moment, before anything is signed. With -verify-receipt, for a certificate-bound receipt: the chain and identity are checked against it at the time the receipt's anchoring head was signed; revocation status is not checked")
+	fs.StringVar(&f.cert, "cert", "", "sign a certificate-bound decision (bide.approval.v4) with your certificate chain: a PEM file, leaf first, the leaf being the certificate of -key. The key must be the leaf's key (checked before anything is signed), and with -identity-policy the chain must be accepted for -as at this moment. Never falls back to a bare-key decision")
+	fs.DurationVar(&f.certMinLeft, "cert-min-left", defaultCertMinLeft, "with -cert: the least validity the leaf must have left, so the decision is provable before the certificate expires")
 	fs.StringVar(&f.logKey, "log-key", "", "with -verify-receipt, for a certificate-bound receipt: the audit log's public key (ed25519:<hex>, or a file holding it), which vouches for the receipt's anchoring proof")
 	fs.BoolVar(&f.reject, "reject", false, "record a rejection instead of an approval")
 	fs.BoolVar(&f.yes, "yes", false, "do not ask for confirmation (for scripts); what is signed is still shown")
@@ -263,15 +282,32 @@ func (f flags) check() string {
 		if (f.identityPolicy == "") != (f.logKey == "") {
 			return "-identity-policy and -log-key go together: a certificate-bound receipt is checked against the policy at the time the log's anchoring head was signed"
 		}
-		for name, set := range map[string]bool{"-db": f.db != "", "-postgres": f.postgres != "", "-postgres-env": f.postgresEnv != "", "-run": f.run != "", "-call": f.call != "", "-as": f.as != "", "-key": f.key != "", "-reject": f.reject, "-yes": f.yes, "-full": f.full, "-list": f.list, "-json": f.asJSON, "-unverified": f.unverified, "-receipt": f.receipt != "", "-to": f.to != ""} {
+		for name, set := range map[string]bool{"-db": f.db != "", "-postgres": f.postgres != "", "-postgres-env": f.postgresEnv != "", "-run": f.run != "", "-call": f.call != "", "-as": f.as != "", "-key": f.key != "", "-reject": f.reject, "-yes": f.yes, "-full": f.full, "-list": f.list, "-json": f.asJSON, "-unverified": f.unverified, "-receipt": f.receipt != "", "-to": f.to != "", "-cert": f.cert != ""} {
 			if set {
 				return name + " does not go with -verify-receipt, which reads no journal"
 			}
 		}
 		return ""
 	}
-	if f.identityPolicy != "" || f.logKey != "" {
-		return "-identity-policy and -log-key go with -verify-receipt only"
+	if f.logKey != "" {
+		return "-log-key goes with -verify-receipt only"
+	}
+	if f.identityPolicy != "" && f.cert == "" {
+		return "-identity-policy goes with -cert (to check your chain before signing) or with -verify-receipt"
+	}
+	if f.cert != "" {
+		switch {
+		case f.list:
+			return "-cert does not go with -list"
+		case f.as == "" || f.key == "":
+			return "-cert signs a certificate-bound decision: give -as (your approver id) and -key (the key of the certificate's leaf)"
+		case f.identityPolicy == "" && !f.unverified:
+			return "-cert needs -identity-policy, the certificate policy file the chain is checked against before signing, or -unverified to sign without that check"
+		case f.unverified && f.identityPolicy != "":
+			return "-unverified and -identity-policy are opposites: give the policy to check the chain, or -unverified to skip the check"
+		case f.certMinLeft < 0:
+			return "-cert-min-left is negative"
+		}
 	}
 	if f.receipt != "" && f.list {
 		return "-receipt does not go with -list"
@@ -291,7 +327,9 @@ func (f flags) check() string {
 			return "-to takes a signed decision: give -as and -key (the intake serves m-of-n gates only)"
 		case f.unverified && f.approverKeys != "":
 			return "-unverified and -approver-keys are opposites: give the keys to check the decision, or -unverified to skip the check"
-		case f.approverKeys == "" && !f.unverified:
+		case f.cert != "" && f.approverKeys != "":
+			return "-approver-keys enrols bare keys: with -cert your key is checked against your certificate and -identity-policy instead"
+		case f.approverKeys == "" && !f.unverified && f.cert == "":
 			return "an m-of-n decision needs -approver-keys, or -unverified to decide without checking your key against the enrolled one"
 		case (f.clientCert == "") != (f.clientKey == ""):
 			return "-client-cert and -client-key go together"
@@ -346,6 +384,7 @@ type cmd struct {
 	st     term.Style
 	stores Stores
 	src    KeySource
+	cert   *certDecision // the certificate-bound decision being made (-cert), nil for a bare-key one
 }
 
 // open opens the journal the flags name. A SQLite file must already exist: a mistyped path must not
@@ -640,7 +679,10 @@ func (c *cmd) approve(ctx context.Context) error {
 	if single && f.unverified {
 		return refuse("the gate on call %s is a single-approver gate: its decision is unsigned, so there is no key to verify and -unverified does not apply; drop it", safe(f.call))
 	}
-	if !single && f.approverKeys == "" && !f.unverified {
+	if single && f.cert != "" {
+		return refuse("the gate on call %s is a single-approver gate: its decision is unsigned and carries no certificate, so -cert does not apply", safe(f.call))
+	}
+	if !single && f.approverKeys == "" && !f.unverified && f.cert == "" {
 		return refuse("an m-of-n decision needs -approver-keys: the file of enrolled approver public keys, a JSON object of approver id to key text (the file bide view -approver-keys reads; %s %s prints this approver's entry). Without it nothing checks that your key is the one the application enrols, and a decision signed with another key is recorded and never counts. To decide anyway, pass -unverified", c.src.EnrolCmd, cmp.Or(safe(f.as), "<id>"))
 	}
 	var keys map[string]audit.Verifier
@@ -656,6 +698,15 @@ func (c *cmd) approve(ctx context.Context) error {
 	}
 	var signer audit.Signer
 	if !single {
+		if f.cert != "" {
+			// The certificate is read and checked before the key is opened: a bad file costs no HSM login.
+			if err := g.refuseCertForBare(f.as); err != nil {
+				return err
+			}
+			if c.cert, err = c.loadCert(); err != nil {
+				return err
+			}
+		}
 		if signer, err = c.src.Load(f.key); err != nil {
 			// The source's error may hold text from a vendor library: show it escaped.
 			return errors.New(safe(err.Error()))
@@ -663,7 +714,14 @@ func (c *cmd) approve(ctx context.Context) error {
 		if cl, ok := signer.(io.Closer); ok {
 			defer cl.Close()
 		}
-		if err := checkEnrolled(keys, f.as, signer); err != nil {
+		if f.cert == "" {
+			if err := checkEnrolled(keys, f.as, signer); err != nil {
+				return err
+			}
+			if err := g.refuseBoundWithoutCert(f.as); err != nil {
+				return err
+			}
+		} else if err := c.cert.chain.checkKeyIsLeaf(signer); err != nil {
 			return err
 		}
 	}
@@ -704,15 +762,34 @@ func (c *cmd) approve(ctx context.Context) error {
 		fmt.Fprintf(c.out, "\n%s%s the call, unsigned (a single-approver gate records no signature)\n", c.st.Pass(), c.verb(!f.reject))
 	} else {
 		at := now()
-		msg := agent.ApprovalDecisionBytes(s, f.as, !f.reject, at)
+		var d agent.Decision
+		var msg []byte
+		if c.cert != nil {
+			// The chain is checked again at the time that will be signed, and the key against the leaf once
+			// more: the approver sat at a prompt, and no failure falls back to a bare-key decision.
+			if err := c.cert.chain.checkKeyIsLeaf(signer); err != nil {
+				return err
+			}
+			if err := c.cert.check(f.as, at, f.certMinLeft); err != nil {
+				return err
+			}
+			if d, msg, err = c.cert.sign(signer, s, f.run, f.call, f.as, !f.reject, at); err != nil {
+				return err
+			}
+			if err := c.cert.verifySigned(d, msg); err != nil {
+				return err
+			}
+		} else {
+			msg = agent.ApprovalDecisionBytes(s, f.as, !f.reject, at)
+			sig, err := signer.Sign(msg)
+			if err != nil {
+				return fmt.Errorf("sign the decision (nothing was recorded): %w", err)
+			}
+			d = agent.Decision{RunID: f.run, ToolUseID: f.call, ApproverID: f.as, Approved: !f.reject, DecidedAt: at, Alg: signer.Alg(), Signature: sig}
+		}
 		if !digestAt(msg, s, argsDigest(s)) {
-			return errors.New("internal error: the decision bytes do not carry the shown arguments digest; nothing was signed")
+			return errors.New("internal error: the decision bytes do not carry the shown arguments digest; nothing was recorded")
 		}
-		sig, err := signer.Sign(msg)
-		if err != nil {
-			return fmt.Errorf("sign the decision (nothing was recorded): %w", err)
-		}
-		d := agent.Decision{RunID: f.run, ToolUseID: f.call, ApproverID: f.as, Approved: !f.reject, DecidedAt: at, Alg: signer.Alg(), Signature: sig}
 		// The check verifies the signature against the call as the journal holds it, with the
 		// public key derived from the private key, so a decision that does not verify is never
 		// recorded; the gate re-verifies every record itself against the application's keys.
@@ -721,7 +798,14 @@ func (c *cmd) approve(ctx context.Context) error {
 			return fmt.Errorf("your key is not a usable verification key (nothing was recorded): %w", err)
 		}
 		ownFor := func(id string) (agent.ApproverVerifier, bool) { return own, id == f.as }
-		if err := agent.SubmitDecision(ctx, j, d, agent.WithDecisionCheck(ownFor)); err != nil {
+		check := ownFor
+		if c.cert != nil {
+			// The same write-time check the approvals intake makes, with what this command can judge: the
+			// chain against the policy, the signature under the leaf's key.
+			li := localIntake{cd: c.cert, as: f.as}
+			check = func(id string) (agent.ApproverVerifier, bool) { return li, id == f.as }
+		}
+		if err := agent.SubmitDecision(ctx, j, d, agent.WithDecisionCheck(check)); err != nil {
 			return fmt.Errorf("the decision was not recorded: %w", err)
 		}
 		fmt.Fprintf(c.out, "\n%s%s call %s as %s, signed and recorded (decided %s)\n", c.st.Pass(), c.verb(!f.reject), safe(f.call), c.st.Bold(f.as), agent.FormatTimestamp(at))
@@ -828,7 +912,10 @@ func (c *cmd) show(g *gateOf, s agent.ApprovalSubject, sg audit.Signer) (clipped
 		if n, ok := sg.(interface{ Notice() string }); ok && n.Notice() != "" {
 			row("", st.Warn(safe(n.Notice())))
 		}
-		if c.f.approverKeys == "" {
+		switch {
+		case c.cert != nil:
+			c.cert.show(row, st, c.f.as, now())
+		case c.f.approverKeys == "":
 			row("", st.BoldFail("UNVERIFIED")+" "+st.Warn("this key is not checked against the key enrolled for you (-unverified, no -approver-keys): if the application enrols another, the decision is recorded and never counts"))
 		}
 	}
@@ -852,7 +939,11 @@ func (c *cmd) show(g *gateOf, s agent.ApprovalSubject, sg audit.Signer) (clipped
 		return hidden > 0
 	}
 	fmt.Fprintf(c.out, "\n  %s %s\n", "args SHA-256", st.Bold(argsDigest(s)))
-	fmt.Fprintf(c.out, "  %s\n\n", st.Dim("your signature binds this digest with the run, call, tool and your id, your decision and its time, and nothing else"))
+	bound := "your signature binds this digest with the run, call, tool and your id, your decision and its time, and nothing else"
+	if c.cert != nil {
+		bound = "your signature binds this digest with the run, call, tool and your id, your decision and its time, and the hash of your certificate, and nothing else"
+	}
+	fmt.Fprintf(c.out, "  %s\n\n", st.Dim(bound))
 	return hidden > 0
 }
 
@@ -921,7 +1012,9 @@ func (c *cmd) after(ctx context.Context, j *agent.Journal, verifierFor, own agen
 		if verifierFor == nil {
 			_, ownCounts = agent.TallyApprovals(g.recs, g.subject(f.run), g.policy(), own)
 		}
-		countErr = ownDecisionCounts(mine, ownCounts)
+		if c.cert == nil {
+			countErr = ownDecisionCounts(mine, ownCounts)
+		}
 	}
 	switch {
 	case countErr != nil:
@@ -1058,6 +1151,10 @@ func (c *cmd) list(ctx context.Context) error {
 			}
 			line := func(approver string) {
 				cmdline, err := approveline.Command(tgt, run, g.ToolUseID, approver, "", "", g.Single)
+				if bound && slices.Contains(g.Identity.Approvers, approver) {
+					// A bare-key decision does not count for a certificate-bound approver.
+					cmdline, err = approveline.CertCommand(tgt, run, g.ToolUseID, approver)
+				}
 				if err == nil {
 					cmdline = c.src.rewriteLine(cmdline)
 				} else {
@@ -1073,9 +1170,6 @@ func (c *cmd) list(ctx context.Context) error {
 			case w.Settled != "":
 			default:
 				for _, id := range w.Pending { // a requester is never pending: the gate excludes them
-					if bound && slices.Contains(g.Identity.Approvers, id) {
-						continue // a bare-key decision does not count for a certificate-bound approver
-					}
 					line(id)
 				}
 			}
@@ -1099,6 +1193,7 @@ func (c *cmd) list(ctx context.Context) error {
 		return nil
 	}
 	fmt.Fprintf(c.out, "%s\n", st.Heading(fmt.Sprintf("%d call(s) wait for a decision:", len(out))))
+	anyCert := false
 	for _, w := range out {
 		fmt.Fprintf(c.out, "\n  run %s  call %s  tool %s\n", st.Bold(safe(w.Run)), st.Bold(safe(w.Call)), st.Bold(safe(w.Tool)))
 		if w.Single {
@@ -1138,12 +1233,16 @@ func (c *cmd) list(ctx context.Context) error {
 		c.listIdentity(w)
 		for _, cmdline := range w.Commands {
 			fmt.Fprintf(c.out, "    %s\n", st.Path(safe(cmdline)))
+			anyCert = anyCert || strings.Contains(cmdline, " -cert ")
 		}
 	}
 	if c.f.postgres != "" {
 		fmt.Fprintf(c.out, "\n%s\n", st.Dim("Set $"+defaultPostgresEnv+" to the DSN, or use -postgres-env with your own variable: the commands above never carry the DSN."))
 	}
 	fmt.Fprintf(c.out, "\n%s\n", st.Dim(c.src.ListHint))
+	if anyCert {
+		fmt.Fprintf(c.out, "%s\n", st.Dim("A command with -cert is for a certificate-bound approver (a bare-key decision does not count for them): replace '"+approveline.CertFilePlaceholder+"' with the PEM file of your certificate chain, leaf first, and '"+approveline.PolicyFilePlaceholder+"' with the identity policy file (docs/guides/certificate-approvers.md)."))
+	}
 	return nil
 }
 

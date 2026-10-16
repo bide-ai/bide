@@ -25,6 +25,156 @@ with that workflow, and run the conformance tests on the capture before any gate
 captures show what that CA stamps (the back-dating of `thisUpdate` and `notBefore`, the real CRL period,
 the overlap, how a revoked certificate is dated) and the values below are declared from them, never assumed.
 
+## Walkthrough: from the CA's certificate to an approved call
+
+This is the path of one approver, `ops`, on a gate whose policy names `ops` as certificate-bound. Four
+people are involved: the **CA operator** (issues certificates, one identifier per person, with the bank's
+EKU and policy OID), the **platform team** (writes the certificate policy and runs the application), the
+**approver** (holds a key and a certificate), and the **application** (runs the gate).
+
+1. **The platform team writes the certificate policy file**, the same file the application's
+   `audit.IdentityPolicy` is built from and `bide approve` reads with `-identity-policy`: the trust anchors
+   (PEM files next to it), the pinned intermediates, the approver-to-identity map (one identifier per
+   approver, `ops` included) and the EKU and policy OID the CA asserts. Its format is in
+   [Human approval](hitl-approval.md#deciding-from-the-terminal). The application's side (an
+   `audit.CertApprover` for `ops`, with the CA's facts declared as above) is Go configuration: see the
+   sections below.
+2. **The approver makes a key and a certificate request.** A key file: `bide keygen -out ops.key -as ops
+   -csr ops.csr.pem` (Ed25519, or `-alg ecdsa-p256`; both have a certificate scheme. ML-DSA-65 does not
+   get a request from bide, and a hybrid has no certificate scheme). A key in an HSM or a KMS: the
+   request is made with the vendor's tooling, see [the key and the request](#the-key-and-the-certificate-request).
+   The private key never leaves its file, token or KMS.
+3. **The CA issues a certificate for that public key**, after the bank's own identification of the person
+   (single sign-on with step-up, say), with one subject alternative name that is the person's identifier,
+   the bank's EKU and the bank's policy OID. The request names nothing, so the CA or the identity provider
+   sets all of that; bide asks the CA for nothing, and it cannot know how the person was identified.
+
+4. **The approver assembles the chain**: a PEM file with the leaf first, then the intermediates up to but
+   not including the trust anchor (the policy holds the anchor), at most 8 certificates:
+   `cat ops-leaf.pem issuing-ca.pem > chain.pem`. Only CERTIFICATE blocks: a file with a private key block is
+   refused unread.
+5. **The approver decides.** The command shows the call, then the certificate it will use and the identity
+   the policy derives from it, and asks for confirmation; answering no records nothing, which is also how to
+   try a certificate:
+
+   ```
+   bide approve -db app.db -run refund-1049 -call c2 -as ops -key ops.key \
+       -cert chain.pem -identity-policy policy.json
+   ```
+
+   Through the application's approval intake instead of a database, add `-to https://approvals.bank.example`
+   (and `-tls-ca`, `-client-cert`, `-token-env` as for any `-to`); with a key in an HSM or KMS, `bide-hsm
+   approve` takes the same flags with `-key` a key reference. Before it signs anything the command refuses
+   if: the file is not a clean chain; the key is not the leaf's key (the keys themselves are compared, not
+   only a signature); the certificate is not valid now or has less than `-cert-min-left` (60 seconds) left;
+   or the policy does not accept the chain for `ops` (wrong CA, wrong EKU or policy, a name that is not
+   `ops`'s identifier). The HSM or KMS is opened only after the file, the policy and the validity pass. There
+   is no fallback: a failure never produces a bare-key decision. `-unverified` signs without the policy
+   check and says so loudly; the gate will still refuse a chain it does not accept, and the decision is then
+   recorded and never counts. The command tells a certificate-bound approver from a bare-key one by the gate's
+   pause note in the journal: if that note was written by a process that does not have the certificate-bound
+   approvers configured, the gate reads as bare, and a bare decision for a bound approver would be recorded and
+   never counted (the gate itself stays safe), so run the application with the same approver configuration on
+   every process that drives the gate.
+6. **The decision is recorded** with the chain, signed over the `bide.approval.v4` bytes, which bind the
+   SHA-256 of the leaf, and a receipt is written (with the chain). `bide approve` does not say that the gate
+   counted it, and cannot: counting needs a signed tree head over the decision (the application's audited
+   store makes one with the write; the gate anchors before it counts) and current revocation status. Through
+   the intake, status the application cannot judge yet answers HTTP 503 and records nothing: run the same
+   command again.
+7. **The gate counts and the call runs.** When enough approvers have decided, the application re-runs the run
+   (or `RecoverLoop` does): the gate counts the decision, and immediately before the call runs the status of
+   the counted certificates is checked again (below). The run viewer and `bide approve -list` show the gate's
+   phase and each counted decision's identity, tier and status time.
+   For a pending approver who is certificate-bound, both print the `bide approve -cert` command with
+   placeholders for the key, the chain and the policy file: `-list` for each such approver, and the Needs
+   attention list once, as the only command when every pending approver is certificate-bound, or next to the
+   bare-key command (marked for the bare-key approvers only) when some are not. A bare-key command is never
+   offered for them, because their decision would be recorded and not counted.
+8. **Anyone can check the receipt later**: `bide approve -verify-receipt ops.receipt.json -identity-policy
+   policy.json -log-key <log public key>` checks the chain and identity at the time the log's head made the
+   decision provable (and, as it says, not revocation status); `bide audit verify-receipts` checks it against
+   the journal and its signed heads.
+
+When it refuses, the message says why. The common ones: "is not the key of the certificate's leaf" (the key
+file is not the one the certificate was issued for); "the certificate has expired" or "less than the 1m0s a
+decision needs left" (ask the CA for a new certificate); "not accepted for ops by the policy" with the
+reason (the chain does not end at a pinned anchor, the identifier is not the one the policy maps to `ops`,
+EKU or policy OID missing); "is a certificate-bound approver of this gate" (give `-cert`) or "is a bare-key
+approver of this gate" (drop it). The approve page in the browser cannot hold a certificate: it tells a
+certificate-bound approver to use `bide approve -to ... -cert`.
+
+## The key and the certificate request
+
+The request proves the approver holds the key and names nothing: a subject-less PKCS#10 request with no
+extensions, so the CA or identity provider decides the name (the identifier in the SAN), the EKU and the
+policy OID. A CA that insists on a subject in the request is a CA setting (most enterprise CAs let a
+template or the issuing application override it); bide never puts a name there.
+
+**A key file.** `bide keygen -out ops.key -as ops -csr ops.csr.pem` writes the key (mode 0600, never
+printed), `ops.key.pub`, and the request. It refuses to overwrite any of the three files and writes
+nothing when it refuses, and with `-alg ml-dsa-65` or the hybrid it refuses `-csr`. Check the request
+before sending it: `openssl req -in ops.csr.pem -noout -verify -text` prints `verify OK`, an empty
+subject, and the public key bide printed.
+
+**A key in an HSM (PKCS#11).** Have the token sign the request, so the key never leaves it. The PIN comes
+from the environment or a file, never from the command line (a command line is visible to other users and to
+process listings). With GnuTLS (`certtool` on Linux; Homebrew installs it as `gnutls-certtool`), which signs
+with the single-part mechanism every token has and works for ECDSA P-256 and Ed25519:
+
+```
+: > empty.tmpl     # an empty template: no subject, no extensions
+GNUTLS_PIN="$(cat /run/secrets/hsm-pin)" certtool --generate-request \
+    --provider /usr/lib/softhsm/libsofthsm2.so \
+    --load-privkey 'pkcs11:token=bide-approvers;object=approver-p256;type=private' \
+    --load-pubkey  'pkcs11:token=bide-approvers;object=approver-p256;type=public' \
+    --template empty.tmpl --outfile ops.csr.pem
+```
+
+(Use your HSM's PKCS#11 library for `--provider`.) Check that the request was made by the key `bide-hsm approve
+-key` will sign with before sending it:
+
+```
+openssl req -in ops.csr.pem -noout -verify
+bide-hsm pubkey -as ops -key 'pkcs11:token=bide-approvers;object=approver-p256?module-path=/usr/lib/softhsm/libsofthsm2.so'
+```
+
+The first prints `verify OK` (and `-text` shows the empty subject); the public key in the second must be the one
+in the request (`openssl req -in ops.csr.pem -pubkey -noout | openssl pkey -pubin -outform DER`, whose last 65
+bytes for P-256, or 32 for Ed25519, are the hex bide prints after `ecdsa-p256:` or `ed25519:`).
+`bide-hsm approve -cert` checks the same before it signs, but only after the CA has issued a certificate, so check
+here. What was run: SoftHSM 2.7.0 with GnuTLS 3.8.13, for one ECDSA P-256 key and one Ed25519 key
+(`pkcs11-tool --keypairgen --key-type EC:secp256r1` and `EC:edwards25519`): both requests verified, had an empty
+subject and carried the key `bide-hsm pubkey` printed.
+
+OpenSSL's PKCS#11 provider ([pkcs11-provider](https://github.com/latchset/pkcs11-provider),
+`openssl req -new -provider pkcs11 -provider default -key '<pkcs11 URI with pin-source=file:...>' -subj /
+-out ops.csr.pem`) also worked for the Ed25519 key. It did not for P-256 on SoftHSM: the provider signs a request
+with a multi-part digest-and-sign mechanism and SoftHSM 2.7.0 failed it with `CKR_OPERATION_NOT_INITIALIZED` (the
+cause was not pursued), so use GnuTLS there. Whether either works on your HSM depends on the mechanisms it
+supports; try it with a test key first.
+
+**A key in a KMS.** bide's part ends at the certificate: the request for a KMS key is made with the KMS vendor's
+documented procedure, and `bide-hsm approve -cert` signs with the same key once the CA has issued the certificate.
+These procedures were not run for this guide (the repository's KMS emulators implement the key and signing calls,
+not the vendors' request tooling), so none is reproduced here:
+
+- AWS KMS has no operation that builds a certificate request, and no AWS procedure or PKCS#11 library for one
+  was found when this guide was written. The request is the key's signature (the [Sign](https://docs.aws.amazon.com/kms/latest/APIReference/API_Sign.html)
+  operation) over the request's bytes, which a tool you trust must assemble; third-party PKCS#11 libraries for
+  KMS exist, and this guide neither tested nor endorses them.
+- Google Cloud KMS: the
+  [Cloud KMS PKCS #11 library with OpenSSL](https://cloud.google.com/kms/docs/reference/pkcs11-openssl) page has
+  a "Create a new certificate signing request" section for a Cloud HSM signing key (`openssl req -new` with the
+  library's engine). It shows a subject in the request; bide needs none, and the CA replaces it.
+- Azure Key Vault and Managed HSM: [Create and merge a CSR in Key Vault](https://learn.microsoft.com/azure/key-vault/certificates/create-certificate-signing-request)
+  generates the key pair in the vault and a request for it. The page has you enter a subject; the CA replaces it.
+
+The links were fetched and their content read on 2026-10-16, and the procedures were not run.
+
+After any of these, run the `bide-hsm pubkey` comparison above with the KMS key reference. A `bide-hsm csr` command
+that signs the request through the same key sources `bide-hsm approve` uses is on the [roadmap](../ROADMAP.md).
+
 ## Declare the CA's facts
 
 Every value is a statement about your CA. A wrong one is a wrong verdict, so each is read from the capture

@@ -44,6 +44,12 @@ decision itself is signed only after you confirm. A refusal on the gate (you are
 you already decided the other way) and a repeat of a decision that already counts happen before
 the key is opened.
 
+A certificate-bound approver uses -cert <chain.pem> (and -identity-policy <policy file>), exactly as with
+bide approve: the key stays in the HSM or KMS, the certificate is issued for its public key (bide-hsm pubkey
+prints it; the CA's request is signed by the key), and the command refuses a key that is not the key of the
+certificate's leaf before it asks the HSM or KMS to sign anything. The chain is a PEM file; a certificate
+object on the token is not read. The file, the policy and the validity are checked before the key is opened.
+
 A key reference is one of:
 
   pkcs11:token=<label>;object=<label>?module-path=<absolute path>&pin-source=file:/path
@@ -98,6 +104,10 @@ Flags:
     	your approver id, exactly as the gate's policy lists it (not for a single-approver gate)
   -call string
     	the call's tool-use ID (for a plan flow node, its key, such as node:review)
+  -cert string
+    	sign a certificate-bound decision (bide.approval.v4) with your certificate chain: a PEM file, leaf first, the leaf being the certificate of -key. The key must be the leaf's key (checked before anything is signed), and with -identity-policy the chain must be accepted for -as at this moment. Never falls back to a bare-key decision
+  -cert-min-left duration
+    	with -cert: the least validity the leaf must have left, so the decision is provable before the certificate expires (default 1m0s)
   -client-cert string
     	with -to: a PEM client certificate for mutual TLS (with -client-key)
   -client-key string
@@ -109,7 +119,7 @@ Flags:
   -full
     	show all of the call's arguments, not the first lines
   -identity-policy string
-    	with -verify-receipt, for a certificate-bound receipt: the certificate policy file (trust anchors, pinned intermediates, the approver-to-identity map; see docs/guides/hitl-approval.md). The chain and identity are checked against it at the time the receipt's anchoring head was signed; revocation status is not checked
+    	the certificate policy file (trust anchors, pinned intermediates, the approver-to-identity map; see docs/guides/certificate-approvers.md). With -cert: your chain must be accepted for -as by it at this moment, before anything is signed. With -verify-receipt, for a certificate-bound receipt: the chain and identity are checked against it at the time the receipt's anchoring head was signed; revocation status is not checked
   -json
     	with -list: print the waiting calls as JSON
   -key string

@@ -130,6 +130,11 @@ type Options struct {
 	// call of a run (single: a one-decision gate). The Needs attention list shows it with each
 	// pending approval; without it the list says it has none.
 	ApproveCommand func(runID, toolUseID string, single bool) (string, error)
+	// ApproveCertCommand, when set, writes the bide approve -cert command line for a gate with a
+	// certificate-bound approver: a bare-key decision does not count for that approver. The Needs
+	// attention list shows it beside (a gate with bare-key approvers too) or instead of (all approvers
+	// certificate-bound) ApproveCommand's line.
+	ApproveCertCommand func(runID, toolUseID string) (string, error)
 	// Now is the clock the Needs attention list measures waits by; nil is time.Now.
 	Now func() time.Time
 

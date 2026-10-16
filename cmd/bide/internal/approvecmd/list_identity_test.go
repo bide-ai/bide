@@ -68,9 +68,34 @@ func TestList_IdentityBoundGate(t *testing.T) {
 	if got[0].Identity.Class != "wait" {
 		t.Fatalf("identity = %+v", got[0].Identity)
 	}
-	// No bare-key command is offered for the certificate-bound approver.
-	if strings.Contains(out, "-as ops ") {
-		t.Fatalf("a bare-key command for a certificate-bound approver:\n%s", out)
+	// The certificate-bound approver is offered the -cert command, never the bare-key one; a bare-key
+	// approver of the same gate keeps the bare-key command.
+	var opsLines, bareLines int
+	for _, l := range strings.Split(out, "\n") {
+		l = strings.TrimSpace(l)
+		switch {
+		case strings.HasPrefix(l, "bide approve") && strings.Contains(l, " -as ops "):
+			opsLines++
+			for _, want := range []string{" -cert '<chain.pem>'", " -identity-policy '<identity-policy.json>'", " -key '<key-file>'"} {
+				if !strings.Contains(l, want) {
+					t.Errorf("the certificate-bound approver's command lacks %q:\n%s", want, l)
+				}
+			}
+			if strings.Contains(l, "-approver-keys") {
+				t.Errorf("a bare-key flag on the certificate-bound approver's command:\n%s", l)
+			}
+		case strings.HasPrefix(l, "bide approve"):
+			bareLines++
+			if strings.Contains(l, " -cert ") || !strings.Contains(l, "-approver-keys") {
+				t.Errorf("a bare-key approver's command is not the bare-key form:\n%s", l)
+			}
+		}
+	}
+	if opsLines != 1 || bareLines == 0 {
+		t.Fatalf("commands for ops: %d, for the other approvers: %d:\n%s", opsLines, bareLines, out)
+	}
+	if !strings.Contains(out, "certificate chain, leaf first") {
+		t.Errorf("-list does not say what to put in the -cert command's placeholders:\n%s", out)
 	}
 }
 

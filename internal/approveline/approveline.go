@@ -64,6 +64,10 @@ const (
 	ApproverPlaceholder = "<approver>"
 	KeyFilePlaceholder  = "<key-file>"
 	KeysFilePlaceholder = "<keys-file>"
+	// CertFilePlaceholder and PolicyFilePlaceholder stand for a certificate-bound approver's chain
+	// file and the identity policy file (CertCommand).
+	CertFilePlaceholder   = "<chain.pem>"
+	PolicyFilePlaceholder = "<identity-policy.json>"
 )
 
 // Command returns the bide approve command line that records a decision on call callID of run
@@ -102,6 +106,33 @@ func Command(j Journal, runID, callID, approver, keyFile, keysFile string, singl
 		}
 		args = append(args, "-as", quote(approver), "-key", quote(keyFile), "-approver-keys", quote(keysFile))
 	}
+	return strings.Join(args, " "), nil
+}
+
+// CertCommand returns the bide approve command line that records a certificate-bound decision on call
+// callID of run runID in journal j: -cert names the approver's chain and -identity-policy the policy file
+// the chain is checked against before anything is signed. approver is the approver's id (empty:
+// ApproverPlaceholder); the key, chain and policy files are always placeholders. Quoting is
+// Command's. A gate with a certificate-bound approver never takes the bare-key form of Command for
+// that approver: the decision would be recorded and not counted.
+func CertCommand(j Journal, runID, callID, approver string) (string, error) {
+	for _, s := range []string{j.SQLite, j.PostgresEnv, runID, callID, approver} {
+		if err := checkText(s); err != nil {
+			return "", err
+		}
+	}
+	if approver == "" {
+		approver = ApproverPlaceholder
+	}
+	args := []string{"bide", "approve"}
+	switch {
+	case j.SQLite != "":
+		args = append(args, "-db", quote(j.SQLite))
+	case j.PostgresEnv != "":
+		args = append(args, "-postgres-env", quote(j.PostgresEnv))
+	}
+	args = append(args, "-run", quote(runID), "-call", quote(callID), "-as", quote(approver),
+		"-key", quote(KeyFilePlaceholder), "-cert", quote(CertFilePlaceholder), "-identity-policy", quote(PolicyFilePlaceholder))
 	return strings.Join(args, " "), nil
 }
 
