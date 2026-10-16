@@ -244,11 +244,11 @@ type ApproverCert struct {
 }
 ```
 
-ApproverCert is the result of a successful VerifyChain: what the later steps (the signature, the status, the seat) work from. *(building block, not yet used by approval gates)*
+ApproverCert is the result of a successful VerifyChain: what the later steps (the signature, the status, the seat) work from.
 
 **Methods**
 
-- `func (a *ApproverCert) SeatKeyID() string`: SeatKeyID is the agent.ApproverVerifier.KeyIDs entry of a certificate-bound approver: the seat is the canonical identity, so a person with two approver ids, or two certificates, fills one seat. *(building block, not yet used by approval gates)*
+- `func (a *ApproverCert) SeatKeyID() string`: SeatKeyID is the agent.ApproverVerifier.KeyIDs entry of a certificate-bound approver: the seat is the canonical identity, so a person with two approver ids, or two certificates, fills one seat.
 
 ## type AttenuateFunc
 
@@ -353,7 +353,7 @@ type CanonicalConfig struct {
 }
 ```
 
-CanonicalConfig configures the default canonicalizer (NewCanonicalizer). *(building block, not yet used by approval gates)*
+CanonicalConfig configures the default canonicalizer (NewCanonicalizer).
 
 ## type Canonicalizer
 
@@ -367,11 +367,11 @@ type Canonicalizer interface {
 }
 ```
 
-Canonicalizer maps an identifier to its one canonical form. *(building block, not yet used by approval gates)*
+Canonicalizer maps an identifier to its one canonical form.
 
 **Constructors and functions**
 
-- `func NewCanonicalizer(cfg CanonicalConfig) Canonicalizer`: NewCanonicalizer returns the default canonicalizer, "bide.default" version 1. *(building block, not yet used by approval gates)*
+- `func NewCanonicalizer(cfg CanonicalConfig) Canonicalizer`: NewCanonicalizer returns the default canonicalizer, "bide.default" version 1.
 
 ## type CertApprover
 
@@ -439,11 +439,11 @@ type CertError struct {
 }
 ```
 
-CertError is the failure of VerifyChain. *(building block, not yet used by approval gates)*
+CertError is the failure of VerifyChain.
 
 **Methods**
 
-- `func (e *CertError) Error() string`: Error reports the category and the precise cause. *(building block, not yet used by approval gates)*
+- `func (e *CertError) Error() string`: Error reports the category and the precise cause.
 
 ## type CertIdentity
 
@@ -453,7 +453,7 @@ type CertIdentity struct {
 }
 ```
 
-CertIdentity is a compiled IdentityPolicy: immutable, safe for concurrent use. *(building block, not yet used by approval gates)*
+CertIdentity is a compiled IdentityPolicy: immutable, safe for concurrent use.
 
 **Constructors and functions**
 
@@ -461,10 +461,10 @@ CertIdentity is a compiled IdentityPolicy: immutable, safe for concurrent use. *
 
 **Methods**
 
-- `func (c *CertIdentity) Canonicalizer() Canonicalizer`: Canonicalizer returns the function this policy compares identifiers with, for the identity record and for the other places an identity is compared (the requester principal). *(building block, not yet used by approval gates)*
+- `func (c *CertIdentity) Canonicalizer() Canonicalizer`: Canonicalizer returns the function this policy compares identifiers with, for the identity record and for the other places an identity is compared (the requester principal).
 - `func (c *CertIdentity) EvaluateStatus(ac *ApproverCert, a time.Time, s *StatusSnapshot, p StatusParams) ChainStatus`: EvaluateStatus applies the status rule to every non-anchor certificate of ac's chain at A(d) = a, over the CRLs in s.
-- `func (c *CertIdentity) Identity(approverID string) (string, bool)`: Identity returns the canonical identifier the policy expects for an approver id. *(building block, not yet used by approval gates)*
-- `func (c *CertIdentity) VerifyChain(approverID string, chain [][]byte, decidedAt, anchoredAt time.Time) (*ApproverCert, error)`: VerifyChain checks a decision's certificate chain for approver approverID. *(building block, not yet used by approval gates)*
+- `func (c *CertIdentity) Identity(approverID string) (string, bool)`: Identity returns the canonical identifier the policy expects for an approver id.
+- `func (c *CertIdentity) VerifyChain(approverID string, chain [][]byte, decidedAt, anchoredAt time.Time) (*ApproverCert, error)`: VerifyChain checks a decision's certificate chain for approver approverID.
 
 ## type CertStatus
 
@@ -1077,12 +1077,12 @@ HybridVerifier requires both component signatures to verify, each over its own l
 type IDKind string
 ```
 
-IDKind names the kind of identifier that is an approver's seat. *(building block, not yet used by approval gates)*
+IDKind names the kind of identifier that is an approver's seat.
 
 **Constants**
 
-- `const IDPersonURI IDKind = "person-uri"`: IDPersonURI is an opaque person id in a URI subject alternative name that has a host ("https://idp.bank.example/person/8f3a..."), a stable directory key and not a name. *(building block, not yet used by approval gates)*
-- `const IDEmail IDKind = "email"`: IDEmail is an rfc822Name. *(building block, not yet used by approval gates)*
+- `const IDPersonURI IDKind = "person-uri"`: IDPersonURI is an opaque person id in a URI subject alternative name that has a host ("https://idp.bank.example/person/8f3a..."), a stable directory key and not a name.
+- `const IDEmail IDKind = "email"`: IDEmail is an rfc822Name.
 
 ## type IdentityPolicy
 
@@ -1123,11 +1123,11 @@ type IdentityPolicy struct {
 }
 ```
 
-IdentityPolicy is the certificate rules of one gate. *(building block, not yet used by approval gates)*
+IdentityPolicy is the certificate rules of one gate.
 
 **Methods**
 
-- `func (p IdentityPolicy) Compile() (*CertIdentity, error)`: Compile validates the policy and fixes a copy of it. *(building block, not yet used by approval gates)*
+- `func (p IdentityPolicy) Compile() (*CertIdentity, error)`: Compile validates the policy and fixes a copy of it.
 
 ## type IgnoredDecision
 
@@ -1660,11 +1660,11 @@ RunVerification is the structured outcome of VerifyRun: the overall verdict plus
 type SPKIHash [32]byte
 ```
 
-SPKIHash is the SHA-256 of a certificate's SubjectPublicKeyInfo. *(building block, not yet used by approval gates)*
+SPKIHash is the SHA-256 of a certificate's SubjectPublicKeyInfo.
 
 **Constructors and functions**
 
-- `func SPKIHashOf(c *x509.Certificate) SPKIHash`: SPKIHashOf returns the pin of c's public key. *(building block, not yet used by approval gates)*
+- `func SPKIHashOf(c *x509.Certificate) SPKIHash`: SPKIHashOf returns the pin of c's public key.
 
 ## type ScopeRule
 

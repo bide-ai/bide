@@ -15,7 +15,7 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `const MaxDecisionCertChain = 8`, `const MaxDecisionCertDER = 16 << 10`: MaxDecisionCertChain and MaxDecisionCertDER bound the certificate chain a decision carries: at most this many certificates, each at most this many bytes of DER.
 - `const ReasonNotEligible = "not an eligible approver"`, `const ReasonSuperseded`, `const ReasonNoKey = "no key for this approver"`, `const ReasonBadSig`, `const ReasonSharedKey`, `const ReasonNoKeyID`, `const ReasonAlg`, `const ReasonNoDecidedAt`, `const ReasonDecidedAt`, `const ReasonRequester`, `const ReasonNoRequester`, `const ReasonLate`: Reasons a decision record does not count.
 - `const ReasonAfterExpiry`: ReasonAfterExpiry: the decision's write landed after the gate recorded its expiry, even if it was stamped before the deadline.
-- `const ReasonNoCert`, `const ReasonCertChain`, `const ReasonCertIdentity`, `const ReasonCertUsage`, `const ReasonCertWindow`: Reasons a certificate-bound approver's decision does not count (docs/design/approver-identity.md). *(building block, not yet used by approval gates)*
+- `const ReasonNoCert`, `const ReasonCertChain`, `const ReasonCertIdentity`, `const ReasonCertUsage`, `const ReasonCertWindow`: Reasons a certificate-bound approver's decision does not count (docs/design/approver-identity.md).
 - `const ReasonRevoked`: ReasonRevoked: a certificate of the chain has an effective revocation time at or before A(d).
 - `const ReasonStatusUnknown`: ReasonStatusUnknown: no usable status covers a certificate of the chain.
 - `const ReasonStatusStale`: ReasonStatusStale: the status available is past nextUpdate or older than the policy allows.
