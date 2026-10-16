@@ -134,7 +134,9 @@ clock, random source), unit-tested without a network or a real clock.
 - **Jitter**: each wait is multiplied by a uniform factor in `[0.9, 1.1]`, drawn from an injectable
   source, so a fleet does not synchronise on the CA.
 - **Backoff** on failure: `30s, 60s, ...` doubling (with full jitter over the upper half) up to `I`,
-  reset by a success. **Every configured URL is queried in each attempt** and the highest-numbered
+  reset by a success. **Every configured URL is queried in each attempt** (concurrently, with a small cap, under one
+  whole-attempt deadline of `min(I, 2 minutes)`, so slow URLs do not stretch an attempt past the
+  interval; the per-URL outcome is in the event) and the highest-numbered
   valid CRL is added (all valid ones are archived, so a mirror that lags is on record); the attempt
   fails only if none answers with a valid CRL. Taking the first answer would let a stale mirror, or a
   replay over plain http of a pre-revocation CRL still inside its validity, win on a cold start with no
@@ -157,7 +159,12 @@ clock, random source), unit-tested without a network or a real clock.
   gates for that issuer paused. `ResetHighWater(issuer, reason)` (and `bide identity fetch-crl
   -reset-high-water <issuer> -reason ...`) drops the mark; it reports `EventHighWaterReset` with the old
   mark, the reason and the operator, and the CLI writes it to the archive directory's log as a security
-  event. It never removes a CRL from the snapshot or the archive.
+  event. It never removes a CRL from the snapshot or the archive. The reset is **durable**: it appends
+  `crl/<issuer>/RESET-<time>.json` to the archive (issuer, the CRL hashes and numbers it sets aside,
+  reason, operator, time), and `Load` computes the marks over the archive **minus the CRLs a reset
+  record names**; later CRLs raise the mark normally. A restart therefore cannot restore a poisoned
+  mark. The set-aside file stays in the archive and is listed for audit. Test: poison with a huge
+  number, reset, restart, a real lower-numbered CRL is accepted.
 - **Verify before adding.** Order: size, parse, algorithm allow-list (the snapshot's, never SHA-1),
   the signature verified against **the entry's own supplied issuer certificate** (not "any issuer in
   the snapshot": a CRL of issuer B served from A's URL must fail), issuer name and authority key id
@@ -199,7 +206,9 @@ snapshot.
 `CRLArchive` is an interface (`PutCRL(ctx, issuer SPKIHash, info CRLInfo, source string, der []byte)`
 and `Load(ctx, yield)`), with `audit.DirCRLArchive` the directory implementation using the layout
 the identity note already fixed (`crl/<issuer-key-id>/<number>-<thisUpdate>.crl`): write to a
-temporary file, fsync, rename, fsync the directory; idempotent by hash.
+temporary file, fsync, rename, fsync the directory; idempotent by hash. CRLs archived but not added (a rollback, a conflicting same-number CRL) get a
+  hash suffix and a `rollback` or `conflict` marker in the file name, so a same-number conflict cannot
+  collide with the series file and an auditor can tell them apart; `Load` never seeds them.
 
 - Order: **archive, then add to the snapshot.** If the archive write fails, the CRL is **still added**
   (a CRL listing a revoked certificate must reach the gate; withholding it would make status look
@@ -213,9 +222,12 @@ temporary file, fsync, rename, fsync the directory; idempotent by hash.
   directory fsync, in that order). The directory is created `0700`, an existing one that is
   world-writable or not owned by the process user is refused (it is the rollback memory), and files
   are written with explicit modes.
-- At start, `Load` seeds the high-water marks (from file names, cheap) and the snapshot through the
+- At start, `Load` seeds the high-water marks and the snapshot through the
   same verification path. The archive is never pruned (a 30-minute CA is about 17,500 CRLs a year per
-  issuer), so seeding goes **newest first** and loads only what the live rule needs: the newest
+  issuer), so A mark is taken only from a CRL that verifies (signature against the issuer, parse): the file
+  setting the highest number is verified, and if it fails `EventArchiveCorrupt` is reported and the
+  next is taken, so a stray or planted file named with a huge number never becomes a mark. Seeding goes
+  **newest first** and loads only what the live rule needs: the newest
   CRLs within `MaxStatusAge` plus the base of any delta, bounded by `WithMaxCRLs` and a startup time
   budget. Seeding does **not** count toward the snapshot's eviction bookkeeping (`evictedNew`): it
   uses an internal insert that never evicts, since loading oldest first and evicting would raise
