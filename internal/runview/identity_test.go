@@ -355,6 +355,9 @@ func TestIdentity_PausePhases(t *testing.T) {
 	} {
 		fx := identRecs(t, agent.TierProvisional, false, func(_ *agent.ApprovalIdentity, w *agent.ApprovalWait) { w.Pause, w.PauseDetail = c.pause, c.detail })
 		g := identGate(t, fx.recs)
+		if c.text != "" && g.Identity.Line != c.text || c.text == "" && g.Identity.Line != "decision recorded, identity not checked yet" {
+			t.Errorf("%s: line %q", c.pause, g.Identity.Line)
+		}
 		if g.Identity.PhaseText != c.text {
 			t.Errorf("%s: phase text %q, want %q", c.pause, g.Identity.PhaseText, c.text)
 		}
