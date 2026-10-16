@@ -262,6 +262,7 @@ count, with `ErrConfig` naming the issuer, the size and this fix. Build the stat
 the issuers the policy pins, so your platform team does not write a fetching loop. It is a separate component
 and the verifier stays free of I/O: audit tools and `bide approve -verify-receipt` work offline as before.
 
+<!-- docsnip: setup sources audit.CRLSources; issuingCA *x509.Certificate; logEvent func(audit.Event); page func(audit.Alarm); ctx context.Context -->
 ```go
 approver := &audit.CertApprover{ /* as above; Status: audit.NewStatusSnapshot(...) and Now are required */ }
 r, err := audit.NewCRLRefresher(approver, sources, audit.RefresherOptions{

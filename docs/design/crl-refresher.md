@@ -156,8 +156,8 @@ clock, random source), unit-tested without a network or a real clock.
   it; an empty snapshot after a restart would otherwise accept any CRL still inside its validity.
   **The mark has an exit.** A CA that issues one CRL with a mistaken huge number, or is restored from
   backup and restarts its numbering, would otherwise leave every later real CRL a "rollback" and the
-  gates for that issuer paused. `ResetHighWater(issuer, reason)` (and `bide identity fetch-crl
-  -reset-high-water <issuer> -reason ...`) drops the mark; it reports `EventHighWaterReset` with the old
+  gates for that issuer paused. `ResetHighWater(issuer, reason, operator)` (and `bide identity
+  reset-high-water -issuer ... -reason ... -operator ...`) drops the mark; it reports `EventHighWaterReset` with the old
   mark, the reason and the operator, and the CLI writes it to the archive directory's log as a security
   event. It never removes a CRL from the archive; it does remove the set-aside CRLs from the live snapshot, since a poisoned number there makes the status rule read every later CRL as a rollback. The reset is **durable**: it appends
   `crl/<issuer>/RESET-<time>.json` to the archive (issuer, the CRL hashes and numbers it sets aside,
@@ -290,7 +290,7 @@ No metrics library in the core. Two surfaces:
 
 ### 8. How a program enables it, and the CLI
 
-```go
+```text
 approver := &audit.CertApprover{ /* as today, Status: audit.NewStatusSnapshot(audit.WithIssuers(...)) */ }
 r, err := audit.NewCRLRefresher(approver, sources, audit.RefresherOptions{
     Archive: audit.DirCRLArchive("/var/lib/bide/crl"),

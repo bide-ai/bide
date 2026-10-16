@@ -20,6 +20,7 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `const FlagRecordedAfterHead`: FlagRecordedAfterHead: the decision's recorded\_at is more than the tolerance after the signed tree head that covers its record was signed: the record existed by then, so the time is not when it was recorded.
 - `const DefaultAnchorTimeout = 3 * time.Second`: DefaultAnchorTimeout is how long AuditedEventStore waits for one head to be built, signed and published before it gives up on it (see AuditedEventStore.WithTimeout).
 - `const DefaultAnchorCooldown = 30 * time.Second`: DefaultAnchorCooldown is how long, after a failed publish, AuditedEventStore skips publishing before it probes the anchor again (see AuditedEventStore.WithCooldown).
+- `const MarkerRollback = "rollback"`, `const MarkerConflict = "conflict"`: Markers on a CRL archived but not added to the snapshot: a rollback (its number is below the issuer's high-water mark) or a conflict (the mark's number with another TBSCertList).
 - `const CoverageCovered = "covered"`: CoverageCovered: a verified signed head over this journal includes the decision's record.
 - `const CoveragePending = "pending"`: CoveragePending: no such head includes it yet, and neither bound has passed.
 - `const CoverageOverdue = "overdue"`: CoverageOverdue: no such head includes it and a bound has passed (see Basis).
@@ -149,6 +150,23 @@ AbsenceBundle is the portable, anchorable form of an absence proof, mirroring Pr
 
 - `func (b AbsenceBundle) Verify(v Verifier, set KeySet) error`: Verify returns nil if the bundle authentically proves Absence.Key absent from the key set set of run RunID, under v (obtained out of band).
 
+## type Alarm
+
+```go
+type Alarm struct {
+	Issuer    SPKIHash
+	Active    bool
+	Critical  bool
+	Age       time.Duration
+	Threshold time.Duration
+	Limit     time.Duration
+	At        time.Time
+	Detail    string
+}
+```
+
+Alarm is a change in an issuer's alarm state.
+
 ## type Alg
 
 ```go
@@ -254,6 +272,22 @@ ApproverCert is the result of a successful VerifyChain: what the later steps (th
 
 - `func (a *ApproverCert) SeatKeyID() string`: SeatKeyID is the agent.ApproverVerifier.KeyIDs entry of a certificate-bound approver: the seat is the canonical identity, so a person with two approver ids, or two certificates, fills one seat.
 
+## type ArchivedCRL
+
+```go
+type ArchivedCRL struct {
+	Name       string
+	Number     *big.Int
+	ThisUpdate time.Time
+	Marker     string
+
+	Source  string
+	Fetched time.Time
+}
+```
+
+ArchivedCRL describes one CRL file of the archive.
+
 ## type AttenuateFunc
 
 ```go
@@ -331,6 +365,24 @@ AuditedStore wraps a store so every journal write is continuously anchored: when
 - `func (a *AuditedStore) Unwrap() agent.Store`: Unwrap returns the wrapped store, so agent.Capability finds its optional capabilities (agent.Leaser, agent.Lister) through the wrapper: an AuditedStore has exactly the capabilities of the store it wraps.
 - `func (a *AuditedStore) WithClock(now func() int64) *AuditedStore`: WithClock sets a deterministic timestamp source (for tests).
 
+## type CRLArchive
+
+```go
+type CRLArchive interface {
+	PutCRL(ctx context.Context, issuer SPKIHash, a ArchivedCRL, der []byte) error
+
+	List(ctx context.Context, issuer SPKIHash) ([]ArchivedCRL, error)
+
+	Read(ctx context.Context, issuer SPKIHash, a ArchivedCRL) ([]byte, error)
+
+	PutReset(ctx context.Context, issuer SPKIHash, r ResetRecord) error
+	Resets(ctx context.Context, issuer SPKIHash) ([]ResetRecord, error)
+	AckReset(ctx context.Context, issuer SPKIHash, r ResetRecord) error
+}
+```
+
+CRLArchive is the dated archive of the CRLs the refresher accepts, and its rollback memory.
+
 ## type CRLInfo
 
 ```go
@@ -344,6 +396,60 @@ type CRLInfo struct {
 ```
 
 CRLInfo describes a CRL accepted into a StatusSnapshot.
+
+## type CRLRefresher
+
+```go
+type CRLRefresher struct {
+	// contains filtered or unexported fields
+}
+```
+
+CRLRefresher keeps the StatusSnapshot of a CertApprover supplied with the newest verified CRLs of the issuing CAs the certificate policy pins, and archives every CRL it accepts (docs/design/crl-refresher.md).
+
+**Constructors and functions**
+
+- `func NewCRLRefresher(a *CertApprover, sources CRLSources, opt RefresherOptions) (*CRLRefresher, error)`: NewCRLRefresher builds the refresher for approver's snapshot.
+
+**Methods**
+
+- `func (r *CRLRefresher) AckReset(ctx context.Context, issuer SPKIHash, name string) error`: AckReset marks a high-water reset record of the issuer (by its name, as Health and the start-up event give it) as acknowledged by an operator: the start-up event for it stops.
+- `func (r *CRLRefresher) Health() []IssuerHealth`: Health returns the state of every issuer, ordered by key.
+- `func (r *CRLRefresher) Ready() <-chan struct{}`: Ready is closed once every issuer holds a fresh CRL.
+- `func (r *CRLRefresher) RefreshOnce(ctx context.Context) []IssuerResult`: RefreshOnce runs one attempt for every feed of every issuer (seeding from the archive first when the snapshot is empty) and returns each issuer's outcome: an error when no valid CRL was obtained or the newest one is not fresh.
+- `func (r *CRLRefresher) ResetHighWater(ctx context.Context, issuer SPKIHash, reason, operator string, setAside ...[32]byte) error`: ResetHighWater is the operator's way out of a poisoned high-water mark: a CA that issued one CRL with a mistaken huge number, or was restored from a backup and restarted its numbering, would otherwise leave every later real CRL a rollback.
+- `func (r *CRLRefresher) Run(ctx context.Context) error`: Run seeds from the archive, then fetches until ctx is cancelled and the in-flight requests end.
+- `func (r *CRLRefresher) Seed(ctx context.Context) error`: Seed loads what the live rule needs from the archive into the snapshot, newest first, and takes the high-water marks from the CRLs that verify.
+
+## type CRLSource
+
+```go
+type CRLSource struct {
+	URLs []string `json:"urls"`
+
+	DeltaURLs []string `json:"delta_urls"`
+
+	FromPinnedCDP bool `json:"from_pinned_cdp"`
+}
+```
+
+CRLSource is where the refresher fetches the CRLs of one issuing CA from.
+
+## type CRLSources
+
+```go
+type CRLSources map[SPKIHash]CRLSource
+```
+
+CRLSources maps an issuing CA, by the SHA-256 of its public key, to where its CRLs are fetched.
+
+**Constructors and functions**
+
+- `func ParseCRLSources(name string, b []byte, readFile func(rel string) ([]byte, error)) (CRLSources, []*x509.Certificate, error)`: ParseCRLSources reads the refresher members of a certificate policy file: "crl" (the sources, keyed by the lowercase hex SPKI hash of the issuing CA) and "intermediate\_certs" (PEM files of the pinned intermediates, relative to the policy file's directory like the anchors).
+
+**Methods**
+
+- `func (s CRLSources) Validate() error`: Validate checks every URL.
 
 ## type CanonicalConfig
 
@@ -467,9 +573,11 @@ CertIdentity is a compiled IdentityPolicy: immutable, safe for concurrent use.
 
 **Methods**
 
+- `func (c *CertIdentity) ApproverIDs() []string`: ApproverIDs returns the approver ids of the policy's identity map, sorted.
 - `func (c *CertIdentity) Canonicalizer() Canonicalizer`: Canonicalizer returns the function this policy compares identifiers with, for the identity record and for the other places an identity is compared (the requester principal).
 - `func (c *CertIdentity) EvaluateStatus(ac *ApproverCert, a time.Time, s *StatusSnapshot, p StatusParams) ChainStatus`: EvaluateStatus applies the status rule to every non-anchor certificate of ac's chain at A(d) = a, over the CRLs in s.
 - `func (c *CertIdentity) Identity(approverID string) (string, bool)`: Identity returns the canonical identifier the policy expects for an approver id.
+- `func (c *CertIdentity) TrustAnchors() []*x509.Certificate`: TrustAnchors returns the policy's trust anchor certificates, ordered by key.
 - `func (c *CertIdentity) VerifyChain(approverID string, chain [][]byte, decidedAt, anchoredAt time.Time) (*ApproverCert, error)`: VerifyChain checks a decision's certificate chain for approver approverID.
 
 ## type CertStatus
@@ -704,6 +812,23 @@ DecisionTime is the two times of one counted approver decision, kept apart on pu
 
 - `func (d DecisionTime) Gap() (gap time.Duration, ok bool)`: Gap returns RecordedAt minus DecidedAt: how long after the approver's signed time bide recorded the decision (negative when the signed time is later).
 
+## type DirCRLArchive
+
+```go
+type DirCRLArchive string
+```
+
+DirCRLArchive is a CRLArchive in a directory: &lt;dir&gt;/crl/&lt;issuer key hash&gt;/&lt;number&gt;-&lt;thisUpdate&gt;.crl, with a .meta.json beside each file (source and fetch time), and RESET-&lt;time&gt;.json for resets.
+
+**Methods**
+
+- `func (d DirCRLArchive) AckReset(_ context.Context, issuer SPKIHash, r ResetRecord) error`: AckReset implements CRLArchive.
+- `func (d DirCRLArchive) List(_ context.Context, issuer SPKIHash) ([]ArchivedCRL, error)`: List implements CRLArchive.
+- `func (d DirCRLArchive) PutCRL(_ context.Context, issuer SPKIHash, a ArchivedCRL, der []byte) error`: PutCRL implements CRLArchive.
+- `func (d DirCRLArchive) PutReset(_ context.Context, issuer SPKIHash, r ResetRecord) error`: PutReset implements CRLArchive.
+- `func (d DirCRLArchive) Read(_ context.Context, issuer SPKIHash, a ArchivedCRL) ([]byte, error)`: Read implements CRLArchive.
+- `func (d DirCRLArchive) Resets(_ context.Context, issuer SPKIHash) ([]ResetRecord, error)`: Resets implements CRLArchive.
+
 ## type DivergentHead
 
 ```go
@@ -807,6 +932,26 @@ Ed25519Verifier verifies with an Ed25519 public key.
 - `func (v Ed25519Verifier) PublicKey() []byte`: PublicKey returns the public key, or nil if it has the wrong length.
 - `func (v Ed25519Verifier) Verify(m, sig []byte) bool`: Verify reports whether sig is a valid Ed25519 signature over m.
 
+## type Event
+
+```go
+type Event struct {
+	Kind     EventKind
+	Issuer   SPKIHash
+	Feed     string
+	URL      string
+	Detail   string
+	Number   *big.Int
+	Held     *big.Int
+	Hash     [32]byte
+	Err      error
+	At       time.Time
+	Outcomes []URLOutcome
+}
+```
+
+Event is one thing the refresher did or refused.
+
 ## type EventInclusion
 
 ```go
@@ -818,6 +963,18 @@ type EventInclusion struct {
 ```
 
 EventInclusion is an inclusion proof for one event: the event's own salt, which its leaf commits to, and the RFC 6962 audit path (the same Inclusion journal proofs use) from that leaf to the log's Root.
+
+## type EventKind
+
+```go
+type EventKind string
+```
+
+EventKind names what an Event reports.
+
+**Constants**
+
+- `const EventStartup EventKind = "startup"`, `const EventFetched EventKind = "fetched"`, `const EventUnchanged EventKind = "unchanged"`, `const EventFetchFailed EventKind = "fetch-failed"`, `const EventRollback EventKind = "rollback"`, `const EventConflict EventKind = "conflict"`, `const EventBadSignature EventKind = "bad-signature"`, `const EventDistrusted EventKind = "distrusted"`, `const EventUnsupportedCRL EventKind = "unsupported-crl"`, `const EventFutureDated EventKind = "future-dated"`, `const EventStaleOnArrival EventKind = "stale-on-arrival"`, `const EventArchiveError EventKind = "archive-error"`, `const EventArchiveDropped EventKind = "archive-dropped"`, `const EventArchiveCorrupt EventKind = "archive-corrupt"`, `const EventClockSkew EventKind = "clock-skew"`, `const EventHighWaterReset EventKind = "high-water-reset"`, `const EventSourcesChanged EventKind = "sources"`, `const EventPanic EventKind = "panic"`, `const EventSeedStopped EventKind = "seed-stopped"`, `const EventUnpairedDelta EventKind = "unpaired-delta"`, `const EventRedirectRefused EventKind = "redirect-refused"`, `const EventOversizeResponse EventKind = "oversize"`: The events.
 
 ## type EventLog
 
@@ -1162,6 +1319,45 @@ Inclusion is an RFC 6962 audit path proving one record's membership in a committ
 **Constructors and functions**
 
 - `func Prove(ctx context.Context, store *agent.Journal, runID string, index int) (Inclusion, error)`: Prove returns an inclusion proof for the record at index in runID's journal: enough to verify that record's stored bytes (agent.Record.Raw) against Root WITHOUT revealing any other record (selective disclosure).
+
+## type IssuerHealth
+
+```go
+type IssuerHealth struct {
+	Issuer              SPKIHash
+	URLs, DeltaURLs     []string
+	LastAttempt         time.Time
+	LastSuccess         time.Time
+	NewestNumber        *big.Int
+	NewestThisUpdate    time.Time
+	NewestNextUpdate    time.Time
+	Age                 time.Duration
+	NextExpected        time.Time
+	NextAttempt         time.Time
+	ConsecutiveFailures int
+	LastError           string
+	ArchiveBacklog      int
+	Paired              bool
+	Alarm, Critical     bool
+	Limit               time.Duration
+	AlarmAge            time.Duration
+	Loop                time.Time
+	UnackedResets       int
+}
+```
+
+IssuerHealth is the state of one issuer, from Health.
+
+## type IssuerResult
+
+```go
+type IssuerResult struct {
+	Issuer SPKIHash
+	Err    error
+}
+```
+
+IssuerResult is the outcome of one issuer in RefreshOnce.
 
 ## type JournalExport
 
@@ -1587,6 +1783,40 @@ ReceiptVerdict is what CheckReceipt finds about one receipt.
 
 - `func (v ReceiptVerdict) Failed() bool`: Failed reports whether the verdict is a failure: the journal does not show a decision that the receipt says is there (ReceiptDeleted, proven; ReceiptUnmatched, claimed), or nothing could be checked (ReceiptUnchecked).
 
+## type RefresherHooks
+
+```go
+type RefresherHooks struct {
+	OnEvent func(Event)
+	OnAlarm func(Alarm)
+}
+```
+
+RefresherHooks are called from the refresher's goroutines, possibly concurrently for different issuers.
+
+## type RefresherOptions
+
+```go
+type RefresherOptions struct {
+	Issuers []*x509.Certificate
+
+	DeltaPeriodFor map[SPKIHash]time.Duration
+
+	Client *http.Client
+
+	Archive CRLArchive
+
+	Hooks RefresherHooks
+
+	Sleep func(ctx context.Context, d time.Duration) error
+	Rand  func() float64
+
+	MaxArchiveQueueBytes int
+}
+```
+
+RefresherOptions configures NewCRLRefresher.
+
 ## type RejectedHead
 
 ```go
@@ -1597,6 +1827,33 @@ type RejectedHead struct {
 ```
 
 RejectedHead is a head CheckDecisionCoverage ignored, and why: it does not verify under the log key, or it is not a journal head of the run.
+
+## type ResetItem
+
+```go
+type ResetItem struct {
+	Hash   string `json:"hash"`
+	Number string `json:"number"`
+}
+```
+
+ResetItem is one CRL a reset sets aside.
+
+## type ResetRecord
+
+```go
+type ResetRecord struct {
+	Name     string      `json:"-"`
+	Issuer   string      `json:"issuer"`
+	SetAside []ResetItem `json:"set_aside"`
+	Reason   string      `json:"reason"`
+	Operator string      `json:"operator"`
+	Time     time.Time   `json:"time"`
+	Acked    bool        `json:"-"`
+}
+```
+
+ResetRecord is the durable record of an operator's reset of an issuer's high-water mark: the CRLs it sets aside, who did it and why.
 
 ## type RunCertSpec
 
@@ -1772,6 +2029,28 @@ type StatusArchive interface {
 
 StatusArchive stores the bytes of a CRL too large for the journal (agent.MaxStatusInline) under its SHA-256 (lowercase hex), durably, before the gate records its hash.
 
+## type StatusDecl
+
+```go
+type StatusDecl struct {
+	Params           StatusParams
+	ExecStatusAge    time.Duration
+	ExecStatusAgeFor map[SPKIHash]time.Duration
+	CAOverlapFor     map[SPKIHash]time.Duration
+	DeltaPeriodFor   map[SPKIHash]time.Duration
+}
+```
+
+StatusDecl is the declared CA timings read from a file.
+
+**Constructors and functions**
+
+- `func ParseStatusDecl(name string, b []byte) (StatusDecl, error)`: ParseStatusDecl reads the declaration file.
+
+**Methods**
+
+- `func (d StatusDecl) Approver(policy *CertIdentity, snap *StatusSnapshot, now func() time.Time) (*CertApprover, error)`: Approver builds the CertApprover the refresher reads its declared values from, for a refresher run outside a gate.
+
 ## type StatusError
 
 ```go
@@ -1915,6 +2194,19 @@ type TreeRef struct {
 ```
 
 TreeRef names one tree of a run by its size and root.
+
+## type URLOutcome
+
+```go
+type URLOutcome struct {
+	URL    string
+	Kind   string
+	Status int
+	Detail string
+}
+```
+
+URLOutcome is the result of asking one URL in one attempt, for the event.
 
 ## type VerifiedPolicy
 

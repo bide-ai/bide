@@ -30,6 +30,7 @@ and `help`, and its import graph is the standard library and the core module (se
 | [`bide edit`](#bide-edit) | a local page for a flow config: the graph, the approval gates, the assertions and the check (read-only so far) |
 | [`bide notify`](#bide-notify) | set up and test the webhook notifier: test a receiver, run a local one, relay to Slack and PagerDuty |
 | [`bide approve`](#bide-approve) | record your signed approval (or -reject) of a call that waits for a decision; -list shows what waits |
+| [`bide identity`](#bide-identity) | keep the CRLs of a certificate policy's issuers current and archived (fetch-crl), and reset a poisoned rollback mark |
 | [`bide keygen`](#bide-keygen) | create an approver key pair for bide approve and print the public key policies and verifiers use |
 | [`bide migrate`](#bide-migrate) | create or check a Postgres journal's schema as its owner, so the service needs no DDL rights |
 | [`bide check`](#bide-check) | check plan flow configs, for CI: one file:node: message line per problem |
@@ -682,6 +683,91 @@ Exit status:
   1  failure: an input cannot be read or the command failed; for check, an error was found
      (with -strict, any problem)
   2  usage error: a bad flag or argument; nothing was read
+```
+
+## bide identity
+
+Keep the CRLs of a certificate policy's issuers current and archived (fetch-crl), and reset a poisoned rollback mark.
+
+```text
+usage: bide identity fetch-crl -policy <file> -params <file> -cache <dir> [-once]
+       bide identity reset-high-water -policy <file> -params <file> -cache <dir> -issuer <hex> -reason <text> -operator <name> [-set-aside <hash>]...
+       bide identity ack-reset -policy <file> -params <file> -cache <dir> -issuer <hex> -name <RESET-...json>
+
+Keep the CRLs of a certificate policy's issuing CAs current and archived:
+
+  fetch-crl         fetches the CRLs from the URLs in the policy file's "crl" member (http and https
+                    only), verifies each against its issuer's own certificate, refuses rollbacks and
+                    equivocation, and writes the dated archive. With -once it makes one pass and exits
+                    1 unless every issuer holds a fresh CRL (a cron job); otherwise it runs until
+                    interrupted.
+  reset-high-water  the way out of a poisoned rollback mark (a CA that issued one CRL with a mistaken
+                    huge number, or restarted its numbering): sets aside the CRL at the mark, with a
+                    durable record, so a restart cannot bring the mark back.
+  ack-reset         acknowledges a reset record; until then every start reports it.
+
+The CA timings come from the -params file, which must carry the values the gate declares. Standard
+output is one JSON line per event. A gate process embeds the same refresher (audit.NewCRLRefresher);
+this command is for the archive an audit kit reads and for monitoring. See
+docs/guides/certificate-approvers.md.
+
+Exit status:
+  0  success
+  1  failure: an input cannot be read or the command failed; for check, an error was found
+     (with -strict, any problem)
+  2  usage error: a bad flag or argument; nothing was read
+```
+
+### bide identity fetch-crl
+
+```text
+usage: bide identity fetch-crl -policy <file> -params <file> -cache <dir> [-once] [-health-every <duration>]
+  -cache string
+    	the archive directory (created 0700; one that others can write to is refused)
+  -health-every duration
+    	how often a running fetch-crl prints a health line per issuer (0 prints none; -once prints one at the end) (default 5m0s)
+  -once
+    	make one pass over every issuer and exit 1 unless each holds a fresh CRL (for cron); without it, run until interrupted
+  -params string
+    	the declaration of the CA timings (ca_period, max_status_age, exec_status_age, per-issuer values)
+  -policy string
+    	the certificate policy file (anchors, intermediates, and the crl and intermediate_certs members)
+```
+
+### bide identity reset-high-water
+
+```text
+usage: bide identity reset-high-water -policy <file> -params <file> -cache <dir> -issuer <hex> -reason <text> -operator <name> [-set-aside <sha256 hex>]...
+  -cache string
+    	the archive directory (created 0700; one that others can write to is refused)
+  -issuer string
+    	the issuing CA, as the lowercase hex SHA-256 of its public key (SubjectPublicKeyInfo)
+  -operator string
+    	who resets it (recorded in the archive)
+  -params string
+    	the declaration of the CA timings (ca_period, max_status_age, exec_status_age, per-issuer values)
+  -policy string
+    	the certificate policy file (anchors, intermediates, and the crl and intermediate_certs members)
+  -reason string
+    	why the mark is reset (recorded in the archive)
+  -set-aside value
+    	the SHA-256 (hex) of an archived CRL to set aside; repeatable. Without it, the archived CRL at the current mark
+```
+
+### bide identity ack-reset
+
+```text
+usage: bide identity ack-reset -policy <file> -params <file> -cache <dir> -issuer <hex> -name <RESET-...json>
+  -cache string
+    	the archive directory (created 0700; one that others can write to is refused)
+  -issuer string
+    	the issuing CA, as the lowercase hex SHA-256 of its public key (SubjectPublicKeyInfo)
+  -name string
+    	the reset record's file name, as the start-up report gives it
+  -params string
+    	the declaration of the CA timings (ca_period, max_status_age, exec_status_age, per-issuer values)
+  -policy string
+    	the certificate policy file (anchors, intermediates, and the crl and intermediate_certs members)
 ```
 
 ## bide keygen
