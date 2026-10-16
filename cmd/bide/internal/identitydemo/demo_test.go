@@ -21,12 +21,14 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/runview"
 	"github.com/bide-ai/bide/internal/testca"
 	"github.com/bide-ai/bide/store/sqlite"
 )
@@ -185,11 +187,6 @@ func run(t *testing.T, dir string) error {
 	}
 	clock = ago(5 * time.Minute)
 	if err := drive("refund-3001", "3001", v); err != nil {
-		recs, _ := j.History(ctx, "refund-3001")
-		_, checks := agent.TallyApprovals(recs, agent.ApprovalSubject{RunID: "refund-3001", ToolUseID: "c1", ToolName: "refund", Args: json.RawMessage(`{"order":"3001","amount":4800,"currency":"USD"}`)}, agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}, v)
-		for _, c := range checks {
-			fmt.Fprintf(os.Stderr, "check %s counted=%v reason=%q cert=%+v\n", c.Approver, c.Counted, c.Reason, c.Cert)
-		}
 		return fmt.Errorf("refund-3001: %w", err)
 	}
 
@@ -245,7 +242,55 @@ func run(t *testing.T, dir string) error {
 	}
 	clock = ago(6 * time.Minute)
 	if err := drive("refund-3004", "3004", v); err == nil {
-		fmt.Fprintln(os.Stderr, "identity.go: note: refund-3004 was not held")
+		return errors.New("refund-3004 ran: the gate did not stop it on stale status")
+	}
+	return check(ctx, j)
+}
+
+// check reads each written run back through the viewer and fails unless it is the state the guide's
+// pictures say it is, so a screenshot can never show another state under its caption.
+func check(ctx context.Context, j *agent.Journal) error {
+	gate := func(run string) (runview.Gate, bool, error) {
+		recs, err := j.History(ctx, run)
+		if err != nil {
+			return runview.Gate{}, false, err
+		}
+		v := runview.Build(ctx, run, recs, nil)
+		if len(v.Gates) != 1 || v.Gates[0].Identity == nil {
+			return runview.Gate{}, false, fmt.Errorf("%s: gates = %+v", run, v.Gates)
+		}
+		ran := slices.ContainsFunc(recs, func(r agent.Record) bool { return r.Kind == agent.StepToolResult && r.ToolUseID == "c1" })
+		return v.Gates[0], ran, nil
+	}
+	want := func(run string, ran bool, phase, class string) (runview.Gate, error) {
+		g, did, err := gate(run)
+		if err != nil {
+			return g, err
+		}
+		if did != ran || g.Identity.Phase != phase || g.Identity.Class != class {
+			return g, fmt.Errorf("%s: executed=%v phase=%q class=%q, want executed=%v phase=%q class=%q (%+v)", run, did, g.Identity.Phase, g.Identity.Class, ran, phase, class, g.Identity)
+		}
+		return g, nil
+	}
+	g, err := want("refund-3001", true, "", "prov")
+	if err != nil {
+		return err
+	}
+	if len(g.Identity.Cards) != 2 || g.Identity.Cards[0].Tier != agent.TierLogclockFinal || g.Identity.Cards[1].Tier != agent.TierProvisional {
+		return fmt.Errorf("refund-3001: cards = %+v", g.Identity.Cards)
+	}
+	if _, err := want("refund-3002", false, agent.PauseAwaitingStatus, "wait"); err != nil {
+		return err
+	}
+	if _, err := want("refund-3003", false, agent.PauseAwaitingAnchor, "wait"); err != nil {
+		return err
+	}
+	g, err = want("refund-3004", false, agent.PauseExecHold, "wait")
+	if err != nil {
+		return err
+	}
+	if !g.Identity.Paused || !g.Held {
+		return fmt.Errorf("refund-3004: not paused before execution: %+v", g.Identity)
 	}
 	return nil
 }

@@ -207,7 +207,7 @@ Each item is one thing to do, and says since when:
 
   <picture>
   <source media="(prefers-color-scheme: dark)" srcset="./img/run-viewer-identity-attention-dark.png">
-  <img src="./img/run-viewer-identity-attention-light.png" alt="bide view's Needs attention list with three refunds at gates with certificate-bound approvers: one paused for identity status, one waiting for a covering signed head, and one counted but held before execution because its status is too old">
+  <img src="./img/run-viewer-identity-attention-light.png" alt="bide view's Needs attention list with three refunds at gates with certificate-bound approvers: one paused for identity status, one waiting for a covering signed head, and one counted but paused before execution because its status is too old to run on">
   </picture>
 
 - **Halted: outcome unknown**: the operation whose attempt marker is live with no result, when it was
@@ -480,7 +480,7 @@ auditor's when it re-checks.
 What the gate is paused for is in the block too, from the newest phase note (a hint the records override):
 `paused: identity status unknown` (no usable revocation status yet; it never uncounts), `decision recorded, not yet
 provable` (no signed head covers the decision yet), `counted provisionally, held until final` (the policy requires a
-final tier to run), and `held before execution: ...` (the pre-execution status re-check found the call may not run,
+final tier to run), and `paused before execution: waiting for current status` (a phase note says the pre-execution status check is waiting for fresher status and no hold record exists: nothing authoritative is written, and the same approvals run once status is fresh), and `held before execution: ...` (a hold record: the pre-execution status re-check found the call may not run,
 with the reason, the decisions that no longer hold and the status time). After a hold the gate has a newer generation;
 the older hold is history, shown as asked again. `identity_bound` is read from every note of the call, so a later
 note from an older binary does not downgrade the display. The JSON view carries all of it under each gate's `identity`.

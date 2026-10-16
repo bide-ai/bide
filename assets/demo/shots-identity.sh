@@ -3,7 +3,7 @@
 # docs/guides/img/run-viewer-identity-run (a run page: one approver counted final as recorded on the log
 # signer's clock, one counted only provisionally, shown in a different style, never green) and
 # run-viewer-identity-attention (the Needs attention list: gates paused for identity status, waiting
-# for a covering signed head, and a call held before execution). cmd/bide/internal/identitydemo writes the journal
+# for a covering signed head, and a call paused before execution for current status). cmd/bide/internal/identitydemo writes the journal
 # with the real agent runtime and a real certificate-bound gate, so every state shown is one the gate produces; the pages are captured with a headless Chromium-based browser at 1200
 # pixels wide, as shots.sh does.
 #
@@ -19,7 +19,8 @@ root=$(cd "$here/../.." && pwd)
 theme=${THEME:-dark}
 out=${OUT:-$root/docs/guides/img}
 port=${PORT:-8651}
-work=$(mktemp -d /tmp/bide-identity.XXXXXX) # a short path: the Needs attention list shows it
+work=/tmp/bide-identity # a fixed, short path: the Needs attention list shows it, so the images are reproducible
+rm -rf "$work" && mkdir -p "$work"
 trap 'kill $(jobs -p) 2>/dev/null || true; wait 2>/dev/null; rm -rf "$work"' EXIT
 
 for c in "${CHROME:-}" \
