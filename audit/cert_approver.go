@@ -247,8 +247,9 @@ func (c *CertApprover) HasIdentity(approverID string) bool {
 	return ok
 }
 
-// RequesterIdentifier implements agent.IdentityRoster: RequesterIdentity if set, else the roster's
-// identifier of the approver id the principal equals.
+// RequesterIdentifier implements agent.IdentityRoster: RequesterIdentity if set; else the principal
+// canonicalized as an identifier of the policy's kind, if it is one; else the roster's identifier of
+// the approver id the principal equals.
 func (c *CertApprover) RequesterIdentifier(principal string) (string, bool) {
 	if c == nil {
 		return "", false
@@ -258,6 +259,11 @@ func (c *CertApprover) RequesterIdentifier(principal string) (string, bool) {
 	}
 	if c.Policy == nil {
 		return "", false
+	}
+	// A principal that is itself an identifier of the policy's kind (an opaque person URI, say) maps to
+	// its canonical form: both sides of the comparison are canonicalized by the policy's own function.
+	if canon, err := c.Policy.canon.Canonical(c.Policy.kind, principal); err == nil {
+		return canon, true
 	}
 	for id, ident := range c.Policy.identity {
 		if agent.SameApprover(id, principal) {

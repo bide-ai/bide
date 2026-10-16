@@ -463,6 +463,10 @@ func TestCertApprover_RosterMethods(t *testing.T) {
 	if id, ok := a.RequesterIdentifier("ALICE"); !ok || id != testca.Person(1) {
 		t.Fatalf("roster mapping: %q %v", id, ok)
 	}
+	// A principal that is an opaque person URI is canonicalized by the policy and maps to itself.
+	if id, ok := a.RequesterIdentifier(testca.Person(2)); !ok || id != testca.Person(2) {
+		t.Fatalf("an identifier principal: %q %v", id, ok)
+	}
 	if _, ok := a.RequesterIdentifier("zed"); ok {
 		t.Fatal("an unknown principal mapped")
 	}
@@ -472,5 +476,20 @@ func TestCertApprover_RosterMethods(t *testing.T) {
 	}
 	if _, ok := a.RequesterIdentifier("alice"); ok {
 		t.Fatal("the hook replaces the roster")
+	}
+}
+
+// Separation of duties by identifier with an opaque person URI: the run's requester is the person's URI
+// (not an approver id), and the approver holding that identity under any approver id is excluded.
+func TestCertApprover_ExcludePrincipalByOpaqueIdentifier(t *testing.T) {
+	c := newCertGate(t, 1, "alice", "bob")
+	c.policy.ExcludePrincipal = true
+	wantPaused(t, c.runAs(testca.Person(2)), 0) // requested by person 2: bob's identifier, spelled as a URI
+	c.decideCert("alice", nil)
+	c.decideCert("bob", nil)
+	c.anchor(certA)
+	tally, checks := c.tally()
+	if reasonOf(t, checks, "bob") != agent.ReasonRequester || reasonOf(t, checks, "alice") != "" || !tally.Passed() {
+		t.Fatalf("%+v %+v", tally, checks)
 	}
 }
