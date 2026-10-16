@@ -271,8 +271,8 @@ tree between releases.
    asking again keeps the cached miss fresh; the v0.18.0 release lost hours to it. So after a push the
    script first checks each tag with `GOPROXY=direct` (git, with the checksum database off, so neither
    the proxy nor the database hears of the version), does not ask the proxy until five minutes after
-   the push, then asks with waits of 5, 10, then 15 minutes, for at most 90 minutes, printing what it
-   waits for. If it gives up, run the same command again once the proxy serves the tag
+   the push (or its own start, when it resumes), then asks with waits of 5, 10, then 15 minutes, for
+   at most 90 minutes in all for one stage's modules, printing what it waits for. If it gives up, run the same command again once the proxy serves the tag
    (`go list -m <module>@vX.Y.Z` shows it); do not poll sooner. `PW_SETTLE`, `PW_STEP` and `PW_MAX`
    (seconds) change the delays (`scripts/proxy-wait.sh`); `--self-test` checks the rules on a fake
    clock. The `module-sbom` job waits the same way, for up to four hours.

@@ -112,8 +112,8 @@ start=$(date +%s)
 for mod in $modules; do
   left=$(( WAIT * 60 - ($(date +%s) - start) ))
   [ "$left" -gt 0 ] || left=0
-  # One module at a time: the direct wait is the time to the deadline, the proxy wait what is left of it.
-  if ! PW_DIRECT_MAX=$left PW_MAX=$left proxy_wait_resolve "$mod" "$VERSION"; then
+  # One deadline for the whole wait; a run never asks the proxy within the settle delay of its own start.
+  if ! PW_FLOOR=$start PW_DEADLINE=$(( start + WAIT * 60 )) PW_DIRECT_MAX=$left PW_MAX=$left proxy_wait_resolve "$mod" "$VERSION"; then
     (cd "$WORK/empty" && gorun list -m "$mod@$VERSION") || true
     die "$mod@$VERSION does not resolve"
   fi

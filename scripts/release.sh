@@ -486,6 +486,15 @@ self_test_proxy() {
     if run m v1 1000; then echo "self-test: a proxy that never answers was accepted"; exit 1; fi
     [ $((CLOCK - 1000)) -le $((300 + 5400)) ] || { echo "self-test: waited $((CLOCK - 1000))s, over the settle plus the 5400s maximum"; exit 1; }
     [ "$(echo "$LOG" | tr ' ' '\n' | grep -c '^p@')" -le 8 ] || { echo "self-test: the proxy was asked too often: [$LOG ]"; exit 1; }
+    # A resumed run (no push time) does not ask the proxy within the settle delay of its own start.
+    DIRECT_OK_AT=0 PROXY_OK_AT=0
+    PW_FLOOR=1000 run m v1 "" || exit 1
+    [ "$LOG" = " d@1000 p@1300" ] || { echo "self-test: a run with no push time asked the proxy before PW_FLOOR+settle: [$LOG ]"; exit 1; }
+    # One deadline bounds the whole wait: a tag fetchable after 200 minutes and a proxy that never
+    # answers does not wait 200 + 5 + 90 minutes against a 240 minute allowance.
+    DIRECT_OK_AT=$((1000 + 200 * 60)) PROXY_OK_AT=999999999
+    if PW_DEADLINE=$((1000 + 240 * 60)) PW_DIRECT_MAX=$((240 * 60)) PW_MAX=$((240 * 60)) run m v1 ""; then echo "self-test: an unanswering proxy was accepted"; exit 1; fi
+    [ $((CLOCK - 1000)) -le $((240 * 60)) ] || { echo "self-test: waited $((CLOCK - 1000))s against a deadline of $((240 * 60))s"; exit 1; }
     # A tag that is never fetchable is not an answer from the proxy: the proxy is never asked.
     DIRECT_OK_AT=999999999
     if run m v1 1000; then echo "self-test: an unfetchable tag was accepted"; exit 1; fi
@@ -680,6 +689,7 @@ pw_proxy() { (cd "$WORK/empty" && gorun list -m "$1"); }
 
 # push_epoch: when the last tags were pushed; wait_resolve does not ask the proxy for them sooner.
 PUSHED_AT=""
+RUN_START=$(date +%s)
 
 # wait_resolve module version: the module proxy (or, in a dry run, the scratch origin) serves it.
 # After a push the tag is first checked without the proxy and the proxy is not asked until it has had
@@ -687,8 +697,10 @@ PUSHED_AT=""
 wait_resolve() {
   local mod=$1 ver=$2
   if $PUSH; then
-    note "waiting for $mod@$ver to resolve on $PROXY (up to ${PW_MAX:-5400}s of asking, after the direct check and a ${PW_SETTLE:-300}s settle since the push)"
-    if proxy_wait_resolve "$mod" "$ver" "$PUSHED_AT"; then note "resolves: $mod@$ver"; return 0; fi
+    note "waiting for $mod@$ver to resolve on $PROXY (a ${PW_SETTLE:-300}s settle since the push, then up to ${PW_MAX:-5400}s of asking, in all for the stage's modules)"
+    # One budget per push (the stage's tags share it): the settle delay and the asking, from the push; a
+    # resumed run counts from its own start.
+    if PW_FLOOR=$RUN_START PW_DEADLINE=$(( ${PUSHED_AT:-$RUN_START} + ${PW_SETTLE:-300} + ${PW_MAX:-5400} )) proxy_wait_resolve "$mod" "$ver" "$PUSHED_AT"; then note "resolves: $mod@$ver"; return 0; fi
     (cd "$WORK/empty" && gorun list -m "$mod@$ver") || true
     die "$mod@$ver does not resolve; re-run the same command to resume, once the proxy serves it"
   fi
