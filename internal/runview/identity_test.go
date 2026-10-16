@@ -508,6 +508,24 @@ func TestIdentity_FinalNeedsTheAtOrAfterBasis(t *testing.T) {
 	}
 }
 
+// An audit result with no digests is never for the current count.
+func TestIdentity_AuditResultWithoutDigestsIsIgnored(t *testing.T) {
+	fx := identRecs(t, agent.TierLogclockFinal, true, nil)
+	v := Options{Provers: []Prover{func(context.Context, string, []agent.Record) *Proof {
+		return &Proof{OK: true, Summary: "verifies", Approvals: map[string]ApprovalCheck{"c1": {Identity: map[string]IdentityAudit{"alice": {OK: true}}}}}
+	}}}.viewOf(context.Background(), "r1", fx.recs, nil)
+	if g := v.Gates[0]; g.Identity.Cards[0].Audited {
+		t.Fatalf("a result with no digests applied: %+v", g.Identity)
+	}
+}
+
+func TestIdentity_LiveBasisOnAFinalTierIsNamed(t *testing.T) {
+	fx := identRecs(t, agent.TierLogclockFinal, true, func(id *agent.ApprovalIdentity, _ *agent.ApprovalWait) { id.Decisions[0].BasisKind = agent.BasisLiveBeforeDecision })
+	if g := identGate(t, fx.recs); !strings.Contains(strings.Join(g.Identity.Problems, "|"), agent.BasisLiveBeforeDecision) {
+		t.Fatalf("problems = %v", g.Identity.Problems)
+	}
+}
+
 func TestIdentity_LongDisplayNameIsCut(t *testing.T) {
 	if got := shorten(strings.Repeat("a", 80), 48); len([]rune(got)) != 51 || !strings.HasSuffix(got, "...") {
 		t.Fatalf("shorten = %q", got)

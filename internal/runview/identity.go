@@ -301,7 +301,7 @@ func identityOf(recs []agent.Record, byName map[string]agent.Record, id string, 
 				c := IdentityCard{Approver: printable(d.Approver), Identifier: printable(d.Identifier), DisplayName: name, Tier: printable(d.Tier), TierText: text, Class: class,
 					BasisKind: printable(d.BasisKind), Basis: printable(d.Basis), Window: printable(d.Window), TimeSource: sourceWords(d.TimeSource, d.TimeEvidence), statusAt: d.StatusTime}
 				if class == identFinal && d.BasisKind != agent.BasisAtOrAfterDecision {
-					problem("a final tier whose basis is " + cmpStr("missing", "\""+printable(d.BasisKind)+"\"") + " rather than status at or after the decision: only that basis is final (a live count is provisional only)")
+					problem("a final tier whose basis is " + cond(d.BasisKind == "", "missing", "\""+printable(d.BasisKind)+"\"") + " rather than status at or after the decision: only that basis is final (a live count is provisional only)")
 					c.Class = identBad
 				}
 				c.StatusTime, c.AnchoredAt = displayStamp(d.StatusTime), displayStamp(d.AnchoredAt)
@@ -411,7 +411,7 @@ func applyIdentityAudit(g *Gate, res map[string]IdentityAudit) {
 		c := &gi.Cards[i]
 		r, ok := res[c.Approver]
 		switch {
-		case ok && (r.TallyDigest != gi.tallyDigest || r.PolicyDigest != gi.recordPolicy):
+		case ok && (r.TallyDigest == "" || gi.tallyDigest == "" || r.TallyDigest != gi.tallyDigest || r.PolicyDigest != gi.recordPolicy):
 			// An audit of another count (an older tally, another generation or policy) says nothing of this one.
 			gi.Problems = append(gi.Problems, "an audit result for "+printable(c.Approver)+" is for another count or policy than the journal's current one, and is not applied")
 			all = false
