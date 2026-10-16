@@ -400,7 +400,7 @@ func (o Options) runItems(v *View, recs []agent.Record) []AttentionItem {
 				switch {
 				case len(bare) == 0:
 					it.Command, it.NoCommand, it.CertOnly = "", "", true
-					it.CommandNote = "every pending approver (" + strings.Join(bound, ", ") + ") is certificate-bound: a bare-key decision does not count for them, so no bare-key command is shown"
+					it.CommandNote = "certificate-bound (" + strings.Join(bound, ", ") + "): sign with your certificate (see the certificate approvers guide, docs/guides/certificate-approvers.md); a bare-key decision does not count for them, so no bare-key command is shown"
 				case len(bound) > 0 && it.Command != "":
 					it.CommandNote = "for the bare-key approvers only (" + strings.Join(bare, ", ") + "): a bare-key decision does not count for " + strings.Join(bound, ", ") + ", who are certificate-bound"
 				}

@@ -579,7 +579,7 @@ func TestIdentity_AttentionCommandIsForBareKeyApproversOnly(t *testing.T) {
 		t.Fatalf("mixed: %+v", mixed)
 	}
 	certOnly := mk([]string{"ops", "finance"}, []string{"ops", "finance"})
-	if certOnly.Command != "" || !certOnly.CertOnly || !strings.Contains(certOnly.CommandNote, "ops, finance") {
+	if certOnly.Command != "" || !certOnly.CertOnly || !strings.Contains(certOnly.CommandNote, "sign with your certificate") || !strings.Contains(certOnly.CommandNote, "ops, finance") {
 		t.Fatalf("cert only: %+v", certOnly)
 	}
 }
