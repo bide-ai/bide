@@ -1055,3 +1055,16 @@ func (s *runSet) remove(id string) {
 		delete(s.m, id)
 	}
 }
+
+// Reanchor asks the journal's store, if it can (a Reanchorer such as audit.AuditedStore), to publish a
+// signed head over runID's journal now, and reports whether it could. A store that signs on its own writes
+// has usually done so already; this covers a record written under a context that was done, and a store
+// whose head failed to publish. It is best effort for a caller that wants a decision it just wrote covered
+// by a head before it answers.
+func (j *Journal) Reanchor(ctx context.Context, runID string) (anchored bool, err error) {
+	ra, ok := Capability[Reanchorer](j.store)
+	if !ok {
+		return false, nil
+	}
+	return true, ra.Reanchor(ctx, runID)
+}

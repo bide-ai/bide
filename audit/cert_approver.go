@@ -424,6 +424,14 @@ func (c *CertApprover) HasIdentity(approverID string) bool {
 	return ok
 }
 
+// Identifier implements agent.IdentityRoster: the canonical identifier the policy gives the approver id.
+func (c *CertApprover) Identifier(approverID string) (string, bool) {
+	if c == nil || c.Policy == nil {
+		return "", false
+	}
+	return c.Policy.Identity(approverID)
+}
+
 // RequesterIdentifier implements agent.IdentityRoster: RequesterIdentity if set; else the principal
 // canonicalized as an identifier of the policy's kind, if it is one; else the roster's identifier of
 // the approver id the principal equals.

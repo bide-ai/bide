@@ -145,7 +145,8 @@ type rosterVerifier struct {
 func (r *rosterVerifier) IdentityMappingConfigured() bool { return r.configured }
 func (r *rosterVerifier) RosterDigest() string            { return r.digest }
 
-func (r *rosterVerifier) HasIdentity(id string) bool { _, ok := r.named[id]; return ok }
+func (r *rosterVerifier) HasIdentity(id string) bool          { _, ok := r.named[id]; return ok }
+func (r *rosterVerifier) Identifier(id string) (string, bool) { v, ok := r.named[id]; return v, ok }
 func (r *rosterVerifier) RequesterIdentifier(p string) (string, bool) {
 	for id, ident := range r.named {
 		if SameApprover(id, p) {
