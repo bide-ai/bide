@@ -90,6 +90,14 @@ no approver id (a login that maps to a person) excluded by identity must supply
 `CertApprover.RequesterIdentity`.** A requester it cannot map is excluded by approver id only, and the
 finding carries a warning.
 
+### One person, one identifier
+
+bide cannot see that two different identifiers belong to one person, so such a person fills two seats of a
+certificate-bound gate: it refuses only two approver ids that map to one identifier, and two certificates
+or keys of one identifier. The control is yours: **the CA's issuance policy gives one person one
+identifier, and the identity map lists one identifier per approver.** See
+[A person with two identifiers fills two seats](../KNOWN-LIMITATIONS.md#a-person-with-two-identifiers-fills-two-seats).
+
 ### Large CRLs
 
 The journal stores a CRL it relied on by hash, with the bytes inline up to `agent.MaxStatusInline`
