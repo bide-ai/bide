@@ -161,7 +161,6 @@ $caFile = Get-ChildItem -Path $enroll -Filter '*.crt' | Select-Object -First 1
 if (-not $caFile) { throw "no CA certificate in $enroll" }
 $ca = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $caFile.FullName
 Save-Pem $ca.RawData 'CERTIFICATE' (Join-Path $Out 'ca.pem')
-Copy-Item (Join-Path $Out 'rootcrl.pem') (Join-Path $Out 'rootcrl.pem')
 
 function Publish-Crl([string]$name, [bool]$delta) {
   if ($delta) { certutil -config $config -CRL delta | Out-Null } else { certutil -config $config -CRL | Out-Null }
