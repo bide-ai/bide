@@ -7,9 +7,6 @@ name: CRL fixtures
 # Download the artifacts, review them, and commit them.
 on:
   workflow_dispatch:
-  push:
-    branches: [ident-c3]
-    paths: ['audit/testdata/adcs/*.ps1']
 
 permissions:
   contents: read

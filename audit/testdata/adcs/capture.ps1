@@ -74,6 +74,7 @@ $issuingThumb = $mine.Thumbprint
 Save-Pem $issuing.RawData 'CERTIFICATE' (Join-Path $Out 'issuing-by-root.pem')
 Remove-Item $inf, $req, $cer
 Remove-Item (Join-Path $env:SystemRoot 'CAPolicy.inf')
+Remove-Item (Join-Path $Out 'issuing.rsp') -ErrorAction SilentlyContinue
 
 # The root's CRL, published after it issued the CA certificate (no entries).
 $enroll = Join-Path $env:SystemRoot 'System32\CertSrv\CertEnroll'

@@ -1,6 +1,6 @@
 X509 Certificate:
 Version: 3
-Serial Number: 1500000003b528e834f35ad432000000000003
+Serial Number: 4a0000000324a828441bc5c005000000000003
 Signature Algorithm:
     Algorithm ObjectId: 1.2.840.113549.1.1.11 sha256RSA
     Algorithm Parameters:
@@ -10,8 +10,8 @@ Issuer:
   Name Hash(sha1): 4c530214a473d71eb933301af24f8df1ac7b60b3
   Name Hash(md5): 804afa6a8abcca4a6be90e61850ec626
 
- NotBefore: 10/16/2026 2:39 AM
- NotAfter: 10/16/2027 2:49 AM
+ NotBefore: 10/16/2026 3:14 AM
+ NotAfter: 10/16/2027 3:24 AM
 
 Subject:
     CN=Fixture ADCS Approver CA
@@ -24,31 +24,31 @@ Public Key Algorithm:
     05 00
 Public Key Length: 3072 bits
 Public Key: UnusedBits = 0
-    0000  30 82 01 8a 02 82 01 81  00 c7 cf 78 ef d8 c0 0a
-    0010  da 4b 59 d8 22 df 03 5d  05 7c 06 64 dd 91 91 29
-    0020  99 4b 07 81 79 38 da 9a  a2 81 da b1 60 9a f2 0d
-    0030  f8 a5 10 74 71 f8 3e 65  89 08 c8 6d b2 93 2b d8
-    0040  a3 55 6c cf db a7 d9 70  8c 03 c6 76 f3 c4 f2 f6
-    0050  65 89 17 8d 77 45 7a f1  ab 3a c0 73 46 9c 79 a2
-    0060  a6 9f fc 7f cd e6 6b 70  d5 58 7a 69 a3 88 ea 93
-    0070  8c 6c fb 87 6e 45 09 92  a5 92 da a8 79 4b dc 10
-    0080  7f 6c 41 d2 23 ae a2 d8  81 38 8d 3d 1c 8b 5b 57
-    0090  87 4c e0 26 7e 9e 9b a3  ac f1 22 6c 99 ec 3b 3d
-    00a0  cf 7e 48 47 57 56 69 d1  73 9c 3e 45 aa 2c 6b 0f
-    00b0  47 50 a0 cd 5e 81 c2 69  49 6e 6a a1 56 42 35 58
-    00c0  c4 ba 76 b0 ae 80 9e d9  71 db f2 35 11 12 9f f1
-    00d0  ea 4d d7 85 03 0a da c6  89 39 14 70 7e 7b c0 ee
-    00e0  86 34 99 55 7e a6 99 d7  29 77 dd 06 44 99 11 62
-    00f0  05 9c 3e de 65 c6 21 34  07 6d 4a a2 d8 53 25 c0
-    0100  90 b3 63 a6 1a 84 b0 2f  46 96 26 f9 6d f4 ed 4b
-    0110  69 85 31 0c c3 5a 5a b4  06 02 88 a2 52 54 69 7c
-    0120  cb 2e 0c 6e e0 d8 5f bb  34 4b 9f 6c 32 6d 37 38
-    0130  56 39 c1 e3 92 c6 2a be  7c f8 ac de 27 a6 fb 0e
-    0140  1b 2e dd 55 bd aa 43 4b  fb 08 80 af 0e 4e eb 21
-    0150  c8 25 41 e5 e6 c1 f8 b1  97 f2 89 bc a0 b3 25 bd
-    0160  b5 e2 8d f4 2d 6f b1 0a  1b 17 57 e4 c3 07 27 93
-    0170  11 e3 f8 28 c3 4d ae 4f  9f bd 60 63 8b d1 42 e3
-    0180  66 00 89 6e 7b 87 e3 9d  45 02 03 01 00 01
+    0000  30 82 01 8a 02 82 01 81  00 da 3b 76 1a f5 75 03
+    0010  00 ab 20 52 b3 a0 ba 08  88 e8 93 13 25 b5 a8 cd
+    0020  76 52 ab 07 02 61 49 ec  f3 df f1 60 31 3f 78 07
+    0030  9f 46 47 c7 51 a9 b3 2d  14 48 b5 45 7e 17 40 37
+    0040  45 19 c4 24 fb 12 3f 04  74 64 48 75 33 cc e7 8f
+    0050  75 27 49 57 4b 87 e1 46  bd ed ff 76 fd 1e 18 a6
+    0060  28 81 8e 8e 47 4c 6d a3  d8 11 19 b3 9d 03 b6 9d
+    0070  c4 64 d1 44 dc f1 e1 0e  be 72 99 4a ea 89 cf d4
+    0080  c0 4c c6 2f 38 84 72 15  64 62 d3 75 cb 69 cd 7c
+    0090  96 39 2d 49 60 72 96 4e  e5 c3 2e ea 6a 8f 5b a9
+    00a0  2e b0 c9 12 88 b0 34 45  ce 42 eb 4a 38 98 c9 91
+    00b0  79 06 64 41 d2 e2 26 cf  03 cb fb e0 ab df c2 c4
+    00c0  72 8c 3c f7 3b 68 9b 32  c7 fa 5d 28 a6 28 7b 95
+    00d0  fb 09 31 7d 6d 32 bb 0a  62 12 29 d0 ea b2 bc 74
+    00e0  45 54 d2 dc 4b b6 af fe  50 11 a9 57 4a dc 8e 6f
+    00f0  9d 7b f9 b3 7b 31 8f 99  62 d2 04 5a db 92 83 cf
+    0100  f5 e8 58 dd 8d b5 33 62  f7 78 91 6d 97 35 01 f3
+    0110  ee c3 8e a0 d3 5c 46 41  1a 69 54 77 14 84 85 d2
+    0120  6c 99 b5 77 77 11 a0 89  0c e0 04 53 24 8b a3 5e
+    0130  90 b7 34 e5 56 0b 67 15  e9 2f cf b9 b4 70 e0 90
+    0140  19 b1 b3 85 4d ef 35 8b  76 51 52 f7 58 10 41 0c
+    0150  c5 27 7a 68 2b fd 56 8f  73 a3 10 2d 5c bc 82 70
+    0160  bf cf df 97 7e f1 a3 42  19 9d 12 2c 34 ed 09 fe
+    0170  99 79 6d 01 4a 5c 45 c5  c5 41 55 18 36 a2 fa 23
+    0180  72 30 d5 ff a9 4c af de  81 02 03 01 00 01
 Certificate Extensions: 7
     2.5.29.15: Flags = 0, Length = 4
     Key Usage
@@ -66,11 +66,11 @@ Certificate Extensions: 7
 
     2.5.29.14: Flags = 0, Length = 16
     Subject Key Identifier
-        b3b82dac8964128627c86db86548a2ac898a9ecf
+        7d90192c59b3f7fbf0c1359576457ca43d3e1c21
 
     2.5.29.35: Flags = 0, Length = 18
     Authority Key Identifier
-        KeyID=b3f408014651df3e1720ace8bd93ce4bd8e4dcbc
+        KeyID=ba1a3fa65242ec8a4b1957916ab9705d71011722
 
     2.5.29.31: Flags = 0, Length = 45
     CRL Distribution Points
@@ -91,41 +91,41 @@ Signature Algorithm:
     Algorithm Parameters:
     05 00
 Signature: UnusedBits=0
-    0000  03 64 af 91 ab 5a 58 cf  9f 0c b1 69 81 67 10 89
-    0010  22 9a b3 e6 e7 12 2e e7  11 c4 1a e3 1a 48 6a 5e
-    0020  9a 9f e0 d8 76 21 1f 2b  83 2c 63 97 3d 83 e5 e1
-    0030  4a 85 af cd 1a 0f 49 e0  dd d6 f6 49 a3 8a f3 68
-    0040  49 8f 66 c7 21 9a ce 17  3d 25 8b 65 fa ce d6 f4
-    0050  f3 43 7e a0 e0 2d a5 80  5c c7 e0 37 03 90 1c 0b
-    0060  5d 35 1c f8 35 84 04 e6  48 b7 38 bf 14 72 9a 16
-    0070  3d 32 90 3e 36 de b1 82  ad 04 76 73 2a ee a0 5f
-    0080  7f ae 18 1d 4a a5 41 d1  a1 72 0c 7a f2 ba 0e 9e
-    0090  5e 7a c7 5f 91 0e ad a3  11 11 e9 ae 19 97 b9 11
-    00a0  3b 35 e7 e3 58 8e 87 d7  b3 57 1f 9f 6b c0 3e cd
-    00b0  77 27 21 19 fa f2 26 e8  0b 6c 69 16 f9 60 e7 47
-    00c0  d0 47 48 5c 84 86 88 9e  81 62 4c e7 5d 91 5d c5
-    00d0  34 d9 0f 06 27 15 9c 1e  29 a1 fc cf 37 0c da 72
-    00e0  78 7e 68 e5 2d 3d 80 5d  ae 60 89 6f 1e 19 27 81
-    00f0  fb 84 f1 53 f8 38 01 4d  b5 03 53 88 5b c0 63 c2
-    0100  ce a2 38 e3 60 90 ae 72  6d 9f e2 33 ec 73 1e 71
-    0110  e8 d0 3a 0f 87 1e ae ca  8d 87 ed ef f4 0f 41 c5
-    0120  5f eb 1c 2a 20 7c e8 b4  47 fa 66 a4 28 d9 50 d8
-    0130  d4 55 8c 53 d8 b1 16 ac  45 d4 a4 e3 b2 9b af bf
-    0140  1a b6 a3 03 7d 8d 37 ca  42 f1 ef cb 69 76 cd f8
-    0150  41 05 a5 4c 62 bf 91 5b  39 30 30 6e 4f 0c a2 e7
-    0160  bd 28 d6 76 f8 cc 84 11  d8 0f 4f eb e6 be a9 b7
-    0170  f4 35 df c5 f3 1c 69 38  dd 78 ca 57 50 68 58 2d
+    0000  bd 6f d1 ba f0 25 06 46  54 87 94 85 01 56 44 65
+    0010  15 6d b0 63 69 b0 00 95  36 8d b0 12 80 c9 7b 7f
+    0020  69 31 93 c8 92 e2 b5 bc  a6 91 00 e6 3c 9a ff 5e
+    0030  6f fa a4 6f 2f 3c 24 ef  0f c6 28 45 73 f0 b3 1a
+    0040  db f2 1d ff 69 5c b2 84  39 bc f0 2a 7a 65 5b a7
+    0050  c0 18 74 e5 44 4f 4c 1c  5e 99 0e 05 42 1b a8 43
+    0060  7c a2 f6 81 bf 9d 8d 18  4b 1c 9a cd 65 de 16 a1
+    0070  0f ff f3 ff 44 83 37 c2  7c 23 a8 00 8d a5 7b ec
+    0080  e8 d8 40 31 b3 84 ae 1c  ad 13 99 b7 10 9f 00 54
+    0090  53 e4 5e 0b 29 06 6c 1a  51 b8 37 dc d4 50 f9 ad
+    00a0  f7 54 b3 90 b8 b3 47 69  5e a1 16 02 03 f2 5d c9
+    00b0  fa 70 c4 db 7a 16 b4 7e  4c 83 ed 2e cf 5e 26 22
+    00c0  cb 0c 81 3b e3 60 72 7e  6c 8e d6 07 51 f7 13 43
+    00d0  51 26 13 b8 d7 ee 88 3f  58 d4 ed 1a 02 85 2a 87
+    00e0  38 99 24 82 bb e4 53 a4  ca f7 8c 1f 6b 08 50 64
+    00f0  cb bc de 05 7f 5b 80 c0  52 e8 c4 ca 23 ab 35 d3
+    0100  00 90 3d 8f cf 24 4c 6d  35 fe f8 c0 12 d9 7b be
+    0110  47 0a 27 a3 7f 0e 29 da  34 63 59 3e 39 52 04 86
+    0120  a7 2a ee 71 9c 71 0d 2d  a8 a4 90 4f a8 c3 3e 5d
+    0130  98 44 86 ef 19 84 8d 70  83 96 ca 5e 37 dd 32 5a
+    0140  ca ad f6 cd 0c b1 24 a4  c9 a0 19 cc a6 42 8f b6
+    0150  66 35 7b 77 54 9b c5 3f  47 50 3b aa 3e b1 69 f1
+    0160  42 2e 16 23 c8 9a f7 cd  7b b6 b8 97 23 29 cc 99
+    0170  c4 d4 91 85 14 c2 26 0e  d0 bd 37 c8 7a 70 b5 81
 Non-root Certificate
-Key Id Hash(rfc-sha1): b3b82dac8964128627c86db86548a2ac898a9ecf
-Key Id Hash(sha1): 6a5b92d9f1893cffed186b2a0c73267981d5ae29
-Key Id Hash(bcrypt-sha1): 77cef8941a78f8b2f7d5b262e301523f9b96cb80
-Key Id Hash(bcrypt-sha256): 5e069fec36a2ba0cdef95c169e7e4fcf01c1632c5531978746a9e0ebbe5e4262
-Key Id Hash(md5): ee7ac0963d2819d538afa7942f76e22e
-Key Id Hash(sha256): c85f0d2577158889b4ad305de15d24ea19255d70172c6feba45ca73e29e404a9
-Key Id Hash(pin-sha256): OGIxTqJXSlpY0SEwaDyPxWIrNI4Xrc+9Zqe4D9FbmiE=
-Key Id Hash(pin-sha256-hex): 3862314ea2574a5a58d12130683c8fc5622b348e17adcfbd66a7b80fd15b9a21
-Cert Hash(md5): 07ff17b77783ddbe34a134ecd096842b
-Cert Hash(sha1): ceef1bb8c1c0b3956bd4c61e257b774e9346d48c
-Cert Hash(sha256): 5d2834ca76ec66910f2003436c030cfb9c368d7a2a92d1fe58d0354b53afb420
-Signature Hash: 0e6a23f6a812279a734d4e95b6a65833cb72cca1e101d7d0c80be00b87870e34
+Key Id Hash(rfc-sha1): 7d90192c59b3f7fbf0c1359576457ca43d3e1c21
+Key Id Hash(sha1): 71dfec36b75585ee02f234dfa47b3a629e4429eb
+Key Id Hash(bcrypt-sha1): 76527a9e3a681d9c624f4cdb5da3f8026a8dfe7c
+Key Id Hash(bcrypt-sha256): 33d2e7b5ef54e76b7ef099f398ad5b0a4806e75a05cb13bb89e4481e0d9d758b
+Key Id Hash(md5): 95969297e689d6f267cd53ec8a26f5ba
+Key Id Hash(sha256): ffad75781f52e65de9137eccae2aeb4409ff6f33a998e031828e42aeb24b788e
+Key Id Hash(pin-sha256): DbJFM9g7d/PjWMNLHzpaTWhIpSVsubTK4MNJ9sSuXWk=
+Key Id Hash(pin-sha256-hex): 0db24533d83b77f3e358c34b1f3a5a4d6848a5256cb9b4cae0c349f6c4ae5d69
+Cert Hash(md5): 7fe464414be98830b432336a5d60c34b
+Cert Hash(sha1): 2e237d23ced91fc80014a3a5086b832c34da8231
+Cert Hash(sha256): 89ce2a0758da790bf465504adbc305bda62b066dbf3dfd38d5e3724a07fec9f9
+Signature Hash: ea5de36c2b4a7191ae1b4bb27a28cc27c97976fe16ddf073f5a103273a2059f0
 CertUtil: -dump command completed successfully.
