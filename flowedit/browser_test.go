@@ -467,31 +467,34 @@ func TestAssertionsInChrome(t *testing.T) {
 	flow := assertFlow + "assert:\n  - every path to charge passes approval >= 2 of 3\n  - receipt reachable\n"
 	s, _ := newTestServer(t, "refund.yaml", flow)
 	var r struct {
-		OK                bool     `json:"ok"`
-		Error             string   `json:"error"`
-		Rows              []string `json:"rows"`
-		Templates         []string `json:"templates"`
-		SubmitInitial     string   `json:"submitInitial"`
-		LiveViolated      string   `json:"liveViolated"`
-		SourceBeforeAdd   string   `json:"sourceBeforeAdd"`
-		AfterAdd          string   `json:"afterAdd"`
-		RowsAfterAdd      []string `json:"rowsAfterAdd"`
-		VerdictAfterAdd   string   `json:"verdictAfterAdd"`
-		FocusAfterAdd     string   `json:"focusAfterAdd"`
-		EditSubmit        string   `json:"editSubmit"`
-		EditTemplate      string   `json:"editTemplate"`
-		EditNode          string   `json:"editNode"`
-		LiveEdit          string   `json:"liveEdit"`
-		AfterEdit         string   `json:"afterEdit"`
-		FocusAfterEdit    string   `json:"focusAfterEdit"`
-		LiveDuplicate     string   `json:"liveDuplicate"`
-		LiveApproval      string   `json:"liveApproval"`
-		AfterRemove       string   `json:"afterRemove"`
-		BannerAfterRemove string   `json:"bannerAfterRemove"`
-		RowsAfterRemove   []string `json:"rowsAfterRemove"`
-		Console           []string `json:"console"`
-		Failed            []string `json:"failed"`
-		OffOrigin         []string `json:"offOrigin"`
+		OK                      bool     `json:"ok"`
+		Error                   string   `json:"error"`
+		Rows                    []string `json:"rows"`
+		Templates               []string `json:"templates"`
+		SubmitInitial           string   `json:"submitInitial"`
+		LiveViolated            string   `json:"liveViolated"`
+		SourceBeforeAdd         string   `json:"sourceBeforeAdd"`
+		AfterAdd                string   `json:"afterAdd"`
+		RowsAfterAdd            []string `json:"rowsAfterAdd"`
+		VerdictAfterAdd         string   `json:"verdictAfterAdd"`
+		FocusAfterAdd           string   `json:"focusAfterAdd"`
+		FocusAfterEditClick     string   `json:"focusAfterEditClick"`
+		AfterRemoveSecond       string   `json:"afterRemoveSecond"`
+		BannerAfterRemoveSecond string   `json:"bannerAfterRemoveSecond"`
+		EditSubmit              string   `json:"editSubmit"`
+		EditTemplate            string   `json:"editTemplate"`
+		EditNode                string   `json:"editNode"`
+		LiveEdit                string   `json:"liveEdit"`
+		AfterEdit               string   `json:"afterEdit"`
+		FocusAfterEdit          string   `json:"focusAfterEdit"`
+		LiveDuplicate           string   `json:"liveDuplicate"`
+		LiveApproval            string   `json:"liveApproval"`
+		AfterRemove             string   `json:"afterRemove"`
+		BannerAfterRemove       string   `json:"bannerAfterRemove"`
+		RowsAfterRemove         []string `json:"rowsAfterRemove"`
+		Console                 []string `json:"console"`
+		Failed                  []string `json:"failed"`
+		OffOrigin               []string `json:"offOrigin"`
 	}
 	runScript(t, "assertions.mjs", s, &r)
 	if !r.OK {
@@ -514,6 +517,12 @@ func TestAssertionsInChrome(t *testing.T) {
 		t.Errorf("the edit form: %q %q %q, live %q", r.EditSubmit, r.EditTemplate, r.EditNode, r.LiveEdit)
 	}
 	edited := flow + "  - no side effect after charge\n"
+	if r.FocusAfterEditClick != "a-template" {
+		t.Errorf("focus after Edit: %q", r.FocusAfterEditClick)
+	}
+	if r.AfterRemoveSecond != strings.Replace(edited, "  - receipt reachable\n", "", 1) || !strings.Contains(r.BannerAfterRemoveSecond, "assertion removed: receipt reachable") {
+		t.Errorf("after removing the second: banner %q\n%s", r.BannerAfterRemoveSecond, r.AfterRemoveSecond)
+	}
 	if r.AfterEdit != edited || r.FocusAfterEdit != "a-edit-2" {
 		t.Errorf("after the edit: focus %q\n%s", r.FocusAfterEdit, r.AfterEdit)
 	}
@@ -523,11 +532,11 @@ func TestAssertionsInChrome(t *testing.T) {
 	if !strings.Contains(r.LiveApproval, "every path to charge passes approval >= 2 of 3 excluding the requester") || !strings.Contains(r.LiveApproval, "violated") {
 		t.Errorf("the approval form's verdict: %q", r.LiveApproval)
 	}
-	removed := strings.Replace(edited, "  - every path to charge passes approval >= 2 of 3\n", "", 1)
+	removed := strings.Replace(strings.Replace(edited, "  - receipt reachable\n", "", 1), "  - every path to charge passes approval >= 2 of 3\n", "", 1)
 	if r.AfterRemove != removed || !strings.Contains(r.BannerAfterRemove, "SAFETY CHECK WEAKENED") || !strings.Contains(r.BannerAfterRemove, "assertion removed: every path to charge passes approval >= 2 of 3") {
 		t.Errorf("after removing: banner %q\n%s", r.BannerAfterRemove, r.AfterRemove)
 	}
-	if !slices.Equal(r.RowsAfterRemove, []string{"receipt reachable", "no side effect after charge"}) {
+	if !slices.Equal(r.RowsAfterRemove, []string{"no side effect after charge"}) {
 		t.Errorf("rows after removing %q", r.RowsAfterRemove)
 	}
 }

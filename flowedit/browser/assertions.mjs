@@ -49,6 +49,7 @@ try {
   // Edit the new line: its node to charge, which makes it hold.
   await page.click('#a-edit-2');
   await until(() => document.getElementById('a-cancel'), null, 'the edit form');
+  r.focusAfterEditClick = await page.evaluate(() => document.activeElement?.id);
   r.editSubmit = await text('#a-submit');
   r.editTemplate = await page.$eval('#a-template', (e) => e.value);
   r.editNode = await page.$eval('#a-node', (e) => e.value);
@@ -82,7 +83,11 @@ try {
   await until(() => document.getElementById('a-live')?.textContent.includes('excluding the requester'), null, 'the approval verdict');
   r.liveApproval = await live();
 
-  // Remove the first line (the gate assertion): weaker than the baseline.
+  // Remove the second line, and then the first (the gate assertion): weaker than the baseline.
+  await page.click('#a-rm-1');
+  await until(() => !document.getElementById('source').value.includes('receipt reachable'), null, 'the second assertion to be removed');
+  r.afterRemoveSecond = await source();
+  r.bannerAfterRemoveSecond = await text('#weakened');
   await page.click('#a-rm-0');
   await until(() => !document.getElementById('source').value.includes('every path to charge passes approval'), null, 'the assertion to be removed');
   r.afterRemove = await source();
