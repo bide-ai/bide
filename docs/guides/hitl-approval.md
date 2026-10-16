@@ -703,6 +703,27 @@ takes neither flag.
 
 **Audit log and receipts.** `bide approve` writes the decision through the journal's plain store, so it is in the journal at once. It cannot tell whether the application audits the journal (`audit.AuditedStore` is configured in the application, with its own signer and anchor), so it says the same thing either way: the decision is signed into the audit log at the app's next write to this run, or when a `RecoverLoop` or `Recover` pass finds the run still waiting and re-signs it ([A decision written by another process](#a-decision-written-by-another-process)), because the first signed tree head published after the decision covers it. That anchoring is best-effort even inside the application: a failed publish never fails the write, `OnError` reports it, and `Reanchor` retries it (see [continuous anchoring](audit.md#continuous-anchoring-auditedstore--the-anchor-port)). Until a head covers the decision, nothing signed contradicts a journal from which it was deleted. So an m-of-n decision also leaves a **receipt** next to your key (`-receipt` names another file; mode 0600; never overwritten): the signed decision with the call's arguments, the journal record's name and position, and when it was recorded, and no key material. `bide approve -verify-receipt <file> -approver-keys <keys>` checks it on its own (the signature over the exact call it states). Keep your receipts: `bide audit verify-receipts` checks them against the journal and the signed heads, and reports a decision the journal does not show where the receipt says as `receipt not matched by the journal (the approver's claim)`; once a signed head commits to the decision, `verify-receipts -update` stores an anchoring proof in the receipt, and only then does a later head that omits it prove `decision deleted after signing` ([audit guide](audit.md#decision-receipts-noticing-a-decision-deleted-before-it-was-anchored)). A receipt holds the call's arguments, as signed, so keep it where you keep the journal.
 
+**Certificate-bound receipts.** The receipt of a certificate-bound decision carries the approver's chain, and `-approver-keys` cannot check it: `-verify-receipt` and `verify-receipts` need `-identity-policy <file>`, the gate's certificate policy (trust anchors, pinned intermediates, the approver-to-identity map), and the log's public key (`-log-key` for `bide approve`, the existing `-pubkey` for `verify-receipts`). A certificate-bound receipt given without them is refused with a message that names them, never checked against a bare key. The check is the one the gate applies (`audit.DecisionReceipt.VerifyIdentity`): the receipt's anchoring proof holds under the log key and fixes the time A the decision became provable (a signed head's time, the log signer's clock), and the chain, the identifier for that approver, the certificate's validity at A and the signature over the v4 bytes are accepted by the policy at A. The output names the identity (and, marked as not part of it, the certificate's name), A and its source, the certificate's validity, the leaf and the trust anchor's key. **It does not check revocation status, and says so: a pass is the identity check at A, never the gate's verdict (final or provisional).** `bide approve -verify-receipt` needs the receipt to carry its anchoring proof; `bide audit verify-receipts` also accepts one that does not, taking A from the signed heads it is given (and `-update` stores the proof). A receipt that no signed head covers yet is pending, not accepted.
+
+The policy file is JSON with unknown members refused, every failure a configuration error:
+
+```json
+{
+  "anchors": ["root.pem"],
+  "intermediates": ["<sha256 of the SubjectPublicKeyInfo, hex>"],
+  "distrust": {"<spki hash>": "2026-09-01T00:00:00Z"},
+  "identity": {"alice": "https://idp.bank.example/person/00000000000000000000000000000001"},
+  "id_kind": "person-uri",
+  "eku": "1.3.6.1.4.1.99999.1.1",
+  "policy_oid": "1.3.6.1.4.1.99999.2.1",
+  "canonical": {"scheme": "https", "host": "idp.bank.example"}
+}
+```
+
+`anchors` are PEM files inside the policy file's directory (a path that leaves it is refused). Optional: `allow_email_protection_eku`, `canonical.path`, `max_chain`, `skew`, `anchor_grace`, `rsa2048_until`, `max_leaf_lifetime` (durations as Go strings), `require_name_constraints`, `require_policy_on_cas`. It is `audit.ReadIdentityPolicy`; the same fields as `audit.IdentityPolicy`.
+
+**Listing.** `bide approve -list` shows a gate with a certificate-bound approver as `identity-bound`, with its approver identity block: what it is paused for, each counted decision's identifier, tier, basis, status time (S) and the time it became provable, a disputed count in red, and the policy digest as the journal records it. Only a final tier is printed in the OK style, provisional is warned, and anything else is a failure. Such a gate is never shown as `verified` or settled by this command: the keys in `-approver-keys` cannot check a certificate-bound decision, so its decisions count only when the gate checks them, and no bare-key command is offered for a certificate-bound approver. A call that was counted but is held before execution is listed too, with no command. The JSON carries `identity` and `held`.
+
 After the decision is recorded, re-run the pause's `RootRunID` (or let `RecoverLoop` pick it up): the
 gate counts the decisions and the call runs or is denied. `bide approve` never runs the call.
 

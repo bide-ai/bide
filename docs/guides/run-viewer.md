@@ -199,6 +199,17 @@ Each item is one thing to do, and says since when:
   are placeholders too. Every value is quoted for a POSIX shell, so a run or call ID with a quote, a
   space, `;` or `$(` is one word (also for a Windows `-db` path: the quoting is POSIX's, for a POSIX shell, so in `cmd.exe` or PowerShell quote the path yourself); an ID with a control, bidirectional or invisible character gets
   *no command (unsafe id)* instead. An exported journal has no store to name, so it shows none.
+  A gate with a certificate-bound approver says why it waits and shows the identity of each counted
+  decision (see [Approver identity](#the-page)): `paused: identity status unknown`, `decision recorded,
+  not yet provable`, or, for a call that was counted but not run, `held before execution: ...` (that
+  item needs a person although no decision is wanted). A non-final identity is never drawn green. The JSON gives it as the
+  item's `gate.identity`.
+
+  <picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./img/run-viewer-identity-attention-dark.png">
+  <img src="./img/run-viewer-identity-attention-light.png" alt="bide view's Needs attention list with two refunds paused at gates with certificate-bound approvers: one paused for identity status, one waiting for a covering signed head">
+  </picture>
+
 - **Halted: outcome unknown**: the operation whose attempt marker is live with no result, when it was
   attempted, and the `agent.ResolveHalt` call with its `HaltRef`, as on the run's page. Resolve it
   only after looking the operation up where it ran.
@@ -436,6 +447,41 @@ decisions by journal position, never by these times, so a note never changes the
 are those of the decision the recount counted. A one-decision gate is not signed and has no cards;
 its "who decided" detail says when the decision was recorded, by the clock of the process that
 called `Approve`.
+
+**Approver identity.** A gate with a certificate-bound approver (see the [approver identity design](../design/approver-identity.md))
+adds an identity block above the cards and an identity panel in each certificate-bound approver's card. The
+panel shows the verified canonical identifier (`https://idp.bank.example/person/...`), the display name
+from the certificate's subject (the CA's label for the person, not part of the identity), the **tier**,
+the **basis** (why the status was enough, or not), the status time **S**, when the decision became
+provable and what that time rests on (`log-signer clock`, `rfc3161 <tsa>`), the window, and the leaf's
+hash. The tiers are `final (independent time)`, `final (log signer's clock)` and `PROVISIONAL`; any
+other value is `NOT VERIFIED`. A card of a bare-key approver on such a gate says `bare key (no
+identity)`.
+
+The rule the page keeps: **only a final tier is drawn in the good (green) style, and the page never uses
+the bare word "verified" for an identity.** Provisional is amber with a dashed edge and a hatched ground
+and says `PROVISIONAL`, a decision the gate has recorded but not counted is `recorded, not counted`, and
+neither makes the gate, the card or the run's verdict green: a finished run whose gate counted an identity
+only provisionally reads `IDENTITY NOT FINAL`, not `VERIFIED`. These are shown in the bad (red) style, with
+the reason: `identity data stripped` (the pause note says the gate is identity-bound and counted, but the
+journal has no `approval-identity` record), `policy differs` (the record's policy digest is not the one
+the gate paused under), a certificate that is not the one the record names, a tier the page does not know,
+`superseded (counted without identity)` (a tally under the plain name on an identity-bound gate, which the gate
+ignores), and `DISPUTED` (an audit found newer status showing a `keyCompromise` revocation effective at or
+before the decision became provable, which voids the count back to the certificate's `notBefore`; the live
+gate never writes this). The page reads the journal alone: it does not recompute the policy digest, verify a
+chain or fetch status. That is the gate's work when it counts and the auditor's when it re-checks.
+
+What the gate is paused for is in the block too: `paused: identity status unknown` (no usable revocation
+status yet; it never uncounts), `decision recorded, not yet provable` (no signed head covers the decision
+yet), `counted provisionally, not final`, and `held before execution: ...` (the pre-execution status
+re-check found the call may not run, with the reason and the status time). The JSON view carries all of it
+under each gate's `identity`.
+
+<picture>
+<source media="(prefers-color-scheme: dark)" srcset="./img/run-viewer-identity-run-dark.png">
+<img src="./img/run-viewer-identity-run-light.png" alt="bide view's run page for a 2-of-3 refund gate with two certificate-bound approvers: one counted final on an independent time and shown with its identity, one counted only provisionally and drawn amber and hatched, and a third approver on a bare key">
+</picture>
 
 **Proof path.** With a signed head (`-sth`) or an evidence package (`-evidence`), a small diagram
 of the proof the audit package verified for the last record the head covers: the record's leaf

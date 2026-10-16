@@ -593,12 +593,16 @@ Flags:
     	SQLite journal file
   -full
     	show all of the call's arguments, not the first lines
+  -identity-policy string
+    	with -verify-receipt, for a certificate-bound receipt: the certificate policy file (trust anchors, pinned intermediates, the approver-to-identity map; see docs/guides/hitl-approval.md). The chain and identity are checked against it at the time the receipt's anchoring head was signed; revocation status is not checked
   -json
     	with -list: print the waiting calls as JSON
   -key string
     	your private key file, as bide keygen writes it (Ed25519, ECDSA P-256, ML-DSA-65 or hybrid) (not for a single-approver gate); on Unix it must not be readable by group or others
   -list
     	list the calls that wait for a decision, each with its bide approve command; nothing is recorded
+  -log-key string
+    	with -verify-receipt, for a certificate-bound receipt: the audit log's public key (ed25519:<hex>, or a file holding it), which vouches for the receipt's anchoring proof
   -postgres string
     	Postgres journal, a pgx DSN such as postgres://user:pass@host:5432/db; prefer -postgres-env, which keeps the password out of the argument list
   -postgres-env string
@@ -1263,6 +1267,8 @@ Usage of bide audit verify-receipts:
     	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never; -json is never colored
   -heads value
     	signed tree heads of the journal: a file with one head, or one head per line (the anchor log a published head is appended to); repeatable
+  -identity-policy string
+    	the certificate policy file (trust anchors, pinned intermediates, the approver-to-identity map; see docs/guides/hitl-approval.md): required for a certificate-bound receipt, which is checked against it and the log key instead of -approver-keys. The check is the identity at the time the decision became provable; revocation status is not checked
   -journal value
     	the run's journal export (audit.ExportJournal), one per run the receipts name; repeatable
   -json
