@@ -309,3 +309,39 @@ func TestBareGate_KeepsPlainTallyName(t *testing.T) {
 		t.Fatal("an :ident tally on a bare-key gate")
 	}
 }
+
+// A plan flow node's gate reads the same chain: a plain-name tally that passed is not its outcome when
+// the gate has a certificate-bound approver, and the count is recorded under the identity tally name.
+func TestFlowGate_BoundGateSupersedesPlainTally(t *testing.T) {
+	ctx := context.Background()
+	j := memJournal()
+	g := newBoundGate(t)
+	vf := certResolver(map[string]ApproverVerifier{"alice": g.alice, "bob": g.bob})
+	args := json.RawMessage(`{"amount":1}`)
+	_, err := flowGate(ctx, j, "r1", "node:pay", "pay", args, g.pol, vf)
+	var pend *ApprovalPending
+	if !errors.As(err, &pend) {
+		t.Fatalf("first evaluation = %v", err)
+	}
+	if _, err := j.do(ctx, "r1", ApprovalTallyStep("node:pay"), func(context.Context) (Record, error) {
+		return valueRec(t, ApprovalTallyStep("node:pay"), passedTally()), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := flowGate(ctx, j, "r1", "node:pay", "pay", args, g.pol, vf)
+	if ok || !errors.As(err, &pend) || pend.Reason != PendingIdentReapproval {
+		t.Fatalf("with a plain tally: %v %v", ok, err)
+	}
+	rec := certRec("approval:node%3Apay:bob:00", "bob")
+	rec.ToolUseID = "node:pay"
+	if _, err := j.do(ctx, "r1", rec.Name, func(context.Context) (Record, error) { return rec, nil }); err != nil {
+		t.Fatal(err)
+	}
+	ok, err = flowGate(ctx, j, "r1", "node:pay", "pay", args, g.pol, vf)
+	if err != nil || !ok {
+		t.Fatalf("after bob decides: %v %v", ok, err)
+	}
+	if _, found, _ := j.Get(ctx, "r1", ApprovalIdentTallyStep("node:pay", 0)); !found {
+		t.Fatal("no identity tally")
+	}
+}

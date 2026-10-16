@@ -170,7 +170,9 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 		if err != nil {
 			return false, fmt.Errorf("read %s (run %s): %w (%w)", ApprovalTallyStep(key), runID, err, ErrStorage)
 		}
-		if ok && r.Kind == StepValue {
+		// A gate with a certificate-bound approver does not take a plain-name tally as its outcome: it
+		// is superseded (tallyGate below counts under the identity tally name).
+		if ok && r.Kind == StepValue && !isBound(pol, verifierFor) {
 			t, err := decodeTally(runID, r)
 			if err != nil {
 				return false, err
