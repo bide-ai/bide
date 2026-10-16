@@ -1,3 +1,0 @@
-Section: Fixed
-
-`scripts/release.sh` no longer asks proxy.golang.org about a new module tag until the tag can be fetched directly (`GOPROXY=direct`, with `GOSUMDB=off`, so a miss caches nothing) and 300 seconds have passed since the push, then waits with growing intervals (5, 10, 15, 15 minutes) for at most 90 minutes (`PW_SETTLE`, `PW_STEP`, `PW_MAX`; `scripts/proxy-wait.sh`, also used by `scripts/module-sbom.sh`). In the v0.18.0 release every stage failed with "does not resolve": the proxy caches a miss for 30 to 60 minutes and polling every 30 seconds kept it fresh, so the `module-sbom` job gave up three minutes before the last module resolved. `release.yml` now gives that job a 270-minute timeout and `--wait 240`.
