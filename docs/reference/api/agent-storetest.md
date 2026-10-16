@@ -6,7 +6,7 @@
 
 Go module `github.com/bide-ai/bide`; [all packages](index.md).
 
-`github.com/bide-ai/bide/agent/storetest` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/agent/storetest) · Stability: **stable**
+`github.com/bide-ai/bide/agent/storetest` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/agent/storetest) · Stability: **core**
 
 Package storetest checks that an agent.Store meets the requirements the journal builds on (A1 to A8, documented on agent.Store), that a Journal over it writes and checks the journal format header, and that records round-trip byte for byte.
 

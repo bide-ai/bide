@@ -8,7 +8,7 @@ Go module `github.com/bide-ai/bide/signer/azurekv`; [all modules](index.md).
 
 ## signer/azurekv
 
-`github.com/bide-ai/bide/signer/azurekv` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/signer/azurekv) · Stability: **stable**
+`github.com/bide-ai/bide/signer/azurekv` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/signer/azurekv) · Stability: **core**
 
 Package azurekv is an audit.Signer whose ECDSA P-256 private key lives in Azure Key Vault or Azure Key Vault Managed HSM.
 

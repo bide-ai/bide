@@ -20,50 +20,50 @@ This page states what bide promises about versions today, derived from what the 
 
 Every package of the published modules carries one of three labels. The labels are declared in one table in `internal/tools/apiref/labels.go`, and the [SDK API reference](../reference/api/index.md) is generated with them. A test fails when this table and that one differ, or when a package has no label.
 
-- **stable**: the library is built around the package and the guarantees rest on it. A change to its API is announced as **Breaking:** in the changelog; pre-1.0, a minor version may still make one.
-- **experimental**: new or still moving. It may change in any minor release, with a changelog entry but without a deprecation period.
+- **core**: breaking changes only in a minor release, listed under Changed in the changelog with a migration note.
+- **experimental**: may change in any release.
 - **building block, not yet used by approval gates**: implemented and tested, but no approval gate calls it yet, so no guarantee rests on it. Its API may change before a gate uses it.
 
 Two groups of symbols are labelled apart from their package. In `audit`, the certificate verification core (`IdentityPolicy`, `CertIdentity`, `ApproverCert`, `CertError`, `SPKIHash`, the canonicalizer types) and, in `agent`, the `ReasonNoCert`, `ReasonCertChain`, `ReasonCertIdentity`, `ReasonCertUsage` and `ReasonCertWindow` reasons are a building block: the approval gates do not count certificate-bound decisions yet. The API reference marks each such symbol.
 
 | Package | Stability |
 |---|---|
-| `agent` | stable |
-| `agent/agenttest` | stable |
-| `agent/storetest` | stable |
-| `approvals` | stable |
-| `audit` | stable |
-| `audit/eventstoretest` | stable |
+| `agent` | core |
+| `agent/agenttest` | core |
+| `agent/storetest` | core |
+| `approvals` | core |
+| `audit` | core |
+| `audit/eventstoretest` | core |
 | `audit/rfc3161` | building block, not yet used by approval gates |
-| `audit/verify` | stable |
+| `audit/verify` | core |
 | `chaos` | experimental |
-| `codec/gcf` | stable |
+| `codec/gcf` | core |
 | `eval` | experimental |
 | `govern` | experimental |
 | `govern/eventlogtest` | experimental |
 | `govern/postgreslog` | experimental |
 | `govern/redislog` | experimental |
 | `govern/sqlitelog` | experimental |
-| `mcptools` | stable |
-| `middleware` | stable |
-| `model/anthropic` | stable |
-| `model/gemini` | stable |
-| `model/modeltest` | stable |
-| `model/openai` | stable |
-| `model/provider` | stable |
-| `notify` | stable |
+| `mcptools` | core |
+| `middleware` | core |
+| `model/anthropic` | core |
+| `model/gemini` | core |
+| `model/modeltest` | core |
+| `model/openai` | core |
+| `model/provider` | core |
+| `notify` | core |
 | `notify/relay` | experimental |
 | `plan` | experimental |
 | `plan/planview` | experimental |
-| `schema` | stable |
-| `signer/awskms` | stable |
-| `signer/azurekv` | stable |
-| `signer/gcpkms` | stable |
-| `signer/pkcs11` | stable |
-| `signer/pkcs11/pkcs11test` | stable |
-| `store/postgres` | stable |
-| `store/sqlite` | stable |
-| `trace` | stable |
+| `schema` | core |
+| `signer/awskms` | core |
+| `signer/azurekv` | core |
+| `signer/gcpkms` | core |
+| `signer/pkcs11` | core |
+| `signer/pkcs11/pkcs11test` | core |
+| `store/postgres` | core |
+| `store/sqlite` | core |
+| `trace` | core |
 
 ## Journal and proof formats
 

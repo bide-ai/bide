@@ -6,7 +6,7 @@
 
 Go module `github.com/bide-ai/bide`; [all packages](index.md).
 
-`github.com/bide-ai/bide/model/openai` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/model/openai) · Stability: **stable**
+`github.com/bide-ai/bide/model/openai` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/model/openai) · Stability: **core**
 
 Package openai adapts the OpenAI Chat Completions API to agent.Model.
 

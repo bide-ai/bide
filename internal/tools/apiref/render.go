@@ -79,11 +79,9 @@ Packages are listed for linux/amd64 with cgo enabled. Packages under ` + "`inter
 Each package carries one label, declared in one place and checked against
 [stability and support](../../trust/stability.md#package-stability), which says what each means:
 
-- **` + Stable + `**: the package the library is built around; a change to it is announced as Breaking in the changelog.
-- **` + Experimental + `**: new or still moving; it may change in any minor release.
+- **` + Core + `**: breaking changes only in a minor release, listed under Changed in the changelog with a migration note.
+- **` + Experimental + `**: may change in any release.
 - **` + BuildingBlock + `**: implemented and tested, but no approval gate calls it yet.
-
-Pre-1.0, a minor version may include breaking changes in any package.
 
 ## Modules
 

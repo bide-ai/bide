@@ -4,7 +4,7 @@ import "strings"
 
 // The stability labels. Their meaning is stated in docs/trust/stability.md.
 const (
-	Stable        = "stable"
+	Core          = "core"
 	Experimental  = "experimental"
 	BuildingBlock = "building block, not yet used by approval gates"
 )
@@ -14,42 +14,42 @@ const (
 // TestPackageLabels fails when a label names no package, and TestStabilityPage fails when the
 // table in docs/trust/stability.md differs from this one.
 var Labels = map[string]string{
-	"agent":                    Stable,
-	"agent/agenttest":          Stable,
-	"agent/storetest":          Stable,
-	"approvals":                Stable,
-	"audit":                    Stable,
-	"audit/eventstoretest":     Stable,
+	"agent":                    Core,
+	"agent/agenttest":          Core,
+	"agent/storetest":          Core,
+	"approvals":                Core,
+	"audit":                    Core,
+	"audit/eventstoretest":     Core,
 	"audit/rfc3161":            BuildingBlock,
-	"audit/verify":             Stable,
+	"audit/verify":             Core,
 	"chaos":                    Experimental,
-	"codec/gcf":                Stable,
+	"codec/gcf":                Core,
 	"eval":                     Experimental,
 	"govern":                   Experimental,
 	"govern/eventlogtest":      Experimental,
 	"govern/postgreslog":       Experimental,
 	"govern/redislog":          Experimental,
 	"govern/sqlitelog":         Experimental,
-	"mcptools":                 Stable,
-	"middleware":               Stable,
-	"model/anthropic":          Stable,
-	"model/gemini":             Stable,
-	"model/modeltest":          Stable,
-	"model/openai":             Stable,
-	"model/provider":           Stable,
-	"notify":                   Stable,
+	"mcptools":                 Core,
+	"middleware":               Core,
+	"model/anthropic":          Core,
+	"model/gemini":             Core,
+	"model/modeltest":          Core,
+	"model/openai":             Core,
+	"model/provider":           Core,
+	"notify":                   Core,
 	"notify/relay":             Experimental,
 	"plan":                     Experimental,
 	"plan/planview":            Experimental,
-	"schema":                   Stable,
-	"signer/awskms":            Stable,
-	"signer/azurekv":           Stable,
-	"signer/gcpkms":            Stable,
-	"signer/pkcs11":            Stable,
-	"signer/pkcs11/pkcs11test": Stable,
-	"store/postgres":           Stable,
-	"store/sqlite":             Stable,
-	"trace":                    Stable,
+	"schema":                   Core,
+	"signer/awskms":            Core,
+	"signer/azurekv":           Core,
+	"signer/gcpkms":            Core,
+	"signer/pkcs11":            Core,
+	"signer/pkcs11/pkcs11test": Core,
+	"store/postgres":           Core,
+	"store/sqlite":             Core,
+	"trace":                    Core,
 }
 
 // A Config is the label tables a page is rendered with.
@@ -71,7 +71,7 @@ type SymbolRule struct {
 }
 
 // SymbolRules label the parts of a package that are further along, or less far along, than the
-// package. The certificate verification core (#313) lives in package audit, which is stable as a
+// package. The certificate verification core (#313) lives in package audit, which is core as a
 // whole; the approval gates do not yet count a certificate-bound decision.
 var SymbolRules = []SymbolRule{
 	{Package: "audit", Files: []string{"identity_cert.go", "identity_canonical.go"}, Label: BuildingBlock},

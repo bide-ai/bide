@@ -6,7 +6,7 @@
 
 Go module `github.com/bide-ai/bide`; [all packages](index.md).
 
-`github.com/bide-ai/bide/middleware` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/middleware) · Stability: **stable**
+`github.com/bide-ai/bide/middleware` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/middleware) · Stability: **core**
 
 Package middleware provides composable func(Handler) Handler batteries for the model call, the "LiteLLM for Go" layer at the semantic level (handlers see messages, tool calls, and token usage, not raw bytes).
 

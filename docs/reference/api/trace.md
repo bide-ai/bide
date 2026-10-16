@@ -8,7 +8,7 @@ Go module `github.com/bide-ai/bide/trace`; [all modules](index.md).
 
 ## trace
 
-`github.com/bide-ai/bide/trace` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/trace) · Stability: **stable**
+`github.com/bide-ai/bide/trace` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/trace) · Stability: **core**
 
 Package trace adds OpenTelemetry GenAI instrumentation to an agent, opt-in, so the core agent package carries NO OTel dependency (a user who doesn't import trace pays nothing; contrast frameworks whose core drags the full OTel + Temporal stack into every binary).
 

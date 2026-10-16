@@ -8,7 +8,7 @@ Go module `github.com/bide-ai/bide/signer/gcpkms`; [all modules](index.md).
 
 ## signer/gcpkms
 
-`github.com/bide-ai/bide/signer/gcpkms` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/signer/gcpkms) · Stability: **stable**
+`github.com/bide-ai/bide/signer/gcpkms` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/signer/gcpkms) · Stability: **core**
 
 Package gcpkms is an audit.Signer whose Ed25519 or ECDSA P-256 private key lives in Google Cloud KMS.
 

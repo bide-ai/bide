@@ -6,7 +6,7 @@
 
 Go module `github.com/bide-ai/bide`; [all packages](index.md).
 
-`github.com/bide-ai/bide/approvals` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/approvals) · Stability: **stable**
+`github.com/bide-ai/bide/approvals` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/approvals) · Stability: **core**
 
 Package approvals is the intake an application serves so that approvers can decide on gated calls over HTTP: an http.Handler that shows a pending call from the journal, and takes an approver's signed decision, verifies it against the recorded call, and records it through the application's own journal.
 

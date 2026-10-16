@@ -6,7 +6,7 @@
 
 Go module `github.com/bide-ai/bide`; [all packages](index.md).
 
-`github.com/bide-ai/bide/agent` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/agent) · Stability: **stable**
+`github.com/bide-ai/bide/agent` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/agent) · Stability: **core**
 
 Package agent is the core of bide, a Go framework for AI agents that move money: a durability-first, Go-idiomatic toolkit whose side effects fire at most once, whose approvals are signed and counted by k-of-n, and whose every action is provable afterwards.
 

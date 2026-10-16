@@ -8,7 +8,7 @@ Go module `github.com/bide-ai/bide/store/sqlite`; [all modules](index.md).
 
 ## store/sqlite
 
-`github.com/bide-ai/bide/store/sqlite` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/store/sqlite) · Stability: **stable**
+`github.com/bide-ai/bide/store/sqlite` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/store/sqlite) · Stability: **core**
 
 Package sqlite is the default on-disk agent.Store: a single-file, zero-cgo SQLite journal (via modernc.org/sqlite).
 

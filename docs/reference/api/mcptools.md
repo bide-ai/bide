@@ -8,7 +8,7 @@ Go module `github.com/bide-ai/bide/mcptools`; [all modules](index.md).
 
 ## mcptools
 
-`github.com/bide-ai/bide/mcptools` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/mcptools) · Stability: **stable**
+`github.com/bide-ai/bide/mcptools` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/mcptools) · Stability: **core**
 
 Package mcptools adapts a Model Context Protocol server's tools into agent.Tool.
 

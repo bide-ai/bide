@@ -8,7 +8,7 @@ Go module `github.com/bide-ai/bide/signer/awskms`; [all modules](index.md).
 
 ## signer/awskms
 
-`github.com/bide-ai/bide/signer/awskms` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/signer/awskms) · Stability: **stable**
+`github.com/bide-ai/bide/signer/awskms` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/signer/awskms) · Stability: **core**
 
 Package awskms is an audit.Signer whose Ed25519 or ECDSA P-256 private key lives in AWS KMS.
 

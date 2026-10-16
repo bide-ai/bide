@@ -8,7 +8,7 @@ Go module `github.com/bide-ai/bide/signer/pkcs11`; [all modules](index.md).
 
 ## signer/pkcs11
 
-`github.com/bide-ai/bide/signer/pkcs11` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/signer/pkcs11) · Stability: **stable**
+`github.com/bide-ai/bide/signer/pkcs11` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/signer/pkcs11) · Stability: **core**
 
 Package pkcs11 is an audit.Signer whose private key lives in a PKCS#11 token: a hardware security module, a smart card, or SoftHSM2 for tests.
 
@@ -107,7 +107,7 @@ Signer signs with a key held by a PKCS#11 token (Ed25519 or ECDSA P-256, see Con
 
 ## signer/pkcs11/pkcs11test
 
-`github.com/bide-ai/bide/signer/pkcs11/pkcs11test` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/signer/pkcs11/pkcs11test) · Stability: **stable**
+`github.com/bide-ai/bide/signer/pkcs11/pkcs11test` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/signer/pkcs11/pkcs11test) · Stability: **core**
 
 Package pkcs11test gives tests a SoftHSM2 token to sign with, so code that uses the signer package can be tested against a real PKCS#11 library with no hardware.
 

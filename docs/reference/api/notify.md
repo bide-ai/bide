@@ -6,7 +6,7 @@
 
 Go module `github.com/bide-ai/bide`; [all packages](index.md).
 
-`github.com/bide-ai/bide/notify` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/notify) · Stability: **stable**
+`github.com/bide-ai/bide/notify` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/notify) · Stability: **core**
 
 Package notify ships bide's webhook notifier: a signed HTTPS POST of a structured notification, and the receiver-side Verify that checks one.
 

@@ -8,7 +8,7 @@ import (
 const fixture = "testdata/repo"
 
 var fixtureConfig = Config{
-	Labels: map[string]string{"a": Stable, "a/sub": Experimental, "nested/b": Stable},
+	Labels: map[string]string{"a": Core, "a/sub": Experimental, "nested/b": Core},
 	Rules:  []SymbolRule{{Package: "a", Files: []string{"b.go"}, Names: []string{"Certish"}, Label: BuildingBlock}},
 }
 
@@ -47,7 +47,7 @@ func TestUndocumented(t *testing.T) {
 
 // TestRenderMissingLabel: a package with no label fails the generation, naming the package.
 func TestRenderMissingLabel(t *testing.T) {
-	_, err := Render(fixtureModules(t), Config{Labels: map[string]string{"a": Stable}})
+	_, err := Render(fixtureModules(t), Config{Labels: map[string]string{"a": Core}})
 	if err == nil || !strings.Contains(err.Error(), "example.com/m/a/sub has no stability label") {
 		t.Fatalf("Render error = %v, want the missing label named", err)
 	}
@@ -73,7 +73,7 @@ func TestRender(t *testing.T) {
 	}
 	for _, want := range []string{
 		"# Package `a`",
-		"[pkg.go.dev](https://pkg.go.dev/example.com/m/a) · Stability: **stable**",
+		"[pkg.go.dev](https://pkg.go.dev/example.com/m/a) · Stability: **core**",
 		"Package a is the fixture: it shows each kind of symbol.\n",                // the first sentence only
 		"- `const Fast Mode`, `const Slow Mode`: The modes.",                       // iota is not shown; Slow repeats the type of Fast
 		"`const Limit = 10`: Limit is the most a thing may hold, e.g. 10 of them.", // e.g. is not a sentence end

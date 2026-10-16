@@ -6,7 +6,7 @@
 
 Go module `github.com/bide-ai/bide`; [all packages](index.md).
 
-`github.com/bide-ai/bide/model/gemini` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/model/gemini) · Stability: **stable**
+`github.com/bide-ai/bide/model/gemini` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/model/gemini) · Stability: **core**
 
 Package gemini adapts Google's Gemini generateContent API to agent.Model.
 

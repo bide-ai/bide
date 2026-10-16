@@ -98,7 +98,7 @@ func TestPackageLabels(t *testing.T) {
 			t.Errorf("label for %s, which is not a documented package", rel)
 		}
 		switch l {
-		case Stable, Experimental, BuildingBlock:
+		case Core, Experimental, BuildingBlock:
 		default:
 			t.Errorf("label %q of %s is not one of the three labels", l, rel)
 		}

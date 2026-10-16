@@ -8,7 +8,7 @@ Go module `github.com/bide-ai/bide/codec/gcf`; [all modules](index.md).
 
 ## codec/gcf
 
-`github.com/bide-ai/bide/codec/gcf` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/codec/gcf) · Stability: **stable**
+`github.com/bide-ai/bide/codec/gcf` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/codec/gcf) · Stability: **core**
 
 Package gcf provides a provider.ToolResultCodec that encodes tool results as GCF (Graph Compact Format) instead of JSON when they are sent to the model.
 

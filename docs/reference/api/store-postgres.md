@@ -8,7 +8,7 @@ Go module `github.com/bide-ai/bide/store/postgres`; [all modules](index.md).
 
 ## store/postgres
 
-`github.com/bide-ai/bide/store/postgres` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/store/postgres) · Stability: **stable**
+`github.com/bide-ai/bide/store/postgres` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/store/postgres) · Stability: **core**
 
 Package postgres is a Postgres-backed agent.Store for high-availability durable agents: shared Postgres storage lets any node resume any run, so a dead worker's in-flight agents pick up elsewhere.
 

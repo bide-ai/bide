@@ -6,7 +6,7 @@
 
 Go module `github.com/bide-ai/bide`; [all packages](index.md).
 
-`github.com/bide-ai/bide/audit/eventstoretest` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/audit/eventstoretest) · Stability: **stable**
+`github.com/bide-ai/bide/audit/eventstoretest` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/audit/eventstoretest) · Stability: **core**
 
 Package eventstoretest checks that an audit.EventStore keeps the contract the event trail builds on: contiguous, append-only positions per run, an idempotent re-append of the same leaf, a refusal (audit.ErrSeqTaken) of a different leaf at a stored position, and exactly one winner among writers racing for one position.
 

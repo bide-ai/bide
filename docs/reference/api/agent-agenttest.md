@@ -6,7 +6,7 @@
 
 Go module `github.com/bide-ai/bide`; [all packages](index.md).
 
-`github.com/bide-ai/bide/agent/agenttest` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/agent/agenttest) · Stability: **stable**
+`github.com/bide-ai/bide/agent/agenttest` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/agent/agenttest) · Stability: **core**
 
 Package agenttest holds test doubles and helpers for code built on package agent: a scripted model that plays back the turns you give it, so an agent runs with no provider or API key (ScriptedModel, NewScriptedModel, ToolTurn, TextTurn, ErrorTurn); a Store that counts its round trips (CountingStore); and constructors that panic instead of returning an error (MemJournal, MustJournal, MustNew, Must), for tests whose setup cannot fail.
 

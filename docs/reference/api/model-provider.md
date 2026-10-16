@@ -6,7 +6,7 @@
 
 Go module `github.com/bide-ai/bide`; [all packages](index.md).
 
-`github.com/bide-ai/bide/model/provider` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/model/provider) · Stability: **stable**
+`github.com/bide-ai/bide/model/provider` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/model/provider) · Stability: **core**
 
 Package provider is the kit a model adapter is built from: HTTP error classification, SSE framing, a cap on a streamed reply, Retry-After parsing, and the tool-result codec.
 

@@ -6,7 +6,7 @@
 
 Go module `github.com/bide-ai/bide`; [all packages](index.md).
 
-`github.com/bide-ai/bide/model/anthropic` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/model/anthropic) · Stability: **stable**
+`github.com/bide-ai/bide/model/anthropic` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/model/anthropic) · Stability: **core**
 
 Package anthropic adapts Anthropic's Messages API to agent.Model.
 

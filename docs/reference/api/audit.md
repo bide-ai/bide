@@ -6,7 +6,7 @@
 
 Go module `github.com/bide-ai/bide`; [all packages](index.md).
 
-`github.com/bide-ai/bide/audit` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/audit) · Stability: **stable**
+`github.com/bide-ai/bide/audit` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/audit) · Stability: **core**
 
 Package audit turns an agent's durable journal into a verifiable, tamper-evident record.
 

@@ -6,7 +6,7 @@
 
 Go module `github.com/bide-ai/bide`; [all packages](index.md).
 
-`github.com/bide-ai/bide/audit/verify` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/audit/verify) · Stability: **stable**
+`github.com/bide-ai/bide/audit/verify` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/audit/verify) · Stability: **core**
 
 Package verify is a dependency-light, standalone verifier for Bide audit proofs.
 

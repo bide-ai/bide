@@ -6,7 +6,7 @@
 
 Go module `github.com/bide-ai/bide`; [all packages](index.md).
 
-`github.com/bide-ai/bide/model/modeltest` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/model/modeltest) · Stability: **stable**
+`github.com/bide-ai/bide/model/modeltest` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/model/modeltest) · Stability: **core**
 
 Package modeltest checks an HTTP-backed agent.Model against the streaming contract the agent loop relies on:
 

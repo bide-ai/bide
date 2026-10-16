@@ -6,7 +6,7 @@
 
 Go module `github.com/bide-ai/bide`; [all packages](index.md).
 
-`github.com/bide-ai/bide/schema` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/schema) · Stability: **stable**
+`github.com/bide-ai/bide/schema` · [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/schema) · Stability: **core**
 
 Package schema derives JSON Schema from Go types and emits provider-specific dialects.
 
