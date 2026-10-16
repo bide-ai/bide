@@ -220,7 +220,8 @@ and calls out an approval gate whose policy was weakened (removed, its need lowe
 added without raising the need, exclude_principal dropped, or its timeout removed or lengthened),
 a node that every path reached through a gate before and some path now reaches without one (whatever
 its safety), a new effect no gate guards, a lowered safety, a Switch condition changed beside an ungated effect, a block changed on an ungated effect node without the Registry,
-or an assert line removed, loosened, or kept and no longer holding;
+or an assert line removed, loosened, or kept and no longer holding (violated, undecided, or holding only
+vacuously);
 a gate made stricter (including a timeout added or shortened, which makes it fail closed sooner)
 is marked strengthened. -diff takes a file, or, when no file has that name, a git
 revision read with git show: <rev>:<path>, or a bare <rev> for the -config file's path at that
