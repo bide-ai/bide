@@ -30,6 +30,7 @@ type certGate struct {
 	params  audit.StatusParams
 	now     func() time.Time
 	crlsAt  time.Time // when the status CRLs are issued
+	execNow func() time.Time // the execution check's clock, when a test sets it
 	pending bool
 	archive audit.StatusArchive // the verifier's status archive, when set
 	goDebug string              // the x509 GODEBUG settings the verifier declares
@@ -86,11 +87,38 @@ func (c *certGate) buildStatus(revoked ...x509.RevocationListEntry) *audit.Statu
 	return sn
 }
 
+// execClock is the clock of the execution check: shortly after the status the harness publishes, unless a
+// test moved it (execNow).
+func (c *certGate) execClock() func() time.Time {
+	return func() time.Time {
+		if c.execNow != nil {
+			return c.execNow()
+		}
+		return c.crlsAt.Add(30 * time.Second)
+	}
+}
+
 func (c *certGate) approver(id string) *audit.CertApprover {
+	// The trust anchor is a CA tier (the policy pins the intermediate): it declares its own periods and ages,
+	// as an operator does from the CA's capture.
+	p := c.params
+	rk := audit.SPKIHashOf(c.root.Cert)
+	with := func(m map[audit.SPKIHash]time.Duration, d time.Duration) map[audit.SPKIHash]time.Duration {
+		out := map[audit.SPKIHash]time.Duration{}
+		for k, v := range m {
+			out[k] = v
+		}
+		if _, ok := out[rk]; !ok {
+			out[rk] = d
+		}
+		return out
+	}
+	p.CAPeriodFor, p.MaxStatusAgeFor = with(p.CAPeriodFor, time.Hour), with(p.MaxStatusAgeFor, 24*time.Hour)
 	return &audit.CertApprover{
 		ApproverID: id, Policy: c.ci, LogKey: audit.Ed25519Verifier{Pub: c.logPub},
 		Heads:  func(string) ([]audit.SignedTreeHead, error) { return c.heads, nil },
-		Status: c.status, StatusParams: c.params, Now: c.now, ExecStatusAge: 2 * time.Hour, StatusArchive: c.archive, GoDebug: c.goDebug,
+		Status: c.status, StatusParams: p, Now: c.now, ExecNow: c.execClock(), ExecStatusAge: 2 * time.Hour, StatusArchive: c.archive, GoDebug: c.goDebug,
+		ExecStatusAgeFor:    map[audit.SPKIHash]time.Duration{rk: 24 * time.Hour},
 		PolicyEffectiveFrom: certA.Add(-24 * time.Hour),
 	}
 }

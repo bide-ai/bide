@@ -29,6 +29,11 @@ func (e *notifyEngine) eventFromErr(runID string, err error) (notifyEvent, bool)
 		return ev, true
 	}
 	if p, ok := errors.AsType[*ApprovalPending](err); ok {
+		if p.Reason == PendingIdentityStatus {
+			// A gate waiting for revocation status that is current asks no one to decide: no approval
+			// notification is owed. (The phase note says exec-hold, for a viewer.)
+			return notifyEvent{}, false
+		}
 		ap := &NotifyApproval{ToolUseID: p.ToolUseID, ToolName: p.ToolName}
 		if q := p.Quorum; q != nil {
 			ap.Need, ap.Of, ap.Approved = q.Need, len(q.Approvers), q.Approved

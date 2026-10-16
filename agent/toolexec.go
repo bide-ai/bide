@@ -747,6 +747,14 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 		if err := journalAcceptedArgs(ctx, t, call, spec.Safety); err != nil {
 			return nil, err
 		}
+		// The one pre-execution check of a gate with certificate-bound approvers (preExecute): every path
+		// that can run the tool, the first execution, a resume, RecoverLoop and a middleware's retry,
+		// passes this point, so none runs a call whose counted approvals no longer hold. It is before
+		// the call is begun, so a call it holds is not marked as run. A gate without such an approver
+		// costs nothing here.
+		if err := preExecute(ctx, a.store, runID, rootRunID(ctx, runID), tu.ID, spec.Approval, a.approverVerifiers, ""); err != nil {
+			return nil, err
+		}
 		// A tool that is not ReadOnly is counted in flight (see inflight): counted in, then the
 		// chain checked not to have returned, so either the chain sees the count when it returns
 		// (and a result it returns has an unknown outcome), or this invocation sees the call closed

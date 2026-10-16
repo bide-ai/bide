@@ -100,9 +100,59 @@ func (c *CertApprover) ValidateConfig() error {
 	if p := c.StatusParams.CAPeriod; p > c.ExecStatusAge/2 {
 		return bad("CAPeriod (%v) is above ExecStatusAge/2 (%v): the status check before execution could not be satisfied between two CRLs", p, c.ExecStatusAge/2)
 	}
-	for _, k := range slices.SortedFunc(maps.Keys(c.StatusParams.CAPeriodFor), func(a, b SPKIHash) int { return slices.Compare(a[:], b[:]) }) {
+	keys := func(m map[SPKIHash]time.Duration) []SPKIHash {
+		return slices.SortedFunc(maps.Keys(m), func(a, b SPKIHash) int { return slices.Compare(a[:], b[:]) })
+	}
+	// A CA that is not the leaf's issuing CA is a CA tier: it declares its own execution age (the rule for
+	// the leaf's issuer, half of ExecStatusAge, is the wrong one for an offline root whose period is weeks).
+	for _, k := range keys(c.StatusParams.CAPeriodFor) {
+		if _, tier := c.ExecStatusAgeFor[k]; tier {
+			continue
+		}
 		if p := c.StatusParams.CAPeriodFor[k]; p > c.ExecStatusAge/2 {
 			return bad("CAPeriodFor %x (%v) is above ExecStatusAge/2 (%v)", k[:4], p, c.ExecStatusAge/2)
+		}
+	}
+	for _, k := range keys(c.CAOverlapFor) {
+		if _, tier := c.ExecStatusAgeFor[k]; !tier {
+			return bad("CAOverlapFor %x is declared for a CA with no ExecStatusAgeFor: the overlap belongs to a CA tier", k[:4])
+		}
+		if o := c.CAOverlapFor[k]; o < 0 {
+			return bad("CAOverlapFor %x is negative (%v)", k[:4], o)
+		}
+	}
+	for _, k := range keys(c.ExecStatusAgeFor) {
+		age := c.ExecStatusAgeFor[k]
+		period, haveP := c.StatusParams.CAPeriodFor[k]
+		maxAge := c.StatusParams.MaxStatusAgeFor[k]
+		overlap := c.CAOverlapFor[k]
+		switch {
+		case age <= 0:
+			return bad("ExecStatusAgeFor %x is %v; a declared age is positive", k[:4], age)
+		case !haveP:
+			return bad("ExecStatusAgeFor %x is declared with no CAPeriodFor for that CA: the age cannot be checked against the CA's CRL period", k[:4])
+		case maxAge <= 0:
+			return bad("ExecStatusAgeFor %x is declared with no MaxStatusAgeFor for that CA: the execution age cannot exceed the age status is accepted at when a decision is counted", k[:4])
+		case period+overlap > age:
+			return bad("CAPeriodFor (%v) plus CAOverlapFor (%v) of the CA %x is above its ExecStatusAgeFor (%v): a CRL that old would hold every call; raise ExecStatusAgeFor to at least %v", period, overlap, k[:4], age, period+overlap)
+		case age > maxAge:
+			return bad("ExecStatusAgeFor %x (%v) is above its MaxStatusAgeFor (%v): status the check before execution accepts would be older than a count accepts", k[:4], age, maxAge)
+		}
+	}
+	// With intermediates pinned, a trust anchor is a CA tier: its CRL covers the pinned intermediate, so
+	// it declares its execution age. (A leaf issued directly by an anchor makes the anchor the leaf's
+	// issuing CA, which has no tier.) A middle CA of a three-tier chain is known to be a tier only from
+	// the accepted chain, so an undeclared one holds the call at its first check.
+	if c.Policy != nil && len(c.Policy.inter) > 0 {
+		anchors := make([]SPKIHash, 0, len(c.Policy.anchorBy))
+		for k := range c.Policy.anchorBy {
+			anchors = append(anchors, k)
+		}
+		slices.SortFunc(anchors, func(a, b SPKIHash) int { return slices.Compare(a[:], b[:]) })
+		for _, k := range anchors {
+			if _, tier := c.ExecStatusAgeFor[k]; !tier {
+				return bad("the policy pins intermediates, so the trust anchor %x issues the CRL that covers them and must declare ExecStatusAgeFor (with CAPeriodFor and MaxStatusAgeFor): its status is as fresh as its oldest CRL, an offline root's is days old", k[:4])
+			}
 		}
 	}
 	return nil
@@ -146,6 +196,7 @@ func (c *CertApprover) DescribeIdentity() agent.IdentityPolicyRecord {
 			d.MaxStatusAgeFor[hex.EncodeToString(k[:])] = v.String()
 		}
 	}
+	d.ExecStatusAgeFor, d.CAOverlapFor = durationsByIssuer(c.ExecStatusAgeFor), durationsByIssuer(c.CAOverlapFor)
 	if len(p.CAPeriodFor) > 0 {
 		d.CAPeriodFor = map[string]string{}
 		for k, v := range p.CAPeriodFor {
@@ -261,4 +312,17 @@ func CheckDeclaredGoDebug(declared, environment string) error {
 		return fmt.Errorf("audit: the declared x509 GODEBUG settings %q differ from the process's %q: declare what the process runs under: %w", strings.Join(d, ","), strings.Join(e, ","), agent.ErrConfig)
 	}
 	return nil
+}
+
+// durationsByIssuer renders a per-issuer duration map as the identity record keeps it (issuer SPKI hash in
+// lowercase hex to time.Duration.String), nil when empty.
+func durationsByIssuer(m map[SPKIHash]time.Duration) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[hex.EncodeToString(k[:])] = v.String()
+	}
+	return out
 }

@@ -178,6 +178,16 @@ func notePause(ctx context.Context, j *Journal, runID string, s ApprovalSubject,
 		return
 	}
 	phase, detail := pausePhase(checks)
+	writePauseNote(ctx, j, runID, s, pol, verifierFor, recs, phase, detail)
+}
+
+// writePauseNote records the phase note of the gate on s (ApprovalPauseStep) when the phase or its detail
+// changed since the newest one among recs. Nothing reads the note to decide, so a failed write is dropped.
+func writePauseNote(ctx context.Context, j *Journal, runID string, s ApprovalSubject, pol *ApprovalPolicy, verifierFor ApproverVerifierFor, recs []Record, phase, detail string) {
+	bound, _ := identityApprovers(pol, verifierFor)
+	if len(bound) == 0 {
+		return
+	}
 	last, have := LatestPausePhase(recs, s.ToolUseID)
 	switch {
 	case !have && phase == PauseAwaitingDecisions:

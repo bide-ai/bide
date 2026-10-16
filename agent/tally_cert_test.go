@@ -12,6 +12,8 @@ import (
 type fakeCertVerifier struct {
 	id    string
 	check func(cd CertDecision) CertCheck
+	// execCheck, when set, answers VerifyCertExec (the check before the call runs); else check does.
+	execCheck func(cd CertDecision) CertCheck
 	calls []CertDecision
 }
 
@@ -20,6 +22,13 @@ func (f *fakeCertVerifier) Verify(message, sig []byte) bool { return true } // w
 func (f *fakeCertVerifier) KeyIDs() []string                { return []string{"ident:" + f.id} }
 func (f *fakeCertVerifier) VerifyCertDecision(cd CertDecision) CertCheck {
 	f.calls = append(f.calls, cd)
+	return f.check(cd)
+}
+
+func (f *fakeCertVerifier) VerifyCertExec(cd CertDecision) CertCheck {
+	if f.execCheck != nil {
+		return f.execCheck(cd)
+	}
 	return f.check(cd)
 }
 
