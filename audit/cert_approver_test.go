@@ -46,7 +46,7 @@ func newCertGate(t *testing.T, need int, approvers ...string) *certGate {
 	inter := root.NewIntermediate(t, "inter", testca.Opts{})
 	ci, err := audit.IdentityPolicy{
 		Anchors: []*x509.Certificate{root.Cert}, Inter: []audit.SPKIHash{audit.SPKIHashOf(inter.Cert)},
-		Identity: map[string]string{"alice": testca.Person(1), "bob": testca.Person(2), "carol": testca.Person(3)},
+		Identity: map[string]string{"alice": testca.Person(1), "bob": testca.Person(2), "carol": testca.Person(3), "dave": testca.Person(4)},
 		IDKind:   audit.IDPersonURI, EKU: testca.EKU, Policy: testca.PolicyOID,
 		Canonical: audit.NewCanonicalizer(audit.CanonicalConfig{Host: "idp.bank.example"}),
 	}.Compile()

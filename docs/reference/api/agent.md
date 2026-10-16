@@ -865,6 +865,18 @@ Identity is the accountability binding for a run: which agent instance acted, on
 
 - `func (i Identity) Empty() bool`: Empty reports whether the identity carries no attribution at all.
 
+## type IdentityRoster
+
+```go
+type IdentityRoster interface {
+	HasIdentity(approverID string) bool
+
+	RequesterIdentifier(principal string) (identifier string, ok bool)
+}
+```
+
+IdentityRoster is implemented by the verifier of a certificate-bound approver that knows the policy's identity map.
+
 ## type Image
 
 ```go

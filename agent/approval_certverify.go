@@ -62,3 +62,16 @@ type CertDecisionVerifier interface {
 
 // AlgCertificate is the Alg a certificate-bound verifier reports.
 const AlgCertificate Alg = "x509"
+
+// IdentityRoster is implemented by the verifier of a certificate-bound approver that knows the policy's
+// identity map. A gate with a certificate-bound approver requires the map to name every approver of the
+// policy, bare-key ones included: an approver outside it could be the same person as another, and one
+// person would fill two seats.
+type IdentityRoster interface {
+	// HasIdentity reports whether the identity map names the approver id.
+	HasIdentity(approverID string) bool
+	// RequesterIdentifier maps a requester principal (as the run records it) to the canonical identifier
+	// of the person it names, so separation of duties can exclude the requester by identifier. ok is
+	// false when the principal cannot be mapped.
+	RequesterIdentifier(principal string) (identifier string, ok bool)
+}

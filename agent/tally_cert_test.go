@@ -2,6 +2,8 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -118,5 +120,86 @@ func TestTally_ExcludePrincipalMatchesTheVerifiedIdentity(t *testing.T) {
 	got, checks := TallyApprovals(recs, timesSubject, pol, certResolver(map[string]ApproverVerifier{"approver-7": v}))
 	if got.Passed() || checks[0].Reason != ReasonRequester {
 		t.Fatalf("%+v %+v", got, checks)
+	}
+}
+
+// rosterVerifier is a certificate-bound verifier that knows the policy's identity map.
+type rosterVerifier struct {
+	fakeCertVerifier
+	named map[string]string // approver id -> identifier
+}
+
+func (r *rosterVerifier) HasIdentity(id string) bool { _, ok := r.named[id]; return ok }
+func (r *rosterVerifier) RequesterIdentifier(p string) (string, bool) {
+	for id, ident := range r.named {
+		if SameApprover(id, p) {
+			return ident, true
+		}
+	}
+	return "", false
+}
+
+// A gate with a certificate-bound approver needs the identity map to name every approver of the policy,
+// bare-key ones included: an approver outside it could be a person who also holds a certificate.
+func TestApprovalPolicy_ValidateKeysRequiresTheRoster(t *testing.T) {
+	cert := &rosterVerifier{fakeCertVerifier: fakeCertVerifier{id: "p1"}, named: map[string]string{"alice": "p1"}}
+	bare := fakeVerifiers("ops")
+	vf := func(id string) (ApproverVerifier, bool) {
+		if id == "alice" {
+			return cert, true
+		}
+		return bare(id)
+	}
+	pol := ApprovalPolicy{Need: 1, Approvers: []string{"alice", "ops"}}
+	err := pol.ValidateKeys(vf)
+	if err == nil || !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), `"ops"`) {
+		t.Fatalf("a bare-key approver outside the identity map: %v", err)
+	}
+	cert.named["ops"] = "p2"
+	if err := pol.ValidateKeys(vf); err != nil {
+		t.Fatalf("every approver named: %v", err)
+	}
+	if err := (&ApprovalPolicy{Need: 1, Approvers: []string{"ops"}}).ValidateKeys(vf); err != nil {
+		t.Fatalf("a policy of bare keys is not asked for a roster: %v", err)
+	}
+}
+
+// Separation of duties by identity reaches a requester spelled as the roster's approver id, and a
+// requester it cannot map is named in a warning on the finding.
+func TestTally_ExcludePrincipalMapsRequestersThroughTheRoster(t *testing.T) {
+	v := &rosterVerifier{fakeCertVerifier: fakeCertVerifier{id: "person-1"}, named: map[string]string{"alice": "person-1", "approver-7": "person-1"}}
+	v.check = func(CertDecision) CertCheck { return CertCheck{Identity: "person-1", KeyHash: [32]byte{1}} }
+	pol := ApprovalPolicy{Need: 1, Approvers: []string{"approver-7"}, ExcludePrincipal: true}
+	run := func(onBehalf string) Record {
+		b, _ := json.Marshal(RunPrincipal{Principal: Principal{OnBehalfOf: onBehalf}})
+		return Record{Name: runPrincipalStep, Kind: StepValue, Result: b}
+	}
+	resolve := certResolver(map[string]ApproverVerifier{"approver-7": v})
+	// The run was requested by "Alice", the roster's approver id of person-1: excluded by identity.
+	got, checks := TallyApprovals([]Record{run("Alice"), certRec("approval:c1:approver-7:00", "approver-7")}, timesSubject, pol, resolve)
+	if got.Passed() || checks[0].Reason != ReasonRequester {
+		t.Fatalf("%+v %+v", got, checks)
+	}
+	// A requester the roster does not know is not excluded by identity, and the finding says so.
+	got, checks = TallyApprovals([]Record{run("zed"), certRec("approval:c1:approver-7:00", "approver-7")}, timesSubject, pol, resolve)
+	if !got.Passed() || checks[0].Cert == nil || len(checks[0].Cert.Warnings) != 1 || !strings.Contains(checks[0].Cert.Warnings[0], `"zed"`) {
+		t.Fatalf("%+v %+v", got, checks)
+	}
+}
+
+// A verifier is given a record and its position in the journal. A journal that holds another record under
+// the record's name does not lend it that position.
+func TestTally_CertVerifierGetsNoPositionForADifferentRecord(t *testing.T) {
+	v := &fakeCertVerifier{id: "x", check: func(CertDecision) CertCheck { return CertCheck{Identity: "x", KeyHash: [32]byte{1}} }}
+	pol := ApprovalPolicy{Need: 1, Approvers: []string{"alice"}}
+	resolve := certResolver(map[string]ApproverVerifier{"alice": v})
+	rec := certRec("approval:c1:alice:00", "alice")
+	other := certRec("approval:c1:alice:00", "alice")
+	other.ApproverSignature.Signature = []byte("different")
+	TallyApprovals([]Record{rec}, timesSubject, pol, resolve) // not a journal given: position unknown
+	tallyApprovals([]Record{rec}, []Record{{Name: "hdr"}, rec}, timesSubject, pol, resolve)
+	tallyApprovals([]Record{rec}, []Record{{Name: "hdr"}, other}, timesSubject, pol, resolve)
+	if len(v.calls) != 3 || v.calls[1].Index != 1 || v.calls[2].Index != -1 {
+		t.Fatalf("indexes %v", []int{v.calls[0].Index, v.calls[1].Index, v.calls[2].Index})
 	}
 }

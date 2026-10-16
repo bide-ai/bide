@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/x509"
+	"strings"
 	"testing"
 	"time"
 
@@ -409,5 +410,67 @@ func TestCertApprover_ARecordNotInTheJournalIsNotProvable(t *testing.T) {
 		if got := a.VerifyCertDecision(cd); got.Reason != agent.ReasonNoCoveringHead {
 			t.Fatalf("position %d: %+v", bad, got)
 		}
+	}
+}
+
+// One CertApprover serves one approver id: a record of another id is not checked against this id's identity.
+func TestCertApprover_RefusesARecordOfAnotherApproverID(t *testing.T) {
+	c := newCertGate(t, 1, "alice", "bob")
+	c.pause()
+	c.decideCert("bob", nil)
+	c.anchor(certA)
+	recs, err := c.store.History(context.Background(), gateRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rec agent.Record
+	idx := -1
+	for i, r := range recs {
+		if r.Kind == agent.StepApproval && r.Approver() == "bob" {
+			rec, idx = r, i
+		}
+	}
+	got := c.approver("alice").VerifyCertDecision(agent.CertDecision{Subject: c.subject(t), Record: rec, Journal: recs, Index: idx})
+	if got.Reason != agent.ReasonNotEligible {
+		t.Fatalf("%+v", got)
+	}
+}
+
+// A signed head of the run that contradicts the journal given is not used, and the finding says so.
+func TestCertApprover_WarnsOfASignedHeadThatContradictsTheJournal(t *testing.T) {
+	c := newCertGate(t, 1, "alice")
+	c.pause()
+	c.decideCert("alice", nil)
+	good := c.anchor(certA)
+	bad := good
+	bad.Size, bad.Root = good.Size, append([]byte{}, good.Root...)
+	bad.Root[0] ^= 0xff
+	bad.TimestampNanos = certA.Add(time.Second).UnixNano()
+	c.heads = append(c.heads, signTH(t, bad.TreeHead, c.logPriv))
+	_, checks := c.tally()
+	cc := checks[0].Cert
+	if !checks[0].Counted || cc == nil || len(cc.Warnings) == 0 || !strings.Contains(cc.Warnings[len(cc.Warnings)-1], "contradict the journal") {
+		t.Fatalf("%+v", checks)
+	}
+}
+
+func TestCertApprover_RosterMethods(t *testing.T) {
+	c := newCertGate(t, 1, "alice")
+	a := c.approver("alice")
+	if !a.HasIdentity("alice") || !a.HasIdentity("bob") || a.HasIdentity("zed") {
+		t.Fatal("HasIdentity")
+	}
+	if id, ok := a.RequesterIdentifier("ALICE"); !ok || id != testca.Person(1) {
+		t.Fatalf("roster mapping: %q %v", id, ok)
+	}
+	if _, ok := a.RequesterIdentifier("zed"); ok {
+		t.Fatal("an unknown principal mapped")
+	}
+	a.RequesterIdentity = func(p string) (string, bool) { return testca.Person(3), p == "ops-bot" }
+	if id, ok := a.RequesterIdentifier("ops-bot"); !ok || id != testca.Person(3) {
+		t.Fatal("hook")
+	}
+	if _, ok := a.RequesterIdentifier("alice"); ok {
+		t.Fatal("the hook replaces the roster")
 	}
 }

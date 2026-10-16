@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"bytes"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -44,6 +45,12 @@ type CertApprover struct {
 	StatusParams StatusParams
 	// Now, when set, is read for each decision to set StatusParams.Now.
 	Now func() time.Time
+	// RequesterIdentity, when set, maps a requester principal (as the run records it) to the canonical
+	// identifier of the person, so separation of duties can exclude the requester by identifier. Without
+	// it the roster is used: a principal equal (ASCII case folded) to an approver id of the identity map
+	// maps to that approver's identifier. A principal it cannot map is excluded by approver id only, and
+	// the finding carries a warning.
+	RequesterIdentity func(principal string) (identifier string, ok bool)
 }
 
 // Alg reports agent.AlgCertificate: the scheme is the leaf key's, known only from the certificate.
@@ -76,6 +83,11 @@ func (c *CertApprover) VerifyCertDecision(cd agent.CertDecision) agent.CertCheck
 		return fail(agent.ReasonNoKey, "the certificate-bound verifier has no policy")
 	}
 	r := cd.Record
+	if r.Approver() != c.ApproverID {
+		// One CertApprover serves one approver id: a record of another id would be checked against this
+		// id's identity.
+		return fail(agent.ReasonNotEligible, "the decision is by approver %q, not the %q this verifier serves", r.Approver(), c.ApproverID)
+	}
 	if len(r.ApproverCert()) == 0 {
 		return fail(agent.ReasonNoCert, "the decision carries no certificate chain; a certificate-bound approver signs bide.approval.v4 with its chain")
 	}
@@ -86,9 +98,9 @@ func (c *CertApprover) VerifyCertDecision(cd agent.CertDecision) agent.CertCheck
 	if err != nil {
 		return fail(agent.ReasonDecidedAt, "decided_at: %v", err)
 	}
-	a, source, why, err := c.provableAt(cd)
+	a, source, _, hwarn, why, err := c.provableAt(cd)
 	if err != nil {
-		return agent.CertCheck{Reason: why, Detail: err.Error()}
+		return agent.CertCheck{Reason: why, Detail: err.Error(), Warnings: hwarn}
 	}
 	ac, err := c.Policy.VerifyChain(c.ApproverID, r.ApproverCert(), decidedAt, a)
 	if err != nil {
@@ -110,7 +122,7 @@ func (c *CertApprover) VerifyCertDecision(cd agent.CertDecision) agent.CertCheck
 		return agent.CertCheck{Reason: agent.ReasonBadSig, Detail: "the signature does not verify over the bide.approval.v4 bytes of this call under the certificate's key", Anchored: a, Time: source}
 	}
 
-	out := agent.CertCheck{Identity: ac.Identity, KeyHash: ac.KeyHash, Anchored: a, Time: source}
+	out := agent.CertCheck{Identity: ac.Identity, KeyHash: ac.KeyHash, Anchored: a, Time: source, Warnings: hwarn}
 	if c.Status == nil {
 		out.Reason, out.Detail = agent.ReasonStatusUnknown, "the verifier has no revocation status"
 		return out
@@ -134,6 +146,10 @@ func (c *CertApprover) VerifyCertDecision(cd agent.CertDecision) agent.CertCheck
 		}
 		return out
 	}
+	if len(cs.Certs) == 0 {
+		out.Reason, out.Detail = agent.ReasonStatusUnknown, "the status rule returned no finding for the chain"
+		return out
+	}
 	// The weakest certificate's finding states the decision's: its tier, what it rests on, and S.
 	weakest := cs.Certs[0]
 	for _, f := range cs.Certs[1:] {
@@ -153,23 +169,40 @@ func (c *CertApprover) VerifyCertDecision(cd agent.CertDecision) agent.CertCheck
 // journal. why is the Reason when it cannot be found, or when that head's time is contradicted by
 // another head: a larger head stamped earlier than a smaller one, beyond the tolerance, implicates
 // both, and a decision whose A(d) would come from either is not provable (the operator cannot pull A(d)
-// earlier with one slow clock).
-func (c *CertApprover) provableAt(cd agent.CertDecision) (a time.Time, source, why string, err error) {
+// earlier with one slow clock). warnings say that a head of this run, signed by the log key, contradicts
+// the journal given (it is not used, and it is evidence the receipt checker would report).
+//
+// The journal's leaf hashes are computed once, and each head's prefix root is taken over them, so the
+// cost per decision is one pass over the journal plus one pass of node hashing per head, not a
+// re-encoding of the journal prefix per head.
+func (c *CertApprover) provableAt(cd agent.CertDecision) (a time.Time, source string, head SignedTreeHead, warnings []string, why string, err error) {
+	none := SignedTreeHead{}
 	if cd.Index < 0 || cd.Index >= len(cd.Journal) || c.Heads == nil {
-		return time.Time{}, "", agent.ReasonNoCoveringHead, errors.New("the decision is not in the journal the verifier was given, or no signed head of the run is known")
+		return time.Time{}, "", none, nil, agent.ReasonNoCoveringHead, errors.New("the decision is not in the journal the verifier was given, or no signed head of the run is known")
 	}
 	runID := cd.Subject.RunID
-	var heads []SignedTreeHead
-	if c.Heads != nil {
-		if heads, err = c.Heads(runID); err != nil {
-			return time.Time{}, "", agent.ReasonNoCoveringHead, fmt.Errorf("heads of run %s: %v", runID, err)
-		}
+	heads, herr := c.Heads(runID)
+	if herr != nil {
+		return time.Time{}, "", none, nil, agent.ReasonNoCoveringHead, fmt.Errorf("heads of run %s: %v", runID, herr)
 	}
+	leaves, lerr := journalLeafHashes(cd.Journal)
 	var good []SignedTreeHead
+	diverged := 0
 	for _, h := range heads {
-		if class, _, _ := classifyHead(h, runID, c.LogKey, cd.Journal); class == headMatches {
-			good = append(good, h)
+		if h.Kind != TreeJournal || h.RunID != runID || c.LogKey == nil || h.Verify(c.LogKey) != nil {
+			continue // not a head of this run's journal tree under the log key
 		}
+		if h.Size < 0 || h.Size > len(cd.Journal) {
+			continue // longer than the journal given: says nothing about it
+		}
+		if lerr != nil || !bytes.Equal(hashRoot(leaves[:h.Size]), h.Root) {
+			diverged++
+			continue
+		}
+		good = append(good, h)
+	}
+	if diverged > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d signed head(s) of this run contradict the journal given and were not used", diverged))
 	}
 	sort.SliceStable(good, func(i, j int) bool {
 		if good[i].Size != good[j].Size {
@@ -185,7 +218,7 @@ func (c *CertApprover) provableAt(cd agent.CertDecision) (a time.Time, source, w
 		}
 	}
 	if cover < 0 {
-		return time.Time{}, "", agent.ReasonNoCoveringHead, fmt.Errorf("no signed head of the run reaches position %d", cd.Index)
+		return time.Time{}, "", none, warnings, agent.ReasonNoCoveringHead, fmt.Errorf("no signed head of the run reaches position %d", cd.Index)
 	}
 	tol := c.ClockTolerance
 	if tol <= 0 {
@@ -195,12 +228,41 @@ func (c *CertApprover) provableAt(cd agent.CertDecision) (a time.Time, source, w
 		for j := i + 1; j < len(good); j++ {
 			if good[j].Size > good[i].Size && good[j].TimestampNanos < good[i].TimestampNanos-tol.Nanoseconds() {
 				if i == cover || j == cover {
-					return time.Time{}, "", agent.ReasonHeadTimes, fmt.Errorf("the head of size %d is stamped %v after the larger head of size %d", good[i].Size,
+					return time.Time{}, "", none, warnings, agent.ReasonHeadTimes, fmt.Errorf("the head of size %d is stamped %v after the larger head of size %d", good[i].Size,
 						time.Duration(good[i].TimestampNanos-good[j].TimestampNanos), good[j].Size)
 				}
 			}
 		}
 	}
 	h := good[cover]
-	return time.Unix(0, h.TimestampNanos).UTC(), "log signer clock: head of size " + fmt.Sprint(h.Size) + " root " + hex.EncodeToString(h.Root[:min(8, len(h.Root))]), "", nil
+	return time.Unix(0, h.TimestampNanos).UTC(), "log signer clock: head of size " + fmt.Sprint(h.Size) + " root " + hex.EncodeToString(h.Root[:min(8, len(h.Root))]), h, warnings, "", nil
+}
+
+// HasIdentity implements agent.IdentityRoster: whether the policy's identity map names the approver id.
+func (c *CertApprover) HasIdentity(approverID string) bool {
+	if c == nil || c.Policy == nil {
+		return false
+	}
+	_, ok := c.Policy.Identity(approverID)
+	return ok
+}
+
+// RequesterIdentifier implements agent.IdentityRoster: RequesterIdentity if set, else the roster's
+// identifier of the approver id the principal equals.
+func (c *CertApprover) RequesterIdentifier(principal string) (string, bool) {
+	if c == nil {
+		return "", false
+	}
+	if c.RequesterIdentity != nil {
+		return c.RequesterIdentity(principal)
+	}
+	if c.Policy == nil {
+		return "", false
+	}
+	for id, ident := range c.Policy.identity {
+		if agent.SameApprover(id, principal) {
+			return ident, true
+		}
+	}
+	return "", false
 }

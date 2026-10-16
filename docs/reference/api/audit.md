@@ -390,6 +390,8 @@ type CertApprover struct {
 	StatusParams StatusParams
 
 	Now func() time.Time
+
+	RequesterIdentity func(principal string) (identifier string, ok bool)
 }
 ```
 
@@ -398,7 +400,9 @@ CertApprover is the verifier of a certificate-bound approver (docs/design/approv
 **Methods**
 
 - `func (*CertApprover) Alg() agent.Alg`: Alg reports agent.AlgCertificate: the scheme is the leaf key's, known only from the certificate.
+- `func (c *CertApprover) HasIdentity(approverID string) bool`: HasIdentity implements agent.IdentityRoster: whether the policy's identity map names the approver id.
 - `func (c *CertApprover) KeyIDs() []string`: KeyIDs is the approver's seat, "ident:" and the canonical identifier the policy's identity map gives the approver id, so two approver ids of one person fill one seat.
+- `func (c *CertApprover) RequesterIdentifier(principal string) (string, bool)`: RequesterIdentifier implements agent.IdentityRoster: RequesterIdentity if set, else the roster's identifier of the approver id the principal equals.
 - `func (*CertApprover) Verify(message, sig []byte) bool`: Verify is always false: a bare signature over bytes, with no certificate, is never a certificate-bound approver's decision.
 - `func (c *CertApprover) VerifyCertDecision(cd agent.CertDecision) agent.CertCheck`: VerifyCertDecision implements agent.CertDecisionVerifier.
 
