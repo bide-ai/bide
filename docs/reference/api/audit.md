@@ -583,6 +583,8 @@ type DecisionReceipt struct {
 	Alg       Alg             `json:"alg"`
 	Signature []byte          `json:"signature"`
 
+	Cert [][]byte `json:"cert,omitempty"`
+
 	Record     string `json:"record"`
 	Index      int    `json:"index"`
 	RecordedAt string `json:"recorded_at"`
@@ -602,7 +604,9 @@ DecisionReceipt is one signed approver decision, with the journal record that ho
 
 **Methods**
 
+- `func (r DecisionReceipt) AnchorTime(logKey Verifier) (time.Time, error)`: AnchorTime is the time of the head that anchors the receipt: the timestamp of the smallest signed head covering the decision, which is when the decision became provable (A in the design note), as logKey vouches for the proof.
 - `func (r DecisionReceipt) Verify(v Verifier) error`: Verify checks the receipt on its own: it is of ReceiptFormat, its arguments hash to ArgsSHA, and Signature is a valid signature, by the approver's key v, over the decision bytes (agent.ApprovalDecisionBytes) of exactly this run, call, tool, arguments, approver, decision and time.
+- `func (r DecisionReceipt) VerifyCertificate(ci *CertIdentity, a time.Time) error`: VerifyCertificate checks a certificate-bound receipt against the gate's certificate policy: the chain it carries is accepted for r.Approver at a, the time the decision became provable (the anchoring head's time, see AnchorTime), by exactly the rules CertIdentity.VerifyChain applies to a decision the gate counts; the receipt's scheme is the one the leaf's key has; and the signature verifies under that key over the v4 bytes.
 
 ## type DecisionTime
 

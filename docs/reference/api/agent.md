@@ -12,6 +12,7 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 
 **Constants**
 
+- `const MaxDecisionCertChain = 8`, `const MaxDecisionCertDER = 16 << 10`: MaxDecisionCertChain and MaxDecisionCertDER bound the certificate chain a decision carries: at most this many certificates, each at most this many bytes of DER.
 - `const ReasonNotEligible = "not an eligible approver"`, `const ReasonSuperseded`, `const ReasonNoKey = "no key for this approver"`, `const ReasonBadSig`, `const ReasonSharedKey`, `const ReasonNoKeyID`, `const ReasonAlg`, `const ReasonNoDecidedAt`, `const ReasonDecidedAt`, `const ReasonRequester`, `const ReasonNoRequester`, `const ReasonLate`: Reasons a decision record does not count.
 - `const ReasonAfterExpiry`: ReasonAfterExpiry: the decision's write landed after the gate recorded its expiry, even if it was stamped before the deadline.
 - `const ReasonNoCert`, `const ReasonCertChain`, `const ReasonCertIdentity`, `const ReasonCertUsage`, `const ReasonCertWindow`: Reasons a certificate-bound approver's decision does not count (docs/design/approver-identity.md). *(building block, not yet used by approval gates)*
@@ -19,6 +20,7 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `const ReasonStatusUnknown`: ReasonStatusUnknown: no usable status covers a certificate of the chain.
 - `const ReasonStatusStale`: ReasonStatusStale: the status available is past nextUpdate or older than the policy allows.
 - `const DecisionFormat = "bide.approval.v3"`: DecisionFormat names the signed decision format this version writes and accepts: the domain tag of ApprovalDecisionBytes without its newline.
+- `const DecisionFormatCert = "bide.approval.v4"`: DecisionFormatCert names the signed decision format of a certificate-bound approver: the v3 layout plus the SHA-256 of the signer's leaf certificate (ApprovalDecisionBytesCert).
 - `const DefaultReceiver = "default"`: DefaultReceiver is the name of the receiver WithNotifier's Notifier is, in Notification.Receiver and in WithNotifyRoute, WithNotifyApproverRoute and EscalationStep.
 - `const ExpiredResult`: ExpiredResult is the result an agent's model reads for a call whose approval gate expired: an error result, as for a denial.
 - `const JournalFormat = "bide.journal.v1-dev"`: JournalFormat is the journal format this version writes: the format every run's header names (see StepHeader).
@@ -74,6 +76,7 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `func Ack(ctx context.Context, d *Journal, runID, channel, key string) error`: Ack marks a message consumed so Receive advances past it.
 - `func ApprovalDeadlineStep(toolUseID string) string`: ApprovalDeadlineStep is the journal name of the record that fixes the deadline of the gate on toolUseID (a tool call's ID, or a plan flow node's key).
 - `func ApprovalDecisionBytes(s ApprovalSubject, approverID string, approved bool, decidedAt time.Time) []byte`: ApprovalDecisionBytes returns the canonical bytes an approver signs and every verifier checks.
+- `func ApprovalDecisionBytesCert(s ApprovalSubject, approverID string, approved bool, decidedAt time.Time, leafHash [32]byte) []byte`: ApprovalDecisionBytesCert returns the canonical bytes a certificate-bound approver signs (bide.approval.v4): the layout of ApprovalDecisionBytes with the domain tag "bide.approval.v4\\n" and, between the verdict byte and the decision time,
 - `func ApprovalKey(runID, call string, reminder int) string`: ApprovalKey is the event key of the approval gate for call on runID.
 - `func ApprovalPendingStep(toolUseID string) string`: ApprovalPendingStep is the journal name of the record that a run paused at the approval gate of the call toolUseID (see ApprovalWait).
 - `func ApprovalReaskKey(runID, call string, sod bool) string`: ApprovalReaskKey is the event key of the approval gate for call on runID asking again over a recorded tally it does not act on (ApprovalPending.Reason): with sod, because its policy now excludes the requester (PendingSoDReapproval); without, because the tally predates DecisionFormat (PendingReapproval).
@@ -87,6 +90,7 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `func AwaitFor[T any](ctx context.Context, name string, d time.Duration) (T, bool, error)`: AwaitFor blocks the current run until either a single-shot signal named `name` is delivered or the duration d elapses, whichever happens first.
 - `func Cancel(ctx context.Context, j *Journal, runID, reason string, opts ...CancelOption) error`: Cancel cancels runID's run (D1), recording reason.
 - `func Capability[T any](store Store) (T, bool)`: Capability returns store's implementation of the optional capability T (Lister, Leaser, or any other interface a store may implement beyond Store), looking through wrappers.
+- `func CertLeafHash(der []byte) [32]byte`: CertLeafHash is the SHA-256 of a leaf certificate's DER: what a v4 decision signs in place of the certificate itself.
 - `func DecisionStep(d Decision) string`: DecisionStep returns the journal name SubmitDecision gives the record of d first: distinct for each distinct decision (call, approver, verdict, scheme and decision time), and the same for every resubmission of it, whatever its signature bytes, which is why that is a no-op.
 - `func DigestKey(bucket string) string`: DigestKey is the event key of the digest for time bucket (an opaque, stable label).
 - `func EncodeRecord(r Record) ([]byte, error)`: EncodeRecord returns the journal encoding of r: the bytes a store persists for it and the bytes an audit leaf commits to.
@@ -417,6 +421,8 @@ type ApproverSignature struct {
 
 	DecidedAt  string `json:"decided_at,omitempty"`
 	RecordedAt string `json:"recorded_at,omitempty"`
+
+	ApproverCert [][]byte `json:"approver_cert,omitempty"`
 }
 ```
 
@@ -521,6 +527,8 @@ type Decision struct {
 	DecidedAt  time.Time
 	Alg        Alg
 	Signature  []byte
+
+	Cert [][]byte
 }
 ```
 
@@ -1851,6 +1859,7 @@ Record is one durably-recorded, named event.
 
 - `func (r Record) Approver() string`: Approver returns the approver of a signed decision (ApproverSignature.Approver), or "" when the record carries none.
 - `func (r Record) ApproverAlg() Alg`: ApproverAlg returns the scheme a signed decision is under (ApproverSignature.ApproverAlg), or "" when the record carries none.
+- `func (r Record) ApproverCert() [][]byte`: ApproverCert returns the certificate chain a certificate-bound decision carries (ApproverSignature.ApproverCert), leaf first, or nil when the record carries none.
 - `func (r Record) ClaimID() string`: ClaimID returns the random id of the driver that wrote this attempt marker or not-started record (see ClaimAttempt), or "" for any other record.
 - `func (r Record) DecidedAt() string`: DecidedAt returns the signed decision time of a signed decision (ApproverSignature.DecidedAt), or "" when the record carries none.
 - `func (r Record) Finish() FinishReason`: Finish returns why the model turn ended (ModelTurn.Finish), or "" when the record carries no model-turn metadata.
