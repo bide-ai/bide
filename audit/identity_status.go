@@ -137,11 +137,17 @@ func WithLimits(maxBytes, maxEntries int) SnapshotOption {
 	return func(s *StatusSnapshot) { s.maxBytes, s.maxEntries = maxBytes, maxEntries }
 }
 
-// WithMaxCRLs bounds how many CRLs the snapshot keeps (default 1024). Beyond it the CRL with the
+// WithMaxCRLs bounds how many CRLs the snapshot keeps (default 1024; a value below 1 keeps the default). Beyond it the CRL with the
 // earliest thisUpdate is evicted, so a long-running refresher does not grow without limit. A policy
 // that needs a longer series for a decision (the journal's evidence) keeps it in the archive, not
 // here.
-func WithMaxCRLs(n int) SnapshotOption { return func(s *StatusSnapshot) { s.maxCRLs = max(n, 1) } }
+func WithMaxCRLs(n int) SnapshotOption {
+	return func(s *StatusSnapshot) {
+		if n >= 1 {
+			s.maxCRLs = n
+		}
+	}
+}
 
 // WithUnboundedCRLs removes the bound on how many CRLs the snapshot keeps, for an audit tool that
 // loads an archived series and must not lose any of it. A long-running refresher should not use it.
@@ -264,27 +270,55 @@ var (
 	}
 )
 
-// pssAlgorithm reads RSASSA-PSS parameters (RFC 4055): a SHA-2 hash, MGF1 with the same hash, a salt
-// as long as the digest and the default trailer. Anything else is outside the profile.
+// pssAlgorithm reads RSASSA-PSS parameters (RFC 4055) strictly: the received parameters must be
+// byte-for-byte the canonical DER encoding for a SHA-2 hash, MGF1 over the same hash, a salt as long
+// as the digest and the default trailer (the NULL parameters of the two hash identifiers may be
+// present or absent). The ASN.1 decoder ignores extra elements, so the check is by re-encoding, not by
+// decoding: a duplicated field, an unknown trailing element or garbage inside an identifier all fail.
 func pssAlgorithm(params asn1.RawValue) (x509.SignatureAlgorithm, bool) {
 	var p struct {
-		Hash    pkix.AlgorithmIdentifier `asn1:"explicit,tag:0,optional"`
-		MGF     pkix.AlgorithmIdentifier `asn1:"explicit,tag:1,optional"`
-		Salt    int                      `asn1:"explicit,tag:2,optional,default:20"`
-		Trailer int                      `asn1:"explicit,tag:3,optional,default:1"`
+		Hash pkix.AlgorithmIdentifier `asn1:"explicit,tag:0,optional"`
 	}
-	if rest, err := asn1.Unmarshal(params.FullBytes, &p); err != nil || len(rest) != 0 {
+	if _, err := asn1.Unmarshal(params.FullBytes, &p); err != nil {
 		return 0, false
 	}
 	h, ok := pssHashes[p.Hash.Algorithm.String()]
-	if !ok || !p.MGF.Algorithm.Equal(oidMGF1) || p.Salt != h.size || p.Trailer != 1 {
+	if !ok {
 		return 0, false
 	}
-	var mgfHash pkix.AlgorithmIdentifier
-	if rest, err := asn1.Unmarshal(p.MGF.Parameters.FullBytes, &mgfHash); err != nil || len(rest) != 0 || !mgfHash.Algorithm.Equal(p.Hash.Algorithm) {
-		return 0, false
+	for _, nullHash := range []bool{true, false} {
+		for _, nullMGF := range []bool{true, false} {
+			if bytes.Equal(params.FullBytes, canonicalPSS(p.Hash.Algorithm, h.size, nullHash, nullMGF)) {
+				return h.alg, true
+			}
+		}
 	}
-	return h.alg, true
+	return 0, false
+}
+
+// canonicalPSS is the DER encoding of the PSS parameters pssAlgorithm accepts.
+func canonicalPSS(hash asn1.ObjectIdentifier, salt int, nullHash, nullMGF bool) []byte {
+	must := func(b []byte, err error) []byte {
+		if err != nil {
+			panic(err)
+		}
+		return b
+	}
+	seq := func(content ...[]byte) []byte {
+		return must(asn1.Marshal(asn1.RawValue{Class: asn1.ClassUniversal, Tag: asn1.TagSequence, IsCompound: true, Bytes: bytes.Join(content, nil)}))
+	}
+	explicit := func(tag int, content []byte) []byte {
+		return must(asn1.Marshal(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: tag, IsCompound: true, Bytes: content}))
+	}
+	alg := func(oid asn1.ObjectIdentifier, withNull bool) []byte {
+		if withNull {
+			return seq(must(asn1.Marshal(oid)), []byte{0x05, 0x00})
+		}
+		return seq(must(asn1.Marshal(oid)))
+	}
+	hashAI := alg(hash, nullHash)
+	mgfAI := seq(must(asn1.Marshal(oidMGF1)), alg(hash, nullMGF))
+	return seq(explicit(0, hashAI), explicit(1, mgfAI), explicit(2, must(asn1.Marshal(salt))))
 }
 
 // authenticate checks the CRL signature against the configured issuers before the entries are built.
@@ -452,9 +486,10 @@ type StatusParams struct {
 	Now          time.Time
 	MaxStatusAge time.Duration
 	// CountLive is the live gate's counting mode and needs Now: a fresh CRL issued before the decision
-	// is accepted, so a decision is not held for a CRL period. Such a verdict is provisional, never
-	// final (its Basis says so): a revocation effective before the decision may be reported after that
-	// CRL. An audit never sets it.
+	// is accepted, so a decision is not held for a CRL period. A verdict resting on status issued
+	// before the decision is provisional, never final (its Basis says so): a revocation effective
+	// before the decision may be reported after that CRL. A live count that finds a CRL at or after
+	// the decision and its window can be final like any other. An audit never sets it.
 	CountLive bool
 	// Distrust adds distrust dates to the policy's own, by issuer key: status signed by that key with
 	// thisUpdate at or after the date is no information. It is the auditor's overlay.

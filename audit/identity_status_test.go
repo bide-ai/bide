@@ -1565,9 +1565,29 @@ func TestPSSParametersOutsideTheProfile(t *testing.T) {
 		b = append(b, mustM(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 0, IsCompound: true, Bytes: alg(hash)}, "")...)
 		b = append(b, mustM(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 1, IsCompound: true, Bytes: mgf(mgfHash)}, "")...)
 		b = append(b, mustM(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 2, IsCompound: true, Bytes: mustM(salt, "")}, "")...)
-		b = append(b, mustM(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 3, IsCompound: true, Bytes: mustM(trailer, "")}, "")...)
+		if trailer >= 0 { // a negative trailer omits the field, the canonical form
+			b = append(b, mustM(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 3, IsCompound: true, Bytes: mustM(trailer, "")}, "")...)
+		}
 		return mustM(asn1.RawValue{Class: asn1.ClassUniversal, Tag: asn1.TagSequence, IsCompound: true, Bytes: b}, "")
 	}
+	withExtra := func(p []byte, extra []byte) []byte {
+		var rv asn1.RawValue
+		if _, err := asn1.Unmarshal(p, &rv); err != nil {
+			t.Fatal(err)
+		}
+		return mustM(asn1.RawValue{Class: asn1.ClassUniversal, Tag: asn1.TagSequence, IsCompound: true, Bytes: append(append([]byte{}, rv.Bytes...), extra...)}, "")
+	}
+	explicit := func(tag int, content []byte) []byte {
+		return mustM(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: tag, IsCompound: true, Bytes: content}, "")
+	}
+	seqOf := func(parts ...[]byte) []byte {
+		var b []byte
+		for _, p := range parts {
+			b = append(b, p...)
+		}
+		return mustM(asn1.RawValue{Class: asn1.ClassUniversal, Tag: asn1.TagSequence, IsCompound: true, Bytes: b}, "")
+	}
+	garbage := mustM([]byte{1, 2}, "")
 	notMGF := func() []byte { mgfOID = sha256; defer func() { mgfOID = mgf1 }(); return params(sha256, sha256, 32, 1) }()
 	for name, p := range map[string][]byte{
 		"a mask function other than mgf1": notMGF,
@@ -1576,6 +1596,10 @@ func TestPSSParametersOutsideTheProfile(t *testing.T) {
 		"mgf1 over another":               params(sha256, sha384, 32, 1),
 		"trailer other than 1":            params(sha256, sha256, 32, 2),
 		"garbage":                         {0x30, 0x01, 0xff},
+		"a duplicated salt":               withExtra(params(sha256, sha256, 32, -1), explicit(2, mustM(32, ""))),
+		"an unknown trailing element":     withExtra(params(sha256, sha256, 32, -1), explicit(5, mustM(1, ""))),
+		"garbage in the hash identifier":  seqOf(explicit(0, alg(sha256, garbage)), explicit(1, mgf(sha256)), explicit(2, mustM(32, ""))),
+		"garbage in the mgf1 identifier":  seqOf(explicit(0, alg(sha256)), explicit(1, alg(mgf1, alg(sha256, garbage))), explicit(2, mustM(32, ""))),
 		"no parameters":                   nil,
 	} {
 		o := testca.RawCRLOpts{Number: big.NewInt(1), This: this, Next: next, InnerAlg: pssOID, OuterAlg: pssOID, OuterParams: p,
@@ -1587,16 +1611,62 @@ func TestPSSParametersOutsideTheProfile(t *testing.T) {
 	}
 }
 
-func TestMaxCRLsOfZeroIsOneNotUnbounded(t *testing.T) {
+// The canonical parameters (NULL hash parameters present or absent, in either identifier) pass the
+// profile check; the signature is then judged on its merits (here it is an ECDSA signature under PSS
+// parameters, so no issuer verifies it).
+func TestCanonicalPSSParametersPassTheProfile(t *testing.T) {
 	s := newStFx(t)
-	sn := audit.NewStatusSnapshot(audit.WithMaxCRLs(0))
-	for i := 0; i < 3; i++ {
-		if _, err := sn.AddCRL(s.lcrl(int64(i+1), idT0.Add(time.Duration(i)*min), 30*min)); err != nil {
+	this, next := s.a.Add(time.Second), s.a.Add(hour)
+	sha256 := asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 1}
+	mgf1 := asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 8}
+	pssOID := asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 10}
+	mm := func(v any) []byte {
+		b, err := asn1.Marshal(v)
+		if err != nil {
 			t.Fatal(err)
 		}
+		return b
 	}
-	if sn.Len() != 1 || sn.Evicted() != 2 {
-		t.Fatalf("%d held, %d evicted", sn.Len(), sn.Evicted())
+	seq := func(parts ...[]byte) []byte {
+		var b []byte
+		for _, p := range parts {
+			b = append(b, p...)
+		}
+		return mm(asn1.RawValue{Class: asn1.ClassUniversal, Tag: asn1.TagSequence, IsCompound: true, Bytes: b})
+	}
+	exp := func(tag int, c []byte) []byte {
+		return mm(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: tag, IsCompound: true, Bytes: c})
+	}
+	ai := func(nullParams bool) []byte {
+		if nullParams {
+			return seq(mm(sha256), []byte{5, 0})
+		}
+		return seq(mm(sha256))
+	}
+	for _, nullHash := range []bool{true, false} {
+		for _, nullMGF := range []bool{true, false} {
+			p := seq(exp(0, ai(nullHash)), exp(1, seq(mm(mgf1), ai(nullMGF))), exp(2, mm(32)))
+			o := testca.RawCRLOpts{Number: big.NewInt(1), This: this, Next: next, InnerAlg: pssOID, OuterAlg: pssOID, OuterParams: p}
+			_, err := audit.NewStatusSnapshot(audit.WithIssuers(s.inter.Cert)).AddCRL(s.inter.RawCRL(t, o))
+			if err == nil || !strings.Contains(err.Error(), "configured issuer") {
+				t.Fatalf("hash NULL %v, mgf NULL %v: %v", nullHash, nullMGF, err)
+			}
+		}
+	}
+}
+
+func TestMaxCRLsBelowOneKeepsTheDefault(t *testing.T) {
+	s := newStFx(t)
+	for _, n := range []int{0, -3} {
+		sn := audit.NewStatusSnapshot(audit.WithMaxCRLs(n))
+		for i := 0; i < 3; i++ {
+			if _, err := sn.AddCRL(s.lcrl(int64(i+1), idT0.Add(time.Duration(i)*min), 30*min)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if sn.Len() != 3 || sn.Evicted() != 0 {
+			t.Fatalf("WithMaxCRLs(%d): %d held, %d evicted", n, sn.Len(), sn.Evicted())
+		}
 	}
 }
 
