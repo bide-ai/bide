@@ -144,6 +144,21 @@ func TestDiffSafetyLoweredIsWeakened(t *testing.T) {
 	}
 }
 
+// A node that was unreachable has no gate to lose, but one that could act and is wired in around the
+// gate is a bypass even when the same edit relabels it read-only.
+func TestDiffUnreachableEffectRelabeledAndWired(t *testing.T) {
+	orphan := func(safety, wiring string) string {
+		return gapCfg(`, {"name": "orphan", "block": "orphan", "safety": "`+safety+`"}`, wiring)
+	}
+	got := weakenedOf(t, orphan("side_effect", ""), orphan("readonly", `, {"edge": ["validate", "orphan"]}`))
+	if len(got) != 1 || !strings.HasPrefix(got[0], "orphan: reachable without an approval gate (validate -> orphan)") {
+		t.Errorf("weakened %q", got)
+	}
+	if got := weakenedOf(t, orphan("readonly", ""), orphan("readonly", `, {"edge": ["validate", "orphan"]}`)); len(got) != 0 {
+		t.Errorf("a read-only node wired in that was never an effect: weakened %q", got)
+	}
+}
+
 // A node whose safety the config does not state (no Registry) may be an effect, so a new ungated
 // route to it is flagged, and says the safety is unknown.
 func TestDiffUngatedPathUnknownSafety(t *testing.T) {
