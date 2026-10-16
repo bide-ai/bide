@@ -430,6 +430,8 @@ type CertStatus struct {
 
 	Caveat string
 
+	PolicyRefusal bool
+
 	Basis string
 
 	Warning string
@@ -1699,6 +1701,8 @@ type StatusParams struct {
 	ConsecutiveNumbers bool
 
 	CoverageTolerance time.Duration
+
+	AllowHolds bool
 }
 ```
 
