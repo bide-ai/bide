@@ -397,6 +397,26 @@ in where no gate and no earlier node of that block stood, looks like any new rea
 reported. Check with the Registry (`plan/planview`) where the blocks are registered. See [Compare two
 versions of a flow](guides/run-viewer.md#compare-two-versions-of-a-flow).
 
+## The flow editor
+
+**The editor's check is structural.** `bide edit` checks a config as `bide check` does: block, predicate and
+merge names and the types are checked when a program loads the flow with its `plan.Registry`, and a gate
+or a safety a block declares in Go is not visible. A clean page is not `plan.Load` accepting the flow, and a
+changed `block` on an ungated effect node is reported as weakened because the new block may carry no gate.
+
+**The weakening classifier is a check, not a proof.** The banner and the confirmation show what `bide check
+-diff` classifies: a gate removed or loosened, an `assert` line removed, loosened or no longer holding, an
+node newly reachable without a gate, whatever its safety (a lowered `safety` label is itself reported). The
+check does not read predicates. The confirmation is not written into the file; the
+control that stops a weakened policy merging is the pull request, with `bide check -diff -check
+-fail-on-weaken` as a required status and a policy owner's approval. See the [flow editor
+guide](guides/flow-editor.md).
+
+**A save is atomic, not exclusive.** The file is replaced by a rename of a temporary file, so a reader sees
+the old file or the new one; a hard link to the old file, extended attributes and ACLs are not carried
+over; and a write by another process between the editor's check that the file is unchanged and the rename
+is overwritten.
+
 ## Audit and proofs
 
 **Tamper evidence needs an anchor outside your database.** Hash chains, Merkle roots and signed tree

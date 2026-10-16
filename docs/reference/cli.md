@@ -27,7 +27,7 @@ and `help`, and its import graph is the standard library and the core module (se
 | [`bide doctor`](#bide-doctor) | check that a first run can work: Go, SQLite, the module cache, model keys, your project |
 | [`bide sample`](#bide-sample) | write a sample journal of varied runs, with evidence and flow configs, and open bide view on it |
 | [`bide view`](#bide-view) | a read-only local page for one run of a journal, or a flow config's graph |
-| [`bide edit`](#bide-edit) | a local page for a flow config: the graph, the approval gates, the assertions and the check (read-only so far) |
+| [`bide edit`](#bide-edit) | a local page for a flow config: the graph, the approval gates, the assertions, and what an edit weakens; edit the source and save |
 | [`bide notify`](#bide-notify) | set up and test the webhook notifier: test a receiver, run a local one, relay to Slack and PagerDuty |
 | [`bide approve`](#bide-approve) | record your signed approval (or -reject) of a call that waits for a decision; -list shows what waits |
 | [`bide keygen`](#bide-keygen) | create an approver key pair for bide approve and print the public key policies and verifiers use |
@@ -286,7 +286,7 @@ Exit status:
 
 ## bide edit
 
-A local page for a flow config: the graph, the approval gates, the assertions and the check (read-only so far).
+A local page for a flow config: the graph, the approval gates, the assertions, and what an edit weakens; edit the source and save.
 
 ```text
 usage: bide edit [-addr <host:port>] [-base <git revision>] [-color auto|always|never] <flow.yaml|flow.json>
@@ -297,16 +297,20 @@ finds, and the source. The page shows what bide check and bide view -config show
 computed by the same code, and labels the check as structural: block and type names are checked
 when a program loads the flow with its plan.Registry.
 
-In this release the page only shows the file; it does not change it. It compares the file with a
-baseline, the committed policy, and says so in a banner that stays while the file is weaker than
+You can edit the file's source in the page and see the check as you type; nothing is written until
+you save, and a save shows the diff of the bytes it will write and the comments it removes. The page
+compares the text with a baseline, the committed policy, and says so in a banner that stays while the file is weaker than
 it: the file at git HEAD, or at the revision -base names (branch, tag or commit), or, when the file
 is not in git, the file as it was when bide edit opened it. The comparison is the one bide check
 -diff -check -fail-on-weaken makes.
 
 It serves on a loopback address only (-addr, default 127.0.0.1:8585), answers only requests
-addressed to a loopback host, and reads only the file you name. The address it prints ends in a
+addressed to a loopback host, and reads and writes only the file you name. The address it prints ends in a
 fragment (#t=...) that carries a per-run session token; open that whole address. Stop it with
 Ctrl-C. bide edit is not in a bide_audit_only build.
+
+A save that weakens the policy against the baseline needs a confirmation that the server checks.
+A save is refused, and writes nothing, if the file changed on disk since the page read it.
   -addr string
     	address to serve on: a loopback IP (127.0.0.1 or ::1) or localhost, with a port (default "127.0.0.1:8585")
   -base string

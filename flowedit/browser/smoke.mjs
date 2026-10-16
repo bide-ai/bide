@@ -32,7 +32,7 @@ try {
   const outline = await page.$$eval('#outline button', (bs) => bs.map((b) => b.getAttribute('data-node')));
   const graphNodes = await page.$$eval('#canvas g.node', (gs) => gs.map((g) => g.getAttribute('data-id')));
   const svgNamespace = await page.$eval('#canvas svg', (s) => s.namespaceURI);
-  const source = await text('#source');
+  const source = await page.$eval('#source', (e) => e.value);
   const assertions = await page.$$eval('#assertions .assert', (a) => a.map((e) => e.textContent.trim()));
   const inspectorBefore = await text('#inspector');
   const banner = await page.$eval('#weakened', (e) => ({ text: e.textContent, role: e.querySelector('section')?.getAttribute('role') ?? '', controls: e.querySelectorAll('button, a, [tabindex]').length }));

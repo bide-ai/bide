@@ -6,19 +6,18 @@ problems `bide check` finds, and the source. The design is in
 [docs/design/visual-editor.md](../design/visual-editor.md); this page says what the command does
 today.
 
-**In this release the page shows the config and does not change it.** The next releases add editing
-a node's approval gate, safety and block, a diff against the committed version with a banner when an
-edit weakens the flow, and saving. Until then `bide edit` is a second way to read what `bide check`
-and `bide view -config` show, in one page with an outline and an inspector.
+**In this release you edit the file's source in the page, see what `bide check` says about it as you
+type, see whether the edit weakens the flow, and save.** The next release adds forms for a node's
+approval gate, safety and block, so a policy owner need not write YAML.
 
-The editor is an authoring tool and nothing else. It reads and (later) writes the file `plan.Load`
+The editor is an authoring tool and nothing else. It reads and writes the file `plan.Load`
 reads, adds no key to it, starts no run and holds no state of its own: the run is the run `plan`
 already makes. A flow is checked by the code `bide check` runs, in Go; the page holds the text and
 draws what the server computes.
 
 ```sh
 bide edit flow.yaml
-# bide edit: serving http://127.0.0.1:8585/#t=3f9a... (loopback only, read-only in this release; Ctrl-C to stop)
+# bide edit: serving http://127.0.0.1:8585/#t=3f9a... (loopback only; Ctrl-C to stop)
 ```
 
 Open the whole address, including the part after `#`: it is a random session token the page sends
@@ -72,13 +71,58 @@ block declares in Go is invisible on both sides, and a change of block on an ung
 is reported as weakened for that reason (see [Compare two versions of a
 flow](run-viewer.md#compare-two-versions-of-a-flow)).
 
+## Editing the source and saving
+
+The **Source** pane is a text area with the file's text. Typing in it asks the server for the check
+of the new text after a short pause, and every pane (the verdict, the flow, the outline, the
+assertions, the problems and the weakened banner) updates: the page validates nothing itself, so
+there is one validator, the one `bide check` runs, and a text the page accepts is a text CI accepts.
+Nothing is written until you save, and there is no autosave: a policy file should not change on a
+keystroke. The header says `saved` or `unsaved changes`, **Revert** puts back the text as it was last
+read or saved, and the page warns before it closes with unsaved changes.
+
+**Save** opens a dialog that shows what will be written:
+
+- the plain unified diff of the bytes against the file on disk, so formatting churn and removed
+  lines are seen before they are written;
+- every **comment the diff removes**, listed, because a dropped comment is easy to miss in a long
+  diff;
+- how many **errors** the text has: a file with errors can be saved (a half-built flow must be
+  holdable) and the dialog says it will fail `bide check` and `plan.Load` until they are fixed;
+- if the text is **weaker than the baseline**, `THIS WEAKENS THE POLICY` with each item, and a
+  checkbox: Save stays disabled until you confirm. The confirmation lists exactly the items the
+  server computed for this text and is checked by the server, not only by the page: a save of a
+  weakened text without it is refused (HTTP 422) and writes nothing, and a confirmation made for an
+  older text does not cover a newer one. A text that could not be compared needs the same
+  confirmation. The confirmation is not written into the file, which has no place for one and must
+  not grow one: the control that stops a weakened policy merging is the pull request, where `bide
+  check -diff -check -fail-on-weaken` fails and a policy owner has to approve.
+
+The write is **atomic**: the text goes to a temporary file in the same directory, which replaces the
+file by a rename, keeping its permission bits, so a reader sees the old file or the new one and a
+failure (a full disk, a permission) leaves the old file and no temporary file. The save carries the
+hash of the file as the page read it, and if the file on disk is different the answer is a conflict
+(HTTP 409): nothing is written, and the dialog shows the file on disk against your text and offers
+to reload (which replaces your edits) or to keep editing. It never overwrites. This is a
+compare-and-swap for a person editing in two places, not a lock: another process that writes
+between the check and the rename is overwritten.
+
+The path is fixed at startup and checked again when writing: a target that has become a symbolic
+link, or a directory, or whose directory is no longer the one resolved at startup, is refused. The
+editor does not run `git add`, `commit` or `push`; you commit the file.
+
+What a rename-over-the-file save does not keep: hard links to the file (the new file is a new
+inode, so another name for the old one is left behind), extended attributes and ACLs, and, on
+Windows, it cannot replace a file another program holds open without sharing delete. Permission
+bits are kept.
+
 A file that is not a readable config (invalid YAML, a duplicate key, more than one YAML document)
 shows `CONFIG DOES NOT PARSE` and the reason, and no graph.
 
 ## Where it runs, and what it can touch
 
 `bide edit` serves on a loopback address (`-addr`, default `127.0.0.1:8585`) and refuses any other
-host, as `bide view` does. It reads only the file named on the command line: that file must exist,
+host, as `bide view` does. It reads and writes only the file named on the command line: that file must exist,
 be a regular file of at most 1 MiB and end in `.yaml`, `.yml` or `.json`; a symbolic link is
 resolved once at startup. There is no endpoint that opens another file.
 
@@ -118,4 +162,5 @@ for a text against a baseline, and `flowedit.WithBase` is the `-base` option of 
 its approval gate: `need`, approvers, `exclude_principal`, `timeout`) to a config's text by splicing,
 so comments, blank lines and key order stay and the diff of an edit is the edit; each result is
 verified, and what cannot be spliced safely is a `*flowedit.Refusal` with the text untouched. The
-page does not offer these operations yet.
+page does not offer these operations yet. `flowedit.UnifiedDiff` is the diff the dialog shows, and
+`(*flowedit.Server).Save` is the save, with the checks above.

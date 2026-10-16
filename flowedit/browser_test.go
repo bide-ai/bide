@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -75,20 +76,27 @@ func browserTools(t *testing.T) (node, dir, chrome string) {
 	return node, dir, chrome
 }
 
-// runSmoke serves s on a loopback port and drives its page in Chrome.
-func runSmoke(t *testing.T, s *Server) smoke {
+// runScript serves s on a loopback port, runs browser/script in Node against its page in Chrome and
+// decodes the one JSON line it prints into out. The script sees FILE, the path of the config.
+func runScript(t *testing.T, script string, s *Server, out any) {
 	t.Helper()
 	node, dir, chrome := browserTools(t)
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
-	cmd := exec.Command(node, "smoke.mjs")
+	cmd := exec.Command(node, script)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "CHROME_BIN="+chrome, "PAGE_URL="+ts.URL+"/#t="+s.Token())
+	cmd.Env = append(os.Environ(), "CHROME_BIN="+chrome, "PAGE_URL="+ts.URL+"/#t="+s.Token(), "FILE="+s.path)
 	raw, err := cmd.Output()
-	var out smoke
-	if jerr := json.Unmarshal(raw, &out); jerr != nil {
+	if jerr := json.Unmarshal(raw, out); jerr != nil {
 		t.Fatalf("the script printed no result (%v): %q", err, raw)
 	}
+}
+
+// runSmoke drives the page of s in Chrome (browser/smoke.mjs).
+func runSmoke(t *testing.T, s *Server) smoke {
+	t.Helper()
+	var out smoke
+	runScript(t, "smoke.mjs", s, &out)
 	if !out.OK {
 		t.Fatalf("the script failed: %s\nconsole: %q\nfailed requests: %q", out.Error, out.Console, out.Failed)
 	}
@@ -196,4 +204,81 @@ func TestWeakenedBannerInChrome(t *testing.T) {
 		t.Errorf("baseline line %q", out.BaselineLine)
 	}
 	checkBrowser(t, out, weaker)
+}
+
+// TestEditAndSaveInChrome types a weakening edit into the source, sees the banner (with nothing in it
+// that closes it), saves it through the dialog by keyboard, and has to confirm the weakening to do
+// so; then changes the file behind the page's back, and the next save is refused and shows what is
+// on disk. The file on disk is checked at each step.
+func TestEditAndSaveInChrome(t *testing.T) {
+	s, p := newTestServer(t, "refund.yaml", weakFlow)
+	var r struct {
+		OK                   bool     `json:"ok"`
+		Error                string   `json:"error"`
+		StateBefore          string   `json:"stateBefore"`
+		SaveDisabledBefore   bool     `json:"saveDisabledBefore"`
+		Banner               string   `json:"banner"`
+		BannerControls       int      `json:"bannerControls"`
+		StateDirty           string   `json:"stateDirty"`
+		SaveEnabled          bool     `json:"saveEnabled"`
+		VerdictAfterEdit     string   `json:"verdictAfterEdit"`
+		DialogTitle          string   `json:"dialogTitle"`
+		DialogText           string   `json:"dialogText"`
+		DiffLines            []string `json:"diffLines"`
+		DoSaveDisabledBefore bool     `json:"doSaveDisabledBefore"`
+		FocusInDialog        string   `json:"focusInDialog"`
+		DoSaveDisabledAfter  bool     `json:"doSaveDisabledAfter"`
+		StateAfterSave       string   `json:"stateAfterSave"`
+		Disk1                string   `json:"disk1"`
+		FocusAfterClose      string   `json:"focusAfterClose"`
+		LiveAfterSave        string   `json:"liveAfterSave"`
+		ConflictText         string   `json:"conflictText"`
+		ConflictButtons      []string `json:"conflictButtons"`
+		ConflictDiffLines    []string `json:"conflictDiffLines"`
+		Disk2                string   `json:"disk2"`
+		SourceAfterReload    string   `json:"sourceAfterReload"`
+		StateAfterReload     string   `json:"stateAfterReload"`
+		Console              []string `json:"console"`
+		Failed               []string `json:"failed"`
+		OffOrigin            []string `json:"offOrigin"`
+	}
+	runScript(t, "edit.mjs", s, &r)
+	if !r.OK {
+		t.Fatalf("the script failed: %s\nconsole: %q\nfailed requests: %q", r.Error, r.Console, r.Failed)
+	}
+	if len(r.Console) > 0 || len(r.Failed) > 0 || len(r.OffOrigin) > 0 {
+		t.Errorf("the browser reported console %q, failed requests %q, requests off the origin %q", r.Console, r.Failed, r.OffOrigin)
+	}
+	weaker := strings.Replace(weakFlow, "need: 2", "need: 1", 1)
+	if r.StateBefore != "saved" || !r.SaveDisabledBefore {
+		t.Errorf("before an edit: state %q, save disabled %v", r.StateBefore, r.SaveDisabledBefore)
+	}
+	if !strings.Contains(r.Banner, "APPROVAL GATE WEAKENED") || !strings.Contains(r.Banner, "charge: approval 2 of 3") || r.BannerControls != 0 {
+		t.Errorf("banner %q with %d controls", r.Banner, r.BannerControls)
+	}
+	if r.StateDirty != "unsaved changes" || !r.SaveEnabled || !strings.Contains(r.VerdictAfterEdit, "POLICY VIOLATION") {
+		t.Errorf("after the edit: state %q, save enabled %v, verdict %q", r.StateDirty, r.SaveEnabled, r.VerdictAfterEdit)
+	}
+	if !strings.HasPrefix(r.DialogTitle, "Save refund.yaml") || !strings.Contains(r.DialogText, "THIS WEAKENS THE POLICY") || !r.DoSaveDisabledBefore || r.DoSaveDisabledAfter || r.FocusInDialog != "confirm-weaken" {
+		t.Errorf("dialog %q %q: Save disabled before %v after %v, focus %q", r.DialogTitle, r.DialogText, r.DoSaveDisabledBefore, r.DoSaveDisabledAfter, r.FocusInDialog)
+	}
+	if !slices.Contains(r.DiffLines, "-      need: 2") || !slices.Contains(r.DiffLines, "+      need: 1") {
+		t.Errorf("diff lines %q", r.DiffLines)
+	}
+	if r.StateAfterSave != "saved" || r.Disk1 != weaker || r.FocusAfterClose != "source" || r.LiveAfterSave != "Saved refund.yaml" {
+		t.Errorf("after the save: state %q, focus %q, live %q, disk %q", r.StateAfterSave, r.FocusAfterClose, r.LiveAfterSave, r.Disk1)
+	}
+	other := strings.Replace(weaker, "flow: refund", "flow: refund-other", 1)
+	if !strings.Contains(r.ConflictText, "nothing was written") || r.Disk2 != other {
+		t.Errorf("conflict: %q; disk %q", r.ConflictText, r.Disk2)
+	}
+	if len(r.ConflictButtons) != 2 || !strings.HasPrefix(r.ConflictButtons[1], "Reload from disk") || !slices.Contains(r.ConflictDiffLines, "-flow: refund-other") || !slices.Contains(r.ConflictDiffLines, "+flow: refund") {
+		t.Errorf("conflict buttons %q, diff %q", r.ConflictButtons, r.ConflictDiffLines)
+	}
+	if r.SourceAfterReload != other || r.StateAfterReload != "saved" {
+		t.Errorf("after the reload: source %q, state %q", r.SourceAfterReload, r.StateAfterReload)
+	}
+	if got, _ := os.ReadFile(p); string(got) != other {
+		t.Errorf("the editor wrote over the other writer's file: %q", got)
+	}
 }

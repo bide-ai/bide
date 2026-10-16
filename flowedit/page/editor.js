@@ -9,6 +9,8 @@
 //                                             verdict{class,word,icon,line,details,stats[]}, errors, warnings,
 //                                             problems[], assertions[], nodes[], wiring[], graph,
 //                                             weakening{baseline, weakened[], word, line, strengthened[], changes[], compare_error} }
+//   POST /api/preview {text, hash}  -> { diff, removed_comments[], changed, hash, conflict, needs_confirmation[], errors, warnings }
+//   POST /api/save {text, hash, confirmed[]} -> Doc, or 409 { conflict, hash, diff }, or 422 { needs_confirmation[] }
 // Every call is a POST with the session token (from the URL fragment, #t=...) in X-Bide-Token.
 
 const SVGNS = 'http://www.w3.org/2000/svg';
@@ -48,7 +50,7 @@ async function api(path, body = {}) {
     body: JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || res.status + ' ' + res.statusText);
+  if (!res.ok) throw Object.assign(new Error(data.error || res.status + ' ' + res.statusText), { status: res.status, data });
   return data;
 }
 
@@ -126,7 +128,7 @@ export function renderInspector(v) {
     h('h3', {}, n.name),
     h('dl', {}, row('kind', n.kind), row('block', n.block), row('safety (config)', n.safety || 'left to the block'), row('crash behavior', n.risk),
       row('approval gate', n.gate || 'none'), row('problems', (n.problems || []).join('; '))),
-    h('p', { class: 'muted small' }, 'This release shows the flow and does not change it.'));
+    h('p', { class: 'muted small' }, 'Change the file in the source below; forms for the gate and the safety come next.'));
 }
 
 export function renderAssertions(v) {
@@ -179,12 +181,18 @@ function select(name) {
   announce('Selected ' + name);
 }
 
-export function render(v) {
+// What the page holds of the file: text is what the author has now, disk is the text the file had
+// when it was last read or saved and hash that file's hash. text differs from disk exactly when there
+// are unsaved changes.
+const state = { text: '', disk: '', hash: '' };
+const dirty = () => state.text !== state.disk;
+
+export function render(v, { keepSource = false } = {}) {
   view = v;
   if (selected && !(v.nodes || []).some((n) => n.name === selected)) selected = '';
   $('file').textContent = v.name + ' (' + v.format + ')';
   $('modeline').textContent = v.mode;
-  $('source').textContent = v.text;
+  if (!keepSource) $('source').value = v.text;
   renderWeakening(v);
   renderVerdict(v);
   renderCanvas(v);
@@ -192,7 +200,142 @@ export function render(v) {
   renderInspector(v);
   renderAssertions(v);
   renderProblems(v);
+  renderState();
   announce((v.weakening && v.weakening.weakened && v.weakening.weakened.length ? (v.weakening.word || 'WEAKENED') + '. ' : '') + v.verdict.word + '. ' + v.verdict.line);
+}
+
+function renderState() {
+  const d = dirty();
+  $('state-tag').textContent = d ? 'unsaved changes' : 'saved';
+  $('save').disabled = !d;
+  $('revert').disabled = !d;
+}
+
+// Typing in the source asks the server for the check of the new text (the page validates nothing
+// itself) after a short pause. A slower answer to an older text is dropped.
+let typing = 0;
+let timer = 0;
+function onInput() {
+  state.text = $('source').value;
+  renderState();
+  clearTimeout(timer);
+  const mine = ++typing;
+  timer = setTimeout(async () => {
+    try {
+      const v = await api('/api/report', { text: state.text });
+      if (mine === typing) render(v, { keepSource: true });
+    } catch (e) {
+      announce('The check failed: ' + e.message);
+    }
+  }, 250);
+}
+
+async function revert() {
+  state.text = state.disk;
+  $('source').value = state.text;
+  render(await api('/api/report', { text: state.text }));
+  announce('Reverted to the saved text');
+}
+
+// ---- the save dialog: what will be written, and what the author must confirm ----
+
+const dlg = () => $('dialog');
+const baseName = (p) => p.split(/[\\/]/).pop();
+function closeDialog(returnFocusTo) {
+  if (dlg().open) dlg().close();
+  if (returnFocusTo) returnFocusTo.focus();
+}
+
+// diffBlock draws a unified diff as lines of text; the leading + or - is part of the text, so
+// added and removed lines are not told apart by color alone.
+function diffBlock(diff) {
+  return h('pre', { class: 'diff', tabindex: '0', 'aria-label': 'Diff of the bytes to be written' },
+    diff.split('\n').filter((l, i, a) => !(i === a.length - 1 && l === '')).map((l) =>
+      h('span', { class: l.startsWith('+++') || l.startsWith('---') || l.startsWith('@@') ? 'dh' : l[0] === '+' ? 'da' : l[0] === '-' ? 'dd' : 'dc' }, l || ' ')));
+}
+
+function openDialog(title, body, actions, labelFor) {
+  $('dialog-title').textContent = title;
+  replace('dialog-body', body);
+  replace('dialog-actions', actions);
+  if (!dlg().open) dlg().showModal();
+  (labelFor || dlg().querySelector('button')).focus();
+}
+
+async function save() {
+  const opener = $('save');
+  let pv;
+  try {
+    pv = await api('/api/preview', { text: state.text, hash: state.hash });
+  } catch (e) {
+    announce('Could not prepare the save: ' + e.message);
+    return;
+  }
+  if (pv.conflict) return conflictDialog(pv.hash, pv.diff, opener);
+  pv.needs_confirmation = pv.needs_confirmation || [];
+  const cancel = h('button', { type: 'button', class: 'btn' }, 'Cancel');
+  cancel.addEventListener('click', () => closeDialog(opener));
+  const confirmBox = h('input', { type: 'checkbox', id: 'confirm-weaken' });
+  const go = h('button', { type: 'button', class: 'btn primary', id: 'do-save', disabled: pv.needs_confirmation.length > 0 }, 'Save');
+  confirmBox.addEventListener('change', () => { go.disabled = !confirmBox.checked; });
+  const status = h('p', { class: 'bad', role: 'alert', id: 'save-error' });
+  go.addEventListener('click', () => commit(pv, opener, status));
+  const body = [
+    !pv.changed ? h('p', {}, 'The text is the same as the file: nothing to write.') : null,
+    pv.errors > 0 ? h('p', { class: 'warn' }, 'The text has ' + pv.errors + ' error' + (pv.errors === 1 ? '' : 's') + ' (bide check lists them). It can be saved, and it will fail bide check and plan.Load until they are fixed.') : null,
+    (pv.removed_comments || []).length ? h('div', {}, h('p', { class: 'warn' }, 'This save removes ' + pv.removed_comments.length + ' comment' + (pv.removed_comments.length === 1 ? '' : 's') + ':'),
+      h('ul', {}, pv.removed_comments.map((c) => h('li', {}, h('code', {}, c))))) : null,
+    pv.needs_confirmation.length ? h('div', { class: 'verdict v-bad' }, h('div', { class: 'vicon' }, icon('halt')), h('div', { class: 'vtext' },
+      h('p', { class: 'vword' }, 'THIS WEAKENS THE POLICY'),
+      h('p', { class: 'vline' }, 'Compared with ' + (view.weakening ? view.weakening.baseline : 'the baseline') + ', saving this:'),
+      pv.needs_confirmation.map((x) => h('p', { class: 'vdetail' }, x)),
+      h('p', { class: 'vdetail' }, h('label', {}, confirmBox, ' I confirm that I am weakening this policy.')))) : null,
+    pv.changed ? diffBlock(pv.diff) : null,
+    status,
+  ];
+  openDialog('Save ' + baseName(view.name) + '?', body, [go, cancel], pv.needs_confirmation.length ? confirmBox : go);
+}
+
+async function commit(pv, opener, status) {
+  status.textContent = '';
+  try {
+    const d = await api('/api/save', { text: state.text, hash: state.hash, confirmed: pv.needs_confirmation });
+    state.disk = d.text;
+    state.hash = d.hash;
+    closeDialog();
+    render(d, { keepSource: true });
+    $('source').focus(); // the Save button is disabled now that nothing is unsaved
+    announce('Saved ' + baseName(d.name));
+  } catch (e) {
+    if (e.status === 409) { conflictDialog(e.data.hash, e.data.diff, opener); return; }
+    if (e.status === 422) { closeDialog(); save(); return; } // the text changed under the confirmation: ask again
+    status.textContent = 'Not saved: ' + e.message;
+  }
+}
+
+// The file changed on disk since the page read it. The editor never overwrites it: it shows what is
+// on disk against the author's text and offers to reload (which replaces the author's edits) or to
+// go on editing.
+function conflictDialog(hash, diff, opener) {
+  const keep = h('button', { type: 'button', class: 'btn' }, 'Keep editing');
+  keep.addEventListener('click', () => closeDialog(opener));
+  const reload = h('button', { type: 'button', class: 'btn primary' }, 'Reload from disk (discards my edits)');
+  reload.addEventListener('click', async () => {
+    try {
+      const d = await api('/api/doc');
+      state.text = state.disk = d.text;
+      state.hash = d.hash;
+      closeDialog(opener);
+      render(d);
+      announce('Reloaded from disk');
+    } catch (e) {
+      announce('Could not reload: ' + e.message);
+    }
+  });
+  openDialog('The file changed on disk', [
+    h('p', { class: 'bad', role: 'alert' }, 'The file was changed by something else after this page read it, so nothing was written. The diff below is the file on disk (lines starting with -) against your text (+).'),
+    diffBlock(diff || ''),
+  ], [keep, reload], keep);
 }
 
 function theme() {
@@ -209,8 +352,15 @@ async function main() {
     replace('verdict', h('p', { class: 'bad' }, 'No session token in the address. Open the address bide edit printed, including the part after #.'));
     return;
   }
+  $('source').addEventListener('input', onInput);
+  $('save').addEventListener('click', save);
+  $('revert').addEventListener('click', revert);
+  addEventListener('beforeunload', (e) => { if (dirty()) { e.preventDefault(); e.returnValue = ''; } });
   try {
-    render(await api('/api/doc'));
+    const d = await api('/api/doc');
+    state.text = state.disk = d.text;
+    state.hash = d.hash;
+    render(d);
   } catch (e) {
     replace('verdict', h('p', { class: 'bad' }, 'Could not read the file: ' + e.message));
   }
