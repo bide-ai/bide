@@ -401,37 +401,35 @@ func diffChanges(o, n plan.ConfigReport, oldSafety, newSafety map[string]string)
 		}
 	}
 	cs = append(cs, switchChanges(o, n, uNew)...)
-	cs = append(cs, assertionChanges(o, n)...)
-	return append(cs, assertionRegressions(o, n)...)
+	cs = append(cs, assertionChanges(o, n, ren)...)
+	return append(cs, assertionRegressions(o, n, ren)...)
 }
 
 // assertionChanges compares the config's assert lines. A line the new config lacks is removed
 // (weakened), unless a line only the new config has is stronger than it (tightened, strengthened: a
 // higher need, a smaller approver set, or the requester excluded), or weaker (loosened, weakened) for
-// the same node; a line only the new config has, and relates to none removed, is added.
-func assertionChanges(o, n plan.ConfigReport) []Change {
+// the same node; a line only the new config has, and relates to none removed, is added. A line is
+// the same line when it differs only in spacing and the quoting of node names, and a node renamed
+// with the same block, kind and edges (ren, old name -> new) is the same node in an old line: a pure
+// rename is not a weakening. A line written twice counts once.
+func assertionChanges(o, n plan.ConfigReport, ren map[string]string) []Change {
 	var cs []Change
-	text := func(r plan.ConfigReport) []string {
-		var out []string
-		for _, a := range r.Assertions {
-			out = append(out, a.Text)
-		}
-		return out
-	}
-	oldT, newT := text(o), text(n)
+	oldT, newT := assertionTexts(o), assertionTexts(n)
+	// oldAs is an old line as the new config would write it, for comparing; the report shows the line as written.
+	oldAs := func(t string) string { return plan.RenameAssertion(t, renamer(ren)) }
 	same := func(a, b string) bool { return plan.CompareAssertions(a, b) == "equal" }
 	inOther := func(list []string, t string) bool {
 		return slices.ContainsFunc(list, func(x string) bool { return same(x, t) })
 	}
 	var added []string
 	for _, t := range newT {
-		if !inOther(oldT, t) {
+		if !slices.ContainsFunc(oldT, func(x string) bool { return same(oldAs(x), t) }) {
 			added = append(added, t)
 		}
 	}
 	used := map[string]bool{}
 	for _, t := range oldT {
-		if inOther(newT, t) {
+		if inOther(newT, oldAs(t)) {
 			continue
 		}
 		rel, with := "", ""
@@ -439,7 +437,7 @@ func assertionChanges(o, n plan.ConfigReport) []Change {
 			if used[a] {
 				continue
 			}
-			switch r := plan.CompareAssertions(t, a); {
+			switch r := plan.CompareAssertions(oldAs(t), a); {
 			case r == "stronger" && rel != "stronger":
 				rel, with = r, a
 			case r == "weaker" && rel == "":
@@ -465,30 +463,58 @@ func assertionChanges(o, n plan.ConfigReport) []Change {
 	return cs
 }
 
-// assertionRegressions reports each assert line the new config keeps (however spelled) that held in
-// the old config and no longer does: it is violated (with the counterexample), cannot be decided, or
-// no longer reads. A line that did not hold before, or still holds, is not reported, and a line the
-// new config changed or dropped is assertionChanges' business. Without this the assert lines would
-// be a check a change can defeat without touching them: a new arm around a gate leaves
-// "every path to charge passes approval" as written and false.
-func assertionRegressions(o, n plan.ConfigReport) []Change {
+// assertionTexts are r's assert lines, each distinct line once (spacing and quoting aside).
+func assertionTexts(r plan.ConfigReport) []string {
+	var out []string
+	for _, a := range r.Assertions {
+		if !slices.ContainsFunc(out, func(x string) bool { return plan.CompareAssertions(x, a.Text) == "equal" }) {
+			out = append(out, a.Text)
+		}
+	}
+	return out
+}
+
+// renamer is the node names of ren (old -> new) as a function.
+func renamer(ren map[string]string) func(string) string {
+	return func(name string) string {
+		if to, ok := ren[name]; ok {
+			return to
+		}
+		return name
+	}
+}
+
+// assertionRegressions reports each assert line the new config keeps (however spelled, and under a
+// renamed node's new name) that held in the old config and no longer does: it is violated (with the
+// counterexample), cannot be decided, no longer reads, or holds only vacuously (nothing it is about
+// is reachable: the flow turned cyclic, or lost the path to the node). A line that did not hold
+// before, or still holds, is not reported, and a line the new config changed or dropped is
+// assertionChanges' business. Without this the assert lines would be a check a change can defeat
+// without touching them: a new arm around a gate leaves "every path to charge passes approval" as
+// written and false.
+func assertionRegressions(o, n plan.ConfigReport, ren map[string]string) []Change {
 	var cs []Change
+	var seen []string
 	for _, a := range o.Assertions {
-		if !a.Holds {
+		if !a.Holds || a.Vacuous || slices.Contains(seen, plan.RenameAssertion(a.Text, nil)) {
 			continue
 		}
+		seen = append(seen, plan.RenameAssertion(a.Text, nil))
+		text := plan.RenameAssertion(a.Text, renamer(ren))
 		var now []plan.AssertionResult
 		for _, b := range n.Assertions {
-			if plan.CompareAssertions(a.Text, b.Text) == "equal" {
+			if plan.CompareAssertions(text, b.Text) == "equal" {
 				now = append(now, b)
 			}
 		}
-		if len(now) == 0 || slices.ContainsFunc(now, func(b plan.AssertionResult) bool { return b.Holds }) {
+		if len(now) == 0 || slices.ContainsFunc(now, func(b plan.AssertionResult) bool { return b.Holds && !b.Vacuous }) {
 			continue
 		}
 		b := now[0]
 		word, why := "violated", ""
 		switch {
+		case b.Holds:
+			word, why = "vacuous", messageOf(b)
 		case b.Invalid:
 			word, why = "invalid", messageOf(b)
 		case b.Undecided:
@@ -498,9 +524,14 @@ func assertionRegressions(o, n plan.ConfigReport) []Change {
 		default:
 			why = messageOf(b)
 		}
+		detail := "held before, now " + word
+		sum := "assertion no longer holds: " + a.Text + " (" + word + why + ")"
+		if word == "vacuous" {
+			detail = "held before, now holds only vacuously"
+			sum = "assertion now holds only vacuously: " + a.Text + " (" + strings.TrimPrefix(b.Message, "holds vacuously: ") + ")"
+		}
 		cs = append(cs, Change{Change: "changed", What: "assertion", Gate: "weakened", Weakening: "assertion",
-			Details: []string{a.Text + ": held before, now " + word + " (weakened)"},
-			summary: "assertion no longer holds: " + a.Text + " (" + word + why + ")"})
+			Details: []string{a.Text + ": " + detail + " (weakened)"}, summary: sum})
 	}
 	return cs
 }

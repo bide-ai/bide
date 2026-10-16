@@ -613,6 +613,12 @@ it never passes wrongly), and `no side effect after X` with a node of unknown sa
 known side effect) is undecided, which is also an error. An assertion outside the grammar, or one
 that names a node the config does not declare, is an error too.
 
+An `every path to X passes ...` or `no side effect after X` assertion holds vacuously when the entry reaches no X (or, for
+`every path to a terminal passes X`, no terminal: a flow whose every node has an outgoing edge, a
+cycle, has none). The check still reports it as holding, with `vacuous` set on the result and a
+message saying so; `bide view -config` shows `holds vacuously`, and `bide check -diff` reports a line
+that held and now holds only vacuously as weakened.
+
 #### Editor support: a JSON Schema for flow configs
 
 A JSON Schema (Draft 2020-12) describes the config, so an editor can complete keys, show each key's
