@@ -175,7 +175,7 @@ func TestRedirectRule(t *testing.T) {
 		refused      bool
 	}{
 		{"http://pki.example/a.crl", "http://pki.example/b.crl", 1, false},
-		{"http://pki.example/a.crl", "https://pki.example/b.crl", 1, false},      // the usual move to TLS
+		{"http://pki.example/a.crl", "https://pki.example/b.crl", 1, false}, // the usual move to TLS
 		{"http://pki.example:80/a.crl", "https://pki.example:443/b.crl", 1, false},
 		{"http://pki.example/a.crl", "https://pki.example:8443/b.crl", 1, true}, // not the default port
 		{"http://pki.example:8080/a.crl", "https://pki.example/b.crl", 1, true}, // not the default port
