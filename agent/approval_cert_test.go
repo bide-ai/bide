@@ -292,3 +292,21 @@ func TestRecordWithOnlyAChainSurvivesDecoding(t *testing.T) {
 		t.Fatalf("%v %+v", err, back.ApproverSignature)
 	}
 }
+
+// L3: WithDecisionCheck's "same decision" includes the leaf. A record of this approver that carries a
+// chain is not the bare-key decision being submitted, even when its v3 signature is valid for the same
+// verdict, scheme and time: the submission is refused as a second decision, not taken as written.
+func TestSubmitDecision_CheckSameDecisionIncludesTheLeaf(t *testing.T) {
+	ctx := context.Background()
+	j, vf, v3sig := pausedOne(t)
+	v3sig = append([]byte{1}, v3sig...)
+	rec := Record{Kind: StepApproval, ToolUseID: "c1", Approved: true, ApproverSignature: &ApproverSignature{
+		Approver: "a", ApproverAlg: fakeAlg, Signature: v3sig, DecidedAt: FormatTimestamp(testDecidedAt), ApproverCert: [][]byte{[]byte("leaf")}}}
+	if _, err := j.put(ctx, "r", "approval:c1:a:withchain", rec); err != nil {
+		t.Fatal(err)
+	}
+	d := Decision{RunID: "r", ToolUseID: "c1", ApproverID: "a", Approved: true, DecidedAt: testDecidedAt, Alg: fakeAlg, Signature: v3sig}
+	if err := SubmitDecision(ctx, j, d, WithDecisionCheck(vf)); !errors.Is(err, ErrAlreadyDecided) {
+		t.Fatalf("a bare decision beside a chain-carrying record of the approver: %v", err)
+	}
+}

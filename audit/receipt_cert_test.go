@@ -48,6 +48,12 @@ func newCertReceiptFx(t *testing.T) *certReceiptFx {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return submitCertDecision(t, g, leaf, ci)
+}
+
+// submitCertDecision journals leaf's v4 decision of "alice" on g's call c1.
+func submitCertDecision(t *testing.T, g *gate, leaf *testca.Leaf, ci *audit.CertIdentity) *certReceiptFx {
+	t.Helper()
 	f := &certReceiptFx{g: g, leaf: leaf, ci: ci, chain: leaf.Chain()}
 	s := g.subject(t)
 	sig := ed25519.Sign(leaf.Key.(ed25519.PrivateKey), agent.ApprovalDecisionBytesCert(s, "alice", true, testDecidedAt, agent.CertLeafHash(leaf.DER)))
@@ -62,6 +68,14 @@ func newCertReceiptFx(t *testing.T) *certReceiptFx {
 		}
 	}
 	return f
+}
+
+// withChain is a fresh gate with the same policy whose "alice" decided under leaf.
+func (f *certReceiptFx) withChain(t *testing.T, leaf *testca.Leaf) *certReceiptFx {
+	t.Helper()
+	g := newGate(1, []string{"alice"}, []string{"alice"})
+	wantPaused(t, g.run(), 0)
+	return submitCertDecision(t, g, leaf, f.ci)
 }
 
 func (f *certReceiptFx) receipt(t *testing.T) audit.DecisionReceipt {
@@ -101,7 +115,7 @@ func TestCertReceipt_CarriesTheChainAndVerifies(t *testing.T) {
 	if err := json.Unmarshal(b, &back); err != nil || len(back.Cert) != 2 {
 		t.Fatalf("%v", err)
 	}
-	if err := back.Verify(leafVerifier(t, f)); err != nil {
+	if err := back.Verify(leafVerifier(t, f)); !errors.Is(err, audit.ErrCertificateBound) {
 		t.Fatalf("Verify: %v", err)
 	}
 	bare := newReceiptWorld(t)
@@ -119,7 +133,8 @@ func TestCertReceipt_VerifyRefusesWhatIsNotTheSignedCertificate(t *testing.T) {
 	if err := stripped.Verify(v); !errors.Is(err, audit.ErrNotVerified) {
 		t.Fatalf("stripped: %v", err)
 	}
-	// Another certificate for the same key swapped in: the leaf hash differs.
+	// Another certificate for the same key swapped in: the leaf hash differs, and the swapped receipt
+	// is refused by VerifyCertificate (given a proof of it) as the signature is over the other leaf.
 	other := testca.NewRoot(t, "root2", testca.Opts{}).NewLeaf(t, testca.Opts{KeyWith: f.leaf.Key})
 	swapped := f.receipt(t)
 	swapped.Cert = other.Chain()
@@ -137,11 +152,21 @@ func TestCertReceipt_VerifyRefusesWhatIsNotTheSignedCertificate(t *testing.T) {
 	}
 }
 
+// anchored returns rc with a proof under a head signed at headTime, and the log key that vouches for it.
+func (f *certReceiptFx) anchored(t *testing.T, rc audit.DecisionReceipt, headTime time.Time) (audit.DecisionReceipt, audit.Verifier) {
+	t.Helper()
+	lk := audit.Ed25519Verifier{Pub: f.g.logPub}
+	out, err := audit.AnchorReceipt(rc, journalOf(t, f.g), []audit.SignedTreeHead{headAt(t, f.g, f.g.logPriv, headTime)}, lk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out, lk
+}
+
 func TestCertReceipt_VerifyCertificate(t *testing.T) {
 	f := newCertReceiptFx(t)
-	rc := f.receipt(t)
-	a := testDecidedAt.Add(time.Second)
-	if err := rc.VerifyCertificate(f.ci, a); err != nil {
+	rc, lk := f.anchored(t, f.receipt(t), testDecidedAt.Add(time.Second))
+	if err := rc.VerifyCertificate(f.ci, lk); err != nil {
 		t.Fatalf("VerifyCertificate: %v", err)
 	}
 	want := func(name string, err error, reason string) {
@@ -153,37 +178,83 @@ func TestCertReceipt_VerifyCertificate(t *testing.T) {
 	}
 	stripped := rc
 	stripped.Cert = nil
-	want("stripped chain", stripped.VerifyCertificate(f.ci, a), agent.ReasonNoCert)
+	if err := stripped.VerifyCertificate(f.ci, lk); !errors.Is(err, audit.ErrNotVerified) {
+		t.Fatalf("stripped chain: %v", err) // the proof is of the record with the chain
+	}
 	// Not this person's certificate.
 	mallory := rc
 	mallory.Approver = "mallory"
-	if err := mallory.VerifyCertificate(f.ci, a); err == nil || !errors.Is(err, audit.ErrNotVerified) {
+	if err := mallory.VerifyCertificate(f.ci, lk); err == nil || !errors.Is(err, audit.ErrNotVerified) {
 		t.Fatalf("an approver with no identity: %v", err)
 	}
-	// A chain to an anchor the gate does not trust.
+	// A chain to an anchor the gate does not trust: re-anchor a receipt for a record that carries it.
 	otherRoot := testca.NewRoot(t, "other", testca.Opts{})
 	oi := otherRoot.NewIntermediate(t, "inter", testca.Opts{})
-	foreign := rc
-	foreign.Cert = oi.NewLeaf(t, testca.Opts{KeyWith: f.leaf.Key}).Chain()
-	want("foreign chain", foreign.VerifyCertificate(f.ci, a), agent.ReasonCertChain)
+	g2 := f.withChain(t, oi.NewLeaf(t, testca.Opts{Key: testca.Ed25519, Mutate: func(c *x509.Certificate) {
+		c.NotBefore, c.NotAfter = testDecidedAt.Add(-time.Hour), testDecidedAt.Add(time.Hour)
+	}}))
+	foreign, flk := g2.anchored(t, g2.receipt(t), testDecidedAt.Add(time.Second))
+	want("foreign chain", foreign.VerifyCertificate(f.ci, flk), agent.ReasonCertChain)
 	// The time it became provable is outside the certificate's validity.
-	want("too late", rc.VerifyCertificate(f.ci, testDecidedAt.Add(3*time.Hour)), agent.ReasonCertWindow)
+	late, llk := f.anchored(t, f.receipt(t), testDecidedAt.Add(3*time.Hour))
+	want("too late", late.VerifyCertificate(f.ci, llk), agent.ReasonCertWindow)
 	// The receipt's scheme must be the certificate key's.
 	confused := rc
 	confused.Alg = audit.AlgECDSAP256
-	if err := confused.VerifyCertificate(f.ci, a); !errors.Is(err, audit.ErrNotVerified) {
+	if err := confused.VerifyCertificate(f.ci, lk); !errors.Is(err, audit.ErrNotVerified) {
 		t.Fatalf("algorithm confusion: %v", err)
 	}
 	// A signature that is not the leaf key's.
 	forged := rc
 	forged.Signature = append([]byte{}, rc.Signature...)
 	forged.Signature[0] ^= 0xff
-	if err := forged.VerifyCertificate(f.ci, a); !errors.Is(err, audit.ErrNotVerified) {
+	if err := forged.VerifyCertificate(f.ci, lk); !errors.Is(err, audit.ErrNotVerified) {
 		t.Fatalf("forged signature: %v", err)
 	}
 	// No policy: a configuration error, not a verdict.
-	if err := rc.VerifyCertificate(nil, a); !errors.Is(err, agent.ErrConfig) {
+	if err := rc.VerifyCertificate(nil, lk); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("nil policy: %v", err)
+	}
+}
+
+// M2: the time the chain is checked at is the receipt's own anchor, never a caller's. A receipt with
+// no proof does not verify, and a certificate that had expired by the real anchoring time does not
+// verify however early the decision was dated.
+func TestCertReceipt_VerifyCertificateUsesTheReceiptsAnchor(t *testing.T) {
+	f := newCertReceiptFx(t)
+	lk := audit.Ed25519Verifier{Pub: f.g.logPub}
+	unanchored := f.receipt(t)
+	if err := unanchored.VerifyCertificate(f.ci, lk); !errors.Is(err, audit.ErrNotVerified) {
+		t.Fatalf("an unanchored receipt verified: %v", err)
+	}
+	late, llk := f.anchored(t, f.receipt(t), testDecidedAt.Add(3*time.Hour)) // leaf expired at +1h
+	if err := late.VerifyCertificate(f.ci, llk); !errors.Is(err, audit.ErrNotVerified) {
+		t.Fatalf("a certificate expired by the anchor verified: %v", err)
+	}
+	ok, olk := f.anchored(t, f.receipt(t), testDecidedAt.Add(time.Minute))
+	if err := ok.VerifyCertificate(f.ci, olk); err != nil {
+		t.Fatal(err)
+	}
+	// The wrong log key does not vouch for the proof.
+	if err := ok.VerifyCertificate(f.ci, audit.Ed25519Verifier{Pub: f.leaf.Cert.PublicKey.(ed25519.PublicKey)}); !errors.Is(err, audit.ErrNotVerified) {
+		t.Fatalf("under the wrong log key: %v", err)
+	}
+}
+
+// M1: a certificate-bound receipt does not verify under a bare verifier, whether the leaf's key or an
+// enrolled bare key: the chain, identity and time are checked by VerifyCertificate alone.
+func TestCertReceipt_VerifyRefusesAChainedReceiptUnderAnyVerifier(t *testing.T) {
+	f := newCertReceiptFx(t)
+	rc := f.receipt(t)
+	if err := rc.Verify(leafVerifier(t, f)); !errors.Is(err, audit.ErrCertificateBound) || !errors.Is(err, audit.ErrNotVerified) {
+		t.Fatalf("Verify under the leaf's key: %v", err)
+	}
+	enrolled, err := audit.NewVerifier(audit.AlgEd25519, f.leaf.Cert.PublicKey.(ed25519.PublicKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rc.Verify(enrolled); !errors.Is(err, audit.ErrCertificateBound) {
+		t.Fatalf("Verify under the enrolled key: %v", err)
 	}
 }
 

@@ -124,10 +124,20 @@ func sameChain(a, b [][]byte) bool {
 // (agent.ApprovalDecisionBytes) of exactly this run, call, tool, arguments, approver, decision and
 // time. It does not look at the journal. An error wraps ErrNotVerified, or ErrFormat.
 //
-// A receipt that carries a chain (Cert) is a certificate-bound decision: the bytes are
-// agent.ApprovalDecisionBytesCert with the hash of Cert[0], and v is the verifier of the leaf's key.
-// Verify checks the signature, not the chain: VerifyCertificate checks the chain and the identity.
+// A receipt that carries a chain (Cert) is a certificate-bound decision, and Verify refuses it with
+// an error wrapping ErrCertificateBound and ErrNotVerified: a caller holding only a key cannot learn
+// whose decision it is. VerifyCertificate checks such a receipt.
 func (r DecisionReceipt) Verify(v Verifier) error {
+	if len(r.Cert) > 0 {
+		return fmt.Errorf("audit: receipt: it carries a certificate chain, so a bare key proves no identity; use VerifyCertificate: %w", ErrCertificateBound)
+	}
+	return r.verifySignature(v)
+}
+
+// verifySignature is Verify's check without the refusal of a certificate-bound receipt; it picks the
+// v4 bytes when the receipt carries a chain. Only VerifyCertificate calls it with such a receipt, after
+// the chain is accepted and v is the verifier of the leaf's key.
+func (r DecisionReceipt) verifySignature(v Verifier) error {
 	if err := formatOf(r, r.Format); err != nil {
 		return err
 	}
@@ -156,14 +166,15 @@ func (r DecisionReceipt) Verify(v Verifier) error {
 }
 
 // VerifyCertificate checks a certificate-bound receipt against the gate's certificate policy: the
-// chain it carries is accepted for r.Approver at a, the time the decision became provable (the
-// anchoring head's time, see AnchorTime), by exactly the rules CertIdentity.VerifyChain applies to a
+// chain it carries is accepted for r.Approver at a, the time of the head the receipt's anchoring
+// proof carries as logKey vouches for it (see AnchorTime; a receipt with no proof fails, and the
+// caller cannot choose the time), by exactly the rules CertIdentity.VerifyChain applies to a
 // decision the gate counts; the receipt's scheme is the one the leaf's key has; and the signature
 // verifies under that key over the v4 bytes. A receipt with no chain, a chain to another anchor, the
 // wrong identifier, or a time outside the certificate's validity fails with an error wrapping both
 // ErrNotVerified and the *CertError that says why. It does not check revocation status (see
 // CertIdentity.EvaluateStatus), and "verified" here is the identity check at a, not the verdict.
-func (r DecisionReceipt) VerifyCertificate(ci *CertIdentity, a time.Time) error {
+func (r DecisionReceipt) VerifyCertificate(ci *CertIdentity, logKey Verifier) error {
 	if err := formatOf(r, r.Format); err != nil {
 		return err
 	}
@@ -173,6 +184,13 @@ func (r DecisionReceipt) VerifyCertificate(ci *CertIdentity, a time.Time) error 
 	at, err := agent.ParseTimestamp(r.DecidedAt)
 	if err != nil {
 		return fmt.Errorf("audit: receipt decided_at: %v: %w", err, ErrNotVerified)
+	}
+	if logKey == nil {
+		return fmt.Errorf("audit: receipt: no log key to vouch for the anchoring proof: %w", agent.ErrConfig)
+	}
+	a, err := r.AnchorTime(logKey)
+	if err != nil {
+		return err
 	}
 	ac, err := ci.VerifyChain(r.Approver, r.Cert, at, a)
 	if err != nil {
@@ -185,13 +203,14 @@ func (r DecisionReceipt) VerifyCertificate(ci *CertIdentity, a time.Time) error 
 	if err != nil {
 		return fmt.Errorf("audit: receipt: the certificate's key: %v: %w", err, ErrNotVerified)
 	}
-	return r.Verify(v)
+	return r.verifySignature(v)
 }
 
-// AnchorTime is the time of the head that anchors the receipt: the timestamp of the smallest signed
-// head covering the decision, which is when the decision became provable (A in the design note), as
-// logKey vouches for the proof. It fails if the receipt has no proof or the proof does not hold. The
-// time is the log signer's clock; an independent time source is a separate attestation.
+// AnchorTime is the timestamp of the signed head the receipt's proof carries, as logKey vouches for
+// it. It is an upper bound on when the decision became provable (A in the design note): the proof is
+// not shown to carry the first head that covers the decision, and an earlier one may exist. It fails
+// if the receipt has no proof or the proof does not hold. The time is the log signer's clock; an
+// independent time source is a separate attestation.
 func (r DecisionReceipt) AnchorTime(logKey Verifier) (time.Time, error) {
 	if r.Anchor == nil {
 		return time.Time{}, fmt.Errorf("audit: receipt: no anchoring proof: %w", ErrNotVerified)

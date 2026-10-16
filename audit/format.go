@@ -60,6 +60,9 @@ var (
 	ErrFormat = fmt.Errorf("audit: unsupported artifact format: %w", ErrMalformed)
 	// ErrNotVerified reports an artifact that was read and understood and does not hold.
 	ErrNotVerified = errors.New("audit: not verified")
+	// ErrCertificateBound reports a certificate-bound decision receipt given to DecisionReceipt.Verify,
+	// which knows only a key: use DecisionReceipt.VerifyCertificate. It wraps ErrNotVerified.
+	ErrCertificateBound = fmt.Errorf("audit: certificate-bound receipt: %w", ErrNotVerified)
 	// ErrRedacted reports a journal holding a redacted record (agent.Record.Redacted) given to a
 	// producer that projects what the records say (an absence key set, a used-policy set, the
 	// event stream): the redacted record's content is gone, so the projection would silently omit
