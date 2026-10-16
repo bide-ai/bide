@@ -84,11 +84,17 @@ func TestServes(t *testing.T) {
 		t.Fatalf("no address in %q", out.String())
 	}
 	base, token := m[1], m[2]
-	req, _ := http.NewRequest("POST", base+"/api/doc", strings.NewReader("{}"))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Origin", base)
-	req.Header.Set("X-Bide-Token", token)
-	res, err := http.DefaultClient.Do(req)
+	// A request is built for each call: its body is read by the first one.
+	post := func(token string) (*http.Response, error) {
+		req, _ := http.NewRequest("POST", base+"/api/doc", strings.NewReader("{}"))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Origin", base)
+		if token != "" {
+			req.Header.Set("X-Bide-Token", token)
+		}
+		return http.DefaultClient.Do(req)
+	}
+	res, err := post(token)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,9 +113,10 @@ func TestServes(t *testing.T) {
 	} else {
 		r.Body.Close()
 	}
-	req.Header.Del("X-Bide-Token")
-	if r, err := http.DefaultClient.Do(req); err != nil || r.StatusCode != 401 {
+	if r, err := post(""); err != nil || r.StatusCode != 401 {
 		t.Errorf("no token: %v %v", r, err)
+	} else {
+		r.Body.Close()
 	}
 	cancel()
 	select {

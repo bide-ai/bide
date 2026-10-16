@@ -19,6 +19,7 @@ examples/approval
 examples/hsm-signing
 examples/plan
 examples/stripe-refund
+flowedit
 govern
 govern/postgreslog
 integration/bideaudit
