@@ -143,11 +143,7 @@ func TestOperationRefusals(t *testing.T) {
 		"an anchored node":          {strings.Replace(opsFlow, "- {name: receipt,", "- &r {name: receipt,", 1), Operation{Op: "set_safety", Node: "receipt", Value: "readonly"}, ""},
 		"a second document":         {opsFlow + "---\nversion: 1\n", Operation{Op: "set_safety", Node: "receipt", Value: "readonly"}, "more than one YAML document"},
 		"text that does not parse":  {"nodes: [", Operation{Op: "set_safety", Node: "a", Value: "readonly"}, ""},
-		"mixed line ends":           {strings.Replace(strings.ReplaceAll(opsFlow, "
-", "
-"), "flow: refund
-", "flow: refund
-", 1), Operation{Op: "set_safety", Node: "receipt", Value: "readonly"}, ""},
+		"mixed line ends":           {strings.Replace(strings.ReplaceAll(opsFlow, "\n", "\r\n"), "flow: refund\r\n", "flow: refund\n", 1), Operation{Op: "set_safety", Node: "receipt", Value: "readonly"}, ""},
 	} {
 		_, err := ApplyOperation("f.yaml", []byte(c.src), c.op)
 		var rf *Refusal
