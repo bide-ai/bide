@@ -8,7 +8,7 @@ Every release of the `bide` command carries three independent kinds of evidence,
 
 What is covered, precisely: the signatures cover the archives, every SBOM, `checksums.txt` and `approve-page.SHA256SUMS`; `checksums.txt` lists every archive and per-archive SBOM. The signature establishes where and when a file was built and by which workflow. It does not establish that the source is free of defects, and it does not cover the Go modules published for `go get`, which the Go module proxy and checksum database authenticate separately; the module set SBOM describes those modules, it does not authenticate them.
 
-Signing and SBOMs apply from the first release made after they were added to the release workflow. A release with no `*.sigstore.json` files was published before that. Per-archive SBOMs are signed on their own, and the module set SBOM is published, from the first release after v0.17.0; v0.17.0's per-archive SBOMs are covered by the signed `checksums.txt` only.
+Signing and SBOMs apply from the first release made after they were added to the release workflow. A release with no `*.sigstore.json` files was published before that. Per-archive SBOMs are signed on their own from v0.18.0; v0.17.0's per-archive SBOMs are covered by the signed `checksums.txt` only. The module set SBOM is published from the first release after v0.18.0: v0.18.0's was not attached, because the release script wrote it to a temporary directory (fixed in [#343](https://github.com/bide-ai/bide/pull/343)).
 
 ## What a release contains
 
