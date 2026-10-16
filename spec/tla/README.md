@@ -2930,6 +2930,10 @@ Each is in `identity/regress/`, is the same model with one rule switched off by 
 - **Liveness beyond the Anchor step.** The pause for stale or missing status is by design (the gate
   waits); `EventuallyCovered` here is only that a decision with no covering head gets one. That the
   gate then counts it is not proved: a contradictory covering head leaves it paused.
+  The property assumes weak fairness of the application's write path (`Anchor`) and of the gate's
+  anchor step (`GateAnchorStep`), that is, that the signer eventually succeeds. Model 1b's
+  `NoStuckPause` (`~badPause`) is a different property: the gate never pauses while the approvals
+  already in meet the policy.
 - **What a crash loses.** `Crash` models the gate's counted set and wait; the process, the store and
   the tool call are model 1b's and model 10's. A crash during the call is the unknown-outcome path
   (models 9 and 13), not here.
