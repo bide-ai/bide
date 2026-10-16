@@ -18,6 +18,18 @@ func (c *CertApprover) execTiers(ac *ApproverCert, p *StatusParams) (perCert fun
 	if c.ExecStatusAge <= 0 {
 		return nil, agent.ReasonStatusUnknown, "the verifier declares no ExecStatusAge, so status cannot be judged fresh enough to execute"
 	}
+	// The leaf's issuing CA is judged by ExecStatusAge, so its own period must fit it: the policy cannot
+	// tell which pinned CA that is (an intermediate can be a tier for another approver), the accepted chain can.
+	if len(ac.Chain) >= 2 {
+		k := SPKIHashOf(ac.Chain[1])
+		period := p.CAPeriod
+		if v, ok := p.CAPeriodFor[k]; ok {
+			period = v
+		}
+		if period > c.ExecStatusAge/2 {
+			return nil, agent.ReasonStatusUnknown, fmt.Sprintf("the leaf's issuing CA (key %s) publishes every %v, more than ExecStatusAge/2 (%v), so its status cannot be judged fresh enough to execute", hex.EncodeToString(k[:4]), period, c.ExecStatusAge/2)
+		}
+	}
 	for i := 1; i+1 < len(ac.Chain); i++ {
 		k := SPKIHashOf(ac.Chain[i+1])
 		if c.ExecStatusAgeFor[k] <= 0 {

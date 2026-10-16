@@ -103,8 +103,9 @@ func (c *CertApprover) ValidateConfig() error {
 	keys := func(m map[SPKIHash]time.Duration) []SPKIHash {
 		return slices.SortedFunc(maps.Keys(m), func(a, b SPKIHash) int { return slices.Compare(a[:], b[:]) })
 	}
-	// A CA that is not the leaf's issuing CA is a CA tier: it declares its own execution age (the rule for
-	// the leaf's issuer, half of ExecStatusAge, is the wrong one for an offline root whose period is weeks).
+	// A CA the declarations name as a tier is judged by its own execution age (the rule for the leaf's
+	// issuer, half of ExecStatusAge, is the wrong one for an offline root whose period is weeks); any
+	// other CA with a per-issuer period is held to that rule.
 	for _, k := range keys(c.StatusParams.CAPeriodFor) {
 		if _, tier := c.ExecStatusAgeFor[k]; tier {
 			continue
@@ -117,20 +118,21 @@ func (c *CertApprover) ValidateConfig() error {
 		if _, tier := c.ExecStatusAgeFor[k]; !tier {
 			return bad("CAOverlapFor %x is declared for a CA with no ExecStatusAgeFor: the overlap belongs to a CA tier", k[:4])
 		}
-		if o := c.CAOverlapFor[k]; o < 0 {
-			return bad("CAOverlapFor %x is negative (%v)", k[:4], o)
-		}
 	}
 	for _, k := range keys(c.ExecStatusAgeFor) {
 		age := c.ExecStatusAgeFor[k]
 		period, haveP := c.StatusParams.CAPeriodFor[k]
+		overlap, haveO := c.CAOverlapFor[k]
 		maxAge := c.StatusParams.MaxStatusAgeFor[k]
-		overlap := c.CAOverlapFor[k]
 		switch {
 		case age <= 0:
 			return bad("ExecStatusAgeFor %x is %v; a declared age is positive", k[:4], age)
 		case !haveP:
 			return bad("ExecStatusAgeFor %x is declared with no CAPeriodFor for that CA: the age cannot be checked against the CA's CRL period", k[:4])
+		case !haveO:
+			return bad("ExecStatusAgeFor %x is declared with no CAOverlapFor for that CA: declare it, zero if the CA has no overlap, so an omitted value is not read as no slack", k[:4])
+		case overlap < 0 || overlap > period:
+			return bad("CAOverlapFor %x is %v, outside 0 to the CA's period %v", k[:4], overlap, period)
 		case maxAge <= 0:
 			return bad("ExecStatusAgeFor %x is declared with no MaxStatusAgeFor for that CA: the execution age cannot exceed the age status is accepted at when a decision is counted", k[:4])
 		case period+overlap > age:
@@ -139,19 +141,25 @@ func (c *CertApprover) ValidateConfig() error {
 			return bad("ExecStatusAgeFor %x (%v) is above its MaxStatusAgeFor (%v): status the check before execution accepts would be older than a count accepts", k[:4], age, maxAge)
 		}
 	}
-	// With intermediates pinned, a trust anchor is a CA tier: its CRL covers the pinned intermediate, so
-	// it declares its execution age. (A leaf issued directly by an anchor makes the anchor the leaf's
-	// issuing CA, which has no tier.) A middle CA of a three-tier chain is known to be a tier only from
-	// the accepted chain, so an undeclared one holds the call at its first check.
-	if c.Policy != nil && len(c.Policy.inter) > 0 {
-		anchors := make([]SPKIHash, 0, len(c.Policy.anchorBy))
-		for k := range c.Policy.anchorBy {
-			anchors = append(anchors, k)
+	// The policy cannot tell which pinned CA issues a leaf and which only sits above one (an intermediate
+	// can be both, for two approvers), so every pinned intermediate declares its tier values, and so does
+	// every trust anchor once intermediates are pinned (its CRL covers them). A leaf issued directly by an
+	// anchor, with no intermediates pinned, makes the anchor the leaf's issuing CA, which declares none.
+	// At the check the position in the accepted chain decides which value applies.
+	if c.Policy != nil {
+		req := make([]SPKIHash, 0, len(c.Policy.inter)+len(c.Policy.anchorBy))
+		for k := range c.Policy.inter {
+			req = append(req, k)
 		}
-		slices.SortFunc(anchors, func(a, b SPKIHash) int { return slices.Compare(a[:], b[:]) })
-		for _, k := range anchors {
+		if len(c.Policy.inter) > 0 {
+			for k := range c.Policy.anchorBy {
+				req = append(req, k)
+			}
+		}
+		slices.SortFunc(req, func(a, b SPKIHash) int { return slices.Compare(a[:], b[:]) })
+		for _, k := range req {
 			if _, tier := c.ExecStatusAgeFor[k]; !tier {
-				return bad("the policy pins intermediates, so the trust anchor %x issues the CRL that covers them and must declare ExecStatusAgeFor (with CAPeriodFor and MaxStatusAgeFor): its status is as fresh as its oldest CRL, an offline root's is days old", k[:4])
+				return bad("the pinned CA %x must declare ExecStatusAgeFor, CAPeriodFor, CAOverlapFor and MaxStatusAgeFor: it may sit above a leaf's issuing CA, whose status is then as fresh as this CA's oldest CRL (an offline root's is days old), and an undeclared value would hold the first call it affects", k[:4])
 			}
 		}
 	}

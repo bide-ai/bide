@@ -111,7 +111,7 @@ func TestVerifyCertExec_LeafTierUsesExecStatusAge(t *testing.T) {
 	c.at(90 * time.Minute)
 	a := c.approver("alice")
 	a.ExecStatusAge = time.Hour
-	a.StatusParams.CAPeriod = 30 * time.Minute
+	a.StatusParams.CAPeriodFor[audit.SPKIHashOf(c.inter.Cert)] = 30 * time.Minute
 	if got := a.VerifyCertExec(c.execDecision("alice")); got.Reason != agent.ReasonStatusStale {
 		t.Fatalf("a 90 minute old CRL against ExecStatusAge one hour: %+v", got)
 	}
@@ -146,7 +146,6 @@ func TestVerifyCertExec_CATierUsesExecStatusAgeFor(t *testing.T) {
 	c.at(10 * time.Hour)
 	a := c.approver("alice")
 	a.ExecStatusAge = 11 * time.Hour
-	a.StatusParams.CAPeriod = time.Hour
 	if got := a.VerifyCertExec(c.execDecision("alice")); got.Reason != "" {
 		t.Fatalf("root tier age 24h, root CRL 10h old: %+v", got)
 	}
@@ -162,6 +161,7 @@ func TestVerifyCertExec_CATierUsesExecStatusAgeFor(t *testing.T) {
 	}
 	// And the leaf tier is judged by ExecStatusAge, not by the root's age: one hour holds at certificate 0.
 	a.ExecStatusAgeFor = map[audit.SPKIHash]time.Duration{rk: 24 * time.Hour}
+	a.StatusParams.CAPeriodFor[audit.SPKIHashOf(c.inter.Cert)] = 30 * time.Minute
 	a.ExecStatusAge = time.Hour
 	if got := a.VerifyCertExec(c.execDecision("alice")); got.Reason != agent.ReasonStatusStale || !strings.Contains(got.Detail, "certificate 0 of the chain") {
 		t.Fatalf("leaf tier age 1h: %+v", got)
@@ -300,49 +300,59 @@ func TestCertApprover_ValidateConfigTiers(t *testing.T) {
 	mk := func(mod func(*audit.CertApprover)) *audit.CertApprover {
 		c := &audit.CertApprover{ApproverID: "alice", Policy: cg.ci, PolicyEffectiveFrom: testDecidedAt, ExecStatusAge: 2 * time.Hour,
 			StatusParams: audit.StatusParams{CAPeriod: time.Hour, MaxStatusAge: time.Hour,
-				CAPeriodFor:     map[audit.SPKIHash]time.Duration{rk: 7 * day},
-				MaxStatusAgeFor: map[audit.SPKIHash]time.Duration{rk: 14 * day}},
-			ExecStatusAgeFor: map[audit.SPKIHash]time.Duration{rk: 8 * day},
-			CAOverlapFor:     map[audit.SPKIHash]time.Duration{rk: 12 * time.Hour}}
+				CAPeriodFor:     map[audit.SPKIHash]time.Duration{rk: 7 * day, ik: time.Hour},
+				MaxStatusAgeFor: map[audit.SPKIHash]time.Duration{rk: 14 * day, ik: 4 * time.Hour}},
+			ExecStatusAgeFor: map[audit.SPKIHash]time.Duration{rk: 8 * day, ik: 2 * time.Hour},
+			CAOverlapFor:     map[audit.SPKIHash]time.Duration{rk: 12 * time.Hour, ik: 0}}
 		mod(c)
 		return c
 	}
 	// A root that publishes weekly is a good CA tier (its period is far above ExecStatusAge/2, which is the
-	// leaf issuer's rule).
+	// leaf issuer's rule), beside an intermediate that publishes hourly.
 	if err := mk(func(*audit.CertApprover) {}).ValidateConfig(); err != nil {
 		t.Fatalf("a weekly root tier: %v", err)
 	}
-	for name, c := range map[string]*audit.CertApprover{
-		"the anchor declares nothing":     mk(func(c *audit.CertApprover) { c.ExecStatusAgeFor = nil }),
-		"non-positive age":                mk(func(c *audit.CertApprover) { c.ExecStatusAgeFor[rk] = 0 }),
-		"no CAPeriodFor":                  mk(func(c *audit.CertApprover) { c.StatusParams.CAPeriodFor = nil }),
-		"no MaxStatusAgeFor":              mk(func(c *audit.CertApprover) { c.StatusParams.MaxStatusAgeFor = nil }),
-		"period plus overlap above age":   mk(func(c *audit.CertApprover) { c.ExecStatusAgeFor[rk] = 7*day + 11*time.Hour }),
-		"age above MaxStatusAgeFor":       mk(func(c *audit.CertApprover) { c.StatusParams.MaxStatusAgeFor[rk] = 8*day - time.Second }),
-		"negative overlap":                mk(func(c *audit.CertApprover) { c.CAOverlapFor[rk] = -time.Second }),
-		"overlap for a CA with no tier":   mk(func(c *audit.CertApprover) { c.CAOverlapFor[ik] = time.Minute }),
-		"a non-tier CA with a weekly CRL": mk(func(c *audit.CertApprover) { c.StatusParams.CAPeriodFor[ik] = 7 * day }),
-		"a tier entry for a stray issuer": mk(func(c *audit.CertApprover) { c.ExecStatusAgeFor[ik] = day }),
+	for name, mod := range map[string]func(*audit.CertApprover){
+		"the anchor declares nothing":             func(c *audit.CertApprover) { delete(c.ExecStatusAgeFor, rk) },
+		"the pinned intermediate declares none":   func(c *audit.CertApprover) { delete(c.ExecStatusAgeFor, ik) },
+		"no ExecStatusAgeFor at all":              func(c *audit.CertApprover) { c.ExecStatusAgeFor = nil },
+		"non-positive age":                        func(c *audit.CertApprover) { c.ExecStatusAgeFor[rk] = 0 },
+		"no CAPeriodFor for the root":             func(c *audit.CertApprover) { delete(c.StatusParams.CAPeriodFor, rk) },
+		"no CAPeriodFor for the intermediate":     func(c *audit.CertApprover) { delete(c.StatusParams.CAPeriodFor, ik) },
+		"no CAOverlapFor for the root":            func(c *audit.CertApprover) { delete(c.CAOverlapFor, rk) },
+		"no CAOverlapFor for the intermediate":    func(c *audit.CertApprover) { delete(c.CAOverlapFor, ik) },
+		"no MaxStatusAgeFor for the root":         func(c *audit.CertApprover) { delete(c.StatusParams.MaxStatusAgeFor, rk) },
+		"no MaxStatusAgeFor for the intermediate": func(c *audit.CertApprover) { delete(c.StatusParams.MaxStatusAgeFor, ik) },
+		"period plus overlap above age":           func(c *audit.CertApprover) { c.ExecStatusAgeFor[rk] = 7*day + 12*time.Hour - time.Nanosecond },
+		"age above MaxStatusAgeFor":               func(c *audit.CertApprover) { c.StatusParams.MaxStatusAgeFor[rk] = 8*day - time.Nanosecond },
+		"negative overlap":                        func(c *audit.CertApprover) { c.CAOverlapFor[rk] = -time.Nanosecond },
+		"overlap above the period":                func(c *audit.CertApprover) { c.CAOverlapFor[ik] = time.Hour + time.Nanosecond },
+		"a stray weekly CA with no tier": func(c *audit.CertApprover) {
+			c.StatusParams.CAPeriodFor[audit.SPKIHash{9}] = 2*time.Hour/2 + time.Nanosecond
+		},
+		"overlap for a CA with no tier":    func(c *audit.CertApprover) { c.CAOverlapFor[audit.SPKIHash{9}] = time.Minute },
+		"the leaf issuer's default period": func(c *audit.CertApprover) { c.StatusParams.CAPeriod = time.Hour + time.Nanosecond },
 	} {
-		err := c.ValidateConfig()
+		err := mk(mod).ValidateConfig()
 		if err == nil || !errors.Is(err, agent.ErrConfig) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	// Exactly the sum is allowed, and so is an age equal to MaxStatusAgeFor.
-	if err := mk(func(c *audit.CertApprover) {
-		c.ExecStatusAgeFor[rk] = 7*day + 12*time.Hour
-		c.StatusParams.MaxStatusAgeFor[rk] = 7*day + 12*time.Hour
-	}).ValidateConfig(); err != nil {
-		t.Errorf("the boundary: %v", err)
+	// The boundaries are accepted exactly: period plus overlap equal to the age, the age equal to
+	// MaxStatusAgeFor, the overlap equal to the period, the default period equal to ExecStatusAge/2.
+	for name, mod := range map[string]func(*audit.CertApprover){
+		"period plus overlap equal to the age": func(c *audit.CertApprover) { c.ExecStatusAgeFor[rk] = 7*day + 12*time.Hour },
+		"age equal to MaxStatusAgeFor":         func(c *audit.CertApprover) { c.StatusParams.MaxStatusAgeFor[rk] = 8 * day },
+		"overlap equal to the period":          func(c *audit.CertApprover) { c.CAOverlapFor[ik] = time.Hour; c.ExecStatusAgeFor[ik] = 2 * time.Hour },
+		"a zero overlap":                       func(c *audit.CertApprover) { c.CAOverlapFor[rk] = 0 },
+		"a stray period at ExecStatusAge/2":    func(c *audit.CertApprover) { c.StatusParams.CAPeriodFor[audit.SPKIHash{9}] = time.Hour },
+	} {
+		if err := mk(mod).ValidateConfig(); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
-	// An intermediate that declares itself a tier is judged as one, not by ExecStatusAge/2.
-	if err := mk(func(c *audit.CertApprover) {
-		c.StatusParams.CAPeriodFor[ik], c.StatusParams.MaxStatusAgeFor[ik], c.ExecStatusAgeFor[ik] = 5*time.Hour, 2*day, day
-	}).ValidateConfig(); err != nil {
-		t.Errorf("a middle CA declared as a tier: %v", err)
-	}
-	// A leaf issued directly by the anchor: the anchor is the leaf's issuing CA, with no tier to declare.
+	// A leaf issued directly by the anchor, with no intermediate pinned: the anchor is the leaf's issuing CA,
+	// which declares no tier.
 	direct, err := audit.IdentityPolicy{
 		Anchors: []*x509.Certificate{cg.root.Cert}, Identity: map[string]string{"alice": testca.Person(1)},
 		IDKind: audit.IDPersonURI, EKU: testca.EKU, Policy: testca.PolicyOID,
@@ -355,6 +365,124 @@ func TestCertApprover_ValidateConfigTiers(t *testing.T) {
 	c.StatusParams.CAPeriodFor, c.StatusParams.MaxStatusAgeFor = nil, nil
 	if err := c.ValidateConfig(); err != nil {
 		t.Errorf("a leaf under the anchor: %v", err)
+	}
+}
+
+// The tier is the position in the accepted chain, never the issuer's key: an intermediate that issues one
+// approver's leaf and sits above another's issuing CA is judged by ExecStatusAge for the first and by its
+// ExecStatusAgeFor for the second.
+func TestVerifyCertExec_TierIsThePositionInTheChain(t *testing.T) {
+	c := newCertGate(t, 2, "alice", "bob")
+	// bob's leaf is issued by interY, which interX (the harness's inter) issued; alice's by interX.
+	interY := c.inter.NewIntermediate(t, "interY", testca.Opts{})
+	// Long-lived leaves: a CRL issued after a certificate expires is not evidence about it (except the first),
+	// so a five hour series needs certificates that outlive it.
+	long := func(n int) func(*x509.Certificate) {
+		return func(x *x509.Certificate) {
+			validAround(t, n)(x)
+			x.NotAfter = testDecidedAt.Add(12 * time.Hour)
+		}
+	}
+	c.leaves["alice"] = c.inter.NewLeaf(t, testca.Opts{Key: testca.Ed25519, Mutate: long(1)})
+	c.leaves["bob"] = interY.NewLeaf(t, testca.Opts{Key: testca.Ed25519, Mutate: long(2)})
+	ci, err := audit.IdentityPolicy{
+		Anchors: []*x509.Certificate{c.root.Cert}, Inter: []audit.SPKIHash{audit.SPKIHashOf(c.inter.Cert), audit.SPKIHashOf(interY.Cert)},
+		Identity: map[string]string{"alice": testca.Person(1), "bob": testca.Person(2)},
+		IDKind:   audit.IDPersonURI, EKU: testca.EKU, Policy: testca.PolicyOID, MaxChain: 5,
+		Canonical: audit.NewCanonicalizer(audit.CanonicalConfig{Host: "idp.bank.example"}),
+	}.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.ci = ci
+	ik, yk := audit.SPKIHashOf(c.inter.Cert), audit.SPKIHashOf(interY.Cert)
+	// interX: judged by ExecStatusAge where it issues the leaf (alice), by its own age where it sits above
+	// interY (bob). Every pinned CA declares its tier values.
+	c.tweak = func(a *audit.CertApprover) {
+		a.ExecStatusAge = time.Hour
+		a.StatusParams.CAPeriod = 30 * time.Minute
+		a.StatusParams.CAPeriodFor[ik], a.StatusParams.CAPeriodFor[yk] = 30*time.Minute, 30*time.Minute
+		a.StatusParams.MaxStatusAgeFor[ik], a.StatusParams.MaxStatusAgeFor[yk] = 48*time.Hour, 48*time.Hour
+		a.ExecStatusAgeFor[ik], a.ExecStatusAgeFor[yk] = 24*time.Hour, time.Hour
+		a.CAOverlapFor[ik], a.CAOverlapFor[yk] = 0, 0
+	}
+	// Every CA publishes hourly CRLs with two-day nextUpdates; interX's newest is issued 5 hours after the
+	// others, who have an older one (alice's leaf CRLs are interX's).
+	c.status = audit.NewStatusSnapshot(audit.WithLimits(agent.MaxStatusInline, 1_000_000))
+	add := func(ca *testca.CA, n int64, at time.Time) {
+		if _, err := c.status.AddCRL(ca.NewCRL(t, testca.CRLOpts{Number: n, ThisUpdate: at, NextUpdate: at.Add(48 * time.Hour)})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, ca := range []*testca.CA{c.root, c.inter, interY} {
+		add(ca, 1, testDecidedAt)
+		add(ca, 2, c.crlsAt)
+	}
+	c.pause()
+	c.decideCert("alice", nil)
+	c.decideCert("bob", nil)
+	c.anchor(certA)
+	c.params.CountLive, c.params.MaxStatusAge = true, 48*time.Hour
+	c.now = func() time.Time { return c.crlsAt.Add(time.Minute) }
+	c.at(5 * time.Hour) // every CRL is five hours old at the check
+	approver := c.approver
+	// alice: certificate 0 is issued by interX, the leaf's issuing CA: its CRL is five hours old against one hour.
+	got := approver("alice").VerifyCertExec(c.execDecision("alice"))
+	if got.Reason != agent.ReasonStatusStale || !strings.Contains(got.Detail, "certificate 0 of the chain") {
+		t.Fatalf("alice: %+v", got)
+	}
+	// bob: certificate 0 is issued by interY (five hours old against one hour: stale there, at position 0), so
+	// give interY a fresh CRL; then interX, now at position 1 (a tier), passes under its 24 hours.
+	for n, at := int64(3), c.crlsAt.Add(30*time.Minute); !at.After(c.crlsAt.Add(5*time.Hour)); n, at = n+1, at.Add(30*time.Minute) {
+		add(interY, n, at) // interY keeps publishing every 30 minutes
+	}
+	got = approver("bob").VerifyCertExec(c.execDecision("bob"))
+	if got.Reason != "" {
+		t.Fatalf("bob: interX as a tier above interY should pass under 24h: %+v", got)
+	}
+	// And with interX's tier age under its CRL's age, bob is held at certificate 1, the position of interX.
+	b := approver("bob")
+	b.ExecStatusAgeFor[audit.SPKIHashOf(c.inter.Cert)] = time.Hour
+	got = b.VerifyCertExec(c.execDecision("bob"))
+	if got.Reason != agent.ReasonStatusStale || !strings.Contains(got.Detail, "certificate 1 of the chain") {
+		t.Fatalf("bob with a one hour tier: %+v", got)
+	}
+}
+
+// A three-tier chain whose middle CA declares nothing holds the call, naming what is missing (the policy
+// cannot know at configuration which pinned CA will sit above a leaf's issuer for which chain).
+func TestVerifyCertExec_UndeclaredMiddleCAHolds(t *testing.T) {
+	c := execGate(t)
+	c.at(5 * time.Minute)
+	a := c.approver("alice")
+	delete(a.ExecStatusAgeFor, audit.SPKIHashOf(c.root.Cert))
+	got := a.VerifyCertExec(c.execDecision("alice"))
+	if got.Reason != agent.ReasonStatusUnknown || !strings.Contains(got.Detail, "ExecStatusAgeFor") || !strings.Contains(got.Detail, "position 1") {
+		t.Fatalf("%+v", got)
+	}
+}
+
+// The leaf's issuing CA must publish at least twice within ExecStatusAge: the accepted chain tells which CA
+// that is, so the check refuses a leaf whose issuer's period does not fit, at the boundary exactly.
+func TestVerifyCertExec_LeafIssuerPeriodMustFit(t *testing.T) {
+	c := execGate(t)
+	c.at(5 * time.Minute)
+	ik := audit.SPKIHashOf(c.inter.Cert)
+	a := c.approver("alice")
+	a.ExecStatusAge = 2 * time.Hour
+	a.StatusParams.CAPeriodFor[ik] = time.Hour
+	if got := a.VerifyCertExec(c.execDecision("alice")); got.Reason != "" {
+		t.Fatalf("period = ExecStatusAge/2: %+v", got)
+	}
+	a.StatusParams.CAPeriodFor[ik] = time.Hour + time.Nanosecond
+	if got := a.VerifyCertExec(c.execDecision("alice")); got.Reason != agent.ReasonStatusUnknown || !strings.Contains(got.Detail, "ExecStatusAge/2") {
+		t.Fatalf("period above ExecStatusAge/2: %+v", got)
+	}
+	// With no per-issuer period the default applies.
+	delete(a.StatusParams.CAPeriodFor, ik)
+	a.StatusParams.CAPeriod = time.Hour + time.Nanosecond
+	if got := a.VerifyCertExec(c.execDecision("alice")); got.Reason != agent.ReasonStatusUnknown {
+		t.Fatalf("default period above ExecStatusAge/2: %+v", got)
 	}
 }
 

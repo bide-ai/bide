@@ -38,7 +38,7 @@ and recorded in the policy (the policy digest and the identity record carry all 
 | `MaxStatusAge` | `StatusParams` | the oldest status accepted when a decision is counted; choose from your risk and the certificates' lifetime, never above a quarter of the shortest lifetime | see below |
 | `MaxStatusAgeFor` | `StatusParams` | for a CA tier above the leaf's issuing CA (an offline root), the age its CRL may have when a decision is counted, set to that CRL's period | the root's weekly CRL makes every decision stale, or a stale root CRL is accepted |
 | `ExecStatusAge` | `CertApprover` | the oldest status of the leaf's issuing CA accepted immediately before the call runs, **set from the CA's actual CRL period, with no default** | startup refuses `CAPeriod > ExecStatusAge/2` |
-| `ExecStatusAgeFor`, `CAOverlapFor` | `CertApprover` | for each CA tier above the leaf's issuing CA: the age its status may have before the call runs, and how long after its period the next CRL may still be coming | startup refuses a tier without them (below) |
+| `ExecStatusAgeFor`, `CAOverlapFor` | `CertApprover` | for each pinned CA and each trust anchor (below): the age its status may have before the call runs, and how long after its period the next CRL may still be coming (from the CA's CRL overlap or ceremony setting; **declared, zero if none**, never left out) | startup refuses a pinned CA without them |
 | `W`, `MinW` | `StatusParams` | the compromise-reporting window the bank commits to (default 24 hours) and the floor on the window of a `final` verdict (default 30 minutes) | a decision is `provisional` when its window is short |
 | `RoutineGrace` | `StatusParams` | for revocations that are not compromises (affiliation changed, superseded, ceased, privilege withdrawn), how long after the revocation a decision still counts; minutes, never hours | a leaver's decision a few minutes before their offboarding is refused, or accepted too long |
 | `PolicyEffectiveFrom` | `CertApprover` | the date of the change record that put this policy in force | the identity record cannot say which policy applied years later |
@@ -52,23 +52,33 @@ environment, so the declaration is yours to keep true. The identity record carri
 ### Two tiers of CA
 
 A certificate's status comes from the CRL of its issuer, and a chain has several issuers. The tier is the
-position in the accepted chain, never the issuer's key:
+position in the **accepted** chain (the one the gate validated and the identity record names), never the
+issuer's key, and the same intermediate can be a leaf's issuing CA for one approver and a CA above it for
+another:
 
 - **The leaf's issuing CA** (an online CA that issues short-lived certificates) publishes often. Its CRL age
-  is bounded by `ExecStatusAge`, and startup requires `CAPeriod <= ExecStatusAge / 2` (a CA that publishes
+  is bounded by `ExecStatusAge`, and its period must be at most `ExecStatusAge / 2`: a CA that publishes
   every 30 minutes gives a newest CRL up to 30 minutes old, so an age of 15 minutes would hold about half of
-  all calls). A 15 minute age needs a CA period of 7 minutes or less; a 30 minute period needs one hour.
+  all calls. A 15 minute age needs a CA period of 7 minutes or less; a 30 minute period needs one hour.
+  Startup checks the default `CAPeriod` and any `CAPeriodFor` of a CA that declares no tier; the check
+  before a call checks the period of the leaf's actual issuing CA again and holds the call if it does not fit.
 - **Every CA above it** (an offline root, a policy CA) publishes rarely: AD CS defaults to a weekly base
-  CRL. A tier declares its own `ExecStatusAgeFor`, `CAPeriodFor`, `MaxStatusAgeFor` and, if the CA has one,
-  `CAOverlapFor`, and startup requires
-  `CAPeriodFor + CAOverlapFor <= ExecStatusAgeFor <= MaxStatusAgeFor`. When intermediates are pinned
-  (`IdentityPolicy.Inter`), the trust anchors are CA tiers and startup refuses a policy where one declares
-  nothing. A middle CA of a three-tier chain is a tier only from the accepted chain, so one that is not
-  declared holds the first call it affects, with a message naming the missing declaration.
+  CRL. It is judged by its own `ExecStatusAgeFor`, and startup requires, for each,
+  `CAPeriodFor + CAOverlapFor <= ExecStatusAgeFor <= MaxStatusAgeFor` and `0 <= CAOverlapFor <= CAPeriodFor`.
+
+The policy cannot tell which pinned CA will sit above a leaf's issuer, so **every pinned intermediate
+(`IdentityPolicy.Inter`) declares `ExecStatusAgeFor`, `CAPeriodFor`, `CAOverlapFor` and `MaxStatusAgeFor`,
+and so does every trust anchor once intermediates are pinned** (the anchor's CRL covers them); startup
+refuses a policy where one is missing. A leaf issued directly by an anchor, with no intermediate pinned,
+makes the anchor the leaf's issuing CA, which declares none. The declarations of a CA that is only ever a
+leaf's issuer are not used for it (it is judged by `ExecStatusAge`), but they must be there. A CA's CRL
+that the check relies on must be no older than its value at the moment the call is about to run.
 
 `CertApprover.ValidateConfig` runs when the gate is built and on every evaluation, so a bad or missing
 value fails at configuration, not at the first decision. A decision is only as fresh as the oldest status in
-its chain.
+its chain. Note also that a CRL issued after a certificate's `notAfter` is not evidence about it (only the
+first one after it is), so a certificate that has expired is judged by the CRLs from its life and that first
+one.
 
 ### Who is excluded as a requester, and the identity map
 

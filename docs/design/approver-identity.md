@@ -1483,13 +1483,15 @@ Decisions 1, 2, 5, 6 (delta CRLs), 12, 13, 15 and 17.
 
 The execution-time status check has two tiers, classified by position in the accepted chain and never by
 the issuer's key. The leaf's issuing CA uses `ExecStatusAge`, with `CAPeriod <= ExecStatusAge / 2`. Every CA
-above it (an offline root, a policy CA) must declare `ExecStatusAgeFor`, `CAPeriodFor` and `MaxStatusAgeFor`
-(and `CAOverlapFor` if its CRL has an overlap), and startup refuses a CA tier without them, with
-`CAPeriodFor + CAOverlapFor <= ExecStatusAgeFor <= MaxStatusAgeFor`: the `/2` ratio is the wrong rule for a
-root whose CRL period is a week, and the root CRL's `nextUpdate` is the binding limit. With intermediates
-pinned the trust anchors are CA tiers; a middle CA of a three-tier chain is known as a tier only from the
-accepted chain, so an undeclared one holds the call at its first check with a message naming the missing
-declaration. `VerifyCertExec` applies the ages per tier, and a per-issuer `MaxStatusAgeFor` (a count's age)
+above it (an offline root, a policy CA) is judged by its own `ExecStatusAgeFor`, with
+`CAPeriodFor + CAOverlapFor <= ExecStatusAgeFor <= MaxStatusAgeFor` and `0 <= CAOverlapFor <= CAPeriodFor`:
+the `/2` ratio is the wrong rule for a root whose CRL period is a week, and the root CRL's `nextUpdate` is
+the binding limit. The policy cannot tell which pinned CA will sit above a leaf's issuer (an intermediate
+can be the issuer for one approver and a tier above another's), so every pinned intermediate, and every
+trust anchor once intermediates are pinned, declares `ExecStatusAgeFor`, `CAPeriodFor`, `CAOverlapFor`
+(declared, zero allowed, never silently defaulted) and `MaxStatusAgeFor`, and startup refuses a policy
+where one is missing; the check before a call still holds the call, naming the missing declaration, for an
+issuer that is not declared, and checks the leaf's actual issuing CA's period against `ExecStatusAge / 2`. `VerifyCertExec` applies the ages per tier, and a per-issuer `MaxStatusAgeFor` (a count's age)
 never stretches an execution age. `ExecStatusAgeFor`, `CAOverlapFor` and `MaxStatusAgeFor` are in the
 recorded policy and its digest. The operator guide publishes two latency bounds: the leaf tier (CA
 publication delay + the leaf CA's period + `ExecStatusAge`, minutes) and the CA tier through the root's CRL

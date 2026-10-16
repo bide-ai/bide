@@ -29,8 +29,9 @@ type certGate struct {
 	heads   []audit.SignedTreeHead
 	params  audit.StatusParams
 	now     func() time.Time
-	crlsAt  time.Time        // when the status CRLs are issued
-	execNow func() time.Time // the execution check's clock, when a test sets it
+	crlsAt  time.Time                 // when the status CRLs are issued
+	execNow func() time.Time          // the execution check's clock, when a test sets it
+	tweak   func(*audit.CertApprover) // applied to every verifier the harness builds, when a test sets it
 	pending bool
 	archive audit.StatusArchive // the verifier's status archive, when set
 	goDebug string              // the x509 GODEBUG settings the verifier declares
@@ -103,6 +104,16 @@ func (c *certGate) approver(id string) *audit.CertApprover {
 	// as an operator does from the CA's capture.
 	p := c.params
 	rk := audit.SPKIHashOf(c.root.Cert)
+	withKey := func(m map[audit.SPKIHash]time.Duration, k audit.SPKIHash, d time.Duration) map[audit.SPKIHash]time.Duration {
+		out := map[audit.SPKIHash]time.Duration{}
+		for kk, v := range m {
+			out[kk] = v
+		}
+		if _, ok := out[k]; !ok {
+			out[k] = d
+		}
+		return out
+	}
 	with := func(m map[audit.SPKIHash]time.Duration, d time.Duration) map[audit.SPKIHash]time.Duration {
 		out := map[audit.SPKIHash]time.Duration{}
 		for k, v := range m {
@@ -114,13 +125,26 @@ func (c *certGate) approver(id string) *audit.CertApprover {
 		return out
 	}
 	p.CAPeriodFor, p.MaxStatusAgeFor = with(p.CAPeriodFor, time.Hour), with(p.MaxStatusAgeFor, 24*time.Hour)
-	return &audit.CertApprover{
+	// The pinned intermediate declares its tier values too (the policy cannot tell it only issues leaves).
+	ik := audit.SPKIHashOf(c.inter.Cert)
+	ikPeriod := p.CAPeriod
+	if ikPeriod <= 0 {
+		ikPeriod = time.Hour
+	}
+	p.CAPeriodFor = withKey(p.CAPeriodFor, ik, ikPeriod)
+	p.MaxStatusAgeFor = withKey(p.MaxStatusAgeFor, ik, 2*time.Hour)
+	a := &audit.CertApprover{
 		ApproverID: id, Policy: c.ci, LogKey: audit.Ed25519Verifier{Pub: c.logPub},
 		Heads:  func(string) ([]audit.SignedTreeHead, error) { return c.heads, nil },
 		Status: c.status, StatusParams: p, Now: c.now, ExecNow: c.execClock(), ExecStatusAge: 2 * time.Hour, StatusArchive: c.archive, GoDebug: c.goDebug,
-		ExecStatusAgeFor:    map[audit.SPKIHash]time.Duration{rk: 24 * time.Hour},
+		ExecStatusAgeFor:    map[audit.SPKIHash]time.Duration{rk: 24 * time.Hour, ik: 2 * time.Hour},
+		CAOverlapFor:        map[audit.SPKIHash]time.Duration{rk: 0, ik: 0},
 		PolicyEffectiveFrom: certA.Add(-24 * time.Hour),
 	}
+	if c.tweak != nil {
+		c.tweak(a)
+	}
+	return a
 }
 
 // resolve: alice, bob and carol are certificate-bound; any other id is a bare key.
