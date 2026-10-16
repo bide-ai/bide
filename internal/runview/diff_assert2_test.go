@@ -153,3 +153,12 @@ func TestDiffAssertionRegressionThroughRename(t *testing.T) {
 		t.Errorf("weakened %q", v.Weakened)
 	}
 }
+
+// "no side effect after X" is vacuous too once X is cut off from the entry.
+func TestDiffNoSideEffectHeldNowVacuous(t *testing.T) {
+	a := "no side effect after receipt"
+	cut := strings.Replace(gapCfg("", "", a), `{"edge": ["charge", "receipt"]}`, `{"edge": ["validate", "validate"]}`, 1)
+	if got := weakenedOf(t, gapCfg("", "", a), cut); !slices.ContainsFunc(got, func(s string) bool { return strings.Contains(s, "vacuously: "+a) }) {
+		t.Errorf("weakened %q", got)
+	}
+}

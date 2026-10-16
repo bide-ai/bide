@@ -42,7 +42,7 @@ type AssertionResult struct {
 	Invalid bool `json:"invalid,omitempty"`
 	// Vacuous reports the assertion holds only because nothing it is about is reachable: for
 	// "every path to T passes ...", no path from the entry reaches T (or, for the terminal form, a
-	// terminal); Message says so. A flow that turned cyclic, or lost the edge to T, satisfies such a
+	// terminal), and for "no side effect after X", the entry reaches no X; Message says so. A flow that turned cyclic, or lost the edge to T, satisfies such a
 	// line without the line checking anything.
 	Vacuous bool `json:"vacuous,omitempty"`
 	// Undecided reports the graph alone cannot decide it (a node's Safety is not known).
@@ -205,6 +205,11 @@ func (r *ConfigReport) assertions(lines []string) {
 			from := name(m[1])
 			nodes = []string{from}
 			decide = func() AssertionResult {
+				if shortestPath(adj, []string{entry}, func(x string) bool { return x == from }, func(string) bool { return false }) == nil {
+					res.Holds, res.Vacuous = true, true
+					res.Message = "holds vacuously: no path from the entry reaches a node this assertion is about"
+					return res
+				}
 				// From each node "from" leads to, so "from" itself counts when a loop returns to it.
 				var unknown []string
 				p := shortestPath(adj, adj[from], func(x string) bool {

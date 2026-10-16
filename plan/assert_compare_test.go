@@ -99,6 +99,14 @@ func TestAssertionVacuous(t *testing.T) {
 	if a := r.Assertions[0]; !a.Holds || !a.Vacuous || !strings.Contains(a.Message, "vacuously") {
 		t.Errorf("cycle: %+v", a)
 	}
+	// "no side effect after X" is vacuous when the entry cannot reach X.
+	r = InspectConfig(cfg(`{"edge": ["a", "b"]}`, "no side effect after c", "no side effect after b"), nil)
+	if a := r.Assertions[0]; !a.Holds || !a.Vacuous {
+		t.Errorf("no side effect after an unreachable node: %+v", a)
+	}
+	if a := r.Assertions[1]; !a.Holds || a.Vacuous {
+		t.Errorf("no side effect after a reachable node: %+v", a)
+	}
 	// c is cut off from the entry.
 	r = InspectConfig(cfg(`{"edge": ["a", "b"]}`, "every path to c passes b", "every path to c passes approval >= 2"), nil)
 	for _, a := range r.Assertions {
