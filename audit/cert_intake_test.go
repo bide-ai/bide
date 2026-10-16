@@ -1,7 +1,9 @@
 package audit_test
 
 import (
+	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/x509"
 	"errors"
@@ -379,5 +381,40 @@ func TestIntake_JudgedAtTheTimeOfTheWriteNotTheSignedTime(t *testing.T) {
 	}
 	if n := c.decisionRecords(); n != 0 {
 		t.Fatalf("%d records", n)
+	}
+}
+
+// A randomized scheme (ECDSA P-256) signs one decision into different bytes: the second, valid signature of
+// the same decision is the same decision (nothing written, no error), not a second decision.
+func TestIntake_ASecondValidSigningOfTheSameDecisionIsTheSameDecision(t *testing.T) {
+	c := newCertGate(t, 1, "alice")
+	c.leaves["alice"] = c.inter.NewLeaf(t, testca.Opts{Key: testca.P256, Mutate: validAround(t, 1)})
+	c.status = c.longStatus()
+	c.now = func() time.Time { return c.crlsAt.Add(time.Minute) }
+	c.execNow = c.now
+	c.pause()
+	l := c.leaves["alice"]
+	signer := audit.ECDSAP256Signer{Priv: l.Key.(*ecdsa.PrivateKey)}
+	sign := func() agent.Decision {
+		sig, err := signer.Sign(agent.ApprovalDecisionBytesCert(c.subject(t), "alice", true, testDecidedAt, agent.CertLeafHash(l.DER)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return agent.Decision{RunID: gateRun, ToolUseID: "c1", ApproverID: "alice", Approved: true, DecidedAt: testDecidedAt, Alg: audit.AlgECDSAP256, Signature: sig, Cert: l.Chain()}
+	}
+	first, second := sign(), sign()
+	if bytes.Equal(first.Signature, second.Signature) {
+		t.Skip("the two signatures happen to be equal")
+	}
+	var wrote bool
+	if err := c.submit(first, &wrote); err != nil || !wrote {
+		t.Fatalf("%v wrote=%v", err, wrote)
+	}
+	wrote = true
+	if err := c.submit(second, &wrote); err != nil || wrote {
+		t.Fatalf("a valid re-signing of the same decision: %v wrote=%v", err, wrote)
+	}
+	if n := c.decisionRecords(); n != 1 {
+		t.Fatalf("%d decision records", n)
 	}
 }
