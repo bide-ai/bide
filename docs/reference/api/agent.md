@@ -37,6 +37,8 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `const NotifyDigestTrail = "notify:@digest"`: NotifyDigestTrail is the name of the trail the periodic digest uses; it belongs to no run.
 - `const NotifyOpenTrail = "notify:@open"`: NotifyOpenTrail is the prefix of the trail that lists the events whose all-clear may still be owed: a watch record before an outcome\_unknown, approval\_pending or recovery\_failing event is observed, an unwatch record when nothing more is owed for it.
 - `const OpenFirstYear = 2026`: OpenFirstYear is the first year an open-trail index can exist: the year the open trail began.
+- `const PendingExecHoldReapproval`: PendingExecHoldReapproval is ApprovalPending.Reason for a certificate-bound gate whose counted approvals were held before execution (ExecHold: a counted decision no longer holds): the call did not run, and it runs once approvers decide again and a new count passes (ApprovalIdentTallyStep of the next generation).
+- `const PendingIdentReapproval`: PendingIdentReapproval is ApprovalPending.Reason for a certificate-bound gate whose recorded tally is a plain-name one (approval-tally:&lt;id&gt;), counted without the approvers' certificates: the gate does not run the call on it, and asks again; the new count is recorded under ApprovalIdentTallyStep.
 - `const PendingReapproval`: PendingReapproval is ApprovalPending.Reason for a gate that passed under decisions signed before DecisionFormat (a run journaled by an earlier version): its call did not run, and it runs once approvers decide again under DecisionFormat with SubmitDecision.
 - `const PendingSoDReapproval`: PendingSoDReapproval is ApprovalPending.Reason for a gate whose recorded tally passed without excluding the requester (ApprovalPolicy.ExcludePrincipal) while its policy now excludes it: the call did not run, and it runs once enough approvers who are not requesters have decided.
 - `const ReanchorMinInterval = 10 * time.Second`: ReanchorMinInterval is the least time between two forced heads of one run: anchoring signs with the log key, which may be an HSM or KMS key with quotas and cost, so the gate rate-limits it.
@@ -88,6 +90,8 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `func ApprovalDecisionBytes(s ApprovalSubject, approverID string, approved bool, decidedAt time.Time) []byte`: ApprovalDecisionBytes returns the canonical bytes an approver signs and every verifier checks.
 - `func ApprovalDecisionBytesCert(s ApprovalSubject, approverID string, approved bool, decidedAt time.Time, leafHash [32]byte) []byte`: ApprovalDecisionBytesCert returns the canonical bytes a certificate-bound approver signs (bide.approval.v4): the layout of ApprovalDecisionBytes with the domain tag "bide.approval.v4\\n" and, between the verdict byte and the decision time,
 - `func ApprovalExecHoldStep(toolUseID string, gen int) string`: ApprovalExecHoldStep is the journal name of the ExecHold record of generation gen of toolUseID's gate.
+- `func ApprovalIdentReaskKey(runID, call string, gen int) string`: ApprovalIdentReaskKey is the event key of the approval gate for call on runID asking again for generation gen of a certificate-bound gate: 0 over a plain-name tally it does not act on (PendingIdentReapproval), n &gt;= 1 after an exec hold of generation n-1 (PendingExecHoldReapproval).
+- `func ApprovalIdentReaskStep(toolUseID string, gen int) string`: ApprovalIdentReaskStep is the journal name of the pause note a certificate-bound gate writes when it asks again for generation gen: 0 over a plain-name tally it does not act on (PendingIdentReapproval), n &gt;= 1 over the generation n-1 tally that an exec hold superseded (PendingExecHoldReapproval).
 - `func ApprovalIdentTallyStep(toolUseID string, gen int) string`: ApprovalIdentTallyStep is the journal name of the terminal tally of an identity-bound gate at generation gen: ApprovalTallyStep plus ":ident" for generation 0 and ":ident-reask:&lt;gen&gt;" for a gate re-asked after an exec hold.
 - `func ApprovalIdentityDigestStep(toolUseID string, gen int, digest string) string`: ApprovalIdentityDigestStep is the name of the identity record of generation gen when the plain name already holds a record of a different tally (a crash between the record and the tally, then a different count): the record whose TallyDigest is the one the gate then writes is found under this name, digest being the first 16 hex digits of that digest.
 - `func ApprovalIdentityStep(toolUseID string, gen int) string`: ApprovalIdentityStep is the journal name of the ApprovalIdentity record of toolUseID's gate at generation gen.
@@ -111,12 +115,16 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `func DigestKey(bucket string) string`: DigestKey is the event key of the digest for time bucket (an opaque, stable label).
 - `func EncodeRecord(r Record) ([]byte, error)`: EncodeRecord returns the journal encoding of r: the bytes a store persists for it and the bytes an audit leaf commits to.
 - `func EscalationKey(key string, level int) string`: EscalationKey is the event key of step level (from 1) of the escalation chain of the event with key.
+- `func ExecHoldGen(toolUseID, name string) (int, bool)`: ExecHoldGen parses the generation out of name, which must be ApprovalExecHoldStep of toolUseID; ok is false for any other name.
 - `func ExpiredKey(runID, call string) string`: ExpiredKey is the event key of the expiry of the approval gate for call on runID (NotificationApprovalExpired).
 - `func FormatTimestamp(t time.Time) string`: FormatTimestamp returns t in the one form bide records times in (RunStart.StartedAt, a signed decision's decided\_at, the recorded\_at of a decision and of ApprovalWait): RFC 3339 in UTC, truncated to the millisecond, always 24 bytes and ending in "Z", e.g. "2026-10-13T12:14:03.123Z".
 - `func GateReask(t ApprovalTally, excludePrincipal bool) string`: GateReask returns why a gate asks again instead of acting on its recorded tally t, or "": t passed on decisions that predate DecisionFormat (PendingReapproval), or passed without excluding the requester while the policy now excludes it (PendingSoDReapproval).
+- `func GateTallyValues(recs []Record, toolUseID string) map[string]Record`: GateTallyValues returns the StepValue records of recs that decide the gate of toolUseID, by name, first writer winning: the plain-name tallies (ApprovalTallyStep, ApprovalRetallyStep, ApprovalSoDRetallyStep), the identity tally chain and the exec holds.
 - `func Generate(ctx context.Context, m Model, req Request) (Message, Usage, error)`: Generate is the convenience drain: stream and assemble in one call.
 - `func HaltedKey(runID string, kind OpKind, opID string, attemptedMS int64) string`: HaltedKey is the event key of an unknown-outcome halt of the operation opID of kind on runID.
 - `func HeldDecisionStep(ctx context.Context, store *Journal, d Decision, verifierFor ApproverVerifierFor) (name string, held, verified bool, err error)`: HeldDecisionStep reports whether the journal holds a record of exactly the decision d (signature included) and the name of the record that does: under the identity name (DecisionStep), under the signature-derived name a bad record at the identity name pushes a decision to, or under the name a version that named by signature gave it.
+- `func IdentReaskGen(toolUseID, name string) (int, bool)`: IdentReaskGen parses the generation out of name, which must be ApprovalIdentReaskStep of toolUseID; ok is false for any other name.
+- `func IdentTallyGen(toolUseID, name string) (int, bool)`: IdentTallyGen parses the generation out of name, which must be ApprovalIdentTallyStep of toolUseID; ok is false for any other name.
 - `func Interrupt[T any](ctx context.Context, name string, prompt any) (T, error)`: Interrupt pauses the current run to request typed human input, identified by name.
 - `func IsApprovalDecision(r Record, toolUseID string) bool`: IsApprovalDecision reports whether r is an m-of-n approver decision (written by SubmitDecision) on toolUseID.
 - `func IsComplete(ctx context.Context, store *Journal, runID string) (bool, error)`: IsComplete reports whether runID completed: its first end marker in journal order is the completion marker the agent loop records at the end of a run (see runCompleteStep).
@@ -1574,6 +1582,7 @@ type NotifyApproval struct {
 	Excluded []string
 
 	Reask string
+	// contains filtered or unexported fields
 }
 ```
 
