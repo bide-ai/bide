@@ -672,7 +672,8 @@ the schema and no other is, its enums and assertion patterns are the code's own,
 
 To see a config's graph and its problems before loading it, run `bide view -config flow.yaml`
 (`-check` for CI), or embed the same page with your Registry through package `plan/planview`; see
-the [run viewer guide](run-viewer.md#check-a-flow-config). Both use `plan.InspectConfig`, which reports
+the [run viewer guide](run-viewer.md#check-a-flow-config), or `bide edit flow.yaml` for the same check
+with an outline and an inspector (the [flow editor guide](flow-editor.md)). All use `plan.InspectConfig`, which reports
 the checks below as problems attached to the node, edge or arm they name.
 
 Moving topology from Go to data trades compile-time type checking for load-time validation: a

@@ -223,12 +223,12 @@ question of server-side state, sessions and cache invalidation.
 
 | Request | Carries | Returns |
 |---|---|---|
-| `GET /api/doc` | nothing | The file's text, its hash, the baseline text and name |
+| `POST /api/doc` | nothing | The file's text, its hash, the baseline text and name |
 | `POST /api/apply` | text, one operation | New text, or a refusal naming why; the report; the graph |
 | `POST /api/report` | text (after a source edit) | The report and graph for the text |
 | `POST /api/save` | text, the hash of the file as read | `200` after an atomic write, or `409` if the file on disk changed |
 
-The report is `plan.InspectConfig` (with the Registry in typed mode), the graph is the viewer's
+Every request is a `POST` of JSON (see "Security"), so even reading the file is a `POST`. The report is `plan.InspectConfig` (with the Registry in typed mode), the graph is the viewer's
 `BuildConfig` output, and the weakening verdict is `runview.BuildDiff` of the text against the
 baseline. The page renders them and computes nothing about the flow itself. There is one validator,
 the one `bide check` runs; the JSON Schema is not run in the browser, because a second validator

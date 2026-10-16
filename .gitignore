@@ -55,3 +55,6 @@ examples/approval/approver-keys.json
 
 # A Go build cache directory used by a local run.
 gocache-*/
+
+# The editor Chrome job installs puppeteer-core here (flowedit/browser/package-lock.json)
+flowedit/browser/node_modules/

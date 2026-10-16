@@ -6,6 +6,7 @@
 //	bide doctor                    check that a first run can work, with a fix for each failure
 //	bide sample                    write a sample journal (14 runs, evidence, flow configs) and open bide view on it
 //	bide view -db run.db           a read-only local page for one run of a journal
+//	bide edit flow.yaml            a local page for a flow config: graph, outline, gates, assertions (read-only so far)
 //	bide approve -db run.db -list  list the calls waiting for a decision; sign one with -run -call -as -key
 //	bide keygen -out ops.key       create an approver key pair for bide approve
 //	bide migrate -postgres-env VAR create or check a Postgres journal's schema as its owner

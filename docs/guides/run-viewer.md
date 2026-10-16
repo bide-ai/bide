@@ -582,6 +582,9 @@ bide view -db f.db -run triage-demo
 
 ## Check a flow config
 
+`bide edit flow.yaml` shows the same check in a page with an outline and an inspector; see the
+[flow editor guide](flow-editor.md).
+
 `bide view -config` shows a flow definition (a `plan` config, `.json` or `.yaml`) without running
 anything: the declared graph, its Switch arms and loops, each node's approval gate written as
 `2 of 3: ops, finance, risk` with `excluding the requester` ([separation of

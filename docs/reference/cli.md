@@ -27,6 +27,7 @@ and `help`, and its import graph is the standard library and the core module (se
 | [`bide doctor`](#bide-doctor) | check that a first run can work: Go, SQLite, the module cache, model keys, your project |
 | [`bide sample`](#bide-sample) | write a sample journal of varied runs, with evidence and flow configs, and open bide view on it |
 | [`bide view`](#bide-view) | a read-only local page for one run of a journal, or a flow config's graph |
+| [`bide edit`](#bide-edit) | a local page for a flow config: the graph, the approval gates, the assertions and the check (read-only so far) |
 | [`bide notify`](#bide-notify) | set up and test the webhook notifier: test a receiver, run a local one, relay to Slack and PagerDuty |
 | [`bide approve`](#bide-approve) | record your signed approval (or -reject) of a call that waits for a decision; -list shows what waits |
 | [`bide keygen`](#bide-keygen) | create an approver key pair for bide approve and print the public key policies and verifiers use |
@@ -275,6 +276,37 @@ Flags:
     	with -check: exit 1 on a warning too
   -topology string
     	declared flow topology, JSON of flow.Topology(), to draw a flow run against instead of the topology the run journaled (flow:topology); for a run journaled before that record existed, or to check a run against another flow
+
+Exit status:
+  0  success
+  1  failure: an input cannot be read or the command failed; for check, an error was found
+     (with -strict, any problem)
+  2  usage error: a bad flag or argument; nothing was read
+```
+
+## bide edit
+
+A local page for a flow config: the graph, the approval gates, the assertions and the check (read-only so far).
+
+```text
+usage: bide edit [-addr <host:port>] [-color auto|always|never] <flow.yaml|flow.json>
+
+Opens a local page for one flow config: the declared graph, an outline of its nodes and wiring,
+each node's approval gate and safety, the assertions and their verdicts, the problems bide check
+finds, and the source. The page shows what bide check and bide view -config show for the file,
+computed by the same code, and labels the check as structural: block and type names are checked
+when a program loads the flow with its plan.Registry.
+
+In this release the page only shows the file; it does not change it.
+
+It serves on a loopback address only (-addr, default 127.0.0.1:8585), answers only requests
+addressed to a loopback host, and reads only the file you name. The address it prints ends in a
+fragment (#t=...) that carries a per-run session token; open that whole address. Stop it with
+Ctrl-C. bide edit is not in a bide_audit_only build.
+  -addr string
+    	address to serve on: a loopback IP (127.0.0.1 or ::1) or localhost, with a port (default "127.0.0.1:8585")
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
 
 Exit status:
   0  success

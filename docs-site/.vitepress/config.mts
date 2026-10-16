@@ -85,6 +85,7 @@ export default defineConfig({
         collapsed: false,
         items: [
           { text: 'Run viewer', link: '/guides/run-viewer' },
+          { text: 'Flow editor', link: '/guides/flow-editor' },
           { text: 'Debugging and recovery', link: '/guides/debugging' },
         ],
       },

@@ -57,6 +57,7 @@ func TestAuditOnlyBuildIsCore(t *testing.T) {
 func TestDirectRequires(t *testing.T) {
 	want := []string{
 		"github.com/bide-ai/bide",
+		"github.com/bide-ai/bide/flowedit",
 		"github.com/bide-ai/bide/store/postgres",
 		"github.com/bide-ai/bide/store/sqlite",
 		"go.yaml.in/yaml/v3",

@@ -1,0 +1,22 @@
+/* bide edit: layout for the panes, on the viewer's tokens (style.css). */
+.grow { flex: 1; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.hbtn { font: inherit; color: var(--fg); background: var(--card-2); border: 1px solid var(--line); border-radius: var(--r-sm); padding: var(--s1) var(--s3); cursor: pointer; }
+main { max-width: 1480px; }
+.editor { display: grid; grid-template-columns: minmax(0, 2fr) minmax(220px, 1fr) minmax(240px, 1fr); gap: var(--s4); align-items: start; }
+@media (max-width: 1100px) { .editor { grid-template-columns: 1fr; } }
+.pane h2 { margin-top: var(--s4); }
+.outlist, .wirelist { list-style: none; margin: 0; padding: 0; }
+.outlist li { margin: 0 0 var(--s1); }
+.outlist button { display: block; width: 100%; text-align: left; font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--line); border-radius: var(--r-sm); padding: var(--s2) var(--s3); cursor: pointer; }
+.outlist button[aria-current="true"] { border-color: var(--accent); background: var(--accent-bg); }
+.outlist .nm { font-family: var(--mono); font-weight: 600; }
+.outlist .meta { display: block; font-size: var(--t-xs); color: var(--muted); }
+.outlist .prob { display: block; font-size: var(--t-xs); color: var(--bad); }
+.wirelist li { font-family: var(--mono); font-size: var(--t-xs); margin: var(--s1) 0; overflow-wrap: anywhere; }
+.inspector dl { display: grid; grid-template-columns: max-content 1fr; gap: var(--s1) var(--s3); margin: 0; }
+.inspector dt { color: var(--muted); font-size: var(--t-sm); }
+.inspector dd { margin: 0; overflow-wrap: anywhere; }
+.source { max-height: 28em; overflow: auto; background: var(--card); border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s3); white-space: pre; }
+.node.sel .box { stroke-width: 3; stroke: var(--accent); }
+.assert { margin: var(--s1) 0; }
