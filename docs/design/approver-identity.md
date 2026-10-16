@@ -1252,11 +1252,33 @@ a retroactive compromise reported after the decisions, entry pruning after expir
 and refusals on real output (SHA-1, issuing distribution point, `removeFromCRL` in a full CRL, a
 critical delta indicator). OpenSSL cannot issue true deltas.
 
-**Step-1 exit criterion (assessor's condition).** Delta conformance against a CA that issues true delta
-CRLs, EJBCA and Microsoft AD CS, must pass before any gate relies on deltas; their fixtures are captured
-by a manually dispatched workflow and checked in, and the AD CS defaults (CRLNumber scheme, prune
-timing, hold handling, and what each CA writes in a `removeFromCRL` entry's revocation date) are recorded
-here when captured.
+**Step-1 exit criterion (assessor's condition), met on 2026-10-16.** Delta conformance against CAs that issue
+true delta CRLs passed on checked-in captures (`audit/testdata/ejbca`, `audit/testdata/adcs`, from the
+manually dispatched workflow `.github/workflows/crl-fixtures.yml`; `VERSION` and `DEFAULTS.txt` record what
+produced them): EJBCA Community 9.6.3 and Microsoft AD CS on Windows Server 2025 as a standalone root.
+What the two CAs do, as observed (the tests pin it):
+
+- *CRL numbers.* Both use one increasing sequence across bases and deltas, as RFC 5280 section 5.2.3 requires.
+- *Which base a delta names.* EJBCA names the latest base issued before the delta. AD CS names an older base
+  (the CA's first, and it keeps naming it for every later delta), and its deltas are cumulative since that
+  base, so each delta also lists everything revoked since: pairing with the highest qualifying base
+  (`baseNumber <= B.number < D.number`, issued no later than the delta) is what makes both work.
+- *Time stamps.* AD CS back-dates `thisUpdate` by about ten minutes, so a revocation date can be later than the
+  `thisUpdate` of the CRL that lists it, and revocations queued before a publication all carry that
+  publication's time. Evidence of absence needs `thisUpdate >= A`, so on AD CS a decision waits about ten
+  minutes longer for a CRL to be usable; the live count (`CountLive`) is what keeps the gate from waiting.
+  It also back-dates certificates' `notBefore` by ten minutes. EJBCA stamps the actual time.
+- *Holds.* Both write the release as a `removeFromCRL` entry in the next delta whose date is the time of the
+  release (not the original hold date); the next base no longer lists the certificate. Neither stamps the
+  original hold date, so the opt-in `AllowHolds` reading is consistent with both, but the default still
+  refuses holds because the field is not defined by the RFC.
+- *Defaults.* A standalone AD CS root defaults to a one week base CRL, deltas off (`CRLDeltaPeriodUnits` 0),
+  overlap 0 hours, `CRLFlags` 2 and one year certificates (`DEFAULTS.txt`); the capture turned deltas on with
+  a one day base and a thirty minute delta, which gave a `nextUpdate` of about a day plus overlap for bases
+  and one hour twenty for deltas. Its bases carry the freshest-CRL extension. EJBCA: hour base, ten minute
+  delta in the capture, no automatic issuing.
+- *Not captured, still open.* Pruning of expired entries (a capture across a certificate's expiry), a re-key,
+  and a restore from backup. The assessor asked for those with the pilot CA's own checks (test plan item 32).
 
 **Requirements this puts on the later changes (v4 decision, gate, audit).** The `approval-identity` record
 stores, for each counted decision, the tier, `S` and the basis, not just "counted". The offline verifier

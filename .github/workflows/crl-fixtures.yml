@@ -7,9 +7,6 @@ name: CRL fixtures
 # commit them.
 on:
   workflow_dispatch:
-  push: # TEMPORARY while the AD CS capture is developed: removed before the pull request is final
-    branches: [ident-c3]
-    paths: ['.github/workflows/crl-fixtures.yml', 'audit/testdata/adcs/capture.ps1', 'audit/testdata/ejbca/capture.sh']
 
 permissions:
   contents: read

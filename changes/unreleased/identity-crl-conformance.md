@@ -1,0 +1,3 @@
+Section: Added
+
+Conformance captures of true delta CRLs for the planned certificate-bound approver identity status rule: certificates and CRLs from EJBCA Community and from Microsoft AD CS (a standalone root on Windows Server 2025), captured by the manually dispatched workflow `crl-fixtures.yml`, checked in under `audit/testdata/ejbca` and `audit/testdata/adcs`, and exercised offline by tests of the base and delta pairing, the shared CRL numbering, cumulative deltas, AD CS's ten minute back-dating, key compromise, supersession and hold release. The design note records what each CA does. No behaviour changes.
