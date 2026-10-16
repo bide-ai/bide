@@ -1085,8 +1085,11 @@ type IdentityPolicy struct {
 
 	AnchorGrace time.Duration
 
-	RSA2048Until           time.Time
-	MaxLeafLifetime        time.Duration
+	RSA2048Until time.Time
+
+	MaxLeafLifetime time.Duration
+
+	NotBeforeBackdate      time.Duration
 	RequireNameConstraints bool
 
 	RequirePolicyOnCAs bool
@@ -1729,6 +1732,8 @@ type StatusParams struct {
 
 	Now          time.Time
 	MaxStatusAge time.Duration
+
+	MaxStatusAgeFor map[SPKIHash]time.Duration
 
 	CountLive bool
 
