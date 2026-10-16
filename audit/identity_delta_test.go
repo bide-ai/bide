@@ -619,3 +619,55 @@ func TestSameHoldInTwoFullCRLs(t *testing.T) {
 		}
 	}
 }
+
+// A CA that issues full CRLs only shows a release as the hold disappearing. The first CRL that no
+// longer lists the hold bounds the release, if the series is contiguous from the last listing to it
+// (TestSameHoldInTwoFullCRLs covers the hold listed twice).
+func TestFullCRLOnlyHoldReleaseByAbsence(t *testing.T) {
+	hold := func(s *stFx) x509.RevocationListEntry { return testca.Revoked(s.leaf.Cert, idT0.Add(10*min), 6) }
+	period := audit.StatusParams{AllowHolds: true, CAPeriod: 20 * min}
+	for _, tc := range []struct {
+		name    string
+		at      time.Duration
+		params  audit.StatusParams
+		b3At    time.Duration // when the CRL without the hold is issued
+		revoked bool
+	}{
+		{"before the hold", 5 * min, period, 40 * min, false},
+		{"during the hold", 20 * min, period, 40 * min, true},
+		{"between the last listing and the CRL that drops it", 35 * min, period, 40 * min, true},
+		{"after the CRL that drops it", 45 * min, period, 40 * min, false},
+		// A gap between the last listing and the next CRL (issued after the previous one's nextUpdate
+		// and beyond the declared period): the hold stays open.
+		{"after, across a gap", 50 * min, period, 55 * min, true},
+		{"no declared period", 45 * min, audit.StatusParams{AllowHolds: true, CAPeriod: -1}, 40 * min, true},
+	} {
+		s := newStFxAt(t, idT0.Add(tc.at))
+		b1 := s.lcrl(1, idT0.Add(12*min), 15*min, hold(s))
+		b2 := s.lcrl(2, idT0.Add(25*min), 15*min, hold(s)) // next update T0+40m
+		b3 := s.lcrl(3, idT0.Add(tc.b3At), 15*min)         // no longer lists the hold
+		st := s.leafStatus(s.snap(b1, b2, b3), tc.params)
+		if st.Revoked != tc.revoked {
+			t.Fatalf("%s: revoked=%v want %v: %+v", tc.name, st.Revoked, tc.revoked, st)
+		}
+	}
+	// Consecutive CRL numbers show the same continuity where the CA numbers every CRL.
+	s := newStFxAt(t, idT0.Add(45*min))
+	b2 := s.lcrl(2, idT0.Add(25*min), 15*min, hold(s))
+	b3 := s.lcrl(3, idT0.Add(40*min), 15*min)
+	if st := s.leafStatus(s.snap(b2, b3), audit.StatusParams{AllowHolds: true, CAPeriod: -1, ConsecutiveNumbers: true}); st.Revoked {
+		t.Fatalf("consecutive numbers: %+v", st)
+	}
+	skip := s.lcrl(4, idT0.Add(40*min), 15*min)
+	if st := s.leafStatus(s.snap(b2, skip), audit.StatusParams{AllowHolds: true, CAPeriod: -1, ConsecutiveNumbers: true}); !st.Revoked {
+		t.Fatalf("a skipped number: %+v", st)
+	}
+	// A later CRL that lists the hold again keeps it open past the first absence.
+	s = newStFxAt(t, idT0.Add(55*min))
+	b1 := s.lcrl(1, idT0.Add(12*min), 15*min, hold(s))
+	b2 = s.lcrl(2, idT0.Add(25*min), 15*min)
+	b3 = s.lcrl(3, idT0.Add(40*min), 15*min, hold(s))
+	if st := s.leafStatus(s.snap(b1, b2, b3), audit.StatusParams{AllowHolds: true, CAPeriod: 20 * min}); !st.Revoked {
+		t.Fatalf("listed again: %+v", st)
+	}
+}

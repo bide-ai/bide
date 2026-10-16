@@ -744,6 +744,40 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, evict
 	st := CertStatus{Serial: cert.SerialNumber, Tier: TierNoInformation}
 	key := cert.SerialNumber.String()
 
+	// Number order: one sequence across bases and deltas. A CRL dated later than another with a
+	// higher number is not a legitimate successor.
+	var ordered []*crlView
+	maxNum := big.NewInt(-1)
+	for _, v := range all {
+		if v.number.Cmp(maxNum) < 0 {
+			continue // a rollback: kept for its listings only
+		}
+		if v.number.Cmp(maxNum) == 0 && len(ordered) > 0 && ordered[len(ordered)-1].hash != v.hash {
+			continue // two different CRLs, one number
+		}
+		maxNum = v.number
+		ordered = append(ordered, v)
+	}
+	// How consecutive CRLs of the series are shown to have nothing between them: issued within the
+	// predecessor's nextUpdate, and within the declared issuance interval of it (or with the next
+	// CRL number). nextUpdate alone is not enough: a CA may issue earlier than it.
+	interval := p.CAPeriod
+	if iv, ok := p.CAPeriodFor[SPKIHashOf(issuer)]; ok {
+		interval = iv
+	}
+	contig := func(prev, v *crlView) bool {
+		if v.this.After(prev.next.Add(p.CoverageTolerance)) {
+			return false
+		}
+		if p.ConsecutiveNumbers && v.number.Cmp(new(big.Int).Add(prev.number, big.NewInt(1))) == 0 {
+			return true
+		}
+		return interval > 0 && v.this.Sub(prev.this) <= interval+p.CoverageTolerance
+	}
+	retains := func(v *crlView) bool {
+		return p.Retained || (!v.expiredFrom.IsZero() && !cert.NotAfter.Before(v.expiredFrom))
+	}
+
 	// A listing in any CRL of the series is a revocation from its time on, whatever the CRL's date;
 	// a later CRL that no longer lists the serial does not undo it. Every CRL that verifies under the
 	// issuer is read for its listings, a delta that has no base included: a listing can only take trust
@@ -793,6 +827,44 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, evict
 				st.Note = "the decision falls inside a certificateHold"
 			}
 		}
+		// A CA that issues full CRLs only shows a release as the hold's disappearance: the first full CRL
+		// after the last one that lists the hold bounds the release, but only if the series is
+		// contiguous (the declared CA period) from that listing to it; across a gap the hold stays open.
+		lists := func(v *crlView, hs time.Time) bool {
+			for _, e := range v.entries[key] {
+				if e.code == 6 && effective(cert, e).Equal(hs) {
+					return true
+				}
+			}
+			return false
+		}
+		releasedByAbsence := func(hs time.Time) time.Time {
+			last := -1
+			for i, v := range ordered {
+				if lists(v, hs) {
+					last = i
+				}
+			}
+			if last < 0 {
+				return time.Time{}
+			}
+			nxt := -1
+			for i := last + 1; i < len(ordered); i++ {
+				if !ordered[i].delta {
+					nxt = i
+					break
+				}
+			}
+			if nxt < 0 {
+				return time.Time{}
+			}
+			for i := last + 1; i <= nxt; i++ {
+				if !contig(ordered[i-1], ordered[i]) {
+					return time.Time{}
+				}
+			}
+			return ordered[nxt].this
+		}
 		for _, hs := range holdStarts {
 			end := time.Time{}
 			for i, r := range releases {
@@ -800,6 +872,9 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, evict
 					end, used[i] = r, true
 					break
 				}
+			}
+			if end.IsZero() {
+				end = releasedByAbsence(hs)
 			}
 			if !a.Before(hs) && (end.IsZero() || !a.After(end)) {
 				inHold(hs)
@@ -815,20 +890,6 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, evict
 		return st
 	}
 
-	// Number order: one sequence across bases and deltas. A CRL dated later than another with a
-	// higher number is not a legitimate successor.
-	var ordered []*crlView
-	maxNum := big.NewInt(-1)
-	for _, v := range all {
-		if v.number.Cmp(maxNum) < 0 {
-			continue // a rollback: kept for its listings only
-		}
-		if v.number.Cmp(maxNum) == 0 && len(ordered) > 0 && ordered[len(ordered)-1].hash != v.hash {
-			continue // two different CRLs, one number
-		}
-		maxNum = v.number
-		ordered = append(ordered, v)
-	}
 	// The evidence of absence is the full CRLs and the merged views: each delta with its base, as of
 	// the delta. A delta with no base to merge with gives none.
 	paired := pairDeltas(ordered)
@@ -847,26 +908,6 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, evict
 			}
 			views = append(views, m)
 		}
-	}
-
-	// How consecutive CRLs of the series are shown to have nothing between them: issued within the
-	// predecessor's nextUpdate, and within the declared issuance interval of it (or with the next
-	// CRL number). nextUpdate alone is not enough: a CA may issue earlier than it.
-	interval := p.CAPeriod
-	if iv, ok := p.CAPeriodFor[SPKIHashOf(issuer)]; ok {
-		interval = iv
-	}
-	contig := func(prev, v *crlView) bool {
-		if v.this.After(prev.next.Add(p.CoverageTolerance)) {
-			return false
-		}
-		if p.ConsecutiveNumbers && v.number.Cmp(new(big.Int).Add(prev.number, big.NewInt(1))) == 0 {
-			return true
-		}
-		return interval > 0 && v.this.Sub(prev.this) <= interval+p.CoverageTolerance
-	}
-	retains := func(v *crlView) bool {
-		return p.Retained || (!v.expiredFrom.IsZero() && !cert.NotAfter.Before(v.expiredFrom))
 	}
 
 	// L(C): the first CRL beyond notAfter, established only if the series shows nothing was issued
