@@ -130,6 +130,10 @@ func ungatedNodes(o, n plan.ConfigReport, renRev map[string]string) map[string]b
 		oldHas[x.Name] = true
 	}
 	oldReach := reachable(o)
+	oldNode := map[string]plan.TopologyNode{}
+	for _, x := range o.Topology.Nodes {
+		oldNode[x.Name] = x
+	}
 	out := map[string]bool{}
 	for _, x := range n.Topology.Nodes {
 		if n.Gated[x.Name] {
@@ -153,6 +157,9 @@ func ungatedNodes(o, n plan.ConfigReport, renRev map[string]string) map[string]b
 		case oldReach[from] && o.Gated[from]:
 			out[x.Name] = true
 		case !oldReach[from] && (mayHaveEffect(n, x.Name) || mayHaveEffect(o, from)):
+			out[x.Name] = true
+		case (oldNode[from].Block != x.Block || oldNode[from].Kind != x.Kind) && len(guardedBlock(o, oldReach, x)) > 0:
+			// The node was edited in place onto a block that only ever sat behind a gate.
 			out[x.Name] = true
 		case mayHaveEffect(n, x.Name) && !mayHaveEffect(o, from):
 			// Reached without a gate before, as something that could not act, and now it can.

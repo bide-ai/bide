@@ -432,6 +432,20 @@ func weakenNode(c *Change, o, n plan.ConfigReport, from, to string, ungated bool
 	var notes []string
 	if ungated {
 		notes = append(notes, ungatedWhy(n, to))
+		var was, now plan.TopologyNode
+		for _, x := range o.Topology.Nodes {
+			if x.Name == from {
+				was = x
+			}
+		}
+		for _, x := range n.Topology.Nodes {
+			if x.Name == to {
+				now = x
+			}
+		}
+		if g := guardedBlock(o, reachable(o), now); (was.Block != now.Block || was.Kind != now.Kind) && len(g) > 0 {
+			notes = append(notes, "its block "+now.Block+" was reached only through an approval gate before ("+strings.Join(g, ", ")+")")
+		}
 	}
 	if safetyLowered(o, n, from, to) {
 		notes = append(notes, fmt.Sprintf("safety lowered %s -> %s", safetyName(o, from), safetyName(n, to)))

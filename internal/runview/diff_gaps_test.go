@@ -336,3 +336,18 @@ func TestDiffUnreachableEffectReplacedByRelabeledCopy(t *testing.T) {
 		t.Errorf("weakened %q", got)
 	}
 }
+
+// A node edited in place onto a block that only ever sat behind a gate, keeping its name and a
+// read-only label, is a bypass of that block's gate.
+func TestDiffNodeEditedOntoGuardedBlock(t *testing.T) {
+	audit := func(block string) string {
+		return gapCfg(`, {"name": "audit", "block": "`+block+`", "safety": "readonly"}`, `, {"edge": ["validate", "audit"]}`)
+	}
+	got := weakenedOf(t, audit("audit"), audit("charge"))
+	if len(got) != 1 || !strings.HasPrefix(got[0], "audit: reachable without an approval gate") || !strings.Contains(got[0], "its block charge was reached only through an approval gate before (charge)") {
+		t.Errorf("weakened %q", got)
+	}
+	if got := weakenedOf(t, audit("audit"), audit("other")); len(got) != 0 {
+		t.Errorf("a block no gate guarded: %q", got)
+	}
+}

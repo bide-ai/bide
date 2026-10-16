@@ -780,7 +780,7 @@ weakened):
   renamed), so a gated node replaced by an ungated read-only copy is reported. A new node that uses
   a block every node used only behind a gate before, and that is reachable without one, is reported
   whatever its name and `safety` (`its block charge was reached only through an approval gate
-  before (charge)`). Raising the `safety` of a node that was already reachable without a gate (read-only to
+  before (charge)`), a read-only block included, and so is an existing node edited in place onto such a block. Raising the `safety` of a node that was already reachable without a gate (read-only to
   side effect) is reported as well: it is an effect that is newly ungated.
 - **A safety lowered.** A node whose `safety` moved toward read-only (side effect or unknown to
   idempotent or read-only, idempotent to read-only) is reported as `safety lowered side effect ->
