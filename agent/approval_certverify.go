@@ -93,6 +93,9 @@ const AlgCertificate Alg = "x509"
 type IdentityRoster interface {
 	// HasIdentity reports whether the identity map names the approver id.
 	HasIdentity(approverID string) bool
+	// Identifier is the canonical identifier the identity map gives the approver id (what its certificate
+	// must carry), for a client to check its own certificate before signing.
+	Identifier(approverID string) (identifier string, ok bool)
 	// RequesterIdentifier maps a requester principal (as the run records it) to the canonical identifier
 	// of the person it names, so separation of duties can exclude the requester by identifier. ok is
 	// false when the principal cannot be mapped.
@@ -123,4 +126,24 @@ type IdentityDescriber interface {
 	// read from the process environment by the engine, so the application compares it with its own
 	// environment at startup (audit.CheckDeclaredGoDebug).
 	VerifierInfo() (revision, goDebug, buildGoDebug string)
+}
+
+// CertIntakeVerifier is implemented by the verifier of a certificate-bound approver that can check a
+// decision before it is written (audit.CertApprover). SubmitDecision with WithDecisionCheck calls it, for a
+// decision that carries a chain, in place of the bare-key check: the chain is accepted for the approver at
+// the time of the write, the signature verifies over the v4 bytes under the leaf's key, and status is
+// usable now. A Reason of ReasonStatusUnknown or ReasonStatusStale means the status could not be judged
+// (SubmitDecision returns ErrStatusUnavailable and writes nothing); any other Reason refuses the decision
+// (ErrInvalidApproval). Nothing is written on any failure.
+type CertIntakeVerifier interface {
+	CertDecisionVerifier
+	VerifyCertIntake(cd CertDecision) CertCheck
+}
+
+// CertRecordVerifies reports whether r is a valid decision of a certificate-bound approver for s as the
+// intake judges (CertIntakeVerifier): its chain, identity, scheme and signature hold now and nothing in its
+// chain is revoked. Status that is missing or stale does not make a record invalid. It is what an intake
+// uses to tell a decision it already holds (a replay) from junk.
+func CertRecordVerifies(iv CertIntakeVerifier, s ApprovalSubject, r Record) bool {
+	return certRecordVerifies(iv, s, r)
 }

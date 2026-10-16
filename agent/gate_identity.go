@@ -290,7 +290,7 @@ func recordIdentity(ctx context.Context, j *Journal, runID string, s ApprovalSub
 		cc := c.Cert
 		d := IdentityDecision{Approver: id, Step: c.Step, Identifier: cc.Identity, Chain: cc.Chain, Anchor: cc.Anchor,
 			AnchoredAt: cc.Anchored.UTC().Format(time.RFC3339Nano), TimeSource: timeSource(cc.Time), TimeEvidence: cc.TimeEvidence,
-			HeadSize: cc.HeadSize, HeadRoot: cc.HeadRoot, HeadHash: cc.HeadHash, Tier: identityTier(cc), BasisKind: cc.BasisKind,
+			HeadSize: cc.HeadSize, HeadRoot: cc.HeadRoot, HeadHash: cc.HeadHash, Tier: IdentityTier(cc), BasisKind: cc.BasisKind,
 			Basis: cc.Basis, Window: cc.Window, Warnings: cc.Warnings}
 		if cc.StatusTime != "" {
 			d.StatusTime = cc.StatusTime
@@ -347,9 +347,12 @@ func timeSource(t string) string {
 	return TimeSourceLogSignerClock
 }
 
-// identityTier maps a verifier's finding to the identity record's tier: only a final status is a
-// final tier, and the time source says which; a live count or a short window is provisional.
-func identityTier(cc *CertCheck) string {
+// IdentityTier maps a verifier's finding to the tier the identity record and the approvals intake report:
+// only a final status is a final tier, and the time source says which (an independent source only when the
+// finding names RFC 3161 or an anchor receipt; anything else is the log signer's clock); a live count or a
+// short window is provisional. It is the one classifier: the gate's record and the intake's response both
+// use it, so they cannot drift.
+func IdentityTier(cc *CertCheck) string {
 	switch {
 	case cc.Tier != "final":
 		return TierProvisional

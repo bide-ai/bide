@@ -141,6 +141,22 @@ still names its time source (`independent-final` with an RFC 3161 token or anoth
 tell; the word "verified" is reserved for an audit result, and a viewer must not present a provisional
 count as verified.
 
+## Taking the decision over HTTP
+
+A certificate-bound approver decides through the approvals intake with the chain in the request (`cert`), or
+directly with `agent.SubmitDecision` and `agent.WithDecisionCheck`. Both verify the chain **before they write**
+and write nothing on a failure: the chain is accepted for the approver at the time of the write, the signature
+is over the `bide.approval.v4` bytes under the leaf's key, and status is usable by the execution ages
+(`ExecStatusAge`, `ExecStatusAgeFor`). A decision whose status cannot be judged is `agent.ErrStatusUnavailable`
+(the intake answers 503 with `Retry-After`; retry once the refresher has current CRLs), not a refusal. A
+revoked chain, a bare signature from a certificate-bound approver and a chain from a bare-key approver are
+refused (`agent.ErrInvalidApproval`, 422). The write is then covered by a signed head (the application's
+`AuditedStore` signs one with it, and the intake asks again), and the gate counts it; the first count is
+usually **provisional** (status that predates the decision), which the response shows (`tier`, `provisional`)
+and which never reads as verified. See [taking decisions over HTTP](hitl-approval.md#taking-decisions-over-http).
+The identity rule per approver is on `GET /pending` (`gate.identity`): restrict who can read a gate, since it
+lists person identifiers.
+
 ## Before the call runs
 
 A terminal tally is never recounted, so a decision counted at 10:00 would otherwise still authorize an

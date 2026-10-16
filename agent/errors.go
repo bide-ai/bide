@@ -105,6 +105,11 @@ var (
 	// WithDecisionCheck: no such tool call, an unknown approver, or a signature that does not
 	// verify for this exact call.
 	ErrInvalidApproval = fmt.Errorf("invalid approval: %w", ErrConfig)
+	// ErrStatusUnavailable is a certificate-bound decision submitted (with WithDecisionCheck) while the
+	// revocation status of its chain is missing or stale: the decision is not refused, the gate cannot
+	// judge it yet, and nothing is written. It is transient (retry when status is current), not a
+	// configuration error; the approvals intake answers 503 for it.
+	ErrStatusUnavailable = errors.New("revocation status is not available")
 	// ErrAlreadyDecided is a decision submitted (with WithDecisionCheck) by an approver whose
 	// earlier valid decision on the same call already counts; the new one would be ignored.
 	ErrAlreadyDecided = fmt.Errorf("approver already decided: %w", ErrConfig)

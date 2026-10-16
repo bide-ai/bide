@@ -1396,9 +1396,6 @@ func submitDecision(ctx context.Context, store *Journal, op string, d Decision, 
 	if o.wrote != nil {
 		ctx = context.WithValue(ctx, wroteKey{}, o.wrote)
 	}
-	if len(d.Cert) > 0 && o.verifierFor != nil {
-		return fmt.Errorf("%s: approver %q: WithDecisionCheck verifies a bare-key decision; this version has no check for a decision that carries a certificate chain, so it is not written: %w", op, d.ApproverID, ErrConfig)
-	}
 	reqSeq, flow, err := flowDecision(ctx, store, op, d.RunID, d.ToolUseID)
 	if err != nil {
 		return err
@@ -1512,13 +1509,35 @@ type decisionCheckResult struct {
 	v    ApproverVerifier
 	d    Decision
 	at   string
+	iv   CertIntakeVerifier // the approver's certificate-bound verifier, when the decision is a certificate-bound one
 }
 
 // validSame reports whether r is the approver's valid record of this decision: valid for the
 // recorded call, with the same approver, verdict, scheme, decision time and leaf certificate.
 func (c decisionCheckResult) validSame(r Record) bool {
-	return IsApprovalDecision(r, c.d.ToolUseID) && r.Approver() == c.d.ApproverID && decisionReason(r, c.s, c.v) == "" &&
+	return IsApprovalDecision(r, c.d.ToolUseID) && r.Approver() == c.d.ApproverID && c.recordVerifies(r) &&
 		r.Approved == c.d.Approved && r.ApproverAlg() == c.d.Alg && r.DecidedAt() == c.at && sameLeaf(r, c.d)
+}
+
+// recordVerifies reports whether r verifies for the recorded call: under the approver's key for a bare-key
+// approver, and for a certificate-bound one by the intake check (its chain and signature now; a record
+// whose only fault is status that cannot be judged right now still verifies, it is the same decision).
+func (c decisionCheckResult) recordVerifies(r Record) bool {
+	if c.iv != nil {
+		return certRecordVerifies(c.iv, c.s, r)
+	}
+	return decisionReason(r, c.s, c.v) == ""
+}
+
+// certRecordVerifies is whether r is a valid decision of a certificate-bound approver for s, as the intake
+// judges: its chain, identity, scheme and signature hold now and nothing in its chain is revoked. Status
+// that is missing or stale does not make a record invalid.
+func certRecordVerifies(iv CertIntakeVerifier, s ApprovalSubject, r Record) bool {
+	switch iv.VerifyCertIntake(CertDecision{Subject: s, Record: r, Index: -1}).Reason {
+	case "", ReasonStatusUnknown, ReasonStatusStale:
+		return true
+	}
+	return false
 }
 
 // sameLeaf reports whether record r and decision d carry the same leaf certificate (or both none): the
@@ -1554,10 +1573,16 @@ func checkDecision(ctx context.Context, store *Journal, op string, d Decision, d
 	if isNilVerifier(v) {
 		return none, fmt.Errorf("%s: the resolver returned a nil %T verifier for approver %q: %w", op, v, d.ApproverID, ErrConfig)
 	}
+	s := ApprovalSubject{RunID: d.RunID, ToolUseID: d.ToolUseID, ToolName: call.Name, Args: call.Args}
+	if cv, isCert := v.(CertDecisionVerifier); isCert {
+		return checkCertDecision(op, d, decidedAt, flow, recs, s, cv)
+	}
+	if len(d.Cert) > 0 {
+		return none, fmt.Errorf("%s: approver %q is a bare-key approver, whose decision carries no certificate chain: %w", op, d.ApproverID, ErrInvalidApproval)
+	}
 	if d.Alg != v.Alg() {
 		return none, fmt.Errorf("%s: approver %q: decision signed under %q, key is %q: %w", op, d.ApproverID, d.Alg, v.Alg(), ErrInvalidApproval)
 	}
-	s := ApprovalSubject{RunID: d.RunID, ToolUseID: d.ToolUseID, ToolName: call.Name, Args: call.Args}
 	if !v.Verify(ApprovalDecisionBytes(s, d.ApproverID, d.Approved, d.DecidedAt), d.Signature) {
 		return none, fmt.Errorf("%s: approver %q: %s: %w", op, d.ApproverID, ReasonBadSig, ErrInvalidApproval)
 	}
@@ -1645,4 +1670,62 @@ func excludedByIdentity(v ApproverVerifier, cc *CertCheck, requesters []string) 
 		cc.Warnings = append(cc.Warnings, fmt.Sprintf("requester %q cannot be mapped to an identifier, so separation of duties could not check it by identity (the exclusion by approver id still applies)", q))
 	}
 	return false
+}
+
+// checkCertDecision is checkDecision for a certificate-bound approver (cv): the decision carries a chain,
+// the chain and signature verify at the time of the write and status is usable now (CertIntakeVerifier),
+// and the approver has no other valid decision on the call. The first valid record with the same verdict,
+// scheme, time and leaf is the same decision (nothing is written again); another valid decision is
+// ErrAlreadyDecided. Nothing is written on any failure: status that cannot be judged is
+// ErrStatusUnavailable, a decision that fails is ErrInvalidApproval.
+func checkCertDecision(op string, d Decision, decidedAt string, flow bool, recs []Record, s ApprovalSubject, cv CertDecisionVerifier) (decisionCheckResult, error) {
+	var none decisionCheckResult
+	iv, ok := cv.(CertIntakeVerifier)
+	if !ok {
+		return none, fmt.Errorf("%s: approver %q: its certificate-bound verifier %T has no intake check (CertIntakeVerifier), so a decision cannot be vouched for before it is written: %w", op, d.ApproverID, cv, ErrConfig)
+	}
+	if flow {
+		i := slices.IndexFunc(recs, func(r Record) bool { return r.Name == ApprovalRequestStep(d.ToolUseID) })
+		recs = recs[i+1:]
+	}
+	// The approver's first valid record, if any. An exact replay (the same signature bytes, so the same
+	// decision) is answered from it without judging the request again, which is what lets a retry end during
+	// a status outage. Any other request is judged first: a request that merely repeats a decision's public
+	// fields (approver, verdict, time, leaf) with other signature bytes is not a replay until it verifies.
+	var held *Record
+	for i := range recs {
+		r := recs[i]
+		if IsApprovalDecision(r, d.ToolUseID) && r.Approver() == d.ApproverID && certRecordVerifies(iv, s, r) {
+			held = &recs[i]
+			break
+		}
+	}
+	sameDecision := func(r Record) bool {
+		return r.Approved == d.Approved && r.ApproverAlg() == d.Alg && r.DecidedAt() == decidedAt && sameLeaf(r, d)
+	}
+	if held != nil && sameDecision(*held) && bytes.Equal(held.Signature(), d.Signature) {
+		return decisionCheckResult{same: held.Name, s: s, v: cv, d: d, at: decidedAt, iv: iv}, nil
+	}
+	// This decision is judged before it is written.
+	if len(d.Cert) == 0 {
+		return none, fmt.Errorf("%s: approver %q: %s: %w", op, d.ApproverID, ReasonNoCert, ErrInvalidApproval)
+	}
+	rec := Record{Name: "intake", Kind: StepApproval, ToolUseID: d.ToolUseID, Approved: d.Approved, ApproverSignature: &ApproverSignature{
+		Approver: d.ApproverID, ApproverAlg: d.Alg, Signature: d.Signature, DecidedAt: decidedAt, ApproverCert: d.Cert}}
+	cc := iv.VerifyCertIntake(CertDecision{Subject: s, Record: rec, Index: -1})
+	switch cc.Reason {
+	case "":
+	case ReasonStatusUnknown, ReasonStatusStale:
+		return none, fmt.Errorf("%s: approver %q: %s (%s): %w", op, d.ApproverID, cc.Reason, cc.Detail, ErrStatusUnavailable)
+	default:
+		return none, fmt.Errorf("%s: approver %q: %s (%s): %w", op, d.ApproverID, cc.Reason, cc.Detail, ErrInvalidApproval)
+	}
+	if held != nil {
+		if sameDecision(*held) {
+			// The same decision under other signature bytes (a randomized scheme re-signed it): already held.
+			return decisionCheckResult{same: held.Name, s: s, v: cv, d: d, at: decidedAt, iv: iv}, nil
+		}
+		return none, fmt.Errorf("%s: approver %q already decided on call %q: %w", op, d.ApproverID, d.ToolUseID, ErrAlreadyDecided)
+	}
+	return decisionCheckResult{s: s, v: cv, d: d, at: decidedAt, iv: iv}, nil
 }

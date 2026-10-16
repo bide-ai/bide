@@ -71,6 +71,14 @@ type Request struct {
 	DecidedAt string `json:"decided_at"` // agent.FormatTimestamp form
 	Alg       string `json:"alg"`        // the signature scheme, e.g. "ed25519"
 	Signature []byte `json:"signature"`
+	// Cert is the leaf-first DER certificate chain of a certificate-bound approver, each certificate base64
+	// (standard alphabet, padded) as encoding/json writes a [][]byte, and Signature is then over
+	// agent.ApprovalDecisionBytesCert with the SHA-256 of Cert[0] (bide.approval.v4). The chain is verified
+	// before anything is written, with the approver's certificate-bound verifier, the same rule the gate
+	// counts by. At most agent.MaxDecisionCertChain certificates of agent.MaxDecisionCertDER bytes; the
+	// body bound (WithMaxBodyBytes, 64 KiB by default) applies to the whole request, so a deployment whose
+	// chains approach the limits raises it. A bare-key approver sends none.
+	Cert [][]byte `json:"cert,omitempty"`
 }
 
 // Response is the body of a successful POST /decisions.
@@ -89,6 +97,10 @@ type Response struct {
 	// client that reports success must check it.
 	Counted bool   `json:"counted"`
 	Reason  string `json:"reason,omitempty"`
+	// Anchored is, for a certificate-bound decision, whether a signed head of the run covers it yet. A
+	// decision no head covers is recorded and does not count until one does (Counted false, Reason says
+	// so); the gate anchors before it tallies, so it is not lost. Absent for a bare-key decision.
+	Anchored *bool `json:"anchored,omitempty"`
 	// Receipt is the decision's receipt (audit.DecisionReceipt), built from the journal record, for
 	// the approver to keep: it carries the signed decision, the call's arguments, and where the
 	// journal holds the record. Record, Index, RecordedAt and LeafHash are the application's word. It
@@ -150,6 +162,10 @@ type Gate struct {
 	Failed    bool           `json:"failed"`             // too few approvers left to reach need
 	Expired   bool           `json:"expired,omitempty"`  // the gate's recorded outcome is its expiry
 	Decisions []GateDecision `json:"decisions,omitempty"`
+	// Identity is, for each certificate-bound approver, the canonical identifier its certificate must carry
+	// (the gate's identity rule), so a client can check its own certificate before it signs. Bare-key
+	// approvers are not listed.
+	Identity map[string]string `json:"identity,omitempty"`
 }
 
 // GateDecision is one decision record the gate read.
@@ -158,6 +174,15 @@ type GateDecision struct {
 	Approved bool   `json:"approved"`
 	Counted  bool   `json:"counted"`
 	Reason   string `json:"reason,omitempty"` // why it does not count
+	// For a decision of a certificate-bound approver, what the count rests on. Counted is true for a
+	// decision the gate counts, and that is not the same as final: Provisional says a later status could
+	// still change the answer (the status in hand predates the decision, as it usually does at intake, or
+	// its window is short), and Tier ("provisional", "logclock-final" or "independent-final") and Basis
+	// ("at-or-after-decision" or "live-before-decision") say how. Only a final tier is a verified one; an
+	// audit (bide audit verify-approvals) recomputes it. Absent for a bare-key approver's decision.
+	Tier        string `json:"tier,omitempty"`
+	Provisional bool   `json:"provisional,omitempty"`
+	Basis       string `json:"basis,omitempty"`
 }
 
 // Recorded is what OnRecorded is told about a decision this handler wrote.
@@ -761,7 +786,29 @@ func (h *Handler) gateChecks(g *gateRecords) (Gate, []agent.DecisionCheck) {
 	out := Gate{Need: need, Approvers: approvers, Approved: t.Approved, Denied: t.Denied,
 		Pending: slices.Clone(t.Pending), Excluded: slices.Clone(t.Excluded), Passed: t.Passed(), Failed: t.Unreachable(), Expired: g.st.Expired}
 	for _, c := range checks {
-		out.Decisions = append(out.Decisions, GateDecision{Approver: c.Approver, Approved: c.Approved, Counted: c.Counted, Reason: c.Reason})
+		gd := GateDecision{Approver: c.Approver, Approved: c.Approved, Counted: c.Counted, Reason: c.Reason}
+		if c.Counted && c.Cert != nil {
+			gd.Tier, gd.Basis = agent.IdentityTier(c.Cert), c.Cert.BasisKind
+			gd.Provisional = gd.Tier == agent.TierProvisional
+		}
+		out.Decisions = append(out.Decisions, gd)
+	}
+	for _, id := range approvers {
+		v, ok := h.verifiers(id)
+		if !ok || v == nil {
+			continue
+		}
+		if _, cert := v.(agent.CertDecisionVerifier); !cert {
+			continue
+		}
+		if roster, ok := v.(agent.IdentityRoster); ok {
+			if ident, ok := roster.Identifier(id); ok {
+				if out.Identity == nil {
+					out.Identity = map[string]string{}
+				}
+				out.Identity[id] = ident
+			}
+		}
 	}
 	return out, checks
 }
@@ -873,9 +920,13 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		writeError(w, http.StatusBadRequest, "bad_request", "decided_at must be of the form 2006-01-02T15:04:05.000Z")
 		return
+	case len(req.Cert) > agent.MaxDecisionCertChain || slices.ContainsFunc(req.Cert, func(c []byte) bool { return len(c) == 0 || len(c) > agent.MaxDecisionCertDER }):
+		// Before any parsing or verification of a certificate: the chain is bounded by count and size.
+		writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("cert is at most %d certificates of 1 to %d bytes each", agent.MaxDecisionCertChain, agent.MaxDecisionCertDER))
+		return
 	}
 	d := agent.Decision{RunID: req.Run, ToolUseID: req.Call, ApproverID: req.Approver, Approved: req.Approved, DecidedAt: at,
-		Alg: agent.Alg(req.Alg), Signature: req.Signature}
+		Alg: agent.Alg(req.Alg), Signature: req.Signature, Cert: req.Cert}
 	if !h.authorize(w, r, Access{Method: r.Method, RunID: req.Run, ToolUseID: req.Call, Approver: req.Approver}) {
 		return
 	}
@@ -907,7 +958,7 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "not_an_approver", "the approver is not one of this gate's approvers")
 		return
 	}
-	idx := h.findDecision(g, d)
+	idx := h.findDecision(g, d, false)
 	if idx >= 0 && !h.standsFor(g, d, idx) {
 		idx = -1 // a record of d's own bytes that is no decision (the gate ignores it): not a replay
 	}
@@ -932,9 +983,16 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, agent.ErrAlreadyDecided):
 			writeError(w, http.StatusConflict, "already_decided", "this approver already has a decision on the call that counts")
 			return
+		case errors.Is(err, agent.ErrStatusUnavailable):
+			// Fail closed and retry: the decision is not refused, the gate cannot judge its certificate yet,
+			// and nothing was written.
+			h.onErr(fmt.Errorf("approvals: decision of %q on %s/%s not written, revocation status is not available: %w", d.ApproverID, d.RunID, d.ToolUseID, err))
+			w.Header().Set("Retry-After", "5")
+			writeError(w, http.StatusServiceUnavailable, "status_unavailable", "revocation status for the certificate chain is not available; nothing was recorded, retry")
+			return
 		case errors.Is(err, agent.ErrInvalidApproval):
 			h.onErr(fmt.Errorf("approvals: refused decision of %q on %s/%s: %w", d.ApproverID, d.RunID, d.ToolUseID, err))
-			writeError(w, http.StatusUnprocessableEntity, "invalid_approval", "the decision does not verify for this call under the approver's enrolled key")
+			writeError(w, http.StatusUnprocessableEntity, "invalid_approval", "the decision does not verify for this call under the approver's enrolled key or certificate chain")
 			return
 		case errors.Is(err, agent.ErrConfig):
 			h.onErr(fmt.Errorf("approvals: refused decision of %q on %s/%s: %w", d.ApproverID, d.RunID, d.ToolUseID, err))
@@ -944,11 +1002,20 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 			h.fail(w, err)
 			return
 		}
+		if wrote && len(d.Cert) > 0 {
+			// A certificate-bound decision counts once a signed head covers it. The application's audited store
+			// has signed one with the write; this asks again for a store whose head failed to publish. The
+			// decision is recorded either way (the gate anchors before it tallies), so a failure is reported,
+			// not returned.
+			if _, aerr := h.j.Reanchor(ctx, d.RunID); aerr != nil {
+				h.onErr(fmt.Errorf("approvals: anchoring run %s after the decision of %q: %w", d.RunID, d.ApproverID, aerr))
+			}
+		}
 		if g, err = h.load(ctx, d.RunID, d.ToolUseID); err != nil {
 			h.fail(w, err)
 			return
 		}
-		if idx = h.findDecision(g, d); idx < 0 {
+		if idx = h.findDecision(g, d, true); idx < 0 {
 			h.fail(w, fmt.Errorf("the decision of %q on %s was recorded but not found in run %s", d.ApproverID, d.ToolUseID, d.RunID))
 			return
 		}
@@ -956,6 +1023,7 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 	// The record the response is about: d's own, or the same decision's under another name.
 	step := g.recs[idx].Name
 	d.Signature = g.recs[idx].Signature()
+	d.Cert = g.recs[idx].ApproverCert() // the receipt is of the record: its chain, as journaled
 	var rcp *audit.DecisionReceipt
 	if h.verifiesNow(g, d, idx) {
 		rc, err := audit.NewDecisionReceipt(g.subject, d, g.recs[idx], idx)
@@ -978,6 +1046,10 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 			resp.Recorded = false
 		}
 	}
+	if i := slices.IndexFunc(checks, func(c agent.DecisionCheck) bool { return c.Step == step }); i >= 0 && checks[i].Cert != nil {
+		anchored := checks[i].Reason != agent.ReasonNoCoveringHead
+		resp.Anchored = &anchored
+	}
 	resp.Record = step
 	writeJSON(w, http.StatusOK, resp)
 	if wrote {
@@ -994,6 +1066,9 @@ func (h *Handler) verifiesNow(g *gateRecords, d agent.Decision, idx int) bool {
 		return false
 	}
 	r := g.recs[idx]
+	if iv, ok := v.(agent.CertIntakeVerifier); ok {
+		return agent.CertRecordVerifies(iv, g.subject, r)
+	}
 	return v.Alg() == r.ApproverAlg() && v.Verify(agent.ApprovalDecisionBytes(g.subject, d.ApproverID, d.Approved, d.DecidedAt), r.Signature())
 }
 
@@ -1021,7 +1096,7 @@ func (h *Handler) standsFor(g *gateRecords, d agent.Decision, idx int) bool {
 // verifies under the approver's key for this call stands in for d: a record that does not verify is no
 // decision (the gate ignores it), so it must not hide the genuine one from SubmitDecision. -1 if there
 // is none.
-func (h *Handler) findDecision(g *gateRecords, d agent.Decision) int {
+func (h *Handler) findDecision(g *gateRecords, d agent.Decision, submitted bool) int {
 	// The record under the decision's identity name (agent.DecisionStep) is not necessarily the
 	// decision: a bad record may hold that name, and the real decision is then journaled under
 	// another. So no record is taken for the decision by its name; one is, if it is the approver's
@@ -1043,6 +1118,20 @@ func (h *Handler) findDecision(g *gateRecords, d agent.Decision) int {
 		return -1
 	}
 	msg := agent.ApprovalDecisionBytes(g.subject, d.ApproverID, d.Approved, d.DecidedAt)
+	if iv, ok := v.(agent.CertIntakeVerifier); ok {
+		// A certificate-bound approver. Only a record with the request's own signature bytes stands in for it
+		// before SubmitDecision has judged the request (found above): a request that repeats a decision's
+		// public fields with other bytes has verified nothing, and is not answered with the record. After
+		// SubmitDecision accepted it (submitted), the same decision (verdict, scheme, time and leaf) by a record
+		// the intake judges valid is found whatever its bytes: a randomized scheme re-signed it.
+		if !submitted {
+			return -1
+		}
+		return slices.IndexFunc(g.recs, func(r agent.Record) bool {
+			return agent.IsApprovalDecision(r, d.ToolUseID) && r.Approver() == d.ApproverID && r.Approved == d.Approved && r.ApproverAlg() == d.Alg &&
+				r.DecidedAt() == at && sameLeaf(r.ApproverCert(), d.Cert) && agent.CertRecordVerifies(iv, g.subject, r)
+		})
+	}
 	return slices.IndexFunc(g.recs, func(r agent.Record) bool {
 		return agent.IsApprovalDecision(r, d.ToolUseID) && r.Approver() == d.ApproverID && r.Approved == d.Approved && r.ApproverAlg() == d.Alg &&
 			r.DecidedAt() == at && v.Alg() == d.Alg && v.Verify(msg, r.Signature())
@@ -1080,4 +1169,12 @@ func shorten(s string) string {
 		s = s[:200] + "..."
 	}
 	return cmp.Or(s, "invalid")
+}
+
+// sameLeaf reports whether the record's chain and the request's have the same leaf (or both none).
+func sameLeaf(a, b [][]byte) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return len(a) == len(b)
+	}
+	return bytes.Equal(a[0], b[0])
 }

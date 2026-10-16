@@ -116,7 +116,7 @@ func (c *CertApprover) KeyIDs() []string {
 
 // VerifyCertDecision implements agent.CertDecisionVerifier.
 func (c *CertApprover) VerifyCertDecision(cd agent.CertDecision) agent.CertCheck {
-	return c.verify(cd, false)
+	return c.verify(cd, modeCount)
 }
 
 // VerifyCertExec implements agent.CertExecVerifier: the check a gate runs on a counted decision
@@ -129,10 +129,34 @@ func (c *CertApprover) VerifyCertDecision(cd agent.CertDecision) agent.CertCheck
 // certificate now shows a revocation with E <= A(d), or whose status is stale or unknown, fails with the
 // same Reason constants as at count time. ValidateConfig checks the ages at configuration time.
 func (c *CertApprover) VerifyCertExec(cd agent.CertDecision) agent.CertCheck {
-	return c.verify(cd, true)
+	return c.verify(cd, modeExec)
 }
 
-func (c *CertApprover) verify(cd agent.CertDecision, exec bool) agent.CertCheck {
+// VerifyCertIntake implements agent.CertIntakeVerifier: the check a decision passes before it is written
+// (agent.WithDecisionCheck, so the approvals intake and `bide approve`). It is the counting check at the
+// time of the write, with no covering head to find (there is none yet; the write is what a head will
+// cover): the chain is accepted for the approver at the current time, the signature verifies over the
+// bide.approval.v4 bytes of this call under the leaf's key, and the status of every certificate of the
+// chain is usable now by the execution ages and shows no revocation with E <= now. A decision that fails
+// for its chain, identity, scheme or signature, or that is revoked, is invalid (the intake answers 422);
+// one that fails only for status that is missing or stale returns agent.ReasonStatusUnknown or
+// ReasonStatusStale (the intake answers 503 and writes nothing: the decision is not refused, the gate
+// cannot judge it yet). The clock is ExecNow, else Now, else the wall clock.
+func (c *CertApprover) VerifyCertIntake(cd agent.CertDecision) agent.CertCheck {
+	return c.verify(cd, modeIntake)
+}
+
+// verifyMode selects what verify judges a decision against.
+type verifyMode int
+
+const (
+	modeCount  verifyMode = iota // at the time the covering head fixes, with MaxStatusAge
+	modeExec                     // immediately before the call executes, with the execution ages
+	modeIntake                   // at the time of the write, with the execution ages and no covering head
+)
+
+func (c *CertApprover) verify(cd agent.CertDecision, mode verifyMode) agent.CertCheck {
+	exec := mode != modeCount
 	fail := func(reason, format string, args ...any) agent.CertCheck {
 		return agent.CertCheck{Reason: reason, Detail: fmt.Sprintf(format, args...)}
 	}
@@ -155,7 +179,20 @@ func (c *CertApprover) verify(cd agent.CertDecision, exec bool) agent.CertCheck 
 	if err != nil {
 		return fail(agent.ReasonDecidedAt, "decided_at: %v", err)
 	}
-	a, source, head, hwarn, why, err := c.provableAt(cd)
+	var (
+		a      time.Time
+		source string
+		head   SignedTreeHead
+		hwarn  []string
+		why    string
+	)
+	if mode == modeIntake {
+		// No head covers a decision before it is written: it is judged at the time of the check, which the
+		// head that follows the write will be at or after.
+		a, source = c.execClock().UTC(), "the time of the intake check"
+	} else {
+		a, source, head, hwarn, why, err = c.provableAt(cd)
+	}
 	if err != nil {
 		if why == agent.ReasonNoCoveringHead {
 			// "Not provable yet" makes the gate anchor, which signs a head with the log key. Report it
@@ -189,8 +226,10 @@ func (c *CertApprover) verify(cd agent.CertDecision, exec bool) agent.CertCheck 
 
 	out := agent.CertCheck{Identity: ac.Identity, KeyHash: ac.KeyHash, Anchored: a, Time: source, Warnings: hwarn, HeadSize: head.Size,
 		Anchor: hex.EncodeToString(ac.Anchor[:]), HeadRoot: hex.EncodeToString(head.Root)}
-	hh := head.Hash()
-	out.HeadHash = hex.EncodeToString(hh[:])
+	if mode != modeIntake {
+		hh := head.Hash()
+		out.HeadHash = hex.EncodeToString(hh[:])
+	}
 	for _, x := range ac.Chain {
 		sum := sha256.Sum256(x.Raw)
 		out.Chain = append(out.Chain, hex.EncodeToString(sum[:]))
@@ -204,6 +243,9 @@ func (c *CertApprover) verify(cd agent.CertDecision, exec bool) agent.CertCheck 
 		p.Now = c.ExecNow()
 	} else if c.Now != nil {
 		p.Now = c.Now()
+	}
+	if mode == modeIntake {
+		p.Now = a
 	}
 	var perCert func(int, *x509.Certificate, StatusParams) StatusParams
 	if exec {
@@ -382,6 +424,14 @@ func (c *CertApprover) HasIdentity(approverID string) bool {
 	return ok
 }
 
+// Identifier implements agent.IdentityRoster: the canonical identifier the policy gives the approver id.
+func (c *CertApprover) Identifier(approverID string) (string, bool) {
+	if c == nil || c.Policy == nil {
+		return "", false
+	}
+	return c.Policy.Identity(approverID)
+}
+
 // RequesterIdentifier implements agent.IdentityRoster: RequesterIdentity if set; else the principal
 // canonicalized as an identifier of the policy's kind, if it is one; else the roster's identifier of
 // the approver id the principal equals.
@@ -428,4 +478,15 @@ func (c *CertApprover) RosterDigest() string {
 		}
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// execClock is the clock of the execution-time and intake checks: ExecNow, else Now, else the wall clock.
+func (c *CertApprover) execClock() time.Time {
+	switch {
+	case c.ExecNow != nil:
+		return c.ExecNow()
+	case c.Now != nil:
+		return c.Now()
+	}
+	return time.Now()
 }
