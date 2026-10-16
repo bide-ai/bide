@@ -112,6 +112,8 @@ func (c *CertApprover) KeyIDs() []string {
 	return []string{"ident:" + id}
 }
 
+// protocol:identity begin Count
+
 // VerifyCertDecision implements agent.CertDecisionVerifier.
 func (c *CertApprover) VerifyCertDecision(cd agent.CertDecision) agent.CertCheck {
 	return c.verify(cd, false)
@@ -339,6 +341,8 @@ func (c *CertApprover) provableAt(cd agent.CertDecision) (a time.Time, source st
 	h := good[cover]
 	return time.Unix(0, h.TimestampNanos).UTC(), "log signer clock: head of size " + fmt.Sprint(h.Size) + " root " + hex.EncodeToString(h.Root[:min(8, len(h.Root))]), h, warnings, "", nil
 }
+
+// protocol:identity end
 
 // verifies checks the decision's chain, identifier, scheme and signature taking at as the time it became
 // provable, and returns the failure, or an empty finding when it verifies. It says nothing of status.
