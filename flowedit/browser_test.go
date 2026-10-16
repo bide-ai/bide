@@ -541,3 +541,109 @@ func TestAssertionsInChrome(t *testing.T) {
 		t.Errorf("rows after removing %q", r.RowsAfterRemove)
 	}
 }
+
+// a11yFlow is a flow with a gate, assertions and a node with a space in its name, so the states the
+// accessibility run visits have something in each pane.
+func a11yFlow() string {
+	return strings.Replace(weakFlow, ">= 2 of 3", ">= 2 of 5", 1)
+}
+
+// TestAccessibilityInChrome runs axe-core over the page in light and dark and in the states that
+// matter, and fails on any violation. An automated check finds a fraction of the problems a person
+// meets; the keyboard-only run below and a manual screen-reader pass are the gate (docs/guides/
+// flow-editor.md, "Accessibility").
+func TestAccessibilityInChrome(t *testing.T) {
+	s, _ := newTestServer(t, "refund.yaml", a11yFlow())
+	var r struct {
+		OK      bool   `json:"ok"`
+		Error   string `json:"error"`
+		Results map[string]struct {
+			Violations []struct {
+				ID     string   `json:"id"`
+				Impact string   `json:"impact"`
+				Help   string   `json:"help"`
+				Nodes  []string `json:"nodes"`
+			} `json:"violations"`
+			Passes int `json:"passes"`
+		} `json:"results"`
+	}
+	runScript(t, "a11y.mjs", s, &r)
+	if !r.OK {
+		t.Fatalf("the script failed: %s", r.Error)
+	}
+	if len(r.Results) != 10 {
+		t.Errorf("%d states were checked, want 10 (5 states in 2 themes)", len(r.Results))
+	}
+	for state, res := range r.Results {
+		if res.Passes < 20 {
+			t.Errorf("%s: only %d rules passed: the page was not checked", state, res.Passes)
+		}
+		for _, v := range res.Violations {
+			t.Errorf("%s: %s (%s): %s at %q", state, v.ID, v.Impact, v.Help, v.Nodes)
+		}
+	}
+}
+
+// TestKeyboardOnlyInChrome is the whole path with the keyboard alone (browser/keyboard.mjs never
+// uses the pointer): the outline is one Tab stop moved by the arrow keys, forms are reached by Tab,
+// the focus returns to the control that was changed, Escape closes the dialog and gives the focus
+// back, Tab stays inside it, and a weakening is saved after confirming it.
+func TestKeyboardOnlyInChrome(t *testing.T) {
+	s, p := newTestServer(t, "refund.yaml", a11yFlow())
+	var r struct {
+		OK                  bool           `json:"ok"`
+		Error               string         `json:"error"`
+		OutlineFirst        string         `json:"outlineFirst"`
+		AfterArrow          string         `json:"afterArrow"`
+		AfterArrowBack      string         `json:"afterArrowBack"`
+		InspectorTitle      string         `json:"inspectorTitle"`
+		OutlineTabStops     int            `json:"outlineTabStops"`
+		FocusAfterSafety    string         `json:"focusAfterSafety"`
+		AfterGate           string         `json:"afterGate"`
+		FocusAfterGate      string         `json:"focusAfterGate"`
+		FocusAfterAssertion string         `json:"focusAfterAssertion"`
+		DialogFocus         string         `json:"dialogFocus"`
+		DialogTitle         string         `json:"dialogTitle"`
+		WeakensShown        bool           `json:"weakensShown"`
+		FocusAfterEscape    string         `json:"focusAfterEscape"`
+		TabStaysInDialog    bool           `json:"tabStaysInDialog"`
+		StateAfterSave      string         `json:"stateAfterSave"`
+		FocusAfterSave      string         `json:"focusAfterSave"`
+		Disk                string         `json:"disk"`
+		Tabs                map[string]int `json:"tabs"`
+		Console             []string       `json:"console"`
+		Failed              []string       `json:"failed"`
+		OffOrigin           []string       `json:"offOrigin"`
+	}
+	runScript(t, "keyboard.mjs", s, &r)
+	if !r.OK {
+		t.Fatalf("the script failed: %s\ntabs: %v\nconsole: %q", r.Error, r.Tabs, r.Console)
+	}
+	if len(r.Console) > 0 || len(r.Failed) > 0 || len(r.OffOrigin) > 0 {
+		t.Errorf("the browser reported console %q, failed requests %q, requests off the origin %q", r.Console, r.Failed, r.OffOrigin)
+	}
+	if r.OutlineFirst != "validate" || r.AfterArrow != "charge" || r.AfterArrowBack != "charge" || r.InspectorTitle != "charge" || r.OutlineTabStops != 1 {
+		t.Errorf("the outline: first %q, after Down %q, after Down Up %q, inspector %q, tab stops %d", r.OutlineFirst, r.AfterArrow, r.AfterArrowBack, r.InspectorTitle, r.OutlineTabStops)
+	}
+	if r.FocusAfterSafety != "f-safety" || r.FocusAfterGate != "g-apply" || r.FocusAfterAssertion != "a-template" {
+		t.Errorf("focus after a change: safety %q, gate %q, assertion %q", r.FocusAfterSafety, r.FocusAfterGate, r.FocusAfterAssertion)
+	}
+	if r.DialogFocus != "confirm-weaken" || !strings.HasPrefix(r.DialogTitle, "Save refund.yaml") || !r.WeakensShown || r.FocusAfterEscape != "save" || !r.TabStaysInDialog {
+		t.Errorf("the dialog: focus %q, title %q, weakens shown %v, focus after Escape %q, Tab stays inside %v", r.DialogFocus, r.DialogTitle, r.WeakensShown, r.FocusAfterEscape, r.TabStaysInDialog)
+	}
+	if r.StateAfterSave != "saved" || r.FocusAfterSave != "source" {
+		t.Errorf("after the save: state %q, focus %q", r.StateAfterSave, r.FocusAfterSave)
+	}
+	want := strings.Replace(a11yFlow(), "safety: side_effect", "safety: idempotent", 1)
+	want = strings.Replace(want, "[ops, finance, risk]", "[ops, finance, risk, audit]", 1)
+	want = strings.Replace(want, "timeout: 24h", "timeout: 72h", 1)
+	want += "  - validate unreachable\n"
+	if got, _ := os.ReadFile(p); string(got) != want || r.Disk != want {
+		t.Errorf("the file on disk:\n%s\nwant\n%s", r.Disk, want)
+	}
+	for name, n := range r.Tabs {
+		if n > 40 {
+			t.Errorf("%d Tab presses to reach %s", n, name)
+		}
+	}
+}

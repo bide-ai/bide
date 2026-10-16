@@ -47,3 +47,5 @@ dialog h2 { margin-top: 0; }
 .assertion-form input[type="number"] { width: 100%; font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--line); border-radius: var(--r-sm); padding: var(--s1) var(--s2); }
 .assertion-form label { display: block; font-size: var(--t-sm); font-weight: 600; margin-bottom: var(--s1); }
 .assertion-form .field.check label { font-weight: 400; margin: 0; }
+.field.check input[type="checkbox"], .verdict input[type="checkbox"] { width: 24px; height: 24px; margin: 0; flex: none; }
+.verdict label { display: inline-flex; gap: var(--s2); align-items: center; }

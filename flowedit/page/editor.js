@@ -113,9 +113,14 @@ export function renderWeakening(v) {
     ((w.strengthened || []).length ? '; stronger in ' + w.strengthened.length + ' way' + (w.strengthened.length === 1 ? '' : 's') : '') + '.');
 }
 
+// The outline is the primary accessible view: a list in config order whose items are buttons. One
+// item is in the tab order (the selected one, else the first) and the arrow keys, Home and End move
+// between them, so a long outline is one Tab stop; Enter or Space selects.
 export function renderOutline(v) {
-  replace('outline', (v.nodes || []).map((n) => {
-    const b = h('button', { type: 'button', 'data-node': n.name, 'aria-current': n.name === selected ? 'true' : 'false' },
+  const nodes = v.nodes || [];
+  const stop = Math.max(0, nodes.findIndex((n) => n.name === selected));
+  replace('outline', nodes.map((n, i) => {
+    const b = h('button', { type: 'button', 'data-node': n.name, 'aria-current': n.name === selected ? 'true' : 'false', tabindex: i === stop ? '0' : '-1' },
       h('span', { class: 'nm' }, n.name),
       h('span', { class: 'meta' }, [n.kind, n.block, n.risk, n.gate ? 'gate ' + n.gate : ''].filter(Boolean).join(' · ')),
       (n.problems || []).map((p) => h('span', { class: 'prob' }, p)));
@@ -123,6 +128,18 @@ export function renderOutline(v) {
     return h('li', {}, b);
   }));
   replace('wiring', (v.wiring || []).map((w) => h('li', {}, w)));
+}
+
+function outlineKeys(e) {
+  const items = [...$('outline').querySelectorAll('button')];
+  const at = items.indexOf(document.activeElement);
+  if (at < 0) return;
+  const to = { ArrowDown: Math.min(at + 1, items.length - 1), ArrowUp: Math.max(at - 1, 0), Home: 0, End: items.length - 1 }[e.key];
+  if (to === undefined) return;
+  e.preventDefault();
+  for (const b of items) b.setAttribute('tabindex', '-1');
+  items[to].setAttribute('tabindex', '0');
+  items[to].focus();
 }
 
 // ---- the inspector: a node's block, safety and approval gate, as forms ----
@@ -358,12 +375,12 @@ function setText(text, v) {
 //   v.assertion_forms[i] is assert line i read as a form, null when it is none of the six.
 
 const TEMPLATES = [
-  ['approval', 'Every path to a node passes an approval gate of at least K decisions'],
-  ['passes', 'Every path to a node passes another node'],
-  ['terminal', 'Every path to a terminal passes a node'],
-  ['no_side_effect', 'No side effect after a node'],
-  ['reachable', 'A node is reachable'],
-  ['unreachable', 'A node is unreachable'],
+  ['approval', 'Approval: every path to a node passes a gate of at least K decisions'],
+  ['passes', 'Passes: every path to a node passes another node'],
+  ['terminal', 'Terminal: every path to a terminal passes a node'],
+  ['no_side_effect', 'No side effect: nothing with a side effect comes after a node'],
+  ['reachable', 'Reachable: a node can be reached'],
+  ['unreachable', 'Unreachable: a node cannot be reached'],
 ];
 
 let assertEditing = -1; // the index of the assert line being edited, -1 for the add form
@@ -484,6 +501,13 @@ export function renderCanvas(v) {
   wrap.replaceChildren(document.adoptNode(svg));
   for (const g of wrap.querySelectorAll('g.node')) {
     const name = g.getAttribute('data-id');
+    g.setAttribute('role', 'button'); // the drawing marks a node as an image; here it can be pressed
+    // The node is one button. Its name comes from the <title> the drawing gives it (the node, its
+    // safety and gate, with the details), not from an aria-label that would have to repeat the words
+    // drawn inside it, which a name must contain; the drawn words are the same facts, so they are
+    // hidden from assistive technology rather than read twice.
+    g.removeAttribute('aria-label');
+    for (const t of g.querySelectorAll('text')) t.setAttribute('aria-hidden', 'true');
     g.addEventListener('click', () => select(name));
     g.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(name); } });
   }
@@ -491,7 +515,10 @@ export function renderCanvas(v) {
 }
 
 function markSelected() {
-  for (const g of $('canvas').querySelectorAll('g.node')) g.classList.toggle('sel', g.getAttribute('data-id') === selected);
+  for (const g of $('canvas').querySelectorAll('g.node')) {
+    g.classList.toggle('sel', g.getAttribute('data-id') === selected);
+    g.setAttribute('aria-pressed', g.getAttribute('data-id') === selected ? 'true' : 'false');
+  }
   for (const b of $('outline').querySelectorAll('button')) b.setAttribute('aria-current', b.getAttribute('data-node') === selected ? 'true' : 'false');
 }
 
@@ -582,7 +609,10 @@ function diffBlock(diff) {
       h('span', { class: l.startsWith('+++') || l.startsWith('---') || l.startsWith('@@') ? 'dh' : l[0] === '+' ? 'da' : l[0] === '-' ? 'dd' : 'dc' }, l || ' ')));
 }
 
-function openDialog(title, body, actions, labelFor) {
+// The dialog gives the focus back to the control that opened it however it closes (Escape included).
+let dialogOpener = null;
+function openDialog(title, body, actions, labelFor, opener) {
+  if (opener) dialogOpener = opener;
   $('dialog-title').textContent = title;
   replace('dialog-body', body);
   replace('dialog-actions', actions);
@@ -621,7 +651,7 @@ async function save() {
     pv.changed ? diffBlock(pv.diff) : null,
     status,
   ];
-  openDialog('Save ' + baseName(view.name) + '?', body, [go, cancel], pv.needs_confirmation.length ? confirmBox : go);
+  openDialog('Save ' + baseName(view.name) + '?', body, [go, cancel], pv.needs_confirmation.length ? confirmBox : go, opener);
 }
 
 async function commit(pv, opener, status) {
@@ -663,7 +693,7 @@ function conflictDialog(hash, diff, opener) {
   openDialog('The file changed on disk', [
     h('p', { class: 'bad', role: 'alert' }, 'The file was changed by something else after this page read it, so nothing was written. The diff below is the file on disk (lines starting with -) against your text (+).'),
     diffBlock(diff || ''),
-  ], [keep, reload], keep);
+  ], [keep, reload], keep, opener);
 }
 
 function theme() {
@@ -681,6 +711,14 @@ async function main() {
     return;
   }
   $('source').addEventListener('input', onInput);
+  $('outline').addEventListener('keydown', outlineKeys);
+  dlg().addEventListener('close', () => {
+    if (dlg().open) return; // closed to be opened again (a save that must be asked again)
+    const o = dialogOpener;
+    dialogOpener = null;
+    if (o && !o.disabled) o.focus();
+    else if (o) $('source').focus();
+  });
   $('save').addEventListener('click', save);
   $('revert').addEventListener('click', revert);
   $('undo').addEventListener('click', undo);

@@ -416,6 +416,14 @@ control that stops a weakened policy merging is the pull request, with `bide che
 -fail-on-weaken` as a required status and a policy owner's approval. See the [flow editor
 guide](guides/flow-editor.md).
 
+**The editor's accessibility has automated and keyboard tests and no manual screen-reader pass yet.** The
+keyboard-only run and axe-core in Chrome (light and dark, five states) pass in CI; they are not a screen
+reader. To check by hand with VoiceOver, NVDA or Orca: the outline reads as a list of buttons named by
+node, kind, safety and gate; selecting a node announces it; a form field reads its label and its help;
+the draft's verdict is announced as you change it; the weakened banner is announced when it appears; the
+save dialog reads its title, the items to confirm and the diff, and returns focus when it closes. Report
+what does not read as described.
+
 **A save is atomic, not exclusive.** The file is replaced by a rename of a temporary file, so a reader sees
 the old file or the new one. Saves in one editor are serialized, so of several over the same hash exactly
 one succeeds and the rest are conflicts. A write by another process between the editor's last check that

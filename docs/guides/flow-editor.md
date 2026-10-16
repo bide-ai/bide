@@ -83,13 +83,13 @@ Below the flow, the panel lists the config's `assert` lines, each with its verdi
 `violated` with the counterexample path, `undecided`, `invalid`), and a form to add one. **An
 assertion is built from a form, not typed.** The six forms of the grammar are the templates:
 
-| Template | Writes |
+| Template (its name starts the label) | Writes |
 |---|---|
-| Every path to a node passes an approval gate of at least K decisions | `every path to <node> passes approval >= K [of N] [excluding the requester]` |
-| Every path to a node passes another node | `every path to <node> passes <node>` |
-| Every path to a terminal passes a node | `every path to a terminal passes <node>` |
-| No side effect after a node | `no side effect after <node>` |
-| A node is reachable / unreachable | `<node> reachable`, `<node> unreachable` |
+| Approval: every path to a node passes a gate of at least K decisions | `every path to <node> passes approval >= K [of N] [excluding the requester]` |
+| Passes: every path to a node passes another node | `every path to <node> passes <node>` |
+| Terminal: every path to a terminal passes a node | `every path to a terminal passes <node>` |
+| No side effect: nothing with a side effect comes after a node | `no side effect after <node>` |
+| Reachable / Unreachable: a node can, or cannot, be reached | `<node> reachable`, `<node> unreachable` |
 
 The page sends the form's parameters and the server writes the line, in the grammar `plan` reads,
 with a node name that has a space in double quotes; a name the grammar cannot hold (one with a double
@@ -186,6 +186,46 @@ directory removes when it is ours and over ten minutes old.
 
 A file that is not a readable config (invalid YAML, a duplicate key, more than one YAML document)
 shows `CONFIG DOES NOT PARSE` and the reason, and no graph.
+
+## A policy owner's workflow
+
+1. `bide edit flows/refund.yaml` in a checkout. The banner is empty: the file is the committed policy.
+2. Select the node, change its gate (raise `need`, add an approver, turn on separation of duties, set a
+   deadline) or an assertion. The verdict, the problems and the banner follow each change; undo is
+   one button.
+3. If the banner says `APPROVAL GATE WEAKENED`, the change loosens the policy against the commit.
+   Undo it, or go on knowing that saving needs the confirmation and that CI will refuse the pull
+   request until a policy owner approves it.
+4. Save: read the diff (it is the edit and nothing else), confirm if asked, and commit the file with
+   git. In CI, `bide check flows/refund.yaml -diff main -check -fail-on-weaken` is the control; the
+   editor shows the same verdict earlier.
+
+## Accessibility
+
+The editor is built to be used without a pointer and without dragging.
+
+- **Every operation is reachable by keyboard.** The outline is one Tab stop and the arrow keys, Home
+  and End move between its nodes; Enter or Space selects. The nodes in the drawing are buttons too
+  (Tab to them, Enter). Forms are real forms: every field has a label, an error is tied to its field,
+  and the draft of a gate or an assertion says what the check thinks in a live region. There is no
+  drag: connecting and reordering are actions, not gestures.
+- **Changes are announced** through a live region (the selection, `Saved`, an operation done or
+  refused, the verdict, and an alert for the weakened banner), and the focus returns to the control
+  you changed. The save dialog is a modal dialog: Tab stays in it, Escape closes it, and the focus
+  goes back to where it was.
+- **State is not carried by color alone.** Verdicts, assertion states, gate badges and the weakened
+  banner each have a glyph and words; the diff marks lines with `+` and `-`. The two themes
+  (light and dark) follow the system and can be switched; the drawing's flowing dash stops under
+  `prefers-reduced-motion`.
+- **Tested.** `go test ./flowedit` drives the page in real Chrome (the `Editor (Chrome)` job):
+  the whole path by keyboard alone (the script never uses the pointer and bounds the Tab presses it
+  needs), and axe-core over the page in light and dark in five states (as opened, a node selected
+  with its forms, a weakened banner, an assertion form with a violation, the save dialog), failing
+  on any violation.
+
+An automated check finds a fraction of the problems a person meets. **A manual screen-reader pass
+has not been done:** the checks above are not a substitute for one, and the checklist for it is in
+[docs/KNOWN-LIMITATIONS.md](../KNOWN-LIMITATIONS.md#the-flow-editor).
 
 ## Where it runs, and what it can touch
 
