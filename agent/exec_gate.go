@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,6 +11,10 @@ import (
 	"strings"
 	"time"
 )
+
+// errExecNotApproved is the error of a call whose gate's outcome, read immediately before the call, is a
+// denial or an expiry. The call does not run; the next drive records the denial.
+var errExecNotApproved = errors.New("the gate's outcome does not approve the call")
 
 // maxExecRounds bounds the loop of preExecute: each round either returns, or writes an exec hold that the
 // next round counts past. A gate whose every generation is held in turn stops here with an error.
@@ -38,7 +43,24 @@ const PendingIdentityStatus = "approval paused before execution: the revocation 
 // the call does not run.
 // protocol:claims begin ApExec
 func preExecute(ctx context.Context, j *Journal, runID, root, id string, pol *ApprovalPolicy, vf ApproverVerifierFor, since string) error {
-	if pol == nil || pol.single() || vf == nil || !isBound(pol, vf) {
+	if pol == nil || pol.single() || vf == nil {
+		return nil
+	}
+	if !isBound(pol, vf) {
+		// A gate of bare keys has nothing to re-check, but a journal that says the gate is bound must not
+		// run its call under a policy that lost the certificate-bound approvers: the gate refuses that
+		// before the handler is reached today, and this keeps a future path from running it unchecked.
+		bound, err := flowBound(ctx, j, runID, id)
+		if err != nil {
+			return err
+		}
+		if bound {
+			recs, err := j.History(ctx, runID)
+			if err != nil {
+				return fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
+			}
+			return checkBoundPolicy(recs, runID, id, pol, vf)
+		}
 		return nil
 	}
 	for range maxExecRounds {
@@ -68,7 +90,11 @@ func preExecute(ctx context.Context, j *Journal, runID, root, id string, pol *Ap
 			return err
 		}
 		if !tally.Passed() {
-			return fmt.Errorf("run %s: the approval gate on %q recorded %s as its outcome, which does not approve the call: %w", runID, id, st.outcome.Name, ErrConfig)
+			// The gate's outcome is a denial or an expiry (a recount after a hold can end so): not an
+			// approval, so the call does not run. It is not a configuration error and not the tool's
+			// result: the run stops, and the next drive's pre-pass reads the recorded outcome and records
+			// the denial as the call's result.
+			return fmt.Errorf("run %s: the approval gate on %q recorded %s as its outcome, which does not approve the call; the next drive records the denial: %w", runID, id, st.outcome.Name, errExecNotApproved)
 		}
 		ident, ok := identityRecordFor(recs, id, st.gen, st.outcome)
 		if !ok {

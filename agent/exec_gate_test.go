@@ -338,7 +338,7 @@ func TestPreExecute_MissingIdentityRecordRefuses(t *testing.T) {
 	_, _ = g2.run()
 	writeRaw(t, g2.store, "r1", ApprovalIdentTallyStep("c1", 0), valueRec(t, ApprovalIdentTallyStep("c1", 0), deniedTally()))
 	vf2 := certResolver(map[string]ApproverVerifier{"alice": g2.alice, "bob": g2.bob})
-	if err := preExecute(context.Background(), g2.store, "r1", "r1", "c1", g2.pol, vf2, ""); !errors.Is(err, ErrConfig) {
+	if err := preExecute(context.Background(), g2.store, "r1", "r1", "c1", g2.pol, vf2, ""); !errors.Is(err, errExecNotApproved) {
 		t.Fatalf("%v", err)
 	}
 }
@@ -740,7 +740,121 @@ func TestPreExecute_ADeniedTallyWithItsIdentityRecordDoesNotRun(t *testing.T) {
 	sum := sha256.Sum256(tr.Result)
 	ir := ApprovalIdentity{Format: ApprovalIdentityFormat, ToolUseID: "c1", Generation: 0, Tally: name, TallyDigest: hex.EncodeToString(sum[:])}
 	writeRaw(t, g.store, "r1", ApprovalIdentityStep("c1", 0), valueRec(t, ApprovalIdentityStep("c1", 0), ir))
-	if err := preExecute(context.Background(), g.store, "r1", "r1", "c1", g.pol, vf, ""); !errors.Is(err, ErrConfig) {
+	if err := preExecute(context.Background(), g.store, "r1", "r1", "c1", g.pol, vf, ""); !errors.Is(err, errExecNotApproved) {
 		t.Fatalf("%v", err)
 	}
+}
+
+// ---- review of E2b (pki-auditor-2) ----
+
+// A journal that says the gate is bound, reaching preExecute under a policy that lost its certificate-bound
+// approvers, is refused there too (the gate refuses it before the handler today; this keeps a future path
+// from running the call unchecked). A bare gate's journal is not.
+func TestPreExecute_BoundJournalUnderABarePolicyIsRefused(t *testing.T) {
+	g := newBoundGate(t)
+	_, _ = g.run()
+	g.decide("alice")
+	g.countOnly()
+	bare := fakeVerifiers("alice", "bob")
+	err := preExecute(context.Background(), g.store, "r1", "r1", "c1", g.pol, bare, "")
+	if !errors.Is(err, ErrConfig) {
+		t.Fatalf("%v", err)
+	}
+	// Through the handler, too: the run fails and the tool does not run.
+	var charged int
+	if _, err := mofnRun(g.store, "r1", false, g.pol, bare, &charged); !errors.Is(err, ErrConfig) || charged != 0 {
+		t.Fatalf("%v charged %d", err, charged)
+	}
+	// A bare gate's journal: nothing to refuse.
+	store := memJournal()
+	pol := &ApprovalPolicy{Need: 1, Approvers: []string{"alice"}}
+	_, _ = mofnRun(store, "r1", true, pol, fakeVerifiers("alice"), &charged)
+	if err := preExecute(context.Background(), store, "r1", "r1", "c1", pol, fakeVerifiers("alice"), ""); err != nil {
+		t.Fatalf("a bare gate: %v", err)
+	}
+}
+
+// A hold after which no seat can pass (both counted decisions fail the recount): the call does not run and the drive records no result; the denial itself is covered by TestPreExecute_DenialIsNotAConfigError (not
+// ErrConfig), and the next drive records the denial as the call's result.
+func TestPreExecute_ARecountWithNoSeatsLeftRunsNothingAndRecordsNothing(t *testing.T) {
+	g := newBoundGate(t)
+	g.pol.Need = 2
+	_, _ = g.run()
+	g.decide("alice")
+	g.decide("bob")
+	vf := certResolver(map[string]ApproverVerifier{"alice": g.alice, "bob": g.bob})
+	if _, final, err := tallyGate(context.Background(), g.store, "r1", subjectOf(t, g.store, "r1", "c1"), g.pol, vf, ""); err != nil || !final {
+		t.Fatalf("%v %v", final, err)
+	}
+	// alice is revoked before the call; bob then withdraws by denying (a later decision of his own does not
+	// count, so use a denial recorded as his first: simulate with his certificate failing too).
+	g.alice.execCheck = func(cd CertDecision) CertCheck { revokeAt(g.alice); return revokedCheck(cd) }
+	g.bob.check = func(CertDecision) CertCheck { return CertCheck{Reason: ReasonRevoked} } // the recount drops bob as well
+	_, err := g.run()
+	if g.charged != 0 {
+		t.Fatalf("the call ran (%v)", err)
+	}
+	// Both seats are gone: the recount cannot pass, and nobody is left to decide it (a pending gate), or it
+	// is a denial; either way the call did not run and nothing was recorded as its result.
+	if _, ok := hasStep(t, g.store, "r1", ToolResultStep("c1")); ok {
+		t.Fatalf("a result was recorded by the drive that held the call (%v)", err)
+	}
+}
+
+// preExecute on a gate whose outcome is a recorded denial returns errExecNotApproved, not ErrConfig, and
+// the loop records the denial as the call's result on the next drive.
+func TestPreExecute_DenialIsNotAConfigError(t *testing.T) {
+	g := newBoundGate(t)
+	g.pol.Need = 2
+	_, _ = g.run()
+	vf := certResolver(map[string]ApproverVerifier{"alice": g.alice, "bob": g.bob})
+	name := ApprovalIdentTallyStep("c1", 0)
+	writeRaw(t, g.store, "r1", name, valueRec(t, name, deniedTally()))
+	err := preExecute(context.Background(), g.store, "r1", "r1", "c1", g.pol, vf, "")
+	if !errors.Is(err, errExecNotApproved) || errors.Is(err, ErrConfig) {
+		t.Fatalf("%v", err)
+	}
+	// The pre-pass reads the recorded denial: the call is denied, the tool never runs, the run goes on.
+	if _, err := g.run(); err != nil || g.charged != 0 {
+		t.Fatalf("the next drive: %v charged %d", err, g.charged)
+	}
+	if r, ok := hasStep(t, g.store, "r1", ToolResultStep("c1")); !ok || !r.IsError {
+		t.Fatalf("the denial was not recorded: %+v %v", r, ok)
+	}
+}
+
+// RecoverLoop re-drives a run paused for stale status: on the first pass after status is current the call
+// runs, with the same approvals.
+func TestPreExecute_RecoverLoopRunsAfterAStaleWait(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		g := newBoundGate(t)
+		tool := &countingTool{name: "charge", approval: g.pol, calls: &g.charged, safety: Safety{Idempotent: true}}
+		a := g.agentFor(tool)
+		_, _ = a.Run(context.Background(), "r1", UserText("pay"))
+		g.decide("alice")
+		var stale atomic.Bool
+		stale.Store(true)
+		g.alice.execCheck = func(cd CertDecision) CertCheck {
+			if stale.Load() {
+				return CertCheck{Reason: ReasonStatusStale}
+			}
+			return okCheck(cd)
+		}
+		stop := runLoop(t, g.store, ResumeAgent(a), WithRecoverInterval(20*time.Millisecond))
+		time.Sleep(200 * time.Millisecond)
+		synctest.Wait()
+		if g.charged != 0 {
+			t.Fatalf("the call ran on stale status (%d)", g.charged)
+		}
+		stale.Store(false)
+		time.Sleep(200 * time.Millisecond)
+		synctest.Wait()
+		_ = stop()
+		if g.charged != 1 {
+			t.Fatalf("the call ran %d times after status became current", g.charged)
+		}
+		if _, held := g.holdRecord(0); held {
+			t.Fatal("a stale wait wrote a hold")
+		}
+	})
 }

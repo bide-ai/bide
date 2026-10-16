@@ -557,3 +557,56 @@ func TestVerifyCertExec_AcceptsStatusIssuedBeforeTheDecision(t *testing.T) {
 		t.Fatalf("%+v", got)
 	}
 }
+
+// The leaf's issuing CA is one of the pinned intermediates: at least one of them must publish at least
+// twice within ExecStatusAge, or every call would be held. With one that fits, a second that does not is
+// left to the check before the call, which tests the accepted chain's issuer.
+func TestCertApprover_ValidateConfigSomeLeafIssuerFits(t *testing.T) {
+	cg := newCertGate(t, 1, "alice")
+	root := cg.root
+	ik, rk := audit.SPKIHashOf(cg.inter.Cert), audit.SPKIHashOf(root.Cert)
+	day := 24 * time.Hour
+	mk := func(pins []*testca.CA, periods map[audit.SPKIHash]time.Duration) *audit.CertApprover {
+		inter := []audit.SPKIHash{}
+		for _, p := range pins {
+			inter = append(inter, audit.SPKIHashOf(p.Cert))
+		}
+		ci, err := audit.IdentityPolicy{
+			Anchors: []*x509.Certificate{root.Cert}, Inter: inter,
+			Identity: map[string]string{"alice": testca.Person(1)}, IDKind: audit.IDPersonURI, EKU: testca.EKU, Policy: testca.PolicyOID,
+			Canonical: audit.NewCanonicalizer(audit.CanonicalConfig{Host: "idp.bank.example"}),
+		}.Compile()
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := &audit.CertApprover{ApproverID: "alice", Policy: ci, PolicyEffectiveFrom: testDecidedAt, ExecStatusAge: time.Hour,
+			StatusParams: audit.StatusParams{CAPeriod: 30 * time.Minute, MaxStatusAge: time.Hour,
+				CAPeriodFor: map[audit.SPKIHash]time.Duration{rk: 7 * day}, MaxStatusAgeFor: map[audit.SPKIHash]time.Duration{rk: 14 * day}},
+			ExecStatusAgeFor: map[audit.SPKIHash]time.Duration{rk: 8 * day}, CAOverlapFor: map[audit.SPKIHash]time.Duration{rk: 0}}
+		for _, p := range pins {
+			k := audit.SPKIHashOf(p.Cert)
+			per := periods[k]
+			c.StatusParams.CAPeriodFor[k], c.StatusParams.MaxStatusAgeFor[k] = per, 2*day
+			c.ExecStatusAgeFor[k], c.CAOverlapFor[k] = day+per, 0
+		}
+		return c
+	}
+	other := root.NewIntermediate(t, "other", testca.Opts{})
+	ok := audit.SPKIHashOf(other.Cert)
+	// The only pinned intermediate publishes daily: nothing can issue a leaf that fits one hour.
+	err := mk([]*testca.CA{cg.inter}, map[audit.SPKIHash]time.Duration{ik: day}).ValidateConfig()
+	if err == nil || !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "no CA that can issue a leaf") {
+		t.Fatalf("daily issuer: %v", err)
+	}
+	// A second pinned intermediate that publishes every 30 minutes makes the policy workable.
+	if err := mk([]*testca.CA{cg.inter, other}, map[audit.SPKIHash]time.Duration{ik: day, ok: 30 * time.Minute}).ValidateConfig(); err != nil {
+		t.Fatalf("with a fitting issuer: %v", err)
+	}
+	// The boundary: exactly ExecStatusAge/2 fits, one nanosecond more does not.
+	if err := mk([]*testca.CA{cg.inter}, map[audit.SPKIHash]time.Duration{ik: 30 * time.Minute}).ValidateConfig(); err != nil {
+		t.Fatalf("at the boundary: %v", err)
+	}
+	if err := mk([]*testca.CA{cg.inter}, map[audit.SPKIHash]time.Duration{ik: 30*time.Minute + time.Nanosecond}).ValidateConfig(); err == nil {
+		t.Fatal("above the boundary")
+	}
+}

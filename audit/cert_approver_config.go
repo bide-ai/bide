@@ -141,6 +141,35 @@ func (c *CertApprover) ValidateConfig() error {
 			return bad("ExecStatusAgeFor %x (%v) is above its MaxStatusAgeFor (%v): status the check before execution accepts would be older than a count accepts", k[:4], age, maxAge)
 		}
 	}
+	// The leaf's issuing CA is one of the pinned intermediates (or an anchor, when none is pinned), judged by
+	// ExecStatusAge: at least one candidate must publish at least twice within it, or every call would be
+	// held at its first check. Which candidate issues which leaf is known only from the accepted chain
+	// (the check before a call tests that one again), but a policy none of whose candidates fits is wrong
+	// for every approver.
+	if c.Policy != nil {
+		cands := make([]SPKIHash, 0, len(c.Policy.inter))
+		for k := range c.Policy.inter {
+			cands = append(cands, k)
+		}
+		if len(cands) == 0 {
+			for k := range c.Policy.anchorBy {
+				cands = append(cands, k)
+			}
+		}
+		fits := false
+		for _, k := range cands {
+			period := c.StatusParams.CAPeriod
+			if v, ok := c.StatusParams.CAPeriodFor[k]; ok {
+				period = v
+			}
+			if period <= c.ExecStatusAge/2 {
+				fits = true
+			}
+		}
+		if len(cands) > 0 && !fits {
+			return bad("no CA that can issue a leaf publishes at least twice within ExecStatusAge (%v): every candidate (a pinned intermediate, or the anchors when none is pinned) has a CAPeriod above %v, so every call would be held before it runs; raise ExecStatusAge or shorten the issuing CA's CRL period", c.ExecStatusAge, c.ExecStatusAge/2)
+		}
+	}
 	// The policy cannot tell which pinned CA issues a leaf and which only sits above one (an intermediate
 	// can be both, for two approvers), so every pinned intermediate declares its tier values, and so does
 	// every trust anchor once intermediates are pinned (its CRL covers them). A leaf issued directly by an

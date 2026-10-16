@@ -155,7 +155,13 @@ What it does with a decision that does not hold:
   authoritative is written. `Run` returns `*agent.ApprovalPending` with `agent.PendingIdentityStatus`, a
   phase note says `exec-hold` with one sentence of detail, and the same approvals run the call when a fresh
   check passes. Nobody is asked to decide, so no approval notification is sent for it; watch the gate's phase
-  (`agent.LatestPausePhase`) and the CRL alarm above.
+  (`agent.LatestPausePhase`) and the CRL alarm above. **A drive has to run again for the call to run:**
+  nothing in the gate retries by itself, so add the fresh CRL to the `StatusSnapshot` and re-drive the run
+  (your own `Resume`, or `RecoverLoop`, which re-drives runs that are still waiting on each pass and so runs
+  the call on the first pass after status is current).
+- **The recount ends in a denial or an expiry** (the approvers who decided again denied it, or the gate's
+  deadline passed): the call does not run, the drive stops with an error that says so, and the next drive
+  records the denial as the call's result.
 
 ## Published revocation latency
 
