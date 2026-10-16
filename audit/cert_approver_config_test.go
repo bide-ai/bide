@@ -43,6 +43,8 @@ func TestStatusParams_Validate(t *testing.T) {
 		"zero CAPeriodFor":        {CAPeriodFor: map[audit.SPKIHash]time.Duration{{1}: 0}},
 		"negative tolerance":      {CoverageTolerance: -time.Second},
 		"negative skew":           {ThisUpdateSkew: -time.Second},
+		"zero MaxStatusAgeFor":    {MaxStatusAgeFor: map[audit.SPKIHash]time.Duration{{1}: 0}},
+		"huge MaxStatusAgeFor":    {MaxStatusAgeFor: map[audit.SPKIHash]time.Duration{{1}: 1000 * 24 * time.Hour}},
 		"skew over 30 minutes":    {ThisUpdateSkew: 31 * time.Minute},
 		"issuer skew over 30 min": {ThisUpdateSkewFor: map[audit.SPKIHash]time.Duration{{1}: time.Hour}},
 		"CountLive without a max": {CountLive: true},
@@ -259,7 +261,7 @@ func TestIdentityPolicyRecordCoversEveryField(t *testing.T) {
 		"IdentityPolicy.IDKind": "IDKind", "IdentityPolicy.EKU": "EKU", "IdentityPolicy.AllowEmailProtectionEKU": "AllowEmailProtectionEKU",
 		"IdentityPolicy.Policy": "PolicyOID", "IdentityPolicy.Canonical": "Canonical", "IdentityPolicy.MaxChain": "MaxChain",
 		"IdentityPolicy.Skew": "Skew", "IdentityPolicy.AnchorGrace": "AnchorGrace", "IdentityPolicy.RSA2048Until": "RSA2048Until",
-		"IdentityPolicy.MaxLeafLifetime": "MaxLeafLifetime", "IdentityPolicy.RequireNameConstraints": "RequireNameConstraints",
+		"IdentityPolicy.MaxLeafLifetime": "MaxLeafLifetime", "IdentityPolicy.NotBeforeBackdate": "NotBeforeBackdate", "StatusParams.MaxStatusAgeFor": "MaxStatusAgeFor", "IdentityPolicy.RequireNameConstraints": "RequireNameConstraints",
 		"IdentityPolicy.RequirePolicyOnCAs": "RequirePolicyOnCAs",
 		"StatusParams.W":                    "W", "StatusParams.MinW": "MinW", "StatusParams.RoutineGrace": "RoutineGrace", "StatusParams.MaxStatusAge": "MaxStatusAge",
 		"StatusParams.CountLive": "CountLive", "StatusParams.Distrust": "Distrust", "StatusParams.Retained": "Retained", "StatusParams.CAPeriod": "CAPeriod",
@@ -380,5 +382,31 @@ func TestCertApprover_VerifierInfo(t *testing.T) {
 	rev, declared, build := a.VerifierInfo()
 	if rev != wantRev || build != wantBuild || declared != " x509sha1=1,foo=2 " {
 		t.Fatalf("rev %q (%q) declared %q build %q (%q)", rev, wantRev, declared, build, wantBuild)
+	}
+}
+
+// NotBeforeBackdate and the per-issuer MaxStatusAgeFor reach a verdict, so the record carries them.
+func TestCertApprover_DescribesBackdateAndPerIssuerAge(t *testing.T) {
+	c := newCertGate(t, 1, "alice")
+	ci, err := audit.IdentityPolicy{
+		Anchors: []*x509.Certificate{c.root.Cert}, Inter: []audit.SPKIHash{audit.SPKIHashOf(c.inter.Cert)},
+		Identity: map[string]string{"alice": testca.Person(1)}, IDKind: audit.IDPersonURI, EKU: testca.EKU, Policy: testca.PolicyOID,
+		NotBeforeBackdate: 10 * time.Minute, Canonical: audit.NewCanonicalizer(audit.CanonicalConfig{Host: "idp.bank.example"}),
+	}.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := c.approver("alice")
+	a.Policy = ci
+	rootH := audit.SPKIHashOf(c.root.Cert)
+	a.StatusParams.MaxStatusAgeFor = map[audit.SPKIHash]time.Duration{rootH: 7 * 24 * time.Hour}
+	d := a.DescribeIdentity()
+	if d.NotBeforeBackdate != "10m0s" || d.MaxStatusAgeFor[hex.EncodeToString(rootH[:])] != "168h0m0s" {
+		t.Fatalf("%+v", d)
+	}
+	dig := a.PolicyDigest()
+	a.StatusParams.MaxStatusAgeFor[rootH] = 8 * 24 * time.Hour
+	if a.PolicyDigest() == dig {
+		t.Fatal("the digest does not cover MaxStatusAgeFor")
 	}
 }

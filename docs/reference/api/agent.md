@@ -1038,6 +1038,7 @@ type IdentityPolicyRecord struct {
 	RSA2048Until            string            `json:"rsa2048_until,omitempty"`
 	MaxChain                int               `json:"max_chain"`
 	MaxLeafLifetime         string            `json:"max_leaf_lifetime"`
+	NotBeforeBackdate       string            `json:"not_before_backdate"`
 	Skew                    string            `json:"skew"`
 	AnchorGrace             string            `json:"anchor_grace"`
 	ClockTolerance          string            `json:"clock_tolerance"`
@@ -1050,6 +1051,7 @@ type IdentityPolicyRecord struct {
 	MaxStatusAgeFor         map[string]string `json:"max_status_age_for,omitempty"`
 	CAPeriod                string            `json:"ca_period"`
 	CAPeriodFor             map[string]string `json:"ca_period_for,omitempty"`
+	CAOverlapFor            map[string]string `json:"ca_overlap_for,omitempty"`
 	CoverageTolerance       string            `json:"coverage_tolerance"`
 	ThisUpdateSkew          string            `json:"this_update_skew"`
 	ThisUpdateSkewFor       map[string]string `json:"this_update_skew_for,omitempty"`

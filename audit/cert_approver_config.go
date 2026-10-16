@@ -52,6 +52,11 @@ func (p StatusParams) Validate() error {
 			return bad("ThisUpdateSkewFor an issuer is %v, outside 0 to %v", d, maxThisUpdateSkew)
 		}
 	}
+	for _, k := range slices.SortedFunc(maps.Keys(p.MaxStatusAgeFor), func(a, b SPKIHash) int { return slices.Compare(a[:], b[:]) }) {
+		if d := p.MaxStatusAgeFor[k]; d <= 0 || d > maxStatusAgeFor {
+			return bad("MaxStatusAgeFor an issuer is %v, outside 0 to %v", d, maxStatusAgeFor)
+		}
+	}
 	if p.CountLive && p.MaxStatusAge <= 0 {
 		return bad("CountLive needs a positive MaxStatusAge: a freshness check without one accepts no status")
 	}
@@ -135,6 +140,12 @@ func (c *CertApprover) DescribeIdentity() agent.IdentityPolicyRecord {
 			d.ThisUpdateSkewFor[hex.EncodeToString(k[:])] = v.String()
 		}
 	}
+	if len(p.MaxStatusAgeFor) > 0 {
+		d.MaxStatusAgeFor = map[string]string{}
+		for k, v := range p.MaxStatusAgeFor {
+			d.MaxStatusAgeFor[hex.EncodeToString(k[:])] = v.String()
+		}
+	}
 	if len(p.CAPeriodFor) > 0 {
 		d.CAPeriodFor = map[string]string{}
 		for k, v := range p.CAPeriodFor {
@@ -155,6 +166,7 @@ func (c *CertApprover) DescribeIdentity() agent.IdentityPolicyRecord {
 		d.PolicyOID = ci.policy.String()
 		d.Canonical = fmt.Sprintf("%s v%d", ci.canon.Name(), ci.canon.Version())
 		d.Skew, d.AnchorGrace, d.MaxLeafLifetime, d.MaxChain = ci.skew.String(), ci.grace.String(), ci.maxLife.String(), ci.maxChain
+		d.NotBeforeBackdate = ci.backdate.String()
 		d.AllowEmailProtectionEKU, d.RequireNameConstraints, d.RequirePolicyOnCAs = ci.emailEKU, ci.needNC, ci.needPol
 		if !ci.rsa2048.IsZero() {
 			d.RSA2048Until = ci.rsa2048.UTC().Format(time.RFC3339Nano)
