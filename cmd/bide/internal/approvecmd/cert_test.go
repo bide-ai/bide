@@ -790,6 +790,25 @@ func TestLocalIntake_JudgesTheRecord(t *testing.T) {
 	if got := li2.VerifyCertIntake(rec(func(r *agent.Record) { r.ApproverSignature.Signature = make([]byte, 64) })); got.Reason == "" {
 		t.Fatal("no policy: a bad signature was accepted")
 	}
+	// Each check stands alone: a record whose signature is valid for what it says, and which only one rule
+	// refuses. The approver it names is not the one this command decides as (a valid signature for another
+	// id under the same key); the chain differs from the prepared one (same leaf, signed for it); the policy
+	// refuses the time (signed correctly at a time past the certificate's life).
+	signedFor := func(as string, when time.Time, chain [][]byte) agent.CertDecision {
+		leaf := agent.CertLeafHash(chain[0])
+		sig, _ := signer.Sign(agent.ApprovalDecisionBytesCert(s, as, true, when, leaf))
+		r := agent.Record{Kind: agent.StepApproval, ToolUseID: "c", Approved: true, ApproverSignature: &agent.ApproverSignature{Approver: as, ApproverAlg: signer.Alg(), Signature: sig, DecidedAt: agent.FormatTimestamp(when), ApproverCert: chain}}
+		return agent.CertDecision{Subject: s, Record: r}
+	}
+	if got := li.VerifyCertIntake(signedFor("finance", at, d.Cert)); got.Reason != agent.ReasonNotEligible {
+		t.Errorf("another approver, validly signed: %+v", got)
+	}
+	if got := li2.VerifyCertIntake(signedFor("ops", at, d.Cert[:1])); got.Reason != agent.ReasonCertChain {
+		t.Errorf("another chain, validly signed: %+v", got)
+	}
+	if got := li.VerifyCertIntake(signedFor("ops", testca.T0.Add(5*time.Hour), d.Cert)); got.Reason != agent.ReasonCertWindow {
+		t.Errorf("a time past the life, validly signed: %+v", got)
+	}
 	// The decision check is the same function as the verifier: it is its own VerifyCertDecision.
 	if got := li.VerifyCertDecision(rec(nil)); got.Reason != "" {
 		t.Fatalf("%+v", got)
