@@ -107,46 +107,60 @@ nothing when it refuses, and with `-alg ml-dsa-65` or the hybrid it refuses `-cs
 before sending it: `openssl req -in ops.csr.pem -noout -verify -text` prints `verify OK`, an empty
 subject, and the public key bide printed.
 
-**A key in an HSM (PKCS#11).** Make the request with OpenSSL's PKCS#11 provider
-([pkcs11-provider](https://github.com/latchset/pkcs11-provider)), so the token signs the request and the key
-never leaves it. The PIN comes from a file, never from the command line (a command line is visible to other
-users and to process listings):
+**A key in an HSM (PKCS#11).** Have the token sign the request, so the key never leaves it. The PIN comes
+from the environment or a file, never from the command line (a command line is visible to other users and to
+process listings). With GnuTLS (`certtool` on Linux; Homebrew installs it as `gnutls-certtool`), which signs
+with the single-part mechanism every token has and works for ECDSA P-256 and Ed25519:
 
 ```
-export PKCS11_PROVIDER_MODULE=/usr/lib/softhsm/libsofthsm2.so   # your HSM's PKCS#11 library
-openssl req -new -provider pkcs11 -provider default \
-    -key 'pkcs11:token=bide-approvers;object=approver-ed;type=private?pin-source=file:/run/secrets/hsm-pin' \
-    -subj / -out ops.csr.pem
+: > empty.tmpl     # an empty template: no subject, no extensions
+GNUTLS_PIN="$(cat /run/secrets/hsm-pin)" certtool --generate-request \
+    --provider /usr/lib/softhsm/libsofthsm2.so \
+    --load-privkey 'pkcs11:token=bide-approvers;object=approver-p256;type=private' \
+    --load-pubkey  'pkcs11:token=bide-approvers;object=approver-p256;type=public' \
+    --template empty.tmpl --outfile ops.csr.pem
 ```
 
-(Add `-provider-path <dir>` if the provider is not in OpenSSL's module directory.) The request is made by the
-key `bide-hsm approve -key` will sign with; check that they are one key before sending it:
+(Use your HSM's PKCS#11 library for `--provider`.) Check that the request was made by the key `bide-hsm approve
+-key` will sign with before sending it:
 
 ```
 openssl req -in ops.csr.pem -noout -verify
-bide-hsm pubkey -as ops -key 'pkcs11:token=bide-approvers;object=approver-ed?module-path=/usr/lib/softhsm/libsofthsm2.so'
+bide-hsm pubkey -as ops -key 'pkcs11:token=bide-approvers;object=approver-p256?module-path=/usr/lib/softhsm/libsofthsm2.so'
 ```
 
-The first prints `verify OK`; the public key in the second must be the one in the request
-(`openssl req -in ops.csr.pem -pubkey -noout | openssl pkey -pubin -outform DER | tail -c 32 | xxd -p -c 64`
-prints an Ed25519 key's 32 bytes, and `bide-hsm`'s `ed25519:<hex>` is the same hex). `bide-hsm approve -cert`
-checks the same thing before it signs, so a mix-up is caught there too, but only after the CA has issued a
-certificate for the wrong key.
+The first prints `verify OK` (and `-text` shows the empty subject); the public key in the second must be the one
+in the request (`openssl req -in ops.csr.pem -pubkey -noout | openssl pkey -pubin -outform DER`, whose last 65
+bytes for P-256, or 32 for Ed25519, are the hex bide prints after `ecdsa-p256:` or `ed25519:`).
+`bide-hsm approve -cert` checks the same before it signs, but only after the CA has issued a certificate, so check
+here. What was run: SoftHSM 2.7.0 with GnuTLS 3.8.13, for one ECDSA P-256 key and one Ed25519 key
+(`pkcs11-tool --keypairgen --key-type EC:secp256r1` and `EC:edwards25519`): both requests verified, had an empty
+subject and carried the key `bide-hsm pubkey` printed.
 
-What was run for this: SoftHSM 2.7.0 with an Ed25519 key (`pkcs11-tool --keypairgen --key-type
-EC:edwards25519`), OpenSSL 3.6 and pkcs11-provider 1.3.0; the request verified, held the key `bide-hsm
-pubkey` printed, and had an empty subject. **ECDSA P-256 was not verified in the same way:** SoftHSM 2.7.0
-fails the provider's multi-part `CKM_ECDSA_SHA256` signature with `CKR_OPERATION_NOT_INITIALIZED` (at
-`C_SignUpdate`; the cause was not pursued), so the same command with a P-256 key fails on SoftHSM. Whether
-it works on your HSM depends on its mechanisms; try it with a test key first.
+OpenSSL's PKCS#11 provider ([pkcs11-provider](https://github.com/latchset/pkcs11-provider),
+`openssl req -new -provider pkcs11 -provider default -key '<pkcs11 URI with pin-source=file:...>' -subj /
+-out ops.csr.pem`) also worked for the Ed25519 key. It did not for P-256 on SoftHSM: the provider signs a request
+with a multi-part digest-and-sign mechanism and SoftHSM 2.7.0 failed it with `CKR_OPERATION_NOT_INITIALIZED` (the
+cause was not pursued), so use GnuTLS there. Whether either works on your HSM depends on the mechanisms it
+supports; try it with a test key first.
 
-**A key in a KMS.** AWS KMS, Google Cloud KMS and Azure Key Vault each have a vendor procedure for a request
-signed by a KMS key (a vendor PKCS#11 library used with the same `openssl req` command, or a program that
-signs the request through the KMS's signing call). These were **not run for this guide**: the repository's
-KMS emulators implement the key and signing calls, not the vendors' PKCS#11 libraries or their request
-tooling, so no command is given here that was not run. Use the vendor's documented procedure, then check the
-request against `bide-hsm pubkey -key <KMS key reference>` as above. A `bide-hsm csr` command that signs the
-request through the same key sources `bide-hsm approve` uses is on the [roadmap](../ROADMAP.md).
+**A key in a KMS.** bide's part ends at the certificate: the request for a KMS key is made with the KMS vendor's
+documented procedure, and `bide-hsm approve -cert` signs with the same key once the CA has issued the certificate.
+These procedures were not run for this guide (the repository's KMS emulators implement the key and signing calls,
+not the vendors' request tooling), so none is reproduced here:
+
+- AWS KMS has no request call. AWS's PKCS#11 library, [aws-kms-pkcs11](https://github.com/AWS/aws-kms-pkcs11),
+  presents the key as a token key, to be used with the GnuTLS or OpenSSL commands above.
+- Google Cloud KMS: the PKCS#11 library `libkmsp11` in
+  [GoogleCloudPlatform/kms-integrations](https://github.com/GoogleCloudPlatform/kms-integrations) does the same,
+  and the library's documentation there covers using it with OpenSSL.
+- Azure Key Vault and Managed HSM: Microsoft's documentation, "Create and merge a CSR in Key Vault"
+  (<https://learn.microsoft.com/azure/key-vault/certificates/create-certificate-signing-request>), describes a
+  request generated inside the vault for a vault key. Check whether it puts a subject in the request; if so,
+  the CA replaces it.
+
+After any of these, run the `bide-hsm pubkey` comparison above with the KMS key reference. A `bide-hsm csr` command
+that signs the request through the same key sources `bide-hsm approve` uses is on the [roadmap](../ROADMAP.md).
 
 ## Declare the CA's facts
 
