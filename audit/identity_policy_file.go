@@ -41,6 +41,11 @@ type identityPolicyFile struct {
 	MaxLeafLifetime    string `json:"max_leaf_lifetime"`
 	RequireNameConstr  bool   `json:"require_name_constraints"`
 	RequirePolicyOnCAs bool   `json:"require_policy_on_cas"`
+
+	// CRL and IntermediateCerts belong to the CRL refresher (ParseCRLSources). The policy ignores them: where a
+	// CRL is fetched from never changes a verdict, so neither is part of the policy digest.
+	CRL               map[string]CRLSource `json:"crl"`
+	IntermediateCerts []string             `json:"intermediate_certs"`
 }
 
 // ParseIdentityPolicy compiles a certificate policy file's bytes (see identityPolicyFile for its
