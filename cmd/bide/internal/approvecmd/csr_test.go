@@ -33,6 +33,9 @@ func TestKeygenCSR(t *testing.T) {
 			if blk == nil || blk.Type != "CERTIFICATE REQUEST" || len(bytes.TrimSpace(rest)) != 0 {
 				t.Fatalf("not one CERTIFICATE REQUEST block: %q", b)
 			}
+			if !bytes.HasSuffix(b, []byte("-----\n")) {
+				t.Fatalf("the request file does not end with a PEM footer and a newline: %q", b[len(b)-10:])
+			}
 			req, err := x509.ParseCertificateRequest(blk.Bytes)
 			if err != nil {
 				t.Fatal(err)
