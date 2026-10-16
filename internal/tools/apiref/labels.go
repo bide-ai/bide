@@ -25,6 +25,7 @@ var Labels = map[string]string{
 	"chaos":                    Experimental,
 	"codec/gcf":                Core,
 	"eval":                     Experimental,
+	"flowedit":                 Experimental,
 	"govern":                   Experimental,
 	"govern/eventlogtest":      Experimental,
 	"govern/postgreslog":       Experimental,

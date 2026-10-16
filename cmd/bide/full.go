@@ -12,6 +12,7 @@ import (
 	"github.com/bide-ai/bide/cmd/bide/internal/approvecmd"
 	"github.com/bide-ai/bide/cmd/bide/internal/demo"
 	"github.com/bide-ai/bide/cmd/bide/internal/doctor"
+	"github.com/bide-ai/bide/cmd/bide/internal/editcmd"
 	"github.com/bide-ai/bide/cmd/bide/internal/initcmd"
 	"github.com/bide-ai/bide/cmd/bide/internal/migratecmd"
 	"github.com/bide-ai/bide/cmd/bide/internal/notifycmd"
@@ -61,6 +62,12 @@ func fullCommands() []command {
 				return runview.Main(args, stdout, stderr, stores)
 			},
 			exits: commonExits,
+		},
+		{
+			name:    "edit",
+			summary: "a local page for a flow config: the graph, the approval gates, the assertions and the check (read-only so far)",
+			run:     editcmd.Main,
+			exits:   commonExits,
 		},
 		{
 			name:    "notify",

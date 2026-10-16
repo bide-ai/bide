@@ -33,7 +33,8 @@ only when that adapter is imported.
 | PKCS#11 signer | `…/signer/pkcs11` | miekg/pkcs11 (needs cgo; without it the module builds and `Open` returns `ErrNoCgo`) |
 | AWS KMS signer | `…/signer/awskms` | the AWS SDK for Go v2 KMS client |
 | gcf codec | `…/codec/gcf` | blackwell-systems/gcf-go |
-| bide command | `…/cmd/bide` | the two store modules, go.yaml.in/yaml/v3 (a program, installed with `go install`, not imported) |
+| flow editor | `…/flowedit` | go.yaml.in/yaml/v3 (it splices a flow config's YAML text, which the core module, with no dependency, cannot) |
+| bide command | `…/cmd/bide` | the two store modules, `flowedit`, go.yaml.in/yaml/v3 (a program, installed with `go install`, not imported) |
 | bide-hsm command | `…/cmd/bide/bide-hsm` | the PKCS#11, AWS KMS, Google Cloud KMS and Azure Key Vault signers (`signer/pkcs11` needs cgo), the AWS SDK, the Cloud KMS client, the two store modules, and `cmd/bide` for its internal approval code (a program, built from source with `go install`; not in the release archives) |
 | bide-view (deprecated) | `…/cmd/bide-view` | none: a program that only points to `bide view`, removed after v0.14.0 |
 
@@ -97,12 +98,12 @@ It tags each library module `<dir>/vX.Y.Z` at that commit, so a consumer's `go g
 module from the proxy. Main keeps its `replace` directives, so development is unchanged.
 
 Published (tagged at every release): `govern`, `store/sqlite`, `store/postgres`, `mcptools`, `trace`,
-`codec/gcf`, `govern/sqlitelog`, `govern/redislog`, `govern/postgreslog`, and the commands
+`codec/gcf`, `flowedit`, `govern/sqlitelog`, `govern/redislog`, `govern/postgreslog`, and the commands
 `cmd/bide` and `cmd/bide-view` (tagged one last time at v0.14.0, then removed).
 
 Repo-only (never tagged; they keep their `replace` directives): `examples/approval`,
 `examples/plan`, `examples/mcp`, `examples/observability`, `examples/govern`, `integration`,
-`benchmarks`, and `flowedit` (the flow editor's edit engine, which `cmd/bide` will require and which is then published with it).
+`benchmarks`.
 
 The exported API of every package in the published modules is listed in the generated [SDK API reference](api/index.md), one page per module (the core module, one per package), with each package's [stability label](../trust/stability.md#package-stability). The reference reads the Repo-only and command lists from `scripts/release.sh`, so a module added to the release is documented and a repo-only module is not.
 

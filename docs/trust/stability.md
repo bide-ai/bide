@@ -39,6 +39,7 @@ Two groups of symbols are labelled apart from their package. In `audit`, the cer
 | `chaos` | experimental |
 | `codec/gcf` | core |
 | `eval` | experimental |
+| `flowedit` | experimental |
 | `govern` | experimental |
 | `govern/eventlogtest` | experimental |
 | `govern/postgreslog` | experimental |
