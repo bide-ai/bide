@@ -174,7 +174,8 @@ func flowGate(ctx context.Context, d *Journal, runID, key, node string, args jso
 		// tally beside an identity tally, or on a gate whose notes say it is bound, is superseded:
 		// tallyGate decides that from the whole journal, whatever the policy is now. So the plain tally is
 		// taken here only when the gate has no identity tally and its first note does not say it is bound.
-		if ok && r.Kind == StepValue {
+		// A policy that is certificate-bound now (an upgrade, say) supersedes it too, as in tallyGate.
+		if ok && r.Kind == StepValue && !isBound(pol, verifierFor) {
 			bound, err := flowBound(ctx, d, runID, key)
 			if err != nil {
 				return false, err

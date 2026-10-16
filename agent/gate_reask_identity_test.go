@@ -605,3 +605,20 @@ func TestBoundGate_IdentityRecordMakesItBound(t *testing.T) {
 		t.Fatal("another call's identity record makes the gate bound")
 	}
 }
+
+// A plain pass counted under bare keys is not taken by a flow gate whose policy has since become
+// certificate-bound (an upgrade): the node does not run on approvals counted without certificates.
+func TestFlowGate_PlainPassUnderAnUpgradedPolicyIsSuperseded(t *testing.T) {
+	ctx := context.Background()
+	j := memJournal()
+	g := newBoundGate(t)
+	args := json.RawMessage(`{"amount":1}`)
+	_, _ = flowGate(ctx, j, "r1", "node:pay", "pay", args, g.pol, fakeVerifiers("alice", "bob"))
+	writeRaw(t, j, "r1", ApprovalTallyStep("node:pay"), valueRec(t, ApprovalTallyStep("node:pay"), passedTally()))
+	bound := certResolver(map[string]ApproverVerifier{"alice": g.alice, "bob": g.bob})
+	ok, err := flowGate(ctx, j, "r1", "node:pay", "pay", args, g.pol, bound)
+	var pend *ApprovalPending
+	if ok || !errors.As(err, &pend) || pend.Reason != PendingIdentReapproval {
+		t.Fatalf("ok %v err %v", ok, err)
+	}
+}
