@@ -30,6 +30,9 @@ public class ProfileGen {
     ku[0] = true; // digitalSignature
     p.setKeyUsage(ku);
     p.setKeyUsageCritical(true);
+    // ECDSA P-256 keys only: the decision schemes verify ECDSA P-256, Ed25519 or ML-DSA-65.
+    p.setAvailableKeyAlgorithmsAsList(new ArrayList<>(List.of("ECDSA")));
+    p.setAvailableEcCurvesAsList(new ArrayList<>(List.of("prime256v1")));
     LinkedHashMap<Object, Object> m = new LinkedHashMap<>((Map) p.saveData());
     try (XMLEncoder e = new XMLEncoder(new FileOutputStream(a[0]))) {
       e.writeObject(m);

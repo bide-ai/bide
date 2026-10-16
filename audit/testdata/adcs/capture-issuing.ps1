@@ -19,6 +19,9 @@ certutil -addstore -f Root (Join-Path $In 'rootcrl.pem') | Out-Null
 $pw = ConvertTo-SecureString (Get-Content (Join-Path $In 'pfx-password.txt')).Trim() -AsPlainText -Force
 Install-WindowsFeature ADCS-Cert-Authority -IncludeManagementTools | Out-Null
 Install-AdcsCertificationAuthority -CAType StandaloneSubordinateCa -CertFile (Join-Path $In 'issuing.pfx') -CertFilePassword $pw -Force | Out-Null
+# A CA installed from a PFX signs with SHA-1 until told otherwise; the approver policy refuses SHA-1.
+certutil -getreg CA\CSP | Set-Content -Path (Join-Path $Out 'csp-before.txt')
+certutil -setreg CA\CSP\CNGHashAlgorithm SHA256 | Out-Null
 # An offline root's revocation server is not reachable from here: the CA ignores an offline CRL.
 certutil -setreg CA\CRLFlags +CRLF_REVCHECK_IGNORE_OFFLINE | Out-Null
 Save-Defaults $issuingName (Join-Path $Out 'DEFAULTS.txt')
@@ -48,8 +51,8 @@ foreach ($n in 1..4) {
 Signature="`$Windows NT`$"
 [NewRequest]
 Subject = "CN=u$n"
-KeyAlgorithm = RSA
-KeyLength = 2048
+KeyAlgorithm = ECDSA_P256
+KeyLength = 256
 HashAlgorithm = SHA256
 RequestType = PKCS10
 MachineKeySet = TRUE
@@ -66,6 +69,7 @@ _continue_ = "$EkuHex"
   certreq -new -f $inf $req | Out-Null
   $cer = Join-Path $Out "u$n.cer"
   $cert = Get-Issued $config $req $cer
+  if ($cert.SignatureAlgorithm.FriendlyName -match 'sha1') { throw "the CA signed with $($cert.SignatureAlgorithm.FriendlyName)" }
   $serials[$n] = $cert.SerialNumber
   Save-Pem $cert.RawData 'CERTIFICATE' (Join-Path $Out "u$n.pem")
   Remove-Item $inf, $req, $cer

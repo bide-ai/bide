@@ -4,6 +4,7 @@ import (
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -19,13 +20,16 @@ import (
 // CS on a Windows Server) and checked in, so these tests run offline. testdata/ejbca/capture.sh and
 // testdata/adcs/capture.ps1 are the scripts; VERSION records what produced them.
 
-// capture is one CA's checked-in capture.
+// capture is one CA's checked-in capture: a two-tier PKI (an offline root and the issuing CA under it),
+// four approver certificates the issuing CA issued, and the CRLs of both CAs.
 type capture struct {
 	t    *testing.T
 	dir  string
+	root *x509.Certificate
 	ca   *x509.Certificate
 	snap *audit.StatusSnapshot
 	crls map[string]*x509.RevocationList
+	ci   *audit.CertIdentity
 }
 
 func readPEM(t *testing.T, path string) []byte {
@@ -41,49 +45,72 @@ func readPEM(t *testing.T, path string) []byte {
 	return blk.Bytes
 }
 
-func loadCapture(t *testing.T, dir string, crls ...string) *capture {
+func parseCert(t *testing.T, path string) *x509.Certificate {
+	t.Helper()
+	cert, err := x509.ParseCertificate(readPEM(t, path))
+	if err != nil {
+		t.Fatalf("%s: %v", path, err)
+	}
+	return cert
+}
+
+// loadCapture reads a capture and compiles the approver policy over it: the root is the anchor, the
+// issuing CA is pinned, and the bank's EKU and policy are required, so VerifyChain runs on what the
+// real CA wrote. backdate is the notBefore back-dating the CA is declared to apply.
+func loadCapture(t *testing.T, dir string, backdate time.Duration, crls ...string) *capture {
 	t.Helper()
 	c := &capture{t: t, dir: filepath.Join("testdata", dir), snap: audit.NewStatusSnapshot(), crls: map[string]*x509.RevocationList{}}
-	var err error
-	if c.ca, err = x509.ParseCertificate(readPEM(t, filepath.Join(c.dir, "ca.pem"))); err != nil {
-		t.Fatal(err)
-	}
-	for _, n := range crls {
+	c.root = parseCert(t, filepath.Join(c.dir, "root.pem"))
+	c.ca = parseCert(t, filepath.Join(c.dir, "ca.pem"))
+	for _, n := range append([]string{"rootcrl"}, crls...) {
 		der := readPEM(t, filepath.Join(c.dir, n+".pem"))
 		if _, err := c.snap.AddCRL(der); err != nil {
 			t.Fatalf("%s: a CRL the CA wrote was refused: %v", n, err)
 		}
+		var err error
 		if c.crls[n], err = x509.ParseRevocationList(der); err != nil {
 			t.Fatal(err)
 		}
 	}
+	ids := map[string]string{}
+	for n := 1; n <= 4; n++ {
+		ids[fmt.Sprintf("u%d", n)] = testca.Person(n)
+	}
+	c.ci = mustCompile(t, audit.IdentityPolicy{
+		Anchors: []*x509.Certificate{c.root}, Inter: []audit.SPKIHash{audit.SPKIHashOf(c.ca)},
+		Identity: ids, IDKind: audit.IDPersonURI, EKU: testca.EKU, Policy: testca.PolicyOID,
+		Canonical:          audit.NewCanonicalizer(audit.CanonicalConfig{Host: "idp.bank.example"}),
+		RequirePolicyOnCAs: true, NotBeforeBackdate: backdate,
+	})
 	return c
 }
 
 func (c *capture) leaf(name string) *x509.Certificate {
 	c.t.Helper()
-	cert, err := x509.ParseCertificate(readPEM(c.t, filepath.Join(c.dir, name+".pem")))
-	if err != nil {
-		c.t.Fatal(err)
-	}
-	return cert
+	return parseCert(c.t, filepath.Join(c.dir, name+".pem"))
 }
 
-// compiled is a policy over the capture's CA; only its status methods are used here.
-func (c *capture) compiled() *audit.CertIdentity {
+// verify runs VerifyChain on the real certificates: the leaf, the issuing CA and the root, as an
+// approver would carry them.
+func (c *capture) verify(leaf string, a time.Time) (*audit.ApproverCert, error) {
 	c.t.Helper()
-	return mustCompile(c.t, audit.IdentityPolicy{
-		Anchors: []*x509.Certificate{c.ca}, Identity: map[string]string{"x": testca.Person(1)},
-		IDKind: audit.IDPersonURI, EKU: testca.EKU, Policy: testca.PolicyOID,
-		Canonical: audit.NewCanonicalizer(audit.CanonicalConfig{Host: "idp.bank.example"}),
-	})
+	return c.ci.VerifyChain(leaf, [][]byte{c.leaf(leaf).Raw, c.ca.Raw, c.root.Raw}, a, a)
+}
+
+// chainStatus is the status rule over the whole accepted chain, the leaf and then the issuing CA (whose
+// status is the root's CRL).
+func (c *capture) chainStatus(leaf string, a time.Time, p audit.StatusParams) audit.ChainStatus {
+	c.t.Helper()
+	ac, err := c.verify(leaf, a)
+	if err != nil {
+		c.t.Fatalf("VerifyChain %s at %v: %v", leaf, a, err)
+	}
+	return c.ci.EvaluateStatus(ac, a, c.snap, p)
 }
 
 func (c *capture) status(leaf string, a time.Time, p audit.StatusParams) audit.CertStatus {
 	c.t.Helper()
-	cert := c.leaf(leaf)
-	ac := &audit.ApproverCert{Leaf: cert, Chain: []*x509.Certificate{cert, c.ca}}
-	return c.compiled().EvaluateStatus(ac, a, c.snap, p).Certs[0]
+	return c.chainStatus(leaf, a, p).Certs[0]
 }
 
 // entry finds a CRL's entry for a certificate.
@@ -114,7 +141,7 @@ func deltaBase(t *testing.T, rl *x509.RevocationList) *big.Int {
 // EJBCA Community: base CRLs hourly, deltas every ten minutes, one shared CRL number sequence, each
 // delta naming the latest base.
 func TestEJBCAConformance(t *testing.T) {
-	c := loadCapture(t, "ejbca", "base1", "delta1", "base2", "delta2", "base3", "delta3")
+	c := loadCapture(t, "ejbca", 0, "base1", "delta1", "base2", "delta2", "base3", "delta3")
 	order := []string{"base1", "delta1", "base2", "delta2", "base3", "delta3"}
 	for i := 1; i < len(order); i++ {
 		if c.crls[order[i]].Number.Cmp(c.crls[order[i-1]].Number) <= 0 {
@@ -152,6 +179,22 @@ func TestEJBCAConformance(t *testing.T) {
 	short := audit.StatusParams{W: 5 * time.Second, MinW: time.Second, CAPeriod: time.Hour}
 	b1 := c.crls["base1"].ThisUpdate
 	a := b1.Add(time.Second)
+
+	// The real certificates pass VerifyChain under the approver policy (EKU, policy on the leaf and on both
+	// CAs, URI subject alternative name, digitalSignature, 24 hours), with the CA's own ten minute notBefore
+	// offset, and the whole chain has status: the leaf from the issuing CA's CRLs, the issuing CA from the
+	// root's CRL.
+	u4 := c.leaf("u4")
+	if span := u4.NotAfter.Sub(u4.NotBefore); span != 24*time.Hour-time.Second {
+		t.Fatalf("EJBCA's 24 hour profile gave a certificate valid for %v", span)
+	}
+	if !u4.NotBefore.Before(b1.Add(-9 * time.Minute)) {
+		t.Fatalf("expected the ten minute notBefore offset: notBefore %v, first CRL %v", u4.NotBefore, b1)
+	}
+	cs := c.chainStatus("u4", a, short)
+	if len(cs.Certs) != 2 || cs.Certs[1].Revoked || cs.Certs[1].Tier == audit.TierNoInformation {
+		t.Fatalf("the issuing CA's status from the root's CRL: %+v", cs)
+	}
 
 	// u4 is never revoked: final, resting on the merged base and delta.
 	st := c.status("u4", a, short)
@@ -199,7 +242,7 @@ func TestEJBCAConformance(t *testing.T) {
 // that publication's time; and the removeFromCRL entry's date is the time of the release, not the
 // original hold date.
 func TestADCSConformance(t *testing.T) {
-	c := loadCapture(t, "adcs", "base1", "delta1", "base2", "delta2", "base3", "delta3")
+	c := loadCapture(t, "adcs", 10*time.Minute, "base1", "delta1", "base2", "delta2", "base3", "delta3")
 	order := []string{"base1", "delta1", "base2", "delta2", "base3", "delta3"}
 	for i := 1; i < len(order); i++ {
 		if c.crls[order[i]].Number.Cmp(c.crls[order[i-1]].Number) <= 0 {
@@ -270,5 +313,34 @@ func TestADCSConformance(t *testing.T) {
 	}
 	if st := c.status("u2", rel.RevocationTime.Add(time.Second), holds); st.Revoked {
 		t.Fatalf("u2 after the release, opted in: %+v", st)
+	}
+}
+
+// The same captures judged with realistic windows: the compromise-reporting window and the minimum window
+// at their defaults (24 hours and 30 minutes), the CA's declared one hour period, and the live count
+// with a one hour age limit. The capture spans minutes, not the 24 hours of a certificate's life, so no
+// verdict is final: the rule says provisional, with the revocations still found, which is what a bank
+// sees for the first day.
+func TestEJBCARealisticWindows(t *testing.T) {
+	c := loadCapture(t, "ejbca", 0, "base1", "delta1", "base2", "delta2", "base3", "delta3")
+	a := c.crls["base1"].ThisUpdate.Add(time.Second)
+	last := c.crls["delta3"].ThisUpdate
+	p := audit.StatusParams{CAPeriod: time.Hour, Now: last.Add(5 * time.Minute), MaxStatusAge: time.Hour, CountLive: true}
+	if st := c.status("u4", a, p); st.Revoked || st.Tier != audit.TierProvisional {
+		t.Fatalf("u4: %+v", st)
+	}
+	if st := c.status("u1", a, p); !st.Revoked || !st.Compromise {
+		t.Fatalf("u1: %+v", st)
+	}
+	// An hour and a half later the CRLs are past nextUpdate: nothing counts.
+	late := p
+	late.Now = c.crls["base3"].NextUpdate.Add(time.Second)
+	if st := c.status("u4", a, late); st.Tier != audit.TierNoInformation {
+		t.Fatalf("u4 on stale CRLs: %+v", st)
+	}
+	// Offline (no clock), a decision a day in: the series ends before the certificate does.
+	off := audit.StatusParams{CAPeriod: time.Hour}
+	if st := c.status("u4", a, off); st.IsFinal() || st.Revoked {
+		t.Fatalf("u4 offline: %+v", st)
 	}
 }
