@@ -76,6 +76,7 @@ CONSTANTS
   TallyRecheck, \* the tally forms only when no counted decision is listed in the archive
   CountCATier,  \* the count reads the CA tier's status (fresh within MaxAgeCA, not listing the CA with E <= A(d))
   ExecCATier,   \* the pre-execution check reads the CA tier's status (fresh within ExecAgeCA, no such listing)
+  FinalCATier,  \* a final verdict also needs the CA tier: a root CRL a window past A(d), and no root CRL listing the CA
   LeafAgeFromCA,\* wrongly, the pre-execution check ages the leaf's status by ExecAgeCA instead of ExecAge
   \* The adversary and the CA's options.
   Prune,        \* the CA may drop a revoked certificate's entry after one CRL beyond its notAfter
@@ -248,6 +249,13 @@ CovOK(d, S) ==
               ELSE \A k1, k2 \in rcvd :
                      (f <= k1 /\ k1 < k2 /\ k2 <= S /\ ~\E k3 \in rcvd : k1 < k3 /\ k3 < k2)
                        => ctu[k2] <= ctu[k1] + Period
+\* The CA tier of a final verdict: a received root CRL at least W after A(d), and no received root CRL
+\* lists the CA with E <= A(d). The root never prunes, so a later CRL lists whatever an earlier one did
+\* and a witness needs no coverage of the series between.
+RootFinalOK(d) ==
+  \/ ~CATier \/ ~FinalCATier
+  \/ /\ \E kr \in rrcvd : AOf(d) + W <= rtu[kr]
+     /\ \A k \in rrcvd : rrl[k] > AOf(d)
 FinalWit(d, S) ==
   LET c == dc[d] a == AOf(d) IN
   /\ Covered(d) /\ HeadOK(d) /\ ChainOK(d) /\ Window(d)
@@ -256,6 +264,7 @@ FinalWit(d, S) ==
   /\ \A k \in rcvd : clst[k][c] > a                \* a listing anywhere in the series is a revocation
   /\ (ctu[S] > na[c] => S = LRcv(c))               \* absence beyond notAfter only from L(C)
   /\ CovOK(d, S)
+  /\ RootFinalOK(d)
 
 (***************************************************************************)
 (* Initial state and actions                                               *)
@@ -563,7 +572,11 @@ NoExecAfterCATierRevocation == execd => ~ebC
 \* witness's thisUpdate lists the chain with E <= A(d).
 FinalNeedsCompleteSeries ==
   \A d \in 1..nd, S \in 1..np :
-    FinalWit(d, S) => \A k \in 1..np : ctu[k] <= ctu[S] => clst[k][dc[d]] > AOf(d)
+    FinalWit(d, S) =>
+      /\ \A k \in 1..np : ctu[k] <= ctu[S] => clst[k][dc[d]] > AOf(d)
+      \* and the root: no root CRL published up to a witness root CRL lists the CA
+      /\ (CATier => \A j \in 1..rnp :
+            (\E kr \in rrcvd : AOf(d) + W <= rtu[kr] /\ rtu[j] <= rtu[kr]) => rrl[j] > AOf(d))
 
 \* Absence is evidence only from a CRL no later than L(C), the first published after notAfter.
 AbsenceOnlyInWindow ==

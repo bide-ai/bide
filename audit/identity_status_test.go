@@ -1802,3 +1802,27 @@ func TestMaxStatusAgeForIsPerIssuer(t *testing.T) {
 		t.Fatalf("a zero per-issuer limit: %+v", cs.Certs[1])
 	}
 }
+
+// Model 15 (CA tier): a chain is never final while the root lists the issuing CA with E <= A(d), in
+// whichever of the root's CRLs the listing appears, however complete the leaf's own series is.
+func TestChainNeverFinalWhileTheRootRevokedTheIssuingCA(t *testing.T) {
+	s := newStFx(t)
+	r0 := s.rcrl(1, idT0, 24*hour+min)
+	l0 := s.lcrl(1, idT0, 30*min)
+	listed := testca.Revoked(s.inter.Cert, s.a.Add(-hour), 2)
+	for name, rootCRLs := range map[string][][]byte{
+		"listed in the later root CRL": {r0, s.rcrl(2, s.a.Add(24*hour+time.Second), 24*hour, listed)},
+		"listed in the first root CRL": {s.rcrl(1, idT0, 24*hour+min, listed), s.rcrl(2, s.a.Add(24*hour+time.Second), 24*hour)},
+	} {
+		cs := s.eval(s.snap(append(rootCRLs, l0)...), audit.StatusParams{CAPeriod: 25 * hour})
+		if cs.IsFinal() || !cs.Revoked || !cs.Certs[1].Revoked {
+			t.Errorf("%s: %+v", name, cs)
+		}
+		wantStatusErr(t, cs.Err(), agent.ReasonRevoked)
+	}
+	// Without the root's later CRL the CA tier has no final status, so the chain is not final.
+	cs := s.eval(s.snap(r0, l0), audit.StatusParams{CAPeriod: 25 * hour})
+	if cs.IsFinal() {
+		t.Errorf("a root CRL less than a window past A made the chain final: %+v", cs)
+	}
+}
