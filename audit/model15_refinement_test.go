@@ -141,6 +141,15 @@ type refScenario struct {
 	ctlWant []string // the set with the rule satisfied; alice alone when nil
 }
 
+// A note on the tally and dead-set scenarios (tally-no-recheck, tally-no-recheck-ca, recount-dead): the Go
+// count is stateless. It has no separate tally recheck and no dead set; every evaluation reads the journal,
+// the heads and the status afresh, so the model's "recheck" and "dead stays out" properties are checked here
+// through the count itself (the same answer from the same inputs, however the inputs arrived). A mutation of
+// a function named "recheck" is not expected to fail them; a mutation of the count's rules is.
+//
+// And on prune-no-lc-count: the decision is refused for ReasonStatusStale because the only earlier CRL has
+// passed its nextUpdate. The model's fallback to an earlier fresh CRL (counting provisionally) is the other
+// half, checked by TestModel15PruneFallback.
 func TestModel15Refinement(t *testing.T) {
 	alice := []string{"alice"}
 	scenarios := map[string]refScenario{
@@ -541,8 +550,9 @@ func TestModel15Refinement(t *testing.T) {
 }
 
 // The limit model 15 states (limits/alias-two-seats): two different identifiers owned by one person fill two
-// seats. The code takes injectivity from identifier to person as the bank's evidenced control: both count and
-// a two-of-two gate passes. What it does refuse is the same identifier under two approver ids (at compile).
+// seats. This test is documentation, not a check: it passes by construction, because the code cannot see that
+// two identifiers belong to one person (it takes injectivity from identifier to person as the bank's evidenced
+// control), so both count and a two-of-two gate passes. What it does refuse is the same identifier under two approver ids (at compile).
 func TestModel15AliasLimit(t *testing.T) {
 	c := newCertGate(t, 2, "alice", "bob") // Person(1) and Person(2): say both are one person's aliases
 	c.pause()
