@@ -369,7 +369,7 @@ func TestFormsInChrome(t *testing.T) {
 	if r.AfterClear != cleared || !strings.Contains(r.BannerAfterClear, "APPROVAL GATE WEAKENED") || r.GateButtonAfterClear != "Add gate" {
 		t.Errorf("after removing the gate: banner %q, button %q\n%s", r.BannerAfterClear, r.GateButtonAfterClear, r.AfterClear)
 	}
-	if !strings.Contains(r.AfterGateReceipt, "  - {name: receipt, block: receipt, safety: idempotent, approval: {need: 1, approvers: [ops]}}\n") {
+	if !strings.Contains(r.AfterGateReceipt, "  - {name: receipt, block: receipt, safety: idempotent, approval: {need: 1, approvers: [ops, audit2], exclude_principal: true}}\n") {
 		t.Errorf("after gating receipt:\n%s", r.AfterGateReceipt)
 	}
 	if !strings.Contains(r.AfterBlock, "  - {name: validate, block: validate_v2, safety: readonly}\n") {

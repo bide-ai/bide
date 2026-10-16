@@ -117,6 +117,11 @@ try {
   await page.focus('#g-add');
   await page.keyboard.type('ops');
   await page.keyboard.press('Enter');
+  await page.keyboard.type('  audit2  ');
+  await page.keyboard.press('Enter');
+  await page.focus('#g-exclude');
+  await page.keyboard.press('Space');
+  await until(() => document.querySelector('#g-kofn')?.textContent.includes('never counting'), null, 'the draft to exclude the requester');
   await page.click('#g-apply');
   await until(() => document.getElementById('source').value.includes('name: receipt, block: receipt, safety: idempotent, approval'), null, 'receipt to be gated');
   r.afterGateReceipt = await source();
