@@ -157,15 +157,13 @@ func checkNotExpired(ctx context.Context, d *Journal, op, runID, toolUseID strin
 	}
 	if !pastDeadline(now(), at) {
 		// The clock may be behind the drive's: a recorded expiry is final whatever it says.
-		for _, name := range []string{ApprovalTallyStep(toolUseID), ApprovalRetallyStep(toolUseID), ApprovalSoDRetallyStep(toolUseID)} {
-			t, ok, err := d.Get(ctx, runID, name)
-			if err != nil {
-				return fmt.Errorf("%s: read %s (run %s): %w (%w)", op, name, runID, err, ErrStorage)
-			}
-			if ok {
-				if tally, err := decodeTally(runID, t); err == nil && tally.Expired {
-					return fmt.Errorf("%s: the approval gate on %s in run %s recorded its expiry (deadline %s), so a decision on it cannot count and was not recorded: %w (%w)", op, toolUseID, runID, dl.ExpiresAt, ErrApprovalExpired, ErrConfig)
-				}
+		tallies, err := gateTallyRecords(func(name string) (Record, bool, error) { return d.Get(ctx, runID, name) }, toolUseID)
+		if err != nil {
+			return fmt.Errorf("%s: read the tallies of %s (run %s): %w (%w)", op, toolUseID, runID, err, ErrStorage)
+		}
+		for _, t := range tallies {
+			if tally, err := decodeTally(runID, t); err == nil && tally.Expired {
+				return fmt.Errorf("%s: the approval gate on %s in run %s recorded its expiry (deadline %s), so a decision on it cannot count and was not recorded: %w (%w)", op, toolUseID, runID, dl.ExpiresAt, ErrApprovalExpired, ErrConfig)
 			}
 		}
 		return nil

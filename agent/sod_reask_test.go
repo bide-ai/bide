@@ -161,10 +161,10 @@ func TestSoDReask_Notification(t *testing.T) {
 	if len(evs) != 1 || evs[0].key != ApprovalReaskKey("r1", "c1", true) || evs[0].approval.Reask != PendingSoDReapproval {
 		t.Fatalf("events from the notes = %+v; want only the re-ask", evs)
 	}
-	if decided, err := e.gateDecided(ctx, "r1", "c1", PendingSoDReapproval); err != nil || decided {
+	if decided, err := e.gateDecided(ctx, "r1", "c1", PendingSoDReapproval, 0); err != nil || decided {
 		t.Fatalf("the re-ask reads as decided (%v); the recorded tally it asks over does not end it", err)
 	}
-	if decided, _ := e.gateDecided(ctx, "r1", "c1", ""); !decided {
+	if decided, _ := e.gateDecided(ctx, "r1", "c1", "", 0); !decided {
 		t.Fatal("the first ask is not ended by its recorded tally")
 	}
 	approveAs(t, store, "r1", "c1", "carol", true)
@@ -172,7 +172,7 @@ func TestSoDReask_Notification(t *testing.T) {
 	if _, err := sodRun(store, "r1", false, sodPolicy(2), fakeVerifiers(abc...), &charged, Identity{}); err != nil {
 		t.Fatal(err)
 	}
-	if decided, _ := e.gateDecided(ctx, "r1", "c1", PendingSoDReapproval); !decided {
+	if decided, _ := e.gateDecided(ctx, "r1", "c1", PendingSoDReapproval, 0); !decided {
 		t.Fatal("the re-ask is not ended by its re-tally")
 	}
 	if evs := e.pendingEvents("r1", mustHistory(t, store, "r1")); len(evs) != 0 {

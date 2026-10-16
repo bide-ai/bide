@@ -231,6 +231,22 @@ func ApprovalReaskKey(runID, call string, sod bool) string {
 	return "approval:" + encodeID(runID) + ":" + encodeID(call) + ":reask-" + which
 }
 
+// ApprovalIdentReaskKey is the event key of the approval gate for call on runID asking again for
+// generation gen of a certificate-bound gate: 0 over a plain-name tally it does not act on
+// (PendingIdentReapproval), n >= 1 after an exec hold of generation n-1 (PendingExecHoldReapproval).
+func ApprovalIdentReaskKey(runID, call string, gen int) string {
+	return "approval:" + encodeID(runID) + ":" + encodeID(call) + ":reask-ident-" + strconv.Itoa(gen)
+}
+
+// reaskKeyFor is the event key of a re-ask whose ApprovalPending.Reason is reason (gen is that of a
+// certificate-bound gate's count).
+func reaskKeyFor(runID, call, reason string, gen int) string {
+	if reason == PendingIdentReapproval || reason == PendingExecHoldReapproval {
+		return ApprovalIdentReaskKey(runID, call, gen)
+	}
+	return ApprovalReaskKey(runID, call, reason == PendingSoDReapproval)
+}
+
 // AbortedKey is the event key of runID reaching run:aborted.
 func AbortedKey(runID string) string { return "aborted:" + encodeID(runID) }
 

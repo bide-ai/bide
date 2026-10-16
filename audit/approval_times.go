@@ -198,7 +198,18 @@ func reaskedAt(actions []EvidenceAction, recs []agent.Record, toolUseID string, 
 			}
 		}
 	}
-	for _, name := range []string{agent.ApprovalReaskStep(toolUseID, true), agent.ApprovalReaskStep(toolUseID, false)} {
+	// The newest generation's note of a certificate-bound gate first, then the others.
+	var names []string
+	for g := len(recs); g >= 0; g-- {
+		for _, r := range recs {
+			if n, ok := agent.IdentReaskGen(toolUseID, r.Name); ok && n == g {
+				names = append(names, r.Name)
+				break
+			}
+		}
+	}
+	names = append(names, agent.ApprovalReaskStep(toolUseID, true), agent.ApprovalReaskStep(toolUseID, false))
+	for _, name := range names {
 		for i, a := range actions {
 			r := recs[i]
 			if a.Kind != KindStep || r.Kind != agent.StepValue || r.Name != name {

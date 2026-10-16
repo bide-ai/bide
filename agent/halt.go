@@ -540,6 +540,17 @@ const PendingReapproval = "approval re-required: the recorded approvals predate 
 // call did not run, and it runs once enough approvers who are not requesters have decided.
 const PendingSoDReapproval = "approval re-required: the recorded approvals were counted without excluding the requester, whom the gate now excludes; approvers who are not requesters decide, then re-run"
 
+// PendingIdentReapproval is ApprovalPending.Reason for a certificate-bound gate whose recorded tally is
+// a plain-name one (approval-tally:<id>), counted without the approvers' certificates: the gate does
+// not run the call on it, and asks again; the new count is recorded under ApprovalIdentTallyStep.
+const PendingIdentReapproval = "approval re-required: the recorded approvals were counted without the approvers' certificates, which the gate now requires; approvers sign again with their certificates, then re-run"
+
+// PendingExecHoldReapproval is ApprovalPending.Reason for a certificate-bound gate whose counted
+// approvals were held before execution (ExecHold: a counted decision no longer holds): the call did not
+// run, and it runs once approvers decide again and a new count passes (ApprovalIdentTallyStep of the
+// next generation).
+const PendingExecHoldReapproval = "approval re-required: the call was held before execution because a counted approval no longer holds; approvers decide again, then re-run"
+
 // Error names the run and the call awaiting approval.
 func (e *ApprovalPending) Error() string {
 	if e.Reason != "" {

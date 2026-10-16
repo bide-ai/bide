@@ -22,6 +22,7 @@ import (
 var keyConstructors = map[string]func(string) string{
 	"ApprovalPendingStep":        ApprovalPendingStep,
 	"ApprovalIdentTallyStep":     func(s string) string { return ApprovalIdentTallyStep(s, 0) },
+	"ApprovalIdentReaskStep":     func(s string) string { return ApprovalIdentReaskStep(s, 0) },
 	"ApprovalIdentityStep":       func(s string) string { return ApprovalIdentityStep(s, 0) },
 	"ApprovalIdentityDigestStep": func(s string) string { return ApprovalIdentityDigestStep(s, 0, "0123456789abcdef") },
 	"ApprovalStatusStep":         ApprovalStatusStep,

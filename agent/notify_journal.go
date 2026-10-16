@@ -66,7 +66,7 @@ func JournalNotifyEvents(runID string, recs []Record) []JournalNotifyEvent {
 		at, _ := time.Parse(time.RFC3339Nano, w.RecordedAt)
 		ev := JournalNotifyEvent{
 			Key: ApprovalKey(runID, w.ToolUseID, 0), Kind: NotificationApprovalPending, RunID: root, At: at,
-			Current: !slices.ContainsFunc(gateDecidedNames(w.ToolUseID), func(n string) bool { return have[n] }),
+			Current: !slices.ContainsFunc(gateDecidedNamesIn(recs, w.ToolUseID), func(n string) bool { return have[n] }),
 		}
 		first := 0
 		if w.Reask != "" || r.Name != ApprovalPendingStep(w.ToolUseID) {
@@ -75,9 +75,9 @@ func JournalNotifyEvents(runID string, recs []Record) []JournalNotifyEvent {
 			if !ValidReaskNote(byName, w.ToolUseID, r.Name, w) {
 				continue
 			}
-			sod := w.Reask == PendingSoDReapproval
-			ev.Key = ApprovalReaskKey(runID, w.ToolUseID, sod)
-			ev.Current = !slices.ContainsFunc(reaskDecidedNames(w.ToolUseID, sod), func(n string) bool { return have[n] })
+			gen, _ := IdentReaskGen(w.ToolUseID, r.Name)
+			ev.Key = reaskKeyFor(runID, w.ToolUseID, w.Reask, gen)
+			ev.Current = !slices.ContainsFunc(reaskDecidedNames(w.ToolUseID, w.Reask, gen), func(n string) bool { return have[n] })
 			first = i + 1 // the decisions that resolve it come after the note
 		}
 		if !w.Single {

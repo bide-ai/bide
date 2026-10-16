@@ -90,7 +90,7 @@ func TestCertGate_AnchorsFirst(t *testing.T) {
 		t.Fatalf("Reanchor called %d times", rs.calls)
 	}
 	// Counted only once a head covered it: the tally exists and its decision has a head.
-	if _, ok := c.recordByName(agent.ApprovalTallyStep("c1")); !ok {
+	if _, ok := c.recordByName(agent.ApprovalIdentTallyStep("c1", 0)); !ok {
 		t.Fatal("no tally")
 	}
 }
@@ -231,8 +231,8 @@ func TestCertGate_RecordsTheIdentityEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := c.approver("alice")
-	tr, _ := c.recordByName(agent.ApprovalTallyStep("c1"))
-	if tsum := sha256.Sum256(tr.Result); id.TallyDigest != hex.EncodeToString(tsum[:]) || id.Tally != agent.ApprovalTallyStep("c1") || id.Generation != 0 ||
+	tr, _ := c.recordByName(agent.ApprovalIdentTallyStep("c1", 0))
+	if tsum := sha256.Sum256(tr.Result); id.TallyDigest != hex.EncodeToString(tsum[:]) || id.Tally != agent.ApprovalIdentTallyStep("c1", 0) || id.Generation != 0 ||
 		id.Evaluated != agent.EvaluatedLive || id.EvaluatedAt == "" {
 		t.Fatalf("tally binding: %+v (tally bytes %s)", id, tr.Result)
 	}
@@ -316,7 +316,7 @@ type failingTallyStore struct {
 }
 
 func (s *failingTallyStore) Insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error) {
-	if !s.failed && name == agent.ApprovalTallyStep("c1") {
+	if !s.failed && name == agent.ApprovalIdentTallyStep("c1", 0) {
 		s.failed = true
 		return agent.Entry{}, false, errors.New("injected: the process died before the tally")
 	}
@@ -340,7 +340,7 @@ func TestCertGate_IdentityRecordFollowsTheTallyAfterACrash(t *testing.T) {
 	if err := c.run(); err == nil || c.charged != 0 {
 		t.Fatalf("the first drive should have failed at the tally: %v, charged %d", err, c.charged)
 	}
-	if _, ok := c.recordByName(agent.ApprovalTallyStep("c1")); ok {
+	if _, ok := c.recordByName(agent.ApprovalIdentTallyStep("c1", 0)); ok {
 		t.Fatal("the tally was written")
 	}
 	first, ok := c.recordByName(agent.ApprovalIdentityStep("c1", 0))
@@ -353,7 +353,7 @@ func TestCertGate_IdentityRecordFollowsTheTallyAfterACrash(t *testing.T) {
 	if err := c.run(); err != nil || c.charged != 1 {
 		t.Fatalf("second drive: %v, charged %d", err, c.charged)
 	}
-	tr, _ := c.recordByName(agent.ApprovalTallyStep("c1"))
+	tr, _ := c.recordByName(agent.ApprovalIdentTallyStep("c1", 0))
 	sum := sha256.Sum256(tr.Result)
 	digest := hex.EncodeToString(sum[:])
 	var fid agent.ApprovalIdentity
@@ -366,7 +366,7 @@ func TestCertGate_IdentityRecordFollowsTheTallyAfterACrash(t *testing.T) {
 		t.Fatal("no identity record under the digest name")
 	}
 	var id agent.ApprovalIdentity
-	if err := json.Unmarshal(r.Result, &id); err != nil || id.TallyDigest != digest || id.Tally != agent.ApprovalTallyStep("c1") {
+	if err := json.Unmarshal(r.Result, &id); err != nil || id.TallyDigest != digest || id.Tally != agent.ApprovalIdentTallyStep("c1", 0) {
 		t.Fatalf("%v %+v", err, id)
 	}
 }

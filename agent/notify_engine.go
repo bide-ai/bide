@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"slices"
 	"sync"
 	"time"
 )
@@ -972,7 +973,7 @@ func (e *notifyEngine) current(ctx context.Context, ev notifyEvent, st NotifySta
 		return true, "", nil
 	}
 	if ev.approval != nil {
-		decided, err := e.gateDecided(ctx, opRun, ev.approval.ToolUseID, ev.approval.Reask)
+		decided, err := e.gateDecided(ctx, opRun, ev.approval.ToolUseID, ev.approval.Reask, ev.approval.reaskGen)
 		if err != nil || decided {
 			if err == nil && e.gateExpired(ctx, opRun, ev.approval.ToolUseID) {
 				return false, "expired", nil
@@ -991,11 +992,11 @@ func (e *notifyEngine) gateExpired(ctx context.Context, run, call string) bool {
 	if r, ok, err := e.j.Get(ctx, run, ToolResultStep(call)); err == nil && ok && string(r.Result) == ExpiredResult {
 		return true
 	}
-	for _, name := range []string{ApprovalTallyStep(call), ApprovalRetallyStep(call), ApprovalSoDRetallyStep(call)} {
-		if r, ok, err := e.j.Get(ctx, run, name); err == nil && ok {
-			if t, err := decodeTally(run, r); err == nil && t.Expired {
-				return true
-			}
+	// A read error counts as not expired, as above.
+	tallies, _ := gateTallyRecords(func(name string) (Record, bool, error) { return e.j.Get(ctx, run, name) }, call)
+	for _, r := range tallies {
+		if t, err := decodeTally(run, r); err == nil && t.Expired {
+			return true
 		}
 	}
 	var expiresAt time.Time
@@ -1022,30 +1023,60 @@ func (e *notifyEngine) hasRecord(ctx context.Context, run, name string) (bool, e
 //
 // For a re-ask (reask set), the gate's re-tally or the call's result instead: the recorded tally it
 // asks again over is what it does not act on.
-func (e *notifyEngine) gateDecided(ctx context.Context, run, call, reask string) (bool, error) {
+func (e *notifyEngine) gateDecided(ctx context.Context, run, call, reask string, gen int) (bool, error) {
 	names := gateDecidedNames(call)
 	if reask != "" {
-		names = reaskDecidedNames(call, reask == PendingSoDReapproval)
+		names = reaskDecidedNames(call, reask, gen)
 	}
 	for _, name := range names {
-		if ok, err := e.hasRecord(ctx, run, name); err != nil || ok {
-			return ok, err
+		ok, err := e.hasRecord(ctx, run, name)
+		if err != nil {
+			return false, err
 		}
+		if !ok {
+			continue
+		}
+		if reask == "" && name == ApprovalTallyStep(call) {
+			// A plain-name tally on a certificate-bound gate is superseded (a stale replica wrote it): it
+			// does not end the gate's first ask.
+			recs, err := e.j.History(ctx, run)
+			if err != nil {
+				return false, err
+			}
+			if bound, _ := journalBound(recs, call); bound {
+				continue
+			}
+		}
+		return true, nil
 	}
 	return false, nil
 }
 
+// gateDecidedNamesIn is gateDecidedNames for a reader that holds the run's records: without the
+// plain-name tally when the journal says the gate is certificate-bound, since that tally is superseded.
+func gateDecidedNamesIn(recs []Record, call string) []string {
+	names := gateDecidedNames(call)
+	if bound, _ := journalBound(recs, call); bound {
+		names = slices.DeleteFunc(names, func(n string) bool { return n == ApprovalTallyStep(call) })
+	}
+	return names
+}
+
 // gateDecidedNames are the journal names whose presence ends the gate of call.
 func gateDecidedNames(call string) []string {
-	return []string{approvalStep(call), approvalAfterRequestStep(call), ApprovalTallyStep(call), ToolResultStep(call), call}
+	return []string{approvalStep(call), approvalAfterRequestStep(call), ApprovalTallyStep(call), ApprovalIdentTallyStep(call, 0), ToolResultStep(call), call}
 }
 
 // reaskDecidedNames are the records that end a re-ask of call's gate (see ApprovalReaskStep): its
-// re-tally, or the call's result.
-func reaskDecidedNames(call string, sod bool) []string {
+// re-tally, or the call's result. For a certificate-bound gate's re-ask (PendingIdentReapproval,
+// PendingExecHoldReapproval) the re-tally is the identity tally of generation gen.
+func reaskDecidedNames(call, reason string, gen int) []string {
 	re := ApprovalRetallyStep(call)
-	if sod {
+	switch reason {
+	case PendingSoDReapproval:
 		re = ApprovalSoDRetallyStep(call)
+	case PendingIdentReapproval, PendingExecHoldReapproval:
+		re = ApprovalIdentTallyStep(call, gen)
 	}
 	return []string{re, ToolResultStep(call), call}
 }

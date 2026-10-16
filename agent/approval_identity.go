@@ -2,7 +2,6 @@ package agent
 
 import (
 	"fmt"
-	"strings"
 )
 
 // The journal records of a gate with a certificate-bound approver (docs/design/approver-identity.md,
@@ -51,18 +50,6 @@ func ApprovalIdentTallyStep(toolUseID string, gen int) string {
 		return ApprovalTallyStep(toolUseID) + ":ident"
 	}
 	return fmt.Sprintf("%s:ident-reask:%d", ApprovalTallyStep(toolUseID), gen)
-}
-
-// identGen returns the generation of toolUseID's gate in recs: the number of exec holds the call has.
-func identGen(recs []Record, toolUseID string) int {
-	prefix := "approval-exec-hold:" + encodeID(toolUseID) + ":"
-	n := 0
-	for _, r := range recs {
-		if r.Kind == StepValue && strings.HasPrefix(r.Name, prefix) {
-			n++
-		}
-	}
-	return n
 }
 
 // Formats of the identity records.

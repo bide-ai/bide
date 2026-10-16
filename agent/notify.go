@@ -66,9 +66,12 @@ type NotifyApproval struct {
 	// count, so a notifier need not ask them.
 	Excluded []string
 	// Reask says why the gate asks again over a recorded tally it does not act on
-	// (PendingReapproval, PendingSoDReapproval), or "" for the gate's first ask. A re-ask is an event
+	// (PendingReapproval, PendingSoDReapproval, PendingIdentReapproval, PendingExecHoldReapproval), or "" for the gate's first ask. A re-ask is an event
 	// of its own (ApprovalReaskKey): approvers decide again.
 	Reask string
+	// reaskGen is the generation of the count a certificate-bound gate asks for (ApprovalIdentReaskStep),
+	// with Reask PendingIdentReapproval (0) or PendingExecHoldReapproval (n >= 1).
+	reaskGen int
 }
 
 // NotifyClears is the structured detail of a NotificationResolved notification: the event it ends.

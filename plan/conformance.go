@@ -172,21 +172,15 @@ func (c *builderCore) conform(ctx context.Context, store *agent.Journal, runID s
 			}
 			gate(r.Name, key)
 
-		case strings.HasPrefix(r.Name, "approval-pending:"), strings.HasPrefix(r.Name, "approval-tally:"):
-			_, enc, _ := strings.Cut(r.Name, ":")
-			if strings.HasPrefix(r.Name, "approval-tally:") {
-				// A re-approval tally (agent.ApprovalRetallyStep, agent.ApprovalSoDRetallyStep) is
-				// the gate's tally name with a suffix; an encoded key holds no ':', so the suffix is
-				// never part of it.
-				for _, retally := range []string{agent.ApprovalRetallyStep(""), agent.ApprovalSoDRetallyStep("")} {
-					enc = strings.TrimSuffix(enc, strings.TrimPrefix(retally, agent.ApprovalTallyStep("")))
-				}
-			} else {
-				// A re-ask note (agent.ApprovalReaskStep) is the pause note's name with a suffix.
-				for _, sod := range []bool{false, true} {
-					enc = strings.TrimSuffix(enc, strings.TrimPrefix(agent.ApprovalReaskStep("", sod), agent.ApprovalPendingStep("")))
-				}
-			}
+		case strings.HasPrefix(r.Name, "approval-pending:"), strings.HasPrefix(r.Name, "approval-tally:"),
+			strings.HasPrefix(r.Name, "approval-identity:"), strings.HasPrefix(r.Name, "approval-exec-hold:"), strings.HasPrefix(r.Name, "approval-pause:"):
+			// The gate's tally, its re-tallies (agent.ApprovalRetallyStep, ApprovalSoDRetallyStep,
+			// ApprovalIdentTallyStep), its pause and re-ask notes (ApprovalReaskStep,
+			// ApprovalIdentReaskStep), and a certificate-bound gate's identity records and exec holds
+			// (ApprovalIdentityStep, ApprovalExecHoldStep, ApprovalPauseStep) are the gate's name with
+			// a suffix; an encoded key holds no ':', so the key is the text up to the first one.
+			_, rest, _ := strings.Cut(r.Name, ":")
+			enc, _, _ := strings.Cut(rest, ":")
 			key, ok := gateKeys[enc]
 			if !ok {
 				diffs = append(diffs, r.Name+" (approval record of a gate the run never reached)")

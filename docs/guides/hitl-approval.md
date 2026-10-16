@@ -296,7 +296,7 @@ the re-ask, so one lost to a crash is written by the next. The first note keeps 
 first pause; `bide view`, `bide approve`, the intake's note fallback, notifications and evidence read
 the newest note (`agent.LatestPauseNote`), so a gate that asks again after a policy change shows as
 waiting under the policy it asks under. A notification for a re-ask is an event of its own
-(`agent.ApprovalReaskKey`, and `reask` in the webhook payload). Like the first note, the gate never
+(`agent.ApprovalReaskKey`, and `reask` in the webhook payload; a certificate-bound gate's re-asks are described below). Like the first note, the gate never
 reads it. The note is insert-once by name, so a journal writer without approver keys could pre-insert
 one; readers therefore honor a re-ask note only if the journal holds a recorded tally the gate would ask
 again over for that reason, and the note names it (`agent.ValidReaskNote`). A note the journal does not
@@ -315,6 +315,64 @@ gate passes it records the new outcome under `approval-tally:<encoded toolUseID>
 `audit.VerifyApprovals` read in place of the old tally, and the call runs. A tally an earlier
 version recorded as a denial stays final, since it runs nothing, and a call that already ran under
 the earlier version is not asked again.
+
+### A gate with a certificate-bound approver: its tally, its holds and its re-asks
+
+A gate with at least one certificate-bound approver (an approver whose verifier is an `audit.CertApprover`;
+see the [approver-identity design](../design/approver-identity.md)) records its terminal tally under
+`approval-tally:<encoded toolUseID>:ident` (`agent.ApprovalIdentTallyStep(call, 0)`), a denial and an
+expiry included, never under the plain name. The identity record of the count
+(`approval-identity:<id>:0`) is journaled before it. A gate of bare-key approvers is unchanged.
+
+- **A plain-name tally is superseded.** If the journal holds a plain-name tally that passed
+  (`approval-tally:<id>`, or its `:v3` or `:sod` re-tally) on such a gate, it was counted without the
+  approvers' certificates, so the call does not run on it. The gate asks again: `Run` returns
+  `*ApprovalPending` with `Reason` `agent.PendingIdentReapproval`, approvers decide with their
+  certificates, and the new count is recorded under the `:ident` name with `Supersedes` naming the plain
+  tally. A plain-name denial stays final, as on any gate.
+- **Generations.** A gate has generations. Generation 0 is its first count. An exec hold of generation
+  `g` (`approval-exec-hold:<id>:<g>`, `agent.ExecHold`, `agent.ApprovalExecHoldStep`) supersedes the
+  generation-`g` tally if that tally passed: the call does not run on it, the gate asks again
+  (`agent.PendingExecHoldReapproval`), and the next count is generation `g+1`, recorded under
+  `approval-tally:<id>:ident-reask:<g+1>` with its own identity record, its `Supersedes` naming the
+  tally it replaces. Decisions are not invalidated by a hold: the new count verifies them again, so one
+  whose certificate was revoked since fails there and the others count. A hold counts only over a
+  passed tally of its own generation; a hold of another call or generation, one that does not read as a
+  hold, one with no tally under it, and one over a denial are ignored. This build reads exec holds. The
+  pre-execution status check that writes them is a later step of the approver-identity work, so until it
+  lands no run writes one.
+- **The outcome** (`agent.RecordedTally`, the one rule every reader goes by) is the newest identity
+  tally that is not held. Over a hold there is no outcome until the next generation is counted, and a
+  plain-name tally beside an identity tally is never the outcome.
+- **Re-ask notes.** The drive that pauses at such a re-ask records `approval-pending:<id>:ident:<n>`
+  (`agent.ApprovalIdentReaskStep(call, n)`: `n` is 0 over a plain-name tally and `g+1` after the hold of
+  generation `g`), an `agent.ApprovalWait` with the policy the gate asks under, `Reask`, and the tally it
+  asks over in `Supersedes`. Readers honor it only if the journal proves it (`agent.ValidReaskNote`): the
+  plain tally passed, or the hold of that generation is there over a passed tally. The newest generation's
+  note is the one `agent.LatestPauseNote` returns. A notification for it has the key
+  `approval:<run>:<call>:reask-ident-<n>` (`agent.ApprovalIdentReaskKey`), ends when the identity tally of
+  generation `n` or the call's result is recorded, and carries `reask` as for any re-ask.
+- **Evidence** (`audit.ApprovalEvidence`) carries the superseded tallies, the exec holds between them and the
+  re-ask notes, in journal order; `audit.VerifyApprovals` reads the outcome by the same rule and reports a
+  hold that is not between the tally it holds and the tally that replaces it. Evidence is a selection the
+  producer makes: a verifier cannot tell that a hold and the tally that replaced it were left out, which a
+  check of the complete journal does.
+- **A bound gate is never counted with bare keys.** Whether a gate is certificate-bound is read from its
+  journal as well as from the policy: an identity tally, an exec hold, or a pause or pending note that says
+  `identity_bound`. A policy or resolver that has since lost the certificate-bound approvers (a downgrade, or
+  a replica configured without them), or that names other approver kinds than the gate was asked under, is
+  refused with `ErrConfig` on every evaluation, so no generation is counted and the call does not run. To
+  drop the certificate-bound approvers deliberately, cancel the run and start the call again.
+- **Separation of duties cannot be turned on after the count.** If a certificate-bound gate's recorded tally
+  passed without excluding the requester and the policy now excludes it, the gate refuses with `ErrConfig`
+  instead of asking again in place (it has no re-tally name for that case); the call does not run. The error
+  also wraps `agent.ErrGateNeedsNewRun`, which `agent.EvaluateGate` and the approvals views carry in
+  `GateStanding.Err` (status `GateMisconfigured`) so a reader can say "needs a new run": cancel the run and
+  start the call again.
+- **A hold is a journal value, like a tally.** Anyone who can write the journal can write a plain-name tally
+  or an exec hold: the first forces a re-ask of a bound gate, the second makes the gate count again. Both
+  are availability effects within the journal's own trust boundary; a hold cannot undo a denial or skip one,
+  and the new count passes again if nothing changed.
 
 ### A decision written by another process
 

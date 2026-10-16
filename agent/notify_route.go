@@ -468,7 +468,11 @@ func (e *notifyEngine) fillDetail(ctx context.Context, ev *notifyEvent) {
 				return
 			}
 			byName := valuesByName(recs)
-			if rec, ok = byName[ApprovalReaskStep(call, reask == PendingSoDReapproval)]; ok {
+			name := ApprovalReaskStep(call, reask == PendingSoDReapproval)
+			if reask == PendingIdentReapproval || reask == PendingExecHoldReapproval {
+				name = ApprovalIdentReaskStep(call, ev.approval.reaskGen)
+			}
+			if rec, ok = byName[name]; ok {
 				var rw ApprovalWait
 				ok = json.Unmarshal(rec.Result, &rw) == nil && ValidReaskNote(byName, call, rec.Name, rw)
 			}

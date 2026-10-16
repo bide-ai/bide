@@ -297,8 +297,8 @@ func TestGate_ReplayReadsTheTallyOnly(t *testing.T) {
 	if err := runGate(ctx, j, "r1", f.core, f.core.byName["refund"], "node:refund", refund{Order: "order-42", Amount: 120}); err != nil {
 		t.Fatalf("runGate on a passed gate = %v", err)
 	}
-	if c := cs.Counts(); c.Load != 0 || c.Insert != 0 || c.Get != 1 {
-		t.Fatalf("a passed gate cost %+v; want one Get", c)
+	if c := cs.Counts(); c.Load != 0 || c.Insert != 0 || c.Get != 3 {
+		t.Fatalf("a passed gate cost %+v; want the tally and two point reads that tell it is not certificate-bound, no Load", c)
 	}
 }
 

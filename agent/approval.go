@@ -471,6 +471,9 @@ type ApprovalTally struct {
 	// reapproval is the ApprovalPending.Reason of a running count that re-asks (PendingReapproval,
 	// PendingSoDReapproval); it is not journaled.
 	reapproval string
+	// reaskGen is the generation of the identity tally a re-ask of a certificate-bound gate awaits (see
+	// ApprovalIdentReaskStep); it is not journaled.
+	reaskGen int
 }
 
 // Passed reports whether Need approvals are in.
@@ -840,6 +843,11 @@ func ApprovalSoDRetallyStep(toolUseID string) string { return ApprovalTallyStep(
 // cases a gate writes them, so a re-approval tally beside any other tally is not the gate's outcome
 // and is ignored. ok is false when there is no tally.
 func RecordedTally(byName map[string]Record, toolUseID string) (r Record, ok bool) {
+	// A gate with a certificate-bound approver records under ApprovalIdentTallyStep; once any such tally
+	// is there the plain names are superseded, and over an exec hold there is no outcome yet.
+	if st := identChain(byName, toolUseID); st.present {
+		return st.outcome, st.decided
+	}
 	r, ok = byName[ApprovalTallyStep(toolUseID)]
 	if !ok {
 		return r, false
@@ -873,15 +881,19 @@ func RecordedTally(byName map[string]Record, toolUseID string) (r Record, ok boo
 // the outcome.
 func SupersededTallies(byName map[string]Record, outcome string) []string {
 	var out []string
-	for cur := outcome; len(out) < 3; {
+	// The whole chain: a certificate-bound gate has one tally per generation, and a shorter list would
+	// show an evidence of a long chain as complete. A name seen twice ends it (a journal that loops).
+	seen := map[string]bool{outcome: true}
+	for cur := outcome; ; {
 		var t ApprovalTally
 		r, ok := byName[cur]
-		if !ok || json.Unmarshal(r.Result, &t) != nil || t.Supersedes == "" || t.Supersedes == cur {
+		if !ok || json.Unmarshal(r.Result, &t) != nil || t.Supersedes == "" || seen[t.Supersedes] {
 			break
 		}
 		if _, ok := byName[t.Supersedes]; !ok {
 			break
 		}
+		seen[t.Supersedes] = true
 		out = append([]string{t.Supersedes}, out...)
 		cur = t.Supersedes
 	}
@@ -973,7 +985,13 @@ func ApprovalReaskStep(toolUseID string, sod bool) string {
 // would ask again over is there. byName must hold the call's tallies as well as its notes. ok is
 // false when there is none.
 func LatestPauseNote(byName map[string]Record, toolUseID string) (r Record, ok bool) {
-	for _, n := range []string{ApprovalReaskStep(toolUseID, true), ApprovalReaskStep(toolUseID, false), ApprovalPendingStep(toolUseID)} {
+	// A certificate-bound gate's newest re-ask is the newest generation's note.
+	names := []string{}
+	for g := identChain(byName, toolUseID).gen; g >= 0; g-- {
+		names = append(names, ApprovalIdentReaskStep(toolUseID, g))
+	}
+	names = append(names, ApprovalReaskStep(toolUseID, true), ApprovalReaskStep(toolUseID, false), ApprovalPendingStep(toolUseID))
+	for _, n := range names {
 		r, ok := byName[n]
 		if !ok || r.Kind != StepValue {
 			continue
@@ -997,6 +1015,9 @@ func LatestPauseNote(byName map[string]Record, toolUseID string) (r Record, ok b
 // recorded, else the tally) under a policy that excludes the requester. The gate writes a note only
 // at such a point, so a note without it was not written by the gate.
 func ValidReaskNote(byName map[string]Record, toolUseID, name string, w ApprovalWait) bool {
+	if _, ok := IdentReaskGen(toolUseID, name); ok {
+		return validIdentReaskNote(byName, toolUseID, name, w)
+	}
 	sod := name == ApprovalReaskStep(toolUseID, true)
 	if !sod && name != ApprovalReaskStep(toolUseID, false) || w.ToolUseID != toolUseID {
 		return false
@@ -1044,7 +1065,11 @@ func noteReask(ctx context.Context, j *Journal, runID, toolUseID, toolName strin
 	if err != nil {
 		return
 	}
-	_, _ = j.put(ctx, runID, ApprovalReaskStep(toolUseID, t.reapproval == PendingSoDReapproval), Record{Kind: StepValue, Result: b})
+	name := ApprovalReaskStep(toolUseID, t.reapproval == PendingSoDReapproval)
+	if t.reapproval == PendingIdentReapproval || t.reapproval == PendingExecHoldReapproval {
+		name = ApprovalIdentReaskStep(toolUseID, t.reaskGen)
+	}
+	_, _ = j.put(ctx, runID, name, Record{Kind: StepValue, Result: b})
 }
 
 // FindToolCall returns the journal index of the record that requested toolUseID, and the call
