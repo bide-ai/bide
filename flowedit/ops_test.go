@@ -127,28 +127,58 @@ func TestOperationRefusals(t *testing.T) {
 	for name, c := range map[string]struct {
 		src string
 		op  Operation
+		why string
 	}{
-		"an unknown operation":      {opsFlow, Operation{Op: "rename_node", Node: "charge", Value: "x"}},
-		"an unknown node":           {opsFlow, Operation{Op: "set_safety", Node: "nope", Value: "readonly"}},
-		"an empty node name":        {opsFlow, Operation{Op: "set_safety", Value: "readonly"}},
-		"a safety not in the set":   {opsFlow, Operation{Op: "set_safety", Node: "charge", Value: "side effect"}},
-		"an upper-case safety":      {opsFlow, Operation{Op: "set_safety", Node: "charge", Value: "READONLY"}},
-		"an empty block":            {opsFlow, Operation{Op: "set_block", Node: "charge"}},
-		"a block with a line break": {opsFlow, Operation{Op: "set_block", Node: "charge", Value: "a\nb"}},
-		"a gate with no value":      {opsFlow, Operation{Op: "set_approval", Node: "charge"}},
-		"too many approvers":        {opsFlow, Operation{Op: "set_approval", Node: "charge", Approval: &Approval{Need: 1, Approvers: make([]string, maxApprovers+1)}}},
-		"two nodes of one name":     {strings.Replace(opsFlow, "name: receipt", "name: charge", 1), Operation{Op: "set_safety", Node: "charge", Value: "readonly"}},
-		"an approval that is null":  {strings.Replace(opsFlow, "    approval:\n      need: 2\n      approvers: [ops, finance, risk]\n", "    approval: null\n", 1), Operation{Op: "set_approval", Node: "charge", Approval: &Approval{Need: 1, Approvers: []string{"a"}}}},
-		"an anchored node":          {strings.Replace(opsFlow, "- {name: receipt,", "- &r {name: receipt,", 1), Operation{Op: "set_safety", Node: "receipt", Value: "readonly"}},
-		"a second document":         {opsFlow + "---\nversion: 1\n", Operation{Op: "set_safety", Node: "receipt", Value: "readonly"}},
-		"text that does not parse":  {"nodes: [", Operation{Op: "set_safety", Node: "a", Value: "readonly"}},
-		"CRLF line ends":            {strings.ReplaceAll(opsFlow, "\n", "\r\n"), Operation{Op: "set_safety", Node: "receipt", Value: "readonly"}},
-		"a byte-order mark":         {"\xef\xbb\xbf" + opsFlow, Operation{Op: "set_safety", Node: "receipt", Value: "readonly"}},
+		"an unknown operation":      {opsFlow, Operation{Op: "rename_node", Node: "charge", Value: "x"}, "not one the editor offers"},
+		"an unknown node":           {opsFlow, Operation{Op: "set_safety", Node: "nope", Value: "readonly"}, "no node is named"},
+		"an empty node name":        {opsFlow, Operation{Op: "set_safety", Value: "readonly"}, ""},
+		"a safety not in the set":   {opsFlow, Operation{Op: "set_safety", Node: "charge", Value: "side effect"}, "is not one of"},
+		"an upper-case safety":      {opsFlow, Operation{Op: "set_safety", Node: "charge", Value: "READONLY"}, ""},
+		"an empty block":            {opsFlow, Operation{Op: "set_block", Node: "charge"}, "cannot be empty"},
+		"a block with a line break": {opsFlow, Operation{Op: "set_block", Node: "charge", Value: "a\nb"}, ""},
+		"a gate with no value":      {opsFlow, Operation{Op: "set_approval", Node: "charge"}, "needs an approval"},
+		"too many approvers":        {opsFlow, Operation{Op: "set_approval", Node: "charge", Approval: &Approval{Need: 1, Approvers: make([]string, maxApprovers+1)}}, "more than"},
+		"two nodes of one name":     {strings.Replace(opsFlow, "name: receipt", "name: charge", 1), Operation{Op: "set_safety", Node: "charge", Value: "readonly"}, "more than one node"},
+		"an approval that is null":  {strings.Replace(opsFlow, "    approval:\n      need: 2\n      approvers: [ops, finance, risk]\n", "    approval: null\n", 1), Operation{Op: "set_approval", Node: "charge", Approval: &Approval{Need: 1, Approvers: []string{"a"}}}, "not a mapping"},
+		"an anchored node":          {strings.Replace(opsFlow, "- {name: receipt,", "- &r {name: receipt,", 1), Operation{Op: "set_safety", Node: "receipt", Value: "readonly"}, ""},
+		"a second document":         {opsFlow + "---\nversion: 1\n", Operation{Op: "set_safety", Node: "receipt", Value: "readonly"}, "more than one YAML document"},
+		"text that does not parse":  {"nodes: [", Operation{Op: "set_safety", Node: "a", Value: "readonly"}, ""},
+		"CRLF line ends":            {strings.ReplaceAll(opsFlow, "\n", "\r\n"), Operation{Op: "set_safety", Node: "receipt", Value: "readonly"}, ""},
+		"a byte-order mark":         {"\xef\xbb\xbf" + opsFlow, Operation{Op: "set_safety", Node: "receipt", Value: "readonly"}, ""},
 	} {
 		_, err := ApplyOperation("f.yaml", []byte(c.src), c.op)
 		var rf *Refusal
 		if !errors.As(err, &rf) {
 			t.Errorf("%s: want a refusal, got %v", name, err)
+			continue
+		}
+		if c.why != "" && !strings.Contains(rf.Reason, c.why) {
+			t.Errorf("%s: the refusal says %q, want it to say %q", name, rf.Reason, c.why)
+		}
+	}
+}
+
+// A list is changed by the smallest edit: the items the old and the new list share at the start and
+// at the end stay, so adding or removing an approver is one splice and the diff is that approver.
+func TestListStepsAreMinimal(t *testing.T) {
+	path := []any{"approvers"}
+	del := func(i int) Op { return Op{Kind: Delete, Path: []any{"approvers", i}} }
+	ins := func(i int, v string) Op { return Op{Kind: Insert, Path: path, Index: i, Value: v} }
+	for _, c := range []struct {
+		old, want []string
+		steps     []Op
+	}{
+		{[]string{"a", "b", "c"}, []string{"a", "b", "c"}, nil},
+		{[]string{"a", "b", "c"}, []string{"a", "c"}, []Op{del(1)}},
+		{[]string{"a", "b", "c"}, []string{"a", "b", "c", "d"}, []Op{ins(3, "d")}},
+		{[]string{"a", "b", "c"}, []string{"z", "a", "b", "c"}, []Op{ins(0, "z")}},
+		{[]string{"a", "b", "c"}, []string{"a", "x", "c"}, []Op{del(1), ins(1, "x")}},
+		{[]string{"a", "b", "c", "d"}, []string{"a", "d"}, []Op{del(2), del(1)}},
+		{[]string{"a"}, nil, []Op{del(0)}},
+		{nil, []string{"a", "b"}, []Op{ins(0, "a"), ins(1, "b")}},
+	} {
+		if got := listSteps(path, c.old, c.want); !reflect.DeepEqual(got, c.steps) {
+			t.Errorf("%v -> %v: %+v, want %+v", c.old, c.want, got, c.steps)
 		}
 	}
 }

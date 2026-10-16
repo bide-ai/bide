@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -258,6 +259,19 @@ func TestBaselineFromGit(t *testing.T) {
 	for _, rev := range []string{"nosuchrev", "HEAD:flows/refund.yaml", "-x", "--output=/tmp/x", "a\nb"} {
 		if _, err := New(p, WithBase(rev)); err == nil {
 			t.Errorf("-base %q was accepted", rev)
+		}
+	}
+	// An option-looking revision must not reach git as an option: --output= would write a file.
+	if runtime.GOOS != "windows" { // the trap is a directory with a colon in its name
+		trap := filepath.Join(sub, "o:.")
+		if err := os.Mkdir(trap, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := New(p, WithBase("--output=o")); err == nil {
+			t.Error("an option as a revision was accepted")
+		}
+		if _, err := os.Stat(filepath.Join(trap, "refund.yaml")); err == nil {
+			t.Error("git was run with an option taken from -base and wrote a file")
 		}
 	}
 	if _, err := New(untracked, WithBase("HEAD")); err == nil {
