@@ -357,11 +357,11 @@ short-lived certificates this design recommends. So, for a certificate `C` and a
   not by itself a gap in coverage; a CRL dated later than another with a higher number is not a legitimate
   successor, and its silence is not evidence of absence. `S` is the latest usable CRL that coverage
   reaches from `A(d)`: a later CRL beyond a gap is no evidence of continuity but does not undo the status
-  as of `S`, and its listings still count. **Holds.** Any listing, a `certificateHold` included, revokes from
-  its time on, and a release never restores validity, so a decision made during a hold stays refused.
-  A hold placed and released between two CRLs is invisible to any CRL; a hold released before `S` is
-  seen only through the series, which is why coverage from `A(d)` to `S` is required for `final`.
-  Banks should not use `certificateHold` on approver certificates (revoke and re-issue instead).
+  as of `S`, and its listings still count. **Holds.** Holds are refused by default (see the build
+  notes on delta CRLs and `AllowHolds`); a hold placed and released between two CRLs is invisible to any
+  CRL, and a hold released before `S` is seen only through the series, which is why coverage from
+  `A(d)` to `S` is required for `final`. Banks should not use `certificateHold` on approver certificates
+  (revoke and re-issue instead).
   **provisional** iff the best usable status has `S < A(d) + W'`, or `W' < MinW`, or coverage has a gap,
   and a later usable one could still exist; **no information** iff no status falls in `[A(d), L(C)]`, which
   is `not verified: status missing`. **Live counting** may use a fresh CRL issued before `A(d)` (so
@@ -395,9 +395,9 @@ Rules for reading entries:
   only).
 - **Series, not snapshots.** The verifier reads the whole archived series of CRLs for each issuer in
   `[A, L]`. A listing in any CRL of the series is a revocation from its time on; a later CRL that no
-  longer lists the serial does not undo it. `certificateHold` (6) is treated as revoked for any decision
-  during the hold, and a release (`removeFromCRL`, 8, which appears only in delta CRLs) never
-  retroactively validates it. A gap in time coverage (a CRL's `thisUpdate` later than the previous CRL's `nextUpdate`) is "no
+  longer lists the serial does not undo it. Holds are refused by default
+  (`certificateHold` (6) and `removeFromCRL` (8, which appears only in delta CRLs) refuse the certificate
+  wholesale); opted in, a decision is refused inside the hold, from the listed start to the release date. A gap in time coverage (a CRL's `thisUpdate` later than the previous CRL's `nextUpdate`) is "no
   information" for the interval; a gap in the `CRLNumber` values alone is not. A cache refuses a CRL whose `CRLNumber` is lower than the cached one for the same issuer key
   (a rollback).
 - **Every non-anchor certificate** of the accepted chain needs status under the same rule (RFC 5280
@@ -475,7 +475,7 @@ audit's to show; deciding what to do about an executed action is not.
 | `RoutineGrace` | for revocation reasons other than compromise (affiliationChanged 3, superseded 4, cessationOfOperation 5, privilegeWithdrawn 9), a decision with `A < E + RoutineGrace` still counts | 0 | covers a CRL published minutes after an offboarding; minutes, never hours; compromise reasons and unspecified never get grace |
 | `W` | compromise-reporting window for the offline `final` verdict | 24 h | from the bank's incident process; cut to `W'` by the certificate's life |
 | `MaxStatusAge` | live: oldest usable status when a decision is counted | **1 h** | an earlier draft said 24 h, which exceeds the lifetime of the certificates it protects and makes revocation add almost nothing beyond expiry; choose from risk and certificate lifetime, never above a quarter of the shortest lifetime |
-| `ExecStatusAge` | live: oldest usable status immediately before the call executes | **set from the CA's actual period; no constant default** | closes the gap between counting and acting. The policy declares the CA's CRL period (`CAPeriod`) and **startup refuses a policy with `CAPeriod > ExecStatusAge / 2`** (a CRL on a 30 min period is up to 30 min old, so a 15 min age would pause about half the time). 15 min needs a CA period of 7 min or less, or OCSP; a 30 min CA period gives `ExecStatusAge` of 1 h. The resulting latency is printed |
+| `ExecStatusAge` | live: oldest usable status immediately before the call executes | **set from the CA's actual period; no constant default** | closes the gap between counting and acting. The policy declares the CA's CRL period (`CAPeriod`) and **startup refuses a policy with `CAPeriod > ExecStatusAge / 2`** (a CRL on a 30 min period is up to 30 min old, so a 15 min age would pause about half the time). 15 min needs a CA period of 7 min or less, or OCSP; a 30 min CA period gives `ExecStatusAge` of 1 h. The resulting latency is printed. The check is in real time: a declared `ThisUpdateSkew` is added to the stamped age and to the stamped allowance alike, so it does not change the ratio. It exists only here so far and is a requirement of the gate configuration (build step E2) |
 | refresher | CRL fetch interval | `min(MaxStatusAge, ExecStatusAge) / 4`; alarm at 50% of the smaller of the two | |
 | `MinW` | floor on `W'` for a `final` verdict | 30 min | a decision near `notAfter` is `provisional (short window)` below it |
 
@@ -1185,7 +1185,36 @@ The status rule landed next (`audit.StatusSnapshot`, `CertIdentity.EvaluateStatu
 against code settled points the text left open, each stated in the rule above so text and code agree:
 when a CRL after `notAfter` is `L(C)`; finality for a certificate unexpired at `S` (the user's decision of
 2026-10-15, one switch in code, `finalityNeedsLC`, kept so the earlier reading can be exercised in tests);
-and rolled-back CRL numbers.
+and rolled-back CRL numbers. Delta CRLs are merged as the Revocation section says: a delta
+is accepted only with a critical, non-negative DER INTEGER indicator and paired with the highest numbered
+base with `baseNumber <= B.number < D.number` issued no later than the delta (a newer base carries
+everything the named one did); the merged view is as of the delta, with the earlier `nextUpdate`; numbers
+are one sequence across bases and deltas (a CA that numbers them apart looks like a rollback and is
+excluded, a pilot-CA check); the listings of every delta that verifies under the issuer are read,
+paired or not, because a listing can only take trust away, while an unpaired delta gives no evidence of
+absence. **Holds are refused by default** (`StatusParams.AllowHolds` is off): a `removeFromCRL` entry's
+date is the CA's own and RFC 5280 does not define it as the release time, so a CA that stamps the
+original hold date would make a release look old and hide a decision made during the hold when the CRLs
+that list the hold are missing. Without the opt-in any `certificateHold` or `removeFromCRL` entry for
+the certificate refuses it wholesale (the finding names the policy). Opted in, a decision is refused only
+inside the hold, `[start, release]`: a listing bounds the start, the release is the earliest
+`removeFromCRL` date at or after it (a hold with none is open), and a release with no listing is a hold of
+unknown start, refused from `notBefore` to its date. A CA that issues full CRLs only shows a release as the
+hold's disappearance: the first full CRL after the last one that lists the hold bounds the release, but
+only when the series is contiguous from that listing to it under the declared `CAPeriod` (or consecutive
+CRL numbers); across a gap, or with no declared period, the hold stays open. The release is bounded by that CRL's `thisUpdate` plus the declared `ThisUpdateSkew` (per issuing CA): a CA that back-dates `thisUpdate`, as AD CS does by about ten minutes, really issues the CRL that much later, so a decision in between is still inside the hold. A CRL's age for freshness (`MaxStatusAge`) is measured from the same moment. Zero is never assumed: with no skew declared `thisUpdate` is taken at face value. The skew is the CA's own configuration (AD CS: `ClockSkewMinutes`, ten minutes by default), which a bank declares from a capture of its CA (the fixtures show the value), never from this note; a negative value or one over 30 minutes is refused (the certificate has no information), and the release bound adds `CoverageTolerance` for the few seconds by which a CA's offset varies. Banks should not use `certificateHold` on approver
+certificates (revoke and re-issue instead). An option that lets a release restore validity beyond this was
+considered and not added. The conformance fixtures (`audit/testdata/openssl`, regenerated by `gen.sh`) are
+certificates and CRLs written by OpenSSL: a 30 minute issuance interval with 24 hour validity (overlap),
+a retroactive compromise reported after the decisions, entry pruning after expiry, `expiredCertsOnCRL`,
+and refusals on real output (SHA-1, issuing distribution point, `removeFromCRL` in a full CRL, a
+critical delta indicator). OpenSSL cannot issue true deltas.
+
+**Step-1 exit criterion (assessor's condition).** Delta conformance against a CA that issues true delta
+CRLs, EJBCA and Microsoft AD CS, must pass before any gate relies on deltas; their fixtures are captured
+by a manually dispatched workflow and checked in, and the AD CS defaults (CRLNumber scheme, prune
+timing, hold handling, and what each CA writes in a `removeFromCRL` entry's revocation date) are recorded
+here when captured.
 
 **Requirements this puts on the later changes (v4 decision, gate, audit).** The `approval-identity` record
 stores, for each counted decision, the tier, `S` and the basis, not just "counted". The offline verifier

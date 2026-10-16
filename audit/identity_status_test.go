@@ -157,7 +157,6 @@ func TestAddCRLRefusals(t *testing.T) {
 		"malformed invalidity date": {Entries: []x509.RevocationListEntry{{
 			SerialNumber: big.NewInt(5), RevocationTime: this,
 			ExtraExtensions: []pkix.Extension{ext(asn1.ObjectIdentifier{2, 5, 29, 24}, false, []byte{0x04, 0x01, 0x00})}}}},
-		"delta CRL":       {Extra: []pkix.Extension{ext(asn1.ObjectIdentifier{2, 5, 29, 27}, true, []byte{0x02, 0x01, 0x01})}},
 		"sha-1 signature": {SigAlg: x509.ECDSAWithSHA1},
 	}
 	for name, o := range cases {

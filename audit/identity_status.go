@@ -35,6 +35,8 @@ const (
 
 	defaultW    = 24 * time.Hour   // compromise-reporting window
 	defaultMinW = 30 * time.Minute // floor on the window for a final verdict
+	// maxThisUpdateSkew caps a declared ThisUpdateSkew: a larger value would make a stale CRL look fresh.
+	maxThisUpdateSkew = 30 * time.Minute
 )
 
 // finalityNeedsLC chooses how a certificate that is still unexpired at the latest usable status is
@@ -92,6 +94,17 @@ type crlView struct {
 	this, next  time.Time
 	entries     map[string][]crlEntry // by serial number (decimal)
 	expiredFrom time.Time             // expiredCertsOnCRL date; zero when absent
+	delta       bool                  // a delta CRL: merged with a base for evidence of absence
+	baseNumber  *big.Int              // for a delta: the CRL number of the base it is cumulative since
+	parts       [][32]byte            // for a merged view: the hashes of the base and the delta
+}
+
+// hashes are the CRLs this view rests on.
+func (v *crlView) hashes() [][32]byte {
+	if v.parts != nil {
+		return v.parts
+	}
+	return [][32]byte{v.hash}
 }
 
 // CRLInfo describes a CRL accepted into a StatusSnapshot.
@@ -186,8 +199,10 @@ func (s *StatusSnapshot) Len() int {
 // "not revoked": a signature algorithm outside the profile (never SHA-1), no CRL number, no
 // nextUpdate (RFC 5280 requires it; absent means unknown), an issuing distribution point (partitioned
 // CRLs), an indirect CRL (a certificateIssuer entry extension), any critical extension bide does
-// not process, removeFromCRL in a full CRL, a malformed invalidity date, and a delta CRL (merging
-// them is a separate step). The signature is not checked here: that needs the issuing certificate,
+// not process, removeFromCRL in a full CRL, a malformed invalidity date, and a malformed delta
+// indicator (a delta CRL must carry a critical delta CRL indicator, a DER INTEGER: the number of the
+// base it is cumulative since; it is merged with a base when a chain is evaluated and never gives
+// evidence of absence alone). The signature is not checked here: that needs the issuing certificate,
 // which belongs to a chain (see CertIdentity.EvaluateStatus).
 func (s *StatusSnapshot) AddCRL(der []byte) (CRLInfo, error) {
 	if len(der) == 0 || len(der) > s.maxBytes {
@@ -387,7 +402,11 @@ func parseCRL(der []byte, hash [32]byte, maxEntries int) (*crlView, error) {
 		case e.Id.Equal(oidIssuingDistPoint):
 			return unreadable("the CRL carries an issuing distribution point (a partitioned CRL cannot be matched correctly)")
 		case e.Id.Equal(oidDeltaIndicator):
-			return unreadable("the CRL is a delta CRL, which is merged with its base and never read alone")
+			base := new(big.Int)
+			if rest, err := asn1.Unmarshal(e.Value, &base); err != nil || len(rest) != 0 || base.Sign() < 0 || !e.Critical {
+				return unreadable("the delta CRL indicator must be a critical, non-negative DER INTEGER (the base CRL number)")
+			}
+			v.delta, v.baseNumber = true, base
 		case e.Id.Equal(oidExpiredCertsOnCRL):
 			var t time.Time
 			if rest, err := asn1.Unmarshal(e.Value, &t); err != nil || len(rest) != 0 {
@@ -410,7 +429,7 @@ func parseCRL(der []byte, hash [32]byte, maxEntries int) (*crlView, error) {
 		switch {
 		case re.ReasonCode == 7 || re.ReasonCode < 0 || re.ReasonCode > 10:
 			return unreadable("entry %d has the undefined reason code %d", i, re.ReasonCode)
-		case re.ReasonCode == 8:
+		case re.ReasonCode == 8 && !v.delta:
 			return unreadable("entry %d is removeFromCRL in a full CRL", i)
 		}
 		entrySeen := map[string]bool{}
@@ -514,6 +533,23 @@ type StatusParams struct {
 	ConsecutiveNumbers bool
 	// CoverageTolerance absorbs publication jitter in time coverage (default one minute).
 	CoverageTolerance time.Duration
+	// ThisUpdateSkew is how much earlier than its real issue a CA stamps thisUpdate (Microsoft AD CS back-dates
+	// it by about ten minutes). A CRL is then really issued at thisUpdate plus the skew: a hold released
+	// before the next CRL is released no later than that, and a CRL's age is measured from it.
+	// ThisUpdateSkewFor overrides it per issuing CA. Zero takes thisUpdate at face value; it is never
+	// assumed. It is the CA's own configuration (AD CS: ClockSkewMinutes), declared from a capture of
+	// that CA, with room for the variation of a few seconds (the release bound adds CoverageTolerance).
+	// A negative value or one over 30 minutes is refused: the certificate has no information.
+	ThisUpdateSkew    time.Duration
+	ThisUpdateSkewFor map[SPKIHash]time.Duration
+	// AllowHolds accepts certificates that have been on hold (certificateHold, removeFromCRL). Off by
+	// default: a removeFromCRL entry's date is the CA's own (RFC 5280 does not define it as the
+	// release time), so a CA that stamps the original hold date makes a release look old and could hide
+	// a decision made during the hold when the CRLs that list the hold are missing. Without it any
+	// hold or release entry for the certificate refuses it wholesale. Banks should not use holds on
+	// approver certificates (revoke and re-issue); opt in only for a CA whose release dates have been
+	// checked (the conformance captures record what EJBCA and AD CS write).
+	AllowHolds bool
 }
 
 // CertStatus is the status finding for one certificate of a chain.
@@ -544,6 +580,10 @@ type CertStatus struct {
 	// Caveat is stated with the verdict: what the status does not cover. Empty only when there is no
 	// status.
 	Caveat string
+	// PolicyRefusal: the finding is the status policy refusing a certificate that was ever on hold
+	// (StatusParams.AllowHolds off), not a revocation the CA recorded for the decision's time. It
+	// refuses even a decision made before a later hold, so it must not be read as "revoked at E".
+	PolicyRefusal bool
 	// Basis says what the status rests on: "status issued at or after the decision", or "live count:
 	// status issued before the decision (provisional only)". A tier is not a verification: only Final
 	// is, and a live count never is. Empty when there is no status.
@@ -589,6 +629,9 @@ func (cs ChainStatus) IsFinal() bool {
 // ReasonStatusUnknown.
 func (cs ChainStatus) Err() error {
 	for i, c := range cs.Certs {
+		if c.Revoked && c.PolicyRefusal {
+			return statusErr(agent.ReasonRevoked, "certificate %d of the chain (serial %s) is refused by the status policy, not by a recorded revocation: %s", i, c.Serial, c.Note)
+		}
 		if c.Revoked {
 			return statusErr(agent.ReasonRevoked, "certificate %d of the chain (serial %s) is revoked with effective time %s, reason code %d",
 				i, c.Serial, c.E.UTC().Format(time.RFC3339), c.ReasonCode)
@@ -712,37 +755,20 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, evict
 	st := CertStatus{Serial: cert.SerialNumber, Tier: TierNoInformation}
 	key := cert.SerialNumber.String()
 
-	// A listing in any CRL of the series is a revocation from its time on, whatever the CRL's date;
-	// a later CRL that no longer lists the serial does not undo it.
-	for _, v := range all {
-		for _, e := range v.entries[key] {
-			ev := effective(cert, e)
-			if ev.After(a) || (isRoutine(e.code) && p.RoutineGrace > 0 && a.Before(ev.Add(p.RoutineGrace))) {
-				continue
-			}
-			if !st.Revoked || ev.Before(st.E) {
-				st.Revoked, st.E, st.ReasonCode, st.Compromise, st.RevokedBy = true, ev, e.code, isCompromise(e.code), v.hash
-			}
-		}
-	}
-	if st.Revoked {
-		return st
-	}
-
-	// Number order: a CRL dated later than another with a higher number is not a legitimate successor.
-	var views []*crlView
+	// Number order: one sequence across bases and deltas. A CRL dated later than another with a
+	// higher number is not a legitimate successor.
+	var ordered []*crlView
 	maxNum := big.NewInt(-1)
 	for _, v := range all {
 		if v.number.Cmp(maxNum) < 0 {
 			continue // a rollback: kept for its listings only
 		}
-		if v.number.Cmp(maxNum) == 0 && len(views) > 0 && views[len(views)-1].hash != v.hash {
+		if v.number.Cmp(maxNum) == 0 && len(ordered) > 0 && ordered[len(ordered)-1].hash != v.hash {
 			continue // two different CRLs, one number
 		}
 		maxNum = v.number
-		views = append(views, v)
+		ordered = append(ordered, v)
 	}
-
 	// How consecutive CRLs of the series are shown to have nothing between them: issued within the
 	// predecessor's nextUpdate, and within the declared issuance interval of it (or with the next
 	// CRL number). nextUpdate alone is not enough: a CA may issue earlier than it.
@@ -759,8 +785,148 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, evict
 		}
 		return interval > 0 && v.this.Sub(prev.this) <= interval+p.CoverageTolerance
 	}
+	skew := p.ThisUpdateSkew
+	if sk, ok := p.ThisUpdateSkewFor[SPKIHashOf(issuer)]; ok {
+		skew = sk
+	}
+	if skew < 0 || skew > maxThisUpdateSkew {
+		st.Note = fmt.Sprintf("the declared ThisUpdateSkew %s is outside 0 to %s", skew, maxThisUpdateSkew)
+		return st
+	}
 	retains := func(v *crlView) bool {
 		return p.Retained || (!v.expiredFrom.IsZero() && !cert.NotAfter.Before(v.expiredFrom))
+	}
+
+	// A listing in any CRL of the series is a revocation from its time on, whatever the CRL's date;
+	// a later CRL that no longer lists the serial does not undo it. Every CRL that verifies under the
+	// issuer is read for its listings, a delta that has no base included: a listing can only take trust
+	// away. Holds are the exception to "from its time on", and are off by default (AllowHolds).
+	var holdStarts, releases []time.Time
+	var holdBy [32]byte
+	for _, v := range all {
+		for _, e := range v.entries[key] {
+			if e.code == 6 || e.code == 8 {
+				if !p.AllowHolds {
+					st.Revoked, st.E, st.ReasonCode, st.RevokedBy = true, cert.NotBefore, e.code, v.hash
+					st.Note = "the certificate has been on hold (certificateHold or removeFromCRL), which this policy does not accept (StatusParams.AllowHolds)"
+					st.PolicyRefusal = true
+					return st
+				}
+				if e.code == 6 {
+					holdStarts = append(holdStarts, effective(cert, e))
+				} else {
+					releases = append(releases, e.revoked)
+				}
+				holdBy = v.hash
+				continue
+			}
+			ev := effective(cert, e)
+			if ev.After(a) || (isRoutine(e.code) && p.RoutineGrace > 0 && a.Before(ev.Add(p.RoutineGrace))) {
+				continue
+			}
+			if !st.Revoked || ev.Before(st.E) {
+				st.Revoked, st.E, st.ReasonCode, st.Compromise, st.RevokedBy = true, ev, e.code, isCompromise(e.code), v.hash
+			}
+		}
+	}
+	// Opted in: a decision is refused inside a hold, [start, release]. A listing bounds the start; the
+	// release is the earliest removeFromCRL date at or after it, else the hold is open. A release with
+	// no listing before it is a hold of unknown start: refused from notBefore to its date.
+	if p.AllowHolds && !st.Revoked {
+		sort.Slice(holdStarts, func(i, j int) bool { return holdStarts[i].Before(holdStarts[j]) })
+		sort.Slice(releases, func(i, j int) bool { return releases[i].Before(releases[j]) })
+		// The same hold is listed by several CRLs (the base, then every delta since): one hold.
+		sameTime := func(a, b time.Time) bool { return a.Equal(b) }
+		holdStarts = slices.CompactFunc(holdStarts, sameTime)
+		releases = slices.CompactFunc(releases, sameTime)
+		used := make([]bool, len(releases))
+		inHold := func(start time.Time) {
+			if !st.Revoked || start.Before(st.E) {
+				st.Revoked, st.E, st.ReasonCode, st.RevokedBy = true, start, 6, holdBy
+				st.Note = "the decision falls inside a certificateHold"
+			}
+		}
+		// A CA that issues full CRLs only shows a release as the hold's disappearance: the first full CRL
+		// after the last one that lists the hold bounds the release, but only if the series is
+		// contiguous (the declared CA period) from that listing to it; across a gap the hold stays open.
+		lists := func(v *crlView, hs time.Time) bool {
+			for _, e := range v.entries[key] {
+				if e.code == 6 && effective(cert, e).Equal(hs) {
+					return true
+				}
+			}
+			return false
+		}
+		releasedByAbsence := func(hs time.Time) time.Time {
+			last := -1
+			for i, v := range ordered {
+				if lists(v, hs) {
+					last = i
+				}
+			}
+			if last < 0 {
+				return time.Time{}
+			}
+			nxt := -1
+			for i := last + 1; i < len(ordered); i++ {
+				if !ordered[i].delta {
+					nxt = i
+					break
+				}
+			}
+			if nxt < 0 {
+				return time.Time{}
+			}
+			for i := last + 1; i <= nxt; i++ {
+				if !contig(ordered[i-1], ordered[i]) {
+					return time.Time{}
+				}
+			}
+			return ordered[nxt].this.Add(skew + p.CoverageTolerance)
+		}
+		for _, hs := range holdStarts {
+			end := time.Time{}
+			for i, r := range releases {
+				if !used[i] && !r.Before(hs) {
+					end, used[i] = r, true
+					break
+				}
+			}
+			if end.IsZero() {
+				end = releasedByAbsence(hs)
+			}
+			if !a.Before(hs) && (end.IsZero() || !a.After(end)) {
+				inHold(hs)
+			}
+		}
+		for i, r := range releases {
+			if !used[i] && !a.After(r) {
+				inHold(cert.NotBefore)
+			}
+		}
+	}
+	if st.Revoked {
+		return st
+	}
+
+	// The evidence of absence is the full CRLs and the merged views: each delta with its base, as of
+	// the delta. A delta with no base to merge with gives none.
+	paired := pairDeltas(ordered)
+	var views []*crlView
+	for _, v := range ordered {
+		if !v.delta {
+			views = append(views, v)
+			continue
+		}
+		if b := paired[v]; b != nil {
+			// Retention comes from the base alone: the delta lists what changed since it, and a
+			// retaining delta says nothing about the entries a pruning base already dropped.
+			m := &crlView{hash: v.hash, number: v.number, this: v.this, next: v.next, expiredFrom: b.expiredFrom, parts: [][32]byte{b.hash, v.hash}}
+			if v.next.After(b.next) {
+				m.next = b.next // the earlier nextUpdate governs: a stale base does not make a fresh delta fresh
+			}
+			views = append(views, m)
+		}
 	}
 
 	// L(C): the first CRL beyond notAfter, established only if the series shows nothing was issued
@@ -793,7 +959,7 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, evict
 	}
 	fresh := usable[:0:0]
 	for _, v := range usable {
-		if live && (p.MaxStatusAge <= 0 || !p.Now.Before(v.next) || p.Now.Sub(v.this) > p.MaxStatusAge || v.this.After(p.Now.Add(p.CoverageTolerance))) {
+		if live && (p.MaxStatusAge <= 0 || !p.Now.Before(v.next) || p.Now.Sub(v.this) > p.MaxStatusAge+skew || v.this.After(p.Now.Add(p.CoverageTolerance))) {
 			continue
 		}
 		fresh = append(fresh, v)
@@ -825,7 +991,7 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, evict
 	}
 	usable = usable[:reached+1]
 	for _, v := range usable {
-		st.Used = append(st.Used, v.hash)
+		st.Used = append(st.Used, v.hashes()...)
 	}
 	sView := usable[len(usable)-1]
 	st.S = sView.this
@@ -936,4 +1102,36 @@ func joinWarning(a, b string) string {
 		return b
 	}
 	return a + "; " + b
+}
+
+// pairDeltas matches each delta CRL in vs with the base it is merged with (RFC 5280 sections 5.2.4
+// and 6.3.3). A base B qualifies for a delta D when D.baseNumber <= B.number < D.number and D was
+// issued no earlier than B. Of the qualifying bases the highest numbered is used, the freshest one
+// that is still a valid partner (the delta is cumulative since the base it names, so a newer base
+// carries everything). A delta with no qualifying base is absent from the result: it gives no
+// evidence of absence, never a partial answer (its listings are read all the same). All the CRLs in
+// vs are already known to verify under one issuer, and the snapshot bounds how many there are.
+func pairDeltas(vs []*crlView) map[*crlView]*crlView {
+	var bases []*crlView
+	for _, v := range vs {
+		if !v.delta {
+			bases = append(bases, v)
+		}
+	}
+	// vs is the series after the number-order rule, so the bases are already in increasing number.
+	out := map[*crlView]*crlView{}
+	for _, d := range vs {
+		if !d.delta {
+			continue
+		}
+		// The first base numbered at or above the delta is too high; walk down from the one before it.
+		i := sort.Search(len(bases), func(i int) bool { return bases[i].number.Cmp(d.number) >= 0 })
+		for i--; i >= 0 && bases[i].number.Cmp(d.baseNumber) >= 0; i-- {
+			if !d.this.Before(bases[i].this) { // implied by the number order; kept as the RFC states it
+				out[d] = bases[i]
+				break
+			}
+		}
+	}
+	return out
 }
