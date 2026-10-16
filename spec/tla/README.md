@@ -2840,7 +2840,7 @@ through `TallyApprovals` comes with that code.
 <!-- modelsync: map identity -->
 | Label | Go |
 |---|---|
-| `Count` | `audit.CertIdentity.VerifyChain` (chain, identifier, window, `anchorGrace`: rules 1 to 3) and `EvaluateStatus` with `evalCert` (rule 5: the status rule, usable only for `[A(d), L(C)]`, no `E <= A(d)`); the integration into `TallyApprovals` is the certificate-bound approver's pull request |
+| `Count` | `audit.CertIdentity.VerifyChain` (chain, identifier, window, `anchorGrace`: rules 1 to 3) and `EvaluateStatus` with `evalCert` (rule 5: the status rule, usable only for `[A(d), L(C)]`, no `E <= A(d)`); `CertApprover.VerifyCertDecision` (with `provableAt`, the covering head and the non-decreasing head-time rule: `A(d)`) joins them for the certificate-bound approver, and `agent.TallyApprovals` calls it; `audit.TestModel15Refinement` runs each counterexample configuration's scenario through them and compares the counted set |
 | `FinalWit` | `evalCert`'s tier, with `coveredFrom` and the series rule (`L(C)`, `CAPeriod`, consecutive numbers) |
 | `Tally` | `agent.TallyApprovals`: an approver's first valid record, distinct approvers, `need` seats |
 | `Anchor` | `AuditedStore.anchorIfGrown`: a write that grows the journal anchors once |
