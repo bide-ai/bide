@@ -2,6 +2,7 @@
 # module-sbom.sh: the SBOM of bide's published Go modules at a release, as SPDX JSON.
 #
 #   scripts/module-sbom.sh vX.Y.Z OUT.json [--wait MINUTES]
+#   scripts/module-sbom.sh --self-test
 #
 # The per-archive SBOMs of a release list what is compiled into the bide binary. This one lists what
 # an application gets with `go get`: it builds the consumer module scripts/release.sh builds for its
@@ -22,8 +23,46 @@ here=$(cd "$(dirname "$0")" && pwd)
 die() { echo "module-sbom: error: $*" >&2; exit 1; }
 usage() { sed -n '2,4p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
+# self_test: the script on fake go and syft commands, run from another directory, writes OUT where
+# the caller named it, for a bare file name and a relative path as for an absolute one. It needs no
+# network.
+self_test() {
+  local tmp mods m ok=true; tmp=$(mktemp -d)
+  mkdir -p "$tmp/bin" "$tmp/cwd/sub"
+  cat > "$tmp/bin/go" <<'GO'
+#!/usr/bin/env bash
+# A fake go: every module resolves, and the consumer selects each module at $FAKE_VERSION.
+if [ "$1 $2" = "list -m" ] && [ "${3:-}" = "-f" ]; then for m in $FAKE_MODULES; do echo "$m $FAKE_VERSION"; done; exit 0; fi
+exit 0
+GO
+  cat > "$tmp/bin/syft" <<'SYFT'
+#!/usr/bin/env bash
+# A fake syft: writes an SBOM of $FAKE_MODULES at $FAKE_VERSION to the spdx-json= output.
+for a in "$@"; do case "$a" in spdx-json=*) out=${a#spdx-json=} ;; esac; done
+for m in $FAKE_MODULES; do printf '%s %s\n' "$m" "$FAKE_VERSION"; done |
+  jq -Rn '{packages: [inputs | split(" ") | {name: .[0], versionInfo: .[1]}]}' > "$out"
+SYFT
+  chmod +x "$tmp/bin/go" "$tmp/bin/syft"
+  mods="$ROOT_MODULE"
+  for m in $("$here/release.sh" --list-published); do mods="$mods $ROOT_MODULE/$m"; done
+  for out in sbom.json sub/sbom.json "$tmp/cwd/abs.json"; do
+    rm -f "$tmp/cwd/$out"
+    if ! (cd "$tmp/cwd" && PATH="$tmp/bin:$PATH" FAKE_VERSION=v9.9.9 FAKE_MODULES="$mods" "$here/module-sbom.sh" v9.9.9 "$out" >"$tmp/log" 2>&1); then
+      echo "self-test: module-sbom.sh $out failed:"; sed 's/^/    /' "$tmp/log"; ok=false; continue
+    fi
+    case "$out" in /*) want=$out ;; *) want=$tmp/cwd/$out ;; esac
+    [ -s "$want" ] || { echo "self-test: the SBOM for OUT=$out is not at $want"; ok=false; }
+  done
+  rm -rf "$tmp"
+  $ok && echo "self-test: ok"
+}
+
+[ "${1:-}" = --self-test ] && { self_test; exit; }
 [ $# -ge 2 ] || usage
 VERSION=$1 OUT=$2; shift 2
+# The script changes directory (to the consumer module it builds), so OUT is made absolute now: the
+# caller's relative path names a file in the caller's directory.
+case "$OUT" in /*) ;; *) OUT=$PWD/$OUT ;; esac
 WAIT=0
 while [ $# -gt 0 ]; do
   case "$1" in
