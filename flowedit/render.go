@@ -44,7 +44,7 @@ func scalar(v any, q byte, flow, js bool) (string, error) {
 				return "", err
 			}
 			out := strings.TrimSuffix(b.String(), "\n")
-			for _, r := range []rune{'\u2028', '\u2029', '\u0085', '\ufeff'} { // raw, they are line breaks or a mark to some readers
+			for _, r := range []rune{} { // raw, they are line breaks or a mark to some readers
 				out = strings.ReplaceAll(out, string(r), fmt.Sprintf(`\u%04x`, r))
 			}
 			return out, nil

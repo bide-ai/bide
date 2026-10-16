@@ -35,7 +35,15 @@ func TestAnchorsAndAliasesAreRefusedWhereverTheyAre(t *testing.T) {
 		"an alias in an unrelated key": "a: &x 1\nb: *x\nz: 1\n",
 	} {
 		start := time.Now()
-		_, err := Apply([]byte(src), setZ)
+		done := make(chan error, 1)
+		go func() { _, err := Apply([]byte(src), setZ); done <- err }()
+		var err error
+		select {
+		case err = <-done:
+		case <-time.After(5 * time.Second):
+			t.Errorf("%s: still expanding after 5s (the goroutine is abandoned)", name)
+			continue
+		}
 		var rf *Refusal
 		if !errors.As(err, &rf) || !strings.Contains(rf.Reason, "anchors and aliases") {
 			t.Errorf("%s: %v", name, err)
