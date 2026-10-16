@@ -278,3 +278,108 @@ func TestCertApprover_VerifyIsNeverTrue(t *testing.T) {
 		t.Fatal("a verifier with no policy accepted a decision")
 	}
 }
+
+// Direct checks of the verifier's early refusals, with records built by hand.
+func TestCertApprover_EarlyRefusals(t *testing.T) {
+	c := newCertGate(t, 1, "alice")
+	a := c.approver("alice")
+	rec := func(mut func(*agent.ApproverSignature)) agent.Record {
+		sig := &agent.ApproverSignature{Approver: "alice", ApproverAlg: audit.AlgEd25519, Signature: []byte("s"),
+			DecidedAt: agent.FormatTimestamp(testDecidedAt), ApproverCert: c.leaves["alice"].Chain()}
+		if mut != nil {
+			mut(sig)
+		}
+		return agent.Record{Name: "approval:c1:alice:00", Kind: agent.StepApproval, ToolUseID: "c1", Approved: true, ApproverSignature: sig}
+	}
+	check := func(name, want string, r agent.Record, journal []agent.Record, idx int) {
+		t.Helper()
+		got := a.VerifyCertDecision(agent.CertDecision{Subject: agent.ApprovalSubject{RunID: gateRun, ToolUseID: "c1"}, Record: r, Journal: journal, Index: idx})
+		if got.Reason != want || got.Detail == "" {
+			t.Fatalf("%s: reason %q (%s), want %q", name, got.Reason, got.Detail, want)
+		}
+	}
+	check("no chain", agent.ReasonNoCert, rec(func(s *agent.ApproverSignature) { s.ApproverCert = nil }), nil, 0)
+	check("no decided_at", agent.ReasonNoDecidedAt, rec(func(s *agent.ApproverSignature) { s.DecidedAt = "" }), nil, 0)
+	check("decided_at not canonical", agent.ReasonDecidedAt, rec(func(s *agent.ApproverSignature) { s.DecidedAt = "2026-10-13T12:14:03Z" }), nil, 0)
+	check("not in the journal", agent.ReasonNoCoveringHead, rec(nil), nil, 0)
+	check("a negative position", agent.ReasonNoCoveringHead, rec(nil), []agent.Record{{}}, -1)
+	check("a position past the journal", agent.ReasonNoCoveringHead, rec(nil), []agent.Record{{}}, 1)
+	var none audit.CertApprover
+	if got := none.VerifyCertDecision(agent.CertDecision{Record: rec(nil)}); got.Reason != agent.ReasonNoKey {
+		t.Fatalf("no policy: %+v", got)
+	}
+	// No head source at all.
+	noHeads := c.approver("alice")
+	noHeads.Heads = nil
+	got := noHeads.VerifyCertDecision(agent.CertDecision{Record: rec(nil), Journal: []agent.Record{{}}, Index: 0})
+	if got.Reason != agent.ReasonNoCoveringHead {
+		t.Fatalf("no heads: %+v", got)
+	}
+}
+
+// The scheme the record names must be the certificate key's.
+func TestCertApprover_SchemeConfusion(t *testing.T) {
+	c := newCertGate(t, 1, "alice")
+	c.pause()
+	c.decideCert("alice", func(d *agent.Decision) { d.Alg = audit.AlgECDSAP256 })
+	c.anchor(certA)
+	if _, checks := c.tally(); reasonOf(t, checks, "alice") != agent.ReasonAlg {
+		t.Fatalf("%+v", checks)
+	}
+}
+
+// A decision's tier is its weakest certificate's: the leaf's status is final, the intermediate's only
+// provisional (one CRL, none in force at A).
+func TestCertApprover_TierIsTheWeakestCertificate(t *testing.T) {
+	c := newCertGate(t, 1, "alice")
+	c.pause()
+	c.decideCert("alice", nil)
+	c.anchor(certA)
+	sn := audit.NewStatusSnapshot()
+	for _, der := range [][]byte{
+		c.inter.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: testDecidedAt, NextUpdate: testDecidedAt.Add(time.Hour)}),
+		c.inter.NewCRL(t, testca.CRLOpts{Number: 2, ThisUpdate: c.crlsAt, NextUpdate: c.crlsAt.Add(time.Hour)}),
+		c.root.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: c.crlsAt, NextUpdate: c.crlsAt.Add(time.Hour)}),
+	} {
+		if _, err := sn.AddCRL(der); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c.status = sn
+	tally, checks := c.tally()
+	if !tally.Passed() || checks[0].Cert.Tier != "provisional" {
+		t.Fatalf("%+v %+v", tally, checks[0].Cert)
+	}
+	// With the full series for both it is final.
+	c.status = c.buildStatus()
+	if _, checks := c.tally(); checks[0].Cert.Tier != "final" {
+		t.Fatalf("%+v", checks[0].Cert)
+	}
+}
+
+// A head that does not cover the decision but is stamped later than the head that does contradicts it.
+func TestCertApprover_SmallerHeadStampedLater(t *testing.T) {
+	c := newCertGate(t, 1, "alice")
+	c.pause()
+	small := c.sth(t, certA.Add(time.Hour).UnixNano()) // before the decision, stamped an hour after A
+	c.decideCert("alice", nil)
+	c.heads = append(c.heads, small)
+	c.anchor(certA)
+	if _, checks := c.tally(); reasonOf(t, checks, "alice") != agent.ReasonHeadTimes {
+		t.Fatalf("%+v", checks)
+	}
+}
+
+// A series that leaves a longer gap than the declared period is reported, though the decision still
+// counts (provisionally).
+func TestCertApprover_WarnsAboutAGapBeyondTheDeclaredPeriod(t *testing.T) {
+	c := newCertGate(t, 1, "alice")
+	c.pause()
+	c.decideCert("alice", nil)
+	c.anchor(certA)
+	c.params.CAPeriod, c.params.CoverageTolerance = 5*time.Second, time.Nanosecond
+	tally, checks := c.tally()
+	if !tally.Passed() || len(checks[0].Cert.Warnings) == 0 || checks[0].Cert.Tier == "final" {
+		t.Fatalf("%+v %+v", tally, checks[0].Cert)
+	}
+}
