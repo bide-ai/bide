@@ -1678,3 +1678,33 @@ func TestNoWarningWithoutADeclaredPeriod(t *testing.T) {
 		t.Fatalf("%+v", st)
 	}
 }
+
+// Model 15 (H1): a live count on a CRL beyond notAfter is usable only if it is L(C), shown by the
+// series to follow its predecessor. A CRL the verifier never received (the first one beyond
+// notAfter, which still lists the leaf) leaves the pruned CRL after it as "the first one received
+// beyond notAfter", and that must not be the status a count rests on.
+func TestLiveCountRefusesPrunedCRLWhenLCWasWithheld(t *testing.T) {
+	s := newStFx(t)
+	all, _, pruned := overlappingSeries(s)
+	now := idT0.Add(95 * min)
+	live := audit.StatusParams{Now: now, MaxStatusAge: hour, CountLive: true, CAPeriod: 30 * min}
+	// Control: the complete series sees the listing.
+	if !s.leafStatus(s.snap(all...), live).Revoked {
+		t.Fatal("complete series: the listing was not seen")
+	}
+	// The pruned CRL alone is no information.
+	st := s.leafStatus(s.snap(pruned), live)
+	if st.Revoked || st.Tier != audit.TierNoInformation || s.eval(s.snap(pruned), live).Err() == nil {
+		t.Errorf("pruned CRL alone counted: %+v", st)
+	}
+	// With CRLs before notAfter the count may rest on them (provisional), never on the pruned one.
+	for name, crls := range map[string][][]byte{
+		"one before A":         {all[2], pruned},
+		"the listing withheld": {all[0], all[1], all[2], pruned},
+	} {
+		st := s.leafStatus(s.snap(crls...), live)
+		if st.LCKnown || !st.S.Equal(idT0.Add(40*min)) || st.Tier == audit.TierFinal {
+			t.Errorf("%s: the status rests on the pruned CRL or is final: %+v", name, st)
+		}
+	}
+}
