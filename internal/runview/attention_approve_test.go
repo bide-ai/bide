@@ -106,4 +106,7 @@ func TestAttentionCertCommand(t *testing.T) {
 			t.Errorf("unsafe id: %+v", it)
 		}
 	}
+	if _, page := get(t, Handler(opts("bad\nid", allBound, cert)), "/attention"); !strings.Contains(page, "no command (unsafe id)") || strings.Contains(page, "bide approve -db") {
+		t.Errorf("the page does not show the fallback for an unsafe id on a certificate-only gate:\n%s", page)
+	}
 }
