@@ -478,4 +478,17 @@ NoStuckPause == \A d \in Decs : [](d <= nd => <>Covered(d))
 
 \* Vacuity (check.sh): the call is reachable.
 EffectNotReachable == ~execd
+
+\* Reachability, expected violated (the configurations id-*-reach): the paths the properties
+\* guard are not empty.
+\* A decision is final.
+FinalNotReachable == ~\E d \in 1..nd, S \in 1..np : FinalWit(d, S)
+\* A revocation removes a counted decision.
+DropNotReachable == dead = {}
+\* A tally rests on two seats.
+TwoSeatsNotReachable == ~(tl # {} /\ Cardinality(tl) >= 2)
+\* A decision counts although a head carries a time that is not the real one.
+SkewedCountNotReachable == ~(Counted # {} /\ \E h \in heads : h.tm # h.rl)
+\* A withheld or rolled-back CRL leaves the cache behind the CA's series, and a decision counts.
+BehindCountNotReachable == ~(Counted # {} /\ snap # np)
 =============================================================================
