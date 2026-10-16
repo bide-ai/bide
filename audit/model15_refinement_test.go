@@ -118,6 +118,20 @@ func cleanSeries(t *testing.T, c *certGate, offsets ...time.Duration) *audit.Sta
 	return snap(t, ders...)
 }
 
+// longSeries is a clean series by the leaf's issuer at the given offsets whose CRLs stay valid (nextUpdate)
+// for a long time, plus a clean root series: status that is current by nextUpdate but may be old by age.
+func longSeries(t *testing.T, c *certGate, offsets ...time.Duration) *audit.StatusSnapshot {
+	t.Helper()
+	var ders [][]byte
+	for i, off := range offsets {
+		ders = append(ders, c.inter.NewCRL(t, testca.CRLOpts{Number: int64(i + 1), ThisUpdate: testDecidedAt.Add(off), NextUpdate: testDecidedAt.Add(off + 400*time.Hour)}))
+	}
+	ders = append(ders,
+		c.root.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: testDecidedAt, NextUpdate: testDecidedAt.Add(400 * time.Hour)}),
+		c.root.NewCRL(t, testca.CRLOpts{Number: 2, ThisUpdate: c.crlsAt, NextUpdate: testDecidedAt.Add(400 * time.Hour)}))
+	return snap(t, ders...)
+}
+
 // refScenario is one model configuration's scenario. run(t, false) builds the situation the broken model
 // mishandles and run(t, true) the same setup with the rule satisfied.
 type refScenario struct {
@@ -134,7 +148,8 @@ func TestModel15Refinement(t *testing.T) {
 		"regress/withhold-no-fresh": {want: nil, why: agent.ReasonStatusStale, run: func(t *testing.T, ctl bool) ([]string, string) {
 			c := aliceGate(t)
 			c.params.CountLive, c.params.MaxStatusAge = true, time.Hour
-			c.now = func() time.Time { return certA.Add(3 * time.Hour) }
+			c.status = longSeries(t, c, 0, 20*time.Second)               // current by nextUpdate for a long time
+			c.now = func() time.Time { return certA.Add(3 * time.Hour) } // but three hours old
 			if ctl {
 				c.now = func() time.Time { return certA.Add(30 * time.Second) }
 			}
@@ -142,7 +157,7 @@ func TestModel15Refinement(t *testing.T) {
 		}},
 		"regress/stale-status": {want: nil, why: agent.ReasonStatusStale, run: func(t *testing.T, ctl bool) ([]string, string) {
 			c := aliceGate(t)
-			c.params.CountLive, c.params.MaxStatusAge = true, time.Hour
+			c.params.CountLive, c.params.MaxStatusAge = true, 24*time.Hour // young by age, past the CRLs' own nextUpdate (+1h)
 			c.now = func() time.Time { return certA.Add(2 * time.Hour) }
 			if ctl {
 				c.now = func() time.Time { return certA.Add(10 * time.Minute) }
@@ -276,15 +291,20 @@ func TestModel15Refinement(t *testing.T) {
 		// consecutively) is not final.
 		"regress/final-no-coverage": {want: nil, run: func(t *testing.T, ctl bool) ([]string, string) {
 			c := aliceGate(t)
-			c.params.ConsecutiveNumbers = true
-			offs := []time.Duration{0, 20 * time.Minute, 40 * time.Minute}
-			c.status = cleanSeries(t, c, offs...)
-			if !ctl { // number 2 withheld: 1 then 3
-				c.status = snap(t,
-					c.inter.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: testDecidedAt, NextUpdate: testDecidedAt.Add(time.Hour)}),
-					c.inter.NewCRL(t, testca.CRLOpts{Number: 3, ThisUpdate: testDecidedAt.Add(40 * time.Minute), NextUpdate: testDecidedAt.Add(100 * time.Minute)}),
-					c.root.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: testDecidedAt, NextUpdate: testDecidedAt.Add(400 * time.Hour)}))
+			c.params.ConsecutiveNumbers, c.params.CAPeriod = true, 0 // no declared period: only consecutive numbers show nothing lies between
+			nums := []int64{1, 3}                                    // number 2 withheld
+			if ctl {
+				nums = []int64{1, 2}
 			}
+			var ders [][]byte
+			for i, n := range nums {
+				off := time.Duration(i) * 40 * time.Minute
+				ders = append(ders, c.inter.NewCRL(t, testca.CRLOpts{Number: n, ThisUpdate: testDecidedAt.Add(off), NextUpdate: testDecidedAt.Add(off + time.Hour)}))
+			}
+			ders = append(ders,
+				c.root.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: testDecidedAt, NextUpdate: testDecidedAt.Add(400 * time.Hour)}),
+				c.root.NewCRL(t, testca.CRLOpts{Number: 2, ThisUpdate: c.crlsAt, NextUpdate: testDecidedAt.Add(400 * time.Hour)}))
+			c.status = snap(t, ders...)
 			_, checks := c.tally()
 			return finalSet(checks), ""
 		}, ctlWant: alice},
@@ -399,14 +419,14 @@ func TestModel15Refinement(t *testing.T) {
 		}},
 		// A CRL past L(C) with no predecessor it follows is no evidence of absence, so the decision does not
 		// count on it (the live count does not read it); with the series filled it counts.
-		"regress/prune-no-lc-count": {want: nil, why: agent.ReasonStatusUnknown, run: func(t *testing.T, ctl bool) ([]string, string) {
+		"regress/prune-no-lc-count": {want: nil, why: agent.ReasonStatusStale, run: func(t *testing.T, ctl bool) ([]string, string) {
 			c := aliceGate(t)
 			c.params.CountLive, c.params.MaxStatusAge, c.params.CAPeriod = true, 6*time.Hour, time.Hour
-			c.now = func() time.Time { return testDecidedAt.Add(100 * time.Minute) }
-			offs := []time.Duration{90 * time.Minute} // only a CRL after notAfter (+1h), with no predecessor it follows
+			now, offs := 250*time.Minute, []time.Duration{20 * time.Minute, 240 * time.Minute} // a CRL long after notAfter (+1h): a gap after its predecessor
 			if ctl {
-				offs = []time.Duration{20 * time.Minute, 70 * time.Minute} // L(C) (the first after notAfter) follows a CRL
+				now, offs = 100*time.Minute, []time.Duration{20 * time.Minute, 70 * time.Minute} // L(C) follows its predecessor
 			}
+			c.now = func() time.Time { return testDecidedAt.Add(now) }
 			c.status = cleanSeries(t, c, offs...)
 			return judged(c)
 		}},
@@ -599,5 +619,28 @@ func TestModel15PruneFallback(t *testing.T) {
 	}
 	if cc := checks[0].Cert; cc == nil || cc.Tier == "final" || cc.BasisKind != agent.BasisLiveBeforeDecision {
 		t.Fatalf("a count that fell back to status before the decision is final or mislabelled: %+v", cc)
+	}
+}
+
+// Time coverage also needs each CRL issued before its predecessor's nextUpdate: a CRL that appears after the
+// predecessor expired leaves a stretch no CRL covers, whatever period the CA declares.
+func TestModel15CoverageNeedsNextUpdate(t *testing.T) {
+	for _, ctl := range []bool{false, true} {
+		c := aliceGate(t)
+		c.params.CAPeriod = time.Hour
+		firstValid := 10 * time.Minute // expired when the second CRL appears at +40m
+		if ctl {
+			firstValid = 50 * time.Minute
+		}
+		c.status = snap(t,
+			c.inter.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: testDecidedAt, NextUpdate: testDecidedAt.Add(firstValid)}),
+			c.inter.NewCRL(t, testca.CRLOpts{Number: 2, ThisUpdate: testDecidedAt.Add(40 * time.Minute), NextUpdate: testDecidedAt.Add(100 * time.Minute)}),
+			c.root.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: testDecidedAt, NextUpdate: testDecidedAt.Add(400 * time.Hour)}),
+			c.root.NewCRL(t, testca.CRLOpts{Number: 2, ThisUpdate: c.crlsAt, NextUpdate: testDecidedAt.Add(400 * time.Hour)}))
+		_, checks := c.tally()
+		got := finalSet(checks)
+		if ctl && !slices.Equal(got, []string{"alice"}) || !ctl && len(got) != 0 {
+			t.Fatalf("control %v: final %v", ctl, got)
+		}
 	}
 }
