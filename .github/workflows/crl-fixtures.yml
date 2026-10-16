@@ -1,12 +1,19 @@
 name: CRL fixtures
 
-# Captures certificates and CRLs, true delta CRLs included, from EJBCA Community Edition and from
-# Microsoft AD CS, for the approver identity status rule's conformance tests (docs/design/approver-identity.md,
-# test plan item 32). It is dispatched by hand, never on a pull request, and its output is checked in
-# under audit/testdata/{ejbca,adcs} so the tests run offline. Download the artifacts, review them, and
-# commit them.
+# Captures two-tier approver PKIs, certificates and CRLs (true delta CRLs included) from EJBCA Community
+# Edition and from Microsoft AD CS, for the approver identity status rule's conformance tests
+# (docs/design/approver-identity.md, test plan item 32). It is dispatched by hand, never on a pull
+# request, and its output is checked in under audit/testdata/{ejbca,adcs} so the tests run offline.
+# Download the artifacts, review them, and commit them.
 on:
   workflow_dispatch:
+  push:
+    branches: [ident-c3]
+    paths:
+      - .github/workflows/crl-fixtures.yml
+      - audit/testdata/ejbca/capture.sh
+      - audit/testdata/ejbca/ProfileGen.java
+      - audit/testdata/adcs/*.ps1
 
 permissions:
   contents: read
@@ -14,10 +21,10 @@ permissions:
 jobs:
   ejbca:
     name: EJBCA Community
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Start EJBCA
         run: |
           # The image is pinned by digest so a capture is reproducible.
@@ -31,21 +38,43 @@ jobs:
           exit 1
       - name: Capture
         run: sh audit/testdata/ejbca/capture.sh ejbca out
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ejbca-fixtures
           path: out/
 
-  adcs:
-    name: Microsoft AD CS
-    runs-on: windows-latest
+  adcs-root:
+    name: Microsoft AD CS offline root
+    runs-on: windows-2025
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Capture
         shell: pwsh
-        run: ./audit/testdata/adcs/capture.ps1 -Out out
-      - uses: actions/upload-artifact@v4
+        run: ./audit/testdata/adcs/capture-root.ps1 -Out root
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          # Contains the issuing CA's throwaway key for the next job: never a fixture.
+          name: adcs-root
+          path: root/
+          retention-days: 1
+
+  adcs-issuing:
+    name: Microsoft AD CS issuing CA
+    needs: adcs-root
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: adcs-root
+          path: root
+      - name: Capture
+        shell: pwsh
+        run: ./audit/testdata/adcs/capture-issuing.ps1 -Out out -In root
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: adcs-fixtures
