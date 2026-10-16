@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
@@ -185,7 +186,7 @@ func (r DecisionReceipt) VerifyCertificate(ci *CertIdentity, logKey Verifier) er
 	if err != nil {
 		return fmt.Errorf("audit: receipt decided_at: %v: %w", err, ErrNotVerified)
 	}
-	if logKey == nil {
+	if isNilVerifier(logKey) {
 		return fmt.Errorf("audit: receipt: no log key to vouch for the anchoring proof: %w", agent.ErrConfig)
 	}
 	a, err := r.AnchorTime(logKey)
@@ -458,4 +459,17 @@ func CheckReceipt(r DecisionReceipt, journal []agent.Record, heads []SignedTreeH
 		return ReceiptFinding{ReceiptUnmatched, fmt.Sprintf("the journal does not hold the decision at position %d (%d records) and no signed head reaches that position. Without an anchoring proof in the receipt this is the approver's claim, not evidence of a deletion", r.Index, len(journal))}
 	}
 	return ReceiptFinding{ReceiptPending, "the journal holds the decision and no signed head covers its position yet; the application signs it at its next write to the run, or when agent.Recover or RecoverLoop next finds the run waiting (bide audit verify-decision-coverage flags one that stays unsigned past a bound)"}
+}
+
+// isNilVerifier reports whether v is nil or holds a typed nil (a nil pointer, map, slice, func or
+// channel inside a non-nil Verifier), whose methods would panic.
+func isNilVerifier(v Verifier) bool {
+	if v == nil {
+		return true
+	}
+	switch rv := reflect.ValueOf(v); rv.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.Interface:
+		return rv.IsNil()
+	}
+	return false
 }

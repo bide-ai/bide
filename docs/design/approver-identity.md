@@ -1216,6 +1216,11 @@ Requirements this step leaves to the gate changes (E), because the format layer 
   by a test).
 - Receipts: `VerifyCertificate` derives its time from the receipt's own anchor and checks no revocation
   status; the gate's status re-check is the single pre-execution function (E2).
+- E3: `bide approve -verify-receipt` and `bide audit verify-receipts` verify a receipt with `Verify(v)`
+  and enrolled keys, so they now refuse a certificate-bound receipt (`audit.ErrCertificateBound`, whose
+  message says to use `VerifyCertificate`). They need an identity path (the trust anchors, the policy and
+  the log key, so `VerifyCertificate` runs) in the same change that lets `bide approve` sign with a
+  certificate, and `bide approve -cert` must not verify its own receipt through `Verify(v)`.
 - Model 1b carries the same-decision relation (approver, verdict, scheme, time, leaf; the leaf is in the
   step name) when counting for certificate-bound approvers lands: two chains for one leaf are one
   decision, two leaves are two.
