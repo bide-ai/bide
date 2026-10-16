@@ -345,3 +345,19 @@ func TestFlowGate_BoundGateSupersedesPlainTally(t *testing.T) {
 		t.Fatal("no identity tally")
 	}
 }
+
+// A certificate-bound gate whose recorded tally passed without excluding the requester, under a policy
+// that now excludes it, cannot be re-asked in place: it refuses with ErrConfig and the call does not run.
+func TestBoundGate_SoDChangeAfterCountRefuses(t *testing.T) {
+	g := newBoundGate(t)
+	_, _ = g.run()
+	g.decide("alice")
+	vf := certResolver(map[string]ApproverVerifier{"alice": g.alice, "bob": g.bob})
+	if _, final, err := tallyGate(context.Background(), g.store, "r1", subjectOf(t, g.store, "r1", "c1"), g.pol, vf, ""); err != nil || !final {
+		t.Fatalf("%v %v", final, err)
+	}
+	g.pol = &ApprovalPolicy{Need: 1, Approvers: []string{"alice", "bob"}, ExcludePrincipal: true}
+	if _, err := g.run(); !errors.Is(err, ErrConfig) || g.charged != 0 {
+		t.Fatalf("%v charged %d", err, g.charged)
+	}
+}

@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
+	"time"
 )
 
 // The notifier and the journal readers over a certificate-bound gate's re-asks: the key names the ask
@@ -172,5 +174,56 @@ func TestIdentReask_LatestPauseNote(t *testing.T) {
 	r, ok := LatestPauseNote(by, "c1")
 	if !ok || r.Name != ApprovalIdentReaskStep("c1", 1) {
 		t.Fatalf("%v %v", r.Name, ok)
+	}
+}
+
+// An escalation of a certificate-bound gate's re-ask is rebuilt from the note of its own generation.
+func TestIdentReask_FillDetailUsesTheGenerationsNote(t *testing.T) {
+	g := newBoundGate(t)
+	g.holdGenerationZero()
+	if _, err := g.run(); err == nil {
+		t.Fatal("no re-ask")
+	}
+	e := &notifyEngine{cfg: defaultNotifyConfig(), j: g.store}
+	re := notifyEvent{runID: "r1", opRun: "r1", approval: &NotifyApproval{ToolUseID: "c1", Reask: PendingExecHoldReapproval, reaskGen: 1}}
+	e.fillDetail(context.Background(), &re)
+	if re.approval.ToolName != "charge" || re.approval.Need != 1 || re.approval.Of != 2 {
+		t.Fatalf("detail = %+v", re.approval)
+	}
+	// The note of another generation is not this ask's.
+	other := notifyEvent{runID: "r1", opRun: "r1", approval: &NotifyApproval{ToolUseID: "c1", Reask: PendingExecHoldReapproval, reaskGen: 2}}
+	e.fillDetail(context.Background(), &other)
+	if other.approval.ToolName != "" {
+		t.Fatalf("a generation with no note was filled: %+v", other.approval)
+	}
+}
+
+// A recorded expiry of a certificate-bound gate is final in the deadline check and in the notifier's
+// all-clear, whichever generation recorded it.
+func TestIdentReask_ExpiryIsReadFromTheChain(t *testing.T) {
+	ctx := context.Background()
+	g := newBoundGate(t)
+	g.holdGenerationZero()
+	if _, err := g.run(); err == nil {
+		t.Fatal("no re-ask")
+	}
+	deadlineAt := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	dl := ApprovalDeadline{ToolUseID: "c1", RequestedAt: FormatTimestamp(deadlineAt.Add(-time.Hour)), ExpiresAt: FormatTimestamp(deadlineAt), TimeoutMS: time.Hour.Milliseconds()}
+	writeRaw(t, g.store, "r1", ApprovalDeadlineStep("c1"), valueRec(t, ApprovalDeadlineStep("c1"), dl))
+	early := func() time.Time { return deadlineAt.Add(-time.Minute) }
+	if err := checkNotExpired(ctx, g.store, "op", "r1", "c1", early); err != nil {
+		t.Fatalf("no expiry is recorded yet: %v", err)
+	}
+	exp := passedTally()
+	exp.Expired, exp.Approved = true, 0
+	exp.ApprovedBy = nil
+	exp.Supersedes = ApprovalIdentTallyStep("c1", 0)
+	writeRaw(t, g.store, "r1", ApprovalIdentTallyStep("c1", 1), valueRec(t, ApprovalIdentTallyStep("c1", 1), exp))
+	if err := checkNotExpired(ctx, g.store, "op", "r1", "c1", early); !errors.Is(err, ErrApprovalExpired) {
+		t.Fatalf("a recorded expiry at generation 1 is not read: %v", err)
+	}
+	e := &notifyEngine{cfg: defaultNotifyConfig(), j: g.store}
+	if !e.gateExpired(ctx, "r1", "c1") {
+		t.Fatal("the notifier does not read the expiry of generation 1")
 	}
 }
