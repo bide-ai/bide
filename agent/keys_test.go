@@ -44,7 +44,7 @@ var keyConstructors = map[string]func(string) string{
 		return approvalDecisionStep(s, "ops:1", true, "ed25519", "2026-10-13T12:14:03.123Z", []byte(s))
 	},
 	"decisionIdentityStep": func(s string) string {
-		return decisionIdentityStep(s, "ops:3", true, "ed25519", "2026-10-13T12:14:03.123Z")
+		return decisionIdentityStep(s, "ops:3", true, "ed25519", "2026-10-13T12:14:03.123Z", nil)
 	},
 	"DecisionStep": func(s string) string {
 		return DecisionStep(Decision{ToolUseID: s, ApproverID: "ops:2", Approved: true, Alg: "ed25519",
@@ -156,7 +156,7 @@ func TestToolUseIDKeys_AreBoundedAndPrintable(t *testing.T) {
 				k = approvalDecisionStep(id, "ops", true, "ed25519", "2026-10-13T12:14:03.123Z", nil)
 			}
 			if name == "decisionIdentityStep" {
-				k = decisionIdentityStep(id, "ops", true, "ed25519", "2026-10-13T12:14:03.123Z")
+				k = decisionIdentityStep(id, "ops", true, "ed25519", "2026-10-13T12:14:03.123Z", nil)
 			}
 			if len(k) > 256 || strings.IndexFunc(k, func(r rune) bool { return r < 0x21 || r > 0x7e }) >= 0 {
 				t.Fatalf("%s(%.30q) = %.60q (%d bytes), not short printable ASCII", name, id, k, len(k))

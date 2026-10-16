@@ -79,6 +79,7 @@ Formats carry their own version tags, and a reader refuses what it does not read
 | Decision receipt | `bide.audit.decision-receipt.v1` | The signed decision an approver keeps, checked on its own and against signed tree heads |
 | Notification trail export | `bide.audit.notify-trail-export.v1` | Read strictly: an unknown record kind or field is an error |
 | Approval decision | `bide.approval.v3` | Decisions signed under `v2` no longer verify and must be signed again; a pending run asks again rather than run on them |
+| Certificate-bound approval decision | `bide.approval.v4` | The `v3` layout plus the SHA-256 of the signer's leaf certificate, with the chain in the journal record (`approver_cert`) and in a receipt (`cert`). Defined and journaled by this version; nothing counts one yet ([design](../design/design-mofn-approval.md#v4-certificate-bound-decisions-format-only)) |
 | Notification payload | `bide.notification.v1` | Receivers should ignore unknown fields |
 
 ### What stays verifiable across versions

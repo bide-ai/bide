@@ -1222,6 +1222,38 @@ recomputes the verdict with `Now` zero and never inherits a live tier from the r
 `bide approve -list` never show a verified or green state for a provisional or live-count decision: they
 show the tier, its basis and `S`, and "provisional" is visibly not "verified".
 
+The decision format landed after the certificate core (`bide.approval.v4` bytes, `approver_cert` in the
+record, the leaf hash in the step name, the chain in a receipt with `VerifyCertificate` and `AnchorTime`);
+it is specified in [the m-of-n design](design-mofn-approval.md#v4-certificate-bound-decisions-format-only)
+and counts nothing until the gate change. `WithDecisionCheck` refuses a decision that carries a chain
+meanwhile, and the verifier-kind rule is exactly the note's: the counting rule decides by the approver's
+verifier, so a v4 signature fails under a bare-key verifier and a v3 decision that carries a chain counts
+as a bare-key decision.
+
+Requirements this step leaves to the gate changes (E), because the format layer cannot enforce them:
+
+- A record counts only if its chain verifies as well as its signature: a record whose chain fails (a
+  wrong intermediate, a chain to no anchor) is bad, exactly as one whose signature fails, so that
+  `SubmitDecision`'s push to the signature-derived name lets the genuine chain land when a junk record
+  holds the identity name. The step name carries the leaf, not the intermediates, so a record with the
+  genuine leaf and signature and a junk intermediate shares the genuine decision's name. The
+  certificate-bound verifier (E1) must therefore verify the record's chain, and the pre-flight must read
+  validity the same way.
+- A chain on a decision of an approver whose kind is known to be bare-key is refused. The resolver does
+  not carry the kind yet, so `SubmitDecision` cannot; until E, one v3 signature journaled under many
+  chains is many records, each valid under the bare key, and the tally counts the approver once (pinned
+  by a test).
+- Receipts: `VerifyCertificate` derives its time from the receipt's own anchor and checks no revocation
+  status; the gate's status re-check is the single pre-execution function (E2).
+- E3: `bide approve -verify-receipt` and `bide audit verify-receipts` verify a receipt with `Verify(v)`
+  and enrolled keys, so they now refuse a certificate-bound receipt (`audit.ErrCertificateBound`, whose
+  message says to use `VerifyCertificate`). They need an identity path (the trust anchors, the policy and
+  the log key, so `VerifyCertificate` runs) in the same change that lets `bide approve` sign with a
+  certificate, and `bide approve -cert` must not verify its own receipt through `Verify(v)`.
+- Model 1b carries the same-decision relation (approver, verdict, scheme, time, leaf; the leaf is in the
+  step name) when counting for certificate-bound approvers lands: two chains for one leaf are one
+  decision, two leaves are two.
+
 Every step updates the guides it touches. The approvals guide states the post-quantum gap (decision 15: a
 certificate-bound approver gives up the hybrid scheme's protection) where it first describes
 certificate-bound approvers.

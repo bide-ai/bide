@@ -40,6 +40,7 @@ type legacyRecord struct {
 	Signature      []byte          `json:"signature,omitempty"`
 	DecidedAt      string          `json:"decided_at,omitempty"`
 	RecordedAt     string          `json:"recorded_at,omitempty"`
+	ApproverCert   [][]byte        `json:"approver_cert,omitempty"`
 	AttemptedAt    int64           `json:"attempted_at,omitempty"`
 	Reconciled     bool            `json:"reconciled,omitempty"`
 	OutcomeUnknown bool            `json:"outcome_unknown,omitempty"`
@@ -104,7 +105,7 @@ func legacyView(r Record) legacyRecord {
 		Name: r.Name, Kind: r.Kind, Message: r.Message, Usage: r.Usage, DiscardedUsage: r.DiscardedUsage,
 		Finish: r.Finish(), RawFinish: r.RawFinish(), Model: r.Model(), PromptDigest: r.PromptDigest(), ToolsDigest: r.ToolsDigest(),
 		ToolUseID: r.ToolUseID, Result: r.Result, IsError: r.IsError, Approved: r.Approved,
-		Approver: r.Approver(), ApproverAlg: r.ApproverAlg(), Signature: r.Signature(), DecidedAt: r.DecidedAt(), RecordedAt: r.RecordedAt(),
+		Approver: r.Approver(), ApproverAlg: r.ApproverAlg(), Signature: r.Signature(), DecidedAt: r.DecidedAt(), RecordedAt: r.RecordedAt(), ApproverCert: r.ApproverCert(),
 		AttemptedAt: r.AttemptedAt, Reconciled: r.Reconciled, OutcomeUnknown: r.OutcomeUnknown, Redacted: r.Redacted, stamped: r.stamped,
 		Safety: r.Safety, Approval: r.Approval, Evidence: r.Evidence, Format: r.Format, claim: r.claim, salt: r.salt, raw: r.raw,
 	}
@@ -183,8 +184,8 @@ func idPair(mask uint32, v idVals) (Record, legacyRecord) {
 	if t := (ModelTurn{Finish: l.Finish, RawFinish: l.RawFinish, Model: l.Model, PromptDigest: l.PromptDigest, ToolsDigest: l.ToolsDigest}); t != (ModelTurn{}) || mask&(1<<idForceTurn) != 0 {
 		r.ModelTurn = &t
 	}
-	if l.Approver != "" || l.ApproverAlg != "" || l.Signature != nil || l.DecidedAt != "" || l.RecordedAt != "" || mask&(1<<idForceSig) != 0 {
-		r.ApproverSignature = &ApproverSignature{Approver: l.Approver, ApproverAlg: l.ApproverAlg, Signature: l.Signature, DecidedAt: l.DecidedAt, RecordedAt: l.RecordedAt}
+	if l.Approver != "" || l.ApproverAlg != "" || l.Signature != nil || l.DecidedAt != "" || l.RecordedAt != "" || len(l.ApproverCert) != 0 || mask&(1<<idForceSig) != 0 {
+		r.ApproverSignature = &ApproverSignature{Approver: l.Approver, ApproverAlg: l.ApproverAlg, Signature: l.Signature, DecidedAt: l.DecidedAt, RecordedAt: l.RecordedAt, ApproverCert: l.ApproverCert}
 	}
 	return r, l
 }
@@ -289,7 +290,7 @@ func checkDecode(b []byte) error {
 	if (got.ModelTurn != nil) != (want.Finish != "" || want.RawFinish != "" || want.Model != nil || want.PromptDigest != "" || want.ToolsDigest != "") {
 		return fmt.Errorf("decode %q: ModelTurn %+v for a record whose journal encoding holds none (or the reverse)", b, got.ModelTurn)
 	}
-	if (got.ApproverSignature != nil) != (want.Approver != "" || want.ApproverAlg != "" || len(want.Signature) != 0 || want.DecidedAt != "" || want.RecordedAt != "") {
+	if (got.ApproverSignature != nil) != (want.Approver != "" || want.ApproverAlg != "" || len(want.Signature) != 0 || want.DecidedAt != "" || want.RecordedAt != "" || len(want.ApproverCert) != 0) {
 		return fmt.Errorf("decode %q: ApproverSignature %+v for a record whose journal encoding holds none (or the reverse)", b, got.ApproverSignature)
 	}
 	again, err := EncodeRecord(got)
@@ -463,7 +464,7 @@ func FuzzRecordIdentity_Decode(f *testing.F) {
 		if err != nil {
 			return
 		}
-		if len(want.Signature) == 0 && want.Approver == "" && want.ApproverAlg == "" && want.DecidedAt == "" && want.RecordedAt == "" {
+		if len(want.Signature) == 0 && want.Approver == "" && want.ApproverAlg == "" && want.DecidedAt == "" && want.RecordedAt == "" && len(want.ApproverCert) == 0 {
 			// "signature":"" decodes to an empty, non-nil slice in the legacy layout; the record
 			// carries no ApproverSignature then, so it reads nil. Both encode alike (omitempty).
 			want.Signature = nil
@@ -476,7 +477,7 @@ func FuzzRecordIdentity_Decode(f *testing.F) {
 		if (got.ModelTurn != nil) != (want.Finish != "" || want.RawFinish != "" || want.Model != nil || want.PromptDigest != "" || want.ToolsDigest != "") {
 			t.Fatalf("decode %q: ModelTurn %+v, though the record holds no model-turn metadata (or the reverse)", b, got.ModelTurn)
 		}
-		if (got.ApproverSignature != nil) != (want.Approver != "" || want.ApproverAlg != "" || len(want.Signature) != 0 || want.DecidedAt != "" || want.RecordedAt != "") {
+		if (got.ApproverSignature != nil) != (want.Approver != "" || want.ApproverAlg != "" || len(want.Signature) != 0 || want.DecidedAt != "" || want.RecordedAt != "" || len(want.ApproverCert) != 0) {
 			t.Fatalf("decode %q: ApproverSignature %+v, though the record holds no signed decision (or the reverse)", b, got.ApproverSignature)
 		}
 		enc, err := EncodeRecord(got)

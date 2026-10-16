@@ -181,6 +181,12 @@ type ApproverSignature struct {
 	// time, since they never fail for want of one.
 	DecidedAt  string `json:"decided_at,omitempty"`
 	RecordedAt string `json:"recorded_at,omitempty"`
+	// ApproverCert is the leaf-first DER certificate chain of a certificate-bound approver (base64
+	// in JSON), present only on a decision signed under bide.approval.v4: the signature binds the
+	// leaf's SHA-256 (agent.ApprovalDecisionBytesCert), and the chain is stored so the journal is
+	// self-contained and its Merkle trail covers it. Additive and optional; a reader that does not
+	// know the member ignores it and, rebuilding v3 bytes, never counts the decision.
+	ApproverCert [][]byte `json:"approver_cert,omitempty"`
 }
 
 // Finish returns why the model turn ended (ModelTurn.Finish), or "" when the record carries no
@@ -253,6 +259,16 @@ func (r Record) Signature() []byte {
 		return nil
 	}
 	return r.ApproverSignature.Signature
+}
+
+// ApproverCert returns the certificate chain a certificate-bound decision carries
+// (ApproverSignature.ApproverCert), leaf first, or nil when the record carries none. The slices are
+// the record's own, as the field was.
+func (r Record) ApproverCert() [][]byte {
+	if r.ApproverSignature == nil {
+		return nil
+	}
+	return r.ApproverSignature.ApproverCert
 }
 
 // DecidedAt returns the signed decision time of a signed decision (ApproverSignature.DecidedAt),
@@ -354,7 +370,7 @@ func unmarshalRecord(b []byte) (Record, error) {
 	if f.ModelTurn != nil && *f.ModelTurn == (ModelTurn{}) {
 		f.ModelTurn = nil
 	}
-	if s := f.ApproverSignature; s != nil && s.Approver == "" && s.ApproverAlg == "" && len(s.Signature) == 0 && s.DecidedAt == "" && s.RecordedAt == "" {
+	if s := f.ApproverSignature; s != nil && s.Approver == "" && s.ApproverAlg == "" && len(s.Signature) == 0 && s.DecidedAt == "" && s.RecordedAt == "" && len(s.ApproverCert) == 0 {
 		f.ApproverSignature = nil
 	}
 	return Record(f), nil

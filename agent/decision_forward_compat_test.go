@@ -22,7 +22,7 @@ func TestUnknownFieldsInADecisionRecordAreTolerated(t *testing.T) {
 	if err := json.Unmarshal(b, &m); err != nil {
 		t.Fatal(err)
 	}
-	m["approver_cert"] = "AAAA"
+	m["approver_future"] = "AAAA"
 	nb, _ := json.Marshal(m)
 	got, err := DecodeStoredRecord("r", "approval:c1:a:00", nb)
 	if err != nil || got.Approver() != "a" {

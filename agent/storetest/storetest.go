@@ -49,6 +49,7 @@ func Run(t *testing.T, open func(t *testing.T) agent.Store) {
 	t.Run("Header_ReadRacingFirstWrite", func(t *testing.T) { readRacingFirstWrite(t, open) })
 	t.Run("Journal_SharedInFlightSteps", func(t *testing.T) { sharedFlights(t, open(t)) })
 	t.Run("Journal_AmbiguousClaimReused", func(t *testing.T) { ambiguousClaim(t, open(t)) })
+	t.Run("Journal_CertChainDecision", func(t *testing.T) { certChainDecision(t, open(t)) })
 	t.Run("Fidelity", func(t *testing.T) {
 		runFidelity(t, func(t *testing.T) *agent.Journal { return journal(t, open(t)) })
 	})
