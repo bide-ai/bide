@@ -3,6 +3,7 @@ package flowedit
 import (
 	"encoding/json"
 	"encoding/xml"
+	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
@@ -432,5 +433,71 @@ func TestGraphIsWellFormedAndEscaped(t *testing.T) {
 	}
 	if strings.Contains(v.Graph, "<img") {
 		t.Errorf("a name is in the graph unescaped")
+	}
+}
+
+// The Content-Type of each asset is fixed in code (one charset, no operating-system lookup): with
+// nosniff, a platform whose mime table maps .js to text/plain would block the module script.
+func TestAssetContentTypes(t *testing.T) {
+	s, _ := newTestServer(t, "refund.yaml", testFlow)
+	for name, want := range map[string]string{
+		"editor.js": "text/javascript; charset=utf-8", "theme.js": "text/javascript; charset=utf-8",
+		"editor.css": "text/css; charset=utf-8", "style.css": "text/css; charset=utf-8", "graph.css": "text/css; charset=utf-8",
+	} {
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, httptest.NewRequest("GET", "http://"+host+"/assets/"+name, nil))
+		if got := w.Header().Get("Content-Type"); got != want {
+			t.Errorf("%s: Content-Type %q, want %q", name, got, want)
+		}
+	}
+}
+
+// The editor reads only the file it was started on. A symbolic link, or another file, put at the
+// path afterwards is refused on every read, not followed.
+func TestReadsRefuseAFileSwappedInAfterStartup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating a symbolic link needs a privilege on Windows")
+	}
+	s, p := newTestServer(t, "refund.yaml", testFlow)
+	secret := filepath.Join(t.TempDir(), "secret.yaml")
+	if err := os.WriteFile(secret, []byte("TOPSECRET: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, swap := range map[string]func(){
+		"a symbolic link": func() { os.Remove(p); os.Symlink(secret, p) },
+		"another file":    func() { os.Remove(p); os.WriteFile(p, []byte("TOPSECRET: 1\n"), 0o600) },
+	} {
+		swap()
+		w := call(s.Handler(), s, "/api/doc", "{}", nil)
+		if w.Code == 200 || strings.Contains(w.Body.String(), "TOPSECRET") {
+			t.Errorf("%s: %d %s", name, w.Code, w.Body)
+		}
+		os.Remove(p)
+		os.WriteFile(p, []byte(testFlow), 0o600)
+	}
+}
+
+// A node name with a character XML 1.0 cannot hold does not blank the graph: the drawing stays
+// well-formed and the name is shown with U+FFFD in its place.
+func TestGraphSurvivesXMLIllegalNames(t *testing.T) {
+	for _, bad := range []string{"\u0001", "\u000b", "\u001b", "￾", "￿"} {
+		text := `{"version": 1, "flow": "f", "entry": "a` + bad + `b", "nodes": [{"name": "a` + bad + `b", "block": "x", "safety": "readonly"}], "wiring": []}`
+		text = strings.ReplaceAll(text, bad, fmt.Sprintf(`\u%04x`, []rune(bad)[0]))
+		v := BuildView("f.json", []byte(text))
+		if v.Graph == "" {
+			t.Fatalf("%q: no graph", bad)
+		}
+		dec := xml.NewDecoder(strings.NewReader(v.Graph))
+		for {
+			if _, err := dec.Token(); err != nil {
+				if err != io.EOF {
+					t.Errorf("%q: the graph is not well-formed: %v", bad, err)
+				}
+				break
+			}
+		}
+		if !strings.Contains(v.Graph, "a�b") {
+			t.Errorf("%q: the name is not shown with a marker", bad)
+		}
 	}
 }

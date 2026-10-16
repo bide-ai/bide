@@ -35,6 +35,9 @@ var pageFS embed.FS
 // graph styles and theme script.
 var sharedAssets = []string{"style.css", "graph.css", "extras.css", "theme.js"}
 
+// assetTypes is the Content-Type of each file the editor serves.
+var assetTypes = map[string]string{".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8"}
+
 // ownAssets are the editor's own files in page/, by name.
 var ownAssets = []string{"editor.js", "editor.css"}
 
@@ -52,6 +55,7 @@ type Server struct {
 	path  string // the file, absolute, with symlinks resolved at startup
 	name  string // the name the page shows: the path as given
 	token string
+	id    os.FileInfo // the file at startup: what every read must open
 }
 
 // New returns the editor for the file at path. The file must be an existing regular file of at
@@ -71,14 +75,18 @@ func New(path string) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("flowedit: %w", err)
 	}
-	if _, err := readConfig(real); err != nil {
+	if _, err := readConfig(real, nil); err != nil {
 		return nil, err
+	}
+	id, err := os.Stat(real)
+	if err != nil {
+		return nil, fmt.Errorf("flowedit: %w", err)
 	}
 	var tok [16]byte
 	if _, err := rand.Read(tok[:]); err != nil {
 		return nil, fmt.Errorf("flowedit: no randomness for the session token: %w", err)
 	}
-	return &Server{path: real, name: path, token: hex.EncodeToString(tok[:])}, nil
+	return &Server{path: real, id: id, name: path, token: hex.EncodeToString(tok[:])}, nil
 }
 
 // Token is the session token the page sends in TokenHeader. bide edit prints it in the address's
@@ -86,7 +94,10 @@ func New(path string) (*Server, error) {
 func (s *Server) Token() string { return s.token }
 
 // readConfig reads the file, which must be a regular file of at most MaxFileSize bytes.
-func readConfig(path string) ([]byte, error) {
+// When id is not nil the opened file must be the file id describes (os.SameFile): the editor reads
+// only the file it was started on, so a symbolic link or another file put at the path since is
+// refused, not followed.
+func readConfig(path string, id os.FileInfo) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("flowedit: %w", err)
@@ -98,6 +109,9 @@ func readConfig(path string) ([]byte, error) {
 	}
 	if !st.Mode().IsRegular() {
 		return nil, fmt.Errorf("flowedit: %s is not a regular file", path)
+	}
+	if id != nil && !os.SameFile(id, st) {
+		return nil, fmt.Errorf("flowedit: %s is no longer the file the editor was started on; nothing was read", path)
 	}
 	b, err := io.ReadAll(io.LimitReader(f, MaxFileSize+1))
 	if err != nil {
@@ -111,7 +125,7 @@ func readConfig(path string) ([]byte, error) {
 
 // Doc reads the file and returns its View with the hash of the bytes read.
 func (s *Server) Doc() (*Doc, error) {
-	b, err := readConfig(s.path)
+	b, err := readConfig(s.path, s.id)
 	if err != nil {
 		return nil, err
 	}
@@ -189,7 +203,9 @@ func (s *Server) asset(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("Content-Type", mime.TypeByExtension(filepath.Ext(name))+"; charset=utf-8")
+	// A fixed table, not the operating system's: with nosniff a platform whose registry maps .js to
+	// text/plain would block the script and leave a dead page.
+	w.Header().Set("Content-Type", assetTypes[filepath.Ext(name)])
 	_, _ = w.Write(b)
 }
 

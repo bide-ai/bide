@@ -128,6 +128,14 @@ func BuildView(name string, text []byte) *View {
 		// The viewer inlines the SVG in HTML, which needs no namespace; the page parses it as an
 		// XML document, which does.
 		v.Graph = strings.Replace(cv.Graph.SVG, "<svg ", `<svg xmlns="http://www.w3.org/2000/svg" `, 1)
+		// A node name is any string in the config, and JSON allows characters XML 1.0 cannot hold;
+		// one such name must not make the whole drawing ill-formed, so each is shown as U+FFFD.
+		v.Graph = strings.Map(func(r rune) rune {
+			if r == 0x9 || r == 0xA || r == 0xD || r >= 0x20 && r <= 0xD7FF || r >= 0xE000 && r <= 0xFFFD || r >= 0x10000 && r <= 0x10FFFF {
+				return r
+			}
+			return '\uFFFD'
+		}, v.Graph)
 	}
 	v.Nodes = outline(data, r)
 	v.Wiring = wiring(r.Topology)
