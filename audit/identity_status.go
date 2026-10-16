@@ -531,6 +531,13 @@ type StatusParams struct {
 	ConsecutiveNumbers bool
 	// CoverageTolerance absorbs publication jitter in time coverage (default one minute).
 	CoverageTolerance time.Duration
+	// ThisUpdateSkew is how much earlier than its real issue a CA stamps thisUpdate (Microsoft AD CS back-dates
+	// it by about ten minutes). A CRL is then really issued at thisUpdate plus the skew: a hold released
+	// before the next CRL is released no later than that, and a CRL's age is measured from it.
+	// ThisUpdateSkewFor overrides it per issuing CA. Zero takes thisUpdate at face value; it is never
+	// assumed.
+	ThisUpdateSkew    time.Duration
+	ThisUpdateSkewFor map[SPKIHash]time.Duration
 	// AllowHolds accepts certificates that have been on hold (certificateHold, removeFromCRL). Off by
 	// default: a removeFromCRL entry's date is the CA's own (RFC 5280 does not define it as the
 	// release time), so a CA that stamps the original hold date makes a release look old and could hide
@@ -774,6 +781,10 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, evict
 		}
 		return interval > 0 && v.this.Sub(prev.this) <= interval+p.CoverageTolerance
 	}
+	skew := p.ThisUpdateSkew
+	if sk, ok := p.ThisUpdateSkewFor[SPKIHashOf(issuer)]; ok {
+		skew = sk
+	}
 	retains := func(v *crlView) bool {
 		return p.Retained || (!v.expiredFrom.IsZero() && !cert.NotAfter.Before(v.expiredFrom))
 	}
@@ -863,7 +874,7 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, evict
 					return time.Time{}
 				}
 			}
-			return ordered[nxt].this
+			return ordered[nxt].this.Add(skew)
 		}
 		for _, hs := range holdStarts {
 			end := time.Time{}
@@ -940,7 +951,7 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, evict
 	}
 	fresh := usable[:0:0]
 	for _, v := range usable {
-		if live && (p.MaxStatusAge <= 0 || !p.Now.Before(v.next) || p.Now.Sub(v.this) > p.MaxStatusAge || v.this.After(p.Now.Add(p.CoverageTolerance))) {
+		if live && (p.MaxStatusAge <= 0 || !p.Now.Before(v.next) || p.Now.Sub(v.this) > p.MaxStatusAge+skew || v.this.After(p.Now.Add(p.CoverageTolerance))) {
 			continue
 		}
 		fresh = append(fresh, v)

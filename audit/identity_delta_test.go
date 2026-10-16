@@ -692,3 +692,61 @@ func TestTwoHoldsAreToldApart(t *testing.T) {
 		}
 	}
 }
+
+// AD CS back-dates thisUpdate (about ten minutes): a CRL is really issued about that long after the
+// time it carries. A hold released between the last CRL that lists it and the next is therefore
+// released no later than the next CRL's *issue*, thisUpdate plus the declared skew, and a decision in
+// between is still inside the hold.
+func TestHoldReleaseByAbsenceUsesTheDeclaredThisUpdateSkew(t *testing.T) {
+	hold := func(s *stFx) x509.RevocationListEntry { return testca.Revoked(s.leaf.Cert, idT0.Add(10*min), 6) }
+	skew := 10 * min
+	for _, tc := range []struct {
+		name    string
+		at      time.Duration
+		skew    time.Duration
+		revoked bool
+	}{
+		{"inside the skew window, skew declared", 45 * min, skew, true},
+		{"after the skew window, skew declared", 51 * min, skew, false},
+		{"inside the window, no skew declared", 45 * min, 0, false}, // the understated thisUpdate is taken at face value
+	} {
+		s := newStFxAt(t, idT0.Add(tc.at))
+		b1 := s.lcrl(1, idT0.Add(12*min), 15*min, hold(s))
+		b2 := s.lcrl(2, idT0.Add(25*min), 15*min, hold(s))
+		b3 := s.lcrl(3, idT0.Add(40*min), 15*min) // thisUpdate T0+40m, issued T0+50m
+		p := audit.StatusParams{AllowHolds: true, CAPeriod: 20 * min, ThisUpdateSkew: tc.skew}
+		if st := s.leafStatus(s.snap(b1, b2, b3), p); st.Revoked != tc.revoked {
+			t.Fatalf("%s: revoked=%v want %v: %+v", tc.name, st.Revoked, tc.revoked, st)
+		}
+	}
+	// Per issuing CA.
+	s := newStFxAt(t, idT0.Add(45*min))
+	b1 := s.lcrl(1, idT0.Add(12*min), 15*min, hold(s))
+	b2 := s.lcrl(2, idT0.Add(25*min), 15*min, hold(s))
+	b3 := s.lcrl(3, idT0.Add(40*min), 15*min)
+	p := audit.StatusParams{AllowHolds: true, CAPeriod: 20 * min,
+		ThisUpdateSkewFor: map[audit.SPKIHash]time.Duration{audit.SPKIHashOf(s.inter.Cert): skew}}
+	if st := s.leafStatus(s.snap(b1, b2, b3), p); !st.Revoked {
+		t.Fatalf("per-issuer skew: %+v", st)
+	}
+	p.ThisUpdateSkewFor = map[audit.SPKIHash]time.Duration{audit.SPKIHashOf(s.root.Cert): skew}
+	if st := s.leafStatus(s.snap(b1, b2, b3), p); st.Revoked {
+		t.Fatalf("another issuer's skew applied: %+v", st)
+	}
+}
+
+// Freshness measures a CRL's age from when it was issued: thisUpdate plus the declared skew.
+func TestFreshnessAllowsTheThisUpdateSkew(t *testing.T) {
+	s := newStFx(t)
+	crl := s.lcrl(1, idT0.Add(10*time.Second), 3*hour) // issued ten minutes later than it says
+	sn := s.snap(crl)
+	age := func(skew time.Duration) audit.CertStatus {
+		return s.leafStatus(sn, audit.StatusParams{Now: idT0.Add(10*time.Second + 55*min), MaxStatusAge: 50 * min, ThisUpdateSkew: skew, CountLive: true})
+	}
+	if st := age(0); st.Tier != audit.TierNoInformation || !st.Stale {
+		t.Fatalf("no skew declared: %+v", st)
+	}
+	if st := age(10 * min); st.Tier == audit.TierNoInformation {
+		t.Fatalf("55 minutes after thisUpdate is 45 after issue: %+v", st)
+	}
+}

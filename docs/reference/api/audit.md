@@ -1702,6 +1702,9 @@ type StatusParams struct {
 
 	CoverageTolerance time.Duration
 
+	ThisUpdateSkew    time.Duration
+	ThisUpdateSkewFor map[SPKIHash]time.Duration
+
 	AllowHolds bool
 }
 ```
