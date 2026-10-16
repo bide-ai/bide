@@ -262,8 +262,68 @@ func TestIntake_ReplayDuringAStatusOutageIsStillTheSameDecision(t *testing.T) {
 		l := c.leaves["alice"]
 		d.Signature = ed25519.Sign(l.Key.(ed25519.PrivateKey), agent.ApprovalDecisionBytesCert(c.subject(c.t), "alice", false, testDecidedAt, agent.CertLeafHash(l.DER)))
 	})
+	// A different decision is judged first: during the outage that is unavailable, never written; once status is
+	// back, the approver has already decided.
+	if err := c.submit(deny, nil); !errors.Is(err, agent.ErrStatusUnavailable) {
+		t.Fatalf("a different decision during the outage: %v", err)
+	}
+	c.status = c.longStatus()
 	if err := c.submit(deny, nil); !errors.Is(err, agent.ErrAlreadyDecided) {
 		t.Fatalf("a different decision after one is held: %v", err)
+	}
+	if n := c.decisionRecords(); n != 1 {
+		t.Fatalf("%d decision records", n)
+	}
+}
+
+// A request that repeats a recorded decision's public fields (approver, verdict, time, leaf) with other
+// signature bytes is not a replay: it is judged, and a garbage, empty or flipped signature is refused (never
+// answered as the held decision), whatever status is doing.
+func TestIntake_AReplayNeedsTheSameSignatureOrAValidOne(t *testing.T) {
+	for _, outage := range []bool{false, true} {
+		c := intakeGate(t)
+		if err := c.submit(c.decision("alice", nil), nil); err != nil {
+			t.Fatal(err)
+		}
+		if outage {
+			c.status = nil
+		}
+		for name, sig := range map[string][]byte{
+			"a flipped byte": func() []byte { s := append([]byte{}, c.decision("alice", nil).Signature...); s[0] ^= 0xff; return s }(),
+			"garbage":        []byte("not a signature"),
+		} {
+			var wrote bool
+			err := c.submit(c.decision("alice", func(d *agent.Decision) { d.Signature = sig }), &wrote)
+			if err == nil || wrote {
+				t.Fatalf("outage=%v %s: answered as a replay (err %v, wrote %v)", outage, name, err, wrote)
+			}
+			if !errors.Is(err, agent.ErrInvalidApproval) && !errors.Is(err, agent.ErrStatusUnavailable) {
+				t.Fatalf("outage=%v %s: %v", outage, name, err)
+			}
+		}
+		if n := c.decisionRecords(); n != 1 {
+			t.Fatalf("%d decision records", n)
+		}
+	}
+}
+
+// The tier a finding gets is one function for the gate's record and the intake's response.
+func TestIdentityTierIsOneClassifier(t *testing.T) {
+	for _, tc := range []struct {
+		tier, time, want string
+	}{
+		{"final", "log signer clock: head of size 3 root ab", agent.TierLogclockFinal},
+		{"final", "rfc3161 tsa.example", agent.TierIndependentFinal},
+		{"final", "anchor-receipt log.example", agent.TierIndependentFinal},
+		{"final", "some future wording", agent.TierLogclockFinal}, // an unknown source is never promoted
+		{"final", "", agent.TierLogclockFinal},
+		{"provisional", "rfc3161 tsa.example", agent.TierProvisional},
+		{"provisional", "log signer clock: head of size 3 root ab", agent.TierProvisional},
+		{"no information", "rfc3161 tsa.example", agent.TierProvisional},
+	} {
+		if got := agent.IdentityTier(&agent.CertCheck{Tier: tc.tier, Time: tc.time}); got != tc.want {
+			t.Fatalf("%q %q: %q, want %q", tc.tier, tc.time, got, tc.want)
+		}
 	}
 }
 

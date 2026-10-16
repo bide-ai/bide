@@ -536,3 +536,29 @@ func TestCertIntake_IdentityRuleIsBehindTheGateReadAuthorization(t *testing.T) {
 		t.Fatalf("%d %s", resp.StatusCode, buf.String())
 	}
 }
+
+// A request that repeats a recorded decision's public fields with a flipped signature byte is refused, with
+// no receipt, whether or not status is available; only the exact bytes (or a valid signature) are a replay.
+func TestCertIntake_AReplayWithAFlippedSignatureIsRefused(t *testing.T) {
+	for _, outage := range []bool{false, true} {
+		r := newCertRig(t)
+		if status, _, out := r.post(r.aliceBody()); status != 200 || out["recorded"] != true {
+			t.Fatalf("%d %v", status, out)
+		}
+		if outage {
+			r.appr.Status = nil
+		}
+		b := r.aliceBody()
+		sig, _ := base64.StdEncoding.DecodeString(b.Signature)
+		sig[0] ^= 0xff
+		b.Signature = base64.StdEncoding.EncodeToString(sig)
+		before := r.records()
+		status, _, out := r.post(b)
+		if status == http.StatusOK || out["receipt"] != nil || r.records() != before {
+			t.Fatalf("outage=%v: a flipped signature was answered: %d %v", outage, status, out)
+		}
+		if status != 422 && status != 503 {
+			t.Fatalf("outage=%v: %d %v", outage, status, out)
+		}
+	}
+}

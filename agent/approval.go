@@ -1688,16 +1688,25 @@ func checkCertDecision(op string, d Decision, decidedAt string, flow bool, recs 
 		i := slices.IndexFunc(recs, func(r Record) bool { return r.Name == ApprovalRequestStep(d.ToolUseID) })
 		recs = recs[i+1:]
 	}
-	for _, r := range recs {
-		if !IsApprovalDecision(r, d.ToolUseID) || r.Approver() != d.ApproverID || !certRecordVerifies(iv, s, r) {
-			continue
+	// The approver's first valid record, if any. An exact replay (the same signature bytes, so the same
+	// decision) is answered from it without judging the request again, which is what lets a retry end during
+	// a status outage. Any other request is judged first: a request that merely repeats a decision's public
+	// fields (approver, verdict, time, leaf) with other signature bytes is not a replay until it verifies.
+	var held *Record
+	for i := range recs {
+		r := recs[i]
+		if IsApprovalDecision(r, d.ToolUseID) && r.Approver() == d.ApproverID && certRecordVerifies(iv, s, r) {
+			held = &recs[i]
+			break
 		}
-		if r.Approved == d.Approved && r.ApproverAlg() == d.Alg && r.DecidedAt() == decidedAt && sameLeaf(r, d) {
-			return decisionCheckResult{same: r.Name, s: s, v: cv, d: d, at: decidedAt, iv: iv}, nil
-		}
-		return none, fmt.Errorf("%s: approver %q already decided on call %q: %w", op, d.ApproverID, d.ToolUseID, ErrAlreadyDecided)
 	}
-	// No valid decision of the approver's is held: this one is judged before it is written.
+	sameDecision := func(r Record) bool {
+		return r.Approved == d.Approved && r.ApproverAlg() == d.Alg && r.DecidedAt() == decidedAt && sameLeaf(r, d)
+	}
+	if held != nil && sameDecision(*held) && bytes.Equal(held.Signature(), d.Signature) {
+		return decisionCheckResult{same: held.Name, s: s, v: cv, d: d, at: decidedAt, iv: iv}, nil
+	}
+	// This decision is judged before it is written.
 	if len(d.Cert) == 0 {
 		return none, fmt.Errorf("%s: approver %q: %s: %w", op, d.ApproverID, ReasonNoCert, ErrInvalidApproval)
 	}
@@ -1710,6 +1719,13 @@ func checkCertDecision(op string, d Decision, decidedAt string, flow bool, recs 
 		return none, fmt.Errorf("%s: approver %q: %s (%s): %w", op, d.ApproverID, cc.Reason, cc.Detail, ErrStatusUnavailable)
 	default:
 		return none, fmt.Errorf("%s: approver %q: %s (%s): %w", op, d.ApproverID, cc.Reason, cc.Detail, ErrInvalidApproval)
+	}
+	if held != nil {
+		if sameDecision(*held) {
+			// The same decision under other signature bytes (a randomized scheme re-signed it): already held.
+			return decisionCheckResult{same: held.Name, s: s, v: cv, d: d, at: decidedAt, iv: iv}, nil
+		}
+		return none, fmt.Errorf("%s: approver %q already decided on call %q: %w", op, d.ApproverID, d.ToolUseID, ErrAlreadyDecided)
 	}
 	return decisionCheckResult{s: s, v: cv, d: d, at: decidedAt, iv: iv}, nil
 }

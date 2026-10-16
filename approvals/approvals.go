@@ -788,7 +788,7 @@ func (h *Handler) gateChecks(g *gateRecords) (Gate, []agent.DecisionCheck) {
 	for _, c := range checks {
 		gd := GateDecision{Approver: c.Approver, Approved: c.Approved, Counted: c.Counted, Reason: c.Reason}
 		if c.Counted && c.Cert != nil {
-			gd.Tier, gd.Basis = certTier(c.Cert), c.Cert.BasisKind
+			gd.Tier, gd.Basis = agent.IdentityTier(c.Cert), c.Cert.BasisKind
 			gd.Provisional = gd.Tier == agent.TierProvisional
 		}
 		out.Decisions = append(out.Decisions, gd)
@@ -958,7 +958,7 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "not_an_approver", "the approver is not one of this gate's approvers")
 		return
 	}
-	idx := h.findDecision(g, d)
+	idx := h.findDecision(g, d, false)
 	if idx >= 0 && !h.standsFor(g, d, idx) {
 		idx = -1 // a record of d's own bytes that is no decision (the gate ignores it): not a replay
 	}
@@ -1015,7 +1015,7 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 			h.fail(w, err)
 			return
 		}
-		if idx = h.findDecision(g, d); idx < 0 {
+		if idx = h.findDecision(g, d, true); idx < 0 {
 			h.fail(w, fmt.Errorf("the decision of %q on %s was recorded but not found in run %s", d.ApproverID, d.ToolUseID, d.RunID))
 			return
 		}
@@ -1096,7 +1096,7 @@ func (h *Handler) standsFor(g *gateRecords, d agent.Decision, idx int) bool {
 // verifies under the approver's key for this call stands in for d: a record that does not verify is no
 // decision (the gate ignores it), so it must not hide the genuine one from SubmitDecision. -1 if there
 // is none.
-func (h *Handler) findDecision(g *gateRecords, d agent.Decision) int {
+func (h *Handler) findDecision(g *gateRecords, d agent.Decision, submitted bool) int {
 	// The record under the decision's identity name (agent.DecisionStep) is not necessarily the
 	// decision: a bad record may hold that name, and the real decision is then journaled under
 	// another. So no record is taken for the decision by its name; one is, if it is the approver's
@@ -1119,8 +1119,14 @@ func (h *Handler) findDecision(g *gateRecords, d agent.Decision) int {
 	}
 	msg := agent.ApprovalDecisionBytes(g.subject, d.ApproverID, d.Approved, d.DecidedAt)
 	if iv, ok := v.(agent.CertIntakeVerifier); ok {
-		// A certificate-bound approver: the same decision (verdict, scheme, time and leaf) by a record that
-		// the intake judges valid, whatever its signature bytes.
+		// A certificate-bound approver. Only a record with the request's own signature bytes stands in for it
+		// before SubmitDecision has judged the request (found above): a request that repeats a decision's
+		// public fields with other bytes has verified nothing, and is not answered with the record. After
+		// SubmitDecision accepted it (submitted), the same decision (verdict, scheme, time and leaf) by a record
+		// the intake judges valid is found whatever its bytes: a randomized scheme re-signed it.
+		if !submitted {
+			return -1
+		}
 		return slices.IndexFunc(g.recs, func(r agent.Record) bool {
 			return agent.IsApprovalDecision(r, d.ToolUseID) && r.Approver() == d.ApproverID && r.Approved == d.Approved && r.ApproverAlg() == d.Alg &&
 				r.DecidedAt() == at && sameLeaf(r.ApproverCert(), d.Cert) && agent.CertRecordVerifies(iv, g.subject, r)
@@ -1171,15 +1177,4 @@ func sameLeaf(a, b [][]byte) bool {
 		return len(a) == len(b)
 	}
 	return bytes.Equal(a[0], b[0])
-}
-
-// certTier is the tier the identity record would give a counted decision's finding.
-func certTier(c *agent.CertCheck) string {
-	switch {
-	case c.Tier != "final":
-		return agent.TierProvisional
-	case c.Time != "" && !strings.HasPrefix(c.Time, "log signer clock"):
-		return agent.TierIndependentFinal
-	}
-	return agent.TierLogclockFinal
 }
