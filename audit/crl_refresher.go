@@ -508,7 +508,7 @@ func (r *CRLRefresher) Run(ctx context.Context) error {
 	}
 	r.running = true
 	r.mu.Unlock()
-	defer func() { r.mu.Lock(); r.running = false; r.mu.Unlock() }()
+	defer func() { r.mu.Lock(); r.running = false; r.mu.Unlock(); r.client.CloseIdleConnections() }()
 
 	if err := r.Seed(ctx); err != nil && ctx.Err() == nil {
 		r.emit(Event{Kind: EventArchiveError, Err: err, Detail: "seeding from the archive failed"})

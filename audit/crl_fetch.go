@@ -103,14 +103,8 @@ func (r *CRLRefresher) fetchOne(ctx context.Context, raw string, maxBytes int) f
 	c.Jar = nil
 	refused := ""
 	c.CheckRedirect = func(next *http.Request, via []*http.Request) error {
-		switch {
-		case len(via) > maxRedirects:
-			refused = "more than 3 redirects"
-		case hostPort(next.URL) != hostPort(origin):
-			refused = "redirect to another host or port: " + hostPort(next.URL)
-		case origin.Scheme == "https" && next.URL.Scheme != "https":
-			refused = "redirect from https to " + next.URL.Scheme
-		default:
+		refused = redirectRefusal(origin, next.URL, len(via))
+		if refused == "" {
 			return nil
 		}
 		return errors.New(refused)
@@ -139,7 +133,7 @@ func (r *CRLRefresher) fetchOne(ctx context.Context, raw string, maxBytes int) f
 	case resp.StatusCode != http.StatusOK:
 		out.Kind, out.Detail = outHTTP, resp.Status
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
-			out.retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
+			out.retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"), r.now())
 		}
 		return out
 	case resp.ContentLength > int64(maxBytes):
@@ -171,6 +165,20 @@ func (r *CRLRefresher) fetchOne(ctx context.Context, raw string, maxBytes int) f
 	r.validators[raw] = validator{etag: resp.Header.Get("ETag"), lastModified: resp.Header.Get("Last-Modified")}
 	r.mu.Unlock()
 	return out
+}
+
+// redirectRefusal is the redirect rule: at most three hops, only to the same host and port as the
+// configured URL, never from https to another scheme. It returns why a redirect is refused, or "".
+func redirectRefusal(origin, next *url.URL, hops int) string {
+	switch {
+	case hops > maxRedirects:
+		return "more than 3 redirects"
+	case hostPort(next) != hostPort(origin):
+		return "redirect to another host or port: " + hostPort(next)
+	case strings.EqualFold(origin.Scheme, "https") && !strings.EqualFold(next.Scheme, "https"):
+		return "redirect from https to " + next.Scheme
+	}
+	return ""
 }
 
 func hostPort(u *url.URL) string {
