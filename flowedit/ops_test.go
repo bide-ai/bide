@@ -143,8 +143,11 @@ func TestOperationRefusals(t *testing.T) {
 		"an anchored node":          {strings.Replace(opsFlow, "- {name: receipt,", "- &r {name: receipt,", 1), Operation{Op: "set_safety", Node: "receipt", Value: "readonly"}, ""},
 		"a second document":         {opsFlow + "---\nversion: 1\n", Operation{Op: "set_safety", Node: "receipt", Value: "readonly"}, "more than one YAML document"},
 		"text that does not parse":  {"nodes: [", Operation{Op: "set_safety", Node: "a", Value: "readonly"}, ""},
-		"CRLF line ends":            {strings.ReplaceAll(opsFlow, "\n", "\r\n"), Operation{Op: "set_safety", Node: "receipt", Value: "readonly"}, ""},
-		"a byte-order mark":         {"\xef\xbb\xbf" + opsFlow, Operation{Op: "set_safety", Node: "receipt", Value: "readonly"}, ""},
+		"mixed line ends":           {strings.Replace(strings.ReplaceAll(opsFlow, "
+", "
+"), "flow: refund
+", "flow: refund
+", 1), Operation{Op: "set_safety", Node: "receipt", Value: "readonly"}, ""},
 	} {
 		_, err := ApplyOperation("f.yaml", []byte(c.src), c.op)
 		var rf *Refusal
@@ -319,4 +322,20 @@ func diffLines(a, b string) string {
 		}
 	}
 	return "lengths differ"
+}
+
+// A CRLF file, with or without a byte-order mark, takes an operation as the LF file does, and the
+// result keeps the line ends and the mark.
+func TestOperationsOnCRLFAndBOMFiles(t *testing.T) {
+	op := Operation{Op: "set_approval", Node: "receipt", Approval: &Approval{Need: 1, Approvers: []string{"ops"}}}
+	want := mustApply(t, "f.yaml", opsFlow, op)
+	for name, wrap := range map[string]func(string) string{
+		"CRLF":     func(s string) string { return strings.ReplaceAll(s, "\n", "\r\n") },
+		"BOM":      func(s string) string { return "\xef\xbb\xbf" + s },
+		"BOM CRLF": func(s string) string { return "\xef\xbb\xbf" + strings.ReplaceAll(s, "\n", "\r\n") },
+	} {
+		if got := mustApply(t, "f.yaml", wrap(opsFlow), op); got != wrap(want) {
+			t.Errorf("%s:\n%q\nwant\n%q", name, got, wrap(want))
+		}
+	}
 }
