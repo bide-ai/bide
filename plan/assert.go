@@ -40,12 +40,18 @@ type AssertionResult struct {
 	// Invalid reports the line is not an assertion this version reads, or names a node the config
 	// does not declare; Message says which. It is neither held nor violated.
 	Invalid bool `json:"invalid,omitempty"`
+	// Vacuous reports the assertion holds only because nothing it is about is reachable: for
+	// "every path to T passes ...", no path from the entry reaches T (or, for the terminal form, a
+	// terminal); Message says so. A flow that turned cyclic, or lost the edge to T, satisfies such a
+	// line without the line checking anything.
+	Vacuous bool `json:"vacuous,omitempty"`
 	// Undecided reports the graph alone cannot decide it (a node's Safety is not known).
 	Undecided bool `json:"undecided,omitempty"`
 	// Path is a counterexample when the assertion is violated: a path of node names through the
 	// declared graph (empty when none applies, as for "X reachable" when X is not).
 	Path []string `json:"path,omitempty"`
-	// Message says why it does not hold, what it could not decide, or why it is invalid.
+	// Message says why it does not hold, what it could not decide, why it is invalid, or why it
+	// holds only vacuously.
 	Message string `json:"message,omitempty"`
 }
 
@@ -294,6 +300,11 @@ func (r *ConfigReport) safetyOf(node string) NodeSafety {
 // counterexample is a shortest path that avoids them. The entry is on every path, so it counts
 // when good; a target that is itself good is guarded by itself.
 func passes(res AssertionResult, adj map[string][]string, entry string, target, good func(string) bool, whatGood string) AssertionResult {
+	if shortestPath(adj, []string{entry}, target, func(string) bool { return false }) == nil {
+		res.Holds, res.Vacuous = true, true
+		res.Message = "holds vacuously: no path from the entry reaches a node this assertion is about"
+		return res
+	}
 	if good(entry) {
 		res.Holds = true
 		return res
@@ -351,8 +362,47 @@ func parseGateAssertion(text string) (gateAssertion, bool) {
 	return ga, true
 }
 
+// assertForms are the assertion forms in the order InspectConfig tries them, each with the capture
+// groups of its node names.
+var assertForms = []struct {
+	re    *regexp.Regexp
+	nodes []int
+}{{assertGate, []int{1}}, {assertTerminal, []int{1}}, {assertPasses, []int{1, 2}}, {assertNoSide, []int{1}}, {assertReach, []int{1}}}
+
+// RenameAssertion is the assertion line with each node name it holds replaced by rename(name) and
+// every name written in double quotes, so two spellings of one assertion (a bare name or a quoted
+// one, extra spaces) are the same string. A line that is not an assertion this version reads comes
+// back with only its spaces collapsed. A nil rename keeps the names.
+func RenameAssertion(text string, rename func(string) string) string {
+	text = strings.Join(strings.Fields(text), " ")
+	for _, f := range assertForms {
+		m := f.re.FindStringSubmatchIndex(text)
+		if m == nil {
+			continue
+		}
+		var b strings.Builder
+		prev := 0
+		for _, g := range f.nodes {
+			start, end := m[2*g], m[2*g+1]
+			name := text[start:end]
+			if u, err := strconv.Unquote(name); err == nil {
+				name = u
+			}
+			if rename != nil {
+				name = rename(name)
+			}
+			b.WriteString(text[prev:start])
+			b.WriteString(strconv.Quote(name))
+			prev = end
+		}
+		b.WriteString(text[prev:])
+		return b.String()
+	}
+	return text
+}
+
 // CompareAssertions relates two assertion lines of a config, for comparing two versions of it. It
-// returns "equal" for the same assertion (spacing and quoting of a node name aside); "stronger" when
+// returns "equal" for the same assertion (spacing and quoting of a node name aside, in every form); "stronger" when
 // b is a different assertion that holds only where a holds, which only the approval form decides
 // ("every path to T passes approval >= K [of N] [excluding the requester]": b is stronger when it
 // names the same T and needs at least a's K, from a set no larger than a's N, and excludes the
@@ -360,7 +410,7 @@ func parseGateAssertion(text string) (gateAssertion, bool) {
 // stronger or equal, so a config could satisfy b and violate a; and "" otherwise (different forms or
 // targets, which the comparison cannot relate).
 func CompareAssertions(a, b string) string {
-	if strings.Join(strings.Fields(a), " ") == strings.Join(strings.Fields(b), " ") {
+	if RenameAssertion(a, nil) == RenameAssertion(b, nil) {
 		return "equal"
 	}
 	ga, okA := parseGateAssertion(a)

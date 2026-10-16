@@ -3,8 +3,8 @@
 <p class="input">{{.Name}}</p>
 {{template "verdict" .Verdict}}
 {{if .Assertions}}<section class="assertions card wide"><h3>Assertions</h3>{{range .Assertions}}
-    <p class="assert"><span class="pill {{if .Holds}}state-completed{{else if .Invalid}}state-started{{else if .Undecided}}state-started{{else}}state-halted{{end}}">{{if .Holds}}{{icon "ok"}} holds{{else if .Invalid}}{{icon "unknown"}} invalid{{else if .Undecided}}{{icon "unknown"}} undecided{{else}}{{icon "x"}} violated{{end}}</span> <code>{{.Text}}</code></p>
-    {{if not .Holds}}<p class="small {{if .Invalid}}warn{{else if .Undecided}}warn{{else}}bad{{end}}">{{.Message}}{{if .Path}}<br>counterexample: <code>{{join .Path " → "}}</code>{{end}}</p>{{end}}{{end}}</section>{{end}}
+    <p class="assert"><span class="pill {{if .Holds}}state-completed{{else if .Invalid}}state-started{{else if .Undecided}}state-started{{else}}state-halted{{end}}">{{if .Holds}}{{icon "ok"}} holds{{if .Vacuous}} vacuously{{end}}{{else if .Invalid}}{{icon "unknown"}} invalid{{else if .Undecided}}{{icon "unknown"}} undecided{{else}}{{icon "x"}} violated{{end}}</span> <code>{{.Text}}</code></p>
+    {{if .Vacuous}}<p class="small warn">{{.Message}}</p>{{end}}{{if not .Holds}}<p class="small {{if .Invalid}}warn{{else if .Undecided}}warn{{else}}bad{{end}}">{{.Message}}{{if .Path}}<br>counterexample: <code>{{join .Path " → "}}</code>{{end}}</p>{{end}}{{end}}</section>{{end}}
 
 
 
