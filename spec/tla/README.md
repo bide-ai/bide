@@ -2940,7 +2940,7 @@ Each is in `identity/regress/`, is the same model with one rule switched off by 
   that issues later (certificates issued at any time up to 2). Leaf reissue and rotation are model 1b's
   two leaves of one approver, not model 15's.
 - **Covered but uncountable.** A decision under a contradictory head (`NonDec`) is covered and never
-  counted (the probe `UncountableNotReachable`-style state is reachable): by design the gate pauses.
+  counted (reachable): by design the gate pauses.
 - **Revocation latency.** The `ExecAge` race (a revocation between the pre-execution check and the call)
   is the published latency bound, not a property.
 
