@@ -213,6 +213,7 @@ Server is the editor for one config file.
 
 **Methods**
 
+- `func (s *Server) BaselineNote() string`: BaselineNote is "" when the baseline is what it should be, and otherwise says why git HEAD was not used although the file may be in a repository; bide edit prints it at startup.
 - `func (s *Server) Doc() (*Doc, error)`: Doc reads the file and returns its View with the hash of the bytes read.
 - `func (s *Server) Handler() http.Handler`: Handler serves the editor: the page at /, its files under /assets/, and the API under /api/.
 - `func (s *Server) Token() string`: Token is the session token the page sends in TokenHeader.
