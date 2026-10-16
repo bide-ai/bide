@@ -16,15 +16,19 @@ Import-Certificate -FilePath (Join-Path $In 'root.cer') -CertStoreLocation Cert:
 # The root's CRL, where chain building on this machine finds it (the certificates' CRL distribution point
 # is a file:// path on the root's machine).
 certutil -addstore -f Root (Join-Path $In 'rootcrl.pem') | Out-Null
-$pw = ConvertTo-SecureString (Get-Content (Join-Path $In 'pfx-password.txt')).Trim() -AsPlainText -Force
 Install-WindowsFeature ADCS-Cert-Authority -IncludeManagementTools | Out-Null
-Install-AdcsCertificationAuthority -CAType StandaloneSubordinateCa -CertFile (Join-Path $In 'issuing.pfx') -CertFilePassword $pw -Force | Out-Null
-# A CA installed from a PFX signs with SHA-1 until told otherwise; the approver policy refuses SHA-1.
-certutil -getreg CA\CSP | Set-Content -Path (Join-Path $Out 'csp-before.txt')
-certutil -setreg CA\CSP\CNGHashAlgorithm SHA256 | Out-Null
+# The CA key goes into the CNG software key storage provider (an install straight from the PFX would use a
+# legacy provider whose default hash is SHA-1, which the approver policy refuses), then the CA is installed
+# on that certificate.
+$pfxPassword = (Get-Content (Join-Path $In 'pfx-password.txt')).Trim()
+certutil -f -p $pfxPassword -csp 'Microsoft Software Key Storage Provider' -importpfx My (Join-Path $In 'issuing.pfx') | Out-Null
+$mine = Get-ChildItem Cert:\LocalMachine\My | Where-Object { $_.Subject -eq "CN=$issuingName" } | Select-Object -First 1
+if (-not $mine) { throw 'the issuing CA certificate was not imported' }
+Install-AdcsCertificationAuthority -CAType StandaloneSubordinateCa -CertificateID $mine.Thumbprint -Force | Out-Null
+Save-Defaults $issuingName (Join-Path $Out 'DEFAULTS.txt')
+certutil -getreg CA\CSP | Set-Content -Path (Join-Path $Out 'csp.txt')
 # An offline root's revocation server is not reachable from here: the CA ignores an offline CRL.
 certutil -setreg CA\CRLFlags +CRLF_REVCHECK_IGNORE_OFFLINE | Out-Null
-Save-Defaults $issuingName (Join-Path $Out 'DEFAULTS.txt')
 
 # 24 hour certificates; a base CRL every day and a delta every 30 minutes; request extensions honoured.
 certutil -setreg CA\ValidityPeriod 'Hours' | Out-Null

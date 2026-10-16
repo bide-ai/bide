@@ -42,6 +42,7 @@ Subject = "CN=$issuingName"
 KeyAlgorithm = RSA
 KeyLength = 3072
 HashAlgorithm = SHA256
+ProviderName = "Microsoft Software Key Storage Provider"
 RequestType = PKCS10
 MachineKeySet = TRUE
 Exportable = TRUE
