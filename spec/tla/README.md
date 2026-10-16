@@ -3,7 +3,7 @@
 TLA+ models of bide's coordination protocols, written in PlusCal and checked with the TLC model
 checker. The plan and the reasoning behind it are in the design note
 [formal models of the coordination protocols](../../docs/design/formal-models.md);
-this directory holds models 1 (the claim protocol), 1b (the approval gate), 2 (the bide protocol's claim rules), 7 (flow semantics), 8 (spend accounting), 9 (the tool-call state machine), 10 (the run lifecycle and recovery), 11 (delegation, sub-run authority and saga trees) and 12 (sessions) of that plan, and two design models: 13 (probes for unknown outcomes) and 14 (notifications).
+this directory holds models 1 (the claim protocol), 1b (the approval gate), 2 (the bide protocol's claim rules), 7 (flow semantics), 8 (spend accounting), 9 (the tool-call state machine), 10 (the run lifecycle and recovery), 11 (delegation, sub-run authority and saga trees) and 12 (sessions) of that plan, two design models: 13 (probes for unknown outcomes) and 14 (notifications), and model 15 (approver identity: the counting, status, time and gate rules of the certificate-bound approver design).
 
 What a model check establishes, stated narrowly: within the bounds a configuration states (drivers,
 processes, faults, attempt numbers), TLC explores every interleaving of the modelled rules and every
@@ -69,7 +69,7 @@ The workflow `.github/workflows/models.yml` has a plan job, **Models (plan)**, t
 (**Models (claims)** and the like), the required **Models** job, and **Models (nightly)**. On every
 pull request, in the merge queue and on pushes to main they run the self-test, the translation
 check, and every `ci`, `regress`, `finding` and `limit` configuration, four at a time (`TLC_JOBS=4`,
-one TLC worker each, on the 4-vCPU runner). The configurations run in seven parallel shard jobs, each
+one TLC worker each, on the 4-vCPU runner). The configurations run in ten parallel shard jobs, each
 a set of configuration directories (`MODEL_SHARDS` in the workflow, passed as `TLC_DIRS`), and the
 **Models** job, the required check, fails unless every shard succeeded. A plan job fails first
 unless every `ci`, `regress`, `finding` and `limit` configuration is in exactly one shard
@@ -180,7 +180,7 @@ func (j *Journal) claim(ctx context.Context, runID, key string, rec Record) (boo
 
 A marker above a declaration is followed by a blank line, so it is not part of the doc comment.
 Regions of one model do not nest; regions of different models may overlap (the run's Load is
-`Open` in both model 1 and model 8). Model 10 (`lifecycle/`) marks the lease, recovery, drive and resolution code, and P14's Run API: the drive's `run:start` and limit amendments, its cancellation checks and end-marker read-back, `Cancel` and `Status`. Model 11 (`delegation/`) marks `audit`'s `AttenuatingSubAgent`, the sub-agent tool, the programmatic sub-run admission and links, the loop's hold and halt rules, and the saga's rollback walk. Model 12 (`sessions/`) marks `agent/session.go`'s handle load, turn start, `SendOnce` lookup, seed, drive and append, the session run IDs in `agent/keys.go`, and P14's `Cancel`. Model 2 (`protocol/`), model 13 (`probes/`) and model 14 (`notify/`) are design models with no Go code yet,
+`Open` in both model 1 and model 8). Model 10 (`lifecycle/`) marks the lease, recovery, drive and resolution code, and P14's Run API: the drive's `run:start` and limit amendments, its cancellation checks and end-marker read-back, `Cancel` and `Status`. Model 11 (`delegation/`) marks `audit`'s `AttenuatingSubAgent`, the sub-agent tool, the programmatic sub-run admission and links, the loop's hold and halt rules, and the saga's rollback walk. Model 12 (`sessions/`) marks `agent/session.go`'s handle load, turn start, `SendOnce` lookup, seed, drive and append, the session run IDs in `agent/keys.go`, and P14's `Cancel`. Model 15 (`identity/`) marks the code of the approver-identity design that is on main (`VerifyChain`, `EvaluateStatus`, `AuditedStore.Reanchor` and `TallyApprovals`) and lists the rest in its no-code list until that code lands. Model 2 (`protocol/`), model 13 (`probes/`) and model 14 (`notify/`) are design models with no Go code yet,
 so they have no map and no markers.
 
 **The checks.** `go run ./internal/tools/modelsync` (the Lint job, on every pull request, in the
@@ -250,8 +250,8 @@ spec/tla/
     regress/         historical rules, each of which must still produce its counterexample
     findings/        open findings, which fail until they are fixed (none open at present)
     limits/          accepted behavior, stated as an expected violation
-  flows/, protocol/, spend/, toolcall/, lifecycle/, delegation/, sessions/, probes/, notify/
-                     models 7, 2, 8, 9, 10, 11, 12, 13 and 14, laid out the same way (toolcall/ also
+  flows/, protocol/, spend/, toolcall/, lifecycle/, delegation/, sessions/, probes/, notify/, identity/
+                     models 7, 2, 8, 9, 10, 11, 12, 13, 14 and 15, laid out the same way (toolcall/ also
                      holds ToolCallApalache.tla, model 9's typed wrapper, not yet checked; notify/
                      also holds NotifyLifecycle.tla, model 14 composed with model 10)
 ```
@@ -717,6 +717,21 @@ resolution all run around it.
   a redeploy may remove, loosen, tighten or change between that process's drives, while another
   process may still run the old one. `ApprovalPolicy.Validate`'s fold check (`FoldSame`) refuses
   a policy that lists one approver under two spellings.
+- **Certificate-bound approvers (`CertKeys`, identity step 1).** A key in `CertKeys` is a leaf
+  certificate's key, held by a person like any key (a reissued certificate under a new key is a
+  second leaf of one approver). `RevokeLeaf` makes a leaf's validity false at any step, for good: the
+  abstract predicate "the chain shows `E <= A(d)`", which model 15 refines. A decision under a revoked
+  leaf does not count (`CountsFor`, `TrueDeciding`), so the approver's decision under the other leaf can.
+  `SubmitCert` writes a decision carrying a chain (`ch`) and a decision time (`t`) under a leaf. The
+  journal names a decision by (approver, verdict, decision time, leaf) (`NameClash`): a second record of
+  one name is not written, so two decisions under different leaves are two decisions, and two chains
+  for one leaf are one. The recorded tally lists the leaves of its seated approvals (`lfs`). The
+  pre-execution status check (`ApExec`) sits between every passing tally and the claim, so a drive
+  restarted by a crash or a redeploy goes through it too: a counted decision's leaf that now shows a
+  revocation holds the call (`pause_approval`, the approvers decide again) whatever the recorded tally
+  says. A revocation after the check and before the call is the published latency bound, not modelled.
+  Every configuration without `CertKeys` is unchanged (the new variables stay at their initial
+  values and the new constants are `CertKeys = {}`, `DecTimes = {0}`, `Chains = {}`).
 - **A recorded denial is final.** The pre-pass denies a call whose Load read an `Approve(false)`
   or a failing recorded tally, whatever the gate is now (#70), and records the denial as the
   call's result.
@@ -737,7 +752,7 @@ resolution all run around it.
   function of the parent's journaled values, which the Go tests drive through a real delegation and
   its resume.
 
-<!-- modelsync: no-code claims Redeploy ResolverChange -->
+<!-- modelsync: no-code claims Redeploy ResolverChange ApExec SubmitCert RevokeLeaf -->
 <!-- modelsync: map claims -->
 | Label | Go |
 |---|---|
@@ -753,6 +768,8 @@ resolution all run around it.
 | `Submit` | `SubmitDecision` (without `WithDecisionCheck`: the gate never depends on it). The record is named by the decision's identity, not its signature (`decisionIdentityStep`), so fewer records are written than the model allows (it forbids only an exact repeat and allows any other append); the counting rule ignores extra records, so no property depends on the count |
 | `Redeploy` | a new deployment of a process's tools |
 | `ResolverChange` | the verifier resolver answering differently (a rotation, a new key file) |
+| `ApExec` | identity step 1, not built yet: the gate's pre-execution status check (`ExecStatusAge`), one function every path that can run the tool goes through (the first execution, a drive restarted by crash recovery or `RecoverLoop`, a retry); marked when the certificate-bound approver's pull request lands |
+| `SubmitCert`, `RevokeLeaf` | identity step 1, not built yet: a decision carrying a leaf certificate and chain, named by (approver, verdict, decision time, leaf), and the CA revoking the leaf; marked when that pull request lands |
 
 ### Properties
 
@@ -767,6 +784,9 @@ resolution all run around it.
 | `LateNeverCounts` | invariant | a passing outcome never rests on an approval recorded after the deadline |
 | `ExpiryAfterDeadline` | invariant | an expiry is recorded only once the deadline has passed |
 | `OutcomeOnce` | action property | a recorded decision, tally or expiry never changes, so an expiry and a passing tally cannot both be the outcome |
+| `NoExecAfterKnownRevocation` | invariant | the call never runs after the pre-execution check saw a counted decision's leaf revoked, on any path to the tool: the first execution, a drive restarted after a crash or a redeploy, a retry |
+| `NoSquat` | invariant | a genuine decision is never kept out of the journal by a record that does not count (a revoked leaf's, a junk record's) |
+| `OneRecordPerDecision` | invariant | no two records of a certificate-bound approver share a name (approver, verdict, decision time, leaf), whatever chains they carry |
 | `SeparationOfDuties` | invariant | a recorded tally or re-tally under a policy that excludes the requester was counted for a run that, with every run above it, records one, seats none of the requesters' approvals (the run's own or an ancestor's, under any spelling), and, when it passed, rests on `need` approvals from other approvers; and no effect fires under a gate that excludes the requester, as the firing drive's deployment has it, without an outcome that held separation of duties |
 
 `AtMostOnce`, `NoLiveOverride` and the rest of model 1's properties are checked in the same runs.

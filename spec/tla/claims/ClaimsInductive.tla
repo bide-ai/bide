@@ -106,6 +106,9 @@ TypeCommon ==
   /\ badSoD = FALSE
   /\ keys = KeyOf
   /\ resChanges = 0
+  /\ revoked = {}
+  /\ squat = FALSE
+  /\ badRev = FALSE
   /\ pc \in [Drivers \cup ResolverSet -> DriverLabels \cup ResolverLabels]
   /\ \A d \in Drivers : pc[d] \in DriverLabels
   /\ \A r \in ResolverSet : pc[r] \in ResolverLabels
@@ -120,6 +123,7 @@ TypeCommon ==
   /\ gp = [d \in Drivers |-> "none"]
   /\ qt = [d \in Drivers |-> NoTally]
   /\ loadDenied = [d \in Drivers |-> FALSE]
+  /\ exr = [d \in Drivers |-> FALSE]
   /\ rc \in [ResolverSet -> Calls \cup {None}]
   /\ rg \in [ResolverSet -> Gens]
   /\ rreply \in [ResolverSet -> Replies]

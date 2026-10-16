@@ -652,6 +652,8 @@ func (cs ChainStatus) Err() error {
 	return nil
 }
 
+// protocol:identity begin Count
+
 // EvaluateStatus applies the status rule to every non-anchor certificate of ac's chain at A(d) = a,
 // over the CRLs in s. A CRL counts for a certificate only if it verifies under that certificate's
 // issuing CA in the chain; one signed by any other key is ignored, and so are entries for the same
@@ -682,6 +684,8 @@ func (c *CertIdentity) EvaluateStatus(ac *ApproverCert, a time.Time, s *StatusSn
 	}
 	return out
 }
+
+// protocol:identity end
 
 // distrustFor is the earliest distrust date for issuer's key, from the policy and the overlay.
 func (c *CertIdentity) distrustFor(issuer *x509.Certificate, overlay map[SPKIHash]time.Time) time.Time {
@@ -750,6 +754,8 @@ func effective(cert *x509.Certificate, e crlEntry) time.Time {
 	}
 	return t
 }
+
+// protocol:identity begin Count FinalWit
 
 func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, evictedNew time.Time, p StatusParams) CertStatus {
 	st := CertStatus{Serial: cert.SerialNumber, Tier: TierNoInformation}
@@ -1069,6 +1075,8 @@ func coveredFrom(views []*crlView, a, to time.Time, contig func(prev, v *crlView
 	}
 	return prev.this.Equal(to)
 }
+
+// protocol:identity end
 
 // observedGapWarning reports the longest gap between consecutive CRLs of the series from the one in
 // force at a to the one at to, when it exceeds the declared period (plus tolerance).

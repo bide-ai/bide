@@ -90,6 +90,12 @@ CONSTANTS
   Requester,
   \* @type: Set(Str);
   Ancestors,
+  \* @type: Set(Str);
+  CertKeys,
+  \* @type: Set(Int);
+  DecTimes,
+  \* @type: Set(Str);
+  Chains,
   \* @type: Str;
   Bug
 
@@ -148,11 +154,11 @@ VARIABLES
   evicted,
   \* @type: Str -> Str;
   one,
-  \* @type: Str -> Seq({ a: Str, h: Str, ok: Bool, k: Str, subj: Str, late: Bool });
+  \* @type: Str -> Seq({ a: Str, h: Str, ok: Bool, k: Str, subj: Str, late: Bool, ch: Str, t: Int });
   dlog,
-  \* @type: Str -> { rec: Bool, passed: Bool, pol: Str, signers: Set(Str), excl: Int, denials: Int, seated: Set(Str), exp: Bool, late: Bool };
+  \* @type: Str -> { rec: Bool, passed: Bool, pol: Str, signers: Set(Str), excl: Int, denials: Int, seated: Set(Str), exp: Bool, late: Bool, lfs: Set(Str) };
   tally,
-  \* @type: Str -> { rec: Bool, passed: Bool, pol: Str, signers: Set(Str), excl: Int, denials: Int, seated: Set(Str), exp: Bool, late: Bool };
+  \* @type: Str -> { rec: Bool, passed: Bool, pol: Str, signers: Set(Str), excl: Int, denials: Int, seated: Set(Str), exp: Bool, late: Bool, lfs: Set(Str) };
   stally,
   \* @type: Str -> (Str -> Str);
   policy,
@@ -178,6 +184,12 @@ VARIABLES
   expired,
   \* @type: Bool;
   badExp,
+  \* @type: Set(Str);
+  revoked,
+  \* @type: Bool;
+  squat,
+  \* @type: Bool;
+  badRev,
   \* @type: Str -> Str;
   pc,
   \* @type: Str -> Int;
@@ -194,14 +206,16 @@ VARIABLES
   reused,
   \* @type: Str -> Str;
   snapOne,
-  \* @type: Str -> { rec: Bool, passed: Bool, pol: Str, signers: Set(Str), excl: Int, denials: Int, seated: Set(Str), exp: Bool, late: Bool };
+  \* @type: Str -> { rec: Bool, passed: Bool, pol: Str, signers: Set(Str), excl: Int, denials: Int, seated: Set(Str), exp: Bool, late: Bool, lfs: Set(Str) };
   snapTally,
   \* @type: Str -> Str;
   gp,
-  \* @type: Str -> { rec: Bool, passed: Bool, pol: Str, signers: Set(Str), excl: Int, denials: Int, seated: Set(Str), exp: Bool, late: Bool };
+  \* @type: Str -> { rec: Bool, passed: Bool, pol: Str, signers: Set(Str), excl: Int, denials: Int, seated: Set(Str), exp: Bool, late: Bool, lfs: Set(Str) };
   qt,
   \* @type: Str -> Bool;
   loadDenied,
+  \* @type: Str -> Bool;
+  exr,
   \* @type: Str -> Str;
   rc,
   \* @type: Str -> Int;

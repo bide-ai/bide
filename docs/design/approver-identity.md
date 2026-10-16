@@ -891,7 +891,34 @@ Properties that must hold (invariants unless noted):
   head**: the gate's `Anchor` step supplies it. Without the `Anchor` step the model must show the
   deadlock, and with it not.
 
-A Go refinement test runs the same scenarios through `TallyApprovals` with the stdlib CA (below) and
+**Where each is checked (built).** The note's model is two changes, made together. A new model, **model
+15** (`spec/tla/identity`, [README](../../spec/tla/README.md#model-15-approver-identity)), checks the
+counting, status, time and gate rules above over certificates, a CRL series, signed heads and decisions.
+Model 1b (`spec/tla/claims`) checks what the gate does around the rules, with crashes, redeploys and
+recovery: a certificate-bound approver is a seat whose leaf validity is an abstract predicate that can turn
+false at any step. Each property is a `ci` invariant of the configurations named; the adjoining counterexample
+configuration breaks the rule and must fail with that property (the mutation check).
+
+| Property | Checked in | Passing configuration | Counterexample configuration (rule switched off) |
+|---|---|---|---|
+| `IdentityBound` | model 15 | `id-seats` | `misbind-no-idbind` (the approver id is not tied to the leaf's identifier) |
+| `RevocationSound` | model 15 | `id-revocation` | `withhold-no-fresh` (no freshness rule), `rollback-no-number` (no number rule), `backdate-by-claim` (E compared with the signed `decided_at`) |
+| `FailClosed` | model 15 | `id-revocation` | `stale-status` (no freshness rule) |
+| `NoBackdate` | model 15 | `id-heads` | `skew-no-nondecreasing` (no non-decreasing head-time rule) |
+| `SeatPerPerson` | model 15 | `id-seats` | `misissue-no-name-constraints` (no name constraints); `limits/alias-two-seats` states the accepted limit when identifiers are not injective |
+| `SeatPerIdentifier` | model 15 | `id-seats` | `no-dedup-seat` (seats counted by decision, not identifier) |
+| `TerminalStable` | model 15 and 1b (`OutcomeOnce`) | `id-revocation` | `recount-terminal` |
+| `StaleNeverUncounts` | model 15 | `id-revocation` | `stale-uncounts` |
+| `NoExecAfterKnownRevocation` | model 15 (the check itself, with a status age) and **model 1b** (every path to the tool: first execution, a drive restarted after a crash or redeploy, a retry) | model 15: `id-revocation`; 1b: `ap-cert`, `ap-cert-cross` | model 15: `no-exec-recheck`; 1b: `regress/ap-no-exec-recheck` |
+| `FinalNeedsCompleteSeries` | model 15 | `id-final-number`, `id-final-time` | `final-no-coverage` (the N2 sequence), `final-time-hourly` (coverage by `nextUpdate` alone) |
+| `AbsenceOnlyInWindow` | model 15 | `id-final-number`, `id-final-time` | `final-no-window` |
+| `NoStuckPause` (the gate's `Anchor` step) | model 15 (liveness) | `id-live` | `no-anchor` |
+| the same-decision relation (approver, verdict, decision time, leaf; two leaves are two decisions, two chains for one leaf are one) | **model 1b** (`NoSquat`, `OneRecordPerDecision`) | `ap-cert-name` | `regress/ap-leaf-not-in-name`, `regress/ap-chain-in-name` |
+
+`DistrustAfter` is not modelled (model 15 has one trust anchor and no intermediates); it stays a Go test
+(test plan 14). Model 15 also leaves out `RoutineGrace`, `ClockTolerance` above zero, OCSP, delta CRLs,
+holds, `expiredCertsOnCRL`, an independent time source, the `W'` cut and the `MinW` floor; the README
+states each. A Go refinement test runs the same scenarios through `TallyApprovals` with the stdlib CA (below) and
 compares the counted set with the model's, trace by trace, as the existing models do. The change to
 `spec/tla` and its README map is part of the build, and `modelsync` gates the PR.
 
