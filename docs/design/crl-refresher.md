@@ -1,6 +1,6 @@
 # CRL refresher for certificate-bound approvers
 
-Status: design, for review before building (2026-10-16). Step 2 of the
+Status: built (2026-10-16); reviewed by pki-auditor-2 before the build. Step 2 of the
 [approver identity](approver-identity.md) work promised "the refresher fetches and archives" CRLs;
 this note fixes how. Today the application fetches CRLs itself and calls `StatusSnapshot.AddCRL`;
 the operator guide says "bide does not fetch CRLs". A bank's platform team should not have to write
@@ -159,7 +159,7 @@ clock, random source), unit-tested without a network or a real clock.
   gates for that issuer paused. `ResetHighWater(issuer, reason)` (and `bide identity fetch-crl
   -reset-high-water <issuer> -reason ...`) drops the mark; it reports `EventHighWaterReset` with the old
   mark, the reason and the operator, and the CLI writes it to the archive directory's log as a security
-  event. It never removes a CRL from the snapshot or the archive. The reset is **durable**: it appends
+  event. It never removes a CRL from the archive; it does remove the set-aside CRLs from the live snapshot, since a poisoned number there makes the status rule read every later CRL as a rollback. The reset is **durable**: it appends
   `crl/<issuer>/RESET-<time>.json` to the archive (issuer, the CRL hashes and numbers it sets aside,
   reason, operator, time), and `Load` computes the marks over the archive **minus the CRLs a reset
   record names**; later CRLs raise the mark normally. A restart therefore cannot restore a poisoned

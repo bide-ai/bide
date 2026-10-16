@@ -256,15 +256,139 @@ idempotent and durable) whenever any issuer's CRL can exceed 256 KiB.** Without 
 count, with `ErrConfig` naming the issuer, the size and this fix. Build the status snapshot with
 `audit.WithLimits` to refuse an oversize CRL at intake instead.
 
+## Keeping the CRLs current
+
+`audit.CRLRefresher` keeps the `StatusSnapshot` of a `CertApprover` supplied with the newest verified CRLs of
+the issuers the policy pins, so your platform team does not write a fetching loop. It is a separate component
+and the verifier stays free of I/O: audit tools and `bide approve -verify-receipt` work offline as before.
+
+```go
+approver := &audit.CertApprover{ /* as above; Status: audit.NewStatusSnapshot(...) and Now are required */ }
+r, err := audit.NewCRLRefresher(approver, sources, audit.RefresherOptions{
+    Issuers: []*x509.Certificate{issuingCA},            // the pinned intermediates' certificates
+    Archive: audit.DirCRLArchive("/var/lib/bide/crl"),   // the dated series and the rollback memory
+    Hooks:   audit.RefresherHooks{OnEvent: logEvent, OnAlarm: page},
+})
+go r.Run(ctx)   // or r.RefreshOnce(ctx) from a cron job
+```
+
+The interval, the alarm and the set of issuers come from the values the approver already declares
+(`CAPeriod`, `MaxStatusAge`, `ExecStatusAge`, the `...For` maps, the overlap, the skew), so there is no second
+copy to drift. `NewCRLRefresher` refuses (`agent.ErrConfig`) a configuration that cannot work: an issuer with no
+source, a pinned intermediate with no certificate, no declared period, a snapshot too small for the series the
+status age needs, or a CA tier whose limit leaves no room for an alarm before the gates pause.
+
+**Where CRLs come from.** Only from URLs you configure, per issuing CA (keyed by the SHA-256 of its key), in
+the policy file or as `audit.CRLSources`:
+
+```json
+"intermediate_certs": ["issuing-ca.pem"],
+"crl": {
+  "<issuing CA spki sha-256 hex>": {"urls": ["http://pki.bank.example/issuing.crl"],
+                                    "delta_urls": ["http://pki.bank.example/issuing+.crl"]},
+  "<root spki sha-256 hex>":       {"urls": ["http://pki.bank.example/root.crl"]}
+}
+```
+
+The policy pins intermediates by key, and a key cannot verify a signature, so the refresher takes the
+intermediates' certificates (`intermediate_certs`, relative to the policy file like the anchors); each must
+match a pinned key and chain to an anchor. A URL is never read from a certificate a client supplied. The one
+use of a distribution point is the opt-in `"from_pinned_cdp": true` on an entry, which adds the CRL
+distribution point of the supplied certificate issued by that CA, so it helps only for a CA above the leaf's
+issuing CA: a leaf names its issuer's CRL, and leaves come from clients, so the leaf CA's CRL URL is always
+configured. The URLs are not part of the policy digest: moving one cannot change a verdict, because every
+CRL is verified against the pinned key and judged by the same number and freshness rules whatever URL
+delivered it; each archived CRL records its source URL and fetch time as provenance, never as evidence.
+
+**Transport.** HTTP and HTTPS only; `ldap://` is refused with a message saying LDAP is not supported
+(publish the CRL over HTTP). GET only, a response size limit (the snapshot's, 16 MiB by default), timeouts on
+every stage, no compression, and redirects only to the same host and port, at most three, never from https to
+http. The library reads no proxy from the environment; `bide identity fetch-crl` does, and an application passes
+its own `*http.Client` for mTLS or a proxy (then the proxy and DNS rules are the application's). A CRL is signed,
+so plain HTTP is the normal profile; a man in the middle can withhold or replay a CRL, which the rules below
+bound, but not forge one. **With a single URL and plain HTTP a replayed CRL stays acceptable until its
+`nextUpdate`**: list every mirror of the same CRL and the refresher asks all of them on each attempt and keeps
+the highest-numbered valid one.
+
+**What it checks before a CRL reaches the snapshot.** The signature algorithm profile (never SHA-1), the
+signature against the issuing CA's own certificate (not any certificate the snapshot knows: another CA's CRL
+served at this CA's URL is refused), the issuer name, the key's `Distrust` date, a `thisUpdate` not ahead of the
+clock beyond the declared skew and a minute, and the structure rules of `AddCRL` (indirect and partitioned CRLs
+are refused and reported as unsupported). A CRL with a **lower number** than the highest accepted is a rollback
+and is not added; the **same number with a different TBSCertList** is an equivocation and is not added (a CA that
+re-signs one CRL, whose signature bytes differ, is the same CRL). Both are archived with a `rollback` or
+`conflict` marker and reported. A delta CRL is paired with a base numbered in `[base indicator, delta number)`;
+the refresher fetches the base at once when none is held, and a delta whose base cannot be had is still added
+and archived and reported unpaired. Freshness is the merged view's earlier `nextUpdate`, so a CA that stops
+publishing deltas does not leave a stale delta looking current.
+
+**Failure behaviour.** A failed fetch changes nothing that is held. Freshness is read from each CRL's own
+`thisUpdate` and `nextUpdate`, never from `Date`, `Last-Modified` or a `304`, so the refresher cannot make status
+look fresher than the CA's series. A dead refresher, a dead CA or a blocked network therefore ends where it did
+before: the gates pause (`agent.PendingIdentityStatus`) and the intake answers 503 with `Retry-After`. A CRL that
+arrives already past its `nextUpdate` is archived and added, because it fills the series, but is not counted as
+fresh. Attempts back off from 30 seconds to the regular interval with jitter, honouring `Retry-After`. The
+regular interval is `min(CAPeriod/2, min(MaxStatusAge, ExecStatusAge)/4)`, at least 30 seconds; from the moment
+the next CRL is due it polls every `CAPeriod/16` (30 seconds to 5 minutes) until one with a higher number
+arrives.
+
+**The alarm, and why it is not "50 percent".** Half of a CRL's validity is inside the normal cycle of a root
+whose status limit is about one period, so a literal 50 percent alarms every week on a healthy root. The
+refresher alarms when the newest CRL's age (`now - thisUpdate`, exactly the age a gate judges) exceeds
+`min(max(limit/2, CAPeriod + overlap + tolerance), limit - interval)`, where `limit` is the smallest status age
+the issuer is judged by in any of its roles (counting a decision; the leaf's issuing CA before a call runs; a CA
+tier before a call runs). For a fast CA that is half the limit, long before the pause; for a root it is when the
+next CRL is overdue. `Critical` is set when a gate no longer accepts the newest CRL (the status rule's own
+freshness test, shared in code, with a test at the boundary). Startup refuses a CA tier whose limit leaves less
+than the tolerance plus one interval after its CRL cycle, so give the root CRL a validity of two periods and set
+its `ExecStatusAgeFor` (and `MaxStatusAgeFor`) to it: then the alarm comes a full period before any gate
+pauses.
+
+**Archive and restart.** `audit.DirCRLArchive` writes `crl/<issuer key hash>/<number>-<thisUpdate>.crl` with a
+`.meta.json` beside it, through a temporary file, a sync, a rename and a directory sync; the directory is created
+`0700` and an existing one that others can write to (or, on Unix, another user owns) is refused, because the
+archive is the rollback memory: **write access to it is write access to the refresher's memory**. Several
+replicas may share one directory. The CRL is archived before it is added; if the archive refuses, the CRL is
+**still added** (withholding it would make status look better), queued for retry and reported
+(`archive-error`, `ArchiveBacklog`), and the queue drops its oldest entries only beyond a byte bound, saying so
+(`archive-dropped`). At start the refresher takes the rollback mark from archived CRLs that verify (a file name
+alone is never a mark; a file that does not verify is reported `archive-corrupt`) and seeds the snapshot with
+what the live rule needs, newest first, without touching the snapshot's eviction count. Without an archive a
+restart forgets rollback protection, and the refresher says so at start.
+
+**A poisoned mark.** A CA that issues one CRL with a mistaken huge number, or is restored from a backup and
+restarts its numbering, would make every later real CRL a rollback. `bide identity reset-high-water` (or
+`CRLRefresher.ResetHighWater`) sets that CRL aside: it appends a `RESET-<time>.json` record to the archive (what
+is set aside, the reason, the operator, the time), removes the CRL from the live snapshot and recomputes the
+mark; the CRL stays in the archive, and a restart honours the record. A listing on a CRL set aside no longer
+reaches the gate: the record is your statement that the CRL was wrong. A forged record could lower a mark, so
+every start reports an unacknowledged reset (`high-water-reset`, `Health().UnackedResets`) until an operator
+runs `bide identity ack-reset`.
+
+**Observability.** `RefresherHooks.OnEvent` receives every attempt and refusal (`fetched`, `unchanged`,
+`rollback`, `conflict`, `bad-signature`, `distrusted`, `unsupported-crl`, `future-dated`, `stale-on-arrival`,
+`oversize`, `redirect-refused`, `fetch-failed`, `archive-error`, `clock-skew`, ...), with the issuer, the URL
+without its query or fragment, and no response body; `OnAlarm` receives alarm changes; `Health()` returns for
+each issuer the last attempt and last success, the newest number and dates, the age, the next expected CRL, the
+failure count, the archive backlog, `Paired`, `Alarm` and `Critical`, and a `Loop` time that stops moving if a
+loop dies. A server's `Date` header that differs from your clock by more than five minutes is reported as a
+warning only. Start-up events print the effective URLs and each issuer's limit, alarm age and margin.
+
+**The command.** `bide identity fetch-crl -policy policy.json -params ca.json -cache dir` is the same code for
+cron (`-once` exits 1 unless every issuer holds a fresh CRL) or as a daemon, printing one JSON line per event
+and a health line per issuer. `ca.json` is a copy of the timings the gate declares (`ca_period`,
+`max_status_age`, `exec_status_age`, `this_update_skew`, and per issuer `ca_period`, `max_status_age`,
+`exec_status_age`, `ca_overlap`, `this_update_skew`, `delta_period`); it must match the gate's declaration. A
+gate process embeds the refresher itself; the command is for the archive an audit reads and for monitoring.
+`bide approve -cert` does not fetch CRLs: its local check is a convenience before signing, and the gate decides.
+
 ## When you revoke a certificate
 
 **Publish the CRL right after revoking.** AD CS dates a revocation at its publication, not at the moment
 the operator pressed revoke, so a revocation left unpublished is not in any CRL and no gate can know of it
-(`certutil -crl` on AD CS, or the CA's equivalent). bide refreshes nothing by itself in this build: the
-application adds the CRLs it fetches from the configured distribution points to the `StatusSnapshot`
-(`AddCRL`), and your own monitoring raises an alarm when the newest CRL of any issuer is older than half of
-the age the policy allows it. A root CRL that lapses holds every gate that depends on it, so give the root
-CRL a validity of at least two publication periods.
+(`certutil -crl` on AD CS, or the CA's equivalent). The [CRL refresher](#keeping-the-crls-current) picks the
+new CRL up within half the CA's declared period of its issue. A root CRL that lapses holds every gate that
+depends on it, so give the root CRL a validity of at least two publication periods.
 
 What a revocation does to decisions:
 
@@ -330,7 +454,7 @@ What it does with a decision that does not hold:
   phase note says `exec-hold` with one sentence of detail, and the same approvals run the call when a fresh
   check passes. Nobody is asked to decide, so no approval notification is sent for it; watch the gate's phase
   (`agent.LatestPausePhase`) and the CRL alarm above. **A drive has to run again for the call to run:**
-  nothing in the gate retries by itself, so add the fresh CRL to the `StatusSnapshot` and re-drive the run
+  nothing in the gate retries by itself, so make sure the refresher has added the fresh CRL to the `StatusSnapshot` and re-drive the run
   (your own `Resume`, or `RecoverLoop`, which re-drives runs that are still waiting on each pass and so runs
   the call on the first pass after status is current).
 - **The recount ends in a denial or an expiry** (the approvers who decided again denied it, or the gate's
