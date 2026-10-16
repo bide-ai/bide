@@ -43,9 +43,13 @@ type Change struct {
 	// gate did not change. A removed node's gate counts as removed.
 	Gate string `json:"gate,omitempty"`
 	// Weakening says what a weakened change weakened: "gate" (an approval policy: the gate was
-	// removed, loosened, or lost its exclusion of the requester or its deadline), "path" (an
-	// effect node newly reachable without passing an approval gate) or "assertion" (an assert line
-	// removed or loosened, or kept and no longer holding). Empty for a change that weakened nothing.
+	// removed, loosened, or lost its exclusion of the requester or its deadline), "path" (a node
+	// newly reachable without passing an approval gate: one every path reached through a gate
+	// before, whatever its safety, or a new or newly wired-in effect), "safety" (a node's safety
+	// lowered toward read-only), "block" (a block changed on an ungated effect node, without the
+	// Registry), "condition" (a Switch condition changed beside an ungated effect) or "assertion"
+	// (an assert line removed or loosened, or kept and no longer holding). Empty for a change that
+	// weakened nothing.
 	Weakening string `json:"weakening,omitempty"`
 	// summary, when set, is the Weakened entry for this change (an assert line that stopped
 	// holding says why, which a Details cut at its first parenthesis would lose).
@@ -85,8 +89,8 @@ type DiffView struct {
 	Changes   []Change `json:"changes"`
 	// Weakened and Strengthened name each change that made the flow's approval checks weaker or
 	// stronger, with how: "charge: approval 2 of 3 -> 1 of 3" for a gate, "receipt: reachable
-	// without an approval gate (validate -> receipt), not before" for a new ungated path to an
-	// effect, "assertion removed: every path to charge passes approval >= 2 of 3" for an assert line.
+	// without an approval gate (validate -> receipt), not before; its safety is side effect" for a
+	// node newly reachable around a gate, "assertion removed: every path to charge passes approval >= 2 of 3" for an assert line.
 	Weakened     []string `json:"weakened,omitempty"`
 	Strengthened []string `json:"strengthened,omitempty"`
 	Counts       Counts   `json:"counts"`

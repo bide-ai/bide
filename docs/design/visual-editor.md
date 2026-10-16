@@ -143,7 +143,7 @@ classifier covers less than the rule needs. Each of these is a way to make a flo
 | G3 | Add an arm or edge that routes around a gated node | The guide says it plainly: the check compares each node's gate and does not reason about paths. The path-level answer exists (`ConfigReport.Gated`, and the `every path to X passes approval` assertions) but the diff does not compare it between versions |
 | G4 | Change a node's `block` to one whose Go registration declares no gate | From the command line only gates the config states are known, so the gate the old block declared in Go is invisible on both sides. With a Registry on both sides the gates are known |
 
-G1 to G3 are classifier gaps and are prerequisites for the editor (phase 1 needs them, see the phased plan). Status: being fixed in a separate pull request (in progress).
+G1 to G3 are classifier gaps and are prerequisites for the editor (phase 1 needs them, see the phased plan). Status: G1 and G2 landed; G3 is the broad rule below (any node a gate guarded on every path before and a path now reaches without one, whatever its safety label, plus a lowered safety).
 G4 is inherent to the structural mode and the editor must say so on the node (see "Structural mode and Go-declared gates").
 
 ## Where it runs
@@ -420,11 +420,13 @@ CI and the editor both get:
 - G2: a gate whose `timeout` was removed or lengthened is weakened; shortened is strengthened. This
   needs a rule decision (decision 5), because a shorter deadline also makes a pending run expire
   sooner, which is stricter about time and not about who approves.
-- G3: for each node, compare `ConfigReport.Gated` between the two versions; a node that every path
-  reached through a gate before, and some path now reaches without one, is reported as "reachable
-  without approval" with the shortest path (the counterexample machinery for assertions exists).
-  The classifier should say plainly that this is the path-level check the per-node gate comparison
-  lacks.
+- G3 (broad): for each node, compare `ConfigReport.Gated` between the two versions; a node that every
+  path reached through a gate before, and some path now reaches without one, is reported as
+  "reachable without an approval gate" with its safety and the shortest path (the counterexample
+  machinery for assertions exists), **whatever its safety label**. The label is the new config's own
+  claim, so trusting it would let one edit relabel a node read-only and route around its gate; the
+  old label counts for the effect checks, and a safety moved toward read-only is itself a weakening.
+  The classifier says plainly that this is the path-level check the per-node gate comparison lacks.
 
 **Structural mode and Go-declared gates (G4).** When a node's `block` changes and the editor does
 not have the Registry, it marks the node: "gate not checked: a block can declare a gate in Go". The

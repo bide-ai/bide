@@ -81,3 +81,19 @@ func TestCheckDiff(t *testing.T) {
 		t.Errorf("bide check -- %s -missing.yaml: exit %d, want 1\n%s%s", v1, code, stdout, stderr)
 	}
 }
+
+// TestCheckDiffGateBypassBroad: -fail-on-weaken exits 1 when a node every path reached through an
+// approval gate becomes reachable around it, whatever its safety: an idempotent node that moves
+// money, and the same edit relabeling the node read-only.
+func TestCheckDiffGateBypassBroad(t *testing.T) {
+	const dir = "testdata/gatebypass/"
+	for _, c := range []struct{ new, old, want string }{
+		{"new-idempotent.yaml", "old-idempotent.yaml", "credit: reachable without an approval gate (validate -> lookup -> credit), not before; its safety is idempotent"},
+		{"new-relabeled.yaml", "old-effect.yaml", "credit: reachable without an approval gate (validate -> lookup -> credit), not before; its safety is read-only; safety lowered side effect -> read-only"},
+	} {
+		code, stdout, stderr := runBide("check", dir+c.new, "-diff", dir+c.old, "-check", "-fail-on-weaken")
+		if code != 1 || !strings.Contains(stdout, "weakened: "+c.want+"\n") {
+			t.Errorf("%s against %s: exit %d, want 1 and %q\n%s%s", c.new, c.old, code, c.want, stdout, stderr)
+		}
+	}
+}

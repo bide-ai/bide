@@ -88,8 +88,8 @@ With -diff it compares the -config flow with an earlier version of it: the page 
 with added nodes and edges in green, removed ones as dashed red ghosts and changed nodes in amber,
 and calls out an approval gate whose policy was weakened (removed, its need lowered, an approver
 added without raising the need, exclude_principal dropped, or its timeout removed or lengthened),
-an effect (a new one included) reachable without passing an approval gate that was not before, a Switch
-condition changed beside an ungated effect, a block changed on an ungated effect node without the Registry,
+a node that every path reached through a gate before and some path now reaches without one (whatever
+its safety), a new effect no gate guards, a lowered safety, a Switch condition changed beside an ungated effect, a block changed on an ungated effect node without the Registry,
 or an assert line removed, loosened, or kept and no longer holding (violated, undecided, or holding only
 vacuously);
 a gate made stricter (including a timeout added or shortened, which makes it fail closed sooner)
