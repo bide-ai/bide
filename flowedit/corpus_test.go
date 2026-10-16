@@ -11,9 +11,11 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"go.yaml.in/yaml/v3"
@@ -726,7 +728,10 @@ func (ta *tally) add(f file) {
 		ta.refusals = map[string]int{}
 	}
 	fr := fileRate{name: f.name}
-	for _, op := range ops(f.text) {
+	for i, op := range ops(f.text) {
+		if i%opStride != 0 {
+			continue
+		}
 		ta.ops++
 		fr.ops++
 		sp, spOK := intended(f.text, op)
@@ -790,7 +795,22 @@ func TestCorpusReport(t *testing.T) {
 	var order []string
 	real := map[string]bool{}
 	corpus := append(collect(t), generated(300)...)
-	for _, f := range corpus {
+	// Each file is measured on its own (Apply is a pure function of its arguments), on as many
+	// goroutines as there are processors, and the results are merged in corpus order.
+	parts := make([]*tally, len(corpus))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, runtime.GOMAXPROCS(0))
+	for i, f := range corpus {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer func() { <-sem; wg.Done() }()
+			parts[i] = &tally{}
+			parts[i].add(f)
+		}()
+	}
+	wg.Wait()
+	for i, f := range corpus {
 		ta := groups[f.group]
 		if ta == nil {
 			ta = &tally{}
@@ -798,7 +818,7 @@ func TestCorpusReport(t *testing.T) {
 			order = append(order, f.group)
 		}
 		real[f.group] = real[f.group] || f.real
-		ta.add(f)
+		parts[i].addTo(ta)
 	}
 	sort.Strings(order)
 	var b strings.Builder

@@ -1,0 +1,38 @@
+name: Editor corpus
+
+# The edit engine's full corpus measurement (flowedit/corpus_test.go: every operation on every file of
+# the corpus, the 95 percent bar, no output that disagrees with the independent oracle), without the
+# race detector. The ordinary Linux test job runs the module under -race, where the measurement takes
+# every eighth operation (stride_race_test.go) because the full one takes minutes there. Runs on pull
+# requests that touch the engine and in the merge queue (which does not filter by path).
+on:
+  pull_request:
+    paths:
+      - 'flowedit/**'
+      - '.github/workflows/flowedit-corpus.yml'
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flowedit-corpus-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  corpus:
+    name: Editor corpus (full)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+          cache-dependency-path: '**/go.sum'
+      - name: Measure every operation on every corpus file
+        working-directory: flowedit
+        env:
+          GOWORK: 'off'
+        run: go test . -run 'TestCorpusReport' -count=1 -timeout 15m -v
