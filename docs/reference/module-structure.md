@@ -102,7 +102,7 @@ Published (tagged at every release): `govern`, `store/sqlite`, `store/postgres`,
 
 Repo-only (never tagged; they keep their `replace` directives): `examples/approval`,
 `examples/plan`, `examples/mcp`, `examples/observability`, `examples/govern`, `integration`,
-`benchmarks`.
+`benchmarks`, and `flowedit` (the flow editor's edit engine, which `cmd/bide` will require and which is then published with it).
 
 The exported API of every package in the published modules is listed in the generated [SDK API reference](api/index.md), one page per module (the core module, one per package), with each package's [stability label](../trust/stability.md#package-stability). The reference reads the Repo-only and command lists from `scripts/release.sh`, so a module added to the release is documented and a repo-only module is not.
 

@@ -1,0 +1,9 @@
+version: 1
+flow: f
+nodes:
+  - {name: a, block: a}
+---
+version: 1
+flow: g
+nodes:
+  - {name: b, block: b}

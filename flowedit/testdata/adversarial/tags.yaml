@@ -1,0 +1,6 @@
+version: 1
+flow: !!str f
+nodes:
+  - !custom {name: a, block: a}
+  - name: !!str b
+    block: b

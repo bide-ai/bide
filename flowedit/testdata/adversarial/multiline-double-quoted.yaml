@@ -1,0 +1,6 @@
+version: 1
+flow: "a flow with a
+  quoted label"
+nodes:
+  - {name: a, block: a}
+  - {name: b, block: b}

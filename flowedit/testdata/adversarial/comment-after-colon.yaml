@@ -1,0 +1,12 @@
+version: 1
+flow: f  # label
+nodes:  # the steps
+  - name: a   # first
+    block: a
+    approval:  # the gate
+      need: 2  # two of three
+      approvers:  # who
+        - ops
+        - finance  # money
+        - risk
+  - {name: b, block: b}

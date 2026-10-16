@@ -1,0 +1,14 @@
+version: 1
+flow: f
+nodes:
+# at column zero inside the list
+  - {name: a, block: a}
+        # deeply indented
+  - name: b
+# between keys
+    block: b
+      # still between keys
+    safety: readonly
+wiring:
+      # indented under wiring
+  - edge: [a, b]

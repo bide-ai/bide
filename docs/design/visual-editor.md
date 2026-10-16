@@ -664,9 +664,14 @@ Each phase is one or more pull requests, each with its docs, changelog fragment 
 - **Phase 0, the engine spike.** The `flowedit` engine with the operations for a node's fields and
   a gate, against the corpus, with property tests and the formatting metric, and no interface.
   Exit: a go or no-go on splicing against the re-emit fallback, decided with numbers
-  (decision 3). In parallel, **prerequisite P1** (in progress, in a separate pull request): the classifier covers G1 to G3 in
-  `internal/runview`, with the CI flag, tests and docs (this is useful to `bide check -diff` users
-  on its own, with or without an editor).
+  (decision 3). **Done:** go. Over 367 configs and 65,951 operations, 99.2 percent applied and
+  touched only the intended lines (the bar is 95 percent) against 18.4 percent for the re-emit, and
+  no unverified output in 4.5 million fuzz executions; the module is `flowedit`. In parallel,
+  **prerequisite P1**: the classifier covers G1 to G3 in `internal/runview`, with the CI flag,
+  tests and docs (this is useful to `bide check -diff` users on its own, with or without an
+  editor). #315 and #316 cover G2, the removed or loosened `assert` line of G1, and G3 for nodes
+  with a side effect; an assertion that held at the baseline and is violated now with its line
+  unchanged is still not reported, and is closed before phase 1 ships.
 - **Phase 1, the smallest useful editor.** `bide edit flow.yaml`: the canvas and outline (read),
   the inspector for a node's block, safety and **approval gate** (need, approvers, separation of
   duties, deadline once #312 is in), the assertions panel with the six forms as templates and live
