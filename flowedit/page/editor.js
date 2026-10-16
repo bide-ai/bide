@@ -7,7 +7,8 @@
 //   POST /api/doc    {}             -> Doc  { ...View, hash }
 //   POST /api/report {text}         -> View { name, format, text, mode, parse_error, flow, entry,
 //                                             verdict{class,word,icon,line,details,stats[]}, errors, warnings,
-//                                             problems[], assertions[], nodes[], wiring[], graph }
+//                                             problems[], assertions[], nodes[], wiring[], graph,
+//                                             weakening{baseline, weakened[], word, line, strengthened[], changes[], compare_error} }
 // Every call is a POST with the session token (from the URL fragment, #t=...) in X-Bide-Token.
 
 const SVGNS = 'http://www.w3.org/2000/svg';
@@ -70,6 +71,36 @@ export function renderVerdict(v) {
     d.stats.map((s) => h('li', { class: 'stat' + (s.class ? ' s-' + s.class : '') },
       h('span', { class: 'num' }, s.value), h('span', { class: 'lbl' }, s.label), s.sub ? h('span', { class: 'sub' }, s.sub) : null)));
   replace('verdict', sec, stats);
+}
+
+// The weakening banner is the classifier's answer (bide check -diff's) for this text against the
+// baseline. It has no close control: a banner that can be dismissed is a warning that can be missed.
+// It is gone only when the text no longer weakens, and it speaks (role alert) when it appears.
+export function renderWeakening(v) {
+  const w = v.weakening;
+  if (!w) { replace('weakened'); replace('baseline'); return; }
+  if (w.weakened && w.weakened.length) {
+    replace('weakened', h('section', { class: 'verdict v-bad weakened', role: 'alert', 'aria-labelledby': 'wword' },
+      h('div', { class: 'vicon' }, icon('halt')),
+      h('div', { class: 'vtext' },
+        h('p', { class: 'vword', id: 'wword' }, w.word || 'WEAKENED'),
+        h('p', { class: 'vline' }, (w.line || 'This is weaker than the baseline') + ', compared with ' + w.baseline + '.'),
+        w.weakened.map((x) => h('p', { class: 'vdetail' }, x)))));
+  } else if (w.compare_error) {
+    replace('weakened', h('section', { class: 'verdict v-warn weakened', role: 'alert', 'aria-labelledby': 'wword' },
+      h('div', { class: 'vicon' }, icon('unknown')),
+      h('div', { class: 'vtext' },
+        h('p', { class: 'vword', id: 'wword' }, 'NOT COMPARED'),
+        h('p', { class: 'vline' }, 'Whether this is weaker than ' + w.baseline + ' cannot be said: ' + w.compare_error))));
+  } else {
+    replace('weakened');
+  }
+  const words = [];
+  if (!(w.weakened && w.weakened.length) && !w.compare_error) words.push('not weaker than');
+  else words.push('compared with');
+  const ch = (w.changes || []).length;
+  replace('baseline', 'Baseline: ' + words[0] + ' ' + w.baseline + (ch ? ' (' + ch + ' change' + (ch === 1 ? '' : 's') + ')' : ' (no changes)') +
+    ((w.strengthened || []).length ? '; stronger in ' + w.strengthened.length + ' way' + (w.strengthened.length === 1 ? '' : 's') : '') + '.');
 }
 
 export function renderOutline(v) {
@@ -154,13 +185,14 @@ export function render(v) {
   $('file').textContent = v.name + ' (' + v.format + ')';
   $('modeline').textContent = v.mode;
   $('source').textContent = v.text;
+  renderWeakening(v);
   renderVerdict(v);
   renderCanvas(v);
   renderOutline(v);
   renderInspector(v);
   renderAssertions(v);
   renderProblems(v);
-  announce(v.verdict.word + '. ' + v.verdict.line);
+  announce((v.weakening && v.weakening.weakened && v.weakening.weakened.length ? (v.weakening.word || 'WEAKENED') + '. ' : '') + v.verdict.word + '. ' + v.verdict.line);
 }
 
 function theme() {

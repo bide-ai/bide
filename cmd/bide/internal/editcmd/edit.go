@@ -19,7 +19,7 @@ import (
 	"github.com/bide-ai/bide/internal/term"
 )
 
-const usageText = `usage: bide edit [-addr <host:port>] [-color auto|always|never] <flow.yaml|flow.json>
+const usageText = `usage: bide edit [-addr <host:port>] [-base <git revision>] [-color auto|always|never] <flow.yaml|flow.json>
 
 Opens a local page for one flow config: the declared graph, an outline of its nodes and wiring,
 each node's approval gate and safety, the assertions and their verdicts, the problems bide check
@@ -27,7 +27,11 @@ finds, and the source. The page shows what bide check and bide view -config show
 computed by the same code, and labels the check as structural: block and type names are checked
 when a program loads the flow with its plan.Registry.
 
-In this release the page only shows the file; it does not change it.
+In this release the page only shows the file; it does not change it. It compares the file with a
+baseline, the committed policy, and says so in a banner that stays while the file is weaker than
+it: the file at git HEAD, or at the revision -base names (branch, tag or commit), or, when the file
+is not in git, the file as it was when bide edit opened it. The comparison is the one bide check
+-diff -check -fail-on-weaken makes.
 
 It serves on a loopback address only (-addr, default 127.0.0.1:8585), answers only requests
 addressed to a loopback host, and reads only the file you name. The address it prints ends in a
@@ -50,6 +54,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fs.PrintDefaults()
 	}
 	addr := fs.String("addr", "127.0.0.1:8585", "address to serve on: a loopback IP (127.0.0.1 or ::1) or localhost, with a port")
+	base := fs.String("base", "", "compare with the file at this git revision (a branch, tag or commit) instead of at HEAD; the file must be in it")
 	color := term.Flag(fs)
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -63,7 +68,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fs.Usage()
 		return 2
 	}
-	srv, err := flowedit.New(fs.Arg(0))
+	var opts []flowedit.Option
+	if *base != "" {
+		opts = append(opts, flowedit.WithBase(*base))
+	}
+	srv, err := flowedit.New(fs.Arg(0), opts...)
 	if err != nil {
 		fmt.Fprintln(stderr, es.ErrorPrefix()+"bide edit:", err)
 		return 1

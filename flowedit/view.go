@@ -48,6 +48,9 @@ type View struct {
 	// Graph is the layered drawing as one SVG document with every label escaped. The page parses
 	// it with DOMParser and never assigns it as markup.
 	Graph string `json:"graph,omitempty"`
+	// Weakening compares the text with the baseline (the committed file, or the file as the editor
+	// opened it). The server sets it; BuildView, which sees one text, does not.
+	Weakening *Weakening `json:"weakening,omitempty"`
 }
 
 // Verdict is the banner the page opens with: Class (good, bad, warn, info), the state in capitals

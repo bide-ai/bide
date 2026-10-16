@@ -20,3 +20,4 @@ main { max-width: 1480px; }
 .source { max-height: 28em; overflow: auto; background: var(--card); border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s3); white-space: pre; }
 .node.sel .box { stroke-width: 3; stroke: var(--accent); }
 .assert { margin: var(--s1) 0; }
+.weakened { margin-top: var(--s3); }
