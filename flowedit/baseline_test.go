@@ -245,7 +245,8 @@ func TestBaselineFromGit(t *testing.T) {
 	if err := json.Unmarshal(call(s.Handler(), s, "/api/apply", body, nil).Body.Bytes(), &e); err != nil {
 		t.Fatal(err)
 	}
-	if len(e.Weakening.Weakened) != 1 || e.Weakening.Baseline != "git "+first {
+	// the gate, and the assertion that held at the first commit and is violated now
+	if len(e.Weakening.Weakened) != 2 || e.Weakening.Baseline != "git "+first {
 		t.Errorf("%+v", e.Weakening)
 	}
 	// A file git does not have falls back to the file as opened; a revision that does not have it is an error.
