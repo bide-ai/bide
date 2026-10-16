@@ -113,7 +113,9 @@ for mod in $modules; do
   left=$(( WAIT * 60 - ($(date +%s) - start) ))
   [ "$left" -gt 0 ] || left=0
   # One deadline for the whole wait; a run never asks the proxy within the settle delay of its own start.
-  if ! PW_FLOOR=$start PW_DEADLINE=$(( start + WAIT * 60 )) PW_DIRECT_MAX=$left PW_MAX=$left proxy_wait_resolve "$mod" "$VERSION"; then
+  # --wait 0 asks once and does not wait: no settle delay either.
+  settle=${PW_SETTLE:-300}; [ "$WAIT" -gt 0 ] || settle=0
+  if ! PW_SETTLE=$settle PW_FLOOR=$start PW_DEADLINE=$(( start + WAIT * 60 )) PW_DIRECT_MAX=$left PW_MAX=$left proxy_wait_resolve "$mod" "$VERSION"; then
     (cd "$WORK/empty" && gorun list -m "$mod@$VERSION") || true
     die "$mod@$VERSION does not resolve"
   fi
