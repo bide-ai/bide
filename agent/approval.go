@@ -424,6 +424,12 @@ const (
 	ReasonCertIdentity = "the certificate does not carry the approver's identity as its one identifier"
 	ReasonCertUsage    = "the certificate is not usable for approving (key usage, extended key usage, policy, key type or CA flag)"
 	ReasonCertWindow   = "the decision time, or the time it became provable, is outside the certificate's validity"
+	// ReasonRevoked: a certificate of the chain has an effective revocation time at or before A(d).
+	ReasonRevoked = "a certificate of the chain was revoked at or before the time the decision became provable"
+	// ReasonStatusUnknown: no usable status covers a certificate of the chain.
+	ReasonStatusUnknown = "no usable revocation status covers a certificate of the chain"
+	// ReasonStatusStale: the status available is past nextUpdate or older than the policy allows.
+	ReasonStatusStale = "the revocation status available is older than the policy allows"
 )
 
 // protocol:claims begin QCount

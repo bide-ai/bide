@@ -66,6 +66,12 @@ var auditArtifacts = []any{
 // notArtifacts is every other exported struct type of audit and audit/verify, with why it is never
 // written as JSON. A new exported struct type must be added to one list or the other.
 var notArtifacts = map[string]string{
+	"audit.StatusSnapshot":    "a set of CRLs held in memory; its state is unexported",
+	"audit.CRLInfo":           "the result of StatusSnapshot.AddCRL, never written out",
+	"audit.StatusError":       "the error of the status check, never written out",
+	"audit.StatusParams":      "configuration of the status rule, built in code",
+	"audit.CertStatus":        "a finding of the status check; the journaled form is the identity record of a later change",
+	"audit.ChainStatus":       "the findings for a chain; the journaled form is the identity record of a later change",
 	"audit.IdentityPolicy":    "configuration of the certificate check, built in code; the journaled form is the identity record of a later change",
 	"audit.CertIdentity":      "a compiled IdentityPolicy; its state is unexported",
 	"audit.CanonicalConfig":   "configuration of the default canonicalizer, built in code",

@@ -324,6 +324,20 @@ AuditedStore wraps a store so every journal write is continuously anchored: when
 - `func (a *AuditedStore) Unwrap() agent.Store`: Unwrap returns the wrapped store, so agent.Capability finds its optional capabilities (agent.Leaser, agent.Lister) through the wrapper: an AuditedStore has exactly the capabilities of the store it wraps.
 - `func (a *AuditedStore) WithClock(now func() int64) *AuditedStore`: WithClock sets a deterministic timestamp source (for tests).
 
+## type CRLInfo
+
+```go
+type CRLInfo struct {
+	Hash       [32]byte
+	Number     *big.Int
+	ThisUpdate time.Time
+	NextUpdate time.Time
+	Entries    int
+}
+```
+
+CRLInfo describes a CRL accepted into a StatusSnapshot.
+
 ## type CanonicalConfig
 
 ```go
@@ -384,8 +398,68 @@ CertIdentity is a compiled IdentityPolicy: immutable, safe for concurrent use. *
 **Methods**
 
 - `func (c *CertIdentity) Canonicalizer() Canonicalizer`: Canonicalizer returns the function this policy compares identifiers with, for the identity record and for the other places an identity is compared (the requester principal). *(building block, not yet used by approval gates)*
+- `func (c *CertIdentity) EvaluateStatus(ac *ApproverCert, a time.Time, s *StatusSnapshot, p StatusParams) ChainStatus`: EvaluateStatus applies the status rule to every non-anchor certificate of ac's chain at A(d) = a, over the CRLs in s.
 - `func (c *CertIdentity) Identity(approverID string) (string, bool)`: Identity returns the canonical identifier the policy expects for an approver id. *(building block, not yet used by approval gates)*
 - `func (c *CertIdentity) VerifyChain(approverID string, chain [][]byte, decidedAt, anchoredAt time.Time) (*ApproverCert, error)`: VerifyChain checks a decision's certificate chain for approver approverID. *(building block, not yet used by approval gates)*
+
+## type CertStatus
+
+```go
+type CertStatus struct {
+	Serial *big.Int
+
+	Revoked    bool
+	E          time.Time
+	ReasonCode int
+	Compromise bool
+	RevokedBy  [32]byte
+
+	Tier StatusTier
+
+	S, LC     time.Time
+	LCKnown   bool
+	Unbounded bool
+
+	Stale bool
+
+	Window time.Duration
+
+	Used [][32]byte
+
+	Note string
+
+	Caveat string
+
+	Basis string
+
+	Warning string
+
+	EvictionGap bool
+}
+```
+
+CertStatus is the status finding for one certificate of a chain.
+
+**Methods**
+
+- `func (c CertStatus) IsFinal() bool`: IsFinal reports whether the finding is a verified one: not revoked, and final under the status rule.
+
+## type ChainStatus
+
+```go
+type ChainStatus struct {
+	Certs   []CertStatus
+	Revoked bool
+	Tier    StatusTier
+}
+```
+
+ChainStatus is the finding for every non-anchor certificate of an accepted chain, leaf first.
+
+**Methods**
+
+- `func (cs ChainStatus) Err() error`: Err is nil when the chain has usable status and no revocation (a provisional or live-count finding included: check IsFinal before calling a decision verified).
+- `func (cs ChainStatus) IsFinal() bool`: IsFinal reports whether every certificate of the chain is final and none is revoked.
 
 ## type Consistency
 
@@ -1568,6 +1642,105 @@ type Signer interface {
 ```
 
 Signer produces signatures under one scheme with one key.
+
+## type SnapshotOption
+
+```go
+type SnapshotOption func(*StatusSnapshot)
+```
+
+SnapshotOption configures NewStatusSnapshot.
+
+**Constructors and functions**
+
+- `func WithIssuers(certs ...*x509.Certificate) SnapshotOption`: WithIssuers names the CA certificates whose CRLs the snapshot is for.
+- `func WithLimits(maxBytes, maxEntries int) SnapshotOption`: WithLimits sets the largest CRL accepted in bytes and in entries (defaults 16 MiB and 1,000,000).
+- `func WithMaxCRLs(n int) SnapshotOption`: WithMaxCRLs bounds how many CRLs the snapshot keeps (default 1024; a value below 1 keeps the default).
+- `func WithUnboundedCRLs() SnapshotOption`: WithUnboundedCRLs removes the bound on how many CRLs the snapshot keeps, for an audit tool that loads an archived series and must not lose any of it.
+
+## type StatusError
+
+```go
+type StatusError struct {
+	Reason string
+	Detail string
+}
+```
+
+StatusError is a status failure.
+
+**Methods**
+
+- `func (e *StatusError) Error() string`: Error reports the reason and the detail.
+
+## type StatusParams
+
+```go
+type StatusParams struct {
+	W time.Duration
+
+	MinW time.Duration
+
+	RoutineGrace time.Duration
+
+	Now          time.Time
+	MaxStatusAge time.Duration
+
+	CountLive bool
+
+	Distrust map[SPKIHash]time.Time
+
+	Retained bool
+
+	CAPeriod time.Duration
+
+	CAPeriodFor map[SPKIHash]time.Duration
+
+	ConsecutiveNumbers bool
+
+	CoverageTolerance time.Duration
+}
+```
+
+StatusParams are the knobs of the status rule.
+
+## type StatusSnapshot
+
+```go
+type StatusSnapshot struct {
+	// contains filtered or unexported fields
+}
+```
+
+StatusSnapshot is a set of CRLs: what a gate fetched, or an auditor's archived series.
+
+**Constructors and functions**
+
+- `func NewStatusSnapshot(opts ...SnapshotOption) *StatusSnapshot`: NewStatusSnapshot returns an empty snapshot.
+
+**Methods**
+
+- `func (s *StatusSnapshot) AddCRL(der []byte) (CRLInfo, error)`: AddCRL parses a CRL and keeps it, or refuses it with a \*StatusError (ReasonStatusUnknown) naming why.
+- `func (s *StatusSnapshot) Evicted() int`: Evicted is the number of CRLs the snapshot has dropped to stay within WithMaxCRLs.
+- `func (s *StatusSnapshot) Len() int`: Len is the number of distinct CRLs held.
+
+## type StatusTier
+
+```go
+type StatusTier int
+```
+
+StatusTier is how strong the evidence of absence from the CRLs is.
+
+**Constants**
+
+- `const TierNoInformation StatusTier`: TierNoInformation: no usable status.
+- `const TierProvisional StatusTier`: TierProvisional: status exists but a later one could change the answer (it ends before A+W', the window is short, or the series is not shown complete to L(C)).
+- `const TierFinal StatusTier`: TierFinal: status reaches A+W' over a window of at least MinW, and the series is complete.
+
+**Methods**
+
+- `func (t StatusTier) String() string`: String names the tier.
 
 ## type TimeCheck
 

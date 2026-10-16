@@ -14,6 +14,7 @@ import (
 	"crypto/mldsa"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -240,4 +241,181 @@ func (l *Leaf) ChainWithRoot() [][]byte {
 		ca = ca.parent
 	}
 	return append(out, ca.DER)
+}
+
+// CRLOpts shapes one CRL signed by a CA.
+type CRLOpts struct {
+	Number     int64
+	ThisUpdate time.Time
+	NextUpdate time.Time
+	Entries    []x509.RevocationListEntry
+	Extra      []pkix.Extension // raw CRL extensions, such as the delta indicator or expiredCertsOnCRL
+	SigAlg     x509.SignatureAlgorithm
+}
+
+// NewCRL signs a CRL as c and returns its DER.
+func (c *CA) NewCRL(tb testing.TB, o CRLOpts) []byte {
+	tb.Helper()
+	der, err := c.TryCRL(o)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	return der
+}
+
+// TryCRL is NewCRL that reports an error when the standard library refuses to create the CRL.
+func (c *CA) TryCRL(o CRLOpts) ([]byte, error) {
+	tpl := &x509.RevocationList{
+		Number: big.NewInt(o.Number), ThisUpdate: o.ThisUpdate, NextUpdate: o.NextUpdate,
+		RevokedCertificateEntries: o.Entries, ExtraExtensions: o.Extra, SignatureAlgorithm: o.SigAlg,
+	}
+	der, err := x509.CreateRevocationList(rand.Reader, tpl, c.Cert, c.Key)
+	if err != nil {
+		return nil, fmt.Errorf("testca: create CRL: %w", err)
+	}
+	return der, nil
+}
+
+// Revoked is an entry for the serial of cert revoked at t with reason code code (0 omits it).
+func Revoked(cert *x509.Certificate, t time.Time, code int) x509.RevocationListEntry {
+	return x509.RevocationListEntry{SerialNumber: cert.SerialNumber, RevocationTime: t, ReasonCode: code}
+}
+
+// WithInvalidity adds an invalidity date (entry extension 2.5.29.24) to e.
+func WithInvalidity(e x509.RevocationListEntry, inv time.Time) x509.RevocationListEntry {
+	v, err := asn1.MarshalWithParams(inv.UTC(), "generalized")
+	if err != nil {
+		panic(err)
+	}
+	e.ExtraExtensions = append(e.ExtraExtensions, pkix.Extension{Id: asn1.ObjectIdentifier{2, 5, 29, 24}, Value: v})
+	return e
+}
+
+// RawEntry is a revoked entry of a hand-built CRL.
+type RawEntry struct {
+	Serial *big.Int
+	Time   time.Time
+	Exts   []pkix.Extension
+}
+
+// RawCRLOpts shapes a hand-built CRL for inputs the standard library will not create: a missing CRL
+// number, missing or backwards times, odd algorithm identifiers, padding. The CRL is signed with the
+// CA's key (ECDSA P-256 or Ed25519 CAs only) so it verifies unless the options say otherwise; only
+// its content is malformed.
+type RawCRLOpts struct {
+	Number      *big.Int // nil omits the cRLNumber extension
+	This, Next  time.Time
+	OmitNext    bool
+	OmitVersion bool       // a version 1 CRL (no version field)
+	Serials     []*big.Int // revoked at This, no extensions
+	Entries     []RawEntry // revoked entries with their own times and extensions
+	Extensions  []pkix.Extension
+	PadBytes    int // adds a non-critical unknown extension of about this many bytes
+	// InnerAlg and OuterAlg override the signature algorithm identifiers in the TBSCertList and in
+	// the CertificateList (the signature itself is still the CA key's). OuterParams is the full DER of
+	// the outer identifier's parameters (for RSASSA-PSS).
+	InnerAlg, OuterAlg asn1.ObjectIdentifier
+	OuterParams        []byte
+	// Indefinite re-encodes the outer SEQUENCE with an indefinite length (BER).
+	Indefinite bool
+	// NoAKI omits the authority key identifier extension.
+	NoAKI bool
+}
+
+// RawCRL builds and signs a CRL by marshalling the TBSCertList itself.
+func (c *CA) RawCRL(tb testing.TB, o RawCRLOpts) []byte {
+	tb.Helper()
+	type algID struct {
+		Algorithm  asn1.ObjectIdentifier
+		Parameters asn1.RawValue `asn1:"optional"`
+	}
+	type entry struct {
+		Serial *big.Int
+		Time   time.Time
+		Exts   []pkix.Extension `asn1:"optional"`
+	}
+	type tbs struct {
+		Version int `asn1:"optional"`
+		Sig     algID
+		Issuer  asn1.RawValue
+		This    time.Time
+		Next    time.Time        `asn1:"optional"`
+		Revoked []entry          `asn1:"optional"`
+		Exts    []pkix.Extension `asn1:"tag:0,optional,explicit"`
+	}
+	var sigAlg asn1.ObjectIdentifier
+	var sign func(msg []byte) []byte
+	switch k := c.Key.(type) {
+	case *ecdsa.PrivateKey:
+		sigAlg = asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 2}
+		sign = func(msg []byte) []byte {
+			h := sha256.Sum256(msg)
+			sig, err := ecdsa.SignASN1(rand.Reader, k, h[:])
+			if err != nil {
+				tb.Fatal(err)
+			}
+			return sig
+		}
+	case ed25519.PrivateKey:
+		sigAlg = asn1.ObjectIdentifier{1, 3, 101, 112}
+		sign = func(msg []byte) []byte { return ed25519.Sign(k, msg) }
+	default:
+		tb.Fatalf("testca: RawCRL cannot sign with %T", c.Key)
+	}
+	inner, outer := sigAlg, sigAlg
+	if o.InnerAlg != nil {
+		inner = o.InnerAlg
+	}
+	if o.OuterAlg != nil {
+		outer = o.OuterAlg
+	}
+	exts := append([]pkix.Extension(nil), o.Extensions...)
+	if len(c.Cert.SubjectKeyId) > 0 && !o.NoAKI {
+		kid, _ := asn1.Marshal(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 0, Bytes: c.Cert.SubjectKeyId})
+		aki, _ := asn1.Marshal(asn1.RawValue{Class: asn1.ClassUniversal, Tag: asn1.TagSequence, IsCompound: true, Bytes: kid})
+		exts = append(exts, pkix.Extension{Id: asn1.ObjectIdentifier{2, 5, 29, 35}, Value: aki})
+	}
+	if o.Number != nil {
+		n, _ := asn1.Marshal(o.Number)
+		exts = append(exts, pkix.Extension{Id: asn1.ObjectIdentifier{2, 5, 29, 20}, Value: n})
+	}
+	if o.PadBytes > 0 {
+		pad, _ := asn1.Marshal(make([]byte, o.PadBytes))
+		exts = append(exts, pkix.Extension{Id: asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 99999, 8}, Value: pad})
+	}
+	t := tbs{Version: 1, Sig: algID{Algorithm: inner}, Issuer: asn1.RawValue{FullBytes: c.Cert.RawSubject}, This: o.This, Next: o.Next, Exts: exts}
+	if o.OmitVersion {
+		t.Version = 0
+	}
+	if o.OmitNext {
+		t.Next = time.Time{}
+	}
+	for _, s := range o.Serials {
+		t.Revoked = append(t.Revoked, entry{Serial: s, Time: o.This})
+	}
+	for _, e := range o.Entries {
+		t.Revoked = append(t.Revoked, entry{Serial: e.Serial, Time: e.Time, Exts: e.Exts})
+	}
+	tbsDER, err := asn1.Marshal(t)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	sigBytes := sign(tbsDER)
+	list, err := asn1.Marshal(struct {
+		TBS asn1.RawValue
+		Alg algID
+		Sig asn1.BitString
+	}{asn1.RawValue{FullBytes: tbsDER}, algID{Algorithm: outer, Parameters: asn1.RawValue{FullBytes: o.OuterParams}}, asn1.BitString{Bytes: sigBytes, BitLength: 8 * len(sigBytes)}})
+	if err != nil {
+		tb.Fatal(err)
+	}
+	if o.Indefinite {
+		// Strip the definite SEQUENCE header and wrap the content in an indefinite one.
+		var rv asn1.RawValue
+		if _, err := asn1.Unmarshal(list, &rv); err != nil {
+			tb.Fatal(err)
+		}
+		list = append(append([]byte{0x30, 0x80}, rv.Bytes...), 0x00, 0x00)
+	}
+	return list
 }
