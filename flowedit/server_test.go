@@ -80,6 +80,13 @@ func TestDocAndReport(t *testing.T) {
 	if d.Text != testFlow || d.Hash != hashOf([]byte(testFlow)) || d.Format != "yaml" || d.Flow != "refund" || d.Entry != "validate" {
 		t.Errorf("doc %+v", d.View)
 	}
+	var order []string
+	for _, n := range d.Nodes {
+		order = append(order, n.Name)
+	}
+	if strings.Join(order, ",") != "validate,charge,receipt" {
+		t.Errorf("outline order %q: nodes are listed in config order, which the digest commits to", order)
+	}
 	if len(d.Nodes) != 3 || d.Nodes[1].Name != "charge" || d.Nodes[1].Gate != "2 of 3: ops, finance, risk excluding the requester" || d.Nodes[1].Safety != "side_effect" {
 		t.Errorf("nodes %+v", d.Nodes)
 	}
