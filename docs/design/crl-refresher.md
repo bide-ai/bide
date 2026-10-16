@@ -224,14 +224,14 @@ temporary file, fsync, rename, fsync the directory; idempotent by hash. CRLs arc
   are written with explicit modes.
 - At start, `Load` seeds the high-water marks and the snapshot through the
   same verification path. The archive is never pruned (a 30-minute CA is about 17,500 CRLs a year per
-  issuer), so A mark is taken only from a CRL that verifies (signature against the issuer, parse): the file
+  issuer). A mark is taken only from a CRL that verifies (signature against the issuer, parse): the file
   setting the highest number is verified, and if it fails `EventArchiveCorrupt` is reported and the
   next is taken, so a stray or planted file named with a huge number never becomes a mark. Seeding goes
   **newest first** and loads only what the live rule needs: the newest
   CRLs within `MaxStatusAge` plus the base of any delta, bounded by `WithMaxCRLs` and a startup time
   budget. Seeding does **not** count toward the snapshot's eviction bookkeeping (`evictedNew`): it
   uses an internal insert that never evicts, since loading oldest first and evicting would raise
-  `evictedNew` and make live status non-final for no reason. A seeded CRL is judged by its own dates,
+  `evictedNew` and make live status non-final for no reason. A RESET record is trusted like the archive directory itself (`0700`, owner-checked), and a forged one can lower a mark, so a reset appears in `Health()` and through the hook as a security event on every start until an operator acknowledges it; the guide treats write access to the archive directory as write access to the rollback memory. A seeded CRL is judged by its own dates,
   so seeding cannot make anything fresher than it was. Without an archive the refresher runs, but a restart forgets rollback protection and says so at
   startup.
 
