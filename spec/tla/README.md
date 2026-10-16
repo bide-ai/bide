@@ -741,6 +741,11 @@ resolution all run around it.
   leaf was revoked (`checked`, set at the end of `ApExec`), so a path that skips the check is caught
   even though the check never ran (`Bug = "ExecBypass"`). A revocation after the check and before the
   call is the published latency bound, not modelled.
+  Outside the model: the 1-of-1 gate (`one`) and step and flow calls go to the claim without `ApExec`
+  and `SubmitCert` writes only m-of-n records, so a certificate-bound approver on the 1-of-1 path is not
+  modelled; `RevokeLeaf` kills every decision under the leaf, so the `E > A(d)` case (a decision that
+  stays valid) is model 15's; and there is no stale-status hold here (the pause for stale status is
+  model 15's `ExecOK`, which refuses a status older than `ExecAge`).
   The check is one more step on every m-of-n path, so the state counts of the m-of-n configurations
   grew by 1 to 9 percent (behavior unchanged; the counts in the table are the new ones).
   Every configuration without `CertKeys` is unchanged (the new variables stay at their initial
@@ -2928,6 +2933,14 @@ Each is in `identity/regress/`, is the same model with one rule switched off by 
 - **What a crash loses.** `Crash` models the gate's counted set and wait; the process, the store and
   the tool call are model 1b's and model 10's. A crash during the call is the unknown-outcome path
   (models 9 and 13), not here.
+- **One clock.** The CA, the verifier and the gate share one clock, so skew between them is not modelled
+  (`Skew` bounds `decided_at` against the head only). Time is advanced only by `ClockTick`.
+- **Atomic execution.** `Exec` is one step with its check, so a revocation between them is not modelled.
+- **Issuance time.** `IssueMax` is 0 in the revocation and seat configurations; `id-validity` is the one
+  that issues later (certificates issued at any time up to 2). Leaf reissue and rotation are model 1b's
+  two leaves of one approver, not model 15's.
+- **Covered but uncountable.** A decision under a contradictory head (`NonDec`) is covered and never
+  counted (the probe `UncountableNotReachable`-style state is reachable): by design the gate pauses.
 - **Revocation latency.** The `ExecAge` race (a revocation between the pre-execution check and the call)
   is the published latency bound, not a property.
 
