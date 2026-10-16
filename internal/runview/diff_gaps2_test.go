@@ -104,6 +104,12 @@ func TestDiffSwitchConditions(t *testing.T) {
 	if got := weakenedOf(t, sw(arm("large", "charge"), "small"), sw(arm("large", "charge")+", "+arm("huge", "note"), "small")); len(got) != 1 {
 		t.Errorf("an added arm beside an ungated one: %q", got)
 	}
+	// The other arm's effect relabeled read-only in the same edit still counts as the effect it was.
+	relabeled := strings.Replace(sw(arm("tiny", "charge"), "small"), `"name": "small", "block": "charge", "safety": "side_effect"`, `"name": "small", "block": "charge", "safety": "readonly"`, 1)
+	v = diffOf(t, sw(arm("large", "charge"), "small"), relabeled, nil, nil)
+	if !slices.Contains(v.weakKinds, "condition") || !slices.Contains(v.weakKinds, "safety") {
+		t.Errorf("relabeled other arm: kinds %q, weakened %q", v.weakKinds, v.Weakened)
+	}
 	for name, c := range map[string][2]string{
 		"unchanged":                      {sw(arm("large", "charge"), "small"), sw(arm("large", "charge"), "small")},
 		"else arm gated, no ungated":     {sw(arm("large", "note"), "charge"), sw(arm("tiny", "note"), "charge")},
@@ -195,12 +201,18 @@ func TestDiffRenameDoesNotHideChanges(t *testing.T) {
 	if len(got) != 2 || !strings.HasPrefix(got[0], "charge: approval") || !strings.HasPrefix(got[1], "receipt2: reachable without an approval gate (validate -> charge -> receipt2)") {
 		t.Errorf("renamed effect behind a removed gate: %q", got)
 	}
+	// Renamed, relabeled read-only and reached around the gate: still a bypass of a node that sat behind it.
+	around := strings.Replace(strings.NewReplacer(`"name": "receipt", "block": "receipt", "safety": "side_effect"`, `"name": "receipt2", "block": "receipt", "safety": "readonly"`, `["charge", "receipt"]`, `["charge", "receipt2"]`).Replace(base), `"wiring": [`, `"wiring": [{"edge": ["validate", "receipt2"]}, `, 1)
+	got = weakenedOf(t, base, around)
+	if len(got) != 1 || !strings.HasPrefix(got[0], "receipt2: new node, reachable without an approval gate (validate -> receipt2)") || !strings.Contains(got[0], "safety lowered side effect -> read-only") {
+		t.Errorf("renamed, relabeled, bypassed: %q", got)
+	}
 	// readonly -> side_effect while renamed.
 	log := func(name, safety string) string {
 		return gapCfg(`, {"name": "`+name+`", "block": "log", "safety": "`+safety+`"}`, `, {"edge": ["validate", "`+name+`"]}`)
 	}
 	v := diffOf(t, log("log", "readonly"), log("log2", "side_effect"), nil, nil)
-	if len(v.Weakened) != 1 || slices.ContainsFunc(v.Changes, func(c Change) bool { return c.Change == "renamed" }) {
+	if len(v.Weakened) != 1 {
 		t.Errorf("renamed and made an effect: %q, changes %q", v.Weakened, lines(v.Changes))
 	}
 	// renamedNodes directly: the pairing's own conditions.

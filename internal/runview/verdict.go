@@ -257,7 +257,7 @@ func diffVerdict(v *DiffView) Verdict {
 	n := len(v.Changes)
 	switch {
 	case len(v.Weakened) > 0 && len(v.weakKinds) == len(v.Weakened) && !slices.Contains(v.weakKinds, "gate"):
-		d = Verdict{Class: "bad", Word: "SAFETY CHECK WEAKENED", Icon: "halt", Line: "An effect is newly reachable without an approval gate, or an assertion was removed, loosened, or no longer holds",
+		d = Verdict{Class: "bad", Word: "SAFETY CHECK WEAKENED", Icon: "halt", Line: "A node is newly reachable without an approval gate, a node's safety was lowered, or an assertion was removed, loosened, or no longer holds",
 			Details: v.Weakened}
 	case len(v.Weakened) > 0:
 		d = Verdict{Class: "bad", Word: "APPROVAL GATE WEAKENED", Icon: "halt", Line: "Approval policy weakened",

@@ -15,32 +15,173 @@ func mayHaveEffect(r plan.ConfigReport, node string) bool {
 	return !ok || s == plan.SafetySideEffect || s == plan.SafetyUnknown
 }
 
-// ungatedEffects are the nodes of r that may have an effect and that a path from the entry reaches
-// without passing an approval gate (ConfigReport.Gated is false for them). A node the entry cannot
-// reach is gated vacuously, so it is not here.
-func ungatedEffects(r plan.ConfigReport) map[string]bool {
-	out := map[string]bool{}
-	for _, n := range r.Topology.Nodes {
-		if !r.Gated[n.Name] && mayHaveEffect(r, n.Name) {
-			out[n.Name] = true
+// safetyRank orders a node's safety by how much a gate in front of it matters: read-only 0,
+// idempotent 1, side effect and unknown 2 (a safety the check cannot read counts as an effect).
+func safetyRank(r plan.ConfigReport, node string) int {
+	switch r.Safety[node] {
+	case plan.SafetyReadOnly:
+		return 0
+	case plan.SafetyIdempotent:
+		return 1
+	}
+	return 2
+}
+
+// safetyName is a node's safety as the report words it.
+func safetyName(r plan.ConfigReport, node string) string {
+	if s, ok := r.Safety[node]; ok {
+		return string(s)
+	}
+	return string(plan.SafetyUnknown)
+}
+
+// safetyLowered reports whether the node's safety moved toward read-only: side effect or unknown to
+// idempotent or read-only, or idempotent to read-only. The label is the config's own claim, so a
+// downgrade is what removes the effect from every effect-based check below.
+func safetyLowered(o, n plan.ConfigReport, from, to string) bool {
+	return safetyRank(n, to) < safetyRank(o, from)
+}
+
+// reachable are the nodes a path from r's entry reaches, gates ignored.
+func reachable(r plan.ConfigReport) map[string]bool {
+	adj := map[string][]string{}
+	for _, e := range r.Topology.Edges {
+		adj[e.From] = append(adj[e.From], e.To)
+	}
+	for _, b := range r.Topology.Branches {
+		for _, a := range b.Arms {
+			adj[b.Over] = append(adj[b.Over], a.Target)
+		}
+	}
+	seen := map[string]bool{}
+	stack := []string{r.Topology.Entry}
+	for len(stack) > 0 {
+		x := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if x == "" || seen[x] {
+			continue
+		}
+		seen[x] = true
+		stack = append(stack, adj[x]...)
+	}
+	return seen
+}
+
+// successorsOf are the nodes o has and n lacks, that no rename pairs, with the block and kind of
+// node (a node n adds): the nodes it may be a moved copy of. The check cannot tell a new node from
+// an old one rewired and renamed, so it judges the new one against each.
+func successorsOf(o, n plan.ConfigReport, renRev map[string]string, node string) []string {
+	var added plan.TopologyNode
+	for _, x := range n.Topology.Nodes {
+		if x.Name == node {
+			added = x
+		}
+	}
+	claimed := map[string]bool{}
+	for _, from := range renRev {
+		claimed[from] = true
+	}
+	inNew := map[string]bool{}
+	for _, x := range n.Topology.Nodes {
+		inNew[x.Name] = true
+	}
+	var out []string
+	for _, x := range o.Topology.Nodes {
+		if !inNew[x.Name] && !claimed[x.Name] && x.Block == added.Block && x.Kind == added.Kind {
+			out = append(out, x.Name)
 		}
 	}
 	return out
 }
 
-// ungatedWhy is the report of a node in ungatedEffects(n): "reachable without an approval gate
-// (validate -> receipt), not before", with "; its safety is not known" when that is why it counts.
+// ungatedNodes are the nodes of n that a path from the entry reaches without passing an approval
+// gate (ConfigReport.Gated is false for them) and that count as a gate bypass, by their name in n:
+//   - a node o reaches only through a gate (every path passes one) whatever its safety in either
+//     config: a gate that guarded it is gone from some path (broad is true);
+//   - a node o does not reach, or n adds, that may have an effect (side effect or unknown safety) in
+//     n or in o: there is no earlier gate to lose, so only a node that can act counts;
+//   - a node o reached without a gate that could not act (read-only or idempotent) and now may.
+//
+// A node o already reached without a gate, and as able to act, is not new. renRev maps a renamed node's new name to its
+// old one. The old safety counts as well as the new: a relabel to read-only is the one edit that
+// would otherwise hide the effect from this check.
+func ungatedNodes(o, n plan.ConfigReport, renRev map[string]string) map[string]bool {
+	oldHas := map[string]bool{}
+	for _, x := range o.Topology.Nodes {
+		oldHas[x.Name] = true
+	}
+	oldReach := reachable(o)
+	out := map[string]bool{}
+	for _, x := range n.Topology.Nodes {
+		if n.Gated[x.Name] {
+			continue
+		}
+		from := x.Name
+		if f, ok := renRev[x.Name]; ok {
+			from = f
+		}
+		switch {
+		case !oldHas[from]:
+			// A new node has no gate to lose, unless it may be a removed node moved: the same block
+			// under another name (renamedNodes pairs only an exact match of the edges), relabeled.
+			hit := mayHaveEffect(n, x.Name)
+			for _, c := range successorsOf(o, n, renRev, x.Name) {
+				hit = hit || oldReach[c] && o.Gated[c] || mayHaveEffect(o, c)
+			}
+			if hit {
+				out[x.Name] = true
+			}
+		case oldReach[from] && o.Gated[from]:
+			out[x.Name] = true
+		case !oldReach[from] && (mayHaveEffect(n, x.Name) || mayHaveEffect(o, from)):
+			out[x.Name] = true
+		case mayHaveEffect(n, x.Name) && !mayHaveEffect(o, from):
+			// Reached without a gate before, as something that could not act, and now it can.
+			out[x.Name] = true
+		}
+	}
+	return out
+}
+
+// effectsNow are the nodes of n that may have an effect, in n's safety or in the old one's, and that
+// a path from the entry reaches without passing an approval gate (ConfigReport.Gated is false for
+// them). A node the entry cannot reach is gated vacuously, so it is not here. The switch-arm rule
+// asks which of these another arm reaches.
+func effectsNow(o, n plan.ConfigReport, renRev map[string]string) map[string]bool {
+	out := map[string]bool{}
+	oldHas := map[string]bool{}
+	for _, x := range o.Topology.Nodes {
+		oldHas[x.Name] = true
+	}
+	for _, x := range n.Topology.Nodes {
+		if n.Gated[x.Name] {
+			continue
+		}
+		from := x.Name
+		if f, ok := renRev[x.Name]; ok {
+			from = f
+		}
+		if mayHaveEffect(n, x.Name) || oldHas[from] && mayHaveEffect(o, from) {
+			out[x.Name] = true
+		}
+	}
+	return out
+}
+
+// ungatedWhy is the report of a node in ungatedNodes(n): "reachable without an approval gate
+// (validate -> receipt), not before; its safety is side effect".
 func ungatedWhy(n plan.ConfigReport, node string) string {
-	why := ""
-	if s, ok := n.Safety[node]; !ok || s == plan.SafetyUnknown {
+	why := "; its safety is " + safetyName(n, node)
+	if _, ok := n.Safety[node]; !ok || n.Safety[node] == plan.SafetyUnknown {
 		why = "; its safety is not known"
 	}
 	return "reachable without an approval gate (" + strings.Join(n.UngatedPath(node), " -> ") + "), not before" + why
 }
 
 // renamedNodes pairs each node only the old topology has with a node only the new one has when they
-// are the same node under another name: the same block, kind and safety, the same entry role, and the
-// same edges and Switch arms once the renamed nodes' names are mapped. The gate may differ: the
+// are the same node under another name: the same block and kind (a safety that differs is judged
+// as the node's change, not a reason to treat the node as removed and a new one added), the same entry role, and the same
+// edges and Switch arms once the renamed nodes' names are mapped. The gate may differ: the
 // caller reports it as the renamed node's gate change. A rename that also changes any of the rest is
 // not paired: it is judged on what changed. It returns old name -> new name.
 func renamedNodes(o, n plan.ConfigReport) map[string]string {
@@ -89,7 +230,7 @@ func renamedNodes(o, n plan.ConfigReport) map[string]string {
 				continue
 			}
 			ro, an := oldNode[r], newNode[a]
-			if ro.Block != an.Block || ro.Kind != an.Kind || o.Safety[r] != n.Safety[a] {
+			if ro.Block != an.Block || ro.Kind != an.Kind {
 				continue
 			}
 			if slices.Equal(incident(ot, r, blur(removedOnly)), incident(nt, a, blur(addedOnly))) {
