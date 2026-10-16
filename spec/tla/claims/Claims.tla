@@ -2320,10 +2320,10 @@ Submit(c, h, a, v, sj, k) ==
 \* leaf are one. Historically (LeafNotInName) the leaf was not in the name, so a record that does
 \* not count (a revoked leaf's, a junk record's) kept a genuine decision under another leaf out;
 \* (ChainInName) the chain was, so one decision was written twice.
-NameClash(e, r) ==
-  /\ e.a = r.a /\ e.ok = r.ok /\ e.t = r.t
-  /\ (Bug = "LeafNotInName" \/ e.k = r.k)
-  /\ (Bug # "ChainInName" \/ e.ch = r.ch)
+NameClash(c, i, a, v, k, ch, t) ==
+  /\ dlog[c][i].a = a /\ dlog[c][i].ok = v /\ dlog[c][i].t = t
+  /\ (Bug = "LeafNotInName" \/ dlog[c][i].k = k)
+  /\ (Bug # "ChainInName" \/ dlog[c][i].ch = ch)
 SubmitCert(c, h, a, v, sj, k, ch, t) ==
   LET r == [a |-> a, h |-> h, ok |-> v, k |-> k, subj |-> sj, late |-> expired[c], ch |-> ch, t |-> t] IN
   /\ submits < MaxSubmit
@@ -2331,11 +2331,11 @@ SubmitCert(c, h, a, v, sj, k, ch, t) ==
   /\ \/ a \in DOMAIN KeyOf /\ k \in KeyOf[a]
      \/ a \in DOMAIN KeyOf2 /\ k \in KeyOf2[a]
   /\ submits' = submits + 1
-  /\ IF \E i \in DOMAIN dlog[c] : NameClash(dlog[c][i], r)
+  /\ IF \E i \in DOMAIN dlog[c] : NameClash(c, i, a, v, k, ch, t)
      THEN \* Refused as a duplicate. Refused for a record that does not count and is under another
           \* leaf is the genuine decision kept out.
           /\ squat' = (squat \/ \E i \in DOMAIN dlog[c] :
-                                  NameClash(dlog[c][i], r) /\ dlog[c][i].k # k /\ ~CountsFor(c, i))
+                                  NameClash(c, i, a, v, k, ch, t) /\ dlog[c][i].k # k /\ ~CountsFor(c, i))
           /\ dlog' = dlog
      ELSE /\ dlog' = [dlog EXCEPT ![c] = Append(dlog[c], r)]
           /\ squat' = squat

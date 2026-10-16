@@ -31,6 +31,7 @@ PairSym   == Permutations({d1, d2})
 NoGate    == [c \in Calls |-> "none"]
 GateOne   == [c \in Calls |-> "one"]
 GateM     == [c \in Calls |-> "m"]
+GateLoose == [c \in Calls |-> "loose"]
 \* Separation of duties: 2 of {a1, a2, a3} excluding the requester (sod), 3 of them (sodtight: out
 \* of reach once the requester is an approver), and 1 of {a1, a2} (sodfold: for a requester that is
 \* another spelling of a1), and 1 of {a1, a2, a3} (sodloose).
