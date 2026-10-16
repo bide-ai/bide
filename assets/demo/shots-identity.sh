@@ -52,7 +52,7 @@ wait_for() { # url: retry for up to 30 s
   for _ in $(seq 300); do curl -sf -o /dev/null "$1" && return 0; sleep 0.1; done
   echo "shots-identity.sh: timed out waiting for $1" >&2; exit 1
 }
-(cd "$root/cmd/bide" && BIDE_IDENTITY_DEMO_DIR="$work" GOWORK=off go test ./internal/identitydemo -run TestWriteDemoJournal -count=1 > /dev/null)
+(cd "$root/cmd/bide" && BIDE_IDENTITY_DEMO_DIR="$work" GOWORK=off go test -tags identitydemo ./internal/identitydemo -run TestWriteDemoJournal -count=1 > /dev/null)
 
 serve() { # port args...: bide view, read-only, on a loopback port
   local p=$1; shift

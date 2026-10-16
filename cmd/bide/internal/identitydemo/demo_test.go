@@ -1,3 +1,5 @@
+//go:build identitydemo
+
 // The journal is written entirely by the real gate: refunds that wait at 2-of-3 gates (ops and finance
 // bound to certificates from a demo CA, risk on a bare key) run on the real agent runtime with a real
 // audit.CertApprover (heads signed by a demo log key, CRLs from the demo CA), on a controllable clock so
@@ -5,7 +7,8 @@
 // provisionally (a live count: the status in hand predates her decision) and executes; refund-3002 waits
 // for revocation status; refund-3003 waits for a covering signed head; refund-3004 is counted and held
 // before execution because the status is too old to run on.
-// Package identitydemo writes, as a test that runs only on request, the journal behind the run viewer
+// Package identitydemo writes, as a test that is built only with the identitydemo tag (a skipped test
+// would fail the integration job, which treats any skip in cmd/bide as unreachable services), the journal behind the run viewer
 // guide's identity screenshots (assets/demo/shots-identity.sh).
 package identitydemo
 
@@ -36,7 +39,7 @@ import (
 func TestWriteDemoJournal(t *testing.T) {
 	dir := os.Getenv("BIDE_IDENTITY_DEMO_DIR")
 	if dir == "" {
-		t.Skip("set BIDE_IDENTITY_DEMO_DIR to write the demo journal")
+		t.Fatal("set BIDE_IDENTITY_DEMO_DIR to the directory that gets identity.db")
 	}
 	if err := run(t, dir); err != nil {
 		t.Fatal(err)
