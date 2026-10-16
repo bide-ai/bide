@@ -41,6 +41,9 @@ type fixture struct {
 	call     string
 	identity string          // the requester the run is driven for, when not empty
 	bound    map[string]bool // approvers whose verifier the application makes certificate-bound (a stub), by id
+	// intakeBound are the verifiers the approvals intake (a test of -to) resolves for the certificate-bound
+	// approvers: stubs that check the chain they are given the way the application's verifier would.
+	intakeBound map[string]*intakeStub
 }
 
 const refundArgs = `{"order":1049,"amount":120,"note":"refund <ok>"}`

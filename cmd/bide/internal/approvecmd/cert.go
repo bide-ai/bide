@@ -276,3 +276,81 @@ func agentLeafHash(der []byte) []byte {
 	h := agent.CertLeafHash(der)
 	return h[:]
 }
+
+// localIntake is the write-time check of a certificate-bound decision that bide approve makes itself,
+// in the form SubmitDecision's check takes (agent.CertIntakeVerifier): the record carries the chain that
+// was prepared, the policy (when there is one) accepts it for the approver now, and the signature verifies
+// over the v4 bytes under the leaf's key. It judges no revocation status: the command has no CRLs, and the
+// gate decides that when it counts.
+type localIntake struct {
+	cd *certDecision
+	as string
+}
+
+func (localIntake) Alg() agent.Alg                  { return agent.AlgCertificate }
+func (localIntake) Verify(message, sig []byte) bool { return false }
+func (l localIntake) KeyIDs() []string              { return []string{"ident:" + l.as} }
+func (l localIntake) VerifyCertDecision(cd agent.CertDecision) agent.CertCheck {
+	return l.VerifyCertIntake(cd)
+}
+
+func (l localIntake) VerifyCertIntake(cd agent.CertDecision) agent.CertCheck {
+	r := cd.Record
+	if r.Approver() != l.as {
+		return agent.CertCheck{Reason: agent.ReasonNotEligible, Detail: "the decision is not by the approver this command decides as"}
+	}
+	chain := r.ApproverCert()
+	if len(chain) != len(l.cd.chain.der) || !slices.EqualFunc(chain, l.cd.chain.der, bytes.Equal) {
+		return agent.CertCheck{Reason: agent.ReasonCertChain, Detail: "the decision does not carry the chain this command prepared"}
+	}
+	at, err := agent.ParseTimestamp(r.DecidedAt())
+	if err != nil {
+		return agent.CertCheck{Reason: agent.ReasonDecidedAt, Detail: "decided_at: " + err.Error()}
+	}
+	if l.cd.policy != nil {
+		if _, err := l.cd.policy.VerifyChain(l.as, chain, at, now()); err != nil {
+			var ce *audit.CertError
+			if errors.As(err, &ce) {
+				return agent.CertCheck{Reason: ce.Reason, Detail: ce.Detail}
+			}
+			return agent.CertCheck{Reason: agent.ReasonCertChain, Detail: err.Error()}
+		}
+	}
+	alg, pub, err := audit.CertDecisionKey(l.cd.chain.leaf)
+	if err != nil {
+		return agent.CertCheck{Reason: agent.ReasonCertUsage, Detail: err.Error()}
+	}
+	v, err := audit.NewVerifier(alg, pub)
+	if err != nil {
+		return agent.CertCheck{Reason: agent.ReasonCertUsage, Detail: err.Error()}
+	}
+	if r.ApproverAlg() != alg || !v.Verify(agent.ApprovalDecisionBytesCert(cd.Subject, r.Approver(), r.Approved, at, agent.CertLeafHash(chain[0])), r.Signature()) {
+		return agent.CertCheck{Reason: agent.ReasonBadSig, Detail: "the signature does not verify over the bide.approval.v4 bytes of this call under the certificate's key"}
+	}
+	return agent.CertCheck{Identity: l.cd.identity(l.as, at), Anchored: now()}
+}
+
+// verifyReceipt checks a certificate-bound receipt an endpoint returned against the decision just sent:
+// it carries the chain that was sent, and its signature verifies over the v4 bytes of the call under the
+// leaf's key.
+func (cd *certDecision) verifyReceipt(rc audit.DecisionReceipt, s agent.ApprovalSubject) error {
+	if len(rc.Cert) != len(cd.chain.der) || !slices.EqualFunc(rc.Cert, cd.chain.der, bytes.Equal) {
+		return errors.New("the receipt does not carry the chain that was sent")
+	}
+	at, err := agent.ParseTimestamp(rc.DecidedAt)
+	if err != nil {
+		return fmt.Errorf("the receipt's decided_at: %w", err)
+	}
+	alg, pub, err := audit.CertDecisionKey(cd.chain.leaf)
+	if err != nil {
+		return err
+	}
+	v, err := audit.NewVerifier(alg, pub)
+	if err != nil {
+		return err
+	}
+	if rc.Alg != alg || !v.Verify(agent.ApprovalDecisionBytesCert(s, rc.Approver, rc.Approved, at, agent.CertLeafHash(rc.Cert[0])), rc.Signature) {
+		return errors.New("the receipt's signature does not verify over the bide.approval.v4 bytes of this call under your certificate's key")
+	}
+	return nil
+}

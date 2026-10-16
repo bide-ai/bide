@@ -798,13 +798,14 @@ func (c *cmd) approve(ctx context.Context) error {
 			return fmt.Errorf("your key is not a usable verification key (nothing was recorded): %w", err)
 		}
 		ownFor := func(id string) (agent.ApproverVerifier, bool) { return own, id == f.as }
-		var opts []agent.ApproveOption
-		if c.cert == nil {
-			opts = append(opts, agent.WithDecisionCheck(ownFor))
+		check := ownFor
+		if c.cert != nil {
+			// The same write-time check the approvals intake makes, with what this command can judge: the
+			// chain against the policy, the signature under the leaf's key.
+			li := localIntake{cd: c.cert, as: f.as}
+			check = func(id string) (agent.ApproverVerifier, bool) { return li, id == f.as }
 		}
-		// A decision that carries a chain is checked above (key against leaf, chain against the policy,
-		// signature under the leaf's key); SubmitDecision's check verifies bare-key decisions only.
-		if err := agent.SubmitDecision(ctx, j, d, opts...); err != nil {
+		if err := agent.SubmitDecision(ctx, j, d, agent.WithDecisionCheck(check)); err != nil {
 			return fmt.Errorf("the decision was not recorded: %w", err)
 		}
 		fmt.Fprintf(c.out, "\n%s%s call %s as %s, signed and recorded (decided %s)\n", c.st.Pass(), c.verb(!f.reject), safe(f.call), c.st.Bold(f.as), agent.FormatTimestamp(at))

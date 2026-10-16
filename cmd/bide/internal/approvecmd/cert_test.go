@@ -10,9 +10,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -461,5 +464,171 @@ func TestCert_ABadCertificateOpensNoKey(t *testing.T) {
 	bad := set("-key", f.keys["finance"])(f.certArgs("ops", p, "-yes"))
 	if code := run(bad...); code != 1 || opened != 1 || len(f.decisions()) != 0 {
 		t.Fatalf("a wrong key: code %d, opened %d, decisions %d", code, opened, len(f.decisions()))
+	}
+}
+
+// ---- -to: the approvals intake ----
+
+// intakeStub is the application's verifier of a certificate-bound approver as the approvals intake uses it
+// (agent.CertIntakeVerifier, with the gate's identity rule): it accepts a decision whose signature verifies
+// over the v4 bytes under the leaf the chain carries, and says the revocation status is unavailable while
+// down is set.
+type intakeStub struct {
+	boundStub
+	ident string
+	down  *atomic.Bool
+	seen  atomic.Int32
+}
+
+func (s *intakeStub) HasIdentity(string) bool                   { return true }
+func (s *intakeStub) Identifier(string) (string, bool)          { return s.ident, true }
+func (s *intakeStub) RequesterIdentifier(string) (string, bool) { return "", false }
+func (s *intakeStub) IdentityMappingConfigured() bool           { return false }
+func (s *intakeStub) RosterDigest() string                      { return "roster" }
+func (s *intakeStub) VerifyCertDecision(cd agent.CertDecision) agent.CertCheck {
+	return s.VerifyCertIntake(cd)
+}
+func (s *intakeStub) VerifyCertIntake(cd agent.CertDecision) agent.CertCheck {
+	s.seen.Add(1)
+	if s.down != nil && s.down.Load() {
+		return agent.CertCheck{Reason: agent.ReasonStatusUnknown, Detail: "no CRL"}
+	}
+	r := cd.Record
+	chain := r.ApproverCert()
+	if len(chain) == 0 {
+		return agent.CertCheck{Reason: agent.ReasonNoCert}
+	}
+	leaf, err := x509.ParseCertificate(chain[0])
+	if err != nil {
+		return agent.CertCheck{Reason: agent.ReasonCertChain}
+	}
+	alg, pub, err := audit.CertDecisionKey(leaf)
+	if err != nil {
+		return agent.CertCheck{Reason: agent.ReasonCertUsage}
+	}
+	v, err := audit.NewVerifier(alg, pub)
+	if err != nil {
+		return agent.CertCheck{Reason: agent.ReasonCertUsage}
+	}
+	at, err := agent.ParseTimestamp(r.DecidedAt())
+	if err != nil || r.ApproverAlg() != alg || !v.Verify(agent.ApprovalDecisionBytesCert(cd.Subject, r.Approver(), r.Approved, at, agent.CertLeafHash(chain[0])), r.Signature()) {
+		return agent.CertCheck{Reason: agent.ReasonBadSig}
+	}
+	return agent.CertCheck{Identity: s.ident, Anchored: at}
+}
+
+// certIntakeFixture is a fixture whose "ops" is certificate-bound on the application's side, resolved by
+// an intakeStub at the intake.
+func certIntakeFixture(t *testing.T, down *atomic.Bool) (*fixture, *pki, *intakeStub) {
+	t.Helper()
+	f, p := newCertFixture(t)
+	st := &intakeStub{boundStub: boundStub{id: "ops"}, ident: testca.Person(1), down: down}
+	f.intakeBound = map[string]*intakeStub{"ops": st}
+	return f, p, st
+}
+
+func TestCertRemote_EndToEnd(t *testing.T) {
+	atT0(t, time.Minute)
+	f, p, st := certIntakeFixture(t, nil)
+	srv := f.intake(nil)
+	rcpt := filepath.Join(f.dir, "r.json")
+	args := []string{"-to", srv.URL, "-run", f.run, "-call", f.call, "-as", "ops", "-key", f.keys["ops"], "-cert", p.chain, "-identity-policy", p.policy, "-yes", "-receipt", rcpt}
+	code, out, errs := f.runTo("", args...)
+	if code != 0 {
+		t.Fatalf("%d\n%s\n%s", code, out, errs)
+	}
+	contains(t, "output", out, "leaf SHA-256", "accepted for ops by the policy now", "signed and recorded by the application", "receipt ")
+	if st.seen.Load() == 0 || len(f.decisions()) != 1 || len(f.decisions()[0].ApproverCert()) != len(p.leaf.Chain()) {
+		t.Fatalf("seen %d, %d decisions", st.seen.Load(), len(f.decisions()))
+	}
+	b, err := os.ReadFile(rcpt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rc audit.DecisionReceipt
+	if err := json.Unmarshal(b, &rc); err != nil || len(rc.Cert) != len(p.leaf.Chain()) {
+		t.Fatalf("receipt: %v", err)
+	}
+}
+
+// A 503 from the intake (status the application cannot judge yet) records nothing and says to retry; the
+// same command succeeds once status is available.
+func TestCertRemote_StatusUnavailableThenRetry(t *testing.T) {
+	atT0(t, time.Minute)
+	var down atomic.Bool
+	down.Store(true)
+	f, p, _ := certIntakeFixture(t, &down)
+	srv := f.intake(nil)
+	args := []string{"-to", srv.URL, "-run", f.run, "-call", f.call, "-as", "ops", "-key", f.keys["ops"], "-cert", p.chain, "-identity-policy", p.policy, "-yes"}
+	code, _, errs := f.runTo("", args...)
+	if code != 1 || !strings.Contains(errs, "cannot judge your certificate's revocation status") || len(f.decisions()) != 0 {
+		t.Fatalf("%d %s, %d decisions", code, errs, len(f.decisions()))
+	}
+	down.Store(false)
+	if code, out, errs := f.runTo("", append(args, "-receipt", filepath.Join(f.dir, "r2.json"))...); code != 0 {
+		t.Fatalf("retry: %d\n%s\n%s", code, out, errs)
+	}
+}
+
+// The gate's identity rule decides who uses a certificate: a certificate-bound approver without -cert, a
+// bare-key approver with one, and a certificate for another identity than the gate expects are all refused
+// before anything is signed.
+func TestCertRemote_TheIdentityRule(t *testing.T) {
+	atT0(t, time.Minute)
+	f, p, st := certIntakeFixture(t, nil)
+	srv := f.intake(nil)
+	code, _, errs := f.runTo("", "-to", srv.URL, "-run", f.run, "-call", f.call, "-as", "ops", "-key", f.keys["ops"], "-unverified", "-yes")
+	if code != 1 || !strings.Contains(errs, "certificate-bound approver of this gate") {
+		t.Fatalf("a bound approver without -cert: %d %s", code, errs)
+	}
+	q := newPKI(t, f, "finance")
+	code, _, errs = f.runTo("", "-to", srv.URL, "-run", f.run, "-call", f.call, "-as", "finance", "-key", f.keys["finance"], "-cert", q.chain, "-identity-policy", q.policy, "-yes")
+	if code != 1 || !strings.Contains(errs, "bare-key approver of this gate") {
+		t.Fatalf("a bare approver with -cert: %d %s", code, errs)
+	}
+	st.ident = testca.Person(2) // the gate expects another person than our certificate carries
+	code, _, errs = f.runTo("", "-to", srv.URL, "-run", f.run, "-call", f.call, "-as", "ops", "-key", f.keys["ops"], "-cert", p.chain, "-identity-policy", p.policy, "-yes")
+	if code != 1 || !strings.Contains(errs, "carries the identity") || len(f.decisions()) != 0 {
+		t.Fatalf("another identity: %d %s %d", code, errs, len(f.decisions()))
+	}
+}
+
+// A receipt that does not carry the chain that was sent, or whose signature is not over the v4 bytes, is not
+// written, though the decision is recorded.
+func TestCertRemote_ABadReceiptIsNotWritten(t *testing.T) {
+	atT0(t, time.Minute)
+	f, p, _ := certIntakeFixture(t, nil)
+	strip := func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, r)
+			body := rec.Body.Bytes()
+			if r.Method == http.MethodPost {
+				var m map[string]any
+				if json.Unmarshal(body, &m) == nil {
+					if rc, ok := m["receipt"].(map[string]any); ok {
+						delete(rc, "cert")
+						body, _ = json.Marshal(m)
+					}
+				}
+			}
+			for k, v := range rec.Header() {
+				w.Header()[k] = v
+			}
+			w.WriteHeader(rec.Code)
+			w.Write(body)
+		})
+	}
+	srv := f.intake(strip)
+	rcpt := filepath.Join(f.dir, "r.json")
+	code, _, errs := f.runTo("", "-to", srv.URL, "-run", f.run, "-call", f.call, "-as", "ops", "-key", f.keys["ops"], "-cert", p.chain, "-identity-policy", p.policy, "-yes", "-receipt", rcpt)
+	if code != 1 || !strings.Contains(errs, "does not verify") {
+		t.Fatalf("%d %s", code, errs)
+	}
+	if _, err := os.Stat(rcpt); err == nil {
+		t.Fatal("a receipt that fails was written")
+	}
+	if len(f.decisions()) != 1 {
+		t.Fatalf("%d decisions", len(f.decisions()))
 	}
 }
