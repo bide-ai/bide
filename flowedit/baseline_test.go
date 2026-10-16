@@ -75,7 +75,8 @@ func TestWeakeningAgreesWithCheckDiff(t *testing.T) {
 		{"raise the need", &Operation{Op: "set_approval", Node: "charge", Approval: gate(3, three, true, "24h")}, nil, false},
 		{"shorten the deadline", &Operation{Op: "set_approval", Node: "charge", Approval: gate(2, three, true, "12h")}, nil, false},
 		{"replace an approver at the same need", &Operation{Op: "set_approval", Node: "charge", Approval: gate(2, []string{"ops", "finance", "treasury"}, true, "24h")}, nil, true},
-		{"change a safety to a lower class", &Operation{Op: "set_safety", Node: "receipt", Value: "readonly"}, nil, false},
+		{"lower a safety label (reported by itself, #342)", &Operation{Op: "set_safety", Node: "receipt", Value: "readonly"}, nil, true},
+		{"raise an ungated node to a side effect (judged by the more dangerous label, #342)", &Operation{Op: "set_safety", Node: "validate", Value: "side_effect"}, nil, true},
 		{"no change", &Operation{Op: "set_safety", Node: "validate", Value: "readonly"}, nil, false},
 	} {
 		text := weakFlow
