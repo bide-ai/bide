@@ -221,7 +221,9 @@ func TestSameDecisionRecord(t *testing.T) {
 		"time":      func(r *Record) { r.ApproverSignature.DecidedAt = "2026-10-13T12:14:04.000Z" },
 		"signature": func(r *Record) { r.ApproverSignature.Signature = []byte("x") },
 		"chain":     func(r *Record) { r.ApproverSignature.ApproverCert = [][]byte{[]byte("other")} },
-		"longer":    func(r *Record) { r.ApproverSignature.ApproverCert = append(r.ApproverSignature.ApproverCert, []byte("x")) },
+		"longer": func(r *Record) {
+			r.ApproverSignature.ApproverCert = append(r.ApproverSignature.ApproverCert, []byte("x"))
+		},
 	} {
 		o := certRec("approval:c1:alice:00", "alice")
 		mut(&o)
