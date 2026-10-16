@@ -64,7 +64,18 @@ async function api(path, body = {}) {
 
 const $ = (id) => document.getElementById(id);
 const replace = (id, ...kids) => $(id).replaceChildren(...kids.flat().filter(Boolean));
-const announce = (msg) => { $('live').textContent = msg; };
+// announce speaks through the live region. The same words twice in a row (Undone, Undone) must be
+// heard twice, and a region whose text does not change is not announced, so a no-break space is
+// alternated on the end.
+let lastSpoken = '';
+let flip = false;
+const announce = (msg) => {
+  flip = msg === lastSpoken ? !flip : false;
+  lastSpoken = msg;
+  $('live').textContent = msg + (flip ? '\u00a0' : '');
+};
+// A verdict is announced when it changes, not on every keystroke that leaves it as it was.
+let lastVerdict = '';
 
 let view = null;
 let selected = '';
@@ -86,9 +97,18 @@ export function renderVerdict(v) {
 // The weakening banner is the classifier's answer (bide check -diff's) for this text against the
 // baseline. It has no close control: a banner that can be dismissed is a warning that can be missed.
 // It is gone only when the text no longer weakens, and it speaks (role alert) when it appears.
+let lastBanner = '';
 export function renderWeakening(v) {
   const w = v.weakening;
-  if (!w) { replace('weakened'); replace('baseline'); return; }
+  if (!w) { replace('weakened'); replace('baseline'); lastBanner = ''; return; }
+  // An alert is spoken when it appears. Drawing the same banner again on every keystroke would speak
+  // it again each time, so a banner that has not changed is left as it is.
+  const key = JSON.stringify([w.weakened, w.word, w.line, w.compare_error, w.baseline]);
+  if (key === lastBanner) {
+    renderBaselineLine(w);
+    return;
+  }
+  lastBanner = key;
   if (w.weakened && w.weakened.length) {
     replace('weakened', h('section', { class: 'verdict v-bad weakened', role: 'alert', 'aria-labelledby': 'wword' },
       h('div', { class: 'vicon' }, icon('halt')),
@@ -105,11 +125,13 @@ export function renderWeakening(v) {
   } else {
     replace('weakened');
   }
-  const words = [];
-  if (!(w.weakened && w.weakened.length) && !w.compare_error) words.push('not weaker than');
-  else words.push('compared with');
+  renderBaselineLine(w);
+}
+
+function renderBaselineLine(w) {
+  const word = !(w.weakened && w.weakened.length) && !w.compare_error ? 'not weaker than' : 'compared with';
   const ch = (w.changes || []).length;
-  replace('baseline', 'Baseline: ' + words[0] + ' ' + w.baseline + (ch ? ' (' + ch + ' change' + (ch === 1 ? '' : 's') + ')' : ' (no changes)') +
+  replace('baseline', 'Baseline: ' + word + ' ' + w.baseline + (ch ? ' (' + ch + ' change' + (ch === 1 ? '' : 's') + ')' : ' (no changes)') +
     ((w.strengthened || []).length ? '; stronger in ' + w.strengthened.length + ' way' + (w.strengthened.length === 1 ? '' : 's') : '') + '.');
 }
 
@@ -549,7 +571,9 @@ export function render(v, { keepSource = false } = {}) {
   renderAssertions(v);
   renderProblems(v);
   renderState();
-  announce((v.weakening && v.weakening.weakened && v.weakening.weakened.length ? (v.weakening.word || 'WEAKENED') + '. ' : '') + v.verdict.word + '. ' + v.verdict.line);
+  // The weakened banner announces itself (it is an alert); the verdict is spoken here, once per change.
+  const verdict = v.verdict.word + '. ' + v.verdict.line;
+  if (verdict !== lastVerdict) { lastVerdict = verdict; announce(verdict); }
 }
 
 function renderState() {

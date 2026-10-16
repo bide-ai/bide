@@ -219,6 +219,7 @@ func TestEditAndSaveInChrome(t *testing.T) {
 		SaveDisabledBefore   bool     `json:"saveDisabledBefore"`
 		Banner               string   `json:"banner"`
 		BannerControls       int      `json:"bannerControls"`
+		BannerMutations      int      `json:"bannerMutationsWhileTyping"`
 		StateDirty           string   `json:"stateDirty"`
 		SaveEnabled          bool     `json:"saveEnabled"`
 		VerdictAfterEdit     string   `json:"verdictAfterEdit"`
@@ -252,6 +253,9 @@ func TestEditAndSaveInChrome(t *testing.T) {
 	weaker := strings.Replace(weakFlow, "need: 2", "need: 1", 1)
 	if r.StateBefore != "saved" || !r.SaveDisabledBefore {
 		t.Errorf("before an edit: state %q, save disabled %v", r.StateBefore, r.SaveDisabledBefore)
+	}
+	if r.BannerMutations != 0 {
+		t.Errorf("the banner was drawn again %d times while the text went on weakening the same way: an alert drawn again is spoken again", r.BannerMutations)
 	}
 	if !strings.Contains(r.Banner, "APPROVAL GATE WEAKENED") || !strings.Contains(r.Banner, "charge: approval 2 of 3") || r.BannerControls != 0 {
 		t.Errorf("banner %q with %d controls", r.Banner, r.BannerControls)
