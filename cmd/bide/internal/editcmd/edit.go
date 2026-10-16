@@ -77,6 +77,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, es.ErrorPrefix()+"bide edit:", err)
 		return 1
 	}
+	if n := srv.BaselineNote(); n != "" {
+		fmt.Fprintln(stderr, es.Warn("bide edit: warning:")+" the baseline is "+n)
+	}
 	ln, err := flowedit.Listen(*addr)
 	if err != nil {
 		fmt.Fprintln(stderr, es.ErrorPrefix()+"bide edit:", err)

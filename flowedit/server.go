@@ -60,6 +60,7 @@ type Server struct {
 	// session, so weakening in two saves is still weakening against it.
 	baseline       []byte
 	baselineSource string
+	baselineNote   string // why git HEAD was not the baseline, when that is not just "not in git"
 }
 
 // Option configures New.
@@ -104,7 +105,7 @@ func New(path string, opts ...Option) (*Server, error) {
 	// bide check -diff makes.
 	dir, base := filepath.Split(real)
 	var baseline []byte
-	var source string
+	var source, note string
 	switch {
 	case o.base != "":
 		if baseline, err = gitShow(dir, o.base, base); err != nil {
@@ -116,14 +117,26 @@ func New(path string, opts ...Option) (*Server, error) {
 			source = "git HEAD"
 		} else {
 			baseline, source = text, "the file as it was when the editor opened it"
+			// Only "the file is not in git" (an untracked file, not a repository) is an ordinary reason
+			// to compare with the opened file. Anything else (git missing, a safe.directory refusal, a
+			// corrupt repository) would quietly turn the guard into "weaker than what was opened", so
+			// the reason is part of the baseline's name, which the page shows every time.
+			if !gitNotThere(err) {
+				source += " (git HEAD was not used: " + firstLine(err.Error()) + ")"
+				note = source
+			}
 		}
 	}
 	var tok [16]byte
 	if _, err := rand.Read(tok[:]); err != nil {
 		return nil, fmt.Errorf("flowedit: no randomness for the session token: %w", err)
 	}
-	return &Server{path: real, name: path, token: hex.EncodeToString(tok[:]), baseline: baseline, baselineSource: source}, nil
+	return &Server{path: real, name: path, token: hex.EncodeToString(tok[:]), baseline: baseline, baselineSource: source, baselineNote: note}, nil
 }
+
+// BaselineNote is "" when the baseline is what it should be, and otherwise says why git HEAD was not
+// used although the file may be in a repository; bide edit prints it at startup.
+func (s *Server) BaselineNote() string { return s.baselineNote }
 
 // Token is the session token the page sends in TokenHeader. bide edit prints it in the address's
 // fragment (#t=...), which a browser does not send to the server or in a Referer.
@@ -353,8 +366,8 @@ type Edited struct {
 	Changed bool `json:"changed"`
 }
 
-// apply answers /api/apply: the operation applied to the text in the request. A refusal is a 422
-// with the reason, and the page keeps the text it had.
+// apply answers /api/apply: the operation applied to the text in the request. A refusal is a 200
+// whose body is {"refused": reason}, and the page keeps the text it had.
 func (s *Server) apply(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Text      string    `json:"text"`

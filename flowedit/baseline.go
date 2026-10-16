@@ -106,3 +106,21 @@ func gitShow(dir, rev, name string) ([]byte, error) {
 	}
 	return out, nil
 }
+
+// gitNotThere reports a git failure that only means the file is not in a repository's history: not a
+// repository, or a path or revision git does not have. Git not installed, an ownership refusal and
+// every other failure are not that.
+func gitNotThere(err error) bool {
+	m := err.Error()
+	for _, ok := range []string{"not a git repository", "exists on disk, but not in", "does not exist in", "unknown revision or path", "bad revision", "ambiguous argument"} {
+		if strings.Contains(m, ok) {
+			return true
+		}
+	}
+	return false
+}
+
+func firstLine(s string) string {
+	l, _, _ := strings.Cut(s, "\n")
+	return l
+}

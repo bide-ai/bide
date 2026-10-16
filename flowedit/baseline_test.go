@@ -280,3 +280,48 @@ func TestBaselineFromGit(t *testing.T) {
 		t.Error("-base for a file that is not in the revision was accepted")
 	}
 }
+
+// fakeGit puts a git on PATH that prints msg to stderr and exits 128, for the commands the baseline
+// runs.
+func fakeGit(t *testing.T, msg string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("a shell script stands in for git")
+	}
+	dir := t.TempDir()
+	script := "#!/bin/sh\necho '" + msg + "' >&2\nexit 128\n"
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// A git that fails for any reason but "the file is not in git" does not quietly turn the baseline into
+// "the file as opened": the reason is in the baseline's name (which the page shows every time) and in
+// BaselineNote (which bide edit prints). An untracked file and a non-repository are ordinary.
+func TestBaselineSaysWhyGitWasNotUsed(t *testing.T) {
+	for name, c := range map[string]struct {
+		msg  string
+		note bool
+	}{
+		"dubious ownership": {"fatal: detected dubious ownership in repository at '/x'", true},
+		"a corrupt repo":    {"fatal: bad object HEAD", true},
+		"not a repository":  {"fatal: not a git repository (or any of the parent directories): .git", false},
+		"untracked":         {"fatal: path 'f.yaml' exists on disk, but not in 'HEAD'", false},
+		"no such path":      {"fatal: path 'f.yaml' does not exist in 'HEAD'", false},
+	} {
+		fakeGit(t, c.msg)
+		s, _ := newTestServer(t, "refund.yaml", weakFlow)
+		d, err := s.Doc()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.note {
+			if s.BaselineNote() == "" || !strings.Contains(d.Weakening.Baseline, "git HEAD was not used: ") || !strings.Contains(d.Weakening.Baseline, strings.SplitN(c.msg, "'", 2)[0]) {
+				t.Errorf("%s: note %q, baseline %q", name, s.BaselineNote(), d.Weakening.Baseline)
+			}
+		} else if s.BaselineNote() != "" || d.Weakening.Baseline != "the file as it was when the editor opened it" {
+			t.Errorf("%s: note %q, baseline %q", name, s.BaselineNote(), d.Weakening.Baseline)
+		}
+	}
+}
