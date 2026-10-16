@@ -2858,7 +2858,8 @@ Each is in `identity/regress/`, is the same model with one rule switched off by 
 | `no-dedup-seat` | `SeatPerIdentifier` | decisions counted instead of identifiers: one identifier under two certificates fills two seats | 13,743 | <1 s |
 | `recount-terminal` | `TerminalStable` | a terminal tally recounted after a later revocation | 121,108 | 2 s |
 | `stale-uncounts` | `StaleNeverUncounts` | stale status removes a decision that was counted | 64,125 | 1 s |
-| `no-exec-recheck` | `NoExecAfterKnownRevocation` | no pre-execution status check: a decision counted before a revocation still authorizes the call | 64,127 | 1 s |
+| `no-exec-recheck` | `NoExecAfterKnownRevocation` | no pre-execution status check: a decision counted before a revocation still authorizes the call, or runs on stale status (the stale arm of the property: no revocation occurs in the counterexample) | 64,127 | 1 s |
+| `no-exec-recheck-revoked` | `NoExecAfterKnownRevocation` | the same without the check, with status never stale (`ExecAge` covers the run): a revocation published after the count still lets the call run (the revocation arm) | 122,492 | 2 s |
 | `final-no-coverage` | `FinalNeedsCompleteSeries` | the N2 sequence: no series coverage, a CRL omitted from the middle hides a listing that a later, pruned CRL no longer carries | 25,005 | 1 s |
 | `final-no-window` | `AbsenceOnlyInWindow` | the same series read for absence from a CRL later than the first one after `notAfter` | 11,828 | <1 s |
 | `final-time-hourly` | `FinalNeedsCompleteSeries` | coverage by `nextUpdate` alone with a CA that publishes more often than its declared period does not show that nothing lies between two CRLs | 47,971 | 1 s |
