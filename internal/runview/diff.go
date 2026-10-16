@@ -45,8 +45,11 @@ type Change struct {
 	// Weakening says what a weakened change weakened: "gate" (an approval policy: the gate was
 	// removed, loosened, or lost its exclusion of the requester or its deadline), "path" (an
 	// effect node newly reachable without passing an approval gate) or "assertion" (an assert line
-	// removed or loosened). Empty for a change that weakened nothing.
+	// removed or loosened, or kept and no longer holding). Empty for a change that weakened nothing.
 	Weakening string `json:"weakening,omitempty"`
+	// summary, when set, is the Weakened entry for this change (an assert line that stopped
+	// holding says why, which a Details cut at its first parenthesis would lose).
+	summary string
 }
 
 // String is the change as one line: "changed node charge: approval 1 of 3 -> 2 of 3 (strengthened)".
@@ -398,7 +401,8 @@ func diffChanges(o, n plan.ConfigReport, oldSafety, newSafety map[string]string)
 		}
 	}
 	cs = append(cs, switchChanges(o, n, uNew)...)
-	return append(cs, assertionChanges(o, n)...)
+	cs = append(cs, assertionChanges(o, n)...)
+	return append(cs, assertionRegressions(o, n)...)
 }
 
 // assertionChanges compares the config's assert lines. A line the new config lacks is removed
@@ -461,9 +465,60 @@ func assertionChanges(o, n plan.ConfigReport) []Change {
 	return cs
 }
 
+// assertionRegressions reports each assert line the new config keeps (however spelled) that held in
+// the old config and no longer does: it is violated (with the counterexample), cannot be decided, or
+// no longer reads. A line that did not hold before, or still holds, is not reported, and a line the
+// new config changed or dropped is assertionChanges' business. Without this the assert lines would
+// be a check a change can defeat without touching them: a new arm around a gate leaves
+// "every path to charge passes approval" as written and false.
+func assertionRegressions(o, n plan.ConfigReport) []Change {
+	var cs []Change
+	for _, a := range o.Assertions {
+		if !a.Holds {
+			continue
+		}
+		var now []plan.AssertionResult
+		for _, b := range n.Assertions {
+			if plan.CompareAssertions(a.Text, b.Text) == "equal" {
+				now = append(now, b)
+			}
+		}
+		if len(now) == 0 || slices.ContainsFunc(now, func(b plan.AssertionResult) bool { return b.Holds }) {
+			continue
+		}
+		b := now[0]
+		word, why := "violated", ""
+		switch {
+		case b.Invalid:
+			word, why = "invalid", messageOf(b)
+		case b.Undecided:
+			word, why = "undecided", messageOf(b)
+		case len(b.Path) > 0:
+			why = ", counterexample: " + strings.Join(b.Path, " -> ")
+		default:
+			why = messageOf(b)
+		}
+		cs = append(cs, Change{Change: "changed", What: "assertion", Gate: "weakened", Weakening: "assertion",
+			Details: []string{a.Text + ": held before, now " + word + " (weakened)"},
+			summary: "assertion no longer holds: " + a.Text + " (" + word + why + ")"})
+	}
+	return cs
+}
+
+// messageOf is an assertion verdict's message as a suffix: ", why", or nothing.
+func messageOf(r plan.AssertionResult) string {
+	if r.Message == "" {
+		return ""
+	}
+	return ", " + r.Message
+}
+
 // changeSummary is c as an entry of DiffView.Weakened or Strengthened. loosened is the verb of an
 // assertion that changed ("loosened", or "tightened" for a strengthening).
 func changeSummary(c Change, loosened string) string {
+	if c.summary != "" {
+		return c.summary
+	}
 	detail, _, _ := strings.Cut(strings.Join(c.Details, "; "), " (")
 	if c.What == "assertion" {
 		// The detail was cut at its first " (", which an assertion's text never holds.

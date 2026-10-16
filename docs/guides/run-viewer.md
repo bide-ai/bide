@@ -257,7 +257,7 @@ has an item. An aborted or cancelled run is listed too, since a halt outlives ei
 | `-check` | With `-config`: serve nothing, print each problem as `file:node: message`, and exit 1 if any is an error. `bide check <file>...` is the same check, for several files. |
 | `-strict` | With `-check`: exit 1 on a warning too (`bide check -strict`). |
 | `-diff <old>` | With `-config`: compare it with an earlier version, a file or a git revision; see [Compare two versions of a flow](#compare-two-versions-of-a-flow). With `-check`, print the changes instead of serving the page. |
-| `-fail-on-weaken` | With `-diff -check`: exit 1 if an approval gate was removed or weakened (its need lowered, an approver added without raising the need, `exclude_principal` dropped, or its timeout removed or lengthened), an effect became reachable without a gate, a Switch condition changed beside an ungated effect, or an `assert` line was removed or loosened. |
+| `-fail-on-weaken` | With `-diff -check`: exit 1 if an approval gate was removed or weakened (its need lowered, an approver added without raising the need, `exclude_principal` dropped, or its timeout removed or lengthened), an effect became reachable without a gate, a Switch condition changed beside an ungated effect, or an `assert` line was removed, loosened, or kept and no longer holds. |
 | `-addr <host:port>` | Where to listen: a loopback IP or `localhost`, with a port. Default `127.0.0.1:8484`. Any other host is refused. |
 | `-color <when>` | `auto` (the default), `always` or `never`: whether the text output (the address to open, and `-check`'s lines) is colored. `auto` colors a terminal only, unless `NO_COLOR` is set to any value or `TERM` is `dumb`; see [Color](#color). |
 
@@ -795,9 +795,15 @@ weakened):
   forms are compared by their text (spacing and the quoting of a node name aside): a line that
   changed is a removal of the old line and an added line. A new line that matches none removed is
   listed as added, not as a weakening.
+- **An `assert` line kept and no longer holding.** A line the new config keeps as it was (spacing
+  and quoting aside) that held in the old config and is now violated, cannot be decided, or no
+  longer reads (it names a node the new config dropped) is reported as weakened, with the
+  counterexample path when there is one: `assertion no longer holds: every path to a terminal
+  passes charge (violated, counterexample: validate -> audit)`. A line that did not hold before is
+  not reported; `bide check` already lists it as a violation.
 
 The check still does not read predicates (above), does not reason about nodes that are not effects,
-and compares assertions as written, not what they would decide. An effect node's safety comes from the
+and compares assert lines as written, apart from a kept line that stopped holding (above). An effect node's safety comes from the
 config, or the Registry; a node whose safety the config leaves out is treated as an effect, so state
 `safety: readonly` where it holds to keep a read-only step from being reported.
 
