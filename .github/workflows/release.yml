@@ -119,13 +119,14 @@ jobs:
   # The SBOM of the published Go module set: what an application gets with `go get`, beside the
   # per-archive SBOMs of the binary (scripts/module-sbom.sh resolves the release's consumer module
   # through the public proxy and lists it with syft). The nested module tags follow the root tag by
-  # minutes (scripts/release.sh), so it waits for the proxy to serve them all, then signs the SBOM
-  # like checksums.txt and attaches it. The manual dry run generates it for the latest release and
+  # minutes (scripts/release.sh; the proxy can take an hour or more to serve a tag it was asked about
+  # too early), so it waits up to four hours for the proxy to serve them all, asking it sparingly
+  # (scripts/proxy-wait.sh), then signs the SBOM like checksums.txt and attaches it. The manual dry run generates it for the latest release and
   # neither signs nor uploads it.
   module-sbom:
     needs: goreleaser
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 270
     permissions:
       contents: write
       id-token: write
@@ -160,7 +161,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
           FILE: ${{ steps.version.outputs.file }}
         run: |
-          scripts/module-sbom.sh "$VERSION" "$FILE" --wait 90
+          scripts/module-sbom.sh "$VERSION" "$FILE" --wait 240
           jq -r '.packages[] | "\(.name) \(.versionInfo)"' "$FILE" | sort | head -n 40
       - name: Sign and attach the module SBOM
         if: github.event_name == 'push'

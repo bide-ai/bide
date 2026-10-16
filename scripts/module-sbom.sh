@@ -13,7 +13,8 @@
 # license syft finds in that module's files.
 #
 # --wait MINUTES waits until the proxy serves every published module at vX.Y.Z (the release workflow
-# runs before scripts/release.sh has pushed the nested tags). It needs syft on the path.
+# runs before scripts/release.sh has pushed the nested tags), asking the proxy sparingly (see
+# scripts/proxy-wait.sh). It needs syft on the path.
 set -euo pipefail
 
 ROOT_MODULE=github.com/bide-ai/bide
@@ -97,13 +98,25 @@ commands=$("$here/release.sh" --list-commands)
 modules="$ROOT_MODULE"
 for m in $published; do modules="$modules $ROOT_MODULE/$m"; done
 
-# Wait for the proxy to serve every module (the nested tags follow the root tag by minutes).
-deadline=$(( $(date +%s) + WAIT * 60 ))
+# Wait for the proxy to serve every module (the nested tags follow the root tag by minutes). Each tag
+# is first checked without the proxy and given time to settle before the proxy is asked, then the
+# proxy is asked with growing waits (scripts/proxy-wait.sh): asking sooner or more often makes it
+# cache a miss for 30 to 60 minutes, which is what made the release wait far longer than the tags
+# took. --wait bounds the whole wait.
+# shellcheck source=scripts/proxy-wait.sh
+. "$here/proxy-wait.sh"
+pw_direct() { (cd "$WORK/empty" && env GOWORK=off GOFLAGS=-mod=mod GOMODCACHE="$WORK/directcache" GOPROXY=direct GOSUMDB=off GOPRIVATE= GONOPROXY= GONOSUMDB= GOINSECURE= go list -m "$1"); }
+pw_proxy() { (cd "$WORK/empty" && gorun list -m "$1"); }
+mkdir -p "$WORK/directcache"
+start=$(date +%s)
 for mod in $modules; do
-  until (cd "$WORK/empty" && gorun list -m "$mod@$VERSION" >/dev/null 2>&1); do
-    [ "$(date +%s)" -lt "$deadline" ] || { (cd "$WORK/empty" && gorun list -m "$mod@$VERSION") || true; die "$mod@$VERSION does not resolve"; }
-    sleep 30
-  done
+  left=$(( WAIT * 60 - ($(date +%s) - start) ))
+  [ "$left" -gt 0 ] || left=0
+  # One module at a time: the direct wait is the time to the deadline, the proxy wait what is left of it.
+  if ! PW_DIRECT_MAX=$left PW_MAX=$left proxy_wait_resolve "$mod" "$VERSION"; then
+    (cd "$WORK/empty" && gorun list -m "$mod@$VERSION") || true
+    die "$mod@$VERSION does not resolve"
+  fi
 done
 
 C=$WORK/consumer
