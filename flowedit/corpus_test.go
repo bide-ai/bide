@@ -58,6 +58,13 @@ func collect(t testing.TB) []file {
 	var out []file
 	seen := map[string]bool{}
 	add := func(group, name, text string) {
+		// A Windows checkout converts the repository's own files to CRLF. The corpus is measured as LF
+		// (the CRLF and BOM variants of every file are TestCRLFAndBOMEditLikeLF's), so the numbers
+		// do not depend on the checkout; files kept byte for byte by testdata/.gitattributes are
+		// whatever they were committed as.
+		if !strings.Contains(name, "testdata/") {
+			text = strings.ReplaceAll(text, "\r\n", "\n")
+		}
 		if seen[text] || !isFlowConfig(text) {
 			return
 		}

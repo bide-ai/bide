@@ -77,9 +77,77 @@ type doc struct {
 	js        bool // a JSON-style document: the root is a flow mapping, so new text is written as JSON
 }
 
+// bom is the UTF-8 byte-order mark some Windows editors put at the start of a file.
+const bom = "\xef\xbb\xbf"
+
 // Apply applies op to src. It returns a *Refusal error for anything it will not splice, and
 // otherwise text it has verified.
-func Apply(src []byte, op Op) (res *Result, err error) {
+//
+// A file with CRLF line ends (a Windows checkout, a Windows editor), with or without a byte-order
+// mark, is edited exactly as the same file with LF ends is: the engine works on the LF form and the
+// result is put back, so every untouched byte is still the original byte and the new text has the
+// file's line ends and mark. A file that mixes LF and CRLF, or has a carriage return that is not part
+// of a CRLF, is refused: its line ends could not be reproduced.
+func Apply(src []byte, op Op) (*Result, error) {
+	mark := bytes.HasPrefix(src, []byte(bom))
+	body := src
+	if mark {
+		body = src[len(bom):]
+	}
+	crlf := bytes.Contains(body, []byte("\r\n"))
+	if crlf {
+		if bytes.Count(body, []byte("\r")) != bytes.Count(body, []byte("\r\n")) || bytes.Count(body, []byte("\n")) != bytes.Count(body, []byte("\r\n")) {
+			return nil, refuse("line ends that are not all CRLF cannot be reproduced")
+		}
+		body = bytes.ReplaceAll(body, []byte("\r\n"), []byte("\n"))
+	}
+	if !mark && !crlf {
+		return applyLF(src, op)
+	}
+	r, err := applyLF(body, op)
+	if err != nil {
+		return nil, err
+	}
+	// Put the line ends and the mark back, and check that doing so is exactly the inverse: the text
+	// the caller gets is the verified text with nothing else changed.
+	out := r.Text
+	if crlf {
+		out = bytes.ReplaceAll(out, []byte("\n"), []byte("\r\n"))
+	}
+	if mark {
+		out = append([]byte(bom), out...)
+	}
+	check := out
+	if mark {
+		check = check[len(bom):]
+	}
+	if crlf {
+		check = bytes.ReplaceAll(check, []byte("\r\n"), []byte("\n"))
+	}
+	if !bytes.Equal(check, r.Text) || crlf && bytes.Count(out, []byte("\r")) != bytes.Count(out, []byte("\n")) {
+		return nil, refuse("internal: the line ends could not be restored exactly")
+	}
+	// The byte range, in the original: offsets in the LF text become offsets in the file.
+	at := func(off int) int {
+		n := off
+		if crlf {
+			n += bytes.Count(body[:off], []byte("\n"))
+		}
+		if mark {
+			n += len(bom)
+		}
+		return n
+	}
+	frag := r.Frag
+	if crlf {
+		frag = bytes.ReplaceAll(frag, []byte("\n"), []byte("\r\n"))
+	}
+	r.Text, r.Lo, r.Hi, r.Frag = out, at(r.Lo), at(r.Hi), frag
+	return r, nil
+}
+
+// applyLF is Apply for a text whose line ends are LF.
+func applyLF(src []byte, op Op) (res *Result, err error) {
 	// A node the scanners cannot place (an implicit empty node has no position) is a refusal, not a crash.
 	defer func() {
 		if r := recover(); r != nil {
@@ -130,10 +198,10 @@ func commit(src []byte, lo, hi int, frag string, op Op) (*Result, error) {
 
 func parse(src []byte) (*doc, error) {
 	if bytes.Contains(src, []byte("\r")) {
-		return nil, refuse("carriage returns (CRLF) are not reproduced")
+		return nil, refuse("carriage returns (a line end that is not LF; Apply converts a CRLF file)")
 	}
-	if bytes.HasPrefix(src, []byte("\xef\xbb\xbf")) {
-		return nil, refuse("byte-order mark")
+	if bytes.HasPrefix(src, []byte(bom)) {
+		return nil, refuse("byte-order mark (Apply strips and restores one)")
 	}
 	if !utf8.Valid(src) {
 		return nil, refuse("not UTF-8")
