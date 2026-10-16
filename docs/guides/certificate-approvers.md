@@ -39,15 +39,16 @@ EKU and policy OID), the **platform team** (writes the certificate policy and ru
    [Human approval](hitl-approval.md#deciding-from-the-terminal). The application's side (an
    `audit.CertApprover` for `ops`, with the CA's facts declared as above) is Go configuration: see the
    sections below.
-2. **The approver makes a key.** A key file: `bide keygen -out ops.key -as ops` (Ed25519, or `-alg
-   ecdsa-p256`; both have a certificate scheme; ML-DSA-65 does too, a hybrid does not). A key in an HSM or a
-   KMS: `bide-hsm pubkey -as ops -key <key reference>`. Either prints the public key. The private key never
-   leaves its file, token or KMS.
+2. **The approver makes a key and a certificate request.** A key file: `bide keygen -out ops.key -as ops
+   -csr ops.csr.pem` (Ed25519, or `-alg ecdsa-p256`; both have a certificate scheme. ML-DSA-65 does not
+   get a request from bide, and a hybrid has no certificate scheme). A key in an HSM or a KMS: the
+   request is made with the vendor's tooling, see [the key and the request](#the-key-and-the-certificate-request).
+   The private key never leaves its file, token or KMS.
 3. **The CA issues a certificate for that public key**, after the bank's own identification of the person
    (single sign-on with step-up, say), with one subject alternative name that is the person's identifier,
-   the bank's EKU and the bank's policy OID. How the request is made is the CA's procedure: bide asks the CA
-   for nothing, and it cannot know how the person was identified. For a KMS key the request's proof of
-   possession is signed by the KMS key with the KMS vendor's tooling.
+   the bank's EKU and the bank's policy OID. The request names nothing, so the CA or the identity provider
+   sets all of that; bide asks the CA for nothing, and it cannot know how the person was identified.
+
 4. **The approver assembles the chain**: a PEM file with the leaf first, then the intermediates up to but
    not including the trust anchor (the policy holds the anchor), at most 8 certificates:
    `cat ops-leaf.pem issuing-ca.pem > chain.pem`. Only CERTIFICATE blocks: a file with a private key block is
@@ -92,6 +93,60 @@ reason (the chain does not end at a pinned anchor, the identifier is not the one
 EKU or policy OID missing); "is a certificate-bound approver of this gate" (give `-cert`) or "is a bare-key
 approver of this gate" (drop it). The approve page in the browser cannot hold a certificate: it tells a
 certificate-bound approver to use `bide approve -to ... -cert`.
+
+## The key and the certificate request
+
+The request proves the approver holds the key and names nothing: a subject-less PKCS#10 request with no
+extensions, so the CA or identity provider decides the name (the identifier in the SAN), the EKU and the
+policy OID. A CA that insists on a subject in the request is a CA setting (most enterprise CAs let a
+template or the issuing application override it); bide never puts a name there.
+
+**A key file.** `bide keygen -out ops.key -as ops -csr ops.csr.pem` writes the key (mode 0600, never
+printed), `ops.key.pub`, and the request. It refuses to overwrite any of the three files and writes
+nothing when it refuses, and with `-alg ml-dsa-65` or the hybrid it refuses `-csr`. Check the request
+before sending it: `openssl req -in ops.csr.pem -noout -verify -text` prints `verify OK`, an empty
+subject, and the public key bide printed.
+
+**A key in an HSM (PKCS#11).** Make the request with OpenSSL's PKCS#11 provider
+([pkcs11-provider](https://github.com/latchset/pkcs11-provider)), so the token signs the request and the key
+never leaves it. The PIN comes from a file, never from the command line (a command line is visible to other
+users and to process listings):
+
+```
+export PKCS11_PROVIDER_MODULE=/usr/lib/softhsm/libsofthsm2.so   # your HSM's PKCS#11 library
+openssl req -new -provider pkcs11 -provider default \
+    -key 'pkcs11:token=bide-approvers;object=approver-ed;type=private?pin-source=file:/run/secrets/hsm-pin' \
+    -subj / -out ops.csr.pem
+```
+
+(Add `-provider-path <dir>` if the provider is not in OpenSSL's module directory.) The request is made by the
+key `bide-hsm approve -key` will sign with; check that they are one key before sending it:
+
+```
+openssl req -in ops.csr.pem -noout -verify
+bide-hsm pubkey -as ops -key 'pkcs11:token=bide-approvers;object=approver-ed?module-path=/usr/lib/softhsm/libsofthsm2.so'
+```
+
+The first prints `verify OK`; the public key in the second must be the one in the request
+(`openssl req -in ops.csr.pem -pubkey -noout | openssl pkey -pubin -outform DER | tail -c 32 | xxd -p -c 64`
+prints an Ed25519 key's 32 bytes, and `bide-hsm`'s `ed25519:<hex>` is the same hex). `bide-hsm approve -cert`
+checks the same thing before it signs, so a mix-up is caught there too, but only after the CA has issued a
+certificate for the wrong key.
+
+What was run for this: SoftHSM 2.7.0 with an Ed25519 key (`pkcs11-tool --keypairgen --key-type
+EC:edwards25519`), OpenSSL 3.6 and pkcs11-provider 1.3.0; the request verified, held the key `bide-hsm
+pubkey` printed, and had an empty subject. **ECDSA P-256 was not verified in the same way:** SoftHSM 2.7.0
+fails the provider's multi-part `CKM_ECDSA_SHA256` signature with `CKR_OPERATION_NOT_INITIALIZED` (at
+`C_SignUpdate`; the cause was not pursued), so the same command with a P-256 key fails on SoftHSM. Whether
+it works on your HSM depends on its mechanisms; try it with a test key first.
+
+**A key in a KMS.** AWS KMS, Google Cloud KMS and Azure Key Vault each have a vendor procedure for a request
+signed by a KMS key (a vendor PKCS#11 library used with the same `openssl req` command, or a program that
+signs the request through the KMS's signing call). These were **not run for this guide**: the repository's
+KMS emulators implement the key and signing calls, not the vendors' PKCS#11 libraries or their request
+tooling, so no command is given here that was not run. Use the vendor's documented procedure, then check the
+request against `bide-hsm pubkey -key <KMS key reference>` as above. A `bide-hsm csr` command that signs the
+request through the same key sources `bide-hsm approve` uses is on the [roadmap](../ROADMAP.md).
 
 ## Declare the CA's facts
 
