@@ -527,16 +527,19 @@ func TestFlowGate_PlainPassOverBoundJournalIsNotTaken(t *testing.T) {
 		"ident denial": func(j *Journal, key string) {
 			writeRaw(t, j, "r1", ApprovalIdentTallyStep(key, 0), valueRec(t, ApprovalIdentTallyStep(key, 0), deniedTally()))
 		},
-		"bound note": func(j *Journal, key string) {
-			w := ApprovalWait{ToolUseID: key, ToolName: "pay", Need: 1, Approvers: []string{"alice", "bob"}, IdentityBound: true, Pause: PauseAwaitingAnchor}
-			writeRaw(t, j, "r1", ApprovalPauseStep(key, 1), valueRec(t, ApprovalPauseStep(key, 1), w))
-		},
+		"bound note": func(j *Journal, key string) {}, // the first note, written below by a bound deployment
 	} {
 		j := memJournal()
 		g := newBoundGate(t)
 		args := json.RawMessage(`{"amount":1}`)
 		bare := fakeVerifiers("alice", "bob")
-		_, _ = flowGate(ctx, j, "r1", "node:pay", "pay", args, g.pol, bare)
+		// The first pause is made by a deployment with the certificate approvers: its note says so.
+		bound := certResolver(map[string]ApproverVerifier{"alice": g.alice, "bob": g.bob})
+		if name == "bound note" {
+			_, _ = flowGate(ctx, j, "r1", "node:pay", "pay", args, g.pol, bound)
+		} else {
+			_, _ = flowGate(ctx, j, "r1", "node:pay", "pay", args, g.pol, bare)
+		}
 		setup(j, "node:pay")
 		writeRaw(t, j, "r1", ApprovalTallyStep("node:pay"), valueRec(t, ApprovalTallyStep("node:pay"), passedTally()))
 		ok, err := flowGate(ctx, j, "r1", "node:pay", "pay", args, g.pol, bare)
