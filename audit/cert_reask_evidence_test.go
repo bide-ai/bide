@@ -121,7 +121,10 @@ func TestApprovalEvidence_BoundGateNamesItsTally(t *testing.T) {
 // hand (the verdict's recount is the bare-key one): generation 0 counted alice, an exec hold of
 // generation 0 superseded it, bob's decision is counted at generation 1 and the tool ran on that.
 // holdLate puts the hold after the generation-1 tally instead of before it.
-func holdChainGate(t *testing.T, holdLate bool) *gate {
+func holdChainGate(t *testing.T, holdLate bool) *gate { return holdChainGateAt(t, holdLate, false) }
+
+// holdChainGateAt also can put the hold before the tally it holds.
+func holdChainGateAt(t *testing.T, holdLate, holdEarly bool) *gate {
 	t.Helper()
 	g := newGate(1, []string{"alice", "bob"}, []string{"alice", "bob"})
 	wantPaused(t, g.run(), 0)
@@ -146,10 +149,15 @@ func holdChainGate(t *testing.T, holdLate bool) *gate {
 	t0 := agent.ApprovalTally{Need: 1, Approved: 1, Approvers: []string{"alice", "bob"}, ApprovedBy: []string{"alice"}, Pending: []string{"bob"}, Records: steps[:1], DecisionFormat: agent.DecisionFormat}
 	t1 := agent.ApprovalTally{Need: 1, Approved: 2, Approvers: []string{"alice", "bob"}, ApprovedBy: []string{"alice", "bob"}, Records: steps, DecisionFormat: agent.DecisionFormat,
 		Supersedes: agent.ApprovalIdentTallyStep("c1", 0)}
-	put(agent.ApprovalIdentTallyStep("c1", 0), t0)
-	if !holdLate {
+	if holdEarly {
 		put(agent.ApprovalExecHoldStep("c1", 0), hold)
 	}
+	put(agent.ApprovalIdentTallyStep("c1", 0), t0)
+	if !holdLate && !holdEarly {
+		put(agent.ApprovalExecHoldStep("c1", 0), hold)
+	}
+	// The gate's re-ask note for generation 1, as the pause at the hold wrote it.
+	put(agent.ApprovalIdentReaskStep("c1", 1), agent.ApprovalWait{ToolUseID: "c1", Need: 1, Approvers: []string{"alice", "bob"}, RecordedAt: "2026-10-16T04:26:58.000Z", Reask: agent.PendingExecHoldReapproval, Supersedes: agent.ApprovalIdentTallyStep("c1", 0)})
 	put(agent.ApprovalIdentTallyStep("c1", 1), t1)
 	if holdLate {
 		put(agent.ApprovalExecHoldStep("c1", 0), hold)
@@ -189,5 +197,29 @@ func TestVerifyApprovals_ExecHoldOutOfOrder(t *testing.T) {
 	}
 	if v.OK || !hasProblem(v, "exec hold") {
 		t.Fatalf("%+v", v)
+	}
+}
+
+// A hold journaled before the tally it holds is out of order too.
+func TestVerifyApprovals_ExecHoldBeforeItsTally(t *testing.T) {
+	g := holdChainGateAt(t, false, true)
+	v, err := audit.VerifyApprovals(evidenceFor(t, g), "c1", g.policy, g.resolver(), edV(g.logPub))
+	if err := reportErr(v.OK, err); err != nil {
+		t.Fatal(err)
+	}
+	if v.OK || !hasProblem(v, "exec hold") {
+		t.Fatalf("%+v", v)
+	}
+}
+
+// The verdict reports the newest proven re-ask note, a certificate-bound gate's included.
+func TestVerifyApprovals_ReportsTheIdentReask(t *testing.T) {
+	g := holdChainGate(t, false)
+	v, err := audit.VerifyApprovals(evidenceFor(t, g), "c1", g.policy, g.resolver(), edV(g.logPub))
+	if err != nil || !v.OK {
+		t.Fatalf("%+v %v", v, err)
+	}
+	if v.Reask != agent.PendingExecHoldReapproval || v.ReaskedAt != "2026-10-16T04:26:58.000Z" {
+		t.Fatalf("reask %q at %q", v.Reask, v.ReaskedAt)
 	}
 }

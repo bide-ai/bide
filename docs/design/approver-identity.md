@@ -563,15 +563,21 @@ archived at decision time. Mapping CA behavior to what this design needs:
   - a **stale-status hold** writes nothing authoritative: the run returns a pending state with a named
     reason (`PendingIdentityStatus`), and executes when a fresh snapshot passes, with the same tally;
   - a **revoked-before-execution hold** (`E <= A(d)` for a counted decision) writes an insert-once
-    `approval-exec-hold:<id>` record (the status digest, the decision, `E`, the reason) and supersedes the
-    tally through the existing re-ask path under the name `approval-tally:<id>:ident-reask`, the way the
-    `:sod` re-ask does; the approvers decide again, and the earlier tally is no longer authoritative.
-    The hold supersedes the tally for as long as the recorded outcome seats a revoked leaf, not only
-    once: the gate counts again (the decisions under revoked leaves do not count), and the decisions that
-    still count, a replacement under another leaf included, are recorded under the next generation of
-    the name (`:ident-reask`, then `:ident-reask:2`, and so on; insert-once each, and the last recorded
-    generation is the outcome). A replacement tally whose own leaf is revoked in turn is held and
-    superseded the same way. Without this a hold is permanent: the replacement decisions can never
+    `approval-exec-hold:<id>:<g>` record for the generation `g` of the tally it holds (the status digest,
+    the decision, `E`, the reason) and **supersedes that tally**: the gate has no outcome until it counts
+    generation `g+1`, recorded under `approval-tally:<id>:ident-reask:<g+1>` with its own identity record
+    (`approval-identity:<id>:<g+1>`) and `Supersedes` naming the tally it replaces. Generation 0 is the first
+    count, `approval-tally:<id>:ident`; the generation of a gate is the number of valid holds it has.
+    Nothing is invalidated by a hold: the approvers decide again, and the new count verifies every decision
+    again, so one whose certificate is now revoked fails there (`E <= A(d)`) and the others count. A hold
+    counts only over a **passed** tally of its own generation (a recorded denial is final, and a hold of
+    another call, generation or format, or with no tally under it, is ignored), so a forged hold can force
+    a re-ask but not undo a denial or skip one. The re-ask is announced like the `:sod` one, by a pause
+    note `approval-pending:<id>:ident:<g+1>` (`PendingExecHoldReapproval`) and its own notification key
+    (`reask-ident-<g+1>`); a plain-name tally on a gate with a certificate-bound approver is the generation
+    0 re-ask (`PendingIdentReapproval`, note `approval-pending:<id>:ident:0`).
+    A replacement tally whose own leaf is revoked in turn is held and superseded the same way (the next
+    generation), and without this a hold would be permanent: the replacement decisions could never
     execute. Model 1b checks it (`ReplacementSupersedes`, `ReplacementFiresNotReachable`);
   - **every path that can run the tool goes through one pre-execution function**: the first execution,
     crash recovery and `RecoverLoop` resume, a retry of a retry-safe tool, and any halt-resolution that

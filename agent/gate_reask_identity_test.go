@@ -74,6 +74,9 @@ func TestIdentChain(t *testing.T) {
 		{"a tally past a missing generation is ignored", []Record{g0, g2}, true, true, 0, "", g0.Name},
 		{"a hold of another call is ignored", []Record{g0, holdFor(t, "c2", 0)}, true, true, 0, "", g0.Name},
 		{"a hold of the wrong generation is ignored", []Record{g0, holdFor(t, "c1", 1)}, true, true, 0, "", g0.Name},
+		{"a hold in another format is ignored", []Record{g0, valueRec(t, ApprovalExecHoldStep("c1", 0), ExecHold{Format: "bide.approval-exec-hold.v1", ToolUseID: "c1", Generation: 0})}, true, true, 0, "", g0.Name},
+		{"a hold naming another call is ignored", []Record{g0, valueRec(t, ApprovalExecHoldStep("c1", 0), ExecHold{Format: ApprovalExecHoldFormat, ToolUseID: "c2", Generation: 0})}, true, true, 0, "", g0.Name},
+		{"a hold naming another generation is ignored", []Record{g0, valueRec(t, ApprovalExecHoldStep("c1", 0), ExecHold{Format: ApprovalExecHoldFormat, ToolUseID: "c1", Generation: 1})}, true, true, 0, "", g0.Name},
 		{"a hold that does not read as one is ignored", []Record{g0, {Kind: StepValue, Name: ApprovalExecHoldStep("c1", 0), Result: json.RawMessage(`{"format":"x"}`)}}, true, true, 0, "", g0.Name},
 	} {
 		st := identChain(namesOf(tc.recs...), "c1")
@@ -350,14 +353,95 @@ func TestFlowGate_BoundGateSupersedesPlainTally(t *testing.T) {
 // that now excludes it, cannot be re-asked in place: it refuses with ErrConfig and the call does not run.
 func TestBoundGate_SoDChangeAfterCountRefuses(t *testing.T) {
 	g := newBoundGate(t)
-	_, _ = g.run()
-	g.decide("alice")
 	vf := certResolver(map[string]ApproverVerifier{"alice": g.alice, "bob": g.bob})
+	var charged int
+	// The run's requester is someone who is no approver, so the exclusion changes nobody's seat.
+	_, _ = sodRun(g.store, "r1", true, g.pol, vf, &charged, Identity{OnBehalfOf: "zed"})
+	g.decide("alice")
 	if _, final, err := tallyGate(context.Background(), g.store, "r1", subjectOf(t, g.store, "r1", "c1"), g.pol, vf, ""); err != nil || !final {
 		t.Fatalf("%v %v", final, err)
 	}
-	g.pol = &ApprovalPolicy{Need: 1, Approvers: []string{"alice", "bob"}, ExcludePrincipal: true}
-	if _, err := g.run(); !errors.Is(err, ErrConfig) || g.charged != 0 {
-		t.Fatalf("%v charged %d", err, g.charged)
+	pol := &ApprovalPolicy{Need: 1, Approvers: []string{"alice", "bob"}, ExcludePrincipal: true}
+	if _, err := sodRun(g.store, "r1", false, pol, vf, &charged, Identity{}); !errors.Is(err, ErrConfig) || charged != 0 {
+		t.Fatalf("%v charged %d", err, charged)
+	}
+}
+
+// A note for generation 0 names a plain-name tally and the reason of that ask; a note for a later
+// generation names the held tally of the one before, and only where that generation's hold is there.
+func TestIdentReask_NoteValidityByGeneration(t *testing.T) {
+	plain := valueRec(t, ApprovalTallyStep("c1"), passedTally())
+	g0 := valueRec(t, ApprovalIdentTallyStep("c1", 0), passedTally())
+	g1 := valueRec(t, ApprovalIdentTallyStep("c1", 1), passedTally())
+	n := func(reask, sup string) ApprovalWait { return ApprovalWait{ToolUseID: "c1", Reask: reask, Supersedes: sup} }
+	// generation 0
+	by := namesOf(plain)
+	if !ValidReaskNote(by, "c1", ApprovalIdentReaskStep("c1", 0), n(PendingIdentReapproval, plain.Name)) {
+		t.Fatal("the genuine generation-0 note")
+	}
+	if ValidReaskNote(by, "c1", ApprovalIdentReaskStep("c1", 0), n(PendingExecHoldReapproval, plain.Name)) {
+		t.Fatal("generation 0 with the hold reason")
+	}
+	// generation 1: the hold is there
+	by = namesOf(g0, holdFor(t, "c1", 0))
+	if !ValidReaskNote(by, "c1", ApprovalIdentReaskStep("c1", 1), n(PendingExecHoldReapproval, g0.Name)) {
+		t.Fatal("the genuine generation-1 note")
+	}
+	// the same note with no hold under the tally
+	if ValidReaskNote(namesOf(g0), "c1", ApprovalIdentReaskStep("c1", 1), n(PendingExecHoldReapproval, g0.Name)) {
+		t.Fatal("generation 1 with no hold")
+	}
+	// generation 2 must name generation 1's tally, not an older held one
+	by = namesOf(g0, holdFor(t, "c1", 0), g1, holdFor(t, "c1", 1))
+	if !ValidReaskNote(by, "c1", ApprovalIdentReaskStep("c1", 2), n(PendingExecHoldReapproval, g1.Name)) {
+		t.Fatal("the genuine generation-2 note")
+	}
+	if ValidReaskNote(by, "c1", ApprovalIdentReaskStep("c1", 2), n(PendingExecHoldReapproval, g0.Name)) {
+		t.Fatal("generation 2 naming generation 0")
+	}
+}
+
+// The note of generation 0 (a plain-name tally superseded) is the newest note too.
+func TestIdentReask_LatestPauseNoteGenerationZero(t *testing.T) {
+	g := newBoundGate(t)
+	_, _ = g.run()
+	writeRaw(t, g.store, "r1", ApprovalTallyStep("c1"), valueRec(t, ApprovalTallyStep("c1"), passedTally()))
+	_, err := g.run()
+	wantReason(t, err, PendingIdentReapproval)
+	r, ok := LatestPauseNote(valuesByName(mustHistory(t, g.store, "r1")), "c1")
+	if !ok || r.Name != ApprovalIdentReaskStep("c1", 0) {
+		t.Fatalf("%v %v", r.Name, ok)
+	}
+}
+
+// A recorded denial of a certificate-bound gate is final in EvaluateGate whatever the policy is now,
+// including no gate at all.
+func TestEvaluateGate_BoundDenialIsFinalWithoutPolicy(t *testing.T) {
+	recs := []Record{valueRec(t, ApprovalIdentTallyStep("c1", 0), deniedTally())}
+	st := EvaluateGate(recs, ApprovalSubject{RunID: "r1", ToolUseID: "c1"}, nil, nil)
+	if st.Status != GateDecided || !st.Denied {
+		t.Fatalf("%+v", st)
+	}
+}
+
+// The deadline check and the notifier read an expiry at every tally name of the gate, plain or not.
+func TestGateTallyRecords(t *testing.T) {
+	ctx := context.Background()
+	j := memJournal()
+	names := []string{ApprovalTallyStep("c1"), ApprovalRetallyStep("c1"), ApprovalSoDRetallyStep("c1"), ApprovalIdentTallyStep("c1", 0), ApprovalIdentTallyStep("c1", 1), ApprovalIdentTallyStep("c1", 3)}
+	for _, n := range names {
+		writeRaw(t, j, "r1", n, valueRec(t, n, passedTally()))
+	}
+	got, err := gateTallyRecords(func(name string) (Record, bool, error) { return j.Get(ctx, "r1", name) }, "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotNames []string
+	for _, r := range got {
+		gotNames = append(gotNames, r.Name)
+	}
+	// Generation 3 is past a gap: the chain ends at the first absent generation.
+	if want := names[:5]; !slices.Equal(gotNames, want) {
+		t.Fatalf("%v, want %v", gotNames, want)
 	}
 }

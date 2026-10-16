@@ -227,3 +227,23 @@ func TestIdentReask_ExpiryIsReadFromTheChain(t *testing.T) {
 		t.Fatal("the notifier does not read the expiry of generation 1")
 	}
 }
+
+// The re-ask of a held generation is ended by the identity tally of its generation, even before the
+// call runs.
+func TestIdentReask_EndedByTheGenerationsTally(t *testing.T) {
+	ctx := context.Background()
+	g := newBoundGate(t)
+	g.holdGenerationZero()
+	g.decide("bob")
+	vf := certResolver(map[string]ApproverVerifier{"alice": g.alice, "bob": g.bob})
+	if _, final, err := tallyGate(ctx, g.store, "r1", subjectOf(t, g.store, "r1", "c1"), g.pol, vf, ""); err != nil || !final {
+		t.Fatalf("%v %v", final, err)
+	}
+	e := &notifyEngine{cfg: defaultNotifyConfig(), j: g.store}
+	if decided, _ := e.gateDecided(ctx, "r1", "c1", PendingExecHoldReapproval, 1); !decided {
+		t.Fatal("the generation-1 tally does not end the re-ask")
+	}
+	if decided, _ := e.gateDecided(ctx, "r1", "c1", PendingExecHoldReapproval, 2); decided {
+		t.Fatal("the generation-1 tally ends the generation-2 re-ask")
+	}
+}

@@ -214,7 +214,7 @@ func countGate(recs []Record, runID string, s ApprovalSubject, pol *ApprovalPoli
 			case supersededForSoD(t, pol):
 				return gateCount{}, fmt.Errorf("run %s: the approval tally %s of a certificate-bound gate passed without excluding the requester, whom the gate now excludes; the call did not run, and the gate cannot count again in place (cancel the run, or re-run the call as a new one): %w", runID, st.outcome.Name, ErrConfig)
 			}
-			return gateCount{tally: t, recorded: true, name: st.outcome.Name, gen: st.gen}, nil
+			return gateCount{tally: t, recorded: true, name: st.outcome.Name}, nil
 		}
 		name, supersedes, gen, reask = ApprovalIdentTallyStep(s.ToolUseID, st.gen), st.prev, st.gen, PendingExecHoldReapproval
 	} else if rt, ok := RecordedTally(byName, s.ToolUseID); ok {
