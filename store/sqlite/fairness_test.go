@@ -18,9 +18,9 @@ import (
 // whole run (the SQLITE_BUSY an application meets on a slow disk, where that run outlasts the busy
 // timeout). Between two writes of one writer, every other writer, each having one write outstanding
 // at a time, gets about one; the bound is generous against scheduling noise and far below the
-// hundreds of writes one writer makes in a row without the queue.
+// hundreds of writes one writer makes in a row without the queue (see checkTurns for the bound).
 func TestWritersOnOneFileTakeTurns(t *testing.T) {
-	const writers, each, maxGap = 24, 60, 3 * 24
+	const writers, each = 24, 60
 	opens := map[string]func(t *testing.T, path string) *sqlite.Store{
 		"Open": func(t *testing.T, path string) *sqlite.Store {
 			s, err := sqlite.Open(path)
@@ -70,15 +70,16 @@ func TestWritersOnOneFileTakeTurns(t *testing.T) {
 			}
 			wg.Wait()
 			if !t.Failed() {
-				checkTurns(t, owner[1:], writers, maxGap)
+				checkTurns(t, owner[1:], writers)
 			}
 		})
 	}
 }
 
-// The audit trail's Append takes turns too.
+// The audit trail's Append takes turns too. The order is read back from the file (see commitOrder),
+// not recorded by the writers after Append returns.
 func TestEventAppendersOnOneFileTakeTurns(t *testing.T) {
-	const writers, each, maxGap = 24, 40, 3 * 24
+	const writers, each = 24, 40
 	path := filepath.Join(t.TempDir(), "events.db")
 	var es []audit.EventStore
 	for range writers {
@@ -89,10 +90,9 @@ func TestEventAppendersOnOneFileTakeTurns(t *testing.T) {
 		defer s.Close()
 		es = append(es, s.EventStore())
 	}
+	order := commitOrder(t, path)
 	// Each writer appends to a run of its own, so that no append is refused for a taken position.
 	// All of them still share the file's one write lock.
-	order := make([]int, 0, writers*each)
-	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for w := range writers {
 		wg.Add(1)
@@ -103,26 +103,47 @@ func TestEventAppendersOnOneFileTakeTurns(t *testing.T) {
 					t.Errorf("writer %d append %d: %v", w, i, err)
 					return
 				}
-				mu.Lock()
-				order = append(order, w)
-				mu.Unlock()
 			}
 		}()
 	}
 	wg.Wait()
-	if !t.Failed() {
-		checkTurns(t, order, writers, maxGap)
+	if t.Failed() {
+		return
 	}
+	idx := map[string]int{}
+	var owners []int
+	for _, r := range order() {
+		if _, ok := idx[r]; !ok {
+			idx[r] = len(idx)
+		}
+		owners = append(owners, idx[r])
+	}
+	if len(owners) != writers*each {
+		t.Fatalf("%d commits recorded, want %d", len(owners), writers*each)
+	}
+	checkTurns(t, owners, writers)
 }
 
-// checkTurns fails if a writer is absent from more than maxGap consecutive completions.
-func checkTurns(t *testing.T, owner []int, writers, maxGap int) {
+// checkTurns fails if a writer is absent from more than 2*writers consecutive commits. The gate is a
+// first-come first-served queue and each writer has one write outstanding, so between two writes of
+// one writer at most writers-1 others commit, provided it asks again promptly. One lap of slack
+// covers a writer the scheduler holds back between its commit and its next request, during which the
+// others may go round once more (the measurements, taken from the commit order in the file, are
+// exactly writers-1 on a machine at load 100). Without the queue the gaps measured were 75 to 565 writes, over
+// the limit.
+func checkTurns(t *testing.T, owner []int, writers int) {
 	t.Helper()
+	maxGap := 2 * writers
 	last := make([]int, writers)
 	for i := range last {
 		last[i] = -1
 	}
+	worst := 0
+	defer func() { t.Logf("longest wait between two writes of one writer: %d others' writes (fair queue: %d at most when every writer is prompt)", worst, writers-1) }()
 	for pos, w := range owner {
+		if last[w] >= 0 {
+			worst = max(worst, pos-last[w]-1)
+		}
 		if last[w] >= 0 && pos-last[w] > maxGap {
 			t.Fatalf("writer %d waited through %d writes between two of its own (limit %d): writers are not taking turns", w, pos-last[w]-1, maxGap)
 		}
