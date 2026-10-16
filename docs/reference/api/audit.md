@@ -371,6 +371,37 @@ Canonicalizer maps an identifier to its one canonical form. *(building block, no
 
 - `func NewCanonicalizer(cfg CanonicalConfig) Canonicalizer`: NewCanonicalizer returns the default canonicalizer, "bide.default" version 1. *(building block, not yet used by approval gates)*
 
+## type CertApprover
+
+```go
+type CertApprover struct {
+	ApproverID string
+
+	Policy *CertIdentity
+
+	Heads func(runID string) ([]SignedTreeHead, error)
+
+	LogKey Verifier
+
+	ClockTolerance time.Duration
+
+	Status *StatusSnapshot
+
+	StatusParams StatusParams
+
+	Now func() time.Time
+}
+```
+
+CertApprover is the verifier of a certificate-bound approver (docs/design/approver-identity.md): it implements agent.CertDecisionVerifier, so the counting rule (agent.TallyApprovals) checks the approver's decisions as certificate-bound ones.
+
+**Methods**
+
+- `func (*CertApprover) Alg() agent.Alg`: Alg reports agent.AlgCertificate: the scheme is the leaf key's, known only from the certificate.
+- `func (c *CertApprover) KeyIDs() []string`: KeyIDs is the approver's seat, "ident:" and the canonical identifier the policy's identity map gives the approver id, so two approver ids of one person fill one seat.
+- `func (*CertApprover) Verify(message, sig []byte) bool`: Verify is always false: a bare signature over bytes, with no certificate, is never a certificate-bound approver's decision.
+- `func (c *CertApprover) VerifyCertDecision(cd agent.CertDecision) agent.CertCheck`: VerifyCertDecision implements agent.CertDecisionVerifier.
+
 ## type CertError
 
 ```go

@@ -440,6 +440,9 @@ type DecisionCheck struct {
 	Approved bool
 	Counted  bool   // this is the approver's decision: their first valid one
 	Reason   string // why it did not count; empty when Counted
+	// Cert is set for a decision of a certificate-bound approver, whatever its outcome: what the
+	// verifier found. Nil for a bare-key approver's decision.
+	Cert *CertCheck
 }
 
 // Reasons a decision record does not count.
@@ -476,6 +479,12 @@ const (
 	ReasonStatusUnknown = "no usable revocation status covers a certificate of the chain"
 	// ReasonStatusStale: the status available is past nextUpdate or older than the policy allows.
 	ReasonStatusStale = "the revocation status available is older than the policy allows"
+	// ReasonNoCoveringHead: no signed tree head of the run covers the decision yet, so the time it
+	// became provable is not known. Live, the gate anchors and retries; offline it is not verified.
+	ReasonNoCoveringHead = "no signed tree head covers the decision yet, so when it became provable is not known"
+	// ReasonHeadTimes: the head that first covers the decision is implicated in a contradiction among
+	// the run's head times (a larger head stamped earlier than a smaller one, beyond the tolerance).
+	ReasonHeadTimes = "the head that first covers the decision has a time contradicted by another head of the run"
 )
 
 // protocol:claims begin QCount
@@ -512,6 +521,14 @@ const (
 // validate p (see ApprovalPolicy.ValidateKeys, which the gate runs first and which refuses a
 // policy this rule would count short); a nil verifierFor counts nothing.
 func TallyApprovals(recs []Record, s ApprovalSubject, p ApprovalPolicy, verifierFor ApproverVerifierFor) (ApprovalTally, []DecisionCheck) {
+	return tallyApprovals(recs, recs, s, p, verifierFor)
+}
+
+// tallyApprovals is TallyApprovals over recs, the records the gate counts (the run's journal, less
+// what it leaves out: a flow gate's earlier records, decisions after a deadline), with journal the
+// run's whole journal from its first record, which a certificate-bound approver's verifier needs to
+// find the head that first covers a decision.
+func tallyApprovals(recs, journal []Record, s ApprovalSubject, p ApprovalPolicy, verifierFor ApproverVerifierFor) (ApprovalTally, []DecisionCheck) {
 	t := ApprovalTally{Need: p.Need, Approvers: append([]string(nil), p.Approvers...)}
 	eligible := make(map[string]bool, len(p.Approvers))
 	for _, id := range p.Approvers {
@@ -539,6 +556,8 @@ func TallyApprovals(recs []Record, s ApprovalSubject, p ApprovalPolicy, verifier
 	}
 	decided := make(map[string]bool, len(p.Approvers))
 	var checks []DecisionCheck
+	counted := map[[32]byte]string{} // leaf key hash -> the approver id whose certificate-bound decision counted under it
+	var journalIdx map[string]int
 	for _, r := range recs {
 		if !IsApprovalDecision(r, s.ToolUseID) {
 			continue
@@ -557,7 +576,40 @@ func TallyApprovals(recs []Record, s ApprovalSubject, p ApprovalPolicy, verifier
 		case !ok:
 			c.Reason = ReasonNoKey
 		default:
-			if c.Reason = decisionReason(r, s, v); c.Reason != "" {
+			if cv, isCert := v.(CertDecisionVerifier); isCert {
+				// The kind of the approver's verifier decides how the record is checked, never what the
+				// record carries.
+				if journalIdx == nil {
+					journalIdx = make(map[string]int, len(journal))
+					for i, x := range journal {
+						if _, dup := journalIdx[x.Name]; !dup {
+							journalIdx[x.Name] = i
+						}
+					}
+				}
+				idx, found := journalIdx[r.Name]
+				if !found {
+					idx = -1
+				}
+				cc := cv.VerifyCertDecision(CertDecision{Subject: s, Record: r, Journal: journal, Index: idx})
+				c.Cert = &cc
+				if c.Reason = cc.Reason; c.Reason == "" {
+					// One key, one seat: another approver id's decision already counted under this
+					// leaf key (a key under two certificates, or two ids on one key) takes it.
+					if other, taken := counted[cc.KeyHash]; taken && other != r.Approver() {
+						c.Reason = ReasonSharedKey
+					}
+				}
+				if c.Reason == "" && p.ExcludePrincipal && slices.ContainsFunc(t.Requesters, func(q string) bool { return SameApprover(cc.Identity, q) }) {
+					// Separation of duties by identity: the requester's identifier, whatever approver id
+					// this person holds.
+					c.Reason = ReasonRequester
+				}
+				if c.Reason != "" {
+					break
+				}
+				counted[cc.KeyHash] = r.Approver()
+			} else if c.Reason = decisionReason(r, s, v); c.Reason != "" {
 				break
 			}
 			c.Counted = true

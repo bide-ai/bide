@@ -195,6 +195,7 @@ func countGate(recs []Record, runID string, s ApprovalSubject, pol *ApprovalPoli
 			return gateCount{tally: t, recorded: true, name: rt.Name}, nil
 		}
 	}
+	journal := recs // the whole journal, which a certificate-bound approver's verifier reads heads against
 	if since != "" {
 		// The decisions after since, and the run's run:principal, which names the requesters a policy
 		// that excludes the requester reads (TallyApprovals).
@@ -222,7 +223,7 @@ func countGate(recs []Record, runID string, s ApprovalSubject, pol *ApprovalPoli
 		}
 		recs = kept
 	}
-	tally, checks := TallyApprovals(recs, s, *pol, verifierFor)
+	tally, checks := tallyApprovals(recs, journal, s, *pol, verifierFor)
 	checks = append(checks, late...)
 	tally.Supersedes = supersedes
 	if hasDeadline {
