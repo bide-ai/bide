@@ -2794,6 +2794,9 @@ certificate-bound approver (see [Model 1b](#model-1b-the-approval-gate)): the tw
   recounted (`StickyTally`); a revocation with `E <= A(d)` in the archive removes a decision for good
   (`DropRevoked`; with `DeadGuard` the decision is not counted again, which matters when the cache
   regresses); stale status never does (`StaleSticky`, else `DropStale`).
+  `DropRevoked` is not needed for safety beyond the tally recheck (`Tally` refuses while a counted
+  decision is listed, and `Exec` re-checks the archive); it is what lets a tally form past a revoked
+  decision, which `id-revocation-reach` shows is reachable.
 - **Execution** (`Exec`): with `ExecRecheck`, the call runs only on a status no older than `ExecAge`
   that satisfies the same `L(C)` rule (`LBoundExec`) and with no counted decision's leaf listed with
   `E <= A(d)` in the archive.
