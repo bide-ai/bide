@@ -29,7 +29,6 @@ Each package carries one label, declared in one place and checked against
 |---|---|---|
 | `github.com/bide-ai/bide` | 21 | one page per package, listed below |
 | `github.com/bide-ai/bide/codec/gcf` | 1 | [codec-gcf](codec-gcf.md) |
-| `github.com/bide-ai/bide/flowedit` | 1 | [flowedit](flowedit.md) |
 | `github.com/bide-ai/bide/govern` | 2 | [govern](govern.md) |
 | `github.com/bide-ai/bide/govern/postgreslog` | 1 | [govern-postgreslog](govern-postgreslog.md) |
 | `github.com/bide-ai/bide/govern/redislog` | 1 | [govern-redislog](govern-redislog.md) |
@@ -69,7 +68,6 @@ Each package carries one label, declared in one place and checked against
 | [`plan/planview`](plan-planview.md) | experimental | Package planview embeds bide view's flow-config page in a program, with the program's plan.Registry, so the page checks a config the way plan.Load does: blocks, predicates, merges and types, as well as structure, and shows the digest a run of the flow would journal. |
 | [`schema`](schema.md) | core | Package schema derives JSON Schema from Go types and emits provider-specific dialects. |
 | [`codec/gcf`](codec-gcf.md) | core | Package gcf provides a provider.ToolResultCodec that encodes tool results as GCF (Graph Compact Format) instead of JSON when they are sent to the model. |
-| [`flowedit`](flowedit.md) | experimental | Package flowedit is the edit engine of the flow editor (docs/design/visual-editor.md): it applies one operation to the text of a flow config by splicing, so every byte outside the edit is the original byte, and it returns the text only after checking that the result means what the operation says (it re-parses the result and compares it with the operation applied to the data). |
 | [`govern`](govern.md) | experimental | Package govern is the Tier-2 (distributed / concurrent) compensating-agent layer: it integrates the gsm "Governed State Machine" library so that MULTIPLE concurrent agents mutating SHARED state converge to the same valid state regardless of interleaving, as certified by gsm's build-time normalization-confluence verification (WFC + CC). |
 | [`govern/eventlogtest`](govern.md) | experimental | Package eventlogtest checks that an implementation satisfies the govern.EventLog contract, so every adapter (in-memory, SQLite, Postgres, Redis, or your own) is held to the same guarantees a governor relies on: dense, unique positions under concurrent appends from separate processes, appends that are idempotent by id (so a retried append is recorded once), and a log that only ever grows at the end. |
 | [`govern/postgreslog`](govern-postgreslog.md) | experimental | Package postgreslog is a Postgres-backed govern.EventLog for HIGH-AVAILABILITY governed state: multiple processes read the same governed event stream and replay it to the same convergent state. |
