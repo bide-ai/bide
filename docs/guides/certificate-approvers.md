@@ -86,6 +86,11 @@ EKU and policy OID), the **platform team** (writes the certificate policy and ru
    (or `RecoverLoop` does): the gate counts the decision, and immediately before the call runs the status of
    the counted certificates is checked again (below). The run viewer and `bide approve -list` show the gate's
    phase and each counted decision's identity, tier and status time.
+   For a pending approver who is certificate-bound, both print the `bide approve -cert` command with
+   placeholders for the key, the chain and the policy file: `-list` for each such approver, and the Needs
+   attention list once, as the only command when every pending approver is certificate-bound, or next to the
+   bare-key command (marked for the bare-key approvers only) when some are not. A bare-key command is never
+   offered for them, because their decision would be recorded and not counted.
 8. **Anyone can check the receipt later**: `bide approve -verify-receipt ops.receipt.json -identity-policy
    policy.json -log-key <log public key>` checks the chain and identity at the time the log's head made the
    decision provable (and, as it says, not revocation status); `bide audit verify-receipts` checks it against
