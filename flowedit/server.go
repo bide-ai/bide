@@ -55,7 +55,6 @@ type Server struct {
 	path  string // the file, absolute, with symlinks resolved at startup
 	name  string // the name the page shows: the path as given
 	token string
-	id    os.FileInfo // the file at startup: what every read must open
 }
 
 // New returns the editor for the file at path. The file must be an existing regular file of at
@@ -75,18 +74,14 @@ func New(path string) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("flowedit: %w", err)
 	}
-	if _, err := readConfig(real, nil); err != nil {
+	if _, err := readConfig(real); err != nil {
 		return nil, err
-	}
-	id, err := os.Stat(real)
-	if err != nil {
-		return nil, fmt.Errorf("flowedit: %w", err)
 	}
 	var tok [16]byte
 	if _, err := rand.Read(tok[:]); err != nil {
 		return nil, fmt.Errorf("flowedit: no randomness for the session token: %w", err)
 	}
-	return &Server{path: real, id: id, name: path, token: hex.EncodeToString(tok[:])}, nil
+	return &Server{path: real, name: path, token: hex.EncodeToString(tok[:])}, nil
 }
 
 // Token is the session token the page sends in TokenHeader. bide edit prints it in the address's
@@ -97,7 +92,15 @@ func (s *Server) Token() string { return s.token }
 // When id is not nil the opened file must be the file id describes (os.SameFile): the editor reads
 // only the file it was started on, so a symbolic link or another file put at the path since is
 // refused, not followed.
-func readConfig(path string, id os.FileInfo) ([]byte, error) {
+func readConfig(path string) ([]byte, error) {
+	// Not a symbolic link or anything but a regular file at the name: a link put there since startup
+	// is refused, not followed. A file another tool replaced by a rename is the file at the name now
+	// and is read; the hash compare-and-swap of a save is what notices it changed.
+	if lfi, err := os.Lstat(path); err != nil {
+		return nil, fmt.Errorf("flowedit: %w", err)
+	} else if lfi.Mode()&os.ModeSymlink != 0 || !lfi.Mode().IsRegular() {
+		return nil, fmt.Errorf("flowedit: %s is not a regular file (a link or another kind of file is not read)", path)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("flowedit: %w", err)
@@ -109,9 +112,6 @@ func readConfig(path string, id os.FileInfo) ([]byte, error) {
 	}
 	if !st.Mode().IsRegular() {
 		return nil, fmt.Errorf("flowedit: %s is not a regular file", path)
-	}
-	if id != nil && !os.SameFile(id, st) {
-		return nil, fmt.Errorf("flowedit: %s is no longer the file the editor was started on; nothing was read", path)
 	}
 	b, err := io.ReadAll(io.LimitReader(f, MaxFileSize+1))
 	if err != nil {
@@ -125,7 +125,7 @@ func readConfig(path string, id os.FileInfo) ([]byte, error) {
 
 // Doc reads the file and returns its View with the hash of the bytes read.
 func (s *Server) Doc() (*Doc, error) {
-	b, err := readConfig(s.path, s.id)
+	b, err := readConfig(s.path)
 	if err != nil {
 		return nil, err
 	}

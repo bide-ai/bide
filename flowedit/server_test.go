@@ -452,28 +452,36 @@ func TestAssetContentTypes(t *testing.T) {
 	}
 }
 
-// The editor reads only the file it was started on. A symbolic link, or another file, put at the
-// path afterwards is refused on every read, not followed.
-func TestReadsRefuseAFileSwappedInAfterStartup(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("creating a symbolic link needs a privilege on Windows")
-	}
+// A symbolic link put at the config's name after startup is not followed on any read. A file another
+// tool replaced by a rename (vim, an IDE, sed -i, git) is the file at the name now: it is read, and
+// the hash compare-and-swap of a save is what notices it changed.
+func TestReadsRefuseALinkButReadAReplacedFile(t *testing.T) {
 	s, p := newTestServer(t, "refund.yaml", testFlow)
 	secret := filepath.Join(t.TempDir(), "secret.yaml")
 	if err := os.WriteFile(secret, []byte("TOPSECRET: 1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	for name, swap := range map[string]func(){
-		"a symbolic link": func() { os.Remove(p); os.Symlink(secret, p) },
-		"another file":    func() { os.Remove(p); os.WriteFile(p, []byte("TOPSECRET: 1\n"), 0o600) },
-	} {
-		swap()
+	if runtime.GOOS != "windows" { // creating a symbolic link needs a privilege there
+		os.Remove(p)
+		os.Symlink(secret, p)
 		w := call(s.Handler(), s, "/api/doc", "{}", nil)
 		if w.Code == 200 || strings.Contains(w.Body.String(), "TOPSECRET") {
-			t.Errorf("%s: %d %s", name, w.Code, w.Body)
+			t.Errorf("a link: %d %s", w.Code, w.Body)
 		}
-		os.Remove(p)
-		os.WriteFile(p, []byte(testFlow), 0o600)
+	}
+	// Replaced by a rename of another file over it: read, with the new text and hash.
+	swp := p + ".swp"
+	os.Remove(p)
+	newer := strings.Replace(testFlow, "flow: refund", "flow: refund2", 1)
+	if err := os.WriteFile(swp, []byte(newer), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(swp, p); err != nil {
+		t.Fatal(err)
+	}
+	d, err := s.Doc()
+	if err != nil || d.Text != newer || d.Hash != hashOf([]byte(newer)) {
+		t.Fatalf("a replaced file is not read: %v", err)
 	}
 }
 
