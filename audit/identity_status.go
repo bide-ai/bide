@@ -774,6 +774,10 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, evict
 	if p.AllowHolds && !st.Revoked {
 		sort.Slice(holdStarts, func(i, j int) bool { return holdStarts[i].Before(holdStarts[j]) })
 		sort.Slice(releases, func(i, j int) bool { return releases[i].Before(releases[j]) })
+		// The same hold is listed by several CRLs (the base, then every delta since): one hold.
+		sameTime := func(a, b time.Time) bool { return a.Equal(b) }
+		holdStarts = slices.CompactFunc(holdStarts, sameTime)
+		releases = slices.CompactFunc(releases, sameTime)
 		used := make([]bool, len(releases))
 		inHold := func(start time.Time) {
 			if !st.Revoked || start.Before(st.E) {
