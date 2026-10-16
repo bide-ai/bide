@@ -39,6 +39,17 @@ Configured per issuer, keyed by the SPKI hash of the issuing key (the same key t
 
 and as `audit.CRLSources` (a map with the same shape) for a program that does not use the file.
 
+- **Issuer certificates.** The policy pins intermediates by SPKI hash only (`IdentityPolicy.Inter`);
+  only anchors are certificates. A hash cannot verify a signature, and the only place an
+  intermediate's certificate exists today is a client-supplied chain, which is never a source. So the
+  refresher takes the **intermediate certificates themselves** (`intermediate_certs`, PEM files
+  relative to the policy file like the anchors, or `Config.Issuers` in Go). At startup each is
+  checked: its SPKI hash is a pinned one, it chains to an anchor, and it is not distrusted. A pinned
+  intermediate with no certificate supplied is `ErrConfig`. These certificates, and only these and
+  the anchors, are the issuers for signature checks, for `WithIssuers` and for `from_pinned_cdp`.
+  Out of scope, and refused: a CRL signed by a delegated CRL signer (not the issuing key), an
+  indirect CRL, a partitioned (issuing distribution point) CRL. `AddCRL` already refuses the last two;
+  the refresher reports that refusal as `EventUnsupportedCRL`, never as "fetched".
 - Every key must be a pinned issuer (an anchor or a pinned intermediate); an unknown key is
   `ErrConfig`. Every issuer the policy can reach through an accepted chain needs an entry or the
   refresher refuses to start (an issuer with no source would be a permanent pause that looks like a
@@ -52,12 +63,15 @@ and as `audit.CRLSources` (a map with the same shape) for a program that does no
   (the root's), and that is the only case where a certificate bide pinned can name a URL. The CRL of
   the leaf's issuing CA is named only in leaves, which arrive from clients: never fetched. Therefore:
   `from_pinned_cdp: true` is an opt-in per entry that adds the CDP URLs (and freshestCRL URLs for
-  deltas) of the **pinned certificate whose issuer is that entry's issuer**; they are subject to the
+  deltas) of the **supplied certificate whose issuer is that entry's issuer** (for the root's entry,
+  the intermediate certificate the operator supplied; the root itself has no CDP); they are subject to the
   same URL rules and the same transport limits. Default false, so the safe default is "exactly the
   configured list". The effective URL list is printed at startup and reported in `Health()`.
 - Policy digest: the URLs are **not** part of `PolicyDigest`. They change for operational reasons
   (a CDP moves) and do not affect any verdict, since every CRL is verified against the pinned key.
-  Each archived CRL records the URL it came from instead.
+  Each archived CRL records the URL it came from instead. Moving a URL cannot change a verdict: the
+  signature (against the supplied issuer certificate), the number rules and the freshness rules do not
+  depend on where the bytes came from.
 
 ### 2. Transport
 
@@ -79,6 +93,12 @@ and as `audit.CRLSources` (a map with the same shape) for a program that does no
   `CheckRedirect`, not the transport). https verifies the server certificate with the system roots
   (`Config.Client` may override); a CRL is signed, so an http URL is the normal profile and a
   man-in-the-middle can at worst withhold or replay, which the rules below handle.
+- `DisableCompression: true` on the library transport (no transparent gzip); the size limit applies to
+  the decoded stream anyway and is tested with a gzip bomb. A `Content-Length` above the limit is
+  refused before any body is read.
+- An application-supplied `Config.Client` is the application's: the library cannot enforce proxy or
+  DNS rules on a transport it did not build (it can still bound the request context, the body size and
+  the redirect rule through `CheckRedirect`), and it logs once that a client was supplied.
 - Conditional GET (`If-None-Match`, `If-Modified-Since`) is used when the server gave a validator.
   A `304` counts as "checked, nothing new": it never refreshes anything, because freshness is read
   from the CRL's own `thisUpdate` and `nextUpdate`, never from a transport header.
@@ -102,20 +122,33 @@ clock, random source), unit-tested without a network or a real clock.
 - **Jitter**: each wait is multiplied by a uniform factor in `[0.9, 1.1]`, drawn from an injectable
   source, so a fleet does not synchronise on the CA.
 - **Backoff** on failure: `30s, 60s, ...` doubling (with full jitter over the upper half) up to `I`,
-  reset by a success. With several URLs, the next URL is tried immediately in the same attempt; the
-  backoff applies per attempt, not per URL. A server `Retry-After` longer than the backoff is
+  reset by a success. **Every configured URL is queried in each attempt** and the highest-numbered
+  valid CRL is added (all valid ones are archived, so a mirror that lags is on record); the attempt
+  fails only if none answers with a valid CRL. Taking the first answer would let a stale mirror, or a
+  replay over plain http of a pre-revocation CRL still inside its validity, win on a cold start with no
+  high-water mark. A single-URL deployment cannot do better, and the guide says so: an http-only CRL
+  source can be replayed until the CRL's `nextUpdate`. The backoff applies per attempt, not per URL. A server `Retry-After` longer than the backoff is
   honoured up to `I`.
 - **Never replace a newer CRL with an older one.** Per issuer, the refresher tracks the highest
   `CRLNumber` seen of full CRLs and of deltas separately (one number sequence across both is allowed;
   the comparison is against the highest number of the same kind). A fetched CRL with a **lower**
-  number is a rollback (a stale mirror, or a replay): not added, counted, reported by `OnEvent`, and
-  the next URL is tried. The **same** number with different bytes is an equivocation: not added,
-  reported loudly (`EventConflict`, with both hashes). The high-water mark is rebuilt at startup
-  from the archive (see 5), so a restart does not forget it; an empty snapshot after a restart would
-  otherwise accept any CRL still inside its validity.
+  number is a rollback (a stale mirror, or a replay): not added, reported by `OnEvent` naming the
+  issuer and both numbers. The **same** number with a different **TBSCertList** is an equivocation:
+  not added, reported loudly (`EventConflict`, with both TBS hashes). The comparison is on the TBS,
+  not the whole DER: ECDSA and RSA-PSS signatures are randomised, so a CA that re-signs one CRL
+  (HA publishers, EJBCA clusters, two AD CS CDPs) is the same CRL, not a conflict. CRL numbers are
+  compared as big integers (up to 20 octets). The mark is per issuer (partitioned CRLs are refused, so
+  there is one scope). It is rebuilt at startup from the archive (see 5), so a restart does not forget
+  it; an empty snapshot after a restart would otherwise accept any CRL still inside its validity.
+  **The mark has an exit.** A CA that issues one CRL with a mistaken huge number, or is restored from
+  backup and restarts its numbering, would otherwise leave every later real CRL a "rollback" and the
+  gates for that issuer paused. `ResetHighWater(issuer, reason)` (and `bide identity fetch-crl
+  -reset-high-water <issuer> -reason ...`) drops the mark; it reports `EventHighWaterReset` with the old
+  mark, the reason and the operator, and the CLI writes it to the archive directory's log as a security
+  event. It never removes a CRL from the snapshot or the archive.
 - **Verify before adding.** Order: size, parse, algorithm allow-list (the snapshot's, never SHA-1),
-  the signature verified against **the entry's own issuer certificate** (not "any issuer in the
-  snapshot": a CRL of issuer B served from A's URL must fail), issuer name and authority key id
+  the signature verified against **the entry's own supplied issuer certificate** (not "any issuer in
+  the snapshot": a CRL of issuer B served from A's URL must fail), issuer name and authority key id
   match, `DistrustAfter` for that key, then the future-dating check (`thisUpdate` more than
   `skew + 1 minute` ahead of the clock is refused). Only then `AddCRL`. A parse or signature failure
   never touches what is held.
@@ -125,7 +158,8 @@ clock, random source), unit-tested without a network or a real clock.
 - **Delta CRLs** are fetched from `delta_urls` on their own schedule (`I` computed from the delta
   period if declared in `CAPeriodFor`-style `DeltaPeriodFor`, else `I`). A delta names the base number
   it is cumulative since; the status rule pairs it with a held base numbered in
-  `[baseNumber, deltaNumber)`. If no such base is held, the refresher fetches the base immediately and
+  `[baseNumber, deltaNumber)` (big integers). A delta whose number is not above a newer held base's
+  number is obsolete: archived, not paired. If no such base is held, the refresher fetches the base immediately and
   retries the delta once; a delta whose base cannot be obtained is still archived and added (it never
   gives evidence of absence alone) but reported as `Paired: false`, and the issuer's freshness is the
   base's. When both are held, freshness is the merged view's (earlier `nextUpdate`, delta's
@@ -136,7 +170,8 @@ clock, random source), unit-tested without a network or a real clock.
 `StatusSnapshot` is already mutex-guarded; `AddCRL` parses and verifies outside the lock and takes it
 only to insert. The refresher does all network I/O, parsing and archiving outside any snapshot lock,
 and calls `AddCRL` once per accepted CRL; the gate reads through `viewsFor` under the same mutex, so a
-gate sees either the snapshot before or after an insert, never a partial CRL. Required race tests:
+gate sees either the snapshot before or after an insert, never a partial CRL. A CA that stops publishing deltas must not leave a stale delta looking current: freshness is the merged
+view's earlier `nextUpdate`, and a test covers it. Required race tests:
 many gate evaluations against a snapshot while the refresher rotates CRLs (race detector), and the
 refresher stopping (context cancel) mid-fetch and mid-archive with no goroutine left behind
 (`goleak`-style check).
@@ -160,9 +195,20 @@ temporary file, fsync, rename, fsync the directory; idempotent by hash.
   `CertApprover.StatusArchive`). The failure is reported (`EventArchiveError`), the CRL is kept in a
   bounded in-memory retry queue and retried with the backoff, and `Health()` shows `ArchiveBacklog`;
   a series with a hole makes offline verdicts non-final, so the operator must hear of it.
-- At start, `Load` seeds the snapshot and the high-water marks through the same verification path. A
-  seeded CRL is judged by its own dates, so seeding cannot make anything fresher than it was.
-  Without an archive the refresher runs, but a restart forgets rollback protection and says so at
+- The retry queue is bounded by bytes, drops the oldest first, and reports `EventArchiveDropped` for
+  each drop, so a hole in the series is known and never silent. `PutCRL` is safe on a directory shared
+  by several replicas: names are content-derived and the rename is atomic (file fsync, rename,
+  directory fsync, in that order). The directory is created `0700`, an existing one that is
+  world-writable or not owned by the process user is refused (it is the rollback memory), and files
+  are written with explicit modes.
+- At start, `Load` seeds the high-water marks (from file names, cheap) and the snapshot through the
+  same verification path. The archive is never pruned (a 30-minute CA is about 17,500 CRLs a year per
+  issuer), so seeding goes **newest first** and loads only what the live rule needs: the newest
+  CRLs within `MaxStatusAge` plus the base of any delta, bounded by `WithMaxCRLs` and a startup time
+  budget. Seeding does **not** count toward the snapshot's eviction bookkeeping (`evictedNew`): it
+  uses an internal insert that never evicts, since loading oldest first and evicting would raise
+  `evictedNew` and make live status non-final for no reason. A seeded CRL is judged by its own dates,
+  so seeding cannot make anything fresher than it was. Without an archive the refresher runs, but a restart forgets rollback protection and says so at
   startup.
 
 ### 6. Observability
@@ -173,18 +219,27 @@ No metrics library in the core. Two surfaces:
   (`EventFetched`, `EventUnchanged`, `EventRollback`, `EventConflict`, `EventBadSignature`,
   `EventOversize`, `EventTimeout`, `EventRedirectRefused`, `EventFutureDated`, `EventStaleOnArrival`,
   `EventArchiveError`, `EventClockSkew`) and `OnAlarm(Alarm)` on entering and leaving an alarm state.
-  Errors carry the issuer, the URL with its query and fragment removed, and a reason; never a body.
+  Errors, the startup printout of effective URLs and `Health()` carry the issuer, the URL with its query
+  and fragment removed (a token in a query string is never logged), and a reason; never a body. The
+  startup lines (effective URLs, per-issuer limit and margin) are also one machine-readable JSON line
+  each, so a platform team can alert on a margin under one period.
 - `Health()` returns, per issuer: `LastAttempt`, `LastSuccess` (a fresh CRL accepted), `NewestNumber`,
-  `NewestThisUpdate`, `NewestNextUpdate`, `Age` (from `thisUpdate + skew`, never from the fetch
-  time), `NextExpected` (`thisUpdate + skew + CAPeriod`), `NextAttempt`, `ConsecutiveFailures`,
+  `NewestThisUpdate`, `NewestNextUpdate`, `Age` (`now - thisUpdate`, with no skew credit and never from the fetch
+  time: the gate judges the same way, so the alarm cannot lag the pause), `NextExpected` (`thisUpdate + skew + CAPeriod`), `NextAttempt`, `ConsecutiveFailures`,
   `LastError`, `ArchiveBacklog`, `Paired`, `Alarm`, `Loop` (last time its goroutine ran, a watchdog
   for a dead loop), and the effective URLs. `cmd` exposes it as a JSON line per change and an
   optional listen address for a scrape; the library never opens a port.
 - **Alarm.** The promise in the guide is "alarm at 50% of validity". Taken literally it is wrong for
   a weekly root: its status limit is about one period, so half of it is inside the normal cycle and
   would alarm every week. Defined once: `limit = min(applicable MaxStatusAge, applicable
-  ExecStatusAge)`; alarm when `Age > max(limit/2, CAPeriod + CAOverlap + tolerance)`; `Critical`
-  when `Age > limit` (gates are pausing now). For a fast CA the first term governs (a missed
+  ExecStatusAge)`, taken as the **minimum over the issuer's roles** (it can be the leaf's issuing CA
+  for one approver and a CA tier for another), computed by the same function `EvaluateStatus` uses,
+  with a test that Age and limit agree with it at the boundaries; alarm when `Age >
+  min(max(limit/2, CAPeriod + CAOverlap + tolerance), limit - I)`; `Critical` when `Age > limit`
+  (gates are pausing now). The `limit - I` cap keeps the alarm ahead of Critical when
+  `ExecStatusAgeFor` is only just above period plus overlap (which validation allows); startup refuses
+  a configuration whose `limit - (CAPeriod + CAOverlap)` is under `tolerance + I` for a CA tier, and
+  warns for the leaf's CA. For a fast CA the first term governs (a missed
   CRL is flagged long before the gate pauses); for a root the second does, which is why the guide
   tells the operator to give the root CRL a validity of two periods and set `ExecStatusAgeFor` to it:
   then the alarm is one full period before any gate pauses. The refresher logs the margin it computed
@@ -205,7 +260,9 @@ No metrics library in the core. Two surfaces:
   `Ready()` closes once every issuer has a fresh CRL; the program may wait on it before serving, but
   nothing requires it: until then the gates pause, as they do today.
 - Local clock error: the HTTP `Date` header is compared with the local clock and a difference over 5
-  minutes raises `EventClockSkew` as a warning only. It is never used for a decision.
+  minutes raises `EventClockSkew` as a warning only; so does a future-dated `thisUpdate` beyond
+  skew plus a minute when several issuers show it at once (a slow local clock). Neither is used for
+  a decision. `NewCRLRefresher` refuses an approver with a nil `Now`.
 
 ### 8. How a program enables it, and the CLI
 
@@ -225,7 +282,8 @@ go r.Run(ctx)
   leave no positive interval.
 - **`bide identity fetch-crl -policy file -cache dir [-once | -every]`**: the cron/daemon form of the
   same code (the identity note already names this command), writing the archive layout and
-  exiting non-zero on any issuer that is not fresh with `-once`. Durations for a daemon come from
+  exiting non-zero on any issuer that is not fresh with `-once`. Issuer certificates come from the
+  policy's `intermediate_certs`. Durations for a daemon come from
   flags (`-period`, per-issuer overrides in a `-params` JSON), since the policy file carries no
   status parameters today.
 - **`bide approve -cert`** does **not** fetch. Its local check is a convenience before signing (it
@@ -266,4 +324,6 @@ text), CONCEPTS, changelog fragment.
 5. `bide identity fetch-crl` in this PR (with `-once` and a daemon mode); `approve -cert` stays
    fetch-free; `bide identity check` is a separate later PR [yes].
 6. HTTP/HTTPS only; LDAP stated as unsupported [yes]. OCSP out of scope [yes].
+8. Review by pki-auditor-2 (2026-10-16) folded in: supplied intermediate certificates, TBS comparison,
+   high-water reset, query-all-URLs, alarm cap and age definition, seeding rules, transport additions.
 7. Interval default tightened to `min(CAPeriod/2, min(MaxStatusAge, ExecStatusAge)/4)` [yes].
