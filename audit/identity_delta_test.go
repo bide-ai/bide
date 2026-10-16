@@ -707,7 +707,7 @@ func TestHoldReleaseByAbsenceUsesTheDeclaredThisUpdateSkew(t *testing.T) {
 		revoked bool
 	}{
 		{"inside the skew window, skew declared", 45 * min, skew, true},
-		{"after the skew window, skew declared", 51 * min, skew, false},
+		{"after the skew window, skew declared", 52 * min, skew, false},
 		{"inside the window, no skew declared", 45 * min, 0, false}, // the understated thisUpdate is taken at face value
 	} {
 		s := newStFxAt(t, idT0.Add(tc.at))
@@ -718,6 +718,20 @@ func TestHoldReleaseByAbsenceUsesTheDeclaredThisUpdateSkew(t *testing.T) {
 		if st := s.leafStatus(s.snap(b1, b2, b3), p); st.Revoked != tc.revoked {
 			t.Fatalf("%s: revoked=%v want %v: %+v", tc.name, st.Revoked, tc.revoked, st)
 		}
+	}
+	// A mistyped skew is refused, not obeyed.
+	for _, bad := range []time.Duration{-min, 31 * min, 2 * hour} {
+		s := newStFxAt(t, idT0.Add(45*min))
+		b := s.lcrl(1, idT0.Add(12*min), 15*min)
+		if st := s.leafStatus(s.snap(b), audit.StatusParams{CAPeriod: 20 * min, ThisUpdateSkew: bad}); st.Tier != audit.TierNoInformation || !strings.Contains(st.Note, "ThisUpdateSkew") {
+			t.Fatalf("skew %v: %+v", bad, st)
+		}
+	}
+	// The release bound also carries the coverage tolerance: a CA's offset varies by seconds.
+	s0 := newStFxAt(t, idT0.Add(50*min+30*time.Second))
+	if st := s0.leafStatus(s0.snap(s0.lcrl(1, idT0.Add(12*min), 15*min, hold(s0)), s0.lcrl(2, idT0.Add(25*min), 15*min, hold(s0)), s0.lcrl(3, idT0.Add(40*min), 15*min)),
+		audit.StatusParams{AllowHolds: true, CAPeriod: 20 * min, ThisUpdateSkew: skew}); !st.Revoked {
+		t.Fatalf("release bound without the tolerance: %+v", st)
 	}
 	// Per issuing CA.
 	s := newStFxAt(t, idT0.Add(45*min))

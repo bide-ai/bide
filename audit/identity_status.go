@@ -35,6 +35,8 @@ const (
 
 	defaultW    = 24 * time.Hour   // compromise-reporting window
 	defaultMinW = 30 * time.Minute // floor on the window for a final verdict
+	// maxThisUpdateSkew caps a declared ThisUpdateSkew: a larger value would make a stale CRL look fresh.
+	maxThisUpdateSkew = 30 * time.Minute
 )
 
 // finalityNeedsLC chooses how a certificate that is still unexpired at the latest usable status is
@@ -535,7 +537,9 @@ type StatusParams struct {
 	// it by about ten minutes). A CRL is then really issued at thisUpdate plus the skew: a hold released
 	// before the next CRL is released no later than that, and a CRL's age is measured from it.
 	// ThisUpdateSkewFor overrides it per issuing CA. Zero takes thisUpdate at face value; it is never
-	// assumed.
+	// assumed. It is the CA's own configuration (AD CS: ClockSkewMinutes), declared from a capture of
+	// that CA, with room for the variation of a few seconds (the release bound adds CoverageTolerance).
+	// A negative value or one over 30 minutes is refused: the certificate has no information.
 	ThisUpdateSkew    time.Duration
 	ThisUpdateSkewFor map[SPKIHash]time.Duration
 	// AllowHolds accepts certificates that have been on hold (certificateHold, removeFromCRL). Off by
@@ -785,6 +789,10 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, evict
 	if sk, ok := p.ThisUpdateSkewFor[SPKIHashOf(issuer)]; ok {
 		skew = sk
 	}
+	if skew < 0 || skew > maxThisUpdateSkew {
+		st.Note = fmt.Sprintf("the declared ThisUpdateSkew %s is outside 0 to %s", skew, maxThisUpdateSkew)
+		return st
+	}
 	retains := func(v *crlView) bool {
 		return p.Retained || (!v.expiredFrom.IsZero() && !cert.NotAfter.Before(v.expiredFrom))
 	}
@@ -874,7 +882,7 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, evict
 					return time.Time{}
 				}
 			}
-			return ordered[nxt].this.Add(skew)
+			return ordered[nxt].this.Add(skew + p.CoverageTolerance)
 		}
 		for _, hs := range holdStarts {
 			end := time.Time{}
