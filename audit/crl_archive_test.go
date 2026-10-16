@@ -132,13 +132,13 @@ func TestAMarkNeverComesFromAFileNameAlone(t *testing.T) {
 
 func TestSeedingDoesNotRaiseTheEvictionBookkeeping(t *testing.T) {
 	arch := audit.DirCRLArchive(t.TempDir())
-	g := newCRig(t, withArchive(arch), withSnapOpts(audit.WithMaxCRLs(9)))
+	g := newCRig(t, withArchive(arch), withSnapOpts(audit.WithMaxCRLs(8)))
 	now := g.clk.Now()
-	// Twelve archived inter CRLs: more than the snapshot keeps.
+	// Twelve archived CRLs, all inside the status window: more than the snapshot keeps.
 	g.srv.set("/root.crl", g.rCRL(1, now.Add(-time.Hour), 48*time.Hour))
 	g.start()
-	for n := int64(1); n <= 6; n++ {
-		g.srv.set("/inter.crl", g.iCRL(n, now.Add(time.Duration(n-7)*time.Minute), time.Hour))
+	for n := int64(1); n <= 11; n++ {
+		g.srv.set("/inter.crl", g.iCRL(n, now.Add(time.Duration(n-12)*time.Minute), time.Hour))
 		g.refresh()
 	}
 	g.restart()

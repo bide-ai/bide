@@ -61,12 +61,25 @@ var auditArtifacts = []any{
 	audit.NotifyEventVerdict{},
 	audit.DecisionReceipt{},
 	verify.TreeRef{},
+	audit.ResetRecord{},
+	audit.CRLSource{},
+	audit.URLOutcome{},
 }
 
 // notArtifacts is every other exported struct type of audit and audit/verify, with why it is never
 // written as JSON. A new exported struct type must be added to one list or the other.
 var notArtifacts = map[string]string{
 	"audit.ReceiptIdentity":   "the result of DecisionReceipt.VerifyIdentity, printed by the receipt commands, never written out",
+	"audit.Alarm":             "a change in a CRL refresher issuer's alarm state, handed to a hook; bide identity prints its own JSON line",
+	"audit.ArchivedCRL":       "describes one file of the CRL archive; the provenance is written as a sidecar object, not this type",
+	"audit.CRLRefresher":      "a running component; its state is unexported",
+	"audit.Event":             "an event handed to a CRL refresher hook; bide identity prints its own JSON line",
+	"audit.IssuerHealth":      "the CRL refresher's health report, read in code",
+	"audit.IssuerResult":      "the outcome of one issuer in RefreshOnce, read in code",
+	"audit.RefresherHooks":    "callbacks, built in code",
+	"audit.RefresherOptions":  "configuration of the CRL refresher, built in code",
+	"audit.ResetItem":         "nested in ResetRecord, which is checked as an artifact",
+	"audit.StatusDecl":        "the declared CA timings read from a file (statusDeclFile has the JSON names); built in code",
 	"audit.CertApprover":      "the verifier of a certificate-bound approver, built in code; its findings are in the identity record of a later change",
 	"audit.StatusSnapshot":    "a set of CRLs held in memory; its state is unexported",
 	"audit.CRLInfo":           "the result of StatusSnapshot.AddCRL, never written out",

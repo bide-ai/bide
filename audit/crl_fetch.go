@@ -59,10 +59,10 @@ const (
 
 // URLOutcome is the result of asking one URL in one attempt, for the event.
 type URLOutcome struct {
-	URL    string // without query and fragment
-	Kind   string
-	Status int
-	Detail string
+	URL    string `json:"url"` // without query and fragment
+	Kind   string `json:"kind"`
+	Status int    `json:"status,omitempty"`
+	Detail string `json:"detail,omitempty"`
 }
 
 type fetched struct {

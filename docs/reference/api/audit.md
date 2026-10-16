@@ -2199,10 +2199,10 @@ TreeRef names one tree of a run by its size and root.
 
 ```go
 type URLOutcome struct {
-	URL    string
-	Kind   string
-	Status int
-	Detail string
+	URL    string `json:"url"`
+	Kind   string `json:"kind"`
+	Status int    `json:"status,omitempty"`
+	Detail string `json:"detail,omitempty"`
 }
 ```
 

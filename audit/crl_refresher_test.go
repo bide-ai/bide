@@ -104,12 +104,12 @@ func TestRefresherGzipBombIsNotDecompressed(t *testing.T) {
 	if g.refresh()[g.intK] == nil {
 		t.Fatal("a gzip body was accepted as a CRL")
 	}
-	for _, k := range []audit.EventKind{audit.EventBadSignature, audit.EventUnsupportedCRL, audit.EventOversizeResponse} {
-		if len(g.kinds(k)) > 0 {
-			return
-		}
+	if len(g.kinds(audit.EventOversizeResponse)) != 0 {
+		t.Fatalf("the body was decompressed before the size limit applied: %s", g.dump())
 	}
-	t.Fatalf("the gzip body produced no refusal event: %+v", g.dump())
+	if len(g.kinds(audit.EventBadSignature)) == 0 {
+		t.Fatalf("the gzip body produced no refusal event: %s", g.dump())
+	}
 }
 
 func TestRefresherSlowServerHitsTheDeadline(t *testing.T) {
@@ -207,6 +207,13 @@ func TestRefresherRollbackConflictAndResignedCRL(t *testing.T) {
 	if marks[""] != 1 || marks[audit.MarkerRollback] != 1 || marks[audit.MarkerConflict] != 1 {
 		t.Fatalf("archive markers %v", marks)
 	}
+	// A restart never loads a marked file as the series: the genuine CRL 5 is still the current one.
+	g.restart()
+	g.srv.set("/inter.crl", five)
+	g.wantOK()
+	if len(g.kinds(audit.EventConflict)) != 0 || len(g.kinds(audit.EventRollback)) != 0 {
+		t.Fatalf("a marked archive file was taken as the series after a restart: %s", g.dump())
+	}
 }
 
 func TestRefresherAllURLsAreAskedAndTheHighestWins(t *testing.T) {
@@ -265,6 +272,9 @@ func TestRefresherFetchesTheBaseOfAnUnpairedDeltaAtOnce(t *testing.T) {
 	if !g.health(g.intK).Paired {
 		t.Fatal("delta and base are not paired")
 	}
+	if len(g.kinds(audit.EventUnpairedDelta)) != 0 {
+		t.Fatalf("the delta was added before its base was fetched: %s", g.dump())
+	}
 
 	// A delta whose base cannot be obtained is still archived and added, reported unpaired.
 	g2 := newCRig(t, withDelta())
@@ -321,13 +331,14 @@ func TestRefresherNotModifiedNeverRefreshesAnything(t *testing.T) {
 	g.srv.set("/inter.crl", g.iCRL(1, g.clk.Now().Add(-time.Minute), time.Hour)).etag = `"v1"`
 	g.start()
 	g.wantOK()
+	succeeded := g.health(g.intK).LastSuccess
 	g.clk.advance(2 * time.Hour) // the held CRL is now long stale
 	g.wantAttempt()
 	rt := g.srv.routes["/inter.crl"]
 	if rt.inm[len(rt.inm)-1] != `"v1"` {
 		t.Fatalf("no conditional request: %v", rt.inm)
 	}
-	if h := g.health(g.intK); !h.Critical {
+	if h := g.health(g.intK); !h.Critical || !h.LastSuccess.Equal(succeeded) {
 		t.Fatalf("a 304 made a two-hour-old CRL look fresh: %+v", h)
 	}
 }
