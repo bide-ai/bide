@@ -40,10 +40,10 @@ type GateIdentity struct {
 	Detail    string `json:"detail,omitempty"`
 	// Unchecked are certificate-bound approvers who decided on a gate that has not counted yet: the
 	// decision is recorded, and nothing here says it counts.
-	Unchecked []string       `json:"unchecked,omitempty"`
-	Cards     []IdentityCard `json:"cards,omitempty"`
-	Hold      *IdentityHold  `json:"hold,omitempty"`
-	tallyDigest, recordPolicy string // the current count's, for matching an audit result
+	Unchecked                 []string       `json:"unchecked,omitempty"`
+	Cards                     []IdentityCard `json:"cards,omitempty"`
+	Hold                      *IdentityHold  `json:"hold,omitempty"`
+	tallyDigest, recordPolicy string         // the current count's, for matching an audit result
 	// Generation is the gate's newest count (0 is the first); Reasked says a call was held before
 	// execution and the gate asked again, so earlier counts are history.
 	Generation int  `json:"generation,omitempty"`

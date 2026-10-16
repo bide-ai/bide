@@ -33,7 +33,7 @@ type Fixture struct {
 	Receipt, NoProof string
 	// ReceiptLate is the receipt anchored under a head an hour later than the one in Heads.
 	ReceiptLate string
-	Journal          string
+	Journal     string
 	// Heads are the signed heads (before and after the decision), HeadsBefore only the first.
 	Heads, HeadsBefore string
 	// Policy is the certificate policy file; OtherPolicy trusts another root.
