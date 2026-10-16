@@ -415,9 +415,16 @@ control that stops a weakened policy merging is the pull request, with `bide che
 guide](guides/flow-editor.md).
 
 **A save is atomic, not exclusive.** The file is replaced by a rename of a temporary file, so a reader sees
-the old file or the new one; a hard link to the old file, extended attributes and ACLs are not carried
-over; and a write by another process between the editor's check that the file is unchanged and the rename
-is overwritten.
+the old file or the new one. Saves in one editor are serialized, so of several over the same hash exactly
+one succeeds and the rest are conflicts. A write by another process between the editor's last check that
+the file is unchanged (made just before the rename) and the rename is overwritten, and a parent directory
+swapped between the editor's checks and the creation of the temporary file is not caught (both need write
+access to the directory). A file with other names (hard links) is refused on Unix, because the others
+would keep the old text, and a read-only file is refused; on Windows hard links are not counted. The
+owner and group are carried over where the user may set them; extended attributes, ACLs and SELinux labels
+are not carried over (there is no portable way to see them without a new dependency). A process killed
+between creating the temporary file and the rename leaves `.bide-edit-*` beside the config, with the
+config text, mode 0600.
 
 ## Audit and proofs
 

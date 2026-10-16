@@ -271,7 +271,7 @@ func TestSaveRefusesATargetThatChanged(t *testing.T) {
 	os.WriteFile(same, []byte(weakFlow), 0o600)
 	os.Remove(p)
 	os.Symlink(same, p)
-	if _, err := s.Save([]byte(mine), hashOf([]byte(weakFlow)), nil); err == nil || !strings.Contains(err.Error(), "no longer the regular file") {
+	if _, err := s.Save([]byte(mine), hashOf([]byte(weakFlow)), nil); err == nil || !strings.Contains(err.Error(), "no longer the file") {
 		t.Errorf("a link to a file with the same bytes: %v", err)
 	}
 	if readFile(t, same) != weakFlow {
@@ -447,13 +447,15 @@ func TestBodyCapAllowsAMaximalConfig(t *testing.T) {
 	s, p := newTestServer(t, "refund.yaml", weakFlow)
 	h := s.Handler()
 	body, _ := json.Marshal(map[string]string{"text": text, "hash": hashOf([]byte(weakFlow))})
+	plain, _ := json.Marshal(map[string]string{"text": text})
 	if len(body) < len(text)+len(text)/10 {
 		t.Fatalf("the body is %d bytes for %d of text: the test is not about escaping", len(body), len(text))
 	}
-	for _, path := range []string{"/api/report", "/api/preview"} {
-		if w := call(h, s, path, string(body), nil); w.Code != 200 {
-			t.Errorf("%s: %d", path, w.Code)
-		}
+	if w := call(h, s, "/api/report", string(plain), nil); w.Code != 200 {
+		t.Errorf("report: %d", w.Code)
+	}
+	if w := call(h, s, "/api/preview", string(body), nil); w.Code != 200 {
+		t.Errorf("preview: %d", w.Code)
 	}
 	// Whole-body escapes: the same text with every line break and tab escaped is still accepted.
 	tabs := strings.ReplaceAll(text, "# ", "#\t")

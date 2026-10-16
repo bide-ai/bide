@@ -111,10 +111,13 @@ The path is fixed at startup and checked again when writing: a target that has b
 link, or a directory, or whose directory is no longer the one resolved at startup, is refused. The
 editor does not run `git add`, `commit` or `push`; you commit the file.
 
-What a rename-over-the-file save does not keep: hard links to the file (the new file is a new
-inode, so another name for the old one is left behind), extended attributes and ACLs, and, on
-Windows, it cannot replace a file another program holds open without sharing delete. Permission
-bits are kept.
+What a rename-over-the-file save does not keep: extended attributes, ACLs and SELinux labels, and, on
+Windows, it cannot replace a file another program holds open without sharing delete. Permission bits
+are kept, and so are the owner and group where the user may set them. A save is refused, and nothing
+is written, for a file that is read-only (the editor does not replace what its owner protected) and,
+on Unix, for a file that has other names (hard links), which would be left with the old text. Saves
+in one editor are serialized: of two over the same hash exactly one succeeds. A process killed
+mid-save leaves a `.bide-edit-*` file beside the config.
 
 A file that is not a readable config (invalid YAML, a duplicate key, more than one YAML document)
 shows `CONFIG DOES NOT PARSE` and the reason, and no graph.
