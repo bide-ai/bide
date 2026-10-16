@@ -64,16 +64,16 @@ MachineKeySet = TRUE
   $serials[$n] = $cert.SerialNumber
   Save-Pem $cert.RawData 'CERTIFICATE' (Join-Path $Out "u$n.pem")
   Remove-Item $inf, $req, $cer
+  Remove-Item (Join-Path $Out "u$n.rsp") -ErrorAction SilentlyContinue
 }
 
-# The CA certificate.
-$caCer = Join-Path $Out 'ca.cer'
-certutil -config $config -ca.cert $caCer | Out-Null
-$ca = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $caCer
-Save-Pem $ca.RawData 'CERTIFICATE' (Join-Path $Out 'ca.pem')
-Remove-Item $caCer
-
 $enroll = Join-Path $env:SystemRoot 'System32\CertSrv\CertEnroll'
+# The CA certificate, from the CertEnroll folder where the CA publishes it.
+$caFile = Get-ChildItem -Path $enroll -Filter '*.crt' | Select-Object -First 1
+if (-not $caFile) { throw "no CA certificate in $enroll" }
+$ca = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $caFile.FullName
+Save-Pem $ca.RawData 'CERTIFICATE' (Join-Path $Out 'ca.pem')
+
 function Publish-Crl([string]$name, [bool]$delta) {
   if ($delta) { certutil -config $config -CRL delta | Out-Null } else { certutil -config $config -CRL | Out-Null }
   Start-Sleep -Seconds 2
