@@ -2820,7 +2820,53 @@ series, so it is checked with `Prune` off: with pruning a count on a CRL past `L
 by design, and only the final tier's claims (`FinalNeedsCompleteSeries`, `AbsenceOnlyInWindow`) are
 checked in the pruning configurations.
 
-@@CONFIGS@@
+### Configurations
+
+Pull requests (`ci`): two people and two identifiers, one or two certificates and decisions, up to three CRLs, a clock of 3 to 5 ticks. The nightly configurations widen the clock, the certificates and the CRLs. The times are TLC on a busy shared development machine: one worker per configuration, four at a time for the `ci` and counterexample configurations (as CI runs them on the 4-vCPU runner), and the default worker count (10) for the nightly ones, which the nightly job runs on 4 vCPUs in proportion.
+
+| Config | Group | What | States | Time |
+|---|---|---|---|---|
+| `id-revocation` | ci | one certificate, one decision, three CRLs; the CA revokes with a past `E`; a CRL may be withheld or an older one delivered; freshness, the number rule and the pre-execution check on. `RevocationSound`, `FailClosed`, `NoExecAfterKnownRevocation`, `IdentityBound`, `TerminalStable`, `StaleNeverUncounts` | 269,258 | 8 s |
+| `id-seats` | ci | two certificates, two decisions, two seats; a mis-issued certificate (the name constraint enforced) and an approver id that does not match the leaf. `IdentityBound`, `SeatPerPerson`, `SeatPerIdentifier` | 402,942 | 11 s |
+| `id-heads` | ci | two decisions, a head stamped out of order, a decided_at earlier than the true time. `NoBackdate`, `RevocationSound`, `IdentityBound` | 890,956 | 23 s |
+| `id-final-number` | ci | the CA prunes an expired certificate's entry; the series is complete by CRL number. `FinalNeedsCompleteSeries`, `AbsenceOnlyInWindow` | 579,608 | 26 s |
+| `id-final-time` | ci | the same with coverage by `nextUpdate` and the CA publishing no more often than its declared period | 139,190 | 6 s |
+| `id-live` | ci | a decision written while the gate waits is covered by a head the gate asks for (`NoStuckPause`, liveness) | 364 | <1 s |
+| `id-final-reach` | ci | reachability: a decision becomes final (`FinalNotReachable` violated) | 1,945 | <1 s |
+| `id-revocation-reach` | ci | reachability: a revocation removes a counted decision (`DropNotReachable` violated) | 62,570 | 1 s |
+| `id-revocation-behind` | ci | reachability: a decision counts while the cache is behind the CA's series (`BehindCountNotReachable` violated) | 10,485 | <1 s |
+| `id-seats-reach` | ci | reachability: a tally rests on two seats (`TwoSeatsNotReachable` violated) | 258,851 | 4 s |
+| `id-heads-reach` | ci | reachability: a decision counts beside a head stamped out of order (`SkewedCountNotReachable` violated) | 6,908 | <1 s |
+| `deep-revocation` | nightly | `id-revocation` with a clock of 5 ticks, two `notAfter` choices and two heads | 1,664,104 | 2 min |
+| `deep-seats` | nightly | `id-seats` with revocation | 16,226,102 | 2 min |
+| `deep-heads` | nightly | `id-heads` with three heads | 4,057,846 | 41 s |
+| `deep-final` | nightly | the final tier with a clock of 5, three `notAfter` choices and four CRLs | 6,983,926 | 1 min |
+
+### Counterexample configurations
+
+Each is in `identity/regress/`, is the same model with one rule switched off by a constant, and must fail with its named property (TLC stops at the first violation, so the state count is the states explored until then and varies with the worker count). The passing configuration for the rule is the one named in the design note's table.
+
+| Config | Violates | Rule switched off | States | Time |
+|---|---|---|---|---|
+| `withhold-no-fresh` | `RevocationSound` | no freshness rule: a withheld CRL leaves the gate counting on status that predates the revocation | 121,139 | 2 s |
+| `rollback-no-number` | `RevocationSound` | no number rule: an older CRL, still fresh, replaces the cached one that listed the certificate | 23,034 | <1 s |
+| `backdate-by-claim` | `RevocationSound` | `E` compared with the signed `decided_at` instead of `A(d)`: a backdated decision signed after the revocation counts | 24,573 | 1 s |
+| `stale-status` | `FailClosed` | no freshness rule: a decision counts on status older than `MaxAge` | 1,823 | <1 s |
+| `skew-no-nondecreasing` | `NoBackdate` | no non-decreasing head-time rule: a head stamped before an earlier head pulls `A(d)` before the revocation | 219,804 | 3 s |
+| `misissue-no-name-constraints` | `SeatPerPerson` | no name constraint: a certificate issued for another person's identifier gives one person two seats | 254,831 | 5 s |
+| `misbind-no-idbind` | `IdentityBound` | a decision naming an approver id other than its leaf's identifier counts | 7,582 | <1 s |
+| `no-dedup-seat` | `SeatPerIdentifier` | decisions counted instead of identifiers: one identifier under two certificates fills two seats | 13,743 | <1 s |
+| `recount-terminal` | `TerminalStable` | a terminal tally recounted after a later revocation | 121,108 | 2 s |
+| `stale-uncounts` | `StaleNeverUncounts` | stale status removes a decision that was counted | 64,125 | 1 s |
+| `no-exec-recheck` | `NoExecAfterKnownRevocation` | no pre-execution status check: a decision counted before a revocation still authorizes the call | 64,127 | 1 s |
+| `final-no-coverage` | `FinalNeedsCompleteSeries` | the N2 sequence: no series coverage, a CRL omitted from the middle hides a listing that a later, pruned CRL no longer carries | 25,005 | 1 s |
+| `final-no-window` | `AbsenceOnlyInWindow` | the same series read for absence from a CRL later than the first one after `notAfter` | 11,828 | <1 s |
+| `final-time-hourly` | `FinalNeedsCompleteSeries` | coverage by `nextUpdate` alone with a CA that publishes more often than its declared period does not show that nothing lies between two CRLs | 47,971 | 1 s |
+| `no-anchor` | `NoStuckPause` (liveness) | no gate `Anchor` step: a decision written while the gate waits is never covered, and the gate pauses for ever | 364 | <1 s |
+
+### Limits
+
+`limits/alias-two-seats` (252,489 states, 4 s; `SeatPerPerson` violated): the accepted limit that identifier-to-person injectivity is a bank-evidenced control. When two identifiers belong to one person (an alias), the name constraint allows a certificate for each and one person fills two seats; `SeatPerIdentifier` still holds. The design note says so, and the roster process is the control.
 
 ### Not modelled
 
