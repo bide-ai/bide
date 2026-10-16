@@ -39,7 +39,8 @@ type fixture struct {
 	args     string
 	run      string
 	call     string
-	identity string // the requester the run is driven for, when not empty
+	identity string          // the requester the run is driven for, when not empty
+	bound    map[string]bool // approvers whose verifier the application makes certificate-bound (a stub), by id
 }
 
 const refundArgs = `{"order":1049,"amount":120,"note":"refund <ok>"}`
@@ -57,7 +58,16 @@ func newFixtureAlg(t *testing.T, policy *agent.ApprovalPolicy, args string, alg 
 
 func newFixtureID(t *testing.T, policy *agent.ApprovalPolicy, args string, alg audit.Alg, identity string) *fixture {
 	t.Helper()
-	f := &fixture{policy: policy, identity: identity, t: t, dir: t.TempDir(), keys: map[string]string{}, pubs: map[string]audit.Verifier{}, charges: new(atomic.Int32), args: args, run: "refund-1049", call: "c2"}
+	return newFixtureBound(t, policy, args, alg, identity)
+}
+
+// newFixtureBound is newFixtureID with the approvers in bound certificate-bound on the application's side.
+func newFixtureBound(t *testing.T, policy *agent.ApprovalPolicy, args string, alg audit.Alg, identity string, bound ...string) *fixture {
+	t.Helper()
+	f := &fixture{bound: map[string]bool{}, policy: policy, identity: identity, t: t, dir: t.TempDir(), keys: map[string]string{}, pubs: map[string]audit.Verifier{}, charges: new(atomic.Int32), args: args, run: "refund-1049", call: "c2"}
+	for _, id := range bound {
+		f.bound[id] = true
+	}
 	f.db = filepath.Join(f.dir, "j.db")
 	enrol := map[string]string{}
 	for _, id := range approvers {
@@ -100,6 +110,9 @@ func (f *fixture) drive(policy *agent.ApprovalPolicy, first bool) (*agent.Result
 	j, closeJ := f.store()
 	defer closeJ()
 	verify := func(id string) (agent.ApproverVerifier, bool) {
+		if f.bound[id] {
+			return boundStub{id: id}, true
+		}
 		v, ok := f.pubs[id]
 		return v, ok
 	}
@@ -1121,4 +1134,15 @@ func TestRetryIsIdempotent(t *testing.T) {
 			})
 		}
 	}
+}
+
+// boundStub is the application's verifier of a certificate-bound approver, as far as the gate's pause
+// note and the key check go: the command under test never asks it to verify.
+type boundStub struct{ id string }
+
+func (boundStub) Alg() agent.Alg                  { return agent.AlgCertificate }
+func (boundStub) Verify(message, sig []byte) bool { return false }
+func (b boundStub) KeyIDs() []string              { return []string{"ident:" + b.id} }
+func (boundStub) VerifyCertDecision(agent.CertDecision) agent.CertCheck {
+	return agent.CertCheck{Reason: agent.ReasonBadSig}
 }

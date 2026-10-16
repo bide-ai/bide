@@ -466,7 +466,12 @@ func (c *CertIdentity) checkLeaf(leaf *x509.Certificate) (Alg, []byte, error) {
 	if !slices.ContainsFunc(leaf.Policies, c.policy.Equal) {
 		return "", nil, certErr(agent.ReasonCertUsage, "the leaf does not assert the certificate policy %s", c.policy)
 	}
-	switch k := leaf.PublicKey.(type) {
+	return decisionKey(leaf.PublicKey)
+}
+
+// decisionKey returns the decision scheme of a leaf's public key and the key in NewVerifier's encoding.
+func decisionKey(pub any) (Alg, []byte, error) {
+	switch k := pub.(type) {
 	case ed25519.PublicKey:
 		return AlgEd25519, slices.Clone(k), nil
 	case *ecdsa.PublicKey:
@@ -484,7 +489,19 @@ func (c *CertIdentity) checkLeaf(leaf *x509.Certificate) (Alg, []byte, error) {
 		}
 		return AlgMLDSA65, k.Bytes(), nil
 	}
-	return "", nil, certErr(agent.ReasonCertUsage, "the leaf's key is %T, which no decision scheme can verify (ed25519, ecdsa-p256 and ml-dsa-65 only)", leaf.PublicKey)
+	return "", nil, certErr(agent.ReasonCertUsage, "the leaf's key is %T, which no decision scheme can verify (ed25519, ecdsa-p256 and ml-dsa-65 only)", pub)
+}
+
+// CertDecisionKey returns the decision scheme of a leaf certificate's public key and the key in the
+// encoding NewVerifier and a signer's PublicKey use, so a command that is about to sign with a key
+// can check, before it signs, that the key is the certificate's. Only ed25519, ecdsa-p256 and
+// ml-dsa-65 keys have a scheme; the error is a *CertError otherwise. It checks nothing else about the
+// certificate.
+func CertDecisionKey(leaf *x509.Certificate) (Alg, []byte, error) {
+	if leaf == nil {
+		return "", nil, certErr(agent.ReasonNoCert, "no certificate")
+	}
+	return decisionKey(leaf.PublicKey)
 }
 
 // leafEKU is how the leaf qualifies on extended key usage.
