@@ -128,7 +128,7 @@ Result is an applied operation: the new text and the byte range of the original 
 
 **Constructors and functions**
 
-- `func Apply(src []byte, op Op) (res *Result, err error)`: Apply applies op to src.
+- `func Apply(src []byte, op Op) (*Result, error)`: Apply applies op to src.
 
 ### type Server
 
