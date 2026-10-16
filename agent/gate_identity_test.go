@@ -62,6 +62,9 @@ func TestRecordIdentity_TallyDigestIsOfTheStoredBytes(t *testing.T) {
 	if rec.TallyDigest != hex.EncodeToString(sum[:]) {
 		t.Fatalf("tally_digest %s is not the digest of the stored tally %s", rec.TallyDigest, tr.Result)
 	}
+	if rec.GoDebug != "x509sha1=1" || rec.BuildGoDebug != "x509usefallbackroots=0" || rec.VerifierRev != "rev" {
+		t.Fatalf("verifier info not in the record: %+v", rec)
+	}
 	if plain, _ := json.Marshal(tally); string(plain) == string(tr.Result) {
 		t.Fatal("the test's tally has nothing the two encoders disagree on")
 	}

@@ -204,17 +204,25 @@ type StatusArchive interface {
 // DefaultGODEBUG (the toolchain's go line fixes many x509 behaviours), read from the build info and not
 // from the environment.
 func (c *CertApprover) VerifierInfo() (revision, goDebug, buildGoDebug string) {
+	var settings []debug.BuildSetting
 	if bi, ok := debug.ReadBuildInfo(); ok {
-		for _, s := range bi.Settings {
-			switch s.Key {
-			case "vcs.revision":
-				revision = s.Value
-			case "DefaultGODEBUG":
-				buildGoDebug = s.Value
-			}
+		settings = bi.Settings
+	}
+	revision, buildGoDebug = buildInfoValues(settings)
+	return revision, c.GoDebug, buildGoDebug
+}
+
+// buildInfoValues picks vcs.revision and DefaultGODEBUG out of a build's settings.
+func buildInfoValues(settings []debug.BuildSetting) (revision, defaultGoDebug string) {
+	for _, s := range settings {
+		switch s.Key {
+		case "vcs.revision":
+			revision = s.Value
+		case "DefaultGODEBUG":
+			defaultGoDebug = s.Value
 		}
 	}
-	return revision, c.GoDebug, buildGoDebug
+	return revision, defaultGoDebug
 }
 
 // x509Settings returns the x509 entries of a GODEBUG string, sorted.
@@ -233,7 +241,8 @@ func x509Settings(godebug string) []string {
 // with the process's real environment value, which the caller reads (os.Getenv("GODEBUG"): the engine
 // itself reads no environment), and returns an error wrapping agent.ErrConfig when they differ. An
 // application with a certificate-bound approver calls it at startup, and generates the declaration from
-// the real settings, so the identity record's declared settings are the ones in force.
+// the real settings, so the identity record's declared settings are the ones in force. The check is of
+// the value at startup: a later os.Setenv("GODEBUG") is not caught, so do not change it after startup.
 func CheckDeclaredGoDebug(declared, environment string) error {
 	d, e := x509Settings(declared), x509Settings(environment)
 	if !slices.Equal(d, e) {

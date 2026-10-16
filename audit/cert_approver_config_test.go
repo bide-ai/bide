@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
@@ -358,5 +359,26 @@ func TestCheckDeclaredGoDebug(t *testing.T) {
 		if (err == nil) != tc.ok || err != nil && !errors.Is(err, agent.ErrConfig) {
 			t.Fatalf("declared %q, environment %q: %v", tc.declared, tc.env, err)
 		}
+	}
+}
+
+// VerifierInfo reports the declared GODEBUG untouched, and the build's baked-in DefaultGODEBUG and
+// revision as the build info has them (a test binary may have none; then both are empty).
+func TestCertApprover_VerifierInfo(t *testing.T) {
+	var wantRev, wantBuild string
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		for _, s := range bi.Settings {
+			switch s.Key {
+			case "vcs.revision":
+				wantRev = s.Value
+			case "DefaultGODEBUG":
+				wantBuild = s.Value
+			}
+		}
+	}
+	a := &audit.CertApprover{GoDebug: " x509sha1=1,foo=2 "}
+	rev, declared, build := a.VerifierInfo()
+	if rev != wantRev || build != wantBuild || declared != " x509sha1=1,foo=2 " {
+		t.Fatalf("rev %q (%q) declared %q build %q (%q)", rev, wantRev, declared, build, wantBuild)
 	}
 }
