@@ -3,7 +3,7 @@
 TLA+ models of bide's coordination protocols, written in PlusCal and checked with the TLC model
 checker. The plan and the reasoning behind it are in the design note
 [formal models of the coordination protocols](../../docs/design/formal-models.md);
-this directory holds models 1 (the claim protocol), 1b (the approval gate), 2 (the bide protocol's claim rules), 7 (flow semantics), 8 (spend accounting), 9 (the tool-call state machine), 10 (the run lifecycle and recovery), 11 (delegation, sub-run authority and saga trees) and 12 (sessions) of that plan, and two design models: 13 (probes for unknown outcomes) and 14 (notifications).
+this directory holds models 1 (the claim protocol), 1b (the approval gate), 2 (the bide protocol's claim rules), 7 (flow semantics), 8 (spend accounting), 9 (the tool-call state machine), 10 (the run lifecycle and recovery), 11 (delegation, sub-run authority and saga trees) and 12 (sessions) of that plan, two design models: 13 (probes for unknown outcomes) and 14 (notifications), and model 15 (approver identity: the counting, status, time and gate rules of the certificate-bound approver design).
 
 What a model check establishes, stated narrowly: within the bounds a configuration states (drivers,
 processes, faults, attempt numbers), TLC explores every interleaving of the modelled rules and every
@@ -69,7 +69,7 @@ The workflow `.github/workflows/models.yml` has a plan job, **Models (plan)**, t
 (**Models (claims)** and the like), the required **Models** job, and **Models (nightly)**. On every
 pull request, in the merge queue and on pushes to main they run the self-test, the translation
 check, and every `ci`, `regress`, `finding` and `limit` configuration, four at a time (`TLC_JOBS=4`,
-one TLC worker each, on the 4-vCPU runner). The configurations run in seven parallel shard jobs, each
+one TLC worker each, on the 4-vCPU runner). The configurations run in ten parallel shard jobs, each
 a set of configuration directories (`MODEL_SHARDS` in the workflow, passed as `TLC_DIRS`), and the
 **Models** job, the required check, fails unless every shard succeeded. A plan job fails first
 unless every `ci`, `regress`, `finding` and `limit` configuration is in exactly one shard
@@ -180,7 +180,7 @@ func (j *Journal) claim(ctx context.Context, runID, key string, rec Record) (boo
 
 A marker above a declaration is followed by a blank line, so it is not part of the doc comment.
 Regions of one model do not nest; regions of different models may overlap (the run's Load is
-`Open` in both model 1 and model 8). Model 10 (`lifecycle/`) marks the lease, recovery, drive and resolution code, and P14's Run API: the drive's `run:start` and limit amendments, its cancellation checks and end-marker read-back, `Cancel` and `Status`. Model 11 (`delegation/`) marks `audit`'s `AttenuatingSubAgent`, the sub-agent tool, the programmatic sub-run admission and links, the loop's hold and halt rules, and the saga's rollback walk. Model 12 (`sessions/`) marks `agent/session.go`'s handle load, turn start, `SendOnce` lookup, seed, drive and append, the session run IDs in `agent/keys.go`, and P14's `Cancel`. Model 2 (`protocol/`), model 13 (`probes/`) and model 14 (`notify/`) are design models with no Go code yet,
+`Open` in both model 1 and model 8). Model 10 (`lifecycle/`) marks the lease, recovery, drive and resolution code, and P14's Run API: the drive's `run:start` and limit amendments, its cancellation checks and end-marker read-back, `Cancel` and `Status`. Model 11 (`delegation/`) marks `audit`'s `AttenuatingSubAgent`, the sub-agent tool, the programmatic sub-run admission and links, the loop's hold and halt rules, and the saga's rollback walk. Model 12 (`sessions/`) marks `agent/session.go`'s handle load, turn start, `SendOnce` lookup, seed, drive and append, the session run IDs in `agent/keys.go`, and P14's `Cancel`. Model 15 (`identity/`) marks the code of the approver-identity design that is on main (`VerifyChain`, `EvaluateStatus`, `AuditedStore.Reanchor` and `TallyApprovals`) and lists the rest in its no-code list until that code lands. Model 2 (`protocol/`), model 13 (`probes/`) and model 14 (`notify/`) are design models with no Go code yet,
 so they have no map and no markers.
 
 **The checks.** `go run ./internal/tools/modelsync` (the Lint job, on every pull request, in the
@@ -250,8 +250,8 @@ spec/tla/
     regress/         historical rules, each of which must still produce its counterexample
     findings/        open findings, which fail until they are fixed (none open at present)
     limits/          accepted behavior, stated as an expected violation
-  flows/, protocol/, spend/, toolcall/, lifecycle/, delegation/, sessions/, probes/, notify/
-                     models 7, 2, 8, 9, 10, 11, 12, 13 and 14, laid out the same way (toolcall/ also
+  flows/, protocol/, spend/, toolcall/, lifecycle/, delegation/, sessions/, probes/, notify/, identity/
+                     models 7, 2, 8, 9, 10, 11, 12, 13, 14 and 15, laid out the same way (toolcall/ also
                      holds ToolCallApalache.tla, model 9's typed wrapper, not yet checked; notify/
                      also holds NotifyLifecycle.tla, model 14 composed with model 10)
 ```
@@ -717,6 +717,39 @@ resolution all run around it.
   a redeploy may remove, loosen, tighten or change between that process's drives, while another
   process may still run the old one. `ApprovalPolicy.Validate`'s fold check (`FoldSame`) refuses
   a policy that lists one approver under two spellings.
+- **Certificate-bound approvers (`CertKeys`, identity step 1).** A key in `CertKeys` is a leaf
+  certificate's key, held by a person like any key (a reissued certificate under a new key is a
+  second leaf of one approver). `RevokeLeaf` makes a leaf's validity false at any step, for good: the
+  abstract predicate "the chain shows `E <= A(d)`", which model 15 refines. A decision under a revoked
+  leaf does not count (`CountsFor`, `TrueDeciding`), so the approver's decision under the other leaf can.
+  `SubmitCert` writes a decision carrying a chain (`ch`) and a decision time (`t`) under a leaf. The
+  journal names a decision by (approver, verdict, decision time, leaf) (`NameClash`): a second record of
+  one name is not written, so two decisions under different leaves are two decisions, and two chains
+  for one leaf are one. A submission refused as a duplicate of a record that is not the same decision
+  (another verdict, decision time or leaf) sets `squat`, so each of those fields is in the name for a
+  reason a configuration checks (`TimeNotInName`, `VerdictNotInName`, `LeafNotInName`). The recorded tally lists the leaves of its seated approvals (`lfs`). The
+  pre-execution status check (`ApExec`) sits between every passing tally and the claim, so a drive
+  restarted by a crash or a redeploy goes through it too: a counted decision's leaf that now shows a
+  revocation holds the call (`pause_approval`, the approvers decide again) whatever the recorded tally
+  says. The hold supersedes the tally (`RevSuperseded`, the identity re-ask `approval-tally:<id>:ident-reask`):
+  while the recorded outcome seats a revoked leaf the gate counts again, without the decisions under
+  revoked leaves, and records the result as the next generation (`rt`, insert-once each, the last one is
+  the outcome; at most one per leaf, since each needs a leaf revoked since the last), so a replacement
+  decision under another leaf can execute (`ReplacementSupersedes`, `ap-cert-replaced`); `Bug = "NoReask"`
+  is the permanent hold. The ghost `badRev` is set when the check saw a revoked leaf and the call ran
+  anyway, and also when a drive reached the call without passing the check while a counted decision's
+  leaf was revoked (`checked`, set at the end of `ApExec`), so a path that skips the check is caught
+  even though the check never ran (`Bug = "ExecBypass"`). A revocation after the check and before the
+  call is the published latency bound, not modelled.
+  Outside the model: the 1-of-1 gate (`one`) and step and flow calls go to the claim without `ApExec`
+  and `SubmitCert` writes only m-of-n records, so a certificate-bound approver on the 1-of-1 path is not
+  modelled; `RevokeLeaf` kills every decision under the leaf, so the `E > A(d)` case (a decision that
+  stays valid) is model 15's; and there is no stale-status hold here (the pause for stale status is
+  model 15's `ExecOK`, which refuses a status older than `ExecAge`).
+  The check is one more step on every m-of-n path, so the state counts of the m-of-n configurations
+  grew by 1 to 9 percent (behavior unchanged; the counts in the table are the new ones).
+  Every configuration without `CertKeys` is unchanged (the new variables stay at their initial
+  values and the new constants are `CertKeys = {}`, `DecTimes = {0}`, `Chains = {}`).
 - **A recorded denial is final.** The pre-pass denies a call whose Load read an `Approve(false)`
   or a failing recorded tally, whatever the gate is now (#70), and records the denial as the
   call's result.
@@ -737,7 +770,7 @@ resolution all run around it.
   function of the parent's journaled values, which the Go tests drive through a real delegation and
   its resume.
 
-<!-- modelsync: no-code claims Redeploy ResolverChange -->
+<!-- modelsync: no-code claims Redeploy ResolverChange ApExec SubmitCert RevokeLeaf -->
 <!-- modelsync: map claims -->
 | Label | Go |
 |---|---|
@@ -753,6 +786,8 @@ resolution all run around it.
 | `Submit` | `SubmitDecision` (without `WithDecisionCheck`: the gate never depends on it). The record is named by the decision's identity, not its signature (`decisionIdentityStep`), so fewer records are written than the model allows (it forbids only an exact repeat and allows any other append); the counting rule ignores extra records, so no property depends on the count |
 | `Redeploy` | a new deployment of a process's tools |
 | `ResolverChange` | the verifier resolver answering differently (a rotation, a new key file) |
+| `ApExec` | identity step 1, not built yet: the gate's pre-execution status check (`ExecStatusAge`), one function every path that can run the tool goes through (the first execution, a drive restarted by crash recovery or `RecoverLoop`, a retry); marked when the certificate-bound approver's pull request lands |
+| `SubmitCert`, `RevokeLeaf` | identity step 1, not built yet: a decision carrying a leaf certificate and chain, named by (approver, verdict, decision time, leaf), and the CA revoking the leaf; marked when that pull request lands |
 
 ### Properties
 
@@ -767,6 +802,11 @@ resolution all run around it.
 | `LateNeverCounts` | invariant | a passing outcome never rests on an approval recorded after the deadline |
 | `ExpiryAfterDeadline` | invariant | an expiry is recorded only once the deadline has passed |
 | `OutcomeOnce` | action property | a recorded decision, tally or expiry never changes, so an expiry and a passing tally cannot both be the outcome |
+| `NoExecAfterKnownRevocation` | invariant | the call never runs after the pre-execution check saw a counted decision's leaf revoked, on any path to the tool: the first execution, a drive restarted after a crash or a redeploy, a retry |
+| `NoSquat` | invariant | no decision that differs from a journaled one (another verdict, decision time or leaf) is refused as a duplicate of it, so a record that does not count (a revoked leaf's, a junk record's) never keeps a genuine decision out of the journal |
+| `ReplacementSupersedes` | invariant | the hold on a revoked leaf is not permanent: a recorded passing outcome that seats a revoked leaf is superseded (the identity re-ask) whenever the count without the revoked leaf's decisions passes and a generation is free |
+| `ReplacementFiresNotReachable` | probe | expected violated (`ap-cert-replaced`): the call runs on a re-asked tally, a replacement decision under another leaf executing after the first leaf's revocation held it |
+| `OneRecordPerDecision` | invariant | no two records of a certificate-bound approver share a name (approver, verdict, decision time, leaf), whatever chains they carry |
 | `SeparationOfDuties` | invariant | a recorded tally or re-tally under a policy that excludes the requester was counted for a run that, with every run above it, records one, seats none of the requesters' approvals (the run's own or an ancestor's, under any spelling), and, when it passed, rests on `need` approvals from other approvers; and no effect fires under a gate that excludes the requester, as the firing drive's deployment has it, without an outcome that held separation of duties |
 
 `AtMostOnce`, `NoLiveOverride` and the rest of model 1's properties are checked in the same runs.
@@ -779,23 +819,28 @@ every drive that read the denial.
 | Config | Group | What | States | Time |
 |---|---|---|---|---|
 | `ap-one-cross` | ci | 1-of-1, two drivers in two processes with their own deployments; a redeploy removes the gate or makes it m-of-n; two `Approve` calls; 1 error reply, 1 crash | 175,641 | 4 s |
-| `ap-m-cross` | ci | m-of-n (2 of 3), two drivers in two processes recording the tally concurrently; two decisions from the approvers or the adversary; a redeploy tightens or loosens one process's policy; 1 error reply | 501,741 | 8 s |
-| `ap-m-bound` | ci | m-of-n with decisions signed over another call; one driver, three decisions | 3,255 | <1 s |
+| `ap-m-cross` | ci | m-of-n (2 of 3), two drivers in two processes recording the tally concurrently; two decisions from the approvers or the adversary; a redeploy tightens or loosens one process's policy; 1 error reply | 544,119 | 8 s |
+| `ap-m-bound` | ci | m-of-n with decisions signed over another call; one driver, three decisions | 3,287 | <1 s |
 | `ap-one-resolve` | ci | 1-of-1 with an operator resolving halts (lease check, claim of the next attempt); 1 error reply, 1 crash | 3,857 | <1 s |
 | `ap-one-resolve-minage` | ci | 1-of-1 with an operator resolving halts under `WithMinHaltAge` and the claim of the next attempt; 2 error replies | 48,356 | 2 s |
 | `ap-fold-check` | ci | the #68 fix: a policy listing one approver twice is refused | 222 | <1 s |
 | `ap-shared-key-check` | ci | F5's fix (#109): a policy whose approvers share a key is refused | 102 | <1 s |
 | `ap-keysets-check` | ci | key sets that meet without being equal ({k1, k4} and {k2, k4}) are refused | 2,406 | <1 s |
-| `ap-resolver-change` | ci | the resolver changes between the check and the count (a2 now accepts a1's key); two drivers, three decisions | 87,065 | 2 s |
-| `ap-sod` | ci | separation of duties: 2 of 3 excluding the requester `a1`, whose key `h1` holds; two drivers in two processes record the tally concurrently while three decisions arrive (`h1` as `a1`, `h2`, `h3`); a redeploy may drop the exclusion on one process | 177,539 | 24 s |
-| `ap-sod-fold` | ci | the requester `a3` is `a1` under the case rule (`FoldSame`); 1 of `a1`, `a2` excluding the requester; `h1` and `h2` sign | 203 | 1 s |
+| `ap-resolver-change` | ci | the resolver changes between the check and the count (a2 now accepts a1's key); two drivers, three decisions | 91,985 | 2 s |
+| `ap-sod` | ci | separation of duties: 2 of 3 excluding the requester `a1`, whose key `h1` holds; two drivers in two processes record the tally concurrently while three decisions arrive (`h1` as `a1`, `h2`, `h3`); a redeploy may drop the exclusion on one process | 186,379 | 24 s |
+| `ap-sod-fold` | ci | the requester `a3` is `a1` under the case rule (`FoldSame`); 1 of `a1`, `a2` excluding the requester; `h1` and `h2` sign | 209 | 1 s |
 | `ap-sod-infeasible` | ci | 3 of 3 excluding the requester `a1`, one of them: the gate refuses the policy | 942 | 1 s |
 | `ap-sod-no-requester` | ci | a policy that excludes the requester, on a run that records none: the gate refuses it | 102 | <1 s |
-| `ap-sod-redeploy` | ci | separation of duties added by a redeploy: 2 of 3 without the exclusion, and one process's redeploy makes it exclude the requester `a1`; `h1` and `h2` approve; two drivers in two processes. A tally the old deployment records, `a1` counted, never lets a drive under the new one fire | 7,693 | 2 s |
-| `ap-sod-chain` | ci | a delegated sub-run: its own requester is `a2`, the run above it was requested by `a1`; 1 of 3 excluding the requesters; `h1`, `h2` and `h3` sign, and only `h3` may count | 1,911 | 7 s |
+| `ap-sod-redeploy` | ci | separation of duties added by a redeploy: 2 of 3 without the exclusion, and one process's redeploy makes it exclude the requester `a1`; `h1` and `h2` approve; two drivers in two processes. A tally the old deployment records, `a1` counted, never lets a drive under the new one fire | 7,991 | 2 s |
+| `ap-sod-chain` | ci | a delegated sub-run: its own requester is `a2`, the run above it was requested by `a1`; 1 of 3 excluding the requesters; `h1`, `h2` and `h3` sign, and only `h3` may count | 1,969 | 7 s |
 | `ap-sod-anonymous-ancestor` | ci | a delegated sub-run under a root run that records no principal: the gate refuses the policy | 102 | 3 s |
-| `ap-deadline-m-cross` | ci | `ap-m-cross` with a deadline: a passing tally and an expiry race for one record while decisions arrive and the deadline passes | 3,946,321 | 1 min |
+| `ap-deadline-m-cross` | ci | `ap-m-cross` with a deadline: a passing tally and an expiry race for one record while decisions arrive and the deadline passes | 4,077,333 | 1 min |
 | `ap-deadline-one-cross` | ci | `ap-one-cross` with a deadline: an `Approve` and the expiry race for the one decision record, and an `Approve` after the deadline is late | 579,434 | 10 s |
+| `ap-cert` | ci | a certificate-bound approver: 2 of 3, `a1` decides under either of two leaves (a certificate reissued under a new key), `a2` with a bare key; a leaf may be revoked at any step; one driver, one crash (the restarted drive goes through the pre-execution check) | 21,962 | 5 s |
+| `ap-cert-cross` | ci | the same in two processes: two drivers record the tally concurrently while a leaf is revoked, one crash | 1,440,306 | 1 min |
+| `ap-cert-name` | ci | the decision relation: 1 of 3, decisions under two leaves, two decision times and two chains, and a junk record from an actor with no key; a genuine decision is never kept out and no decision is written twice | 518,540 | 25 s |
+| `ap-cert-two-leaves`, `ap-cert-later-leaf`, `ap-cert-held` | ci | reachability, each expected to violate its probe: one approver has records under two leaves (`TwoLeavesNotReachable`); an approver's record under the second leaf counts while the first leaf's does not (`LaterLeafNotReachable`); the pre-execution check holds a call on a revoked leaf (`HeldOnRevokedNotReachable`) | 420 to 10,093 | 1 s |
+| `ap-cert-replaced` | ci | reachability: after a counted decision's leaf is revoked and the call held, the approver decides again under a new leaf, the gate re-asks (the identity re-ask records the next generation) and the call runs on it (`ReplacementFiresNotReachable` violated) | 20,837 | 2 s |
 | `deep-ap-m-same` | nightly | m-of-n, two drivers in one process, three decisions, a redeploy; 1 error reply | 5,252,508 | 6 min |
 
 Regressions (a regression's state count is the states TLC explored until the violation, with one TLC worker, and varies with the worker count): `regress/ap-denial-not-final` (#70: a recorded denial honoured only while the tool
@@ -807,7 +852,7 @@ two seats under two spellings of one id; `TallySound`, 14 states), `regress/ap-s
 fixed in #109: two approvers on one key with neither the check nor the count looking at keys;
 `TallySound`, 9 states), `regress/ap-set-equality` (key sets compared for equality, not overlap;
 `TallySound`, 9 states), `regress/ap-no-count-exclusion` (the count seating what the check passed
-after the resolver changed; `TallySound`, 10 states). `regress/ap-sod-no-exclusion` (the count ignoring the requester exclusion: the requester's
+after the resolver changed; `TallySound`, 10 states). `regress/ap-no-exec-recheck` (identity step 1: a recorded tally stands after a counted decision's leaf is revoked, and the call runs; `NoExecAfterKnownRevocation`, 16,105 states), `regress/ap-leaf-not-in-name` (the leaf out of a decision's journal name: a record that does not count keeps the approver's decision under the other leaf out; `NoSquat`, 179 states) and `regress/ap-chain-in-name` (the chain in the name: one decision written twice; `OneRecordPerDecision`, 622 states), `regress/ap-exec-bypass` (one path to the tool skips the pre-execution check, so the call runs on a recorded tally whose leaf is revoked: the ghost is the leaf's state at the call; `NoExecAfterKnownRevocation`, 18,383 states), `regress/ap-no-reask` (the hold does not supersede the recorded tally, so a replacement decision can never execute; `ReplacementSupersedes`, 9,177 states), `regress/ap-time-not-in-name` and `regress/ap-verdict-not-in-name` (the decision time, or the verdict, out of the name: a distinct decision refused as a duplicate; `NoSquat`, 526 and 370 states) are the counterexamples of the certificate-bound approver. `regress/ap-sod-no-exclusion` (the count ignoring the requester exclusion: the requester's
 approval is seated; `SeparationOfDuties`, 125 states), `regress/ap-sod-exact-match` (the requester
 compared with approver ids exactly, so another spelling of the requester's id counts;
 `SeparationOfDuties`, 38 states), `regress/ap-sod-own-only` (only the sub-run's own requester
@@ -2700,6 +2745,228 @@ Two rules the model needed, which the note implies but does not state: the claim
 unique per process incarnation and per deliverer (`holder-process`), and an `acked` append that
 errors is retried in place with the round's claim kept (`ack-no-retry`).
 
+## Model 15: approver identity
+
+`identity/Identity.tla` checks the counting, status, time and gate rules of the
+[approver-identity design](../../docs/design/approver-identity.md) (certificate-bound approvers)
+before the Go code that implements all of them lands. It is a model of its own, in plain TLA+ rather
+than PlusCal (like model 13), so model 1's cost and its Apalache proof are unchanged. Model 1b
+checks what the gate does around these rules, with crashes, redeploys and recovery, for a
+certificate-bound approver (see [Model 1b](#model-1b-the-approval-gate)): the two together are the
+"Formal model impact" section of the design note, and its table says where each property is checked.
+
+### What is modelled
+
+- **Certificates.** A CA issues certificates, each with a holder (the person whose key it
+  certifies), an identifier (its SAN), a validity interval `[nb, na]` and, once revoked, an effective
+  time `E` that may lie in the past (a compromise date). `IssueCert` gives a holder an identifier of
+  their own (the name constraint); `MisIssue` (`CanMisIssue`) gives one an identifier of another
+  person. The verifier rejects a mis-issued certificate only with `NameCons`.
+- **A CRL series and the verifier's two views.** The CA publishes CRLs (number, `thisUpdate`, the
+  revocations it knows, each with its `E`). The verifier keeps an **archive** (`rcvd`, every CRL it
+  received), which the live count, the pre-execution check and the final tier all read: a listing in any
+  received CRL revokes, and absence is read from any received CRL that is fresh enough and passes the
+  `L(C)` rule (as `EvaluateStatus` does, which falls back to an earlier usable CRL). `snap` is only the
+  latest received CRL, kept for a probe (`NumRule` keeps the higher number when an older one arrives
+  later). `CRLPublish` delivers a CRL; `WithholdCRL` publishes one the verifier never gets;
+  `RollbackCRL` delivers an older one later.
+  `Prune` lets the CA drop an expired certificate's entry after one CRL beyond its `notAfter` (RFC 5280
+  section 3.3).
+- **A journal with signed heads.** Each decision is a journal record; `Anchor` is the application's
+  write path signing a head over the journal so far, blocked once the gate waits (the application is
+  waiting for the gate); `GateAnchorStep` is the gate's own `Reanchor` before it tallies a decision no head
+  covers; `SkewHead` signs a head with a time that is not the real one. `A(d)` is the signed time of
+  the smallest-size covering head. With `NonDec`, two heads out of order (a larger head stamped earlier,
+  or two of one size with two times) are both contradictory and a decision whose `A` comes from either
+  does not count.
+- **Decisions.** `SubmitCert(c, a, t)`: a decision signed with the key of certificate `c`, naming
+  approver `a`, claiming decision time `t` (the true time, or with `CanBackdate` an earlier one;
+  `CanMisbind` lets `a` differ from the leaf's identifier). A stolen key and a genuine one are the
+  same submission: no rule reads who held the key.
+- **The counting rule** (`Count`): the head covers the record and is not contradictory; the leaf's
+  identifier is the approver's (`IdBind`) and, with `NameCons`, its holder's own; `nb <= A(d)`;
+  `nb <= decided_at <= na` and `decided_at <= A(d) + Skew`; `A(d) <= na + Grace`; and some
+  received CRL is usable (no older than `MaxAge` with `Fresh`, issued at or after `A(d)` unless `CountLive`; and,
+  with `LBoundCount`, a CRL beyond the leaf's `na` only if it is `L(C)`: the first archived CRL beyond
+  `na`, with a predecessor in the archive that it follows, the next number with `Cov = "number"`,
+  within `Period` with `"time"`, and nothing with `"none"`, because the CA may have dropped the entry
+  from any later CRL, RFC 5280 section 3.3) and does
+  not list the leaf with `E <= A(d)` (with `RevByClaim`, the historical error, `E` is compared with the
+  signed `decided_at`). A seat is an identifier (`DedupSeat`); the gate tallies at `K` seats, and only
+  when no counted decision is listed in the archive (`TallyRecheck`); the terminal tally is not
+  recounted (`StickyTally`); a revocation with `E <= A(d)` in the archive removes a decision for good
+  (`DropRevoked`; with `DeadGuard` the decision is not counted again, which matters when a head
+  stamped earlier moves `A(d)` before the revocation); stale status never does (`StaleSticky`, else `DropStale`).
+  `DropRevoked` is not needed for safety beyond the tally recheck (`Tally` refuses while a counted
+  decision is listed, and `Exec` re-checks the archive); it is what lets a tally form past a revoked
+  decision, which `id-revocation-reach` shows is reachable.
+- **Execution** (`Exec`): with `ExecRecheck`, the call runs only on a status no older than `ExecAge`
+  that satisfies the same `L(C)` rule (`LBoundExec`) and with no counted decision's leaf listed with
+  `E <= A(d)` in the archive.
+- **A gate crash** (`Crash`, `CanCrash`): the gate restarts, losing the counted set and the wait; the
+  journal (the heads and the terminal tally) and the archive are not lost. The decisions are counted
+  again, and the pre-execution check runs on the journaled tally.
+- **The final tier** (`FinalWit`): a decision is final with a witness CRL `S` issued at least `W`
+  after `A(d)` when no CRL of the archive lists a leaf with `E <= A(d)`, `S` beyond `na` is the first
+  archived CRL after `na` (`L(C)`), and the series is covered from `A(d)` to `S` by `Cov`: `"number"`
+  (consecutive numbers), `"time"` (each CRL within the declared `Period` of its predecessor and the one
+  in force at `A(d)` reaching it) or `"none"`.
+
+### Model-code map
+
+Each label is one atomic step (or, for `FinalWit`, one predicate). The Go regions are on main; the
+actions whose Go is in the certificate-bound approver's pull request (`CertApprover`,
+`CertDecisionVerifier`) or is the environment (the CA, the clock, the adversary) are in the no-code
+list and are marked when that code lands. The Go refinement test that runs the model's scenarios
+through `TallyApprovals` comes with that code.
+
+<!-- modelsync: no-code identity IssueCert MisIssue Revoke CRLPublish WithholdCRL RollbackCRL ClockTick SkewHead SubmitCert GateOpen DropRevoked DropStale Exec Crash -->
+<!-- modelsync: map identity -->
+| Label | Go |
+|---|---|
+| `Count` | `audit.CertIdentity.VerifyChain` (chain, identifier, window, `anchorGrace`: rules 1 to 3) and `EvaluateStatus` with `evalCert` (rule 5: the status rule, usable only for `[A(d), L(C)]`, no `E <= A(d)`); the integration into `TallyApprovals` is the certificate-bound approver's pull request |
+| `FinalWit` | `evalCert`'s tier, with `coveredFrom` and the series rule (`L(C)`, `CAPeriod`, consecutive numbers) |
+| `Tally` | `agent.TallyApprovals`: an approver's first valid record, distinct approvers, `need` seats |
+| `Anchor` | `AuditedStore.anchorIfGrown`: a write that grows the journal anchors once |
+| `GateAnchorStep` | `AuditedStore.Reanchor` (the gate calls it before tallying a cert-bound decision no head covers) |
+| `IssueCert`, `MisIssue`, `Revoke`, `CRLPublish`, `WithholdCRL`, `RollbackCRL`, `ClockTick`, `SkewHead` | the CA, the clock and the adversary: no Go code |
+| `SubmitCert`, `GateOpen`, `DropRevoked`, `DropStale`, `Exec`, `Crash` | the certificate-bound approver's pull request: `CertApprover`, the gate's counting loop, and the pre-execution check (marked when it lands) |
+
+### Properties
+
+| Property | Kind | Statement |
+|---|---|---|
+| `IdentityBound` | invariant | a counted decision's leaf carries exactly the approver's identifier, was valid at `A(d)`, and the signed time was plausible |
+| `RevocationSound` | invariant | when a decision was counted, no CRL the verifier had received, or published longer ago than `MaxAge`, listed its leaf with `E <= A(d)` |
+| `FailClosed` | invariant | a decision counts only on status that was fresh and issued at or after `A(d)` |
+| `NoBackdate` | invariant | a decision written after a head that already carries a time at or after the revocation never counts, whatever its `decided_at` or a later head's time says |
+| `SeatPerPerson` | invariant | a passing tally rests on `K` distinct people (given the identifier-to-person map is injective and the name constraint holds) |
+| `SeatPerIdentifier` | invariant | a passing tally rests on `K` distinct identifiers |
+| `TerminalStable` | action property | a terminal tally never changes |
+| `StaleNeverUncounts` | action property | a counted decision is removed only by a revocation with `E <= A(d)`, never by stale or missing status |
+| `NoExecAfterKnownRevocation` | invariant | the call never ran on status older than `ExecAge`, nor while a counted decision's leaf was listed with `E <= A(d)` in a CRL the verifier had (or one old enough that it must have) |
+| `FinalNeedsCompleteSeries` | invariant | a final decision has no listing with `E <= A(d)` in any CRL the CA published up to its witness |
+| `AbsenceOnlyInWindow` | invariant | absence beyond `na` is evidence only from a CRL no later than the first published after `na` |
+| `TallyClean` | action property | a tally forms only from decisions none of which the archive lists with `E <= A(d)` at that moment (`DropRevoked` is what lets a tally form past a revoked decision) |
+| `DeadStaysOut` | invariant | a decision a revocation removed is in neither the counted set nor the tally |
+| `EventuallyCovered` | liveness | a decision written while the gate waits is eventually covered by a head. It does not say the decision is then counted: a covering head that contradicts another (`NonDec`) or status that never arrives leaves the gate paused by design |
+| `EffectNotReachable` and the `*NotReachable` probes | reachability | expected violated: the call runs; a decision is final; a revocation removes a counted decision; a tally rests on two seats; a decision counts beside a skewed head; a decision counts while the cache is behind the CA's series |
+
+`RevocationSound` is checked with pruning on (`id-prune`, `id-prune-live`, `id-prune-time`): a CA that
+drops an expired certificate's entry makes a CRL beyond `L(C)` silent about a revocation it once listed,
+so the live count (and the pre-execution check) reads a CRL beyond `na` only if it is `L(C)` and shown
+to follow its predecessor. With the first CRL beyond `na` withheld, the pruned CRL after it is not
+`L(C)` and nothing counts or runs on it (`regress/prune-no-lc-count`, `regress/prune-no-lc-exec`). A
+count with the pruned CRL present falls back to an earlier fresh CRL, provisionally, as `EvaluateStatus`
+does. Since a listing in any received CRL revokes, a rollback (an older CRL delivered later) can no
+longer make the count miss a listing; the number rule's remaining job in the Go code, refusing the
+silence of a lower-numbered CRL dated later (a CA restored from a backup), is not modelled, so
+`rollback-no-number` is gone and `NumRule` only shapes `snap`.
+
+### Configurations
+
+Pull requests (`ci`): two people and two identifiers, one or two certificates and decisions, up to three CRLs, a clock of 3 to 5 ticks. The nightly configurations widen the clock, the certificates and the CRLs. The times are TLC on a busy shared development machine: one worker per configuration, four at a time for the `ci` and counterexample configurations (as CI runs them on the 4-vCPU runner), and the default worker count (10) for the nightly ones, which the nightly job runs on 4 vCPUs in proportion.
+
+| Config | Group | What | States | Time |
+|---|---|---|---|---|
+| `id-revocation` | ci | one certificate, one decision, three CRLs; the CA revokes with a past `E`; a CRL may be withheld or an older one delivered; freshness and the pre-execution check on, an older CRL may be delivered later. `RevocationSound`, `FailClosed`, `NoExecAfterKnownRevocation`, `IdentityBound`, `TerminalStable`, `StaleNeverUncounts`, `TallyClean`, `DeadStaysOut` | 269,258 | 8 s |
+| `id-seats` | ci | two certificates, two decisions, two seats; a mis-issued certificate (the name constraint enforced) and an approver id that does not match the leaf. `IdentityBound`, `SeatPerPerson`, `SeatPerIdentifier` | 402,942 | 11 s |
+| `id-prune` | ci | the CA drops an expired certificate's entry after one CRL beyond `notAfter`; a CRL may be withheld or an older one delivered; the live count and the pre-execution check read a CRL beyond `notAfter` only if it is `L(C)` and follows its predecessor (by number). The live invariants `RevocationSound`, `FailClosed`, `NoExecAfterKnownRevocation`, `IdentityBound`, `TallyClean`, `DeadStaysOut` | 817,688 | 53 s |
+| `id-prune-live` | ci | the same with `CountLive`: a fresh CRL issued before `A(d)` may count (provisional), never one beyond `L(C)` | 829,648 | 53 s |
+| `id-prune-time` | ci | the same with coverage by time: the CA publishes no more often than its declared period, and a CRL beyond `notAfter` is `L(C)` only within that period of its predecessor | 231,988 | 7 s |
+| `id-validity` | ci | the CA issues the certificate at any time up to 2 with any `notAfter`; a head stamped out of order and a decided_at earlier than the true time try a decision before `notBefore`, after `notAfter` or beyond the grace: `IdentityBound` (rules 1 to 3), `FailClosed`, `NoBackdate` | 543,440 | 15 s |
+| `id-seats-revocation` | ci | two seats (`K = 2`) with revocation and a gate crash: two certificates, two decisions, the CA revokes one with a past `E`, the gate may crash and recount; a revoked decision does not fill a seat in the tally, the tally is not recounted, the call does not run on a revoked leaf. `SeatPerPerson`, `SeatPerIdentifier`, `RevocationSound`, `NoExecAfterKnownRevocation`, `TallyClean`, `TerminalStable` | 714,004 | 36 s |
+| `id-dead-skew` | ci | the non-decreasing head rule off: a head stamped earlier moves `A(d)` before a revocation; `DeadStaysOut` (the dead set keeps a removed decision from being counted again; `RevocationSound` and `NoBackdate` are what the non-decreasing rule protects) | 1,191,012 | 16 s |
+| `id-crash-reach` | ci | reachability: the gate crashes after the terminal tally formed (`CrashAfterTallyNotReachable` violated) | 265,172 | 10 s |
+| `id-crash-exec-reach` | ci | reachability: the call runs after the gate crashed and restarted (`ExecAfterCrashNotReachable` violated) | 382,230 | 16 s |
+| `id-heads` | ci | two decisions, a head stamped out of order, a decided_at earlier than the true time. `NoBackdate`, `RevocationSound`, `IdentityBound` | 890,956 | 23 s |
+| `id-final-number` | ci | the CA prunes an expired certificate's entry; the series is complete by CRL number. `FinalNeedsCompleteSeries`, `AbsenceOnlyInWindow` | 527,626 | 26 s |
+| `id-final-time` | ci | the same with coverage by `nextUpdate` and the CA publishing no more often than its declared period | 128,528 | 6 s |
+| `id-live` | ci | a decision written while the gate waits is covered by a head the gate asks for (`EventuallyCovered`, liveness) | 364 | <1 s |
+| `id-final-reach` | ci | reachability: a decision becomes final (`FinalNotReachable` violated) | 1,945 | <1 s |
+| `id-revocation-reach` | ci | reachability: a revocation removes a counted decision (`DropNotReachable` violated) | 62,570 | 1 s |
+| `id-revocation-behind` | ci | reachability: a decision counts while the cache is behind the CA's series (`BehindCountNotReachable` violated) | 10,485 | <1 s |
+| `id-seats-reach` | ci | reachability: a tally rests on two seats (`TwoSeatsNotReachable` violated) | 258,851 | 4 s |
+| `id-heads-reach` | ci | reachability: a decision counts beside a head stamped out of order (`SkewedCountNotReachable` violated) | 6,908 | <1 s |
+| `deep-revocation` | nightly | `id-revocation` with a clock of 5 ticks, two `notAfter` choices and two heads | 1,664,104 | 2 min |
+| `deep-seats` | nightly | `id-seats` with revocation | 16,226,102 | 2 min |
+| `deep-heads` | nightly | `id-heads` with three heads | 4,057,846 | 41 s |
+| `deep-final` | nightly | the final tier with a clock of 5, three `notAfter` choices and four CRLs | 6,983,926 | 1 min |
+
+### Counterexample configurations
+
+Each is in `identity/regress/`, is the same model with one rule switched off by a constant, and must fail with its named property (TLC stops at the first violation, so the state count is the states explored until then and varies with the worker count). The passing configuration for the rule is the one named in the design note's table.
+
+| Config | Violates | Rule switched off | States | Time |
+|---|---|---|---|---|
+| `withhold-no-fresh` | `RevocationSound` | no freshness rule: a withheld CRL leaves the gate counting on status that predates the revocation | 121,139 | 2 s |
+| `backdate-by-claim` | `RevocationSound` | `E` compared with the signed `decided_at` instead of `A(d)`: a backdated decision signed after the revocation counts | 24,573 | 1 s |
+| `stale-status` | `FailClosed` | no freshness rule: a decision counts on status older than `MaxAge` | 1,823 | <1 s |
+| `skew-no-nondecreasing` | `NoBackdate` | no non-decreasing head-time rule: a head stamped before an earlier head pulls `A(d)` before the revocation | 219,804 | 3 s |
+| `misissue-no-name-constraints` | `SeatPerPerson` | no name constraint: a certificate issued for another person's identifier gives one person two seats | 254,831 | 5 s |
+| `misbind-no-idbind` | `IdentityBound` | a decision naming an approver id other than its leaf's identifier counts | 7,582 | <1 s |
+| `no-dedup-seat` | `SeatPerIdentifier` | decisions counted instead of identifiers: one identifier under two certificates fills two seats | 13,743 | <1 s |
+| `recount-terminal` | `TerminalStable` | a terminal tally recounted after a later revocation | 121,108 | 2 s |
+| `stale-uncounts` | `StaleNeverUncounts` | stale status removes a decision that was counted | 64,125 | 1 s |
+| `no-exec-recheck` | `NoExecAfterKnownRevocation` | no pre-execution status check: a decision counted before a revocation still authorizes the call, or runs on stale status (the stale arm of the property: no revocation occurs in the counterexample) | 64,127 | 1 s |
+| `no-exec-recheck-revoked` | `NoExecAfterKnownRevocation` | the same without the check, with status never stale (`ExecAge` covers the run): a revocation published after the count still lets the call run (the revocation arm) | 121,110 | 4 s |
+| `final-no-coverage` | `FinalNeedsCompleteSeries` | the N2 sequence: no series coverage, a CRL omitted from the middle hides a listing that a later, pruned CRL no longer carries | 24,969 | 1 s |
+| `final-no-window` | `AbsenceOnlyInWindow` | the same series read for absence from a CRL later than the first one after `notAfter` | 11,820 | <1 s |
+| `final-time-hourly` | `FinalNeedsCompleteSeries` | coverage by `nextUpdate` alone with a CA that publishes more often than its declared period does not show that nothing lies between two CRLs | 47,931 | 1 s |
+| `prune-no-lc-count` | `RevocationSound` | the live count does not apply the `L(C)` rule: with the first CRL beyond `notAfter` withheld or unread, the pruned CRL after it counts a revoked leaf | 373,253 | 8 s |
+| `prune-no-lc-exec` | `NoExecAfterKnownRevocation` | the pre-execution check does not apply the `L(C)` rule: a decision counted before `notAfter`, the CRL that lists the leaf withheld, and a pruned CRL satisfies the freshness check, so the call runs | 789,789 | 21 s |
+| `tally-no-recheck` | `TallyClean` | the tally forms without looking at the archive: a decision counted before the revocation reached the gate is in the terminal tally | 62,571 | 1 s |
+| `recount-dead` | `DeadStaysOut` | without the dead set a decision a revocation removed is counted again when a head stamped earlier moves `A(d)` before the revocation | 723,213 | 6 s |
+| `no-anchor` | `EventuallyCovered` (liveness) | no gate `Anchor` step: a decision written while the gate waits is never covered, and the gate pauses for ever | 364 | <1 s |
+
+### Limits
+
+`limits/alias-two-seats` (252,489 states, 4 s; `SeatPerPerson` violated): the accepted limit that identifier-to-person injectivity is a bank-evidenced control. When two identifiers belong to one person (an alias), the name constraint allows a certificate for each and one person fills two seats; `SeatPerIdentifier` still holds. The design note says so, and the roster process is the control.
+
+### Not modelled
+
+- **`DistrustAfter` and a compromised CA.** One CA, one trust anchor and no intermediates: the
+  per-certificate status of every chain member, the auditor's `-distrust` overlay and a forged
+  certificate after a CA compromise are Go tests (test plan 12 and 14), not model 15. (`MisIssue` shows the
+  effect of a CA ignoring the name constraint.)
+- **`RoutineGrace` (0), `ClockTolerance` (0), OCSP, delta CRLs, `certificateHold`,
+  `expiredCertsOnCRL`, the `W'` cut and the `MinW` floor, `CountLive`'s provisional tier, and an
+  independent time source (RFC 3161).** `CountLive` is a switch, on only in `id-prune-live`.
+- **Who held the key.** A stolen key and a genuine one are the same action.
+- **Durations.** Time is a small integer clock: `Period`, `MaxAge`, `ExecAge`, `Skew` and `Grace` are
+  small numbers, so a relation between them that the integers cannot express is not covered.
+- **Liveness beyond the Anchor step.** The pause for stale or missing status is by design (the gate
+  waits); `EventuallyCovered` here is only that a decision with no covering head gets one. That the
+  gate then counts it is not proved: a contradictory covering head leaves it paused.
+  The property assumes weak fairness of the application's write path (`Anchor`) and of the gate's
+  anchor step (`GateAnchorStep`), that is, that the signer eventually succeeds. Model 1b's
+  `NoStuckPause` (`~badPause`) is a different property: the gate never pauses while the approvals
+  already in meet the policy.
+- **What a crash loses.** `Crash` models the gate's counted set and wait; the process, the store and
+  the tool call are model 1b's and model 10's. A crash during the call is the unknown-outcome path
+  (models 9 and 13), not here.
+- **One clock.** The CA, the verifier and the gate share one clock, so skew between them is not modelled
+  (`Skew` bounds `decided_at` against the head only). Time is advanced only by `ClockTick`.
+- **Atomic execution.** `Exec` is one step with its check, so a revocation between them is not modelled.
+- **Issuance time.** `IssueMax` is 0 in the revocation and seat configurations; `id-validity` is the one
+  that issues later (certificates issued at any time up to 2). Leaf reissue and rotation are model 1b's
+  two leaves of one approver, not model 15's.
+- **Covered but uncountable.** A decision under a contradictory head (`NonDec`) is covered and never
+  counted (reachable): by design the gate pauses.
+- **Revocation latency.** The `ExecAge` race (a revocation between the pre-execution check and the call)
+  is the published latency bound, not a property.
+
+Bounds: two people and two identifiers, one or two certificates, one or two decisions, up to three
+CRLs and three heads, and a clock of 3 to 5 ticks (the `ci` configurations); the nightly ones widen
+each.
+
+### Keeping model 15 and the code in step
+
+`modelsync` holds the regions above to the map. The certificate-bound approver's pull request marks
+`SubmitCert`, `GateOpen`, `DropRevoked`, `DropStale` and `Exec` where its code lands and adds the Go
+refinement test: the same scenarios through `TallyApprovals` with the standard-library CA, the counted
+set compared with the model's, trace by trace, as the other models do.
+
 ## What the bounds do not cover
 
 Model 14: two processes (three nightly) of one deliverer (two in `notify-slots`), one event per
@@ -2752,7 +3019,10 @@ bounds, not a proof for larger ones.
 
 Model 1b adds: three approvers and a policy of 2 of 3 (tightened to 3 or loosened to 1 by a
 redeploy), up to three decisions and two `Approve` calls, one call. A bug that needs more
-decisions than that, or two gated calls whose approvals interact, is outside the check.
+decisions than that, or two gated calls whose approvals interact, is outside the check. The
+certificate-bound configurations use two leaves of one approver, up to three or four decisions,
+one or two decision times and chains, and one crash; the revocation is a predicate that turns false
+at any step, so its effective time, the status data and the time rules are model 15's, not 1b's.
 
 Two drivers (three in `deep-drivers`, nightly, with one error reply), one crash, one
 cancellation, up to two error replies per run on pull requests (three in the F3 configs) and

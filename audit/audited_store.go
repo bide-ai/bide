@@ -107,6 +107,8 @@ func (a *AuditedStore) Insert(ctx context.Context, runID, name string, data []by
 	return e, inserted, err
 }
 
+// protocol:identity begin GateAnchorStep
+
 // Reanchor anchors runID's journal now, if it holds records no published head covers. A failed
 // publish is covered by the run's next write, but a run's last write has none, and a write under
 // a context that is done is not anchored at all (see Insert): OnError is the signal to call
@@ -118,6 +120,8 @@ func (a *AuditedStore) Insert(ctx context.Context, runID, name string, data []by
 func (a *AuditedStore) Reanchor(ctx context.Context, runID string) error {
 	return a.anchorIfGrown(ctx, runID)
 }
+
+// protocol:identity end
 
 // Get reads through to the inner store.
 func (a *AuditedStore) Get(ctx context.Context, runID, name string) (agent.Entry, bool, error) {
@@ -134,6 +138,8 @@ func (a *AuditedStore) Load(ctx context.Context, runID string, after int64) iter
 // the store it wraps. Leasing and listing touch no journal, so they bypass anchoring. It passes run
 // IDs and names through unchanged, as Unwrap requires.
 func (a *AuditedStore) Unwrap() agent.Store { return a.inner }
+
+// protocol:identity begin Anchor
 
 // anchorIfGrown publishes a fresh STH iff runID's journal is longer than the last anchored size,
 // so each write that grows the journal anchors once.
@@ -181,5 +187,7 @@ func (a *AuditedStore) anchorIfGrown(ctx context.Context, runID string) error {
 	a.mu.Unlock()
 	return nil
 }
+
+// protocol:identity end
 
 var _ agent.Store = (*AuditedStore)(nil)

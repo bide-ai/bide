@@ -480,6 +480,8 @@ const (
 
 // protocol:claims begin QCount
 
+// protocol:identity begin Tally
+
 // TallyApprovals is the m-of-n counting rule, shared by the gate and offline verification so
 // the two cannot drift. Over recs, in journal order, it considers every decision record on
 // s.ToolUseID (IsApprovalDecision). An approver's decision is their FIRST record that is
@@ -584,6 +586,8 @@ func TallyApprovals(recs []Record, s ApprovalSubject, p ApprovalPolicy, verifier
 	}
 	return t, checks
 }
+
+// protocol:identity end
 
 // decisionReason returns why r, a decision record whose approver's verifier is v, does not verify
 // for s, or "" when it does: it is signed under v's scheme, carries a decision time in canonical

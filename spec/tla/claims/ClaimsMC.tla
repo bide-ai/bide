@@ -31,6 +31,7 @@ PairSym   == Permutations({d1, d2})
 NoGate    == [c \in Calls |-> "none"]
 GateOne   == [c \in Calls |-> "one"]
 GateM     == [c \in Calls |-> "m"]
+GateLoose == [c \in Calls |-> "loose"]
 \* Separation of duties: 2 of {a1, a2, a3} excluding the requester (sod), 3 of them (sodtight: out
 \* of reach once the requester is an approver), and 1 of {a1, a2} (sodfold: for a requester that is
 \* another spelling of a1), and 1 of {a1, a2, a3} (sodloose).
@@ -62,4 +63,9 @@ Holders4  == (k1 :> h1) @@ (k2 :> h2) @@ (k3 :> h3) @@ (k4 :> h1)
 \* a3 is a1 spelled differently, and a1's person holds a3's key.
 HoldersFold == (k1 :> h1) @@ (k2 :> h2) @@ (k3 :> h1)
 FoldA1A3  == {<<a1, a3>>}
+\* Certificate-bound approvers (identity step 1): a1's verifier accepts the keys of two leaves,
+\* "kc1" and "kc2" (a certificate reissued under a new key), both held by h1; a2 and a3 keep
+\* bare keys. The leaves are the configurations' CertKeys.
+KeysCert  == (a1 :> {"kc1", "kc2"}) @@ (a2 :> {k2}) @@ (a3 :> {k3})
+HoldersCert == ("kc1" :> h1) @@ ("kc2" :> h1) @@ (k2 :> h2) @@ (k3 :> h3)
 =============================================================================

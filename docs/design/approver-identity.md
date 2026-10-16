@@ -295,7 +295,7 @@ decision that no head covers, the gate asks the application to anchor**: the gat
 signs and publishes a head over the journal (`AuditedStore.Reanchor`) and re-reads. The application's
 store must therefore be an audited store, or a configuration with a cert-bound approver is refused at
 build time with `ErrConfig` ("identity policy needs an audited store or a head source"). The model's
-`NoStuckPause` is extended to include this step (Formal model impact).
+The model's liveness property `EventuallyCovered` includes this step (Formal model impact).
 
 The gate and the auditor both need the run's heads after the fact, including heads signed before a
 process restart. `AuditedStore` keeps only what it published since it started, so the build adds an
@@ -565,7 +565,14 @@ archived at decision time. Mapping CA behavior to what this design needs:
   - a **revoked-before-execution hold** (`E <= A(d)` for a counted decision) writes an insert-once
     `approval-exec-hold:<id>` record (the status digest, the decision, `E`, the reason) and supersedes the
     tally through the existing re-ask path under the name `approval-tally:<id>:ident-reask`, the way the
-    `:sod` re-ask does; the approvers decide again, and the earlier tally is no longer authoritative;
+    `:sod` re-ask does; the approvers decide again, and the earlier tally is no longer authoritative.
+    The hold supersedes the tally for as long as the recorded outcome seats a revoked leaf, not only
+    once: the gate counts again (the decisions under revoked leaves do not count), and the decisions that
+    still count, a replacement under another leaf included, are recorded under the next generation of
+    the name (`:ident-reask`, then `:ident-reask:2`, and so on; insert-once each, and the last recorded
+    generation is the outcome). A replacement tally whose own leaf is revoked in turn is held and
+    superseded the same way. Without this a hold is permanent: the replacement decisions can never
+    execute. Model 1b checks it (`ReplacementSupersedes`, `ReplacementFiresNotReachable`);
   - **every path that can run the tool goes through one pre-execution function**: the first execution,
     crash recovery and `RecoverLoop` resume, a retry of a retry-safe tool, and any halt-resolution that
     would proceed. `RoutineGrace`, `E` and `A(d)` are the same functions at execution as at count time.
@@ -855,8 +862,11 @@ Properties that must hold (invariants unless noted):
 - **IdentityBound**: a counted decision's certificate chains to a trust anchor of the gate, through
   pinned intermediates, with exactly the approver's SAN, valid at `A(d)`.
 - **RevocationSound**: a counted decision's chain has no `E <= A(d)` in the status series the count used.
-  With `WithholdCRL` or `RollbackCRL` enabled and no freshness and number rule the property must
-  **fail** (documented counterexamples), and hold once the rules are in.
+  With `WithholdCRL` enabled and no freshness rule the property must **fail** (a documented
+  counterexample), and hold once the rule is in. A rollback alone cannot defeat it in the model, because
+  the count reads the whole archive and a listing in any received CRL revokes; what the number rule
+  still does in the Go code (refusing the silence of a lower-numbered CRL dated later, as from a CA
+  restored from a backup) is a Go test, not modelled.
 - **FailClosed**: unknown, stale or out-of-window status never counts.
 - **NoBackdate**: a decision signed after `E` and first covered after `E` never counts, however its
   `decided_at` reads; with `SkewHead` and no non-decreasing rule the property **fails**, and holds with it.
@@ -886,12 +896,44 @@ Properties that must hold (invariants unless noted):
   distinct *identifiers*. The model does not assume an identifier is one person; it takes injectivity
   from identifier to person as a stated, bank-evidenced control, and shows that when it fails (an alias)
   one person fills two seats.
-- **NoStuckPause** (extended): a gate with enough genuinely valid cert-bound decisions, fresh status
-  and an audited store is not stuck, **including when a decision was written directly with no covering
+- **EventuallyCovered** (was `NoStuckPause`, renamed for what it proves): a decision written while the
+  gate waits is eventually covered by a head, **including when it was written directly with no covering
   head**: the gate's `Anchor` step supplies it. Without the `Anchor` step the model must show the
-  deadlock, and with it not.
+  deadlock, and with it not. This is only coverage. It does not say the decision is then counted: a
+  covering head that contradicts another (the non-decreasing rule) or status that never arrives leaves
+  the gate paused, by design.
 
-A Go refinement test runs the same scenarios through `TallyApprovals` with the stdlib CA (below) and
+**Where each is checked (built).** The note's model is two changes, made together. A new model, **model
+15** (`spec/tla/identity`, [README](../../spec/tla/README.md#model-15-approver-identity)), checks the
+counting, status, time and gate rules above over certificates, a CRL series, signed heads and decisions.
+Model 1b (`spec/tla/claims`) checks what the gate does around the rules, with crashes, redeploys and
+recovery: a certificate-bound approver is a seat whose leaf validity is an abstract predicate that can turn
+false at any step. Each property is a `ci` invariant of the configurations named; the adjoining counterexample
+configuration breaks the rule and must fail with that property (the mutation check).
+
+| Property | Checked in | Passing configuration | Counterexample configuration (rule switched off) |
+|---|---|---|---|
+| `IdentityBound` | model 15 | `id-seats` | `misbind-no-idbind` (the approver id is not tied to the leaf's identifier) |
+| `RevocationSound` | model 15 | `id-revocation`, `id-prune`, `id-prune-live`, `id-prune-time` | `withhold-no-fresh` (no freshness rule), `backdate-by-claim` (E compared with the signed `decided_at`), `prune-no-lc-count` (the live count reads a CRL beyond `L(C)` that a pruning CA may have emptied) |
+| `FailClosed` | model 15 | `id-revocation` | `stale-status` (no freshness rule) |
+| `NoBackdate` | model 15 | `id-heads` | `skew-no-nondecreasing` (no non-decreasing head-time rule) |
+| `SeatPerPerson` | model 15 | `id-seats` | `misissue-no-name-constraints` (no name constraints); `limits/alias-two-seats` states the accepted limit when identifiers are not injective |
+| `SeatPerIdentifier` | model 15 | `id-seats` | `no-dedup-seat` (seats counted by decision, not identifier) |
+| `TerminalStable` | model 15 and 1b (`OutcomeOnce`) | `id-revocation`, `id-seats-revocation` | `recount-terminal` |
+| `TallyClean` (a tally forms only from decisions the archive does not list) | model 15 | `id-revocation`, `id-seats-revocation` | `tally-no-recheck` |
+| `DeadStaysOut` (a decision a revocation removed is not counted again) | model 15 | `id-dead-skew`, `id-revocation` | `recount-dead` |
+| `ReplacementSupersedes` (the hold on a revoked leaf is not permanent: the identity re-ask) | **model 1b** | `ap-cert`, `ap-cert-cross` (`ap-cert-replaced`: a replacement executes) | `regress/ap-no-reask` |
+| `StaleNeverUncounts` | model 15 | `id-revocation` | `stale-uncounts` |
+| `NoExecAfterKnownRevocation` | model 15 (the check itself, with a status age) and **model 1b** (every path to the tool: first execution, a drive restarted after a crash or redeploy, a retry) | model 15: `id-revocation`, `id-prune`, `id-seats-revocation` (with a gate crash); 1b: `ap-cert`, `ap-cert-cross` | model 15: `no-exec-recheck`, `no-exec-recheck-revoked`, `prune-no-lc-exec` (the check ignores the `L(C)` rule); 1b: `regress/ap-no-exec-recheck`, `regress/ap-exec-bypass` (one path skips the check; the ghost is the leaf's state at the call, not the check's result) |
+| `FinalNeedsCompleteSeries` | model 15 | `id-final-number`, `id-final-time` | `final-no-coverage` (the N2 sequence), `final-time-hourly` (coverage by `nextUpdate` alone) |
+| `AbsenceOnlyInWindow` | model 15 | `id-final-number`, `id-final-time` | `final-no-window` |
+| `EventuallyCovered` (the gate's `Anchor` step; coverage only) | model 15 (liveness) | `id-live` | `no-anchor` |
+| the same-decision relation (approver, verdict, decision time, leaf; two leaves are two decisions, two chains for one leaf are one) | **model 1b** (`NoSquat`, `OneRecordPerDecision`: no distinct decision is refused as a duplicate, no decision is written twice) | `ap-cert-name` | `regress/ap-leaf-not-in-name`, `regress/ap-chain-in-name`, `regress/ap-time-not-in-name`, `regress/ap-verdict-not-in-name` (a distinct decision refused as a duplicate) |
+
+`DistrustAfter` is not modelled (model 15 has one trust anchor and no intermediates); it stays a Go test
+(test plan 14). Model 15 also leaves out `RoutineGrace`, `ClockTolerance` above zero, OCSP, delta CRLs,
+holds, `expiredCertsOnCRL`, an independent time source, the `W'` cut and the `MinW` floor; the README
+states each. A Go refinement test runs the same scenarios through `TallyApprovals` with the stdlib CA (below) and
 compares the counted set with the model's, trace by trace, as the existing models do. The change to
 `spec/tla` and its README map is part of the build, and `modelsync` gates the PR.
 
@@ -1120,7 +1162,7 @@ asserting the same counted set and the same reason:
     CS-style cadence (weekly base, hourly delta, 8 h certificates) gives `final` for a decision whose
     window the deltas cover; a delta replayed from before a revocation is refused by the number rule.
 30. model 1b: the configurations above, including the expected counterexamples (`WithholdCRL` and
-    `RollbackCRL` without the freshness and number rules; `SkewHead` without the non-decreasing rule;
+    `WithholdCRL` without the freshness rule; `SkewHead` without the non-decreasing rule;
     `MisIssue` without name constraints; the direct-write deadlock without the gate's `Anchor` step), and
     the Go refinement test.
 

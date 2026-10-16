@@ -290,6 +290,8 @@ func quote(s string) string {
 	return strconv.Quote(s)
 }
 
+// protocol:identity begin Count
+
 // VerifyChain checks a decision's certificate chain for approver approverID.
 //
 // decidedAt is the time the approver signed (their claim); anchoredAt is A(d), the time of the
@@ -425,6 +427,8 @@ func (c *CertIdentity) VerifyChain(approverID string, chain [][]byte, decidedAt,
 		Identity: ident, LeafHash: sha256.Sum256(leaf.Raw), KeyHash: SPKIHashOf(leaf),
 	}, nil
 }
+
+// protocol:identity end
 
 // checkLeaf is the leaf's role: not a CA, may sign, the extended key usage and policy, and a key one
 // of the decision schemes can verify. It returns that scheme and the key in NewVerifier's encoding.
