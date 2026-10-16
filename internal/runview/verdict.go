@@ -93,7 +93,9 @@ func runVerdict(v *View) Verdict {
 	case finished && identityBad(v):
 		d = Verdict{Class: "bad", Word: "FAILED", Icon: "x", Line: "The run finished, but an approval gate's identity data does not check out: " + identityLine(v, identBad) + "."}
 	case finished && identityNotFinal(v):
-		d = Verdict{Class: "wait", Word: "IDENTITY NOT FINAL", Icon: "wait", Line: "The run finished, but a gate counted an approver's identity only provisionally: " + identityLine(v, identProv) + ". Nothing here is verified until status makes it final."}
+		d = Verdict{Class: "wait", Word: "IDENTITY NOT FINAL", Icon: "wait", Line: "The run finished, but an approval gate's identity is not final: " + identityLine(v, identProv) + ". Nothing here is verified until status makes it final."}
+	case finished && identityNotAudited(v):
+		d = Verdict{Class: "info", Word: "COMPLETED", Icon: "ok", Line: "The run finished and each certificate-bound approver's identity is final as recorded by the gate at counting; no audit result was given, so nothing is verified here: " + identityLine(v, identFinal) + "."}
 	case finished && v.Proof != nil && !v.Proof.OK:
 		d = Verdict{Class: "bad", Word: "FAILED", Icon: "x", Line: "The run finished, but its audit proof does not verify: " + v.Proof.Summary + "."}
 	case finished && badSigs:
@@ -356,13 +358,21 @@ func identityBad(v *View) bool {
 // identityNotFinal reports whether any gate's identity is not final: counted provisionally, or not
 // counted at all. A run with such a gate is never VERIFIED.
 func identityNotFinal(v *View) bool {
-	return slices.ContainsFunc(v.Gates, func(g Gate) bool { return g.Identity != nil && g.Identity.Class != identFinal })
+	return slices.ContainsFunc(v.Gates, func(g Gate) bool {
+		return g.Identity != nil && g.Identity.Class != identFinal && g.Identity.Class != identAudited
+	})
+}
+
+// identityNotAudited reports whether any gate's identity is final as recorded but not re-checked by an
+// audit: the run is not VERIFIED on the gate's word alone.
+func identityNotAudited(v *View) bool {
+	return slices.ContainsFunc(v.Gates, func(g Gate) bool { return g.Identity != nil && g.Identity.Class == identFinal })
 }
 
 // identityLine is the first gate's identity line of the given class.
 func identityLine(v *View, class string) string {
 	for _, g := range v.Gates {
-		if g.Identity != nil && (g.Identity.Class == class || class == identProv && g.Identity.Class != identFinal) {
+		if g.Identity != nil && (g.Identity.Class == class || class == identProv && g.Identity.Class != identFinal && g.Identity.Class != identAudited) {
 			return cmpName(g) + ": " + g.Identity.Line
 		}
 	}

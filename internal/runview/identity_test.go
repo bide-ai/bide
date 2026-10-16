@@ -2,6 +2,7 @@ package runview
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
@@ -40,14 +41,19 @@ func identRecs(t *testing.T, tier string, tally bool, edit func(*agent.ApprovalI
 	const digest = "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d"
 	wait := agent.ApprovalWait{ToolUseID: "c1", ToolName: "refund", Need: 1, Approvers: []string{"alice"}, RecordedAt: stamp(identT0),
 		IdentityBound: true, IdentityApprovers: []string{"alice"}, IdentityPolicyDigest: digest}
-	id := agent.ApprovalIdentity{Format: agent.ApprovalIdentityFormat, ToolUseID: "c1", PolicyDigest: digest, Rules: "v1", Verifier: "go1.27.0",
+	tl, _ := json.Marshal(agent.ApprovalTally{Need: 1, Approvers: []string{"alice"}, Approved: 1, ApprovedBy: []string{"alice"}, DecisionFormat: agent.DecisionFormat})
+	td := sha256.Sum256(tl)
+	id := agent.ApprovalIdentity{Format: agent.ApprovalIdentityFormat, ToolUseID: "c1", Tally: agent.ApprovalIdentTallyStep("c1", 0), TallyDigest: hex.EncodeToString(td[:]),
+		Evaluated: agent.EvaluatedLive, PolicyDigest: digest, Rules: "v1", Verifier: "go1.27.0",
 		Decisions: []agent.IdentityDecision{{Approver: "alice", Step: "approval:c1:alice:1", Identifier: testca.Person(1), LeafHash: hex.EncodeToString(lh[:]),
-			AnchoredAt: stamp(identT0.Add(time.Minute)), TimeSource: "log-signer clock", HeadSize: 7, Tier: tier,
+			AnchoredAt: stamp(identT0.Add(time.Minute)), TimeSource: agent.TimeSourceLogSignerClock, HeadSize: 7, Tier: tier, BasisKind: agent.BasisAtOrAfterDecision,
 			Basis: "status issued after the decision became provable", StatusTime: stamp(identT0.Add(10 * time.Minute)), Window: "1h0m0s"}}}
+	if tier == agent.TierProvisional {
+		id.Decisions[0].BasisKind = agent.BasisLiveBeforeDecision
+	}
 	if edit != nil {
 		edit(&id, &wait)
 	}
-	tl, _ := json.Marshal(agent.ApprovalTally{Need: 1, Approvers: []string{"alice"}, Approved: 1, ApprovedBy: []string{"alice"}, DecisionFormat: agent.DecisionFormat})
 	recs := []agent.Record{
 		{Name: "@llm/0", Kind: agent.StepModel, Message: &agent.Message{Role: agent.RoleAssistant, Parts: []agent.Part{agent.ToolUse{ID: "c1", Name: "refund", Args: json.RawMessage(`{}`)}}}},
 		rec(agent.ApprovalPendingStep("c1"), wait),
@@ -55,7 +61,7 @@ func identRecs(t *testing.T, tier string, tally bool, edit func(*agent.ApprovalI
 			Signature: []byte{1}, DecidedAt: stamp(identT0), RecordedAt: stamp(identT0.Add(time.Second)), ApproverCert: leaf.Chain()}},
 	}
 	if tally {
-		recs = append(recs, agent.Record{Name: agent.ApprovalIdentTallyStep("c1"), Kind: agent.StepValue, Result: tl}, rec(agent.ApprovalIdentityStep("c1"), id))
+		recs = append(recs, agent.Record{Name: agent.ApprovalIdentTallyStep("c1", 0), Kind: agent.StepValue, Result: tl}, rec(agent.ApprovalIdentityStep("c1", 0), id))
 	}
 	return identFx{recs: recs, digest: digest, leaf: hex.EncodeToString(lh[:])}
 }
@@ -77,8 +83,8 @@ func page(t *testing.T, recs []agent.Record) string {
 
 func TestIdentity_FinalShowsTheTierAndNeverTheBareWordVerified(t *testing.T) {
 	for tier, want := range map[string]string{
-		agent.TierLogclockFinal:    "final (log signer's clock)",
-		agent.TierIndependentFinal: "final (independent time)",
+		agent.TierLogclockFinal:    "final as recorded (log signer's clock)",
+		agent.TierIndependentFinal: "final as recorded (independent time)",
 	} {
 		fx := identRecs(t, tier, true, nil)
 		g := identGate(t, fx.recs)
@@ -88,7 +94,7 @@ func TestIdentity_FinalShowsTheTierAndNeverTheBareWordVerified(t *testing.T) {
 		}
 		c := gi.Cards[0]
 		if c.Identifier != testca.Person(1) || c.DisplayName != "Alice Example" || c.TierText != want || c.Class != "final" ||
-			c.StatusTime != "2026-10-15 09:10:00.000" || c.AnchoredAt != "2026-10-15 09:01:00.000" || c.TimeSource != "log-signer clock" {
+			c.StatusTime != "2026-10-15 09:10:00.000" || c.AnchoredAt != "2026-10-15 09:01:00.000" || c.TimeSource != "log signer's clock" {
 			t.Fatalf("%s: card = %+v", tier, c)
 		}
 		html := page(t, fx.recs)
@@ -99,7 +105,7 @@ func TestIdentity_FinalShowsTheTierAndNeverTheBareWordVerified(t *testing.T) {
 		}
 		// Whatever the page says of the identity, it never calls it "verified": the tier is named.
 		for _, m := range identBlock.FindAllString(html, -1) {
-			if strings.Contains(strings.ToLower(m), "verified") && !strings.Contains(m, "not verified") {
+			if strings.Contains(strings.ReplaceAll(strings.ReplaceAll(strings.ToLower(m), "not re-verified", ""), "not verified", ""), "verified") {
 				t.Errorf("%s: identity block says verified: %s", tier, m)
 			}
 		}
@@ -107,7 +113,7 @@ func TestIdentity_FinalShowsTheTierAndNeverTheBareWordVerified(t *testing.T) {
 }
 
 // identBlock matches the page's identity blocks.
-var identBlock = regexp.MustCompile(`(?s)<div class="aident.*?</div>`)
+var identBlock = regexp.MustCompile(`(?s)<div class="aident.*?</dl>.*?</div>`)
 
 func TestIdentity_ProvisionalIsNeverShownAsVerified(t *testing.T) {
 	fx := identRecs(t, agent.TierProvisional, true, func(id *agent.ApprovalIdentity, _ *agent.ApprovalWait) {
@@ -151,12 +157,12 @@ func TestIdentity_MissingOrMismatchedRecordIsAProblem(t *testing.T) {
 	stripped := identRecs(t, agent.TierLogclockFinal, true, nil)
 	var kept []agent.Record
 	for _, r := range stripped.recs {
-		if r.Name != agent.ApprovalIdentityStep("c1") {
+		if r.Name != agent.ApprovalIdentityStep("c1", 0) {
 			kept = append(kept, r)
 		}
 	}
 	g := identGate(t, kept)
-	if g.Identity.Class != "bad" || !strings.Contains(strings.Join(g.Identity.Problems, "|"), "identity data stripped") {
+	if g.Identity.Class != "bad" || !strings.Contains(strings.Join(g.Identity.Problems, "|"), "incomplete identity data") {
 		t.Fatalf("stripped: %+v", g.Identity)
 	}
 	if g.Class() == "good" {
@@ -183,16 +189,132 @@ func TestIdentity_MissingOrMismatchedRecordIsAProblem(t *testing.T) {
 	}
 }
 
-func TestIdentity_Disputed(t *testing.T) {
-	fx := identRecs(t, agent.TierLogclockFinal, true, func(id *agent.ApprovalIdentity, _ *agent.ApprovalWait) { id.Decisions[0].Disputed = true })
-	g := identGate(t, fx.recs)
+// Disputed and audited come only from an audit result the viewer is given, never from the journal.
+func TestIdentity_DisputedAndAuditedNeedAnAuditResult(t *testing.T) {
+	fx := identRecs(t, agent.TierLogclockFinal, true, nil)
+	view := func(res map[string]IdentityAudit) *View {
+		v := Options{Provers: []Prover{func(context.Context, string, []agent.Record) *Proof {
+			return &Proof{OK: true, Summary: "verifies: 9 records", Approvals: map[string]ApprovalCheck{"c1": {Identity: res}}}
+		}}}.viewOf(context.Background(), "r1", fx.recs, nil)
+		return v
+	}
+	// No audit result: final as recorded, in the neutral style, never audited (green).
+	if g := view(nil).Gates[0]; g.Identity.Class != "final" || g.Identity.Cards[0].Audited {
+		t.Fatalf("no audit: %+v", g.Identity)
+	}
+	// An audit that agrees makes it the only green.
+	g := view(map[string]IdentityAudit{"alice": {OK: true}}).Gates[0]
+	if g.Identity.Class != "audited" || !g.Identity.Cards[0].Audited || g.Class() != "good" {
+		t.Fatalf("audited: %+v / %q", g.Identity, g.Class())
+	}
+	// An audit that disputes it: red, and it says why.
+	v := view(map[string]IdentityAudit{"alice": {Disputed: true, Detail: "keyCompromise effective 2026-10-15T08:59:00Z"}})
+	g = v.Gates[0]
 	c := g.Identity.Cards[0]
-	if g.Identity.Class != "bad" || !c.Disputed || c.Class != "bad" {
+	if g.Identity.Class != "bad" || !c.Disputed || c.Class != "bad" || g.Class() == "good" {
 		t.Fatalf("disputed: %+v", g.Identity)
 	}
-	html := page(t, fx.recs)
+	if v.Verdict.Class == "good" {
+		t.Fatalf("a disputed identity under a VERIFIED verdict: %+v", v.Verdict)
+	}
+	html := html.UnescapeString(pageText(t, v))
 	if !strings.Contains(html, "DISPUTED") || !strings.Contains(html, "keyCompromise") {
 		t.Fatalf("page lacks the dispute")
+	}
+}
+
+func TestIdentity_FinalAsRecordedIsNeverGreen(t *testing.T) {
+	fx := identRecs(t, agent.TierLogclockFinal, true, nil)
+	html := page(t, fx.recs)
+	for _, m := range identBlock.FindAllString(html, -1) {
+		if strings.Contains(m, "id-audited") || strings.Contains(m, "good") {
+			t.Fatalf("final as recorded drawn as audited: %s", m)
+		}
+		if !strings.Contains(m, "not re-verified here") {
+			t.Fatalf("no as-recorded caveat: %s", m)
+		}
+	}
+	if strings.Contains(html, "a-approved") {
+		t.Fatal("a certificate-bound approval without an audit is styled approved")
+	}
+	g := identGate(t, fx.recs)
+	if g.Class() == "good" {
+		t.Fatal("the gate is good without an audit")
+	}
+}
+
+// An :ident tally whose identity record is missing, or does not name that tally, is incomplete.
+func TestIdentity_IncompleteData(t *testing.T) {
+	fx := identRecs(t, agent.TierLogclockFinal, true, func(id *agent.ApprovalIdentity, _ *agent.ApprovalWait) { id.TallyDigest = strings.Repeat("0", 64) })
+	g := identGate(t, fx.recs)
+	if g.Identity.Class != "bad" || !strings.Contains(strings.Join(g.Identity.Problems, "|"), "incomplete identity data") || len(g.Identity.Cards) != 0 {
+		t.Fatalf("identity = %+v", g.Identity)
+	}
+	// The record under the digest-qualified name is found.
+	fx = identRecs(t, agent.TierLogclockFinal, true, nil)
+	var idr agent.ApprovalIdentity
+	for i, r := range fx.recs {
+		if r.Name == agent.ApprovalIdentityStep("c1", 0) {
+			_ = json.Unmarshal(r.Result, &idr)
+			fx.recs[i] = rec(agent.ApprovalIdentityDigestStep("c1", 0, idr.TallyDigest), idr)
+		}
+	}
+	if g = identGate(t, fx.recs); g.Identity.Class != "final" {
+		t.Fatalf("digest-named record: %+v", g.Identity)
+	}
+}
+
+// A final tier on a live count of status issued before the decision is not something the gate writes;
+// the page refuses to show it as final.
+func TestIdentity_LiveCountIsProvisionalOnly(t *testing.T) {
+	fx := identRecs(t, agent.TierLogclockFinal, true, func(id *agent.ApprovalIdentity, _ *agent.ApprovalWait) {
+		id.Decisions[0].BasisKind = agent.BasisLiveBeforeDecision
+	})
+	if g := identGate(t, fx.recs); g.Identity.Class != "bad" {
+		t.Fatalf("identity = %+v", g.Identity)
+	}
+}
+
+// identity_bound is the OR of the call's notes: a later note from a binary that predates the feature
+// does not downgrade the display, and notes with different policy digests are flagged.
+func TestIdentity_BoundIsStickyAndPolicyChangeIsFlagged(t *testing.T) {
+	fx := identRecs(t, agent.TierLogclockFinal, false, nil)
+	plain, _ := json.Marshal(agent.ApprovalWait{ToolUseID: "c1", ToolName: "refund", Need: 1, Approvers: []string{"alice"}, Pause: agent.PauseAwaitingAnchor})
+	recs := append(fx.recs, agent.Record{Name: agent.ApprovalPauseStep("c1", 1), Kind: agent.StepValue, Result: plain})
+	g := identGate(t, recs)
+	if g.Identity == nil || !g.Identity.Bound || g.Identity.PhaseText != "decision recorded, not yet provable" {
+		t.Fatalf("identity = %+v", g.Identity)
+	}
+	other, _ := json.Marshal(agent.ApprovalWait{ToolUseID: "c1", Need: 1, IdentityBound: true, IdentityPolicyDigest: strings.Repeat("c", 64), Pause: agent.PauseAwaitingStatus})
+	g = identGate(t, append(recs, agent.Record{Name: agent.ApprovalPauseStep("c1", 2), Kind: agent.StepValue, Result: other}))
+	if !strings.Contains(strings.Join(g.Identity.Problems, "|"), "policy changed") || g.Identity.Phase != agent.PauseAwaitingStatus {
+		t.Fatalf("identity = %+v", g.Identity)
+	}
+}
+
+// After a hold the gate has a newer generation; the older hold is history, and the page says so.
+func TestIdentity_GenerationsAfterAHold(t *testing.T) {
+	fx := identRecs(t, agent.TierLogclockFinal, true, nil)
+	hold := agent.ExecHold{Format: agent.ApprovalExecHoldFormat, ToolUseID: "c1", Generation: 0, Reason: agent.ReasonRevoked, Detail: "a certificate of the chain was revoked", Approvers: []string{"alice"}, CheckedAt: stamp(identT0.Add(time.Hour)), Serial: "4242", ReasonCode: 1}
+	recs := append(fx.recs, rec(agent.ApprovalExecHoldStep("c1", 0), hold))
+	g := identGate(t, recs)
+	if g.Identity.Hold == nil || g.Identity.Hold.Serial != "4242" || !g.Held || g.Identity.Class != "bad" {
+		t.Fatalf("held: %+v", g.Identity)
+	}
+	// A new count, generation 1, replaces the hold as the current state.
+	tl, _ := json.Marshal(agent.ApprovalTally{Need: 1, Approvers: []string{"alice"}, Approved: 1, ApprovedBy: []string{"alice"}, DecisionFormat: agent.DecisionFormat})
+	td := sha256.Sum256(tl)
+	var idr agent.ApprovalIdentity
+	for _, r := range fx.recs {
+		if r.Name == agent.ApprovalIdentityStep("c1", 0) {
+			_ = json.Unmarshal(r.Result, &idr)
+		}
+	}
+	idr.Generation, idr.Tally, idr.TallyDigest = 1, agent.ApprovalIdentTallyStep("c1", 1), hex.EncodeToString(td[:])
+	recs = append(recs, agent.Record{Name: agent.ApprovalIdentTallyStep("c1", 1), Kind: agent.StepValue, Result: tl}, rec(agent.ApprovalIdentityStep("c1", 1), idr))
+	g = identGate(t, recs)
+	if g.Identity.Hold != nil || g.Held || !g.Identity.Reasked || g.Identity.Generation != 1 || g.Identity.Class != "final" {
+		t.Fatalf("re-asked: %+v", g.Identity)
 	}
 }
 
@@ -228,7 +350,7 @@ func TestIdentity_PausePhases(t *testing.T) {
 	}{
 		{agent.PauseAwaitingStatus, "no CRL for the issuing CA", "paused: identity status unknown", true},
 		{agent.PauseAwaitingAnchor, "", "decision recorded, not yet provable", true},
-		{agent.PauseAwaitingFinal, "", "counted provisionally, not final", false},
+		{agent.PauseHeldUntilFinal, "", "counted provisionally, held until final", false},
 		{agent.PauseAwaitingDecisions, "", "", true},
 	} {
 		fx := identRecs(t, agent.TierProvisional, false, func(_ *agent.ApprovalIdentity, w *agent.ApprovalWait) { w.Pause, w.PauseDetail = c.pause, c.detail })
@@ -254,8 +376,8 @@ func TestIdentity_ExecHoldNeedsAPerson(t *testing.T) {
 	fx := identRecs(t, agent.TierLogclockFinal, true, func(_ *agent.ApprovalIdentity, w *agent.ApprovalWait) {
 		w.Pause, w.PauseDetail = agent.PauseExecHold, "status is older than the execution bound"
 	})
-	hold := agent.ExecHold{Format: agent.ApprovalExecHoldFormat, ToolUseID: "c1", Reason: agent.ReasonStatusStale, Detail: "status is older than the execution bound", Approver: "alice", CheckedAt: stamp(identT0.Add(time.Hour))}
-	recs := append(fx.recs, rec(agent.ApprovalExecHoldStep("c1"), hold))
+	hold := agent.ExecHold{Format: agent.ApprovalExecHoldFormat, ToolUseID: "c1", Reason: agent.ReasonStatusStale, Detail: "status is older than the execution bound", Approvers: []string{"alice"}, CheckedAt: stamp(identT0.Add(time.Hour))}
+	recs := append(fx.recs, rec(agent.ApprovalExecHoldStep("c1", 0), hold))
 	g := identGate(t, recs)
 	if g.Identity.Hold == nil || g.Identity.Class == "final" || !strings.Contains(g.Identity.PhaseText, "held before execution") {
 		t.Fatalf("identity = %+v", g.Identity)

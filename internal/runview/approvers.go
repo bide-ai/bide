@@ -269,20 +269,23 @@ func gapWords(t audit.DecisionTime) string {
 	}
 }
 
-// Final reports whether the card may be drawn as an ordinary approval: a bare-key approver's, or a
-// certificate-bound approver's whose identity is final. A certificate-bound approval whose identity is
-// provisional, bad or missing is never drawn in the approved (green) style.
-func (c ApproverCard) Final() bool {
-	return c.Binding != "certificate-bound" || c.Identity != nil && c.Identity.Class == identFinal
+// Plain reports whether the card may be drawn as an ordinary approval: a bare-key approver's, or a
+// certificate-bound approver's whose identity an audit result re-checked. A certificate-bound approval
+// that is only final as recorded, provisional, bad or missing is never drawn in the approved (green) style.
+func (c ApproverCard) Plain() bool {
+	return c.Binding != "certificate-bound" || c.Identity != nil && c.Identity.Audited
 }
 
 // Style is the card's state class: the state, except that a certificate-bound approval that is not
-// final has its own, not the approved one.
+// plain has its own: idrecorded (final as recorded, neutral) or idcounted (anything else).
 func (c ApproverCard) Style() string {
-	if c.State == "approved" && !c.Final() {
-		return "idcounted"
+	switch {
+	case c.State != "approved" || c.Plain():
+		return c.State
+	case c.Identity != nil && c.Identity.Class == identFinal:
+		return "idrecorded"
 	}
-	return c.State
+	return "idcounted"
 }
 
 // IdentityWord is a non-final approval's identity in a word, for the card's state line.

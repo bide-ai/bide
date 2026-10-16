@@ -1156,8 +1156,10 @@ func (c *cmd) listIdentity(w waiting) {
 	}
 	style := st.Warn
 	switch gi.Class {
+	case "audited":
+		style = st.OK // only an audit result is green
 	case "final":
-		style = st.OK
+		style = func(t string) string { return t } // final as recorded by the gate: not green
 	case "bad":
 		style = st.Fail
 	}
@@ -1177,8 +1179,9 @@ func (c *cmd) listIdentity(w waiting) {
 	for _, ic := range gi.Cards {
 		tier := safe(ic.TierText)
 		switch ic.Class {
-		case "final":
+		case "audited":
 			tier = st.OK(tier)
+		case "final":
 		case "prov":
 			tier = st.Warn(tier)
 		default:
@@ -1196,11 +1199,14 @@ func (c *cmd) listIdentity(w waiting) {
 			fmt.Fprintf(c.out, "        basis: %s\n", safe(ic.Basis))
 		}
 		if ic.StatusTime != "" {
-			fmt.Fprintf(c.out, "        status time (S) %s UTC\n", safe(ic.StatusTime))
+			fmt.Fprintf(c.out, "        status time (S) %s UTC%s\n", safe(ic.StatusTime), cond(ic.StatusAge != "", " ("+safe(ic.StatusAge)+")", ""))
 		}
 		if ic.AnchoredAt != "" {
 			fmt.Fprintf(c.out, "        provable at %s UTC (%s)\n", safe(ic.AnchoredAt), safe(ic.TimeSource))
 		}
+	}
+	if len(gi.Cards) > 0 {
+		fmt.Fprintf(c.out, "      %s\n", st.Dim("as recorded at counting by the gate, not re-verified here; a revocation first reported after S is not covered"))
 	}
 	if gi.PolicyDigest != "" {
 		fmt.Fprintf(c.out, "      policy %s %s\n", safe(gi.PolicyDigest), st.Dim("(as the journal records it; not recomputed here)"))

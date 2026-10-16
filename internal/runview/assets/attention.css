@@ -23,7 +23,8 @@
 
 /* approver identity on a waiting gate: the same styles as the run page (extras.css); a non-final identity is never green */
 .attn-id { border-left: 4px solid var(--line); padding-left: var(--s2); }
-.attn-id.id-final { border-left-color: var(--good); }
+.attn-id.id-audited { border-left-color: var(--good); }
+.attn-id.id-final { border-left-color: var(--accent); }
 .attn-id.id-prov { border-left: 4px dashed var(--warn); }
 .attn-id.id-bad { border-left-color: var(--bad); }
 .attn-id .idc { display: inline-block; margin-top: 2px; }

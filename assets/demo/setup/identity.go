@@ -186,7 +186,8 @@ func run(dir string) error {
 	}
 	stamp := agent.FormatTimestamp
 	// put writes a value record under a reserved name, straight to the store: the engine's own step API
-	// refuses these names, since only a gate writes them.
+	// refuses these names, since only a gate writes them. The bytes are json.Marshal's, so a tally's
+	// TallyDigest (the SHA-256 of them) matches what the record holds.
 	put := func(id, name string, v any) error {
 		b, err := json.Marshal(v)
 		if err != nil {
@@ -199,11 +200,11 @@ func run(dir string) error {
 		_, _, err = s.Insert(ctx, id, name, data)
 		return err
 	}
-	idDecision := func(who, step, tier, basis string, decided time.Time, status time.Duration, src string) agent.IdentityDecision {
+	idDecision := func(who, step, tier, kind, basis string, decided time.Time, status time.Duration, src string) agent.IdentityDecision {
 		p := people[who]
 		leaf := sha256.Sum256(p.cert)
 		d := agent.IdentityDecision{Approver: who, Step: step, Identifier: p.uri, LeafHash: hex.EncodeToString(leaf[:]), Chain: []string{hex.EncodeToString(leaf[:])},
-			Anchor: hex.EncodeToString(leaf[:]), AnchoredAt: stamp(decided.Add(time.Minute)), TimeSource: src, HeadSize: 9, Tier: tier, Basis: basis, Window: "1h0m0s"}
+			Anchor: hex.EncodeToString(leaf[:]), AnchoredAt: stamp(decided.Add(time.Minute)), TimeSource: src, HeadSize: 9, Tier: tier, BasisKind: kind, Basis: basis, Window: "1h0m0s"}
 		if status != 0 {
 			d.StatusTime = stamp(decided.Add(status))
 		}
@@ -219,18 +220,21 @@ func run(dir string) error {
 		if len(ds) == 2 {
 			tally.Pending = nil
 		}
-		if err := put(id, agent.ApprovalIdentTallyStep("c1"), tally); err != nil {
+		tb, _ := json.Marshal(tally)
+		td := sha256.Sum256(tb)
+		// The identity record first, then the tally that is the commit point, as the gate writes them.
+		if err := put(id, agent.ApprovalIdentityStep("c1", 0), agent.ApprovalIdentity{Format: agent.ApprovalIdentityFormat, ToolUseID: "c1", Tally: agent.ApprovalIdentTallyStep("c1", 0),
+			TallyDigest: hex.EncodeToString(td[:]), Evaluated: agent.EvaluatedLive, EvaluatedAt: stamp(now), PolicyDigest: policyDigest, RosterDigest: policyDigest, Decisions: ds,
+			Rules: agent.ApprovalIdentityRulesVer, Verifier: "go1.27.0", RecordedAt: stamp(now)}); err != nil {
 			return err
 		}
-		return put(id, agent.ApprovalIdentityStep("c1"), agent.ApprovalIdentity{Format: agent.ApprovalIdentityFormat, ToolUseID: "c1", PolicyDigest: policyDigest,
-			RosterDigest: policyDigest, Decisions: ds, Rules: agent.ApprovalIdentityRulesVer, Verifier: "go1.27.0", RecordedAt: stamp(now)})
+		return put(id, agent.ApprovalIdentTallyStep("c1", 0), tally)
 	}
 
 	for _, r := range []refund{
 		{"refund-3001", "3001", "", "", 50 * time.Minute},
 		{"refund-3002", "3002", agent.PauseAwaitingStatus, "no revocation list for the issuing CA is newer than the decision", 30 * time.Minute},
 		{"refund-3003", "3003", agent.PauseAwaitingAnchor, "", 12 * time.Minute},
-		{"refund-3004", "3004", "", "", 40 * time.Minute},
 	} {
 		if err := ask(r); err != nil {
 			return err
@@ -248,8 +252,8 @@ func run(dir string) error {
 	// refund-3001: ops counted final on an independent time; finance counted only provisionally, because
 	// the status in hand was issued before the decision became provable.
 	if err := count("refund-3001",
-		idDecision("ops", opsStep, agent.TierIndependentFinal, "status issued after the decision became provable and covering its window", t1, 20*time.Minute, "rfc3161 tsa.bank.example"),
-		idDecision("finance", finStep, agent.TierProvisional, "live count: status issued before the decision (provisional only)", t1.Add(5*time.Minute), -10*time.Minute, "log-signer clock")); err != nil {
+		idDecision("ops", opsStep, agent.TierIndependentFinal, agent.BasisAtOrAfterDecision, "status issued after the decision became provable and covering its window", t1, 20*time.Minute, agent.TimeSourceRFC3161),
+		idDecision("finance", finStep, agent.TierProvisional, agent.BasisLiveBeforeDecision, "live count: status issued before the decision (provisional only)", t1.Add(5*time.Minute), -10*time.Minute, agent.TimeSourceLogSignerClock)); err != nil {
 		return err
 	}
 	// refund-3002 (waiting for status) and refund-3003 (waiting for a covering head) hold ops' decision.
@@ -259,17 +263,5 @@ func run(dir string) error {
 	if _, err := decide("refund-3003", "ops", now.Add(-10*time.Minute)); err != nil {
 		return err
 	}
-	// refund-3004: both counted, then an audit found newer status that voids finance's count.
-	o4, err := decide("refund-3004", "ops", now.Add(-38*time.Minute))
-	if err != nil {
-		return err
-	}
-	f4, err := decide("refund-3004", "finance", now.Add(-36*time.Minute))
-	if err != nil {
-		return err
-	}
-	d4 := idDecision("finance", f4, agent.TierLogclockFinal, "status issued after the decision became provable and covering its window", now.Add(-36*time.Minute), 15*time.Minute, "log-signer clock")
-	d4.Disputed = true
-	return count("refund-3004",
-		idDecision("ops", o4, agent.TierLogclockFinal, "status issued after the decision became provable and covering its window", now.Add(-38*time.Minute), 15*time.Minute, "log-signer clock"), d4)
+	return nil
 }

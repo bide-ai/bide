@@ -1,15 +1,16 @@
 {{define "identcard"}}<div class="aident id-{{.Class}}">
-<p class="idtier"><span class="idbadge">{{.TierText}}</span>{{if .Disputed}} <span class="iddisputed">DISPUTED: newer status shows a revocation (keyCompromise) that voids this count back to the certificate's notBefore</span>{{end}}</p>
+<p class="idtier"><span class="idbadge">{{.TierText}}</span>{{if .Audited}} <span class="idaudit">re-checked by an audit</span>{{end}}{{if .Disputed}} <span class="iddisputed">DISPUTED: newer status shows a revocation (keyCompromise) that voids this count back to the certificate's notBefore</span>{{end}}</p>
 <dl class="idfacts">
 <div><dt>identity</dt><dd class="mono">{{.Identifier}}</dd></div>
 {{with .DisplayName}}<div><dt title="the certificate's subject name: the CA's label for the person, not part of the identity">name</dt><dd>{{.}}</dd></div>{{end}}
 {{with .Basis}}<div><dt>basis</dt><dd>{{.}}</dd></div>{{end}}
-{{with .StatusTime}}<div><dt title="S: the time of the revocation status this count rests on">status time (S)</dt><dd>{{.}} UTC</dd></div>{{end}}
+{{with .StatusTime}}<div><dt title="S: the time of the revocation status this count rests on">status time (S)</dt><dd>{{.}} UTC{{with $.StatusAge}} ({{.}}){{end}}</dd></div>{{end}}
 {{with .AnchoredAt}}<div><dt title="the time the decision became provable, and what that time rests on">provable at</dt><dd>{{.}} UTC{{with $.TimeSource}} ({{.}}){{end}}</dd></div>{{end}}
 {{with .Window}}<div><dt title="W': how long after the decision the status must reach">window</dt><dd>{{.}}</dd></div>{{end}}
 {{with .Leaf}}<div><dt>leaf</dt><dd class="mono">{{.}}</dd></div>{{end}}
 </dl>
 {{range .Warnings}}<p class="small aflag">{{icon "clock"}} {{.}}</p>{{end}}
+{{if not .Audited}}<p class="small muted">as recorded at counting by the gate, not re-verified here; a revocation first reported after S is not covered</p>{{end}}
 </div>{{end}}
 {{define "run.html"}}{{template "head" (head (printf "%s · %s · bide view" .Verdict.Word .RunID) .Verdict.Class .Verdict.Icon)}}
 <div class="crumb"><h1 class="rid">{{.RunID}}</h1> <span class="pill kind">{{.KindText}}{{if .Flow}}: {{.Flow}}{{end}}</span> <span class="pill state-{{.State}}">{{.StateText}}</span>{{if .Live}} <span class="pill live" id="live" data-run="{{.RunID}}" data-cursor="{{.Cursor}}" title="the page follows the run as records land">live</span>{{end}}</div>
@@ -52,15 +53,16 @@
 
 {{range .Gates}}{{if .Cards}}<section class="approvals"><h2>Approvers{{if gt (len $.Gates) 1}}: {{.ToolName}}{{end}} <span class="count">{{.Headline}}</span></h2>
 {{if .HasTimes}}<p class="small muted atimesnote"><b>decided</b>: when the approver says they decided, by their clock, inside their signature. <b>recorded</b>: when the decision was journaled, by the clock of whoever submitted it, not signed, anchored in the journal. Times are UTC; neither changes the count.</p>{{end}}
-{{with .Identity}}{{$gi := .}}<div class="gident id-{{.Class}}"><p class="idline"><b>{{if eq .Class "final"}}{{icon "ok"}}{{else if eq .Class "bad"}}{{icon "x"}}{{else}}{{icon "wait"}}{{end}} approver identity: {{.Line}}</b></p>
+{{with .Identity}}{{$gi := .}}<div class="gident id-{{.Class}}"><p class="idline"><b>{{if eq .Class "audited"}}{{icon "ok"}}{{else if eq .Class "bad"}}{{icon "x"}}{{else}}{{icon "wait"}}{{end}} approver identity: {{.Line}}</b></p>
 {{with .PhaseText}}<p class="small">{{.}}{{if and $gi.Detail (not $gi.Hold)}}: {{$gi.Detail}}{{end}}</p>{{end}}
-{{with .Hold}}<p class="small bad">held {{.CheckedAt}} UTC: {{.Reason}}{{with .Detail}}: {{.}}{{end}}{{with .Approver}} (decision of {{.}}){{end}}{{with .StatusTime}}; status time {{.}} UTC{{end}}</p>{{end}}
+{{if $gi.Reasked}}<p class="small muted">generation {{$gi.Generation}}: the gate was held before execution and asked again; earlier counts are history</p>{{end}}
+{{with .Hold}}<p class="small bad">held {{.CheckedAt}} UTC: {{.Reason}}{{with .Detail}}: {{.}}{{end}}{{with .Approvers}} (decisions of {{join . ", "}}){{end}}{{with .Serial}}; certificate serial {{.}}{{end}}{{with .StatusTime}}; status time {{.}} UTC{{end}}</p>{{end}}
 {{range .Problems}}<p class="small bad">{{.}}</p>{{end}}
 {{with .PolicyDigest}}<p class="small muted mono" title="SHA-256 of the identity policy in force when the gate counted, as the journal records it; this page does not recompute it">policy {{.}}</p>{{end}}
 </div>{{end}}
 <ul class="acards">{{range .Cards}}{{$card := .}}<li class="acard a-{{.Style}}{{with .Identity}} a-id-{{.Class}}{{end}}">
 <span class="avatar" aria-hidden="true">{{.Initials}}</span>
-<div class="abody"><p class="aname"><b>{{.Name}}</b> <span class="astate">{{if eq .State "approved"}}{{if .Final}}{{icon "ok"}} approved{{else}}{{icon "wait"}} counted, identity {{.IdentityWord}}{{end}}{{else if eq .State "denied"}}{{icon "x"}} denied{{else if eq .State "excluded"}}excluded{{else if eq .State "recorded"}}{{icon "wait"}} recorded, not counted{{else}}{{icon "wait"}} pending{{end}}</span></p>
+<div class="abody"><p class="aname"><b>{{.Name}}</b> <span class="astate">{{if eq .State "approved"}}{{if .Plain}}{{icon "ok"}} approved{{else}}{{icon "wait"}} counted, identity {{.IdentityWord}}{{end}}{{else if eq .State "denied"}}{{icon "x"}} denied{{else if eq .State "excluded"}}excluded{{else if eq .State "recorded"}}{{icon "wait"}} recorded, not counted{{else}}{{icon "wait"}} pending{{end}}</span></p>
 {{with .Binding}}<p class="small muted abind">{{.}}</p>{{end}}
 {{with .Identity}}{{template "identcard" .}}{{end}}
 {{with .IdentityNote}}<p class="small {{if $card.IdentityBad}}bad{{else}}muted{{end}}">{{.}}</p>{{end}}

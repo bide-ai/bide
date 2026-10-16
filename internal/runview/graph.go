@@ -350,13 +350,16 @@ func gateLines(gt Gate) (line, class, sig string) {
 	case "denied", "closed, not approved", "expired":
 		class = "bad"
 	}
-	// An approved gate whose identity is not final is never drawn in the good style, and says so.
-	if gi := gt.Identity; gi != nil && gi.Bound && state == "approved" && gi.Class != identFinal {
-		class = "wait"
-		line += ", identity not final"
-		if gi.Class == identBad {
-			class = "bad"
-			line = strings.TrimSuffix(line, ", identity not final") + ", identity NOT VERIFIED"
+	// An approved gate with a certificate-bound approver is drawn good only when an audit re-checked its
+	// identity; otherwise it says what the identity is as recorded.
+	if gi := gt.Identity; gi != nil && gi.Bound && state == "approved" && gi.Class != identAudited {
+		switch gi.Class {
+		case identFinal:
+			class, line = "wait", line+", identity final as recorded"
+		case identBad:
+			class, line = "bad", line+", identity NOT VERIFIED"
+		default:
+			class, line = "wait", line+", identity not final"
 		}
 	}
 	switch {

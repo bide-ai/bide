@@ -77,14 +77,16 @@ body.loading::before { content: ""; position: fixed; top: 0; left: 0; width: 100
    provisional is amber with a dashed edge and a hatched ground, a waiting, held or stripped identity is never green */
 .gident { border: 1px solid var(--line); border-left-width: 5px; border-radius: var(--r-md); background: var(--card); padding: var(--s2) var(--s4); margin: 0 0 var(--s3); }
 .gident p { margin: 2px 0; }
-.id-final { border-color: var(--good); }
+.id-audited { border-color: var(--good); }
+.id-final { border-color: var(--accent); }
 .id-prov { border-color: var(--warn); border-style: dashed; background: repeating-linear-gradient(135deg, var(--warn-bg) 0 8px, transparent 8px 16px); }
 .id-bad { border-color: var(--bad); background: var(--bad-bg); }
 .id-wait { border-color: var(--idle); border-style: dashed; }
 .aident { margin-top: var(--s2); padding: var(--s2) var(--s3); border: 1px solid var(--line); border-left-width: 4px; border-radius: var(--r-sm); font-size: var(--t-sm); }
 .aident p { margin: 2px 0; }
 .idbadge { display: inline-block; font-weight: 800; letter-spacing: .03em; padding: 1px 8px; border-radius: 999px; border: 1px solid currentColor; }
-.id-final .idbadge { color: var(--good); }
+.id-audited .idbadge, .idaudit { color: var(--good); }
+.id-final .idbadge { color: var(--accent); }
 .id-prov .idbadge { color: var(--warn); border-style: dashed; }
 .id-bad .idbadge, .iddisputed { color: var(--bad); }
 .iddisputed { font-weight: 800; }
@@ -92,6 +94,7 @@ body.loading::before { content: ""; position: fixed; top: 0; left: 0; width: 100
 .idfacts div { display: flex; flex-wrap: wrap; column-gap: var(--s2); }
 .idfacts dt { color: var(--muted); min-width: 7.5em; }
 .idfacts dd { margin: 0; overflow-wrap: anywhere; }
+.a-idrecorded .avatar { background: var(--accent-bg); color: var(--accent); border: 2px solid var(--accent); }
 .a-recorded .avatar { background: var(--card-2); color: var(--muted); border: 2px dashed var(--warn); }
 .a-idcounted .avatar { background: var(--warn-bg); color: var(--warn); border: 2px dashed var(--warn); }
 .a-id-bad .avatar, .a-idcounted.a-id-bad .avatar { background: var(--bad-bg); color: var(--bad); border: 2px solid var(--bad); }

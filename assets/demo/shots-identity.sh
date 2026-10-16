@@ -3,7 +3,7 @@
 # docs/guides/img/run-viewer-identity-run (a run page: one approver counted final on an independent
 # time, one counted only provisionally, shown in a different style, never green) and
 # run-viewer-identity-attention (the Needs attention list: gates paused for identity status, waiting
-# for a covering signed head, and one with a disputed count). assets/demo/setup/identity.go writes the journal
+# for a covering signed head). assets/demo/setup/identity.go writes the journal
 # with the real agent runtime; the pages are captured with a headless Chromium-based browser at 1200
 # pixels wide, as shots.sh does.
 #
@@ -39,7 +39,12 @@ shot() { # name url height
   local flags=(--headless=new --disable-gpu --hide-scrollbars --virtual-time-budget=3000 --window-size=1200,"$3"
     --user-data-dir="$work/profile-$1" --screenshot="$out/$1-$theme.png")
   if [ "$theme" = dark ]; then flags+=(--force-dark-mode); else flags+=(--blink-settings=preferredColorScheme=1); fi
-  "$CHROME" "${flags[@]}" "$2" > /dev/null 2>&1
+  rm -f "$out/$1-$theme.png"
+  for _ in 1 2 3; do # a headless browser sometimes exits before it writes the file
+    "$CHROME" "${flags[@]}" "$2" > /dev/null 2>&1 || true
+    [ -s "$out/$1-$theme.png" ] && break
+  done
+  [ -s "$out/$1-$theme.png" ] || { echo "shots-identity.sh: no screenshot of $2" >&2; exit 1; }
   echo "$out/$1-$theme.png"
 }
 wait_for() { # url: retry for up to 30 s

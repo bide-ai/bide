@@ -565,8 +565,6 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 		g := Gate{ToolUseID: id, ToolName: calls[id].Name}
 		var wait agent.ApprovalWait
 		paused := false
-		_, boundNote := byName[agent.ApprovalIdentityStep(id)]
-		_, boundTally := byName[agent.ApprovalIdentTallyStep(id)]
 		// The newest pause note: a gate that asked again (agent.ApprovalReaskStep) records the policy it
 		// asks under there, while the first note keeps the policy of the first pause.
 		if r, ok := agent.LatestPauseNote(byName, id); ok && json.Unmarshal(r.Result, &wait) == nil {
@@ -610,10 +608,12 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 		}
 		// A gate with a certificate-bound approver counts under its :ident tally; a tally under the
 		// plain name is superseded (the gate asks again), and is not read here.
-		bound := wait.IdentityBound || boundNote || boundTally
+		bound, boundApprovers, _, _ := identNotes(recs, byName, id, wait)
+		_, _, hasIdentTally := latestIdentTally(byName, id)
+		bound = bound || hasIdentTally
 		t, tallyOK := agent.RecordedTally(byName, id)
 		if bound {
-			t, tallyOK = byName[agent.ApprovalIdentTallyStep(id)]
+			t, _, tallyOK = latestIdentTally(byName, id)
 		}
 		if tallyOK {
 			var tally agent.ApprovalTally
@@ -672,7 +672,7 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 				case slices.Contains(g.Excluded, d.Approver): // the requester: never counts
 				case d.Note != "": // written after the deadline: never counts
 				case g.Reapproval && d.DecidedAt == "": // signed before the format: never counts now
-				case bound && d.Signed && slices.Contains(wait.IdentityApprovers, d.Approver):
+				case bound && d.Signed && slices.Contains(boundApprovers, d.Approver):
 					// A certificate-bound decision counts only once the gate has checked the chain, the
 					// identity and the revocation status; until its tally says so, it is recorded, not counted.
 					if !slices.Contains(unchecked, d.Approver) {
@@ -693,7 +693,7 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 		_, singleDecided := singleDecision(g)
 		g.Waiting = (paused || g.Reapproval) && !resulted && !g.Tallied && !(g.Single && singleDecided)
 		if bound {
-			if g.Identity = identityOf(byName, id, wait, g, resulted); g.Identity != nil {
+			if g.Identity = identityOf(recs, byName, id, wait, g, resulted); g.Identity != nil {
 				g.Identity.Unchecked = unchecked
 				g.Identity.Class, g.Identity.Line = identityClass(g.Identity, g)
 				g.Held = g.Identity.Hold != nil && g.Tallied && !resulted
@@ -910,6 +910,7 @@ func maxTime(a, b time.Time) time.Time {
 // expired. Build leaves them empty, since it reads no clock; the pages and bide approve -list call
 // this with theirs.
 func MarkDeadlines(gates []Gate, now time.Time) {
+	markStatusAges(gates, now)
 	for i := range gates {
 		g := &gates[i]
 		at := parseTime(g.ExpiresAt)

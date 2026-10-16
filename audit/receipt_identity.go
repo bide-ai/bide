@@ -39,11 +39,11 @@ func (r DecisionReceipt) VerifyIdentity(ci *CertIdentity, logKey Verifier) (Rece
 	if ci == nil {
 		return ReceiptIdentity{}, fmt.Errorf("audit: receipt: no certificate policy: %w", agent.ErrConfig)
 	}
-	a, err := r.AnchorTime(logKey)
-	if err != nil {
+	if err := r.VerifyCertificate(ci, logKey); err != nil {
 		return ReceiptIdentity{}, err
 	}
-	if err := r.VerifyCertificate(ci, a); err != nil {
+	a, err := r.AnchorTime(logKey)
+	if err != nil {
 		return ReceiptIdentity{}, err
 	}
 	decided, err := agent.ParseTimestamp(r.DecidedAt)

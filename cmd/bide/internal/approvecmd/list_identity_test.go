@@ -7,14 +7,27 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/store/sqlite"
 )
 
-// putIdentity writes the identity record of the fixture's gate, which marks it identity-bound.
-func (f *fixture) putIdentity(t *testing.T, id agent.ApprovalIdentity) {
+// markBound writes a phase note that marks the fixture's gate identity-bound, with ops certificate-bound,
+// and paused for status. (The gate writes it itself once the identity feature is wired into a gate; the
+// engine refuses these names to Journal.Step, so the test writes them to the store.)
+func (f *fixture) markBound(t *testing.T) {
 	t.Helper()
-	j, closeJ := f.store()
-	defer closeJ()
-	if _, err := j.Step(context.Background(), f.run, agent.ApprovalIdentityStep(f.call), func(context.Context) (agent.ApprovalIdentity, error) { return id, nil }); err != nil {
+	s, err := sqlite.Open(f.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	b, _ := json.Marshal(agent.ApprovalWait{ToolUseID: f.call, ToolName: "refund", Need: 2, Approvers: approvers, IdentityBound: true, IdentityApprovers: []string{"ops"},
+		IdentityPolicyDigest: strings.Repeat("ab", 32), Pause: agent.PauseAwaitingStatus, PauseDetail: "no CRL newer than the decision"})
+	name := agent.ApprovalPauseStep(f.call, 1)
+	data, err := agent.JournalEntry(name, agent.Record{Kind: agent.StepValue, Result: b})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Insert(context.Background(), f.run, name, data); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -23,14 +36,12 @@ func (f *fixture) putIdentity(t *testing.T, id agent.ApprovalIdentity) {
 // claim a verified tally: the keys it holds cannot check a certificate-bound decision.
 func TestList_IdentityBoundGate(t *testing.T) {
 	f := newFixture(t, twoOfThree, refundArgs)
-	f.putIdentity(t, agent.ApprovalIdentity{Format: agent.ApprovalIdentityFormat, ToolUseID: f.call, PolicyDigest: strings.Repeat("ab", 32), Rules: "v1",
-		Decisions: []agent.IdentityDecision{{Approver: "ops", Identifier: "https://idp.bank.example/person/00000000000000000000000000000001", Tier: agent.TierProvisional,
-			Basis: "live count: status issued before the decision (provisional only)", StatusTime: "2026-10-15T09:10:00.000Z", AnchoredAt: "2026-10-15T09:01:00.000Z", TimeSource: "log-signer clock"}}})
+	f.markBound(t)
 	code, out, errs := f.run_("", "-list", "-approver-keys", f.keysJSON)
 	if code != 0 {
 		t.Fatalf("%d %s", code, errs)
 	}
-	for _, want := range []string{"identity-bound", "PROVISIONAL", "https://idp.bank.example/person/00000000000000000000000000000001", "live count: status issued before the decision", "status time (S) 2026-10-15 09:10:00.000"} {
+	for _, want := range []string{"identity-bound", "paused: identity status unknown", "no CRL newer than the decision", "policy " + strings.Repeat("ab", 32), "certificate-bound decisions count only when the gate checks them"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("-list lacks %q:\n%s", want, out)
 		}
@@ -54,9 +65,12 @@ func TestList_IdentityBoundGate(t *testing.T) {
 	if err := json.Unmarshal([]byte(js), &got); err != nil || len(got) != 1 || got[0].Identity == nil || !got[0].Identity.Bound || got[0].Verified {
 		t.Fatalf("-list -json = %s (%v)", js, err)
 	}
-	// Not counted yet: the viewer's class is wait, never final; the card is the provisional one.
-	if got[0].Identity.Class == "final" || len(got[0].Identity.Cards) != 1 || got[0].Identity.Cards[0].Class != "prov" {
+	if got[0].Identity.Class != "wait" {
 		t.Fatalf("identity = %+v", got[0].Identity)
+	}
+	// No bare-key command is offered for the certificate-bound approver.
+	if strings.Contains(out, "-as ops ") {
+		t.Fatalf("a bare-key command for a certificate-bound approver:\n%s", out)
 	}
 }
 
