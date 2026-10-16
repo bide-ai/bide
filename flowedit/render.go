@@ -44,14 +44,18 @@ func scalar(v any, q byte, flow, js bool) (string, error) {
 				return "", err
 			}
 			out := strings.TrimSuffix(b.String(), "\n")
-			for _, r := range []rune{} { // raw, they are line breaks or a mark to some readers
+			for _, r := range []rune{'\u2028', '\u2029', '\u0085', '\ufeff'} { // raw, they are line breaks or a mark to some readers
 				out = strings.ReplaceAll(out, string(r), fmt.Sprintf(`\u%04x`, r))
 			}
 			return out, nil
 		}
 		dq := func() string {
 			b, _ := yaml.Marshal(&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: x, Style: yaml.DoubleQuotedStyle})
-			return strings.TrimSuffix(string(b), "\n")
+			out := strings.TrimSuffix(string(b), "\n")
+			for _, r := range []rune{'\u2028', '\u2029', '\u0085', '\ufeff'} { // the library leaves some raw
+				out = strings.ReplaceAll(out, string(r), fmt.Sprintf(`\u%04x`, r))
+			}
+			return out
 		}
 		// A rune a YAML 1.1 reader reads as a line break, or that is a control or format character,
 		// is written escaped in double quotes, never raw in a single-quoted or plain scalar.
