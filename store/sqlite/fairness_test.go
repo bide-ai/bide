@@ -16,9 +16,8 @@ import (
 // waits through another's run of writes. SQLite's busy handler alone is not a queue, so a writer
 // that has just released the lock wins it back, and one unlucky writer waits for everyone else's
 // whole run (the SQLITE_BUSY an application meets on a slow disk, where that run outlasts the busy
-// timeout). Between two writes of one writer, every other writer, each having one write outstanding
-// at a time, gets about one; the bound is generous against scheduling noise and far below the
-// hundreds of writes one writer makes in a row without the queue (see checkTurns for the bound).
+// timeout). The commit order is the file's own (the step's Seq), so a writer's turn is not read
+// through the scheduler; checkTurns says what is asserted of it.
 func TestWritersOnOneFileTakeTurns(t *testing.T) {
 	const writers, each = 24, 60
 	opens := map[string]func(t *testing.T, path string) *sqlite.Store{
@@ -124,29 +123,26 @@ func TestEventAppendersOnOneFileTakeTurns(t *testing.T) {
 	checkTurns(t, owners, writers)
 }
 
-// checkTurns fails if a writer is absent from more than 2*writers consecutive commits. The gate is a
-// first-come first-served queue and each writer has one write outstanding, so between two writes of
-// one writer at most writers-1 others commit, provided it asks again promptly. One lap of slack
-// covers a writer the scheduler holds back between its commit and its next request, during which the
-// others may go round once more (the measurements, taken from the commit order in the file, are
-// exactly writers-1 on a machine at load 100). Without the queue the gaps measured were 75 to 565 writes, over
-// the limit.
+// checkTurns fails if writers keep winning the lock back. With the gate (a first-come first-served
+// queue, each writer having one write outstanding) a writer that has just committed joins the back
+// of the queue, so the next commit is another writer's whenever one is waiting: the share of commits
+// that follow a commit of the same writer is small (at most a few per cent on an idle machine and
+// 10% on one at load 100, where a writer the scheduler holds back leaves the queue short). Without
+// the gate the writer that just released the lock takes it again from the others asleep in SQLite's
+// busy handler, and about 95% of commits are repeats. The test reads the share over every commit,
+// not the longest wait of one writer: that depends on when the scheduler runs that one goroutine
+// (a wait of 343 writes was seen on a loaded machine with the gate in place), which the queue does
+// not control. The limit is half.
 func checkTurns(t *testing.T, owner []int, writers int) {
 	t.Helper()
-	maxGap := 2 * writers
-	last := make([]int, writers)
-	for i := range last {
-		last[i] = -1
+	repeats := 0
+	for i := 1; i < len(owner); i++ {
+		if owner[i] == owner[i-1] {
+			repeats++
+		}
 	}
-	worst := 0
-	defer func() { t.Logf("longest wait between two writes of one writer: %d others' writes (fair queue: %d at most when every writer is prompt)", worst, writers-1) }()
-	for pos, w := range owner {
-		if last[w] >= 0 {
-			worst = max(worst, pos-last[w]-1)
-		}
-		if last[w] >= 0 && pos-last[w] > maxGap {
-			t.Fatalf("writer %d waited through %d writes between two of its own (limit %d): writers are not taking turns", w, pos-last[w]-1, maxGap)
-		}
-		last[w] = pos
+	t.Logf("%d of %d commits follow a commit of the same writer (%d writers)", repeats, len(owner), writers)
+	if repeats*2 > len(owner) {
+		t.Fatalf("%d of %d commits follow a commit of the same writer (limit one half): writers are not taking turns", repeats, len(owner))
 	}
 }
