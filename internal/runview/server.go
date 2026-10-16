@@ -260,6 +260,9 @@ func (o Options) viewOf(ctx context.Context, runID string, recs []agent.Record, 
 	}
 	for i := range v.Gates {
 		signatures(&v.Gates[i], v.Proof)
+		if chk, ok := v.Proof.approval(v.Gates[i].ToolUseID); ok {
+			applyIdentityAudit(&v.Gates[i], chk.Identity)
+		}
 		v.Gates[i].Cards = cards(v.Gates[i], v.Proof)
 	}
 	MarkDeadlines(v.Gates, o.now())

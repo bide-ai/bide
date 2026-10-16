@@ -9,11 +9,13 @@ import (
 	"reflect"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/policyfile"
 )
 
 // receiptSuffix is how bide approve names the receipts it writes; a directory given to -receipt is
@@ -32,15 +34,25 @@ func (c *cli) verifyReceipts(args []string) {
 	fs.Var(&heads, "heads", "signed tree heads of the journal: a file with one head, or one head per line (the anchor log a published head is appended to); repeatable")
 	pubkey := fs.String("pubkey", "", "the log's "+pubkeyHelp)
 	keysPath := fs.String("approver-keys", "", `JSON object of approver id to public key text (<scheme>:<hex>), e.g. {"ops":"ed25519:ab12..."}`)
+	policyPath := fs.String("identity-policy", "", "the certificate policy file (trust anchors, pinned intermediates, the approver-to-identity map; see docs/guides/hitl-approval.md): required for a certificate-bound receipt, which is checked against it and the log key instead of -approver-keys. The check is the identity at the time the decision became provable; revocation status is not checked")
 	update := fs.Bool("update", false, "write an anchoring proof into each receipt whose decision a signed head now commits to (an atomic rewrite of the receipt file, mode kept): from then on a signed head that omits the decision proves its deletion; without it the verdict is the approver's claim")
 	c.parse(fs, args)
 
-	c.require(fs, required{"-receipt", len(receipts) == 0}, required{"-journal", len(journals) == 0}, required{"-heads", len(heads) == 0}, absent("-pubkey", *pubkey), absent("-approver-keys", *keysPath))
+	c.require(fs, required{"-receipt", len(receipts) == 0}, required{"-journal", len(journals) == 0}, required{"-heads", len(heads) == 0}, absent("-pubkey", *pubkey), required{"-approver-keys or -identity-policy", *keysPath == "" && *policyPath == ""})
 
 	logKey, err := readPubKey(*pubkey)
 	ok := c.note(err)
 	var keyText map[string]string
-	ok = c.note(c.readJSON(*keysPath, &keyText)) && ok
+	if *keysPath != "" {
+		ok = c.note(c.readJSON(*keysPath, &keyText)) && ok
+	}
+	var ci *audit.CertIdentity
+	if *policyPath != "" {
+		var perr error
+		if ci, perr = policyfile.Read(*policyPath); perr != nil {
+			ok = c.note(unusable(perr)) && ok
+		}
+	}
 	keys := map[string]audit.Verifier{}
 	for id, text := range keyText {
 		k, err := audit.ParsePublicKey(text)
@@ -87,9 +99,20 @@ func (c *cli) verifyReceipts(args []string) {
 		return
 	}
 
-	failed, pending := 0, 0
+	failed, pending, accepted := 0, 0, 0
 	for i, r := range rs {
 		what := fmt.Sprintf("%s %s on call %s of run %s (record %s)", cleanText(r.Approver), approvedWord(r.Approved), cleanText(r.ToolUseID), cleanText(r.RunID), cleanText(r.Record))
+		if len(r.Cert) > 0 {
+			switch outcome := c.certReceipt(what, r, ci, byRun[r.RunID], signed, logKey); outcome {
+			case certFailed:
+				failed++
+			case certPending:
+				pending++
+			case certAccepted:
+				accepted++
+			}
+			continue
+		}
 		v, known := keys[r.Approver]
 		if !known {
 			c.printf("FAIL  %s: -approver-keys has no key for this approver\n", what)
@@ -133,11 +156,17 @@ func (c *cli) verifyReceipts(args []string) {
 		c.fail("%d of %d receipt(s) did not verify or are not committed to by the signed heads", failed, len(rs))
 		return
 	}
+	// A certificate-bound receipt is counted apart: its identity was accepted at A, with revocation not checked.
+	verified := len(rs) - accepted - pending
+	note := ""
+	if accepted > 0 {
+		note = fmt.Sprintf("; %d certificate-bound receipt(s) had their identity accepted at the time the decision became provable, revocation status not checked (not verified decisions)", accepted)
+	}
 	if pending > 0 {
-		c.printf("PASS: %d receipt(s) verified; %d not yet signed into a head (the application's next write to the run, or a recovery pass, does it)\n", len(rs), pending)
+		c.printf("PASS: %d receipt(s) verified%s; %d not yet signed into a head (the application's next write to the run, or a recovery pass, does it)\n", verified, note, pending)
 		return
 	}
-	c.printf("PASS: %d receipt(s) verified and committed to by signed heads\n", len(rs))
+	c.printf("PASS: %d receipt(s) verified and committed to by signed heads%s\n", verified, note)
 }
 
 // anchorReceiptFile adds the anchoring proof to the receipt file at path, by writing a temporary file
@@ -244,4 +273,66 @@ func (c *cli) readHeads(path string) ([]audit.SignedTreeHead, error) {
 		return nil, unusable(fmt.Errorf("%s holds no signed tree head", path))
 	}
 	return out, nil
+}
+
+// Outcomes of checking one certificate-bound receipt.
+const (
+	certOK = iota
+	certAccepted
+	certFailed
+	certPending
+)
+
+// certReceipt checks a certificate-bound receipt: the journal and heads must commit to the decision (as
+// for a bare-key receipt), and the chain it carries must be accepted by the policy at A, the time of the
+// head that covers it (audit.DecisionReceipt.VerifyIdentity). Revocation status is not looked at, and
+// the line says so: this is neither a final nor a provisional verdict.
+func (c *cli) certReceipt(what string, r audit.DecisionReceipt, ci *audit.CertIdentity, journal []agent.Record, heads []audit.SignedTreeHead, logKey audit.Verifier) int {
+	if ci == nil {
+		c.printf("FAIL  %s: the receipt is certificate-bound; pass -identity-policy (the certificate policy file) to check its chain and identity\n", what)
+		return certFailed
+	}
+	if journal == nil {
+		c.note(unusable(fmt.Errorf("no -journal for run %q, which receipt %s names", r.RunID, r.Record)))
+		return certOK
+	}
+	f := audit.CheckReceipt(r, journal, heads, logKey)
+	switch f.Verdict {
+	case audit.ReceiptPending:
+		c.printf("INFO  %s: pending: %s (the identity is checked once a signed head covers the decision)\n", what, cleanText(f.Detail))
+		return certPending
+	case audit.ReceiptAnchored, audit.ReceiptRedacted:
+	default:
+		c.printf("FAIL  %s: %s: %s\n", what, f.Verdict, cleanText(f.Detail))
+		return certFailed
+	}
+	// A comes from the heads the caller supplied too, and the earlier of that and the receipt's own
+	// anchoring proof is used: the auditor's own list is the better source, and a later head only fails closed.
+	own := r.Anchor
+	bare := r
+	bare.Anchor = nil
+	fromHeads, err := audit.AnchorReceipt(bare, journal, heads, logKey)
+	switch {
+	case err == nil && own == nil:
+		r = fromHeads
+	case err == nil:
+		if a1, e1 := r.AnchorTime(logKey); e1 != nil || fromHeads.Anchor.STH.TimestampNanos < a1.UnixNano() {
+			r = fromHeads
+		}
+	case own == nil:
+		c.printf("FAIL  %s: %s\n", what, cleanText(err.Error()))
+		return certFailed
+	}
+	id, err := r.VerifyIdentity(ci, logKey)
+	if err != nil {
+		c.printf("FAIL  %s: %s\n", what, cleanText(err.Error()))
+		return certFailed
+	}
+	name := ""
+	if id.DisplayName != "" {
+		name = fmt.Sprintf(" (certificate name %s, not part of the identity)", strconv.Quote(cleanText(id.DisplayName)))
+	}
+	c.printf("IDENTITY  %s: %s; identity %s%s accepted at %s (%s), certificate valid %s to %s, leaf %s; revocation status NOT checked, so this is not the gate's verdict\n", what, f.Verdict,
+		cleanText(id.Identifier), name, agent.FormatTimestamp(id.AnchoredAt), id.TimeSource, agent.FormatTimestamp(id.NotBefore), agent.FormatTimestamp(id.NotAfter), id.LeafHash[:16])
+	return certAccepted
 }

@@ -455,6 +455,10 @@ type CertIdentity struct {
 
 CertIdentity is a compiled IdentityPolicy: immutable, safe for concurrent use. *(building block, not yet used by approval gates)*
 
+**Constructors and functions**
+
+- `func ParseIdentityPolicy(name string, b []byte, readAnchor func(rel string) ([]byte, error)) (*CertIdentity, error)`: ParseIdentityPolicy compiles a certificate policy file's bytes (see identityPolicyFile for its members).
+
 **Methods**
 
 - `func (c *CertIdentity) Canonicalizer() Canonicalizer`: Canonicalizer returns the function this policy compares identifiers with, for the identity record and for the other places an identity is compared (the requester principal). *(building block, not yet used by approval gates)*
@@ -669,6 +673,7 @@ DecisionReceipt is one signed approver decision, with the journal record that ho
 - `func (r DecisionReceipt) AnchorTime(logKey Verifier) (time.Time, error)`: AnchorTime is the timestamp of the signed head the receipt's proof carries, as logKey vouches for it.
 - `func (r DecisionReceipt) Verify(v Verifier) error`: Verify checks the receipt on its own: it is of ReceiptFormat, its arguments hash to ArgsSHA, and Signature is a valid signature, by the approver's key v, over the decision bytes (agent.ApprovalDecisionBytes) of exactly this run, call, tool, arguments, approver, decision and time.
 - `func (r DecisionReceipt) VerifyCertificate(ci *CertIdentity, logKey Verifier) error`: VerifyCertificate checks a certificate-bound receipt against the gate's certificate policy: the chain it carries is accepted for r.Approver at a, the time of the head the receipt's anchoring proof carries as logKey vouches for it (see AnchorTime; a receipt with no proof fails, and the caller cannot choose the time), by exactly the rules CertIdentity.VerifyChain applies to a decision the gate counts; the receipt's scheme is the one the leaf's key has; and the signature verifies under that key over the v4 bytes.
+- `func (r DecisionReceipt) VerifyIdentity(ci *CertIdentity, logKey Verifier) (ReceiptIdentity, error)`: VerifyIdentity checks a certificate-bound receipt on its own: the anchoring proof holds under logKey and fixes A (AnchorTime), and the chain, the identity and the signature are accepted by ci at A (VerifyCertificate).
 
 ## type DecisionTime
 
@@ -1531,6 +1536,29 @@ ReceiptFinding is the verdict on one receipt, with the reason.
 **Constructors and functions**
 
 - `func CheckReceipt(r DecisionReceipt, journal []agent.Record, heads []SignedTreeHead, logKey Verifier) ReceiptFinding`: CheckReceipt decides whether the signed tree heads of the run commit to the receipt's decision.
+
+## type ReceiptIdentity
+
+```go
+type ReceiptIdentity struct {
+	Approver string
+
+	Identifier string
+
+	DisplayName string
+
+	LeafHash, AnchorKey string
+	Chain               []string
+	NotBefore, NotAfter time.Time
+
+	DecidedAt, AnchoredAt time.Time
+	TimeSource            string
+
+	Revocation string
+}
+```
+
+ReceiptIdentity is what VerifyIdentity establishes about a certificate-bound receipt.
 
 ## type ReceiptVerdict
 

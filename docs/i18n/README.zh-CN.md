@@ -52,6 +52,8 @@ Bide 朝着银行对处理资金的软件的要求构建：密钥置于应用之
 
 **在终端中决定，并证明人们得到了通知。** `bide approve` 显示它从日志中读到的调用、其参数以及你的签名所绑定的 SHA-256，拒绝其决定不会被计入的发起人，并留下一份回执；之后 `bide audit verify-receipts` 会对照已签名的树头检查该回执，以发现在某个树头已承诺该决定之后被删除的决定。`bide audit notifications` 对照运行日志和已签名的轨迹离线检查：每一次停机和每一个等待中的批准是否都已及时送达并被确认，对无人被告知的情形则判定失败。参见[批准指南](../../docs/guides/hitl-approval.md#deciding-from-the-terminal)、[审计指南](../../docs/guides/audit.md#decision-receipts-noticing-a-decision-deleted-before-it-was-anchored)和[通知指南](../../docs/guides/notifications.md#auditing-were-the-people-told)。
 
+**审批人身份（绑定证书的审批人）。** `bide view` 与 `bide approve -list` 对此类网关显示网关记录的标识符、层级、依据和状态时间；只有审计结果才会使任何内容变绿，临时计数始终明显不同。带 `-identity-policy` 的 `bide approve -verify-receipt` 与 `bide audit verify-receipts` 检查证书链和身份（不检查吊销）。参见[运行查看器指南](../../docs/guides/run-viewer.md)。
+
 ## 一条日志，五项保证
 
 智能体循环约 40 行。五项保证来自其下那条持久化、仅追加的日志。

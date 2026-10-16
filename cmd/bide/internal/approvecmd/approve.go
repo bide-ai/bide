@@ -25,6 +25,7 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/internal/approveline"
+	"github.com/bide-ai/bide/internal/policyfile"
 	"github.com/bide-ai/bide/internal/runview"
 	"github.com/bide-ai/bide/internal/term"
 )
@@ -154,6 +155,7 @@ type flags struct {
 	reject, yes, full         bool
 	unverified                bool
 	receipt, verifyReceipt    string
+	identityPolicy, logKey    string
 	list, asJSON              bool
 	to                        string // an approval intake's base URL (package approvals): decide through it
 	tlsCA                     string
@@ -190,6 +192,8 @@ func MainWith(args []string, in io.Reader, stdout, stderr io.Writer, stores Stor
 	fs.BoolVar(&f.unverified, "unverified", false, "decide an m-of-n gate without -approver-keys: the key is not checked against the one enrolled for you, and the tally is not verified")
 	fs.StringVar(&f.receipt, "receipt", "", src.ReceiptHelp)
 	fs.StringVar(&f.verifyReceipt, "verify-receipt", "", "verify a decision receipt on its own, against -approver-keys, instead of deciding anything: its signature over the exact call it states")
+	fs.StringVar(&f.identityPolicy, "identity-policy", "", "with -verify-receipt, for a certificate-bound receipt: the certificate policy file (trust anchors, pinned intermediates, the approver-to-identity map; see docs/guides/hitl-approval.md). The chain and identity are checked against it at the time the receipt's anchoring head was signed; revocation status is not checked")
+	fs.StringVar(&f.logKey, "log-key", "", "with -verify-receipt, for a certificate-bound receipt: the audit log's public key (ed25519:<hex>, or a file holding it), which vouches for the receipt's anchoring proof")
 	fs.BoolVar(&f.reject, "reject", false, "record a rejection instead of an approval")
 	fs.BoolVar(&f.yes, "yes", false, "do not ask for confirmation (for scripts); what is signed is still shown")
 	fs.BoolVar(&f.full, "full", false, "show all of the call's arguments, not the first lines")
@@ -253,8 +257,11 @@ func (f flags) check() string {
 		return approveline.NotAnEnvName
 	}
 	if f.verifyReceipt != "" {
-		if f.approverKeys == "" {
-			return "-verify-receipt needs -approver-keys, the file of enrolled approver public keys"
+		if f.approverKeys == "" && f.identityPolicy == "" {
+			return "-verify-receipt needs -approver-keys, the file of enrolled approver public keys (or -identity-policy and -log-key for a certificate-bound receipt)"
+		}
+		if (f.identityPolicy == "") != (f.logKey == "") {
+			return "-identity-policy and -log-key go together: a certificate-bound receipt is checked against the policy at the time the log's anchoring head was signed"
 		}
 		for name, set := range map[string]bool{"-db": f.db != "", "-postgres": f.postgres != "", "-postgres-env": f.postgresEnv != "", "-run": f.run != "", "-call": f.call != "", "-as": f.as != "", "-key": f.key != "", "-reject": f.reject, "-yes": f.yes, "-full": f.full, "-list": f.list, "-json": f.asJSON, "-unverified": f.unverified, "-receipt": f.receipt != "", "-to": f.to != ""} {
 			if set {
@@ -262,6 +269,9 @@ func (f flags) check() string {
 			}
 		}
 		return ""
+	}
+	if f.identityPolicy != "" || f.logKey != "" {
+		return "-identity-policy and -log-key go with -verify-receipt only"
 	}
 	if f.receipt != "" && f.list {
 		return "-receipt does not go with -list"
@@ -980,6 +990,13 @@ type waiting struct {
 	// only when Verified.
 	Settled  string   `json:"settled,omitempty"`
 	Commands []string `json:"commands"`
+	// Identity is the gate's approver identity, for a gate with a certificate-bound approver
+	// (runview.GateIdentity): what it is paused for and the identity, tier, basis and status time of
+	// each counted decision. Such a gate is never Verified here: the keys -approver-keys holds cannot
+	// check a certificate-bound decision, the gate does.
+	Identity *runview.GateIdentity `json:"identity,omitempty"`
+	// Held: the gate counted and the call is held before execution by the identity status re-check.
+	Held bool `json:"held,omitempty"`
 }
 
 // list prints the calls that wait for a decision in the journal.
@@ -1018,15 +1035,16 @@ func (c *cmd) list(ctx context.Context) error {
 		v := runview.Build(ctx, run, recs, nil)
 		runview.MarkDeadlines(v.Gates, now())
 		for _, g := range v.Gates {
-			if !g.Waiting || v.State == string(agent.RunCompleted) || v.State == string(agent.RunAborted) || v.State == string(agent.RunCancelled) {
+			if !(g.Waiting || g.Held) || v.State == string(agent.RunCompleted) || v.State == string(agent.RunAborted) || v.State == string(agent.RunCancelled) {
 				continue
 			}
 			w := waiting{Run: run, Call: g.ToolUseID, Tool: g.ToolName, Single: g.Single, Need: g.Need, Approvers: g.Approvers, ApprovedBy: g.ApprovedBy, DeniedBy: g.DeniedBy, Pending: g.Pending, AskedAt: g.AskedAt,
-				ExpiresAt: g.ExpiresAt, Timeout: g.Timeout, Due: g.Due, Overdue: g.Overdue}
+				ExpiresAt: g.ExpiresAt, Timeout: g.Timeout, Due: g.Due, Overdue: g.Overdue, Identity: g.Identity, Held: g.Held}
+			bound := g.Identity != nil && g.Identity.Bound
 			if g.ExcludePrincipal {
 				w.Requesters, w.Excluded = g.Requesters, g.Excluded
 			}
-			if _, tu, found := agent.FindToolCall(recs, g.ToolUseID); found && verifierFor != nil && !g.Single && g.Need > 0 {
+			if _, tu, found := agent.FindToolCall(recs, g.ToolUseID); found && verifierFor != nil && !g.Single && g.Need > 0 && !bound {
 				// The gate's own count, with the approvers' keys: records that do not verify count for
 				// nothing, and a pending approver is one with no valid decision.
 				t, _ := agent.TallyApprovals(recs, agent.ApprovalSubject{RunID: run, ToolUseID: g.ToolUseID, ToolName: tu.Name, Args: tu.Args}, gatePolicy(g), verifierFor)
@@ -1049,11 +1067,15 @@ func (c *cmd) list(ctx context.Context) error {
 			}
 			switch {
 			case g.Overdue: // the gate refuses decisions
+			case g.Held: // counted: no decision is wanted
 			case g.Single:
 				line("")
 			case w.Settled != "":
 			default:
 				for _, id := range w.Pending { // a requester is never pending: the gate excludes them
+					if bound && slices.Contains(g.Identity.Approvers, id) {
+						continue // a bare-key decision does not count for a certificate-bound approver
+					}
 					line(id)
 				}
 			}
@@ -1094,7 +1116,10 @@ func (c *cmd) list(ctx context.Context) error {
 		}
 		if !w.Single {
 			label := ""
-			if !w.Verified {
+			switch {
+			case w.Identity != nil && w.Identity.Bound:
+				label = " (identity-bound: certificate-bound decisions count only when the gate checks them; this command does not)"
+			case !w.Verified:
 				label = " (decisions as recorded, unverified: give -approver-keys)"
 			}
 			fmt.Fprintf(c.out, "    %d of %d: %s%s%s\n", w.Need, len(w.Approvers), safe(strings.Join(w.Approvers, ", ")), names("; approved by", w.ApprovedBy)+names("; denied by", w.DeniedBy), label)
@@ -1110,6 +1135,7 @@ func (c *cmd) list(ctx context.Context) error {
 				fmt.Fprintf(c.out, "    pending: %s\n", safe(strings.Join(w.Pending, ", ")))
 			}
 		}
+		c.listIdentity(w)
 		for _, cmdline := range w.Commands {
 			fmt.Fprintf(c.out, "    %s\n", st.Path(safe(cmdline)))
 		}
@@ -1119,6 +1145,80 @@ func (c *cmd) list(ctx context.Context) error {
 	}
 	fmt.Fprintf(c.out, "\n%s\n", st.Dim(c.src.ListHint))
 	return nil
+}
+
+// listIdentity prints a gate's approver identity under its -list entry. Only a final tier is printed in
+// the OK style; a provisional tier is warned, anything else is a failure, and the words say the
+// tier either way. Every value comes from the journal and is printed through safe.
+func (c *cmd) listIdentity(w waiting) {
+	gi, st := w.Identity, c.st
+	if gi == nil || !gi.Bound {
+		return
+	}
+	style := st.Warn
+	switch gi.Class {
+	case "audited":
+		style = st.OK // only an audit result is green
+	case "final":
+		style = func(t string) string { return t } // final as recorded by the gate: not green
+	case "bad":
+		style = st.Fail
+	}
+	fmt.Fprintf(c.out, "    approver identity: %s\n", style(safe(gi.Line)))
+	if gi.PhaseText != "" {
+		fmt.Fprintf(c.out, "      %s\n", style(safe(gi.PhaseText)))
+	}
+	if gi.Detail != "" && gi.Hold == nil {
+		fmt.Fprintf(c.out, "      %s\n", safe(gi.Detail))
+	}
+	for _, p := range gi.Problems {
+		fmt.Fprintf(c.out, "      %s\n", st.Fail(safe(p)))
+	}
+	if h := gi.Hold; h != nil {
+		fmt.Fprintf(c.out, "      held %s UTC: %s%s\n", safe(h.CheckedAt), safe(h.Reason), cond(h.Detail != "", ": "+safe(h.Detail), ""))
+	}
+	for _, ic := range gi.Cards {
+		tier := safe(ic.TierText)
+		switch ic.Class {
+		case "audited":
+			tier = st.OK(tier)
+		case "final":
+		case "prov":
+			tier = st.Warn(tier)
+		default:
+			tier = st.Fail(tier)
+		}
+		name := ""
+		if ic.DisplayName != "" {
+			name = " (" + safe(ic.DisplayName) + ")"
+		}
+		fmt.Fprintf(c.out, "      %s: %s%s  %s\n", safe(ic.Approver), safe(ic.Identifier), name, tier)
+		if ic.Disputed {
+			fmt.Fprintf(c.out, "        %s\n", st.Fail("DISPUTED: newer status shows a revocation (keyCompromise) that voids this count back to the certificate's notBefore"))
+		}
+		if ic.Basis != "" {
+			fmt.Fprintf(c.out, "        basis: %s\n", safe(ic.Basis))
+		}
+		if ic.StatusTime != "" {
+			fmt.Fprintf(c.out, "        status time (S) %s UTC%s\n", safe(ic.StatusTime), cond(ic.StatusAge != "", " ("+safe(ic.StatusAge)+")", ""))
+		}
+		if ic.AnchoredAt != "" {
+			fmt.Fprintf(c.out, "        provable at %s UTC (%s)\n", safe(ic.AnchoredAt), safe(ic.TimeSource))
+		}
+	}
+	if len(gi.Cards) > 0 {
+		fmt.Fprintf(c.out, "      %s\n", st.Dim("as recorded at counting by the gate, not re-verified here; a revocation first reported after S is not covered"))
+	}
+	if gi.PolicyDigest != "" {
+		fmt.Fprintf(c.out, "      policy %s %s\n", safe(gi.PolicyDigest), st.Dim("(as the journal records it; not recomputed here)"))
+	}
+}
+
+func cond(b bool, yes, no string) string {
+	if b {
+		return yes
+	}
+	return no
 }
 
 // auditLine says when a recorded decision is signed into the audit log. It is the same whatever the
@@ -1222,6 +1322,12 @@ func (c *cmd) verifyReceiptFile() error {
 	if err := audit.UnmarshalStrict(b, &r); err != nil {
 		return fmt.Errorf("receipt %s: %w", c.f.verifyReceipt, err)
 	}
+	if len(r.Cert) > 0 {
+		return c.verifyCertReceipt(r)
+	}
+	if c.f.approverKeys == "" {
+		return refuse("the receipt is of a bare-key decision: -verify-receipt needs -approver-keys for it")
+	}
 	keys, err := approverKeys(c.f.approverKeys)
 	if err != nil {
 		return err
@@ -1238,6 +1344,56 @@ func (c *cmd) verifyReceiptFile() error {
 	fmt.Fprintf(c.out, "  args SHA-256 %s\n  journal record %s at position %d, recorded %s\n", r.ArgsSHA, safe(r.Record), r.Index, safe(r.RecordedAt))
 	fmt.Fprintf(c.out, "%s\n", st.Dim("this checks the receipt alone; bide audit verify-receipts checks that the signed heads of the journal commit to the decision"))
 	return nil
+}
+
+// verifyCertReceipt checks a certificate-bound receipt on its own: its anchoring proof under the log's
+// key fixes the time A the decision became provable, and the policy accepts the chain, the identity and
+// the signature at A. Revocation status is not checked, and the output says so.
+func (c *cmd) verifyCertReceipt(r audit.DecisionReceipt) error {
+	if c.f.identityPolicy == "" {
+		return refuse("the receipt is certificate-bound (it carries the approver's certificate chain): pass -identity-policy and -log-key to check its chain and identity")
+	}
+	ci, err := policyfile.Read(c.f.identityPolicy)
+	if err != nil {
+		return err
+	}
+	logKey, err := readLogKey(c.f.logKey)
+	if err != nil {
+		return err
+	}
+	if r.Anchor == nil {
+		return refuse("the receipt has no anchoring proof, so the time the decision became provable is not known: bide audit verify-receipts -update adds one once a signed head covers it")
+	}
+	id, err := r.VerifyIdentity(ci, logKey)
+	if err != nil {
+		return refuse("the receipt does not verify: %s", safe(err.Error()))
+	}
+	st := c.st
+	name := ""
+	if id.DisplayName != "" {
+		name = fmt.Sprintf(" (certificate name %q, not part of the identity)", safe(id.DisplayName))
+	}
+	fmt.Fprintf(c.out, "IDENTITY %s%s%s accepted for %s, who %s call %s (tool %s) of run %s at %s\n", "", st.Bold(safe(id.Identifier)), name, st.Bold(safe(r.Approver)), approvedWord(r.Approved), safe(r.ToolUseID), safe(r.ToolName), safe(r.RunID), safe(r.DecidedAt))
+	fmt.Fprintf(c.out, "  accepted at %s (%s); certificate valid %s to %s\n  leaf %s, trust anchor key %s\n", agent.FormatTimestamp(id.AnchoredAt), id.TimeSource, agent.FormatTimestamp(id.NotBefore), agent.FormatTimestamp(id.NotAfter), id.LeafHash, id.AnchorKey)
+	fmt.Fprintf(c.out, "  args SHA-256 %s\n  journal record %s at position %d, recorded %s\n", r.ArgsSHA, safe(r.Record), r.Index, safe(r.RecordedAt))
+	fmt.Fprintln(c.out, "revocation status was NOT checked, so this is the identity check, not the gate's verdict (final or provisional); the receipt alone does not show the journal kept the decision: bide audit verify-receipts checks that")
+	return nil
+}
+
+// readLogKey reads the log's public key given as key text or as a file holding it.
+func readLogKey(s string) (audit.Verifier, error) {
+	if v, err := audit.ParsePublicKey(s); err == nil {
+		return v, nil
+	}
+	b, err := os.ReadFile(s)
+	if err != nil {
+		return nil, refuse("-log-key is neither a public key (ed25519:<hex>) nor a readable file: %s", safe(unwrapPath(err).Error()))
+	}
+	v, err := audit.ParsePublicKey(strings.TrimSpace(string(b)))
+	if err != nil {
+		return nil, refuse("-log-key %s: %s", safe(s), safe(err.Error()))
+	}
+	return v, nil
 }
 
 func approvedWord(approved bool) string {

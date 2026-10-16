@@ -19,6 +19,8 @@
 {{if .DeniedBy}}<dt>Denied</dt><dd>{{join .DeniedBy ", "}}</dd>{{end}}
 <dt>Pending</dt><dd>{{if .Pending}}{{join .Pending ", "}}{{else}}<span class="muted">none</span>{{end}}</dd>{{end}}
 <dt>Status</dt><dd>{{.Status}}</dd>
+{{with .Identity}}{{$gi := .}}<dt>Identity</dt><dd class="attn-id id-{{.Class}}"><b>{{.Line}}</b>{{with .PhaseText}}{{if ne . $gi.Line}}<br>{{.}}{{end}}{{end}}{{if .Approvers}}<br><span class="muted small">certificate-bound: {{join .Approvers ", "}}. A bare-key decision does not count for them.</span>{{end}}{{range .Problems}}<br><span class="bad">{{.}}</span>{{end}}
+{{range .Cards}}<br><span class="idc id-{{.Class}}"><span class="idbadge">{{.TierText}}</span>{{if .Disputed}} <span class="iddisputed">DISPUTED</span>{{end}} {{.Approver}}: <span class="mono">{{.Identifier}}</span>{{with .DisplayName}} ({{.}}){{end}}{{with .Basis}}; {{.}}{{end}}{{with .StatusTime}}; status time (S) {{.}} UTC{{end}}</span>{{end}}</dd>{{end}}
 {{if .Due}}<dt>Deadline</dt><dd class="{{if .Overdue}}bad{{else if .DueSoon}}warn{{end}}">{{if .DueSoon}}{{if .Overdue}}OVERDUE{{else}}DUE SOON{{end}}: {{end}}{{.Due}}</dd>{{end}}
 </dl>{{end}}
 {{if and .Gate .Gate.Overdue}}<p class="attn-label">Deadline passed</p><p class="muted">Decisions on this gate are refused. Drive the run again (resume it) to record the expiry; the call does not run.</p>{{else if .Command}}<p class="attn-label">Record a decision</p><pre class="attn-cmd">{{.Command}}</pre>{{else if .NoCommand}}<p class="attn-label">Record a decision</p><p class="muted">{{.NoCommand}}: an id holds a control or invisible character. Use <code>bide approve -list</code>.</p>{{end}}

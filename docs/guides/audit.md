@@ -748,6 +748,8 @@ kept, so a decision deleted before its approver made a receipt, or before a rece
 not proved deleted, and a head that stops short of the position says nothing, however late it was
 signed. `bide audit verify-receipts` is the command line (below).
 
+**Certificate-bound receipts.** A receipt that carries the approver's certificate chain is not checked with `-approver-keys`: `verify-receipts -identity-policy <file>` (with `-pubkey`, the log's key) checks it against the gate's certificate policy at the time the decision became provable, the time of the smallest signed head that covers it (from the receipt's own anchoring proof, else from the heads given), and prints the identity, that time and its source, and the certificate's validity. It does not check revocation status and says so: the result is an `IDENTITY` line, not a `PASS`, and the summary counts these receipts apart from the verified ones; it is the identity check, not the gate's final or provisional verdict. A is the earlier of the receipt's own anchoring head and the heads given. Without `-identity-policy` such a receipt fails and the line names the flag. The policy file and the single-receipt form are in [Human approval](hitl-approval.md#deciding-from-the-terminal).
+
 **Which verb to run.** The approver runs `verify-receipts` on the receipts they kept: it asks whether
 *their* decision was kept, and notices one deleted after a head committed to it. The operator or an
 auditor runs `verify-decision-coverage` on a journal export and the heads: it needs no receipts and asks

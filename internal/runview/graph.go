@@ -350,7 +350,23 @@ func gateLines(gt Gate) (line, class, sig string) {
 	case "denied", "closed, not approved", "expired":
 		class = "bad"
 	}
+	// An approved gate with a certificate-bound approver is drawn good only when an audit re-checked its
+	// identity; otherwise it says what the identity is as recorded.
+	if gi := gt.Identity; gi != nil && gi.Bound && state == "approved" && gi.Class != identAudited {
+		switch gi.Class {
+		case identFinal:
+			class, line = "wait", line+", identity final as recorded"
+		case identBad:
+			class, line = "bad", line+", identity NOT VERIFIED"
+		default:
+			class, line = "wait", line+", identity not final"
+		}
+	}
 	switch {
+	case gt.Identity != nil && gt.Identity.Bound:
+		// The identity block says what the count rests on; the signature line of a bare-key gate would
+		// claim more than this page checked.
+		sig = "identity: " + gt.Identity.Line
 	case gt.Single:
 		sig = "one unsigned decision"
 	case gt.SignaturesOK:

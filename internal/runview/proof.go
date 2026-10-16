@@ -44,6 +44,27 @@ type ApprovalCheck struct {
 	Ignored         map[string]string             `json:"-"`
 	Keys            map[string]string             `json:"-"`
 	Times           map[string]audit.DecisionTime `json:"-"`
+	// Identity is what an audit found of each certificate-bound approver's decision on the gate (by
+	// approver id), for the identity block: only a result here can mark a decision disputed, and only
+	// a result for every one of them can make the block audited (the only green). Empty without one.
+	Identity map[string]IdentityAudit `json:"-"`
+}
+
+// IdentityAudit is an audit's finding on one certificate-bound decision: OK that the audit recomputed
+// the tier from the decision record, the heads, the chain and the status bytes and agrees with what the
+// gate recorded, Disputed that newer status shows a revocation effective at or before the decision
+// became provable (keyCompromise voids the count back to the certificate's notBefore), with Detail.
+//
+// TallyDigest and PolicyDigest name the count the audit examined (the SHA-256 of the recorded tally's
+// bytes and of the identity record's policy); a result whose digests are not the journal's current ones
+// is not applied. CheckedAt is when the audit ran (an RFC 3339 time).
+type IdentityAudit struct {
+	OK           bool
+	Disputed     bool
+	Detail       string
+	TallyDigest  string
+	PolicyDigest string
+	CheckedAt    string
 }
 
 // Prover checks a run's records against an audit artifact. It returns nil for a run the artifact

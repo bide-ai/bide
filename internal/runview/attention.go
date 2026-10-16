@@ -105,6 +105,9 @@ type AttentionGate struct {
 	Due       string `json:"due,omitempty"`
 	DueSoon   bool   `json:"due_soon,omitempty"`
 	Overdue   bool   `json:"overdue,omitempty"`
+	// Identity is the gate's approver identity, for a gate with a certificate-bound approver: what it
+	// is paused for (paused: identity status unknown, ...) and the identity of each counted decision.
+	Identity *GateIdentity `json:"identity,omitempty"`
 }
 
 // dueSoonWindow is how close to its deadline a waiting gate is flagged on the Needs attention list.
@@ -339,14 +342,28 @@ func (o Options) runItems(v *View, recs []agent.Record) []AttentionItem {
 	gates := slices.Clone(v.Gates)
 	MarkDeadlines(gates, now)
 	for _, g := range gates {
-		if !g.Waiting || over {
+		if !(g.Waiting || g.Held) || over {
 			continue
 		}
 		it := AttentionItem{Kind: AttentionApproval, KindText: "waiting for approval", RunID: v.RunID, Call: g.ToolUseID, Tool: g.ToolName,
 			Since: cmp.Or(parseTime(g.AskedAt), started), Gate: &AttentionGate{Single: g.Single, Need: g.Need, Of: len(g.Approvers), Approvers: g.Approvers,
 				ApprovedBy: g.ApprovedBy, DeniedBy: g.DeniedBy, Pending: g.Pending, Reapproval: g.Reapproval, Status: g.Status,
-				ExpiresAt: g.ExpiresAt, Due: g.Due, Overdue: g.Overdue}}
+				ExpiresAt: g.ExpiresAt, Due: g.Due, Overdue: g.Overdue, Identity: g.Identity}}
 		it.Summary = "Approval for " + cmp.Or(g.ToolName, g.ToolUseID) + " is waiting."
+		if gi := g.Identity; gi != nil && gi.PhaseText != "" {
+			// The phase leads: it is why a person is needed, and what to do differs from a plain wait.
+			it.Summary = "Approval for " + cmp.Or(g.ToolName, g.ToolUseID) + " is " + cond(g.Held, "not running", "waiting") + ": " + gi.PhaseText
+			if gi.Detail != "" && gi.Hold == nil {
+				it.Summary += " (" + gi.Detail + ")"
+			}
+			it.Summary += "."
+		}
+		if g.Held {
+			// Counted, so no decision is wanted: the call is held until the status the gate relies on is
+			// refreshed or the hold is resolved.
+			out = append(out, it)
+			continue
+		}
 		if at := parseTime(g.ExpiresAt); !at.IsZero() {
 			it.Gate.DueSoon = at.Sub(now) <= dueSoonWindow
 		}

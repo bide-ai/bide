@@ -41,6 +41,16 @@ type ApproverCard struct {
 	// the card's outcome and their signatures were not checked: which one counted, and so which
 	// decided_at is signed, is not known.
 	TimesNote string
+	// Identity is the identity of a certificate-bound approver's counted decision (see
+	// IdentityCard), nil for a bare-key approver and for a decision no identity record shows.
+	// Binding says which kind of approver this is on a gate with a certificate-bound approver:
+	// "certificate-bound" or "bare key (no identity)", empty on a gate of bare keys. IdentityNote is
+	// what to read instead of a signature line for a certificate-bound approver whose decision has no
+	// identity card, and IdentityBad that it is a problem.
+	Identity     *IdentityCard
+	Binding      string
+	IdentityNote string
+	IdentityBad  bool
 }
 
 // initials is up to two letters standing for an approver id: the first letters of its words
@@ -114,7 +124,18 @@ func cards(g Gate, p *Proof) []ApproverCard {
 	var out []ApproverCard
 	for _, n := range names {
 		c := ApproverCard{Name: n, Initials: initials(n), Fingerprint: chk.Keys[n]}
+		certBound := g.Identity != nil && g.Identity.Bound && slices.Contains(g.Identity.Approvers, n)
+		if g.Identity != nil && g.Identity.Bound {
+			c.Binding = "bare key (no identity)"
+			if certBound {
+				c.Binding = "certificate-bound"
+			}
+		}
 		switch {
+		case certBound && slices.Contains(g.Identity.Unchecked, n):
+			c.State = "recorded"
+			c.IdentityNote = "decision recorded, identity not checked: the gate counts it only after it has checked the chain, the identity and the revocation status"
+
 		case slices.Contains(g.Excluded, n):
 			// Fills no seat: the gate excludes the run's requester (or the tally excluded them).
 			c.State = "excluded"
@@ -146,6 +167,18 @@ func cards(g Gate, p *Proof) []ApproverCard {
 				c.TimesNote = fmt.Sprintf("%d signed decisions with this outcome on record, and only the one that counted carries a time its signature covers: pass -approver-keys to show it", many)
 			}
 			switch {
+			case certBound:
+				// The identity block speaks for a certificate-bound approver; a bare signature line
+				// would claim more than this page checked.
+				if i := slices.IndexFunc(g.Identity.Cards, func(ic IdentityCard) bool { return ic.Approver == n }); i >= 0 {
+					c.Identity = &g.Identity.Cards[i]
+				} else if c.State == "recorded" {
+					// said above
+				} else if c.State == "approved" {
+					c.IdentityNote, c.IdentityBad = "counted, but the journal holds no identity record for this decision", true
+				} else {
+					c.IdentityNote = "denial: no identity is shown for it"
+				}
 			case checked && (slices.Contains(chk.Counted, n) || slices.Contains(chk.Denied, n)):
 				c.Verify, c.VerifyOK = "signature verified", true
 			case checked:
@@ -234,4 +267,31 @@ func gapWords(t audit.DecisionTime) string {
 	default:
 		return "recorded " + (-gap).Round(time.Millisecond).String() + " before the signed time"
 	}
+}
+
+// Plain reports whether the card may be drawn as an ordinary approval: a bare-key approver's, or a
+// certificate-bound approver's whose identity an audit result re-checked. A certificate-bound approval
+// that is only final as recorded, provisional, bad or missing is never drawn in the approved (green) style.
+func (c ApproverCard) Plain() bool {
+	return c.Binding != "certificate-bound" || c.Identity != nil && c.Identity.Audited
+}
+
+// Style is the card's state class: the state, except that a certificate-bound approval that is not
+// plain has its own: idrecorded (final as recorded, neutral) or idcounted (anything else).
+func (c ApproverCard) Style() string {
+	switch {
+	case c.State != "approved" || c.Plain():
+		return c.State
+	case c.Identity != nil && c.Identity.Class == identFinal:
+		return "idrecorded"
+	}
+	return "idcounted"
+}
+
+// IdentityWord is a non-final approval's identity in a word, for the card's state line.
+func (c ApproverCard) IdentityWord() string {
+	if c.Identity != nil {
+		return c.Identity.TierText
+	}
+	return "NOT SHOWN"
 }

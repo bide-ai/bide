@@ -170,6 +170,12 @@ type Gate struct {
 	// Due says where the deadline stands on the viewer's clock ("due in 40m 00s (... UTC)"); empty
 	// for a gate with no deadline.
 	Due string `json:"due,omitempty"`
+	// Identity is the gate's approver identity, for a gate with a certificate-bound approver; nil for
+	// a gate of bare keys (see GateIdentity).
+	Identity *GateIdentity `json:"identity,omitempty"`
+	// Held: the call is counted but not run, held before execution by the identity status re-check
+	// (agent.ExecHold); the run needs a person although the gate is no longer waiting for decisions.
+	Held bool `json:"held,omitempty"`
 }
 
 // Decision is one recorded approval decision. A signed decision carries two times: DecidedAt, the
@@ -600,11 +606,20 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 			}
 			g.Expired = agent.EvaluateGateAfter(recs, agent.ApprovalSubject{ToolUseID: id}, nil, nil, since).Expired
 		}
-		if t, ok := agent.RecordedTally(byName, id); ok {
+		// A gate with a certificate-bound approver counts under its :ident tally; a tally under the
+		// plain name is superseded (the gate asks again), and is not read here.
+		bound, boundApprovers, _, _ := identNotes(recs, byName, id, wait)
+		_, _, hasIdentTally := latestIdentTally(byName, id)
+		bound = bound || hasIdentTally
+		t, tallyOK := agent.RecordedTally(byName, id)
+		if bound {
+			t, _, tallyOK = latestIdentTally(byName, id)
+		}
+		if tallyOK {
 			var tally agent.ApprovalTally
 			switch {
 			case json.Unmarshal(t.Result, &tally) != nil:
-			case !resulted && agent.GateReask(tally, g.ExcludePrincipal) != "":
+			case !bound && !resulted && agent.GateReask(tally, g.ExcludePrincipal) != "":
 				// The gate asks again rather than act on this tally (agent.GateReask, the rule the gate
 				// itself applies): it passed on decisions that predate the signed decision format, or
 				// without excluding the requester under a policy that now excludes it. Only decisions
@@ -647,6 +662,7 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 		if len(g.Decisions) == 0 && !g.Tallied && g.Need == 0 && !paused {
 			continue // an ungated call
 		}
+		var unchecked []string // certificate-bound approvers who decided on a gate that has not counted
 		if !g.Tallied {
 			// Whether the gate is a one-decision gate comes from the pause note, or the policy the
 			// call ran under, never from the decisions: an unsigned agent.Approve record on an
@@ -656,6 +672,12 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 				case slices.Contains(g.Excluded, d.Approver): // the requester: never counts
 				case d.Note != "": // written after the deadline: never counts
 				case g.Reapproval && d.DecidedAt == "": // signed before the format: never counts now
+				case bound && d.Signed && slices.Contains(boundApprovers, d.Approver):
+					// A certificate-bound decision counts only once the gate has checked the chain, the
+					// identity and the revocation status; until its tally says so, it is recorded, not counted.
+					if !slices.Contains(unchecked, d.Approver) {
+						unchecked = append(unchecked, d.Approver)
+					}
 				case d.Signed && d.Approved && !slices.Contains(g.ApprovedBy, d.Approver):
 					g.ApprovedBy = append(g.ApprovedBy, d.Approver)
 				case d.Signed && !d.Approved && !slices.Contains(g.DeniedBy, d.Approver):
@@ -663,13 +685,18 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 				}
 			}
 			for _, id := range g.Approvers {
-				if !slices.Contains(g.ApprovedBy, id) && !slices.Contains(g.DeniedBy, id) && !slices.Contains(g.Excluded, id) {
+				if !slices.Contains(g.ApprovedBy, id) && !slices.Contains(g.DeniedBy, id) && !slices.Contains(g.Excluded, id) && !slices.Contains(unchecked, id) {
 					g.Pending = append(g.Pending, id)
 				}
 			}
 		}
 		_, singleDecided := singleDecision(g)
 		g.Waiting = (paused || g.Reapproval) && !resulted && !g.Tallied && !(g.Single && singleDecided)
+		if g.Identity = identityOf(recs, byName, id, wait, g, resulted); g.Identity != nil {
+			g.Identity.Unchecked = unchecked
+			g.Identity.Class, g.Identity.Line = identityClass(g.Identity, g)
+			g.Held = g.Identity.Hold != nil && g.Tallied && !resulted
+		}
 		g.Status = gateStatus(g)
 		out = append(out, g)
 	}
@@ -881,6 +908,7 @@ func maxTime(a, b time.Time) time.Time {
 // expired. Build leaves them empty, since it reads no clock; the pages and bide approve -list call
 // this with theirs.
 func MarkDeadlines(gates []Gate, now time.Time) {
+	markStatusAges(gates, now)
 	for i := range gates {
 		g := &gates[i]
 		at := parseTime(g.ExpiresAt)
