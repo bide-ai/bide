@@ -96,7 +96,7 @@ bide cannot see that two different identifiers belong to one person, so such a p
 certificate-bound gate: it refuses only two approver ids that map to one identifier, and two certificates
 or keys of one identifier. The control is yours: **the CA's issuance policy gives one person one
 identifier, and the identity map lists one identifier per approver.** See
-[A person with two identifiers fills two seats](../KNOWN-LIMITATIONS.md#a-person-with-two-identifiers-fills-two-seats).
+the "A person with two identifiers fills two seats" entry in [known limitations](../KNOWN-LIMITATIONS.md).
 
 ### Large CRLs
 
