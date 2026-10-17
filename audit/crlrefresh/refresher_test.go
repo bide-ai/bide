@@ -150,8 +150,12 @@ func TestRefresherChecksTheSignatureAgainstTheIssuersOwnCertificate(t *testing.T
 	// A CRL with the issuer's own name signed by another key.
 	rogue := testca.NewRoot(t, "inter", testca.Opts{})
 	g.srv.set("/inter.crl", rogue.NewCRL(t, testca.CRLOpts{Number: 10, ThisUpdate: now.Add(-time.Minute), NextUpdate: now.Add(time.Hour)}))
-	if g.refresh()[g.intK] == nil {
+	err := g.refresh()[g.intK]
+	if err == nil {
 		t.Fatal("a CRL signed by another key was accepted")
+	}
+	if strings.Contains(err.Error(), ": ok") {
+		t.Fatalf("a CRL that failed verification is reported as ok: %v", err)
 	}
 	if h := g.health(g.intK); h.NewestNumber.Int64() != 1 {
 		t.Fatalf("a refused CRL changed what is held: %+v", h)
