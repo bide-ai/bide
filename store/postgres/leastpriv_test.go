@@ -136,7 +136,7 @@ func TestLeastPrivilegeRoles(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	tomb, err := agent.NewTombstone(rec, time.Now())
+	tomb, err := agent.NewTombstone("tool:pii", rec, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}

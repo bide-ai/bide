@@ -19,11 +19,11 @@ func TestNewTombstone_ReadsBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tomb, err := agent.NewTombstone(rec, time.UnixMilli(1_700_000_000_123))
+	tomb, err := agent.NewTombstone("tool:x", rec, time.UnixMilli(1_700_000_000_123))
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"redacted":{"leaf_hash":"` + hex.EncodeToString(agent.LeafHash(rec)) + `","at_ms":1700000000123}}`
+	want := `{"redacted":{"leaf_hash":"` + hex.EncodeToString(agent.LeafHash(rec)) + `","at_ms":1700000000123,"name":"tool:x"}}`
 	if string(tomb) != want {
 		t.Fatalf("NewTombstone = %s, want %s", tomb, want)
 	}
@@ -33,11 +33,17 @@ func TestNewTombstone_ReadsBack(t *testing.T) {
 	if err := agent.CheckRedaction("r", "tool:x", rec, tomb); err != nil {
 		t.Fatalf("CheckRedaction of a well-formed redaction = %v", err)
 	}
-	if _, err := agent.NewTombstone(tomb, time.Now()); !errors.Is(err, agent.ErrRedactMismatch) {
+	if _, err := agent.NewTombstone("tool:x", tomb, time.Now()); !errors.Is(err, agent.ErrRedactMismatch) {
 		t.Errorf("NewTombstone of a tombstone = %v, want ErrRedactMismatch", err)
 	}
-	if _, err := agent.NewTombstone(rec, time.UnixMilli(-1)); !errors.Is(err, agent.ErrConfig) {
+	if _, err := agent.NewTombstone("tool:x", rec, time.UnixMilli(-1)); !errors.Is(err, agent.ErrConfig) {
 		t.Errorf("NewTombstone before the epoch = %v, want ErrConfig", err)
+	}
+	if _, err := agent.NewTombstone("", rec, time.Now()); !errors.Is(err, agent.ErrConfig) {
+		t.Errorf("NewTombstone with no name = %v, want ErrConfig", err)
+	}
+	if n, ok := agent.TombstoneName(tomb); !ok || n != "tool:x" {
+		t.Errorf("TombstoneName = %q, %v", n, ok)
 	}
 	// A tombstone with a changed hash, extra member, upper-case hex, or short hash is not one.
 	for _, bad := range []string{
@@ -211,5 +217,43 @@ func TestRedact_RefusesAPlanMadeFromOtherRecords(t *testing.T) {
 	}
 	if e, _, _ := other.Get(ctx, "r", "step"); bytes.Contains(e.Data, []byte(`"redacted"`)) {
 		t.Fatalf("the record was replaced")
+	}
+}
+
+// A tombstone that names a record sits only in that record's row.
+func TestTombstone_NameMustMatchItsRow(t *testing.T) {
+	ctx := context.Background()
+	s := agent.NewMemStore()
+	j := agenttest.MustJournal(s)
+	b, err := agent.JournalEntry("a", agent.Record{Kind: agent.StepValue, Result: []byte(`1`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tomb, err := agent.NewTombstone("a", b, time.UnixMilli(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Step(ctx, "r", "seed", func(context.Context) (int, error) { return 1, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Insert(ctx, "r", "a", tomb); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Insert(ctx, "r", "b", tomb); err != nil { // a's tombstone copied under b
+		t.Fatal(err)
+	}
+	if r, ok, err := j.Get(ctx, "r", "a"); err != nil || !ok || !r.Redacted || r.Name != "a" {
+		t.Fatalf("Get(a) = %+v, %v, %v; want the redacted record", r, ok, err)
+	}
+	if _, _, err := j.Get(ctx, "r", "b"); !errors.Is(err, agent.ErrStorage) {
+		t.Fatalf("Get(b) of a tombstone naming a = %v, want ErrStorage", err)
+	}
+	// A tombstone that names no record (the reserved form without it) still reads.
+	legacy := []byte(`{"redacted":{"leaf_hash":"` + hex.EncodeToString(agent.LeafHash(b)) + `","at_ms":1}}`)
+	if _, _, err := s.Insert(ctx, "r", "c", legacy); err != nil {
+		t.Fatal(err)
+	}
+	if r, ok, err := j.Get(ctx, "r", "c"); err != nil || !ok || !r.Redacted {
+		t.Fatalf("Get(c) of a tombstone without a name = %+v, %v, %v", r, ok, err)
 	}
 }

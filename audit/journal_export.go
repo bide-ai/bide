@@ -63,11 +63,12 @@ func (x JournalExport) Journal() ([]agent.Record, error) {
 	return recs, nil
 }
 
-// recordName reads the name a record's stored bytes carry, or "" for a redaction tombstone (whose
-// name is its key, which an export does not carry).
+// recordName reads the name a record's stored bytes carry. A redaction tombstone carries the name
+// of the record it replaced (a tombstone written before names were recorded carries none: "").
 func recordName(b []byte) (string, error) {
 	if _, err := tombstoneLeafHash(b); err == nil {
-		return "", nil
+		n, _ := agent.TombstoneName(b)
+		return n, nil
 	}
 	r, err := decodeRecordBytes(b)
 	if err != nil {

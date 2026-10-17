@@ -91,8 +91,10 @@ type Record struct {
 	// rather than take it for a step that changed nothing.
 	OutcomeUnknown bool `json:"outcome_unknown,omitempty"`
 	// Redacted marks a record whose stored bytes a redaction replaced with a tombstone, the
-	// reserved form {"redacted":{"leaf_hash":"<hex>","at_ms":<ms>}}: the hex audit leaf hash of
-	// the bytes it replaced and the Unix-millis time of the redaction. Only Name is meaningful on
+	// reserved form {"redacted":{"leaf_hash":"<hex>","at_ms":<ms>,"name":"<name>"}}: the hex audit leaf hash of
+	// the bytes it replaced, the Unix-millis time of the redaction and the record's name (the name
+	// is optional on read; a redaction always writes it, so an export of the journal, which does
+	// not carry row names, still says which record a tombstone replaced). Only Name is meaningful on
 	// such a record, and Raw returns the tombstone. It is never journaled: the tombstone is what the
 	// store holds. A run holding a redacted record is over and cannot be driven again.
 	Redacted bool `json:"-"`
@@ -566,6 +568,11 @@ func DecodeStoredRecord(runID, name string, b []byte) (Record, error) {
 // modifies, such as an entry a store handed the journal.
 func decodeStored(runID, name string, b []byte) (Record, error) {
 	if isTombstone(b) {
+		// A tombstone that names its record must name the row it sits in: one copied under
+		// another row would otherwise read as that row's record.
+		if n, ok := TombstoneName(b); ok && n != name {
+			return Record{}, fmt.Errorf("run %s: the row stored as step %q holds a tombstone for a record named %q: %w", runID, name, n, ErrStorage)
+		}
 		return Record{Name: name, Redacted: true, raw: b}, nil
 	}
 	r, err := decodeRecord(b)
@@ -618,6 +625,7 @@ type tombstone struct {
 	Redacted *struct {
 		LeafHash string `json:"leaf_hash"`
 		AtMs     int64  `json:"at_ms"`
+		Name     string `json:"name,omitempty"`
 	} `json:"redacted"`
 }
 

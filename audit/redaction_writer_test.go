@@ -165,3 +165,52 @@ func rootOfPrefix(ctx context.Context, t *testing.T, s *agent.MemStore, run stri
 	}
 	return root
 }
+
+// A redacted approval decision, exported and read back from the export, is still listed as a
+// decision: the tombstone names the record it replaced, which the export (bytes only) does not.
+func TestRedactionWriter_ExportKeepsTheRedactedRecordsName(t *testing.T) {
+	ctx := context.Background()
+	s := agent.NewMemStore()
+	j := agenttest.MustJournal(s)
+	if _, err := j.Step(ctx, "r", "x", func(context.Context) (string, error) { return "x", nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Insert(ctx, "r", "approval:call1", mustEntry(t, "approval:call1", agent.Record{Kind: agent.StepApproval, Approved: true})); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Insert(ctx, "r", "run:complete", mustEntry(t, "run:complete", agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`"ok"`)})); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := agent.PlanRedaction(ctx, j, "r", agent.RedactionSelector{Payloads: true, IncludeApprovals: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.Redact(ctx, j, plan, time.UnixMilli(1)); err != nil {
+		t.Fatal(err)
+	}
+	x, err := audit.ExportJournal(ctx, j, "r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recs, err := x.Journal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, r := range recs {
+		if r.Redacted && r.Name == "approval:call1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the journal read from the export has no redacted record named approval:call1: %+v", recs)
+	}
+	signer := p11Signers(t)["ed25519"]
+	rep, err := audit.CheckDecisionCoverage("r", recs, nil, p11Verifier(t, signer), audit.CoverageBound{MaxRecords: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Decisions) != 1 || rep.Decisions[0].Note != audit.NoteRedacted {
+		t.Fatalf("decisions from the export = %+v, want the redacted approval listed with %q", rep.Decisions, audit.NoteRedacted)
+	}
+}

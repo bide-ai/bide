@@ -226,7 +226,7 @@ func Redact(ctx context.Context, j *Journal, plan RedactionPlan, at time.Time) (
 		if hex.EncodeToString(LeafHash(e.Data)) != pr.LeafHash {
 			return res, fmt.Errorf("run %s, entry %q is not the record the plan was made from: %w", plan.RunID, pr.Name, ErrRedactChanged)
 		}
-		tomb, err := NewTombstone(e.Data, at)
+		tomb, err := NewTombstone(pr.Name, e.Data, at)
 		if err != nil {
 			return res, err
 		}
