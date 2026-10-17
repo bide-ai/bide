@@ -18,6 +18,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/cmd/bide/internal/csr"
 	"github.com/bide-ai/bide/internal/approveline"
 	"github.com/bide-ai/bide/internal/term"
 )
@@ -396,9 +397,9 @@ func writeKeyPairCSR(path, csrPath string, alg audit.Alg) (audit.Signer, error) 
 	if err != nil {
 		return nil, err
 	}
-	var csr []byte
+	var req []byte
 	if csrPath != "" {
-		if csr, err = certificateRequest(priv); err != nil {
+		if req, err = csr.Build(priv, csr.Names{}); err != nil {
 			return nil, err
 		}
 	}
@@ -408,8 +409,8 @@ func writeKeyPairCSR(path, csrPath string, alg audit.Alg) (audit.Signer, error) 
 	if err := writeExclusive(path+".pub", []byte(publicKeyText(priv)+"\n"), 0o644); err != nil {
 		return nil, fmt.Errorf("%w (the private key %s was written; its public key is derived from it, bide approve prints it)", err, path)
 	}
-	if csr != nil {
-		if err := writeExclusive(csrPath, csr, 0o644); err != nil {
+	if req != nil {
+		if err := writeExclusive(csrPath, req, 0o644); err != nil {
 			return nil, fmt.Errorf("%w (the private key %s was written; make a request for it with your CA's tooling)", err, path)
 		}
 	}
