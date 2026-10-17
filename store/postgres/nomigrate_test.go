@@ -102,7 +102,7 @@ func TestWithoutMigration_LeastPrivilege(t *testing.T) {
 	if len(again.Created) != 0 {
 		t.Fatalf("second Migrate created %v", again.Created)
 	}
-	if len(res.Created) != 7 { // four tables, the function and two indexes
+	if len(res.Created) != 8 { // four tables, two functions and two indexes
 		t.Fatalf("first Migrate created %v", res.Created)
 	}
 	for _, st := range again.Statements { // idempotent: no function and no index on a current schema

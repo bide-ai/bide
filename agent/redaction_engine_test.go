@@ -28,39 +28,35 @@ func redactPlanned(t *testing.T, j *Journal, run string, sel RedactionSelector) 
 // and even asking for the saga records by prefix, leaves what was compensated readable: the
 // compensation memos are protected, so the second report is the first.
 func TestRedact_SagaRollbackSurvives(t *testing.T) {
-	ctx := context.Background()
-	l := newLedger()
-	j := memJournal()
-	drive := func() error {
-		a := mustNew(&scriptModel{turns: [][]Emit{toolTurn("a1", "A", `{}`), toolTurn("a2", "boom", `{}`)}}, j,
-			WithTools(l.write("A"), failTool("boom")))
-		_, err := a.Run(ctx, "r", UserText("go"), WithSaga())
-		return err
-	}
-	var first *SagaAborted
-	if err := drive(); !errors.As(err, &first) {
-		t.Fatalf("first drive = %v, want SagaAborted", err)
-	}
-	plan := redactPlanned(t, j, "r", RedactionSelector{Prefixes: []string{"@saga/", "@subrun/", "tool:", "@llm/", "run:start"}})
-	kept := map[string]bool{}
-	for _, k := range plan.Kept {
-		kept[k.Name] = true
-	}
-	for _, r := range plan.Records {
-		if strings.HasPrefix(r.Name, "@saga/") {
-			t.Errorf("the plan redacts the saga record %q", r.Name)
+	// Each selector alone, then all together: a re-drive of the redacted aborted saga is refused
+	// (the report would be rebuilt from records whose content is gone, so it is never given), the
+	// compensator never fires again, and the memos that say what was compensated are kept.
+	for _, prefixes := range [][]string{{"tool:"}, {"@llm/"}, {"run:start"}, {"@saga/", "@subrun/", "tool:", "@llm/", "run:start"}} {
+		ctx := context.Background()
+		l := newLedger()
+		j := memJournal()
+		drive := func() error {
+			a := mustNew(&scriptModel{turns: [][]Emit{toolTurn("a1", "A", `{}`), toolTurn("a2", "boom", `{}`)}}, j,
+				WithTools(l.write("A"), failTool("boom")))
+			_, err := a.Run(ctx, "r", UserText("go"), WithSaga())
+			return err
 		}
-	}
-	if !kept["@saga/compensate/a1"] {
-		t.Errorf("the plan does not list the compensation memo as kept: %+v", plan.Kept)
-	}
-	// Driving the redacted run again is refused, as for any run that holds a redacted record: it is
-	// not reported as a rollback that compensated nothing, and nothing runs again.
-	if err := drive(); !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "redacted") {
-		t.Fatalf("re-drive of the redacted run = %v, want ErrConfig naming the redaction", err)
-	}
-	if l.undoCount["A"] != 1 {
-		t.Errorf("the compensator for A ran %d times, want 1", l.undoCount["A"])
+		var first *SagaAborted
+		if err := drive(); !errors.As(err, &first) {
+			t.Fatalf("%v: first drive = %v, want SagaAborted", prefixes, err)
+		}
+		plan := redactPlanned(t, j, "r", RedactionSelector{Prefixes: prefixes})
+		for _, r := range plan.Records {
+			if strings.HasPrefix(r.Name, "@saga/") || strings.HasPrefix(r.Name, "@subrun/") {
+				t.Errorf("%v: the plan redacts the saga record %q", prefixes, r.Name)
+			}
+		}
+		if err := drive(); errors.As(err, new(*SagaAborted)) || !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "redacted") {
+			t.Fatalf("%v: re-drive of the redacted run = %v, want ErrConfig naming the redaction and no SagaAborted report", prefixes, err)
+		}
+		if l.undoCount["A"] != 1 {
+			t.Errorf("%v: the compensator for A ran %d times, want 1", prefixes, l.undoCount["A"])
+		}
 	}
 }
 

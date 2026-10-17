@@ -220,6 +220,24 @@ Test first, per rule 4.
 3. Signed authorization (if kept optional in 1).
 4. Model addition (if accepted) and, separately, end-marker redaction (if accepted).
 
+## Planned follow-ups
+
+- **Erasing a session transcript.** A session's journal and turn runs never end, so v1 refuses them (`ErrRedactSession`), and chat transcripts are where personal data concentrates. Needs a notion of a closed session (an explicit end record the session writes and every reader of a turn respects), then the same tombstone path over `turn/`, `start/`, `from/` records, which are protected today for that reason. Separate design and PR.
+- **Tombstones for event leaves** in `bide_events`, so `-keep-event-copies` is not the only answer.
+- **End-marker tombstones** (decision 4, approved): a tombstone of an end marker counts as an end, recognised by the tombstone's name, never by content. PR 3, with the lifecycle model.
+
+## Legal hold
+
+A bank must be able to freeze erasure while a matter is open. A hold is a promise the redaction path checks, so it is stored where a redaction cannot skip it and recorded where an auditor can see who placed and lifted it.
+
+- **Scope.** A hold names a run (and, by default, its sub-run tree: the run and every run whose ID starts with `<run>>`), or a matter id that covers a set of runs listed in the hold. A hold has an id, a matter, a scope, a reason, who placed it and when.
+- **Representation (recommended): a table, plus the trail.** A `bide_holds` table (SQLite and Postgres) with one row per active hold (`hold_id`, `matter`, `run_id`, `tree` flag), written only by the hold commands. The redaction statement (SQLite) and `bide_redact_v1` (Postgres) refuse, in the same statement that replaces the row, any run that has an active hold row for it or an ancestor (`NOT EXISTS`), so a hold placed concurrently with a redaction either lands first (the redaction is refused) or after (the redaction is already done and the hold command reports the run as already redacted at its position). Rejected: a protected record kind inside the run's journal, because holds placed on a run would be writes to a journal that may be over, would change the run's leaf set (and every root), and cannot cover a matter that names runs not yet created. The migration creates the table and the function checks it; a schema without the table has no holds, and `Redact` on it says to migrate, because a store that cannot check holds must not erase.
+- **Accountability.** Placing and lifting a hold are records in the same signed, anchored `redact:@log` trail (kinds `hold_placed`, `hold_lifted`: hold id, matter, scope, reason, who, when, and for a lift the id of the placement). The table is the enforcement; the trail is the evidence. `bide audit redactions` checks that every active table row has a placement in the trail and that no lift is missing a placement, and reports the table and trail disagreeing as a finding.
+- **Separation of duties for banks (optional).** Lifting by a different principal than placed it: the lift record carries a signed authorization (the same `bide.audit.redaction-authorization.v1` shape as an erasure) and the verifier checks the lifter's key differs from the placer's. A deployment sets "lift needs a second person"; off by default.
+- **Plan and refusal.** `PlanRedaction` gains `Holds` (id and matter of each hold covering the run) and a `Refusal` naming them; `bide journal redact` prints the hold and exits 1 with `held`. A dry run names the hold. The refusal is `ErrRedactHeld`, wrapping ErrConfig, written by the store, so it holds for raw callers too; on Postgres the role that erases has no privilege on `bide_holds` either, and a separate role places holds.
+- **Verification.** `bide audit redactions` lists active holds, hold history, and a redaction that crossed a hold (the trail's redaction record falls within a placement and its lift) as a finding, which also finds a redaction made by hand with SQL during a hold when it shows as an unaccounted tombstone.
+- **The anchor's own legal hold.** An S3 Object Lock legal hold on the anchor's objects (the signed heads) is a separate control: it stops the heads from being deleted or overwritten and says nothing about the journal rows. It does not replace this hold, and this hold does not protect the anchor. A deployment under a matter should have both, and the docs say so: bide's hold stops its own redaction path; it cannot stop a database administrator, a backup restore or a manual `DELETE`.
+
 ## Questions for approval
 
 1. Command home: `bide journal redact` (write, full build) plus `bide audit redactions` (read-only verifier). Recommend yes.

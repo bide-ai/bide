@@ -52,7 +52,7 @@ func TestNewSelect(t *testing.T) {
 		// casts only to pg_catalog built-ins: a domain's CHECK can call anything
 		`SELECT x FROM "app".bide_steps WHERE y OPERATOR(pg_catalog.=) $1::text`,
 		`SELECT x FROM "app".bide_steps WHERE y OPERATOR(pg_catalog.=) $1::app.dom`,
-		`SELECT x FROM "app".bide_steps WHERE y OPERATOR(pg_catalog.=) $1::pg_catalog.bytea`,
+		`SELECT x FROM "app".bide_steps WHERE y OPERATOR(pg_catalog.=) $1::pg_catalog.numeric`,
 		"SELECT CAST($1 AS pg_catalog.text)", "SELECT interval '1 second'", "SELECT E'x'", "SELECT pg_catalog.text 'a'",
 		// operators only as OPERATOR(pg_catalog.<op>), with an allowed op
 		`SELECT a || b FROM "app".bide_steps`, `SELECT x FROM "app".bide_steps WHERE y ### $1`,
