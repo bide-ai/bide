@@ -140,7 +140,6 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -190,8 +189,9 @@ type tables struct {
 	qEvents                             string     // the events table, schema-qualified
 	rels                                [][]sqlTok // the qualified tables, as the statement check names them
 	insert, acquire, renew, release     writeSQL
-	reap, redact                        writeSQL
-	leased, parentLive                  selectSQL
+	reap                                writeSQL
+	redactCall                          selectSQL // see Store.Redact
+	redact, qRedact                     string    // the redaction function's bare and qualified names
 	get, load                           selectSQL
 	appendEvent                         writeSQL // see EventStore.Append
 	getEvent, loadEvents                selectSQL
@@ -245,18 +245,19 @@ func (t tables) nextSeqBody(schema string) string {
 
 func newTables(prefix, schema string) (tables, error) {
 	t := tables{steps: prefix + "steps", leases: prefix + "leases", version: prefix + "schema_version", events: prefix + "events",
-		nextSeq: prefix + "next_seq_" + nextSeqVersion}
+		nextSeq: prefix + "next_seq_" + nextSeqVersion, redact: prefix + "redact_" + redactVersion}
 	q := quoteIdent(schema) + "."
 	t.qSteps, t.qLeases, t.qVersion, t.qNextSeq = q+t.steps, q+t.leases, q+t.version, q+t.nextSeq
 	t.qEvents = q + t.events
-	var names [5][]sqlTok
-	for i, n := range []string{t.qNextSeq, t.qSteps, t.qLeases, t.qVersion, t.qEvents} {
+	t.qRedact = q + t.redact
+	var names [6][]sqlTok
+	for i, n := range []string{t.qNextSeq, t.qSteps, t.qLeases, t.qVersion, t.qEvents, t.qRedact} {
 		var err error
 		if names[i], err = parseName(n); err != nil {
 			return tables{}, fmt.Errorf("postgres: schema %q: %w (%w)", schema, err, agent.ErrConfig)
 		}
 	}
-	nextSeq, steps, leases := names[0], [][]sqlTok{names[1]}, [][]sqlTok{names[2]}
+	nextSeq, steps, leases, redactFn := names[0], [][]sqlTok{names[1]}, [][]sqlTok{names[2]}, names[5]
 	t.rels = [][]sqlTok{names[1], names[2], names[3]}
 	var err error
 	// Every name is qualified: tables with the recorded schema, built-ins, types and the collation
@@ -300,21 +301,9 @@ func newTables(prefix, schema string) (tables, error) {
 			OR EXISTS (SELECT 1 FROM `+t.qSteps+` AS x WHERE x.run_id OPERATOR(pg_catalog.=) l.run_id AND x.name OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.text[])))`, nil, [][]sqlTok{names[1], names[2]}); err != nil {
 		return tables{}, err
 	}
-	// A redaction (see Store.Redact): one statement, so atomic. The row is replaced only if it holds
-	// the caller's bytes, the run holds an end marker and no lease on it is live; a concurrent
-	// change to the row makes the statement re-evaluate its conditions on the new version at read
-	// committed (and run again after a serialization failure, see write). The entry keeps its seq.
-	if t.redact, err = newWrite(`UPDATE `+t.qSteps+` AS s SET data = $3
-		WHERE s.run_id OPERATOR(pg_catalog.=) $1 AND s.name OPERATOR(pg_catalog.=) $2 AND s.data OPERATOR(pg_catalog.=) $4
-		AND EXISTS (SELECT 1 FROM `+t.qSteps+` AS e WHERE e.run_id OPERATOR(pg_catalog.=) $1 AND e.name OPERATOR(pg_catalog.=) ANY ($5::pg_catalog.text[]))
-		AND NOT EXISTS (SELECT 1 FROM `+t.qLeases+` AS l WHERE l.run_id OPERATOR(pg_catalog.=) $1 AND l.expiry OPERATOR(pg_catalog.>=) pg_catalog.now())
-		AND NOT EXISTS (`+parentLive(t.qSteps, 5, 6)+`)`, nil, [][]sqlTok{names[1], names[2]}); err != nil {
-		return tables{}, err
-	}
-	if t.parentLive, err = newSelect(`SELECT EXISTS (`+parentLive(t.qSteps, 1, 2)+`)`, steps); err != nil {
-		return tables{}, err
-	}
-	if t.leased, err = newSelect(`SELECT EXISTS (SELECT 1 FROM `+t.qLeases+` WHERE run_id OPERATOR(pg_catalog.=) $1 AND expiry OPERATOR(pg_catalog.>=) pg_catalog.now())`, leases); err != nil {
+	// The redaction function (see redact.go), called as a SELECT; it does the checks and the
+	// replacement in one statement, with the definer's privilege.
+	if t.redactCall, err = newSelect(`SELECT `+t.qRedact+`($1::pg_catalog.text, $2::pg_catalog.text, $3::pg_catalog.bytea, $4::pg_catalog.int8)`, nil, redactFn); err != nil {
 		return tables{}, err
 	}
 	if t.get, err = newSelect(`SELECT seq, data FROM `+t.qSteps+` WHERE run_id OPERATOR(pg_catalog.=) $1 AND name OPERATOR(pg_catalog.=) $2`, steps); err != nil {
@@ -370,11 +359,15 @@ func newWrite(q string, nextSeq []sqlTok, rels [][]sqlTok) (writeSQL, error) {
 
 // newSelect returns q as a selectSQL, or an error unless q starts with SELECT and passes the
 // statement check; rels are the relations, besides pg_catalog's, q may name.
-func newSelect(q string, rels [][]sqlTok) (selectSQL, error) {
+func newSelect(q string, rels [][]sqlTok, calls ...[]sqlTok) (selectSQL, error) {
 	if !startsWith(q, "SELECT") {
 		return "", fmt.Errorf("postgres: a read on the pool must be one SELECT statement, got %.40q: %w", q, agent.ErrConfig)
 	}
-	if err := checkSQL(q, nil, rels); err != nil {
+	var fn []sqlTok // the one function q may call (the redaction function), if any
+	if len(calls) > 0 {
+		fn = calls[0]
+	}
+	if err := checkSQLCalling(q, fn, "select", rels); err != nil {
 		return "", fmt.Errorf("postgres: a read on the pool holds %v, in %.40q: %w", err, q, agent.ErrConfig)
 	}
 	return selectSQL(q), nil
@@ -718,6 +711,9 @@ func (s *Store) migrate(ctx context.Context, dryRun bool) (MigrationResult, erro
 			return res, err
 		}
 	}
+	if err := s.migrateRedact(ctx, tx, &res, run); err != nil {
+		return res, err
+	}
 	if err := run("create tables", fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %[1]s (
 			run_id pg_catalog.text COLLATE pg_catalog."C" NOT NULL,
@@ -848,7 +844,7 @@ func (s *Store) checkSchema(ctx context.Context) error {
 		return fmt.Errorf("postgres: function %s.%s(text) has another owner than table %s: its owner could replace it after Open checked it, and every insert would run that role's code; drop it, or have the tables' owner create it: %w",
 			quoteIdent(s.schema), s.t.nextSeq, s.t.steps, agent.ErrConfig)
 	}
-	return nil
+	return s.checkRedactFunction(ctx)
 }
 
 // checkEvents checks, after the migration, that the events table is a table with the unique
@@ -1167,70 +1163,6 @@ func (s *Store) ReapLeases(ctx context.Context, ended []string) (int, error) {
 		return 0, fmt.Errorf("reap leases: %w (%w)", err, agent.ErrStorage)
 	}
 	return int(n), nil
-}
-
-// parentLive selects a run among $6 (a text array) that holds an entry and no end marker among $5:
-// a run above a sub-agent's run that is still being driven.
-func parentLive(qSteps string, ends, ancestors int) string {
-	return `SELECT 1 FROM ` + qSteps + ` AS p WHERE p.run_id OPERATOR(pg_catalog.=) ANY ($` + strconv.Itoa(ancestors) + `::pg_catalog.text[])
-		AND NOT EXISTS (SELECT 1 FROM ` + qSteps + ` AS m WHERE m.run_id OPERATOR(pg_catalog.=) p.run_id AND m.name OPERATOR(pg_catalog.=) ANY ($` + strconv.Itoa(ends) + `::pg_catalog.text[]))`
-}
-
-// Redact implements agent.Redactor with one UPDATE that replaces the entry only if it holds current,
-// the run holds an end marker and no lease on the run is live (see agent.Redactor). It takes no lock
-// beyond the row's: the entry keeps its seq, so it does not contend with the run's inserts for a
-// position, and an end marker, once stored, stays. When the update changes nothing, the store reads
-// why (the row, the end marker, the lease) to say which refusal it was; a row that already holds
-// the tombstone is not one. The role that calls it needs UPDATE (data) on the steps table, which
-// the application's role has no need of (see docs/guides/postgres.md).
-func (s *Store) Redact(ctx context.Context, runID, name string, current, tombstone []byte) (bool, error) {
-	if err := ctx.Err(); err != nil {
-		return false, err
-	}
-	if err := agent.CheckRedaction(runID, name, current, tombstone); err != nil {
-		return false, err
-	}
-	ancestors := append([]string{}, agent.RedactionAncestors(runID)...)
-	n, err := s.write(ctx, s.t.redact, runID, name, tombstone, current, agent.RedactionEndMarkers(), ancestors)
-	if err != nil {
-		return false, fmt.Errorf("redact step %q: %w (%w)", name, err, agent.ErrStorage)
-	}
-	if n == 1 {
-		return true, nil
-	}
-	var st agent.RedactState
-	e, err := s.get(ctx, runID, name)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-	case err != nil:
-		return false, fmt.Errorf("redact step %q: read it: %w (%w)", name, err, agent.ErrStorage)
-	default:
-		st.Row, st.Found = e, true
-	}
-	if st.Found {
-		for _, m := range agent.RedactionEndMarkers() {
-			if _, err := s.get(ctx, runID, m); err == nil {
-				st.Ended = true
-			} else if !errors.Is(err, sql.ErrNoRows) {
-				return false, fmt.Errorf("redact step %q: read %s: %w (%w)", name, m, err, agent.ErrStorage)
-			}
-		}
-		if st.Leased, err = retry(ctx, func() (bool, error) {
-			var leased bool
-			err := s.db.QueryRowContext(ctx, string(s.t.leased), runID).Scan(&leased)
-			return leased, err
-		}); err != nil {
-			return false, fmt.Errorf("redact step %q: read the lease: %w (%w)", name, err, agent.ErrStorage)
-		}
-		if st.ParentLive, err = retry(ctx, func() (bool, error) {
-			var live bool
-			err := s.db.QueryRowContext(ctx, string(s.t.parentLive), agent.RedactionEndMarkers(), ancestors).Scan(&live)
-			return live, err
-		}); err != nil {
-			return false, fmt.Errorf("redact step %q: read the parent runs: %w (%w)", name, err, agent.ErrStorage)
-		}
-	}
-	return false, st.Explain(runID, name, current, tombstone)
 }
 
 // write sends one data-changing statement on the pool, where Postgres runs it as a transaction of

@@ -44,11 +44,11 @@ func TestLeastPrivilegeRoles(t *testing.T) {
 		`GRANT SELECT ON `+schema+`.bide_steps, `+schema+`.bide_events, `+schema+`.bide_leases, `+schema+`.bide_schema_version TO `+reader,
 		`REVOKE ALL ON FUNCTION `+schema+`.bide_next_seq_v1(text) FROM PUBLIC`,
 		`GRANT EXECUTE ON FUNCTION `+schema+`.bide_next_seq_v1(text) TO `+app,
-		// The redaction role of docs/guides/postgres.md: it reads the journal and replaces an entry's
-		// data, and can do nothing else; the service role cannot erase and this role cannot append.
+		// The redaction role of docs/guides/postgres.md: it holds EXECUTE on the redaction function and
+		// no privilege on the tables; the service role cannot erase and this role cannot append.
 		`GRANT USAGE ON SCHEMA `+schema+` TO `+redactor,
-		`GRANT SELECT ON `+schema+`.bide_steps, `+schema+`.bide_leases, `+schema+`.bide_schema_version TO `+redactor,
-		`GRANT UPDATE (data) ON `+schema+`.bide_steps TO `+redactor,
+		`GRANT SELECT ON `+schema+`.bide_schema_version TO `+redactor,
+		`GRANT EXECUTE ON FUNCTION `+schema+`.bide_redact_v1(text, text, bytea, bigint) TO `+redactor,
 	)
 
 	// 3. The service role has no CREATE on the schema: the default Open, which migrates, is refused;
@@ -159,7 +159,7 @@ func TestLeastPrivilegeRoles(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer redDB.Close()
-	for _, q := range []string{`DELETE FROM ` + schema + `.bide_steps`, `UPDATE ` + schema + `.bide_steps SET name = 'x'`, `UPDATE ` + schema + `.bide_steps SET seq = 0`} {
+	for _, q := range []string{`SELECT * FROM ` + schema + `.bide_steps`, `DELETE FROM ` + schema + `.bide_steps`, `UPDATE ` + schema + `.bide_steps SET data = ''`, `UPDATE ` + schema + `.bide_steps SET name = 'x'`, `INSERT INTO ` + schema + `.bide_steps VALUES ('x', 99, 'x', ''::bytea)`} {
 		if _, err := redDB.ExecContext(ctx, q); err == nil {
 			t.Errorf("redaction role ran %q", q)
 		}

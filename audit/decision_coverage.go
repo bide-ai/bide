@@ -197,7 +197,10 @@ func CheckDecisionCoverage(runID string, recs []agent.Record, heads []SignedTree
 const NoteNoRecordedTime = "no recorded time"
 
 // NoteRedacted is DecisionCoverage.Note for a decision whose record a redaction replaced with a
-// tombstone: its approver, verdict and recorded_at are gone, and it is bounded like any other.
+// tombstone: its approver, verdict and recorded_at are gone, and it is bounded like any other. The
+// decision is listed by the name the tombstone carries, which is outside the leaf hash and so not
+// attested by any head or signature (anyone holding an export can rename a tombstone); a signed
+// redaction trail attests it.
 const NoteRedacted = "redacted, name not attested"
 
 // overAge reports whether recordedAt is more than bound.MaxAge+bound.Tolerance before bound.Now.

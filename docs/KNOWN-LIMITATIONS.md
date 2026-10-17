@@ -522,7 +522,7 @@ A journal holding a tombstone cannot produce a new absence set, run certificate 
 evidence packages and approver receipts, the event store (`bide_events`, which has no tombstone for
 an event leaf), Postgres dead tuples before `VACUUM`, SQLite free pages and the write-ahead log,
 backups, replicas and WAL archives, logs and traces, or the model provider's copy. Govern event logs
-hold opaque application strings and cannot be erased. The notifier's sweep of an aborted flow run
+hold opaque application strings and cannot be erased. A tombstone's name is outside the leaf hash, so it is unattested in an export or package (readers label it). The notifier's sweep of an aborted flow run
 whose `run:start` was redacted attributes its events to the run ID's root, as it does for any run
 whose `run:start` it cannot read. Sessions have no end marker, so a session's journal and turn runs cannot be redacted (the session reads its turns' runs), and a sub-agent's run can be redacted only once every run above it is over.
 

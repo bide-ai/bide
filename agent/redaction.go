@@ -118,6 +118,13 @@ func TombstoneLeafHash(b []byte) ([]byte, bool) {
 	return h, true
 }
 
+// TombstoneMillis returns the time a tombstone records, in Unix millis, and false if b is not a
+// tombstone in the exact form NewTombstone writes.
+func TombstoneMillis(b []byte) (int64, bool) {
+	_, ms, _, ok := parseTombstone(b)
+	return ms, ok
+}
+
 // TombstoneName returns the record name a tombstone carries, and false if b is not a tombstone or
 // names none (the reserved form allows a tombstone without one).
 func TombstoneName(b []byte) (string, bool) {
