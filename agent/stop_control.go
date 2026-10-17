@@ -39,6 +39,21 @@ func WithStopMode(m StopMode) StopOption {
 	})
 }
 
+// WithStopRoot names the digest (StopPolicy.Digest) of the deployment's root policy, the only policy
+// that may start the chain a process walks. It defaults to the pin's own, which is right when the pin is
+// the root (the recommended form); a process that pins a later policy must name the root, and needs
+// WithStopVerifier to build it from the root record. A pin that is not the root, given without the
+// root, makes the stops unknowable.
+func WithStopRoot(digest string) StopOption {
+	return stopOption(func(c *StopControl) error {
+		if len(digest) != 64 {
+			return fmt.Errorf("WithStopRoot: not a policy digest: %w", ErrConfig)
+		}
+		c.root = digest
+		return nil
+	})
+}
+
 // WithStopPolicy gives the control the audited-mode policy: the trust root, the policy this process
 // pins (normally the one the deployment started audited mode with). It is validated here and again
 // whenever State uses it. The later policies are the control run's own, by signed transitions.
@@ -78,6 +93,7 @@ type StopControl struct {
 	policy *StopPolicy
 	nv     StopVerifierFunc
 	mode   StopMode
+	root   string // digest of the trusted root policy; the pin's when empty
 	now    func() time.Time
 }
 
@@ -287,11 +303,16 @@ func (c *StopControl) State(ctx context.Context) (StopState, error) {
 		return st, nil
 	}
 	pinDigest := pin.Digest()
-	// The chain starts at a root record that verifies under its own policy: the one that is the pin
-	// if there is one, else the first. A competing root is only Rejected (anyone can write a
-	// self-signed one); the pin decides which chain is this deployment's.
-	var roots []StopPolicy
-	hasRootRecord := false
+	// The chain starts at the root this process trusts (WithStopRoot; the pin itself by default) and at
+	// no other: a root record counts only if its policy is that one, so a root a store writer appends
+	// with keys of their own, however it is chained to the pin, never governs a record. Before any
+	// trusted root is stored, records are judged under the pin.
+	rootDigest := c.root
+	if rootDigest == "" {
+		rootDigest = pinDigest
+	}
+	var root *StopPolicy
+	stored := 0
 	for _, rec := range recs {
 		if rec.Kind != StepValue || !strings.HasPrefix(rec.Name, "@stop/root/") {
 			continue
@@ -300,36 +321,28 @@ func (c *StopControl) State(ctx context.Context) (StopState, error) {
 		if err != nil || r.Kind != "root" || stopRecordStep(r) != rec.Name {
 			continue
 		}
-		if c.nv == nil && StopPolicyDigest(*r.Policy) != pinDigest {
-			hasRootRecord = true // may be genuine, and this process cannot build it: see below
+		stored++
+		if StopPolicyDigest(*r.Policy) != rootDigest || root != nil {
 			continue
 		}
-		rp, err := c.policyOf(*r.Policy, pin, pinDigest)
-		if err != nil || !(rp.verify(r, "lifter") || rp.verify(r, "setter")) {
-			continue
-		}
-		if !slices.ContainsFunc(roots, func(o StopPolicy) bool { return o.Digest() == rp.Digest() }) {
-			roots = append(roots, rp)
+		if rp, err := c.policyOf(*r.Policy, pin, pinDigest); err == nil && rp.Digest() == rootDigest {
+			root = &rp
 		}
 	}
-	// The root that is the pin first, then the others in store order: the first whose chain reaches the pin
-	// is the deployment's.
-	slices.SortStableFunc(roots, func(x, y StopPolicy) int {
-		return map[bool]int{true: 0, false: 1}[x.Digest() == pinDigest] - map[bool]int{true: 0, false: 1}[y.Digest() == pinDigest]
-	})
-	for _, root := range roots {
-		if st, reached := c.foldFrom(recs, true, root, root.Digest()); reached {
+	if root != nil {
+		if st, reached := c.foldFrom(recs, true, *root, rootDigest); reached {
 			return st, nil
 		}
+		st, _ := c.foldFrom(recs, true, pin, pinDigest)
+		st.ChainErr = "the pinned policy is not on the chain from the trusted root (configure the root policy, or one the chain reaches)"
+		return st, nil
 	}
 	st, _ := c.foldFrom(recs, true, pin, pinDigest)
 	switch {
-	case len(roots) > 0:
-		// No stored root's chain reaches the pin: this process's policy is not this deployment's, or the
-		// roots are not. Judged under the pin; the stops are unknowable.
-		st.ChainErr = "the pinned policy is not on the store's chain (configure the deployment's root policy, or one the chain reaches)"
-	case hasRootRecord:
-		st.ChainErr = "the control run has a root policy this process cannot build (give it a verifier constructor, WithStopVerifier) or pin the root policy"
+	case rootDigest != pinDigest:
+		st.ChainErr = "this process pins a policy that is not the root and its trusted root record is not in the control run (or it has no verifier constructor, WithStopVerifier): the stops set under earlier policies cannot be judged"
+	case stored > 0:
+		st.ChainErr = "the control run has root records and none is this process's root policy: configure the deployment's root policy (WithStopRoot), or pin it"
 	}
 	return st, nil
 }
@@ -724,16 +737,19 @@ func (c *StopControl) RotatePolicy(ctx context.Context, next StopPolicy, req Lif
 	return after, nil
 }
 
-// ensureRoot writes the deployment's root record (the first policy, signed) if no stored root's chain
-// reaches this process's pin: every audited deployment is walkable from its first audited write on.
+// ensureRoot writes the deployment's root record (the first policy, signed) if the control run has none for
+// this process's root policy: every audited deployment is walkable from its first audited write on.
 func (c *StopControl) ensureRoot(ctx context.Context, st StopState, by, host, reason string, signer StopSigner) error {
+	if c.root != "" && c.root != c.policy.Digest() {
+		return nil // this process does not hold the root policy: it cannot write the root
+	}
 	recs, err := c.j.History(ctx, StopControlRun)
 	if err != nil {
 		return err
 	}
 	for _, rec := range recs {
-		if strings.HasPrefix(rec.Name, "@stop/root/") && st.ChainErr == "" {
-			return nil // a root whose chain reaches this process's pin is already there
+		if strings.HasPrefix(rec.Name, "@stop/root/"+c.policy.Digest()+"/") {
+			return nil // this process's root policy already has its root record
 		}
 	}
 	doc, err := c.policy.Doc()

@@ -7,8 +7,8 @@ EXTENDS Stop, TLC
 CONSTANTS a, b, c, eve, c1, c2, s1, s2
 
 CoverOfDef == (s1 :> {c1}) @@ (s2 :> {c2})
-SettersOfDef == (1 :> {a}) @@ (2 :> {b})
-LiftersOfDef == (1 :> {a, b}) @@ (2 :> {b, c})
-QuorumOfDef == (1 :> 2) @@ (2 :> 2)
-QuorumOfOneDef == (1 :> 1) @@ (2 :> 1)
+SettersOfDef == (0 :> {eve}) @@ (1 :> {a}) @@ (2 :> {b})
+LiftersOfDef == (0 :> {eve}) @@ (1 :> {a, b}) @@ (2 :> {b, c})
+QuorumOfDef == (0 :> 1) @@ (1 :> 2) @@ (2 :> 2)
+QuorumOfOneDef == (0 :> 1) @@ (1 :> 1) @@ (2 :> 1)
 =============================================================================

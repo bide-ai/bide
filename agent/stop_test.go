@@ -841,7 +841,7 @@ func TestPinnedToACurrentPolicyWalksFromTheRoot(t *testing.T) {
 		t.Fatalf("second rotation (quorum 1 of P1): %+v %v", st, err)
 	}
 	// Pinned to the current policy: the stops set under P0 and P1 are still in force.
-	cur := audited(t, store, p2)
+	cur := audited(t, store, p2, WithStopRoot(p0.Digest()))
 	st := mustState(t, cur)
 	if st.ChainErr != "" || st.UnknowableErr() != nil || len(st.Active()) != 2 || st.PolicySeq != 2 {
 		t.Fatalf("pinned to the current policy: %+v", st)
@@ -850,12 +850,12 @@ func TestPinnedToACurrentPolicyWalksFromTheRoot(t *testing.T) {
 	// Pinned to a policy the chain never reaches: unknowable, and the stops the chain holds are still shown.
 	other := auditedPolicy(1, false)
 	other.Setters = []string{"ops1"}
-	off := audited(t, store, other)
-	if st := mustState(t, off); !errors.Is(st.UnknowableErr(), ErrStopsUnknowable) || !strings.Contains(st.ChainErr, "pinned policy is not on") {
+	off := audited(t, store, other, WithStopRoot(p0.Digest()))
+	if st := mustState(t, off); !errors.Is(st.UnknowableErr(), ErrStopsUnknowable) || !strings.Contains(st.ChainErr, "not on the chain from the trusted root") {
 		t.Fatalf("a pin off the chain: %+v", st)
 	}
 	// Without a verifier constructor a process pinned later cannot build the root: unknowable too.
-	nv := newControl(t, store, WithStopMode(StopAudited), WithStopPolicy(p2))
+	nv := newControl(t, store, WithStopMode(StopAudited), WithStopPolicy(p2), WithStopRoot(p0.Digest()))
 	if st := mustState(t, nv); st.UnknowableErr() == nil {
 		t.Fatalf("no verifier constructor: %+v", st)
 	}
@@ -972,7 +972,7 @@ func TestRootIsWrittenByTheFirstAuditedWrite(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	st := mustState(t, audited(t, store, p2))
+	st := mustState(t, audited(t, store, p2, WithStopRoot(p1.Digest())))
 	if st.UnknowableErr() != nil || len(st.Active()) != 1 || st.Active()[0].ID != s.ID {
 		t.Fatalf("a process pinned to the current policy on a deployment that never ran ChangeMode: %+v", st)
 	}
@@ -985,5 +985,130 @@ func TestRootIsWrittenByTheFirstAuditedWrite(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("%d root records", n)
+	}
+}
+
+// signedBy signs r as the fake approver by.
+func signedBy(r StopRecord, by string) StopRecord {
+	r.Format, r.Mode, r.Deployment, r.At, r.By, r.Alg = StopFormat, StopAudited, "dep-1", nowStr(), by, fakeAlg
+	if r.Kind == "set" {
+		r.StopID = StopIDOf(r)
+	}
+	r.Signature = hex.EncodeToString(fakeSign(by, StopSigningBytes(r)))
+	return r
+}
+
+// TestAttackerRootCannotGovernTheChain (H7): a store writer with keys of their own appends a self-signed
+// root for a policy they control and a transition from it into the public policy the deployment pins.
+// Only the root this process trusts starts the chain, so the genuine stops stay in force: with a genuine
+// root before or after, and with none stored at all (then the result is unknowable, never the
+// attacker's lineage).
+func TestAttackerRootCannotGovernTheChain(t *testing.T) {
+	ctx := context.Background()
+	p1 := auditedPolicy(2, false)
+	p2 := StopPolicy{DeploymentID: "dep-1", Setters: []string{"ops2"}, Lifters: []string{"ops2", "risk"}, Verifiers: fakeVerifiers("ops2", "risk"), LiftQuorum: 2}
+	pe := StopPolicy{DeploymentID: "dep-1", Setters: []string{"eve"}, Lifters: []string{"eve"}, Verifiers: fakeVerifiers("eve"), LiftQuorum: 1}
+	attack := func(t *testing.T, c *StopControl, into StopPolicy, lift string) {
+		edoc, _ := pe.Doc()
+		putRaw(t, c, signedBy(StopRecord{Kind: "root", Policy: &edoc}, "eve"))
+		if lift != "" {
+			l := StopRecord{Kind: "lift", StopID: lift}
+			if st := mustState(t, c); len(st.Stops) > 0 {
+				l.SetDigest = st.Stops[0].digest
+			}
+			putRaw(t, c, signedBy(l, "eve"))
+		}
+		ndoc, _ := into.Doc()
+		putRaw(t, c, signedBy(StopRecord{Kind: "policy", Seq: 1, PrevDigest: pe.Digest(), Policy: &ndoc}, "eve"))
+	}
+	t.Run("attacker root before the genuine one", func(t *testing.T) {
+		store := NewMemStore()
+		c := audited(t, store, p1)
+		attack(t, c, p2, "")
+		s, err := c.SetStop(ctx, StopRequest{Scope: StopScope{Kind: StopGlobal}, By: "ops1", Signer: sign("ops1")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, by := range []string{"ops1", "ops2"} {
+			if _, err := c.RotatePolicy(ctx, p2, LiftRequest{By: by, Signer: sign(by)}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// Pinned to P2 and trusting the genuine root: the genuine lineage governs.
+		st := mustState(t, audited(t, store, p2, WithStopRoot(p1.Digest())))
+		if st.UnknowableErr() != nil || len(st.Active()) != 1 || st.Active()[0].ID != s.ID || st.PolicySeq != 1 {
+			t.Fatalf("pinned to P2, trusting the root: %+v", st)
+		}
+		// Pinned to P2 and naming no root: the process cannot tell, so the stops are unknowable (not dropped silently).
+		if st := mustState(t, audited(t, store, p2)); st.UnknowableErr() == nil {
+			t.Fatalf("a later pin without the root: %+v", st)
+		}
+	})
+	t.Run("no genuine root stored", func(t *testing.T) {
+		store := NewMemStore()
+		c := audited(t, store, p2)
+		// The genuine stop, written by a process of the deployment, with no root record (as an older writer would).
+		set := signedBy(StopRecord{Kind: "set", Scope: &StopScope{Kind: StopGlobal}, Compensation: CompensationAllow}, "ops2")
+		putRaw(t, c, set)
+		attack(t, c, p2, set.StopID)
+		for _, rootless := range []*StopControl{c, audited(t, store, p2, WithStopRoot(p1.Digest()))} {
+			st := mustState(t, rootless)
+			if len(st.Active()) != 1 || st.UnknowableErr() == nil || st.PolicySeq != 0 {
+				t.Fatalf("the attacker's root governed, or the stops were not unknowable: %+v", st)
+			}
+		}
+	})
+}
+
+// TestEveryAuditedWriteWritesTheRoot: a stop, a lift, a policy transition and a change of mode each
+// leave the control run with the deployment's root record, exactly once.
+func TestEveryAuditedWriteWritesTheRoot(t *testing.T) {
+	ctx := context.Background()
+	p2 := StopPolicy{DeploymentID: "dep-1", Setters: []string{"ops2"}, Lifters: []string{"ops2", "risk"}, Verifiers: fakeVerifiers("ops2", "risk"), LiftQuorum: 1}
+	roots := func(c *StopControl) int {
+		n := 0
+		recs, _ := c.j.History(ctx, StopControlRun)
+		for _, r := range recs {
+			if strings.HasPrefix(r.Name, "@stop/root/") {
+				n++
+			}
+		}
+		return n
+	}
+	for name, do := range map[string]func(c *StopControl) error{
+		"set": func(c *StopControl) error {
+			_, err := c.SetStop(ctx, StopRequest{Scope: StopScope{Kind: StopGlobal}, By: "ops1", Signer: sign("ops1")})
+			return err
+		},
+		"lift": func(c *StopControl) error {
+			_, err := c.LiftStop(ctx, "nope", LiftRequest{By: "ops1", Signer: sign("ops1")})
+			if errors.Is(err, ErrStopRejected) {
+				return nil // no such stop: the lift is refused before it is written
+			}
+			return err
+		},
+		"rotate": func(c *StopControl) error {
+			_, err := c.RotatePolicy(ctx, p2, LiftRequest{By: "ops1", Signer: sign("ops1")})
+			return err
+		},
+		"mode": func(c *StopControl) error {
+			_, err := c.ChangeMode(ctx, ModeRequest{To: StopAudited, By: "ops1", Signer: sign("ops1")})
+			return err
+		},
+	} {
+		c := audited(t, NewMemStore(), auditedPolicy(1, false))
+		if err := do(c); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if name != "lift" && roots(c) != 1 {
+			t.Fatalf("%s wrote %d roots", name, roots(c))
+		}
+	}
+	// A lift of a real stop writes the root too, if the stop was written without one.
+	c := audited(t, NewMemStore(), auditedPolicy(1, false))
+	set := signedBy(StopRecord{Kind: "set", Scope: &StopScope{Kind: StopGlobal}, Compensation: CompensationAllow}, "ops1")
+	putRaw(t, c, set)
+	if _, err := c.LiftStop(ctx, set.StopID, LiftRequest{By: "risk", Signer: sign("risk")}); err != nil || roots(c) != 1 {
+		t.Fatalf("lift: %v, %d roots", err, roots(c))
 	}
 }

@@ -38,6 +38,8 @@ CONSTANTS
   Cfg,               \* the process's mode: "basic" or "audited"
   Pin,               \* the policy (1..MaxPol) an audited process has pinned; the chain is walked from policy 1
   Deps, CheckDep,    \* the deployments records name ("mine" and perhaps "other"); whether the fold checks it
+  AttackerRoots,     \* the forger holds a key of their own and may write a root and a transition (policy 0 is theirs)
+  TrustRootOnly,     \* TRUE: only the root the process trusts (policy 1) starts the chain; FALSE (regress): a stored root does
   UnkOnUnverified,   \* regress: an audited process whose pin is reached treats a forged record as making the stops unknowable
   BasicHonoursPlainLift, \* regress: a basic process lets a plain lift lift a stop set under a signed record
   Chain,             \* TRUE: follow policy transitions; FALSE (regress): pinned to the last policy
@@ -52,21 +54,23 @@ CONSTANTS
 
 Pols == 1..MaxPol
 Enrolled == UNION {SettersOf[p] \cup LiftersOf[p] : p \in Pols}
-Kinds == {"set", "lift", "pol", "mode"}
+Kinds == {"set", "lift", "pol", "mode", "root"}
 None == "none"
 
 \* vocabulary: begin
 \* The control-run records: a stop, one lifter's lift, one lifter's approval of a policy transition,
 \* evidence of a change of mode, the root policy (the chain's start; the model always walks from it).
-RecordKinds == {"set", "lift", "pol", "mode"}
+RecordKinds == {"set", "lift", "pol", "mode", "root"}
 \* vocabulary: end
 
 \* Unforgeable: a signed record is by an enrolled approver; the forger signs nothing.
 Records == { r \in [k : Kinds, by : People, sig : BOOLEAN, stop : StopIds, to : Pols, dep : Deps] :
-               /\ r.sig => r.by \in Enrolled
+               /\ r.sig => (r.by \in Enrolled \/ (AttackerRoots /\ r.by = Forger /\ r.k \in {"root", "pol"}))
                /\ ~r.sig => r.by = Forger
+               /\ r.k = "root" => (AttackerRoots /\ r.sig /\ r.by = Forger)
+               /\ (r.k = "pol" /\ r.by = Forger /\ r.sig) => r.to = 2
                /\ r.k = "pol" => r.to \in 2..MaxPol
-               /\ r.k /= "pol" => r.to = 1
+               /\ r.k \notin {"pol"} => r.to = 1
                /\ r.k = "mode" => ~r.sig }
 
 Stop0 == [phase |-> "none", setter |-> None, lifts |-> {}, how |-> None, signed |-> FALSE]
@@ -83,7 +87,7 @@ Relift(s) ==
      IF s.st[i].phase = "active" /\ RuleMet(s, i)
        THEN [s.st[i] EXCEPT !.phase = "lifted", !.how = "audited"] ELSE s.st[i]]]
 
-ApplyBody(ch, s, r) ==
+ApplyBody(ch, tr, s, r) ==
   IF ~s.audited THEN
     CASE r.k = "set" /\ s.st[r.stop].phase = "none"
            -> [s EXCEPT !.st[r.stop] = [Stop0 EXCEPT !.phase = "active", !.setter = r.by, !.signed = r.sig]]
@@ -99,20 +103,21 @@ ApplyBody(ch, s, r) ==
            -> LET s2 == [s EXCEPT !.st[r.stop].lifts = @ \cup {r.by}] IN
               IF RuleMet(s2, r.stop)
                 THEN [s2 EXCEPT !.st[r.stop].phase = "lifted", !.st[r.stop].how = "audited"] ELSE s2
-      [] r.k = "pol" /\ ch /\ r.sig /\ r.by \in LiftersOf[s.pol] /\ r.to = s.pol + 1
+      [] r.k = "root" /\ ~tr /\ r.sig -> [s EXCEPT !.pol = 0]
+      [] r.k = "pol" /\ ch /\ r.sig /\ r.by \in LiftersOf[s.pol] /\ (r.to = s.pol + 1 \/ s.pol = 0)
            -> LET T == s.tps \cup {r.by} IN
               IF Cardinality(T \cap LiftersOf[s.pol]) >= QuorumOf[s.pol]
                 THEN Relift([s EXCEPT !.pol = r.to, !.tps = {}])
                 ELSE [s EXCEPT !.tps = T]
       [] OTHER -> s
 
-ApplyC(ch, s, r) ==
-  LET t == ApplyBody(ch, s, r) IN
+ApplyC(ch, tr, s, r) ==
+  LET t == ApplyBody(ch, tr, s, r) IN
   IF UnkOnUnverified /\ s.audited /\ ~r.sig /\ r.k \in {"set", "lift", "pol"} THEN [t EXCEPT !.unv = TRUE] ELSE t
 
-RECURSIVE EffC(_, _, _)
-EffC(ch, l, n) == IF n = 0 THEN Init0C(ch) ELSE ApplyC(ch, EffC(ch, l, n - 1), l[n])
-Eff(l, n) == EffC(Chain, l, n)
+RECURSIVE EffC(_, _, _, _)
+EffC(ch, tr, l, n) == IF n = 0 THEN Init0C(ch) ELSE ApplyC(ch, tr, EffC(ch, tr, l, n - 1), l[n])
+Eff(l, n) == EffC(Chain, TrustRootOnly, l, n)
 
 \* The process cannot tell which stops are in force: an audited process whose pin the walk from the root has not
 \* reached, or a basic process holding an active stop that was set under a signed record.
@@ -236,7 +241,7 @@ LiftNeedsQuorum ==
 \* every transition from the root, or it says they are unknowable.
 AgreesWithChain ==
   Cfg = "audited" =>
-    (Unk(Eff(log, Len(log))) \/ \A i \in StopIds : Eff(log, Len(log)).st[i].phase = EffC(TRUE, log, Len(log)).st[i].phase)
+    (Unk(Eff(log, Len(log))) \/ \A i \in StopIds : Eff(log, Len(log)).st[i].phase = EffC(TRUE, TRUE, log, Len(log)).st[i].phase)
 
 \* An audited process whose pin the chain has reached is never made unknowable by a record that does
 \* not verify: a forgery is only ignored, so a store-write attacker has no lever against audited mode.
