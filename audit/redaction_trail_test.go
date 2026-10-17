@@ -142,8 +142,12 @@ func TestRedactJournal_Refusals(t *testing.T) {
 	t.Run("HeadOfAnotherJournal", func(t *testing.T) {
 		r := newTrailRig(t)
 		// A head over a shorter prefix does not cover the run as it stands.
-		short := r.head
-		short.Size--
+		n := r.head.Size - 1
+		th := audit.TreeHead{Kind: audit.TreeJournal, RunID: "gov", Size: n, Root: rootOfPrefix(ctx, t, r.store, "gov", n), TimestampNanos: p11Now()}
+		short, err := audit.SignTreeHead(th, r.signer)
+		if err != nil {
+			t.Fatal(err)
+		}
 		r.options.Heads = []audit.SignedTreeHead{short}
 		if _, err := audit.RedactJournal(ctx, r.j, r.trail, r.plan, r.options); !errors.Is(err, audit.ErrRedactNoHead) {
 			t.Fatalf("err = %v, want ErrRedactNoHead", err)
