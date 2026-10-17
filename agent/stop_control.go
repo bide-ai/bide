@@ -43,7 +43,8 @@ func WithStopMode(m StopMode) StopOption {
 // that may start the chain a process walks. It defaults to the pin's own, which is right when the pin is
 // the root (the recommended form); a process that pins a later policy must name the root, and needs
 // WithStopVerifier to build it from the root record. A pin that is not the root, given without the
-// root, makes the stops unknowable.
+// root, makes the stops unknowable: the engine then pauses the side-effect calls a stop could cover
+// until the process is configured, which is the safe direction.
 func WithStopRoot(digest string) StopOption {
 	return stopOption(func(c *StopControl) error {
 		if len(digest) != 64 {

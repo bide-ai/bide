@@ -359,7 +359,9 @@ and lift under the policy in force at its position, so:
   public pinned policy), never governs a record. A process that pins a later policy must name the root
   (and have a verifier constructor to build it); a later pin without the root, or a trusted root that is
   not stored, is unknowable, never a silent drop. Records before any trusted root is stored are judged
-  under the pin. Only verified records count toward
+  under the pin. A later-pin process configured without the root therefore sees the stops as
+  unknowable, which (PR 2) pauses the covered side-effect calls until it is configured: the safe
+  direction. Only verified records count toward
   anything: a fake root, transition or mode record is rejected and never sets `ChainErr`. The first
   audited write of any kind (a stop, a lift, a transition, a mode change) writes the root if none whose
   chain reaches the pin exists, so every audited deployment is walkable;
