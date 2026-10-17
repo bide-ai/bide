@@ -269,3 +269,47 @@ func TestRedactionClasses_CoverEveryReservedKey(t *testing.T) {
 		}
 	}
 }
+
+// Recover never re-drives a run whose protected record was replaced by a tombstone: the run reads
+// as ended (its end marker row is still there by name) or as corrupt, and the resumer is not called.
+func TestRedact_RecoverDoesNotResumeAForgedTombstone(t *testing.T) {
+	ctx := context.Background()
+	for _, name := range []string{"run:complete", "attempt:tool:x"} {
+		st := NewMemStore()
+		j := mustJournal(st)
+		a := mustNew(&scriptModel{turns: [][]Emit{textTurn("answer")}}, j)
+		if _, err := a.Run(ctx, "r", UserText("input")); err != nil {
+			t.Fatal(err)
+		}
+		if name != "run:complete" {
+			b, _ := JournalEntry(name, Record{Kind: StepAttempt})
+			if _, _, err := st.Insert(ctx, "r", name, b); err != nil {
+				t.Fatal(err)
+			}
+			// a live run: drop its end marker row so Recover would look at it
+			rn := st.runs["r"]
+			i := rn.byName["run:complete"]
+			delete(rn.byName, "run:complete")
+			rn.entries = append(rn.entries[:i:i], rn.entries[i+1:]...)
+			for k, e := range rn.entries {
+				rn.byName[e.Name] = k
+			}
+		}
+		rn := st.runs["r"]
+		i := rn.byName[name]
+		tomb, err := NewTombstone(name, rn.entries[i].Data, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		rn.entries[i].Data = tomb
+		// The real resumer: the drive refuses a run holding a tombstone, so nothing runs again.
+		_, err = Recover(ctx, j, ResumeAgent(a))
+		if name == "run:complete" {
+			if err != nil {
+				t.Errorf("%s: Recover = %v; the run reads as ended and is skipped", name, err)
+			}
+		} else if err == nil || !errors.Is(err, ErrConfig) && !errors.Is(err, ErrStorage) {
+			t.Errorf("%s: Recover of a live run with a forged tombstone = %v, want a refusal", name, err)
+		}
+	}
+}
