@@ -173,6 +173,8 @@ type Options struct {
 
 	DeltaPeriodFor map[audit.SPKIHash]time.Duration
 
+	StandIn *StandIn
+
 	Client *http.Client
 
 	Archive Archive
@@ -254,6 +256,14 @@ type ResetRequest struct {
 ```
 
 ResetRequest is an operator's request to reset an issuer's high-water mark.
+
+## type StandIn
+
+```go
+type StandIn struct{ Missing []string }
+```
+
+StandIn says what a declaration file lacked of the values the policy digest covers (audit.StatusDecl.MissingForDigest).
 
 ## type URLOutcome
 
