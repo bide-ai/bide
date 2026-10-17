@@ -20,6 +20,7 @@ Exit status is 0 for success, 1 for a refusal or a failure, and 2 for a usage er
 |---|---|
 | [`bide-hsm approve`](#bide-hsm-approve) | record your signed approval (or -reject) of a call that waits for a decision, with a key in an HSM or KMS; -list shows what waits |
 | [`bide-hsm pubkey`](#bide-hsm-pubkey) | print the public key of a key in an HSM or KMS, and the approver-keys entry that enrols it |
+| [`bide-hsm csr`](#bide-hsm-csr) | write a certificate signing request for a key in an HSM or KMS, signed by that key, for the CA that issues the certificate bide-hsm approve -cert uses |
 | [`bide-hsm version`](#bide-hsm-version) | print the version and whether this build can use PKCS#11 keys |
 
 ## bide-hsm approve
@@ -226,6 +227,120 @@ Flags:
     	for a Google Cloud KMS key version in an HSM, require its Cloud HSM attestation to prove the key was generated there and cannot be extracted
 ```
 
+## bide-hsm csr
+
+```text
+usage: bide-hsm csr -key <key ref> [-out <file>] [-force] [-policy <policy file> -as <approver id>] [-san-email <address> | -san-uri <uri>] [-eku <usage>[,<usage>...]] [key flags]
+
+Writes a PKCS#10 certificate signing request (PEM) for a key in an HSM or a KMS, signed by that key
+through the same key sources as bide-hsm approve, so no vendor tooling is needed. It is the request a
+CA or identity provider turns into the certificate bide-hsm approve -cert uses. The key signs the
+request once and is never read out; for a KMS key that is one Sign call (billed) beside the one
+bide-hsm pubkey makes. The request holds the key's public key; before anything is written, it checks
+the request's signature and that its public key is the key source's, so a faulty token or a key
+replaced behind the reference writes nothing.
+
+The key is Ed25519 (signature algorithm Ed25519, RFC 8410) or ECDSA P-256 (ecdsa-with-SHA256), the
+schemes bide-hsm keys have; there is no RSA request. Ed25519 is available where the key source has it
+(PKCS#11, AWS KMS, and Google Cloud KMS with -allow-software-key; not Azure Key Vault).
+
+The request is written to -out, or to standard output without -out or with -out -. A file is never
+overwritten: -out names a file that does not exist, unless -force replaces a regular file (a
+directory or a symbolic link is refused). Everything else goes to the other stream (to standard
+error when the request is on standard output), so the output is only the request.
+
+By default the request names nothing (an empty subject, no extensions): the CA sets the name, the
+usage and the policy. A CA may ignore or replace what a request asks for, so the certificate it issues
+is what counts, and bide-hsm approve -cert checks that before anything is signed. To ask for names:
+
+  -san-email <address>   one rfc822Name subject alternative name (a bare address)
+  -san-uri <uri>         one URI subject alternative name (absolute, with a host, no fragment)
+  -eku <usage>,...       extended key usages: clientAuth, serverAuth, emailProtection, codeSigning,
+                         timeStamping, ocspSigning, or a dotted OID
+
+-policy <file> with -as <approver id> reads the certificate policy file bide-hsm approve takes as
+-identity-policy and asks for what the policy's gate looks for: as the one SAN, the approver's
+identifier in the policy (an email address or a person URI, in the policy's canonical form), and the
+policy's extended key usage. Then -san-email, -san-uri and -eku are refused: the policy decides. It
+cannot ask for the policy OID (a CA asserts it, after the bank's sign-on and checks), and says on
+standard error what the CA must issue for the gate to accept the certificate: the one SAN, the
+usage, the policy OID and the longest lifetime. It reads the policy only; it checks no certificate.
+
+Check a request before sending it: openssl req -in <file> -noout -verify -text.
+
+Exit status is 0 on success, 1 if the key could not be used, the request failed its checks or the
+output was refused, 2 for a usage error.
+
+A key reference is one of:
+
+  pkcs11:token=<label>;object=<label>?module-path=<absolute path>&pin-source=file:/path
+      An RFC 7512 PKCS#11 URI, for a key in an HSM or on a smart card or token. token (or
+      slot-id) selects the token; object (the key's label), id (its CKA_ID as percent-encoded
+      bytes) or both select the key; module-path is the vendor's PKCS#11 library, loaded and run
+      by this program, so name only a library you trust. The PIN is read from
+      pin-source=file:/absolute/path (on Unix the file must not be readable by others) or
+      pin-source=env:NAME, or asked for on the controlling terminal with echo off by
+      pin-source=prompt (never read from a pipe; refused when there is no terminal), or typed on
+      the token's own PIN pad by pin-source=protected (the token must report a protected
+      authentication path, else it is refused; needs -alg, as each login asks on the pad), and with
+      no pin-source from $BIDE_HSM_PIN. The PIN is never part of the
+      reference: pin-value is refused, and so is every attribute not listed here (serial,
+      manufacturer, module-name, ...), not ignored, since an ignored attribute would let a
+      reference select a key more loosely than it reads. Percent-encode ; ? & = % and spaces in a
+      value, and quote the whole reference in a shell, which treats ; and & as operators.
+  awskms:arn:aws:kms:<region>:<account>:key/<id>
+      An AWS KMS key by its full ARN (alias/<name> in place of key/<id> names an alias, which is
+      resolved once). Credentials come from the AWS SDK's default chain (environment, shared
+      config, instance or task role); the ARN's region is used.
+  gcpkms:projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>/cryptoKeyVersions/<n>
+      A Google Cloud KMS key version by its full resource name with the numeric version (no alias,
+      no "latest": signing uses exactly that version). Credentials are Google's application default
+      credentials. Only an HSM-backed version is used unless -allow-software-key (Cloud KMS has no
+      HSM-backed Ed25519 key, so an Ed25519 key needs it, and approve then says so beside the key);
+      -verify-attestation requires the key's Cloud HSM attestation to prove it was generated in the
+      HSM and cannot be extracted.
+  azurekv:https://<vault>.vault.azure.net/keys/<name>/<32-hex-version>
+      An Azure Key Vault or Managed HSM key by its full identifier with the version pinned (a base
+      identifier without a version would follow rotation and is refused). The key is ECDSA P-256 (Key
+      Vault has no Ed25519), HSM-protected unless -allow-software-key, and not exportable.
+      Credentials are the Azure SDK's default credential chain. The principal needs the
+      "Key Vault Crypto User" role (Managed HSM Crypto User) on the key.
+
+The key is Ed25519 or ECDSA P-256, the schemes HSMs and KMS sign; -alg names the scheme, and
+without it the key's type is detected. A PKCS#11 key must be marked non-extractable and sensitive
+by the token, or it is refused, since a key that can be read out of the token defeats keeping it
+there; -allow-extractable lifts that, and bide-hsm approve then says so beside the key. The token
+or KMS signs; bide-hsm never holds the private key.
+
+Flags:
+  -alg string
+    	the key's scheme: ed25519 or ecdsa-p256 (default: detect it)
+  -allow-extractable
+    	use a PKCS#11 key the token does not mark non-extractable and sensitive; by default such a key is refused
+  -allow-software-key
+    	use a software-protected key: a Google Cloud KMS key version at protection level SOFTWARE, or an Azure Key Vault key that is not HSM-protected; by default only an HSM-backed key is used, and Cloud KMS has no HSM-backed Ed25519 key
+  -as string
+    	the approver id in the -policy file whose identifier the request asks for
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
+  -eku string
+    	ask for these extended key usages, comma separated: clientAuth, serverAuth, emailProtection, codeSigning, timeStamping, ocspSigning or a dotted OID
+  -force
+    	replace -out if it is a regular file that exists
+  -key string
+    	reference to the key: a pkcs11: URI (quote it), awskms:<key ARN>, gcpkms:<key version> or azurekv:<key identifier>
+  -out string
+    	where to write the request (default, or -: standard output); a file that exists is not overwritten without -force
+  -policy string
+    	the certificate policy file (as bide-hsm approve -identity-policy): ask for the identifier and usage it expects for -as; needs -as
+  -san-email string
+    	ask for this email address as the one subject alternative name
+  -san-uri string
+    	ask for this URI as the one subject alternative name
+  -verify-attestation
+    	for a Google Cloud KMS key version in an HSM, require its Cloud HSM attestation to prove the key was generated there and cannot be extracted
+```
+
 ## bide-hsm version
 
 ```text
@@ -242,12 +357,14 @@ bide-hsm: bide approve for approvers whose keys are in an HSM or a cloud KMS
   bide-hsm approve -db <file> -run <id> -call <tool-use id> -as <approver> -key <key ref> -approver-keys <keys> [flags]
   bide-hsm approve -db <file> -list
   bide-hsm pubkey  -key <key ref> [-as <approver>]
+  bide-hsm csr     -key <key ref> [-out <file>] [-policy <policy file> -as <approver>]
   bide-hsm version
 
 bide-hsm approve is bide approve, with -key naming a key by reference instead of a key file. It
 reads the call from the journal, shows what it will sign, asks you to confirm, has the HSM or KMS
 sign the decision, checks it against the call, records it, and writes a receipt.
-bide-hsm pubkey prints the approver-keys entry that enrols a key. Each command takes -h.
+bide-hsm pubkey prints the approver-keys entry that enrols a key. bide-hsm csr writes a certificate
+signing request for a key, signed by the key, for a certificate-bound approver. Each command takes -h.
 
 A key reference is one of:
 

@@ -475,7 +475,9 @@ approver (see [Human approval](hitl-approval.md)).
 program for approvers whose keys are in an HSM, on a smart card or token, in AWS KMS, or in Google Cloud KMS or in Azure Key Vault. `bide-hsm
 approve` is `bide approve`: one implementation of the display, the confirmation, the signature, the
 record and the receipt (`cmd/bide/internal/approvecmd`), with `-key` naming a key by reference instead of
-a file. `bide-hsm pubkey` prints the entry that enrols a key.
+a file. `bide-hsm pubkey` prints the entry that enrols a key, and `bide-hsm csr` writes the certificate
+signing request for a certificate-bound approver, signed by the key where it is held (see
+[the key and the certificate request](certificate-approvers.md#the-key-and-the-certificate-request)).
 
 ```sh
 export BIDE_HSM_PIN=...            # or pin-source=file:/path (mode 0600) in the reference

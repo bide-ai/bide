@@ -18,6 +18,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/cmd/bide/internal/csr"
 	"github.com/bide-ai/bide/internal/approveline"
 	"github.com/bide-ai/bide/internal/term"
 )
@@ -298,7 +299,7 @@ With -csr, bide keygen also writes a PKCS#10 certificate signing request for the
 or ECDSA P-256 only) to the file, as PEM. It proves possession of the key and names nothing: the
 subject is empty and there are no extensions, so the CA or identity provider sets the name (SAN)
 and the key usage. Send it to the CA that issues the approver's certificate; the issued chain is
-what bide approve -cert reads.
+what bide approve -cert reads. For a key in an HSM or a KMS, bide-hsm csr makes the request.
 
 It refuses to overwrite a file (the key, its .pub or the request). The private key file is not encrypted; keep it on the approver's
 own machine, readable only by the approver. Anyone who can read it can sign as the approver.
@@ -396,9 +397,9 @@ func writeKeyPairCSR(path, csrPath string, alg audit.Alg) (audit.Signer, error) 
 	if err != nil {
 		return nil, err
 	}
-	var csr []byte
+	var req []byte
 	if csrPath != "" {
-		if csr, err = certificateRequest(priv); err != nil {
+		if req, err = csr.Build(priv, csr.Names{}); err != nil {
 			return nil, err
 		}
 	}
@@ -408,8 +409,8 @@ func writeKeyPairCSR(path, csrPath string, alg audit.Alg) (audit.Signer, error) 
 	if err := writeExclusive(path+".pub", []byte(publicKeyText(priv)+"\n"), 0o644); err != nil {
 		return nil, fmt.Errorf("%w (the private key %s was written; its public key is derived from it, bide approve prints it)", err, path)
 	}
-	if csr != nil {
-		if err := writeExclusive(csrPath, csr, 0o644); err != nil {
+	if req != nil {
+		if err := writeExclusive(csrPath, req, 0o644); err != nil {
 			return nil, fmt.Errorf("%w (the private key %s was written; make a request for it with your CA's tooling)", err, path)
 		}
 	}

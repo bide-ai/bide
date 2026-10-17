@@ -502,6 +502,7 @@ jobs:
       PG_DSN: postgres://bide:bide@localhost:5432/bide_test?sslmode=disable
       REDIS_ADDR: localhost:6379
       BIDE_REQUIRE_SOFTHSM: "1" # signer/pkcs11 and bide-hsm fail, not skip, without SoftHSM2
+      BIDE_REQUIRE_OPENSSL: "1" # the certificate request tests (cmd/bide, bide-hsm) fail, not skip, without openssl
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

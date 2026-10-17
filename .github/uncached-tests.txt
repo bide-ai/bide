@@ -10,7 +10,10 @@ approvals
 audit/rfc3161
 cmd/bide
 cmd/bide/bide-hsm
+cmd/bide/bide-hsm/azuretest
+cmd/bide/bide-hsm/emulatortest
 cmd/bide/bide-hsm/internal/hsmkeys
+cmd/bide/internal/csr
 cmd/bide/internal/demo
 cmd/bide/internal/doctor
 cmd/bide/internal/initcmd
