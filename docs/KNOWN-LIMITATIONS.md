@@ -666,8 +666,11 @@ acknowledged. A chain is at most four steps and is not repeated.
   sees the stops as unknowable and holds covered side-effect calls.
 - The staleness bound (default 15s) is an engineering figure the formal model does not cover; the
   model checks the synchronous case.
-- Not shipped yet: `bide stop`, the viewer banner, the signed anchored audit trail and the
-  notifications for a stop. A plan flow is checked only if it was given a switch (`Builder.WithStopSwitch`); one without, on a store with a control run, is refused.
+- Not shipped yet: `bide stop`, the viewer banner and the notifications for a stop.
+- The stop trail records each signed record when the control writes it; a record written around the
+  control (straight into the control run, with no trail) is found by `bide audit stops -db` or
+  `-postgres-env`, not prevented. `Reaudit` appends what the trail lacks. The stop trail's order of
+  writes is not covered by the formal model. A plan flow is checked only if it was given a switch (`Builder.WithStopSwitch`); one without, on a store with a control run, is refused.
 - An agent-scope stop matches `Identity.Actor`: a run with no identity is never covered by one.
 - A session turn and a `Step` are not held by a stop of a tool; a global or agent stop holds the run
   at its next drive or turn start.
