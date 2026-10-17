@@ -3,6 +3,7 @@ package crlrefresh
 import (
 	"github.com/bide-ai/bide/audit"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -204,8 +205,8 @@ func TestURLRedaction(t *testing.T) {
 			t.Errorf("%q -> %q", in, got)
 		}
 	}
-	if _, err := audit.CheckCRLURL("ldap://h.example/cn=x"); err == nil {
-		t.Error("ldap accepted")
+	if _, err := audit.CheckCRLURL("ldap://h.example/cn=x"); err == nil || !strings.Contains(err.Error(), "LDAP is not supported") {
+		t.Errorf("ldap: %v", err)
 	}
 }
 

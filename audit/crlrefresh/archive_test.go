@@ -472,3 +472,31 @@ func TestUnchangedCRLIsStillHeldByTheSnapshot(t *testing.T) {
 		t.Fatal("an unchanged CRL was reported while the snapshot lacked it")
 	}
 }
+
+// Seeding stops at a full snapshot instead of evicting: the application may have added CRLs itself.
+func TestSeedStopsAtAFullSnapshotWithoutEvicting(t *testing.T) {
+	arch := crlrefresh.DirArchive(t.TempDir())
+	g := newCRig(t, withArchive(arch), withSnapOpts(audit.WithMaxCRLs(8)))
+	now := g.clk.Now()
+	g.srv.set("/root.crl", g.rCRL(1, now.Add(-time.Hour), 48*time.Hour))
+	g.start()
+	for n := int64(1); n <= 4; n++ {
+		g.srv.set("/inter.crl", g.iCRL(n, now.Add(time.Duration(n-6)*time.Minute), time.Hour))
+		g.refresh()
+	}
+	g.restart()
+	for n := int64(100); n < 107; n++ { // the application's own CRLs fill the snapshot first
+		if _, err := g.snap.AddCRL(g.iCRL(n, now.Add(-2*time.Minute), time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := g.r.Seed(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if g.snap.Evicted() != 0 || g.snap.Len() > 8 {
+		t.Fatalf("seeding evicted %d CRLs (%d held)", g.snap.Evicted(), g.snap.Len())
+	}
+	if len(g.kinds(crlrefresh.EventSeedStopped)) == 0 {
+		t.Fatalf("a seed that stopped did not say so: %s", g.dump())
+	}
+}
