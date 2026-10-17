@@ -503,3 +503,154 @@ func TestStopEngine_GuardIsCachedPerStore(t *testing.T) {
 		t.Fatalf("%d Loads of the control run over four drives, want 1", n)
 	}
 }
+
+// partialLoad makes a Load of the control run yield its entries and then fail, while on is set: a
+// connection reset at the end of a read.
+type partialLoad struct {
+	Store
+	on *atomic.Bool
+}
+
+func (p partialLoad) Unwrap() Store { return p.Store }
+func (p partialLoad) Load(ctx context.Context, runID string, after int64) iter.Seq2[Entry, error] {
+	return func(yield func(Entry, error) bool) {
+		for e, err := range p.Store.Load(ctx, runID, after) {
+			if !yield(e, err) {
+				return
+			}
+		}
+		if runID == StopControlRun && p.on.Load() {
+			yield(Entry{}, errCovBlip)
+		}
+	}
+}
+
+// A read that delivers a stop and then fails must not lose it: the entries are not folded and the cursor
+// does not move, so the next read, which succeeds, finds the stop.
+func TestStopSwitch_PartialReadDoesNotLoseAStop(t *testing.T) {
+	ctx := context.Background()
+	var broken atomic.Bool
+	r := newStopRig(t, partialLoad{NewMemStore(), &broken}, WithStopPoll(time.Hour), WithStopStaleness(time.Hour))
+	hold := func() *Stopped { return r.sw.Hold(ctx, RunRef{RunID: "x"}, StopQuery{Tool: "charge"}, true, true) }
+	if h := hold(); h != nil {
+		t.Fatal(h)
+	}
+	r.stop(StopScope{Kind: StopGlobal})
+	broken.Store(true)
+	if h := hold(); h != nil && h.Cause == StopCauseStop {
+		t.Fatal("a stop was seen through a failed read; it is not folded until a read completes") // the cache is within the bound
+	}
+	broken.Store(false)
+	if h := hold(); h == nil || h.Cause != StopCauseStop {
+		t.Fatalf("the stop that arrived in a failed read was lost: %+v", h)
+	}
+}
+
+// A record this process cannot decode, and a context that ends mid-read, do not advance the cursor either.
+func TestStopSwitch_FailedReadsKeepTheCursor(t *testing.T) {
+	r := newStopRig(t, NewMemStore(), WithStopPoll(time.Hour), WithStopStaleness(time.Hour))
+	hold := func(ctx context.Context) *Stopped {
+		return r.sw.Hold(ctx, RunRef{RunID: "x"}, StopQuery{Tool: "charge"}, true, true)
+	}
+	hold(context.Background())
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	r.stop(StopScope{Kind: StopGlobal})
+	hold(cancelled) // a read that cannot complete
+	if h := hold(context.Background()); h == nil || h.Cause != StopCauseStop {
+		t.Fatalf("after a cancelled read: %+v", h)
+	}
+	// An undecodable entry after the header: reads fail until it is gone; the stop before it is kept as read.
+	r2 := newStopRig(t, NewMemStore(), WithStopPoll(time.Hour), WithStopStaleness(0))
+	r2.stop(StopScope{Kind: StopTool, Name: "a"})
+	if _, _, err := r2.store.Insert(context.Background(), StopControlRun, "@stop/zz-bad", []byte("not a record")); err != nil {
+		t.Fatal(err)
+	}
+	if h := r2.sw.Hold(context.Background(), RunRef{RunID: "x"}, StopQuery{Tool: "charge"}, true, true); h == nil || h.Cause != StopCauseUnreadable {
+		t.Fatalf("an undecodable entry must make a side-effect call fail closed, not pass: %+v", h)
+	}
+}
+
+// With nothing read yet and an unreadable control run, only side-effect calls are held: a read-only
+// call, a turn and a drive start proceed.
+func TestStopSwitch_NothingReadYetHoldsOnlySideEffects(t *testing.T) {
+	ctx := context.Background()
+	var down atomic.Bool
+	down.Store(true)
+	r := newStopRig(t, failLoad{NewMemStore(), &down}, WithStopPoll(10*time.Millisecond), WithStopStaleness(time.Hour))
+	if h := r.sw.Hold(ctx, RunRef{RunID: "x"}, StopQuery{Tool: "charge"}, true, true); h == nil || h.Cause != StopCauseUnreadable {
+		t.Fatalf("a side-effect call: %+v", h)
+	}
+	for name, h := range map[string]*Stopped{
+		"read-only": r.sw.Hold(ctx, RunRef{RunID: "x"}, StopQuery{Tool: "lookup"}, false, true),
+		"turn":      r.sw.Hold(ctx, RunRef{RunID: "x"}, StopQuery{}, false, false),
+	} {
+		if h != nil {
+			t.Fatalf("%s held: %+v", name, h)
+		}
+	}
+}
+
+// slowLoad blocks a Load of the control run until released, signalling when one has started.
+type slowLoad struct {
+	Store
+	started chan struct{}
+	release chan struct{}
+	slow    atomic.Bool
+}
+
+func (s *slowLoad) Unwrap() Store { return s.Store }
+func (s *slowLoad) Load(ctx context.Context, runID string, after int64) iter.Seq2[Entry, error] {
+	if runID == StopControlRun && s.slow.Load() {
+		return func(yield func(Entry, error) bool) {
+			select {
+			case s.started <- struct{}{}:
+			default:
+			}
+			select {
+			case <-s.release:
+			case <-ctx.Done():
+				yield(Entry{}, ctx.Err())
+				return
+			}
+			for e, err := range s.Store.Load(ctx, runID, after) {
+				if !yield(e, err) {
+					return
+				}
+			}
+		}
+	}
+	return s.Store.Load(ctx, runID, after)
+}
+
+// One slow read does not hold up the cached checks, and a caller waiting for the reader gives up when its
+// context ends.
+func TestStopSwitch_SlowReadDoesNotBlockOthers(t *testing.T) {
+	st := &slowLoad{Store: NewMemStore(), started: make(chan struct{}, 1), release: make(chan struct{})}
+	r := newStopRig(t, st, WithStopPoll(time.Hour), WithStopStaleness(time.Hour))
+	bg := context.Background()
+	r.sw.Hold(bg, RunRef{RunID: "x"}, StopQuery{}, false, true) // primes the cache
+	st.slow.Store(true)
+	done := make(chan *Stopped, 1)
+	go func() { done <- r.sw.Hold(bg, RunRef{RunID: "x"}, StopQuery{Tool: "charge"}, true, true) }() // the slow read
+	<-st.started
+	// A cached check is answered from the cache while the read is in flight.
+	got := make(chan *Stopped, 1)
+	go func() { got <- r.sw.Hold(bg, RunRef{RunID: "y"}, StopQuery{Tool: "charge"}, false, false) }()
+	select {
+	case h := <-got:
+		if h != nil {
+			t.Fatal(h)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a cached check waited for a slow read")
+	}
+	// A synchronous caller waiting for the reader stops waiting when its context ends.
+	wctx, cancel := context.WithTimeout(bg, 50*time.Millisecond)
+	defer cancel()
+	if h := r.sw.Hold(wctx, RunRef{RunID: "z"}, StopQuery{Tool: "charge"}, true, true); h != nil && h.Cause != StopCauseUnreadable && h.Cause != StopCauseStop {
+		t.Fatal(h)
+	}
+	close(st.release)
+	<-done
+}

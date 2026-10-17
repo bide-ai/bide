@@ -101,19 +101,25 @@ func WithStopErrors(fn func(error)) StopSwitchOption {
 // (a call after its claim, a call before it begins) always reads: a stop committed before the read is
 // seen, so the bound for a side effect is the store's own visibility (on Postgres the control run must
 // be read from the primary). When a read fails, a side-effect call runs only on a state read within the
-// staleness bound, else it is held; a read-only call and a model turn use whatever was last read.
+// staleness bound, else it is held; a read-only call and a model turn are never held for a failed read
+// (with nothing read yet they proceed as if no stop existed). Reads are one at a time and honor each
+// caller's context: a slow read delays the callers that need a read, never the cached checks, and a
+// caller whose context ends stops waiting.
 type StopSwitch struct {
 	ctl      *StopControl
 	poll     time.Duration
 	maxStale time.Duration
 	onError  func(error)
 
-	mu     sync.Mutex
-	recs   []Record
-	after  int64 // Seq of the last entry read, -1 before the first read
-	st     StopState
-	have   bool      // st is a fold of recs
-	lastOK time.Time // when the last read succeeded (monotonic)
+	sem chan struct{} // held by the one reader; it alone touches recs and after
+
+	mu        sync.Mutex
+	recs      []Record
+	after     int64 // Seq of the last entry folded, -1 before the first read
+	st        StopState
+	have      bool      // st is a fold of recs
+	lastOK    time.Time // when the last read succeeded (monotonic)
+	lastStart time.Time // when the last read began
 }
 
 // NewStopSwitch returns a switch over ctl.
@@ -121,7 +127,7 @@ func NewStopSwitch(ctl *StopControl, opts ...StopSwitchOption) (*StopSwitch, err
 	if ctl == nil {
 		return nil, fmt.Errorf("NewStopSwitch: nil control: %w", ErrConfig)
 	}
-	s := &StopSwitch{ctl: ctl, poll: time.Second, maxStale: 15 * time.Second, after: -1}
+	s := &StopSwitch{ctl: ctl, poll: time.Second, maxStale: 15 * time.Second, after: -1, sem: make(chan struct{}, 1)}
 	for _, o := range opts {
 		if o == nil {
 			return nil, fmt.Errorf("NewStopSwitch: nil option: %w", ErrConfig)
@@ -133,12 +139,20 @@ func NewStopSwitch(ctl *StopControl, opts ...StopSwitchOption) (*StopSwitch, err
 	return s, nil
 }
 
-// refresh reads the control run's entries after the last one and folds. The caller holds s.mu.
+// refresh reads the control run's entries after the last one and folds them. The caller holds s.sem.
+// What it reads is kept only once the whole read succeeded and folded: a read that fails part way (a
+// connection reset, a record this process cannot decode, a context that ends) keeps nothing and
+// leaves the cursor where it was, so the next read loads the same entries again, and a stop that
+// arrived in the part that was read is never lost.
 func (s *StopSwitch) refresh(ctx context.Context) error {
 	j := s.ctl.j
-	n := len(s.recs)
-	first := s.after < 0
-	for e, err := range j.store.Load(ctx, StopControlRun, s.after) {
+	s.mu.Lock()
+	s.lastStart = time.Now()
+	s.mu.Unlock()
+	recs, after := s.recs, s.after
+	n := len(recs)
+	first := after < 0
+	for e, err := range j.store.Load(ctx, StopControlRun, after) {
 		if err != nil {
 			return storageErr("load the stop control run", err)
 		}
@@ -152,34 +166,44 @@ func (s *StopSwitch) refresh(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		s.recs = append(s.recs, rec)
-		s.after = e.Seq
+		recs = append(recs, rec)
+		after = e.Seq
 	}
-	if len(s.recs) != n || !s.have {
-		st, err := s.ctl.stateOf(s.recs)
-		if err != nil {
+	s.mu.Lock()
+	have := s.have
+	s.mu.Unlock()
+	st := s.st
+	if len(recs) != n || !have {
+		var err error
+		if st, err = s.ctl.stateOf(recs); err != nil {
 			return err
 		}
-		s.st, s.have = st, true
-		if st.ChainErr != "" && s.onError != nil {
-			s.onError(fmt.Errorf("kill switch: %s", st.ChainErr))
-		}
 	}
-	s.lastOK = time.Now()
+	s.recs, s.after = recs, after
+	s.mu.Lock()
+	s.st, s.have, s.lastOK = st, true, time.Now()
+	s.mu.Unlock()
+	if len(recs) != n && st.ChainErr != "" && s.onError != nil {
+		s.onError(fmt.Errorf("kill switch: %s", st.ChainErr))
+	}
 	return nil
 }
 
-// protocol:stop begin ReadOk ReadFail
-
 // view returns the state to judge by, and whether it is known: a fresh read, or (when the read fails)
-// the last state if it is within the staleness bound.
+// the last state if it is within the staleness bound. A check that cannot have a side effect always
+// gets a state: nothing read yet is "no stops".
 func (s *StopSwitch) view(ctx context.Context, sync bool, sideEffect bool) (StopState, bool) {
+	begin := time.Now()
+	s.mu.Lock()
+	if s.have && !sync && time.Since(s.lastOK) < s.poll {
+		st := s.st
+		s.mu.Unlock()
+		return st, true
+	}
+	s.mu.Unlock()
+	err := s.read(ctx, begin)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.have && !sync && time.Since(s.lastOK) < s.poll {
-		return s.st, true
-	}
-	err := s.refresh(ctx)
 	if err == nil {
 		return s.st, true
 	}
@@ -188,11 +212,29 @@ func (s *StopSwitch) view(ctx context.Context, sync bool, sideEffect bool) (Stop
 	}
 	switch {
 	case !sideEffect:
-		return s.st, s.have // the last read, however old; nothing known if there was none
+		return s.st, true // the last read, however old; nothing read yet is no stops
 	case s.have && time.Since(s.lastOK) <= s.maxStale:
 		return s.st, true
 	}
 	return StopState{}, false
+}
+
+// read takes the reader's turn (or gives up when ctx ends) and reads, unless a read that began after
+// begin has finished meanwhile: it saw everything committed before begin, so it serves this caller too.
+func (s *StopSwitch) read(ctx context.Context, begin time.Time) error {
+	select {
+	case s.sem <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-s.sem }()
+	s.mu.Lock()
+	shared := s.have && s.lastStart.After(begin) && !s.lastOK.Before(s.lastStart)
+	s.mu.Unlock()
+	if shared {
+		return nil
+	}
+	return s.refresh(ctx)
 }
 
 // Hold decides whether q is held, for run ref. sideEffect says the thing asked about can have a side
@@ -211,8 +253,6 @@ func (s *StopSwitch) Hold(ctx context.Context, ref RunRef, q StopQuery, sideEffe
 	}
 	return nil
 }
-
-// protocol:stop end
 
 // GlobalStop returns the active global stop, if there is one, from a cached read (a read when it is older than
 // the poll interval): what a recovery pass asks, so that it lists nothing while everything is stopped.
