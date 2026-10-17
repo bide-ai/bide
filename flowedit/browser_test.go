@@ -335,11 +335,10 @@ func TestFormsInChrome(t *testing.T) {
 	if !r.OK {
 		t.Fatalf("the script failed: %s\nconsole: %q\nfailed requests: %q", r.Error, r.Console, r.Failed)
 	}
-	// The one refused operation of the script is a 422, which the browser logs as a console error;
-	// it is expected, exactly once, and nothing else is.
-	const refused422 = "error: Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)"
-	if len(r.Console) != 1 || r.Console[0] != refused422 || len(r.Failed) > 0 || len(r.OffOrigin) > 0 {
-		t.Errorf("the browser reported console %q (want only the one 422 of the refused operation), failed requests %q, requests off the origin %q", r.Console, r.Failed, r.OffOrigin)
+	// A refused operation is a 200 with {"refused": reason}, which the browser does not log as a failed
+	// request: the forms script refuses one operation (an empty block name) and the console stays empty.
+	if len(r.Console) > 0 || len(r.Failed) > 0 || len(r.OffOrigin) > 0 {
+		t.Errorf("the browser reported console %q, failed requests %q, requests off the origin %q", r.Console, r.Failed, r.OffOrigin)
 	}
 	if r.Original != formsFlow || r.GateButton != "Apply gate" || r.NeedBefore != "2" || !slices.Equal(r.ApproversBefore, []string{"ops", "finance", "risk"}) || r.SafetyBefore != "side_effect" || !r.ExcludeBefore || r.TimeoutBefore != "24h" {
 		t.Errorf("the form does not show the node's gate: need %q approvers %q safety %q exclude %v timeout %q button %q", r.NeedBefore, r.ApproversBefore, r.SafetyBefore, r.ExcludeBefore, r.TimeoutBefore, r.GateButton)
@@ -458,6 +457,8 @@ func TestRacesInChrome(t *testing.T) {
 	get("sourceUnchanged", &unchanged)
 	if !goodEnabled || !unchanged {
 		t.Errorf("a good number: apply enabled %v, text unchanged %v", goodEnabled, unchanged)
+	}
+}
 
 // TestAssertionsInChrome drives the assertions panel: an assertion is built from one of the six
 // templates, its verdict is shown live before it is added (a violation with its counterexample, a
