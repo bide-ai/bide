@@ -1868,6 +1868,10 @@ type StatusDecl struct {
 	ExecStatusAgeFor map[SPKIHash]time.Duration
 	CAOverlapFor     map[SPKIHash]time.Duration
 	DeltaPeriodFor   map[SPKIHash]time.Duration
+
+	ClockTolerance time.Duration
+	EffectiveFrom  time.Time
+	// contains filtered or unexported fields
 }
 ```
 
@@ -1880,6 +1884,7 @@ StatusDecl is the declared CA timings read from a file.
 **Methods**
 
 - `func (d StatusDecl) Approver(policy *CertIdentity, snap *StatusSnapshot, now func() time.Time) (*CertApprover, error)`: Approver builds the CertApprover the refresher reads its declared values from, for a refresher run outside a gate.
+- `func (d StatusDecl) MissingForDigest() []string`: MissingForDigest returns, sorted, the members of the declaration the policy digest covers and the file does not state.
 
 ## type StatusError
 

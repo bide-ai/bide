@@ -703,7 +703,7 @@ Pre-flight a certificate-bound approval setup and say why a certificate would be
 
 ```text
 usage: bide identity fetch-crl -policy <file> -params <file> -cache <dir> [-once]
-       bide identity check -policy <file> -params <file> (-expect <file> | -no-expect) (-crl-dir <dir> | -fetch | -no-status) [-cert <chain.pem>] [-json]
+       bide identity check -policy <file> -params <file> (-expect <file> | -expect-digest <hex> | -no-expect) (-crl-dir <dir> | -fetch | -no-status) [-cert <chain.pem>] [-json]
        bide identity reset-high-water -policy <file> -params <file> -cache <dir> -issuer <hex> -reason <text> -operator <name> [-set-aside <hash>]... [-accept-lost-listings]
        bide identity ack-reset -policy <file> -params <file> -cache <dir> -issuer <hex> -name <RESET-...json>
 
@@ -761,7 +761,7 @@ usage: bide identity fetch-crl -policy <file> -params <file> -cache <dir> [-once
 ### bide identity check
 
 ```text
-usage: bide identity check -policy <file> -params <file> (-expect <file> | -no-expect) (-crl-dir <dir> | -fetch | -no-status) [-cert <chain.pem> [-chain <more.pem>] [-as <approver id>]] [-at <time>] [-json]
+usage: bide identity check -policy <file> -params <file> (-expect <file> | -expect-digest <hex> | -no-expect) (-crl-dir <dir> | -fetch | -no-status) [-cert <chain.pem> [-chain <more.pem>] [-as <approver id>]] [-at <time>] [-json]
   -as string
     	the approver id the certificate is for (default: the policy's only approver id)
   -at string
@@ -776,12 +776,14 @@ usage: bide identity check -policy <file> -params <file> (-expect <file> | -no-e
     	offline: read the CRLs from this directory (a bide identity fetch-crl archive, which is not written to, or a flat directory of .crl, .der or .pem files); no network is used
   -expect string
     	the gate's recorded policy: the "policy" member of its identity record (or the whole record), to compare the policy file and -params with, member by member
+  -expect-digest string
+    	the gate's policy digest (lowercase hex SHA-256: the pause note's identity_policy_digest, or the identity record's policy_digest): compared with the digest of the policy file and -params, which is an equality only when -params states every member the digest covers (w, min_w, routine_grace, clock_tolerance, coverage_tolerance, allow_holds, consecutive_numbers, retained, effective_from); otherwise the check fails and names the missing members
   -fetch
     	online: fetch the CRLs from the policy's crl sources (http and https only, with the size limits, timeouts and same-host redirect rule of fetch-crl; nothing is stored). Run it on the gate's host
   -json
     	print the report as one JSON document
   -no-expect
-    	do not compare with the gate's recorded policy; the result is then partial (exit 4) and never ready
+    	do not compare with the gate's recorded policy or digest; the result is then partial (exit 4) and never ready
   -no-status
     	do not check CRL status; the result is then partial (exit 4) and never ready
   -params string

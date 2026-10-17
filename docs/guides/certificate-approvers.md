@@ -448,14 +448,19 @@ warning only. Start-up events print the effective URLs and each issuer's limit, 
 cron (`-once` exits 1 unless every issuer holds a fresh CRL) or as a daemon, printing one JSON line per event
 and a health line per issuer. `ca.json` is a copy of the timings the gate declares (`ca_period`,
 `max_status_age`, `exec_status_age`, `this_update_skew`, and per issuer `ca_period`, `max_status_age`,
-`exec_status_age`, `ca_overlap`, `this_update_skew`, `delta_period`); it must match the gate's declaration. Do not compare the policy digest the command prints with the digest the gate
-records: today the two cannot be equal. The digest covers `effective_from` (the command's stand-in approver
-takes its start time) and values the file cannot hold (`w`, `min_w`, `routine_grace`, `clock_tolerance`,
-holds, retention, consecutive numbers), which the command fills with defaults. Compare instead the
-`declared values` start-up event with the policy record the gate journals (the `ApprovalIdentity` record):
-the timing members (`ca_period*`, `max_status_age*`, `exec_status_age*`, `ca_overlap_for`,
-`this_update_skew*`, `coverage_tolerance`) and the anchors and intermediates must be the same. A
-mismatch means the schedule and the alarm follow other numbers than the gate. A delta outage is reported as an event and does not fail `-once`; a base that
+`exec_status_age`, `ca_overlap`, `this_update_skew`, `delta_period`); it must match the gate's declaration.
+The policy digest the command prints is the gate's only when `ca.json` also states every other member the
+digest covers, which are optional and named as in the gate's policy record: `coverage_tolerance`, `w`,
+`min_w`, `routine_grace`, `clock_tolerance`, `allow_holds`, `consecutive_numbers`, `retained` and
+`effective_from` (the date the policy took effect, RFC 3339). With all of them present the start-up event says
+the digest is comparable and **must equal** the digest the gate records (a difference means the file and the
+gate declare different values); a file without some of them (every file written before these members existed)
+still works as before, and the event names what it lacks and says the digest cannot be compared, because the
+missing members take defaults and `effective_from` the start time. In that case compare the `declared values`
+start-up event with the policy record the gate journals (the `ApprovalIdentity` record): the timing members
+(`ca_period*`, `max_status_age*`, `exec_status_age*`, `ca_overlap_for`, `this_update_skew*`,
+`coverage_tolerance`) and the anchors and intermediates must be the same. A mismatch means the schedule and
+the alarm follow other numbers than the gate. A delta outage is reported as an event and does not fail `-once`; a base that
 is not fresh does. A
 gate process embeds the refresher itself; the command is for the archive an audit reads and for monitoring.
 `bide approve -cert` does not fetch CRLs: its local check is a convenience before signing, and the gate decides.
@@ -479,7 +484,7 @@ It never reports ready while a part the gate relies on was left out, so two choi
 | You choose | Flag | If you decline |
 |---|---|---|
 | Where the CRLs come from | `-crl-dir <dir>` offline: a `bide identity fetch-crl` archive (read, never written) or a flat directory of `.crl`, `.der` or `.pem` files; no network. `-fetch` online: the policy's `crl` sources over HTTP or HTTPS with the limits of `fetch-crl` (size, timeouts, same-host redirects), nothing stored. Together, the archive seeds the rollback memory and the fetch is judged. | `-no-status`: the result is **partial** |
-| What the gate runs with | `-expect <file>`: the gate's recorded policy, the `policy` member of its identity record (or the whole record) | `-no-expect`: the result is **partial** |
+| What the gate runs with | `-expect <file>`: the gate's recorded policy, the `policy` member of its identity record (or the whole record); and/or `-expect-digest <hex>`: its policy digest | `-no-expect`: the result is **partial** |
 
 Optional: `-cert chain.pem` (the approver's chain, leaf first, as `bide approve -cert` takes it; `-chain` adds
 more certificates behind it, `-as` names the approver id when the policy has several) asks whether that
@@ -505,6 +510,7 @@ refuse, pause or miscount), `SKIP` (not run, and the summary says whether that m
 | `policy.anchor`, `policy.intermediate` | each pinned CA certificate is valid now (WARN inside 90 days of expiry) |
 | `policy.sources`, `policy.intermediates` | the `crl` and `intermediate_certs` members parse; every pinned intermediate key has its certificate, and every certificate supplied is pinned |
 | `params.load`, `params.config` | the `-params` file parses, and passes the gate's own start-up check (`CertApprover.ValidateConfig`) |
+| `params.digest` | with `-expect-digest`: the digest of the policy file and `-params` equals the gate's (needs a complete `-params` file) |
 | `params.expect`, `params.expect.unverified` | the policy file and `-params` agree with the gate's recorded policy, member by member; the members they cannot declare are listed, not claimed |
 | `crl.setup` | every pinned issuer has a CRL source and a certificate, and the timings leave the refresher a margin before gates pause (`crlrefresh.New`) |
 | `crl.load`, `crl.file`, `crl.fetch`, `crl.event.*` | the CRLs were read or fetched, verified against the pinned issuers; files and events that were refused (rollback, equivocation, bad signature, oversize, a refused redirect, ...) |
@@ -513,13 +519,16 @@ refuse, pause or miscount), `SKIP` (not run, and the summary says whether that m
 | `cert.parse`, `cert.chain` | the file is a certificate chain; the gate would accept it for the approver (`VerifyChain`), with the gate's reason if not |
 | `cert.status.count`, `cert.status.exec` | the revocation status rule, as when a decision is counted and as immediately before the call runs |
 
-**Why the comparison with the gate is member by member.** The digest `fetch-crl` prints cannot equal the
-gate's (see [the command](#keeping-the-crls-current)): the digest covers `effective_from` and values the
-`-params` file cannot carry. `-expect` compares the members both sides can declare (anchors, intermediates,
-the identity profile, the lifetime and algorithm limits, and every CA timing) and names each difference with
-both values. `params.expect.unverified` lists the rest (`w`, `min_w`, `routine_grace`, `clock_tolerance`,
-holds, retention, consecutive numbers, `effective_from`) with the recorded values: compare those with the
-gate's declaration by hand.
+**Two ways to compare with the gate.** `-expect-digest <hex>` (the gate's policy digest, from the pause note
+or the identity record) is a true equality, and it needs a `-params` file that states every member the digest
+covers (see [the command](#keeping-the-crls-current)); with a file that lacks some, the check fails and names
+them, because a digest over defaults would mean nothing. `-expect <file>` (the gate's recorded policy)
+works with any file: it compares the members both sides can declare (anchors, intermediates, the identity
+profile, the lifetime and algorithm limits, every CA timing, and every optional member the file states) and
+names each difference with both values; `params.expect.unverified` lists the optional members the file does
+not state (`w`, `min_w`, `routine_grace`, `clock_tolerance`, holds, retention, consecutive numbers,
+`effective_from`) with the recorded values, to compare with the gate's declaration by hand. Give either, or
+both.
 
 **Troubleshooting: the messages, and what to do.**
 
@@ -531,6 +540,8 @@ gate's declaration by hand.
 | `policy.intermediates` FAIL, `does not pin` | a certificate is supplied for a CA the policy does not pin | pin its key under `intermediates`, or remove the file |
 | `params.config` FAIL, `ExecStatusAge/2` | a CA publishes less often than twice per execution age | raise `exec_status_age` or declare the CA's real period |
 | `params.expect` FAIL, `<member>: policy and -params say A, the gate recorded B` | the files differ from what the gate runs with | make the files carry the gate's values (the schedule and alarm follow them) |
+| `params.digest` FAIL, `lacks w, ...` | the `-params` file does not state every member the digest covers | state them, each with the value the gate declares |
+| `params.digest` FAIL, `the gate's is ...` | the file and the gate declare different values | run again with `-expect` to see which members differ |
 | `crl.setup` FAIL, `no CRL source` | a pinned issuer has no `crl` entry | add `"crl": {"<issuer key hash>": {"urls": [...]}}` |
 | `crl.fetch` FAIL, `http-status: 404`, `error`, `not-a-crl` | the URL does not serve the CA's CRL | fix the URL, firewall, proxy, DNS or TLS trust from the gate's host; only http and https are fetched |
 | `crl.fresh` FAIL, `no CRL is held` | none read or fetched for that issuer | run `fetch-crl`, or put the CRL in `-crl-dir` |
