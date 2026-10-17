@@ -569,6 +569,10 @@ func TestStopSwitch_FailedReadsKeepTheCursor(t *testing.T) {
 	if h := r2.sw.Hold(context.Background(), RunRef{RunID: "x"}, StopQuery{Tool: "charge"}, true, true); h == nil || h.Cause != StopCauseUnreadable {
 		t.Fatalf("an undecodable entry must make a side-effect call fail closed, not pass: %+v", h)
 	}
+	// And it keeps doing so: the cursor did not move past the entry the read could not decode.
+	if h := r2.sw.Hold(context.Background(), RunRef{RunID: "x"}, StopQuery{Tool: "charge"}, true, true); h == nil || h.Cause != StopCauseUnreadable {
+		t.Fatalf("the second read after an undecodable entry passed: %+v", h)
+	}
 }
 
 // With nothing read yet and an unreadable control run, only side-effect calls are held: a read-only
