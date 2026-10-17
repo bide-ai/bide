@@ -781,7 +781,7 @@ func (c *StopControl) ensureRoot(ctx context.Context, st StopState, by, host, re
 	return c.write(ctx, st, &root, signer, false)
 }
 
-// protocol:stop begin Write
+// protocol:stop begin Write StartWrite FinishWrite
 
 // write completes r (time, policy digest, ID, signature) and inserts it. An audited control signs.
 func (c *StopControl) write(ctx context.Context, st StopState, r *StopRecord, signer StopSigner, isSet bool) error {
