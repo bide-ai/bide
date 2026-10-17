@@ -170,9 +170,10 @@ type Store struct {
 }
 
 var (
-	_ agent.Store  = (*Store)(nil)
-	_ agent.Lister = (*Store)(nil)
-	_ agent.Leaser = (*Store)(nil)
+	_ agent.Store    = (*Store)(nil)
+	_ agent.Lister   = (*Store)(nil)
+	_ agent.Redactor = (*Store)(nil)
+	_ agent.Leaser   = (*Store)(nil)
 )
 
 // tables holds the table names, prefixed, their schema-qualified forms, and the statements built
@@ -189,6 +190,8 @@ type tables struct {
 	rels                                [][]sqlTok // the qualified tables, as the statement check names them
 	insert, acquire, renew, release     writeSQL
 	reap                                writeSQL
+	redactCall                          selectSQL // see Store.Redact
+	redact, qRedact                     string    // the redaction function's bare and qualified names
 	get, load                           selectSQL
 	appendEvent                         writeSQL // see EventStore.Append
 	getEvent, loadEvents                selectSQL
@@ -242,18 +245,19 @@ func (t tables) nextSeqBody(schema string) string {
 
 func newTables(prefix, schema string) (tables, error) {
 	t := tables{steps: prefix + "steps", leases: prefix + "leases", version: prefix + "schema_version", events: prefix + "events",
-		nextSeq: prefix + "next_seq_" + nextSeqVersion}
+		nextSeq: prefix + "next_seq_" + nextSeqVersion, redact: prefix + "redact_" + redactVersion}
 	q := quoteIdent(schema) + "."
 	t.qSteps, t.qLeases, t.qVersion, t.qNextSeq = q+t.steps, q+t.leases, q+t.version, q+t.nextSeq
 	t.qEvents = q + t.events
-	var names [5][]sqlTok
-	for i, n := range []string{t.qNextSeq, t.qSteps, t.qLeases, t.qVersion, t.qEvents} {
+	t.qRedact = q + t.redact
+	var names [6][]sqlTok
+	for i, n := range []string{t.qNextSeq, t.qSteps, t.qLeases, t.qVersion, t.qEvents, t.qRedact} {
 		var err error
 		if names[i], err = parseName(n); err != nil {
 			return tables{}, fmt.Errorf("postgres: schema %q: %w (%w)", schema, err, agent.ErrConfig)
 		}
 	}
-	nextSeq, steps, leases := names[0], [][]sqlTok{names[1]}, [][]sqlTok{names[2]}
+	nextSeq, steps, leases, redactFn := names[0], [][]sqlTok{names[1]}, [][]sqlTok{names[2]}, names[5]
 	t.rels = [][]sqlTok{names[1], names[2], names[3]}
 	var err error
 	// Every name is qualified: tables with the recorded schema, built-ins, types and the collation
@@ -295,6 +299,11 @@ func newTables(prefix, schema string) (tables, error) {
 		AND (pg_catalog.strpos(l.run_id, '>') OPERATOR(pg_catalog.>) 0
 			OR NOT EXISTS (SELECT 1 FROM `+t.qSteps+` AS y WHERE y.run_id OPERATOR(pg_catalog.=) l.run_id)
 			OR EXISTS (SELECT 1 FROM `+t.qSteps+` AS x WHERE x.run_id OPERATOR(pg_catalog.=) l.run_id AND x.name OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.text[])))`, nil, [][]sqlTok{names[1], names[2]}); err != nil {
+		return tables{}, err
+	}
+	// The redaction function (see redact.go), called as a SELECT; it does the checks and the
+	// replacement in one statement, with the definer's privilege.
+	if t.redactCall, err = newSelect(`SELECT `+t.qRedact+`($1::pg_catalog.text, $2::pg_catalog.text, $3::pg_catalog.bytea, $4::pg_catalog.int8)`, nil, redactFn); err != nil {
 		return tables{}, err
 	}
 	if t.get, err = newSelect(`SELECT seq, data FROM `+t.qSteps+` WHERE run_id OPERATOR(pg_catalog.=) $1 AND name OPERATOR(pg_catalog.=) $2`, steps); err != nil {
@@ -350,11 +359,15 @@ func newWrite(q string, nextSeq []sqlTok, rels [][]sqlTok) (writeSQL, error) {
 
 // newSelect returns q as a selectSQL, or an error unless q starts with SELECT and passes the
 // statement check; rels are the relations, besides pg_catalog's, q may name.
-func newSelect(q string, rels [][]sqlTok) (selectSQL, error) {
+func newSelect(q string, rels [][]sqlTok, calls ...[]sqlTok) (selectSQL, error) {
 	if !startsWith(q, "SELECT") {
 		return "", fmt.Errorf("postgres: a read on the pool must be one SELECT statement, got %.40q: %w", q, agent.ErrConfig)
 	}
-	if err := checkSQL(q, nil, rels); err != nil {
+	var fn []sqlTok // the one function q may call (the redaction function), if any
+	if len(calls) > 0 {
+		fn = calls[0]
+	}
+	if err := checkSQLCalling(q, fn, "select", rels); err != nil {
 		return "", fmt.Errorf("postgres: a read on the pool holds %v, in %.40q: %w", err, q, agent.ErrConfig)
 	}
 	return selectSQL(q), nil
@@ -698,6 +711,9 @@ func (s *Store) migrate(ctx context.Context, dryRun bool) (MigrationResult, erro
 			return res, err
 		}
 	}
+	if err := s.migrateRedact(ctx, tx, &res, run); err != nil {
+		return res, err
+	}
 	if err := run("create tables", fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %[1]s (
 			run_id pg_catalog.text COLLATE pg_catalog."C" NOT NULL,
@@ -828,7 +844,7 @@ func (s *Store) checkSchema(ctx context.Context) error {
 		return fmt.Errorf("postgres: function %s.%s(text) has another owner than table %s: its owner could replace it after Open checked it, and every insert would run that role's code; drop it, or have the tables' owner create it: %w",
 			quoteIdent(s.schema), s.t.nextSeq, s.t.steps, agent.ErrConfig)
 	}
-	return nil
+	return s.checkRedactFunction(ctx)
 }
 
 // checkEvents checks, after the migration, that the events table is a table with the unique

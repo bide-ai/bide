@@ -127,12 +127,12 @@ gets every engine guarantee without reimplementing any of them.
   engine tells its own model record from another driver's by the salt it drew, so a store that
   rewrites or drops salt bytes makes it take its own record for another's.
 - **A6, immutable.** No update or delete; only a redaction may replace an entry's bytes with a
-  tombstone, in a run that is over.
+  tombstone, in a run that is over, through the optional `Redactor` below, never through `Store`.
 - **A7, context.** Every method honors `ctx`.
 - **A8, iterator hygiene.** Breaking out of `Load` releases everything it holds, and a store holds
   no connection, transaction or lock across a `yield`, so a caller may write inside its loop.
 
-**Optional capabilities.** A store may also implement `Lister` (`Runs(ctx, RunFilter)`, which a
+**Optional capabilities.** A store may also implement `Redactor` (`Redact(ctx, runID, name, current, tombstone)`: replace one entry's bytes with a tombstone that keeps its leaf hash, atomically, only if the entry still holds `current`, the run holds an end marker, no lease on it is live and every run above it (a sub-agent's parents) that holds records holds an end marker, and it is not a session's run; it calls `agent.CheckRedaction` first, so a caller cannot write a tombstone with the wrong hash or redact a protected record; `storetest.Redactor` is the conformance suite and `Run` calls it). A store may also implement `Lister` (`Runs(ctx, RunFilter)`, which a
 recovery supervisor needs; a SQL store evaluates the filter in its query) and `Leaser` (run leases
 that coordinate drivers, and `ReapLeases`, which deletes lapsed leases no recovery pass takes over:
 a finished run's, one on a run the store does not hold, and one on a run whose ID contains `>`).

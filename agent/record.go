@@ -91,8 +91,11 @@ type Record struct {
 	// rather than take it for a step that changed nothing.
 	OutcomeUnknown bool `json:"outcome_unknown,omitempty"`
 	// Redacted marks a record whose stored bytes a redaction replaced with a tombstone, the
-	// reserved form {"redacted":{"leaf_hash":"<hex>","at_ms":<ms>}}: the hex audit leaf hash of
-	// the bytes it replaced and the Unix-millis time of the redaction. Only Name is meaningful on
+	// reserved form {"redacted":{"leaf_hash":"<hex>","at_ms":<ms>,"name":"<name>"}}: the hex audit leaf hash of
+	// the bytes it replaced, the Unix-millis time of the redaction and the record's name (the name
+	// is optional on read; a redaction always writes it, so an export of the journal, which does
+	// not carry row names, still says which record a tombstone replaced). That name is outside the
+	// leaf hash, so outside the database nothing attests it. Only Name is meaningful on
 	// such a record, and Raw returns the tombstone. It is never journaled: the tombstone is what the
 	// store holds. A run holding a redacted record is over and cannot be driven again.
 	Redacted bool `json:"-"`
@@ -566,6 +569,18 @@ func DecodeStoredRecord(runID, name string, b []byte) (Record, error) {
 // modifies, such as an entry a store handed the journal.
 func decodeStored(runID, name string, b []byte) (Record, error) {
 	if isTombstone(b) {
+		// A tombstone that names its record must name the row it sits in: one copied under
+		// another row would otherwise read as that row's record.
+		if n, ok := TombstoneName(b); ok && n != name {
+			return Record{}, fmt.Errorf("run %s: the row stored as step %q holds a tombstone for a record named %q: %w", runID, name, n, ErrStorage)
+		}
+		// A redaction never writes a tombstone over a protected record (RedactionProtected), so one
+		// there was written by something else: a row edited outside a redaction. It keeps the leaf
+		// hash, so signed heads still verify, but the record the engine and the verifiers need is
+		// gone; the journal is corrupt, and no reader treats it as a run in some state.
+		if why := RedactionProtected(name, ""); why != "" {
+			return Record{}, fmt.Errorf("run %s: the row stored as step %q holds a redaction tombstone, but it is %s, which a redaction never replaces: the journal was changed outside a redaction: %w", runID, name, why, ErrStorage)
+		}
 		return Record{Name: name, Redacted: true, raw: b}, nil
 	}
 	r, err := decodeRecord(b)
@@ -618,21 +633,67 @@ type tombstone struct {
 	Redacted *struct {
 		LeafHash string `json:"leaf_hash"`
 		AtMs     int64  `json:"at_ms"`
+		Name     string `json:"name,omitempty"`
 	} `json:"redacted"`
 }
 
-// isTombstone reports whether b is a redaction tombstone: a JSON object whose only member is
-// "redacted", holding a leaf hash. A record's encoding always starts with its "name" member, so
-// no record is ever read as a tombstone.
+// maxTombstoneMs bounds at_ms to the year 9999, so the member is a time and nothing else.
+const maxTombstoneMs = 253402300799999
+
+// isTombstone reports whether b is a redaction tombstone: exactly the bytes NewTombstone writes,
+// {"redacted":{"leaf_hash":"<64 lower-case hex>","at_ms":<digits>}} with an optional ,"name":"<name>"
+// member after at_ms, in that order, with no other member, no space and no duplicate or
+// differently-cased member. Being byte-exact means every JSON reader reads the same leaf hash from
+// it; a parser that took the first duplicate where Go takes the last would otherwise verify against
+// another record's hash. A record's encoding always starts with its "name" member, so no record is
+// ever read as a tombstone.
 func isTombstone(b []byte) bool {
-	if !bytes.HasPrefix(b, []byte(`{"redacted":`)) {
-		return false
+	_, _, _, ok := parseTombstone(b)
+	return ok
+}
+
+// parseTombstone reads a tombstone's leaf hash (hex), time and name by its canonical form.
+func parseTombstone(b []byte) (leaf string, atMs int64, name string, ok bool) {
+	const head = `{"redacted":{"leaf_hash":"`
+	rest, found := bytes.CutPrefix(b, []byte(head))
+	if !found || len(rest) < 64 {
+		return "", 0, "", false
 	}
-	var t tombstone
-	dec := json.NewDecoder(bytes.NewReader(b))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&t); err != nil || dec.More() {
-		return false
+	leaf, rest = string(rest[:64]), rest[64:]
+	for i := 0; i < 64; i++ {
+		if c := leaf[i]; (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return "", 0, "", false
+		}
 	}
-	return t.Redacted != nil && t.Redacted.LeafHash != ""
+	rest, found = bytes.CutPrefix(rest, []byte(`","at_ms":`))
+	if !found {
+		return "", 0, "", false
+	}
+	n := 0
+	for n < len(rest) && rest[n] >= '0' && rest[n] <= '9' {
+		n++
+	}
+	if n == 0 || n > 15 || (n > 1 && rest[0] == '0') {
+		return "", 0, "", false
+	}
+	for _, c := range rest[:n] {
+		atMs = atMs*10 + int64(c-'0')
+	}
+	if atMs > maxTombstoneMs {
+		return "", 0, "", false
+	}
+	rest = rest[n:]
+	if bytes.Equal(rest, []byte("}}")) {
+		return leaf, atMs, "", true
+	}
+	js, found := bytes.CutPrefix(rest, []byte(`,"name":`))
+	if !found || !bytes.HasSuffix(js, []byte("}}")) {
+		return "", 0, "", false
+	}
+	js = js[:len(js)-2]
+	var nm string
+	if json.Unmarshal(js, &nm) != nil || nm == "" {
+		return "", 0, "", false
+	}
+	return leaf, atMs, nm, true
 }

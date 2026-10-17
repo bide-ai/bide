@@ -24,7 +24,7 @@ type MemStore struct {
 }
 
 type memRun struct {
-	entries []Entry // in Seq order; an entry is never modified once appended
+	entries []Entry // in Seq order; an entry is never modified once appended, and a redaction replaces the slice (see Redact)
 	byName  map[string]int
 }
 
@@ -56,9 +56,10 @@ func (m *MemStore) setNow(now func() time.Time) {
 }
 
 var (
-	_ Store  = (*MemStore)(nil)
-	_ Lister = (*MemStore)(nil)
-	_ Leaser = (*MemStore)(nil)
+	_ Store    = (*MemStore)(nil)
+	_ Lister   = (*MemStore)(nil)
+	_ Leaser   = (*MemStore)(nil)
+	_ Redactor = (*MemStore)(nil)
 )
 
 // Insert implements Store.
@@ -158,4 +159,53 @@ func (m *MemStore) Runs(ctx context.Context, f RunFilter) iter.Seq2[string, erro
 			}
 		}
 	}
+}
+
+// Redact implements Redactor. A reader that took a snapshot of the run's entries (Load) keeps
+// reading the entries as they were: the replacement is a new slice, never a write into the old one.
+func (m *MemStore) Redact(ctx context.Context, runID, name string, current, tombstone []byte) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if err := CheckRedaction(runID, name, current, tombstone); err != nil {
+		return false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.init()
+	var st RedactState
+	r := m.runs[runID]
+	var i int
+	if r != nil {
+		i, st.Found = r.byName[name]
+	}
+	if st.Found {
+		st.Row = r.entries[i]
+		for _, end := range endOfRunMarkers {
+			if _, ok := r.byName[end]; ok {
+				st.Ended = true
+			}
+		}
+		if cur, ok := m.leases[runID]; ok && m.now().Before(cur.expiry) {
+			st.Leased = true
+		}
+		for _, anc := range RedactionAncestors(runID) {
+			if a := m.runs[anc]; a != nil && len(a.entries) > 0 {
+				over := false
+				for _, end := range endOfRunMarkers {
+					if _, ok := a.byName[end]; ok {
+						over = true
+					}
+				}
+				st.ParentLive = st.ParentLive || !over
+			}
+		}
+		if bytes.Equal(st.Row.Data, current) && st.Ended && !st.Leased && !st.ParentLive {
+			entries := slices.Clone(r.entries)
+			entries[i].Data = bytes.Clone(tombstone)
+			r.entries = entries
+			return true, nil
+		}
+	}
+	return false, st.Explain(runID, name, current, tombstone)
 }

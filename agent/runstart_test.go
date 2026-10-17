@@ -659,7 +659,7 @@ var rev138cStartSeeds = []string{
 	`{"name":"run:start","kind":"value","result":{"input":{"role":"user","parts":[{"type":"text","text":"x"}]}},"salt":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}`,
 	`{"name":"run:start","kind":"value","result":{"input":null,"saga":true},"salt":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}`,
 	`{"name":"run:start","kind":"value","result":null,"salt":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}`,
-	`{"redacted":{"leaf_hash":"ab12","at_ms":1}}`,
+	`{"redacted":{"leaf_hash":"abababababababababababababababababababababababababababababababab","at_ms":1}}`,
 	// salts of the right length that are not one, or not a plain string
 	`{"name":"run:start","kind":"value","result":{"input":"hi","kind":"agent"},"salt":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="}`,
 	`{"name":"run:start","kind":"value","result":{"input":"hi","kind":"agent"},"salt":"AAAAAAAAAAAAAAAAAAAA=AAAAAAAAAAAAAAAAAAAAAAA"}`,

@@ -88,6 +88,14 @@ func (a *Agent) runSagaWithTelemetry(ctx context.Context, runID string, d *drive
 	if err != nil {
 		return Message{}, usageTotals{}, 0, err
 	}
+	// A run holding a redacted record is over for good, as Journal.open refuses it: a saga's walk
+	// of its rollback reads the model turns and tool results a redaction erases, so it would report
+	// what it can no longer read as nothing compensated.
+	for _, r := range recs {
+		if r.Redacted {
+			return Message{}, usageTotals{}, 0, fmt.Errorf("run %s holds a redacted record (%q), so it is over and cannot be driven again: %w", runID, r.Name, ErrConfig)
+		}
+	}
 	cause, aborting, err := sagaFailure(runID, recs)
 	if err != nil {
 		return Message{}, usageTotals{}, 0, err

@@ -103,6 +103,21 @@ The audit trail does not provide **confidentiality**. This is scoped out explici
   with appropriate access control. The cryptography here proves *what happened*; it does not
   hide it.
 
+### Erasing journal content after the fact
+
+Because a journal is append-only and every record is committed by a signed head, removing a
+record's content is itself a security-relevant act. The one way bide offers is a redaction: the
+record's stored bytes are replaced with a tombstone that keeps its name, its position and its
+leaf hash, so every other proof and every earlier signed head still verifies, and that record can
+no longer be proven (see [Erasing personal data](retention.md#erasing-personal-data)). The
+controls are these. It is not part of the `Store` port the engine uses, so a running agent cannot
+erase. A store refuses it unless the run is over and no lease on it is live, refuses the records a
+verifier or the engine needs, and recomputes the leaf hash itself, so a caller cannot write a
+tombstone that breaks the roots over the run. On Postgres it takes a separate database role that holds only `EXECUTE` on a `SECURITY DEFINER` function repeating the checks server-side (no privilege on the tables), so the application's role cannot erase and the erasing role can write nothing but a tombstone of a finished run's record. A tombstone's name is not authenticated outside the database. What it does not
+yet do is record the erasure in a signed trail of its own: until the planned command does, keep a
+change record. It does not reach copies outside the journal (exports, evidence packages, receipts,
+the event store, backups, replicas, dead tuples before `VACUUM`, logs, the model provider).
+
 ### Retrieved documents are stored like tool results
 
 Retrieved documents are durable content at rest, like tool results. A `RetrievalTool` call's
