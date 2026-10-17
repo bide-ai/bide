@@ -428,11 +428,15 @@ func TestStopSwitch_ReadsIncrementally(t *testing.T) {
 type countLoad struct {
 	Store
 	entries atomic.Int64
+	loads   atomic.Int64 // Loads of the control run
 }
 
 func (c *countLoad) Unwrap() Store { return c.Store }
 func (c *countLoad) Load(ctx context.Context, runID string, after int64) iter.Seq2[Entry, error] {
 	return func(yield func(Entry, error) bool) {
+		if runID == StopControlRun {
+			c.loads.Add(1)
+		}
 		for e, err := range c.Store.Load(ctx, runID, after) {
 			if runID == StopControlRun && err == nil {
 				c.entries.Add(1)
@@ -481,5 +485,21 @@ func TestStopEngine_RecoverLoopRespectsAGlobalStop(t *testing.T) {
 	<-done
 	if calls.Load() != 1 {
 		t.Fatalf("after the lift the run was not driven: calls %d", calls.Load())
+	}
+}
+
+// The guard that refuses an agent with no switch costs one Load of the control run per store every few
+// seconds, not one per drive: a steady-state drive adds nothing.
+func TestStopEngine_GuardIsCachedPerStore(t *testing.T) {
+	ctx := context.Background()
+	counting := &countLoad{Store: NewMemStore()}
+	j := mustJournal(counting)
+	for _, id := range []string{"r1", "r2", "r3", "r4"} {
+		if _, err := mustNew(&seqModel{turns: [][]Emit{textTurn("done")}}, j).Run(ctx, id, UserText("go")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := counting.loads.Load(); n != 1 {
+		t.Fatalf("%d Loads of the control run over four drives, want 1", n)
 	}
 }
