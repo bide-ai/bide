@@ -97,14 +97,20 @@ the effect: a **stop** is written to the control run first, so it is in force at
 trail second; **every other record** (a lift, a policy transition, the root, a mode change) is
 written to the trail first, so none is in force without its evidence. A failed trail write is a
 `*agent.StopTrailError`: for a stop it says the stop *is* in force and carries the stop, and
-`StopControl.Reaudit` appends what the trail lacks; for any other record nothing was written.
+`StopControl.Reaudit` appends what the trail lacks; for any other record nothing was written. Before
+a record that rests on earlier ones (a lift names its stop, a transition its root) goes to the trail, the
+control run's records the trail lacks are appended first, in store order, so the trail never holds a
+lift ahead of its stop. Only records the control accepts are appended: a forged record written straight
+into the control run is a finding of `bide audit stops`, never evidence.
 
 `bide audit stops` verifies the trail offline: each record must verify under the policy the
 deployment pinned (`-stop-policy`, the policy document with the approvers' public keys) and the chain
 of signed transitions from its root; with signed heads (`-sth`, `-pubkey`) a deleted or reordered
 record is found; and against the store (`-db`, `-postgres-env`) every record of the control run must
 be in the trail and the reverse (a stop written around the trail, or a row deleted from the store).
-Basic mode keeps no trail.
+Basic mode keeps no trail. Without `-max-unattested` the verb warns when records follow the newest
+signed head, because whoever can write the trail's store could have deleted them from an exported trail
+unseen; a comparison with the control run (`-db`, `-postgres-env`) would find it.
 
 ## How fast, and when the control run cannot be read
 
