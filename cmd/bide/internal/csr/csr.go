@@ -176,6 +176,25 @@ func selfCheck(der, spki []byte, n Names) error {
 	if !slices.Equal(req.EmailAddresses, wantEmail) || !slices.Equal(gotURI, wantURI) || len(req.DNSNames) != 0 || len(req.IPAddresses) != 0 {
 		return errors.New("the request does not carry the names asked for")
 	}
+	// The extensions are the SAN (if asked for) and the EKU (if asked for), in that order, and nothing else.
+	wantExts := 0
+	if n.Email != "" || n.URI != "" {
+		wantExts++
+	}
+	var gotEKU []asn1.ObjectIdentifier
+	for _, e := range req.Extensions {
+		if e.Id.Equal(oidEKU) {
+			if rest, err := asn1.Unmarshal(e.Value, &gotEKU); err != nil || len(rest) != 0 {
+				return errors.New("the request's extended key usage does not parse")
+			}
+		}
+	}
+	if len(n.EKU) > 0 {
+		wantExts++
+	}
+	if len(req.Extensions) != wantExts || !slices.EqualFunc(gotEKU, n.EKU, func(a, b asn1.ObjectIdentifier) bool { return a.Equal(b) }) {
+		return errors.New("the request does not carry the names asked for")
+	}
 	return nil
 }
 

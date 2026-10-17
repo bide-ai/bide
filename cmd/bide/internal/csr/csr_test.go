@@ -355,3 +355,31 @@ func TestCheck(t *testing.T) {
 		t.Fatal("accepted two SANs")
 	}
 }
+
+// TestSelfCheckEKU: the self-check refuses a request whose extended key usages, or whose extensions, are
+// not what was asked for, so the claim that a request carries exactly the names asked for holds for the EKU too.
+func TestSelfCheckEKU(t *testing.T) {
+	clientAuth := asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 3, 2}
+	emailProt := asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 3, 4}
+	sg := newSigner(t, audit.AlgEd25519)
+	b, err := Build(sg, Names{Email: "ops@bank.example", EKU: []asn1.ObjectIdentifier{clientAuth, emailProt}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blk, _ := pem.Decode(b)
+	spki := sourceSPKI(t, sg)
+	for name, n := range map[string]Names{
+		"other usage":   {Email: "ops@bank.example", EKU: []asn1.ObjectIdentifier{clientAuth, {1, 2, 3, 4}}},
+		"other order":   {Email: "ops@bank.example", EKU: []asn1.ObjectIdentifier{emailProt, clientAuth}},
+		"fewer usages":  {Email: "ops@bank.example", EKU: []asn1.ObjectIdentifier{clientAuth}},
+		"no usage":      {Email: "ops@bank.example"},
+		"no san, usage": {EKU: []asn1.ObjectIdentifier{clientAuth, emailProt}},
+	} {
+		if err := selfCheck(blk.Bytes, spki, n); err == nil {
+			t.Errorf("%s: the self-check accepted a request that does not match what was asked", name)
+		}
+	}
+	if err := selfCheck(blk.Bytes, spki, Names{Email: "ops@bank.example", EKU: []asn1.ObjectIdentifier{clientAuth, emailProt}}); err != nil {
+		t.Fatal(err)
+	}
+}
