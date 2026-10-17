@@ -1,0 +1,10 @@
+{
+  "title": "Bide anchor reader",
+  "description": "Reads signed tree heads and the bucket's configuration for bide-anchor verify, export and check. Cannot write.",
+  "stage": "GA",
+  "includedPermissions": [
+    "storage.buckets.get",
+    "storage.objects.get",
+    "storage.objects.list"
+  ]
+}
