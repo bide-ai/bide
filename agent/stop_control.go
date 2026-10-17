@@ -39,20 +39,6 @@ func WithStopMode(m StopMode) StopOption {
 	})
 }
 
-// WithStopAcceptUnverified tells an audited control that n of the records it cannot verify have been
-// investigated and are not stops (garbage, or a retired operator's attempt), so they do not make the
-// stops unknowable (StopState.UnknowableErr). The control run is append-only, so this is how an
-// operator clears the condition; the records stay listed in Rejected.
-func WithStopAcceptUnverified(n int) StopOption {
-	return stopOption(func(c *StopControl) error {
-		if n < 0 {
-			return fmt.Errorf("WithStopAcceptUnverified(%d): %w", n, ErrConfig)
-		}
-		c.acceptUnverified = n
-		return nil
-	})
-}
-
 // WithStopPolicy gives the control the audited-mode policy: the trust root, the policy this process
 // pins (normally the one the deployment started audited mode with). It is validated here and again
 // whenever State uses it. The later policies are the control run's own, by signed transitions.
@@ -88,12 +74,11 @@ func WithStopClock(now func() time.Time) StopOption {
 // deployment. It is the one place that decides which records count (see State), so every reader, the
 // engine's check points included, sees the same effective stops.
 type StopControl struct {
-	j                *Journal
-	policy           *StopPolicy
-	nv               StopVerifierFunc
-	mode             StopMode
-	acceptUnverified int
-	now              func() time.Time
+	j      *Journal
+	policy *StopPolicy
+	nv     StopVerifierFunc
+	mode   StopMode
+	now    func() time.Time
 }
 
 // NewStopControl returns the control over j's store.
@@ -133,11 +118,12 @@ func (c *StopControl) Mode() StopMode {
 	return StopBasic
 }
 
-// ErrStopsUnknowable is returned by StopState.UnknowableErr when an audited control found records that
-// claim to be signed and do not verify under the policy in force at their position: a stop it cannot
-// see may exist (a rotation that was not carried through, or a forged record). The engine treats it as
-// "stops unknowable" and fails closed for side-effect calls that a stop could cover; a stop or a lift
-// can still be written.
+// ErrStopsUnknowable is returned by StopState.UnknowableErr when a control genuinely cannot judge which
+// stops are in force: a basic process that holds an active stop set under a signed record (it lacks the
+// deployment's policy), or an audited process whose pin the stored chain does not reach, or whose chain
+// forks or competes. The engine treats it as "stops unknowable" and fails closed for side-effect calls
+// that a stop could cover; a stop or a lift can still be written. A forged record is not a cause: in an
+// audited control with its pin on the chain it is only Rejected.
 var ErrStopsUnknowable = errors.New("agent: stops unknowable: the control run holds signed-looking records this process cannot verify")
 
 // maxRejected bounds StopState.Rejected.
@@ -188,23 +174,19 @@ type StopState struct {
 	// all, so a flood of garbage does not grow the result.
 	Rejected      []Rejection
 	RejectedTotal int
-	// Unverified counts the records that claim to be signed (audited mode) and that this control cannot
-	// verify: a basic control has no policy to check them with (the deployment may have moved to
-	// audited mode without this process), an audited control found a signature that does not verify
-	// under the policy in force at the record's position. A control that sees any should say so loudly.
+	// Unverified counts, in a basic control, the signed records it cannot check because it has no policy
+	// (the deployment may have moved to audited mode without this process): say so loudly. An audited
+	// control does not count here; its forgeries are in Rejected.
 	Unverified int
 }
 
-// UnknowableErr returns ErrStopsUnknowable when an audited control has unverified records (see
-// Unverified): the stops it can see are in State, but others may exist that it cannot. A basic control
-// never returns it (it trusts the store; see Unverified). The engine fails closed on it for side-effect
-// calls a stop could cover.
+// UnknowableErr returns ErrStopsUnknowable when the control cannot judge which stops are in force (see
+// the error). The stops it can see are in State. The engine fails closed on it for side-effect calls a
+// stop could cover.
 func (s StopState) UnknowableErr() error {
 	switch {
 	case s.ChainErr != "":
 		return fmt.Errorf("%s: %w", s.ChainErr, ErrStopsUnknowable)
-	case s.Mode == StopAudited && s.Unverified > 0:
-		return fmt.Errorf("%d record(s) that claim a signature do not verify: %w", s.Unverified, ErrStopsUnknowable)
 	case s.Mode == StopBasic && s.UnverifiedActive > 0:
 		return fmt.Errorf("%d active stop(s) were set under signed records this basic process cannot check (is it missing the deployment's stop policy?): %w", s.UnverifiedActive, ErrStopsUnknowable)
 	}
@@ -286,12 +268,12 @@ func (s StopState) Covering(q StopQuery) (StopEntry, bool) {
 //   - "mode" records are evidence of a change of mode and nothing else: the mode is configuration.
 func (c *StopControl) State(ctx context.Context) (StopState, error) {
 	audited := c.Mode() == StopAudited
-	cur := StopPolicy{}
+	var pin StopPolicy
 	if audited {
 		if err := c.policy.Validate(); err != nil {
 			return StopState{}, err // the control's own policy changed under it
 		}
-		cur = *c.policy
+		pin = *c.policy
 	}
 	recs, err := c.j.History(ctx, StopControlRun)
 	if err != nil {
@@ -300,6 +282,62 @@ func (c *StopControl) State(ctx context.Context) (StopState, error) {
 	if c.mode == "" && len(recs) > 0 {
 		return StopState{}, fmt.Errorf("the control run holds records and this process has not declared its stop mode (WithStopMode): %w", ErrConfig)
 	}
+	if !audited {
+		st, _ := c.foldFrom(recs, false, pin, "")
+		return st, nil
+	}
+	pinDigest := pin.Digest()
+	// The chain starts at a root record that verifies under its own policy: the one that is the pin
+	// if there is one, else the first. A competing root is only Rejected (anyone can write a
+	// self-signed one); the pin decides which chain is this deployment's.
+	var roots []StopPolicy
+	hasRootRecord := false
+	for _, rec := range recs {
+		if rec.Kind != StepValue || !strings.HasPrefix(rec.Name, "@stop/root/") {
+			continue
+		}
+		r, err := decodeStopRecord(rec.Result)
+		if err != nil || r.Kind != "root" || stopRecordStep(r) != rec.Name {
+			continue
+		}
+		if c.nv == nil && StopPolicyDigest(*r.Policy) != pinDigest {
+			hasRootRecord = true // may be genuine, and this process cannot build it: see below
+			continue
+		}
+		rp, err := c.policyOf(*r.Policy, pin, pinDigest)
+		if err != nil || !(rp.verify(r, "lifter") || rp.verify(r, "setter")) {
+			continue
+		}
+		if !slices.ContainsFunc(roots, func(o StopPolicy) bool { return o.Digest() == rp.Digest() }) {
+			roots = append(roots, rp)
+		}
+	}
+	// The root that is the pin first, then the others in store order: the first whose chain reaches the pin
+	// is the deployment's.
+	slices.SortStableFunc(roots, func(x, y StopPolicy) int {
+		return map[bool]int{true: 0, false: 1}[x.Digest() == pinDigest] - map[bool]int{true: 0, false: 1}[y.Digest() == pinDigest]
+	})
+	for _, root := range roots {
+		if st, reached := c.foldFrom(recs, true, root, root.Digest()); reached {
+			return st, nil
+		}
+	}
+	st, _ := c.foldFrom(recs, true, pin, pinDigest)
+	switch {
+	case len(roots) > 0:
+		// No stored root's chain reaches the pin: this process's policy is not this deployment's, or the
+		// roots are not. Judged under the pin; the stops are unknowable.
+		st.ChainErr = "the pinned policy is not on the store's chain (configure the deployment's root policy, or one the chain reaches)"
+	case hasRootRecord:
+		st.ChainErr = "the control run has a root policy this process cannot build (give it a verifier constructor, WithStopVerifier) or pin the root policy"
+	}
+	return st, nil
+}
+
+// foldFrom folds recs starting from the policy start (the root, or the pin when there is none), and
+// reports whether the control's own policy is on the chain it walked.
+func (c *StopControl) foldFrom(recs []Record, audited bool, start StopPolicy, startDigest string) (StopState, bool) {
+	cur := start
 	st := StopState{Mode: c.Mode()}
 	reject := func(name, why string) {
 		st.RejectedTotal++
@@ -316,37 +354,12 @@ func (c *StopControl) State(ctx context.Context) (StopState, error) {
 	var prevPol StopPolicy
 	var prevDigest string
 	forks := map[string]map[string]StopRecord{}
-	rootDigest := ""
 	if audited {
-		pin := cur
-		pinDigest := pin.Digest()
-		// The chain starts at the first root record that verifies under its own policy.
-		for _, rec := range recs {
-			if rec.Kind != StepValue || !strings.HasPrefix(rec.Name, "@stop/root/") {
-				continue
-			}
-			r, err := decodeStopRecord(rec.Result)
-			if err != nil || r.Kind != "root" || stopRecordStep(r) != rec.Name {
-				continue
-			}
-			rp, err := c.policyOf(*r.Policy, pin, pinDigest)
-			if err != nil || !(rp.verify(r, "lifter") || rp.verify(r, "setter")) {
-				continue
-			}
-			if rootDigest == "" {
-				rootDigest, cur = rp.Digest(), rp
-			} else if rp.Digest() != rootDigest {
-				broken("two different root policies verify: the deployment's chain competes with itself")
-			}
-		}
-		st.PolicyDigest = cur.Digest()
-		chain = append(chain, st.PolicyDigest)
-		if rootDigest == "" {
-			chain = []string{pinDigest}
-		}
+		st.PolicyDigest = startDigest
+		chain = append(chain, startDigest)
 	}
 	unverified := func(r StopRecord) {
-		if r.Signed() {
+		if !audited && r.Signed() {
 			st.Unverified++
 		}
 	}
@@ -366,6 +379,8 @@ func (c *StopControl) State(ctx context.Context) (StopState, error) {
 			if !audited {
 				unverified(r)
 				reject(rec.Name, "not checked: this process has no stop policy")
+			} else if r.Policy != nil && StopPolicyDigest(*r.Policy) != startDigest {
+				reject(rec.Name, "a root policy other than the one this chain starts from")
 			}
 		case "set":
 			if _, dup := byID[r.StopID]; dup {
@@ -483,12 +498,7 @@ func (c *StopControl) State(ctx context.Context) (StopState, error) {
 			}
 		}
 	}
-	if audited && !slices.Contains(chain, c.policy.Digest()) {
-		broken("the pinned policy is not on the store's chain (configure the deployment's root policy, or one the chain reaches)")
-	}
-	if audited {
-		st.Unverified -= min(st.Unverified, c.acceptUnverified)
-	}
+	reached := !audited || slices.Contains(chain, c.policy.Digest())
 	for i := range st.Stops {
 		s := &st.Stops[i]
 		if !s.Lifted {
@@ -501,7 +511,7 @@ func (c *StopControl) State(ctx context.Context) (StopState, error) {
 			s.LiftsHeld = len(enrolledLifters(s, cur, audited))
 		}
 	}
-	return st, nil
+	return st, reached
 }
 
 // policyOf builds the policy a document names: the pin itself when the digest is its own (no
@@ -674,7 +684,7 @@ func (c *StopControl) ChangeMode(ctx context.Context, req ModeRequest) (StopStat
 		}
 		hasRoot = hasRoot || strings.HasPrefix(rec.Name, "@stop/root/")
 	}
-	if req.To == StopAudited && !hasRoot {
+	if req.To == StopAudited && !(hasRoot && st.ChainErr == "") { // a root whose chain reaches the pin is the deployment's
 		doc, err := c.policy.Doc()
 		if err != nil {
 			return st, err
@@ -709,6 +719,9 @@ func (c *StopControl) RotatePolicy(ctx context.Context, next StopPolicy, req Lif
 	if err != nil {
 		return st, err
 	}
+	if err := c.ensureRoot(ctx, st, req); err != nil {
+		return StopState{}, err
+	}
 	r := StopRecord{Format: StopFormat, Kind: "policy", Mode: StopAudited, Seq: st.PolicySeq + 1, PrevDigest: st.PolicyDigest, Policy: &doc, Reason: req.Reason, By: req.By, Host: req.Host}
 	if err := c.write(ctx, st, &r, req.Signer, false); err != nil {
 		return StopState{}, err
@@ -724,6 +737,26 @@ func (c *StopControl) RotatePolicy(ctx context.Context, next StopPolicy, req Lif
 		}
 	}
 	return after, nil
+}
+
+// ensureRoot writes the deployment's root record (the first policy, signed) if the control run has none:
+// the chain every audited process walks starts there.
+func (c *StopControl) ensureRoot(ctx context.Context, st StopState, req LiftRequest) error {
+	recs, err := c.j.History(ctx, StopControlRun)
+	if err != nil {
+		return err
+	}
+	for _, rec := range recs {
+		if strings.HasPrefix(rec.Name, "@stop/root/") && st.ChainErr == "" {
+			return nil // a root whose chain reaches this process's pin is already there
+		}
+	}
+	doc, err := c.policy.Doc()
+	if err != nil {
+		return err
+	}
+	root := StopRecord{Format: StopFormat, Kind: "root", Mode: StopAudited, Policy: &doc, Reason: req.Reason, By: req.By, Host: req.Host}
+	return c.write(ctx, st, &root, req.Signer, false)
 }
 
 // protocol:stop begin Write

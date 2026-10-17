@@ -344,11 +344,11 @@ func TestStoreModeRecordsAreEvidenceOnly(t *testing.T) {
 			if err != nil || st.Mode != c.Mode() || st.RejectedTotal != 4 {
 				t.Fatalf("State: %+v %v", st, err)
 			}
-			if st.Unverified != 4 {
-				t.Fatalf("a control must count the records it cannot check: %d", st.Unverified)
+			if (st.Unverified != 0) != (name == "basic") {
+				t.Fatalf("only a basic control counts the records it cannot check: %d", st.Unverified)
 			}
-			if (st.UnknowableErr() != nil) != (name == "audited") {
-				t.Fatalf("UnknowableErr = %v: an audited control cannot know the stops, a basic one trusts the store", st.UnknowableErr())
+			if st.UnknowableErr() != nil {
+				t.Fatalf("forged mode records made the stops unknowable: %v", st.UnknowableErr())
 			}
 			req := StopRequest{Scope: StopScope{Kind: StopGlobal}, By: "ops1", Signer: sign("ops1")}
 			s, err := c.SetStop(ctx, req)
@@ -369,7 +369,7 @@ func TestStoreModeRecordsAreEvidenceOnly(t *testing.T) {
 	if _, err := a.ChangeMode(ctx, ModeRequest{To: StopAudited, By: "ops1", Signer: sign("ops1")}); err != nil {
 		t.Fatal(err)
 	}
-	if st := mustState(t, newControl(t, store)); st.Mode != StopBasic || st.Unverified != 2 {
+	if st := mustState(t, newControl(t, store)); st.Mode != StopBasic || st.Unverified != 2 || st.UnknowableErr() != nil {
 		t.Fatalf("basic view of a genuine mode record: %+v", st)
 	}
 }
@@ -672,41 +672,42 @@ func TestModeMustBeDeclared(t *testing.T) {
 	}
 }
 
-// TestUnknowableStops: an audited control that finds a record that claims a signature and does not
-// verify reports Unverified and UnknowableErr (the engine fails closed on it); the stops it can see are
-// still returned and a stop can still be written; WithStopAcceptUnverified clears it once investigated.
-func TestUnknowableStops(t *testing.T) {
+// TestForgedRecordsAreNotALeverAgainstAnAuditedControl: a store-write attacker inserts a fake signed
+// set and a fake signed lift into an audited deployment. State reports them Rejected, the stops are not
+// unknowable (so covered calls do not pause), a fake stop covers nothing, and the genuine stop stays in
+// force and is not lifted by the fake lift.
+func TestForgedRecordsAreNotALeverAgainstAnAuditedControl(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemStore()
-	c := audited(t, store, auditedPolicy(1, false))
-	if mustState(t, c).UnknowableErr() != nil {
-		t.Fatal("unknowable on an empty control run")
+	c := audited(t, NewMemStore(), auditedPolicy(1, false))
+	genuine, err := c.SetStop(ctx, StopRequest{Scope: StopScope{Kind: StopTool, Name: "refund"}, By: "ops1", Signer: sign("ops1")})
+	if err != nil {
+		t.Fatal(err)
 	}
-	r := StopRecord{Format: StopFormat, Kind: "set", Mode: StopAudited, Scope: &StopScope{Kind: StopGlobal}, Compensation: CompensationAllow, At: nowStr(), By: "eve", Alg: fakeAlg, Signature: "00"}
-	r.StopID = StopIDOf(r)
-	putRaw(t, c, r)
+	for _, by := range []string{"eve", "ops2"} { // a non-enrolled key, and an enrolled id with a junk signature
+		fake := StopRecord{Format: StopFormat, Kind: "set", Mode: StopAudited, Scope: &StopScope{Kind: StopGlobal}, Compensation: CompensationAllow, Deployment: "dep-1", At: nowStr(), By: by, Alg: fakeAlg}
+		fake.StopID = StopIDOf(fake)
+		fake.Signature = hex.EncodeToString(fakeSign("eve", StopSigningBytes(fake)))
+		putRaw(t, c, fake)
+		lift := StopRecord{Format: StopFormat, Kind: "lift", Mode: StopAudited, StopID: genuine.ID, SetDigest: genuine.digest, Deployment: "dep-1", At: nowStr(), By: by, Alg: fakeAlg}
+		lift.Signature = hex.EncodeToString(fakeSign("eve", StopSigningBytes(lift)))
+		putRaw(t, c, lift)
+	}
 	st := mustState(t, c)
-	if !errors.Is(st.UnknowableErr(), ErrStopsUnknowable) || st.Unverified != 1 {
-		t.Fatalf("%+v %v", st, st.UnknowableErr())
+	if st.RejectedTotal != 4 || st.UnknowableErr() != nil || len(st.Active()) != 1 || st.Active()[0].ID != genuine.ID {
+		t.Fatalf("forged records: %+v %v", st, st.UnknowableErr())
 	}
-	if _, err := c.SetStop(ctx, StopRequest{Scope: StopScope{Kind: StopTool, Name: "t"}, By: "ops1", Signer: sign("ops1")}); err != nil {
-		t.Fatalf("a stop must still be writable: %v", err)
+	if _, ok := st.Covering(StopQuery{Tool: "other"}); ok {
+		t.Fatal("a forged global stop covers a call")
 	}
-	if st := mustState(t, c); len(st.Active()) != 1 {
-		t.Fatalf("the verifiable stop is in State: %+v", st.Active())
+	if _, ok := st.Covering(StopQuery{Tool: "refund"}); !ok {
+		t.Fatal("the genuine stop does not cover its tool")
 	}
-	cleared := audited(t, store, auditedPolicy(1, false), WithStopAcceptUnverified(1))
-	if st := mustState(t, cleared); st.UnknowableErr() != nil || st.Unverified != 0 || st.RejectedTotal != 1 {
-		t.Fatalf("after the operator accepted it: %+v", st)
+	// A stop can still be written, and the unknowable state does not arise from any amount of garbage.
+	for range 3 * maxRejected {
+		putRaw(t, c, StopRecord{Format: StopFormat, Kind: "lift", Mode: StopAudited, StopID: "x", SetDigest: "y", Deployment: "dep-1", At: nowStr(), By: "eve", Alg: fakeAlg, Signature: "00", Reason: nowStr()})
 	}
-	// A plain (unsigned) record is not signed-looking: it is ignored, not unknowable.
-	store2 := NewMemStore()
-	c2 := audited(t, store2, auditedPolicy(1, false))
-	p := StopRecord{Format: StopFormat, Kind: "set", Mode: StopBasic, Scope: &StopScope{Kind: StopGlobal}, Compensation: CompensationAllow, At: nowStr(), By: "eve"}
-	p.StopID = StopIDOf(p)
-	putRaw(t, c2, p)
-	if st := mustState(t, c2); st.UnknowableErr() != nil || st.RejectedTotal != 1 {
-		t.Fatalf("a plain record: %+v", st)
+	if st := mustState(t, c); st.UnknowableErr() != nil || len(st.Active()) != 1 {
+		t.Fatalf("garbage: %+v", st)
 	}
 }
 
@@ -839,7 +840,7 @@ func TestPinnedToACurrentPolicyWalksFromTheRoot(t *testing.T) {
 	other := auditedPolicy(1, false)
 	other.Setters = []string{"ops1"}
 	off := audited(t, store, other)
-	if st := mustState(t, off); !errors.Is(st.UnknowableErr(), ErrStopsUnknowable) || !strings.Contains(st.ChainErr, "pinned policy is not on") || len(st.Active()) != 2 {
+	if st := mustState(t, off); !errors.Is(st.UnknowableErr(), ErrStopsUnknowable) || !strings.Contains(st.ChainErr, "pinned policy is not on") {
 		t.Fatalf("a pin off the chain: %+v", st)
 	}
 	// Without a verifier constructor a process pinned later cannot build the root: unknowable too.
@@ -849,20 +850,26 @@ func TestPinnedToACurrentPolicyWalksFromTheRoot(t *testing.T) {
 	}
 }
 
-// TestCompetingRoots: a second root policy that verifies under itself makes the stops unknowable.
+// TestCompetingRoots: anyone can write a self-signed root. The root that is the pin wins whatever the
+// order, a root the chain does not reach the pin from is only Rejected, and the stops stay knowable.
 func TestCompetingRoots(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemStore()
 	c := audited(t, store, auditedPolicy(1, false))
-	if _, err := c.ChangeMode(ctx, ModeRequest{To: StopAudited, By: "ops1", Signer: sign("ops1")}); err != nil {
-		t.Fatal(err)
-	}
 	evil := StopPolicy{DeploymentID: "dep-1", Setters: []string{"eve"}, Lifters: []string{"eve"}, Verifiers: fakeVerifiers("eve"), LiftQuorum: 1}
 	doc, _ := evil.Doc()
 	r := StopRecord{Format: StopFormat, Kind: "root", Mode: StopAudited, Policy: &doc, Deployment: "dep-1", By: "eve", Alg: fakeAlg, At: nowStr()}
 	r.Signature = hex.EncodeToString(fakeSign("eve", StopSigningBytes(r)))
-	putRaw(t, c, r)
-	if st := mustState(t, c); !strings.Contains(st.ChainErr, "root policies") || st.UnknowableErr() == nil {
+	putRaw(t, c, r)                                                                                              // the attacker's root comes first
+	if _, err := c.ChangeMode(ctx, ModeRequest{To: StopAudited, By: "ops1", Signer: sign("ops1")}); err != nil { // the genuine root
+		t.Fatal(err)
+	}
+	s, err := c.SetStop(ctx, StopRequest{Scope: StopScope{Kind: StopGlobal}, By: "ops1", Signer: sign("ops1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := mustState(t, c)
+	if st.ChainErr != "" || st.UnknowableErr() != nil || len(st.Active()) != 1 || st.Active()[0].ID != s.ID || st.RejectedTotal != 1 {
 		t.Fatalf("%+v", st)
 	}
 }
