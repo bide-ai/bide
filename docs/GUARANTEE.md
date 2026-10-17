@@ -231,6 +231,18 @@ says happened. A drive uses the configuration it is given for:
   leave a run halted and needing intervention. The promise is *safety* (no double-fire, no lost
   completed work), not *liveness* (guaranteed completion without help).
 
+## A stop
+
+A kill switch ([guide](guides/kill-switch.md)) holds covered runs as a pause. It adds no way for a
+side effect to fire twice: a stop never writes an attempt marker, never clears one, and never
+starts a call. It can only record, on a claim it won and that provably never began, that the
+attempt did not start (the same record a cancellation writes). A call that had begun when the stop
+was read finishes and is journaled; a marker with no result halts for its outcome before, during
+and after a stop and its lift. What a stop does not guarantee is timing: a stop is seen by a call
+about to begin as soon as the store shows it (and within the poll interval by the other checks),
+and a call past its last check is not stopped. Model 16 checks these rules within its bounds; it
+does not model the staleness bound in time.
+
 ## The one-sentence version
 
 Not "it can't crash," and not even "it always recovers automatically." It is: **when it

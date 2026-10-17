@@ -651,6 +651,26 @@ that is not an approval, an acknowledged step ends the chain, which a person may
 the step to a receiver that pages. An approval is escalated until it is decided, whatever was
 acknowledged. A chain is at most four steps and is not repeated.
 
+## Kill switch
+
+- A stop does not cancel a call that has begun: it finishes and is journaled. A stop is seen by the
+  call-level checks no later than the store shows it (on Postgres the control run must be read from
+  the primary; a lagging replica adds its lag), and by drive and turn starts within the poll interval
+  (default 1s).
+- Approval deadlines keep running during a stop, so a long stop can turn a pending approval into an
+  expiry and the call into a denial.
+- Basic mode trusts store access completely: anyone who can write the store can stop, lift, or write
+  records a basic process does not check. Audited mode needs keys, a policy, a pinned root and the
+  verifier constructor; certificate-bound stoppers (the approver-identity machinery) are not built.
+- Moving a deployment to audited mode needs the policy on every process first; a process left basic
+  sees the stops as unknowable and holds covered side-effect calls.
+- The staleness bound (default 15s) is an engineering figure the formal model does not cover; the
+  model checks the synchronous case.
+- Not shipped yet: `bide stop`, the viewer banner, the signed anchored audit trail and the
+  notifications for a stop; a plan flow node is not checked by the kill switch yet (agent runs are).
+- A session turn and a `Step` are not held by a stop of a tool; a global or agent stop holds the run
+  at its next drive or turn start.
+
 ## Stores
 
 **Upgrading from v0.8.0 or earlier is not a rolling deploy.** Their journals have no journal

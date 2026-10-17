@@ -202,12 +202,14 @@ func (a *Agent) postClaim(ctx context.Context, runID string, p *runPlan, markerK
 	// The kill switch, after the claim and before the call: the control run is read now (a stop committed
 	// before this read is seen), and a covering stop records the attempt as not started and holds the
 	// call, so a resume claims it afresh. A failed record leaves the marker, which halts a resume (safe).
+	// protocol:stop begin ReadOk ReadFail
 	if st := a.stopHold(ctx, runID, tool, true, true); st != nil {
 		if nerr := recordNotStarted(ctx, a.store, runID, markerKey, marker); nerr != nil {
 			return false, fmt.Errorf("%w (%w)", st, nerr)
 		}
 		return false, st
 	}
+	// protocol:stop end
 	seen, err := a.cancelSeen(ctx, runID, p)
 	if err != nil {
 		if nerr := recordNotStarted(ctx, a.store, runID, markerKey, marker); nerr != nil {

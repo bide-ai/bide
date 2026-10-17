@@ -449,8 +449,8 @@ func TestStopEngine_RecoverLoopRespectsAGlobalStop(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	r := newStopRig(t, NewMemStore(), WithStopPoll(10*time.Millisecond))
-	var calls int
-	tool := &countingTool{name: "charge", calls: &calls}
+	var calls atomic.Int32
+	tool := MustFunc("charge", "", func(context.Context, struct{}) (string, error) { calls.Add(1); return "ok", nil })
 	m := &seqModel{turns: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}}
 	e := r.stop(StopScope{Kind: StopTool, Name: "charge"})
 	if _, err := r.agent(m, tool).Run(ctx, "run1", UserText("go")); err == nil {
@@ -469,17 +469,17 @@ func TestStopEngine_RecoverLoopRespectsAGlobalStop(t *testing.T) {
 		}, WithRecoverStop(r.sw), WithRecoverInterval(20*time.Millisecond))
 	}()
 	time.Sleep(150 * time.Millisecond)
-	if driven.Load() != 0 || calls != 0 {
-		t.Fatalf("a global stop: driven %d calls %d", driven.Load(), calls)
+	if driven.Load() != 0 || calls.Load() != 0 {
+		t.Fatalf("a global stop: driven %d calls %d", driven.Load(), calls.Load())
 	}
 	r.lift(g)
 	deadline := time.Now().Add(3 * time.Second)
-	for calls == 0 && time.Now().Before(deadline) {
+	for calls.Load() == 0 && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	cancel()
 	<-done
-	if calls != 1 {
-		t.Fatalf("after the lift the run was not driven: calls %d", calls)
+	if calls.Load() != 1 {
+		t.Fatalf("after the lift the run was not driven: calls %d", calls.Load())
 	}
 }

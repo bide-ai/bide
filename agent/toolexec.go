@@ -764,9 +764,11 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 		// execution, a resume, RecoverLoop, a middleware's retry, a saga's re-run) passes here, so a
 		// covering stop holds it. The control run is read now for a call that can have a side effect.
 		// Like a held gate, it is before the call is begun, so the call is not marked as run.
+		// protocol:stop begin ReadOk ReadFail
 		if st := a.stopHold(ctx, runID, tu.Name, tracked(spec.Safety), tracked(spec.Safety)); st != nil {
 			return nil, st
 		}
+		// protocol:stop end
 		// A tool that is not ReadOnly is counted in flight (see inflight): counted in, then the
 		// chain checked not to have returned, so either the chain sees the count when it returns
 		// (and a result it returns has an unknown outcome), or this invocation sees the call closed
@@ -785,6 +787,7 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 		// call.Spec: a tool that is not retry-safe is begun once per call, and an invocation that
 		// finds it begun is "already ran", which is then true; its outcome is the earlier
 		// invocation's, which this one does not know (see toolNotRun).
+		// protocol:stop begin Begin
 		if call.began != nil {
 			var refused error
 			switch first, sealed := beginCall(call.began); {
@@ -800,6 +803,7 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 				return nil, refused
 			}
 		}
+		// protocol:stop end
 		if call.out != nil {
 			if prev := call.out.Load(); prev != toolNotRun && prev != toolFailed && call.earlier != nil {
 				call.earlier.Store(true)

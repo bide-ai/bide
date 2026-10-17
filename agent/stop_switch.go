@@ -169,6 +169,8 @@ func (s *StopSwitch) refresh(ctx context.Context) error {
 	return nil
 }
 
+// protocol:stop begin ReadOk ReadFail
+
 // view returns the state to judge by, and whether it is known: a fresh read, or (when the read fails)
 // the last state if it is within the staleness bound.
 func (s *StopSwitch) view(ctx context.Context, sync bool, sideEffect bool) (StopState, bool) {
@@ -209,6 +211,8 @@ func (s *StopSwitch) Hold(ctx context.Context, ref RunRef, q StopQuery, sideEffe
 	}
 	return nil
 }
+
+// protocol:stop end
 
 // GlobalStop returns the active global stop, if there is one, from a cached read (a read when it is older than
 // the poll interval): what a recovery pass asks, so that it lists nothing while everything is stopped.

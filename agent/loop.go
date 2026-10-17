@@ -833,12 +833,14 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 					called    atomic.Bool // the tool was called: its effect may have fired
 				)
 				if !c.spec.Safety.retriableOnResume() {
+					// protocol:stop begin Claim
 					won, got, key, err := claimNextAttempt(gctx, a.store, runID, toolAttemptStep(c.tu.ID),
 						Record{Kind: StepAttempt, ToolUseID: c.tu.ID, AttemptedAt: time.Now().UnixMilli()})
 					if err != nil {
 						return err
 					}
 					claimed, marker, markerKey = won, got, key
+					// protocol:stop end
 					if !won {
 						return toolHalt(runID, rootRunID(ctx, runID), c.tu.ID, c.tu.Name, markerTime(got.AttemptedAt), HaltContended)
 					}
