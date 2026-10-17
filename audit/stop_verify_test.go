@@ -420,9 +420,8 @@ func TestVerifyStops_SupersededRecords(t *testing.T) {
 		t.Fatal("expected the control-run write to fail")
 	}
 	flaky.on.Store(false)
-	// The operator tries again: a new record (a new time), which reaches both. The first is now behind it.
-	time.Sleep(2 * time.Millisecond)
-	if _, err := c2.LiftStop(ctx, e.ID, agent.LiftRequest{By: "ops1", Signer: r.signer("ops1")}); err != nil {
+	// Another lifter signs: a record that reaches both. The first is now behind it on the trail.
+	if _, err := c2.LiftStop(ctx, e.ID, agent.LiftRequest{By: "risk", Signer: r.signer("risk")}); err != nil {
 		t.Fatal(err)
 	}
 	ctlRecs, _ := c2.StopRecords(ctx)
@@ -431,7 +430,7 @@ func TestVerifyStops_SupersededRecords(t *testing.T) {
 		t.Fatalf("%v %+v %s", err, rep, problems(rep))
 	}
 	if len(rep.Stops) != 1 || rep.Stops[0].LiftsHeld != 1 || rep.Stops[0].Lifted {
-		t.Fatalf("the stops shown are the control run's (one lift held), not the trail's: %+v", rep.Stops)
+		t.Fatalf("the stops shown are the control run's (one lift held: risk's), not the trail's (which would show both lifts and the stop lifted): %+v", rep.Stops)
 	}
 	if n, sup, err := c2.ApplyPending(ctx); err != nil || n != 0 || sup != 1 {
 		t.Fatalf("ApplyPending: %d applied, %d superseded, %v", n, sup, err)
