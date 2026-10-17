@@ -112,6 +112,7 @@ export default defineConfig({
           { text: 'Threat model', link: '/trust/threat-model' },
           { text: 'Stability and support', link: '/trust/stability' },
           { text: 'Comparison', link: '/trust/comparison' },
+          { text: 'Control mapping', link: '/trust/control-mapping' },
           { text: 'Operations guidance', link: '/trust/operations' },
           { text: 'Retention and archiving', link: '/guides/retention' },
           { text: 'Verifying releases', link: '/trust/verify-releases' },
