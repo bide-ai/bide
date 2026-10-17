@@ -41,8 +41,8 @@ EKU and policy OID), the **platform team** (writes the certificate policy and ru
    sections below.
 2. **The approver makes a key and a certificate request.** A key file: `bide keygen -out ops.key -as ops
    -csr ops.csr.pem` (Ed25519, or `-alg ecdsa-p256`; both have a certificate scheme. ML-DSA-65 does not
-   get a request from bide, and a hybrid has no certificate scheme). A key in an HSM or a KMS: the
-   request is made with the vendor's tooling, see [the key and the request](#the-key-and-the-certificate-request).
+   get a request from bide, and a hybrid has no certificate scheme). A key in an HSM or a KMS: `bide-hsm csr`
+   makes the request, signed by the key where it is held, see [the key and the request](#the-key-and-the-certificate-request).
    The private key never leaves its file, token or KMS.
 3. **The CA issues a certificate for that public key**, after the bank's own identification of the person
    (single sign-on with step-up, say), with one subject alternative name that is the person's identifier,
@@ -106,10 +106,11 @@ certificate-bound approver to use `bide approve -to ... -cert`.
 
 ## The key and the certificate request
 
-The request proves the approver holds the key and names nothing: a subject-less PKCS#10 request with no
+The request proves the approver holds the key. By default it names nothing: a subject-less PKCS#10 request with no
 extensions, so the CA or identity provider decides the name (the identifier in the SAN), the EKU and the
 policy OID. A CA that insists on a subject in the request is a CA setting (most enterprise CAs let a
-template or the issuing application override it); bide never puts a name there.
+template or the issuing application override it); bide never puts a subject there. `bide-hsm csr` can ask for a
+SAN and an EKU (below), which a CA may honor or replace.
 
 **A key file.** `bide keygen -out ops.key -as ops -csr ops.csr.pem` writes the key (mode 0600, never
 printed), `ops.key.pub`, and the request. It refuses to overwrite any of the three files and writes
@@ -117,7 +118,68 @@ nothing when it refuses, and with `-alg ml-dsa-65` or the hybrid it refuses `-cs
 before sending it: `openssl req -in ops.csr.pem -noout -verify -text` prints `verify OK`, an empty
 subject, and the public key bide printed.
 
-**A key in an HSM (PKCS#11).** Have the token sign the request, so the key never leaves it. The PIN comes
+**A key in an HSM or a KMS: `bide-hsm csr`.** It signs the request with the key where it is held, through the same
+key references `bide-hsm approve` takes, so no vendor tooling is needed and the key never leaves the token or the KMS.
+The PIN or the credentials come from where they do for `bide-hsm approve` (a file, the environment or a prompt; never
+the command line).
+
+```
+bide-hsm csr -key 'pkcs11:token=bide-approvers;object=approver-p256?module-path=/usr/lib/softhsm/libsofthsm2.so&pin-source=file:/run/secrets/hsm-pin' \
+    -out ops.csr.pem
+bide-hsm csr -key 'awskms:arn:aws:kms:eu-west-2:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab' -out ops.csr.pem
+```
+
+The request goes to the file named by `-out`, or to standard output without it, and nothing else goes to standard
+output. An existing file is not overwritten unless you give `-force` (which replaces only a regular file, never a
+directory or a symbolic link). A KMS key signs once for the request, billed as one signing request, beside the one
+the key's self-test makes when it is opened. By default the request names nothing, as for a key file. The key and its
+scheme per source:
+
+| Source | ECDSA P-256 (ecdsa-with-SHA256) | Ed25519 |
+|---|---|---|
+| PKCS#11 | yes | yes, if the token has `CKM_EDDSA` |
+| AWS KMS | yes (a digest is signed) | yes |
+| Google Cloud KMS | yes | only a SOFTWARE key version, with `-allow-software-key` |
+| Azure Key Vault | yes | no (Key Vault has no Ed25519) |
+
+There is no RSA request: bide-hsm keys, and the certificates the gate accepts, are Ed25519 or ECDSA P-256. Before it
+writes anything, `bide-hsm csr` parses the request it built, checks its signature, checks that its public key is the
+one the key source reports (so a token that signs with another key, or a KMS key replaced behind the reference, writes
+no file), and checks that it carries exactly the names asked for.
+
+*Asking for names.* The CA decides what the certificate says, and many ignore or replace what a request asks for; the
+certificate it issues is what `bide approve -cert` checks. A request can still ask, with `-san-email <address>` or
+`-san-uri <uri>` (one subject alternative name, never both) and `-eku clientAuth,emailProtection` (names or dotted
+OIDs). To ask for exactly what the gate looks for, give the policy file `bide-hsm approve -identity-policy` takes and the
+approver's id:
+
+```
+bide-hsm csr -key "$KEY" -policy policy.json -as ops -out ops.csr.pem
+```
+
+The request then asks for the policy's identifier for `ops` (an email address or a person URI, in the policy's
+canonical form) as its one SAN, and for the policy's EKU; `-san-email`, `-san-uri` and `-eku` are refused beside
+`-policy`. It cannot ask for the policy OID, which a CA asserts after the bank's own sign-on, so it prints on standard
+error what the CA must issue: the one SAN, the EKU (and emailProtection if the policy accepts it), the policy OID and
+the longest lifetime. It reads the policy file and checks no certificate.
+
+Check the request before sending it, and the key it is for:
+
+```
+openssl req -in ops.csr.pem -noout -verify -text
+bide-hsm pubkey -as ops -key "$KEY"
+```
+
+The first prints `verify OK`, and the public key in the second is the one in the request. The tests run `bide-hsm csr`
+for each scheme on SoftHSM 2 (PKCS#11), an in-process AWS KMS fake, the Google Cloud KMS emulator and a Key Vault
+fake, and have OpenSSL verify each request; it has not been run against a hardware HSM or a real cloud KMS.
+
+**With the vendor's tooling.** If your CA or process requires a request made by the vendor's own tooling, the key can
+be used that way too; check the result as above. The PKCS#11 procedures below were run on SoftHSM, not on each
+vendor's product, and whether they work on your HSM depends on the mechanisms it supports; the KMS procedures were
+not run.
+
+*PKCS#11.* Have the token sign the request, so the key never leaves it. The PIN comes
 from the environment or a file, never from the command line (a command line is visible to other users and to
 process listings). With GnuTLS (`certtool` on Linux; Homebrew installs it as `gnutls-certtool`), which signs
 with the single-part mechanism every token has and works for ECDSA P-256 and Ed25519:
@@ -154,8 +216,7 @@ with a multi-part digest-and-sign mechanism and SoftHSM 2.7.0 failed it with `CK
 cause was not pursued), so use GnuTLS there. Whether either works on your HSM depends on the mechanisms it
 supports; try it with a test key first.
 
-**A key in a KMS.** bide's part ends at the certificate: the request for a KMS key is made with the KMS vendor's
-documented procedure, and `bide-hsm approve -cert` signs with the same key once the CA has issued the certificate.
+*A KMS.* The request for a KMS key is made with the KMS vendor's documented procedure.
 These procedures were not run for this guide (the repository's KMS emulators implement the key and signing calls,
 not the vendors' request tooling), so none is reproduced here:
 
@@ -172,8 +233,7 @@ not the vendors' request tooling), so none is reproduced here:
 
 The links were fetched and their content read on 2026-10-16, and the procedures were not run.
 
-After any of these, run the `bide-hsm pubkey` comparison above with the KMS key reference. A `bide-hsm csr` command
-that signs the request through the same key sources `bide-hsm approve` uses is on the [roadmap](../ROADMAP.md).
+After any of these, run the `bide-hsm pubkey` comparison above with the key reference.
 
 ## Declare the CA's facts
 

@@ -299,7 +299,7 @@ With -csr, bide keygen also writes a PKCS#10 certificate signing request for the
 or ECDSA P-256 only) to the file, as PEM. It proves possession of the key and names nothing: the
 subject is empty and there are no extensions, so the CA or identity provider sets the name (SAN)
 and the key usage. Send it to the CA that issues the approver's certificate; the issued chain is
-what bide approve -cert reads.
+what bide approve -cert reads. For a key in an HSM or a KMS, bide-hsm csr makes the request.
 
 It refuses to overwrite a file (the key, its .pub or the request). The private key file is not encrypted; keep it on the approver's
 own machine, readable only by the approver. Anyone who can read it can sign as the approver.

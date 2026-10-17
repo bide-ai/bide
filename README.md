@@ -333,7 +333,7 @@ the approver's claim.
 
 - **[CLI reference](docs/reference/cli.md)**: every `bide` command, flag and exit status.
 - **[SDK API reference](docs/reference/api/index.md)**: every exported symbol of every published package, with its declaration, its first doc sentence and a stability label, generated from the Go sources.
-- **[bide-hsm reference](docs/reference/bide-hsm.md)**: `bide-hsm approve` and `pubkey`, for approver keys in an HSM, on a smart card or in a cloud KMS.
+- **[bide-hsm reference](docs/reference/bide-hsm.md)**: `bide-hsm approve`, `pubkey` and `csr`, for approver keys in an HSM, on a smart card or in a cloud KMS.
 - **[Extension points](docs/reference/extension-points.md)** and **[module structure](docs/reference/module-structure.md)**: the ports and adapters, and the multi-module layout.
 - **API**: [pkg.go.dev/github.com/bide-ai/bide](https://pkg.go.dev/github.com/bide-ai/bide/agent).
 
