@@ -15,10 +15,16 @@ import (
 // to the reader, only if Config.LegalHold is set, and to a separate identity from the writer's if you want the
 // hold to be releasable by someone other than the application.
 var (
+	// WriterPolicy is the policy template for the application that publishes heads.
+	//
 	//go:embed iam/writer.json
 	WriterPolicy string
+	// ReaderPolicy is the policy template for an auditor or monitor that only reads heads.
+	//
 	//go:embed iam/reader.json
 	ReaderPolicy string
+	// BucketPolicy is the bucket policy template that denies deletes, governance bypass and weaker writes.
+	//
 	//go:embed iam/bucket.json
 	BucketPolicy string
 )

@@ -34,6 +34,7 @@ if [ "${1:-}" = --self-test ]; then
   t 0 "" agent/run.go
   t 0 "" docs/reference/cli.md
   t 0 "" docs/reference/bide-hsm.md
+  t 0 "" docs/reference/bide-anchor.md
   t 0 "" docs/reference/api/agent.md
   t 0 "" docs/trust/stability.md
   t 0 "" docs/releases/v0.17.0.md
@@ -93,11 +94,11 @@ if [ -n "$codeish" ]; then
   other=$(printf '%s\n%s\n' "$other" "$codeish" | grep -v '^$' | LC_ALL=C sort -u)
 fi
 # Documents that Go tests compare with the code count as code: the command reference tests
-# (cmd/bide, cmd/bide/bide-hsm reference_test.go) fail when docs/reference/cli.md or bide-hsm.md
+# (cmd/bide, cmd/bide/bide-hsm, anchor/awss3/cmd/bide-anchor reference_test.go) fail when docs/reference/cli.md, bide-hsm.md or bide-anchor.md
 # differs from the commands' help, TestAPIReference (internal/tools/apiref) fails when
 # docs/reference/api/ or the package table in docs/trust/stability.md differs from the sources, and
 # doccheck and TestRepoReleaseNotes read docs/releases/.
-tested=$(echo "$files" | grep -E '^docs/(reference/(cli|bide-hsm)\.md|reference/api/|trust/stability\.md|releases/)' || true)
+tested=$(echo "$files" | grep -E '^docs/(reference/(cli|bide-hsm|bide-anchor)\.md|reference/api/|trust/stability\.md|releases/)' || true)
 if [ -n "$tested" ]; then
   other=$(printf '%s\n%s\n' "$other" "$tested" | grep -v '^$' | LC_ALL=C sort -u)
 fi

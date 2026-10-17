@@ -59,7 +59,7 @@ PROXY=https://proxy.golang.org
 . "$(cd "$(dirname "$0")" && pwd)/proxy-wait.sh"
 
 # Libraries users import. Each is tagged <dir>/vX.Y.Z at every release.
-PUBLISHED="govern store/sqlite store/postgres mcptools trace codec/gcf govern/sqlitelog govern/redislog govern/postgreslog signer/pkcs11 signer/awskms signer/azurekv signer/gcpkms flowedit cmd/bide cmd/bide/bide-hsm cmd/bide-view"
+PUBLISHED="govern store/sqlite store/postgres mcptools trace codec/gcf anchor/awss3 govern/sqlitelog govern/redislog govern/postgreslog signer/pkcs11 signer/awskms signer/azurekv signer/gcpkms flowedit cmd/bide cmd/bide/bide-hsm cmd/bide-view"
 # Published modules whose root package is a command (package main), installed with go install. The
 # consumer check builds them instead of importing them, since a program cannot be imported.
 # cmd/bide-view is a signpost to bide view, tagged one last time at v0.14.0 and then removed.

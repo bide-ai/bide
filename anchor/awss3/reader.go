@@ -198,6 +198,7 @@ type Finding struct {
 	Problem string
 }
 
+// String is the finding as one line.
 func (f Finding) String() string {
 	if f.Version != "" {
 		return fmt.Sprintf("%s (version %s): %s", f.Key, f.Version, f.Problem)

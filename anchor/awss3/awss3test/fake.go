@@ -132,6 +132,7 @@ func (f *Fake) Calls(op string) int {
 	return f.calls[op]
 }
 
+// HeadBucket checks the bucket and the expected owner.
 func (f *Fake) HeadBucket(_ context.Context, in *s3.HeadBucketInput, _ ...func(*s3.Options)) (*s3.HeadBucketOutput, error) {
 	if err := f.begin("HeadBucket", in.Bucket, in.ExpectedBucketOwner); err != nil {
 		return nil, err
@@ -140,6 +141,7 @@ func (f *Fake) HeadBucket(_ context.Context, in *s3.HeadBucketInput, _ ...func(*
 	return &s3.HeadBucketOutput{}, nil
 }
 
+// GetBucketVersioning returns the bucket's versioning status.
 func (f *Fake) GetBucketVersioning(_ context.Context, in *s3.GetBucketVersioningInput, _ ...func(*s3.Options)) (*s3.GetBucketVersioningOutput, error) {
 	if err := f.begin("GetBucketVersioning", in.Bucket, in.ExpectedBucketOwner); err != nil {
 		return nil, err
@@ -148,6 +150,7 @@ func (f *Fake) GetBucketVersioning(_ context.Context, in *s3.GetBucketVersioning
 	return &s3.GetBucketVersioningOutput{Status: f.Versioning}, nil
 }
 
+// GetObjectLockConfiguration returns the bucket's Object Lock configuration, or the not-found error S3 returns when Object Lock is not enabled.
 func (f *Fake) GetObjectLockConfiguration(_ context.Context, in *s3.GetObjectLockConfigurationInput, _ ...func(*s3.Options)) (*s3.GetObjectLockConfigurationOutput, error) {
 	if err := f.begin("GetObjectLockConfiguration", in.Bucket, in.ExpectedBucketOwner); err != nil {
 		return nil, err
@@ -163,6 +166,7 @@ func (f *Fake) GetObjectLockConfiguration(_ context.Context, in *s3.GetObjectLoc
 	return &s3.GetObjectLockConfigurationOutput{ObjectLockConfiguration: cfg}, nil
 }
 
+// GetBucketEncryption returns the bucket's default encryption, or AccessDenied when NoEncryptRead is set.
 func (f *Fake) GetBucketEncryption(_ context.Context, in *s3.GetBucketEncryptionInput, _ ...func(*s3.Options)) (*s3.GetBucketEncryptionOutput, error) {
 	if err := f.begin("GetBucketEncryption", in.Bucket, in.ExpectedBucketOwner); err != nil {
 		return nil, err
@@ -179,6 +183,7 @@ func (f *Fake) GetBucketEncryption(_ context.Context, in *s3.GetBucketEncryption
 		Rules: []types.ServerSideEncryptionRule{{ApplyServerSideEncryptionByDefault: &types.ServerSideEncryptionByDefault{SSEAlgorithm: alg}}}}}, nil
 }
 
+// PutObject stores a new version, honouring If-None-Match, the lock headers and SSE-KMS, as S3 does.
 func (f *Fake) PutObject(_ context.Context, in *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
 	if err := f.begin("PutObject", in.Bucket, in.ExpectedBucketOwner); err != nil {
 		return nil, err
@@ -249,6 +254,7 @@ func (f *Fake) find(key, version string) (*Version, bool) {
 	return nil, false
 }
 
+// GetObject returns a version (the current one without a VersionId) with its lock and encryption metadata.
 func (f *Fake) GetObject(_ context.Context, in *s3.GetObjectInput, _ ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
 	if err := f.begin("GetObject", in.Bucket, in.ExpectedBucketOwner); err != nil {
 		return nil, err
@@ -277,6 +283,7 @@ func timeOrNil(t time.Time) *time.Time {
 
 const pageSize = 2 // small, so tests exercise pagination
 
+// ListObjectVersions lists versions and delete markers, each key's newest first, in pages of two.
 func (f *Fake) ListObjectVersions(_ context.Context, in *s3.ListObjectVersionsInput, _ ...func(*s3.Options)) (*s3.ListObjectVersionsOutput, error) {
 	if err := f.begin("ListObjectVersions", in.Bucket, in.ExpectedBucketOwner); err != nil {
 		return nil, err

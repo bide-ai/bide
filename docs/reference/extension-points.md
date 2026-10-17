@@ -17,7 +17,7 @@ stability label, is in the generated [SDK API reference](api/index.md).
 | `Tool` | root | an action the agent can take | `Func`, `CompensatedFunc`, `mcptools` tools |
 | `Compensator` | root | how a tool undoes its side effect (sagas) | `CompensatedFunc` |
 | `Retriever` | root | bring-your-own RAG | your store; wired via `RetrievalTool` / `WithRetrieval` |
-| `Anchor` | `audit` | out-of-band anchoring of a commitment | `MemAnchorLog` |
+| `Anchor` | `audit` | out-of-band anchoring of a commitment | `MemAnchorLog`, `anchor/awss3` (S3 Object Lock) |
 | `EventStore` | `audit` | durable event-trail persistence | `MemEventStore` |
 | `Notifier` | root | telling a person a run needs them | your webhook, chat or pager adapter |
 | `NotifyTrail` | root | the audited delivery state behind `Notifier` | `audit.NewNotifyTrail` (over an `EventStore`), `MemNotifyTrail` |
@@ -408,6 +408,8 @@ own RFC 6962 tree over the entries, a third party can verify that the anchor log
 grew (`ProveConsistency`) and that a specific STH was anchored (`Prove`). In a real
 deployment the anchor lives in a different trust domain than the journal; this in-memory
 version is for tests and local dev. See the [audit guide](../guides/audit.md).
+
+**Production adapter.** `anchor/awss3` (its own module, so the AWS SDK stays out of the core) writes each head as an object in an S3 bucket under Object Lock, reads it back, and ships `bide-anchor` to verify the set. See [anchoring](../guides/anchoring.md).
 
 ## `EventStore`: durable event-trail persistence (`audit`)
 

@@ -77,16 +77,29 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 	fs := flag.NewFlagSet("bide-anchor "+cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		dir       = fs.String("dir", "", "a directory of downloaded anchor objects")
-		pubkey    = fs.String("pubkey", "", "the log operator's public key (ed25519:<hex>, or a file holding it)")
-		run       = fs.String("run", "", "the run or trail ID")
-		kind      = fs.String("kind", audit.TreeJournal, "the tree kind: journal, or events for a notification or event trail")
-		bucket    = fs.String("bucket", "", "the anchor bucket")
-		ownerID   = fs.String("owner", "", "the 12-digit AWS account ID that owns the bucket")
-		prefix    = fs.String("prefix", "", "the key prefix the anchor was configured with (default bide-anchor/)")
-		pathStyle = fs.Bool("path-style", false, "use path-style addressing (a non-AWS server)")
-		out       = fs.String("o", "", "export: write to this file instead of standard output")
+		dir, run, bucket, ownerID, prefix, out string
+		pubkey                                 string
+		kind                                   = audit.TreeJournal
+		pathStyle                              bool
 	)
+	// Each command takes only the flags that mean something to it, so its help lists only those.
+	fs.StringVar(&pubkey, "pubkey", "", "the log operator's public key (ed25519:<hex>, or a file holding it)")
+	fs.StringVar(&kind, "kind", audit.TreeJournal, "the tree kind: journal, or events for a notification or event trail")
+	switch cmd {
+	case "verify":
+		fs.StringVar(&dir, "dir", "", "a directory of downloaded anchor objects")
+		fs.StringVar(&run, "run", "", "only this run or trail ID (default: every one)")
+	case "export", "check":
+		fs.StringVar(&run, "run", "", "the run or trail ID")
+		if cmd == "export" {
+			fs.StringVar(&dir, "dir", "", "read a directory of downloaded anchor objects (offline)")
+			fs.StringVar(&out, "o", "", "write to this file instead of standard output")
+		}
+		fs.StringVar(&bucket, "bucket", "", "read this anchor bucket (online, with read-only credentials)")
+		fs.StringVar(&ownerID, "owner", "", "the 12-digit AWS account ID that owns the bucket (with -bucket)")
+		fs.StringVar(&prefix, "prefix", "", "the key prefix the anchor was configured with (default bide-anchor/)")
+		fs.BoolVar(&pathStyle, "path-style", false, "use path-style addressing (a non-AWS server)")
+	}
 	switch cmd {
 	case "verify", "export", "check":
 	case "-h", "-help", "--help", "help":
@@ -109,35 +122,35 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 	if fs.NArg() != 0 {
 		return fail(exitUsage, "unexpected argument %q", fs.Arg(0))
 	}
-	if *pubkey == "" {
+	if pubkey == "" {
 		return fail(exitUsage, "-pubkey is required")
 	}
-	v, err := readKey(*pubkey)
+	v, err := readKey(pubkey)
 	if err != nil {
 		return fail(exitUsage, "%v", err)
 	}
-	if *kind != audit.TreeJournal && *kind != audit.TreeEvents {
-		return fail(exitUsage, "-kind %q is not journal or events", *kind)
+	if kind != audit.TreeJournal && kind != audit.TreeEvents {
+		return fail(exitUsage, "-kind %q is not journal or events", kind)
 	}
-	online := *bucket != ""
+	online := bucket != ""
 	switch {
-	case cmd == "verify" && (*dir == "" || online):
+	case cmd == "verify" && (dir == "" || online):
 		return fail(exitUsage, "verify takes -dir (and no -bucket): it works offline on downloaded objects; use check for a bucket")
-	case cmd == "check" && (!online || *dir != ""):
+	case cmd == "check" && (!online || dir != ""):
 		return fail(exitUsage, "check takes -bucket and -owner (and no -dir)")
-	case cmd == "export" && online == (*dir != ""):
+	case cmd == "export" && online == (dir != ""):
 		return fail(exitUsage, "export takes either -dir or -bucket, not both or neither")
-	case cmd != "verify" && *run == "":
+	case cmd != "verify" && run == "":
 		return fail(exitUsage, "-run is required")
 	}
 
 	var reader *awss3.Reader
 	if online {
-		c, err := mk(ctx, *pathStyle)
+		c, err := mk(ctx, pathStyle)
 		if err != nil {
 			return fail(exitUsage, "AWS configuration: %v", err)
 		}
-		reader, err = awss3.NewReader(awss3.ReaderConfig{Client: c, Bucket: *bucket, ExpectedBucketOwner: *ownerID, Prefix: *prefix, Verifier: v})
+		reader, err = awss3.NewReader(awss3.ReaderConfig{Client: c, Bucket: bucket, ExpectedBucketOwner: ownerID, Prefix: prefix, Verifier: v})
 		if err != nil {
 			return fail(exitUsage, "%v", err)
 		}
@@ -145,16 +158,16 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 
 	switch cmd {
 	case "check":
-		rep, err := reader.Audit(ctx, *kind, *run, time.Now())
+		rep, err := reader.Audit(ctx, kind, run, time.Now())
 		if err != nil {
 			return fail(exitFindings, "%v", err)
 		}
-		fmt.Fprintf(stdout, "%d verified head(s) for %s %q\n", len(rep.Heads), *kind, *run)
+		fmt.Fprintf(stdout, "%d verified head(s) for %s %q\n", len(rep.Heads), kind, run)
 		for _, f := range rep.Findings {
 			fmt.Fprintf(stdout, "FINDING: %s\n", f)
 		}
 		if len(rep.Heads) == 0 {
-			fmt.Fprintf(stdout, "FAIL: no verified head is anchored for %s %q\n", *kind, *run)
+			fmt.Fprintf(stdout, "FAIL: no verified head is anchored for %s %q\n", kind, run)
 			return exitFindings
 		}
 		if conflicts := equivocations(rep.Heads); len(conflicts) > 0 {
@@ -171,12 +184,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 		return exitOK
 
 	case "verify":
-		heads, err := awss3.LoadDir(*dir, v)
+		heads, err := awss3.LoadDir(dir, v)
 		if err != nil {
 			fmt.Fprintf(stdout, "FAIL: %v\n", err)
 			return exitFindings
 		}
-		heads = filter(heads, *kind, *run, cmd == "verify" && flagSet(fs, "kind"))
+		heads = filter(heads, kind, run, cmd == "verify" && flagSet(fs, "kind"))
 		if len(heads) == 0 {
 			fmt.Fprintln(stdout, "FAIL: no verified head matches")
 			return exitFindings
@@ -196,12 +209,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 	default: // export
 		var heads []audit.SignedTreeHead
 		if online {
-			heads, err = reader.Heads(ctx, *kind, *run)
+			heads, err = reader.Heads(ctx, kind, run)
 		} else {
-			heads, err = awss3.LoadDir(*dir, v)
-			heads = filter(heads, *kind, *run, true)
+			heads, err = awss3.LoadDir(dir, v)
+			heads = filter(heads, kind, run, true)
 			if err == nil && len(heads) == 0 {
-				err = fmt.Errorf("%w for %s %q", awss3.ErrNotFound, *kind, *run)
+				err = fmt.Errorf("%w for %s %q", awss3.ErrNotFound, kind, run)
 			}
 		}
 		if err != nil {
@@ -220,14 +233,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 			sb.Write(b)
 			sb.WriteByte('\n')
 		}
-		if *out == "" {
+		if out == "" {
 			io.WriteString(stdout, sb.String())
 			return exitOK
 		}
-		if err := os.WriteFile(*out, []byte(sb.String()), 0o644); err != nil {
+		if err := os.WriteFile(out, []byte(sb.String()), 0o644); err != nil {
 			return fail(exitUsage, "%v", err)
 		}
-		fmt.Fprintf(stderr, "bide-anchor: wrote %d verified head(s) to %s\n", len(heads), *out)
+		fmt.Fprintf(stderr, "bide-anchor: wrote %d verified head(s) to %s\n", len(heads), out)
 		return exitOK
 	}
 }
