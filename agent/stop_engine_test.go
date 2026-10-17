@@ -443,3 +443,43 @@ func (c *countLoad) Load(ctx context.Context, runID string, after int64) iter.Se
 		}
 	}
 }
+
+// RecoverLoop lists nothing while a global stop is active and drives the unfinished run after the lift.
+func TestStopEngine_RecoverLoopRespectsAGlobalStop(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := newStopRig(t, NewMemStore(), WithStopPoll(10*time.Millisecond))
+	var calls int
+	tool := &countingTool{name: "charge", calls: &calls}
+	m := &seqModel{turns: [][]Emit{toolTurn("c1", "charge", `{}`), textTurn("done")}}
+	e := r.stop(StopScope{Kind: StopTool, Name: "charge"})
+	if _, err := r.agent(m, tool).Run(ctx, "run1", UserText("go")); err == nil {
+		t.Fatal("expected a hold")
+	}
+	g := r.stop(StopScope{Kind: StopGlobal})
+	r.lift(e)
+	time.Sleep(20 * time.Millisecond) // past the poll interval: the switch has read the global stop
+	var driven atomic.Int32
+	resume := ResumeAgent(r.agent(m, tool))
+	done := make(chan error, 1)
+	go func() {
+		done <- RecoverLoop(ctx, r.j, func(c context.Context, id string, st RunStart) error {
+			driven.Add(1)
+			return resume(c, id, st)
+		}, WithRecoverStop(r.sw), WithRecoverInterval(20*time.Millisecond))
+	}()
+	time.Sleep(150 * time.Millisecond)
+	if driven.Load() != 0 || calls != 0 {
+		t.Fatalf("a global stop: driven %d calls %d", driven.Load(), calls)
+	}
+	r.lift(g)
+	deadline := time.Now().Add(3 * time.Second)
+	for calls == 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	if calls != 1 {
+		t.Fatalf("after the lift the run was not driven: calls %d", calls)
+	}
+}
