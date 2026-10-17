@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -301,6 +303,10 @@ const (
 	FindingHashMismatch RedactionFindingKind = "HASH_MISMATCH"
 	// FindingUncovered: a redaction that ran with no covering signed head.
 	FindingUncovered RedactionFindingKind = "UNCOVERED"
+	// FindingTimeMismatch: a tombstone stamped at a time no pass of the trail that listed it carries.
+	FindingTimeMismatch RedactionFindingKind = "TIME_MISMATCH"
+	// FindingUnchecked: the trail names a run no journal was given for.
+	FindingUnchecked RedactionFindingKind = "UNCHECKED"
 	// FindingMalformed: a trail record that does not read.
 	FindingMalformed RedactionFindingKind = "MALFORMED"
 )
@@ -333,6 +339,8 @@ type RedactionReport struct {
 	Anchored   bool               `json:"anchored"`
 	HeadSize   int                `json:"head_size,omitempty"`
 	Findings   []RedactionFinding `json:"findings,omitempty"`
+	// Notes are things that are not findings: an earlier failed pass that a later pass finished.
+	Notes []string `json:"notes,omitempty"`
 }
 
 // OK reports whether nothing was found.
@@ -389,54 +397,91 @@ func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error) {
 		run string
 		pos int
 	}
+	// A tombstone is accounted for by the begin record that first lists the record as erased by
+	// that pass (Already false), never by one that lists it as already redacted: the plan of a later
+	// erasure of a run reads a tombstone made by hand as "already redacted", and that must not
+	// launder it into the trail.
 	listed := map[key]RedactedRef{}
-	open := map[string]int{} // run+plan digest -> begins not yet ended
+	times := map[key][]int64{} // the time of every pass that listed the record as erased
+	type pass struct{ phase, err string }
+	history := map[string][]pass{} // run + plan digest -> its records, in order
+	var order []string
 	for _, r := range recs {
 		id := r.RunID + "\x00" + r.PlanDigest
-		switch r.Phase {
-		case RedactionBegin:
-			rep.Redactions++
-			open[id]++
-			if r.Uncovered {
-				add(FindingUncovered, r.RunID, "the redaction of plan %.12s ran with no covering signed journal head (ticket %s)", r.PlanDigest, r.Ticket)
+		if _, ok := history[id]; !ok {
+			order = append(order, id)
+		}
+		history[id] = append(history[id], pass{r.Phase, r.Error})
+		if r.Phase != RedactionBegin {
+			continue
+		}
+		rep.Redactions++
+		if r.Uncovered {
+			add(FindingUncovered, r.RunID, "the redaction of plan %.12s ran with no covering signed journal head (ticket %s)", r.PlanDigest, r.Ticket)
+		}
+		for _, ref := range r.Records {
+			if ref.Already {
+				continue
 			}
-			for _, ref := range r.Records {
-				listed[key{r.RunID, ref.Position}] = ref
+			k := key{r.RunID, ref.Position}
+			if _, ok := listed[k]; !ok {
+				listed[k] = ref
 			}
-		case RedactionEnd:
-			if open[id] > 0 {
-				open[id]--
-			}
-			if r.Error != "" {
-				add(FindingIncomplete, r.RunID, "the redaction of plan %.12s stopped with an error: %s", r.PlanDigest, r.Error)
+			times[k] = append(times[k], r.AtMs)
+		}
+	}
+	// A pass is judged by its last record: a begin with no end after it is unfinished, an end with
+	// an error is a failed pass, and a later end without one (the same plan run again) closes it.
+	for _, id := range order {
+		h := history[id]
+		run, digest, _ := strings.Cut(id, "\x00")
+		last := h[len(h)-1]
+		switch {
+		case last.phase == RedactionBegin:
+			add(FindingIncomplete, run, "the redaction of plan %.12s has a begin record and no end after it: an unfinished pass (run the same plan again)", digest)
+		case last.err != "":
+			add(FindingIncomplete, run, "the redaction of plan %.12s stopped with an error: %s", digest, last.err)
+		default:
+			for _, p := range h[:len(h)-1] {
+				if p.err != "" {
+					rep.Notes = append(rep.Notes, fmt.Sprintf("run %s: an earlier pass of plan %.12s stopped with an error (%s) and a later pass finished it", run, digest, p.err))
+				}
 			}
 		}
 	}
-	for _, r := range recs {
-		id := r.RunID + "\x00" + r.PlanDigest
-		if r.Phase == RedactionBegin && open[id] > 0 {
-			add(FindingIncomplete, r.RunID, "the redaction of plan %.12s has a begin record and no end: an unfinished pass (run the same plan again)", r.PlanDigest)
-			open[id] = 0
-		}
-	}
+	checked := map[string]bool{}
 	for run, journal := range in.Journals {
+		checked[run] = true
 		for i, rec := range journal {
 			ref, isListed := listed[key{run, i}]
 			if rec.Redacted {
 				leaf, _ := agent.TombstoneLeafHash(rec.Raw())
+				at, _ := agent.TombstoneMillis(rec.Raw())
 				switch {
 				case !isListed:
-					add(FindingUnaccounted, run, "record %d (%q) is a tombstone and no trail record names it: a redaction made outside the tool", i, rec.Name)
+					add(FindingUnaccounted, run, "record %d (%q) is a tombstone and no trail record names it as erased by a pass: a redaction made outside the tool (a later plan listing it as already redacted does not account for it)", i, rec.Name)
 				case ref.Name != rec.Name:
 					add(FindingNameMismatch, run, "record %d: the tombstone says %q and the trail recorded %q", i, rec.Name, ref.Name)
 				case hex.EncodeToString(leaf) != ref.LeafHash:
 					add(FindingHashMismatch, run, "record %d (%q): the tombstone keeps leaf hash %x and the trail recorded %s", i, rec.Name, leaf, ref.LeafHash)
+				case !slices.Contains(times[key{run, i}], at):
+					add(FindingTimeMismatch, run, "record %d (%q): the tombstone is stamped %d and no pass of the trail that listed it was stamped then", i, rec.Name, at)
 				}
 				continue
 			}
 			if isListed {
 				add(FindingNotErased, run, "record %d (%q) is listed as erased in the trail and still holds content", i, rec.Name)
 			}
+		}
+	}
+	// A run the trail names that no journal was given for is not checked, and that is not a pass.
+	runs := map[string]bool{}
+	for k := range listed {
+		runs[k.run] = true
+	}
+	for _, run := range slices.Sorted(maps.Keys(runs)) {
+		if !checked[run] {
+			add(FindingUnchecked, run, "the trail names this run and no journal of it was given, so its tombstones and listed records were not checked")
 		}
 	}
 	if len(rep.Findings) > 0 {

@@ -252,7 +252,7 @@ func TestVerifyRedactions_Findings(t *testing.T) {
 		if err == nil || kinds(rep) != "UNANCHORED" {
 			t.Fatalf("report = %+v, %v", rep, err)
 		}
-		rep, err = audit.VerifyRedactions(audit.RedactionVerifyInput{Trail: leaves, Verifier: r.v, Unanchored: true})
+		rep, err = audit.VerifyRedactions(audit.RedactionVerifyInput{Trail: leaves, Verifier: r.v, Unanchored: true, Journals: r.journals()})
 		if err != nil || !rep.OK() {
 			t.Fatalf("an allowed unanchored trail = %+v, %v", rep, err)
 		}
@@ -383,4 +383,117 @@ type countingRedactor struct {
 func (c *countingRedactor) Redact(ctx context.Context, run, name string, cur, tomb []byte) (bool, error) {
 	c.n++
 	return c.Redactor.Redact(ctx, run, name, cur, tomb)
+}
+
+// An erasure made by hand is read by a later plan as "already redacted". Listing it in a signed
+// begin record must not account for it.
+func TestVerifyRedactions_HandTombstoneIsNotLaunderedByALaterPlan(t *testing.T) {
+	ctx := context.Background()
+	r := newTrailRig(t)
+	hand, err := agent.PlanRedaction(ctx, r.j, "gov", agent.RedactionSelector{Names: []string{"note"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.Redact(ctx, r.j, hand, time.Now()); err != nil { // outside the tool: nothing is recorded
+		t.Fatal(err)
+	}
+	plan, err := agent.PlanRedaction(ctx, r.j, "gov", agent.RedactionSelector{Names: []string{"call:pay", "note"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := audit.RedactJournal(ctx, r.j, r.trail, plan, r.options); err != nil {
+		t.Fatal(err)
+	}
+	leaves, head := r.signedTrail()
+	rep, err := r.verify(leaves, head)
+	if err == nil || kinds(rep) != "UNACCOUNTED" {
+		t.Fatalf("report = %+v, %v; want only the hand tombstone UNACCOUNTED", rep, err)
+	}
+}
+
+// A pass that stopped and was run again to the end is closed: the audit judges each plan by its
+// last record, and says what failed earlier as a note.
+func TestVerifyRedactions_AFinishedRetryClearsAnEarlierFailure(t *testing.T) {
+	ctx := context.Background()
+	t.Run("EndRecordMissingThenRetried", func(t *testing.T) {
+		r := newTrailRig(t)
+		ft := &failNth{EventStore: r.trail, failAt: 1}
+		if _, err := audit.RedactJournal(ctx, r.j, ft, r.plan, r.options); err == nil {
+			t.Fatal("the injected failure did not show")
+		}
+		r.options.Now = time.UnixMilli(1_700_000_001_000)
+		plan, _ := agent.PlanRedaction(ctx, r.j, "gov", agent.RedactionSelector{Names: []string{"call:pay", "note"}})
+		if _, err := audit.RedactJournal(ctx, r.j, r.trail, plan, r.options); err != nil {
+			t.Fatal(err)
+		}
+		leaves, head := r.signedTrail()
+		if rep, err := r.verify(leaves, head); err != nil || !rep.OK() {
+			t.Fatalf("report = %+v, %v; the finished retry should close the pass", rep, err)
+		}
+	})
+	t.Run("FailedThenSucceeded", func(t *testing.T) {
+		r := newTrailRig(t)
+		// A first pass that stops with an error recorded in its end record (a lease held).
+		leaser := r.store
+		if ok, err := leaser.AcquireLease(ctx, "gov", "driver", time.Minute); err != nil || !ok {
+			t.Fatal(ok, err)
+		}
+		if _, err := audit.RedactJournal(ctx, r.j, r.trail, r.plan, r.options); err == nil {
+			t.Fatal("a leased run was erased")
+		}
+		if err := leaser.ReleaseLease(ctx, "gov", "driver"); err != nil {
+			t.Fatal(err)
+		}
+		leaves, head := r.signedTrail()
+		if rep, err := r.verify(leaves, head); err == nil || !strings.Contains(kinds(rep), "INCOMPLETE") {
+			t.Fatalf("while failed: report = %+v, %v; want INCOMPLETE", rep, err)
+		}
+		r.options.Now = time.UnixMilli(1_700_000_002_000)
+		if _, err := audit.RedactJournal(ctx, r.j, r.trail, r.plan, r.options); err != nil {
+			t.Fatal(err)
+		}
+		leaves, head = r.signedTrail()
+		rep, err := r.verify(leaves, head)
+		if err != nil || !rep.OK() || len(rep.Notes) != 1 {
+			t.Fatalf("after the retry: report = %+v, %v; want OK with one note about the earlier failure", rep, err)
+		}
+	})
+}
+
+// A trail checked against no journal checked nothing.
+func TestVerifyRedactions_NoJournalIsNotAPass(t *testing.T) {
+	ctx := context.Background()
+	r := newTrailRig(t)
+	if _, err := audit.RedactJournal(ctx, r.j, r.trail, r.plan, r.options); err != nil {
+		t.Fatal(err)
+	}
+	leaves, head := r.signedTrail()
+	rep, err := audit.VerifyRedactions(audit.RedactionVerifyInput{Trail: leaves, Heads: []audit.SignedTreeHead{head}, Verifier: r.v})
+	if err == nil || kinds(rep) != "UNCHECKED" {
+		t.Fatalf("report = %+v, %v; want UNCHECKED", rep, err)
+	}
+}
+
+// A tombstone is stamped with the time of a pass that listed it.
+func TestVerifyRedactions_TombstoneTimeIsChecked(t *testing.T) {
+	ctx := context.Background()
+	r := newTrailRig(t)
+	if _, err := audit.RedactJournal(ctx, r.j, r.trail, r.plan, r.options); err != nil {
+		t.Fatal(err)
+	}
+	leaves, head := r.signedTrail()
+	x, _ := audit.ExportJournal(ctx, r.j, "gov")
+	for i, b := range x.Records {
+		if n, ok := agent.TombstoneName(b); ok && n == "note" {
+			x.Records[i] = bytes.Replace(b, []byte(`"at_ms":1700000000000`), []byte(`"at_ms":1600000000000`), 1)
+		}
+	}
+	recs, err := x.Journal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep, err := audit.VerifyRedactions(audit.RedactionVerifyInput{Trail: leaves, Heads: []audit.SignedTreeHead{head}, Verifier: r.v, Journals: map[string][]agent.Record{"gov": recs}})
+	if err == nil || kinds(rep) != "TIME_MISMATCH" {
+		t.Fatalf("report = %+v, %v; want TIME_MISMATCH", rep, err)
+	}
 }

@@ -27,21 +27,28 @@ func (c *cli) redactions(args []string) {
 	unanchored := fs.Bool("unanchored", false, "accept a trail with no signed head: it is read, and nothing attests that it is complete or unaltered")
 	db := fs.String("db", "", "read the trail and the journals from this SQLite journal (opened read-only) instead of from files")
 	pgEnv := fs.String("postgres-env", "", "read them from the Postgres journal whose DSN is in this environment variable (never given on the command line)")
+	trailDB := fs.String("trail-db", "", "read the redaction trail from this SQLite file (opened read-only), when it is kept apart from the journal; the journals then come from -db or -postgres-env, or -journal")
+	trailEnv := fs.String("trail-postgres-env", "", "read the redaction trail from the Postgres database whose DSN is in this environment variable (never given on the command line)")
 	run := fs.String("run", "", "with -db or -postgres-env: only this run and its sub-runs; default every run")
 	c.parse(fs, args)
 
 	haveFiles := *trailPath != "" || len(journals) > 0
-	haveStore := *db != "" || *pgEnv != ""
+	haveTrailStore := *trailDB != "" || *trailEnv != ""
+	haveStore := *db != "" || *pgEnv != "" || haveTrailStore
 	switch {
+	case *trailDB != "" && *trailEnv != "":
+		c.usageLine(fs.Name() + ": give one of -trail-db and -trail-postgres-env, not both")
+	case haveTrailStore && *trailPath != "":
+		c.usageLine(fs.Name() + ": the trail is a file (-trail) or a store (-trail-db, -trail-postgres-env), not both")
 	case *db != "" && *pgEnv != "":
 		c.usageLine(fs.Name() + ": give one of -db and -postgres-env, not both; run `" + fs.Name() + " -h` for usage")
-	case haveFiles && haveStore:
-		c.usageLine(fs.Name() + ": give exported files (-trail, -journal) or a store (-db, -postgres-env), not both")
-	case !haveFiles && !haveStore:
+	case !haveStore && !haveFiles:
 		c.usageLine(fs.Name() + ": missing -trail, or -db, or -postgres-env; run `" + fs.Name() + " -h` for usage")
-	case haveFiles && *trailPath == "":
+	case *trailPath == "" && !haveStore:
 		c.usageLine(fs.Name() + ": missing -trail")
-	case *run != "" && !haveStore:
+	case (*db != "" || *pgEnv != "") && len(journals) > 0:
+		c.usageLine(fs.Name() + ": the journals are files (-journal) or a store (-db, -postgres-env), not both")
+	case *run != "" && *db == "" && *pgEnv == "":
 		c.usageLine(fs.Name() + ": -run reads one run from a store; it needs -db or -postgres-env")
 	case haveStore && Stores == nil:
 		c.usageLine(fs.Name() + ": this build reads exported files only (-trail, -journal); -db and -postgres-env are in the full bide command")
@@ -62,24 +69,25 @@ func (c *cli) redactions(args []string) {
 		ok = c.note(c.readJSON(p, &h)) && ok
 		in.Heads = append(in.Heads, h)
 	}
-	if haveFiles {
+	if *trailPath != "" {
 		var x audit.NotifyTrailExport
 		ok = c.note(c.readJSON(*trailPath, &x)) && ok
 		if ok && x.Trail != audit.RedactionTrailName {
 			ok = c.note(unusable(fmt.Errorf("-trail %s: this is the trail %q, not %q", *trailPath, x.Trail, audit.RedactionTrailName)))
 		}
 		in.Trail = x.Leaves
-		for _, p := range journals {
-			var jx audit.JournalExport
-			ok = c.note(c.readJSON(p, &jx)) && ok
-			if recs, err := jx.Journal(); err == nil {
-				in.Journals[jx.RunID] = recs
-			} else {
-				ok = c.note(unusable(err)) && ok
-			}
+	}
+	for _, p := range journals {
+		var jx audit.JournalExport
+		ok = c.note(c.readJSON(p, &jx)) && ok
+		if recs, err := jx.Journal(); err == nil {
+			in.Journals[jx.RunID] = recs
+		} else {
+			ok = c.note(unusable(err)) && ok
 		}
-	} else {
-		ok = c.note(c.readRedactionStore(&in, *db, *pgEnv, *run)) && ok
+	}
+	if haveStore {
+		ok = c.note(c.readRedactionStore(&in, *db, *pgEnv, *run, *trailDB, *trailEnv, *trailPath != "")) && ok
 	}
 	if !ok {
 		return
@@ -114,34 +122,65 @@ func (c *cli) redactions(args []string) {
 	c.printf("PASS: %d redaction(s) in %d trail record(s); every tombstone in the journals checked is named by the trail, and every listed record is erased\n", rep.Redactions, rep.Records)
 }
 
-// readRedactionStore loads the redaction trail and the journals of run (or of every run) from a store.
-func (c *cli) readRedactionStore(in *audit.RedactionVerifyInput, db, pgEnv, run string) error {
-	var s NotifyStores
-	var err error
-	if db != "" {
-		s, err = Stores.SQLite(db)
-	} else {
-		dsn := os.Getenv(pgEnv)
-		if dsn == "" {
-			return unusable(fmt.Errorf("-postgres-env %s: the variable is empty or not set", pgEnv))
+// openNotifyStores opens the SQLite file or the Postgres database named by path or env.
+func openNotifyStores(path, env string) (NotifyStores, error) {
+	if path != "" {
+		s, err := Stores.SQLite(path)
+		if err != nil {
+			return NotifyStores{}, unusable(fmt.Errorf("open the store: %w", err))
 		}
-		s, err = Stores.Postgres(dsn)
+		return s, nil
 	}
+	dsn := os.Getenv(env)
+	if dsn == "" {
+		return NotifyStores{}, unusable(fmt.Errorf("%s: the variable is empty or not set", env))
+	}
+	s, err := Stores.Postgres(dsn)
 	if err != nil {
-		return unusable(fmt.Errorf("open the store: %w", err))
+		return NotifyStores{}, unusable(fmt.Errorf("open the store: %w", err))
 	}
-	defer s.Close()
+	return s, nil
+}
+
+// readRedactionStore loads the redaction trail (from the trail store if one is named, else from the
+// journal's store, unless the trail came from a file) and the journals of run (or of every run) from
+// the journal store.
+func (c *cli) readRedactionStore(in *audit.RedactionVerifyInput, db, pgEnv, run, trailDB, trailEnv string, trailFromFile bool) error {
 	ctx := context.Background()
-	x, err := audit.ExportNotifyTrail(ctx, s.Events, audit.RedactionTrailName)
-	if err != nil {
-		return unusable(err)
+	var journalStore NotifyStores
+	haveJournals := db != "" || pgEnv != ""
+	if haveJournals {
+		s, err := openNotifyStores(db, pgEnv)
+		if err != nil {
+			return err
+		}
+		defer s.Close()
+		journalStore = s
 	}
-	in.Trail = x.Leaves
-	lister, ok := agent.Capability[agent.Lister](s.Journal)
+	if !trailFromFile {
+		events := journalStore.Events
+		if trailDB != "" || trailEnv != "" {
+			ts, err := openNotifyStores(trailDB, trailEnv)
+			if err != nil {
+				return err
+			}
+			defer ts.Close()
+			events = ts.Events
+		}
+		x, err := audit.ExportNotifyTrail(ctx, events, audit.RedactionTrailName)
+		if err != nil {
+			return unusable(err)
+		}
+		in.Trail = x.Leaves
+	}
+	if !haveJournals {
+		return nil
+	}
+	lister, ok := agent.Capability[agent.Lister](journalStore.Journal)
 	if !ok {
 		return unusable(errors.New("the store cannot list its runs"))
 	}
-	j, err := agent.NewJournal(s.Journal)
+	j, err := agent.NewJournal(journalStore.Journal)
 	if err != nil {
 		return unusable(err)
 	}

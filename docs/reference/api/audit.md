@@ -1731,6 +1731,8 @@ RedactionFindingKind names what VerifyRedactions found wrong.
 - `const FindingNameMismatch RedactionFindingKind = "NAME_MISMATCH"`: FindingNameMismatch: a tombstone's name is not the name the trail recorded at that position.
 - `const FindingHashMismatch RedactionFindingKind = "HASH_MISMATCH"`: FindingHashMismatch: a tombstone's leaf hash is not the one the trail recorded.
 - `const FindingUncovered RedactionFindingKind = "UNCOVERED"`: FindingUncovered: a redaction that ran with no covering signed head.
+- `const FindingTimeMismatch RedactionFindingKind = "TIME_MISMATCH"`: FindingTimeMismatch: a tombstone stamped at a time no pass of the trail that listed it carries.
+- `const FindingUnchecked RedactionFindingKind = "UNCHECKED"`: FindingUnchecked: the trail names a run no journal was given for.
 - `const FindingMalformed RedactionFindingKind = "MALFORMED"`: FindingMalformed: a trail record that does not read.
 
 ## type RedactionOptions
@@ -1798,6 +1800,8 @@ type RedactionReport struct {
 	Anchored   bool               `json:"anchored"`
 	HeadSize   int                `json:"head_size,omitempty"`
 	Findings   []RedactionFinding `json:"findings,omitempty"`
+
+	Notes []string `json:"notes,omitempty"`
 }
 ```
 
