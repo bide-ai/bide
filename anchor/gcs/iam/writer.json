@@ -1,0 +1,11 @@
+{
+  "title": "Bide anchor writer",
+  "description": "Publishes signed tree heads to the bide anchor bucket and reads them back. Cannot delete or overwrite an object, release a hold, set or shorten a retention, or change the bucket.",
+  "stage": "GA",
+  "includedPermissions": [
+    "storage.buckets.get",
+    "storage.objects.create",
+    "storage.objects.get",
+    "storage.objects.list"
+  ]
+}
