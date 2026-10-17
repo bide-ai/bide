@@ -101,6 +101,7 @@ type crlView struct {
 	expiredFrom time.Time             // expiredCertsOnCRL date; zero when absent
 	delta       bool                  // a delta CRL: merged with a base for evidence of absence
 	baseNumber  *big.Int              // for a delta: the CRL number of the base it is cumulative since
+	idp         []string              // the URIs of the issuing distribution point's full name; none when the CRL has no IDP
 	parts       [][32]byte            // for a merged view: the hashes of the base and the delta
 }
 
@@ -451,7 +452,11 @@ func parseCRL(der []byte, hash [32]byte, maxEntries int) (*crlView, error) {
 		seen[e.Id.String()] = true
 		switch {
 		case e.Id.Equal(oidIssuingDistPoint):
-			return unreadable("the CRL carries an issuing distribution point (a partitioned CRL cannot be matched correctly)")
+			uris, err := parseIDP(e.Value, e.Critical)
+			if err != nil {
+				return unreadable("%v", err)
+			}
+			v.idp = uris
 		case e.Id.Equal(oidDeltaIndicator):
 			base := new(big.Int)
 			if rest, err := asn1.Unmarshal(e.Value, &base); err != nil || len(rest) != 0 || base.Sign() < 0 || !e.Critical {
@@ -468,6 +473,9 @@ func parseCRL(der []byte, hash [32]byte, maxEntries int) (*crlView, error) {
 		case e.Critical:
 			return unreadable("the CRL has a critical extension %s that bide does not process", e.Id)
 		}
+	}
+	if v.delta && len(v.idp) > 0 {
+		return unreadable("a delta CRL carries an issuing distribution point (not read)")
 	}
 	if len(rl.RevokedCertificateEntries) > maxEntries {
 		return unreadable("the CRL has %d entries, over the limit of %d", len(rl.RevokedCertificateEntries), maxEntries)
@@ -871,6 +879,9 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, evict
 	var ordered []*crlView
 	maxNum := big.NewInt(-1)
 	for _, v := range all {
+		if !v.covers(cert) {
+			continue // another partition: its listings still revoke (below), but it is no evidence of absence
+		}
 		if v.number.Cmp(maxNum) < 0 {
 			continue // a rollback: kept for its listings only
 		}
