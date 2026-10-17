@@ -510,11 +510,16 @@ func notifiedGate(t *testing.T, store agent.Store, run string, trail agent.Notif
 // A delivery is acknowledged and recorded although every anchor publish fails, and the notifier
 // still reports nothing as undelivered: an anchor error is a side channel.
 func TestNotifier_AnAnchorOutageNeverFailsADelivery(t *testing.T) {
-	fa := &trailAnchor{down: true}
+	// The anchor holds every publish until the gate has run, so the outage cannot have been
+	// reported when FlushNotifications returns: the store's own Flush is what waits for it.
+	release := make(chan struct{})
+	fa := &trailAnchor{down: true, hang: release}
 	r := newRig(t, fa)
 	sink := &recSink{}
 	var notifyErrs errLog
 	notifiedGate(t, agent.NewMemStore(), "told", audit.NewNotifyTrail(r.s), sink, agent.WithNotifyErrors(func(err error) { notifyErrs.on("", err) }))
+	close(release)
+	r.flush(t)
 
 	if sink.count() != 1 {
 		t.Fatalf("the sink was called %d times, want 1", sink.count())
