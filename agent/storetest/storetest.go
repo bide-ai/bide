@@ -42,6 +42,9 @@ func Run(t *testing.T, open func(t *testing.T) agent.Store) {
 			t.Run("Leaser_ReapLeases", func(t *testing.T) { reapLeases(t, open(t)) })
 		}
 	}
+	if _, ok := agent.Capability[agent.Redactor](open(t)); ok {
+		t.Run("Redactor", func(t *testing.T) { Redactor(t, open) })
+	}
 	t.Run("Header_First", func(t *testing.T) { headerFirst(t, open(t)) })
 	t.Run("Header_ConcurrentFirstWriters", func(t *testing.T) { concurrentFirstWriters(t, open) })
 	t.Run("Header_UnsupportedFormatRefused", func(t *testing.T) { unsupportedFormat(t, open(t)) })

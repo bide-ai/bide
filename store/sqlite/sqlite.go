@@ -19,6 +19,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"iter"
@@ -56,15 +57,16 @@ type Store struct {
 }
 
 var (
-	_ agent.Store  = (*Store)(nil)
-	_ agent.Lister = (*Store)(nil)
-	_ agent.Leaser = (*Store)(nil)
+	_ agent.Store    = (*Store)(nil)
+	_ agent.Redactor = (*Store)(nil)
+	_ agent.Lister   = (*Store)(nil)
+	_ agent.Leaser   = (*Store)(nil)
 )
 
 // tables holds the table names, prefixed, and the statements built from them.
 type tables struct {
 	steps, leases, version, events    string
-	insert, get, load                 string
+	insert, get, load, redact         string
 	appendEvent, getEvent, loadEvents string
 }
 
@@ -242,6 +244,11 @@ func mainFile(ctx context.Context, db *sql.DB) string {
 func (c config) tables() tables {
 	t := tables{steps: c.prefix + "steps", leases: c.prefix + "leases", version: c.prefix + "schema_version", events: c.prefix + "events"}
 	t.insert = `INSERT INTO ` + t.steps + ` (run_id, name, data) VALUES (?, ?, ?) ON CONFLICT (run_id, name) DO NOTHING`
+	// The replacement is one statement, so it is atomic: the row's bytes are the caller's, the run
+	// holds an end marker, and no lease on it is live, all read in the same write transaction.
+	t.redact = `UPDATE ` + t.steps + ` SET data = ?3 WHERE run_id = ?1 AND name = ?2 AND data = ?4
+		AND EXISTS (SELECT 1 FROM ` + t.steps + ` AS e WHERE e.run_id = ?1 AND e.name IN (SELECT value FROM json_each(?5)))
+		AND NOT EXISTS (SELECT 1 FROM ` + t.leases + ` AS l WHERE l.run_id = ?1 AND l.expiry >= unixepoch('subsec'))`
 	t.get = `SELECT seq, data FROM ` + t.steps + ` WHERE run_id = ? AND name = ?`
 	t.load = `SELECT seq, name, data FROM ` + t.steps + ` WHERE run_id = ? AND seq > ? ORDER BY seq LIMIT ?`
 	t.appendEvent = `INSERT INTO ` + t.events + ` (run_id, seq, leaf)
@@ -367,6 +374,52 @@ func (s *Store) Insert(ctx context.Context, runID, name string, data []byte) (ag
 		return agent.Entry{}, false, fmt.Errorf("insert step %q: the insert conflicted but no entry exists: %w", name, agent.ErrStorage)
 	}
 	return e, false, nil
+}
+
+// Redact implements agent.Redactor with one UPDATE that replaces the entry only if it holds current,
+// the run holds an end marker and no lease on the run is live (see agent.Redactor). The entry
+// keeps its row id, so its Seq and every other entry are unchanged. When the update changes
+// nothing, the store reads why (the row, the end marker, the lease) to say which refusal it was; a
+// row that already holds the tombstone is not one.
+func (s *Store) Redact(ctx context.Context, runID, name string, current, tombstone []byte) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if err := agent.CheckRedaction(runID, name, current, tombstone); err != nil {
+		return false, err
+	}
+	markers, err := json.Marshal(agent.RedactionEndMarkers())
+	if err != nil {
+		return false, fmt.Errorf("redact step %q: %w (%w)", name, err, agent.ErrStorage)
+	}
+	res, err := s.write(ctx, s.t.redact, runID, name, tombstone, current, string(markers))
+	if err != nil {
+		return false, fmt.Errorf("redact step %q: %w (%w)", name, err, agent.ErrStorage)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("redact step %q: %w (%w)", name, err, agent.ErrStorage)
+	}
+	if n == 1 {
+		return true, nil
+	}
+	st := agent.RedactState{}
+	if st.Row, st.Found, err = s.get(ctx, s.w, runID, name); err != nil {
+		return false, err
+	}
+	if st.Found {
+		for _, m := range agent.RedactionEndMarkers() {
+			if _, ok, err := s.get(ctx, s.w, runID, m); err != nil {
+				return false, err
+			} else if ok {
+				st.Ended = true
+			}
+		}
+		if err := s.w.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM `+s.t.leases+` WHERE run_id = ? AND expiry >= unixepoch('subsec'))`, runID).Scan(&st.Leased); err != nil {
+			return false, fmt.Errorf("redact step %q: read the lease: %w (%w)", name, err, agent.ErrStorage)
+		}
+	}
+	return false, st.Explain(runID, name, current, tombstone)
 }
 
 // write runs one write statement on the writer connection when it is this process's turn at the
