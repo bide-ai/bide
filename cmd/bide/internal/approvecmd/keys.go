@@ -276,7 +276,7 @@ func keyName(sg audit.Signer) string {
 }
 
 // keygenUsage heads bide keygen's -h output.
-const keygenUsage = `usage: bide keygen -out <key-file> [-as <approver id>] [-alg ed25519|ecdsa-p256|ml-dsa-65|ed25519+ml-dsa-65] [-csr <request.pem>] [-color auto|always|never]
+const keygenUsage = `usage: bide keygen -out <key-file> [-as <approver id>] [-alg ed25519|ecdsa-p256|ml-dsa-65|ed25519+ml-dsa-65] [-csr <request.pem> [-cn <name>]] [-color auto|always|never]
 
 Creates an approver key pair for bide approve. The private key is written to <key-file> (the key's
 seed as hex: 64 characters for ed25519, the default; "ecdsa-p256:" and the 32-byte private
@@ -297,9 +297,12 @@ the id.
 
 With -csr, bide keygen also writes a PKCS#10 certificate signing request for the new key (Ed25519
 or ECDSA P-256 only) to the file, as PEM. It proves possession of the key and names nothing: the
-subject is empty and there are no extensions, so the CA or identity provider sets the name (SAN)
+subject is empty (unless -cn) and there are no extensions, so the CA or identity provider sets the name (SAN)
 and the key usage. Send it to the CA that issues the approver's certificate; the issued chain is
 what bide approve -cert reads. For a key in an HSM or a KMS, bide-hsm csr makes the request.
+With -cn <name>, the subject is one common name (printable ASCII text, at most 64 characters). The
+gate reads no subject, so the name changes nothing about who may approve; it exists because step ca
+sign refuses a request with an empty subject. Without -cn the subject stays empty.
 
 It refuses to overwrite a file (the key, its .pub or the request). The private key file is not encrypted; keep it on the approver's
 own machine, readable only by the approver. Anyone who can read it can sign as the approver.
@@ -319,7 +322,8 @@ func KeygenMain(args []string, stdout, stderr io.Writer) int {
 	out := fs.String("out", "", "file to write the private key to (mode 0600); the public key goes to <file>.pub. It must not exist")
 	as := fs.String("as", "", "the approver id the key is for: prints the approver-keys entry for it")
 	alg := fs.String("alg", string(audit.AlgEd25519), "signature scheme: ed25519, ecdsa-p256, ml-dsa-65 or ed25519+ml-dsa-65 (hybrid)")
-	csr := fs.String("csr", "", "also write a certificate signing request for the new key to this PEM file (ed25519 or ecdsa-p256; no names in it, the CA sets them). It must not exist")
+	csr := fs.String("csr", "", "also write a certificate signing request for the new key to this PEM file (ed25519 or ecdsa-p256; no SAN or usage in it, the CA sets them). It must not exist")
+	cn := fs.String("cn", "", "with -csr: make the request's subject this one common name (printable ASCII, at most 64 characters). The gate ignores the subject; step ca sign needs one")
 	color := term.Flag(fs)
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -351,10 +355,16 @@ func KeygenMain(args []string, stdout, stderr io.Writer) int {
 	if *csr != "" && audit.Alg(*alg) != audit.AlgEd25519 && audit.Alg(*alg) != audit.AlgECDSAP256 {
 		return usage(fmt.Sprintf("-csr: a certificate-bound approver signs with ed25519 or ecdsa-p256, not %s", *alg))
 	}
+	if *cn != "" && *csr == "" {
+		return usage("-cn goes with -csr")
+	}
+	if err := checkCN(*cn); err != nil {
+		return usage("-cn: " + err.Error())
+	}
 	if *csr != "" && (*csr == *out || *csr == *out+".pub") {
 		return usage("-csr names the same file as the key")
 	}
-	priv, err := writeKeyPairCSR(*out, *csr, audit.Alg(*alg))
+	priv, err := writeKeyPairCSR(*out, *csr, *cn, audit.Alg(*alg))
 	if err != nil {
 		fmt.Fprintln(stderr, es.ErrorPrefix()+"bide keygen:", err)
 		return 1
@@ -377,13 +387,13 @@ func KeygenMain(args []string, stdout, stderr io.Writer) int {
 // private key is written first and the check that neither file exists runs before either is
 // created, so a refusal leaves nothing behind.
 func writeKeyPair(path string, alg audit.Alg) (audit.Signer, error) {
-	return writeKeyPairCSR(path, "", alg)
+	return writeKeyPairCSR(path, "", "", alg)
 }
 
 // writeKeyPairCSR is writeKeyPair that also writes a certificate signing request for the new key to
 // csrPath (if not empty; see csr.go). The request is built before any file is created, so a refusal
 // (an existing file, or a scheme that has no request) leaves nothing behind.
-func writeKeyPairCSR(path, csrPath string, alg audit.Alg) (audit.Signer, error) {
+func writeKeyPairCSR(path, csrPath, commonName string, alg audit.Alg) (audit.Signer, error) {
 	paths := []string{path, path + ".pub"}
 	if csrPath != "" {
 		paths = append(paths, csrPath)
@@ -399,7 +409,7 @@ func writeKeyPairCSR(path, csrPath string, alg audit.Alg) (audit.Signer, error) 
 	}
 	var req []byte
 	if csrPath != "" {
-		if req, err = csr.Build(priv, csr.Names{}); err != nil {
+		if req, err = csr.Build(priv, csr.Names{CommonName: commonName}); err != nil {
 			return nil, err
 		}
 	}
@@ -435,3 +445,7 @@ func writeExclusive(path string, data []byte, perm os.FileMode) error {
 	}
 	return nil
 }
+
+// checkCN reports whether cn can be a request's common name (csr.Check's rule), so keygen refuses it
+// before it creates any file.
+func checkCN(cn string) error { return csr.Check(csr.Names{CommonName: cn}) }

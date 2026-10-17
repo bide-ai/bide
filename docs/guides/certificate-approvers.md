@@ -110,8 +110,11 @@ certificate-bound approver to use `bide approve -to ... -cert`.
 The request proves the approver holds the key. By default it names nothing: a subject-less PKCS#10 request with no
 extensions, so the CA or identity provider decides the name (the identifier in the SAN), the EKU and the
 policy OID. A CA that insists on a subject in the request is a CA setting (most enterprise CAs let a
-template or the issuing application override it); bide never puts a subject there. `bide-hsm csr` can ask for a
-SAN and an EKU (below), which a CA may honor or replace.
+template or the issuing application override it); bide puts a subject there only when asked, with `-cn <name>`
+(`bide keygen -csr` and `bide-hsm csr`): one common name of printable ASCII text, at most 64 characters. The gate
+reads no subject, so `-cn` changes nothing about who may approve; it exists for tools such as `step ca sign`, which
+refuse a request with an empty subject and ignore the name when the CA's template builds the certificate.
+`bide-hsm csr` can also ask for a SAN and an EKU (below), which a CA may honor or replace.
 
 **A key file.** `bide keygen -out ops.key -as ops -csr ops.csr.pem` writes the key (mode 0600, never
 printed), `ops.key.pub`, and the request. It refuses to overwrite any of the three files and writes

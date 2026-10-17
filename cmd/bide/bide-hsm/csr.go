@@ -17,7 +17,7 @@ import (
 	"github.com/bide-ai/bide/internal/term"
 )
 
-const csrUsage = `usage: bide-hsm csr -key <key ref> [-out <file>] [-force] [-policy <policy file> -as <approver id>] [-san-email <address> | -san-uri <uri>] [-eku <usage>[,<usage>...]] [key flags]
+const csrUsage = `usage: bide-hsm csr -key <key ref> [-out <file>] [-force] [-policy <policy file> -as <approver id>] [-san-email <address> | -san-uri <uri>] [-eku <usage>[,<usage>...]] [-cn <name>] [key flags]
 
 Writes a PKCS#10 certificate signing request (PEM) for a key in an HSM or a KMS, signed by that key
 through the same key sources as bide-hsm approve, so no vendor tooling is needed. It is the request a
@@ -44,6 +44,11 @@ is what counts, and bide-hsm approve -cert checks that before anything is signed
   -san-uri <uri>         one URI subject alternative name (absolute, with a host, no fragment)
   -eku <usage>,...       extended key usages: clientAuth, serverAuth, emailProtection, codeSigning,
                          timeStamping, ocspSigning, or a dotted OID
+  -cn <name>             the subject: one common name (printable ASCII text, at most 64 characters)
+
+The gate reads no subject, so -cn changes nothing about who may approve. It exists because step ca sign
+refuses a request with an empty subject (it needs a name to start its single sign-on login); the SSO
+CA's template ignores it. Without -cn the subject stays empty. -cn goes with -policy.
 
 -policy <file> with -as <approver id> reads the certificate policy file bide-hsm approve takes as
 -identity-policy and asks for what the policy's gate looks for: as the one SAN, the approver's
@@ -112,6 +117,7 @@ func csrCmd(args []string, stdout, stderr io.Writer, d deps) int {
 	sanEmail := fs.String("san-email", "", "ask for this email address as the one subject alternative name")
 	sanURI := fs.String("san-uri", "", "ask for this URI as the one subject alternative name")
 	eku := fs.String("eku", "", "ask for these extended key usages, comma separated: clientAuth, serverAuth, emailProtection, codeSigning, timeStamping, ocspSigning or a dotted OID")
+	cn := fs.String("cn", "", "make the request's subject this one common name (printable ASCII, at most 64 characters). The gate ignores the subject; step ca sign needs one")
 	kf := addKeyFlags(fs)
 	color := term.Flag(fs)
 	if err := fs.Parse(args); err != nil {
@@ -153,8 +159,8 @@ func csrCmd(args []string, stdout, stderr io.Writer, d deps) int {
 			return bad("-eku: " + err.Error())
 		}
 	}
-	names = csr.Names{Email: *sanEmail, URI: *sanURI, EKU: ekus}
-	if *sanEmail != "" || *sanURI != "" || ekus != nil {
+	names = csr.Names{Email: *sanEmail, URI: *sanURI, EKU: ekus, CommonName: *cn}
+	if *sanEmail != "" || *sanURI != "" || ekus != nil || *cn != "" {
 		// Checked before a key is opened, so a bad name costs no PIN and no billed signature.
 		if err := csr.Check(names); err != nil {
 			return bad(err.Error())

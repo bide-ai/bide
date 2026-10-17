@@ -31,6 +31,11 @@ import (
 // extensions, so the CA or identity provider sets the name and the usage. A CA may ignore or replace
 // what is asked; the certificate it issues is what bide approve -cert checks.
 type Names struct {
+	// CommonName, if not empty, is the request's whole subject: one common name. The gate reads no
+	// subject, so it names nothing bide uses; it exists because some tools that carry a request to a CA
+	// (step ca sign) need one to start. It is printable ASCII text, at most MaxCommonName characters,
+	// without a leading or trailing space.
+	CommonName string
 	// Email is the one rfc822Name subject alternative name to ask for (a bare address). It excludes URI.
 	Email string
 	// URI is the one uniformResourceIdentifier subject alternative name to ask for (an absolute URI with
@@ -40,7 +45,11 @@ type Names struct {
 	EKU []asn1.ObjectIdentifier
 }
 
+// MaxCommonName is the longest common name a request carries (RFC 5280's ub-common-name).
+const MaxCommonName = 64
+
 var (
+	oidCN               = asn1.ObjectIdentifier{2, 5, 4, 3}
 	oidExtensionRequest = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 14}
 	oidSAN              = asn1.ObjectIdentifier{2, 5, 29, 17}
 	oidEKU              = asn1.ObjectIdentifier{2, 5, 29, 37}
@@ -70,6 +79,9 @@ func PublicKey(sg audit.Signer) (crypto.PublicKey, error) {
 // Check reports whether n can be put in a request, so a caller can refuse a name before it opens a key.
 // Build checks the same.
 func Check(n Names) error {
+	if err := checkCommonName(n.CommonName); err != nil {
+		return err
+	}
 	_, err := extensions(n)
 	return err
 }
@@ -79,9 +91,18 @@ func Check(n Names) error {
 // one sg reports, and that it carries exactly the names asked for; a request that fails any of them is
 // an error and no bytes.
 func Build(sg audit.Signer, n Names) ([]byte, error) {
+	if err := checkCommonName(n.CommonName); err != nil {
+		return nil, err
+	}
 	exts, err := extensions(n)
 	if err != nil {
 		return nil, err
+	}
+	subject := []byte{0x30, 0x00}
+	if n.CommonName != "" {
+		if subject, err = asn1.Marshal(pkix.RDNSequence{{{Type: oidCN, Value: n.CommonName}}}); err != nil {
+			return nil, fmt.Errorf("encode the common name: %w", err)
+		}
 	}
 	pub, err := PublicKey(sg)
 	if err != nil {
@@ -116,7 +137,7 @@ func Build(sg audit.Signer, n Names) ([]byte, error) {
 		Subject    asn1.RawValue
 		PublicKey  asn1.RawValue
 		Attributes asn1.RawValue
-	}{0, asn1.RawValue{FullBytes: []byte{0x30, 0x00}}, asn1.RawValue{FullBytes: spki}, attrs})
+	}{0, asn1.RawValue{FullBytes: subject}, asn1.RawValue{FullBytes: spki}, attrs})
 	if err != nil {
 		return nil, fmt.Errorf("encode the request: %w", err)
 	}
@@ -161,6 +182,9 @@ func selfCheck(der, spki []byte, n Names) error {
 	// signature check above is what catches a signature by another key.
 	if !slices.Equal(req.RawSubjectPublicKeyInfo, spki) {
 		return errors.New("the request's public key is not the key's")
+	}
+	if req.Subject.CommonName != n.CommonName || len(req.Subject.Names) != btoi(n.CommonName != "") {
+		return errors.New("the request does not carry the names asked for")
 	}
 	wantEmail, wantURI := []string(nil), []string(nil)
 	if n.Email != "" {
@@ -243,6 +267,33 @@ func extensions(n Names) ([]extension, error) {
 		exts = append(exts, extension{oidEKU, v})
 	}
 	return exts, nil
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// checkCommonName accepts no name, or printable ASCII text (spaces inside are fine) of at most
+// MaxCommonName characters that does not start or end with a space.
+func checkCommonName(s string) error {
+	if s == "" {
+		return nil
+	}
+	if len(s) > MaxCommonName {
+		return fmt.Errorf("the common name is %d characters, at most %d", len(s), MaxCommonName)
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < ' ' || s[i] >= 0x7f {
+			return errors.New("the common name is printable ASCII text only (no control characters, no non-ASCII)")
+		}
+	}
+	if s[0] == ' ' || s[len(s)-1] == ' ' {
+		return errors.New("the common name does not start or end with a space")
+	}
+	return nil
 }
 
 // plainASCII reports whether s is printable ASCII without a space.

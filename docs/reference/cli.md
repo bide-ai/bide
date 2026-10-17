@@ -833,7 +833,7 @@ usage: bide identity ack-reset -policy <file> -params <file> -cache <dir> -issue
 Create an approver key pair for bide approve and print the public key policies and verifiers use.
 
 ```text
-usage: bide keygen -out <key-file> [-as <approver id>] [-alg ed25519|ecdsa-p256|ml-dsa-65|ed25519+ml-dsa-65] [-csr <request.pem>] [-color auto|always|never]
+usage: bide keygen -out <key-file> [-as <approver id>] [-alg ed25519|ecdsa-p256|ml-dsa-65|ed25519+ml-dsa-65] [-csr <request.pem> [-cn <name>]] [-color auto|always|never]
 
 Creates an approver key pair for bide approve. The private key is written to <key-file> (the key's
 seed as hex: 64 characters for ed25519, the default; "ecdsa-p256:" and the 32-byte private
@@ -854,9 +854,12 @@ the id.
 
 With -csr, bide keygen also writes a PKCS#10 certificate signing request for the new key (Ed25519
 or ECDSA P-256 only) to the file, as PEM. It proves possession of the key and names nothing: the
-subject is empty and there are no extensions, so the CA or identity provider sets the name (SAN)
+subject is empty (unless -cn) and there are no extensions, so the CA or identity provider sets the name (SAN)
 and the key usage. Send it to the CA that issues the approver's certificate; the issued chain is
 what bide approve -cert reads. For a key in an HSM or a KMS, bide-hsm csr makes the request.
+With -cn <name>, the subject is one common name (printable ASCII text, at most 64 characters). The
+gate reads no subject, so the name changes nothing about who may approve; it exists because step ca
+sign refuses a request with an empty subject. Without -cn the subject stays empty.
 
 It refuses to overwrite a file (the key, its .pub or the request). The private key file is not encrypted; keep it on the approver's
 own machine, readable only by the approver. Anyone who can read it can sign as the approver.
@@ -866,10 +869,12 @@ Flags:
     	signature scheme: ed25519, ecdsa-p256, ml-dsa-65 or ed25519+ml-dsa-65 (hybrid) (default "ed25519")
   -as string
     	the approver id the key is for: prints the approver-keys entry for it
+  -cn string
+    	with -csr: make the request's subject this one common name (printable ASCII, at most 64 characters). The gate ignores the subject; step ca sign needs one
   -color when
     	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
   -csr string
-    	also write a certificate signing request for the new key to this PEM file (ed25519 or ecdsa-p256; no names in it, the CA sets them). It must not exist
+    	also write a certificate signing request for the new key to this PEM file (ed25519 or ecdsa-p256; no SAN or usage in it, the CA sets them). It must not exist
   -out string
     	file to write the private key to (mode 0600); the public key goes to <file>.pub. It must not exist
 

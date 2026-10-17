@@ -402,11 +402,55 @@ func TestCSRExtractableKey(t *testing.T) {
 }
 
 // The usage and the command list name csr.
+// -cn sets the request's subject to one common name and nothing else; with -policy it rides along
+// (the subject is not a name the gate reads); a bad one is a usage error that costs no signature, and
+// a request without it has the empty subject.
+func TestCSRCommonName(t *testing.T) {
+	kms := fakekms.New()
+	kms.AddP256(kmsP256)
+	ref := "awskms:" + kmsP256
+	r := hsm(t, kms, "", "csr", "-key", ref, "-cn", "ops placeholder")
+	if r.code != 0 {
+		t.Fatalf("%d\n%s", r.code, r.all())
+	}
+	req := request(t, []byte(r.out))
+	if req.Subject.CommonName != "ops placeholder" || len(req.Subject.Names) != 1 || len(req.Extensions) != 0 { //nolint:staticcheck
+		t.Fatalf("subject %v, %d extensions", req.Subject, len(req.Extensions))
+	}
+	r = hsm(t, kms, "", "csr", "-key", ref, "-policy", policyFile(t, "person-uri", false), "-as", "ops", "-cn", "ops")
+	if r.code != 0 {
+		t.Fatalf("%d\n%s", r.code, r.all())
+	}
+	req = request(t, []byte(r.out))
+	if req.Subject.CommonName != "ops" || san(t, req) != testca.Person(1) {
+		t.Fatalf("subject %v, SAN %q", req.Subject, san(t, req))
+	}
+	r = hsm(t, kms, "", "csr", "-key", ref)
+	if r.code != 0 || len(request(t, []byte(r.out)).RawSubject) != 2 {
+		t.Fatalf("a request without -cn has a subject: %d\n%s", r.code, r.all())
+	}
+	signs := kms.Signs
+	for name, cn := range map[string]string{"too long": strings.Repeat("x", 65), "non-ascii": "opé", "leading space": " ops", "control": "ops\x01"} {
+		t.Run(name, func(t *testing.T) {
+			r := hsm(t, kms, "", "csr", "-key", ref, "-cn", cn)
+			if r.code != 2 || !strings.Contains(r.errOut, "common name") || r.out != "" {
+				t.Fatalf("exit %d, want 2 with the common name named:\n%s", r.code, r.all())
+			}
+		})
+	}
+	if kms.Signs != signs {
+		t.Fatalf("%d KMS signatures for requests that were refused", kms.Signs-signs)
+	}
+}
+
 func TestCSRHelp(t *testing.T) {
 	for _, h := range [][]string{{"csr", "-h"}, {"help"}} {
 		if got := help(t, h...); !strings.Contains(got, "bide-hsm csr") {
 			t.Errorf("%v does not mention bide-hsm csr", h)
 		}
+	}
+	if got := help(t, "csr", "-h"); !strings.Contains(got, "-cn") || !strings.Contains(got, "step ca sign") {
+		t.Errorf("the csr help does not explain -cn:\n%s", got)
 	}
 	if r := hsm(t, nil, "", "nonsense"); !strings.Contains(r.errOut, "csr") {
 		t.Errorf("the command list omits csr: %s", r.errOut)
