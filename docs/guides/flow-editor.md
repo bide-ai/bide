@@ -34,7 +34,7 @@ work below. It does **not** yet: add, remove, rename or reorder nodes, or wire e
 type-compatible connections or digest); compare with a journaled run; or let you place nodes on the canvas
 (the layout is derived from the topology, on purpose). A config with an anchor or alias anywhere,
 a repeated key, a key that is not a string, NaN or infinity, or mixed line ends is refused by the editor
-with the reason (edit it in a text editor); `plan` itself accepts the first two. The design note
+with the reason (edit it in a text editor); `plan` itself accepts an anchor or alias, and refuses the others too. The design note
 ([visual-editor.md](../design/visual-editor.md)) has the later phases.
 
 ## What the page shows
