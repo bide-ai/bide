@@ -198,7 +198,9 @@ func Status(ctx context.Context, j *Journal, runID string) (RunStatus, error) {
 		if err != nil {
 			return RunStatus{}, err
 		}
-		if r.Kind == StepValue && r.Name == runStartStep {
+		// A redacted run:start (Record.Redacted) keeps its name and its place, so the run still
+		// started: its input and principal are what a redaction erases, not the fact.
+		if (r.Kind == StepValue || r.Redacted) && r.Name == runStartStep {
 			started = true
 		}
 		recs = append(recs, r)
