@@ -40,6 +40,7 @@ type Fake struct {
 	nextGen int64
 	calls   []string
 	faults  []*fault
+	alter   func(*gcs.ObjectInfo)
 }
 
 type fault struct {
@@ -192,6 +193,10 @@ func (f *Fake) create(name string, body []byte, o gcs.CreateOptions) (gcs.Object
 	if o.Retention != nil {
 		r := *o.Retention
 		info.Retention = &r
+	}
+	if f.alter != nil {
+		f.alter(&info)
+		f.alter = nil
 	}
 	f.objs[name][len(f.objs[name])-1].info = info
 	return info, nil
@@ -359,6 +364,24 @@ func (f *Fake) Inject(info gcs.ObjectInfo, body []byte) gcs.ObjectInfo {
 	info.CRC32C = crc32.Checksum(body, crc32.MakeTable(crc32.Castagnoli))
 	f.objs[info.Name] = append(f.objs[info.Name], &gen{info: info, body: slices.Clone(body)})
 	return info
+}
+
+// Report changes what Cloud Storage reports for a generation (the live one when generation is 0), as
+// a server that answers inconsistently would.
+func (f *Fake) Report(name string, generation int64, fn func(*gcs.ObjectInfo)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if g := f.find(name, generation); g != nil {
+		fn(&g.info)
+	}
+}
+
+// AlterNextCreate changes the attributes of the generation the next Create writes, as a bucket that
+// stores an object under other terms than were asked for would.
+func (f *Fake) AlterNextCreate(fn func(*gcs.ObjectInfo)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.alter = fn
 }
 
 // Names returns every object name, sorted.
