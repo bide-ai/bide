@@ -443,7 +443,10 @@ func (r *Refresher) startupEvents(clientGiven bool, warnings []string) {
 	// holds, retention). It is printed for the record; the declared values below are what to compare.
 	dec := r.appr.DescribeIdentity()
 	dec.EffectiveFrom = ""
-	vals, _ := json.Marshal(dec)
+	vals, merr := json.Marshal(dec)
+	if merr != nil {
+		vals = []byte(fmt.Sprintf("%q", "the declared values could not be encoded: "+merr.Error()))
+	}
 	r.emit(Event{Kind: EventStartup, Detail: "policy digest " + r.appr.PolicyDigest() + " of this refresher's stand-in approver; it differs from a gate's digest even when the timings agree (the stand-in effective_from is the start time and values the declaration cannot hold are defaults), so do not compare it with the gate's"})
 	r.emit(Event{Kind: EventStartup, Detail: "declared values " + string(vals) + ": compare the timing members (ca_period*, max_status_age*, exec_status_age*, ca_overlap_for, this_update_skew*, coverage_tolerance) and the anchors and intermediates with the policy record the gate journals"})
 	if r.archive == nil {
