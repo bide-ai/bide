@@ -11,7 +11,7 @@ bide does not decide any of these. Answer them before you build the archive.
 1. **How long** must the evidence of a run stay verifiable, and does the period differ by kind of action (a payment, a refund, a record change)? (As an example only, seven years is a period often used for payment records; yours is set by your policy and counsel.)
 2. **What counts as the record**: the journal, the evidence packages made from it, or both? An evidence package proves the records it names and nothing else (see [Evidence packages](#evidence-packages)).
 3. **Who holds the copy** that must survive the operator: which account, which team, under what access control and legal hold?
-4. **Does any rule require deleting data** (personal data in a prompt or a tool result, for example) before the evidence period ends? bide cannot delete part of a run and keep the rest verifiable (see [What deleting does](#what-deleting-does)); if your policy requires it you need a decision before you deploy.
+4. **Does any rule require deleting data** (personal data in a prompt or a tool result, for example) before the evidence period ends? bide can replace chosen records with tombstones and keep the rest of the run verifiable, at the cost of those records being unprovable and of the projections listed in [Erasing personal data](#erasing-personal-data); decide before you deploy which evidence you make first and who may erase.
 5. **How long must you be able to run the verifier**: which `bide` version will read these artifacts in that year, and where is it kept?
 6. **Who owns each key's history**: the log key, the grant issuer keys, each approver's key, and (if adopted) approver certificates?
 7. **How is retention proven**: who re-verifies the archive, how often, and where is the result kept?
@@ -124,9 +124,47 @@ A verification takes one public key. A head, a package or a receipt that was sig
 
 Binding an approver's key to a person with a bank-issued certificate, and checking revocation years later, is a design only: see the approver-identity design, [pull request #302](https://github.com/bide-ai/bide/pull/302). Nothing in this guide depends on it, and bide today verifies a decision against a public key, not a certificate. If that design is adopted it will add things to archive (the certificate chains, and a dated series of every revocation list for each issuer, since it judges a decision by the revocation status valid when it was made). Its archiving requirements are not final; do not build an archive for them yet, and check the design when you plan one.
 
+## Erasing personal data
+
+**Make every piece of evidence you will need before you redact.** A journal that holds a tombstone cannot produce a new absence key set (`prove-absent`), used-policy set, run certificate or event stream (`audit.ErrRedacted`), because the content that defines them is gone. Signed heads, evidence packages, receipts, proofs of records that remain, and consistency proofs made earlier keep verifying. So, for a run, before erasing anything: make the evidence packages and run certificate you may need, the absence heads you may want, persist the event trail if you keep one, export the journal if you will keep the other records, and have a signed head that covers the run's current size anchored where you keep heads. A redaction cannot be undone, and none of these can be made afterwards.
+
+What a redaction does, exactly:
+
+- It replaces the stored bytes of the records you select with a tombstone that keeps the record's name, its position in the run, and its audit leaf hash. The leaf hash is over bytes that include a random 32-byte salt, and the salt is erased with the bytes, so the retained hash does not let anyone confirm a guess of the content.
+- It refuses unless the run is over (it holds `run:complete`, `run:aborted` or `run:cancelled`) and no lease on the run is live. It is atomic per record. A pass that stops partway leaves a prefix redacted; running the same plan again finishes it.
+- It refuses the records a verifier or the engine needs: the journal header, the end markers and other `run:` records except `run:start`, attempt and not-started markers, saga failures, the approval tally, identity, status, exec-hold and deadline records, and the `audit:` and `flow:` records (`agent.RedactionProtected`). Approval decisions are kept unless you ask for them.
+- It leaves, by design, `run:complete`'s result (the run's final answer is part of an end marker, which a reader must still recognise), the record names (step keys, encoded tool-use IDs, the approver and call IDs inside `approval:` keys) and the positions.
+
+The library, for a store that implements `agent.Redactor` (SQLite, Postgres, `MemStore`):
+
+<!-- docsnip: setup ctx context.Context; journal *agent.Journal; runID string; returns error -->
+```go
+plan, err := agent.PlanRedaction(ctx, journal, runID, agent.RedactionSelector{Payloads: true})
+if err != nil {
+	return err
+}
+// plan lists each record by position, name, kind, length and leaf hash, and never its content.
+// Review plan.Records, plan.Kept and plan.Digest; refuse a run that is not plan.Terminal.
+if _, err := agent.Redact(ctx, journal, plan, time.Now()); err != nil {
+	return err // wraps agent.ErrRedactNotTerminal, ErrRedactLeased, ErrRedactChanged, ...
+}
+```
+
+`Payloads` selects run:start (the input and the principal), model turns, tool results, user steps, signals and approval requests; `Names`, `Prefixes` and `Kinds` select by hand; `IncludeApprovals` also selects approval decisions. `agent.Redact` records nothing about what it did: **an erasure that must itself be accountable needs the audit trail the design describes**, which the command will write (planned). Until then, record who erased what and why in your own change record.
+
+Scope: what a redaction does not reach. Say this to the people who ask you to erase:
+
+- Copies outside this database: exported journals (`audit.ExportJournal`), evidence packages, proofs and approvers' receipts hold the bytes they were made from, including the salt; erase them yourself.
+- The event store (`bide_events`, written by `audit.PersistJournal`) holds a copy of event content and is append-only, with no tombstone for an event leaf yet; a redaction does not touch it.
+- Database internals and other copies: Postgres keeps the replaced row version as a dead tuple until `VACUUM` (and `VACUUM FULL` to return the space), SQLite keeps it in free pages and the write-ahead log until a checkpoint and `VACUUM`, and replicas, WAL archives, base backups and dumps keep their own copies. The operator has to cover each of them.
+- Logs, traces (`trace` with content capture), the application's own tables, and the model provider's retention of what you sent it.
+- Govern event logs (`govern/sqlitelog`, `postgreslog`, `redislog`): a governed event is an opaque string the application chose, appended once and folded in order, with no tombstone. Do not put personal data in govern events; bide cannot erase it.
+
+Who may erase: the application's database role should not be able to. On Postgres, give the redaction tool its own role with `SELECT` on `bide_steps`, `bide_leases` and `bide_schema_version` and `UPDATE (data)` on `bide_steps` and nothing else ([Postgres roles](postgres.md#roles)), and keep it out of the application's configuration.
+
 ## What deleting does
 
-**What bide gives you.** The journal port has no update and no delete (`agent.Store`, rule A6). A store may replace a record's bytes with a reserved tombstone (`{"redacted":{"leaf_hash":...}}`) that keeps its position and its leaf hash, so other records' proofs and the root are unchanged; readers (`audit`, `bide view`, `verify-receipts`, which reports `redacted (anchored)`) understand a tombstone. **No store in this repository implements a redaction and no command performs one**, and a run that holds a tombstone is over and cannot be driven again. The tombstone is a format a deployment could use, not a feature of bide today. A redacted record can no longer be proven, and a journal holding one refuses to project the absence key sets, a run certificate or the event stream (`audit.ErrRedacted`).
+**What bide gives you.** The journal port has no update and no delete (`agent.Store`, rule A6). A store may replace a record's bytes with a reserved tombstone (`{"redacted":{"leaf_hash":...}}`) that keeps its position and its leaf hash, so other records' proofs and the root are unchanged; readers (`audit`, `bide view`, `verify-receipts`, which reports `redacted (anchored)`) understand a tombstone. SQLite, Postgres and `MemStore` implement the optional `agent.Redactor` capability that writes one, and `agent.PlanRedaction` and `agent.Redact` use it; see [Erasing personal data](#erasing-personal-data). **There is no command yet** (`bide journal redact` is planned, see [the design](../design/journal-redaction.md)). A run that holds a tombstone is over and cannot be driven again. A redacted record can no longer be proven, and a journal holding one refuses to project the absence key sets, a run certificate or the event stream (`audit.ErrRedacted`).
 
 **How tampering is detected.** Detection is by position. A signed head commits to the first N records; a journal that differs from it in that prefix (a record removed, changed or reordered) no longer hashes to the head's root. A record after the newest head is not covered. Deleting a record from a journal you then present with its head is therefore found, and deleting without the head is not.
 
@@ -148,7 +186,7 @@ The same position rule applies to `verify-decision-coverage` (a head that does n
 2. **Delete whole runs, not records.** Remove the run's journal, its `notify:<run>` trail, and its receipts together, and stop supplying that run's journal export, trail and heads to the verifier. The remaining runs verify as before. Do this only for runs that are finished (a run that is waiting for an approval is not).
 3. **Keep the heads.** Deleting a run does not require deleting its heads, and keeping them (at your anchor or in the archive) is what lets you show later that the run existed and what it committed to, without its content. Heads hold no record content.
 4. **Do not delete open-trail segments or yearly indexes one by one.** Their chain is checked end to end and the audit reads every yearly index from 2026 ([audit guide](audit.md)). They are part of the trail's proof. They grow with the life of the store. To bound them, archive the whole store at the end of a period, verify it, and start the next period on a fresh store when no run is in flight. That cutover was not tested.
-5. **Content that must not be kept** (personal data in a prompt, a retrieved document or a tool result) is in the journal in clear text and in each proof that discloses that record. Deleting it means deleting its run (item 2), or using a tombstone your deployment must implement itself, after which that record is unprovable. If your policy requires erasing data from a run that must stay provable, bide cannot do both for the same record. Decide before deployment: keep such data out of the journal (the tool-error redactor covers error text only: [Tool errors are redacted](security-model.md#tool-errors-are-redacted-before-they-are-journaled)), or make the run the unit of deletion.
+5. **Content that must not be kept** (personal data in a prompt, a retrieved document or a tool result) is in the journal in clear text and in each proof that discloses that record. Erasing it from a run that must stay provable is [a redaction](#erasing-personal-data): the record is replaced by a tombstone, the run keeps its place in the signed heads, and that record is unprovable from then on. Or delete the whole run (item 2). Decide before deployment which you will do, and keep such data out of the journal where you can (the tool-error redactor covers error text only: [Tool errors are redacted](security-model.md#tool-errors-are-redacted-before-they-are-journaled)).
 6. **The anchor is append-only by design.** Do not ask it to delete heads for runs you deleted unless your policy requires it; a missing head only means the run can no longer be checked against it.
 
 ## Where to store it

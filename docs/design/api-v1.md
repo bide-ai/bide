@@ -988,7 +988,7 @@ Kept, and documented:
 | C: model identity and what the model was shown | adopted | P9 |
 | C: `OutcomeUnknown.Cause` | adopted | P10 |
 | D1 cancel | adopted (reserve `run:cancelled`) | P14 (key in P6a) |
-| D2 redaction | tombstone format reserved | P6a; the capability depends on maintainer decision D2 |
+| D2 redaction | tombstone format reserved | P6a; the capability depends on maintainer decision D2. Implemented as `agent.Redactor` with a compare-and-swap `Redact(ctx, runID, name, current, tombstone)`; see [journal-redaction.md](journal-redaction.md) |
 | D3 per-run tool filter | `WithToolFilter(names...)` `RunOption`, journaled, enforced at dispatch (L5) | P14 |
 | D4 multi-tenancy | run-ID prefix convention plus `RunFilter.Prefix` | P6a |
 | D5 programmatic sub-runs | `SubRunFor` | P13 |

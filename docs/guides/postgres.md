@@ -67,6 +67,7 @@ Pin the schema with `WithSchema`: the store then trusts the schema's owner and a
 | `bide_owner` | Owns the schema, the tables and `bide_next_seq_v1`. Runs `bide migrate`. Not used by the running service |
 | `bide_app` | `USAGE` on the schema. `SELECT`, `INSERT` on `bide_steps` and `bide_events`. `SELECT`, `INSERT`, `UPDATE`, `DELETE` on `bide_leases`. `SELECT` on `bide_schema_version`. `EXECUTE` on `bide_next_seq_v1(text)`. **No `CREATE`** |
 | `bide_reader` | `USAGE` on the schema, `SELECT` on the four tables; opens the store with `postgres.OpenReadOnly` |
+| `bide_redactor` | Only for erasing personal data from finished runs ([retention guide](retention.md#erasing-personal-data)): `USAGE` on the schema, `SELECT` on `bide_steps`, `bide_leases` and `bide_schema_version`, and `UPDATE (data)` on `bide_steps`. It cannot insert, delete or change a name or position. Do not give it to the application: the application has no need to erase, and a role that cannot is the first separation of duties |
 
 ```sql
 CREATE SCHEMA bide AUTHORIZATION bide_owner;
@@ -78,9 +79,13 @@ GRANT SELECT ON bide.bide_schema_version TO bide_app;
 REVOKE ALL ON FUNCTION bide.bide_next_seq_v1(text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION bide.bide_next_seq_v1(text) TO bide_app;
 GRANT SELECT ON bide.bide_steps, bide.bide_events, bide.bide_leases, bide.bide_schema_version TO bide_reader;
+-- only for the tool that erases personal data (agent.Redact):
+GRANT USAGE ON SCHEMA bide TO bide_redactor;
+GRANT SELECT ON bide.bide_steps, bide.bide_leases, bide.bide_schema_version TO bide_redactor;
+GRANT UPDATE (data) ON bide.bide_steps TO bide_redactor;
 ```
 
-`TestWithoutMigration_LeastPrivilege` (`store/postgres/nomigrate_test.go`, run under the Integration job's Postgres) exercises this split: the application role has no `CREATE`, opens before the migration and gets `ErrSchemaMissing`, opens after it and drives a journal write, an attempt claim, a lease (acquire, renew, release), a run listing and the event store, and gets `ErrSchemaVersion` on a version mismatch. The journal tables take inserts only, so the application role has no `UPDATE` or `DELETE` on `bide_steps` or `bide_events`; the lease table is the one it updates and deletes.
+`TestWithoutMigration_LeastPrivilege` (`store/postgres/nomigrate_test.go`, run under the Integration job's Postgres) exercises this split: the application role has no `CREATE`, opens before the migration and gets `ErrSchemaMissing`, opens after it and drives a journal write, an attempt claim, a lease (acquire, renew, release), a run listing and the event store, and gets `ErrSchemaVersion` on a version mismatch. The journal tables take inserts only, so the application role has no `UPDATE` or `DELETE` on `bide_steps` or `bide_events`; the lease table is the one it updates and deletes. `TestLeastPrivilegeRoles` (`store/postgres/leastpriv_test.go`) also runs the redaction role: the application role's `Redact` is refused by the database, the redaction role's replaces an entry, and it can neither append nor delete. A replaced row version stays in the table as a dead tuple until `VACUUM`.
 
 Creating the lease indexes on a database from v0.9.0 takes the table's owner, so the first `Migrate` after that upgrade must run as the owner role.
 
