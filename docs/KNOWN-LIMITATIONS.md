@@ -690,7 +690,7 @@ acknowledged. A chain is at most four steps and is not repeated.
 - Not shipped yet: `bide stop`, the viewer banner and the notifications for a stop.
 - The stop trail records each signed record when the control writes it; a record written around the
   control (straight into the control run, with no trail) is found by `bide audit stops -db` or
-  `-postgres-env`, not prevented. `Reaudit` appends what the trail lacks. The order of the two
+  `-postgres-env`, not prevented. `Reaudit` appends what the trail lacks, and a signed record that reached the trail but never the control run (a crash between the two writes) is listed as unapplied or superseded, not as a forgery; `ApplyPending` applies the unapplied ones, an operator's decision (there is no `bide stop` command for it yet). The order of the two
   writes (a stop to the control run first, every other record to the trail first) is checked by Model 16. A plan flow is checked only if it was given a switch (`Builder.WithStopSwitch`); one without, on a store with a control run, is refused.
 - An agent-scope stop matches `Identity.Actor`: a run with no identity is never covered by one.
 - A session turn and a `Step` are not held by a stop of a tool; a global or agent stop holds the run

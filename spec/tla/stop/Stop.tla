@@ -52,6 +52,7 @@ CONSTANTS
   ReadFails,         \* a read may fail
   LiftRefires,       \* regress: a lift starts a halted call again
   WithTrail,         \* TRUE: records are also written to the audit trail, in two steps (the order of the Go control)
+  CatchUp,           \* TRUE: before a record that rests on earlier ones goes to the trail, the log's records the trail lacks are appended (in log order)
   LiftStoreFirst     \* regress: a record that is not a stop is written to the control run before the trail
 
 Pols == 1..MaxPol
@@ -130,7 +131,7 @@ Covers(s, c) == Active(s, c)
 
 VARIABLES
   log,        \* the control log
-  trail,      \* the audit trail: the set of records written to it (WithTrail)
+  trail,      \* the audit trail: the sequence of records written to it, in order (WithTrail)
   pend,       \* the record being written in two steps (a set of at most one)
 
   calls,      \* c -> "idle", "claimed", "cleared", "started", "done", "halted"
@@ -147,12 +148,12 @@ TypeOK ==
   /\ log \in Seq(Records) /\ Len(log) <= MaxLog
   /\ calls \in [Calls -> {"idle", "claimed", "cleared", "started", "done", "halted"}]
   /\ att \in [Calls -> 0..MaxAtt] /\ crashes \in 0..MaxCrash /\ blocked \in BOOLEAN
-  /\ trail \subseteq Records /\ pend \subseteq Records /\ Cardinality(pend) <= 1
+  /\ trail \in Seq(Records) /\ pend \subseteq Records /\ Cardinality(pend) <= 1
 
 Init ==
   /\ log = <<>> /\ calls = [c \in Calls |-> "idle"] /\ att = [c \in Calls |-> 0]
   /\ claimLen = [c \in Calls |-> 0] /\ rd = [c \in Calls |-> -1] /\ fired = [c \in Calls |-> 0]
-  /\ crashes = 0 /\ blocked = FALSE /\ trail = {} /\ pend = {}
+  /\ crashes = 0 /\ blocked = FALSE /\ trail = <<>> /\ pend = {}
 
 \* protocol:stop begin Write StartWrite FinishWrite Reaudit (the Go regions carry the markers)
 \* Without a trail a record is one atomic write to the control log.
@@ -217,16 +218,29 @@ Refire(c) ==
 \* leaves the first one, and Reaudit appends to the trail what the control log holds that it lacks.
 StoreFirst(r) == r.k = "set" \/ LiftStoreFirst
 
+Range(q) == {q[i] : i \in 1..Len(q)}
+TrailSet == Range(trail)
+SignedLog == {x \in Range(log) : x.sig}
+\* The catch-up before a trail-first record: every signed record of the log is already on the trail.
+CaughtUp == ~CatchUp \/ SignedLog \subseteq TrailSet
+
 StartWrite(r) ==
   /\ WithTrail /\ pend = {} /\ r.sig /\ Len(log) < MaxLog
-  /\ IF StoreFirst(r) THEN log' = Append(log, r) /\ trail' = trail ELSE trail' = trail \cup {r} /\ log' = log
+  /\ r.k = "lift" => Eff(log, Len(log)).st[r.stop].phase /= "none"   \* a lift names a stop the control run holds
+  \* A record already on the trail but not in the log (a write that crashed) is only re-applied while no log
+  \* record follows it on the trail: ApplyPending leaves a superseded one, so the orders cannot diverge.
+  /\ (r \in TrailSet /\ r \notin Range(log)) => \A i \in 1..Len(trail) : trail[i] = r => \A j \in (i + 1)..Len(trail) : trail[j] \notin Range(log)
+  /\ IF StoreFirst(r) THEN log' = Append(log, r) /\ trail' = trail
+       ELSE /\ CaughtUp
+            /\ log' = log
+            /\ trail' = IF r \in TrailSet THEN trail ELSE Append(trail, r)
   /\ pend' = {r}
   /\ UNCHANGED <<calls, att, claimLen, rd, fired, crashes, blocked>>
 
 FinishWrite ==
   /\ WithTrail /\ pend /= {}
   /\ LET p == CHOOSE x \in pend : TRUE IN
-       IF StoreFirst(p) THEN trail' = trail \cup {p} /\ log' = log ELSE Len(log) < MaxLog /\ log' = Append(log, p) /\ trail' = trail
+       IF StoreFirst(p) THEN trail' = (IF p \in TrailSet THEN trail ELSE Append(trail, p)) /\ log' = log ELSE Len(log) < MaxLog /\ log' = Append(log, p) /\ trail' = trail
   /\ pend' = {}
   /\ UNCHANGED <<calls, att, claimLen, rd, fired, crashes, blocked>>
 
@@ -241,7 +255,10 @@ Forge(r) ==
   /\ UNCHANGED <<trail, pend, calls, att, claimLen, rd, fired, crashes, blocked>>
 
 Reaudit ==
-  /\ WithTrail /\ \E i \in 1..Len(log) : log[i].sig /\ log[i] \notin trail /\ trail' = trail \cup {log[i]}
+  /\ WithTrail /\ \E i \in 1..Len(log) :
+       /\ log[i].sig /\ log[i] \notin TrailSet
+       /\ \A j \in 1..(i - 1) : log[j].sig => log[j] \in TrailSet   \* in log order, every earlier record first
+       /\ trail' = Append(trail, log[i])
   /\ UNCHANGED <<log, pend, calls, att, claimLen, rd, fired, crashes, blocked>>
 \* protocol:stop end
 
@@ -305,7 +322,14 @@ BasicSignedStopNeedsSignedLift ==
 \* policy transition, the root and a mode change are evidenced first. (A stop is written to the control log
 \* first, so it may be in force before its trail write: Reaudit completes it.)
 EffectiveImpliesTrailed ==
-  WithTrail => \A i \in 1..Len(log) : (log[i].sig /\ log[i].k /= "set") => log[i] \in trail
+  WithTrail => \A i \in 1..Len(log) : (log[i].sig /\ log[i].k /= "set") => log[i] \in TrailSet
+
+\* Once every write has finished and the trail holds every signed record of the log and nothing else, the
+\* trail's fold equals the log's: the trail shows what is in force. (A trail that holds a lift before the stop
+\* it names folds differently: the lift is rejected and the stop shows in force.)
+Quiescent == WithTrail /\ pend = {} /\ TrailSet = SignedLog
+TrailAgreesWithLog ==
+  Quiescent => EffC(Chain, TrustRootOnly, trail, Len(trail)) = Eff(log, Len(log))
 
 \* A stop never goes back: none, then active, then lifted.
 Rank(p) == IF p = "none" THEN 0 ELSE IF p = "active" THEN 1 ELSE 2
@@ -317,7 +341,8 @@ OnlyBeginFires == [][\A c \in Calls : fired'[c] /= fired[c] => (calls[c] = "clea
 
 \* Vacuity and reachability: each is violated when the effect is reached.
 EffectNotReachable == \A c \in Calls : fired[c] = 0
-UntrailedStopNotReachable == ~(pend = {} /\ \E i \in 1..Len(log) : log[i].sig /\ log[i].k = "set" /\ log[i] \notin trail)
+UntrailedStopNotReachable == ~(pend = {} /\ \E i \in 1..Len(log) : log[i].sig /\ log[i].k = "set" /\ log[i] \notin TrailSet)
+QuiescentAgreeNotReachable == ~(Quiescent /\ Len(trail) > 1)
 BlockedNotReachable == ~blocked
 AuditedLiftNotReachable == ~(\E i \in StopIds : Eff(log, Len(log)).st[i].how = "audited")
 RotatedNotReachable == ~(Eff(log, Len(log)).pol = 2 /\ \E i \in StopIds : Eff(log, Len(log)).st[i].phase = "active")

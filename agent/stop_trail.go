@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -183,6 +184,85 @@ func (c *StopControl) Reaudit(ctx context.Context) (int, error) {
 }
 
 // protocol:stop end
+
+// ApplyPending writes to the control run the records of the trail that it lacks and that are not stops: what
+// a crash between "trail first" and the control-run write leaves (a lift, a policy transition, the root or a
+// mode change that was signed and evidenced and never took effect). It applies, in trail order, each one the
+// control would accept (a record the fold would reject stays unapplied) and returns how many it applied.
+//
+// Only the records at the end of the trail are applied: those after the last record the control run holds. A
+// pending record that a stored record follows on the trail is superseded (the next write went on without it):
+// writing it now would put it after records the trail has behind it and make the control run's order differ
+// from the trail's, so it is left, and counted in superseded. Applying makes the signer's recorded intent
+// effective now, however old it is: look at `bide audit stops`, which lists these records, before running it.
+// A stop on the trail that the control run lacks is never applied (a stop is written to the control run first,
+// so that is a row deleted from it: a finding).
+func (c *StopControl) ApplyPending(ctx context.Context) (applied, superseded int, err error) {
+	if c.trail == nil {
+		return 0, 0, fmt.Errorf("ApplyPending needs a stop trail (WithStopTrail): %w", ErrConfig)
+	}
+	have, err := c.trail.Load(ctx, StopTrailName)
+	if err != nil {
+		return 0, 0, err
+	}
+	store, err := c.StopRecords(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	inStore := make(map[string]bool, len(store))
+	for _, r := range store {
+		inStore[StopDigest(r)] = true
+	}
+	last := -1 // the last record of the trail that the control run holds
+	for i, r := range have {
+		if inStore[StopDigest(r)] {
+			last = i
+		}
+	}
+	for i, r := range have {
+		if inStore[StopDigest(r)] || r.Kind == "set" || !r.Signed() || r.Validate() != nil {
+			continue
+		}
+		if i < last {
+			superseded++
+			continue
+		}
+		if err := c.applyOne(ctx, r, store); err != nil {
+			if errors.Is(err, ErrStopRejected) {
+				continue // the fold would not accept it now
+			}
+			return applied, superseded, err
+		}
+		store = append(store, r)
+		applied++
+	}
+	return applied, superseded, nil
+}
+
+// applyOne writes r to the control run if folding the control run's records with it accepts it.
+func (c *StopControl) applyOne(ctx context.Context, r StopRecord, store []StopRecord) error {
+	var journal []Record
+	for _, x := range append(slices.Clone(store), r) {
+		b, err := json.Marshal(x)
+		if err != nil {
+			return err
+		}
+		journal = append(journal, Record{Kind: StepValue, Name: stopRecordStep(x), Result: b})
+	}
+	st, err := c.stateOf(journal)
+	if err != nil {
+		return err
+	}
+	if st.Rejects(r) {
+		return fmt.Errorf("the record %s would not be accepted: %w", stopRecordStep(r), ErrStopRejected)
+	}
+	b, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	_, _, err = c.j.putNew(ctx, StopControlRun, stopRecordStep(r), Record{Kind: StepValue, Result: b})
+	return err
+}
 
 // VerifyStopRecords folds records (a control run's, or a stop trail's) under the policy the options give,
 // with no store: what bide audit stops does to a trail. It returns the same StopState as

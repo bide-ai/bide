@@ -164,16 +164,20 @@ func TestStops_TamperAndWrongPolicy(t *testing.T) {
 	}
 }
 
-// Records after the newest signed head are reported with a WARN unless -max-unattested was given, and fail
-// when the tail is older than it.
-func TestStops_UnattestedTailIsWarned(t *testing.T) {
+// Records after the newest signed head fail by default (the newest records could have been deleted unseen),
+// are accepted for as long as -max-unattested says, and fail when older than that.
+func TestStops_UnattestedTailFailsByDefault(t *testing.T) {
 	f := newStopFixture(t)
 	code, out, _ := runStops("-trail", f.trailWithTail, "-sth", f.sth, "-pubkey", f.pub, "-stop-policy", f.policy)
-	if code != 0 || !strings.Contains(out, "WARN  1 record(s) after the newest signed head are not attested") {
-		t.Errorf("exit %d:\n%s", code, out)
+	if code != 1 || !strings.Contains(out, "1 record(s) after the newest signed head") {
+		t.Errorf("default: exit %d:\n%s", code, out)
+	}
+	code, out, _ = runStops("-trail", f.trailWithTail, "-sth", f.sth, "-pubkey", f.pub, "-stop-policy", f.policy, "-max-unattested", "1h")
+	if code != 0 || !strings.Contains(out, "the last 1 are not attested") {
+		t.Errorf("-max-unattested 1h: exit %d:\n%s", code, out)
 	}
 	code, out, _ = runStops("-trail", f.trailWithTail, "-sth", f.sth, "-pubkey", f.pub, "-stop-policy", f.policy, "-max-unattested", "1m", "-as-of", time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
-	if code != 1 || strings.Contains(out, "WARN") || !strings.Contains(out, "unattested for") {
-		t.Errorf("exit %d:\n%s", code, out)
+	if code != 1 || !strings.Contains(out, "unattested for") {
+		t.Errorf("a tail older than -max-unattested: exit %d:\n%s", code, out)
 	}
 }

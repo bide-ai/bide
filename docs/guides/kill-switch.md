@@ -108,9 +108,18 @@ deployment pinned (`-stop-policy`, the policy document with the approvers' publi
 of signed transitions from its root; with signed heads (`-sth`, `-pubkey`) a deleted or reordered
 record is found; and against the store (`-db`, `-postgres-env`) every record of the control run must
 be in the trail and the reverse (a stop written around the trail, or a row deleted from the store).
-Basic mode keeps no trail. Without `-max-unattested` the verb warns when records follow the newest
-signed head, because whoever can write the trail's store could have deleted them from an exported trail
-unseen; a comparison with the control run (`-db`, `-postgres-env`) would find it.
+Basic mode keeps no trail. Records after the newest signed head are not attested: with no
+`-max-unattested` any such tail fails (whoever can write the trail's store could have deleted the newest
+records unseen), and `-max-unattested` accepts a tail younger than that.
+
+A crash between "trail first" and the control-run write leaves a signed lift (or transition, root, mode
+change) on the trail that never took effect. That is not a forgery: `bide audit stops` lists it as
+**UNAPPLIED** and passes, and `StopControl.ApplyPending` writes it to the control run if the control would
+accept it (look at the list first: it makes the signer's recorded intent effective now, however old). It
+applies only the records at the end of the trail; one that a stored record follows (the operator tried
+again, and the new record went through) is **SUPERSEDED**: listed, not a failure, not in the stops shown,
+and not applied, since applying it would put it after records the trail has behind it. A record on the
+trail that the fold rejects, or a stop on the trail that the control run lacks, is a problem.
 
 ## How fast, and when the control run cannot be read
 

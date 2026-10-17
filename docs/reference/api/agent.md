@@ -3096,6 +3096,7 @@ StopControl reads and writes the control run: the stops, lifts, mode and policy 
 
 **Methods**
 
+- `func (c *StopControl) ApplyPending(ctx context.Context) (applied, superseded int, err error)`: ApplyPending writes to the control run the records of the trail that it lacks and that are not stops: what a crash between "trail first" and the control-run write leaves (a lift, a policy transition, the root or a mode change that was signed and evidenced and never took effect).
 - `func (c *StopControl) ChangeMode(ctx context.Context, req ModeRequest) (StopState, error)`: ChangeMode records that the deployment changed mode: evidence for history and the audit trail, which changes nothing a process does (the mode is each process's configuration, rolled out by the operator).
 - `func (c *StopControl) LiftStop(ctx context.Context, id string, req LiftRequest) (StopEntry, error)`: LiftStop adds one lifter's approval of lifting stop id and returns the stop as State then reports it (Lifted when the rule is met, else LiftsHeld of LiftsNeeded).
 - `func (c *StopControl) Mode() StopMode`: Mode is the mode the control runs under: the declared one, else audited with a policy and basic without (an undeclared mode is refused as soon as the control run holds a record).
@@ -3359,6 +3360,7 @@ StopState is the effective state of the control run for one control.
 
 - `func (s StopState) Active() []StopEntry`: Active returns the stops that are not lifted, in the order they were set.
 - `func (s StopState) Covering(q StopQuery) (StopEntry, bool)`: Covering returns the first active stop that covers q.
+- `func (s StopState) Rejects(r StopRecord) bool`: Rejects reports whether the fold rejected r (a record it did not accept: not signed by an enrolled approver of the policy in force, for another deployment, malformed, and so on).
 - `func (s StopState) UnknowableErr() error`: UnknowableErr returns ErrStopsUnknowable when the control cannot judge which stops are in force (see the error).
 
 ## type StopSwitch
