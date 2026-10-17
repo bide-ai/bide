@@ -1,4 +1,4 @@
-package audit_test
+package crlrefresh_test
 
 import (
 	"bytes"
@@ -16,6 +16,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/audit/crlrefresh"
 	"github.com/bide-ai/bide/internal/testca"
 )
 
@@ -48,7 +49,7 @@ func TestRefresherAddsAndRotates(t *testing.T) {
 }
 
 func TestRefresherStaleOnArrivalIsArchivedNotFresh(t *testing.T) {
-	g := newCRig(t, withArchive(audit.DirCRLArchive(t.TempDir())))
+	g := newCRig(t, withArchive(crlrefresh.DirArchive(t.TempDir())))
 	now := g.clk.Now()
 	g.srv.set("/root.crl", g.rCRL(1, now.Add(-time.Hour), 48*time.Hour))
 	g.srv.set("/inter.crl", g.iCRL(1, now.Add(-3*time.Hour), time.Hour)) // nextUpdate two hours ago
@@ -57,7 +58,7 @@ func TestRefresherStaleOnArrivalIsArchivedNotFresh(t *testing.T) {
 	if errs[g.intK] == nil {
 		t.Fatal("a CRL past its nextUpdate was reported as a fresh refresh")
 	}
-	if len(g.kinds(audit.EventStaleOnArrival)) != 1 {
+	if len(g.kinds(crlrefresh.EventStaleOnArrival)) != 1 {
 		t.Fatalf("events %+v", g.dump())
 	}
 	if g.snap.Len() != 2 {
@@ -80,7 +81,7 @@ func TestRefresherOversizeIsRefusedNotTruncated(t *testing.T) {
 	if g.refresh()[g.intK] == nil {
 		t.Fatal("an oversize body was accepted")
 	}
-	if len(g.kinds(audit.EventOversizeResponse)) == 0 {
+	if len(g.kinds(crlrefresh.EventOversizeResponse)) == 0 {
 		t.Fatalf("no oversize event: %+v", g.dump())
 	}
 	// Chunked, with no Content-Length: the limit applies to the body read.
@@ -104,10 +105,10 @@ func TestRefresherGzipBombIsNotDecompressed(t *testing.T) {
 	if g.refresh()[g.intK] == nil {
 		t.Fatal("a gzip body was accepted as a CRL")
 	}
-	if len(g.kinds(audit.EventOversizeResponse)) != 0 {
+	if len(g.kinds(crlrefresh.EventOversizeResponse)) != 0 {
 		t.Fatalf("the body was decompressed before the size limit applied: %s", g.dump())
 	}
-	if len(g.kinds(audit.EventBadSignature)) == 0 {
+	if len(g.kinds(crlrefresh.EventBadSignature)) == 0 {
 		t.Fatalf("the gzip body produced no refusal event: %s", g.dump())
 	}
 }
@@ -118,7 +119,7 @@ func TestRefresherSlowServerHitsTheDeadline(t *testing.T) {
 	rt := g.srv.set("/inter.crl", g.iCRL(1, g.clk.Now().Add(-time.Minute), time.Hour))
 	rt.delay = 5 * time.Second
 	g.start()
-	audit.SetAttemptTimeout(g.r, 200*time.Millisecond)
+	crlrefresh.SetAttemptTimeout(g.r, 200*time.Millisecond)
 	start := time.Now()
 	if g.refresh()[g.intK] == nil {
 		t.Fatal("a slow server produced a CRL")
@@ -143,7 +144,7 @@ func TestRefresherChecksTheSignatureAgainstTheIssuersOwnCertificate(t *testing.T
 	if g.refresh()[g.intK] == nil {
 		t.Fatal("another issuer's CRL was accepted at this issuer's URL")
 	}
-	if len(g.kinds(audit.EventBadSignature)) == 0 {
+	if len(g.kinds(crlrefresh.EventBadSignature)) == 0 {
 		t.Fatalf("no bad-signature event: %+v", g.dump())
 	}
 	// A CRL with the issuer's own name signed by another key.
@@ -158,7 +159,7 @@ func TestRefresherChecksTheSignatureAgainstTheIssuersOwnCertificate(t *testing.T
 }
 
 func TestRefresherRollbackConflictAndResignedCRL(t *testing.T) {
-	g := newCRig(t, withArchive(audit.DirCRLArchive(t.TempDir())))
+	g := newCRig(t, withArchive(crlrefresh.DirArchive(t.TempDir())))
 	now := g.clk.Now()
 	g.srv.set("/root.crl", g.rCRL(1, now.Add(-time.Hour), 48*time.Hour))
 	five := g.iCRL(5, now.Add(-2*time.Minute), time.Hour)
@@ -173,7 +174,7 @@ func TestRefresherRollbackConflictAndResignedCRL(t *testing.T) {
 	}
 	g.srv.set("/inter.crl", again)
 	g.wantOK()
-	if len(g.kinds(audit.EventConflict)) != 0 || g.snap.Len() != 2 {
+	if len(g.kinds(crlrefresh.EventConflict)) != 0 || g.snap.Len() != 2 {
 		t.Fatalf("a re-signed CRL was treated as a conflict or added: %+v, %d held", g.events, g.snap.Len())
 	}
 
@@ -182,7 +183,7 @@ func TestRefresherRollbackConflictAndResignedCRL(t *testing.T) {
 	if g.refresh()[g.intK] == nil {
 		t.Fatal("an equivocating CRL counted as success")
 	}
-	if len(g.kinds(audit.EventConflict)) != 1 || g.snap.Len() != 2 {
+	if len(g.kinds(crlrefresh.EventConflict)) != 1 || g.snap.Len() != 2 {
 		t.Fatalf("conflict not reported or added: %+v", g.dump())
 	}
 
@@ -191,7 +192,7 @@ func TestRefresherRollbackConflictAndResignedCRL(t *testing.T) {
 	if g.refresh()[g.intK] == nil {
 		t.Fatal("a rollback counted as success")
 	}
-	rb := g.kinds(audit.EventRollback)
+	rb := g.kinds(crlrefresh.EventRollback)
 	if len(rb) != 1 || rb[0].Number.Int64() != 4 || rb[0].Held.Int64() != 5 {
 		t.Fatalf("rollback event %+v", rb)
 	}
@@ -204,14 +205,14 @@ func TestRefresherRollbackConflictAndResignedCRL(t *testing.T) {
 	for _, e := range ents {
 		marks[e.Marker]++
 	}
-	if marks[""] != 1 || marks[audit.MarkerRollback] != 1 || marks[audit.MarkerConflict] != 1 {
+	if marks[""] != 1 || marks[crlrefresh.MarkerRollback] != 1 || marks[crlrefresh.MarkerConflict] != 1 {
 		t.Fatalf("archive markers %v", marks)
 	}
 	// A restart never loads a marked file as the series: the genuine CRL 5 is still the current one.
 	g.restart()
 	g.srv.set("/inter.crl", five)
 	g.wantOK()
-	if len(g.kinds(audit.EventConflict)) != 0 || len(g.kinds(audit.EventRollback)) != 0 {
+	if len(g.kinds(crlrefresh.EventConflict)) != 0 || len(g.kinds(crlrefresh.EventRollback)) != 0 {
 		t.Fatalf("a marked archive file was taken as the series after a restart: %s", g.dump())
 	}
 }
@@ -272,7 +273,7 @@ func TestRefresherFetchesTheBaseOfAnUnpairedDeltaAtOnce(t *testing.T) {
 	if !g.health(g.intK).Paired {
 		t.Fatal("delta and base are not paired")
 	}
-	if len(g.kinds(audit.EventUnpairedDelta)) != 0 {
+	if len(g.kinds(crlrefresh.EventUnpairedDelta)) != 0 {
 		t.Fatalf("the delta was added before its base was fetched: %s", g.dump())
 	}
 
@@ -282,7 +283,7 @@ func TestRefresherFetchesTheBaseOfAnUnpairedDeltaAtOnce(t *testing.T) {
 	g2.srv.set("/inter-delta.crl", g2.iDelta(31, 30, now.Add(-time.Minute), 20*time.Minute))
 	g2.start()
 	g2.refresh()
-	if len(g2.kinds(audit.EventUnpairedDelta)) != 1 || g2.health(g2.intK).Paired {
+	if len(g2.kinds(crlrefresh.EventUnpairedDelta)) != 1 || g2.health(g2.intK).Paired {
 		t.Fatalf("unpaired delta: %+v", g2.dump())
 	}
 	if g2.snap.Len() != 2 {
@@ -310,7 +311,7 @@ func TestRefresherFutureDatedAndSkew(t *testing.T) {
 	g.srv.set("/root.crl", g.rCRL(1, now.Add(-time.Hour), 48*time.Hour))
 	g.srv.set("/inter.crl", g.iCRL(1, now.Add(10*time.Minute), time.Hour))
 	g.start()
-	if g.refresh()[g.intK] == nil || len(g.kinds(audit.EventFutureDated)) != 1 || g.snap.Len() != 1 {
+	if g.refresh()[g.intK] == nil || len(g.kinds(crlrefresh.EventFutureDated)) != 1 || g.snap.Len() != 1 {
 		t.Fatalf("a CRL dated 10 minutes ahead was not refused: %+v", g.dump())
 	}
 	// With a declared 10 minute skew a thisUpdate 9 minutes ahead is accepted (skew plus a minute).
@@ -320,7 +321,7 @@ func TestRefresherFutureDatedAndSkew(t *testing.T) {
 	g2.srv.set("/inter.crl", g2.iCRL(1, n2.Add(9*time.Minute), time.Hour))
 	g2.start()
 	g2.refresh() // added; the gate itself calls a CRL more than a minute ahead not yet fresh
-	if len(g2.kinds(audit.EventFutureDated)) != 0 || g2.snap.Len() != 2 {
+	if len(g2.kinds(crlrefresh.EventFutureDated)) != 0 || g2.snap.Len() != 2 {
 		t.Fatalf("a CRL within the declared skew was refused: %+v", g2.dump())
 	}
 }
@@ -371,7 +372,7 @@ func TestRefresherRedirects(t *testing.T) {
 	other := newCRLServer(t)
 	other.set("/x.crl", g.iCRL(7, g.clk.Now().Add(-time.Minute), time.Hour))
 	g.srv.set("/inter.crl", nil).redirect = other.url("/x.crl")
-	if g.refresh()[g.intK] == nil || len(g.kinds(audit.EventRedirectRefused)) != 1 {
+	if g.refresh()[g.intK] == nil || len(g.kinds(crlrefresh.EventRedirectRefused)) != 1 {
 		t.Fatalf("a redirect to another host was followed: %+v", g.dump())
 	}
 	if other.routes["/x.crl"].hits != 0 {
@@ -387,7 +388,7 @@ func TestRefresherDateHeaderSkewIsOnlyAWarning(t *testing.T) {
 	g.start()
 	// The fake clock is in 2026 while the real Date is "now": the difference is large either way.
 	g.wantOK()
-	if len(g.kinds(audit.EventClockSkew)) == 0 {
+	if len(g.kinds(crlrefresh.EventClockSkew)) == 0 {
 		t.Fatalf("no clock-skew warning: %+v", g.dump())
 	}
 }
@@ -402,7 +403,7 @@ func TestRefresherDistrustedKey(t *testing.T) {
 	_ = inter
 	g.publishFresh(1)
 	g.start()
-	if g.refresh()[g.intK] == nil || len(g.kinds(audit.EventDistrusted)) != 1 {
+	if g.refresh()[g.intK] == nil || len(g.kinds(crlrefresh.EventDistrusted)) != 1 {
 		t.Fatalf("a CRL from a distrusted key was added: %+v", g.dump())
 	}
 }
@@ -415,13 +416,13 @@ func TestRefresherUnsupportedCRLIsReportedNotFetched(t *testing.T) {
 	g.srv.set("/inter.crl", g.inter.NewCRL(t, testca.CRLOpts{Number: 2, ThisUpdate: now.Add(-time.Minute), NextUpdate: now.Add(time.Hour),
 		Extra: []pkix.Extension{ext(asn1.ObjectIdentifier{2, 5, 29, 28}, true, []byte{0x30, 0x00})}}))
 	g.start()
-	if g.refresh()[g.intK] == nil || len(g.kinds(audit.EventUnsupportedCRL)) == 0 {
+	if g.refresh()[g.intK] == nil || len(g.kinds(crlrefresh.EventUnsupportedCRL)) == 0 {
 		t.Fatalf("an IDP CRL was not refused as unsupported: %+v", g.dump())
 	}
 }
 
 func TestRefresherArchiveFailureStillAddsAndRetries(t *testing.T) {
-	fa := &flakyArchive{DirCRLArchive: audit.DirCRLArchive(t.TempDir()), fail: true}
+	fa := &flakyArchive{DirArchive: crlrefresh.DirArchive(t.TempDir()), fail: true}
 	g := newCRig(t, withArchive(fa))
 	g.publishFresh(1)
 	g.start()
@@ -429,7 +430,7 @@ func TestRefresherArchiveFailureStillAddsAndRetries(t *testing.T) {
 	if g.snap.Len() != 2 {
 		t.Fatal("a CRL was withheld because the archive failed")
 	}
-	if len(g.kinds(audit.EventArchiveError)) == 0 || g.health(g.intK).ArchiveBacklog == 0 {
+	if len(g.kinds(crlrefresh.EventArchiveError)) == 0 || g.health(g.intK).ArchiveBacklog == 0 {
 		t.Fatalf("archive failure not reported: %+v", g.dump())
 	}
 	fa.fail = false
@@ -444,27 +445,27 @@ func TestRefresherArchiveFailureStillAddsAndRetries(t *testing.T) {
 }
 
 func TestRefresherArchiveQueueDropsOldestAndSaysSo(t *testing.T) {
-	fa := &flakyArchive{DirCRLArchive: audit.DirCRLArchive(t.TempDir()), fail: true}
+	fa := &flakyArchive{DirArchive: crlrefresh.DirArchive(t.TempDir()), fail: true}
 	g := newCRig(t, withArchive(fa))
 	g.opts.MaxArchiveQueueBytes = 1
 	g.publishFresh(1)
 	g.start()
 	g.refresh()
-	if len(g.kinds(audit.EventArchiveDropped)) == 0 {
+	if len(g.kinds(crlrefresh.EventArchiveDropped)) == 0 {
 		t.Fatalf("a dropped archive entry was silent: %+v", g.dump())
 	}
 }
 
 type flakyArchive struct {
-	audit.DirCRLArchive
+	crlrefresh.DirArchive
 	fail bool
 }
 
-func (f *flakyArchive) PutCRL(ctx context.Context, i audit.SPKIHash, a audit.ArchivedCRL, der []byte) error {
+func (f *flakyArchive) PutCRL(ctx context.Context, i audit.SPKIHash, a crlrefresh.ArchivedCRL, der []byte) error {
 	if f.fail {
 		return errors.New("disk full")
 	}
-	return f.DirCRLArchive.PutCRL(ctx, i, a, der)
+	return f.DirArchive.PutCRL(ctx, i, a, der)
 }
 
 func TestNewCRLRefresherConfigErrors(t *testing.T) {
@@ -515,7 +516,7 @@ func TestNewCRLRefresherConfigErrors(t *testing.T) {
 	} {
 		g := base()
 		mod(g)
-		_, err := audit.NewCRLRefresher(g.ap, g.sources, g.opts)
+		_, err := crlrefresh.New(g.ap, g.sources, g.opts)
 		if err == nil || !errors.Is(err, agent.ErrConfig) {
 			t.Errorf("%s: %v", name, err)
 		}
@@ -565,7 +566,7 @@ func TestRefresherFromPinnedCDP(t *testing.T) {
 	}
 	// A source with neither urls nor a CDP to read is refused.
 	g.sources = audit.CRLSources{g.rootK: {URLs: []string{srv.url("/root.crl")}}, g.intK: {FromPinnedCDP: true}}
-	if _, err := audit.NewCRLRefresher(g.ap, g.sources, g.opts); err == nil {
+	if _, err := crlrefresh.New(g.ap, g.sources, g.opts); err == nil {
 		t.Fatal("the leaf CA's CRL was taken from a CDP: only leaves name it, and leaves are never a source")
 	}
 }

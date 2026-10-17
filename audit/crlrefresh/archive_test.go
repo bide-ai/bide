@@ -1,4 +1,4 @@
-package audit_test
+package crlrefresh_test
 
 import (
 	"context"
@@ -13,11 +13,12 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/audit/crlrefresh"
 	"github.com/bide-ai/bide/internal/testca"
 )
 
 func TestRestartKeepsRollbackMemoryAndSeedsTheSnapshot(t *testing.T) {
-	g := newCRig(t, withArchive(audit.DirCRLArchive(t.TempDir())))
+	g := newCRig(t, withArchive(crlrefresh.DirArchive(t.TempDir())))
 	g.publishFresh(5)
 	g.start()
 	g.wantOK()
@@ -34,7 +35,7 @@ func TestRestartKeepsRollbackMemoryAndSeedsTheSnapshot(t *testing.T) {
 	if errs[g.intK] == nil {
 		t.Fatal("a rollback after a restart counted as success")
 	}
-	rb := g.kinds(audit.EventRollback)
+	rb := g.kinds(crlrefresh.EventRollback)
 	if len(rb) != 1 || rb[0].Held.Int64() != 5 {
 		t.Fatalf("the archive's mark was forgotten: %s", g.dump())
 	}
@@ -44,7 +45,7 @@ func TestRestartKeepsRollbackMemoryAndSeedsTheSnapshot(t *testing.T) {
 }
 
 func TestPoisonedHighWaterMarkResetSurvivesARestart(t *testing.T) {
-	arch := audit.DirCRLArchive(t.TempDir())
+	arch := crlrefresh.DirArchive(t.TempDir())
 	g := newCRig(t, withArchive(arch))
 	now := g.clk.Now()
 	g.srv.set("/root.crl", g.rCRL(1, now.Add(-time.Hour), 48*time.Hour))
@@ -57,13 +58,13 @@ func TestPoisonedHighWaterMarkResetSurvivesARestart(t *testing.T) {
 		t.Fatal("a real CRL after a poisoned number was accepted without a reset")
 	}
 	ctx := context.Background()
-	if err := g.r.ResetHighWater(ctx, g.intK, audit.ResetRequest{Operator: "ops"}); err == nil {
+	if err := g.r.ResetHighWater(ctx, g.intK, crlrefresh.ResetRequest{Operator: "ops"}); err == nil {
 		t.Fatal("a reset without a reason")
 	}
-	if err := g.r.ResetHighWater(ctx, g.intK, audit.ResetRequest{Reason: "CA issued number 1000000 by mistake", Operator: "dayna"}); err != nil {
+	if err := g.r.ResetHighWater(ctx, g.intK, crlrefresh.ResetRequest{Reason: "CA issued number 1000000 by mistake", Operator: "dayna"}); err != nil {
 		t.Fatal(err)
 	}
-	if len(g.kinds(audit.EventHighWaterReset)) != 1 {
+	if len(g.kinds(crlrefresh.EventHighWaterReset)) != 1 {
 		t.Fatalf("no reset event: %s", g.dump())
 	}
 	if h := g.health(g.intK); h.NewestNumber != nil {
@@ -96,7 +97,7 @@ func TestPoisonedHighWaterMarkResetSurvivesARestart(t *testing.T) {
 	if h := g.health(g.intK); h.NewestNumber.Int64() != 7 || h.UnackedResets != 1 {
 		t.Fatalf("after a restart: %+v", h)
 	}
-	if len(g.kinds(audit.EventHighWaterReset)) != 1 {
+	if len(g.kinds(crlrefresh.EventHighWaterReset)) != 1 {
 		t.Fatalf("no start-up reset event: %s", g.dump())
 	}
 	if err := g.r.AckReset(ctx, g.intK, resets[0].Name); err != nil {
@@ -104,13 +105,13 @@ func TestPoisonedHighWaterMarkResetSurvivesARestart(t *testing.T) {
 	}
 	g.restart()
 	g.refresh()
-	if len(g.kinds(audit.EventHighWaterReset)) != 0 || g.health(g.intK).UnackedResets != 0 {
+	if len(g.kinds(crlrefresh.EventHighWaterReset)) != 0 || g.health(g.intK).UnackedResets != 0 {
 		t.Fatalf("an acknowledged reset is still reported: %s", g.dump())
 	}
 }
 
 func TestAMarkNeverComesFromAFileNameAlone(t *testing.T) {
-	arch := audit.DirCRLArchive(t.TempDir())
+	arch := crlrefresh.DirArchive(t.TempDir())
 	g := newCRig(t, withArchive(arch))
 	g.publishFresh(2)
 	g.start()
@@ -122,7 +123,7 @@ func TestAMarkNeverComesFromAFileNameAlone(t *testing.T) {
 	g.restart()
 	g.srv.set("/inter.crl", g.iCRL(3, g.clk.Now().Add(-time.Minute), time.Hour))
 	g.wantOK()
-	if len(g.kinds(audit.EventArchiveCorrupt)) != 1 {
+	if len(g.kinds(crlrefresh.EventArchiveCorrupt)) != 1 {
 		t.Fatalf("a planted file was not reported: %s", g.dump())
 	}
 	if g.health(g.intK).NewestNumber.Int64() != 3 {
@@ -131,7 +132,7 @@ func TestAMarkNeverComesFromAFileNameAlone(t *testing.T) {
 }
 
 func TestSeedingDoesNotRaiseTheEvictionBookkeeping(t *testing.T) {
-	arch := audit.DirCRLArchive(t.TempDir())
+	arch := crlrefresh.DirArchive(t.TempDir())
 	g := newCRig(t, withArchive(arch), withSnapOpts(audit.WithMaxCRLs(8)))
 	now := g.clk.Now()
 	// Twelve archived CRLs, all inside the status window: more than the snapshot keeps.
@@ -148,13 +149,13 @@ func TestSeedingDoesNotRaiseTheEvictionBookkeeping(t *testing.T) {
 	}
 }
 
-func TestDirCRLArchive(t *testing.T) {
+func TestDirArchive(t *testing.T) {
 	g := newCRig(t)
 	dir := t.TempDir()
-	arch := audit.DirCRLArchive(filepath.Join(dir, "a"))
+	arch := crlrefresh.DirArchive(filepath.Join(dir, "a"))
 	ctx := context.Background()
 	der := g.iCRL(3, testca.T0, time.Hour)
-	rec := audit.ArchivedCRL{Number: bigInt(3), ThisUpdate: testca.T0, Source: "http://x/y.crl", Fetched: testca.T0}
+	rec := crlrefresh.ArchivedCRL{Number: bigInt(3), ThisUpdate: testca.T0, Source: "http://x/y.crl", Fetched: testca.T0}
 	if err := arch.PutCRL(ctx, g.intK, rec, der); err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +166,7 @@ func TestDirCRLArchive(t *testing.T) {
 		t.Fatal("two different CRLs under one series name")
 	}
 	mk := rec
-	mk.Marker = audit.MarkerConflict
+	mk.Marker = crlrefresh.MarkerConflict
 	if err := arch.PutCRL(ctx, g.intK, mk, g.iCRL(3, testca.T0, 2*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +174,7 @@ func TestDirCRLArchive(t *testing.T) {
 	if err != nil || len(ents) != 2 {
 		t.Fatalf("%v %v", ents, err)
 	}
-	var series audit.ArchivedCRL
+	var series crlrefresh.ArchivedCRL
 	for _, e := range ents {
 		if e.Marker == "" {
 			series = e
@@ -186,10 +187,10 @@ func TestDirCRLArchive(t *testing.T) {
 	if err != nil || string(got) != string(der) {
 		t.Fatalf("read back: %v", err)
 	}
-	if _, err := arch.Read(ctx, g.intK, audit.ArchivedCRL{Name: "../../etc/passwd"}); err == nil {
+	if _, err := arch.Read(ctx, g.intK, crlrefresh.ArchivedCRL{Name: "../../etc/passwd"}); err == nil {
 		t.Fatal("a path outside the archive was read")
 	}
-	r := audit.ResetRecord{Issuer: "x", Reason: "r", Operator: "o", Time: testca.T0}
+	r := crlrefresh.ResetRecord{Issuer: "x", Reason: "r", Operator: "o", Time: testca.T0}
 	if err := arch.PutReset(ctx, g.intK, r); err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +219,7 @@ func TestDirCRLArchive(t *testing.T) {
 		if err := os.Chmod(bad, 0o777); err != nil {
 			t.Fatal(err)
 		}
-		if err := audit.DirCRLArchive(bad).PutCRL(ctx, g.intK, rec, der); err == nil {
+		if err := crlrefresh.DirArchive(bad).PutCRL(ctx, g.intK, rec, der); err == nil {
 			t.Fatal("a world-writable archive directory was accepted")
 		}
 	}
@@ -285,10 +286,10 @@ func TestRunAlarmsBeforeTheGatesPauseAndReportsBoth(t *testing.T) {
 	go func() { _ = g.r.Run(ctx); close(done) }()
 	defer func() { cancel(); <-done }()
 	deadline := time.Now().Add(10 * time.Second)
-	var seen []audit.Alarm
+	var seen []crlrefresh.Alarm
 	for time.Now().Before(deadline) {
 		g.mu.Lock()
-		seen = append([]audit.Alarm(nil), g.alarms...)
+		seen = append([]crlrefresh.Alarm(nil), g.alarms...)
 		g.mu.Unlock()
 		crit := false
 		for _, a := range seen {
@@ -299,7 +300,7 @@ func TestRunAlarmsBeforeTheGatesPauseAndReportsBoth(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	var first, crit *audit.Alarm
+	var first, crit *crlrefresh.Alarm
 	for i := range seen {
 		a := &seen[i]
 		if a.Issuer != g.intK {
@@ -452,20 +453,22 @@ func TestCRLSourcesFromThePolicyFile(t *testing.T) {
 // A seed that stopped after taking the mark but before adding the CRL must not make the fetched CRL
 // "unchanged" without the gate holding it.
 func TestUnchangedCRLIsStillHeldByTheSnapshot(t *testing.T) {
-	arch := audit.DirCRLArchive(t.TempDir())
-	g := newCRig(t, withArchive(arch), withSnapOpts(audit.WithMaxCRLs(8)))
+	arch := crlrefresh.DirArchive(t.TempDir())
+	g := newCRig(t, withArchive(arch))
 	g.publishFresh(3)
 	g.start()
 	g.wantOK()
 	g.restart()
-	// Simulate a seed that took the mark and added nothing: the snapshot is full of other CRLs' worth of room
-	// in a real case; here the snapshot simply starts empty after the marks were read.
 	if err := g.r.Seed(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	audit.DropAllCRLs(g.snap)
+	// The seed took the mark (3) but the snapshot lacks the intermediate's CRL, as after a seed that stopped
+	// early: the root's CRL stays, so the refresher does not re-seed.
+	for _, c := range g.snap.HeldCRLs(g.inter.Cert) {
+		g.snap.RemoveCRL(c.Hash)
+	}
 	g.wantOK()
-	if g.snap.Len() == 0 {
+	if len(g.snap.HeldCRLs(g.inter.Cert)) == 0 {
 		t.Fatal("an unchanged CRL was reported while the snapshot lacked it")
 	}
 }

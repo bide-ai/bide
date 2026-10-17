@@ -1,12 +1,12 @@
-package audit
+package crlrefresh
 
 import (
 	"context"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/bide-ai/bide/audit"
 	"math/big"
 	"slices"
 	"strings"
@@ -58,29 +58,22 @@ func (e *verifyError) Error() string { return e.msg }
 // verify applies the checks that precede anything touching the snapshot: the signature algorithm profile
 // and the signature against THIS issuer's own certificate (not any issuer of the snapshot), the CRL's
 // structure, the issuer name, and the policy's distrust date for the key.
-func (i *issuerRT) verify(der []byte) (*crlView, [32]byte, *verifyError) {
-	if err := authenticateWith(der, []*x509.Certificate{i.cert}); err != nil {
-		var se *StatusError
+func (i *issuerRT) verify(der []byte) (*audit.CRL, [32]byte, *verifyError) {
+	hash := sha256.Sum256(der)
+	_, maxEntries, _ := i.r.appr.Status.Limits()
+	v, err := audit.VerifyCRL(der, i.cert, maxEntries)
+	if err != nil {
 		msg := err.Error()
+		var se *audit.StatusError
 		if errors.As(err, &se) {
 			msg = se.Detail
 		}
-		return nil, [32]byte{}, &verifyError{EventBadSignature, msg}
-	}
-	hash := sha256.Sum256(der)
-	v, err := parseCRL(der, hash, i.r.appr.Status.maxEntries)
-	if err != nil {
-		var se *StatusError
-		msg := err.Error()
-		if errors.As(err, &se) {
-			msg = se.Detail
+		if errors.Is(err, audit.ErrCRLSignature) {
+			return nil, hash, &verifyError{EventBadSignature, strings.TrimPrefix(msg, audit.ErrCRLSignature.Error()+": ")}
 		}
 		return nil, hash, &verifyError{EventUnsupportedCRL, msg}
 	}
-	if string(v.rl.RawIssuer) != string(i.cert.RawSubject) {
-		return nil, hash, &verifyError{EventBadSignature, "the CRL's issuer name is not the issuing CA's subject"}
-	}
-	if d := i.r.appr.Policy.distrust[i.key]; !d.IsZero() && !v.this.Before(d) {
+	if d := i.r.appr.Policy.DistrustFrom(i.key); !d.IsZero() && !v.ThisUpdate.Before(d) {
 		return nil, hash, &verifyError{EventDistrusted, "the CRL is signed by a key the policy distrusts from " + d.Format(time.RFC3339)}
 	}
 	return v, hash, nil
@@ -88,7 +81,7 @@ func (i *issuerRT) verify(der []byte) (*crlView, [32]byte, *verifyError) {
 
 // cand is a CRL that passed verify, with where it came from.
 type cand struct {
-	v    *crlView
+	v    *audit.CRL
 	der  []byte
 	tbs  [32]byte
 	url  string
@@ -107,18 +100,24 @@ func (f *feed) attempt(ctx context.Context) (bool, error) {
 	now := r.now()
 	actx, cancel := context.WithTimeout(ctx, f.attemptTimeout)
 	defer cancel()
-	maxBytes := r.appr.Status.maxBytes
+	maxBytes, _, _ := r.appr.Status.Limits()
 
 	res := make([]fetched, len(f.urls))
-	sem := make(chan struct{}, fetchConcurrency)
+	// A small pool of workers takes the URLs from a queue filled and closed before they start, so no
+	// goroutine holds a slot while it sends.
+	jobs := make(chan int, len(f.urls))
+	for n := range f.urls {
+		jobs <- n
+	}
+	close(jobs)
 	var wg sync.WaitGroup
-	for n, u := range f.urls {
+	for range min(fetchConcurrency, len(f.urls)) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			res[n] = r.fetchOne(actx, u, maxBytes)
+			for n := range jobs {
+				res[n] = r.fetchOne(actx, f.urls[n], maxBytes)
+			}
 		}()
 	}
 	wg.Wait()
@@ -146,18 +145,18 @@ func (f *feed) attempt(ctx context.Context) (bool, error) {
 				r.emit(Event{Kind: verr.kind, Issuer: f.iss.key, Feed: f.kind, URL: x.URL, Detail: verr.msg, Hash: hash, At: now})
 				continue
 			}
-			if v.delta != (f.kind == "delta") {
-				r.emit(Event{Kind: EventUnsupportedCRL, Issuer: f.iss.key, Feed: f.kind, URL: x.URL, Hash: hash, Number: v.number, At: now,
-					Detail: "a " + map[bool]string{true: "delta", false: "full"}[v.delta] + " CRL was served at a " + f.kind + " URL"})
+			if v.Delta != (f.kind == "delta") {
+				r.emit(Event{Kind: EventUnsupportedCRL, Issuer: f.iss.key, Feed: f.kind, URL: x.URL, Hash: hash, Number: v.Number, At: now,
+					Detail: "a " + map[bool]string{true: "delta", false: "full"}[v.Delta] + " CRL was served at a " + f.kind + " URL"})
 				continue
 			}
-			if lim := v.this.After(now.Add(f.iss.timing.Skew + time.Minute)); lim {
+			if lim := v.ThisUpdate.After(now.Add(f.iss.timing.Skew + time.Minute)); lim {
 				f.iss.r.futureDated(f.iss, now)
-				r.emit(Event{Kind: EventFutureDated, Issuer: f.iss.key, Feed: f.kind, URL: x.URL, Hash: hash, Number: v.number, At: now,
-					Detail: "thisUpdate " + v.this.Format(time.RFC3339) + " is ahead of the local clock beyond the declared skew and a minute"})
+				r.emit(Event{Kind: EventFutureDated, Issuer: f.iss.key, Feed: f.kind, URL: x.URL, Hash: hash, Number: v.Number, At: now,
+					Detail: "thisUpdate " + v.ThisUpdate.Format(time.RFC3339) + " is ahead of the local clock beyond the declared skew and a minute"})
 				continue
 			}
-			tbs, _ := tbsHash(x.der)
+			tbs, _ := audit.CRLTBSHash(x.der)
 			cands = append(cands, cand{v: v, der: x.der, tbs: tbs, url: f.urls[n], hash: hash, val: x.val})
 		case outNotModified:
 			confirmed = true
@@ -170,7 +169,7 @@ func (f *feed) attempt(ctx context.Context) (bool, error) {
 		}
 	}
 	slices.SortStableFunc(cands, func(a, b cand) int {
-		if c := a.v.number.Cmp(b.v.number); c != 0 {
+		if c := a.v.Number.Cmp(b.v.Number); c != 0 {
 			return c
 		}
 		return strings.Compare(a.url, b.url)
@@ -199,15 +198,15 @@ func (f *feed) attempt(ctx context.Context) (bool, error) {
 // current one (newly accepted, or the one already held).
 func (f *feed) consider(ctx context.Context, c cand, now time.Time, outcomes []URLOutcome) bool {
 	r := f.iss.r
-	n := c.v.number
-	if c.v.delta && !f.iss.basePaired(c.v) {
+	n := c.v.Number
+	if c.v.Delta && !f.iss.basePaired(c.v) {
 		// The delta names a base we do not hold: get the base first, then add the delta whether or not
 		// the base arrived (a delta never gives evidence of absence alone, and its listings only take
 		// trust away). This runs before the reset lock is taken: a base attempt takes it too.
 		f.iss.base.attempt(ctx)
 		if !f.iss.basePaired(c.v) {
-			r.emit(Event{Kind: EventUnpairedDelta, Issuer: f.iss.key, Feed: f.kind, URL: redactURL(c.url), Number: n, Hash: c.hash, At: now,
-				Detail: fmt.Sprintf("no base numbered %s to %s is held for delta %s", c.v.baseNumber, new(big.Int).Sub(n, big.NewInt(1)), n)})
+			r.emit(Event{Kind: EventUnpairedDelta, Issuer: f.iss.key, Feed: f.kind, URL: audit.RedactURL(c.url), Number: n, Hash: c.hash, At: now,
+				Detail: fmt.Sprintf("no base numbered %s to %s is held for delta %s", c.v.BaseNumber, new(big.Int).Sub(n, big.NewInt(1)), n)})
 		}
 	}
 	// The set-aside check, the number rules, the add and the mark update are one step against a
@@ -219,10 +218,10 @@ func (f *feed) consider(ctx context.Context, c cand, now time.Time, outcomes []U
 	mark, markTBS := f.mark, f.markTBS
 	f.mu.Unlock()
 	ev := func(k EventKind, detail string) Event {
-		return Event{Kind: k, Issuer: f.iss.key, Feed: f.kind, URL: redactURL(c.url), Number: n, Held: mark, Hash: c.hash, Detail: detail, At: now}
+		return Event{Kind: k, Issuer: f.iss.key, Feed: f.kind, URL: audit.RedactURL(c.url), Number: n, Held: mark, Hash: c.hash, Detail: detail, At: now}
 	}
 	archived := func(marker string) ArchivedCRL {
-		return ArchivedCRL{Number: n, ThisUpdate: c.v.this, Marker: marker, Source: redactURL(c.url), Fetched: now}
+		return ArchivedCRL{Number: n, ThisUpdate: c.v.ThisUpdate, Marker: marker, Source: audit.RedactURL(c.url), Fetched: now}
 	}
 	switch {
 	case f.iss.setAside[hex.EncodeToString(c.hash[:])]:
@@ -258,7 +257,7 @@ func (f *feed) consider(ctx context.Context, c cand, now time.Time, outcomes []U
 	f.mu.Lock()
 	f.mark, f.markTBS = n, c.tbs
 	f.mu.Unlock()
-	if !now.Before(c.v.next) {
+	if !now.Before(c.v.NextUpdate) {
 		r.emit(ev(EventStaleOnArrival, "the CRL was already past its nextUpdate when fetched; archived and added, not counted as fresh"))
 		return false
 	}
@@ -271,8 +270,8 @@ func (f *feed) consider(ctx context.Context, c cand, now time.Time, outcomes []U
 // holdsTBS reports whether the snapshot holds a CRL of this issuer with the given TBSCertList (a re-signed
 // copy is the same CRL).
 func (i *issuerRT) holdsTBS(tbs [32]byte) bool {
-	for _, v := range i.r.appr.Status.held(i.cert) {
-		if sum := sha256.Sum256(v.rl.RawTBSRevocationList); sum == tbs {
+	for _, v := range i.r.appr.Status.HeldCRLs(i.cert) {
+		if v.TBSHash == tbs {
 			return true
 		}
 	}
@@ -281,9 +280,9 @@ func (i *issuerRT) holdsTBS(tbs [32]byte) bool {
 
 // basePaired reports whether the snapshot holds a full CRL the delta pairs with: numbered in
 // [baseNumber, deltaNumber).
-func (i *issuerRT) basePaired(d *crlView) bool {
-	for _, v := range i.r.appr.Status.held(i.cert) {
-		if !v.delta && v.number.Cmp(d.baseNumber) >= 0 && v.number.Cmp(d.number) < 0 {
+func (i *issuerRT) basePaired(d *audit.CRL) bool {
+	for _, v := range i.r.appr.Status.HeldCRLs(i.cert) {
+		if !v.Delta && v.Number.Cmp(d.BaseNumber) >= 0 && v.Number.Cmp(d.Number) < 0 {
 			return true
 		}
 	}
@@ -294,9 +293,9 @@ func (i *issuerRT) basePaired(d *crlView) bool {
 func (f *feed) finish(now time.Time, obtained bool, retry time.Duration, outcomes []URLOutcome) {
 	have, this := false, time.Time{}
 	var best *big.Int
-	for _, v := range f.iss.r.appr.Status.held(f.iss.cert) {
-		if v.delta == (f.kind == "delta") && (best == nil || v.number.Cmp(best) > 0) {
-			best, this, have = v.number, v.this, true
+	for _, v := range f.iss.r.appr.Status.HeldCRLs(f.iss.cert) {
+		if v.Delta == (f.kind == "delta") && (best == nil || v.Number.Cmp(best) > 0) {
+			best, this, have = v.Number, v.ThisUpdate, true
 		}
 	}
 	f.mu.Lock()
@@ -320,16 +319,16 @@ func (f *feed) finish(now time.Time, obtained bool, retry time.Duration, outcome
 // heldNext is the nextUpdate of the newest CRL of the feed's kind. Callers hold no feed lock needs: it
 // reads only the snapshot.
 func (f *feed) heldNext() time.Time {
-	var best *crlView
-	for _, v := range f.iss.r.appr.Status.held(f.iss.cert) {
-		if v.delta == (f.kind == "delta") && (best == nil || v.number.Cmp(best.number) > 0) {
+	var best *audit.CRL
+	for _, v := range f.iss.r.appr.Status.HeldCRLs(f.iss.cert) {
+		if v.Delta == (f.kind == "delta") && (best == nil || v.Number.Cmp(best.Number) > 0) {
 			best = v
 		}
 	}
 	if best == nil {
 		return time.Time{}
 	}
-	return best.next
+	return best.NextUpdate
 }
 
 // putArchive archives der, or queues it for retry when the archive refuses. The CRL is added to the
@@ -456,10 +455,10 @@ func (f *feed) waitNext(ctx context.Context) {
 
 // futureDated notes a future-dated thisUpdate; several issuers doing it together point at a slow local
 // clock, which is reported once as a warning.
-func (r *CRLRefresher) futureDated(i *issuerRT, now time.Time) {
+func (r *Refresher) futureDated(i *issuerRT, now time.Time) {
 	r.mu.Lock()
 	if r.futureAt == nil {
-		r.futureAt = map[SPKIHash]time.Time{}
+		r.futureAt = map[audit.SPKIHash]time.Time{}
 	}
 	r.futureAt[i.key] = now
 	n := 0
@@ -483,7 +482,7 @@ func (r *CRLRefresher) futureDated(i *issuerRT, now time.Time) {
 // planted file with a huge number has no CRL behind it and is reported as corrupt. CRLs a reset record
 // sets aside and CRLs marked rollback or conflict are never loaded. Seeding does not touch the
 // snapshot's eviction bookkeeping, and stops when the snapshot is full.
-func (r *CRLRefresher) Seed(ctx context.Context) error {
+func (r *Refresher) Seed(ctx context.Context) error {
 	if r.archive == nil {
 		return nil
 	}
@@ -522,9 +521,9 @@ func (i *issuerRT) seed(ctx context.Context) error {
 func (f *feed) finishSeed() {
 	have, this := false, time.Time{}
 	var best *big.Int
-	for _, v := range f.iss.r.appr.Status.held(f.iss.cert) {
-		if v.delta == (f.kind == "delta") && (best == nil || v.number.Cmp(best) > 0) {
-			best, this, have = v.number, v.this, true
+	for _, v := range f.iss.r.appr.Status.HeldCRLs(f.iss.cert) {
+		if v.Delta == (f.kind == "delta") && (best == nil || v.Number.Cmp(best) > 0) {
+			best, this, have = v.Number, v.ThisUpdate, true
 		}
 	}
 	f.mu.Lock()
@@ -589,7 +588,7 @@ func (i *issuerRT) syncResets(ctx context.Context, report bool, local ...bool) {
 	i.resetSeen, i.setAside, i.resetInit = key, set, true
 	for h := range set {
 		if raw, err := hex.DecodeString(h); err == nil && len(raw) == 32 {
-			r.appr.Status.remove([32]byte(raw))
+			r.appr.Status.RemoveCRL([32]byte(raw))
 		}
 	}
 	r.clearValidators(i.base.urls)
@@ -633,12 +632,13 @@ func (i *issuerRT) scan(ctx context.Context, setAside map[string]bool, intoSnaps
 	baseMark, deltaMark := false, i.delta == nil
 	var wantLo, wantHi *big.Int // the base range a seeded delta needs
 	full := false
+	added := 0
 	for _, e := range list {
 		if e.Marker != "" {
 			continue
 		}
 		inWindow := now.Sub(e.ThisUpdate) <= window
-		if !inWindow && baseMark && deltaMark && wantLo == nil {
+		if (!inWindow || added >= i.need) && baseMark && deltaMark && wantLo == nil {
 			break
 		}
 		if scanned >= seedScanCap || ctx.Err() != nil {
@@ -660,19 +660,19 @@ func (i *issuerRT) scan(ctx context.Context, setAside map[string]bool, intoSnaps
 		}
 		scanned++
 		f := i.base
-		if v.delta {
+		if v.Delta {
 			if i.delta == nil {
 				continue
 			}
 			f = i.delta
 		}
-		tbs, _ := tbsHash(der)
+		tbs, _ := audit.CRLTBSHash(der)
 		f.mu.Lock()
-		if f.mark == nil || v.number.Cmp(f.mark) > 0 {
-			f.mark, f.markTBS = v.number, tbs
+		if f.mark == nil || v.Number.Cmp(f.mark) > 0 {
+			f.mark, f.markTBS = v.Number, tbs
 		}
 		f.mu.Unlock()
-		if v.delta {
+		if v.Delta {
 			deltaMark = true
 		} else {
 			baseMark = true
@@ -680,12 +680,12 @@ func (i *issuerRT) scan(ctx context.Context, setAside map[string]bool, intoSnaps
 		if !intoSnapshot || full {
 			continue
 		}
-		wanted := wantLo != nil && !v.delta && v.number.Cmp(wantLo) >= 0 && v.number.Cmp(wantHi) < 0
-		if now.Sub(v.this) > window && !wanted {
+		wanted := wantLo != nil && !v.Delta && v.Number.Cmp(wantLo) >= 0 && v.Number.Cmp(wantHi) < 0
+		if (now.Sub(v.ThisUpdate) > window || added >= i.need) && !wanted {
 			continue
 		}
-		if _, err := r.appr.Status.addCRL(der, false); err != nil {
-			if errors.Is(err, errSnapshotFull) {
+		if _, err := r.appr.Status.AddCRLNoEvict(der); err != nil {
+			if errors.Is(err, audit.ErrSnapshotFull) {
 				full = true
 				r.emit(Event{Kind: EventSeedStopped, Issuer: i.key, Detail: "the snapshot is full; older CRLs were not loaded", At: now})
 				continue
@@ -693,21 +693,22 @@ func (i *issuerRT) scan(ctx context.Context, setAside map[string]bool, intoSnaps
 			r.emit(Event{Kind: EventUnsupportedCRL, Issuer: i.key, Detail: e.Name + ": " + err.Error(), Hash: hash, At: now})
 			continue
 		}
+		added++
 		if wanted {
 			wantLo, wantHi = nil, nil
 		}
-		if v.delta && wantLo == nil && !i.basePairedHeld(v) {
-			wantLo, wantHi = v.baseNumber, v.number
+		if v.Delta && wantLo == nil && !i.basePairedHeld(v) {
+			wantLo, wantHi = v.BaseNumber, v.Number
 		}
 	}
 	return nil
 }
 
-func (i *issuerRT) basePairedHeld(d *crlView) bool { return i.basePaired(d) }
+func (i *issuerRT) basePairedHeld(d *audit.CRL) bool { return i.basePaired(d) }
 
 // AckReset marks a high-water reset record of the issuer (by its name, as Health and the start-up event
 // give it) as acknowledged by an operator: the start-up event for it stops.
-func (r *CRLRefresher) AckReset(ctx context.Context, issuer SPKIHash, name string) error {
+func (r *Refresher) AckReset(ctx context.Context, issuer audit.SPKIHash, name string) error {
 	if r.archive == nil {
 		return errors.New("audit: CRL refresher: no archive")
 	}
@@ -747,7 +748,7 @@ type ResetRequest struct {
 //
 // A CRL set aside may be the newest real one. If it lists a revocation no remaining CRL lists, the reset
 // would make status look better, so it is refused unless AcceptLostListings is set.
-func (r *CRLRefresher) ResetHighWater(ctx context.Context, issuer SPKIHash, req ResetRequest) error {
+func (r *Refresher) ResetHighWater(ctx context.Context, issuer audit.SPKIHash, req ResetRequest) error {
 	i := r.byKey[issuer]
 	switch {
 	case i == nil:
@@ -775,7 +776,7 @@ func (r *CRLRefresher) ResetHighWater(ctx context.Context, issuer SPKIHash, req 
 	type aside struct {
 		hash [32]byte
 		num  *big.Int
-		v    *crlView
+		v    *audit.CRL
 	}
 	var set []aside
 	load := func(e ArchivedCRL) (aside, bool) {
@@ -784,7 +785,8 @@ func (r *CRLRefresher) ResetHighWater(ctx context.Context, issuer SPKIHash, req 
 			return aside{}, false
 		}
 		h := sha256.Sum256(der)
-		v, err := parseCRL(der, h, r.appr.Status.maxEntries)
+		_, maxEntries, _ := r.appr.Status.Limits()
+		v, err := audit.VerifyCRL(der, i.cert, maxEntries)
 		if err != nil {
 			return aside{hash: h, num: e.Number}, true
 		}
@@ -822,9 +824,9 @@ func (r *CRLRefresher) ResetHighWater(ctx context.Context, issuer SPKIHash, req 
 		gone[a.hash] = true
 	}
 	remaining := map[string]bool{}
-	for _, v := range r.appr.Status.held(i.cert) {
-		if !gone[v.hash] {
-			for k := range v.entries {
+	for _, v := range r.appr.Status.HeldCRLs(i.cert) {
+		if !gone[v.Hash] {
+			for _, k := range v.Serials() {
 				remaining[k] = true
 			}
 		}
@@ -832,14 +834,18 @@ func (r *CRLRefresher) ResetHighWater(ctx context.Context, issuer SPKIHash, req 
 	lostSet := map[string]bool{}
 	for _, a := range set {
 		if a.v != nil {
-			for k := range a.v.entries {
+			for _, k := range a.v.Serials() {
 				if !remaining[k] {
 					lostSet[k] = true
 				}
 			}
 		}
 	}
-	lost := slices.Sorted(mapKeys(lostSet))
+	lost := make([]string, 0, len(lostSet))
+	for k := range lostSet {
+		lost = append(lost, k)
+	}
+	slices.Sort(lost)
 	if len(lost) > 0 && !req.AcceptLostListings {
 		return fmt.Errorf("audit: CRL refresher: setting these CRLs aside would drop %d revocation(s) no remaining CRL lists, so status would look better until the CA publishes them again; pass AcceptLostListings (bide identity reset-high-water -accept-lost-listings) to record that decision", len(lost))
 	}

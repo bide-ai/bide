@@ -1,13 +1,22 @@
-package audit
+// Package crlrefresh keeps the status snapshot of a certificate-bound approver (audit.CertApprover)
+// supplied with the newest verified CRLs of the issuing CAs its policy pins, and archives every CRL it
+// accepts (docs/design/crl-refresher.md, docs/guides/certificate-approvers.md).
+//
+// It does the network and file I/O that package audit must not: it fetches only from URLs the operator
+// configured (audit.CRLSources), verifies each CRL against its own issuer's certificate with
+// audit.VerifyCRL before adding it, refuses a rollback or an equivocation, and never makes status look
+// fresher than the CRLs say, because freshness is read only from each CRL's own dates (audit.StatusFresh,
+// the status rule's own test). The verdicts stay in audit.CertIdentity.EvaluateStatus.
+package crlrefresh
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/bide-ai/bide/audit"
 	"math/big"
 	"math/rand/v2"
 	"net/http"
@@ -18,7 +27,7 @@ import (
 	"github.com/bide-ai/bide/agent"
 )
 
-// CRLRefresher keeps the StatusSnapshot of a CertApprover supplied with the newest verified CRLs of the
+// Refresher keeps the audit.StatusSnapshot of a audit.CertApprover supplied with the newest verified CRLs of the
 // issuing CAs the certificate policy pins, and archives every CRL it accepts (docs/design/crl-refresher.md).
 //
 // It fetches only from URLs the operator configured, never from a client-supplied chain and never in the
@@ -27,18 +36,18 @@ import (
 // read from each CRL's thisUpdate and nextUpdate, never from a transport header. A failed refresh
 // changes nothing, so a dead refresher or CA ends in the gate's existing outcome (a pause).
 //
-// It is not part of the verifier: CertApprover stays free of I/O.
-type CRLRefresher struct {
-	appr    *CertApprover
+// It is not part of the verifier: audit.CertApprover stays free of I/O.
+type Refresher struct {
+	appr    *audit.CertApprover
 	client  *http.Client
-	archive CRLArchive
-	hooks   RefresherHooks
+	archive Archive
+	hooks   Hooks
 	now     func() time.Time
 	sleep   func(context.Context, time.Duration) error
 	rnd     func() float64
 
 	issuers []*issuerRT
-	byKey   map[SPKIHash]*issuerRT
+	byKey   map[audit.SPKIHash]*issuerRT
 
 	mu         sync.Mutex // validators, ready, hooks serialisation is not needed
 	validators map[string]validator
@@ -46,27 +55,27 @@ type CRLRefresher struct {
 	readyDone  bool
 	running    bool
 	maxQueue   int
-	futureAt   map[SPKIHash]time.Time
+	futureAt   map[audit.SPKIHash]time.Time
 	skewWarned time.Time
 }
 
-// RefresherOptions configures NewCRLRefresher.
-type RefresherOptions struct {
+// Options configures New.
+type Options struct {
 	// Issuers are the certificates of the pinned intermediates (the policy pins them by key only). Each
 	// must match a pinned key and chain to an anchor; a pinned intermediate with no certificate here is
 	// refused. They are the only certificates a CRL signature is checked against besides the anchors.
 	Issuers []*x509.Certificate
 	// DeltaPeriodFor is the declared delta CRL period of each issuer that has DeltaURLs.
-	DeltaPeriodFor map[SPKIHash]time.Duration
+	DeltaPeriodFor map[audit.SPKIHash]time.Duration
 	// Client is the application's HTTP client (mTLS, a proxy, a resolver). Nil builds the library's: no
 	// proxy, no compression, timeouts on every stage. The library cannot enforce proxy or DNS rules on a
 	// client it did not build; it still bounds the body, the context and the redirects.
 	Client *http.Client
 	// Archive stores accepted CRLs and the rollback memory. Nil runs without: a restart forgets rollback
 	// protection, and the refresher says so at start.
-	Archive CRLArchive
+	Archive Archive
 	// Hooks receives events and alarms.
-	Hooks RefresherHooks
+	Hooks Hooks
 	// Sleep waits for d or the context; nil uses a timer. Rand returns [0,1); nil uses math/rand/v2.
 	// Both exist so a test can drive the schedule without a real clock.
 	Sleep func(ctx context.Context, d time.Duration) error
@@ -76,9 +85,9 @@ type RefresherOptions struct {
 	MaxArchiveQueueBytes int
 }
 
-// RefresherHooks are called from the refresher's goroutines, possibly concurrently for different
+// Hooks are called from the refresher's goroutines, possibly concurrently for different
 // issuers. They must not block; a panic in one is recovered.
-type RefresherHooks struct {
+type Hooks struct {
 	OnEvent func(Event)
 	OnAlarm func(Alarm)
 }
@@ -118,7 +127,7 @@ const (
 // response body.
 type Event struct {
 	Kind     EventKind
-	Issuer   SPKIHash
+	Issuer   audit.SPKIHash
 	Feed     string // "base" or "delta"
 	URL      string
 	Detail   string
@@ -132,7 +141,7 @@ type Event struct {
 
 // Alarm is a change in an issuer's alarm state.
 type Alarm struct {
-	Issuer    SPKIHash
+	Issuer    audit.SPKIHash
 	Active    bool          // the alarm is on
 	Critical  bool          // a gate would not accept the newest CRL now (gates are pausing)
 	Age       time.Duration // now - thisUpdate of the newest CRL; zero when none is held
@@ -144,7 +153,7 @@ type Alarm struct {
 
 // IssuerHealth is the state of one issuer, from Health.
 type IssuerHealth struct {
-	Issuer              SPKIHash
+	Issuer              audit.SPKIHash
 	URLs, DeltaURLs     []string // the effective list, without query or fragment
 	LastAttempt         time.Time
 	LastSuccess         time.Time // the last attempt that confirmed the newest CRL and found it fresh
@@ -167,8 +176,8 @@ type IssuerHealth struct {
 
 // issuerRT is the runtime state of one issuing CA.
 type issuerRT struct {
-	r      *CRLRefresher
-	key    SPKIHash
+	r      *Refresher
+	key    audit.SPKIHash
 	cert   *x509.Certificate
 	timing issuerTiming
 	base   *feed
@@ -186,23 +195,26 @@ type issuerRT struct {
 	critical bool
 	loop     time.Time
 	unacked  int
+	// need is how many CRLs the live rule needs of this issuer (the status age over the period, bases and
+	// deltas, plus two each): the seed loads no more, so one issuer's old CRLs cannot starve another's.
+	need int
 }
 
-// NewCRLRefresher builds the refresher for approver's snapshot. Every issuer reachable through an
+// New builds the refresher for approver's snapshot. Every issuer reachable through an
 // accepted chain (the anchors and the pinned intermediates) needs a source and a certificate; the
 // approver's declared values (the CA period, the status ages, the overlap, the skew) drive the schedule
 // and the alarm, so there is no second copy to drift. It returns an error wrapping agent.ErrConfig when
 // the approver has no status snapshot or clock, a source is missing or malformed, an issuer certificate
 // does not match a pinned key, or the declared values leave no margin for an alarm.
-func NewCRLRefresher(a *CertApprover, sources CRLSources, opt RefresherOptions) (*CRLRefresher, error) {
-	bad := func(format string, args ...any) (*CRLRefresher, error) {
+func New(a *audit.CertApprover, sources audit.CRLSources, opt Options) (*Refresher, error) {
+	bad := func(format string, args ...any) (*Refresher, error) {
 		return nil, fmt.Errorf("audit: CRL refresher: %s: %w", fmt.Sprintf(format, args...), agent.ErrConfig)
 	}
 	switch {
 	case a == nil || a.Policy == nil:
-		return bad("no CertApprover with a policy")
+		return bad("no audit.CertApprover with a policy")
 	case a.Status == nil:
-		return bad("the approver has no StatusSnapshot to feed")
+		return bad("the approver has no audit.StatusSnapshot to feed")
 	case a.Now == nil:
 		return bad("the approver has no Now clock: the refresher judges freshness by the same clock as the gate")
 	}
@@ -214,25 +226,25 @@ func NewCRLRefresher(a *CertApprover, sources CRLSources, opt RefresherOptions) 
 	}
 	pol := a.Policy
 	// The issuer certificates: the anchors and the supplied intermediates.
-	certs := map[SPKIHash]*x509.Certificate{}
-	for k, c := range pol.anchorBy {
-		certs[k] = c
+	certs := map[audit.SPKIHash]*x509.Certificate{}
+	for _, c := range pol.TrustAnchors() {
+		certs[audit.SPKIHashOf(c)] = c
 	}
 	pool := x509.NewCertPool()
 	for _, c := range opt.Issuers {
 		pool.AddCert(c)
 	}
 	for _, c := range opt.Issuers {
-		k := SPKIHashOf(c)
-		if !pol.inter[k] {
+		k := audit.SPKIHashOf(c)
+		if !pol.IsPinnedIntermediate(k) {
 			return bad("issuer certificate %x is not a pinned intermediate", k[:4])
 		}
-		if _, err := c.Verify(x509.VerifyOptions{Roots: pol.anchors, Intermediates: pool, CurrentTime: a.Now(), KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}); err != nil {
+		if _, err := c.Verify(x509.VerifyOptions{Roots: pol.TrustRoots(), Intermediates: pool, CurrentTime: a.Now(), KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}); err != nil {
 			return bad("issuer certificate %x does not chain to an anchor: %v", k[:4], err)
 		}
 		certs[k] = c
 	}
-	for k := range pol.inter {
+	for _, k := range pol.PinnedIntermediates() {
 		if certs[k] == nil {
 			return bad("the pinned intermediate %x has no certificate in Issuers: the policy pins keys, and a key cannot verify a CRL", k[:4])
 		}
@@ -247,8 +259,8 @@ func NewCRLRefresher(a *CertApprover, sources CRLSources, opt RefresherOptions) 
 	if client == nil {
 		client = newCRLClient()
 	}
-	r := &CRLRefresher{appr: a, client: client, archive: opt.Archive, hooks: opt.Hooks, now: a.Now,
-		sleep: opt.Sleep, rnd: opt.Rand, byKey: map[SPKIHash]*issuerRT{}, validators: map[string]validator{},
+	r := &Refresher{appr: a, client: client, archive: opt.Archive, hooks: opt.Hooks, now: a.Now,
+		sleep: opt.Sleep, rnd: opt.Rand, byKey: map[audit.SPKIHash]*issuerRT{}, validators: map[string]validator{},
 		readyCh: make(chan struct{}), maxQueue: opt.MaxArchiveQueueBytes}
 	if r.sleep == nil {
 		r.sleep = realSleep
@@ -293,19 +305,21 @@ func NewCRLRefresher(a *CertApprover, sources CRLSources, opt RefresherOptions) 
 		if w != "" {
 			warnings = append(warnings, fmt.Sprintf("issuer %x: %s", k[:4], w))
 		}
-		need += int(t.Limit/t.Period) + 2
+		iss.need = int(t.Limit/t.Period) + 2
+		need += iss.need
 		if len(delta) > 0 {
 			dp := opt.DeltaPeriodFor[k]
 			if dp <= 0 {
 				return bad("the issuer %x has delta URLs and no DeltaPeriodFor: the delta schedule needs the delta period", k[:4])
 			}
 			iss.delta = &feed{iss: iss, kind: "delta", urls: delta, period: dp}
+			iss.need += int(t.Limit/dp) + 2
 			need += int(t.Limit/dp) + 2
 		}
 		r.issuers = append(r.issuers, iss)
 		r.byKey[k] = iss
 	}
-	if m := a.Status.maxCRLs; m > 0 && m < need {
+	if m := statusMax(a.Status); m > 0 && m < need {
 		return bad("the status snapshot keeps %d CRLs (WithMaxCRLs) but the policy needs about %d across its issuers (the status age over the CRL period, bases and deltas, plus two each): evicting a CRL the live rule needs makes status staler", m, need)
 	}
 	for _, f := range r.feeds() {
@@ -339,7 +353,7 @@ func dedupe(s []string) []string {
 	return out
 }
 
-func (r *CRLRefresher) feeds() []*feed {
+func (r *Refresher) feeds() []*feed {
 	var out []*feed
 	for _, i := range r.issuers {
 		out = append(out, i.base)
@@ -353,15 +367,15 @@ func (r *CRLRefresher) feeds() []*feed {
 // cdpURLs reads the CRL distribution points and freshest CRL URLs of the supplied certificates whose
 // issuer is k. A root has none of its own; the intermediate certificate the operator supplied names the
 // root's CRL.
-func cdpURLs(certs map[SPKIHash]*x509.Certificate, k SPKIHash) (base, delta, skipped []string) {
+func cdpURLs(certs map[audit.SPKIHash]*x509.Certificate, k audit.SPKIHash) (base, delta, skipped []string) {
 	issuer := certs[k]
 	for ck, c := range certs {
 		if ck == k || c.CheckSignatureFrom(issuer) != nil {
 			continue
 		}
 		for _, raw := range c.CRLDistributionPoints {
-			if _, err := checkCRLURL(raw); err != nil {
-				skipped = append(skipped, redactURL(raw))
+			if _, err := audit.CheckCRLURL(raw); err != nil {
+				skipped = append(skipped, audit.RedactURL(raw))
 				continue
 			}
 			base = append(base, raw)
@@ -369,8 +383,8 @@ func cdpURLs(certs map[SPKIHash]*x509.Certificate, k SPKIHash) (base, delta, ski
 		for _, e := range c.Extensions {
 			if e.Id.Equal(asn1.ObjectIdentifier{2, 5, 29, 46}) {
 				for _, raw := range distPointURIs(e.Value) {
-					if _, err := checkCRLURL(raw); err != nil {
-						skipped = append(skipped, redactURL(raw))
+					if _, err := audit.CheckCRLURL(raw); err != nil {
+						skipped = append(skipped, audit.RedactURL(raw))
 						continue
 					}
 					delta = append(delta, raw)
@@ -416,7 +430,7 @@ func distPointURIs(der []byte) []string {
 
 // startupEvents reports the effective sources and the margin of each issuer, as events so a platform
 // team can alert on a margin under one period.
-func (r *CRLRefresher) startupEvents(clientGiven bool, warnings []string) {
+func (r *Refresher) startupEvents(clientGiven bool, warnings []string) {
 	for _, i := range r.issuers {
 		iv := i.timing.interval(i.timing.Period)
 		r.emit(Event{Kind: EventSourcesChanged, Issuer: i.key, Feed: "base", URL: joinURLs(i.base.urls),
@@ -445,7 +459,7 @@ func (i *issuerRT) deltaURLs() []string {
 func redactAll(s []string) []string {
 	out := make([]string, len(s))
 	for n, x := range s {
-		out[n] = redactURL(x)
+		out[n] = audit.RedactURL(x)
 	}
 	return out
 }
@@ -462,7 +476,7 @@ func joinURLs(s []string) string {
 }
 
 // emit calls the event hook, recovering a panic in it.
-func (r *CRLRefresher) emit(e Event) {
+func (r *Refresher) emit(e Event) {
 	if r.hooks.OnEvent == nil {
 		return
 	}
@@ -473,7 +487,7 @@ func (r *CRLRefresher) emit(e Event) {
 	r.hooks.OnEvent(e)
 }
 
-func (r *CRLRefresher) alarm(a Alarm) {
+func (r *Refresher) alarm(a Alarm) {
 	if r.hooks.OnAlarm == nil {
 		return
 	}
@@ -481,7 +495,7 @@ func (r *CRLRefresher) alarm(a Alarm) {
 	r.hooks.OnAlarm(a)
 }
 
-func (r *CRLRefresher) setValidator(url string, v validator) {
+func (r *Refresher) setValidator(url string, v validator) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if v == (validator{}) {
@@ -491,7 +505,7 @@ func (r *CRLRefresher) setValidator(url string, v validator) {
 	r.validators[url] = v
 }
 
-func (r *CRLRefresher) clearValidators(urls []string) {
+func (r *Refresher) clearValidators(urls []string) {
 	for _, u := range urls {
 		r.setValidator(u, validator{})
 	}
@@ -499,9 +513,9 @@ func (r *CRLRefresher) clearValidators(urls []string) {
 
 // Ready is closed once every issuer holds a fresh CRL. Nothing requires waiting for it: until then the
 // gates pause, as they do without a refresher.
-func (r *CRLRefresher) Ready() <-chan struct{} { return r.readyCh }
+func (r *Refresher) Ready() <-chan struct{} { return r.readyCh }
 
-func (r *CRLRefresher) checkReady() {
+func (r *Refresher) checkReady() {
 	r.mu.Lock()
 	done := r.readyDone
 	r.mu.Unlock()
@@ -525,7 +539,7 @@ func (r *CRLRefresher) checkReady() {
 // Run seeds from the archive, then fetches until ctx is cancelled and the in-flight requests end. Each
 // issuer has its own goroutine; a panic in one is recovered, reported and restarted with a backoff.
 // Run returns nil on cancel. It may be called once at a time.
-func (r *CRLRefresher) Run(ctx context.Context) error {
+func (r *Refresher) Run(ctx context.Context) error {
 	r.mu.Lock()
 	if r.running {
 		r.mu.Unlock()
@@ -569,14 +583,14 @@ func (i *issuerRT) run(ctx context.Context) {
 
 // IssuerResult is the outcome of one issuer in RefreshOnce.
 type IssuerResult struct {
-	Issuer SPKIHash
+	Issuer audit.SPKIHash
 	Err    error
 }
 
 // RefreshOnce runs one attempt for every feed of every issuer (seeding from the archive first when the
 // snapshot is empty) and returns each issuer's outcome: an error when no valid CRL was obtained or the
 // newest one is not fresh. It is the cron form and the test hook.
-func (r *CRLRefresher) RefreshOnce(ctx context.Context) []IssuerResult {
+func (r *Refresher) RefreshOnce(ctx context.Context) []IssuerResult {
 	if r.appr.Status.Len() == 0 {
 		if err := r.Seed(ctx); err != nil && ctx.Err() == nil {
 			r.emit(Event{Kind: EventArchiveError, Err: err, Detail: "seeding from the archive failed"})
@@ -617,7 +631,7 @@ func (r *CRLRefresher) RefreshOnce(ctx context.Context) []IssuerResult {
 }
 
 // Health returns the state of every issuer, ordered by key.
-func (r *CRLRefresher) Health() []IssuerHealth {
+func (r *Refresher) Health() []IssuerHealth {
 	now := r.now()
 	out := make([]IssuerHealth, 0, len(r.issuers))
 	for _, i := range r.issuers {
@@ -632,24 +646,24 @@ func (i *issuerRT) health(now time.Time) IssuerHealth {
 	t := i.timing
 	h := IssuerHealth{Issuer: i.key, URLs: redactAll(i.base.urls), DeltaURLs: redactAll(i.deltaURLs()), Limit: t.Limit}
 	h.AlarmAge = t.alarmAge(t.interval(t.Period))
-	var newestBase, newestDelta *crlView
-	for _, v := range i.r.appr.Status.held(i.cert) {
-		if v.delta {
-			if newestDelta == nil || v.number.Cmp(newestDelta.number) > 0 {
+	var newestBase, newestDelta *audit.CRL
+	for _, v := range i.r.appr.Status.HeldCRLs(i.cert) {
+		if v.Delta {
+			if newestDelta == nil || v.Number.Cmp(newestDelta.Number) > 0 {
 				newestDelta = v
 			}
-		} else if newestBase == nil || v.number.Cmp(newestBase.number) > 0 {
+		} else if newestBase == nil || v.Number.Cmp(newestBase.Number) > 0 {
 			newestBase = v
 		}
 	}
 	if newestBase != nil {
-		h.NewestNumber, h.NewestThisUpdate, h.NewestNextUpdate = newestBase.number, newestBase.this, newestBase.next
+		h.NewestNumber, h.NewestThisUpdate, h.NewestNextUpdate = newestBase.Number, newestBase.ThisUpdate, newestBase.NextUpdate
 	}
-	if newestDelta != nil && newestBase != nil && newestDelta.number.Cmp(newestBase.number) > 0 &&
-		newestDelta.baseNumber.Cmp(newestBase.number) <= 0 {
+	if newestDelta != nil && newestBase != nil && newestDelta.Number.Cmp(newestBase.Number) > 0 &&
+		newestDelta.BaseNumber.Cmp(newestBase.Number) <= 0 {
 		h.Paired = true
-		h.NewestNumber, h.NewestThisUpdate = newestDelta.number, newestDelta.this
-		h.NewestNextUpdate = minTime(newestBase.next, newestDelta.next)
+		h.NewestNumber, h.NewestThisUpdate = newestDelta.Number, newestDelta.ThisUpdate
+		h.NewestNextUpdate = minTime(newestBase.NextUpdate, newestDelta.NextUpdate)
 	}
 	if !h.NewestThisUpdate.IsZero() {
 		h.Age = now.Sub(h.NewestThisUpdate)
@@ -702,14 +716,21 @@ func (i *issuerRT) checkAlarm(now time.Time) {
 	i.r.alarm(Alarm{Issuer: i.key, Active: h.Alarm, Critical: h.Critical, Age: h.Age, Threshold: h.AlarmAge, Limit: h.Limit, At: now, Detail: d})
 }
 
-// tbsHash is the SHA-256 of the TBSCertList: two CRLs with the same TBS are one CRL, whatever their
-// (randomised) signatures.
-func tbsHash(der []byte) ([32]byte, bool) {
-	var o outerCRL
-	if rest, err := asn1.Unmarshal(der, &o); err != nil || len(rest) != 0 {
-		return [32]byte{}, false
-	}
-	return sha256.Sum256(o.TBS.FullBytes), true
+func hexShort(h [32]byte) string { return hex.EncodeToString(h[:4]) }
+
+func statusMax(s *audit.StatusSnapshot) int {
+	_, _, m := s.Limits()
+	return m
 }
 
-func hexShort(h [32]byte) string { return hex.EncodeToString(h[:4]) }
+func mapKeys[K comparable, V any](m map[K]V) func(yield func(K) bool) {
+	return func(yield func(K) bool) {
+		for k := range m {
+			if !yield(k) {
+				return
+			}
+		}
+	}
+}
+
+func cmpHash(a, b audit.SPKIHash) int { return slices.Compare(a[:], b[:]) }

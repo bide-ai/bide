@@ -93,6 +93,7 @@ type crlEntry struct {
 // crlView is one CRL after structural checks. It is not yet tied to an issuer.
 type crlView struct {
 	hash        [32]byte
+	tbs         [32]byte // SHA-256 of the TBSCertList
 	rl          *x509.RevocationList
 	number      *big.Int
 	this, next  time.Time
@@ -290,12 +291,6 @@ func (s *StatusSnapshot) remove(hash [32]byte) bool {
 	return true
 }
 
-// held returns the CRLs the snapshot holds that verify under issuer, ordered by thisUpdate then number.
-func (s *StatusSnapshot) held(issuer *x509.Certificate) []*crlView {
-	views, _ := s.viewsFor(issuer, time.Time{})
-	return views
-}
-
 // statusFresh is the live freshness rule for one CRL, the one the status rule applies (evalCert) and the
 // refresher's alarm reads, so the two cannot disagree: the CRL is past nextUpdate, older than maxAge
 // plus the declared thisUpdate skew, or dated beyond the coverage tolerance in the future.
@@ -447,7 +442,7 @@ func parseCRL(der []byte, hash [32]byte, maxEntries int) (*crlView, error) {
 	if rl.ThisUpdate.IsZero() || rl.NextUpdate.IsZero() || !rl.NextUpdate.After(rl.ThisUpdate) {
 		return unreadable("the CRL has no usable thisUpdate and nextUpdate (nextUpdate absent means status unknown)")
 	}
-	v := &crlView{hash: hash, rl: rl, number: rl.Number, this: rl.ThisUpdate, next: rl.NextUpdate, entries: map[string][]crlEntry{}}
+	v := &crlView{hash: hash, tbs: sha256.Sum256(rl.RawTBSRevocationList), rl: rl, number: rl.Number, this: rl.ThisUpdate, next: rl.NextUpdate, entries: map[string][]crlEntry{}}
 	seen := map[string]bool{}
 	for _, e := range rl.Extensions {
 		if seen[e.Id.String()] {

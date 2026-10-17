@@ -1,4 +1,4 @@
-package audit
+package crlrefresh
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/bide-ai/bide/audit"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -61,37 +62,37 @@ type ResetItem struct {
 	Number string `json:"number"`
 }
 
-// CRLArchive is the dated archive of the CRLs the refresher accepts, and its rollback memory. Put must be
+// Archive is the dated archive of the CRLs the refresher accepts, and its rollback memory. Put must be
 // durable and idempotent by hash.
-type CRLArchive interface {
+type Archive interface {
 	// PutCRL stores der for issuer. meta.Marker is empty for a CRL of the series.
-	PutCRL(ctx context.Context, issuer SPKIHash, a ArchivedCRL, der []byte) error
+	PutCRL(ctx context.Context, issuer audit.SPKIHash, a ArchivedCRL, der []byte) error
 	// List returns the issuer's CRL files, newest number first.
-	List(ctx context.Context, issuer SPKIHash) ([]ArchivedCRL, error)
+	List(ctx context.Context, issuer audit.SPKIHash) ([]ArchivedCRL, error)
 	// Read returns the bytes of a listed file.
-	Read(ctx context.Context, issuer SPKIHash, a ArchivedCRL) ([]byte, error)
+	Read(ctx context.Context, issuer audit.SPKIHash, a ArchivedCRL) ([]byte, error)
 	// PutReset appends a reset record; Resets lists them (with Acked set) oldest first; AckReset marks
 	// one acknowledged by an operator.
-	PutReset(ctx context.Context, issuer SPKIHash, r ResetRecord) error
-	Resets(ctx context.Context, issuer SPKIHash) ([]ResetRecord, error)
-	AckReset(ctx context.Context, issuer SPKIHash, r ResetRecord) error
+	PutReset(ctx context.Context, issuer audit.SPKIHash, r ResetRecord) error
+	Resets(ctx context.Context, issuer audit.SPKIHash) ([]ResetRecord, error)
+	AckReset(ctx context.Context, issuer audit.SPKIHash, r ResetRecord) error
 }
 
-// DirCRLArchive is a CRLArchive in a directory: <dir>/crl/<issuer key hash>/<number>-<thisUpdate>.crl, with
+// DirArchive is a Archive in a directory: <dir>/crl/<issuer key hash>/<number>-<thisUpdate>.crl, with
 // a .meta.json beside each file (source and fetch time), and RESET-<time>.json for resets. A file is
 // written to a temporary name, synced, renamed, and the directory synced, so a reader sees all of it or
 // none; names derive from the content, so several replicas may share the directory. The directory is
 // created 0700 and an existing one that is writable by others, or on Unix not owned by the process user,
 // is refused: the archive is the refresher's rollback memory.
-type DirCRLArchive string
+type DirArchive string
 
-func (d DirCRLArchive) issuerDir(issuer SPKIHash) string {
+func (d DirArchive) issuerDir(issuer audit.SPKIHash) string {
 	return filepath.Join(string(d), "crl", hex.EncodeToString(issuer[:]))
 }
 
 const archiveTimeFmt = "20060102T150405Z"
 
-func (d DirCRLArchive) prepare(issuer SPKIHash) (string, error) {
+func (d DirArchive) prepare(issuer audit.SPKIHash) (string, error) {
 	dir := d.issuerDir(issuer)
 	for _, p := range []string{string(d), filepath.Join(string(d), "crl"), dir} {
 		if err := ensureArchiveDir(p); err != nil {
@@ -109,8 +110,8 @@ func fileName(a ArchivedCRL, hash [32]byte) string {
 	return n + ".crl"
 }
 
-// PutCRL implements CRLArchive.
-func (d DirCRLArchive) PutCRL(_ context.Context, issuer SPKIHash, a ArchivedCRL, der []byte) error {
+// PutCRL implements Archive.
+func (d DirArchive) PutCRL(_ context.Context, issuer audit.SPKIHash, a ArchivedCRL, der []byte) error {
 	dir, err := d.prepare(issuer)
 	if err != nil {
 		return err
@@ -122,8 +123,8 @@ func (d DirCRLArchive) PutCRL(_ context.Context, issuer SPKIHash, a ArchivedCRL,
 		// file that is already there must hold these bytes.
 		if old, err := os.ReadFile(filepath.Join(dir, name)); err == nil {
 			// The same CRL re-signed (same TBSCertList, other signature bytes) is already archived.
-			have, ok1 := tbsHash(old)
-			want, ok2 := tbsHash(der)
+			have, ok1 := audit.CRLTBSHash(old)
+			want, ok2 := audit.CRLTBSHash(der)
 			if sha256.Sum256(old) == hash || (ok1 && ok2 && have == want) {
 				return nil
 			}
@@ -141,8 +142,8 @@ func (d DirCRLArchive) PutCRL(_ context.Context, issuer SPKIHash, a ArchivedCRL,
 	return writeFileAtomic(dir, name, der, 0o644)
 }
 
-// List implements CRLArchive.
-func (d DirCRLArchive) List(_ context.Context, issuer SPKIHash) ([]ArchivedCRL, error) {
+// List implements Archive.
+func (d DirArchive) List(_ context.Context, issuer audit.SPKIHash) ([]ArchivedCRL, error) {
 	ents, err := os.ReadDir(d.issuerDir(issuer))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -208,16 +209,16 @@ func parseFileName(n string) (ArchivedCRL, bool) {
 	return a, true
 }
 
-// Read implements CRLArchive.
-func (d DirCRLArchive) Read(_ context.Context, issuer SPKIHash, a ArchivedCRL) ([]byte, error) {
+// Read implements Archive.
+func (d DirArchive) Read(_ context.Context, issuer audit.SPKIHash, a ArchivedCRL) ([]byte, error) {
 	if a.Name != filepath.Base(a.Name) {
 		return nil, fmt.Errorf("audit: CRL archive: bad file name %q", a.Name)
 	}
 	return os.ReadFile(filepath.Join(d.issuerDir(issuer), a.Name))
 }
 
-// PutReset implements CRLArchive.
-func (d DirCRLArchive) PutReset(_ context.Context, issuer SPKIHash, r ResetRecord) error {
+// PutReset implements Archive.
+func (d DirArchive) PutReset(_ context.Context, issuer audit.SPKIHash, r ResetRecord) error {
 	dir, err := d.prepare(issuer)
 	if err != nil {
 		return err
@@ -233,8 +234,8 @@ func (d DirCRLArchive) PutReset(_ context.Context, issuer SPKIHash, r ResetRecor
 	return writeFileAtomic(dir, name, b, 0o644)
 }
 
-// Resets implements CRLArchive.
-func (d DirCRLArchive) Resets(_ context.Context, issuer SPKIHash) ([]ResetRecord, error) {
+// Resets implements Archive.
+func (d DirArchive) Resets(_ context.Context, issuer audit.SPKIHash) ([]ResetRecord, error) {
 	dir := d.issuerDir(issuer)
 	ents, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
@@ -266,8 +267,8 @@ func (d DirCRLArchive) Resets(_ context.Context, issuer SPKIHash) ([]ResetRecord
 	return out, nil
 }
 
-// AckReset implements CRLArchive.
-func (d DirCRLArchive) AckReset(_ context.Context, issuer SPKIHash, r ResetRecord) error {
+// AckReset implements Archive.
+func (d DirArchive) AckReset(_ context.Context, issuer audit.SPKIHash, r ResetRecord) error {
 	if r.Name != filepath.Base(r.Name) || !strings.HasPrefix(r.Name, "RESET-") {
 		return fmt.Errorf("audit: CRL archive: bad reset name %q", r.Name)
 	}

@@ -258,24 +258,24 @@ count, with `ErrConfig` naming the issuer, the size and this fix. Build the stat
 
 ## Keeping the CRLs current
 
-`audit.CRLRefresher` keeps the `StatusSnapshot` of a `CertApprover` supplied with the newest verified CRLs of
+`crlrefresh.Refresher` (package `github.com/bide-ai/bide/audit/crlrefresh`) keeps the `StatusSnapshot` of a `CertApprover` supplied with the newest verified CRLs of
 the issuers the policy pins, so your platform team does not write a fetching loop. It is a separate component
 and the verifier stays free of I/O: audit tools and `bide approve -verify-receipt` work offline as before.
 
-<!-- docsnip: setup sources audit.CRLSources; issuingCA *x509.Certificate; logEvent func(audit.Event); page func(audit.Alarm); ctx context.Context -->
+<!-- docsnip: setup sources audit.CRLSources; issuingCA *x509.Certificate; logEvent func(crlrefresh.Event); page func(crlrefresh.Alarm); ctx context.Context -->
 ```go
 approver := &audit.CertApprover{ /* as above; Status: audit.NewStatusSnapshot(...) and Now are required */ }
-r, err := audit.NewCRLRefresher(approver, sources, audit.RefresherOptions{
+r, err := crlrefresh.New(approver, sources, crlrefresh.Options{
     Issuers: []*x509.Certificate{issuingCA},            // the pinned intermediates' certificates
-    Archive: audit.DirCRLArchive("/var/lib/bide/crl"),   // the dated series and the rollback memory
-    Hooks:   audit.RefresherHooks{OnEvent: logEvent, OnAlarm: page},
+    Archive: crlrefresh.DirArchive("/var/lib/bide/crl"),   // the dated series and the rollback memory
+    Hooks:   crlrefresh.Hooks{OnEvent: logEvent, OnAlarm: page},
 })
 go r.Run(ctx)   // or r.RefreshOnce(ctx) from a cron job
 ```
 
 The interval, the alarm and the set of issuers come from the values the approver already declares
 (`CAPeriod`, `MaxStatusAge`, `ExecStatusAge`, the `...For` maps, the overlap, the skew), so there is no second
-copy to drift. `NewCRLRefresher` refuses (`agent.ErrConfig`) a configuration that cannot work: an issuer with no
+copy to drift. `crlrefresh.New` refuses (`agent.ErrConfig`) a configuration that cannot work: an issuer with no
 source, a pinned intermediate with no certificate, no declared period, a snapshot too small for the series the
 status age needs, or a CA tier whose limit leaves no room for an alarm before the gates pause.
 
@@ -346,7 +346,7 @@ than the tolerance plus one interval after its CRL cycle, so give the root CRL a
 its `ExecStatusAgeFor` (and `MaxStatusAgeFor`) to it: then the alarm comes a full period before any gate
 pauses.
 
-**Archive and restart.** `audit.DirCRLArchive` writes `crl/<issuer key hash>/<number>-<thisUpdate>.crl` with a
+**Archive and restart.** `crlrefresh.DirArchive` writes `crl/<issuer key hash>/<number>-<thisUpdate>.crl` with a
 `.meta.json` beside it, through a temporary file, a sync, a rename and a directory sync; the directory is created
 `0700` and an existing one that others can write to (or, on Unix, another user owns) is refused, because the
 archive is the rollback memory: **write access to it is write access to the refresher's memory**. Several
@@ -360,20 +360,20 @@ restart forgets rollback protection, and the refresher says so at start.
 
 **A poisoned mark.** A CA that issues one CRL with a mistaken huge number, or is restored from a backup and
 restarts its numbering, would make every later real CRL a rollback. `bide identity reset-high-water` (or
-`CRLRefresher.ResetHighWater`) sets that CRL aside: it appends a `RESET-<time>.json` record to the archive (what
+`crlrefresh.Refresher.ResetHighWater`) sets that CRL aside: it appends a `RESET-<time>.json` record to the archive (what
 is set aside, the reason, the operator, the time), removes the CRL from the live snapshot and recomputes the
 mark; the CRL stays in the archive, and a restart honours the record. A reset made with the command reaches a
 running daemon (or a gate's embedded refresher on a shared archive) at its next attempt, with no restart, and a
 source that keeps serving the set-aside CRL has it archived with a `setaside` marker and never added
 (`set-aside-served`). The CRL set aside is normally the issuer's newest real one, so a reset that would drop a
 revocation no remaining CRL lists, and so make status look better until the CA publishes it again, is refused
-unless you pass `-accept-lost-listings` (`ResetRequest.AcceptLostListings`); the serials it dropped are written
+unless you pass `-accept-lost-listings` (`crlrefresh.ResetRequest.AcceptLostListings`); the serials it dropped are written
 into the record's `lost_serials`, which is the audit trail. A listing on a CRL set aside no longer
 reaches the gate: the record is your statement that the CRL was wrong. A forged record could lower a mark, so
 every start reports an unacknowledged reset (`high-water-reset`, `Health().UnackedResets`) until an operator
 runs `bide identity ack-reset`.
 
-**Observability.** `RefresherHooks.OnEvent` receives every attempt and refusal (`fetched`, `unchanged`,
+**Observability.** `crlrefresh.Hooks.OnEvent` receives every attempt and refusal (`fetched`, `unchanged`,
 `rollback`, `conflict`, `bad-signature`, `distrusted`, `unsupported-crl`, `future-dated`, `stale-on-arrival`,
 `oversize`, `redirect-refused`, `fetch-failed`, `archive-error`, `clock-skew`, ...), with the issuer, the URL
 without its query or fragment, and no response body; `OnAlarm` receives alarm changes; `Health()` returns for

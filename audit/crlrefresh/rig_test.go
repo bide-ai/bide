@@ -1,4 +1,4 @@
-package audit_test
+package crlrefresh_test
 
 import (
 	"context"
@@ -16,6 +16,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/audit/crlrefresh"
 	"github.com/bide-ai/bide/internal/testca"
 )
 
@@ -157,14 +158,14 @@ type crig struct {
 	clk          *fakeClock
 	snap         *audit.StatusSnapshot
 	ap           *audit.CertApprover
-	r            *audit.CRLRefresher
-	arch         audit.CRLArchive
+	r            *crlrefresh.Refresher
+	arch         crlrefresh.Archive
 	delta        bool
 	mu           sync.Mutex
-	events       []audit.Event
-	alarms       []audit.Alarm
+	events       []crlrefresh.Event
+	alarms       []crlrefresh.Alarm
 	sources      audit.CRLSources
-	opts         audit.RefresherOptions
+	opts         crlrefresh.Options
 	leaf         *testca.Leaf
 	snapOpts     []audit.SnapshotOption
 	soFull       []audit.SnapshotOption
@@ -176,9 +177,9 @@ type crig struct {
 
 type crigOpt func(*crig)
 
-func withArchive(a audit.CRLArchive) crigOpt { return func(g *crig) { g.arch = a } }
-func withDelta() crigOpt                     { return func(g *crig) { g.delta = true } }
-func withSkew(d time.Duration) crigOpt       { return func(g *crig) { g.skew = d } }
+func withArchive(a crlrefresh.Archive) crigOpt { return func(g *crig) { g.arch = a } }
+func withDelta() crigOpt                       { return func(g *crig) { g.delta = true } }
+func withSkew(d time.Duration) crigOpt         { return func(g *crig) { g.skew = d } }
 func withSnapOpts(o ...audit.SnapshotOption) crigOpt {
 	return func(g *crig) { g.snapOpts = o }
 }
@@ -241,17 +242,17 @@ func newCRig(t *testing.T, opts ...crigOpt) *crig {
 	if g.delta {
 		g.opts.DeltaPeriodFor = map[audit.SPKIHash]time.Duration{g.intK: 5 * time.Minute}
 	}
-	g.opts.Hooks = audit.RefresherHooks{
-		OnEvent: func(e audit.Event) { g.mu.Lock(); g.events = append(g.events, e); g.mu.Unlock() },
-		OnAlarm: func(a audit.Alarm) { g.mu.Lock(); g.alarms = append(g.alarms, a); g.mu.Unlock() },
+	g.opts.Hooks = crlrefresh.Hooks{
+		OnEvent: func(e crlrefresh.Event) { g.mu.Lock(); g.events = append(g.events, e); g.mu.Unlock() },
+		OnAlarm: func(a crlrefresh.Alarm) { g.mu.Lock(); g.alarms = append(g.alarms, a); g.mu.Unlock() },
 	}
 	return g
 }
 
 // start builds the refresher (separate so a test can change sources or options first).
-func (g *crig) start() *audit.CRLRefresher {
+func (g *crig) start() *crlrefresh.Refresher {
 	g.t.Helper()
-	r, err := audit.NewCRLRefresher(g.ap, g.sources, g.opts)
+	r, err := crlrefresh.New(g.ap, g.sources, g.opts)
 	if err != nil {
 		g.t.Fatalf("NewCRLRefresher: %v", err)
 	}
@@ -288,10 +289,10 @@ func (g *crig) publishFresh(n int64) (inter []byte) {
 	return inter
 }
 
-func (g *crig) kinds(k audit.EventKind) []audit.Event {
+func (g *crig) kinds(k crlrefresh.EventKind) []crlrefresh.Event {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	var out []audit.Event
+	var out []crlrefresh.Event
 	for _, e := range g.events {
 		if e.Kind == k {
 			out = append(out, e)
@@ -300,14 +301,14 @@ func (g *crig) kinds(k audit.EventKind) []audit.Event {
 	return out
 }
 
-func (g *crig) health(k audit.SPKIHash) audit.IssuerHealth {
+func (g *crig) health(k audit.SPKIHash) crlrefresh.IssuerHealth {
 	for _, h := range g.r.Health() {
 		if h.Issuer == k {
 			return h
 		}
 	}
 	g.t.Fatalf("no health for %x", k[:4])
-	return audit.IssuerHealth{}
+	return crlrefresh.IssuerHealth{}
 }
 
 func (g *crig) refresh() map[audit.SPKIHash]error {
@@ -334,7 +335,7 @@ func (g *crig) dump() string {
 	defer g.mu.Unlock()
 	var b []string
 	for _, e := range g.events {
-		if e.Kind == audit.EventSourcesChanged || e.Kind == audit.EventStartup {
+		if e.Kind == crlrefresh.EventSourcesChanged || e.Kind == crlrefresh.EventStartup {
 			continue
 		}
 		b = append(b, string(e.Kind)+":"+e.Feed+":"+e.Detail)
@@ -344,7 +345,7 @@ func (g *crig) dump() string {
 
 // restart replaces the snapshot and the refresher, as a process restart does; the archive, the server
 // and the clock stay.
-func (g *crig) restart() *audit.CRLRefresher {
+func (g *crig) restart() *crlrefresh.Refresher {
 	g.t.Helper()
 	g.snap = audit.NewStatusSnapshot(g.soFull...)
 	g.ap.Status = g.snap
@@ -362,17 +363,32 @@ func pemCert(der []byte) []byte {
 
 // rigRefresherFor builds a second refresher over the same PKI and archive with its own snapshot: another
 // process.
-func rigRefresherFor(t *testing.T, g *crig, arch audit.CRLArchive) *audit.CRLRefresher {
+func rigRefresherFor(t *testing.T, g *crig, arch crlrefresh.Archive) *crlrefresh.Refresher {
 	t.Helper()
 	snap := audit.NewStatusSnapshot(g.soFull...)
 	ap := *g.ap
 	ap.Status = snap
 	opts := g.opts
 	opts.Archive = arch
-	opts.Hooks = audit.RefresherHooks{}
-	r, err := audit.NewCRLRefresher(&ap, g.sources, opts)
+	opts.Hooks = crlrefresh.Hooks{}
+	r, err := crlrefresh.New(&ap, g.sources, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return r
+}
+
+func ext(oid asn1.ObjectIdentifier, critical bool, v []byte) pkix.Extension {
+	return pkix.Extension{Id: oid, Critical: critical, Value: v}
+}
+
+var testDecidedAt = time.Date(2026, 10, 13, 12, 14, 3, 123_000_000, time.UTC)
+
+func mustCompile(t *testing.T, p audit.IdentityPolicy) *audit.CertIdentity {
+	t.Helper()
+	c, err := p.Compile()
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	return c
 }

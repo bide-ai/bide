@@ -1,6 +1,7 @@
-package audit
+package crlrefresh
 
 import (
+	"github.com/bide-ai/bide/audit"
 	"net/url"
 	"testing"
 	"time"
@@ -199,11 +200,11 @@ func TestURLRedaction(t *testing.T) {
 		"http://u:p@h.example/a.crl?token=S#f": "http://h.example/a.crl",
 		"https://h.example/a.crl?x=1":          "https://h.example/a.crl",
 	} {
-		if got := redactURL(in); got != want {
+		if got := audit.RedactURL(in); got != want {
 			t.Errorf("%q -> %q", in, got)
 		}
 	}
-	if _, err := checkCRLURL("ldap://h.example/cn=x"); err == nil {
+	if _, err := audit.CheckCRLURL("ldap://h.example/cn=x"); err == nil {
 		t.Error("ldap accepted")
 	}
 }

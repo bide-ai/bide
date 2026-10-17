@@ -1,6 +1,6 @@
 # CRL refresher for certificate-bound approvers
 
-Status: built (2026-10-16); reviewed by pki-auditor-2 before the build. Step 2 of the
+Status: built (2026-10-16); reviewed by pki-auditor-2 before the build. The refresher lives in package `audit/crlrefresh` (it does network and file I/O, which package `audit` must not); `audit` keeps the pure parts (the CRL checks, `VerifyCRL`, the snapshot's `HeldCRLs`, `RemoveCRL`, `AddCRLNoEvict`, `StatusFresh`, `CRLSources`, `ParseCRLSources`, `StatusDecl`). Where the text below says `audit.CRLRefresher` it means `crlrefresh.Refresher`. Step 2 of the
 [approver identity](approver-identity.md) work promised "the refresher fetches and archives" CRLs;
 this note fixes how. Today the application fetches CRLs itself and calls `StatusSnapshot.AddCRL`;
 the operator guide says "bide does not fetch CRLs". A bank's platform team should not have to write
@@ -8,7 +8,7 @@ that loop, and a hand-written loop is where rollback, stale-on-failure and silen
 
 ## What it is, and what it is not
 
-`audit.CRLRefresher` is a long-running component that keeps the `StatusSnapshot` of a `CertApprover`
+`crlrefresh.Refresher` is a long-running component that keeps the `StatusSnapshot` of a `CertApprover`
 supplied with the newest verified CRLs of the issuers the policy pins, and keeps a dated archive of
 every CRL it accepts.
 
@@ -203,8 +203,8 @@ snapshot.
 
 ### 5. Archive and restart
 
-`CRLArchive` is an interface (`PutCRL(ctx, issuer SPKIHash, info CRLInfo, source string, der []byte)`
-and `Load(ctx, yield)`), with `audit.DirCRLArchive` the directory implementation using the layout
+`crlrefresh.Archive` is an interface (`PutCRL(ctx, issuer SPKIHash, info CRLInfo, source string, der []byte)`
+and `Load(ctx, yield)`), with `crlrefresh.DirArchive` the directory implementation using the layout
 the identity note already fixed (`crl/<issuer-key-id>/<number>-<thisUpdate>.crl`): write to a
 temporary file, fsync, rename, fsync the directory; idempotent by hash. CRLs archived but not added (a rollback, a conflicting same-number CRL) get a
   hash suffix and a `rollback` or `conflict` marker in the file name, so a same-number conflict cannot
@@ -286,22 +286,22 @@ No metrics library in the core. Two surfaces:
 - Local clock error: the HTTP `Date` header is compared with the local clock and a difference over 5
   minutes raises `EventClockSkew` as a warning only; so does a future-dated `thisUpdate` beyond
   skew plus a minute when several issuers show it at once (a slow local clock). Neither is used for
-  a decision. `NewCRLRefresher` refuses an approver with a nil `Now`.
+  a decision. `crlrefresh.New` refuses an approver with a nil `Now`.
 
 ### 8. How a program enables it, and the CLI
 
 ```text
 approver := &audit.CertApprover{ /* as today, Status: audit.NewStatusSnapshot(audit.WithIssuers(...)) */ }
-r, err := audit.NewCRLRefresher(approver, sources, audit.RefresherOptions{
-    Archive: audit.DirCRLArchive("/var/lib/bide/crl"),
-    Hooks:   audit.RefresherHooks{OnEvent: log, OnAlarm: page},
+r, err := crlrefresh.New(approver, sources, crlrefresh.Options{
+    Archive: crlrefresh.DirArchive("/var/lib/bide/crl"),
+    Hooks:   crlrefresh.Hooks{OnEvent: log, OnAlarm: page},
 })
 go r.Run(ctx)
 ```
 
 - A **separate type**, not an option on `CertApprover`, built from the approver so the interval,
   the alarm and the issuer set come from the same declared `StatusParams`, `ExecStatusAge*` and
-  `CAOverlapFor` the gate uses (no second copy to drift). `NewCRLRefresher` returns `ErrConfig` when
+  `CAOverlapFor` the gate uses (no second copy to drift). `crlrefresh.New` returns `ErrConfig` when
   `approver.Status` is nil, when a reachable issuer has no source, or when the declared parameters
   leave no positive interval.
 - **`bide identity fetch-crl -policy file -cache dir [-once | -every]`**: the cron/daemon form of the
@@ -337,7 +337,7 @@ text), CONCEPTS, changelog fragment.
 
 ## Open for the lead (recommendations in brackets)
 
-1. Separate `audit.CRLRefresher` built from the `CertApprover`, not a field on it [yes].
+1. Separate `crlrefresh.Refresher` built from the `CertApprover`, not a field on it [yes].
 2. URLs in the policy file under `crl`, not in `PolicyDigest`; `from_pinned_cdp` opt-in only for the
    CA tiers, default off [yes].
 3. Alarm redefinition (`max(limit/2, period + overlap + tolerance)`, plus `Critical` at the limit)

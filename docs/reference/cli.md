@@ -691,7 +691,7 @@ Keep the CRLs of a certificate policy's issuers current and archived (fetch-crl)
 
 ```text
 usage: bide identity fetch-crl -policy <file> -params <file> -cache <dir> [-once]
-       bide identity reset-high-water -policy <file> -params <file> -cache <dir> -issuer <hex> -reason <text> -operator <name> [-set-aside <hash>]...
+       bide identity reset-high-water -policy <file> -params <file> -cache <dir> -issuer <hex> -reason <text> -operator <name> [-set-aside <hash>]... [-accept-lost-listings]
        bide identity ack-reset -policy <file> -params <file> -cache <dir> -issuer <hex> -name <RESET-...json>
 
 Keep the CRLs of a certificate policy's issuing CAs current and archived:
@@ -707,7 +707,7 @@ Keep the CRLs of a certificate policy's issuing CAs current and archived:
   ack-reset         acknowledges a reset record; until then every start reports it.
 
 The CA timings come from the -params file, which must carry the values the gate declares. Standard
-output is one JSON line per event. A gate process embeds the same refresher (audit.NewCRLRefresher);
+output is one JSON line per event. A gate process embeds the same refresher (crlrefresh.New);
 this command is for the archive an audit kit reads and for monitoring. See
 docs/guides/certificate-approvers.md.
 
@@ -737,7 +737,9 @@ usage: bide identity fetch-crl -policy <file> -params <file> -cache <dir> [-once
 ### bide identity reset-high-water
 
 ```text
-usage: bide identity reset-high-water -policy <file> -params <file> -cache <dir> -issuer <hex> -reason <text> -operator <name> [-set-aside <sha256 hex>]...
+usage: bide identity reset-high-water -policy <file> -params <file> -cache <dir> -issuer <hex> -reason <text> -operator <name> [-set-aside <sha256 hex>]... [-accept-lost-listings]
+  -accept-lost-listings
+    	allow the reset although a CRL set aside lists a revocation that no remaining CRL lists (the serials are recorded)
   -cache string
     	the archive directory (created 0700; one that others can write to is refused)
   -issuer string

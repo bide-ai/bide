@@ -4,7 +4,7 @@
 //	bide identity reset-high-water  set aside a CRL that poisoned an issuer's rollback mark
 //	bide identity ack-reset         acknowledge a reset record, which stops its start-up report
 //
-// fetch-crl is the audit.CRLRefresher: what it fetches and refuses is what a gate's embedded refresher
+// fetch-crl is the crlrefresh.Refresher: what it fetches and refuses is what a gate's embedded refresher
 // does. It reads the same policy file as the gate and a declaration of the CA timings (the values the
 // gate declares in CertApprover and StatusParams), writes the dated archive, and prints one JSON line
 // per event on standard output.
@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/audit/crlrefresh"
 	"github.com/bide-ai/bide/internal/policyfile"
 	"github.com/bide-ai/bide/internal/term"
 )
@@ -84,7 +85,7 @@ Keep the CRLs of a certificate policy's issuing CAs current and archived:
   ack-reset         acknowledges a reset record; until then every start reports it.
 
 The CA timings come from the -params file, which must carry the values the gate declares. Standard
-output is one JSON line per event. A gate process embeds the same refresher (audit.NewCRLRefresher);
+output is one JSON line per event. A gate process embeds the same refresher (crlrefresh.New);
 this command is for the archive an audit kit reads and for monitoring. See
 docs/guides/certificate-approvers.md.
 `)
@@ -135,19 +136,19 @@ func (c *common) missing() string {
 	return ""
 }
 
-// eventLine is the JSON form of an audit.Event.
+// eventLine is the JSON form of an crlrefresh.Event.
 type eventLine struct {
-	Time     time.Time          `json:"time"`
-	Event    string             `json:"event"`
-	Issuer   string             `json:"issuer,omitempty"`
-	Feed     string             `json:"feed,omitempty"`
-	URL      string             `json:"url,omitempty"`
-	Detail   string             `json:"detail,omitempty"`
-	Number   string             `json:"number,omitempty"`
-	Held     string             `json:"held,omitempty"`
-	Hash     string             `json:"hash,omitempty"`
-	Error    string             `json:"error,omitempty"`
-	Outcomes []audit.URLOutcome `json:"outcomes,omitempty"`
+	Time     time.Time               `json:"time"`
+	Event    string                  `json:"event"`
+	Issuer   string                  `json:"issuer,omitempty"`
+	Feed     string                  `json:"feed,omitempty"`
+	URL      string                  `json:"url,omitempty"`
+	Detail   string                  `json:"detail,omitempty"`
+	Number   string                  `json:"number,omitempty"`
+	Held     string                  `json:"held,omitempty"`
+	Hash     string                  `json:"hash,omitempty"`
+	Error    string                  `json:"error,omitempty"`
+	Outcomes []crlrefresh.URLOutcome `json:"outcomes,omitempty"`
 }
 
 type lineWriter struct {
@@ -162,7 +163,7 @@ func (l *lineWriter) write(v any) {
 	_, _ = l.w.Write(append(b, '\n'))
 }
 
-func (l *lineWriter) event(e audit.Event) {
+func (l *lineWriter) event(e crlrefresh.Event) {
 	ln := eventLine{Time: e.At, Event: string(e.Kind), Feed: e.Feed, URL: e.URL, Detail: e.Detail, Outcomes: e.Outcomes}
 	if e.Issuer != (audit.SPKIHash{}) {
 		ln.Issuer = hex.EncodeToString(e.Issuer[:])
@@ -182,12 +183,12 @@ func (l *lineWriter) event(e audit.Event) {
 	l.write(ln)
 }
 
-func (l *lineWriter) alarm(a audit.Alarm) {
+func (l *lineWriter) alarm(a crlrefresh.Alarm) {
 	l.write(map[string]any{"time": a.At, "event": "alarm", "issuer": hex.EncodeToString(a.Issuer[:]), "active": a.Active,
 		"critical": a.Critical, "age": a.Age.String(), "threshold": a.Threshold.String(), "limit": a.Limit.String(), "detail": a.Detail})
 }
 
-func (l *lineWriter) health(h audit.IssuerHealth) {
+func (l *lineWriter) health(h crlrefresh.IssuerHealth) {
 	m := map[string]any{"event": "health", "issuer": hex.EncodeToString(h.Issuer[:]), "urls": h.URLs, "delta_urls": h.DeltaURLs,
 		"last_attempt": h.LastAttempt, "last_success": h.LastSuccess, "newest_this_update": h.NewestThisUpdate,
 		"newest_next_update": h.NewestNextUpdate, "age": h.Age.String(), "next_expected": h.NextExpected, "next_attempt": h.NextAttempt,
@@ -214,7 +215,7 @@ func httpClient() *http.Client {
 }
 
 // build loads the policy, the sources and the declaration and returns the refresher.
-func build(c *common, lw *lineWriter) (*audit.CRLRefresher, error) {
+func build(c *common, lw *lineWriter) (*crlrefresh.Refresher, error) {
 	pol, err := policyfile.Read(c.policy)
 	if err != nil {
 		return nil, err
@@ -236,9 +237,9 @@ func build(c *common, lw *lineWriter) (*audit.CRLRefresher, error) {
 	if err != nil {
 		return nil, err
 	}
-	return audit.NewCRLRefresher(ap, src, audit.RefresherOptions{
-		Issuers: certs, DeltaPeriodFor: decl.DeltaPeriodFor, Client: httpClient(), Archive: audit.DirCRLArchive(c.cache),
-		Hooks: audit.RefresherHooks{OnEvent: lw.event, OnAlarm: lw.alarm},
+	return crlrefresh.New(ap, src, crlrefresh.Options{
+		Issuers: certs, DeltaPeriodFor: decl.DeltaPeriodFor, Client: httpClient(), Archive: crlrefresh.DirArchive(c.cache),
+		Hooks: crlrefresh.Hooks{OnEvent: lw.event, OnAlarm: lw.alarm},
 	})
 }
 
@@ -369,7 +370,7 @@ func runReset(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if err := r.Seed(ctx); err != nil {
 		return failure("reset-high-water", stderr, "reading the archive: %v", err)
 	}
-	if err := r.ResetHighWater(ctx, ih, audit.ResetRequest{Reason: *reason, Operator: *operator, SetAside: hashes, AcceptLostListings: *accept}); err != nil {
+	if err := r.ResetHighWater(ctx, ih, crlrefresh.ResetRequest{Reason: *reason, Operator: *operator, SetAside: hashes, AcceptLostListings: *accept}); err != nil {
 		return failure("reset-high-water", stderr, "%v", err)
 	}
 	return 0

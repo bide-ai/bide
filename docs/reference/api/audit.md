@@ -20,7 +20,6 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `const FlagRecordedAfterHead`: FlagRecordedAfterHead: the decision's recorded\_at is more than the tolerance after the signed tree head that covers its record was signed: the record existed by then, so the time is not when it was recorded.
 - `const DefaultAnchorTimeout = 3 * time.Second`: DefaultAnchorTimeout is how long AuditedEventStore waits for one head to be built, signed and published before it gives up on it (see AuditedEventStore.WithTimeout).
 - `const DefaultAnchorCooldown = 30 * time.Second`: DefaultAnchorCooldown is how long, after a failed publish, AuditedEventStore skips publishing before it probes the anchor again (see AuditedEventStore.WithCooldown).
-- `const MarkerRollback = "rollback"`, `const MarkerConflict = "conflict"`: Markers on a CRL archived but not added to the snapshot: a rollback (its number is below the issuer's high-water mark) or a conflict (the mark's number with another TBSCertList).
 - `const CoverageCovered = "covered"`: CoverageCovered: a verified signed head over this journal includes the decision's record.
 - `const CoveragePending = "pending"`: CoveragePending: no such head includes it yet, and neither bound has passed.
 - `const CoverageOverdue = "overdue"`: CoverageOverdue: no such head includes it and a bound has passed (see Basis).
@@ -57,8 +56,10 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `var ErrCertificateBound`: ErrCertificateBound reports a certificate-bound decision receipt given to DecisionReceipt.Verify, which knows only a key: use DecisionReceipt.VerifyCertificate.
 - `var ErrRedacted`: ErrRedacted reports a journal holding a redacted record (agent.Record.Redacted) given to a producer that projects what the records say (an absence key set, a used-policy set, the event stream): the redacted record's content is gone, so the projection would silently omit it, and a key set without it would prove absent a call the journal tree commits.
 - `var EarnedRules`: EarnedRules is the ScopeRules an earned grant attenuates its root under.
+- `var ErrCRLSignature`: ErrCRLSignature is wrapped by VerifyCRL when the CRL's algorithm is outside the profile, its signature does not verify under the issuer's certificate, or it names another issuer.
 - `var ErrRootMismatch`: ErrRootMismatch is wrapped by the error of a proof or check that finds a signed tree head's root is not the root of the run's journal at the head's size: the journal was changed after the head was signed, or the head is for another history.
 - `var ErrSeqTaken`: ErrSeqTaken is what EventStore.Append returns, wrapped, when a different leaf is already stored at the requested seq: the position was taken.
+- `var ErrSnapshotFull`: ErrSnapshotFull is returned by AddCRLNoEvict when adding the CRL would evict another.
 - `var ErrWeakKey`: ErrWeakKey reports an Ed25519 public key that is not a usable verification key (see CheckEd25519PublicKey).
 - `var PolicyUsedKeys`: PolicyUsedKeys is the key set of policy digests exercised by governed actions, keyed "policy\_used:&lt;digest&gt;" (see PolicyUsedKey).
 - `var ToolUseKeys`: ToolUseKeys is the key set of the tool calls a run's model requested, keyed "tooluse:&lt;ToolUseID&gt;" (see ToolUseKey).
@@ -68,7 +69,9 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `func AbsenceRoot(records []agent.Record, set KeySet) (root []byte, size int, err error)`: AbsenceRoot is the RFC 6962 Merkle root over the run's sorted, distinct keys in set, and the number of keys.
 - `func ApprovalArgsDigest(s agent.ApprovalSubject) string`: ApprovalArgsDigest returns the SHA-256 of the canonical arguments of s, in lowercase hex: the digest a signature over agent.ApprovalDecisionBytes(s, ...) binds.
 - `func AttenuatingSubAgent(name, description string, sub *agent.Agent, cfg AttenuationConfig, opts ...agent.ToolOption) agent.Tool`: AttenuatingSubAgent wraps a sub-agent as a delegation Tool that attenuates authority by default.
+- `func CRLTBSHash(der []byte) ([32]byte, bool)`: CRLTBSHash is the SHA-256 of the TBSCertList of a CRL's DER, for comparing two CRLs without their (possibly randomised) signatures.
 - `func CheckAttenuation(parent, child Grant, rules ScopeRules) error`: CheckAttenuation returns nil if child is a valid delegation of parent, and otherwise an error naming the first rule it breaks:
+- `func CheckCRLURL(raw string) (*url.URL, error)`: CheckCRLURL applies the URL rules of a CRL source: http or https, a host, no userinfo, no fragment.
 - `func CheckDeclaredGoDebug(declared, environment string) error`: CheckDeclaredGoDebug compares the x509 GODEBUG settings an operator declares (CertApprover.GoDebug) with the process's real environment value, which the caller reads (os.Getenv("GODEBUG"): the engine itself reads no environment), and returns an error wrapping agent.ErrConfig when they differ.
 - `func CheckEd25519PublicKey(pub []byte) error`: CheckEd25519PublicKey reports whether pub is a usable Ed25519 verification key: 32 bytes, the canonical encoding (y &lt; p, and no sign bit on x = 0) of a point on the curve, in the prime-order subgroup (`L`A is the identity), and not the identity itself, which leaves no small-order point.
 - `func CheckTimestamp(th TreeHead, now time.Time, skew time.Duration) error`: CheckTimestamp applies the timestamp rule to one signed head: its TimestampNanos must be positive and not later than now plus skew.
@@ -96,8 +99,10 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `func RecordPolicy(ctx context.Context, store *agent.Journal, runID string, policy []byte, digest string) (agent.Record, error)`: RecordPolicy commits the serialized policy as a dedicated journal leaf (idempotent per (runID, digest)), so the policy is covered by the same STH and inclusion proofs as the actions taken under it.
 - `func RecordRunCertificate(ctx context.Context, store *agent.Journal, runID string, cert RunCertificate) (agent.Record, error)`: RecordRunCertificate anchors a RunCertificate as a dedicated journal leaf (idempotent per runID), so the certificate is itself covered by a signed tree head and inclusion proofs, mirroring RecordPolicy / RecordConvergence.
 - `func RecordStream(log *EventLog, stream *agent.RunStream, onEvent func(agent.RunEvent)) (*agent.Result, error)`: RecordStream drains stream through log, committing every event, while forwarding each event to onEvent (nil to skip), then returns the run's Result and error, as RunStream.Result does (the Result is non-nil whenever the run ID is valid, whatever the error, including \*ApprovalPending and \*OutcomeUnknown).
+- `func RedactURL(raw string) string`: RedactURL removes the userinfo, query and fragment from a URL, so a token in one is never printed.
 - `func Root(ctx context.Context, store *agent.Journal, runID string) ([]byte, error)`: Root returns the RFC 6962 Merkle root committing to runID's journal (records in persisted order, each leaf = the canonical record bytes).
 - `func Sign(head []byte, s Signer) ([]byte, error)`: Sign returns s's signature over a head commitment ("bide.audit.head.v1\\x00" || head).
+- `func StatusFresh(now, this, next time.Time, maxAge, skew, tolerance time.Duration) bool`: StatusFresh is the live freshness test the status rule applies to every CRL, so a refresher's alarm cannot disagree with a gate: a CRL is fresh when now is before nextUpdate, its age is at most maxAge plus the declared thisUpdate skew, and thisUpdate is not beyond the coverage tolerance in the future.
 - `func ToolUseKey(r agent.Record) []string`: ToolUseKey is the KeyFunc of ToolUseKeys: every record that shows a call ran or may have run, keyed by its ToolUseID.
 - `func ToolUseKeyFor(toolUseID string) string`: ToolUseKeyFor is the absence key for a tool-use id: pass it to ProveAbsent / ProveAbsentBundle with ToolUseKeys to prove no tool call with that id happened in the run.
 - `func UnmarshalStrict(data []byte, v any) error`: UnmarshalStrict decodes a JSON proof artifact (a bundle, certificate, evidence package, or tree head) so that what a person reads in the file is exactly what is verified.
@@ -149,23 +154,6 @@ AbsenceBundle is the portable, anchorable form of an absence proof, mirroring Pr
 **Methods**
 
 - `func (b AbsenceBundle) Verify(v Verifier, set KeySet) error`: Verify returns nil if the bundle authentically proves Absence.Key absent from the key set set of run RunID, under v (obtained out of band).
-
-## type Alarm
-
-```go
-type Alarm struct {
-	Issuer    SPKIHash
-	Active    bool
-	Critical  bool
-	Age       time.Duration
-	Threshold time.Duration
-	Limit     time.Duration
-	At        time.Time
-	Detail    string
-}
-```
-
-Alarm is a change in an issuer's alarm state.
 
 ## type Alg
 
@@ -272,22 +260,6 @@ ApproverCert is the result of a successful VerifyChain: what the later steps (th
 
 - `func (a *ApproverCert) SeatKeyID() string`: SeatKeyID is the agent.ApproverVerifier.KeyIDs entry of a certificate-bound approver: the seat is the canonical identity, so a person with two approver ids, or two certificates, fills one seat.
 
-## type ArchivedCRL
-
-```go
-type ArchivedCRL struct {
-	Name       string
-	Number     *big.Int
-	ThisUpdate time.Time
-	Marker     string
-
-	Source  string
-	Fetched time.Time
-}
-```
-
-ArchivedCRL describes one CRL file of the archive.
-
 ## type AttenuateFunc
 
 ```go
@@ -365,23 +337,30 @@ AuditedStore wraps a store so every journal write is continuously anchored: when
 - `func (a *AuditedStore) Unwrap() agent.Store`: Unwrap returns the wrapped store, so agent.Capability finds its optional capabilities (agent.Leaser, agent.Lister) through the wrapper: an AuditedStore has exactly the capabilities of the store it wraps.
 - `func (a *AuditedStore) WithClock(now func() int64) *AuditedStore`: WithClock sets a deterministic timestamp source (for tests).
 
-## type CRLArchive
+## type CRL
 
 ```go
-type CRLArchive interface {
-	PutCRL(ctx context.Context, issuer SPKIHash, a ArchivedCRL, der []byte) error
-
-	List(ctx context.Context, issuer SPKIHash) ([]ArchivedCRL, error)
-
-	Read(ctx context.Context, issuer SPKIHash, a ArchivedCRL) ([]byte, error)
-
-	PutReset(ctx context.Context, issuer SPKIHash, r ResetRecord) error
-	Resets(ctx context.Context, issuer SPKIHash) ([]ResetRecord, error)
-	AckReset(ctx context.Context, issuer SPKIHash, r ResetRecord) error
+type CRL struct {
+	Hash       [32]byte
+	TBSHash    [32]byte
+	Number     *big.Int
+	ThisUpdate time.Time
+	NextUpdate time.Time
+	Delta      bool
+	BaseNumber *big.Int
+	// contains filtered or unexported fields
 }
 ```
 
-CRLArchive is the dated archive of the CRLs the refresher accepts, and its rollback memory.
+CRL is one CRL as a refresher sees it: what the snapshot holds, or what VerifyCRL returned.
+
+**Constructors and functions**
+
+- `func VerifyCRL(der []byte, issuer *x509.Certificate, maxEntries int) (*CRL, error)`: VerifyCRL checks der as a CRL of the given issuing CA: the signature algorithm profile (never SHA-1), the signature against that one certificate, the issuer name, and the structure rules of AddCRL.
+
+**Methods**
+
+- `func (c *CRL) Serials() []string`: Serials returns the decimal serial numbers the CRL lists, sorted.
 
 ## type CRLInfo
 
@@ -396,30 +375,6 @@ type CRLInfo struct {
 ```
 
 CRLInfo describes a CRL accepted into a StatusSnapshot.
-
-## type CRLRefresher
-
-```go
-type CRLRefresher struct {
-	// contains filtered or unexported fields
-}
-```
-
-CRLRefresher keeps the StatusSnapshot of a CertApprover supplied with the newest verified CRLs of the issuing CAs the certificate policy pins, and archives every CRL it accepts (docs/design/crl-refresher.md).
-
-**Constructors and functions**
-
-- `func NewCRLRefresher(a *CertApprover, sources CRLSources, opt RefresherOptions) (*CRLRefresher, error)`: NewCRLRefresher builds the refresher for approver's snapshot.
-
-**Methods**
-
-- `func (r *CRLRefresher) AckReset(ctx context.Context, issuer SPKIHash, name string) error`: AckReset marks a high-water reset record of the issuer (by its name, as Health and the start-up event give it) as acknowledged by an operator: the start-up event for it stops.
-- `func (r *CRLRefresher) Health() []IssuerHealth`: Health returns the state of every issuer, ordered by key.
-- `func (r *CRLRefresher) Ready() <-chan struct{}`: Ready is closed once every issuer holds a fresh CRL.
-- `func (r *CRLRefresher) RefreshOnce(ctx context.Context) []IssuerResult`: RefreshOnce runs one attempt for every feed of every issuer (seeding from the archive first when the snapshot is empty) and returns each issuer's outcome: an error when no valid CRL was obtained or the newest one is not fresh.
-- `func (r *CRLRefresher) ResetHighWater(ctx context.Context, issuer SPKIHash, reason, operator string, setAside ...[32]byte) error`: ResetHighWater is the operator's way out of a poisoned high-water mark: a CA that issued one CRL with a mistaken huge number, or was restored from a backup and restarted its numbering, would otherwise leave every later real CRL a rollback.
-- `func (r *CRLRefresher) Run(ctx context.Context) error`: Run seeds from the archive, then fetches until ctx is cancelled and the in-flight requests end.
-- `func (r *CRLRefresher) Seed(ctx context.Context) error`: Seed loads what the live rule needs from the archive into the snapshot, newest first, and takes the high-water marks from the CRLs that verify.
 
 ## type CRLSource
 
@@ -575,9 +530,14 @@ CertIdentity is a compiled IdentityPolicy: immutable, safe for concurrent use.
 
 - `func (c *CertIdentity) ApproverIDs() []string`: ApproverIDs returns the approver ids of the policy's identity map, sorted.
 - `func (c *CertIdentity) Canonicalizer() Canonicalizer`: Canonicalizer returns the function this policy compares identifiers with, for the identity record and for the other places an identity is compared (the requester principal).
+- `func (c *CertIdentity) DistrustFrom(k SPKIHash) time.Time`: DistrustFrom returns when the policy ends trust in the key (zero when it does not).
 - `func (c *CertIdentity) EvaluateStatus(ac *ApproverCert, a time.Time, s *StatusSnapshot, p StatusParams) ChainStatus`: EvaluateStatus applies the status rule to every non-anchor certificate of ac's chain at A(d) = a, over the CRLs in s.
 - `func (c *CertIdentity) Identity(approverID string) (string, bool)`: Identity returns the canonical identifier the policy expects for an approver id.
+- `func (c *CertIdentity) IsPinnedIntermediate(k SPKIHash) bool`: IsPinnedIntermediate reports whether the key is a pinned intermediate.
+- `func (c *CertIdentity) IsTrustAnchor(k SPKIHash) bool`: IsTrustAnchor reports whether the key is one of the policy's trust anchors.
+- `func (c *CertIdentity) PinnedIntermediates() []SPKIHash`: PinnedIntermediates returns the pinned intermediate keys, sorted.
 - `func (c *CertIdentity) TrustAnchors() []*x509.Certificate`: TrustAnchors returns the policy's trust anchor certificates, ordered by key.
+- `func (c *CertIdentity) TrustRoots() *x509.CertPool`: TrustRoots returns the policy's trust anchors as a certificate pool.
 - `func (c *CertIdentity) VerifyChain(approverID string, chain [][]byte, decidedAt, anchoredAt time.Time) (*ApproverCert, error)`: VerifyChain checks a decision's certificate chain for approver approverID.
 
 ## type CertStatus
@@ -812,23 +772,6 @@ DecisionTime is the two times of one counted approver decision, kept apart on pu
 
 - `func (d DecisionTime) Gap() (gap time.Duration, ok bool)`: Gap returns RecordedAt minus DecidedAt: how long after the approver's signed time bide recorded the decision (negative when the signed time is later).
 
-## type DirCRLArchive
-
-```go
-type DirCRLArchive string
-```
-
-DirCRLArchive is a CRLArchive in a directory: &lt;dir&gt;/crl/&lt;issuer key hash&gt;/&lt;number&gt;-&lt;thisUpdate&gt;.crl, with a .meta.json beside each file (source and fetch time), and RESET-&lt;time&gt;.json for resets.
-
-**Methods**
-
-- `func (d DirCRLArchive) AckReset(_ context.Context, issuer SPKIHash, r ResetRecord) error`: AckReset implements CRLArchive.
-- `func (d DirCRLArchive) List(_ context.Context, issuer SPKIHash) ([]ArchivedCRL, error)`: List implements CRLArchive.
-- `func (d DirCRLArchive) PutCRL(_ context.Context, issuer SPKIHash, a ArchivedCRL, der []byte) error`: PutCRL implements CRLArchive.
-- `func (d DirCRLArchive) PutReset(_ context.Context, issuer SPKIHash, r ResetRecord) error`: PutReset implements CRLArchive.
-- `func (d DirCRLArchive) Read(_ context.Context, issuer SPKIHash, a ArchivedCRL) ([]byte, error)`: Read implements CRLArchive.
-- `func (d DirCRLArchive) Resets(_ context.Context, issuer SPKIHash) ([]ResetRecord, error)`: Resets implements CRLArchive.
-
 ## type DivergentHead
 
 ```go
@@ -932,26 +875,6 @@ Ed25519Verifier verifies with an Ed25519 public key.
 - `func (v Ed25519Verifier) PublicKey() []byte`: PublicKey returns the public key, or nil if it has the wrong length.
 - `func (v Ed25519Verifier) Verify(m, sig []byte) bool`: Verify reports whether sig is a valid Ed25519 signature over m.
 
-## type Event
-
-```go
-type Event struct {
-	Kind     EventKind
-	Issuer   SPKIHash
-	Feed     string
-	URL      string
-	Detail   string
-	Number   *big.Int
-	Held     *big.Int
-	Hash     [32]byte
-	Err      error
-	At       time.Time
-	Outcomes []URLOutcome
-}
-```
-
-Event is one thing the refresher did or refused.
-
 ## type EventInclusion
 
 ```go
@@ -963,18 +886,6 @@ type EventInclusion struct {
 ```
 
 EventInclusion is an inclusion proof for one event: the event's own salt, which its leaf commits to, and the RFC 6962 audit path (the same Inclusion journal proofs use) from that leaf to the log's Root.
-
-## type EventKind
-
-```go
-type EventKind string
-```
-
-EventKind names what an Event reports.
-
-**Constants**
-
-- `const EventStartup EventKind = "startup"`, `const EventFetched EventKind = "fetched"`, `const EventUnchanged EventKind = "unchanged"`, `const EventFetchFailed EventKind = "fetch-failed"`, `const EventRollback EventKind = "rollback"`, `const EventConflict EventKind = "conflict"`, `const EventBadSignature EventKind = "bad-signature"`, `const EventDistrusted EventKind = "distrusted"`, `const EventUnsupportedCRL EventKind = "unsupported-crl"`, `const EventFutureDated EventKind = "future-dated"`, `const EventStaleOnArrival EventKind = "stale-on-arrival"`, `const EventArchiveError EventKind = "archive-error"`, `const EventArchiveDropped EventKind = "archive-dropped"`, `const EventArchiveCorrupt EventKind = "archive-corrupt"`, `const EventClockSkew EventKind = "clock-skew"`, `const EventHighWaterReset EventKind = "high-water-reset"`, `const EventSourcesChanged EventKind = "sources"`, `const EventPanic EventKind = "panic"`, `const EventSeedStopped EventKind = "seed-stopped"`, `const EventUnpairedDelta EventKind = "unpaired-delta"`, `const EventRedirectRefused EventKind = "redirect-refused"`, `const EventOversizeResponse EventKind = "oversize"`: The events.
 
 ## type EventLog
 
@@ -1319,45 +1230,6 @@ Inclusion is an RFC 6962 audit path proving one record's membership in a committ
 **Constructors and functions**
 
 - `func Prove(ctx context.Context, store *agent.Journal, runID string, index int) (Inclusion, error)`: Prove returns an inclusion proof for the record at index in runID's journal: enough to verify that record's stored bytes (agent.Record.Raw) against Root WITHOUT revealing any other record (selective disclosure).
-
-## type IssuerHealth
-
-```go
-type IssuerHealth struct {
-	Issuer              SPKIHash
-	URLs, DeltaURLs     []string
-	LastAttempt         time.Time
-	LastSuccess         time.Time
-	NewestNumber        *big.Int
-	NewestThisUpdate    time.Time
-	NewestNextUpdate    time.Time
-	Age                 time.Duration
-	NextExpected        time.Time
-	NextAttempt         time.Time
-	ConsecutiveFailures int
-	LastError           string
-	ArchiveBacklog      int
-	Paired              bool
-	Alarm, Critical     bool
-	Limit               time.Duration
-	AlarmAge            time.Duration
-	Loop                time.Time
-	UnackedResets       int
-}
-```
-
-IssuerHealth is the state of one issuer, from Health.
-
-## type IssuerResult
-
-```go
-type IssuerResult struct {
-	Issuer SPKIHash
-	Err    error
-}
-```
-
-IssuerResult is the outcome of one issuer in RefreshOnce.
 
 ## type JournalExport
 
@@ -1783,40 +1655,6 @@ ReceiptVerdict is what CheckReceipt finds about one receipt.
 
 - `func (v ReceiptVerdict) Failed() bool`: Failed reports whether the verdict is a failure: the journal does not show a decision that the receipt says is there (ReceiptDeleted, proven; ReceiptUnmatched, claimed), or nothing could be checked (ReceiptUnchecked).
 
-## type RefresherHooks
-
-```go
-type RefresherHooks struct {
-	OnEvent func(Event)
-	OnAlarm func(Alarm)
-}
-```
-
-RefresherHooks are called from the refresher's goroutines, possibly concurrently for different issuers.
-
-## type RefresherOptions
-
-```go
-type RefresherOptions struct {
-	Issuers []*x509.Certificate
-
-	DeltaPeriodFor map[SPKIHash]time.Duration
-
-	Client *http.Client
-
-	Archive CRLArchive
-
-	Hooks RefresherHooks
-
-	Sleep func(ctx context.Context, d time.Duration) error
-	Rand  func() float64
-
-	MaxArchiveQueueBytes int
-}
-```
-
-RefresherOptions configures NewCRLRefresher.
-
 ## type RejectedHead
 
 ```go
@@ -1827,33 +1665,6 @@ type RejectedHead struct {
 ```
 
 RejectedHead is a head CheckDecisionCoverage ignored, and why: it does not verify under the log key, or it is not a journal head of the run.
-
-## type ResetItem
-
-```go
-type ResetItem struct {
-	Hash   string `json:"hash"`
-	Number string `json:"number"`
-}
-```
-
-ResetItem is one CRL a reset sets aside.
-
-## type ResetRecord
-
-```go
-type ResetRecord struct {
-	Name     string      `json:"-"`
-	Issuer   string      `json:"issuer"`
-	SetAside []ResetItem `json:"set_aside"`
-	Reason   string      `json:"reason"`
-	Operator string      `json:"operator"`
-	Time     time.Time   `json:"time"`
-	Acked    bool        `json:"-"`
-}
-```
-
-ResetRecord is the durable record of an operator's reset of an issuer's high-water mark: the CRLs it sets aside, who did it and why.
 
 ## type RunCertSpec
 
@@ -2125,8 +1936,12 @@ StatusSnapshot is a set of CRLs: what a gate fetched, or an auditor's archived s
 **Methods**
 
 - `func (s *StatusSnapshot) AddCRL(der []byte) (CRLInfo, error)`: AddCRL parses a CRL and keeps it, or refuses it with a \*StatusError (ReasonStatusUnknown) naming why.
+- `func (s *StatusSnapshot) AddCRLNoEvict(der []byte) (CRLInfo, error)`: AddCRLNoEvict is AddCRL that never drops a CRL to make room: with the snapshot full it returns ErrSnapshotFull.
 - `func (s *StatusSnapshot) Evicted() int`: Evicted is the number of CRLs the snapshot has dropped to stay within WithMaxCRLs.
+- `func (s *StatusSnapshot) HeldCRLs(issuer *x509.Certificate) []*CRL`: HeldCRLs returns the CRLs the snapshot holds that verify under issuer, ordered by thisUpdate and then number.
 - `func (s *StatusSnapshot) Len() int`: Len is the number of distinct CRLs held.
+- `func (s *StatusSnapshot) Limits() (maxBytes, maxEntries, maxCRLs int)`: Limits returns the largest CRL the snapshot accepts in bytes and in entries, and how many CRLs it keeps (0: unbounded).
+- `func (s *StatusSnapshot) RemoveCRL(hash [32]byte) bool`: RemoveCRL drops the CRL with the given hash from the snapshot without touching the eviction count (Evicted), and reports whether it was held.
 
 ## type StatusTier
 
@@ -2194,19 +2009,6 @@ type TreeRef struct {
 ```
 
 TreeRef names one tree of a run by its size and root.
-
-## type URLOutcome
-
-```go
-type URLOutcome struct {
-	URL    string `json:"url"`
-	Kind   string `json:"kind"`
-	Status int    `json:"status,omitempty"`
-	Detail string `json:"detail,omitempty"`
-}
-```
-
-URLOutcome is the result of asking one URL in one attempt, for the event.
 
 ## type VerifiedPolicy
 

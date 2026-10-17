@@ -1,4 +1,4 @@
-package audit
+package crlrefresh
 
 import (
 	"bytes"
@@ -6,6 +6,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"github.com/bide-ai/bide/audit"
 	"io"
 	"net"
 	"net/http"
@@ -15,7 +16,7 @@ import (
 	"time"
 )
 
-// Fetch defaults. Each is the library's; an application client supplied in RefresherOptions.Client brings
+// Fetch defaults. Each is the library's; an application client supplied in Options.Client brings
 // its own transport.
 const (
 	dialTimeout      = 5 * time.Second
@@ -80,9 +81,9 @@ type validator struct{ etag, lastModified string }
 
 // fetchOne asks one configured URL. It enforces the size limit on the decoded body, the redirect rule and
 // the content form, and never reads a header for freshness.
-func (r *CRLRefresher) fetchOne(ctx context.Context, raw string, maxBytes int) fetched {
-	out := fetched{URLOutcome: URLOutcome{URL: redactURL(raw)}}
-	origin, err := checkCRLURL(raw)
+func (r *Refresher) fetchOne(ctx context.Context, raw string, maxBytes int) fetched {
+	out := fetched{URLOutcome: URLOutcome{URL: audit.RedactURL(raw)}}
+	origin, err := audit.CheckCRLURL(raw)
 	if err != nil {
 		out.Kind, out.Detail = outError, err.Error()
 		return out
@@ -208,7 +209,7 @@ func isTimeout(err error) bool {
 func redactError(err error) string {
 	var ue *url.Error
 	if errors.As(err, &ue) {
-		return ue.Op + " " + redactURL(ue.URL) + ": " + ue.Err.Error()
+		return ue.Op + " " + audit.RedactURL(ue.URL) + ": " + ue.Err.Error()
 	}
 	return err.Error()
 }

@@ -1,4 +1,4 @@
-package audit_test
+package crlrefresh_test
 
 import (
 	"bytes"
@@ -14,6 +14,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/audit/crlrefresh"
 	"github.com/bide-ai/bide/internal/testca"
 )
 
@@ -25,7 +26,7 @@ func TestRefresherRefusedCRLIsNotHiddenBehindA304(t *testing.T) {
 	rt := g.srv.set("/inter.crl", g.iCRL(1, now.Add(10*time.Minute), 2*time.Hour))
 	rt.etag = `"v1"`
 	g.start()
-	if g.refresh()[g.intK] == nil || len(g.kinds(audit.EventFutureDated)) != 1 {
+	if g.refresh()[g.intK] == nil || len(g.kinds(crlrefresh.EventFutureDated)) != 1 {
 		t.Fatalf("a future-dated CRL was not refused: %s", g.dump())
 	}
 	g.clk.advance(15 * time.Minute) // the same CRL is now acceptable
@@ -55,7 +56,7 @@ func TestRefresherRefusedCRLIsNotHiddenBehindA304(t *testing.T) {
 // After a reset, a source that keeps serving the poisoned CRL does not bring the mark back, and a reset
 // made by another handle on the archive reaches a running refresher.
 func TestResetHoldsAgainstTheSourceAndAcrossProcesses(t *testing.T) {
-	arch := audit.DirCRLArchive(t.TempDir())
+	arch := crlrefresh.DirArchive(t.TempDir())
 	g := newCRig(t, withArchive(arch))
 	now := g.clk.Now()
 	g.srv.set("/root.crl", g.rCRL(1, now.Add(-time.Hour), 48*time.Hour))
@@ -70,14 +71,14 @@ func TestResetHoldsAgainstTheSourceAndAcrossProcesses(t *testing.T) {
 	if err := r2.Seed(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if err := r2.ResetHighWater(context.Background(), g.intK, audit.ResetRequest{Reason: "mistake", Operator: "ops", AcceptLostListings: true}); err != nil {
+	if err := r2.ResetHighWater(context.Background(), g.intK, crlrefresh.ResetRequest{Reason: "mistake", Operator: "ops", AcceptLostListings: true}); err != nil {
 		t.Fatal(err)
 	}
 
 	// The running refresher applies it at its next attempt; the source still serves the poison.
 	g.srv.set("/inter.crl", poison)
 	g.refresh()
-	if len(g.kinds(audit.EventSetAsideServed)) != 1 {
+	if len(g.kinds(crlrefresh.EventSetAsideServed)) != 1 {
 		t.Fatalf("a served set-aside CRL was not refused: %s", g.dump())
 	}
 	if h := g.health(g.intK); h.NewestNumber != nil && h.NewestNumber.Int64() == 1_000_000 {
@@ -91,7 +92,7 @@ func TestResetHoldsAgainstTheSourceAndAcrossProcesses(t *testing.T) {
 	ents, _ := arch.List(context.Background(), g.intK)
 	marked := 0
 	for _, e := range ents {
-		if e.Marker == audit.MarkerSetAside {
+		if e.Marker == crlrefresh.MarkerSetAside {
 			marked++
 		}
 	}
@@ -102,7 +103,7 @@ func TestResetHoldsAgainstTheSourceAndAcrossProcesses(t *testing.T) {
 
 // A reset that would drop a revocation nobody else lists is refused without an explicit acceptance.
 func TestResetRefusesToUnrevokeSilently(t *testing.T) {
-	arch := audit.DirCRLArchive(t.TempDir())
+	arch := crlrefresh.DirArchive(t.TempDir())
 	g := newCRig(t, withArchive(arch))
 	now := g.clk.Now()
 	g.srv.set("/root.crl", g.rCRL(1, now.Add(-time.Hour), 48*time.Hour))
@@ -113,7 +114,7 @@ func TestResetRefusesToUnrevokeSilently(t *testing.T) {
 	g.srv.set("/inter.crl", g.iCRL(2, g.clk.Now().Add(-time.Minute), time.Hour, testca.Revoked(g.leaf.Cert, g.clk.Now().Add(-5*time.Minute), 1)))
 	g.wantOK()
 	ctx := context.Background()
-	err := g.r.ResetHighWater(ctx, g.intK, audit.ResetRequest{Reason: "r", Operator: "o"})
+	err := g.r.ResetHighWater(ctx, g.intK, crlrefresh.ResetRequest{Reason: "r", Operator: "o"})
 	if err == nil {
 		t.Fatal("a reset that drops a unique revocation was accepted")
 	}
@@ -123,7 +124,7 @@ func TestResetRefusesToUnrevokeSilently(t *testing.T) {
 	if rs, _ := arch.Resets(ctx, g.intK); len(rs) != 0 {
 		t.Fatal("a refused reset wrote a record")
 	}
-	if err := g.r.ResetHighWater(ctx, g.intK, audit.ResetRequest{Reason: "r", Operator: "o", AcceptLostListings: true}); err != nil {
+	if err := g.r.ResetHighWater(ctx, g.intK, crlrefresh.ResetRequest{Reason: "r", Operator: "o", AcceptLostListings: true}); err != nil {
 		t.Fatal(err)
 	}
 	rs, _ := arch.Resets(ctx, g.intK)
@@ -134,7 +135,7 @@ func TestResetRefusesToUnrevokeSilently(t *testing.T) {
 
 // A reset during delta attempts whose base is missing must not deadlock.
 func TestResetDuringDeltaAttemptsDoesNotDeadlock(t *testing.T) {
-	arch := audit.DirCRLArchive(t.TempDir())
+	arch := crlrefresh.DirArchive(t.TempDir())
 	g := newCRig(t, withArchive(arch), withDelta())
 	now := g.clk.Now()
 	g.srv.set("/root.crl", g.rCRL(1, now.Add(-time.Hour), 48*time.Hour))
@@ -151,7 +152,7 @@ func TestResetDuringDeltaAttemptsDoesNotDeadlock(t *testing.T) {
 			go func() { defer wg.Done(); g.refresh() }()
 			go func() {
 				defer wg.Done()
-				_ = g.r.ResetHighWater(context.Background(), g.intK, audit.ResetRequest{Reason: "r", Operator: "o", AcceptLostListings: true})
+				_ = g.r.ResetHighWater(context.Background(), g.intK, crlrefresh.ResetRequest{Reason: "r", Operator: "o", AcceptLostListings: true})
 			}()
 		}
 		wg.Wait()
@@ -172,7 +173,7 @@ func TestRefresherFollowsAnHTTPToHTTPSUpgradeOnlyOnDefaultPorts(t *testing.T) {
 	other.set("/x.crl", g.iCRL(7, g.clk.Now().Add(-time.Minute), time.Hour))
 	g.srv.set("/inter.crl", nil).redirect = other.url("/x.crl")
 	g.start()
-	if g.refresh()[g.intK] == nil || len(g.kinds(audit.EventRedirectRefused)) != 1 {
+	if g.refresh()[g.intK] == nil || len(g.kinds(crlrefresh.EventRedirectRefused)) != 1 {
 		t.Fatalf("%s", g.dump())
 	}
 }
@@ -184,7 +185,7 @@ func TestDeltaOutageDoesNotFailARefreshOnce(t *testing.T) {
 	g.srv.set("/inter.crl", g.iCRL(10, now.Add(-time.Minute), time.Hour))
 	g.start() // the delta URL is not served: 404
 	g.wantOK()
-	if len(g.kinds(audit.EventFetchFailed)) == 0 {
+	if len(g.kinds(crlrefresh.EventFetchFailed)) == 0 {
 		t.Fatalf("the delta failure was not reported: %s", g.dump())
 	}
 }
@@ -194,7 +195,7 @@ func TestStartupReportsThePolicyDigest(t *testing.T) {
 	g.publishFresh(1)
 	g.start()
 	found := false
-	for _, e := range g.kinds(audit.EventStartup) {
+	for _, e := range g.kinds(crlrefresh.EventStartup) {
 		found = found || bytes.Contains([]byte(e.Detail), []byte("policy digest "+g.ap.PolicyDigest()))
 	}
 	if !found {
@@ -204,14 +205,14 @@ func TestStartupReportsThePolicyDigest(t *testing.T) {
 
 func TestArchiveAcceptsAResignedSeriesFile(t *testing.T) {
 	g := newCRig(t)
-	arch := audit.DirCRLArchive(t.TempDir())
+	arch := crlrefresh.DirArchive(t.TempDir())
 	this := testca.T0
 	a := g.iCRL(3, this, time.Hour)
 	b := g.iCRL(3, this, time.Hour) // same TBS, re-signed (ECDSA is randomised)
 	if bytes.Equal(a, b) {
 		t.Skip("deterministic signatures")
 	}
-	rec := audit.ArchivedCRL{Number: bigInt(3), ThisUpdate: this}
+	rec := crlrefresh.ArchivedCRL{Number: bigInt(3), ThisUpdate: this}
 	ctx := context.Background()
 	if err := arch.PutCRL(ctx, g.intK, rec, a); err != nil {
 		t.Fatal(err)
@@ -233,7 +234,7 @@ func TestRefresherRefusesACRLWithAnotherIssuerName(t *testing.T) {
 	now := g.clk.Now()
 	g.srv.set("/inter.crl", other.NewCRL(t, testca.CRLOpts{Number: 5, ThisUpdate: now.Add(-time.Minute), NextUpdate: now.Add(time.Hour)}))
 	g.start()
-	if g.refresh()[g.intK] == nil || len(g.kinds(audit.EventBadSignature)) != 1 {
+	if g.refresh()[g.intK] == nil || len(g.kinds(crlrefresh.EventBadSignature)) != 1 {
 		t.Fatalf("a CRL naming another issuer was accepted: %s", g.dump())
 	}
 }
@@ -258,7 +259,7 @@ func TestRefresherBodyLimitIsTheSnapshotsOwn(t *testing.T) {
 	if g.refresh()[g.intK] == nil {
 		t.Fatalf("an oversize CRL was accepted: %s", g.dump())
 	}
-	ev := g.kinds(audit.EventOversizeResponse)
+	ev := g.kinds(crlrefresh.EventOversizeResponse)
 	if len(ev) != 1 || !strings.Contains(ev[0].Detail, "Content-Length") {
 		t.Fatalf("the declared length was not checked first: %s", g.dump())
 	}
@@ -266,7 +267,7 @@ func TestRefresherBodyLimitIsTheSnapshotsOwn(t *testing.T) {
 	rt := g.srv.set("/inter.crl", big)
 	rt.hdr, rt.chunked = nil, true
 	g.refresh()
-	ev = g.kinds(audit.EventOversizeResponse)
+	ev = g.kinds(crlrefresh.EventOversizeResponse)
 	if len(ev) != 2 || !strings.Contains(ev[1].Detail, "the body is above") {
 		t.Fatalf("the streamed body was not limited: %s", g.dump())
 	}
@@ -293,7 +294,24 @@ func TestIssuerCertificateMustChainToAnAnchor(t *testing.T) {
 	stranger := testca.NewRoot(t, "stranger", testca.Opts{})
 	fake := stranger.NewIntermediate(t, "inter", testca.Opts{KeyWith: g.inter.Key}) // the pinned key, another issuer
 	g.opts.Issuers = []*x509.Certificate{fake.Cert}
-	if _, err := audit.NewCRLRefresher(g.ap, g.sources, g.opts); err == nil || !errors.Is(err, agent.ErrConfig) {
+	if _, err := crlrefresh.New(g.ap, g.sources, g.opts); err == nil || !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("a certificate with the pinned key that does not chain to an anchor was accepted: %v", err)
+	}
+}
+
+// A CRL naming the intermediate but signed by the root's key: only the signature check refuses it (the name
+// matches), so this pins the signature to the issuer's own certificate.
+func TestRefresherRefusesASignatureByAnotherIssuersKey(t *testing.T) {
+	g := newCRig(t)
+	g.publishFresh(1)
+	now := g.clk.Now()
+	forger := testca.NewRoot(t, "inter", testca.Opts{KeyWith: g.root.Key}) // subject "inter", the root's key
+	if string(forger.Cert.RawSubject) != string(g.inter.Cert.RawSubject) {
+		t.Fatal("the forger's subject differs from the intermediate's")
+	}
+	g.srv.set("/inter.crl", forger.NewCRL(t, testca.CRLOpts{Number: 5, ThisUpdate: now.Add(-time.Minute), NextUpdate: now.Add(time.Hour)}))
+	g.start()
+	if g.refresh()[g.intK] == nil || len(g.kinds(crlrefresh.EventBadSignature)) != 1 {
+		t.Fatalf("a CRL signed by another CA's key was accepted: %s", g.dump())
 	}
 }

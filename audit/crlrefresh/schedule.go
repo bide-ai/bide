@@ -1,7 +1,8 @@
-package audit
+package crlrefresh
 
 import (
 	"fmt"
+	"github.com/bide-ai/bide/audit"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
@@ -32,7 +33,7 @@ type issuerTiming struct {
 // timingFor reads the declared values for the issuer with key k. It fails (ErrConfig) when a value the
 // schedule needs is missing: a refresher with no period cannot know when the next CRL is due, and one
 // with no MaxStatusAge would feed a snapshot the gate accepts nothing from.
-func timingFor(a *CertApprover, k SPKIHash) (issuerTiming, error) {
+func timingFor(a *audit.CertApprover, k audit.SPKIHash) (issuerTiming, error) {
 	bad := func(format string, args ...any) (issuerTiming, error) {
 		return issuerTiming{}, fmt.Errorf("audit: CRL refresher: issuer %x: %s: %w", k[:4], fmt.Sprintf(format, args...), agent.ErrConfig)
 	}
@@ -64,7 +65,7 @@ func timingFor(a *CertApprover, k SPKIHash) (issuerTiming, error) {
 		t.Limit = min(t.Limit, a.ExecStatusAgeFor[k])
 	}
 	// The leaf's issuing CA is a pinned intermediate, or an anchor when none is pinned.
-	if _, inter := a.Policy.inter[k]; inter || (len(a.Policy.inter) == 0 && a.Policy.anchorBy[k] != nil) {
+	if inter := a.Policy.IsPinnedIntermediate(k); inter || (len(a.Policy.PinnedIntermediates()) == 0 && a.Policy.IsTrustAnchor(k)) {
 		if a.ExecStatusAge <= 0 {
 			return bad("no ExecStatusAge")
 		}
@@ -100,7 +101,7 @@ func (t issuerTiming) alarmAge(i time.Duration) time.Duration {
 
 // critical reports that a gate would not accept this CRL now, by the status rule's own freshness test.
 func (t issuerTiming) critical(now, this, next time.Time) bool {
-	return !statusFresh(now, this, next, t.Limit, t.Skew, t.Tolerance)
+	return !audit.StatusFresh(now, this, next, t.Limit, t.Skew, t.Tolerance)
 }
 
 // checkMargin applies the startup rule: for a CA tier the limit must leave the probe interval and the
