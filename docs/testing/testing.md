@@ -251,10 +251,9 @@ the journal.
 
 Beyond the pillars above, each package carries conventional unit tests:
 
-- Core (`agent_test.go`, `stream_agent_test.go`, `concurrency_test.go`, `saga_test.go`,
-  `session_test.go`, `result_test.go`, `errors_test.go`, `hitl_test.go`, `maxturns_test.go`,
-  `system_prompt_test.go`, `dynamic_prompt_test.go`, `typed_test.go`, `typed_native_test.go`,
-  `sampling_test.go`, `retrieval_test.go`, `tool_middleware_test.go`): the agent loop, streaming,
+- Core (`agent_test.go`, `stream_test.go`, `loop_test.go`, `saga_test.go`,
+  `session_test.go`, `decision_test.go`, `model_test.go`, `typed_test.go`, `retrieval_test.go`,
+  `tool_middleware_test.go`): the agent loop, streaming,
   concurrency, sagas, sessions, typed results, human-in-the-loop, turn limits, prompts, sampling,
   retrieval/RAG, and tool middleware.
 - `audit/` also covers policy, signing (including signature-scheme agility), anchoring, event

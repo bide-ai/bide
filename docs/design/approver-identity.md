@@ -1106,7 +1106,7 @@ asserting the same counted set and the same reason:
     `expiredCertsOnCRL` extensions, intermediates needing pins and their own status, several SANs
     returned, Ed25519 and ML-DSA leaves and roots, email SAN returned as issued. The build keeps them as
     the assumption checks.
-24. forward compatibility, **also in this PR** (`agent/decision_forward_compat_test.go`): decision
+24. forward compatibility, **also in this PR** (`agent/approval_test.go`): decision
     records tolerate unknown fields, the tally decoding is strict (so identity data has its own record),
     the pause note tolerates new fields.
 25. `bide identity fetch-crl` against a local `httptest` server: atomic replace, stale alarm, archive,

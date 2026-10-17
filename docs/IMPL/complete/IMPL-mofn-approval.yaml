@@ -82,7 +82,7 @@ file_ownership:
       depends_on:
         - A
         - B
-    - file: agent/mofn_gate_test.go
+    - file: agent/mofn_test.go
       agent: C
       wave: 2
       action: new
@@ -387,7 +387,7 @@ waves:
             you may add a small internal sanity test in a NEW file
             agent/store_mofn_test.go IF you keep ownership; but to stay within your
             declared ownership (agent/store.go only), do NOT create new files.
-            Leave thorough tally unit tests to Agent C (agent/mofn_gate_test.go).
+            Leave thorough tally unit tests to Agent C (agent/mofn_test.go).
 
             Verification gate:
               gofmt -l agent/store.go   # expect empty
@@ -493,7 +493,7 @@ waves:
                If a tool has a non-nil Approval but no resolver is configured, return
                a clear wrapped ErrConfig error rather than silently tallying zero.
 
-            Tests (agent/mofn_gate_test.go): use MemStore and a fake in-package
+            Tests (agent/mofn_test.go): use MemStore and a fake in-package
             ApproverVerifier. Cover:
               - tally proceeds at exactly Need approvals; pauses below Need with
                 Quorum populated (Approved/Denied/Pending correct).
@@ -506,7 +506,7 @@ waves:
               - the "approval-tally:"+toolUseID step is journaled and readable.
 
             Verification gate:
-              gofmt -l agent/agent.go agent/mofn_gate_test.go   # expect empty
+              gofmt -l agent/agent.go agent/mofn_test.go   # expect empty
               GOWORK=off go build ./agent/...
               GOWORK=off go vet ./agent/...
               GOWORK=off go test ./agent/ -run 'Mofn|Approval'
@@ -525,7 +525,7 @@ waves:
             - Use the go1.27 toolchain and GOWORK=off.
           files:
             - agent/agent.go
-            - agent/mofn_gate_test.go
+            - agent/mofn_test.go
           dependencies:
             - A
             - B
@@ -819,9 +819,9 @@ completion_reports:
         commit: 094c5d1
         files_changed:
             - agent/agent.go
-            - agent/mofn_gate_test.go
+            - agent/mofn_test.go
         files_created:
-            - agent/mofn_gate_test.go
+            - agent/mofn_test.go
         tests_added:
             - TestMofn_ProceedsAtNeed
             - TestMofn_TallyStepJournaled
@@ -877,7 +877,7 @@ completion_reports:
             - TestMofnDST_InterleavedDecisions
             - TestMofnDST_CrashSweepAfterQuorum
         verification: PASS
-        notes: 'Reuses mofn_gate_test.go helpers (fakeVerifiers, approveAs, mofnRun, wantPending, hasStep) and dst_test.go crashStore. Added a crash sweep after quorum (at most one charge, ResumeHalt path exercised, tally journaled exactly once). Redundant-resume check disables verifiers to prove the journaled tally is authoritative. Observation (pre-existing, not m-of-n specific): re-running an already complete run via Run appends a fresh @llm/N model turn after run:complete, because the loop does not consult the completion marker. The test compares History up through run:complete for equality and asserts only StepModel records follow. Full agent package passes with -race.'
+        notes: 'Reuses mofn_test.go helpers (fakeVerifiers, approveAs, mofnRun, wantPending, hasStep) and dst_test.go crashStore. Added a crash sweep after quorum (at most one charge, ResumeHalt path exercised, tally journaled exactly once). Redundant-resume check disables verifiers to prove the journaled tally is authoritative. Observation (pre-existing, not m-of-n specific): re-running an already complete run via Run appends a fresh @llm/N model turn after run:complete, because the loop does not consult the completion marker. The test compares History up through run:complete for equality and asserts only StepModel records follow. Full agent package passes with -race.'
     G:
         status: complete
         branch: polywave/mofn-approval/wave3-agent-G

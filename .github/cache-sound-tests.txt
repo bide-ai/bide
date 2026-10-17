@@ -6,7 +6,7 @@
 # A change to the process calls of a file listed here (a new command, a new argument, a Dir, a
 # different program) needs its reason re-checked: the entry vouches for the calls as they were.
 agent/architecture_test.go: go list -deps of agent (its own import graph, in the test binary) and go mod edit (go.mod changes clear the test cache)
-agent/option_scopes_test.go: go list -export -deps of agent (its own import graph)
+agent/options_x_test.go: go list -export -deps of agent (its own import graph)
 cmd/bench/main_test.go: re-runs the test binary (os.Args[0])
 model/modeltest/modeltest_test.go: re-runs the test binary
 notify/relay/relay_test.go: re-runs the test binary
