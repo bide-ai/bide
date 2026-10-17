@@ -79,6 +79,14 @@ type RedactionRecord struct {
 	// EventCopiesKept is the number of events of the run the event store holds, which the erasure
 	// left (the operator chose to erase the journal anyway); 0 when it held none or was not asked.
 	EventCopiesKept int `json:"event_copies_kept,omitempty"`
+	// Position and Prev bind the record to its place in the trail: its index, and the leaf hash of
+	// the record before it (empty for the first). They are signed, so a signed record copied to
+	// another position, or after other records, or into another trail, no longer verifies.
+	Position int    `json:"position"`
+	Prev     []byte `json:"prev,omitempty"`
+	// Deployment names the deployment the trail belongs to (RedactionOptions.Deployment), signed, so a
+	// record cannot be moved into another deployment's trail that holds the same key.
+	Deployment string `json:"deployment,omitempty"`
 	// Alg and Signature sign the record's other members under the redaction key: a record without a
 	// signature that verifies is not the tool's, whatever signed head covers it.
 	Alg       string `json:"alg"`
@@ -181,17 +189,20 @@ func AppendRedactionRecord(ctx context.Context, store EventStore, r RedactionRec
 		return err
 	}
 	r.Format = RedactionRecordFormat
-	if err := r.sign(signer); err != nil {
-		return err
-	}
-	leaf, err := redactionLeaf(r)
-	if err != nil {
-		return err
-	}
 	for range 8 {
 		leaves, err := store.Load(ctx, RedactionTrailName)
 		if err != nil {
 			return fmt.Errorf("audit: load the redaction trail: %w", err)
+		}
+		// The record is bound to the position it is appended at and to the leaf before it, so every
+		// retry after a lost race signs it again at the new position.
+		r.Position, r.Prev = len(leaves), prevHash(leaves, len(leaves))
+		if err := r.sign(signer); err != nil {
+			return err
+		}
+		leaf, err := redactionLeaf(r)
+		if err != nil {
+			return err
 		}
 		err = store.Append(ctx, RedactionTrailName, len(leaves), leaf)
 		if err == nil {
@@ -235,6 +246,9 @@ type RedactionOptions struct {
 	// EventCopiesKept is the number of events of the run the event store holds that the erasure
 	// leaves; it is recorded and VerifyRedactions reports it.
 	EventCopiesKept int
+	// Deployment names the deployment the trail belongs to; it is signed into every record, and
+	// VerifyRedactions checks it when given one. Optional.
+	Deployment string
 	// Executor says who is erasing (a key ID, a user name); required.
 	Executor string
 	// Now is the time stamped into the tombstones and the trail; the zero value is an error.
@@ -294,7 +308,7 @@ func RedactJournal(ctx context.Context, j *agent.Journal, trail EventStore, plan
 	rec := RedactionRecord{
 		Format: RedactionRecordFormat, Phase: RedactionBegin, PlanDigest: plan.Digest, RunID: plan.RunID,
 		JournalSize: plan.JournalSize, Reason: opt.Reason, Ticket: opt.Ticket, Executor: opt.Executor,
-		AtMs: opt.Now.UnixMilli(), Version: opt.Version, EventCopiesKept: opt.EventCopiesKept,
+		AtMs: opt.Now.UnixMilli(), Version: opt.Version, EventCopiesKept: opt.EventCopiesKept, Deployment: opt.Deployment,
 	}
 	for _, p := range plan.Records {
 		rec.Records = append(rec.Records, RedactedRef{Position: p.Position, Name: p.Name, Kind: string(p.Kind), Length: p.Length, LeafHash: p.LeafHash, Already: p.AlreadyRedacted})
@@ -372,6 +386,8 @@ const (
 	FindingHashMismatch RedactionFindingKind = "HASH_MISMATCH"
 	// FindingUncovered: a redaction that ran with no covering signed head.
 	FindingUncovered RedactionFindingKind = "UNCOVERED"
+	// FindingReordered: a trail record that is not at the position, or after the record, it was signed for: a replayed, copied or reordered record.
+	FindingReordered RedactionFindingKind = "REORDERED"
 	// FindingBadSignature: a trail record with no signature, or one that does not verify under the key: not the tool's, whatever head covers it.
 	FindingBadSignature RedactionFindingKind = "BAD_SIGNATURE"
 	// FindingEventCopies: an erasure that left the run's events in the event store.
@@ -400,6 +416,8 @@ type RedactionVerifyInput struct {
 	Verifier Verifier
 	// Unanchored accepts a trail with no head, reported but not failed.
 	Unanchored bool
+	// Deployment, when set, is the deployment every record must be signed for (RedactionOptions.Deployment).
+	Deployment string
 	// Journals are the journals to check against, by run ID: the records as read (a store's History,
 	// or JournalExport.Journal). A run the trail names that has no journal here is not checked.
 	Journals map[string][]agent.Record
@@ -467,8 +485,13 @@ func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error) {
 	}
 
 	for i, r := range recs {
-		if !r.verifySignature(in.Verifier) {
+		switch {
+		case !r.verifySignature(in.Verifier):
 			add(FindingBadSignature, r.RunID, "trail record %d has no signature that verifies under the key: it was not written by the redaction tool (a planted record), whatever signed head covers it", i)
+		case in.Deployment != "" && r.Deployment != in.Deployment:
+			add(FindingBadSignature, r.RunID, "trail record %d is signed for deployment %q, not %q: it was copied from another trail", i, r.Deployment, in.Deployment)
+		case r.Position != i || !bytes.Equal(r.Prev, prevHash(in.Trail, i)):
+			add(FindingReordered, r.RunID, "trail record %d was signed for position %d after another record: a replayed, copied or reordered record (it hides the pass that follows it)", i, r.Position)
 		}
 	}
 	type key struct {
@@ -571,26 +594,35 @@ func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error) {
 	return rep, nil
 }
 
+// prevHash is the leaf hash of the trail's leaf before position i, nil for the first.
+func prevHash(leaves [][]byte, i int) []byte {
+	if i == 0 {
+		return nil
+	}
+	return leafHash(leaves[i-1])
+}
+
 // SignRedactionTrail signs a tree head over the redaction trail in store, after checking the trail is
 // the one the earlier heads attest: every head in prior must verify under v, be a head of the trail,
 // and commit to a prefix of it, and every record in the trail must carry a signature that verifies
-// under v, so a record planted by someone who can append to the event store (and holds no key) is
-// refused rather than attested by the head. It returns an error wrapping ErrNotVerified naming the
+// under v and is bound to its position and the record before it, so a record planted by someone who can
+// append to the event store (and holds no key), or a signed record replayed or copied, is refused rather
+// than attested by the head. The head is over exactly the leaves it checked, never a fresh load, so a
+// record appended meanwhile is not attested. It returns an error wrapping ErrNotVerified naming the
 // first problem.
 func SignRedactionTrail(ctx context.Context, store EventStore, signer Signer, v Verifier, prior []SignedTreeHead, now time.Time) (SignedTreeHead, error) {
 	leaves, err := store.Load(ctx, RedactionTrailName)
 	if err != nil {
 		return SignedTreeHead{}, fmt.Errorf("audit: load the redaction trail: %w", err)
 	}
-	rep, verr := VerifyRedactions(RedactionVerifyInput{Trail: leaves, Heads: prior, Verifier: v, Unanchored: len(prior) == 0, Journals: nil})
+	rep, _ := VerifyRedactions(RedactionVerifyInput{Trail: leaves, Heads: prior, Verifier: v, Unanchored: len(prior) == 0})
 	for _, f := range rep.Findings {
 		switch f.Kind {
-		case FindingTrailAltered, FindingBadSignature, FindingMalformed:
+		case FindingTrailAltered, FindingBadSignature, FindingReordered, FindingMalformed:
 			return SignedTreeHead{}, notVerified("audit: refusing to sign the redaction trail: %s: %s", f.Kind, f.Detail)
 		}
 	}
-	_ = verr
-	return SignNotifyTrail(ctx, store, RedactionTrailName, signer, now)
+	return SignTreeHead(TreeHead{Kind: TreeEvents, RunID: RedactionTrailName, Size: len(leaves), Root: merkleRoot(leaves), TimestampNanos: now.UnixNano()}, signer)
 }
 
 // checkTrailBeforeAppend refuses to append to a trail that holds a record the redaction key did not
@@ -607,7 +639,7 @@ func checkTrailBeforeAppend(ctx context.Context, trail EventStore, opt Redaction
 	rep, _ := VerifyRedactions(RedactionVerifyInput{Trail: leaves, Heads: opt.TrailHeads, Verifier: v, Unanchored: true})
 	for _, f := range rep.Findings {
 		switch f.Kind {
-		case FindingTrailAltered, FindingBadSignature, FindingMalformed:
+		case FindingTrailAltered, FindingBadSignature, FindingReordered, FindingMalformed:
 			return fmt.Errorf("%w (%s: %s)", ErrRedactTrailUntrusted, f.Kind, f.Detail)
 		}
 	}

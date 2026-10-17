@@ -713,3 +713,152 @@ func TestRedactJournal_RefusesATrailTheEarlierHeadsDoNotMatch(t *testing.T) {
 		t.Error("the refused pass wrote to the trail")
 	}
 }
+
+// A signed record is bound to its position and to the record before it: copying pass 1's end after a
+// crashed pass 2's begin would hide the unfinished pass, and is found.
+func TestRedactionTrail_ReplayedSignedRecordIsFound(t *testing.T) {
+	ctx := context.Background()
+	r := newTrailRig(t)
+	if _, err := audit.RedactJournal(ctx, r.j, r.trail, r.plan, r.options); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := r.trail.Load(ctx, audit.RedactionTrailName)
+	// Pass 2 of the same plan begins and crashes (its begin is written, its end never is).
+	begin, err := audit.DecodeRedactionLeaf(first[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	begin.Signature = nil
+	if err := audit.AppendRedactionRecord(ctx, r.trail, begin, r.signer); err != nil {
+		t.Fatal(err)
+	}
+	// Someone with append access copies pass 1's signed end leaf after it.
+	leaves, _ := r.trail.Load(ctx, audit.RedactionTrailName)
+	if err := r.trail.Append(ctx, audit.RedactionTrailName, len(leaves), first[1]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := audit.SignRedactionTrail(ctx, r.trail, r.signer, r.v, nil, time.Unix(0, p11Now())); err == nil || !strings.Contains(err.Error(), "REORDERED") {
+		t.Fatalf("SignRedactionTrail over a replayed record = %v; want a refusal naming REORDERED", err)
+	}
+	leaves, _ = r.trail.Load(ctx, audit.RedactionTrailName)
+	rep, err := audit.VerifyRedactions(audit.RedactionVerifyInput{Trail: leaves, Verifier: r.v, Unanchored: true, Journals: r.journals()})
+	if err == nil || !strings.Contains(kinds(rep), "REORDERED") {
+		t.Fatalf("report = %+v, %v; want REORDERED", rep, err)
+	}
+	// Reordering two genuine records is found too.
+	r2 := newTrailRig(t)
+	if _, err := audit.RedactJournal(ctx, r2.j, r2.trail, r2.plan, r2.options); err != nil {
+		t.Fatal(err)
+	}
+	ls, _ := r2.trail.Load(ctx, audit.RedactionTrailName)
+	rep, err = audit.VerifyRedactions(audit.RedactionVerifyInput{Trail: [][]byte{ls[1], ls[0]}, Verifier: r2.v, Unanchored: true, Journals: r2.journals()})
+	if err == nil || !strings.Contains(kinds(rep), "REORDERED") {
+		t.Fatalf("a reordered trail: report = %+v, %v", rep, err)
+	}
+}
+
+// A record signed for one deployment does not verify in another's trail, even under the same key.
+func TestRedactionTrail_CopyFromAnotherDeploymentIsFound(t *testing.T) {
+	ctx := context.Background()
+	b := newTrailRig(t)
+	b.options.Deployment = "branch-b"
+	if _, err := audit.RedactJournal(ctx, b.j, b.trail, b.plan, b.options); err != nil {
+		t.Fatal(err)
+	}
+	copied, _ := b.trail.Load(ctx, audit.RedactionTrailName)
+	// Deployment A, same key, holds only the first record B wrote.
+	a := audit.NewMemEventStore()
+	if err := a.Append(ctx, audit.RedactionTrailName, 0, copied[0]); err != nil {
+		t.Fatal(err)
+	}
+	leaves, _ := a.Load(ctx, audit.RedactionTrailName)
+	rep, err := audit.VerifyRedactions(audit.RedactionVerifyInput{Trail: leaves, Verifier: b.v, Unanchored: true, Deployment: "branch-a", Journals: b.journals()})
+	if err == nil || !strings.Contains(kinds(rep), "BAD_SIGNATURE") || !strings.Contains(rep.Findings[0].Detail, "another trail") {
+		t.Fatalf("report = %+v, %v; want BAD_SIGNATURE naming another trail", rep, err)
+	}
+	// Under its own deployment it verifies as far as signatures and position go.
+	rep, _ = audit.VerifyRedactions(audit.RedactionVerifyInput{Trail: leaves, Verifier: b.v, Unanchored: true, Deployment: "branch-b", Journals: b.journals()})
+	for _, f := range rep.Findings {
+		if f.Kind == audit.FindingBadSignature || f.Kind == audit.FindingReordered {
+			t.Errorf("a record in its own deployment: %+v", f)
+		}
+	}
+}
+
+// storeAppendingAfterLoad appends a planted leaf after its first Load, as a record added between a
+// check and a signature would be.
+type storeAppendingAfterLoad struct {
+	audit.EventStore
+	planted []byte
+	loads   int
+}
+
+func (s *storeAppendingAfterLoad) Load(ctx context.Context, run string) ([][]byte, error) {
+	leaves, err := s.EventStore.Load(ctx, run)
+	s.loads++
+	if s.loads == 1 {
+		s.EventStore.Append(ctx, run, len(leaves), s.planted)
+	}
+	return leaves, err
+}
+
+// The head is over exactly the leaves that were checked, whatever is appended meanwhile.
+func TestSignRedactionTrail_SignsWhatItChecked(t *testing.T) {
+	ctx := context.Background()
+	r := newTrailRig(t)
+	if _, err := audit.RedactJournal(ctx, r.j, r.trail, r.plan, r.options); err != nil {
+		t.Fatal(err)
+	}
+	checked, _ := r.trail.Load(ctx, audit.RedactionTrailName)
+	s := &storeAppendingAfterLoad{EventStore: r.trail, planted: []byte("planted")}
+	h, err := audit.SignRedactionTrail(ctx, s, r.signer, r.v, nil, time.Unix(0, p11Now()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.Size != len(checked) {
+		t.Fatalf("the head commits to %d leaves, the checked trail had %d: a record appended after the check was attested", h.Size, len(checked))
+	}
+	if now, _ := r.trail.Load(ctx, audit.RedactionTrailName); len(now) != len(checked)+1 {
+		t.Fatalf("the test did not append after the load")
+	}
+}
+
+// raceStore loses the first Append to another writer whose record lands at that position.
+type raceStore struct {
+	audit.EventStore
+	signer audit.Signer
+	raced  bool
+}
+
+func (s *raceStore) Append(ctx context.Context, run string, seq int, leaf []byte) error {
+	if !s.raced {
+		s.raced = true
+		other := audit.RedactionRecord{Phase: audit.RedactionBegin, PlanDigest: "other", RunID: "other", Reason: "x", Ticket: "x", Executor: "x", AtMs: 1}
+		if err := audit.AppendRedactionRecord(ctx, s.EventStore, other, s.signer); err != nil {
+			return err
+		}
+		return audit.ErrSeqTaken
+	}
+	return s.EventStore.Append(ctx, run, seq, leaf)
+}
+
+// After a lost race the record is signed again at the position it lands at.
+func TestAppendRedactionRecord_ResignsAfterALostRace(t *testing.T) {
+	ctx := context.Background()
+	r := newTrailRig(t)
+	rs := &raceStore{EventStore: r.trail, signer: r.signer}
+	rec := audit.RedactionRecord{Phase: audit.RedactionEnd, PlanDigest: "mine", RunID: "mine", Reason: "x", Ticket: "x", Executor: "x", AtMs: 2}
+	if err := audit.AppendRedactionRecord(ctx, rs, rec, r.signer); err != nil {
+		t.Fatal(err)
+	}
+	leaves, _ := r.trail.Load(ctx, audit.RedactionTrailName)
+	if len(leaves) != 2 {
+		t.Fatalf("trail has %d records, want the other writer's and ours", len(leaves))
+	}
+	rep, _ := audit.VerifyRedactions(audit.RedactionVerifyInput{Trail: leaves, Verifier: r.v, Unanchored: true})
+	for _, f := range rep.Findings {
+		if f.Kind == audit.FindingBadSignature || f.Kind == audit.FindingReordered {
+			t.Fatalf("a record appended after a lost race: %+v", f)
+		}
+	}
+}

@@ -1732,6 +1732,7 @@ RedactionFindingKind names what VerifyRedactions found wrong.
 - `const FindingNameMismatch RedactionFindingKind = "NAME_MISMATCH"`: FindingNameMismatch: a tombstone's name is not the name the trail recorded at that position.
 - `const FindingHashMismatch RedactionFindingKind = "HASH_MISMATCH"`: FindingHashMismatch: a tombstone's leaf hash is not the one the trail recorded.
 - `const FindingUncovered RedactionFindingKind = "UNCOVERED"`: FindingUncovered: a redaction that ran with no covering signed head.
+- `const FindingReordered RedactionFindingKind = "REORDERED"`: FindingReordered: a trail record that is not at the position, or after the record, it was signed for: a replayed, copied or reordered record.
 - `const FindingBadSignature RedactionFindingKind = "BAD_SIGNATURE"`: FindingBadSignature: a trail record with no signature, or one that does not verify under the key: not the tool's, whatever head covers it.
 - `const FindingEventCopies RedactionFindingKind = "EVENT_COPIES_KEPT"`: FindingEventCopies: an erasure that left the run's events in the event store.
 - `const FindingTimeMismatch RedactionFindingKind = "TIME_MISMATCH"`: FindingTimeMismatch: a tombstone stamped at a time no pass of the trail that listed it carries.
@@ -1747,6 +1748,8 @@ type RedactionOptions struct {
 	Signer Signer
 
 	EventCopiesKept int
+
+	Deployment string
 
 	Executor string
 
@@ -1792,6 +1795,11 @@ type RedactionRecord struct {
 	Error    string `json:"error,omitempty"`
 
 	EventCopiesKept int `json:"event_copies_kept,omitempty"`
+
+	Position int    `json:"position"`
+	Prev     []byte `json:"prev,omitempty"`
+
+	Deployment string `json:"deployment,omitempty"`
 
 	Alg       string `json:"alg"`
 	Signature []byte `json:"signature"`
@@ -1839,6 +1847,8 @@ type RedactionVerifyInput struct {
 	Verifier Verifier
 
 	Unanchored bool
+
+	Deployment string
 
 	Journals map[string][]agent.Record
 }
@@ -1985,7 +1995,7 @@ SignedTreeHead is a TreeHead with a signature over its canonical encoding under 
 
 - `func SignAbsenceRoot(records []agent.Record, set KeySet, journal TreeHead, s Signer, timestamp int64) (SignedTreeHead, error)`: SignAbsenceRoot commits and signs a run's key set in one call: NewAbsenceTreeHead, then SignTreeHead with s.
 - `func SignNotifyTrail(ctx context.Context, store EventStore, trail string, s Signer, now time.Time) (SignedTreeHead, error)`: SignNotifyTrail signs a tree head over the leaves store holds for trail, at now.
-- `func SignRedactionTrail(ctx context.Context, store EventStore, signer Signer, v Verifier, prior []SignedTreeHead, now time.Time) (SignedTreeHead, error)`: SignRedactionTrail signs a tree head over the redaction trail in store, after checking the trail is the one the earlier heads attest: every head in prior must verify under v, be a head of the trail, and commit to a prefix of it, and every record in the trail must carry a signature that verifies under v, so a record planted by someone who can append to the event store (and holds no key) is refused rather than attested by the head.
+- `func SignRedactionTrail(ctx context.Context, store EventStore, signer Signer, v Verifier, prior []SignedTreeHead, now time.Time) (SignedTreeHead, error)`: SignRedactionTrail signs a tree head over the redaction trail in store, after checking the trail is the one the earlier heads attest: every head in prior must verify under v, be a head of the trail, and commit to a prefix of it, and every record in the trail must carry a signature that verifies under v and is bound to its position and the record before it, so a record planted by someone who can append to the event store (and holds no key), or a signed record replayed or copied, is refused rather than attested by the head.
 - `func SignTreeHead(th TreeHead, s Signer) (SignedTreeHead, error)`: SignTreeHead signs th under s's scheme.
 
 **Methods**

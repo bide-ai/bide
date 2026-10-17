@@ -1284,6 +1284,8 @@ Usage of bide audit redactions:
     	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never; -json is never colored
   -db string
     	read the trail and the journals from this SQLite journal (opened read-only) instead of from files
+  -deployment string
+    	the deployment name every trail record must be signed for (RedactionOptions.Deployment): a record copied from another deployment's trail under the same key is then BAD_SIGNATURE
   -journal value
     	a run's journal export (audit.ExportJournal as JSON) to check the tombstones of; repeat once per run
   -json
