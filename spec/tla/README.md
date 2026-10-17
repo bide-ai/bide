@@ -3103,11 +3103,13 @@ nothing in the model starts it again.
   plain lift, and its stops are unknowable while one is active (`BasicSignedStopNeedsSignedLift`).
 - **Two stops**, each covering a set of calls (`CoverOf`); a lift names its stop. Lifting needs
   `QuorumOf` distinct lifters of the policy in force and, with `NeedsOther`, one who is not the setter.
-- **The audit trail** (`WithTrail`). A signed record is written in two steps. A stop goes to the control
+- **The audit trail** (`WithTrail`), a sequence in write order. A signed record is written in two steps. A stop goes to the control
   log first, so it is in force at once, and to the trail second. Every other record (a lift, a transition,
   the root, a mode change) goes to the trail first, so none is in force without its evidence
-  (`EffectiveImpliesTrailed`). A crash between the two steps leaves the first (`WriteCrash`), and `Reaudit`
-  appends to the trail what the control log holds that it lacks; a writer with store access can write
+  (`EffectiveImpliesTrailed`). Before a trail-first record the control catches the trail up (`CaughtUp`: every
+  signed log record is on the trail), so the trail never holds a lift ahead of its stop. A crash between the two
+  steps leaves the first (`WriteCrash`; a crashed lift stays on the trail, unapplied), and `Reaudit`
+  appends, in log order, what the control log holds that the trail lacks; a writer with store access can write
   unsigned records straight into the control log (`Forge`).
 - **A call**: `Claim`, then the check (`ReadOk`: a synchronous read of the whole log, or without
   `SyncRead` any earlier prefix; `ReadFail`: held under `FailClosed`, else it proceeds), then
@@ -3129,6 +3131,7 @@ nothing in the model starts it again.
 | `AgreesWithChain` | invariant | an audited process's stops agree with the fold that follows every transition from the root, or it says they are unknowable |
 | `NoSpuriousUnknowable` | invariant | an audited process whose pin the chain has reached is never made unknowable by a record that does not verify |
 | `EffectiveImpliesTrailed` | invariant | with a trail, no signed record that is not a stop is in the control log unless it is already on the trail |
+| `TrailAgreesWithLog` | invariant | once every write has finished and the trail holds exactly the log's signed records, the trail's fold equals the log's |
 | `ForeignNoEffect` | invariant | a record for another deployment changes nothing in an audited process |
 | `BasicSignedStopNeedsSignedLift` | invariant | a basic process does not lift a stop set under a signed record on a plain lift |
 | `StopsNeverDropped` | property | a stop never goes back: none, active, lifted |
@@ -3162,6 +3165,7 @@ nothing in the model starts it again.
 | `stop-replay` | ci | records signed for another deployment change nothing |
 | `stop-attacker-root` | ci | an attacker with keys of their own writes a root and a transition into the pinned policy: only the trusted root starts the chain |
 | `stop-trail` | ci | the write order with a trail, with a crash between the two steps and a store writer |
+| `stop-trail-agree-reach` | ci | reachability: a quiescent trail of more than one record that agrees with the log (`QuiescentAgreeNotReachable` violated) |
 | `stop-trail-reach` | ci | reachability: a stop in force whose trail write has not happened (`UntrailedStopNotReachable` violated) |
 | `stop-two-stops` | ci | two stops and two calls: each stop holds only its own call |
 | `stop-blocked-reach` | ci | reachability: a call reads a stop and is not started (`BlockedNotReachable` violated) |
@@ -3183,6 +3187,7 @@ Each is in `stop/regress/` and must fail with its named property:
 - `no-chain` (`AgreesWithChain`): a process that does not walk the chain from the root drops a stop set under policy 1 silently (found in the review of #393).
 - `unknowable-on-forgery` (`NoSpuriousUnknowable`): one forged record makes an audited process's stops unknowable, so a store-write attacker pauses every covered call (the lead's review of fac3710c).
 - `untrusted-root` (`AgreesWithChain`): a stored root the process does not trust starts the chain: an attacker's root plus a transition into the pinned policy drops the genuine stops silently (found in the review of #393).
+- `no-catch-up` (`TrailAgreesWithLog`): a lift goes on the trail without the catch-up: after a stop whose trail write failed, the lift is on the trail ahead of its stop, Reaudit appends the stop behind it, and the trail folds to a stop shown in force (found in the review of the stop trail's PR).
 - `lift-store-first` (`EffectiveImpliesTrailed`): a lift written to the control log before the trail is in force without its evidence (asked for in the review of the stop trail's PR).
 - `no-dep-check` (`ForeignNoEffect`): the fold ignores the deployment ID, so staging's records take effect in production (found in the review of #393).
 - `basic-plain-lift` (`BasicSignedStopNeedsSignedLift`): a basic process on an audited deployment lifts a signed stop on a plain lift (found in the review of #393).

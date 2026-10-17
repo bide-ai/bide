@@ -219,6 +219,10 @@ func (s StopState) UnknowableErr() error {
 	return nil
 }
 
+// Rejects reports whether the fold rejected r (a record it did not accept: not signed by an enrolled
+// approver of the policy in force, for another deployment, malformed, and so on).
+func (s StopState) Rejects(r StopRecord) bool { return s.rejectedSet[stopRecordStep(r)] }
+
 // Active returns the stops that are not lifted, in the order they were set.
 func (s StopState) Active() []StopEntry {
 	var out []StopEntry

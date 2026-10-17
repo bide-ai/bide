@@ -87,6 +87,13 @@ type StopReport struct {
 	// Problems are the reasons the trail is not what a deployment's stop trail should be; any makes
 	// VerifyStops return ErrNotVerified.
 	Problems []string `json:"problems,omitempty"`
+	// Unapplied are records of the trail, signed and accepted by the fold, that are not stops and that the
+	// control run lacks: what a crash between the trail write and the control-run write leaves. They are not
+	// in force and not a forgery, so they are not a problem; agent.StopControl.ApplyPending applies them.
+	Unapplied []StopReportRecord `json:"unapplied,omitempty"`
+	// Superseded are such records that a record the control run holds follows on the trail: the next write
+	// went on without them, so they cannot be applied without reordering. They are not in force either.
+	Superseded []StopReportRecord `json:"superseded,omitempty"`
 }
 
 func refOf(r agent.StopRecord) StopReportRecord {
@@ -122,8 +129,11 @@ func VerifyStops(in StopVerifyInput) (StopReport, error) {
 	}
 	in.checkStopHeads(&rep, in.Trail.Leaves, recs, decoded, bad)
 
-	if len(in.Options) > 0 {
-		st, err := agent.VerifyStopRecords(recs, in.Options...)
+	var st agent.StopState
+	folded := len(in.Options) > 0
+	if folded {
+		var err error
+		st, err = agent.VerifyStopRecords(recs, in.Options...)
 		if err != nil {
 			return rep, err
 		}
@@ -147,8 +157,51 @@ func VerifyStops(in StopVerifyInput) (StopReport, error) {
 		for _, r := range storeOnly {
 			rep.StoreOnly = append(rep.StoreOnly, refOf(r))
 		}
+		var forged []agent.StopRecord
+		lastStored := -1
+		stored := map[string]bool{}
+		for _, r := range in.Control {
+			stored[agent.StopDigest(r)] = true
+		}
+		for i, r := range recs {
+			if stored[agent.StopDigest(r)] {
+				lastStored = i
+			}
+		}
+		idx := map[string]int{}
+		for i, r := range recs {
+			idx[agent.StopDigest(r)] = i
+		}
+		skip := map[string]bool{} // the records the control run does not hold: not in force, left out of the stops reported
 		for _, r := range trailOnly {
+			if folded && r.Kind != "set" && r.Signed() && !st.Rejects(r) {
+				skip[agent.StopDigest(r)] = true
+				if idx[agent.StopDigest(r)] < lastStored {
+					rep.Superseded = append(rep.Superseded, refOf(r))
+				} else {
+					rep.Unapplied = append(rep.Unapplied, refOf(r))
+				}
+				continue
+			}
 			rep.TrailOnly = append(rep.TrailOnly, refOf(r))
+			forged = append(forged, r)
+		}
+		trailOnly = forged
+		if len(skip) > 0 {
+			// What is in force is what the control run holds: fold the trail without the records that never took effect.
+			var eff []agent.StopRecord
+			for _, r := range recs {
+				if !skip[agent.StopDigest(r)] {
+					eff = append(eff, r)
+				}
+			}
+			if st2, err := agent.VerifyStopRecords(eff, in.Options...); err == nil {
+				rep.Stops = rep.Stops[:0]
+				for _, s := range st2.Stops {
+					rep.Stops = append(rep.Stops, StopReportEntry{ID: s.ID, Scope: s.Scope.String(), Reason: s.Reason, By: s.By, At: s.At, Signed: s.Signed,
+						Lifted: s.Lifted, LiftedBy: s.LiftedBy, LiftsHeld: s.LiftsHeld, LiftsNeeded: s.LiftsNeeded, Compensation: s.Compensation})
+				}
+			}
 		}
 		if len(storeOnly) > 0 {
 			bad("%d record(s) are in the control run and not in the trail: in force without evidence (agent.StopControl.Reaudit appends them), or written around the trail", len(storeOnly))
@@ -221,13 +274,18 @@ func (in StopVerifyInput) checkStopHeads(rep *StopReport, leaves [][]byte, recs 
 	rep.Anchored, rep.Heads = true, len(heads)
 	rep.HeadSize, rep.HeadTime = newest.Size, time.Unix(0, newest.TimestampNanos).UTC()
 	rep.Tail = len(leaves) - newest.Size
-	if rep.Tail > 0 && decoded && newest.Size < len(recs) {
-		if t, err := time.Parse(time.RFC3339Nano, recs[newest.Size].At); err == nil {
-			if age := in.Now.Sub(t); age > 0 {
-				rep.TailAge = age
+	if rep.Tail > 0 {
+		if decoded && newest.Size < len(recs) {
+			if t, err := time.Parse(time.RFC3339Nano, recs[newest.Size].At); err == nil {
+				if age := in.Now.Sub(t); age > 0 {
+					rep.TailAge = age
+				}
 			}
 		}
-		if in.MaxTailAge > 0 && rep.TailAge > in.MaxTailAge {
+		switch {
+		case in.MaxTailAge <= 0:
+			bad("%d record(s) after the newest signed head (size %d) are not attested, so whoever can write the trail's store could have deleted the newest records unseen: give a MaxTailAge (-max-unattested) to accept a tail younger than that", rep.Tail, newest.Size)
+		case rep.TailAge > in.MaxTailAge:
 			bad("%d record(s) after the newest signed head (size %d) have gone unattested for %s, longer than the %s allowed: the anchoring is not keeping up", rep.Tail, newest.Size, rep.TailAge.Round(time.Second), in.MaxTailAge)
 		}
 	}

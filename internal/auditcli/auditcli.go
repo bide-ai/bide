@@ -168,10 +168,12 @@ const usageText = `bide audit: produce and verify audit proof bundles
          is a problem, and a pin the chain does not reach is one too); with signed heads (-sth, from
          audit.SignStopTrail or the anchor log of the store that anchors it, each verified) the trail's
          first records are exactly what the newest head commits to, so a deleted or reordered record is
-         found, and the records after it are reported with how long the oldest has gone unattested
-         (-max-unattested fails a gap older than that). With -db or -postgres-env it also compares the
-         trail with the control run record for record: a record in force without evidence, or evidence
-         of a record that is not in force, fails. It prints each stop and whether it is in force
+         found; records after it are not attested, so with no -max-unattested any such tail fails (whoever
+         can write the trail's store could have deleted the newest records unseen) and -max-unattested
+         accepts a tail younger than that. With -db or -postgres-env it also compares the trail with
+         the control run record for record: a record in force without evidence, or a forged record in
+         the trail, fails; a signed record on the trail that never reached the control run (a crash
+         between the two writes) is listed as UNAPPLIED, or SUPERSEDED when a later record went on without it, and does not fail; agent.StopControl.ApplyPending applies an unapplied one. It prints each stop and whether it is in force
 
   notifications (-trail <file>... [-journal <file>...] | -db <file> | -postgres-env <var>) [-run <id>]
                 (-sth <file>... -pubkey <hex|file> | -unanchored) [-max-ack <duration>] [-max-unattested <duration>]

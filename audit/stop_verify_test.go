@@ -6,6 +6,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -175,6 +176,14 @@ func TestVerifyStops_TamperingAfterAHead(t *testing.T) {
 	if !errors.Is(err, audit.ErrNotVerified) || rep.Tail != 1 || !strings.Contains(problems(rep), "unattested") {
 		t.Errorf("tail: %v %+v", err, rep)
 	}
+	// With no MaxTailAge any unattested tail fails; with one it is accepted while it is younger.
+	rep, err = audit.VerifyStops(r.input(audit.StopVerifyInput{Heads: []audit.SignedTreeHead{head}}))
+	if !errors.Is(err, audit.ErrNotVerified) || !strings.Contains(problems(rep), "are not attested") {
+		t.Errorf("default tail: %v %s", err, problems(rep))
+	}
+	if rep, err = audit.VerifyStops(r.input(audit.StopVerifyInput{Heads: []audit.SignedTreeHead{head}, MaxTailAge: time.Hour})); err != nil {
+		t.Errorf("a young tail: %v %s", err, problems(rep))
+	}
 }
 
 // A record that does not verify under the pinned policy, written into the trail, is a problem, and so is
@@ -323,5 +332,108 @@ func TestVerifyStops_ControlRunFloodIsAFinding(t *testing.T) {
 	rep, err := audit.VerifyStops(r.input(audit.StopVerifyInput{Unanchored: true, Control: flood, HaveControl: true}))
 	if !errors.Is(err, audit.ErrNotVerified) || !strings.Contains(problems(rep), "the control run holds") || time.Since(start) > 10*time.Second {
 		t.Fatalf("%v %s (%v)", err, problems(rep), time.Since(start))
+	}
+}
+
+// A lift written to the trail whose control-run write never finished is unapplied, not a forgery: the
+// verb lists it and passes; ApplyPending makes it effective; a trail-only set, and a forged trail-only
+// record, are still problems.
+func TestVerifyStops_UnappliedRecordsAreNotForgeries(t *testing.T) {
+	ctx := context.Background()
+	r := newStopRig(t)
+	e := r.set("refund", "ops1")
+	r.lift(e, "ops1") // quorum 2: this one alone does not lift it
+	// The second lift reaches the trail, and the control-run write fails.
+	flaky := &failInsert{Store: r.store}
+	j, _ := agent.NewJournal(flaky)
+	c2, err := agent.NewStopControl(j, agent.WithStopMode(agent.StopAudited), agent.WithStopPolicy(r.policy), agent.WithStopVerifier(audit.StopVerifierFromAudit), agent.WithStopTrail(r.trail))
+	if err != nil {
+		t.Fatal(err)
+	}
+	flaky.on.Store(true)
+	if _, err := c2.LiftStop(ctx, e.ID, agent.LiftRequest{By: "risk", Signer: r.signer("risk")}); err == nil {
+		t.Fatal("expected the control-run write to fail")
+	}
+	flaky.on.Store(false)
+	ctlRecs, _ := c2.StopRecords(ctx)
+	rep, err := audit.VerifyStops(r.input(audit.StopVerifyInput{Unanchored: true, Control: ctlRecs, HaveControl: true}))
+	if err != nil || len(rep.Unapplied) != 1 || rep.Unapplied[0].Kind != "lift" || len(rep.TrailOnly) != 0 {
+		t.Fatalf("an unapplied lift: %v %+v %s", err, rep, problems(rep))
+	}
+	if st, _ := c2.State(ctx); len(st.Active()) != 1 {
+		t.Fatalf("the unapplied lift must not be in force: %+v", st.Active())
+	}
+	n, sup, err := c2.ApplyPending(ctx)
+	if err != nil || n != 1 || sup != 0 {
+		t.Fatalf("ApplyPending: %d applied, %d superseded, %v", n, sup, err)
+	}
+	if st, _ := c2.State(ctx); len(st.Active()) != 0 {
+		t.Fatalf("the lift must be in force after ApplyPending: %+v", st.Active())
+	}
+	ctlRecs, _ = c2.StopRecords(ctx)
+	if rep, err := audit.VerifyStops(r.input(audit.StopVerifyInput{Unanchored: true, Control: ctlRecs, HaveControl: true})); err != nil || len(rep.Unapplied) != 0 {
+		t.Fatalf("after ApplyPending: %v %+v", err, rep)
+	}
+	if n, sup, err := c2.ApplyPending(ctx); err != nil || n != 0 || sup != 0 {
+		t.Fatalf("a second ApplyPending: %d %d %v", n, sup, err)
+	}
+	// A trail-only record the fold rejects (a forgery written into the trail) is a problem, not unapplied.
+	forged := agent.StopRecord{Format: agent.StopFormat, Kind: "lift", Mode: agent.StopAudited, StopID: e.ID, SetDigest: "00", Deployment: "prod-91c2", At: time.Now().UTC().Format(time.RFC3339Nano), By: "ops1", Alg: audit.AlgEd25519, Signature: "00"}
+	have, _ := r.trail.Load(ctx, agent.StopTrailName)
+	if err := r.trail.Append(ctx, agent.StopTrailName, len(have), forged); err != nil {
+		t.Fatal(err)
+	}
+	rep, err = audit.VerifyStops(r.input(audit.StopVerifyInput{Unanchored: true, Control: ctlRecs, HaveControl: true}))
+	if !errors.Is(err, audit.ErrNotVerified) || len(rep.Unapplied) != 0 || len(rep.TrailOnly) != 1 {
+		t.Fatalf("a forged trail-only record: %v %+v", err, rep)
+	}
+}
+
+// failInsert fails every Insert of a control-run lift while on is set.
+type failInsert struct {
+	agent.Store
+	on atomic.Bool
+}
+
+func (f *failInsert) Unwrap() agent.Store { return f.Store }
+func (f *failInsert) Insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error) {
+	if f.on.Load() && runID == agent.StopControlRun && strings.HasPrefix(name, "@stop/lift/") {
+		return agent.Entry{}, false, errors.New("injected store fault")
+	}
+	return f.Store.Insert(ctx, runID, name, data)
+}
+
+// A pending record that a stored record follows on the trail is superseded: reported as such, not a
+// failure, left out of the stops shown, and not applied (applying it would reorder the control run).
+func TestVerifyStops_SupersededRecords(t *testing.T) {
+	ctx := context.Background()
+	r := newStopRig(t)
+	e := r.set("refund", "ops1")
+	flaky := &failInsert{Store: r.store}
+	j, _ := agent.NewJournal(flaky)
+	c2, err := agent.NewStopControl(j, agent.WithStopMode(agent.StopAudited), agent.WithStopPolicy(r.policy), agent.WithStopVerifier(audit.StopVerifierFromAudit), agent.WithStopTrail(r.trail))
+	if err != nil {
+		t.Fatal(err)
+	}
+	flaky.on.Store(true)
+	if _, err := c2.LiftStop(ctx, e.ID, agent.LiftRequest{By: "ops1", Signer: r.signer("ops1")}); err == nil {
+		t.Fatal("expected the control-run write to fail")
+	}
+	flaky.on.Store(false)
+	// The operator tries again: a new record (a new time), which reaches both. The first is now behind it.
+	time.Sleep(2 * time.Millisecond)
+	if _, err := c2.LiftStop(ctx, e.ID, agent.LiftRequest{By: "ops1", Signer: r.signer("ops1")}); err != nil {
+		t.Fatal(err)
+	}
+	ctlRecs, _ := c2.StopRecords(ctx)
+	rep, err := audit.VerifyStops(r.input(audit.StopVerifyInput{Unanchored: true, Control: ctlRecs, HaveControl: true}))
+	if err != nil || len(rep.Superseded) != 1 || len(rep.Unapplied) != 0 || len(rep.TrailOnly) != 0 {
+		t.Fatalf("%v %+v %s", err, rep, problems(rep))
+	}
+	if len(rep.Stops) != 1 || rep.Stops[0].LiftsHeld != 1 || rep.Stops[0].Lifted {
+		t.Fatalf("the stops shown are the control run's (one lift held), not the trail's: %+v", rep.Stops)
+	}
+	if n, sup, err := c2.ApplyPending(ctx); err != nil || n != 0 || sup != 1 {
+		t.Fatalf("ApplyPending: %d applied, %d superseded, %v", n, sup, err)
 	}
 }

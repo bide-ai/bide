@@ -27,7 +27,7 @@ func (c *cli) stops(args []string) {
 	root := fs.String("stop-root", "", "the digest (agent.StopPolicy.Digest) of the deployment's root policy, when -stop-policy is a later one the chain reaches; default the pinned policy itself")
 	db := fs.String("db", "", "read the trail and the control run from this SQLite database (opened read-only) instead of from a file")
 	pgEnv := fs.String("postgres-env", "", "read them from the Postgres database whose DSN is in this environment variable (never given on the command line)")
-	maxTail := fs.Duration("max-unattested", 0, "fail when records after the newest signed head have gone unattested longer than this (0: report the tail only)")
+	maxTail := fs.Duration("max-unattested", 0, "accept records after the newest signed head for this long: a tail older than that fails, and with 0 (default) any unattested tail fails, since whoever can write the trail's store could have deleted the newest records unseen")
 	asOf := fs.String("as-of", "", "judge the heads and the tail as of this RFC 3339 time (default now)")
 	c.parse(fs, args)
 
@@ -168,9 +168,6 @@ func (c *cli) stopReport(rep audit.StopReport, maxTail time.Duration) {
 	default:
 		c.printf("INFO  stop trail: %d records; UNANCHORED, nothing attests that it is complete or unaltered\n", rep.Records)
 	}
-	if rep.Anchored && rep.Tail > 0 && maxTail == 0 {
-		c.printf("WARN  %d record(s) after the newest signed head are not attested, and no -max-unattested was given: whoever can write the trail's store could have deleted the newest records from an exported trail unseen (a comparison with the control run, -db or -postgres-env, would find it)\n", rep.Tail)
-	}
 	if rep.PolicyDigest != "" {
 		c.printf("INFO  policy in force %.12s after %d transition(s)\n", rep.PolicyDigest, rep.PolicySeq)
 	}
@@ -188,6 +185,12 @@ func (c *cli) stopReport(rep audit.StopReport, maxTail time.Duration) {
 			line += fmt.Sprintf(": %s", cleanText(s.Reason))
 		}
 		c.println(line)
+	}
+	for _, r := range rep.Unapplied {
+		c.printf("WARN  UNAPPLIED %s by %s at %s: signed and on the trail, not in the control run (a write that did not finish); agent.StopControl.ApplyPending applies it\n", cleanText(r.Kind), cleanText(r.By), cleanText(r.At))
+	}
+	for _, r := range rep.Superseded {
+		c.printf("WARN  SUPERSEDED %s by %s at %s: signed and on the trail, not in the control run, and a later record went on without it (an abandoned write); it cannot be applied\n", cleanText(r.Kind), cleanText(r.By), cleanText(r.At))
 	}
 	for _, r := range rep.StoreOnly {
 		c.printf("FAIL  in the control run, not in the trail: %s by %s at %s\n", cleanText(r.Kind), cleanText(r.By), cleanText(r.At))
