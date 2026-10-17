@@ -129,6 +129,8 @@ The baseline is fixed when `bide edit` starts, so weakening in two edits is stil
 against the commit. The editor reads git only for this, with the same `git show rev:./file` that
 `bide check -diff` makes.
 
+![The editor in light mode after the approval gate form on the charge node was used to turn off separation of duties: a red APPROVAL GATE WEAKENED banner names the change from 2 of 3 excluding the requester to 2 of 3, a green ALL ASSERTIONS HOLD banner sits below it, and the flow, outline and inspector with its forms are visible](img/flow-edit-weakened.png)
+
 The comparison is the classifier `bide check -diff -check -fail-on-weaken` runs, not a second one:
 the editor shows what it returns. When the text is weaker than the baseline (a gate removed, its
 need lowered, an approver added without raising the need or replaced, `exclude_principal` or a
@@ -155,6 +157,8 @@ there is one validator, the one `bide check` runs, and a text the page accepts i
 Nothing is written until you save, and there is no autosave: a policy file should not change on a
 keystroke. The header says `saved` or `unsaved changes`, **Revert** puts back the text as it was last
 read or saved, and the page warns before it closes with unsaved changes.
+
+![The save dialog over the same page: a red THIS WEAKENS THE POLICY box repeats the change and holds an unchecked I confirm that I am weakening this policy box, with the unified diff of the file below it showing the removed exclude_principal line, and a Save button that stays disabled until the box is checked](img/flow-edit-save.png)
 
 **Save** opens a dialog that shows what will be written:
 
