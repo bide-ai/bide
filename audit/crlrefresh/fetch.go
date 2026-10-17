@@ -58,6 +58,9 @@ const (
 	outNotCRL      = "not-a-crl"
 	// outRefused marks a URL whose CRL was fetched but not accepted; Detail says why.
 	outRefused = "refused"
+	// outStale marks a URL whose CRL was fetched, archived and added, but was already past its nextUpdate,
+	// so it does not count as fresh.
+	outStale = "stale"
 )
 
 // URLOutcome is the result of asking one URL in one attempt, for the event.

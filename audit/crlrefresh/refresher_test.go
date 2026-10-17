@@ -61,6 +61,10 @@ func TestRefresherStaleOnArrivalIsArchivedNotFresh(t *testing.T) {
 	if len(g.kinds(crlrefresh.EventStaleOnArrival)) != 1 {
 		t.Fatalf("events %+v", g.dump())
 	}
+	// It was archived and added, so the URL is not reported as refused.
+	if msg := errs[g.intK].Error(); !strings.Contains(msg, ": stale: ") || strings.Contains(msg, "refused") {
+		t.Fatalf("a stale CRL is not labelled stale: %v", errs[g.intK])
+	}
 	if g.snap.Len() != 2 {
 		t.Fatalf("an expired CRL still fills the series: snapshot holds %d", g.snap.Len())
 	}
@@ -609,5 +613,21 @@ func TestRefresherErrorNamesWhyAFetchedCRLWasNotAccepted(t *testing.T) {
 		if h := g.health(g.intK); !strings.Contains(h.LastError, tc.want) {
 			t.Errorf("%s: LastError %q", name, h.LastError)
 		}
+	}
+}
+
+func TestRefresherDeltaServedAtTheBaseURLIsReported(t *testing.T) {
+	g := newCRig(t, withDelta())
+	now := g.clk.Now()
+	g.srv.set("/root.crl", g.rCRL(1, now.Add(-time.Hour), 48*time.Hour))
+	// A delta at the base URL (the base feed's error is the one refresh returns).
+	g.srv.set("/inter.crl", g.iDelta(11, 10, now.Add(-time.Minute), 20*time.Minute))
+	g.start()
+	err := g.refresh()[g.intK]
+	if err == nil {
+		t.Fatal("the wrong kind of CRL counted as success")
+	}
+	if want := "refused: a delta CRL was served at a base URL"; !strings.Contains(err.Error(), want) {
+		t.Errorf("the error lacks %q: %v", want, err)
 	}
 }

@@ -127,8 +127,8 @@ func (f *feed) attempt(ctx context.Context) (bool, error) {
 	var outcomes []URLOutcome
 	// refuse records on the URL's outcome that its CRL was fetched but not accepted, so a failed attempt
 	// does not read "ok" for a URL whose CRL was refused.
-	refuse := func(n int, why string) {
-		outcomes[n].Kind, outcomes[n].Detail = outRefused, why
+	refuse := func(n int, kind, why string) {
+		outcomes[n].Kind, outcomes[n].Detail = kind, why
 	}
 	var retry time.Duration
 	confirmed := false
@@ -149,20 +149,20 @@ func (f *feed) attempt(ctx context.Context) (bool, error) {
 			v, hash, verr := f.iss.verify(x.der)
 			if verr != nil {
 				r.emit(Event{Kind: verr.kind, Issuer: f.iss.key, Feed: f.kind, URL: x.URL, Detail: verr.msg, Hash: hash, At: now})
-				refuse(n, verr.msg)
+				refuse(n, outRefused, verr.msg)
 				continue
 			}
 			if v.Delta != (f.kind == "delta") {
 				why := "a " + map[bool]string{true: "delta", false: "full"}[v.Delta] + " CRL was served at a " + f.kind + " URL"
 				r.emit(Event{Kind: EventUnsupportedCRL, Issuer: f.iss.key, Feed: f.kind, URL: x.URL, Hash: hash, Number: v.Number, At: now, Detail: why})
-				refuse(n, why)
+				refuse(n, outRefused, why)
 				continue
 			}
 			if lim := v.ThisUpdate.After(now.Add(f.iss.timing.Skew + time.Minute)); lim {
 				f.iss.r.futureDated(f.iss, now)
 				why := "thisUpdate " + v.ThisUpdate.Format(time.RFC3339) + " is ahead of the local clock beyond the declared skew and a minute"
 				r.emit(Event{Kind: EventFutureDated, Issuer: f.iss.key, Feed: f.kind, URL: x.URL, Hash: hash, Number: v.Number, At: now, Detail: why})
-				refuse(n, why)
+				refuse(n, outRefused, why)
 				continue
 			}
 			tbs, _ := audit.CRLTBSHash(x.der)
@@ -185,11 +185,11 @@ func (f *feed) attempt(ctx context.Context) (bool, error) {
 	})
 	obtained := confirmed
 	for _, c := range cands {
-		if ok, why := f.consider(ctx, c, now, outcomes); ok {
+		if ok, kind, why := f.consider(ctx, c, now, outcomes); ok {
 			obtained = true
 			r.setValidator(c.url, c.val)
 		} else {
-			refuse(c.n, why)
+			refuse(c.n, kind, why)
 		}
 	}
 	f.flushQueue(ctx)
@@ -206,8 +206,9 @@ func (f *feed) attempt(ctx context.Context) (bool, error) {
 }
 
 // consider applies the number rules to one verified CRL. It reports whether the CRL is the issuer's
-// current one (newly accepted, or the one already held); when it is not, the second result says why.
-func (f *feed) consider(ctx context.Context, c cand, now time.Time, outcomes []URLOutcome) (bool, string) {
+// current one (newly accepted, or the one already held); when it is not, the second and third results
+// are the URL outcome kind (outRefused, or outStale for a CRL that was added but is not fresh) and why.
+func (f *feed) consider(ctx context.Context, c cand, now time.Time, outcomes []URLOutcome) (bool, string, string) {
 	r := f.iss.r
 	n := c.v.Number
 	if c.v.Delta && !f.iss.basePaired(c.v) {
@@ -231,9 +232,9 @@ func (f *feed) consider(ctx context.Context, c cand, now time.Time, outcomes []U
 	ev := func(k EventKind, detail string) Event {
 		return Event{Kind: k, Issuer: f.iss.key, Feed: f.kind, URL: audit.RedactURL(c.url), Number: n, Held: mark, Hash: c.hash, Detail: detail, At: now}
 	}
-	refuse := func(k EventKind, detail string) (bool, string) {
+	refuse := func(k EventKind, detail string) (bool, string, string) {
 		r.emit(ev(k, detail))
-		return false, detail
+		return false, outRefused, detail
 	}
 	archived := func(marker string) ArchivedCRL {
 		return ArchivedCRL{Number: n, ThisUpdate: c.v.ThisUpdate, Marker: marker, Source: audit.RedactURL(c.url), Fetched: now}
@@ -255,7 +256,7 @@ func (f *feed) consider(ctx context.Context, c cand, now time.Time, outcomes []U
 				}
 			}
 			r.emit(ev(EventUnchanged, "the newest CRL is unchanged"))
-			return true, ""
+			return true, "", ""
 		}
 		f.putArchive(ctx, archived(MarkerConflict), c.der)
 		return refuse(EventConflict, fmt.Sprintf("CRL number %s was seen with another TBSCertList; not added (the CA, or a source, is equivocating)", n))
@@ -268,12 +269,14 @@ func (f *feed) consider(ctx context.Context, c cand, now time.Time, outcomes []U
 	f.mark, f.markTBS = n, c.tbs
 	f.mu.Unlock()
 	if !now.Before(c.v.NextUpdate) {
-		return refuse(EventStaleOnArrival, "the CRL was already past its nextUpdate when fetched; archived and added, not counted as fresh")
+		const why = "the CRL was already past its nextUpdate when fetched; archived and added, not counted as fresh"
+		r.emit(ev(EventStaleOnArrival, why))
+		return false, outStale, why
 	}
 	e := ev(EventFetched, "CRL accepted")
 	e.Outcomes = outcomes
 	r.emit(e)
-	return true, ""
+	return true, "", ""
 }
 
 // holdsTBS reports whether the snapshot holds a CRL of this issuer with the given TBSCertList (a re-signed
@@ -321,7 +324,7 @@ func (f *feed) finish(now time.Time, obtained bool, retry time.Duration, outcome
 	var parts []string
 	for _, o := range outcomes {
 		p := o.URL + ": " + o.Kind
-		if o.Kind == outRefused && o.Detail != "" {
+		if (o.Kind == outRefused || o.Kind == outStale) && o.Detail != "" {
 			p += ": " + o.Detail
 		}
 		parts = append(parts, p)
