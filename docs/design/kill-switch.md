@@ -354,8 +354,10 @@ and lift under the policy in force at its position, so:
   not verify is a forgery, `Rejected` and nothing more. Otherwise a store-write attacker would hold a
   lever (pausing covered calls) against exactly the mode meant to resist them. Among several roots, the
   one equal to the pin is used, then the others in store order, and the first whose chain reaches the
-  pin is the deployment's; a competing root is only rejected. A writer's `RotatePolicy` and
-  `ChangeMode` write the root if none whose chain reaches the pin exists;
+  pin is the deployment's; a competing root is only rejected. Only verified records count toward
+  anything: a fake root, transition or mode record is rejected and never sets `ChainErr`. The first
+  audited write of any kind (a stop, a lift, a transition, a mode change) writes the root if none whose
+  chain reaches the pin exists, so every audited deployment is walkable;
 - a control needs a verifier constructor (`WithStopVerifier`, `audit.NewVerifier`) to adopt a
   transition; without it the transition is reported as rejected and the policy in force is the
   pinned one.
