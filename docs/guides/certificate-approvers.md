@@ -380,7 +380,7 @@ the highest-numbered valid one.
 **What it checks before a CRL reaches the snapshot.** The signature algorithm profile (never SHA-1), the
 signature against the issuing CA's own certificate (not any certificate the snapshot knows: another CA's CRL
 served at this CA's URL is refused), the issuer name, the key's `Distrust` date, a `thisUpdate` not ahead of the
-clock beyond the declared skew and a minute, and the structure rules of `AddCRL` (indirect and partitioned CRLs
+clock beyond the declared skew and a minute, and the structure rules of `AddCRL` (indirect CRLs, and partitioned CRLs other than a full-name-only issuing distribution point; a full-name-only point is read, see the CRL refresher limits in [known limitations](../KNOWN-LIMITATIONS.md)
 are refused and reported as unsupported). A CRL with a **lower number** than the highest accepted is a rollback
 and is not added; the **same number with a different TBSCertList** is an equivocation and is not added (a CA that
 re-signs one CRL, whose signature bytes differ, is the same CRL). Both are archived with a `rollback` or

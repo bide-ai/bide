@@ -175,13 +175,23 @@ func TestOpenSSLOverlappingCRLsWithAnOmittedCRL(t *testing.T) {
 
 // CRLs OpenSSL wrote that a verifier must refuse, and the real encoding of a delta indicator.
 func TestOpenSSLRefusalsAndTheDeltaIndicatorEncoding(t *testing.T) {
-	for _, name := range []string{"bad-sha1", "bad-idp", "bad-removefromcrl"} {
+	for _, name := range []string{"bad-sha1", "bad-removefromcrl"} {
 		if _, err := os.Stat(filepath.Join("testdata", "openssl", name+".pem")); err != nil {
 			t.Fatalf("%s: %v (gen.sh writes it; a missing SHA-1 CRL means OpenSSL would not write one)", name, err)
 		}
 		if _, err := audit.NewStatusSnapshot().AddCRL(fixturePEM(t, name)); err == nil {
 			t.Fatalf("%s: accepted", name)
 		}
+	}
+	// OpenSSL's issuing distribution point with only a full name (bad-idp.pem, from before the rule that reads
+	// it) is read, and is evidence of absence only for a certificate that names its URI: the fixture's
+	// leaves name none.
+	if _, err := audit.NewStatusSnapshot().AddCRL(fixturePEM(t, "bad-idp")); err != nil {
+		t.Fatalf("a full-name-only IDP was refused: %v", err)
+	}
+	fi := newOSSLFx(t)
+	if st := fi.leaf(fi.snap("bad-idp"), "good", "good", osslAt(11, 45), audit.StatusParams{CAPeriod: 30 * time.Minute}); st.Tier != audit.TierNoInformation {
+		t.Fatalf("an IDP CRL gave status to a certificate that does not name it: %+v", st)
 	}
 	// A CRL carrying a critical delta CRL indicator as OpenSSL encodes it is read as a delta: it
 	// merges with the base it names (number 1) and gives status as of its own time.

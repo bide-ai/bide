@@ -203,8 +203,9 @@ func (s *StatusSnapshot) Len() int {
 //
 // A CRL is refused when bide cannot read it without guessing, because a wrong reading is a wrong
 // "not revoked": a signature algorithm outside the profile (never SHA-1), no CRL number, no
-// nextUpdate (RFC 5280 requires it; absent means unknown), an issuing distribution point (partitioned
-// CRLs), an indirect CRL (a certificateIssuer entry extension), any critical extension bide does
+// nextUpdate (RFC 5280 requires it; absent means unknown), an issuing distribution point that is
+// not exactly a critical full name of URIs (see identity_idp.go; one that is is read, and is evidence of
+// absence only for a certificate that names it), an indirect CRL (a certificateIssuer entry extension), any critical extension bide does
 // not process, removeFromCRL in a full CRL, a malformed invalidity date, and a malformed delta
 // indicator (a delta CRL must carry a critical delta CRL indicator, a DER INTEGER: the number of the
 // base it is cumulative since; it is merged with a base when a chain is evaluated and never gives

@@ -462,6 +462,7 @@ func TestRefresherIDPMustNameTheSourceURL(t *testing.T) {
 	g = newCRig(t)
 	g.publishFresh(1)
 	now = g.clk.Now()
+	url = g.srv.URL + "/inter.crl"
 	g.srv.set("/inter.crl", g.inter.NewCRL(t, testca.CRLOpts{Number: 2, ThisUpdate: now.Add(-time.Minute), NextUpdate: now.Add(time.Hour),
 		Extra: []pkix.Extension{ext(asn1.ObjectIdentifier{2, 5, 29, 28}, true, idpFor(t, "http://elsewhere.example/other.crl"))}}))
 	g.start()
@@ -472,7 +473,7 @@ func TestRefresherIDPMustNameTheSourceURL(t *testing.T) {
 	if len(evs) == 0 || !strings.Contains(evs[0].Detail, "elsewhere.example") || !strings.Contains(evs[0].Detail, url) {
 		t.Fatalf("the event does not name both URLs: %+v", evs)
 	}
-	if h := g.health(g.intK); h.NewestNumber.Int64() != 1 {
+	if h := g.health(g.intK); h.NewestNumber != nil {
 		t.Fatalf("the refused CRL became the newest: %+v", h)
 	}
 }

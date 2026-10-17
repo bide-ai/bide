@@ -150,6 +150,11 @@ func (f *feed) attempt(ctx context.Context) (bool, error) {
 					Detail: "a " + map[bool]string{true: "delta", false: "full"}[v.Delta] + " CRL was served at a " + f.kind + " URL"})
 				continue
 			}
+			if len(v.DistributionPoints) > 0 && !slices.Contains(v.DistributionPoints, f.urls[n]) {
+				r.emit(Event{Kind: EventUnsupportedCRL, Issuer: f.iss.key, Feed: f.kind, URL: x.URL, Hash: hash, Number: v.Number, At: now,
+					Detail: "the CRL's issuing distribution point names " + strings.Join(v.DistributionPoints, ", ") + ", not the configured source " + f.urls[n] + ": the source is not the point the CA says the CRL is for"})
+				continue
+			}
 			if lim := v.ThisUpdate.After(now.Add(f.iss.timing.Skew + time.Minute)); lim {
 				f.iss.r.futureDated(f.iss, now)
 				r.emit(Event{Kind: EventFutureDated, Issuer: f.iss.key, Feed: f.kind, URL: x.URL, Hash: hash, Number: v.Number, At: now,
