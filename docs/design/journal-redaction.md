@@ -37,7 +37,7 @@ Redact never changes `seq`, `run_id` or `name`, so position and `Load` order are
 Store specifics:
 
 - SQLite: `UPDATE steps SET data=? WHERE run_id=? AND name=? AND data=?` plus the end-marker `EXISTS`, in one `BEGIN IMMEDIATE` transaction through the same write gate as `Insert`.
-- Postgres: the same under the run's advisory lock that `Insert` takes (so it serializes with writers), `UPDATE ... WHERE data = $4`. The application role has only `SELECT, INSERT` on `bide_steps` today (`docs/guides/postgres.md`), so it cannot erase. The redaction tool uses a third role, `bide_redactor`, with `SELECT` and `UPDATE (data)` on `bide_steps` (column privilege) and nothing else; that is the first layer of separation of duties and the guide gains the GRANT.
+- Postgres: one call of a `SECURITY DEFINER` function `bide_redact_v1(run, name, current, at_ms)` that the schema owner's migration creates (never replaced, search_path pinned, definition checked by `Open`), which repeats every check server-side and builds the tombstone itself. It takes no advisory lock: the replacement is one `UPDATE` of a row that keeps its `seq`, so it does not contend with inserts for a position, and it is safe because an end marker, once stored, stays, and the lease check is a read at the statement's snapshot. The application role has only `SELECT, INSERT` on `bide_steps` (`docs/guides/postgres.md`), so it cannot erase. The redaction tool uses a third role, `bide_redactor`, with `EXECUTE` on the function and no privilege on any table (a first design gave it `UPDATE (data)`, which let raw SQL rewrite any row; review found it): that is the first layer of separation of duties.
 - MemStore: implements it for tests.
 
 ### Engine-side helper
@@ -143,6 +143,10 @@ Every redaction is recorded in a separate append-only trail, signed and anchored
   1. *Database roles* (cheap, recommended always): the application cannot erase (no `UPDATE` on `bide_steps`); a distinct `bide_redactor` role can, and cannot touch the trail database; the trail's signer is not the application's.
   2. *Plan digest handoff* (free): one person runs the dry run and approves the digest, another executes it. Recorded as `executor` only; nothing enforces two people.
   3. *Signed authorization* (optional, `-authorization FILE`): a second person signs `{plan_digest, reason, ticket, not_after, authorizer key id}` with a key of their own (`bide.audit.redaction-authorization.v1`, any `audit.Signer`, so an HSM or KMS key works). `redact -execute` verifies it against `-authorizer-pubkey`, refuses an expired one, a different plan digest, or an authorizer key equal to the executor's signing key (`authorization-required`), and copies it into the `begin` record, so the verifier checks it later. A deployment sets "authorization required" in the config of the tool (or the flag `-require-authorization`); a bank would expect it on for any erasure of approval records or of a regulated run. It is optional in v1 so the first PR is not blocked on it; the record format has the field from the start so adding it later changes no format.
+
+### Names are attested by the trail
+
+A tombstone carries the record's name so that an export (bytes without row keys) can say which record it replaced. The name is outside the leaf hash, so nothing in the journal, an export or an evidence package authenticates it: it can be rewritten without breaking a root or a signature. Until the trail exists, every reader that acts on it labels it (decision coverage: "redacted, name not attested"; `RunStatus.StartRedacted`). The signed, anchored `redact:@log` trail records each redaction's run, position, name and leaf hash, so `bide audit redactions`, and the evidence path when given the trail and its head, check every tombstone's name against it: names are attested exactly when the trail verifies.
 
 ## 4. Verification afterwards
 

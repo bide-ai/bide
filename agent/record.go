@@ -94,7 +94,8 @@ type Record struct {
 	// reserved form {"redacted":{"leaf_hash":"<hex>","at_ms":<ms>,"name":"<name>"}}: the hex audit leaf hash of
 	// the bytes it replaced, the Unix-millis time of the redaction and the record's name (the name
 	// is optional on read; a redaction always writes it, so an export of the journal, which does
-	// not carry row names, still says which record a tombstone replaced). Only Name is meaningful on
+	// not carry row names, still says which record a tombstone replaced). That name is outside the
+	// leaf hash, so outside the database nothing attests it. Only Name is meaningful on
 	// such a record, and Raw returns the tombstone. It is never journaled: the tombstone is what the
 	// store holds. A run holding a redacted record is over and cannot be driven again.
 	Redacted bool `json:"-"`

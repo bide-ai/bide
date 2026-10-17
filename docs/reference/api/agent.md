@@ -186,6 +186,7 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `func TallyApprovals(recs []Record, s ApprovalSubject, p ApprovalPolicy, verifierFor ApproverVerifierFor) (ApprovalTally, []DecisionCheck)`: TallyApprovals is the m-of-n counting rule, shared by the gate and offline verification so the two cannot drift.
 - `func ToKey(receiver, key string) string`: ToKey is the event key of key's delivery to receiver, for an event that goes to several receivers at once (an approval whose approvers are routed to different ones): each has a key, and so an ID, claim and acknowledgement, of its own.
 - `func TombstoneLeafHash(b []byte) ([]byte, bool)`: TombstoneLeafHash returns the leaf hash a tombstone keeps, and false if b is not a tombstone in the exact form NewTombstone writes (see isTombstone).
+- `func TombstoneMillis(b []byte) (int64, bool)`: TombstoneMillis returns the time a tombstone records, in Unix millis, and false if b is not a tombstone in the exact form NewTombstone writes.
 - `func TombstoneName(b []byte) (string, bool)`: TombstoneName returns the record name a tombstone carries, and false if b is not a tombstone or names none (the reserved form allows a tombstone without one).
 - `func ToolResultStep(toolUseID string) string`: ToolResultStep is the key of the result of the call toolUseID: the record the loop, a saga rollback, or ResolveHalt writes when the call's outcome is known.
 - `func ToolsDigest(tools []ToolSpec) string`: ToolsDigest is the hex SHA-256 digest a model record journals of the tool set a turn was sent: each tool's name, description and argument schema, length-prefixed under a domain tag, in the order of their names, so the digest does not depend on the order the tools were listed in.
@@ -2751,7 +2752,8 @@ RunState is a run's state as Status reads it from the run's journal.
 
 ```go
 type RunStatus struct {
-	State RunState
+	StartRedacted bool
+	State         RunState
 
 	Terminal string
 

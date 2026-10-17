@@ -69,7 +69,7 @@ var (
 		"in": true, "case": true, "using": true, "array": true}
 	// sqlTypes are the types a statement may cast to, each written pg_catalog.<type>, optionally
 	// as an array (<type>[]).
-	sqlTypes = map[string]bool{"text": true, "int8": true, "int2": true, "float8": true, "interval": true, "oidvector": true, "regtype": true, "oid": true}
+	sqlTypes = map[string]bool{"text": true, "bytea": true, "int8": true, "int2": true, "float8": true, "interval": true, "oidvector": true, "regtype": true, "oid": true}
 	// sqlOperators are the operators a statement may use.
 	sqlOperators = map[string]bool{"=": true, "<>": true, "<": true, ">": true, "<=": true, ">=": true, "+": true, "-": true, "*": true}
 )
@@ -232,6 +232,13 @@ func sameName(a, b []sqlTok) bool {
 // schema-qualified name of the next_seq function, which q may call once if it is an INSERT with no
 // SELECT; rels are the qualified names of the relations, other than pg_catalog's, q may name.
 func checkSQL(q string, nextSeq []sqlTok, rels [][]sqlTok) error {
+	return checkSQLCalling(q, nextSeq, "insert", rels)
+}
+
+// checkSQLCalling is checkSQL for a statement that may call the schema-qualified function fn once,
+// which must be an INSERT with no SELECT (fnIn "insert": next_seq) or a SELECT (fnIn "select": the
+// redaction function).
+func checkSQLCalling(q string, nextSeq []sqlTok, fnIn string, rels [][]sqlTok) error {
 	toks, err := sqlTokens(q)
 	if err != nil {
 		return err
@@ -239,7 +246,11 @@ func checkSQL(q string, nextSeq []sqlTok, rels [][]sqlTok) error {
 	if len(toks) == 0 {
 		return errors.New("an empty statement")
 	}
-	if nextSeq != nil {
+	if nextSeq != nil && fnIn == "select" {
+		if !isTok(toks, 0, 'i', "select") {
+			return errors.New("the redaction function outside a SELECT")
+		}
+	} else if nextSeq != nil {
 		if !isTok(toks, 0, 'i', "insert") {
 			return errors.New("next_seq outside an INSERT")
 		}
