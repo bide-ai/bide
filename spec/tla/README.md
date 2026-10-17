@@ -2964,7 +2964,9 @@ Each is in `identity/regress/`, is the same model with one rule switched off by 
   distribution point of partition 1, even CRLs that of partition 0), a certificate's distribution point naming
   one, with the series coverage by time (`Cov` is not `"number"`: the model indexes CRLs globally, while the Go
   code numbers per partition). What the Go code adds is a fixed-URL match on bytes and the refusal of every other
-  IDP, which is test plan, not model.
+  IDP, which is test plan, not model. Delta CRLs are not modelled, so the rule that a delta is never merged with a
+  partition's base, and that a certificate with several points takes status from any covering CRL, are Go tests
+  (`TestUnscopedDeltaIsNotMergedWithAPartitionBase`, `TestSeveralPointsAreAlternatives`).
 - **`RoutineGrace` (0), `ClockTolerance` (0), OCSP, delta CRLs, `certificateHold`,
   `expiredCertsOnCRL`, the `W'` cut and the `MinW` floor, `CountLive`'s provisional tier, and an
   independent time source (RFC 3161).** `CountLive` is a switch, on only in `id-prune-live`.

@@ -1239,7 +1239,10 @@ func joinWarning(a, b string) string {
 func pairDeltas(vs []*crlView) map[*crlView]*crlView {
 	var bases []*crlView
 	for _, v := range vs {
-		if !v.delta {
+		// A base with an issuing distribution point is a partition's: a delta (which has none) says "nothing
+		// changed since base N" of the whole CA, which is no statement about one partition, so it is never
+		// merged with one. A partition's evidence is its full CRLs.
+		if !v.delta && len(v.idp) == 0 {
 			bases = append(bases, v)
 		}
 	}

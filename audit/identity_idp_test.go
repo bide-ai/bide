@@ -6,6 +6,7 @@ import (
 	"encoding/asn1"
 	"encoding/pem"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -358,4 +359,66 @@ func readCert(t *testing.T, path string) *x509.Certificate {
 		t.Fatal(err)
 	}
 	return c
+}
+
+// An unscoped delta (a delta has no IDP) is not merged with a partition's base: it says nothing changed in
+// the whole CA since base N, which is no statement about one partition. It is no evidence of absence for the
+// partition, and the mirror case (a delta whose base has another partition's IDP) is the same.
+func TestUnscopedDeltaIsNotMergedWithAPartitionBase(t *testing.T) {
+	for name, idp := range map[string]string{"the cert's partition": urlA, "another partition": urlB} {
+		t.Run(name, func(t *testing.T) {
+			s := newIDPFx(t, withCDP(urlA))
+			base := s.icrl(1, idT0.Add(10*min), idpExt(true, idpOf(t, idp)))
+			d := s.delta(2, 1, idT0.Add(40*min), hour)
+			st := s.leafStatus(s.snap(base, d, s.rootCRL()), audit.StatusParams{})
+			dv, err := audit.VerifyCRL(d, s.inter.Cert, 1000)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if slices.Contains(st.Used, dv.Hash) || st.S.Equal(idT0.Add(40*min)) {
+				t.Fatalf("the delta was used as evidence for a partition's base: S=%v", st.S)
+			}
+		})
+	}
+	// Control: the same delta pairs with a base that has no IDP.
+	s := newIDPFx(t, withCDP(urlA))
+	base := s.lcrl(1, idT0.Add(10*min), hour)
+	d := s.delta(2, 1, idT0.Add(40*min), hour)
+	st := s.leafStatus(s.snap(base, d, s.rootCRL()), audit.StatusParams{})
+	dv, _ := audit.VerifyCRL(d, s.inter.Cert, 1000)
+	if !slices.Contains(st.Used, dv.Hash) {
+		t.Fatalf("control: the delta did not pair with an unscoped base: %+v", st)
+	}
+}
+
+// A certificate that names several distribution points (separate points, as AD CS writes its LDAP and HTTP
+// publication points of one CRL) takes absence from a CRL that covers any one of them: the points are
+// alternative places for the same scope (RFC 5280 section 4.2.1.13). The consequence for a CA that
+// partitions and puts every partition's point in each certificate is stated in the guide: such a CA must
+// not do that, a certificate names its own partition's point only.
+func TestSeveralPointsAreAlternatives(t *testing.T) {
+	s := newIDPFx(t, withCDP(urlA, urlB))
+	cleanB := s.icrl(1, idT0.Add(10*min), idpExt(true, idpOf(t, urlB)))
+	st := s.leafStatus(s.snap(cleanB, s.rootCRL()), audit.StatusParams{})
+	if st.Tier == audit.TierNoInformation {
+		t.Fatalf("a CRL covering one of the certificate's points gave no status: %+v", st)
+	}
+	// A listing in the other point's CRL still revokes.
+	listA := s.icrl(2, idT0.Add(20*min), idpExt(true, idpOf(t, urlA)), testca.Revoked(s.leaf.Cert, idT0.Add(15*min), 1))
+	if st := s.leafStatus(s.snap(cleanB, listA, s.rootCRL()), audit.StatusParams{}); !st.Revoked {
+		t.Fatalf("a listing in the certificate's other point did not revoke: %+v", st)
+	}
+}
+
+// A URI with an embedded NUL, in the CRL's IDP, is refused.
+func TestIDPRefusesANulInTheURI(t *testing.T) {
+	s := newIDPFx(t, withCDP(urlA))
+	crl, err := s.inter.TryCRL(testca.CRLOpts{Number: 1, ThisUpdate: idT0, NextUpdate: idT0.Add(hour),
+		Extra: []pkix.Extension{idpExt(true, idpOf(t, "http://pki.bank.example/a\x00.crl"))}})
+	if err != nil {
+		t.Skip(err)
+	}
+	if _, err := audit.NewStatusSnapshot().AddCRL(crl); err == nil {
+		t.Fatal("accepted")
+	}
 }
