@@ -36,6 +36,9 @@ CONSTANTS
   WantOther,         \* what the invariant demands of a lift (equal to NeedsOther unless a regress)
   People, Forger,    \* the writers of records; the one who holds no enrolled key
   Cfg,               \* the process's mode: "basic" or "audited"
+  Pin,               \* the policy (1..MaxPol) an audited process has pinned; the chain is walked from policy 1
+  Deps, CheckDep,    \* the deployments records name ("mine" and perhaps "other"); whether the fold checks it
+  BasicHonoursPlainLift, \* regress: a basic process lets a plain lift lift a stop set under a signed record
   Chain,             \* TRUE: follow policy transitions; FALSE (regress): pinned to the last policy
   ModeFromStore,     \* regress: a mode record in the store flips the process to audited
   AcceptPlain,       \* regress: an audited process accepts a plain record
@@ -53,19 +56,19 @@ None == "none"
 
 \* vocabulary: begin
 \* The control-run records: a stop, one lifter's lift, one lifter's approval of a policy transition,
-\* evidence of a change of mode.
+\* evidence of a change of mode, the root policy (the chain's start; the model always walks from it).
 RecordKinds == {"set", "lift", "pol", "mode"}
 \* vocabulary: end
 
 \* Unforgeable: a signed record is by an enrolled approver; the forger signs nothing.
-Records == { r \in [k : Kinds, by : People, sig : BOOLEAN, stop : StopIds, to : Pols] :
+Records == { r \in [k : Kinds, by : People, sig : BOOLEAN, stop : StopIds, to : Pols, dep : Deps] :
                /\ r.sig => r.by \in Enrolled
                /\ ~r.sig => r.by = Forger
                /\ r.k = "pol" => r.to \in 2..MaxPol
                /\ r.k /= "pol" => r.to = 1
                /\ r.k = "mode" => ~r.sig }
 
-Stop0 == [phase |-> "none", setter |-> None, lifts |-> {}, how |-> None]
+Stop0 == [phase |-> "none", setter |-> None, lifts |-> {}, how |-> None, signed |-> FALSE]
 Init0C(ch) == [audited |-> (Cfg = "audited"), pol |-> IF ch THEN 1 ELSE MaxPol, tps |-> {},
                st |-> [i \in StopIds |-> Stop0]]
 
@@ -82,14 +85,15 @@ Relift(s) ==
 ApplyC(ch, s, r) ==
   IF ~s.audited THEN
     CASE r.k = "set" /\ s.st[r.stop].phase = "none"
-           -> [s EXCEPT !.st[r.stop] = [Stop0 EXCEPT !.phase = "active", !.setter = r.by]]
-      [] r.k = "lift" /\ s.st[r.stop].phase = "active"
-           -> [s EXCEPT !.st[r.stop].phase = "lifted", !.st[r.stop].how = "basic"]
+           -> [s EXCEPT !.st[r.stop] = [Stop0 EXCEPT !.phase = "active", !.setter = r.by, !.signed = r.sig]]
+      [] r.k = "lift" /\ s.st[r.stop].phase = "active" /\ (r.sig \/ ~s.st[r.stop].signed \/ BasicHonoursPlainLift)
+           -> [s EXCEPT !.st[r.stop].phase = "lifted", !.st[r.stop].how = IF r.sig THEN "signedlift" ELSE "basic"]
       [] r.k = "mode" /\ ModeFromStore -> [s EXCEPT !.audited = TRUE]
       [] OTHER -> s
   ELSE
-    CASE r.k = "set" /\ s.st[r.stop].phase = "none" /\ (r.sig \/ AcceptPlain) /\ (r.by \in SettersOf[s.pol] \/ AcceptPlain)
-           -> [s EXCEPT !.st[r.stop] = [Stop0 EXCEPT !.phase = "active", !.setter = r.by]]
+    CASE r.dep /= "mine" /\ CheckDep /\ r.k /= "mode" -> s
+      [] r.k = "set" /\ s.st[r.stop].phase = "none" /\ (r.sig \/ AcceptPlain) /\ (r.by \in SettersOf[s.pol] \/ AcceptPlain)
+           -> [s EXCEPT !.st[r.stop] = [Stop0 EXCEPT !.phase = "active", !.setter = r.by, !.signed = r.sig]]
       [] r.k = "lift" /\ s.st[r.stop].phase = "active" /\ r.sig /\ r.by \in LiftersOf[s.pol]
            -> LET s2 == [s EXCEPT !.st[r.stop].lifts = @ \cup {r.by}] IN
               IF RuleMet(s2, r.stop)
@@ -104,6 +108,10 @@ ApplyC(ch, s, r) ==
 RECURSIVE EffC(_, _, _)
 EffC(ch, l, n) == IF n = 0 THEN Init0C(ch) ELSE ApplyC(ch, EffC(ch, l, n - 1), l[n])
 Eff(l, n) == EffC(Chain, l, n)
+
+\* The process cannot tell which stops are in force: an audited process whose pin the chain has not
+\* reached, or a basic process holding an active stop that was set under a signed record.
+Unk(s) == IF s.audited THEN Pin > s.pol ELSE \E i \in StopIds : s.st[i].phase = "active" /\ s.st[i].signed
 
 Active(s, c) == \E i \in StopIds : s.st[i].phase = "active" /\ c \in CoverOf[i]
 Covers(s, c) == Active(s, c)
@@ -219,8 +227,21 @@ LiftNeedsQuorum ==
 
 \* The fold that follows the transitions is the reference: a process that cannot follow them (pinned
 \* to the last policy) drops stops set under the earlier ones.
+\* A process never silently drops a stop the chain holds: its stops agree with the fold that follows
+\* every transition from the root, or it says they are unknowable.
 AgreesWithChain ==
-  Cfg = "audited" => \A i \in StopIds : Eff(log, Len(log)).st[i].phase = EffC(TRUE, log, Len(log)).st[i].phase
+  Cfg = "audited" =>
+    (Unk(Eff(log, Len(log))) \/ \A i \in StopIds : Eff(log, Len(log)).st[i].phase = EffC(TRUE, log, Len(log)).st[i].phase)
+
+\* A record for another deployment changes nothing in an audited process.
+ForeignNoEffect ==
+  \A n \in 0..(Len(log) - 1) :
+    (Eff(log, n).audited /\ log[n + 1].dep /= "mine" /\ log[n + 1].k /= "mode") => Eff(log, n + 1) = Eff(log, n)
+
+\* A basic process does not lift a stop set under a signed record on a plain lift.
+BasicSignedStopNeedsSignedLift ==
+  Cfg = "basic" => \A i \in StopIds :
+    (Eff(log, Len(log)).st[i].signed /\ Eff(log, Len(log)).st[i].phase = "lifted") => Eff(log, Len(log)).st[i].how = "signedlift"
 
 \* A stop never goes back: none, then active, then lifted.
 Rank(p) == IF p = "none" THEN 0 ELSE IF p = "active" THEN 1 ELSE 2

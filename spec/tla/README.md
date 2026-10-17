@@ -3089,19 +3089,25 @@ nothing in the model starts it again.
   audited process counts a record only if it is signed by an approver the policy in force enrols
   (`Unforgeable`: only an enrolled key signs; the forger signs nothing); plain and unsigned records
   change nothing. Mode records are evidence only (`ModeRecordsEvidence`).
-- **Policy transitions.** The policy in force starts as the process's own (policy 1) and advances
+- **Policy transitions.** The policy in force starts at the deployment's root (policy 1) and advances
   when a quorum of lifters of the policy in force have approved the next one (`pol` records); each
   record is judged under the policy in force at its position, so a stop set under policy 1 stays in
   force after a transition that offboards its setter, and an offboarded lifter's earlier lift no
-  longer counts. Without the chain (`Chain = FALSE`) a process pinned to the last policy drops
-  the earlier stops (`AgreesWithChain`).
+  longer counts. The process pins one policy (`Pin`) and walks the chain from the root: stops set
+  under policy 1 are in force whatever it pins, and until the walk reaches its pin the stops are
+  unknowable (`Unk`). A process that does not follow the chain drops the earlier stops silently
+  (`AgreesWithChain`).
+- **Deployments.** A record names its deployment (`dep`); an audited process ignores records for
+  another (`ForeignNoEffect`).
+- **A basic process on an audited deployment** does not lift a stop set under a signed record on a
+  plain lift, and its stops are unknowable while one is active (`BasicSignedStopNeedsSignedLift`).
 - **Two stops**, each covering a set of calls (`CoverOf`); a lift names its stop. Lifting needs
   `QuorumOf` distinct lifters of the policy in force and, with `NeedsOther`, one who is not the setter.
 - **A call**: `Claim`, then the check (`ReadOk`: a synchronous read of the whole log, or without
   `SyncRead` any earlier prefix; `ReadFail`: held under `FailClosed`, else it proceeds), then
   `Begin`, which can follow a stop committed after the read (the call is in flight and finishes),
   then `Finish`. A crash with a marker and no result halts the call (`Crash`).
-- **Not modelled**: forks and rollbacks of the policy chain (Go tests; only holders of a quorum can cause them), the "stops unknowable" signal for records that do not verify (a Go test), scope matching (a pure function, unit-tested), the reader's staleness bound in
+- **Not modelled**: forks, rollbacks and competing roots of the policy chain (Go tests; each makes the stops unknowable), the "stops unknowable" signal for records that do not verify (a Go test), scope matching (a pure function, unit-tested), the reader's staleness bound in
   time (the model is the case of a maximum staleness of 0; the bound is an engineering figure of the
   Go code, and a bounded cache is covered by the Go tests when the switch lands), a split of the
   lifters over different transition documents (a Go test), and the check points of the loop, which
@@ -3114,7 +3120,9 @@ nothing in the model starts it again.
 | `ForgedNoEffect` | invariant | in an audited process a record that is not signed changes nothing |
 | `ModeRecordsEvidence` | invariant | a mode record in the store changes nothing, in any process |
 | `LiftNeedsQuorum` | invariant | an audited lift is by a quorum of lifters of the policy in force, one not the setter when `WantOther` |
-| `AgreesWithChain` | invariant | an audited process's stops agree with the fold that follows the policy transitions |
+| `AgreesWithChain` | invariant | an audited process's stops agree with the fold that follows every transition from the root, or it says they are unknowable |
+| `ForeignNoEffect` | invariant | a record for another deployment changes nothing in an audited process |
+| `BasicSignedStopNeedsSignedLift` | invariant | a basic process does not lift a stop set under a signed record on a plain lift |
 | `StopsNeverDropped` | property | a stop never goes back: none, active, lifted |
 | `OnlyBeginFires` | property | only a call's `Begin` starts the effect: a stop, a lift, a transition or a mode record never does |
 
@@ -3135,8 +3143,10 @@ nothing in the model starts it again.
 |---|---|---|
 | `stop-audited` | ci | an audited process, one stop and one call, quorum 2, three records |
 | `stop-q1` | ci | quorum 1 with the setter rule |
-| `stop-basic` | ci | a basic process: plain records stop and lift; policy and mode records change nothing |
+| `stop-basic` | ci | a basic process: plain records stop and lift; policy and mode records change nothing; a signed stop needs a signed lift |
 | `stop-rotation` | ci | a policy transition: stops set under policy 1 stay in force |
+| `stop-pinned` | ci | a process pinned to policy 2 walks the chain from the root; unknowable until the walk reaches its pin |
+| `stop-replay` | ci | records signed for another deployment change nothing |
 | `stop-two-stops` | ci | two stops and two calls: each stop holds only its own call |
 | `stop-blocked-reach` | ci | reachability: a call reads a stop and is not started (`BlockedNotReachable` violated) |
 | `stop-lift-reach` | ci | reachability: an audited lift by a quorum of two (`AuditedLiftNotReachable` violated) |
@@ -3153,5 +3163,7 @@ Each is in `stop/regress/` and must fail with its named property:
 - `plain-in-audited` (`ForgedNoEffect`): an audited process accepts a plain record.
 - `lift-by-setter` (`LiftNeedsQuorum`): the fold does not require a lifter other than the setter (quorum 1).
 - `mode-from-store` (`ModeRecordsEvidence`): the store decides the mode: one forged mode record flips a basic process to audited, which then ignores every plain stop and lift (found in the review of #393).
-- `no-chain` (`AgreesWithChain`): a process pinned to the last policy drops a stop set under policy 1 (found in the review of #393).
+- `no-chain` (`AgreesWithChain`): a process that does not walk the chain from the root drops a stop set under policy 1 silently (found in the review of #393).
+- `no-dep-check` (`ForeignNoEffect`): the fold ignores the deployment ID, so staging's records take effect in production (found in the review of #393).
+- `basic-plain-lift` (`BasicSignedStopNeedsSignedLift`): a basic process on an audited deployment lifts a signed stop on a plain lift (found in the review of #393).
 - `lift-refires` (`AtMostOnce`): a lift starts a halted call again, and it fires twice.

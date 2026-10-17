@@ -295,9 +295,16 @@ fold's admission of a record (`StopControl.State`) and the CLI's signing step an
 mode-specific. Model 16 has the mode as a parameter of that one rule and checks the safety
 invariants under both.
 
-**The trust root and policy rotation.** An audited process pins its policy from its own
-configuration (a file or an option), normally the first one, and the control run's **policy
-transitions** carry the later ones, as in TUF: a transition record names the next number, the
+**The trust root and policy rotation.** The anchor is the deployment's **root policy**, as in TUF. It
+carries a **deployment ID**, a random value chosen at genesis (one per deployment, never shared
+between staging and production), which is part of the policy's digest, repeated by every later
+policy, and written into every signed record: a record signed for another deployment is rejected, so
+staging's records copied into production do nothing. The first audited action (`bide stop
+-upgrade`) writes a signed **root record** carrying that policy. An audited process pins one policy
+from its own configuration (a file or an option): the root policy, which is the recommended and
+simplest form, or a later policy that the chain reaches. It walks the chain forward from the first
+root record that verifies under its own policy, and the control run's **policy transitions** carry
+the later policies: a transition record names the next number, the
 digest of the policy it replaces and the new policy in full (approvers with public keys, roles,
 quorum, the setter rule), and counts when `LiftQuorum` distinct lifters of the policy in force have
 signed the same document. A process folds the log forward from its pinned policy, judging each stop
@@ -323,15 +330,26 @@ and lift under the policy in force at its position, so:
   longer counts toward the new quorum;
 - the chain is checked for **forks** (a quorum of the replaced policy also approving a different
   successor) and **rollbacks** (a quorum approving a policy that was already in force): both are
-  `ErrConfig` with the cause named, since only holders of a quorum can cause them. Records that
-  do not verify never cause an error. A pinned policy that is not on the store's chain cannot be told
-  from garbage, so it is not an error either: the records it cannot verify are in `Rejected` and in
-  `Unverified`, which makes the stops unknowable (below);
+  recorded in `StopState.ChainErr`, which makes the stops unknowable (below), not an error: the
+  first lineage keeps being enforced. Two different roots that each verify under themselves are the
+  same condition. Records that do not verify never cause an error. A pinned policy that the walk from
+  the root never reaches is `ChainErr` too ("the pinned policy is not on the store's chain"): it
+  cannot be told from a forged chain, so it is an alert (the engine's `OnError` and the `bide view`
+  banner, PR 2) and fail-closed for covered side-effect calls, never a silent drop and never an
+  `ErrConfig` that a store writer could trigger. A process pinned to a later policy that the chain
+  reaches enforces the stops set under the earlier ones, because it judges each record under the
+  policy in force at its position, from the root;
+- a **basic process on an audited deployment** (a missing policy) sees signed records it cannot
+  check: it counts them in `Unverified`, a plain lift does not lift a stop that was set under a signed
+  record (a signed lift does, in its view, which is how a deployment that moved back to basic stays
+  usable), and an active stop set under a signed record makes its stops unknowable, so it fails
+  safe. This is no worse than basic's stated exposure: store access can already stop a basic
+  deployment;
 - **stops unknowable.** An audited control that finds a record claiming a signature that does not
   verify under the policy in force at its position counts it in `Unverified`, and
   `StopState.UnknowableErr()` returns `ErrStopsUnknowable`. The engine (PR 2) fails closed on it for
   side-effect calls a stop could cover, since a stop it cannot see may exist (a rotation not carried
-  through, a policy pinned off the chain). A stop and a lift can still be written, and the stops it can
+  through, a policy pinned off the chain, a replay from another deployment). A stop and a lift can still be written, and the stops it can
   verify are in `State`. The cost is stated: anyone with store write access can make an audited
   deployment's covered side-effect calls pause with one such record, which is the safe direction for
   a kill switch and no worse than their ability to stop in basic mode; an operator who has looked at
@@ -347,7 +365,8 @@ policy to be safe. The rule of thumb: pin the policy the deployment started audi
 
 **Moving to audited mode mid-stop.** `bide stop -upgrade` (with a policy and a key) first
 **adopts** every stop that is active in the basic view: it sets it again, signed (reason prefixed
-"adopted:"), because an audited process ignores unsigned stops; then it writes a mode record as
+"adopted:", and the record names the digest of the plain record it re-states, so the history stays
+traceable), because an audited process ignores unsigned stops; then it writes a mode record as
 evidence. The deployment stays stopped, the plain originals stay in the log (basic processes that
 have not been rolled over still see them), and the stops need an audited lift from then on. The
 policy file reaches every process before the upgrade is signed (rollout order: policy, then the

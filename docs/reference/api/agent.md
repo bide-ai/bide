@@ -3041,6 +3041,7 @@ type StopEntry struct {
 
 	Lifted bool
 
+	AdoptedFrom            string
 	LiftedBy               []string
 	LiftsHeld, LiftsNeeded int
 	// contains filtered or unexported fields
@@ -3088,8 +3089,9 @@ StopOption configures NewStopControl.
 
 ```go
 type StopPolicy struct {
-	Setters []string
-	Lifters []string
+	DeploymentID string
+	Setters      []string
+	Lifters      []string
 
 	Verifiers ApproverVerifierFor
 
@@ -3115,6 +3117,7 @@ StopPolicy is who may set and lift stops in audited mode: the enrolled setters a
 
 ```go
 type StopPolicyDoc struct {
+	DeploymentID   string                  `json:"deployment_id"`
 	Approvers      map[string]StopApprover `json:"approvers"`
 	Setters        []string                `json:"setters"`
 	Lifters        []string                `json:"lifters"`
@@ -3144,6 +3147,10 @@ type StopRecord struct {
 	Kind   string `json:"kind"`
 
 	Mode StopMode `json:"mode"`
+
+	Deployment string `json:"deployment,omitempty"`
+
+	AdoptedFrom string `json:"adopted_from,omitempty"`
 
 	StopID string `json:"stop_id,omitempty"`
 
@@ -3186,6 +3193,8 @@ type StopRequest struct {
 	Compensation string
 	By, Host     string
 	Signer       StopSigner
+
+	AdoptedFrom string
 }
 ```
 
@@ -3241,6 +3250,10 @@ type StopState struct {
 
 	PolicyDigest string
 	PolicySeq    int
+
+	ChainErr string
+
+	UnverifiedActive int
 
 	Stops []StopEntry
 
