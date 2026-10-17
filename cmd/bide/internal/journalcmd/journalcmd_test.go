@@ -461,3 +461,31 @@ func TestRedactDSNHandlesAnEmptyPassword(t *testing.T) {
 		t.Errorf("the password leaks: %q", got)
 	}
 }
+
+// A typo in -trail-db starts a new, empty trail; the earlier heads in -head-out do not match it, so the
+// command refuses before it erases anything.
+func TestAWrongTrailDatabaseIsRefusedBeforeErasing(t *testing.T) {
+	r := newRig(t)
+	_, out, _ := r.run(r.base()...)
+	if code, _, errb := r.run(r.execArgs(digestOf(t, out))...); code != 0 {
+		t.Fatalf("first erasure: %d %s", code, errb)
+	}
+	wrong := filepath.Join(r.dir, "typo.db")
+	args := []string{"-db", r.db, "-run", "r1", "-prefix", "@"}
+	_, out, _ = r.run(args...)
+	exec := append(args, "-execute", "-plan-digest", digestOf(t, out), "-reason", "r", "-ticket", "t", "-deployment", "test", "-sign-key", r.key, "-head-out", r.headOut, "-pubkey", r.pub, "-sth", r.head, "-allow-uncovered", "-trail-db", wrong)
+	code, _, errb := r.run(exec...)
+	if code != 1 || !strings.Contains(errb, "does not match its signed heads") {
+		t.Fatalf("with a trail that the earlier heads do not match: %d %s", code, errb)
+	}
+	if leaves, err := func() ([][]byte, error) {
+		w, err := sqlite.Open(wrong)
+		if err != nil {
+			return nil, err
+		}
+		defer w.Close()
+		return w.EventStore().Load(context.Background(), audit.RedactionTrailName)
+	}(); err != nil || len(leaves) != 0 {
+		t.Fatalf("the refused attempt wrote %d record(s) to the wrong trail (%v)", len(leaves), err)
+	}
+}

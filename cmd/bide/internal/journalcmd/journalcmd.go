@@ -315,11 +315,20 @@ erases and an "end" record after; if it stops partway, run the same plan again.
 	} else {
 		rep.Compaction = &compaction{ByOperator: true, Detail: "this store does not overwrite the bytes it replaced: on Postgres they stay as dead tuples until VACUUM (and VACUUM FULL to return the space), which is the operator's to run, and replicas, WAL archives and backups hold their own copies"}
 	}
+	if passErr != nil && errors.Is(passErr, audit.ErrRedactTrailUntrusted) {
+		// Nothing was written or erased: the trail is not the one the earlier heads attest, so no head is
+		// signed over it either.
+		emit(stdout, rep, *asJSON, st, 1)
+		return fail("%v", passErr)
+	}
 	// The trail's head is signed after a failed pass too: the begin and end records it wrote are
 	// attested, so the next attempt finds a trail its earlier heads cover.
 	head, err := audit.SignRedactionTrail(ctx, trail, signer, trailVerifier, *deployment, prior, time.Now())
 	if err != nil {
 		emit(stdout, rep, *asJSON, st, 1)
+		if passErr != nil {
+			return fail("%v; and signing the trail head failed: %v", passErr, err)
+		}
 		return fail("the erasure ran and is recorded, but signing the trail head failed: %v (nothing was signed; the records are in the trail and bide audit redactions reports the unattested tail)", err)
 	}
 	if err := appendLine(*headOut, head); err != nil {
