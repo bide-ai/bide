@@ -448,3 +448,24 @@ func TestCRLSourcesFromThePolicyFile(t *testing.T) {
 	var m map[string]any
 	_ = json.Unmarshal(a, &m)
 }
+
+// A seed that stopped after taking the mark but before adding the CRL must not make the fetched CRL
+// "unchanged" without the gate holding it.
+func TestUnchangedCRLIsStillHeldByTheSnapshot(t *testing.T) {
+	arch := audit.DirCRLArchive(t.TempDir())
+	g := newCRig(t, withArchive(arch), withSnapOpts(audit.WithMaxCRLs(8)))
+	g.publishFresh(3)
+	g.start()
+	g.wantOK()
+	g.restart()
+	// Simulate a seed that took the mark and added nothing: the snapshot is full of other CRLs' worth of room
+	// in a real case; here the snapshot simply starts empty after the marks were read.
+	if err := g.r.Seed(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	audit.DropAllCRLs(g.snap)
+	g.wantOK()
+	if g.snap.Len() == 0 {
+		t.Fatal("an unchanged CRL was reported while the snapshot lacked it")
+	}
+}

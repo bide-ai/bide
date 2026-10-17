@@ -17,3 +17,17 @@ func SetAttemptTimeout(r *CRLRefresher, d time.Duration) {
 		f.attemptTimeout = d
 	}
 }
+
+// DropAllCRLs empties the snapshot without touching its eviction bookkeeping, to stage a snapshot that
+// lacks a CRL the refresher's mark already covers.
+func DropAllCRLs(s *StatusSnapshot) {
+	s.mu.Lock()
+	hs := make([][32]byte, 0, len(s.views))
+	for _, v := range s.views {
+		hs = append(hs, v.hash)
+	}
+	s.mu.Unlock()
+	for _, h := range hs {
+		s.remove(h)
+	}
+}

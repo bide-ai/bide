@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/x509"
+	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -238,22 +241,59 @@ func TestRefresherRefusesACRLWithAnotherIssuerName(t *testing.T) {
 func TestRefresherBodyLimitIsTheSnapshotsOwn(t *testing.T) {
 	g := newCRig(t, withSnapOpts(audit.WithLimits(2000, 1000)))
 	g.publishFresh(1)
-	// A valid CRL padded past the limit by many entries, chunked with no Content-Length.
 	now := g.clk.Now()
 	var entries []x509.RevocationListEntry
 	for i := range 200 {
-		entries = append(entries, testca.Revoked(g.leaf.Cert, now, 0))
-		entries[i].SerialNumber = bigInt(int64(1000 + i))
+		e := testca.Revoked(g.leaf.Cert, now, 0)
+		e.SerialNumber = bigInt(int64(1000 + i))
+		entries = append(entries, e)
 	}
 	big := g.iCRL(2, now.Add(-time.Minute), time.Hour, entries...)
 	if len(big) <= 2000 {
 		t.Fatalf("test CRL is only %d bytes", len(big))
 	}
-	rt := g.srv.set("/inter.crl", big)
-	rt.hdr = http.Header{"Content-Type": {"application/pkix-crl"}}
+	// Declared length above the limit: refused before any body is read.
+	g.srv.set("/inter.crl", big).hdr = http.Header{"Content-Length": {strconv.Itoa(len(big))}}
 	g.start()
-	if g.refresh()[g.intK] == nil || len(g.kinds(audit.EventOversizeResponse)) != 1 {
+	if g.refresh()[g.intK] == nil {
 		t.Fatalf("an oversize CRL was accepted: %s", g.dump())
 	}
-	_ = agent.MaxStatusInline
+	ev := g.kinds(audit.EventOversizeResponse)
+	if len(ev) != 1 || !strings.Contains(ev[0].Detail, "Content-Length") {
+		t.Fatalf("the declared length was not checked first: %s", g.dump())
+	}
+	// Chunked, no Content-Length: the read itself is limited.
+	rt := g.srv.set("/inter.crl", big)
+	rt.hdr, rt.chunked = nil, true
+	g.refresh()
+	ev = g.kinds(audit.EventOversizeResponse)
+	if len(ev) != 2 || !strings.Contains(ev[1].Detail, "the body is above") {
+		t.Fatalf("the streamed body was not limited: %s", g.dump())
+	}
+}
+
+func TestFromPinnedCDPReadsOnlyTheCertificateIssuedByThatCA(t *testing.T) {
+	g := newCRig(t, func(g *crig) {
+		g.rootMutate = func(c *x509.Certificate) { c.CRLDistributionPoints = []string{"http://root-cdp.example/never.crl"} }
+	})
+	g.publishFresh(1)
+	g.sources = audit.CRLSources{g.rootK: {URLs: []string{g.srv.url("/root.crl")}},
+		g.intK: {URLs: []string{g.srv.url("/inter.crl")}, FromPinnedCDP: true}}
+	g.start()
+	for _, u := range g.health(g.intK).URLs {
+		if strings.Contains(u, "root-cdp") {
+			t.Fatalf("the root's own distribution point became the intermediate's CRL URL: %v", g.health(g.intK).URLs)
+		}
+	}
+}
+
+func TestIssuerCertificateMustChainToAnAnchor(t *testing.T) {
+	g := newCRig(t)
+	g.publishFresh(1)
+	stranger := testca.NewRoot(t, "stranger", testca.Opts{})
+	fake := stranger.NewIntermediate(t, "inter", testca.Opts{KeyWith: g.inter.Key}) // the pinned key, another issuer
+	g.opts.Issuers = []*x509.Certificate{fake.Cert}
+	if _, err := audit.NewCRLRefresher(g.ap, g.sources, g.opts); err == nil || !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("a certificate with the pinned key that does not chain to an anchor was accepted: %v", err)
+	}
 }

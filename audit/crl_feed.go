@@ -235,6 +235,14 @@ func (f *feed) consider(ctx context.Context, c cand, now time.Time, outcomes []U
 		return false
 	case mark != nil && n.Cmp(mark) == 0:
 		if c.tbs == markTBS {
+			// The mark may come from a seed that stopped (a full snapshot, the scan cap, the budget)
+			// before this CRL was added: make sure the gate holds it. AddCRL is idempotent.
+			if !f.iss.holdsTBS(c.tbs) {
+				if _, err := r.appr.Status.AddCRL(c.der); err != nil {
+					r.emit(ev(EventUnsupportedCRL, err.Error()))
+					return false
+				}
+			}
 			r.emit(ev(EventUnchanged, "the newest CRL is unchanged"))
 			return true
 		}
@@ -258,6 +266,17 @@ func (f *feed) consider(ctx context.Context, c cand, now time.Time, outcomes []U
 	e.Outcomes = outcomes
 	r.emit(e)
 	return true
+}
+
+// holdsTBS reports whether the snapshot holds a CRL of this issuer with the given TBSCertList (a re-signed
+// copy is the same CRL).
+func (i *issuerRT) holdsTBS(tbs [32]byte) bool {
+	for _, v := range i.r.appr.Status.held(i.cert) {
+		if sum := sha256.Sum256(v.rl.RawTBSRevocationList); sum == tbs {
+			return true
+		}
+	}
+	return false
 }
 
 // basePaired reports whether the snapshot holds a full CRL the delta pairs with: numbered in

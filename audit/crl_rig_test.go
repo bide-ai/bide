@@ -27,6 +27,7 @@ type crlRoute struct {
 	delay    time.Duration
 	hdr      http.Header
 	redirect string
+	chunked  bool
 	etag     string
 	hits     int
 	inm      []string
@@ -52,7 +53,7 @@ func newCRLServer(t *testing.T) *crlServer {
 		rt.mu.Lock()
 		rt.hits++
 		rt.inm = append(rt.inm, r.Header.Get("If-None-Match"))
-		body, status, delay, hdr, redirect, etag := rt.body, rt.status, rt.delay, rt.hdr, rt.redirect, rt.etag
+		body, status, delay, hdr, redirect, etag, chunked := rt.body, rt.status, rt.delay, rt.hdr, rt.redirect, rt.etag, rt.chunked
 		rt.mu.Unlock()
 		if delay > 0 {
 			select {
@@ -77,6 +78,18 @@ func newCRLServer(t *testing.T) *crlServer {
 		}
 		if status != 0 {
 			w.WriteHeader(status)
+		}
+		if chunked {
+			for len(body) > 0 {
+				n := len(body)
+				if n > 512 {
+					n = 512
+				}
+				_, _ = w.Write(body[:n])
+				w.(http.Flusher).Flush()
+				body = body[n:]
+			}
+			return
 		}
 		_, _ = w.Write(body)
 	}))
@@ -156,6 +169,7 @@ type crig struct {
 	snapOpts     []audit.SnapshotOption
 	soFull       []audit.SnapshotOption
 	interMutate  func(*x509.Certificate)
+	rootMutate   func(*x509.Certificate)
 	skew         time.Duration
 	policyMutate func(*audit.IdentityPolicy)
 }
@@ -181,7 +195,7 @@ func newCRig(t *testing.T, opts ...crigOpt) *crig {
 	for _, o := range opts {
 		o(g)
 	}
-	g.root = testca.NewRoot(t, "root", testca.Opts{})
+	g.root = testca.NewRoot(t, "root", testca.Opts{Mutate: g.rootMutate})
 	g.inter = g.root.NewIntermediate(t, "inter", testca.Opts{Mutate: g.interMutate})
 	g.rootK, g.intK = audit.SPKIHashOf(g.root.Cert), audit.SPKIHashOf(g.inter.Cert)
 	pol := audit.IdentityPolicy{
