@@ -253,6 +253,7 @@ var verbs = map[string]func(*cli, []string){
 	"verify-approvals":         (*cli).verifyApprovals,
 	"notifications":            (*cli).notifications,
 	"redactions":               (*cli).redactions,
+	"stops":                    (*cli).stops,
 	"prove-absent":             (*cli).proveAbsent,
 	"verify-absent":            (*cli).verifyAbsent,
 	"verify-receipts":          (*cli).verifyReceipts,
@@ -416,9 +417,10 @@ var readFormats = []artifactFormat{
 	{"run certificate", audit.RunCertificateFormat, "verify-run"},
 	{"evidence package", audit.EvidenceFormat, "verify-evidence, verify-approvals"},
 	{"decision receipt", audit.ReceiptFormat, "verify-receipts"},
-	{"signed tree head", audit.STHFormat, "prove, prove-absent, notifications, and every head inside an artifact"},
+	{"signed tree head", audit.STHFormat, "prove, prove-absent, notifications, stops, and every head inside an artifact"},
 	{"journal export", audit.JournalExportFormat, "prove, prove-absent, notifications"},
 	{"notify trail export", audit.NotifyTrailExportFormat, "notifications"},
+	{"stop trail export", audit.StopTrailExportFormat, "stops"},
 }
 
 func printVersion(w io.Writer, asJSON bool, st term.Style) {

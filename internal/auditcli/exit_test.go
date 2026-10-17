@@ -44,11 +44,12 @@ type exitFixture struct {
 	evidenceV4, journalWrongFormat, journalV0        string
 	keyUnknownScheme, keyPrefixed                    string
 	agree, nonConvergent, broken                     string
-	brokenFirst, brokenSecond                        string // no verdict on one policy, a disagreement on the other
-	fakePolicy                                       string // a tool result shaped like the policy leaf
-	absUnknownKey, allow                             string // allow: both policies' digests, one per line
-	notifyTrail, notifyTrailCut, notifyTrailLate     string // notification trails: complete, with its ack deleted, acknowledged past its deadline
-	notifySTH, notifySTHLate                         string // signed heads over the complete and the late trail
+	brokenFirst, brokenSecond                        string      // no verdict on one policy, a disagreement on the other
+	fakePolicy                                       string      // a tool result shaped like the policy leaf
+	absUnknownKey, allow                             string      // allow: both policies' digests, one per line
+	notifyTrail, notifyTrailCut, notifyTrailLate     string      // notification trails: complete, with its ack deleted, acknowledged past its deadline
+	notifySTH, notifySTHLate                         string      // signed heads over the complete and the late trail
+	stopFix                                          stopFixture // a stop trail, its head, its policy and keys
 	red                                              redactionFiles
 }
 
@@ -70,6 +71,7 @@ func newExitFixture(t *testing.T) *exitFixture {
 	ctx := context.Background()
 	dir := t.TempDir()
 	f := &exitFixture{dir: dir}
+	f.stopFix = newStopFixture(t)
 	file := func(name string, v any) string {
 		p := filepath.Join(dir, name)
 		writeJSON(t, p, v)
@@ -420,6 +422,11 @@ func exitCases(f *exitFixture) []exitCase {
 		{name: "redactions: a notification trail as the trail", args: []string{"redactions", "-deployment", "test", "-trail", f.notifyTrail, "-unanchored", "-pubkey", f.pub}, want: 4},
 		{name: "notifications: genuine", args: notif(f.notifyTrail, f.notifySTH), want: 0},
 		{name: "notifications: a record deleted", args: notif(f.notifyTrailCut, f.notifySTH), want: 1},
+		{name: "stops: genuine", args: []string{"stops", "-trail", f.stopFix.trail, "-sth", f.stopFix.sth, "-pubkey", f.stopFix.pub, "-stop-policy", f.stopFix.policy}, want: 0},
+		{name: "stops: another key", args: []string{"stops", "-trail", f.stopFix.trail, "-sth", f.stopFix.sth, "-pubkey", f.stopFix.otherPub, "-stop-policy", f.stopFix.policy}, want: 1},
+		{name: "stops: nothing to read", args: []string{"stops", "-unanchored", "-stop-policy", f.stopFix.policy}, want: 2},
+		{name: "stops: missing trail file", args: []string{"stops", "-trail", f.missing, "-unanchored", "-stop-policy", f.stopFix.policy}, want: 4},
+		{name: "stops: a journal export as the trail (format)", args: []string{"stops", "-trail", f.journal, "-unanchored", "-stop-policy", f.stopFix.policy}, want: 4},
 		{name: "notifications: acknowledged late", args: notif(f.notifyTrailLate, f.notifySTHLate), want: 1},
 		{name: "notifications: another key", args: []string{"notifications", "-trail", f.notifyTrail, "-sth", f.notifySTH, "-pubkey", f.otherPub, "-as-of", "2026-10-13T09:01:00Z"}, want: 1},
 		{name: "notifications: no head, not -unanchored", args: []string{"notifications", "-trail", f.notifyTrail, "-pubkey", f.pub, "-as-of", "2026-10-13T09:01:00Z"}, want: 1},
@@ -636,7 +643,7 @@ func TestVersion(t *testing.T) {
 	if code != 0 || !strings.HasPrefix(stdout, "bide ") {
 		t.Fatalf("-version: exit %d:\n%s", code, stdout)
 	}
-	formats := []string{audit.ProofFormat, audit.AbsenceFormat, audit.RunCertificateFormat, audit.EvidenceFormat, audit.ReceiptFormat, audit.STHFormat, audit.JournalExportFormat, audit.NotifyTrailExportFormat}
+	formats := []string{audit.ProofFormat, audit.AbsenceFormat, audit.RunCertificateFormat, audit.EvidenceFormat, audit.ReceiptFormat, audit.STHFormat, audit.JournalExportFormat, audit.NotifyTrailExportFormat, audit.StopTrailExportFormat}
 	for _, f := range formats {
 		if !strings.Contains(stdout, f) {
 			t.Errorf("-version does not name format %s:\n%s", f, stdout)
