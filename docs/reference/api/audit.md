@@ -528,14 +528,19 @@ CertIdentity is a compiled IdentityPolicy: immutable, safe for concurrent use.
 
 **Methods**
 
+- `func (c *CertIdentity) AllowsEmailProtectionEKU() bool`: AllowsEmailProtectionEKU reports whether the policy accepts id-kp-emailProtection in place of EKU.
 - `func (c *CertIdentity) ApproverIDs() []string`: ApproverIDs returns the approver ids of the policy's identity map, sorted.
 - `func (c *CertIdentity) Canonicalizer() Canonicalizer`: Canonicalizer returns the function this policy compares identifiers with, for the identity record and for the other places an identity is compared (the requester principal).
 - `func (c *CertIdentity) DistrustFrom(k SPKIHash) time.Time`: DistrustFrom returns when the policy ends trust in the key (zero when it does not).
+- `func (c *CertIdentity) EKU() asn1.ObjectIdentifier`: EKU returns the extended key usage a leaf must carry, as a copy.
 - `func (c *CertIdentity) EvaluateStatus(ac *ApproverCert, a time.Time, s *StatusSnapshot, p StatusParams) ChainStatus`: EvaluateStatus applies the status rule to every non-anchor certificate of ac's chain at A(d) = a, over the CRLs in s.
+- `func (c *CertIdentity) IDKind() IDKind`: IDKind returns the kind of the one subject alternative name a leaf must carry.
 - `func (c *CertIdentity) Identity(approverID string) (string, bool)`: Identity returns the canonical identifier the policy expects for an approver id.
 - `func (c *CertIdentity) IsPinnedIntermediate(k SPKIHash) bool`: IsPinnedIntermediate reports whether the key is a pinned intermediate.
 - `func (c *CertIdentity) IsTrustAnchor(k SPKIHash) bool`: IsTrustAnchor reports whether the key is one of the policy's trust anchors.
+- `func (c *CertIdentity) MaxLeafLifetime() time.Duration`: MaxLeafLifetime returns the bound on a leaf's notAfter minus notBefore: the policy's value, or the 24 hour default when it set none.
 - `func (c *CertIdentity) PinnedIntermediates() []SPKIHash`: PinnedIntermediates returns the pinned intermediate keys, sorted.
+- `func (c *CertIdentity) PolicyOID() x509.OID`: PolicyOID returns the certificate policy OID a leaf must assert.
 - `func (c *CertIdentity) TrustAnchors() []*x509.Certificate`: TrustAnchors returns the policy's trust anchor certificates, ordered by key.
 - `func (c *CertIdentity) TrustRoots() *x509.CertPool`: TrustRoots returns the policy's trust anchors as a certificate pool.
 - `func (c *CertIdentity) VerifyChain(approverID string, chain [][]byte, decidedAt, anchoredAt time.Time) (*ApproverCert, error)`: VerifyChain checks a decision's certificate chain for approver approverID.
