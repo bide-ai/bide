@@ -352,9 +352,14 @@ and lift under the policy in force at its position, so:
   raises an alert (`OnError`, the `bide view` banner). A forged record is **never** a cause: an audited
   process whose pin the chain reaches knows the policy in force at every position, so a record that does
   not verify is a forgery, `Rejected` and nothing more. Otherwise a store-write attacker would hold a
-  lever (pausing covered calls) against exactly the mode meant to resist them. Among several roots, the
-  one equal to the pin is used, then the others in store order, and the first whose chain reaches the
-  pin is the deployment's; a competing root is only rejected. Only verified records count toward
+  lever (pausing covered calls) against exactly the mode meant to resist them. The chain starts at the one root the process
+  **trusts**: its configuration names the root policy (`WithStopRoot`, which defaults to the pin when the pin is the
+  root), and a root record counts only if its policy is that one. A root a store writer appends with
+  keys of their own, however it is chained to the pin (a self-signed root plus a transition into the
+  public pinned policy), never governs a record. A process that pins a later policy must name the root
+  (and have a verifier constructor to build it); a later pin without the root, or a trusted root that is
+  not stored, is unknowable, never a silent drop. Records before any trusted root is stored are judged
+  under the pin. Only verified records count toward
   anything: a fake root, transition or mode record is rejected and never sets `ChainErr`. The first
   audited write of any kind (a stop, a lift, a transition, a mode change) writes the root if none whose
   chain reaches the pin exists, so every audited deployment is walkable;

@@ -3082,6 +3082,7 @@ StopOption configures NewStopControl.
 - `func WithStopClock(now func() time.Time) StopOption`: WithStopClock sets the clock that stamps a record's At (default time.Now).
 - `func WithStopMode(m StopMode) StopOption`: WithStopMode declares the mode of this process: StopBasic, or StopAudited (which needs WithStopPolicy).
 - `func WithStopPolicy(p StopPolicy) StopOption`: WithStopPolicy gives the control the audited-mode policy: the trust root, the policy this process pins (normally the one the deployment started audited mode with).
+- `func WithStopRoot(digest string) StopOption`: WithStopRoot names the digest (StopPolicy.Digest) of the deployment's root policy, the only policy that may start the chain a process walks.
 - `func WithStopVerifier(nv StopVerifierFunc) StopOption`: WithStopVerifier gives the control the means to build the verifiers of a policy a transition carries (audit.NewVerifier).
 
 ## type StopPolicy

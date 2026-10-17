@@ -1112,3 +1112,19 @@ func TestEveryAuditedWriteWritesTheRoot(t *testing.T) {
 		t.Fatalf("lift: %v, %d roots", err, roots(c))
 	}
 }
+
+// TestLaterPinWithTheRootNotStoredIsUnknowable: a process pinned to a later policy, naming a root that
+// the control run does not hold, cannot judge the stops set under earlier policies.
+func TestLaterPinWithTheRootNotStoredIsUnknowable(t *testing.T) {
+	p1 := auditedPolicy(2, false)
+	p2 := StopPolicy{DeploymentID: "dep-1", Setters: []string{"ops2"}, Lifters: []string{"ops2", "risk"}, Verifiers: fakeVerifiers("ops2", "risk"), LiftQuorum: 2}
+	store := NewMemStore()
+	c := audited(t, store, p2, WithStopRoot(p1.Digest()))
+	putRaw(t, c, signedBy(StopRecord{Kind: "set", Scope: &StopScope{Kind: StopGlobal}, Compensation: CompensationAllow}, "ops1"))
+	if st := mustState(t, c); st.UnknowableErr() == nil || !strings.Contains(st.ChainErr, "trusted root record is not in the control run") {
+		t.Fatalf("%+v", st)
+	}
+	if _, err := NewStopControl(c.j, WithStopRoot("short")); !errors.Is(err, ErrConfig) {
+		t.Fatalf("a malformed root digest: %v", err)
+	}
+}

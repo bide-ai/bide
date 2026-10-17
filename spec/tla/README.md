@@ -3089,7 +3089,7 @@ nothing in the model starts it again.
   audited process counts a record only if it is signed by an approver the policy in force enrols
   (`Unforgeable`: only an enrolled key signs; the forger signs nothing); plain and unsigned records
   change nothing. Mode records are evidence only (`ModeRecordsEvidence`).
-- **Policy transitions.** The policy in force starts at the deployment's root (policy 1) and advances
+- **Policy transitions.** The policy in force starts at the root the process trusts (policy 1; an attacker's own root, policy 0, never starts the chain, `TrustRootOnly`) and advances
   when a quorum of lifters of the policy in force have approved the next one (`pol` records); each
   record is judged under the policy in force at its position, so a stop set under policy 1 stays in
   force after a transition that offboards its setter, and an offboarded lifter's earlier lift no
@@ -3148,6 +3148,7 @@ nothing in the model starts it again.
 | `stop-rotation` | ci | a policy transition: stops set under policy 1 stay in force |
 | `stop-pinned` | ci | a process pinned to policy 2 walks the chain from the root; unknowable until the walk reaches its pin |
 | `stop-replay` | ci | records signed for another deployment change nothing |
+| `stop-attacker-root` | ci | an attacker with keys of their own writes a root and a transition into the pinned policy: only the trusted root starts the chain |
 | `stop-two-stops` | ci | two stops and two calls: each stop holds only its own call |
 | `stop-blocked-reach` | ci | reachability: a call reads a stop and is not started (`BlockedNotReachable` violated) |
 | `stop-lift-reach` | ci | reachability: an audited lift by a quorum of two (`AuditedLiftNotReachable` violated) |
@@ -3166,6 +3167,7 @@ Each is in `stop/regress/` and must fail with its named property:
 - `mode-from-store` (`ModeRecordsEvidence`): the store decides the mode: one forged mode record flips a basic process to audited, which then ignores every plain stop and lift (found in the review of #393).
 - `no-chain` (`AgreesWithChain`): a process that does not walk the chain from the root drops a stop set under policy 1 silently (found in the review of #393).
 - `unknowable-on-forgery` (`NoSpuriousUnknowable`): one forged record makes an audited process's stops unknowable, so a store-write attacker pauses every covered call (the lead's review of fac3710c).
+- `untrusted-root` (`AgreesWithChain`): a stored root the process does not trust starts the chain: an attacker's root plus a transition into the pinned policy drops the genuine stops silently (found in the review of #393).
 - `no-dep-check` (`ForeignNoEffect`): the fold ignores the deployment ID, so staging's records take effect in production (found in the review of #393).
 - `basic-plain-lift` (`BasicSignedStopNeedsSignedLift`): a basic process on an audited deployment lifts a signed stop on a plain lift (found in the review of #393).
 - `lift-refires` (`AtMostOnce`): a lift starts a halted call again, and it fires twice.
