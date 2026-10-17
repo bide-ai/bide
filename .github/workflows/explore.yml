@@ -32,13 +32,13 @@ jobs:
       GOWORK: 'off'
       BIDE_EXPLORE: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Output directory
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/explore"
           echo "SIGS_DIR=$RUNNER_TEMP/explore" >> "$GITHUB_ENV"
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.27'
       - name: Every BIDE_EXPLORE test is in the core module
@@ -93,7 +93,7 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
             gzip -9 "$SIGS_DIR/sigs.tsv"
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:
           name: explore-sigs-${{ github.run_id }}

@@ -49,8 +49,8 @@ jobs:
       PG_DSN: postgres://bide:bide@localhost:5432/bide_test?sslmode=disable
       REDIS_ADDR: localhost:6379
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.27'
       - name: Test with coverage (published modules, merged into coverage.out)
