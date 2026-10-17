@@ -949,8 +949,7 @@ func TestP14_ResultOnEveryErrorKind(t *testing.T) {
 	}
 }
 
-// The adversarial review of #138: the cases its tests (cancel_tree_x_test.go) do not cover, each for a
-// maintainer decision on its findings.
+// Cancellation cases that the tests in cancel_tree_x_test.go do not cover.
 
 // A SendOnce run main started (run:start with no kind) still drives after the upgrade: its
 // run:start reads as any kind.

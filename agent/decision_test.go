@@ -434,8 +434,8 @@ func TestIsDecisionStepName(t *testing.T) {
 	}
 }
 
-// Adversarial review of #244 (bide.approval.v3, decision times). TestReview_* reproduce findings
-// and fail on the reviewed branch; FuzzReview_* are the fuzz targets the review ran.
+// Decision times of bide.approval.v3. TestReview_* pin the behaviour found in review;
+// FuzzReview_* are the fuzz targets that review ran.
 
 // TestReview_SubmitDecisionJournalsNonCanonicalRecordedAt: decided_at must have a canonical form
 // (years 0001 to 9999) or SubmitDecision refuses it, but recorded_at, from WithClock or the

@@ -491,7 +491,7 @@ func TestRev103d_CanonicalCostLinear(t *testing.T) {
 	})
 }
 
-// Adversarial review of PR #103's F2 (exact decimal comparison of flow inputs).
+// Exact decimal comparison of flow inputs (F2).
 
 // F2: canonicalNumber documents "Two number texts denote the same decimal value if and only if
 // their canonical forms are equal." A number whose exponent is beyond +-2^62 keeps its text, so

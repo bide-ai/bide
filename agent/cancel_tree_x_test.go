@@ -381,7 +381,7 @@ func TestReview138b_CrossStoreNestedSubRunSeesRootCancel(t *testing.T) {
 	}
 }
 
-// The decisions on the second review of #138: the suspicions it raised, each proved by a test.
+// Cancellation suspicions, each proved by a test.
 
 // Suspicion 1: a legacy run:start (no kind, no typed start) does not say which entry point started
 // the run, and a typed run started on main has one. ResumeAgent must not recover it as an untyped

@@ -1083,9 +1083,9 @@ func TestReask_ValidNoteFollowsTheChainOfTallies(t *testing.T) {
 	}
 }
 
-// Adversarial review of the notifier core and NotifyPending (PR #243). Every test here states a
-// guarantee of docs/design/notifier.md and fails on the branch it was written against; each is a
-// reproduction, not a fix. Run them with: go test -run TestReview ./agent/
+// Guarantees of the notifier core and NotifyPending (docs/design/notifier.md): sweeps, overdue
+// notices, a hung sink, worker memory and the recovery episode. Each test pins one guarantee and
+// its comment quotes it. Run them with: go test -run TestReview ./agent/
 
 // hangSink blocks every call whose key is hang (or every call, with all set) until release is
 // closed or the call's context ends. It records the keys it saw and whether each call's context
@@ -1709,8 +1709,9 @@ func TestReview_AckAppendErrorIsRetriedNotRedelivered(t *testing.T) {
 	}
 }
 
-// Second round of the adversarial review, against the fixed stack (681e5f8e). Tests named
-// TestReview2_ fail there and reproduce a finding.
+// More guarantees of the notifier (docs/design/notifier.md), pinned by the TestReview2_ tests:
+// deaf sinks, the claim a round ends inside, Flush's report of undelivered events, key locks and
+// the abort catch-up.
 
 // realEngine builds an engine on the real clock with scaled-down timings, for races that depend
 // on the per-call timeout, which runs on real time.
@@ -1914,8 +1915,9 @@ func TestReview2_EnablingTheSweepDoesNotPageForEveryHistoricalAbort(t *testing.T
 	}
 }
 
-// Third round of the adversarial review, against 67b9016b. Tests named TestReview3_ fail there and
-// reproduce a finding; TestReview3Held_ pass and record what held up.
+// More guarantees of the notifier (docs/design/notifier.md), pinned by the TestReview3_ tests: the
+// aborted-run catch-up, abandoned calls, claims and Flush. TestReview3Held_ records behaviour that
+// held up.
 
 // R3-1. The aborted-run catch-up is bounded by the run's start time (WithNotifyAbortedWithin,
 // default 24h), because run:aborted records no time. A long-lived run that started three days ago
@@ -2116,8 +2118,9 @@ func TestReview3Held_KeyLockUnderContention(t *testing.T) {
 	}
 }
 
-// Fourth round of the adversarial review, against d3ddd1eb. Tests named TestReview4_ fail there and
-// reproduce a finding.
+// More guarantees of the notifier (docs/design/notifier.md), pinned by the TestReview4_ tests:
+// Flush with a hung trail, a round that ends inside its claim after an ack blip, and a peer sending
+// the overdue notice when the holder is gone.
 
 // blockingLoadTrail blocks every Load after block is set, until the Load's context ends.
 type blockingLoadTrail struct {

@@ -551,8 +551,8 @@ func TestRev104d_ToolClaimBehindWrapperResumes(t *testing.T) {
 	}
 }
 
-// rev104e: adversarial review of #104 round 4 (D2 claims behind a store wrapper; written against
-// the removed Durable wrapper and converted to Store wrappers).
+// D2 claims behind a store wrapper: a claim made through a Store wrapper is remembered and shared
+// as through the bare store.
 
 // hookWrap is a Store wrapper with Unwrap() Store (audit.AuditedStore's shape). before, if set,
 // runs before an Insert of the name it is given is forwarded.

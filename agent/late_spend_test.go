@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// Adversarial re-review of the #104 review fixes (f2b31af). Copy into agent/ to run.
+// Late spend: a model request still in flight when its turn fails is journaled and replayed.
 
 // faultStore wraps a Store with deterministic faults.
 type faultStore struct {
@@ -647,7 +647,7 @@ func TestAdv104_FailedLateSpendWriteIsWrittenNextDrive(t *testing.T) {
 	}
 }
 
-// Adversarial review of the #104 second-round fixes (621c62d, ed71031). Copy into agent/ to run.
+// Late spend, content check and kept spend (second round).
 
 // C1: the content check of fix 4 compares the record the step built with the record the journal
 // returns, decoded. A tool call whose args are not in compact JSON (a provider that streams
