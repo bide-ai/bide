@@ -46,6 +46,7 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `const EvidenceFormatV5 = "bide.audit.evidence.v5"`: EvidenceFormatV5 is the previous evidence format, whose seal covers the whole package JSON rather than its digest.
 - `const GrantFormat = "bide.audit.grant.v2"`: GrantFormat tags the canonical bytes of a grant (Grant.Bytes), which are both signed and digested.
 - `const JournalExportFormat = "bide.audit.journal-export.v1"`: JournalExportFormat is the format of a JournalExport.
+- `const MaxStopRecords = 20000`: MaxStopRecords bounds the records VerifyStops reads from the control run for its comparison with the trail: past it the comparison is not made and the count is a problem, so a flood of records written into the control run is a finding, not a hang.
 - `const NoteNoRecordedTime = "no recorded time"`: NoteNoRecordedTime is DecisionCoverage.Note for a decision whose record has no usable recorded\_at.
 - `const NoteRedacted = "redacted, name not attested"`: NoteRedacted is DecisionCoverage.Note for a decision whose record a redaction replaced with a tombstone: its approver, verdict and recorded\_at are gone, and it is bounded like any other.
 - `const NotifyTrailExportFormat = "bide.audit.notify-trail-export.v1"`: NotifyTrailExportFormat is the format of a NotifyTrailExport.

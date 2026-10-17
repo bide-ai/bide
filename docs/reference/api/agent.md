@@ -3099,7 +3099,7 @@ StopControl reads and writes the control run: the stops, lifts, mode and policy 
 - `func (c *StopControl) ChangeMode(ctx context.Context, req ModeRequest) (StopState, error)`: ChangeMode records that the deployment changed mode: evidence for history and the audit trail, which changes nothing a process does (the mode is each process's configuration, rolled out by the operator).
 - `func (c *StopControl) LiftStop(ctx context.Context, id string, req LiftRequest) (StopEntry, error)`: LiftStop adds one lifter's approval of lifting stop id and returns the stop as State then reports it (Lifted when the rule is met, else LiftsHeld of LiftsNeeded).
 - `func (c *StopControl) Mode() StopMode`: Mode is the mode the control runs under: the declared one, else audited with a policy and basic without (an undeclared mode is refused as soon as the control run holds a record).
-- `func (c *StopControl) Reaudit(ctx context.Context) (int, error)`: Reaudit appends to the trail every record of the control run that it lacks, in store order, and returns how many it appended: how a stop whose trail write failed (a \*StopTrailError) is completed, and a trail that fell behind is caught up.
+- `func (c *StopControl) Reaudit(ctx context.Context) (int, error)`: Reaudit appends to the trail every record of the control run that it lacks and that the control accepts (a record the fold rejects is a forgery, and copying it would turn a finding into evidence), in store order, and returns how many it appended: how a stop whose trail write failed (a \*StopTrailError) is completed, and a trail that fell behind is caught up.
 - `func (c *StopControl) RotatePolicy(ctx context.Context, next StopPolicy, req LiftRequest) (StopState, error)`: RotatePolicy adds one lifter's approval of replacing the policy in force with next, and returns the state afterwards (PolicySeq has advanced once a quorum of the policy in force has approved the same document).
 - `func (c *StopControl) SetStop(ctx context.Context, req StopRequest) (StopEntry, error)`: SetStop sets a stop and returns it as State reports it.
 - `func (c *StopControl) State(ctx context.Context) (StopState, error)`: State folds the control run into the effective state.
@@ -3266,6 +3266,7 @@ StopRecord is one record of the control run.
 **Methods**
 
 - `func (r StopRecord) Signed() bool`: Signed reports whether r carries a signature.
+- `func (r StopRecord) Validate() error`: Validate reports whether r is a well-formed record of its kind (not whether it is authorised): its format, mode, time, operator, reason, signature presence, and the fields its kind needs.
 
 ## type StopRequest
 
@@ -3344,6 +3345,7 @@ type StopState struct {
 	RejectedTotal int
 
 	Unverified int
+	// contains filtered or unexported fields
 }
 ```
 
