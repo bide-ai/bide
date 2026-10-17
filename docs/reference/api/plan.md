@@ -100,6 +100,7 @@ Builder\[In, Out\] accumulates a flow spec.
 - `func (b *Builder[In, Out]) WithApproverVerifiers(f agent.ApproverVerifierFor) *Builder[In, Out]`: WithApproverVerifiers binds the resolver of each approver's signature verifier for the flow's m-of-n approval gates, as agent.Agent.WithApproverVerifiers does for an agent's: a decision counts only if it verifies under the verifier this returns for its approver.
 - `func (b *Builder[In, Out]) WithModel(m agent.Model) *Builder[In, Out]`: WithModel binds an agent.Model to the flow, so a Model step can render its prompt, call the model, and decode the structured result.
 - `func (b *Builder[In, Out]) WithNotifier(n agent.Notifier, trail agent.NotifyTrail, opts ...agent.NotifyOption) *Builder[In, Out]`: WithNotifier tells n, at least once and with a stable ID, when a run of the flow that Run drives halts on an unknown outcome, waits at an approval gate, or is aborted: see agent.WithNotifier, whose semantics, trail requirements and options this takes.
+- `func (b *Builder[In, Out]) WithStopSwitch(sw *agent.StopSwitch) *Builder[In, Out]`: WithStopSwitch gives the flow a kill switch (see agent.StopSwitch and docs/guides/kill-switch.md): a run of the flow is held, as a pause (\*agent.Stopped), at its start, and each node is held before its claim and, with the control run read then, after the claim and before the node's body, where a stop covers the flow (agent.StopFlow, by the flow's name), the agent that acts (an agent stop) or every run (a global stop).
 
 ## type ConfigProblem
 
@@ -211,6 +212,7 @@ LoadOption configures a flow at Load time (before Build).
 - `func WithLoadedApproverVerifiers(f agent.ApproverVerifierFor) LoadOption`: WithLoadedApproverVerifiers binds the resolver of each approver's signature verifier for a loaded flow's m-of-n approval gates: the loader's equivalent of Builder.WithApproverVerifiers.
 - `func WithLoadedModel(m agent.Model) LoadOption`: WithLoadedModel binds an agent.Model to a flow produced by Load or LoadReader, so a config that declares a Model node (a RegisterModel block) can render its prompt, call the model, and decode the structured result at run time.
 - `func WithLoadedNotifier(n agent.Notifier, trail agent.NotifyTrail, opts ...agent.NotifyOption) LoadOption`: WithLoadedNotifier binds a notifier to a loaded flow: the loader's equivalent of Builder.WithNotifier.
+- `func WithLoadedStopSwitch(sw *agent.StopSwitch) LoadOption`: WithLoadedStopSwitch binds a kill switch to a loaded flow: the loader's equivalent of Builder.WithStopSwitch.
 
 ## type NodeOption
 

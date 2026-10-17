@@ -59,25 +59,53 @@ func (a *Agent) controlRunGuard(ctx context.Context) error {
 	if a.stop != nil {
 		return nil
 	}
-	if v, ok := stopGuardSeen.Load(a.store.id); ok {
+	return controlRunGuardFor(ctx, a.store)
+}
+
+// stopFlow is a plan flow's name and kill switch, carried by the context of the flow's run.
+type stopFlow struct {
+	name string
+	sw   *StopSwitch
+}
+
+type stopFlowKey struct{}
+
+func stopFlowFrom(ctx context.Context) *stopFlow {
+	sf, _ := ctx.Value(stopFlowKey{}).(*stopFlow)
+	return sf
+}
+
+// hold is the switch's check for one node of the flow: nil when nothing holds it (or the receiver is
+// nil).
+func (sf *stopFlow) hold(ctx context.Context, ref RunRef, sideEffect, sync bool) *Stopped {
+	if sf == nil {
+		return nil
+	}
+	id, _ := IdentityFrom(ctx)
+	return sf.sw.Hold(ctx, ref, StopQuery{Flow: sf.name, Agent: id.Actor}, sideEffect, sync)
+}
+
+// controlRunGuardFor is controlRunGuard for a store with no agent: a plan flow without a switch.
+func controlRunGuardFor(ctx context.Context, j *Journal) error {
+	if v, ok := stopGuardSeen.Load(j.id); ok {
 		if _, found := v.(bool); found {
-			return errNoSwitch(a)
+			return errNoSwitch()
 		}
 		if t, isTime := v.(time.Time); isTime && time.Since(t) < stopGuardAbsentFor {
 			return nil
 		}
 	}
-	for _, err := range a.store.store.Load(ctx, StopControlRun, -1) {
+	for _, err := range j.store.Load(ctx, StopControlRun, -1) {
 		if err != nil {
 			return storageErr("load the stop control run", err)
 		}
-		stopGuardSeen.Store(a.store.id, true)
-		return errNoSwitch(a)
+		stopGuardSeen.Store(j.id, true)
+		return errNoSwitch()
 	}
-	stopGuardSeen.Store(a.store.id, time.Now())
+	stopGuardSeen.Store(j.id, time.Now())
 	return nil
 }
 
-func errNoSwitch(*Agent) error {
-	return fmt.Errorf("this store holds a kill switch (its control run has records) and this agent has none: give the process a StopSwitch with WithStopSwitch, or it would run in disregard of a stop: %w", ErrConfig)
+func errNoSwitch() error {
+	return fmt.Errorf("this store holds a kill switch (its control run has records) and this agent or flow has none: give the process a StopSwitch (WithStopSwitch; a flow's WithStopSwitch), or it would run in disregard of a stop: %w", ErrConfig)
 }

@@ -750,3 +750,7 @@ diagram, runs it against a sqlite-backed store, conforms the run, and proves cry
 `flow.Digest()`). Its cross-process test crashes mid-run and resumes in a fresh process, proving the
 side effect fires at most once and the run either completes or halts. Run the demo with
 `cd examples/plan && GOWORK=off go run .`.
+
+## Stopping a flow
+
+`Builder.WithStopSwitch` (and `plan.WithLoadedStopSwitch`) gives a flow the process's kill switch, so a stop that covers the flow by name, a stop on the agent that acts, or a global stop holds a run as a pause (`*agent.Stopped`) at its start and each node before it begins. See the [kill switch guide](kill-switch.md).

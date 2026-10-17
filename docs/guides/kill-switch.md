@@ -26,8 +26,8 @@ signed audit trail and the notifications; until they are, a stop is set and lift
   end a run itself, `agent.Cancel` has the same rule.
 - A call whose attempt marker is written and which has no result is **never fired again by a stop,
   by its lift or by recovery**: it halts for its outcome as it always did.
-- **Scopes**: global, a tool by exact name, an agent by exact name (its `Identity.Actor`). No
-  patterns. A tool stop leaves the model's other turns running and holds only calls to that tool.
+- **Scopes**: global, a tool by exact name, a plan flow by its name, an agent by exact name (its
+  `Identity.Actor`). No patterns. A tool stop leaves the model's other turns running and holds only calls to that tool.
 - **Compensation continues by default**: a saga's rollback is not held by a stop, since it undoes
   damage already done. A stop set with `Compensation: agent.CompensationBlock` holds the rollback
   too, which then resumes after the lift.
@@ -55,9 +55,13 @@ e, _ := ctl.SetStop(ctx, agent.StopRequest{
 ctl.LiftStop(ctx, e.ID, agent.LiftRequest{By: "dayna"})
 ```
 
-An agent without a switch **refuses to run** (`ErrConfig`) on a store whose control run holds a
+A plan flow takes its switch with `Builder.WithStopSwitch` (or `plan.WithLoadedStopSwitch` for a
+loaded one): a run is held at its start, and each node before its claim and, with the control run
+read then, after the claim and before its body, where a won claim is recorded as not started.
+
+An agent or flow without a switch **refuses to run** (`ErrConfig`) on a store whose control run holds a
 record, so a process cannot silently disregard a stop. The check costs one read per store every few
-seconds when no stop exists (the [budget tests](../../agent/journal_x_test.go) count it).
+seconds when no stop exists (the budget tests `TestBudget_*` in `agent/journal_x_test.go` and `TestLowering_NoHistoryReadsPerNode` in `plan` count it).
 
 ## Basic and audited mode
 

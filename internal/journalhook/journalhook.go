@@ -90,3 +90,8 @@ var WithClaim func(rec any, claim string) any
 // WithRaw returns rec, an agent.Record, with the bytes Raw returns replaced by raw, for tests of
 // code that reads a record's stored bytes.
 var WithRaw func(rec any, raw json.RawMessage) any
+
+// WithStop returns ctx carrying the plan flow named flow and its kill switch sw (an
+// *agent.StopSwitch), which the flow's nodes (Step) are checked against: a node is held, as a pause
+// (*agent.Stopped), where a stop covers the flow, before it begins.
+var WithStop func(ctx context.Context, flow string, sw any) context.Context
