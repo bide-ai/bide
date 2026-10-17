@@ -362,3 +362,25 @@ func (r *trailRig) journals() map[string][]agent.Record {
 	}
 	return map[string][]agent.Record{"gov": recs}
 }
+
+// A Redactor given in the options does the replacing, while the journal still supplies the records:
+// the arrangement of a Postgres erasing role that can read nothing.
+func TestRedactJournal_UsesTheGivenRedactor(t *testing.T) {
+	ctx := context.Background()
+	r := newTrailRig(t)
+	rd := &countingRedactor{Redactor: r.store}
+	r.options.Redactor = rd
+	if res, err := audit.RedactJournal(ctx, r.j, r.trail, r.plan, r.options); err != nil || len(res.Redacted) != 2 || rd.n != 2 {
+		t.Fatalf("RedactJournal = %+v, %v; the given redactor was called %d times, want 2", res, err, rd.n)
+	}
+}
+
+type countingRedactor struct {
+	agent.Redactor
+	n int
+}
+
+func (c *countingRedactor) Redact(ctx context.Context, run, name string, cur, tomb []byte) (bool, error) {
+	c.n++
+	return c.Redactor.Redact(ctx, run, name, cur, tomb)
+}

@@ -181,7 +181,7 @@ const usageText = `bide audit: produce and verify audit proof bundles
   redactions (-trail <file> [-journal <file>...] | -db <file> | -postgres-env <var>) [-run <id>]
              (-sth <file>... -pubkey <hex|file> | -unanchored)
          verify the redaction trail (the signed, append-only record of each erasure of journal
-         content, written by bide journal redact): its signed heads commit to its records, so a
+         content, written by audit.RedactJournal): its signed heads commit to its records, so a
          deleted or changed record is TRAIL_ALTERED; each begin has an end (INCOMPLETE is an
          unfinished pass, finished by running the same plan again); a tombstone in a journal that no
          trail record names is UNACCOUNTED (an erasure made by hand), and one whose name or leaf hash

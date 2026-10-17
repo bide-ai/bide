@@ -2428,6 +2428,7 @@ RedactionResult is what Redact did.
 **Constructors and functions**
 
 - `func Redact(ctx context.Context, j *Journal, plan RedactionPlan, at time.Time) (RedactionResult, error)`: Redact replaces the records plan names with tombstones, in position order, each in its own transaction of the store's Redactor (so a crash leaves a prefix replaced and a second call with the same plan finishes the rest).
+- `func RedactUsing(ctx context.Context, j *Journal, store Redactor, plan RedactionPlan, at time.Time) (RedactionResult, error)`: RedactUsing is Redact with the Redactor given: the journal reads the records (plan and bytes) and store replaces them.
 
 ## type RedactionSelector
 

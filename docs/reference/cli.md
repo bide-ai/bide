@@ -1085,6 +1085,19 @@ bide audit: produce and verify audit proof bundles
          never_notified (and, with -strict, on the warnings unobserved_resolved and all_clear_untimed). A verdict that rests on records after the newest signed head is unattested and fails unless every tail record it rests on is within -max-unattested (default 0: strict; records within a nonzero bound are accepted without a signature); with -routing (the notifier's routing, agent.RoutingOf as JSON), an event with no delivery to a receiver it routes to, or a due escalation step with none, is no_delivery and fails. -db and -postgres-env (a variable holding the DSN) read every run, or -run,
          from a store, in the full bide command; the audit-only build reads exported files
 
+  redactions (-trail <file> [-journal <file>...] | -db <file> | -postgres-env <var>) [-run <id>]
+             (-sth <file>... -pubkey <hex|file> | -unanchored)
+         verify the redaction trail (the signed, append-only record of each erasure of journal
+         content, written by audit.RedactJournal): its signed heads commit to its records, so a
+         deleted or changed record is TRAIL_ALTERED; each begin has an end (INCOMPLETE is an
+         unfinished pass, finished by running the same plan again); a tombstone in a journal that no
+         trail record names is UNACCOUNTED (an erasure made by hand), and one whose name or leaf hash
+         is not what the trail recorded is NAME_MISMATCH or HASH_MISMATCH: a tombstone's name is
+         outside the journal's hashes, so the signed trail is what attests it; a record the trail lists as
+         erased that still holds content is NOT_ERASED; a redaction that ran without a covering
+         signed journal head is UNCOVERED. -db and -postgres-env read the trail and every run's journal
+         from a store, in the full bide command; the audit-only build reads exported files
+
   verify-receipts -receipt <file|dir> -journal <export> -heads <file> -pubkey <hex|file> -approver-keys <file>
          verify decision receipts (written by bide approve): each signature verifies for the
          approver's key over the exact call, and the signed tree heads (-heads: a head, or one per
@@ -1255,6 +1268,36 @@ Usage of bide audit prove-absent:
     	write the absence bundle here (default: stdout)
   -sth string
     	path to the signed absence tree head JSON (see audit.SignAbsenceRoot)
+```
+
+### bide audit redactions
+
+```text
+Usage of bide audit redactions:
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never; -json is never colored
+  -db string
+    	read the trail and the journals from this SQLite journal (opened read-only) instead of from files
+  -journal value
+    	a run's journal export (audit.ExportJournal as JSON) to check the tombstones of; repeat once per run
+  -json
+    	print one JSON report on stdout instead of the text report
+  -max-clock-skew duration
+    	how far past this machine's clock a signed head's timestamp may be (default 5m0s)
+  -max-input-bytes int
+    	the largest input file, in bytes, the verb reads; a larger one is an error (default 268435456)
+  -postgres-env string
+    	read them from the Postgres journal whose DSN is in this environment variable (never given on the command line)
+  -pubkey string
+    	the public key as <scheme>:<hex> (ed25519, ecdsa-p256, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it; it verifies every -sth
+  -run string
+    	with -db or -postgres-env: only this run and its sub-runs; default every run
+  -sth value
+    	a signed tree head over the redaction trail, as JSON; repeat for as many as you have: each must verify and match a prefix of the trail
+  -trail string
+    	the redaction trail export (audit.ExportNotifyTrail of redact:@log, as JSON)
+  -unanchored
+    	accept a trail with no signed head: it is read, and nothing attests that it is complete or unaltered
 ```
 
 ### bide audit verify
