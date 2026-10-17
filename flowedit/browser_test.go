@@ -30,7 +30,14 @@ type smoke struct {
 		Role     string `json:"role"`
 		Controls int    `json:"controls"`
 	} `json:"banner"`
-	BaselineLine    string   `json:"baselineLine"`
+	BaselineLine string `json:"baselineLine"`
+	Cue          struct {
+		Sel, Other struct {
+			Edge   float64 `json:"edge"`
+			Weight int     `json:"weight"`
+			Marker string  `json:"marker"`
+		}
+	} `json:"cue"`
 	Verdict         string   `json:"verdict"`
 	Outline         []string `json:"outline"`
 	GraphNodes      []string `json:"graphNodes"`
@@ -132,6 +139,9 @@ func checkBrowser(t *testing.T, out smoke, source string) {
 	}
 	if out.ByKeyboardGraph != "validate" {
 		t.Errorf("keyboard selection in the graph: %q", out.ByKeyboardGraph)
+	}
+	if out.Cue.Sel.Edge < 5 || out.Cue.Sel.Edge <= out.Cue.Other.Edge || out.Cue.Sel.Weight < 700 || out.Cue.Sel.Weight <= out.Cue.Other.Weight || out.Cue.Sel.Marker == "none" || out.Cue.Sel.Marker == "normal" || out.Cue.Other.Marker != "none" && out.Cue.Other.Marker != "normal" {
+		t.Errorf("the selected outline item is told by color alone: %+v", out.Cue)
 	}
 	if !strings.HasPrefix(out.Live, "Selected ") {
 		t.Errorf("the live region says %q after a selection", out.Live)
@@ -450,6 +460,11 @@ func TestRacesInChrome(t *testing.T) {
 		if !strings.Contains(v.Msg, "whole number") || !v.ApplyDisabled || v.Invalid != "true" {
 			t.Errorf("need %q: %+v", bad, v)
 		}
+	}
+	var fbMut int
+	get("feedbackMutations", &fbMut)
+	if fbMut > 1 {
+		t.Errorf("the gate form's live region was rewritten %d times while typing a deadline whose verdict did not change", fbMut)
 	}
 	var steps int
 	get("undoSteps", &steps)

@@ -222,6 +222,16 @@ function gateForm(n) {
   const apply = h('button', { type: 'button', class: 'btn primary', id: 'g-apply' }, cur ? 'Apply gate' : 'Add gate');
   const clear = cur ? h('button', { type: 'button', class: 'btn', id: 'g-clear' }, 'Remove gate') : null;
 
+  // The feedback region is a live region: it is rewritten only when its words change, so a draft that
+  // is still fine does not say "The check accepts this gate." again at every keystroke.
+  let lastFeedback = '';
+  function setFeedback(cls, messages) {
+    const key = cls + '|' + messages.join('\n');
+    if (key === lastFeedback) return;
+    lastFeedback = key;
+    feedback.className = 'small ' + cls;
+    feedback.replaceChildren(...messages.map((m) => h('p', {}, m)));
+  }
   let needBad = false;
   const operation = () => ({ op: 'set_approval', node: n.name, approval: draft });
   let timer = 0;
@@ -240,8 +250,7 @@ function gateForm(n) {
       clearTimeout(timer);
       ++seq;
       kofn.textContent = '';
-      feedback.className = 'small bad';
-      feedback.replaceChildren(h('p', {}, 'Decisions needed must be a whole number such as 2.'));
+      setFeedback('bad', ['Decisions needed must be a whole number such as 2.']);
       return;
     }
     kofn.textContent = draft.approvers.length ? draft.need + ' of ' + draft.approvers.length + ' approvers must sign' + (draft.exclude_principal ? ', never counting the person who started the run' : '') + (draft.timeout ? '; the gate expires after ' + draft.timeout : '') + '.' : 'No approvers yet.';
@@ -253,10 +262,9 @@ function gateForm(n) {
         if (mine !== seq) return;
         const mineNode = (e.nodes || []).find((x) => x.name === n.name);
         const errs = ((mineNode && mineNode.problems) || []).filter((p) => p.startsWith('error'));
-        feedback.className = 'small ' + (errs.length ? 'bad' : 'good');
-        feedback.replaceChildren(...(errs.length ? errs.map((p) => h('p', {}, p)) : [h('p', {}, 'The check accepts this gate.')]));
+        setFeedback(errs.length ? 'bad' : 'good', errs.length ? errs : ['The check accepts this gate.']);
       } catch (err) {
-        if (mine === seq) { feedback.className = 'small bad'; feedback.replaceChildren(h('p', {}, err.message)); }
+        if (mine === seq) setFeedback('bad', [err.message]);
       }
     }, 200);
   }

@@ -217,17 +217,22 @@ shows `CONFIG DOES NOT PARSE` and the reason, and no graph.
 
 The editor is built to be used without a pointer and without dragging.
 
-- **Every operation is reachable by keyboard.** The outline is one Tab stop and the arrow keys, Home
-  and End move between its nodes; Enter or Space selects. The nodes in the drawing are buttons too
-  (Tab to them, Enter). Forms are real forms: every field has a label, an error is tied to its field,
-  and the draft of a gate or an assertion says what the check thinks in a live region. There is no
-  drag: connecting and reordering are actions, not gestures.
+- **No operation needs a pointer or dragging.** Every control is a native button, field, select or
+  checkbox, reached by Tab; one test drives the path of selecting a node, setting its safety, editing
+  its gate, adding an assertion, undoing and redoing, and saving with the confirmation a weakening
+  needs, by keyboard alone (the other controls are not each driven by a test). The outline is one Tab
+  stop and the arrow keys, Home and End move between its nodes; Enter or Space selects. The nodes in the
+  drawing are buttons too (Tab to them, Enter). Forms are real forms: every field has a label, an error
+  is tied to its field, and the draft of a gate or an assertion says what the check thinks in a live
+  region, rewritten only when its words change. There is no drag in this phase and none will be
+  required.
 - **Changes are announced** through a live region (the selection, `Saved`, an operation done or
   refused, the verdict, and an alert for the weakened banner), and the focus returns to the control
   you changed. The save dialog is a modal dialog: Tab stays in it, Escape closes it, and the focus
   goes back to where it was.
 - **State is not carried by color alone.** Verdicts, assertion states, gate badges and the weakened
-  banner each have a glyph and words; the diff marks lines with `+` and `-`. The two themes
+  banner each have a glyph and words, the selected node in the outline a heavier edge, a bold name and a
+  marker (a test checks the computed styles); the diff marks lines with `+` and `-`. The two themes
   (light and dark) follow the system and can be switched; the drawing's flowing dash stops under
   `prefers-reduced-motion`.
 - **Tested.** `go test ./flowedit` drives the page in real Chrome (the `Editor (Chrome)` job):
