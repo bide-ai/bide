@@ -312,8 +312,8 @@ go r.Run(ctx)
   status parameters today.
 - **`bide approve -cert`** does **not** fetch. Its local check is a convenience before signing (it
   already says it judges no status); fetching from an approver's workstation would need egress to
-  the bank's CRL points and would suggest a verdict only the gate gives. A later `bide identity check`
-  may read the cache dir the refresher keeps.
+  the bank's CRL points and would suggest a verdict only the gate gives. `bide identity check` (the pre-flight) reads the cache dir the
+  refresher keeps, read-only, or fetches without storing.
 
 ## Tests (step 2)
 
@@ -346,7 +346,7 @@ text), CONCEPTS, changelog fragment.
 4. On archive failure, still add to the snapshot, alarm, and retry [yes: withholding a CRL would
    make status look better].
 5. `bide identity fetch-crl` in this PR (with `-once` and a daemon mode); `approve -cert` stays
-   fetch-free; `bide identity check` is a separate later PR [yes].
+   fetch-free; `bide identity check` shipped as a separate PR.
 6. HTTP/HTTPS only; LDAP stated as unsupported [yes]. OCSP out of scope [yes].
 7. Interval default tightened to `min(CAPeriod/2, min(MaxStatusAge, ExecStatusAge)/4)` [yes].
 8. Review by pki-auditor-2 (2026-10-16) folded in: supplied intermediate certificates, TBS comparison,

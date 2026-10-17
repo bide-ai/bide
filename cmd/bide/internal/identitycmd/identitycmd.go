@@ -1,6 +1,7 @@
 // Package identitycmd is bide identity: commands for the certificate-bound approvers' status data.
 //
 //	bide identity fetch-crl         fetch, verify and archive the CRLs of the issuers a policy pins
+//	bide identity check             pre-flight a certificate-bound approval setup, and say why a certificate would be refused
 //	bide identity reset-high-water  set aside a CRL that poisoned an issuer's rollback mark
 //	bide identity ack-reset         acknowledge a reset record, which stops its start-up report
 //
@@ -36,10 +37,12 @@ import (
 )
 
 // Verbs are the verbs of bide identity, in the order help shows them.
-func Verbs() []string { return []string{"fetch-crl", "reset-high-water", "ack-reset"} }
+func Verbs() []string { return []string{"fetch-crl", "check", "reset-high-water", "ack-reset"} }
 
 // Main runs bide identity with args (after "identity") and returns the exit status: 0 on success, 1 for a
-// failure (for fetch-crl -once, an issuer without a fresh CRL), 2 for a usage error.
+// failure (for fetch-crl -once, an issuer without a fresh CRL; for check, a setup that will not work), 2 for a
+// usage error, and for check also 3 (a file could not be read) and 4 (nothing failed but part was not
+// checked).
 func Main(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -57,6 +60,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "fetch-crl":
 		return runFetch(ctx, args[1:], stdout, stderr)
+	case "check":
+		return runCheck(ctx, args[1:], stdout, stderr)
 	case "reset-high-water":
 		return runReset(ctx, args[1:], stdout, stderr)
 	case "ack-reset":
@@ -69,6 +74,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 func usage(w io.Writer) {
 	fmt.Fprint(w, `usage: bide identity fetch-crl -policy <file> -params <file> -cache <dir> [-once]
+       bide identity check -policy <file> -params <file> (-expect <file> | -no-expect) (-crl-dir <dir> | -fetch | -no-status) [-cert <chain.pem>] [-json]
        bide identity reset-high-water -policy <file> -params <file> -cache <dir> -issuer <hex> -reason <text> -operator <name> [-set-aside <hash>]... [-accept-lost-listings]
        bide identity ack-reset -policy <file> -params <file> -cache <dir> -issuer <hex> -name <RESET-...json>
 
@@ -79,6 +85,14 @@ Keep the CRLs of a certificate policy's issuing CAs current and archived:
                     equivocation, and writes the dated archive. With -once it makes one pass and exits
                     1 unless every issuer holds a fresh CRL (a cron job); otherwise it runs until
                     interrupted.
+  check             the pre-flight before go-live, and when an approver's decision is refused: does
+                    the policy load, do the pinned CAs and intermediates match, are the CRLs reachable
+                    and fresh enough for the declared ages, do the policy file and -params agree with the
+                    gate's recorded policy, and would the gate accept an approver's certificate (given with
+                    -cert) and let its call run. It runs the gate's own code for each answer and prints
+                    one line per check with the fix, and what it cannot check ahead of time. Exit 0 ready,
+                    1 will not work as configured, 2 usage, 3 a file could not be read, 4 nothing failed but
+                    part was left unchecked (-no-status, -no-expect).
   reset-high-water  the way out of a poisoned rollback mark (a CA that issued one CRL with a mistaken
                     huge number, or restarted its numbering): sets aside the CRL at the mark, with a
                     durable record, so a restart cannot bring the mark back.
