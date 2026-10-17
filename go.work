@@ -14,6 +14,7 @@ use (
 	./examples/mcp
 	./examples/observability
 	./examples/plan
+	./examples/sso-certs
 	./examples/stripe-refund
 	./flowedit
 	./govern

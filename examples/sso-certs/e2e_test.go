@@ -67,6 +67,12 @@ func requireDocker(t *testing.T) {
 		}
 		t.Skipf(format, args...)
 	}
+	// The test pulls three images and runs for about a minute, so it runs only when asked to: by
+	// BIDE_TEST_STEPCA=1, or by BIDE_REQUIRE_STEPCA=1 (the Integration job), which also turns a
+	// missing Docker into a failure.
+	if os.Getenv("BIDE_TEST_STEPCA") == "" && os.Getenv("BIDE_REQUIRE_STEPCA") == "" {
+		t.Skip("set BIDE_TEST_STEPCA=1 to run the SSO recipe against containers (needs Docker)")
+	}
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		fail("the recipe test runs where Docker can mount host directories at the same path (linux, macOS)")
 	}

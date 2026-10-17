@@ -21,6 +21,7 @@ cmd/bide/internal/samplecmd
 examples/approval
 examples/hsm-signing
 examples/plan
+examples/sso-certs
 examples/stripe-refund
 flowedit
 govern

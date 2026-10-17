@@ -8,8 +8,8 @@ API key from the environment; set `OPENROUTER_API_KEY` before running them. Exam
 marked "offline" need no key and no network.
 
 Most examples are packages of the root module: run them from the repository root with
-`go run ./examples/<name>`. Seven are their own modules because they import an adapter module with
-its own dependencies (`approval`, `plan`, `mcp`, `observability`, `stripe-refund`, `hsm-signing`, and the `govern` examples); `cd` into the directory and run
+`go run ./examples/<name>`. Eight are their own modules because they import an adapter module with
+its own dependencies, or drive containers (`approval`, `plan`, `mcp`, `observability`, `stripe-refund`, `hsm-signing`, `sso-certs`, and the `govern` examples); `cd` into the directory and run
 `go run .`, or `go run ./<name>` for a `govern` example (the `go.work` at the root resolves the local modules; with `GOWORK=off` each module's
 `replace` directives do the same).
 
@@ -54,6 +54,7 @@ evaluation, and integration seams.
 | `eval` | The statistical evaluation harness: labeled cases, metrics, repeated runs, a pass-rate report (offline). | `go run ./examples/eval` |
 | `observability` | OpenTelemetry GenAI spans in one call (`trace.Instrument`), exported to stdout, with token usage and cost on the chat span (offline). Its own module. | `cd examples/observability && go run .` |
 | `hsm-signing` | An agent whose audit log is signed by an Ed25519 or ECDSA P-256 key held in a PKCS#11 token (an HSM, or SoftHSM2 to try it), in Google Cloud KMS (set `BIDE_GCPKMS_KEY_VERSION`), or in Azure Key Vault or Managed HSM (set `BIDE_AZURE_KEY_ID`; ECDSA P-256 only): every journal write is anchored with a tree head signed in the token or by Cloud KMS, then the head and an evidence package are verified with the public key alone. PIN from an environment variable or a file, never an argument. Needs cgo and a token, a Cloud KMS key version with Application Default Credentials, or an Azure key with an `azidentity` credential (see `docs/guides/key-custody.md`); its PKCS#11 tests use SoftHSM2 and skip without it, and its Cloud KMS tests run against an in-process emulator, and its Azure tests use a fake Key Vault client. Its own module. | `cd examples/hsm-signing && BIDE_PKCS11_MODULE=... BIDE_PKCS11_TOKEN=... BIDE_HSM_PIN_FILE=... go run .` or `cd examples/hsm-signing && BIDE_GCPKMS_KEY_VERSION=projects/P/locations/L/keyRings/R/cryptoKeys/K/cryptoKeyVersions/N go run .` or `cd examples/hsm-signing && BIDE_AZURE_KEY_ID=https://V.vault.azure.net/keys/K/VERSION go run .` |
+| `sso-certs` | Approver certificates issued after a single sign-on login: a step-ca OIDC provisioner and certificate template that issue what a bide `IdentityPolicy` requires, `scripts/renew.sh` for the approver, and an end-to-end test against containers (needs Docker; `BIDE_TEST_STEPCA=1`). Its own module. See [SSO certificates](../docs/guides/sso-certificates.md). | `cd examples/sso-certs && BIDE_TEST_STEPCA=1 go test -v ./...` |
 | `mcp` | Wiring runtime MCP tools into an agent from an in-memory MCP server, with trusted annotations marking a tool retry-safe (offline). Its own module. | `cd examples/mcp && go run .` |
 | `coordination` | Multi-agent coordination through shared durable state: a gsm-synthesized repair, and a cyclic federation built under a coordination plan (offline). | `cd examples/govern && go run ./coordination` |
 | `webhook` | Driving an agent from an inbound messenger webhook, with idempotent redelivery handling (offline). | `go run ./examples/webhook` |

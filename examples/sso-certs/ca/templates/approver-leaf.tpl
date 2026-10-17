@@ -6,7 +6,7 @@
   - key usage digitalSignature only, and the bank's approver EKU only (no serverAuth, no clientAuth);
   - the bank's certificate policy OID, asserted only by this template;
   - the CRL distribution point that the CRL's issuing distribution point names.
-  Edit the five values marked CHANGE for your bank; the test in this directory uses the values below.
+  For your bank, change the host in the SAN, the two OIDs and the CRL URL; the test in this directory uses the values below.
 */ -}}
 {{- $id := .Token.person_id -}}
 {{- if not (regexMatch "^[0-9a-f]{32}$" $id) }}{{ fail "the person_id claim is not 32 lowercase hex digits" }}{{ end -}}
