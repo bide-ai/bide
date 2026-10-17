@@ -38,7 +38,7 @@ jobs:
     name: Docs build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
       # A pull request or a merge queue batch builds only when it touches what the site is built
@@ -57,7 +57,7 @@ jobs:
             echo "$files" | grep -qE '^(docs/|docs-site/|CHANGELOG\.md$|\.github/workflows/docs\.yml$)' || build=false
           fi
           echo "build=$build" | tee -a "$GITHUB_OUTPUT"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         if: steps.changed.outputs.build != 'false'
         with:
           node-version: 20
@@ -69,11 +69,11 @@ jobs:
         if: steps.changed.outputs.build != 'false'
         working-directory: docs-site
         run: npm run docs:build
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         with:
           enablement: true
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         with:
           path: docs-site/.vitepress/dist
@@ -87,4 +87,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

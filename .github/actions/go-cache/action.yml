@@ -24,7 +24,7 @@ runs:
           go env GOMODCACHE
           echo "EOF"
         } >> "$GITHUB_OUTPUT"
-    - uses: actions/cache/restore@v4
+    - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
         path: ${{ steps.paths.outputs.paths }}
         key: go-${{ runner.os }}-${{ inputs.name }}-${{ github.sha }}
