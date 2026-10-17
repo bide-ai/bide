@@ -248,3 +248,26 @@ func TestStopTrail_RejectsAForeignLeaf(t *testing.T) {
 		t.Fatalf("%v %+v", err, rep)
 	}
 }
+
+// A head over another trail, and a trusted root the trail does not hold, are problems.
+func TestVerifyStops_HeadOfAnotherTrailAndAMissingRoot(t *testing.T) {
+	ctx := context.Background()
+	r := newStopRig(t)
+	r.set("refund", "ops1")
+	log, err := audit.LoadEventLog(ctx, r.events, agent.StopTrailName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := audit.SignTreeHead(log.TreeHead("notify:r1", time.Now().UnixNano()), audit.Ed25519Signer{Priv: r.head})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep, err := audit.VerifyStops(r.input(audit.StopVerifyInput{Heads: []audit.SignedTreeHead{other}})); !errors.Is(err, audit.ErrNotVerified) || !strings.Contains(problems(rep), "not \"stop\"") {
+		t.Fatalf("a head of another trail: %v %s", err, problems(rep))
+	}
+	root := strings.Repeat("ab", 32)
+	rep, err := audit.VerifyStops(r.input(audit.StopVerifyInput{Unanchored: true, Options: []agent.StopOption{agent.WithStopMode(agent.StopAudited), agent.WithStopPolicy(r.policy), agent.WithStopRoot(root), agent.WithStopVerifier(audit.StopVerifierFromAudit)}}))
+	if !errors.Is(err, audit.ErrNotVerified) || rep.ChainErr == "" || rep.RejectedTotal != 0 || !strings.Contains(problems(rep), "policy chain cannot be trusted") {
+		t.Fatalf("a trusted root the trail does not hold: %v %+v", err, rep)
+	}
+}
