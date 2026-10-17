@@ -152,3 +152,53 @@ func pemChain(der ...[]byte) []byte {
 	}
 	return out
 }
+
+// The digest, end to end: fetch-crl prints the digest and whether it is comparable; check -expect-digest is
+// an equality once -params states every member.
+func TestDigestComparabilityThroughTheCommands(t *testing.T) {
+	e := newEnv(t)
+	e.publish(1, 1)
+	startup := func() string {
+		st, out, errs := e.run(append([]string{"fetch-crl", "-once"}, e.common()...)...)
+		if st != 0 {
+			t.Fatalf("status %d: %s %s", st, out, errs)
+		}
+		return out
+	}
+	out := startup()
+	if !strings.Contains(out, "cannot be compared with the gate's because the file lacks allow_holds, clock_tolerance, consecutive_numbers, coverage_tolerance, effective_from, min_w, retained, routine_grace, w") {
+		t.Fatalf("an old file is not reported as incomplete:\n%s", out)
+	}
+	// An old file: -expect-digest is refused, naming the members.
+	st, out, _ := e.run(e.checkArgs("-expect-digest", strings.Repeat("a", 64), "-fetch")...)
+	if st != 1 || !strings.Contains(out, "FAIL  params.digest") || !strings.Contains(out, "lacks allow_holds,") {
+		t.Fatalf("status %d:\n%s", st, out)
+	}
+	// A complete file: the printed digest is the one check compares.
+	b, err := os.ReadFile(e.params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var p map[string]any
+	if err := json.Unmarshal(b, &p); err != nil {
+		t.Fatal(err)
+	}
+	p["coverage_tolerance"], p["w"], p["min_w"], p["routine_grace"], p["clock_tolerance"] = "1m0s", "24h0m0s", "30m0s", "0s", "1m0s"
+	p["allow_holds"], p["consecutive_numbers"], p["retained"], p["effective_from"] = false, false, false, "2026-09-01T00:00:00Z"
+	b, _ = json.Marshal(p)
+	if err := os.WriteFile(e.params, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out = startup()
+	i := strings.Index(out, "policy digest ")
+	if i < 0 || !strings.Contains(out, "every member the digest covers is stated, so it must equal the digest the gate records") {
+		t.Fatalf("a complete file is not reported as comparable:\n%s", out)
+	}
+	digest := out[i+len("policy digest ") : i+len("policy digest ")+64]
+	if st, out, _ := e.run(e.checkArgs("-expect-digest", digest, "-fetch")...); st != 0 || !strings.Contains(out, "OK    params.digest") {
+		t.Fatalf("status %d:\n%s", st, out)
+	}
+	if st, out, _ := e.run(e.checkArgs("-expect-digest", strings.Repeat("b", 64), "-fetch")...); st != 1 || !strings.Contains(out, "FAIL  params.digest") {
+		t.Fatalf("status %d:\n%s", st, out)
+	}
+}

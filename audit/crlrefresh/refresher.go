@@ -22,6 +22,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -68,6 +69,10 @@ type Options struct {
 	Issuers []*x509.Certificate
 	// DeltaPeriodFor is the declared delta CRL period of each issuer that has DeltaURLs.
 	DeltaPeriodFor map[audit.SPKIHash]time.Duration
+	// StandIn is set when the approver was built from a declaration file (audit.StatusDecl.Approver) and
+	// not by the gate: the start-up events then say whether the approver's policy digest can be compared
+	// with the gate's. Nil means the approver is the gate's own.
+	StandIn *StandIn
 	// Client is the application's HTTP client (mTLS, a proxy, a resolver). Nil builds the library's: no
 	// proxy, no compression, timeouts on every stage. The library cannot enforce proxy or DNS rules on a
 	// client it did not build; it still bounds the body, the context and the redirects.
@@ -85,6 +90,11 @@ type Options struct {
 	// oldest are dropped and reported.
 	MaxArchiveQueueBytes int
 }
+
+// StandIn says what a declaration file lacked of the values the policy digest covers
+// (audit.StatusDecl.MissingForDigest). With none missing the stand-in approver's digest equals the gate's
+// for the same declaration.
+type StandIn struct{ Missing []string }
 
 // Hooks are called from the refresher's goroutines, possibly concurrently for different
 // issuers. They must not block; a panic in one is recovered.
@@ -326,7 +336,7 @@ func New(a *audit.CertApprover, sources audit.CRLSources, opt Options) (*Refresh
 	for _, f := range r.feeds() {
 		f.attemptTimeout = attemptDeadline(f.iss.timing.interval(f.period))
 	}
-	r.startupEvents(given, warnings)
+	r.startupEvents(given, warnings, opt.StandIn)
 	return r, nil
 }
 
@@ -431,24 +441,31 @@ func distPointURIs(der []byte) []string {
 
 // startupEvents reports the effective sources and the margin of each issuer, as events so a platform
 // team can alert on a margin under one period.
-func (r *Refresher) startupEvents(clientGiven bool, warnings []string) {
+func (r *Refresher) startupEvents(clientGiven bool, warnings []string, standIn *StandIn) {
 	for _, i := range r.issuers {
 		iv := i.timing.interval(i.timing.Period)
 		r.emit(Event{Kind: EventSourcesChanged, Issuer: i.key, Feed: "base", URL: joinURLs(i.base.urls),
 			Detail: fmt.Sprintf("urls=%v delta_urls=%v interval=%v limit=%v alarm_age=%v margin=%v",
 				redactAll(i.base.urls), redactAll(i.deltaURLs()), iv, i.timing.Limit, i.timing.alarmAge(iv), i.timing.margin())})
 	}
-	// The digest of this stand-in approver cannot equal a gate's: it carries a stand-in effective_from
-	// and the defaults of values a declaration cannot hold (W, MinW, RoutineGrace, ClockTolerance,
-	// holds, retention). It is printed for the record; the declared values below are what to compare.
 	dec := r.appr.DescribeIdentity()
-	dec.EffectiveFrom = ""
+	digest := r.appr.PolicyDigest()
+	switch {
+	case standIn == nil:
+		r.emit(Event{Kind: EventStartup, Detail: "policy digest " + digest + " of the approver this refresher was built from; when it is the gate's own CertApprover it is the digest the gate records"})
+	case len(standIn.Missing) == 0:
+		r.emit(Event{Kind: EventStartup, Detail: "policy digest " + digest + " of the declaration file: every member the digest covers is stated, so it must equal the digest the gate records; a difference means the file and the gate declare different values"})
+	default:
+		// The members the file lacks take defaults (and effective_from the start time), so the digest
+		// cannot be compared; the declared values below are what to compare.
+		dec.EffectiveFrom = ""
+		r.emit(Event{Kind: EventStartup, Detail: "policy digest " + digest + " of the declaration file; it cannot be compared with the gate's because the file lacks " + strings.Join(standIn.Missing, ", ") + " (they take defaults, and effective_from the start time): state them in the file, or compare the declared values below with the policy record the gate journals"})
+	}
 	vals, merr := json.Marshal(dec)
 	if merr != nil {
 		vals = []byte(fmt.Sprintf("%q", "the declared values could not be encoded: "+merr.Error()))
 	}
-	r.emit(Event{Kind: EventStartup, Detail: "policy digest " + r.appr.PolicyDigest() + " of this refresher's stand-in approver; it differs from a gate's digest even when the timings agree (the stand-in effective_from is the start time and values the declaration cannot hold are defaults), so do not compare it with the gate's"})
-	r.emit(Event{Kind: EventStartup, Detail: "declared values " + string(vals) + ": compare the timing members (ca_period*, max_status_age*, exec_status_age*, ca_overlap_for, this_update_skew*, coverage_tolerance) and the anchors and intermediates with the policy record the gate journals"})
+	r.emit(Event{Kind: EventStartup, Detail: "declared values " + string(vals) + ": the timing members (ca_period*, max_status_age*, exec_status_age*, ca_overlap_for, this_update_skew*, coverage_tolerance) and the anchors and intermediates must be the ones in the policy record the gate journals"})
 	if r.archive == nil {
 		r.emit(Event{Kind: EventStartup, Detail: "no archive: a restart forgets rollback protection and no dated series is kept"})
 	}

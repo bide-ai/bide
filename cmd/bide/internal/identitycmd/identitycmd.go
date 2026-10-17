@@ -74,7 +74,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 func usage(w io.Writer) {
 	fmt.Fprint(w, `usage: bide identity fetch-crl -policy <file> -params <file> -cache <dir> [-once]
-       bide identity check -policy <file> -params <file> (-expect <file> | -no-expect) (-crl-dir <dir> | -fetch | -no-status) [-cert <chain.pem>] [-json]
+       bide identity check -policy <file> -params <file> (-expect <file> | -expect-digest <hex> | -no-expect) (-crl-dir <dir> | -fetch | -no-status) [-cert <chain.pem>] [-json]
        bide identity reset-high-water -policy <file> -params <file> -cache <dir> -issuer <hex> -reason <text> -operator <name> [-set-aside <hash>]... [-accept-lost-listings]
        bide identity ack-reset -policy <file> -params <file> -cache <dir> -issuer <hex> -name <RESET-...json>
 
@@ -252,7 +252,7 @@ func build(c *common, lw *lineWriter) (*crlrefresh.Refresher, error) {
 		return nil, err
 	}
 	return crlrefresh.New(ap, src, crlrefresh.Options{
-		Issuers: certs, DeltaPeriodFor: decl.DeltaPeriodFor, Client: httpClient(), Archive: crlrefresh.DirArchive(c.cache),
+		Issuers: certs, DeltaPeriodFor: decl.DeltaPeriodFor, StandIn: &crlrefresh.StandIn{Missing: decl.MissingForDigest()}, Client: httpClient(), Archive: crlrefresh.DirArchive(c.cache),
 		Hooks: crlrefresh.Hooks{OnEvent: lw.event, OnAlarm: lw.alarm},
 	})
 }

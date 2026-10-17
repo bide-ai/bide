@@ -13,11 +13,12 @@ import (
 	"github.com/bide-ai/bide/audit"
 )
 
-// notDeclared are the members of the gate's policy record that the policy file and the -params file cannot
-// carry, so a pre-flight cannot compare them (the stand-in approver fills defaults, or a start time). They
-// are listed with the recorded value, never reported as matching.
-var notDeclared = []string{"effective_from", "w", "min_w", "routine_grace", "clock_tolerance", "allow_holds",
-	"consecutive_numbers", "count_live", "retained", "independent_time"}
+// undeclarable are the members of the gate's policy record that a -params file may state (or leave out).
+// When the file leaves one out the stand-in approver fills a default (or a start time), so it cannot be
+// compared: it is listed with the recorded value, never reported as matching. count_live (forced true in a
+// declaration) and independent_time (never set) are always compared.
+var undeclarable = []string{"effective_from", "w", "min_w", "routine_grace", "clock_tolerance", "allow_holds",
+	"consecutive_numbers", "retained"}
 
 // readRecord reads the gate's recorded policy from path: an ApprovalIdentity record (the "policy" member of
 // the journal's identity record), or the IdentityPolicyRecord alone. Unknown members are refused, so a
@@ -53,13 +54,15 @@ func asMap(rec agent.IdentityPolicyRecord) map[string]any {
 	return m
 }
 
-// compareRecords returns, for the members both sides can declare, the ones that differ (naming both
-// values), and the members that could not be compared with the recorded value.
-func compareRecords(mine, gate agent.IdentityPolicyRecord) (diffs, unverified []string) {
+// compareRecords returns the members that differ (naming both values), and the members that could not be
+// compared with the recorded value because the declaration file leaves them out (missing).
+func compareRecords(mine, gate agent.IdentityPolicyRecord, missing []string) (diffs, unverified []string) {
 	a, g := asMap(mine), asMap(gate)
 	skip := map[string]bool{}
-	for _, k := range notDeclared {
-		skip[k] = true
+	for _, k := range missing {
+		if slices.Contains(undeclarable, k) {
+			skip[k] = true
+		}
 	}
 	keys := map[string]bool{}
 	for k := range a {
