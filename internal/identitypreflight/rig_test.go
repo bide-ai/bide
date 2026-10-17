@@ -167,9 +167,13 @@ func (g *rig) gateRecord() map[string]any {
 	b, _ := json.Marshal(ap.DescribeIdentity())
 	var m map[string]any
 	_ = json.Unmarshal(b, &m)
-	m["effective_from"] = "2026-09-01T00:00:00Z"
-	m["routine_grace"] = "2m0s"
-	m["retained"] = true
+	// What the gate sets and an old -params file cannot state; a complete file states them, and then
+	// the record is what the file says.
+	if _, ok := g.params["effective_from"]; !ok {
+		m["effective_from"] = "2026-09-01T00:00:00Z"
+		m["routine_grace"] = "2m0s"
+		m["retained"] = true
+	}
 	return m
 }
 
