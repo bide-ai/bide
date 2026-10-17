@@ -383,7 +383,7 @@ func TestSelfCheckEKU(t *testing.T) {
 	// An extension that was not asked for (here a key usage) is refused although SAN and EKU match.
 	priv := sg.(audit.Ed25519Signer).Priv
 	extra, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
-		EmailAddresses: []string{"ops@bank.example"},
+		EmailAddresses:  []string{"ops@bank.example"},
 		ExtraExtensions: []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 15}, Value: []byte{3, 2, 7, 0x80}}},
 	}, priv)
 	if err != nil {
