@@ -71,7 +71,7 @@ untouched, and you edit that part in the source.
   The page says that approvers' keys are supplied when a program loads the flow and that it cannot
   check that they are enrolled.
 
-A form change is an undoable step: **Undo** and **Redo** in the header restore the exact earlier
+A form change is an undoable step (the history keeps the last 100 steps; each is a whole copy of the text): **Undo** and **Redo** in the header restore the exact earlier
 text, and a burst of typing in the source is one step. After a change the focus returns to the
 control you changed. A changed gate, safety or block is compared with the baseline like any other
 edit, so the weakened banner appears when the change weakens the flow, with the same words as in CI.

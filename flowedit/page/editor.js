@@ -175,6 +175,7 @@ function gateForm(n) {
   const apply = h('button', { type: 'button', class: 'btn primary', id: 'g-apply' }, cur ? 'Apply gate' : 'Add gate');
   const clear = cur ? h('button', { type: 'button', class: 'btn', id: 'g-clear' }, 'Remove gate') : null;
 
+  let needBad = false;
   const operation = () => ({ op: 'set_approval', node: n.name, approval: draft });
   let timer = 0;
   let seq = 0;
@@ -187,6 +188,15 @@ function gateForm(n) {
   }
   // Every change to the draft asks the server what the check says of the node with it.
   function changed() {
+    apply.disabled = needBad;
+    if (needBad) {
+      clearTimeout(timer);
+      ++seq;
+      kofn.textContent = '';
+      feedback.className = 'small bad';
+      feedback.replaceChildren(h('p', {}, 'Decisions needed must be a whole number such as 2.'));
+      return;
+    }
     kofn.textContent = draft.approvers.length ? draft.need + ' of ' + draft.approvers.length + ' approvers must sign' + (draft.exclude_principal ? ', never counting the person who started the run' : '') + (draft.timeout ? '; the gate expires after ' + draft.timeout : '') + '.' : 'No approvers yet.';
     clearTimeout(timer);
     const mine = ++seq;
@@ -203,7 +213,15 @@ function gateForm(n) {
       }
     }, 200);
   }
-  need.addEventListener('input', () => { draft.need = Number.parseInt(need.value, 10) || 0; changed(); });
+  // The number is read strictly: what the field shows is what is sent. "1e3", "2.5" or "" is not a
+  // whole number, and is said so instead of being sent as something else.
+  need.addEventListener('input', () => {
+    const raw = need.value.trim();
+    needBad = !/^\d+$/.test(raw);
+    draft.need = needBad ? 0 : Number(raw);
+    need.setAttribute('aria-invalid', needBad ? 'true' : 'false');
+    changed();
+  });
   exclude.addEventListener('change', () => { draft.exclude_principal = exclude.checked; changed(); });
   timeout.addEventListener('input', () => { draft.timeout = timeout.value.trim(); changed(); });
   const addOne = () => {
@@ -235,9 +253,20 @@ function gateForm(n) {
 
 // operate applies an operation to the text, as a step the author can undo, and puts the focus back
 // on the control that made it.
+const applyOrApi = (text, op) => api('/api/apply', { text, operation: op });
+
 async function operate(op, focusId) {
+  const sent = state.text;
   try {
-    const e = await api('/api/apply', { text: state.text, operation: op });
+    const e = await applyOrApi(sent, op);
+    // The author may have typed while the answer was on its way: their text is not overwritten.
+    if (state.text !== sent) {
+      const msg = 'Not applied: the text changed while the edit was being applied. Apply it again.';
+      const box = $('op-error');
+      if (box) box.textContent = msg;
+      announce(msg);
+      return;
+    }
     if (e.changed) {
       checkpoint();
       setText(e.text, e);
@@ -268,16 +297,37 @@ function opWords(op) {
 const undoStack = [];
 const redoStack = [];
 function checkpoint() {
-  if (undoStack.at(-1) !== state.text) undoStack.push(state.text);
+  if (undoStack.at(-1) !== state.text) pushCapped(undoStack, state.text);
   redoStack.length = 0;
   renderState();
 }
+// The undo and redo stacks hold whole texts (at most a megabyte each), so they are capped: the oldest
+// step is dropped past this many.
+const MAX_HISTORY = 100;
+const pushCapped = (stack, text) => { stack.push(text); if (stack.length > MAX_HISTORY) stack.shift(); };
+let stepping = false;
 async function step(from, to, words) {
-  if (!from.length) return;
-  to.push(state.text);
-  const text = from.pop();
-  setText(text, await api('/api/report', { text }));
-  announce(words);
+  if (!from.length || stepping) return;
+  stepping = true;
+  const sent = state.text;
+  const text = from.at(-1);
+  try {
+    // Ask for the check first: the stacks move only when the step is going to happen.
+    const v = await api('/api/report', { text });
+    if (state.text !== sent) {
+      announce('Not ' + words.toLowerCase() + ': the text changed while the step was being made.');
+      return;
+    }
+    from.pop();
+    pushCapped(to, sent);
+    setText(text, v);
+    announce(words);
+  } catch (err) {
+    announce('Not ' + words.toLowerCase() + ': ' + err.message);
+  } finally {
+    stepping = false;
+    renderState();
+  }
 }
 const undo = () => step(undoStack, redoStack, 'Undone');
 const redo = () => step(redoStack, undoStack, 'Redone');
@@ -378,7 +428,7 @@ let timer = 0;
 let lastTyped = 0;
 function onInput() {
   const now = Date.now();
-  if (now - lastTyped > 1000) { undoStack.push(state.text); redoStack.length = 0; } // a burst of typing is one undo step
+  if (now - lastTyped > 1000) { pushCapped(undoStack, state.text); redoStack.length = 0; } // a burst of typing is one undo step
   lastTyped = now;
   state.text = $('source').value;
   renderState();

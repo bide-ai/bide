@@ -385,3 +385,73 @@ func TestFormsInChrome(t *testing.T) {
 		t.Errorf("after the block:\n%s", r.AfterBlock)
 	}
 }
+
+// TestRacesInChrome: an answer that arrives late or fails. The author's typing is never overwritten by
+// the late answer of an operation, a failed undo loses no history and says so, and the number the
+// decisions-needed field shows is the number that is sent (a value that is not a whole number is
+// refused with a message).
+func TestRacesInChrome(t *testing.T) {
+	formsFlow := strings.Replace(weakFlow, ">= 2 of 3", ">= 2 of 5", 1)
+	s, _ := newTestServer(t, "refund.yaml", formsFlow)
+	var raw map[string]json.RawMessage
+	runScript(t, "races.mjs", s, &raw)
+	get := func(key string, into any) {
+		t.Helper()
+		if err := json.Unmarshal(raw[key], into); err != nil {
+			t.Fatalf("%s: %v (%s)", key, err, raw[key])
+		}
+	}
+	var ok bool
+	get("ok", &ok)
+	var console, failed, pageErrors []string
+	get("console", &console)
+	get("failed", &failed)
+	get("pageErrors", &pageErrors)
+	if !ok {
+		var e string
+		get("error", &e)
+		t.Fatalf("the script failed: %s\nconsole: %q", e, console)
+	}
+	if len(pageErrors) > 0 {
+		t.Errorf("unhandled errors in the page: %q", pageErrors)
+	}
+	// The aborted report is the only failed request, and the browser logs it once.
+	if len(failed) != 1 || !strings.HasPrefix(failed[0], "/api/report") || len(console) != 1 || !strings.Contains(console[0], "ERR_FAILED") {
+		t.Errorf("console %q, failed requests %q: want only the aborted /api/report", console, failed)
+	}
+	var lateSource, lateMessage, lateLive string
+	get("lateSource", &lateSource)
+	get("lateMessage", &lateMessage)
+	get("lateLive", &lateLive)
+	if !strings.Contains(lateSource, "#TYPED MEANWHILE") || !strings.Contains(lateSource, "safety: side_effect\n    approval") || strings.Contains(lateSource, "safety: idempotent\n    approval") ||
+		!strings.Contains(lateMessage, "text changed") || !strings.HasPrefix(lateLive, "Not applied: the text changed") {
+		t.Errorf("a late answer: source %q, message %q, live %q", lateSource, lateMessage, lateLive)
+	}
+	var undoLive string
+	var keptSource, undoEnabled, redoDisabled, oneStep bool
+	get("failedUndoLive", &undoLive)
+	get("failedUndoSource", &keptSource)
+	get("undoStillEnabled", &undoEnabled)
+	get("redoStillDisabled", &redoDisabled)
+	get("undoneOneStep", &oneStep)
+	if !strings.HasPrefix(undoLive, "Not undone") || !keptSource || !undoEnabled || !redoDisabled || !oneStep {
+		t.Errorf("a failed undo: live %q, source kept %v, undo enabled %v, redo disabled %v, one step back %v", undoLive, keptSource, undoEnabled, redoDisabled, oneStep)
+	}
+	for _, bad := range []string{"1e3", "2.5", "", "-1"} {
+		var v struct {
+			Msg           string `json:"msg"`
+			ApplyDisabled bool   `json:"applyDisabled"`
+			Invalid       string `json:"invalid"`
+		}
+		get("needBad_"+bad, &v)
+		if !strings.Contains(v.Msg, "whole number") || !v.ApplyDisabled || v.Invalid != "true" {
+			t.Errorf("need %q: %+v", bad, v)
+		}
+	}
+	var goodEnabled, unchanged bool
+	get("needGoodApplyEnabled", &goodEnabled)
+	get("sourceUnchanged", &unchanged)
+	if !goodEnabled || !unchanged {
+		t.Errorf("a good number: apply enabled %v, text unchanged %v", goodEnabled, unchanged)
+	}
+}
