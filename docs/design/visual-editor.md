@@ -1,6 +1,6 @@
 # Design: a visual editor for flow configs
 
-Status: accepted (the maintainer decided all 12 decisions as recommended on 2026-10-15). Design only; nothing here is built, and every name below is a
+Status: accepted (the maintainer decided all 12 decisions as recommended on 2026-10-15). Phase 1 is built (`bide edit`, v0.19.0 and v0.20.0; see the [flow editor guide](../guides/flow-editor.md) and the phased plan below); phases 2 to 4 are not, and the names in them are a
 sketch. Written against `main` at 759cf547 and, where it says so, against the open pull request
 #312 (approval deadlines).
 
