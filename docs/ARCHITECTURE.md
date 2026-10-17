@@ -7,10 +7,8 @@ This page is the map of the source.
 ## Reading the code
 
 Test files sit next to the code they test, as Go convention has it, in the same directory with a
-`_test.go` suffix. Most are named for the file or feature they cover; some are named for the review
-round or issue that added them. In `agent`, `audit` and `plan` the tests outnumber the source files
-several times over, so the lists below name the source files to open first. Each list is in reading
-order.
+`_test.go` suffix, named for the area they cover. The lists below name the source files to open first,
+in reading order.
 
 ### The core path
 

@@ -15,9 +15,8 @@
 // tool call. The precise promise is "survives crashes around tool calls, never
 // double-fires an unsafe side effect" — not "mid-tool-call resume".
 //
-// Where to start: the test files in this directory outnumber the source files, so open these first.
-// journal.go holds the Store port and the Journal; step.go holds Journal.Step, the named-step
-// memoization everything else is built on; options.go holds New and the options; loop.go and
+// Where to start: journal.go holds the Store port and the Journal; step.go holds
+// Journal.Step, the named-step memoization everything else is built on; options.go holds New and the options; loop.go and
 // runapi.go hold the loop and Run, Resume, Stream and RunTyped; toolexec.go and exec_gate.go hold
 // tool execution and the approval gate's check before a gated call runs; lease.go and recovery.go
 // hold run leasing and crash recovery; notify.go holds the notifier. The reading-order map of every
