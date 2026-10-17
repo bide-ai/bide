@@ -156,7 +156,6 @@ const (
 )
 
 func (c *CertApprover) verify(cd agent.CertDecision, mode verifyMode) agent.CertCheck {
-	exec := mode != modeCount
 	fail := func(reason, format string, args ...any) agent.CertCheck {
 		return agent.CertCheck{Reason: reason, Detail: fmt.Sprintf(format, args...)}
 	}
@@ -204,7 +203,64 @@ func (c *CertApprover) verify(cd agent.CertDecision, mode verifyMode) agent.Cert
 		}
 		return agent.CertCheck{Reason: why, Detail: err.Error(), Warnings: hwarn}
 	}
-	ac, err := c.Policy.VerifyChain(c.ApproverID, r.ApproverCert(), decidedAt, a)
+	seed := agent.CertCheck{Anchored: a, Time: source, Warnings: hwarn, HeadSize: head.Size, HeadRoot: hex.EncodeToString(head.Root)}
+	if mode != modeIntake {
+		hh := head.Hash()
+		seed.HeadHash = hex.EncodeToString(hh[:])
+	}
+	return c.checkCertificate(r.ApproverCert(), decidedAt, a, mode, seed, func(ac *ApproverCert) *agent.CertCheck {
+		if r.ApproverAlg() != ac.Scheme {
+			return &agent.CertCheck{Reason: agent.ReasonAlg, Anchored: a, Time: source,
+				Detail: fmt.Sprintf("signed under %q, the certificate's key is %q", r.ApproverAlg(), ac.Scheme)}
+		}
+		v, err := NewVerifier(ac.Scheme, ac.PublicKey)
+		if err != nil {
+			return &agent.CertCheck{Reason: agent.ReasonCertUsage, Detail: "the certificate's key: " + err.Error(), Anchored: a, Time: source}
+		}
+		if !v.Verify(agent.ApprovalDecisionBytesCert(cd.Subject, r.Approver(), r.Approved, decidedAt, ac.LeafHash), r.Signature()) {
+			return &agent.CertCheck{Reason: agent.ReasonBadSig, Detail: "the signature does not verify over the bide.approval.v4 bytes of this call under the certificate's key", Anchored: a, Time: source}
+		}
+		return nil
+	})
+}
+
+// CheckMode is the counting rule a CheckCertificate verdict is judged by.
+type CheckMode int
+
+const (
+	// CheckCount judges as the gate does when it counts a decision: status no older than MaxStatusAge
+	// (and MaxStatusAgeFor).
+	CheckCount CheckMode = iota
+	// CheckExec judges as the gate does immediately before the call runs: ExecStatusAge for the leaf's
+	// issuing CA and ExecStatusAgeFor for each CA tier above it.
+	CheckExec
+)
+
+// CheckCertificate is the part of the verifier that needs no journal, signature or signed head: whether
+// the chain is accepted for this approver (CertIdentity.VerifyChain) and what the status rule makes of
+// it, for a decision signed at decidedAt that became provable at anchoredAt, judged by the count rule or
+// the pre-execution rule. The verdict (Reason empty when it would count) is what VerifyCertDecision or
+// VerifyCertExec reports for a decision with that chain, signed correctly, and that time: both call the
+// same function. The clock for the status rule is Now (CheckCount) or ExecNow, then Now (CheckExec).
+// The signature, the key's scheme and the covering head are not checked; a caller says so.
+func (c *CertApprover) CheckCertificate(chain [][]byte, decidedAt, anchoredAt time.Time, mode CheckMode) agent.CertCheck {
+	m := modeCount
+	if mode == CheckExec {
+		m = modeExec
+	}
+	if c == nil || c.Policy == nil {
+		return agent.CertCheck{Reason: agent.ReasonNoKey, Detail: "the certificate-bound verifier has no policy"}
+	}
+	return c.checkCertificate(chain, decidedAt, anchoredAt, m, agent.CertCheck{Anchored: anchoredAt}, nil)
+}
+
+// checkCertificate is the verdict on a chain from VerifyChain on: the chain, then (when given) the
+// signature checks, then the status rule. seed carries what the caller already knows (the time source,
+// the covering head, head warnings); a failure before the status rule reports only Anchored and Time.
+func (c *CertApprover) checkCertificate(chain [][]byte, decidedAt, a time.Time, mode verifyMode, seed agent.CertCheck, sig func(*ApproverCert) *agent.CertCheck) agent.CertCheck {
+	exec := mode != modeCount
+	source := seed.Time
+	ac, err := c.Policy.VerifyChain(c.ApproverID, chain, decidedAt, a)
 	if err != nil {
 		var ce *CertError
 		if errors.As(err, &ce) {
@@ -212,24 +268,14 @@ func (c *CertApprover) verify(cd agent.CertDecision, mode verifyMode) agent.Cert
 		}
 		return agent.CertCheck{Reason: agent.ReasonCertChain, Detail: err.Error(), Anchored: a, Time: source}
 	}
-	if r.ApproverAlg() != ac.Scheme {
-		return agent.CertCheck{Reason: agent.ReasonAlg, Anchored: a, Time: source,
-			Detail: fmt.Sprintf("signed under %q, the certificate's key is %q", r.ApproverAlg(), ac.Scheme)}
-	}
-	v, err := NewVerifier(ac.Scheme, ac.PublicKey)
-	if err != nil {
-		return agent.CertCheck{Reason: agent.ReasonCertUsage, Detail: "the certificate's key: " + err.Error(), Anchored: a, Time: source}
-	}
-	if !v.Verify(agent.ApprovalDecisionBytesCert(cd.Subject, r.Approver(), r.Approved, decidedAt, ac.LeafHash), r.Signature()) {
-		return agent.CertCheck{Reason: agent.ReasonBadSig, Detail: "the signature does not verify over the bide.approval.v4 bytes of this call under the certificate's key", Anchored: a, Time: source}
+	if sig != nil {
+		if fail := sig(ac); fail != nil {
+			return *fail
+		}
 	}
 
-	out := agent.CertCheck{Identity: ac.Identity, KeyHash: ac.KeyHash, Anchored: a, Time: source, Warnings: hwarn, HeadSize: head.Size,
-		Anchor: hex.EncodeToString(ac.Anchor[:]), HeadRoot: hex.EncodeToString(head.Root)}
-	if mode != modeIntake {
-		hh := head.Hash()
-		out.HeadHash = hex.EncodeToString(hh[:])
-	}
+	out := seed
+	out.Identity, out.KeyHash, out.Anchor = ac.Identity, ac.KeyHash, hex.EncodeToString(ac.Anchor[:])
 	for _, x := range ac.Chain {
 		sum := sha256.Sum256(x.Raw)
 		out.Chain = append(out.Chain, hex.EncodeToString(sum[:]))
