@@ -7,6 +7,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math/big"
 	"slices"
@@ -92,6 +93,7 @@ type crlEntry struct {
 // crlView is one CRL after structural checks. It is not yet tied to an issuer.
 type crlView struct {
 	hash        [32]byte
+	tbs         [32]byte // SHA-256 of the TBSCertList
 	rl          *x509.RevocationList
 	number      *big.Int
 	this, next  time.Time
@@ -208,6 +210,16 @@ func (s *StatusSnapshot) Len() int {
 // evidence of absence alone). The signature is not checked here: that needs the issuing certificate,
 // which belongs to a chain (see CertIdentity.EvaluateStatus).
 func (s *StatusSnapshot) AddCRL(der []byte) (CRLInfo, error) {
+	info, err := s.addCRL(der, true)
+	return info, err
+}
+
+// errSnapshotFull is addCRL's refusal, with evict false, of a CRL that would need an eviction.
+var errSnapshotFull = errors.New("audit: the status snapshot is full")
+
+// addCRL is AddCRL. With evict false it never drops a CRL to make room: it returns errSnapshotFull
+// instead, so the refresher's seeding at start cannot raise the eviction bookkeeping.
+func (s *StatusSnapshot) addCRL(der []byte, evict bool) (CRLInfo, error) {
 	if len(der) == 0 || len(der) > s.maxBytes {
 		return CRLInfo{}, statusErr(agent.ReasonStatusUnknown, "the CRL is %d bytes, outside 1 to %d", len(der), s.maxBytes)
 	}
@@ -230,6 +242,9 @@ func (s *StatusSnapshot) AddCRL(der []byte) (CRLInfo, error) {
 	defer s.mu.Unlock()
 	if old, ok := s.by[hash]; ok {
 		return old.info(), nil
+	}
+	if !evict && s.maxCRLs > 0 && len(s.views) >= s.maxCRLs {
+		return CRLInfo{}, errSnapshotFull
 	}
 	s.by[hash] = v
 	s.views = append(s.views, v)
@@ -254,6 +269,33 @@ func (s *StatusSnapshot) AddCRL(der []byte) (CRLInfo, error) {
 		}
 	}
 	return v.info(), nil
+}
+
+// remove drops the CRL with the given hash from the snapshot without touching the eviction
+// bookkeeping. It is used only by the refresher's operator reset of a poisoned high-water mark.
+func (s *StatusSnapshot) remove(hash [32]byte) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.by[hash]
+	if !ok {
+		return false
+	}
+	delete(s.by, hash)
+	i := slices.Index(s.views, v)
+	s.views = slices.Delete(s.views, i, i+1)
+	for k := range s.sigs {
+		if k.crl == hash {
+			delete(s.sigs, k)
+		}
+	}
+	return true
+}
+
+// statusFresh is the live freshness rule for one CRL, the one the status rule applies (evalCert) and the
+// refresher's alarm reads, so the two cannot disagree: the CRL is past nextUpdate, older than maxAge
+// plus the declared thisUpdate skew, or dated beyond the coverage tolerance in the future.
+func statusFresh(now, this, next time.Time, maxAge, skew, tolerance time.Duration) bool {
+	return !(maxAge <= 0 || !now.Before(next) || now.Sub(this) > maxAge+skew || this.After(now.Add(tolerance)))
 }
 
 // outerCRL is the CertificateList envelope: enough to check the signature without reading entries.
@@ -347,6 +389,12 @@ func (s *StatusSnapshot) authenticate(der []byte) error {
 	if len(s.issuers) == 0 {
 		return nil
 	}
+	return authenticateWith(der, s.issuers)
+}
+
+// authenticateWith checks the CRL's signature algorithm against the profile and its signature against
+// the given issuer certificates.
+func authenticateWith(der []byte, issuers []*x509.Certificate) error {
 	var o outerCRL
 	if rest, err := asn1.Unmarshal(der, &o); err != nil || len(rest) != 0 {
 		return statusErr(agent.ReasonStatusUnknown, "the CRL envelope does not parse")
@@ -358,7 +406,7 @@ func (s *StatusSnapshot) authenticate(der []byte) error {
 	if !ok {
 		return statusErr(agent.ReasonStatusUnknown, "the CRL signature algorithm %s is outside the profile", o.Alg.Algorithm)
 	}
-	if !slices.ContainsFunc(s.issuers, func(c *x509.Certificate) bool {
+	if !slices.ContainsFunc(issuers, func(c *x509.Certificate) bool {
 		return c.CheckSignature(algo, o.TBS.FullBytes, o.Sig.RightAlign()) == nil
 	}) {
 		return statusErr(agent.ReasonStatusUnknown, "the CRL signature does not verify under any configured issuer")
@@ -394,7 +442,7 @@ func parseCRL(der []byte, hash [32]byte, maxEntries int) (*crlView, error) {
 	if rl.ThisUpdate.IsZero() || rl.NextUpdate.IsZero() || !rl.NextUpdate.After(rl.ThisUpdate) {
 		return unreadable("the CRL has no usable thisUpdate and nextUpdate (nextUpdate absent means status unknown)")
 	}
-	v := &crlView{hash: hash, rl: rl, number: rl.Number, this: rl.ThisUpdate, next: rl.NextUpdate, entries: map[string][]crlEntry{}}
+	v := &crlView{hash: hash, tbs: sha256.Sum256(rl.RawTBSRevocationList), rl: rl, number: rl.Number, this: rl.ThisUpdate, next: rl.NextUpdate, entries: map[string][]crlEntry{}}
 	seen := map[string]bool{}
 	for _, e := range rl.Extensions {
 		if seen[e.Id.String()] {
@@ -1022,7 +1070,7 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, evict
 	}
 	fresh := usable[:0:0]
 	for _, v := range usable {
-		if live && (maxAge <= 0 || !p.Now.Before(v.next) || p.Now.Sub(v.this) > maxAge+skew || v.this.After(p.Now.Add(p.CoverageTolerance))) {
+		if live && !statusFresh(p.Now, v.this, v.next, maxAge, skew, p.CoverageTolerance) {
 			continue
 		}
 		fresh = append(fresh, v)

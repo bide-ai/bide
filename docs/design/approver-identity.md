@@ -476,7 +476,7 @@ audit's to show; deciding what to do about an executed action is not.
 | `W` | compromise-reporting window for the offline `final` verdict | 24 h | from the bank's incident process; cut to `W'` by the certificate's life |
 | `MaxStatusAge` | live: oldest usable status when a decision is counted | **1 h** | an earlier draft said 24 h, which exceeds the lifetime of the certificates it protects and makes revocation add almost nothing beyond expiry; choose from risk and certificate lifetime, never above a quarter of the shortest lifetime |
 | `ExecStatusAge` | live: oldest usable status immediately before the call executes | **set from the CA's actual period; no constant default** | closes the gap between counting and acting. The policy declares the CA's CRL period (`CAPeriod`) and **startup refuses a policy with `CAPeriod > ExecStatusAge / 2`** (a CRL on a 30 min period is up to 30 min old, so a 15 min age would pause about half the time). 15 min needs a CA period of 7 min or less, or OCSP; a 30 min CA period gives `ExecStatusAge` of 1 h. The resulting latency is printed. The check is in real time: a declared `ThisUpdateSkew` is added to the stamped age and to the stamped allowance alike, so it does not change the ratio. It exists only here so far and is a requirement of the gate configuration (build step E2) |
-| refresher | CRL fetch interval | `min(MaxStatusAge, ExecStatusAge) / 4`; alarm at 50% of the smaller of the two | |
+| refresher | CRL fetch interval | `min(CAPeriod/2, min(MaxStatusAge, ExecStatusAge)/4)`, at least 30 s; alarm at `min(max(limit/2, CAPeriod + overlap + tolerance), limit - interval)` with `limit` the smallest status age the issuer is judged by | the refresher is built ([crl-refresher.md](crl-refresher.md)); the literal 50% is wrong for a root whose limit is about one period, so the alarm is not before the next CRL is due |
 | `MinW` | floor on `W'` for a `final` verdict | 30 min | a decision near `notAfter` is `provisional (short window)` below it |
 
 **The published revocation latency.** A bank can state the number: the time from the CA recording a
@@ -1000,7 +1000,7 @@ head can be computed independently). `bide audit verify-approvals -identity ... 
 -anchor-log ...` needs nothing else and no network. Keep the archive for the retention period,
 including the CRLs: the archived series is the evidence, because a CA drops expired entries.
 
-**Stale CRL in production.** The refresher alarms before staleness (at 50% of `MaxStatusAge`, the same figure as everywhere else in this note). At
+**Stale CRL in production.** The refresher alarms before staleness (at half the limit for a fast CA, and when the next CRL is overdue for a root; see [crl-refresher.md](crl-refresher.md) for the rule and why it is not a literal 50%). At
 staleness gates pause with a named needs-attention reason; the notifier says which CA and since when.
 There is **no break-glass in the core**: weakening the policy is a deploy of a changed `IdentityPolicy`,
 a visible, reviewable diff.
@@ -1144,7 +1144,7 @@ asserting the same counted set and the same reason:
     `MinW`; a producer omitting a listing CRL from the middle of `[A + W, L(C)]` cannot reach `final`
     (the series must have time coverage to the CRL at `L(C)`, and `L(C)` is the first CRL strictly after
     `notAfter`); startup refuses `CAPeriod > ExecStatusAge / 2` for the leaf's issuer (CA tiers: `CAPeriodFor + overlap <= ExecStatusAgeFor <= MaxStatusAgeFor`), and a 30 min CRL against a 15 min
-    `ExecStatusAge` is refused rather than pausing half the time; the alarm is at 50% everywhere; the
+    `ExecStatusAge` is refused rather than pausing half the time; the alarm rule is in [crl-refresher.md](crl-refresher.md); the
     post-terminal hold: stale status holds without writing a tally, a revoked-before-execution decision
     writes `approval-exec-hold` and re-asks through `approval-tally:<id>:ident-reask`, and a crash
     recovery, a `RecoverLoop` resume and a retry all pass through the same check; a plain-name tally on an
@@ -1503,8 +1503,8 @@ recorded policy and its digest. The operator guide publishes two latency bounds:
 publication delay + the leaf CA's period + `ExecStatusAge`, minutes) and the CA tier through the root's CRL
 (ceremony delay + the root's period + overlap + `ExecStatusAgeFor`, days to a week, never worded as
 minutes). The fast path for a compromised issuing CA is a policy change (removing the pin or
-`Distrust`), to be rehearsed; the root CRL's validity should be at least two publication periods with an
-alarm at 50 percent; and a decision is only as fresh as the oldest status in its chain.
+`Distrust`), to be rehearsed; the root CRL's validity should be at least two publication periods, with its
+`ExecStatusAgeFor` set to it, so the alarm comes a period before any gate pauses; and a decision is only as fresh as the oldest status in its chain.
 
 ### Decided by recommendation (technical, 2026-10-15)
 
@@ -1521,7 +1521,7 @@ These are engineering choices the design settles; each can be reopened if the us
    `L(C)` (derived from the archived series, first CRL strictly after `notAfter`).
 6. (rest) **Latency and CRL policy.** `MaxStatusAge` default 1 h; `ExecStatusAge` set from the CA's actual
    period (startup refuses `CAPeriod > ExecStatusAge / 2` for the leaf's issuer; CA tiers `CAPeriodFor + overlap <= ExecStatusAgeFor <= MaxStatusAgeFor`) with a status re-check immediately before the
-   call runs on every execution path, a published latency number, monotonic CRL numbers, alarm at 50%; CRLs fetched only from configured URLs by the refresher; `Status: NotRequired` only by explicit
+   call runs on every execution path, a published latency number, monotonic CRL numbers, an alarm before the pause (rule in crl-refresher.md); CRLs fetched only from configured URLs by the refresher; `Status: NotRequired` only by explicit
    policy for short-lived certificates (default off).
 7. **Stale or missing status.** The live gate pauses with a named needs-attention reason (at count time
    and at execution) and the intake returns 503; no deny, no break-glass in the core; staleness never

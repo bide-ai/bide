@@ -56,8 +56,10 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `var ErrCertificateBound`: ErrCertificateBound reports a certificate-bound decision receipt given to DecisionReceipt.Verify, which knows only a key: use DecisionReceipt.VerifyCertificate.
 - `var ErrRedacted`: ErrRedacted reports a journal holding a redacted record (agent.Record.Redacted) given to a producer that projects what the records say (an absence key set, a used-policy set, the event stream): the redacted record's content is gone, so the projection would silently omit it, and a key set without it would prove absent a call the journal tree commits.
 - `var EarnedRules`: EarnedRules is the ScopeRules an earned grant attenuates its root under.
+- `var ErrCRLSignature`: ErrCRLSignature is wrapped by VerifyCRL when the CRL's algorithm is outside the profile, its signature does not verify under the issuer's certificate, or it names another issuer.
 - `var ErrRootMismatch`: ErrRootMismatch is wrapped by the error of a proof or check that finds a signed tree head's root is not the root of the run's journal at the head's size: the journal was changed after the head was signed, or the head is for another history.
 - `var ErrSeqTaken`: ErrSeqTaken is what EventStore.Append returns, wrapped, when a different leaf is already stored at the requested seq: the position was taken.
+- `var ErrSnapshotFull`: ErrSnapshotFull is returned by AddCRLNoEvict when adding the CRL would evict another.
 - `var ErrWeakKey`: ErrWeakKey reports an Ed25519 public key that is not a usable verification key (see CheckEd25519PublicKey).
 - `var PolicyUsedKeys`: PolicyUsedKeys is the key set of policy digests exercised by governed actions, keyed "policy\_used:&lt;digest&gt;" (see PolicyUsedKey).
 - `var ToolUseKeys`: ToolUseKeys is the key set of the tool calls a run's model requested, keyed "tooluse:&lt;ToolUseID&gt;" (see ToolUseKey).
@@ -67,7 +69,9 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `func AbsenceRoot(records []agent.Record, set KeySet) (root []byte, size int, err error)`: AbsenceRoot is the RFC 6962 Merkle root over the run's sorted, distinct keys in set, and the number of keys.
 - `func ApprovalArgsDigest(s agent.ApprovalSubject) string`: ApprovalArgsDigest returns the SHA-256 of the canonical arguments of s, in lowercase hex: the digest a signature over agent.ApprovalDecisionBytes(s, ...) binds.
 - `func AttenuatingSubAgent(name, description string, sub *agent.Agent, cfg AttenuationConfig, opts ...agent.ToolOption) agent.Tool`: AttenuatingSubAgent wraps a sub-agent as a delegation Tool that attenuates authority by default.
+- `func CRLTBSHash(der []byte) ([32]byte, bool)`: CRLTBSHash is the SHA-256 of the TBSCertList of a CRL's DER, for comparing two CRLs without their (possibly randomised) signatures.
 - `func CheckAttenuation(parent, child Grant, rules ScopeRules) error`: CheckAttenuation returns nil if child is a valid delegation of parent, and otherwise an error naming the first rule it breaks:
+- `func CheckCRLURL(raw string) (*url.URL, error)`: CheckCRLURL applies the URL rules of a CRL source: http or https, a host, no userinfo, no fragment.
 - `func CheckDeclaredGoDebug(declared, environment string) error`: CheckDeclaredGoDebug compares the x509 GODEBUG settings an operator declares (CertApprover.GoDebug) with the process's real environment value, which the caller reads (os.Getenv("GODEBUG"): the engine itself reads no environment), and returns an error wrapping agent.ErrConfig when they differ.
 - `func CheckEd25519PublicKey(pub []byte) error`: CheckEd25519PublicKey reports whether pub is a usable Ed25519 verification key: 32 bytes, the canonical encoding (y &lt; p, and no sign bit on x = 0) of a point on the curve, in the prime-order subgroup (`L`A is the identity), and not the identity itself, which leaves no small-order point.
 - `func CheckTimestamp(th TreeHead, now time.Time, skew time.Duration) error`: CheckTimestamp applies the timestamp rule to one signed head: its TimestampNanos must be positive and not later than now plus skew.
@@ -95,8 +99,10 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `func RecordPolicy(ctx context.Context, store *agent.Journal, runID string, policy []byte, digest string) (agent.Record, error)`: RecordPolicy commits the serialized policy as a dedicated journal leaf (idempotent per (runID, digest)), so the policy is covered by the same STH and inclusion proofs as the actions taken under it.
 - `func RecordRunCertificate(ctx context.Context, store *agent.Journal, runID string, cert RunCertificate) (agent.Record, error)`: RecordRunCertificate anchors a RunCertificate as a dedicated journal leaf (idempotent per runID), so the certificate is itself covered by a signed tree head and inclusion proofs, mirroring RecordPolicy / RecordConvergence.
 - `func RecordStream(log *EventLog, stream *agent.RunStream, onEvent func(agent.RunEvent)) (*agent.Result, error)`: RecordStream drains stream through log, committing every event, while forwarding each event to onEvent (nil to skip), then returns the run's Result and error, as RunStream.Result does (the Result is non-nil whenever the run ID is valid, whatever the error, including \*ApprovalPending and \*OutcomeUnknown).
+- `func RedactURL(raw string) string`: RedactURL removes the userinfo, query and fragment from a URL, so a token in one is never printed.
 - `func Root(ctx context.Context, store *agent.Journal, runID string) ([]byte, error)`: Root returns the RFC 6962 Merkle root committing to runID's journal (records in persisted order, each leaf = the canonical record bytes).
 - `func Sign(head []byte, s Signer) ([]byte, error)`: Sign returns s's signature over a head commitment ("bide.audit.head.v1\\x00" || head).
+- `func StatusFresh(now, this, next time.Time, maxAge, skew, tolerance time.Duration) bool`: StatusFresh is the live freshness test the status rule applies to every CRL, so a refresher's alarm cannot disagree with a gate: a CRL is fresh when now is before nextUpdate, its age is at most maxAge plus the declared thisUpdate skew, and thisUpdate is not beyond the coverage tolerance in the future.
 - `func ToolUseKey(r agent.Record) []string`: ToolUseKey is the KeyFunc of ToolUseKeys: every record that shows a call ran or may have run, keyed by its ToolUseID.
 - `func ToolUseKeyFor(toolUseID string) string`: ToolUseKeyFor is the absence key for a tool-use id: pass it to ProveAbsent / ProveAbsentBundle with ToolUseKeys to prove no tool call with that id happened in the run.
 - `func UnmarshalStrict(data []byte, v any) error`: UnmarshalStrict decodes a JSON proof artifact (a bundle, certificate, evidence package, or tree head) so that what a person reads in the file is exactly what is verified.
@@ -331,6 +337,31 @@ AuditedStore wraps a store so every journal write is continuously anchored: when
 - `func (a *AuditedStore) Unwrap() agent.Store`: Unwrap returns the wrapped store, so agent.Capability finds its optional capabilities (agent.Leaser, agent.Lister) through the wrapper: an AuditedStore has exactly the capabilities of the store it wraps.
 - `func (a *AuditedStore) WithClock(now func() int64) *AuditedStore`: WithClock sets a deterministic timestamp source (for tests).
 
+## type CRL
+
+```go
+type CRL struct {
+	Hash       [32]byte
+	TBSHash    [32]byte
+	Number     *big.Int
+	ThisUpdate time.Time
+	NextUpdate time.Time
+	Delta      bool
+	BaseNumber *big.Int
+	// contains filtered or unexported fields
+}
+```
+
+CRL is one CRL as a refresher sees it: what the snapshot holds, or what VerifyCRL returned.
+
+**Constructors and functions**
+
+- `func VerifyCRL(der []byte, issuer *x509.Certificate, maxEntries int) (*CRL, error)`: VerifyCRL checks der as a CRL of the given issuing CA: the signature algorithm profile (never SHA-1), the signature against that one certificate, the issuer name, and the structure rules of AddCRL.
+
+**Methods**
+
+- `func (c *CRL) Serials() []string`: Serials returns the decimal serial numbers the CRL lists, sorted.
+
 ## type CRLInfo
 
 ```go
@@ -344,6 +375,36 @@ type CRLInfo struct {
 ```
 
 CRLInfo describes a CRL accepted into a StatusSnapshot.
+
+## type CRLSource
+
+```go
+type CRLSource struct {
+	URLs []string `json:"urls"`
+
+	DeltaURLs []string `json:"delta_urls"`
+
+	FromPinnedCDP bool `json:"from_pinned_cdp"`
+}
+```
+
+CRLSource is where the refresher fetches the CRLs of one issuing CA from.
+
+## type CRLSources
+
+```go
+type CRLSources map[SPKIHash]CRLSource
+```
+
+CRLSources maps an issuing CA, by the SHA-256 of its public key, to where its CRLs are fetched.
+
+**Constructors and functions**
+
+- `func ParseCRLSources(name string, b []byte, readFile func(rel string) ([]byte, error)) (CRLSources, []*x509.Certificate, error)`: ParseCRLSources reads the refresher members of a certificate policy file: "crl" (the sources, keyed by the lowercase hex SPKI hash of the issuing CA) and "intermediate\_certs" (PEM files of the pinned intermediates, relative to the policy file's directory like the anchors).
+
+**Methods**
+
+- `func (s CRLSources) Validate() error`: Validate checks every URL.
 
 ## type CanonicalConfig
 
@@ -467,9 +528,16 @@ CertIdentity is a compiled IdentityPolicy: immutable, safe for concurrent use.
 
 **Methods**
 
+- `func (c *CertIdentity) ApproverIDs() []string`: ApproverIDs returns the approver ids of the policy's identity map, sorted.
 - `func (c *CertIdentity) Canonicalizer() Canonicalizer`: Canonicalizer returns the function this policy compares identifiers with, for the identity record and for the other places an identity is compared (the requester principal).
+- `func (c *CertIdentity) DistrustFrom(k SPKIHash) time.Time`: DistrustFrom returns when the policy ends trust in the key (zero when it does not).
 - `func (c *CertIdentity) EvaluateStatus(ac *ApproverCert, a time.Time, s *StatusSnapshot, p StatusParams) ChainStatus`: EvaluateStatus applies the status rule to every non-anchor certificate of ac's chain at A(d) = a, over the CRLs in s.
 - `func (c *CertIdentity) Identity(approverID string) (string, bool)`: Identity returns the canonical identifier the policy expects for an approver id.
+- `func (c *CertIdentity) IsPinnedIntermediate(k SPKIHash) bool`: IsPinnedIntermediate reports whether the key is a pinned intermediate.
+- `func (c *CertIdentity) IsTrustAnchor(k SPKIHash) bool`: IsTrustAnchor reports whether the key is one of the policy's trust anchors.
+- `func (c *CertIdentity) PinnedIntermediates() []SPKIHash`: PinnedIntermediates returns the pinned intermediate keys, sorted.
+- `func (c *CertIdentity) TrustAnchors() []*x509.Certificate`: TrustAnchors returns the policy's trust anchor certificates, ordered by key.
+- `func (c *CertIdentity) TrustRoots() *x509.CertPool`: TrustRoots returns the policy's trust anchors as a certificate pool.
 - `func (c *CertIdentity) VerifyChain(approverID string, chain [][]byte, decidedAt, anchoredAt time.Time) (*ApproverCert, error)`: VerifyChain checks a decision's certificate chain for approver approverID.
 
 ## type CertStatus
@@ -1772,6 +1840,28 @@ type StatusArchive interface {
 
 StatusArchive stores the bytes of a CRL too large for the journal (agent.MaxStatusInline) under its SHA-256 (lowercase hex), durably, before the gate records its hash.
 
+## type StatusDecl
+
+```go
+type StatusDecl struct {
+	Params           StatusParams
+	ExecStatusAge    time.Duration
+	ExecStatusAgeFor map[SPKIHash]time.Duration
+	CAOverlapFor     map[SPKIHash]time.Duration
+	DeltaPeriodFor   map[SPKIHash]time.Duration
+}
+```
+
+StatusDecl is the declared CA timings read from a file.
+
+**Constructors and functions**
+
+- `func ParseStatusDecl(name string, b []byte) (StatusDecl, error)`: ParseStatusDecl reads the declaration file.
+
+**Methods**
+
+- `func (d StatusDecl) Approver(policy *CertIdentity, snap *StatusSnapshot, now func() time.Time) (*CertApprover, error)`: Approver builds the CertApprover the refresher reads its declared values from, for a refresher run outside a gate.
+
 ## type StatusError
 
 ```go
@@ -1846,8 +1936,12 @@ StatusSnapshot is a set of CRLs: what a gate fetched, or an auditor's archived s
 **Methods**
 
 - `func (s *StatusSnapshot) AddCRL(der []byte) (CRLInfo, error)`: AddCRL parses a CRL and keeps it, or refuses it with a \*StatusError (ReasonStatusUnknown) naming why.
+- `func (s *StatusSnapshot) AddCRLNoEvict(der []byte) (CRLInfo, error)`: AddCRLNoEvict is AddCRL that never drops a CRL to make room: with the snapshot full it returns ErrSnapshotFull.
 - `func (s *StatusSnapshot) Evicted() int`: Evicted is the number of CRLs the snapshot has dropped to stay within WithMaxCRLs.
+- `func (s *StatusSnapshot) HeldCRLs(issuer *x509.Certificate) []*CRL`: HeldCRLs returns the CRLs the snapshot holds that verify under issuer, ordered by thisUpdate and then number.
 - `func (s *StatusSnapshot) Len() int`: Len is the number of distinct CRLs held.
+- `func (s *StatusSnapshot) Limits() (maxBytes, maxEntries, maxCRLs int)`: Limits returns the largest CRL the snapshot accepts in bytes and in entries, and how many CRLs it keeps (0: unbounded).
+- `func (s *StatusSnapshot) RemoveCRL(hash [32]byte) bool`: RemoveCRL drops the CRL with the given hash from the snapshot without touching the eviction count (Evicted), and reports whether it was held.
 
 ## type StatusTier
 

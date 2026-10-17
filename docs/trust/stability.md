@@ -33,6 +33,7 @@ The certificate verification core in `audit` and the certificate-bound approver 
 | `agent/storetest` | core |
 | `approvals` | core |
 | `audit` | core |
+| `audit/crlrefresh` | experimental |
 | `audit/eventstoretest` | core |
 | `audit/rfc3161` | building block, not yet used by approval gates |
 | `audit/verify` | core |
