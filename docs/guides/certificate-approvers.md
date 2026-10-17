@@ -171,8 +171,9 @@ bide-hsm pubkey -as ops -key "$KEY"
 ```
 
 The first prints `verify OK`, and the public key in the second is the one in the request. The tests run `bide-hsm csr`
-for each scheme on SoftHSM 2 (PKCS#11), an in-process AWS KMS fake, the Google Cloud KMS emulator and a Key Vault
-fake, and have OpenSSL verify each request; it has not been run against a hardware HSM or a real cloud KMS.
+for each scheme on SoftHSM 2 (PKCS#11), an in-process AWS KMS fake (which implements the same digest-then-sign API as
+AWS KMS; there is no AWS emulator test for this command), the Google Cloud KMS emulator and a Key Vault fake, and
+have OpenSSL verify each request; it has not been run against a hardware HSM or a real cloud KMS.
 
 **With the vendor's tooling.** If your CA or process requires a request made by the vendor's own tooling, the key can
 be used that way too; check the result as above. The PKCS#11 procedures below were run on SoftHSM, not on each
