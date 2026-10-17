@@ -161,7 +161,7 @@ func TestJournal_RedactedRecord(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	tomb := []byte(`{"redacted":{"leaf_hash":"ab12","at_ms":1700000000000}}`)
+	tomb := []byte(`{"redacted":{"leaf_hash":"abababababababababababababababababababababababababababababababab","at_ms":1700000000000}}`)
 	m.mu.Lock()
 	rn := m.runs["r"]
 	rn.entries[rn.byName["secret"]].Data = tomb

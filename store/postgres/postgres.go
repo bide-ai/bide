@@ -140,6 +140,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -190,7 +191,7 @@ type tables struct {
 	rels                                [][]sqlTok // the qualified tables, as the statement check names them
 	insert, acquire, renew, release     writeSQL
 	reap, redact                        writeSQL
-	leased                              selectSQL
+	leased, parentLive                  selectSQL
 	get, load                           selectSQL
 	appendEvent                         writeSQL // see EventStore.Append
 	getEvent, loadEvents                selectSQL
@@ -306,7 +307,11 @@ func newTables(prefix, schema string) (tables, error) {
 	if t.redact, err = newWrite(`UPDATE `+t.qSteps+` AS s SET data = $3
 		WHERE s.run_id OPERATOR(pg_catalog.=) $1 AND s.name OPERATOR(pg_catalog.=) $2 AND s.data OPERATOR(pg_catalog.=) $4
 		AND EXISTS (SELECT 1 FROM `+t.qSteps+` AS e WHERE e.run_id OPERATOR(pg_catalog.=) $1 AND e.name OPERATOR(pg_catalog.=) ANY ($5::pg_catalog.text[]))
-		AND NOT EXISTS (SELECT 1 FROM `+t.qLeases+` AS l WHERE l.run_id OPERATOR(pg_catalog.=) $1 AND l.expiry OPERATOR(pg_catalog.>=) pg_catalog.now())`, nil, [][]sqlTok{names[1], names[2]}); err != nil {
+		AND NOT EXISTS (SELECT 1 FROM `+t.qLeases+` AS l WHERE l.run_id OPERATOR(pg_catalog.=) $1 AND l.expiry OPERATOR(pg_catalog.>=) pg_catalog.now())
+		AND NOT EXISTS (`+parentLive(t.qSteps, 5, 6)+`)`, nil, [][]sqlTok{names[1], names[2]}); err != nil {
+		return tables{}, err
+	}
+	if t.parentLive, err = newSelect(`SELECT EXISTS (`+parentLive(t.qSteps, 1, 2)+`)`, steps); err != nil {
 		return tables{}, err
 	}
 	if t.leased, err = newSelect(`SELECT EXISTS (SELECT 1 FROM `+t.qLeases+` WHERE run_id OPERATOR(pg_catalog.=) $1 AND expiry OPERATOR(pg_catalog.>=) pg_catalog.now())`, leases); err != nil {
@@ -1164,6 +1169,13 @@ func (s *Store) ReapLeases(ctx context.Context, ended []string) (int, error) {
 	return int(n), nil
 }
 
+// parentLive selects a run among $6 (a text array) that holds an entry and no end marker among $5:
+// a run above a sub-agent's run that is still being driven.
+func parentLive(qSteps string, ends, ancestors int) string {
+	return `SELECT 1 FROM ` + qSteps + ` AS p WHERE p.run_id OPERATOR(pg_catalog.=) ANY ($` + strconv.Itoa(ancestors) + `::pg_catalog.text[])
+		AND NOT EXISTS (SELECT 1 FROM ` + qSteps + ` AS m WHERE m.run_id OPERATOR(pg_catalog.=) p.run_id AND m.name OPERATOR(pg_catalog.=) ANY ($` + strconv.Itoa(ends) + `::pg_catalog.text[]))`
+}
+
 // Redact implements agent.Redactor with one UPDATE that replaces the entry only if it holds current,
 // the run holds an end marker and no lease on the run is live (see agent.Redactor). It takes no lock
 // beyond the row's: the entry keeps its seq, so it does not contend with the run's inserts for a
@@ -1178,7 +1190,8 @@ func (s *Store) Redact(ctx context.Context, runID, name string, current, tombsto
 	if err := agent.CheckRedaction(runID, name, current, tombstone); err != nil {
 		return false, err
 	}
-	n, err := s.write(ctx, s.t.redact, runID, name, tombstone, current, agent.RedactionEndMarkers())
+	ancestors := append([]string{}, agent.RedactionAncestors(runID)...)
+	n, err := s.write(ctx, s.t.redact, runID, name, tombstone, current, agent.RedactionEndMarkers(), ancestors)
 	if err != nil {
 		return false, fmt.Errorf("redact step %q: %w (%w)", name, err, agent.ErrStorage)
 	}
@@ -1208,6 +1221,13 @@ func (s *Store) Redact(ctx context.Context, runID, name string, current, tombsto
 			return leased, err
 		}); err != nil {
 			return false, fmt.Errorf("redact step %q: read the lease: %w (%w)", name, err, agent.ErrStorage)
+		}
+		if st.ParentLive, err = retry(ctx, func() (bool, error) {
+			var live bool
+			err := s.db.QueryRowContext(ctx, string(s.t.parentLive), agent.RedactionEndMarkers(), ancestors).Scan(&live)
+			return live, err
+		}); err != nil {
+			return false, fmt.Errorf("redact step %q: read the parent runs: %w (%w)", name, err, agent.ErrStorage)
 		}
 	}
 	return false, st.Explain(runID, name, current, tombstone)

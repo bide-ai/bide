@@ -68,7 +68,7 @@ func TestRedactionWriter_ProofsAndHeadsSurviveARealRedaction(t *testing.T) {
 	if err != nil || len(plan.Records) != 1 || !plan.Terminal {
 		t.Fatalf("PlanRedaction = %+v, %v", plan, err)
 	}
-	if res, err := agent.Redact(ctx, j, plan, time.UnixMilli(ts)); err != nil || len(res.Redacted) != 1 {
+	if res, err := agent.Redact(ctx, j, plan, time.UnixMilli(1_700_000_000_000)); err != nil || len(res.Redacted) != 1 {
 		t.Fatalf("Redact = %+v, %v", res, err)
 	}
 

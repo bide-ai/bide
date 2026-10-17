@@ -67,6 +67,7 @@ var (
 type tables struct {
 	steps, leases, version, events    string
 	insert, get, load, redact         string
+	parentLive                        string
 	appendEvent, getEvent, loadEvents string
 }
 
@@ -248,7 +249,11 @@ func (c config) tables() tables {
 	// holds an end marker, and no lease on it is live, all read in the same write transaction.
 	t.redact = `UPDATE ` + t.steps + ` SET data = ?3 WHERE run_id = ?1 AND name = ?2 AND data = ?4
 		AND EXISTS (SELECT 1 FROM ` + t.steps + ` AS e WHERE e.run_id = ?1 AND e.name IN (SELECT value FROM json_each(?5)))
-		AND NOT EXISTS (SELECT 1 FROM ` + t.leases + ` AS l WHERE l.run_id = ?1 AND l.expiry >= unixepoch('subsec'))`
+		AND NOT EXISTS (SELECT 1 FROM ` + t.leases + ` AS l WHERE l.run_id = ?1 AND l.expiry >= unixepoch('subsec'))
+		AND NOT EXISTS (` + parentLiveSQL(t.steps) + `)`
+	// A run above a sub-agent's run (?6, a JSON array of run IDs) that holds records and no end
+	// marker (?5) is still being driven, and replays the sub-run's records.
+	t.parentLive = parentLiveSQL(t.steps)
 	t.get = `SELECT seq, data FROM ` + t.steps + ` WHERE run_id = ? AND name = ?`
 	t.load = `SELECT seq, name, data FROM ` + t.steps + ` WHERE run_id = ? AND seq > ? ORDER BY seq LIMIT ?`
 	t.appendEvent = `INSERT INTO ` + t.events + ` (run_id, seq, leaf)
@@ -257,6 +262,13 @@ func (c config) tables() tables {
 	t.getEvent = `SELECT leaf FROM ` + t.events + ` WHERE run_id = ? AND seq = ?`
 	t.loadEvents = `SELECT seq, leaf FROM ` + t.events + ` WHERE run_id = ? AND seq >= ? ORDER BY seq LIMIT ?`
 	return t
+}
+
+// parentLiveSQL selects a run among the JSON array ?6 that holds an entry and no end marker (the
+// JSON array ?5).
+func parentLiveSQL(steps string) string {
+	return `SELECT 1 FROM ` + steps + ` AS p WHERE p.run_id IN (SELECT value FROM json_each(?6))
+			AND NOT EXISTS (SELECT 1 FROM ` + steps + ` AS m WHERE m.run_id = p.run_id AND m.name IN (SELECT value FROM json_each(?5)))`
 }
 
 // legacyTable is the journal table of v0.8.0 and earlier, whose journals this version does not
@@ -392,7 +404,11 @@ func (s *Store) Redact(ctx context.Context, runID, name string, current, tombsto
 	if err != nil {
 		return false, fmt.Errorf("redact step %q: %w (%w)", name, err, agent.ErrStorage)
 	}
-	res, err := s.write(ctx, s.t.redact, runID, name, tombstone, current, string(markers))
+	ancestors, err := json.Marshal(append([]string{}, agent.RedactionAncestors(runID)...))
+	if err != nil {
+		return false, fmt.Errorf("redact step %q: %w (%w)", name, err, agent.ErrStorage)
+	}
+	res, err := s.write(ctx, s.t.redact, runID, name, tombstone, current, string(markers), string(ancestors))
 	if err != nil {
 		return false, fmt.Errorf("redact step %q: %w (%w)", name, err, agent.ErrStorage)
 	}
@@ -417,6 +433,9 @@ func (s *Store) Redact(ctx context.Context, runID, name string, current, tombsto
 		}
 		if err := s.w.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM `+s.t.leases+` WHERE run_id = ? AND expiry >= unixepoch('subsec'))`, runID).Scan(&st.Leased); err != nil {
 			return false, fmt.Errorf("redact step %q: read the lease: %w (%w)", name, err, agent.ErrStorage)
+		}
+		if err := s.w.QueryRowContext(ctx, `SELECT EXISTS (`+s.t.parentLive+`)`, runID, name, nil, nil, string(markers), string(ancestors)).Scan(&st.ParentLive); err != nil {
+			return false, fmt.Errorf("redact step %q: read the parent runs: %w (%w)", name, err, agent.ErrStorage)
 		}
 	}
 	return false, st.Explain(runID, name, current, tombstone)

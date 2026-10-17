@@ -66,8 +66,12 @@ type RedactionPlan struct {
 	JournalSize int `json:"journal_size"`
 	// Terminal is whether the run held an end marker when it was planned. A store refuses a
 	// redaction of a run that does not.
-	Terminal bool   `json:"terminal"`
-	Digest   string `json:"digest"`
+	Terminal bool `json:"terminal"`
+	// Refusal says why a store would refuse this run, or is empty: the run is not over, a run above
+	// it (a sub-agent's parent) is not over, or it belongs to a session. A run with a Refusal
+	// still gets a plan, so a dry run shows what would be refused; Redact then fails.
+	Refusal string `json:"refusal,omitempty"`
+	Digest  string `json:"digest"`
 }
 
 // PlanRedaction reads runID's journal and returns what redacting the records sel selects would do,
@@ -82,6 +86,20 @@ func PlanRedaction(ctx context.Context, j *Journal, runID string, sel RedactionS
 		return RedactionPlan{}, err
 	}
 	p := RedactionPlan{RunID: runID, JournalSize: len(recs), Terminal: terminal(recs)}
+	switch {
+	case RedactionSession(runID):
+		p.Refusal = ErrRedactSession.Error()
+	case !p.Terminal:
+		p.Refusal = ErrRedactNotTerminal.Error()
+	default:
+		live, err := parentLive(ctx, j, runID)
+		if err != nil {
+			return RedactionPlan{}, err
+		}
+		if live != "" {
+			p.Refusal = fmt.Sprintf("%s (%s)", ErrRedactParentLive.Error(), live)
+		}
+	}
 	for i, r := range recs {
 		if r.Redacted {
 			// A tombstone keeps no kind, so a selector by kind or preset takes every tombstone of
@@ -116,6 +134,35 @@ func PlanRedaction(ctx context.Context, j *Journal, runID string, sel RedactionS
 	}
 	p.Digest = p.digest()
 	return p, nil
+}
+
+// parentLive returns the nearest run above runID that holds records and no end marker, or "".
+func parentLive(ctx context.Context, j *Journal, runID string) (string, error) {
+	for _, anc := range RedactionAncestors(runID) {
+		any := false
+		for _, err := range j.store.Load(ctx, anc, -1) {
+			if err != nil {
+				return "", storageErr("read run "+anc, err)
+			}
+			any = true
+			break
+		}
+		if !any {
+			continue
+		}
+		over := false
+		for _, m := range endOfRunMarkers {
+			if _, ok, err := j.store.Get(ctx, anc, m); err != nil {
+				return "", storageErr("read run "+anc, err)
+			} else if ok {
+				over = true
+			}
+		}
+		if !over {
+			return anc, nil
+		}
+	}
+	return "", nil
 }
 
 // terminal reports whether recs hold an end marker, by name: a tombstoned end marker cannot occur

@@ -629,18 +629,66 @@ type tombstone struct {
 	} `json:"redacted"`
 }
 
-// isTombstone reports whether b is a redaction tombstone: a JSON object whose only member is
-// "redacted", holding a leaf hash. A record's encoding always starts with its "name" member, so
-// no record is ever read as a tombstone.
+// maxTombstoneMs bounds at_ms to the year 9999, so the member is a time and nothing else.
+const maxTombstoneMs = 253402300799999
+
+// isTombstone reports whether b is a redaction tombstone: exactly the bytes NewTombstone writes,
+// {"redacted":{"leaf_hash":"<64 lower-case hex>","at_ms":<digits>}} with an optional ,"name":"<name>"
+// member after at_ms, in that order, with no other member, no space and no duplicate or
+// differently-cased member. Being byte-exact means every JSON reader reads the same leaf hash from
+// it; a parser that took the first duplicate where Go takes the last would otherwise verify against
+// another record's hash. A record's encoding always starts with its "name" member, so no record is
+// ever read as a tombstone.
 func isTombstone(b []byte) bool {
-	if !bytes.HasPrefix(b, []byte(`{"redacted":`)) {
-		return false
+	_, _, _, ok := parseTombstone(b)
+	return ok
+}
+
+// parseTombstone reads a tombstone's leaf hash (hex), time and name by its canonical form.
+func parseTombstone(b []byte) (leaf string, atMs int64, name string, ok bool) {
+	const head = `{"redacted":{"leaf_hash":"`
+	rest, found := bytes.CutPrefix(b, []byte(head))
+	if !found || len(rest) < 64 {
+		return "", 0, "", false
 	}
-	var t tombstone
-	dec := json.NewDecoder(bytes.NewReader(b))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&t); err != nil || dec.More() {
-		return false
+	leaf, rest = string(rest[:64]), rest[64:]
+	for i := 0; i < 64; i++ {
+		if c := leaf[i]; (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return "", 0, "", false
+		}
 	}
-	return t.Redacted != nil && t.Redacted.LeafHash != ""
+	rest, found = bytes.CutPrefix(rest, []byte(`","at_ms":`))
+	if !found {
+		return "", 0, "", false
+	}
+	n := 0
+	for n < len(rest) && rest[n] >= '0' && rest[n] <= '9' {
+		n++
+	}
+	if n == 0 || n > 15 || (n > 1 && rest[0] == '0') {
+		return "", 0, "", false
+	}
+	for _, c := range rest[:n] {
+		atMs = atMs*10 + int64(c-'0')
+	}
+	if atMs > maxTombstoneMs {
+		return "", 0, "", false
+	}
+	rest = rest[n:]
+	if bytes.Equal(rest, []byte("}}")) {
+		return leaf, atMs, "", true
+	}
+	js, found := bytes.CutPrefix(rest, []byte(`,"name":`))
+	if !found || !bytes.HasSuffix(js, []byte("}}")) {
+		return "", 0, "", false
+	}
+	js = js[:len(js)-2]
+	var nm string
+	if json.Unmarshal(js, &nm) != nil || nm == "" {
+		return "", 0, "", false
+	}
+	if canon, err := json.Marshal(nm); err != nil || !bytes.Equal(canon, js) {
+		return "", 0, "", false
+	}
+	return leaf, atMs, nm, true
 }

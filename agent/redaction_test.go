@@ -82,6 +82,8 @@ func TestRedactionProtected_Names(t *testing.T) {
 		{"approval-deadline:a", agent.StepValue, true},
 		{"audit:policy", agent.StepValue, true},
 		{"flow:digest", agent.StepValue, true},
+		{"@saga/compensate/c", agent.StepValue, true},
+		{"@saga/args/c", agent.StepValue, true},
 		{"approval:a", agent.StepApproval, false}, // protected by the selector, not by the store
 		{"@llm/1", agent.StepModel, false},
 		{"signal:x", agent.StepSignal, false},
@@ -255,5 +257,60 @@ func TestTombstone_NameMustMatchItsRow(t *testing.T) {
 	}
 	if r, ok, err := j.Get(ctx, "r", "c"); err != nil || !ok || !r.Redacted {
 		t.Fatalf("Get(c) of a tombstone without a name = %+v, %v, %v", r, ok, err)
+	}
+}
+
+// Only the exact bytes NewTombstone writes are a tombstone: a parser that takes the first of two
+// duplicate members, or reads a member name without regard to case, would read another leaf hash.
+func TestTombstone_OnlyTheCanonicalFormReads(t *testing.T) {
+	leaf := strings.Repeat("ab", 32)
+	good := `{"redacted":{"leaf_hash":"` + leaf + `","at_ms":5,"name":"x"}}`
+	if _, ok := agent.TombstoneLeafHash([]byte(good)); !ok {
+		t.Fatalf("the canonical form does not read")
+	}
+	for name, bad := range map[string]string{
+		"duplicate leaf_hash":  `{"redacted":{"leaf_hash":"00","leaf_hash":"` + leaf + `","at_ms":5}}`,
+		"duplicate at_ms":      `{"redacted":{"leaf_hash":"` + leaf + `","at_ms":5,"at_ms":6}}`,
+		"upper-case member":    `{"redacted":{"LEAF_HASH":"` + leaf + `","at_ms":5}}`,
+		"upper-case hex":       `{"redacted":{"leaf_hash":"` + strings.ToUpper(leaf) + `","at_ms":5}}`,
+		"trailing space":       good + " ",
+		"trailing newline":     good + "\n",
+		"leading space":        " " + good,
+		"space after colon":    `{"redacted": {"leaf_hash":"` + leaf + `","at_ms":5}}`,
+		"missing at_ms":        `{"redacted":{"leaf_hash":"` + leaf + `"}}`,
+		"at_ms past year 9999": `{"redacted":{"leaf_hash":"` + leaf + `","at_ms":253402300800000}}`,
+		"at_ms max int64":      `{"redacted":{"leaf_hash":"` + leaf + `","at_ms":9223372036854775807}}`,
+		"at_ms leading zero":   `{"redacted":{"leaf_hash":"` + leaf + `","at_ms":05}}`,
+		"at_ms negative":       `{"redacted":{"leaf_hash":"` + leaf + `","at_ms":-1}}`,
+		"at_ms float":          `{"redacted":{"leaf_hash":"` + leaf + `","at_ms":5.0}}`,
+		"extra member":         `{"redacted":{"leaf_hash":"` + leaf + `","at_ms":5,"x":1}}`,
+		"name before at_ms":    `{"redacted":{"leaf_hash":"` + leaf + `","name":"x","at_ms":5}}`,
+		"name escaped":         `{"redacted":{"leaf_hash":"` + leaf + `","at_ms":5,"name":"\u0078"}}`,
+		"empty name":           `{"redacted":{"leaf_hash":"` + leaf + `","at_ms":5,"name":""}}`,
+		"short hash":           `{"redacted":{"leaf_hash":"ab","at_ms":5}}`,
+		"second top member":    `{"redacted":{"leaf_hash":"` + leaf + `","at_ms":5},"x":1}`,
+	} {
+		if _, ok := agent.TombstoneLeafHash([]byte(bad)); ok {
+			t.Errorf("%s: %s reads as a tombstone", name, bad)
+		}
+		rec, _ := agent.JournalEntry("x", agent.Record{Kind: agent.StepValue, Result: []byte(`1`)})
+		if err := agent.CheckRedaction("r", "x", rec, []byte(bad)); err == nil {
+			t.Errorf("%s: CheckRedaction accepted it", name)
+		}
+	}
+}
+
+func TestRedactionAncestorsAndSession(t *testing.T) {
+	sub := agent.SubRunID(agent.SubRunID("root", "a"), "b")
+	if got := agent.RedactionAncestors(sub); len(got) != 2 || got[0] != agent.SubRunID("root", "a") || got[1] != "root" {
+		t.Errorf("RedactionAncestors(%q) = %v", sub, got)
+	}
+	if got := agent.RedactionAncestors("root"); len(got) != 0 {
+		t.Errorf("a root run has ancestors %v", got)
+	}
+	for id, want := range map[string]bool{"root": false, sub: false, "s>@session": true, "s>@turn/1": true, agent.SubRunID("s>@turn/1", "c"): true} {
+		if got := agent.RedactionSession(id); got != want {
+			t.Errorf("RedactionSession(%q) = %v, want %v", id, got, want)
+		}
 	}
 }
