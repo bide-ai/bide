@@ -505,8 +505,13 @@ archived at decision time. Mapping CA behavior to what this design needs:
   (RFC 5280 section 5.1.2.5); a zero or absent value is "status unknown". The delta CRL indicator
   (2.5.29.27), the issuing distribution point (2.5.29.28), `indirectCRL`, `onlySomeReasons` and any
   unrecognized critical extension are visible in `RevocationList.Extensions` with their critical flag
-  (pinned by tests). **The first build refuses a CRL that carries any issuing distribution point, is
-  indirect, or has `onlySomeReasons`**: matching them correctly (RFC 5280 sections 5.2.5 and 6.3.3(b)) is
+  (pinned by tests). **A CRL is refused if it carries an issuing distribution point other than a critical
+  `distributionPoint.fullName` made of URIs (step-ca stamps exactly that shape; added 2026-10-17), is
+  indirect, or has `onlySomeReasons`.** A full-name-only IDP narrows the CRL to the certificates whose own CRL
+  distribution points name the same URI (RFC 5280 section 5.2.5): such a CRL is evidence of absence only for
+  a certificate that names one of its URIs, byte for byte, in a point with no reasons and no cRLIssuer, and the
+  refresher refuses an IDP that does not name the URL it was fetched from; a listing in it revokes whatever the
+  certificate names. Matching the other forms correctly (RFC 5280 sections 5.2.5 and 6.3.3(b)) is
   not in the standard library, and a wrong match is a wrong "good". A CA that can publish only
   partitioned or indirect CRLs is a deployment blocker, not a case to approximate.
 - **Delta CRLs are supported (decided 2026-10-15), so an AD CS default works.** A delta is merged with its

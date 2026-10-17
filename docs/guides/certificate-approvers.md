@@ -380,7 +380,7 @@ the highest-numbered valid one.
 **What it checks before a CRL reaches the snapshot.** The signature algorithm profile (never SHA-1), the
 signature against the issuing CA's own certificate (not any certificate the snapshot knows: another CA's CRL
 served at this CA's URL is refused), the issuer name, the key's `Distrust` date, a `thisUpdate` not ahead of the
-clock beyond the declared skew and a minute, and the structure rules of `AddCRL` (indirect and partitioned CRLs
+clock beyond the declared skew and a minute, and the structure rules of `AddCRL` (indirect CRLs, and partitioned CRLs other than a full-name-only issuing distribution point; a full-name-only point is read, under the conditions in the next paragraph
 are refused and reported as unsupported). A CRL with a **lower number** than the highest accepted is a rollback
 and is not added; the **same number with a different TBSCertList** is an equivocation and is not added (a CA that
 re-signs one CRL, whose signature bytes differ, is the same CRL). Both are archived with a `rollback` or
@@ -388,6 +388,21 @@ re-signs one CRL, whose signature bytes differ, is the same CRL). Both are archi
 the refresher fetches the base at once when none is held, and a delta whose base cannot be had is still added
 and archived and reported unpaired. Freshness is the merged view's earlier `nextUpdate`, so a CA that stops
 publishing deltas does not leave a stale delta looking current.
+
+**CRLs with an issuing distribution point (step-ca).** A CRL whose issuing distribution point is only a full name of
+URIs (what step-ca stamps on every CRL) is read, under three conditions a bank must meet: (1) the leaf must carry a CRL
+distribution point whose URI equals the CRL's issuing distribution point URI byte for byte (in step-ca, `crl.idpURL`
+and the template's `crlDistributionPoints`): the point narrows the CRL's scope (RFC 5280 section 5.2.5), so a
+certificate that does not name it gets no status from that CRL and the gate waits; (2) the URL in the policy file's
+`crl` member must equal that URI, or the refresher refuses the CRL (`unsupported-crl`; the check is the refresher's,
+and a CRL loaded another way still covers a certificate only by the leaf's own distribution point); (3) a delta CRL
+with an issuing distribution point is refused, and a delta without one is never merged with such a CRL, so the
+series of a CA that publishes them needs full CRLs. A listing in any CRL the issuer signed revokes, whatever its
+point. A certificate that names several distribution points (separate points, as AD CS writes the LDAP and the HTTP
+point of one CRL) takes status from a CRL covering any one of them, because the points are alternative places for
+the same scope (this follows RFC 5280 section 6.3.3, which stops processing distribution points once one complete
+CRL has been read; that AD CS writes its mirrors as separate points is from Microsoft's documentation, not from a
+capture bide holds): a CA that partitions must put in each certificate its own partition's point only.
 
 **Failure behaviour.** A failed fetch changes nothing that is held. Freshness is read from each CRL's own
 `thisUpdate` and `nextUpdate`, never from `Date`, `Last-Modified` or a `304`, so the refresher cannot make status

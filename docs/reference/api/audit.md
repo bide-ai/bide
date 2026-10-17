@@ -348,6 +348,8 @@ type CRL struct {
 	NextUpdate time.Time
 	Delta      bool
 	BaseNumber *big.Int
+
+	DistributionPoints []string
 	// contains filtered or unexported fields
 }
 ```

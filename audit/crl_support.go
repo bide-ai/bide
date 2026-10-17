@@ -25,12 +25,14 @@ type CRL struct {
 	NextUpdate time.Time
 	Delta      bool
 	BaseNumber *big.Int // for a delta, the base number it is cumulative since
-	v          *crlView
+	// DistributionPoints are the URIs of the CRL's issuing distribution point, none when it has no IDP.
+	DistributionPoints []string
+	v                  *crlView
 }
 
 func newCRL(v *crlView) *CRL {
 	return &CRL{Hash: v.hash, TBSHash: v.tbs, Number: v.number, ThisUpdate: v.this, NextUpdate: v.next,
-		Delta: v.delta, BaseNumber: v.baseNumber, v: v}
+		Delta: v.delta, BaseNumber: v.baseNumber, DistributionPoints: slices.Clone(v.idp), v: v}
 }
 
 // Serials returns the decimal serial numbers the CRL lists, sorted.

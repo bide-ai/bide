@@ -101,6 +101,7 @@ type crlView struct {
 	expiredFrom time.Time             // expiredCertsOnCRL date; zero when absent
 	delta       bool                  // a delta CRL: merged with a base for evidence of absence
 	baseNumber  *big.Int              // for a delta: the CRL number of the base it is cumulative since
+	idp         []string              // the URIs of the issuing distribution point's full name; none when the CRL has no IDP
 	parts       [][32]byte            // for a merged view: the hashes of the base and the delta
 }
 
@@ -202,8 +203,9 @@ func (s *StatusSnapshot) Len() int {
 //
 // A CRL is refused when bide cannot read it without guessing, because a wrong reading is a wrong
 // "not revoked": a signature algorithm outside the profile (never SHA-1), no CRL number, no
-// nextUpdate (RFC 5280 requires it; absent means unknown), an issuing distribution point (partitioned
-// CRLs), an indirect CRL (a certificateIssuer entry extension), any critical extension bide does
+// nextUpdate (RFC 5280 requires it; absent means unknown), an issuing distribution point that is
+// not exactly a critical full name of URIs (see identity_idp.go; one that is is read, and is evidence of
+// absence only for a certificate that names it), an indirect CRL (a certificateIssuer entry extension), any critical extension bide does
 // not process, removeFromCRL in a full CRL, a malformed invalidity date, and a malformed delta
 // indicator (a delta CRL must carry a critical delta CRL indicator, a DER INTEGER: the number of the
 // base it is cumulative since; it is merged with a base when a chain is evaluated and never gives
@@ -451,7 +453,11 @@ func parseCRL(der []byte, hash [32]byte, maxEntries int) (*crlView, error) {
 		seen[e.Id.String()] = true
 		switch {
 		case e.Id.Equal(oidIssuingDistPoint):
-			return unreadable("the CRL carries an issuing distribution point (a partitioned CRL cannot be matched correctly)")
+			uris, err := parseIDP(e.Value, e.Critical)
+			if err != nil {
+				return unreadable("%v", err)
+			}
+			v.idp = uris
 		case e.Id.Equal(oidDeltaIndicator):
 			base := new(big.Int)
 			if rest, err := asn1.Unmarshal(e.Value, &base); err != nil || len(rest) != 0 || base.Sign() < 0 || !e.Critical {
@@ -468,6 +474,9 @@ func parseCRL(der []byte, hash [32]byte, maxEntries int) (*crlView, error) {
 		case e.Critical:
 			return unreadable("the CRL has a critical extension %s that bide does not process", e.Id)
 		}
+	}
+	if v.delta && len(v.idp) > 0 {
+		return unreadable("a delta CRL carries an issuing distribution point (not read)")
 	}
 	if len(rl.RevokedCertificateEntries) > maxEntries {
 		return unreadable("the CRL has %d entries, over the limit of %d", len(rl.RevokedCertificateEntries), maxEntries)
@@ -871,6 +880,9 @@ func evalCert(cert, issuer *x509.Certificate, a time.Time, all []*crlView, evict
 	var ordered []*crlView
 	maxNum := big.NewInt(-1)
 	for _, v := range all {
+		if !v.covers(cert) {
+			continue // another partition: its listings still revoke (below), but it is no evidence of absence
+		}
 		if v.number.Cmp(maxNum) < 0 {
 			continue // a rollback: kept for its listings only
 		}
@@ -1227,7 +1239,10 @@ func joinWarning(a, b string) string {
 func pairDeltas(vs []*crlView) map[*crlView]*crlView {
 	var bases []*crlView
 	for _, v := range vs {
-		if !v.delta {
+		// A base with an issuing distribution point is a partition's: a delta (which has none) says "nothing
+		// changed since base N" of the whole CA, which is no statement about one partition, so it is never
+		// merged with one. A partition's evidence is its full CRLs.
+		if !v.delta && len(v.idp) == 0 {
 			bases = append(bases, v)
 		}
 	}

@@ -3,7 +3,9 @@ package audit_test
 import (
 	"crypto/ed25519"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"net/url"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -180,6 +182,31 @@ type refScenario struct {
 func TestModel15Refinement(t *testing.T) {
 	alice := []string{"alice"}
 	scenarios := map[string]refScenario{
+		// CRL partitions (CrlCovers): absence for a certificate is read only from a CRL whose issuing
+		// distribution point its own CRL distribution points name. A fresh clean CRL of the other partition
+		// is no evidence for alice, so her decision waits for her partition's CRL.
+		"regress/partition-fail-open": {want: nil, why: agent.ReasonStatusUnknown, run: func(t *testing.T, ctl bool) ([]string, string) {
+			c := partitionGate(t)
+			c.status = partitionStatus(t, c, urlB, nil) // the other partition's CRLs, clean
+			if ctl {
+				c.status = partitionStatus(t, c, urlA, nil) // her partition's
+			}
+			return judged(c)
+		}},
+		// And a listing is read from every CRL (the model's Listed reads every received CRL): alice names
+		// urlA and her partition's CRLs are clean and fresh, but a CRL of the other partition lists her.
+		"regress/partition-fail-open-revoked": {want: nil, why: agent.ReasonRevoked, run: func(t *testing.T, ctl bool) ([]string, string) {
+			c := partitionGate(t)
+			c.status = partitionStatus(t, c, urlA, nil)
+			if !ctl {
+				other := c.inter.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: c.crlsAt, NextUpdate: c.crlsAt.Add(time.Hour),
+					Entries: []x509.RevocationListEntry{revokedAlice(c, certA.Add(-time.Minute))}, Extra: []pkix.Extension{idpExt(true, idpOf(t, urlB))}})
+				if _, err := c.status.AddCRL(other); err != nil {
+					t.Fatal(err)
+				}
+			}
+			return judged(c)
+		}},
 		// The freshness rule: status older than MaxStatusAge never counts a decision (the live count).
 		"regress/withhold-no-fresh": {want: nil, why: agent.ReasonStatusStale, run: func(t *testing.T, ctl bool) ([]string, string) {
 			c := aliceGate(t)
@@ -769,4 +796,37 @@ func TestModel15CoverageNeedsNextUpdate(t *testing.T) {
 			t.Fatalf("control %v: final %v", ctl, got)
 		}
 	}
+}
+
+// partitionGate is a one-seat gate whose alice holds a leaf that names urlA as its CRL distribution point.
+func partitionGate(t *testing.T) *certGate {
+	t.Helper()
+	c := newCertGate(t, 1, "alice")
+	c.leaves["alice"] = c.inter.NewLeaf(t, testca.Opts{Key: testca.Ed25519, Mutate: func(x *x509.Certificate) {
+		x.NotBefore, x.NotAfter = testDecidedAt.Add(-time.Hour), testDecidedAt.Add(time.Hour)
+		x.URIs = []*url.URL{mustURL(t, testca.Person(1))}
+		x.CRLDistributionPoints = []string{urlA}
+	}})
+	c.pause()
+	c.decideCert("alice", nil)
+	c.anchor(certA)
+	return c
+}
+
+// partitionStatus is the series buildStatus makes, with the issuing distribution point uri on the leaf
+// issuer's CRLs.
+func partitionStatus(t *testing.T, c *certGate, uri string, entries []x509.RevocationListEntry) *audit.StatusSnapshot {
+	t.Helper()
+	sn := audit.NewStatusSnapshot(audit.WithLimits(agent.MaxStatusInline, 1_000_000))
+	add := func(der []byte) {
+		if _, err := sn.AddCRL(der); err != nil {
+			t.Fatal(err)
+		}
+	}
+	idp := []pkix.Extension{idpExt(true, idpOf(t, uri))}
+	add(c.inter.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: testDecidedAt, NextUpdate: testDecidedAt.Add(time.Hour), Entries: entries, Extra: idp}))
+	add(c.inter.NewCRL(t, testca.CRLOpts{Number: 2, ThisUpdate: c.crlsAt, NextUpdate: c.crlsAt.Add(time.Hour), Entries: entries, Extra: idp}))
+	add(c.root.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: testDecidedAt, NextUpdate: testDecidedAt.Add(time.Hour)}))
+	add(c.root.NewCRL(t, testca.CRLOpts{Number: 2, ThisUpdate: c.crlsAt, NextUpdate: c.crlsAt.Add(time.Hour)}))
+	return sn
 }

@@ -429,6 +429,63 @@ func TestRefresherUnsupportedCRLIsReportedNotFetched(t *testing.T) {
 	}
 }
 
+// idpFor is the value of a critical IDP extension holding only the fullName of one URI.
+func idpFor(t *testing.T, uri string) []byte {
+	t.Helper()
+	name, err := asn1.Marshal(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 6, Bytes: []byte(uri)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	point, err := asn1.Marshal(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 0, IsCompound: true, Bytes: name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dp, err := asn1.Marshal(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 0, IsCompound: true, Bytes: point})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := asn1.Marshal(asn1.RawValue{Class: asn1.ClassUniversal, Tag: asn1.TagSequence, IsCompound: true, Bytes: dp})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// A CRL whose issuing distribution point names the URL it was fetched from is added. One that names
+// another URL is a misconfiguration (the source is not the point the CA says the CRL is for): it is
+// refused with an unsupported-crl event naming both, and not added.
+func TestRefresherIDPMustNameTheSourceURL(t *testing.T) {
+	g := newCRig(t)
+	g.publishFresh(1)
+	now := g.clk.Now()
+	url := g.srv.URL + "/inter.crl"
+	g.srv.set("/inter.crl", g.inter.NewCRL(t, testca.CRLOpts{Number: 2, ThisUpdate: now.Add(-time.Minute), NextUpdate: now.Add(time.Hour),
+		Extra: []pkix.Extension{ext(asn1.ObjectIdentifier{2, 5, 29, 28}, true, idpFor(t, url))}}))
+	g.start()
+	g.wantOK()
+	if h := g.health(g.intK); h.NewestNumber.Int64() != 2 || len(g.kinds(crlrefresh.EventUnsupportedCRL)) != 0 {
+		t.Fatalf("a CRL whose IDP names its source was not added: %+v", g.dump())
+	}
+
+	g = newCRig(t)
+	g.publishFresh(1)
+	now = g.clk.Now()
+	url = g.srv.URL + "/inter.crl"
+	g.srv.set("/inter.crl", g.inter.NewCRL(t, testca.CRLOpts{Number: 2, ThisUpdate: now.Add(-time.Minute), NextUpdate: now.Add(time.Hour),
+		Extra: []pkix.Extension{ext(asn1.ObjectIdentifier{2, 5, 29, 28}, true, idpFor(t, "http://elsewhere.example/other.crl"))}}))
+	g.start()
+	if g.refresh()[g.intK] == nil {
+		t.Fatalf("a CRL whose IDP names another URL was added: %+v", g.dump())
+	}
+	evs := g.kinds(crlrefresh.EventUnsupportedCRL)
+	if len(evs) == 0 || !strings.Contains(evs[0].Detail, "elsewhere.example") || !strings.Contains(evs[0].Detail, url) {
+		t.Fatalf("the event does not name both URLs: %+v", evs)
+	}
+	if h := g.health(g.intK); h.NewestNumber != nil {
+		t.Fatalf("the refused CRL became the newest: %+v", h)
+	}
+}
+
 func TestRefresherArchiveFailureStillAddsAndRetries(t *testing.T) {
 	fa := &flakyArchive{DirArchive: crlrefresh.DirArchive(t.TempDir()), fail: true}
 	g := newCRig(t, withArchive(fa))

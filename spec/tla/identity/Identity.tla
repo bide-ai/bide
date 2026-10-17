@@ -88,7 +88,11 @@ CONSTANTS
   CanBackdate,  \* a decision may carry a decided_at earlier than its true time
   CanRevokeCA,  \* the root may revoke the CA (the whole chain below it)
   CanCrash,     \* the gate may crash: the counted set is lost, the journal (heads, the tally) is not
-  CanMisbind    \* a decision may name an approver id other than its certificate's identifier
+  CanMisbind,   \* a decision may name an approver id other than its certificate's identifier
+  \* A CA that splits its revocations over CRLs with an issuing distribution point (IDP).
+  Partitioned,  \* the CA publishes two partitions of CRLs; a certificate's CDP names one, a CRL's IDP names one
+  PartRule      \* TRUE (the rule): absence for a certificate is read only from a CRL whose IDP its CDP names;
+                \* FALSE: from any CRL of the issuer (fail-open). Listings count from every CRL either way
 
 ASSUME NaSet \subseteq 0..MaxT /\ IssueMax \in Nat
 ASSUME MaxT \in Nat /\ MaxCert \in Nat /\ MaxDec \in Nat /\ MaxCRL \in Nat /\ MaxHeads \in Nat
@@ -98,6 +102,8 @@ ASSUME CATier \in BOOLEAN /\ MaxRCRL \in Nat /\ RootSpacing \in Nat /\ MaxAgeCA 
 ASSUME RootSpacing >= 1
 ASSUME Skew \in Nat /\ Grace \in Nat /\ W \in Nat
 ASSUME Cov \in {"none", "time", "number"}
+ASSUME Partitioned \in BOOLEAN /\ PartRule \in BOOLEAN
+ASSUME Partitioned => Cov # "number"   \* a number sequence is per partition; the model indexes CRLs globally
 ASSUME IdOwner \in [Idents -> Persons]
 
 Time == 0..MaxT
@@ -167,8 +173,18 @@ HeadOK(d) == ~NonDec \/ \A h \in Smallest(d) : ~Implicated(h)
 (***************************************************************************)
 (* Status                                                                  *)
 (***************************************************************************)
-\* The first received CRL beyond c's notAfter (0 if none).
-LRcv(c) == IF \E k \in rcvd : ctu[k] > na[c] THEN MinOf({k \in rcvd : ctu[k] > na[c]}) ELSE 0
+\* Partitions: with Partitioned, certificate c's CRL distribution point is CertPart(c) and the CA's k-th CRL
+\* carries the issuing distribution point CrlPart(k) and lists only the certificates of that partition (the
+\* two alternate). TrueCrlCovers is what the CRL covers (RFC 5280 section 5.2.5, 6.3.3); CrlCovers is what the
+\* verifier takes it to cover: with PartRule the same, without it every CRL of the issuer (fail-open).
+CertPart(c) == IF Partitioned THEN c % 2 ELSE 0
+CrlPart(k) == IF Partitioned THEN k % 2 ELSE 0
+TrueCrlCovers(c, k) == CertPart(c) = CrlPart(k)
+CrlCovers(c, k) == ~PartRule \/ TrueCrlCovers(c, k)
+\* The received CRLs absence for c may be read from. Listings are read from rcvd, never from this.
+RC(c) == {k \in rcvd : CrlCovers(c, k)}
+\* The first received covering CRL beyond c's notAfter (0 if none).
+LRcv(c) == IF \E k \in RC(c) : ctu[k] > na[c] THEN MinOf({k \in RC(c) : ctu[k] > na[c]}) ELSE 0
 \* The E the CRLs of set S list for certificate c (NoE if none does).
 KnownE(S, c) == IF S = {} THEN NoE ELSE MinOf({clst[k][c] : k \in S})
 \* Published CRLs older than age: a fresh-enough cache cannot have missed their listing.
@@ -196,11 +212,11 @@ Follows(p, k) ==
 \* may have dropped the entry from any later one).
 LOK(c, k) ==
   \/ ctu[k] <= na[c]
-  \/ /\ k \in rcvd /\ k = LRcv(c)
-     /\ \E q \in rcvd : q < k /\ (\A j \in rcvd : j < k => j <= q) /\ Follows(q, k)
+  \/ /\ k \in RC(c) /\ k = LRcv(c)
+     /\ \E q \in RC(c) : q < k /\ (\A j \in RC(c) : j < k => j <= q) /\ Follows(q, k)
 \* Usable for counting d: a cache, fresh (with Fresh), issued at or after A(d) (or live-counted).
 UsableCRL(d, k, age) ==
-  /\ k \in rcvd /\ (~Fresh \/ now - ctu[k] <= age)
+  /\ k \in RC(dc[d]) /\ (~Fresh \/ now - ctu[k] <= age)
   /\ (ctu[k] >= AOf(d) \/ CountLive)
   /\ (~LBoundCount \/ LOK(dc[d], k))
 StatusUsable(d) == (\E k \in rcvd : UsableCRL(d, k, MaxAge)) /\ (~CATier \/ ~CountCATier \/ CAFresh(d, MaxAgeCA))
@@ -238,7 +254,7 @@ Seats(S) == IF DedupSeat THEN Cardinality({da[d] : d \in S}) ELSE Cardinality(S)
 (***************************************************************************)
 CovOK(d, S) ==
   LET a == AOf(d)
-      F == {k \in rcvd : ctu[k] <= a}
+      F == {k \in RC(dc[d]) : ctu[k] <= a}
   IN \/ Cov = "none"
      \/ /\ F # {}
         /\ LET f == MaxOf(F) IN
@@ -246,8 +262,8 @@ CovOK(d, S) ==
            /\ f <= S
            /\ IF Cov = "number"
               THEN \A k \in f..S : k \in rcvd
-              ELSE \A k1, k2 \in rcvd :
-                     (f <= k1 /\ k1 < k2 /\ k2 <= S /\ ~\E k3 \in rcvd : k1 < k3 /\ k3 < k2)
+              ELSE \A k1, k2 \in RC(dc[d]) :
+                     (f <= k1 /\ k1 < k2 /\ k2 <= S /\ ~\E k3 \in RC(dc[d]) : k1 < k3 /\ k3 < k2)
                        => ctu[k2] <= ctu[k1] + Period
 \* The CA tier of a final verdict: a received root CRL at least W after A(d), and no received root CRL
 \* lists the CA with E <= A(d). The root never prunes, so a later CRL lists whatever an earlier one did
@@ -259,7 +275,7 @@ RootFinalOK(d) ==
 FinalWit(d, S) ==
   LET c == dc[d] a == AOf(d) IN
   /\ Covered(d) /\ HeadOK(d) /\ ChainOK(d) /\ Window(d)
-  /\ S \in rcvd
+  /\ S \in RC(c)
   /\ a + W <= ctu[S]
   /\ \A k \in rcvd : clst[k][c] > a                \* a listing anywhere in the series is a revocation
   /\ (ctu[S] > na[c] => S = LRcv(c))               \* absence beyond notAfter only from L(C)
@@ -312,7 +328,8 @@ Revoke(c, e) ==
 Entries(pr) ==
   [c \in Certs |->
      IF c <= nc /\ rev[c] # NoE
-        /\ ~(pr /\ now > na[c] /\ \E k \in 1..np : ctu[k] > na[c])
+        /\ (~Partitioned \/ CertPart(c) = CrlPart(np + 1))
+        /\ ~(pr /\ now > na[c] /\ \E k \in 1..np : ctu[k] > na[c] /\ CrlPart(k) = CrlPart(np + 1))
      THEN rev[c] ELSE NoE]
 CanPublish == np < MaxCRL /\ IF np = 0 THEN TRUE ELSE now - ctu[np] >= MinSpacing
 Publish(pr) ==
@@ -408,7 +425,7 @@ Count(d) ==
                               \/ (CATier /\ KnownRE(RSeen(MaxAgeCA)) <= AOf(d))]
   /\ cNb' = [cNb EXCEPT ![d] =
               \E h \in heads : h.sz < d /\ KnownE(Seen(MaxAge), dc[d]) <= h.tm]
-  /\ cOk' = [cOk EXCEPT ![d] = (\E k \in rcvd : now - ctu[k] <= MaxAge /\ (ctu[k] >= AOf(d) \/ CountLive))
+  /\ cOk' = [cOk EXCEPT ![d] = (\E k \in rcvd : TrueCrlCovers(dc[d], k) /\ now - ctu[k] <= MaxAge /\ (ctu[k] >= AOf(d) \/ CountLive))
                                  /\ (~CATier \/ CAFresh(d, MaxAgeCA))]
   /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, caRev, rnp, rtu, rrl, rrcvd, rcvd, snap, heads, nd, da, dc, dt,
                  waiting, dead, tl, execd, eb, ebC>>
@@ -442,13 +459,14 @@ Tally ==
 \* The pre-execution check: a status no older than ExecAge, and no counted decision's chain with
 \* E <= A(d) in the archive.
 ExecOK ==
-  /\ \A d \in tl : ~Listed(d) /\ \E k \in rcvd : now - ctu[k] <= (IF LeafAgeFromCA THEN ExecAgeCA ELSE ExecAge) /\ (~LBoundExec \/ LOK(dc[d], k))
+  /\ \A d \in tl : ~Listed(d) /\ \E k \in RC(dc[d]) : now - ctu[k] <= (IF LeafAgeFromCA THEN ExecAgeCA ELSE ExecAge) /\ (~LBoundExec \/ LOK(dc[d], k))
   /\ (~CATier \/ ~ExecCATier \/ \E k \in rrcvd : now - rtu[k] <= ExecAgeCA)
 
 Exec ==
   /\ tl # {} /\ ~execd /\ (~ExecRecheck \/ ExecOK)
   /\ execd' = TRUE
-  /\ eb' = (~(\E k \in rcvd : now - ctu[k] <= ExecAge) \/ \E d \in tl : KnownE(Seen(ExecAge), dc[d]) <= cA[d])
+  /\ eb' = (\E d \in tl : ~(\E k \in rcvd : TrueCrlCovers(dc[d], k) /\ now - ctu[k] <= ExecAge)
+                        \/ KnownE(Seen(ExecAge), dc[d]) <= cA[d])
   /\ ebC' = (CATier /\ (~(\E k \in rrcvd : now - rtu[k] <= ExecAgeCA)
                         \/ \E d \in tl : KnownRE(RSeen(ExecAgeCA)) <= cA[d]))
   /\ UNCHANGED <<now, nc, hold, idn, nb, na, rev, np, ctu, clst, caRev, rnp, rtu, rrl, rrcvd, rcvd, snap, heads, nd, da, dc, dt,
@@ -584,8 +602,8 @@ AbsenceOnlyInWindow ==
   \A d \in 1..nd, S \in 1..np :
     FinalWit(d, S) =>
       \/ ctu[S] <= na[dc[d]]
-      \/ \E L \in 1..np : ctu[L] > na[dc[d]] /\ ctu[S] <= ctu[L]
-                          /\ \A j \in 1..np : ctu[j] > na[dc[d]] => ctu[L] <= ctu[j]
+      \/ \E L \in 1..np : TrueCrlCovers(dc[d], L) /\ ctu[L] > na[dc[d]] /\ ctu[S] <= ctu[L]
+                          /\ \A j \in 1..np : (TrueCrlCovers(dc[d], j) /\ ctu[j] > na[dc[d]]) => ctu[L] <= ctu[j]
 
 \* A tally forms only from decisions none of which the archive lists with E <= A(d) at that moment.
 TallyClean ==
@@ -619,6 +637,8 @@ SkewedCountNotReachable == ~(Counted # {} /\ \E h \in heads : h.tm # h.rl)
 CrashAfterTallyNotReachable == ~(tl # {} /\ ~waiting)
 \* The call ran after a crash.
 ExecAfterCrashNotReachable == ~(execd /\ ~waiting)
+\* A decision counts although the verifier holds a CRL that does not cover its certificate (the other partition).
+PartitionSkipNotReachable == ~(Counted # {} /\ \E d \in Counted, k \in rcvd : ~TrueCrlCovers(dc[d], k))
 \* A withheld or rolled-back CRL leaves the cache behind the CA's series, and a decision counts.
 BehindCountNotReachable == ~(Counted # {} /\ snap # np)
 =============================================================================
