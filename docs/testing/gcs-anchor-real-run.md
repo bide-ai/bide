@@ -42,7 +42,9 @@ gcloud kms keyrings create anchor --location=$LOC --project=$PROJECT
 gcloud kms keys create anchor --keyring=anchor --location=$LOC --purpose=encryption --project=$PROJECT
 KEY=projects/$PROJECT/locations/$LOC/keyRings/anchor/cryptoKeys/anchor
 
-# Let the project's Cloud Storage service agent use the key.
+# Let the project's Cloud Storage service agent use the key. On a new project the agent does not exist
+# yet: create it first (no flag), or --authorize-cmek fails with "Service account ... does not exist".
+gcloud storage service-agent --project=$PROJECT
 gcloud storage service-agent --project=$PROJECT --authorize-cmek=$KEY
 
 gcloud storage buckets create gs://$BUCKET --project=$PROJECT --location=$LOC \

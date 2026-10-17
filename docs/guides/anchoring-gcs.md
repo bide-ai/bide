@@ -58,8 +58,9 @@ gcloud storage buckets describe gs://bank-bide-anchor      # check it, then:
 gcloud storage buckets update gs://bank-bide-anchor --lock-retention-period
 ```
 
-The Cloud Storage service agent of the anchor project needs permission to use the key
-(`gcloud storage service-agent --project=ANCHOR_PROJECT --authorize-cmek=KEY`).
+The Cloud Storage service agent of the anchor project needs permission to use the key. On a new
+project the agent does not exist yet: create it with `gcloud storage service-agent --project=ANCHOR_PROJECT`,
+then run the same command with `--authorize-cmek=KEY`.
 
 `New` refuses a bucket that is owned by another project than `Config.ExpectedProjectNumber`, has no
 retention policy, has one that is not locked or is shorter than `Config.Retention` (or than
