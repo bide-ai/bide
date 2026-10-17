@@ -250,6 +250,28 @@ ci_status() {
   echo none
 }
 
+# ci_wait REPO SHA TREE: ci_status, but for a --push release a "none" (no completed push run of SHA
+# yet, and no queue run of the tree) is waited out, because right after an admin merge main's push
+# CI has often not started or is still going. It polls every BIDE_CI_PREFLIGHT_POLL_SECS (30) for up
+# to BIDE_CI_PREFLIGHT_WAIT_SECS (2700) and prints the answer ci_status gives when the time is up.
+# Any other answer (success, queue, failure, unknown) is returned at once. A dry run (PUSH=false)
+# asks once. Progress goes to stderr.
+ci_wait() {
+  local repo=$1 sha=$2 tree=$3 poll=${BIDE_CI_PREFLIGHT_POLL_SECS:-30} wait=${BIDE_CI_PREFLIGHT_WAIT_SECS:-2700} n i st
+  n=$(awk -v w="$wait" -v p="$poll" 'BEGIN { n = int(w / p); if (n < 1) n = 1; print n }')
+  $PUSH || n=1
+  for ((i = 1; i <= n; i++)); do
+    st=$(ci_status "$repo" "$sha" "$tree")
+    [ "$st" = none ] || { echo "$st"; return; }
+    if [ "$i" -lt "$n" ]; then
+      note "main's CI for $sha has not completed (poll $i of $n, every ${poll}s, up to $((wait / 60)) min); waiting" >&2
+      sleep "$poll"
+    fi
+  done
+  $PUSH && note "main's CI for $sha still has not completed after $((wait / 60)) min" >&2
+  echo none
+}
+
 # push_ci_state REPO SHA: the state of main's ci.yml push runs of SHA: "failure" when a completed one
 # failed or was cancelled, "running" when one has not completed, "success" when all completed and
 # passed, "none" when there is none yet, "unknown" when GitHub could not be queried.
@@ -381,6 +403,30 @@ GH
   gate_case go success "a re-run of the push run is going after a green one, then passes" "$pass_and_rerun" "$pass"
   gate_case stop queue "an earlier run passed, a re-run is still going at the time limit" "$pass_and_rerun"
   gate_case stop queue "a completed run failed while another is going: stops at once, not after the other passes" '[{"status":"completed","conclusion":"failure"},{"status":"in_progress","conclusion":""}]' "$pass"
+  # ci_wait: the same fake gh, one push.N.json per call (the last repeats). A "none" is waited out
+  # (a --push release), anything else is answered at once, and the time limit ends the wait.
+  wait_case() { # wait_case WANT PUSH DESCRIPTION PUSH-JSON...
+    local want=$1 push=$2 desc=$3 k=0 f
+    shift 3
+    rm -f "$tmp/fx/n" "$tmp/fx"/push.[0-9]*.json "$tmp/fx"/tree-*
+    for f in "$@"; do k=$((k + 1)); printf '%s' "$f" > "$tmp/fx/push.$k.json"; done
+    printf '[]' > "$tmp/fx/mg.json"; rm -f "$tmp/fx/down"
+    got=$(FX="$tmp/fx" PATH="$tmp/bin:$PATH" PUSH=$push BIDE_CI_PREFLIGHT_POLL_SECS=0.1 BIDE_CI_PREFLIGHT_WAIT_SECS=1 ci_wait example/r release-sha "$T" 2>/dev/null)
+    [ "$got" = "$want" ] || { echo "self-test: $desc: ci_wait said $got, want $want"; ok=false; }
+    calls=$(cat "$tmp/fx/n" 2>/dev/null || echo 0)
+  }
+  local calls
+  wait_case success true "no run yet, then going, then green: waited for" '[]' "$running" "$pass"
+  [ "$calls" -eq 3 ] || { echo "self-test: ci_wait asked $calls times, want 3"; ok=false; }
+  wait_case failure true "no run yet, then failed: stopped at once" '[]' "$fail" "$pass"
+  [ "$calls" -eq 2 ] || { echo "self-test: ci_wait asked $calls times after a failure, want 2"; ok=false; }
+  wait_case none true "no run ever appears: gives up at the time limit" '[]'
+  [ "$calls" -ge 5 ] || { echo "self-test: ci_wait gave up after $calls asks, want a bounded wait of 10"; ok=false; }
+  wait_case none true "a run that never completes: gives up at the time limit" "$running"
+  wait_case none false "a dry run does not wait" '[]'
+  [ "$calls" -eq 1 ] || { echo "self-test: a dry run asked $calls times, want 1"; ok=false; }
+  wait_case success true "green at once: no wait" "$pass"
+  [ "$calls" -eq 1 ] || { echo "self-test: a green run asked $calls times, want 1"; ok=false; }
   # The gate comes before the root tag is created and pushed (the self-test cannot run a release).
   local gate_line tag_line
   gate_line=$(grep -n 'root_tag_gate "\$GITHUB_REPO"' "${BASH_SOURCE[0]}" | head -1 | cut -d: -f1)
@@ -638,7 +684,7 @@ case "$(main_check "$SHA" "$(git -C "$REPO" rev-parse "$REMOTE/main" 2>/dev/null
 esac
 CI_BASIS=none
 if command -v gh >/dev/null 2>&1; then
-  ci=$(ci_status "$GITHUB_REPO" "$SHA" "$(git -C "$REPO" rev-parse "$SHA^{tree}" 2>/dev/null || true)")
+  ci=$(ci_wait "$GITHUB_REPO" "$SHA" "$(git -C "$REPO" rev-parse "$SHA^{tree}" 2>/dev/null || true)")
   case "$ci" in
     success) note "CI on main is green for $SHA" ;;
     queue) note "no completed CI run on main for $SHA yet, but the merge queue's run of the same tree passed: the preflight and a dry run go on; a --push release waits for main's push run to pass before it tags the root module" ;;
