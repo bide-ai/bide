@@ -52,14 +52,16 @@ func readOnly() agent.Tool {
 // that landed meanwhile is seen: it reads the header and run:start), one model turn (its memo read
 // and its record), and the completion with its read-back of run:cancelled (P14 rule 4: the first
 // end marker in journal order is the run's end). The drive's first turn needs no run:cancelled
-// check: its Load read the run.
+// check: its Load read the run. A third Load, which finds nothing, is the kill switch guard's: an agent
+// with no StopSwitch checks once per store per few seconds that the store holds no control run (see
+// Agent.controlRunGuard); a drive that finds none costs no entry read.
 func TestBudget_FirstDriveAndCompletion(t *testing.T) {
 	j, cs, _ := countingJournal(t)
 	if _, err := agenttest.MustNew(agenttest.NewScriptedModel(agenttest.TextTurn("done")), j).Run(context.Background(), "r", agent.UserText("hi")); err != nil {
 		t.Fatal(err)
 	}
 	wantCounts(t, cs, "first drive, one turn, completion",
-		[]string{"insert @journal", "insert run:start", "get @llm/0", "insert @llm/0", "insert run:complete", "get run:cancelled"}, 2, 2)
+		[]string{"insert @journal", "insert run:start", "get @llm/0", "insert @llm/0", "insert run:complete", "get run:cancelled"}, 3, 2)
 }
 
 // A side-effect tool call costs two Inserts (its claim and its result) and one Get (run:cancelled,
@@ -82,7 +84,7 @@ func TestBudget_ToolCalls(t *testing.T) {
 			}
 			want := append([]string{"insert @journal", "insert run:start", "get @llm/0", "insert @llm/0"}, c.want...)
 			want = append(want, "get run:cancelled", "get @llm/1", "insert @llm/1", "insert run:complete", "get run:cancelled")
-			wantCounts(t, cs, c.name+" tool call", want, 2, 2) // the Load, and the Load after run:start
+			wantCounts(t, cs, c.name+" tool call", want, 3, 2) // the Load, the Load after run:start, and the kill switch guard's (below)
 		})
 	}
 }

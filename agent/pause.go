@@ -23,11 +23,12 @@ import (
 // Pause is the error a run returns when it has stopped durably and is waiting on something
 // outside it: a human's approval (*ApprovalPending), an answer to an interrupt
 // (*InterruptPending), a signal or a channel message (*SignalPending), a durable timer
-// (*TimerPending), or a verdict on a side effect whose outcome is unknown (*OutcomeUnknown).
+// (*TimerPending), a kill switch that holds the run (*Stopped), or a verdict on a side effect
+// whose outcome is unknown (*OutcomeUnknown).
 // A pause is not a failure: the run's journal is intact, and once the condition is met the
 // run is re-invoked with Paused().RootRunID and carries on.
 //
-// The set is sealed: only this package's five types implement Pause, so a type switch over
+// The set is sealed: only this package's six types implement Pause, so a type switch over
 // them is exhaustive. Test for a pause with IsPause and read it with AsPause, which see
 // through wrapping.
 type Pause interface {

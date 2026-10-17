@@ -760,6 +760,13 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 			// failure of the tool the model would read as durable), fail the run, and a re-drive calls it.
 			return nil, &argsJournalError{err}
 		}
+		// The kill switch, immediately before the call begins: every path to the tool (the first
+		// execution, a resume, RecoverLoop, a middleware's retry, a saga's re-run) passes here, so a
+		// covering stop holds it. The control run is read now for a call that can have a side effect.
+		// Like a held gate, it is before the call is begun, so the call is not marked as run.
+		if st := a.stopHold(ctx, runID, tu.Name, tracked(spec.Safety), tracked(spec.Safety)); st != nil {
+			return nil, st
+		}
 		// A tool that is not ReadOnly is counted in flight (see inflight): counted in, then the
 		// chain checked not to have returned, so either the chain sees the count when it returns
 		// (and a result it returns has an unknown outcome), or this invocation sees the call closed

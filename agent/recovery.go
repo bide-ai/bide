@@ -53,7 +53,23 @@ type recoverConfig struct {
 	reanchorSet     bool                                // reanchor was set (nil turns re-signing off)
 	reanchorTimeout time.Duration                       // each re-sign's deadline; 0 means half the lease TTL
 	intervalSet     bool
+	stop            *StopSwitch // the kill switch: a global stop makes a pass list nothing (WithRecoverStop)
 }
+
+// WithRecoverStop gives Recover and RecoverLoop the process's kill switch (see StopSwitch). While a global
+// stop is active a pass lists nothing and returns at once, so a pass over a very large number of stopped
+// runs costs one read, not one open per run. Scoped stops need no help: the drive of each run checks them
+// (a run held by a stop is a pause, not a failure, and is not reported). Recovery never drives a run past
+// a stop: the check is in the drive, which is the only path to a tool.
+func WithRecoverStop(sw *StopSwitch) RecoverStopOption {
+	return RecoverStopOption{sw}
+}
+
+// RecoverStopOption is the option WithRecoverStop returns; it applies to Recover and RecoverLoop.
+type RecoverStopOption struct{ sw *StopSwitch }
+
+func (o RecoverStopOption) applyRecover(c *recoverConfig) error     { c.stop = o.sw; return nil }
+func (o RecoverStopOption) applyRecoverLoop(c *recoverConfig) error { c.stop = o.sw; return nil }
 
 // WithLeaseHolder names the worker that claims leases, as the leases table and logs show it.
 // Defaults to a host/pid/random string. The name identifies, it does not grant: each Lease call
@@ -244,6 +260,11 @@ func Recover(ctx context.Context, store *Journal, resume Resumer, opts ...Recove
 
 	if cfg.notify != nil {
 		cfg.notify.queueBackfill() // once: the events observed before the open trail existed
+	}
+	if cfg.stop != nil {
+		if _, held := cfg.stop.GlobalStop(ctx); held {
+			return 0, nil // everything is stopped: nothing to list, nothing to drive
+		}
 	}
 	var recovered int
 	var errs []error
@@ -890,6 +911,11 @@ func RecoverLoop(ctx context.Context, store *Journal, resume Resumer, opts ...Re
 	// pass lists the runs f admits and drives each one this process is not driving yet, taking one
 	// of slots for each drive.
 	pass := func(f RunFilter, slots chan struct{}) {
+		if cfg.stop != nil {
+			if _, held := cfg.stop.GlobalStop(ctx); held {
+				return // everything is stopped: list nothing; the next pass looks again
+			}
+		}
 		for runID, err := range lister.Runs(ctx, f) {
 			if err != nil {
 				report(fmt.Errorf("list runs for recovery: %w (%w)", err, ErrStorage))
