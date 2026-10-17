@@ -71,9 +71,9 @@ func redactRun(t *testing.T, s agent.Store, over bool) (string, []byte) {
 	return id, tool
 }
 
-func tombstoneFor(t *testing.T, data []byte) []byte {
+func tombstoneFor(t *testing.T, name string, data []byte) []byte {
 	t.Helper()
-	tomb, err := agent.NewTombstone(data, time.UnixMilli(1_700_000_000_000))
+	tomb, err := agent.NewTombstone(name, data, time.UnixMilli(1_700_000_000_000))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func redactReplaces(t *testing.T, s agent.Store) {
 	ctx := context.Background()
 	id, tool := redactRun(t, s, true)
 	before := snapshot(t, s, id)
-	tomb := tombstoneFor(t, tool)
+	tomb := tombstoneFor(t, "tool:a", tool)
 	done, err := redactor(t, s).Redact(ctx, id, "tool:a", tool, tomb)
 	if err != nil || !done {
 		t.Fatalf("Redact = %v, %v; want it replaced", done, err)
@@ -145,12 +145,12 @@ func redactIdempotent(t *testing.T, s agent.Store) {
 	ctx := context.Background()
 	id, tool := redactRun(t, s, true)
 	r := redactor(t, s)
-	first := tombstoneFor(t, tool)
+	first := tombstoneFor(t, "tool:a", tool)
 	if done, err := r.Redact(ctx, id, "tool:a", tool, first); err != nil || !done {
 		t.Fatalf("first Redact = %v, %v", done, err)
 	}
 	// The same call again, and the same call stamped at another time, replace nothing.
-	other, err := agent.NewTombstone(tool, time.UnixMilli(1_800_000_000_000))
+	other, err := agent.NewTombstone("tool:a", tool, time.UnixMilli(1_800_000_000_000))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +188,7 @@ func redactRefusals(t *testing.T, s agent.Store) {
 
 	t.Run("NotOver", func(t *testing.T) {
 		id, tool := redactRun(t, s, false)
-		expect(t, id, "tool:a", tool, tombstoneFor(t, tool), agent.ErrRedactNotTerminal)
+		expect(t, id, "tool:a", tool, tombstoneFor(t, "tool:a", tool), agent.ErrRedactNotTerminal)
 	})
 	t.Run("Protected", func(t *testing.T) {
 		id, _ := redactRun(t, s, true)
@@ -197,19 +197,19 @@ func redactRefusals(t *testing.T, s agent.Store) {
 			if err != nil || !ok {
 				t.Fatalf("Get %q = %v, %v", name, ok, err)
 			}
-			expect(t, id, name, e.Data, tombstoneFor(t, e.Data), agent.ErrRedactProtected)
+			expect(t, id, name, e.Data, tombstoneFor(t, name, e.Data), agent.ErrRedactProtected)
 		}
 		att := put(t, s, id, "attempt:tool:a", agent.StepAttempt, `null`)
-		expect(t, id, "attempt:tool:a", att, tombstoneFor(t, att), agent.ErrRedactProtected)
+		expect(t, id, "attempt:tool:a", att, tombstoneFor(t, "attempt:tool:a", att), agent.ErrRedactProtected)
 		fail := put(t, s, id, "tool:saga", agent.StepSagaFail, `"x"`)
-		expect(t, id, "tool:saga", fail, tombstoneFor(t, fail), agent.ErrRedactProtected)
+		expect(t, id, "tool:saga", fail, tombstoneFor(t, "tool:saga", fail), agent.ErrRedactProtected)
 		tally := put(t, s, id, "approval-tally:x", agent.StepValue, `{}`)
-		expect(t, id, "approval-tally:x", tally, tombstoneFor(t, tally), agent.ErrRedactProtected)
+		expect(t, id, "approval-tally:x", tally, tombstoneFor(t, "approval-tally:x", tally), agent.ErrRedactProtected)
 	})
 	t.Run("HashMismatch", func(t *testing.T) {
 		id, tool := redactRun(t, s, true)
 		other, _, _ := s.Get(ctx, id, "tool:b")
-		expect(t, id, "tool:a", tool, tombstoneFor(t, other.Data), agent.ErrRedactMismatch) // another record's hash
+		expect(t, id, "tool:a", tool, tombstoneFor(t, "tool:a", other.Data), agent.ErrRedactMismatch) // another record's hash
 		for _, bad := range []string{
 			``, `{}`, `{"redacted":{}}`, `{"redacted":{"leaf_hash":"ab"}}`,
 			`{"redacted":{"leaf_hash":"` + fmt.Sprintf("%x", agent.LeafHash(tool)) + `","extra":1}}`,
@@ -219,6 +219,13 @@ func redactRefusals(t *testing.T, s agent.Store) {
 			expect(t, id, "tool:a", tool, []byte(bad), agent.ErrRedactMismatch)
 		}
 	})
+	t.Run("Name", func(t *testing.T) {
+		id, tool := redactRun(t, s, true)
+		// A tombstone that names another record, or none, is not a redaction of this entry.
+		expect(t, id, "tool:a", tool, tombstoneFor(t, "tool:b", tool), agent.ErrRedactMismatch)
+		legacy := fmt.Sprintf(`{"redacted":{"leaf_hash":"%x","at_ms":1}}`, agent.LeafHash(tool))
+		expect(t, id, "tool:a", tool, []byte(legacy), agent.ErrRedactMismatch)
+	})
 	t.Run("Changed", func(t *testing.T) {
 		id, _ := redactRun(t, s, true)
 		// A well-formed redaction of bytes the entry does not hold: the caller's copy is stale.
@@ -226,7 +233,7 @@ func redactRefusals(t *testing.T, s agent.Store) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		expect(t, id, "tool:a", stale, tombstoneFor(t, stale), agent.ErrRedactChanged)
+		expect(t, id, "tool:a", stale, tombstoneFor(t, "tool:a", stale), agent.ErrRedactChanged)
 	})
 	t.Run("NoEntry", func(t *testing.T) {
 		id, _ := redactRun(t, s, true)
@@ -234,10 +241,10 @@ func redactRefusals(t *testing.T, s agent.Store) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		expect(t, id, "tool:ghost", ghost, tombstoneFor(t, ghost), agent.ErrRedactNoEntry)
+		expect(t, id, "tool:ghost", ghost, tombstoneFor(t, "tool:ghost", ghost), agent.ErrRedactNoEntry)
 		other := runID(t)
 		expect2 := func() {
-			done, err := r.Redact(ctx, other, "tool:ghost", ghost, tombstoneFor(t, ghost))
+			done, err := r.Redact(ctx, other, "tool:ghost", ghost, tombstoneFor(t, "tool:ghost", ghost))
 			if done || !errors.Is(err, agent.ErrRedactNoEntry) {
 				t.Errorf("Redact in an unknown run = %v, %v; want ErrRedactNoEntry", done, err)
 			}
@@ -251,7 +258,7 @@ func redactRefusals(t *testing.T, s agent.Store) {
 			t.Fatal(err)
 		}
 		put(t, s, id, "run:complete", agent.StepValue, `"done"`)
-		done, err := r.Redact(ctx, id, "tool:junk", raw, tombstoneFor(t, raw))
+		done, err := r.Redact(ctx, id, "tool:junk", raw, tombstoneFor(t, "tool:junk", raw))
 		if done || !errors.Is(err, agent.ErrRedactProtected) {
 			t.Errorf("Redact of bytes that do not read as a record = %v, %v; want a refusal", done, err)
 		}
@@ -265,7 +272,7 @@ func redactLease(t *testing.T, s agent.Store) {
 	}
 	ctx := context.Background()
 	id, tool := redactRun(t, s, true)
-	tomb := tombstoneFor(t, tool)
+	tomb := tombstoneFor(t, "tool:a", tool)
 	if got, err := leaser.AcquireLease(ctx, id, "driver", time.Minute); err != nil || !got {
 		t.Fatalf("AcquireLease = %v, %v", got, err)
 	}
@@ -288,7 +295,7 @@ func redactContext(t *testing.T, s agent.Store) {
 	id, tool := redactRun(t, s, true)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	done, err := redactor(t, s).Redact(ctx, id, "tool:a", tool, tombstoneFor(t, tool))
+	done, err := redactor(t, s).Redact(ctx, id, "tool:a", tool, tombstoneFor(t, "tool:a", tool))
 	if done || err == nil {
 		t.Fatalf("Redact with a cancelled context = %v, %v; want an error", done, err)
 	}
@@ -305,7 +312,7 @@ func redactConcurrent(t *testing.T, open func(*testing.T) agent.Store) {
 		hs[i] = open(t)
 	}
 	id, tool := redactRun(t, hs[0], true)
-	tomb := tombstoneFor(t, tool)
+	tomb := tombstoneFor(t, "tool:a", tool)
 	var won atomic.Int64
 	var wg sync.WaitGroup
 	start := make(chan struct{})
@@ -344,7 +351,7 @@ func redactWithWriters(t *testing.T, open func(*testing.T) agent.Store) {
 	ctx := context.Background()
 	w, rd, rr := open(t), open(t), open(t)
 	id, tool := redactRun(t, w, true)
-	tomb := tombstoneFor(t, tool)
+	tomb := tombstoneFor(t, "tool:a", tool)
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
 	var inserted atomic.Int64

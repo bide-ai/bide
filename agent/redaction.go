@@ -74,10 +74,16 @@ func LeafHash(recordBytes []byte) []byte {
 	return h.Sum(nil)
 }
 
-// NewTombstone returns the redaction tombstone that replaces the stored bytes recordBytes:
-// {"redacted":{"leaf_hash":"<hex of LeafHash(recordBytes)>","at_ms":<at in Unix millis>}}. It
-// refuses bytes that are already a tombstone, and an at before the Unix epoch.
-func NewTombstone(recordBytes []byte, at time.Time) ([]byte, error) {
+// NewTombstone returns the redaction tombstone that replaces the stored bytes recordBytes of the
+// record named name:
+// {"redacted":{"leaf_hash":"<hex of LeafHash(recordBytes)>","at_ms":<at in Unix millis>,"name":"<name>"}}.
+// The name is the row's key, which the row keeps; the tombstone repeats it so that an export of
+// the journal, which holds bytes and no keys, still says which record it replaced. It refuses
+// bytes that are already a tombstone, an empty name, and an at before the Unix epoch.
+func NewTombstone(name string, recordBytes []byte, at time.Time) ([]byte, error) {
+	if name == "" {
+		return nil, fmt.Errorf("NewTombstone: no record name: %w", ErrConfig)
+	}
 	if isTombstone(recordBytes) {
 		return nil, fmt.Errorf("NewTombstone: the bytes are already a tombstone: %w", ErrRedactMismatch)
 	}
@@ -85,7 +91,24 @@ func NewTombstone(recordBytes []byte, at time.Time) ([]byte, error) {
 	if ms < 0 {
 		return nil, fmt.Errorf("NewTombstone: the time %s is before the Unix epoch: %w", at.UTC().Format(time.RFC3339), ErrConfig)
 	}
-	return fmt.Appendf(nil, `{"redacted":{"leaf_hash":"%s","at_ms":%d}}`, hex.EncodeToString(LeafHash(recordBytes)), ms), nil
+	nameJSON, err := json.Marshal(name)
+	if err != nil {
+		return nil, fmt.Errorf("NewTombstone: %w", ErrConfig)
+	}
+	return fmt.Appendf(nil, `{"redacted":{"leaf_hash":"%s","at_ms":%d,"name":%s}}`, hex.EncodeToString(LeafHash(recordBytes)), ms, nameJSON), nil
+}
+
+// TombstoneName returns the record name a tombstone carries, and false if b is not a tombstone or
+// names none (a tombstone is read without a name, as the reserved form allows).
+func TombstoneName(b []byte) (string, bool) {
+	if !isTombstone(b) {
+		return "", false
+	}
+	var t tombstone
+	if err := json.Unmarshal(b, &t); err != nil || t.Redacted == nil || t.Redacted.Name == "" {
+		return "", false
+	}
+	return t.Redacted.Name, true
 }
 
 // TombstoneLeafHash returns the leaf hash a tombstone keeps, and false if b is not a well-formed
@@ -163,6 +186,9 @@ func CheckRedaction(runID, name string, current, tombstone []byte) error {
 	want, ok := TombstoneLeafHash(tombstone)
 	if !ok {
 		return fmt.Errorf("run %s, entry %q: the replacement is not a well-formed tombstone: %w", runID, name, ErrRedactMismatch)
+	}
+	if n, ok := TombstoneName(tombstone); !ok || n != name {
+		return fmt.Errorf("run %s, entry %q: the tombstone does not name the entry it replaces (%q): %w", runID, name, n, ErrRedactMismatch)
 	}
 	if !bytes.Equal(want, LeafHash(current)) {
 		return fmt.Errorf("run %s, entry %q: the tombstone's leaf hash %x is not the leaf hash of the stored bytes: %w", runID, name, want, ErrRedactMismatch)
