@@ -239,6 +239,26 @@ heads.
   account (a short retention in governance mode, `AllowGovernance`) before you rely on it, and test the
   policies above with the writer role.
 
+## Trying it against AWS
+
+Nothing in this repository has run against AWS. Before relying on the anchor, run this once in a scratch
+account (the bucket's objects cannot be deleted before their retention date, so use the shortest
+retention, one day, and expect to pay for it):
+
+1. Create a bucket with Object Lock, a one-day default retention in compliance mode, and a scratch KMS key
+   ([above](#create-the-bucket)). Apply `WriterPolicy` to a role (no delete, no bypass) and `ReaderPolicy` to another.
+2. As the writer role, run `awss3.New` and publish a head with `Config.Retention` of `awss3.MinRetention`.
+   Expect success; a failure naming `AccessDenied` is a missing action in the policy, and the policy
+   template needs fixing.
+3. Check what the unverified list in [known limitations](../KNOWN-LIMITATIONS.md#anchoring) claims: the
+   write needs `s3:PutObjectRetention`; the read-back sees the lock mode only with
+   `s3:GetObjectRetention` (remove it from a copy of the role and see whether `Publish` returns
+   `ErrWeak`); the response carries the KMS key ARN; a wrong `ExpectedBucketOwner` is refused with a 403.
+4. As the reader role, run `bide-anchor check` and `export`; expect no findings.
+5. As an administrator, try `aws s3api delete-object --version-id` and `put-object-retention` with an
+   earlier date on a head: both must be refused.
+6. Report what differed from this guide.
+
 ## See also
 
 - [Retention and archiving](retention.md): keep the heads at least as long as the journals they cover.

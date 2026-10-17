@@ -530,7 +530,10 @@ jobs:
           # AGPL-licensed server, pinned by digest, used only as a test fixture (nothing of it is
           # distributed). The tests create their own buckets.
           image=cgr.dev/chainguard/minio@sha256:c93745c56fccdaf0e5dcb88999a96a65a136428beb045ef5d546255a80d747a7
-          docker pull -q "$image"
+          if ! docker pull -q "$image"; then
+            echo "::error::The pinned MinIO image $image could not be pulled. Chainguard's free tier keeps only its latest build, so the digest may have been replaced. Fix: pick a MinIO image with Object Lock (cgr.dev/chainguard/minio:latest, or a mirror), run anchor/awss3's tests against it (BIDE_S3_ENDPOINT, BIDE_REQUIRE_OBJECTLOCK=1; see docs/guides/anchoring.md), then replace the digest here."
+            exit 1
+          fi
           docker run -d --name minio -p 127.0.0.1:19000:9000 \
             -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin-ci-only \
             "$image" server /data --address :9000
