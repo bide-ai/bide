@@ -621,7 +621,7 @@ never runs the call.
 that decides it and, for a gate with a deadline (ApprovalPolicy.Timeout), the time left; a gate
 past its deadline is marked and gets no command, since it refuses decisions. -json prints them as JSON. With -approver-keys it counts each gate as the gate does
 (verified); without it the counts are labelled unverified and no gate is called settled. Run and
-call ids that hold control, bidirectional or invisible characters get no command (take their ids from -json and pass them to -run and -call). A Postgres journal is named by -postgres-env, the name
+call ids that hold control, bidirectional or invisible characters get no command (take their ids from -json and give that call to -item). A Postgres journal is named by -postgres-env, the name
 of the environment variable that holds the DSN, so the password stays out of the argument list,
 the shell history and the commands -list prints; -postgres takes the DSN itself, and the listed
 commands then name $BIDE_POSTGRES_DSN.
@@ -657,6 +657,8 @@ Flags:
     	show all of the call's arguments, not the first lines
   -identity-policy string
     	the certificate policy file (trust anchors, pinned intermediates, the approver-to-identity map; see docs/guides/certificate-approvers.md). With -cert: your chain must be accepted for -as by it at this moment, before anything is signed. With -verify-receipt, for a certificate-bound receipt: the chain and identity are checked against it at the time the receipt's anchoring head was signed; revocation status is not checked
+  -item string
+    	take -run and -call exactly from one call of bide approve -list -json output instead: a file, or - for standard input (which then also needs -yes, since the confirmation would read the same input). The input is one call's object, or an array of exactly one. For ids that cannot be pasted on a command line (a line break or an invisible or bidirectional character in them)
   -json
     	with -list: print the waiting calls as JSON
   -key string

@@ -27,6 +27,7 @@ import (
 	"github.com/bide-ai/bide/internal/approveline"
 	"github.com/bide-ai/bide/internal/policyfile"
 	"github.com/bide-ai/bide/internal/runview"
+	"github.com/bide-ai/bide/internal/strictjson"
 	"github.com/bide-ai/bide/internal/term"
 )
 
@@ -138,7 +139,7 @@ never runs the call.
 that decides it and, for a gate with a deadline (ApprovalPolicy.Timeout), the time left; a gate
 past its deadline is marked and gets no command, since it refuses decisions. -json prints them as JSON. With -approver-keys it counts each gate as the gate does
 (verified); without it the counts are labelled unverified and no gate is called settled. Run and
-call ids that hold control, bidirectional or invisible characters get no command (take their ids from -json and pass them to -run and -call). A Postgres journal is named by -postgres-env, the name
+call ids that hold control, bidirectional or invisible characters get no command (take their ids from -json and give that call to -item). A Postgres journal is named by -postgres-env, the name
 of the environment variable that holds the DSN, so the password stays out of the argument list,
 the shell history and the commands -list prints; -postgres takes the DSN itself, and the listed
 commands then name $` + defaultPostgresEnv + `.
@@ -166,6 +167,7 @@ func refuse(format string, args ...any) error { return &refusal{fmt.Sprintf(form
 type flags struct {
 	db, postgres, postgresEnv string
 	run, call, as, key        string
+	item                      string // -item: one waiting call of -list -json (a file, or - for standard input), in place of -run and -call
 	approverKeys              string
 	reject, yes, full         bool
 	unverified                bool
@@ -203,6 +205,7 @@ func MainWith(args []string, in io.Reader, stdout, stderr io.Writer, stores Stor
 	fs.StringVar(&f.postgresEnv, "postgres-env", "", "name of the environment variable that holds the Postgres DSN")
 	fs.StringVar(&f.run, "run", "", "the run whose journal holds the call: the pause's run ID")
 	fs.StringVar(&f.call, "call", "", "the call's tool-use ID (for a plan flow node, its key, such as node:review)")
+	fs.StringVar(&f.item, "item", "", "take -run and -call exactly from one call of bide approve -list -json output instead: a file, or - for standard input (which then also needs -yes, since the confirmation would read the same input). The input is one call's object, or an array of exactly one. For ids that cannot be pasted on a command line (a line break or an invisible or bidirectional character in them)")
 	fs.StringVar(&f.as, "as", "", "your approver id, exactly as the gate's policy lists it (not for a single-approver gate)")
 	fs.StringVar(&f.key, "key", "", src.KeyHelp)
 	fs.StringVar(&f.approverKeys, "approver-keys", "", `approver public keys, a JSON object of approver id to key text, e.g. {"ops":"ed25519:ab12..."}, the file bide view -approver-keys reads (`+src.EnrolHelp+`): refuse a -key that is not the one enrolled for -as, and verify the tally. Required for an m-of-n gate unless -unverified`)
@@ -245,6 +248,15 @@ func MainWith(args []string, in io.Reader, stdout, stderr io.Writer, stores Stor
 		}
 		return usage(fmt.Sprintf("unexpected argument %q", fs.Arg(0)))
 	}
+	if f.item != "" {
+		if msg := f.checkItem(); msg != "" {
+			return usage(msg)
+		}
+		if err := f.readItem(in); err != nil {
+			fmt.Fprintln(stderr, es.ErrorPrefix()+src.Prog+":", err)
+			return 1
+		}
+	}
 	if msg := f.check(); msg != "" {
 		return usage(msg)
 	}
@@ -270,6 +282,71 @@ func MainWith(args []string, in io.Reader, stdout, stderr io.Writer, stores Stor
 	return 0
 }
 
+// maxItem bounds the input of -item: one call of -list -json is far smaller.
+const maxItem = 1 << 20
+
+// checkItem reports a usage error in how -item is combined with other flags, or "". It runs before
+// -item is read, so that an ambiguous command line reads nothing.
+func (f flags) checkItem() string {
+	switch {
+	case f.run != "" || f.call != "":
+		return "-item gives -run and -call (exactly as -list -json printed them): do not also pass -run or -call"
+	case f.list || f.asJSON:
+		return "-item does not go with -list or -json"
+	case f.verifyReceipt != "":
+		return "-item does not go with -verify-receipt, which reads no journal"
+	case f.item == "-" && !f.yes:
+		return "-item - reads standard input, which the confirmation would read too: give -yes (what is signed is still shown), or put the item in a file"
+	}
+	return ""
+}
+
+// readItem sets run and call from the one call of -list -json output that -item names: a file, or
+// standard input for "-". The input is the call's object or an array of exactly one object, decoded
+// strictly (no repeated name, no invalid UTF-8) so what the text shows is what is used; the ids are
+// taken as the JSON decodes them, so a line break or an invisible character in one is kept.
+func (f *flags) readItem(stdin io.Reader) error {
+	r := stdin
+	if f.item != "-" {
+		file, err := os.Open(f.item)
+		if err != nil {
+			return fmt.Errorf("-item %s: %w", f.item, unwrapPath(err))
+		}
+		defer file.Close()
+		r = file
+	}
+	data, err := io.ReadAll(io.LimitReader(r, maxItem+1))
+	if err != nil {
+		return fmt.Errorf("-item %s: %w", f.item, err)
+	}
+	if len(data) > maxItem {
+		return fmt.Errorf("-item %s: more than %d bytes: it is one call of -list -json, not the whole list", f.item, maxItem)
+	}
+	type call struct {
+		Run  string `json:"run"`
+		Call string `json:"call"`
+	}
+	opts := &strictjson.Options{AllowUnknown: true}
+	var one call
+	if t := bytes.TrimSpace(data); len(t) > 0 && t[0] == '[' {
+		var many []call
+		if err := strictjson.Unmarshal(data, &many, opts); err != nil {
+			return fmt.Errorf("-item %s: %w", f.item, err)
+		}
+		if len(many) != 1 {
+			return fmt.Errorf("-item %s: %d calls; name exactly one (for example with jq '.[0]')", f.item, len(many))
+		}
+		one = many[0]
+	} else if err := strictjson.Unmarshal(data, &one, opts); err != nil {
+		return fmt.Errorf("-item %s: %w", f.item, err)
+	}
+	if one.Run == "" || one.Call == "" {
+		return fmt.Errorf("-item %s: the call has no \"run\" or no \"call\" (it is one call of bide approve -list -json)", f.item)
+	}
+	f.run, f.call = one.Run, one.Call
+	return nil
+}
+
 // check reports a usage error in the flags, or "".
 func (f flags) check() string {
 	if f.postgresEnv != "" && !approveline.ValidEnvName(f.postgresEnv) {
@@ -282,7 +359,7 @@ func (f flags) check() string {
 		if (f.identityPolicy == "") != (f.logKey == "") {
 			return "-identity-policy and -log-key go together: a certificate-bound receipt is checked against the policy at the time the log's anchoring head was signed"
 		}
-		for name, set := range map[string]bool{"-db": f.db != "", "-postgres": f.postgres != "", "-postgres-env": f.postgresEnv != "", "-run": f.run != "", "-call": f.call != "", "-as": f.as != "", "-key": f.key != "", "-reject": f.reject, "-yes": f.yes, "-full": f.full, "-list": f.list, "-json": f.asJSON, "-unverified": f.unverified, "-receipt": f.receipt != "", "-to": f.to != "", "-cert": f.cert != ""} {
+		for name, set := range map[string]bool{"-db": f.db != "", "-postgres": f.postgres != "", "-postgres-env": f.postgresEnv != "", "-run": f.run != "", "-call": f.call != "", "-item": f.item != "", "-as": f.as != "", "-key": f.key != "", "-reject": f.reject, "-yes": f.yes, "-full": f.full, "-list": f.list, "-json": f.asJSON, "-unverified": f.unverified, "-receipt": f.receipt != "", "-to": f.to != "", "-cert": f.cert != ""} {
 			if set {
 				return name + " does not go with -verify-receipt, which reads no journal"
 			}
@@ -1158,7 +1235,7 @@ func (c *cmd) list(ctx context.Context) error {
 				if err == nil {
 					cmdline = c.src.rewriteLine(cmdline)
 				} else {
-					cmdline = "(no command: this run or call id holds characters that cannot be shown or pasted safely; take the ids from bide approve -list -json, its run and call members, and pass them to -run and -call)"
+					cmdline = "(no command: this run or call id holds characters that cannot be shown or pasted safely; save that call from bide approve -list -json to a file and decide with -item FILE)"
 				}
 				w.Commands = append(w.Commands, cmdline)
 			}

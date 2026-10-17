@@ -20,7 +20,7 @@ func TestUnsafeIDDecidedFromListJSON(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("-list = %d: %s", code, errs)
 	}
-	contains(t, "-list", out, "no command: ", "bide approve -list -json", "-run and -call")
+	contains(t, "-list", out, "no command: ", "bide approve -list -json", "-item FILE")
 	if strings.Contains(out, "bide approve -db") || strings.ContainsAny(out, "‮") {
 		t.Errorf("-list wrote a command or an unescaped id:\n%s", out)
 	}

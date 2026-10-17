@@ -86,11 +86,10 @@ type AttentionItem struct {
 
 // noCommandUnsafe is the NoCommand of a call whose run or call id holds a control, bidirectional or
 // invisible character (approveline.ErrUnsafe), and unsafeIDRemedy what an approver can do about it:
-// bide approve -list -json prints the ids as JSON, which a tool such as jq decodes exactly, and
-// bide approve takes them as -run and -call (a shell's $(...) drops trailing newlines, so an id that
-// ends in one cannot be passed that way).
+// bide approve -list -json prints the call with its ids JSON-escaped, and bide approve -item reads
+// that object and takes the ids from it exactly, without a shell or a command line in between.
 const (
-	unsafeIDRemedy  = "`bide approve -list -json` (its run and call members, passed to -run and -call)"
+	unsafeIDRemedy  = "`bide approve -list -json` (save that call to a file, then decide with `bide approve -item FILE`)"
 	noCommandUnsafe = "no command: the run or call id holds a character that cannot be shown or pasted safely; take the ids from " + unsafeIDRemedy
 )
 

@@ -733,7 +733,7 @@ gate counts the decisions and the call runs or is denied. `bide approve` never r
 `bide approve -list` shows the calls that wait for a decision, each with the command that decides it
 (`-json` for scripts; `-approver-keys` makes its counts the gate's own). A run or call id that holds a
 control, bidirectional or invisible character, a combining mark, or a space other than the ASCII space
-gets no command line (`approveline.Unsafe`), and the command shows such text escaped; to decide such a call, take the ids from `bide approve -list -json` (its `run` and `call` members) and pass them to `-run` and `-call`; write accented text
+gets no command line (`approveline.Unsafe`), and the command shows such text escaped; to decide such a call, save that call's object from `bide approve -list -json` to a file (for example with `jq '.[0]'`) and decide with `bide approve -item FILE` in place of `-run` and `-call` (`-item -` reads standard input and needs `-yes`); write accented text
 precomposed (NFC). The commands never carry a secret: a Postgres journal is named by
 `-postgres-env VAR`, not by its DSN, and the key by its file (`bide-hsm approve -list` suggests the same
 command with `-key '<key-ref>'`, a reference to a key that holds no PIN). `internal/approveline` builds the same
