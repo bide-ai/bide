@@ -1,0 +1,126 @@
+# Control mapping
+
+This page maps bide's features to controls in frameworks that bank risk and procurement teams use, to help an assessment. It is not legal advice, not a certification, and not a statement that any deployment meets any framework. bide is a library that you run in your own processes and database, so most controls are met by the deployment as a whole, and an assessor decides what evidence satisfies a control. Each row says what bide provides (with a link to the page or code that shows it), what the institution must still provide, and the gaps are listed under each framework. Where this page and the linked pages differ, the linked pages win: [the guarantee](../GUARANTEE.md), [the security model](../guides/security-model.md), [the threat model](threat-model.md) and [known limitations](../KNOWN-LIMITATIONS.md).
+
+Clause numbers are cited so you can find the control in your own copy of the framework; the paraphrases are short and are not the framework's text. Every "bide provides" entry describes behavior on the main branch; anything not yet merged is marked "in progress" and is not counted as provided.
+
+## The bide features the tables refer to
+
+| Short name | What it is | Where it is specified |
+|---|---|---|
+| At-most-once journal | A non-idempotent side effect fires at most once per call, across crashes and a second driver; an unknown outcome halts the run | [Guarantee](../GUARANTEE.md), [reliability](../guides/reliability.md) |
+| Approval gates | k-of-n signed approvals over the exact call, one key per approver, the requester excluded from counting with `ExcludePrincipal` (separation of duties) | [HITL approval](../guides/hitl-approval.md), [quorum](../guides/quorum.md) |
+| Certificate-bound approvers | Approver keys bound to an institution's certificates from its own CA; revocation is checked before a gated call runs | [Certificate approvers](../guides/certificate-approvers.md) |
+| Key custody | Signing and approver keys in a PKCS#11 HSM, AWS KMS, Google Cloud KMS or Azure Key Vault behind `audit.Signer` | [Key custody](../guides/key-custody.md) |
+| Audit log | Merkle log over the journal with signed tree heads, inclusion, consistency and absence proofs, verified offline with `bide audit` | [Audit guide](../guides/audit.md) |
+| Anchors | `audit.AuditedStore` publishes each signed head through the `Anchor` port; you supply the anchor | [Audit guide, anchoring](../guides/audit.md#continuous-anchoring-auditedstore--the-anchor-port), [security model](../guides/security-model.md#anchoring-the-condition-on-tamper-evidence) |
+| Notifications | Signed webhooks for runs that need a person, with a Merkle-committed delivery trail | [Notifications](../guides/notifications.md), [audit guide, notification evidence](../guides/audit.md#notification-evidence-were-the-people-told) |
+| Policy diff gate | `bide check -diff ... -check -fail-on-weaken` fails CI when an approval gate is removed or weakened | [Plan flows](../guides/plan-flows.md), [CLI reference](../reference/cli.md) |
+| Editor warning | The flow editor shows a weakened banner, with the same words as in CI | [Flow editor](../guides/flow-editor.md) |
+| Release integrity | cosign signatures, signed SBOMs, SLSA v1 build provenance (Build Level 2), reproducible builds | [Verifying releases](verify-releases.md) |
+| Retention | What to keep, how to archive it so it verifies years later, what deletion does to the proofs | [Retention guide](../guides/retention.md), [operations](operations.md) |
+| Identity pre-flight | `bide identity check` says whether a certificate-bound setup will work, by running the gate's own code | [Certificate approvers, pre-flight](../guides/certificate-approvers.md#pre-flight-bide-identity-check) |
+| Model identity and evaluation | Each journaled model turn records the model, finish reason and digests of the prompt and tool set; `eval` measures a model's decisions statistically | [Threat model](threat-model.md#a-compromised-or-misbehaving-model-or-agent), [`eval`](../../eval/eval.go) |
+| Redaction | Erasing journal records: in progress ([#381](https://github.com/bide-ai/bide/pull/381)), not available on main | [Known limitations, audit and proofs](../KNOWN-LIMITATIONS.md#audit-and-proofs) |
+
+## SOC 2 (Trust Services Criteria)
+
+| Control | bide provides | You provide |
+|---|---|---|
+| CC6.1 to CC6.3: logical access, provisioning, removal and review of access | Tools run only if the run's journaled tool filter allows them; a gated tool does not run until k approvers sign the exact call; the requester cannot fill a seat ([approval gates](../guides/hitl-approval.md)); certificate-bound approvers and revocation ([guide](../guides/certificate-approvers.md#when-you-revoke-a-certificate)); delegated authority can only narrow ([delegation](../guides/delegation.md)); a least-privilege Postgres role split with tests ([operations](operations.md#least-privilege-postgres-roles)) | Authentication and joiner, mover, leaver processes for people and services; the identity provider and the CA; database, host and network access; access reviews. bide records an identity as a claim and does not authenticate it ([security model](../guides/security-model.md#identity-is-a-claim-not-authentication)) |
+| CC6.1, CC6.7: protection of keys and data in transit | Keys held outside the application ([key custody](../guides/key-custody.md)); outbound notifications use HTTPS, TLS 1.2 or newer, signed bodies, optional mutual TLS and a key pin ([notifications](../guides/notifications.md#mutual-tls-a-private-ca-and-a-key-pin)) | Key ceremonies, rotation, backup and destruction; TLS to the database and to model providers; encryption of data at rest. Journal records are not encrypted ([security model](../guides/security-model.md#what-is-not-guaranteed-confidentiality)) |
+| CC6.8: unauthorized or malicious software | Signed releases, signed SBOMs, SLSA v1 provenance, reproducible builds ([verify releases](verify-releases.md)) | Verifying them at install, vulnerability management for your dependencies, endpoint controls |
+| CC7.1 to CC7.2: detection and monitoring | Tamper evidence over the journal with anchored heads; OpenTelemetry spans ([observability](../guides/observability.md)); decision times flagged when implausible (`audit.CheckDecisionTimes`); `bide audit verify-decision-coverage` flags decisions left unsigned past a bound ([audit guide](../guides/audit.md#decision-receipts-noticing-a-decision-deleted-before-it-was-anchored)) | Running the verifier on a schedule, alerting, a monitored anchor, database audit logging, reviewing the telemetry |
+| CC7.3 to CC7.5: incident evaluation, response and recovery | A halted run with `OutcomeUnknown` instead of a silent retry; evidence packages and offline proofs for reconstructing what happened ([audit guide](../guides/audit.md#the-run-level-evidence-bundle-evidencepackage)); restore guidance that warns a restore can roll the journal back ([operations](operations.md#backups)) | The incident process, reconciliation against downstream systems after a restore, communication, post-incident review |
+| CC8.1: change management | Approver policy changes are checked in CI by the policy diff gate, and the editor shows the same weakened banner before the change is saved; a run's flow digest commits to its approval policy ([plan flows](../guides/plan-flows.md)); a governed action links to the policy that admitted it ([audit guide](../guides/audit.md#governed-actions-proving-which-policy-admitted-the-action)); release provenance ([verify releases](verify-releases.md)) | Code review, branch protection, the CI that runs the gate and requires it to pass, deployment approval, rollback. The gate covers approval-gate weakening, not every change to an agent |
+
+Gaps: external security review has not been done ([known limitations](../KNOWN-LIMITATIONS.md)); there is no third-party attestation of any kind. A production anchor is in progress ([roadmap](../ROADMAP.md#bank-readiness)); until one exists you supply the `Anchor`. A kill switch to stop agents is in progress and is not on main.
+
+## ISO/IEC 27001:2022, Annex A
+
+| Control | bide provides | You provide |
+|---|---|---|
+| 5.15 access control, 5.18 access rights | The tool filter, approval gates and attenuating delegation (see SOC 2 CC6.1 to CC6.3) | The access control policy, role design, periodic review of who may approve |
+| 5.16 identity management, 5.17 authentication information | Certificate-bound approvers from your CA, revocation honored by the gate, the identity shown in `bide view` and `bide approve -list`, the pre-flight `bide identity check` ([guide](../guides/certificate-approvers.md)); two approvers on one key are refused | The identity lifecycle, the CA, issuance and revocation procedure, credential and PIN handling. One person with two keys is not detected ([threat model](threat-model.md#a-compromised-approver)) |
+| 8.15 logging | The journal records model turns, tool results, attempt markers and approval decisions; a Merkle log with signed heads over it and over the event stream and notification trail ([audit guide](../guides/audit.md)) | What else to log (host, database, identity provider), clock discipline, log protection beyond the journal, review of logs |
+| 8.16 monitoring activities | Spans and metrics ([observability](../guides/observability.md)); overdue notices for undelivered notifications ([notifications](../guides/notifications.md)) | Monitoring, alert thresholds and response; running `bide audit` on a schedule |
+| 8.24 use of cryptography | Ed25519, ECDSA P-256, ML-DSA-65 and a hybrid scheme; keys in an HSM or KMS; HMAC-signed webhooks; verification needs only public keys ([security model](../guides/security-model.md#post-quantum-and-hybrid-signatures)); FIPS mode is documented as mutually exclusive with ML-DSA | The cryptography policy, key management (generation, rotation, revocation, escrow: bide does none of these), the validation status of your HSM or KMS, the FIPS decision. bide makes no claim about FIPS validation of any module |
+| 8.32 change management | Policy diff gate, editor warning, release provenance (see SOC 2 CC8.1) | The change process, testing and approval of changes, separation of environments |
+| 5.33 protection of records | Append-only journal (the service role needs only `INSERT`), signed heads, offline verification years later with the matching `bide` version ([retention guide](../guides/retention.md)), a statement of what deletion does to proofs | Retention periods (a legal decision), WORM storage in another account, backups, access control and encryption of the archive, archive verification. Erasing records is in progress and not on main |
+
+Gaps: key rotation and revocation workflow is out of scope for the runtime ([operations](operations.md#key-custody)); the independent timestamp authority is not yet used by any gate (see below).
+
+## PCI DSS v4.0, requirement 10
+
+bide is not a card-data system and its journal is not encrypted. If an agent's tool results could contain cardholder data, keep it out of the journal or restrict the store as you would the data, and confirm scope with your assessor.
+
+| Control | bide provides | You provide |
+|---|---|---|
+| 10.2: audit logs capture the events that matter, with identity and time | Records of model turns, tool calls, attempts, outcomes and approval decisions, each approval naming its approvers and the policy enforced ([audit guide](../guides/audit.md#approval-evidence-k-approvers-signed-off-before-the-action)) | Mapping the required event types to your systems, logging of administrative access to the database and hosts, the user-identification side (authentication is yours) |
+| 10.3, in particular 10.3.4: protect logs from modification and destruction | A signed Merkle tree head over the journal: any edit, insertion, deletion or reorder breaks an inclusion, consistency or absence proof, when the head was anchored outside the operator's control ([threat model, insider](threat-model.md#an-insider-with-database-access)); the service role needs no `UPDATE` or `DELETE` ([operations](operations.md#least-privilege-postgres-roles)) | Restricting the database administrator and the owner role, the anchor's trust domain, backups to a separate system, file integrity monitoring on logs that are files. bide detects a rewrite; it does not prevent one by a database administrator |
+| 10.4: review of logs | `bide view` and the run viewer show runs, pauses and decisions ([run viewer](../guides/run-viewer.md)); `bide audit` verifies | The review process, frequency and evidence of review |
+| 10.5: retention of log history | [Retention guide](../guides/retention.md): what to keep so proofs verify later | The retention period, immediately available and archived storage, the cost of both |
+| 10.6: time synchronization | Verifiers bound clock skew and pin a verification time ([audit guide](../guides/audit.md#timestamps)); leases use the database clock on Postgres ([operations](operations.md#clocks-and-time)) | NTP or equivalent on every node, monitoring it, protecting the time source. Tree-head times are the signer's clock, not an independent one |
+| 10.7: failures of critical controls are detected | Anchoring failures are reported to `OnError` and `Reanchor` repairs them; verification fails closed (`audit.ErrNotVerified`) | Alerting on those errors and responding |
+
+Gaps: independent time (an RFC 3161 verifier exists in `audit/rfc3161` but no gate, endpoint or command calls it yet; [known limitations](../KNOWN-LIMITATIONS.md#audit-and-proofs)). Time in approvals is the approver's own claim ([known limitations](../KNOWN-LIMITATIONS.md#approval-and-quorum)).
+
+## DORA (Regulation (EU) 2022/2554)
+
+DORA applies to financial entities, not to a library. Only the articles where a runtime contributes are listed.
+
+| Control | bide provides | You provide |
+|---|---|---|
+| Art. 8 to 9: identify ICT assets and risk; protect and prevent (access control, strong authentication, cryptographic controls, change management) | Per-run tool filter, approval gates, attenuating delegation, key custody in an HSM or KMS, the policy diff gate and release provenance; a [threat model](threat-model.md) that states what is and is not addressed | The ICT risk management framework, asset register, the identity and cryptographic policies, change management, testing, the risk assessment of your own agent deployments |
+| Art. 10: detection of anomalous activity and logging | Tamper-evident journal and audit log, telemetry, notification evidence | Detection thresholds, monitoring and escalation, central logging, the roles that act on alerts |
+| Art. 17: ICT incident management process | Evidence packages and offline proofs support reconstruction; a run halts on an unknown outcome and can be resolved by a person or a reconciler ([guarantee](../GUARANTEE.md)); notifications reach people when a run needs them | Classification, reporting to the competent authority within the required deadlines, the root cause process, the register of incidents |
+| Art. 28: third-party ICT risk, as it applies to model providers | Each model turn records which model answered and digests of the prompt and tools ([threat model](threat-model.md#a-compromised-or-misbehaving-model-or-agent)), so an audit can tell what configuration produced an answer; the provider is a replaceable adapter behind an interface ([models guide](../guides/models.md)) | The register of information, contract terms, due diligence, exit strategy and concentration risk for each model provider. bide does not assess or monitor a provider |
+
+Gaps: nothing in bide produces regulatory reports or classifies incidents. Availability is not guaranteed: bide guarantees safety (no double fire, no lost completed work), not liveness ([threat model](threat-model.md#what-bide-does-not-address-in-one-list)). A kill switch is in progress and not on main.
+
+## EU AI Act (Regulation (EU) 2024/1689)
+
+Which obligations apply depends on the system's risk classification, and the classification is the deployer's and provider's to decide with counsel; bide does not classify anything. A runtime can contribute to some technical measures only. These rows apply if the system is classified as high-risk.
+
+| Control | bide provides | You provide |
+|---|---|---|
+| Art. 12: automatic recording of events over the system's lifetime (and the log retention duties that follow in Arts. 19 and 26) | Every run is journaled automatically; the journal is the event record, and the Merkle log makes it tamper-evident ([audit guide](../guides/audit.md)); model, prompt and tool-set digests are journaled per turn | Deciding which events the classification requires, retention periods, archive storage, access control, and personal data handling in the journal (records are not encrypted, and erasure is in progress and not on main) |
+| Art. 14: human oversight | Approval gates make a person's signed decision a precondition of a call; k-of-n with separation of duties; notifications tell the person; the viewer shows the exact call ([HITL approval](../guides/hitl-approval.md)). A denial is final. bide does not set approval deadlines or role rules | Choosing which actions need oversight, training and competence of the overseers, authority to override, interface design for the overseers' real use, measuring whether approvers understand what they approve (bide cannot) |
+| Art. 15: accuracy, robustness, cybersecurity | At-most-once effects across crashes (robustness of side effects, [guarantee](../GUARANTEE.md)); the `eval` package measures a model's decisions with pass-rate distributions and is explicitly not a proof ([`eval`](../../eval/eval.go)); signed releases and provenance; threat model | Declared accuracy metrics for the system as a whole, model accuracy and bias testing, adversarial and prompt-injection testing (bide bounds what a steered request can do and does not stop it), the cybersecurity of the deployment |
+
+Gaps: a conformity assessment, technical documentation under the Act, a quality management system and a risk management system are the provider's or deployer's, not a runtime's.
+
+## SR 11-7 and OCC 2011-12 (model risk management)
+
+A runtime does not validate models. It can make the evidence for inventory, monitoring and outcomes analysis easier to produce and harder to alter.
+
+| Control | bide provides | You provide |
+|---|---|---|
+| Model inventory and documentation | Each model turn journals the model that answered, its finish reason, and digests of the system prompt and tool set ([threat model](threat-model.md#a-compromised-or-misbehaving-model-or-agent)); the flow digest and governed policy digest identify the configuration in force ([plan flows](../guides/plan-flows.md)) | The inventory itself, model purpose and limits, versioning and ownership, the vendor model documentation |
+| Ongoing monitoring | Telemetry, cost on spans ([observability](../guides/observability.md)); the `eval` harness reruns labeled cases and reports a pass-rate distribution with confidence intervals ([`eval`](../../eval/eval.go)); `Quorum` records when models disagree ([quorum](../guides/quorum.md)) | Thresholds, drift criteria, the monitoring cadence, escalation, and acting on the results |
+| Outcomes analysis | A tamper-evident record of what was decided and what happened, queryable and verifiable offline | The back-testing design, benchmarks, analysis and reporting |
+| Effective challenge, validation (conceptual soundness) | Nothing. bide does not evaluate whether a model is sound for its use, and an `eval` pass rate is not a guarantee | Independent validation of each model, its data, assumptions and limits; the validation's approval and the issue log |
+| Governance, policies and controls over use | Approval gates and policy-diff gating keep decisions with people and make weakening visible ([plan flows](../guides/plan-flows.md)) | The model risk policy, roles, approvals, internal audit |
+
+## What is not covered yet
+
+| Gap | Status | Link |
+|---|---|---|
+| Production anchor (a ready-made independent log for signed heads) | In progress; today you supply an `Anchor` | [Known limitations](../KNOWN-LIMITATIONS.md#audit-and-proofs), [roadmap](../ROADMAP.md#bank-readiness) |
+| Kill switch to stop agents | In progress; not on main | [Roadmap](../ROADMAP.md) |
+| Independent time: RFC 3161 is not yet used by any gate, endpoint or command | Verifier exists; wiring left | [Roadmap](../ROADMAP.md#bank-readiness), [known limitations](../KNOWN-LIMITATIONS.md#audit-and-proofs) |
+| External security review | Not done; no third party has assessed bide | [Threat model](threat-model.md#what-bide-does-not-address-in-one-list) |
+| Redaction of journal records | In progress ([#381](https://github.com/bide-ai/bide/pull/381)); not on main | [Retention guide](../guides/retention.md#what-deleting-does) |
+| Hardware HSM trial | Left | [Roadmap](../ROADMAP.md#bank-readiness) |
+| Keys issued through an institution's SSO | Left | [Roadmap](../ROADMAP.md#bank-readiness) |
+| Passkey (WebAuthn) approvals | Left | [Roadmap](../ROADMAP.md#notifications-and-approvals) |
+| Journal format tag final value | Waits for 1.0; before then a verifier reads only the current format | [Stability](stability.md) |
+
+## Reporting an error in this mapping
+
+If a row overstates what bide does, cites the wrong clause, or links to something that has changed, open an issue at [github.com/bide-ai/bide](https://github.com/bide-ai/bide/issues) naming the row and the evidence, or send a pull request that fixes it. An overstatement is treated as a defect and corrected publicly in the changelog. A suspected security vulnerability goes through [SECURITY.md](../../SECURITY.md) instead.
+
+## Related
+
+- [Threat model](threat-model.md), [operations guidance](operations.md), [verifying releases](verify-releases.md) and [stability](stability.md).
+- [The guarantee](../GUARANTEE.md) and [known limitations](../KNOWN-LIMITATIONS.md).

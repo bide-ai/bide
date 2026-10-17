@@ -55,6 +55,7 @@ For security and risk reviewers. Read with the guarantee and the known limitatio
 - **[Threat model](trust/threat-model.md)** (evaluator): assets, actors and trust boundaries, and for each threat what bide prevents, what it detects and how, and what it does not address.
 - **[Stability and support](trust/stability.md)** (evaluator): the 0.x versioning policy, how breaking changes are announced, journal and proof format versions, what stays verifiable across versions, and the deprecation process.
 - **[Comparison](trust/comparison.md)** (evaluator): bide, Temporal, LangGraph, and retries with idempotency keys, on side effects across crashes, human approval, audit evidence and operations, including where the others are stronger.
+- **[Control mapping](trust/control-mapping.md)** (risk, procurement): bide's features mapped to SOC 2, ISO/IEC 27001, PCI DSS requirement 10, DORA, the EU AI Act and SR 11-7, with what you must still provide and what is not covered yet. Not a certification.
 - **[Operations guidance](trust/operations.md)** (operator): key custody, backups, clocks, and least-privilege Postgres roles.
 - **[Retention and archiving](guides/retention.md)** (operator, risk): what to keep and how to archive it so it verifies offline years later, rotating and retiring keys, what deletion does to the proofs, and immutable storage.
 - **[Verifying releases](trust/verify-releases.md)** (operator): cosign signatures, SBOMs, SLSA build provenance and reproducible builds.
