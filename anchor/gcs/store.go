@@ -28,8 +28,6 @@ type Store interface {
 	List(ctx context.Context, prefix string, versions bool, fn func(ObjectInfo) bool) error
 }
 
-// Permissions
-//
 // MethodPermissions maps each Store method to the IAM permissions it needs. The permission a call
 // needs is a fact about Cloud Storage (checked against its documentation); the table is the one place
 // this package states it.
