@@ -91,8 +91,9 @@ type Config struct {
 	// retention policy must be at least this long; with ObjectRetention it is also set on each object.
 	Retention time.Duration
 	// ObjectRetention also sets a Locked per-object retention on each head, counted from the time of
-	// the write. It needs a bucket created with object retention enabled; the locked bucket policy is
-	// what is required either way, and this adds a per-head date that can be later than the policy's.
+	// the write. It needs a bucket created with object retention enabled and the writer to hold
+	// storage.objects.setRetention (WriterObjectRetentionRole); the locked bucket policy is what is
+	// required either way, and this adds a per-head date that can be later than the policy's.
 	ObjectRetention bool
 	// LegalHold also places a temporary hold on each head. A hold has no end date and is released
 	// with storage.objects.update, which the writer role does not hold: release it with a separate identity.
