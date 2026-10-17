@@ -49,6 +49,7 @@ type exitFixture struct {
 	absUnknownKey, allow                             string // allow: both policies' digests, one per line
 	notifyTrail, notifyTrailCut, notifyTrailLate     string // notification trails: complete, with its ack deleted, acknowledged past its deadline
 	notifySTH, notifySTHLate                         string // signed heads over the complete and the late trail
+	red                                              redactionFiles
 }
 
 func must[T any](v T, err error) T {
@@ -215,6 +216,7 @@ func newExitFixture(t *testing.T) *exitFixture {
 			f.notifyTrailCut = file("notify-trail-cut.json", x)
 		}
 	}
+	f.red = newRedactionFiles(t, signer, file)
 	f.keys = file("keys.json", map[string]string{"a": f.pub})
 	f.sharedKeys = file("shared-keys.json", map[string]string{"a": f.pub, "b": f.pub})
 	f.identityPub = "01" + strings.Repeat("00", 31)
@@ -400,6 +402,18 @@ func exitCases(f *exitFixture) []exitCase {
 		{name: "verify-evidence: another key", args: []string{"verify-evidence", "-evidence", f.evidence, "-pubkey", f.otherPub}, want: 1},
 
 		// notifications
+		// redactions
+		{name: "redactions: genuine", args: []string{"redactions", "-trail", f.red.trail, "-sth", f.red.sth, "-pubkey", f.pub, "-journal", f.red.journal}, want: 0},
+		{name: "redactions: another key", args: []string{"redactions", "-trail", f.red.trail, "-sth", f.red.sth, "-pubkey", f.otherPub, "-journal", f.red.journal}, want: 1},
+		{name: "redactions: no head, not -unanchored", args: []string{"redactions", "-trail", f.red.trail, "-pubkey", f.pub}, want: 1},
+		{name: "redactions: -unanchored", args: []string{"redactions", "-trail", f.red.trail, "-unanchored", "-journal", f.red.journal}, want: 0},
+		{name: "redactions: a record deleted from the trail", args: []string{"redactions", "-trail", f.red.trailCut, "-sth", f.red.sth, "-pubkey", f.pub}, want: 1},
+		{name: "redactions: tombstones the trail does not name", args: []string{"redactions", "-trail", f.red.trailEmpty, "-unanchored", "-journal", f.red.journal}, want: 1},
+		{name: "redactions: listed records still hold content", args: []string{"redactions", "-trail", f.red.trail, "-sth", f.red.sth, "-pubkey", f.pub, "-journal", f.red.journalWhole}, want: 1},
+		{name: "redactions: nothing to read", args: []string{"redactions", "-unanchored"}, want: 2},
+		{name: "redactions: no -pubkey", args: []string{"redactions", "-trail", f.red.trail}, want: 2},
+		{name: "redactions: missing trail file", args: []string{"redactions", "-trail", f.missing, "-unanchored"}, want: 4},
+		{name: "redactions: a notification trail as the trail", args: []string{"redactions", "-trail", f.notifyTrail, "-unanchored"}, want: 4},
 		{name: "notifications: genuine", args: notif(f.notifyTrail, f.notifySTH), want: 0},
 		{name: "notifications: a record deleted", args: notif(f.notifyTrailCut, f.notifySTH), want: 1},
 		{name: "notifications: acknowledged late", args: notif(f.notifyTrailLate, f.notifySTHLate), want: 1},

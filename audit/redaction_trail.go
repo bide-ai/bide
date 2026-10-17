@@ -189,6 +189,8 @@ type RedactionOptions struct {
 	// such a head the redaction is refused, unless AllowUncovered is set, which is recorded.
 	Heads    []SignedTreeHead
 	Verifier Verifier
+	// Redactor, when set, replaces the records instead of the journal's own store (see agent.RedactUsing).
+	Redactor agent.Redactor
 	// AllowUncovered lets a redaction go ahead with no covering head. It is recorded in the trail.
 	AllowUncovered bool
 }
@@ -237,7 +239,12 @@ func RedactJournal(ctx context.Context, j *agent.Journal, trail EventStore, plan
 	if err := AppendRedactionRecord(ctx, trail, rec); err != nil {
 		return res, fmt.Errorf("%w: %w", ErrRedactNoTrail, err)
 	}
-	res, rerr := agent.Redact(ctx, j, plan, opt.Now)
+	var rerr error
+	if opt.Redactor != nil {
+		res, rerr = agent.RedactUsing(ctx, j, opt.Redactor, plan, opt.Now)
+	} else {
+		res, rerr = agent.Redact(ctx, j, plan, opt.Now)
+	}
 	end := rec
 	end.Phase, end.Records = RedactionEnd, nil
 	end.Redacted, end.Already = len(res.Redacted), len(res.Already)
