@@ -26,6 +26,11 @@ Unreleased changes are in `changes/unreleased/`.
 
 - A node name in double quotes in an `assert` line is now read exactly as written: the assertion grammar has no escapes. Before, `plan` read a quoted name with `strconv.Unquote`, so a name such as `"caf\u00e9"` or `"a\tb"` was unescaped to the character, and a name with a backslash and a space (`my\ node`, `x\n y`) in quotes was read as an undeclared node or as a name with a newline in it; `RenameAssertion` and `CompareAssertions` read it the same way. A quoted name is now read raw by the check, by `RenameAssertion` and `CompareAssertions`, and by the flow editor, which writes the same lines; a bare name was already raw. **Upgrade note:** an assertion that relied on an escape inside the quotes now names a different node; write the character itself (`"café"`). `bide check` warns on every quoted name that contains a backslash sequence the old reading would have changed, so no assertion silently starts naming another node (a warning, not an error, unless `-strict`). A name that contains a double quote still cannot be written in an assertion.
 
+### Fixed
+
+- `TestNotifier_AnAnchorOutageNeverFailsADelivery` failed on Windows because it read the store's `OnError` reports without waiting for the background publisher, and because a failed catch-up from `FlushNotifications` can open the anchor breaker first, in which case the outage is reported to the notifier's error handler and the publisher is skipped. The test now flushes the store and accepts the first report on either channel, a new test pins the breaker ordering, and the `AuditedEventStore.Flush` godoc says that `Agent.FlushNotifications` does not wait for the publisher. No production behavior changed.
+- Counts in the `bide edit` page and the `bide view` pages now agree with their nouns: the config verdict reads "1 assertion holds" (not "1 assertion hold"), and the key numbers, the graph label, the audit proof summary, the gate status and the diff error note use the singular for a count of one ("1 node", "1 approval gate", "1 approver", "1 error"). A test pins both forms of each string.
+
 ## [0.19.0] - 2026-10-16
 
 ### Added

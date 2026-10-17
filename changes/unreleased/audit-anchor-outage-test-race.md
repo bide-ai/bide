@@ -1,3 +1,0 @@
-Section: Fixed
-
-`TestNotifier_AnAnchorOutageNeverFailsADelivery` failed on Windows because it read the store's `OnError` reports without waiting for the background publisher, and because a failed catch-up from `FlushNotifications` can open the anchor breaker first, in which case the outage is reported to the notifier's error handler and the publisher is skipped. The test now flushes the store and accepts the first report on either channel, a new test pins the breaker ordering, and the `AuditedEventStore.Flush` godoc says that `Agent.FlushNotifications` does not wait for the publisher. No production behavior changed.
