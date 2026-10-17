@@ -142,6 +142,34 @@ reachable, which publishes a head over the whole journal if no published head co
 a smaller head can reach the anchor after a larger one; both are valid, so monitors compare a run's
 heads by size, not by arrival.
 
+### Bounding how often heads are published: `WithMinInterval`
+
+By default every journal write publishes a head. For an anchor that keeps each head for years (an S3
+Object Lock bucket, a timestamping service that bills per token) that is one retained object per write.
+`AuditedStore.WithMinInterval(d)` and `AuditedEventStore.WithMinInterval(d)` publish at most one head per
+run or trail per `d`: growth inside the interval is held back and published as one head that covers all
+of it, by a timer at the end of the interval, not only by a later write.
+
+- **Immediate, always:** a run's or trail's first head, a run's end (the write of `run:complete` or
+  `run:aborted`), `Reanchor`, `Flush` (which also publishes everything held back, so call it before the
+  process exits), `ReanchorRuns`, and for trails `ReanchorPending` and `AnchorTrails` (the notifier's sweep
+  and recovery pass). The cooldown after a failed publish still applies to a trail.
+- **The window, while the process lives:** a record is covered by a published head at most `d` (plus one
+  publish) after it was written. It is not "one head per `d`" in the other direction: there is never a
+  later gap, because the timer publishes what no later write does. A failed publish on the timer goes to
+  `OnError`, and the run is not left looking held back: the next write after the interval, `Reanchor` or
+  `Flush` publishes it, as for any failed publish.
+- **The window after a crash:** a process that dies loses its timers, so what it held back stays
+  unanchored **until the next start or recovery pass**, not for `d`. `AuditedStore.ReanchorRuns(ctx,
+  filter)` is that pass for journals: call it at start (with `agent.RunFilter{ExcludeHolding: ...}` set to the
+  end markers to skip finished runs), or rely on `agent.Recover` for the runs it drives (it calls
+  `Reanchor`). For notification and event trails the notifier's sweep and recovery pass (`AnchorTrails`)
+  already is it. Between the crash and that pass the journal is intact and the records are simply not under a
+  head; a monitor sees a latest head older than the journal.
+- Heads of one run still only grow, and `d` of zero (the default) or less turns it off.
+  It trades the density of heads for the cost of keeping them: choose `d` as the longest you accept
+  records being unanchored, given what it costs to hold a head.
+
 `AuditedStore` implements `Unwrap() Store`, so it keeps every optional capability of the store
 it wraps and adds none: `agent.Lease`, `agent.Recover` and `agent.RecoverLoop` find the inner
 store's `Leaser` and `Lister` through it (see `agent.Capability`). Leases are not journaled, so
@@ -1337,7 +1365,7 @@ Candidate extensions if a use case needs them, in rough priority:
 - **`Anchor` adapters** against real external logs (Trillian/CT, a public ledger, a
   notary/timestamping service), and **witness cosigning** so a shared anchor's forks are
   detectable (only relevant if the anchor is a service you do not control).
-- **Batched/periodic anchoring** rather than per-step, for high-throughput runs.
+- ~~Batched/periodic anchoring~~ **Done**: `WithMinInterval` on `AuditedStore` and `AuditedEventStore` ([above](#bounding-how-often-heads-are-published-withmininterval)).
 - **Journal compaction with proof continuity** (design note: [compaction](../design/compaction.md)): seal
   a closed prefix into a signed checkpoint plus a deterministic state snapshot, carry the previous
   root forward as the next segment's first leaf, and drop the sealed raw records. Proofs survive the

@@ -163,9 +163,9 @@ func (a *AuditedEventStore) WithCooldown(d time.Duration) *AuditedEventStore {
 // What stays immediate: a trail's first head, Reanchor, ReanchorPending, AnchorTrails (the
 // notifier's sweep and recovery pass) and Flush. What is bounded: while this process lives, a record
 // is covered by a published head at most d (plus one publish) after it was appended, because held-back
-// growth is published by a timer, not only by a later append. A process that dies loses the timer:
-// records appended in the last d stay unanchored until another process anchors the trail, so d is also
-// how much a crash can leave uncovered. The cooldown after a failed publish still applies.
+// growth is published by a timer, not only by a later append. A process that dies loses the timer: the
+// records it held back stay unanchored until the next start or recovery pass anchors the trail
+// (AnchorTrails, the notifier's sweep and recovery pass, or Reanchor), not for d. The cooldown after a failed publish still applies.
 // It returns the store; configure it before the first write.
 func (a *AuditedEventStore) WithMinInterval(d time.Duration) *AuditedEventStore {
 	a.minInterval = max(d, 0)

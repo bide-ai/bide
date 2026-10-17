@@ -93,9 +93,9 @@ func (a *AuditedStore) OnError(fn func(runID string, err error)) *AuditedStore {
 // What stays immediate: a run's first head, the write of its end marker (run:complete or
 // run:aborted), Reanchor, and Flush. What is bounded: while this process lives, a record is covered
 // by a published head at most d (plus one publish) after it was written, because held-back growth is
-// published by a timer, not only by a later write. A process that dies loses the timer: records
-// written in the last d, and not yet anchored, stay unanchored until another process anchors the run
-// (Reanchor), so d is also how much a crash can leave uncovered. Heads of one run still only grow.
+// published by a timer, not only by a later write. A process that dies loses the timer: the
+// records it held back stay unanchored until the next start or recovery pass anchors them
+// (ReanchorRuns, which a deployment calls at start), not for d. Heads of one run still only grow.
 // Call Flush before the process exits. It returns the store; configure it before the first write.
 func (a *AuditedStore) WithMinInterval(d time.Duration) *AuditedStore {
 	a.minInterval = max(d, 0)
@@ -116,6 +116,32 @@ func (a *AuditedStore) Flush(ctx context.Context) error {
 	var first error
 	for _, r := range runs {
 		if err := a.anchorIfGrown(ctx, r, true); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
+// ReanchorRuns is the restart path for WithMinInterval: it anchors now every run f admits whose journal
+// this store has not anchored, which after a start is every run, since the store remembers nothing of
+// an earlier process. Growth held back by a process that died (its timer died with it) stays
+// unanchored until this runs, so call it at start, or in the recovery pass, with a filter that skips
+// the runs that ended (agent.RunFilter{ExcludeHolding: ...} with the end markers: the write of a
+// run's end anchors at once). It publishes one head per run it lists, the current one, which a
+// monitor reads as the same size as an earlier head, not a change. It needs a store that lists runs
+// (agent.Lister, found through Unwrap) and returns an error wrapping agent.ErrConfig without one. It
+// tries every run, and returns the first error.
+func (a *AuditedStore) ReanchorRuns(ctx context.Context, f agent.RunFilter) error {
+	l, ok := agent.Capability[agent.Lister](a.inner)
+	if !ok {
+		return fmt.Errorf("audit: ReanchorRuns: the store cannot list runs (it is not an agent.Lister): %w", agent.ErrConfig)
+	}
+	var first error
+	for runID, err := range l.Runs(ctx, f) {
+		if err == nil {
+			err = a.anchorIfGrown(ctx, runID, true)
+		}
+		if err != nil && first == nil {
 			first = err
 		}
 	}

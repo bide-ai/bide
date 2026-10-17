@@ -263,6 +263,9 @@ func TestMinInterval_ATimerFailureIsReportedAndTheNextWriteRecovers(t *testing.T
 	if len(r.errs) != 1 {
 		t.Fatalf("errors = %v, want the timer's failure reported once", r.errs)
 	}
+	if p := r.store.Pending(); len(p) != 0 {
+		t.Fatalf("Pending = %v after the timer fired: a failed timer must leave the run disarmed, not looking held back", p)
+	}
 	r.anchor.mu.Lock()
 	r.anchor.fail = nil
 	r.anchor.mu.Unlock()
@@ -404,5 +407,123 @@ func TestMinInterval_EventTrailFlushReanchorAndSweepAreImmediate(t *testing.T) {
 				t.Errorf("%d heads: a disarmed timer published again", n)
 			}
 		})
+	}
+}
+
+func TestMinInterval_EventTrailATimerFailureLeavesItDisarmed(t *testing.T) {
+	r := newEventRig(t, 10*time.Second)
+	r.appendN(t, 1)
+	r.settle(t, false)
+	r.store.Flush(context.Background())
+	r.appendN(t, 2)
+	r.settle(t, true)
+	r.anchor.mu.Lock()
+	r.anchor.fail = errors.New("anchor down")
+	r.anchor.mu.Unlock()
+	r.clk.Advance(10 * time.Second)
+	select {
+	case <-r.errs:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the timer's failure was not reported")
+	}
+	if h := r.store.HeldBack(); len(h) != 0 {
+		t.Fatalf("HeldBack = %v after the timer fired", h)
+	}
+	if u := r.store.Unanchored(); len(u) != 1 {
+		t.Fatalf("Unanchored = %v, want the trail remembered for a retry", u)
+	}
+}
+
+// A crash between a held-back write and its timer: the timer is gone, but the restart path anchors
+// the run, so the records are not left unanchored for good.
+func TestMinInterval_AfterACrashTheRestartPathAnchorsHeldBackRuns(t *testing.T) {
+	ctx := context.Background()
+	_, priv, _ := ed25519.GenerateKey(nil)
+	inner := agent.NewMemStore()
+	clk := newManualClock()
+	anchorA := &timedAnchor{clk: clk}
+	a, err := audit.NewAuditedStore(inner, edS(priv), anchorA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.WithMinInterval(time.Hour).SetClock(clk.Now, clk.After)
+	j := agenttest.MustJournal(a)
+	for _, n := range []string{"a", "b", "c"} {
+		if _, err := journaltest.Do(ctx, j, "run-1", n, func(context.Context) (agent.Record, error) { return agent.Record{Kind: agent.StepValue}, nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recs, _ := agenttest.MustJournal(inner).History(ctx, "run-1")
+	if got := anchorA.sizes(); got[len(got)-1] == len(recs) {
+		t.Fatalf("heads %v already cover all %d records: nothing was held back", got, len(recs))
+	}
+	// The process dies: its timer never fires, and no Flush ran. A new process opens the same store.
+	anchorB := &timedAnchor{clk: clk}
+	b, err := audit.NewAuditedStore(inner, edS(priv), anchorB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.WithMinInterval(time.Hour).SetClock(clk.Now, clk.After)
+	clk.Advance(2 * time.Hour) // the dead process's timer would have fired; nothing does
+	if len(anchorB.sizes()) != 0 {
+		t.Fatal("a new store anchored before the restart path ran")
+	}
+	if err := b.ReanchorRuns(ctx, agent.RunFilter{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := anchorB.sizes(); len(got) != 1 || got[0] != len(recs) {
+		t.Fatalf("heads after the restart path = %v, want one covering all %d records", got, len(recs))
+	}
+	// A store that cannot list runs says so.
+	c, err := audit.NewAuditedStore(onlyStore{inner}, edS(priv), anchorB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.ReanchorRuns(ctx, agent.RunFilter{}); !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("ReanchorRuns without a Lister = %v, want ErrConfig", err)
+	}
+}
+
+// onlyStore hides a store's optional capabilities.
+type onlyStore struct{ agent.Store }
+
+// A crash on the event store: the notifier's recovery pass (AnchorTrails) anchors the trail a dead
+// process held back.
+func TestMinInterval_AfterACrashAnchorTrailsAnchorsHeldBackTrails(t *testing.T) {
+	ctx := context.Background()
+	_, priv, _ := ed25519.GenerateKey(nil)
+	inner := audit.NewMemEventStore()
+	clk := newManualClock()
+	anchorA := &timedAnchor{clk: clk}
+	sa, err := audit.NewAuditedEventStore(inner, edS(priv), anchorA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sa.WithMinInterval(time.Hour).WithCooldown(0).SetClock(clk.Now, clk.After)
+	trailA := audit.NewNotifyTrail(sa)
+	for i := range 3 {
+		if err := trailA.Append(ctx, "notify:t", i, agent.NotifyRecord{Kind: agent.NotifyObserved, Key: "k", At: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			sa.Flush(ctx)
+		}
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(sa.HeldBack()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	anchorB := &timedAnchor{clk: clk}
+	sb, err := audit.NewAuditedEventStore(inner, edS(priv), anchorB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sb.WithMinInterval(time.Hour).WithCooldown(0).SetClock(clk.Now, clk.After)
+	clk.Advance(2 * time.Hour) // the dead process's timer would have fired
+	if err := audit.NewNotifyTrail(sb).AnchorTrails(ctx, []string{"notify:t"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := anchorB.sizes(); len(got) != 1 || got[0] != 3 {
+		t.Fatalf("heads after the recovery pass = %v, want one of size 3", got)
 	}
 }
