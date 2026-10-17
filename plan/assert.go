@@ -63,6 +63,8 @@ func (a AssertionResult) Violated() bool { return !a.Holds && !a.Invalid && !a.U
 // quotes. Each is decided by breadth-first reachability on the declared graph (every edge, a join's
 // inputs, and every Switch arm, loop-back arms included), so a loop is visited once and never
 // enumerated, and a counterexample is a shortest path.
+var quotedToken = regexp.MustCompile(`"[^"]*"`)
+
 var (
 	assertGate     = regexp.MustCompile(`^every path to (\S+|"[^"]*") passes approval >= (\d+)(?: of (\d+))?( excluding the requester)?$`)
 	assertTerminal = regexp.MustCompile(`^every path to a terminal passes (\S+|"[^"]*")$`)
@@ -161,6 +163,14 @@ func (r *ConfigReport) assertions(lines []string) {
 	name := assertName
 	for i, line := range lines {
 		text := strings.Join(strings.Fields(line), " ")
+		// Quoted names were once read with strconv.Unquote and are read as written now. A name whose
+		// old reading differs from the new (an escape such as \t or \u00e9 inside the quotes) would
+		// silently name a different node than before, so it is warned about, whatever it now names.
+		for _, tok := range quotedToken.FindAllString(text, -1) {
+			if u, err := strconv.Unquote(tok); err == nil && u != tok[1:len(tok)-1] {
+				r.Problems = append(r.Problems, ConfigProblem{Severity: "warning", Message: fmt.Sprintf("assert[%d] %q: the quoted name %s contains a backslash sequence; a quoted name is read exactly as written (no escapes), as a name with %q would have been read before: write the character itself", i, text, tok, u)})
+			}
+		}
 		res := AssertionResult{Text: text}
 		invalid := func(format string, args ...any) {
 			res.Invalid, res.Message = true, fmt.Sprintf(format, args...)

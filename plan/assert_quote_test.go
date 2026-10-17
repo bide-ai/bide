@@ -2,6 +2,7 @@ package plan
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -52,5 +53,43 @@ func TestAssertQuotedNamesAreRaw(t *testing.T) {
 	}
 	if CompareAssertions(`"x\n y" reachable`, `"x<LF> y" reachable`) == "equal" {
 		t.Error("a name with an escape is a different name from one with a newline")
+	}
+}
+
+// A quoted name whose old reading (strconv.Unquote) differs from the new (as written) is warned about,
+// so no existing assertion silently starts naming a different node; a name the old reading left alone
+// (no escape it could read) is not.
+func TestAssertQuotedEscapeWarning(t *testing.T) {
+	for line, warn := range map[string]bool{
+		`"a\tb" reachable`:                           true,
+		`"caf\u00e9" reachable`:                      true,
+		`every path to "x\x41" passes approval >= 1`: true,
+		`"my\ node" reachable`:                       false, // the old reading failed: it already meant the raw name
+		`"a b" reachable`:                            false,
+		`plain reachable`:                            false,
+		`"back\\slash" reachable`:                    true, // the old reading was one backslash
+	} {
+		cfg := map[string]any{"version": 1, "flow": "f", "entry": "n",
+			"nodes":  []any{map[string]any{"name": "n", "block": "b", "safety": "readonly"}},
+			"wiring": []any{}, "assert": []string{line}}
+		data, _ := json.Marshal(cfg)
+		var warned bool
+		for _, p := range InspectConfig(data, nil).Problems {
+			if p.Severity == "warning" && strings.Contains(p.Message, "backslash sequence") {
+				warned = true
+			}
+		}
+		if warned != warn {
+			t.Errorf("%q: warned %v, want %v", line, warned, warn)
+		}
+	}
+	// A warning does not fail the check (without -strict); the assertion is still decided as written.
+	cfg := map[string]any{"version": 1, "flow": "f", "entry": `a\tb`,
+		"nodes":  []any{map[string]any{"name": `a\tb`, "block": "b", "safety": "readonly"}},
+		"wiring": []any{}, "assert": []string{`"a\tb" reachable`}}
+	data, _ := json.Marshal(cfg)
+	r := InspectConfig(data, nil)
+	if r.Errors() {
+		t.Errorf("a warning is an error: %+v", r.Problems)
 	}
 }
