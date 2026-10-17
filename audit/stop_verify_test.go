@@ -271,3 +271,57 @@ func TestVerifyStops_HeadOfAnotherTrailAndAMissingRoot(t *testing.T) {
 		t.Fatalf("a trusted root the trail does not hold: %v %+v", err, rep)
 	}
 }
+
+// A leaf that is not exactly the encoding the control writes is refused, and reported as a problem, never
+// dropped: a repeated or case-variant member, an unknown kind, a short salt, a record in another spelling.
+func TestVerifyStops_StrictLeaves(t *testing.T) {
+	r := newStopRig(t)
+	r.set("refund", "ops1")
+	good := r.export()
+	last := len(good.Leaves) - 1
+	for name, edit := range map[string][2]string{
+		"repeated member":   {`"event":{`, `"event":{"by":"x",`},
+		"case-variant":      {`"event":{`, `"event":{"By":"x",`},
+		"unknown kind":      {`"kind":"stop_set"`, `"kind":"stop_zzz"`},
+		"short salt":        {`"salt":"`, `"salt":"AAAA`},
+		"another spelling":  {`"event":{`, `"event":{ `},
+		"another leaf kind": {`"kind":"stop_set"`, `"kind":"turn_started"`},
+	} {
+		x := good
+		x.Leaves = slices.Clone(good.Leaves)
+		leaf := string(x.Leaves[last])
+		if !strings.Contains(leaf, edit[0]) {
+			t.Fatalf("%s: the leaf has no %q: %s", name, edit[0], leaf)
+		}
+		x.Leaves[last] = []byte(strings.Replace(leaf, edit[0], edit[1], 1))
+		rep, err := audit.VerifyStops(r.input(audit.StopVerifyInput{Trail: x, Unanchored: true}))
+		if !errors.Is(err, audit.ErrNotVerified) || !strings.Contains(problems(rep), "record") {
+			t.Errorf("%s: %v %s", name, err, problems(rep))
+		}
+	}
+	// A record whose kind the leaf names truthfully but that is not well formed (a set with no scope).
+	bad := agent.StopRecord{Format: agent.StopFormat, Kind: "set", Mode: agent.StopAudited, Compensation: agent.CompensationAllow, At: time.Now().UTC().Format(time.RFC3339Nano), By: "ops1", Alg: audit.AlgEd25519, Signature: "00"}
+	ev := audit.NewMemEventStore()
+	if err := audit.NewStopTrail(ev).Append(context.Background(), agent.StopTrailName, 0, bad); err != nil {
+		t.Fatal(err)
+	}
+	x, _ := audit.ExportStopTrail(context.Background(), ev, agent.StopTrailName)
+	if rep, err := audit.VerifyStops(r.input(audit.StopVerifyInput{Trail: x, Unanchored: true})); !errors.Is(err, audit.ErrNotVerified) || !strings.Contains(problems(rep), "not a valid stop record") {
+		t.Errorf("a malformed record: %v %s", err, problems(rep))
+	}
+}
+
+// A flood of records in the control run is a finding, not a hang.
+func TestVerifyStops_ControlRunFloodIsAFinding(t *testing.T) {
+	r := newStopRig(t)
+	r.set("refund", "ops1")
+	flood := make([]agent.StopRecord, audit.MaxStopRecords+1)
+	for i := range flood {
+		flood[i] = agent.StopRecord{Format: agent.StopFormat, Kind: "lift", Mode: agent.StopBasic, StopID: "x", SetDigest: "y", At: time.Now().UTC().Format(time.RFC3339Nano), By: "eve", Reason: strings.Repeat("a", i%50)}
+	}
+	start := time.Now()
+	rep, err := audit.VerifyStops(r.input(audit.StopVerifyInput{Unanchored: true, Control: flood, HaveControl: true}))
+	if !errors.Is(err, audit.ErrNotVerified) || !strings.Contains(problems(rep), "the control run holds") || time.Since(start) > 10*time.Second {
+		t.Fatalf("%v %s (%v)", err, problems(rep), time.Since(start))
+	}
+}

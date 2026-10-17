@@ -99,7 +99,7 @@ func (c *cli) stops(args []string) {
 		c.note(unusable(err))
 		return
 	}
-	c.stopReport(rep)
+	c.stopReport(rep, *maxTail)
 	if b, merr := json.Marshal(rep); merr == nil {
 		c.artifact = b
 	}
@@ -154,7 +154,7 @@ func (c *cli) readStopStore(in *audit.StopVerifyInput, db, pgEnv string) error {
 	return nil
 }
 
-func (c *cli) stopReport(rep audit.StopReport) {
+func (c *cli) stopReport(rep audit.StopReport, maxTail time.Duration) {
 	switch {
 	case rep.Anchored:
 		line := fmt.Sprintf("INFO  stop trail: %d records; signed head over the first %d (signed %s)", rep.Records, rep.HeadSize, rep.HeadTime.Format(time.RFC3339))
@@ -168,6 +168,9 @@ func (c *cli) stopReport(rep audit.StopReport) {
 	default:
 		c.printf("INFO  stop trail: %d records; UNANCHORED, nothing attests that it is complete or unaltered\n", rep.Records)
 	}
+	if rep.Anchored && rep.Tail > 0 && maxTail == 0 {
+		c.printf("WARN  %d record(s) after the newest signed head are not attested, and no -max-unattested was given: whoever can write the trail's store could have deleted the newest records from an exported trail unseen (a comparison with the control run, -db or -postgres-env, would find it)\n", rep.Tail)
+	}
 	if rep.PolicyDigest != "" {
 		c.printf("INFO  policy in force %.12s after %d transition(s)\n", rep.PolicyDigest, rep.PolicySeq)
 	}
@@ -177,7 +180,7 @@ func (c *cli) stopReport(rep audit.StopReport) {
 		if s.Lifted {
 			state = "lifted"
 		}
-		line := fmt.Sprintf("INFO  stop %.12s: %s, set by %s at %s, %s", s.ID, cleanText(s.Scope), cleanText(s.By), s.At, state)
+		line := fmt.Sprintf("INFO  stop %.12s: %s, set by %s at %s, %s", s.ID, cleanText(s.Scope), cleanText(s.By), cleanText(s.At), state)
 		if !s.Lifted && s.LiftsNeeded > 0 {
 			line += fmt.Sprintf(" (%d of %d lifts)", s.LiftsHeld, s.LiftsNeeded)
 		}
@@ -187,10 +190,10 @@ func (c *cli) stopReport(rep audit.StopReport) {
 		c.println(line)
 	}
 	for _, r := range rep.StoreOnly {
-		c.printf("FAIL  in the control run, not in the trail: %s by %s at %s\n", r.Kind, cleanText(r.By), r.At)
+		c.printf("FAIL  in the control run, not in the trail: %s by %s at %s\n", cleanText(r.Kind), cleanText(r.By), cleanText(r.At))
 	}
 	for _, r := range rep.TrailOnly {
-		c.printf("FAIL  in the trail, not in the control run: %s by %s at %s\n", r.Kind, cleanText(r.By), r.At)
+		c.printf("FAIL  in the trail, not in the control run: %s by %s at %s\n", cleanText(r.Kind), cleanText(r.By), cleanText(r.At))
 	}
 	for _, p := range rep.Problems {
 		c.printf("FAIL  %s\n", cleanText(p))
