@@ -157,6 +157,8 @@ func selfCheck(der, spki []byte, n Names) error {
 	if err := req.CheckSignature(); err != nil {
 		return fmt.Errorf("the key's signature does not verify under its public key (a faulty token or KMS, or a key replaced behind the reference): %w", err)
 	}
+	// Defence in depth: spki is what the request was built with, so this catches an encoding fault; the
+	// signature check above is what catches a signature by another key.
 	if !slices.Equal(req.RawSubjectPublicKeyInfo, spki) {
 		return errors.New("the request's public key is not the key's")
 	}
@@ -210,16 +212,14 @@ func extensions(n Names) ([]extension, error) {
 	}
 	if len(n.EKU) > 0 {
 		for i, o := range n.EKU {
-			if len(o) < 3 {
-				return nil, fmt.Errorf("extended key usage %d is not an object identifier", i+1)
-			}
 			if slices.IndexFunc(n.EKU[:i], o.Equal) >= 0 {
 				return nil, fmt.Errorf("extended key usage %s is asked for twice", o)
 			}
 		}
 		v, err := asn1.Marshal(n.EKU)
 		if err != nil {
-			return nil, fmt.Errorf("encode the extended key usages: %w", err)
+			// An empty or one-arc OID does not encode.
+			return nil, fmt.Errorf("an extended key usage is not an object identifier: %w", err)
 		}
 		exts = append(exts, extension{oidEKU, v})
 	}
