@@ -149,6 +149,17 @@ func TestCSROverwrite(t *testing.T) {
 		t.Fatalf("-force: %d\n%s", r.code, r.all())
 	}
 	request(t, mustRead(t, out))
+	// A replaced file has the mode a new file gets (a temporary file is created 0600, a request is public).
+	fresh := filepath.Join(dir, "fresh.pem")
+	if r := hsm(t, kms, "", "csr", "-key", "awskms:"+kmsP256, "-out", fresh); r.code != 0 {
+		t.Fatalf("%d\n%s", r.code, r.all())
+	}
+	fi, _ := os.Stat(fresh)
+	fo, _ := os.Stat(out)
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != fo.Mode().Perm() {
+		t.Fatalf("a replaced file has mode %v, a new one %v", fo.Mode().Perm(), fi.Mode().Perm())
+	}
+	os.Remove(fresh)
 	if ents, _ := os.ReadDir(dir); len(ents) != 1 {
 		t.Fatalf("-force left %d files in the directory, want only the request", len(ents))
 	}
@@ -254,9 +265,15 @@ func TestCSRFromPolicy(t *testing.T) {
 			if got := ekuOf(t, req); len(got) != 1 || got[0] != testca.EKU.String() {
 				t.Fatalf("EKU = %v, want %v", got, testca.EKU)
 			}
-			for _, w := range []string{"the CA must issue", want, testca.EKU.String(), testca.PolicyOID.String(), "8h"} {
-				if !strings.Contains(r.errOut, w) {
-					t.Errorf("stderr does not say %q:\n%s", w, r.errOut)
+			var line string
+			for _, l := range strings.Split(r.errOut, "\n") {
+				if strings.HasPrefix(l, "the CA must issue") {
+					line = l
+				}
+			}
+			for _, w := range []string{want, testca.EKU.String(), testca.PolicyOID.String(), "8h"} {
+				if !strings.Contains(line, w) {
+					t.Errorf("the CA line does not say %q:\n%s", w, r.errOut)
 				}
 			}
 			if strings.Contains(r.out, "the CA must issue") {
