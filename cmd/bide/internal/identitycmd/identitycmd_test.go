@@ -29,11 +29,14 @@ type env struct {
 	routes         map[string][]byte
 	policy, params string
 	cache          string
+	// base is fixed for the env: a CRL republished under the same number must carry the same thisUpdate,
+	// or it is a different TBSCertList and the refresher rightly reports the number as equivocation.
+	base time.Time
 }
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	e := &env{t: t, dir: t.TempDir(), routes: map[string][]byte{}}
+	e := &env{t: t, dir: t.TempDir(), routes: map[string][]byte{}, base: time.Now()}
 	e.root = testca.NewRoot(t, "root", testca.Opts{})
 	e.inter = e.root.NewIntermediate(t, "inter", testca.Opts{})
 	rk, ik := audit.SPKIHashOf(e.root.Cert), audit.SPKIHashOf(e.inter.Cert)
@@ -83,7 +86,7 @@ func newEnv(t *testing.T) *env {
 }
 
 func (e *env) publish(rootNum, interNum int64) {
-	now := time.Now()
+	now := e.base
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.routes["/root.crl"] = e.root.NewCRL(e.t, testca.CRLOpts{Number: rootNum, ThisUpdate: now.Add(-time.Hour), NextUpdate: now.Add(48 * time.Hour)})
@@ -211,5 +214,22 @@ func TestResetHighWaterAndAck(t *testing.T) {
 	}
 	if _, out, _ := e.run(append([]string{"fetch-crl", "-once"}, e.common()...)...); strings.Contains(out, "unacknowledged high-water reset") {
 		t.Fatal("an acknowledged reset is still reported")
+	}
+}
+
+// A CRL republished under the same number with another thisUpdate is another TBSCertList: the refresher
+// reports equivocation, and the failure names the reason. This is the deterministic form of the flake
+// the shared base time prevents (two publishes straddling a second boundary).
+func TestRepublishedNumberWithAnotherThisUpdateIsReportedAsEquivocation(t *testing.T) {
+	e := newEnv(t)
+	e.publish(1, 1)
+	if st, _, errs := e.run(append([]string{"fetch-crl", "-once"}, e.common()...)...); st != 0 {
+		t.Fatalf("%d %s", st, errs)
+	}
+	e.base = e.base.Add(time.Second)
+	e.publish(1, 1)
+	st, _, errs := e.run(append([]string{"fetch-crl", "-once"}, e.common()...)...)
+	if st != 1 || !strings.Contains(errs, "equivocating") || strings.Contains(errs, ": ok)") {
+		t.Fatalf("status %d: %s", st, errs)
 	}
 }

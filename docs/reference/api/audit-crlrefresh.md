@@ -259,7 +259,8 @@ ResetRequest is an operator's request to reset an issuer's high-water mark.
 
 ```go
 type URLOutcome struct {
-	URL    string `json:"url"`
+	URL string `json:"url"`
+
 	Kind   string `json:"kind"`
 	Status int    `json:"status,omitempty"`
 	Detail string `json:"detail,omitempty"`

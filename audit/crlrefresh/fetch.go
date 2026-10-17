@@ -56,11 +56,20 @@ const (
 	outHTTP        = "http-status"
 	outError       = "error"
 	outNotCRL      = "not-a-crl"
+	// outRefused marks a URL whose CRL was fetched but not accepted; Detail says why.
+	outRefused = "refused"
+	// outStale marks a URL whose CRL was fetched, archived and added, but was already past its nextUpdate,
+	// so it does not count as fresh.
+	outStale = "stale"
 )
 
 // URLOutcome is the result of asking one URL in one attempt, for the event.
 type URLOutcome struct {
-	URL    string `json:"url"` // without query and fragment
+	URL string `json:"url"` // without query and fragment
+	// Kind is "ok" (fetched; reported alone only when the attempt succeeded), "not-modified", "oversize",
+	// "timeout", "redirect-refused", "http-status", "error", "not-a-crl", "refused" (fetched but not accepted:
+	// a rollback, conflict, set-aside, future-dated, unverifiable or wrong-kind CRL; Detail says why) or
+	// "stale" (fetched, archived and added, but already past its nextUpdate).
 	Kind   string `json:"kind"`
 	Status int    `json:"status,omitempty"`
 	Detail string `json:"detail,omitempty"`

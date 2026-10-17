@@ -445,7 +445,9 @@ without its query or fragment, and no response body; `OnAlarm` receives alarm ch
 each issuer the last attempt and last success, the newest number and dates, the age, the next expected CRL, the
 failure count, the archive backlog, `Paired`, `Alarm` and `Critical`, and a `Loop` time that stops moving if a
 loop dies. A server's `Date` header that differs from your clock by more than five minutes is reported as a
-warning only. Start-up events print the effective URLs and each issuer's limit, alarm age and margin.
+warning only. When an attempt obtains no valid CRL, the error and `LastError` list each URL with its outcome; a URL whose CRL
+was fetched but not accepted (a rollback, a conflict, a future-dated or unverifiable CRL) shows `refused` and the reason,
+not `ok`; a CRL that was added but arrived already past its nextUpdate shows `stale`. Start-up events print the effective URLs and each issuer's limit, alarm age and margin.
 
 **The command.** `bide identity fetch-crl -policy policy.json -params ca.json -cache dir` is the same code for
 cron (`-once` exits 1 unless every issuer holds a fresh CRL) or as a daemon, printing one JSON line per event
