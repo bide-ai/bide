@@ -21,7 +21,7 @@ Clause numbers are cited so you can find the control in your own copy of the fra
 | Retention | What to keep, how to archive it so it verifies years later, what deletion does to the proofs | [Retention guide](../guides/retention.md), [operations](operations.md) |
 | Identity pre-flight | `bide identity check` says whether a certificate-bound setup will work, by running the gate's own code | [Certificate approvers, pre-flight](../guides/certificate-approvers.md#pre-flight-bide-identity-check) |
 | Model identity and evaluation | Each journaled model turn records the model, finish reason and digests of the prompt and tool set; `eval` measures a model's decisions statistically | [Threat model](threat-model.md#a-compromised-or-misbehaving-model-or-agent), [`eval`](../../eval/eval.go) |
-| Redaction | Erasing journal records of a finished run into tombstones that keep each record's position and leaf hash, through library calls (`agent.PlanRedaction`, `agent.Redact`, and `audit.RedactJournal`, which records each erasure in a signed trail that `bide audit redactions` verifies) on SQLite, Postgres and `MemStore`. No command yet; the final result, session transcripts, the event store, exports, backups and the model provider's copy are not reached | [Erasing personal data](../guides/retention.md#erasing-personal-data), [Known limitations, audit and proofs](../KNOWN-LIMITATIONS.md#audit-and-proofs) |
+| Redaction | Erasing journal records of a finished run into tombstones that keep each record's position and leaf hash, through `bide journal redact` (a dry-run plan, then an erasure recorded in a signed trail that `bide audit redactions` verifies; SQLite's log is truncated, Postgres's `VACUUM` is the operator's) on SQLite and Postgres, or the library calls behind it. The final result, session transcripts, the event store, exports, backups and the model provider's copy are not reached | [Erasing personal data](../guides/retention.md#erasing-personal-data), [Known limitations, audit and proofs](../KNOWN-LIMITATIONS.md#audit-and-proofs) |
 
 ## SOC 2 (Trust Services Criteria)
 
@@ -110,7 +110,7 @@ A runtime does not validate models. It can make the evidence for inventory, moni
 | Kill switch to stop agents | In progress; not on main | [Roadmap](../ROADMAP.md) |
 | Independent time: RFC 3161 is not yet used by any gate, endpoint or command | Verifier exists; wiring left | [Roadmap](../ROADMAP.md#bank-readiness), [known limitations](../KNOWN-LIMITATIONS.md#audit-and-proofs) |
 | External security review | Not done; no third party has assessed bide | [Threat model](threat-model.md#what-bide-does-not-address-in-one-list) |
-| A command for erasure, legal hold, a second person's signed authorization of an erasure, erasure of final results, session transcripts and event-store copies | Designed, not built ([design](../design/journal-redaction.md)) | [Retention guide](../guides/retention.md#erasing-personal-data) |
+| Legal hold, a second person's signed authorization of an erasure, erasure of final results, session transcripts and event-store copies | Designed, not built ([design](../design/journal-redaction.md)) | [Retention guide](../guides/retention.md#erasing-personal-data) |
 | Hardware HSM trial | Left | [Roadmap](../ROADMAP.md#bank-readiness) |
 | Keys issued through an institution's SSO | Left | [Roadmap](../ROADMAP.md#bank-readiness) |
 | Passkey (WebAuthn) approvals | Left | [Roadmap](../ROADMAP.md#notifications-and-approvals) |

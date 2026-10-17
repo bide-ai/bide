@@ -715,6 +715,28 @@ ClockOption is a clock that applies to an agent (Option), to one run (RunOption)
 
 - `func WithClock(now func() time.Time) ClockOption`: WithClock sets the clock that reads "now": for a run (an agent's runs, or one run), the clock its durable timers (Sleep, WaitUntil, AwaitFor) measure against and that stamps the times it records (RunStart.StartedAt, ApprovalWait.RecordedAt, the end markers' RecordedAt); for ResolveHalt, the one clock of the call: WithMinHaltAge measures against it, and it stamps the claim marker and the outcome's RecordedAt (the context's clock is not read); for SubmitDecision, Approve and Cancel, the clock that stamps the record's RecordedAt.
 
+## type CompactionReport
+
+```go
+type CompactionReport struct {
+	Complete bool `json:"complete"`
+
+	Detail string `json:"detail"`
+}
+```
+
+CompactionReport says what Compact did.
+
+## type Compactor
+
+```go
+type Compactor interface {
+	Compact(ctx context.Context) (CompactionReport, error)
+}
+```
+
+Compactor is the optional store capability that makes an erasure complete at the storage layer: a store whose engine keeps the bytes a redaction replaced (SQLite's write-ahead log and freed pages) overwrites them.
+
 ## type Compensator
 
 ```go

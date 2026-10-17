@@ -29,6 +29,7 @@ and `help`, and its import graph is the standard library and the core module (se
 | [`bide view`](#bide-view) | a read-only local page for one run of a journal, or a flow config's graph |
 | [`bide edit`](#bide-edit) | a local page for a flow config: the graph, the approval gates, the assertions, and what an edit weakens; edit the source and save |
 | [`bide notify`](#bide-notify) | set up and test the webhook notifier: test a receiver, run a local one, relay to Slack and PagerDuty |
+| [`bide journal`](#bide-journal) | erase personal data from finished runs of a journal, accountably: a dry-run plan, then a signed record of each erasure |
 | [`bide approve`](#bide-approve) | record your signed approval (or -reject) of a call that waits for a decision; -list shows what waits |
 | [`bide identity`](#bide-identity) | pre-flight a certificate-bound approval setup and say why a certificate would be refused (check), keep the CRLs of a policy's issuers current and archived (fetch-crl), and reset a poisoned rollback mark |
 | [`bide keygen`](#bide-keygen) | create an approver key pair for bide approve and print the public key policies and verifiers use |
@@ -520,6 +521,99 @@ proxy that terminates TLS on the same host. Forwarding has a budget (-forward-ti
     	with -state: how long a change may wait so a burst costs one file write; a clear is always written at once, and a crash can lose the last window of forwarded-delivery entries (negative: write every change) (default 1s)
   -view-url string
     	the run viewer's base URL, for the "Open in viewer" button when a notification has no view.url
+```
+
+## bide journal
+
+Erase personal data from finished runs of a journal, accountably: a dry-run plan, then a signed record of each erasure.
+
+```text
+usage: bide journal redact (-db <file> | -postgres-env <var> [-schema <name>]) -run <id> <selection>
+                           [-execute -plan-digest <hex> -reason <text> -ticket <id> -sign-key <file> -head-out <file> ...]
+
+  redact  replace the content of records of a finished run with tombstones that keep each record's
+          position, name and leaf hash, so the run's signed heads and every other record's proof
+          still verify, and record the erasure in a signed trail. Run bide journal redact -h.
+
+Exit status:
+  0  success
+  1  failure: an input cannot be read or the command failed; for check, an error was found
+     (with -strict, any problem)
+  2  usage error: a bad flag or argument; nothing was read
+```
+
+### bide journal redact
+
+```text
+usage: bide journal redact (-db <file> | -postgres-env <var>) -run <id> (-name <key> | -prefix <p> | -kind <k> | -payloads)...
+
+A dry run (the default) prints, for each run, whether it can be erased and the records it would
+replace: position, key, kind, length and leaf hash, never content, and a plan digest. Review it, then
+run the same command with -execute -plan-digest <digest> -reason ... -ticket ... -sign-key ... -head-out ...
+
+Before erasing, make every piece of evidence you will need: a journal that holds a tombstone can no
+longer produce a new absence proof, run certificate or event stream. The command refuses to erase a
+run that no signed journal head (-sth, verified under -pubkey) covers, unless -allow-uncovered.
+
+It refuses a run that is not over, whose lease is live, whose parent is not over, that belongs to a
+session, that holds protected records (they are kept and listed), and a run the event store holds
+events of (unless -keep-event-copies). It writes a "begin" record to the redaction trail before it
+erases and an "end" record after; if it stops partway, run the same plan again.
+
+  -accept-unheaded-trail
+    	with -execute: sign the trail although it already holds records and no earlier head (-head-out) attests them, so they are attested only from this head on; never needed on a trail's first erasure
+  -allow-uncovered
+    	with -execute: erase although no signed head covers the run (recorded in the trail as UNCOVERED, and reported by bide audit redactions)
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
+  -db string
+    	the SQLite journal to erase from
+  -deployment string
+    	with -execute: the deployment name signed into every trail record (required): records cannot be copied between deployments that share a key
+  -execute
+    	erase; without it the command only lists the plan
+  -head-out string
+    	with -execute: append the trail's new signed head, as one JSON line, to this file, for your anchor
+  -include-approvals
+    	let the selection also erase approval decisions, which verify-approvals and decision coverage read
+  -json
+    	print the plan and result as one JSON document
+  -keep-event-copies
+    	with -execute: erase although the event store holds events of the run, which stay (recorded)
+  -kind value
+    	erase the records of this kind (model, tool_result, value, signal, approval); repeat
+  -name value
+    	erase the record with this key; repeat
+  -payloads
+    	erase every record whose content is payload: the input and principal, model turns, tool results, user steps, signals, approval requests (never a protected record, never an approval decision unless -include-approvals)
+  -plan-digest string
+    	with -execute: the plan digest a dry run printed; the erasure runs only if the plan is still exactly that
+  -postgres-env string
+    	the environment variable that holds the Postgres DSN of a role that can read the journal (never given on the command line)
+  -prefix value
+    	erase the records whose key starts with this; repeat
+  -pubkey string
+    	with -execute: the log's public key (ed25519:<hex>, or a file) that verifies the -sth heads
+  -reason string
+    	with -execute: why (recorded in the trail)
+  -redact-postgres-env string
+    	the environment variable that holds the DSN of the role that may erase (EXECUTE on bide_redact_v1 and no table privilege); default: the -postgres-env role
+  -run string
+    	the run to erase from
+  -schema string
+    	with -postgres-env: the schema that holds the journal (recommended; without it the DSN's search path decides)
+  -sign-key string
+    	with -execute: the log signing key file that signs the redaction trail's head (never printed)
+  -sth value
+    	with -execute: a signed journal head of the run; one that verifies, matches the journal and covers all of it is required; repeat
+  -subruns
+    	also erase from the run's sub-agent runs (each is planned and recorded on its own)
+  -ticket string
+    	with -execute: the ticket or authority (recorded in the trail)
+  -trail-db string
+    	keep the redaction trail in this SQLite file instead of the journal's (recommended: a store the erasing role cannot rewrite)
+  -trail-postgres-env string
+    	keep the redaction trail in the Postgres database whose DSN is in this variable, instead of the journal's
 ```
 
 ## bide approve

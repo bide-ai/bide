@@ -512,10 +512,14 @@ seal covers the whole package JSON, still verifies (`bide audit verify-evidence`
 but it cannot be re-sealed and its seal cannot be produced by a signer that refuses large messages.
 Re-create the evidence to get a v6 package.
 
-**Erasing personal data is a library call, and it cannot reach everything.** SQLite, Postgres and
-`MemStore` can replace chosen records of a finished run with tombstones (`agent.PlanRedaction`,
-`agent.Redact`; [retention guide](guides/retention.md#erasing-personal-data)); there is no command
-yet; `audit.RedactJournal` records each erasure in a signed trail that `bide audit redactions` verifies (anchor its heads; an erasure outside it is reported as unaccounted). There is no legal hold yet, so nothing but your own process stops an erasure of a run under a matter. A record someone redacted by hand and stamped with the time of an unfinished pass of the trail counts as accounted, limited to the records that pass was authorised to erase.
+**Erasing personal data cannot reach everything.** `bide journal redact` replaces chosen records of
+a finished run with tombstones on SQLite and Postgres, and records each erasure in a signed trail that
+`bide audit redactions` verifies ([retention guide](guides/retention.md#erasing-personal-data)); anchor
+its heads, and erase through the command, since an erasure outside it is reported as unaccounted. The
+command signs the trail with a key file; HSM and KMS signing go through the library until `bide-hsm`
+gains it. On SQLite it overwrites the replaced bytes and truncates the write-ahead log, which a reader
+holding the database open prevents (the command says so and exits 1); on Postgres the replaced row
+versions stay until the operator's `VACUUM`. There is no legal hold yet, so nothing but your own process stops an erasure of a run under a matter. A record someone redacted by hand and stamped with the time of an unfinished pass of the trail counts as accounted, limited to the records that pass was authorised to erase.
 A journal holding a tombstone cannot produce a new absence set, run certificate or event stream
 (`audit.ErrRedacted`): make that evidence first. It does not erase the run's final result
 (`run:complete` is an end marker and stays), the record names, copies in exported journals,

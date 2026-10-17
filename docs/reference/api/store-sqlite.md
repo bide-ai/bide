@@ -61,6 +61,7 @@ Store is a SQLite-backed agent.Store.
 
 - `func (s *Store) AcquireLease(ctx context.Context, runID, holder string, ttl time.Duration) (bool, error)`: AcquireLease implements agent.Leaser with one upsert: it grants the lease when the run is unleased, already held by holder (a renewal), or the current lease has expired.
 - `func (s *Store) Close() error`: Close closes the connection pools Open opened.
+- `func (s *Store) Compact(ctx context.Context) (agent.CompactionReport, error)`: Compact implements agent.Compactor: it checkpoints the write-ahead log and truncates it (PRAGMA wal\_checkpoint(TRUNCATE)), which copies the pages an erasure rewrote (their old bytes zeroed, see Redact) into the database file and empties the log that held the old pages.
 - `func (s *Store) EventStore() *EventStore`: EventStore returns the audit.EventStore over s's database.
 - `func (s *Store) Get(ctx context.Context, runID, name string) (agent.Entry, bool, error)`: Get implements agent.Store.
 - `func (s *Store) Insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error)`: Insert implements agent.Store.
