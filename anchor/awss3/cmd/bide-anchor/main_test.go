@@ -1,0 +1,196 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"crypto/ed25519"
+	"crypto/sha256"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/bide-ai/bide/anchor/awss3"
+	"github.com/bide-ai/bide/anchor/awss3/awss3test"
+	"github.com/bide-ai/bide/audit"
+)
+
+const owner = "111122223333"
+
+type env struct {
+	s      audit.Ed25519Signer
+	pub    string
+	fake   *awss3test.Fake
+	anchor *awss3.Anchor
+}
+
+func setup(t *testing.T) *env {
+	t.Helper()
+	h := sha256.Sum256([]byte("k"))
+	s := audit.Ed25519Signer{Priv: ed25519.NewKeyFromSeed(h[:])}
+	f := awss3test.New("b")
+	a, err := awss3.New(context.Background(), awss3.Config{Client: f, Bucket: "b", ExpectedBucketOwner: owner, Retention: 48 * time.Hour, KMSKeyID: "arn:aws:kms:eu-west-1:111122223333:key/k", OnWarn: func(error) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &env{s: s, pub: audit.FormatPublicKey(s.Alg(), s.PublicKey()), fake: f, anchor: a}
+}
+
+func (e *env) head(t *testing.T, run string, size int, rootSeed string) audit.SignedTreeHead {
+	t.Helper()
+	root := sha256.Sum256([]byte(rootSeed))
+	sth, err := audit.SignTreeHead(audit.TreeHead{Kind: audit.TreeJournal, RunID: run, Size: size, Root: root[:], TimestampNanos: int64(size)}, e.s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sth
+}
+
+func (e *env) publish(t *testing.T, sths ...audit.SignedTreeHead) {
+	t.Helper()
+	for _, h := range sths {
+		if err := e.anchor.Publish(context.Background(), h.RunID, h); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func (e *env) dump(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, key := range e.fake.Keys() {
+		p := filepath.Join(dir, filepath.FromSlash(key))
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		if err := os.WriteFile(p, e.fake.Versions(key)[0].Body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func (e *env) do(args ...string) (int, string, string) {
+	var out, errb bytes.Buffer
+	code := run(context.Background(), args, &out, &errb, func(context.Context, bool) (awss3.Client, error) { return e.fake, nil })
+	return code, out.String(), errb.String()
+}
+
+func TestVerifyOfflineAndExport(t *testing.T) {
+	e := setup(t)
+	e.publish(t, e.head(t, "r1", 1, "a"), e.head(t, "r1", 3, "c"), e.head(t, "r2", 2, "x"))
+	dir := e.dump(t)
+
+	code, out, errs := e.do("verify", "-dir", dir, "-pubkey", e.pub)
+	if code != 0 || !strings.Contains(out, "PASS: 3 head(s)") || !strings.Contains(out, `journal "r1": 2 head(s), sizes 1 to 3`) {
+		t.Fatalf("verify = %d\n%s%s", code, out, errs)
+	}
+	if !strings.Contains(out, "cannot show that S3 locked them") {
+		t.Errorf("the offline verdict does not say what it cannot show:\n%s", out)
+	}
+	if code, out, _ := e.do("verify", "-dir", dir, "-pubkey", e.pub, "-run", "nope"); code != 1 || !strings.Contains(out, "FAIL") {
+		t.Errorf("verify of an absent run = %d %s", code, out)
+	}
+
+	// export: one verified head per line, increasing size, in the form bide audit -heads reads.
+	code, out, errs = e.do("export", "-dir", dir, "-pubkey", e.pub, "-run", "r1")
+	if code != 0 {
+		t.Fatalf("export = %d %s", code, errs)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("export wrote %d lines: %s", len(lines), out)
+	}
+	for i, size := range []int{1, 3} {
+		var h audit.SignedTreeHead
+		if err := audit.UnmarshalStrict([]byte(lines[i]), &h); err != nil || h.Size != size {
+			t.Errorf("line %d = size %d, %v; want size %d", i, h.Size, err, size)
+		}
+	}
+	// A key file works as -pubkey; a wrong key fails verification.
+	keyfile := filepath.Join(t.TempDir(), "log.pub")
+	os.WriteFile(keyfile, []byte(e.pub+"\n"), 0o644)
+	if code, _, errs := e.do("export", "-dir", dir, "-pubkey", keyfile, "-run", "r1"); code != 0 {
+		t.Errorf("export with a key file = %d %s", code, errs)
+	}
+	other := audit.Ed25519Signer{Priv: ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, 32))}
+	if code, out, _ := e.do("verify", "-dir", dir, "-pubkey", audit.FormatPublicKey(other.Alg(), other.PublicKey())); code != 1 || !strings.Contains(out, "FAIL") {
+		t.Errorf("verify under another key = %d %s", code, out)
+	}
+	// -o writes a file.
+	of := filepath.Join(t.TempDir(), "heads.jsonl")
+	if code, _, _ := e.do("export", "-dir", dir, "-pubkey", e.pub, "-run", "r1", "-o", of); code != 0 {
+		t.Fatal("export -o failed")
+	}
+	if b, _ := os.ReadFile(of); strings.Count(string(b), "\n") != 2 {
+		t.Errorf("heads file = %q", b)
+	}
+}
+
+func TestVerifyReportsASignedHistoryFork(t *testing.T) {
+	e := setup(t)
+	e.publish(t, e.head(t, "r1", 2, "honest"), e.head(t, "r1", 2, "rewritten"))
+	code, out, _ := e.do("verify", "-dir", e.dump(t), "-pubkey", e.pub)
+	if code != 1 || !strings.Contains(out, "two different signed heads of size 2") {
+		t.Fatalf("verify = %d\n%s", code, out)
+	}
+	if code, _, errs := e.do("export", "-dir", e.dump(t), "-pubkey", e.pub, "-run", "r1"); code != 1 || !strings.Contains(errs, "not exporting") {
+		t.Errorf("export of a fork = %d %s", code, errs)
+	}
+}
+
+func TestVerifyFailsOnDamagedOrStrayFiles(t *testing.T) {
+	e := setup(t)
+	e.publish(t, e.head(t, "r1", 1, "a"))
+	dir := e.dump(t)
+	filepath.WalkDir(dir, func(p string, d os.DirEntry, _ error) error {
+		if !d.IsDir() {
+			os.WriteFile(p, append([]byte(" "), mustRead(p)...), 0o644)
+		}
+		return nil
+	})
+	if code, out, _ := e.do("verify", "-dir", dir, "-pubkey", e.pub); code != 1 || !strings.Contains(out, "FAIL") {
+		t.Fatalf("verify of a damaged object = %d %s", code, out)
+	}
+}
+
+func mustRead(p string) []byte { b, _ := os.ReadFile(p); return b }
+
+func TestCheckOnline(t *testing.T) {
+	e := setup(t)
+	e.publish(t, e.head(t, "r1", 1, "a"), e.head(t, "r1", 2, "b"))
+	args := []string{"check", "-bucket", "b", "-owner", owner, "-pubkey", e.pub, "-run", "r1"}
+	code, out, errs := e.do(args...)
+	if code != 0 || !strings.Contains(out, "2 verified head(s)") || !strings.Contains(out, "PASS") {
+		t.Fatalf("check of an intact anchor = %d\n%s%s", code, out, errs)
+	}
+	// An unlocked rewrite of a key and a delete marker are findings.
+	key := e.fake.Keys()[0]
+	e.fake.DefaultMode = ""
+	e.fake.Put(key, e.fake.Versions(key)[0].Body)
+	e.fake.Delete(e.fake.Keys()[1], "", false)
+	code, out, _ = e.do(args...)
+	if code != 1 || !strings.Contains(out, "FINDING") || !strings.Contains(out, "FAIL") {
+		t.Fatalf("check with findings = %d\n%s", code, out)
+	}
+	if code, out, _ := e.do("check", "-bucket", "b", "-owner", owner, "-pubkey", e.pub, "-run", "absent"); code != 1 || !strings.Contains(out, "FAIL: no verified head") {
+		t.Errorf("check of an absent run = %d %s", code, out)
+	}
+	if code, out, _ := e.do("export", "-bucket", "b", "-owner", owner, "-pubkey", e.pub, "-run", "r1"); code != 0 || strings.Count(out, "\n") < 2 {
+		t.Errorf("online export = %d %q", code, out)
+	}
+}
+
+func TestUsageErrors(t *testing.T) {
+	e := setup(t)
+	for _, args := range [][]string{
+		nil, {"nope"}, {"verify"}, {"verify", "-dir", "d"}, {"verify", "-dir", "d", "-pubkey", "garbage"},
+		{"verify", "-bucket", "b", "-pubkey", e.pub}, {"check", "-dir", "d", "-pubkey", e.pub, "-run", "r"},
+		{"export", "-pubkey", e.pub, "-run", "r"}, {"export", "-dir", "d", "-bucket", "b", "-pubkey", e.pub, "-run", "r"},
+		{"export", "-dir", "d", "-pubkey", e.pub}, {"verify", "-dir", "d", "-pubkey", e.pub, "-kind", "other"},
+		{"verify", "-dir", "d", "-pubkey", e.pub, "extra"}, {"check", "-bucket", "b", "-owner", "12", "-pubkey", e.pub, "-run", "r"},
+	} {
+		if code, _, _ := e.do(args...); code != exitUsage {
+			t.Errorf("%v = exit %d, want %d", args, code, exitUsage)
+		}
+	}
+}

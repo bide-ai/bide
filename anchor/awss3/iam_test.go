@@ -70,7 +70,6 @@ func TestWriterPolicyCoversEveryCall(t *testing.T) {
 		"GetBucketEncryption":        {"s3:GetEncryptionConfiguration"},
 		"PutObject":                  {"s3:PutObject", "s3:PutObjectRetention"},
 		"GetObject":                  {"s3:GetObject", "s3:GetObjectVersion", "s3:GetObjectRetention", "s3:GetObjectLegalHold"},
-		"ListObjectsV2":              {"s3:ListBucket"},
 		"ListObjectVersions":         {"s3:ListBucketVersions"},
 	}
 	ty := reflect.TypeFor[awss3.Client]()

@@ -342,7 +342,7 @@ func TestEveryRequestCarriesTheExpectedBucketOwner(t *testing.T) {
 			}
 		}
 	}
-	for _, op := range []string{"HeadBucket", "GetBucketVersioning", "GetObjectLockConfiguration", "GetBucketEncryption", "PutObject", "GetObject", "ListObjectsV2", "ListObjectVersions"} {
+	for _, op := range []string{"HeadBucket", "GetBucketVersioning", "GetObjectLockConfiguration", "GetBucketEncryption", "PutObject", "GetObject", "ListObjectVersions"} {
 		if len(f.Seen[op]) == 0 {
 			t.Errorf("no %s request was made", op)
 		}
@@ -434,4 +434,26 @@ func hasFinding(r awss3.Report, sub string) bool {
 		}
 	}
 	return false
+}
+
+// A delete marker over the newest head must not make an older head look like the latest.
+func TestLatestIsNotFooledByADeleteMarker(t *testing.T) {
+	k := newKeys(t, 1)
+	f := awss3test.New(bucket)
+	publish(t, f, k, "r", 1, 2, 3)
+	newest := f.Keys()[0] // the largest size sorts first
+	if err := f.Delete(newest, "", false); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(f.Keys()); got != 2 {
+		t.Fatalf("the marker should hide one key from a plain listing, %d remain", got)
+	}
+	r := newReader(t, f, k.v)
+	latest, err := r.Latest(ctx, audit.TreeJournal, "r")
+	if err != nil || latest.Size != 3 {
+		t.Fatalf("Latest = size %d, %v; want 3 (the head the marker hides)", latest.Size, err)
+	}
+	if all, err := r.Heads(ctx, audit.TreeJournal, "r"); err != nil || len(all) != 3 {
+		t.Fatalf("Heads = %v, %v; want all 3", sizes(all), err)
+	}
 }

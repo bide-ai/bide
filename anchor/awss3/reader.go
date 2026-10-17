@@ -61,55 +61,63 @@ func NewReader(cfg ReaderConfig) (*Reader, error) {
 	return &Reader{c: cfg.Client, bucket: cfg.Bucket, owner: cfg.ExpectedBucketOwner, prefix: a.prefix, v: cfg.Verifier}, nil
 }
 
-// list returns the keys under a prefix in S3's order (ascending), following continuation tokens, at most limit (0 for all).
-func (r *Reader) list(ctx context.Context, prefix string, limit int) ([]string, error) {
-	var keys []string
-	var token *string
+// ref is one stored version of a key.
+type ref struct{ key, version string }
+
+// list returns the versions under a prefix, newest key first as the layout sorts them (see invertedSize),
+// each key's newest version first, at most limit (0 for all), following the markers. It lists
+// versions and not only current objects: a delete marker hides a key from a plain listing, and the
+// locked version under it is still the anchored head. Delete markers themselves are not returned;
+// Audit reports them.
+func (r *Reader) list(ctx context.Context, prefix string, limit int) ([]ref, error) {
+	var refs []ref
+	var marker, vmarker *string
 	for {
-		in := &s3.ListObjectsV2Input{Bucket: aws.String(r.bucket), Prefix: aws.String(prefix),
-			ExpectedBucketOwner: aws.String(r.owner), ContinuationToken: token}
-		if limit > 0 {
-			in.MaxKeys = aws.Int32(int32(limit - len(keys)))
-		}
-		out, err := r.c.ListObjectsV2(ctx, in)
+		out, err := r.c.ListObjectVersions(ctx, &s3.ListObjectVersionsInput{Bucket: aws.String(r.bucket), Prefix: aws.String(prefix),
+			ExpectedBucketOwner: aws.String(r.owner), KeyMarker: marker, VersionIdMarker: vmarker})
 		if err != nil {
 			return nil, wrapErr("list "+prefix, err)
 		}
-		for _, o := range out.Contents {
-			keys = append(keys, aws.ToString(o.Key))
+		for _, v := range out.Versions {
+			refs = append(refs, ref{aws.ToString(v.Key), aws.ToString(v.VersionId)})
+			if limit > 0 && len(refs) >= limit {
+				return refs, nil
+			}
 		}
-		if limit > 0 && len(keys) >= limit || !aws.ToBool(out.IsTruncated) || out.NextContinuationToken == nil {
-			return keys, nil
+		if !aws.ToBool(out.IsTruncated) {
+			return refs, nil
 		}
-		token = out.NextContinuationToken
+		marker, vmarker = out.NextKeyMarker, out.NextVersionIdMarker
 	}
 }
 
-func (r *Reader) get(ctx context.Context, key string) ([]byte, error) {
-	out, err := r.c.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(r.bucket), Key: aws.String(key), ExpectedBucketOwner: aws.String(r.owner)})
+func (r *Reader) get(ctx context.Context, x ref) ([]byte, error) {
+	out, err := r.c.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(r.bucket), Key: aws.String(x.key), VersionId: aws.String(x.version), ExpectedBucketOwner: aws.String(r.owner)})
 	if err != nil {
-		return nil, wrapErr("read "+key, err)
+		return nil, wrapErr("read "+x.key, err)
 	}
 	defer out.Body.Close()
 	b, err := io.ReadAll(io.LimitReader(out.Body, maxObjectBytes+1))
 	if err != nil {
-		return nil, wrapErr("read "+key, err)
+		return nil, wrapErr("read "+x.key, err)
 	}
 	if len(b) > maxObjectBytes {
-		return nil, fmt.Errorf("%w: %s is larger than %d bytes", ErrObject, key, maxObjectBytes)
+		return nil, fmt.Errorf("%w: %s is larger than %d bytes", ErrObject, x.key, maxObjectBytes)
 	}
 	return b, nil
 }
 
-// load reads and verifies the objects at keys.
-func (r *Reader) load(ctx context.Context, keys []string) ([]audit.SignedTreeHead, error) {
+// load reads and verifies the objects at refs. Two versions of one key must be the same bytes (the key
+// is derived from them) and count as one head; anything else fails verification.
+func (r *Reader) load(ctx context.Context, refs []ref) ([]audit.SignedTreeHead, error) {
 	var heads []audit.SignedTreeHead
-	for _, key := range keys {
-		partition, name, ok := splitKey(r.prefix, key)
+	seen := map[string]bool{}
+	for _, x := range refs {
+		partition, name, ok := splitKey(r.prefix, x.key)
 		if !ok {
-			return nil, fmt.Errorf("%w: key %q is not in this package's layout under %q", ErrObject, key, r.prefix)
+			return nil, fmt.Errorf("%w: key %q is not in this package's layout under %q", ErrObject, x.key, r.prefix)
 		}
-		body, err := r.get(ctx, key)
+		body, err := r.get(ctx, x)
 		if err != nil {
 			return nil, err
 		}
@@ -117,27 +125,31 @@ func (r *Reader) load(ctx context.Context, keys []string) ([]audit.SignedTreeHea
 		if err != nil {
 			return nil, err
 		}
-		heads = append(heads, sth)
+		if !seen[x.key] {
+			seen[x.key] = true
+			heads = append(heads, sth)
+		}
 	}
 	return heads, nil
 }
 
 // Latest returns the head of the largest size anchored for the tree of the given kind (audit.TreeJournal
-// or audit.TreeEvents) and run or trail ID: one listing of one key, then one read. When two heads of that
-// size exist (two processes anchored one run around a lease handoff) it returns the one whose key sorts
-// first. It returns ErrNotFound when none is anchored.
+// or audit.TreeEvents) and run or trail ID. The layout lists the largest size first, so this is one
+// listing and one read. When two heads of that size exist (two processes anchored one run around a lease
+// handoff) it returns the one whose key sorts first. It returns ErrNotFound when none is anchored.
 //
-// Latest relies on S3 listing a key as soon as it is written, which S3 guarantees (strong read-after-write
-// consistency for listings since December 2020).
+// It lists versions, so a delete marker over the newest head does not make an older head look like the
+// latest. Latest relies on S3 listing a key as soon as it is written, which S3 guarantees (strong
+// read-after-write consistency for listings since December 2020).
 func (r *Reader) Latest(ctx context.Context, kind, runID string) (audit.SignedTreeHead, error) {
-	keys, err := r.list(ctx, r.prefix+partitionOf(kind, runID)+"/", 1)
+	refs, err := r.list(ctx, r.prefix+partitionOf(kind, runID)+"/", 1)
 	if err != nil {
 		return audit.SignedTreeHead{}, err
 	}
-	if len(keys) == 0 {
+	if len(refs) == 0 {
 		return audit.SignedTreeHead{}, fmt.Errorf("%w for %s %q", ErrNotFound, kind, runID)
 	}
-	heads, err := r.load(ctx, keys)
+	heads, err := r.load(ctx, refs)
 	if err != nil {
 		return audit.SignedTreeHead{}, err
 	}
@@ -147,15 +159,19 @@ func (r *Reader) Latest(ctx context.Context, kind, runID string) (audit.SignedTr
 // Heads returns every head anchored for the tree, in increasing size (heads of one size in key
 // order), each verified. A key that is not a head, or a head that is not for this tree, is an error.
 func (r *Reader) Heads(ctx context.Context, kind, runID string) ([]audit.SignedTreeHead, error) {
-	keys, err := r.list(ctx, r.prefix+partitionOf(kind, runID)+"/", 0)
+	refs, err := r.list(ctx, r.prefix+partitionOf(kind, runID)+"/", 0)
 	if err != nil {
 		return nil, err
 	}
-	if len(keys) == 0 {
+	if len(refs) == 0 {
 		return nil, fmt.Errorf("%w for %s %q", ErrNotFound, kind, runID)
 	}
-	slices.Reverse(keys) // S3 lists the largest size first; callers want them in increasing size
-	return r.load(ctx, keys)
+	heads, err := r.load(ctx, refs)
+	if err != nil {
+		return nil, err
+	}
+	slices.Reverse(heads) // S3 lists the largest size first; callers want them in increasing size
+	return heads, nil
 }
 
 // Head returns the heads anchored for the tree at exactly the given size (more than one only when two
@@ -164,14 +180,14 @@ func (r *Reader) Head(ctx context.Context, kind, runID string, size int) ([]audi
 	if size < 0 {
 		return nil, fmt.Errorf("awss3: size %d is negative", size)
 	}
-	keys, err := r.list(ctx, r.prefix+partitionOf(kind, runID)+"/"+invertedSize(size)+"-", 0)
+	refs, err := r.list(ctx, r.prefix+partitionOf(kind, runID)+"/"+invertedSize(size)+"-", 0)
 	if err != nil {
 		return nil, err
 	}
-	if len(keys) == 0 {
+	if len(refs) == 0 {
 		return nil, fmt.Errorf("%w for %s %q at size %d", ErrNotFound, kind, runID, size)
 	}
-	return r.load(ctx, keys)
+	return r.load(ctx, refs)
 }
 
 // Finding is something Audit found wrong with the bucket's lock state. Each Finding is a reason not

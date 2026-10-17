@@ -277,50 +277,47 @@ func timeOrNil(t time.Time) *time.Time {
 
 const pageSize = 2 // small, so tests exercise pagination
 
-func (f *Fake) ListObjectsV2(_ context.Context, in *s3.ListObjectsV2Input, _ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
-	if err := f.begin("ListObjectsV2", in.Bucket, in.ExpectedBucketOwner); err != nil {
-		return nil, err
-	}
-	defer f.mu.Unlock()
-	max := pageSize
-	if in.MaxKeys != nil && int(*in.MaxKeys) < max {
-		max = int(*in.MaxKeys)
-	}
-	after := aws.ToString(in.ContinuationToken)
-	out := &s3.ListObjectsV2Output{}
-	for _, k := range f.order {
-		if !strings.HasPrefix(k, aws.ToString(in.Prefix)) || k <= after {
-			continue
-		}
-		if _, ok := f.find(k, ""); !ok {
-			continue
-		}
-		if len(out.Contents) == max {
-			out.IsTruncated = aws.Bool(true)
-			out.NextContinuationToken = out.Contents[len(out.Contents)-1].Key
-			break
-		}
-		out.Contents = append(out.Contents, types.Object{Key: aws.String(k)})
-	}
-	return out, nil
-}
-
 func (f *Fake) ListObjectVersions(_ context.Context, in *s3.ListObjectVersionsInput, _ ...func(*s3.Options)) (*s3.ListObjectVersionsOutput, error) {
 	if err := f.begin("ListObjectVersions", in.Bucket, in.ExpectedBucketOwner); err != nil {
 		return nil, err
 	}
 	defer f.mu.Unlock()
-	out := &s3.ListObjectVersionsOutput{}
+	type entry struct {
+		key string
+		v   *Version
+	}
+	var all []entry
 	for _, k := range f.order {
 		if !strings.HasPrefix(k, aws.ToString(in.Prefix)) {
 			continue
 		}
-		for _, v := range f.keys[k] {
-			if v.Marker {
-				out.DeleteMarkers = append(out.DeleteMarkers, types.DeleteMarkerEntry{Key: aws.String(k), VersionId: aws.String(v.ID)})
-			} else {
-				out.Versions = append(out.Versions, types.ObjectVersion{Key: aws.String(k), VersionId: aws.String(v.ID)})
+		vs := f.keys[k]
+		for i := len(vs) - 1; i >= 0; i-- { // each key's newest version first, as S3 lists them
+			all = append(all, entry{k, vs[i]})
+		}
+	}
+	start := 0
+	if km := aws.ToString(in.KeyMarker); km != "" {
+		for i, e := range all {
+			if e.key == km && e.v.ID == aws.ToString(in.VersionIdMarker) {
+				start = i + 1
+				break
 			}
+		}
+	}
+	out := &s3.ListObjectVersionsOutput{}
+	for i := start; i < len(all); i++ {
+		if i-start == pageSize {
+			out.IsTruncated = aws.Bool(true)
+			last := all[i-1]
+			out.NextKeyMarker, out.NextVersionIdMarker = aws.String(last.key), aws.String(last.v.ID)
+			break
+		}
+		e := all[i]
+		if e.v.Marker {
+			out.DeleteMarkers = append(out.DeleteMarkers, types.DeleteMarkerEntry{Key: aws.String(e.key), VersionId: aws.String(e.v.ID)})
+		} else {
+			out.Versions = append(out.Versions, types.ObjectVersion{Key: aws.String(e.key), VersionId: aws.String(e.v.ID)})
 		}
 	}
 	return out, nil
