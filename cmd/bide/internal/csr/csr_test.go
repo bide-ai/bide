@@ -158,6 +158,78 @@ func TestBuildNames(t *testing.T) {
 	}
 }
 
+// TestBuildCommonName: a requested common name is the request's whole subject (one CN), the signature
+// covers it, and it adds no extension; a request without one keeps the empty subject byte for byte.
+func TestBuildCommonName(t *testing.T) {
+	for _, alg := range schemes {
+		t.Run(string(alg), func(t *testing.T) {
+			sg := newSigner(t, alg)
+			for _, cn := range []string{"ops", "ops placeholder", "a", strings.Repeat("x", 64)} {
+				b, err := Build(sg, Names{CommonName: cn})
+				if err != nil {
+					t.Fatalf("%q: %v", cn, err)
+				}
+				req := parse(t, b)
+				if err := req.CheckSignature(); err != nil {
+					t.Fatalf("%q: %v", cn, err)
+				}
+				if req.Subject.CommonName != cn || len(req.Subject.Names) != 1 || len(req.Extensions) != 0 || len(req.Attributes) != 0 { //nolint:staticcheck
+					t.Fatalf("%q: subject %v, %d extensions", cn, req.Subject, len(req.Extensions))
+				}
+			}
+			// With the names too: the SAN and the EKU are unchanged by a subject.
+			b, err := Build(sg, Names{CommonName: "ops", URI: "https://idp.bank.example/people/42"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := parse(t, b)
+			if req.Subject.CommonName != "ops" || len(req.URIs) != 1 || len(req.Extensions) != 1 {
+				t.Fatalf("subject %v, uris %v, %d extensions", req.Subject, req.URIs, len(req.Extensions))
+			}
+			// No common name: the subject is the empty SEQUENCE, as before.
+			b, err = Build(sg, Names{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := parse(t, b).RawSubject; !bytes.Equal(got, []byte{0x30, 0x00}) {
+				t.Fatalf("subject without a common name = %x, want 3000", got)
+			}
+		})
+	}
+}
+
+// TestBuildRefusesBadCommonName: a common name that is not plain printable ASCII text of at most 64
+// characters is refused before the key is asked to sign anything, and Check says the same.
+func TestBuildRefusesBadCommonName(t *testing.T) {
+	for name, cn := range map[string]string{
+		"65 characters":  strings.Repeat("x", 65),
+		"leading space":  " ops",
+		"trailing space": "ops ",
+		"only spaces":    "   ",
+		"tab":            "ops\tx",
+		"newline":        "ops\nx",
+		"nul":            "ops\x00",
+		"delete":         "ops\x7f",
+		"non-ascii":      "opé",
+		"emoji":          "ops\U0001F600",
+		"invalid utf-8":  "ops\xff",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := Check(Names{CommonName: cn}); err == nil {
+				t.Fatal("Check accepted")
+			}
+			signed := false
+			sg := keySource{Signer: newSigner(t, audit.AlgECDSAP256), sign: func([]byte) ([]byte, error) { signed = true; return nil, errors.New("must not sign") }}
+			if _, err := Build(sg, Names{CommonName: cn}); err == nil {
+				t.Fatal("accepted")
+			}
+			if signed {
+				t.Fatal("the key was asked to sign a request that was refused")
+			}
+		})
+	}
+}
+
 // TestBuildRefusesBadNames: a name the request cannot carry as one plain SAN is refused before the key
 // is asked to sign anything.
 func TestBuildRefusesBadNames(t *testing.T) {

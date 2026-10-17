@@ -87,6 +87,42 @@ func TestKeygenCSRRefusals(t *testing.T) {
 	}
 }
 
+// TestKeygenCSRCommonName: -cn sets the request's subject to one common name (the gate ignores it; step
+// ca sign needs one), needs -csr, and a bad one is a usage error that writes nothing.
+func TestKeygenCSRCommonName(t *testing.T) {
+	dir := t.TempDir()
+	key, csrPath := filepath.Join(dir, "k"), filepath.Join(dir, "k.csr.pem")
+	var out, errb bytes.Buffer
+	if code := KeygenMain([]string{"-out", key, "-csr", csrPath, "-cn", "ops placeholder"}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	blk, _ := pem.Decode([]byte(mustRead(t, csrPath)))
+	req, err := x509.ParseCertificateRequest(blk.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := req.CheckSignature(); err != nil {
+		t.Fatal(err)
+	}
+	if req.Subject.CommonName != "ops placeholder" || len(req.Subject.Names) != 1 || len(req.Extensions) != 0 { //nolint:staticcheck
+		t.Fatalf("subject %v, %d extensions", req.Subject, len(req.Extensions))
+	}
+	other := t.TempDir()
+	for _, args := range [][]string{
+		{"-out", filepath.Join(other, "a"), "-cn", "ops"},
+		{"-out", filepath.Join(other, "b"), "-csr", filepath.Join(other, "b.csr"), "-cn", strings.Repeat("x", 65)},
+		{"-out", filepath.Join(other, "c"), "-csr", filepath.Join(other, "c.csr"), "-cn", "opé"},
+	} {
+		errb.Reset()
+		if code := KeygenMain(args, io.Discard, &errb); code != 2 {
+			t.Errorf("%v: exit %d", args, code)
+		}
+	}
+	if ents, _ := os.ReadDir(other); len(ents) != 0 {
+		t.Fatalf("a refusal left %d files", len(ents))
+	}
+}
+
 func mustRead(t *testing.T, path string) string {
 	t.Helper()
 	b, err := os.ReadFile(path)
