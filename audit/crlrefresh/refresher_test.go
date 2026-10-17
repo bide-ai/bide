@@ -575,3 +575,35 @@ func newCRigWith(t *testing.T, pre func(*crig)) *crig {
 	t.Helper()
 	return newCRig(t, func(g *crig) { pre(g) })
 }
+
+// A CRL that was fetched fine but refused afterwards must be reported with the reason, not as a URL that
+// is "ok" in a failed attempt.
+func TestRefresherErrorNamesWhyAFetchedCRLWasNotAccepted(t *testing.T) {
+	g := newCRig(t, withArchive(crlrefresh.DirArchive(t.TempDir())))
+	now := g.clk.Now()
+	g.srv.set("/root.crl", g.rCRL(1, now.Add(-time.Hour), 48*time.Hour))
+	g.srv.set("/inter.crl", g.iCRL(5, now.Add(-2*time.Minute), time.Hour))
+	g.start()
+	g.wantOK()
+
+	for name, tc := range map[string]struct {
+		crl  []byte
+		want string
+	}{
+		"conflict": {g.iCRL(5, now.Add(-time.Minute), time.Hour, testca.Revoked(g.leaf.Cert, now, 1)), "equivocating"},
+		"rollback": {g.iCRL(4, now.Add(-time.Minute), time.Hour), "below the high-water mark"},
+		"future":   {g.iCRL(6, now.Add(24*time.Hour), 48*time.Hour), "ahead of the local clock"},
+	} {
+		g.srv.set("/inter.crl", tc.crl)
+		err := g.refresh()[g.intK]
+		if err == nil {
+			t.Fatalf("%s: counted as success", name)
+		}
+		if strings.Contains(err.Error(), ": ok") || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: the error does not say why the fetched CRL was refused: %v", name, err)
+		}
+		if h := g.health(g.intK); !strings.Contains(h.LastError, tc.want) {
+			t.Errorf("%s: LastError %q", name, h.LastError)
+		}
+	}
+}

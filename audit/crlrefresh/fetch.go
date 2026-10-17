@@ -56,6 +56,8 @@ const (
 	outHTTP        = "http-status"
 	outError       = "error"
 	outNotCRL      = "not-a-crl"
+	// outRefused marks a URL whose CRL was fetched but not accepted; Detail says why.
+	outRefused = "refused"
 )
 
 // URLOutcome is the result of asking one URL in one attempt, for the event.
