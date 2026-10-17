@@ -40,7 +40,9 @@ const (
 	StopTool StopScopeKind = "tool"
 	// StopFlow covers the runs and nodes of the plan flow with exactly the scope's name.
 	StopFlow StopScopeKind = "flow"
-	// StopAgent covers the runs of the agent with exactly the scope's name.
+	// StopAgent covers the runs of the agent whose Identity.Actor is exactly the scope's name. A run with
+	// no identity has no Actor and is never covered by an agent stop: give every agent an identity
+	// (WithIdentity) before relying on an agent stop, and use a tool or global stop otherwise.
 	StopAgent StopScopeKind = "agent"
 )
 

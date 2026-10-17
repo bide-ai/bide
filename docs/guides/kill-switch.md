@@ -27,7 +27,9 @@ signed audit trail and the notifications; until they are, a stop is set and lift
 - A call whose attempt marker is written and which has no result is **never fired again by a stop,
   by its lift or by recovery**: it halts for its outcome as it always did.
 - **Scopes**: global, a tool by exact name, a plan flow by its name, an agent by exact name (its
-  `Identity.Actor`). No patterns. A tool stop leaves the model's other turns running and holds only calls to that tool.
+  `Identity.Actor`; **a run with no identity is never covered by an agent stop**, so give every agent
+  an identity with `agent.WithIdentity` before relying on one, or use a tool or global stop). No
+  patterns. A tool stop leaves the model's other turns running and holds only calls to that tool.
 - **Compensation continues by default**: a saga's rollback is not held by a stop, since it undoes
   damage already done. A stop set with `Compensation: agent.CompensationBlock` holds the rollback
   too, which then resumes after the lift.
@@ -94,7 +96,9 @@ audited deployment are only rejected (`StopState.Rejected`). See the [design not
 - When the control run cannot be read, a side-effect call runs only on a read no older than
   `WithStopStaleness` (default 15s), else it is **held** (`StopCauseUnreadable`): failing closed
   costs almost nothing, because the control run is in the store a call needs anyway. A read-only
-  call and a model turn are never held for it. `WithStopErrors` receives every failed read.
+  call and a model turn are never held for it (with nothing read yet they proceed as if no stop
+  existed). Reads are one at a time and honor each caller's context: a slow read delays the callers that
+  need a read, never the cached checks. `WithStopErrors` receives every failed read.
 
 The formal model ([model 16](../../spec/tla/README.md#model-16-the-kill-switch)) checks these
 rules, with counterexample configurations for each one removed; it models a staleness of zero, and

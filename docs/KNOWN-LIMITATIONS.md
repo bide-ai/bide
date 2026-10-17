@@ -668,6 +668,7 @@ acknowledged. A chain is at most four steps and is not repeated.
   model checks the synchronous case.
 - Not shipped yet: `bide stop`, the viewer banner, the signed anchored audit trail and the
   notifications for a stop. A plan flow is checked only if it was given a switch (`Builder.WithStopSwitch`); one without, on a store with a control run, is refused.
+- An agent-scope stop matches `Identity.Actor`: a run with no identity is never covered by one.
 - A session turn and a `Step` are not held by a stop of a tool; a global or agent stop holds the run
   at its next drive or turn start.
 

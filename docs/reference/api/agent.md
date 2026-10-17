@@ -3258,7 +3258,7 @@ StopScopeKind says what a stop covers.
 - `const StopGlobal StopScopeKind = "global"`: StopGlobal covers every run.
 - `const StopTool StopScopeKind = "tool"`: StopTool covers the calls of the tool with exactly the scope's name.
 - `const StopFlow StopScopeKind = "flow"`: StopFlow covers the runs and nodes of the plan flow with exactly the scope's name.
-- `const StopAgent StopScopeKind = "agent"`: StopAgent covers the runs of the agent with exactly the scope's name.
+- `const StopAgent StopScopeKind = "agent"`: StopAgent covers the runs of the agent whose Identity.Actor is exactly the scope's name.
 
 ## type StopSigner
 
