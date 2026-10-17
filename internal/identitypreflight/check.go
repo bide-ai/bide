@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -98,6 +99,8 @@ func Run(ctx context.Context, o Options) (*Report, error) {
 		if err := s.certificate(); err != nil {
 			return nil, err
 		}
+	} else {
+		r.add("cert.none", Skip, "run with -cert <chain.pem> -as <approver id> for each approver before go-live", "no approver certificate was checked: this is a check of the deployment's setup, not of any approver's certificate")
 	}
 	r.finish()
 	return r, nil
@@ -137,7 +140,15 @@ func (s *run) policy() error {
 	s.names = map[audit.SPKIHash]string{}
 	label := func(c *x509.Certificate) string {
 		h := audit.SPKIHashOf(c)
-		return fmt.Sprintf("%x (%s)", h[:4], c.Subject.CommonName)
+		// Only CA certificates are labelled with their subject; an approver's leaf never is (its common name
+		// is usually a person's name).
+		cn := strings.Map(func(r rune) rune {
+			if r < 0x20 || r == 0x7f {
+				return -1
+			}
+			return r
+		}, c.Subject.CommonName)
+		return fmt.Sprintf("%x (%s)", h[:4], cn)
 	}
 	now := s.now()
 	for _, c := range pol.TrustAnchors() {
@@ -245,6 +256,10 @@ func (s *run) declared() error {
 // fetch-crl job runs.
 func (s *run) status(ctx context.Context) error {
 	r := s.r
+	if s.src == nil {
+		r.add("crl.setup", Skip, "fix policy.sources above first", "not run: the policy's crl and intermediate_certs members did not load")
+		return nil
+	}
 	var mu sync.Mutex
 	var events []crlrefresh.Event
 	opts := crlrefresh.Options{Issuers: s.inter, DeltaPeriodFor: s.decl.DeltaPeriodFor, Client: s.o.Client,

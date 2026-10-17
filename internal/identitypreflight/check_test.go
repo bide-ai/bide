@@ -456,3 +456,84 @@ func TestFlatDirSkipsWhatIsNotAFileAndSaysSo(t *testing.T) {
 	}
 	r.want(t, "crl.load", OK, "2 CRL(s)")
 }
+
+// A report is logged: no URL secret and no approver's name may reach it, in text or JSON.
+func everything(t *testing.T, r *Report) string {
+	t.Helper()
+	var buf bytes.Buffer
+	r.Text(&buf, term.New(false))
+	if err := r.JSON(&buf); err != nil {
+		t.Fatal(err)
+	}
+	return buf.String()
+}
+
+func TestNoURLSecretReachesTheReport(t *testing.T) {
+	g := newRig(t)
+	srv := newCRLServer(t) // serves nothing: every fetch fails
+	now := time.Now()
+	g.at = now
+	host := strings.TrimPrefix(srv.URL, "http://")
+	t.Run("a token in the query, failing fetch", func(t *testing.T) {
+		g.policy["crl"] = map[string]any{
+			g.rootK:  map[string]any{"urls": []string{srv.URL + "/root.crl?token=s3cret"}},
+			g.interK: map[string]any{"urls": []string{srv.URL + "/inter.crl?token=s3cret"}},
+		}
+		o := g.options("")
+		o.At, o.Fetch = time.Time{}, true
+		r := g.run(o)
+		r.want(t, "crl.fetch", Fail, "404")
+		if out := everything(t, r); strings.Contains(out, "s3cret") {
+			t.Fatalf("a secret reached the report:\n%s", out)
+		}
+	})
+	t.Run("credentials in the URL", func(t *testing.T) {
+		g.policy["crl"] = map[string]any{
+			g.rootK:  map[string]any{"urls": []string{"http://user:pass@" + host + "/root.crl?token=s3cret"}},
+			g.interK: map[string]any{"urls": []string{"http://user:pass@" + host + "/inter.crl"}},
+		}
+		o := g.options("")
+		o.At, o.Fetch = time.Time{}, true
+		r := g.run(o)
+		r.want(t, "policy.sources", Fail, "credentials")
+		if out := everything(t, r); strings.Contains(out, "pass@") || strings.Contains(out, "user:pass") || strings.Contains(out, "s3cret") || strings.Contains(out, "user:") {
+			t.Fatalf("a secret reached the report:\n%s", out)
+		}
+	})
+	t.Run("whatever code wrote the message", func(t *testing.T) {
+		if got := scrubURLs(`fetch "https://u:p@h.example/a.crl?token=x#f" failed (http://h.example/b?k=v)`); strings.ContainsAny(got, "?#@") {
+			t.Fatalf("not scrubbed: %s", got)
+		}
+	})
+}
+
+// A leaf's common name is usually a person's name: it is never printed, on success or on a refusal.
+func TestLeafCommonNameIsNeverPrinted(t *testing.T) {
+	c := newCertRig(t)
+	const cn = "Jane Q Person"
+	good := c.rig.inter.NewLeaf(t, testca.Opts{Key: testca.Ed25519, Mutate: func(x *x509Cert) { x.Subject.CommonName = cn }})
+	if out := everything(t, c.judge(good.Chain()...)); strings.Contains(out, cn) || strings.Contains(out, "Jane") {
+		t.Fatalf("a leaf CN reached the report:\n%s", out)
+	}
+	bad := c.rig.inter.NewLeaf(t, testca.Opts{Key: testca.Ed25519, Mutate: func(x *x509Cert) {
+		x.Subject.CommonName, x.UnknownExtKeyUsage = cn, nil
+	}})
+	r := c.judge(bad.Chain()...)
+	r.want(t, "cert.chain", Fail, "extended key usage")
+	if out := everything(t, r); strings.Contains(out, "Jane") {
+		t.Fatalf("a leaf CN reached the report:\n%s", out)
+	}
+}
+
+func TestNoCertificateIsSaidNotSkippedSilently(t *testing.T) {
+	g := newRig(t)
+	r := g.run(g.options(g.flatDir(g.freshCRLs())))
+	r.want(t, "cert.none", Skip, "no approver certificate was checked")
+	if !r.Ready || r.Partial || r.ExitCode() != ExitReady {
+		t.Fatalf("an absent -cert is a deployment check, not a partial one: exit %d", r.ExitCode())
+	}
+	c := newCertRig(t)
+	if c.judge(c.leaf.Chain()...).get("cert.none") != nil {
+		t.Fatal("cert.none is reported although a certificate was checked")
+	}
+}

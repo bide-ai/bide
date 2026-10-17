@@ -484,7 +484,10 @@ It never reports ready while a part the gate relies on was left out, so two choi
 Optional: `-cert chain.pem` (the approver's chain, leaf first, as `bide approve -cert` takes it; `-chain` adds
 more certificates behind it, `-as` names the approver id when the policy has several) asks whether that
 certificate would be accepted, as a decision made now (`-at <RFC 3339>` judges at another time, offline only).
-Run `-fetch` on the gate's host: reachability is proved from where the check runs.
+Run `-fetch` on the gate's host: reachability is proved from where the check runs. Without `-cert` the report
+says so (`cert.none`): a ready result then covers the deployment, not any approver, so run it with `-cert` and
+`-as` for each approver before go-live. The report prints the subject of CA certificates only, never an
+approver's, and every URL without its userinfo, query and fragment.
 
 **Exit status.** 0 ready: every check passed. 1 will not work as configured: at least one check failed (a
 failure outranks everything). 2 usage error. 3 a file could not be read or the tool could not run. 4
@@ -506,6 +509,7 @@ refuse, pause or miscount), `SKIP` (not run, and the summary says whether that m
 | `crl.setup` | every pinned issuer has a CRL source and a certificate, and the timings leave the refresher a margin before gates pause (`crlrefresh.New`) |
 | `crl.load`, `crl.file`, `crl.fetch`, `crl.event.*` | the CRLs were read or fetched, verified against the pinned issuers; files and events that were refused (rollback, equivocation, bad signature, oversize, a refused redirect, ...) |
 | `crl.fresh.<issuer>` | the newest CRL of each issuer is fresh by the status rule's own test and the refresher's health model (`FAIL` when a gate would not accept it now, `WARN` past the alarm age) |
+| `cert.none` | no `-cert` was given: the deployment was checked, and no approver's certificate was (a `SKIP` that does not make the result partial) |
 | `cert.parse`, `cert.chain` | the file is a certificate chain; the gate would accept it for the approver (`VerifyChain`), with the gate's reason if not |
 | `cert.status.count`, `cert.status.exec` | the revocation status rule, as when a decision is counted and as immediately before the call runs |
 

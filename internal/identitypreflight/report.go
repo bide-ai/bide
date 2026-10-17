@@ -16,9 +16,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"time"
 
+	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/internal/term"
 )
 
@@ -98,7 +100,15 @@ func (r *Report) ExitCode() int {
 }
 
 func (r *Report) add(id string, s Status, fix string, format string, a ...any) {
-	r.Checks = append(r.Checks, Check{ID: id, Status: s, Message: fmt.Sprintf(format, a...), Fix: fix})
+	r.Checks = append(r.Checks, Check{ID: id, Status: s, Message: scrubURLs(fmt.Sprintf(format, a...)), Fix: fix})
+}
+
+var urlText = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://[^\s"'<>)]+`)
+
+// scrubURLs passes every URL in a message through audit.RedactURL (no userinfo, query or fragment), whatever
+// code produced the message: a CRL source URL may carry a token, and a report is logged.
+func scrubURLs(s string) string {
+	return urlText.ReplaceAllStringFunc(s, audit.RedactURL)
 }
 
 func (r *Report) finish() {

@@ -231,7 +231,7 @@ func (r *Report) mustBeReady(t *testing.T) {
 		t.Fatalf("not ready (exit %d):\n%s", r.ExitCode(), r.dump())
 	}
 	for _, c := range r.Checks {
-		if c.Status == Skip || c.Status == Warn {
+		if c.Status == Warn || (c.Status == Skip && c.ID != "cert.none") {
 			t.Fatalf("a ready report holds %s %s: %s", c.Status, c.ID, c.Message)
 		}
 	}
