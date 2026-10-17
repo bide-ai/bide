@@ -317,6 +317,7 @@ func TestFormsInChrome(t *testing.T) {
 		TimeoutBefore        string   `json:"timeoutBefore"`
 		AssertionDraft       string   `json:"assertionDraft"`
 		Kofn                 string   `json:"kofn"`
+		KofnOne              string   `json:"kofnOne"`
 		SourceBeforeApply    string   `json:"sourceBeforeApply"`
 		AfterAddApprover     string   `json:"afterAddApprover"`
 		BannerAfterAdd       string   `json:"bannerAfterAdd"`
@@ -359,6 +360,9 @@ func TestFormsInChrome(t *testing.T) {
 	}
 	if !strings.Contains(r.AssertionDraft, `assert[0] "every path to charge passes approval >= 2 of 5" is violated`) {
 		t.Errorf("a draft that breaks the assertion: %q", r.AssertionDraft)
+	}
+	if r.KofnOne != "1 of 1 approver must sign." {
+		t.Errorf("one approver: %q", r.KofnOne)
 	}
 	if r.Kofn != "2 of 4 approvers must sign, never counting the person who started the run; the gate expires after 24h." || r.SourceBeforeApply != formsFlow {
 		t.Errorf("the draft: %q (the source must not change before Apply)", r.Kofn)

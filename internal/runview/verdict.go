@@ -230,7 +230,7 @@ func configVerdict(v *ConfigView) Verdict {
 			Line: "An assertion could not be decided or read; the others hold."}
 	case held > 0:
 		d = Verdict{Class: "good", Word: "ALL ASSERTIONS HOLD", Icon: "approval",
-			Line: fmt.Sprintf("%s hold on every path the flow declares.", count(held, "assertion"))}
+			Line: fmt.Sprintf("%s on every path the flow declares.", count(held, "assertion")+" "+holdVerb(held))}
 	default:
 		d = Verdict{Class: "info", Word: "NO ASSERTIONS", Icon: "node", Line: "The config declares none. Nothing is checked beyond its structure."}
 	}
@@ -246,17 +246,17 @@ func configVerdict(v *ConfigView) Verdict {
 		}
 	}
 	d.Stats = []Stat{
-		{Value: fmt.Sprint(nodes), Label: "nodes", Sub: v.Flow},
-		{Value: fmt.Sprint(v.Risk.SideEffects), Label: "side-effect steps", Sub: fmt.Sprintf("%d gated, %d ungated", v.Risk.Gated, v.Risk.Ungated), Class: map[bool]string{true: "warn", false: ""}[v.Risk.Ungated > 0]},
+		{Value: fmt.Sprint(nodes), Label: "node" + plural(nodes), Sub: v.Flow},
+		{Value: fmt.Sprint(v.Risk.SideEffects), Label: "side-effect step" + plural(v.Risk.SideEffects), Sub: fmt.Sprintf("%d gated, %d ungated", v.Risk.Gated, v.Risk.Ungated), Class: map[bool]string{true: "warn", false: ""}[v.Risk.Ungated > 0]},
 	}
 	if n := len(v.Assertions); n > 0 {
 		cl := "good"
 		if held < n {
 			cl = "bad"
 		}
-		d.Stats = append(d.Stats, Stat{Value: fmt.Sprintf("%d/%d", held, n), Label: "assertions hold", Sub: fmt.Sprintf("%d violated", violated), Class: cl})
+		d.Stats = append(d.Stats, Stat{Value: fmt.Sprintf("%d/%d", held, n), Label: "assertion" + plural(n) + " " + holdVerb(n), Sub: fmt.Sprintf("%d violated", violated), Class: cl})
 	}
-	d.Stats = append(d.Stats, Stat{Value: fmt.Sprint(len(v.Approvals)), Label: "approval gates", Sub: map[bool]string{true: "none declared", false: "declared on nodes"}[len(v.Approvals) == 0]})
+	d.Stats = append(d.Stats, Stat{Value: fmt.Sprint(len(v.Approvals)), Label: "approval gate" + plural(len(v.Approvals)), Sub: map[bool]string{true: "none declared", false: "declared on nodes"}[len(v.Approvals) == 0]})
 	return d
 }
 

@@ -250,7 +250,7 @@ func approvalText(v audit.ApprovalVerdict, err error, n int, mismatch string) Ap
 		why = append(why, fmt.Sprintf("%s's decision did not count: %s", d.Approver, d.Reason))
 	}
 	if len(v.Counted) < v.Need {
-		why = append(why, fmt.Sprintf("only %d of the %d needed approvals verified", len(v.Counted), v.Need))
+		why = append(why, fmt.Sprintf("only %d of the %d needed approval%s verified", len(v.Counted), v.Need, plural(v.Need)))
 	}
 	if err != nil && len(why) == 0 {
 		why = append(why, err.Error())
@@ -306,8 +306,12 @@ func finish(p *Proof, n int) {
 	case !p.OK:
 		p.Summary = "does not verify"
 	case p.Covers < n:
-		p.Summary = fmt.Sprintf("verifies: records 1 to %d of %d are under the signed head; the %d after it are not yet covered", p.Covers, n, n-p.Covers)
+		p.Summary = fmt.Sprintf("verifies: records 1 to %d of %d are under the signed head; the %d after it %s not yet covered", p.Covers, n, n-p.Covers, isAre(n-p.Covers))
 	default:
+		if n == 1 {
+			p.Summary = "verifies: the 1 record is under the signed head"
+			break
+		}
 		p.Summary = fmt.Sprintf("verifies: all %d records are under the signed head", n)
 	}
 }

@@ -67,8 +67,8 @@ func clip(s string, n int) string {
 // complete without script: the hover, click and pan of graph.js only add to it.
 func svg(g *Graph) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, `<svg class="graph" viewBox="0 0 %d %d" width="%d" height="%d" role="group" aria-label="flow graph: %d nodes, %d edges">`,
-		g.Width, g.Height, g.Width, g.Height, len(g.Nodes), len(g.Edges))
+	fmt.Fprintf(&b, `<svg class="graph" viewBox="0 0 %d %d" width="%d" height="%d" role="group" aria-label="flow graph: %d node%s, %d edge%s">`,
+		g.Width, g.Height, g.Width, g.Height, len(g.Nodes), plural(len(g.Nodes)), len(g.Edges), plural(len(g.Edges)))
 	b.WriteString(`<defs>`)
 	for _, m := range []struct{ id, cls string }{{"arrow", "arrowhead"}, {"arrow-taken", "arrowhead taken"}, {"arrow-problem", "arrowhead problem"},
 		{"arrow-added", "arrowhead added"}, {"arrow-removed", "arrowhead removed"}, {"arrow-changed", "arrowhead changed"}} {
