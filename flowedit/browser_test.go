@@ -335,11 +335,10 @@ func TestFormsInChrome(t *testing.T) {
 	if !r.OK {
 		t.Fatalf("the script failed: %s\nconsole: %q\nfailed requests: %q", r.Error, r.Console, r.Failed)
 	}
-	// The one refused operation of the script is a 422, which the browser logs as a console error;
-	// it is expected, exactly once, and nothing else is.
-	const refused422 = "error: Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)"
-	if len(r.Console) != 1 || r.Console[0] != refused422 || len(r.Failed) > 0 || len(r.OffOrigin) > 0 {
-		t.Errorf("the browser reported console %q (want only the one 422 of the refused operation), failed requests %q, requests off the origin %q", r.Console, r.Failed, r.OffOrigin)
+	// A refused operation is a 200 with {"refused": reason}, which the browser does not log as a failed
+	// request: the forms script refuses one operation (an empty block name) and the console stays empty.
+	if len(r.Console) > 0 || len(r.Failed) > 0 || len(r.OffOrigin) > 0 {
+		t.Errorf("the browser reported console %q, failed requests %q, requests off the origin %q", r.Console, r.Failed, r.OffOrigin)
 	}
 	if r.Original != formsFlow || r.GateButton != "Apply gate" || r.NeedBefore != "2" || !slices.Equal(r.ApproversBefore, []string{"ops", "finance", "risk"}) || r.SafetyBefore != "side_effect" || !r.ExcludeBefore || r.TimeoutBefore != "24h" {
 		t.Errorf("the form does not show the node's gate: need %q approvers %q safety %q exclude %v timeout %q button %q", r.NeedBefore, r.ApproversBefore, r.SafetyBefore, r.ExcludeBefore, r.TimeoutBefore, r.GateButton)
@@ -458,5 +457,87 @@ func TestRacesInChrome(t *testing.T) {
 	get("sourceUnchanged", &unchanged)
 	if !goodEnabled || !unchanged {
 		t.Errorf("a good number: apply enabled %v, text unchanged %v", goodEnabled, unchanged)
+	}
+}
+
+// TestAssertionsInChrome drives the assertions panel: an assertion is built from one of the six
+// templates, its verdict is shown live before it is added (a violation with its counterexample, a
+// duplicate refused), it is added, edited and removed as a splice of the file's text, and removing
+// one shows the weakened banner.
+func TestAssertionsInChrome(t *testing.T) {
+	flow := assertFlow + "assert:\n  - every path to charge passes approval >= 2 of 3\n  - receipt reachable\n"
+	s, _ := newTestServer(t, "refund.yaml", flow)
+	var r struct {
+		OK                      bool     `json:"ok"`
+		Error                   string   `json:"error"`
+		Rows                    []string `json:"rows"`
+		Templates               []string `json:"templates"`
+		SubmitInitial           string   `json:"submitInitial"`
+		LiveViolated            string   `json:"liveViolated"`
+		SourceBeforeAdd         string   `json:"sourceBeforeAdd"`
+		AfterAdd                string   `json:"afterAdd"`
+		RowsAfterAdd            []string `json:"rowsAfterAdd"`
+		VerdictAfterAdd         string   `json:"verdictAfterAdd"`
+		FocusAfterAdd           string   `json:"focusAfterAdd"`
+		FocusAfterEditClick     string   `json:"focusAfterEditClick"`
+		AfterRemoveSecond       string   `json:"afterRemoveSecond"`
+		BannerAfterRemoveSecond string   `json:"bannerAfterRemoveSecond"`
+		EditSubmit              string   `json:"editSubmit"`
+		EditTemplate            string   `json:"editTemplate"`
+		EditNode                string   `json:"editNode"`
+		LiveEdit                string   `json:"liveEdit"`
+		AfterEdit               string   `json:"afterEdit"`
+		FocusAfterEdit          string   `json:"focusAfterEdit"`
+		LiveDuplicate           string   `json:"liveDuplicate"`
+		LiveApproval            string   `json:"liveApproval"`
+		AfterRemove             string   `json:"afterRemove"`
+		BannerAfterRemove       string   `json:"bannerAfterRemove"`
+		RowsAfterRemove         []string `json:"rowsAfterRemove"`
+		Console                 []string `json:"console"`
+		Failed                  []string `json:"failed"`
+		OffOrigin               []string `json:"offOrigin"`
+	}
+	runScript(t, "assertions.mjs", s, &r)
+	if !r.OK {
+		t.Fatalf("the script failed: %s\nconsole: %q\nfailed requests: %q", r.Error, r.Console, r.Failed)
+	}
+	if len(r.Console) > 0 || len(r.Failed) > 0 || len(r.OffOrigin) > 0 {
+		t.Errorf("the browser reported console %q, failed requests %q, requests off the origin %q", r.Console, r.Failed, r.OffOrigin)
+	}
+	if !slices.Equal(r.Rows, []string{"every path to charge passes approval >= 2 of 3", "receipt reachable"}) || !slices.Equal(r.Templates, assertionForms) || r.SubmitInitial != "Add assertion" {
+		t.Errorf("rows %q, templates %q, submit %q", r.Rows, r.Templates, r.SubmitInitial)
+	}
+	if !strings.Contains(r.LiveViolated, "violated") || !strings.Contains(r.LiveViolated, "counterexample: validate → big spender → charge") || r.SourceBeforeAdd != flow {
+		t.Errorf("the live verdict before adding: %q (the source must not change)", r.LiveViolated)
+	}
+	added := flow + "  - no side effect after validate\n"
+	if r.AfterAdd != added || !slices.Equal(r.RowsAfterAdd, []string{"every path to charge passes approval >= 2 of 3", "receipt reachable", "no side effect after validate"}) || !strings.Contains(r.VerdictAfterAdd, "POLICY VIOLATION") || r.FocusAfterAdd != "a-template" {
+		t.Errorf("after adding: verdict %q, focus %q\n%s", r.VerdictAfterAdd, r.FocusAfterAdd, r.AfterAdd)
+	}
+	if r.EditSubmit != "Save assertion" || r.EditTemplate != "no_side_effect" || r.EditNode != "validate" || !strings.Contains(r.LiveEdit, "holds") {
+		t.Errorf("the edit form: %q %q %q, live %q", r.EditSubmit, r.EditTemplate, r.EditNode, r.LiveEdit)
+	}
+	edited := flow + "  - no side effect after charge\n"
+	if r.FocusAfterEditClick != "a-template" {
+		t.Errorf("focus after Edit: %q", r.FocusAfterEditClick)
+	}
+	if r.AfterRemoveSecond != strings.Replace(edited, "  - receipt reachable\n", "", 1) || !strings.Contains(r.BannerAfterRemoveSecond, "assertion removed: receipt reachable") {
+		t.Errorf("after removing the second: banner %q\n%s", r.BannerAfterRemoveSecond, r.AfterRemoveSecond)
+	}
+	if r.AfterEdit != edited || r.FocusAfterEdit != "a-edit-2" {
+		t.Errorf("after the edit: focus %q\n%s", r.FocusAfterEdit, r.AfterEdit)
+	}
+	if !strings.Contains(r.LiveDuplicate, "already has the assertion") {
+		t.Errorf("a duplicate: %q", r.LiveDuplicate)
+	}
+	if !strings.Contains(r.LiveApproval, "every path to charge passes approval >= 2 of 3 excluding the requester") || !strings.Contains(r.LiveApproval, "violated") {
+		t.Errorf("the approval form's verdict: %q", r.LiveApproval)
+	}
+	removed := strings.Replace(strings.Replace(edited, "  - receipt reachable\n", "", 1), "  - every path to charge passes approval >= 2 of 3\n", "", 1)
+	if r.AfterRemove != removed || !strings.Contains(r.BannerAfterRemove, "SAFETY CHECK WEAKENED") || !strings.Contains(r.BannerAfterRemove, "assertion removed: every path to charge passes approval >= 2 of 3") {
+		t.Errorf("after removing: banner %q\n%s", r.BannerAfterRemove, r.AfterRemove)
+	}
+	if !slices.Equal(r.RowsAfterRemove, []string{"no side effect after charge"}) {
+		t.Errorf("rows after removing %q", r.RowsAfterRemove)
 	}
 }

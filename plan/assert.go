@@ -63,6 +63,8 @@ func (a AssertionResult) Violated() bool { return !a.Holds && !a.Invalid && !a.U
 // quotes. Each is decided by breadth-first reachability on the declared graph (every edge, a join's
 // inputs, and every Switch arm, loop-back arms included), so a loop is visited once and never
 // enumerated, and a counterexample is a shortest path.
+var quotedToken = regexp.MustCompile(`"[^"]*"`)
+
 var (
 	assertGate     = regexp.MustCompile(`^every path to (\S+|"[^"]*") passes approval >= (\d+)(?: of (\d+))?( excluding the requester)?$`)
 	assertTerminal = regexp.MustCompile(`^every path to a terminal passes (\S+|"[^"]*")$`)
@@ -70,6 +72,27 @@ var (
 	assertNoSide   = regexp.MustCompile(`^no side effect after (\S+|"[^"]*")$`)
 	assertReach    = regexp.MustCompile(`^(\S+|"[^"]*") (reachable|unreachable)$`)
 )
+
+// assertName is the node name an assertion line holds in token: a name in double quotes is what is
+// between the quotes, exactly (the grammar has no escapes, so a backslash is a backslash and a
+// quote cannot be part of a name), and a bare name is itself. The line the flow editor writes and the
+// line a person writes are read the same way.
+func assertName(token string) string {
+	if len(token) >= 2 && token[0] == '"' && token[len(token)-1] == '"' {
+		return token[1 : len(token)-1]
+	}
+	return token
+}
+
+// assertQuote writes a node name as an assertion line holds it: in double quotes, as is. A name with a
+// double quote cannot be written (the grammar cannot hold it), and is quoted with strconv.Quote, which
+// no form of the grammar matches.
+func assertQuote(name string) string {
+	if strings.Contains(name, `"`) {
+		return strconv.Quote(name)
+	}
+	return `"` + name + `"`
+}
 
 // graphOf is the declared graph as adjacency: every edge (a join's inputs included) and every
 // Switch arm (loop-back arms included), and the entry.
@@ -137,14 +160,17 @@ func (r *ConfigReport) assertions(lines []string) {
 	for from := range adj {
 		hasOut[from] = true
 	}
-	name := func(s string) string {
-		if u, err := strconv.Unquote(s); err == nil {
-			return u
-		}
-		return s
-	}
+	name := assertName
 	for i, line := range lines {
 		text := strings.Join(strings.Fields(line), " ")
+		// Quoted names were once read with strconv.Unquote and are read as written now. A name whose
+		// old reading differs from the new (an escape such as \t or \u00e9 inside the quotes) would
+		// silently name a different node than before, so it is warned about, whatever it now names.
+		for _, tok := range quotedToken.FindAllString(text, -1) {
+			if u, err := strconv.Unquote(tok); err == nil && u != tok[1:len(tok)-1] {
+				r.Problems = append(r.Problems, ConfigProblem{Severity: "warning", Message: fmt.Sprintf("assert[%d] %q: the quoted name %s contains a backslash sequence; a quoted name is read exactly as written (no escapes), as a name with %q would have been read before: write the character itself", i, text, tok, u)})
+			}
+		}
 		res := AssertionResult{Text: text}
 		invalid := func(format string, args ...any) {
 			res.Invalid, res.Message = true, fmt.Sprintf(format, args...)
@@ -356,10 +382,7 @@ func parseGateAssertion(text string) (gateAssertion, bool) {
 		return gateAssertion{}, false
 	}
 	ga := gateAssertion{k: -1, n: -1, excl: m[4] != ""}
-	ga.target = m[1]
-	if u, err := strconv.Unquote(m[1]); err == nil {
-		ga.target = u
-	}
+	ga.target = assertName(m[1])
 	ga.k, _ = strconv.Atoi(m[2])
 	if m[3] != "" {
 		ga.n, _ = strconv.Atoi(m[3])
@@ -389,15 +412,12 @@ func RenameAssertion(text string, rename func(string) string) string {
 		prev := 0
 		for _, g := range f.nodes {
 			start, end := m[2*g], m[2*g+1]
-			name := text[start:end]
-			if u, err := strconv.Unquote(name); err == nil {
-				name = u
-			}
+			name := assertName(text[start:end])
 			if rename != nil {
 				name = rename(name)
 			}
 			b.WriteString(text[prev:start])
-			b.WriteString(strconv.Quote(name))
+			b.WriteString(assertQuote(name))
 			prev = end
 		}
 		b.WriteString(text[prev:])

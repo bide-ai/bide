@@ -55,6 +55,30 @@ type Approval struct {
 
 Approval is a node's approval gate as the config writes it: Need decisions from the Approvers, never counting the run's requester when ExcludePrincipal is set, and a deadline (a Go duration such as "48h", "" for none).
 
+### type Assertion
+
+```go
+type Assertion struct {
+	Form string `json:"form"`
+	Node string `json:"node,omitempty"`
+	Via  string `json:"via,omitempty"`
+
+	K         int  `json:"k,omitempty"`
+	N         int  `json:"n,omitempty"`
+	Excluding bool `json:"excluding,omitempty"`
+}
+```
+
+Assertion is one line of a config's assert list as the editor builds it: one of the six forms of the grammar plan reads (docs/guides/plan-flows.md, "Policy assertions"), with its parameters.
+
+**Constructors and functions**
+
+- `func ParseAssertion(line string) (a Assertion, ok bool)`: ParseAssertion reads a line of the assert list as one of the six forms, in the order plan tries them (a line that is two of them is the first); ok is false for a line that is none, which the check reports and the page shows without a form.
+
+**Methods**
+
+- `func (a Assertion) Text() (string, error)`: Text is the assertion as one line of the assert list, or a refusal when its parameters do not make one.
+
 ### type Conflict
 
 ```go
@@ -184,6 +208,9 @@ type Operation struct {
 	Value string `json:"value,omitempty"`
 
 	Approval *Approval `json:"approval,omitempty"`
+
+	Assertion *Assertion `json:"assertion,omitempty"`
+	Index     int        `json:"index,omitempty"`
 }
 ```
 
@@ -324,6 +351,8 @@ type View struct {
 	Warnings   int                    `json:"warnings"`
 	Problems   []plan.ConfigProblem   `json:"problems,omitempty"`
 	Assertions []plan.AssertionResult `json:"assertions,omitempty"`
+
+	AssertionForms []*Assertion `json:"assertion_forms,omitempty"`
 
 	Nodes  []Node   `json:"nodes,omitempty"`
 	Wiring []string `json:"wiring,omitempty"`

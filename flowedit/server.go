@@ -398,8 +398,10 @@ type Edited struct {
 	Changed bool `json:"changed"`
 }
 
-// apply answers /api/apply: the operation applied to the text in the request. A refusal is a 422
-// with {"error": reason}, and the page keeps the text it had.
+// apply answers /api/apply: the operation applied to the text in the request. A refusal is not an
+// HTTP error (the page asks what an operation would do as a question, and a browser logs a failed
+// request as an error): it is a 200 whose body is {"refused": reason}, and the page keeps the text it
+// had.
 func (s *Server) apply(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Text      string    `json:"text"`
@@ -416,7 +418,7 @@ func (s *Server) apply(w http.ResponseWriter, r *http.Request) {
 	var rf *Refusal
 	switch {
 	case errors.As(err, &rf):
-		fail(w, http.StatusUnprocessableEntity, rf.Reason)
+		reply(w, map[string]string{"refused": rf.Reason})
 	case err != nil:
 		fail(w, http.StatusInternalServerError, err.Error())
 	default:

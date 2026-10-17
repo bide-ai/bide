@@ -43,6 +43,14 @@ export function icon(name) {
   return svg;
 }
 
+// applyOp asks the server to apply an operation to the text. It resolves with the new text's view
+// ({text, changed, ...}) and rejects with the server's reason when the operation cannot be applied.
+async function applyOp(text, operation) {
+  const e = await api('/api/apply', { text, operation });
+  if (e.refused) throw new Error(e.refused);
+  return e;
+}
+
 async function api(path, body = {}) {
   const res = await fetch(path, {
     method: 'POST',
@@ -124,8 +132,8 @@ export function renderOutline(v) {
 // it asks the server what the check would say of the node with that gate (the same call, not kept),
 // and shows the node's problems under the form, so what the form rejects is what bide check
 // rejects. Apply writes the draft into the text.
-//   POST /api/apply {text, operation{op, node, value, approval{need, approvers[], exclude_principal, timeout}}}
-//     -> View + { changed }, or 422 { error } when the operation cannot be applied
+//   POST /api/apply {text, operation{op, node, value, approval{need, approvers[], exclude_principal, timeout}, assertion{form, node, via, k, n, excluding}, index}}
+//     -> View + { changed }, or { refused: reason } when the operation cannot be applied
 
 const SAFETIES = [['', 'left to the block'], ['readonly', 'readonly: no external effect, a resume re-runs it'], ['idempotent', 'idempotent: safe to repeat, a resume re-runs it'], ['side_effect', 'side_effect: must not run twice, a resume halts and asks']];
 
@@ -202,7 +210,7 @@ function gateForm(n) {
     const mine = ++seq;
     timer = setTimeout(async () => {
       try {
-        const e = await api('/api/apply', { text: state.text, operation: operation() });
+        const e = await applyOp(state.text, operation());
         if (mine !== seq) return;
         const mineNode = (e.nodes || []).find((x) => x.name === n.name);
         const errs = ((mineNode && mineNode.problems) || []).filter((p) => p.startsWith('error'));
@@ -253,12 +261,10 @@ function gateForm(n) {
 
 // operate applies an operation to the text, as a step the author can undo, and puts the focus back
 // on the control that made it.
-const applyOrApi = (text, op) => api('/api/apply', { text, operation: op });
-
 async function operate(op, focusId) {
   const sent = state.text;
   try {
-    const e = await applyOrApi(sent, op);
+    const e = await applyOp(sent, op);
     // The author may have typed while the answer was on its way: their text is not overwritten.
     if (state.text !== sent) {
       const msg = 'Not applied: the text changed while the edit was being applied. Apply it again.';
@@ -288,6 +294,9 @@ function opWords(op) {
     case 'set_safety': return op.node + ': safety ' + (op.value || 'left to the block');
     case 'set_block': return op.node + ': block ' + op.value;
     case 'clear_approval': return op.node + ': gate removed';
+    case 'add_assertion': return 'Assertion added';
+    case 'set_assertion': return 'Assertion changed';
+    case 'remove_assertion': return 'Assertion removed';
     default: return op.node + ': gate set';
   }
 }
@@ -339,18 +348,122 @@ function setText(text, v) {
   render(v, { keepSource: true });
 }
 
+// ---- the assertions panel: the six forms as templates, each with its live verdict ----
+//
+// An assertion is written from a form, not typed: the page sends the form's parameters
+// ({form, node, via, k, n, excluding}) and the server writes the line the check reads. While the form
+// is filled in, each change asks the server what the check says of the line (the apply call, not
+// kept) and shows the verdict, so the author sees whether it holds, or its counterexample, before
+// adding it. Assertions are checked by bide check and in CI; plan.Load ignores them.
+//   v.assertion_forms[i] is assert line i read as a form, null when it is none of the six.
+
+const TEMPLATES = [
+  ['approval', 'Every path to a node passes an approval gate of at least K decisions'],
+  ['passes', 'Every path to a node passes another node'],
+  ['terminal', 'Every path to a terminal passes a node'],
+  ['no_side_effect', 'No side effect after a node'],
+  ['reachable', 'A node is reachable'],
+  ['unreachable', 'A node is unreachable'],
+];
+
+let assertEditing = -1; // the index of the assert line being edited, -1 for the add form
+
+function verdictPill(a) {
+  const state = a.holds ? 'holds' : a.invalid ? 'invalid' : a.undecided ? 'undecided' : 'violated';
+  const glyph = a.holds ? 'ok' : a.invalid || a.undecided ? 'unknown' : 'x';
+  const cls = a.holds ? 'state-completed' : a.invalid || a.undecided ? 'state-started' : 'state-halted';
+  return h('span', { class: 'pill ' + cls }, icon(glyph), ' ' + state);
+}
+
+function verdictDetail(a) {
+  if (a.holds) return null;
+  return h('p', { class: 'small ' + (a.invalid || a.undecided ? 'warn' : 'bad') }, a.message || '', (a.path || []).length ? ' counterexample: ' + a.path.join(' \u2192 ') : '');
+}
+
 export function renderAssertions(v) {
   const list = v.assertions || [];
-  if (list.length === 0) { replace('assertions', h('p', { class: 'muted' }, 'None declared.')); return; }
-  replace('assertions', list.map((a) => {
-    const state = a.holds ? 'holds' : a.invalid ? 'invalid' : a.undecided ? 'undecided' : 'violated';
-    const glyph = a.holds ? 'ok' : a.invalid || a.undecided ? 'unknown' : 'x';
-    const cls = a.holds ? 'state-completed' : a.invalid || a.undecided ? 'state-started' : 'state-halted';
-    return h('div', { class: 'assert' },
-      h('p', {}, h('span', { class: 'pill ' + cls }, icon(glyph), ' ' + state), ' ', h('code', {}, a.text)),
-      a.holds ? null : h('p', { class: 'small ' + (a.invalid || a.undecided ? 'warn' : 'bad') }, a.message || '',
-        (a.path || []).length ? ' counterexample: ' + a.path.join(' → ') : ''));
-  }));
+  const forms = v.assertion_forms || [];
+  const rows = list.map((a, i) => {
+    const edit = forms[i] ? h('button', { type: 'button', class: 'btn', id: 'a-edit-' + i, 'aria-label': 'Edit assertion ' + a.text }, 'Edit') : null;
+    if (edit) edit.addEventListener('click', () => { assertEditing = i; renderAssertions(view); $('a-template').focus(); });
+    const rm = h('button', { type: 'button', class: 'btn', id: 'a-rm-' + i, 'aria-label': 'Remove assertion ' + a.text }, 'Remove');
+    rm.addEventListener('click', () => { assertEditing = -1; operate({ op: 'remove_assertion', index: i }, 'a-template'); });
+    return h('div', { class: 'assert', id: 'a-row-' + i },
+      h('p', {}, verdictPill(a), ' ', h('code', {}, a.text), ' ', edit, rm), verdictDetail(a));
+  });
+  if (assertEditing >= list.length || (assertEditing >= 0 && !forms[assertEditing])) assertEditing = -1;
+  replace('assertions', list.length ? rows : h('p', { class: 'muted' }, 'None declared.'), assertionForm(v, assertEditing));
+}
+
+function nodeSelect(id, label, v, value, onChange) {
+  const sel = h('select', { id }, (v.nodes || []).map((n) => h('option', { value: n.name, selected: n.name === value }, n.name)));
+  sel.addEventListener('change', onChange);
+  return field(id, label, sel);
+}
+
+function assertionForm(v, editing) {
+  const names = (v.nodes || []).map((n) => n.name);
+  const forms = v.assertion_forms || [];
+  const cur = editing >= 0 ? forms[editing] : null;
+  const d = cur ? { ...cur } : { form: 'approval', node: names[0] || '', via: names[0] || '', k: 1, n: 0, excluding: false };
+  if (!d.node) d.node = names[0] || '';
+  if (!d.via) d.via = names[0] || '';
+  if (!d.k) d.k = 1;
+  const tpl = h('select', { id: 'a-template' }, TEMPLATES.map(([val, label]) => h('option', { value: val, selected: val === d.form }, label)));
+  const fields = h('div', {});
+  const live = h('div', { id: 'a-live', class: 'small', role: 'status', 'aria-live': 'polite' });
+  const submit = h('button', { type: 'button', class: 'btn primary', id: 'a-submit' }, editing >= 0 ? 'Save assertion' : 'Add assertion');
+  const cancel = editing >= 0 ? h('button', { type: 'button', class: 'btn', id: 'a-cancel' }, 'Cancel') : null;
+  const operation = () => ({ op: editing >= 0 ? 'set_assertion' : 'add_assertion', index: editing >= 0 ? editing : 0, assertion: { ...d } });
+  let timer = 0;
+  let seq = 0;
+  function draw() {
+    const kids = [];
+    if (d.form === 'approval' || d.form === 'passes' || d.form === 'no_side_effect' || d.form === 'reachable' || d.form === 'unreachable') {
+      kids.push(nodeSelect('a-node', 'Node', v, d.node, (e) => { d.node = e.target.value; changed(); }));
+    }
+    if (d.form === 'passes' || d.form === 'terminal') {
+      kids.push(nodeSelect('a-via', d.form === 'terminal' ? 'Node every terminal path passes' : 'Node it must pass', v, d.via, (e) => { d.via = e.target.value; changed(); }));
+    }
+    if (d.form === 'approval') {
+      const k = h('input', { id: 'a-k', type: 'number', min: '1', step: '1', value: String(d.k) });
+      k.addEventListener('input', () => { d.k = Number.parseInt(k.value, 10) || 0; changed(); });
+      const n = h('input', { id: 'a-n', type: 'number', min: '0', step: '1', value: d.n ? String(d.n) : '', placeholder: 'no limit' });
+      n.addEventListener('input', () => { d.n = Number.parseInt(n.value, 10) || 0; changed(); });
+      const ex = h('input', { id: 'a-excluding', type: 'checkbox', checked: !!d.excluding });
+      ex.addEventListener('change', () => { d.excluding = ex.checked; changed(); });
+      kids.push(field('a-k', 'Decisions needed (K)', k), field('a-n', 'At most this many approvers (N, optional)', n),
+        h('div', { class: 'field check' }, ex, h('label', { for: 'a-excluding' }, 'The gate never counts the person who started the run')));
+    }
+    fields.replaceChildren(...kids);
+  }
+  function changed() {
+    clearTimeout(timer);
+    const mine = ++seq;
+    timer = setTimeout(async () => {
+      try {
+        const e = await applyOp(state.text, operation());
+        if (mine !== seq) return;
+        const at = editing >= 0 ? editing : (e.assertions || []).length - 1;
+        const a = (e.assertions || [])[at];
+        live.className = 'small';
+        live.replaceChildren(a ? h('p', {}, 'Live verdict: ', verdictPill(a), ' ', h('code', {}, a.text)) : h('p', {}, 'No change.'), a ? verdictDetail(a) : null);
+      } catch (err) {
+        if (mine !== seq) return;
+        live.className = 'small bad';
+        live.replaceChildren(h('p', {}, err.message));
+      }
+    }, 150);
+  }
+  tpl.addEventListener('change', () => { d.form = tpl.value; draw(); changed(); });
+  submit.addEventListener('click', async () => { const idx = assertEditing; assertEditing = -1; await operate(operation(), idx >= 0 ? 'a-edit-' + idx : 'a-template'); });
+  if (cancel) cancel.addEventListener('click', () => { assertEditing = -1; renderAssertions(view); $('a-edit-' + editing)?.focus(); });
+  draw();
+  changed();
+  return h('fieldset', { class: 'gate assertion-form' },
+    h('legend', {}, editing >= 0 ? 'Edit assertion' : 'Add an assertion'),
+    field('a-template', 'Form', tpl),
+    fields, live, h('div', { class: 'inline' }, submit, cancel));
 }
 
 export function renderProblems(v) {
