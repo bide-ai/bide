@@ -1,0 +1,22 @@
+# Dependabot keeps the GitHub Actions the workflows use up to date. Every action is pinned by commit
+# SHA with its tag in a comment (CONTRIBUTING.md, .github/scripts/check-pinned-actions.sh), so a pin
+# would otherwise never pick up an action's security fix. Dependabot updates the SHA and the comment
+# together, in one grouped pull request a week, which then goes through review and the merge queue
+# like any other change. Its commits carry no Signed-off-by; the DCO check accepts them only from a
+# pull request Dependabot opened (dco.yml).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/go-cache
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: ci
+    open-pull-requests-limit: 2
