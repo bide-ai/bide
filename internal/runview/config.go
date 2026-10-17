@@ -337,3 +337,19 @@ func CheckStyled(w io.Writer, c Config, st term.Style) bool {
 	}
 	return r.Errors() || c.Strict && len(r.Problems) > 0
 }
+
+// holdVerb is "holds" for one assertion and "hold" for any other count.
+func holdVerb(n int) string {
+	if n == 1 {
+		return "holds"
+	}
+	return "hold"
+}
+
+// isAre is "is" for one and "are" for any other count.
+func isAre(n int) string {
+	if n == 1 {
+		return "is"
+	}
+	return "are"
+}

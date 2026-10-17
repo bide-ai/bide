@@ -738,7 +738,7 @@ func gateStatus(g Gate) string {
 	if g.Need == 0 || n == 0 {
 		return fmt.Sprintf("pending (%d approved, %d denied so far; the policy is journaled with the call's result or the gate's tally)", a, d)
 	}
-	counts := fmt.Sprintf("%d of %d approvers", a, n)
+	counts := fmt.Sprintf("%d of %d approver%s", a, n, plural(n))
 	if d > 0 {
 		counts += fmt.Sprintf(", %d denied", d)
 	}

@@ -117,6 +117,8 @@ try {
   await page.focus('#g-add');
   await page.keyboard.type('ops');
   await page.keyboard.press('Enter');
+  await until(() => document.querySelector('#g-kofn')?.textContent.startsWith('1 of 1'), null, 'the draft to say 1 of 1');
+  r.kofnOne = await text('#g-kofn');
   await page.keyboard.type('  audit2  ');
   await page.keyboard.press('Enter');
   await page.focus('#g-exclude');

@@ -211,7 +211,7 @@ func CheckDiffStyled(w io.Writer, d Diff, st term.Style) (weakened bool, err err
 		n           int
 	}{{"old", v.OldName, v.OldErrors}, {"new", v.Name, v.NewErrors}} {
 		if s.n > 0 {
-			fmt.Fprintf(w, "%s%s: %s the %s config has %d error(s), compared as far as it reads; bide check %s lists them\n", st.Bang(), name, st.Warn("note:"), s.which, s.n, st.Path(s.name))
+			fmt.Fprintf(w, "%s%s: %s the %s config has %d error%s, compared as far as it reads; bide check %s lists them\n", st.Bang(), name, st.Warn("note:"), s.which, s.n, plural(s.n), st.Path(s.name))
 		}
 	}
 	if len(v.Changes) == 0 {

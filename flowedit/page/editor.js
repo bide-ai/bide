@@ -253,7 +253,7 @@ function gateForm(n) {
       setFeedback('bad', ['Decisions needed must be a whole number such as 2.']);
       return;
     }
-    kofn.textContent = draft.approvers.length ? draft.need + ' of ' + draft.approvers.length + ' approvers must sign' + (draft.exclude_principal ? ', never counting the person who started the run' : '') + (draft.timeout ? '; the gate expires after ' + draft.timeout : '') + '.' : 'No approvers yet.';
+    kofn.textContent = draft.approvers.length ? draft.need + ' of ' + draft.approvers.length + ' approver' + (draft.approvers.length === 1 ? '' : 's') + ' must sign' + (draft.exclude_principal ? ', never counting the person who started the run' : '') + (draft.timeout ? '; the gate expires after ' + draft.timeout : '') + '.' : 'No approvers yet.';
     clearTimeout(timer);
     const mine = ++seq;
     timer = setTimeout(async () => {
