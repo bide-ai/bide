@@ -224,7 +224,7 @@ func TestPublishAfterALostResponseFindsItsOwnObject(t *testing.T) {
 func injectHead(t *testing.T, k keys, f *gcstest.Fake, h audit.SignedTreeHead, mod func(*gcs.ObjectInfo)) {
 	t.Helper()
 	name, body := nameAndBody(t, k, h)
-	info := gcs.ObjectInfo{Name: name, KMSKey: kmsKey + "/cryptoKeyVersions/1", RetentionExpiry: f.Now().Add(30 * 24 * time.Hour)}
+	info := gcs.ObjectInfo{Name: name, Created: f.Now(), KMSKey: kmsKey + "/cryptoKeyVersions/1", RetentionExpiry: f.Now().Add(30 * 24 * time.Hour)}
 	if mod != nil {
 		mod(&info)
 	}
@@ -272,6 +272,55 @@ func TestPublishRefusesAnExistingObjectThatIsWeaker(t *testing.T) {
 	f := gcstest.New()
 	injectHead(t, k, f, h, nil)
 	publish(t, newAnchor(t, f, nil), h)
+}
+
+func TestPublishRefusesAnObjectCloudStorageDescribesInconsistently(t *testing.T) {
+	k := newKeys(t, 1)
+	h := k.head(t, "r", 1, 1)
+	for name, mod := range map[string]func(*gcs.ObjectInfo){
+		"checksum":         func(i *gcs.ObjectInfo) { i.CRC32C++ },
+		"size":             func(i *gcs.ObjectInfo) { i.Size++ },
+		"no generation":    func(i *gcs.ObjectInfo) { i.Generation = 0 },
+		"no creation time": func(i *gcs.ObjectInfo) { i.Created = time.Time{} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := gcstest.New()
+			injectHead(t, k, f, h, nil)
+			f.Report(f.Names()[0], 0, mod)
+			if err := newAnchor(t, f, nil).Publish(ctx, "r", h); !errors.Is(err, gcs.ErrWeak) {
+				t.Fatalf("Publish = %v; want ErrWeak", err)
+			}
+		})
+	}
+}
+
+// A fresh write that the bucket stored under other terms than were asked for does not count as anchored.
+func TestPublishRefusesAFreshWriteStoredUnderOtherTerms(t *testing.T) {
+	k := newKeys(t, 1)
+	for name, tc := range map[string]struct {
+		cfg func(*gcs.Config)
+		mod func(*gcs.ObjectInfo)
+	}{
+		"per-object retention too short": {func(c *gcs.Config) { c.ObjectRetention = true },
+			func(i *gcs.ObjectInfo) { i.Retention.RetainUntil = i.Created.Add(time.Hour) }},
+		"per-object retention unlocked": {func(c *gcs.Config) { c.ObjectRetention = true },
+			func(i *gcs.ObjectInfo) { i.Retention.Mode = "Unlocked" }},
+		"per-object retention dropped": {func(c *gcs.Config) { c.ObjectRetention = true }, func(i *gcs.ObjectInfo) { i.Retention = nil }},
+		"hold dropped":                 {func(c *gcs.Config) { c.LegalHold = true }, func(i *gcs.ObjectInfo) { i.TemporaryHold = false }},
+		"another key": {nil, func(i *gcs.ObjectInfo) {
+			i.KMSKey = "projects/p/locations/l/keyRings/r/cryptoKeys/other/cryptoKeyVersions/1"
+		}},
+		"retention dropped": {nil, func(i *gcs.ObjectInfo) { i.RetentionExpiry = time.Time{} }},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := gcstest.New()
+			f.Configure(func(b *gcs.BucketInfo) { b.ObjectRetention = true })
+			f.AlterNextCreate(tc.mod)
+			if err := newAnchor(t, f, tc.cfg).Publish(ctx, "r", k.head(t, "r", 1, 1)); !errors.Is(err, gcs.ErrWeak) {
+				t.Fatalf("Publish = %v; want ErrWeak", err)
+			}
+		})
+	}
 }
 
 func TestPublishRefusesAFreshWriteThatReadsBackWeaker(t *testing.T) {
