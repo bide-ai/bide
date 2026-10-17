@@ -412,6 +412,7 @@ func exitCases(f *exitFixture) []exitCase {
 		{name: "redactions: listed records still hold content", args: []string{"redactions", "-deployment", "test", "-trail", f.red.trail, "-sth", f.red.sth, "-pubkey", f.pub, "-journal", f.red.journalWhole}, want: 1},
 		{name: "redactions: the trail names a run no journal was given for", args: []string{"redactions", "-deployment", "test", "-trail", f.red.trail, "-sth", f.red.sth, "-pubkey", f.pub}, want: 1},
 		{name: "redactions: a trail file and a trail store", args: []string{"redactions", "-deployment", "test", "-trail", f.red.trail, "-trail-db", f.missing, "-unanchored", "-pubkey", f.pub}, want: 2},
+		{name: "redactions: a whitespace -deployment", args: []string{"redactions", "-deployment", "  ", "-trail", f.red.trail, "-sth", f.red.sth, "-pubkey", f.pub, "-journal", f.red.journal}, want: 2},
 		{name: "redactions: no -deployment", args: []string{"redactions", "-trail", f.red.trail, "-sth", f.red.sth, "-pubkey", f.pub, "-journal", f.red.journal}, want: 2},
 		{name: "redactions: nothing to read", args: []string{"redactions", "-deployment", "test", "-unanchored"}, want: 2},
 		{name: "redactions: no -pubkey", args: []string{"redactions", "-deployment", "test", "-trail", f.red.trail}, want: 2},

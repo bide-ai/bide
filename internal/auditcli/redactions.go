@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strings"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
@@ -53,12 +54,12 @@ func (c *cli) redactions(args []string) {
 		c.usageLine(fs.Name() + ": -run reads one run from a store; it needs -db or -postgres-env")
 	case haveStore && Stores == nil:
 		c.usageLine(fs.Name() + ": this build reads exported files only (-trail, -journal); -db and -postgres-env are in the full bide command")
-	case *deployment == "":
+	case strings.TrimSpace(*deployment) == "":
 		c.usageLine(fs.Name() + ": missing -deployment: every trail record is signed for one deployment, and the check verifies it")
 	case *pubkey == "":
 		c.usageLine(fs.Name() + ": missing -pubkey: every trail record is signed with the redaction key, and the check verifies each (give -unanchored to read a trail with no signed head)")
 	}
-	in := audit.RedactionVerifyInput{Unanchored: *unanchored, Deployment: *deployment, Journals: map[string][]agent.Record{}}
+	in := audit.RedactionVerifyInput{Unanchored: *unanchored, Deployment: strings.TrimSpace(*deployment), Journals: map[string][]agent.Record{}}
 	ok := true
 	if *pubkey != "" {
 		v, err := readPubKey(*pubkey)

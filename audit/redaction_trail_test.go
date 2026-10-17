@@ -878,3 +878,36 @@ func TestRedaction_DeploymentIsRequired(t *testing.T) {
 		t.Fatalf("VerifyRedactions with no deployment = %v, want ErrConfig", err)
 	}
 }
+
+// The signing check cannot be disabled by an input that makes the check fail to run: with an empty
+// deployment the check returns an error, and nothing is signed over a planted leaf.
+func TestSignRedactionTrail_AnErrorFromTheCheckDisablesNothing(t *testing.T) {
+	ctx := context.Background()
+	r := newTrailRig(t)
+	if _, err := audit.RedactJournal(ctx, r.j, r.trail, r.plan, r.options); err != nil {
+		t.Fatal(err)
+	}
+	r.plant(nil, "gov")
+	for _, dep := range []string{"", "  ", "\t"} {
+		if h, err := audit.SignRedactionTrail(ctx, r.trail, r.signer, r.v, dep, nil, time.Unix(0, p11Now())); err == nil || !errors.Is(err, agent.ErrConfig) {
+			t.Fatalf("SignRedactionTrail with deployment %q = %+v, %v; want an ErrConfig refusal", dep, h, err)
+		}
+	}
+	if _, err := audit.SignRedactionTrail(ctx, r.trail, r.signer, nil, "test", nil, time.Unix(0, p11Now())); !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("SignRedactionTrail with no verifier = %v", err)
+	}
+	r.options.Deployment = "\t "
+	if _, err := audit.RedactJournal(ctx, r.j, r.trail, r.plan, r.options); !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("RedactJournal with a whitespace deployment = %v", err)
+	}
+	// Surrounding space in a name is not part of it, when writing or verifying.
+	r2 := newTrailRig(t)
+	r2.options.Deployment = " test "
+	if _, err := audit.RedactJournal(ctx, r2.j, r2.trail, r2.plan, r2.options); err != nil {
+		t.Fatal(err)
+	}
+	leaves, _ := r2.trail.Load(ctx, audit.RedactionTrailName)
+	if rep, err := audit.VerifyRedactions(audit.RedactionVerifyInput{Deployment: "test ", Trail: leaves, Verifier: r2.v, Unanchored: true, Journals: r2.journals()}); err != nil || !rep.OK() {
+		t.Fatalf("a padded deployment name does not match its trimmed form: %+v, %v", rep, err)
+	}
+}

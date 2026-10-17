@@ -292,6 +292,7 @@ var (
 // as unfinished) and the error says so; run the same plan again to finish and close it.
 func RedactJournal(ctx context.Context, j *agent.Journal, trail EventStore, plan agent.RedactionPlan, opt RedactionOptions) (agent.RedactionResult, error) {
 	var res agent.RedactionResult
+	opt.Deployment = strings.TrimSpace(opt.Deployment)
 	switch {
 	case j == nil || trail == nil:
 		return res, fmt.Errorf("audit: RedactJournal: a nil journal or trail: %w", agent.ErrConfig)
@@ -449,6 +450,7 @@ func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error) {
 	if strings.TrimSpace(in.Deployment) == "" {
 		return rep, fmt.Errorf("audit: VerifyRedactions: a deployment name is required: every record is signed for one: %w", agent.ErrConfig)
 	}
+	in.Deployment = strings.TrimSpace(in.Deployment)
 	add := func(k RedactionFindingKind, run, format string, a ...any) {
 		rep.Findings = append(rep.Findings, RedactionFinding{Kind: k, RunID: run, Detail: fmt.Sprintf(format, a...)})
 	}
@@ -565,8 +567,12 @@ func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error) {
 		for i, rec := range journal {
 			ref, isListed := listed[key{run, i}]
 			if rec.Redacted {
-				leaf, _ := agent.TombstoneLeafHash(rec.Raw())
-				at, _ := agent.TombstoneMillis(rec.Raw())
+				leaf, okLeaf := agent.TombstoneLeafHash(rec.Raw())
+				at, okAt := agent.TombstoneMillis(rec.Raw())
+				if !okLeaf || !okAt {
+					add(FindingMalformed, run, "record %d (%q): its tombstone does not read", i, rec.Name)
+					continue
+				}
 				switch {
 				case !isListed:
 					add(FindingUnaccounted, run, "record %d (%q) is a tombstone and no trail record names it as erased by a pass: a redaction made outside the tool (a later plan listing it as already redacted does not account for it)", i, rec.Name)
@@ -617,11 +623,18 @@ func prevHash(leaves [][]byte, i int) []byte {
 // record appended meanwhile is not attested. It returns an error wrapping ErrNotVerified naming the
 // first problem.
 func SignRedactionTrail(ctx context.Context, store EventStore, signer Signer, v Verifier, deployment string, prior []SignedTreeHead, now time.Time) (SignedTreeHead, error) {
+	if strings.TrimSpace(deployment) == "" || v == nil {
+		return SignedTreeHead{}, fmt.Errorf("audit: SignRedactionTrail: a deployment name and a verifier are required: %w", agent.ErrConfig)
+	}
+	deployment = strings.TrimSpace(deployment)
 	leaves, err := store.Load(ctx, RedactionTrailName)
 	if err != nil {
 		return SignedTreeHead{}, fmt.Errorf("audit: load the redaction trail: %w", err)
 	}
-	rep, _ := VerifyRedactions(RedactionVerifyInput{Trail: leaves, Heads: prior, Verifier: v, Deployment: deployment, Unanchored: len(prior) == 0})
+	rep, verr := VerifyRedactions(RedactionVerifyInput{Trail: leaves, Heads: prior, Verifier: v, Deployment: deployment, Unanchored: len(prior) == 0})
+	if verr != nil && !errors.Is(verr, ErrNotVerified) {
+		return SignedTreeHead{}, verr // not a finding: the check could not run (no deployment, say), so nothing is signed
+	}
 	for _, f := range rep.Findings {
 		switch f.Kind {
 		case FindingTrailAltered, FindingBadSignature, FindingReordered, FindingMalformed:
@@ -642,7 +655,10 @@ func checkTrailBeforeAppend(ctx context.Context, trail EventStore, opt Redaction
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrRedactNoTrail, err)
 	}
-	rep, _ := VerifyRedactions(RedactionVerifyInput{Trail: leaves, Heads: opt.TrailHeads, Verifier: v, Deployment: opt.Deployment, Unanchored: true})
+	rep, verr := VerifyRedactions(RedactionVerifyInput{Trail: leaves, Heads: opt.TrailHeads, Verifier: v, Deployment: opt.Deployment, Unanchored: true})
+	if verr != nil && !errors.Is(verr, ErrNotVerified) {
+		return fmt.Errorf("audit: RedactJournal: the trail could not be checked: %w", verr)
+	}
 	for _, f := range rep.Findings {
 		switch f.Kind {
 		case FindingTrailAltered, FindingBadSignature, FindingReordered, FindingMalformed:
