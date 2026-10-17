@@ -46,7 +46,7 @@ EKU and policy OID), the **platform team** (writes the certificate policy and ru
    makes the request, signed by the key where it is held, see [the key and the request](#the-key-and-the-certificate-request).
    The private key never leaves its file, token or KMS.
 3. **The CA issues a certificate for that public key**, after the bank's own identification of the person
-   (single sign-on with step-up, say), with one subject alternative name that is the person's identifier,
+   (single sign-on with step-up, say; [a worked, tested recipe with step-ca](sso-certificates.md)), with one subject alternative name that is the person's identifier,
    the bank's EKU and the bank's policy OID. The request names nothing, so the CA or the identity provider
    sets all of that; bide asks the CA for nothing, and it cannot know how the person was identified.
 

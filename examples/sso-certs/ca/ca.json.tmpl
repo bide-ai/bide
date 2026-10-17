@@ -1,0 +1,46 @@
+{
+  "root": "/pki/certs/root.crt",
+  "crt": "/pki/certs/intermediate.crt",
+  "key": "/pki/secrets/intermediate.key",
+  "address": ":19000",
+  "insecureAddress": ":19001",
+  "dnsNames": ["localhost"],
+  "logger": {"format": "text"},
+  "db": {"type": "badgerv2", "dataSource": "/pki/db"},
+  "crl": {
+    "enabled": true,
+    "generateOnRevoke": true,
+    "cacheDuration": "[[ .CRLCache ]]",
+    "renewPeriod": "[[ .CRLRenew ]]",
+    "idpURL": "http://localhost:19001/1.0/crl"
+  },
+  "authority": {
+    "backdate": "1m",
+    "claims": {
+      "minTLSCertDuration": "1m",
+      "maxTLSCertDuration": "7h59m",
+      "defaultTLSCertDuration": "7h59m",
+      "disableRenewal": true
+    },
+    "provisioners": [
+      [[ range .Provisioners ]]{
+        "type": "OIDC",
+        "name": "[[ .Name ]]",
+        "clientID": "[[ .ClientID ]]",
+        "clientSecret": "unused: the mock IdP does not check it",
+        "configurationEndpoint": "https://localhost:8080/default/.well-known/openid-configuration",
+        "listenAddress": "127.0.0.1:10000",
+        "options": {"x509": {"templateFile": "/pki/templates/approver-leaf.tpl"}}
+      }[[ if not .Last ]],[[ end ]]
+      [[ end ]],
+      {
+        "type": "JWK",
+        "name": "operator",
+        "key": [[ .OperatorPublic ]],
+        "encryptedKey": "[[ .OperatorEncrypted ]]",
+        "options": {"x509": {"templateFile": "/pki/templates/operator-leaf.tpl"}}
+      }
+    ]
+  },
+  "tls": {"minVersion": 1.2, "maxVersion": 1.3}
+}

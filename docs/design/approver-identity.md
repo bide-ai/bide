@@ -66,7 +66,7 @@ Not claimed:
   standard library only: a narrow, strict CMS verifier on `encoding/asn1` (decision 17), with no third-party
   CMS dependency.
 - SSO is the bank's. Its SSO issues short-lived certificates through its existing PKI (smallstep,
-  Vault PKI, ADCS, or another). bide verifies certificates. It never speaks OIDC.
+  Vault PKI, ADCS, or another). bide verifies certificates. It never speaks OIDC. The worked, tested path with step-ca (OIDC provisioner, template, renewal script, revocation) is [SSO certificates](../guides/sso-certificates.md); `examples/sso-certs` runs it.
 
 ## Threat model
 
