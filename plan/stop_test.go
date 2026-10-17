@@ -151,3 +151,41 @@ func TestStop_FlowWithoutASwitchIsRefused(t *testing.T) {
 		t.Fatalf("a nil switch: %v", err)
 	}
 }
+
+// A node held before its claim writes no attempt marker; one held after its claim has its claim recorded
+// as not started. Here the switch's cache learns of the stop while the first node runs, so the second
+// node is held by the cached check, before its claim.
+func TestStop_FlowNodeHeldBeforeItsClaimWritesNoMarker(t *testing.T) {
+	ctx := context.Background()
+	j := agenttest.MustJournal(agent.NewMemStore())
+	ctl, _ := agent.NewStopControl(j, agent.WithStopMode(agent.StopBasic))
+	sw, _ := agent.NewStopSwitch(ctl, agent.WithStopPoll(time.Hour))
+	var fired atomic.Int64
+	b := plan.New[int, int]("payout")
+	a := b.Step("prep", func(c context.Context, n int) (int, error) {
+		if _, err := ctl.SetStop(c, agent.StopRequest{Scope: agent.StopScope{Kind: agent.StopFlow, Name: "payout"}, By: "a"}); err != nil {
+			t.Error(err)
+		}
+		sw.Hold(c, agent.RunRef{RunID: "x"}, agent.StopQuery{}, false, true) // the cache reads it
+		return n, nil
+	}, plan.ReadOnly())
+	c := b.Step("charge", func(_ context.Context, n int) (int, error) { fired.Add(1); return n + 1, nil })
+	b.Edge(a, c)
+	b.WithStopSwitch(sw)
+	flow, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := flow.Run(ctx, j, "r1", 1); !errors.As(err, new(*agent.Stopped)) || fired.Load() != 0 {
+		t.Fatalf("err = %v fired %d", err, fired.Load())
+	}
+	recs, err := j.History(ctx, "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range recs {
+		if r.Kind == agent.StepAttempt {
+			t.Fatalf("a node held before its claim left an attempt marker: %q", r.Name)
+		}
+	}
+}
