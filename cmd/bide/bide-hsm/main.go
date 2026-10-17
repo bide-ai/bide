@@ -94,12 +94,14 @@ const usage = `bide-hsm: bide approve for approvers whose keys are in an HSM or 
   bide-hsm approve -db <file> -run <id> -call <tool-use id> -as <approver> -key <key ref> -approver-keys <keys> [flags]
   bide-hsm approve -db <file> -list
   bide-hsm pubkey  -key <key ref> [-as <approver>]
+  bide-hsm csr     -key <key ref> [-out <file>] [-policy <policy file> -as <approver>]
   bide-hsm version
 
 bide-hsm approve is bide approve, with -key naming a key by reference instead of a key file. It
 reads the call from the journal, shows what it will sign, asks you to confirm, has the HSM or KMS
 sign the decision, checks it against the call, records it, and writes a receipt.
-bide-hsm pubkey prints the approver-keys entry that enrols a key. Each command takes -h.
+bide-hsm pubkey prints the approver-keys entry that enrols a key. bide-hsm csr writes a certificate
+signing request for a key, signed by the key, for a certificate-bound approver. Each command takes -h.
 
 ` + keyRefHelp
 
@@ -142,6 +144,8 @@ func run(args []string, in io.Reader, stdout, stderr io.Writer, d deps) int {
 		return approvecmd.MainWith(args[1:], in, stdout, stderr, d.stores, keySource(d))
 	case "pubkey":
 		return pubkey(args[1:], stdout, stderr, d)
+	case "csr":
+		return csrCmd(args[1:], stdout, stderr, d)
 	case "version":
 		return versionCmd(args[1:], stdout, stderr)
 	case "help", "-h", "-help", "--help":
@@ -149,7 +153,7 @@ func run(args []string, in io.Reader, stdout, stderr io.Writer, d deps) int {
 		return 0
 	}
 	fmt.Fprintf(stderr, "%sbide-hsm: unknown command %q\n", term.For(stderr, term.Auto).ErrorPrefix(), args[0])
-	fmt.Fprintln(stderr, "commands: approve, pubkey, version (bide-hsm -h)")
+	fmt.Fprintln(stderr, "commands: approve, pubkey, csr, version (bide-hsm -h)")
 	return 2
 }
 

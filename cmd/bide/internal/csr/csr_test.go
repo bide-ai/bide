@@ -345,3 +345,13 @@ func TestOpenSSL(t *testing.T) {
 		})
 	}
 }
+
+// TestCheck: Check refuses what Build refuses and accepts what it builds, without a key.
+func TestCheck(t *testing.T) {
+	if err := Check(Names{Email: "ops@bank.example"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Check(Names{Email: "a@b.example", URI: "https://b.example/a"}); err == nil {
+		t.Fatal("accepted two SANs")
+	}
+}

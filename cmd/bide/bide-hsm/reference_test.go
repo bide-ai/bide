@@ -64,11 +64,13 @@ Exit status is 0 for success, 1 for a refusal or a failure, and 2 for a usage er
 |---|---|
 | [` + "`bide-hsm approve`" + `](#bide-hsm-approve) | record your signed approval (or -reject) of a call that waits for a decision, with a key in an HSM or KMS; -list shows what waits |
 | [` + "`bide-hsm pubkey`" + `](#bide-hsm-pubkey) | print the public key of a key in an HSM or KMS, and the approver-keys entry that enrols it |
+| [` + "`bide-hsm csr`" + `](#bide-hsm-csr) | write a certificate signing request for a key in an HSM or KMS, signed by that key, for the CA that issues the certificate bide-hsm approve -cert uses |
 | [` + "`bide-hsm version`" + `](#bide-hsm-version) | print the version and whether this build can use PKCS#11 keys |
 `)
 	for _, c := range []struct{ name, h string }{
 		{"approve", help(t, "approve", "-h")},
 		{"pubkey", help(t, "pubkey", "-h")},
+		{"csr", help(t, "csr", "-h")},
 	} {
 		b.WriteString("\n## bide-hsm " + c.name + "\n\n```text\n" + c.h + "```\n")
 	}

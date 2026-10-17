@@ -67,6 +67,13 @@ func PublicKey(sg audit.Signer) (crypto.PublicKey, error) {
 	return nil, fmt.Errorf("a certificate signing request needs an ed25519 or ecdsa-p256 key, not %s", sg.Alg())
 }
 
+// Check reports whether n can be put in a request, so a caller can refuse a name before it opens a key.
+// Build checks the same.
+func Check(n Names) error {
+	_, err := extensions(n)
+	return err
+}
+
 // Build returns the PEM of a certificate signing request for the key of sg asking for n, signed by the
 // key. Before returning, it parses the request and checks its signature, that its public key is the
 // one sg reports, and that it carries exactly the names asked for; a request that fails any of them is
