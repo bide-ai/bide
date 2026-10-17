@@ -53,6 +53,7 @@ type StopTrailError struct {
 	Err          error
 }
 
+// Error implements error.
 func (e *StopTrailError) Error() string {
 	if e.StoreWritten {
 		return fmt.Sprintf("stop record %s is in force, but writing it to the stop trail failed (Reaudit completes it): %v", e.Record, e.Err)
@@ -60,6 +61,7 @@ func (e *StopTrailError) Error() string {
 	return fmt.Sprintf("stop record %s was not written: the stop trail could not take it first: %v", e.Record, e.Err)
 }
 
+// Unwrap returns the trail's error.
 func (e *StopTrailError) Unwrap() error { return e.Err }
 
 // agentEvent lets the audit package commit a StopRecord as an event leaf (as it does a NotifyRecord);

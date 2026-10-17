@@ -48,6 +48,7 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `const SaltSize = 32`: SaltSize is the length of Record.Salt: 32 bytes (256 bits) from crypto/rand.
 - `const StopControlRun = "@stop"`: StopControlRun is the run ID of the control run: the journal run in which a store holds the stop, lift and mode records.
 - `const StopFormat = "bide.stop/1"`: StopFormat names the format of a stop record.
+- `const StopTrailName = "stop"`: StopTrailName is the name of the audit trail of a deployment's stops: an append-only sequence of the control run's signed records, committed, signed and anchored by the audit package (audit.StopTrail over an audit.AuditedEventStore).
 
 **Variables**
 
@@ -185,6 +186,7 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `func RootRunID(runID string) string`: RootRunID returns the run that drives runID: the run itself, or for a sub-agent's run the root run to re-invoke to continue it (ApprovalPending.RootRunID for a gate inside a sub-agent).
 - `func SameApprover(a, b string) bool`: SameApprover reports whether two ids name one approver: equal ignoring ASCII case, the rule Validate holds a policy's ids to, and the rule a gate that excludes the requester matches a requester to an approver id by.
 - `func SameNotifyRecord(a, b NotifyRecord) bool`: SameNotifyRecord reports whether a and b are the same record: the same canonical JSON, so times compare by instant and not by location or monotonic clock reading.
+- `func SameStopRecord(a, b StopRecord) bool`: SameStopRecord reports whether a and b are the same record: the same canonical bytes, signature included.
 - `func Sleep(ctx context.Context, name string, d time.Duration) error`: Sleep pauses the current run until d has elapsed from the FIRST time this timer was reached, durably.
 - `func SplitToKey(key string) (receiver, base string, ok bool)`: SplitToKey splits the key of a fan-out delivery, "to:&lt;receiver&gt;:&lt;key&gt;" (see ToKey), into the receiver and the key of the event it delivers.
 - `func StopDigest(r StopRecord) string`: StopDigest returns the hex SHA-256 of the canonical bytes of the whole record r, signature included: what a lift's SetDigest names.
@@ -1450,6 +1452,25 @@ MemNotifyTrail is an in-memory NotifyTrail, safe for concurrent use.
 - `func (m *MemNotifyTrail) Append(_ context.Context, trail string, seq int, rec NotifyRecord) error`: Append implements NotifyTrail.
 - `func (m *MemNotifyTrail) Load(_ context.Context, trail string) ([]NotifyRecord, error)`: Load implements NotifyTrail.
 
+## type MemStopTrail
+
+```go
+type MemStopTrail struct {
+	// contains filtered or unexported fields
+}
+```
+
+MemStopTrail is an in-memory StopTrail, safe for concurrent use.
+
+**Constructors and functions**
+
+- `func NewMemStopTrail() *MemStopTrail`: NewMemStopTrail returns an empty in-memory stop trail.
+
+**Methods**
+
+- `func (m *MemStopTrail) Append(_ context.Context, trail string, seq int, rec StopRecord) error`: Append implements StopTrail.
+- `func (m *MemStopTrail) Load(_ context.Context, trail string) ([]StopRecord, error)`: Load implements StopTrail.
+
 ## type MemStore
 
 ```go
@@ -2496,7 +2517,10 @@ Redactor is the optional store capability that replaces one entry's bytes with a
 ## type Rejection
 
 ```go
-type Rejection struct{ Name, Reason string }
+type Rejection struct {
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
+}
 ```
 
 Rejection is a record in the control run that has no effect, and why.
@@ -3075,9 +3099,11 @@ StopControl reads and writes the control run: the stops, lifts, mode and policy 
 - `func (c *StopControl) ChangeMode(ctx context.Context, req ModeRequest) (StopState, error)`: ChangeMode records that the deployment changed mode: evidence for history and the audit trail, which changes nothing a process does (the mode is each process's configuration, rolled out by the operator).
 - `func (c *StopControl) LiftStop(ctx context.Context, id string, req LiftRequest) (StopEntry, error)`: LiftStop adds one lifter's approval of lifting stop id and returns the stop as State then reports it (Lifted when the rule is met, else LiftsHeld of LiftsNeeded).
 - `func (c *StopControl) Mode() StopMode`: Mode is the mode the control runs under: the declared one, else audited with a policy and basic without (an undeclared mode is refused as soon as the control run holds a record).
+- `func (c *StopControl) Reaudit(ctx context.Context) (int, error)`: Reaudit appends to the trail every record of the control run that it lacks, in store order, and returns how many it appended: how a stop whose trail write failed (a \*StopTrailError) is completed, and a trail that fell behind is caught up.
 - `func (c *StopControl) RotatePolicy(ctx context.Context, next StopPolicy, req LiftRequest) (StopState, error)`: RotatePolicy adds one lifter's approval of replacing the policy in force with next, and returns the state afterwards (PolicySeq has advanced once a quorum of the policy in force has approved the same document).
 - `func (c *StopControl) SetStop(ctx context.Context, req StopRequest) (StopEntry, error)`: SetStop sets a stop and returns it as State reports it.
 - `func (c *StopControl) State(ctx context.Context) (StopState, error)`: State folds the control run into the effective state.
+- `func (c *StopControl) StopRecords(ctx context.Context) ([]StopRecord, error)`: StopRecords returns the control run's decodable records, in store order: what the trail is compared with.
 
 ## type StopEntry
 
@@ -3135,6 +3161,7 @@ StopOption configures NewStopControl.
 - `func WithStopMode(m StopMode) StopOption`: WithStopMode declares the mode of this process: StopBasic, or StopAudited (which needs WithStopPolicy).
 - `func WithStopPolicy(p StopPolicy) StopOption`: WithStopPolicy gives the control the audited-mode policy: the trust root, the policy this process pins (normally the one the deployment started audited mode with).
 - `func WithStopRoot(digest string) StopOption`: WithStopRoot names the digest (StopPolicy.Digest) of the deployment's root policy, the only policy that may start the chain a process walks.
+- `func WithStopTrail(t StopTrail) StopOption`: WithStopTrail gives an audited control the trail its records are also written to.
 - `func WithStopVerifier(nv StopVerifierFunc) StopOption`: WithStopVerifier gives the control the means to build the verifiers of a policy a transition carries (audit.NewVerifier).
 
 ## type StopPolicy
@@ -3232,6 +3259,10 @@ type StopRecord struct {
 
 StopRecord is one record of the control run.
 
+**Constructors and functions**
+
+- `func DiffStopRecords(store, trail []StopRecord) (storeOnly, trailOnly []StopRecord)`: DiffStopRecords returns the records of store that are not in trail, and those of trail that are not in store, by content.
+
 **Methods**
 
 - `func (r StopRecord) Signed() bool`: Signed reports whether r carries a signature.
@@ -3318,6 +3349,10 @@ type StopState struct {
 
 StopState is the effective state of the control run for one control.
 
+**Constructors and functions**
+
+- `func VerifyStopRecords(recs []StopRecord, opts ...StopOption) (StopState, error)`: VerifyStopRecords folds records (a control run's, or a stop trail's) under the policy the options give, with no store: what bide audit stops does to a trail.
+
 **Methods**
 
 - `func (s StopState) Active() []StopEntry`: Active returns the stops that are not lifted, in the order they were set.
@@ -3358,6 +3393,35 @@ StopSwitchOption configures NewStopSwitch.
 - `func WithStopErrors(fn func(error)) StopSwitchOption`: WithStopErrors sets the function a StopSwitch hands a failed read of the control run, and the alerts of a control that cannot judge the stops (StopState.ChainErr, Unverified in a basic control).
 - `func WithStopPoll(d time.Duration) StopSwitchOption`: WithStopPoll sets how often a StopSwitch reads the control run for the checks that use its cache (a drive's start, a turn's start, a call before its claim): the latency bound of a stop for them.
 - `func WithStopStaleness(d time.Duration) StopSwitchOption`: WithStopStaleness sets how old the last successful read may be for a side-effect call to run when the control run cannot be read now: past it the call is held (StopCauseUnreadable).
+
+## type StopTrail
+
+```go
+type StopTrail interface {
+	Load(ctx context.Context, trail string) ([]StopRecord, error)
+
+	Append(ctx context.Context, trail string, seq int, rec StopRecord) error
+}
+```
+
+StopTrail is the port of the stop trail: a named, append-only sequence of StopRecords with insert-if-absent at a position, as NotifyTrail is for notifications.
+
+## type StopTrailError
+
+```go
+type StopTrailError struct {
+	Record       string
+	StoreWritten bool
+	Err          error
+}
+```
+
+StopTrailError is returned when a record could not be written to the stop trail.
+
+**Methods**
+
+- `func (e *StopTrailError) Error() string`: Error implements error.
+- `func (e *StopTrailError) Unwrap() error`: Unwrap returns the trail's error.
 
 ## type StopVerifierFunc
 
