@@ -537,6 +537,7 @@ refuse, pause or miscount), `SKIP` (not run, and the summary says whether that m
 | `crl.fresh.<issuer>` | the newest CRL of each issuer is fresh by the status rule's own test and the refresher's health model (`FAIL` when a gate would not accept it now, `WARN` past the alarm age) |
 | `cert.none` | no `-cert` was given: the deployment was checked, and no approver's certificate was (a `SKIP` that does not make the result partial) |
 | `cert.parse`, `cert.chain` | the file is a certificate chain; the gate would accept it for the approver (`VerifyChain`), with the gate's reason if not |
+| `cert.cdp` | the leaf's CRL distribution points against the CRLs held (only with `-cert` and CRLs loaded): `FAIL` when the issuer's CRLs carry an issuing distribution point that none of the leaf's plain points names, so no CRL covers it; `WARN` when the leaf has several plain points with different names, because status is read from a CRL covering any one of them and that is right only for mirrors of one CRL |
 | `cert.status.count`, `cert.status.exec` | the revocation status rule, as when a decision is counted and as immediately before the call runs |
 
 **Two ways to compare with the gate.** `-expect-digest <hex>` (the gate's policy digest, from the pause note
