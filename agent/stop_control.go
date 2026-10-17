@@ -458,7 +458,9 @@ func (c *StopControl) foldFrom(recs []Record, audited bool, start StopPolicy, st
 			}
 			s.liftSet[r.By] = true
 			countLifts(s, cur)
-		case "mode":
+		case "mode", "apply":
+			// Evidence only (a change of mode; the application of pending records): neither changes what the
+			// fold accepts.
 			switch {
 			case !audited:
 				unverified(r)
@@ -789,15 +791,9 @@ func (c *StopControl) ensureRoot(ctx context.Context, st StopState, by, host, re
 	return c.write(ctx, st, &root, signer, false)
 }
 
-// protocol:stop begin Write StartWrite FinishWrite
-
-// write completes r (time, policy digest, ID, signature) and inserts it. An audited control signs.
-func (c *StopControl) write(ctx context.Context, st StopState, r *StopRecord, signer StopSigner, isSet bool) error {
-	if c.policy != nil && r.Kind != "root" && signer != nil {
-		if err := c.ensureRoot(ctx, st, r.By, r.Host, "root of the deployment's policy chain", signer); err != nil {
-			return err
-		}
-	}
+// complete fills in r's time, mode, algorithm, policy digest, deployment and ID, signs it when the control is
+// audited, and validates it.
+func (c *StopControl) complete(st StopState, r *StopRecord, signer StopSigner, isSet bool) error {
 	r.At = c.now().UTC().Format(time.RFC3339Nano)
 	if c.policy != nil {
 		if signer == nil {
@@ -820,6 +816,21 @@ func (c *StopControl) write(ctx context.Context, st StopState, r *StopRecord, si
 		r.Signature = hex.EncodeToString(sig)
 	}
 	if err := r.validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// protocol:stop begin Write StartWrite FinishWrite
+
+// write completes r (time, policy digest, ID, signature) and inserts it. An audited control signs.
+func (c *StopControl) write(ctx context.Context, st StopState, r *StopRecord, signer StopSigner, isSet bool) error {
+	if c.policy != nil && r.Kind != "root" && signer != nil {
+		if err := c.ensureRoot(ctx, st, r.By, r.Host, "root of the deployment's policy chain", signer); err != nil {
+			return err
+		}
+	}
+	if err := c.complete(st, r, signer, isSet); err != nil {
 		return err
 	}
 	b, err := json.Marshal(r)

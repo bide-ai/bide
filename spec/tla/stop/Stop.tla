@@ -52,6 +52,7 @@ CONSTANTS
   ReadFails,         \* a read may fail
   LiftRefires,       \* regress: a lift starts a halted call again
   WithTrail,         \* TRUE: records are also written to the audit trail, in two steps (the order of the Go control)
+  UseKinds,          \* the record kinds in play (a subset of set, lift, pol, mode: a configuration may narrow them to keep a deep check small)
   CatchUp,           \* TRUE: before a record that rests on earlier ones goes to the trail, the log's records the trail lacks are appended (in log order)
   LiftStoreFirst     \* regress: a record that is not a stop is written to the control run before the trail
 

@@ -363,9 +363,35 @@ func TestVerifyStops_UnappliedRecordsAreNotForgeries(t *testing.T) {
 	if st, _ := c2.State(ctx); len(st.Active()) != 1 {
 		t.Fatalf("the unapplied lift must not be in force: %+v", st.Active())
 	}
-	n, sup, err := c2.ApplyPending(ctx)
+	pend, err := c2.PendingRecords(ctx)
+	if err != nil || len(pend) != 1 || pend[0].Record.By != "risk" || pend[0].Superseded || pend[0].Age < 0 {
+		t.Fatalf("PendingRecords: %+v %v", pend, err)
+	}
+	// An applier who is not enrolled is refused before anything is applied; an unsigned request too.
+	eve := audit.Ed25519Signer{Priv: r.keys["ops1"]}
+	if _, _, err := c2.ApplyPending(ctx, agent.ApplyRequest{By: "eve", Signer: eve}); !errors.Is(err, agent.ErrStopRejected) {
+		t.Fatalf("an applier who is not enrolled: %v", err)
+	}
+	if _, _, err := c2.ApplyPending(ctx, agent.ApplyRequest{By: "ops1"}); !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("an unsigned apply: %v", err)
+	}
+	if st, _ := c2.State(ctx); len(st.Active()) != 1 {
+		t.Fatalf("nothing may have been applied: %+v", st.Active())
+	}
+	n, sup, err := c2.ApplyPending(ctx, agent.ApplyRequest{By: "ops2", Reason: "the crash was ours", Signer: r.signer("ops2")})
 	if err != nil || n != 1 || sup != 0 {
 		t.Fatalf("ApplyPending: %d applied, %d superseded, %v", n, sup, err)
+	}
+	// Who applied what is a signed record on the trail and in the control run.
+	have, _ := r.trail.Load(ctx, agent.StopTrailName)
+	var applyRec *agent.StopRecord
+	for i := range have {
+		if have[i].Kind == "apply" && have[i].By == "ops2" {
+			applyRec = &have[i]
+		}
+	}
+	if applyRec == nil || len(applyRec.Applied) != 1 || applyRec.Applied[0] != agent.StopDigest(pend[0].Record) || applyRec.Reason != "the crash was ours" {
+		t.Fatalf("the apply record: %+v", applyRec)
 	}
 	if st, _ := c2.State(ctx); len(st.Active()) != 0 {
 		t.Fatalf("the lift must be in force after ApplyPending: %+v", st.Active())
@@ -374,12 +400,12 @@ func TestVerifyStops_UnappliedRecordsAreNotForgeries(t *testing.T) {
 	if rep, err := audit.VerifyStops(r.input(audit.StopVerifyInput{Unanchored: true, Control: ctlRecs, HaveControl: true})); err != nil || len(rep.Unapplied) != 0 {
 		t.Fatalf("after ApplyPending: %v %+v", err, rep)
 	}
-	if n, sup, err := c2.ApplyPending(ctx); err != nil || n != 0 || sup != 0 {
+	if n, sup, err := c2.ApplyPending(ctx, agent.ApplyRequest{By: "ops2", Signer: r.signer("ops2")}); err != nil || n != 0 || sup != 0 {
 		t.Fatalf("a second ApplyPending: %d %d %v", n, sup, err)
 	}
 	// A trail-only record the fold rejects (a forgery written into the trail) is a problem, not unapplied.
 	forged := agent.StopRecord{Format: agent.StopFormat, Kind: "lift", Mode: agent.StopAudited, StopID: e.ID, SetDigest: "00", Deployment: "prod-91c2", At: time.Now().UTC().Format(time.RFC3339Nano), By: "ops1", Alg: audit.AlgEd25519, Signature: "00"}
-	have, _ := r.trail.Load(ctx, agent.StopTrailName)
+	have, _ = r.trail.Load(ctx, agent.StopTrailName)
 	if err := r.trail.Append(ctx, agent.StopTrailName, len(have), forged); err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +458,7 @@ func TestVerifyStops_SupersededRecords(t *testing.T) {
 	if len(rep.Stops) != 1 || rep.Stops[0].LiftsHeld != 1 || rep.Stops[0].Lifted {
 		t.Fatalf("the stops shown are the control run's (one lift held: risk's), not the trail's (which would show both lifts and the stop lifted): %+v", rep.Stops)
 	}
-	if n, sup, err := c2.ApplyPending(ctx); err != nil || n != 0 || sup != 1 {
+	if n, sup, err := c2.ApplyPending(ctx, agent.ApplyRequest{By: "ops2", Signer: r.signer("ops2")}); err != nil || n != 0 || sup != 1 {
 		t.Fatalf("ApplyPending: %d applied, %d superseded, %v", n, sup, err)
 	}
 }

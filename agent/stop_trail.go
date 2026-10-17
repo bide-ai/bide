@@ -185,29 +185,24 @@ func (c *StopControl) Reaudit(ctx context.Context) (int, error) {
 
 // protocol:stop end
 
-// ApplyPending writes to the control run the records of the trail that it lacks and that are not stops: what
-// a crash between "trail first" and the control-run write leaves (a lift, a policy transition, the root or a
-// mode change that was signed and evidenced and never took effect). It applies, in trail order, each one the
-// control would accept (a record the fold would reject stays unapplied) and returns how many it applied.
-//
-// Only the records at the end of the trail are applied: those after the last record the control run holds. A
-// pending record that a stored record follows on the trail is superseded (the next write went on without it):
-// writing it now would put it after records the trail has behind it and make the control run's order differ
-// from the trail's, so it is left, and counted in superseded. Applying makes the signer's recorded intent
-// effective now, however old it is: look at `bide audit stops`, which lists these records, before running it.
-// A stop on the trail that the control run lacks is never applied (a stop is written to the control run first,
-// so that is a row deleted from it: a finding).
-func (c *StopControl) ApplyPending(ctx context.Context) (applied, superseded int, err error) {
-	if c.trail == nil {
-		return 0, 0, fmt.Errorf("ApplyPending needs a stop trail (WithStopTrail): %w", ErrConfig)
-	}
+// PendingStop is a record on the trail that the control run lacks and that ApplyPending would consider: signed,
+// not a stop, well formed. Age is how long ago its signer wrote it, by the signer's clock.
+type PendingStop struct {
+	Record StopRecord
+	Age    time.Duration
+	// Superseded is true when a record the control run holds follows it on the trail: ApplyPending leaves it.
+	Superseded bool
+}
+
+// pending returns the trail's pending records, in trail order, with the store's records.
+func (c *StopControl) pending(ctx context.Context) ([]PendingStop, []StopRecord, error) {
 	have, err := c.trail.Load(ctx, StopTrailName)
 	if err != nil {
-		return 0, 0, err
+		return nil, nil, err
 	}
 	store, err := c.StopRecords(ctx)
 	if err != nil {
-		return 0, 0, err
+		return nil, nil, err
 	}
 	inStore := make(map[string]bool, len(store))
 	for _, r := range store {
@@ -219,43 +214,137 @@ func (c *StopControl) ApplyPending(ctx context.Context) (applied, superseded int
 			last = i
 		}
 	}
+	var out []PendingStop
 	for i, r := range have {
-		if inStore[StopDigest(r)] || r.Kind == "set" || !r.Signed() || r.Validate() != nil {
+		if inStore[StopDigest(r)] || r.Kind == "set" || r.Kind == "apply" || !r.Signed() || r.Validate() != nil {
 			continue
 		}
-		if i < last {
+		p := PendingStop{Record: r, Superseded: i < last}
+		if t, err := time.Parse(time.RFC3339Nano, r.At); err == nil {
+			p.Age = c.now().Sub(t)
+		}
+		out = append(out, p)
+	}
+	return out, store, nil
+}
+
+// PendingRecords lists the records ApplyPending would consider, with each one's signer (Record.By) and age,
+// so an operator sees what a run would make effective before making it so.
+func (c *StopControl) PendingRecords(ctx context.Context) ([]PendingStop, error) {
+	if c.trail == nil {
+		return nil, fmt.Errorf("PendingRecords needs a stop trail (WithStopTrail): %w", ErrConfig)
+	}
+	p, _, err := c.pending(ctx)
+	return p, err
+}
+
+// ApplyRequest names who applies pending records: an enrolled approver of the policy in force, with the key to sign
+// the record that says so.
+type ApplyRequest struct {
+	By, Host, Reason string
+	Signer           StopSigner
+}
+
+// ApplyPending writes to the control run the records of the trail that it lacks and that are not stops: what a
+// crash between "trail first" and the control-run write leaves (a lift, a policy transition, the root or a mode
+// change that was signed and evidenced and never took effect). It applies, in trail order, each one the control
+// would accept (a record the fold would reject stays unapplied) and returns how many it applied.
+//
+// It is an operator action, and an accountable one. A signature cannot be revoked, so a signed lift that sat on the
+// trail can be made effective by whoever runs this, however old it is: see PendingRecords, or `bide audit stops`,
+// first. Before it applies anything it writes a signed "apply" record, by req.By, naming the digests it is about to
+// apply and when, to the trail and the control run like any other record, so who applied what is evidence.
+//
+// Only the records at the end of the trail are applied: those after the last record the control run holds. A
+// pending record that a stored record follows on the trail is superseded (the next write went on without it):
+// writing it now would put it after records the trail has behind it and make the control run's order differ from
+// the trail's, so it is left, and counted in superseded. A stop on the trail that the control run lacks is never
+// applied (a stop is written to the control run first, so that is a row deleted from it: a finding).
+func (c *StopControl) ApplyPending(ctx context.Context, req ApplyRequest) (applied, superseded int, err error) {
+	if c.trail == nil {
+		return 0, 0, fmt.Errorf("ApplyPending needs a stop trail (WithStopTrail): %w", ErrConfig)
+	}
+	if req.Signer == nil || req.By == "" {
+		return 0, 0, fmt.Errorf("ApplyPending is signed: it needs the applier (By) and a Signer: %w", ErrConfig)
+	}
+	pend, store, err := c.pending(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	var todo []StopRecord
+	for _, p := range pend {
+		if p.Superseded {
 			superseded++
 			continue
 		}
-		if err := c.applyOne(ctx, r, store); err != nil {
-			if errors.Is(err, ErrStopRejected) {
-				continue // the fold would not accept it now
+		if ok, err := c.acceptable(p.Record, store); err != nil {
+			return 0, superseded, err
+		} else if ok {
+			todo = append(todo, p.Record)
+		}
+	}
+	if len(todo) == 0 {
+		return 0, superseded, nil
+	}
+	st, err := c.State(ctx)
+	if err != nil {
+		return 0, superseded, err
+	}
+	digests := make([]string, len(todo))
+	for i, r := range todo {
+		digests[i] = StopDigest(r)
+	}
+	rec := StopRecord{Format: StopFormat, Kind: "apply", Mode: StopAudited, Applied: digests, Reason: req.Reason, By: req.By, Host: req.Host}
+	// A dry run first: an applier the policy does not enrol is refused before anything is written.
+	probe := rec
+	if err := c.complete(st, &probe, req.Signer, false); err != nil {
+		return 0, superseded, err
+	}
+	if ok, err := c.acceptable(probe, store); err != nil {
+		return 0, superseded, err
+	} else if !ok {
+		return 0, superseded, fmt.Errorf("%q is not an approver the policy in force enrols, so the apply record would not be accepted: %w", req.By, ErrStopRejected)
+	}
+	if err := c.write(ctx, st, &rec, req.Signer, false); err != nil {
+		return 0, superseded, err
+	}
+	if after, err := c.State(ctx); err != nil {
+		return 0, superseded, err
+	} else {
+		for _, rj := range after.Rejected {
+			if rj.Name == stopRecordStep(rec) {
+				return 0, superseded, fmt.Errorf("the apply record was written but has no effect: %s: %w", rj.Reason, ErrStopRejected)
 			}
+		}
+	}
+	for _, r := range todo {
+		if err := c.putRecord(ctx, r); err != nil {
 			return applied, superseded, err
 		}
-		store = append(store, r)
 		applied++
 	}
 	return applied, superseded, nil
 }
 
-// applyOne writes r to the control run if folding the control run's records with it accepts it.
-func (c *StopControl) applyOne(ctx context.Context, r StopRecord, store []StopRecord) error {
+// acceptable reports whether folding the control run's records with r accepts r.
+func (c *StopControl) acceptable(r StopRecord, store []StopRecord) (bool, error) {
 	var journal []Record
 	for _, x := range append(slices.Clone(store), r) {
 		b, err := json.Marshal(x)
 		if err != nil {
-			return err
+			return false, err
 		}
 		journal = append(journal, Record{Kind: StepValue, Name: stopRecordStep(x), Result: b})
 	}
 	st, err := c.stateOf(journal)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if st.Rejects(r) {
-		return fmt.Errorf("the record %s would not be accepted: %w", stopRecordStep(r), ErrStopRejected)
-	}
+	return !st.Rejects(r), nil
+}
+
+// putRecord writes r, already on the trail, to the control run.
+func (c *StopControl) putRecord(ctx context.Context, r StopRecord) error {
 	b, err := json.Marshal(r)
 	if err != nil {
 		return err
