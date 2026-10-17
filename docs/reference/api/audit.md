@@ -32,6 +32,9 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `const EventInclusionFormat = "bide.audit.event-inclusion.v3"`: EventInclusionFormat is the format of an EventInclusion.
 - `const STHFormat = "bide.audit.sth.v5"`: STHFormat is the format of a SignedTreeHead, and the tag of the bytes it signs.
 - `const AnchorEntryFormat = "bide.audit.anchor-entry.v1"`: AnchorEntryFormat is the format of an AnchorEntry.
+- `const RedactionTrailName = "redact:@log"`: RedactionTrailName is the name of the deployment's redaction trail in an EventStore.
+- `const RedactionRecordFormat = "bide.audit.redaction-record.v1"`: RedactionRecordFormat is the format of a RedactionRecord.
+- `const RedactionBegin = "begin"`, `const RedactionEnd = "end"`: Phases of a RedactionRecord.
 - `const TreeJournal = "journal"`: TreeJournal is a run's journal: one leaf per record, in persisted order (NewTreeHead).
 - `const TreeEvents = "events"`: TreeEvents is a run's semantic event stream (EventLog.TreeHead).
 - `const TreeToolUse = absenceKindPrefix + "tool-use"`: TreeToolUse is the sorted, distinct tool-use keys of a run's completed tool calls (ToolUseKeys), the tree tool-call absence proofs verify against.
@@ -55,6 +58,9 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `var ErrNotVerified = errors.New("audit: not verified")`: ErrNotVerified reports an artifact that was read and understood and does not hold.
 - `var ErrCertificateBound`: ErrCertificateBound reports a certificate-bound decision receipt given to DecisionReceipt.Verify, which knows only a key: use DecisionReceipt.VerifyCertificate.
 - `var ErrRedacted`: ErrRedacted reports a journal holding a redacted record (agent.Record.Redacted) given to a producer that projects what the records say (an absence key set, a used-policy set, the event stream): the redacted record's content is gone, so the projection would silently omit it, and a key set without it would prove absent a call the journal tree commits.
+- `var ErrRedactNoHead`: ErrRedactNoHead is a redaction of a run no verified signed head covers.
+- `var ErrRedactTrailUntrusted`: ErrRedactTrailUntrusted is a redaction whose trail does not match the signed heads given: it is not the trail they attest (records deleted or changed, or another trail altogether).
+- `var ErrRedactNoTrail`: ErrRedactNoTrail is a redaction whose begin record could not be written.
 - `var EarnedRules`: EarnedRules is the ScopeRules an earned grant attenuates its root under.
 - `var ErrCRLSignature`: ErrCRLSignature is wrapped by VerifyCRL when the CRL's algorithm is outside the profile, its signature does not verify under the issuer's certificate, or it names another issuer.
 - `var ErrRootMismatch`: ErrRootMismatch is wrapped by the error of a proof or check that finds a signed tree head's root is not the root of the run's journal at the head's size: the journal was changed after the head was signed, or the head is for another history.
@@ -67,6 +73,7 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 **Functions**
 
 - `func AbsenceRoot(records []agent.Record, set KeySet) (root []byte, size int, err error)`: AbsenceRoot is the RFC 6962 Merkle root over the run's sorted, distinct keys in set, and the number of keys.
+- `func AppendRedactionRecord(ctx context.Context, store EventStore, r RedactionRecord, signer Signer) error`: AppendRedactionRecord signs r with signer (the redaction key) and appends it to the redaction trail in store, at the next position.
 - `func ApprovalArgsDigest(s agent.ApprovalSubject) string`: ApprovalArgsDigest returns the SHA-256 of the canonical arguments of s, in lowercase hex: the digest a signature over agent.ApprovalDecisionBytes(s, ...) binds.
 - `func AttenuatingSubAgent(name, description string, sub *agent.Agent, cfg AttenuationConfig, opts ...agent.ToolOption) agent.Tool`: AttenuatingSubAgent wraps a sub-agent as a delegation Tool that attenuates authority by default.
 - `func CRLTBSHash(der []byte) ([32]byte, bool)`: CRLTBSHash is the SHA-256 of the TBSCertList of a CRL's DER, for comparing two CRLs without their (possibly randomised) signatures.
@@ -100,6 +107,7 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `func RecordPolicy(ctx context.Context, store *agent.Journal, runID string, policy []byte, digest string) (agent.Record, error)`: RecordPolicy commits the serialized policy as a dedicated journal leaf (idempotent per (runID, digest)), so the policy is covered by the same STH and inclusion proofs as the actions taken under it.
 - `func RecordRunCertificate(ctx context.Context, store *agent.Journal, runID string, cert RunCertificate) (agent.Record, error)`: RecordRunCertificate anchors a RunCertificate as a dedicated journal leaf (idempotent per runID), so the certificate is itself covered by a signed tree head and inclusion proofs, mirroring RecordPolicy / RecordConvergence.
 - `func RecordStream(log *EventLog, stream *agent.RunStream, onEvent func(agent.RunEvent)) (*agent.Result, error)`: RecordStream drains stream through log, committing every event, while forwarding each event to onEvent (nil to skip), then returns the run's Result and error, as RunStream.Result does (the Result is non-nil whenever the run ID is valid, whatever the error, including \*ApprovalPending and \*OutcomeUnknown).
+- `func RedactJournal(ctx context.Context, j *agent.Journal, trail EventStore, plan agent.RedactionPlan, opt RedactionOptions) (agent.RedactionResult, error)`: RedactJournal erases the records plan names, accountably: it checks the plan can run and that a signed head covers the run, appends a begin record to the redaction trail in trail, runs agent.Redact, and appends an end record, even when the redaction failed partway (its error is in the record).
 - `func RedactURL(raw string) string`: RedactURL removes the userinfo, query and fragment from a URL, so a token in one is never printed.
 - `func Root(ctx context.Context, store *agent.Journal, runID string) ([]byte, error)`: Root returns the RFC 6962 Merkle root committing to runID's journal (records in persisted order, each leaf = the canonical record bytes).
 - `func Sign(head []byte, s Signer) ([]byte, error)`: Sign returns s's signature over a head commitment ("bide.audit.head.v1\\x00" || head).
@@ -1677,6 +1685,177 @@ ReceiptVerdict is what CheckReceipt finds about one receipt.
 
 - `func (v ReceiptVerdict) Failed() bool`: Failed reports whether the verdict is a failure: the journal does not show a decision that the receipt says is there (ReceiptDeleted, proven; ReceiptUnmatched, claimed), or nothing could be checked (ReceiptUnchecked).
 
+## type RedactedRef
+
+```go
+type RedactedRef struct {
+	Position int    `json:"position"`
+	Name     string `json:"name"`
+	Kind     string `json:"kind,omitempty"`
+	Length   int    `json:"length,omitempty"`
+	LeafHash string `json:"leaf_hash"`
+
+	Already bool `json:"already,omitempty"`
+}
+```
+
+A RedactedRef names one record a redaction replaces: its position in the run's journal, its name, kind and stored length, and the hex leaf hash its tombstone keeps.
+
+## type RedactionFinding
+
+```go
+type RedactionFinding struct {
+	Kind   RedactionFindingKind `json:"kind"`
+	RunID  string               `json:"run_id,omitempty"`
+	Detail string               `json:"detail"`
+}
+```
+
+A RedactionFinding is one problem VerifyRedactions found.
+
+## type RedactionFindingKind
+
+```go
+type RedactionFindingKind string
+```
+
+RedactionFindingKind names what VerifyRedactions found wrong.
+
+**Constants**
+
+- `const FindingUnanchored RedactionFindingKind = "UNANCHORED"`: FindingUnanchored: the trail has no signed head, so nothing shows it is complete.
+- `const FindingTrailAltered RedactionFindingKind = "TRAIL_ALTERED"`: FindingTrailAltered: a head contradicts the trail (records deleted or changed).
+- `const FindingUnattestedTail RedactionFindingKind = "UNATTESTED_TAIL"`: FindingUnattestedTail: records after the newest signed head.
+- `const FindingIncomplete RedactionFindingKind = "INCOMPLETE"`: FindingIncomplete: a begin with no end: an unfinished pass.
+- `const FindingUnaccounted RedactionFindingKind = "UNACCOUNTED"`: FindingUnaccounted: a tombstone no trail record names (a redaction made by hand).
+- `const FindingNotErased RedactionFindingKind = "NOT_ERASED"`: FindingNotErased: a record the trail lists as erased still holds content.
+- `const FindingNameMismatch RedactionFindingKind = "NAME_MISMATCH"`: FindingNameMismatch: a tombstone's name is not the name the trail recorded at that position.
+- `const FindingHashMismatch RedactionFindingKind = "HASH_MISMATCH"`: FindingHashMismatch: a tombstone's leaf hash is not the one the trail recorded.
+- `const FindingUncovered RedactionFindingKind = "UNCOVERED"`: FindingUncovered: a redaction that ran with no covering signed head.
+- `const FindingReordered RedactionFindingKind = "REORDERED"`: FindingReordered: a trail record that is not at the position, or after the record, it was signed for: a replayed, copied or reordered record.
+- `const FindingBadSignature RedactionFindingKind = "BAD_SIGNATURE"`: FindingBadSignature: a trail record with no signature, or one that does not verify under the key: not the tool's, whatever head covers it.
+- `const FindingEventCopies RedactionFindingKind = "EVENT_COPIES_KEPT"`: FindingEventCopies: an erasure that left the run's events in the event store.
+- `const FindingTimeMismatch RedactionFindingKind = "TIME_MISMATCH"`: FindingTimeMismatch: a tombstone stamped at a time no pass of the trail that listed it carries.
+- `const FindingUnchecked RedactionFindingKind = "UNCHECKED"`: FindingUnchecked: the trail names a run no journal was given for.
+- `const FindingMalformed RedactionFindingKind = "MALFORMED"`: FindingMalformed: a trail record that does not read.
+
+## type RedactionOptions
+
+```go
+type RedactionOptions struct {
+	Reason, Ticket string
+
+	Signer Signer
+
+	EventCopiesKept int
+
+	Deployment string
+
+	Executor string
+
+	Now time.Time
+
+	Version string
+
+	Heads    []SignedTreeHead
+	Verifier Verifier
+
+	Redactor agent.Redactor
+
+	TrailHeads []SignedTreeHead
+
+	AllowUncovered bool
+}
+```
+
+RedactionOptions are what an accountable redaction needs besides the plan.
+
+## type RedactionRecord
+
+```go
+type RedactionRecord struct {
+	Format      string        `json:"format"`
+	Phase       string        `json:"phase"`
+	PlanDigest  string        `json:"plan_digest"`
+	RunID       string        `json:"run_id"`
+	Records     []RedactedRef `json:"records,omitempty"`
+	JournalSize int           `json:"journal_size,omitempty"`
+	Reason      string        `json:"reason"`
+	Ticket      string        `json:"ticket"`
+
+	Executor string `json:"executor"`
+	AtMs     int64  `json:"at_ms"`
+	Version  string `json:"version,omitempty"`
+
+	HeadSize  int  `json:"head_size,omitempty"`
+	Uncovered bool `json:"uncovered,omitempty"`
+
+	Redacted int    `json:"redacted,omitempty"`
+	Already  int    `json:"already,omitempty"`
+	Error    string `json:"error,omitempty"`
+
+	EventCopiesKept int `json:"event_copies_kept,omitempty"`
+
+	Position int    `json:"position"`
+	Prev     []byte `json:"prev,omitempty"`
+
+	Deployment string `json:"deployment,omitempty"`
+
+	Alg       string `json:"alg"`
+	Signature []byte `json:"signature"`
+}
+```
+
+A RedactionRecord is one leaf of the redaction trail.
+
+**Constructors and functions**
+
+- `func DecodeRedactionLeaf(leaf []byte) (RedactionRecord, error)`: DecodeRedactionLeaf reads a redaction record from a stored event leaf.
+- `func LoadRedactionTrail(ctx context.Context, store EventStore) ([]RedactionRecord, error)`: LoadRedactionTrail returns the records of the redaction trail in store, in order.
+
+## type RedactionReport
+
+```go
+type RedactionReport struct {
+	Records    int                `json:"records"`
+	Redactions int                `json:"redactions"`
+	Anchored   bool               `json:"anchored"`
+	HeadSize   int                `json:"head_size,omitempty"`
+	Findings   []RedactionFinding `json:"findings,omitempty"`
+
+	Notes []string `json:"notes,omitempty"`
+}
+```
+
+A RedactionReport is the result of VerifyRedactions.
+
+**Constructors and functions**
+
+- `func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error)`: VerifyRedactions checks the redaction trail against its signed heads and the journals.
+
+**Methods**
+
+- `func (r RedactionReport) OK() bool`: OK reports whether nothing was found.
+
+## type RedactionVerifyInput
+
+```go
+type RedactionVerifyInput struct {
+	Trail [][]byte
+
+	Heads    []SignedTreeHead
+	Verifier Verifier
+
+	Unanchored bool
+
+	Deployment string
+
+	Journals map[string][]agent.Record
+}
+```
+
+RedactionVerifyInput is what VerifyRedactions checks.
+
 ## type RejectedHead
 
 ```go
@@ -1816,6 +1995,7 @@ SignedTreeHead is a TreeHead with a signature over its canonical encoding under 
 
 - `func SignAbsenceRoot(records []agent.Record, set KeySet, journal TreeHead, s Signer, timestamp int64) (SignedTreeHead, error)`: SignAbsenceRoot commits and signs a run's key set in one call: NewAbsenceTreeHead, then SignTreeHead with s.
 - `func SignNotifyTrail(ctx context.Context, store EventStore, trail string, s Signer, now time.Time) (SignedTreeHead, error)`: SignNotifyTrail signs a tree head over the leaves store holds for trail, at now.
+- `func SignRedactionTrail(ctx context.Context, store EventStore, signer Signer, v Verifier, deployment string, prior []SignedTreeHead, now time.Time) (SignedTreeHead, error)`: SignRedactionTrail signs a tree head over the redaction trail in store, after checking the trail is the one the earlier heads attest: every head in prior must verify under v, be a head of the trail, and commit to a prefix of it, and every record in the trail must carry a signature that verifies under v.
 - `func SignTreeHead(th TreeHead, s Signer) (SignedTreeHead, error)`: SignTreeHead signs th under s's scheme.
 
 **Methods**

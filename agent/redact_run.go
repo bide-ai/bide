@@ -239,13 +239,24 @@ type RedactionResult struct {
 // Redact does not account for what it did: a redaction that must be audited writes the record of it
 // before calling Redact and after it returns (see docs/design/journal-redaction.md).
 func Redact(ctx context.Context, j *Journal, plan RedactionPlan, at time.Time) (RedactionResult, error) {
-	var res RedactionResult
 	if j == nil {
-		return res, fmt.Errorf("Redact: nil journal: %w", ErrConfig)
+		return RedactionResult{}, fmt.Errorf("Redact: nil journal: %w", ErrConfig)
 	}
 	store, ok := Capability[Redactor](j.store)
 	if !ok {
-		return res, fmt.Errorf("Redact: the journal's store cannot redact (it does not implement agent.Redactor): %w", ErrConfig)
+		return RedactionResult{}, fmt.Errorf("Redact: the journal's store cannot redact (it does not implement agent.Redactor): %w", ErrConfig)
+	}
+	return RedactUsing(ctx, j, store, plan, at)
+}
+
+// RedactUsing is Redact with the Redactor given: the journal reads the records (plan and bytes) and
+// store replaces them. They are one store in every deployment but a Postgres one that keeps the
+// erasing role apart from the reading one (a role with only EXECUTE on the redaction function reads
+// nothing).
+func RedactUsing(ctx context.Context, j *Journal, store Redactor, plan RedactionPlan, at time.Time) (RedactionResult, error) {
+	var res RedactionResult
+	if j == nil || store == nil {
+		return res, fmt.Errorf("RedactUsing: a nil journal or redactor: %w", ErrConfig)
 	}
 	if plan.Digest != plan.digest() {
 		return res, fmt.Errorf("Redact: the plan's digest does not match its records: %w", ErrConfig)

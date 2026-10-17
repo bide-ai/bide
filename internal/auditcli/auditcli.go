@@ -178,6 +178,28 @@ const usageText = `bide audit: produce and verify audit proof bundles
          never_notified (and, with -strict, on the warnings unobserved_resolved and all_clear_untimed). A verdict that rests on records after the newest signed head is unattested and fails unless every tail record it rests on is within -max-unattested (default 0: strict; records within a nonzero bound are accepted without a signature); with -routing (the notifier's routing, agent.RoutingOf as JSON), an event with no delivery to a receiver it routes to, or a due escalation step with none, is no_delivery and fails. -db and -postgres-env (a variable holding the DSN) read every run, or -run,
          from a store, in the full bide command; the audit-only build reads exported files
 
+  redactions (-trail <file> | -trail-db <file> | -trail-postgres-env <var> | -db <file> | -postgres-env <var>)
+             [-journal <file>...] [-run <id>] -deployment <name> -pubkey <hex|file> [-sth <file>... | -unanchored]
+         verify the redaction trail (the signed, append-only record of each erasure of journal
+         content, written by audit.RedactJournal): its signed heads commit to its records, so a
+         deleted or changed record is TRAIL_ALTERED; a record with no signature that verifies under -pubkey (the
+         redaction key: planted by someone who can append to the event store) is BAD_SIGNATURE, whatever head covers it, and accounts for nothing (neither does a record
+         that does not read, MALFORMED); a record signed for another position or after another
+         record (a replayed, copied or reordered one, which would hide an unfinished pass) is
+         REORDERED, and one signed for another -deployment (required) is BAD_SIGNATURE; each begin has an end (INCOMPLETE is an
+         unfinished pass, finished by running the same plan again); a tombstone in a journal that no
+         trail record names is UNACCOUNTED (an erasure made by hand), and one whose name or leaf hash
+         is not what the trail recorded is NAME_MISMATCH or HASH_MISMATCH: a tombstone's name is
+         outside the journal's hashes, so the signed trail is what attests it; a record the trail lists as
+         erased that still holds content is NOT_ERASED; a tombstone not stamped at the time of a pass
+         that listed it is TIME_MISMATCH; a run the trail names with no journal given is UNCHECKED (a
+         trail checked against no journal checked nothing); a redaction that ran without a covering
+         signed journal head is UNCOVERED, and one that left the run's events in the event store is EVENT_COPIES_KEPT. A pass is judged by its last record, so a failed pass that
+         the same plan later finished is a note, not a finding. -db and -postgres-env read every run's
+         journal (and the trail, unless -trail-db or -trail-postgres-env name the store it is kept in
+         apart from the journal) from a store, in the full bide command; the audit-only build reads
+         exported files
+
   verify-receipts -receipt <file|dir> -journal <export> -heads <file> -pubkey <hex|file> -approver-keys <file>
          verify decision receipts (written by bide approve): each signature verifies for the
          approver's key over the exact call, and the signed tree heads (-heads: a head, or one per
