@@ -48,7 +48,7 @@ func newTrailRig(t *testing.T) *trailRig {
 		t.Fatal(err)
 	}
 	r.options = audit.RedactionOptions{Reason: "customer request", Ticket: "PRIV-42", Executor: "alice", Now: time.UnixMilli(1_700_000_000_000),
-		Version: "test", Heads: []audit.SignedTreeHead{r.head}, Verifier: r.v, Signer: r.signer}
+		Version: "test", Heads: []audit.SignedTreeHead{r.head}, Verifier: r.v, Signer: r.signer, Deployment: "test"}
 	return r
 }
 
@@ -71,7 +71,7 @@ func (r *trailRig) verify(leaves [][]byte, heads ...audit.SignedTreeHead) (audit
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	return audit.VerifyRedactions(audit.RedactionVerifyInput{Trail: leaves, Heads: heads, Verifier: r.v, Journals: map[string][]agent.Record{"gov": recs}})
+	return audit.VerifyRedactions(audit.RedactionVerifyInput{Deployment: "test", Trail: leaves, Heads: heads, Verifier: r.v, Journals: map[string][]agent.Record{"gov": recs}})
 }
 
 func kinds(rep audit.RedactionReport) string {
@@ -253,7 +253,7 @@ func TestVerifyRedactions_Findings(t *testing.T) {
 		if err == nil || kinds(rep) != "UNANCHORED" {
 			t.Fatalf("report = %+v, %v", rep, err)
 		}
-		rep, err = audit.VerifyRedactions(audit.RedactionVerifyInput{Trail: leaves, Verifier: r.v, Unanchored: true, Journals: r.journals()})
+		rep, err = audit.VerifyRedactions(audit.RedactionVerifyInput{Deployment: "test", Trail: leaves, Verifier: r.v, Unanchored: true, Journals: r.journals()})
 		if err != nil || !rep.OK() {
 			t.Fatalf("an allowed unanchored trail = %+v, %v", rep, err)
 		}
@@ -294,7 +294,7 @@ func TestVerifyRedactions_Findings(t *testing.T) {
 		if _, err := agent.Redact(ctx, r.j, plan, time.Now()); err != nil {
 			t.Fatal(err)
 		}
-		rep, err := audit.VerifyRedactions(audit.RedactionVerifyInput{Trail: nil, Verifier: r.v, Unanchored: true, Journals: r.journals()})
+		rep, err := audit.VerifyRedactions(audit.RedactionVerifyInput{Deployment: "test", Trail: nil, Verifier: r.v, Unanchored: true, Journals: r.journals()})
 		if err == nil || kinds(rep) != "UNACCOUNTED" {
 			t.Fatalf("report = %+v, %v; want UNACCOUNTED", rep, err)
 		}
@@ -318,7 +318,7 @@ func TestVerifyRedactions_Findings(t *testing.T) {
 				}
 			}
 		}
-		rep, err := audit.VerifyRedactions(audit.RedactionVerifyInput{Trail: leaves, Heads: []audit.SignedTreeHead{head}, Verifier: r.v, Journals: map[string][]agent.Record{"gov": recs}})
+		rep, err := audit.VerifyRedactions(audit.RedactionVerifyInput{Deployment: "test", Trail: leaves, Heads: []audit.SignedTreeHead{head}, Verifier: r.v, Journals: map[string][]agent.Record{"gov": recs}})
 		if err == nil || !strings.Contains(kinds(rep), "NAME_MISMATCH") {
 			t.Fatalf("report = %+v, %v; want NAME_MISMATCH", rep, err)
 		}
@@ -329,7 +329,7 @@ func TestVerifyRedactions_Findings(t *testing.T) {
 		orig, _ := p11GovernedRun(t)
 		orig.Insert(ctx, "gov", "run:complete", mustEntry(t, "run:complete", agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`"ok"`)}))
 		recs, _ := agenttest.MustJournal(orig).History(ctx, "gov")
-		rep, err := audit.VerifyRedactions(audit.RedactionVerifyInput{Trail: leaves, Heads: []audit.SignedTreeHead{head}, Verifier: r.v, Journals: map[string][]agent.Record{"gov": recs}})
+		rep, err := audit.VerifyRedactions(audit.RedactionVerifyInput{Deployment: "test", Trail: leaves, Heads: []audit.SignedTreeHead{head}, Verifier: r.v, Journals: map[string][]agent.Record{"gov": recs}})
 		if err == nil || !strings.Contains(kinds(rep), "NOT_ERASED") {
 			t.Fatalf("report = %+v, %v; want NOT_ERASED", rep, err)
 		}
@@ -349,7 +349,7 @@ func TestVerifyRedactions_Findings(t *testing.T) {
 	})
 	t.Run("MalformedAndForeignRecords", func(t *testing.T) {
 		r := newTrailRig(t)
-		rep, err := audit.VerifyRedactions(audit.RedactionVerifyInput{Trail: [][]byte{[]byte("junk")}, Verifier: r.v, Unanchored: true})
+		rep, err := audit.VerifyRedactions(audit.RedactionVerifyInput{Deployment: "test", Trail: [][]byte{[]byte("junk")}, Verifier: r.v, Unanchored: true})
 		if err == nil || !strings.Contains(kinds(rep), "MALFORMED") {
 			t.Fatalf("report = %+v, %v", rep, err)
 		}
@@ -469,7 +469,7 @@ func TestVerifyRedactions_NoJournalIsNotAPass(t *testing.T) {
 		t.Fatal(err)
 	}
 	leaves, head := r.signedTrail()
-	rep, err := audit.VerifyRedactions(audit.RedactionVerifyInput{Trail: leaves, Heads: []audit.SignedTreeHead{head}, Verifier: r.v})
+	rep, err := audit.VerifyRedactions(audit.RedactionVerifyInput{Deployment: "test", Trail: leaves, Heads: []audit.SignedTreeHead{head}, Verifier: r.v})
 	if err == nil || kinds(rep) != "UNCHECKED" {
 		t.Fatalf("report = %+v, %v; want UNCHECKED", rep, err)
 	}
@@ -493,7 +493,7 @@ func TestVerifyRedactions_TombstoneTimeIsChecked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rep, err := audit.VerifyRedactions(audit.RedactionVerifyInput{Trail: leaves, Heads: []audit.SignedTreeHead{head}, Verifier: r.v, Journals: map[string][]agent.Record{"gov": recs}})
+	rep, err := audit.VerifyRedactions(audit.RedactionVerifyInput{Deployment: "test", Trail: leaves, Heads: []audit.SignedTreeHead{head}, Verifier: r.v, Journals: map[string][]agent.Record{"gov": recs}})
 	if err == nil || kinds(rep) != "TIME_MISMATCH" {
 		t.Fatalf("report = %+v, %v; want TIME_MISMATCH", rep, err)
 	}
@@ -514,8 +514,8 @@ func (r *trailRig) plant(signer audit.Signer, runID string) {
 			refs = append(refs, audit.RedactedRef{Position: i, Name: x.Name, LeafHash: hex.EncodeToString(h)})
 		}
 	}
-	b := audit.RedactionRecord{Phase: audit.RedactionBegin, PlanDigest: "planted", RunID: runID, Records: refs, Reason: "x", Ticket: "x", Executor: "x", AtMs: 1_700_000_000_000}
-	e := audit.RedactionRecord{Phase: audit.RedactionEnd, PlanDigest: "planted", RunID: runID, Reason: "x", Ticket: "x", Executor: "x", AtMs: 1_700_000_000_000}
+	b := audit.RedactionRecord{Phase: audit.RedactionBegin, Deployment: "test", PlanDigest: "planted", RunID: runID, Records: refs, Reason: "x", Ticket: "x", Executor: "x", AtMs: 1_700_000_000_000}
+	e := audit.RedactionRecord{Phase: audit.RedactionEnd, Deployment: "test", PlanDigest: "planted", RunID: runID, Reason: "x", Ticket: "x", Executor: "x", AtMs: 1_700_000_000_000}
 	for _, rec := range []audit.RedactionRecord{b, e} {
 		if signer == nil {
 			// no key at all: an unsigned record straight into the store
@@ -544,7 +544,7 @@ func TestRedactionTrail_PlantedRecordsAreNeverAttested(t *testing.T) {
 			t.Fatal(err)
 		}
 		r.plant(signer, "gov")
-		_, err := audit.SignRedactionTrail(ctx, r.trail, r.signer, r.v, nil, time.Unix(0, p11Now()))
+		_, err := audit.SignRedactionTrail(ctx, r.trail, r.signer, r.v, "test", nil, time.Unix(0, p11Now()))
 		if err == nil || !errors.Is(err, audit.ErrNotVerified) || !strings.Contains(err.Error(), "BAD_SIGNATURE") {
 			t.Fatalf("%s: SignRedactionTrail = %v; want a refusal naming BAD_SIGNATURE", name, err)
 		}
@@ -564,7 +564,7 @@ func TestSignRedactionTrail_ChecksEarlierHeads(t *testing.T) {
 	if _, err := audit.RedactJournal(ctx, r.j, r.trail, r.plan, r.options); err != nil {
 		t.Fatal(err)
 	}
-	h1, err := audit.SignRedactionTrail(ctx, r.trail, r.signer, r.v, nil, time.Unix(0, p11Now()))
+	h1, err := audit.SignRedactionTrail(ctx, r.trail, r.signer, r.v, "test", nil, time.Unix(0, p11Now()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -572,7 +572,7 @@ func TestSignRedactionTrail_ChecksEarlierHeads(t *testing.T) {
 	if _, err := audit.RedactJournal(ctx, r.j, r.trail, r.plan, r.options); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := audit.SignRedactionTrail(ctx, r.trail, r.signer, r.v, []audit.SignedTreeHead{h1}, time.Unix(0, p11Now())); err != nil {
+	if _, err := audit.SignRedactionTrail(ctx, r.trail, r.signer, r.v, "test", []audit.SignedTreeHead{h1}, time.Unix(0, p11Now())); err != nil {
 		t.Fatalf("with the earlier head: %v", err)
 	}
 	// A different trail (a typo in -trail-db starts a new one) does not match the earlier head.
@@ -582,7 +582,7 @@ func TestSignRedactionTrail_ChecksEarlierHeads(t *testing.T) {
 	if _, err := audit.RedactJournal(ctx, r2.j, other, r2.plan, r2.options); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := audit.SignRedactionTrail(ctx, other, r.signer, r.v, []audit.SignedTreeHead{h1}, time.Unix(0, p11Now())); err == nil || !strings.Contains(err.Error(), "TRAIL_ALTERED") {
+	if _, err := audit.SignRedactionTrail(ctx, other, r.signer, r.v, "test", []audit.SignedTreeHead{h1}, time.Unix(0, p11Now())); err == nil || !strings.Contains(err.Error(), "TRAIL_ALTERED") {
 		t.Fatalf("a trail the earlier head does not match: %v; want a refusal naming TRAIL_ALTERED", err)
 	}
 }
@@ -700,7 +700,7 @@ func TestRedactJournal_RefusesATrailTheEarlierHeadsDoNotMatch(t *testing.T) {
 	if _, err := audit.RedactJournal(ctx, r.j, r.trail, r.plan, r.options); err != nil {
 		t.Fatal(err)
 	}
-	h, err := audit.SignRedactionTrail(ctx, r.trail, r.signer, r.v, nil, time.Unix(0, p11Now()))
+	h, err := audit.SignRedactionTrail(ctx, r.trail, r.signer, r.v, "test", nil, time.Unix(0, p11Now()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -737,11 +737,11 @@ func TestRedactionTrail_ReplayedSignedRecordIsFound(t *testing.T) {
 	if err := r.trail.Append(ctx, audit.RedactionTrailName, len(leaves), first[1]); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := audit.SignRedactionTrail(ctx, r.trail, r.signer, r.v, nil, time.Unix(0, p11Now())); err == nil || !strings.Contains(err.Error(), "REORDERED") {
+	if _, err := audit.SignRedactionTrail(ctx, r.trail, r.signer, r.v, "test", nil, time.Unix(0, p11Now())); err == nil || !strings.Contains(err.Error(), "REORDERED") {
 		t.Fatalf("SignRedactionTrail over a replayed record = %v; want a refusal naming REORDERED", err)
 	}
 	leaves, _ = r.trail.Load(ctx, audit.RedactionTrailName)
-	rep, err := audit.VerifyRedactions(audit.RedactionVerifyInput{Trail: leaves, Verifier: r.v, Unanchored: true, Journals: r.journals()})
+	rep, err := audit.VerifyRedactions(audit.RedactionVerifyInput{Deployment: "test", Trail: leaves, Verifier: r.v, Unanchored: true, Journals: r.journals()})
 	if err == nil || !strings.Contains(kinds(rep), "REORDERED") {
 		t.Fatalf("report = %+v, %v; want REORDERED", rep, err)
 	}
@@ -751,7 +751,7 @@ func TestRedactionTrail_ReplayedSignedRecordIsFound(t *testing.T) {
 		t.Fatal(err)
 	}
 	ls, _ := r2.trail.Load(ctx, audit.RedactionTrailName)
-	rep, err = audit.VerifyRedactions(audit.RedactionVerifyInput{Trail: [][]byte{ls[1], ls[0]}, Verifier: r2.v, Unanchored: true, Journals: r2.journals()})
+	rep, err = audit.VerifyRedactions(audit.RedactionVerifyInput{Deployment: "test", Trail: [][]byte{ls[1], ls[0]}, Verifier: r2.v, Unanchored: true, Journals: r2.journals()})
 	if err == nil || !strings.Contains(kinds(rep), "REORDERED") {
 		t.Fatalf("a reordered trail: report = %+v, %v", rep, err)
 	}
@@ -811,7 +811,7 @@ func TestSignRedactionTrail_SignsWhatItChecked(t *testing.T) {
 	}
 	checked, _ := r.trail.Load(ctx, audit.RedactionTrailName)
 	s := &storeAppendingAfterLoad{EventStore: r.trail, planted: []byte("planted")}
-	h, err := audit.SignRedactionTrail(ctx, s, r.signer, r.v, nil, time.Unix(0, p11Now()))
+	h, err := audit.SignRedactionTrail(ctx, s, r.signer, r.v, "test", nil, time.Unix(0, p11Now()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -833,7 +833,7 @@ type raceStore struct {
 func (s *raceStore) Append(ctx context.Context, run string, seq int, leaf []byte) error {
 	if !s.raced {
 		s.raced = true
-		other := audit.RedactionRecord{Phase: audit.RedactionBegin, PlanDigest: "other", RunID: "other", Reason: "x", Ticket: "x", Executor: "x", AtMs: 1}
+		other := audit.RedactionRecord{Phase: audit.RedactionBegin, Deployment: "test", PlanDigest: "other", RunID: "other", Reason: "x", Ticket: "x", Executor: "x", AtMs: 1}
 		if err := audit.AppendRedactionRecord(ctx, s.EventStore, other, s.signer); err != nil {
 			return err
 		}
@@ -847,7 +847,7 @@ func TestAppendRedactionRecord_ResignsAfterALostRace(t *testing.T) {
 	ctx := context.Background()
 	r := newTrailRig(t)
 	rs := &raceStore{EventStore: r.trail, signer: r.signer}
-	rec := audit.RedactionRecord{Phase: audit.RedactionEnd, PlanDigest: "mine", RunID: "mine", Reason: "x", Ticket: "x", Executor: "x", AtMs: 2}
+	rec := audit.RedactionRecord{Phase: audit.RedactionEnd, Deployment: "test", PlanDigest: "mine", RunID: "mine", Reason: "x", Ticket: "x", Executor: "x", AtMs: 2}
 	if err := audit.AppendRedactionRecord(ctx, rs, rec, r.signer); err != nil {
 		t.Fatal(err)
 	}
@@ -855,10 +855,26 @@ func TestAppendRedactionRecord_ResignsAfterALostRace(t *testing.T) {
 	if len(leaves) != 2 {
 		t.Fatalf("trail has %d records, want the other writer's and ours", len(leaves))
 	}
-	rep, _ := audit.VerifyRedactions(audit.RedactionVerifyInput{Trail: leaves, Verifier: r.v, Unanchored: true})
+	rep, _ := audit.VerifyRedactions(audit.RedactionVerifyInput{Deployment: "test", Trail: leaves, Verifier: r.v, Unanchored: true})
 	for _, f := range rep.Findings {
 		if f.Kind == audit.FindingBadSignature || f.Kind == audit.FindingReordered {
 			t.Fatalf("a record appended after a lost race: %+v", f)
 		}
+	}
+}
+
+// A deployment name is required, to write and to verify.
+func TestRedaction_DeploymentIsRequired(t *testing.T) {
+	ctx := context.Background()
+	r := newTrailRig(t)
+	r.options.Deployment = " "
+	if _, err := audit.RedactJournal(ctx, r.j, r.trail, r.plan, r.options); !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "deployment") {
+		t.Fatalf("RedactJournal with no deployment = %v", err)
+	}
+	if leaves, _ := r.trail.Load(ctx, audit.RedactionTrailName); len(leaves) != 0 {
+		t.Error("a refused pass wrote the trail")
+	}
+	if _, err := audit.VerifyRedactions(audit.RedactionVerifyInput{Verifier: r.v, Unanchored: true}); !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("VerifyRedactions with no deployment = %v, want ErrConfig", err)
 	}
 }

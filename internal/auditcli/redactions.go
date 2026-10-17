@@ -27,7 +27,7 @@ func (c *cli) redactions(args []string) {
 	unanchored := fs.Bool("unanchored", false, "accept a trail with no signed head: it is read, and nothing attests that it is complete or unaltered")
 	db := fs.String("db", "", "read the trail and the journals from this SQLite journal (opened read-only) instead of from files")
 	pgEnv := fs.String("postgres-env", "", "read them from the Postgres journal whose DSN is in this environment variable (never given on the command line)")
-	deployment := fs.String("deployment", "", "the deployment name every trail record must be signed for (RedactionOptions.Deployment): a record copied from another deployment's trail under the same key is then BAD_SIGNATURE")
+	deployment := fs.String("deployment", "", "the deployment name every trail record must be signed for (required; RedactionOptions.Deployment): a record copied from another deployment's trail under the same key is BAD_SIGNATURE")
 	trailDB := fs.String("trail-db", "", "read the redaction trail from this SQLite file (opened read-only), when it is kept apart from the journal; the journals then come from -db or -postgres-env, or -journal")
 	trailEnv := fs.String("trail-postgres-env", "", "read the redaction trail from the Postgres database whose DSN is in this environment variable (never given on the command line)")
 	run := fs.String("run", "", "with -db or -postgres-env: only this run and its sub-runs; default every run")
@@ -53,6 +53,8 @@ func (c *cli) redactions(args []string) {
 		c.usageLine(fs.Name() + ": -run reads one run from a store; it needs -db or -postgres-env")
 	case haveStore && Stores == nil:
 		c.usageLine(fs.Name() + ": this build reads exported files only (-trail, -journal); -db and -postgres-env are in the full bide command")
+	case *deployment == "":
+		c.usageLine(fs.Name() + ": missing -deployment: every trail record is signed for one deployment, and the check verifies it")
 	case *pubkey == "":
 		c.usageLine(fs.Name() + ": missing -pubkey: every trail record is signed with the redaction key, and the check verifies each (give -unanchored to read a trail with no signed head)")
 	}
