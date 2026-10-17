@@ -1,0 +1,3 @@
+Section: Changed
+
+The fallback for a run or call id that cannot be shown or pasted safely (a control, bidirectional or invisible character) now says what to do instead of "no command (unsafe id)" or "decide from the application": take the ids from `bide approve -list -json` (the `run` and `call` members) and pass them to `-run` and `-call`, which a test shows records a decision on such a call. In `bide view`'s Needs attention list, a gate with both bare-key and certificate-bound approvers also names which approvers the missing command affects and how each kind decides (`-key`, or `-cert` and `-identity-policy`). The `bide approve -list` help and the guides say the same.

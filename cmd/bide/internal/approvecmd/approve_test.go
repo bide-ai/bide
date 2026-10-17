@@ -67,7 +67,13 @@ func newFixtureID(t *testing.T, policy *agent.ApprovalPolicy, args string, alg a
 // newFixtureBound is newFixtureID with the approvers in bound certificate-bound on the application's side.
 func newFixtureBound(t *testing.T, policy *agent.ApprovalPolicy, args string, alg audit.Alg, identity string, bound ...string) *fixture {
 	t.Helper()
-	f := &fixture{bound: map[string]bool{}, policy: policy, identity: identity, t: t, dir: t.TempDir(), keys: map[string]string{}, pubs: map[string]audit.Verifier{}, charges: new(atomic.Int32), args: args, run: "refund-1049", call: "c2"}
+	return newFixtureIDs(t, policy, args, alg, identity, "refund-1049", "c2", bound...)
+}
+
+// newFixtureIDs is newFixtureBound with the run and call ids given.
+func newFixtureIDs(t *testing.T, policy *agent.ApprovalPolicy, args string, alg audit.Alg, identity, run, call string, bound ...string) *fixture {
+	t.Helper()
+	f := &fixture{bound: map[string]bool{}, policy: policy, identity: identity, t: t, dir: t.TempDir(), keys: map[string]string{}, pubs: map[string]audit.Verifier{}, charges: new(atomic.Int32), args: args, run: run, call: call}
 	for _, id := range bound {
 		f.bound[id] = true
 	}

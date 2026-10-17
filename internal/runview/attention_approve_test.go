@@ -41,12 +41,12 @@ func TestAttentionApproveCommandQuoting(t *testing.T) {
 	}
 	for _, id := range []string{"bad\nid", "bad\rid", "bad‮id"} {
 		items := itemsByKind(attn(id).Items, AttentionApproval)
-		if len(items) != 1 || items[0].Command != "" || items[0].NoCommand != "no command (unsafe id)" {
+		if len(items) != 1 || items[0].Command != "" || items[0].NoCommand != noCommandUnsafe {
 			t.Errorf("%q: items %+v; want no command and the unsafe-id reason", id, items)
 			continue
 		}
 		o := Options{Source: Exports{id: recs}, ApproveCommand: hook, Now: func() time.Time { return attnNow }}
-		if _, page := get(t, Handler(o), "/attention"); !strings.Contains(page, "no command (unsafe id)") || strings.Contains(page, "bide approve -db") {
+		if _, page := get(t, Handler(o), "/attention"); !strings.Contains(page, noCommandUnsafe) || strings.Contains(page, "bide approve -db") {
 			t.Errorf("%q: the page does not show the fallback instead of a command", id)
 		}
 	}
@@ -102,11 +102,24 @@ func TestAttentionCertCommand(t *testing.T) {
 	// An unsafe id gets no command, and the reason.
 	for _, recs := range [][]agent.Record{allBound, recsOf([]string{"ops", "risk"}, []string{"ops"})} {
 		it = item("bad\nid", recs, cert)
-		if it.CertCommand != "" || it.NoCommand != "no command (unsafe id)" {
+		if it.CertCommand != "" || it.NoCommand != noCommandUnsafe {
 			t.Errorf("unsafe id: %+v", it)
 		}
 	}
-	if _, page := get(t, Handler(opts("bad\nid", allBound, cert)), "/attention"); !strings.Contains(page, "no command (unsafe id)") || strings.Contains(page, "bide approve -db") {
+	// A mixed gate says which approvers the missing command affects and where the ids come from.
+	mixed := item("bad\nid", recsOf([]string{"ops", "risk"}, []string{"ops"}), cert)
+	for _, want := range []string{"bare-key approvers (risk)", "certificate-bound approvers (ops)", "-list -json"} {
+		if !strings.Contains(mixed.CommandNote, want) {
+			t.Errorf("mixed gate, unsafe id: the note %q lacks %q", mixed.CommandNote, want)
+		}
+	}
+	if !strings.Contains(mixed.NoCommand, "-list -json") {
+		t.Errorf("mixed gate, unsafe id: %q does not name the remedy", mixed.NoCommand)
+	}
+	if _, page := get(t, Handler(opts("bad\nid", recsOf([]string{"ops", "risk"}, []string{"ops"}), cert)), "/attention"); !strings.Contains(page, "bare-key approvers (risk)") {
+		t.Errorf("the page does not show the mixed gate's note:\n%s", page)
+	}
+	if _, page := get(t, Handler(opts("bad\nid", allBound, cert)), "/attention"); !strings.Contains(page, noCommandUnsafe) || strings.Contains(page, "bide approve -db") {
 		t.Errorf("the page does not show the fallback for an unsafe id on a certificate-only gate:\n%s", page)
 	}
 }

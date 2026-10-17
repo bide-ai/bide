@@ -168,7 +168,7 @@ func (r *ConfigReport) assertions(lines []string) {
 		// silently name a different node than before, so it is warned about, whatever it now names.
 		for _, tok := range quotedToken.FindAllString(text, -1) {
 			if u, err := strconv.Unquote(tok); err == nil && u != tok[1:len(tok)-1] {
-				r.Problems = append(r.Problems, ConfigProblem{Severity: "warning", Message: fmt.Sprintf("assert[%d] %q: the quoted name %s contains a backslash sequence; a quoted name is read exactly as written (no escapes), as a name with %q would have been read before: write the character itself", i, text, tok, u)})
+				r.Problems = append(r.Problems, ConfigProblem{Severity: "warning", Message: fmt.Sprintf("assert[%d] %q: the quoted name %s contains a backslash sequence. A quoted name is read as written (no escapes), so this line refers to the node named `%s`; if you meant %q, write that character itself", i, text, tok, tok[1:len(tok)-1], u)})
 			}
 		}
 		res := AssertionResult{Text: text}
