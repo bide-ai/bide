@@ -602,7 +602,7 @@ assert:
 
 ![A violated assertion on bide view -config: the shortest counterexample path, drawn in red, reaches charge without passing a 2-of-3 approval gate](img/run-viewer-config-assert-dark.png)
 
-A node is named bare (no spaces) or in double quotes, and the words are separated by spaces. Every
+A node is named bare (no spaces) or in double quotes, and the words are separated by spaces. A quoted name is exactly what is between the quotes: there are no escapes, so a backslash is a backslash, and a name that contains a double quote cannot be written. Every
 assertion is decided by reachability over the declared graph (every edge, a join's inputs, and every
 Switch arm, loop-back arms included), never by listing paths, so a loop is visited once. The graph is
 what the config declares: a Switch arm counts as taken whatever its predicate.

@@ -1,6 +1,7 @@
 package flowedit
 
 import (
+	"encoding/json"
 	"errors"
 	"reflect"
 	"slices"
@@ -35,7 +36,7 @@ func assertOp(op string, idx int, a *Assertion) Operation {
 // by the check (not invalid), for node names that are bare, have a space, or have a character that
 // is not ASCII.
 func TestAssertionFormsRoundTrip(t *testing.T) {
-	for _, node := range []string{"charge", "big spender", "überweisung", "a-b_c.d"} {
+	for _, node := range []string{"charge", "big spender", "überweisung", "a-b_c.d", `my\ node`, `x\n y`, `tab\t here`, `back\\slash x`, `bare\back`} {
 		for _, a := range []Assertion{
 			{Form: "approval", Node: node, K: 2},
 			{Form: "approval", Node: node, K: 2, N: 3},
@@ -85,7 +86,10 @@ func declared(r plan.ConfigReport, a Assertion) bool {
 	return (a.Node == "" || have[a.Node]) && (a.Via == "" || have[a.Via])
 }
 
-func yamlString(s string) string { return `"` + strings.ReplaceAll(s, `"`, `\"`) + `"` }
+func yamlString(s string) string {
+	b, _ := json.Marshal(s) // a JSON string is a YAML double-quoted scalar
+	return string(b)
+}
 
 func TestAssertionTextRefusals(t *testing.T) {
 	for name, a := range map[string]Assertion{
@@ -230,5 +234,25 @@ func TestViewCarriesAssertionForms(t *testing.T) {
 	v := BuildView("f.yaml", []byte(assertFlow+"assert:\n  - every path to charge passes approval >= 2 of 3\n  - charge sometimes reachable\n  - receipt reachable\n"))
 	if len(v.AssertionForms) != 3 || v.AssertionForms[0] == nil || v.AssertionForms[0].K != 2 || v.AssertionForms[1] != nil || v.AssertionForms[2] == nil || v.AssertionForms[2].Form != "reachable" {
 		t.Errorf("%+v", v.AssertionForms)
+	}
+}
+
+// The line the editor writes for a node whose name has a backslash and a space is read by plan as that
+// node (the quoted name has no escapes), through the whole path: operation, text, loader, check.
+func TestAssertionOnABackslashNodeReadsAsThatNode(t *testing.T) {
+	for _, name := range []string{`my\ node`, `x\n y`} {
+		src := "version: 1\nflow: f\nentry: " + yamlString(name) + "\nnodes:\n  - {name: " + yamlString(name) + ", block: b, safety: readonly}\nwiring: []\n"
+		got := mustApply(t, "f.yaml", src, assertOp("add_assertion", 0, &Assertion{Form: "reachable", Node: name}))
+		data, err := ToJSON([]byte(got))
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := plan.InspectConfig(data, nil)
+		if len(r.Assertions) != 1 || r.Assertions[0].Invalid || !r.Assertions[0].Holds {
+			t.Errorf("%q: %+v\n%s", name, r.Assertions, got)
+		}
+		if a, ok := ParseAssertion(r.Assertions[0].Text); !ok || a.Node != name {
+			t.Errorf("%q reads back as %+v", name, a)
+		}
 	}
 }

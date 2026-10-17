@@ -1,0 +1,3 @@
+Section: Fixed
+
+A node name in double quotes in an `assert` line is now exactly what is between the quotes: the assertion grammar has no escapes. Before, `plan` read a quoted name with `strconv.Unquote`, so a name with a backslash and a space (`my\ node`, `x\n y`) written in quotes was read as an undeclared node with the quotes in its name, or as a different name with a newline in it, and `RenameAssertion` and `CompareAssertions` read it the same way. A quoted name is now read raw by the check, by `RenameAssertion` and `CompareAssertions`, and by the flow editor, which writes the same lines; a bare name was already raw. A name that contains a double quote still cannot be written in an assertion.

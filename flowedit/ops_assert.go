@@ -115,9 +115,11 @@ var (
 	reReachability = regexp.MustCompile(`^` + nodeRE + ` (reachable|unreachable)$`)
 )
 
+// unquoteNode is the name a token holds, as plan reads it: between the quotes exactly, with no
+// escapes.
 func unquoteNode(s string) string {
-	if u, err := strconv.Unquote(s); err == nil {
-		return u
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		return s[1 : len(s)-1]
 	}
 	return s
 }

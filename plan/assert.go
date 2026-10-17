@@ -71,6 +71,27 @@ var (
 	assertReach    = regexp.MustCompile(`^(\S+|"[^"]*") (reachable|unreachable)$`)
 )
 
+// assertName is the node name an assertion line holds in token: a name in double quotes is what is
+// between the quotes, exactly (the grammar has no escapes, so a backslash is a backslash and a
+// quote cannot be part of a name), and a bare name is itself. The line the flow editor writes and the
+// line a person writes are read the same way.
+func assertName(token string) string {
+	if len(token) >= 2 && token[0] == '"' && token[len(token)-1] == '"' {
+		return token[1 : len(token)-1]
+	}
+	return token
+}
+
+// assertQuote writes a node name as an assertion line holds it: in double quotes, as is. A name with a
+// double quote cannot be written (the grammar cannot hold it), and is quoted with strconv.Quote, which
+// no form of the grammar matches.
+func assertQuote(name string) string {
+	if strings.Contains(name, `"`) {
+		return strconv.Quote(name)
+	}
+	return `"` + name + `"`
+}
+
 // graphOf is the declared graph as adjacency: every edge (a join's inputs included) and every
 // Switch arm (loop-back arms included), and the entry.
 func graphOf(t Topology) (map[string][]string, string) {
@@ -137,12 +158,7 @@ func (r *ConfigReport) assertions(lines []string) {
 	for from := range adj {
 		hasOut[from] = true
 	}
-	name := func(s string) string {
-		if u, err := strconv.Unquote(s); err == nil {
-			return u
-		}
-		return s
-	}
+	name := assertName
 	for i, line := range lines {
 		text := strings.Join(strings.Fields(line), " ")
 		res := AssertionResult{Text: text}
@@ -356,10 +372,7 @@ func parseGateAssertion(text string) (gateAssertion, bool) {
 		return gateAssertion{}, false
 	}
 	ga := gateAssertion{k: -1, n: -1, excl: m[4] != ""}
-	ga.target = m[1]
-	if u, err := strconv.Unquote(m[1]); err == nil {
-		ga.target = u
-	}
+	ga.target = assertName(m[1])
 	ga.k, _ = strconv.Atoi(m[2])
 	if m[3] != "" {
 		ga.n, _ = strconv.Atoi(m[3])
@@ -389,15 +402,12 @@ func RenameAssertion(text string, rename func(string) string) string {
 		prev := 0
 		for _, g := range f.nodes {
 			start, end := m[2*g], m[2*g+1]
-			name := text[start:end]
-			if u, err := strconv.Unquote(name); err == nil {
-				name = u
-			}
+			name := assertName(text[start:end])
 			if rename != nil {
 				name = rename(name)
 			}
 			b.WriteString(text[prev:start])
-			b.WriteString(strconv.Quote(name))
+			b.WriteString(assertQuote(name))
 			prev = end
 		}
 		b.WriteString(text[prev:])
