@@ -258,8 +258,10 @@ record): the enrolled setters, the enrolled lifters, and the **lift rule**.
 
 ## 7A. Modes: basic and audited
 
-**The mode is each process's configuration, never something the store says.** A process with a
-stop policy (`WithStopPolicy`) is audited; one without is basic. Nothing in the control run can
+**The mode is each process's configuration, never something the store says.** Every process
+declares it (`WithStopMode`): audited needs a stop policy, basic takes none, and a control that
+reads a control run holding records without a declared mode fails with `ErrConfig` at open (a
+configuration error, never one the store can cause). Nothing in the control run can
 switch a process's mode, make it fail, or downgrade it. (An earlier draft took the mode from the
 control run's records; the review of #393 showed that one forged record then bricked every basic
 deployment, so the records became history and evidence, and a mode change is a configuration
@@ -312,6 +314,29 @@ and lift under the policy in force at its position, so:
   and a signed setter of it succeeds); a transition's new policy is validated when adopted (an
   invalid one is rejected, the old policy stays) and every policy is validated again whenever it is
   used, since a verifier can change after it was given;
+- a **stop set during a rotation** is judged under the policy in force when its record lands: a
+  setter the new policy still enrols succeeds, one it no longer enrols is rejected and the writer
+  is told (`ErrStopRejected`) and sets it again with a current setter; nothing is accepted on the
+  strength of a policy that has been replaced;
+- a key that was **offboarded or rotated under the same id has no authority after the transition**:
+  its later sets, lifts and approvals are rejected, and a lift it gave before the transition no
+  longer counts toward the new quorum;
+- the chain is checked for **forks** (a quorum of the replaced policy also approving a different
+  successor) and **rollbacks** (a quorum approving a policy that was already in force): both are
+  `ErrConfig` with the cause named, since only holders of a quorum can cause them. Records that
+  do not verify never cause an error. A pinned policy that is not on the store's chain cannot be told
+  from garbage, so it is not an error either: the records it cannot verify are in `Rejected` and in
+  `Unverified`, which makes the stops unknowable (below);
+- **stops unknowable.** An audited control that finds a record claiming a signature that does not
+  verify under the policy in force at its position counts it in `Unverified`, and
+  `StopState.UnknowableErr()` returns `ErrStopsUnknowable`. The engine (PR 2) fails closed on it for
+  side-effect calls a stop could cover, since a stop it cannot see may exist (a rotation not carried
+  through, a policy pinned off the chain). A stop and a lift can still be written, and the stops it can
+  verify are in `State`. The cost is stated: anyone with store write access can make an audited
+  deployment's covered side-effect calls pause with one such record, which is the safe direction for
+  a kill switch and no worse than their ability to stop in basic mode; an operator who has looked at
+  the records clears it with `WithStopAcceptUnverified(n)` (the log is append-only). Plain and
+  unsigned records are not signature-claiming and are only ignored;
 - a control needs a verifier constructor (`WithStopVerifier`, `audit.NewVerifier`) to adopt a
   transition; without it the transition is reported as rejected and the policy in force is the
   pinned one.

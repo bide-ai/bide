@@ -95,6 +95,7 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `var ErrRunCancelled = errors.New("run cancelled")`: ErrRunCancelled is the end of a run that was cancelled (see Cancel): the first of the run's end markers in journal order is run:cancelled.
 - `var ErrRunEnded = errors.New("run already ended")`: ErrRunEnded is Cancel's answer for a run that is already over: its first end marker is run:complete or run:aborted, so there is nothing left to cancel.
 - `var ErrStopRejected`: ErrStopRejected is returned when a record was written but the control run's fold does not accept it (a policy transition raced it, or its signature does not verify under the policy in force at its position): it has no effect.
+- `var ErrStopsUnknowable`: ErrStopsUnknowable is returned by StopState.UnknowableErr when an audited control found records that claim to be signed and do not verify under the policy in force at their position: a stop it cannot see may exist (a rotation that was not carried through, or a forged record).
 - `var ErrToolNotCalled = errors.New("tool not called")`: ErrToolNotCalled marks a tool call that is known never to have reached its tool, so its side effect cannot have happened.
 - `var ErrTrailConflict`: ErrTrailConflict is returned by NotifyTrail.Append when the position is already taken by a different record: another process won the append.
 - `var ErrTurnContended`: ErrTurnContended is returned by a Session's Send, SendOnce, Send and SendOnce when another driver holds the lease on the turn's run (see Session): another worker, or, while a cancelled saga turn's rollback is in progress, another caller on the same session handle (see Session.Send).
@@ -3021,7 +3022,7 @@ StopControl reads and writes the control run: the stops, lifts, mode and policy 
 
 - `func (c *StopControl) ChangeMode(ctx context.Context, req ModeRequest) (StopState, error)`: ChangeMode records that the deployment changed mode: evidence for history and the audit trail, which changes nothing a process does (the mode is each process's configuration, rolled out by the operator).
 - `func (c *StopControl) LiftStop(ctx context.Context, id string, req LiftRequest) (StopEntry, error)`: LiftStop adds one lifter's approval of lifting stop id and returns the stop as State then reports it (Lifted when the rule is met, else LiftsHeld of LiftsNeeded).
-- `func (c *StopControl) Mode() StopMode`: Mode is the mode the control runs under: audited with a policy, else basic.
+- `func (c *StopControl) Mode() StopMode`: Mode is the mode the control runs under: the declared one, else audited with a policy and basic without (an undeclared mode is refused as soon as the control run holds a record).
 - `func (c *StopControl) RotatePolicy(ctx context.Context, next StopPolicy, req LiftRequest) (StopState, error)`: RotatePolicy adds one lifter's approval of replacing the policy in force with next, and returns the state afterwards (PolicySeq has advanced once a quorum of the policy in force has approved the same document).
 - `func (c *StopControl) SetStop(ctx context.Context, req StopRequest) (StopEntry, error)`: SetStop sets a stop and returns it as State reports it.
 - `func (c *StopControl) State(ctx context.Context) (StopState, error)`: State folds the control run into the effective state.
@@ -3077,8 +3078,10 @@ StopOption configures NewStopControl.
 
 **Constructors and functions**
 
+- `func WithStopAcceptUnverified(n int) StopOption`: WithStopAcceptUnverified tells an audited control that n of the records it cannot verify have been investigated and are not stops (garbage, or a retired operator's attempt), so they do not make the stops unknowable (StopState.UnknowableErr).
 - `func WithStopClock(now func() time.Time) StopOption`: WithStopClock sets the clock that stamps a record's At (default time.Now).
-- `func WithStopPolicy(p StopPolicy) StopOption`: WithStopPolicy gives the control the audited-mode policy and so makes it audited: the mode is the process's own configuration, not something the store says.
+- `func WithStopMode(m StopMode) StopOption`: WithStopMode declares the mode of this process: StopBasic, or StopAudited (which needs WithStopPolicy).
+- `func WithStopPolicy(p StopPolicy) StopOption`: WithStopPolicy gives the control the audited-mode policy: the trust root, the policy this process pins (normally the one the deployment started audited mode with).
 - `func WithStopVerifier(nv StopVerifierFunc) StopOption`: WithStopVerifier gives the control the means to build the verifiers of a policy a transition carries (audit.NewVerifier).
 
 ## type StopPolicy
@@ -3254,6 +3257,7 @@ StopState is the effective state of the control run for one control.
 
 - `func (s StopState) Active() []StopEntry`: Active returns the stops that are not lifted, in the order they were set.
 - `func (s StopState) Covering(q StopQuery) (StopEntry, bool)`: Covering returns the first active stop that covers q.
+- `func (s StopState) UnknowableErr() error`: UnknowableErr returns ErrStopsUnknowable when an audited control has unverified records (see Unverified): the stops it can see are in State, but others may exist that it cannot.
 
 ## type StopVerifierFunc
 
