@@ -232,7 +232,7 @@ Flags:
 ## bide-hsm csr
 
 ```text
-usage: bide-hsm csr -key <key ref> [-out <file>] [-force] [-policy <policy file> -as <approver id>] [-san-email <address> | -san-uri <uri>] [-eku <usage>[,<usage>...]] [key flags]
+usage: bide-hsm csr -key <key ref> [-out <file>] [-force] [-policy <policy file> -as <approver id>] [-san-email <address> | -san-uri <uri>] [-eku <usage>[,<usage>...]] [-cn <name>] [key flags]
 
 Writes a PKCS#10 certificate signing request (PEM) for a key in an HSM or a KMS, signed by that key
 through the same key sources as bide-hsm approve, so no vendor tooling is needed. It is the request a
@@ -259,6 +259,11 @@ is what counts, and bide-hsm approve -cert checks that before anything is signed
   -san-uri <uri>         one URI subject alternative name (absolute, with a host, no fragment)
   -eku <usage>,...       extended key usages: clientAuth, serverAuth, emailProtection, codeSigning,
                          timeStamping, ocspSigning, or a dotted OID
+  -cn <name>             the subject: one common name (printable ASCII text, at most 64 characters)
+
+The gate reads no subject, so -cn changes nothing about who may approve. It exists because step ca sign
+refuses a request with an empty subject (it needs a name to start its single sign-on login); the SSO
+CA's template ignores it. Without -cn the subject stays empty. -cn goes with -policy.
 
 -policy <file> with -as <approver id> reads the certificate policy file bide-hsm approve takes as
 -identity-policy and asks for what the policy's gate looks for: as the one SAN, the approver's
@@ -323,6 +328,8 @@ Flags:
     	use a software-protected key: a Google Cloud KMS key version at protection level SOFTWARE, or an Azure Key Vault key that is not HSM-protected; by default only an HSM-backed key is used, and Cloud KMS has no HSM-backed Ed25519 key
   -as string
     	the approver id in the -policy file whose identifier the request asks for
+  -cn string
+    	make the request's subject this one common name (printable ASCII, at most 64 characters). The gate ignores the subject; step ca sign needs one
   -color when
     	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
   -eku string
