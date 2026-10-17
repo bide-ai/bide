@@ -189,7 +189,18 @@ func (m *MemStore) Redact(ctx context.Context, runID, name string, current, tomb
 		if cur, ok := m.leases[runID]; ok && m.now().Before(cur.expiry) {
 			st.Leased = true
 		}
-		if bytes.Equal(st.Row.Data, current) && st.Ended && !st.Leased {
+		for _, anc := range RedactionAncestors(runID) {
+			if a := m.runs[anc]; a != nil && len(a.entries) > 0 {
+				over := false
+				for _, end := range endOfRunMarkers {
+					if _, ok := a.byName[end]; ok {
+						over = true
+					}
+				}
+				st.ParentLive = st.ParentLive || !over
+			}
+		}
+		if bytes.Equal(st.Row.Data, current) && st.Ended && !st.Leased && !st.ParentLive {
 			entries := slices.Clone(r.entries)
 			entries[i].Data = bytes.Clone(tombstone)
 			r.entries = entries

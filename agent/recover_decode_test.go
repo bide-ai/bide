@@ -292,7 +292,7 @@ func TestP14_RecoveryStartDecodeMatchesFullDecode(t *testing.T) {
 	}
 
 	// What the one-pass decoding does not take, the full decoding reports.
-	tomb := []byte(`{"redacted":{"leaf_hash":"aa","at_ms":1}}`)
+	tomb := []byte(`{"redacted":{"leaf_hash":"abababababababababababababababababababababababababababababababab","at_ms":1}}`)
 	other, _ := EncodeRecord(Record{Name: runStartStep, Kind: StepToolResult, Result: json.RawMessage(`{"input":"go"}`)})
 	renamed, _ := EncodeRecord(Record{Name: "run:other", Kind: StepValue, Result: json.RawMessage(`{"input":"go"}`)})
 	badInput, _ := EncodeRecord(Record{Name: runStartStep, Kind: StepValue, Result: json.RawMessage(`{"input":5}`)})

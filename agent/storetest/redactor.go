@@ -24,6 +24,9 @@ func Redactor(t *testing.T, open func(t *testing.T) agent.Store) {
 	t.Run("Replaces", func(t *testing.T) { redactReplaces(t, open(t)) })
 	t.Run("Idempotent", func(t *testing.T) { redactIdempotent(t, open(t)) })
 	t.Run("Refusals", func(t *testing.T) { redactRefusals(t, open(t)) })
+	t.Run("DoubleRedaction", func(t *testing.T) { redactTwice(t, open(t)) })
+	t.Run("SubRun", func(t *testing.T) { redactSubRun(t, open(t)) })
+	t.Run("Session", func(t *testing.T) { redactSession(t, open(t)) })
 	t.Run("Lease", func(t *testing.T) { redactLease(t, open(t)) })
 	t.Run("Context", func(t *testing.T) { redactContext(t, open(t)) })
 	t.Run("ConcurrentSameEntry", func(t *testing.T) { redactConcurrent(t, open) })
@@ -203,6 +206,10 @@ func redactRefusals(t *testing.T, s agent.Store) {
 		expect(t, id, "attempt:tool:a", att, tombstoneFor(t, "attempt:tool:a", att), agent.ErrRedactProtected)
 		fail := put(t, s, id, "tool:saga", agent.StepSagaFail, `"x"`)
 		expect(t, id, "tool:saga", fail, tombstoneFor(t, "tool:saga", fail), agent.ErrRedactProtected)
+		for _, saga := range []string{"@saga/compensate/c1", "@saga/args/c1"} {
+			b := put(t, s, id, saga, agent.StepValue, `{}`)
+			expect(t, id, saga, b, tombstoneFor(t, saga, b), agent.ErrRedactProtected)
+		}
 		tally := put(t, s, id, "approval-tally:x", agent.StepValue, `{}`)
 		expect(t, id, "approval-tally:x", tally, tombstoneFor(t, "approval-tally:x", tally), agent.ErrRedactProtected)
 	})
@@ -480,5 +487,80 @@ func redactRunPlan(t *testing.T, s agent.Store) {
 	sp.Records[0].LeafHash = fmt.Sprintf("%x", agent.LeafHash([]byte("x")))
 	if _, err := agent.Redact(ctx, j, sp, time.Now()); err == nil {
 		t.Fatalf("Redact accepted a plan whose digest no longer matches its records")
+	}
+}
+
+// A tombstone is never replaced by another: its leaf hash must stay the hash of the original record.
+func redactTwice(t *testing.T, s agent.Store) {
+	ctx := context.Background()
+	id, tool := redactRun(t, s, true)
+	r := redactor(t, s)
+	first := tombstoneFor(t, "tool:a", tool)
+	if done, err := r.Redact(ctx, id, "tool:a", tool, first); err != nil || !done {
+		t.Fatalf("Redact = %v, %v", done, err)
+	}
+	// A hand-built tombstone that keeps the hash of the first tombstone, as the bytes it replaces.
+	second := fmt.Appendf(nil, `{"redacted":{"leaf_hash":"%x","at_ms":1,"name":"tool:a"}}`, agent.LeafHash(first))
+	done, err := r.Redact(ctx, id, "tool:a", first, second)
+	if done || !errors.Is(err, agent.ErrRedactMismatch) {
+		t.Fatalf("Redact of a tombstone = %v, %v; want ErrRedactMismatch", done, err)
+	}
+	if e, _, _ := s.Get(ctx, id, "tool:a"); !bytes.Equal(e.Data, first) {
+		t.Fatalf("the tombstone was replaced by %q", e.Data)
+	}
+}
+
+// A sub-agent's run is read by its parent when the parent replays the call, so it is redacted only
+// once every run above it is over.
+func redactSubRun(t *testing.T, s agent.Store) {
+	ctx := context.Background()
+	parent, _ := redactRun(t, s, false)
+	child := agent.SubRunID(parent, "call1")
+	childEnd := put(t, s, child, "run:complete", agent.StepValue, `"done"`)
+	_ = childEnd
+	payload := put(t, s, child, "tool:x", agent.StepToolResult, `{"pii":1}`)
+	tomb := tombstoneFor(t, "tool:x", payload)
+	r := redactor(t, s)
+	done, err := r.Redact(ctx, child, "tool:x", payload, tomb)
+	if done || !errors.Is(err, agent.ErrRedactParentLive) {
+		t.Fatalf("Redact in a sub-run whose parent is live = %v, %v; want ErrRedactParentLive", done, err)
+	}
+	if e, _, _ := s.Get(ctx, child, "tool:x"); !bytes.Equal(e.Data, payload) {
+		t.Fatalf("a refused redaction changed the sub-run")
+	}
+	plan, err := agent.PlanRedaction(ctx, journal(t, s), child, agent.RedactionSelector{Names: []string{"tool:x"}})
+	if err == nil && plan.Refusal == "" {
+		t.Errorf("the plan of a sub-run with a live parent has no Refusal")
+	}
+	// A grandchild is refused for the live run two levels up.
+	grand := agent.SubRunID(child, "call2")
+	put(t, s, grand, "run:complete", agent.StepValue, `"done"`)
+	gp := put(t, s, grand, "tool:y", agent.StepToolResult, `{"pii":2}`)
+	if done, err := r.Redact(ctx, grand, "tool:y", gp, tombstoneFor(t, "tool:y", gp)); done || !errors.Is(err, agent.ErrRedactParentLive) {
+		t.Fatalf("Redact in a grandchild under a live root = %v, %v; want ErrRedactParentLive", done, err)
+	}
+	// Once the parent is over the child may be redacted.
+	put(t, s, parent, "run:complete", agent.StepValue, `"done"`)
+	if done, err := r.Redact(ctx, child, "tool:x", payload, tomb); err != nil || !done {
+		t.Fatalf("Redact after the parent ended = %v, %v", done, err)
+	}
+}
+
+// A session's runs are never redacted: the session reads its turns' runs and does not end.
+func redactSession(t *testing.T, s agent.Store) {
+	ctx := context.Background()
+	sid := runID(t)
+	turn := sid + ">@turn/1"
+	put(t, s, turn, "run:complete", agent.StepValue, `"done"`)
+	payload := put(t, s, turn, "tool:x", agent.StepToolResult, `{"pii":1}`)
+	done, err := redactor(t, s).Redact(ctx, turn, "tool:x", payload, tombstoneFor(t, "tool:x", payload))
+	if done || !errors.Is(err, agent.ErrRedactSession) {
+		t.Fatalf("Redact in a session turn run = %v, %v; want ErrRedactSession", done, err)
+	}
+	sub := agent.SubRunID(turn, "c")
+	put(t, s, sub, "run:complete", agent.StepValue, `"done"`)
+	sp := put(t, s, sub, "tool:x", agent.StepToolResult, `{"pii":1}`)
+	if done, err := redactor(t, s).Redact(ctx, sub, "tool:x", sp, tombstoneFor(t, "tool:x", sp)); done || !errors.Is(err, agent.ErrRedactSession) {
+		t.Fatalf("Redact in a sub-run of a session turn = %v, %v; want ErrRedactSession", done, err)
 	}
 }

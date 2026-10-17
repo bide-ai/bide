@@ -52,6 +52,12 @@ var (
 	// ErrRedactMismatch is a tombstone whose leaf hash is not the leaf hash of the bytes it
 	// replaces, or one that is not a well-formed tombstone.
 	ErrRedactMismatch = fmt.Errorf("redaction refused: the tombstone does not keep the leaf hash of the bytes it replaces: %w", ErrConfig)
+	// ErrRedactSession is a redaction in a session's journal or turn run: the session reads its
+	// turns' runs and never ends, so a redaction there is refused.
+	ErrRedactSession = fmt.Errorf("redaction refused: the run belongs to a session, which does not end: %w", ErrConfig)
+	// ErrRedactParentLive is a redaction in a sub-agent's run while a run above it is not over: the
+	// parent reads the child's records when it replays the call.
+	ErrRedactParentLive = fmt.Errorf("redaction refused: a run above this one (the sub-agent's parent) is not over: %w", ErrConfig)
 	// ErrRedactChanged is a redaction of an entry whose bytes are not the bytes the caller read:
 	// another writer changed it, or the caller's copy is not what is stored.
 	ErrRedactChanged = fmt.Errorf("redaction refused: the stored entry is not the one the caller read: %w", ErrConfig)
@@ -98,34 +104,25 @@ func NewTombstone(name string, recordBytes []byte, at time.Time) ([]byte, error)
 	return fmt.Appendf(nil, `{"redacted":{"leaf_hash":"%s","at_ms":%d,"name":%s}}`, hex.EncodeToString(LeafHash(recordBytes)), ms, nameJSON), nil
 }
 
-// TombstoneName returns the record name a tombstone carries, and false if b is not a tombstone or
-// names none (a tombstone is read without a name, as the reserved form allows).
-func TombstoneName(b []byte) (string, bool) {
-	if !isTombstone(b) {
-		return "", false
-	}
-	var t tombstone
-	if err := json.Unmarshal(b, &t); err != nil || t.Redacted == nil || t.Redacted.Name == "" {
-		return "", false
-	}
-	return t.Redacted.Name, true
-}
-
-// TombstoneLeafHash returns the leaf hash a tombstone keeps, and false if b is not a well-formed
-// tombstone (the reserved form of Record.Redacted with a leaf hash of 32 bytes in lower-case hex).
+// TombstoneLeafHash returns the leaf hash a tombstone keeps, and false if b is not a tombstone
+// in the exact form NewTombstone writes (see isTombstone).
 func TombstoneLeafHash(b []byte) ([]byte, bool) {
-	if !isTombstone(b) {
+	leaf, _, _, ok := parseTombstone(b)
+	if !ok {
 		return nil, false
 	}
-	var t tombstone
-	if err := json.Unmarshal(b, &t); err != nil || t.Redacted == nil || t.Redacted.AtMs < 0 {
-		return nil, false
-	}
-	h, err := hex.DecodeString(t.Redacted.LeafHash)
-	if err != nil || len(h) != sha256.Size || hex.EncodeToString(h) != t.Redacted.LeafHash {
+	h, err := hex.DecodeString(leaf)
+	if err != nil {
 		return nil, false
 	}
 	return h, true
+}
+
+// TombstoneName returns the record name a tombstone carries, and false if b is not a tombstone or
+// names none (the reserved form allows a tombstone without one).
+func TombstoneName(b []byte) (string, bool) {
+	_, _, name, ok := parseTombstone(b)
+	return name, ok && name != ""
 }
 
 // RedactionProtected reports why a record named name, of kind kind, may never be redacted, or ""
@@ -155,6 +152,8 @@ func RedactionProtected(name string, kind StepKind) string {
 		return "a run state record (cancellation, limits)"
 	case strings.HasPrefix(name, "attempt:"):
 		return "an attempt marker: the at-most-once evidence"
+	case strings.HasPrefix(name, "@saga/"):
+		return "a saga record (compensation memo or arguments): a re-drive of the run reads what was compensated"
 	}
 	for _, p := range protectedPrefixes {
 		if strings.HasPrefix(name, p) {
@@ -183,9 +182,17 @@ func RedactionEndMarkers() []string { return slices.Clone(endOfRunMarkers) }
 // Every Redactor calls it before it writes, so a caller cannot make a store write a tombstone that
 // does not keep the hash its proofs rest on. It wraps ErrRedactMismatch or ErrRedactProtected.
 func CheckRedaction(runID, name string, current, tombstone []byte) error {
+	if RedactionSession(runID) {
+		return fmt.Errorf("run %s: %w", runID, ErrRedactSession)
+	}
 	want, ok := TombstoneLeafHash(tombstone)
 	if !ok {
 		return fmt.Errorf("run %s, entry %q: the replacement is not a well-formed tombstone: %w", runID, name, ErrRedactMismatch)
+	}
+	if isTombstone(current) {
+		// A redaction replaces content, once. Replacing a tombstone with one that keeps the hash of
+		// the first would change the leaf, and with it every root over the run.
+		return fmt.Errorf("run %s, entry %q: the stored bytes are already a tombstone: %w", runID, name, ErrRedactMismatch)
 	}
 	if n, ok := TombstoneName(tombstone); !ok || n != name {
 		return fmt.Errorf("run %s, entry %q: the tombstone does not name the entry it replaces (%q): %w", runID, name, n, ErrRedactMismatch)
@@ -211,6 +218,8 @@ type RedactState struct {
 	Found  bool
 	Ended  bool
 	Leased bool
+	// ParentLive is whether a run above this one (RedactionAncestors) holds records and no end marker.
+	ParentLive bool
 }
 
 // Explain says what a replacement that changed nothing meant: it returns nil if the entry already
@@ -232,6 +241,42 @@ func (s RedactState) Explain(runID, name string, current, tombstone []byte) erro
 		return fmt.Errorf("run %s: %w", runID, ErrRedactNotTerminal)
 	case s.Leased:
 		return fmt.Errorf("run %s: %w", runID, ErrRedactLeased)
+	case s.ParentLive:
+		return fmt.Errorf("run %s: %w", runID, ErrRedactParentLive)
 	}
 	return fmt.Errorf("run %s, entry %q: the run changed while it was redacted: %w", runID, name, ErrRedactChanged)
+}
+
+// RedactionAncestors returns the runs above runID, nearest first, whose records runID's are read
+// with: for a sub-agent's run "a>b>c" they are "a>b" and "a". A run that is not a sub-agent's has
+// none. A Redactor refuses a sub-run unless each ancestor that holds any record holds an end marker.
+// It is empty for a session's run, which RedactionSession reports.
+func RedactionAncestors(runID string) []string {
+	if !IsSubRun(runID) || IsSessionRun(runID) {
+		return nil
+	}
+	var out []string
+	for {
+		i := strings.LastIndex(runID, subRunSep)
+		if i < 0 {
+			return out
+		}
+		runID = runID[:i]
+		out = append(out, runID)
+	}
+}
+
+// RedactionSession reports whether runID is a session's journal or turn run (agent.IsSessionRun),
+// or a sub-agent run inside one: they are never redacted.
+func RedactionSession(runID string) bool {
+	for id := runID; ; {
+		if IsSessionRun(id) {
+			return true
+		}
+		i := strings.LastIndex(id, subRunSep)
+		if i < 0 {
+			return false
+		}
+		id = id[:i]
+	}
 }

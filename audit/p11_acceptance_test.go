@@ -617,7 +617,8 @@ func TestP11_RedactionTombstoneKeepsTheTree(t *testing.T) {
 			}
 		}
 	}
-	// A tombstone whose leaf hash is not 32 bytes of hex is not a leaf.
+	// A tombstone whose leaf hash is not 32 bytes of lower-case hex is not a tombstone, so the row is
+	// a record that does not decode: the journal is refused (ErrStorage), never read with a short hash.
 	bad := agent.NewMemStore()
 	j3 := agenttest.MustJournal(bad)
 	for e, err := range orig.Load(ctx, "gov", -1) {
@@ -630,8 +631,8 @@ func TestP11_RedactionTombstoneKeepsTheTree(t *testing.T) {
 		}
 		bad.Insert(ctx, "gov", e.Name, data)
 	}
-	if _, err := audit.Root(ctx, j3, "gov"); !errors.Is(err, audit.ErrMalformed) {
-		t.Fatalf("a tombstone with a short leaf hash: err = %v, want ErrMalformed", err)
+	if _, err := audit.Root(ctx, j3, "gov"); !errors.Is(err, agent.ErrStorage) {
+		t.Fatalf("a tombstone with a short leaf hash: err = %v, want ErrStorage", err)
 	}
 }
 

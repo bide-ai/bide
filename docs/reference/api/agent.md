@@ -74,6 +74,8 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `var ErrRedactLeased`: ErrRedactLeased is a redaction in a run whose lease is live: a driver may be running it.
 - `var ErrRedactProtected`: ErrRedactProtected is a redaction of a record a verifier or the engine needs (see RedactionProtected).
 - `var ErrRedactMismatch`: ErrRedactMismatch is a tombstone whose leaf hash is not the leaf hash of the bytes it replaces, or one that is not a well-formed tombstone.
+- `var ErrRedactSession`: ErrRedactSession is a redaction in a session's journal or turn run: the session reads its turns' runs and never ends, so a redaction there is refused.
+- `var ErrRedactParentLive`: ErrRedactParentLive is a redaction in a sub-agent's run while a run above it is not over: the parent reads the child's records when it replays the call.
 - `var ErrRedactChanged`: ErrRedactChanged is a redaction of an entry whose bytes are not the bytes the caller read: another writer changed it, or the caller's copy is not what is stored.
 - `var ErrRedactNoEntry`: ErrRedactNoEntry is a redaction of an entry the run does not hold.
 - `var ErrAlreadyResolved`: ErrAlreadyResolved is the condition of a resolution refused because the operation already has a different recorded outcome (see HaltAlreadyResolved).
@@ -165,8 +167,10 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `func RecoverLoop(ctx context.Context, store *Journal, resume Resumer, opts ...RecoverLoopOption) error`: RecoverLoop re-drives in-flight runs until ctx is done, so a run whose holder dies is taken over automatically: Recover is a single pass, and a run another holder leases at that moment is left for a later one.
 - `func RecoveryKey(runID string, episode int) string`: RecoveryKey is the event key of runID's episode-th recovery failure (episode counts the recovered records before it, from zero).
 - `func RedactURLs(s string) string`: RedactURLs returns s with every URL in it redacted: its userinfo, each query parameter's value, and its fragment become REDACTED, and its scheme, host, path, and query parameter names are kept.
+- `func RedactionAncestors(runID string) []string`: RedactionAncestors returns the runs above runID, nearest first, whose records runID's are read with: for a sub-agent's run "a&gt;b&gt;c" they are "a&gt;b" and "a".
 - `func RedactionEndMarkers() []string`: RedactionEndMarkers returns the names of the end markers: a run that holds one of them is over, and only such a run may be redacted.
 - `func RedactionProtected(name string, kind StepKind) string`: RedactionProtected reports why a record named name, of kind kind, may never be redacted, or "" if it may.
+- `func RedactionSession(runID string) bool`: RedactionSession reports whether runID is a session's journal or turn run (agent.IsSessionRun), or a sub-agent run inside one: they are never redacted.
 - `func RenderMermaid(ctx context.Context, d *Journal, runID string) (string, error)`: RenderMermaid returns a Mermaid flowchart of a run's journaled steps, the "graph as derived OUTPUT" (Option B): you write plain Go, and the graph is rendered from what actually ran, not hand-authored.
 - `func ReportNotifyAck(ctx context.Context, ack NotifyAck)`: ReportNotifyAck is called by a Notifier, with the context it was given, to say how a delivery it is about to acknowledge was authenticated and answered.
 - `func ResolveHalt(ctx context.Context, store *Journal, ref HaltRef, out Outcome, opts ...ResolveOption) error`: ResolveHalt is the sanctioned escape from an \*OutcomeUnknown halt.
@@ -181,8 +185,8 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `func SupersededTallies(byName map[string]Record, outcome string) []string`: SupersededTallies returns the names of the tallies that outcome, the gate's outcome (as RecordedTally returns it, among byName) supersedes, oldest first: the tally its Supersedes names, and that one's, and so on.
 - `func TallyApprovals(recs []Record, s ApprovalSubject, p ApprovalPolicy, verifierFor ApproverVerifierFor) (ApprovalTally, []DecisionCheck)`: TallyApprovals is the m-of-n counting rule, shared by the gate and offline verification so the two cannot drift.
 - `func ToKey(receiver, key string) string`: ToKey is the event key of key's delivery to receiver, for an event that goes to several receivers at once (an approval whose approvers are routed to different ones): each has a key, and so an ID, claim and acknowledgement, of its own.
-- `func TombstoneLeafHash(b []byte) ([]byte, bool)`: TombstoneLeafHash returns the leaf hash a tombstone keeps, and false if b is not a well-formed tombstone (the reserved form of Record.Redacted with a leaf hash of 32 bytes in lower-case hex).
-- `func TombstoneName(b []byte) (string, bool)`: TombstoneName returns the record name a tombstone carries, and false if b is not a tombstone or names none (a tombstone is read without a name, as the reserved form allows).
+- `func TombstoneLeafHash(b []byte) ([]byte, bool)`: TombstoneLeafHash returns the leaf hash a tombstone keeps, and false if b is not a tombstone in the exact form NewTombstone writes (see isTombstone).
+- `func TombstoneName(b []byte) (string, bool)`: TombstoneName returns the record name a tombstone carries, and false if b is not a tombstone or names none (the reserved form allows a tombstone without one).
 - `func ToolResultStep(toolUseID string) string`: ToolResultStep is the key of the result of the call toolUseID: the record the loop, a saga rollback, or ResolveHalt writes when the call's outcome is known.
 - `func ToolsDigest(tools []ToolSpec) string`: ToolsDigest is the hex SHA-256 digest a model record journals of the tool set a turn was sent: each tool's name, description and argument schema, length-prefixed under a domain tag, in the order of their names, so the digest does not depend on the order the tools were listed in.
 - `func ValidReaskNote(byName map[string]Record, toolUseID, name string, w ApprovalWait) bool`: ValidReaskNote reports whether w, the content of the record named name (ApprovalReaskStep of toolUseID), is a re-ask note the journal proves: its Reask is the reason its name stands for, and its Supersedes names a recorded tally (among byName) that GateReask would ask again over for that reason, namely the call's tally for a format re-ask, and for a separation-of-duties re-ask the outcome so far (the format re-approval tally when the tally predates DecisionFormat and that one is recorded, else the tally) under a policy that excludes the requester.
@@ -2339,6 +2343,8 @@ type RedactState struct {
 	Found  bool
 	Ended  bool
 	Leased bool
+
+	ParentLive bool
 }
 ```
 
@@ -2358,8 +2364,10 @@ type RedactionPlan struct {
 
 	JournalSize int `json:"journal_size"`
 
-	Terminal bool   `json:"terminal"`
-	Digest   string `json:"digest"`
+	Terminal bool `json:"terminal"`
+
+	Refusal string `json:"refusal,omitempty"`
+	Digest  string `json:"digest"`
 }
 ```
 

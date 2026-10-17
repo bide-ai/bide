@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 
 	"github.com/bide-ai/bide/agent"
@@ -212,20 +210,13 @@ func journalLeafHashes(recs []agent.Record) ([][]byte, error) {
 	return out, nil
 }
 
-// tombstoneLeafHash reads the leaf hash a redaction tombstone records:
-// {"redacted":{"leaf_hash":"<hex>",...}}, 32 bytes.
+// tombstoneLeafHash reads the leaf hash a redaction tombstone records (agent.TombstoneLeafHash):
+// {"redacted":{"leaf_hash":"<64 lower-case hex>","at_ms":<ms>}}, in exactly the form agent.NewTombstone
+// writes, so every JSON reader reads the same hash.
 func tombstoneLeafHash(tombstone []byte) ([]byte, error) {
-	var t struct {
-		Redacted *struct {
-			LeafHash string `json:"leaf_hash"`
-		} `json:"redacted"`
-	}
-	if err := json.Unmarshal(tombstone, &t); err != nil || t.Redacted == nil {
+	h, ok := agent.TombstoneLeafHash(tombstone)
+	if !ok {
 		return nil, fmt.Errorf("a redacted record's tombstone does not read: %w", ErrMalformed)
-	}
-	h, err := hex.DecodeString(t.Redacted.LeafHash)
-	if err != nil || len(h) != sha256.Size {
-		return nil, fmt.Errorf("a redacted record's tombstone leaf hash %q is not 32 bytes of hex: %w", t.Redacted.LeafHash, ErrMalformed)
 	}
 	return h, nil
 }
