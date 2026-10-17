@@ -67,7 +67,7 @@ disclosure or append-only proofs matter.
 `SHA-256(0x00 || "bide.audit.journal-leaf.v1\x00" || stored bytes)`, where the stored bytes are the
 record as the journal holds it (`agent.Record.Raw`; `audit.JournalLeafHash` computes it). A record
 built in memory has no stored bytes and so no leaf. A record a redaction replaced with a tombstone
-keeps its place in the journal tree through the leaf hash the tombstone records, so the root and
+keeps its place in the journal tree through the leaf hash the tombstone records (and its name, which a journal export therefore still carries for it), so the root and
 every other record's proof are unchanged; it can no longer be proven itself. What the redacted record
 said is gone, so nothing is projected from a journal holding one: the absence key sets
 (`NewAbsenceTreeHead`, `SignAbsenceRoot`, `ProveAbsent`, `ProveAbsentBundle`), the run certificate's

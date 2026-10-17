@@ -604,7 +604,7 @@ The critique's key-rewriting-wrapper concern (C) is handled by contract.
 ### Redaction (D2)
 The tombstone format is reserved now.
 
-- **Tombstone shape:** `{"redacted":{"leaf_hash":"<hex>","at_ms":<ms>}}`.
+- **Tombstone shape:** `{"redacted":{"leaf_hash":"<hex>","at_ms":<ms>,"name":"<name>"}}`. The `name` member is optional on read and always written; it must equal the row name it sits in, and it lets an export of the journal (bytes without row keys) say which record a tombstone replaced.
 - **Proofs.** The prover uses the tombstone's leaf hash instead of hashing the entry. Proofs of every other record still verify. The redacted record decodes as `Record{Redacted: true}`.
 - **Resume.** A run with a redacted record is terminal and cannot be resumed.
 - **Scope.** Whether 1.0 ships the capability in the three stores is a decision for the maintainer (section 12, D2).
