@@ -3,7 +3,7 @@
 TLA+ models of bide's coordination protocols, written in PlusCal and checked with the TLC model
 checker. The plan and the reasoning behind it are in the design note
 [formal models of the coordination protocols](../../docs/design/formal-models.md);
-this directory holds models 1 (the claim protocol), 1b (the approval gate), 2 (the bide protocol's claim rules), 7 (flow semantics), 8 (spend accounting), 9 (the tool-call state machine), 10 (the run lifecycle and recovery), 11 (delegation, sub-run authority and saga trees) and 12 (sessions) of that plan, two design models: 13 (probes for unknown outcomes) and 14 (notifications), and model 15 (approver identity: the counting, status, time and gate rules of the certificate-bound approver design).
+this directory holds models 1 (the claim protocol), 1b (the approval gate), 2 (the bide protocol's claim rules), 7 (flow semantics), 8 (spend accounting), 9 (the tool-call state machine), 10 (the run lifecycle and recovery), 11 (delegation, sub-run authority and saga trees) and 12 (sessions) of that plan, two design models: 13 (probes for unknown outcomes) and 14 (notifications), model 15 (approver identity: the counting, status, time and gate rules of the certificate-bound approver design) and model 16 (the kill switch: the stop, the lift and the change of mode, and a call's read of them).
 
 What a model check establishes, stated narrowly: within the bounds a configuration states (drivers,
 processes, faults, attempt numbers), TLC explores every interleaving of the modelled rules and every
@@ -250,8 +250,8 @@ spec/tla/
     regress/         historical rules, each of which must still produce its counterexample
     findings/        open findings, which fail until they are fixed (none open at present)
     limits/          accepted behavior, stated as an expected violation
-  flows/, protocol/, spend/, toolcall/, lifecycle/, delegation/, sessions/, probes/, notify/, identity/
-                     models 7, 2, 8, 9, 10, 11, 12, 13, 14 and 15, laid out the same way (toolcall/ also
+  flows/, protocol/, spend/, toolcall/, lifecycle/, delegation/, sessions/, probes/, notify/, identity/, stop/
+                     models 7, 2, 8, 9, 10, 11, 12, 13, 14, 15 and 16, laid out the same way (toolcall/ also
                      holds ToolCallApalache.tla, model 9's typed wrapper, not yet checked; notify/
                      also holds NotifyLifecycle.tla, model 14 composed with model 10)
 ```
@@ -3071,3 +3071,103 @@ except for the properties model 1's inductive invariant proves: for those, the d
 unbounded and any number and mix of faults is covered within its configurations' drivers,
 processes, calls, attempts and claim ids (claim ids are never reused, so the pool bounds the
 number of claims) ([Apalache results](#apalache-results)).
+
+## Model 16: the kill switch
+
+`stop/Stop.tla` checks the rules of the kill switch ([docs/design/kill-switch.md](../../docs/design/kill-switch.md)),
+in plain TLA+. The control log holds stops, one lifter's lift, one lifter's approval of a policy
+transition, and evidence of a change of mode; the effective state is a fold of the log (`EffC`,
+`Eff`), which `StopControl.State` implements. A call claims an attempt, reads the log after the
+claim, and starts only if no covering stop is active in what it read; a stop that is read makes the
+attempt not started, so it is claimed again. A call with a marker and no result is halted for good:
+nothing in the model starts it again.
+
+### What is modelled
+
+- **The mode is the process's configuration** (`Cfg`), never the store's. A basic process trusts
+  the store: any set is a stop, one lift lifts it, and policy and mode records change nothing. An
+  audited process counts a record only if it is signed by an approver the policy in force enrols
+  (`Unforgeable`: only an enrolled key signs; the forger signs nothing); plain and unsigned records
+  change nothing. Mode records are evidence only (`ModeRecordsEvidence`).
+- **Policy transitions.** The policy in force starts at the root the process trusts (policy 1; an attacker's own root, policy 0, never starts the chain, `TrustRootOnly`) and advances
+  when a quorum of lifters of the policy in force have approved the next one (`pol` records); each
+  record is judged under the policy in force at its position, so a stop set under policy 1 stays in
+  force after a transition that offboards its setter, and an offboarded lifter's earlier lift no
+  longer counts. The process pins one policy (`Pin`) and walks the chain from the root: stops set
+  under policy 1 are in force whatever it pins, and until the walk reaches its pin the stops are
+  unknowable (`Unk`); a forged record never makes an audited process whose pin is reached unknowable (`NoSpuriousUnknowable`). A process that does not follow the chain drops the earlier stops silently
+  (`AgreesWithChain`).
+- **Deployments.** A record names its deployment (`dep`); an audited process ignores records for
+  another (`ForeignNoEffect`).
+- **A basic process on an audited deployment** does not lift a stop set under a signed record on a
+  plain lift, and its stops are unknowable while one is active (`BasicSignedStopNeedsSignedLift`).
+- **Two stops**, each covering a set of calls (`CoverOf`); a lift names its stop. Lifting needs
+  `QuorumOf` distinct lifters of the policy in force and, with `NeedsOther`, one who is not the setter.
+- **A call**: `Claim`, then the check (`ReadOk`: a synchronous read of the whole log, or without
+  `SyncRead` any earlier prefix; `ReadFail`: held under `FailClosed`, else it proceeds), then
+  `Begin`, which can follow a stop committed after the read (the call is in flight and finishes),
+  then `Finish`. A crash with a marker and no result halts the call (`Crash`).
+- **Not modelled**: forks, rollbacks and competing roots of the policy chain (Go tests; each makes the stops unknowable), the "stops unknowable" signal for records that do not verify (a Go test), scope matching (a pure function, unit-tested), the reader's staleness bound in
+  time (the model is the case of a maximum staleness of 0; the bound is an engineering figure of the
+  Go code, and a bounded cache is covered by the Go tests when the switch lands), a split of the
+  lifters over different transition documents (a Go test), and the check points of the loop, which
+  land with their code.
+
+| Property | Kind | Statement |
+|---|---|---|
+| `AtMostOnce` | invariant | the effect starts at most once, whatever the stop, the lift and the crashes do |
+| `StartedSawNoStop` | invariant | a call that started read the log at or after its claim and saw no covering stop |
+| `ForgedNoEffect` | invariant | in an audited process a record that is not signed changes nothing |
+| `ModeRecordsEvidence` | invariant | a mode record in the store changes nothing, in any process |
+| `LiftNeedsQuorum` | invariant | an audited lift is by a quorum of lifters of the policy in force, one not the setter when `WantOther` |
+| `AgreesWithChain` | invariant | an audited process's stops agree with the fold that follows every transition from the root, or it says they are unknowable |
+| `NoSpuriousUnknowable` | invariant | an audited process whose pin the chain has reached is never made unknowable by a record that does not verify |
+| `ForeignNoEffect` | invariant | a record for another deployment changes nothing in an audited process |
+| `BasicSignedStopNeedsSignedLift` | invariant | a basic process does not lift a stop set under a signed record on a plain lift |
+| `StopsNeverDropped` | property | a stop never goes back: none, active, lifted |
+| `OnlyBeginFires` | property | only a call's `Begin` starts the effect: a stop, a lift, a transition or a mode record never does |
+
+### Model-code map
+
+<!-- modelsync: no-code stop Claim ReadOk ReadFail Begin Finish Crash Refire Relift -->
+<!-- modelsync: map stop -->
+| Model action | Go code |
+|---|---|
+| `ApplyC`, `EffC` | `StopControl.State` (`agent/stop_control.go`): the fold, with `countLifts` (`Relift`) |
+| `Write` | `StopControl.write` (`agent/stop_control.go`): a record is appended to the control run |
+| `Claim`, `ReadOk`, `ReadFail`, `Begin`, `Finish`, `Crash`, `Refire` | no Go region yet (the check points land with the switch); `Refire` is a counterexample rule |
+| `Relift` | inside the fold: the lift rule is evaluated again under a new policy |
+
+### Configurations
+
+| Config | Group | What |
+|---|---|---|
+| `stop-audited` | ci | an audited process, one stop and one call, quorum 2, three records |
+| `stop-q1` | ci | quorum 1 with the setter rule |
+| `stop-basic` | ci | a basic process: plain records stop and lift; policy and mode records change nothing; a signed stop needs a signed lift |
+| `stop-rotation` | ci | a policy transition: stops set under policy 1 stay in force |
+| `stop-pinned` | ci | a process pinned to policy 2 walks the chain from the root; unknowable until the walk reaches its pin |
+| `stop-replay` | ci | records signed for another deployment change nothing |
+| `stop-attacker-root` | ci | an attacker with keys of their own writes a root and a transition into the pinned policy: only the trusted root starts the chain |
+| `stop-two-stops` | ci | two stops and two calls: each stop holds only its own call |
+| `stop-blocked-reach` | ci | reachability: a call reads a stop and is not started (`BlockedNotReachable` violated) |
+| `stop-lift-reach` | ci | reachability: an audited lift by a quorum of two (`AuditedLiftNotReachable` violated) |
+| `stop-rotated-reach` | ci | reachability: policy 2 in force with a policy-1 stop active (`RotatedNotReachable` violated) |
+| `deep-stop` | nightly | the audited process at four records |
+
+### Counterexample configurations
+
+Each is in `stop/regress/` and must fail with its named property:
+
+- `no-check` (`StartedSawNoStop`): a call that does not read the log after its claim starts under a stop committed before it.
+- `stale-read` (`StartedSawNoStop`): a call that reads an older prefix than its claim does the same: why a side-effect call reads synchronously.
+- `fail-open` (`StartedSawNoStop`): a failed read that does not hold the call: a partition from the log defeats the stop.
+- `plain-in-audited` (`ForgedNoEffect`): an audited process accepts a plain record.
+- `lift-by-setter` (`LiftNeedsQuorum`): the fold does not require a lifter other than the setter (quorum 1).
+- `mode-from-store` (`ModeRecordsEvidence`): the store decides the mode: one forged mode record flips a basic process to audited, which then ignores every plain stop and lift (found in the review of #393).
+- `no-chain` (`AgreesWithChain`): a process that does not walk the chain from the root drops a stop set under policy 1 silently (found in the review of #393).
+- `unknowable-on-forgery` (`NoSpuriousUnknowable`): one forged record makes an audited process's stops unknowable, so a store-write attacker pauses every covered call (the lead's review of fac3710c).
+- `untrusted-root` (`AgreesWithChain`): a stored root the process does not trust starts the chain: an attacker's root plus a transition into the pinned policy drops the genuine stops silently (found in the review of #393).
+- `no-dep-check` (`ForeignNoEffect`): the fold ignores the deployment ID, so staging's records take effect in production (found in the review of #393).
+- `basic-plain-lift` (`BasicSignedStopNeedsSignedLift`): a basic process on an audited deployment lifts a signed stop on a plain lift (found in the review of #393).
+- `lift-refires` (`AtMostOnce`): a lift starts a halted call again, and it fires twice.

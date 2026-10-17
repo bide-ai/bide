@@ -235,6 +235,9 @@ func checkRunID(ctx context.Context, runID string) error {
 		// their memoized steps. Reject it rather than corrupt the log.
 		return fmt.Errorf("run: empty runID: %w", ErrConfig)
 	}
+	if runID == StopControlRun {
+		return fmt.Errorf("run: run ID %q is reserved by the engine (the stop control run): %w", runID, ErrConfig)
+	}
 	if !strings.Contains(runID, subRunSep) || derivedRunID(ctx, runID) {
 		return nil
 	}
