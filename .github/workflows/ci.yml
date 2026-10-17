@@ -67,7 +67,7 @@ jobs:
       heavy: ${{ steps.diff.outputs.heavy }}
       shards: ${{ steps.shards.outputs.shards }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
       - id: diff
@@ -127,10 +127,10 @@ jobs:
       contents: read
       pull-requests: read # the modelsync step reads the descriptions of the pull requests it checks
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0 # the modelsync step diffs against the merge base and reads commit messages
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.27'
           cache-dependency-path: '**/go.sum'
@@ -198,6 +198,8 @@ jobs:
           # run, or in the list of those whose result depends only on the test binary.
           .github/scripts/check-uncached.sh --self-test
           .github/scripts/check-uncached.sh
+          .github/scripts/check-pinned-actions.sh --self-test
+          .github/scripts/check-pinned-actions.sh
           # The docs-only test (changed-code.sh) is what lets a pull request or a queue batch skip
           # the Go jobs: its cases include the documents the Go tests read.
           .github/scripts/changed-code.sh --self-test
@@ -323,8 +325,8 @@ jobs:
       matrix:
         shard: ${{ fromJSON(needs.changes.outputs.shards) }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.27'
           cache: false # the go-cache action below restores the build and test cache
@@ -332,7 +334,7 @@ jobs:
         id: gocache
         with:
           name: linux-${{ matrix.shard }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22' # the approve page's script tests (approvals/page) run under Node: Ed25519 in WebCrypto needs 20 or later
       - name: Build & test (the shard's modules and packages)
@@ -348,7 +350,7 @@ jobs:
         run: SHARDS="$TEST_SHARDS" .github/scripts/shards.sh run "$SHARD" -race
       # Only a push to main saves the cache: a cache saved on a pull request or a merge queue branch
       # is not readable by other runs, and would only evict the useful ones.
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         if: github.event_name == 'push'
         with:
           path: ${{ steps.gocache.outputs.paths }}
@@ -361,8 +363,8 @@ jobs:
     if: needs.changes.outputs.heavy != 'false'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.27'
           cache: false # the go-cache action below restores the build and test cache
@@ -382,7 +384,7 @@ jobs:
         run: .github/scripts/shards.sh run-modules
       # Only a push to main saves the cache: a cache saved on a pull request or a merge queue branch
       # is not readable by other runs, and would only evict the useful ones.
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         if: github.event_name == 'push'
         with:
           path: ${{ steps.gocache.outputs.paths }}
@@ -397,7 +399,7 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           sparse-checkout: .github/scripts
       - name: Every shard passed
@@ -420,8 +422,8 @@ jobs:
     if: ${{ !cancelled() && needs.changes.outputs.heavy != 'false' }}
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.27'
           cache: false # the go-cache action below restores the build and test cache
@@ -429,7 +431,7 @@ jobs:
         id: gocache
         with:
           name: macos
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22' # the approve page's script tests (approvals/page) run under Node: Ed25519 in WebCrypto needs 20 or later
       - name: Build & test (all modules)
@@ -438,7 +440,7 @@ jobs:
         run: .github/scripts/shards.sh run-modules
       # Only a push to main saves the cache: a cache saved on a pull request or a merge queue branch
       # is not readable by other runs, and would only evict the useful ones.
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         if: github.event_name == 'push'
         with:
           path: ${{ steps.gocache.outputs.paths }}
@@ -450,8 +452,8 @@ jobs:
     if: ${{ !cancelled() && needs.changes.outputs.heavy != 'false' }}
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.27'
           cache: false # the go-cache action below restores the build and test cache
@@ -459,7 +461,7 @@ jobs:
         id: gocache
         with:
           name: windows
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22' # the approve page's script tests (approvals/page) run under Node: Ed25519 in WebCrypto needs 20 or later
       - name: Build & test (all modules)
@@ -468,7 +470,7 @@ jobs:
         run: .github/scripts/shards.sh run-modules
       # Only a push to main saves the cache: a cache saved on a pull request or a merge queue branch
       # is not readable by other runs, and would only evict the useful ones.
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         if: github.event_name == 'push'
         with:
           path: ${{ steps.gocache.outputs.paths }}
@@ -507,8 +509,8 @@ jobs:
       BIDE_REQUIRE_SOFTHSM: "1" # signer/pkcs11 and bide-hsm fail, not skip, without SoftHSM2
       BIDE_REQUIRE_OPENSSL: "1" # the certificate request tests (cmd/bide, bide-hsm) fail, not skip, without openssl
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.27'
           cache-dependency-path: '**/go.sum'

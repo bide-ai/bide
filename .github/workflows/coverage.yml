@@ -49,8 +49,8 @@ jobs:
       PG_DSN: postgres://bide:bide@localhost:5432/bide_test?sslmode=disable
       REDIS_ADDR: localhost:6379
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.27'
       - name: Test with coverage (published modules, merged into coverage.out)
@@ -58,7 +58,7 @@ jobs:
       - name: Upload to Codecov
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         # Pinned to a commit: this workflow holds an OIDC token. v7.1.1.
-        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           use_oidc: true
           files: coverage.out
