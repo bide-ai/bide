@@ -329,7 +329,7 @@ across crashes, error replies, two drivers and the resolver), `GatedResults` and
 regressions `gate-missing` (no gate check), `gate-unscoped` (a per-node key in a loop) and
 `gate-request-order` (a decision recorded before the request counted) fail `GateHeld`. The counting
 rule over signed records, and that a counted signature binds the request's input, are model 1b's
-and the Go tests' (`plan/rev_gate_test.go`, `plan/gate_test.go`), not model 7's.
+and the Go tests' (`plan/gate_test.go`), not model 7's.
 
 ## Separation of duties (`ExcludePrincipal`)
 

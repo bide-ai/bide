@@ -995,7 +995,7 @@ written directly, since `Approve` and `SubmitDecision` refuse it; modelled with 
 counted and is final for that approver, whose identical decision afterwards has its name. Each approver's
 decision here is their first valid one; model 1b checks the counting rule over signed, possibly
 invalid records, and that a counted signature binds the request's input is checked by Go tests
-(`plan/rev_gate_test.go`, `plan/gate_test.go`), not by this model.
+(`plan/gate_test.go`), not by this model.
 
 <!-- modelsync: map flows -->
 | Label | Go |
