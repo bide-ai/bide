@@ -729,3 +729,20 @@ func chainDigest(ch []*x509.Certificate) string {
 	}
 	return string(h.Sum(nil))
 }
+
+// IDKind returns the kind of the one subject alternative name a leaf must carry.
+func (c *CertIdentity) IDKind() IDKind { return c.kind }
+
+// EKU returns the extended key usage a leaf must carry, as a copy. A policy that also accepts
+// id-kp-emailProtection (AllowsEmailProtectionEKU) accepts a leaf with that usage instead.
+func (c *CertIdentity) EKU() asn1.ObjectIdentifier { return slices.Clone(c.eku) }
+
+// AllowsEmailProtectionEKU reports whether the policy accepts id-kp-emailProtection in place of EKU.
+func (c *CertIdentity) AllowsEmailProtectionEKU() bool { return c.emailEKU }
+
+// PolicyOID returns the certificate policy OID a leaf must assert.
+func (c *CertIdentity) PolicyOID() x509.OID { return c.policy }
+
+// MaxLeafLifetime returns the bound on a leaf's notAfter minus notBefore: the policy's value, or the
+// 24 hour default when it set none. The policy's NotBeforeBackdate widens the check beyond it.
+func (c *CertIdentity) MaxLeafLifetime() time.Duration { return c.maxLife }
