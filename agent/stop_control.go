@@ -172,7 +172,10 @@ type StopEntry struct {
 }
 
 // Rejection is a record in the control run that has no effect, and why.
-type Rejection struct{ Name, Reason string }
+type Rejection struct {
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
+}
 
 // StopState is the effective state of the control run for one control.
 type StopState struct {
