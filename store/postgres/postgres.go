@@ -170,9 +170,10 @@ type Store struct {
 }
 
 var (
-	_ agent.Store  = (*Store)(nil)
-	_ agent.Lister = (*Store)(nil)
-	_ agent.Leaser = (*Store)(nil)
+	_ agent.Store    = (*Store)(nil)
+	_ agent.Lister   = (*Store)(nil)
+	_ agent.Redactor = (*Store)(nil)
+	_ agent.Leaser   = (*Store)(nil)
 )
 
 // tables holds the table names, prefixed, their schema-qualified forms, and the statements built
@@ -188,7 +189,8 @@ type tables struct {
 	qEvents                             string     // the events table, schema-qualified
 	rels                                [][]sqlTok // the qualified tables, as the statement check names them
 	insert, acquire, renew, release     writeSQL
-	reap                                writeSQL
+	reap, redact                        writeSQL
+	leased                              selectSQL
 	get, load                           selectSQL
 	appendEvent                         writeSQL // see EventStore.Append
 	getEvent, loadEvents                selectSQL
@@ -295,6 +297,19 @@ func newTables(prefix, schema string) (tables, error) {
 		AND (pg_catalog.strpos(l.run_id, '>') OPERATOR(pg_catalog.>) 0
 			OR NOT EXISTS (SELECT 1 FROM `+t.qSteps+` AS y WHERE y.run_id OPERATOR(pg_catalog.=) l.run_id)
 			OR EXISTS (SELECT 1 FROM `+t.qSteps+` AS x WHERE x.run_id OPERATOR(pg_catalog.=) l.run_id AND x.name OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.text[])))`, nil, [][]sqlTok{names[1], names[2]}); err != nil {
+		return tables{}, err
+	}
+	// A redaction (see Store.Redact): one statement, so atomic. The row is replaced only if it holds
+	// the caller's bytes, the run holds an end marker and no lease on it is live; a concurrent
+	// change to the row makes the statement re-evaluate its conditions on the new version at read
+	// committed (and run again after a serialization failure, see write). The entry keeps its seq.
+	if t.redact, err = newWrite(`UPDATE `+t.qSteps+` AS s SET data = $3
+		WHERE s.run_id OPERATOR(pg_catalog.=) $1 AND s.name OPERATOR(pg_catalog.=) $2 AND s.data OPERATOR(pg_catalog.=) $4
+		AND EXISTS (SELECT 1 FROM `+t.qSteps+` AS e WHERE e.run_id OPERATOR(pg_catalog.=) $1 AND e.name OPERATOR(pg_catalog.=) ANY ($5::pg_catalog.text[]))
+		AND NOT EXISTS (SELECT 1 FROM `+t.qLeases+` AS l WHERE l.run_id OPERATOR(pg_catalog.=) $1 AND l.expiry OPERATOR(pg_catalog.>=) pg_catalog.now())`, nil, [][]sqlTok{names[1], names[2]}); err != nil {
+		return tables{}, err
+	}
+	if t.leased, err = newSelect(`SELECT EXISTS (SELECT 1 FROM `+t.qLeases+` WHERE run_id OPERATOR(pg_catalog.=) $1 AND expiry OPERATOR(pg_catalog.>=) pg_catalog.now())`, leases); err != nil {
 		return tables{}, err
 	}
 	if t.get, err = newSelect(`SELECT seq, data FROM `+t.qSteps+` WHERE run_id OPERATOR(pg_catalog.=) $1 AND name OPERATOR(pg_catalog.=) $2`, steps); err != nil {
@@ -1147,6 +1162,55 @@ func (s *Store) ReapLeases(ctx context.Context, ended []string) (int, error) {
 		return 0, fmt.Errorf("reap leases: %w (%w)", err, agent.ErrStorage)
 	}
 	return int(n), nil
+}
+
+// Redact implements agent.Redactor with one UPDATE that replaces the entry only if it holds current,
+// the run holds an end marker and no lease on the run is live (see agent.Redactor). It takes no lock
+// beyond the row's: the entry keeps its seq, so it does not contend with the run's inserts for a
+// position, and an end marker, once stored, stays. When the update changes nothing, the store reads
+// why (the row, the end marker, the lease) to say which refusal it was; a row that already holds
+// the tombstone is not one. The role that calls it needs UPDATE (data) on the steps table, which
+// the application's role has no need of (see docs/guides/postgres.md).
+func (s *Store) Redact(ctx context.Context, runID, name string, current, tombstone []byte) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if err := agent.CheckRedaction(runID, name, current, tombstone); err != nil {
+		return false, err
+	}
+	n, err := s.write(ctx, s.t.redact, runID, name, tombstone, current, agent.RedactionEndMarkers())
+	if err != nil {
+		return false, fmt.Errorf("redact step %q: %w (%w)", name, err, agent.ErrStorage)
+	}
+	if n == 1 {
+		return true, nil
+	}
+	var st agent.RedactState
+	e, err := s.get(ctx, runID, name)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+	case err != nil:
+		return false, fmt.Errorf("redact step %q: read it: %w (%w)", name, err, agent.ErrStorage)
+	default:
+		st.Row, st.Found = e, true
+	}
+	if st.Found {
+		for _, m := range agent.RedactionEndMarkers() {
+			if _, err := s.get(ctx, runID, m); err == nil {
+				st.Ended = true
+			} else if !errors.Is(err, sql.ErrNoRows) {
+				return false, fmt.Errorf("redact step %q: read %s: %w (%w)", name, m, err, agent.ErrStorage)
+			}
+		}
+		if st.Leased, err = retry(ctx, func() (bool, error) {
+			var leased bool
+			err := s.db.QueryRowContext(ctx, string(s.t.leased), runID).Scan(&leased)
+			return leased, err
+		}); err != nil {
+			return false, fmt.Errorf("redact step %q: read the lease: %w (%w)", name, err, agent.ErrStorage)
+		}
+	}
+	return false, st.Explain(runID, name, current, tombstone)
 }
 
 // write sends one data-changing statement on the pool, where Postgres runs it as a transaction of
