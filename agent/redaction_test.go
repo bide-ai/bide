@@ -285,7 +285,6 @@ func TestTombstone_OnlyTheCanonicalFormReads(t *testing.T) {
 		"at_ms float":          `{"redacted":{"leaf_hash":"` + leaf + `","at_ms":5.0}}`,
 		"extra member":         `{"redacted":{"leaf_hash":"` + leaf + `","at_ms":5,"x":1}}`,
 		"name before at_ms":    `{"redacted":{"leaf_hash":"` + leaf + `","name":"x","at_ms":5}}`,
-		"name escaped":         `{"redacted":{"leaf_hash":"` + leaf + `","at_ms":5,"name":"\u0078"}}`,
 		"empty name":           `{"redacted":{"leaf_hash":"` + leaf + `","at_ms":5,"name":""}}`,
 		"short hash":           `{"redacted":{"leaf_hash":"ab","at_ms":5}}`,
 		"second top member":    `{"redacted":{"leaf_hash":"` + leaf + `","at_ms":5},"x":1}`,

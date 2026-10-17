@@ -185,21 +185,16 @@ func (s RedactionSelector) matchesName(name string) bool {
 	return false
 }
 
-// preset reports whether the Payloads preset chooses r.
+// preset reports whether the Payloads preset chooses r: a record of a payload kind whose key is
+// payload (not bookkeeping: usage, branch choices, timers).
 func (s RedactionSelector) preset(r Record) bool {
 	if !s.Payloads {
 		return false
 	}
 	switch r.Kind {
-	case StepModel, StepToolResult, StepSignal, StepApproval:
-		return true
-	case StepValue:
-		// Usage-only @spend records and the approval bookkeeping records hold no payload; an
-		// approval request does.
-		if strings.HasPrefix(r.Name, "@spend") {
-			return false
-		}
-		return !strings.HasPrefix(r.Name, "approval") || strings.HasPrefix(r.Name, "approval-request:")
+	case StepModel, StepToolResult, StepSignal, StepApproval, StepValue:
+		class, _, _ := classOf(r.Name)
+		return class == classPayload
 	}
 	return false
 }
