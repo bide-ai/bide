@@ -95,8 +95,7 @@ func allowed(t *testing.T, role string, calls []string) {
 func TestEveryWriterCallIsAllowedByTheWriterRole(t *testing.T) {
 	k := newKeys(t, 1)
 	f := gcstest.New()
-	f.Configure(func(b *gcs.BucketInfo) { b.ObjectRetention = true })
-	a := newAnchor(t, f, func(c *gcs.Config) { c.LegalHold = true; c.ObjectRetention = true })
+	a := newAnchor(t, f, func(c *gcs.Config) { c.LegalHold = true })
 	h := k.head(t, "r", 1, 1)
 	publish(t, a, h)
 	publish(t, a, h) // the 412 path: read back of an existing object
@@ -116,4 +115,38 @@ func TestEveryReaderCallIsAllowedByTheReaderRole(t *testing.T) {
 	_, _ = r.Head(ctx, audit.TreeJournal, "r", 1)
 	_, _ = r.Audit(ctx, audit.TreeJournal, "r", f.Now().Add(time.Hour))
 	allowed(t, gcs.ReaderRole, f.Calls()[n:])
+}
+
+func TestObjectRetentionNeedsItsOwnWriterRole(t *testing.T) {
+	plain, withRetention := perms(t, gcs.WriterRole), perms(t, gcs.WriterObjectRetentionRole)
+	for _, p := range gcs.ObjectRetentionPermissions {
+		if slices.Contains(plain, p) {
+			t.Errorf("the plain writer role grants %s", p)
+		}
+		if !slices.Contains(withRetention, p) {
+			t.Errorf("the object-retention writer role lacks %s", p)
+		}
+	}
+	// It is the writer role plus exactly those permissions.
+	want := slices.Sorted(slices.Values(append(slices.Clone(plain), gcs.ObjectRetentionPermissions...)))
+	if got := slices.Sorted(slices.Values(withRetention)); !slices.Equal(got, want) {
+		t.Errorf("object-retention writer = %v, want writer plus setRetention = %v", got, want)
+	}
+	for _, p := range withRetention {
+		l := strings.ToLower(p)
+		if strings.Contains(l, "delete") || strings.Contains(l, "override") || strings.Contains(l, "setiampolicy") || strings.Contains(l, "buckets.update") || strings.Contains(l, "objects.update") {
+			t.Errorf("object-retention writer role grants %s", p)
+		}
+	}
+	k := newKeys(t, 1)
+	f := gcstest.New()
+	f.Configure(func(b *gcs.BucketInfo) { b.ObjectRetention = true })
+	a := newAnchor(t, f, func(c *gcs.Config) { c.ObjectRetention = true })
+	publish(t, a, k.head(t, "r", 1, 1))
+	allowed(t, gcs.WriterObjectRetentionRole, f.Calls())
+	for _, p := range gcs.ObjectRetentionPermissions {
+		if !slices.Contains(withRetention, p) {
+			t.Errorf("a Create with a retention needs %s", p)
+		}
+	}
 }

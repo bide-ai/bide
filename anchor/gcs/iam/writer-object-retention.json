@@ -1,0 +1,12 @@
+{
+  "title": "Bide anchor writer with object retention",
+  "description": "Like the writer, and may also set a per-object retention when it creates a head (Config.ObjectRetention). Locked retention can only be extended; the package never sets Unlocked. Cannot delete or overwrite an object, release a hold, or change the bucket.",
+  "stage": "GA",
+  "includedPermissions": [
+    "storage.buckets.get",
+    "storage.objects.create",
+    "storage.objects.get",
+    "storage.objects.list",
+    "storage.objects.setRetention"
+  ]
+}

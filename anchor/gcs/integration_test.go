@@ -13,6 +13,8 @@ import (
 	"github.com/bide-ai/bide/anchor/gcs"
 	"github.com/bide-ai/bide/audit"
 	"google.golang.org/api/googleapi"
+	"google.golang.org/api/impersonate"
+	"google.golang.org/api/option"
 )
 
 // TestRealGCS runs the anchor against a real bucket. It is skipped unless BIDE_GCS_BUCKET is set, and
@@ -24,12 +26,17 @@ import (
 //	BIDE_GCS_PROJECT_NUMBER    the numeric project number that owns it
 //	BIDE_GCS_KMS_KEY           projects/P/locations/L/keyRings/R/cryptoKeys/K (also the bucket's default key)
 //	BIDE_GCS_RETENTION_HOURS   the retention to require (default 24; the bucket's policy must be at least this)
-//	BIDE_GCS_OBJECT_RETENTION  1 to also use per-object Locked retention (the bucket needs object retention enabled)
+//	BIDE_GCS_OBJECT_RETENTION  1 to also use per-object Locked retention (the bucket needs object retention enabled;
+//	                           the writer then needs gcs.WriterObjectRetentionRole, not gcs.WriterRole)
 //	BIDE_GCS_LEGAL_HOLD        1 to also place temporary holds (a hold stays until a separate identity releases it)
+//	BIDE_GCS_WRITER_SA         a service account holding only the writer role: the Anchor runs as it (by impersonation)
+//	BIDE_GCS_READER_SA         a service account holding only the reader role: the Reader runs as it
 //
-// Credentials are Application Default Credentials. The identity needs the writer role plus
-// storage.objects.delete for the final probe, which is expected to be REFUSED: a deletion that succeeds
-// there fails the test.
+// Credentials are Application Default Credentials. The ADC identity is the operator: it is used for the
+// bucket probes (and, without BIDE_GCS_WRITER_SA, for the Anchor), and needs storage.objects.delete
+// for the final probe, which is expected to be REFUSED: a deletion that succeeds there fails the test.
+// With the two service accounts set, the Anchor and the Reader run with exactly the roles shipped in
+// iam/, which settles that those roles are enough (and that no Cloud KMS role is needed).
 func TestRealGCS(t *testing.T) {
 	bucket := os.Getenv("BIDE_GCS_BUCKET")
 	if bucket == "" {
@@ -55,8 +62,24 @@ func TestRealGCS(t *testing.T) {
 	_, _ = rand.Read(suffix[:])
 	prefix := "bide-anchor-it/" + hex.EncodeToString(suffix[:]) + "/"
 	store := gcs.NewStore(client, bucket)
+	asStore := func(sa string) gcs.Store {
+		if sa == "" {
+			return store
+		}
+		ts, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{TargetPrincipal: sa,
+			Scopes: []string{"https://www.googleapis.com/auth/devstorage.read_write"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := storage.NewClient(ctx, option.WithTokenSource(ts))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { c.Close() })
+		return gcs.NewStore(c, bucket)
+	}
 	cfg := gcs.Config{
-		Store: store, ExpectedProjectNumber: project, Prefix: prefix, Retention: time.Duration(hours) * time.Hour,
+		Store: asStore(os.Getenv("BIDE_GCS_WRITER_SA")), ExpectedProjectNumber: project, Prefix: prefix, Retention: time.Duration(hours) * time.Hour,
 		KMSKey: os.Getenv("BIDE_GCS_KMS_KEY"), ObjectRetention: os.Getenv("BIDE_GCS_OBJECT_RETENTION") == "1",
 		LegalHold: os.Getenv("BIDE_GCS_LEGAL_HOLD") == "1", OnWarn: func(err error) { t.Logf("warning: %v", err) },
 	}
@@ -75,7 +98,7 @@ func TestRealGCS(t *testing.T) {
 	publish(t, a, h1) // the 412 path against the real server
 	publish(t, a, h2)
 
-	r, err := gcs.NewReader(ctx, gcs.ReaderConfig{Store: store, ExpectedProjectNumber: project, Prefix: prefix, KMSKey: cfg.KMSKey, Verifier: k.v})
+	r, err := gcs.NewReader(ctx, gcs.ReaderConfig{Store: asStore(os.Getenv("BIDE_GCS_READER_SA")), ExpectedProjectNumber: project, Prefix: prefix, KMSKey: cfg.KMSKey, Verifier: k.v})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +132,7 @@ func TestRealGCS(t *testing.T) {
 
 	// Deleting the live object (no generation) makes it noncurrent; the Reader must still return the head.
 	if err := client.Bucket(bucket).Object(first.Name).Delete(ctx); err != nil {
-		t.Logf("delete of the live object: %v (documented to succeed as a noncurrent transition)", err)
+		t.Logf("delete of the live object: %v (it succeeds as a noncurrent transition unless a hold is on the object)", err)
 	}
 	if got, err := r.Latest(ctx, audit.TreeJournal, run); err != nil || got.Hash() != h2.Hash() {
 		t.Fatalf("Latest after the live object was deleted = %v, %v", got, err)
