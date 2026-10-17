@@ -1,7 +1,7 @@
 // Package identitycheck holds tests of the crypto/x509 behaviors the approver identity design
 // (docs/design/approver-identity.md) relies on. Each test states one assumption and fails, naming
-// it, if a Go release changes it. The package has no non-test code; the build of the feature replaces
-// it with the real tests of the identity verifier and keeps these as the assumption checks.
+// it, if a Go release changes it. The package has no non-test code: the verifier's own tests are in
+// package audit, and the pre-flight command (bide identity check) is internal/identitypreflight.
 package identitycheck
 
 import (
