@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -584,3 +586,345 @@ func (d docsRetriever) Retrieve(context.Context, string, int) ([]Doc, error) { r
 // runSeq numbers the runs of tests that need a fresh run ID on a shared journal (a clock's
 // resolution is too coarse on some platforms).
 var runSeq atomic.Int64
+
+// The shared vocabulary of the claim code and model 1 (docs/design/formal-models.md, section
+// 6.2): every journal key the claim protocol writes or reads, and every record kind it stores
+// under them, has a kind in the spec, declared in the vocabulary block of
+// spec/tla/claims/Claims.tla. The chain: every engine write uses a key constructor
+// (TestEngineKeys_WritesUseConstructors); every claim-code constructor is in claimKeyKinds (checked
+// against keyConstructors below); every kind in the tables is in the spec block, and back.
+
+// stepNameKey stands for the key of a Step's result, which is the step's name itself, in
+// claimKeyKinds.
+const stepNameKey = "(the step name)"
+
+// claimKeyKinds maps each key constructor the claim code writes through to the spec's kind of
+// record stored under the keys it builds.
+var claimKeyKinds = map[string]string{
+	"toolAttemptStep":  "marker",
+	"stepAttemptStep":  "marker",
+	"retryAttemptStep": "retry_marker",
+	"nextAttemptStep":  "retry_marker",
+	"notStartedStep":   "not_started",
+	"ToolResultStep":   "result_tool",
+	stepNameKey:        "result_step",
+}
+
+// claimRecordKinds maps each record kind the claim code stores to the spec kinds of the keys it
+// is stored under.
+var claimRecordKinds = map[StepKind][]string{
+	StepAttempt:    {"marker", "retry_marker"},
+	StepNotStarted: {"not_started"},
+	StepToolResult: {"result_tool"},
+	StepValue:      {"result_step"},
+}
+
+// claimsSpec is model 1's spec, relative to this package.
+const claimsSpec = "../spec/tla/claims/Claims.tla"
+
+var recordKindsRE = regexp.MustCompile(`^RecordKinds\s*==\s*\{(.*)\}\s*$`)
+
+// specRecordKinds reads RecordKinds from the vocabulary block of the spec.
+func specRecordKinds(t *testing.T) []string {
+	t.Helper()
+	data, err := os.ReadFile(claimsSpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kinds []string
+	in, found, blocks := false, 0, 0
+	for _, line := range strings.Split(string(data), "\n") {
+		switch strings.TrimSpace(line) {
+		case `\* vocabulary: begin`:
+			in = true
+			blocks++
+			continue
+		case `\* vocabulary: end`:
+			in = false
+			continue
+		}
+		if !in {
+			continue
+		}
+		if m := recordKindsRE.FindStringSubmatch(strings.TrimSpace(line)); m != nil {
+			found++
+			for _, f := range strings.Split(m[1], ",") {
+				k, err := strconv.Unquote(strings.TrimSpace(f))
+				if err != nil {
+					t.Fatalf("%s: RecordKinds element %q is not a string: %v", claimsSpec, f, err)
+				}
+				kinds = append(kinds, k)
+			}
+		}
+	}
+	if blocks != 1 || in || found != 1 {
+		t.Fatalf("%s: want one closed vocabulary block holding one RecordKinds line; got %d blocks, %d RecordKinds lines, open=%v", claimsSpec, blocks, found, in)
+	}
+	slices.Sort(kinds)
+	return kinds
+}
+
+func sortedSet(xs []string) []string {
+	out := slices.Clone(xs)
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
+// claimKey is a claim-protocol key parsed back into the parts the model names: its kind, the
+// first attempt's marker key of the effect (base), the attempt number, and the claim id of a
+// not-started record. It is the key parser the trace emitter of milestone M3 is to use.
+type claimKey struct {
+	kind  string
+	base  string // for markers and not-started records: the first attempt's marker key
+	gen   int
+	claim string // for not-started records
+	call  string // for results: the encoded tool-use id or the step name
+}
+
+// parseClaimKey parses a key the claim protocol writes, or reports false for any other key.
+func parseClaimKey(key string) (claimKey, bool) {
+	if rest, ok := strings.CutPrefix(key, notStartedPrefix); ok {
+		claim, marker, ok := strings.Cut(rest, ":")
+		if !ok || claim == "" {
+			return claimKey{}, false
+		}
+		m, ok := parseClaimKey(marker)
+		if !ok || (m.kind != "marker" && m.kind != "retry_marker") {
+			return claimKey{}, false
+		}
+		return claimKey{kind: "not_started", base: m.base, gen: m.gen, claim: claim}, true
+	}
+	if rest, ok := strings.CutPrefix(key, retryAttemptPrefix); ok {
+		n, tail, ok := strings.Cut(rest, ":")
+		gen, err := strconv.Atoi(n)
+		if !ok || err != nil || gen < 1 || strconv.Itoa(gen) != n {
+			return claimKey{}, false
+		}
+		base, ok := parseClaimKey("attempt:" + tail)
+		if !ok || base.kind != "marker" {
+			return claimKey{}, false
+		}
+		return claimKey{kind: "retry_marker", base: base.base, gen: gen}, true
+	}
+	if strings.HasPrefix(key, "attempt:tool:") || strings.HasPrefix(key, "attempt:step:") {
+		return claimKey{kind: "marker", base: key}, true
+	}
+	if strings.HasPrefix(key, "attempt:") {
+		return claimKey{}, false
+	}
+	if id, ok := strings.CutPrefix(key, "tool:"); ok {
+		return claimKey{kind: "result_tool", call: id}, true
+	}
+	if checkStepName("Step", key) == nil || planNodeStep(key) {
+		return claimKey{kind: "result_step", call: key}, true
+	}
+	return claimKey{}, false
+}
+
+func TestProtocolVocabulary(t *testing.T) {
+	spec := specRecordKinds(t)
+
+	// The tables and the spec block name the same kinds, in both directions.
+	var fromKeys []string
+	for _, k := range claimKeyKinds {
+		fromKeys = append(fromKeys, k)
+	}
+	if got := sortedSet(fromKeys); !slices.Equal(got, spec) {
+		t.Errorf("key constructors map to kinds %q; %s declares RecordKinds %q", got, claimsSpec, spec)
+	}
+	var fromRecs []string
+	for _, ks := range claimRecordKinds {
+		fromRecs = append(fromRecs, ks...)
+	}
+	if got := sortedSet(fromRecs); !slices.Equal(got, spec) {
+		t.Errorf("record kinds map to kinds %q; %s declares RecordKinds %q", got, claimsSpec, spec)
+	}
+
+	// Every constructor of an attempt: key is in the table, and every constructor in the table
+	// (except the step name) is a real constructor.
+	for name, build := range keyConstructors {
+		if strings.HasPrefix(build("x"), "attempt:") {
+			if _, ok := claimKeyKinds[name]; !ok {
+				t.Errorf("key constructor %s builds attempt: keys but has no kind in claimKeyKinds", name)
+			}
+		}
+	}
+	for name := range claimKeyKinds {
+		if _, ok := keyConstructors[name]; !ok && name != stepNameKey {
+			t.Errorf("claimKeyKinds lists %s, which keyConstructors does not", name)
+		}
+	}
+
+	// Each constructor's keys parse back to the table's kind.
+	for name, kind := range claimKeyKinds {
+		if name == stepNameKey {
+			continue
+		}
+		for _, s := range adversarialToolUseIDs() {
+			key := keyConstructors[name](s)
+			got, ok := parseClaimKey(key)
+			if !ok || got.kind != kind {
+				t.Errorf("%s(%.30q) = %.60q parses as %+v (ok=%v), want kind %s", name, s, key, got, ok, kind)
+			}
+		}
+	}
+	for _, name := range []string{"reserve", "a:b", "node:n", "node:iter:2:H:step:N"} {
+		if got, ok := parseClaimKey(name); !ok || got.kind != claimKeyKinds[stepNameKey] || got.call != name {
+			t.Errorf("step name %q parses as %+v (ok=%v), want result_step", name, got, ok)
+		}
+	}
+}
+
+// The key parser round-trips each constructor's output to the parts it was built from.
+func TestProtocolVocabulary_KeysRoundTrip(t *testing.T) {
+	claim := newClaimID()
+	for _, s := range adversarialToolUseIDs() {
+		for _, base := range []string{toolAttemptStep(s), stepAttemptStep(s)} {
+			for gen := range 4 {
+				key := retryAttemptStep(base, gen)
+				want := claimKey{kind: "marker", base: base}
+				if gen > 0 {
+					want = claimKey{kind: "retry_marker", base: base, gen: gen}
+				}
+				if got, ok := parseClaimKey(key); !ok || got != want {
+					t.Fatalf("parse %.60q = %+v (ok=%v), want %+v", key, got, ok, want)
+				}
+				next, _ := parseClaimKey(nextAttemptStep(key))
+				if next.kind != "retry_marker" || next.base != base || next.gen != gen+1 {
+					t.Fatalf("parse nextAttemptStep(%.60q) = %+v, want attempt %d of %.60q", key, next, gen+1, base)
+				}
+				ns := notStartedStep(key, claim)
+				wantNS := claimKey{kind: "not_started", base: base, gen: gen, claim: claim}
+				if got, ok := parseClaimKey(ns); !ok || got != wantNS {
+					t.Fatalf("parse %.60q = %+v (ok=%v), want %+v", ns, got, ok, wantNS)
+				}
+			}
+		}
+		key := ToolResultStep(s)
+		if got, ok := parseClaimKey(key); !ok || got != (claimKey{kind: "result_tool", call: encodeID(s)}) {
+			t.Fatalf("parse %.60q = %+v (ok=%v)", key, got, ok)
+		}
+	}
+	for _, bad := range []string{"attempt:", "attempt:retry:0:tool:x", "attempt:retry:01:tool:x", "attempt:retry:x:tool:x",
+		"attempt:retry:1:retry:1:tool:x", "attempt:not-started::attempt:tool:x", "attempt:not-started:c:tool:x", "attempt:other:x", "run:complete"} {
+		if got, ok := parseClaimKey(bad); ok {
+			t.Errorf("parse %q = %+v, want not a claim key", bad, got)
+		}
+	}
+}
+
+// doneCause is the cancellation cause when there is one, and DeadlineExceeded for a context whose
+// deadline has passed but whose timer has not run yet (no cause recorded).
+func TestDoneCause(t *testing.T) {
+	why := errors.New("operator stop")
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(why)
+	if got := doneCause(ctx); !errors.Is(got, why) {
+		t.Errorf("doneCause(cancelled with a cause) = %v; want the cause", got)
+	}
+	if got := doneCause(context.Background()); !errors.Is(got, context.DeadlineExceeded) {
+		t.Errorf("doneCause(no cause) = %v; want DeadlineExceeded", got)
+	}
+}
+
+type covRules struct{ Model }
+
+func (covRules) ToolNameRule() *regexp.Regexp   { return regexp.MustCompile(`^[a-z]+$`) }
+func (covRules) RequiresToolsForRequired() bool { return true }
+
+type covModelWrapper struct{ inner Model }
+
+func (w covModelWrapper) Stream(ctx context.Context, r Request) (*Stream, error) {
+	return w.inner.Stream(ctx, r)
+}
+func (w covModelWrapper) Unwrap() Model { return w.inner }
+
+// The tool rules a model declares are found through its wrappers, and a nil model, a model that
+// declares none, and a wrapper that unwraps to itself declare none rather than looping.
+func TestToolRulesOf(t *testing.T) {
+	base := covRules{&scriptModel{}}
+	if r, ok := toolRulesOf(covModelWrapper{covModelWrapper{base}}); !ok || !r.RequiresToolsForRequired() {
+		t.Errorf("rules behind two wrappers = %v, %v", r, ok)
+	}
+	if _, ok := toolRulesOf(nil); ok {
+		t.Error("a nil model declared rules")
+	}
+	if _, ok := toolRulesOf(&scriptModel{}); ok {
+		t.Error("a model with none declared rules")
+	}
+	var self covSelfWrapper
+	self.inner = &self
+	if _, ok := toolRulesOf(self); ok {
+		t.Error("a self-wrapping model declared rules")
+	}
+	// New enforces the declared name rule: a tool whose name the provider would refuse is ErrConfig.
+	bad := &countingTool{name: "Bad_Name", calls: new(int)}
+	if _, err := New(base, memJournal(), WithTools(bad)); !errors.Is(err, ErrConfig) {
+		t.Errorf("New with a tool name the model refuses = %v; want ErrConfig", err)
+	}
+}
+
+type covSelfWrapper struct{ inner Model }
+
+func (w covSelfWrapper) Stream(ctx context.Context, r Request) (*Stream, error) {
+	return w.inner.Stream(ctx, r)
+}
+func (w covSelfWrapper) Unwrap() Model { return w.inner }
+
+// An agent with no tools offers the model none.
+func TestRequestTools_NoToolsOffersNone(t *testing.T) {
+	a := mustNew(&scriptModel{}, memJournal())
+	if got := a.requestTools(); got != nil {
+		t.Errorf("requestTools = %v; want nil", got)
+	}
+}
+
+// A decoded record carries a ModelTurn / ApproverSignature although its journal encoding holds none,
+// when the bytes name a moved member with an empty value. The PR says a decoded record carries one
+// exactly when its encoding does.
+func TestR140_DecodedEmptySubStruct(t *testing.T) {
+	for _, in := range []string{
+		`{"name":"a","kind":"model","finish":""}`,
+		`{"name":"a","kind":"model","model":null}`,
+		`{"name":"a","kind":"approval","approver":""}`,
+		`{"name":"a","kind":"approval","signature":null}`,
+	} {
+		r, err := DecodeRecord([]byte(in))
+		if err != nil {
+			t.Fatal(err)
+		}
+		enc, _ := EncodeRecord(r)
+		back, _ := DecodeRecord(enc)
+		back.raw, r.raw = nil, nil
+		if !reflect.DeepEqual(r, back) {
+			t.Errorf("%s: decoded ModelTurn=%v ApproverSignature=%v, but its encoding %s decodes to ModelTurn=%v ApproverSignature=%v",
+				in, r.ModelTurn, r.ApproverSignature, enc, back.ModelTurn, back.ApproverSignature)
+		}
+	}
+}
+
+// Do and History hand back records that share no sub-struct with the record fn returned or with
+// each other, so a caller replacing nothing but writing through the pointer cannot alter the journal.
+func TestR140_StoreCopiesSubStructs(t *testing.T) {
+	ctx := context.Background()
+	m := memJournal()
+	built := Record{Kind: StepModel, ModelTurn: &ModelTurn{Finish: "stop"}}
+	live, err := m.do(ctx, "r", "s", func(context.Context) (Record, error) { return built, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live.ModelTurn == built.ModelTurn {
+		t.Fatal("Do returned the built ModelTurn pointer")
+	}
+	live.ModelTurn.Finish = "X"
+	h, _ := m.History(ctx, "r")
+	if h[len(h)-1].Finish() != "stop" {
+		t.Fatalf("History reads %q after a caller wrote through Do's ModelTurn", h[len(h)-1].Finish())
+	}
+	h[len(h)-1].ModelTurn.Finish = "Y"
+	h2, _ := m.History(ctx, "r")
+	memo, _ := m.do(ctx, "r", "s", func(context.Context) (Record, error) { t.Fatal("ran"); return Record{}, nil })
+	if h2[len(h2)-1].Finish() != "stop" || memo.Finish() != "stop" || built.Finish() != "stop" {
+		t.Fatalf("aliasing: history %q memo %q built %q", h2[len(h2)-1].Finish(), memo.Finish(), built.Finish())
+	}
+}

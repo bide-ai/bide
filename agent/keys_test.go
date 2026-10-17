@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"go/ast"
 	"go/parser"
@@ -419,5 +420,168 @@ func TestSagaRun_SubRunIDIsRefusedBeforeRollback(t *testing.T) {
 	}
 	if aborted, _ := hasValueStep(ctx, j, sub, runAbortedStep); aborted {
 		t.Fatal("the sub-run was rolled back and marked aborted")
+	}
+}
+
+// overlappingDo runs Do for (run1, name1) with a step that waits, then, while it waits, Do for
+// (run2, name2), and returns the record each call got back and whether the second step ran. The
+// first step is held until the second call has had time to reach the store, so a store that
+// keyed the two steps alike would hand the second caller the first step's record.
+func overlappingDo(t *testing.T, d *Journal, run1, name1, run2, name2 string) (first, second Record, secondRan bool) {
+	t.Helper()
+	ctx := context.Background()
+	release := make(chan struct{})
+	started := make(chan struct{})
+	done := make(chan Record, 1)
+	go func() {
+		rec, err := d.do(ctx, run1, name1, func(context.Context) (Record, error) {
+			close(started)
+			<-release
+			return Record{Kind: StepValue, Result: json.RawMessage(`"first"`)}, nil
+		})
+		if err != nil {
+			t.Errorf("Do(%q, %q): %v", run1, name1, err)
+		}
+		done <- rec
+	}()
+	<-started
+	secondDone := make(chan Record, 1)
+	go func() {
+		rec, err := d.do(ctx, run2, name2, func(context.Context) (Record, error) {
+			secondRan = true
+			return Record{Kind: StepValue, Result: json.RawMessage(`"second"`)}, nil
+		})
+		if err != nil {
+			t.Errorf("Do(%q, %q): %v", run2, name2, err)
+		}
+		secondDone <- rec
+	}()
+	select {
+	case second = <-secondDone: // the second call did not wait on the first: nothing shared
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(release)
+	first = <-done
+	if second.Name == "" {
+		second = <-secondDone
+	}
+	return first, second, secondRan
+}
+
+// Two different steps are never one step, whatever bytes their run IDs and names hold. The
+// store's in-process deduplication key must tell ("a\x00b", "c") from ("a", "b\x00c"): keyed
+// alike, a concurrent Do of the second would share the first's fn and get its record back.
+func TestMemStore_DistinctStepsWithNULDoNotShareADo(t *testing.T) {
+	for _, c := range [][4]string{{"a\x00b", "c", "a", "b\x00c"}, {"ab", "c", "a", "bc"}} {
+		first, second, ran := overlappingDo(t, memJournal(), c[0], c[1], c[2], c[3])
+		if string(first.Result) != `"first"` {
+			t.Errorf("%q: first step's record = %s, want \"first\"", c, first.Result)
+		}
+		if !ran || string(second.Result) != `"second"` || second.Name != c[3] {
+			t.Errorf("%q: second step ran=%v, record %q %s; want its own fn run and record \"second\"", c, ran, second.Name, second.Result)
+		}
+	}
+}
+
+// Two timers of two runs are two wakes, whatever bytes the run IDs and timer names hold:
+// ("a\x00b", "c") and ("a", "b\x00c") keyed alike would let one registration overwrite the
+// other, and the overwritten run would never wake.
+func TestMemWaker_DistinctTimersWithNULAreKeptApart(t *testing.T) {
+	woke := map[string]bool{}
+	w := NewMemWaker(func(_ context.Context, runID string) error {
+		woke[runID] = true
+		return nil
+	})
+	at := time.Unix(100, 0)
+	w.Schedule(context.Background(), Wake{RunID: "a\x00b", Name: "c", FireAt: at})
+	w.Schedule(context.Background(), Wake{RunID: "a", Name: "b\x00c", FireAt: at})
+	w.Schedule(context.Background(), Wake{RunID: "xy", Name: "z", FireAt: at})
+	w.Schedule(context.Background(), Wake{RunID: "x", Name: "yz", FireAt: at})
+	if n, err := w.Fire(context.Background(), at); err != nil || n != 4 {
+		t.Fatalf("Fire = %d, %v; want both runs resumed", n, err)
+	}
+	if !woke["a\x00b"] || !woke["a"] || !woke["xy"] || !woke["x"] {
+		t.Fatalf("woke %v; want all four runs", woke)
+	}
+}
+
+// memTamper replaces the stored encoding of step name in run runID with data, as a corrupted or
+// edited backing store would.
+func memTamper(t *testing.T, m *MemStore, runID, name string, data []byte) {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rl := m.runs[runID]
+	i, ok := rl.byName[name]
+	if !ok {
+		t.Fatalf("no step %q in run %s", name, runID)
+	}
+	rl.entries[i].Data = data
+}
+
+// A row's key is the name it was recorded under, and the record it holds carries that name. A
+// row whose record names another step (a row copied or edited in the backing store) must not be
+// read as that other step: the loop and the recovery supervisor find records by their name, so a
+// row under "x" holding a record named run:complete would mark an unfinished run complete.
+func TestMemStore_RowWhoseRecordNamesAnotherStepIsRefused(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemStore()
+	j := mustJournal(m)
+	if _, err := j.do(ctx, "r", "x", func(context.Context) (Record, error) { return Record{Kind: StepValue, Result: []byte(`1`)}, nil }); err != nil {
+		t.Fatal(err)
+	}
+	forged, err := JournalEntry(runCompleteStep, Record{Kind: StepValue})
+	if err != nil {
+		t.Fatal(err)
+	}
+	memTamper(t, m, "r", "x", forged)
+
+	if done, err := IsComplete(ctx, j, "r"); !errors.Is(err, ErrStorage) {
+		t.Errorf("IsComplete = %v, %v; want an ErrStorage error, not a run marked complete by a misfiled row", done, err)
+	}
+	if _, err := j.History(ctx, "r"); !errors.Is(err, ErrStorage) || !strings.Contains(err.Error(), `"x"`) {
+		t.Errorf("History = %v; want ErrStorage naming the row's key", err)
+	}
+	ran := false
+	if _, err := j.do(ctx, "r", "x", func(context.Context) (Record, error) { ran = true; return Record{}, nil }); !errors.Is(err, ErrStorage) {
+		t.Errorf("Do(memoized) = %v; want ErrStorage", err)
+	}
+	if ran {
+		t.Error("Do ran fn for a recorded step")
+	}
+}
+
+// A record with a field this version does not know (written by a newer version) still reads: the
+// name check does not make the journal decoding strict.
+func TestMemStore_UnknownFieldStillReads(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemStore()
+	j := mustJournal(m)
+	if _, err := j.do(ctx, "r", "x", func(context.Context) (Record, error) { return Record{Kind: StepValue, Result: []byte(`1`)}, nil }); err != nil {
+		t.Fatal(err)
+	}
+	memTamper(t, m, "r", "x", []byte(`{"name":"x","kind":"value","result":1,"future_field":{"a":1}}`))
+	recs, err := j.History(ctx, "r")
+	if err != nil || len(recs) != 2 || recs[1].Name != "x" { // the header, then the record
+		t.Fatalf("History = %+v, %v; want the one record", recs, err)
+	}
+	if rec, err := j.do(ctx, "r", "x", func(context.Context) (Record, error) { return Record{}, errors.New("must not run") }); err != nil || string(rec.Result) != "1" {
+		t.Fatalf("Do = %+v, %v", rec, err)
+	}
+}
+
+// A row that does not decode at all is reported as such (with its run and key), not as a record
+// under another name.
+func TestMemStore_UndecodableRowIsReportedAsUndecodable(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemStore()
+	j := mustJournal(m)
+	if _, err := j.do(ctx, "r", "x", func(context.Context) (Record, error) { return Record{Kind: StepValue}, nil }); err != nil {
+		t.Fatal(err)
+	}
+	memTamper(t, m, "r", "x", []byte(`not json`))
+	_, err := j.History(ctx, "r")
+	if !errors.Is(err, ErrStorage) || !strings.Contains(err.Error(), "decode stored record") || !strings.Contains(err.Error(), `"x"`) {
+		t.Fatalf("History = %v; want the decode failure, naming the key", err)
 	}
 }

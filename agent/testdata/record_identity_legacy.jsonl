@@ -1,4 +1,4 @@
-# Records encoded by EncodeRecord at 12e61346 (before ModelTurn and ApproverSignature), one per line; see record_identity_test.go.
+# Records encoded by EncodeRecord at 12e61346 (before ModelTurn and ApproverSignature), one per line; see record_test.go.
 {"name":"a","kind":"model"}
 {"name":"a","kind":"model","discarded_usage":{"input_tokens":5,"cache_write_tokens":2},"tools_digest":"end_turn","tool_use_id":"sha256:p"}
 {"name":"a","kind":"model","finish":"sha256:t","tool_use_id":"sha256:p","result":{"ok":true}}

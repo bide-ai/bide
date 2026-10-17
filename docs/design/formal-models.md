@@ -376,7 +376,7 @@ historical bug, it is missing something, and that gap is fixed before the model 
 ### 5.1 Double fire 1: a remembered claim runs under a voided marker
 
 Found by #92's second review (tests `TestRememberedClaimRunsUnderAVoidedMarker_Tool` and `_Step`,
-now in `agent/claim_reuse_test.go`). First fixed by pinning a reused id's not-started key with a
+now in `agent/claims_x_test.go`). First fixed by pinning a reused id's not-started key with a
 claim-held record, which the third review showed can halt an effect that never started for ever
 (its not-started record lands on the pin); fixed for good by never claiming with a remembered id:
 the id's not-started record is written again and every claim takes a fresh id. The pin is kept as
@@ -404,7 +404,7 @@ the regression configuration `regress/held-pin` (expects a `Progress` violation)
 ### 5.2 Double fire 2: a Step's pause guard recorded as a tool failure
 
 Found by #92's first review (`TestStepPauseGuard_InsideAToolIsNotRecordedAsAToolFailure`, in
-`agent/step_pause_tool_test.go`). A retry-safe tool `book` runs a non-retry-safe Step
+`agent/step_x_test.go`). A retry-safe tool `book` runs a non-retry-safe Step
 `charge-<tool-use id>` whose body fires and then pauses. The guard turns the pause into an error;
 the tool call recorded that error as a failed result; the model, told the call failed, called
 `book` again under a new tool-use id, and the new Step name fired the charge again. Fixed by
@@ -496,7 +496,7 @@ Store events are recorded by a test-only `Store` wrapper, `tracestore`, placed u
 where `chaos/bide.go` already places `crashingStore`. It needs no change to production code. It
 logs every `Insert` with the key (parsed back into its kind, call and attempt), the claim id read
 from the stored bytes, `inserted`, and the reply. Fault-injecting stores in the suites
-(`faultStore` in `claim_reuse_test.go`, `commitThenFail`, `crashingStore`) add the ground truth of
+(`faultStore` in `claims_x_test.go`, `commitThenFail`, `crashingStore`) add the ground truth of
 an error reply (`committed` or `not_committed`), which the code itself never learns.
 
 Journal and engine events are recorded by hook calls at these sites:
@@ -564,10 +564,10 @@ multi-process paragraph below covers the merge.
 `BIDE_TRACE_DIR` set:
 
 - the DST crash sweep and randomized runs (`TestDST_NoDoubleFire_CrashSweep`,
-  `TestDST_NoDoubleFire_Randomized`) and the Step crash tests (`agent/step_crash_test.go`);
+  `TestDST_NoDoubleFire_Randomized`) and the Step crash tests (`agent/step_test.go`);
 - the chaos sweep through `crashingStore` (seven writes, one crash point each);
-- the claim tests: `agent/claim_reuse_test.go`, `agent/not_started_rules_test.go`,
-  `agent/step_flight_test.go`, the commit-then-fail sweep (seven writes, same and new process);
+- the claim tests: `agent/claims_x_test.go`, `agent/recover_decode_test.go`,
+  `agent/step_x_test.go`, the commit-then-fail sweep (seven writes, same and new process);
 - storetest's ambiguous-claim and A1 at-most-once cases over MemStore and SQLite;
 - the reference model's crash sweep (`TestRefModel_CrashSweep`) and a capped number of randomized
   scenarios (`BIDE_REFMODEL_N`);
@@ -651,7 +651,7 @@ speak about the same records:
   a constructor, so the chain is: every write uses a constructor, every claim-code constructor is in
   the table, every table entry is in the spec, and back.
 - As built (M4): the trace emitter does not exist before M3, so the key parser lives in the test
-  (`parseClaimKey`, in `agent/protocol_vocabulary_test.go`) and round-trips each constructor's
+  (`parseClaimKey`, in `agent/options_test.go`) and round-trips each constructor's
   output to its kind, attempt number, base marker key and claim id; M3's emitter takes it over.
   The test runs in the Lint job on every change, since the Go tests skip a spec-only change.
 

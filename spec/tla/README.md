@@ -1774,7 +1774,7 @@ The mechanisms of section 6 of the plan, as they apply here:
   writes, `renewLoop`'s `ErrLeaseLost`, and P14's `Cancel` and `run:cancelled` checks; the
   multi-process HA harness is the natural producer.
 - **Findings need Go tests before their fixes**, as for every model: L1's is
-  `TestRecoverLoop_TakesOverALapsedLeaseWithinAnIntervalBehindHaltedRuns` (`agent/recover_lapsed_test.go`,
+  `TestRecoverLoop_TakesOverALapsedLeaseWithinAnIntervalBehindHaltedRuns` (`agent/recovery_test.go`,
   committed failing before #126's fix), which measures a takeover behind halted runs against the
   interval. For P14, each counterexample above becomes a test of section 10.1's list: L2's and
   L3's (`Cancel` on a live run), L4's (`Cancel` on a saga, with rollback), L5's and B1's (a budget,
@@ -2218,7 +2218,7 @@ the fixed rules.
 ### Findings
 
 Found by this model on `main` at `91909b7` (#130 merged). S1, S2 and S4 are fixed in #137,
-whose Go tests (`agent/session_model12_test.go`) failed first; their configurations are
+whose Go tests (`agent/session_test.go`) failed first; their configurations are
 regressions now (`regress/`). S3 is against P14's design, which was not built then, as L2 and L3
 were; the maintainers adopted its rule (rule 16 of the P14 contract in `docs/design/api-v1.md`).
 It landed with P14 (`Session.startTurn`'s `closeIfCancelled`; the test is
