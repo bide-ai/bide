@@ -409,3 +409,36 @@ func TestPartialNeverHidesAFailure(t *testing.T) {
 func pemCRL(der []byte) []byte {
 	return pemBlock("X509 CRL", der)
 }
+
+// -fetch with a -crl-dir archive: the archive seeds the rollback memory, and the fetched CRL is not stored.
+func TestFetchOverAnArchiveWritesNothing(t *testing.T) {
+	g := newRig(t)
+	srv := newCRLServer(t)
+	now := time.Now()
+	old := g.inter.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: now.Add(-20 * time.Minute), NextUpdate: now.Add(time.Hour)})
+	rootCRL := g.root.NewCRL(t, testca.CRLOpts{Number: 1, ThisUpdate: now.Add(-time.Hour), NextUpdate: now.Add(48 * time.Hour)})
+	g.at = now
+	dir := g.archiveDir(rootCRL, old)
+	srv.set("/root.crl", rootCRL)
+	srv.set("/inter.crl", g.inter.NewCRL(t, testca.CRLOpts{Number: 2, ThisUpdate: now.Add(-time.Minute), NextUpdate: now.Add(time.Hour)}))
+	g.policy["crl"] = map[string]any{
+		g.rootK:  map[string]any{"urls": []string{srv.URL + "/root.crl"}},
+		g.interK: map[string]any{"urls": []string{srv.URL + "/inter.crl"}},
+	}
+	count := func() int {
+		n := 0
+		_ = filepath.Walk(dir, func(string, os.FileInfo, error) error { n++; return nil })
+		return n
+	}
+	before := count()
+	o := g.options(dir)
+	o.At, o.Fetch = time.Time{}, true
+	r := g.run(o)
+	r.mustBeReady(t)
+	if m := r.get("crl.fresh." + g.interK[:8]).Message; !strings.Contains(m, "CRL number 2") {
+		t.Fatalf("the fetched CRL is not the one judged: %s", m)
+	}
+	if count() != before {
+		t.Fatalf("the archive changed: %d files before, %d after", before, count())
+	}
+}
