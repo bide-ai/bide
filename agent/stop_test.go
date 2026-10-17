@@ -927,4 +927,12 @@ func TestRecordsDoNotReplayAcrossDeployments(t *testing.T) {
 	if _, err := pc.RotatePolicy(ctx, other, LiftRequest{By: "ops1", Signer: sign("ops1")}); !errors.Is(err, ErrConfig) {
 		t.Fatalf("a transition that changes the deployment ID: %v", err)
 	}
+	// And a quorum-signed one written around the writer is rejected by the fold.
+	doc, _ := other.Doc()
+	r := StopRecord{Format: StopFormat, Kind: "policy", Mode: StopAudited, Seq: 1, PrevDigest: prod.Digest(), Policy: &doc, Deployment: "prod-91c2", By: "ops1", Alg: fakeAlg, At: nowStr()}
+	r.Signature = hex.EncodeToString(fakeSign("ops1", StopSigningBytes(r)))
+	putRaw(t, pc, r)
+	if st := mustState(t, pc); st.PolicySeq != 0 || st.PolicyDigest != prod.Digest() {
+		t.Fatalf("a transition changed the deployment ID: %+v", st)
+	}
 }
