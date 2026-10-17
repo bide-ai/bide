@@ -512,11 +512,13 @@ seal covers the whole package JSON, still verifies (`bide audit verify-evidence`
 but it cannot be re-sealed and its seal cannot be produced by a signer that refuses large messages.
 Re-create the evidence to get a v6 package.
 
-**Erasing personal data is a library call, and it cannot reach everything.** SQLite, Postgres and
-`MemStore` can replace chosen records of a finished run with tombstones (`agent.PlanRedaction`,
-`agent.Redact`; [retention guide](guides/retention.md#erasing-personal-data)); there is no command
-yet, and the redaction itself is not recorded in an audit trail yet, so keep your own change record.
-A journal holding a tombstone cannot produce a new absence set, run certificate or event stream
+**Erasing personal data cannot reach everything.** `bide journal redact` replaces chosen records of
+a finished run with tombstones on SQLite and Postgres, and records each erasure in a signed trail
+that `bide audit redactions` verifies ([retention guide](guides/retention.md#erasing-personal-data)).
+The trail is only as good as its anchoring: anchor the heads the command writes, and erase through
+the command, since an erasure by hand is reported as unaccounted. There is no legal hold yet, so
+nothing but your own process stops an erasure of a run under a matter; and the signed second-person
+authorization of an erasure is not built. A journal holding a tombstone cannot produce a new absence set, run certificate or event stream
 (`audit.ErrRedacted`): make that evidence first. It does not erase the run's final result
 (`run:complete` is an end marker and stays), the record names, copies in exported journals,
 evidence packages and approver receipts, the event store (`bide_events`, which has no tombstone for

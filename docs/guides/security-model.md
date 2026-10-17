@@ -113,9 +113,7 @@ no longer be proven (see [Erasing personal data](retention.md#erasing-personal-d
 controls are these. It is not part of the `Store` port the engine uses, so a running agent cannot
 erase. A store refuses it unless the run is over and no lease on it is live, refuses the records a
 verifier or the engine needs, and recomputes the leaf hash itself, so a caller cannot write a
-tombstone that breaks the roots over the run. On Postgres it takes a separate database role that holds only `EXECUTE` on a `SECURITY DEFINER` function repeating the checks server-side (no privilege on the tables), so the application's role cannot erase and the erasing role can write nothing but a tombstone of a finished run's record. A tombstone's name is not authenticated outside the database. What it does not
-yet do is record the erasure in a signed trail of its own: until the planned command does, keep a
-change record. It does not reach copies outside the journal (exports, evidence packages, receipts,
+tombstone that breaks the roots over the run. On Postgres it takes a separate database role that holds only `EXECUTE` on a `SECURITY DEFINER` function repeating the checks server-side (no privilege on the tables), so the application's role cannot erase and the erasing role can write nothing but a tombstone of a finished run's record. A tombstone's name is not authenticated outside the database. `bide journal redact` records each erasure (who, when, why, which records by position and leaf hash) in a signed, anchored trail before and after it erases, refuses a run no signed head covers, and `bide audit redactions` verifies the trail and attests each tombstone's name against it; erasing outside the command leaves an `UNACCOUNTED` tombstone. It does not reach copies outside the journal (exports, evidence packages, receipts,
 the event store, backups, replicas, dead tuples before `VACUUM`, logs, the model provider).
 
 ### Retrieved documents are stored like tool results
