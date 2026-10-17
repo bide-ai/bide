@@ -21,7 +21,10 @@ maintainers to own the core end to end, the same reason SQLite keeps a closed co
 An invited or accepted contribution is made under the [Developer Certificate of Origin](DCO). Sign off
 each commit with `git commit -s`, which appends a `Signed-off-by` line certifying you
 have the right to submit the work under the project's license (Apache-2.0). Commits
-without a sign-off fail the DCO check.
+without a sign-off fail the DCO check. The one exception is Dependabot (`.github/dependabot.yml`), which
+opens a weekly pull request updating the commit-pinned GitHub Actions: its own commits, in a pull request
+it opened, pass without a sign-off, and anything else in that pull request still needs one. Review its
+pull request like any other: check that each new SHA is the release the comment names.
 
 ## Build and test
 

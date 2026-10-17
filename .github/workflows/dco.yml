@@ -27,12 +27,28 @@ jobs:
         with:
           fetch-depth: 0
       - name: Check Signed-off-by on every commit
+        env:
+          # The account that opened the pull request (empty in the merge queue).
+          PR_USER: ${{ github.event.pull_request.user.login }}
         run: |
           # In the merge queue the range is the batch: the queue's base and its merge commit.
           base='${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}'
           head='${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}'
+          # Dependabot's commits (.github/dependabot.yml: action pin updates) carry no Signed-off-by.
+          # They are accepted without one only when Dependabot is the author: on a pull request, only
+          # in a pull request Dependabot itself opened; in the merge queue, only in a commit GitHub made
+          # (the squash of such a pull request, which passed this check as a pull request first). A
+          # commit that merely names Dependabot's address as its author, in anyone else's pull
+          # request, still needs a sign-off.
+          bot='49699333+dependabot[bot]@users.noreply.github.com'
           missing=0
           for c in $(git rev-list "$base..$head"); do
+            author=$(git show -s --format=%ae "$c")
+            committer=$(git show -s --format=%ce "$c")
+            if [ "$author" = "$bot" ] && { [ "$PR_USER" = 'dependabot[bot]' ] || { [ -z "$PR_USER" ] && [ "$committer" = noreply@github.com ]; }; }; then
+              echo "commit $c is Dependabot's (no sign-off needed)"
+              continue
+            fi
             if ! git show -s --format=%B "$c" | grep -qiE '^Signed-off-by: .+ <.+@.+>'; then
               echo "::error::commit $c is missing a Signed-off-by line"
               missing=1
