@@ -1,6 +1,6 @@
 # Design: one `bide` CLI and the onboarding path
 
-Status: accepted (2026-10-12); being implemented as the PRs in section 7. Target: v0.14.0.
+Status: accepted (2026-10-12); shipped in v0.14.0 (2026-10-13) as the PRs in section 7.
 
 bide has no users yet, so this note asks how the tooling and onboarding should have looked from
 the start, and plans the move there in one release without compatibility shims.
