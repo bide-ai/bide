@@ -126,6 +126,19 @@ try {
   await until(() => document.getElementById('source').value.includes('name: receipt, block: receipt, safety: idempotent, approval'), null, 'receipt to be gated');
   r.afterGateReceipt = await source();
 
+  // A refused operation (an empty block name): the server answers 422 {"error": reason}; the page shows
+  // the reason under the form, announces it, and leaves the text as it was.
+  await page.click('#outline button[data-node="validate"]');
+  await until(() => document.getElementById('f-block'), null, 'the block field for a refusal');
+  await page.$eval('#f-block', (e) => { e.value = ''; });
+  const beforeRefusal = await source();
+  await page.focus('#f-block');
+  await page.keyboard.press('Enter');
+  await until(() => document.getElementById('op-error')?.textContent.includes('cannot be empty'), null, 'the refusal reason');
+  r.refusalShown = await text('#op-error');
+  r.refusalLive = await text('#live');
+  r.sourceAfterRefusal = (await source()) === beforeRefusal;
+
   // Block, by the text field.
   await page.click('#outline button[data-node="validate"]');
   await until(() => document.getElementById('f-block'), null, 'the block field');

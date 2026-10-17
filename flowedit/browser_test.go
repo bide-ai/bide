@@ -324,6 +324,9 @@ func TestFormsInChrome(t *testing.T) {
 		GateButtonAfterClear string   `json:"gateButtonAfterClear"`
 		AfterGateReceipt     string   `json:"afterGateReceipt"`
 		AfterBlock           string   `json:"afterBlock"`
+		RefusalShown         string   `json:"refusalShown"`
+		RefusalLive          string   `json:"refusalLive"`
+		SourceAfterRefusal   bool     `json:"sourceAfterRefusal"`
 		Console              []string `json:"console"`
 		Failed               []string `json:"failed"`
 		OffOrigin            []string `json:"offOrigin"`
@@ -332,8 +335,11 @@ func TestFormsInChrome(t *testing.T) {
 	if !r.OK {
 		t.Fatalf("the script failed: %s\nconsole: %q\nfailed requests: %q", r.Error, r.Console, r.Failed)
 	}
-	if len(r.Console) > 0 || len(r.Failed) > 0 || len(r.OffOrigin) > 0 {
-		t.Errorf("the browser reported console %q, failed requests %q, requests off the origin %q", r.Console, r.Failed, r.OffOrigin)
+	// The one refused operation of the script is a 422, which the browser logs as a console error;
+	// it is expected, exactly once, and nothing else is.
+	const refused422 = "error: Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)"
+	if len(r.Console) != 1 || r.Console[0] != refused422 || len(r.Failed) > 0 || len(r.OffOrigin) > 0 {
+		t.Errorf("the browser reported console %q (want only the one 422 of the refused operation), failed requests %q, requests off the origin %q", r.Console, r.Failed, r.OffOrigin)
 	}
 	if r.Original != formsFlow || r.GateButton != "Apply gate" || r.NeedBefore != "2" || !slices.Equal(r.ApproversBefore, []string{"ops", "finance", "risk"}) || r.SafetyBefore != "side_effect" || !r.ExcludeBefore || r.TimeoutBefore != "24h" {
 		t.Errorf("the form does not show the node's gate: need %q approvers %q safety %q exclude %v timeout %q button %q", r.NeedBefore, r.ApproversBefore, r.SafetyBefore, r.ExcludeBefore, r.TimeoutBefore, r.GateButton)
@@ -371,6 +377,9 @@ func TestFormsInChrome(t *testing.T) {
 	}
 	if !strings.Contains(r.AfterGateReceipt, "  - {name: receipt, block: receipt, safety: idempotent, approval: {need: 1, approvers: [ops, audit2], exclude_principal: true}}\n") {
 		t.Errorf("after gating receipt:\n%s", r.AfterGateReceipt)
+	}
+	if !strings.Contains(r.RefusalShown, "cannot be empty") || !strings.HasPrefix(r.RefusalLive, "Not applied: ") || !r.SourceAfterRefusal {
+		t.Errorf("a refused operation: shown %q, announced %q, text unchanged %v", r.RefusalShown, r.RefusalLive, r.SourceAfterRefusal)
 	}
 	if !strings.Contains(r.AfterBlock, "  - {name: validate, block: validate_v2, safety: readonly}\n") {
 		t.Errorf("after the block:\n%s", r.AfterBlock)
