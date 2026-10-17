@@ -510,15 +510,11 @@ func notifiedGate(t *testing.T, store agent.Store, run string, trail agent.Notif
 // A delivery is acknowledged and recorded although every anchor publish fails, and the notifier
 // still reports nothing as undelivered: an anchor error is a side channel.
 func TestNotifier_AnAnchorOutageNeverFailsADelivery(t *testing.T) {
-	// The anchor holds every publish until the gate has run, so the outage cannot have been
-	// reported when FlushNotifications returns: the store's own Flush is what waits for it.
-	release := make(chan struct{})
-	fa := &trailAnchor{down: true, hang: release}
+	fa := &trailAnchor{down: true}
 	r := newRig(t, fa)
 	sink := &recSink{}
 	var notifyErrs errLog
 	notifiedGate(t, agent.NewMemStore(), "told", audit.NewNotifyTrail(r.s), sink, agent.WithNotifyErrors(func(err error) { notifyErrs.on("", err) }))
-	close(release)
 	r.flush(t)
 
 	if sink.count() != 1 {
@@ -535,13 +531,34 @@ func TestNotifier_AnAnchorOutageNeverFailsADelivery(t *testing.T) {
 	if !slices.Contains(kinds, agent.NotifyAcked) {
 		t.Fatalf("trail %v holds no acknowledgement", kinds)
 	}
-	if r.errs.n() == 0 {
-		t.Fatal("the outage was not reported to OnError")
+	// The outage is reported once, by whichever attempt reaches the anchor first: the publisher
+	// (to OnError) or the flush's own catch-up (to the notifier's error handler), and the first
+	// failure opens the breaker for the other. Which one wins depends on scheduling.
+	if r.errs.n()+notifyErrs.n() == 0 {
+		t.Fatal("the outage was reported to neither OnError nor the notifier's error handler")
 	}
 	for _, err := range notifyErrs.errs {
 		if !strings.Contains(err.Error(), "anchor trails") {
 			t.Fatalf("the notifier reported %v: only anchoring may fail in an anchor outage", err)
 		}
+	}
+}
+
+// A failure is reported by the attempt that meets it, and the failure opens the breaker for every
+// other path: a catch-up that fails first is returned to its caller, and the publisher that
+// follows is skipped without reporting. The outage is not lost, it is reported once.
+func TestAuditedEventStore_AFailedCatchUpOpensTheBreakerForThePublisher(t *testing.T) {
+	fa := &trailAnchor{down: true}
+	r := newRig(t, fa)
+	appendNotify(t, audit.NewNotifyTrail(r.mem), trailName, 0, 2) // written around the store: nothing is kicked
+
+	if err := r.s.AnchorTrails(context.Background(), []string{trailName}); err == nil {
+		t.Fatal("AnchorTrails in an outage returned nil")
+	}
+	appendNotify(t, audit.NewNotifyTrail(r.s), trailName, 2, 1)
+	r.flush(t)
+	if r.errs.n() != 0 || fa.tried() != 1 {
+		t.Fatalf("%d OnError reports and %d attempts after a failed catch-up, want 0 and 1", r.errs.n(), fa.tried())
 	}
 }
 
