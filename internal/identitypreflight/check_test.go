@@ -442,3 +442,17 @@ func TestFetchOverAnArchiveWritesNothing(t *testing.T) {
 		t.Fatalf("the archive changed: %d files before, %d after", before, count())
 	}
 }
+
+func TestFlatDirSkipsWhatIsNotAFileAndSaysSo(t *testing.T) {
+	g := newRig(t)
+	rc, ic := g.freshCRLs()
+	dir := g.flatDir(rc, ic)
+	if err := os.Mkdir(filepath.Join(dir, "dir.crl"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	r := g.run(g.options(dir))
+	if c := r.get("crl.file"); c == nil || c.Status != Warn || !strings.Contains(c.Message, "dir.crl is not a regular file") {
+		t.Fatalf("a directory named like a CRL is not reported:\n%s", r.dump())
+	}
+	r.want(t, "crl.load", OK, "2 CRL(s)")
+}

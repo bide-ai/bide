@@ -61,7 +61,11 @@ func loadFlat(dir string, snap *audit.StatusSnapshot) (loaded int, rejected []st
 	for _, e := range ents {
 		n := e.Name()
 		ext := strings.ToLower(filepath.Ext(n))
-		if !e.Type().IsRegular() || (ext != ".crl" && ext != ".der" && ext != ".pem") {
+		if ext != ".crl" && ext != ".der" && ext != ".pem" {
+			continue
+		}
+		if !e.Type().IsRegular() {
+			rejected = append(rejected, fmt.Sprintf("%s is not a regular file (a directory or a link): not read", n))
 			continue
 		}
 		if seen++; seen > maxFlatFiles {
