@@ -3095,7 +3095,7 @@ nothing in the model starts it again.
   force after a transition that offboards its setter, and an offboarded lifter's earlier lift no
   longer counts. The process pins one policy (`Pin`) and walks the chain from the root: stops set
   under policy 1 are in force whatever it pins, and until the walk reaches its pin the stops are
-  unknowable (`Unk`). A process that does not follow the chain drops the earlier stops silently
+  unknowable (`Unk`); a forged record never makes an audited process whose pin is reached unknowable (`NoSpuriousUnknowable`). A process that does not follow the chain drops the earlier stops silently
   (`AgreesWithChain`).
 - **Deployments.** A record names its deployment (`dep`); an audited process ignores records for
   another (`ForeignNoEffect`).
@@ -3121,6 +3121,7 @@ nothing in the model starts it again.
 | `ModeRecordsEvidence` | invariant | a mode record in the store changes nothing, in any process |
 | `LiftNeedsQuorum` | invariant | an audited lift is by a quorum of lifters of the policy in force, one not the setter when `WantOther` |
 | `AgreesWithChain` | invariant | an audited process's stops agree with the fold that follows every transition from the root, or it says they are unknowable |
+| `NoSpuriousUnknowable` | invariant | an audited process whose pin the chain has reached is never made unknowable by a record that does not verify |
 | `ForeignNoEffect` | invariant | a record for another deployment changes nothing in an audited process |
 | `BasicSignedStopNeedsSignedLift` | invariant | a basic process does not lift a stop set under a signed record on a plain lift |
 | `StopsNeverDropped` | property | a stop never goes back: none, active, lifted |
@@ -3164,6 +3165,7 @@ Each is in `stop/regress/` and must fail with its named property:
 - `lift-by-setter` (`LiftNeedsQuorum`): the fold does not require a lifter other than the setter (quorum 1).
 - `mode-from-store` (`ModeRecordsEvidence`): the store decides the mode: one forged mode record flips a basic process to audited, which then ignores every plain stop and lift (found in the review of #393).
 - `no-chain` (`AgreesWithChain`): a process that does not walk the chain from the root drops a stop set under policy 1 silently (found in the review of #393).
+- `unknowable-on-forgery` (`NoSpuriousUnknowable`): one forged record makes an audited process's stops unknowable, so a store-write attacker pauses every covered call (the lead's review of fac3710c).
 - `no-dep-check` (`ForeignNoEffect`): the fold ignores the deployment ID, so staging's records take effect in production (found in the review of #393).
 - `basic-plain-lift` (`BasicSignedStopNeedsSignedLift`): a basic process on an audited deployment lifts a signed stop on a plain lift (found in the review of #393).
 - `lift-refires` (`AtMostOnce`): a lift starts a halted call again, and it fires twice.

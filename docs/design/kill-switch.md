@@ -345,16 +345,17 @@ and lift under the policy in force at its position, so:
   usable), and an active stop set under a signed record makes its stops unknowable, so it fails
   safe. This is no worse than basic's stated exposure: store access can already stop a basic
   deployment;
-- **stops unknowable.** An audited control that finds a record claiming a signature that does not
-  verify under the policy in force at its position counts it in `Unverified`, and
-  `StopState.UnknowableErr()` returns `ErrStopsUnknowable`. The engine (PR 2) fails closed on it for
-  side-effect calls a stop could cover, since a stop it cannot see may exist (a rotation not carried
-  through, a policy pinned off the chain, a replay from another deployment). A stop and a lift can still be written, and the stops it can
-  verify are in `State`. The cost is stated: anyone with store write access can make an audited
-  deployment's covered side-effect calls pause with one such record, which is the safe direction for
-  a kill switch and no worse than their ability to stop in basic mode; an operator who has looked at
-  the records clears it with `WithStopAcceptUnverified(n)` (the log is append-only). Plain and
-  unsigned records are not signature-claiming and are only ignored;
+- **stops unknowable** (`StopState.UnknowableErr()`, `ErrStopsUnknowable`) is only for a process that
+  genuinely cannot judge: a basic process holding an active stop set under a signed record (above),
+  or an audited process whose pin no stored root's chain reaches (or whose chain forks, or whose root
+  it cannot build). The engine (PR 2) fails closed on it for side-effect calls a stop could cover, and
+  raises an alert (`OnError`, the `bide view` banner). A forged record is **never** a cause: an audited
+  process whose pin the chain reaches knows the policy in force at every position, so a record that does
+  not verify is a forgery, `Rejected` and nothing more. Otherwise a store-write attacker would hold a
+  lever (pausing covered calls) against exactly the mode meant to resist them. Among several roots, the
+  one equal to the pin is used, then the others in store order, and the first whose chain reaches the
+  pin is the deployment's; a competing root is only rejected. A writer's `RotatePolicy` and
+  `ChangeMode` write the root if none whose chain reaches the pin exists;
 - a control needs a verifier constructor (`WithStopVerifier`, `audit.NewVerifier`) to adopt a
   transition; without it the transition is reported as rejected and the policy in force is the
   pinned one.

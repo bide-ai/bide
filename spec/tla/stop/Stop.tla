@@ -38,6 +38,7 @@ CONSTANTS
   Cfg,               \* the process's mode: "basic" or "audited"
   Pin,               \* the policy (1..MaxPol) an audited process has pinned; the chain is walked from policy 1
   Deps, CheckDep,    \* the deployments records name ("mine" and perhaps "other"); whether the fold checks it
+  UnkOnUnverified,   \* regress: an audited process whose pin is reached treats a forged record as making the stops unknowable
   BasicHonoursPlainLift, \* regress: a basic process lets a plain lift lift a stop set under a signed record
   Chain,             \* TRUE: follow policy transitions; FALSE (regress): pinned to the last policy
   ModeFromStore,     \* regress: a mode record in the store flips the process to audited
@@ -69,7 +70,7 @@ Records == { r \in [k : Kinds, by : People, sig : BOOLEAN, stop : StopIds, to : 
                /\ r.k = "mode" => ~r.sig }
 
 Stop0 == [phase |-> "none", setter |-> None, lifts |-> {}, how |-> None, signed |-> FALSE]
-Init0C(ch) == [audited |-> (Cfg = "audited"), pol |-> IF ch THEN 1 ELSE MaxPol, tps |-> {},
+Init0C(ch) == [unv |-> FALSE, audited |-> (Cfg = "audited"), pol |-> IF ch THEN 1 ELSE MaxPol, tps |-> {},
                st |-> [i \in StopIds |-> Stop0]]
 
 \* The lifters of the policy in force that approved the lift, and whether the rule is met.
@@ -82,7 +83,7 @@ Relift(s) ==
      IF s.st[i].phase = "active" /\ RuleMet(s, i)
        THEN [s.st[i] EXCEPT !.phase = "lifted", !.how = "audited"] ELSE s.st[i]]]
 
-ApplyC(ch, s, r) ==
+ApplyBody(ch, s, r) ==
   IF ~s.audited THEN
     CASE r.k = "set" /\ s.st[r.stop].phase = "none"
            -> [s EXCEPT !.st[r.stop] = [Stop0 EXCEPT !.phase = "active", !.setter = r.by, !.signed = r.sig]]
@@ -105,13 +106,17 @@ ApplyC(ch, s, r) ==
                 ELSE [s EXCEPT !.tps = T]
       [] OTHER -> s
 
+ApplyC(ch, s, r) ==
+  LET t == ApplyBody(ch, s, r) IN
+  IF UnkOnUnverified /\ s.audited /\ ~r.sig /\ r.k \in {"set", "lift", "pol"} THEN [t EXCEPT !.unv = TRUE] ELSE t
+
 RECURSIVE EffC(_, _, _)
 EffC(ch, l, n) == IF n = 0 THEN Init0C(ch) ELSE ApplyC(ch, EffC(ch, l, n - 1), l[n])
 Eff(l, n) == EffC(Chain, l, n)
 
-\* The process cannot tell which stops are in force: an audited process whose pin the chain has not
+\* The process cannot tell which stops are in force: an audited process whose pin the walk from the root has not
 \* reached, or a basic process holding an active stop that was set under a signed record.
-Unk(s) == IF s.audited THEN Pin > s.pol ELSE \E i \in StopIds : s.st[i].phase = "active" /\ s.st[i].signed
+Unk(s) == IF s.audited THEN (Pin > s.pol \/ s.unv) ELSE \E i \in StopIds : s.st[i].phase = "active" /\ s.st[i].signed
 
 Active(s, c) == \E i \in StopIds : s.st[i].phase = "active" /\ c \in CoverOf[i]
 Covers(s, c) == Active(s, c)
@@ -232,6 +237,10 @@ LiftNeedsQuorum ==
 AgreesWithChain ==
   Cfg = "audited" =>
     (Unk(Eff(log, Len(log))) \/ \A i \in StopIds : Eff(log, Len(log)).st[i].phase = EffC(TRUE, log, Len(log)).st[i].phase)
+
+\* An audited process whose pin the chain has reached is never made unknowable by a record that does
+\* not verify: a forgery is only ignored, so a store-write attacker has no lever against audited mode.
+NoSpuriousUnknowable == Cfg = "audited" => (Unk(Eff(log, Len(log))) => Pin > Eff(log, Len(log)).pol)
 
 \* A record for another deployment changes nothing in an audited process.
 ForeignNoEffect ==

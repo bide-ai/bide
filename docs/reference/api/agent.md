@@ -95,7 +95,7 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `var ErrRunCancelled = errors.New("run cancelled")`: ErrRunCancelled is the end of a run that was cancelled (see Cancel): the first of the run's end markers in journal order is run:cancelled.
 - `var ErrRunEnded = errors.New("run already ended")`: ErrRunEnded is Cancel's answer for a run that is already over: its first end marker is run:complete or run:aborted, so there is nothing left to cancel.
 - `var ErrStopRejected`: ErrStopRejected is returned when a record was written but the control run's fold does not accept it (a policy transition raced it, or its signature does not verify under the policy in force at its position): it has no effect.
-- `var ErrStopsUnknowable`: ErrStopsUnknowable is returned by StopState.UnknowableErr when an audited control found records that claim to be signed and do not verify under the policy in force at their position: a stop it cannot see may exist (a rotation that was not carried through, or a forged record).
+- `var ErrStopsUnknowable`: ErrStopsUnknowable is returned by StopState.UnknowableErr when a control genuinely cannot judge which stops are in force: a basic process that holds an active stop set under a signed record (it lacks the deployment's policy), or an audited process whose pin the stored chain does not reach, or whose chain forks or competes.
 - `var ErrToolNotCalled = errors.New("tool not called")`: ErrToolNotCalled marks a tool call that is known never to have reached its tool, so its side effect cannot have happened.
 - `var ErrTrailConflict`: ErrTrailConflict is returned by NotifyTrail.Append when the position is already taken by a different record: another process won the append.
 - `var ErrTurnContended`: ErrTurnContended is returned by a Session's Send, SendOnce, Send and SendOnce when another driver holds the lease on the turn's run (see Session): another worker, or, while a cancelled saga turn's rollback is in progress, another caller on the same session handle (see Session.Send).
@@ -3079,7 +3079,6 @@ StopOption configures NewStopControl.
 
 **Constructors and functions**
 
-- `func WithStopAcceptUnverified(n int) StopOption`: WithStopAcceptUnverified tells an audited control that n of the records it cannot verify have been investigated and are not stops (garbage, or a retired operator's attempt), so they do not make the stops unknowable (StopState.UnknowableErr).
 - `func WithStopClock(now func() time.Time) StopOption`: WithStopClock sets the clock that stamps a record's At (default time.Now).
 - `func WithStopMode(m StopMode) StopOption`: WithStopMode declares the mode of this process: StopBasic, or StopAudited (which needs WithStopPolicy).
 - `func WithStopPolicy(p StopPolicy) StopOption`: WithStopPolicy gives the control the audited-mode policy: the trust root, the policy this process pins (normally the one the deployment started audited mode with).
@@ -3270,7 +3269,7 @@ StopState is the effective state of the control run for one control.
 
 - `func (s StopState) Active() []StopEntry`: Active returns the stops that are not lifted, in the order they were set.
 - `func (s StopState) Covering(q StopQuery) (StopEntry, bool)`: Covering returns the first active stop that covers q.
-- `func (s StopState) UnknowableErr() error`: UnknowableErr returns ErrStopsUnknowable when an audited control has unverified records (see Unverified): the stops it can see are in State, but others may exist that it cannot.
+- `func (s StopState) UnknowableErr() error`: UnknowableErr returns ErrStopsUnknowable when the control cannot judge which stops are in force (see the error).
 
 ## type StopVerifierFunc
 
