@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -24,9 +25,37 @@ type stopOption func(*StopControl) error
 
 func (f stopOption) applyStop(c *StopControl) error { return f(c) }
 
-// WithStopPolicy gives the control the audited-mode policy and so makes it audited: the mode is the
-// process's own configuration, not something the store says. The policy is the trust root. It
-// is validated here and again whenever State uses it. Without it the control is basic.
+// WithStopMode declares the mode of this process: StopBasic, or StopAudited (which needs
+// WithStopPolicy). The mode is the process's own configuration, never something the store says, and
+// it must be declared: a control that reads a control run holding records and has no declared mode
+// fails with ErrConfig, so a process cannot be silently basic or audited by accident.
+func WithStopMode(m StopMode) StopOption {
+	return stopOption(func(c *StopControl) error {
+		if m != StopBasic && m != StopAudited {
+			return fmt.Errorf("WithStopMode(%q): %w", m, ErrConfig)
+		}
+		c.mode = m
+		return nil
+	})
+}
+
+// WithStopAcceptUnverified tells an audited control that n of the records it cannot verify have been
+// investigated and are not stops (garbage, or a retired operator's attempt), so they do not make the
+// stops unknowable (StopState.UnknowableErr). The control run is append-only, so this is how an
+// operator clears the condition; the records stay listed in Rejected.
+func WithStopAcceptUnverified(n int) StopOption {
+	return stopOption(func(c *StopControl) error {
+		if n < 0 {
+			return fmt.Errorf("WithStopAcceptUnverified(%d): %w", n, ErrConfig)
+		}
+		c.acceptUnverified = n
+		return nil
+	})
+}
+
+// WithStopPolicy gives the control the audited-mode policy: the trust root, the policy this process
+// pins (normally the one the deployment started audited mode with). It is validated here and again
+// whenever State uses it. The later policies are the control run's own, by signed transitions.
 func WithStopPolicy(p StopPolicy) StopOption {
 	return stopOption(func(c *StopControl) error {
 		if err := p.Validate(); err != nil {
@@ -59,10 +88,12 @@ func WithStopClock(now func() time.Time) StopOption {
 // deployment. It is the one place that decides which records count (see State), so every reader, the
 // engine's check points included, sees the same effective stops.
 type StopControl struct {
-	j      *Journal
-	policy *StopPolicy
-	nv     StopVerifierFunc
-	now    func() time.Time
+	j                *Journal
+	policy           *StopPolicy
+	nv               StopVerifierFunc
+	mode             StopMode
+	acceptUnverified int
+	now              func() time.Time
 }
 
 // NewStopControl returns the control over j's store.
@@ -79,16 +110,35 @@ func NewStopControl(j *Journal, opts ...StopOption) (*StopControl, error) {
 			return nil, err
 		}
 	}
+	switch {
+	case c.mode == StopAudited && c.policy == nil:
+		return nil, fmt.Errorf("NewStopControl: audited mode needs WithStopPolicy: %w", ErrConfig)
+	case c.mode == StopBasic && c.policy != nil:
+		return nil, fmt.Errorf("NewStopControl: basic mode takes no WithStopPolicy: %w", ErrConfig)
+	case c.mode == "" && c.policy != nil:
+		c.mode = "" // declared at State, once the control run holds records
+	}
 	return c, nil
 }
 
-// Mode is the mode the control runs under: audited with a policy, else basic.
+// Mode is the mode the control runs under: the declared one, else audited with a policy and basic
+// without (an undeclared mode is refused as soon as the control run holds a record).
 func (c *StopControl) Mode() StopMode {
-	if c.policy != nil {
+	switch {
+	case c.mode != "":
+		return c.mode
+	case c.policy != nil:
 		return StopAudited
 	}
 	return StopBasic
 }
+
+// ErrStopsUnknowable is returned by StopState.UnknowableErr when an audited control found records that
+// claim to be signed and do not verify under the policy in force at their position: a stop it cannot
+// see may exist (a rotation that was not carried through, or a forged record). The engine treats it as
+// "stops unknowable" and fails closed for side-effect calls that a stop could cover; a stop or a lift
+// can still be written.
+var ErrStopsUnknowable = errors.New("agent: stops unknowable: the control run holds signed-looking records this process cannot verify")
 
 // maxRejected bounds StopState.Rejected.
 const maxRejected = 100
@@ -129,10 +179,22 @@ type StopState struct {
 	// all, so a flood of garbage does not grow the result.
 	Rejected      []Rejection
 	RejectedTotal int
-	// Unverified counts the audited-mode records (a change of mode, a policy transition) a basic
-	// control cannot check because it has no policy. A control that sees any should say so loudly:
-	// the deployment may have moved to audited mode without this process.
+	// Unverified counts the records that claim to be signed (audited mode) and that this control cannot
+	// verify: a basic control has no policy to check them with (the deployment may have moved to
+	// audited mode without this process), an audited control found a signature that does not verify
+	// under the policy in force at the record's position. A control that sees any should say so loudly.
 	Unverified int
+}
+
+// UnknowableErr returns ErrStopsUnknowable when an audited control has unverified records (see
+// Unverified): the stops it can see are in State, but others may exist that it cannot. A basic control
+// never returns it (it trusts the store; see Unverified). The engine fails closed on it for side-effect
+// calls a stop could cover.
+func (s StopState) UnknowableErr() error {
+	if s.Mode == StopAudited && s.Unverified > 0 {
+		return fmt.Errorf("%d record(s): %w", s.Unverified, ErrStopsUnknowable)
+	}
+	return nil
 }
 
 // Active returns the stops that are not lifted, in the order they were set.
@@ -202,7 +264,7 @@ func (s StopState) Covering(q StopQuery) (StopEntry, bool) {
 //     of the policy in force have signed it. A stop set under an earlier policy stays in force.
 //   - "mode" records are evidence of a change of mode and nothing else: the mode is configuration.
 func (c *StopControl) State(ctx context.Context) (StopState, error) {
-	audited := c.policy != nil
+	audited := c.Mode() == StopAudited
 	cur := StopPolicy{}
 	if audited {
 		if err := c.policy.Validate(); err != nil {
@@ -214,9 +276,22 @@ func (c *StopControl) State(ctx context.Context) (StopState, error) {
 	if err != nil {
 		return StopState{}, err
 	}
+	if c.mode == "" && len(recs) > 0 {
+		return StopState{}, fmt.Errorf("the control run holds records and this process has not declared its stop mode (WithStopMode): %w", ErrConfig)
+	}
 	st := StopState{Mode: c.Mode()}
+	chain := []string{}
+	var prevPol StopPolicy
+	var prevDigest string
+	forks := map[string]map[string]StopRecord{}
 	if audited {
 		st.PolicyDigest = cur.Digest()
+		chain = append(chain, st.PolicyDigest)
+	}
+	unverified := func(r StopRecord) {
+		if audited && r.Signed() {
+			st.Unverified++
+		}
 	}
 	byID := map[string]int{}
 	approvals := map[string]map[string]StopRecord{} // policy transition number -> signer -> approval
@@ -242,6 +317,7 @@ func (c *StopControl) State(ctx context.Context) (StopState, error) {
 			}
 			if audited && !cur.verify(r, "setter") {
 				reject(rec.Name, "not signed by an enrolled setter of the policy in force")
+				unverified(r)
 				continue
 			}
 			byID[r.StopID] = len(st.Stops)
@@ -263,6 +339,7 @@ func (c *StopControl) State(ctx context.Context) (StopState, error) {
 			}
 			if !cur.verify(r, "lifter") {
 				reject(rec.Name, "not signed by an enrolled lifter of the policy in force")
+				unverified(r)
 				continue
 			}
 			s.liftSet[r.By] = true
@@ -274,6 +351,7 @@ func (c *StopControl) State(ctx context.Context) (StopState, error) {
 				reject(rec.Name, "not checked: this process has no stop policy")
 			case audited && !cur.verify(r, "lifter") && !cur.verify(r, "setter"):
 				reject(rec.Name, "not signed by an enrolled approver of the policy in force")
+				unverified(r)
 			}
 		case "policy":
 			if !audited {
@@ -281,8 +359,27 @@ func (c *StopControl) State(ctx context.Context) (StopState, error) {
 				reject(rec.Name, "not checked: this process has no stop policy")
 				continue
 			}
-			if r.Seq != st.PolicySeq+1 || r.PrevDigest != st.PolicyDigest || !cur.verify(r, "lifter") {
-				reject(rec.Name, "not an approval, by a lifter of the policy in force, of the next transition from it")
+			if r.Seq == st.PolicySeq && st.PolicySeq > 0 && r.PrevDigest == prevDigest && prevPol.verify(r, "lifter") && StopPolicyDigest(*r.Policy) != st.PolicyDigest {
+				// Another successor of the policy that was replaced: a fork, once its quorum signs it.
+				g := forks[StopPolicyDigest(*r.Policy)]
+				if g == nil {
+					g = map[string]StopRecord{}
+					forks[StopPolicyDigest(*r.Policy)] = g
+				}
+				g[r.By] = r
+				if len(g) >= prevPol.LiftQuorum {
+					return st, fmt.Errorf("the control run's policy chain forks at transition %d: a quorum of the earlier policy also approved a different successor: %w", r.Seq, ErrConfig)
+				}
+				reject(rec.Name, "an approval of another successor of the policy already replaced")
+				continue
+			}
+			if !cur.verify(r, "lifter") {
+				reject(rec.Name, "not signed by a lifter of the policy in force")
+				unverified(r)
+				continue
+			}
+			if r.Seq != st.PolicySeq+1 || r.PrevDigest != st.PolicyDigest {
+				reject(rec.Name, "not an approval of the next transition from the policy in force")
 				continue
 			}
 			key := fmt.Sprint(r.Seq)
@@ -306,13 +403,21 @@ func (c *StopControl) State(ctx context.Context) (StopState, error) {
 				delete(approvals, key)
 				continue
 			}
+			if slices.Contains(chain, next.Digest()) {
+				return st, fmt.Errorf("the control run's policy chain rolls back at transition %d: a quorum approved a policy that was already in force: %w", r.Seq, ErrConfig)
+			}
+			prevPol, prevDigest = cur, st.PolicyDigest
 			cur, st.PolicyDigest, st.PolicySeq = next, next.Digest(), r.Seq
+			chain = append(chain, st.PolicyDigest)
 			for i := range st.Stops {
 				if !st.Stops[i].Lifted {
 					countLifts(&st.Stops[i], cur)
 				}
 			}
 		}
+	}
+	if st.Unverified > 0 && audited {
+		st.Unverified -= min(st.Unverified, c.acceptUnverified)
 	}
 	for i := range st.Stops {
 		s := &st.Stops[i]
@@ -459,7 +564,7 @@ func (c *StopControl) ChangeMode(ctx context.Context, req ModeRequest) (StopStat
 		return st, fmt.Errorf("%d stop(s) are active: lift them before leaving audited mode: %w", len(st.Active()), ErrConfig)
 	}
 	if req.To == StopAudited {
-		basic := &StopControl{j: c.j, now: c.now}
+		basic := &StopControl{j: c.j, now: c.now, mode: StopBasic}
 		bs, err := basic.State(ctx)
 		if err != nil {
 			return st, err

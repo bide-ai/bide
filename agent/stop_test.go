@@ -30,7 +30,7 @@ func newControl(t *testing.T, store Store, opts ...StopOption) *StopControl {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := NewStopControl(j, append([]StopOption{WithStopClock(stopClock())}, opts...)...)
+	c, err := NewStopControl(j, append([]StopOption{WithStopClock(stopClock()), WithStopMode(StopBasic)}, opts...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func auditedPolicy(quorum int, other bool) StopPolicy {
 func fakeNV(_ Alg, pub []byte) (ApproverVerifier, error) { return fakeVerifier{id: string(pub)}, nil }
 
 func audited(t *testing.T, store Store, p StopPolicy, opts ...StopOption) *StopControl {
-	return newControl(t, store, append([]StopOption{WithStopPolicy(p), WithStopVerifier(fakeNV)}, opts...)...)
+	return newControl(t, store, append([]StopOption{WithStopMode(StopAudited), WithStopPolicy(p), WithStopVerifier(fakeNV)}, opts...)...)
 }
 
 func sign(id string) StopSigner { return fakeStopSigner{id} }
@@ -341,8 +341,11 @@ func TestStoreModeRecordsAreEvidenceOnly(t *testing.T) {
 			if err != nil || st.Mode != c.Mode() || st.RejectedTotal != 4 {
 				t.Fatalf("State: %+v %v", st, err)
 			}
-			if name == "basic" && st.Unverified != 4 {
-				t.Fatalf("a basic control must count the records it cannot check: %d", st.Unverified)
+			if st.Unverified != 4 {
+				t.Fatalf("a control must count the records it cannot check: %d", st.Unverified)
+			}
+			if (st.UnknowableErr() != nil) != (name == "audited") {
+				t.Fatalf("UnknowableErr = %v: an audited control cannot know the stops, a basic one trusts the store", st.UnknowableErr())
 			}
 			req := StopRequest{Scope: StopScope{Kind: StopGlobal}, By: "ops1", Signer: sign("ops1")}
 			s, err := c.SetStop(ctx, req)
@@ -530,7 +533,7 @@ func TestPolicyRotation(t *testing.T) {
 		t.Fatalf("second transition: %+v", st)
 	}
 	// A control with no verifier constructor cannot adopt a transition: it reports it, no error.
-	nv := newControl(t, store, WithStopPolicy(p1))
+	nv := newControl(t, store, WithStopMode(StopAudited), WithStopPolicy(p1))
 	if st := mustState(t, nv); st.PolicySeq != 0 || st.RejectedTotal == 0 {
 		t.Fatalf("no verifier constructor: %+v", st)
 	}
@@ -578,7 +581,7 @@ func TestAuditedWithEd25519(t *testing.T) {
 			return ed25519Verifier{k}, ok
 		}}
 	nv := func(alg Alg, p []byte) (ApproverVerifier, error) { return ed25519Verifier{p}, nil }
-	c := newControl(t, NewMemStore(), WithStopPolicy(pol), WithStopVerifier(nv))
+	c := newControl(t, NewMemStore(), WithStopMode(StopAudited), WithStopPolicy(pol), WithStopVerifier(nv))
 	s, err := c.SetStop(ctx, StopRequest{Scope: StopScope{Kind: StopFlow, Name: "payout"}, By: "alice", Signer: ed25519Signer{priv}})
 	if err != nil || !s.Signed {
 		t.Fatalf("%+v %v", s, err)
@@ -645,4 +648,154 @@ func TestStalePolicyApprovalsAndOffboardedLifts(t *testing.T) {
 	if l, _ = c.LiftStop(ctx, s.ID, LiftRequest{By: "ops2", Signer: sign("ops2")}); !l.Lifted {
 		t.Fatalf("%+v", l)
 	}
+}
+
+// TestModeMustBeDeclared: a control that reads a control run holding records, and was given no mode,
+// fails with ErrConfig; an empty control run is fine; basic with a policy and audited without are
+// refused at construction.
+func TestModeMustBeDeclared(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	j, _ := NewJournal(store)
+	undeclared, _ := NewStopControl(j, WithStopClock(stopClock()))
+	if _, err := undeclared.State(ctx); err != nil {
+		t.Fatalf("an empty control run: %v", err)
+	}
+	newControl(t, store).SetStop(ctx, StopRequest{Scope: StopScope{Kind: StopGlobal}, By: "a"})
+	if _, err := undeclared.State(ctx); !errors.Is(err, ErrConfig) {
+		t.Fatalf("an undeclared mode over a control run with records: %v", err)
+	}
+	if _, err := NewStopControl(j, WithStopMode(StopBasic), WithStopPolicy(auditedPolicy(1, false))); !errors.Is(err, ErrConfig) {
+		t.Fatalf("basic with a policy: %v", err)
+	}
+}
+
+// TestUnknowableStops: an audited control that finds a record that claims a signature and does not
+// verify reports Unverified and UnknowableErr (the engine fails closed on it); the stops it can see are
+// still returned and a stop can still be written; WithStopAcceptUnverified clears it once investigated.
+func TestUnknowableStops(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	c := audited(t, store, auditedPolicy(1, false))
+	if mustState(t, c).UnknowableErr() != nil {
+		t.Fatal("unknowable on an empty control run")
+	}
+	r := StopRecord{Format: StopFormat, Kind: "set", Mode: StopAudited, Scope: &StopScope{Kind: StopGlobal}, Compensation: CompensationAllow, At: nowStr(), By: "eve", Alg: fakeAlg, Signature: "00"}
+	r.StopID = StopIDOf(r)
+	putRaw(t, c, r)
+	st := mustState(t, c)
+	if !errors.Is(st.UnknowableErr(), ErrStopsUnknowable) || st.Unverified != 1 {
+		t.Fatalf("%+v %v", st, st.UnknowableErr())
+	}
+	if _, err := c.SetStop(ctx, StopRequest{Scope: StopScope{Kind: StopTool, Name: "t"}, By: "ops1", Signer: sign("ops1")}); err != nil {
+		t.Fatalf("a stop must still be writable: %v", err)
+	}
+	if st := mustState(t, c); len(st.Active()) != 1 {
+		t.Fatalf("the verifiable stop is in State: %+v", st.Active())
+	}
+	cleared := audited(t, store, auditedPolicy(1, false), WithStopAcceptUnverified(1))
+	if st := mustState(t, cleared); st.UnknowableErr() != nil || st.Unverified != 0 || st.RejectedTotal != 1 {
+		t.Fatalf("after the operator accepted it: %+v", st)
+	}
+	// A plain (unsigned) record is not signed-looking: it is ignored, not unknowable.
+	store2 := NewMemStore()
+	c2 := audited(t, store2, auditedPolicy(1, false))
+	p := StopRecord{Format: StopFormat, Kind: "set", Mode: StopBasic, Scope: &StopScope{Kind: StopGlobal}, Compensation: CompensationAllow, At: nowStr(), By: "eve"}
+	p.StopID = StopIDOf(p)
+	putRaw(t, c2, p)
+	if st := mustState(t, c2); st.UnknowableErr() != nil || st.RejectedTotal != 1 {
+		t.Fatalf("a plain record: %+v", st)
+	}
+}
+
+// TestRotationEdgeCases: the same id with a new key, a stop set during a rotation, a fork and a rollback.
+func TestRotationEdgeCases(t *testing.T) {
+	ctx := context.Background()
+	gen1 := map[string]string{"ops1": "1", "ops2": "1", "risk": "1"}
+	p1 := keyedPolicy(gen1, []string{"ops1", "ops2"}, []string{"ops1", "ops2", "risk"}, 2)
+	nvKeyed := func(_ Alg, pub []byte) (ApproverVerifier, error) {
+		id, gen, _ := strings.Cut(string(pub), "/")
+		return keyedVerifier{id, gen}, nil
+	}
+	mk := func(store Store) *StopControl {
+		return newControl(t, store, WithStopMode(StopAudited), WithStopPolicy(p1), WithStopVerifier(nvKeyed))
+	}
+	rot := func(c *StopControl, next StopPolicy, bys ...string) StopState {
+		var st StopState
+		var err error
+		for _, by := range bys {
+			if st, err = c.RotatePolicy(ctx, next, LiftRequest{By: by, Signer: keyedSigner{by, gen1[by]}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return st
+	}
+	// Same id, new key: the old key has no authority after the transition, the new key has.
+	store := NewMemStore()
+	c := mk(store)
+	s, _ := c.SetStop(ctx, StopRequest{Scope: StopScope{Kind: StopGlobal}, By: "ops1", Signer: keyedSigner{"ops1", "1"}})
+	p2 := keyedPolicy(map[string]string{"ops1": "2", "ops2": "1", "risk": "1"}, []string{"ops1", "ops2"}, []string{"ops1", "ops2", "risk"}, 2)
+	if st := rot(c, p2, "ops1", "ops2"); st.PolicySeq != 1 || len(st.Active()) != 1 {
+		t.Fatalf("rotation: %+v", st)
+	}
+	if _, err := c.SetStop(ctx, StopRequest{Scope: StopScope{Kind: StopTool, Name: "t"}, By: "ops1", Signer: keyedSigner{"ops1", "1"}}); !errors.Is(err, ErrStopRejected) {
+		t.Fatalf("the old key set a stop after its rotation: %v", err)
+	}
+	// A stop set during the rotation by a setter the new policy still enrols is accepted; by one it
+	// no longer enrols it is rejected, and the writer is told (ErrStopRejected) and sets it again.
+	if _, err := c.SetStop(ctx, StopRequest{Scope: StopScope{Kind: StopTool, Name: "t"}, By: "ops1", Signer: keyedSigner{"ops1", "2"}}); err != nil {
+		t.Fatalf("the new key: %v", err)
+	}
+	_ = s
+	// A fork: after policy 2 was adopted, a quorum of policy 1 also approves a different successor.
+	other := keyedPolicy(map[string]string{"ops1": "1", "ops2": "1", "risk": "1"}, []string{"ops1"}, []string{"ops1", "ops2", "risk"}, 1)
+	doc, _ := other.Doc()
+	for _, by := range []string{"ops1", "ops2"} {
+		r := StopRecord{Format: StopFormat, Kind: "policy", Mode: StopAudited, Seq: 1, PrevDigest: p1.Digest(), Policy: &doc, By: by, Alg: fakeAlg, At: nowStr()}
+		r.Signature = hex.EncodeToString((keyedSigner{by, "1"}).sign(StopSigningBytes(r)))
+		putRaw(t, c, r)
+	}
+	if _, err := c.State(ctx); !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "forks") {
+		t.Fatalf("a fork: %v", err)
+	}
+	// A rollback: a quorum of policy 2 approves policy 1 again.
+	store3 := NewMemStore()
+	c3 := mk(store3)
+	rot(c3, p2, "ops1", "ops2")
+	p2gen := map[string]string{"ops1": "2", "ops2": "1", "risk": "1"}
+	for _, by := range []string{"ops1", "ops2"} {
+		if _, err := c3.RotatePolicy(ctx, p1, LiftRequest{By: by, Signer: keyedSigner{by, p2gen[by]}}); err != nil && !errors.Is(err, ErrConfig) {
+			t.Fatal(err)
+		}
+	}
+	if _, err := c3.State(ctx); !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "rolls back") {
+		t.Fatalf("a rollback: %v", err)
+	}
+}
+
+// keyedVerifier verifies signatures made with a per-id key generation, so a test can rotate an
+// approver's key (same id, new key). Its public key is "<id>/<generation>".
+type keyedVerifier struct{ id, gen string }
+
+func (keyedVerifier) Alg() Alg            { return fakeAlg }
+func (v keyedVerifier) PublicKey() []byte { return []byte(v.id + "/" + v.gen) }
+func (v keyedVerifier) Verify(m, sig []byte) bool {
+	return string(sig) == v.id+"/"+v.gen+"|"+string(m)
+}
+func (v keyedVerifier) KeyIDs() []string { return []string{"k:" + v.id + ":" + v.gen} }
+
+type keyedSigner struct{ id, gen string }
+
+func (keyedSigner) Alg() Alg { return fakeAlg }
+func (s keyedSigner) sign(m []byte) []byte {
+	return []byte(s.id + "/" + s.gen + "|" + string(m))
+}
+func (s keyedSigner) Sign(m []byte) ([]byte, error) { return s.sign(m), nil }
+
+func keyedPolicy(gen map[string]string, setters, lifters []string, q int) StopPolicy {
+	return StopPolicy{Setters: setters, Lifters: lifters, LiftQuorum: q,
+		Verifiers: func(id string) (ApproverVerifier, bool) {
+			g, ok := gen[id]
+			return keyedVerifier{id, g}, ok
+		}}
 }
