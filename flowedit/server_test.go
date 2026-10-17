@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"io/fs"
 	"net/http"
@@ -43,11 +46,22 @@ func newTestServer(t *testing.T, name, text string) (*Server, string) {
 	if err := os.WriteFile(p, []byte(text), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := New(p)
+	s, err := newServer(t, p)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return s, p
+}
+
+// newServer is New for a test: the server's directory handle is closed when the test ends (Windows
+// cannot remove a directory that is open, so a test's TempDir cleanup would fail).
+func newServer(t *testing.T, path string, opts ...Option) (*Server, error) {
+	t.Helper()
+	s, err := New(path, opts...)
+	if err == nil {
+		t.Cleanup(func() { s.Close() })
+	}
+	return s, err
 }
 
 const host = "127.0.0.1:8484"
@@ -176,8 +190,9 @@ func TestAPIRefusals(t *testing.T) {
 		{"no content type", "/api/doc", "{}", func(r *http.Request) { r.Header.Del("Content-Type") }, 415},
 		{"GET", "/api/doc", "", func(r *http.Request) { r.Method = "GET" }, 405},
 		{"PUT", "/api/doc", "{}", func(r *http.Request) { r.Method = "PUT" }, 405},
-		{"an unknown endpoint", "/api/save", "{}", nil, 404},
-		{"body over the limit", "/api/report", `{"text":"` + strings.Repeat("a", MaxFileSize) + `"}`, nil, 413},
+		{"an unknown endpoint", "/api/nope", "{}", nil, 404},
+		{"body over the limit", "/api/report", `{"text":"` + strings.Repeat("a", MaxBodySize) + `"}`, nil, 413},
+		{"text over the file limit", "/api/report", `{"text":"` + strings.Repeat("a", MaxFileSize+1) + `"}`, nil, 413},
 		{"unknown field", "/api/doc", `{"path":"/etc/passwd"}`, nil, 400},
 		{"not JSON", "/api/report", "text=a", nil, 400},
 		{"data after the JSON", "/api/doc", "{} {}", nil, 400},
@@ -288,7 +303,7 @@ func TestNewRefusals(t *testing.T) {
 		"no suffix":        write("flow", testFlow),
 		"a file too large": write("big.yaml", "# "+strings.Repeat("a", MaxFileSize)+"\n"),
 	} {
-		if _, err := New(p); err == nil {
+		if _, err := newServer(t, p); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
 	}
@@ -298,7 +313,7 @@ func TestNewRefusals(t *testing.T) {
 		if err := os.Symlink(target, link); err != nil {
 			t.Fatal(err)
 		}
-		s, err := New(link)
+		s, err := newServer(t, link)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -558,5 +573,99 @@ func TestApplyEndpoint(t *testing.T) {
 	// Nothing was written: the file is what it was.
 	if d, err := s.Doc(); err != nil || d.Text != testFlow {
 		t.Errorf("the file changed: %v", err)
+	}
+}
+
+// Every route under /api is registered behind apiGuard (token, origin, content type, size). A new
+// endpoint cannot skip it without this failing, and every one answers a request without the token
+// with 401 and never reaches its handler.
+func TestEveryAPIRouteIsGuarded(t *testing.T) {
+	src, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := parser.ParseFile(token.NewFileSet(), "server.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var routes []string
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || (sel.Sel.Name != "Handle" && sel.Sel.Name != "HandleFunc") || len(call.Args) != 2 {
+			return true
+		}
+		lit, ok := call.Args[0].(*ast.BasicLit)
+		if !ok || !strings.Contains(lit.Value, "/api/") {
+			return true
+		}
+		route := strings.Trim(lit.Value, `"`)
+		guarded := false
+		if c, ok := call.Args[1].(*ast.CallExpr); ok {
+			if s, ok := c.Fun.(*ast.SelectorExpr); ok && s.Sel.Name == "apiGuard" {
+				guarded = sel.Sel.Name == "Handle"
+			}
+		}
+		if !guarded {
+			t.Errorf("%s is not registered as mux.Handle(route, s.apiGuard(...))", route)
+		}
+		if !strings.HasPrefix(route, "POST ") {
+			t.Errorf("%s is not a POST route", route)
+		}
+		routes = append(routes, strings.TrimPrefix(route, "POST "))
+		return true
+	})
+	if len(routes) < 5 {
+		t.Fatalf("found only %v: the route scan is broken", routes)
+	}
+	s, _ := newTestServer(t, "refund.yaml", testFlow)
+	for _, path := range routes {
+		if w := call(s.Handler(), s, path, "{}", func(r *http.Request) { r.Header.Del(TokenHeader) }); w.Code != 401 {
+			t.Errorf("%s without the token: %d", path, w.Code)
+		}
+		if w := call(s.Handler(), s, path, "{}", func(r *http.Request) { r.Header.Set("Origin", "http://evil.example") }); w.Code != 403 {
+			t.Errorf("%s from a foreign origin: %d", path, w.Code)
+		}
+	}
+}
+
+// The script reads these keys of the preview and the save's refusals; they are decoded from the Go
+// structs so renaming one in Go without the script fails here.
+func TestPageContractForSave(t *testing.T) {
+	s, _ := newTestServer(t, "refund.yaml", weakFlow)
+	pv, err := s.Preview([]byte(strings.Replace(weakFlow, "need: 2", "need: 1", 1)), hashOf([]byte(weakFlow)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pv.RemovedComments = []string{"# c"}
+	pv.Conflict = true
+	b, _ := json.Marshal(pv)
+	var m map[string]any
+	_ = json.Unmarshal(b, &m)
+	for _, k := range []string{"diff", "removed_comments", "changed", "hash", "conflict", "needs_confirmation", "errors", "warnings"} {
+		if _, ok := m[k]; !ok {
+			t.Errorf("Preview has no %q", k)
+		}
+	}
+	js, _ := fs.ReadFile(pageFS, "page/editor.js")
+	for _, k := range []string{"pv.diff", "pv.removed_comments", "pv.changed", "pv.hash", "pv.conflict", "pv.needs_confirmation", "pv.errors", "e.data.hash", "e.data.diff", "d.text", "d.hash", "d.name"} {
+		if !strings.Contains(string(js), k) {
+			t.Errorf("the script no longer reads %s: update this list with it", k)
+		}
+	}
+	// The refusals of a save carry these keys.
+	w := call(s.Handler(), s, "/api/save", saveBody("nodes: [", hashOf([]byte(weakFlow))), nil)
+	if w.Code != 422 || !strings.Contains(w.Body.String(), `"needs_confirmation"`) {
+		t.Errorf("%d %s", w.Code, w.Body)
+	}
+	if err := os.WriteFile(s.path, []byte(weakFlow+"# x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w = call(s.Handler(), s, "/api/save", saveBody("a: 1\n", hashOf([]byte(weakFlow))), nil)
+	if w.Code != 409 || !strings.Contains(w.Body.String(), `"conflict":true`) || !strings.Contains(w.Body.String(), `"diff"`) || !strings.Contains(w.Body.String(), `"hash"`) {
+		t.Errorf("%d %s", w.Code, w.Body)
 	}
 }

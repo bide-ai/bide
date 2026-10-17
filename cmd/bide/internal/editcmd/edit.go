@@ -27,16 +27,20 @@ finds, and the source. The page shows what bide check and bide view -config show
 computed by the same code, and labels the check as structural: block and type names are checked
 when a program loads the flow with its plan.Registry.
 
-In this release the page only shows the file; it does not change it. It compares the file with a
-baseline, the committed policy, and says so in a banner that stays while the file is weaker than
+You can edit the file's source in the page and see the check as you type; nothing is written until
+you save, and a save shows the diff of the bytes it will write and the comments it removes. The page
+compares the text with a baseline, the committed policy, and says so in a banner that stays while the file is weaker than
 it: the file at git HEAD, or at the revision -base names (branch, tag or commit), or, when the file
 is not in git, the file as it was when bide edit opened it. The comparison is the one bide check
 -diff -check -fail-on-weaken makes.
 
 It serves on a loopback address only (-addr, default 127.0.0.1:8585), answers only requests
-addressed to a loopback host, and reads only the file you name. The address it prints ends in a
+addressed to a loopback host, and reads and writes only the file you name. The address it prints ends in a
 fragment (#t=...) that carries a per-run session token; open that whole address. Stop it with
 Ctrl-C. bide edit is not in a bide_audit_only build.
+
+A save that weakens the policy against the baseline needs a confirmation that the server checks.
+A save is refused, and writes nothing, if the file changed on disk since the page read it.
 `
 
 // Main runs bide edit with its arguments (after the command's name) and returns the exit status.
@@ -77,6 +81,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, es.ErrorPrefix()+"bide edit:", err)
 		return 1
 	}
+	defer srv.Close()
 	if n := srv.BaselineNote(); n != "" {
 		fmt.Fprintln(stderr, es.Warn("bide edit: warning:")+" the baseline is "+n)
 	}
@@ -92,7 +97,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 // in its fragment.
 func serve(ctx context.Context, ln net.Listener, srv *flowedit.Server, st, es term.Style, stdout, stderr io.Writer) int {
 	link := "http://" + ln.Addr().String() + "/#t=" + srv.Token()
-	fmt.Fprintf(stdout, "bide edit: serving %s %s\n", st.Path(link), st.Dim("(loopback only, read-only in this release; Ctrl-C to stop)"))
+	fmt.Fprintf(stdout, "bide edit: serving %s %s\n", st.Path(link), st.Dim("(loopback only; Ctrl-C to stop)"))
 	hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		<-ctx.Done()

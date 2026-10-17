@@ -6,7 +6,7 @@
 <script type="module" src="/assets/editor.js"></script>
 </head>
 <body>{{.Sprite}}
-<header class="top"><span class="brand">bide edit</span><span class="ro" id="mode-tag">read-only</span><span class="grow"></span><span class="muted small" id="file"></span><button type="button" class="hbtn" id="theme" aria-label="Switch between light and dark">Theme</button></header>
+<header class="top"><span class="brand">bide edit</span><span class="ro" id="state-tag">saved</span><span class="grow"></span><span class="muted small" id="file"></span><button type="button" class="btn" id="revert" disabled>Revert</button><button type="button" class="btn primary" id="save" disabled>Save&hellip;</button><button type="button" class="btn" id="theme" aria-label="Switch between light and dark">Theme</button></header>
 <main>
 <div id="live" class="sr-only" role="status" aria-live="polite"></div>
 <noscript><p class="bad">bide edit needs script: the page draws what the server computes.</p></noscript>
@@ -21,6 +21,7 @@
 </div>
 <section aria-labelledby="h-assert"><h2 id="h-assert">Assertions</h2><p class="muted small">Checked by <code>bide check</code> and in CI, not at run time.</p><div id="assertions"></div></section>
 <section aria-labelledby="h-problems"><h2 id="h-problems">Problems</h2><div id="problems"></div></section>
-<section aria-labelledby="h-source"><h2 id="h-source">Source</h2><pre id="source" class="source" tabindex="0" aria-label="Config source, read-only"></pre></section>
+<section aria-labelledby="h-source"><h2 id="h-source">Source</h2><p class="muted small">Edit the file here; the page checks it as you type. Nothing is written until you save.</p><textarea id="source" class="source" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="Config source" rows="24"></textarea></section>
+<dialog id="dialog" aria-labelledby="dialog-title"><div id="dialog-form"><h2 id="dialog-title"></h2><div id="dialog-body"></div><div class="dialog-actions" id="dialog-actions"></div></div></dialog>
 </main>
 </body></html>

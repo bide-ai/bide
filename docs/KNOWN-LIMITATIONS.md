@@ -397,6 +397,36 @@ in where no gate and no earlier node of that block stood, looks like any new rea
 reported. Check with the Registry (`plan/planview`) where the blocks are registered. See [Compare two
 versions of a flow](guides/run-viewer.md#compare-two-versions-of-a-flow).
 
+## The flow editor
+
+**The editor's check is structural.** `bide edit` checks a config as `bide check` does: block, predicate and
+merge names and the types are checked when a program loads the flow with its `plan.Registry`, and a gate
+or a safety a block declares in Go is not visible. A clean page is not `plan.Load` accepting the flow, and a
+changed `block` on an ungated effect node is reported as weakened because the new block may carry no gate.
+
+**A file with any YAML anchor or alias is refused by the editor.** `plan` reads such a file (the YAML converter resolves anchors, aliases and merge keys), but the editor's splice cannot place an edit inside an alias, and a walk that follows aliases can overflow the stack or expand exponentially, so it refuses the whole document and says why; edit that file in your text editor. It likewise refuses a repeated key, a key that is not a string, NaN and infinity, which the loader refuses too.
+
+**The weakening classifier is a check, not a proof.** The banner and the confirmation show what `bide check
+-diff` classifies: a gate removed or loosened, an `assert` line removed, loosened or no longer holding, an
+node newly reachable without a gate, whatever its safety (a lowered `safety` label is itself reported). The
+check does not read predicates. The confirmation is not written into the file; the
+control that stops a weakened policy merging is the pull request, with `bide check -diff -check
+-fail-on-weaken` as a required status and a policy owner's approval. See the [flow editor
+guide](guides/flow-editor.md).
+
+**A save is atomic, not exclusive.** The file is replaced by a rename of a temporary file, so a reader sees
+the old file or the new one. Saves in one editor are serialized, so of several over the same hash exactly
+one succeeds and the rest are conflicts. A write by another process between the editor's last check that
+the file is unchanged (made just before the rename) and the rename is overwritten, . The config's directory is
+opened once at startup and every read and write goes through that handle, so a directory swapped for a
+link or another directory later cannot redirect a save. A file with other names (hard links) is refused on Unix, because the others
+would keep the old text, and a read-only file is refused; on Windows hard links are not counted. The
+owner and group are carried over where the user may set them; extended attributes, ACLs and SELinux labels
+are not carried over (there is no portable way to see them without a new dependency). On Windows the open directory handle (the price of the swap protection) stops anything from renaming or removing the config's directory while `bide edit` runs. A process killed
+between creating the temporary file and the rename leaves `.bide-edit-*` beside the config (mode 0600,
+the config's text); the next `bide edit` in that directory removes such files that are ours and older
+than ten minutes.
+
 ## Audit and proofs
 
 **Tamper evidence needs an anchor outside your database.** Hash chains, Merkle roots and signed tree

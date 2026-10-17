@@ -18,12 +18,20 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/bide-ai/bide/internal/runview"
 )
 
 // MaxFileSize is the largest config the editor reads, and the largest request body it accepts.
 const MaxFileSize = 1 << 20
+
+// MaxBodySize is the largest request body: a config of MaxFileSize bytes is a JSON string in it,
+// where every newline, quote and tab takes two bytes and a control character six, so the body of a
+// maximal valid config is up to six times the file. The text itself is checked against MaxFileSize
+// after it is decoded.
+const MaxBodySize = 6*MaxFileSize + 4096
 
 // TokenHeader is the request header that carries the session token on every /api call.
 const TokenHeader = "X-Bide-Token"
@@ -55,12 +63,16 @@ type Server struct {
 	path  string // the file, absolute, with symlinks resolved at startup
 	name  string // the name the page shows: the path as given
 	token string
+	mu    sync.Mutex // one read or save at a time; guards id
+	root  *os.Root   // the config's directory, opened at startup
+	base  string     // the config's name in it
 	// baseline is the text every version is compared with for weakening, and baselineSource says
 	// where it came from. They are fixed at startup: the baseline is the committed policy, not the
 	// session, so weakening in two saves is still weakening against it.
 	baseline       []byte
 	baselineSource string
-	baselineNote   string // why git HEAD was not the baseline, when that is not just "not in git"
+	baselineNote   string     // why git HEAD was not the baseline, when that is not just "not in git"
+	fs             fileSystem // what a save writes with; a test replaces it
 }
 
 // Option configures New.
@@ -93,23 +105,31 @@ func New(path string, opts ...Option) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("flowedit: %w", err)
 	}
-	if _, err := readConfig(real); err != nil {
-		return nil, err
-	}
-	text, err := readConfig(real)
+	dir, base := filepath.Split(real)
+	// The directory is opened once, here: every read and write is through this handle, so a
+	// directory swapped for a link later cannot redirect them.
+	root, err := os.OpenRoot(dir)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("flowedit: %w", err)
 	}
+	fail := func(err error) (*Server, error) { root.Close(); return nil, err }
+	if _, err := readConfig(root, base, real); err != nil {
+		return fail(err)
+	}
+	text, err := readConfig(root, base, real)
+	if err != nil {
+		return fail(err)
+	}
+	cleanStale(root, time.Now())
 	// The baseline: the file at the revision asked for, else at HEAD when the file is committed,
 	// else the file as it is now. The editor reads git only for this, with the same `git show` that
 	// bide check -diff makes.
-	dir, base := filepath.Split(real)
 	var baseline []byte
 	var source, note string
 	switch {
 	case o.base != "":
 		if baseline, err = gitShow(dir, o.base, base); err != nil {
-			return nil, fmt.Errorf("flowedit: -base: %w", err)
+			return fail(fmt.Errorf("flowedit: -base: %w", err))
 		}
 		source = "git " + o.base
 	default:
@@ -129,33 +149,33 @@ func New(path string, opts ...Option) (*Server, error) {
 	}
 	var tok [16]byte
 	if _, err := rand.Read(tok[:]); err != nil {
-		return nil, fmt.Errorf("flowedit: no randomness for the session token: %w", err)
+		return fail(fmt.Errorf("flowedit: no randomness for the session token: %w", err))
 	}
-	return &Server{path: real, name: path, token: hex.EncodeToString(tok[:]), baseline: baseline, baselineSource: source, baselineNote: note}, nil
+	return &Server{path: real, root: root, base: base, name: path, token: hex.EncodeToString(tok[:]), baseline: baseline, baselineSource: source, baselineNote: note, fs: osFS}, nil
 }
 
 // BaselineNote is "" when the baseline is what it should be, and otherwise says why git HEAD was not
 // used although the file may be in a repository; bide edit prints it at startup.
 func (s *Server) BaselineNote() string { return s.baselineNote }
 
+// Close releases the directory handle. A Server must not be used after.
+func (s *Server) Close() error { return s.root.Close() }
+
 // Token is the session token the page sends in TokenHeader. bide edit prints it in the address's
 // fragment (#t=...), which a browser does not send to the server or in a Referer.
 func (s *Server) Token() string { return s.token }
 
 // readConfig reads the file, which must be a regular file of at most MaxFileSize bytes.
-// When id is not nil the opened file must be the file id describes (os.SameFile): the editor reads
-// only the file it was started on, so a symbolic link or another file put at the path since is
-// refused, not followed.
-func readConfig(path string) ([]byte, error) {
+func readConfig(root *os.Root, base, path string) ([]byte, error) {
 	// Not a symbolic link or anything but a regular file at the name: a link put there since startup
 	// is refused, not followed. A file another tool replaced by a rename is the file at the name now
 	// and is read; the hash compare-and-swap of a save is what notices it changed.
-	if lfi, err := os.Lstat(path); err != nil {
+	if lfi, err := root.Lstat(base); err != nil {
 		return nil, fmt.Errorf("flowedit: %w", err)
 	} else if lfi.Mode()&os.ModeSymlink != 0 || !lfi.Mode().IsRegular() {
 		return nil, fmt.Errorf("flowedit: %s is not a regular file (a link or another kind of file is not read)", path)
 	}
-	f, err := os.Open(path)
+	f, err := root.Open(base)
 	if err != nil {
 		return nil, fmt.Errorf("flowedit: %w", err)
 	}
@@ -186,7 +206,13 @@ func (s *Server) view(text []byte) *View {
 
 // Doc reads the file and returns its View with the hash of the bytes read.
 func (s *Server) Doc() (*Doc, error) {
-	b, err := readConfig(s.path)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.docLocked()
+}
+
+func (s *Server) docLocked() (*Doc, error) {
+	b, err := readConfig(s.root, s.base, s.path)
 	if err != nil {
 		return nil, err
 	}
@@ -205,6 +231,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/doc", s.apiGuard(s.doc))
 	mux.Handle("POST /api/report", s.apiGuard(s.report))
 	mux.Handle("POST /api/apply", s.apiGuard(s.apply))
+	mux.Handle("POST /api/preview", s.apiGuard(s.preview))
+	mux.Handle("POST /api/save", s.apiGuard(s.save))
 	return secure(mux)
 }
 
@@ -299,7 +327,7 @@ func (s *Server) apiGuard(h func(w http.ResponseWriter, r *http.Request)) http.H
 			fail(w, http.StatusUnauthorized, "missing or wrong session token")
 			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, MaxFileSize)
+		r.Body = http.MaxBytesReader(w, r.Body, MaxBodySize)
 		h(w, r)
 	})
 }
@@ -322,7 +350,7 @@ func readBody(w http.ResponseWriter, r *http.Request, v any) bool {
 	if err := dec.Decode(v); err != nil {
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) {
-			fail(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("the request is larger than %d bytes", MaxFileSize))
+			fail(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("the request is larger than %d bytes", MaxBodySize))
 			return false
 		}
 		fail(w, http.StatusBadRequest, "the request body is not the expected JSON: "+err.Error())
@@ -356,6 +384,10 @@ func (s *Server) report(w http.ResponseWriter, r *http.Request) {
 	if !readBody(w, r, &req) {
 		return
 	}
+	if len(req.Text) > MaxFileSize {
+		fail(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("the text is larger than %d bytes", MaxFileSize))
+		return
+	}
 	reply(w, s.view([]byte(req.Text)))
 }
 
@@ -376,6 +408,10 @@ func (s *Server) apply(w http.ResponseWriter, r *http.Request) {
 	if !readBody(w, r, &req) {
 		return
 	}
+	if len(req.Text) > MaxFileSize {
+		fail(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("the text is larger than %d bytes", MaxFileSize))
+		return
+	}
 	res, err := ApplyOperation(s.name, []byte(req.Text), req.Operation)
 	var rf *Refusal
 	switch {
@@ -385,5 +421,61 @@ func (s *Server) apply(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, err.Error())
 	default:
 		reply(w, Edited{View: *s.view(res.Text), Changed: res.Changed})
+	}
+}
+
+// preview answers /api/preview: what saving the text would do (see Preview).
+func (s *Server) preview(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Text string `json:"text"`
+		Hash string `json:"hash"`
+	}
+	if !readBody(w, r, &req) {
+		return
+	}
+	if len(req.Text) > MaxFileSize {
+		fail(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("the text is larger than %d bytes", MaxFileSize))
+		return
+	}
+	p, err := s.Preview([]byte(req.Text), req.Hash)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	reply(w, p)
+}
+
+// save answers /api/save: the text written over the file (see Save). A file that changed on disk
+// is a 409 with the file's hash and the diff from it to the text, a weakening that was not
+// confirmed is a 422 with the items to confirm, and nothing is written in either case.
+func (s *Server) save(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Text      string   `json:"text"`
+		Hash      string   `json:"hash"`
+		Confirmed []string `json:"confirmed"`
+	}
+	if !readBody(w, r, &req) {
+		return
+	}
+	if len(req.Text) > MaxFileSize {
+		fail(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("the text is larger than %d bytes", MaxFileSize))
+		return
+	}
+	d, err := s.Save([]byte(req.Text), req.Hash, req.Confirmed)
+	var conflict *Conflict
+	var needs *NeedsConfirmation
+	switch {
+	case errors.As(err, &conflict):
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": conflict.Error(), "conflict": true, "hash": conflict.Hash, "diff": conflict.Diff})
+	case errors.As(err, &needs):
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": needs.Error(), "needs_confirmation": needs.Items})
+	case err != nil:
+		fail(w, http.StatusInternalServerError, err.Error())
+	default:
+		reply(w, d)
 	}
 }
