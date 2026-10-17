@@ -400,7 +400,9 @@ with an issuing distribution point is refused, and a delta without one is never 
 series of a CA that publishes them needs full CRLs. A listing in any CRL the issuer signed revokes, whatever its
 point. A certificate that names several distribution points (separate points, as AD CS writes the LDAP and the HTTP
 point of one CRL) takes status from a CRL covering any one of them, because the points are alternative places for
-the same scope: a CA that partitions must put in each certificate its own partition's point only.
+the same scope (this follows RFC 5280 section 6.3.3, which stops processing distribution points once one complete
+CRL has been read; that AD CS writes its mirrors as separate points is from Microsoft's documentation, not from a
+capture bide holds): a CA that partitions must put in each certificate its own partition's point only.
 
 **Failure behaviour.** A failed fetch changes nothing that is held. Freshness is read from each CRL's own
 `thisUpdate` and `nextUpdate`, never from `Date`, `Last-Modified` or a `304`, so the refresher cannot make status
