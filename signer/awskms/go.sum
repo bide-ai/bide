@@ -8,3 +8,5 @@ github.com/aws/aws-sdk-go-v2/service/kms v1.61.4 h1:vW7497x7W6ucLJAqDt96jIdO4+IW
 github.com/aws/aws-sdk-go-v2/service/kms v1.61.4/go.mod h1:Vz59N7x42VGLXZ5dGL9b10QhrU4GQv7MqnO7wc8bl9U=
 github.com/aws/smithy-go v1.28.5 h1:OqbqKtzY9NUnr2yAe9+hiTdFb20tNaK/lI0PMOGXX9k=
 github.com/aws/smithy-go v1.28.5/go.mod h1:YE2RhdIuDbA5E5bTdciG9KrW3+TiEONeUWCqxX9i1Fc=
+github.com/bide-ai/bide v0.20.0 h1:BURES6rJwexyYsq3oqIG12J6isiueZbyERz6yJ45WtE=
+github.com/bide-ai/bide v0.20.0/go.mod h1:/9TldvSgiSK7hwUc7FpvD2y3jGS5a6EgWhqaBUv+Diw=
