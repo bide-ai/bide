@@ -76,22 +76,26 @@ func parseIDP(value []byte, critical bool) ([]string, error) {
 	return uris, nil
 }
 
-// certNamesPoint reports whether one of cert's CRL distribution points names one of uris: a point that
-// holds only a fullName (no reasons, no cRLIssuer) with that URI, byte for byte.
-func certNamesPoint(cert *x509.Certificate, uris []string) bool {
-	for _, e := range cert.Extensions {
+// PlainDistributionPoints returns the URIs of each of c's CRL distribution points that is a plain point: one
+// that holds only a fullName (no reasons, no cRLIssuer, no relative name), in the order the certificate has
+// them, each point's URIs in order. A point of any other shape, and a name that is not a URI, is left out. It
+// reports false when the extension does not parse. These are the points bide matches a CRL's issuing
+// distribution point against.
+func PlainDistributionPoints(c *x509.Certificate) ([][]string, bool) {
+	var out [][]string
+	for _, e := range c.Extensions {
 		if !e.Id.Equal(oidCRLDistributionPoints) {
 			continue
 		}
 		list, rest, ok := derElem(e.Value, asn1.ClassUniversal, asn1.TagSequence, true)
 		if !ok || len(rest) != 0 {
-			return false
+			return nil, false
 		}
 		for len(list) > 0 {
 			var dp asn1.RawValue
 			var err error
 			if list, err = asn1.Unmarshal(list, &dp); err != nil || dp.Class != asn1.ClassUniversal || dp.Tag != asn1.TagSequence {
-				return false
+				return nil, false
 			}
 			// A point is read only if it is exactly [0] { [0] fullName }.
 			name, r, ok := derElem(dp.Bytes, asn1.ClassContextSpecific, 0, true)
@@ -102,14 +106,34 @@ func certNamesPoint(cert *x509.Certificate, uris []string) bool {
 			if !ok || len(r) != 0 {
 				continue
 			}
-			var rv asn1.RawValue
+			var uris []string
 			for len(full) > 0 {
+				var rv asn1.RawValue
 				if full, err = asn1.Unmarshal(full, &rv); err != nil {
 					break
 				}
-				if rv.Class == asn1.ClassContextSpecific && rv.Tag == 6 && !rv.IsCompound && slices.Contains(uris, string(rv.Bytes)) {
-					return true
+				if rv.Class == asn1.ClassContextSpecific && rv.Tag == 6 && !rv.IsCompound {
+					uris = append(uris, string(rv.Bytes))
 				}
+			}
+			if len(uris) > 0 {
+				out = append(out, uris)
+			}
+		}
+	}
+	return out, true
+}
+
+// certNamesPoint reports whether one of cert's plain CRL distribution points names one of uris, byte for byte.
+func certNamesPoint(cert *x509.Certificate, uris []string) bool {
+	points, ok := PlainDistributionPoints(cert)
+	if !ok {
+		return false
+	}
+	for _, p := range points {
+		for _, u := range p {
+			if slices.Contains(uris, u) {
+				return true
 			}
 		}
 	}

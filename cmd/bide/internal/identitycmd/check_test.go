@@ -2,6 +2,8 @@ package identitycmd
 
 import (
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/json"
 	"encoding/pem"
 	"os"
@@ -199,6 +201,74 @@ func TestDigestComparabilityThroughTheCommands(t *testing.T) {
 		t.Fatalf("status %d:\n%s", st, out)
 	}
 	if st, out, _ := e.run(e.checkArgs("-expect-digest", strings.Repeat("b", 64), "-fetch")...); st != 1 || !strings.Contains(out, "FAIL  params.digest") {
+		t.Fatalf("status %d:\n%s", st, out)
+	}
+}
+
+// idpOf is a critical issuing distribution point holding only the fullName of uri (what step-ca stamps).
+func idpOf(t *testing.T, uri string) pkix.Extension {
+	t.Helper()
+	enc := func(v asn1.RawValue) []byte {
+		b, err := asn1.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	name := enc(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 6, Bytes: []byte(uri)})
+	full := enc(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 0, IsCompound: true, Bytes: name})
+	point := enc(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 0, IsCompound: true, Bytes: full})
+	return pkix.Extension{Id: asn1.ObjectIdentifier{2, 5, 29, 28}, Critical: true,
+		Value: enc(asn1.RawValue{Class: asn1.ClassUniversal, Tag: asn1.TagSequence, IsCompound: true, Bytes: point})}
+}
+
+// publishScoped serves a CRL of the intermediate whose issuing distribution point names uri.
+func (e *env) publishScoped(uri string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.routes["/root.crl"] = e.root.NewCRL(e.t, testca.CRLOpts{Number: 1, ThisUpdate: e.base.Add(-time.Hour), NextUpdate: e.base.Add(48 * time.Hour)})
+	e.routes["/inter.crl"] = e.inter.NewCRL(e.t, testca.CRLOpts{Number: 1, ThisUpdate: e.base.Add(-time.Minute), NextUpdate: e.base.Add(time.Hour),
+		Extra: []pkix.Extension{idpOf(e.t, uri)}})
+}
+
+// A step-ca style CRL (an issuing distribution point naming the URL it is served at) is read by the command,
+// and the leaf must name that URL: one that does not is reported with the cause.
+func TestCheckCertificateAndAScopedCRL(t *testing.T) {
+	e := newEnv(t)
+	url := e.srv.URL + "/inter.crl"
+	e.publishScoped(url)
+	now := time.Now()
+	leaf := func(name string, points ...string) string {
+		l := e.inter.NewLeaf(t, testca.Opts{Key: testca.Ed25519, Mutate: func(c *x509Certificate) {
+			c.NotBefore, c.NotAfter, c.CRLDistributionPoints = now.Add(-time.Hour), now.Add(time.Hour), points
+		}})
+		p := filepath.Join(e.dir, name+".pem")
+		if err := os.WriteFile(p, pemChain(l.Chain()...), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	exp := e.expect()
+	st, out, errs := e.run(e.checkArgs("-expect", exp, "-fetch", "-cert", leaf("names", url))...)
+	if st != 0 || !strings.Contains(out, "OK    cert.cdp") || !strings.Contains(out, "OK    cert.status.count") {
+		t.Fatalf("a leaf that names the CRL's point: status %d\n%s\n%s", st, out, errs)
+	}
+	st, out, _ = e.run(e.checkArgs("-expect", exp, "-fetch", "-cert", leaf("none"))...)
+	if st != 1 || !strings.Contains(out, "FAIL  cert.cdp") || !strings.Contains(out, "FAIL  cert.status.count") {
+		t.Fatalf("a leaf without the point: status %d\n%s", st, out)
+	}
+	st, out, _ = e.run(e.checkArgs("-expect", exp, "-fetch", "-cert", leaf("two", url, "http://mirror.bank.example/other.crl"))...)
+	if st != 0 || !strings.Contains(out, "WARN  cert.cdp") {
+		t.Fatalf("a leaf with two different points: status %d\n%s", st, out)
+	}
+}
+
+// fetch-crl refuses a CRL whose issuing distribution point is not the URL it was fetched from.
+func TestFetchRefusesAnIDPThatIsNotItsSource(t *testing.T) {
+	e := newEnv(t)
+	e.publishScoped("http://elsewhere.bank.example/other.crl")
+	st, out, _ := e.run(append([]string{"fetch-crl", "-once"}, e.common()...)...)
+	if st != 1 || !strings.Contains(out, "unsupported-crl") || !strings.Contains(out, "elsewhere.bank.example") {
 		t.Fatalf("status %d:\n%s", st, out)
 	}
 }

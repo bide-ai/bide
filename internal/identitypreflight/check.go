@@ -480,6 +480,7 @@ func (s *run) certificate() error {
 		return nil
 	}
 	r.add("cert.chain", OK, "", "accepted for approver %q as %s; the verified path has %d certificate(s), the anchor included, and ends at the anchor with key %s", as, count.Identity, len(count.Chain), short32(count.Anchor))
+	s.cdpChecks(der)
 	if s.o.NoStatus || !s.haveCRL {
 		r.add("cert.status.count", Skip, "run again with -crl-dir or -fetch", "revocation status was not checked (-no-status), so whether the decision would count was not judged")
 		r.add("cert.status.exec", Skip, "run again with -crl-dir or -fetch", "revocation status was not checked (-no-status), so whether the call would run was not judged")

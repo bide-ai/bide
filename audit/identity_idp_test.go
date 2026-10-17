@@ -422,3 +422,34 @@ func TestIDPRefusesANulInTheURI(t *testing.T) {
 		t.Fatal("accepted")
 	}
 }
+
+// PlainDistributionPoints returns the URIs of each plain point in order, and leaves out a point with a
+// cRLIssuer or reasons and a name that is not a URI.
+func TestPlainDistributionPoints(t *testing.T) {
+	cdp := func(dps ...[]byte) func(*x509.Certificate) {
+		return func(c *x509.Certificate) {
+			var body []byte
+			for _, d := range dps {
+				body = append(body, d...)
+			}
+			c.ExtraExtensions = append(c.ExtraExtensions, pkix.Extension{Id: oidCDP,
+				Value: der(t, asn1.RawValue{Class: asn1.ClassUniversal, Tag: asn1.TagSequence, IsCompound: true, Bytes: body}, "")})
+		}
+	}
+	plain := func(us ...string) []byte {
+		var n []asn1.RawValue
+		for _, u := range us {
+			n = append(n, uriName(u))
+		}
+		return seq(t, dpName(t, fullName(t, n...)))
+	}
+	crlIssuer := asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 2, IsCompound: true, Bytes: der(t, uriName("http://other.example/ca"), "")}
+	s := newIDPFx(t, cdp(plain(urlA, urlB), seq(t, dpName(t, fullName(t, uriName(urlB))), crlIssuer), plain(urlB)))
+	got, ok := audit.PlainDistributionPoints(s.leaf.Cert)
+	if !ok || len(got) != 2 || len(got[0]) != 2 || got[0][0] != urlA || got[0][1] != urlB || len(got[1]) != 1 || got[1][0] != urlB {
+		t.Fatalf("points %v ok %v", got, ok)
+	}
+	if p, ok := audit.PlainDistributionPoints(newIDPFx(t, nil).leaf.Cert); !ok || len(p) != 0 {
+		t.Fatalf("a leaf without points: %v %v", p, ok)
+	}
+}
