@@ -150,6 +150,10 @@ type builderCore struct {
 	// notifier tells a notifier when a run needs a person (WithNotifier, WithLoadedNotifier). Like
 	// model it is a runtime binding, not part of Digest.
 	notifier agent.NotifierOption
+	// stop is the flow's kill switch (WithStopSwitch, WithLoadedStopSwitch): its runs are held, as a pause,
+	// where a stop covers the flow. A runtime binding, not part of the flow's Digest.
+	stop    *agent.StopSwitch
+	stopSet bool // WithStopSwitch was called (a nil switch is then ErrConfig)
 	// notify holds the per-journal notifiers of a built flow; Build makes it.
 	notify *flowNotify
 	// loops are the bounded loops Build derived from the LoopBack arms (see

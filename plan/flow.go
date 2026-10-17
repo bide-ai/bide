@@ -147,6 +147,15 @@ func (f *Flow[In, Out]) run(ctx context.Context, store *agent.Journal, runID str
 	if finished {
 		return decodeCompletion[Out](c.flowName, runID, done)
 	}
+	// The kill switch, at a drive's start: a covering global, flow or agent stop holds the run (a cached
+	// check). Each node is checked against it too (journalhook.Step).
+	if c.stop != nil {
+		ctx = journalhook.WithStop(ctx, c.flowName, c.stop)
+		id, _ := agent.IdentityFrom(ctx)
+		if h := c.stop.Hold(ctx, agent.RunRef{RunID: runID, RootRunID: runID}, agent.StopQuery{Flow: c.flowName, Agent: id.Actor}, false, false); h != nil {
+			return out, h
+		}
+	}
 
 	// Next Run records the frozen flow's topology digest, under the reserved step name
 	// flow:digest, so the audit layer's Merkle tree and signed tree head cover it (see Digest).

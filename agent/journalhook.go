@@ -9,6 +9,9 @@ import (
 )
 
 func init() {
+	journalhook.WithStop = func(ctx context.Context, flow string, sw any) context.Context {
+		return context.WithValue(ctx, stopFlowKey{}, &stopFlow{name: flow, sw: sw.(*StopSwitch)})
+	}
 	journalhook.Do = func(ctx context.Context, j any, runID, name string, fn func(context.Context) (any, error)) (any, error) {
 		return hookDo(ctx, j, runID, name, fn, false)
 	}
@@ -35,7 +38,27 @@ func init() {
 		// The flow's cancellation (D1) is read once the node will run: after a side-effect node's
 		// claim is won, before its call (rule 3), and before a retry-safe node's call. A node that
 		// finds the run cancelled does not run, and the flow returns ErrRunCancelled.
+		//
+		// The kill switch is checked at the same two places. A flow with a switch (the flow's
+		// WithStopSwitch) holds a node before its claim (a cached check) and, with the control run read
+		// now, after the claim and before its call, where a won claim is recorded as not started; a
+		// flow with none, on a store whose control run holds a record, is refused (ErrConfig).
+		sf := stopFlowFrom(ctx)
+		if sf == nil {
+			if err := controlRunGuardFor(ctx, d); err != nil {
+				return nil, err
+			}
+		}
+		ref := RunRef{RunID: runID, RootRunID: rootRunID(ctx, runID)}
+		if sf != nil {
+			if h := sf.hold(ctx, ref, !s.ReadOnly, false); h != nil {
+				return nil, h
+			}
+		}
 		cancelled := stepCancelCheck(func(ctx context.Context) error {
+			if h := sf.hold(ctx, ref, !s.ReadOnly, true); sf != nil && h != nil {
+				return h
+			}
 			if _, ok, err := d.Get(ctx, runID, runCancelledStep); err != nil || !ok {
 				return err
 			}

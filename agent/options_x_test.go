@@ -57,7 +57,7 @@ func TestOptionScopes_TypeChecked(t *testing.T) {
 			_ = []agent.RecoverOption{agent.WithReanchor(nil), agent.WithReanchorTimeout(1)}
 			_ = []agent.RecoverLoopOption{agent.WithReanchor(nil), agent.WithReanchorTimeout(1), agent.WithRecoverInterval(1)}`,
 		"agent-only options": `
-			_ = []agent.Option{agent.WithTools(), agent.WithMiddleware(), agent.WithToolMiddleware(), agent.WithApproverVerifiers(nil),
+			_ = []agent.Option{agent.WithTools(), agent.WithMiddleware(), agent.WithToolMiddleware(), agent.WithApproverVerifiers(nil), agent.WithStopSwitch(nil),
 				agent.WithToolErrorRedactor(nil), agent.WithRetrieval(nil, 1), agent.WithSystemPromptFunc(nil), agent.WithOptions()}`,
 		"options built conditionally": `
 			var opts []agent.Option
@@ -151,7 +151,7 @@ func TestOptionScopes_TypeChecked(t *testing.T) {
 		"WithNotifier":    "NotifierOption",
 		"WithSafety":      "SafetyOption",
 		"WithLeaseHolder": "LeaseControl", "WithLeaseTTL": "LeaseControl",
-		"WithTools": "Option", "WithMiddleware": "Option", "WithToolMiddleware": "Option", "WithApproverVerifiers": "Option",
+		"WithTools": "Option", "WithMiddleware": "Option", "WithToolMiddleware": "Option", "WithApproverVerifiers": "Option", "WithStopSwitch": "Option",
 		"WithToolErrorRedactor": "Option", "WithRetrieval": "Option", "WithSystemPromptFunc": "Option", "WithOptions": "Option",
 		"WithRecoverInterval": "RecoverLoopOption", "WithRecoverConcurrency": "RecoverLoopOption", "WithRecoverLapsedConcurrency": "RecoverLoopOption", "WithRecoverErrors": "RecoverLoopOption", "WithReanchor": "ReanchorOption", "WithReanchorTimeout": "ReanchorOption",
 		"WithMinHaltAge": "ResolveOption", "WithoutLiveDriverCheck": "ResolveOption", "WithEvidence": "ResolveOption",

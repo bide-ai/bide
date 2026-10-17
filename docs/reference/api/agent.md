@@ -2080,6 +2080,7 @@ Option configures an Agent: New applies options to a new agent, and With to a co
 - `func WithMiddleware(mw ...Middleware) Option`: WithMiddleware appends model-call middleware, after any the agent has; the first one added is the outermost.
 - `func WithOptions(opts ...Option) Option`: WithOptions groups options into one, applied in order where it appears.
 - `func WithRetrieval(r Retriever, k int, opts ...RetrievalOption) Option`: WithRetrieval adds classic retrieval-augmented generation: for each run, the agent retrieves the top-k documents for the run's user message, as a journaled engine step, and adds them to every model request of the run as a user message placed just before that user message (after the system prompt and any earlier turns).
+- `func WithStopSwitch(sw *StopSwitch) Option`: WithStopSwitch gives the agent a kill switch (see StopSwitch, and docs/design/kill-switch.md): its runs are held, as a pause (\*Stopped), where a stop covers them, before any side effect that has not begun.
 - `func WithSystemPromptFunc(fn func(ctx context.Context, run RunInfo) (string, error)) Option`: WithSystemPromptFunc sets a system message computed for each drive of a run (each Run, Stream or resume), from the run's context and its RunInfo, so it can carry dynamic context (the date, the tenant, state read from elsewhere).
 - `func WithToolErrorRedactor(fn func(tool string, err error) string) Option`: WithToolErrorRedactor sets the text recorded for a tool call that fails (see Agent.WithToolErrorRedactor for what it covers).
 - `func WithToolMiddleware(mw ...ToolMiddleware) Option`: WithToolMiddleware appends tool-call middleware, after any the agent has; the first one added is the outermost (see ToolMiddleware).
@@ -2160,7 +2161,7 @@ type Pause interface {
 }
 ```
 
-Pause is the error a run returns when it has stopped durably and is waiting on something outside it: a human's approval (\*ApprovalPending), an answer to an interrupt (\*InterruptPending), a signal or a channel message (\*SignalPending), a durable timer (\*TimerPending), or a verdict on a side effect whose outcome is unknown (\*OutcomeUnknown).
+Pause is the error a run returns when it has stopped durably and is waiting on something outside it: a human's approval (\*ApprovalPending), an answer to an interrupt (\*InterruptPending), a signal or a channel message (\*SignalPending), a durable timer (\*TimerPending), a kill switch that holds the run (\*Stopped), or a verdict on a side effect whose outcome is unknown (\*OutcomeUnknown).
 
 **Constructors and functions**
 
@@ -2371,6 +2372,20 @@ type RecoverOption interface {
 ```
 
 RecoverOption configures Recover.
+
+## type RecoverStopOption
+
+```go
+type RecoverStopOption struct {
+	// contains filtered or unexported fields
+}
+```
+
+RecoverStopOption is the option WithRecoverStop returns; it applies to Recover and RecoverLoop.
+
+**Constructors and functions**
+
+- `func WithRecoverStop(sw *StopSwitch) RecoverStopOption`: WithRecoverStop gives Recover and RecoverLoop the process's kill switch (see StopSwitch).
 
 ## type RedactState
 
@@ -3004,6 +3019,20 @@ type StopApprover struct {
 
 StopApprover is an enrolled approver in a StopPolicyDoc: the signature scheme and the public key.
 
+## type StopCause
+
+```go
+type StopCause string
+```
+
+StopCause says why a run was held by a stop (see Stopped).
+
+**Constants**
+
+- `const StopCauseStop StopCause = "stop"`: StopCauseStop: an active stop covers the run, the tool or the agent.
+- `const StopCauseUnreadable StopCause = "unreadable"`: StopCauseUnreadable: no stop is known, and the control run could not be read within the staleness bound, so a side-effect call is held (fail closed).
+- `const StopCauseUnknowable StopCause = "unknowable"`: StopCauseUnknowable: the stops cannot be judged (StopState.UnknowableErr), so a side-effect call a stop could cover is held (fail closed).
+
 ## type StopControl
 
 ```go
@@ -3229,7 +3258,7 @@ StopScopeKind says what a stop covers.
 - `const StopGlobal StopScopeKind = "global"`: StopGlobal covers every run.
 - `const StopTool StopScopeKind = "tool"`: StopTool covers the calls of the tool with exactly the scope's name.
 - `const StopFlow StopScopeKind = "flow"`: StopFlow covers the runs and nodes of the plan flow with exactly the scope's name.
-- `const StopAgent StopScopeKind = "agent"`: StopAgent covers the runs of the agent with exactly the scope's name.
+- `const StopAgent StopScopeKind = "agent"`: StopAgent covers the runs of the agent whose Identity.Actor is exactly the scope's name.
 
 ## type StopSigner
 
@@ -3272,6 +3301,41 @@ StopState is the effective state of the control run for one control.
 - `func (s StopState) Covering(q StopQuery) (StopEntry, bool)`: Covering returns the first active stop that covers q.
 - `func (s StopState) UnknowableErr() error`: UnknowableErr returns ErrStopsUnknowable when the control cannot judge which stops are in force (see the error).
 
+## type StopSwitch
+
+```go
+type StopSwitch struct {
+	// contains filtered or unexported fields
+}
+```
+
+StopSwitch is what an Agent consults (WithStopSwitch): a StopControl and the records it has read.
+
+**Constructors and functions**
+
+- `func NewStopSwitch(ctl *StopControl, opts ...StopSwitchOption) (*StopSwitch, error)`: NewStopSwitch returns a switch over ctl.
+
+**Methods**
+
+- `func (s *StopSwitch) GlobalStop(ctx context.Context) (StopEntry, bool)`: GlobalStop returns the active global stop, if there is one, from a cached read (a read when it is older than the poll interval): what a recovery pass asks, so that it lists nothing while everything is stopped.
+- `func (s *StopSwitch) Hold(ctx context.Context, ref RunRef, q StopQuery, sideEffect, sync bool) *Stopped`: Hold decides whether q is held, for run ref.
+
+## type StopSwitchOption
+
+```go
+type StopSwitchOption interface {
+	// contains filtered or unexported methods
+}
+```
+
+StopSwitchOption configures NewStopSwitch.
+
+**Constructors and functions**
+
+- `func WithStopErrors(fn func(error)) StopSwitchOption`: WithStopErrors sets the function a StopSwitch hands a failed read of the control run, and the alerts of a control that cannot judge the stops (StopState.ChainErr, Unverified in a basic control).
+- `func WithStopPoll(d time.Duration) StopSwitchOption`: WithStopPoll sets how often a StopSwitch reads the control run for the checks that use its cache (a drive's start, a turn's start, a call before its claim): the latency bound of a stop for them.
+- `func WithStopStaleness(d time.Duration) StopSwitchOption`: WithStopStaleness sets how old the last successful read may be for a side-effect call to run when the control run cannot be read now: past it the call is held (StopCauseUnreadable).
+
 ## type StopVerifierFunc
 
 ```go
@@ -3279,6 +3343,29 @@ type StopVerifierFunc func(alg Alg, publicKey []byte) (ApproverVerifier, error)
 ```
 
 StopVerifierFunc builds a verifier from a scheme and a public key, for the approvers of a policy a transition names (audit.NewVerifier has this form).
+
+## type Stopped
+
+```go
+type Stopped struct {
+	RunRef
+	Cause StopCause
+
+	StopID string
+	Scope  StopScope
+	Reason string
+	By     string
+	Since  string
+
+	Detail string
+}
+```
+
+Stopped is returned by a run that a kill switch held (see StopSwitch): a pause, not a failure.
+
+**Methods**
+
+- `func (e *Stopped) Error() string`: Error implements error.
 
 ## type Store
 

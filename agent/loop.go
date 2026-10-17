@@ -156,6 +156,16 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 		break
 	}
 	// protocol:lifecycle end
+	// The kill switch, at a drive's start: a run that is over is read back as it is, any other is held
+	// by a covering global or agent stop before it spends anything (a cached check; see StopSwitch).
+	if _, ended := firstEnd(recs); !ended {
+		if err := a.controlRunGuard(ctx); err != nil {
+			return Message{}, usageTotals{}, 0, err
+		}
+		if st := a.stopHold(ctx, runID, "", false, false); st != nil {
+			return Message{}, usageTotals{}, 0, st
+		}
+	}
 	seed := append(slices.Clip(d.seed), *d.input)
 
 	// The conversation without its system message, which is computed at the drive's first model
@@ -413,6 +423,11 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 					}
 					return a.leaveCancelled(ctx, runID, p, leave, &tot, liveTurns)
 				}
+			}
+			// The kill switch, at a turn's start: a stop that landed while the run was driving holds it
+			// before the model is asked again, so no new tool call is proposed (a cached check).
+			if st := a.stopHold(ctx, runID, "", false, false); st != nil {
+				return leave(st)
 			}
 			if p.maxTurns > 0 && modelSeq >= p.maxTurns {
 				return leave(fmt.Errorf("run %s: %w (%d turns)", runID, ErrMaxTurns, modelSeq))
@@ -794,6 +809,11 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 				if halted.Load() || cancelled.Load() {
 					return nil // not started: it runs when the resumed turn does
 				}
+				// The kill switch, before the claim: a covering stop holds the call with no marker
+				// written, so there is nothing to reconcile (a cached check).
+				if st := a.stopHold(gctx, runID, c.tu.Name, !c.spec.Safety.ReadOnly, false); st != nil {
+					return st
+				}
 				// protocol:delegation end
 				sctx := withOnceScope(gctx, SubRunID(runID, c.tu.ID))      // NextOnceKey's scope: the call's sub-run ID
 				sctx = withRunContext(sctx, a.store, runID, c.tu.ID, saga) // RunInfoFrom; lets the tool call Interrupt
@@ -813,18 +833,20 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 					called    atomic.Bool // the tool was called: its effect may have fired
 				)
 				if !c.spec.Safety.retriableOnResume() {
+					// protocol:stop begin Claim
 					won, got, key, err := claimNextAttempt(gctx, a.store, runID, toolAttemptStep(c.tu.ID),
 						Record{Kind: StepAttempt, ToolUseID: c.tu.ID, AttemptedAt: time.Now().UnixMilli()})
 					if err != nil {
 						return err
 					}
 					claimed, marker, markerKey = won, got, key
+					// protocol:stop end
 					if !won {
 						return toolHalt(runID, rootRunID(ctx, runID), c.tu.ID, c.tu.Name, markerTime(got.AttemptedAt), HaltContended)
 					}
 					// The claim is won: run:cancelled (a saga's rollback request) is read again before
 					// the call, and a cancelled run records the attempt as not started (rule 3, L2).
-					if stop, err := a.postClaim(gctx, runID, p, markerKey, marker); err != nil || stop {
+					if stop, err := a.postClaim(gctx, runID, p, markerKey, marker, c.tu.Name); err != nil || stop {
 						if stop {
 							cancelled.Store(true)
 						}
@@ -923,7 +945,9 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 						// pause ahead of it).
 						_, subHalt := errors.AsType[*OutcomeUnknown](callErr)
 						_, subApproval := errors.AsType[*ApprovalPending](callErr)
-						if subHalt || subApproval {
+						// So does a kill switch's hold (*Stopped), here or in a sub-run: the call did not begin.
+						_, subStop := errors.AsType[*Stopped](callErr)
+						if subHalt || subApproval || subStop {
 							return Record{}, callErr
 						}
 						paused := IsPause(callErr)

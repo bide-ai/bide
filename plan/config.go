@@ -272,6 +272,12 @@ func WithLoadedNotifier(n agent.Notifier, trail agent.NotifyTrail, opts ...agent
 	return func(c *builderCore) { c.notifier = agent.WithNotifier(n, trail, opts...) }
 }
 
+// WithLoadedStopSwitch binds a kill switch to a loaded flow: the loader's equivalent of
+// Builder.WithStopSwitch.
+func WithLoadedStopSwitch(sw *agent.StopSwitch) LoadOption {
+	return func(c *builderCore) { c.stop, c.stopSet = sw, true }
+}
+
 // LoadReader is Load reading the config from r (for example an *os.File or an HTTP
 // body). It reads r to EOF, then behaves exactly like Load.
 func LoadReader[In, Out any](r io.Reader, reg *Registry, opts ...LoadOption) (*Flow[In, Out], error) {

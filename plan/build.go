@@ -42,6 +42,9 @@ func (b *Builder[In, Out]) Build() (*Flow[In, Out], error) {
 
 	// A bound notifier is validated now, against a throwaway journal, so a nil notifier or trail or a
 	// bad option is an ErrConfig here and not a notifier that silently never runs.
+	if c.stopSet && c.stop == nil {
+		return nil, fmt.Errorf("plan: flow %q: WithStopSwitch: nil switch: %w", c.flowName, agent.ErrConfig)
+	}
 	if c.notifier != nil {
 		scratch, err := agent.NewJournal(agent.NewMemStore())
 		if err == nil {
@@ -642,6 +645,8 @@ func (c *builderCore) seal() *builderCore {
 		// and the approver verifiers, so Run can count an m-of-n gate's decisions
 		approverVerifiers: c.approverVerifiers,
 		notifier:          c.notifier,
+		stop:              c.stop,
+		stopSet:           c.stopSet,
 		notify:            &flowNotify{},
 		loops:             make([]loopSpec, len(c.loops)),
 	}

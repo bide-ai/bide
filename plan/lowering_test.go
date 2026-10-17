@@ -357,11 +357,12 @@ func TestLowering_NoHistoryReadsPerNode(t *testing.T) {
 				t.Fatalf("Run: %d, %v", out, err)
 			}
 			// The one Load is the journal's check that its header is the run's first entry, which
-			// every first drive of a new run makes (the budget agenttest holds the engine to). The
-			// point reads are flow:digest's and each node's memo, run:cancelled once each node will
+			// every first drive of a new run makes (the budget agenttest holds the engine to), and the third, the
+			// kill-switch guard's, cached per store for 5 s: it finds no control run and reads no entry (the
+			// replay below loads nothing). The point reads are flow:digest's and each node's memo, run:cancelled once each node will
 			// run (D1: the node's claim is won), and run:cancelled read back after run:complete.
-			if c := cs.Reset(); c.Load != 1 || c.Get != 2*n+2 {
-				t.Fatalf("a fresh drive of %d nodes loaded the run %d times and made %d point reads, want 1 and %d (%v)", n, c.Load, c.Get, 2*n+2, c.Names)
+			if c := cs.Reset(); c.Load != 2 || c.Get != 2*n+2 {
+				t.Fatalf("a fresh drive of %d nodes loaded the run %d times and made %d point reads, want 2 and %d (%v)", n, c.Load, c.Get, 2*n+2, c.Names)
 			}
 			if out, err := flow.Run(ctx, j, "r", 0); err != nil || out != n {
 				t.Fatalf("replay: %d, %v", out, err)

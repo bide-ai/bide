@@ -3110,8 +3110,8 @@ nothing in the model starts it again.
 - **Not modelled**: forks, rollbacks and competing roots of the policy chain (Go tests; each makes the stops unknowable), the "stops unknowable" signal for records that do not verify (a Go test), scope matching (a pure function, unit-tested), the reader's staleness bound in
   time (the model is the case of a maximum staleness of 0; the bound is an engineering figure of the
   Go code, and a bounded cache is covered by the Go tests when the switch lands), a split of the
-  lifters over different transition documents (a Go test), and the check points of the loop, which
-  land with their code.
+  lifters over different transition documents (a Go test), and the cached checks (a drive's start, a turn's start, a call before its
+  claim), which only add earlier holds.
 
 | Property | Kind | Statement |
 |---|---|---|
@@ -3129,13 +3129,16 @@ nothing in the model starts it again.
 
 ### Model-code map
 
-<!-- modelsync: no-code stop Claim ReadOk ReadFail Begin Finish Crash Refire Relift -->
+<!-- modelsync: no-code stop Finish Crash Refire Relift -->
 <!-- modelsync: map stop -->
 | Model action | Go code |
 |---|---|
 | `ApplyC`, `EffC` | `StopControl.State` (`agent/stop_control.go`): the fold, with `countLifts` (`Relift`) |
 | `Write` | `StopControl.write` (`agent/stop_control.go`): a record is appended to the control run |
-| `Claim`, `ReadOk`, `ReadFail`, `Begin`, `Finish`, `Crash`, `Refire` | no Go region yet (the check points land with the switch); `Refire` is a counterexample rule |
+| `Claim` | the claim of a call's attempt marker (`agent/loop.go`, `claimNextAttempt`): the stop check follows it |
+| `ReadOk`, `ReadFail` | the check after the claim and before the call begins: `StopSwitch.view` and `Hold` (`agent/stop_switch.go`), called from `postClaim` (`agent/endmarker.go`) and from the tool handler after the pre-execution gate (`agent/toolexec.go`); a failed read holds the call under the staleness bound |
+| `Begin` | the call begins (`beginCall`, `agent/toolexec.go`): a stop committed after the read leaves the call in flight |
+| `Finish`, `Crash`, `Refire` | no Go region (a call's end, a crash, and a counterexample rule) |
 | `Relift` | inside the fold: the lift rule is evaluated again under a new policy |
 
 ### Configurations

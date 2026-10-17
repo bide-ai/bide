@@ -175,6 +175,12 @@ func (a *Agent) rollbackCtx(ctx context.Context, d *driveSpec) context.Context {
 
 func (a *Agent) rollback(ctx context.Context, runID string, cause error, causeText string, cancel *cancelTrip) (Message, error) {
 	comp, uncomp, unknown, cerr := a.rollbackRun(ctx, runID, rootRunID(ctx, runID))
+	if st, held := errors.AsType[*Stopped](cerr); cerr != nil && held {
+		// A kill switch holds the rollback (a stop that blocks compensation, or one that cannot be
+		// judged): the run pauses, nothing is marked, and it is re-driven when the stop is lifted, which
+		// resumes the rollback where it stopped.
+		return Message{}, st
+	}
 	if cerr == nil {
 		// The rollback finished: the run is over. Mark it terminal so a recovery supervisor
 		// leaves it alone. A rollback that stopped (an unknown outcome, a failed compensator) is
@@ -442,7 +448,7 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 				spec := a.specs[tu.Name]
 				rec, ce := a.store.do(ctx, runID, ToolResultStep(tu.ID), func(ctx context.Context) (Record, error) {
 					live := &callUsage{} // the re-run's own call, from which it may resume its programmatic sub-runs
-					out, state, _, e := callTool(withCallUsage(withRunContext(ctx, a.store, runID, tu.ID, true), live), spec.Timeout, func(ctx context.Context) (json.RawMessage, int32, error) { return toolH(ctx, tu) })
+					out, state, _, e := callTool(withCallUsage(withRunContext(withCompensating(ctx), a.store, runID, tu.ID, true), live), spec.Timeout, func(ctx context.Context) (json.RawMessage, int32, error) { return toolH(ctx, tu) })
 					live.callReturned()
 					if e != nil {
 						return Record{}, e
@@ -506,6 +512,11 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 				args, _ = argsFor(recs, tu.ID)
 			}
 			if _, ce := a.store.do(ctx, runID, sagaCompensateStep(tu.ID), func(ctx context.Context) (Record, error) {
+				// The kill switch: a stop that blocks compensation holds the rollback here, before the
+				// compensation runs; it resumes when the stop is lifted (nothing is recorded).
+				if st := a.stopHold(withCompensating(ctx), runID, tu.Name, true, true); st != nil {
+					return Record{}, st
+				}
 				if e := comp.Compensate(ctx, args, res.Result); e != nil {
 					return Record{}, e
 				}

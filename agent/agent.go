@@ -78,6 +78,8 @@ type Agent struct {
 	toolErrRedact func(tool string, err error) string
 	// notify, if set, is told when a drive ends with a run that needs a person (see WithNotifier).
 	notify *notifyEngine
+	// stop, if set, is the agent's kill switch (see WithStopSwitch).
+	stop *StopSwitch
 }
 
 // systemMessage returns the system prompt for this drive of run: the dynamic function's if one

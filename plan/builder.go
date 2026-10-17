@@ -137,6 +137,19 @@ func (b *Builder[In, Out]) WithNotifier(n agent.Notifier, trail agent.NotifyTrai
 	return b
 }
 
+// WithStopSwitch gives the flow a kill switch (see agent.StopSwitch and docs/guides/kill-switch.md):
+// a run of the flow is held, as a pause (*agent.Stopped), at its start, and each node is held before
+// its claim and, with the control run read then, after the claim and before the node's body, where a
+// stop covers the flow (agent.StopFlow, by the flow's name), the agent that acts (an agent stop) or every
+// run (a global stop). A held node writes no attempt marker; a won claim is recorded as not started. A
+// flow with no switch, on a store whose control run holds a record, is refused (ErrConfig). It is a
+// runtime binding, not part of the flow's Digest. A nil switch is ErrConfig, reported by Build.
+func (b *Builder[In, Out]) WithStopSwitch(sw *agent.StopSwitch) *Builder[In, Out] {
+	b.core.stop = sw
+	b.core.stopSet = true
+	return b
+}
+
 // applyNodeOptions applies opts to n in order (a later option wins), then returns
 // n so a constructor can inline it into register. It is the single place both the
 // builder constructors and the registry share, so their Safety handling is identical.

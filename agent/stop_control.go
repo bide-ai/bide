@@ -284,6 +284,16 @@ func (s StopState) Covering(q StopQuery) (StopEntry, bool) {
 //     policy stays in force. Forks and competing roots make the stops unknowable too.
 //   - "mode" records are evidence of a change of mode and nothing else: the mode is configuration.
 func (c *StopControl) State(ctx context.Context) (StopState, error) {
+	recs, err := c.j.History(ctx, StopControlRun)
+	if err != nil {
+		return StopState{}, err
+	}
+	return c.stateOf(recs)
+}
+
+// stateOf folds recs, the control run's records in store order, as State does; a StopSwitch folds the
+// records it has read so far without reading them again.
+func (c *StopControl) stateOf(recs []Record) (StopState, error) {
 	audited := c.Mode() == StopAudited
 	var pin StopPolicy
 	if audited {
@@ -291,10 +301,6 @@ func (c *StopControl) State(ctx context.Context) (StopState, error) {
 			return StopState{}, err // the control's own policy changed under it
 		}
 		pin = *c.policy
-	}
-	recs, err := c.j.History(ctx, StopControlRun)
-	if err != nil {
-		return StopState{}, err
 	}
 	if c.mode == "" && len(recs) > 0 {
 		return StopState{}, fmt.Errorf("the control run holds records and this process has not declared its stop mode (WithStopMode): %w", ErrConfig)
