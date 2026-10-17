@@ -184,7 +184,7 @@ func TestWeakenedBannerInChrome(t *testing.T) {
 	git(t, dir, "add", "-A")
 	git(t, dir, "commit", "-q", "-m", "policy")
 	write(weaker)
-	s, err := New(p)
+	s, err := newServer(t, p)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -146,7 +146,7 @@ func TestUnifiedDiffAppliesBack(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, "d.patch"), []byte(d), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			cmd := exec.Command("git", "apply", "--unsafe-paths", "d.patch")
+			cmd := exec.Command("git", "-c", "core.autocrlf=false", "-c", "core.eol=lf", "apply", "--unsafe-paths", "d.patch")
 			cmd.Dir = dir
 			if out, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("case %d: git does not take the diff: %v\n%s\n%s", i, err, out, d)

@@ -507,7 +507,7 @@ func TestSaveGoesToTheDirectoryItWasStartedOn(t *testing.T) {
 	if err := os.WriteFile(p, []byte(weakFlow), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := New(p)
+	s, err := newServer(t, p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -567,7 +567,7 @@ func TestStartRemovesStaleTemporaryFiles(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, tempPrefix+"dir"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	s, err := New(p)
+	s, err := newServer(t, p)
 	if err != nil {
 		t.Fatal(err)
 	}

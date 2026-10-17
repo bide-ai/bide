@@ -46,11 +46,22 @@ func newTestServer(t *testing.T, name, text string) (*Server, string) {
 	if err := os.WriteFile(p, []byte(text), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := New(p)
+	s, err := newServer(t, p)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return s, p
+}
+
+// newServer is New for a test: the server's directory handle is closed when the test ends (Windows
+// cannot remove a directory that is open, so a test's TempDir cleanup would fail).
+func newServer(t *testing.T, path string, opts ...Option) (*Server, error) {
+	t.Helper()
+	s, err := New(path, opts...)
+	if err == nil {
+		t.Cleanup(func() { s.Close() })
+	}
+	return s, err
 }
 
 const host = "127.0.0.1:8484"
@@ -292,7 +303,7 @@ func TestNewRefusals(t *testing.T) {
 		"no suffix":        write("flow", testFlow),
 		"a file too large": write("big.yaml", "# "+strings.Repeat("a", MaxFileSize)+"\n"),
 	} {
-		if _, err := New(p); err == nil {
+		if _, err := newServer(t, p); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
 	}
@@ -302,7 +313,7 @@ func TestNewRefusals(t *testing.T) {
 		if err := os.Symlink(target, link); err != nil {
 			t.Fatal(err)
 		}
-		s, err := New(link)
+		s, err := newServer(t, link)
 		if err != nil {
 			t.Fatal(err)
 		}

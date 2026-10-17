@@ -88,7 +88,7 @@ func gitShow(dir, rev, name string) ([]byte, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, git, "show", rev+":./"+filepath.ToSlash(name))
+	cmd := exec.CommandContext(ctx, git, "-c", "core.autocrlf=false", "-c", "core.eol=lf", "show", rev+":./"+filepath.ToSlash(name))
 	cmd.Dir = dir
 	cmd.Env = append(cmd.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0")
 	var stderr bytes.Buffer

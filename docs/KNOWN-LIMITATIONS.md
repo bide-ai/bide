@@ -422,7 +422,7 @@ opened once at startup and every read and write goes through that handle, so a d
 link or another directory later cannot redirect a save. A file with other names (hard links) is refused on Unix, because the others
 would keep the old text, and a read-only file is refused; on Windows hard links are not counted. The
 owner and group are carried over where the user may set them; extended attributes, ACLs and SELinux labels
-are not carried over (there is no portable way to see them without a new dependency). A process killed
+are not carried over (there is no portable way to see them without a new dependency). On Windows the open directory handle (the price of the swap protection) stops anything from renaming or removing the config's directory while `bide edit` runs. A process killed
 between creating the temporary file and the rename leaves `.bide-edit-*` beside the config (mode 0600,
 the config's text); the next `bide edit` in that directory removes such files that are ours and older
 than ten minutes.

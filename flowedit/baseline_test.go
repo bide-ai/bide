@@ -173,7 +173,7 @@ func TestBaselineWithoutGit(t *testing.T) {
 
 func git(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false"}, args...)...)
+	cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false", "-c", "core.eol=lf", "-c", "core.safecrlf=false"}, args...)...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_SYSTEM="+os.DevNull)
 	out, err := cmd.CombinedOutput()
@@ -214,7 +214,7 @@ func TestBaselineFromGit(t *testing.T) {
 	}
 
 	// Default: the file at HEAD (need 1), so the working file (need 3) is stronger.
-	s, err := New(p)
+	s, err := newServer(t, p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +227,7 @@ func TestBaselineFromGit(t *testing.T) {
 	}
 	// -base: the first commit (need 2): need 3 is stronger there too; HEAD~1 is the same commit.
 	for _, rev := range []string{first, "HEAD~1"} {
-		s, err := New(p, WithBase(rev))
+		s, err := newServer(t, p, WithBase(rev))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -237,7 +237,7 @@ func TestBaselineFromGit(t *testing.T) {
 	}
 	// The committed policy is the baseline, not the previous save: editing the working file down
 	// to need 1 is weaker than the first commit.
-	s, err = New(p, WithBase(first))
+	s, err = newServer(t, p, WithBase(first))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,11 +255,11 @@ func TestBaselineFromGit(t *testing.T) {
 	if err := os.WriteFile(untracked, []byte(weakFlow), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if s, err := New(untracked); err != nil || s.baselineSource != "the file as it was when the editor opened it" {
+	if s, err := newServer(t, untracked); err != nil || s.baselineSource != "the file as it was when the editor opened it" {
 		t.Errorf("untracked file: %v %v", err, s)
 	}
 	for _, rev := range []string{"nosuchrev", "HEAD:flows/refund.yaml", "-x", "--output=/tmp/x", "a\nb"} {
-		if _, err := New(p, WithBase(rev)); err == nil {
+		if _, err := newServer(t, p, WithBase(rev)); err == nil {
 			t.Errorf("-base %q was accepted", rev)
 		}
 	}
@@ -269,14 +269,14 @@ func TestBaselineFromGit(t *testing.T) {
 		if err := os.Mkdir(trap, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := New(p, WithBase("--output=o")); err == nil {
+		if _, err := newServer(t, p, WithBase("--output=o")); err == nil {
 			t.Error("an option as a revision was accepted")
 		}
 		if _, err := os.Stat(filepath.Join(trap, "refund.yaml")); err == nil {
 			t.Error("git was run with an option taken from -base and wrote a file")
 		}
 	}
-	if _, err := New(untracked, WithBase("HEAD")); err == nil {
+	if _, err := newServer(t, untracked, WithBase("HEAD")); err == nil {
 		t.Error("-base for a file that is not in the revision was accepted")
 	}
 }
@@ -323,5 +323,32 @@ func TestBaselineSaysWhyGitWasNotUsed(t *testing.T) {
 		} else if s.BaselineNote() != "" || d.Weakening.Baseline != "the file as it was when the editor opened it" {
 			t.Errorf("%s: note %q, baseline %q", name, s.BaselineNote(), d.Weakening.Baseline)
 		}
+	}
+}
+
+// A bank's git settings cannot change the baseline's bytes: with core.autocrlf=true in the user's
+// global configuration (the Windows default) the committed file is still read as committed, LF.
+func TestBaselineIgnoresTheUsersLineEndingSettings(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	home := t.TempDir()
+	cfg := filepath.Join(home, "gitconfig")
+	if err := os.WriteFile(cfg, []byte("[core]\n\tautocrlf = true\n\teol = crlf\n[safe]\n\tdirectory = *\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	git(t, dir, "init", "-q")
+	p := filepath.Join(dir, "refund.yaml")
+	if err := os.WriteFile(p, []byte(weakFlow), 0o600); err != nil { // LF bytes
+		t.Fatal(err)
+	}
+	git(t, dir, "add", "-A")
+	git(t, dir, "commit", "-q", "-m", "policy")
+	t.Setenv("GIT_CONFIG_GLOBAL", cfg)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	got, err := gitShow(dir, "HEAD", "refund.yaml")
+	if err != nil || string(got) != weakFlow {
+		t.Errorf("the baseline read as %q (%v), want the committed bytes", got, err)
 	}
 }
