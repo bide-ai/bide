@@ -151,7 +151,7 @@ func (c *certGate) approver(id string) *audit.CertApprover {
 func (c *certGate) resolve(id string) (agent.ApproverVerifier, bool) {
 	switch id {
 	case "alice", "bob", "carol":
-		return c.approver(id), true
+		return agreeing{c.approver(id), c.t}, true
 	}
 	pub, ok := c.pubs[id]
 	if !ok {

@@ -73,7 +73,7 @@ func (c *certGate) at(d time.Duration) {
 
 func (c *certGate) execCheck() agent.CertCheck {
 	c.t.Helper()
-	return c.approver("alice").VerifyCertExec(c.execDecision("alice"))
+	return verifyExec(c.t, c.approver("alice"), c.execDecision("alice"))
 }
 
 // addCRLs publishes a CRL of the given number at 'later' for the intermediate (listing e, if any) and the
@@ -112,11 +112,11 @@ func TestVerifyCertExec_LeafTierUsesExecStatusAge(t *testing.T) {
 	a := c.approver("alice")
 	a.ExecStatusAge = time.Hour
 	a.StatusParams.CAPeriodFor[audit.SPKIHashOf(c.inter.Cert)] = 30 * time.Minute
-	if got := a.VerifyCertExec(c.execDecision("alice")); got.Reason != agent.ReasonStatusStale {
+	if got := verifyExec(c.t, a, c.execDecision("alice")); got.Reason != agent.ReasonStatusStale {
 		t.Fatalf("a 90 minute old CRL against ExecStatusAge one hour: %+v", got)
 	}
 	a.ExecStatusAge = 2 * time.Hour
-	if got := a.VerifyCertExec(c.execDecision("alice")); got.Reason != "" {
+	if got := verifyExec(c.t, a, c.execDecision("alice")); got.Reason != "" {
 		t.Fatalf("%+v", got)
 	}
 }
@@ -146,24 +146,24 @@ func TestVerifyCertExec_CATierUsesExecStatusAgeFor(t *testing.T) {
 	c.at(10 * time.Hour)
 	a := c.approver("alice")
 	a.ExecStatusAge = 11 * time.Hour
-	if got := a.VerifyCertExec(c.execDecision("alice")); got.Reason != "" {
+	if got := verifyExec(c.t, a, c.execDecision("alice")); got.Reason != "" {
 		t.Fatalf("root tier age 24h, root CRL 10h old: %+v", got)
 	}
 	a.ExecStatusAgeFor = map[audit.SPKIHash]time.Duration{rk: time.Hour}
-	got := a.VerifyCertExec(c.execDecision("alice"))
+	got := verifyExec(c.t, a, c.execDecision("alice"))
 	if got.Reason != agent.ReasonStatusStale || !strings.Contains(got.Detail, "certificate 1 of the chain") {
 		t.Fatalf("root tier age 1h, root CRL 10h old: %+v", got)
 	}
 	// The root's MaxStatusAgeFor (48 hours here) does not decide the execution check.
 	a.StatusParams.MaxStatusAgeFor = map[audit.SPKIHash]time.Duration{rk: 48 * time.Hour}
-	if got := a.VerifyCertExec(c.execDecision("alice")); got.Reason != agent.ReasonStatusStale {
+	if got := verifyExec(c.t, a, c.execDecision("alice")); got.Reason != agent.ReasonStatusStale {
 		t.Fatalf("MaxStatusAgeFor stretched the execution age: %+v", got)
 	}
 	// And the leaf tier is judged by ExecStatusAge, not by the root's age: one hour holds at certificate 0.
 	a.ExecStatusAgeFor = map[audit.SPKIHash]time.Duration{rk: 24 * time.Hour}
 	a.StatusParams.CAPeriodFor[audit.SPKIHashOf(c.inter.Cert)] = 30 * time.Minute
 	a.ExecStatusAge = time.Hour
-	if got := a.VerifyCertExec(c.execDecision("alice")); got.Reason != agent.ReasonStatusStale || !strings.Contains(got.Detail, "certificate 0 of the chain") {
+	if got := verifyExec(c.t, a, c.execDecision("alice")); got.Reason != agent.ReasonStatusStale || !strings.Contains(got.Detail, "certificate 0 of the chain") {
 		t.Fatalf("leaf tier age 1h: %+v", got)
 	}
 }
@@ -175,13 +175,13 @@ func TestVerifyCertExec_UndeclaredTierHolds(t *testing.T) {
 	c.at(5 * time.Minute)
 	a := c.approver("alice")
 	a.ExecStatusAgeFor = nil
-	got := a.VerifyCertExec(c.execDecision("alice"))
+	got := verifyExec(c.t, a, c.execDecision("alice"))
 	if got.Reason != agent.ReasonStatusUnknown || !strings.Contains(got.Detail, "ExecStatusAgeFor") || !strings.Contains(got.Detail, "position 1") {
 		t.Fatalf("%+v", got)
 	}
 	a = c.approver("alice")
 	a.ExecStatusAge = 0
-	if got := a.VerifyCertExec(c.execDecision("alice")); got.Reason != agent.ReasonStatusUnknown || !strings.Contains(got.Detail, "declares no ExecStatusAge,") {
+	if got := verifyExec(c.t, a, c.execDecision("alice")); got.Reason != agent.ReasonStatusUnknown || !strings.Contains(got.Detail, "declares no ExecStatusAge,") {
 		t.Fatalf("no ExecStatusAge: %+v", got)
 	}
 }
@@ -234,11 +234,11 @@ func TestVerifyCertExec_FailsClosed(t *testing.T) {
 	c.at(5 * time.Minute)
 	cd := c.execDecision("alice")
 	c.status = nil
-	if got := c.approver("alice").VerifyCertExec(cd); got.Reason != agent.ReasonStatusUnknown {
+	if got := verifyExec(c.t, c.approver("alice"), cd); got.Reason != agent.ReasonStatusUnknown {
 		t.Fatalf("no status: %+v", got)
 	}
 	c.status = audit.NewStatusSnapshot(audit.WithLimits(agent.MaxStatusInline, 1_000_000))
-	if got := c.approver("alice").VerifyCertExec(cd); got.Reason != agent.ReasonStatusUnknown {
+	if got := verifyExec(c.t, c.approver("alice"), cd); got.Reason != agent.ReasonStatusUnknown {
 		t.Fatalf("empty status: %+v", got)
 	}
 }
@@ -250,17 +250,17 @@ func TestVerifyCertExec_Clocks(t *testing.T) {
 	c.execNow, c.now = nil, nil
 	a := c.approver("alice")
 	a.ExecNow = nil
-	if got := a.VerifyCertExec(c.execDecision("alice")); got.Reason != agent.ReasonStatusStale {
+	if got := verifyExec(c.t, a, c.execDecision("alice")); got.Reason != agent.ReasonStatusStale {
 		t.Fatalf("wall clock: %+v", got)
 	}
 	// Now alone is the clock of the execution check when ExecNow is nil.
 	a.Now = func() time.Time { return c.crlsAt.Add(time.Minute) }
-	if got := a.VerifyCertExec(c.execDecision("alice")); got.Reason != "" {
+	if got := verifyExec(c.t, a, c.execDecision("alice")); got.Reason != "" {
 		t.Fatalf("Now: %+v", got)
 	}
 	// ExecNow overrides it.
 	a.ExecNow = func() time.Time { return c.crlsAt.Add(100 * time.Hour) }
-	if got := a.VerifyCertExec(c.execDecision("alice")); got.Reason != agent.ReasonStatusStale {
+	if got := verifyExec(c.t, a, c.execDecision("alice")); got.Reason != agent.ReasonStatusStale {
 		t.Fatalf("ExecNow: %+v", got)
 	}
 }
@@ -271,11 +271,11 @@ func TestVerifyCertExec_RechecksTheWholeDecision(t *testing.T) {
 	c.at(5 * time.Minute)
 	cd := c.execDecision("alice")
 	c.heads = nil
-	if got := c.approver("alice").VerifyCertExec(cd); got.Reason != agent.ReasonNoCoveringHead {
+	if got := verifyExec(c.t, c.approver("alice"), cd); got.Reason != agent.ReasonNoCoveringHead {
 		t.Fatalf("%+v", got)
 	}
 	var none *audit.CertApprover
-	if got := none.VerifyCertExec(cd); got.Reason != agent.ReasonNoKey {
+	if got := verifyExec(c.t, none, cd); got.Reason != agent.ReasonNoKey {
 		t.Fatalf("nil verifier: %+v", got)
 	}
 }
@@ -467,7 +467,7 @@ func TestVerifyCertExec_TierIsThePositionInTheChain(t *testing.T) {
 	// And with interX's tier age under its CRL's age, bob is held at certificate 1, the position of interX.
 	b := approver("bob")
 	b.ExecStatusAgeFor[audit.SPKIHashOf(c.inter.Cert)] = time.Hour
-	got = b.VerifyCertExec(c.execDecision("bob"))
+	got = verifyExec(c.t, b, c.execDecision("bob"))
 	if got.Reason != agent.ReasonStatusStale || !strings.Contains(got.Detail, "certificate 1 of the chain") {
 		t.Fatalf("bob with a one hour tier: %+v", got)
 	}
@@ -480,7 +480,7 @@ func TestVerifyCertExec_UndeclaredMiddleCAHolds(t *testing.T) {
 	c.at(5 * time.Minute)
 	a := c.approver("alice")
 	delete(a.ExecStatusAgeFor, audit.SPKIHashOf(c.root.Cert))
-	got := a.VerifyCertExec(c.execDecision("alice"))
+	got := verifyExec(c.t, a, c.execDecision("alice"))
 	if got.Reason != agent.ReasonStatusUnknown || !strings.Contains(got.Detail, "ExecStatusAgeFor") || !strings.Contains(got.Detail, "position 1") {
 		t.Fatalf("%+v", got)
 	}
@@ -495,17 +495,17 @@ func TestVerifyCertExec_LeafIssuerPeriodMustFit(t *testing.T) {
 	a := c.approver("alice")
 	a.ExecStatusAge = 2 * time.Hour
 	a.StatusParams.CAPeriodFor[ik] = time.Hour
-	if got := a.VerifyCertExec(c.execDecision("alice")); got.Reason != "" {
+	if got := verifyExec(c.t, a, c.execDecision("alice")); got.Reason != "" {
 		t.Fatalf("period = ExecStatusAge/2: %+v", got)
 	}
 	a.StatusParams.CAPeriodFor[ik] = time.Hour + time.Nanosecond
-	if got := a.VerifyCertExec(c.execDecision("alice")); got.Reason != agent.ReasonStatusUnknown || !strings.Contains(got.Detail, "ExecStatusAge/2") {
+	if got := verifyExec(c.t, a, c.execDecision("alice")); got.Reason != agent.ReasonStatusUnknown || !strings.Contains(got.Detail, "ExecStatusAge/2") {
 		t.Fatalf("period above ExecStatusAge/2: %+v", got)
 	}
 	// With no per-issuer period the default applies.
 	delete(a.StatusParams.CAPeriodFor, ik)
 	a.StatusParams.CAPeriod = time.Hour + time.Nanosecond
-	if got := a.VerifyCertExec(c.execDecision("alice")); got.Reason != agent.ReasonStatusUnknown {
+	if got := verifyExec(c.t, a, c.execDecision("alice")); got.Reason != agent.ReasonStatusUnknown {
 		t.Fatalf("default period above ExecStatusAge/2: %+v", got)
 	}
 }
@@ -552,7 +552,7 @@ func TestVerifyCertExec_AcceptsStatusIssuedBeforeTheDecision(t *testing.T) {
 	// The count's own parameters do not set CountLive here: the execution check does.
 	a := c.approver("alice")
 	a.StatusParams.CountLive = false
-	got := a.VerifyCertExec(c.execDecision("alice"))
+	got := verifyExec(c.t, a, c.execDecision("alice"))
 	if got.Reason != "" || got.Tier != "provisional" {
 		t.Fatalf("%+v", got)
 	}

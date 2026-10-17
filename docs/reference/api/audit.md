@@ -482,6 +482,7 @@ CertApprover is the verifier of a certificate-bound approver (docs/design/approv
 
 - `func (*CertApprover) Alg() agent.Alg`: Alg reports agent.AlgCertificate: the scheme is the leaf key's, known only from the certificate.
 - `func (c *CertApprover) ArchiveStatus(ctx context.Context, hash string, der []byte) error`: ArchiveStatus implements agent.StatusArchiver with the verifier's StatusArchive, if any.
+- `func (c *CertApprover) CheckCertificate(chain [][]byte, decidedAt, anchoredAt time.Time, mode CheckMode) agent.CertCheck`: CheckCertificate is the part of the verifier that needs no journal, signature or signed head: whether the chain is accepted for this approver (CertIdentity.VerifyChain) and what the status rule makes of it, for a decision signed at decidedAt that became provable at anchoredAt, judged by the count rule or the pre-execution rule.
 - `func (c *CertApprover) DescribeIdentity() agent.IdentityPolicyRecord`: DescribeIdentity implements agent.IdentityDescriber: the certificate policy and status values in force, every one that reaches a verdict, as the identity record keeps them (defaults filled in).
 - `func (c *CertApprover) HasIdentity(approverID string) bool`: HasIdentity implements agent.IdentityRoster: whether the policy's identity map names the approver id.
 - `func (c *CertApprover) Identifier(approverID string) (string, bool)`: Identifier implements agent.IdentityRoster: the canonical identifier the policy gives the approver id.
@@ -605,6 +606,19 @@ ChainStatus is the finding for every non-anchor certificate of an accepted chain
 
 - `func (cs ChainStatus) Err() error`: Err is nil when the chain has usable status and no revocation (a provisional or live-count finding included: check IsFinal before calling a decision verified).
 - `func (cs ChainStatus) IsFinal() bool`: IsFinal reports whether every certificate of the chain is final and none is revoked.
+
+## type CheckMode
+
+```go
+type CheckMode int
+```
+
+CheckMode is the counting rule a CheckCertificate verdict is judged by.
+
+**Constants**
+
+- `const CheckCount CheckMode`: CheckCount judges as the gate does when it counts a decision: status no older than MaxStatusAge (and MaxStatusAgeFor).
+- `const CheckExec CheckMode`: CheckExec judges as the gate does immediately before the call runs: ExecStatusAge for the leaf's issuing CA and ExecStatusAgeFor for each CA tier above it.
 
 ## type Consistency
 
