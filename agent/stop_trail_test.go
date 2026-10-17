@@ -258,3 +258,59 @@ func TestDiffStopRecords_IsLinear(t *testing.T) {
 		t.Fatalf("%d %d in %v", len(only), len(trOnly), time.Since(start))
 	}
 }
+
+// Controls racing on one trail, writing different kinds of records at once (new stops, and lifts of a stop by
+// the three lifters), leave a trail whose fold equals the control run's: the same stops in force, the lifts
+// counted the same, nothing rejected, nothing missing either way.
+func TestStopTrail_RacingControlsLeaveAgreeingFolds(t *testing.T) {
+	ctx := context.Background()
+	for round := range 5 {
+		tr := NewMemStopTrail()
+		store := NewMemStore()
+		p := auditedPolicy(2, false)
+		first := trailed(t, store, tr, p)
+		target, err := first.SetStop(ctx, StopRequest{Scope: StopScope{Kind: StopTool, Name: "target"}, By: "ops1", Signer: sign("ops1")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		for i, by := range []string{"ops1", "ops2", "risk"} {
+			wg.Go(func() {
+				c := trailed(t, store, tr, p)
+				if _, err := c.LiftStop(ctx, target.ID, LiftRequest{By: by, Signer: sign(by)}); err != nil {
+					t.Error(err)
+				}
+			})
+			wg.Go(func() {
+				c := trailed(t, store, tr, p)
+				if _, err := c.SetStop(ctx, StopRequest{Scope: StopScope{Kind: StopTool, Name: string(rune('a' + i + 3*round))}, By: "ops2", Signer: sign("ops2")}); err != nil {
+					t.Error(err)
+				}
+			})
+		}
+		wg.Wait()
+		c := trailed(t, store, tr, p)
+		recs, _ := c.StopRecords(ctx)
+		have, _ := tr.Load(ctx, StopTrailName)
+		only, trOnly := DiffStopRecords(recs, have)
+		if len(only) != 0 || len(trOnly) != 0 {
+			t.Fatalf("round %d: store-only %d, trail-only %d", round, len(only), len(trOnly))
+		}
+		got, err := VerifyStopRecords(have, WithStopPolicy(p), WithStopVerifier(fakeNV))
+		want := mustState(t, c)
+		if err != nil || got.RejectedTotal != 0 || len(got.Stops) != len(want.Stops) || len(got.Active()) != len(want.Active()) {
+			t.Fatalf("round %d: the trail's fold %+v %v differs from the control run's %+v", round, got, err, want)
+		}
+		// Independent stops may sit in a different order on the trail than in the control run (two controls
+		// race on both), so the stops are compared by ID.
+		lifted := map[string]bool{}
+		for _, s := range want.Stops {
+			lifted[s.ID] = s.Lifted
+		}
+		for _, s := range got.Stops {
+			if l, ok := lifted[s.ID]; !ok || l != s.Lifted {
+				t.Fatalf("round %d: stop %.12s differs: trail lifted %v, control %v (known %v)", round, s.ID, s.Lifted, l, ok)
+			}
+		}
+	}
+}
