@@ -28,12 +28,14 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `const TierIndependentFinal = "independent-final"`, `const TierLogclockFinal = "logclock-final"`, `const TierProvisional = "provisional"`: Identity tiers (IdentityDecision.Tier).
 - `const BasisAtOrAfterDecision = "at-or-after-decision"`, `const BasisLiveBeforeDecision = "live-before-decision"`: Status bases (IdentityDecision.BasisKind).
 - `const TimeSourceLogSignerClock = "log-signer-clock"`, `const TimeSourceRFC3161 = "rfc3161"`, `const TimeSourceAnchorReceipt = "anchor-receipt"`: Time sources (IdentityDecision.TimeSource).
+- `const CompensationAllow = "allow"`, `const CompensationBlock = "block"`: Compensation says whether a stop also holds the compensation (the rollback) of the calls it covers.
 - `const DecisionFormat = "bide.approval.v3"`: DecisionFormat names the signed decision format this version writes and accepts: the domain tag of ApprovalDecisionBytes without its newline.
 - `const DecisionFormatCert = "bide.approval.v4"`: DecisionFormatCert names the signed decision format of a certificate-bound approver: the v3 layout plus the SHA-256 of the signer's leaf certificate (ApprovalDecisionBytesCert).
 - `const DefaultReceiver = "default"`: DefaultReceiver is the name of the receiver WithNotifier's Notifier is, in Notification.Receiver and in WithNotifyRoute, WithNotifyApproverRoute and EscalationStep.
 - `const ExpiredResult`: ExpiredResult is the result an agent's model reads for a call whose approval gate expired: an error result, as for a denial.
 - `const JournalFormat = "bide.journal.v1-dev"`: JournalFormat is the journal format this version writes: the format every run's header names (see StepHeader).
 - `const MaxEscalationSteps = maxEscalationSteps`: MaxEscalationSteps is the most steps an escalation chain may have.
+- `const MaxStopReason = 1024`: MaxStopReason bounds the reason of a stop, a lift or a mode change, in bytes.
 - `const NotifyDigestTrail = "notify:@digest"`: NotifyDigestTrail is the name of the trail the periodic digest uses; it belongs to no run.
 - `const NotifyOpenTrail = "notify:@open"`: NotifyOpenTrail is the prefix of the trail that lists the events whose all-clear may still be owed: a watch record before an outcome\_unknown, approval\_pending or recovery\_failing event is observed, an unwatch record when nothing more is owed for it.
 - `const OpenFirstYear = 2026`: OpenFirstYear is the first year an open-trail index can exist: the year the open trail began.
@@ -44,6 +46,8 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `const PendingSoDReapproval`: PendingSoDReapproval is ApprovalPending.Reason for a gate whose recorded tally passed without excluding the requester (ApprovalPolicy.ExcludePrincipal) while its policy now excludes it: the call did not run, and it runs once enough approvers who are not requesters have decided.
 - `const ReanchorMinInterval = 10 * time.Second`: ReanchorMinInterval is the least time between two forced heads of one run: anchoring signs with the log key, which may be an HSM or KMS key with quotas and cost, so the gate rate-limits it.
 - `const SaltSize = 32`: SaltSize is the length of Record.Salt: 32 bytes (256 bits) from crypto/rand.
+- `const StopControlRun = "@stop"`: StopControlRun is the run ID of the control run: the journal run in which a store holds the stop, lift and mode records.
+- `const StopFormat = "bide.stop/1"`: StopFormat names the format of a stop record.
 
 **Variables**
 
@@ -81,6 +85,7 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `var ErrAlreadyResolved`: ErrAlreadyResolved is the condition of a resolution refused because the operation already has a different recorded outcome (see HaltAlreadyResolved).
 - `var ErrApprovalExpired = errors.New("approval expired")`: ErrApprovalExpired is returned (wrapped) when an approval gate's deadline has passed: by Approve and SubmitDecision for a decision on such a gate (also ErrConfig: nothing is recorded), and by a plan flow for a node whose gate expired (also plan.ErrApprovalDenied).
 - `var ErrGateNeedsNewRun = errors.New("the gate needs a new run")`: ErrGateNeedsNewRun is wrapped (with ErrConfig) by the error of a certificate-bound gate that cannot go on in place: its recorded count passed without excluding the requester and the policy now excludes them, so no re-ask can be named.
+- `var ErrInvalidStop = errors.New("agent: invalid stop record")`: ErrInvalidStop marks a stop record that is malformed, or that no policy in force authorises.
 - `var ErrJournalVersion`: ErrJournalVersion is a run whose journal this version cannot read or write: its header names a journal format this version does not support, or the journal has no header first (written before the header existed, or by something other than a Journal).
 - `var ErrLeaseLost = errors.New("run lease lost")`: ErrLeaseLost ends a drive whose run lease was lost while it ran: the store reported the lease no longer held (it lapsed and another process took it), or no renewal succeeded before the renewal cutoff (see Lease).
 - `var ErrNoLiveAttempt`: ErrNoLiveAttempt is the condition of a resolution refused because the operation named has no live attempt marker: it never halted (it was never attempted, or its only attempts are recorded as not started and are re-attempted by the next drive).
@@ -89,6 +94,7 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `var ErrNotifyPermanent`: ErrNotifyPermanent marks a Notifier error as one a retry within the round cannot fix.
 - `var ErrRunCancelled = errors.New("run cancelled")`: ErrRunCancelled is the end of a run that was cancelled (see Cancel): the first of the run's end markers in journal order is run:cancelled.
 - `var ErrRunEnded = errors.New("run already ended")`: ErrRunEnded is Cancel's answer for a run that is already over: its first end marker is run:complete or run:aborted, so there is nothing left to cancel.
+- `var ErrStopRejected`: ErrStopRejected is returned when a record was written but the control run's fold does not accept it (a policy transition raced it, or its signature does not verify under the policy in force at its position): it has no effect.
 - `var ErrToolNotCalled = errors.New("tool not called")`: ErrToolNotCalled marks a tool call that is known never to have reached its tool, so its side effect cannot have happened.
 - `var ErrTrailConflict`: ErrTrailConflict is returned by NotifyTrail.Append when the position is already taken by a different record: another process won the append.
 - `var ErrTurnContended`: ErrTurnContended is returned by a Session's Send, SendOnce, Send and SendOnce when another driver holds the lease on the turn's run (see Session): another worker, or, while a cancelled saga turn's rollback is in progress, another caller on the same session handle (see Session.Send).
@@ -180,6 +186,10 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `func SameNotifyRecord(a, b NotifyRecord) bool`: SameNotifyRecord reports whether a and b are the same record: the same canonical JSON, so times compare by instant and not by location or monotonic clock reading.
 - `func Sleep(ctx context.Context, name string, d time.Duration) error`: Sleep pauses the current run until d has elapsed from the FIRST time this timer was reached, durably.
 - `func SplitToKey(key string) (receiver, base string, ok bool)`: SplitToKey splits the key of a fan-out delivery, "to:&lt;receiver&gt;:&lt;key&gt;" (see ToKey), into the receiver and the key of the event it delivers.
+- `func StopDigest(r StopRecord) string`: StopDigest returns the hex SHA-256 of the canonical bytes of the whole record r, signature included: what a lift's SetDigest names.
+- `func StopIDOf(r StopRecord) string`: StopIDOf returns the ID of the stop a set record makes: the hex SHA-256 of its canonical bytes without StopID and Signature.
+- `func StopPolicyDigest(d StopPolicyDoc) string`: StopPolicyDigest returns the hex SHA-256 of the canonical bytes of a policy document.
+- `func StopSigningBytes(r StopRecord) []byte`: StopSigningBytes returns the bytes a signature of r covers: the label, the record's kind and its canonical body (StopID included, Signature excluded).
 - `func SubRunID(parent, toolUseID string) string`: SubRunID returns the run ID of the sub-agent run that the call toolUseID of run parent starts: parent, '&gt;', then toolUseID encoded (see encodeID).
 - `func SubmitDecision(ctx context.Context, store *Journal, d Decision, opts ...ApproveOption) error`: SubmitDecision records d, one approver's signed decision on an m-of-n gated call.
 - `func SupersededTallies(byName map[string]Record, outcome string) []string`: SupersededTallies returns the names of the tallies that outcome, the gate's outcome (as RecordedTally returns it, among byName) supersedes, oldest first: the tally its Supersedes names, and that one's, and so on.
@@ -1376,6 +1386,18 @@ type Leaser interface {
 
 Leaser is the optional capability that coordinates driving a run across processes.
 
+## type LiftRequest
+
+```go
+type LiftRequest struct {
+	Reason   string
+	By, Host string
+	Signer   StopSigner
+}
+```
+
+LiftRequest is what LiftStop takes: one lifter's approval.
+
 ## type Lister
 
 ```go
@@ -1481,6 +1503,19 @@ type Middleware func(next ModelHandler) ModelHandler
 ```
 
 Middleware wraps a ModelHandler: the net/http-style func(Handler) Handler chain, at the semantic layer (it sees messages, tool calls and token usage, not bytes).
+
+## type ModeRequest
+
+```go
+type ModeRequest struct {
+	To       StopMode
+	Reason   string
+	By, Host string
+	Signer   StopSigner
+}
+```
+
+ModeRequest is what ChangeMode takes: one signer's evidence record of a change of mode.
 
 ## type Model
 
@@ -2419,6 +2454,14 @@ type Redactor interface {
 
 Redactor is the optional store capability that replaces one entry's bytes with a redaction tombstone (see Record.Redacted).
 
+## type Rejection
+
+```go
+type Rejection struct{ Name, Reason string }
+```
+
+Rejection is a record in the control run that has no effect, and why.
+
 ## type Request
 
 ```go
@@ -2948,6 +2991,277 @@ type StepOption interface {
 ```
 
 StepOption configures Step.
+
+## type StopApprover
+
+```go
+type StopApprover struct {
+	Alg Alg    `json:"alg"`
+	Key string `json:"key"`
+}
+```
+
+StopApprover is an enrolled approver in a StopPolicyDoc: the signature scheme and the public key.
+
+## type StopControl
+
+```go
+type StopControl struct {
+	// contains filtered or unexported fields
+}
+```
+
+StopControl reads and writes the control run: the stops, lifts, mode and policy records of a deployment.
+
+**Constructors and functions**
+
+- `func NewStopControl(j *Journal, opts ...StopOption) (*StopControl, error)`: NewStopControl returns the control over j's store.
+
+**Methods**
+
+- `func (c *StopControl) ChangeMode(ctx context.Context, req ModeRequest) (StopState, error)`: ChangeMode records that the deployment changed mode: evidence for history and the audit trail, which changes nothing a process does (the mode is each process's configuration, rolled out by the operator).
+- `func (c *StopControl) LiftStop(ctx context.Context, id string, req LiftRequest) (StopEntry, error)`: LiftStop adds one lifter's approval of lifting stop id and returns the stop as State then reports it (Lifted when the rule is met, else LiftsHeld of LiftsNeeded).
+- `func (c *StopControl) Mode() StopMode`: Mode is the mode the control runs under: audited with a policy, else basic.
+- `func (c *StopControl) RotatePolicy(ctx context.Context, next StopPolicy, req LiftRequest) (StopState, error)`: RotatePolicy adds one lifter's approval of replacing the policy in force with next, and returns the state afterwards (PolicySeq has advanced once a quorum of the policy in force has approved the same document).
+- `func (c *StopControl) SetStop(ctx context.Context, req StopRequest) (StopEntry, error)`: SetStop sets a stop and returns it as State reports it.
+- `func (c *StopControl) State(ctx context.Context) (StopState, error)`: State folds the control run into the effective state.
+
+## type StopEntry
+
+```go
+type StopEntry struct {
+	ID           string
+	Scope        StopScope
+	Reason       string
+	Compensation string
+	By, Host, At string
+
+	Signed bool
+
+	Lifted bool
+
+	LiftedBy               []string
+	LiftsHeld, LiftsNeeded int
+	// contains filtered or unexported fields
+}
+```
+
+StopEntry is one stop as State reports it.
+
+**Methods**
+
+- `func (s StopEntry) Covers(q StopQuery) bool`: Covers reports whether s covers q: a global stop covers everything; a tool, flow or agent stop covers a query that names exactly its name.
+
+## type StopMode
+
+```go
+type StopMode string
+```
+
+StopMode is the mode a deployment's stops run under: StopBasic (the default) or StopAudited.
+
+**Constants**
+
+- `const StopBasic StopMode = "basic"`: StopBasic needs no keys: anyone who can write the store sets and lifts a stop, and the records are plain and unsigned.
+- `const StopAudited StopMode = "audited"`: StopAudited signs every record with an enrolled key, lifts by a quorum and records to an anchored trail (package audit).
+
+## type StopOption
+
+```go
+type StopOption interface {
+	// contains filtered or unexported methods
+}
+```
+
+StopOption configures NewStopControl.
+
+**Constructors and functions**
+
+- `func WithStopClock(now func() time.Time) StopOption`: WithStopClock sets the clock that stamps a record's At (default time.Now).
+- `func WithStopPolicy(p StopPolicy) StopOption`: WithStopPolicy gives the control the audited-mode policy and so makes it audited: the mode is the process's own configuration, not something the store says.
+- `func WithStopVerifier(nv StopVerifierFunc) StopOption`: WithStopVerifier gives the control the means to build the verifiers of a policy a transition carries (audit.NewVerifier).
+
+## type StopPolicy
+
+```go
+type StopPolicy struct {
+	Setters []string
+	Lifters []string
+
+	Verifiers ApproverVerifierFor
+
+	LiftQuorum int
+
+	LiftNeedsOther bool
+}
+```
+
+StopPolicy is who may set and lift stops in audited mode: the enrolled setters and lifters (by approver id), how to verify an id's signatures, and the lift rule.
+
+**Constructors and functions**
+
+- `func PolicyFromDoc(d StopPolicyDoc, nv StopVerifierFunc) (StopPolicy, error)`: PolicyFromDoc builds the policy a transition names, with verifiers made by nv, and validates it.
+
+**Methods**
+
+- `func (p StopPolicy) Digest() string`: Digest returns the digest of the policy's document; "" for a policy that does not validate.
+- `func (p StopPolicy) Doc() (StopPolicyDoc, error)`: Doc returns the policy as a transition carries it; it fails as Validate does.
+- `func (p StopPolicy) Validate() error`: Validate reports whether the policy is well formed and can be satisfied: a verifier for every enrolled id that exposes its public key, one seat per signing key (two ids never share a key identity), at least LiftQuorum lifters, and, with LiftNeedsOther, a lifter other than the setter of any stop.
+
+## type StopPolicyDoc
+
+```go
+type StopPolicyDoc struct {
+	Approvers      map[string]StopApprover `json:"approvers"`
+	Setters        []string                `json:"setters"`
+	Lifters        []string                `json:"lifters"`
+	LiftQuorum     int                     `json:"lift_quorum"`
+	LiftNeedsOther bool                    `json:"lift_needs_other"`
+}
+```
+
+StopPolicyDoc is a stop policy as the control run carries it in a policy transition: the enrolled approvers with their public keys, the roles, and the lift rule.
+
+## type StopQuery
+
+```go
+type StopQuery struct {
+	Tool, Flow, Agent string
+	Compensation      bool
+}
+```
+
+StopQuery is what a check point asks: which stop, if any, covers this.
+
+## type StopRecord
+
+```go
+type StopRecord struct {
+	Format string `json:"format"`
+	Kind   string `json:"kind"`
+
+	Mode StopMode `json:"mode"`
+
+	StopID string `json:"stop_id,omitempty"`
+
+	SetDigest    string     `json:"set_digest,omitempty"`
+	Scope        *StopScope `json:"scope,omitempty"`
+	Compensation string     `json:"compensation,omitempty"`
+
+	To  StopMode `json:"to,omitempty"`
+	Seq int      `json:"seq,omitempty"`
+
+	Policy     *StopPolicyDoc `json:"policy,omitempty"`
+	PrevDigest string         `json:"prev_digest,omitempty"`
+
+	Reason string `json:"reason,omitempty"`
+
+	At string `json:"at"`
+
+	By   string `json:"by"`
+	Host string `json:"host,omitempty"`
+
+	PolicyDigest string `json:"policy_digest,omitempty"`
+	Alg          Alg    `json:"alg,omitempty"`
+
+	Signature string `json:"signature,omitempty"`
+}
+```
+
+StopRecord is one record of the control run.
+
+**Methods**
+
+- `func (r StopRecord) Signed() bool`: Signed reports whether r carries a signature.
+
+## type StopRequest
+
+```go
+type StopRequest struct {
+	Scope        StopScope
+	Reason       string
+	Compensation string
+	By, Host     string
+	Signer       StopSigner
+}
+```
+
+StopRequest is what SetStop takes.
+
+## type StopScope
+
+```go
+type StopScope struct {
+	Kind StopScopeKind `json:"kind"`
+	Name string        `json:"name,omitempty"`
+}
+```
+
+StopScope is what a stop covers: a kind and, except for StopGlobal, an exact name.
+
+**Methods**
+
+- `func (s StopScope) String() string`: String is the scope as a person reads it: "global", "tool refund".
+- `func (s StopScope) Validate() error`: Validate reports whether s names a scope: a known kind, no name for StopGlobal, and for every other kind a name of valid UTF-8, with no control or bidirectional character, at most 256 bytes.
+
+## type StopScopeKind
+
+```go
+type StopScopeKind string
+```
+
+StopScopeKind says what a stop covers.
+
+**Constants**
+
+- `const StopGlobal StopScopeKind = "global"`: StopGlobal covers every run.
+- `const StopTool StopScopeKind = "tool"`: StopTool covers the calls of the tool with exactly the scope's name.
+- `const StopFlow StopScopeKind = "flow"`: StopFlow covers the runs and nodes of the plan flow with exactly the scope's name.
+- `const StopAgent StopScopeKind = "agent"`: StopAgent covers the runs of the agent with exactly the scope's name.
+
+## type StopSigner
+
+```go
+type StopSigner interface {
+	Alg() Alg
+	Sign(message []byte) ([]byte, error)
+}
+```
+
+StopSigner signs a stop record in audited mode.
+
+## type StopState
+
+```go
+type StopState struct {
+	Mode StopMode
+
+	PolicyDigest string
+	PolicySeq    int
+
+	Stops []StopEntry
+
+	Rejected      []Rejection
+	RejectedTotal int
+
+	Unverified int
+}
+```
+
+StopState is the effective state of the control run for one control.
+
+**Methods**
+
+- `func (s StopState) Active() []StopEntry`: Active returns the stops that are not lifted, in the order they were set.
+- `func (s StopState) Covering(q StopQuery) (StopEntry, bool)`: Covering returns the first active stop that covers q.
+
+## type StopVerifierFunc
+
+```go
+type StopVerifierFunc func(alg Alg, publicKey []byte) (ApproverVerifier, error)
+```
+
+StopVerifierFunc builds a verifier from a scheme and a public key, for the approvers of a policy a transition names (audit.NewVerifier has this form).
 
 ## type Store
 

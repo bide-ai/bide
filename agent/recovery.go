@@ -681,8 +681,11 @@ func (k *isValueKind) UnmarshalJSON(b []byte) error {
 }
 
 // recoverable reports whether a run the recovery filter admits is one a recovery pass drives: not a
-// sub-agent's run (its root's re-run resumes it) or a session's (the session resumes it).
-func recoverable(runID string) bool { return !IsSubRun(runID) && !IsSessionRun(runID) }
+// sub-agent's run (its root's re-run resumes it), a session's (the session resumes it), or the engine's
+// own control run (the stops).
+func recoverable(runID string) bool {
+	return !IsSubRun(runID) && !IsSessionRun(runID) && runID != StopControlRun
+}
 
 // recoverRun drives runID under its lease (when the store supports one) and reports whether it
 // called resume for it and the genuine failure, if any. A run another holder currently leases is

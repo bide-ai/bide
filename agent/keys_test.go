@@ -32,6 +32,7 @@ var keyConstructors = map[string]func(string) string{
 	"ApprovalRequestStep":        ApprovalRequestStep,
 	"ApprovalDeadlineStep":       ApprovalDeadlineStep,
 	"approvalAfterRequestStep":   approvalAfterRequestStep,
+	"stopRecordStep":             func(s string) string { return stopRecordStep(StopRecord{Kind: "set", StopID: s}) },
 	"runCompleteStep":            func(string) string { return runCompleteStep },
 	"runAbortedStep":             func(string) string { return runAbortedStep },
 	"runStartStep":               func(string) string { return runStartStep },
