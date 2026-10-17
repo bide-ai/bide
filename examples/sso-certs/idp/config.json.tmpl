@@ -1,0 +1,16 @@
+{
+  "interactiveLogin": false,
+  "httpServer": {"type": "NettyWrapper", "ssl": {}},
+  "tokenCallbacks": [{
+    "issuerId": "default",
+    "tokenExpiry": 300,
+    "requestMappings": [
+      [[ range .Clients ]]{
+        "requestParam": "client_id",
+        "match": "[[ .ClientID ]]",
+        "claims": {"sub": "ops-subject-1", "email": "[[ .Email ]]", "person_id": "[[ .PersonID ]]", "amr": [[ .AMR ]]}
+      }[[ if not .Last ]],[[ end ]]
+      [[ end ]]
+    ]
+  }]
+}
