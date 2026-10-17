@@ -621,7 +621,7 @@ never runs the call.
 that decides it and, for a gate with a deadline (ApprovalPolicy.Timeout), the time left; a gate
 past its deadline is marked and gets no command, since it refuses decisions. -json prints them as JSON. With -approver-keys it counts each gate as the gate does
 (verified); without it the counts are labelled unverified and no gate is called settled. Run and
-call ids that hold control, bidirectional or invisible characters get no command. A Postgres journal is named by -postgres-env, the name
+call ids that hold control, bidirectional or invisible characters get no command (take their ids from -json and pass them to -run and -call). A Postgres journal is named by -postgres-env, the name
 of the environment variable that holds the DSN, so the password stays out of the argument list,
 the shell history and the commands -list prints; -postgres takes the DSN itself, and the listed
 commands then name $BIDE_POSTGRES_DSN.

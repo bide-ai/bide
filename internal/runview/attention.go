@@ -84,6 +84,16 @@ type AttentionItem struct {
 	Notify *NotifyStatus `json:"notify,omitempty"`
 }
 
+// noCommandUnsafe is the NoCommand of a call whose run or call id holds a control, bidirectional or
+// invisible character (approveline.ErrUnsafe), and unsafeIDRemedy what an approver can do about it:
+// bide approve -list -json prints the ids as JSON, which a tool such as jq decodes exactly, and
+// bide approve takes them as -run and -call (a shell's $(...) drops trailing newlines, so an id that
+// ends in one cannot be passed that way).
+const (
+	unsafeIDRemedy  = "`bide approve -list -json` (its run and call members, passed to -run and -call)"
+	noCommandUnsafe = "no command: the run or call id holds a character that cannot be shown or pasted safely; take the ids from " + unsafeIDRemedy
+)
+
 // Link is the run's page.
 func (i AttentionItem) Link() string { return "/run?id=" + url.QueryEscape(i.RunID) }
 
@@ -397,7 +407,7 @@ func (o Options) runItems(v *View, recs []agent.Record) []AttentionItem {
 			cmd, err := o.ApproveCommand(v.RunID, g.ToolUseID, g.Single)
 			switch {
 			case errors.Is(err, approveline.ErrUnsafe):
-				it.NoCommand = "no command (unsafe id)"
+				it.NoCommand = noCommandUnsafe
 			case err != nil:
 				it.NoCommand = "no command"
 			default:
@@ -417,12 +427,17 @@ func (o Options) runItems(v *View, recs []agent.Record) []AttentionItem {
 			// The command that does count for them: bide approve -cert, with placeholders.
 			switch cmd, err := o.ApproveCertCommand(v.RunID, g.ToolUseID); {
 			case errors.Is(err, approveline.ErrUnsafe):
-				it.NoCommand = "no command (unsafe id)"
+				it.NoCommand = noCommandUnsafe
 			case err != nil:
 				it.NoCommand = "no command"
 			default:
 				it.CertCommand = cmd
 			}
+		}
+		if it.NoCommand == noCommandUnsafe && len(bare) > 0 && len(bound) > 0 {
+			// Neither command can be written, and the two kinds of approver sign differently.
+			it.CommandNote = "the id cannot be shown or pasted, so no command is written for either kind of approver here: the bare-key approvers (" + strings.Join(bare, ", ") +
+				") decide with -key, the certificate-bound approvers (" + strings.Join(bound, ", ") + ") with -cert and -identity-policy (a bare-key decision does not count for them); both take the ids from " + unsafeIDRemedy
 		}
 		out = append(out, it)
 	}
