@@ -55,8 +55,8 @@ type StopVerifierFunc func(alg Alg, publicKey []byte) (ApproverVerifier, error)
 type StopPolicy struct {
 	// DeploymentID is the deployment's identifier (see StopPolicyDoc); required.
 	DeploymentID string
-	Setters []string
-	Lifters []string
+	Setters      []string
+	Lifters      []string
 	// Verifiers resolves an enrolled id to its verifier (the same verifiers an approval gate uses).
 	Verifiers ApproverVerifierFor
 	// LiftQuorum is how many distinct lifters a lift needs (at least 1; the recommended value is 2).
