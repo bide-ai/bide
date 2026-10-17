@@ -386,9 +386,14 @@ warning only. Start-up events print the effective URLs and each issuer's limit, 
 cron (`-once` exits 1 unless every issuer holds a fresh CRL) or as a daemon, printing one JSON line per event
 and a health line per issuer. `ca.json` is a copy of the timings the gate declares (`ca_period`,
 `max_status_age`, `exec_status_age`, `this_update_skew`, and per issuer `ca_period`, `max_status_age`,
-`exec_status_age`, `ca_overlap`, `this_update_skew`, `delta_period`); it must match the gate's declaration: the command prints the policy digest of the approver it built in its
-start-up events, and you compare it with the digest the gate records (a mismatch means the schedule and the alarm
-follow other numbers than the gate). A delta outage is reported as an event and does not fail `-once`; a base that
+`exec_status_age`, `ca_overlap`, `this_update_skew`, `delta_period`); it must match the gate's declaration. Do not compare the policy digest the command prints with the digest the gate
+records: today the two cannot be equal. The digest covers `effective_from` (the command's stand-in approver
+takes its start time) and values the file cannot hold (`w`, `min_w`, `routine_grace`, `clock_tolerance`,
+holds, retention, consecutive numbers), which the command fills with defaults. Compare instead the
+`declared values` start-up event with the policy record the gate journals (the `ApprovalIdentity` record):
+the timing members (`ca_period*`, `max_status_age*`, `exec_status_age*`, `ca_overlap_for`,
+`this_update_skew*`, `coverage_tolerance`) and the anchors and intermediates must be the same. A
+mismatch means the schedule and the alarm follow other numbers than the gate. A delta outage is reported as an event and does not fail `-once`; a base that
 is not fresh does. A
 gate process embeds the refresher itself; the command is for the archive an audit reads and for monitoring.
 `bide approve -cert` does not fetch CRLs: its local check is a convenience before signing, and the gate decides.

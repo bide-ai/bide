@@ -14,6 +14,7 @@ import (
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/bide-ai/bide/audit"
@@ -437,7 +438,14 @@ func (r *Refresher) startupEvents(clientGiven bool, warnings []string) {
 			Detail: fmt.Sprintf("urls=%v delta_urls=%v interval=%v limit=%v alarm_age=%v margin=%v",
 				redactAll(i.base.urls), redactAll(i.deltaURLs()), iv, i.timing.Limit, i.timing.alarmAge(iv), i.timing.margin())})
 	}
-	r.emit(Event{Kind: EventStartup, Detail: "policy digest " + r.appr.PolicyDigest() + ": compare it with the digest the gate records, so a copy of the declared values (bide identity -params) that differs from the gate's is noticed"})
+	// The digest of this stand-in approver cannot equal a gate's: it carries a stand-in effective_from
+	// and the defaults of values a declaration cannot hold (W, MinW, RoutineGrace, ClockTolerance,
+	// holds, retention). It is printed for the record; the declared values below are what to compare.
+	dec := r.appr.DescribeIdentity()
+	dec.EffectiveFrom = ""
+	vals, _ := json.Marshal(dec)
+	r.emit(Event{Kind: EventStartup, Detail: "policy digest " + r.appr.PolicyDigest() + " of this refresher's stand-in approver; it differs from a gate's digest even when the timings agree (the stand-in effective_from is the start time and values the declaration cannot hold are defaults), so do not compare it with the gate's"})
+	r.emit(Event{Kind: EventStartup, Detail: "declared values " + string(vals) + ": compare the timing members (ca_period*, max_status_age*, exec_status_age*, ca_overlap_for, this_update_skew*, coverage_tolerance) and the anchors and intermediates with the policy record the gate journals"})
 	if r.archive == nil {
 		r.emit(Event{Kind: EventStartup, Detail: "no archive: a restart forgets rollback protection and no dated series is kept"})
 	}
