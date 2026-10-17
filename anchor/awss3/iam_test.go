@@ -91,11 +91,54 @@ func TestWriterPolicyCoversEveryCall(t *testing.T) {
 			t.Errorf("the writer policy lacks %s", a)
 		}
 	}
-	filled := awss3.PolicyFor(awss3.WriterPolicy, "b", "", "arn:aws:kms:x")
+	filled := awss3.PolicyFor(awss3.WriterPolicy, awss3.PolicyParams{Bucket: "b", KMSKeyARN: "arn:aws:kms:x"})
 	if strings.Contains(filled, "BUCKET") || strings.Contains(filled, "PREFIX") || !strings.Contains(filled, "arn:aws:s3:::b/bide-anchor/*") {
 		t.Errorf("PolicyFor left placeholders or misplaced them: %s", filled)
 	}
 	if err := json.Unmarshal([]byte(filled), new(any)); err != nil {
 		t.Errorf("filled policy is not JSON: %v", err)
+	}
+}
+
+// The filled bucket policy denies a writer a weaker lock, a shorter retention, another KMS key, and
+// changing the policy itself; and every placeholder is filled.
+func TestBucketPolicyPinsLockRetentionAndKey(t *testing.T) {
+	filled := awss3.PolicyFor(awss3.BucketPolicy, awss3.PolicyParams{Bucket: "b", KMSKeyARN: "arn:aws:kms:eu-west-1:111122223333:key/k",
+		MinRetentionDays: 2555, AdminRoleARN: "arn:aws:iam::444455556666:role/anchor-admin"})
+	for _, ph := range []string{"BUCKET", "PREFIX", "KMS_KEY_ARN", "LOCK_MODE", "MIN_RETENTION_DAYS", "ADMIN_ROLE_ARN"} {
+		if strings.Contains(filled, ph) {
+			t.Errorf("the filled bucket policy still holds %s", ph)
+		}
+	}
+	var p struct {
+		Statement []struct {
+			Effect, Sid string
+			Condition   map[string]map[string]string
+		}
+	}
+	if err := json.Unmarshal([]byte(filled), &p); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][3]string{ // sid: operator, key, value
+		"OnlyLockedHeads":                       {"StringNotEquals", "s3:object-lock-mode", "COMPLIANCE"},
+		"OnlyLongRetention":                     {"NumericLessThan", "s3:object-lock-remaining-retention-days", "2555"},
+		"OnlyTheConfiguredKmsKey":               {"StringNotEquals", "s3:x-amz-server-side-encryption-aws-kms-key-id", "arn:aws:kms:eu-west-1:111122223333:key/k"},
+		"OnlyTheAdministratorChangesThisPolicy": {"StringNotEquals", "aws:PrincipalArn", "arn:aws:iam::444455556666:role/anchor-admin"},
+	}
+	for _, st := range p.Statement {
+		w, ok := want[st.Sid]
+		if !ok {
+			continue
+		}
+		delete(want, st.Sid)
+		if st.Effect != "Deny" || st.Condition[w[0]][w[1]] != w[2] {
+			t.Errorf("%s = %v, want a Deny with %s %s = %s", st.Sid, st.Condition, w[0], w[1], w[2])
+		}
+	}
+	for sid := range want {
+		t.Errorf("the bucket policy has no %s statement", sid)
+	}
+	if g := awss3.PolicyFor(awss3.BucketPolicy, awss3.PolicyParams{Bucket: "b", LockMode: "GOVERNANCE"}); !strings.Contains(g, `"s3:object-lock-mode": "GOVERNANCE"`) {
+		t.Error("LockMode did not reach the policy")
 	}
 }

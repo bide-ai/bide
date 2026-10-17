@@ -28,11 +28,18 @@ func TestReaderRefusesHeadsNotSignedByTheLogKey(t *testing.T) {
 	k, other := newKeys(t, 1), newKeys(t, 2)
 	f := awss3test.New(bucket)
 	publish(t, f, other, "r", 3) // a writer with the bucket but not the log key
-	if _, err := newReader(t, f, k.v).Latest(ctx, audit.TreeJournal, "r"); !errors.Is(err, awss3.ErrObject) {
-		t.Fatalf("Latest = %v, want ErrObject for a head the log key did not sign", err)
-	}
-	if _, err := newReader(t, f, k.v).Heads(ctx, audit.TreeJournal, "r"); !errors.Is(err, awss3.ErrObject) {
-		t.Fatalf("Heads = %v, want ErrObject", err)
+	// A well-formed head the log key did not sign is never skipped: it may be a real head under a
+	// rotated key, and skipping it would show an older head as the latest.
+	publish(t, f, k, "r", 1)
+	for name, call := range map[string]func(*awss3.Reader) error{
+		"Latest": func(r *awss3.Reader) error { _, err := r.Latest(ctx, audit.TreeJournal, "r"); return err },
+		"Heads":  func(r *awss3.Reader) error { _, err := r.Heads(ctx, audit.TreeJournal, "r"); return err },
+		"Head":   func(r *awss3.Reader) error { _, err := r.Head(ctx, audit.TreeJournal, "r", 3); return err },
+	} {
+		rd, skipped := newReaderSkips(t, f, k.v)
+		if err := call(rd); !errors.Is(err, awss3.ErrBadSignature) || !errors.Is(err, awss3.ErrObject) || len(*skipped) != 0 {
+			t.Errorf("%s = %v with %d skipped, want ErrBadSignature and no skip", name, err, len(*skipped))
+		}
 	}
 }
 
@@ -57,9 +64,13 @@ func TestReaderRefusesAnObjectThatDoesNotMatchItsKey(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := awss3test.New(bucket)
 			f.Put(tc.key, body)
-			rd := newReader(t, f, k.v)
-			if _, err := rd.Heads(ctx, audit.TreeJournal, "r"); !errors.Is(err, awss3.ErrObject) {
-				t.Fatalf("Heads = %v, want ErrObject", err)
+			rd, skipped := newReaderSkips(t, f, k.v)
+			if _, err := rd.Heads(ctx, audit.TreeJournal, "r"); !errors.Is(err, awss3.ErrNotFound) || len(*skipped) != 1 {
+				t.Fatalf("Heads = %v with %d skipped, want ErrNotFound and the object reported as skipped", err, len(*skipped))
+			}
+			rep, err := rd.Audit(ctx, audit.TreeJournal, "r", time.Now())
+			if err != nil || len(rep.Heads) != 0 || len(rep.Findings) == 0 {
+				t.Fatalf("Audit = %d heads, findings %v, %v; want the object reported", len(rep.Heads), rep.Findings, err)
 			}
 		})
 	}
@@ -81,8 +92,9 @@ func TestReaderRefusesNonCanonicalAndMalformedBodies(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := awss3test.New(bucket)
 			f.Put(key, b)
-			if _, err := newReader(t, f, k.v).Latest(ctx, audit.TreeJournal, "r"); !errors.Is(err, awss3.ErrObject) {
-				t.Fatalf("Latest = %v, want ErrObject", err)
+			rd, skipped := newReaderSkips(t, f, k.v)
+			if _, err := rd.Latest(ctx, audit.TreeJournal, "r"); !errors.Is(err, awss3.ErrNotFound) || len(*skipped) != 1 {
+				t.Fatalf("Latest = %v with %d skipped, want ErrNotFound and the object reported as skipped", err, len(*skipped))
 			}
 		})
 	}
@@ -216,5 +228,108 @@ func TestARewrittenKeyIsOneHead(t *testing.T) {
 	}
 	if rep, _ := r.Audit(ctx, audit.TreeJournal, "r", time.Now()); !hasFinding(rep, "2 versions of one key") {
 		t.Errorf("Audit findings %v lack the rewritten key", rep.Findings)
+	}
+}
+
+// Two validly signed heads of one size with different roots are the log key signing two histories:
+// the library returns an error and never picks one.
+func TestEquivocationIsAnErrorEverywhere(t *testing.T) {
+	k := newKeys(t, 1)
+	f := awss3test.New(bucket)
+	a := newAnchor(t, f, nil)
+	if err := a.Publish(ctx, "r", k.head(t, "r", 1, 1)); err != nil {
+		t.Fatal(err)
+	}
+	fork := k.headRoot(t, "r", 5, 100, "honest")
+	if err := a.Publish(ctx, "r", fork); err != nil {
+		t.Fatal(err)
+	}
+	// The same size and the same root with another timestamp (a lease handoff) is fine.
+	if err := a.Publish(ctx, "r", k.headRoot(t, "r", 5, 150, "honest")); err != nil {
+		t.Fatal(err)
+	}
+	rd := newReader(t, f, k.v)
+	if got, err := rd.Latest(ctx, audit.TreeJournal, "r"); err != nil || got.Size != 5 {
+		t.Fatalf("Latest over a handoff pair = %d, %v; want size 5", got.Size, err)
+	}
+	if err := a.Publish(ctx, "r", k.headRoot(t, "r", 5, 200, "rewritten")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rd.Latest(ctx, audit.TreeJournal, "r"); !errors.Is(err, awss3.ErrEquivocation) {
+		t.Errorf("Latest = %v, want ErrEquivocation", err)
+	}
+	if _, err := rd.Heads(ctx, audit.TreeJournal, "r"); !errors.Is(err, awss3.ErrEquivocation) {
+		t.Errorf("Heads = %v, want ErrEquivocation", err)
+	}
+	if _, err := rd.Head(ctx, audit.TreeJournal, "r", 5); !errors.Is(err, awss3.ErrEquivocation) {
+		t.Errorf("Head = %v, want ErrEquivocation", err)
+	}
+	if hs, err := rd.Head(ctx, audit.TreeJournal, "r", 1); err != nil || len(hs) != 1 {
+		t.Errorf("Head of an unaffected size = %d, %v", len(hs), err)
+	}
+	rep, err := rd.Audit(ctx, audit.TreeJournal, "r", time.Now())
+	if err != nil || !hasFinding(rep, "two different signed heads of size 5") {
+		t.Errorf("Audit = %v, %v; want an equivocation finding", rep.Findings, err)
+	}
+}
+
+// One garbage object that sorts first does not make the partition unreadable: it is skipped and
+// reported, Latest returns the newest valid head, and Audit fails on it when it claims a larger size.
+func TestAStrayObjectIsSkippedAndReported(t *testing.T) {
+	k := newKeys(t, 1)
+	f := awss3test.New(bucket)
+	publish(t, f, k, "r", 2, 3)
+	keys := f.Keys()
+	dir := keys[0][:strings.LastIndex(keys[0], "/")+1]
+	f.Put(dir+"0000000000000000000-"+strings.Repeat("a", 32)+".json", []byte("garbage"))
+	rd, skipped := newReaderSkips(t, f, k.v)
+	got, err := rd.Latest(ctx, audit.TreeJournal, "r")
+	if err != nil || got.Size != 3 {
+		t.Fatalf("Latest = size %d, %v; want the newest valid head (3)", got.Size, err)
+	}
+	if len(*skipped) != 1 || !strings.Contains((*skipped)[0].Key, "0000000000000000000-") {
+		t.Errorf("skipped = %v, want the garbage object named", *skipped)
+	}
+	all, err := rd.Heads(ctx, audit.TreeJournal, "r")
+	if err != nil || len(all) != 2 {
+		t.Errorf("Heads = %v, %v; want the 2 valid heads", sizes(all), err)
+	}
+	rep, err := rd.Audit(ctx, audit.TreeJournal, "r", time.Now())
+	if err != nil || !hasFinding(rep, "claims size") {
+		t.Errorf("Audit = %v, %v; want a finding that a skipped object claims a larger size", rep.Findings, err)
+	}
+}
+
+// An object another writer stored, with the same bytes (so the same key), under a weaker lock does
+// not count as anchored.
+func TestPublishRefusesAnExistingObjectUnderAWeakerLock(t *testing.T) {
+	k := newKeys(t, 1)
+	f := awss3test.New(bucket)
+	f.DefaultDays = 365 // the bucket default is what the other writer's object got
+	a := newAnchor(t, f, func(c *awss3.Config) { c.Retention = 300 * 24 * time.Hour; c.KMSKeyID = ""; c.EncryptionNone = true })
+	h := k.head(t, "r", 1, 1)
+	key, body := keyAndBody(t, k, h)
+	f.DefaultDays = 2
+	f.Put(key, body) // a two-day lock under the key Publish will use
+	f.DefaultDays = 365
+	if err := a.Publish(ctx, "r", h); !errors.Is(err, awss3.ErrWeak) {
+		t.Fatalf("Publish over a 2-day object = %v, want ErrWeak", err)
+	}
+	// The same object with a long enough lock is accepted.
+	f2 := awss3test.New(bucket)
+	f2.DefaultDays = 365
+	a2 := newAnchor(t, f2, func(c *awss3.Config) { c.Retention = 300 * 24 * time.Hour; c.KMSKeyID = ""; c.EncryptionNone = true })
+	f2.Put(key, body)
+	if err := a2.Publish(ctx, "r", h); err != nil {
+		t.Fatalf("Publish over an object retained 365 days = %v", err)
+	}
+	// An existing object whose write time S3 does not report cannot be checked, and is refused.
+	f4 := awss3test.New(bucket)
+	f4.DefaultDays = 365
+	a4 := newAnchor(t, f4, func(c *awss3.Config) { c.Retention = 300 * 24 * time.Hour; c.KMSKeyID = ""; c.EncryptionNone = true })
+	f4.Put(key, body)
+	f4.Tamper = func(_ string, v *awss3test.Version) { v.Created = time.Time{} }
+	if err := a4.Publish(ctx, "r", h); !errors.Is(err, awss3.ErrWeak) {
+		t.Errorf("Publish over an object with no LastModified = %v, want ErrWeak", err)
 	}
 }

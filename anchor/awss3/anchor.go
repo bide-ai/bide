@@ -428,7 +428,7 @@ func (a *Anchor) readBack(ctx context.Context, key, version string, want []byte,
 		}
 		return fmt.Errorf("awss3: %s read back different bytes than were written: %w", key, ErrConflict)
 	}
-	if err := a.checkStored(key, out.ObjectLockMode, out.ObjectLockRetainUntilDate, out.ObjectLockLegalHoldStatus, out.ServerSideEncryption, out.SSEKMSKeyId, out.VersionId, until, version == ""); err != nil {
+	if err := a.checkStored(key, out.ObjectLockMode, out.ObjectLockRetainUntilDate, out.ObjectLockLegalHoldStatus, out.ServerSideEncryption, out.SSEKMSKeyId, out.VersionId, until, version == "", out.LastModified); err != nil {
 		return err
 	}
 	return nil
@@ -436,9 +436,10 @@ func (a *Anchor) readBack(ctx context.Context, key, version string, want []byte,
 
 // checkStored compares the lock and encryption S3 reports for a stored object with the
 // configuration. For an object this call wrote (existing false) the retain-until date must be the
-// one requested, less a minute of clock slack. An existing object, written by an earlier publish,
-// counts its retention from that write, so it must only still be locked, with a date in the future.
-func (a *Anchor) checkStored(key string, mode types.ObjectLockMode, until *time.Time, hold types.ObjectLockLegalHoldStatus, sse types.ServerSideEncryption, kms, version *string, wantUntil time.Time, existing bool) error {
+// one requested, less a minute of clock slack. An existing object, written earlier by a retry, another
+// process or another tool, must be retained for at least the configured retention from its own write
+// (less the same slack): a head some other writer stored under a weaker lock does not count as anchored.
+func (a *Anchor) checkStored(key string, mode types.ObjectLockMode, until *time.Time, hold types.ObjectLockLegalHoldStatus, sse types.ServerSideEncryption, kms, version *string, wantUntil time.Time, existing bool, lastModified *time.Time) error {
 	weak := func(format string, args ...any) error {
 		return fmt.Errorf("awss3: %s: "+format+": %w", append(append([]any{key}, args...), ErrWeak)...)
 	}
@@ -452,8 +453,13 @@ func (a *Anchor) checkStored(key string, mode types.ObjectLockMode, until *time.
 		return weak("no retain-until date")
 	}
 	if existing {
-		if !until.After(a.now()) {
-			return weak("its retention ended at %s", until.UTC().Format(time.RFC3339))
+		// Another write (a retry, another process, another tool) stored these bytes. Its lock must be
+		// as strong as this publish asks for, counted from its own write: S3 reports LastModified.
+		if lastModified == nil {
+			return weak("S3 reported no LastModified, so the retention of an object written earlier cannot be checked")
+		}
+		if floor := lastModified.Add(a.cfg.Retention).Add(-time.Minute); until.Before(floor) {
+			return weak("an object written earlier is retained until %s, less than the configured %s after its write (%s)", until.UTC().Format(time.RFC3339), a.cfg.Retention, lastModified.UTC().Format(time.RFC3339))
 		}
 	} else if until.Before(wantUntil.Add(-time.Minute)) {
 		return weak("retain-until is %s, want %s", until.UTC().Format(time.RFC3339), wantUntil.UTC().Format(time.RFC3339))

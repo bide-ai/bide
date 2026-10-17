@@ -484,6 +484,9 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.heavy != 'false' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read # pulls the private MinIO fixture image from ghcr.io
     # Skipped on a pull request, like the macOS and Windows jobs.
     # The Postgres store (cross-instance at-most-once, leases) and the shared governed-event logs
     # need real services; their tests skip without PG_DSN / REDIS_ADDR, so the Test jobs above
@@ -524,14 +527,21 @@ jobs:
           sudo apt-get install -y -q softhsm2
           ls /usr/lib/softhsm /usr/lib/*/softhsm 2>/dev/null
       - name: Start MinIO (an S3 server with Object Lock, for anchor/awss3)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # A service container cannot be given a command, so the server is started here. MinIO no
-          # longer publishes images on Docker Hub or Quay; this is Chainguard's build of the
-          # AGPL-licensed server, pinned by digest, used only as a test fixture (nothing of it is
-          # distributed). The tests create their own buckets.
-          image=cgr.dev/chainguard/minio@sha256:c93745c56fccdaf0e5dcb88999a96a65a136428beb045ef5d546255a80d747a7
+          # longer publishes images on Docker Hub or Quay. The image is a private, CI-only mirror of
+          # Chainguard's build of the AGPL-licensed MinIO server (cgr.dev/chainguard/minio), pinned by
+          # digest and used only as a test fixture: nothing of it is distributed, and the package is
+          # not public. The repository needs Actions read access to the package (package settings).
+          # To refresh the mirror, a maintainer runs
+          #   docker buildx imagetools create -t ghcr.io/bide-ai/minio-fixture:<date> cgr.dev/chainguard/minio@<digest>
+          # and puts the digest here. The tests create their own buckets.
+          image=ghcr.io/bide-ai/minio-fixture@sha256:c93745c56fccdaf0e5dcb88999a96a65a136428beb045ef5d546255a80d747a7
+          echo "$GITHUB_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           if ! docker pull -q "$image"; then
-            echo "::error::The pinned MinIO image $image could not be pulled. Chainguard's free tier keeps only its latest build, so the digest may have been replaced. Fix: pick a MinIO image with Object Lock (cgr.dev/chainguard/minio:latest, or a mirror), run anchor/awss3's tests against it (BIDE_S3_ENDPOINT, BIDE_REQUIRE_OBJECTLOCK=1; see docs/guides/anchoring.md), then replace the digest here."
+            echo "::error::The MinIO fixture image $image could not be pulled. A 403 means this repository has no Actions read access to the private package ghcr.io/bide-ai/minio-fixture (package settings, Manage Actions access). If the digest is gone, mirror a MinIO image with Object Lock again (see the comment in this step), run anchor/awss3's tests against it (BIDE_S3_ENDPOINT, BIDE_REQUIRE_OBJECTLOCK=1; docs/guides/anchoring.md), and replace the digest."
             exit 1
           fi
           docker run -d --name minio -p 127.0.0.1:19000:9000 \

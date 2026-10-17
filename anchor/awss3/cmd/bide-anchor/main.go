@@ -80,7 +80,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 		dir, run, bucket, ownerID, prefix, out string
 		pubkey                                 string
 		kind                                   = audit.TreeJournal
-		pathStyle                              bool
+		pathStyle, force                       bool
 	)
 	// Each command takes only the flags that mean something to it, so its help lists only those.
 	fs.StringVar(&pubkey, "pubkey", "", "the log operator's public key (ed25519:<hex>, or a file holding it)")
@@ -94,6 +94,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 		if cmd == "export" {
 			fs.StringVar(&dir, "dir", "", "read a directory of downloaded anchor objects (offline)")
 			fs.StringVar(&out, "o", "", "write to this file instead of standard output")
+			fs.BoolVar(&force, "force", false, "with -bucket: export even when the lock audit has findings")
 		}
 		fs.StringVar(&bucket, "bucket", "", "read this anchor bucket (online, with read-only credentials)")
 		fs.StringVar(&ownerID, "owner", "", "the 12-digit AWS account ID that owns the bucket (with -bucket)")
@@ -150,7 +151,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 		if err != nil {
 			return fail(exitUsage, "AWS configuration: %v", err)
 		}
-		reader, err = awss3.NewReader(awss3.ReaderConfig{Client: c, Bucket: bucket, ExpectedBucketOwner: ownerID, Prefix: prefix, Verifier: v})
+		reader, err = awss3.NewReader(awss3.ReaderConfig{Client: c, Bucket: bucket, ExpectedBucketOwner: ownerID, Prefix: prefix, Verifier: v,
+			OnSkip: func(f awss3.Finding) {
+				fmt.Fprintf(stderr, "bide-anchor: skipped an object that is no anchored head: %s\n", f)
+			}})
 		if err != nil {
 			return fail(exitUsage, "%v", err)
 		}
@@ -203,12 +207,24 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 			}
 			return exitFindings
 		}
-		fmt.Fprintf(stdout, "PASS: %d head(s) verify under this key. This is an offline check of the files: it cannot show that S3 locked them; run check for that.\n", len(heads))
+		fmt.Fprintf(stdout, "PASS: %d head(s) verify under this key. This is an offline check of the files: it cannot show that S3 locked them (run check), nor that the directory is complete: a stale or partial sync verifies too, so compare the largest sizes above with the journal's.\n", len(heads))
 		return exitOK
 
 	default: // export
 		var heads []audit.SignedTreeHead
 		if online {
+			// Export what the lock audit finds sound: a head under a weak lock, or next to a delete
+			// marker, is evidence somebody should look at before it is relied on.
+			rep, aerr := reader.Audit(ctx, kind, run, time.Now())
+			if aerr != nil {
+				return fail(exitFindings, "%v", aerr)
+			}
+			if len(rep.Findings) > 0 && !force {
+				for _, f := range rep.Findings {
+					fmt.Fprintf(stderr, "bide-anchor: FINDING: %s\n", f)
+				}
+				return fail(exitFindings, "%d finding(s) in how the heads are stored; not exporting (run check, or export -force to take the verified heads anyway)", len(rep.Findings))
+			}
 			heads, err = reader.Heads(ctx, kind, run)
 		} else {
 			heads, err = awss3.LoadDir(dir, v)
@@ -233,6 +249,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 			sb.Write(b)
 			sb.WriteByte('\n')
 		}
+		for _, line := range summarize(heads) {
+			fmt.Fprintf(stderr, "bide-anchor: %s\n", line)
+		}
+		fmt.Fprintln(stderr, "bide-anchor: this is every head in the set you gave, not proof the set is complete: a stale or partial copy verifies too. Compare the largest size with the journal's current size (bide audit against these heads).")
 		if out == "" {
 			io.WriteString(stdout, sb.String())
 			return exitOK

@@ -33,6 +33,7 @@ type Version struct {
 	SSE           types.ServerSideEncryption
 	KMSKey        string
 	ChecksumSHA25 string
+	Created       time.Time
 }
 
 // Fake is a bucket. The zero value is not usable; use New.
@@ -207,7 +208,7 @@ func (f *Fake) PutObject(_ context.Context, in *s3.PutObjectInput, _ ...func(*s3
 		return nil, APIError("InvalidRequest", 400)
 	}
 	f.nextID++
-	v := &Version{ID: "v" + strconv.Itoa(f.nextID), Body: body, SSE: in.ServerSideEncryption, KMSKey: aws.ToString(in.SSEKMSKeyId), ChecksumSHA25: sumB64}
+	v := &Version{ID: "v" + strconv.Itoa(f.nextID), Body: body, SSE: in.ServerSideEncryption, KMSKey: aws.ToString(in.SSEKMSKeyId), ChecksumSHA25: sumB64, Created: f.now()}
 	if f.Versioning != types.BucketVersioningStatusEnabled {
 		v.ID = "null"
 	}
@@ -271,7 +272,7 @@ func (f *Fake) GetObject(_ context.Context, in *s3.GetObjectInput, _ ...func(*s3
 	}
 	return &s3.GetObjectOutput{Body: io.NopCloser(bytes.NewReader(c.Body)), VersionId: aws.String(c.ID),
 		ObjectLockMode: c.LockMode, ObjectLockRetainUntilDate: timeOrNil(c.RetainUntil), ObjectLockLegalHoldStatus: c.LegalHold,
-		ServerSideEncryption: c.SSE, SSEKMSKeyId: aws.String(c.KMSKey), ChecksumSHA256: aws.String(c.ChecksumSHA25)}, nil
+		ServerSideEncryption: c.SSE, SSEKMSKeyId: aws.String(c.KMSKey), ChecksumSHA256: aws.String(c.ChecksumSHA25), LastModified: timeOrNil(c.Created)}, nil
 }
 
 func timeOrNil(t time.Time) *time.Time {
@@ -367,7 +368,7 @@ func (f *Fake) Put(key string, body []byte) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.nextID++
-	v := &Version{ID: "v" + strconv.Itoa(f.nextID), Body: append([]byte(nil), body...)}
+	v := &Version{ID: "v" + strconv.Itoa(f.nextID), Body: append([]byte(nil), body...), Created: f.now()}
 	if f.DefaultMode != "" {
 		v.LockMode = types.ObjectLockMode(f.DefaultMode)
 		v.RetainUntil = f.now().Add(time.Duration(f.DefaultDays) * 24 * time.Hour)

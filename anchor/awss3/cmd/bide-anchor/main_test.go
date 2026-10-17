@@ -163,6 +163,9 @@ func TestCheckOnline(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "2 verified head(s)") || !strings.Contains(out, "PASS") {
 		t.Fatalf("check of an intact anchor = %d\n%s%s", code, out, errs)
 	}
+	if code, out, errs := e.do("export", "-bucket", "b", "-owner", owner, "-pubkey", e.pub, "-run", "r1"); code != 0 || strings.Count(out, "\n") != 2 {
+		t.Fatalf("online export of an intact anchor = %d %q %q", code, out, errs)
+	}
 	// An unlocked rewrite of a key and a delete marker are findings.
 	key := e.fake.Keys()[0]
 	e.fake.DefaultMode = ""
@@ -175,8 +178,12 @@ func TestCheckOnline(t *testing.T) {
 	if code, out, _ := e.do("check", "-bucket", "b", "-owner", owner, "-pubkey", e.pub, "-run", "absent"); code != 1 || !strings.Contains(out, "FAIL: no verified head") {
 		t.Errorf("check of an absent run = %d %s", code, out)
 	}
-	if code, out, _ := e.do("export", "-bucket", "b", "-owner", owner, "-pubkey", e.pub, "-run", "r1"); code != 0 || strings.Count(out, "\n") < 2 {
-		t.Errorf("online export = %d %q", code, out)
+	exp := []string{"export", "-bucket", "b", "-owner", owner, "-pubkey", e.pub, "-run", "r1"}
+	if code, out, errs := e.do(exp...); code != 1 || out != "" || !strings.Contains(errs, "not exporting") {
+		t.Errorf("online export with findings = %d %q %q; want a refusal that exports nothing", code, out, errs)
+	}
+	if code, out, errs := e.do(append(exp, "-force")...); code != 0 || strings.Count(out, "\n") < 2 || !strings.Contains(errs, "not proof the set is complete") || !strings.Contains(errs, "sizes 1 to 2") {
+		t.Errorf("online export -force = %d %q %q; want the heads, the largest size and the completeness note", code, out, errs)
 	}
 }
 

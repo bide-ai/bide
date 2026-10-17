@@ -25,6 +25,16 @@ var (
 	ErrConflict = errors.New("awss3: key holds a different object")
 	// ErrNotFound is returned by the Reader when a partition holds no head.
 	ErrNotFound = errors.New("awss3: no anchored head")
+	// ErrBadSignature wraps (with ErrObject) the error of an object that is a well-formed head of its
+	// partition whose signature does not verify under the log key: a forgery, a head signed by another
+	// key (a rotated one, say), or a re-signed one. The Reader never skips it, since skipping would
+	// show an older head as the latest.
+	ErrBadSignature = errors.New("awss3: head does not verify under the log key")
+	// ErrEquivocation wraps the error of two validly signed heads of one tree and size that commit to
+	// different roots: the log key signed two histories. That is evidence of tampering or of a broken
+	// writer, and the Reader returns it and never picks one of the two. Two heads of one size with the
+	// same root (two processes anchoring one run around a lease handoff) are not equivocation.
+	ErrEquivocation = errors.New("awss3: two different signed heads of one size")
 	// ErrObject wraps the error of an object that is not a well-formed anchored head: a key and a
 	// body that disagree, a body that is not an anchored object, or a head that does not verify.
 	ErrObject = errors.New("awss3: object is not a valid anchored head")
@@ -80,7 +90,7 @@ func decodeObject(partition, name string, body []byte, v audit.Verifier) (audit.
 	}
 	if v != nil {
 		if err := sth.Verify(v); err != nil {
-			return audit.SignedTreeHead{}, fmt.Errorf("%w: %s/%s: %w", ErrObject, partition, name, err)
+			return audit.SignedTreeHead{}, fmt.Errorf("%w: %w: %s/%s: %w", ErrObject, ErrBadSignature, partition, name, err)
 		}
 	}
 	return sth, nil

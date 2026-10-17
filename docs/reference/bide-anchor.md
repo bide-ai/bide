@@ -44,6 +44,8 @@ Usage of bide-anchor export:
     	read this anchor bucket (online, with read-only credentials)
   -dir string
     	read a directory of downloaded anchor objects (offline)
+  -force
+    	with -bucket: export even when the lock audit has findings
   -kind string
     	the tree kind: journal, or events for a notification or event trail (default "journal")
   -o string

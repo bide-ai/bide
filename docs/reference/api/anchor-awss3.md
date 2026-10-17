@@ -26,12 +26,14 @@ Package awss3 is an audit.Anchor that writes every signed tree head as an object
 - `var ErrWeak`: ErrWeak wraps the error of a stored object whose lock, retention or encryption is weaker than the configuration asked for.
 - `var ErrConflict`: ErrConflict wraps the error of a key that already holds different bytes than the head being published.
 - `var ErrNotFound = errors.New("awss3: no anchored head")`: ErrNotFound is returned by the Reader when a partition holds no head.
+- `var ErrBadSignature`: ErrBadSignature wraps (with ErrObject) the error of an object that is a well-formed head of its partition whose signature does not verify under the log key: a forgery, a head signed by another key (a rotated one, say), or a re-signed one.
+- `var ErrEquivocation`: ErrEquivocation wraps the error of two validly signed heads of one tree and size that commit to different roots: the log key signed two histories.
 - `var ErrObject`: ErrObject wraps the error of an object that is not a well-formed anchored head: a key and a body that disagree, a body that is not an anchored object, or a head that does not verify.
 
 **Functions**
 
 - `func LoadDir(dir string, v audit.Verifier) ([]audit.SignedTreeHead, error)`: LoadDir reads a downloaded set of anchored objects (for example the output of "aws s3 sync" of the anchor prefix) and verifies each against v.
-- `func PolicyFor(template, bucket, prefix, kmsKeyARN string) string`: PolicyFor fills a policy template in with the bucket name, the key prefix (as configured, with its trailing slash; "bide-anchor/" when empty) and the KMS key ARN.
+- `func PolicyFor(template string, p PolicyParams) string`: PolicyFor fills a policy template in.
 
 ### type Anchor
 
@@ -117,6 +119,24 @@ Finding is something Audit found wrong with the bucket's lock state.
 
 - `func (f Finding) String() string`: String is the finding as one line.
 
+### type PolicyParams
+
+```go
+type PolicyParams struct {
+	Bucket    string
+	Prefix    string
+	KMSKeyARN string
+
+	LockMode string
+
+	MinRetentionDays int
+
+	AdminRoleARN string
+}
+```
+
+PolicyParams fills in a policy template.
+
 ### type Reader
 
 ```go
@@ -133,9 +153,9 @@ Reader reads anchored heads back from S3 and verifies them.
 
 **Methods**
 
-- `func (r *Reader) Audit(ctx context.Context, kind, runID string, now time.Time) (Report, error)`: Audit reads every version of every object of a tree and reports their lock state: Heads are the verified heads, and Findings lists every delete marker, every version that is not locked, every version whose retention has ended (it can now be deleted), every governance-mode lock (a principal with s3:BypassGovernanceRetention can delete it), every key with more than one version (the key is never rewritten by this package), and every object that is not a verified head.
-- `func (r *Reader) Head(ctx context.Context, kind, runID string, size int) ([]audit.SignedTreeHead, error)`: Head returns the heads anchored for the tree at exactly the given size (more than one only when two processes anchored one run at the same size), or ErrNotFound.
-- `func (r *Reader) Heads(ctx context.Context, kind, runID string) ([]audit.SignedTreeHead, error)`: Heads returns every head anchored for the tree, in increasing size (heads of one size in key order), each verified.
+- `func (r *Reader) Audit(ctx context.Context, kind, runID string, now time.Time) (Report, error)`: Audit reads every version of every object of a tree and reports their lock state: Heads are the verified heads, and Findings lists every delete marker, every version that is not locked, every version whose retention has ended (it can now be deleted), every governance-mode lock (a principal with s3:BypassGovernanceRetention can delete it), every key with more than one version (the key is never rewritten by this package), every object that is not a verified head (and, when its key claims a size larger than the largest verified head, that too), and two verified heads of one size with different roots.
+- `func (r *Reader) Head(ctx context.Context, kind, runID string, size int) ([]audit.SignedTreeHead, error)`: Head returns the heads anchored for the tree at exactly the given size (more than one only when two processes anchored one run at the same size, with the same root), or ErrNotFound; two with different roots are an error wrapping ErrEquivocation.
+- `func (r *Reader) Heads(ctx context.Context, kind, runID string) ([]audit.SignedTreeHead, error)`: Heads returns every head anchored for the tree, in increasing size (heads of one size in key order), each verified, with the skipping of Latest.
 - `func (r *Reader) Latest(ctx context.Context, kind, runID string) (audit.SignedTreeHead, error)`: Latest returns the head of the largest size anchored for the tree of the given kind (audit.TreeJournal or audit.TreeEvents) and run or trail ID.
 
 ### type ReaderConfig
@@ -149,6 +169,8 @@ type ReaderConfig struct {
 	ExpectedBucketOwner string
 
 	Prefix string
+
+	OnSkip func(Finding)
 
 	Verifier audit.Verifier
 }
@@ -237,6 +259,7 @@ type Version struct {
 	SSE           types.ServerSideEncryption
 	KMSKey        string
 	ChecksumSHA25 string
+	Created       time.Time
 }
 ```
 

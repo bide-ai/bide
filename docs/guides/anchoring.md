@@ -109,8 +109,11 @@ object cannot be erased before its retention date: **redaction cannot reach the 
 only a hash of the ID, but the objects hold the ID. Do not put a customer's name, email address, account
 number or any other personal data in a run ID or a trail ID that is anchored here; use an opaque ID and
 keep the mapping in your own store, where it can be erased. `Config.OnWarn` reports an ID that looks like
-an email address or holds a run of 12 or more digits, and `Config.RefuseSuspectIDs` makes `Publish`
-refuse it. This is a tripwire for the obvious cases, not a proof that an ID is clean.
+an email address (an `@` with something before it and a dotted host or `localhost` after it, anywhere in the
+ID, except that the exact notifier prefix `notify:@open:` is not examined), or that holds 12 or more digits
+in a row or 13 or more digits separated by spaces or hyphens (an account or card number), and
+`Config.RefuseSuspectIDs` makes `Publish` refuse it. This is a tripwire for those cases, not a proof that an ID is
+clean: it does not catch a name, an address, free text, an obfuscated email address or an unusual number notation.
 
 ### Cost and volume
 
@@ -139,6 +142,22 @@ match its body, and any head whose signature does not verify.
 
 `Reader` gives `Latest`, `Head` (a size), `Heads` (all, in increasing size) and `Audit`. S3 lists a key as
 soon as it is written (strong read-after-write consistency, since December 2020), which `Latest` relies on.
+
+- **Equivocation.** Two validly signed heads of one tree and size with different roots are the log key
+  signing two histories. `Latest`, `Head` and `Heads` return an error wrapping `ErrEquivocation` naming both
+  and never pick one; `Audit` and `bide-anchor check` report it as a finding. Two heads of one size with the
+  same root (two processes anchoring one run around a lease handoff) are normal.
+- **Stray objects.** An object that is not in the layout, or is not the canonical encoding of a head, is
+  skipped and reported (`ReaderConfig.OnSkip`, or `log/slog` at Warn) so that one garbage object written by
+  anyone who can `PutObject` cannot make a partition unreadable (a locked object cannot be removed). `Audit`
+  and `check` fail on every such object and say so when its key claims a size larger than the largest
+  verified head. A **well-formed head whose signature does not verify** is never skipped: it may be a real
+  head signed by another key, and skipping it would show an older head as the latest. `Latest` returns an
+  error wrapping `ErrBadSignature` naming the key.
+- **An existing object.** When the head's key already exists (a retry, another process, another tool wrote
+  the same bytes), `Publish` requires its lock to be at least as strong as the configuration, counted from
+  its own write (`LastModified`); an object that another writer stored under the bucket's shorter default
+  retention is `ErrWeak`, not anchored.
 
 ## The IAM policies
 
@@ -179,11 +198,37 @@ cover every call the package makes. The writer's, for the application:
 - With `Config.LegalHold`, also allow `s3:PutObjectLegalHold`. It lets the holder release the hold too, so
   give release (the same action) to a separate identity and keep it off the application's role; the
   application only needs to place it.
-- `BucketPolicy` denies everyone `s3:DeleteObjectVersion`, `s3:BypassGovernanceRetention`, and changes to
-  the lock configuration, versioning and lifecycle, requires SSE-KMS and an object lock mode on every
-  write, and requires TLS. Apply it after the bucket is configured, since it denies the calls that
-  configure it. A deny in a bucket policy is overridden by whoever can replace the policy: make
-  `s3:PutBucketPolicy` and the organization's service control policies the anchor account's to guard.
+- `BucketPolicy` is what stops the writer (which you should assume may be an adversarial operator) from
+  anchoring a weaker head than the configuration says. It denies everyone `s3:DeleteObjectVersion`,
+  `s3:BypassGovernanceRetention` and changes to the lock configuration, versioning and lifecycle; denies a
+  `s3:PutObject` whose `s3:object-lock-mode` is not the configured mode, whose
+  `s3:object-lock-remaining-retention-days` is under the floor, or whose SSE-KMS key is not the configured one;
+  requires TLS; and denies `s3:PutBucketPolicy` and `s3:DeleteBucketPolicy` to everyone but one administrator
+  role. Fill it in with `awss3.PolicyFor(awss3.BucketPolicy, awss3.PolicyParams{Bucket, Prefix, KMSKeyARN,
+  LockMode, MinRetentionDays, AdminRoleARN})`; `MinRetentionDays` is the days of `Config.Retention` and must
+  be set, since without it a writer can anchor a head with a one-day lock. Apply it after the bucket is
+  configured, since it denies the calls that configure it.
+- **Nothing in a bucket policy stops the account's owner from removing the policy itself**: the account's root
+  user and any administrator who can change the administrator role can. The control is an organization service
+  control policy on the anchor account, which no principal inside the account can lift, for example:
+
+  ```json
+  {
+    "Version": "2012-10-17",
+    "Statement": [{
+      "Sid": "ProtectTheAnchor",
+      "Effect": "Deny",
+      "Action": ["s3:PutBucketPolicy", "s3:DeleteBucketPolicy", "s3:PutBucketObjectLockConfiguration",
+                 "s3:DeleteBucket", "kms:ScheduleKeyDeletion", "kms:DisableKey", "kms:PutKeyPolicy",
+                 "organizations:LeaveOrganization", "account:CloseAccount"],
+      "Resource": "*",
+      "Condition": {"StringNotLike": {"aws:PrincipalArn": "arn:aws:iam::*:role/anchor-admin"}}
+    }]
+  }
+  ```
+
+  The SCP text is an example to adapt and is not tested here (an SCP does not apply to the organization's
+  management account, so keep the anchor account out of it).
 - The reader policy (auditors and monitors) is read-only. A reader also needs `kms:Decrypt` on the key.
 
 **CloudTrail.** Turn on S3 data events for the bucket in the anchor account, delivered to a third place
@@ -215,7 +260,10 @@ the bucket.
 
 `verify` (offline) checks every object's name, encoding and signature and reports two signed heads of one
 size with different roots: that is the log key signing two histories, and no normal operation does it. It
-cannot see the objects' lock state, which is S3 metadata and not in the file, and it says so. `check`
+cannot see the objects' lock state, which is S3 metadata and not in the file, and it says so. It cannot
+show that the directory is **complete** either: a stale or partial `aws s3 sync` that lacks the newest
+heads verifies and exports without complaint, which is a rollback of the evidence. Compare the largest size
+`verify` and `export` print with the journal's current size. `check`
 (online) reads every version of every object and reports a finding for each delete marker, each object that
 is not locked, each retention that has ended (the object can be deleted now), each governance-mode lock,
 each key with more than one version, and each object that is not a verified head. Findings exit 1.

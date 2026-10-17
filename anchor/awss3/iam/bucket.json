@@ -15,23 +15,46 @@
       "Resource": ["arn:aws:s3:::BUCKET", "arn:aws:s3:::BUCKET/*"]
     },
     {
-      "Sid": "OnlyLockedKmsEncryptedHeads",
+      "Sid": "OnlyTheAdministratorChangesThisPolicy",
       "Effect": "Deny",
       "Principal": "*",
-      "Action": "s3:PutObject",
-      "Resource": "arn:aws:s3:::BUCKET/PREFIX*",
+      "Action": ["s3:PutBucketPolicy", "s3:DeleteBucketPolicy"],
+      "Resource": "arn:aws:s3:::BUCKET",
       "Condition": {
-        "Null": {"s3:object-lock-mode": "true"}
+        "StringNotEquals": {"aws:PrincipalArn": "ADMIN_ROLE_ARN"}
       }
     },
     {
-      "Sid": "OnlyKmsEncryptedHeads",
+      "Sid": "OnlyLockedHeads",
       "Effect": "Deny",
       "Principal": "*",
       "Action": "s3:PutObject",
       "Resource": "arn:aws:s3:::BUCKET/PREFIX*",
       "Condition": {
-        "StringNotEquals": {"s3:x-amz-server-side-encryption": "aws:kms"}
+        "StringNotEquals": {"s3:object-lock-mode": "LOCK_MODE"}
+      }
+    },
+    {
+      "Sid": "OnlyLongRetention",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::BUCKET/PREFIX*",
+      "Condition": {
+        "NumericLessThan": {"s3:object-lock-remaining-retention-days": "MIN_RETENTION_DAYS"}
+      }
+    },
+    {
+      "Sid": "OnlyTheConfiguredKmsKey",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::BUCKET/PREFIX*",
+      "Condition": {
+        "StringNotEquals": {
+          "s3:x-amz-server-side-encryption": "aws:kms",
+          "s3:x-amz-server-side-encryption-aws-kms-key-id": "KMS_KEY_ARN"
+        }
       }
     },
     {

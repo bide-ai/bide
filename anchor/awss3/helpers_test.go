@@ -68,9 +68,40 @@ func newAnchor(t testing.TB, f *awss3test.Fake, mod func(*awss3.Config)) *awss3.
 
 func newReader(t testing.TB, f *awss3test.Fake, v audit.Verifier) *awss3.Reader {
 	t.Helper()
-	r, err := awss3.NewReader(awss3.ReaderConfig{Client: f, Bucket: bucket, ExpectedBucketOwner: owner, Verifier: v})
+	r, _ := newReaderSkips(t, f, v)
+	return r
+}
+
+// newReaderSkips is newReader and the objects it skipped, as it reports them.
+func newReaderSkips(t testing.TB, f *awss3test.Fake, v audit.Verifier) (*awss3.Reader, *[]awss3.Finding) {
+	t.Helper()
+	var skipped []awss3.Finding
+	r, err := awss3.NewReader(awss3.ReaderConfig{Client: f, Bucket: bucket, ExpectedBucketOwner: owner, Verifier: v,
+		OnSkip: func(f awss3.Finding) { skipped = append(skipped, f) }})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return r
+	return r, &skipped
+}
+
+// headRoot is head with a root chosen by a seed, so two heads of one size can disagree.
+func (k keys) headRoot(t testing.TB, run string, size int, ts int64, seed string) audit.SignedTreeHead {
+	t.Helper()
+	root := sha256.Sum256([]byte(seed))
+	sth, err := audit.SignTreeHead(audit.TreeHead{Kind: audit.TreeJournal, RunID: run, Size: size, Root: root[:], TimestampNanos: ts}, k.signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sth
+}
+
+// keyAndBody is the key and the bytes Publish uses for a head: it publishes to a scratch bucket.
+func keyAndBody(t testing.TB, k keys, h audit.SignedTreeHead) (string, []byte) {
+	t.Helper()
+	f := awss3test.New(bucket)
+	if err := newAnchor(t, f, nil).Publish(ctx, h.RunID, h); err != nil {
+		t.Fatal(err)
+	}
+	key := f.Keys()[0]
+	return key, f.Versions(key)[0].Body
 }
