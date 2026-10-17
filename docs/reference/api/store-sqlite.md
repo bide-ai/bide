@@ -66,6 +66,7 @@ Store is a SQLite-backed agent.Store.
 - `func (s *Store) Insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error)`: Insert implements agent.Store.
 - `func (s *Store) Load(ctx context.Context, runID string, after int64) iter.Seq2[agent.Entry, error]`: Load implements agent.Store.
 - `func (s *Store) ReapLeases(ctx context.Context, ended []string) (int, error)`: ReapLeases implements agent.Leaser with one DELETE, which checks the expiry in the same statement, so a lease taken or renewed meanwhile is kept.
+- `func (s *Store) Redact(ctx context.Context, runID, name string, current, tombstone []byte) (bool, error)`: Redact implements agent.Redactor with one UPDATE that replaces the entry only if it holds current, the run holds an end marker and no lease on the run is live (see agent.Redactor).
 - `func (s *Store) ReleaseLease(ctx context.Context, runID, holder string) error`: ReleaseLease implements agent.Leaser: it deletes runID's lease if holder holds it.
 - `func (s *Store) RenewLease(ctx context.Context, runID, holder string, ttl time.Duration) (bool, error)`: RenewLease implements agent.Leaser: it extends holder's still-live lease on runID.
 - `func (s *Store) Runs(ctx context.Context, f agent.RunFilter) iter.Seq2[string, error]`: Runs implements agent.Lister.

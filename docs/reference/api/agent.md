@@ -70,6 +70,12 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `var ErrInvalidApproval`: ErrInvalidApproval is an approver decision rejected at submission by SubmitDecision's WithDecisionCheck: no such tool call, an unknown approver, or a signature that does not verify for this exact call.
 - `var ErrStatusUnavailable`: ErrStatusUnavailable is a certificate-bound decision submitted (with WithDecisionCheck) while the revocation status of its chain is missing or stale: the decision is not refused, the gate cannot judge it yet, and nothing is written.
 - `var ErrAlreadyDecided`: ErrAlreadyDecided is a decision submitted (with WithDecisionCheck) by an approver whose earlier valid decision on the same call already counts; the new one would be ignored.
+- `var ErrRedactNotTerminal`: ErrRedactNotTerminal is a redaction in a run with no end marker.
+- `var ErrRedactLeased`: ErrRedactLeased is a redaction in a run whose lease is live: a driver may be running it.
+- `var ErrRedactProtected`: ErrRedactProtected is a redaction of a record a verifier or the engine needs (see RedactionProtected).
+- `var ErrRedactMismatch`: ErrRedactMismatch is a tombstone whose leaf hash is not the leaf hash of the bytes it replaces, or one that is not a well-formed tombstone.
+- `var ErrRedactChanged`: ErrRedactChanged is a redaction of an entry whose bytes are not the bytes the caller read: another writer changed it, or the caller's copy is not what is stored.
+- `var ErrRedactNoEntry`: ErrRedactNoEntry is a redaction of an entry the run does not hold.
 - `var ErrAlreadyResolved`: ErrAlreadyResolved is the condition of a resolution refused because the operation already has a different recorded outcome (see HaltAlreadyResolved).
 - `var ErrApprovalExpired = errors.New("approval expired")`: ErrApprovalExpired is returned (wrapped) when an approval gate's deadline has passed: by Approve and SubmitDecision for a decision on such a gate (also ErrConfig: nothing is recorded), and by a plan flow for a node whose gate expired (also plan.ErrApprovalDenied).
 - `var ErrGateNeedsNewRun = errors.New("the gate needs a new run")`: ErrGateNeedsNewRun is wrapped (with ErrConfig) by the error of a certificate-bound gate that cannot go on in place: its recorded count passed without excluding the requester and the policy now excludes them, so no re-ask can be named.
@@ -115,6 +121,7 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `func Capability[T any](store Store) (T, bool)`: Capability returns store's implementation of the optional capability T (Lister, Leaser, or any other interface a store may implement beyond Store), looking through wrappers.
 - `func CertLeafHash(der []byte) [32]byte`: CertLeafHash is the SHA-256 of a leaf certificate's DER: what a v4 decision signs in place of the certificate itself.
 - `func CertRecordVerifies(iv CertIntakeVerifier, s ApprovalSubject, r Record) bool`: CertRecordVerifies reports whether r is a valid decision of a certificate-bound approver for s as the intake judges (CertIntakeVerifier): its chain, identity, scheme and signature hold now and nothing in its chain is revoked.
+- `func CheckRedaction(runID, name string, current, tombstone []byte) error`: CheckRedaction checks the part of a redaction that needs no store: that tombstone is a well-formed tombstone (TombstoneLeafHash), that the leaf hash it keeps is the leaf hash of current (LeafHash), and that the record current holds, named name in run runID, is not protected (RedactionProtected).
 - `func DecisionStep(d Decision) string`: DecisionStep returns the journal name SubmitDecision gives the record of d first: distinct for each distinct decision (call, approver, verdict, scheme and decision time), and the same for every resubmission of it, whatever its signature bytes, which is why that is a no-op.
 - `func DigestKey(bucket string) string`: DigestKey is the event key of the digest for time bucket (an opaque, stable label).
 - `func EncodeRecord(r Record) ([]byte, error)`: EncodeRecord returns the journal encoding of r: the bytes a store persists for it and the bytes an audit leaf commits to.
@@ -141,7 +148,9 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `func IsSubRun(runID string) bool`: IsSubRun reports whether runID is a sub-agent's run (SubRunID), which its root run drives: its last '&gt;' is followed by an encoded call ID, not by a session's mark.
 - `func JournalEntry(name string, rec Record) ([]byte, error)`: JournalEntry returns the bytes a store persists when it records rec as the step named name: rec with Name set to name and a fresh random Salt (see Record.Salt; a salt the engine drew for the record is kept), in its journal encoding (EncodeRecord).
 - `func LastSegment(recs []NotifyRecord) string`: LastSegment is the segment named by the last NotifySegment record of an open-trail index, "" if there is none.
+- `func LeafHash(recordBytes []byte) []byte`: LeafHash returns the audit leaf hash of a journal record from the bytes the journal stores for it: SHA-256(0x00 || "bide.audit.journal-leaf.v1\\x00" || recordBytes), the RFC 6962 leaf hash of the journal leaf.
 - `func Lease(ctx context.Context, store *Journal, runID string, drive func(context.Context) error, opts ...LeaseOption) (bool, error)`: Lease runs drive under an exclusive, auto-renewed lease on runID, so a primary driver and a recoverer (or two workers) do not drive the same run at once.
+- `func NewTombstone(recordBytes []byte, at time.Time) ([]byte, error)`: NewTombstone returns the redaction tombstone that replaces the stored bytes recordBytes: {"redacted":{"leaf\_hash":"&lt;hex of LeafHash(recordBytes)&gt;","at\_ms":&lt;at in Unix millis&gt;}}.
 - `func NextOnceKey(ctx context.Context) string`: NextOnceKey returns a key for the next exactly-once operation (an idempotent append, say) that the tool call running in ctx makes, or "" outside a tool call.
 - `func NotifyID(key string) string`: NotifyID is the stable delivery ID of an event: the hex SHA-256 of its key.
 - `func NotifyPending(ctx context.Context, j *Journal, n Notifier, trail NotifyTrail, opts ...NotifyOption) error`: NotifyPending runs one catch-up sweep for a notifier: it reads every unfinished run in j and delivers, through n and trail as WithNotifier would, each event that needs a person and has not been delivered: a run waiting at an approval gate, and a run halted on an effect whose outcome is unknown.
@@ -156,6 +165,8 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `func RecoverLoop(ctx context.Context, store *Journal, resume Resumer, opts ...RecoverLoopOption) error`: RecoverLoop re-drives in-flight runs until ctx is done, so a run whose holder dies is taken over automatically: Recover is a single pass, and a run another holder leases at that moment is left for a later one.
 - `func RecoveryKey(runID string, episode int) string`: RecoveryKey is the event key of runID's episode-th recovery failure (episode counts the recovered records before it, from zero).
 - `func RedactURLs(s string) string`: RedactURLs returns s with every URL in it redacted: its userinfo, each query parameter's value, and its fragment become REDACTED, and its scheme, host, path, and query parameter names are kept.
+- `func RedactionEndMarkers() []string`: RedactionEndMarkers returns the names of the end markers: a run that holds one of them is over, and only such a run may be redacted.
+- `func RedactionProtected(name string, kind StepKind) string`: RedactionProtected reports why a record named name, of kind kind, may never be redacted, or "" if it may.
 - `func RenderMermaid(ctx context.Context, d *Journal, runID string) (string, error)`: RenderMermaid returns a Mermaid flowchart of a run's journaled steps, the "graph as derived OUTPUT" (Option B): you write plain Go, and the graph is rendered from what actually ran, not hand-authored.
 - `func ReportNotifyAck(ctx context.Context, ack NotifyAck)`: ReportNotifyAck is called by a Notifier, with the context it was given, to say how a delivery it is about to acknowledge was authenticated and answered.
 - `func ResolveHalt(ctx context.Context, store *Journal, ref HaltRef, out Outcome, opts ...ResolveOption) error`: ResolveHalt is the sanctioned escape from an \*OutcomeUnknown halt.
@@ -170,6 +181,7 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `func SupersededTallies(byName map[string]Record, outcome string) []string`: SupersededTallies returns the names of the tallies that outcome, the gate's outcome (as RecordedTally returns it, among byName) supersedes, oldest first: the tally its Supersedes names, and that one's, and so on.
 - `func TallyApprovals(recs []Record, s ApprovalSubject, p ApprovalPolicy, verifierFor ApproverVerifierFor) (ApprovalTally, []DecisionCheck)`: TallyApprovals is the m-of-n counting rule, shared by the gate and offline verification so the two cannot drift.
 - `func ToKey(receiver, key string) string`: ToKey is the event key of key's delivery to receiver, for an event that goes to several receivers at once (an approval whose approvers are routed to different ones): each has a key, and so an ID, claim and acknowledgement, of its own.
+- `func TombstoneLeafHash(b []byte) ([]byte, bool)`: TombstoneLeafHash returns the leaf hash a tombstone keeps, and false if b is not a well-formed tombstone (the reserved form of Record.Redacted with a leaf hash of 32 bytes in lower-case hex).
 - `func ToolResultStep(toolUseID string) string`: ToolResultStep is the key of the result of the call toolUseID: the record the loop, a saga rollback, or ResolveHalt writes when the call's outcome is known.
 - `func ToolsDigest(tools []ToolSpec) string`: ToolsDigest is the hex SHA-256 digest a model record journals of the tool set a turn was sent: each tool's name, description and argument schema, length-prefixed under a domain tag, in the order of their names, so the digest does not depend on the order the tools were listed in.
 - `func ValidReaskNote(byName map[string]Record, toolUseID, name string, w ApprovalWait) bool`: ValidReaskNote reports whether w, the content of the record named name (ApprovalReaskStep of toolUseID), is a re-ask note the journal proves: its Reask is the reason its name stands for, and its Supersedes names a recorded tally (among byName) that GateReask would ask again over for that reason, namely the call's tally for a format re-ask, and for a separation-of-duties re-ask the outcome so far (the format re-approval tally when the tally predates DecisionFormat and that one is recorded, else the tally) under a policy that excludes the requester.
@@ -1303,6 +1315,18 @@ JournalVersionError is returned by a Journal asked to read or write a run whose 
 - `func (e *JournalVersionError) Error() string`: Error describes the run, the format found, and the formats supported.
 - `func (e *JournalVersionError) Unwrap() error`: Unwrap returns ErrJournalVersion.
 
+## type KeptRecord
+
+```go
+type KeptRecord struct {
+	Position int    `json:"position"`
+	Name     string `json:"name"`
+	Reason   string `json:"reason"`
+}
+```
+
+KeptRecord is a record a selector chose and a redaction keeps, and why.
+
 ## type LeaseControl
 
 ```go
@@ -1396,6 +1420,7 @@ MemStore is an in-memory Store for tests and local development.
 - `func (m *MemStore) Insert(ctx context.Context, runID, name string, data []byte) (Entry, bool, error)`: Insert implements Store.
 - `func (m *MemStore) Load(ctx context.Context, runID string, after int64) iter.Seq2[Entry, error]`: Load implements Store.
 - `func (m *MemStore) ReapLeases(_ context.Context, ended []string) (int, error)`: ReapLeases implements Leaser.
+- `func (m *MemStore) Redact(ctx context.Context, runID, name string, current, tombstone []byte) (bool, error)`: Redact implements Redactor.
 - `func (m *MemStore) ReleaseLease(_ context.Context, runID, holder string) error`: ReleaseLease implements Leaser.
 - `func (m *MemStore) RenewLease(_ context.Context, runID, holder string, ttl time.Duration) (bool, error)`: RenewLease implements Leaser.
 - `func (m *MemStore) Runs(ctx context.Context, f RunFilter) iter.Seq2[string, error]`: Runs implements Lister: the runs f admits, in ascending order.
@@ -2099,6 +2124,25 @@ Pause is the error a run returns when it has stopped durably and is waiting on s
 
 - `func AsPause(err error) (Pause, bool)`: AsPause returns the first Pause in err's chain, if there is one.
 
+## type PlannedRedaction
+
+```go
+type PlannedRedaction struct {
+	Position int    `json:"position"`
+	Name     string `json:"name"`
+
+	Kind StepKind `json:"kind,omitempty"`
+
+	Length int `json:"length,omitempty"`
+
+	LeafHash string `json:"leaf_hash"`
+
+	AlreadyRedacted bool `json:"already_redacted,omitempty"`
+}
+```
+
+PlannedRedaction is one record a redaction would replace (or already replaced).
+
 ## type Principal
 
 ```go
@@ -2285,6 +2329,85 @@ type RecoverOption interface {
 ```
 
 RecoverOption configures Recover.
+
+## type RedactState
+
+```go
+type RedactState struct {
+	Row    Entry
+	Found  bool
+	Ended  bool
+	Leased bool
+}
+```
+
+RedactState is what a Redactor read after its conditional replacement changed nothing, to say why.
+
+**Methods**
+
+- `func (s RedactState) Explain(runID, name string, current, tombstone []byte) error`: Explain says what a replacement that changed nothing meant: it returns nil if the entry already holds the tombstone's redaction (nothing to do), and otherwise an error that wraps the ErrRedact sentinel that names the refusal.
+
+## type RedactionPlan
+
+```go
+type RedactionPlan struct {
+	RunID   string             `json:"run_id"`
+	Records []PlannedRedaction `json:"records"`
+	Kept    []KeptRecord       `json:"kept,omitempty"`
+
+	JournalSize int `json:"journal_size"`
+
+	Terminal bool   `json:"terminal"`
+	Digest   string `json:"digest"`
+}
+```
+
+RedactionPlan is what a redaction of one run would do: the records it replaces, the selected records it keeps, and a digest of the replacements.
+
+**Constructors and functions**
+
+- `func PlanRedaction(ctx context.Context, j *Journal, runID string, sel RedactionSelector) (RedactionPlan, error)`: PlanRedaction reads runID's journal and returns what redacting the records sel selects would do, without writing anything.
+
+## type RedactionResult
+
+```go
+type RedactionResult struct {
+	Redacted []PlannedRedaction `json:"redacted,omitempty"`
+	Already  []PlannedRedaction `json:"already,omitempty"`
+}
+```
+
+RedactionResult is what Redact did.
+
+**Constructors and functions**
+
+- `func Redact(ctx context.Context, j *Journal, plan RedactionPlan, at time.Time) (RedactionResult, error)`: Redact replaces the records plan names with tombstones, in position order, each in its own transaction of the store's Redactor (so a crash leaves a prefix replaced and a second call with the same plan finishes the rest).
+
+## type RedactionSelector
+
+```go
+type RedactionSelector struct {
+	Names    []string
+	Kinds    []StepKind
+	Prefixes []string
+
+	Payloads bool
+
+	IncludeApprovals bool
+}
+```
+
+RedactionSelector chooses the records of one run a redaction replaces.
+
+## type Redactor
+
+```go
+type Redactor interface {
+	Redact(ctx context.Context, runID, name string, current, tombstone []byte) (bool, error)
+}
+```
+
+Redactor is the optional store capability that replaces one entry's bytes with a redaction tombstone (see Record.Redacted).
 
 ## type Request
 

@@ -510,6 +510,20 @@ seal covers the whole package JSON, still verifies (`bide audit verify-evidence`
 but it cannot be re-sealed and its seal cannot be produced by a signer that refuses large messages.
 Re-create the evidence to get a v6 package.
 
+**Erasing personal data is a library call, and it cannot reach everything.** SQLite, Postgres and
+`MemStore` can replace chosen records of a finished run with tombstones (`agent.PlanRedaction`,
+`agent.Redact`; [retention guide](guides/retention.md#erasing-personal-data)); there is no command
+yet, and the redaction itself is not recorded in an audit trail yet, so keep your own change record.
+A journal holding a tombstone cannot produce a new absence set, run certificate or event stream
+(`audit.ErrRedacted`): make that evidence first. It does not erase the run's final result
+(`run:complete` is an end marker and stays), the record names, copies in exported journals,
+evidence packages and approver receipts, the event store (`bide_events`, which has no tombstone for
+an event leaf), Postgres dead tuples before `VACUUM`, SQLite free pages and the write-ahead log,
+backups, replicas and WAL archives, logs and traces, or the model provider's copy. Govern event logs
+hold opaque application strings and cannot be erased. The notifier's sweep of an aborted flow run
+whose `run:start` was redacted attributes its events to the run ID's root, as it does for any run
+whose `run:start` it cannot read. Sessions have no end marker, so they cannot be redacted.
+
 ## Key custody
 
 A signing key can be held in a PKCS#11 token, AWS KMS, Google Cloud KMS or Azure Key Vault ([Key custody](guides/key-custody.md)). What is and is not supported:
