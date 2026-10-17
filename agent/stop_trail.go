@@ -140,6 +140,8 @@ func DiffStopRecords(store, trail []StopRecord) (storeOnly, trailOnly []StopReco
 	return storeOnly, trailOnly
 }
 
+// protocol:stop begin Reaudit
+
 // Reaudit appends to the trail every record of the control run that it lacks, in store order, and
 // returns how many it appended: how a stop whose trail write failed (a *StopTrailError) is completed, and
 // a trail that fell behind is caught up. It needs a control with a trail.
@@ -174,6 +176,8 @@ func (c *StopControl) Reaudit(ctx context.Context) (int, error) {
 	}
 	return n, nil
 }
+
+// protocol:stop end
 
 // VerifyStopRecords folds records (a control run's, or a stop trail's) under the policy the options give,
 // with no store: what bide audit stops does to a trail. It returns the same StopState as
