@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,6 +30,8 @@ type crlRoute struct {
 	hdr      http.Header
 	redirect string
 	chunked  bool
+	stream   bool // write junk until the client goes away (at most 64 MiB), counting what was written
+	written  atomic.Int64
 	etag     string
 	hits     int
 	inm      []string
@@ -79,6 +82,17 @@ func newCRLServer(t *testing.T) *crlServer {
 		}
 		if status != 0 {
 			w.WriteHeader(status)
+		}
+		if rt.stream {
+			chunk := make([]byte, 32<<10)
+			for rt.written.Load() < 64<<20 {
+				if _, err := w.Write(chunk); err != nil {
+					return
+				}
+				w.(http.Flusher).Flush()
+				rt.written.Add(int64(len(chunk)))
+			}
+			return
 		}
 		if chunked {
 			for len(body) > 0 {

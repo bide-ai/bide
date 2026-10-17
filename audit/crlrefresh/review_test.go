@@ -315,3 +315,20 @@ func TestRefresherRefusesASignatureByAnotherIssuersKey(t *testing.T) {
 		t.Fatalf("a CRL signed by another CA's key was accepted: %s", g.dump())
 	}
 }
+
+// The read limit is the memory bound against a hostile server: the client stops reading (and closes the
+// connection) soon after the limit, it does not take what the server is willing to send.
+func TestRefresherStopsReadingAtTheLimit(t *testing.T) {
+	g := newCRig(t, withSnapOpts(audit.WithLimits(2000, 1000)))
+	g.publishFresh(1)
+	rt := g.srv.set("/inter.crl", nil)
+	rt.stream = true
+	g.start()
+	if g.refresh()[g.intK] == nil {
+		t.Fatalf("an endless body was accepted: %s", g.dump())
+	}
+	// The limit is 2000 bytes; allow generous room for socket buffers and the chunk in flight.
+	if n := rt.written.Load(); n > 8<<20 {
+		t.Fatalf("the server wrote %d bytes before the client stopped reading", n)
+	}
+}
