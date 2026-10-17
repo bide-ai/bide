@@ -72,7 +72,7 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 **Functions**
 
 - `func AbsenceRoot(records []agent.Record, set KeySet) (root []byte, size int, err error)`: AbsenceRoot is the RFC 6962 Merkle root over the run's sorted, distinct keys in set, and the number of keys.
-- `func AppendRedactionRecord(ctx context.Context, store EventStore, r RedactionRecord) error`: AppendRedactionRecord appends r to the redaction trail in store, at the next position.
+- `func AppendRedactionRecord(ctx context.Context, store EventStore, r RedactionRecord, signer Signer) error`: AppendRedactionRecord signs r with signer (the redaction key) and appends it to the redaction trail in store, at the next position.
 - `func ApprovalArgsDigest(s agent.ApprovalSubject) string`: ApprovalArgsDigest returns the SHA-256 of the canonical arguments of s, in lowercase hex: the digest a signature over agent.ApprovalDecisionBytes(s, ...) binds.
 - `func AttenuatingSubAgent(name, description string, sub *agent.Agent, cfg AttenuationConfig, opts ...agent.ToolOption) agent.Tool`: AttenuatingSubAgent wraps a sub-agent as a delegation Tool that attenuates authority by default.
 - `func CRLTBSHash(der []byte) ([32]byte, bool)`: CRLTBSHash is the SHA-256 of the TBSCertList of a CRL's DER, for comparing two CRLs without their (possibly randomised) signatures.
@@ -1731,6 +1731,8 @@ RedactionFindingKind names what VerifyRedactions found wrong.
 - `const FindingNameMismatch RedactionFindingKind = "NAME_MISMATCH"`: FindingNameMismatch: a tombstone's name is not the name the trail recorded at that position.
 - `const FindingHashMismatch RedactionFindingKind = "HASH_MISMATCH"`: FindingHashMismatch: a tombstone's leaf hash is not the one the trail recorded.
 - `const FindingUncovered RedactionFindingKind = "UNCOVERED"`: FindingUncovered: a redaction that ran with no covering signed head.
+- `const FindingBadSignature RedactionFindingKind = "BAD_SIGNATURE"`: FindingBadSignature: a trail record with no signature, or one that does not verify under the key: not the tool's, whatever head covers it.
+- `const FindingEventCopies RedactionFindingKind = "EVENT_COPIES_KEPT"`: FindingEventCopies: an erasure that left the run's events in the event store.
 - `const FindingTimeMismatch RedactionFindingKind = "TIME_MISMATCH"`: FindingTimeMismatch: a tombstone stamped at a time no pass of the trail that listed it carries.
 - `const FindingUnchecked RedactionFindingKind = "UNCHECKED"`: FindingUnchecked: the trail names a run no journal was given for.
 - `const FindingMalformed RedactionFindingKind = "MALFORMED"`: FindingMalformed: a trail record that does not read.
@@ -1740,6 +1742,10 @@ RedactionFindingKind names what VerifyRedactions found wrong.
 ```go
 type RedactionOptions struct {
 	Reason, Ticket string
+
+	Signer Signer
+
+	EventCopiesKept int
 
 	Executor string
 
@@ -1781,6 +1787,11 @@ type RedactionRecord struct {
 	Redacted int    `json:"redacted,omitempty"`
 	Already  int    `json:"already,omitempty"`
 	Error    string `json:"error,omitempty"`
+
+	EventCopiesKept int `json:"event_copies_kept,omitempty"`
+
+	Alg       string `json:"alg"`
+	Signature []byte `json:"signature"`
 }
 ```
 
@@ -1971,6 +1982,7 @@ SignedTreeHead is a TreeHead with a signature over its canonical encoding under 
 
 - `func SignAbsenceRoot(records []agent.Record, set KeySet, journal TreeHead, s Signer, timestamp int64) (SignedTreeHead, error)`: SignAbsenceRoot commits and signs a run's key set in one call: NewAbsenceTreeHead, then SignTreeHead with s.
 - `func SignNotifyTrail(ctx context.Context, store EventStore, trail string, s Signer, now time.Time) (SignedTreeHead, error)`: SignNotifyTrail signs a tree head over the leaves store holds for trail, at now.
+- `func SignRedactionTrail(ctx context.Context, store EventStore, signer Signer, v Verifier, prior []SignedTreeHead, now time.Time) (SignedTreeHead, error)`: SignRedactionTrail signs a tree head over the redaction trail in store, after checking the trail is the one the earlier heads attest: every head in prior must verify under v, be a head of the trail, and commit to a prefix of it, and every record in the trail must carry a signature that verifies under v, so a record planted by someone who can append to the event store (and holds no key) is refused rather than attested by the head.
 - `func SignTreeHead(th TreeHead, s Signer) (SignedTreeHead, error)`: SignTreeHead signs th under s's scheme.
 
 **Methods**

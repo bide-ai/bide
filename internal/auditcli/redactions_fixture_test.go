@@ -40,7 +40,7 @@ func newRedactionFiles(t *testing.T, signer audit.Signer, file func(string, any)
 	}
 	trail := audit.NewMemEventStore()
 	if _, err := audit.RedactJournal(ctx, j, trail, plan, audit.RedactionOptions{Reason: "request", Ticket: "T-1", Executor: "op", Now: time.Now(),
-		Heads: []audit.SignedTreeHead{head}, Verifier: audit.Ed25519Verifier{Pub: ed25519.PublicKey(signer.PublicKey())}}); err != nil {
+		Signer: signer, Heads: []audit.SignedTreeHead{head}, Verifier: audit.Ed25519Verifier{Pub: ed25519.PublicKey(signer.PublicKey())}}); err != nil {
 		t.Fatal(err)
 	}
 	x, err := audit.ExportNotifyTrail(ctx, trail, audit.RedactionTrailName)

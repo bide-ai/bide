@@ -3,6 +3,7 @@ package audit_test
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -47,7 +48,7 @@ func newTrailRig(t *testing.T) *trailRig {
 		t.Fatal(err)
 	}
 	r.options = audit.RedactionOptions{Reason: "customer request", Ticket: "PRIV-42", Executor: "alice", Now: time.UnixMilli(1_700_000_000_000),
-		Version: "test", Heads: []audit.SignedTreeHead{r.head}, Verifier: r.v}
+		Version: "test", Heads: []audit.SignedTreeHead{r.head}, Verifier: r.v, Signer: r.signer}
 	return r
 }
 
@@ -496,4 +497,163 @@ func TestVerifyRedactions_TombstoneTimeIsChecked(t *testing.T) {
 	if err == nil || kinds(rep) != "TIME_MISMATCH" {
 		t.Fatalf("report = %+v, %v; want TIME_MISMATCH", rep, err)
 	}
+}
+
+// plant appends to the trail a begin and end pair that names a hand-made tombstone as erased by a
+// pass, written by someone who can append to the event store and holds no key (or the wrong one).
+func (r *trailRig) plant(signer audit.Signer, runID string) {
+	r.t.Helper()
+	ctx := context.Background()
+	recs, _ := r.j.History(ctx, runID)
+	var refs []audit.RedactedRef
+	for i, x := range recs {
+		if x.Redacted {
+			h, _ := agent.TombstoneLeafHash(x.Raw())
+			at, _ := agent.TombstoneMillis(x.Raw())
+			_ = at
+			refs = append(refs, audit.RedactedRef{Position: i, Name: x.Name, LeafHash: hex.EncodeToString(h)})
+		}
+	}
+	b := audit.RedactionRecord{Phase: audit.RedactionBegin, PlanDigest: "planted", RunID: runID, Records: refs, Reason: "x", Ticket: "x", Executor: "x", AtMs: 1_700_000_000_000}
+	e := audit.RedactionRecord{Phase: audit.RedactionEnd, PlanDigest: "planted", RunID: runID, Reason: "x", Ticket: "x", Executor: "x", AtMs: 1_700_000_000_000}
+	for _, rec := range []audit.RedactionRecord{b, e} {
+		if signer == nil {
+			// no key at all: an unsigned record straight into the store
+			leaf := unsignedLeaf(r.t, rec)
+			leaves, _ := r.trail.Load(ctx, audit.RedactionTrailName)
+			if err := r.trail.Append(ctx, audit.RedactionTrailName, len(leaves), leaf); err != nil {
+				r.t.Fatal(err)
+			}
+			continue
+		}
+		if err := audit.AppendRedactionRecord(ctx, r.trail, rec, signer); err != nil {
+			r.t.Fatal(err)
+		}
+	}
+}
+
+// A begin and end pair planted through the event store, with no key or the wrong one, is never
+// attested: the tool refuses to sign a head over it, and the audit rejects it under any head.
+func TestRedactionTrail_PlantedRecordsAreNeverAttested(t *testing.T) {
+	ctx := context.Background()
+	for name, signer := range map[string]audit.Signer{"no key": nil, "another key": p11Signers(t)["ecdsa-p256"]} {
+		r := newTrailRig(t)
+		// An erasure made by hand, then a planted record that claims a pass erased it.
+		hand, _ := agent.PlanRedaction(ctx, r.j, "gov", agent.RedactionSelector{Names: []string{"note"}})
+		if _, err := agent.Redact(ctx, r.j, hand, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		r.plant(signer, "gov")
+		_, err := audit.SignRedactionTrail(ctx, r.trail, r.signer, r.v, nil, time.Unix(0, p11Now()))
+		if err == nil || !errors.Is(err, audit.ErrNotVerified) || !strings.Contains(err.Error(), "BAD_SIGNATURE") {
+			t.Fatalf("%s: SignRedactionTrail = %v; want a refusal naming BAD_SIGNATURE", name, err)
+		}
+		// Even a head some other process signed over it does not attest it.
+		leaves, head := r.signedTrail()
+		rep, err := r.verify(leaves, head)
+		if err == nil || !strings.Contains(kinds(rep), "BAD_SIGNATURE") {
+			t.Fatalf("%s: report = %+v, %v; want BAD_SIGNATURE", name, rep, err)
+		}
+	}
+}
+
+// The tool signs a head over a trail it wrote, with its earlier heads checked.
+func TestSignRedactionTrail_ChecksEarlierHeads(t *testing.T) {
+	ctx := context.Background()
+	r := newTrailRig(t)
+	if _, err := audit.RedactJournal(ctx, r.j, r.trail, r.plan, r.options); err != nil {
+		t.Fatal(err)
+	}
+	h1, err := audit.SignRedactionTrail(ctx, r.trail, r.signer, r.v, nil, time.Unix(0, p11Now()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.options.Now = time.UnixMilli(1_700_000_001_000)
+	if _, err := audit.RedactJournal(ctx, r.j, r.trail, r.plan, r.options); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := audit.SignRedactionTrail(ctx, r.trail, r.signer, r.v, []audit.SignedTreeHead{h1}, time.Unix(0, p11Now())); err != nil {
+		t.Fatalf("with the earlier head: %v", err)
+	}
+	// A different trail (a typo in -trail-db starts a new one) does not match the earlier head.
+	other := audit.NewMemEventStore()
+	r2 := newTrailRig(t)
+	r2.trail = other
+	if _, err := audit.RedactJournal(ctx, r2.j, other, r2.plan, r2.options); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := audit.SignRedactionTrail(ctx, other, r.signer, r.v, []audit.SignedTreeHead{h1}, time.Unix(0, p11Now())); err == nil || !strings.Contains(err.Error(), "TRAIL_ALTERED") {
+		t.Fatalf("a trail the earlier head does not match: %v; want a refusal naming TRAIL_ALTERED", err)
+	}
+}
+
+// A redaction that leaves events in the event store says so in the trail, and the audit reports it.
+func TestRedactJournal_EventCopiesKeptIsRecordedAndReported(t *testing.T) {
+	ctx := context.Background()
+	r := newTrailRig(t)
+	r.options.EventCopiesKept = 3
+	if _, err := audit.RedactJournal(ctx, r.j, r.trail, r.plan, r.options); err != nil {
+		t.Fatal(err)
+	}
+	leaves, head := r.signedTrail()
+	rep, err := r.verify(leaves, head)
+	if err == nil || kinds(rep) != "EVENT_COPIES_KEPT" {
+		t.Fatalf("report = %+v, %v; want EVENT_COPIES_KEPT", rep, err)
+	}
+}
+
+// A record signed by the wrong key is rejected, and so is a changed signed record.
+func TestVerifyRedactions_RecordSignaturesAreChecked(t *testing.T) {
+	ctx := context.Background()
+	r := newTrailRig(t)
+	other := p11Signers(t)["ecdsa-p256"]
+	r.options.Signer = other
+	if _, err := audit.RedactJournal(ctx, r.j, r.trail, r.plan, r.options); err != nil {
+		t.Fatal(err)
+	}
+	leaves, head := r.signedTrail()
+	if rep, err := r.verify(leaves, head); err == nil || !strings.Contains(kinds(rep), "BAD_SIGNATURE") {
+		t.Fatalf("records signed by another key: %+v, %v", rep, err)
+	}
+	r2 := newTrailRig(t)
+	if _, err := audit.RedactJournal(ctx, r2.j, r2.trail, r2.plan, r2.options); err != nil {
+		t.Fatal(err)
+	}
+	leaves, _ = r2.signedTrail()
+	leaves = append([][]byte(nil), leaves...)
+	leaves[0] = bytes.Replace(leaves[0], []byte("PRIV-42"), []byte("PRIV-99"), 1)
+	changed := audit.NewMemEventStore()
+	for i, l := range leaves {
+		if err := changed.Append(ctx, audit.RedactionTrailName, i, l); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h, err := audit.SignNotifyTrail(ctx, changed, audit.RedactionTrailName, r2.signer, time.Unix(0, p11Now()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep, err := r2.verify(leaves, h)
+	if err == nil || !strings.Contains(kinds(rep), "BAD_SIGNATURE") {
+		t.Fatalf("a record changed after signing, under a head that matches the changed trail: %+v, %v", rep, err)
+	}
+}
+
+// unsignedLeaf is an event leaf holding rec as the trail writes it, with no signature.
+func unsignedLeaf(t *testing.T, rec audit.RedactionRecord) []byte {
+	t.Helper()
+	rec.Format = audit.RedactionRecordFormat
+	inner, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kind := "redaction_begin"
+	if rec.Phase == audit.RedactionEnd {
+		kind = "redaction_end"
+	}
+	salt := make([]byte, agent.SaltSize)
+	b, err := json.Marshal(map[string]any{"kind": kind, "event": json.RawMessage(inner), "salt": salt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append([]byte("bide.audit.event-leaf.v3\x00"), b...)
 }

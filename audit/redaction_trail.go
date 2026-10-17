@@ -76,6 +76,49 @@ type RedactionRecord struct {
 	Redacted int    `json:"redacted,omitempty"`
 	Already  int    `json:"already,omitempty"`
 	Error    string `json:"error,omitempty"`
+	// EventCopiesKept is the number of events of the run the event store holds, which the erasure
+	// left (the operator chose to erase the journal anyway); 0 when it held none or was not asked.
+	EventCopiesKept int `json:"event_copies_kept,omitempty"`
+	// Alg and Signature sign the record's other members under the redaction key: a record without a
+	// signature that verifies is not the tool's, whatever signed head covers it.
+	Alg       string `json:"alg"`
+	Signature []byte `json:"signature"`
+}
+
+// redactionRecordTag domain-separates the signature of a trail record from every other message the
+// package signs.
+const redactionRecordTag = RedactionRecordFormat + "\x00"
+
+// signedBytes is what a record's signature covers: the tag and the record's encoding with no
+// signature.
+func (r RedactionRecord) signedBytes() ([]byte, error) {
+	r.Signature = nil
+	b, err := json.Marshal(r)
+	if err != nil {
+		return nil, fmt.Errorf("audit: encode redaction record: %w", err)
+	}
+	return append([]byte(redactionRecordTag), b...), nil
+}
+
+func (r *RedactionRecord) sign(s Signer) error {
+	r.Alg = string(s.Alg())
+	m, err := r.signedBytes()
+	if err != nil {
+		return err
+	}
+	if r.Signature, err = s.Sign(m); err != nil {
+		return fmt.Errorf("audit: sign redaction record: %w", err)
+	}
+	return nil
+}
+
+// verifySignature reports whether the record's signature verifies under v.
+func (r RedactionRecord) verifySignature(v Verifier) bool {
+	if v == nil || len(r.Signature) == 0 || r.Alg != string(v.Alg()) {
+		return false
+	}
+	m, err := r.signedBytes()
+	return err == nil && v.Verify(m, r.Signature)
 }
 
 func (r RedactionRecord) kind() string {
@@ -130,10 +173,17 @@ func DecodeRedactionLeaf(leaf []byte) (RedactionRecord, error) {
 	return r, nil
 }
 
-// AppendRedactionRecord appends r to the redaction trail in store, at the next position. A lost
+// AppendRedactionRecord signs r with signer (the redaction key) and appends it to the redaction trail
+// in store, at the next position. A lost
 // race for the position is retried; any other failure is returned.
-func AppendRedactionRecord(ctx context.Context, store EventStore, r RedactionRecord) error {
+func AppendRedactionRecord(ctx context.Context, store EventStore, r RedactionRecord, signer Signer) error {
+	if err := checkSigner(signer); err != nil {
+		return err
+	}
 	r.Format = RedactionRecordFormat
+	if err := r.sign(signer); err != nil {
+		return err
+	}
 	leaf, err := redactionLeaf(r)
 	if err != nil {
 		return err
@@ -179,6 +229,12 @@ func decodeRedactionLeaves(leaves [][]byte) ([]RedactionRecord, error) {
 type RedactionOptions struct {
 	// Reason and Ticket say why, and under what authority: both are required and are recorded.
 	Reason, Ticket string
+	// Signer signs every record the redaction writes (required): the redaction key, which
+	// VerifyRedactions verifies under the same log key that signs the trail's heads.
+	Signer Signer
+	// EventCopiesKept is the number of events of the run the event store holds that the erasure
+	// leaves; it is recorded and VerifyRedactions reports it.
+	EventCopiesKept int
 	// Executor says who is erasing (a key ID, a user name); required.
 	Executor string
 	// Now is the time stamped into the tombstones and the trail; the zero value is an error.
@@ -218,6 +274,8 @@ func RedactJournal(ctx context.Context, j *agent.Journal, trail EventStore, plan
 		return res, fmt.Errorf("audit: RedactJournal: a nil journal or trail: %w", agent.ErrConfig)
 	case strings.TrimSpace(opt.Reason) == "" || strings.TrimSpace(opt.Ticket) == "" || strings.TrimSpace(opt.Executor) == "":
 		return res, fmt.Errorf("audit: RedactJournal: a reason, a ticket and an executor are required, and are recorded: %w", agent.ErrConfig)
+	case opt.Signer == nil:
+		return res, fmt.Errorf("audit: RedactJournal: no signer for the trail's records: %w", agent.ErrConfig)
 	case opt.Now.IsZero():
 		return res, fmt.Errorf("audit: RedactJournal: no time: %w", agent.ErrConfig)
 	case plan.Refusal != "":
@@ -228,7 +286,7 @@ func RedactJournal(ctx context.Context, j *agent.Journal, trail EventStore, plan
 	rec := RedactionRecord{
 		Format: RedactionRecordFormat, Phase: RedactionBegin, PlanDigest: plan.Digest, RunID: plan.RunID,
 		JournalSize: plan.JournalSize, Reason: opt.Reason, Ticket: opt.Ticket, Executor: opt.Executor,
-		AtMs: opt.Now.UnixMilli(), Version: opt.Version,
+		AtMs: opt.Now.UnixMilli(), Version: opt.Version, EventCopiesKept: opt.EventCopiesKept,
 	}
 	for _, p := range plan.Records {
 		rec.Records = append(rec.Records, RedactedRef{Position: p.Position, Name: p.Name, Kind: string(p.Kind), Length: p.Length, LeafHash: p.LeafHash, Already: p.AlreadyRedacted})
@@ -238,7 +296,7 @@ func RedactJournal(ctx context.Context, j *agent.Journal, trail EventStore, plan
 		return res, err
 	}
 	rec.HeadSize, rec.Uncovered = size, size == 0
-	if err := AppendRedactionRecord(ctx, trail, rec); err != nil {
+	if err := AppendRedactionRecord(ctx, trail, rec, opt.Signer); err != nil {
 		return res, fmt.Errorf("%w: %w", ErrRedactNoTrail, err)
 	}
 	var rerr error
@@ -253,7 +311,7 @@ func RedactJournal(ctx context.Context, j *agent.Journal, trail EventStore, plan
 	if rerr != nil {
 		end.Error = rerr.Error()
 	}
-	if eerr := AppendRedactionRecord(ctx, trail, end); eerr != nil {
+	if eerr := AppendRedactionRecord(ctx, trail, end, opt.Signer); eerr != nil {
 		return res, errors.Join(rerr, fmt.Errorf("audit: the erasure ran but its end record was not written (the trail shows it unfinished; run the same plan again to close it): %w", eerr))
 	}
 	return res, rerr
@@ -303,6 +361,10 @@ const (
 	FindingHashMismatch RedactionFindingKind = "HASH_MISMATCH"
 	// FindingUncovered: a redaction that ran with no covering signed head.
 	FindingUncovered RedactionFindingKind = "UNCOVERED"
+	// FindingBadSignature: a trail record with no signature, or one that does not verify under the key: not the tool's, whatever head covers it.
+	FindingBadSignature RedactionFindingKind = "BAD_SIGNATURE"
+	// FindingEventCopies: an erasure that left the run's events in the event store.
+	FindingEventCopies RedactionFindingKind = "EVENT_COPIES_KEPT"
 	// FindingTimeMismatch: a tombstone stamped at a time no pass of the trail that listed it carries.
 	FindingTimeMismatch RedactionFindingKind = "TIME_MISMATCH"
 	// FindingUnchecked: the trail names a run no journal was given for.
@@ -393,6 +455,11 @@ func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error) {
 		return rep, notVerified("audit: redactions: %s: %s", rep.Findings[0].Kind, rep.Findings[0].Detail)
 	}
 
+	for i, r := range recs {
+		if !r.verifySignature(in.Verifier) {
+			add(FindingBadSignature, r.RunID, "trail record %d has no signature that verifies under the key: it was not written by the redaction tool (a planted record), whatever signed head covers it", i)
+		}
+	}
 	type key struct {
 		run string
 		pos int
@@ -416,6 +483,9 @@ func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error) {
 			continue
 		}
 		rep.Redactions++
+		if r.EventCopiesKept > 0 {
+			add(FindingEventCopies, r.RunID, "the redaction of plan %.12s left %d event(s) of the run in the event store (ticket %s)", r.PlanDigest, r.EventCopiesKept, r.Ticket)
+		}
 		if r.Uncovered {
 			add(FindingUncovered, r.RunID, "the redaction of plan %.12s ran with no covering signed journal head (ticket %s)", r.PlanDigest, r.Ticket)
 		}
@@ -488,4 +558,26 @@ func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error) {
 		return rep, notVerified("audit: redactions: %d finding(s), first: %s: %s", len(rep.Findings), rep.Findings[0].Kind, rep.Findings[0].Detail)
 	}
 	return rep, nil
+}
+
+// SignRedactionTrail signs a tree head over the redaction trail in store, after checking the trail is
+// the one the earlier heads attest: every head in prior must verify under v, be a head of the trail,
+// and commit to a prefix of it, and every record in the trail must carry a signature that verifies
+// under v, so a record planted by someone who can append to the event store (and holds no key) is
+// refused rather than attested by the head. It returns an error wrapping ErrNotVerified naming the
+// first problem.
+func SignRedactionTrail(ctx context.Context, store EventStore, signer Signer, v Verifier, prior []SignedTreeHead, now time.Time) (SignedTreeHead, error) {
+	leaves, err := store.Load(ctx, RedactionTrailName)
+	if err != nil {
+		return SignedTreeHead{}, fmt.Errorf("audit: load the redaction trail: %w", err)
+	}
+	rep, verr := VerifyRedactions(RedactionVerifyInput{Trail: leaves, Heads: prior, Verifier: v, Unanchored: len(prior) == 0, Journals: nil})
+	for _, f := range rep.Findings {
+		switch f.Kind {
+		case FindingTrailAltered, FindingBadSignature, FindingMalformed:
+			return SignedTreeHead{}, notVerified("audit: refusing to sign the redaction trail: %s: %s", f.Kind, f.Detail)
+		}
+	}
+	_ = verr
+	return SignNotifyTrail(ctx, store, RedactionTrailName, signer, now)
 }

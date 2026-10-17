@@ -52,10 +52,8 @@ func (c *cli) redactions(args []string) {
 		c.usageLine(fs.Name() + ": -run reads one run from a store; it needs -db or -postgres-env")
 	case haveStore && Stores == nil:
 		c.usageLine(fs.Name() + ": this build reads exported files only (-trail, -journal); -db and -postgres-env are in the full bide command")
-	case !*unanchored && *pubkey == "":
-		c.usageLine(fs.Name() + ": missing -pubkey (and an -sth for the trail); give -unanchored to read a trail nothing attests")
-	case len(heads) > 0 && *pubkey == "":
-		c.usageLine(fs.Name() + ": -sth needs -pubkey")
+	case *pubkey == "":
+		c.usageLine(fs.Name() + ": missing -pubkey: every trail record is signed with the redaction key, and the check verifies each (give -unanchored to read a trail with no signed head)")
 	}
 	in := audit.RedactionVerifyInput{Unanchored: *unanchored, Journals: map[string][]agent.Record{}}
 	ok := true
