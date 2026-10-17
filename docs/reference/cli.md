@@ -1086,11 +1086,13 @@ bide audit: produce and verify audit proof bundles
          from a store, in the full bide command; the audit-only build reads exported files
 
   redactions (-trail <file> | -trail-db <file> | -trail-postgres-env <var> | -db <file> | -postgres-env <var>)
-             [-journal <file>...] [-run <id>] -pubkey <hex|file> [-sth <file>... | -unanchored]
+             [-journal <file>...] [-run <id>] [-deployment <name>] -pubkey <hex|file> [-sth <file>... | -unanchored]
          verify the redaction trail (the signed, append-only record of each erasure of journal
          content, written by audit.RedactJournal): its signed heads commit to its records, so a
          deleted or changed record is TRAIL_ALTERED; a record with no signature that verifies under -pubkey (the
-         redaction key: planted by someone who can append to the event store) is BAD_SIGNATURE, whatever head covers it; each begin has an end (INCOMPLETE is an
+         redaction key: planted by someone who can append to the event store) is BAD_SIGNATURE, whatever head covers it; a record signed for another position or after another
+         record (a replayed, copied or reordered one, which would hide an unfinished pass) is
+         REORDERED, and one signed for another -deployment is BAD_SIGNATURE; each begin has an end (INCOMPLETE is an
          unfinished pass, finished by running the same plan again); a tombstone in a journal that no
          trail record names is UNACCOUNTED (an erasure made by hand), and one whose name or leaf hash
          is not what the trail recorded is NAME_MISMATCH or HASH_MISMATCH: a tombstone's name is
