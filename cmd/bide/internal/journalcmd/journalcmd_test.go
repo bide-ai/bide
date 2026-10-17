@@ -3,6 +3,7 @@ package journalcmd
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -90,7 +91,7 @@ func (r *rig) base() []string { return []string{"-db", r.db, "-run", "r1", "-pay
 
 func (r *rig) execArgs(digest string, extra ...string) []string {
 	a := append(r.base(), "-execute", "-plan-digest", digest, "-reason", "customer request", "-ticket", "PRIV-42",
-		"-sign-key", r.key, "-head-out", r.headOut, "-pubkey", r.pub, "-sth", r.head)
+		"-deployment", "test", "-sign-key", r.key, "-head-out", r.headOut, "-pubkey", r.pub, "-sth", r.head)
 	return append(a, extra...)
 }
 
@@ -170,7 +171,7 @@ func TestExecuteErasesAndIsAccountable(t *testing.T) {
 	}}
 	t.Cleanup(func() { auditcli.Stores = nil })
 	var ao, ae bytes.Buffer
-	if code := auditcli.Main("test", []string{"redactions", "-db", r.db, "-sth", sth, "-pubkey", r.pub}, &ao, &ae); code != 0 || !strings.Contains(ao.String(), "PASS") {
+	if code := auditcli.Main("test", []string{"redactions", "-db", r.db, "-sth", sth, "-pubkey", r.pub, "-deployment", "test"}, &ao, &ae); code != 0 || !strings.Contains(ao.String(), "PASS") {
 		t.Fatalf("bide audit redactions = %d\n%s\n%s", code, ao.String(), ae.String())
 	}
 	// A repeat of the same plan finds it done.
@@ -196,10 +197,10 @@ func TestRefusals(t *testing.T) {
 		{"a dsn as an argument", append(r.base(), "postgres://u:p@h/db"), 2, "never an argument"},
 		{"execute without a reason", append(r.base(), "-execute", "-plan-digest", d), 2, "-execute needs"},
 		{"execute flags without -execute", append(r.base(), "-reason", "x"), 2, "go with -execute"},
-		{"execute without a head", append(r.base(), "-execute", "-plan-digest", d, "-reason", "r", "-ticket", "t", "-sign-key", r.key, "-head-out", r.headOut), 2, "signed journal head"},
+		{"execute without a head", append(r.base(), "-execute", "-plan-digest", d, "-reason", "r", "-ticket", "t", "-deployment", "test", "-sign-key", r.key, "-head-out", r.headOut), 2, "signed journal head"},
 		{"wrong digest", r.execArgs("00" + d[2:]), 1, "not the one reviewed"},
 		{"missing key", r.execArgs(d, "-sign-key", filepath.Join(r.dir, "nope")), 1, "nope"},
-		{"unknown run", []string{"-db", r.db, "-run", "nope", "-payloads", "-execute", "-plan-digest", "x", "-reason", "r", "-ticket", "t", "-sign-key", r.key, "-head-out", r.headOut, "-allow-uncovered"}, 1, "not over"},
+		{"unknown run", []string{"-db", r.db, "-run", "nope", "-payloads", "-execute", "-plan-digest", "x", "-reason", "r", "-ticket", "t", "-deployment", "test", "-sign-key", r.key, "-head-out", r.headOut, "-allow-uncovered"}, 1, "not over"},
 	}
 	for _, tc := range cases {
 		before := r.content()
@@ -228,7 +229,7 @@ func TestRefusals(t *testing.T) {
 		t.Error("a refused command erased")
 	}
 	// An allowed uncovered erasure is recorded.
-	if code, _, errb := r.run(append(r.base(), "-execute", "-plan-digest", d, "-reason", "r", "-ticket", "t", "-sign-key", r.key, "-head-out", r.headOut, "-allow-uncovered")...); code != 0 {
+	if code, _, errb := r.run(append(r.base(), "-execute", "-plan-digest", d, "-reason", "r", "-ticket", "t", "-deployment", "test", "-sign-key", r.key, "-head-out", r.headOut, "-allow-uncovered")...); code != 0 {
 		t.Fatalf("allowed uncovered: %d %s", code, errb)
 	}
 }
@@ -299,7 +300,7 @@ func TestLiveRunAndEventCopiesAreRefused(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "NOT over") || !strings.Contains(out, "REFUSED") {
 		t.Fatalf("dry run of a live run: %d\n%s", code, out)
 	}
-	args := []string{"-db", r.db, "-run", "live", "-payloads", "-execute", "-plan-digest", digestOf(t, out), "-reason", "r", "-ticket", "t", "-sign-key", r.key, "-head-out", r.headOut, "-allow-uncovered"}
+	args := []string{"-db", r.db, "-run", "live", "-payloads", "-execute", "-plan-digest", digestOf(t, out), "-reason", "r", "-ticket", "t", "-deployment", "test", "-sign-key", r.key, "-head-out", r.headOut, "-allow-uncovered"}
 	if code, _, errb := r.run(args...); code != 1 || !strings.Contains(errb, "refused") {
 		t.Fatalf("execute on a live run: %d %s", code, errb)
 	}
@@ -321,5 +322,142 @@ func TestLiveRunAndEventCopiesAreRefused(t *testing.T) {
 	}
 	if code, _, errb := r.run(r.execArgs(d, "-keep-event-copies")...); code != 0 {
 		t.Fatalf("-keep-event-copies: %d %s", code, errb)
+	}
+}
+
+func TestDeploymentIsRequired(t *testing.T) {
+	r := newRig(t)
+	_, out, _ := r.run(r.base()...)
+	d := digestOf(t, out)
+	args := append(r.base(), "-execute", "-plan-digest", d, "-reason", "r", "-ticket", "t", "-sign-key", r.key, "-head-out", r.headOut, "-pubkey", r.pub, "-sth", r.head)
+	if code, _, errb := r.run(args...); code != 2 || !strings.Contains(errb, "-deployment") {
+		t.Fatalf("without -deployment: %d %s", code, errb)
+	}
+	if code, _, errb := r.run(append(args, "-deployment", "  ")...); code != 2 {
+		t.Fatalf("with a blank -deployment: %d %s", code, errb)
+	}
+}
+
+// With another connection holding the file open, the erased bytes are in neither the database file
+// nor the WAL once -execute returns; and with a reader holding a transaction open the command says the
+// storage was not compacted and exits 1, rather than claiming success.
+func TestExecuteLeavesNoBytesInTheFiles(t *testing.T) {
+	r := newRig(t)
+	hold, err := sqlite.OpenReadOnly(r.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hold.Close()
+	if _, _, err := hold.Get(context.Background(), "r1", "run:start"); err != nil {
+		t.Fatal(err)
+	}
+	if in, _ := fileHolds(t, r.db, "Alice"); !in {
+		t.Fatal("the content is not in the database file before the erasure; the test cannot tell")
+	}
+	_, out, _ := r.run(r.base()...)
+	code, out, errb := r.run(r.execArgs(digestOf(t, out))...)
+	if code != 0 || !strings.Contains(out, "storage: wal_checkpoint(TRUNCATE)") {
+		t.Fatalf("execute: %d\n%s%s", code, out, errb)
+	}
+	for _, secret := range []string{"Alice", "4111"} {
+		if inDB, inWAL := fileHolds(t, r.db, secret); inDB || inWAL {
+			t.Errorf("%q is still in the database file (%v) or the WAL (%v) after -execute", secret, inDB, inWAL)
+		}
+	}
+}
+
+func fileHolds(t *testing.T, path, marker string) (inDB, inWAL bool) {
+	t.Helper()
+	db, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wal, err := os.ReadFile(path + "-wal")
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	return bytes.Contains(db, []byte(marker)), bytes.Contains(wal, []byte(marker))
+}
+
+func TestABusyCheckpointIsReportedNotClaimedAsSuccess(t *testing.T) {
+	r := newRig(t)
+	other, err := sql.Open("sqlite", r.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	tx, err := other.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(context.Background(), `SELECT data FROM bide_steps`)
+	if err != nil || !rows.Next() {
+		t.Fatalf("reader: %v", err)
+	}
+	defer rows.Close()
+	_, out, _ := r.run(r.base()...)
+	code, out, errb := r.run(r.execArgs(digestOf(t, out))...)
+	if code != 1 || !strings.Contains(out, "STORAGE NOT COMPACTED") || !strings.Contains(errb, "not compacted") {
+		t.Fatalf("a reader held the file: exit %d\n%s%s", code, out, errb)
+	}
+	if strings.Contains(out, "DONE") {
+		t.Errorf("the report says DONE although the storage was not compacted:\n%s", out)
+	}
+}
+
+// A trail that already holds records and has no earlier head to attest them is refused, unless the
+// operator says it knows.
+func TestATrailWithRecordsAndNoEarlierHeadIsRefused(t *testing.T) {
+	r := newRig(t)
+	_, out, _ := r.run(r.base()...)
+	d := digestOf(t, out)
+	if code, _, errb := r.run(r.execArgs(d)...); code != 0 {
+		t.Fatalf("first erasure: %d %s", code, errb)
+	}
+	// A second erasure (another selection) with the heads file gone.
+	os.Remove(r.headOut)
+	args := []string{"-db", r.db, "-run", "r1", "-name", "run:start"}
+	_, out, _ = r.run(args...)
+	d2 := digestOf(t, out)
+	exec := append(args, "-execute", "-plan-digest", d2, "-reason", "again", "-ticket", "T-2", "-deployment", "test", "-sign-key", r.key, "-head-out", r.headOut, "-pubkey", r.pub, "-sth", r.head, "-allow-uncovered")
+	if code, _, errb := r.run(exec...); code != 1 || !strings.Contains(errb, "no earlier signed head") {
+		t.Fatalf("without the earlier heads: %d %s", code, errb)
+	}
+	if code, _, errb := r.run(append(exec, "-accept-unheaded-trail")...); code != 0 {
+		t.Fatalf("with -accept-unheaded-trail: %d %s", code, errb)
+	}
+}
+
+// A run whose lease is live is refused before anything is written to the trail.
+func TestALeasedRunWritesNothing(t *testing.T) {
+	r := newRig(t)
+	_, out, _ := r.run(r.base()...)
+	d := digestOf(t, out)
+	s, err := sqlite.Open(r.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if ok, err := s.AcquireLease(context.Background(), "r1", "driver", time.Minute); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if code, _, errb := r.run(r.execArgs(d)...); code != 1 || !strings.Contains(errb, "lease") {
+		t.Fatalf("leased run: %d %s", code, errb)
+	}
+	leaves, err := s.EventStore().Load(context.Background(), audit.RedactionTrailName)
+	if err != nil || len(leaves) != 0 {
+		t.Fatalf("a refused attempt wrote %d trail record(s) (%v)", len(leaves), err)
+	}
+}
+
+func TestRedactDSNHandlesAnEmptyPassword(t *testing.T) {
+	dsn := "postgres://u:@h/db"
+	if got := redactDSN("connect "+dsn+" failed: x", dsn); strings.Contains(got, "<password>") || !strings.Contains(got, "failed: x") {
+		t.Errorf("redactDSN with an empty password = %q", got)
+	}
+	dsn = "postgres://u:hunter2@h/db"
+	if got := redactDSN("dial hunter2@h: "+dsn, dsn); strings.Contains(got, "hunter2") {
+		t.Errorf("the password leaks: %q", got)
 	}
 }

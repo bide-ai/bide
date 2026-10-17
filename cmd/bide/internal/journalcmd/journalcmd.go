@@ -100,6 +100,8 @@ func redact(args []string, stdout, stderr io.Writer) int {
 	reason := fs.String("reason", "", "with -execute: why (recorded in the trail)")
 	ticket := fs.String("ticket", "", "with -execute: the ticket or authority (recorded in the trail)")
 	signKey := fs.String("sign-key", "", "with -execute: the log signing key file that signs the redaction trail's head (never printed)")
+	deployment := fs.String("deployment", "", "with -execute: the deployment name signed into every trail record (required): records cannot be copied between deployments that share a key")
+	acceptUnheaded := fs.Bool("accept-unheaded-trail", false, "with -execute: sign the trail although it already holds records and no earlier head (-head-out) attests them, so they are attested only from this head on; never needed on a trail's first erasure")
 	headOut := fs.String("head-out", "", "with -execute: append the trail's new signed head, as one JSON line, to this file, for your anchor")
 	trailDB := fs.String("trail-db", "", "keep the redaction trail in this SQLite file instead of the journal's (recommended: a store the erasing role cannot rewrite)")
 	trailEnv := fs.String("trail-postgres-env", "", "keep the redaction trail in the Postgres database whose DSN is in this variable, instead of the journal's")
@@ -157,10 +159,10 @@ erases and an "end" record after; if it stops partway, run the same plan again.
 		return usageErr("-redact-postgres-env goes with -postgres-env")
 	case *trailDB != "" && *trailEnv != "":
 		return usageErr("give one of -trail-db and -trail-postgres-env")
-	case *execute && (*reason == "" || *ticket == "" || *digest == "" || *signKey == "" || *headOut == ""):
-		return usageErr("-execute needs -plan-digest, -reason, -ticket, -sign-key and -head-out")
-	case !*execute && (*digest != "" || *reason != "" || *ticket != "" || *signKey != "" || *headOut != ""):
-		return usageErr("-plan-digest, -reason, -ticket, -sign-key and -head-out go with -execute")
+	case *execute && (*reason == "" || *ticket == "" || *digest == "" || *signKey == "" || *headOut == "" || strings.TrimSpace(*deployment) == ""):
+		return usageErr("-execute needs -plan-digest, -reason, -ticket, -deployment, -sign-key and -head-out")
+	case !*execute && (*digest != "" || *reason != "" || *ticket != "" || *signKey != "" || *headOut != "" || *deployment != "" || *acceptUnheaded):
+		return usageErr("-plan-digest, -reason, -ticket, -deployment, -sign-key and -head-out go with -execute")
 	case *execute && !*allowUncovered && (len(sths) == 0 || *pubkey == ""):
 		return usageErr("-execute needs a signed journal head (-sth and -pubkey) that covers the run, or -allow-uncovered")
 	}
@@ -232,11 +234,29 @@ erases and an "end" record after; if it stops partway, run the same plan again.
 		}
 		heads = append(heads, h)
 	}
-	trail, closeTrail, err := openTrail(ctx, rd, *trailDB, *trailEnv)
+	trail, closeTrail, err := openTrail(ctx, rd, *trailDB, *trailEnv, *schema)
 	if err != nil {
 		return fail("%v", err)
 	}
 	defer closeTrail()
+	trailVerifier, err := audit.NewVerifier(signer.Alg(), signer.PublicKey())
+	if err != nil {
+		return fail("the signing key: %v", err)
+	}
+	// The heads the trail has had so far: the -head-out file the earlier passes wrote. The trail is
+	// checked against them before anything is erased, and a head is signed only over a trail they
+	// cover; a trail that already holds records and has no earlier head is not attested by anything.
+	prior, err := readHeads(*headOut)
+	if err != nil {
+		return fail("%v", err)
+	}
+	existing, err := trail.Load(ctx, audit.RedactionTrailName)
+	if err != nil {
+		return fail("read the redaction trail: %v", err)
+	}
+	if len(prior) == 0 && len(existing) > 0 && !*acceptUnheaded {
+		return fail("refused: the redaction trail already holds %d record(s) and %s holds no earlier signed head, so nothing attests them (a trail in the wrong database looks like this, and so does a plant): give the earlier heads in that file, or -accept-unheaded-trail to attest the trail as it stands from this head on", len(existing), *headOut)
+	}
 	if !*keepEvents {
 		for _, p := range plans {
 			if len(p.Records) == 0 {
@@ -251,30 +271,72 @@ erases and an "end" record after; if it stops partway, run the same plan again.
 			}
 		}
 	}
+	// A run with a live lease is refused before the trail is written: the store would refuse it
+	// after a begin record, which leaves a failed pass in the trail for nothing.
+	for _, p := range plans {
+		if len(p.Records) == 0 {
+			continue
+		}
+		if leased(ctx, rd.journal, p.RunID) {
+			return fail("refused: a lease on run %s is live, so a driver may still be running it; nothing was written", p.RunID)
+		}
+	}
 	now := time.Now()
 	exec := executorName(signer)
+	var passErr error
 	for _, p := range plans {
+		copies := 0
+		if *keepEvents {
+			if leaves, err := rd.events.Load(ctx, p.RunID); err == nil {
+				copies = len(leaves)
+			}
+		}
 		res, err := audit.RedactJournal(ctx, rd.journal, trail, p, audit.RedactionOptions{
-			Reason: *reason, Ticket: *ticket, Executor: exec, Now: now, Version: version(),
+			Reason: *reason, Ticket: *ticket, Executor: exec, Now: now, Version: version(), Signer: signer,
+			Deployment: *deployment, TrailHeads: prior, EventCopiesKept: copies,
 			Heads: heads, Verifier: verifier, AllowUncovered: *allowUncovered, Redactor: rd.redactor,
 		})
 		rep.Results = append(rep.Results, runResult{RunID: p.RunID, Redacted: len(res.Redacted), Already: len(res.Already)})
 		if err != nil {
 			rep.Results[len(rep.Results)-1].Error = err.Error()
-			emit(stdout, rep, *asJSON, st, 1)
-			return fail("run %s: %v", p.RunID, err)
+			passErr = fmt.Errorf("run %s: %w", p.RunID, err)
+			break
 		}
 	}
-	head, err := audit.SignNotifyTrail(ctx, trail, audit.RedactionTrailName, signer, time.Now())
+	// The storage layer: a store that keeps the bytes it replaced (SQLite's log) overwrites them.
+	if c, ok := rd.redactor.(agent.Compactor); ok {
+		cr, err := c.Compact(ctx)
+		switch {
+		case err != nil:
+			rep.Compaction = &compaction{Detail: err.Error()}
+		default:
+			rep.Compaction = &compaction{Complete: cr.Complete, Detail: cr.Detail}
+		}
+	} else {
+		rep.Compaction = &compaction{ByOperator: true, Detail: "this store does not overwrite the bytes it replaced: on Postgres they stay as dead tuples until VACUUM (and VACUUM FULL to return the space), which is the operator's to run, and replicas, WAL archives and backups hold their own copies"}
+	}
+	// The trail's head is signed after a failed pass too: the begin and end records it wrote are
+	// attested, so the next attempt finds a trail its earlier heads cover.
+	head, err := audit.SignRedactionTrail(ctx, trail, signer, trailVerifier, *deployment, prior, time.Now())
 	if err != nil {
 		emit(stdout, rep, *asJSON, st, 1)
-		return fail("the erasure ran and is recorded, but signing the trail head failed: %v (sign it with the log key and keep it; bide audit redactions reports the unattested tail)", err)
+		return fail("the erasure ran and is recorded, but signing the trail head failed: %v (nothing was signed; the records are in the trail and bide audit redactions reports the unattested tail)", err)
 	}
 	if err := appendLine(*headOut, head); err != nil {
 		emit(stdout, rep, *asJSON, st, 1)
 		return fail("the erasure ran and is recorded, but writing the head to %s failed: %v", *headOut, err)
 	}
-	rep.Executed, rep.HeadOut = true, *headOut
+	rep.HeadOut = *headOut
+	if passErr != nil {
+		emit(stdout, rep, *asJSON, st, 1)
+		return fail("%v (the attempt is recorded in the redaction trail and its signed head was appended to %s)", passErr, *headOut)
+	}
+	rep.Executed = true
+	if rep.Compaction != nil && !rep.Compaction.Complete && !rep.Compaction.ByOperator {
+		// Erased and recorded, but the engine still holds the old bytes: not a success to report.
+		emit(stdout, rep, *asJSON, st, 1)
+		return fail("the erasure is recorded, but the storage was not compacted, so the old bytes may remain in the database's files: close the readers of the database and run the compaction again (bide journal redact repeats it with the same plan)")
+	}
 	return emit(stdout, rep, *asJSON, st, 0)
 }
 
@@ -285,7 +347,15 @@ type runResult struct {
 	Error    string `json:"error,omitempty"`
 }
 
+type compaction struct {
+	Complete bool   `json:"complete"`
+	Detail   string `json:"detail"`
+	// ByOperator is set for a store that does not compact (Postgres): the operator's VACUUM does.
+	ByOperator bool `json:"by_operator,omitempty"`
+}
+
 type report struct {
+	Compaction       *compaction           `json:"compaction,omitempty"`
 	DryRun           bool                  `json:"dry_run"`
 	Executed         bool                  `json:"executed"`
 	PlanDigest       string                `json:"plan_digest"`
@@ -329,7 +399,19 @@ func emit(w io.Writer, rep report, asJSON bool, st term.Style, code int) int {
 	for _, r := range rep.Results {
 		fmt.Fprintf(w, "run %s: replaced %d, already redacted %d\n", r.RunID, r.Redacted, r.Already)
 	}
-	if rep.Executed {
+	if c := rep.Compaction; c != nil {
+		switch {
+		case c.ByOperator:
+			fmt.Fprintf(w, "storage, for the operator: %s\n", c.Detail)
+		case c.Complete:
+			fmt.Fprintf(w, "storage: %s\n", c.Detail)
+		default:
+			fmt.Fprintf(w, "STORAGE NOT COMPACTED: %s\n", c.Detail)
+		}
+	}
+	if rep.Executed && rep.Compaction != nil && !rep.Compaction.Complete && !rep.Compaction.ByOperator {
+		fmt.Fprintf(w, "erased and recorded; the trail's signed head was appended to %s\n", rep.HeadOut)
+	} else if rep.Executed {
 		fmt.Fprintf(w, "%s: erased and recorded; the trail's signed head was appended to %s\n", st.Heading("DONE"), rep.HeadOut)
 	} else if rep.DryRun {
 		fmt.Fprintf(w, "dry run: nothing was changed. To erase: add -execute -plan-digest %s -reason ... -ticket ... -sign-key ... -head-out ...\n", rep.PlanDigest)
@@ -488,7 +570,7 @@ func openJournal(ctx context.Context, db, pgEnv, schema, redactEnv string) (*rea
 	return r, nil
 }
 
-func openTrail(ctx context.Context, r *reader, trailDB, trailEnv string) (audit.EventStore, func(), error) {
+func openTrail(ctx context.Context, r *reader, trailDB, trailEnv, schema string) (audit.EventStore, func(), error) {
 	switch {
 	case trailDB != "":
 		s, err := sqlite.Open(trailDB)
@@ -501,7 +583,11 @@ func openTrail(ctx context.Context, r *reader, trailDB, trailEnv string) (audit.
 		if dsn == "" {
 			return nil, nil, fmt.Errorf("-trail-postgres-env %s: the variable is empty or not set", trailEnv)
 		}
-		s, err := postgres.Open(ctx, dsn, postgres.WithoutMigration())
+		opts := []postgres.Option{postgres.WithoutMigration()}
+		if schema != "" {
+			opts = append(opts, postgres.WithSchema(schema))
+		}
+		s, err := postgres.Open(ctx, dsn, opts...)
 		if err != nil {
 			return nil, nil, errors.New(redactDSN(err.Error(), dsn))
 		}
@@ -516,7 +602,9 @@ func redactDSN(msg, dsn string) string {
 	if i := strings.Index(dsn, "://"); i >= 0 {
 		if at := strings.LastIndex(dsn, "@"); at > i {
 			if colon := strings.Index(dsn[i+3:at], ":"); colon >= 0 {
-				msg = strings.ReplaceAll(msg, dsn[i+3+colon+1:at], "<password>")
+				if pw := dsn[i+3+colon+1 : at]; pw != "" {
+					msg = strings.ReplaceAll(msg, pw, "<password>")
+				}
 			}
 		}
 	}
@@ -539,4 +627,46 @@ func subRuns(ctx context.Context, j *agent.Journal, run string) ([]string, error
 		}
 	}
 	return out, nil
+}
+
+// readHeads reads the signed heads in path, one JSON head per line; a file that does not exist holds
+// none.
+func readHeads(path string) ([]audit.SignedTreeHead, error) {
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	var out []audit.SignedTreeHead
+	for i, line := range strings.Split(string(b), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var h audit.SignedTreeHead
+		if err := json.Unmarshal([]byte(line), &h); err != nil {
+			return nil, fmt.Errorf("%s line %d is not a signed head: %w", path, i+1, err)
+		}
+		out = append(out, h)
+	}
+	return out, nil
+}
+
+// leased reports whether another holder has a live lease on runID, found by trying to take it and
+// giving it back at once. A store with no leases, or a role that cannot take one, says no: the
+// store's own redaction refuses a leased run in any case.
+func leased(ctx context.Context, j *agent.Journal, runID string) bool {
+	l, ok := agent.Capability[agent.Leaser](j.Store())
+	if !ok {
+		return false
+	}
+	got, err := l.AcquireLease(ctx, runID, "bide-journal-redact-check", time.Second)
+	if err != nil {
+		return false
+	}
+	if got {
+		l.ReleaseLease(ctx, runID, "bide-journal-redact-check")
+	}
+	return !got
 }
