@@ -970,8 +970,10 @@ compares the counted set with the model's, trace by trace, as the existing model
 
 - `bide identity fetch-crl -cache dir -policy file` fetches, verifies and stores CRLs atomically and
   keeps a dated archive (`crl/<issuer-key-id>/<number>-<thisUpdate>.crl`) for the kit;
-- `bide identity check -cert chain.pem -policy file` tells an approver why their certificate would not
-  count (chain, SAN, EKU, window, status), the same function the gate uses;
+- `bide identity check -policy file -params file ... [-cert chain.pem]` is the pre-flight before go-live and
+  tells an approver why their certificate would not count (chain, SAN, EKU, window, status), by
+  `CertApprover.CheckCertificate`, the function the gate's counting and execution checks call (shipped; see
+  the certificate approvers guide);
 - `bide identity kit -evidence pkg.json -out dir` assembles the identity bundle for a package.
 
 The application embeds the same refresher when it does not run a cron.

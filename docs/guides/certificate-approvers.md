@@ -24,6 +24,7 @@ the captures. **Pilot checklist item: capture the bank's own enterprise CA, with
 with that workflow, and run the conformance tests on the capture before any gate uses the CA.** The
 captures show what that CA stamps (the back-dating of `thisUpdate` and `notBefore`, the real CRL period,
 the overlap, how a revoked certificate is dated) and the values below are declared from them, never assumed.
+Before a gate goes live, run [`bide identity check`](#pre-flight-bide-identity-check) over the same files.
 
 ## Walkthrough: from the CA's certificate to an approved call
 
@@ -458,6 +459,94 @@ mismatch means the schedule and the alarm follow other numbers than the gate. A 
 is not fresh does. A
 gate process embeds the refresher itself; the command is for the archive an audit reads and for monitoring.
 `bide approve -cert` does not fetch CRLs: its local check is a convenience before signing, and the gate decides.
+
+## Pre-flight: `bide identity check`
+
+Run `bide identity check` before go-live, after any change to the policy file, the CA's timings or the CRL
+sources, and when an approver's decision is refused. It answers one question: will a gate built from this
+setup count a certificate-bound approver and let the call run, and if not, exactly why. It runs the gate's
+own code for each answer (the policy loader, the gate's configuration check, the CRL refresher's fetch and
+health model, and the function the gate's counting and execution checks call for a certificate chain), so a
+verdict here is the gate's verdict, not a second opinion.
+
+```text
+bide identity check -policy policy.json -params ca.json \
+    -expect gate-policy.json  -crl-dir ./crl-archive  [-cert chain.pem] [-json]
+```
+
+It never reports ready while a part the gate relies on was left out, so two choices are required:
+
+| You choose | Flag | If you decline |
+|---|---|---|
+| Where the CRLs come from | `-crl-dir <dir>` offline: a `bide identity fetch-crl` archive (read, never written) or a flat directory of `.crl`, `.der` or `.pem` files; no network. `-fetch` online: the policy's `crl` sources over HTTP or HTTPS with the limits of `fetch-crl` (size, timeouts, same-host redirects), nothing stored. Together, the archive seeds the rollback memory and the fetch is judged. | `-no-status`: the result is **partial** |
+| What the gate runs with | `-expect <file>`: the gate's recorded policy, the `policy` member of its identity record (or the whole record) | `-no-expect`: the result is **partial** |
+
+Optional: `-cert chain.pem` (the approver's chain, leaf first, as `bide approve -cert` takes it; `-chain` adds
+more certificates behind it, `-as` names the approver id when the policy has several) asks whether that
+certificate would be accepted, as a decision made now (`-at <RFC 3339>` judges at another time, offline only).
+Run `-fetch` on the gate's host: reachability is proved from where the check runs.
+
+**Exit status.** 0 ready: every check passed. 1 will not work as configured: at least one check failed (a
+failure outranks everything). 2 usage error. 3 a file could not be read or the tool could not run. 4
+partial: nothing failed, but `-no-status` or `-no-expect` left a part unchecked; a partial result is never a
+go-live result. `-json` prints `{"ready", "partial", "checked_at", "checks": [{"id", "status", "message",
+"fix"}], "not_checkable"}`; no CRL bytes, URL queries, keys or private-key blocks are ever printed.
+
+**Reading the output.** One line per check: `OK`, `WARN` (works, but will not for long), `FAIL` (a gate would
+refuse, pause or miscount), `SKIP` (not run, and the summary says whether that makes the result partial). A
+`WARN` or `FAIL` has a `fix:` line. The check ids are stable:
+
+| Check id | What it asks |
+|---|---|
+| `policy.load` | the policy file parses strictly and compiles (`audit.ParseIdentityPolicy`) |
+| `policy.anchor`, `policy.intermediate` | each pinned CA certificate is valid now (WARN inside 90 days of expiry) |
+| `policy.sources`, `policy.intermediates` | the `crl` and `intermediate_certs` members parse; every pinned intermediate key has its certificate, and every certificate supplied is pinned |
+| `params.load`, `params.config` | the `-params` file parses, and passes the gate's own start-up check (`CertApprover.ValidateConfig`) |
+| `params.expect`, `params.expect.unverified` | the policy file and `-params` agree with the gate's recorded policy, member by member; the members they cannot declare are listed, not claimed |
+| `crl.setup` | every pinned issuer has a CRL source and a certificate, and the timings leave the refresher a margin before gates pause (`crlrefresh.New`) |
+| `crl.load`, `crl.file`, `crl.fetch`, `crl.event.*` | the CRLs were read or fetched, verified against the pinned issuers; files and events that were refused (rollback, equivocation, bad signature, oversize, a refused redirect, ...) |
+| `crl.fresh.<issuer>` | the newest CRL of each issuer is fresh by the status rule's own test and the refresher's health model (`FAIL` when a gate would not accept it now, `WARN` past the alarm age) |
+| `cert.parse`, `cert.chain` | the file is a certificate chain; the gate would accept it for the approver (`VerifyChain`), with the gate's reason if not |
+| `cert.status.count`, `cert.status.exec` | the revocation status rule, as when a decision is counted and as immediately before the call runs |
+
+**Why the comparison with the gate is member by member.** The digest `fetch-crl` prints cannot equal the
+gate's (see [the command](#keeping-the-crls-current)): the digest covers `effective_from` and values the
+`-params` file cannot carry. `-expect` compares the members both sides can declare (anchors, intermediates,
+the identity profile, the lifetime and algorithm limits, and every CA timing) and names each difference with
+both values. `params.expect.unverified` lists the rest (`w`, `min_w`, `routine_grace`, `clock_tolerance`,
+holds, retention, consecutive numbers, `effective_from`) with the recorded values: compare those with the
+gate's declaration by hand.
+
+**Troubleshooting: the messages, and what to do.**
+
+| You see | It means | Do this |
+|---|---|---|
+| `policy.load` FAIL, `"x" is not a field` | a member of the policy file is misspelled or unknown | correct the member; unknown members are refused so a typo cannot weaken a policy |
+| `policy.anchor` FAIL, `expired` | every chain through that CA is refused | pin a new CA certificate before it lapses; plan with the WARN at 90 days |
+| `policy.intermediates` FAIL, `holds no certificate for it` | the policy pins a key; a key cannot verify a CRL | add the intermediate's PEM to `intermediate_certs` |
+| `policy.intermediates` FAIL, `does not pin` | a certificate is supplied for a CA the policy does not pin | pin its key under `intermediates`, or remove the file |
+| `params.config` FAIL, `ExecStatusAge/2` | a CA publishes less often than twice per execution age | raise `exec_status_age` or declare the CA's real period |
+| `params.expect` FAIL, `<member>: policy and -params say A, the gate recorded B` | the files differ from what the gate runs with | make the files carry the gate's values (the schedule and alarm follow them) |
+| `crl.setup` FAIL, `no CRL source` | a pinned issuer has no `crl` entry | add `"crl": {"<issuer key hash>": {"urls": [...]}}` |
+| `crl.fetch` FAIL, `http-status: 404`, `error`, `not-a-crl` | the URL does not serve the CA's CRL | fix the URL, firewall, proxy, DNS or TLS trust from the gate's host; only http and https are fetched |
+| `crl.fresh` FAIL, `no CRL is held` | none read or fetched for that issuer | run `fetch-crl`, or put the CRL in `-crl-dir` |
+| `crl.fresh` FAIL, `a gate would not accept it` | the newest CRL is older than the declared ages, or past `nextUpdate` | the CA must publish within its declared period and the fetch job must run |
+| `cert.chain` FAIL, `does not verify` | the chain does not reach a pinned CA, or lacks a pinned intermediate | the file given to `bide approve -cert` must carry the leaf and the pinned intermediates, leaf first |
+| `cert.chain` FAIL, `is not the identity of approver` / `no subject alternative name` / `exactly one is required` | the certificate's one SAN is not the identifier the policy gives this approver id | reissue the certificate, or correct the identity map through the change process |
+| `cert.chain` FAIL, `not usable for approving` | the extended key usage, certificate policy, key usage, key type or CA flag is wrong | compare with the policy's `eku` and `policy_oid`; reissue from the right template |
+| `cert.chain` FAIL, `outside the certificate's validity` | a certificate is expired or not yet valid at the check time, or the leaf outlives `max_leaf_lifetime` | renew; check the host's clock |
+| `cert.status.*` FAIL, `revoked` | a certificate of the chain is revoked, or refused by the status policy (a hold) | the approver needs a new certificate |
+| `cert.status.exec` FAIL, `older than the policy allows`, while `cert.status.count` is OK | the CRL is old enough to count a decision but not to run its call | the CA is publishing too slowly for `exec_status_age`, or the fetch job has stopped |
+| `cert.status.*` FAIL, `no usable revocation status` | no CRL covers a certificate of the chain, or a CA above the leaf's issuer has no `ExecStatusAgeFor` | fetch the CRLs for every issuer in the chain; declare the tier |
+
+**What it cannot check ahead of time**, and says so in every report: the signature of a real decision and
+that the key is the certificate's; when a real decision becomes provable (the covering head and the log
+clock) and, with no independent time source shipped, nothing about it; whether a future decision will be
+provisional or final; revocations published after the check; the application's own HTTP client, proxy and
+DNS rules; the gate's other settings (separation of duties, the roster, requester mapping, holds, the
+`GODEBUG` of the process) unless `-expect` supplies them; and that the gate embeds the refresher or that a
+`fetch-crl` job is running. A ready result means the declared setup works as far as these checks reach, not
+that a bank's controls are met; nothing here is a compliance certification.
 
 ## When you revoke a certificate
 

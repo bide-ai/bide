@@ -146,12 +146,16 @@ func (r *Report) Text(w io.Writer, st term.Style) {
 // UsageError is a mistake in the options; the command exits with ExitUsage.
 type UsageError struct{ Msg string }
 
+// Error implements error.
 func (e *UsageError) Error() string { return e.Msg }
 
 // IOError is a file that could not be read or a tool that could not run; the command exits with ExitIO.
 type IOError struct{ Err error }
 
+// Error implements error.
 func (e *IOError) Error() string { return e.Err.Error() }
+
+// Unwrap returns the underlying error.
 func (e *IOError) Unwrap() error { return e.Err }
 
 func short(h [32]byte) string { return fmt.Sprintf("%x", h[:4]) }
