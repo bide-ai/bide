@@ -4,6 +4,7 @@
   "type": "module",
   "description": "Drives bide edit's page in real Chrome (flowedit/browser_test.go); installed only by the Editor (Chrome) job.",
   "dependencies": {
+    "axe-core": "4.14.0",
     "puppeteer-core": "25.14.0"
   }
 }

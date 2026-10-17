@@ -91,6 +91,17 @@ try {
   }
   r.undoSteps = undone;
 
+  // A gate draft that stays fine does not rewrite its live region at every keystroke.
+  await page.click('#outline button[data-node="charge"]');
+  await until(() => document.getElementById('g-timeout'), null, 'the gate form for the live region');
+  await page.focus('#g-timeout');
+  await page.keyboard.type('4');
+  await until(() => document.getElementById('g-feedback')?.textContent.includes('accepts'), null, 'the first verdict');
+  await page.evaluate(() => { window.__fb = 0; new MutationObserver((m) => { window.__fb += m.length; }).observe(document.getElementById('g-feedback'), { childList: true, subtree: true, characterData: true }); });
+  for (const ch of '8h') { await page.keyboard.type(ch); await new Promise((res) => setTimeout(res, 350)); }
+  r.feedbackMutations = await page.evaluate(() => window.__fb);
+  await page.$eval('#g-timeout', (e) => { e.value = ''; e.dispatchEvent(new Event('input', { bubbles: true })); });
+
   // 3. A number the field shows is the number sent: "1e3" is refused, not sent as 1.
   await page.click('#outline button[data-node="charge"]');
   await until(() => document.getElementById('g-need'), null, 'the gate form');

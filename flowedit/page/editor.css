@@ -9,7 +9,10 @@ main { max-width: 1480px; }
 .outlist, .wirelist { list-style: none; margin: 0; padding: 0; }
 .outlist li { margin: 0 0 var(--s1); }
 .outlist button { display: block; width: 100%; text-align: left; font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--line); border-radius: var(--r-sm); padding: var(--s2) var(--s3); cursor: pointer; }
-.outlist button[aria-current="true"] { border-color: var(--accent); background: var(--accent-bg); }
+.outlist button[aria-current="true"] { border-color: var(--accent); background: var(--accent-bg); border-left-width: 6px; }
+/* The selected item is not told by color alone: a heavier left edge and a bold name. */
+.outlist button[aria-current="true"] .nm { font-weight: 800; }
+.outlist button[aria-current="true"] .nm::before { content: "\25B6\00a0"; }
 .outlist .nm { font-family: var(--mono); font-weight: 600; }
 .outlist .meta { display: block; font-size: var(--t-xs); color: var(--muted); }
 .outlist .prob { display: block; font-size: var(--t-xs); color: var(--bad); }
@@ -47,3 +50,5 @@ dialog h2 { margin-top: 0; }
 .assertion-form input[type="number"] { width: 100%; font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--line); border-radius: var(--r-sm); padding: var(--s1) var(--s2); }
 .assertion-form label { display: block; font-size: var(--t-sm); font-weight: 600; margin-bottom: var(--s1); }
 .assertion-form .field.check label { font-weight: 400; margin: 0; }
+.field.check input[type="checkbox"], .verdict input[type="checkbox"] { width: 24px; height: 24px; margin: 0; flex: none; }
+.verdict label { display: inline-flex; gap: var(--s2); align-items: center; }

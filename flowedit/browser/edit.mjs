@@ -36,6 +36,13 @@ try {
   await until(() => document.querySelector('#weakened section[role="alert"]'), null, 'the weakened banner');
   r.banner = await text('#weakened');
   r.bannerControls = await page.$$eval('#weakened button, #weakened a, #weakened [tabindex]', (e) => e.length);
+  // A banner that has not changed is not drawn again: an alert drawn again is spoken again.
+  await page.evaluate(() => { window.__mutations = 0; new MutationObserver((m) => { window.__mutations += m.length; }).observe(document.getElementById('weakened'), { childList: true, subtree: true }); });
+  await page.$eval('#source', (e, v) => { e.value = v + '# a comment\n'; e.dispatchEvent(new Event('input', { bubbles: true })); }, edited);
+  await new Promise((res) => setTimeout(res, 900));
+  r.bannerMutationsWhileTyping = await page.evaluate(() => window.__mutations);
+  await page.$eval('#source', (e, v) => { e.value = v; e.dispatchEvent(new Event('input', { bubbles: true })); }, edited);
+  await new Promise((res) => setTimeout(res, 900));
   r.stateDirty = await text('#state-tag');
   r.saveEnabled = await page.$eval('#save', (b) => !b.disabled);
   r.verdictAfterEdit = await text('#vword');

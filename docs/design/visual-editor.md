@@ -672,7 +672,15 @@ Each phase is one or more pull requests, each with its docs, changelog fragment 
   editor). #315 and #316 cover G2, the removed or loosened `assert` line of G1, and G3 for nodes
   with a side effect; an assertion that held at the baseline and is violated now with its line
   unchanged is still not reported, and is closed before phase 1 ships.
-- **Phase 1, the smallest useful editor.** `bide edit flow.yaml`: the canvas and outline (read),
+- **Phase 1, the smallest useful editor (built).** Status: shipped across the pull requests that
+  followed the spike (the read-only page, the baseline and weakened banner, the source pane and
+  atomic save, the inspector's forms, the assertions panel, the accessibility pass), with the
+  decisions of this note unchanged. Three things differ from the sketch below, each for a reason
+  the tests found: every API call is a `POST` (including reading the file), a refused operation is
+  a `200` with the reason and not an error status (so asking what an operation would do does not
+  fill the browser console), and the assertion verdict regression of G1 was closed in its own pull
+  request. The manual screen-reader pass of the phase gate is not done and is listed in
+  `docs/KNOWN-LIMITATIONS.md`. The sketch: `bide edit flow.yaml`: the canvas and outline (read),
   the inspector for a node's block, safety and **approval gate** (need, approvers, separation of
   duties, deadline once #312 is in), the assertions panel with the six forms as templates and live
   verdicts, the source pane, the baseline and the weakened banner, the pre-save diff, atomic save.

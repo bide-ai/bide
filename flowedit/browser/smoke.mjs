@@ -41,6 +41,13 @@ try {
   // The pointer: click a node in the graph.
   await page.click('#canvas g.node[data-id="charge"]');
   const byPointer = await text('#inspector h3');
+  // The selection is not told by color alone: the selected item has a heavier left edge, a bold name and a marker.
+  const cue = await page.evaluate(() => {
+    const sel = document.querySelector('#outline button[aria-current="true"]');
+    const other = document.querySelector('#outline button[aria-current="false"]');
+    const w = (b) => ({ edge: parseFloat(getComputedStyle(b).borderLeftWidth), weight: Number(getComputedStyle(b.querySelector('.nm')).fontWeight), marker: getComputedStyle(b.querySelector('.nm'), '::before').content });
+    return { sel: w(sel), other: w(other) };
+  });
   const current = await page.$$eval('#outline button[aria-current="true"]', (bs) => bs.map((b) => b.getAttribute('data-node')));
 
   // The keyboard alone: from the top of the page, Tab to an outline button and press Enter.
@@ -59,7 +66,7 @@ try {
   await page.keyboard.press('Enter');
   const byKeyboardGraph = await text('#inspector h3');
 
-  out = { ok: true, banner, baselineLine, verdict, outline, graphNodes, svgNamespace, source, assertions, inspectorBefore, byPointer, current, reached, byKeyboard, byKeyboardGraph, live, console: console_, failed, offOrigin };
+  out = { ok: true, cue, banner, baselineLine, verdict, outline, graphNodes, svgNamespace, source, assertions, inspectorBefore, byPointer, current, reached, byKeyboard, byKeyboardGraph, live, console: console_, failed, offOrigin };
 } catch (e) {
   out = { ok: false, error: String(e && e.message || e), console: console_, failed, offOrigin };
 }

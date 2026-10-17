@@ -1,10 +1,11 @@
 name: Editor (Chrome)
 
 # The flow editor's page (bide edit, package flowedit) in real Chrome: it draws what the server
-# computed, selects a node by pointer and by keyboard alone, and makes no request off its origin, no
-# failed request and no console message (a Content-Security-Policy violation is one). The test is
-# flowedit/browser_test.go; this workflow installs Chrome's driver (puppeteer-core, from the
-# lockfile) around it. Runs on pull requests that touch the editor or the viewer assets it serves,
+# computed, selects a node by pointer and by keyboard alone, edits through the forms, the assertions
+# panel and the source, saves through the dialog, runs axe-core in light and dark, and makes no request
+# off its origin, no failed request and no console message (a Content-Security-Policy violation is
+# one). The tests are the *InChrome tests of flowedit/browser_test.go; this workflow installs Chrome's
+# driver (puppeteer-core and axe-core, from the lockfile) around them. Runs on pull requests that touch the editor or the viewer assets it serves,
 # and in the merge queue (which does not filter by path).
 on:
   pull_request:
@@ -47,4 +48,4 @@ jobs:
           GOWORK: 'off'
           BIDE_EDIT_BROWSER: '1' # with CI set, a missing Chrome or tool fails the test instead of skipping it
           CHROME_BIN: /usr/bin/google-chrome-stable
-        run: go test . -run TestPageInChrome -count=1 -v
+        run: go test . -run 'InChrome' -count=1 -v
