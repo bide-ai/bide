@@ -9,7 +9,7 @@ semantics (equivocation, stray objects, bad signatures) and the run-ID rules are
 anchor's; this page covers what is different.
 
 This is tamper evidence, not a compliance certification. It is tested against an in-memory model of
-Cloud Storage, never against Google Cloud ([what it is tested against](#what-it-is-tested-against)).
+Cloud Storage and was run once against a real bucket ([what it is tested against](#what-it-is-tested-against)).
 
 ## What it gives you, and what it does not
 
@@ -26,7 +26,7 @@ What an operator who controls the **anchor** project can still do, and what you 
 |---|---|---|
 | Delete a head after its retention date | the policy ends at the date | Set a retention at least as long as the journals the heads cover (`Config.Retention`), and copy the heads into your archive before it ends ([retention](retention.md#signed-heads-and-anchor-entries)). |
 | Delete the bucket's objects, or the bucket | after retention only: a bucket with a locked policy cannot be deleted while any object is inside its retention | As above. |
-| Delete the project | Cloud Storage puts a lien on project deletion while the policy is locked, on a best-effort basis, and a project owner can remove a lien. Google's documentation does not say what happens to locked data when a project whose lien was removed is deleted, and this package does not claim anything about it | Keep the anchor project in a folder whose organization policies and IAM deny policies the application's administrators cannot change, with break-glass access under MFA. Treat the lien as a speed bump, not a control. |
+| Delete the project | Cloud Storage puts a lien on project deletion when a bucket is given a retention policy (the real run saw it appear one second after the bucket was created with one), on a best-effort basis, and a project owner can remove a lien. Google's documentation does not say what happens to locked data when a project whose lien was removed is deleted, and this package does not claim anything about it | Keep the anchor project in a folder whose organization policies and IAM deny policies the application's administrators cannot change, with break-glass access under MFA. Treat the lien as a speed bump, not a control. |
 | Disable or destroy the Cloud KMS key | the key's IAM is theirs | The heads become unreadable, not altered: the Reader fails instead of returning a wrong head. Keep the key in the anchor project (or a key project of its own) and deny the application's identities any administrative role on it. |
 | Make the live object of a name noncurrent | with versioning on, deleting or overwriting the live object keeps the generation; a locked policy lets the live object become noncurrent | `Reader.Latest`, `Heads` and `Audit` list noncurrent generations, so nothing is hidden, and `Audit` and `bide-anchor check` report each noncurrent generation. The writer role has no delete permission, which also means it cannot overwrite (replacing an object needs both `storage.objects.create` and `storage.objects.delete`). |
 | Write a forged head | any identity that can create objects | The Reader verifies each head's signature under the log's public key and refuses an object that does not verify. |
@@ -71,7 +71,7 @@ deleted bucket's name can be created again by anyone, so the number (not the pro
 bucket you meant. The Reader makes the same check.
 
 Per-object retention (`Config.ObjectRetention`) is optional. It sets a `Locked` retention on each head,
-counted from the write, and needs a bucket created with object retention enabled, which cannot be
+counted from the write, needs the writer role with `storage.objects.setRetention`, and needs a bucket created with object retention enabled, which cannot be
 enabled over gRPC and cannot be disabled once on. It adds a per-head date that can be later than the
 bucket policy's; it adds nothing against deletion that the locked policy does not already give. An
 `Unlocked` per-object retention can be shortened by an authorised user, so the package refuses to count
@@ -161,21 +161,24 @@ well-formed head whose signature does not verify is an error wrapping `ErrBadSig
 | Role | Permissions |
 |---|---|
 | writer (the application) | `storage.buckets.get`, `storage.objects.create`, `storage.objects.get`, `storage.objects.list` |
+| writer with object retention (only with `Config.ObjectRetention`) | the writer's, and `storage.objects.setRetention` |
 | reader (auditors, monitors) | `storage.buckets.get`, `storage.objects.get`, `storage.objects.list` |
 | hold releaser | `storage.buckets.get`, `storage.objects.get`, `storage.objects.list`, `storage.objects.update` |
 
-None grants `storage.objects.delete` (so none can overwrite an object either), `setRetention`,
-`overrideUnlockedRetention`, any `setIamPolicy`, or any bucket-changing permission. A test checks that
+None grants `storage.objects.delete` (so none can overwrite an object either), `overrideUnlockedRetention`,
+any `setIamPolicy`, or any bucket-changing permission, and only the writer with object retention grants
+`setRetention` (a create that sets a per-object retention is refused without it, as the real run showed). A test checks that
 every call the package makes is in the role that uses it (`gcs.MethodPermissions`), and that no role has
 a forbidden permission, so a new call cannot be added without the roles being reviewed. Placing a
-temporary hold when a head is created is part of the create; **releasing** it needs
+temporary hold when a head is created is part of the create and needs nothing more than the writer role;
+**releasing** it needs
 `storage.objects.update`, which the writer does not hold: give it to a separate identity.
 `storage.objects.update` also changes other mutable metadata (for example custom time); it cannot shorten
 a locked retention.
 
 The Cloud Storage service agent of the anchor project, not the caller, uses the Cloud KMS key to encrypt
-and decrypt. That the callers need no Cloud KMS permission of their own is **not verified**
-([known limitations](../KNOWN-LIMITATIONS.md#anchoring-google-cloud-storage)).
+and decrypt: in the real run, identities holding only the writer and reader roles and no Cloud KMS role
+published, read back and audited CMEK-encrypted heads.
 
 **What roles cannot do.** An IAM role cannot stop a project owner from granting themselves any role. The
 controls are outside the project: an organization policy and IAM deny policies on the anchor project's
@@ -206,9 +209,12 @@ flags. The command's reference is [bide-anchor](../reference/bide-anchor.md).
 - **No emulator.** Neither of the two public emulators was found to enforce a locked policy, retention on
   delete, versioning or the create-only precondition (read from their source, not run). An opt-in test
   runs the SDK adapter against `STORAGE_EMULATOR_HOST` for the shape of its requests only.
-- **Never Google Cloud.** The permissions each call needs, the form of a key version, how a hold is placed,
-  and the errors Cloud Storage returns rest on its documentation. `TestRealGCS` (opt-in, `BIDE_GCS_BUCKET`,
-  never in CI) runs the anchor against a real bucket: follow
+- **One real run.** On 2026-10-17 `TestRealGCS` (opt-in, `BIDE_GCS_BUCKET`, never in CI) ran against a
+  real bucket with a locked 24-hour policy, as the shipped roles. It settled the permissions each call
+  needs, the form of a key version, how a hold is placed and released, that a retained generation cannot be
+  deleted, and that a live delete only makes a generation noncurrent. It did not cover what happens after
+  the retention ends, project deletion, multi-region buckets or the gRPC client; the list is in
+  [known limitations](../KNOWN-LIMITATIONS.md#anchoring-google-cloud-storage). To repeat it, follow
   [the runbook](../testing/gcs-anchor-real-run.md), which leads with what a locked policy commits you to.
 
 ## See also
