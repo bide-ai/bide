@@ -159,6 +159,20 @@ const usageText = `bide audit: produce and verify audit proof bundles
          journal order or after the signed head, and a time that is not canonical (printed
          quoted); these notes never change the verdict
 
+  stops (-trail <file> | -db <file> | -postgres-env <var>) -stop-policy <file> [-stop-root <digest>]
+        (-sth <file>... -pubkey <hex|file> | -unanchored) [-max-unattested <duration>] [-as-of <time>]
+         verify the kill switch's stop trail: each record is read strictly and must verify, under the
+         policy the deployment pinned (-stop-policy, a JSON policy document with the approvers' public
+         keys, the setters and lifters, the lift quorum and the deployment ID) and the chain of signed
+         policy transitions from its root, in the order the trail holds them (a forged or foreign record
+         is a problem, and a pin the chain does not reach is one too); with signed heads (-sth, from
+         audit.SignStopTrail or the anchor log of the store that anchors it, each verified) the trail's
+         first records are exactly what the newest head commits to, so a deleted or reordered record is
+         found, and the records after it are reported with how long the oldest has gone unattested
+         (-max-unattested fails a gap older than that). With -db or -postgres-env it also compares the
+         trail with the control run record for record: a record in force without evidence, or evidence
+         of a record that is not in force, fails. It prints each stop and whether it is in force
+
   notifications (-trail <file>... [-journal <file>...] | -db <file> | -postgres-env <var>) [-run <id>]
                 (-sth <file>... -pubkey <hex|file> | -unanchored) [-max-ack <duration>] [-max-unattested <duration>]
                 [-strict] [-routing <file>] [-as-of <time>]
