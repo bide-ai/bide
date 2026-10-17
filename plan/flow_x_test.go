@@ -1,8 +1,5 @@
 package plan_test
 
-// Findings of the review of PR #103 (plan lowering). Each test asserts the behaviour the PR's
-// promises imply; a failing test is a finding.
-
 import (
 	"context"
 	"encoding/json"
@@ -18,6 +15,8 @@ import (
 	"github.com/bide-ai/bide/internal/journaltest"
 	"github.com/bide-ai/bide/plan"
 )
+
+// Properties of plan lowering that the flow's promises imply, each asserted as behaviour.
 
 func twoNode(t *testing.T, name string, fired *atomic.Int64, extra bool) *plan.Flow[int, int] {
 	t.Helper()
@@ -196,7 +195,7 @@ func TestF4_ResolutionOfTheWrongTypeStrandsTheRun(t *testing.T) {
 	}
 }
 
-// F5: Conform reports a Step that a node's body runs (which #103's reserved prefixes exist to
+// F5: Conform reports a Step that a node's body runs (which the reserved prefixes exist to
 // make safe) as an unexpected step, so a conforming run of such a flow never conforms.
 func TestF5_ConformFlagsAStepInsideANodeBody(t *testing.T) {
 	ctx := context.Background()
@@ -261,7 +260,7 @@ func TestF6_FlowRunAcceptsRunIDsAgentRefuses(t *testing.T) {
 	}
 }
 
-// F7 (pre-existing, not from #103): a Step a loop body runs has the same name in every
+// F7: a Step a loop body runs has the same name in every
 // iteration, so iteration 1 replays iteration 0's result and its effect never runs.
 func TestF7_NestedStepInLoopBodyIsNotIterationScoped(t *testing.T) {
 	ctx := context.Background()
@@ -363,5 +362,35 @@ func TestF10_ConformWithoutRunStartOrDigest(t *testing.T) {
 	}
 	if ok, diffs, err := flow.Conform(ctx, j, "r"); err != nil || ok {
 		t.Fatalf("Conform = %v, %q, %v on a journal with no run:start and no flow:digest; want a divergence", ok, diffs, err)
+	}
+}
+
+// Budget of a loop + switch + join flow: a fresh drive, a replay in a new process, a resume at
+// a halted node in a new process.
+func TestZBudgetLoopSwitch(t *testing.T) {
+	ctx := context.Background()
+	for _, sub := range fSubjects() {
+		cs := agenttest.NewCountingStore(agent.NewMemStore())
+		p := &fProc{h: &fHarness{mem: agent.NewMemStore(), crash: map[int]int{}, acked: map[string]bool{}}}
+		p.h.drive = -1
+		flow, err := sub.build(p, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		j, _ := agent.NewJournal(cs)
+		if out, err := flow.Run(ctx, j, "r", sub.in); err != nil || out != sub.want {
+			t.Fatalf("%s: %q %v", sub.name, out, err)
+		}
+		c := cs.Reset()
+		t.Logf("%s fresh: Load %d Get %d Inserted %d", sub.name, c.Load, c.Get, c.Inserted)
+		j2, _ := agent.NewJournal(cs)
+		if out, err := flow.Run(ctx, j2, "r", sub.in); err != nil || out != sub.want {
+			t.Fatalf("%s replay: %q %v", sub.name, out, err)
+		}
+		c = cs.Reset()
+		t.Logf("%s replay new journal: Load %d Get %d Inserted %d", sub.name, c.Load, c.Get, c.Inserted)
+		if c.Load > 1 || c.Inserted != 0 {
+			t.Errorf("%s replay: Load %d Inserted %d", sub.name, c.Load, c.Inserted)
+		}
 	}
 }

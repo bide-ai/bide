@@ -202,7 +202,7 @@ per node rather than per iteration, so the first iteration's approval lets the n
 both fail `GateHeld`. A third, `gate-request-order`, encodes the one bug #195's adversarial review
 found: a decision recorded before the gate's request (node keys are predictable) was counted. The
 model checks that only decisions after the request count; that a counted signature binds the
-request's input is checked by Go tests (`plan/rev_gate_test.go`, `plan/gate_test.go`), not by
+request's input is checked by Go tests (`plan/gate_test.go`), not by
 model 7. The other regression configurations of models 1, 1b, 9 and 10 do the
 same for bugs found by review and testing before the models existed, back to #31 and #58.
 

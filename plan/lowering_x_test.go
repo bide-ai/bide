@@ -1,14 +1,5 @@
 package plan_test
 
-// Systematic fault exploration of plan lowering (review of PR #103). Every Insert a drive makes
-// (journal header, run:start, flow:digest, attempt markers, not-started records, node results,
-// switch choices) is a branch point with outcomes ok, error-not-committed, error-committed,
-// cancel-after-ok, crash-before and crash-after. Budget: at most 2 non-ok outcomes over the 3
-// faulty drives, at most 1 crash per drive. Each faulty drive runs in the process of the previous
-// drive (unless it crashed) or a new one, per plan. Then clean verification drives: the same
-// process (if alive), then a new one; a halt is resolved with ResolveHalt when the halted
-// node's body fired, and the run driven again.
-
 import (
 	"context"
 	"encoding/json"
@@ -26,6 +17,15 @@ import (
 	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/plan"
 )
+
+// Systematic fault exploration of plan lowering. Every Insert a drive makes
+// (journal header, run:start, flow:digest, attempt markers, not-started records, node results,
+// switch choices) is a branch point with outcomes ok, error-not-committed, error-committed,
+// cancel-after-ok, crash-before and crash-after. Budget: at most 2 non-ok outcomes over the 3
+// faulty drives, at most 1 crash per drive. Each faulty drive runs in the process of the previous
+// drive (unless it crashed) or a new one, per plan. Then clean verification drives: the same
+// process (if alive), then a new one; a halt is resolved with ResolveHalt when the halted
+// node's body fired, and the run driven again.
 
 type fOutcome int
 
