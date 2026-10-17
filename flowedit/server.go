@@ -149,7 +149,7 @@ func New(path string, opts ...Option) (*Server, error) {
 	}
 	var tok [16]byte
 	if _, err := rand.Read(tok[:]); err != nil {
-		return nil, fmt.Errorf("flowedit: no randomness for the session token: %w", err)
+		return fail(fmt.Errorf("flowedit: no randomness for the session token: %w", err))
 	}
 	return &Server{path: real, root: root, base: base, name: path, token: hex.EncodeToString(tok[:]), baseline: baseline, baselineSource: source, baselineNote: note, fs: osFS}, nil
 }

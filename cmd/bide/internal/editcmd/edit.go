@@ -81,6 +81,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, es.ErrorPrefix()+"bide edit:", err)
 		return 1
 	}
+	defer srv.Close()
 	if n := srv.BaselineNote(); n != "" {
 		fmt.Fprintln(stderr, es.Warn("bide edit: warning:")+" the baseline is "+n)
 	}
