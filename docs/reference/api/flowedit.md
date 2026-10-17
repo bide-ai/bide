@@ -151,6 +151,8 @@ type Node struct {
 
 	Gate string `json:"gate,omitempty"`
 
+	Approval *Approval `json:"approval,omitempty"`
+
 	Problems []string `json:"problems,omitempty"`
 }
 ```

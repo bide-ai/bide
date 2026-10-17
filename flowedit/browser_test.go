@@ -282,3 +282,181 @@ func TestEditAndSaveInChrome(t *testing.T) {
 		t.Errorf("the editor wrote over the other writer's file: %q", got)
 	}
 }
+
+// TestFormsInChrome drives the inspector's forms: a node's safety, block and approval gate are
+// edited by the controls a keyboard reaches, each change is a splice of the file's text (the diff
+// is the edit), the check's answer for a gate draft is shown before it is applied, the weakened
+// banner follows the text against the baseline, and undo and redo restore the exact bytes.
+func TestFormsInChrome(t *testing.T) {
+	// weakFlow with an assertion the gate satisfies with room to spare, so adding an approver keeps it true.
+	formsFlow := strings.Replace(weakFlow, ">= 2 of 3", ">= 2 of 5", 1)
+	s, _ := newTestServer(t, "refund.yaml", formsFlow)
+	var r struct {
+		OK                   bool     `json:"ok"`
+		Error                string   `json:"error"`
+		Original             string   `json:"original"`
+		GateButton           string   `json:"gateButton"`
+		NeedBefore           string   `json:"needBefore"`
+		ApproversBefore      []string `json:"approversBefore"`
+		SafetyBefore         string   `json:"safetyBefore"`
+		ExcludeBefore        bool     `json:"excludeBefore"`
+		TimeoutBefore        string   `json:"timeoutBefore"`
+		AssertionDraft       string   `json:"assertionDraft"`
+		Kofn                 string   `json:"kofn"`
+		SourceBeforeApply    string   `json:"sourceBeforeApply"`
+		AfterAddApprover     string   `json:"afterAddApprover"`
+		BannerAfterAdd       string   `json:"bannerAfterAdd"`
+		StateAfterAdd        string   `json:"stateAfterAdd"`
+		FocusAfterApply      string   `json:"focusAfterApply"`
+		UndoEnabled          bool     `json:"undoEnabled"`
+		AfterNeed            string   `json:"afterNeed"`
+		BannerAfterNeed      string   `json:"bannerAfterNeed"`
+		RejectedDraft        string   `json:"rejectedDraft"`
+		FeedbackClass        string   `json:"feedbackClass"`
+		SourceAfterRejected  string   `json:"sourceAfterRejectedDraft"`
+		AfterUndo            string   `json:"afterUndo"`
+		RedoEnabled          bool     `json:"redoEnabled"`
+		AfterRedo            string   `json:"afterRedo"`
+		AfterSafety          string   `json:"afterSafety"`
+		FocusAfterSafety     string   `json:"focusAfterSafety"`
+		AfterClear           string   `json:"afterClear"`
+		BannerAfterClear     string   `json:"bannerAfterClear"`
+		GateButtonAfterClear string   `json:"gateButtonAfterClear"`
+		AfterGateReceipt     string   `json:"afterGateReceipt"`
+		AfterBlock           string   `json:"afterBlock"`
+		RefusalShown         string   `json:"refusalShown"`
+		RefusalLive          string   `json:"refusalLive"`
+		SourceAfterRefusal   bool     `json:"sourceAfterRefusal"`
+		Console              []string `json:"console"`
+		Failed               []string `json:"failed"`
+		OffOrigin            []string `json:"offOrigin"`
+	}
+	runScript(t, "forms.mjs", s, &r)
+	if !r.OK {
+		t.Fatalf("the script failed: %s\nconsole: %q\nfailed requests: %q", r.Error, r.Console, r.Failed)
+	}
+	// The one refused operation of the script is a 422, which the browser logs as a console error;
+	// it is expected, exactly once, and nothing else is.
+	const refused422 = "error: Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)"
+	if len(r.Console) != 1 || r.Console[0] != refused422 || len(r.Failed) > 0 || len(r.OffOrigin) > 0 {
+		t.Errorf("the browser reported console %q (want only the one 422 of the refused operation), failed requests %q, requests off the origin %q", r.Console, r.Failed, r.OffOrigin)
+	}
+	if r.Original != formsFlow || r.GateButton != "Apply gate" || r.NeedBefore != "2" || !slices.Equal(r.ApproversBefore, []string{"ops", "finance", "risk"}) || r.SafetyBefore != "side_effect" || !r.ExcludeBefore || r.TimeoutBefore != "24h" {
+		t.Errorf("the form does not show the node's gate: need %q approvers %q safety %q exclude %v timeout %q button %q", r.NeedBefore, r.ApproversBefore, r.SafetyBefore, r.ExcludeBefore, r.TimeoutBefore, r.GateButton)
+	}
+	if !strings.Contains(r.AssertionDraft, `assert[0] "every path to charge passes approval >= 2 of 5" is violated`) {
+		t.Errorf("a draft that breaks the assertion: %q", r.AssertionDraft)
+	}
+	if r.Kofn != "2 of 4 approvers must sign, never counting the person who started the run; the gate expires after 24h." || r.SourceBeforeApply != formsFlow {
+		t.Errorf("the draft: %q (the source must not change before Apply)", r.Kofn)
+	}
+	addedApprover := strings.Replace(formsFlow, "[ops, finance, risk]", "[ops, finance, risk, audit]", 1)
+	if r.AfterAddApprover != addedApprover {
+		t.Errorf("after adding an approver:\n%s", r.AfterAddApprover)
+	}
+	if !strings.Contains(r.BannerAfterAdd, "APPROVAL GATE WEAKENED") || r.StateAfterAdd != "unsaved changes" || r.FocusAfterApply != "g-apply" || !r.UndoEnabled {
+		t.Errorf("after adding: banner %q, state %q, focus %q, undo %v", r.BannerAfterAdd, r.StateAfterAdd, r.FocusAfterApply, r.UndoEnabled)
+	}
+	need3 := strings.Replace(addedApprover, "need: 2", "need: 3", 1)
+	if r.AfterNeed != need3 || strings.TrimSpace(r.BannerAfterNeed) != "" {
+		t.Errorf("after raising the need: banner %q\n%s", r.BannerAfterNeed, r.AfterNeed)
+	}
+	if !strings.Contains(r.RejectedDraft, "must be between 1 and 4") || !strings.Contains(r.FeedbackClass, "bad") || r.SourceAfterRejected != need3 {
+		t.Errorf("the rejected draft: %q (%s); the source must not change", r.RejectedDraft, r.FeedbackClass)
+	}
+	if r.AfterUndo != formsFlow || !r.RedoEnabled || r.AfterRedo != addedApprover {
+		t.Errorf("undo and redo do not restore the bytes: undo %q, redo %q", r.AfterUndo, r.AfterRedo)
+	}
+	idem := strings.Replace(formsFlow, "safety: side_effect", "safety: idempotent", 1)
+	if r.AfterSafety != idem || r.FocusAfterSafety != "f-safety" {
+		t.Errorf("after the safety: focus %q\n%s", r.FocusAfterSafety, r.AfterSafety)
+	}
+	cleared := strings.Replace(idem, "    approval:\n      need: 2\n      approvers: [ops, finance, risk]\n      exclude_principal: true\n      timeout: 24h\n", "", 1)
+	if r.AfterClear != cleared || !strings.Contains(r.BannerAfterClear, "APPROVAL GATE WEAKENED") || r.GateButtonAfterClear != "Add gate" {
+		t.Errorf("after removing the gate: banner %q, button %q\n%s", r.BannerAfterClear, r.GateButtonAfterClear, r.AfterClear)
+	}
+	if !strings.Contains(r.AfterGateReceipt, "  - {name: receipt, block: receipt, safety: idempotent, approval: {need: 1, approvers: [ops, audit2], exclude_principal: true}}\n") {
+		t.Errorf("after gating receipt:\n%s", r.AfterGateReceipt)
+	}
+	if !strings.Contains(r.RefusalShown, "cannot be empty") || !strings.HasPrefix(r.RefusalLive, "Not applied: ") || !r.SourceAfterRefusal {
+		t.Errorf("a refused operation: shown %q, announced %q, text unchanged %v", r.RefusalShown, r.RefusalLive, r.SourceAfterRefusal)
+	}
+	if !strings.Contains(r.AfterBlock, "  - {name: validate, block: validate_v2, safety: readonly}\n") {
+		t.Errorf("after the block:\n%s", r.AfterBlock)
+	}
+}
+
+// TestRacesInChrome: an answer that arrives late or fails. The author's typing is never overwritten by
+// the late answer of an operation, a failed undo loses no history and says so, and the number the
+// decisions-needed field shows is the number that is sent (a value that is not a whole number is
+// refused with a message).
+func TestRacesInChrome(t *testing.T) {
+	formsFlow := strings.Replace(weakFlow, ">= 2 of 3", ">= 2 of 5", 1)
+	s, _ := newTestServer(t, "refund.yaml", formsFlow)
+	var raw map[string]json.RawMessage
+	runScript(t, "races.mjs", s, &raw)
+	get := func(key string, into any) {
+		t.Helper()
+		if err := json.Unmarshal(raw[key], into); err != nil {
+			t.Fatalf("%s: %v (%s)", key, err, raw[key])
+		}
+	}
+	var ok bool
+	get("ok", &ok)
+	var console, failed, pageErrors []string
+	get("console", &console)
+	get("failed", &failed)
+	get("pageErrors", &pageErrors)
+	if !ok {
+		var e string
+		get("error", &e)
+		t.Fatalf("the script failed: %s\nconsole: %q", e, console)
+	}
+	if len(pageErrors) > 0 {
+		t.Errorf("unhandled errors in the page: %q", pageErrors)
+	}
+	// The aborted report is the only failed request, and the browser logs it once.
+	if len(failed) != 1 || !strings.HasPrefix(failed[0], "/api/report") || len(console) != 1 || !strings.Contains(console[0], "ERR_FAILED") {
+		t.Errorf("console %q, failed requests %q: want only the aborted /api/report", console, failed)
+	}
+	var lateSource, lateMessage, lateLive string
+	get("lateSource", &lateSource)
+	get("lateMessage", &lateMessage)
+	get("lateLive", &lateLive)
+	if !strings.Contains(lateSource, "#TYPED MEANWHILE") || !strings.Contains(lateSource, "safety: side_effect\n    approval") || strings.Contains(lateSource, "safety: idempotent\n    approval") ||
+		!strings.Contains(lateMessage, "text changed") || !strings.HasPrefix(lateLive, "Not applied: the text changed") {
+		t.Errorf("a late answer: source %q, message %q, live %q", lateSource, lateMessage, lateLive)
+	}
+	var undoLive string
+	var keptSource, undoEnabled, redoDisabled, oneStep bool
+	get("failedUndoLive", &undoLive)
+	get("failedUndoSource", &keptSource)
+	get("undoStillEnabled", &undoEnabled)
+	get("redoStillDisabled", &redoDisabled)
+	get("undoneOneStep", &oneStep)
+	if !strings.HasPrefix(undoLive, "Not undone") || !keptSource || !undoEnabled || !redoDisabled || !oneStep {
+		t.Errorf("a failed undo: live %q, source kept %v, undo enabled %v, redo disabled %v, one step back %v", undoLive, keptSource, undoEnabled, redoDisabled, oneStep)
+	}
+	for _, bad := range []string{"1e3", "2.5", "", "-1"} {
+		var v struct {
+			Msg           string `json:"msg"`
+			ApplyDisabled bool   `json:"applyDisabled"`
+			Invalid       string `json:"invalid"`
+		}
+		get("needBad_"+bad, &v)
+		if !strings.Contains(v.Msg, "whole number") || !v.ApplyDisabled || v.Invalid != "true" {
+			t.Errorf("need %q: %+v", bad, v)
+		}
+	}
+	var steps int
+	get("undoSteps", &steps)
+	if steps < 100 || steps > 101 {
+		t.Errorf("undo went back %d steps after 105+ operations, want the cap of 100", steps)
+	}
+	var goodEnabled, unchanged bool
+	get("needGoodApplyEnabled", &goodEnabled)
+	get("sourceUnchanged", &unchanged)
+	if !goodEnabled || !unchanged {
+		t.Errorf("a good number: apply enabled %v, text unchanged %v", goodEnabled, unchanged)
+	}
+}

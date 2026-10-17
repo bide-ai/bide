@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -397,9 +398,15 @@ func TestPageContract(t *testing.T) {
 		}
 	}
 	n := m["nodes"].([]any)[1].(map[string]any)
-	for _, k := range []string{"name", "kind", "block", "safety", "risk", "gate"} {
+	for _, k := range []string{"name", "kind", "block", "safety", "risk", "gate", "approval"} {
 		if _, ok := n[k]; !ok {
 			t.Errorf("node has no %q", k)
+		}
+	}
+	ap := n["approval"].(map[string]any)
+	for _, k := range []string{"need", "approvers", "exclude_principal"} {
+		if _, ok := ap[k]; !ok {
+			t.Errorf("approval has no %q", k)
 		}
 	}
 	wk := m["weakening"].(map[string]any)
@@ -413,7 +420,7 @@ func TestPageContract(t *testing.T) {
 		}
 	}
 	js, _ := fs.ReadFile(pageFS, "page/editor.js")
-	for _, k := range []string{"d.icon", "d.word", "d.line", "v.nodes", "v.wiring", "v.assertions", "v.problems", "v.graph", "v.parse_error", "v.verdict", "a.holds", "a.invalid", "a.undecided", "a.path", "a.message", "p.severity", "p.message", "n.gate", "n.risk", "w.weakened", "w.word", "w.line", "w.baseline", "w.changes", "w.strengthened", "w.compare_error"} {
+	for _, k := range []string{"d.icon", "d.word", "d.line", "v.nodes", "v.wiring", "v.assertions", "v.problems", "v.graph", "v.parse_error", "v.verdict", "a.holds", "a.invalid", "a.undecided", "a.path", "a.message", "p.severity", "p.message", "n.gate", "n.risk", "w.weakened", "w.word", "w.line", "w.baseline", "w.changes", "w.strengthened", "w.compare_error", "n.approval", "cur.need", "cur.approvers", "cur.exclude_principal", "cur.timeout", "n.safety", "n.block", "e.changed", "e.text"} {
 		if !strings.Contains(string(js), k) {
 			t.Errorf("the script no longer reads %s: update this list with it", k)
 		}
@@ -667,5 +674,26 @@ func TestPageContractForSave(t *testing.T) {
 	w = call(s.Handler(), s, "/api/save", saveBody("a: 1\n", hashOf([]byte(weakFlow))), nil)
 	if w.Code != 409 || !strings.Contains(w.Body.String(), `"conflict":true`) || !strings.Contains(w.Body.String(), `"diff"`) || !strings.Contains(w.Body.String(), `"hash"`) {
 		t.Errorf("%d %s", w.Code, w.Body)
+	}
+}
+
+// The view carries the gate the config declares, which the forms edit, and survives a config whose
+// gate is not a mapping: the check reports it and the node has no approval to edit.
+func TestViewCarriesTheDeclaredGate(t *testing.T) {
+	v := BuildView("refund.yaml", []byte(testFlow))
+	ap := v.Nodes[1].Approval
+	if ap == nil || ap.Need != 2 || !slices.Equal(ap.Approvers, []string{"ops", "finance", "risk"}) || !ap.ExcludePrincipal || ap.Timeout != "" {
+		t.Errorf("%+v", ap)
+	}
+	if v.Nodes[0].Approval != nil || v.Nodes[2].Approval != nil {
+		t.Errorf("a node with no gate has one: %+v %+v", v.Nodes[0].Approval, v.Nodes[2].Approval)
+	}
+	bad := strings.Replace(testFlow, "approval: {need: 2, approvers: [ops, finance, risk], exclude_principal: true}", "approval: yes", 1)
+	v = BuildView("refund.yaml", []byte(bad))
+	if v.ParseError != "" || len(v.Nodes) != 0 && v.Nodes[1].Approval != nil {
+		t.Errorf("parse error %q, nodes %+v", v.ParseError, v.Nodes)
+	}
+	if v.Errors == 0 {
+		t.Error("a gate that is not a mapping is not reported")
 	}
 }

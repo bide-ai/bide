@@ -6,9 +6,9 @@ problems `bide check` finds, and the source. The design is in
 [docs/design/visual-editor.md](../design/visual-editor.md); this page says what the command does
 today.
 
-**In this release you edit the file's source in the page, see what `bide check` says about it as you
-type, see whether the edit weakens the flow, and save.** The next release adds forms for a node's
-approval gate, safety and block, so a policy owner need not write YAML.
+**You can edit a node's approval gate, safety and block with forms, or edit the file's source, see
+what `bide check` says about it as you type, see whether the edit weakens the flow, and save.** The
+forms mean a policy owner need not write YAML.
 
 The editor is an authoring tool and nothing else. It reads and writes the file `plan.Load`
 reads, adds no key to it, starts no run and holds no state of its own: the run is the run `plan`
@@ -38,12 +38,43 @@ with every request, and it is not sent to the server as part of the address or i
 - **The outline**: the nodes in the order the config declares them, then the wiring. Order is data
   (the topology digest commits to node, edge and arm order), so the outline is a list in config
   order, not a sorted one.
-- **The inspector**: the selected node's block, the safety the config states, the crash behavior the
-  check derives, its approval gate and its problems. Select a node by clicking it in the flow, or
-  with the keyboard in the outline or the flow (Tab to it, Enter).
+- **The inspector**: the selected node's crash behavior, its approval gate and its problems, and the
+  forms below (see [The inspector's forms](#the-inspectors-forms)). Select a node by clicking it in
+  the flow, or with the keyboard in the outline or the flow (Tab to it, Enter).
 - **The assertions**, each with its verdict and, for a violated one, the counterexample path. They
   are checked by `bide check` and in CI, not at run time: `plan.Load` ignores `assert` lines.
 - **The problems** `bide check` lists, and **the source** as the file is on disk.
+
+## The inspector's forms
+
+Select a node and the inspector offers three forms. Each change is an **operation** the server
+applies to the file's text as a splice, so the diff of an edit is the edit: the file's comments,
+blank lines, key order and the flow or block style of the lines around it stay as they were. The
+result is verified before it is returned (the text must parse to the old data with the operation
+applied and nothing else, every other line unchanged, every comment still with its entry); an
+operation the engine cannot splice safely (a file with anchors or aliases on that node, more than
+one document, CRLF line ends, a byte-order mark) is refused with the reason and the text is
+untouched, and you edit that part in the source.
+
+- **Safety**: `readonly`, `idempotent` or `side_effect`, or left to the block. The config may only
+  lower the safety a block declares in Go, never raise it; the editor cannot see the block's, so a
+  value above it fails when a program loads the flow, and the form says so.
+- **Block**: the name of a registered block. You choose one (the names used in the file are
+  offered); a block's Go code is not written here.
+- **Approval gate**: decisions needed, the approvers in policy order, **separation of duties** (never
+  count the person who started the run) and a **deadline** (`timeout`, a Go duration such as `48h`:
+  past it the gate expires and the node never runs). The form edits a draft. Every change to the
+  draft asks the server what `bide check` would say of the node with that gate and shows the answer
+  under the form, in the check's words (`approval.need 9 must be between 1 and 4`, or an `assert` line
+  the draft would break), so the form rejects exactly what the check rejects and there is no second
+  validator in the page. **Apply gate** writes the draft into the text; **Remove gate** removes it.
+  The page says that approvers' keys are supplied when a program loads the flow and that it cannot
+  check that they are enrolled.
+
+A form change is an undoable step (the history keeps the last 100 steps; each is a whole copy of the text): **Undo** and **Redo** in the header restore the exact earlier
+text, and a burst of typing in the source is one step. After a change the focus returns to the
+control you changed. A changed gate, safety or block is compared with the baseline like any other
+edit, so the weakened banner appears when the change weakens the flow, with the same words as in CI.
 
 ## The baseline and the weakened banner
 
@@ -167,6 +198,6 @@ for a text against a baseline, and `flowedit.WithBase` is the `-base` option of 
 `flowedit.ApplyOperation` applies one editor operation (set a node's safety or block, set or clear
 its approval gate: `need`, approvers, `exclude_principal`, `timeout`) to a config's text by splicing,
 so comments, blank lines and key order stay and the diff of an edit is the edit; each result is
-verified, and what cannot be spliced safely is a `*flowedit.Refusal` with the text untouched. The
-page does not offer these operations yet. `flowedit.UnifiedDiff` is the diff the dialog shows, and
+verified, and what cannot be spliced safely is a `*flowedit.Refusal` with the text untouched. It is
+what the forms call, through `POST /api/apply`. `flowedit.UnifiedDiff` is the diff the dialog shows, and
 `(*flowedit.Server).Save` is the save, with the checks above.

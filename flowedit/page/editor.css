@@ -30,3 +30,15 @@ dialog h2 { margin-top: 0; }
 .diff { max-height: 22em; overflow: auto; background: var(--card-2); border: 1px solid var(--line); border-radius: var(--r-sm); padding: var(--s2) var(--s3); white-space: pre; }
 .diff .da { color: var(--good); } .diff .dd { color: var(--bad); } .diff .dh { color: var(--muted); font-weight: 600; } .diff span { display: block; }
 .verdict label { cursor: pointer; }
+.form .field { margin: var(--s3) 0; }
+.form label, .gate label { display: block; font-size: var(--t-sm); font-weight: 600; margin-bottom: var(--s1); }
+.form input[type="text"], .form input[type="number"], .form select, .gate input[type="text"], .gate input[type="number"] { width: 100%; font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--line); border-radius: var(--r-sm); padding: var(--s1) var(--s2); }
+.field.check { display: flex; gap: var(--s2); align-items: flex-start; }
+.field.check label { font-weight: 400; margin: 0; }
+.inline { display: flex; gap: var(--s2); align-items: center; flex-wrap: wrap; }
+.inline input[type="text"] { flex: 1; min-width: 8em; width: auto; }
+.gate { border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s3) var(--s4); margin: var(--s4) 0 0; }
+.gate legend { font-weight: 700; padding: 0 var(--s2); }
+.approvers { list-style: none; margin: var(--s1) 0; padding: 0; }
+.approvers li { margin: var(--s1) 0; }
+.field input:focus-visible, .field select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

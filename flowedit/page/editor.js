@@ -117,6 +117,22 @@ export function renderOutline(v) {
   replace('wiring', (v.wiring || []).map((w) => h('li', {}, w)));
 }
 
+// ---- the inspector: a node's block, safety and approval gate, as forms ----
+//
+// A form change is an operation sent to the server (POST /api/apply {text, operation}); the answer
+// is the new text and its check, which the page shows. The gate form edits a draft: each change to
+// it asks the server what the check would say of the node with that gate (the same call, not kept),
+// and shows the node's problems under the form, so what the form rejects is what bide check
+// rejects. Apply writes the draft into the text.
+//   POST /api/apply {text, operation{op, node, value, approval{need, approvers[], exclude_principal, timeout}}}
+//     -> View + { changed }, or 422 { error } when the operation cannot be applied
+
+const SAFETIES = [['', 'left to the block'], ['readonly', 'readonly: no external effect, a resume re-runs it'], ['idempotent', 'idempotent: safe to repeat, a resume re-runs it'], ['side_effect', 'side_effect: must not run twice, a resume halts and asks']];
+
+function field(id, label, control, help) {
+  return h('div', { class: 'field' }, h('label', { for: id }, label), control, help ? h('p', { class: 'muted small', id: id + '-help' }, help) : null);
+}
+
 export function renderInspector(v) {
   const n = (v.nodes || []).find((x) => x.name === selected);
   if (!n) {
@@ -124,11 +140,203 @@ export function renderInspector(v) {
     return;
   }
   const row = (k, val) => val ? [h('dt', {}, k), h('dd', {}, val)] : [];
+  const blocks = [...new Set((v.nodes || []).map((x) => x.block).filter(Boolean))];
+  const safety = h('select', { id: 'f-safety' }, SAFETIES.map(([val, label]) => h('option', { value: val, selected: val === (n.safety || '') }, label)));
+  safety.addEventListener('change', () => operate({ op: 'set_safety', node: n.name, value: safety.value }, 'f-safety'));
+  const block = h('input', { id: 'f-block', type: 'text', value: n.block || '', list: 'f-blocks', autocomplete: 'off', spellcheck: 'false' });
+  const setBlock = h('button', { type: 'button', class: 'btn', id: 'f-block-set' }, 'Set block');
+  setBlock.addEventListener('click', () => operate({ op: 'set_block', node: n.name, value: block.value.trim() }, 'f-block'));
+  block.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); setBlock.click(); } });
   replace('inspector',
     h('h3', {}, n.name),
-    h('dl', {}, row('kind', n.kind), row('block', n.block), row('safety (config)', n.safety || 'left to the block'), row('crash behavior', n.risk),
-      row('approval gate', n.gate || 'none'), row('problems', (n.problems || []).join('; '))),
-    h('p', { class: 'muted small' }, 'Change the file in the source below; forms for the gate and the safety come next.'));
+    h('dl', {}, row('kind', n.kind), row('crash behavior', n.risk), row('approval gate', n.gate || 'none'), row('problems', (n.problems || []).join('; '))),
+    h('p', { id: 'op-error', class: 'bad small', role: 'alert' }),
+    h('div', { class: 'form' },
+      field('f-safety', 'Safety', safety, 'Only lowers what the block declares in Go; the check cannot see that here, so a value above it fails when a program loads the flow.'),
+      h('div', { class: 'field' }, h('label', { for: 'f-block' }, 'Block'), h('div', { class: 'inline' }, block, setBlock),
+        h('datalist', { id: 'f-blocks' }, blocks.map((b) => h('option', { value: b }))),
+        h('p', { class: 'muted small' }, 'A block name is chosen, not written: its Go code is registered in your program.')),
+      gateForm(n)));
+}
+
+// gateForm is the approval section: a draft of need, approvers, separation of duties and deadline.
+function gateForm(n) {
+  const cur = n.approval;
+  const draft = cur ? { need: cur.need, approvers: [...(cur.approvers || [])], exclude_principal: !!cur.exclude_principal, timeout: cur.timeout || '' }
+    : { need: 1, approvers: [], exclude_principal: false, timeout: '' };
+  const need = h('input', { id: 'g-need', type: 'number', min: '1', step: '1', value: String(draft.need), 'aria-describedby': 'g-feedback' });
+  const list = h('ul', { class: 'approvers', id: 'g-approvers', 'aria-label': 'Approvers, in policy order' });
+  const addId = h('input', { id: 'g-add', type: 'text', autocomplete: 'off', spellcheck: 'false', 'aria-describedby': 'g-feedback' });
+  const add = h('button', { type: 'button', class: 'btn', id: 'g-add-btn' }, 'Add approver');
+  const exclude = h('input', { id: 'g-exclude', type: 'checkbox', checked: draft.exclude_principal });
+  const timeout = h('input', { id: 'g-timeout', type: 'text', value: draft.timeout, autocomplete: 'off', spellcheck: 'false', placeholder: 'none', 'aria-describedby': 'g-timeout-help g-feedback' });
+  const feedback = h('div', { id: 'g-feedback', class: 'small', role: 'status', 'aria-live': 'polite' });
+  const kofn = h('p', { class: 'small', id: 'g-kofn' });
+  const apply = h('button', { type: 'button', class: 'btn primary', id: 'g-apply' }, cur ? 'Apply gate' : 'Add gate');
+  const clear = cur ? h('button', { type: 'button', class: 'btn', id: 'g-clear' }, 'Remove gate') : null;
+
+  let needBad = false;
+  const operation = () => ({ op: 'set_approval', node: n.name, approval: draft });
+  let timer = 0;
+  let seq = 0;
+  function drawApprovers() {
+    list.replaceChildren(...draft.approvers.map((id, i) => {
+      const rm = h('button', { type: 'button', class: 'btn', id: 'g-rm-' + i, 'aria-label': 'Remove approver ' + id }, 'Remove');
+      rm.addEventListener('click', () => { draft.approvers.splice(i, 1); changed(); drawApprovers(); (list.querySelector('button') || addId).focus(); });
+      return h('li', {}, h('code', {}, id), ' ', rm);
+    }));
+  }
+  // Every change to the draft asks the server what the check says of the node with it.
+  function changed() {
+    apply.disabled = needBad;
+    if (needBad) {
+      clearTimeout(timer);
+      ++seq;
+      kofn.textContent = '';
+      feedback.className = 'small bad';
+      feedback.replaceChildren(h('p', {}, 'Decisions needed must be a whole number such as 2.'));
+      return;
+    }
+    kofn.textContent = draft.approvers.length ? draft.need + ' of ' + draft.approvers.length + ' approvers must sign' + (draft.exclude_principal ? ', never counting the person who started the run' : '') + (draft.timeout ? '; the gate expires after ' + draft.timeout : '') + '.' : 'No approvers yet.';
+    clearTimeout(timer);
+    const mine = ++seq;
+    timer = setTimeout(async () => {
+      try {
+        const e = await api('/api/apply', { text: state.text, operation: operation() });
+        if (mine !== seq) return;
+        const mineNode = (e.nodes || []).find((x) => x.name === n.name);
+        const errs = ((mineNode && mineNode.problems) || []).filter((p) => p.startsWith('error'));
+        feedback.className = 'small ' + (errs.length ? 'bad' : 'good');
+        feedback.replaceChildren(...(errs.length ? errs.map((p) => h('p', {}, p)) : [h('p', {}, 'The check accepts this gate.')]));
+      } catch (err) {
+        if (mine === seq) { feedback.className = 'small bad'; feedback.replaceChildren(h('p', {}, err.message)); }
+      }
+    }, 200);
+  }
+  // The number is read strictly: what the field shows is what is sent. "1e3", "2.5" or "" is not a
+  // whole number, and is said so instead of being sent as something else.
+  need.addEventListener('input', () => {
+    const raw = need.value.trim();
+    needBad = !/^\d+$/.test(raw);
+    draft.need = needBad ? 0 : Number(raw);
+    need.setAttribute('aria-invalid', needBad ? 'true' : 'false');
+    changed();
+  });
+  exclude.addEventListener('change', () => { draft.exclude_principal = exclude.checked; changed(); });
+  timeout.addEventListener('input', () => { draft.timeout = timeout.value.trim(); changed(); });
+  const addOne = () => {
+    const id = addId.value.trim();
+    if (!id) return;
+    draft.approvers.push(id);
+    addId.value = '';
+    drawApprovers();
+    changed();
+    addId.focus();
+  };
+  add.addEventListener('click', addOne);
+  addId.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addOne(); } });
+  apply.addEventListener('click', () => operate(operation(), 'g-apply'));
+  if (clear) clear.addEventListener('click', () => operate({ op: 'clear_approval', node: n.name }, 'f-safety'));
+  drawApprovers();
+  changed();
+  return h('fieldset', { class: 'gate' },
+    h('legend', {}, 'Approval gate'),
+    h('p', { class: 'muted small' }, 'A person or people must sign before this node runs: ' + (cur ? 'edit the gate below.' : 'this node has no gate in the config.') + ' Approvers\' keys are supplied when a program loads the flow; the editor cannot check that they are enrolled.'),
+    field('g-need', 'Decisions needed', need),
+    h('div', { class: 'field' }, h('label', { for: 'g-add' }, 'Approvers'), list, h('div', { class: 'inline' }, addId, add)),
+    kofn,
+    h('div', { class: 'field check' }, exclude, h('label', { for: 'g-exclude' }, 'Separation of duties: never count the person who started the run')),
+    field('g-timeout', 'Deadline', timeout, 'A Go duration such as 48h or 90m; empty for none. Past it the gate expires and the node never runs.'),
+    feedback,
+    h('div', { class: 'inline' }, apply, clear));
+}
+
+// operate applies an operation to the text, as a step the author can undo, and puts the focus back
+// on the control that made it.
+const applyOrApi = (text, op) => api('/api/apply', { text, operation: op });
+
+async function operate(op, focusId) {
+  const sent = state.text;
+  try {
+    const e = await applyOrApi(sent, op);
+    // The author may have typed while the answer was on its way: their text is not overwritten.
+    if (state.text !== sent) {
+      const msg = 'Not applied: the text changed while the edit was being applied. Apply it again.';
+      const box = $('op-error');
+      if (box) box.textContent = msg;
+      announce(msg);
+      return;
+    }
+    if (e.changed) {
+      checkpoint();
+      setText(e.text, e);
+      announce(opWords(op));
+    } else {
+      announce('No change: the text already says that.');
+    }
+    const target = $(focusId);
+    if (target) target.focus();
+  } catch (err) {
+    const box = $('op-error');
+    if (box) box.textContent = 'Not applied: ' + err.message;
+    announce('Not applied: ' + err.message);
+  }
+}
+
+function opWords(op) {
+  switch (op.op) {
+    case 'set_safety': return op.node + ': safety ' + (op.value || 'left to the block');
+    case 'set_block': return op.node + ': block ' + op.value;
+    case 'clear_approval': return op.node + ': gate removed';
+    default: return op.node + ': gate set';
+  }
+}
+
+// ---- undo and redo: a stack of earlier texts ----
+
+const undoStack = [];
+const redoStack = [];
+function checkpoint() {
+  if (undoStack.at(-1) !== state.text) pushCapped(undoStack, state.text);
+  redoStack.length = 0;
+  renderState();
+}
+// The undo and redo stacks hold whole texts (at most a megabyte each), so they are capped: the oldest
+// step is dropped past this many.
+const MAX_HISTORY = 100;
+const pushCapped = (stack, text) => { stack.push(text); if (stack.length > MAX_HISTORY) stack.shift(); };
+let stepping = false;
+async function step(from, to, words) {
+  if (!from.length || stepping) return;
+  stepping = true;
+  const sent = state.text;
+  const text = from.at(-1);
+  try {
+    // Ask for the check first: the stacks move only when the step is going to happen.
+    const v = await api('/api/report', { text });
+    if (state.text !== sent) {
+      announce('Not ' + words.toLowerCase() + ': the text changed while the step was being made.');
+      return;
+    }
+    from.pop();
+    pushCapped(to, sent);
+    setText(text, v);
+    announce(words);
+  } catch (err) {
+    announce('Not ' + words.toLowerCase() + ': ' + err.message);
+  } finally {
+    stepping = false;
+    renderState();
+  }
+}
+const undo = () => step(undoStack, redoStack, 'Undone');
+const redo = () => step(redoStack, undoStack, 'Redone');
+
+// setText makes text the page's text: the source, the check, and every pane.
+function setText(text, v) {
+  state.text = text;
+  $('source').value = text;
+  render(v, { keepSource: true });
 }
 
 export function renderAssertions(v) {
@@ -209,13 +417,19 @@ function renderState() {
   $('state-tag').textContent = d ? 'unsaved changes' : 'saved';
   $('save').disabled = !d;
   $('revert').disabled = !d;
+  $('undo').disabled = undoStack.length === 0;
+  $('redo').disabled = redoStack.length === 0;
 }
 
 // Typing in the source asks the server for the check of the new text (the page validates nothing
 // itself) after a short pause. A slower answer to an older text is dropped.
 let typing = 0;
 let timer = 0;
+let lastTyped = 0;
 function onInput() {
+  const now = Date.now();
+  if (now - lastTyped > 1000) { pushCapped(undoStack, state.text); redoStack.length = 0; } // a burst of typing is one undo step
+  lastTyped = now;
   state.text = $('source').value;
   renderState();
   clearTimeout(timer);
@@ -231,6 +445,7 @@ function onInput() {
 }
 
 async function revert() {
+  checkpoint();
   state.text = state.disk;
   $('source').value = state.text;
   render(await api('/api/report', { text: state.text }));
@@ -355,6 +570,8 @@ async function main() {
   $('source').addEventListener('input', onInput);
   $('save').addEventListener('click', save);
   $('revert').addEventListener('click', revert);
+  $('undo').addEventListener('click', undo);
+  $('redo').addEventListener('click', redo);
   addEventListener('beforeunload', (e) => { if (dirty()) { e.preventDefault(); e.returnValue = ''; } });
   try {
     const d = await api('/api/doc');
