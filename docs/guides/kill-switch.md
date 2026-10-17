@@ -115,8 +115,12 @@ records unseen), and `-max-unattested` accepts a tail younger than that.
 A crash between "trail first" and the control-run write leaves a signed lift (or transition, root, mode
 change) on the trail that never took effect. That is not a forgery: `bide audit stops` lists it as
 **UNAPPLIED** and passes, and `StopControl.ApplyPending` writes it to the control run if the control would
-accept it (look at the list first: it makes the signer's recorded intent effective now, however old). It
-applies only the records at the end of the trail; one that a stored record follows (the operator tried
+accept it. That is an **operator action**: a signature cannot be revoked, so a signed lift that sat on
+the trail can be made effective by whoever runs it, however old. `PendingRecords` lists each pending
+record with its signer and age first. `ApplyPending` is signed: the applier (an approver the policy
+enrols) writes an `apply` record, to the trail and the control run, naming the digests applied, before it
+applies any, so who applied what, and when, is evidence; an applier the policy does not enrol is refused
+before anything is written. It applies only the records at the end of the trail; one that a stored record follows (the operator tried
 again, and the new record went through) is **SUPERSEDED**: listed, not a failure, not in the stops shown,
 and not applied, since applying it would put it after records the trail has behind it. A record on the
 trail that the fold rejects, or a stop on the trail that the control run lacks, is a problem.

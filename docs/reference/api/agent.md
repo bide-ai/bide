@@ -296,6 +296,17 @@ type AnswerOption interface {
 
 AnswerOption configures AnswerInterrupt and Signal: WithClock, the clock that stamps the record's RecordedAt.
 
+## type ApplyRequest
+
+```go
+type ApplyRequest struct {
+	By, Host, Reason string
+	Signer           StopSigner
+}
+```
+
+ApplyRequest names who applies pending records: an enrolled approver of the policy in force, with the key to sign the record that says so.
+
 ## type ApprovalDeadline
 
 ```go
@@ -2188,6 +2199,19 @@ Pause is the error a run returns when it has stopped durably and is waiting on s
 
 - `func AsPause(err error) (Pause, bool)`: AsPause returns the first Pause in err's chain, if there is one.
 
+## type PendingStop
+
+```go
+type PendingStop struct {
+	Record StopRecord
+	Age    time.Duration
+
+	Superseded bool
+}
+```
+
+PendingStop is a record on the trail that the control run lacks and that ApplyPending would consider: signed, not a stop, well formed.
+
 ## type PlannedRedaction
 
 ```go
@@ -3074,10 +3098,11 @@ StopControl reads and writes the control run: the stops, lifts, mode and policy 
 
 **Methods**
 
-- `func (c *StopControl) ApplyPending(ctx context.Context) (applied, superseded int, err error)`: ApplyPending writes to the control run the records of the trail that it lacks and that are not stops: what a crash between "trail first" and the control-run write leaves (a lift, a policy transition, the root or a mode change that was signed and evidenced and never took effect).
+- `func (c *StopControl) ApplyPending(ctx context.Context, req ApplyRequest) (applied, superseded int, err error)`: ApplyPending writes to the control run the records of the trail that it lacks and that are not stops: what a crash between "trail first" and the control-run write leaves (a lift, a policy transition, the root or a mode change that was signed and evidenced and never took effect).
 - `func (c *StopControl) ChangeMode(ctx context.Context, req ModeRequest) (StopState, error)`: ChangeMode records that the deployment changed mode: evidence for history and the audit trail, which changes nothing a process does (the mode is each process's configuration, rolled out by the operator).
 - `func (c *StopControl) LiftStop(ctx context.Context, id string, req LiftRequest) (StopEntry, error)`: LiftStop adds one lifter's approval of lifting stop id and returns the stop as State then reports it (Lifted when the rule is met, else LiftsHeld of LiftsNeeded).
 - `func (c *StopControl) Mode() StopMode`: Mode is the mode the control runs under: the declared one, else audited with a policy and basic without (an undeclared mode is refused as soon as the control run holds a record).
+- `func (c *StopControl) PendingRecords(ctx context.Context) ([]PendingStop, error)`: PendingRecords lists the records ApplyPending would consider, with each one's signer (Record.By) and age, so an operator sees what a run would make effective before making it so.
 - `func (c *StopControl) Reaudit(ctx context.Context) (int, error)`: Reaudit appends to the trail every record of the control run that it lacks and that the control accepts (a record the fold rejects is a forgery, and copying it would turn a finding into evidence), in store order, and returns how many it appended: how a stop whose trail write failed (a \*StopTrailError) is completed, and a trail that fell behind is caught up.
 - `func (c *StopControl) RotatePolicy(ctx context.Context, next StopPolicy, req LiftRequest) (StopState, error)`: RotatePolicy adds one lifter's approval of replacing the policy in force with next, and returns the state afterwards (PolicySeq has advanced once a quorum of the policy in force has approved the same document).
 - `func (c *StopControl) SetStop(ctx context.Context, req StopRequest) (StopEntry, error)`: SetStop sets a stop and returns it as State reports it.
@@ -3221,6 +3246,8 @@ type StopRecord struct {
 
 	Policy     *StopPolicyDoc `json:"policy,omitempty"`
 	PrevDigest string         `json:"prev_digest,omitempty"`
+
+	Applied []string `json:"applied,omitempty"`
 
 	Reason string `json:"reason,omitempty"`
 
