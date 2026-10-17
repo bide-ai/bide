@@ -16,7 +16,7 @@ import (
 )
 
 // TestRealGCS runs the anchor against a real bucket. It is skipped unless BIDE_GCS_BUCKET is set, and
-// it is never run in CI (no credentials). Read docs/runbooks/gcs-anchor-scratch-run.md before running
+// it is never run in CI (no credentials). Read docs/testing/gcs-anchor-real-run.md before running
 // it: the bucket needs a LOCKED retention policy, which cannot be undone, and every object this test
 // writes stays until its retention ends.
 //
