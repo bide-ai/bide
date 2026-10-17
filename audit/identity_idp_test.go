@@ -275,6 +275,28 @@ func TestAPartitionIsNotEvidenceForAnotherPartition(t *testing.T) {
 	}
 }
 
+// A listing is a revocation whatever the partition: a CRL the issuer signed that lists the certificate
+// revokes it even when the CRL's IDP does not match the certificate's distribution points, or the
+// certificate has none. The matching rule limits evidence of absence only.
+func TestAListingInAnyPartitionRevokes(t *testing.T) {
+	for name, mut := range map[string]func(*x509.Certificate){"another point": withCDP(urlB), "no points": nil} {
+		t.Run(name, func(t *testing.T) {
+			s := newIDPFx(t, mut)
+			listing := s.icrl(1, idT0.Add(10*min), idpExt(true, idpOf(t, urlA)), testca.Revoked(s.leaf.Cert, idT0.Add(5*min), 1))
+			st := s.leafStatus(s.snap(listing, s.rootCRL()), audit.StatusParams{})
+			if !st.Revoked {
+				t.Fatalf("a listing in a non-matching partition did not revoke: %+v", st)
+			}
+			// It gives no evidence of absence for another certificate's partition: with the listing
+			// removed the same snapshot has no status for this certificate.
+			clean := s.icrl(2, idT0.Add(10*min), idpExt(true, idpOf(t, urlA)))
+			if st := s.leafStatus(s.snap(clean, s.rootCRL()), audit.StatusParams{}); st.Tier != audit.TierNoInformation || st.Revoked {
+				t.Fatalf("%+v", st)
+			}
+		})
+	}
+}
+
 // The evidence the verdict records (the hashes of the CRLs relied on) never names a CRL that did not
 // cover the certificate.
 func TestUsedCRLsAreOnlyThoseThatCovered(t *testing.T) {
