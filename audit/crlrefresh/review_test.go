@@ -225,7 +225,10 @@ func TestStartupDeclaredValuesReplaceTheDigestComparison(t *testing.T) {
 	}
 	want := g.ap.DescribeIdentity()
 	want.EffectiveFrom = ""
-	b, _ := json.Marshal(want)
+	b, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(declared, string(b)) {
 		t.Fatalf("declared values %q do not carry the approver's record %s without effective_from", declared, b)
 	}
