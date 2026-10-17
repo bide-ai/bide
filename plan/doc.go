@@ -56,4 +56,9 @@
 //
 // See docs/guides/plan-flows.md for the guide, including the limits this package carries
 // (Switch arms do not reconverge; plan adds no executor of its own).
+//
+// Where to start: builder.go, handle.go and wiring.go declare and wire nodes; build.go and flow.go
+// freeze and run a Flow; gate.go gates a node on approval; conformance.go holds Conform; config.go,
+// registry.go and inspect.go hold the flow config. The reading-order map of every package is
+// docs/ARCHITECTURE.md in the repository.
 package plan

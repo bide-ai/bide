@@ -15,6 +15,7 @@ proofs. Each entry notes who it is for.
 
 - **[Concepts](CONCEPTS.md)** (everyone): the vocabulary in one place (journal, at-most-once, lease, Waker, gsm, ProofBundle, and the rest).
 - **[Design](design/design.md)**: how the runtime is put together.
+- **[Architecture](ARCHITECTURE.md)** (contributors, reviewers): where the code is, a reading-order map of the source files in each package.
 
 ## Guides: build
 

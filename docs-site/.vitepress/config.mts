@@ -46,6 +46,7 @@ export default defineConfig({
           { text: 'Getting started', link: '/getting-started' },
           { text: 'A tour of bide', link: '/tour' },
           { text: 'Concepts', link: '/CONCEPTS' },
+          { text: 'Architecture', link: '/ARCHITECTURE' },
           { text: 'The guarantee', link: '/GUARANTEE' },
           { text: 'Known limitations', link: '/KNOWN-LIMITATIONS' },
           { text: 'Changelog', link: '/CHANGELOG' },
