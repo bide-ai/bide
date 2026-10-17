@@ -82,8 +82,9 @@ func (c *StopControl) appendTrail(ctx context.Context, rec StopRecord) error {
 		if err != nil {
 			return err
 		}
+		want := StopDigest(rec)
 		for _, h := range have {
-			if SameStopRecord(h, rec) {
+			if StopDigest(h) == want {
 				return nil
 			}
 		}
@@ -119,21 +120,23 @@ func (c *StopControl) StopRecords(ctx context.Context) ([]StopRecord, error) {
 // store, by content. A record in the store only is in force (or ignored) without evidence; one in the
 // trail only was recorded but is not in the control run (deleted, or a lift that never took effect).
 func DiffStopRecords(store, trail []StopRecord) (storeOnly, trailOnly []StopRecord) {
-	has := func(set []StopRecord, r StopRecord) bool {
-		for _, s := range set {
-			if SameStopRecord(s, r) {
-				return true
-			}
+	digests := func(recs []StopRecord) ([]string, map[string]bool) {
+		ds, set := make([]string, len(recs)), make(map[string]bool, len(recs))
+		for i, r := range recs {
+			ds[i] = StopDigest(r) // once per record: the comparison is by digest, not pairwise
+			set[ds[i]] = true
 		}
-		return false
+		return ds, set
 	}
-	for _, r := range store {
-		if !has(trail, r) {
+	sd, sset := digests(store)
+	td, tset := digests(trail)
+	for i, r := range store {
+		if !tset[sd[i]] {
 			storeOnly = append(storeOnly, r)
 		}
 	}
-	for _, r := range trail {
-		if !has(store, r) {
+	for i, r := range trail {
+		if !sset[td[i]] {
 			trailOnly = append(trailOnly, r)
 		}
 	}
@@ -142,7 +145,8 @@ func DiffStopRecords(store, trail []StopRecord) (storeOnly, trailOnly []StopReco
 
 // protocol:stop begin Reaudit
 
-// Reaudit appends to the trail every record of the control run that it lacks, in store order, and
+// Reaudit appends to the trail every record of the control run that it lacks and that the control accepts
+// (a record the fold rejects is a forgery, and copying it would turn a finding into evidence), in store order, and
 // returns how many it appended: how a stop whose trail write failed (a *StopTrailError) is completed, and
 // a trail that fell behind is caught up. It needs a control with a trail.
 func (c *StopControl) Reaudit(ctx context.Context) (int, error) {
@@ -153,21 +157,22 @@ func (c *StopControl) Reaudit(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	st, err := c.State(ctx)
+	if err != nil {
+		return 0, err
+	}
 	have, err := c.trail.Load(ctx, StopTrailName)
 	if err != nil {
 		return 0, err
 	}
+	onTrail := make(map[string]bool, len(have))
+	for _, h := range have {
+		onTrail[StopDigest(h)] = true
+	}
 	n := 0
 	for _, r := range recs {
-		if present := func() bool {
-			for _, h := range have {
-				if SameStopRecord(h, r) {
-					return true
-				}
-			}
-			return false
-		}(); present {
-			continue
+		if onTrail[StopDigest(r)] || st.rejectedSet[stopRecordStep(r)] {
+			continue // already evidenced, or a record the fold rejects (a forgery is not evidence: it is a finding)
 		}
 		if err := c.appendTrail(ctx, r); err != nil {
 			return n, err

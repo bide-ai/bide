@@ -10,6 +10,11 @@ import (
 	"github.com/bide-ai/bide/agent"
 )
 
+// MaxStopRecords bounds the records VerifyStops reads from the control run for its comparison with the
+// trail: past it the comparison is not made and the count is a problem, so a flood of records written into
+// the control run is a finding, not a hang. A deployment's stops number in the tens.
+const MaxStopRecords = 20000
+
 // StopVerifyInput is what VerifyStops checks: a stop trail, the signed heads over it, the policy the
 // deployment pinned, and, when the control run is at hand, its records to compare with.
 type StopVerifyInput struct {
@@ -135,7 +140,9 @@ func VerifyStops(in StopVerifyInput) (StopReport, error) {
 			bad("the policy chain cannot be trusted: %s", st.ChainErr)
 		}
 	}
-	if in.HaveControl {
+	if in.HaveControl && len(in.Control) > MaxStopRecords {
+		bad("the control run holds %d records, over the %d the comparison reads: a flood of records written into the store, or a deployment that has outgrown this check", len(in.Control), MaxStopRecords)
+	} else if in.HaveControl {
 		storeOnly, trailOnly := agent.DiffStopRecords(in.Control, recs)
 		for _, r := range storeOnly {
 			rep.StoreOnly = append(rep.StoreOnly, refOf(r))

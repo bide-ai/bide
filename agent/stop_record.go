@@ -212,7 +212,11 @@ func checkStopText(what, s string, max int) error {
 	return nil
 }
 
-// validate reports whether r is a well-formed record of its kind (not whether it is authorised).
+// Validate reports whether r is a well-formed record of its kind (not whether it is authorised): its
+// format, mode, time, operator, reason, signature presence, and the fields its kind needs.
+func (r StopRecord) Validate() error { return r.validate() }
+
+// validate is Validate.
 func (r StopRecord) validate() error {
 	if r.Format != StopFormat {
 		return fmt.Errorf("stop record format %q is not %q: %w", r.Format, StopFormat, ErrInvalidStop)

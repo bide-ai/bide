@@ -198,6 +198,8 @@ type StopState struct {
 	// all, so a flood of garbage does not grow the result.
 	Rejected      []Rejection
 	RejectedTotal int
+	// rejectedSet holds every rejected record's name (Rejected is capped), for Reaudit.
+	rejectedSet map[string]bool
 	// Unverified counts, in a basic control, the signed records it cannot check because it has no policy
 	// (the deployment may have moved to audited mode without this process): say so loudly. An audited
 	// control does not count here; its forgeries are in Rejected.
@@ -366,8 +368,10 @@ func (c *StopControl) stateOf(recs []Record) (StopState, error) {
 func (c *StopControl) foldFrom(recs []Record, audited bool, start StopPolicy, startDigest string) (StopState, bool) {
 	cur := start
 	st := StopState{Mode: c.Mode()}
+	st.rejectedSet = map[string]bool{}
 	reject := func(name, why string) {
 		st.RejectedTotal++
+		st.rejectedSet[name] = true
 		if len(st.Rejected) < maxRejected {
 			st.Rejected = append(st.Rejected, Rejection{name, why})
 		}
@@ -836,6 +840,13 @@ func (c *StopControl) write(ctx context.Context, st StopState, r *StopRecord, si
 			return &StopTrailError{Record: name, StoreWritten: true, Err: err}
 		}
 		return nil
+	}
+	// Before a record that depends on earlier ones (a lift names its stop, a transition its root and
+	// predecessors) goes to the trail, the records of the control run that the trail lacks are appended
+	// in store order, so the trail is never left holding a record without what it rests on: a stop whose
+	// own trail write failed is evidenced before the lift of it.
+	if _, err := c.Reaudit(ctx); err != nil {
+		return &StopTrailError{Record: name, Err: err}
 	}
 	if err := c.appendTrail(ctx, *r); err != nil {
 		return &StopTrailError{Record: name, Err: err}

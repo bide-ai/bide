@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/strictjson"
 )
 
 // StopTrail adapts an EventStore to agent.StopTrail: the stop trail of a deployment is an event trail of
@@ -95,15 +96,17 @@ func (t *StopTrail) AnchorTrails(ctx context.Context, trails []string) error {
 	return nil
 }
 
-// decodeStopLeaf reads a stop record from a stored event leaf. The leaf's kind must be the stop kind of
-// the record it holds, so a leaf cannot say one thing and hold another.
+// decodeStopLeaf reads a stop record from a stored event leaf, strictly: the leaf and the record are
+// decoded with no repeated or case-variant member name, the salt is agent.SaltSize bytes, the record is
+// well formed (agent.StopRecord.Validate), its kind is the one the leaf names, and the record's own encoding
+// is exactly the bytes the leaf holds, so the bytes a signed head commits to are the ones every reader sees.
 func decodeStopLeaf(leaf []byte) (agent.StopRecord, error) {
-	body, ok := bytes.CutPrefix(leaf, []byte(eventLeafTag))
-	if !ok {
-		return agent.StopRecord{}, errors.New("not an event leaf")
+	if _, err := eventLeafSalt(leaf); err != nil {
+		return agent.StopRecord{}, err
 	}
+	body, _ := bytes.CutPrefix(leaf, []byte(eventLeafTag))
 	var el eventLeaf
-	if err := json.Unmarshal(body, &el); err != nil {
+	if err := strictjson.Unmarshal(body, &el, nil); err != nil {
 		return agent.StopRecord{}, err
 	}
 	kind, isStop := strings.CutPrefix(el.Kind, "stop_")
@@ -111,13 +114,17 @@ func decodeStopLeaf(leaf []byte) (agent.StopRecord, error) {
 		return agent.StopRecord{}, fmt.Errorf("leaf kind %q is not a stop record", el.Kind)
 	}
 	var rec agent.StopRecord
-	dec := json.NewDecoder(bytes.NewReader(el.Event))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&rec); err != nil {
+	if err := strictjson.Unmarshal(el.Event, &rec, nil); err != nil {
 		return agent.StopRecord{}, err
 	}
 	if rec.Kind != kind {
 		return agent.StopRecord{}, fmt.Errorf("leaf kind %q holds a %q record", el.Kind, rec.Kind)
+	}
+	if err := rec.Validate(); err != nil {
+		return agent.StopRecord{}, fmt.Errorf("not a valid stop record: %w", err)
+	}
+	if enc, err := json.Marshal(rec); err != nil || !bytes.Equal(enc, el.Event) {
+		return agent.StopRecord{}, errors.New("the record is not in its canonical encoding")
 	}
 	return rec, nil
 }
