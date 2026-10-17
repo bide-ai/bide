@@ -31,7 +31,11 @@ const (
 
 // RunStatus is a run's state, as Status reads it.
 type RunStatus struct {
-	State RunState
+	// StartRedacted is set when the run's run:start was redacted: the run started only by the
+	// record's name, which a tombstone carries but nothing outside the database attests (see
+	// Record.Redacted).
+	StartRedacted bool
+	State         RunState
 	// Terminal is the text the run's first end marker records: the reason given to Cancel for a
 	// cancelled run, the failure that aborted a saga; empty otherwise.
 	Terminal string
@@ -206,6 +210,11 @@ func Status(ctx context.Context, j *Journal, runID string) (RunStatus, error) {
 		recs = append(recs, r)
 	}
 	st := RunStatus{State: RunNotStarted, Records: len(recs)}
+	for _, r := range recs {
+		if r.Redacted && r.Name == runStartStep {
+			st.StartRedacted = true
+		}
+	}
 	if !started {
 		return st, nil
 	}

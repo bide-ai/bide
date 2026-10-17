@@ -573,6 +573,13 @@ func decodeStored(runID, name string, b []byte) (Record, error) {
 		if n, ok := TombstoneName(b); ok && n != name {
 			return Record{}, fmt.Errorf("run %s: the row stored as step %q holds a tombstone for a record named %q: %w", runID, name, n, ErrStorage)
 		}
+		// A redaction never writes a tombstone over a protected record (RedactionProtected), so one
+		// there was written by something else: a row edited outside a redaction. It keeps the leaf
+		// hash, so signed heads still verify, but the record the engine and the verifiers need is
+		// gone; the journal is corrupt, and no reader treats it as a run in some state.
+		if why := RedactionProtected(name, ""); why != "" {
+			return Record{}, fmt.Errorf("run %s: the row stored as step %q holds a redaction tombstone, but it is %s, which a redaction never replaces: the journal was changed outside a redaction: %w", runID, name, why, ErrStorage)
+		}
 		return Record{Name: name, Redacted: true, raw: b}, nil
 	}
 	r, err := decodeRecord(b)
@@ -685,9 +692,6 @@ func parseTombstone(b []byte) (leaf string, atMs int64, name string, ok bool) {
 	js = js[:len(js)-2]
 	var nm string
 	if json.Unmarshal(js, &nm) != nil || nm == "" {
-		return "", 0, "", false
-	}
-	if canon, err := json.Marshal(nm); err != nil || !bytes.Equal(canon, js) {
 		return "", 0, "", false
 	}
 	return leaf, atMs, nm, true

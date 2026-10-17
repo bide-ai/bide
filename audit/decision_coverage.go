@@ -198,7 +198,7 @@ const NoteNoRecordedTime = "no recorded time"
 
 // NoteRedacted is DecisionCoverage.Note for a decision whose record a redaction replaced with a
 // tombstone: its approver, verdict and recorded_at are gone, and it is bounded like any other.
-const NoteRedacted = "redacted"
+const NoteRedacted = "redacted, name not attested"
 
 // overAge reports whether recordedAt is more than bound.MaxAge+bound.Tolerance before bound.Now.
 // Without an age or a Now there is no age bound, and nothing is over it. Under one, a decision with

@@ -125,15 +125,86 @@ func TombstoneName(b []byte) (string, bool) {
 	return name, ok && name != ""
 }
 
+// journalHeaderName is the name of a journal's header entry.
+const journalHeaderName = "@journal"
+
+// redactionClass says what a redaction does with a record by its key.
+type redactionClass int
+
+const (
+	// classPayload: content a redaction may erase, and the Payloads preset selects.
+	classPayload redactionClass = iota
+	// classProtected: a record a verifier or the engine reads the content or the structure of.
+	classProtected
+	// classBookkeeping: engine bookkeeping with no personal content (usage, branch choices, timers):
+	// not protected, but not chosen by the Payloads preset; a selector may name it.
+	classBookkeeping
+)
+
+// redactionClasses classifies every key family the engine writes (reservedPrefixes, and the
+// engine-internal "@" keys), longest prefix first. TestRedactionClasses_CoverEveryReservedKey fails
+// when a key family is added without a line here, so a new record is classified on purpose.
+// A key that matches none (a developer-chosen step name) is payload.
+var redactionClasses = []struct {
+	prefix string
+	class  redactionClass
+	why    string
+}{
+	{journalHeaderName, classProtected, "the journal header"},
+	{"@saga/", classProtected, "a saga record (compensation memo or arguments): a re-drive of the run reads what was compensated"},
+	{"@subrun/", classProtected, "a saga's link to a sub-run it started: a rollback reads it"},
+	{"@spend-late/", classBookkeeping, ""},
+	{"@spend/", classBookkeeping, ""},
+	{"@llm/", classPayload, ""},
+	{"@retrieval/", classPayload, ""},
+	{runStartStep, classPayload, ""},
+	{"run:", classProtected, "a run state record (an end marker, cancellation, limits)"},
+	{"tool:", classPayload, ""},
+	{"attempt:", classProtected, "an attempt marker: the at-most-once evidence"},
+	{"approval-tally:", classProtected, "a record an approval count rests on"},
+	{"approval-identity:", classProtected, "a record an approval count rests on"},
+	{"approval-status:", classProtected, "the revocation basis an approval count rests on"},
+	{"approval-exec-hold:", classProtected, "a record the pre-execution check of an approval rests on"},
+	{"approval-deadline:", classProtected, "a gate's deadline"},
+	{"approval-pending:", classBookkeeping, ""},
+	{"approval-pause:", classBookkeeping, ""},
+	{"approval-request:", classPayload, ""},
+	{"approval:", classPayload, ""}, // a decision: kept unless the selector asks for approvals
+	{"signal:", classPayload, ""},
+	{"await-timeout:", classBookkeeping, ""},
+	{"await-resolved:", classBookkeeping, ""},
+	{"timer:", classBookkeeping, ""},
+	{"interrupt:", classPayload, ""},
+	{"chanack:", classBookkeeping, ""},
+	{"chan:", classPayload, ""},
+	{"turn/", classProtected, "a session record"},
+	{"start/", classProtected, "a session record"},
+	{"from/", classProtected, "a session record"},
+	{"audit:", classProtected, "an audit leaf a verifier relies on"},
+	{"node:", classPayload, ""},
+	{"switch:", classBookkeeping, ""},
+	{"flow:", classProtected, "a flow's topology record"},
+}
+
+// classOf returns the class of the record key name, and whether a line above names its family.
+func classOf(name string) (class redactionClass, why string, explicit bool) {
+	for _, c := range redactionClasses {
+		if strings.HasPrefix(name, c.prefix) {
+			return c.class, c.why, true
+		}
+	}
+	return classPayload, "", false
+}
+
 // RedactionProtected reports why a record named name, of kind kind, may never be redacted, or ""
 // if it may. The protected records are the ones a verifier or the engine reads the content or the
 // structure of: the journal header, the end markers (a tombstone has no kind, so a run whose end
-// marker was replaced would read as running), the other run: records except run:start, the attempt
-// and not-started markers and saga failures (the at-most-once and rollback evidence), the
-// records an approval count and its revocation basis rest on, and the audit and flow records. The
-// payload records (run:start's input and principal, model turns, tool results, user steps,
-// signals, approval decisions) are not protected; Redact's selector keeps approval decisions
-// unless asked.
+// marker was replaced would read as running), the other run: records except run:start, attempt
+// and not-started markers and saga failures (the at-most-once and rollback evidence), the saga
+// compensation and sub-run link records, the records an approval count and its revocation basis
+// rest on, and the audit and flow records. The payload records (run:start's input and principal,
+// model turns, tool results, user steps, signals, approval decisions) are not protected; Redact's
+// selector keeps approval decisions unless asked.
 func RedactionProtected(name string, kind StepKind) string {
 	switch kind {
 	case StepHeader:
@@ -143,33 +214,13 @@ func RedactionProtected(name string, kind StepKind) string {
 	case StepSagaFail:
 		return "a saga failure: the rollback evidence"
 	}
-	switch {
-	case name == journalHeaderName:
-		return "the journal header"
-	case slices.Contains(endOfRunMarkers, name):
-		return "an end marker: it says the run is over, and Status and Recover read it by kind and name"
-	case strings.HasPrefix(name, "run:") && name != runStartStep:
-		return "a run state record (cancellation, limits)"
-	case strings.HasPrefix(name, "attempt:"):
-		return "an attempt marker: the at-most-once evidence"
-	case strings.HasPrefix(name, "@saga/"):
-		return "a saga record (compensation memo or arguments): a re-drive of the run reads what was compensated"
-	}
-	for _, p := range protectedPrefixes {
-		if strings.HasPrefix(name, p) {
-			return "a record an approval count, its revocation basis or the audit leaves rest on"
+	if class, why, _ := classOf(name); class == classProtected {
+		if slices.Contains(endOfRunMarkers, name) {
+			return "an end marker: it says the run is over, and Status and Recover read it by kind and name"
 		}
+		return why
 	}
 	return ""
-}
-
-// journalHeaderName is the name of a journal's header entry.
-const journalHeaderName = "@journal"
-
-// protectedPrefixes are the key prefixes of records whose content is not payload (RedactionProtected).
-var protectedPrefixes = []string{
-	"approval-tally:", "approval-identity:", "approval-status:", "approval-exec-hold:", "approval-deadline:",
-	"audit:", "flow:",
 }
 
 // RedactionEndMarkers returns the names of the end markers: a run that holds one of them is over,
