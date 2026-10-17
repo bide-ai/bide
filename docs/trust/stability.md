@@ -111,4 +111,4 @@ If you build on bide, pin exact module versions, read the Breaking entries on ev
 
 ## Verifying a release
 
-Release artifacts are signed and carry an SBOM; see [Verifying releases](verify-releases.md).
+Release artifacts are signed, carry an SBOM and have SLSA build provenance; see [Verifying releases](verify-releases.md).

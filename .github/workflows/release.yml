@@ -6,12 +6,21 @@ name: Release
 # SBOM (GitHub OIDC; docs/trust/verify-releases.md). Run manually
 # (workflow_dispatch) to dry-run the whole pipeline in snapshot mode without tagging or publishing
 # anything; the dry run builds the SBOMs but skips signing, so it writes nothing to the public
+# transparency log. Every archive, SBOM, checksums.txt, approve-page.SHA256SUMS and the module
+# set SBOM also gets a SLSA v1 build provenance attestation (actions/attest-build-provenance, stored
+# by GitHub and verified with `gh attestation verify`; docs/trust/verify-releases.md). The manual
+# run's `attest` input rehearses that on the snapshot build, which does write to the public
 # transparency log.
 on:
   push:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      attest:
+        description: 'Rehearse build provenance: attest and verify the snapshot artifacts (writes to the public transparency log)'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -21,8 +30,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      # id-token mints the OIDC token cosign signs with (keyless: no signing key is stored).
+      # id-token mints the OIDC token cosign and the provenance attestations are signed with
+      # (keyless: no signing key is stored); attestations stores the provenance attestations.
       id-token: write
+      attestations: write
     env:
       GOWORK: 'off'
     steps:
@@ -80,6 +91,32 @@ jobs:
           (cd approve-page && sha256sum --check --strict SHA256SUMS)
           cp approve-page/SHA256SUMS approve-page.SHA256SUMS
           cat approve-page.SHA256SUMS
+      # SLSA v1 build provenance for what the release publishes, made by GitHub's attest action from
+      # this job's OIDC identity: which workflow, ref and commit built each file, on which runner. It
+      # is stored by GitHub (not attached to the release) and checked right away and again from the
+      # published release (verify-signatures). A tag push always attests; a manual run does so only
+      # when asked, with the snapshot artifacts.
+      - name: Attest build provenance
+        if: github.event_name == 'push' || inputs.attest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/bide_*.tar.gz
+            dist/bide_*.tar.gz.sbom.json
+            dist/checksums.txt
+            approve-page.SHA256SUMS
+      - name: Verify the attestations just made
+        if: github.event_name == 'push' || inputs.attest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Six archives and six archive SBOMs (three systems, two architectures): fewer means the
+          # globs above attested less than the release publishes.
+          set -- dist/bide_*.tar.gz; [ $# -eq 6 ] || { echo "want 6 archives, got $#: $*"; exit 1; }
+          set -- dist/bide_*.tar.gz.sbom.json; [ $# -eq 6 ] || { echo "want 6 archive SBOMs, got $#: $*"; exit 1; }
+          scripts/verify-provenance.sh --ref "$GITHUB_REF" --source-digest "$GITHUB_SHA" "${GITHUB_REF_NAME}" \
+            dist/bide_*.tar.gz dist/bide_*.tar.gz.sbom.json dist/checksums.txt approve-page.SHA256SUMS
       - name: Publish the approve page SHA256SUMS
         if: github.event_name == 'push'
         env:
@@ -130,6 +167,7 @@ jobs:
     permissions:
       contents: write
       id-token: write
+      attestations: write
     env:
       GOWORK: 'off'
     steps:
@@ -172,11 +210,16 @@ jobs:
           set -euo pipefail
           cosign sign-blob --yes --bundle="$FILE.sigstore.json" "$FILE"
           gh release upload "$GITHUB_REF_NAME" "$FILE" "$FILE.sigstore.json" --clobber
+      - name: Attest build provenance of the module SBOM
+        if: github.event_name == 'push'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ steps.version.outputs.file }}
 
   # Verify what was just published, as a user would (docs/trust/verify-releases.md): the signature
   # of checksums.txt, of every archive and of every per-archive SBOM against the identity of this
   # workflow, and every archive and SBOM against checksums.txt. A release whose signatures do not
-  # verify fails here. It needs only goreleaser, so the archives are verified even when the module
+  # verify fails here, and so does a file without valid build provenance (scripts/verify-provenance.sh). It needs only goreleaser, so the archives are verified even when the module
   # set SBOM is late or missing; verify-module-sbom checks that one as a job of its own.
   verify-signatures:
     if: github.event_name == 'push'
@@ -185,6 +228,7 @@ jobs:
     permissions:
       contents: read
     steps:
+      - uses: actions/checkout@v4
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
           cosign-release: v3.1.3
@@ -203,6 +247,18 @@ jobs:
           done
           sha256sum --check --strict checksums.txt
           ls bide_*.sbom.json >/dev/null
+      # Build provenance, from the published files and the attestations GitHub stores: made by this
+      # workflow at this tag and commit, on a GitHub-hosted runner, for every archive, every
+      # archive SBOM, checksums.txt and the approve page sums.
+      - name: Verify build provenance
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          set -- rel/bide_*.tar.gz; [ $# -eq 6 ] || { echo "want 6 archives, got $#: $*"; exit 1; }
+          set -- rel/bide_*.tar.gz.sbom.json; [ $# -eq 6 ] || { echo "want 6 archive SBOMs, got $#: $*"; exit 1; }
+          scripts/verify-provenance.sh --source-digest "$GITHUB_SHA" "${GITHUB_REF_NAME}" \
+            rel/bide_*.tar.gz rel/bide_*.tar.gz.sbom.json rel/checksums.txt rel/approve-page.SHA256SUMS
 
   # Verify the module set SBOM as a user would: it is on the release, its signature verifies against
   # this workflow's identity for the tag, and it lists the published bide modules at the release's
@@ -234,6 +290,10 @@ jobs:
           n=$(jq --arg v "${GITHUB_REF_NAME}" '[.packages[] | select((.name == "github.com/bide-ai/bide" or (.name | startswith("github.com/bide-ai/bide/"))) and .versionInfo == $v)] | length' "$f")
           echo "$f: $n bide modules at ${GITHUB_REF_NAME}, want $want (the core and every published module)"
           [ "$n" -eq "$want" ]
+      - name: Verify its build provenance
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/verify-provenance.sh --source-digest "$GITHUB_SHA" "${GITHUB_REF_NAME}" "rel/bide_${GITHUB_REF_NAME#v}_modules.sbom.json"
 
   # Rebuild every published binary from the tag on another OS and compare the bytes, so the claim
   # that anyone can reproduce the release is checked on every release (scripts/repro.sh).
