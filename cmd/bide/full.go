@@ -87,9 +87,9 @@ func fullCommands() []command {
 		},
 		{
 			name:    "identity",
-			summary: "keep the CRLs of a certificate policy's issuers current and archived (fetch-crl), and reset a poisoned rollback mark",
+			summary: "pre-flight a certificate-bound approval setup and say why a certificate would be refused (check), keep the CRLs of a policy's issuers current and archived (fetch-crl), and reset a poisoned rollback mark",
 			run:     identitycmd.Main,
-			exits:   commonExits,
+			exits:   identityExits,
 			verbs:   identitycmd.Verbs(),
 		},
 		{
@@ -112,6 +112,12 @@ func fullCommands() []command {
 		},
 	}
 }
+
+// identityExits are the exit statuses of bide identity: the common ones, and check's two more.
+const identityExits = commonExits + `
+   for identity check: 1 means the setup will not work as configured (a check failed)
+3  identity check: a file could not be read or the tool could not run
+4  identity check: nothing failed, but part was left unchecked (-no-status, -no-expect): not ready`
 
 // runCheck is bide check: bide view's -config -check on each file. It exits 1 if any file has an
 // error (with -strict, any problem) or cannot be read. With -diff it compares one file with an

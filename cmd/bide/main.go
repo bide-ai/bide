@@ -9,7 +9,7 @@
 //	bide edit flow.yaml            a local page for a flow config: edit its source, see the check and what an edit weakens, save
 //	bide approve -db run.db -list  list the calls waiting for a decision; sign one with -run -call -as -key
 //	bide keygen -out ops.key       create an approver key pair for bide approve
-//	bide identity fetch-crl ...    keep a certificate policy's CRLs current and archived (also reset-high-water, ack-reset)
+//	bide identity fetch-crl ...    keep a certificate policy's CRLs current and archived (also check, reset-high-water, ack-reset)
 //	bide migrate -postgres-env VAR create or check a Postgres journal's schema as its owner
 //	bide check flow.yaml           check a plan flow config, for CI
 //	bide notify test|listen|relay  set up and test the webhook notifier, and relay it to Slack and PagerDuty

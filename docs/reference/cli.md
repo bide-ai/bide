@@ -30,7 +30,7 @@ and `help`, and its import graph is the standard library and the core module (se
 | [`bide edit`](#bide-edit) | a local page for a flow config: the graph, the approval gates, the assertions, and what an edit weakens; edit the source and save |
 | [`bide notify`](#bide-notify) | set up and test the webhook notifier: test a receiver, run a local one, relay to Slack and PagerDuty |
 | [`bide approve`](#bide-approve) | record your signed approval (or -reject) of a call that waits for a decision; -list shows what waits |
-| [`bide identity`](#bide-identity) | keep the CRLs of a certificate policy's issuers current and archived (fetch-crl), and reset a poisoned rollback mark |
+| [`bide identity`](#bide-identity) | pre-flight a certificate-bound approval setup and say why a certificate would be refused (check), keep the CRLs of a policy's issuers current and archived (fetch-crl), and reset a poisoned rollback mark |
 | [`bide keygen`](#bide-keygen) | create an approver key pair for bide approve and print the public key policies and verifiers use |
 | [`bide migrate`](#bide-migrate) | create or check a Postgres journal's schema as its owner, so the service needs no DDL rights |
 | [`bide check`](#bide-check) | check plan flow configs, for CI: one file:node: message line per problem |
@@ -699,10 +699,11 @@ Exit status:
 
 ## bide identity
 
-Keep the CRLs of a certificate policy's issuers current and archived (fetch-crl), and reset a poisoned rollback mark.
+Pre-flight a certificate-bound approval setup and say why a certificate would be refused (check), keep the CRLs of a policy's issuers current and archived (fetch-crl), and reset a poisoned rollback mark.
 
 ```text
 usage: bide identity fetch-crl -policy <file> -params <file> -cache <dir> [-once]
+       bide identity check -policy <file> -params <file> (-expect <file> | -no-expect) (-crl-dir <dir> | -fetch | -no-status) [-cert <chain.pem>] [-json]
        bide identity reset-high-water -policy <file> -params <file> -cache <dir> -issuer <hex> -reason <text> -operator <name> [-set-aside <hash>]... [-accept-lost-listings]
        bide identity ack-reset -policy <file> -params <file> -cache <dir> -issuer <hex> -name <RESET-...json>
 
@@ -713,6 +714,14 @@ Keep the CRLs of a certificate policy's issuing CAs current and archived:
                     equivocation, and writes the dated archive. With -once it makes one pass and exits
                     1 unless every issuer holds a fresh CRL (a cron job); otherwise it runs until
                     interrupted.
+  check             the pre-flight before go-live, and when an approver's decision is refused: does
+                    the policy load, do the pinned CAs and intermediates match, are the CRLs reachable
+                    and fresh enough for the declared ages, do the policy file and -params agree with the
+                    gate's recorded policy, and would the gate accept an approver's certificate (given with
+                    -cert) and let its call run. It runs the gate's own code for each answer and prints
+                    one line per check with the fix, and what it cannot check ahead of time. Exit 0 ready,
+                    1 will not work as configured, 2 usage, 3 a file could not be read, 4 nothing failed but
+                    part was left unchecked (-no-status, -no-expect).
   reset-high-water  the way out of a poisoned rollback mark (a CA that issued one CRL with a mistaken
                     huge number, or restarted its numbering): sets aside the CRL at the mark, with a
                     durable record, so a restart cannot bring the mark back.
@@ -728,6 +737,9 @@ Exit status:
   1  failure: an input cannot be read or the command failed; for check, an error was found
      (with -strict, any problem)
   2  usage error: a bad flag or argument; nothing was read
+     for identity check: 1 means the setup will not work as configured (a check failed)
+  3  identity check: a file could not be read or the tool could not run
+  4  identity check: nothing failed, but part was left unchecked (-no-status, -no-expect): not ready
 ```
 
 ### bide identity fetch-crl
@@ -744,6 +756,38 @@ usage: bide identity fetch-crl -policy <file> -params <file> -cache <dir> [-once
     	the declaration of the CA timings (ca_period, max_status_age, exec_status_age, per-issuer values)
   -policy string
     	the certificate policy file (anchors, intermediates, and the crl and intermediate_certs members)
+```
+
+### bide identity check
+
+```text
+usage: bide identity check -policy <file> -params <file> (-expect <file> | -no-expect) (-crl-dir <dir> | -fetch | -no-status) [-cert <chain.pem> [-chain <more.pem>] [-as <approver id>]] [-at <time>] [-json]
+  -as string
+    	the approver id the certificate is for (default: the policy's only approver id)
+  -at string
+    	judge at this time, RFC 3339 (default now); not with -fetch
+  -cert string
+    	an approver's certificate chain, PEM, leaf first (as bide approve -cert takes it): is it accepted for the approver, as a decision made now, and would the call run
+  -chain string
+    	more certificates (PEM) to carry behind -cert, such as an intermediates bundle
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
+  -crl-dir string
+    	offline: read the CRLs from this directory (a bide identity fetch-crl archive, which is not written to, or a flat directory of .crl, .der or .pem files); no network is used
+  -expect string
+    	the gate's recorded policy: the "policy" member of its identity record (or the whole record), to compare the policy file and -params with, member by member
+  -fetch
+    	online: fetch the CRLs from the policy's crl sources (http and https only, with the size limits, timeouts and same-host redirect rule of fetch-crl; nothing is stored). Run it on the gate's host
+  -json
+    	print the report as one JSON document
+  -no-expect
+    	do not compare with the gate's recorded policy; the result is then partial (exit 4) and never ready
+  -no-status
+    	do not check CRL status; the result is then partial (exit 4) and never ready
+  -params string
+    	the declaration of the CA timings (ca_period, max_status_age, exec_status_age, per-issuer values): a copy of what the gate declares
+  -policy string
+    	the certificate policy file the gate loads (the same file bide identity fetch-crl takes)
 ```
 
 ### bide identity reset-high-water
