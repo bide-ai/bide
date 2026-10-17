@@ -47,7 +47,14 @@ func seededStore(t *testing.T) (*Store, string, []byte) {
 	if _, err := j.Step(ctx, "r", "x", func(context.Context) (int, error) { return 1, nil }); err != nil {
 		t.Fatal(err)
 	}
-	b, err := agent.JournalEntry("tool:a", agent.Record{Kind: agent.StepToolResult, Result: []byte(`{"pii":"` + secret + `"}`)})
+	// Other records around it, so the page is not rewritten from scratch by the erasure.
+	for i := 0; i < 12; i++ {
+		fb, _ := agent.JournalEntry("tool:f"+string(rune('a'+i)), agent.Record{Kind: agent.StepToolResult, Result: []byte(`{"filler":"` + string(bytes.Repeat([]byte{byte('a' + i)}, 40)) + `"}`)})
+		if _, _, err := s.Insert(ctx, "r", "tool:f"+string(rune('a'+i)), fb); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b, err := agent.JournalEntry("tool:a", agent.Record{Kind: agent.StepToolResult, Result: []byte(`{"pii":"` + secret + `","pad":"` + string(bytes.Repeat([]byte("p"), 3000)) + `"}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
