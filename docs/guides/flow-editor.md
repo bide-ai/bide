@@ -24,6 +24,19 @@ bide edit flow.yaml
 Open the whole address, including the part after `#`: it is a random session token the page sends
 with every request, and it is not sent to the server as part of the address or in a `Referer`.
 
+## What it does and does not do
+
+This is the first phase of the editor (the accountability editor), and it is complete as designed: the
+read-only views, the baseline and the weakened banner, the source pane with a diff and an atomic save,
+the forms for a node's safety, block and approval gate, the assertions panel, and the accessibility
+work below. It does **not** yet: add, remove, rename or reorder nodes, or wire edges, switches and joins
+(edit the source for structure); know your `plan.Registry` (it checks structure only, so no block palette,
+type-compatible connections or digest); compare with a journaled run; or let you place nodes on the canvas
+(the layout is derived from the topology, on purpose). A config with an anchor or alias anywhere,
+a repeated key, a key that is not a string, NaN or infinity, or mixed line ends is refused by the editor
+with the reason (edit it in a text editor); `plan` itself accepts the first two. The design note
+([visual-editor.md](../design/visual-editor.md)) has the later phases.
+
 ## What the page shows
 
 - **The verdict**, in the words `bide view -config` uses (`ALL ASSERTIONS HOLD`, `1 POLICY
