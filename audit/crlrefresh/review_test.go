@@ -204,34 +204,51 @@ func TestStartupReportsThePolicyDigest(t *testing.T) {
 	}
 }
 
-// The digest of a refresher that is not a gate cannot equal the gate's (it carries a stand-in
-// effective_from and the defaults of values the declaration cannot hold), so the start-up events must not
-// tell the operator to compare it, and must print the declared values to compare field by field.
-func TestStartupDeclaredValuesReplaceTheDigestComparison(t *testing.T) {
-	g := newCRig(t)
-	g.publishFresh(1)
-	g.start()
-	var declared string
-	for _, e := range g.kinds(crlrefresh.EventStartup) {
-		if bytes.Contains([]byte(e.Detail), []byte("compare it with the digest")) {
-			t.Fatalf("a start-up event still tells the operator to compare the digest with the gate's: %q", e.Detail)
+// What the start-up events say about the policy digest depends on where the approver came from: the gate's own
+// (nil StandIn), a declaration file that states every member the digest covers (comparable, and must be equal
+// to the gate's), or one that lacks some (not comparable: the effective_from and defaults are not the gate's).
+func TestStartupSaysWhetherTheDigestIsComparable(t *testing.T) {
+	startup := func(si *crlrefresh.StandIn) (all string, declared string, g *crig) {
+		g = newCRig(t)
+		g.publishFresh(1)
+		g.opts.StandIn = si
+		g.start()
+		for _, e := range g.kinds(crlrefresh.EventStartup) {
+			all += e.Detail + "\n"
+			if _, after, ok := strings.Cut(e.Detail, "declared values "); ok {
+				declared = after
+			}
 		}
-		if _, after, ok := strings.Cut(e.Detail, "declared values "); ok {
-			declared = after
+		return
+	}
+	t.Run("the gate's own approver", func(t *testing.T) {
+		all, _, g := startup(nil)
+		if !strings.Contains(all, "policy digest "+g.ap.PolicyDigest()) || !strings.Contains(all, "it is the digest the gate records") {
+			t.Fatalf("%s", all)
 		}
-	}
-	if declared == "" {
-		t.Fatalf("no declared-values start-up event: %s", g.dump())
-	}
-	want := g.ap.DescribeIdentity()
-	want.EffectiveFrom = ""
-	b, err := json.Marshal(want)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(declared, string(b)) {
-		t.Fatalf("declared values %q do not carry the approver's record %s without effective_from", declared, b)
-	}
+	})
+	t.Run("a complete declaration file", func(t *testing.T) {
+		all, _, g := startup(&crlrefresh.StandIn{})
+		if !strings.Contains(all, "policy digest "+g.ap.PolicyDigest()+" of the declaration file: every member the digest covers is stated, so it must equal the digest the gate records") ||
+			strings.Contains(all, "cannot be compared") {
+			t.Fatalf("%s", all)
+		}
+	})
+	t.Run("an incomplete declaration file", func(t *testing.T) {
+		all, declared, g := startup(&crlrefresh.StandIn{Missing: []string{"effective_from", "w"}})
+		if !strings.Contains(all, "cannot be compared with the gate's because the file lacks effective_from, w") {
+			t.Fatalf("%s", all)
+		}
+		want := g.ap.DescribeIdentity()
+		want.EffectiveFrom = ""
+		b, err := json.Marshal(want)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(declared, string(b)) {
+			t.Fatalf("declared values %q do not carry the record %s without effective_from", declared, b)
+		}
+	})
 }
 
 func TestArchiveAcceptsAResignedSeriesFile(t *testing.T) {

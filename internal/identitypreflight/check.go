@@ -27,8 +27,13 @@ type Options struct {
 	Policy, Params string
 	// Expect is the gate's recorded policy (the identity record's "policy" member, or the whole record)
 	// to compare the declared values with; NoExpect acknowledges that it is not compared.
-	Expect   string
-	NoExpect bool
+	Expect string
+	// ExpectDigest is the gate's policy digest (the pause note's identity_policy_digest, or the identity
+	// record's policy_digest), lowercase hex. It is compared with the digest of the declaration only when
+	// the -params file states every member the digest covers; otherwise the check fails naming the missing
+	// members. It can stand in for Expect, or be given with it.
+	ExpectDigest string
+	NoExpect     bool
 	// CRLDir is a directory of CRLs read without network: a crlrefresh archive, or a flat directory of CRL
 	// files. Fetch asks the policy's crl sources over HTTP(S) with the crlrefresh fetch code, storing
 	// nothing; with CRLDir the directory seeds the rollback memory. NoStatus acknowledges that CRL status
@@ -57,10 +62,12 @@ func (o Options) validate() error {
 		return bad("-no-status says CRL status is not checked; it cannot be combined with -crl-dir or -fetch")
 	case !o.NoStatus && o.CRLDir == "" && !o.Fetch:
 		return bad("one of -crl-dir (offline), -fetch (online) or -no-status (CRL status not checked, and the result is partial) is required")
-	case o.Expect != "" && o.NoExpect:
-		return bad("-no-expect says the gate's recorded policy is not compared; it cannot be combined with -expect")
-	case o.Expect == "" && !o.NoExpect:
-		return bad("-expect <file> (the gate's recorded policy) or -no-expect (not compared, and the result is partial) is required")
+	case (o.Expect != "" || o.ExpectDigest != "") && o.NoExpect:
+		return bad("-no-expect says the gate's recorded policy is not compared; it cannot be combined with -expect or -expect-digest")
+	case o.Expect == "" && o.ExpectDigest == "" && !o.NoExpect:
+		return bad("-expect <file> (the gate's recorded policy), -expect-digest <hex> (its policy digest) or -no-expect (not compared, and the result is partial) is required")
+	case o.ExpectDigest != "" && !validDigest(o.ExpectDigest):
+		return bad("-expect-digest must be 64 lowercase hex digits (a SHA-256)")
 	case o.Fetch && !o.At.IsZero():
 		return bad("-at cannot be combined with -fetch: a fetched CRL is judged by the clock")
 	case o.Cert == "" && (o.Chain != "" || o.As != ""):
@@ -229,6 +236,12 @@ func (s *run) declared() error {
 		r.add("params.expect", Skip, "run again with -expect <the gate's recorded policy> before go-live", "the declared values were not compared with the gate's recorded policy (-no-expect)")
 		return nil
 	}
+	if s.o.ExpectDigest != "" {
+		s.digest(decl)
+	}
+	if s.o.Expect == "" {
+		return nil
+	}
 	rec, err := readRecord(s.o.Expect)
 	if err != nil {
 		var ie *IOError
@@ -238,7 +251,7 @@ func (s *run) declared() error {
 		r.add("params.expect", Fail, "give -expect the identity record's \"policy\" member, or the whole ApprovalIdentity record, as journaled by a gate of this bide version", "%v", err)
 		return nil
 	}
-	diffs, unverified := compareRecords(standIn(ap), rec)
+	diffs, unverified := compareRecords(standIn(ap), rec, decl.MissingForDigest())
 	for _, d := range diffs {
 		r.add("params.expect", Fail, "make the policy file and -params carry the values the gate runs with, or the gate's declaration the ones you checked; the schedule and the alarm follow these numbers", "%s", d)
 	}
@@ -246,9 +259,37 @@ func (s *run) declared() error {
 		r.add("params.expect", OK, "", "the policy file and -params agree with the gate's recorded policy on every member they can declare")
 	}
 	if len(unverified) > 0 {
-		r.add("params.expect.unverified", OK, "", "not verified, because the policy file and -params cannot declare them (compare them with the gate's declaration by hand): %s", join(unverified))
+		r.add("params.expect.unverified", OK, "", "not verified, because the -params file does not state them (state them in the file, or compare them with the gate's declaration by hand): %s", join(unverified))
 	}
 	return nil
+}
+
+func validDigest(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// digest compares the digest of the declaration with the gate's. It is an equality only when the file states
+// every member the digest covers; otherwise the missing members would take defaults and the answer would
+// mean nothing, so the check fails and names them.
+func (s *run) digest(decl audit.StatusDecl) {
+	if missing := decl.MissingForDigest(); len(missing) > 0 {
+		s.r.add("params.digest", Fail, "state these members in the -params file (each with the value the gate declares; see the certificate approvers guide), or use -expect to compare the members that are stated", "the -params file lacks %s, so its policy digest cannot be compared with the gate's", join(missing))
+		return
+	}
+	got := s.ap.PolicyDigest()
+	if got == s.o.ExpectDigest {
+		s.r.add("params.digest", OK, "", "the policy file and -params produce the gate's policy digest %s", got)
+		return
+	}
+	s.r.add("params.digest", Fail, "the file and the gate declare different values; run again with -expect (the gate's recorded policy) to see which members differ", "the policy file and -params produce policy digest %s, the gate's is %s", got, s.o.ExpectDigest)
 }
 
 // status builds the refresher over the declared values (c): its construction is the gate-side matching of
@@ -262,7 +303,7 @@ func (s *run) status(ctx context.Context) error {
 	}
 	var mu sync.Mutex
 	var events []crlrefresh.Event
-	opts := crlrefresh.Options{Issuers: s.inter, DeltaPeriodFor: s.decl.DeltaPeriodFor, Client: s.o.Client,
+	opts := crlrefresh.Options{Issuers: s.inter, DeltaPeriodFor: s.decl.DeltaPeriodFor, Client: s.o.Client, StandIn: &crlrefresh.StandIn{Missing: s.decl.MissingForDigest()},
 		Hooks: crlrefresh.Hooks{OnEvent: func(e crlrefresh.Event) { mu.Lock(); events = append(events, e); mu.Unlock() }}}
 	flat := false
 	if s.o.CRLDir != "" {
