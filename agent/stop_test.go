@@ -38,7 +38,7 @@ func newControl(t *testing.T, store Store, opts ...StopOption) *StopControl {
 }
 
 func auditedPolicy(quorum int, other bool) StopPolicy {
-	return StopPolicy{Setters: []string{"ops1", "ops2"}, Lifters: []string{"ops1", "ops2", "risk"}, Verifiers: fakeVerifiers("ops1", "ops2", "risk", "eve", "new"), LiftQuorum: quorum, LiftNeedsOther: other}
+	return StopPolicy{DeploymentID: "dep-1", Setters: []string{"ops1", "ops2"}, Lifters: []string{"ops1", "ops2", "risk"}, Verifiers: fakeVerifiers("ops1", "ops2", "risk", "eve", "new"), LiftQuorum: quorum, LiftNeedsOther: other}
 }
 
 // fakeNV builds the verifier of a policy document: the public key of a fakeVerifier is its id.
@@ -238,8 +238,11 @@ func TestAuditedSigningAndRejection(t *testing.T) {
 		sawX = sawX || a.Scope.Name == "x"
 		sawS = sawS || a.ID == s.ID
 	}
-	if !sawX || sawS {
-		t.Fatalf("basic view (it trusts the store: the plain stop counts, the plain lift lifts): %+v", bs.Active())
+	if !sawX || !sawS {
+		t.Fatalf("basic view (it trusts the store: the plain stop counts; a plain lift does not lift a stop set under a signed record): %+v", bs.Active())
+	}
+	if !errors.Is(bs.UnknowableErr(), ErrStopsUnknowable) || bs.UnverifiedActive == 0 {
+		t.Fatalf("a basic process on an audited deployment must see the stops as unknowable: %+v", bs)
 	}
 	if l, err := c.LiftStop(ctx, s.ID, LiftRequest{By: "ops1", Signer: sign("ops1")}); err != nil || l.Lifted || l.LiftsHeld != 1 || l.LiftsNeeded != 2 {
 		t.Fatalf("first lift: %+v %v", l, err)
@@ -366,7 +369,7 @@ func TestStoreModeRecordsAreEvidenceOnly(t *testing.T) {
 	if _, err := a.ChangeMode(ctx, ModeRequest{To: StopAudited, By: "ops1", Signer: sign("ops1")}); err != nil {
 		t.Fatal(err)
 	}
-	if st := mustState(t, newControl(t, store)); st.Mode != StopBasic || st.Unverified != 1 {
+	if st := mustState(t, newControl(t, store)); st.Mode != StopBasic || st.Unverified != 2 {
 		t.Fatalf("basic view of a genuine mode record: %+v", st)
 	}
 }
@@ -386,7 +389,7 @@ func TestUpgradeAdoptsActiveStops(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := mustState(t, a)
-	if act := st.Active(); len(act) != 1 || !act[0].Signed || act[0].Scope.Name != "refund" || act[0].Compensation != CompensationBlock || act[0].Reason != "adopted: incident" || act[0].LiftsNeeded != 2 {
+	if act := st.Active(); len(act) != 1 || act[0].AdoptedFrom != plain.digest || !act[0].Signed || act[0].Scope.Name != "refund" || act[0].Compensation != CompensationBlock || act[0].Reason != "adopted: incident" || act[0].LiftsNeeded != 2 {
 		t.Fatalf("adopted stop: %+v", st.Active())
 	}
 	// A basic process still sees the original, and lifting the adopted stop does not lift it.
@@ -397,7 +400,6 @@ func TestUpgradeAdoptsActiveStops(t *testing.T) {
 	if len(mustState(t, a).Active()) != 0 || len(mustState(t, newControl(t, store)).Active()) != 1 {
 		t.Fatal("a basic process's view must be unchanged by an audited lift")
 	}
-	_ = plain
 	// Leaving audited mode is refused while a stop is active.
 	if _, err := a.SetStop(ctx, StopRequest{Scope: StopScope{Kind: StopGlobal}, By: "ops1", Signer: sign("ops1")}); err != nil {
 		t.Fatal(err)
@@ -472,7 +474,7 @@ func TestPolicyIsValidatedWhenUsed(t *testing.T) {
 func TestPolicyRotation(t *testing.T) {
 	ctx := context.Background()
 	p1 := auditedPolicy(2, true)
-	p2 := StopPolicy{Setters: []string{"ops2"}, Lifters: []string{"ops2", "risk", "new"}, Verifiers: fakeVerifiers("ops2", "risk", "new"), LiftQuorum: 2, LiftNeedsOther: true}
+	p2 := StopPolicy{DeploymentID: "dep-1", Setters: []string{"ops2"}, Lifters: []string{"ops2", "risk", "new"}, Verifiers: fakeVerifiers("ops2", "risk", "new"), LiftQuorum: 2, LiftNeedsOther: true}
 	store := NewMemStore()
 	c := audited(t, store, p1) // pinned to P1, the genesis policy
 	s1, err := c.SetStop(ctx, StopRequest{Scope: StopScope{Kind: StopGlobal}, By: "ops1", Signer: sign("ops1")})
@@ -522,7 +524,7 @@ func TestPolicyRotation(t *testing.T) {
 		t.Fatalf("a restarted control: %+v", st2)
 	}
 	// A second rotation chains from the first, and a stale approval of the first is ignored.
-	p3 := StopPolicy{Setters: []string{"ops2", "new"}, Lifters: []string{"ops2", "new"}, Verifiers: fakeVerifiers("ops2", "new"), LiftQuorum: 2}
+	p3 := StopPolicy{DeploymentID: "dep-1", Setters: []string{"ops2", "new"}, Lifters: []string{"ops2", "new"}, Verifiers: fakeVerifiers("ops2", "new"), LiftQuorum: 2}
 	for _, by := range []string{"ops2", "risk"} {
 		st, err = c.RotatePolicy(ctx, p3, LiftRequest{By: by, Signer: sign(by)})
 		if err != nil {
@@ -543,10 +545,10 @@ func TestPolicyRotation(t *testing.T) {
 // not validate (two ids sharing a key); it is rejected, with no error, and the old policy stays.
 func TestPolicyTransitionToAnInvalidPolicyIsRejected(t *testing.T) {
 	c := audited(t, NewMemStore(), auditedPolicy(1, false))
-	bad := StopPolicy{Setters: []string{"ops1"}, Lifters: []string{"ops1", "ops2"}, Verifiers: fakeVerifiers("ops1", "ops2"), LiftQuorum: 1}
+	bad := StopPolicy{DeploymentID: "dep-1", Setters: []string{"ops1"}, Lifters: []string{"ops1", "ops2"}, Verifiers: fakeVerifiers("ops1", "ops2"), LiftQuorum: 1}
 	doc, _ := bad.Doc()
 	doc.Approvers["ops2"] = doc.Approvers["ops1"] // the same key under two ids
-	r := StopRecord{Format: StopFormat, Kind: "policy", Mode: StopAudited, Seq: 1, PrevDigest: mustState(t, c).PolicyDigest, Policy: &doc, By: "ops1", Alg: fakeAlg, At: nowStr()}
+	r := StopRecord{Format: StopFormat, Kind: "policy", Mode: StopAudited, Seq: 1, PrevDigest: mustState(t, c).PolicyDigest, Policy: &doc, Deployment: "dep-1", By: "ops1", Alg: fakeAlg, At: nowStr()}
 	r.Signature = hex.EncodeToString(fakeSign("ops1", StopSigningBytes(r)))
 	putRaw(t, c, r)
 	if st := mustState(t, c); st.PolicySeq != 0 || st.RejectedTotal != 1 {
@@ -575,7 +577,7 @@ func TestAuditedWithEd25519(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(nil)
 	pub2, priv2, _ := ed25519.GenerateKey(nil)
 	keys := map[string]ed25519.PublicKey{"alice": pub, "bob": pub2}
-	pol := StopPolicy{Setters: []string{"alice"}, Lifters: []string{"alice", "bob"}, LiftQuorum: 2, LiftNeedsOther: true,
+	pol := StopPolicy{DeploymentID: "dep-1", Setters: []string{"alice"}, Lifters: []string{"alice", "bob"}, LiftQuorum: 2, LiftNeedsOther: true,
 		Verifiers: func(id string) (ApproverVerifier, bool) {
 			k, ok := keys[id]
 			return ed25519Verifier{k}, ok
@@ -603,7 +605,7 @@ func TestAuditedWithEd25519(t *testing.T) {
 	// Rotation with real keys: the transition carries the public keys of the new policy.
 	pub3, priv3, _ := ed25519.GenerateKey(nil)
 	keys["carol"] = pub3
-	next := StopPolicy{Setters: []string{"carol"}, Lifters: []string{"alice", "carol"}, LiftQuorum: 1, Verifiers: pol.Verifiers}
+	next := StopPolicy{DeploymentID: "dep-1", Setters: []string{"carol"}, Lifters: []string{"alice", "carol"}, LiftQuorum: 1, Verifiers: pol.Verifiers}
 	if st, err := c.RotatePolicy(ctx, next, LiftRequest{By: "alice", Signer: ed25519Signer{priv}}); err != nil || st.PolicySeq != 0 {
 		t.Fatalf("quorum 2 needs a second approval: %+v %v", st, err)
 	}
@@ -621,11 +623,11 @@ func TestAuditedWithEd25519(t *testing.T) {
 func TestStalePolicyApprovalsAndOffboardedLifts(t *testing.T) {
 	ctx := context.Background()
 	p1 := auditedPolicy(2, false)
-	p2 := StopPolicy{Setters: []string{"ops2"}, Lifters: []string{"ops2", "risk"}, Verifiers: fakeVerifiers("ops2", "risk"), LiftQuorum: 2}
+	p2 := StopPolicy{DeploymentID: "dep-1", Setters: []string{"ops2"}, Lifters: []string{"ops2", "risk"}, Verifiers: fakeVerifiers("ops2", "risk"), LiftQuorum: 2}
 	c := audited(t, NewMemStore(), p1)
 	doc, _ := p2.Doc()
 	for _, by := range []string{"ops1", "ops2"} {
-		r := StopRecord{Format: StopFormat, Kind: "policy", Mode: StopAudited, Seq: 1, PrevDigest: "not-the-digest-in-force", Policy: &doc, By: by, Alg: fakeAlg, At: nowStr()}
+		r := StopRecord{Format: StopFormat, Kind: "policy", Mode: StopAudited, Seq: 1, PrevDigest: "not-the-digest-in-force", Policy: &doc, Deployment: "dep-1", By: by, Alg: fakeAlg, At: nowStr()}
 		r.Signature = hex.EncodeToString(fakeSign(by, StopSigningBytes(r)))
 		putRaw(t, c, r)
 	}
@@ -751,12 +753,12 @@ func TestRotationEdgeCases(t *testing.T) {
 	other := keyedPolicy(map[string]string{"ops1": "1", "ops2": "1", "risk": "1"}, []string{"ops1"}, []string{"ops1", "ops2", "risk"}, 1)
 	doc, _ := other.Doc()
 	for _, by := range []string{"ops1", "ops2"} {
-		r := StopRecord{Format: StopFormat, Kind: "policy", Mode: StopAudited, Seq: 1, PrevDigest: p1.Digest(), Policy: &doc, By: by, Alg: fakeAlg, At: nowStr()}
+		r := StopRecord{Format: StopFormat, Kind: "policy", Mode: StopAudited, Seq: 1, PrevDigest: p1.Digest(), Policy: &doc, Deployment: "dep-1", By: by, Alg: fakeAlg, At: nowStr()}
 		r.Signature = hex.EncodeToString((keyedSigner{by, "1"}).sign(StopSigningBytes(r)))
 		putRaw(t, c, r)
 	}
-	if _, err := c.State(ctx); !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "forks") {
-		t.Fatalf("a fork: %v", err)
+	if st := mustState(t, c); !errors.Is(st.UnknowableErr(), ErrStopsUnknowable) || !strings.Contains(st.ChainErr, "forks") || len(st.Active()) == 0 {
+		t.Fatalf("a fork must make the stops unknowable and keep the first lineage: %+v", st)
 	}
 	// A rollback: a quorum of policy 2 approves policy 1 again.
 	store3 := NewMemStore()
@@ -768,8 +770,8 @@ func TestRotationEdgeCases(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := c3.State(ctx); !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "rolls back") {
-		t.Fatalf("a rollback: %v", err)
+	if st := mustState(t, c3); !errors.Is(st.UnknowableErr(), ErrStopsUnknowable) || !strings.Contains(st.ChainErr, "rolls back") {
+		t.Fatalf("a rollback: %+v", st)
 	}
 }
 
@@ -793,9 +795,136 @@ func (s keyedSigner) sign(m []byte) []byte {
 func (s keyedSigner) Sign(m []byte) ([]byte, error) { return s.sign(m), nil }
 
 func keyedPolicy(gen map[string]string, setters, lifters []string, q int) StopPolicy {
-	return StopPolicy{Setters: setters, Lifters: lifters, LiftQuorum: q,
+	return StopPolicy{DeploymentID: "dep-1", Setters: setters, Lifters: lifters, LiftQuorum: q,
 		Verifiers: func(id string) (ApproverVerifier, bool) {
 			g, ok := gen[id]
 			return keyedVerifier{id, g}, ok
 		}}
+}
+
+// TestPinnedToACurrentPolicyWalksFromTheRoot (H4): the deployment's root policy is the trust anchor.
+// A process pinned to the current policy after two rotations still enforces the stops set under the
+// earlier policies, because it walks the chain from the root record; a pin the chain never reaches
+// makes the stops unknowable, not silently dropped.
+func TestPinnedToACurrentPolicyWalksFromTheRoot(t *testing.T) {
+	ctx := context.Background()
+	p0 := auditedPolicy(2, false)
+	p1 := keyedPolicy(map[string]string{"ops1": "1", "ops2": "1", "risk": "1"}, []string{"ops1", "ops2"}, []string{"ops1", "ops2", "risk"}, 2)
+	p1.Verifiers = fakeVerifiers("ops1", "ops2", "risk") // same keys as P0, a different rule: the digest differs
+	p1.LiftQuorum = 1
+	p2 := StopPolicy{DeploymentID: "dep-1", Setters: []string{"risk"}, Lifters: []string{"risk", "ops2"}, Verifiers: fakeVerifiers("risk", "ops2"), LiftQuorum: 2}
+	store := NewMemStore()
+	c := audited(t, store, p0)
+	if _, err := c.ChangeMode(ctx, ModeRequest{To: StopAudited, By: "ops1", Signer: sign("ops1")}); err != nil { // writes the root record
+		t.Fatal(err)
+	}
+	a, _ := c.SetStop(ctx, StopRequest{Scope: StopScope{Kind: StopTool, Name: "a"}, By: "ops1", Signer: sign("ops1")})
+	for _, by := range []string{"ops1", "ops2"} {
+		if _, err := c.RotatePolicy(ctx, p1, LiftRequest{By: by, Signer: sign(by)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b, _ := c.SetStop(ctx, StopRequest{Scope: StopScope{Kind: StopTool, Name: "b"}, By: "ops2", Signer: sign("ops2")})
+	if st, err := c.RotatePolicy(ctx, p2, LiftRequest{By: "ops1", Signer: sign("ops1")}); err != nil || st.PolicySeq != 2 {
+		t.Fatalf("second rotation (quorum 1 of P1): %+v %v", st, err)
+	}
+	// Pinned to the current policy: the stops set under P0 and P1 are still in force.
+	cur := audited(t, store, p2)
+	st := mustState(t, cur)
+	if st.ChainErr != "" || st.UnknowableErr() != nil || len(st.Active()) != 2 || st.PolicySeq != 2 {
+		t.Fatalf("pinned to the current policy: %+v", st)
+	}
+	_, _ = a, b
+	// Pinned to a policy the chain never reaches: unknowable, and the stops the chain holds are still shown.
+	other := auditedPolicy(1, false)
+	other.Setters = []string{"ops1"}
+	off := audited(t, store, other)
+	if st := mustState(t, off); !errors.Is(st.UnknowableErr(), ErrStopsUnknowable) || !strings.Contains(st.ChainErr, "pinned policy is not on") || len(st.Active()) != 2 {
+		t.Fatalf("a pin off the chain: %+v", st)
+	}
+	// Without a verifier constructor a process pinned later cannot build the root: unknowable too.
+	nv := newControl(t, store, WithStopMode(StopAudited), WithStopPolicy(p2))
+	if st := mustState(t, nv); st.UnknowableErr() == nil {
+		t.Fatalf("no verifier constructor: %+v", st)
+	}
+}
+
+// TestCompetingRoots: a second root policy that verifies under itself makes the stops unknowable.
+func TestCompetingRoots(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	c := audited(t, store, auditedPolicy(1, false))
+	if _, err := c.ChangeMode(ctx, ModeRequest{To: StopAudited, By: "ops1", Signer: sign("ops1")}); err != nil {
+		t.Fatal(err)
+	}
+	evil := StopPolicy{DeploymentID: "dep-1", Setters: []string{"eve"}, Lifters: []string{"eve"}, Verifiers: fakeVerifiers("eve"), LiftQuorum: 1}
+	doc, _ := evil.Doc()
+	r := StopRecord{Format: StopFormat, Kind: "root", Mode: StopAudited, Policy: &doc, Deployment: "dep-1", By: "eve", Alg: fakeAlg, At: nowStr()}
+	r.Signature = hex.EncodeToString(fakeSign("eve", StopSigningBytes(r)))
+	putRaw(t, c, r)
+	if st := mustState(t, c); !strings.Contains(st.ChainErr, "root policies") || st.UnknowableErr() == nil {
+		t.Fatalf("%+v", st)
+	}
+}
+
+// TestBasicProcessOnAnAuditedDeployment (H5): a process with no policy that sees a stop set under a
+// signed record does not lift it on a plain lift, and says the stops are unknowable.
+func TestBasicProcessOnAnAuditedDeployment(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	a := audited(t, store, auditedPolicy(2, true))
+	s, _ := a.SetStop(ctx, StopRequest{Scope: StopScope{Kind: StopGlobal}, By: "ops1", Signer: sign("ops1")})
+	b := newControl(t, store)
+	if _, err := b.LiftStop(ctx, s.ID, LiftRequest{By: "eve"}); !errors.Is(err, ErrStopRejected) {
+		t.Fatalf("a plain lift of a signed stop: %v", err)
+	}
+	st := mustState(t, b)
+	if len(st.Active()) != 1 || !errors.Is(st.UnknowableErr(), ErrStopsUnknowable) || st.Unverified == 0 {
+		t.Fatalf("%+v", st)
+	}
+	// After the audited quorum lifts it, the basic view follows (a signed lift lifts in its view) and is no longer unknowable.
+	for _, by := range []string{"ops2", "risk"} {
+		a.LiftStop(ctx, s.ID, LiftRequest{By: by, Signer: sign(by)})
+	}
+	if st := mustState(t, b); len(st.Active()) != 0 || st.UnknowableErr() != nil {
+		t.Fatalf("after the audited lift: %+v", st)
+	}
+}
+
+// TestRecordsDoNotReplayAcrossDeployments (M1): staging's signed records, copied into production's
+// control run, are rejected: every signed body names the deployment, and a transition cannot change it.
+func TestRecordsDoNotReplayAcrossDeployments(t *testing.T) {
+	ctx := context.Background()
+	stg, prod := auditedPolicy(1, false), auditedPolicy(1, false)
+	stg.DeploymentID, prod.DeploymentID = "staging-7f3a", "prod-91c2"
+	sc := audited(t, NewMemStore(), stg)
+	pc := audited(t, NewMemStore(), prod)
+	if _, err := sc.SetStop(ctx, StopRequest{Scope: StopScope{Kind: StopGlobal}, By: "ops1", Signer: sign("ops1")}); err != nil {
+		t.Fatal(err)
+	}
+	next := auditedPolicy(1, true)
+	next.DeploymentID = "staging-7f3a"
+	if _, err := sc.RotatePolicy(ctx, next, LiftRequest{By: "ops1", Signer: sign("ops1")}); err != nil {
+		t.Fatal(err)
+	}
+	recs, _ := sc.j.History(ctx, StopControlRun)
+	for _, r := range recs {
+		if strings.HasPrefix(r.Name, "@stop/") {
+			d, err := decodeStopRecord(r.Result)
+			if err != nil {
+				continue
+			}
+			putRaw(t, pc, d)
+		}
+	}
+	st := mustState(t, pc)
+	if len(st.Active()) != 0 || st.PolicySeq != 0 || st.RejectedTotal < 2 {
+		t.Fatalf("staging's records took effect in production: %+v", st)
+	}
+	// A transition cannot change the deployment ID, even with a quorum.
+	other := auditedPolicy(1, true)
+	other.DeploymentID = "prod-other"
+	if _, err := pc.RotatePolicy(ctx, other, LiftRequest{By: "ops1", Signer: sign("ops1")}); !errors.Is(err, ErrConfig) {
+		t.Fatalf("a transition that changes the deployment ID: %v", err)
+	}
 }

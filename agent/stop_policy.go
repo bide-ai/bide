@@ -27,6 +27,10 @@ type StopApprover struct {
 // approvers with their public keys, the roles, and the lift rule. Its digest (StopPolicy.Digest)
 // names the policy.
 type StopPolicyDoc struct {
+	// DeploymentID names the deployment: a random value chosen at genesis (generate one per
+	// deployment, never share it between staging and production) that every signed record carries and
+	// every policy of the chain repeats, so a record signed for one deployment is rejected in another.
+	DeploymentID   string                  `json:"deployment_id"`
 	Approvers      map[string]StopApprover `json:"approvers"`
 	Setters        []string                `json:"setters"`
 	Lifters        []string                `json:"lifters"`
@@ -49,6 +53,8 @@ type StopVerifierFunc func(alg Alg, publicKey []byte) (ApproverVerifier, error)
 // stop. A verifier must expose its public key (a PublicKey() []byte method, as audit's verifiers do),
 // which is what a transition carries.
 type StopPolicy struct {
+	// DeploymentID is the deployment's identifier (see StopPolicyDoc); required.
+	DeploymentID string
 	Setters []string
 	Lifters []string
 	// Verifiers resolves an enrolled id to its verifier (the same verifiers an approval gate uses).
@@ -76,7 +82,10 @@ func (p StopPolicy) doc() (StopPolicyDoc, error) {
 	if p.LiftQuorum < 1 {
 		return StopPolicyDoc{}, fmt.Errorf("stop policy: the lift quorum is %d, want at least 1: %w", p.LiftQuorum, ErrConfig)
 	}
-	d := StopPolicyDoc{Approvers: map[string]StopApprover{}, Setters: uniq(p.Setters), Lifters: uniq(p.Lifters), LiftQuorum: p.LiftQuorum, LiftNeedsOther: p.LiftNeedsOther}
+	if err := checkStopText("stop policy deployment ID", p.DeploymentID, maxStopName); err != nil || p.DeploymentID == "" {
+		return StopPolicyDoc{}, fmt.Errorf("stop policy: a deployment ID is required (a random value, one per deployment): %w", ErrConfig)
+	}
+	d := StopPolicyDoc{DeploymentID: p.DeploymentID, Approvers: map[string]StopApprover{}, Setters: uniq(p.Setters), Lifters: uniq(p.Lifters), LiftQuorum: p.LiftQuorum, LiftNeedsOther: p.LiftNeedsOther}
 	seen := map[string]string{} // key identity -> approver id
 	for _, id := range slices.Concat(d.Setters, d.Lifters) {
 		if _, done := d.Approvers[id]; done {
@@ -137,7 +146,7 @@ func PolicyFromDoc(d StopPolicyDoc, nv StopVerifierFunc) (StopPolicy, error) {
 		}
 		vs[id] = v
 	}
-	p := StopPolicy{Setters: d.Setters, Lifters: d.Lifters, LiftQuorum: d.LiftQuorum, LiftNeedsOther: d.LiftNeedsOther,
+	p := StopPolicy{DeploymentID: d.DeploymentID, Setters: d.Setters, Lifters: d.Lifters, LiftQuorum: d.LiftQuorum, LiftNeedsOther: d.LiftNeedsOther,
 		Verifiers: func(id string) (ApproverVerifier, bool) { v, ok := vs[id]; return v, ok }}
 	for _, id := range slices.Concat(d.Setters, d.Lifters) {
 		if _, ok := vs[id]; !ok {
@@ -179,7 +188,7 @@ func (p StopPolicy) Digest() string {
 
 // verify reports whether r carries a valid signature by an id enrolled in role ("setter" or "lifter").
 func (p StopPolicy) verify(r StopRecord, role string) bool {
-	if p.Verifiers == nil || !r.Signed() {
+	if p.Verifiers == nil || !r.Signed() || r.Deployment != p.DeploymentID {
 		return false
 	}
 	ids := p.Setters

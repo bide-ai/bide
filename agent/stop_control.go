@@ -156,6 +156,8 @@ type StopEntry struct {
 	Lifted bool
 	// LiftedBy names the lifters whose records counted. LiftsHeld and LiftsNeeded say how far an
 	// active stop is from being lifted.
+	// AdoptedFrom is the digest of the plain record this stop re-states (a move to audited mode).
+	AdoptedFrom            string
 	LiftedBy               []string
 	LiftsHeld, LiftsNeeded int
 	digest                 string
@@ -173,6 +175,13 @@ type StopState struct {
 	// effect (an audited control; zero when none did).
 	PolicyDigest string
 	PolicySeq    int
+	// ChainErr, when set, says why this audited control cannot trust the chain it walked: the pinned
+	// policy is not on it, two roots or two successors of one policy compete, or a rollback. The
+	// stops are unknowable (UnknowableErr); a stop is never silently dropped.
+	ChainErr string
+	// UnverifiedActive counts, in a basic control, the active stops set under a signed record: it
+	// cannot check the lift rule they were set under.
+	UnverifiedActive int
 	// Stops holds every accepted stop in the order set.
 	Stops []StopEntry
 	// Rejected lists the first maxRejected records with no effect and why; RejectedTotal counts them
@@ -191,8 +200,13 @@ type StopState struct {
 // never returns it (it trusts the store; see Unverified). The engine fails closed on it for side-effect
 // calls a stop could cover.
 func (s StopState) UnknowableErr() error {
-	if s.Mode == StopAudited && s.Unverified > 0 {
-		return fmt.Errorf("%d record(s): %w", s.Unverified, ErrStopsUnknowable)
+	switch {
+	case s.ChainErr != "":
+		return fmt.Errorf("%s: %w", s.ChainErr, ErrStopsUnknowable)
+	case s.Mode == StopAudited && s.Unverified > 0:
+		return fmt.Errorf("%d record(s) that claim a signature do not verify: %w", s.Unverified, ErrStopsUnknowable)
+	case s.Mode == StopBasic && s.UnverifiedActive > 0:
+		return fmt.Errorf("%d active stop(s) were set under signed records this basic process cannot check (is it missing the deployment's stop policy?): %w", s.UnverifiedActive, ErrStopsUnknowable)
 	}
 	return nil
 }
@@ -250,18 +264,25 @@ func (s StopState) Covering(q StopQuery) (StopEntry, bool) {
 // State folds the control run into the effective state. Which records count is decided here and
 // nowhere else, and nothing the store holds can make it fail: a record that does not check is
 // Rejected, never an error. (An error is the control's own configuration: a policy that no longer
-// validates.)
+// validates, or a mode that was not declared.)
 //
 //   - Records are read in the store's order. A stop is active from its set record until the lift
 //     rule is met at a lift's position; it never becomes active again.
 //   - A basic control (no policy) trusts the store: any well-formed set record is a stop and one lift
-//     lifts it. Mode and policy records do not affect it; audited ones are counted in Unverified.
+//     lifts it, except that a stop set under a signed record (an audited deployment's) is lifted only by
+//     a signed lift, never by a plain one. Signed records it cannot check are counted in Unverified,
+//     and an active stop set under a signed record makes the stops unknowable (UnknowableErr): the
+//     process is probably a basic one on an audited deployment.
 //   - An audited control accepts a set only if it is signed by a setter, and counts a lift only if it
-//     is signed by a lifter, of the policy in force at that record's position: LiftQuorum distinct
-//     lifters, one not the setter with LiftNeedsOther. A plain or unsigned record is ignored.
-//   - The policy in force starts as the control's own and advances by transitions: a "policy" record
-//     counts when it names the next number and the digest in force, and LiftQuorum distinct lifters
-//     of the policy in force have signed it. A stop set under an earlier policy stays in force.
+//     is signed by a lifter, of the policy in force at that record's position and for this
+//     deployment: LiftQuorum distinct lifters, one not the setter with LiftNeedsOther. A plain or
+//     unsigned record is ignored.
+//   - The policy in force starts at the deployment's root record (the first one that verifies under
+//     its own policy) and advances by transitions: a "policy" record counts when it names the next
+//     number and the digest in force and LiftQuorum distinct lifters of the policy in force have signed
+//     it. The control's own policy is a pin: it must be on that chain (the root itself, normally, or
+//     a later policy the walk reaches), else the stops are unknowable. A stop set under an earlier
+//     policy stays in force. Forks and competing roots make the stops unknowable too.
 //   - "mode" records are evidence of a change of mode and nothing else: the mode is configuration.
 func (c *StopControl) State(ctx context.Context) (StopState, error) {
 	audited := c.Mode() == StopAudited
@@ -280,27 +301,57 @@ func (c *StopControl) State(ctx context.Context) (StopState, error) {
 		return StopState{}, fmt.Errorf("the control run holds records and this process has not declared its stop mode (WithStopMode): %w", ErrConfig)
 	}
 	st := StopState{Mode: c.Mode()}
-	chain := []string{}
-	var prevPol StopPolicy
-	var prevDigest string
-	forks := map[string]map[string]StopRecord{}
-	if audited {
-		st.PolicyDigest = cur.Digest()
-		chain = append(chain, st.PolicyDigest)
-	}
-	unverified := func(r StopRecord) {
-		if audited && r.Signed() {
-			st.Unverified++
-		}
-	}
-	byID := map[string]int{}
-	approvals := map[string]map[string]StopRecord{} // policy transition number -> signer -> approval
 	reject := func(name, why string) {
 		st.RejectedTotal++
 		if len(st.Rejected) < maxRejected {
 			st.Rejected = append(st.Rejected, Rejection{name, why})
 		}
 	}
+	broken := func(why string) {
+		if st.ChainErr == "" {
+			st.ChainErr = why
+		}
+	}
+	chain := []string{}
+	var prevPol StopPolicy
+	var prevDigest string
+	forks := map[string]map[string]StopRecord{}
+	rootDigest := ""
+	if audited {
+		pin := cur
+		pinDigest := pin.Digest()
+		// The chain starts at the first root record that verifies under its own policy.
+		for _, rec := range recs {
+			if rec.Kind != StepValue || !strings.HasPrefix(rec.Name, "@stop/root/") {
+				continue
+			}
+			r, err := decodeStopRecord(rec.Result)
+			if err != nil || r.Kind != "root" || stopRecordStep(r) != rec.Name {
+				continue
+			}
+			rp, err := c.policyOf(*r.Policy, pin, pinDigest)
+			if err != nil || !(rp.verify(r, "lifter") || rp.verify(r, "setter")) {
+				continue
+			}
+			if rootDigest == "" {
+				rootDigest, cur = rp.Digest(), rp
+			} else if rp.Digest() != rootDigest {
+				broken("two different root policies verify: the deployment's chain competes with itself")
+			}
+		}
+		st.PolicyDigest = cur.Digest()
+		chain = append(chain, st.PolicyDigest)
+		if rootDigest == "" {
+			chain = []string{pinDigest}
+		}
+	}
+	unverified := func(r StopRecord) {
+		if r.Signed() {
+			st.Unverified++
+		}
+	}
+	byID := map[string]int{}
+	approvals := map[string]map[string]StopRecord{} // policy transition number -> signer -> approval
 	for _, rec := range recs {
 		if rec.Kind != StepValue || !strings.HasPrefix(rec.Name, "@stop/") {
 			continue
@@ -311,18 +362,26 @@ func (c *StopControl) State(ctx context.Context) (StopState, error) {
 			continue
 		}
 		switch r.Kind {
+		case "root":
+			if !audited {
+				unverified(r)
+				reject(rec.Name, "not checked: this process has no stop policy")
+			}
 		case "set":
 			if _, dup := byID[r.StopID]; dup {
 				continue
 			}
 			if audited && !cur.verify(r, "setter") {
-				reject(rec.Name, "not signed by an enrolled setter of the policy in force")
+				reject(rec.Name, "not signed by an enrolled setter of the policy in force, for this deployment")
 				unverified(r)
 				continue
 			}
+			if !audited {
+				unverified(r)
+			}
 			byID[r.StopID] = len(st.Stops)
 			st.Stops = append(st.Stops, StopEntry{ID: r.StopID, Scope: *r.Scope, Reason: r.Reason, Compensation: r.Compensation, By: r.By, Host: r.Host, At: r.At,
-				Signed: r.Signed(), digest: StopDigest(r), liftSet: map[string]bool{}})
+				AdoptedFrom: r.AdoptedFrom, Signed: r.Signed(), digest: StopDigest(r), liftSet: map[string]bool{}})
 		case "lift":
 			i, ok := byID[r.StopID]
 			if !ok || st.Stops[i].digest != r.SetDigest {
@@ -334,11 +393,16 @@ func (c *StopControl) State(ctx context.Context) (StopState, error) {
 				continue
 			}
 			if !audited {
+				if s.Signed && !r.Signed() {
+					reject(rec.Name, "a stop set under a signed record is not lifted by a plain one")
+					continue
+				}
+				unverified(r)
 				s.Lifted, s.LiftedBy = true, []string{r.By}
 				continue
 			}
 			if !cur.verify(r, "lifter") {
-				reject(rec.Name, "not signed by an enrolled lifter of the policy in force")
+				reject(rec.Name, "not signed by an enrolled lifter of the policy in force, for this deployment")
 				unverified(r)
 				continue
 			}
@@ -346,40 +410,41 @@ func (c *StopControl) State(ctx context.Context) (StopState, error) {
 			countLifts(s, cur)
 		case "mode":
 			switch {
-			case !audited && r.Signed():
-				st.Unverified++
-				reject(rec.Name, "not checked: this process has no stop policy")
-			case audited && !cur.verify(r, "lifter") && !cur.verify(r, "setter"):
-				reject(rec.Name, "not signed by an enrolled approver of the policy in force")
+			case !audited:
+				unverified(r)
+				if r.Signed() {
+					reject(rec.Name, "not checked: this process has no stop policy")
+				}
+			case !cur.verify(r, "lifter") && !cur.verify(r, "setter"):
+				reject(rec.Name, "not signed by an enrolled approver of the policy in force, for this deployment")
 				unverified(r)
 			}
 		case "policy":
 			if !audited {
-				st.Unverified++
+				unverified(r)
 				reject(rec.Name, "not checked: this process has no stop policy")
 				continue
 			}
 			if r.Seq == st.PolicySeq && st.PolicySeq > 0 && r.PrevDigest == prevDigest && prevPol.verify(r, "lifter") && StopPolicyDigest(*r.Policy) != st.PolicyDigest {
 				// Another successor of the policy that was replaced: a fork, once its quorum signs it.
-				g := forks[StopPolicyDigest(*r.Policy)]
-				if g == nil {
-					g = map[string]StopRecord{}
-					forks[StopPolicyDigest(*r.Policy)] = g
+				d := StopPolicyDigest(*r.Policy)
+				if forks[d] == nil {
+					forks[d] = map[string]StopRecord{}
 				}
-				g[r.By] = r
-				if len(g) >= prevPol.LiftQuorum {
-					return st, fmt.Errorf("the control run's policy chain forks at transition %d: a quorum of the earlier policy also approved a different successor: %w", r.Seq, ErrConfig)
+				forks[d][r.By] = r
+				if len(forks[d]) >= prevPol.LiftQuorum {
+					broken(fmt.Sprintf("the policy chain forks at transition %d: a quorum of the earlier policy also approved a different successor", r.Seq))
 				}
 				reject(rec.Name, "an approval of another successor of the policy already replaced")
 				continue
 			}
 			if !cur.verify(r, "lifter") {
-				reject(rec.Name, "not signed by a lifter of the policy in force")
+				reject(rec.Name, "not signed by a lifter of the policy in force, for this deployment")
 				unverified(r)
 				continue
 			}
-			if r.Seq != st.PolicySeq+1 || r.PrevDigest != st.PolicyDigest {
-				reject(rec.Name, "not an approval of the next transition from the policy in force")
+			if r.Seq != st.PolicySeq+1 || r.PrevDigest != st.PolicyDigest || r.Policy.DeploymentID != cur.DeploymentID {
+				reject(rec.Name, "not an approval of the next transition from the policy in force, for this deployment")
 				continue
 			}
 			key := fmt.Sprint(r.Seq)
@@ -388,23 +453,25 @@ func (c *StopControl) State(ctx context.Context) (StopState, error) {
 			}
 			g := approvals[key]
 			g[r.By] = r
-			var agree []string
-			for by, a := range g {
+			agree := 0
+			for _, a := range g {
 				if StopPolicyDigest(*a.Policy) == StopPolicyDigest(*r.Policy) {
-					agree = append(agree, by)
+					agree++
 				}
 			}
-			if len(agree) < cur.LiftQuorum {
+			if agree < cur.LiftQuorum {
 				continue // the lifters approved different policies
 			}
-			next, err := PolicyFromDoc(*r.Policy, c.nv)
+			next, err := c.policyOf(*r.Policy, StopPolicy{}, "")
 			if err != nil {
 				reject(rec.Name, "the new policy does not validate here: "+err.Error())
 				delete(approvals, key)
 				continue
 			}
 			if slices.Contains(chain, next.Digest()) {
-				return st, fmt.Errorf("the control run's policy chain rolls back at transition %d: a quorum approved a policy that was already in force: %w", r.Seq, ErrConfig)
+				broken(fmt.Sprintf("the policy chain rolls back at transition %d: a quorum approved a policy that was already in force", r.Seq))
+				delete(approvals, key)
+				continue
 			}
 			prevPol, prevDigest = cur, st.PolicyDigest
 			cur, st.PolicyDigest, st.PolicySeq = next, next.Digest(), r.Seq
@@ -416,7 +483,10 @@ func (c *StopControl) State(ctx context.Context) (StopState, error) {
 			}
 		}
 	}
-	if st.Unverified > 0 && audited {
+	if audited && !slices.Contains(chain, c.policy.Digest()) {
+		broken("the pinned policy is not on the store's chain (configure the deployment's root policy, or one the chain reaches)")
+	}
+	if audited {
 		st.Unverified -= min(st.Unverified, c.acceptUnverified)
 	}
 	for i := range st.Stops {
@@ -425,11 +495,22 @@ func (c *StopControl) State(ctx context.Context) (StopState, error) {
 			s.LiftsNeeded = 1
 			if audited {
 				s.LiftsNeeded = cur.LiftQuorum
+			} else if s.Signed {
+				st.UnverifiedActive++
 			}
 			s.LiftsHeld = len(enrolledLifters(s, cur, audited))
 		}
 	}
 	return st, nil
+}
+
+// policyOf builds the policy a document names: the pin itself when the digest is its own (no
+// verifier constructor needed), else through the control's verifier constructor.
+func (c *StopControl) policyOf(d StopPolicyDoc, pin StopPolicy, pinDigest string) (StopPolicy, error) {
+	if pinDigest != "" && StopPolicyDigest(d) == pinDigest {
+		return pin, nil
+	}
+	return PolicyFromDoc(d, c.nv)
 }
 
 // enrolledLifters returns the lifters among those who approved s's lift that the policy in force
@@ -475,6 +556,8 @@ type StopRequest struct {
 	Compensation string // CompensationAllow (the default) or CompensationBlock
 	By, Host     string
 	Signer       StopSigner
+	// AdoptedFrom is the digest of the plain stop this one re-states (ChangeMode sets it).
+	AdoptedFrom string
 }
 
 // LiftRequest is what LiftStop takes: one lifter's approval. An audited control needs Signer and By
@@ -508,7 +591,7 @@ func (c *StopControl) SetStop(ctx context.Context, req StopRequest) (StopEntry, 
 	if err != nil {
 		return StopEntry{}, err
 	}
-	r := StopRecord{Format: StopFormat, Kind: "set", Mode: st.Mode, Scope: &req.Scope, Compensation: comp, Reason: req.Reason, By: req.By, Host: req.Host}
+	r := StopRecord{Format: StopFormat, Kind: "set", Mode: st.Mode, Scope: &req.Scope, Compensation: comp, Reason: req.Reason, By: req.By, Host: req.Host, AdoptedFrom: req.AdoptedFrom}
 	if err := c.write(ctx, st, &r, req.Signer, true); err != nil {
 		return StopEntry{}, err
 	}
@@ -577,16 +660,28 @@ func (c *StopControl) ChangeMode(ctx context.Context, req ModeRequest) (StopStat
 			if covered {
 				continue
 			}
-			if _, err := c.SetStop(ctx, StopRequest{Scope: p.Scope, Reason: "adopted: " + p.Reason, Compensation: p.Compensation, By: req.By, Host: req.Host, Signer: req.Signer}); err != nil {
+			if _, err := c.SetStop(ctx, StopRequest{Scope: p.Scope, Reason: "adopted: " + p.Reason, Compensation: p.Compensation, By: req.By, Host: req.Host, Signer: req.Signer, AdoptedFrom: p.digest}); err != nil {
 				return st, fmt.Errorf("adopt the stop %s: %w", p.ID, err)
 			}
 		}
 	}
 	n := 1
+	hasRoot := false
 	recs, _ := c.j.History(ctx, StopControlRun)
 	for _, rec := range recs {
 		if strings.HasPrefix(rec.Name, "@stop/mode/") {
 			n++
+		}
+		hasRoot = hasRoot || strings.HasPrefix(rec.Name, "@stop/root/")
+	}
+	if req.To == StopAudited && !hasRoot {
+		doc, err := c.policy.Doc()
+		if err != nil {
+			return st, err
+		}
+		root := StopRecord{Format: StopFormat, Kind: "root", Mode: StopAudited, Policy: &doc, Reason: req.Reason, By: req.By, Host: req.Host}
+		if err := c.write(ctx, st, &root, req.Signer, false); err != nil {
+			return StopState{}, err
 		}
 	}
 	r := StopRecord{Format: StopFormat, Kind: "mode", Mode: StopAudited, To: req.To, Seq: n, Reason: req.Reason, By: req.By, Host: req.Host}
@@ -606,6 +701,9 @@ func (c *StopControl) RotatePolicy(ctx context.Context, next StopPolicy, req Lif
 	doc, err := next.Doc()
 	if err != nil {
 		return StopState{}, err
+	}
+	if doc.DeploymentID != c.policy.DeploymentID {
+		return StopState{}, fmt.Errorf("a policy transition keeps the deployment ID: %w", ErrConfig)
 	}
 	st, err := c.State(ctx)
 	if err != nil {
@@ -637,7 +735,7 @@ func (c *StopControl) write(ctx context.Context, st StopState, r *StopRecord, si
 		if signer == nil {
 			return fmt.Errorf("an audited control signs every record: a signer is required: %w", ErrConfig)
 		}
-		r.Mode, r.Alg, r.PolicyDigest = StopAudited, signer.Alg(), st.PolicyDigest
+		r.Mode, r.Alg, r.PolicyDigest, r.Deployment = StopAudited, signer.Alg(), st.PolicyDigest, c.policy.DeploymentID
 	} else if r.Kind != "set" && r.Kind != "lift" {
 		return fmt.Errorf("a basic control writes only stops and lifts: %w", ErrConfig)
 	} else {

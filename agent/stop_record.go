@@ -100,13 +100,20 @@ const (
 // one lifter's approval of lifting it, "mode" evidence that a deployment changed mode (it never
 // changes what a process does: the mode is the process's configuration), "policy" one lifter's
 // approval of replacing the stop policy (a transition applies once a lift quorum of the policy in
-// force has approved it).
+// force has approved it), "root" the first policy of the deployment, signed by one of its own
+// approvers (the walk of the chain starts from the first root a process can verify).
 type StopRecord struct {
 	Format string `json:"format"`
 	Kind   string `json:"kind"`
 	// Mode is the mode the record was written under. A record written under StopBasic is ignored once
 	// the deployment is audited.
 	Mode StopMode `json:"mode"`
+	// Deployment is the deployment ID of the policy the record was signed under (audited mode): it is in
+	// the signed body, so a record cannot be replayed into another deployment.
+	Deployment string `json:"deployment,omitempty"`
+	// AdoptedFrom, on a set record, is the digest (StopDigest) of the plain set record a signed stop
+	// re-states when a deployment moves to audited mode, so the history stays traceable.
+	AdoptedFrom string `json:"adopted_from,omitempty"`
 	// StopID is the stop a set record makes (see StopIDOf) and the stop a lift record lifts.
 	StopID string `json:"stop_id,omitempty"`
 	// SetDigest, on a lift, is the digest of the set record it lifts (StopDigest), so a lift cannot be
@@ -239,6 +246,10 @@ func (r StopRecord) validate() error {
 		if r.Seq < 1 || r.To != StopBasic && r.To != StopAudited {
 			return fmt.Errorf("stop record: a mode change needs a number and a mode: %w", ErrInvalidStop)
 		}
+	case "root":
+		if r.Policy == nil || r.Mode != StopAudited {
+			return fmt.Errorf("stop record: a root record carries the first policy and is signed: %w", ErrInvalidStop)
+		}
 	case "policy":
 		if r.Seq < 1 || r.PrevDigest == "" || r.Policy == nil || r.Mode != StopAudited {
 			return fmt.Errorf("stop record: a policy transition needs a number, the digest it replaces, the new policy and a signature: %w", ErrInvalidStop)
@@ -261,6 +272,9 @@ func stopRecordStep(r StopRecord) string {
 		return "@stop/set/" + r.StopID
 	case "lift":
 		return "@stop/lift/" + r.StopID + "/" + encodeID(r.By) + "/" + d
+	}
+	if r.Kind == "root" {
+		return "@stop/root/" + StopPolicyDigest(*r.Policy) + "/" + encodeID(r.By) + "/" + d
 	}
 	if r.Kind == "policy" {
 		return fmt.Sprintf("@stop/policy/%010d/%s/%s", r.Seq, encodeID(r.By), d)
