@@ -448,6 +448,11 @@ func TestRacesInChrome(t *testing.T) {
 			t.Errorf("need %q: %+v", bad, v)
 		}
 	}
+	var steps int
+	get("undoSteps", &steps)
+	if steps < 100 || steps > 101 {
+		t.Errorf("undo went back %d steps after 105+ operations, want the cap of 100", steps)
+	}
 	var goodEnabled, unchanged bool
 	get("needGoodApplyEnabled", &goodEnabled)
 	get("sourceUnchanged", &unchanged)

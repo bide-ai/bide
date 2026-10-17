@@ -73,6 +73,24 @@ try {
   await until(() => document.getElementById('live')?.textContent === 'Undone', null, 'the good undo');
   r.undoneOneStep = (await source()) === afterFirst;
 
+  // The history is capped: 105 operations, and undo can go back 100 steps.
+  const values = ['idempotent', 'readonly'];
+  for (let i = 0; i < 105; i++) {
+    const want = values[i % 2];
+    await page.select('#f-safety', want);
+    await until((w) => document.getElementById('source').value.includes('name: validate, block: validate, safety: ' + w), want, 'toggle ' + i);
+  }
+  let undone = 0;
+  while (await page.$eval('#undo', (b) => !b.disabled)) {
+    const prev = await source();
+    await page.click('#undo');
+    await until((v) => document.getElementById('source').value !== v, prev, 'undo ' + undone);
+    await new Promise((res) => setTimeout(res, 30)); // the step's finally runs just after its announcement
+    undone++;
+    if (undone > 200) break;
+  }
+  r.undoSteps = undone;
+
   // 3. A number the field shows is the number sent: "1e3" is refused, not sent as 1.
   await page.click('#outline button[data-node="charge"]');
   await until(() => document.getElementById('g-need'), null, 'the gate form');
