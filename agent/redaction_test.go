@@ -179,3 +179,37 @@ func (p plainStore) Get(ctx context.Context, r, n string) (agent.Entry, bool, er
 func (p plainStore) Load(ctx context.Context, r string, after int64) iter.Seq2[agent.Entry, error] {
 	return p.inner.Load(ctx, r, after)
 }
+
+// A plan is for the records it was made from: executed against a journal whose record under the
+// same name holds other bytes, it replaces nothing.
+func TestRedact_RefusesAPlanMadeFromOtherRecords(t *testing.T) {
+	ctx := context.Background()
+	build := func(content string) (*agent.MemStore, *agent.Journal) {
+		s := agent.NewMemStore()
+		j := agenttest.MustJournal(s)
+		if _, err := j.Step(ctx, "r", "step", func(context.Context) (string, error) { return content, nil }); err != nil {
+			t.Fatal(err)
+		}
+		b, err := agent.JournalEntry("run:complete", agent.Record{Kind: agent.StepValue, Result: []byte(`"ok"`)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := s.Insert(ctx, "r", "run:complete", b); err != nil {
+			t.Fatal(err)
+		}
+		return s, j
+	}
+	_, planned := build("first")
+	other, otherJ := build("second")
+	plan, err := agent.PlanRedaction(ctx, planned, "r", agent.RedactionSelector{Names: []string{"step"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := agent.Redact(ctx, otherJ, plan, time.Now())
+	if !errors.Is(err, agent.ErrRedactChanged) || len(res.Redacted) != 0 {
+		t.Fatalf("Redact of a plan made from other bytes = %+v, %v; want ErrRedactChanged and nothing replaced", res, err)
+	}
+	if e, _, _ := other.Get(ctx, "r", "step"); bytes.Contains(e.Data, []byte(`"redacted"`)) {
+		t.Fatalf("the record was replaced")
+	}
+}
