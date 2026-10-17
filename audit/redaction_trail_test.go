@@ -657,3 +657,59 @@ func unsignedLeaf(t *testing.T, rec audit.RedactionRecord) []byte {
 	}
 	return append([]byte("bide.audit.event-leaf.v3\x00"), b...)
 }
+
+// A legitimate pass after a planted pair is refused before it appends or erases, so the next signed
+// head can never attest the planted records; and the planted erasure stays unaccounted.
+func TestRedactJournal_RefusesATrailWithAPlantedRecord(t *testing.T) {
+	ctx := context.Background()
+	for name, signer := range map[string]audit.Signer{"no key": nil, "another key": p11Signers(t)["ecdsa-p256"]} {
+		r := newTrailRig(t)
+		hand, _ := agent.PlanRedaction(ctx, r.j, "gov", agent.RedactionSelector{Names: []string{"note"}})
+		if _, err := agent.Redact(ctx, r.j, hand, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		r.plant(signer, "gov")
+		plan, _ := agent.PlanRedaction(ctx, r.j, "gov", agent.RedactionSelector{Names: []string{"call:pay"}})
+		before, _ := r.trail.Load(ctx, audit.RedactionTrailName)
+		_, err := audit.RedactJournal(ctx, r.j, r.trail, plan, r.options)
+		if !errors.Is(err, audit.ErrRedactTrailUntrusted) {
+			t.Fatalf("%s: RedactJournal = %v; want ErrRedactTrailUntrusted", name, err)
+		}
+		after, _ := r.trail.Load(ctx, audit.RedactionTrailName)
+		recs, _ := r.j.History(ctx, "gov")
+		for _, x := range recs {
+			if x.Name == "call:pay" && x.Redacted {
+				t.Errorf("%s: the refused pass erased a record", name)
+			}
+		}
+		if len(after) != len(before) {
+			t.Errorf("%s: the refused pass wrote to the trail", name)
+		}
+		leaves, head := r.signedTrail()
+		rep, err := r.verify(leaves, head)
+		if err == nil || !strings.Contains(kinds(rep), "BAD_SIGNATURE") {
+			t.Fatalf("%s: report = %+v, %v", name, rep, err)
+		}
+	}
+}
+
+// A trail that is not the one the earlier heads attest is refused.
+func TestRedactJournal_RefusesATrailTheEarlierHeadsDoNotMatch(t *testing.T) {
+	ctx := context.Background()
+	r := newTrailRig(t)
+	if _, err := audit.RedactJournal(ctx, r.j, r.trail, r.plan, r.options); err != nil {
+		t.Fatal(err)
+	}
+	h, err := audit.SignRedactionTrail(ctx, r.trail, r.signer, r.v, nil, time.Unix(0, p11Now()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2 := newTrailRig(t) // a fresh trail: what a typo in the trail's database name would give
+	r2.options.Signer, r2.options.TrailHeads = r.signer, []audit.SignedTreeHead{h}
+	if _, err := audit.RedactJournal(ctx, r2.j, r2.trail, r2.plan, r2.options); !errors.Is(err, audit.ErrRedactTrailUntrusted) || !strings.Contains(err.Error(), "TRAIL_ALTERED") {
+		t.Fatalf("RedactJournal over a trail the earlier head does not match = %v; want ErrRedactTrailUntrusted (TRAIL_ALTERED)", err)
+	}
+	if leaves, _ := r2.trail.Load(ctx, audit.RedactionTrailName); len(leaves) != 0 {
+		t.Error("the refused pass wrote to the trail")
+	}
+}

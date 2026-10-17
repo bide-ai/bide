@@ -59,6 +59,7 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `var ErrCertificateBound`: ErrCertificateBound reports a certificate-bound decision receipt given to DecisionReceipt.Verify, which knows only a key: use DecisionReceipt.VerifyCertificate.
 - `var ErrRedacted`: ErrRedacted reports a journal holding a redacted record (agent.Record.Redacted) given to a producer that projects what the records say (an absence key set, a used-policy set, the event stream): the redacted record's content is gone, so the projection would silently omit it, and a key set without it would prove absent a call the journal tree commits.
 - `var ErrRedactNoHead`: ErrRedactNoHead is a redaction of a run no verified signed head covers.
+- `var ErrRedactTrailUntrusted`: ErrRedactTrailUntrusted is a redaction whose trail holds a record the redaction key did not sign, or does not match the heads given: appending to it would let the next signed head attest records the tool did not write.
 - `var ErrRedactNoTrail`: ErrRedactNoTrail is a redaction whose begin record could not be written.
 - `var EarnedRules`: EarnedRules is the ScopeRules an earned grant attenuates its root under.
 - `var ErrCRLSignature`: ErrCRLSignature is wrapped by VerifyCRL when the CRL's algorithm is outside the profile, its signature does not verify under the issuer's certificate, or it names another issuer.
@@ -1757,6 +1758,8 @@ type RedactionOptions struct {
 	Verifier Verifier
 
 	Redactor agent.Redactor
+
+	TrailHeads []SignedTreeHead
 
 	AllowUncovered bool
 }

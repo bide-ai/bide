@@ -249,6 +249,10 @@ type RedactionOptions struct {
 	Verifier Verifier
 	// Redactor, when set, replaces the records instead of the journal's own store (see agent.RedactUsing).
 	Redactor agent.Redactor
+	// TrailHeads are the signed heads of the redaction trail so far (the operator's anchor, or the
+	// -head-out file): RedactJournal checks the trail against them before it appends, so a trail
+	// that is not the one they attest (a typo in the trail's database starts a new one) is refused.
+	TrailHeads []SignedTreeHead
 	// AllowUncovered lets a redaction go ahead with no covering head. It is recorded in the trail.
 	AllowUncovered bool
 }
@@ -257,6 +261,10 @@ type RedactionOptions struct {
 var (
 	// ErrRedactNoHead is a redaction of a run no verified signed head covers.
 	ErrRedactNoHead = fmt.Errorf("redaction refused: no signed journal head that verifies and matches the journal covers the whole run, so its evidence is not anchored (make it first, or allow an uncovered redaction, which is recorded): %w", agent.ErrConfig)
+	// ErrRedactTrailUntrusted is a redaction whose trail holds a record the redaction key did not sign,
+	// or does not match the heads given: appending to it would let the next signed head attest
+	// records the tool did not write.
+	ErrRedactTrailUntrusted = fmt.Errorf("redaction refused: the redaction trail holds a record the redaction key did not sign, or does not match its signed heads, so a head signed over it would attest records the tool did not write: %w", agent.ErrConfig)
 	// ErrRedactNoTrail is a redaction whose begin record could not be written.
 	ErrRedactNoTrail = fmt.Errorf("redaction refused: the redaction trail cannot be written, so nothing was erased: %w", agent.ErrConfig)
 )
@@ -290,6 +298,9 @@ func RedactJournal(ctx context.Context, j *agent.Journal, trail EventStore, plan
 	}
 	for _, p := range plan.Records {
 		rec.Records = append(rec.Records, RedactedRef{Position: p.Position, Name: p.Name, Kind: string(p.Kind), Length: p.Length, LeafHash: p.LeafHash, Already: p.AlreadyRedacted})
+	}
+	if err := checkTrailBeforeAppend(ctx, trail, opt); err != nil {
+		return res, err
 	}
 	size, err := coveringHeadSize(ctx, j, plan, opt)
 	if err != nil {
@@ -580,4 +591,25 @@ func SignRedactionTrail(ctx context.Context, store EventStore, signer Signer, v 
 	}
 	_ = verr
 	return SignNotifyTrail(ctx, store, RedactionTrailName, signer, now)
+}
+
+// checkTrailBeforeAppend refuses to append to a trail that holds a record the redaction key did not
+// sign (a planted one) or that does not match the heads given, before anything is erased or written.
+func checkTrailBeforeAppend(ctx context.Context, trail EventStore, opt RedactionOptions) error {
+	v, err := NewVerifier(opt.Signer.Alg(), opt.Signer.PublicKey())
+	if err != nil {
+		return fmt.Errorf("audit: RedactJournal: the signer's public key: %w", err)
+	}
+	leaves, err := trail.Load(ctx, RedactionTrailName)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrRedactNoTrail, err)
+	}
+	rep, _ := VerifyRedactions(RedactionVerifyInput{Trail: leaves, Heads: opt.TrailHeads, Verifier: v, Unanchored: true})
+	for _, f := range rep.Findings {
+		switch f.Kind {
+		case FindingTrailAltered, FindingBadSignature, FindingMalformed:
+			return fmt.Errorf("%w (%s: %s)", ErrRedactTrailUntrusted, f.Kind, f.Detail)
+		}
+	}
+	return nil
 }
