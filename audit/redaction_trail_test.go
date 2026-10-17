@@ -911,3 +911,37 @@ func TestSignRedactionTrail_AnErrorFromTheCheckDisablesNothing(t *testing.T) {
 		t.Fatalf("a padded deployment name does not match its trimmed form: %+v, %v", rep, err)
 	}
 }
+
+// Odd inputs are errors, never panics.
+func TestRedactionTrail_NoPanicOnOddInputs(t *testing.T) {
+	ctx := context.Background()
+	r := newTrailRig(t)
+	now := time.Unix(0, p11Now())
+	if _, err := audit.SignRedactionTrail(ctx, nil, r.signer, r.v, "test", nil, now); !errors.Is(err, agent.ErrConfig) {
+		t.Errorf("SignRedactionTrail with a nil store = %v", err)
+	}
+	if _, err := audit.SignRedactionTrail(ctx, r.trail, nil, r.v, "test", nil, now); !errors.Is(err, agent.ErrConfig) {
+		t.Errorf("SignRedactionTrail with a nil signer = %v", err)
+	}
+	if err := audit.AppendRedactionRecord(ctx, nil, audit.RedactionRecord{}, r.signer); !errors.Is(err, agent.ErrConfig) {
+		t.Errorf("AppendRedactionRecord with a nil store = %v", err)
+	}
+	if err := audit.AppendRedactionRecord(ctx, r.trail, audit.RedactionRecord{}, nil); err == nil {
+		t.Errorf("AppendRedactionRecord with a nil signer returned no error")
+	}
+	if _, err := audit.LoadRedactionTrail(ctx, nil); !errors.Is(err, agent.ErrConfig) {
+		t.Errorf("LoadRedactionTrail with a nil store = %v", err)
+	}
+	if _, err := audit.RedactJournal(ctx, nil, r.trail, r.plan, r.options); !errors.Is(err, agent.ErrConfig) {
+		t.Errorf("RedactJournal with a nil journal = %v", err)
+	}
+	if _, err := audit.RedactJournal(ctx, r.j, nil, r.plan, r.options); !errors.Is(err, agent.ErrConfig) {
+		t.Errorf("RedactJournal with a nil trail = %v", err)
+	}
+	if rep, err := audit.VerifyRedactions(audit.RedactionVerifyInput{Deployment: "test", Unanchored: true}); err != nil || !rep.OK() {
+		t.Errorf("VerifyRedactions of nothing = %+v, %v", rep, err)
+	}
+	if rep, _ := audit.VerifyRedactions(audit.RedactionVerifyInput{Deployment: "test", Trail: [][]byte{nil, {}, []byte("x")}, Unanchored: true}); rep.OK() {
+		t.Errorf("empty and junk leaves verified")
+	}
+}

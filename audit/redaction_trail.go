@@ -185,6 +185,9 @@ func DecodeRedactionLeaf(leaf []byte) (RedactionRecord, error) {
 // in store, at the next position. A lost
 // race for the position is retried; any other failure is returned.
 func AppendRedactionRecord(ctx context.Context, store EventStore, r RedactionRecord, signer Signer) error {
+	if store == nil {
+		return fmt.Errorf("audit: AppendRedactionRecord: no store: %w", agent.ErrConfig)
+	}
 	if err := checkSigner(signer); err != nil {
 		return err
 	}
@@ -217,6 +220,9 @@ func AppendRedactionRecord(ctx context.Context, store EventStore, r RedactionRec
 
 // LoadRedactionTrail returns the records of the redaction trail in store, in order.
 func LoadRedactionTrail(ctx context.Context, store EventStore) ([]RedactionRecord, error) {
+	if store == nil {
+		return nil, fmt.Errorf("audit: LoadRedactionTrail: no store: %w", agent.ErrConfig)
+	}
 	leaves, err := store.Load(ctx, RedactionTrailName)
 	if err != nil {
 		return nil, fmt.Errorf("audit: load the redaction trail: %w", err)
@@ -623,8 +629,8 @@ func prevHash(leaves [][]byte, i int) []byte {
 // record appended meanwhile is not attested. It returns an error wrapping ErrNotVerified naming the
 // first problem.
 func SignRedactionTrail(ctx context.Context, store EventStore, signer Signer, v Verifier, deployment string, prior []SignedTreeHead, now time.Time) (SignedTreeHead, error) {
-	if strings.TrimSpace(deployment) == "" || v == nil {
-		return SignedTreeHead{}, fmt.Errorf("audit: SignRedactionTrail: a deployment name and a verifier are required: %w", agent.ErrConfig)
+	if store == nil || signer == nil || strings.TrimSpace(deployment) == "" || v == nil {
+		return SignedTreeHead{}, fmt.Errorf("audit: SignRedactionTrail: a store, a signer, a verifier and a deployment name are required: %w", agent.ErrConfig)
 	}
 	deployment = strings.TrimSpace(deployment)
 	leaves, err := store.Load(ctx, RedactionTrailName)
