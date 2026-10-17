@@ -202,3 +202,19 @@ func TestLoadDirVerifiesADownloadedSet(t *testing.T) {
 		t.Error("LoadDir without a verifier succeeded")
 	}
 }
+
+// A key written twice with the same bytes is one head, and Audit still reports the second version.
+func TestARewrittenKeyIsOneHead(t *testing.T) {
+	k := newKeys(t, 1)
+	f := awss3test.New(bucket)
+	publish(t, f, k, "r", 1, 2)
+	key := f.Keys()[0]
+	f.Put(key, f.Versions(key)[0].Body)
+	r := newReader(t, f, k.v)
+	if all, err := r.Heads(ctx, audit.TreeJournal, "r"); err != nil || len(all) != 2 {
+		t.Fatalf("Heads = %v, %v; want 2 heads", sizes(all), err)
+	}
+	if rep, _ := r.Audit(ctx, audit.TreeJournal, "r", time.Now()); !hasFinding(rep, "2 versions of one key") {
+		t.Errorf("Audit findings %v lack the rewritten key", rep.Findings)
+	}
+}
