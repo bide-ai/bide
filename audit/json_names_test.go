@@ -60,6 +60,10 @@ var auditArtifacts = []any{
 	audit.RedactedRef{},
 	audit.RedactionReport{},
 	audit.RedactionFinding{},
+	audit.StopTrailExport{},
+	audit.StopReport{},
+	audit.StopReportEntry{},
+	audit.StopReportRecord{},
 	audit.NotifyReport{},
 	audit.NotifyTrailReport{},
 	audit.NotifyEventVerdict{},
@@ -71,6 +75,8 @@ var auditArtifacts = []any{
 // notArtifacts is every other exported struct type of audit and audit/verify, with why it is never
 // written as JSON. A new exported struct type must be added to one list or the other.
 var notArtifacts = map[string]string{
+	"audit.StopVerifyInput":      "the input of VerifyStops, built in code from files and a store",
+	"audit.StopTrail":            "the stop trail adapter over an EventStore; its state is unexported",
 	"audit.ReceiptIdentity":      "the result of DecisionReceipt.VerifyIdentity, printed by the receipt commands, never written out",
 	"audit.CRL":                  "a CRL as a refresher sees it, read in code",
 	"audit.StatusDecl":           "the declared CA timings read from a file (statusDeclFile has the JSON names); built in code",
