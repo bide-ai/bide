@@ -94,6 +94,7 @@ type StopControl struct {
 	policy *StopPolicy
 	nv     StopVerifierFunc
 	mode   StopMode
+	trail  StopTrail
 	root   string // digest of the trusted root policy; the pin's when empty
 	now    func() time.Time
 }
@@ -119,6 +120,9 @@ func NewStopControl(j *Journal, opts ...StopOption) (*StopControl, error) {
 		return nil, fmt.Errorf("NewStopControl: basic mode takes no WithStopPolicy: %w", ErrConfig)
 	case c.mode == "" && c.policy != nil:
 		c.mode = "" // declared at State, once the control run holds records
+	}
+	if c.trail != nil && c.policy == nil {
+		return nil, fmt.Errorf("NewStopControl: a basic control keeps no stop trail (WithStopTrail needs audited mode): %w", ErrConfig)
 	}
 	return c, nil
 }
@@ -623,6 +627,13 @@ func (c *StopControl) SetStop(ctx context.Context, req StopRequest) (StopEntry, 
 	}
 	r := StopRecord{Format: StopFormat, Kind: "set", Mode: st.Mode, Scope: &req.Scope, Compensation: comp, Reason: req.Reason, By: req.By, Host: req.Host, AdoptedFrom: req.AdoptedFrom}
 	if err := c.write(ctx, st, &r, req.Signer, true); err != nil {
+		// A stop that is in force but whose trail write failed is returned with the error: the caller
+		// has the stop (and its ID), and Reaudit completes the evidence.
+		if te, ok := errors.AsType[*StopTrailError](err); ok && te.StoreWritten {
+			if e, ferr := c.find(ctx, r.StopID, stopRecordStep(r)); ferr == nil {
+				return e, err
+			}
+		}
 		return StopEntry{}, err
 	}
 	return c.find(ctx, r.StopID, stopRecordStep(r))
@@ -804,8 +815,29 @@ func (c *StopControl) write(ctx context.Context, st StopState, r *StopRecord, si
 	if err != nil {
 		return fmt.Errorf("encode the stop record: %w (%w)", err, ErrStorage)
 	}
-	_, _, err = c.j.putNew(ctx, StopControlRun, stopRecordStep(*r), Record{Kind: StepValue, Result: b})
-	return err
+	name := stopRecordStep(*r)
+	put := func() error {
+		_, _, err := c.j.putNew(ctx, StopControlRun, name, Record{Kind: StepValue, Result: b})
+		return err
+	}
+	if c.trail == nil {
+		return put()
+	}
+	// With a trail: a stop is effective first and evidenced second; every other record is evidenced
+	// first, so none is in force without its evidence (see WithStopTrail).
+	if r.Kind == "set" {
+		if err := put(); err != nil {
+			return err
+		}
+		if err := c.appendTrail(ctx, *r); err != nil {
+			return &StopTrailError{Record: name, StoreWritten: true, Err: err}
+		}
+		return nil
+	}
+	if err := c.appendTrail(ctx, *r); err != nil {
+		return &StopTrailError{Record: name, Err: err}
+	}
+	return put()
 }
 
 // protocol:stop end
