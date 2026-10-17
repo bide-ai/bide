@@ -2842,6 +2842,7 @@ through `TallyApprovals` comes with that code.
 |---|---|
 | `Count` | `audit.CertIdentity.VerifyChain` (chain, identifier, window, `anchorGrace`: rules 1 to 3) and `EvaluateStatus` with `evalCert` (rule 5: the status rule, usable only for `[A(d), L(C)]`, no `E <= A(d)`); `CertApprover.VerifyCertDecision` (with `provableAt`, the covering head and the non-decreasing head-time rule: `A(d)`) joins them for the certificate-bound approver, and `agent.TallyApprovals` calls it; `audit.TestModel15Refinement` runs each counterexample configuration's scenario through them and compares the counted set. Go's count is stateless (every evaluation recounts every decision against the current journal, heads and status), so the model's tally recheck and dead set map to that recount, not to separate Go state |
 | `FinalWit` | `evalCert`'s tier, with `coveredFrom` and the series rule (`L(C)`, `CAPeriod`, consecutive numbers) |
+| `CrlCovers` | `crlView.covers` with `certNamesPoint` and `parseIDP` (`audit/identity_idp.go`): a CRL with an issuing distribution point is evidence of absence only for a certificate whose own CRL distribution points name its URI; `evalCert` reads listings from every CRL and absence only from the covering ones |
 | `Tally` | `agent.TallyApprovals`: an approver's first valid record, distinct approvers, `need` seats |
 | `Anchor` | `AuditedStore.anchorIfGrown`: a write that grows the journal anchors once |
 | `GateAnchorStep` | `AuditedStore.Reanchor` (the gate calls it before tallying a cert-bound decision no head covers) |
@@ -2891,6 +2892,8 @@ Pull requests (`ci`): two people and two identifiers, one or two certificates an
 | `id-prune` | ci | the CA drops an expired certificate's entry after one CRL beyond `notAfter`; a CRL may be withheld or an older one delivered; the live count and the pre-execution check read a CRL beyond `notAfter` only if it is `L(C)` and follows its predecessor (by number). The live invariants `RevocationSound`, `FailClosed`, `NoExecAfterKnownRevocation`, `IdentityBound`, `TallyClean`, `DeadStaysOut` | 817,688 | 53 s |
 | `id-prune-live` | ci | the same with `CountLive`: a fresh CRL issued before `A(d)` may count (provisional), never one beyond `L(C)` | 829,648 | 53 s |
 | `id-prune-time` | ci | the same with coverage by time: the CA publishes no more often than its declared period, and a CRL beyond `notAfter` is `L(C)` only within that period of its predecessor | 231,988 | 7 s |
+| `id-partition` | ci | a CA that splits its revocations over two CRLs with issuing distribution points (`Partitioned`): absence for a certificate is read only from a CRL its distribution point names (`PartRule`), listings from every CRL; a CRL may be withheld or an older one delivered; `RevocationSound`, `FailClosed`, `NoExecAfterKnownRevocation` pass | 195,058 | 3 s |
+| `id-partition-reach` | ci | reachability: a decision counts although the verifier holds a CRL of the other partition, which it does not read for absence (`PartitionSkipNotReachable` violated) | 11,112 | 1 s |
 | `id-ca-tier` | ci | the CA tier: a root that publishes rarely and revokes the CA with a past `E`, a root CRL that may be withheld, the leaf's CRL at `ExecAge` and the root's at `ExecAgeCA`; `RevocationSound`, `FailClosed`, `NoExecAfterKnownRevocation` per tier | 1,056,618 | 9 s |
 | `id-final-ca` | ci | the final tier with a CA tier (the leaf side one CRL, no series coverage): a final verdict needs a root CRL a window past `A(d)` and no root CRL listing the CA; `FinalNeedsCompleteSeries` over the root | 523,466 | 6 s |
 | `id-final-ca-reach` | ci | reachability: a decision becomes final with a CA tier (`FinalNotReachable` violated) | 4,171 | <1 s |
@@ -2935,6 +2938,8 @@ Each is in `identity/regress/`, is the same model with one rule switched off by 
 | `final-time-hourly` | `FinalNeedsCompleteSeries` | coverage by `nextUpdate` alone with a CA that publishes more often than its declared period does not show that nothing lies between two CRLs | 47,931 | 1 s |
 | `prune-no-lc-count` | `RevocationSound` | the live count does not apply the `L(C)` rule: with the first CRL beyond `notAfter` withheld or unread, the pruned CRL after it counts a revoked leaf | 373,253 | 8 s |
 | `prune-no-lc-exec` | `NoExecAfterKnownRevocation` | the pre-execution check does not apply the `L(C)` rule: a decision counted before `notAfter`, the CRL that lists the leaf withheld, and a pruned CRL satisfies the freshness check, so the call runs | 789,789 | 21 s |
+| `partition-fail-open` | `FailClosed` | absence read from any CRL of the issuer (`PartRule` off): a decision counts on a fresh CRL of the other partition, with its own partition unheard from | 9,531 | 1 s |
+| `partition-fail-open-revoked` | `RevocationSound` | the same: a certificate its own partition lists as revoked, in a CRL the verifier did not get and that is old enough that a fresh cache cannot have missed it, counts on the other partition's clean CRL | 46,848 | 2 s |
 | `final-no-ca-tier` | `FinalNeedsCompleteSeries` | a final verdict ignores the CA tier: the root revoked the CA at or before `A(d)` and the decision is final on the leaf's series | 15,076 | <1 s |
 | `exec-no-ca-tier` | `NoExecAfterCATierRevocation` | the pre-execution check does not require a fresh root CRL (the stale arm: the call runs on a root status older than `ExecAgeCA`) | 663,149 | 4 s |
 | `exec-no-recheck-ca-revoked` | `NoExecAfterCATierRevocation` | no pre-execution check, with the ages covering the run: a root CRL published after the count lists the CA with a past `E`, and the call runs (the revocation arm) | 1,014,913 | 5 s |
@@ -2955,6 +2960,11 @@ Each is in `identity/regress/`, is the same model with one rule switched off by 
   per-certificate status of every chain member, the auditor's `-distrust` overlay and a forged
   certificate after a CA compromise are Go tests (test plan 12 and 14), not model 15. (`MisIssue` shows the
   effect of a CA ignoring the name constraint.)
+- **CRL partitions.** `Partitioned` models a CA with two partitions that alternate (odd CRLs carry the issuing
+  distribution point of partition 1, even CRLs that of partition 0), a certificate's distribution point naming
+  one, with the series coverage by time (`Cov` is not `"number"`: the model indexes CRLs globally, while the Go
+  code numbers per partition). What the Go code adds is a fixed-URL match on bytes and the refusal of every other
+  IDP, which is test plan, not model.
 - **`RoutineGrace` (0), `ClockTolerance` (0), OCSP, delta CRLs, `certificateHold`,
   `expiredCertsOnCRL`, the `W'` cut and the `MinW` floor, `CountLive`'s provisional tier, and an
   independent time source (RFC 3161).** `CountLive` is a switch, on only in `id-prune-live`.

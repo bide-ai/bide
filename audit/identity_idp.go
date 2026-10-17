@@ -116,6 +116,8 @@ func certNamesPoint(cert *x509.Certificate, uris []string) bool {
 	return false
 }
 
+// protocol:identity begin CrlCovers
+
 // covers reports whether v can give evidence of absence for cert: a CRL without an IDP covers every
 // certificate of its issuer, one with an IDP only a certificate that names it.
 func (v *crlView) covers(cert *x509.Certificate) bool {
@@ -124,3 +126,5 @@ func (v *crlView) covers(cert *x509.Certificate) bool {
 	}
 	return certNamesPoint(cert, v.idp)
 }
+
+// protocol:identity end
