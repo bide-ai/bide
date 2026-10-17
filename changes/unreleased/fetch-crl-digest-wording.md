@@ -1,0 +1,3 @@
+Section: Fixed
+
+The certificate approvers guide and the `bide identity fetch-crl` start-up events told operators to compare the policy digest the command prints with the digest the gate records, but the two can never be equal: the digest covers `effective_from`, which the command's stand-in approver sets to its start time, and values the `-params` file cannot hold (`w`, `min_w`, `routine_grace`, `clock_tolerance`, holds, retention), which the command fills with defaults. The guide and the start-up event now say so, and a new `declared values` start-up event prints the stand-in approver's policy record without `effective_from`, so the timings and pinned CAs can be compared field by field with the policy record the gate journals.

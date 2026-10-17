@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -200,6 +201,36 @@ func TestStartupReportsThePolicyDigest(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("no policy digest in the start-up events: %s", g.dump())
+	}
+}
+
+// The digest of a refresher that is not a gate cannot equal the gate's (it carries a stand-in
+// effective_from and the defaults of values the declaration cannot hold), so the start-up events must not
+// tell the operator to compare it, and must print the declared values to compare field by field.
+func TestStartupDeclaredValuesReplaceTheDigestComparison(t *testing.T) {
+	g := newCRig(t)
+	g.publishFresh(1)
+	g.start()
+	var declared string
+	for _, e := range g.kinds(crlrefresh.EventStartup) {
+		if bytes.Contains([]byte(e.Detail), []byte("compare it with the digest")) {
+			t.Fatalf("a start-up event still tells the operator to compare the digest with the gate's: %q", e.Detail)
+		}
+		if _, after, ok := strings.Cut(e.Detail, "declared values "); ok {
+			declared = after
+		}
+	}
+	if declared == "" {
+		t.Fatalf("no declared-values start-up event: %s", g.dump())
+	}
+	want := g.ap.DescribeIdentity()
+	want.EffectiveFrom = ""
+	b, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(declared, string(b)) {
+		t.Fatalf("declared values %q do not carry the approver's record %s without effective_from", declared, b)
 	}
 }
 
