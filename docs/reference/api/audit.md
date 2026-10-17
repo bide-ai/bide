@@ -309,6 +309,7 @@ AuditedEventStore wraps an EventStore so every append is continuously anchored, 
 - `func (a *AuditedEventStore) Unwrap() EventStore`: Unwrap returns the wrapped store, so a decorator above this one, and NotifyTrail, find it and the stores beneath it.
 - `func (a *AuditedEventStore) WithClock(now func() int64) *AuditedEventStore`: WithClock sets a deterministic timestamp source for the heads (for tests).
 - `func (a *AuditedEventStore) WithCooldown(d time.Duration) *AuditedEventStore`: WithCooldown sets how long, after a failed publish, writes skip publishing before one probes the anchor again (default DefaultAnchorCooldown).
+- `func (a *AuditedEventStore) WithMinInterval(d time.Duration) *AuditedEventStore`: WithMinInterval limits how often a trail's head is published: after one head, growth of the same trail is held back until d has passed, and then published as one head that covers all of it.
 - `func (a *AuditedEventStore) WithTimeout(d time.Duration) *AuditedEventStore`: WithTimeout sets how long one anchoring attempt may take before it is abandoned (default DefaultAnchorTimeout).
 
 ## type AuditedStore
@@ -327,15 +328,19 @@ AuditedStore wraps a store so every journal write is continuously anchored: when
 
 **Methods**
 
+- `func (a *AuditedStore) Flush(ctx context.Context) error`: Flush publishes now every run whose growth WithMinInterval held back, stopping their timers, and returns the first error (it still tries the others).
 - `func (a *AuditedStore) Format(f fmt.State, _ rune)`: Format writes String for every verb, so no fmt verb prints the signing key.
 - `func (a *AuditedStore) Get(ctx context.Context, runID, name string) (agent.Entry, bool, error)`: Get reads through to the inner store.
 - `func (a *AuditedStore) Insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error)`: Insert stores the entry in the inner store, then anchors the run's tree head if the journal grew past the last anchored head.
 - `func (a *AuditedStore) Load(ctx context.Context, runID string, after int64) iter.Seq2[agent.Entry, error]`: Load reads through to the inner store.
 - `func (a *AuditedStore) OnError(fn func(runID string, err error)) *AuditedStore`: OnError sets a hook called when anchoring a write fails (Publish, or committing the root).
+- `func (a *AuditedStore) Pending() []string`: Pending returns, sorted, the runs whose growth WithMinInterval is holding back.
 - `func (a *AuditedStore) Reanchor(ctx context.Context, runID string) error`: Reanchor anchors runID's journal now, if it holds records no published head covers.
+- `func (a *AuditedStore) ReanchorRuns(ctx context.Context, f agent.RunFilter) error`: ReanchorRuns is the restart path for WithMinInterval: it anchors now every run f admits whose journal this store has not anchored, which after a start is every run, since the store remembers nothing of an earlier process.
 - `func (*AuditedStore) String() string`: String returns a description of the store that does not include its signing key.
 - `func (a *AuditedStore) Unwrap() agent.Store`: Unwrap returns the wrapped store, so agent.Capability finds its optional capabilities (agent.Leaser, agent.Lister) through the wrapper: an AuditedStore has exactly the capabilities of the store it wraps.
 - `func (a *AuditedStore) WithClock(now func() int64) *AuditedStore`: WithClock sets a deterministic timestamp source (for tests).
+- `func (a *AuditedStore) WithMinInterval(d time.Duration) *AuditedStore`: WithMinInterval limits how often a run's head is published: after one head, growth of the same run is held back until d has passed, and then published as one head that covers all of it.
 
 ## type CRL
 
