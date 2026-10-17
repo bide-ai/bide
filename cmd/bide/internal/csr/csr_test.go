@@ -7,6 +7,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/pem"
 	"errors"
@@ -378,6 +379,18 @@ func TestSelfCheckEKU(t *testing.T) {
 		if err := selfCheck(blk.Bytes, spki, n); err == nil {
 			t.Errorf("%s: the self-check accepted a request that does not match what was asked", name)
 		}
+	}
+	// An extension that was not asked for (here a key usage) is refused although SAN and EKU match.
+	priv := sg.(audit.Ed25519Signer).Priv
+	extra, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		EmailAddresses: []string{"ops@bank.example"},
+		ExtraExtensions: []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 15}, Value: []byte{3, 2, 7, 0x80}}},
+	}, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := selfCheck(extra, spki, Names{Email: "ops@bank.example"}); err == nil {
+		t.Error("the self-check accepted an extension that was not asked for")
 	}
 	if err := selfCheck(blk.Bytes, spki, Names{Email: "ops@bank.example", EKU: []asn1.ObjectIdentifier{clientAuth, emailProt}}); err != nil {
 		t.Fatal(err)
