@@ -1090,7 +1090,8 @@ bide audit: produce and verify audit proof bundles
          verify the redaction trail (the signed, append-only record of each erasure of journal
          content, written by audit.RedactJournal): its signed heads commit to its records, so a
          deleted or changed record is TRAIL_ALTERED; a record with no signature that verifies under -pubkey (the
-         redaction key: planted by someone who can append to the event store) is BAD_SIGNATURE, whatever head covers it; a record signed for another position or after another
+         redaction key: planted by someone who can append to the event store) is BAD_SIGNATURE, whatever head covers it, and accounts for nothing (neither does a record
+         that does not read, MALFORMED); a record signed for another position or after another
          record (a replayed, copied or reordered one, which would hide an unfinished pass) is
          REORDERED, and one signed for another -deployment (required) is BAD_SIGNATURE; each begin has an end (INCOMPLETE is an
          unfinished pass, finished by running the same plan again); a tombstone in a journal that no

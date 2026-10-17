@@ -282,10 +282,10 @@ type RedactionOptions struct {
 var (
 	// ErrRedactNoHead is a redaction of a run no verified signed head covers.
 	ErrRedactNoHead = fmt.Errorf("redaction refused: no signed journal head that verifies and matches the journal covers the whole run, so its evidence is not anchored (make it first, or allow an uncovered redaction, which is recorded): %w", agent.ErrConfig)
-	// ErrRedactTrailUntrusted is a redaction whose trail holds a record the redaction key did not sign,
-	// or does not match the heads given: appending to it would let the next signed head attest
-	// records the tool did not write.
-	ErrRedactTrailUntrusted = fmt.Errorf("redaction refused: the redaction trail holds a record the redaction key did not sign, or does not match its signed heads, so a head signed over it would attest records the tool did not write: %w", agent.ErrConfig)
+	// ErrRedactTrailUntrusted is a redaction whose trail does not match the signed heads given: it is
+	// not the trail they attest (records deleted or changed, or another trail altogether). A record
+	// planted in the trail does not stop an erasure: it is reported and accounts for nothing.
+	ErrRedactTrailUntrusted = fmt.Errorf("redaction refused: the redaction trail does not match its signed heads, so it is not the trail they attest (records were deleted or changed, or this is another trail): %w", agent.ErrConfig)
 	// ErrRedactNoTrail is a redaction whose begin record could not be written.
 	ErrRedactNoTrail = fmt.Errorf("redaction refused: the redaction trail cannot be written, so nothing was erased: %w", agent.ErrConfig)
 )
@@ -460,9 +460,17 @@ func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error) {
 	add := func(k RedactionFindingKind, run, format string, a ...any) {
 		rep.Findings = append(rep.Findings, RedactionFinding{Kind: k, RunID: run, Detail: fmt.Sprintf(format, a...)})
 	}
-	recs, derr := decodeRedactionLeaves(in.Trail)
-	if derr != nil {
-		add(FindingMalformed, "", "%v", derr)
+	// Each leaf is read on its own: one that does not read is reported and skipped, never accounted
+	// for, and does not stop the check of the rest (one planted leaf must not block every later erasure).
+	recs := make([]RedactionRecord, len(in.Trail))
+	trusted := make([]bool, len(in.Trail))
+	for i, l := range in.Trail {
+		r, err := DecodeRedactionLeaf(l)
+		if err != nil {
+			add(FindingMalformed, "", "trail record %d does not read: %v", i, err)
+			continue
+		}
+		recs[i], trusted[i] = r, true
 	}
 	// Anchoring: every head verifies, is of this trail, and commits to a prefix of it.
 	newest := -1
@@ -494,11 +502,12 @@ func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error) {
 			add(FindingUnattestedTail, "", "%d record(s) after the newest signed head (size %d) are not attested", len(in.Trail)-newest, newest)
 		}
 	}
-	if derr != nil {
-		return rep, notVerified("audit: redactions: %s: %s", rep.Findings[0].Kind, rep.Findings[0].Detail)
-	}
-
+	// A record counts only if it was written by the tool: signed under the key, for this deployment,
+	// at its position and after its predecessor. Any other is reported, and accounts for nothing.
 	for i, r := range recs {
+		if !trusted[i] {
+			continue
+		}
 		switch {
 		case !r.verifySignature(in.Verifier):
 			add(FindingBadSignature, r.RunID, "trail record %d has no signature that verifies under the key: it was not written by the redaction tool (a planted record), whatever signed head covers it", i)
@@ -506,7 +515,10 @@ func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error) {
 			add(FindingBadSignature, r.RunID, "trail record %d is signed for deployment %q, not %q: it was copied from another trail", i, r.Deployment, in.Deployment)
 		case r.Position != i || !bytes.Equal(r.Prev, prevHash(in.Trail, i)):
 			add(FindingReordered, r.RunID, "trail record %d was signed for position %d after another record: a replayed, copied or reordered record (it hides the pass that follows it)", i, r.Position)
+		default:
+			continue
 		}
+		trusted[i] = false
 	}
 	type key struct {
 		run string
@@ -521,7 +533,10 @@ func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error) {
 	type pass struct{ phase, err string }
 	history := map[string][]pass{} // run + plan digest -> its records, in order
 	var order []string
-	for _, r := range recs {
+	for i, r := range recs {
+		if !trusted[i] {
+			continue
+		}
 		id := r.RunID + "\x00" + r.PlanDigest
 		if _, ok := history[id]; !ok {
 			order = append(order, id)
@@ -623,11 +638,11 @@ func prevHash(leaves [][]byte, i int) []byte {
 // SignRedactionTrail signs a tree head over the redaction trail in store, after checking the trail is
 // the one the earlier heads attest: every head in prior must verify under v, be a head of the trail,
 // and commit to a prefix of it, and every record in the trail must carry a signature that verifies
-// under v and is bound to its position and the record before it, so a record planted by someone who can
-// append to the event store (and holds no key), or a signed record replayed or copied, is refused rather
-// than attested by the head. The head is over exactly the leaves it checked, never a fresh load, so a
-// record appended meanwhile is not attested. It returns an error wrapping ErrNotVerified naming the
-// first problem.
+// under v. A record that is not the tool's (unsigned, signed for another deployment or position, or
+// not a record) does not stop the signing: the head attests that the leaves exist, VerifyRedactions
+// reports them, and they account for nothing. The head is over exactly the leaves it checked, never a
+// fresh load, so a record appended meanwhile is not attested. It returns an error wrapping
+// ErrNotVerified when a prior head does not match the trail.
 func SignRedactionTrail(ctx context.Context, store EventStore, signer Signer, v Verifier, deployment string, prior []SignedTreeHead, now time.Time) (SignedTreeHead, error) {
 	if store == nil || signer == nil || strings.TrimSpace(deployment) == "" || v == nil {
 		return SignedTreeHead{}, fmt.Errorf("audit: SignRedactionTrail: a store, a signer, a verifier and a deployment name are required: %w", agent.ErrConfig)
@@ -643,7 +658,7 @@ func SignRedactionTrail(ctx context.Context, store EventStore, signer Signer, v 
 	}
 	for _, f := range rep.Findings {
 		switch f.Kind {
-		case FindingTrailAltered, FindingBadSignature, FindingReordered, FindingMalformed:
+		case FindingTrailAltered:
 			return SignedTreeHead{}, notVerified("audit: refusing to sign the redaction trail: %s: %s", f.Kind, f.Detail)
 		}
 	}
@@ -651,7 +666,7 @@ func SignRedactionTrail(ctx context.Context, store EventStore, signer Signer, v 
 }
 
 // checkTrailBeforeAppend refuses to append to a trail that holds a record the redaction key did not
-// sign (a planted one) or that does not match the heads given, before anything is erased or written.
+// match the heads given, before anything is erased or written. A planted record does not stop an erasure.
 func checkTrailBeforeAppend(ctx context.Context, trail EventStore, opt RedactionOptions) error {
 	v, err := NewVerifier(opt.Signer.Alg(), opt.Signer.PublicKey())
 	if err != nil {
@@ -667,7 +682,7 @@ func checkTrailBeforeAppend(ctx context.Context, trail EventStore, opt Redaction
 	}
 	for _, f := range rep.Findings {
 		switch f.Kind {
-		case FindingTrailAltered, FindingBadSignature, FindingReordered, FindingMalformed:
+		case FindingTrailAltered:
 			return fmt.Errorf("%w (%s: %s)", ErrRedactTrailUntrusted, f.Kind, f.Detail)
 		}
 	}

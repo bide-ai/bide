@@ -55,7 +55,7 @@ func newTrailRig(t *testing.T) *trailRig {
 // signedTrail signs the trail as it stands and returns its leaves and head.
 func (r *trailRig) signedTrail() ([][]byte, audit.SignedTreeHead) {
 	r.t.Helper()
-	h, err := audit.SignNotifyTrail(context.Background(), r.trail, audit.RedactionTrailName, r.signer, time.Unix(0, p11Now()))
+	h, err := audit.SignRedactionTrail(context.Background(), r.trail, r.signer, r.v, "test", nil, time.Unix(0, p11Now()))
 	if err != nil {
 		r.t.Fatal(err)
 	}
@@ -532,27 +532,26 @@ func (r *trailRig) plant(signer audit.Signer, runID string) {
 	}
 }
 
-// A begin and end pair planted through the event store, with no key or the wrong one, is never
-// attested: the tool refuses to sign a head over it, and the audit rejects it under any head.
-func TestRedactionTrail_PlantedRecordsAreNeverAttested(t *testing.T) {
+// A begin and end pair planted through the event store, with no key or the wrong one, is reported
+// under any head and accounts for nothing: the hand-made tombstone it claims stays UNACCOUNTED.
+func TestRedactionTrail_PlantedRecordsAreReportedAndNeverAccount(t *testing.T) {
 	ctx := context.Background()
 	for name, signer := range map[string]audit.Signer{"no key": nil, "another key": p11Signers(t)["ecdsa-p256"]} {
 		r := newTrailRig(t)
-		// An erasure made by hand, then a planted record that claims a pass erased it.
 		hand, _ := agent.PlanRedaction(ctx, r.j, "gov", agent.RedactionSelector{Names: []string{"note"}})
 		if _, err := agent.Redact(ctx, r.j, hand, time.Now()); err != nil {
 			t.Fatal(err)
 		}
 		r.plant(signer, "gov")
-		_, err := audit.SignRedactionTrail(ctx, r.trail, r.signer, r.v, "test", nil, time.Unix(0, p11Now()))
-		if err == nil || !errors.Is(err, audit.ErrNotVerified) || !strings.Contains(err.Error(), "BAD_SIGNATURE") {
-			t.Fatalf("%s: SignRedactionTrail = %v; want a refusal naming BAD_SIGNATURE", name, err)
-		}
-		// Even a head some other process signed over it does not attest it.
 		leaves, head := r.signedTrail()
 		rep, err := r.verify(leaves, head)
-		if err == nil || !strings.Contains(kinds(rep), "BAD_SIGNATURE") {
-			t.Fatalf("%s: report = %+v, %v; want BAD_SIGNATURE", name, rep, err)
+		got := kinds(rep)
+		if err == nil || !strings.Contains(got, "BAD_SIGNATURE") || !strings.Contains(got, "UNACCOUNTED") {
+			t.Fatalf("%s: report = %+v, %v; want BAD_SIGNATURE and UNACCOUNTED", name, rep, err)
+		}
+		// Signing is still possible: a head attests that the leaves exist, never that they are the tool's.
+		if _, err := audit.SignRedactionTrail(ctx, r.trail, r.signer, r.v, "test", nil, time.Unix(0, p11Now())); err != nil {
+			t.Fatalf("%s: SignRedactionTrail = %v", name, err)
 		}
 	}
 }
@@ -658,37 +657,46 @@ func unsignedLeaf(t *testing.T, rec audit.RedactionRecord) []byte {
 	return append([]byte("bide.audit.event-leaf.v3\x00"), b...)
 }
 
-// A legitimate pass after a planted pair is refused before it appends or erases, so the next signed
-// head can never attest the planted records; and the planted erasure stays unaccounted.
-func TestRedactJournal_RefusesATrailWithAPlantedRecord(t *testing.T) {
+// A planted record does not block erasure: a legitimate pass after it proceeds and is accounted for;
+// the planted records are reported and account for nothing, junk leaves included.
+func TestRedactJournal_ProceedsPastAPlantedRecord(t *testing.T) {
 	ctx := context.Background()
-	for name, signer := range map[string]audit.Signer{"no key": nil, "another key": p11Signers(t)["ecdsa-p256"]} {
+	for name, plant := range map[string]func(*trailRig){
+		"unsigned pair":    func(r *trailRig) { r.plant(nil, "gov") },
+		"another key pair": func(r *trailRig) { r.plant(p11Signers(t)["ecdsa-p256"], "gov") },
+		"junk leaf": func(r *trailRig) {
+			if err := r.trail.Append(ctx, audit.RedactionTrailName, 0, []byte("junk")); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
 		r := newTrailRig(t)
 		hand, _ := agent.PlanRedaction(ctx, r.j, "gov", agent.RedactionSelector{Names: []string{"note"}})
 		if _, err := agent.Redact(ctx, r.j, hand, time.Now()); err != nil {
 			t.Fatal(err)
 		}
-		r.plant(signer, "gov")
+		plant(r)
 		plan, _ := agent.PlanRedaction(ctx, r.j, "gov", agent.RedactionSelector{Names: []string{"call:pay"}})
-		before, _ := r.trail.Load(ctx, audit.RedactionTrailName)
-		_, err := audit.RedactJournal(ctx, r.j, r.trail, plan, r.options)
-		if !errors.Is(err, audit.ErrRedactTrailUntrusted) {
-			t.Fatalf("%s: RedactJournal = %v; want ErrRedactTrailUntrusted", name, err)
-		}
-		after, _ := r.trail.Load(ctx, audit.RedactionTrailName)
-		recs, _ := r.j.History(ctx, "gov")
-		for _, x := range recs {
-			if x.Name == "call:pay" && x.Redacted {
-				t.Errorf("%s: the refused pass erased a record", name)
-			}
-		}
-		if len(after) != len(before) {
-			t.Errorf("%s: the refused pass wrote to the trail", name)
+		if res, err := audit.RedactJournal(ctx, r.j, r.trail, plan, r.options); err != nil || len(res.Redacted) != 1 {
+			t.Fatalf("%s: RedactJournal = %+v, %v; a planted record must not block erasure", name, res, err)
 		}
 		leaves, head := r.signedTrail()
 		rep, err := r.verify(leaves, head)
-		if err == nil || !strings.Contains(kinds(rep), "BAD_SIGNATURE") {
-			t.Fatalf("%s: report = %+v, %v", name, rep, err)
+		if err == nil {
+			t.Fatalf("%s: the planted record is not reported", name)
+		}
+		for _, f := range rep.Findings {
+			if f.Kind == audit.FindingNameMismatch || f.Kind == audit.FindingHashMismatch || f.Kind == audit.FindingNotErased {
+				t.Errorf("%s: the legitimate pass is not accounted for: %+v", name, f)
+			}
+		}
+		if name != "junk leaf" && !strings.Contains(kinds(rep), "UNACCOUNTED") {
+			t.Errorf("%s: the hand tombstone the planted pair claims is accounted for: %s", name, kinds(rep))
+		}
+		for _, f := range rep.Findings {
+			if f.Kind == audit.FindingUnaccounted && !strings.Contains(f.Detail, "\"note\"") {
+				t.Errorf("%s: unaccounted finding is about another record: %+v", name, f)
+			}
 		}
 	}
 }
@@ -737,13 +745,11 @@ func TestRedactionTrail_ReplayedSignedRecordIsFound(t *testing.T) {
 	if err := r.trail.Append(ctx, audit.RedactionTrailName, len(leaves), first[1]); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := audit.SignRedactionTrail(ctx, r.trail, r.signer, r.v, "test", nil, time.Unix(0, p11Now())); err == nil || !strings.Contains(err.Error(), "REORDERED") {
-		t.Fatalf("SignRedactionTrail over a replayed record = %v; want a refusal naming REORDERED", err)
-	}
 	leaves, _ = r.trail.Load(ctx, audit.RedactionTrailName)
 	rep, err := audit.VerifyRedactions(audit.RedactionVerifyInput{Deployment: "test", Trail: leaves, Verifier: r.v, Unanchored: true, Journals: r.journals()})
-	if err == nil || !strings.Contains(kinds(rep), "REORDERED") {
-		t.Fatalf("report = %+v, %v; want REORDERED", rep, err)
+	// The replayed end does not close pass 2: it is reported, and the unfinished pass still shows.
+	if err == nil || !strings.Contains(kinds(rep), "REORDERED") || !strings.Contains(kinds(rep), "INCOMPLETE") {
+		t.Fatalf("report = %+v, %v; want REORDERED and the still-unfinished pass INCOMPLETE", rep, err)
 	}
 	// Reordering two genuine records is found too.
 	r2 := newTrailRig(t)
