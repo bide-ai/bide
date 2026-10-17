@@ -57,7 +57,7 @@ For security and risk reviewers. Read with the guarantee and the known limitatio
 - **[Comparison](trust/comparison.md)** (evaluator): bide, Temporal, LangGraph, and retries with idempotency keys, on side effects across crashes, human approval, audit evidence and operations, including where the others are stronger.
 - **[Operations guidance](trust/operations.md)** (operator): key custody, backups, clocks, and least-privilege Postgres roles.
 - **[Retention and archiving](guides/retention.md)** (operator, risk): what to keep and how to archive it so it verifies offline years later, rotating and retiring keys, what deletion does to the proofs, and immutable storage.
-- **[Verifying releases](trust/verify-releases.md)** (operator): cosign signatures, SBOMs and reproducible builds.
+- **[Verifying releases](trust/verify-releases.md)** (operator): cosign signatures, SBOMs, SLSA build provenance and reproducible builds.
 
 ## Reference
 

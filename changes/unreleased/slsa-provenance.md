@@ -1,0 +1,3 @@
+Section: Added
+
+Releases now carry SLSA v1 build provenance: the release workflow attests every archive, every archive SBOM, `checksums.txt`, `approve-page.SHA256SUMS` and the module set SBOM with GitHub's artifact attestations, recording the workflow, tag, commit and runner that built each file, and verifies the attestations of what it published (`scripts/verify-provenance.sh`), failing the release if one does not verify. `docs/trust/verify-releases.md` has the `gh attestation verify` commands and states what the check proves and what it does not; the provenance is made by the job that builds, so it supports SLSA Build Level 2, not Level 3.
