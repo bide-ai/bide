@@ -676,22 +676,10 @@ func (c *StopControl) ChangeMode(ctx context.Context, req ModeRequest) (StopStat
 		}
 	}
 	n := 1
-	hasRoot := false
 	recs, _ := c.j.History(ctx, StopControlRun)
 	for _, rec := range recs {
 		if strings.HasPrefix(rec.Name, "@stop/mode/") {
 			n++
-		}
-		hasRoot = hasRoot || strings.HasPrefix(rec.Name, "@stop/root/")
-	}
-	if req.To == StopAudited && !(hasRoot && st.ChainErr == "") { // a root whose chain reaches the pin is the deployment's
-		doc, err := c.policy.Doc()
-		if err != nil {
-			return st, err
-		}
-		root := StopRecord{Format: StopFormat, Kind: "root", Mode: StopAudited, Policy: &doc, Reason: req.Reason, By: req.By, Host: req.Host}
-		if err := c.write(ctx, st, &root, req.Signer, false); err != nil {
-			return StopState{}, err
 		}
 	}
 	r := StopRecord{Format: StopFormat, Kind: "mode", Mode: StopAudited, To: req.To, Seq: n, Reason: req.Reason, By: req.By, Host: req.Host}
@@ -719,9 +707,6 @@ func (c *StopControl) RotatePolicy(ctx context.Context, next StopPolicy, req Lif
 	if err != nil {
 		return st, err
 	}
-	if err := c.ensureRoot(ctx, st, req); err != nil {
-		return StopState{}, err
-	}
 	r := StopRecord{Format: StopFormat, Kind: "policy", Mode: StopAudited, Seq: st.PolicySeq + 1, PrevDigest: st.PolicyDigest, Policy: &doc, Reason: req.Reason, By: req.By, Host: req.Host}
 	if err := c.write(ctx, st, &r, req.Signer, false); err != nil {
 		return StopState{}, err
@@ -739,9 +724,9 @@ func (c *StopControl) RotatePolicy(ctx context.Context, next StopPolicy, req Lif
 	return after, nil
 }
 
-// ensureRoot writes the deployment's root record (the first policy, signed) if the control run has none:
-// the chain every audited process walks starts there.
-func (c *StopControl) ensureRoot(ctx context.Context, st StopState, req LiftRequest) error {
+// ensureRoot writes the deployment's root record (the first policy, signed) if no stored root's chain
+// reaches this process's pin: every audited deployment is walkable from its first audited write on.
+func (c *StopControl) ensureRoot(ctx context.Context, st StopState, by, host, reason string, signer StopSigner) error {
 	recs, err := c.j.History(ctx, StopControlRun)
 	if err != nil {
 		return err
@@ -755,14 +740,19 @@ func (c *StopControl) ensureRoot(ctx context.Context, st StopState, req LiftRequ
 	if err != nil {
 		return err
 	}
-	root := StopRecord{Format: StopFormat, Kind: "root", Mode: StopAudited, Policy: &doc, Reason: req.Reason, By: req.By, Host: req.Host}
-	return c.write(ctx, st, &root, req.Signer, false)
+	root := StopRecord{Format: StopFormat, Kind: "root", Mode: StopAudited, Policy: &doc, Reason: reason, By: by, Host: host}
+	return c.write(ctx, st, &root, signer, false)
 }
 
 // protocol:stop begin Write
 
 // write completes r (time, policy digest, ID, signature) and inserts it. An audited control signs.
 func (c *StopControl) write(ctx context.Context, st StopState, r *StopRecord, signer StopSigner, isSet bool) error {
+	if c.policy != nil && r.Kind != "root" && signer != nil {
+		if err := c.ensureRoot(ctx, st, r.By, r.Host, "root of the deployment's policy chain", signer); err != nil {
+			return err
+		}
+	}
 	r.At = c.now().UTC().Format(time.RFC3339Nano)
 	if c.policy != nil {
 		if signer == nil {

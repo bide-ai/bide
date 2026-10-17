@@ -692,8 +692,19 @@ func TestForgedRecordsAreNotALeverAgainstAnAuditedControl(t *testing.T) {
 		lift.Signature = hex.EncodeToString(fakeSign("eve", StopSigningBytes(lift)))
 		putRaw(t, c, lift)
 	}
+	// And fake root, policy-transition and mode records of every kind, signed with junk.
+	evil := StopPolicy{DeploymentID: "dep-1", Setters: []string{"eve"}, Lifters: []string{"eve"}, Verifiers: fakeVerifiers("eve"), LiftQuorum: 1}
+	edoc, _ := evil.Doc()
+	for _, r := range []StopRecord{
+		{Kind: "root", Policy: &edoc},
+		{Kind: "policy", Seq: 1, PrevDigest: auditedPolicy(1, false).Digest(), Policy: &edoc},
+		{Kind: "mode", Seq: 1, To: StopAudited},
+	} {
+		r.Format, r.Mode, r.Deployment, r.At, r.By, r.Alg, r.Signature = StopFormat, StopAudited, "dep-1", nowStr(), "eve", fakeAlg, "00"
+		putRaw(t, c, r)
+	}
 	st := mustState(t, c)
-	if st.RejectedTotal != 4 || st.UnknowableErr() != nil || len(st.Active()) != 1 || st.Active()[0].ID != genuine.ID {
+	if st.RejectedTotal < 4 || st.UnknowableErr() != nil || st.ChainErr != "" || st.Unverified != 0 || len(st.Active()) != 1 || st.Active()[0].ID != genuine.ID {
 		t.Fatalf("forged records: %+v %v", st, st.UnknowableErr())
 	}
 	if _, ok := st.Covering(StopQuery{Tool: "other"}); ok {
@@ -941,5 +952,38 @@ func TestRecordsDoNotReplayAcrossDeployments(t *testing.T) {
 	putRaw(t, pc, r)
 	if st := mustState(t, pc); st.PolicySeq != 0 || st.PolicyDigest != prod.Digest() {
 		t.Fatalf("a transition changed the deployment ID: %+v", st)
+	}
+}
+
+// TestRootIsWrittenByTheFirstAuditedWrite: any first audited write (a stop, here, with no ChangeMode)
+// leaves the deployment walkable, so a process pinned to a later policy enforces the stop.
+func TestRootIsWrittenByTheFirstAuditedWrite(t *testing.T) {
+	ctx := context.Background()
+	p1 := auditedPolicy(2, false)
+	p2 := StopPolicy{DeploymentID: "dep-1", Setters: []string{"ops2"}, Lifters: []string{"ops2", "risk"}, Verifiers: fakeVerifiers("ops2", "risk"), LiftQuorum: 2}
+	store := NewMemStore()
+	c := audited(t, store, p1)
+	s, err := c.SetStop(ctx, StopRequest{Scope: StopScope{Kind: StopGlobal}, By: "ops1", Signer: sign("ops1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, by := range []string{"ops1", "ops2"} {
+		if _, err := c.RotatePolicy(ctx, p2, LiftRequest{By: by, Signer: sign(by)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st := mustState(t, audited(t, store, p2))
+	if st.UnknowableErr() != nil || len(st.Active()) != 1 || st.Active()[0].ID != s.ID {
+		t.Fatalf("a process pinned to the current policy on a deployment that never ran ChangeMode: %+v", st)
+	}
+	n := 0
+	recs, _ := c.j.History(ctx, StopControlRun)
+	for _, r := range recs {
+		if strings.HasPrefix(r.Name, "@stop/root/") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("%d root records", n)
 	}
 }
