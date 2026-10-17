@@ -232,8 +232,10 @@ func (a *AuditedEventStore) nextAppended(seen map[string]uint64) (name string, a
 
 // Flush waits until the background publisher has tried every trail appended to before the call (or
 // ctx is done, whose error it returns). It does not retry what failed: use ReanchorPending. Call
-// it before a process exits, as a notifier does when it is flushed, so the last records are
-// covered; whatever a process leaves behind is covered by the next sweep or recovery pass.
+// it before a process exits, so the last records are covered; whatever a process leaves behind is
+// covered by the next sweep or recovery pass. Agent.FlushNotifications does not wait for this
+// publisher: it signs the notify trails itself (AnchorTrails) and reports a failure to its own
+// error handler, so a caller that needs the OnError reports of the appends it made calls Flush.
 func (a *AuditedEventStore) Flush(ctx context.Context) error {
 	for {
 		a.mu.Lock()
