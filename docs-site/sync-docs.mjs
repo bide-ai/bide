@@ -7,6 +7,7 @@ import { cpSync, existsSync } from 'node:fs'
 const items = [
   'getting-started.md',
   'CONCEPTS.md',
+  'ARCHITECTURE.md',
   'GUARANTEE.md',
   'KNOWN-LIMITATIONS.md',
   'tour.md',

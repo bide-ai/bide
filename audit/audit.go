@@ -15,6 +15,12 @@
 //     rehashed; the guarantee is "you committed the head elsewhere, so divergence is
 //     provable." This package returns the head and provides signing; anchoring policy is
 //     yours.
+//
+// Where to start: audit.go holds Head, Sign and VerifySignature; signing.go the signature schemes;
+// merkle.go, consistency.go and sth.go the Merkle trees, consistency proofs and signed tree heads;
+// proof.go and step.go ProofBundle and ProveStep; anchor.go and audited_store.go the anchoring of
+// heads; evidence.go and runcert.go the EvidencePackage and RunCertificate. The reading-order map
+// of every package is docs/ARCHITECTURE.md in the repository.
 package audit
 
 import (

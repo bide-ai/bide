@@ -302,6 +302,7 @@ the approver's claim.
 
 - **[Concepts](docs/CONCEPTS.md)**: the vocabulary (journal, at-most-once, lease, Waker, gsm, ProofBundle) in one place.
 - **[Design](docs/design/design.md)**: how the runtime is put together.
+- **[Architecture](docs/ARCHITECTURE.md)**: where the code is: the source files to open first in each package, in reading order, starting with the journal, step, claims and leases, the loop, approvals, the notifier and the audit log.
 
 **Guides: build**
 
