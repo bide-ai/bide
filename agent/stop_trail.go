@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"slices"
 	"strings"
 	"sync"
@@ -72,13 +73,25 @@ func (StopRecord) agentEvent() {}
 // SameStopRecord reports whether a and b are the same record: the same canonical bytes, signature included.
 func SameStopRecord(a, b StopRecord) bool { return StopDigest(a) == StopDigest(b) }
 
-// maxStopTrailTries bounds how often an append retries after losing a race for its position.
-const maxStopTrailTries = 8
+// stopTrailBudget bounds an append that has no deadline of its own: how long it keeps retrying after losing
+// races for its position. A caller's earlier deadline wins.
+const stopTrailBudget = 30 * time.Second
+
+// stopTrailBackoff is the wait before the retry after the try-th lost race: 1 ms doubling to 64 ms, jittered
+// by +-50%, so writers that collided do not collide again in step.
+func stopTrailBackoff(try int) time.Duration {
+	d := time.Millisecond << min(try, 6)
+	return d/2 + time.Duration(rand.Int64N(int64(d)))
+}
 
 // appendTrail appends rec to the trail unless it is already there, retrying at the next position when
-// another writer took the one it tried.
+// another writer took the one it tried. Writers that lose a race wait a jittered, growing time and try
+// again until the caller's deadline (or stopTrailBudget, when it has none): a fixed number of tries ran out
+// with ten operators writing at once, and a trail write that gives up turns a stop into exit 5.
 func (c *StopControl) appendTrail(ctx context.Context, rec StopRecord) error {
-	for range maxStopTrailTries {
+	ctx, cancel := context.WithTimeout(ctx, stopTrailBudget)
+	defer cancel()
+	for try := 0; ; try++ {
 		have, err := c.trail.Load(ctx, StopTrailName)
 		if err != nil {
 			return err
@@ -94,8 +107,12 @@ func (c *StopControl) appendTrail(ctx context.Context, rec StopRecord) error {
 		} else if !errors.Is(err, ErrTrailConflict) {
 			return err
 		}
+		select {
+		case <-time.After(stopTrailBackoff(try)):
+		case <-ctx.Done():
+			return fmt.Errorf("stop trail: no position before the deadline (%d tries): %w", try+1, ErrTrailConflict)
+		}
 	}
-	return fmt.Errorf("stop trail: no position after %d tries: %w", maxStopTrailTries, ErrTrailConflict)
 }
 
 // StopRecords returns the control run's decodable records, in store order: what the trail is

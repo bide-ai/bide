@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -130,11 +132,12 @@ func TestStopTrail_ConcurrentWritersLoseNothing(t *testing.T) {
 	tr := NewMemStopTrail()
 	store := NewMemStore()
 	var wg sync.WaitGroup
-	for i := range 8 {
+	// Thirty-two operators at once: a fixed number of tries ran out with ten, under -race.
+	for i := range 32 {
 		wg.Go(func() {
 			c := trailed(t, store, tr, auditedPolicy(1, false))
 			by := []string{"ops1", "ops2"}[i%2]
-			if _, err := c.SetStop(ctx, StopRequest{Scope: StopScope{Kind: StopTool, Name: string(rune('a' + i))}, By: by, Signer: sign(by)}); err != nil {
+			if _, err := c.SetStop(ctx, StopRequest{Scope: StopScope{Kind: StopTool, Name: fmt.Sprintf("tool-%d", i)}, By: by, Signer: sign(by)}); err != nil {
 				t.Error(err)
 			}
 		})
@@ -312,5 +315,25 @@ func TestStopTrail_RacingControlsLeaveAgreeingFolds(t *testing.T) {
 				t.Fatalf("round %d: stop %.12s differs: trail lifted %v, control %v (known %v)", round, s.ID, s.Lifted, l, ok)
 			}
 		}
+	}
+}
+
+// An append that keeps losing the race for its position stops at its caller's deadline, with an error that says
+// so, rather than at a fixed number of tries.
+type alwaysConflict struct{ StopTrail }
+
+func (alwaysConflict) Append(context.Context, string, int, StopRecord) error { return ErrTrailConflict }
+
+func TestStopTrail_AppendRetriesUntilTheDeadline(t *testing.T) {
+	c := trailed(t, NewMemStore(), alwaysConflict{NewMemStopTrail()}, auditedPolicy(1, false))
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := c.appendTrail(ctx, StopRecord{Kind: "set"})
+	if !errors.Is(err, ErrTrailConflict) || !strings.Contains(err.Error(), "before the deadline") {
+		t.Fatalf("%v", err)
+	}
+	if d := time.Since(start); d < 250*time.Millisecond || d > 2*time.Second {
+		t.Fatalf("gave up after %v: it must retry until the deadline", d)
 	}
 }
