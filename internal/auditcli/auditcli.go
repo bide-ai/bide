@@ -161,6 +161,7 @@ const usageText = `bide audit: produce and verify audit proof bundles
 
   stops (-trail <file> | -db <file> | -postgres-env <var>) -stop-policy <file> [-stop-root <digest>]
         (-sth <file>... -pubkey <hex|file> | -unanchored) [-max-unattested <duration>] [-as-of <time>]
+        [-sign-head -log-key <file> -head-out <file>]
          verify the kill switch's stop trail: each record is read strictly and must verify, under the
          policy the deployment pinned (-stop-policy, a JSON policy document with the approvers' public
          keys, the setters and lifters, the lift quorum and the deployment ID) and the chain of signed
@@ -173,7 +174,11 @@ const usageText = `bide audit: produce and verify audit proof bundles
          accepts a tail younger than that. With -db or -postgres-env it also compares the trail with
          the control run record for record: a record in force without evidence, or a forged record in
          the trail, fails; a signed record on the trail that never reached the control run (a crash
-         between the two writes) is listed as UNAPPLIED, or SUPERSEDED when a later record went on without it, and does not fail; agent.StopControl.ApplyPending applies an unapplied one. It prints each stop and whether it is in force
+         between the two writes) is listed as UNAPPLIED, or SUPERSEDED when a later record went on without it, and does not fail; agent.StopControl.ApplyPending applies an unapplied one. It prints each stop and whether it is in force. With -sign-head (a store, -pubkey, -log-key and -head-out
+         required) it then signs a head over exactly the records it verified and appends it, as one JSON line,
+         to -head-out, which -sth reads back: the job to run on a schedule, since the audit fails on any record
+         after the newest signed head. The heads already in -head-out are verified with the trail, so a
+         shrunken or rewritten trail is refused, and with nothing new nothing is signed
 
   notifications (-trail <file>... [-journal <file>...] | -db <file> | -postgres-env <var>) [-run <id>]
                 (-sth <file>... -pubkey <hex|file> | -unanchored) [-max-ack <duration>] [-max-unattested <duration>]

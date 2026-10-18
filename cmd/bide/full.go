@@ -19,6 +19,7 @@ import (
 	"github.com/bide-ai/bide/cmd/bide/internal/migratecmd"
 	"github.com/bide-ai/bide/cmd/bide/internal/notifycmd"
 	"github.com/bide-ai/bide/cmd/bide/internal/samplecmd"
+	"github.com/bide-ai/bide/cmd/bide/internal/stopcmd"
 	"github.com/bide-ai/bide/internal/runview"
 	"github.com/bide-ai/bide/internal/term"
 )
@@ -92,6 +93,14 @@ func fullCommands() []command {
 				return approvecmd.Main(args, os.Stdin, stdout, stderr, approveStores)
 			},
 			exits: commonExits,
+		},
+		{
+			name:    "stop",
+			summary: "stop agents now, as a pause that resumes when the stop is lifted: set a stop (-all, -tool, -flow, -agent), -list, -show and -lift; audited mode signs with an enrolled key",
+			run: func(args []string, stdout, stderr io.Writer) int {
+				return stopcmd.Main(args, os.Stdin, stdout, stderr, stopStores)
+			},
+			exits: stopcmd.Exits,
 		},
 		{
 			name:    "identity",

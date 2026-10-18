@@ -168,6 +168,21 @@ func SignStopTrail(ctx context.Context, store EventStore, trail string, s Signer
 	return SignTreeHead(log.TreeHead(trail, now.UnixNano()), s)
 }
 
+// SignStopTrailExport signs a tree head over exactly the leaves exp carries, at now: the head `bide audit
+// stops -sign-head` appends to a head file after it has verified those leaves. Unlike SignStopTrail it never
+// reads a store, so what is signed is what was verified, even if the trail grew in between. An empty
+// trail is refused: a head over nothing attests nothing.
+func SignStopTrailExport(exp StopTrailExport, s Signer, now time.Time) (SignedTreeHead, error) {
+	if len(exp.Leaves) == 0 {
+		return SignedTreeHead{}, fmt.Errorf("audit: sign stop trail: the trail has no records: %w", ErrMalformed)
+	}
+	if exp.Trail != agent.StopTrailName {
+		return SignedTreeHead{}, fmt.Errorf("audit: sign stop trail: the export is of the trail %q, not %q: %w", exp.Trail, agent.StopTrailName, ErrMalformed)
+	}
+	log := &EventLog{leaves: exp.Leaves}
+	return SignTreeHead(log.TreeHead(exp.Trail, now.UnixNano()), s)
+}
+
 // StopVerifierFromAudit builds the verifier of a policy document's approver with this package's
 // verifiers (agent.StopVerifierFunc): pass it to agent.WithStopVerifier, or to agent.PolicyFromDoc.
 func StopVerifierFromAudit(alg agent.Alg, pub []byte) (agent.ApproverVerifier, error) {

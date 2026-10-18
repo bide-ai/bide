@@ -31,6 +31,7 @@ import (
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/cmd/bide/bide-hsm/internal/fakekms"
 	"github.com/bide-ai/bide/cmd/bide/internal/approvecmd"
+	"github.com/bide-ai/bide/cmd/bide/internal/stopcmd"
 	"github.com/bide-ai/bide/internal/auditcli"
 	"github.com/bide-ai/bide/internal/testca"
 	"github.com/bide-ai/bide/signer/pkcs11/pkcs11test"
@@ -109,6 +110,7 @@ func hsm(t *testing.T, kms *fakekms.KMS, stdin string, args ...string) result {
 func hsmWith(t *testing.T, d deps, stdin string, args ...string) result {
 	t.Helper()
 	d.stores = approvecmd.JournalStores()
+	d.stopStores = stopcmd.JournalStores()
 	var out, errb bytes.Buffer
 	if len(args) > 1 {
 		args = append(args[:1:1], append([]string{"-color", "never"}, args[1:]...)...)

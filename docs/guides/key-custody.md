@@ -478,6 +478,8 @@ record and the receipt (`cmd/bide/internal/approvecmd`), with `-key` naming a ke
 a file. `bide-hsm pubkey` prints the entry that enrols a key, and `bide-hsm csr` writes the certificate
 signing request for a certificate-bound approver, signed by the key where it is held (see
 [the key and the certificate request](certificate-approvers.md#the-key-and-the-certificate-request)).
+`bide-hsm stop` is `bide stop`, the kill switch, with the key held there signing each stop and lift
+([kill switch guide](kill-switch.md#audited-mode-from-the-command-line)).
 
 ```sh
 export BIDE_HSM_PIN=...            # or pin-source=file:/path (mode 0600) in the reference

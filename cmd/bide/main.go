@@ -8,6 +8,7 @@
 //	bide view -db run.db           a read-only local page for one run of a journal
 //	bide edit flow.yaml            a local page for a flow config: edit its source, see the check and what an edit weakens, save
 //	bide approve -db run.db -list  list the calls waiting for a decision; sign one with -run -call -as -key
+//	bide stop -db run.db -all -reason ...  stop agents now, as a pause that resumes on a lift (also -list, -show, -lift)
 //	bide keygen -out ops.key       create an approver key pair for bide approve
 //	bide identity fetch-crl ...    keep a certificate policy's CRLs current and archived (also check, reset-high-water, ack-reset)
 //	bide migrate -postgres-env VAR create or check a Postgres journal's schema as its owner

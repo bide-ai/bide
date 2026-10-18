@@ -25,6 +25,7 @@ import (
 	"github.com/bide-ai/bide/cmd/bide/bide-hsm/internal/hsmkeys"
 	"github.com/bide-ai/bide/cmd/bide/bide-hsm/internal/keyref"
 	"github.com/bide-ai/bide/cmd/bide/internal/approvecmd"
+	"github.com/bide-ai/bide/cmd/bide/internal/stopcmd"
 	"github.com/bide-ai/bide/internal/term"
 	"github.com/bide-ai/bide/signer/awskms"
 	"github.com/bide-ai/bide/signer/azurekv"
@@ -40,10 +41,12 @@ type deps struct {
 	gcp    func(ctx context.Context) (gcpkms.API, error)
 	azure  azurekv.API
 	stores approvecmd.Stores
+	// stopStores are the journals bide-hsm stop opens, with the event store of the stop trail.
+	stopStores stopcmd.Stores
 }
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr, deps{stores: approvecmd.JournalStores()}))
+	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr, deps{stores: approvecmd.JournalStores(), stopStores: stopcmd.JournalStores()}))
 }
 
 // keyRefHelp describes the key references, for the help of every command that takes one.
@@ -93,6 +96,7 @@ const usage = `bide-hsm: bide approve for approvers whose keys are in an HSM or 
 
   bide-hsm approve -db <file> -run <id> -call <tool-use id> -as <approver> -key <key ref> -approver-keys <keys> [flags]
   bide-hsm approve -db <file> -list
+  bide-hsm stop    -db <file> -all|-tool <name>|-flow <name>|-agent <name> -reason <text> -stop-policy <file> -as <approver> -key <key ref>
   bide-hsm pubkey  -key <key ref> [-as <approver>]
   bide-hsm csr     -key <key ref> [-out <file>] [-policy <policy file> -as <approver>]
   bide-hsm version
@@ -101,7 +105,9 @@ bide-hsm approve is bide approve, with -key naming a key by reference instead of
 reads the call from the journal, shows what it will sign, asks you to confirm, has the HSM or KMS
 sign the decision, checks it against the call, records it, and writes a receipt.
 bide-hsm pubkey prints the approver-keys entry that enrols a key. bide-hsm csr writes a certificate
-signing request for a key, signed by the key, for a certificate-bound approver. Each command takes -h.
+signing request for a key, signed by the key, for a certificate-bound approver. bide-hsm stop is bide stop
+for the kill switch's audited mode, with -key naming the HSM or KMS key that signs the stop, the lift or the
+change of mode. Each command takes -h.
 
 ` + keyRefHelp
 
@@ -142,6 +148,8 @@ func run(args []string, in io.Reader, stdout, stderr io.Writer, d deps) int {
 	switch args[0] {
 	case "approve":
 		return approvecmd.MainWith(args[1:], in, stdout, stderr, d.stores, keySource(d))
+	case "stop":
+		return stopcmd.MainWith(args[1:], in, stdout, stderr, d.stopStores, stopKeySource(d))
 	case "pubkey":
 		return pubkey(args[1:], stdout, stderr, d)
 	case "csr":
@@ -153,7 +161,7 @@ func run(args []string, in io.Reader, stdout, stderr io.Writer, d deps) int {
 		return 0
 	}
 	fmt.Fprintf(stderr, "%sbide-hsm: unknown command %q\n", term.For(stderr, term.Auto).ErrorPrefix(), args[0])
-	fmt.Fprintln(stderr, "commands: approve, pubkey, csr, version (bide-hsm -h)")
+	fmt.Fprintln(stderr, "commands: approve, stop, pubkey, csr, version (bide-hsm -h)")
 	return 2
 }
 
@@ -215,6 +223,15 @@ func keySource(d deps) approvecmd.KeySource {
 		Load:         func(ref string) (audit.Signer, error) { return kf.open(ref, d) },
 		ReceiptDir:   func(string) string { return "." },
 	}
+}
+
+// stopKeySource is the key source of bide-hsm stop: the same keys as bide-hsm approve, with the words of the
+// stop command.
+func stopKeySource(d deps) approvecmd.KeySource {
+	src := keySource(d)
+	src.Prog = "bide-hsm stop"
+	src.KeyHelp = "audited mode: reference to your key in an HSM or KMS: a pkcs11: URI (RFC 7512; quote it), awskms:<key ARN>, gcpkms:<key version> or azurekv:<key identifier>"
+	return src
 }
 
 const pubkeyUsage = `usage: bide-hsm pubkey -key <key ref> [-as <approver id>] [-alg ed25519|ecdsa-p256] [-allow-extractable]
