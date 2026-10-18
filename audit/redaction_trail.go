@@ -564,6 +564,8 @@ func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error) {
 	// from a run a hold in force covered at the time.
 	active := map[string]RedactionRecord{}
 	crossing := map[string][]string{} // run + plan digest -> passes begun under a hold, until their end is read
+	open := map[string]string{}       // run + plan digest -> run, for passes that erase and begun under no hold, until their end
+	spans := map[string][]string{}    // run + plan digest -> holds placed over the run while the pass was open
 	for i, r := range recs {
 		if !trusted[i] {
 			continue
@@ -575,6 +577,11 @@ func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error) {
 				continue
 			}
 			active[r.HoldID] = r
+			for id, run := range open {
+				if holdOf(r).Covers(run) {
+					spans[id] = append(spans[id], r.HoldID)
+				}
+			}
 		case RedactionHoldLifted:
 			if _, ok := active[r.HoldID]; !ok {
 				add(FindingHoldUnmatched, "", "trail record %d lifts hold %q, which the trail shows no active placement of", i, r.HoldID)
@@ -585,6 +592,9 @@ func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error) {
 			// A pass that begins under a hold crossed it only if it erased something: the end record
 			// says how many records it replaced, and a begin with no end may have.
 			erases := slices.ContainsFunc(r.Records, func(x RedactedRef) bool { return !x.Already })
+			if erases {
+				open[r.RunID+"\x00"+r.PlanDigest] = r.RunID
+			}
 			for _, id := range slices.Sorted(maps.Keys(active)) {
 				h := holdOf(active[id])
 				if erases && h.Covers(r.RunID) {
@@ -594,6 +604,11 @@ func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error) {
 			}
 		case RedactionEnd:
 			id := r.RunID + "\x00" + r.PlanDigest
+			if hs, ok := spans[id]; ok && r.Redacted > 0 {
+				rep.Notes = append(rep.Notes, fmt.Sprintf("run %s: the pass of plan %.12s began before hold %s was placed and ended after it, having replaced %d record(s); the trail cannot say when each went", r.RunID, id[len(r.RunID)+1:], strings.Join(hs, ", "), r.Redacted))
+			}
+			delete(open, id)
+			delete(spans, id)
 			if msgs, ok := crossing[id]; ok {
 				if r.Redacted > 0 {
 					for _, m := range msgs {
@@ -612,6 +627,9 @@ func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error) {
 	}
 	for _, id := range slices.Sorted(maps.Keys(active)) {
 		rep.Holds = append(rep.Holds, holdOf(active[id]))
+	}
+	if in.StoreHolds == nil && len(active) > 0 {
+		rep.Notes = append(rep.Notes, "the holds were not compared with a store: a hold lifted or placed outside the tool is not seen")
 	}
 	if in.StoreHolds != nil {
 		inStore := map[string]agent.Hold{}
@@ -915,7 +933,25 @@ func PlaceLegalHold(ctx context.Context, trail EventStore, holder agent.Holder, 
 	if err := CheckRedactionTrail(ctx, trail, signer, deployment, prior); err != nil {
 		return err
 	}
-	if err := holder.PlaceHold(ctx, h); err != nil {
+	active, _, err := trailHolds(ctx, trail, signer, deployment)
+	if err != nil {
+		return err
+	}
+	if _, ok := active[h.ID]; ok {
+		return fmt.Errorf("audit: PlaceLegalHold: the trail already shows hold %q in force: %w", h.ID, agent.ErrHoldExists)
+	}
+	// An earlier placement whose record could not be written left the hold in the store: if the
+	// store holds exactly this hold, record it and do not place it again; if it holds another, refuse.
+	inStore, err := holder.Holds(ctx)
+	if err != nil {
+		return err
+	}
+	if i := slices.IndexFunc(inStore, func(x agent.Hold) bool { return x.ID == h.ID }); i >= 0 {
+		got := inStore[i]
+		if got.Matter != h.Matter || got.Tree != h.Tree || !slices.Equal(got.Runs, slices.Compact(slices.Sorted(slices.Values(h.Runs)))) {
+			return fmt.Errorf("audit: PlaceLegalHold: the store holds a different hold %q (another matter, runs or tree setting): %w", h.ID, agent.ErrHoldExists)
+		}
+	} else if err := holder.PlaceHold(ctx, h); err != nil {
 		return err
 	}
 	rec := RedactionRecord{Phase: RedactionHoldPlaced, Reason: reason, Ticket: ticket, Executor: executor, AtMs: now.UnixMilli(),
@@ -941,26 +977,86 @@ func LiftLegalHold(ctx context.Context, trail EventStore, holder agent.Holder, s
 	if err := CheckRedactionTrail(ctx, trail, signer, deployment, prior); err != nil {
 		return err
 	}
+	active, lifted, err := trailHolds(ctx, trail, signer, deployment)
+	if err != nil {
+		return err
+	}
 	all, err := holder.Holds(ctx)
 	if err != nil {
 		return err
 	}
-	i := slices.IndexFunc(all, func(h agent.Hold) bool { return h.ID == id })
-	if i < 0 {
-		return fmt.Errorf("audit: LiftLegalHold: the store holds no hold %q: %w", id, agent.ErrConfig)
+	var stored *agent.Hold
+	if i := slices.IndexFunc(all, func(h agent.Hold) bool { return h.ID == id }); i >= 0 {
+		stored = &all[i]
 	}
-	h := all[i]
+	liftInStore := func() error {
+		if ok, err := holder.LiftHold(ctx, id); err != nil {
+			return fmt.Errorf("audit: the lift of hold %q is recorded in the redaction trail but the store did not lift it, so it stays in force (run the lift again): %w", id, err)
+		} else if !ok {
+			return fmt.Errorf("audit: the lift of hold %q is recorded, and the store held no such hold any more: %w", id, agent.ErrConfig)
+		}
+		return nil
+	}
+	placed, inTrail := active[id]
+	switch {
+	case !inTrail && stored != nil && lifted[id]:
+		// The record was written and the store step failed: finish it, with no second record.
+		return liftInStore()
+	case !inTrail && stored != nil:
+		return fmt.Errorf("audit: LiftLegalHold: the store holds hold %q and the trail never recorded it (placed outside the tool): record it by placing it again with the same matter and runs, then lift it: %w", id, agent.ErrConfig)
+	case !inTrail:
+		return fmt.Errorf("audit: LiftLegalHold: neither the store nor the trail shows a hold %q in force: %w", id, agent.ErrConfig)
+	}
+	// The trail shows the hold in force. If the store lacks it (lifted by hand), the lift is still
+	// recorded, with a note, so the trail stops showing it.
+	h := holdOf(placed)
+	if stored != nil {
+		h = *stored
+	} else {
+		reason += " (the store held no such hold: it had been lifted outside the tool)"
+	}
 	rec := RedactionRecord{Phase: RedactionHoldLifted, Reason: reason, Ticket: ticket, Executor: executor, AtMs: now.UnixMilli(),
 		Deployment: strings.TrimSpace(deployment), HoldID: h.ID, HoldMatter: h.Matter, HoldRuns: h.Runs, HoldTree: h.Tree}
 	if err := AppendRedactionRecord(ctx, trail, rec, signer); err != nil {
 		return fmt.Errorf("audit: the lift of hold %q could not be recorded in the redaction trail, so the hold stays in force: %w", id, err)
 	}
-	if ok, err := holder.LiftHold(ctx, id); err != nil {
-		return fmt.Errorf("audit: the lift of hold %q is recorded in the redaction trail but the store did not lift it, so it stays in force (run the lift again): %w", id, err)
-	} else if !ok {
-		return fmt.Errorf("audit: the lift of hold %q is recorded, and the store held no such hold any more: %w", id, agent.ErrConfig)
+	if stored == nil {
+		return nil
 	}
-	return nil
+	return liftInStore()
+}
+
+// trailHolds reads the redaction trail and returns the holds in force by it (the latest verified
+// placement of each, not lifted since) and the IDs whose latest verified event is a matching lift.
+func trailHolds(ctx context.Context, trail EventStore, signer Signer, deployment string) (active map[string]RedactionRecord, lifted map[string]bool, err error) {
+	v, err := NewVerifier(signer.Alg(), signer.PublicKey())
+	if err != nil {
+		return nil, nil, fmt.Errorf("audit: the signer's public key: %w", err)
+	}
+	leaves, err := trail.Load(ctx, RedactionTrailName)
+	if err != nil {
+		return nil, nil, fmt.Errorf("audit: load the redaction trail: %w", err)
+	}
+	recs, trusted, _ := classifyTrail(RedactionVerifyInput{Trail: leaves, Verifier: v, Deployment: strings.TrimSpace(deployment)})
+	active, lifted = map[string]RedactionRecord{}, map[string]bool{}
+	for i, r := range recs {
+		if !trusted[i] {
+			continue
+		}
+		switch r.Phase {
+		case RedactionHoldPlaced:
+			if _, dup := active[r.HoldID]; !dup {
+				active[r.HoldID] = r
+				delete(lifted, r.HoldID)
+			}
+		case RedactionHoldLifted:
+			if _, ok := active[r.HoldID]; ok {
+				delete(active, r.HoldID)
+				lifted[r.HoldID] = true
+			}
+		}
+	}
+	return active, lifted, nil
 }
 
 func checkHoldArgs(trail EventStore, holder agent.Holder, signer Signer, deployment, reason, ticket, executor string, now time.Time) error {
