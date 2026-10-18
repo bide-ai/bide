@@ -64,7 +64,7 @@ SYFT
   (cd "$tmp/cwd" && PATH="$tmp/bin:$PATH" FAKE_VERSION=v9.9.9-rc.1 FAKE_MODULES="$mods" "$here/module-sbom.sh" v9.9.9-rc.1 pre.json >"$tmp/log" 2>&1) \
     && [ -s "$tmp/cwd/pre.json" ] || { echo "self-test: a pre-release version was refused:"; sed 's/^/    /' "$tmp/log"; ok=false; }
   local bad
-  for bad in v9.9 v9.9.9x v9.9.9- 'v9.9.9-$x' 9.9.9 'v9.9.9;rm'; do
+  for bad in v9.9 v9.9.9x v9.9.9- 'v9.9.9-a b' 9.9.9 'v9.9.9;rm'; do
     if (cd "$tmp/cwd" && PATH="$tmp/bin:$PATH" FAKE_VERSION=v9.9.9 FAKE_MODULES="$mods" "$here/module-sbom.sh" "$bad" bad.json >"$tmp/log" 2>&1); then
       echo "self-test: version '$bad' was accepted"; ok=false
     fi
