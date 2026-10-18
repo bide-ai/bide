@@ -631,7 +631,7 @@ func (g *gateOf) preflight(run, as string, reject bool, verifierFor agent.Approv
 		}
 	}
 	switch g.view.State {
-	case string(agent.RunCompleted), string(agent.RunAborted), string(agent.RunCancelled):
+	case string(agent.RunCompleted), string(agent.RunAborted), string(agent.RunCancelled), string(agent.RunEnded):
 		return refuse("run %s has ended (%s); it does not wait on call %s", safe(run), g.view.StateText, safe(gt.ToolUseID))
 	}
 	if dl, at, ok := agent.RecordedDeadline(g.recs, gt.ToolUseID); ok && !now().Before(at) {
@@ -1205,7 +1205,7 @@ func (c *cmd) list(ctx context.Context) error {
 		v := runview.Build(ctx, run, recs, nil)
 		runview.MarkDeadlines(v.Gates, now())
 		for _, g := range v.Gates {
-			if !(g.Waiting || g.Held) || v.State == string(agent.RunCompleted) || v.State == string(agent.RunAborted) || v.State == string(agent.RunCancelled) {
+			if !(g.Waiting || g.Held) || v.State == string(agent.RunCompleted) || v.State == string(agent.RunAborted) || v.State == string(agent.RunCancelled) || v.State == string(agent.RunEnded) {
 				continue
 			}
 			w := waiting{Run: run, Call: g.ToolUseID, Tool: g.ToolName, Single: g.Single, Need: g.Need, Approvers: g.Approvers, ApprovedBy: g.ApprovedBy, DeniedBy: g.DeniedBy, Pending: g.Pending, AskedAt: g.AskedAt,

@@ -22,6 +22,7 @@ import (
 // implements agent.Redactor.
 func Redactor(t *testing.T, open func(t *testing.T) agent.Store) {
 	t.Run("Replaces", func(t *testing.T) { redactReplaces(t, open(t)) })
+	t.Run("EndMarker", func(t *testing.T) { redactEndMarker(t, open(t)) })
 	t.Run("Idempotent", func(t *testing.T) { redactIdempotent(t, open(t)) })
 	t.Run("Refusals", func(t *testing.T) { redactRefusals(t, open(t)) })
 	t.Run("DoubleRedaction", func(t *testing.T) { redactTwice(t, open(t)) })
@@ -94,6 +95,39 @@ func snapshot(t *testing.T, s agent.Store, id string) []agent.Entry {
 		out = append(out, e)
 	}
 	return out
+}
+
+// redactEndMarker erases the end marker of a finished run: the row keeps its name and its place, so
+// the run still holds an end marker by name, and every record of the run keeps its bytes.
+func redactEndMarker(t *testing.T, s agent.Store) {
+	ctx := context.Background()
+	for _, end := range []string{"run:complete", "run:aborted", "run:cancelled"} {
+		id, _ := redactRun(t, s, false)
+		data := put(t, s, id, end, agent.StepValue, `"the answer"`)
+		before := snapshot(t, s, id)
+		tomb := tombstoneFor(t, end, data)
+		done, err := redactor(t, s).Redact(ctx, id, end, data, tomb)
+		if err != nil || !done {
+			t.Fatalf("Redact of %s = %v, %v; want it replaced", end, done, err)
+		}
+		after := snapshot(t, s, id)
+		if len(after) != len(before) {
+			t.Fatalf("%s: the run holds %d entries after the redaction, want %d", end, len(after), len(before))
+		}
+		for i := range before {
+			want := before[i].Data
+			if before[i].Name == end {
+				want = tomb
+			}
+			if before[i].Seq != after[i].Seq || before[i].Name != after[i].Name || !bytes.Equal(after[i].Data, want) {
+				t.Errorf("%s: entry %d is (%d, %q) holding %q, want (%d, %q) holding %q", end, i, after[i].Seq, after[i].Name, after[i].Data, before[i].Seq, before[i].Name, want)
+			}
+		}
+		// A second redaction of the same marker is a no-op, and the run is still over.
+		if done, err := redactor(t, s).Redact(ctx, id, end, data, tomb); err != nil || done {
+			t.Errorf("%s: a second Redact = %v, %v; want already redacted", end, done, err)
+		}
+	}
 }
 
 func redactReplaces(t *testing.T, s agent.Store) {
@@ -195,7 +229,8 @@ func redactRefusals(t *testing.T, s agent.Store) {
 	})
 	t.Run("Protected", func(t *testing.T) {
 		id, _ := redactRun(t, s, true)
-		for _, name := range []string{"@journal", "run:complete"} {
+		put(t, s, id, "run:limits:1", agent.StepValue, `{}`)
+		for _, name := range []string{"@journal", "run:limits:1"} {
 			e, ok, err := s.Get(ctx, id, name)
 			if err != nil || !ok {
 				t.Fatalf("Get %q = %v, %v", name, ok, err)
@@ -440,10 +475,14 @@ func redactRunPlan(t *testing.T, s agent.Store) {
 	}
 	want := []string{"before", "tool:a", "tool:b"}
 	if fmt.Sprint(names) != fmt.Sprint(want) {
-		t.Fatalf("the payload plan selects %v, want %v (the approval decision is kept, the end marker and header are protected)", names, want)
+		t.Fatalf("the payload plan selects %v, want %v (the approval decision is kept, the header is protected, the end marker is left unless named)", names, want)
 	}
-	if len(plan.Kept) != 1 || plan.Kept[0].Name != "approval:call1" {
-		t.Errorf("the plan keeps %+v, want the approval decision listed as kept", plan.Kept)
+	var keptNames []string
+	for _, k := range plan.Kept {
+		keptNames = append(keptNames, k.Name)
+	}
+	if fmt.Sprint(keptNames) != "[run:complete approval:call1]" {
+		t.Errorf("the plan keeps %v, want the approval decision and the end marker listed as kept (the end marker with the notice that it was not selected)", keptNames)
 	}
 	res, err := agent.Redact(ctx, j, plan, time.UnixMilli(1_700_000_000_000))
 	if err != nil || len(res.Redacted) != 3 || len(res.Already) != 0 {

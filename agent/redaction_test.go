@@ -65,9 +65,9 @@ func TestRedactionProtected_Names(t *testing.T) {
 		want bool
 	}{
 		{"@journal", agent.StepHeader, true},
-		{"run:complete", agent.StepValue, true},
-		{"run:aborted", agent.StepValue, true},
-		{"run:cancelled", agent.StepValue, true},
+		{"run:complete", agent.StepValue, false}, // an end marker is read by its name: its content may go
+		{"run:aborted", agent.StepValue, false},
+		{"run:cancelled", agent.StepValue, false},
 		{"run:cancel-requested", agent.StepValue, true},
 		{"run:limits:1", agent.StepValue, true},
 		{"run:start", agent.StepValue, false},
@@ -116,7 +116,10 @@ func TestRedact_RealRun(t *testing.T) {
 		t.Fatalf("plan = %+v; want a finished run with run:start and a model turn selected", plan)
 	}
 	for _, k := range plan.Kept {
-		t.Errorf("the payload preset lists %q as kept (%s): it should not list records it did not choose", k.Name, k.Reason)
+		// The one record the preset lists is the end marker, so its content is not left silently.
+		if k.Name != "run:complete" || !strings.Contains(k.Reason, "end marker not selected") {
+			t.Errorf("the payload preset lists %q as kept (%s): it should not list records it did not choose", k.Name, k.Reason)
+		}
 	}
 	if _, err := agent.Redact(ctx, j, plan, time.Now()); err != nil {
 		t.Fatalf("Redact: %v", err)
@@ -131,7 +134,7 @@ func TestRedact_RealRun(t *testing.T) {
 			t.Errorf("entry %q still holds the content: %s", e.Name, e.Data)
 		}
 	}
-	// Status is unchanged: the end marker is not redacted.
+	// Status is unchanged: the end marker is not redacted by the preset.
 	after, err := agent.Status(ctx, j, "r")
 	if err != nil || after.State != agent.RunCompleted || after.Records != before.Records {
 		t.Errorf("Status after = %+v, %v; want %+v", after, err, before)

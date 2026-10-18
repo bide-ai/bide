@@ -171,7 +171,7 @@ func TestRedact_TombstonedAttemptMarkerDoesNotRefire(t *testing.T) {
 // reports corruption (ErrStorage), never a run in some state.
 func TestRedact_TombstoneAtAProtectedNameIsCorruption(t *testing.T) {
 	ctx := context.Background()
-	for _, name := range []string{"run:complete", "audit:x", "@saga/compensate/c", "run:limits:1", "approval-tally:x"} {
+	for _, name := range []string{"run:cancel-requested", "audit:x", "@saga/compensate/c", "run:limits:1", "approval-tally:x"} {
 		st := NewMemStore()
 		j := mustJournal(st)
 		a := mustNew(&scriptModel{turns: [][]Emit{textTurn("answer")}}, j)
@@ -182,10 +182,8 @@ func TestRedact_TombstoneAtAProtectedNameIsCorruption(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if name != "run:complete" {
-			if _, _, err := st.Insert(ctx, "r", name, b); err != nil {
-				t.Fatal(err)
-			}
+		if _, _, err := st.Insert(ctx, "r", name, b); err != nil {
+			t.Fatal(err)
 		}
 		r := st.runs["r"]
 		i := r.byName[name]
@@ -263,7 +261,7 @@ func TestRedactionClasses_CoverEveryReservedKey(t *testing.T) {
 		}
 	}
 	// Spot-check the classes that matter to a re-drive.
-	for name, protected := range map[string]bool{"@saga/compensate/x": true, "@saga/args/x": true, "@subrun/a/b": true, "@llm/0": false, "@spend/x": false, "run:start": false, "run:complete": true, "tool:x": false} {
+	for name, protected := range map[string]bool{"@saga/compensate/x": true, "@saga/args/x": true, "@subrun/a/b": true, "@llm/0": false, "@spend/x": false, "run:start": false, "run:complete": false, "run:cancel-requested": true, "tool:x": false} {
 		if got := RedactionProtected(name, StepValue) != ""; got != protected {
 			t.Errorf("RedactionProtected(%q) = %v, want %v", name, got, protected)
 		}

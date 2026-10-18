@@ -88,7 +88,7 @@ func TestPostgresErasureThroughTheRedactionRole(t *testing.T) {
 		`GRANT SELECT, INSERT, DELETE ON `+schema+`.bide_holds TO `+holder,
 		`GRANT EXECUTE ON FUNCTION `+schema+`.bide_next_seq_v1(text) TO `+holder,
 		`GRANT EXECUTE ON FUNCTION `+schema+`.bide_next_seq_v1(text) TO `+app,
-		`GRANT EXECUTE ON FUNCTION `+schema+`.bide_redact_v2(text, text, bytea, bigint) TO `+red,
+		`GRANT EXECUTE ON FUNCTION `+schema+`.bide_redact_v3(text, text, bytea, bigint) TO `+red,
 	)
 	appDSN, redDSN := pgDSN(t, base, app), pgDSN(t, base, red)
 	appStore, err := postgres.Open(ctx, appDSN, postgres.WithSchema(schema), postgres.WithoutMigration())

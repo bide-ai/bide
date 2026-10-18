@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,7 +33,7 @@ import (
 // search_path, and Open checks its definition when it exists. It is optional: a schema migrated
 // before it existed has none, the application's role never needs it, and Redact on such a schema
 // says to run the migration as the schema's owner.
-const redactVersion = "v2"
+const redactVersion = "v3"
 
 // redactTemplate is the body of the redaction function, over the steps table %[1]s and the leases
 // table %[2]s (qualified with their schema). The function sets search_path to pg_catalog, pg_temp
@@ -87,7 +88,7 @@ BEGIN
 	IF kind IN ('header', 'attempt', 'not_started', 'saga_fail') THEN
 		RETURN 'protected';
 	END IF;
-	IF pg_catalog.left(n, 4) = 'run:' AND pg_catalog.left(n, 9) <> 'run:start' THEN
+	IF pg_catalog.left(n, 4) = 'run:' AND pg_catalog.left(n, 9) <> 'run:start' AND n <> ALL (ends) THEN
 		RETURN 'protected';
 	END IF;
 	FOREACH p IN ARRAY prot LOOP
@@ -198,44 +199,82 @@ func (s *Store) migrateRedact(ctx context.Context, tx *sql.Tx, res *MigrationRes
 	return s.revokeOldRedact(ctx, tx, run)
 }
 
-// revokeOldRedact withdraws EXECUTE on bide_redact_v1, the first version of the redaction function,
-// from PUBLIC and from every role it was granted to explicitly. v1 does not read legal holds, so a
-// role that can still call it can erase a held run: the migration never replaces or drops a function,
-// but it can and does revoke. It runs on every migration (revoking again is harmless), and does
-// nothing for a schema that never had v1.
+// revokeOldRedact withdraws EXECUTE on every older version of the redaction function (bide_redact_v1,
+// v2, ... below redactVersion) from PUBLIC and from every role it was granted to explicitly, so only
+// the current function can be called. An older version does not check what the current one does (v1
+// reads no legal holds; v2 refuses an end marker the current one erases), and a role that can still
+// call one can do what the current checks forbid or leave a record the current one would have erased:
+// the migration never replaces or drops a function, but it can and does revoke. It runs on every
+// migration (revoking again is harmless), and does nothing for a schema that never had one.
 func (s *Store) revokeOldRedact(ctx context.Context, tx *sql.Tx, run func(failure, stmt string) error) error {
-	v1 := strings.TrimSuffix(s.t.redact, redactVersion) + "v1"
-	var have bool
-	if err := tx.QueryRowContext(ctx, redactPresent, v1, s.schema).Scan(&have); err != nil {
-		return fmt.Errorf("postgres: look up %s: %w (%w)", v1, err, agent.ErrStorage)
+	prefix := strings.TrimSuffix(s.t.redact, redactVersion)
+	cur, err := strconv.Atoi(strings.TrimPrefix(redactVersion, "v"))
+	if err != nil {
+		return fmt.Errorf("postgres: redaction function version %q: %w", redactVersion, agent.ErrConfig)
 	}
-	if !have {
-		return nil
+	rows, err := tx.QueryContext(ctx, redactVersions, s.schema, prefix+"v%")
+	if err != nil {
+		return fmt.Errorf("postgres: look up the older %s versions: %w (%w)", prefix, err, agent.ErrStorage)
 	}
-	qv1 := quoteIdent(s.schema) + "." + quoteIdent(v1) + `(pg_catalog.text, pg_catalog.text, pg_catalog.bytea, pg_catalog.int8)`
-	if err := run("revoke "+v1+" from PUBLIC", `REVOKE ALL ON FUNCTION `+qv1+` FROM PUBLIC`); err != nil {
+	var older []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return fmt.Errorf("postgres: look up the older %s versions: %w (%w)", prefix, err, agent.ErrStorage)
+		}
+		if rest, ok := strings.CutPrefix(name, prefix+"v"); ok {
+			if n, err := strconv.Atoi(rest); err == nil && n < cur && strconv.Itoa(n) == rest {
+				older = append(older, name)
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("postgres: look up the older %s versions: %w (%w)", prefix, err, agent.ErrStorage)
+	}
+	rows.Close()
+	for _, old := range older {
+		if err := s.revokeRedactVersion(ctx, tx, run, old); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// redactVersions lists the names, matching the LIKE pattern $2, of the functions taking (text, text,
+// bytea, bigint) in schema $1.
+const redactVersions = `SELECT p.proname::pg_catalog.text FROM pg_catalog.pg_proc AS p
+	WHERE p.proname OPERATOR(pg_catalog.~~) $2 AND p.proargtypes OPERATOR(pg_catalog.=) '25 25 17 20'::pg_catalog.oidvector
+		AND p.pronamespace OPERATOR(pg_catalog.=) (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname OPERATOR(pg_catalog.=) $1)
+	ORDER BY 1`
+
+// revokeRedactVersion withdraws EXECUTE on the function old from PUBLIC and from every role granted it.
+func (s *Store) revokeRedactVersion(ctx context.Context, tx *sql.Tx, run func(failure, stmt string) error, old string) error {
+	qold := quoteIdent(s.schema) + "." + quoteIdent(old) + `(pg_catalog.text, pg_catalog.text, pg_catalog.bytea, pg_catalog.int8)`
+	if err := run("revoke "+old+" from PUBLIC", `REVOKE ALL ON FUNCTION `+qold+` FROM PUBLIC`); err != nil {
 		return err
 	}
-	rows, err := tx.QueryContext(ctx, grantedRedact, v1, s.schema)
+	rows, err := tx.QueryContext(ctx, grantedRedact, old, s.schema)
 	if err != nil {
-		return fmt.Errorf("postgres: look up the grants on %s: %w (%w)", v1, err, agent.ErrStorage)
+		return fmt.Errorf("postgres: look up the grants on %s: %w (%w)", old, err, agent.ErrStorage)
 	}
 	var grantees []string
 	for rows.Next() {
 		var g string
 		if err := rows.Scan(&g); err != nil {
 			rows.Close()
-			return fmt.Errorf("postgres: look up the grants on %s: %w (%w)", v1, err, agent.ErrStorage)
+			return fmt.Errorf("postgres: look up the grants on %s: %w (%w)", old, err, agent.ErrStorage)
 		}
 		grantees = append(grantees, g)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return fmt.Errorf("postgres: look up the grants on %s: %w (%w)", v1, err, agent.ErrStorage)
+		return fmt.Errorf("postgres: look up the grants on %s: %w (%w)", old, err, agent.ErrStorage)
 	}
 	rows.Close()
 	for _, g := range grantees {
-		if err := run("revoke "+v1+" from "+g, `REVOKE ALL ON FUNCTION `+qv1+` FROM `+g); err != nil {
+		if err := run("revoke "+old+" from "+g, `REVOKE ALL ON FUNCTION `+qold+` FROM `+g); err != nil {
 			return err
 		}
 	}

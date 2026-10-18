@@ -135,7 +135,7 @@ func JournalNotifyEvents(runID string, recs []Record) []JournalNotifyEvent {
 	}
 	if root == runID {
 		for _, r := range recs {
-			if r.Name == runAbortedStep {
+			if r.Name == runAbortedStep && !r.Redacted { // an erased marker does not attest an abort
 				at, _ := abortedAt(r)
 				out = append(out, JournalNotifyEvent{Key: AbortedKey(runID), Kind: NotificationRunAborted, RunID: root, At: at, Current: true})
 				break

@@ -763,7 +763,7 @@ func (h *Handler) state(ctx context.Context, g *gateRecords) (string, error) {
 		return "", err
 	}
 	switch st.State {
-	case agent.RunCompleted, agent.RunAborted, agent.RunCancelled:
+	case agent.RunCompleted, agent.RunAborted, agent.RunCancelled, agent.RunEnded:
 		return StateEnded, nil
 	}
 	return StateWaiting, nil

@@ -76,7 +76,7 @@ func NotifyPending(ctx context.Context, j *Journal, n Notifier, trail NotifyTrai
 			if abortEntry, aborted, err := j.getEntry(ctx, runID, runAbortedStep); err != nil {
 				errs = append(errs, fmt.Errorf("notification sweep: read run %s: %w", runID, err))
 				continue
-			} else if aborted {
+			} else if aborted && !isTombstone(abortEntry.Data) {
 				// An aborted run is over, so no recovery pass lists it: the sweep is the only catch-up
 				// for an abort whose drive died before it recorded the event. Only a recent one.
 				at, known, terr := e.abortTime(ctx, j, runID, abortEntry)

@@ -133,6 +133,11 @@ func PlanRedaction(ctx context.Context, j *Journal, runID string, sel RedactionS
 		}
 		explicit, preset := sel.matchesName(r.Name) || slices.Contains(sel.Kinds, r.Kind), sel.preset(r)
 		if !explicit && !preset {
+			if sel.Payloads && r.Kind == StepValue && slices.Contains(endOfRunMarkers, r.Name) {
+				// The preset leaves an end marker alone, so its content (the final answer, the
+				// cancellation or failure text) is not erased silently: the plan says it is not selected.
+				p.Kept = append(p.Kept, KeptRecord{i, r.Name, "end marker not selected by the Payloads preset: name " + r.Name + " to erase its content (the run stays over, and how it ended is then not attested)"})
+			}
 			continue
 		}
 		if why := RedactionProtected(r.Name, r.Kind); why != "" {
@@ -182,8 +187,8 @@ func parentLive(ctx context.Context, j *Journal, runID string) (string, error) {
 	return "", nil
 }
 
-// terminal reports whether recs hold an end marker, by name: a tombstoned end marker cannot occur
-// (end markers are protected), and a run that holds one is over.
+// terminal reports whether recs hold an end marker, by name, redacted or not: a run that holds one
+// is over.
 func terminal(recs []Record) bool {
 	_, ok := firstEnd(recs)
 	return ok

@@ -14,16 +14,30 @@ import (
 
 // endMarker is one end marker of a run, as read: its key, its record, and its position.
 type endMarker struct {
+	// name is the marker's kind: run:complete, run:aborted or run:cancelled. It is empty for a
+	// redacted marker (rec.Redacted): the run is over, but a tombstone's name (the row's, and the one
+	// inside it) is outside the leaf hash, so how the run ended is not attested and is never read from it.
 	name string
 	rec  Record
 	seq  int64 // its Seq (a Journal read), or its index in a History (any other *Journal)
 }
 
-// firstEnd returns the first end marker in recs, which are in journal order.
+// endKind is the kind of the end marker named name that was read as rec: name, or "" for a redacted
+// marker (see endMarker).
+func endKind(name string, rec Record) string {
+	if rec.Redacted {
+		return ""
+	}
+	return name
+}
+
+// firstEnd returns the first end marker in recs, which are in journal order. A tombstone (a
+// redacted end marker, Record.Redacted) at an end marker's name is an end: the run is over. How it
+// ended is not known (endMarker.name is empty): the content is erased, and the name is not attested.
 func firstEnd(recs []Record) (endMarker, bool) {
 	for i, r := range recs {
-		if r.Kind == StepValue && slices.Contains(endOfRunMarkers, r.Name) {
-			return endMarker{name: r.Name, rec: r, seq: int64(i)}, true
+		if (r.Kind == StepValue || r.Redacted) && slices.Contains(endOfRunMarkers, r.Name) {
+			return endMarker{name: endKind(r.Name, r), rec: r, seq: int64(i)}, true
 		}
 	}
 	return endMarker{}, false
@@ -70,7 +84,7 @@ func writeEnd(ctx context.Context, j *Journal, runID, name string, rec Record, o
 		if err != nil {
 			return endMarker{}, err
 		}
-		first = endMarker{name: o, rec: r, seq: e.Seq}
+		first = endMarker{name: endKind(o, r), rec: r, seq: e.Seq}
 	}
 	return first, nil
 }
@@ -92,10 +106,10 @@ func firstEndOf(ctx context.Context, j *Journal, runID string, names ...string) 
 		if err != nil {
 			return endMarker{}, false, err
 		}
-		if r.Kind != StepValue {
+		if r.Kind != StepValue && !r.Redacted {
 			continue
 		}
-		first, found = endMarker{name: name, rec: r, seq: e.Seq}, true
+		first, found = endMarker{name: endKind(name, r), rec: r, seq: e.Seq}, true
 	}
 	return first, found, nil
 }
@@ -117,6 +131,9 @@ func endOthers(own string, saga bool) []string {
 // that is not a saga's gets (a saga's drive rolls it back again, memoized, and returns
 // *SagaAborted).
 func endedErr(runID string, end endMarker) error {
+	if end.rec.Redacted {
+		return fmt.Errorf("run %s is over, but its end marker was redacted, so how it ended is not attested, and it cannot be driven again: %w", runID, ErrConfig)
+	}
 	if end.name == runCancelledStep {
 		return fmt.Errorf("run %s: %w", runID, ErrRunCancelled)
 	}

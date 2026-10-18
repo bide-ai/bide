@@ -239,6 +239,11 @@ func (c *builderCore) conform(ctx context.Context, store *agent.Journal, runID s
 				diffs = append(diffs, r.Name+" (not this flow's topology)")
 			}
 
+		case r.Name == runCompleteStep && r.Redacted:
+			// The run ended and its completion was erased: there is no output to compare, and the
+			// run is not reported as divergent for it.
+			haveProgress = true
+
 		case r.Name == runCompleteStep:
 			haveProgress = true
 			var done completion

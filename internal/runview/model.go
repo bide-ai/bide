@@ -259,6 +259,9 @@ func Build(ctx context.Context, runID string, recs []agent.Record, flow *Flow) *
 		case r.Name == "flow:digest":
 			_ = json.Unmarshal(r.Result, &v.Digest)
 			e.Class, e.Title, e.Detail = "meta", "topology digest", v.Digest
+		case r.Redacted && (r.Name == "run:complete" || r.Name == "run:aborted" || r.Name == "run:cancelled"):
+			// A tombstone's name is not attested: the run is over, but how it ended is not read from it.
+			e.Class, e.Title = "end", "end (erased; how it ended is not attested)"
 		case r.Name == "run:complete" || r.Name == "run:aborted" || r.Name == "run:cancelled":
 			e.Class, e.Title, e.Detail = "end", strings.TrimPrefix(r.Name, "run:"), short(r.Result)
 		case r.Kind == agent.StepModel:

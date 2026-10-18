@@ -31,7 +31,7 @@ OptNo2Res == [f |-> {1, 3}, l |-> 2, c |-> "a"]
 \* on a saga a rollback request, Status off, a not-started run reported once per process.
 ApiP14 == [opt |-> "journal", filter |-> "dispatch", prim |-> OptAll, res |-> {},
            dflt |-> OptAll, init |-> OptAll, sagaCancel |-> "request", status |-> "off",
-           notStarted |-> "report"]
+           notStarted |-> "report", redact |-> FALSE]
 \* Status (D8) by one Load, by Gets with the re-read, and by one round of Gets.
 ApiStatusLoad == [ApiP14 EXCEPT !.status = "load"]
 ApiStatusRegets == [ApiP14 EXCEPT !.status = "regets"]
@@ -51,4 +51,7 @@ ApiSagaMarker == [ApiP14 EXCEPT !.sagaCancel = "marker"]
 \* A run with no run:start: reported every pass, or skipped for good once reported.
 ApiNSEvery == [ApiP14 EXCEPT !.notStarted = "every"]
 ApiNSRemember == [ApiP14 EXCEPT !.notStarted = "remember"]
+\* A finished run's end marker is erased (redacted): the run is still ended, and a drive refuses it.
+ApiRedact == [ApiP14 EXCEPT !.redact = TRUE]
+ApiRedactStatus == [ApiStatusRegets EXCEPT !.redact = TRUE]
 =============================================================================

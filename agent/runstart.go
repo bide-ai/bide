@@ -361,6 +361,10 @@ func beginRun(ctx context.Context, d *Journal, runID string, want RunStart) (con
 	}
 	ctx = bindRun(ctx, got)
 	switch {
+	case ok && end.rec.Redacted:
+		// The end marker's content was erased: there is no completion to return, and the run, which holds a
+		// redacted record, cannot be driven again (Journal.open refuses it too).
+		return ctx, nil, false, fmt.Errorf("run %s is over, but its end marker was redacted, so how it ended is not attested, and it cannot be driven again: %w", runID, ErrConfig)
 	case ok && end.name == runCancelledStep:
 		return ctx, nil, false, fmt.Errorf("run %s: %w", runID, ErrRunCancelled) // its first end marker
 	case ok:

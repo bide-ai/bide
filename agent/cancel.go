@@ -27,6 +27,11 @@ const (
 	RunAborted RunState = "aborted"
 	// RunCancelled is a run whose first end marker is run:cancelled.
 	RunCancelled RunState = "cancelled"
+	// RunEnded is a run whose first end marker was redacted (RunStatus.EndRedacted): it is over, but
+	// how it ended (completed, aborted or cancelled) is not attested, because a tombstone's name is
+	// outside the leaf hash, so Status never reads it from the name. bide audit redactions reports
+	// the kind the signed redaction trail recorded.
+	RunEnded RunState = "ended"
 )
 
 // RunStatus is a run's state, as Status reads it.
@@ -35,7 +40,11 @@ type RunStatus struct {
 	// record's name, which a tombstone carries but nothing outside the database attests (see
 	// Record.Redacted).
 	StartRedacted bool
-	State         RunState
+	// EndRedacted is set when the run's first end marker was redacted: the run is over, as the
+	// marker's name says, and the text the marker recorded (Terminal) and its time (EndedAt) are
+	// gone with its content (see Record.Redacted).
+	EndRedacted bool
+	State       RunState
 	// Terminal is the text the run's first end marker records: the reason given to Cancel for a
 	// cancelled run, the failure that aborted a saga; empty otherwise.
 	Terminal string
@@ -137,7 +146,11 @@ func Cancel(ctx context.Context, j *Journal, runID, reason string, opts ...Cance
 			return err
 		}
 		if ok && (first == nil || e.Seq < first.seq) {
-			first = &endMarker{name: name, seq: e.Seq}
+			r, err := decodeStored(runID, name, e.Data)
+			if err != nil {
+				return err
+			}
+			first = &endMarker{name: endKind(name, r), rec: r, seq: e.Seq}
 		}
 	}
 	if first != nil {
@@ -173,6 +186,9 @@ func Cancel(ctx context.Context, j *Journal, runID, reason string, opts ...Cance
 func cancelVerdict(runID, first string) error {
 	if first == runCancelledStep {
 		return nil
+	}
+	if first == "" {
+		return fmt.Errorf("Cancel run %s: its end marker was redacted, so how it ended is not attested, and the run is over: %w", runID, ErrRunEnded)
 	}
 	return fmt.Errorf("Cancel run %s: its first end marker is %s: %w", runID, first, ErrRunEnded)
 }
@@ -224,6 +240,11 @@ func Status(ctx context.Context, j *Journal, runID string) (RunStatus, error) {
 		return st, nil
 	}
 	st.EndedAt = endedAt(end.rec)
+	st.EndRedacted = end.rec.Redacted
+	if end.rec.Redacted {
+		st.State = RunEnded
+		return st, nil
+	}
 	switch end.name {
 	case runCompleteStep:
 		st.State = RunCompleted
