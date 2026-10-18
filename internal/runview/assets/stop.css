@@ -1,0 +1,10 @@
+.stopbanner { margin: 0 0 16px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--warn); background: var(--warn-bg); color: var(--warn); }
+.stopbanner.sb-stop { border-color: var(--bad); background: var(--bad-bg); color: var(--bad); }
+.stopbanner p { margin: 2px 0; }
+.stopbanner .sbword { font-weight: 700; letter-spacing: .04em; }
+.stopbanner .sbmode { font-weight: 400; letter-spacing: 0; }
+.stopbanner .sbline b { font-weight: 700; }
+.stopbanner .sb-bad { font-weight: 600; }
+.stopbanner .muted { color: inherit; opacity: .85; }
+.pill.state-held { background: var(--bad-bg); color: var(--bad); box-shadow: inset 0 0 0 1px var(--bad); }
+.pill.state-mayheld { background: transparent; color: var(--warn); box-shadow: inset 0 0 0 1px var(--warn); }

@@ -77,6 +77,8 @@ type RunRow struct {
 	Group     string `json:"group"` // the state filter group
 	Flow      string `json:"flow,omitempty"`
 	Records   int    `json:"records"`
+	// Held are the active kill switch stops that hold, or may hold, the run (see heldBy).
+	Held []StopHold `json:"held_by,omitempty"`
 	// Started is when the run's first drive started, as its run:start records it
 	// (agent.RunStart.Started). Zero for a run journaled by a version that recorded none.
 	Started time.Time `json:"started,omitzero"`
@@ -207,6 +209,7 @@ func (o Options) runList(ctx context.Context, f ListFilter) RunList {
 	if o.Events != nil {
 		tr = newTrailReader(ctx, o.Events)
 	}
+	stRead, _ := o.stopState(ctx)
 	kinds := map[string]bool{}
 	var rows []RunRow
 	for _, id := range ids {
@@ -220,7 +223,10 @@ func (o Options) runList(ctx context.Context, f ListFilter) RunList {
 			l.Empty++
 			continue
 		}
-		r := summarize(ctx, id, recs)
+		r, v := summarizeView(ctx, id, recs)
+		if stRead.err == nil {
+			r.Held = heldBy(stRead.st, v)
+		}
 		l.Summarized++
 		kinds[r.Kind] = true
 		if f.Kind != "" && r.Kind != f.Kind {
@@ -277,6 +283,12 @@ func (o Options) runList(ctx context.Context, f ListFilter) RunList {
 
 // summarize is the run's row, from the View the run page shows.
 func summarize(ctx context.Context, runID string, recs []agent.Record) RunRow {
+	r, _ := summarizeView(ctx, runID, recs)
+	return r
+}
+
+// summarizeView is summarize that also returns the View the row was made from.
+func summarizeView(ctx context.Context, runID string, recs []agent.Record) (RunRow, *View) {
 	v := Build(ctx, runID, recs, nil)
 	r := RunRow{ID: runID, Kind: v.Kind, State: v.State, StateText: v.StateText, Group: group(v.State), Flow: v.Flow, Records: v.Records}
 	if r.Group == "in-progress" || r.Group == "not-started" {
@@ -291,7 +303,7 @@ func summarize(ctx context.Context, runID string, recs []agent.Record) RunRow {
 			break
 		}
 	}
-	return r
+	return r, v
 }
 
 // KindOption is one of the kind filter's options.

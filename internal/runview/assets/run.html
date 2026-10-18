@@ -13,7 +13,7 @@
 {{if not .Audited}}<p class="small muted">as recorded at counting by the gate, not re-verified here; a revocation first reported after S is not covered</p>{{end}}
 </div>{{end}}
 {{define "run.html"}}{{template "head" (head (printf "%s · %s · bide view" .Verdict.Word .RunID) .Verdict.Class .Verdict.Icon)}}
-<div class="crumb"><h1 class="rid">{{.RunID}}</h1> <span class="pill kind">{{.KindText}}{{if .Flow}}: {{.Flow}}{{end}}</span> <span class="pill state-{{.State}}">{{.StateText}}</span>{{if .Live}} <span class="pill live" id="live" data-run="{{.RunID}}" data-cursor="{{.Cursor}}" title="the page follows the run as records land">live</span>{{end}}</div>
+<div class="crumb"><h1 class="rid">{{.RunID}}</h1> <span class="pill kind">{{.KindText}}{{if .Flow}}: {{.Flow}}{{end}}</span> <span class="pill state-{{.State}}">{{.StateText}}</span>{{range .Held}} <span class="pill state-{{if .May}}mayheld{{else}}held{{end}}" title="{{if .May}}an agent stop covers runs of an agent identity, which the journal does not record: this run may be one{{else}}this stop holds the run at its next drive; a call that has begun finishes{{end}}">{{.Text}}</span>{{end}}{{if .Live}} <span class="pill live" id="live" data-run="{{.RunID}}" data-cursor="{{.Cursor}}" title="the page follows the run as records land">live</span>{{end}}</div>
 {{if .Input}}<p class="input">{{.Input}}</p>{{end}}
 {{template "verdict" .Verdict}}
 

@@ -587,7 +587,7 @@ func (o Options) serveAttention(asJSON bool) http.HandlerFunc {
 			writeJSON(w, l)
 			return
 		}
-		render(w, "attention.html", l)
+		o.render(w, r, "attention.html", l)
 	}
 }
 

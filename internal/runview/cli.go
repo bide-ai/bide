@@ -121,6 +121,7 @@ type flags struct {
 	need                  int
 	approvers             string
 	excludePrincipal      bool
+	stopPolicy, stopRoot  string
 }
 
 // Main is the bide view command: it parses args, opens the input, and serves until interrupted.
@@ -152,6 +153,8 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 	fs.IntVar(&f.need, "need", 0, "the expected policy's k: verify approvals against -need of -approvers instead of the recorded policy; needs -approvers and -approver-keys")
 	fs.StringVar(&f.approvers, "approvers", "", "the expected policy's approver ids, comma-separated, in policy order; needs -need")
 	fs.BoolVar(&f.excludePrincipal, "exclude-principal", false, "the expected policy excludes the run's requesters (its principal and those of the runs above it) from approving (separation of duties); needs -need")
+	fs.StringVar(&f.stopPolicy, "stop-policy", "", "the kill switch's stop policy (the JSON document bide stop -stop-policy reads), so the banner and the held-by-stop states judge the control run as an audited deployment does and check its signatures; without it the control run is read as a basic one and the banner says signatures are not verified")
+	fs.StringVar(&f.stopRoot, "stop-root", "", "with -stop-policy: the digest of the deployment's root policy, when the file is a later policy the chain reaches")
 	addr := fs.String("addr", "127.0.0.1:8484", "address to serve on: a loopback IP (127.0.0.1 or ::1) or localhost, with a port")
 	color := term.Flag(fs)
 	if err := fs.Parse(args); err != nil {
@@ -258,6 +261,12 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 	if f.digest != "" && f.topo == "" {
 		return usage("-digest needs -topology")
 	}
+	if (f.stopPolicy != "" || f.stopRoot != "") && len(f.journals) > 0 {
+		return usage("-stop-policy and -stop-root read the control run of a store (-db, -postgres, -postgres-env); an exported journal holds none")
+	}
+	if f.stopRoot != "" && f.stopPolicy == "" {
+		return usage("-stop-root needs -stop-policy")
+	}
 	o, closer, err := options(f, stores)
 	if err != nil {
 		fmt.Fprintln(stderr, es.ErrorPrefix()+"bide view:", err)
@@ -332,6 +341,10 @@ func options(f flags, stores Stores) (Options, io.Closer, error) {
 			return o, nil, err
 		}
 		o.Source, closer = JournalSource{J: j}, c
+		if o.Stops, err = stopFeed(j, f); err != nil {
+			c.Close()
+			return o, nil, err
+		}
 		o.ApproveCommand = approveCommand(f)
 		o.ApproveCertCommand = approveCertCommand(f)
 		if stores.Events != nil {
@@ -524,4 +537,35 @@ func approveCertCommand(f flags) func(runID, toolUseID string) (string, error) {
 	return func(runID, toolUseID string) (string, error) {
 		return approveline.CertCommand(j, runID, toolUseID, "")
 	}
+}
+
+// stopFeed makes the viewer's reader of the kill switch's control run over j: audited, with signatures
+// checked, when the deployment's stop policy is given, else basic (and the banner says signatures are not
+// verified). The control is only read.
+func stopFeed(j *agent.Journal, f flags) (*StopFeed, error) {
+	if f.stopPolicy == "" {
+		ctl, err := agent.NewStopControl(j, agent.WithStopMode(agent.StopBasic))
+		return &StopFeed{Control: ctl}, err
+	}
+	var doc agent.StopPolicyDoc
+	if err := readStrict(f.stopPolicy, &doc); err != nil {
+		return nil, err
+	}
+	pol, err := audit.StopPolicyFromDoc(doc)
+	if err != nil {
+		return nil, fmt.Errorf("-stop-policy %s: %w", f.stopPolicy, err)
+	}
+	opts := []agent.StopOption{agent.WithStopMode(agent.StopAudited), agent.WithStopPolicy(pol), agent.WithStopVerifier(audit.StopVerifierFromAudit)}
+	if f.stopRoot != "" {
+		opts = append(opts, agent.WithStopRoot(f.stopRoot))
+	}
+	ctl, err := agent.NewStopControl(j, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("-stop-policy %s: %w", f.stopPolicy, err)
+	}
+	plain, err := agent.NewStopControl(j, agent.WithStopMode(agent.StopBasic))
+	if err != nil {
+		return nil, err
+	}
+	return &StopFeed{Control: ctl, Plain: plain, Verified: true}, nil
 }

@@ -19,7 +19,7 @@
 <tbody>{{range .Rows}}<tr>
 <td class="rid"><a href="{{.Link}}">{{.ID}}</a></td>
 <td>{{.KindText}}{{if .Flow}}<div class="muted small">{{.Flow}}</div>{{end}}</td>
-<td><span class="pill state-{{.State}}">{{.StateText}}</span></td>
+<td><span class="pill state-{{.State}}">{{.StateText}}</span>{{range .Held}} <span class="pill state-{{if .May}}mayheld{{else}}held{{end}}" title="{{.Text}}">{{if .May}}may be {{end}}held by stop</span>{{end}}</td>
 <td class="when">{{with .StartedText}}{{.}}{{else}}<span class="muted" title="journaled by a version that recorded no start time">none</span>{{end}}</td>
 <td class="num">{{.Records}}</td>
 </tr>{{end}}</tbody></table></div>

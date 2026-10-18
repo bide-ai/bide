@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -19,6 +20,8 @@ import (
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/cmd/bide/internal/approvecmd"
 	"github.com/bide-ai/bide/cmd/bide/internal/stopcmd"
+	"github.com/bide-ai/bide/internal/runview"
+	"github.com/bide-ai/bide/internal/sample"
 	"github.com/bide-ai/bide/store/sqlite"
 )
 
@@ -769,5 +772,89 @@ func TestStop_PlainStopAfterDowngrade(t *testing.T) {
 	}
 	if code, out, errOut := e.stop("", "-all", "-reason", "plain again"); code != 0 || !strings.Contains(out, "in force") {
 		t.Fatalf("plain set after the downgrade: %d\n%s\n%s", code, out, errOut)
+	}
+}
+
+// A lift says how many unfinished runs the stop holds: what it lets carry on. Runs that are over, halted
+// for an unknown outcome, or journaled as steps are not counted.
+func TestStop_LiftShowsHeldRuns(t *testing.T) {
+	e := newStopEnv(t, 0)
+	s, err := sqlite.Open(e.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sample.Write(context.Background(), s, ""); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	if code, _, errOut := e.stop("", "-all", "-reason", "incident"); code != 0 {
+		t.Fatalf("set: %d\n%s", code, errOut)
+	}
+	st := e.state(false)
+	id := st.Active()[0].ID
+	s, _ = sqlite.Open(e.db)
+	j, _ := agent.NewJournal(s)
+	want := runview.HeldCount(context.Background(), runview.JournalSource{J: j}, st.Active()[0])
+	s.Close()
+	if want.Held == 0 || want.Read == 0 {
+		t.Fatalf("the sample store must hold runs a global stop holds: %+v", want)
+	}
+	code, out, errOut := e.stop("", "-lift", id, "-reason", "recovered", "-yes")
+	line := fmt.Sprintf("runs held     %d held of %d unfinished runs read", want.Held, want.Read)
+	if code != 0 || !strings.Contains(out, line) {
+		t.Fatalf("exit %d, want %q\n%s\n%s", code, line, out, errOut)
+	}
+	// A tool stop on a tool no unfinished run has an open call to holds none.
+	if code, _, _ := e.stop("", "-tool", "no-such-tool", "-reason", "x"); code != 0 {
+		t.Fatal("set tool")
+	}
+	var tid string
+	for _, a := range e.state(false).Active() {
+		tid = a.ID
+	}
+	if _, out, _ := e.stop("", "-lift", tid, "-reason", "x", "-yes"); !strings.Contains(out, "runs held     0 held of") {
+		t.Fatalf("a stop that holds nothing:\n%s", out)
+	}
+}
+
+// The control run holds records and is not a run: the other commands that list a store's runs read the same
+// answer with and without a stop in force, and never name it.
+func TestStop_OtherCommandsIgnoreTheControlRun(t *testing.T) {
+	e := newStopEnv(t, 0)
+	s, err := sqlite.Open(e.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sample.Write(context.Background(), s, ""); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	cmds := [][]string{
+		{"approve", "-db", e.db, "-list"},
+		{"audit", "notifications", "-db", e.db, "-unanchored"},
+	}
+	type answer struct {
+		code     int
+		out, err string
+	}
+	read := func() []answer {
+		var out []answer
+		for _, c := range cmds {
+			code, o, er := runBide(c...)
+			out = append(out, answer{code, o, er})
+		}
+		return out
+	}
+	before := read()
+	if code, _, errOut := e.stop("", "-all", "-reason", "incident"); code != 0 {
+		t.Fatalf("set: %d\n%s", code, errOut)
+	}
+	for i, a := range read() {
+		if a != before[i] {
+			t.Errorf("%v differs once a stop is in force:\nbefore %+v\nafter  %+v", cmds[i], before[i], a)
+		}
+		if strings.Contains(a.out+a.err, agent.StopControlRun) {
+			t.Errorf("%v names the control run:\n%s", cmds[i], a.out)
+		}
 	}
 }

@@ -275,6 +275,10 @@ Flags:
     	run to open (default: the run list)
   -sth string
     	signed tree head (audit.SignedTreeHead JSON) to verify the journal against; needs -pubkey
+  -stop-policy string
+    	the kill switch's stop policy (the JSON document bide stop -stop-policy reads), so the banner and the held-by-stop states judge the control run as an audited deployment does and check its signatures; without it the control run is read as a basic one and the banner says signatures are not verified
+  -stop-root string
+    	with -stop-policy: the digest of the deployment's root policy, when the file is a later policy the chain reaches
   -strict
     	with -check: exit 1 on a warning too
   -topology string

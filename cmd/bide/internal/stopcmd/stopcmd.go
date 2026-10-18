@@ -431,7 +431,9 @@ func (c *cmd) run(ctx context.Context, es term.Style) int {
 	if err != nil {
 		return c.errCode(err)
 	}
-	if c.j, err = agent.NewJournal(o.Store); err != nil {
+	c.j, err = agent.NewJournal(o.Store)
+	jr := c.j
+	if err != nil {
 		return c.errCode(err)
 	}
 	// The key is loaded after the arguments are validated and the journal is open, so a bad flag never
@@ -453,7 +455,7 @@ func (c *cmd) run(ctx context.Context, es term.Style) int {
 	case c.f.setScopes > 0:
 		return c.setStops(ctx, ctl, doc, signer, by, host)
 	case c.f.lift != "":
-		return c.liftStop(ctx, ctl, doc, signer, by, host)
+		return c.liftStop(ctx, ctl, jr, doc, signer, by, host)
 	case c.f.reaudit:
 		return c.reauditTrail(ctx, ctl)
 	case c.f.applyPending:

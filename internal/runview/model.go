@@ -37,15 +37,18 @@ type View struct {
 	EndedAt string `json:"ended_at,omitempty"`
 	Records int    `json:"records"`
 
-	Events    []Event      `json:"events"`
-	Halts     []Halt       `json:"halts,omitempty"`
-	Gates     []Gate       `json:"gates,omitempty"`
-	Graph     *Graph       `json:"graph,omitempty"`
-	Conform   *Conformance `json:"conformance,omitempty"`
-	Proof     *Proof       `json:"proof,omitempty"`
-	Notes     []string     `json:"notes,omitempty"` // what the page cannot show for this run, and why
-	LastNode  string       `json:"last_node,omitempty"`
-	FinalText string       `json:"final_text,omitempty"`
+	Events  []Event      `json:"events"`
+	Halts   []Halt       `json:"halts,omitempty"`
+	Gates   []Gate       `json:"gates,omitempty"`
+	Graph   *Graph       `json:"graph,omitempty"`
+	Conform *Conformance `json:"conformance,omitempty"`
+	Proof   *Proof       `json:"proof,omitempty"`
+	Notes   []string     `json:"notes,omitempty"` // what the page cannot show for this run, and why
+	// Held are the active kill switch stops that hold, or may hold, the run at its next drive (see heldBy);
+	// empty when no stop applies or the viewer reads no control run.
+	Held      []StopHold `json:"held_by,omitempty"`
+	LastNode  string     `json:"last_node,omitempty"`
+	FinalText string     `json:"final_text,omitempty"`
 
 	// Live: the page follows the run (live mode): it was read from a store, not an export, and has
 	// no end marker. Cursor is the store sequence (agent.Entry.Seq) of its last record.
@@ -54,6 +57,13 @@ type View struct {
 
 	// Verdict is the answer the page opens with (see runVerdict); it is not in the JSON view.
 	Verdict Verdict `json:"-"`
+
+	// openTools are the tools of the calls a model turn requested that the journal shows no result for.
+	openTools []string
+	// rollingBack is set for a saga run that has not ended and has a failed step: its compensation is under way
+	// or due, and a stop that does not block compensation does not hold it.
+	rollingBack bool
+	saga        bool
 }
 
 // Event is one journal record, as a timeline row.
@@ -227,6 +237,18 @@ func Build(ctx context.Context, runID string, recs []agent.Record, flow *Flow) *
 		}
 	}
 
+	resolved := map[string]bool{} // tool-use IDs with a result (or a failed saga step)
+	for _, r := range recs {
+		if r.Kind == agent.StepToolResult || r.Kind == agent.StepSagaFail {
+			resolved[r.ToolUseID] = true
+		}
+	}
+	for _, id := range callOrder {
+		if !resolved[id] && !slices.Contains(v.openTools, calls[id].Name) {
+			v.openTools = append(v.openTools, calls[id].Name)
+		}
+	}
+
 	var started time.Time
 	for i, r := range recs {
 		e := Event{Seq: i + 1, Name: r.Name, Kind: string(r.Kind), Class: "value", Title: r.Name, Payload: payloadOf(r)}
@@ -252,6 +274,7 @@ func Build(ctx context.Context, runID string, recs []agent.Record, flow *Flow) *
 					e.Badges = append(e.Badges, "tools: "+strings.Join(st.Tools, ", "))
 				}
 				if st.Saga {
+					v.saga = true
 					e.Badges = append(e.Badges, "saga")
 				}
 			}
@@ -373,6 +396,8 @@ func Build(ctx context.Context, runID string, recs []agent.Record, flow *Flow) *
 		}
 		v.Events = append(v.Events, e)
 	}
+
+	v.rollingBack = v.saga && !ended(v.State) && slices.ContainsFunc(recs, func(r agent.Record) bool { return r.Kind == agent.StepSagaFail })
 
 	timeline(v.Events, started)
 	v.Halts = halts(runID, recs, calls)
