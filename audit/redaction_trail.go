@@ -558,6 +558,11 @@ func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error) {
 		return rep, fmt.Errorf("audit: VerifyRedactions: a deployment name is required: every record is signed for one: %w", agent.ErrConfig)
 	}
 	in.Deployment = strings.TrimSpace(in.Deployment)
+	if in.Verifier != nil {
+		if err := checkAuthorizersApart(in.LiftAuthorizers, string(in.Verifier.Alg()), in.Verifier.PublicKey()); err != nil {
+			return rep, err
+		}
+	}
 	if in.RequireLiftAuthorization && len(in.LiftAuthorizers) == 0 {
 		return rep, fmt.Errorf("audit: VerifyRedactions: requiring lift authorizations needs the authorizers' keys (without them any key would do): %w", agent.ErrConfig)
 	}
@@ -1066,6 +1071,9 @@ func LiftLegalHold(ctx context.Context, trail EventStore, holder agent.Holder, s
 	var cfg liftConfig
 	for _, o := range opts {
 		o(&cfg)
+	}
+	if err := checkAuthorizersApart(cfg.authorizers, string(signer.Alg()), signer.PublicKey()); err != nil {
+		return err
 	}
 	if strings.TrimSpace(id) == "" {
 		return fmt.Errorf("audit: LiftLegalHold: a hold ID is required: %w", agent.ErrConfig)

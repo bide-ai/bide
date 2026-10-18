@@ -308,3 +308,56 @@ func TestNewLiftAuthorization_Refusals(t *testing.T) {
 		t.Errorf("another deployment's trail = %v; want ErrConfig (no such hold there)", err)
 	}
 }
+
+// A second person is a second secret: a hybrid key whose Ed25519 half is the trail's Ed25519 key is the
+// same key holder, however the algorithm is named. The check compares by component, at creation, at the
+// lift, in the pinned list and in the verifier.
+func TestLiftAuthorization_SharedComponentIsNotASecondPerson(t *testing.T) {
+	ctx := context.Background()
+	r := newAuthRig(t)
+	ed := r.signer.(audit.Ed25519Signer)
+	hybrid := audit.HybridSigner{Ed: ed, ML: p11Signers(t)["ml-dsa-65"].(audit.MLDSASigner)}
+	hv := p11Verifier(t, hybrid)
+	// The authorizer is a hybrid holding the trail's Ed25519 key.
+	if _, err := audit.NewLiftAuthorization(ctx, r.trail, r.v, hybrid, "test", r.holdID, "x", "y", "", time.UnixMilli(authAt), time.Hour); !errors.Is(err, agent.ErrConfig) {
+		t.Errorf("a hybrid authorizer holding the trail's Ed25519 key = %v; want ErrConfig", err)
+	}
+	// Pinning such a key is refused, by the lift and by the verifier.
+	if err := r.lift(audit.WithLiftAuthorizers(hv)); !errors.Is(err, agent.ErrConfig) {
+		t.Errorf("lift with a pinned authorizer that shares a component = %v; want ErrConfig", err)
+	}
+	leaves, head := r.signedTrail()
+	if _, err := audit.VerifyRedactions(audit.RedactionVerifyInput{Deployment: "test", Trail: leaves, Heads: []audit.SignedTreeHead{head}, Verifier: r.v, LiftAuthorizers: []audit.Verifier{hv}}); !errors.Is(err, agent.ErrConfig) {
+		t.Errorf("verify with such a pinned authorizer = %v; want ErrConfig", err)
+	}
+	// A forged authorization signed by that hybrid is refused by the lift and found by the verifier.
+	a := r.authorize(time.Hour)
+	a.Alg, a.PublicKey, a.KeyID = string(hybrid.Alg()), hybrid.PublicKey(), audit.KeyID(string(hybrid.Alg()), hybrid.PublicKey())
+	a = resign(t, a, hybrid)
+	if err := r.lift(audit.WithLiftAuthorization(a)); !errors.Is(err, audit.ErrLiftUnauthorized) {
+		t.Fatalf("lift with a hybrid that shares the trail's Ed25519 half = %v; want ErrLiftUnauthorized", err)
+	}
+	rec := audit.RedactionRecord{Phase: audit.RedactionHoldLifted, Reason: "x", Ticket: "y", Executor: "z", AtMs: liftAtMs, Deployment: "test",
+		HoldID: r.holdID, HoldMatter: "litigation 7", HoldRuns: []string{"gov"}, HoldTree: true, Authorization: &a}
+	if err := audit.AppendRedactionRecord(ctx, r.trail, rec, r.signer); err != nil {
+		t.Fatal(err)
+	}
+	if rep, _ := r.verify(false); !strings.Contains(kinds(rep), "LIFT_UNAUTHORIZED") {
+		t.Errorf("the verifier accepted a hybrid that shares the trail key's Ed25519 half: %s", kinds(rep))
+	}
+}
+
+// The other direction: the trail is signed with a hybrid key, the authorizer is its Ed25519 half.
+func TestLiftAuthorization_AuthorizerIsAHalfOfTheTrailsHybridKey(t *testing.T) {
+	ctx := context.Background()
+	r := newTrailRig(t)
+	ed := p11Signers(t)["ed25519"].(audit.Ed25519Signer)
+	hybrid := audit.HybridSigner{Ed: ed, ML: p11Signers(t)["ml-dsa-65"].(audit.MLDSASigner)}
+	r.signer, r.v = hybrid, p11Verifier(t, hybrid)
+	if err := r.placeHold("h1", "gov"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := audit.NewLiftAuthorization(ctx, r.trail, r.v, ed, "test", "h1", "x", "y", "", time.UnixMilli(authAt), time.Hour); !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("the Ed25519 half of the trail's hybrid key as authorizer = %v; want ErrConfig", err)
+	}
+}
