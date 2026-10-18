@@ -1,3 +1,0 @@
-Section: Fixed
-
-The CRL refresher's "no valid CRL obtained" error and `Health().LastError` now say why a CRL that was fetched fine was not accepted (a rollback, a conflict between two CRLs of one number, a future-dated, unverifiable or set-aside CRL) instead of listing the URL as "ok"; the per-URL outcome kind is `refused` with the reason in its detail. This also fixes an intermittent failure of the identity reset test, which republished a CRL under the same number with a thisUpdate one second later when it straddled a second boundary and so, correctly, hit the equivocation rule; the test now keeps one base time.

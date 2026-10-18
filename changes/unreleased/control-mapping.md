@@ -1,3 +1,0 @@
-Section: Added
-
-A control mapping page, `docs/trust/control-mapping.md`, for bank risk and procurement reviews: for SOC 2 (CC6 to CC8), ISO/IEC 27001:2022 Annex A, PCI DSS v4.0 requirement 10, DORA, the EU AI Act (Articles 12, 14 and 15) and SR 11-7 / OCC 2011-12, it lists what bide provides with links to the guide or code that shows it, what the institution must still provide, and what is not covered yet (a production anchor and a kill switch in progress, independent time not used by any gate, no external security review). It is not a certification or legal advice and says an assessor decides. It is linked from the docs index and the docs-site Trust sidebar.
