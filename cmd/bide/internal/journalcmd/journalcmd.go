@@ -35,7 +35,7 @@ import (
 )
 
 // Verbs are the verbs of bide journal.
-func Verbs() []string { return []string{"redact"} }
+func Verbs() []string { return []string{"redact", "acknowledge"} }
 
 // getenv is replaced by tests.
 var getenv = os.Getenv
@@ -50,11 +50,14 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	if args[0] != "redact" {
-		fmt.Fprintf(stderr, "%sbide journal: unknown verb %q\n\n%s", term.For(stderr, term.Auto).ErrorPrefix(), args[0], usage)
-		return 2
+	switch args[0] {
+	case "redact":
+		return redact(args[1:], stdout, stderr)
+	case "acknowledge":
+		return acknowledge(args[1:], stdout, stderr)
 	}
-	return redact(args[1:], stdout, stderr)
+	fmt.Fprintf(stderr, "%sbide journal: unknown verb %q\n\n%s", term.For(stderr, term.Auto).ErrorPrefix(), args[0], usage)
+	return 2
 }
 
 const usage = `usage: bide journal redact (-db <file> | -postgres-env <var> [-schema <name>]) -run <id> <selection>
@@ -63,6 +66,9 @@ const usage = `usage: bide journal redact (-db <file> | -postgres-env <var> [-sc
   redact  replace the content of records of a finished run with tombstones that keep each record's
           position, name and leaf hash, so the run's signed heads and every other record's proof
           still verify, and record the erasure in a signed trail. Run bide journal redact -h.
+  acknowledge  sign a note that a leaf in the redaction trail that the tool did not write (a planted
+          one that bide audit redactions reports) has been investigated; the audit then reports it as
+          acknowledged. Run bide journal acknowledge -h.
 `
 
 // stringList is a repeatable flag.

@@ -30,12 +30,16 @@ const (
 	// Event leaf kinds of the trail.
 	redactionBeginKind = "redaction_begin"
 	redactionEndKind   = "redaction_end"
+	redactionAckKind   = "redaction_ack"
 )
 
 // Phases of a RedactionRecord.
 const (
 	RedactionBegin = "begin"
 	RedactionEnd   = "end"
+	// RedactionAcknowledge is the phase of a record in which an operator acknowledges a planted
+	// leaf (see AcknowledgeRecord).
+	RedactionAcknowledge = "acknowledge"
 )
 
 // A RedactedRef names one record a redaction replaces: its position in the run's journal, its
@@ -87,6 +91,10 @@ type RedactionRecord struct {
 	// Deployment names the deployment the trail belongs to (RedactionOptions.Deployment), signed, so a
 	// record cannot be moved into another deployment's trail that holds the same key.
 	Deployment string `json:"deployment,omitempty"`
+	// AckPosition and AckLeafHash, on an acknowledge record only, name the planted leaf the operator
+	// acknowledges: its position in the trail and the hex leaf hash of its bytes.
+	AckPosition int    `json:"ack_position,omitempty"`
+	AckLeafHash string `json:"ack_leaf_hash,omitempty"`
 	// Alg and Signature sign the record's other members under the redaction key: a record without a
 	// signature that verifies is not the tool's, whatever signed head covers it.
 	Alg       string `json:"alg"`
@@ -130,8 +138,11 @@ func (r RedactionRecord) verifySignature(v Verifier) bool {
 }
 
 func (r RedactionRecord) kind() string {
-	if r.Phase == RedactionEnd {
+	switch r.Phase {
+	case RedactionEnd:
 		return redactionEndKind
+	case RedactionAcknowledge:
+		return redactionAckKind
 	}
 	return redactionBeginKind
 }
@@ -173,10 +184,15 @@ func DecodeRedactionLeaf(leaf []byte) (RedactionRecord, error) {
 	switch {
 	case r.Format != RedactionRecordFormat:
 		return RedactionRecord{}, fmt.Errorf("format %q is not %s", r.Format, RedactionRecordFormat)
-	case r.Phase != RedactionBegin && r.Phase != RedactionEnd:
+	case r.Phase != RedactionBegin && r.Phase != RedactionEnd && r.Phase != RedactionAcknowledge:
 		return RedactionRecord{}, fmt.Errorf("phase %q", r.Phase)
 	case el.Kind != r.kind():
 		return RedactionRecord{}, fmt.Errorf("leaf kind %q holds a %q record", el.Kind, r.Phase)
+	}
+	if r.Phase == RedactionAcknowledge {
+		if h, err := hex.DecodeString(r.AckLeafHash); err != nil || len(h) != 32 || r.AckPosition < 0 {
+			return RedactionRecord{}, errors.New("an acknowledge record names no leaf")
+		}
 	}
 	return r, nil
 }
@@ -460,18 +476,6 @@ func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error) {
 	add := func(k RedactionFindingKind, run, format string, a ...any) {
 		rep.Findings = append(rep.Findings, RedactionFinding{Kind: k, RunID: run, Detail: fmt.Sprintf(format, a...)})
 	}
-	// Each leaf is read on its own: one that does not read is reported and skipped, never accounted
-	// for, and does not stop the check of the rest (one planted leaf must not block every later erasure).
-	recs := make([]RedactionRecord, len(in.Trail))
-	trusted := make([]bool, len(in.Trail))
-	for i, l := range in.Trail {
-		r, err := DecodeRedactionLeaf(l)
-		if err != nil {
-			add(FindingMalformed, "", "trail record %d does not read: %v", i, err)
-			continue
-		}
-		recs[i], trusted[i] = r, true
-	}
 	// Anchoring: every head verifies, is of this trail, and commits to a prefix of it.
 	newest := -1
 	for _, h := range in.Heads {
@@ -502,23 +506,21 @@ func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error) {
 			add(FindingUnattestedTail, "", "%d record(s) after the newest signed head (size %d) are not attested", len(in.Trail)-newest, newest)
 		}
 	}
-	// A record counts only if it was written by the tool: signed under the key, for this deployment,
-	// at its position and after its predecessor. Any other is reported, and accounts for nothing.
+	recs, trusted, pend := classifyTrail(in)
+	// A planted, replayed or unreadable leaf is a finding, unless the redaction key signed an
+	// acknowledgement of exactly that leaf (its position and hash) after it.
+	acked := map[[2]string]bool{}
 	for i, r := range recs {
-		if !trusted[i] {
+		if trusted[i] && r.Phase == RedactionAcknowledge && r.AckPosition < i {
+			acked[[2]string{fmt.Sprint(r.AckPosition), r.AckLeafHash}] = true
+		}
+	}
+	for _, f := range pend {
+		if acked[[2]string{fmt.Sprint(f.pos), hex.EncodeToString(leafHash(in.Trail[f.pos]))}] {
+			rep.Notes = append(rep.Notes, fmt.Sprintf("trail record %d (%s) is acknowledged by a signed record of the redaction key: %s", f.pos, f.kind, f.detail))
 			continue
 		}
-		switch {
-		case !r.verifySignature(in.Verifier):
-			add(FindingBadSignature, r.RunID, "trail record %d has no signature that verifies under the key: it was not written by the redaction tool (a planted record), whatever signed head covers it", i)
-		case r.Deployment != in.Deployment:
-			add(FindingBadSignature, r.RunID, "trail record %d is signed for deployment %q, not %q: it was copied from another trail", i, r.Deployment, in.Deployment)
-		case r.Position != i || !bytes.Equal(r.Prev, prevHash(in.Trail, i)):
-			add(FindingReordered, r.RunID, "trail record %d was signed for position %d after another record: a replayed, copied or reordered record (it hides the pass that follows it)", i, r.Position)
-		default:
-			continue
-		}
-		trusted[i] = false
+		add(f.kind, f.run, "%s", f.detail)
 	}
 	type key struct {
 		run string
@@ -534,7 +536,7 @@ func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error) {
 	history := map[string][]pass{} // run + plan digest -> its records, in order
 	var order []string
 	for i, r := range recs {
-		if !trusted[i] {
+		if !trusted[i] || r.Phase == RedactionAcknowledge {
 			continue
 		}
 		id := r.RunID + "\x00" + r.PlanDigest
@@ -665,6 +667,16 @@ func SignRedactionTrail(ctx context.Context, store EventStore, signer Signer, v 
 	return SignTreeHead(TreeHead{Kind: TreeEvents, RunID: RedactionTrailName, Size: len(leaves), Root: merkleRoot(leaves), TimestampNanos: now.UnixNano()}, signer)
 }
 
+// CheckRedactionTrail checks, as RedactJournal does before it appends, that the redaction trail in store
+// is the one the earlier heads attest, and returns ErrRedactTrailUntrusted if it is not. A planted
+// record does not fail it.
+func CheckRedactionTrail(ctx context.Context, store EventStore, signer Signer, deployment string, prior []SignedTreeHead) error {
+	if store == nil || signer == nil || strings.TrimSpace(deployment) == "" {
+		return fmt.Errorf("audit: CheckRedactionTrail: a store, a signer and a deployment name are required: %w", agent.ErrConfig)
+	}
+	return checkTrailBeforeAppend(ctx, store, RedactionOptions{Signer: signer, Deployment: strings.TrimSpace(deployment), TrailHeads: prior})
+}
+
 // checkTrailBeforeAppend refuses to append to a trail that holds a record the redaction key did not
 // match the heads given, before anything is erased or written. A planted record does not stop an erasure.
 func checkTrailBeforeAppend(ctx context.Context, trail EventStore, opt RedactionOptions) error {
@@ -687,4 +699,87 @@ func checkTrailBeforeAppend(ctx context.Context, trail EventStore, opt Redaction
 		}
 	}
 	return nil
+}
+
+// A pendingFinding is a problem with one trail leaf, held until the acknowledgements are read.
+type pendingFinding struct {
+	pos    int
+	kind   RedactionFindingKind
+	run    string
+	detail string
+}
+
+// classifyTrail reads each leaf of in.Trail on its own and decides which are the tool's: a record
+// counts only if it reads, is signed under the key, is signed for this deployment, and is at the
+// position, after the record, it was signed for. Any other is returned as a pending finding, and
+// accounts for nothing. in.Deployment must be trimmed.
+func classifyTrail(in RedactionVerifyInput) (recs []RedactionRecord, trusted []bool, pend []pendingFinding) {
+	recs = make([]RedactionRecord, len(in.Trail))
+	trusted = make([]bool, len(in.Trail))
+	for i, l := range in.Trail {
+		r, err := DecodeRedactionLeaf(l)
+		if err != nil {
+			pend = append(pend, pendingFinding{i, FindingMalformed, "", fmt.Sprintf("trail record %d does not read: %v", i, err)})
+			continue
+		}
+		recs[i], trusted[i] = r, true
+	}
+	for i, r := range recs {
+		if !trusted[i] {
+			continue
+		}
+		switch {
+		case !r.verifySignature(in.Verifier):
+			pend = append(pend, pendingFinding{i, FindingBadSignature, r.RunID, fmt.Sprintf("trail record %d has no signature that verifies under the key: it was not written by the redaction tool (a planted record), whatever signed head covers it", i)})
+		case r.Deployment != in.Deployment:
+			pend = append(pend, pendingFinding{i, FindingBadSignature, r.RunID, fmt.Sprintf("trail record %d is signed for deployment %q, not %q: it was copied from another trail", i, r.Deployment, in.Deployment)})
+		case r.Position != i || !bytes.Equal(r.Prev, prevHash(in.Trail, i)):
+			pend = append(pend, pendingFinding{i, FindingReordered, r.RunID, fmt.Sprintf("trail record %d was signed for position %d after another record: a replayed, copied or reordered record (it hides the pass that follows it)", i, r.Position)})
+		default:
+			continue
+		}
+		trusted[i] = false
+	}
+	slices.SortStableFunc(pend, func(a, b pendingFinding) int { return a.pos - b.pos })
+	return recs, trusted, pend
+}
+
+// AcknowledgeRecord appends to the redaction trail a record, signed with signer (the redaction key),
+// in which the operator acknowledges the leaf at position: a planted, replayed or unreadable one that
+// VerifyRedactions reports and that the operator has investigated. The record names the leaf's
+// position and the hash of its bytes, with the reason, the ticket and who, so VerifyRedactions then
+// reports that leaf as acknowledged and no longer fails on it. It acknowledges nothing else: not a
+// leaf the tool wrote, not a tombstone no pass accounts for, and not a different leaf at that
+// position later. It refuses a position that holds no finding.
+func AcknowledgeRecord(ctx context.Context, store EventStore, signer Signer, deployment string, position int, reason, ticket, executor string, now time.Time) error {
+	deployment = strings.TrimSpace(deployment)
+	switch {
+	case store == nil || signer == nil:
+		return fmt.Errorf("audit: AcknowledgeRecord: a store and a signer are required: %w", agent.ErrConfig)
+	case deployment == "":
+		return fmt.Errorf("audit: AcknowledgeRecord: a deployment name is required: %w", agent.ErrConfig)
+	case strings.TrimSpace(reason) == "" || strings.TrimSpace(ticket) == "" || strings.TrimSpace(executor) == "":
+		return fmt.Errorf("audit: AcknowledgeRecord: a reason, a ticket and an executor are required, and are recorded: %w", agent.ErrConfig)
+	case now.IsZero():
+		return fmt.Errorf("audit: AcknowledgeRecord: no time: %w", agent.ErrConfig)
+	}
+	v, err := NewVerifier(signer.Alg(), signer.PublicKey())
+	if err != nil {
+		return fmt.Errorf("audit: AcknowledgeRecord: the signer's public key: %w", err)
+	}
+	leaves, err := store.Load(ctx, RedactionTrailName)
+	if err != nil {
+		return fmt.Errorf("audit: load the redaction trail: %w", err)
+	}
+	if position < 0 || position >= len(leaves) {
+		return fmt.Errorf("audit: AcknowledgeRecord: position %d is outside the trail of %d record(s): %w", position, len(leaves), agent.ErrConfig)
+	}
+	_, _, pend := classifyTrail(RedactionVerifyInput{Trail: leaves, Verifier: v, Deployment: deployment})
+	if !slices.ContainsFunc(pend, func(f pendingFinding) bool { return f.pos == position }) {
+		return fmt.Errorf("audit: AcknowledgeRecord: the record at position %d is not a finding: only a record the tool did not write (BAD_SIGNATURE, REORDERED, MALFORMED) can be acknowledged: %w", position, agent.ErrConfig)
+	}
+	return AppendRedactionRecord(ctx, store, RedactionRecord{
+		Phase: RedactionAcknowledge, RunID: "", Reason: reason, Ticket: ticket, Executor: executor, AtMs: now.UnixMilli(),
+		Deployment: deployment, AckPosition: position, AckLeafHash: hex.EncodeToString(leafHash(leaves[position])),
+	}, signer)
 }

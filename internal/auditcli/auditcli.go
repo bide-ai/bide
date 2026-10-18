@@ -186,7 +186,8 @@ const usageText = `bide audit: produce and verify audit proof bundles
          redaction key: planted by someone who can append to the event store) is BAD_SIGNATURE, whatever head covers it, and accounts for nothing (neither does a record
          that does not read, MALFORMED); a record signed for another position or after another
          record (a replayed, copied or reordered one, which would hide an unfinished pass) is
-         REORDERED, and one signed for another -deployment (required) is BAD_SIGNATURE; each begin has an end (INCOMPLETE is an
+         REORDERED, and one signed for another -deployment (required) is BAD_SIGNATURE (an operator's
+         signed acknowledgement of exactly that leaf, bide journal acknowledge, turns these findings for it into a note); each begin has an end (INCOMPLETE is an
          unfinished pass, finished by running the same plan again); a tombstone in a journal that no
          trail record names is UNACCOUNTED (an erasure made by hand), and one whose name or leaf hash
          is not what the trail recorded is NAME_MISMATCH or HASH_MISMATCH: a tombstone's name is

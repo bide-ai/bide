@@ -3,6 +3,7 @@ package audit_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -949,5 +950,133 @@ func TestRedactionTrail_NoPanicOnOddInputs(t *testing.T) {
 	}
 	if rep, _ := audit.VerifyRedactions(audit.RedactionVerifyInput{Deployment: "test", Trail: [][]byte{nil, {}, []byte("x")}, Unanchored: true}); rep.OK() {
 		t.Errorf("empty and junk leaves verified")
+	}
+}
+
+func (r *trailRig) ack(signer audit.Signer, pos int) error {
+	return audit.AcknowledgeRecord(context.Background(), r.trail, signer, "test", pos, "investigated: a test plant", "SEC-7", "operator", time.UnixMilli(1_700_000_005_000))
+}
+
+// An operator acknowledges a planted leaf by position and hash: the audit then reports it as
+// acknowledged and stops failing on it; what the acknowledgement does not name still fails.
+func TestAcknowledgeRecord_AcknowledgesExactlyTheNamedLeaf(t *testing.T) {
+	ctx := context.Background()
+	r := newTrailRig(t)
+	if _, err := audit.RedactJournal(ctx, r.j, r.trail, r.plan, r.options); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := r.trail.Load(ctx, audit.RedactionTrailName)
+	r.plant(nil, "gov") // two unsigned leaves, at positions len(before) and len(before)+1
+	p0, p1 := len(before), len(before)+1
+	verify := func() (audit.RedactionReport, error) {
+		leaves, head := r.signedTrail()
+		return r.verify(leaves, head)
+	}
+	rep, err := verify()
+	if err == nil || strings.Count(kinds(rep), "BAD_SIGNATURE") != 2 {
+		t.Fatalf("before: %+v, %v; want two BAD_SIGNATURE", rep, err)
+	}
+	if err := r.ack(r.signer, p0); err != nil {
+		t.Fatal(err)
+	}
+	rep, err = verify()
+	if err == nil || strings.Count(kinds(rep), "BAD_SIGNATURE") != 1 || len(rep.Notes) != 1 || !strings.Contains(rep.Notes[0], "acknowledged") {
+		t.Fatalf("after acknowledging one: %+v, %v; want one BAD_SIGNATURE left and a note", rep, err)
+	}
+	if err := r.ack(r.signer, p1); err != nil {
+		t.Fatal(err)
+	}
+	rep, err = verify()
+	if err != nil || !rep.OK() || len(rep.Notes) != 2 {
+		t.Fatalf("after acknowledging both: %+v, %v; want OK with two notes", rep, err)
+	}
+	// The acknowledgement names the leaf's hash: the same position holding other bytes fails again.
+	leaves, _ := r.trail.Load(ctx, audit.RedactionTrailName)
+	swapped := append([][]byte(nil), leaves...)
+	swapped[p0] = append([]byte("junk-"), swapped[p0]...)
+	rep, err = audit.VerifyRedactions(audit.RedactionVerifyInput{Deployment: "test", Trail: swapped, Verifier: r.v, Unanchored: true, Journals: r.journals()})
+	if err == nil || !strings.Contains(kinds(rep), "MALFORMED") {
+		t.Fatalf("a leaf changed after it was acknowledged: %+v, %v; want it reported again", rep, err)
+	}
+}
+
+func TestAcknowledgeRecord_RefusalsAndForgeries(t *testing.T) {
+	ctx := context.Background()
+	r := newTrailRig(t)
+	if _, err := audit.RedactJournal(ctx, r.j, r.trail, r.plan, r.options); err != nil {
+		t.Fatal(err)
+	}
+	// Only a finding can be acknowledged: not a record the tool wrote, not a position outside the trail.
+	for _, pos := range []int{0, 1, -1, 99} {
+		if err := r.ack(r.signer, pos); !errors.Is(err, agent.ErrConfig) {
+			t.Errorf("acknowledging position %d = %v, want an ErrConfig refusal", pos, err)
+		}
+	}
+	for name, f := range map[string]func() error{
+		"no reason": func() error {
+			return audit.AcknowledgeRecord(ctx, r.trail, r.signer, "test", 0, " ", "t", "o", time.Now())
+		},
+		"no ticket": func() error {
+			return audit.AcknowledgeRecord(ctx, r.trail, r.signer, "test", 0, "r", "", "o", time.Now())
+		},
+		"no executor": func() error {
+			return audit.AcknowledgeRecord(ctx, r.trail, r.signer, "test", 0, "r", "t", "", time.Now())
+		},
+		"no deployment": func() error {
+			return audit.AcknowledgeRecord(ctx, r.trail, r.signer, " ", 0, "r", "t", "o", time.Now())
+		},
+		"no time": func() error {
+			return audit.AcknowledgeRecord(ctx, r.trail, r.signer, "test", 0, "r", "t", "o", time.Time{})
+		},
+		"nil store": func() error { return audit.AcknowledgeRecord(ctx, nil, r.signer, "test", 0, "r", "t", "o", time.Now()) },
+	} {
+		if err := f(); !errors.Is(err, agent.ErrConfig) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// A planted leaf, then forged acknowledgements of it: unsigned, signed by another key, and one
+	// written before the leaf it names. None acknowledges it.
+	r.plant(nil, "gov")
+	leaves, _ := r.trail.Load(ctx, audit.RedactionTrailName)
+	target := len(leaves) - 2
+	forged := audit.RedactionRecord{Phase: audit.RedactionAcknowledge, Deployment: "test", Reason: "x", Ticket: "x", Executor: "x", AtMs: 1,
+		AckPosition: target, AckLeafHash: hex.EncodeToString(leafHashOf(leaves[target]))}
+	if err := r.trail.Append(ctx, audit.RedactionTrailName, len(leaves), unsignedLeaf(t, forged)); err != nil {
+		t.Fatal(err)
+	}
+	if err := audit.AppendRedactionRecord(ctx, r.trail, forged, p11Signers(t)["ecdsa-p256"]); err != nil {
+		t.Fatal(err)
+	}
+	all, _ := r.trail.Load(ctx, audit.RedactionTrailName)
+	rep, err := audit.VerifyRedactions(audit.RedactionVerifyInput{Deployment: "test", Trail: all, Verifier: r.v, Unanchored: true, Journals: r.journals()})
+	if err == nil || len(rep.Notes) != 0 || strings.Count(kinds(rep), "BAD_SIGNATURE") < 3 {
+		t.Fatalf("forged acknowledgements: %+v, %v; want the planted leaf and both forgeries reported and no note", rep, err)
+	}
+}
+
+func leafHashOf(leaf []byte) []byte {
+	h := sha256.New()
+	h.Write([]byte{0})
+	h.Write(leaf)
+	return h.Sum(nil)
+}
+
+// An acknowledgement written before the leaf it names does not acknowledge it.
+func TestAcknowledgeRecord_MustComeAfterTheLeaf(t *testing.T) {
+	ctx := context.Background()
+	r := newTrailRig(t)
+	planted := unsignedLeaf(t, audit.RedactionRecord{Phase: audit.RedactionBegin, Deployment: "test", PlanDigest: "p", RunID: "gov", Reason: "x", Ticket: "x", Executor: "x", AtMs: 1})
+	ack := audit.RedactionRecord{Phase: audit.RedactionAcknowledge, Deployment: "test", Reason: "x", Ticket: "x", Executor: "x", AtMs: 1,
+		AckPosition: 1, AckLeafHash: hex.EncodeToString(leafHashOf(planted))}
+	if err := audit.AppendRedactionRecord(ctx, r.trail, ack, r.signer); err != nil { // position 0, naming position 1
+		t.Fatal(err)
+	}
+	if err := r.trail.Append(ctx, audit.RedactionTrailName, 1, planted); err != nil {
+		t.Fatal(err)
+	}
+	leaves, _ := r.trail.Load(ctx, audit.RedactionTrailName)
+	rep, err := audit.VerifyRedactions(audit.RedactionVerifyInput{Deployment: "test", Trail: leaves, Verifier: r.v, Unanchored: true})
+	if err == nil || !strings.Contains(kinds(rep), "BAD_SIGNATURE") || len(rep.Notes) != 0 {
+		t.Fatalf("report = %+v, %v; want the leaf reported and no acknowledgement", rep, err)
 	}
 }

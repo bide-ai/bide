@@ -534,6 +534,9 @@ usage: bide journal redact (-db <file> | -postgres-env <var> [-schema <name>]) -
   redact  replace the content of records of a finished run with tombstones that keep each record's
           position, name and leaf hash, so the run's signed heads and every other record's proof
           still verify, and record the erasure in a signed trail. Run bide journal redact -h.
+  acknowledge  sign a note that a leaf in the redaction trail that the tool did not write (a planted
+          one that bide audit redactions reports) has been investigated; the audit then reports it as
+          acknowledged. Run bide journal acknowledge -h.
 
 Exit status:
   0  success
@@ -614,6 +617,47 @@ erases and an "end" record after; if it stops partway, run the same plan again.
     	keep the redaction trail in this SQLite file instead of the journal's (recommended: a store the erasing role cannot rewrite)
   -trail-postgres-env string
     	keep the redaction trail in the Postgres database whose DSN is in this variable, instead of the journal's
+```
+
+### bide journal acknowledge
+
+```text
+usage: bide journal acknowledge (-db <file> | -postgres-env <var> | -trail-db <file> | -trail-postgres-env <var>)
+                                -position <n> -reason <text> -ticket <id> -deployment <name> -sign-key <file> -head-out <file>
+
+Acknowledges a leaf in the redaction trail that the redaction tool did not write: one that bide audit
+redactions reports as BAD_SIGNATURE, REORDERED or MALFORMED. Investigate it first (who could append to
+the event store?). The acknowledgement is a signed record naming the leaf's position and the hash of its
+bytes, with the reason, the ticket and who; the audit then reports that leaf as acknowledged and stops
+failing on it. It acknowledges nothing else: not a record the tool wrote, not an erasure made by hand, and
+not another leaf later at that position. It cannot be undone: the trail is append-only.
+
+  -accept-unheaded-trail
+    	sign although the trail holds records and no earlier head attests them
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
+  -db string
+    	the SQLite journal whose event store holds the redaction trail
+  -deployment string
+    	the deployment name signed into every trail record (required)
+  -head-out string
+    	the file of the trail's signed heads: it is read for the earlier heads and the new head is appended to it
+  -position int
+    	the position in the trail of the leaf to acknowledge (bide audit redactions names it in its finding) (default -1)
+  -postgres-env string
+    	the environment variable that holds the Postgres DSN of a role that can append to the event store (never given on the command line)
+  -reason string
+    	what was found, in words (recorded)
+  -schema string
+    	with -postgres-env: the schema that holds the journal
+  -sign-key string
+    	the log signing key file that signs the acknowledgement and the trail's head (never printed)
+  -ticket string
+    	the ticket or authority (recorded)
+  -trail-db string
+    	the SQLite file that holds the redaction trail, when kept apart from the journal
+  -trail-postgres-env string
+    	the environment variable that holds the DSN of the Postgres database that holds the redaction trail
 ```
 
 ## bide approve
@@ -1187,7 +1231,8 @@ bide audit: produce and verify audit proof bundles
          redaction key: planted by someone who can append to the event store) is BAD_SIGNATURE, whatever head covers it, and accounts for nothing (neither does a record
          that does not read, MALFORMED); a record signed for another position or after another
          record (a replayed, copied or reordered one, which would hide an unfinished pass) is
-         REORDERED, and one signed for another -deployment (required) is BAD_SIGNATURE; each begin has an end (INCOMPLETE is an
+         REORDERED, and one signed for another -deployment (required) is BAD_SIGNATURE (an operator's
+         signed acknowledgement of exactly that leaf, bide journal acknowledge, turns these findings for it into a note); each begin has an end (INCOMPLETE is an
          unfinished pass, finished by running the same plan again); a tombstone in a journal that no
          trail record names is UNACCOUNTED (an erasure made by hand), and one whose name or leaf hash
          is not what the trail recorded is NAME_MISMATCH or HASH_MISMATCH: a tombstone's name is

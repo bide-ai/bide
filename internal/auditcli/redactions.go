@@ -108,6 +108,9 @@ func (c *cli) redactions(args []string) {
 	if b, merr := json.Marshal(rep); merr == nil {
 		c.artifact = b
 	}
+	for _, n := range rep.Notes {
+		c.printf("INFO  %s\n", cleanText(n))
+	}
 	for _, f := range rep.Findings {
 		run := ""
 		if f.RunID != "" {
