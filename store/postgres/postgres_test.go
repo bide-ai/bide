@@ -139,11 +139,16 @@ func TestPostgres_LeaseExpiry(t *testing.T) {
 	_ = store.ReleaseLease(ctx, run, "A")
 	_ = store.ReleaseLease(ctx, run, "B")
 
-	if ok, _ := store.AcquireLease(ctx, run, "A", 300*time.Millisecond); !ok {
+	// A long lease first, so a slow runner cannot let it expire before B's attempt; then A
+	// shortens it with a renewal and it is let expire.
+	if ok, _ := store.AcquireLease(ctx, run, "A", time.Minute); !ok {
 		t.Fatal("A should acquire")
 	}
 	if ok, _ := store.AcquireLease(ctx, run, "B", time.Minute); ok {
 		t.Fatal("B must not take A's live lease")
+	}
+	if ok, _ := store.RenewLease(ctx, run, "A", 300*time.Millisecond); !ok {
+		t.Fatal("A should shorten its live lease")
 	}
 	time.Sleep(500 * time.Millisecond) // let A's lease expire against the DB clock
 	if ok, _ := store.AcquireLease(ctx, run, "B", time.Minute); !ok {
