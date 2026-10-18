@@ -60,6 +60,7 @@ var (
 	_ agent.Store     = (*Store)(nil)
 	_ agent.Redactor  = (*Store)(nil)
 	_ agent.Compactor = (*Store)(nil)
+	_ agent.Holder    = (*Store)(nil)
 	_ agent.Lister    = (*Store)(nil)
 	_ agent.Leaser    = (*Store)(nil)
 )
@@ -67,7 +68,9 @@ var (
 // tables holds the table names, prefixed, and the statements built from them.
 type tables struct {
 	steps, leases, version, events    string
+	holds                             string
 	insert, get, load, redact         string
+	held                              string
 	parentLive                        string
 	appendEvent, getEvent, loadEvents string
 }
@@ -244,17 +247,19 @@ func mainFile(ctx context.Context, db *sql.DB) string {
 }
 
 func (c config) tables() tables {
-	t := tables{steps: c.prefix + "steps", leases: c.prefix + "leases", version: c.prefix + "schema_version", events: c.prefix + "events"}
+	t := tables{steps: c.prefix + "steps", leases: c.prefix + "leases", version: c.prefix + "schema_version", events: c.prefix + "events", holds: c.prefix + "holds"}
 	t.insert = `INSERT INTO ` + t.steps + ` (run_id, name, data) VALUES (?, ?, ?) ON CONFLICT (run_id, name) DO NOTHING`
 	// The replacement is one statement, so it is atomic: the row's bytes are the caller's, the run
 	// holds an end marker, and no lease on it is live, all read in the same write transaction.
 	t.redact = `UPDATE ` + t.steps + ` SET data = ?3 WHERE run_id = ?1 AND name = ?2 AND data = ?4
 		AND EXISTS (SELECT 1 FROM ` + t.steps + ` AS e WHERE e.run_id = ?1 AND e.name IN (SELECT value FROM json_each(?5)))
 		AND NOT EXISTS (SELECT 1 FROM ` + t.leases + ` AS l WHERE l.run_id = ?1 AND l.expiry >= unixepoch('subsec'))
-		AND NOT EXISTS (` + parentLiveSQL(t.steps) + `)`
+		AND NOT EXISTS (` + parentLiveSQL(t.steps) + `)
+		AND NOT EXISTS (` + heldSQL(t.holds) + `)`
 	// A run above a sub-agent's run (?6, a JSON array of run IDs) that holds records and no end
 	// marker (?5) is still being driven, and replays the sub-run's records.
 	t.parentLive = parentLiveSQL(t.steps)
+	t.held = heldSQL(t.holds)
 	t.get = `SELECT seq, data FROM ` + t.steps + ` WHERE run_id = ? AND name = ?`
 	t.load = `SELECT seq, name, data FROM ` + t.steps + ` WHERE run_id = ? AND seq > ? ORDER BY seq LIMIT ?`
 	t.appendEvent = `INSERT INTO ` + t.events + ` (run_id, seq, leaf)
@@ -263,6 +268,12 @@ func (c config) tables() tables {
 	t.getEvent = `SELECT leaf FROM ` + t.events + ` WHERE run_id = ? AND seq = ?`
 	t.loadEvents = `SELECT seq, leaf FROM ` + t.events + ` WHERE run_id = ? AND seq >= ? ORDER BY seq LIMIT ?`
 	return t
+}
+
+// heldSQL selects a hold that covers the run ?1: one that names it, or, with tree set, one that names a
+// run above it (?6, the JSON array of the run's ancestors).
+func heldSQL(holds string) string {
+	return `SELECT 1 FROM ` + holds + ` AS h WHERE h.run_id = ?1 OR (h.tree = 1 AND h.run_id IN (SELECT value FROM json_each(?6)))`
 }
 
 // parentLiveSQL selects a run among the JSON array ?6 that holds an entry and no end marker (the
@@ -306,8 +317,16 @@ func (s *Store) migrate(ctx context.Context) error {
 			seq    INTEGER NOT NULL CHECK (seq >= 0),
 			leaf   BLOB    NOT NULL,
 			PRIMARY KEY (run_id, seq)
+		) WITHOUT ROWID;
+		CREATE TABLE IF NOT EXISTS %[6]s (
+			hold_id      TEXT    NOT NULL,
+			run_id       TEXT    NOT NULL,
+			tree         INTEGER NOT NULL CHECK (tree IN (0, 1)),
+			matter       TEXT    NOT NULL,
+			placed_at_ms INTEGER NOT NULL,
+			PRIMARY KEY (hold_id, run_id)
 		) WITHOUT ROWID;`,
-		s.t.steps, s.t.leases, s.t.version, schemaVersion, s.t.events)); err != nil {
+		s.t.steps, s.t.leases, s.t.version, schemaVersion, s.t.events, s.t.holds)); err != nil {
 		return fmt.Errorf("sqlite: create tables: %w (%w)", err, agent.ErrStorage)
 	}
 	var v int
@@ -437,6 +456,9 @@ func (s *Store) Redact(ctx context.Context, runID, name string, current, tombsto
 		}
 		if err := s.w.QueryRowContext(ctx, `SELECT EXISTS (`+s.t.parentLive+`)`, runID, name, nil, nil, string(markers), string(ancestors)).Scan(&st.ParentLive); err != nil {
 			return false, fmt.Errorf("redact step %q: read the parent runs: %w (%w)", name, err, agent.ErrStorage)
+		}
+		if err := s.w.QueryRowContext(ctx, `SELECT EXISTS (`+s.t.held+`)`, runID, nil, nil, nil, nil, string(ancestors)).Scan(&st.Held); err != nil {
+			return false, fmt.Errorf("redact step %q: read the legal holds: %w (%w)", name, err, agent.ErrStorage)
 		}
 	}
 	return false, st.Explain(runID, name, current, tombstone)
@@ -751,4 +773,88 @@ func (s *Store) ReapLeases(ctx context.Context, ended []string) (int, error) {
 		return 0, fmt.Errorf("reap leases: %w (%w)", err, agent.ErrStorage)
 	}
 	return int(n), nil
+}
+
+// PlaceHold implements agent.Holder: one statement, so atomic, that inserts a row for each run the hold
+// names; a hold whose ID is active already violates the key and is refused.
+func (s *Store) PlaceHold(ctx context.Context, h agent.Hold) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := agent.CheckHold(h); err != nil {
+		return err
+	}
+	runs, err := json.Marshal(h.Runs)
+	if err != nil {
+		return fmt.Errorf("place hold %q: %w (%w)", h.ID, err, agent.ErrStorage)
+	}
+	tree := 0
+	if h.Tree {
+		tree = 1
+	}
+	res, err := s.write(ctx, `INSERT INTO `+s.t.holds+` (hold_id, run_id, tree, matter, placed_at_ms)
+		SELECT DISTINCT ?1, value, ?3, ?4, CAST(unixepoch('subsec') * 1000 AS INTEGER) FROM json_each(?2)
+		WHERE NOT EXISTS (SELECT 1 FROM `+s.t.holds+` WHERE hold_id = ?1)`, h.ID, string(runs), tree, h.Matter)
+	if err != nil {
+		return fmt.Errorf("place hold %q: %w (%w)", h.ID, err, agent.ErrStorage)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("place hold %q: %w (%w)", h.ID, err, agent.ErrStorage)
+	} else if n == 0 {
+		return fmt.Errorf("hold %q: %w", h.ID, agent.ErrHoldExists) // nothing was inserted: the ID is active
+	}
+	return nil
+}
+
+// LiftHold implements agent.Holder.
+func (s *Store) LiftHold(ctx context.Context, id string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	res, err := s.write(ctx, `DELETE FROM `+s.t.holds+` WHERE hold_id = ?`, id)
+	if err != nil {
+		return false, fmt.Errorf("lift hold %q: %w (%w)", id, err, agent.ErrStorage)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("lift hold %q: %w (%w)", id, err, agent.ErrStorage)
+	}
+	return n > 0, nil
+}
+
+// Holds implements agent.Holder. A file with no holds table (one written before holds, opened
+// read-only) holds no hold.
+func (s *Store) Holds(ctx context.Context) ([]agent.Hold, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var n int
+	if err := s.w.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, s.t.holds).Scan(&n); err != nil {
+		return nil, fmt.Errorf("read the legal holds: %w (%w)", err, agent.ErrStorage)
+	}
+	if n == 0 {
+		return nil, nil
+	}
+	rows, err := s.w.QueryContext(ctx, `SELECT hold_id, run_id, tree, matter, placed_at_ms FROM `+s.t.holds+` ORDER BY hold_id, run_id`)
+	if err != nil {
+		return nil, fmt.Errorf("read the legal holds: %w (%w)", err, agent.ErrStorage)
+	}
+	defer rows.Close()
+	var out []agent.Hold
+	for rows.Next() {
+		var id, run, matter string
+		var tree int
+		var at int64
+		if err := rows.Scan(&id, &run, &tree, &matter, &at); err != nil {
+			return nil, fmt.Errorf("read the legal holds: %w (%w)", err, agent.ErrStorage)
+		}
+		if len(out) == 0 || out[len(out)-1].ID != id {
+			out = append(out, agent.Hold{ID: id, Matter: matter, Tree: tree == 1, PlacedAtMs: at})
+		}
+		out[len(out)-1].Runs = append(out[len(out)-1].Runs, run)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the legal holds: %w (%w)", err, agent.ErrStorage)
+	}
+	return out, nil
 }

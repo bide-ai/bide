@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,11 +17,12 @@ import (
 )
 
 type redactRig struct {
-	app  *Store // the service role: appends
-	call func(run, name string, cur []byte, ms int64) string
-	raw  *sql.DB // the redaction role's connection
-	seen map[string]bool
-	t    *testing.T
+	app   *Store // the service role: appends
+	call  func(run, name string, cur []byte, ms int64) string
+	raw   *sql.DB // the redaction role's connection
+	seen  map[string]bool
+	admin *sql.DB
+	t     *testing.T
 }
 
 func newRedactRig(t *testing.T) *redactRig {
@@ -43,7 +45,7 @@ func newRedactRig(t *testing.T) *redactRig {
 		`GRANT SELECT, INSERT, UPDATE, DELETE ON `+schema+`.bide_leases TO `+app,
 		`GRANT SELECT ON `+schema+`.bide_schema_version TO `+app,
 		`GRANT EXECUTE ON FUNCTION `+schema+`.bide_next_seq_v1(text) TO `+app,
-		`GRANT EXECUTE ON FUNCTION `+schema+`.bide_redact_v1(text, text, bytea, bigint) TO `+redactor,
+		`GRANT EXECUTE ON FUNCTION `+schema+`.bide_redact_v2(text, text, bytea, bigint) TO `+redactor,
 	)
 	s, err := Open(ctx, rv120DSN(t, base, app, ""), WithSchema(schema), WithoutMigration())
 	if err != nil {
@@ -55,11 +57,11 @@ func newRedactRig(t *testing.T) *redactRig {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { raw.Close() })
-	r := &redactRig{app: s, raw: raw, t: t, seen: map[string]bool{}}
+	r := &redactRig{app: s, raw: raw, t: t, seen: map[string]bool{}, admin: admin}
 	r.call = func(run, name string, cur []byte, ms int64) string {
 		t.Helper()
 		var code string
-		if err := raw.QueryRowContext(ctx, `SELECT `+schema+`.bide_redact_v1($1, $2, $3, $4)`, run, name, cur, ms).Scan(&code); err != nil {
+		if err := raw.QueryRowContext(ctx, `SELECT `+schema+`.bide_redact_v2($1, $2, $3, $4)`, run, name, cur, ms).Scan(&code); err != nil {
 			t.Fatalf("call: %v", err)
 		}
 		return code
@@ -263,7 +265,7 @@ func TestRedactFunction_NeedsAGrant(t *testing.T) {
 	}
 	defer app.Close()
 	var code string
-	err = app.QueryRowContext(ctx, `SELECT rrschema.bide_redact_v1($1, $2, $3, $4)`, run, "tool:x", b, int64(1)).Scan(&code)
+	err = app.QueryRowContext(ctx, `SELECT rrschema.bide_redact_v2($1, $2, $3, $4)`, run, "tool:x", b, int64(1)).Scan(&code)
 	if err == nil || sqlState(err) != "42501" {
 		t.Fatalf("the service role called the redaction function: %q, %v; want permission denied", code, err)
 	}
@@ -292,14 +294,14 @@ func TestRedactFunction_DefinitionIsChecked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !containsPrefix(res.Created, "function \""+schema+"\".bide_redact_v1") {
+	if !containsPrefix(res.Created, "function \""+schema+"\".bide_redact_v2") {
 		t.Fatalf("the migration created %v, want the redaction function", res.Created)
 	}
 	if res, err = Migrate(ctx, dsn, WithSchema(schema)); err != nil || containsPrefix(res.Created, "function") {
 		t.Fatalf("a second migration = %+v, %v; want nothing created", res, err)
 	}
 	// A schema from before the function existed opens, and is brought up by the migration.
-	rv120Exec(t, admin, `DROP FUNCTION `+schema+`.bide_redact_v1(text, text, bytea, bigint)`)
+	rv120Exec(t, admin, `DROP FUNCTION `+schema+`.bide_redact_v2(text, text, bytea, bigint)`)
 	s, err := Open(ctx, dsn, WithSchema(schema), WithoutMigration())
 	if err != nil {
 		t.Fatalf("a schema without the redaction function does not open: %v", err)
@@ -309,7 +311,7 @@ func TestRedactFunction_DefinitionIsChecked(t *testing.T) {
 		t.Fatalf("migration of a schema without the function = %+v, %v", res, err)
 	}
 	// A function of that name with another body is refused.
-	rv120Exec(t, admin, `CREATE OR REPLACE FUNCTION `+schema+`.bide_redact_v1(r text, n text, cur bytea, ms bigint) RETURNS text LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$ BEGIN RETURN 'replaced'; END $$`)
+	rv120Exec(t, admin, `CREATE OR REPLACE FUNCTION `+schema+`.bide_redact_v2(r text, n text, cur bytea, ms bigint) RETURNS text LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$ BEGIN RETURN 'replaced'; END $$`)
 	if s, err := Open(ctx, dsn, WithSchema(schema), WithoutMigration()); err == nil {
 		s.Close()
 		t.Fatal("Open accepted a redaction function with another body")
@@ -330,4 +332,68 @@ func containsPrefix(ss []string, p string) bool {
 func rv120DSNFor(t *testing.T, user string) string {
 	_, base := rv120Admin(t)
 	return rv120DSN(t, base, user, "")
+}
+
+// A legal hold is enforced by the function, for the role that has nothing but EXECUTE: the hold is in
+// the database, the role cannot read or change it, and the function says "held". Lifting it lets the
+// same call through. A hold placed through the store's own methods (a role with the hold table's
+// privileges) is read the same way.
+func TestRedactFunction_ARowInTheHoldsTableHoldsTheRun(t *testing.T) {
+	r := newRedactRig(t)
+	ctx := context.Background()
+	const ms = 1_700_000_000_000
+	run := uniqueID(t, "held-")
+	r.put(run, "run:complete", agent.StepValue, `"ok"`)
+	tool := r.put(run, "tool:x", agent.StepToolResult, `{"pii":1}`)
+	child := agent.SubRunID(run, "c1")
+	r.put(child, "run:complete", agent.StepValue, `"ok"`)
+	childTool := r.put(child, "tool:y", agent.StepToolResult, `{"pii":2}`)
+	r.put(run, "tool:z", agent.StepToolResult, `{"pii":3}`)
+
+	if _, err := r.admin.ExecContext(ctx, `INSERT INTO rrschema.bide_holds (hold_id, run_id, tree, matter, placed_at_ms) VALUES ('h1', $1, true, 'case', 1)`, run); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.call(run, "tool:x", tool, ms); got != "held" {
+		t.Errorf("a held run: code %q, want held", got)
+	}
+	if got := r.call(child, "tool:y", childTool, ms); got != "held" {
+		t.Errorf("a sub-run under a tree hold: code %q, want held", got)
+	}
+	// The redaction role can neither read nor change the holds.
+	for _, q := range []string{`SELECT * FROM rrschema.bide_holds`, `DELETE FROM rrschema.bide_holds`, `INSERT INTO rrschema.bide_holds VALUES ('x','y',false,'m',1)`} {
+		if _, err := r.raw.ExecContext(ctx, q); err == nil {
+			t.Errorf("the redaction role ran %q", q)
+		}
+	}
+	if _, err := r.admin.ExecContext(ctx, `DELETE FROM rrschema.bide_holds WHERE hold_id = 'h1'`); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.call(run, "tool:x", tool, ms); got != "replaced" {
+		t.Errorf("after the lift: code %q, want replaced", got)
+	}
+}
+
+// A schema whose redaction function is gone (a schema migrated before holds has only the first
+// version, which does not check them) is told to migrate, not erased through.
+func TestRedact_WithoutTheFunctionSaysToMigrate(t *testing.T) {
+	r := newRedactRig(t)
+	ctx := context.Background()
+	run := uniqueID(t, "nofn-")
+	r.put(run, "run:complete", agent.StepValue, `"ok"`)
+	tool := r.put(run, "tool:x", agent.StepToolResult, `{"pii":1}`)
+	if _, err := r.admin.ExecContext(ctx, `DROP FUNCTION rrschema.bide_redact_v2(text, text, bytea, bigint)`); err != nil {
+		t.Fatal(err)
+	}
+	// An older function of the first version, which a schema from before holds still has, is not called.
+	if _, err := r.admin.ExecContext(ctx, `CREATE FUNCTION rrschema.bide_redact_v1(r text, n text, cur bytea, ms bigint) RETURNS text LANGUAGE sql AS $$ SELECT 'replaced' $$`); err != nil {
+		t.Fatal(err)
+	}
+	tomb, _ := agent.NewTombstone("tool:x", tool, time.UnixMilli(1))
+	rd := r.app
+	if done, err := rd.Redact(ctx, run, "tool:x", tool, tomb); done || !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "migration") {
+		t.Fatalf("Redact without the function = %v, %v; want ErrConfig telling to run the migration", done, err)
+	}
+	if !bytes.Equal(r.stored(run, "tool:x"), tool) {
+		t.Fatal("the row changed")
+	}
 }

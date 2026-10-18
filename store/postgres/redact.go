@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
 )
@@ -23,7 +24,7 @@ import (
 //
 // It returns a code: "replaced", "already" (the entry already holds the redaction of these bytes),
 // or the reason it replaced nothing: "session", "mismatch", "protected", "no_entry", "changed",
-// "not_terminal", "leased", "parent_live". The Go side (agent.CheckRedaction) makes the same checks
+// "not_terminal", "leased", "parent_live", "held", "isolation". The Go side (agent.CheckRedaction) makes the same checks
 // first, so the function is the second layer and the only one a role with raw SQL meets.
 // TestRedactFunctionMatchesGo pins its classification of record names to agent.RedactionProtected.
 //
@@ -31,7 +32,7 @@ import (
 // search_path, and Open checks its definition when it exists. It is optional: a schema migrated
 // before it existed has none, the application's role never needs it, and Redact on such a schema
 // says to run the migration as the schema's owner.
-const redactVersion = "v1"
+const redactVersion = "v2"
 
 // redactTemplate is the body of the redaction function, over the steps table %[1]s and the leases
 // table %[2]s (qualified with their schema). The function sets search_path to pg_catalog, pg_temp
@@ -54,6 +55,15 @@ DECLARE
 	stored pg_catalog.bytea;
 	nrows pg_catalog.int8;
 BEGIN
+	-- Each statement below must see every hold that has committed. At READ COMMITTED a statement takes
+	-- its snapshot when it starts, so taking the holds table's SHARE lock first (a hold's INSERT or
+	-- DELETE waits for it, and this waits for the ones in flight) makes the UPDATE's snapshot include
+	-- every hold committed before the lock was granted. A snapshot taken earlier, by a caller at
+	-- REPEATABLE READ or SERIALIZABLE, would not: refuse it.
+	IF pg_catalog.current_setting('transaction_isolation') <> 'read committed' THEN
+		RETURN 'isolation';
+	END IF;
+	LOCK TABLE %[3]s IN SHARE MODE;
 	FOR i IN 2..nseg LOOP
 		IF pg_catalog.left(segs[i], 1) = '@' THEN
 			RETURN 'session';
@@ -97,7 +107,8 @@ BEGIN
 		AND EXISTS (SELECT 1 FROM %[1]s AS e WHERE e.run_id = r AND e.name = ANY (ends))
 		AND NOT EXISTS (SELECT 1 FROM %[2]s AS l WHERE l.run_id = r AND l.expiry >= pg_catalog.now())
 		AND NOT EXISTS (SELECT 1 FROM %[1]s AS a WHERE a.run_id = ANY (ancestors)
-			AND NOT EXISTS (SELECT 1 FROM %[1]s AS m WHERE m.run_id = a.run_id AND m.name = ANY (ends)));
+			AND NOT EXISTS (SELECT 1 FROM %[1]s AS m WHERE m.run_id = a.run_id AND m.name = ANY (ends)))
+		AND NOT EXISTS (SELECT 1 FROM %[3]s AS h WHERE h.run_id = r OR (h.tree AND h.run_id = ANY (ancestors)));
 	GET DIAGNOSTICS nrows = ROW_COUNT;
 	IF nrows = 1 THEN
 		RETURN 'replaced';
@@ -123,6 +134,9 @@ BEGIN
 		AND NOT EXISTS (SELECT 1 FROM %[1]s AS m WHERE m.run_id = a.run_id AND m.name = ANY (ends))) THEN
 		RETURN 'parent_live';
 	END IF;
+	IF EXISTS (SELECT 1 FROM %[3]s AS h WHERE h.run_id = r OR (h.tree AND h.run_id = ANY (ancestors))) THEN
+		RETURN 'held';
+	END IF;
 	RETURN 'changed';
 END
 `
@@ -133,7 +147,7 @@ const redactConfig = "search_path=pg_catalog, pg_temp"
 // redactBody returns the redaction function's source for the tables in schema.
 func (t tables) redactBody(schema string) string {
 	q := quoteIdent(schema) + "."
-	return fmt.Sprintf(redactTemplate, q+t.steps, q+t.leases)
+	return fmt.Sprintf(redactTemplate, q+t.steps, q+t.leases, q+t.holds)
 }
 
 // redactPresent reports whether a function named $1 taking (text, text, bytea, bigint) exists in
@@ -166,7 +180,7 @@ func (s *Store) migrateRedact(ctx context.Context, tx *sql.Tx, res *MigrationRes
 		return fmt.Errorf("postgres: look up %s: %w (%w)", s.t.redact, err, agent.ErrStorage)
 	}
 	if have {
-		return nil
+		return s.revokeOldRedact(ctx, tx, run)
 	}
 	res.Created = append(res.Created, "function "+quoteIdent(s.schema)+"."+s.t.redact+"(text, text, bytea, bigint)")
 	body := s.t.redactBody(s.schema)
@@ -178,8 +192,63 @@ func (s *Store) migrateRedact(ctx context.Context, tx *sql.Tx, res *MigrationRes
 		` RETURNS pg_catalog.text LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $bide$`+body+`$bide$`); err != nil {
 		return err
 	}
-	return run("restrict "+s.t.redact, `REVOKE ALL ON FUNCTION `+s.t.qRedact+`(pg_catalog.text, pg_catalog.text, pg_catalog.bytea, pg_catalog.int8) FROM PUBLIC`)
+	if err := run("restrict "+s.t.redact, `REVOKE ALL ON FUNCTION `+s.t.qRedact+`(pg_catalog.text, pg_catalog.text, pg_catalog.bytea, pg_catalog.int8) FROM PUBLIC`); err != nil {
+		return err
+	}
+	return s.revokeOldRedact(ctx, tx, run)
 }
+
+// revokeOldRedact withdraws EXECUTE on bide_redact_v1, the first version of the redaction function,
+// from PUBLIC and from every role it was granted to explicitly. v1 does not read legal holds, so a
+// role that can still call it can erase a held run: the migration never replaces or drops a function,
+// but it can and does revoke. It runs on every migration (revoking again is harmless), and does
+// nothing for a schema that never had v1.
+func (s *Store) revokeOldRedact(ctx context.Context, tx *sql.Tx, run func(failure, stmt string) error) error {
+	v1 := strings.TrimSuffix(s.t.redact, redactVersion) + "v1"
+	var have bool
+	if err := tx.QueryRowContext(ctx, redactPresent, v1, s.schema).Scan(&have); err != nil {
+		return fmt.Errorf("postgres: look up %s: %w (%w)", v1, err, agent.ErrStorage)
+	}
+	if !have {
+		return nil
+	}
+	qv1 := quoteIdent(s.schema) + "." + quoteIdent(v1) + `(pg_catalog.text, pg_catalog.text, pg_catalog.bytea, pg_catalog.int8)`
+	if err := run("revoke "+v1+" from PUBLIC", `REVOKE ALL ON FUNCTION `+qv1+` FROM PUBLIC`); err != nil {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, grantedRedact, v1, s.schema)
+	if err != nil {
+		return fmt.Errorf("postgres: look up the grants on %s: %w (%w)", v1, err, agent.ErrStorage)
+	}
+	var grantees []string
+	for rows.Next() {
+		var g string
+		if err := rows.Scan(&g); err != nil {
+			rows.Close()
+			return fmt.Errorf("postgres: look up the grants on %s: %w (%w)", v1, err, agent.ErrStorage)
+		}
+		grantees = append(grantees, g)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("postgres: look up the grants on %s: %w (%w)", v1, err, agent.ErrStorage)
+	}
+	rows.Close()
+	for _, g := range grantees {
+		if err := run("revoke "+v1+" from "+g, `REVOKE ALL ON FUNCTION `+qv1+` FROM `+g); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// grantedRedact lists, as SQL, the roles other than the owner that hold an explicit privilege on the
+// function $1(text, text, bytea, bigint) in schema $2.
+const grantedRedact = `SELECT pg_catalog.quote_ident(pg_catalog.pg_get_userbyid(a.grantee))
+	FROM pg_catalog.pg_proc AS p CROSS JOIN LATERAL pg_catalog.aclexplode(p.proacl) AS a
+	WHERE p.proname OPERATOR(pg_catalog.=) $1 AND p.proargtypes OPERATOR(pg_catalog.=) '25 25 17 20'::pg_catalog.oidvector
+		AND p.pronamespace OPERATOR(pg_catalog.=) (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname OPERATOR(pg_catalog.=) $2)
+		AND a.grantee OPERATOR(pg_catalog.<>) 0 AND a.grantee OPERATOR(pg_catalog.<>) p.proowner`
 
 // checkRedactFunction checks the redaction function's definition when the schema has one: a
 // SECURITY DEFINER function is the one place the store runs another role's code, so a function of
@@ -252,10 +321,91 @@ func (s *Store) Redact(ctx context.Context, runID, name string, current, tombsto
 		return false, fmt.Errorf("run %s: %w", runID, agent.ErrRedactNotTerminal)
 	case "leased":
 		return false, fmt.Errorf("run %s: %w", runID, agent.ErrRedactLeased)
+	case "isolation":
+		return false, fmt.Errorf("redact step %q: the redaction function must run at READ COMMITTED (its transaction already took a snapshot, which would not see a hold placed meanwhile): set the erasing role's default_transaction_isolation to 'read committed' (ALTER ROLE ... SET default_transaction_isolation = 'read committed'): %w", name, agent.ErrConfig)
+	case "held":
+		return false, fmt.Errorf("run %s: %w", runID, agent.ErrRedactHeld)
 	case "parent_live":
 		return false, fmt.Errorf("run %s: %w", runID, agent.ErrRedactParentLive)
 	case "changed":
 		return false, fmt.Errorf("run %s, entry %q: %w", runID, name, agent.ErrRedactChanged)
 	}
 	return false, fmt.Errorf("redact step %q: the redaction function returned %q: %w", name, code, agent.ErrStorage)
+}
+
+// PlaceHold implements agent.Holder with one statement that inserts a row per run the hold names, only
+// if no hold has the ID. Two placements of one ID at the same instant over disjoint runs could both
+// land (the statement checks the ID, it does not lock it); the key on (hold_id, run_id) refuses an
+// overlap. The placed time is this process's clock.
+func (s *Store) PlaceHold(ctx context.Context, h agent.Hold) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := agent.CheckHold(h); err != nil {
+		return err
+	}
+	n, err := s.write(ctx, s.t.placeHold, h.ID, h.Runs, h.Tree, h.Matter, time.Now().UnixMilli())
+	if sqlState(err) == uniqueViolation {
+		return fmt.Errorf("hold %q: %w", h.ID, agent.ErrHoldExists)
+	}
+	if err != nil {
+		return fmt.Errorf("place hold %q: %w (%w)", h.ID, err, agent.ErrStorage)
+	}
+	if n == 0 {
+		return fmt.Errorf("hold %q: %w", h.ID, agent.ErrHoldExists)
+	}
+	return nil
+}
+
+// LiftHold implements agent.Holder.
+func (s *Store) LiftHold(ctx context.Context, id string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	n, err := s.write(ctx, s.t.liftHold, id)
+	if err != nil {
+		return false, fmt.Errorf("lift hold %q: %w (%w)", id, err, agent.ErrStorage)
+	}
+	return n > 0, nil
+}
+
+// Holds implements agent.Holder. A schema migrated before holds has no table and no hold.
+func (s *Store) Holds(ctx context.Context) ([]agent.Hold, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var present sql.NullBool
+	if err := retryScan(ctx, func() error {
+		return s.db.QueryRowContext(ctx, relationIsTable, s.t.holds, s.schema).Scan(&present)
+	}); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("read the legal holds: %w (%w)", err, agent.ErrStorage)
+	}
+	if !present.Bool {
+		return nil, nil
+	}
+	rows, err := retry(ctx, func() ([]agent.Hold, error) {
+		r, err := s.db.QueryContext(ctx, string(s.t.listHolds))
+		if err != nil {
+			return nil, err
+		}
+		defer r.Close()
+		var out []agent.Hold
+		for r.Next() {
+			var id, run, matter string
+			var tree bool
+			var at int64
+			if err := r.Scan(&id, &run, &tree, &matter, &at); err != nil {
+				return nil, err
+			}
+			if len(out) == 0 || out[len(out)-1].ID != id {
+				out = append(out, agent.Hold{ID: id, Matter: matter, Tree: tree, PlacedAtMs: at})
+			}
+			out[len(out)-1].Runs = append(out[len(out)-1].Runs, run)
+		}
+		return out, r.Err()
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the legal holds: %w (%w)", err, agent.ErrStorage)
+	}
+	return rows, nil
 }

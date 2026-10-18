@@ -46,6 +46,12 @@ type PlannedRedaction struct {
 	AlreadyRedacted bool `json:"already_redacted,omitempty"`
 }
 
+// PlannedHold names a legal hold that covers a planned run.
+type PlannedHold struct {
+	ID     string `json:"id"`
+	Matter string `json:"matter"`
+}
+
 // KeptRecord is a record a selector chose and a redaction keeps, and why.
 type KeptRecord struct {
 	Position int    `json:"position"`
@@ -71,7 +77,9 @@ type RedactionPlan struct {
 	// it (a sub-agent's parent) is not over, or it belongs to a session. A run with a Refusal
 	// still gets a plan, so a dry run shows what would be refused; Redact then fails.
 	Refusal string `json:"refusal,omitempty"`
-	Digest  string `json:"digest"`
+	// Holds are the active legal holds that cover the run (see Holder); a run under one is refused.
+	Holds  []PlannedHold `json:"holds,omitempty"`
+	Digest string        `json:"digest"`
 }
 
 // PlanRedaction reads runID's journal and returns what redacting the records sel selects would do,
@@ -86,7 +94,16 @@ func PlanRedaction(ctx context.Context, j *Journal, runID string, sel RedactionS
 		return RedactionPlan{}, err
 	}
 	p := RedactionPlan{RunID: runID, JournalSize: len(recs), Terminal: terminal(recs)}
+	held, err := HoldsOf(ctx, j.store, runID)
+	if err != nil {
+		return RedactionPlan{}, fmt.Errorf("read the legal holds: %w", err)
+	}
+	for _, h := range held {
+		p.Holds = append(p.Holds, PlannedHold{h.ID, h.Matter})
+	}
 	switch {
+	case len(held) > 0:
+		p.Refusal = fmt.Sprintf("%s (%s)", ErrRedactHeld.Error(), holdIDs(held))
 	case RedactionSession(runID):
 		p.Refusal = ErrRedactSession.Error()
 	case !p.Terminal:

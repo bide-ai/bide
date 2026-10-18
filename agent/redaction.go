@@ -278,6 +278,8 @@ type RedactState struct {
 	Leased bool
 	// ParentLive is whether a run above this one (RedactionAncestors) holds records and no end marker.
 	ParentLive bool
+	// Held is whether an active legal hold covers the run (see Holder).
+	Held bool
 }
 
 // Explain says what a replacement that changed nothing meant: it returns nil if the entry already
@@ -301,6 +303,8 @@ func (s RedactState) Explain(runID, name string, current, tombstone []byte) erro
 		return fmt.Errorf("run %s: %w", runID, ErrRedactLeased)
 	case s.ParentLive:
 		return fmt.Errorf("run %s: %w", runID, ErrRedactParentLive)
+	case s.Held:
+		return fmt.Errorf("run %s: %w", runID, ErrRedactHeld)
 	}
 	return fmt.Errorf("run %s, entry %q: the run changed while it was redacted: %w", runID, name, ErrRedactChanged)
 }
