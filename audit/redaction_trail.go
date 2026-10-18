@@ -442,7 +442,7 @@ const (
 	FindingHoldNotInStore RedactionFindingKind = "HOLD_NOT_IN_STORE"
 	// FindingHoldNotInTrail: the store holds a hold the trail never recorded: placed by hand.
 	FindingHoldNotInTrail RedactionFindingKind = "HOLD_NOT_IN_TRAIL"
-	// FindingHoldDiffers: the store's hold and the trail's have the same ID and cover other runs.
+	// FindingHoldDiffers: the store's hold and the trail's have the same ID and differ in runs, tree setting or matter.
 	FindingHoldDiffers RedactionFindingKind = "HOLD_DIFFERS"
 	// FindingReordered: a trail record that is not at the position, or after the record, it was signed for: a replayed, copied or reordered record.
 	FindingReordered RedactionFindingKind = "REORDERED"
@@ -641,8 +641,8 @@ func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error) {
 			switch got, ok := inStore[id]; {
 			case !ok:
 				add(FindingHoldNotInStore, "", "the trail shows hold %q (matter %q) active and the store holds no such hold: it was lifted outside the tool, or never reached the store", id, h.Matter)
-			case !slices.Equal(got.Runs, h.Runs) || got.Tree != h.Tree:
-				add(FindingHoldDiffers, "", "hold %q covers other runs, or another tree setting, in the store than in the trail", id)
+			case !slices.Equal(got.Runs, h.Runs) || got.Tree != h.Tree || got.Matter != h.Matter:
+				add(FindingHoldDiffers, "", "hold %q has other runs, another tree setting or another matter in the store than in the trail", id)
 			}
 		}
 		for _, id := range slices.Sorted(maps.Keys(inStore)) {

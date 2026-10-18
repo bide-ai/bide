@@ -1747,7 +1747,7 @@ RedactionFindingKind names what VerifyRedactions found wrong.
 - `const FindingHoldUnmatched RedactionFindingKind = "HOLD_UNMATCHED"`: FindingHoldUnmatched: a hold\_lifted record for a hold the trail shows no active placement of, or a placement of an ID already active.
 - `const FindingHoldNotInStore RedactionFindingKind = "HOLD_NOT_IN_STORE"`: FindingHoldNotInStore: the trail says a hold is active and the store holds none: lifted by hand.
 - `const FindingHoldNotInTrail RedactionFindingKind = "HOLD_NOT_IN_TRAIL"`: FindingHoldNotInTrail: the store holds a hold the trail never recorded: placed by hand.
-- `const FindingHoldDiffers RedactionFindingKind = "HOLD_DIFFERS"`: FindingHoldDiffers: the store's hold and the trail's have the same ID and cover other runs.
+- `const FindingHoldDiffers RedactionFindingKind = "HOLD_DIFFERS"`: FindingHoldDiffers: the store's hold and the trail's have the same ID and differ in runs, tree setting or matter.
 - `const FindingReordered RedactionFindingKind = "REORDERED"`: FindingReordered: a trail record that is not at the position, or after the record, it was signed for: a replayed, copied or reordered record.
 - `const FindingBadSignature RedactionFindingKind = "BAD_SIGNATURE"`: FindingBadSignature: a trail record with no signature, or one that does not verify under the key: not the tool's, whatever head covers it.
 - `const FindingEventCopies RedactionFindingKind = "EVENT_COPIES_KEPT"`: FindingEventCopies: an erasure that left the run's events in the event store.
