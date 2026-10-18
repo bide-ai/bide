@@ -325,6 +325,11 @@ func TestMainRunFlagErrors(t *testing.T) {
 // interrupt is repeated until Main returns, since the server installs its handler after it prints
 // its address.
 func serveMain(t *testing.T, args []string, probe func(base string)) (int, string, string) {
+	return serveMainStores(t, Stores{}, args, probe)
+}
+
+// serveMainStores is serveMain with the stores bide view opens a journal through.
+func serveMainStores(t *testing.T, stores Stores, args []string, probe func(base string)) (int, string, string) {
 	skipNoSelfInterrupt(t)
 	t.Helper()
 	guard := make(chan os.Signal, 8) // keeps an early interrupt from killing the test binary
@@ -332,7 +337,7 @@ func serveMain(t *testing.T, args []string, probe func(base string)) (int, strin
 	defer signal.Stop(guard)
 	var out, errb syncBuf
 	done := make(chan int, 1)
-	go func() { done <- Main(args, &out, &errb, Stores{}) }()
+	go func() { done <- Main(args, &out, &errb, stores) }()
 	deadline := time.Now().Add(10 * time.Second)
 	for !strings.Contains(out.String(), "serving") {
 		if time.Now().After(deadline) {

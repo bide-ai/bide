@@ -11,6 +11,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/runview"
 )
 
 // scopeSpecs are the scopes the flags name, in the order -all, -tool, -flow, -agent.
@@ -173,7 +174,7 @@ func resolve(st agent.StopState, id string) (agent.StopEntry, error) {
 	return agent.StopEntry{}, fmt.Errorf("%q names %d stops: give more of the ID", id, len(hit))
 }
 
-func (c *cmd) liftStop(ctx context.Context, ctl *agent.StopControl, doc *agent.StopPolicyDoc, signer audit.Signer, by, host string) int {
+func (c *cmd) liftStop(ctx context.Context, ctl *agent.StopControl, j *agent.Journal, doc *agent.StopPolicyDoc, signer audit.Signer, by, host string) int {
 	if err := checkReason(c.f.reason); err != nil {
 		return c.fail(exitUsage, "-reason: %v", err)
 	}
@@ -196,6 +197,7 @@ func (c *cmd) liftStop(ctx context.Context, ctl *agent.StopControl, doc *agent.S
 		return exitOK
 	}
 	c.printStop(e, false)
+	c.printHeld(ctx, j, e)
 	fmt.Fprintf(c.out, "lift reason   %s\n", c.f.reason)
 	fmt.Fprintf(c.out, "lifted by     %s@%s\n", by, host)
 	fmt.Fprintf(c.out, "mode          %s\n", c.modeLine(st))
@@ -600,4 +602,29 @@ func (c *cmd) landed(ctx context.Context, ctl *agent.StopControl, before agent.S
 		return fmt.Errorf("the stop was written but is not in force in the policy's view: %w", agent.ErrStopRejected)
 	}
 	return nil
+}
+
+// printHeld says how many unfinished runs the stop holds: what the lift lets carry on.
+func (c *cmd) printHeld(ctx context.Context, j *agent.Journal, e agent.StopEntry) {
+	n := runview.HeldCount(ctx, runview.JournalSource{J: j}, e)
+	switch {
+	case n.ListErr != "":
+		fmt.Fprintf(c.out, "runs held     not counted: the runs could not be listed (%s)\n", n.ListErr)
+		return
+	case !runview.JournalSource{J: j}.CanList():
+		fmt.Fprintf(c.out, "runs held     not counted: this store cannot list its runs\n")
+		return
+	}
+	line := fmt.Sprintf("%d held", n.Held)
+	if n.May > 0 {
+		line += fmt.Sprintf(", %d may be held (an agent stop covers runs by the agent identity that drives them; the journal does not record it)", n.May)
+	}
+	line += fmt.Sprintf(" of %s read", countWord(n.Read, "unfinished run"))
+	if n.Unread > 0 {
+		line += fmt.Sprintf(", %d could not be read", n.Unread)
+	}
+	if n.Truncated {
+		line += "; more unfinished runs exist and were not read"
+	}
+	fmt.Fprintf(c.out, "runs held     %s\n", line)
 }

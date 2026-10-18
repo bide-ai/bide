@@ -37,15 +37,18 @@ type View struct {
 	EndedAt string `json:"ended_at,omitempty"`
 	Records int    `json:"records"`
 
-	Events    []Event      `json:"events"`
-	Halts     []Halt       `json:"halts,omitempty"`
-	Gates     []Gate       `json:"gates,omitempty"`
-	Graph     *Graph       `json:"graph,omitempty"`
-	Conform   *Conformance `json:"conformance,omitempty"`
-	Proof     *Proof       `json:"proof,omitempty"`
-	Notes     []string     `json:"notes,omitempty"` // what the page cannot show for this run, and why
-	LastNode  string       `json:"last_node,omitempty"`
-	FinalText string       `json:"final_text,omitempty"`
+	Events  []Event      `json:"events"`
+	Halts   []Halt       `json:"halts,omitempty"`
+	Gates   []Gate       `json:"gates,omitempty"`
+	Graph   *Graph       `json:"graph,omitempty"`
+	Conform *Conformance `json:"conformance,omitempty"`
+	Proof   *Proof       `json:"proof,omitempty"`
+	Notes   []string     `json:"notes,omitempty"` // what the page cannot show for this run, and why
+	// Held are the active kill switch stops that hold, or may hold, the run at its next drive (see heldBy);
+	// empty when no stop applies or the viewer reads no control run.
+	Held      []StopHold `json:"held_by,omitempty"`
+	LastNode  string     `json:"last_node,omitempty"`
+	FinalText string     `json:"final_text,omitempty"`
 
 	// Live: the page follows the run (live mode): it was read from a store, not an export, and has
 	// no end marker. Cursor is the store sequence (agent.Entry.Seq) of its last record.
@@ -54,6 +57,9 @@ type View struct {
 
 	// Verdict is the answer the page opens with (see runVerdict); it is not in the JSON view.
 	Verdict Verdict `json:"-"`
+
+	// openTools are the tools of the calls a model turn requested that the journal shows no result for.
+	openTools []string
 }
 
 // Event is one journal record, as a timeline row.
@@ -224,6 +230,18 @@ func Build(ctx context.Context, runID string, recs []agent.Record, flow *Flow) *
 					calls[tu.ID] = tu
 				}
 			}
+		}
+	}
+
+	resolved := map[string]bool{} // tool-use IDs with a result (or a failed saga step)
+	for _, r := range recs {
+		if r.Kind == agent.StepToolResult || r.Kind == agent.StepSagaFail {
+			resolved[r.ToolUseID] = true
+		}
+	}
+	for _, id := range callOrder {
+		if !resolved[id] && !slices.Contains(v.openTools, calls[id].Name) {
+			v.openTools = append(v.openTools, calls[id].Name)
 		}
 	}
 

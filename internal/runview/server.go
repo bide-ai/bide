@@ -56,7 +56,9 @@ func (s JournalSource) Runs(ctx context.Context) ([]string, error) {
 		if err != nil {
 			return ids, err
 		}
-		ids = append(ids, id)
+		if id != agent.StopControlRun { // the kill switch's control run is not a run
+			ids = append(ids, id)
+		}
 	}
 	return ids, nil
 }
@@ -81,7 +83,9 @@ func (s JournalSource) Unfinished(ctx context.Context) ([]string, error) {
 		if err != nil {
 			return ids, err
 		}
-		ids = append(ids, id)
+		if id != agent.StopControlRun {
+			ids = append(ids, id)
+		}
 	}
 	return ids, nil
 }
@@ -135,6 +139,10 @@ type Options struct {
 	// attention list shows it beside (a gate with bare-key approvers too) or instead of (all approvers
 	// certificate-bound) ApproveCommand's line.
 	ApproveCertCommand func(runID, toolUseID string) (string, error)
+	// Stops, when set, is the kill switch's control run of the journal: every page then opens with a banner
+	// while a stop is in force (or the control run cannot be judged, or holds rejected records), a run's page
+	// and the run list say which runs a stop holds, and /stops.json serves the same state.
+	Stops *StopFeed
 	// Now is the clock the Needs attention list measures waits by; nil is time.Now.
 	Now func() time.Time
 
@@ -163,8 +171,9 @@ func Handler(o Options) http.Handler {
 		return guard(mux)
 	}
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		render(w, "runs.html", o.cachedRunList(r.Context(), listFilter(r.URL.Query())))
+		o.render(w, r, "runs.html", o.cachedRunList(r.Context(), listFilter(r.URL.Query())))
 	})
+	mux.HandleFunc("GET /stops.json", o.serveStops)
 	mux.HandleFunc("GET /runs.json", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, o.cachedRunList(r.Context(), listFilter(r.URL.Query())))
 	})
@@ -179,7 +188,7 @@ func Handler(o Options) http.Handler {
 			case asJSON:
 				writeJSON(w, v)
 			default:
-				render(w, "run.html", v)
+				o.render(w, r, "run.html", v)
 			}
 		}
 	}
@@ -274,6 +283,9 @@ func (o Options) viewOf(ctx context.Context, runID string, recs []agent.Record, 
 	markGates(v.Graph, v.Gates) // the graph's gated nodes say whether their signatures verified
 	follow(v, seqs)
 	v.Verdict = runVerdict(v)
+	if r, ok := o.stopState(ctx); ok && r.err == nil {
+		v.Held = heldBy(r.st, v)
+	}
 	return v
 }
 

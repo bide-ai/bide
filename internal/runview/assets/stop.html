@@ -1,0 +1,9 @@
+{{define "stopbanner"}}<section class="stopbanner{{if .Stopped}} sb-stop{{else}} sb-note{{end}}" role="alert" aria-labelledby="sbword">
+<p class="sbword" id="sbword">{{if .Stopped}}STOPPED{{else}}Kill switch{{end}}{{if .Mode}} <span class="sbmode">{{.Mode}} mode{{if not .Verified}}, signatures not verified{{end}}</span>{{end}}</p>
+{{range .Active}}<p class="sbline"><b>{{.Scope}}</b>: {{.Reason}} <span class="muted">set by {{.By}}{{if .Host}}@{{.Host}}{{end}}{{if not .Signed}} (asserted, not authenticated){{end}}, {{.Age}} ago ({{.At}}); {{.LiftsHeld}} of {{.LiftsNeeded}} lifts held{{if eq .Compensation "block"}}; compensation held too{{end}}</span></p>{{end}}
+{{if .MoreActive}}<p class="sbline">and {{.MoreActive}} more stop{{if ne .MoreActive 1}}s{{end}} in force (bide stop -list shows them)</p>{{end}}
+{{if .Unknowable}}<p class="sbline sb-bad">Stops unknowable: {{.Unknowable}}. The engine holds side-effect calls a stop could cover until this is fixed.</p>{{end}}
+{{if .Unverified}}<p class="sbline sb-bad">Signatures not verified: {{.Unverified}} signed record{{if ne .Unverified 1}}s{{end}} in the control run cannot be checked without the deployment's stop policy (-stop-policy).</p>{{end}}
+{{if .RejectedTotal}}<p class="sbline sb-bad">{{.RejectedTotal}} record{{if ne .RejectedTotal 1}}s{{end}} in the control run {{if eq .RejectedTotal 1}}was{{else}}were{{end}} rejected and {{if eq .RejectedTotal 1}}has{{else}}have{{end}} no effect:</p>{{range .Rejected}}<p class="sbline muted">{{.}}</p>{{end}}{{end}}
+{{if .ReadErr}}<p class="sbline sb-bad">The kill switch's control run could not be read ({{.ReadErr}}): this page cannot say whether a stop is in force.</p>{{end}}
+</section>{{end}}
