@@ -1267,3 +1267,51 @@ func TestZeroFlushDelayMeansTheDefault(t *testing.T) {
 		t.Fatalf("delay %v, want %v", h.delay, DefaultStateFlushDelay)
 	}
 }
+
+func stopPayload(kind string) notify.Payload {
+	return notify.Payload{Schema: notify.Schema, ID: "i", Key: "stop:x", Kind: kind, RunID: "@stop", Summary: "Agents are stopped: tool refund",
+		View: notify.View{Command: "bide stop -db run.db -show x"},
+		Stop: &notify.Stop{ID: "x", Scope: "tool", Name: "refund", By: "da`yna <@U123>", Reason: "incident <!channel> & `more`", Mode: "basic", Compensation: "allow"}}
+}
+
+// A stop's text is operator text: the Slack message escapes it, so it can open no mention or link, and
+// shows that a basic setter is asserted.
+func TestSlackMessageOfAStopEscapesOperatorText(t *testing.T) {
+	b, _ := json.Marshal(SlackMessage(stopPayload("stop_set"), ""))
+	out := string(b)
+	for _, bad := range []string{"<!channel>", "<@U123>"} {
+		if strings.Contains(out, bad) {
+			t.Fatalf("an unescaped %s in the message: %s", bad, out)
+		}
+	}
+	if strings.Contains(out, "da`yna") || strings.Contains(out, "`more`") {
+		t.Fatalf("a backtick of operator text could open a code span: %s", out)
+	}
+	for _, want := range []string{"Agents stopped", "tool refund", "(asserted)", `\u0026lt;!channel\u0026gt;`, "*Reason*"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the message lacks %q: %s", want, out)
+		}
+	}
+	if KindTitle("stop_lifted") != "Stop lifted" {
+		t.Fatalf("title %q", KindTitle("stop_lifted"))
+	}
+}
+
+// A stop in force is critical, its lift informational, and the all-clear of the stop resolves the incident
+// the stop opened.
+func TestPagerDutyOfAStop(t *testing.T) {
+	if DefaultSeverity(stopPayload("stop_set")) != "critical" || DefaultSeverity(stopPayload("stop_lifted")) != "info" {
+		t.Fatal("severities")
+	}
+	ev := PagerDutyTrigger("rk", "bide", "critical", stopPayload("stop_set"))
+	d, _ := ev.Payload.CustomDetails["stop"].(map[string]any)
+	if d == nil || d["scope"] != "tool" || d["name"] != "refund" || d["id"] != "x" || strings.Contains(fmt.Sprint(d), "signature") {
+		t.Fatalf("details %v", ev.Payload.CustomDetails)
+	}
+	set := stopPayload("stop_set")
+	set.Key = "stop:x"
+	clear := notify.Payload{Schema: notify.Schema, Kind: ResolveKind, Key: "resolved:stop:x", Clears: &notify.Clears{ID: "i", Key: "stop:x", Kind: "stop_set"}}
+	if DedupKey(set) != "stop:x" && ClearsID(clear) == "" {
+		t.Fatalf("dedup %q, clears %q", DedupKey(set), ClearsID(clear))
+	}
+}

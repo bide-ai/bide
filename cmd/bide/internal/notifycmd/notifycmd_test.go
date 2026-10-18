@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"github.com/bide-ai/bide/agent"
 	"io"
 	"math/big"
 	"net"
@@ -623,5 +624,27 @@ func TestReportPrintsAZeroDurationAsUnderOneMillisecond(t *testing.T) {
 	}
 	if ms(0) != "<1 ms" || ms(400*time.Microsecond) != "<1 ms" || ms(time.Millisecond) != "1 ms" {
 		t.Errorf("ms: %q %q", ms(0), ms(time.Millisecond))
+	}
+}
+
+// A test of a stop kind sends a stop that does not exist, with keys the engine reads back, and a new event
+// each time.
+func TestSampleOfAStopKind(t *testing.T) {
+	for _, kind := range []agent.NotificationKind{agent.NotificationStopSet, agent.NotificationStopLifted} {
+		a, err := sampleNotification(kind, time.Now(), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := sampleNotification(kind, time.Now(), "")
+		if a.Stop == nil || len(a.Stop.ID) != 64 || a.ID != agent.NotifyID(a.Key) || a.ID == b.ID {
+			t.Fatalf("%s: %+v", kind, a)
+		}
+		want := agent.StopSetKey(a.Stop.ID)
+		if kind == agent.NotificationStopLifted {
+			want = agent.StopLiftedKey(a.Stop.ID)
+		}
+		if a.Key != want || a.Stop.By != "notify-test" {
+			t.Fatalf("%s: key %q want %q", kind, a.Key, want)
+		}
 	}
 }

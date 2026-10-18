@@ -168,7 +168,7 @@ func normTime(t time.Time) time.Time {
 func NotifyTrailName(runID string) string { return "notify:" + runID }
 
 // NotifyOpenTrail is the prefix of the trail that lists the events whose all-clear may still be
-// owed: a watch record before an outcome_unknown, approval_pending or recovery_failing event is
+// owed: a watch record before an outcome_unknown, approval_pending, recovery_failing or stop_set event is
 // observed, an unwatch record when nothing more is owed for it. It belongs to no run, so a sweep or a
 // recovery pass finds the runs that need a scan, including a run that has completed since, without
 // reading every finished run.

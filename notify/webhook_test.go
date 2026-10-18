@@ -569,7 +569,7 @@ func TestPayloadIsMinimalByDefault(t *testing.T) {
 	// Exactly the documented top-level fields: a new one must be a deliberate, reviewed change.
 	want := map[string]bool{"schema": true, "id": true, "key": true, "kind": true, "run_id": true, "event_at": true, "observed_at": true,
 		"deadline_at": true, "attempt": true, "summary": true, "step": true, "halt": true, "principal": true, "approval": true,
-		"abort": true, "failing": true, "clears": true, "escalates": true, "receiver": true, "view": true}
+		"abort": true, "failing": true, "stop": true, "clears": true, "escalates": true, "receiver": true, "view": true}
 	for k := range m {
 		if !want[k] {
 			t.Errorf("undocumented top-level field %q", k)
@@ -700,5 +700,70 @@ func TestViewCommandNamesTheStore(t *testing.T) {
 	}
 	if _, err := NewWebhook("https://example.com/hook", WithSecrets(testSecret, ""), WithViewDB("")); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("empty WithViewDB: %v", err)
+	}
+}
+
+func stopNotification(kind agent.NotificationKind) agent.Notification {
+	id := strings.Repeat("ab", 32)
+	key := agent.StopSetKey(id)
+	st := &agent.NotifyStop{ID: id, Scope: agent.StopScope{Kind: agent.StopTool, Name: "refund"}, Reason: "provider <!channel> incident", Compensation: agent.CompensationBlock, By: "dayna", Host: "ops-1", Mode: agent.StopAudited, Signed: true}
+	if kind == agent.NotificationStopLifted {
+		key = agent.StopLiftedKey(id)
+		st.LiftedBy = []string{"risk", "cto"}
+	}
+	return agent.Notification{ID: agent.NotifyID(key), Key: key, Kind: kind, RunID: agent.StopControlRun, Attempt: 1, Receiver: agent.DefaultReceiver,
+		EventAt: time.Date(2026, 10, 18, 7, 0, 0, 0, time.UTC), Observed: time.Date(2026, 10, 18, 7, 0, 1, 0, time.UTC), Stop: st}
+}
+
+// A stop event carries the stop's detail and a view command that shows the stop, not a run; it carries no
+// key, signature or secret.
+func TestPayloadOfAStopEvent(t *testing.T) {
+	w := plainWebhook(t, WithViewDB("/var/lib/bide/run.db"))
+	for _, kind := range []agent.NotificationKind{agent.NotificationStopSet, agent.NotificationStopLifted} {
+		m, body := notifyJSON(t, w, stopNotification(kind))
+		stop, _ := m["stop"].(map[string]any)
+		if m["kind"] != string(kind) || stop == nil || stop["id"] != strings.Repeat("ab", 32) || stop["scope"] != "tool" || stop["name"] != "refund" ||
+			stop["by"] != "dayna" || stop["host"] != "ops-1" || stop["mode"] != "audited" || stop["signed"] != true || stop["compensation"] != "block" ||
+			stop["reason"] != "provider <!channel> incident" {
+			t.Fatalf("%s: stop detail: %s", kind, body)
+		}
+		view, _ := m["view"].(map[string]any)
+		if cmd, _ := view["command"].(string); cmd != "bide stop -db /var/lib/bide/run.db -show "+strings.Repeat("ab", 32) {
+			t.Fatalf("%s: view command %q", kind, cmd)
+		}
+		if strings.Contains(body, "signature") || strings.Contains(body, "key\":\"ed25519") {
+			t.Fatalf("%s: a signature or key in the payload: %s", kind, body)
+		}
+		for _, other := range []string{"halt", "approval", "abort", "failing", "clears", "escalates"} {
+			if m[other] != nil {
+				t.Errorf("%s: %q set on a stop event", kind, other)
+			}
+		}
+	}
+	m, _ := notifyJSON(t, w, stopNotification(agent.NotificationStopLifted))
+	if lb, _ := m["stop"].(map[string]any)["lifted_by"].([]any); len(lb) != 2 {
+		t.Fatalf("lifted_by = %v", lb)
+	}
+	if !strings.Contains(m["summary"].(string), "was lifted") {
+		t.Fatalf("summary %q", m["summary"])
+	}
+	// A stop with no detail still has a view command that works.
+	n := stopNotification(agent.NotificationStopSet)
+	n.Stop = nil
+	m, _ = notifyJSON(t, w, n)
+	if m["stop"] != nil || !strings.Contains(m["view"].(map[string]any)["command"].(string), "-list") {
+		t.Fatalf("%v", m)
+	}
+}
+
+// A stop's reason is operator text: it is shown, never able to break out of the field it is in.
+func TestPayloadOfAStopEventIsJSONSafe(t *testing.T) {
+	w := plainWebhook(t)
+	n := stopNotification(agent.NotificationStopSet)
+	n.Stop.Reason = "quote \" backslash \\ newline-free <script>"
+	_, body := notifyJSON(t, w, n)
+	var back Payload
+	if err := json.Unmarshal([]byte(body), &back); err != nil || back.Stop == nil || back.Stop.Reason != n.Stop.Reason {
+		t.Fatalf("%v: %s", err, body)
 	}
 }
