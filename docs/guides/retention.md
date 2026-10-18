@@ -155,6 +155,12 @@ if _, err := agent.Redact(ctx, journal, plan, time.Now()); err != nil {
 
 `Payloads` selects run:start (the input and the principal), model turns, tool results, user steps, signals and approval requests; `Names`, `Prefixes` and `Kinds` select by hand; `IncludeApprovals` also selects approval decisions. `agent.Redact` records nothing about what it did; `audit.RedactJournal` does (below).
 
+### Legal hold
+
+A hold keeps a matter's runs from being erased. `agent.Holder` (implemented by `MemStore`, SQLite and Postgres) places and lifts holds: `PlaceHold(ctx, agent.Hold{ID, Matter, Runs, Tree})` covers each run named, and with `Tree` also the sub-agent runs below it; a matter that covers several runs is one hold with several `Runs`; `LiftHold(ctx, id)` lifts the whole hold; `Holds(ctx)` lists the active ones. The store enforces it where the record is replaced: **in the same statement** (SQLite's `UPDATE`, Postgres's redaction function), so a hold placed while a pass runs either lands first (the erasure of that record is refused with `agent.ErrRedactHeld`) or the record was already erased; and `PlanRedaction` names the holds that cover a run and refuses it. On Postgres the hold table is read by the function as its owner, so the erasing role cannot read or change it, and a separate role holds `SELECT, INSERT, DELETE` on it ([Postgres roles](postgres.md#roles)).
+
+What a hold does not do: it stops bide's own erasure, not a database administrator, a backup restore or a hand-written `DELETE`, and it does not protect the anchor (an S3 Object Lock legal hold on the anchor's objects is a separate control that keeps the signed heads, and neither replaces the other). It is not yet recorded in the signed redaction trail, and there is no command for it yet; both are planned ([the design](../design/journal-redaction.md#legal-hold)).
+
 ### The redaction trail
 
 `audit.RedactJournal(ctx, journal, trail, plan, opts)` erases accountably. `trail` is an `audit.EventStore` (the `bide_events` table of a database, ideally a separate one the erasing role cannot rewrite) holding the trail `audit.RedactionTrailName` (`redact:@log`); wrap it in `audit.AuditedEventStore`, or call `audit.SignNotifyTrail` and anchor the head, as for a notification trail. It:
