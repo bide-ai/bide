@@ -3115,6 +3115,7 @@ nothing in the model starts it again.
   `SyncRead` any earlier prefix; `ReadFail`: held under `FailClosed`, else it proceeds), then
   `Begin`, which can follow a stop committed after the read (the call is in flight and finishes),
   then `Finish`. A crash with a marker and no result halts the call (`Crash`).
+- **Modelling limits**: at most one write crashes between its two steps (`MaxWriteCrash = 1`) and a record is inserted into the control log once. More crashes would grow the trail without adding a kind of state (the crashed records are the same ones), so the bound keeps the state space finite; a second crash is covered by the Go tests (`TestStopTrail_WriteOrderAndFailure`, `TestVerifyStops_UnappliedRecordsAreNotForgeries`, `TestVerifyStops_SupersededRecords`), not by the model.
 - **Not modelled**: forks, rollbacks and competing roots of the policy chain (Go tests; each makes the stops unknowable), the "stops unknowable" signal for records that do not verify (a Go test), scope matching (a pure function, unit-tested), the reader's staleness bound in
   time (the model is the case of a maximum staleness of 0; the bound is an engineering figure of the
   Go code, and a bounded cache is covered by the Go tests when the switch lands), a split of the
