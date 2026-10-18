@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/audit/anchorobj"
 )
 
 // maxObjectBytes bounds what the Reader reads for one object: a head is a few hundred bytes plus the
@@ -169,19 +170,7 @@ func (r *Reader) load(ctx context.Context, refs []ref) ([]audit.SignedTreeHead, 
 // checkEquivocation returns an error wrapping ErrEquivocation when two heads of one tree and size
 // commit to different roots.
 func checkEquivocation(heads []audit.SignedTreeHead) error {
-	first := map[int]audit.SignedTreeHead{}
-	for _, h := range heads {
-		p, ok := first[h.Size]
-		if !ok {
-			first[h.Size] = h
-			continue
-		}
-		if !p.SameTree(h.TreeHead) {
-			a, b := p.Hash(), h.Hash()
-			return fmt.Errorf("%w: %s %q has two different signed heads of size %d (%x and %x): the log key signed two histories", ErrEquivocation, h.Kind, h.RunID, h.Size, a[:8], b[:8])
-		}
-	}
-	return nil
+	return anchorobj.CheckEquivocation(heads, ErrEquivocation)
 }
 
 // list returns every version under a prefix (see scan).
