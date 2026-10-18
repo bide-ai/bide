@@ -558,7 +558,7 @@ Before erasing, make every piece of evidence you will need: a journal that holds
 longer produce a new absence proof, run certificate or event stream. The command refuses to erase a
 run that no signed journal head (-sth, verified under -pubkey) covers, unless -allow-uncovered.
 
-It refuses a run that is not over, whose lease is live, whose parent is not over, that belongs to a
+It refuses a run that is not over, whose lease is live (probed by taking the lease and giving it back; a role that cannot take a lease skips the probe and the store's own refusal applies), whose parent is not over, that belongs to a
 session, that holds protected records (they are kept and listed), and a run the event store holds
 events of (unless -keep-event-copies). It writes a "begin" record to the redaction trail before it
 erases and an "end" record after; if it stops partway, run the same plan again.

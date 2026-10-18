@@ -129,7 +129,7 @@ Before erasing, make every piece of evidence you will need: a journal that holds
 longer produce a new absence proof, run certificate or event stream. The command refuses to erase a
 run that no signed journal head (-sth, verified under -pubkey) covers, unless -allow-uncovered.
 
-It refuses a run that is not over, whose lease is live, whose parent is not over, that belongs to a
+It refuses a run that is not over, whose lease is live (probed by taking the lease and giving it back; a role that cannot take a lease skips the probe and the store's own refusal applies), whose parent is not over, that belongs to a
 session, that holds protected records (they are kept and listed), and a run the event store holds
 events of (unless -keep-event-copies). It writes a "begin" record to the redaction trail before it
 erases and an "end" record after; if it stops partway, run the same plan again.
@@ -326,6 +326,16 @@ erases and an "end" record after; if it stops partway, run the same plan again.
 		// signed over it either.
 		emit(stdout, rep, *asJSON, st, 1)
 		return fail("%v", passErr)
+	}
+	if after, err := trail.Load(ctx, audit.RedactionTrailName); err == nil && len(after) == len(existing) {
+		// Nothing was written (a refusal before the first record): there is nothing new to attest.
+		if passErr != nil {
+			emit(stdout, rep, *asJSON, st, 1)
+			return fail("%v (nothing was erased or written)", passErr)
+		}
+		rep.Executed = true
+		fmt.Fprintln(stderr, "bide journal redact: nothing to erase: every selected record is already redacted or none was selected; no trail record or head was written")
+		return emit(stdout, rep, *asJSON, st, 0)
 	}
 	// The trail's head is signed after a failed pass too: the begin and end records it wrote are
 	// attested, so the next attempt finds a trail its earlier heads cover.

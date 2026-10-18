@@ -489,3 +489,31 @@ func TestAWrongTrailDatabaseIsRefusedBeforeErasing(t *testing.T) {
 		t.Fatalf("the refused attempt wrote %d record(s) to the wrong trail (%v)", len(leaves), err)
 	}
 }
+
+// A refusal before the first trail record writes no head: there is nothing new to attest.
+func TestARefusalBeforeTheTrailWritesNoHead(t *testing.T) {
+	r := newRig(t)
+	_, out, _ := r.run(r.base()...)
+	d := digestOf(t, out)
+	s, err := sqlite.Open(r.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	// The head on file is signed by another key than -pubkey names, so none covers the run: RedactJournal
+	// refuses after the trail check and before its first record.
+	other := filepath.Join(r.dir, "other.key")
+	var o, e bytes.Buffer
+	approvecmd.KeygenMain([]string{"-out", other, "-color", "never"}, &o, &e)
+	args := append(r.base(), "-execute", "-plan-digest", d, "-reason", "r", "-ticket", "t", "-deployment", "test", "-sign-key", r.key, "-head-out", r.headOut, "-pubkey", other+".pub", "-sth", r.head)
+	if code, _, errb := r.run(args...); code != 1 || !strings.Contains(errb, "no signed journal head") || !strings.Contains(errb, "nothing was erased or written") {
+		t.Fatalf("refusal: %d %s", code, errb)
+	}
+	if _, err := os.Stat(r.headOut); err == nil {
+		t.Error("a refused command wrote a head")
+	}
+	leaves, _ := s.EventStore().Load(context.Background(), audit.RedactionTrailName)
+	if len(leaves) != 0 {
+		t.Errorf("a refused command wrote %d trail record(s)", len(leaves))
+	}
+}
