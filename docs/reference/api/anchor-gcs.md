@@ -40,6 +40,7 @@ Package gcs is an audit.Anchor that writes every signed tree head as an object i
 
 **Functions**
 
+- `func Layout() anchorobj.Layout`: Layout returns this backend's layout: its object format, partition tag and error values.
 - `func LoadDir(dir string, v audit.Verifier) ([]audit.SignedTreeHead, error)`: LoadDir reads a downloaded set of anchored objects (for example the output of "gcloud storage cp -r" of the anchor prefix) and verifies each against v.
 - `func RolePermissions(role string) ([]string, error)`: RolePermissions returns the permissions a role document (WriterRole and the others) grants.
 

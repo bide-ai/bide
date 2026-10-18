@@ -19,6 +19,11 @@ const (
 // layout is this backend's naming and encoding of anchored heads.
 var layout = anchorobj.Layout{Format: ObjectFormat, PartitionTag: layoutTag, ErrObject: ErrObject, ErrBadSignature: ErrBadSignature}
 
+// Layout returns this backend's layout: its object format, partition tag and error values. It is a copy;
+// changing it changes nothing in the package. A program that links several anchors uses it to check
+// that no two layouts collide (anchorobj.Layout.Collides).
+func Layout() anchorobj.Layout { return layout }
+
 func partitionOf(kind, runID string) string { return layout.Partition(kind, runID) }
 
 func invertedSize(size int) string { return anchorobj.InvertedSize(size) }

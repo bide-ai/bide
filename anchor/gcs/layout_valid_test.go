@@ -21,3 +21,17 @@ func TestLayoutIsValidAndDoesNotCollideWithS3(t *testing.T) {
 		t.Error("the same tree has the same partition under both anchors")
 	}
 }
+
+func TestLayoutIsACopyOfTheRealLayout(t *testing.T) {
+	l := Layout()
+	if l.Format != ObjectFormat || l.PartitionTag != layoutTag || l.ErrObject != ErrObject || l.ErrBadSignature != ErrBadSignature {
+		t.Fatalf("Layout() = %+v; want the package's format, tag and errors", l)
+	}
+	if err := l.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	l.Format = "changed"
+	if Layout().Format != ObjectFormat {
+		t.Error("changing the returned Layout changed the package's")
+	}
+}
