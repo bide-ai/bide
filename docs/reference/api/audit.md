@@ -916,6 +916,20 @@ Ed25519Verifier verifies with an Ed25519 public key.
 - `func (v Ed25519Verifier) PublicKey() []byte`: PublicKey returns the public key, or nil if it has the wrong length.
 - `func (v Ed25519Verifier) Verify(m, sig []byte) bool`: Verify reports whether sig is a valid Ed25519 signature over m.
 
+## type ErasedEnd
+
+```go
+type ErasedEnd struct {
+	RunID string `json:"run_id"`
+
+	Marker string `json:"marker"`
+
+	Kind string `json:"kind"`
+}
+```
+
+ErasedEnd is a run whose end marker was erased, with how it ended per the signed redaction trail.
+
 ## type EventInclusion
 
 ```go
@@ -1850,6 +1864,8 @@ type RedactionReport struct {
 	Holds []agent.Hold `json:"holds,omitempty"`
 
 	Notes []string `json:"notes,omitempty"`
+
+	Ended []ErasedEnd `json:"ended,omitempty"`
 }
 ```
 
