@@ -185,7 +185,8 @@ database or your logs:
 - **Consistency proof**: prove the history was only ever appended to, never rewritten or
   reordered.
 - **Signed tree head + continuous anchoring**: `AuditedStore` signs a commitment per step and
-  publishes it out-of-band to an external transparency log, so tampering can be proven.
+  publishes it out-of-band to an external transparency log, so tampering can be proven. `anchor/awss3`
+  ships one for S3 Object Lock ([anchoring](docs/guides/anchoring.md)).
 - **Who acted, under what authority**: the same leaf can commit to the acting identity (actor, on
   whose behalf, under which signed grant) and enforce delegated authority as a governed invariant,
   so a proof shows who was authorized for what happened. Bring your own IdP; this
@@ -328,6 +329,7 @@ the approver's claim.
 - **[SSO certificates](docs/guides/sso-certificates.md)**: approver certificates issued after a single sign-on login, as a tested recipe with step-ca (OIDC provisioner, certificate template, the approver's renewal script, revocation and step-ca's CRL limits); runnable: `examples/sso-certs`.
 - **[A refund against Stripe test mode](examples/stripe-refund/README.md)**: kill a refund agent mid-refund; the restart halts instead of refunding twice, then a reconciler resolves the step from Stripe's own record. Runnable: `examples/stripe-refund`.
 - **[Security model](docs/guides/security-model.md)**: the exact scope of the cryptographic guarantees, and the audit-only build of `bide`. Read before relying on the trail.
+- **[Anchoring](docs/guides/anchoring.md)**: publish every signed head to an S3 bucket under Object Lock (`anchor/awss3`), in compliance mode in a separate AWS account, so the operator of the database cannot rewrite what was anchored; read back and verified, with the IAM policies, the failure modes, and `bide-anchor` to verify the objects offline or with read-only credentials. Tested against MinIO and a fake, never AWS.
 - **[Key custody](docs/guides/key-custody.md)**: audit-log and approver signing keys in a PKCS#11 HSM (SoftHSM2 for tests), AWS KMS, Google Cloud KMS or Azure Key Vault (ECDSA P-256), behind `audit.Signer`; approvers decide from a terminal with an HSM, AWS KMS, Google Cloud KMS or Azure Key Vault key through `bide-hsm approve`, built from source. Runnable: `examples/hsm-signing`.
 - **[Delegation](docs/guides/delegation.md)**, **[Governance](docs/guides/governance.md)**, **[Quorum](docs/guides/quorum.md)**: signed grants a sub-agent can only narrow, convergent governed state (gsm), and governed k-of-n agreement.
 
@@ -335,6 +337,7 @@ the approver's claim.
 
 - **[CLI reference](docs/reference/cli.md)**: every `bide` command, flag and exit status.
 - **[SDK API reference](docs/reference/api/index.md)**: every exported symbol of every published package, with its declaration, its first doc sentence and a stability label, generated from the Go sources.
+- **[bide-anchor reference](docs/reference/bide-anchor.md)**: `bide-anchor verify`, `export` and `check`, for the heads in an S3 Object Lock anchor.
 - **[bide-hsm reference](docs/reference/bide-hsm.md)**: `bide-hsm approve`, `pubkey` and `csr`, for approver keys in an HSM, on a smart card or in a cloud KMS.
 - **[Extension points](docs/reference/extension-points.md)** and **[module structure](docs/reference/module-structure.md)**: the ports and adapters, and the multi-module layout.
 - **API**: [pkg.go.dev/github.com/bide-ai/bide](https://pkg.go.dev/github.com/bide-ai/bide/agent).

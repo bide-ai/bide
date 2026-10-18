@@ -17,6 +17,8 @@ var Labels = map[string]string{
 	"agent":                    Core,
 	"agent/agenttest":          Core,
 	"agent/storetest":          Core,
+	"anchor/awss3":             Experimental,
+	"anchor/awss3/awss3test":   Experimental,
 	"approvals":                Core,
 	"audit":                    Core,
 	"audit/crlrefresh":         Experimental,

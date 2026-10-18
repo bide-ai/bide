@@ -1,0 +1,71 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "NobodyDeletesOrBypasses",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": [
+        "s3:DeleteObjectVersion",
+        "s3:BypassGovernanceRetention",
+        "s3:PutBucketObjectLockConfiguration",
+        "s3:PutBucketVersioning",
+        "s3:PutLifecycleConfiguration"
+      ],
+      "Resource": ["arn:aws:s3:::BUCKET", "arn:aws:s3:::BUCKET/*"]
+    },
+    {
+      "Sid": "OnlyTheAdministratorChangesThisPolicy",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": ["s3:PutBucketPolicy", "s3:DeleteBucketPolicy"],
+      "Resource": "arn:aws:s3:::BUCKET",
+      "Condition": {
+        "StringNotEquals": {"aws:PrincipalArn": "ADMIN_ROLE_ARN"}
+      }
+    },
+    {
+      "Sid": "OnlyLockedHeads",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::BUCKET/PREFIX*",
+      "Condition": {
+        "StringNotEquals": {"s3:object-lock-mode": "LOCK_MODE"}
+      }
+    },
+    {
+      "Sid": "OnlyLongRetention",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::BUCKET/PREFIX*",
+      "Condition": {
+        "NumericLessThan": {"s3:object-lock-remaining-retention-days": "MIN_RETENTION_DAYS"}
+      }
+    },
+    {
+      "Sid": "OnlyTheConfiguredKmsKey",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::BUCKET/PREFIX*",
+      "Condition": {
+        "StringNotEquals": {
+          "s3:x-amz-server-side-encryption": "aws:kms",
+          "s3:x-amz-server-side-encryption-aws-kms-key-id": "KMS_KEY_ARN"
+        }
+      }
+    },
+    {
+      "Sid": "TlsOnly",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:*",
+      "Resource": ["arn:aws:s3:::BUCKET", "arn:aws:s3:::BUCKET/*"],
+      "Condition": {
+        "Bool": {"aws:SecureTransport": "false"}
+      }
+    }
+  ]
+}

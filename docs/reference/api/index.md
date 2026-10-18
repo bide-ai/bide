@@ -28,6 +28,7 @@ Each package carries one label, declared in one place and checked against
 | Module | Packages | Pages |
 |---|---|---|
 | `github.com/bide-ai/bide` | 22 | one page per package, listed below |
+| `github.com/bide-ai/bide/anchor/awss3` | 2 | [anchor-awss3](anchor-awss3.md) |
 | `github.com/bide-ai/bide/codec/gcf` | 1 | [codec-gcf](codec-gcf.md) |
 | `github.com/bide-ai/bide/flowedit` | 1 | [flowedit](flowedit.md) |
 | `github.com/bide-ai/bide/govern` | 2 | [govern](govern.md) |
@@ -69,6 +70,8 @@ Each package carries one label, declared in one place and checked against
 | [`plan`](plan.md) | experimental | Package plan is rung-1 of the expression-surfaces stack: a handle-based flow builder that lowers to the journal-backed runtime and adds no new executor. |
 | [`plan/planview`](plan-planview.md) | experimental | Package planview embeds bide view's flow-config page in a program, with the program's plan.Registry, so the page checks a config the way plan.Load does: blocks, predicates, merges and types, as well as structure, and shows the digest a run of the flow would journal. |
 | [`schema`](schema.md) | core | Package schema derives JSON Schema from Go types and emits provider-specific dialects. |
+| [`anchor/awss3`](anchor-awss3.md) | experimental | Package awss3 is an audit.Anchor that writes every signed tree head as an object in an S3 bucket under Object Lock (a WORM store), and a Reader that reads the heads back and verifies them. |
+| [`anchor/awss3/awss3test`](anchor-awss3.md) | experimental | Package awss3test is an in-memory S3 bucket with versioning and Object Lock, for testing code that uses the awss3 package without a network. |
 | [`codec/gcf`](codec-gcf.md) | core | Package gcf provides a provider.ToolResultCodec that encodes tool results as GCF (Graph Compact Format) instead of JSON when they are sent to the model. |
 | [`flowedit`](flowedit.md) | experimental | Package flowedit is the edit engine of the flow editor (docs/design/visual-editor.md): it applies one operation to the text of a flow config by splicing, so every byte outside the edit is the original byte, and it returns the text only after checking that the result means what the operation says (it re-parses the result and compares it with the operation applied to the data). |
 | [`govern`](govern.md) | experimental | Package govern is the Tier-2 (distributed / concurrent) compensating-agent layer: it integrates the gsm "Governed State Machine" library so that MULTIPLE concurrent agents mutating SHARED state converge to the same valid state regardless of interleaving, as certified by gsm's build-time normalization-confluence verification (WFC + CC). |

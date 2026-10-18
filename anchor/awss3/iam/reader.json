@@ -1,0 +1,28 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadHeads",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:GetObjectVersion",
+        "s3:GetObjectRetention",
+        "s3:GetObjectLegalHold"
+      ],
+      "Resource": "arn:aws:s3:::BUCKET/PREFIX*"
+    },
+    {
+      "Sid": "ListTheBucket",
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket", "s3:ListBucketVersions"],
+      "Resource": "arn:aws:s3:::BUCKET"
+    },
+    {
+      "Sid": "DecryptHeads",
+      "Effect": "Allow",
+      "Action": ["kms:Decrypt"],
+      "Resource": "KMS_KEY_ARN"
+    }
+  ]
+}

@@ -173,7 +173,12 @@ plus the `Anchor` port make it push-based and automatic: wrap any `Store`, and e
 write is signed and published to the external log you configure. `Anchor` is bring-your-own; the
 in-memory `MemAnchorLog` is the reference implementation and keeps its own append-only tree over
 the published tree heads, so a monitor can prove a given tree head was anchored and that the
-anchor log itself only grew.
+anchor log itself only grew. For production, `anchor/awss3` writes each head as an object under S3
+Object Lock ([anchoring](anchoring.md)). In compliance mode, in an AWS account the application's
+operators do not administer, an operator cannot remove or rewrite a head before its retention date;
+they can still stop publishing, and after the retention date, close the account or disable the KMS key
+(see the table in the guide). An anchored head carries its run or trail ID in clear, and a write-once
+anchor cannot be redacted, so run IDs sent to it must hold no personal data.
 
 ## Key custody
 

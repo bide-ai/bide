@@ -23,7 +23,7 @@ concurrency:
 # fails if a module in the tree is missing from this list or from go.work;
 # benchmarks is the one module left out of both (bench.yml runs it on demand).
 env:
-  MODULES: ". mcptools trace flowedit store/sqlite store/postgres govern govern/redislog govern/sqlitelog govern/postgreslog codec/gcf signer/pkcs11 signer/awskms signer/azurekv signer/gcpkms signer/gcpkms/emulatortest signer/awskms/emulatortest cmd/bide cmd/bide/bide-hsm cmd/bide/bide-hsm/emulatortest cmd/bide/bide-hsm/azuretest cmd/bide-view examples/approval examples/plan examples/mcp examples/observability examples/govern examples/stripe-refund examples/sso-certs examples/hsm-signing integration"
+  MODULES: ". mcptools trace flowedit store/sqlite store/postgres govern govern/redislog govern/sqlitelog govern/postgreslog codec/gcf anchor/awss3 signer/pkcs11 signer/awskms signer/azurekv signer/gcpkms signer/gcpkms/emulatortest signer/awskms/emulatortest cmd/bide cmd/bide/bide-hsm cmd/bide/bide-hsm/emulatortest cmd/bide/bide-hsm/azuretest cmd/bide-view examples/approval examples/plan examples/mcp examples/observability examples/govern examples/stripe-refund examples/sso-certs examples/hsm-signing integration"
   UNLISTED_MODULES: "benchmarks"
   # The Linux test shards, one job each, balanced by measured time: the core's agent package alone
   # (".:agent", the package in the core's agent directory, not its subpackages; the longest -race
@@ -34,7 +34,7 @@ env:
   TEST_SHARDS: |
     agent: .:agent
     core: .
-    rest: mcptools trace flowedit store/sqlite store/postgres govern govern/redislog govern/sqlitelog govern/postgreslog codec/gcf signer/pkcs11 signer/awskms signer/azurekv signer/gcpkms signer/gcpkms/emulatortest signer/awskms/emulatortest cmd/bide cmd/bide/bide-hsm cmd/bide/bide-hsm/emulatortest cmd/bide/bide-hsm/azuretest cmd/bide-view examples/approval examples/plan examples/mcp examples/observability examples/govern examples/stripe-refund examples/sso-certs examples/hsm-signing integration
+    rest: mcptools trace flowedit store/sqlite store/postgres govern govern/redislog govern/sqlitelog govern/postgreslog codec/gcf anchor/awss3 signer/pkcs11 signer/awskms signer/azurekv signer/gcpkms signer/gcpkms/emulatortest signer/awskms/emulatortest cmd/bide cmd/bide/bide-hsm cmd/bide/bide-hsm/emulatortest cmd/bide/bide-hsm/azuretest cmd/bide-view examples/approval examples/plan examples/mcp examples/observability examples/govern examples/stripe-refund examples/sso-certs examples/hsm-signing integration
 
 jobs:
   # Decides what a run needs. The merge queue is where the full matrix runs, once per batch of
@@ -484,6 +484,9 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.heavy != 'false' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read # pulls the private MinIO fixture image from ghcr.io
     # Skipped on a pull request, like the macOS and Windows jobs.
     # The Postgres store (cross-instance at-most-once, leases) and the shared governed-event logs
     # need real services; their tests skip without PG_DSN / REDIS_ADDR, so the Test jobs above
@@ -508,6 +511,10 @@ jobs:
       REDIS_ADDR: localhost:6379
       BIDE_REQUIRE_SOFTHSM: "1" # signer/pkcs11 and bide-hsm fail, not skip, without SoftHSM2
       BIDE_REQUIRE_OPENSSL: "1" # the certificate request tests (cmd/bide, bide-hsm) fail, not skip, without openssl
+      BIDE_REQUIRE_OBJECTLOCK: "1" # anchor/awss3's Object Lock tests fail, not skip, without the MinIO server below
+      BIDE_S3_ENDPOINT: http://127.0.0.1:19000
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin-ci-only
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -519,12 +526,40 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y -q softhsm2
           ls /usr/lib/softhsm /usr/lib/*/softhsm 2>/dev/null
+      - name: Start MinIO (an S3 server with Object Lock, for anchor/awss3)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # A service container cannot be given a command, so the server is started here. MinIO no
+          # longer publishes images on Docker Hub or Quay. The image is a private, CI-only mirror of
+          # Chainguard's build of the AGPL-licensed MinIO server (cgr.dev/chainguard/minio), pinned by
+          # digest and used only as a test fixture: nothing of it is distributed, and the package is
+          # not public. The repository needs Actions read access to the package (package settings).
+          # To refresh the mirror, a maintainer runs
+          #   docker buildx imagetools create -t ghcr.io/bide-ai/minio-fixture:<date> cgr.dev/chainguard/minio@<digest>
+          # and puts the digest here. The tests create their own buckets.
+          image=ghcr.io/bide-ai/minio-fixture@sha256:c93745c56fccdaf0e5dcb88999a96a65a136428beb045ef5d546255a80d747a7
+          echo "$GITHUB_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          if ! docker pull -q "$image"; then
+            echo "::error::The MinIO fixture image $image could not be pulled. A 403 means this repository has no Actions read access to the private package ghcr.io/bide-ai/minio-fixture (package settings, Manage Actions access). If the digest is gone, mirror a MinIO image with Object Lock again (see the comment in this step), run anchor/awss3's tests against it (BIDE_S3_ENDPOINT, BIDE_REQUIRE_OBJECTLOCK=1; docs/guides/anchoring.md), and replace the digest."
+            exit 1
+          fi
+          docker run -d --name minio -p 127.0.0.1:19000:9000 \
+            -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin-ci-only \
+            "$image" server /data --address :9000
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:19000/minio/health/ready && exit 0
+            sleep 1
+          done
+          docker logs minio
+          echo "::error::MinIO did not become ready"
+          exit 1
       - name: Integration tests (twice each; a skip fails the job)
         run: |
           # -count=2 runs each suite twice against the same services, so a test that only passes
           # on a fresh database fails here. A skip means the services were not reached, which
           # would silently test nothing, so it fails the job.
-          for m in store/postgres govern/postgreslog govern/redislog cmd/bide cmd/bide/bide-hsm signer/pkcs11 examples/hsm-signing; do
+          for m in store/postgres govern/postgreslog govern/redislog cmd/bide cmd/bide/bide-hsm signer/pkcs11 examples/hsm-signing anchor/awss3; do
             echo "== $m =="
             out=$(cd "$m" && go test -race -count=2 -v ./... 2>&1) || { echo "$out"; exit 1; }
             echo "$out" | grep -E '^(ok|FAIL|--- (PASS|FAIL|SKIP))'
