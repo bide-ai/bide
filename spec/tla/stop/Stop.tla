@@ -31,6 +31,9 @@ EXTENDS Integers, FiniteSets, Sequences
 
 CONSTANTS
   Calls, StopIds, CoverOf, \* the calls; the stops; the calls each stop covers
+  ScopeOf,           \* the stop key each stop has (its scope and compensation): two stops with one key are duplicates
+  GenRule,           \* TRUE: a set is named by (stop key, generation) and the insert is once-only; FALSE (regress): named by its own content
+  MaxGen,            \* the largest generation a set may carry
   MaxPol, SettersOf, LiftersOf, QuorumOf, \* policies 1..MaxPol: roles and lift quorum
   NeedsOther,        \* the fold's lift rule: one lifter is not the setter
   WantOther,         \* what the invariant demands of a lift (equal to NeedsOther unless a regress)
@@ -71,14 +74,16 @@ RecordKinds == {"set", "lift", "pol", "mode", "root"}
 \* vocabulary: end
 
 \* Unforgeable: a signed record is by an enrolled approver; the forger signs nothing.
-Records == { r \in [k : Kinds, by : People, sig : BOOLEAN, stop : StopIds, to : Pols, dep : Deps] :
+Records == { r \in [k : Kinds, by : People, sig : BOOLEAN, stop : StopIds, to : Pols, dep : Deps, gen : 0..MaxGen] :
                /\ r.sig => (r.by \in Enrolled \/ (AttackerRoots /\ r.by = Forger /\ r.k \in {"root", "pol"}))
                /\ ~r.sig => r.by = Forger
                /\ r.k = "root" => (AttackerRoots /\ r.sig /\ r.by = Forger)
                /\ (r.k = "pol" /\ r.by = Forger /\ r.sig) => r.to = 2
                /\ r.k = "pol" => r.to \in 2..MaxPol
                /\ r.k \notin {"pol"} => r.to = 1
-               /\ r.k = "mode" => ~r.sig }
+               /\ r.k = "mode" => ~r.sig
+               /\ r.k /= "set" => r.gen = 0
+               /\ r.k = "set" => r.gen \in (IF GenRule THEN 1..MaxGen ELSE {0}) }
 
 Stop0 == [phase |-> "none", setter |-> None, lifts |-> {}, how |-> None, signed |-> FALSE]
 Init0C(ch) == [unv |-> FALSE, audited |-> (Cfg = "audited"), pol |-> IF ch THEN 1 ELSE MaxPol, tps |-> {},
@@ -130,6 +135,26 @@ Eff(l, n) == EffC(Chain, TrustRootOnly, l, n)
 \* reached, or a basic process holding an active stop that was set under a signed record.
 Unk(s) == IF s.audited THEN (Pin > s.pol \/ s.unv) ELSE \E i \in StopIds : s.st[i].phase = "active" /\ s.st[i].signed
 
+\* A stop in force for the key sc.
+HeldKey(s, sc) == \E i \in StopIds : s.st[i].phase = "active" /\ ScopeOf[i] = sc
+\* The name a set has in the control run: with GenRule the stop key and the generation (so two writers that
+\* chose the same generation collide), without it the set's own content (here its stop), which never collides.
+SetName(r) == IF GenRule THEN <<ScopeOf[r.stop], r.gen>> ELSE <<r.stop, 0>>
+\* The greatest generation among the sets of key sc in the first n records of l (0 if none).
+MaxGenOf(l, n, sc) ==
+  LET gs == {l[i].gen : i \in {j \in 1..n : l[j].k = "set" /\ ScopeOf[l[j].stop] = sc}} IN
+  IF gs = {} THEN 0 ELSE CHOOSE g \in gs : \A h \in gs : h <= g
+\* The insert of a set record r into log l. A writer reads the log up to some n (any prefix: it may be stale);
+\* if a stop is in force for the key in what it read it reports "already stopped" and writes nothing; else it
+\* names the record by the key and one more than the greatest generation it saw; and the insert fails if that
+\* name is taken. Another record kind is not a set and is not constrained.
+SetInsertable(l, r) ==
+  r.k = "set" =>
+    /\ \E n \in 0..Len(l) :
+         /\ ~HeldKey(Eff(l, n), ScopeOf[r.stop])
+         /\ r.gen = IF GenRule THEN 1 + MaxGenOf(l, n, ScopeOf[r.stop]) ELSE 0
+    /\ SetName(r) \notin {SetName(l[i]) : i \in {j \in 1..Len(l) : l[j].k = "set"}}
+
 Active(s, c) == \E i \in StopIds : s.st[i].phase = "active" /\ c \in CoverOf[i]
 Covers(s, c) == Active(s, c)
 
@@ -165,6 +190,7 @@ Init ==
 Write(r) ==
   /\ ~WithTrail
   /\ Len(log) < MaxLog
+  /\ SetInsertable(log, r)
   /\ log' = Append(log, r)
   /\ UNCHANGED <<trail, pend, wcrash, calls, att, claimLen, rd, fired, crashes, blocked>>
 
@@ -231,6 +257,7 @@ CaughtUp == ~CatchUp \/ SignedLog \subseteq TrailSet
 
 StartWrite(r) ==
   /\ WithTrail /\ pend = {} /\ r.sig /\ Len(log) < MaxLog
+  /\ SetInsertable(log, r)
   /\ r \notin Range(log)   \* a record is inserted once: the control run's names are content-derived, so the same record is not written twice
   /\ r.k = "lift" => Eff(log, Len(log)).st[r.stop].phase /= "none"   \* a lift names a stop the control run holds
   \* A record already on the trail but not in the log (a write that crashed) is only re-applied while no log
@@ -257,6 +284,7 @@ WriteCrash ==
 \* A writer with store access and no key writes an unsigned record straight into the control log.
 Forge(r) ==
   /\ WithTrail /\ ~r.sig /\ Len(log) < MaxLog
+  /\ r.k = "set" => SetName(r) \notin {SetName(log[i]) : i \in {j \in 1..Len(log) : log[j].k = "set"}}   \* a forger cannot overwrite a name either
   /\ log' = Append(log, r)
   /\ UNCHANGED <<trail, pend, wcrash, calls, att, claimLen, rd, fired, crashes, blocked>>
 
@@ -275,6 +303,12 @@ Next == \/ \E r \in Records : Write(r) \/ StartWrite(r) \/ Forge(r)
 Spec == Init /\ [][Next]_vars
 
 ----------------------------------------------------------------------------
+\* Two stops with one key are never in force together: a concurrent duplicate is refused at the insert (the
+\* generation names one winner), and the loser, reading again, finds the stop in force and writes nothing.
+OneActivePerScope ==
+  \A i, j \in StopIds : (i /= j /\ ScopeOf[i] = ScopeOf[j]) =>
+    ~(Eff(log, Len(log)).st[i].phase = "active" /\ Eff(log, Len(log)).st[j].phase = "active")
+
 \* The effect starts at most once, whatever the stop, the lift and the crashes do.
 AtMostOnce == \A c \in Calls : fired[c] <= 1
 
@@ -350,6 +384,8 @@ EffectNotReachable == \A c \in Calls : fired[c] = 0
 UntrailedStopNotReachable == ~(pend = {} /\ \E i \in 1..Len(log) : log[i].sig /\ log[i].k = "set" /\ log[i] \notin TrailSet)
 QuiescentAgreeNotReachable == ~(Quiescent /\ Len(trail) > 1)
 BlockedNotReachable == ~blocked
+\* A second stop of one key can be written once the first is lifted.
+SecondSetNotReachable == ~(\E i, j \in StopIds : i /= j /\ ScopeOf[i] = ScopeOf[j] /\ Eff(log, Len(log)).st[i].phase /= "none" /\ Eff(log, Len(log)).st[j].phase /= "none")
 AuditedLiftNotReachable == ~(\E i \in StopIds : Eff(log, Len(log)).st[i].how = "audited")
 RotatedNotReachable == ~(Eff(log, Len(log)).pol = 2 /\ \E i \in StopIds : Eff(log, Len(log)).st[i].phase = "active")
 =============================================================================

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -123,6 +124,12 @@ type StopRecord struct {
 	SetDigest    string     `json:"set_digest,omitempty"`
 	Scope        *StopScope `json:"scope,omitempty"`
 	Compensation string     `json:"compensation,omitempty"`
+	// Gen, on a set record, is its generation: one more than the greatest generation of any set of the same
+	// scope and compensation the writer read, from 1. The record is named by its scope key and Gen
+	// (stopRecordStep), and an insert is once-only, so two writers that chose the same generation
+	// collide and one fails, re-reads, and finds the stop in force. A record written before generations
+	// existed has Gen 0 and is named by its stop ID; it is read as before.
+	Gen int `json:"gen,omitempty"`
 	// To, on a mode record, is the mode being changed to; Seq the change's number (from 1).
 	To  StopMode `json:"to,omitempty"`
 	Seq int      `json:"seq,omitempty"`
@@ -239,6 +246,9 @@ func (r StopRecord) validate() error {
 	if (r.Mode == StopAudited) != r.Signed() {
 		return fmt.Errorf("stop record: a record is signed exactly when it is audited: %w", ErrInvalidStop)
 	}
+	if r.Gen < 0 || r.Kind != "set" && r.Gen != 0 {
+		return fmt.Errorf("stop record: a generation belongs to a set record and is not negative: %w", ErrInvalidStop)
+	}
 	switch r.Kind {
 	case "set":
 		if r.Scope == nil || r.Scope.Validate() != nil || r.StopID != StopIDOf(r) {
@@ -282,6 +292,9 @@ func stopRecordStep(r StopRecord) string {
 	d := StopDigest(r)[:16]
 	switch r.Kind {
 	case "set":
+		if r.Gen > 0 && r.Scope != nil {
+			return setNamePrefix(*r.Scope, r.Compensation) + strconv.Itoa(r.Gen)
+		}
 		return "@stop/set/" + r.StopID
 	case "lift":
 		return "@stop/lift/" + r.StopID + "/" + encodeID(r.By) + "/" + d
@@ -296,6 +309,14 @@ func stopRecordStep(r StopRecord) string {
 		return fmt.Sprintf("@stop/policy/%010d/%s/%s", r.Seq, encodeID(r.By), d)
 	}
 	return fmt.Sprintf("@stop/mode/%010d/%s/%s", r.Seq, encodeID(r.By), d)
+}
+
+// setNamePrefix is the start of the journal names of the sets of one scope and compensation: the digest of
+// the two, and the generation follows. A set that has no generation is named by its stop ID, which holds
+// no "/", so the two forms never collide.
+func setNamePrefix(scope StopScope, compensation string) string {
+	sum := sha256.Sum256([]byte(string(scope.Kind) + "\x00" + scope.Name + "\x00" + compensation))
+	return "@stop/set/" + hex.EncodeToString(sum[:]) + "/"
 }
 
 // decodeStopRecord decodes a control-run entry's result strictly.

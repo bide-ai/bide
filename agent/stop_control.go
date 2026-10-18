@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -643,22 +644,84 @@ func (c *StopControl) SetStop(ctx context.Context, req StopRequest) (StopEntry, 
 	if comp == "" {
 		comp = CompensationAllow
 	}
-	st, err := c.State(ctx)
-	if err != nil {
-		return StopEntry{}, err
-	}
-	r := StopRecord{Format: StopFormat, Kind: "set", Mode: st.Mode, Scope: &req.Scope, Compensation: comp, Reason: req.Reason, By: req.By, Host: req.Host, AdoptedFrom: req.AdoptedFrom}
-	if err := c.write(ctx, st, &r, req.Signer, true); err != nil {
-		// A stop that is in force but whose trail write failed is returned with the error: the caller
-		// has the stop (and its ID), and Reaudit completes the evidence.
-		if te, ok := errors.AsType[*StopTrailError](err); ok && te.StoreWritten {
-			if e, ferr := c.find(ctx, r.StopID, stopRecordStep(r)); ferr == nil {
-				return e, err
+	// The write is once-only per (scope, compensation, generation): a writer reads the control run, finds no
+	// stop in force for the scope, and inserts the next generation. Another writer that read the same state
+	// chose the same generation, so exactly one insert succeeds; the loser reads again, finds the winner's
+	// stop in force, and reports it (*AlreadyStoppedError) without writing anything.
+	for range maxSetTries {
+		recs, err := c.j.History(ctx, StopControlRun)
+		if err != nil {
+			return StopEntry{}, err
+		}
+		st, err := c.stateOf(recs)
+		if err != nil {
+			return StopEntry{}, err
+		}
+		for _, a := range st.Active() {
+			if a.Scope == req.Scope && a.Compensation == comp {
+				return a, &AlreadyStoppedError{Entry: a}
 			}
 		}
-		return StopEntry{}, err
+		r := StopRecord{Format: StopFormat, Kind: "set", Mode: st.Mode, Scope: &req.Scope, Compensation: comp, Gen: nextSetGen(recs, req.Scope, comp), Reason: req.Reason, By: req.By, Host: req.Host, AdoptedFrom: req.AdoptedFrom}
+		err = c.write(ctx, st, &r, req.Signer, true)
+		if errors.Is(err, errStopNameTaken) {
+			continue
+		}
+		if err != nil {
+			// A stop that is in force but whose trail write failed is returned with the error: the caller
+			// has the stop (and its ID), and Reaudit completes the evidence.
+			if te, ok := errors.AsType[*StopTrailError](err); ok && te.StoreWritten {
+				if e, ferr := c.find(ctx, r.StopID, stopRecordStep(r)); ferr == nil {
+					return e, err
+				}
+			}
+			return StopEntry{}, err
+		}
+		return c.find(ctx, r.StopID, stopRecordStep(r))
 	}
-	return c.find(ctx, r.StopID, stopRecordStep(r))
+	return StopEntry{}, fmt.Errorf("the control run kept changing under the write (%d tries): %w", maxSetTries, ErrStopContended)
+}
+
+// maxSetTries bounds the retries of SetStop after losing the insert to another writer.
+const maxSetTries = 8
+
+// ErrAlreadyStopped is matched (errors.Is) by the *AlreadyStoppedError SetStop returns, with the stop in
+// force, when the scope with that compensation is already stopped. Nothing was written.
+var ErrAlreadyStopped = errors.New("agent: already stopped")
+
+// ErrStopContended is returned by SetStop when it lost the insert to other writers more times than it
+// retries: the control run is changing faster than the call can read it.
+var ErrStopContended = errors.New("agent: the control run is contended")
+
+// AlreadyStoppedError is returned by SetStop when a stop with the same scope and compensation is already
+// in force: Entry is that stop, set by someone else or by an earlier call. Nothing was written.
+type AlreadyStoppedError struct{ Entry StopEntry }
+
+// Error implements error.
+func (e *AlreadyStoppedError) Error() string {
+	return fmt.Sprintf("%s is already stopped (stop %s, set by %s)", e.Entry.Scope, e.Entry.ID, e.Entry.By)
+}
+
+// Unwrap lets errors.Is(err, ErrAlreadyStopped) match.
+func (e *AlreadyStoppedError) Unwrap() error { return ErrAlreadyStopped }
+
+// errStopNameTaken says the insert of a set lost to another record under the same name.
+var errStopNameTaken = errors.New("agent: the stop's name is taken by another record")
+
+// nextSetGen is one more than the greatest generation among the control run's set entries of this scope and
+// compensation, by name: every entry counts, a record that does not verify or does not decode included, so a
+// writer that squats a name can only push the next generation up, never block it.
+func nextSetGen(recs []Record, scope StopScope, comp string) int {
+	prefix := setNamePrefix(scope, comp)
+	next := 1
+	for _, rec := range recs {
+		if rest, ok := strings.CutPrefix(rec.Name, prefix); ok {
+			if g, err := strconv.Atoi(rest); err == nil && g >= next {
+				next = g + 1
+			}
+		}
+	}
+	return next
 }
 
 // LiftStop adds one lifter's approval of lifting stop id and returns the stop as State then reports
@@ -848,8 +911,13 @@ func (c *StopControl) write(ctx context.Context, st StopState, r *StopRecord, si
 	}
 	name := stopRecordStep(*r)
 	put := func() error {
-		_, _, err := c.j.putNew(ctx, StopControlRun, name, Record{Kind: StepValue, Result: b})
-		return err
+		_, inserted, err := c.j.putNew(ctx, StopControlRun, name, Record{Kind: StepValue, Result: b})
+		if err != nil || inserted || r.Kind != "set" {
+			return err
+		}
+		// A set's name holds no digest of its content, so a name that is taken is taken by another record
+		// (this one's time is part of it, so it is never a retry): the caller reads again and decides.
+		return errStopNameTaken
 	}
 	if c.trail == nil {
 		return put()

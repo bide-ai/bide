@@ -6,6 +6,9 @@ EXTENDS Stop, TLC
 
 CONSTANTS a, b, c, eve, c1, c2, s1, s2
 
+ScopeOfDef == (s1 :> "x1") @@ (s2 :> "x2")
+SameScopeDef == (s1 :> "x") @@ (s2 :> "x")
+SameCoverDef == (s1 :> {c1}) @@ (s2 :> {c1})
 CoverOfDef == (s1 :> {c1}) @@ (s2 :> {c2})
 SettersOfDef == (0 :> {eve}) @@ (1 :> {a}) @@ (2 :> {b})
 LiftersOfDef == (0 :> {eve}) @@ (1 :> {a, b}) @@ (2 :> {b, c})

@@ -50,6 +50,15 @@ func audited(t *testing.T, store Store, p StopPolicy, opts ...StopOption) *StopC
 
 func sign(id string) StopSigner { return fakeStopSigner{id} }
 
+func mustRecords(t *testing.T, c *StopControl) []StopRecord {
+	t.Helper()
+	recs, err := c.StopRecords(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return recs
+}
+
 func mustState(t *testing.T, c *StopControl) StopState {
 	t.Helper()
 	st, err := c.State(context.Background())
@@ -75,11 +84,17 @@ func TestBasicStopAndLift(t *testing.T) {
 	if s.Signed || s.By != "dayna" || s.Host != "ops-1" || s.Reason != "provider incident" || s.Compensation != CompensationAllow || s.LiftsNeeded != 1 {
 		t.Fatalf("stop: %+v", s)
 	}
-	if _, err := c.SetStop(ctx, req); err != nil { // a second request is a second stop: its time differs
-		t.Fatal(err)
+	// A second request for the scope in force is refused with the stop in force, and writes nothing.
+	n0 := len(mustRecords(t, c))
+	var dup *AlreadyStoppedError
+	if again, err := c.SetStop(ctx, req); !errors.As(err, &dup) || !errors.Is(err, ErrAlreadyStopped) || dup.Entry.ID != s.ID || again.ID != s.ID {
+		t.Fatalf("a second request: %+v %v", again, err)
+	}
+	if n := len(mustRecords(t, c)); n != n0 {
+		t.Fatalf("a refused duplicate wrote %d records", n-n0)
 	}
 	st := mustState(t, c)
-	if n := len(st.Active()); n != 2 {
+	if n := len(st.Active()); n != 1 {
 		t.Fatalf("active = %d", n)
 	}
 	for _, tc := range []struct {
