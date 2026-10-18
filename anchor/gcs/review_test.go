@@ -2,11 +2,14 @@ package gcs_test
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/bide-ai/bide/anchor/gcs"
 	"github.com/bide-ai/bide/anchor/gcs/gcstest"
+	"github.com/bide-ai/bide/audit"
 )
 
 // An auditor's Reader.Audit reports the state of each object, but the bucket's own protections (the
@@ -143,5 +146,37 @@ func TestAuditReportsAPolicyBelowTheMinimum(t *testing.T) {
 	}
 	if !hasFinding(rep, "below the minimum") {
 		t.Fatalf("a 1h policy is not reported: %v", rep.Findings)
+	}
+}
+
+func TestLoadDirRefusesNothingAndEquivocation(t *testing.T) {
+	k := newKeys(t, 1)
+	write := func(dir string, h audit.SignedTreeHead) {
+		t.Helper()
+		name, body := nameAndBody(t, k, h)
+		p := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := gcs.LoadDir(t.TempDir(), k.v); !errors.Is(err, gcs.ErrNotFound) {
+		t.Fatalf("LoadDir of an empty directory = %v; want ErrNotFound, never zero heads and nil", err)
+	}
+	dir := t.TempDir()
+	write(dir, k.headRoot(t, "r", 4, 1, "history A"))
+	write(dir, k.headRoot(t, "r", 4, 2, "history B"))
+	if _, err := gcs.LoadDir(dir, k.v); !errors.Is(err, gcs.ErrEquivocation) {
+		t.Fatalf("LoadDir with two histories = %v; want ErrEquivocation", err)
+	}
+	// Same root at one size (two writers around a lease handoff) and equal sizes in different trees are fine.
+	ok := t.TempDir()
+	write(ok, k.headRoot(t, "r", 4, 1, "same"))
+	write(ok, k.headRoot(t, "r", 4, 2, "same"))
+	write(ok, k.headRoot(t, "q", 4, 1, "other"))
+	if hs, err := gcs.LoadDir(ok, k.v); err != nil || len(hs) != 3 {
+		t.Fatalf("LoadDir = %d heads, %v; want 3 and no error", len(hs), err)
 	}
 }

@@ -207,8 +207,11 @@ Cloud Storage bucket yet: a `-backend gcs` option, with `-project` taking the pr
 
 - `gcs.LoadDir(dir, verifier)` verifies a downloaded copy of the objects offline (for example
   `gcloud storage cp -r gs://bank-bide-anchor/bide-anchor ./anchor/`), as `bide-anchor verify` does for S3. It
-  cannot see retention state, and it cannot show that the copy is complete: a stale copy that lacks the
-  newest heads verifies without complaint, so compare the largest size with the journal's.
+  cannot see retention state, refuses an empty directory (`gcs.ErrNotFound`: nothing to verify) and two
+  validly signed heads of one size with different roots in one partition (`gcs.ErrEquivocation`), and cannot
+  show that the copy is complete: a stale copy that lacks the newest heads verifies without complaint, since
+  the directory shows only what was exported, so compare its newest head with the live bucket and the
+  journal's size.
 - `gcs.NewReader(...)` then `Heads`, `Latest` and `Audit` read the bucket with a reader identity.
   `Reader.Heads` returns the verified heads in increasing size, the list that `bide audit verify-receipts
   -heads` and `verify-decision-coverage -heads` read once you write them one per line as JSON; `Audit` returns the
