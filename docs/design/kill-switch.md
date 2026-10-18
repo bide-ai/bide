@@ -1,6 +1,6 @@
 # Design: the kill switch (a signed, audited emergency stop)
 
-Status: accepted. The control run, the fold and Model 16 (#393) and the engine's holds, recovery, `StopSwitch` and the audit trail with `bide audit stops` have shipped (unreleased); `bide stop`, the viewer banner and the notifications follow. Decisions are in section 14.
+Status: accepted. The control run, the fold and Model 16 (#393) and the engine's holds, recovery, `StopSwitch` and the audit trail with `bide audit stops` have shipped (unreleased); `bide stop` and the signed-head job `bide audit stops -sign-head` have shipped (unreleased); the viewer banner and the notifications follow. Decisions are in section 14.
 
 ## 1. Problem
 
@@ -537,6 +537,18 @@ bide stop  -lift ID  -reason TEXT -key KEY ...   # adds this lifter's signature;
 - Exit statuses follow the common table; the half-landed audit case has its own.
 - The CLI reference is regenerated, `bide help stop` has Recipes, and the approval guides gain a
   "stopping everything" recipe.
+
+**As built (PR 4).** `bide stop` is `cmd/bide/internal/stopcmd`, registered in the command table, and
+`bide-hsm stop` is the same code with the HSM key source. Differences from the sketch above: the journal
+is `-db` or `-postgres-env` only (no literal DSN on the command line); a stop is written without a
+prompt when stdin is not a terminal, and a lift, `-apply-pending`, `-upgrade` and `-downgrade` are
+refused without a terminal unless `-yes` (the lift is the dangerous direction); a repeated stop of the
+same scope writes nothing; `-reaudit` and `-apply-pending` complete the half-landed writes (a repeated
+stop would be a second stop, because the record's time is part of its identity, so "repeat the command"
+is not the repair); exit statuses are 0, 1, 2, 3 and 5 (half done). `bide stop` appends leaves to the
+trail only: signed heads come from `bide audit stops -sign-head -log-key -head-out`, a separate job that
+verifies the trail against the control run, signs exactly the verified records and appends the head to a
+file `-sth` reads. The viewer banner, the per-run "held by stop" state and the run count on a lift follow.
 
 ## 12. Formal model
 

@@ -31,6 +31,7 @@ and `help`, and its import graph is the standard library and the core module (se
 | [`bide notify`](#bide-notify) | set up and test the webhook notifier: test a receiver, run a local one, relay to Slack and PagerDuty |
 | [`bide journal`](#bide-journal) | erase personal data from finished runs of a journal, accountably: a dry-run plan, then a signed record of each erasure |
 | [`bide approve`](#bide-approve) | record your signed approval (or -reject) of a call that waits for a decision; -list shows what waits |
+| [`bide stop`](#bide-stop) | stop agents now, as a pause that resumes when the stop is lifted: set a stop (-all, -tool, -flow, -agent), -list, -show and -lift; audited mode signs with an enrolled key |
 | [`bide identity`](#bide-identity) | pre-flight a certificate-bound approval setup and say why a certificate would be refused (check), keep the CRLs of a policy's issuers current and archived (fetch-crl), and reset a poisoned rollback mark |
 | [`bide keygen`](#bide-keygen) | create an approver key pair for bide approve and print the public key policies and verifiers use |
 | [`bide migrate`](#bide-migrate) | create or check a Postgres journal's schema as its owner, so the service needs no DDL rights |
@@ -835,6 +836,103 @@ Exit status:
   2  usage error: a bad flag or argument; nothing was read
 ```
 
+## bide stop
+
+Stop agents now, as a pause that resumes when the stop is lifted: set a stop (-all, -tool, -flow, -agent), -list, -show and -lift; audited mode signs with an enrolled key.
+
+```text
+bide stop: stop agents now (a pause that resumes when the stop is lifted), and list and lift stops
+
+  bide stop -db <file> -all|-tool <name>|-flow <name>|-agent <name> -reason <text> [-yes]
+  bide stop -db <file> -list [-json]
+  bide stop -db <file> -show <id>
+  bide stop -db <file> -lift <id> -reason <text> [-yes]
+  bide stop -postgres-env <VAR> ...
+
+A stop is a pause, not a failure: a call that has begun finishes, a call that has not begun does not start,
+and the runs carry on when the stop is lifted. There is no default scope: a bare "bide stop" lists the active
+stops and exits 2, and never sets one. -tool, -flow and -agent repeat (one stop each).
+
+Basic mode (no -stop-policy) needs no keys: anyone who can reach the journal sets and lifts a stop, and who
+did it is asserted, not authenticated. Audited mode (-stop-policy FILE, the deployment's policy) signs every
+record with -key as the enrolled approver -as, lifts by the policy's quorum (each lifter runs -lift), and
+writes the signed stop trail that "bide audit stops" verifies. Give every process the same mode: a basic
+process that meets signed records holds side-effect calls until it is given the policy.
+
+An -agent stop covers runs whose identity (agent.WithIdentity) names that agent; a run with no identity is
+never covered by one. Use -all or -tool to cover those.
+
+Operations on an audited deployment:
+  -reaudit         append to the trail the records the control run has and the trail lacks (after exit 5)
+  -apply-pending   make effective the signed lifts (and policy or mode records) that sit on the trail and never
+                   took effect, after showing each one's signer and age; signed, so who applied what is evidence
+  -upgrade         move to audited mode: adopts the active plain stops as signed ones, then records the change
+  -downgrade       record a move back to basic; refused while any stop is active
+
+The reason is shown in logs, notifications and the viewer: put no secret and no customer data in it. A stop is
+written without a prompt when -yes is given or standard input is not a terminal, and asked about once on a
+terminal. A lift, -apply-pending, -upgrade and -downgrade ask on a terminal and refuse without one unless -yes
+is given. The journal is named by -db (an existing SQLite file) or -postgres-env (the variable that holds the
+DSN: it never goes on the command line).
+
+Flags:
+  -agent value
+    	set a stop that holds runs of this agent, by its identity's actor name (repeat for several); runs with no identity are not covered
+  -all
+    	set a stop that covers every run
+  -apply-pending
+    	audited: make effective the signed records on the trail that never took effect, after showing each one's signer and age (signed, so it is evidence)
+  -as string
+    	audited mode: your approver id, as the stop policy lists it; basic mode: the name recorded (default your OS user; asserted, not authenticated)
+  -block-compensation
+    	with a stop: hold a saga's compensation too (by default a rollback continues)
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
+  -db string
+    	SQLite journal file (must exist)
+  -downgrade
+    	record a move back to basic mode (refused while any stop is active)
+  -flow value
+    	set a stop that holds this plan flow, by its name (repeat for several)
+  -json
+    	with -list: print the state as JSON
+  -key string
+    	audited mode: your private key file, as bide keygen writes it; on Unix it must not be readable by group or others
+  -lift string
+    	add your lift of this stop (its ID or an unambiguous prefix of at least 8 characters); audited mode lifts by the policy's quorum
+  -list
+    	list the stops: active ones with who set them and their lifts, the rejected records, the records waiting on the trail; nothing is written
+  -postgres-env string
+    	name of the environment variable that holds the Postgres DSN (a DSN never goes on the command line)
+  -reason string
+    	why (at most 1 KiB, shown in logs, notifications and the viewer: no secrets, no customer data); required to set or lift
+  -reaudit
+    	audited: append to the stop trail what the control run has and the trail lacks
+  -show string
+    	show one stop, by its ID or an unambiguous prefix of at least 8 characters, with its lift records
+  -stop-policy string
+    	audited mode: the stop policy file (JSON: approvers' public keys, setters, lifters, lift quorum, deployment ID) the deployment pins; without it this is basic mode
+  -stop-root string
+    	audited mode: the digest of the deployment's root policy, when -stop-policy is a later policy the chain reaches
+  -tool value
+    	set a stop that holds calls to this tool, by exact name (repeat for several)
+  -upgrade
+    	move the deployment to audited mode: adopt the active stops as signed ones and record the change (needs -stop-policy, -as, -key)
+  -yes
+    	do not ask for confirmation (for scripts); what is signed is still shown
+
+Exit status:
+  0  success
+  1  refused or failed: the stop control did not accept the record, no such stop, the prompt was declined,
+     or the stops cannot be judged (the stops are unknowable); nothing was written unless stated
+  2  usage error: a bad flag or argument; nothing was read or written. A bare "bide stop" is one
+  3  the journal, the policy or the key could not be read or opened; nothing was written
+  5  half done: an audited record landed in the control run or on the stop trail but not both. The
+     message says which; "bide stop -reaudit" (a stop in force, trail missing) or "bide stop
+     -apply-pending" (a lift on the trail, not in force) completes it. Do not repeat the command: a
+     repeated stop is a second stop
+```
+
 ## bide identity
 
 Pre-flight a certificate-bound approval setup and say why a certificate would be refused (check), keep the CRLs of a policy's issuers current and archived (fetch-crl), and reset a poisoned rollback mark.
@@ -1206,6 +1304,7 @@ bide audit: produce and verify audit proof bundles
 
   stops (-trail <file> | -db <file> | -postgres-env <var>) -stop-policy <file> [-stop-root <digest>]
         (-sth <file>... -pubkey <hex|file> | -unanchored) [-max-unattested <duration>] [-as-of <time>]
+        [-sign-head -log-key <file> -head-out <file>]
          verify the kill switch's stop trail: each record is read strictly and must verify, under the
          policy the deployment pinned (-stop-policy, a JSON policy document with the approvers' public
          keys, the setters and lifters, the lift quorum and the deployment ID) and the chain of signed
@@ -1218,7 +1317,11 @@ bide audit: produce and verify audit proof bundles
          accepts a tail younger than that. With -db or -postgres-env it also compares the trail with
          the control run record for record: a record in force without evidence, or a forged record in
          the trail, fails; a signed record on the trail that never reached the control run (a crash
-         between the two writes) is listed as UNAPPLIED, or SUPERSEDED when a later record went on without it, and does not fail; agent.StopControl.ApplyPending applies an unapplied one. It prints each stop and whether it is in force
+         between the two writes) is listed as UNAPPLIED, or SUPERSEDED when a later record went on without it, and does not fail; agent.StopControl.ApplyPending applies an unapplied one. It prints each stop and whether it is in force. With -sign-head (a store, -pubkey, -log-key and -head-out
+         required) it then signs a head over exactly the records it verified and appends it, as one JSON line,
+         to -head-out, which -sth reads back: the job to run on a schedule, since the audit fails on any record
+         after the newest signed head. The heads already in -head-out are verified with the trail, so a
+         shrunken or rewritten trail is refused, and with nothing new nothing is signed
 
   notifications (-trail <file>... [-journal <file>...] | -db <file> | -postgres-env <var>) [-run <id>]
                 (-sth <file>... -pubkey <hex|file> | -unanchored) [-max-ack <duration>] [-max-unattested <duration>]
@@ -1480,8 +1583,12 @@ Usage of bide audit stops:
     	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never; -json is never colored
   -db string
     	read the trail and the control run from this SQLite database (opened read-only) instead of from a file
+  -head-out string
+    	with -sign-head: the file the signed head is appended to (created if absent); it is verified first, so a trail that shrank or was rewritten since an earlier head is refused, not re-signed
   -json
     	print one JSON report on stdout instead of the text report
+  -log-key string
+    	with -sign-head: the private key file that signs the head (as bide keygen writes it; on Unix not readable by group or others). It is the deployment's log key, not an approver's: -pubkey names its public half
   -max-clock-skew duration
     	how far past this machine's clock a signed head's timestamp may be (default 5m0s)
   -max-input-bytes int
@@ -1492,6 +1599,8 @@ Usage of bide audit stops:
     	read them from the Postgres database whose DSN is in this environment variable (never given on the command line)
   -pubkey string
     	the public key as <scheme>:<hex> (ed25519, ecdsa-p256, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it; it verifies every -sth
+  -sign-head
+    	after verifying the trail against the control run (-db or -postgres-env, required), sign a head over exactly the verified records with -log-key and append it, as one JSON line, to -head-out; the heads in that file are read back by -sth. Run it on a schedule: with no -max-unattested the audit fails on any record after the newest signed head
   -sth value
     	a signed tree head over the trail, as JSON (audit.SignStopTrail, or an entry's sth from the anchor log of the store that anchors it); repeat for as many as you have: each must verify and match a prefix of the trail, the largest is the newest
   -stop-policy string

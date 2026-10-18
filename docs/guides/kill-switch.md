@@ -8,9 +8,9 @@ failure modes and the formal model, is in the [design note](../design/kill-switc
 how to use what has shipped.
 
 Shipped: the control run, the engine's holds, recovery, the signed audit trail with `bide audit
-stops`, and the model (`agent.StopControl`, `agent.StopSwitch`, `agent.WithStopSwitch`,
-`audit.NewStopTrail`). Not shipped yet: `bide stop`, the viewer banner and the notifications; until
-they are, a stop is set and lifted from Go (`StopControl.SetStop`, `LiftStop`).
+stops`, the model (`agent.StopControl`, `agent.StopSwitch`, `agent.WithStopSwitch`,
+`audit.NewStopTrail`), and the operator command `bide stop` (and `bide-hsm stop` for a key in an HSM
+or a KMS). Not shipped yet: the viewer banner and the notifications.
 
 ## What a stop does
 
@@ -65,6 +65,75 @@ An agent or flow without a switch **refuses to run** (`ErrConfig`) on a store wh
 record, so a process cannot silently disregard a stop. The check costs one read per store every few
 seconds when no stop exists (the budget tests `TestBudget_*` in `agent/journal_x_test.go` and `TestLowering_NoHistoryReadsPerNode` in `plan` count it).
 
+## Setting, listing and lifting a stop: `bide stop`
+
+```
+bide stop -db run.db -all -reason "model misbehaving"            # basic mode: no keys
+bide stop -db run.db -tool refund -tool payout -reason "provider incident"
+bide stop -db run.db -list                                       # the active stops; -json for scripts
+bide stop -db run.db -show 3f9c2a10                              # one stop and its lift records
+bide stop -db run.db -lift 3f9c2a10 -reason "provider recovered" -yes
+```
+
+- **There is no default scope.** Exactly one of `-all`, `-tool NAME`, `-flow NAME` and `-agent NAME` sets
+  a stop (the last three repeat, one stop each). A bare `bide stop -db run.db` lists the active stops
+  and exits 2: it never stops anything by accident. Setting a scope that is already stopped writes
+  nothing and says so.
+- `-reason` is required, at most 1 KiB, and is shown in logs, notifications and the viewer: put no
+  secret and no customer data in it. `-block-compensation` holds a saga's rollback too.
+- **An `-agent` stop covers runs whose identity names that agent.** A run with no identity
+  (`agent.WithIdentity`) is never covered by one, and the command says so every time. Use `-all` or `-tool`
+  to cover those.
+- **The prompt.** A stop is written without a prompt when `-yes` is given or standard input is not a
+  terminal (an incident script must neither hang nor be refused), and asked about once on a terminal.
+  A lift, `-apply-pending`, `-upgrade` and `-downgrade` ask on a terminal and are refused without one
+  unless `-yes` is given. What will be written is always shown first. A cron job's `/dev/null` is not a
+  terminal.
+- **The journal** is `-db FILE` (it must already exist: a mistyped path never creates an empty
+  journal) or `-postgres-env VAR`, the variable that holds the DSN. A DSN never goes on the command
+  line, and a key never does either: `-key` names a key file, or for `bide-hsm stop` a key reference.
+- **Exit statuses.** 0 success; 1 refused (the control did not accept the record, no such stop, the
+  prompt was declined, the stops are unknowable); 2 usage; 3 the journal, the policy or the key could not
+  be read or opened; 5 half done (below). The table is in `bide help stop` and the [CLI reference](../reference/cli.md#bide-stop).
+- In basic mode the setter is `-as NAME` or your OS user, recorded with the host name, and shown as
+  "asserted, not authenticated". `-list` always says which mode it read.
+
+### Audited mode from the command line
+
+Give the deployment's policy and sign with an enrolled key:
+
+```
+bide stop -db run.db -tool refund -reason "provider incident" \
+    -stop-policy stop-policy.json -as ops -key ops.key
+bide stop -db run.db -lift 3f9c2a10 -reason "provider recovered" \
+    -stop-policy stop-policy.json -as risk -key risk.key        # one lifter's approval
+```
+
+`-stop-policy` is the policy document the deployment pins (`agent.StopPolicyDoc` as JSON: the approvers'
+public keys, the setters and lifters, the lift quorum, the deployment ID); `-stop-root DIGEST` names the
+root policy when the file is a later one. `-as` is your approver id and `-key` is your private key file
+(`bide keygen` makes one; on Unix it must not be readable by group or others). With a key in an HSM or a
+KMS use `bide-hsm stop`, which takes the same flags and a key reference after `-key` (a `pkcs11:` URI,
+`awskms:`, `gcpkms:` or `azurekv:`); the PIN or credentials come from the paths `bide-hsm approve` uses.
+Before it writes anything the command checks that your id and key are the ones the pinned policy enrols
+for the role (once a policy transition has taken effect the control judges the record instead). A lift
+prints how many lifts the stop holds and how many more it needs; the stop stays in force until the quorum
+is met. Every audited write goes to the control run and the stop trail, in the order below.
+
+- `-reaudit` appends to the trail what the control run has and the trail lacks.
+- `-apply-pending` lists the signed records that sit on the trail and never took effect, each with its
+  signer and age (and SUPERSEDED ones, which it leaves), asks, and makes them effective under your signed
+  `apply` record. A signature cannot be revoked: applying makes an old pending lift effective.
+- `-upgrade` moves a deployment to audited mode: it lists the active plain stops, sets each again
+  signed, then records the change. Roll the policy file out to every process first; `-downgrade` records a
+  move back to basic and is refused while any stop is active.
+
+**Exit 5, half done.** An audited stop is written to the control run first and the trail second. If the
+trail write fails the stop IS in force; run `bide stop -reaudit` (same `-db` and `-stop-policy`) to put it
+on the trail. Do not repeat the stop: a repeat is a second stop with its own ID. A lift is written to the
+trail first; if the control-run write then fails, the lift is on the trail and not in force, and
+`bide stop -apply-pending` makes it effective. `bide audit stops` shows the same two states.
+
 ## Basic and audited mode
 
 The mode is each process's configuration (`WithStopMode`), never something the store says.
@@ -102,6 +171,27 @@ a record that rests on earlier ones (a lift names its stop, a transition its roo
 control run's records the trail lacks are appended first, in store order, so the trail never holds a
 lift ahead of its stop. Only records the control accepts are appended: a forged record written straight
 into the control run is a finding of `bide audit stops`, never evidence.
+
+**Keeping the audit passing.** `bide stop` appends signed leaves to the trail and nothing else: one key
+touch in an incident. A signed head over the trail, which is what attests that nothing was deleted, is
+made by a separate, schedulable job, and **`bide audit stops` fails by default on any record after the
+newest signed head**. So the deployment must run, on a schedule shorter than the longest unattested tail
+it accepts:
+
+```
+bide audit stops -db run.db -stop-policy stop-policy.json \
+    -sign-head -log-key log.key -pubkey log.pub -head-out stop-heads.jsonl
+```
+
+It verifies the trail against the policy and the control run first, signs exactly the records it
+verified (never a second read of the store), and appends the head as one JSON line to the head file,
+which `-sth stop-heads.jsonl` reads back. The heads already in the file are verified with the trail,
+so a trail that shrank or was rewritten since an earlier head is refused, not re-signed; with nothing
+new it signs nothing. Exit statuses are `bide audit`'s (1: the trail does not verify, nothing is signed;
+3: the key could not sign or the file could not be written). `-log-key` is a key file; a log key held in
+an HSM or a KMS is signed by an anchoring process that uses `audit.AuditedEventStore`, not by this job,
+and the head file is not itself anchored: publish it somewhere the deployment's store writers cannot
+edit.
 
 `bide audit stops` verifies the trail offline: each record must verify under the policy the
 deployment pinned (`-stop-policy`, the policy document with the approvers' public keys) and the chain

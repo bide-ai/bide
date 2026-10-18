@@ -2007,6 +2007,7 @@ SignedTreeHead is a TreeHead with a signature over its canonical encoding under 
 - `func SignNotifyTrail(ctx context.Context, store EventStore, trail string, s Signer, now time.Time) (SignedTreeHead, error)`: SignNotifyTrail signs a tree head over the leaves store holds for trail, at now.
 - `func SignRedactionTrail(ctx context.Context, store EventStore, signer Signer, v Verifier, deployment string, prior []SignedTreeHead, now time.Time) (SignedTreeHead, error)`: SignRedactionTrail signs a tree head over the redaction trail in store, after checking the trail is the one the earlier heads attest: every head in prior must verify under v, be a head of the trail, and commit to a prefix of it, and every record in the trail must carry a signature that verifies under v.
 - `func SignStopTrail(ctx context.Context, store EventStore, trail string, s Signer, now time.Time) (SignedTreeHead, error)`: SignStopTrail signs a tree head over the leaves store holds for trail, at now: the head AuditedEventStore publishes as records arrive, for a deployment that signs on its own schedule.
+- `func SignStopTrailExport(exp StopTrailExport, s Signer, now time.Time) (SignedTreeHead, error)`: SignStopTrailExport signs a tree head over exactly the leaves exp carries, at now: the head `bide audit stops -sign-head` appends to a head file after it has verified those leaves.
 - `func SignTreeHead(th TreeHead, s Signer) (SignedTreeHead, error)`: SignTreeHead signs th under s's scheme.
 
 **Methods**

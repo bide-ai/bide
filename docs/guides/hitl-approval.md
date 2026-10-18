@@ -752,6 +752,9 @@ never part of the reference, a PKCS#11 key the token does not mark non-extractab
 program is built from source. See [Key custody](key-custody.md#deciding-from-the-terminal-bide-hsm) for the
 reference forms and what this does and does not protect, and the [bide-hsm reference](../reference/bide-hsm.md).
 
+`bide-hsm stop` is the same program for the kill switch: it signs the stop, the lift and the change of mode
+with the key in the HSM or the KMS (see the [kill switch guide](kill-switch.md#audited-mode-from-the-command-line)).
+
 Deciding on a click in a chat message is out of scope on purpose. A button handled by a server must sign
 with a key the server holds, and one server holding the keys of k approvers collapses k-of-n
 independence: whoever controls the server decides alone. See the [roadmap](../ROADMAP.md#notifications-and-approvals) for approvals
