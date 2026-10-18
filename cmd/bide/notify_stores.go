@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 
+	"github.com/bide-ai/bide/cmd/bide/internal/approvecmd"
 	"github.com/bide-ai/bide/internal/auditcli"
 	"github.com/bide-ai/bide/store/postgres"
 	"github.com/bide-ai/bide/store/sqlite"
@@ -14,6 +15,8 @@ import (
 // a store, read-only, as bide view does. The audit-only build links no driver, so it leaves
 // auditcli.Stores nil and the verb reads exported files only.
 func init() {
+	// bide audit stops -sign-head signs with a key file, as bide stop does.
+	auditcli.LoadLogSigner = approvecmd.LoadSigner
 	auditcli.Stores = &auditcli.StoreOpeners{
 		SQLite: func(path string) (auditcli.NotifyStores, error) {
 			s, err := sqlite.OpenReadOnly(path)

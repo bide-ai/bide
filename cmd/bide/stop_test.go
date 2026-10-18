@@ -13,9 +13,11 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/cmd/bide/internal/approvecmd"
 	"github.com/bide-ai/bide/cmd/bide/internal/stopcmd"
 	"github.com/bide-ai/bide/store/sqlite"
 )
@@ -497,5 +499,188 @@ func TestStop_UpgradeAdoptsActiveStopsAndDowngradeRefusesWhileActive(t *testing.
 	}
 	if code, out, errOut := e.stop("ops", "-downgrade", "-reason", "back", "-yes"); code != 0 {
 		t.Fatalf("downgrade: exit %d\n%s\n%s", code, out, errOut)
+	}
+}
+
+// logKey writes an Ed25519 log key (the file form bide keygen writes) and returns it with the public key
+// text -pubkey takes.
+func logKey(t *testing.T, dir, name string) (keyFile, pub string) {
+	t.Helper()
+	p, priv, _ := ed25519.GenerateKey(nil)
+	keyFile = filepath.Join(dir, name+".key")
+	if err := os.WriteFile(keyFile, []byte(hex.EncodeToString(priv.Seed())+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return keyFile, audit.FormatPublicKey(audit.AlgEd25519, p)
+}
+
+func headLines(t *testing.T, path string) []string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Split(strings.TrimSpace(string(b)), "\n")
+}
+
+// bide audit stops -sign-head is the scheduled job that keeps the audit passing: it verifies the trail against
+// the control run, signs a head over exactly the verified records, and appends it to a head file that -sth
+// reads back. With nothing new it signs nothing.
+func TestAuditStopsSignHead(t *testing.T) {
+	e := newStopEnv(t, 1, "ops")
+	dir := filepath.Dir(e.db)
+	key, pub := logKey(t, dir, "log")
+	heads := filepath.Join(dir, "heads.jsonl")
+	audited := func(extra ...string) (int, string, string) {
+		return runBide(append([]string{"audit", "stops", "-db", e.db, "-stop-policy", e.policy}, extra...)...)
+	}
+	if code, _, _ := e.stop("ops", "-tool", "refund", "-reason", "incident"); code != 0 {
+		t.Fatal("set")
+	}
+	// Without a head the audit fails by default.
+	if code, out, _ := audited("-pubkey", pub); code != 1 || !strings.Contains(out, "no signed head") {
+		t.Fatalf("unattested trail: exit %d\n%s", code, out)
+	}
+	code, out, errOut := audited("-sign-head", "-log-key", key, "-head-out", heads, "-pubkey", pub)
+	if code != 0 || !strings.Contains(out, "appended it to") || len(headLines(t, heads)) != 1 {
+		t.Fatalf("sign-head: exit %d\n%s\n%s", code, out, errOut)
+	}
+	if code, out, _ := audited("-sth", heads, "-pubkey", pub); code != 0 || !strings.Contains(out, "PASS") {
+		t.Fatalf("the signed head must make the audit pass: exit %d\n%s", code, out)
+	}
+	// Nothing new: nothing signed.
+	if code, out, _ := audited("-sign-head", "-log-key", key, "-head-out", heads, "-pubkey", pub); code != 0 || !strings.Contains(out, "nothing signed") || len(headLines(t, heads)) != 1 {
+		t.Fatalf("no new records: exit %d\n%s", code, out)
+	}
+	// A new record is unattested until the next run.
+	id := e.state(true).Active()[0].ID
+	if code, _, _ := e.stop("ops", "-lift", id, "-reason", "done", "-yes"); code != 0 {
+		t.Fatal("lift")
+	}
+	if code, out, _ := audited("-sth", heads, "-pubkey", pub); code != 1 || !strings.Contains(out, "not attested") {
+		t.Fatalf("a record after the head: exit %d\n%s", code, out)
+	}
+	if code, out, _ := audited("-sign-head", "-log-key", key, "-head-out", heads, "-pubkey", pub); code != 0 || len(headLines(t, heads)) != 2 {
+		t.Fatalf("second sign-head: exit %d\n%s", code, out)
+	}
+	if code, out, _ := audited("-sth", heads, "-pubkey", pub); code != 0 {
+		t.Fatalf("the audit after the second head: exit %d\n%s", code, out)
+	}
+}
+
+// What is not verified is not signed: a store-only record, a head of a longer trail (records deleted), and a
+// head under another key all stop the job with nothing appended.
+func TestAuditStopsSignHeadRefusesWhatDoesNotVerify(t *testing.T) {
+	e := newStopEnv(t, 1, "ops")
+	dir := filepath.Dir(e.db)
+	key, pub := logKey(t, dir, "log")
+	heads := filepath.Join(dir, "heads.jsonl")
+	sign := func(extra ...string) (int, string, string) {
+		return runBide(append([]string{"audit", "stops", "-db", e.db, "-stop-policy", e.policy, "-sign-head", "-log-key", key, "-head-out", heads, "-pubkey", pub}, extra...)...)
+	}
+	if code, _, _ := e.stop("ops", "-tool", "refund", "-reason", "incident"); code != 0 {
+		t.Fatal("set")
+	}
+	if code, out, _ := sign(); code != 0 {
+		t.Fatalf("first sign-head: %d\n%s", code, out)
+	}
+	before := headLines(t, heads)
+
+	// A head over a longer trail than the store holds: records were deleted.
+	s, _ := sqlite.Open(e.db)
+	exp, err := audit.ExportStopTrail(context.Background(), s.EventStore(), agent.StopTrailName)
+	s.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	exp.Leaves = append(exp.Leaves, []byte("not a real leaf"))
+	signer, _ := approvecmdLoad(t, key)
+	h, err := audit.SignStopTrailExport(exp, signer, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(h)
+	longer := filepath.Join(dir, "longer.jsonl")
+	if err := os.WriteFile(longer, append(b, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, _ := runBide("audit", "stops", "-db", e.db, "-stop-policy", e.policy, "-sign-head", "-log-key", key, "-head-out", longer, "-pubkey", pub); code != 1 || !strings.Contains(out, "records were deleted") {
+		t.Fatalf("a head of a longer trail: exit %d\n%s", code, out)
+	}
+	if got := headLines(t, longer); len(got) != 1 {
+		t.Fatalf("a refused run appended to the head file: %d lines", len(got))
+	}
+
+	// A record written around the trail.
+	id := e.state(true).Active()[0].ID
+	s, _ = sqlite.Open(e.db)
+	j, _ := agent.NewJournal(s)
+	doc := agent.StopPolicyDoc{}
+	pb, _ := os.ReadFile(e.policy)
+	_ = json.Unmarshal(pb, &doc)
+	pol, _ := audit.StopPolicyFromDoc(doc)
+	bare, _ := agent.NewStopControl(j, agent.WithStopMode(agent.StopAudited), agent.WithStopPolicy(pol), agent.WithStopVerifier(audit.StopVerifierFromAudit))
+	sk, _ := approvecmdLoad(t, e.keys["ops"])
+	if _, err := bare.LiftStop(context.Background(), id, agent.LiftRequest{By: "ops", Signer: sk}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	if code, out, _ := sign(); code != 1 || !strings.Contains(out, "in the control run, not in the trail") {
+		t.Fatalf("a record around the trail: exit %d\n%s", code, out)
+	}
+	if after := headLines(t, heads); len(after) != len(before) {
+		t.Fatalf("a refused run appended a head: %d lines, was %d", len(after), len(before))
+	}
+}
+
+func approvecmdLoad(t *testing.T, path string) (audit.Signer, error) {
+	t.Helper()
+	sg, err := approvecmd.LoadSigner(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sg, nil
+}
+
+func TestAuditStopsSignHeadUsageAndKeys(t *testing.T) {
+	e := newStopEnv(t, 1, "ops")
+	dir := filepath.Dir(e.db)
+	key, pub := logKey(t, dir, "log")
+	other, _ := logKey(t, dir, "other")
+	heads := filepath.Join(dir, "heads.jsonl")
+	if code, _, _ := e.stop("ops", "-all", "-reason", "incident"); code != 0 {
+		t.Fatal("set")
+	}
+	base := []string{"audit", "stops", "-db", e.db, "-stop-policy", e.policy}
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"no key", []string{"-sign-head", "-head-out", heads, "-pubkey", pub}, "needs -log-key and -head-out"},
+		{"no out", []string{"-sign-head", "-log-key", key, "-pubkey", pub}, "needs -log-key and -head-out"},
+		{"no pubkey", []string{"-sign-head", "-log-key", key, "-head-out", heads}, "-pubkey"},
+		{"key without the flag", []string{"-log-key", key, "-unanchored"}, "go with -sign-head"},
+		{"from a file", []string{"-trail", "x.json", "-sign-head", "-log-key", key, "-head-out", heads, "-pubkey", pub}, "needs the store"},
+	} {
+		args := base
+		if tc.name == "from a file" {
+			args = []string{"audit", "stops", "-stop-policy", e.policy}
+		}
+		if code, _, errOut := runBide(append(append([]string{}, args...), tc.args...)...); code != 2 || !strings.Contains(errOut, tc.want) {
+			t.Errorf("%s: exit %d\n%s", tc.name, code, errOut)
+		}
+	}
+	// The log key must be the key -pubkey names: otherwise the head would not verify.
+	code, _, errOut := runBide(append(append([]string{}, base...), "-sign-head", "-log-key", other, "-head-out", heads, "-pubkey", pub)...)
+	if code != 3 || !strings.Contains(errOut, "not the key -pubkey names") || len(headLines(t, heads)) != 0 {
+		t.Fatalf("the wrong log key: exit %d\n%s", code, errOut)
+	}
+	// A key file that does not exist writes nothing.
+	if code, _, _ := runBide(append(append([]string{}, base...), "-sign-head", "-log-key", filepath.Join(dir, "none.key"), "-head-out", heads, "-pubkey", pub)...); code != 3 || len(headLines(t, heads)) != 0 {
+		t.Fatalf("a missing log key: exit %d", code)
 	}
 }

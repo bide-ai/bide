@@ -462,3 +462,42 @@ func TestVerifyStops_SupersededRecords(t *testing.T) {
 		t.Fatalf("ApplyPending: %d applied, %d superseded, %v", n, sup, err)
 	}
 }
+
+// SignStopTrailExport signs exactly the leaves it is given: the head verifies against them, equals the head a
+// store read would give, and does not follow a trail that grew after the export.
+func TestSignStopTrailExportSignsExactlyTheExportedLeaves(t *testing.T) {
+	r := newStopRig(t)
+	e := r.set("refund", "ops1")
+	x := r.export()
+	now := time.Now()
+	h, err := audit.SignStopTrailExport(x, audit.Ed25519Signer{Priv: r.head}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := r.sth(now); h.Size != want.Size || string(h.Root) != string(want.Root) {
+		t.Fatalf("export head %d/%x differs from the store head %d/%x", h.Size, h.Root, want.Size, want.Root)
+	}
+	r.lift(e, "ops1") // the trail grows after the export
+	r.lift(e, "risk")
+	if h.Size != len(x.Leaves) {
+		t.Fatalf("head size %d, exported %d", h.Size, len(x.Leaves))
+	}
+	rep, err := audit.VerifyStops(r.input(audit.StopVerifyInput{Heads: []audit.SignedTreeHead{h}, MaxTailAge: time.Hour}))
+	if err != nil || rep.Tail != len(r.export().Leaves)-len(x.Leaves) || rep.Tail == 0 {
+		t.Fatalf("the head must cover the exported prefix only: tail %d, %v", rep.Tail, err)
+	}
+}
+
+func TestSignStopTrailExportRefusesNothingAndForeignTrails(t *testing.T) {
+	r := newStopRig(t)
+	s := audit.Ed25519Signer{Priv: r.head}
+	if _, err := audit.SignStopTrailExport(r.export(), s, time.Now()); !errors.Is(err, audit.ErrMalformed) {
+		t.Fatalf("an empty trail: %v", err)
+	}
+	r.set("refund", "ops1")
+	x := r.export()
+	x.Trail = "notify"
+	if _, err := audit.SignStopTrailExport(x, s, time.Now()); !errors.Is(err, audit.ErrMalformed) {
+		t.Fatalf("another trail: %v", err)
+	}
+}

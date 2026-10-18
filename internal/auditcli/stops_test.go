@@ -181,3 +181,45 @@ func TestStops_UnattestedTailFailsByDefault(t *testing.T) {
 		t.Errorf("a tail older than -max-unattested: exit %d:\n%s", code, out)
 	}
 }
+
+// The audit-only build links no key loader: -sign-head is a usage error there, never a silent skip.
+func TestStops_SignHeadNeedsTheFullBuild(t *testing.T) {
+	f := newStopFixture(t)
+	old := LoadLogSigner
+	LoadLogSigner = nil
+	defer func() { LoadLogSigner = old }()
+	saved := Stores
+	Stores = &StoreOpeners{}
+	defer func() { Stores = saved }()
+	code, _, errOut := runStops("-db", filepath.Join(f.dir, "x.db"), "-stop-policy", f.policy, "-sign-head", "-log-key", "k", "-head-out", filepath.Join(f.dir, "h"), "-pubkey", f.pub)
+	if code != 2 || !strings.Contains(errOut, "does not sign") {
+		t.Fatalf("exit %d\n%s", code, errOut)
+	}
+}
+
+// A head file is one head, or several one per line; a file with no head, or with a bad line, is unusable.
+func TestStops_HeadFileForms(t *testing.T) {
+	c := &cli{}
+	_, priv, _ := ed25519.GenerateKey(nil)
+	sth, err := audit.SignTreeHead(audit.TreeHead{Kind: audit.TreeEvents, RunID: agent.StopTrailName, Size: 1, Root: make([]byte, 32), TimestampNanos: time.Now().UnixNano()}, audit.Ed25519Signer{Priv: priv})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hb, _ := json.Marshal(sth)
+	h := string(hb)
+	for _, tc := range []struct {
+		name, in string
+		n        int
+		bad      bool
+	}{
+		{"one", h, 1, false},
+		{"lines", h + "\n" + h + "\n", 2, false},
+		{"empty", "", 0, true},
+		{"garbage", h + "\nnot json\n", 0, true},
+	} {
+		got, err := c.parseHeads("heads", []byte(tc.in))
+		if tc.bad != (err != nil) || len(got) != tc.n {
+			t.Errorf("%s: %d heads, %v", tc.name, len(got), err)
+		}
+	}
+}
