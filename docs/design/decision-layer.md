@@ -1,6 +1,6 @@
 # Design: the decision layer (System One deciders that can only make bide stricter)
 
-Status: draft for approval; nothing is built. The direction (target the `/v1/systemone` protocol, not a vendor) was chosen by the user. Decisions that remain are in section 14. Target release: v0.22.0, after the v0.21.0 bank pilot.
+Status: accepted (user, 2026-10-18: all 15 decisions in section 14 as recommended); nothing is built, and code waits until v0.21.0 ships. The direction (target the `/v1/systemone` protocol, not a vendor) was chosen by the user. Target release: v0.22.0, after the v0.21.0 bank pilot.
 
 ## 1. Problem
 
@@ -354,7 +354,9 @@ A new small model (the next number after Model 16) in `spec/tla/decide/`, checke
 | **Auto-approve on a high-confidence "safe"** | The exact thing the rule forbids. Confidence is not authorization |
 | **A trained in-house classifier** | Out of scope; it would use the same `Decider` port |
 
-## 14. Decisions (for approval)
+## 14. Decisions
+
+Decided: the user accepted all 15 as recommended on 2026-10-18.
 
 1. **Port in the core, adapters outside it**: `agent.Decider` in `agent`, `decide/systemone` and `decide/decidertest` in the root module, `decide/opa` in a new nested module. Recommend yes.
 2. **Policy mechanism**: a signed decision policy with a quorum-approved chain in a reserved `@decide` control run, reusing the stop control's chain code rather than the plan-flow governed policy digest. Recommend yes; the chain is the proven pattern, and a model change then has an auditable approver set.
