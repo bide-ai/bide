@@ -28,9 +28,11 @@ const (
 	RedactionRecordFormat = "bide.audit.redaction-record.v1"
 
 	// Event leaf kinds of the trail.
-	redactionBeginKind = "redaction_begin"
-	redactionEndKind   = "redaction_end"
-	redactionAckKind   = "redaction_ack"
+	redactionBeginKind      = "redaction_begin"
+	redactionEndKind        = "redaction_end"
+	redactionAckKind        = "redaction_ack"
+	redactionHoldPlacedKind = "redaction_hold_placed"
+	redactionHoldLiftedKind = "redaction_hold_lifted"
 )
 
 // Phases of a RedactionRecord.
@@ -40,6 +42,10 @@ const (
 	// RedactionAcknowledge is the phase of a record in which an operator acknowledges a planted
 	// leaf (see AcknowledgeRecord).
 	RedactionAcknowledge = "acknowledge"
+	// RedactionHoldPlaced and RedactionHoldLifted are the phases of the records of a legal hold
+	// being placed and lifted (see PlaceLegalHold and LiftLegalHold).
+	RedactionHoldPlaced = "hold_placed"
+	RedactionHoldLifted = "hold_lifted"
 )
 
 // A RedactedRef names one record a redaction replaces: its position in the run's journal, its
@@ -95,6 +101,12 @@ type RedactionRecord struct {
 	// acknowledges: its position in the trail and the hex leaf hash of its bytes.
 	AckPosition int    `json:"ack_position,omitempty"`
 	AckLeafHash string `json:"ack_leaf_hash,omitempty"`
+	// HoldID, HoldMatter, HoldRuns and HoldTree describe the legal hold of a hold_placed or hold_lifted
+	// record: the hold's ID, its matter, the runs it covers and whether it covers their sub-agent runs.
+	HoldID     string   `json:"hold_id,omitempty"`
+	HoldMatter string   `json:"hold_matter,omitempty"`
+	HoldRuns   []string `json:"hold_runs,omitempty"`
+	HoldTree   bool     `json:"hold_tree,omitempty"`
 	// Alg and Signature sign the record's other members under the redaction key: a record without a
 	// signature that verifies is not the tool's, whatever signed head covers it.
 	Alg       string `json:"alg"`
@@ -143,6 +155,10 @@ func (r RedactionRecord) kind() string {
 		return redactionEndKind
 	case RedactionAcknowledge:
 		return redactionAckKind
+	case RedactionHoldPlaced:
+		return redactionHoldPlacedKind
+	case RedactionHoldLifted:
+		return redactionHoldLiftedKind
 	}
 	return redactionBeginKind
 }
@@ -184,7 +200,8 @@ func DecodeRedactionLeaf(leaf []byte) (RedactionRecord, error) {
 	switch {
 	case r.Format != RedactionRecordFormat:
 		return RedactionRecord{}, fmt.Errorf("format %q is not %s", r.Format, RedactionRecordFormat)
-	case r.Phase != RedactionBegin && r.Phase != RedactionEnd && r.Phase != RedactionAcknowledge:
+	case r.Phase != RedactionBegin && r.Phase != RedactionEnd && r.Phase != RedactionAcknowledge &&
+		r.Phase != RedactionHoldPlaced && r.Phase != RedactionHoldLifted:
 		return RedactionRecord{}, fmt.Errorf("phase %q", r.Phase)
 	case el.Kind != r.kind():
 		return RedactionRecord{}, fmt.Errorf("leaf kind %q holds a %q record", el.Kind, r.Phase)
@@ -192,6 +209,11 @@ func DecodeRedactionLeaf(leaf []byte) (RedactionRecord, error) {
 	if r.Phase == RedactionAcknowledge {
 		if h, err := hex.DecodeString(r.AckLeafHash); err != nil || len(h) != 32 || r.AckPosition < 0 {
 			return RedactionRecord{}, errors.New("an acknowledge record names no leaf")
+		}
+	}
+	if r.Phase == RedactionHoldPlaced || r.Phase == RedactionHoldLifted {
+		if strings.TrimSpace(r.HoldID) == "" || (r.Phase == RedactionHoldPlaced && (len(r.HoldRuns) == 0 || strings.TrimSpace(r.HoldMatter) == "")) {
+			return RedactionRecord{}, errors.New("a hold record names no hold")
 		}
 	}
 	return r, nil
@@ -412,6 +434,16 @@ const (
 	FindingHashMismatch RedactionFindingKind = "HASH_MISMATCH"
 	// FindingUncovered: a redaction that ran with no covering signed head.
 	FindingUncovered RedactionFindingKind = "UNCOVERED"
+	// FindingUnderHold: a pass erased records of a run a legal hold in force covered.
+	FindingUnderHold RedactionFindingKind = "REDACTED_UNDER_HOLD"
+	// FindingHoldUnmatched: a hold_lifted record for a hold the trail shows no active placement of, or a placement of an ID already active.
+	FindingHoldUnmatched RedactionFindingKind = "HOLD_UNMATCHED"
+	// FindingHoldNotInStore: the trail says a hold is active and the store holds none: lifted by hand.
+	FindingHoldNotInStore RedactionFindingKind = "HOLD_NOT_IN_STORE"
+	// FindingHoldNotInTrail: the store holds a hold the trail never recorded: placed by hand.
+	FindingHoldNotInTrail RedactionFindingKind = "HOLD_NOT_IN_TRAIL"
+	// FindingHoldDiffers: the store's hold and the trail's have the same ID and cover other runs.
+	FindingHoldDiffers RedactionFindingKind = "HOLD_DIFFERS"
 	// FindingReordered: a trail record that is not at the position, or after the record, it was signed for: a replayed, copied or reordered record.
 	FindingReordered RedactionFindingKind = "REORDERED"
 	// FindingBadSignature: a trail record with no signature, or one that does not verify under the key: not the tool's, whatever head covers it.
@@ -444,6 +476,9 @@ type RedactionVerifyInput struct {
 	Unanchored bool
 	// Deployment is the deployment every record must be signed for (RedactionOptions.Deployment); required.
 	Deployment string
+	// StoreHolds, when not nil, are the legal holds the store holds (agent.Holder.Holds): they are
+	// compared with the holds the trail shows active, and a hold in one and not the other is a finding.
+	StoreHolds *[]agent.Hold
 	// Journals are the journals to check against, by run ID: the records as read (a store's History,
 	// or JournalExport.Journal). A run the trail names that has no journal here is not checked.
 	Journals map[string][]agent.Record
@@ -456,6 +491,8 @@ type RedactionReport struct {
 	Anchored   bool               `json:"anchored"`
 	HeadSize   int                `json:"head_size,omitempty"`
 	Findings   []RedactionFinding `json:"findings,omitempty"`
+	// Holds are the legal holds the trail shows active at its end, by ID.
+	Holds []agent.Hold `json:"holds,omitempty"`
 	// Notes are things that are not findings: an earlier failed pass that a later pass finished.
 	Notes []string `json:"notes,omitempty"`
 }
@@ -523,6 +560,79 @@ func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error) {
 		}
 		add(f.kind, f.run, "%s", f.detail)
 	}
+	// The legal holds in force, by the trail: placements and lifts in order, and a pass that erased
+	// from a run a hold in force covered at the time.
+	active := map[string]RedactionRecord{}
+	crossing := map[string][]string{} // run + plan digest -> passes begun under a hold, until their end is read
+	for i, r := range recs {
+		if !trusted[i] {
+			continue
+		}
+		switch r.Phase {
+		case RedactionHoldPlaced:
+			if _, dup := active[r.HoldID]; dup {
+				add(FindingHoldUnmatched, "", "trail record %d places hold %q, which is already active in the trail", i, r.HoldID)
+				continue
+			}
+			active[r.HoldID] = r
+		case RedactionHoldLifted:
+			if _, ok := active[r.HoldID]; !ok {
+				add(FindingHoldUnmatched, "", "trail record %d lifts hold %q, which the trail shows no active placement of", i, r.HoldID)
+				continue
+			}
+			delete(active, r.HoldID)
+		case RedactionBegin:
+			// A pass that begins under a hold crossed it only if it erased something: the end record
+			// says how many records it replaced, and a begin with no end may have.
+			erases := slices.ContainsFunc(r.Records, func(x RedactedRef) bool { return !x.Already })
+			for _, id := range slices.Sorted(maps.Keys(active)) {
+				h := holdOf(active[id])
+				if erases && h.Covers(r.RunID) {
+					msg := fmt.Sprintf("trail record %d begins an erasure of run %s while hold %q (matter %q, placed by %s, ticket %s) was in force", i, r.RunID, h.ID, h.Matter, active[id].Executor, active[id].Ticket)
+					crossing[r.RunID+"\x00"+r.PlanDigest] = append(crossing[r.RunID+"\x00"+r.PlanDigest], msg)
+				}
+			}
+		case RedactionEnd:
+			id := r.RunID + "\x00" + r.PlanDigest
+			if msgs, ok := crossing[id]; ok {
+				if r.Redacted > 0 {
+					for _, m := range msgs {
+						add(FindingUnderHold, r.RunID, "%s, and the pass replaced %d record(s)", m, r.Redacted)
+					}
+				}
+				delete(crossing, id)
+			}
+		}
+	}
+	for _, id := range slices.Sorted(maps.Keys(crossing)) {
+		run, _, _ := strings.Cut(id, "\x00")
+		for _, m := range crossing[id] {
+			add(FindingUnderHold, run, "%s, and no end record says whether it erased anything", m)
+		}
+	}
+	for _, id := range slices.Sorted(maps.Keys(active)) {
+		rep.Holds = append(rep.Holds, holdOf(active[id]))
+	}
+	if in.StoreHolds != nil {
+		inStore := map[string]agent.Hold{}
+		for _, h := range *in.StoreHolds {
+			inStore[h.ID] = h
+		}
+		for _, id := range slices.Sorted(maps.Keys(active)) {
+			h := holdOf(active[id])
+			switch got, ok := inStore[id]; {
+			case !ok:
+				add(FindingHoldNotInStore, "", "the trail shows hold %q (matter %q) active and the store holds no such hold: it was lifted outside the tool, or never reached the store", id, h.Matter)
+			case !slices.Equal(got.Runs, h.Runs) || got.Tree != h.Tree:
+				add(FindingHoldDiffers, "", "hold %q covers other runs, or another tree setting, in the store than in the trail", id)
+			}
+		}
+		for _, id := range slices.Sorted(maps.Keys(inStore)) {
+			if _, ok := active[id]; !ok {
+				add(FindingHoldNotInTrail, "", "the store holds hold %q (matter %q) and the trail never recorded it: it was placed outside the tool", id, inStore[id].Matter)
+			}
+		}
+	}
 	type key struct {
 		run string
 		pos int
@@ -537,7 +647,7 @@ func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error) {
 	history := map[string][]pass{} // run + plan digest -> its records, in order
 	var order []string
 	for i, r := range recs {
-		if !trusted[i] || r.Phase == RedactionAcknowledge {
+		if !trusted[i] || (r.Phase != RedactionBegin && r.Phase != RedactionEnd) {
 			continue
 		}
 		id := r.RunID + "\x00" + r.PlanDigest
@@ -783,4 +893,86 @@ func AcknowledgeRecord(ctx context.Context, store EventStore, signer Signer, dep
 		Phase: RedactionAcknowledge, RunID: "", Reason: reason, Ticket: ticket, Executor: executor, AtMs: now.UnixMilli(),
 		Deployment: deployment, AckPosition: position, AckLeafHash: hex.EncodeToString(leafHash(leaves[position])),
 	}, signer)
+}
+
+// holdOf is the hold a hold_placed (or hold_lifted) record describes.
+func holdOf(r RedactionRecord) agent.Hold {
+	return agent.Hold{ID: r.HoldID, Matter: r.HoldMatter, Runs: slices.Compact(slices.Sorted(slices.Values(r.HoldRuns))), Tree: r.HoldTree, PlacedAtMs: r.AtMs}
+}
+
+// PlaceLegalHold places h in holder (the store) and records it in the redaction trail: a record signed
+// with signer (the redaction key) naming the hold, its matter, the runs it covers, the reason, the
+// ticket and who. The store comes first: the protection is in force before the record exists, and a
+// failure to record leaves a hold that the audit reports (HOLD_NOT_IN_TRAIL), never an unprotected
+// run. The trail is checked against prior (the heads so far) first, as RedactJournal does.
+func PlaceLegalHold(ctx context.Context, trail EventStore, holder agent.Holder, signer Signer, deployment string, prior []SignedTreeHead, h agent.Hold, reason, ticket, executor string, now time.Time) error {
+	if err := checkHoldArgs(trail, holder, signer, deployment, reason, ticket, executor, now); err != nil {
+		return err
+	}
+	if err := agent.CheckHold(h); err != nil {
+		return err
+	}
+	if err := CheckRedactionTrail(ctx, trail, signer, deployment, prior); err != nil {
+		return err
+	}
+	if err := holder.PlaceHold(ctx, h); err != nil {
+		return err
+	}
+	rec := RedactionRecord{Phase: RedactionHoldPlaced, Reason: reason, Ticket: ticket, Executor: executor, AtMs: now.UnixMilli(),
+		Deployment: strings.TrimSpace(deployment), HoldID: h.ID, HoldMatter: h.Matter, HoldRuns: slices.Compact(slices.Sorted(slices.Values(h.Runs))), HoldTree: h.Tree}
+	if err := AppendRedactionRecord(ctx, trail, rec, signer); err != nil {
+		return fmt.Errorf("audit: hold %q is in force in the store but could not be recorded in the redaction trail (bide audit redactions reports it as HOLD_NOT_IN_TRAIL until it is): %w", h.ID, err)
+	}
+	return nil
+}
+
+// LiftLegalHold lifts the hold id in holder (the store) after recording the lift in the redaction trail:
+// the record comes first, so a hold is never lifted without evidence, and a failure to lift after the
+// record leaves a hold still in force that the audit reports (HOLD_NOT_IN_STORE reads the other way, a
+// hold the trail shows active and the store lacks; this case shows as the store holding a hold the trail
+// shows lifted, HOLD_NOT_IN_TRAIL). It refuses a hold the store does not hold.
+func LiftLegalHold(ctx context.Context, trail EventStore, holder agent.Holder, signer Signer, deployment string, prior []SignedTreeHead, id, reason, ticket, executor string, now time.Time) error {
+	if err := checkHoldArgs(trail, holder, signer, deployment, reason, ticket, executor, now); err != nil {
+		return err
+	}
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("audit: LiftLegalHold: a hold ID is required: %w", agent.ErrConfig)
+	}
+	if err := CheckRedactionTrail(ctx, trail, signer, deployment, prior); err != nil {
+		return err
+	}
+	all, err := holder.Holds(ctx)
+	if err != nil {
+		return err
+	}
+	i := slices.IndexFunc(all, func(h agent.Hold) bool { return h.ID == id })
+	if i < 0 {
+		return fmt.Errorf("audit: LiftLegalHold: the store holds no hold %q: %w", id, agent.ErrConfig)
+	}
+	h := all[i]
+	rec := RedactionRecord{Phase: RedactionHoldLifted, Reason: reason, Ticket: ticket, Executor: executor, AtMs: now.UnixMilli(),
+		Deployment: strings.TrimSpace(deployment), HoldID: h.ID, HoldMatter: h.Matter, HoldRuns: h.Runs, HoldTree: h.Tree}
+	if err := AppendRedactionRecord(ctx, trail, rec, signer); err != nil {
+		return fmt.Errorf("audit: the lift of hold %q could not be recorded in the redaction trail, so the hold stays in force: %w", id, err)
+	}
+	if ok, err := holder.LiftHold(ctx, id); err != nil {
+		return fmt.Errorf("audit: the lift of hold %q is recorded in the redaction trail but the store did not lift it, so it stays in force (run the lift again): %w", id, err)
+	} else if !ok {
+		return fmt.Errorf("audit: the lift of hold %q is recorded, and the store held no such hold any more: %w", id, agent.ErrConfig)
+	}
+	return nil
+}
+
+func checkHoldArgs(trail EventStore, holder agent.Holder, signer Signer, deployment, reason, ticket, executor string, now time.Time) error {
+	switch {
+	case trail == nil || holder == nil || signer == nil:
+		return fmt.Errorf("audit: a trail, a holder and a signer are required: %w", agent.ErrConfig)
+	case strings.TrimSpace(deployment) == "":
+		return fmt.Errorf("audit: a deployment name is required: %w", agent.ErrConfig)
+	case strings.TrimSpace(reason) == "" || strings.TrimSpace(ticket) == "" || strings.TrimSpace(executor) == "":
+		return fmt.Errorf("audit: a reason, a ticket and an executor are required, and are recorded: %w", agent.ErrConfig)
+	case now.IsZero():
+		return fmt.Errorf("audit: no time: %w", agent.ErrConfig)
+	}
+	return nil
 }

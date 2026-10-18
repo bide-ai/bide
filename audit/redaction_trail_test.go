@@ -1080,3 +1080,210 @@ func TestAcknowledgeRecord_MustComeAfterTheLeaf(t *testing.T) {
 		t.Fatalf("report = %+v, %v; want the leaf reported and no acknowledgement", rep, err)
 	}
 }
+
+func (r *trailRig) placeHold(id string, runs ...string) error {
+	return audit.PlaceLegalHold(context.Background(), r.trail, r.store, r.signer, "test", nil,
+		agent.Hold{ID: id, Matter: "litigation 7", Runs: runs, Tree: true}, "preserve for the case", "LEGAL-3", "counsel", time.UnixMilli(1_700_000_010_000))
+}
+
+func (r *trailRig) liftHold(id string) error {
+	return audit.LiftLegalHold(context.Background(), r.trail, r.store, r.signer, "test", nil, id, "matter closed", "LEGAL-9", "counsel", time.UnixMilli(1_700_000_020_000))
+}
+
+func (r *trailRig) verifyHolds(withStore bool) (audit.RedactionReport, error) {
+	r.t.Helper()
+	ctx := context.Background()
+	leaves, head := r.signedTrail()
+	in := audit.RedactionVerifyInput{Deployment: "test", Trail: leaves, Heads: []audit.SignedTreeHead{head}, Verifier: r.v, Journals: r.journals()}
+	if withStore {
+		hs, err := r.store.Holds(ctx)
+		if err != nil {
+			r.t.Fatal(err)
+		}
+		in.StoreHolds = &hs
+	}
+	return audit.VerifyRedactions(in)
+}
+
+// A hold is placed in the store and recorded in the signed trail; the audit lists it, and the two agree.
+func TestLegalHold_PlacedAndLiftedAreRecordedAndAgreeWithTheStore(t *testing.T) {
+	ctx := context.Background()
+	r := newTrailRig(t)
+	if err := r.placeHold("h1", "gov", "other"); err != nil {
+		t.Fatal(err)
+	}
+	if hs, _ := r.store.Holds(ctx); len(hs) != 1 || hs[0].ID != "h1" {
+		t.Fatalf("the store holds %+v", hs)
+	}
+	rep, err := r.verifyHolds(true)
+	if err != nil || !rep.OK() || len(rep.Holds) != 1 || rep.Holds[0].ID != "h1" || rep.Holds[0].Matter != "litigation 7" {
+		t.Fatalf("report = %+v, %v; want the active hold listed and no finding", rep, err)
+	}
+	// The erasure of the held run is refused by the store (and a plan would say so); nothing is erased.
+	if _, err := audit.RedactJournal(ctx, r.j, r.trail, r.plan, r.options); !errors.Is(err, agent.ErrRedactHeld) {
+		t.Fatalf("RedactJournal under a hold = %v, want ErrRedactHeld", err)
+	}
+	if err := r.liftHold("h1"); err != nil {
+		t.Fatal(err)
+	}
+	if hs, _ := r.store.Holds(ctx); len(hs) != 0 {
+		t.Fatalf("the lifted hold is still in the store: %+v", hs)
+	}
+	// After the lift the erasure goes ahead, and the audit passes: the begin comes after the lift.
+	r.options.Now = time.UnixMilli(1_700_000_030_000)
+	plan, _ := agent.PlanRedaction(ctx, r.j, "gov", agent.RedactionSelector{Names: []string{"call:pay", "note"}})
+	if _, err := audit.RedactJournal(ctx, r.j, r.trail, plan, r.options); err != nil {
+		t.Fatal(err)
+	}
+	rep, err = r.verifyHolds(true)
+	if kindsWithout(rep, "INCOMPLETE") != "" {
+		t.Fatalf("after the lift and the erasure: %+v, %v", rep, err)
+	}
+	if len(rep.Holds) != 0 {
+		t.Errorf("a lifted hold is still listed: %+v", rep.Holds)
+	}
+}
+
+// kindsWithout lists the finding kinds of rep other than the named one (the refused pass under the
+// hold left an unfinished-looking pass that the later pass of the same plan closed).
+func kindsWithout(rep audit.RedactionReport, skip string) string {
+	var k []string
+	for _, f := range rep.Findings {
+		if string(f.Kind) != skip {
+			k = append(k, string(f.Kind))
+		}
+	}
+	return strings.Join(k, ",")
+}
+
+// An erasure made while the trail shows a hold in force is a finding, whatever the store let through
+// (here the hold was lifted in the store by hand).
+func TestLegalHold_AnErasureUnderAHoldTheTrailShowsIsFound(t *testing.T) {
+	ctx := context.Background()
+	r := newTrailRig(t)
+	if err := r.placeHold("h1", "gov"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := r.store.LiftHold(ctx, "h1"); err != nil || !ok { // lifted outside the tool
+		t.Fatal(ok, err)
+	}
+	r.options.Now = time.UnixMilli(1_700_000_030_000)
+	if _, err := audit.RedactJournal(ctx, r.j, r.trail, r.plan, r.options); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := r.verifyHolds(true)
+	got := kinds(rep)
+	if err == nil || !strings.Contains(got, "REDACTED_UNDER_HOLD") || !strings.Contains(got, "HOLD_NOT_IN_STORE") {
+		t.Fatalf("report = %+v, %v; want REDACTED_UNDER_HOLD and HOLD_NOT_IN_STORE", rep, err)
+	}
+}
+
+func TestLegalHold_StoreAndTrailDisagreements(t *testing.T) {
+	ctx := context.Background()
+	t.Run("placed by hand", func(t *testing.T) {
+		r := newTrailRig(t)
+		if err := r.store.PlaceHold(ctx, agent.Hold{ID: "hand", Matter: "m", Runs: []string{"gov"}}); err != nil {
+			t.Fatal(err)
+		}
+		rep, err := r.verifyHolds(true)
+		if err == nil || kinds(rep) != "HOLD_NOT_IN_TRAIL" {
+			t.Fatalf("report = %+v, %v", rep, err)
+		}
+	})
+	t.Run("covers other runs", func(t *testing.T) {
+		r := newTrailRig(t)
+		if err := r.placeHold("h1", "gov", "x"); err != nil {
+			t.Fatal(err)
+		}
+		r.store.LiftHold(ctx, "h1")
+		r.store.PlaceHold(ctx, agent.Hold{ID: "h1", Matter: "litigation 7", Runs: []string{"gov"}, Tree: true})
+		rep, err := r.verifyHolds(true)
+		if err == nil || kinds(rep) != "HOLD_DIFFERS" {
+			t.Fatalf("report = %+v, %v", rep, err)
+		}
+	})
+	t.Run("a lift with no placement, and a placement of an active ID", func(t *testing.T) {
+		r := newTrailRig(t)
+		lift := audit.RedactionRecord{Phase: audit.RedactionHoldLifted, Deployment: "test", HoldID: "ghost", Reason: "x", Ticket: "x", Executor: "x", AtMs: 1}
+		if err := audit.AppendRedactionRecord(ctx, r.trail, lift, r.signer); err != nil {
+			t.Fatal(err)
+		}
+		place := audit.RedactionRecord{Phase: audit.RedactionHoldPlaced, Deployment: "test", HoldID: "h", HoldMatter: "m", HoldRuns: []string{"gov"}, Reason: "x", Ticket: "x", Executor: "x", AtMs: 1}
+		for range 2 {
+			if err := audit.AppendRedactionRecord(ctx, r.trail, place, r.signer); err != nil {
+				t.Fatal(err)
+			}
+		}
+		rep, err := r.verifyHolds(false)
+		if err == nil || strings.Count(kinds(rep), "HOLD_UNMATCHED") != 2 {
+			t.Fatalf("report = %+v, %v; want two HOLD_UNMATCHED", rep, err)
+		}
+	})
+	t.Run("no store holds given: not compared", func(t *testing.T) {
+		r := newTrailRig(t)
+		r.store.PlaceHold(ctx, agent.Hold{ID: "hand", Matter: "m", Runs: []string{"gov"}})
+		if rep, err := r.verifyHolds(false); err != nil || !rep.OK() {
+			t.Fatalf("report = %+v, %v", rep, err)
+		}
+	})
+}
+
+func TestLegalHold_RefusalsAndOrder(t *testing.T) {
+	ctx := context.Background()
+	r := newTrailRig(t)
+	if err := r.placeHold("h1", "gov"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.placeHold("h1", "gov"); !errors.Is(err, agent.ErrHoldExists) {
+		t.Errorf("placing an active ID again = %v", err)
+	}
+	if err := r.liftHold("nope"); !errors.Is(err, agent.ErrConfig) {
+		t.Errorf("lifting a hold the store lacks = %v", err)
+	}
+	for name, f := range map[string]func() error{
+		"no reason": func() error {
+			return audit.PlaceLegalHold(ctx, r.trail, r.store, r.signer, "test", nil, agent.Hold{ID: "x", Matter: "m", Runs: []string{"a"}}, "", "t", "e", time.Now())
+		},
+		"no deployment": func() error {
+			return audit.PlaceLegalHold(ctx, r.trail, r.store, r.signer, " ", nil, agent.Hold{ID: "x", Matter: "m", Runs: []string{"a"}}, "r", "t", "e", time.Now())
+		},
+		"bad hold": func() error {
+			return audit.PlaceLegalHold(ctx, r.trail, r.store, r.signer, "test", nil, agent.Hold{ID: "x"}, "r", "t", "e", time.Now())
+		},
+		"nil holder": func() error {
+			return audit.LiftLegalHold(ctx, r.trail, nil, r.signer, "test", nil, "h1", "r", "t", "e", time.Now())
+		},
+	} {
+		if err := f(); !errors.Is(err, agent.ErrConfig) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// A hold placed but not recorded stays in force (the protection comes first)...
+	broken := failingTrail{r.trail}
+	err := audit.PlaceLegalHold(ctx, broken, r.store, r.signer, "test", nil, agent.Hold{ID: "h2", Matter: "m", Runs: []string{"gov"}}, "r", "t", "e", time.Now())
+	if err == nil || !strings.Contains(err.Error(), "in force") {
+		t.Fatalf("placing with an unwritable trail = %v", err)
+	}
+	if hs, _ := r.store.Holds(ctx); len(hs) != 2 {
+		t.Errorf("the hold is not in force in the store: %+v", hs)
+	}
+	// ...and a hold whose lift cannot be recorded is not lifted (the evidence comes first).
+	if err := audit.LiftLegalHold(ctx, broken, r.store, r.signer, "test", nil, "h1", "r", "t", "e", time.Now()); err == nil {
+		t.Fatal("lifted with an unwritable trail")
+	}
+	if hs, _ := r.store.Holds(ctx); len(hs) != 2 {
+		t.Errorf("a hold whose lift was not recorded was lifted: %+v", hs)
+	}
+	// A planted record in the trail does not block holds, but a trail the earlier heads do not match does.
+	other := audit.NewMemEventStore()
+	h, err := audit.SignRedactionTrail(ctx, r.trail, r.signer, r.v, "test", nil, time.Unix(0, p11Now()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := audit.PlaceLegalHold(ctx, other, r.store, r.signer, "test", []audit.SignedTreeHead{h}, agent.Hold{ID: "h3", Matter: "m", Runs: []string{"gov"}}, "r", "t", "e", time.Now()); !errors.Is(err, audit.ErrRedactTrailUntrusted) {
+		t.Errorf("placing with a trail the earlier head does not match = %v", err)
+	}
+	if hs, _ := r.store.Holds(ctx); len(hs) != 2 {
+		t.Errorf("a refused placement reached the store: %+v", hs)
+	}
+}

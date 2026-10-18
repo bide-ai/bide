@@ -108,6 +108,13 @@ func (c *cli) redactions(args []string) {
 	if b, merr := json.Marshal(rep); merr == nil {
 		c.artifact = b
 	}
+	for _, h := range rep.Holds {
+		tree := ""
+		if h.Tree {
+			tree = " and their sub-agent runs"
+		}
+		c.printf("INFO  legal hold %s in force by the trail: matter %q, covers %s%s\n", cleanText(h.ID), cleanText(h.Matter), cleanText(strings.Join(h.Runs, ", ")), tree)
+	}
 	for _, n := range rep.Notes {
 		c.printf("INFO  %s\n", cleanText(n))
 	}
@@ -180,6 +187,13 @@ func (c *cli) readRedactionStore(in *audit.RedactionVerifyInput, db, pgEnv, run,
 	}
 	if !haveJournals {
 		return nil
+	}
+	if h, ok := agent.Capability[agent.Holder](journalStore.Journal); ok {
+		hs, err := h.Holds(ctx)
+		if err != nil {
+			return unusable(fmt.Errorf("read the legal holds: %w (the role needs SELECT on the holds table to compare them with the trail)", err))
+		}
+		in.StoreHolds = &hs
 	}
 	lister, ok := agent.Capability[agent.Lister](journalStore.Journal)
 	if !ok {
