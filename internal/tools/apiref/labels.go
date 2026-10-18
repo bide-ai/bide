@@ -95,7 +95,7 @@ var SymbolRules = []SymbolRule{
 	},
 	{
 		Package: "audit",
-		Files:   []string{"redaction_trail.go", "stop_trail.go", "stop_verify.go"},
+		Files:   []string{"hold_authorization.go", "redaction_trail.go", "stop_trail.go", "stop_verify.go"},
 		Names:   []string{"ErrRedacted", "NoteRedacted"},
 		Label:   Experimental,
 	},

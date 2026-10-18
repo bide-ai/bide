@@ -49,7 +49,7 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `const EvidenceFormatV5 = "bide.audit.evidence.v5"`: EvidenceFormatV5 is the previous evidence format, whose seal covers the whole package JSON rather than its digest.
 - `const GrantFormat = "bide.audit.grant.v2"`: GrantFormat tags the canonical bytes of a grant (Grant.Bytes), which are both signed and digested.
 - `const JournalExportFormat = "bide.audit.journal-export.v1"`: JournalExportFormat is the format of a JournalExport.
-- `const LiftAuthorizationFormat = "bide.audit.redaction-authorization.v1"`: LiftAuthorizationFormat is the format of a LiftAuthorization.
+- `const LiftAuthorizationFormat = "bide.audit.redaction-authorization.v1"`: LiftAuthorizationFormat is the format of a LiftAuthorization. *(experimental)*
 - `const MaxStopRecords = 20000`: MaxStopRecords bounds the records VerifyStops reads from the control run for its comparison with the trail: past it the comparison is not made and the count is a problem, so a flood of records written into the control run is a finding, not a hang. *(experimental)*
 - `const NoteNoRecordedTime = "no recorded time"`: NoteNoRecordedTime is DecisionCoverage.Note for a decision whose record has no usable recorded\_at.
 - `const NoteRedacted = "redacted, name not attested"`: NoteRedacted is DecisionCoverage.Note for a decision whose record a redaction replaced with a tombstone: its approver, verdict and recorded\_at are gone, and it is bounded like any other. *(experimental)*
@@ -69,7 +69,7 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `var ErrRedactNoTrail`: ErrRedactNoTrail is a redaction whose begin record could not be written. *(experimental)*
 - `var EarnedRules`: EarnedRules is the ScopeRules an earned grant attenuates its root under.
 - `var ErrCRLSignature`: ErrCRLSignature is wrapped by VerifyCRL when the CRL's algorithm is outside the profile, its signature does not verify under the issuer's certificate, or it names another issuer.
-- `var ErrLiftUnauthorized`: ErrLiftUnauthorized is a lift of a legal hold that needs a second person's signed authorization and has none that checks out: it is refused, and the hold stays in force.
+- `var ErrLiftUnauthorized`: ErrLiftUnauthorized is a lift of a legal hold that needs a second person's signed authorization and has none that checks out: it is refused, and the hold stays in force. *(experimental)*
 - `var ErrRootMismatch`: ErrRootMismatch is wrapped by the error of a proof or check that finds a signed tree head's root is not the root of the run's journal at the head's size: the journal was changed after the head was signed, or the head is for another history.
 - `var ErrSeqTaken`: ErrSeqTaken is what EventStore.Append returns, wrapped, when a different leaf is already stored at the requested seq: the position was taken.
 - `var ErrSnapshotFull`: ErrSnapshotFull is returned by AddCRLNoEvict when adding the CRL would evict another.
@@ -1363,11 +1363,11 @@ type LiftAuthorization struct {
 }
 ```
 
-A LiftAuthorization is a second person's signed consent to lift one placement of one legal hold.
+A LiftAuthorization is a second person's signed consent to lift one placement of one legal hold. *(experimental)*
 
 **Constructors and functions**
 
-- `func NewLiftAuthorization(ctx context.Context, trail EventStore, trailKey Verifier, authorizer Signer, deployment, holdID, reason, ticket, lifterKeyID string, now time.Time, validFor time.Duration) (LiftAuthorization, error)`: NewLiftAuthorization reads the redaction trail (its records verified under trailKey, the key that signs the trail) and returns authorizer's signed consent to lift the hold holdID as the trail shows it now.
+- `func NewLiftAuthorization(ctx context.Context, trail EventStore, trailKey Verifier, authorizer Signer, deployment, holdID, reason, ticket, lifterKeyID string, now time.Time, validFor time.Duration) (LiftAuthorization, error)`: NewLiftAuthorization reads the redaction trail (its records verified under trailKey, the key that signs the trail) and returns authorizer's signed consent to lift the hold holdID as the trail shows it now. *(experimental)*
 
 ## type LiftOption
 
@@ -1375,13 +1375,13 @@ A LiftAuthorization is a second person's signed consent to lift one placement of
 type LiftOption func(*liftConfig)
 ```
 
-LiftOption is an option of LiftLegalHold.
+LiftOption is an option of LiftLegalHold. *(experimental)*
 
 **Constructors and functions**
 
-- `func RequireLiftAuthorization() LiftOption`: RequireLiftAuthorization makes LiftLegalHold refuse a lift that has no valid authorization (ErrLiftUnauthorized).
-- `func WithLiftAuthorization(a LiftAuthorization) LiftOption`: WithLiftAuthorization gives LiftLegalHold the second person's authorization to embed in the lift's record.
-- `func WithLiftAuthorizers(v ...Verifier) LiftOption`: WithLiftAuthorizers pins the keys an authorization must be signed by.
+- `func RequireLiftAuthorization() LiftOption`: RequireLiftAuthorization makes LiftLegalHold refuse a lift that has no valid authorization (ErrLiftUnauthorized). *(experimental)*
+- `func WithLiftAuthorization(a LiftAuthorization) LiftOption`: WithLiftAuthorization gives LiftLegalHold the second person's authorization to embed in the lift's record. *(experimental)*
+- `func WithLiftAuthorizers(v ...Verifier) LiftOption`: WithLiftAuthorizers pins the keys an authorization must be signed by. *(experimental)*
 
 ## type MLDSASigner
 
