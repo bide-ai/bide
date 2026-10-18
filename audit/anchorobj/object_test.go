@@ -199,6 +199,7 @@ func TestLayoutValidate(t *testing.T) {
 		"tag of only a NUL":  func(l *anchorobj.Layout) { l.PartitionTag = "\x00" },
 		"no ErrObject":       func(l *anchorobj.Layout) { l.ErrObject = nil },
 		"no ErrBadSignature": func(l *anchorobj.Layout) { l.ErrBadSignature = nil },
+		"one error for both": func(l *anchorobj.Layout) { l.ErrBadSignature = l.ErrObject },
 	} {
 		l := testLayout
 		mod(&l)
