@@ -114,7 +114,13 @@ func TestFailedSaveIsRetriedWithoutAnotherEvent(t *testing.T) {
 	var lmu sync.Mutex
 	sink := &funcSink{name: "s"}
 	h, err := New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, StatePath: path, StateFlushDelay: 20 * time.Millisecond,
-		Logf: func(f string, a ...any) { lmu.Lock(); logs = append(logs, f); lmu.Unlock() }})
+		Logf: func(f string, a ...any) {
+			if strings.Contains(f, "memory of forwarded and cleared events") { // the failed-save line
+				lmu.Lock()
+				logs = append(logs, f)
+				lmu.Unlock()
+			}
+		}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,14 +137,18 @@ func TestFailedSaveIsRetriedWithoutAnotherEvent(t *testing.T) {
 	t.Cleanup(func() { srv.Close(); h.Close() })
 	rg := &rig{srv: srv}
 	sendEvents(t, rg, 3, "e")
-	waitFor2(t, "the failure to be logged", func() bool {
+	failures := func() int {
 		lmu.Lock()
 		defer lmu.Unlock()
-		return len(logs) > 0
-	})
+		return len(logs)
+	}
+	waitFor2(t, "the failed save to be logged", func() bool { return failures() > 0 })
 	if n := seenInFile(t, path); n != 0 {
 		t.Fatalf("file holds %d entries while every rename is refused", n)
 	}
+	// The retry runs again while the file stays unwritable: the state is still wanted.
+	first := failures()
+	waitFor2(t, "a second attempt", func() bool { return failures() > first })
 	fail.Store(false)
 	waitFor2(t, "the retry to write the state", func() bool {
 		n, err := readSeen(t, path)
