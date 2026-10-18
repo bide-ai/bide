@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -116,5 +117,152 @@ func TestAuditNotifications_ReadsAPostgresStore(t *testing.T) {
 	code, out, _ = runBide("audit", "notifications", "-postgres-env", "BIDE_AUDIT_TEST_DSN", "-run", untold, "-unanchored", "-as-of", late)
 	if code != 1 || !strings.Contains(out, "FAIL  never_notified") {
 		t.Fatalf("an un-notified gate: exit %d\n%s", code, out)
+	}
+}
+
+// stopNotify sweeps the control run of s into its event store (a notifier told of every stop), as a
+// deployment's notifier process does.
+func stopNotify(t *testing.T, s *sqlite.Store, at time.Time) {
+	t.Helper()
+	j, err := agent.NewJournal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctl, err := agent.NewStopControl(j, agent.WithStopMode(agent.StopBasic))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = agent.NotifyPending(context.Background(), j, okSink{}, audit.NewNotifyTrail(s.EventStore()), agent.WithNotifyStops(ctl), agent.WithNotifyHolder("p1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func setStopIn(t *testing.T, s *sqlite.Store, tool string) agent.StopEntry {
+	t.Helper()
+	j, _ := agent.NewJournal(s)
+	ctl, _ := agent.NewStopControl(j, agent.WithStopMode(agent.StopBasic))
+	e, err := ctl.SetStop(context.Background(), agent.StopRequest{Scope: agent.StopScope{Kind: agent.StopTool, Name: tool}, Reason: "incident", By: "dayna", Host: "h"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return e
+}
+
+func liftStopIn(t *testing.T, s *sqlite.Store, id string) {
+	t.Helper()
+	j, _ := agent.NewJournal(s)
+	ctl, _ := agent.NewStopControl(j, agent.WithStopMode(agent.StopBasic))
+	if _, err := ctl.LiftStop(context.Background(), id, agent.LiftRequest{By: "dayna"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// bide audit notifications checks the kill switch's notifications from the control run: a stop the notifier
+// was told of passes; a stop no notifier saw, and a lift no notifier saw, fail.
+func TestAuditNotifications_StopsFromTheControlRun(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "run.db")
+	s, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := setStopIn(t, s, "refund")
+	stopNotify(t, s, time.Now())
+	s.Close()
+	late := time.Now().Add(time.Hour).Format(time.RFC3339)
+	code, out, errOut := runBide("audit", "notifications", "-db", path, "-unanchored", "-as-of", late)
+	if code != 0 || !strings.Contains(out, "stop_set") || !strings.Contains(out, "PASS") {
+		t.Fatalf("a notified stop: exit %d\n%s\n%s", code, out, errOut)
+	}
+
+	// The stop is lifted and nobody is told: the lift (and the all-clear of the stop) are owed.
+	s, _ = sqlite.Open(path)
+	liftStopIn(t, s, e.ID)
+	s.Close()
+	code, out, _ = runBide("audit", "notifications", "-db", path, "-unanchored", "-as-of", late)
+	if code != 1 || !strings.Contains(out, "never_notified") || !strings.Contains(out, "stop_lifted") {
+		t.Fatalf("a lift no notifier saw: exit %d\n%s", code, out)
+	}
+	s, _ = sqlite.Open(path)
+	stopNotify(t, s, time.Now())
+	s.Close()
+	if code, out, _ := runBide("audit", "notifications", "-db", path, "-unanchored", "-as-of", late); code != 0 {
+		t.Fatalf("after the notifier caught up: exit %d\n%s", code, out)
+	}
+
+	// A stop no notifier saw.
+	s, _ = sqlite.Open(path)
+	setStopIn(t, s, "payout")
+	s.Close()
+	if code, out, _ := runBide("audit", "notifications", "-db", path, "-unanchored", "-as-of", late); code != 1 || !strings.Contains(out, "never_notified") || !strings.Contains(out, "stop_set") {
+		t.Fatalf("a stop no notifier saw: exit %d\n%s", code, out)
+	}
+}
+
+// auditedStopNotify sweeps the control run of an audited deployment into its event store, judged under the
+// policy, as the deployment's notifier does.
+func auditedStopNotify(t *testing.T, e *stopEnv) {
+	t.Helper()
+	s, err := sqlite.Open(e.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	j, _ := agent.NewJournal(s)
+	b, _ := os.ReadFile(e.policy)
+	var doc agent.StopPolicyDoc
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatal(err)
+	}
+	pol, err := audit.StopPolicyFromDoc(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctl, err := agent.NewStopControl(j, agent.WithStopMode(agent.StopAudited), agent.WithStopPolicy(pol), agent.WithStopVerifier(audit.StopVerifierFromAudit))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.NotifyPending(context.Background(), j, okSink{}, audit.NewNotifyTrail(s.EventStore()), agent.WithNotifyStops(ctl), agent.WithNotifyHolder("p1")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// An audited deployment's stops are judged under its policy: without it the audit refuses (it cannot read the
+// signed records), with it an unnotified stop fails and a notified one passes.
+func TestAuditNotifications_AuditedStops(t *testing.T) {
+	e := newStopEnv(t, 1, "ops")
+	if code, _, errOut := e.stop("ops", "-tool", "refund", "-reason", "incident"); code != 0 {
+		t.Fatalf("set: %d\n%s", code, errOut)
+	}
+	late := time.Now().Add(time.Hour).Format(time.RFC3339)
+	code, _, errOut := runBide("audit", "notifications", "-db", e.db, "-unanchored", "-as-of", late)
+	if code != 4 || !strings.Contains(errOut, "give -stop-policy") {
+		t.Fatalf("no policy: exit %d\n%s", code, errOut)
+	}
+	code, out, _ := runBide("audit", "notifications", "-db", e.db, "-unanchored", "-as-of", late, "-stop-policy", e.policy)
+	if code != 1 || !strings.Contains(out, "never_notified") || !strings.Contains(out, "stop_set") {
+		t.Fatalf("an audited stop no notifier saw: exit %d\n%s", code, out)
+	}
+	auditedStopNotify(t, e)
+	if code, out, errOut := runBide("audit", "notifications", "-db", e.db, "-unanchored", "-as-of", late, "-stop-policy", e.policy); code != 0 {
+		t.Fatalf("after the notifier: exit %d\n%s\n%s", code, out, errOut)
+	}
+}
+
+func TestAuditNotifications_StopFlagErrors(t *testing.T) {
+	e := newStopEnv(t, 0)
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"policy with files", []string{"-trail", "x.json", "-unanchored", "-stop-policy", "p.json"}, "need -db"},
+		{"root alone", []string{"-db", e.db, "-unanchored", "-stop-root", strings.Repeat("a", 64)}, "-stop-root needs -stop-policy"},
+		{"short window", []string{"-db", e.db, "-unanchored", "-stops-within", "1s"}, "at least one minute"},
+	} {
+		code, _, errOut := runBide(append([]string{"audit", "notifications"}, tc.args...)...)
+		if code != 2 || !strings.Contains(errOut, tc.want) {
+			t.Errorf("%s: exit %d\n%s", tc.name, code, errOut)
+		}
 	}
 }

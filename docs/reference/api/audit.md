@@ -1564,6 +1564,8 @@ type NotifyVerifyInput struct {
 
 	Journals []JournalExport
 
+	StopEvents []agent.JournalNotifyEvent
+
 	Routing *agent.NotifyRouting
 
 	Strict bool

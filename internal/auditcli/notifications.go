@@ -54,6 +54,9 @@ func (c *cli) notifications(args []string) {
 	strict := fs.Bool("strict", false, "also fail (exit 1) on a warning: a decided gate no notifier observed (unobserved_resolved), or an all-clear owed that cannot be timed (all_clear_untimed)")
 	maxTail := fs.Duration("max-unattested", 0, "how long records after a trail's newest signed head may stay unattested: a trail with one older fails, and an event resting on tail records no older than this is accepted WITHOUT a signature, so its content and times (written by whoever appended it) are trusted; 0 (default): strict, an event resting on the tail fails (unattested)")
 	asOf := fs.String("as-of", "", "judge pending events as of this RFC 3339 time (default now)")
+	stopPolicy := fs.String("stop-policy", "", "with -db or -postgres-env: the kill switch's stop policy (the JSON bide stop -stop-policy reads), so the control run's stops are judged as an audited deployment judges them; without it they are read as a basic deployment's, and a control run holding signed records is refused. Every stop the control run holds (within -stops-within) must have been notified (stop_set), and every lift of one (stop_lifted)")
+	stopRoot := fs.String("stop-root", "", "with -stop-policy: the digest of the deployment's root policy, when the file is a later policy the chain reaches")
+	stopsWithin := fs.Duration("stops-within", 7*24*time.Hour, "with -db or -postgres-env: how far back stop events are owed (the notifier's WithNotifyStopsWithin; a stop set, or lifted, longer ago is history)")
 	c.parse(fs, args)
 
 	haveFiles := len(trails) > 0 || len(journals) > 0
@@ -73,6 +76,12 @@ func (c *cli) notifications(args []string) {
 		c.usageLine(fs.Name() + ": missing -pubkey (and an -sth for each trail); give -unanchored to read a trail nothing attests")
 	case len(heads) > 0 && *pubkey == "":
 		c.usageLine(fs.Name() + ": -sth needs -pubkey")
+	case (*stopPolicy != "" || *stopRoot != "") && !haveStore:
+		c.usageLine(fs.Name() + ": -stop-policy and -stop-root read the kill switch's control run from a store; they need -db or -postgres-env")
+	case *stopRoot != "" && *stopPolicy == "":
+		c.usageLine(fs.Name() + ": -stop-root needs -stop-policy")
+	case *stopsWithin < time.Minute:
+		c.usageLine(fs.Name() + ": -stops-within must be at least one minute")
 	case *maxAck < 0 || *grace < 0 || *recovery < 0 || *maxTail < 0:
 		c.usageLine(fs.Name() + ": -max-ack, -grace, -recovery-failing-after and -max-unattested must not be negative")
 	}
@@ -113,7 +122,7 @@ func (c *cli) notifications(args []string) {
 		in.Journals = append(in.Journals, x)
 	}
 	if haveStore {
-		ok = c.note(c.readStore(&in, *db, *pgEnv, *run)) && ok
+		ok = c.note(c.readStore(&in, *db, *pgEnv, *run, stopSettings{policy: *stopPolicy, root: *stopRoot, within: *stopsWithin})) && ok
 	}
 	if !ok {
 		return
@@ -144,8 +153,49 @@ func (c *cli) notifications(args []string) {
 	c.printf("PASS: %d event(s) in %d trail(s): every event that needed a person was notified, and none is late or overdue\n", len(rep.Events), len(rep.Trails))
 }
 
+// stopSettings are how the audit reads the kill switch's control run: the policy and root the deployment
+// pins (empty: a basic deployment), and the window the notifier raises stop events within.
+type stopSettings struct {
+	policy, root string
+	within       time.Duration
+}
+
+// stopEvents reads the control run of j as the deployment's mode judges it and returns the events a notifier
+// owes for it at now (agent.StopNotifyEvents). A control run this audit cannot judge (signed records and no
+// policy, a chain the policy does not reach) is an unusable input, never an empty list: the audit would
+// pass a deployment whose stops it could not read.
+func (c *cli) stopEvents(ctx context.Context, j *agent.Journal, s stopSettings, now time.Time) ([]agent.JournalNotifyEvent, error) {
+	opts := []agent.StopOption{agent.WithStopMode(agent.StopBasic)}
+	if s.policy != "" {
+		var doc agent.StopPolicyDoc
+		if err := c.readJSON(s.policy, &doc); err != nil {
+			return nil, err
+		}
+		pol, err := audit.StopPolicyFromDoc(doc)
+		if err != nil {
+			return nil, unusable(fmt.Errorf("-stop-policy %s: %w", s.policy, err))
+		}
+		opts = []agent.StopOption{agent.WithStopMode(agent.StopAudited), agent.WithStopPolicy(pol), agent.WithStopVerifier(audit.StopVerifierFromAudit)}
+		if s.root != "" {
+			opts = append(opts, agent.WithStopRoot(s.root))
+		}
+	}
+	ctl, err := agent.NewStopControl(j, opts...)
+	if err != nil {
+		return nil, unusable(err)
+	}
+	st, err := ctl.State(ctx)
+	if err != nil {
+		return nil, unusable(fmt.Errorf("read the kill switch's control run: %w", err))
+	}
+	if err := st.UnknowableErr(); err != nil {
+		return nil, unusable(fmt.Errorf("the kill switch's stops cannot be judged (%v): give -stop-policy (and -stop-root) as the deployment pins them", err))
+	}
+	return agent.StopNotifyEvents(st, now, s.within), nil
+}
+
 // readStore opens the store and loads into in the trails and journals of run (or of every run).
-func (c *cli) readStore(in *audit.NotifyVerifyInput, db, pgEnv, run string) error {
+func (c *cli) readStore(in *audit.NotifyVerifyInput, db, pgEnv, run string, stops stopSettings) error {
 	var s NotifyStores
 	var err error
 	if db != "" {
@@ -184,6 +234,13 @@ func (c *cli) readStore(in *audit.NotifyVerifyInput, db, pgEnv, run string) erro
 	}
 	if run != "" && !slices.Contains(ids, run) {
 		return unusable(fmt.Errorf("-run %s: the store holds no such run", run))
+	}
+	if run == "" { // the kill switch's stops belong to no run: they are checked when the audit is of every run
+		ev, err := c.stopEvents(ctx, j, stops, in.Now)
+		if err != nil {
+			return err
+		}
+		in.StopEvents = ev
 	}
 	roots := map[string]bool{} // the runs whose trails may hold events: roots, and the roots events name (a flow run is its own)
 	for _, id := range ids {

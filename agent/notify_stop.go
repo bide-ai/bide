@@ -94,29 +94,81 @@ func WithNotifyStopsWithin(d time.Duration) NotifyOption {
 	})
 }
 
-// stopEvents are the events a state of the control run owes: a stop_set for each stop within the window, and a
-// stop_lifted for each of them that is lifted. The state is read as a process judges it, so a record it
-// rejects raises nothing.
-func (e *notifyEngine) stopEvents(st StopState) []notifyEvent {
-	within := e.cfg.stopWithin
+// ownedStop is one stop of a control run state and which of its two events are owed within the window.
+type ownedStop struct {
+	entry         StopEntry
+	set, lifted   bool // the stop_set and the stop_lifted are owed
+	setAt, liftAt time.Time
+}
+
+// stopsOwed says, for each stop of st, which events a notifier owes at now with a window of within (0 is
+// the default): the set is news while the set is recent. The lift is news while the lift is recent, however
+// long the stop ran: a stop that was set a month ago and is lifted now is told as a lift. A time that does
+// not parse is not old. The notifier and bide audit notifications judge by this one function.
+func stopsOwed(st StopState, now time.Time, within time.Duration) []ownedStop {
 	if within <= 0 {
 		within = defaultStopNotifyWithin
 	}
-	now := e.cfg.now()
-	var out []notifyEvent
-	recent := func(stamp string) bool { // a time that does not parse is not old
+	recent := func(stamp string) bool {
 		at, err := time.Parse(time.RFC3339Nano, stamp)
 		return err != nil || now.Sub(at) <= within
 	}
+	var out []ownedStop
 	for _, s := range st.Stops {
-		at, _ := time.Parse(time.RFC3339Nano, s.At)
-		info := &NotifyStop{ID: s.ID, Scope: s.Scope, Reason: s.Reason, Compensation: s.Compensation, By: s.By, Host: s.Host, Mode: st.Mode, Signed: s.Signed}
-		// The set is news while it is recent. The lift is news while the lift is recent, however long the stop
-		// ran: a stop that was set a month ago and is lifted now is told as a lift.
-		if recent(s.At) {
-			out = append(out, notifyEvent{key: StopSetKey(s.ID), kind: NotificationStopSet, runID: StopControlRun, eventAt: at, stop: info})
+		o := ownedStop{entry: s, set: recent(s.At), lifted: s.Lifted && recent(cmp.Or(s.LiftedAt, s.At))}
+		o.setAt, _ = time.Parse(time.RFC3339Nano, s.At)
+		o.liftAt, _ = time.Parse(time.RFC3339Nano, s.LiftedAt)
+		if o.set || o.lifted {
+			out = append(out, o)
 		}
-		if s.Lifted && recent(cmp.Or(s.LiftedAt, s.At)) {
+	}
+	return out
+}
+
+// StopNotifyEvents are the events a state of the control run owes a notifier at now, with a window of within
+// (0: the notifier's default, 7 days), as the journal-side facts audit.VerifyNotifications compares with the
+// trail of the control run: a stop_set for each stop whose set is within the window (Current while the stop
+// stands, with the time it was lifted as ResolvedAt otherwise), and a stop_lifted for each lift within it. It
+// is what the notifier itself raises (WithNotifyStops).
+func StopNotifyEvents(st StopState, now time.Time, within time.Duration) []JournalNotifyEvent {
+	var out []JournalNotifyEvent
+	for _, o := range stopsOwed(st, now, within) {
+		if o.set {
+			out = append(out, JournalNotifyEvent{Key: StopSetKey(o.entry.ID), Kind: NotificationStopSet, RunID: StopControlRun, At: o.setAt, Current: !o.entry.Lifted, ResolvedAt: o.liftAt})
+		}
+		if o.lifted {
+			out = append(out, JournalNotifyEvent{Key: StopLiftedKey(o.entry.ID), Kind: NotificationStopLifted, RunID: StopControlRun, At: o.liftAt, Current: true})
+		}
+	}
+	return out
+}
+
+// ParseStopKey is the stop and the kind an event key names: StopSetKey is a stop_set, StopLiftedKey a
+// stop_lifted. ok is false for any other key.
+func ParseStopKey(key string) (id string, kind NotificationKind, ok bool) {
+	id, lifted, ok := stopIDOfKey(key)
+	switch {
+	case !ok:
+		return "", "", false
+	case lifted:
+		return id, NotificationStopLifted, true
+	}
+	return id, NotificationStopSet, true
+}
+
+// stopEvents are the events a state of the control run owes: a stop_set for each stop whose set is within
+// the window, and a stop_lifted for each lift within it. The state is read as a process judges it, so a record
+// it rejects raises nothing.
+func (e *notifyEngine) stopEvents(st StopState) []notifyEvent {
+	now := e.cfg.now()
+	var out []notifyEvent
+	for _, o := range stopsOwed(st, now, e.cfg.stopWithin) {
+		s := o.entry
+		info := &NotifyStop{ID: s.ID, Scope: s.Scope, Reason: s.Reason, Compensation: s.Compensation, By: s.By, Host: s.Host, Mode: st.Mode, Signed: s.Signed}
+		if o.set {
+			out = append(out, notifyEvent{key: StopSetKey(s.ID), kind: NotificationStopSet, runID: StopControlRun, eventAt: o.setAt, stop: info})
+		}
+		if o.lifted {
 			lifted := *info
 			lifted.LiftedBy = append([]string(nil), s.LiftedBy...)
 			out = append(out, notifyEvent{key: StopLiftedKey(s.ID), kind: NotificationStopLifted, runID: StopControlRun, eventAt: now, stop: &lifted})

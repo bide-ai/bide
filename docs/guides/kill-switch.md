@@ -10,7 +10,7 @@ how to use what has shipped.
 Shipped: the control run, the engine's holds, recovery, the signed audit trail with `bide audit
 stops`, the model (`agent.StopControl`, `agent.StopSwitch`, `agent.WithStopSwitch`,
 `audit.NewStopTrail`), and the operator command `bide stop` (and `bide-hsm stop` for a key in an HSM
-or a KMS). `bide view` shows an active stop on every page and which runs it holds. A stop and its lift notify through the [notifier](#notifications). Not shipped yet: `bide audit notifications` coverage of them.
+or a KMS). `bide view` shows an active stop on every page and which runs it holds. A stop and its lift notify through the [notifier](#notifications). `bide audit notifications` checks that they were told.
 
 ## What a stop does
 
@@ -246,7 +246,8 @@ sw, _ := agent.NewStopSwitch(ctl, agent.WithStopObserver(n.Observe))
   notification, which the sweep finds again.
 - `bide stop` does not notify: it has no notifier. A deployment runs the sweep (or a `StopNotifier`) in the
   process that already holds its notifier, and checks the receiver with `bide notify test -kind stop_set`.
-  `bide audit notifications` does not yet check that every stop was told (a follow-up).
+  `bide audit notifications -db` checks that every stop and every lift was told, from the control run
+  (`-stop-policy` and `-stop-root` for an audited deployment, `-stops-within` as the notifier's window).
 
 ## The audit trail
 

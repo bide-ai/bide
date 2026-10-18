@@ -1397,6 +1397,7 @@ JournalNotifyEvent is an event the journal of a run records that needs a person:
 **Constructors and functions**
 
 - `func JournalNotifyEvents(runID string, recs []Record) []JournalNotifyEvent`: JournalNotifyEvents returns the events recs, the history of runID, records that need a person, in journal order (gates, then halts in key order, then the abort).
+- `func StopNotifyEvents(st StopState, now time.Time, within time.Duration) []JournalNotifyEvent`: StopNotifyEvents are the events a state of the control run owes a notifier at now, with a window of within (0: the notifier's default, 7 days), as the journal-side facts audit.VerifyNotifications compares with the trail of the control run: a stop\_set for each stop whose set is within the window (Current while the stop stands, with the time it was lifted as ResolvedAt otherwise), and a stop\_lifted for each lift within it.
 
 ## type JournalOption
 
@@ -1816,6 +1817,10 @@ NotificationKind says what a Notification is about.
 - `const NotificationEscalated NotificationKind = "escalated"`: NotificationEscalated: an outcome\_unknown, approval\_pending, recovery\_failing or stop\_set event was not acknowledged (an approval: not decided) by its deadline, and the next receiver of its escalation chain is told.
 - `const NotificationStopSet NotificationKind = "stop_set"`: NotificationStopSet: a stop was set.
 - `const NotificationStopLifted NotificationKind = "stop_lifted"`: NotificationStopLifted: a stop was lifted, by the lift rule in force (an audited stop needs its quorum, so one partial lift raises nothing).
+
+**Constructors and functions**
+
+- `func ParseStopKey(key string) (id string, kind NotificationKind, ok bool)`: ParseStopKey is the stop and the kind an event key names: StopSetKey is a stop\_set, StopLiftedKey a stop\_lifted.
 
 ## type Notifier
 
