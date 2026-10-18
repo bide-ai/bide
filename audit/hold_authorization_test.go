@@ -361,3 +361,23 @@ func TestLiftAuthorization_AuthorizerIsAHalfOfTheTrailsHybridKey(t *testing.T) {
 		t.Fatalf("the Ed25519 half of the trail's hybrid key as authorizer = %v; want ErrConfig", err)
 	}
 }
+
+// ML-DSA-only keys: the authorizer is the ML-DSA half of the trail's hybrid key, and a pinned
+// authorizer that is such a half is refused too.
+func TestLiftAuthorization_MLDSAHalfOfTheTrailsHybridKeyIsNotASecondPerson(t *testing.T) {
+	ctx := context.Background()
+	r := newTrailRig(t)
+	ml := p11Signers(t)["ml-dsa-65"].(audit.MLDSASigner)
+	hybrid := audit.HybridSigner{Ed: p11Signers(t)["ed25519"].(audit.Ed25519Signer), ML: ml}
+	r.signer, r.v = hybrid, p11Verifier(t, hybrid)
+	if err := r.placeHold("h1", "gov"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := audit.NewLiftAuthorization(ctx, r.trail, r.v, ml, "test", "h1", "x", "y", "", time.UnixMilli(authAt), time.Hour); !errors.Is(err, agent.ErrConfig) {
+		t.Errorf("the ML-DSA half of the trail's hybrid key as authorizer = %v; want ErrConfig", err)
+	}
+	err := audit.LiftLegalHold(ctx, r.trail, r.store, r.signer, "test", nil, "h1", "x", "y", "counsel", time.UnixMilli(liftAtMs), audit.WithLiftAuthorizers(p11Verifier(t, ml)))
+	if !errors.Is(err, agent.ErrConfig) {
+		t.Errorf("a pinned authorizer that is the ML-DSA half of the trail's key = %v; want ErrConfig", err)
+	}
+}

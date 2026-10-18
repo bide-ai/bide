@@ -270,6 +270,11 @@ type ApproverVerifier interface {
 	// public key under a second approver makes the gate refuse the whole policy: it fails closed,
 	// and no call under it runs until the keys are corrected.
 	//
+	// KeyIDs MUST list one ID per independent key component: a hybrid key lists its Ed25519 and its
+	// ML-DSA component separately (audit.HybridVerifier does), because two approvers whose sets
+	// intersect are one seat, here and in the stop quorum and a hold lift's second person. A verifier
+	// that reports one combined ID for a hybrid key lets its holder fill a seat with a half of it.
+	//
 	// Trust boundary: a verifier is trusted code, like the resolver that returns it. The gate
 	// takes its KeyIDs on faith; it cannot check that they name the keys Verify really accepts.
 	// A verifier that under-reports its keys, or reports an identity that is not derived from a

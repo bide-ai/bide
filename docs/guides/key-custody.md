@@ -27,6 +27,8 @@ error names what was found. Pick Ed25519 where the HSM or KMS has it; pick ECDSA
 (many HSMs, and cloud key services such as Azure Key Vault, which has no Ed25519 at all, and any Google Cloud KMS key that must be in an HSM). Both are FIPS-approved signature schemes.
 ECDSA signatures are randomized, so signing one message twice gives two different valid signatures.
 
+**Who counts as the same person.** Approvals, the kill switch's lift quorum and a legal hold lift's second person all treat two keys as one person when their `Verifier.KeyIDs()` sets intersect. `KeyIDs()` must list one ID per independent key component: a hybrid key lists its Ed25519 and its ML-DSA component separately, so a hybrid and its own Ed25519 or ML-DSA half are one person. A custom `agent.ApproverVerifier` or `audit.Verifier` that reports one combined ID for a hybrid key would let its holder fill a second seat with a half of it.
+
 Not supported, and why:
 
 - **ML-DSA and hybrid in a token.** `audit.HybridSigner` holds a concrete `Ed25519Signer` and an

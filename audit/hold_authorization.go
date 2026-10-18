@@ -137,31 +137,17 @@ func NewLiftAuthorization(ctx context.Context, trail EventStore, trailKey Verifi
 	return a, nil
 }
 
-// sameKey reports whether two keys share a secret: the same scheme and public key, or, for a hybrid key,
-// a component (its Ed25519 half or its ML-DSA half) that the other key is or holds. Keys are compared by
-// component, because the Ed25519 half of a hybrid key is a plain Ed25519 key with the same secret: a
-// second person must not be the same key holder under another algorithm name.
+// sameKey reports whether two keys are one key holder: their verifiers' KeyIDs sets intersect. This is
+// the rule approvals and the stop quorum use for "the same person" (Verifier.KeyIDs lists one ID per
+// independent key component, so a hybrid key and its own Ed25519 or ML-DSA half share an ID): one
+// rule repo-wide, and a key that does not read is never "the same" as anything.
 func sameKey(algA string, pubA []byte, algB string, pubB []byte) bool {
-	if len(pubA) == 0 || len(pubB) == 0 {
+	va, errA := NewVerifier(Alg(algA), pubA)
+	vb, errB := NewVerifier(Alg(algB), pubB)
+	if errA != nil || errB != nil {
 		return false
 	}
-	ca, cb := keyComponents(algA, pubA), keyComponents(algB, pubB)
-	return slices.ContainsFunc(ca, func(a keyComponent) bool { return slices.Contains(cb, a) })
-}
-
-// A keyComponent is one scheme's public key: a whole key, or one half of a hybrid.
-type keyComponent struct {
-	alg string
-	pub string
-}
-
-func keyComponents(alg string, pub []byte) []keyComponent {
-	if Alg(alg) == AlgHybrid {
-		if ed, ml, ok := splitHybrid(pub); ok {
-			return []keyComponent{{string(AlgEd25519), string(ed)}, {string(AlgMLDSA65), string(ml)}}
-		}
-	}
-	return []keyComponent{{alg, string(pub)}}
+	return slices.ContainsFunc(va.KeyIDs(), func(id string) bool { return slices.Contains(vb.KeyIDs(), id) })
 }
 
 // checkAuthorizersApart refuses a pinned authorizer that shares a secret with the key that signs the
