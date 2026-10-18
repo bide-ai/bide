@@ -115,6 +115,34 @@ KNOWN-LIMITATIONS lists what is still not verified.
 | The hold releaser role is enough to release a hold, and cannot delete | Confirmed with a service account holding only that role. |
 | The lien | Cloud Storage created a lien on `resourcemanager.projects.delete` (origin `storage.googleapis.com`) one second after the bucket was created with a retention policy, not when the policy was locked. Not removed; project deletion not attempted. |
 
+### Evidence for the table
+
+Quoted from the run's output with every account name removed (service accounts of the scratch project are
+shown by role name only). Times are UTC, 2026-10-17.
+
+- **Lien** (Cloud Resource Manager `liens` listing for the project, read after the bucket was locked):
+  `"restrictions": ["resourcemanager.projects.delete"]`, `"origin": "storage.googleapis.com"`,
+  `"reason": "A lien is put on project deletion because one or more Cloud Storage resources were put under retention."`,
+  `"createTime": "22:32:58"`. The bucket was created at 22:32:57 with a 1-day policy and locked later, so the
+  lien appeared with the policy, not with the lock.
+- **Soft delete:** after the live object of a retained head was deleted (default 7-day soft delete on),
+  `gcloud storage ls --soft-deleted -r "gs://BUCKET/**"` printed
+  `ERROR: (gcloud.storage.ls) One or more URLs matched no objects.`, while `ls --all-versions` still listed the
+  generations.
+- **Hold releaser:** with a service account holding only the hold-releaser role, `gcloud storage objects update
+  --no-temporary-hold` patched both held generations (the object's `temporary_hold` read `True` before and
+  empty after), and `gcloud storage rm` of a retained generation as that identity was refused with
+  `HTTP 403 ... does not have storage.objects.delete access to the Google Cloud Storage object`.
+- **Service-account runs:** `TestRealGCS` passed with the Anchor running as a service account holding only
+  the writer role and the Reader as one holding only the reader role, with no Cloud KMS role on either
+  (`--- PASS: TestRealGCS`, after the bucket-level binding had propagated; the first attempts failed with
+  `iam.serviceAccounts.getAccessToken` denied until the caller had token-creator on the service accounts).
+  With per-object retention the same run failed with `403 ... does not have storage.objects.setRetention
+  access` until the object-retention writer role was bound.
+
+The transcripts themselves are not committed (they hold project identifiers); if you repeat the run, keep
+yours next to the test output.
+
 What differed from the runbook as first written, now corrected above or below:
 
 - `gcloud storage service-agent --authorize-cmek` fails on a new project until the agent exists: run
