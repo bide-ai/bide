@@ -143,7 +143,9 @@ func (e *notifyEngine) sweepStops(ctx context.Context) []error {
 	if err != nil {
 		return append(errs, fmt.Errorf("notification sweep: read the stop control run: %w", err))
 	}
-	e.queueScanTrail(StopControlRun) // a stop delivered earlier may have been lifted
+	// No scan is queued here: the sweep's run listing reaches the control run (an unfinished run) and queues
+	// its trail's scan, and each stop event below is judged again by its round, which writes the all-clear
+	// of a stop that has been lifted.
 	for _, ev := range e.stopEvents(st) {
 		if err := e.roundRouted(ctx, ev); err != nil {
 			errs = append(errs, fmt.Errorf("notification sweep: stop %s: %w", ev.stop.ID, err))
