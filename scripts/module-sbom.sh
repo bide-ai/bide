@@ -65,9 +65,9 @@ SYFT
     && [ -s "$tmp/cwd/pre.json" ] || { echo "self-test: a pre-release version was refused:"; sed 's/^/    /' "$tmp/log"; ok=false; }
   local bad
   for bad in v9.9 v9.9.9x v9.9.9- 'v9.9.9-a b' 9.9.9 'v9.9.9;rm'; do
-    if (cd "$tmp/cwd" && PATH="$tmp/bin:$PATH" FAKE_VERSION=v9.9.9 FAKE_MODULES="$mods" "$here/module-sbom.sh" "$bad" bad.json >"$tmp/log" 2>&1); then
-      echo "self-test: version '$bad' was accepted"; ok=false
-    fi
+    # Refused by the version check itself (its message), not by a later step failing for another reason.
+    (cd "$tmp/cwd" && PATH="$tmp/bin:$PATH" FAKE_VERSION=v9.9.9 FAKE_MODULES="$mods" "$here/module-sbom.sh" "$bad" bad.json >"$tmp/log" 2>&1) || true
+    grep -qF "is not a release version" "$tmp/log" || { echo "self-test: version '$bad' was not refused by the version check"; ok=false; }
   done
   rm -rf "$tmp"
   $ok && echo "self-test: ok"
