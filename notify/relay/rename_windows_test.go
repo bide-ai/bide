@@ -3,6 +3,7 @@
 package relay
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -12,16 +13,36 @@ import (
 	"github.com/bide-ai/bide/agent"
 )
 
-func TestRetryableRenameClassifiesWindowsErrors(t *testing.T) {
-	for _, e := range []syscall.Errno{32, 5} {
-		if !retryableRename(&os.LinkError{Op: "rename", Err: e}) {
-			t.Errorf("errno %d is not retried", e)
+func TestRenameQuickRetriesClassifiesWindowsErrors(t *testing.T) {
+	for e, want := range map[syscall.Errno]int{32: transientRetries, 5: transientRetries / 2, 2: 0, 3: 0, 112: 0} { // 112: disk full
+		if got := renameQuickRetries(&os.LinkError{Op: "rename", Err: e}); got != want {
+			t.Errorf("errno %d: %d quick retries, want %d", e, got, want)
 		}
 	}
-	for _, e := range []syscall.Errno{2, 3, 112} { // not found, path not found, disk full
-		if retryableRename(&os.LinkError{Op: "rename", Err: e}) {
-			t.Errorf("errno %d is retried", e)
+}
+
+// What MoveFileEx returns when the target is open in a reader that did not share delete (how Go opens a file):
+// the error the relay must classify as a refusal that passes. The log names which it is.
+func TestRenameOverAnOpenReaderReturnsAClassifiedError(t *testing.T) {
+	dir := t.TempDir()
+	target, tmp := filepath.Join(dir, "relay.state"), filepath.Join(dir, "relay.state.tmp-1")
+	for _, p := range []string{target, tmp} {
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
 		}
+	}
+	r, err := os.Open(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	err = os.Rename(tmp, target)
+	if err == nil {
+		t.Fatal("the rename over an open file succeeded")
+	}
+	t.Logf("rename over an open reader: %v (errno %v)", err, errors.Unwrap(errors.Unwrap(err)))
+	if renameQuickRetries(err) == 0 {
+		t.Fatalf("the error a reader's open handle causes is not retried: %v", err)
 	}
 }
 

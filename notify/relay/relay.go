@@ -355,36 +355,52 @@ const (
 	// stateRetryDelay is the least wait before a failed save is tried again once the quick retries are spent,
 	// and it doubles with each failure up to stateRetryMax.
 	stateRetryDelay = time.Second
-	stateRetryMax   = time.Minute
+	stateRetryMax   = 30 * time.Second
 	// A refusal that may pass (a reader holding the file on Windows) is retried at once on a timer: 5 ms
-	// doubling, transientRetries times, about 300 ms in all, without logging.
+	// doubling, up to transientRetries times (about 300 ms in all), without logging.
 	transientRetries = 6
 	transientBase    = 5 * time.Millisecond
 )
 
+// backoffWait is base doubled slow times, never more than stateRetryMax (and never negative: a large base shifted
+// left would overflow, so it doubles one step at a time and stops at the cap).
+func backoffWait(base time.Duration, slow int) time.Duration {
+	d := min(base, stateRetryMax)
+	for i := 0; i < slow && d < stateRetryMax; i++ {
+		d = min(d*2, stateRetryMax)
+	}
+	return d
+}
+
 // saveLocked saves the state, with h.pmu held, in one attempt, so nothing waits behind a sleep. A save that fails
 // leaves the state dirty with a retry on a timer, so it is written when the file can be written again, not only
-// when the next event changes it (Close writes it too): a refusal that may pass is retried within milliseconds,
-// anything else is logged and retried after the flush delay (at least a second), doubling to a minute.
+// when the next event changes it (Close writes it too): a refusal that may pass is retried within milliseconds
+// and not logged; anything else, or one that does not pass, is logged once per streak of failures and retried
+// after the flush delay (at least a second), doubling to 30 seconds. The save that ends a streak is logged.
 func (h *Handler) saveLocked() {
 	err := h.state.save(h.seen, h.cleared, false)
 	if err == nil {
+		if h.slowFailures > 0 {
+			h.log("relay: the state file was written again after %d failed attempts", h.failures)
+		}
 		h.failures, h.slowFailures = 0, 0
 		return
 	}
 	h.dirty = true
 	h.failures++
 	var after time.Duration
-	if h.state.transient(err) && h.failures <= transientRetries {
+	if h.failures <= h.state.quickRetries(err) {
 		after = transientBase << (h.failures - 1)
 	} else {
 		floor := h.retryDelay
 		if floor <= 0 {
 			floor = stateRetryDelay
 		}
-		after = min(max(h.delay, floor)<<min(h.slowFailures, 16), stateRetryMax)
+		after = backoffWait(max(h.delay, floor), h.slowFailures)
+		if h.slowFailures == 0 {
+			h.log("relay: %v (the memory of forwarded and cleared events is in the process only until this works; retrying, with a growing wait)", err)
+		}
 		h.slowFailures++
-		h.log("relay: %v (the memory of forwarded and cleared events is in the process only until this works; trying again in %s)", err, after.Round(time.Millisecond))
 	}
 	if h.closed {
 		return

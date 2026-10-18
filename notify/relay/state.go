@@ -39,9 +39,9 @@ type stateStore struct {
 	beforeRename func() error
 	afterRename  func() // test hook: runs after the rename, before the directory sync
 	syncDir      func(dir string) error
-	// renameFile, retryable and sleep stand in for os.Rename, retryableRename and time.Sleep in tests.
+	// renameFile, quick and sleep stand in for os.Rename, renameQuickRetries and time.Sleep in tests.
 	renameFile func(from, to string) error
-	retryable  func(error) bool
+	quick      func(error) int
 	sleep      func(time.Duration)
 	saves      int
 }
@@ -169,23 +169,20 @@ func (s *stateStore) save(d *dedupe, c *idSet, wait bool) error {
 	return nil
 }
 
-// transient reports whether err is a refusal that may pass on its own (see retryableRename).
-func (s *stateStore) transient(err error) bool {
-	if s.retryable != nil {
-		return s.retryable(err)
+// quickRetries is how many quick retries a refusal err gets (see renameQuickRetries).
+func (s *stateStore) quickRetries(err error) int {
+	if s.quick != nil {
+		return s.quick(err)
 	}
-	return retryableRename(err)
+	return renameQuickRetries(err)
 }
 
 // rename replaces the state file with tmp; with wait it retries briefly when the operating system refuses
-// because another process has the file open (Windows; see retryableRename).
+// because another process has the file open (Windows; see renameQuickRetries).
 func (s *stateStore) rename(tmp, path string, wait bool) error {
-	rename, retryable, sleep := s.renameFile, s.retryable, s.sleep
+	rename, sleep := s.renameFile, s.sleep
 	if rename == nil {
 		rename = os.Rename
-	}
-	if retryable == nil {
-		retryable = retryableRename
 	}
 	if sleep == nil {
 		sleep = time.Sleep
@@ -193,7 +190,7 @@ func (s *stateStore) rename(tmp, path string, wait bool) error {
 	if !wait {
 		return rename(tmp, path)
 	}
-	return renameWithRetry(rename, retryable, sleep, tmp, path)
+	return renameWithRetry(rename, func(err error) bool { return s.quickRetries(err) > 0 }, sleep, tmp, path)
 }
 
 func unwrapPath(err error) error {
