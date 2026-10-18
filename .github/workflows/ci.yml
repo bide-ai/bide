@@ -219,9 +219,20 @@ jobs:
           # The Homebrew formula the release workflow writes pins a sha256 per archive and refuses
           # a checksums file that lacks one.
           scripts/brew-formula.sh --self-test
-          # The release's provenance check passes gh the repository, workflow, tag and predicate
+          # The release's provenance check passes gh the repository, builder workflow and commit, ref and predicate
           # to enforce, and fails on one file that does not verify or on no files at all.
           scripts/verify-provenance.sh --self-test
+          # The pinned gh the release verifies provenance with is installed only if its checksum
+          # matches.
+          scripts/install-gh.sh --self-test
+      - name: Release builder pin
+        if: needs.changes.outputs.code != 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # release.yml pins the release builder by commit; GitHub runs any commit of a fork network
+          # named by SHA, so each pin must be on bide-ai/release-builder's main.
+          scripts/verify-provenance.sh --check-pin
       - name: Benchmark summary script
         if: needs.changes.outputs.code != 'false'
         run: |

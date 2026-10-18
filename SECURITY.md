@@ -11,7 +11,7 @@ You will get an acknowledgement, and a fix plus disclosure timeline once the rep
 
 ## Verifying releases
 
-Release archives and `checksums.txt` are signed keylessly with cosign (GitHub OIDC), each archive has an SPDX SBOM that is signed too, and each release publishes an SBOM of its Go module set. Archives, SBOMs and checksums also have SLSA v1 build provenance attestations (Build Level 2), checked with `gh attestation verify`. See [Verifying releases](docs/trust/verify-releases.md) for the commands. Release binaries also rebuild byte for byte from their tag (`scripts/repro.sh`).
+Release archives and `checksums.txt` are signed keylessly with cosign (GitHub OIDC), each archive has an SPDX SBOM that is signed too, and each release publishes an SBOM of its Go module set. Archives, SBOMs and checksums also have SLSA v1 build provenance attestations (Build Level 3, made by a separate release-builder repository), checked with `gh attestation verify`; the release's own check of them is a safety net, so verify them yourself as described there. See [Verifying releases](docs/trust/verify-releases.md) for the commands. Release binaries also rebuild byte for byte from their tag (`scripts/repro.sh`).
 
 ## Trust documentation
 
