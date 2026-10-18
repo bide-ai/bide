@@ -39,7 +39,7 @@ type EscalationStep struct {
 // receiver of the event it is about (an escalated event, its step's).
 func routableKind(k NotificationKind) bool {
 	switch k {
-	case NotificationOutcomeUnknown, NotificationApprovalPending, NotificationApprovalExpired, NotificationRunAborted, NotificationRecoveryFailing:
+	case NotificationOutcomeUnknown, NotificationApprovalPending, NotificationApprovalExpired, NotificationRunAborted, NotificationRecoveryFailing, NotificationStopSet, NotificationStopLifted:
 		return true
 	}
 	return false
@@ -253,6 +253,13 @@ func kindOfKey(key string) NotificationKind {
 		return NotificationRecoveryFailing
 	case strings.HasPrefix(key, "expired:"):
 		return NotificationApprovalExpired
+	case strings.HasPrefix(key, "stop:"):
+		if _, lifted, ok := stopIDOfKey(key); ok {
+			if lifted {
+				return NotificationStopLifted
+			}
+			return NotificationStopSet
+		}
 	}
 	return ""
 }

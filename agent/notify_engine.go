@@ -30,6 +30,9 @@ type notifyConfig struct {
 	overdue       Notifier
 	onError       func(error)
 
+	stops      *StopControl  // the control run a sweep or a StopNotifier reads for stop events (WithNotifyStops)
+	stopWithin time.Duration // how far back stop events are raised; 0 is defaultStopNotifyWithin
+
 	receivers      map[string]Notifier                   // named receivers besides the default
 	routes         map[NotificationKind]string           // receiver by kind
 	approverRoutes map[string]string                     // receiver by approver
@@ -89,6 +92,7 @@ type notifyEvent struct {
 
 	halt      *NotifyHalt
 	approval  *NotifyApproval
+	stop      *NotifyStop // for a stop_set or stop_lifted event
 	principal *Principal
 	reason    string
 	err       error
@@ -810,7 +814,7 @@ func (e *notifyEngine) notification(ev notifyEvent, es *NotifyEvent, attempt int
 	n := Notification{
 		ID: NotifyID(ev.key), Key: ev.key, Kind: ev.kind, RunID: ev.runID,
 		EventAt: es.EventAt, Observed: es.ObservedAt, Deadline: es.DeadlineAt, Attempt: attempt,
-		Halt: ev.halt, Approval: ev.approval, Principal: ev.principal, Reason: ev.reason, Err: ev.err,
+		Halt: ev.halt, Approval: ev.approval, Stop: ev.stop, Principal: ev.principal, Reason: ev.reason, Err: ev.err,
 		Receiver: receiverLabel(ev.receiver),
 	}
 	switch ev.kind {
@@ -935,7 +939,20 @@ func (e *notifyEngine) current(ctx context.Context, ev notifyEvent, st NotifySta
 			return false, "resolved", nil
 		}
 		return true, "", nil
-	case NotificationRunAborted, NotificationResolved, NotificationApprovalExpired:
+	case NotificationRunAborted, NotificationResolved, NotificationApprovalExpired, NotificationStopLifted:
+		return true, "", nil
+	case NotificationStopSet:
+		id, _, ok := stopIDOfKey(ev.key)
+		if !ok {
+			return true, "", nil
+		}
+		set, err := e.stopStillSet(ctx, id)
+		if err != nil {
+			return false, "", err
+		}
+		if !set {
+			return false, "lifted", nil
+		}
 		return true, "", nil
 	case NotificationEscalated:
 		// A step stands while the event it escalates does: it is not acknowledged by a receiver

@@ -119,6 +119,21 @@ func SlackMessage(p notify.Payload, viewURL string) SlackMsg {
 			fields = append(fields, mrkdwn("*Approvers*\n"+escapeSlack(strings.Join(a.Approvers, ", "))))
 		}
 	}
+	if s := p.Stop; s != nil {
+		scope := s.Scope
+		if s.Name != "" {
+			scope += " " + s.Name
+		}
+		fields = append(fields, mrkdwn("*Scope*\n"+code(scope)))
+		who := s.By
+		if !s.Signed {
+			who += " (asserted)"
+		}
+		fields = append(fields, mrkdwn("*Set by*\n"+escapeSlack(who)), mrkdwn("*Mode*\n"+code(s.Mode)))
+		if s.Reason != "" {
+			fields = append(fields, mrkdwn("*Reason*\n"+escapeSlack(s.Reason)))
+		}
+	}
 	if p.Principal != nil && p.Principal.OnBehalfOf != "" {
 		fields = append(fields, mrkdwn("*On behalf of*\n"+escapeSlack(p.Principal.OnBehalfOf)))
 	}
@@ -197,6 +212,8 @@ var kindTitles = map[string]string{
 	"notification_overdue": "Notification overdue",
 	"resolved":             "All clear",
 	"escalated":            "Escalated: not acknowledged or decided in time",
+	"stop_set":             "Agents stopped",
+	"stop_lifted":          "Stop lifted",
 }
 
 // KindTitle is the short heading for a notification kind; a kind it does not know is shown as it is

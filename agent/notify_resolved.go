@@ -19,7 +19,7 @@ import (
 // run_aborted is a fact and never does; a resolved or overdue notice is not an incident.
 func resolvable(kind string) bool {
 	switch NotificationKind(kind) {
-	case NotificationOutcomeUnknown, NotificationApprovalPending, NotificationRecoveryFailing, NotificationEscalated:
+	case NotificationOutcomeUnknown, NotificationApprovalPending, NotificationRecoveryFailing, NotificationEscalated, NotificationStopSet:
 		return true
 	}
 	return false
@@ -98,6 +98,12 @@ func eventFromKey(es *NotifyEvent) (notifyEvent, bool) {
 			return notifyEvent{}, false
 		}
 		ev.episode = episode
+	case NotificationStopSet, NotificationStopLifted: // stop:<id>, stop:<id>:lifted
+		id, _, ok := stopIDOfKey(es.Key)
+		if !ok {
+			return notifyEvent{}, false
+		}
+		ev.runID, ev.stop = StopControlRun, &NotifyStop{ID: id}
 	default:
 		return notifyEvent{}, false
 	}

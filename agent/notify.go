@@ -42,6 +42,8 @@ const (
 	NotificationEscalated NotificationKind = "escalated"
 )
 
+// The kill switch's kinds, NotificationStopSet and NotificationStopLifted, are in notify_stop.go.
+
 // DefaultReceiver is the name of the receiver WithNotifier's Notifier is, in Notification.Receiver
 // and in WithNotifyRoute, WithNotifyApproverRoute and EscalationStep.
 const DefaultReceiver = "default"
@@ -123,6 +125,7 @@ type Notification struct {
 
 	Halt      *NotifyHalt      // for NotificationOutcomeUnknown
 	Approval  *NotifyApproval  // for NotificationApprovalPending
+	Stop      *NotifyStop      // for NotificationStopSet and NotificationStopLifted
 	Principal *Principal       // the run's principal, nil if it has none
 	Clears    *NotifyClears    // for NotificationResolved
 	Escalates *NotifyEscalates // for NotificationEscalated

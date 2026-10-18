@@ -106,6 +106,10 @@ func NotifyPending(ctx context.Context, j *Journal, n Notifier, trail NotifyTrai
 			}
 		}
 	}
+	if e.cfg.stops != nil {
+		errs = append(errs, e.sweepStops(ctx)...) // a stop set or lifted since the last sweep
+		trails = append(trails, NotifyTrailName(StopControlRun))
+	}
 	if err := e.backfillOpen(ctx); err != nil { // events observed before the open trail existed
 		errs = append(errs, fmt.Errorf("notification sweep: list earlier events: %w", err))
 	}

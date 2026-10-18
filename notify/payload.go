@@ -64,6 +64,8 @@ type Payload struct {
 	Approval   *Approval  `json:"approval"`
 	Abort      *Abort     `json:"abort"`
 	Failing    *Failing   `json:"failing"`
+	// Stop is present for a stop_set or stop_lifted event: the kill switch stop it is about.
+	Stop *Stop `json:"stop"`
 	// Clears is present for a resolved notification: the event it ends.
 	Clears *Clears `json:"clears"`
 	// Escalates is present for an escalated notification: the event that was not acknowledged (an
@@ -127,6 +129,23 @@ type Abort struct {
 // Failing is the detail of a recovery_failing event; Cause is a class, not text.
 type Failing struct {
 	Cause string `json:"cause"`
+}
+
+// Stop is the detail of a stop_set or stop_lifted event. It holds no key, signature or secret. Scope is
+// "global", "tool", "flow" or "agent", and Name the tool, flow or agent (empty for global). By is the setter:
+// asserted in basic mode, authenticated by the signature when Signed. Reason is the operator's text.
+// Compensation is "allow" or "block". LiftedBy is present for stop_lifted.
+type Stop struct {
+	ID           string   `json:"id"`
+	Scope        string   `json:"scope"`
+	Name         string   `json:"name,omitempty"`
+	Reason       string   `json:"reason"`
+	By           string   `json:"by"`
+	Host         string   `json:"host,omitempty"`
+	Mode         string   `json:"mode"`
+	Signed       bool     `json:"signed"`
+	Compensation string   `json:"compensation"`
+	LiftedBy     []string `json:"lifted_by,omitempty"`
 }
 
 // Clears is the detail of a resolved notification, the all-clear: the event that stopped being
@@ -254,6 +273,8 @@ func (w *Webhook) payload(n agent.Notification) Payload {
 	case agent.NotificationRecoveryFailing:
 		p.Failing = &Failing{Cause: n.Reason}
 		p.Summary = fmt.Sprintf("Recovery of run %s keeps failing.", run)
+	case agent.NotificationStopSet, agent.NotificationStopLifted:
+		p.stopDetail(w, n)
 	case agent.NotificationResolved:
 		p.Reason = n.Reason
 		if c := n.Clears; c != nil {
@@ -300,4 +321,37 @@ func shellWord(s string) string {
 		return s
 	}
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// stopDetail fills in the payload of a stop_set or stop_lifted event. The view command points at the stop,
+// not at a run: the control run is not one.
+func (p *Payload) stopDetail(w *Webhook, n agent.Notification) {
+	db := viewPlaceholder
+	if w.viewDB != "" {
+		db = shellWord(w.viewDB)
+	}
+	if s := n.Stop; s != nil {
+		p.Stop = &Stop{ID: s.ID, Scope: string(s.Scope.Kind), Name: s.Scope.Name, Reason: s.Reason, By: s.By, Host: s.Host, Mode: string(s.Mode), Signed: s.Signed, Compensation: s.Compensation, LiftedBy: s.LiftedBy}
+		p.View.Command = "bide stop -db " + db + " -show " + shellWord(s.ID)
+		what := "everything"
+		if s.Scope.Kind != agent.StopGlobal {
+			what = s.Scope.String()
+		}
+		who := s.By
+		if !s.Signed {
+			who += " (asserted, not authenticated)"
+		}
+		if n.Kind == agent.NotificationStopLifted {
+			p.Summary = fmt.Sprintf("The stop of %s was lifted (set by %s). Held runs carry on when they are next driven.", what, who)
+		} else {
+			p.Summary = fmt.Sprintf("Agents are stopped: %s, set by %s. Reason: %s", what, who, clip(s.Reason, 300))
+		}
+	} else {
+		p.View.Command = "bide stop -db " + db + " -list"
+		p.Summary = fmt.Sprintf("A kill switch stop was %s.", map[bool]string{true: "lifted", false: "set"}[n.Kind == agent.NotificationStopLifted])
+	}
+	if w.viewURL != "" {
+		u := strings.TrimRight(w.viewURL, "/") + "/"
+		p.View.URL = &u
+	}
 }
