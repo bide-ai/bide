@@ -262,11 +262,14 @@ bide-anchor check  -bucket bank-bide-anchor -owner 111122223333 -pubkey ed25519:
 `-kind events` and the trail's name. The public key must come from the log operator out of band, not from
 the bucket.
 
+`verify` and `export -dir` take a directory (a path to one object file, or a missing path, is a usage error: exit 2).
 `verify` (offline) checks every object's name, encoding and signature and reports two signed heads of one
-size with different roots: that is the log key signing two histories, and no normal operation does it. It
-cannot see the objects' lock state, which is S3 metadata and not in the file, and it says so. It cannot
+size with different roots: that is the log key signing two histories, and no normal operation does it
+(`awss3.LoadDir`, which both commands use, returns it as an error wrapping `ErrEquivocation`). An empty
+directory is an error too (`ErrNotFound`, and both commands exit 1 saying there is nothing to verify): nothing
+to verify never passes. It cannot see the objects' lock state, which is S3 metadata and not in the file, and it says so. It cannot
 show that the directory is **complete** either: a stale or partial `aws s3 sync` that lacks the newest
-heads verifies and exports without complaint, which is a rollback of the evidence. Compare the largest size
+heads verifies and exports without complaint, which is a rollback of the evidence (the directory shows only what was exported). Compare the largest size
 `verify` and `export` print with the journal's current size. `check`
 (online) reads every version of every object and reports a finding for each delete marker, each object that
 is not locked, each retention that has ended (the object can be deleted now), each governance-mode lock,

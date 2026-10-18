@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -415,59 +413,13 @@ func (r *Reader) auditVersion(ctx context.Context, key, ver string, now time.Tim
 // LoadDir reads a downloaded set of anchored objects (for example the output of "aws s3 sync" of the
 // anchor prefix) and verifies each against v. The set is every regular file under dir whose path
 // ends in <partition>/<object name>; any other file is an error, so a stray or renamed file is not
-// ignored. It needs no network. It returns the heads sorted by partition, then size, and cannot show
-// the objects' lock state (the files carry none): use Reader.Audit for that.
+// ignored. It needs no network. It returns the heads sorted by partition, then size.
+//
+// A directory with no heads is an error wrapping ErrNotFound, and two validly signed heads of one tree
+// and size with different roots in one partition are an error wrapping ErrEquivocation. It cannot show
+// the objects' lock state (the files carry none): use Reader.Audit for that. It cannot show that the
+// directory is complete either: it shows only what was exported, so compare its newest head with the
+// live bucket.
 func LoadDir(dir string, v audit.Verifier) ([]audit.SignedTreeHead, error) {
-	if v == nil {
-		return nil, fmt.Errorf("awss3: LoadDir needs a Verifier: %w", agent.ErrConfig)
-	}
-	type item struct {
-		partition string
-		sth       audit.SignedTreeHead
-	}
-	var items []item
-	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-		if !d.Type().IsRegular() {
-			return fmt.Errorf("%w: %s is not a regular file", ErrObject, path)
-		}
-		partition, name := filepath.Base(filepath.Dir(path)), d.Name()
-		f, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		body, err := io.ReadAll(io.LimitReader(f, maxObjectBytes+1))
-		if err != nil {
-			return err
-		}
-		if len(body) > maxObjectBytes {
-			return fmt.Errorf("%w: %s is larger than %d bytes", ErrObject, path, maxObjectBytes)
-		}
-		sth, err := decodeObject(partition, name, body, v)
-		if err != nil {
-			return err
-		}
-		items = append(items, item{partition, sth})
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	slices.SortStableFunc(items, func(a, b item) int {
-		if c := strings.Compare(a.partition, b.partition); c != 0 {
-			return c
-		}
-		return a.sth.Size - b.sth.Size
-	})
-	heads := make([]audit.SignedTreeHead, len(items))
-	for i, it := range items {
-		heads[i] = it.sth
-	}
-	return heads, nil
+	return layout.LoadDir(dir, v, ErrNotFound, ErrEquivocation)
 }

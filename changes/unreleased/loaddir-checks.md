@@ -1,0 +1,3 @@
+Section: Fixed
+
+awss3.LoadDir, and so bide-anchor verify and export -dir, passed on an empty directory and loaded two validly signed heads of one size with different roots as two heads, without an error; an empty directory is now an error wrapping ErrNotFound (nothing to verify never passes), and such a pair in one partition is an error wrapping ErrEquivocation, as the online Reader already reported. The directory walk, the per-partition equivocation check and the empty-directory check now live in audit/anchorobj (Layout.LoadDir, with MaxObjectBytes) so that every object-store anchor gets them, and a directory copy still cannot show that it is complete: compare its newest head with the live bucket.

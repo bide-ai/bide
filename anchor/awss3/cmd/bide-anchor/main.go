@@ -144,6 +144,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 	case cmd != "verify" && run == "":
 		return fail(exitUsage, "-run is required")
 	}
+	if dir != "" {
+		// -dir is a directory of downloaded objects: a path to one object file or a missing path is a usage
+		// error, not a one-head export or a pass.
+		if st, err := os.Stat(dir); err != nil {
+			return fail(exitUsage, "-dir: %v", err)
+		} else if !st.IsDir() {
+			return fail(exitUsage, "-dir %s is not a directory: give the directory the objects were downloaded to", dir)
+		}
+	}
 
 	var reader *awss3.Reader
 	if online {
@@ -232,6 +241,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 			if err == nil && len(heads) == 0 {
 				err = fmt.Errorf("%w for %s %q", awss3.ErrNotFound, kind, run)
 			}
+		}
+		if errors.Is(err, awss3.ErrEquivocation) {
+			return fail(exitFindings, "%v; not exporting", err)
 		}
 		if err != nil {
 			return fail(exitFindings, "%v", err)
