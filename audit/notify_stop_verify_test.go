@@ -227,3 +227,29 @@ func TestParseStopKey(t *testing.T) {
 		}
 	}
 }
+
+// An observed stop event whose key is not the key of its kind is a violation: a stop_set under the key of a lift,
+// or of another kind of event, is not a history a notifier writes.
+func TestVerifyNotifications_AStopEventUnderAnotherKindsKey(t *testing.T) {
+	id := strings.Repeat("ab", 32)
+	for name, key := range map[string]string{"a lift's key": agent.StopLiftedKey(id), "an approval's key": "approval:r:c:0", "no id": "stop:"} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			es := audit.NewMemEventStore()
+			trail := audit.NewNotifyTrail(es)
+			at := time.Now()
+			rec := agent.NotifyRecord{Kind: agent.NotifyObserved, Key: key, RunID: agent.StopControlRun, At: at, EventKind: string(agent.NotificationStopSet), EventAt: at, DeadlineAt: at.Add(5 * time.Minute)}
+			if err := trail.Append(ctx, agent.NotifyTrailName(agent.StopControlRun), 0, rec); err != nil {
+				t.Fatal(err)
+			}
+			x, err := audit.ExportNotifyTrail(ctx, es, agent.NotifyTrailName(agent.StopControlRun))
+			if err != nil {
+				t.Fatal(err)
+			}
+			rep, err := audit.VerifyNotifications(audit.NotifyVerifyInput{Trails: []audit.NotifyTrailExport{x}, Unanchored: true, Now: at.Add(time.Minute)})
+			if err == nil || !slices.ContainsFunc(rep.Problems, func(p string) bool { return strings.Contains(p, "is not the key of a stop_set event") }) {
+				t.Fatalf("%v %+v", err, rep.Problems)
+			}
+		})
+	}
+}
