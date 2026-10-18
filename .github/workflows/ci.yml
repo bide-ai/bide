@@ -225,6 +225,14 @@ jobs:
           # The pinned gh the release verifies provenance with is installed only if its checksum
           # matches.
           scripts/install-gh.sh --self-test
+      - name: Release builder pin
+        if: needs.changes.outputs.code != 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # release.yml pins the release builder by commit; GitHub runs any commit of a fork network
+          # named by SHA, so each pin must be on bide-ai/release-builder's main.
+          scripts/verify-provenance.sh --check-pin
       - name: Benchmark summary script
         if: needs.changes.outputs.code != 'false'
         run: |

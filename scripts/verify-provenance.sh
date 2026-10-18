@@ -3,6 +3,7 @@
 # release builder for this repository, as a user would (docs/trust/verify-releases.md).
 #
 #   scripts/verify-provenance.sh [OPTIONS] TAG FILE...
+#   scripts/verify-provenance.sh --check-pin      (CI: each builder workflow release.yml pins is on the builder's main)
 #   scripts/verify-provenance.sh --self-test      (CI: the right policy is passed, a failure fails)
 #
 #   --workflow NAME       the builder workflow that made the files: build.yml (default; archives, their
@@ -183,6 +184,11 @@ FAKE
   : > "$tmp/log"
   FAKE_COMPARE_STATUS=ahead "$self" --builder-sha "$b" v1.2.3 "$tmp/a.tar.gz" >/dev/null 2>&1 || true
   grep -qF "api repos/bide-ai/release-builder/compare/$b...main" "$tmp/log" || { echo "self-test: an explicit --builder-sha was not checked against the builder's main"; ok=false; }
+  # --check-pin checks every pinned workflow, and fails on a pin the builder does not hold.
+  : > "$tmp/log"
+  "$self" --check-pin >/dev/null 2>&1 || { echo "self-test: --check-pin refused vouched pins"; ok=false; }
+  [ "$(grep -c 'compare/' "$tmp/log")" = 2 ] || { echo "self-test: --check-pin did not check both workflows"; ok=false; }
+  if FAKE_COMPARE_STATUS=behind "$self" --check-pin >/dev/null 2>&1; then echo "self-test: --check-pin passed an unvouched pin"; ok=false; fi
   # A refused commit stops before any file is verified.
   : > "$tmp/log"
   FAKE_COMPARE_STATUS=diverged "$self" v1.2.3 "$tmp/a.tar.gz" >/dev/null 2>&1 || true
@@ -199,7 +205,16 @@ FAKE
   $ok
 }
 
+check_pin() {
+  local wf
+  for wf in build.yml module-sbom.yml; do
+    builder_vouched "$(pinned_builder "$wf")"
+    echo "builder pin ok: $wf"
+  done
+}
+
 case "${1:-}" in
   --self-test) self_test ;;
+  --check-pin) check_pin ;;
   *) verify "$@" ;;
 esac
