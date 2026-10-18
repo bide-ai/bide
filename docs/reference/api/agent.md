@@ -2977,13 +2977,16 @@ RunState is a run's state as Status reads it from the run's journal.
 - `const RunCompleted RunState = "completed"`: RunCompleted is a run whose first end marker is run:complete.
 - `const RunAborted RunState = "aborted"`: RunAborted is a saga whose first end marker is run:aborted: a step failed and its rollback finished.
 - `const RunCancelled RunState = "cancelled"`: RunCancelled is a run whose first end marker is run:cancelled.
+- `const RunEnded RunState = "ended"`: RunEnded is a run whose first end marker was redacted (RunStatus.EndRedacted): it is over, but how it ended (completed, aborted or cancelled) is not attested, because a tombstone's name is outside the leaf hash, so Status never reads it from the name.
 
 ## type RunStatus
 
 ```go
 type RunStatus struct {
 	StartRedacted bool
-	State         RunState
+
+	EndRedacted bool
+	State       RunState
 
 	Terminal string
 

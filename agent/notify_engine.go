@@ -974,7 +974,7 @@ func (e *notifyEngine) current(ctx context.Context, ev notifyEvent, st NotifySta
 		return false, "", err
 	}
 	switch status.State {
-	case RunCompleted, RunAborted, RunCancelled:
+	case RunCompleted, RunAborted, RunCancelled, RunEnded:
 		return false, "ended", nil
 	}
 	opRun := ev.opRun

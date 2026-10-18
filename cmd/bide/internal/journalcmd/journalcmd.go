@@ -95,14 +95,14 @@ func redact(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	db := fs.String("db", "", "the SQLite journal to erase from")
 	pgEnv := fs.String("postgres-env", "", "the environment variable that holds the Postgres DSN of a role that can read the journal (never given on the command line)")
-	redactEnv := fs.String("redact-postgres-env", "", "the environment variable that holds the DSN of the role that may erase (EXECUTE on bide_redact_v2 and no table privilege); default: the -postgres-env role")
+	redactEnv := fs.String("redact-postgres-env", "", "the environment variable that holds the DSN of the role that may erase (EXECUTE on bide_redact_v3 and no table privilege); default: the -postgres-env role")
 	schema := fs.String("schema", "", "with -postgres-env: the schema that holds the journal (recommended; without it the DSN's search path decides)")
 	run := fs.String("run", "", "the run to erase from")
 	var names, prefixes, kinds stringList
 	fs.Var(&names, "name", "erase the record with this key; repeat")
 	fs.Var(&prefixes, "prefix", "erase the records whose key starts with this; repeat")
 	fs.Var(&kinds, "kind", "erase the records of this kind (model, tool_result, value, signal, approval); repeat")
-	payloads := fs.Bool("payloads", false, "erase every record whose content is payload: the input and principal, model turns, tool results, user steps, signals, approval requests (never a protected record, never an approval decision unless -include-approvals)")
+	payloads := fs.Bool("payloads", false, "erase every record whose content is payload: the input and principal, model turns, tool results, user steps, signals, approval requests (never an end marker, which is erased only by naming it; never a protected record, never an approval decision unless -include-approvals)")
 	approvals := fs.Bool("include-approvals", false, "let the selection also erase approval decisions, which verify-approvals and decision coverage read")
 	subruns := fs.Bool("subruns", false, "also erase from the run's sub-agent runs (each is planned and recorded on its own)")
 	execute := fs.Bool("execute", false, "erase; without it the command only lists the plan")
@@ -423,7 +423,7 @@ func emit(w io.Writer, rep report, asJSON bool, st term.Style, code int) int {
 			fmt.Fprintf(w, "  replace  #%d  %-40s %-12s %6d bytes  leaf %s%s\n", r.Position, clean(r.Name), r.Kind, r.Length, r.LeafHash[:16], note)
 		}
 		if rest := p.JournalSize - len(p.Records) - len(p.Kept); rest > 0 {
-			fmt.Fprintf(w, "  keep     %d other record(s) unchanged (protected records such as the end marker, bookkeeping, or not selected)\n", rest)
+			fmt.Fprintf(w, "  keep     %d other record(s) unchanged (protected records, bookkeeping, or not selected)\n", rest)
 		}
 		for _, k := range p.Kept {
 			fmt.Fprintf(w, "  keep     #%d  %-40s %s\n", k.Position, clean(k.Name), k.Reason)

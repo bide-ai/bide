@@ -55,7 +55,7 @@ InJournal ==
                  reply, ctxDead, stalled, copt, eo, why, srun, sk, sseen, sround, sret, nsRep,
                  listed, pri, cand, tk, fire, orun, ocall, cret, ambig, crashes, stalls, fired,
                  seenEnds, fireAfterCancel, resumedEnded, recErr, crashLost, orphan, age, rolled,
-                 filterBroken, optBroken, overLimit, sOpen, nsCnt, pc, spent>>
+                 filterBroken, optBroken, overLimit, sOpen, sErased, nsCnt, red, pc, spent>>
   /\ \E a \in N!Dlv : act[a] = "claimed" /\ N!Write(a)
 
 CInit == FullInit /\ N!InitProto

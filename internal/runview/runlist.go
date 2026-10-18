@@ -21,6 +21,7 @@ var stateGroups = []struct{ Value, Label string }{
 	{"waiting", "waiting for approval"},
 	{"in-progress", "in progress"},
 	{"failed", "failed or cancelled"},
+	{"ended", "ended (erased)"},
 	{"not-started", "not started"},
 }
 
@@ -37,6 +38,8 @@ func group(state string) string {
 		return "in-progress"
 	case string(agent.RunAborted), string(agent.RunCancelled):
 		return "failed"
+	case string(agent.RunEnded):
+		return "ended"
 	}
 	return "not-started"
 }

@@ -129,7 +129,7 @@ func TestDryRunListsAndChangesNothing(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("dry run: %d %s", code, errb)
 	}
-	for _, want := range []string{"run r1:", "replace", "run:start", "keep", "unchanged", "plan digest:", "dry run: nothing was changed", "not reached by this command", "Postgres dead tuples", "event store"} {
+	for _, want := range []string{"run r1:", "replace", "run:start", "keep", "unchanged", "plan digest:", "dry run: nothing was changed", "not reached by this command", "Postgres dead tuples", "event store", "end marker not selected by the Payloads preset: name run:complete"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the dry run lacks %q:\n%s", want, out)
 		}

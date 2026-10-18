@@ -85,6 +85,8 @@ func runVerdict(v *View) Verdict {
 				break
 			}
 		}
+	case v.State == string(agent.RunEnded):
+		d = Verdict{Class: "info", Word: "ENDED (ERASED)", Icon: "ok", Line: "The run is over, but its end marker was erased, so how it ended is not attested here (bide audit redactions reports it from the signed redaction trail)."}
 	case v.State == string(agent.RunAborted) || v.State == string(agent.RunCancelled):
 		d = Verdict{Class: "bad", Word: "FAILED", Icon: "x", Line: "The run " + v.State + ": " + v.Terminal}
 		if v.Terminal == "" {

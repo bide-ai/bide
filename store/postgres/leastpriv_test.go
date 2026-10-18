@@ -48,7 +48,7 @@ func TestLeastPrivilegeRoles(t *testing.T) {
 		// no privilege on the tables; the service role cannot erase and this role cannot append.
 		`GRANT USAGE ON SCHEMA `+schema+` TO `+redactor,
 		`GRANT SELECT ON `+schema+`.bide_schema_version TO `+redactor,
-		`GRANT EXECUTE ON FUNCTION `+schema+`.bide_redact_v2(text, text, bytea, bigint) TO `+redactor,
+		`GRANT EXECUTE ON FUNCTION `+schema+`.bide_redact_v3(text, text, bytea, bigint) TO `+redactor,
 	)
 
 	// 3. The service role has no CREATE on the schema: the default Open, which migrates, is refused;

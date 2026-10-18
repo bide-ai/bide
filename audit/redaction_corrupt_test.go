@@ -1,6 +1,6 @@
 package audit_test
 
-// A tombstone at a name a redaction never replaces (the end marker, the audit leaves, the saga
+// A tombstone at a name a redaction never replaces (the run's limits, the audit leaves, the saga
 // records) was not written by a redaction. It keeps the leaf hash, so roots and signed heads still
 // verify, which is why every reader must report it rather than read the run in some state.
 
@@ -24,6 +24,9 @@ func forgedTombstones(t *testing.T, names ...string) (orig, forged *agent.MemSto
 	t.Helper()
 	ctx := context.Background()
 	s, _ := p11GovernedRun(t)
+	if _, _, err := s.Insert(ctx, "gov", "run:limits:1", mustEntry(t, "run:limits:1", agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`{}`)})); err != nil {
+		t.Fatal(err)
+	}
 	if _, _, err := s.Insert(ctx, "gov", "run:complete", mustEntry(t, "run:complete", agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`"ok"`)})); err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +55,7 @@ func forgedTombstones(t *testing.T, names ...string) (orig, forged *agent.MemSto
 func TestRedactionCorrupt_EveryReaderFailsClosed(t *testing.T) {
 	ctx := context.Background()
 	signer := p11Signers(t)["ed25519"]
-	for _, name := range []string{"run:complete", "audit:policy:D1", "@journal"} {
+	for _, name := range []string{"run:limits:1", "audit:policy:D1", "@journal"} {
 		orig, forged := forgedTombstones(t, name)
 		if name == "audit:policy:D1" {
 			// the governed run's policy record: find its real name
@@ -83,8 +86,8 @@ func TestRedactionCorrupt_EveryReaderFailsClosed(t *testing.T) {
 	}
 }
 
-// An export edited after the fact, to put a named tombstone where an end marker was, is refused
-// when it is read back.
+// An export edited after the fact, to put a named tombstone where a record a redaction never
+// replaces was, is refused when it is read back.
 func TestRedactionCorrupt_ForgedExportIsRefused(t *testing.T) {
 	ctx := context.Background()
 	orig, _ := forgedTombstones(t)
@@ -92,14 +95,14 @@ func TestRedactionCorrupt_ForgedExportIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	last := len(x.Records) - 1 // run:complete
-	tomb, err := agent.NewTombstone("run:complete", x.Records[last], time.UnixMilli(1))
+	last := len(x.Records) - 2 // run:limits:1, before run:complete
+	tomb, err := agent.NewTombstone("run:limits:1", x.Records[last], time.UnixMilli(1))
 	if err != nil {
 		t.Fatal(err)
 	}
 	x.Records[last] = tomb
 	if _, err := x.Journal(); !errors.Is(err, audit.ErrMalformed) {
-		t.Fatalf("Journal() of an export with a tombstoned run:complete = %v, want ErrMalformed", err)
+		t.Fatalf("Journal() of an export with a tombstoned run:limits:1 = %v, want ErrMalformed", err)
 	}
 }
 
@@ -158,5 +161,32 @@ func TestRedactionName_IsNotAttestedInAnExport(t *testing.T) {
 	}
 	if !strings.Contains(audit.NoteRedacted, "not attested") {
 		t.Errorf("NoteRedacted = %q does not say the name is not attested", audit.NoteRedacted)
+	}
+}
+
+// A redacted end marker is not corruption: the tombstone keeps the marker's name, position and leaf
+// hash, so the root, the signed head and the export are those of the run before the redaction, and
+// every reader reads the run as before (agent.Status over a driven run is in the agent package's tests).
+func TestRedactionEndMarker_EveryReaderStillReadsTheRun(t *testing.T) {
+	ctx := context.Background()
+	orig, forged := forgedTombstones(t, "run:complete")
+	oj, fj := agenttest.MustJournal(orig), agenttest.MustJournal(forged)
+	ro, err := audit.Root(ctx, oj, "gov")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rf, err := audit.Root(ctx, fj, "gov")
+	if err != nil || !bytes.Equal(rf, ro) {
+		t.Fatalf("Root over a redacted end marker = %x, %v; want the root before the redaction %x", rf, err, ro)
+	}
+	x, err := audit.ExportJournal(ctx, fj, "gov")
+	if err != nil {
+		t.Fatalf("ExportJournal over a redacted end marker: %v", err)
+	}
+	if _, err := x.Journal(); err != nil {
+		t.Fatalf("an export holding a redacted end marker is refused when read back: %v", err)
+	}
+	if _, err := audit.NewTreeHead(ctx, fj, "gov", p11Now()); err != nil {
+		t.Fatalf("NewTreeHead over a redacted end marker: %v", err)
 	}
 }

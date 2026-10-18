@@ -55,6 +55,7 @@ Calls == 1..LastCall
 Prim == <<"prim", "-">>
 Res == <<"res", "-">>       \* a later caller's Resume of the primary's run, with options of its own
 Op == <<"op", "-">>
+Red == <<"red", "-">>
 Canc == <<"canc", "-">>
 St == <<"stat", "-">>
 Slot(w) == <<"slot", w>>
@@ -84,7 +85,7 @@ Range(s) == {s[i] : i \in DOMAIN s}
 Min(S) == CHOOSE x \in S : \A y \in S : x <= y
 
 ASSUME Bug \in {"none", "NoRecheck", "SharedHolder", "NoAbortMarker", "RecordUnderCtx",
-                "SkipWhenBusy", "ReplayFinished"}
+                "SkipWhenBusy", "ReplayFinished", "RedactedNotEnd", "RedactedKindFromName"}
 ASSUME Primary \in {"none", "leased", "plain"} /\ PassRule \in {"all", "lapsedFirst", "split"}
 ASSUME CancelRule \in {"none", "turn", "claim"} /\ VerdictRule \in {"none", "first"}
 ASSUME (CancelRule = "none") <=> ~Canceller
@@ -118,6 +119,12 @@ ASSUME (CancelRule = "none") <=> ~Canceller
 (*   status  "off", "load" (Status reads one Load, a prefix), "gets" (one   *)
 (*           Get per end marker), "regets" (the Gets, then, if any marker   *)
 (*           was found, the Gets again).                                    *)
+(*   redact  FALSE, or TRUE: an operator may redact the end marker of a run  *)
+(*           that is over and has no live lease (bide journal redact; the   *)
+(*           row keeps its name, so the run still holds an end marker). A   *)
+(*           reader that reads the journal by what an end marker says       *)
+(*           instead of its name misreads the run (Bug "RedactedNotEnd");   *)
+(*           a drive refuses a run holding a redacted record (Journal.open).*)
 (*   notStarted  recovery of a run with no run:start: "report" (skipped,    *)
 (*           reported once per process, run:start read again every pass),   *)
 (*           "every" (reported every pass), "remember" (skipped for good    *)
@@ -127,7 +134,7 @@ NoOpt == [f |-> {}, l |-> -1, c |-> "none"]
 NoStart == [f |-> {}, l |-> -1, c |-> "nostart"]
 ASSUME Api.opt \in {"journal", "caller"} /\ Api.filter \in {"dispatch", "request"}
 ASSUME Api.sagaCancel \in {"marker", "request"} /\ Api.status \in {"off", "load", "gets", "regets"}
-ASSUME Api.notStarted \in {"report", "every", "remember"}
+ASSUME Api.notStarted \in {"report", "every", "remember"} /\ Api.redact \in BOOLEAN
 EndKinds == <<"complete", "aborted", "cancelled">>   \* Status's Gets, in this order
 
 (* --algorithm lifecycle
@@ -137,6 +144,9 @@ variables
   marker   = [r \in Runs |-> [c \in Calls |-> IF r \in Halted0 /\ c = 1 THEN Unknown ELSE NoClaim]],
   result   = [r \in Runs |-> [c \in Calls |-> "none"]],
   ends     = [r \in Runs |-> <<>>],
+  \* Whether the run's end marker was redacted: the row keeps its name and its place, and only
+  \* its content (the final result) is gone.
+  red      = [r \in Runs |-> FALSE],
   approved = [r \in Runs |-> FALSE],
   \* P14: run:start's per-run options (written by the first drive, the primary's), the limit
   \* amendments run:limits:<n> in order, and a saga's rollback request (sagaCancel "request").
@@ -198,10 +208,17 @@ variables
   optBroken = FALSE,
   overLimit = FALSE,
   sOpen     = FALSE,
+  \* Whether Status read the run after its end marker was erased (a read of the tombstone).
+  sErased   = FALSE,
   nsCnt     = [w \in Workers |-> [r \in Runs |-> 0]];
 
 define
   Ended(r) == ends[r] # <<>>
+  \* What a reader of the journal's end markers sees. A redacted end marker is still read as the end
+  \* it was (the tombstone carries the row's name); Bug "RedactedNotEnd" is a reader that classifies
+  \* a record by its content, which a redaction erased, and sees no end marker.
+  Rd(r) == IF Bug = "RedactedNotEnd" /\ red[r] THEN <<>> ELSE ends[r]
+  EndedV(r) == Rd(r) # <<>>
   Live(r, c) == marker[r][c] # NoClaim /\ result[r][c] = "none"
   Lapsed(r) == lease[r].o # NoOwner /\ lease[r].left = 0
   \* AcquireLease: granted if the run is unleased, its lease lapsed, or the owner is the caller.
@@ -237,8 +254,8 @@ define
   \* rollback reads the request (one Get) before it writes its end marker (#138 review).
   AbortKind(p) == IF Api.sagaCancel = "request" /\ (why[p] = "cancel" \/ creq[jr[p]]) THEN "cancelled" ELSE "aborted"
   \* Status's Gets: the markers found so far, with this Get's result added.
-  Pos(r, k) == CHOOSE i \in DOMAIN ends[r] : ends[r][i] = k
-  Seen1 == IF EndKinds[sk] \in Range(ends[srun])
+  Pos(r, k) == CHOOSE i \in DOMAIN Rd(r) : Rd(r)[i] = k
+  Seen1 == IF EndKinds[sk] \in Range(Rd(srun))
            THEN sseen \cup {<<EndKinds[sk], Pos(srun, EndKinds[sk])>>} ELSE sseen
   StatusOf(s) == IF s = {} THEN "started" ELSE (CHOOSE x \in s : \A y \in s : x[2] <= y[2])[1]
 end define;
@@ -300,6 +317,8 @@ DOpen:
     if self = Prim then goto DStart; else ret[self] := "notstarted"; goto DRel; end if;
   elsif SagaCancelPending(jr[self]) then
     why[self] := "cancel"; goto DRollback;
+  elsif red[jr[self]] then
+    ret[self] := "redacted"; goto DRel;           \* Journal.open refuses a run holding a redacted record
   elsif VerdictRule = "first" /\ Ended(jr[self]) then
     ret[self] := Head(ends[jr[self]]); goto DRel;
   elsif CancelRule # "none" /\ "cancelled" \in Range(ends[jr[self]]) then
@@ -557,10 +576,10 @@ begin
 CGet:
   \* Under sagaCancel "request", Cancel also reads run:start (the saga flag).
   await Canceller;
-  if Ended(PrimRun) then
+  if EndedV(PrimRun) then
     \* A run that is over is ErrRunEnded, but one already cancelled is cancelled: Cancel returns
     \* nil, so a Cancel retried after a lost reply succeeds (maintainer decision, #138).
-    cret := IF Head(ends[PrimRun]) = "cancelled" THEN "cancelled" ELSE "over"; goto Done;
+    cret := IF ~red[PrimRun] /\ Head(Rd(PrimRun)) = "cancelled" THEN "cancelled" ELSE "over"; goto Done;
   elsif Api.sagaCancel = "request" /\ start[PrimRun] = NoStart then
     cret := "notstarted"; goto Done;              \* ErrNotStarted: nothing is written
   elsif Api.sagaCancel = "request" /\ PrimRun \in SagaRuns then
@@ -596,32 +615,50 @@ SStart:
   if start[srun] = NoStart then
     sret := "notstarted"; goto Done;
   elsif Api.status = "load" then
-    sOpen := ~Ended(srun);
-    if Ended(srun) then sret := Head(ends[srun]); else sret := "started"; end if;
+    sOpen := ~EndedV(srun); sErased := red[srun];
+    if red[srun] /\ Bug # "RedactedKindFromName" /\ EndedV(srun) then sret := "ended"; elsif EndedV(srun) then sret := Head(Rd(srun)); else sret := "started"; end if;
     goto Done;
   end if;
 SGet:
   \* One Get; the first Get's instant is when an empty answer ("started") holds.
-  if sround = 1 /\ sk = 1 then sOpen := ~Ended(srun); end if;
+  if sround = 1 /\ sk = 1 then sOpen := ~EndedV(srun); end if;
+  sErased := sErased \/ red[srun];
   if sk < 3 then
     sseen := Seen1; sk := sk + 1; goto SGet;
   elsif sround = 1 /\ Seen1 # {} /\ Api.status = "regets" then
     sround := 2; sk := 1; sseen := {}; goto SGet;
   else
-    sret := StatusOf(Seen1);
+    sret := IF red[srun] /\ Bug # "RedactedKindFromName" /\ Seen1 # {} THEN "ended" ELSE StatusOf(Seen1);
   end if;
+end process;
+
+\* An operator redacts the end marker of a run that is over and holds no live lease: the store's
+\* redaction replaces the row's bytes and keeps its name. Nothing else about the run changes.
+process redactOp = Red
+begin
+RedEnd:
+  await Api.redact;
+  with r \in {r \in Runs : ends[r] # <<>> /\ ~red[r] /\ (lease[r].o = NoOwner \/ lease[r].left = 0)} do
+    red[r] := TRUE;
+  end with;
 end process;
 end algorithm; *)
 \* BEGIN TRANSLATION
-VARIABLES marker, result, ends, approved, start, lims, creq, lease, job, jr, 
-          holds, cc, outc, ret, reply, ctxDead, stalled, copt, eo, why, srun, 
-          sk, sseen, sround, sret, nsRep, listed, pri, cand, tk, fire, orun, 
-          ocall, cret, ambig, crashes, stalls, fired, seenEnds, 
+VARIABLES marker, result, ends, red, approved, start, lims, creq, lease, job, 
+          jr, holds, cc, outc, ret, reply, ctxDead, stalled, copt, eo, why, 
+          srun, sk, sseen, sround, sret, nsRep, listed, pri, cand, tk, fire, 
+          orun, ocall, cret, ambig, crashes, stalls, fired, seenEnds, 
           fireAfterCancel, resumedEnded, recErr, crashLost, orphan, age, 
-          rolled, filterBroken, optBroken, overLimit, sOpen, nsCnt, pc
+          rolled, filterBroken, optBroken, overLimit, sOpen, sErased, nsCnt, 
+          pc
 
 (* define statement *)
 Ended(r) == ends[r] # <<>>
+
+
+
+Rd(r) == IF Bug = "RedactedNotEnd" /\ red[r] THEN <<>> ELSE ends[r]
+EndedV(r) == Rd(r) # <<>>
 Live(r, c) == marker[r][c] # NoClaim /\ result[r][c] = "none"
 Lapsed(r) == lease[r].o # NoOwner /\ lease[r].left = 0
 
@@ -657,25 +694,27 @@ SagaCancelPending(r) == Api.sagaCancel = "marker" /\ r \in SagaRuns /\ Ended(r)
 
 AbortKind(p) == IF Api.sagaCancel = "request" /\ (why[p] = "cancel" \/ creq[jr[p]]) THEN "cancelled" ELSE "aborted"
 
-Pos(r, k) == CHOOSE i \in DOMAIN ends[r] : ends[r][i] = k
-Seen1 == IF EndKinds[sk] \in Range(ends[srun])
+Pos(r, k) == CHOOSE i \in DOMAIN Rd(r) : Rd(r)[i] = k
+Seen1 == IF EndKinds[sk] \in Range(Rd(srun))
          THEN sseen \cup {<<EndKinds[sk], Pos(srun, EndKinds[sk])>>} ELSE sseen
 StatusOf(s) == IF s = {} THEN "started" ELSE (CHOOSE x \in s : \A y \in s : x[2] <= y[2])[1]
 
 
-vars == << marker, result, ends, approved, start, lims, creq, lease, job, jr, 
-           holds, cc, outc, ret, reply, ctxDead, stalled, copt, eo, why, srun, 
-           sk, sseen, sround, sret, nsRep, listed, pri, cand, tk, fire, orun, 
-           ocall, cret, ambig, crashes, stalls, fired, seenEnds, 
+vars == << marker, result, ends, red, approved, start, lims, creq, lease, job, 
+           jr, holds, cc, outc, ret, reply, ctxDead, stalled, copt, eo, why, 
+           srun, sk, sseen, sround, sret, nsRep, listed, pri, cand, tk, fire, 
+           orun, ocall, cret, ambig, crashes, stalls, fired, seenEnds, 
            fireAfterCancel, resumedEnded, recErr, crashLost, orphan, age, 
-           rolled, filterBroken, optBroken, overLimit, sOpen, nsCnt, pc >>
+           rolled, filterBroken, optBroken, overLimit, sOpen, sErased, nsCnt, 
+           pc >>
 
-ProcSet == (Drivers) \cup (PassProcs) \cup {Op} \cup {Canc} \cup {St}
+ProcSet == (Drivers) \cup (PassProcs) \cup {Op} \cup {Canc} \cup {St} \cup {Red}
 
 Init == (* Global variables *)
         /\ marker = [r \in Runs |-> [c \in Calls |-> IF r \in Halted0 /\ c = 1 THEN Unknown ELSE NoClaim]]
         /\ result = [r \in Runs |-> [c \in Calls |-> "none"]]
         /\ ends = [r \in Runs |-> <<>>]
+        /\ red = [r \in Runs |-> FALSE]
         /\ approved = [r \in Runs |-> FALSE]
         /\ start = [r \in Runs |-> IF r = PrimRun /\ Primary # "none" THEN NoStart ELSE Api.init]
         /\ lims = [r \in Runs |-> <<>>]
@@ -723,12 +762,14 @@ Init == (* Global variables *)
         /\ optBroken = FALSE
         /\ overLimit = FALSE
         /\ sOpen = FALSE
+        /\ sErased = FALSE
         /\ nsCnt = [w \in Workers |-> [r \in Runs |-> 0]]
         /\ pc = [self \in ProcSet |-> CASE self \in Drivers -> "DIdle"
                                         [] self \in PassProcs -> "PList"
                                         [] self = Op -> "OPick"
                                         [] self = Canc -> "CGet"
-                                        [] self = St -> "SPick"]
+                                        [] self = St -> "SPick"
+                                        [] self = Red -> "RedEnd"]
 
 DIdle(self) == /\ pc[self] = "DIdle"
                /\ job[self] # 0
@@ -753,14 +794,14 @@ DIdle(self) == /\ pc[self] = "DIdle"
                                      /\ UNCHANGED << lease, holds, orphan >>
                      ELSE /\ pc' = [pc EXCEPT ![self] = "DOpen"]
                           /\ UNCHANGED << lease, holds, orphan >>
-               /\ UNCHANGED << marker, result, ends, approved, start, lims, 
-                               creq, job, cc, reply, stalled, eo, why, srun, 
-                               sk, sseen, sround, sret, nsRep, listed, pri, 
-                               cand, tk, fire, orun, ocall, cret, ambig, 
+               /\ UNCHANGED << marker, result, ends, red, approved, start, 
+                               lims, creq, job, cc, reply, stalled, eo, why, 
+                               srun, sk, sseen, sround, sret, nsRep, listed, 
+                               pri, cand, tk, fire, orun, ocall, cret, ambig, 
                                crashes, stalls, fired, seenEnds, 
                                fireAfterCancel, resumedEnded, recErr, 
                                crashLost, age, rolled, filterBroken, optBroken, 
-                               overLimit, sOpen, nsCnt >>
+                               overLimit, sOpen, sErased, nsCnt >>
 
 DCheck(self) == /\ pc[self] = "DCheck"
                 /\ IF Bug # "NoRecheck" /\ Ended(jr[self])
@@ -775,15 +816,15 @@ DCheck(self) == /\ pc[self] = "DCheck"
                                       /\ pc' = [pc EXCEPT ![self] = "DRel"]
                                  ELSE /\ pc' = [pc EXCEPT ![self] = "DResume"]
                                       /\ UNCHANGED << nsRep, nsCnt >>
-                /\ UNCHANGED << marker, result, ends, approved, start, lims, 
-                                creq, lease, job, jr, holds, cc, outc, ret, 
-                                reply, ctxDead, stalled, copt, eo, why, srun, 
-                                sk, sseen, sround, sret, listed, pri, cand, tk, 
-                                fire, orun, ocall, cret, ambig, crashes, 
-                                stalls, fired, seenEnds, fireAfterCancel, 
-                                resumedEnded, recErr, crashLost, orphan, age, 
-                                rolled, filterBroken, optBroken, overLimit, 
-                                sOpen >>
+                /\ UNCHANGED << marker, result, ends, red, approved, start, 
+                                lims, creq, lease, job, jr, holds, cc, outc, 
+                                ret, reply, ctxDead, stalled, copt, eo, why, 
+                                srun, sk, sseen, sround, sret, listed, pri, 
+                                cand, tk, fire, orun, ocall, cret, ambig, 
+                                crashes, stalls, fired, seenEnds, 
+                                fireAfterCancel, resumedEnded, recErr, 
+                                crashLost, orphan, age, rolled, filterBroken, 
+                                optBroken, overLimit, sOpen, sErased >>
 
 DResume(self) == /\ pc[self] = "DResume"
                  /\ IF Ended(jr[self])
@@ -791,15 +832,15 @@ DResume(self) == /\ pc[self] = "DResume"
                        ELSE /\ TRUE
                             /\ UNCHANGED resumedEnded
                  /\ pc' = [pc EXCEPT ![self] = "DOpen"]
-                 /\ UNCHANGED << marker, result, ends, approved, start, lims, 
-                                 creq, lease, job, jr, holds, cc, outc, ret, 
-                                 reply, ctxDead, stalled, copt, eo, why, srun, 
-                                 sk, sseen, sround, sret, nsRep, listed, pri, 
-                                 cand, tk, fire, orun, ocall, cret, ambig, 
+                 /\ UNCHANGED << marker, result, ends, red, approved, start, 
+                                 lims, creq, lease, job, jr, holds, cc, outc, 
+                                 ret, reply, ctxDead, stalled, copt, eo, why, 
+                                 srun, sk, sseen, sround, sret, nsRep, listed, 
+                                 pri, cand, tk, fire, orun, ocall, cret, ambig, 
                                  crashes, stalls, fired, seenEnds, 
                                  fireAfterCancel, recErr, crashLost, orphan, 
                                  age, rolled, filterBroken, optBroken, 
-                                 overLimit, sOpen, nsCnt >>
+                                 overLimit, sOpen, sErased, nsCnt >>
 
 DOpen(self) == /\ pc[self] = "DOpen"
                /\ IF ctxDead[self]
@@ -818,109 +859,116 @@ DOpen(self) == /\ pc[self] = "DOpen"
                                                 /\ pc' = [pc EXCEPT ![self] = "DRollback"]
                                                 /\ UNCHANGED << cc, ret, eo, 
                                                                 optBroken >>
-                                           ELSE /\ IF VerdictRule = "first" /\ Ended(jr[self])
-                                                      THEN /\ ret' = [ret EXCEPT ![self] = Head(ends[jr[self]])]
+                                           ELSE /\ IF red[jr[self]]
+                                                      THEN /\ ret' = [ret EXCEPT ![self] = "redacted"]
                                                            /\ pc' = [pc EXCEPT ![self] = "DRel"]
                                                            /\ UNCHANGED << cc, 
                                                                            eo, 
                                                                            why, 
                                                                            optBroken >>
-                                                      ELSE /\ IF CancelRule # "none" /\ "cancelled" \in Range(ends[jr[self]])
-                                                                 THEN /\ ret' = [ret EXCEPT ![self] = "cancelled"]
+                                                      ELSE /\ IF VerdictRule = "first" /\ Ended(jr[self])
+                                                                 THEN /\ ret' = [ret EXCEPT ![self] = Head(ends[jr[self]])]
                                                                       /\ pc' = [pc EXCEPT ![self] = "DRel"]
                                                                       /\ UNCHANGED << cc, 
                                                                                       eo, 
                                                                                       why, 
                                                                                       optBroken >>
-                                                                 ELSE /\ IF "complete" \in Range(ends[jr[self]]) /\ Bug # "ReplayFinished"
-                                                                            THEN /\ ret' = [ret EXCEPT ![self] = "complete"]
+                                                                 ELSE /\ IF CancelRule # "none" /\ "cancelled" \in Range(ends[jr[self]])
+                                                                            THEN /\ ret' = [ret EXCEPT ![self] = "cancelled"]
                                                                                  /\ pc' = [pc EXCEPT ![self] = "DRel"]
                                                                                  /\ UNCHANGED << cc, 
                                                                                                  eo, 
                                                                                                  why, 
                                                                                                  optBroken >>
-                                                                            ELSE /\ IF "aborted" \in Range(ends[jr[self]])
-                                                                                       THEN /\ ret' = [ret EXCEPT ![self] = "aborted"]
+                                                                            ELSE /\ IF "complete" \in Range(ends[jr[self]]) /\ Bug # "ReplayFinished"
+                                                                                       THEN /\ ret' = [ret EXCEPT ![self] = "complete"]
                                                                                             /\ pc' = [pc EXCEPT ![self] = "DRel"]
                                                                                             /\ UNCHANGED << cc, 
                                                                                                             eo, 
                                                                                                             why, 
                                                                                                             optBroken >>
-                                                                                       ELSE /\ IF Mismatch(self, jr[self])
-                                                                                                  THEN /\ ret' = [ret EXCEPT ![self] = "config"]
+                                                                                       ELSE /\ IF "aborted" \in Range(ends[jr[self]])
+                                                                                                  THEN /\ ret' = [ret EXCEPT ![self] = "aborted"]
                                                                                                        /\ pc' = [pc EXCEPT ![self] = "DRel"]
                                                                                                        /\ UNCHANGED << cc, 
                                                                                                                        eo, 
                                                                                                                        why, 
                                                                                                                        optBroken >>
-                                                                                                  ELSE /\ IF Amends(self, jr[self])
-                                                                                                             THEN /\ pc' = [pc EXCEPT ![self] = "DAmend"]
+                                                                                                  ELSE /\ IF Mismatch(self, jr[self])
+                                                                                                             THEN /\ ret' = [ret EXCEPT ![self] = "config"]
+                                                                                                                  /\ pc' = [pc EXCEPT ![self] = "DRel"]
                                                                                                                   /\ UNCHANGED << cc, 
-                                                                                                                                  ret, 
                                                                                                                                   eo, 
                                                                                                                                   why, 
                                                                                                                                   optBroken >>
-                                                                                                             ELSE /\ IF creq[jr[self]] /\ \E c \in Calls : result[jr[self]][c] = "fail"
-                                                                                                                        THEN /\ why' = [why EXCEPT ![self] = "cancel"]
-                                                                                                                             /\ pc' = [pc EXCEPT ![self] = "DRollback"]
+                                                                                                             ELSE /\ IF Amends(self, jr[self])
+                                                                                                                        THEN /\ pc' = [pc EXCEPT ![self] = "DAmend"]
                                                                                                                              /\ UNCHANGED << cc, 
                                                                                                                                              ret, 
                                                                                                                                              eo, 
+                                                                                                                                             why, 
                                                                                                                                              optBroken >>
-                                                                                                                        ELSE /\ IF \E c \in Calls : result[jr[self]][c] = "fail"
-                                                                                                                                   THEN /\ why' = [why EXCEPT ![self] = "fail"]
+                                                                                                                        ELSE /\ IF creq[jr[self]] /\ \E c \in Calls : result[jr[self]][c] = "fail"
+                                                                                                                                   THEN /\ why' = [why EXCEPT ![self] = "cancel"]
                                                                                                                                         /\ pc' = [pc EXCEPT ![self] = "DRollback"]
                                                                                                                                         /\ UNCHANGED << cc, 
                                                                                                                                                         ret, 
                                                                                                                                                         eo, 
                                                                                                                                                         optBroken >>
-                                                                                                                                   ELSE /\ IF NextCall(jr[self]) > NCalls /\ "complete" \notin Range(ends[jr[self]])
-                                                                                                                                              THEN /\ pc' = [pc EXCEPT ![self] = "DComplete"]
+                                                                                                                                   ELSE /\ IF \E c \in Calls : result[jr[self]][c] = "fail"
+                                                                                                                                              THEN /\ why' = [why EXCEPT ![self] = "fail"]
+                                                                                                                                                   /\ pc' = [pc EXCEPT ![self] = "DRollback"]
                                                                                                                                                    /\ UNCHANGED << cc, 
                                                                                                                                                                    ret, 
                                                                                                                                                                    eo, 
-                                                                                                                                                                   why, 
                                                                                                                                                                    optBroken >>
-                                                                                                                                              ELSE /\ IF Live(jr[self], NextCall(jr[self]))
-                                                                                                                                                         THEN /\ ret' = [ret EXCEPT ![self] = "halt"]
-                                                                                                                                                              /\ pc' = [pc EXCEPT ![self] = "DRel"]
+                                                                                                                                              ELSE /\ IF NextCall(jr[self]) > NCalls /\ "complete" \notin Range(ends[jr[self]])
+                                                                                                                                                         THEN /\ pc' = [pc EXCEPT ![self] = "DComplete"]
                                                                                                                                                               /\ UNCHANGED << cc, 
+                                                                                                                                                                              ret, 
                                                                                                                                                                               eo, 
                                                                                                                                                                               why, 
                                                                                                                                                                               optBroken >>
-                                                                                                                                                         ELSE /\ IF creq[jr[self]]
-                                                                                                                                                                    THEN /\ why' = [why EXCEPT ![self] = "cancel"]
-                                                                                                                                                                         /\ pc' = [pc EXCEPT ![self] = "DRollback"]
+                                                                                                                                                         ELSE /\ IF Live(jr[self], NextCall(jr[self]))
+                                                                                                                                                                    THEN /\ ret' = [ret EXCEPT ![self] = "halt"]
+                                                                                                                                                                         /\ pc' = [pc EXCEPT ![self] = "DRel"]
                                                                                                                                                                          /\ UNCHANGED << cc, 
-                                                                                                                                                                                         ret, 
                                                                                                                                                                                          eo, 
+                                                                                                                                                                                         why, 
                                                                                                                                                                                          optBroken >>
-                                                                                                                                                                    ELSE /\ IF jr[self] \in Paused0 /\ ~approved[jr[self]]
-                                                                                                                                                                               THEN /\ ret' = [ret EXCEPT ![self] = "pause"]
-                                                                                                                                                                                    /\ pc' = [pc EXCEPT ![self] = "DRel"]
+                                                                                                                                                                    ELSE /\ IF creq[jr[self]]
+                                                                                                                                                                               THEN /\ why' = [why EXCEPT ![self] = "cancel"]
+                                                                                                                                                                                    /\ pc' = [pc EXCEPT ![self] = "DRollback"]
                                                                                                                                                                                     /\ UNCHANGED << cc, 
+                                                                                                                                                                                                    ret, 
                                                                                                                                                                                                     eo, 
                                                                                                                                                                                                     optBroken >>
-                                                                                                                                                                               ELSE /\ IF NextCall(jr[self]) > Eff(self, jr[self]).l
-                                                                                                                                                                                          THEN /\ ret' = [ret EXCEPT ![self] = "limit"]
+                                                                                                                                                                               ELSE /\ IF jr[self] \in Paused0 /\ ~approved[jr[self]]
+                                                                                                                                                                                          THEN /\ ret' = [ret EXCEPT ![self] = "pause"]
                                                                                                                                                                                                /\ pc' = [pc EXCEPT ![self] = "DRel"]
                                                                                                                                                                                                /\ UNCHANGED << cc, 
                                                                                                                                                                                                                eo, 
                                                                                                                                                                                                                optBroken >>
-                                                                                                                                                                                          ELSE /\ eo' = [eo EXCEPT ![self] = Eff(self, jr[self])]
-                                                                                                                                                                                               /\ optBroken' = (optBroken \/ Eff(self, jr[self]) # Journaled(jr[self]))
-                                                                                                                                                                                               /\ cc' = [cc EXCEPT ![self] = NextCall(jr[self])]
-                                                                                                                                                                                               /\ pc' = [pc EXCEPT ![self] = "DClaim"]
-                                                                                                                                                                                               /\ ret' = ret
-                                                                                                                                                                         /\ why' = why
-               /\ UNCHANGED << marker, result, ends, approved, start, lims, 
-                               creq, lease, job, jr, holds, outc, reply, 
+                                                                                                                                                                                          ELSE /\ IF NextCall(jr[self]) > Eff(self, jr[self]).l
+                                                                                                                                                                                                     THEN /\ ret' = [ret EXCEPT ![self] = "limit"]
+                                                                                                                                                                                                          /\ pc' = [pc EXCEPT ![self] = "DRel"]
+                                                                                                                                                                                                          /\ UNCHANGED << cc, 
+                                                                                                                                                                                                                          eo, 
+                                                                                                                                                                                                                          optBroken >>
+                                                                                                                                                                                                     ELSE /\ eo' = [eo EXCEPT ![self] = Eff(self, jr[self])]
+                                                                                                                                                                                                          /\ optBroken' = (optBroken \/ Eff(self, jr[self]) # Journaled(jr[self]))
+                                                                                                                                                                                                          /\ cc' = [cc EXCEPT ![self] = NextCall(jr[self])]
+                                                                                                                                                                                                          /\ pc' = [pc EXCEPT ![self] = "DClaim"]
+                                                                                                                                                                                                          /\ ret' = ret
+                                                                                                                                                                                    /\ why' = why
+               /\ UNCHANGED << marker, result, ends, red, approved, start, 
+                               lims, creq, lease, job, jr, holds, outc, reply, 
                                ctxDead, stalled, copt, srun, sk, sseen, sround, 
                                sret, nsRep, listed, pri, cand, tk, fire, orun, 
                                ocall, cret, ambig, crashes, stalls, fired, 
                                seenEnds, fireAfterCancel, resumedEnded, recErr, 
                                crashLost, orphan, age, rolled, filterBroken, 
-                               overLimit, sOpen, nsCnt >>
+                               overLimit, sOpen, sErased, nsCnt >>
 
 DStart(self) == /\ pc[self] = "DStart"
                 /\ \/ /\ reply' = [reply EXCEPT ![self] = "ok"]
@@ -940,15 +988,15 @@ DStart(self) == /\ pc[self] = "DStart"
                            /\ pc' = [pc EXCEPT ![self] = "DRel"]
                       ELSE /\ pc' = [pc EXCEPT ![self] = "DOpen"]
                            /\ ret' = ret
-                /\ UNCHANGED << marker, result, ends, approved, lims, creq, 
-                                lease, job, jr, holds, cc, outc, ctxDead, 
+                /\ UNCHANGED << marker, result, ends, red, approved, lims, 
+                                creq, lease, job, jr, holds, cc, outc, ctxDead, 
                                 stalled, copt, eo, why, srun, sk, sseen, 
                                 sround, sret, nsRep, listed, pri, cand, tk, 
                                 fire, orun, ocall, cret, crashes, stalls, 
                                 fired, seenEnds, fireAfterCancel, resumedEnded, 
                                 recErr, crashLost, orphan, age, rolled, 
                                 filterBroken, optBroken, overLimit, sOpen, 
-                                nsCnt >>
+                                sErased, nsCnt >>
 
 DAmend(self) == /\ pc[self] = "DAmend"
                 /\ \/ /\ reply' = [reply EXCEPT ![self] = "ok"]
@@ -968,15 +1016,15 @@ DAmend(self) == /\ pc[self] = "DAmend"
                            /\ pc' = [pc EXCEPT ![self] = "DRel"]
                       ELSE /\ pc' = [pc EXCEPT ![self] = "DOpen"]
                            /\ ret' = ret
-                /\ UNCHANGED << marker, result, ends, approved, start, creq, 
-                                lease, job, jr, holds, cc, outc, ctxDead, 
+                /\ UNCHANGED << marker, result, ends, red, approved, start, 
+                                creq, lease, job, jr, holds, cc, outc, ctxDead, 
                                 stalled, copt, eo, why, srun, sk, sseen, 
                                 sround, sret, nsRep, listed, pri, cand, tk, 
                                 fire, orun, ocall, cret, crashes, stalls, 
                                 fired, seenEnds, fireAfterCancel, resumedEnded, 
                                 recErr, crashLost, orphan, age, rolled, 
                                 filterBroken, optBroken, overLimit, sOpen, 
-                                nsCnt >>
+                                sErased, nsCnt >>
 
 DTurn(self) == /\ pc[self] = "DTurn"
                /\ IF CancelRule # "none" /\ CancelSeen(jr[self])
@@ -993,15 +1041,15 @@ DTurn(self) == /\ pc[self] = "DTurn"
                                 ELSE /\ pc' = [pc EXCEPT ![self] = "DClaim"]
                                      /\ ret' = ret
                           /\ why' = why
-               /\ UNCHANGED << marker, result, ends, approved, start, lims, 
-                               creq, lease, job, jr, holds, cc, outc, reply, 
-                               ctxDead, stalled, copt, eo, srun, sk, sseen, 
-                               sround, sret, nsRep, listed, pri, cand, tk, 
-                               fire, orun, ocall, cret, ambig, crashes, stalls, 
-                               fired, seenEnds, fireAfterCancel, resumedEnded, 
-                               recErr, crashLost, orphan, age, rolled, 
-                               filterBroken, optBroken, overLimit, sOpen, 
-                               nsCnt >>
+               /\ UNCHANGED << marker, result, ends, red, approved, start, 
+                               lims, creq, lease, job, jr, holds, cc, outc, 
+                               reply, ctxDead, stalled, copt, eo, srun, sk, 
+                               sseen, sround, sret, nsRep, listed, pri, cand, 
+                               tk, fire, orun, ocall, cret, ambig, crashes, 
+                               stalls, fired, seenEnds, fireAfterCancel, 
+                               resumedEnded, recErr, crashLost, orphan, age, 
+                               rolled, filterBroken, optBroken, overLimit, 
+                               sOpen, sErased, nsCnt >>
 
 DClaim(self) == /\ pc[self] = "DClaim"
                 /\ IF ctxDead[self]
@@ -1059,14 +1107,14 @@ DClaim(self) == /\ pc[self] = "DClaim"
                                                                   ELSE /\ pc' = [pc EXCEPT ![self] = "DCall"]
                                                             /\ ret' = ret
                                       /\ UNCHANGED << result, cc >>
-                /\ UNCHANGED << ends, approved, start, lims, creq, lease, job, 
-                                jr, holds, outc, ctxDead, stalled, copt, eo, 
-                                why, srun, sk, sseen, sround, sret, nsRep, 
+                /\ UNCHANGED << ends, red, approved, start, lims, creq, lease, 
+                                job, jr, holds, outc, ctxDead, stalled, copt, 
+                                eo, why, srun, sk, sseen, sround, sret, nsRep, 
                                 listed, pri, cand, tk, fire, orun, ocall, cret, 
                                 crashes, stalls, fired, fireAfterCancel, 
                                 resumedEnded, recErr, crashLost, orphan, age, 
                                 rolled, filterBroken, optBroken, overLimit, 
-                                sOpen, nsCnt >>
+                                sOpen, sErased, nsCnt >>
 
 DPost(self) == /\ pc[self] = "DPost"
                /\ IF CancelSeen(jr[self])
@@ -1080,14 +1128,14 @@ DPost(self) == /\ pc[self] = "DPost"
                                      /\ why' = why
                      ELSE /\ pc' = [pc EXCEPT ![self] = "DCall"]
                           /\ UNCHANGED << marker, ret, why >>
-               /\ UNCHANGED << result, ends, approved, start, lims, creq, 
+               /\ UNCHANGED << result, ends, red, approved, start, lims, creq, 
                                lease, job, jr, holds, cc, outc, reply, ctxDead, 
                                stalled, copt, eo, srun, sk, sseen, sround, 
                                sret, nsRep, listed, pri, cand, tk, fire, orun, 
                                ocall, cret, ambig, crashes, stalls, fired, 
                                seenEnds, fireAfterCancel, resumedEnded, recErr, 
                                crashLost, orphan, age, rolled, filterBroken, 
-                               optBroken, overLimit, sOpen, nsCnt >>
+                               optBroken, overLimit, sOpen, sErased, nsCnt >>
 
 DCall(self) == /\ pc[self] = "DCall"
                /\ IF ctxDead[self]
@@ -1109,13 +1157,13 @@ DCall(self) == /\ pc[self] = "DCall"
                                 /\ outc' = [outc EXCEPT ![self] = "fail"]
                           /\ pc' = [pc EXCEPT ![self] = "DRecord"]
                           /\ UNCHANGED << marker, ret >>
-               /\ UNCHANGED << result, ends, approved, start, lims, creq, 
+               /\ UNCHANGED << result, ends, red, approved, start, lims, creq, 
                                lease, job, jr, holds, cc, reply, ctxDead, 
                                stalled, copt, eo, why, srun, sk, sseen, sround, 
                                sret, nsRep, listed, pri, cand, tk, fire, orun, 
                                ocall, cret, ambig, crashes, stalls, seenEnds, 
                                resumedEnded, recErr, crashLost, orphan, age, 
-                               rolled, sOpen, nsCnt >>
+                               rolled, sOpen, sErased, nsCnt >>
 
 DRecord(self) == /\ pc[self] = "DRecord"
                  /\ IF Bug = "RecordUnderCtx" /\ ctxDead[self]
@@ -1148,14 +1196,15 @@ DRecord(self) == /\ pc[self] = "DRecord"
                                                         ELSE /\ pc' = [pc EXCEPT ![self] = "DComplete"]
                                                              /\ cc' = cc
                                        /\ UNCHANGED << ret, recErr >>
-                 /\ UNCHANGED << marker, ends, approved, start, lims, creq, 
-                                 lease, job, jr, holds, outc, ctxDead, stalled, 
-                                 copt, eo, why, srun, sk, sseen, sround, sret, 
-                                 nsRep, listed, pri, cand, tk, fire, orun, 
-                                 ocall, cret, crashes, stalls, fired, seenEnds, 
-                                 fireAfterCancel, resumedEnded, crashLost, 
-                                 orphan, age, rolled, filterBroken, optBroken, 
-                                 overLimit, sOpen, nsCnt >>
+                 /\ UNCHANGED << marker, ends, red, approved, start, lims, 
+                                 creq, lease, job, jr, holds, outc, ctxDead, 
+                                 stalled, copt, eo, why, srun, sk, sseen, 
+                                 sround, sret, nsRep, listed, pri, cand, tk, 
+                                 fire, orun, ocall, cret, crashes, stalls, 
+                                 fired, seenEnds, fireAfterCancel, 
+                                 resumedEnded, crashLost, orphan, age, rolled, 
+                                 filterBroken, optBroken, overLimit, sOpen, 
+                                 sErased, nsCnt >>
 
 DRollback(self) == /\ pc[self] = "DRollback"
                    /\ IF ctxDead[self]
@@ -1165,8 +1214,8 @@ DRollback(self) == /\ pc[self] = "DRollback"
                          ELSE /\ rolled' = [rolled EXCEPT ![jr[self]] = TRUE]
                               /\ pc' = [pc EXCEPT ![self] = "DAbort"]
                               /\ ret' = ret
-                   /\ UNCHANGED << marker, result, ends, approved, start, lims, 
-                                   creq, lease, job, jr, holds, cc, outc, 
+                   /\ UNCHANGED << marker, result, ends, red, approved, start, 
+                                   lims, creq, lease, job, jr, holds, cc, outc, 
                                    reply, ctxDead, stalled, copt, eo, why, 
                                    srun, sk, sseen, sround, sret, nsRep, 
                                    listed, pri, cand, tk, fire, orun, ocall, 
@@ -1174,7 +1223,7 @@ DRollback(self) == /\ pc[self] = "DRollback"
                                    seenEnds, fireAfterCancel, resumedEnded, 
                                    recErr, crashLost, orphan, age, 
                                    filterBroken, optBroken, overLimit, sOpen, 
-                                   nsCnt >>
+                                   sErased, nsCnt >>
 
 DAbort(self) == /\ pc[self] = "DAbort"
                 /\ IF Bug = "NoAbortMarker"
@@ -1205,15 +1254,15 @@ DAbort(self) == /\ pc[self] = "DAbort"
                                                             /\ ret' = ret
                                                        ELSE /\ ret' = [ret EXCEPT ![self] = AbortKind(self)]
                                                             /\ pc' = [pc EXCEPT ![self] = "DRel"]
-                /\ UNCHANGED << marker, result, approved, start, lims, creq, 
-                                lease, job, jr, holds, cc, outc, ctxDead, 
+                /\ UNCHANGED << marker, result, red, approved, start, lims, 
+                                creq, lease, job, jr, holds, cc, outc, ctxDead, 
                                 stalled, copt, eo, why, srun, sk, sseen, 
                                 sround, sret, nsRep, listed, pri, cand, tk, 
                                 fire, orun, ocall, cret, crashes, stalls, 
                                 fired, seenEnds, fireAfterCancel, resumedEnded, 
                                 recErr, crashLost, orphan, age, rolled, 
                                 filterBroken, optBroken, overLimit, sOpen, 
-                                nsCnt >>
+                                sErased, nsCnt >>
 
 DComplete(self) == /\ pc[self] = "DComplete"
                    /\ IF ctxDead[self]
@@ -1240,28 +1289,28 @@ DComplete(self) == /\ pc[self] = "DComplete"
                                                     /\ ret' = ret
                                                ELSE /\ ret' = [ret EXCEPT ![self] = "complete"]
                                                     /\ pc' = [pc EXCEPT ![self] = "DRel"]
-                   /\ UNCHANGED << marker, result, approved, start, lims, creq, 
-                                   lease, job, jr, holds, cc, outc, ctxDead, 
-                                   stalled, copt, eo, why, srun, sk, sseen, 
-                                   sround, sret, nsRep, listed, pri, cand, tk, 
-                                   fire, orun, ocall, cret, crashes, stalls, 
-                                   fired, seenEnds, fireAfterCancel, 
+                   /\ UNCHANGED << marker, result, red, approved, start, lims, 
+                                   creq, lease, job, jr, holds, cc, outc, 
+                                   ctxDead, stalled, copt, eo, why, srun, sk, 
+                                   sseen, sround, sret, nsRep, listed, pri, 
+                                   cand, tk, fire, orun, ocall, cret, crashes, 
+                                   stalls, fired, seenEnds, fireAfterCancel, 
                                    resumedEnded, recErr, crashLost, orphan, 
                                    age, rolled, filterBroken, optBroken, 
-                                   overLimit, sOpen, nsCnt >>
+                                   overLimit, sOpen, sErased, nsCnt >>
 
 DVerdict(self) == /\ pc[self] = "DVerdict"
                   /\ ret' = [ret EXCEPT ![self] = Head(ends[jr[self]])]
                   /\ pc' = [pc EXCEPT ![self] = "DRel"]
-                  /\ UNCHANGED << marker, result, ends, approved, start, lims, 
-                                  creq, lease, job, jr, holds, cc, outc, reply, 
-                                  ctxDead, stalled, copt, eo, why, srun, sk, 
-                                  sseen, sround, sret, nsRep, listed, pri, 
+                  /\ UNCHANGED << marker, result, ends, red, approved, start, 
+                                  lims, creq, lease, job, jr, holds, cc, outc, 
+                                  reply, ctxDead, stalled, copt, eo, why, srun, 
+                                  sk, sseen, sround, sret, nsRep, listed, pri, 
                                   cand, tk, fire, orun, ocall, cret, ambig, 
                                   crashes, stalls, fired, seenEnds, 
                                   fireAfterCancel, resumedEnded, recErr, 
                                   crashLost, orphan, age, rolled, filterBroken, 
-                                  optBroken, overLimit, sOpen, nsCnt >>
+                                  optBroken, overLimit, sOpen, sErased, nsCnt >>
 
 DRel(self) == /\ pc[self] = "DRel"
               /\ IF holds[self] # 0 /\ lease[holds[self]].o = Tok(self)
@@ -1273,14 +1322,14 @@ DRel(self) == /\ pc[self] = "DRel"
               /\ IF self \in {Prim, Res}
                     THEN /\ pc' = [pc EXCEPT ![self] = "Done"]
                     ELSE /\ pc' = [pc EXCEPT ![self] = "DIdle"]
-              /\ UNCHANGED << marker, result, ends, approved, start, lims, 
+              /\ UNCHANGED << marker, result, ends, red, approved, start, lims, 
                               creq, jr, cc, outc, ret, reply, ctxDead, stalled, 
                               copt, eo, why, srun, sk, sseen, sround, sret, 
                               nsRep, listed, pri, cand, tk, fire, orun, ocall, 
                               cret, ambig, crashes, stalls, fired, seenEnds, 
                               fireAfterCancel, resumedEnded, recErr, crashLost, 
                               orphan, age, rolled, filterBroken, optBroken, 
-                              overLimit, sOpen, nsCnt >>
+                              overLimit, sOpen, sErased, nsCnt >>
 
 drv(self) == DIdle(self) \/ DCheck(self) \/ DResume(self) \/ DOpen(self)
                 \/ DStart(self) \/ DAmend(self) \/ DTurn(self)
@@ -1294,15 +1343,15 @@ PList(self) == /\ pc[self] = "PList"
                      ELSE /\ listed' = [listed EXCEPT ![self] = {r \in Runs : ~Ended(r)}]
                /\ pri' = [pri EXCEPT ![self] = IF PassRule = "lapsedFirst" THEN {r \in Runs : Lapsed(r) /\ ~Ended(r)} ELSE {}]
                /\ pc' = [pc EXCEPT ![self] = "PNext"]
-               /\ UNCHANGED << marker, result, ends, approved, start, lims, 
-                               creq, lease, job, jr, holds, cc, outc, ret, 
-                               reply, ctxDead, stalled, copt, eo, why, srun, 
-                               sk, sseen, sround, sret, nsRep, cand, tk, fire, 
-                               orun, ocall, cret, ambig, crashes, stalls, 
+               /\ UNCHANGED << marker, result, ends, red, approved, start, 
+                               lims, creq, lease, job, jr, holds, cc, outc, 
+                               ret, reply, ctxDead, stalled, copt, eo, why, 
+                               srun, sk, sseen, sround, sret, nsRep, cand, tk, 
+                               fire, orun, ocall, cret, ambig, crashes, stalls, 
                                fired, seenEnds, fireAfterCancel, resumedEnded, 
                                recErr, crashLost, orphan, age, rolled, 
                                filterBroken, optBroken, overLimit, sOpen, 
-                               nsCnt >>
+                               sErased, nsCnt >>
 
 PNext(self) == /\ pc[self] = "PNext"
                /\ IF listed[self] = {}
@@ -1314,15 +1363,15 @@ PNext(self) == /\ pc[self] = "PNext"
                           /\ IF InFlight(self, cand'[self])
                                 THEN /\ pc' = [pc EXCEPT ![self] = "PNext"]
                                 ELSE /\ pc' = [pc EXCEPT ![self] = "PSlot"]
-               /\ UNCHANGED << marker, result, ends, approved, start, lims, 
-                               creq, lease, job, jr, holds, cc, outc, ret, 
-                               reply, ctxDead, stalled, copt, eo, why, srun, 
-                               sk, sseen, sround, sret, nsRep, pri, tk, fire, 
-                               orun, ocall, cret, ambig, crashes, stalls, 
+               /\ UNCHANGED << marker, result, ends, red, approved, start, 
+                               lims, creq, lease, job, jr, holds, cc, outc, 
+                               ret, reply, ctxDead, stalled, copt, eo, why, 
+                               srun, sk, sseen, sround, sret, nsRep, pri, tk, 
+                               fire, orun, ocall, cret, ambig, crashes, stalls, 
                                fired, seenEnds, fireAfterCancel, resumedEnded, 
                                recErr, crashLost, orphan, age, rolled, 
                                filterBroken, optBroken, overLimit, sOpen, 
-                               nsCnt >>
+                               sErased, nsCnt >>
 
 PSlot(self) == /\ pc[self] = "PSlot"
                /\ IF Bug = "SkipWhenBusy" /\ job[SlotOf(self)] # 0
@@ -1331,15 +1380,15 @@ PSlot(self) == /\ pc[self] = "PSlot"
                      ELSE /\ job[SlotOf(self)] = 0
                           /\ job' = [job EXCEPT ![SlotOf(self)] = cand[self]]
                           /\ pc' = [pc EXCEPT ![self] = "PNext"]
-               /\ UNCHANGED << marker, result, ends, approved, start, lims, 
-                               creq, lease, jr, holds, cc, outc, ret, reply, 
-                               ctxDead, stalled, copt, eo, why, srun, sk, 
-                               sseen, sround, sret, nsRep, listed, pri, cand, 
-                               tk, fire, orun, ocall, cret, ambig, crashes, 
-                               stalls, fired, seenEnds, fireAfterCancel, 
-                               resumedEnded, recErr, crashLost, orphan, age, 
-                               rolled, filterBroken, optBroken, overLimit, 
-                               sOpen, nsCnt >>
+               /\ UNCHANGED << marker, result, ends, red, approved, start, 
+                               lims, creq, lease, jr, holds, cc, outc, ret, 
+                               reply, ctxDead, stalled, copt, eo, why, srun, 
+                               sk, sseen, sround, sret, nsRep, listed, pri, 
+                               cand, tk, fire, orun, ocall, cret, ambig, 
+                               crashes, stalls, fired, seenEnds, 
+                               fireAfterCancel, resumedEnded, recErr, 
+                               crashLost, orphan, age, rolled, filterBroken, 
+                               optBroken, overLimit, sOpen, sErased, nsCnt >>
 
 PWait(self) == /\ pc[self] = "PWait"
                /\ IF ~Loop
@@ -1348,15 +1397,15 @@ PWait(self) == /\ pc[self] = "PWait"
                      ELSE /\ fire[self]
                           /\ fire' = [fire EXCEPT ![self] = FALSE]
                           /\ pc' = [pc EXCEPT ![self] = "PList"]
-               /\ UNCHANGED << marker, result, ends, approved, start, lims, 
-                               creq, lease, job, jr, holds, cc, outc, ret, 
-                               reply, ctxDead, stalled, copt, eo, why, srun, 
-                               sk, sseen, sround, sret, nsRep, listed, pri, 
-                               cand, tk, orun, ocall, cret, ambig, crashes, 
-                               stalls, fired, seenEnds, fireAfterCancel, 
-                               resumedEnded, recErr, crashLost, orphan, age, 
-                               rolled, filterBroken, optBroken, overLimit, 
-                               sOpen, nsCnt >>
+               /\ UNCHANGED << marker, result, ends, red, approved, start, 
+                               lims, creq, lease, job, jr, holds, cc, outc, 
+                               ret, reply, ctxDead, stalled, copt, eo, why, 
+                               srun, sk, sseen, sround, sret, nsRep, listed, 
+                               pri, cand, tk, orun, ocall, cret, ambig, 
+                               crashes, stalls, fired, seenEnds, 
+                               fireAfterCancel, resumedEnded, recErr, 
+                               crashLost, orphan, age, rolled, filterBroken, 
+                               optBroken, overLimit, sOpen, sErased, nsCnt >>
 
 pass(self) == PList(self) \/ PNext(self) \/ PSlot(self) \/ PWait(self)
 
@@ -1371,13 +1420,14 @@ OPick == /\ pc[Op] = "OPick"
                     approved' = [approved EXCEPT ![r] = TRUE]
                /\ pc' = [pc EXCEPT ![Op] = "OPick"]
                /\ UNCHANGED <<orun, ocall>>
-         /\ UNCHANGED << marker, result, ends, start, lims, creq, lease, job, 
-                         jr, holds, cc, outc, ret, reply, ctxDead, stalled, 
-                         copt, eo, why, srun, sk, sseen, sround, sret, nsRep, 
-                         listed, pri, cand, tk, fire, cret, ambig, crashes, 
-                         stalls, fired, seenEnds, fireAfterCancel, 
+         /\ UNCHANGED << marker, result, ends, red, start, lims, creq, lease, 
+                         job, jr, holds, cc, outc, ret, reply, ctxDead, 
+                         stalled, copt, eo, why, srun, sk, sseen, sround, sret, 
+                         nsRep, listed, pri, cand, tk, fire, cret, ambig, 
+                         crashes, stalls, fired, seenEnds, fireAfterCancel, 
                          resumedEnded, recErr, crashLost, orphan, age, rolled, 
-                         filterBroken, optBroken, overLimit, sOpen, nsCnt >>
+                         filterBroken, optBroken, overLimit, sOpen, sErased, 
+                         nsCnt >>
 
 OLease == /\ pc[Op] = "OLease"
           /\ IF LeaseFree(orun, Op)
@@ -1386,14 +1436,14 @@ OLease == /\ pc[Op] = "OLease"
                      /\ pc' = [pc EXCEPT ![Op] = "OWrite"]
                 ELSE /\ pc' = [pc EXCEPT ![Op] = "OPick"]
                      /\ UNCHANGED << lease, holds >>
-          /\ UNCHANGED << marker, result, ends, approved, start, lims, creq, 
-                          job, jr, cc, outc, ret, reply, ctxDead, stalled, 
-                          copt, eo, why, srun, sk, sseen, sround, sret, nsRep, 
-                          listed, pri, cand, tk, fire, orun, ocall, cret, 
-                          ambig, crashes, stalls, fired, seenEnds, 
+          /\ UNCHANGED << marker, result, ends, red, approved, start, lims, 
+                          creq, job, jr, cc, outc, ret, reply, ctxDead, 
+                          stalled, copt, eo, why, srun, sk, sseen, sround, 
+                          sret, nsRep, listed, pri, cand, tk, fire, orun, 
+                          ocall, cret, ambig, crashes, stalls, fired, seenEnds, 
                           fireAfterCancel, resumedEnded, recErr, crashLost, 
                           orphan, age, rolled, filterBroken, optBroken, 
-                          overLimit, sOpen, nsCnt >>
+                          overLimit, sOpen, sErased, nsCnt >>
 
 OWrite == /\ pc[Op] = "OWrite"
           /\ \/ /\ reply' = [reply EXCEPT ![Op] = "ok"]
@@ -1409,13 +1459,14 @@ OWrite == /\ pc[Op] = "OWrite"
                 ELSE /\ TRUE
                      /\ UNCHANGED result
           /\ pc' = [pc EXCEPT ![Op] = "ORel"]
-          /\ UNCHANGED << marker, ends, approved, start, lims, creq, lease, 
-                          job, jr, holds, cc, outc, ret, ctxDead, stalled, 
-                          copt, eo, why, srun, sk, sseen, sround, sret, nsRep, 
-                          listed, pri, cand, tk, fire, orun, ocall, cret, 
-                          crashes, stalls, fired, seenEnds, fireAfterCancel, 
-                          resumedEnded, recErr, crashLost, orphan, age, rolled, 
-                          filterBroken, optBroken, overLimit, sOpen, nsCnt >>
+          /\ UNCHANGED << marker, ends, red, approved, start, lims, creq, 
+                          lease, job, jr, holds, cc, outc, ret, ctxDead, 
+                          stalled, copt, eo, why, srun, sk, sseen, sround, 
+                          sret, nsRep, listed, pri, cand, tk, fire, orun, 
+                          ocall, cret, crashes, stalls, fired, seenEnds, 
+                          fireAfterCancel, resumedEnded, recErr, crashLost, 
+                          orphan, age, rolled, filterBroken, optBroken, 
+                          overLimit, sOpen, sErased, nsCnt >>
 
 ORel == /\ pc[Op] = "ORel"
         /\ IF lease[orun].o = Op
@@ -1424,20 +1475,20 @@ ORel == /\ pc[Op] = "ORel"
                    /\ lease' = lease
         /\ holds' = [holds EXCEPT ![Op] = 0]
         /\ pc' = [pc EXCEPT ![Op] = "OPick"]
-        /\ UNCHANGED << marker, result, ends, approved, start, lims, creq, job, 
-                        jr, cc, outc, ret, reply, ctxDead, stalled, copt, eo, 
-                        why, srun, sk, sseen, sround, sret, nsRep, listed, pri, 
-                        cand, tk, fire, orun, ocall, cret, ambig, crashes, 
+        /\ UNCHANGED << marker, result, ends, red, approved, start, lims, creq, 
+                        job, jr, cc, outc, ret, reply, ctxDead, stalled, copt, 
+                        eo, why, srun, sk, sseen, sround, sret, nsRep, listed, 
+                        pri, cand, tk, fire, orun, ocall, cret, ambig, crashes, 
                         stalls, fired, seenEnds, fireAfterCancel, resumedEnded, 
                         recErr, crashLost, orphan, age, rolled, filterBroken, 
-                        optBroken, overLimit, sOpen, nsCnt >>
+                        optBroken, overLimit, sOpen, sErased, nsCnt >>
 
 resolveOp == OPick \/ OLease \/ OWrite \/ ORel
 
 CGet == /\ pc[Canc] = "CGet"
         /\ Canceller
-        /\ IF Ended(PrimRun)
-              THEN /\ cret' = (IF Head(ends[PrimRun]) = "cancelled" THEN "cancelled" ELSE "over")
+        /\ IF EndedV(PrimRun)
+              THEN /\ cret' = (IF ~red[PrimRun] /\ Head(Rd(PrimRun)) = "cancelled" THEN "cancelled" ELSE "over")
                    /\ pc' = [pc EXCEPT ![Canc] = "Done"]
               ELSE /\ IF Api.sagaCancel = "request" /\ start[PrimRun] = NoStart
                          THEN /\ cret' = "notstarted"
@@ -1446,13 +1497,14 @@ CGet == /\ pc[Canc] = "CGet"
                                     THEN /\ pc' = [pc EXCEPT ![Canc] = "CReq"]
                                     ELSE /\ pc' = [pc EXCEPT ![Canc] = "CIns"]
                               /\ cret' = cret
-        /\ UNCHANGED << marker, result, ends, approved, start, lims, creq, 
+        /\ UNCHANGED << marker, result, ends, red, approved, start, lims, creq, 
                         lease, job, jr, holds, cc, outc, ret, reply, ctxDead, 
                         stalled, copt, eo, why, srun, sk, sseen, sround, sret, 
                         nsRep, listed, pri, cand, tk, fire, orun, ocall, ambig, 
                         crashes, stalls, fired, seenEnds, fireAfterCancel, 
                         resumedEnded, recErr, crashLost, orphan, age, rolled, 
-                        filterBroken, optBroken, overLimit, sOpen, nsCnt >>
+                        filterBroken, optBroken, overLimit, sOpen, sErased, 
+                        nsCnt >>
 
 CIns == /\ pc[Canc] = "CIns"
         /\ \/ /\ reply' = [reply EXCEPT ![Canc] = "ok"]
@@ -1475,25 +1527,25 @@ CIns == /\ pc[Canc] = "CIns"
                               /\ cret' = cret
                          ELSE /\ cret' = "cancelled"
                               /\ pc' = [pc EXCEPT ![Canc] = "Done"]
-        /\ UNCHANGED << marker, result, approved, start, lims, creq, lease, 
-                        job, jr, holds, cc, outc, ret, ctxDead, stalled, copt, 
-                        eo, why, srun, sk, sseen, sround, sret, nsRep, listed, 
-                        pri, cand, tk, fire, orun, ocall, crashes, stalls, 
-                        fired, seenEnds, fireAfterCancel, resumedEnded, recErr, 
-                        crashLost, orphan, age, rolled, filterBroken, 
-                        optBroken, overLimit, sOpen, nsCnt >>
+        /\ UNCHANGED << marker, result, red, approved, start, lims, creq, 
+                        lease, job, jr, holds, cc, outc, ret, ctxDead, stalled, 
+                        copt, eo, why, srun, sk, sseen, sround, sret, nsRep, 
+                        listed, pri, cand, tk, fire, orun, ocall, crashes, 
+                        stalls, fired, seenEnds, fireAfterCancel, resumedEnded, 
+                        recErr, crashLost, orphan, age, rolled, filterBroken, 
+                        optBroken, overLimit, sOpen, sErased, nsCnt >>
 
 CRead == /\ pc[Canc] = "CRead"
          /\ cret' = Head(ends[PrimRun])
          /\ pc' = [pc EXCEPT ![Canc] = "Done"]
-         /\ UNCHANGED << marker, result, ends, approved, start, lims, creq, 
-                         lease, job, jr, holds, cc, outc, ret, reply, ctxDead, 
-                         stalled, copt, eo, why, srun, sk, sseen, sround, sret, 
-                         nsRep, listed, pri, cand, tk, fire, orun, ocall, 
-                         ambig, crashes, stalls, fired, seenEnds, 
+         /\ UNCHANGED << marker, result, ends, red, approved, start, lims, 
+                         creq, lease, job, jr, holds, cc, outc, ret, reply, 
+                         ctxDead, stalled, copt, eo, why, srun, sk, sseen, 
+                         sround, sret, nsRep, listed, pri, cand, tk, fire, 
+                         orun, ocall, ambig, crashes, stalls, fired, seenEnds, 
                          fireAfterCancel, resumedEnded, recErr, crashLost, 
                          orphan, age, rolled, filterBroken, optBroken, 
-                         overLimit, sOpen, nsCnt >>
+                         overLimit, sOpen, sErased, nsCnt >>
 
 CReq == /\ pc[Canc] = "CReq"
         /\ \/ /\ reply' = [reply EXCEPT ![Canc] = "ok"]
@@ -1512,13 +1564,13 @@ CReq == /\ pc[Canc] = "CReq"
               THEN /\ cret' = "requested"
               ELSE /\ cret' = "error"
         /\ pc' = [pc EXCEPT ![Canc] = "Done"]
-        /\ UNCHANGED << marker, result, ends, approved, start, lims, lease, 
-                        job, jr, holds, cc, outc, ret, ctxDead, stalled, copt, 
-                        eo, why, srun, sk, sseen, sround, sret, nsRep, listed, 
-                        pri, cand, tk, fire, orun, ocall, crashes, stalls, 
-                        fired, seenEnds, fireAfterCancel, resumedEnded, recErr, 
-                        crashLost, orphan, age, rolled, filterBroken, 
-                        optBroken, overLimit, sOpen, nsCnt >>
+        /\ UNCHANGED << marker, result, ends, red, approved, start, lims, 
+                        lease, job, jr, holds, cc, outc, ret, ctxDead, stalled, 
+                        copt, eo, why, srun, sk, sseen, sround, sret, nsRep, 
+                        listed, pri, cand, tk, fire, orun, ocall, crashes, 
+                        stalls, fired, seenEnds, fireAfterCancel, resumedEnded, 
+                        recErr, crashLost, orphan, age, rolled, filterBroken, 
+                        optBroken, overLimit, sOpen, sErased, nsCnt >>
 
 cancelOp == CGet \/ CIns \/ CRead \/ CReq
 
@@ -1527,42 +1579,46 @@ SPick == /\ pc[St] = "SPick"
          /\ \E r \in Runs:
               srun' = r
          /\ pc' = [pc EXCEPT ![St] = "SStart"]
-         /\ UNCHANGED << marker, result, ends, approved, start, lims, creq, 
-                         lease, job, jr, holds, cc, outc, ret, reply, ctxDead, 
-                         stalled, copt, eo, why, sk, sseen, sround, sret, 
-                         nsRep, listed, pri, cand, tk, fire, orun, ocall, cret, 
-                         ambig, crashes, stalls, fired, seenEnds, 
+         /\ UNCHANGED << marker, result, ends, red, approved, start, lims, 
+                         creq, lease, job, jr, holds, cc, outc, ret, reply, 
+                         ctxDead, stalled, copt, eo, why, sk, sseen, sround, 
+                         sret, nsRep, listed, pri, cand, tk, fire, orun, ocall, 
+                         cret, ambig, crashes, stalls, fired, seenEnds, 
                          fireAfterCancel, resumedEnded, recErr, crashLost, 
                          orphan, age, rolled, filterBroken, optBroken, 
-                         overLimit, sOpen, nsCnt >>
+                         overLimit, sOpen, sErased, nsCnt >>
 
 SStart == /\ pc[St] = "SStart"
           /\ IF start[srun] = NoStart
                 THEN /\ sret' = "notstarted"
                      /\ pc' = [pc EXCEPT ![St] = "Done"]
-                     /\ sOpen' = sOpen
+                     /\ UNCHANGED << sOpen, sErased >>
                 ELSE /\ IF Api.status = "load"
-                           THEN /\ sOpen' = ~Ended(srun)
-                                /\ IF Ended(srun)
-                                      THEN /\ sret' = Head(ends[srun])
-                                      ELSE /\ sret' = "started"
+                           THEN /\ sOpen' = ~EndedV(srun)
+                                /\ sErased' = red[srun]
+                                /\ IF red[srun] /\ Bug # "RedactedKindFromName" /\ EndedV(srun)
+                                      THEN /\ sret' = "ended"
+                                      ELSE /\ IF EndedV(srun)
+                                                 THEN /\ sret' = Head(Rd(srun))
+                                                 ELSE /\ sret' = "started"
                                 /\ pc' = [pc EXCEPT ![St] = "Done"]
                            ELSE /\ pc' = [pc EXCEPT ![St] = "SGet"]
-                                /\ UNCHANGED << sret, sOpen >>
-          /\ UNCHANGED << marker, result, ends, approved, start, lims, creq, 
-                          lease, job, jr, holds, cc, outc, ret, reply, ctxDead, 
-                          stalled, copt, eo, why, srun, sk, sseen, sround, 
-                          nsRep, listed, pri, cand, tk, fire, orun, ocall, 
-                          cret, ambig, crashes, stalls, fired, seenEnds, 
+                                /\ UNCHANGED << sret, sOpen, sErased >>
+          /\ UNCHANGED << marker, result, ends, red, approved, start, lims, 
+                          creq, lease, job, jr, holds, cc, outc, ret, reply, 
+                          ctxDead, stalled, copt, eo, why, srun, sk, sseen, 
+                          sround, nsRep, listed, pri, cand, tk, fire, orun, 
+                          ocall, cret, ambig, crashes, stalls, fired, seenEnds, 
                           fireAfterCancel, resumedEnded, recErr, crashLost, 
                           orphan, age, rolled, filterBroken, optBroken, 
                           overLimit, nsCnt >>
 
 SGet == /\ pc[St] = "SGet"
         /\ IF sround = 1 /\ sk = 1
-              THEN /\ sOpen' = ~Ended(srun)
+              THEN /\ sOpen' = ~EndedV(srun)
               ELSE /\ TRUE
                    /\ sOpen' = sOpen
+        /\ sErased' = (sErased \/ red[srun])
         /\ IF sk < 3
               THEN /\ sseen' = Seen1
                    /\ sk' = sk + 1
@@ -1574,10 +1630,10 @@ SGet == /\ pc[St] = "SGet"
                               /\ sseen' = {}
                               /\ pc' = [pc EXCEPT ![St] = "SGet"]
                               /\ sret' = sret
-                         ELSE /\ sret' = StatusOf(Seen1)
+                         ELSE /\ sret' = (IF red[srun] /\ Bug # "RedactedKindFromName" /\ Seen1 # {} THEN "ended" ELSE StatusOf(Seen1))
                               /\ pc' = [pc EXCEPT ![St] = "Done"]
                               /\ UNCHANGED << sk, sseen, sround >>
-        /\ UNCHANGED << marker, result, ends, approved, start, lims, creq, 
+        /\ UNCHANGED << marker, result, ends, red, approved, start, lims, creq, 
                         lease, job, jr, holds, cc, outc, ret, reply, ctxDead, 
                         stalled, copt, eo, why, srun, nsRep, listed, pri, cand, 
                         tk, fire, orun, ocall, cret, ambig, crashes, stalls, 
@@ -1587,11 +1643,27 @@ SGet == /\ pc[St] = "SGet"
 
 statOp == SPick \/ SStart \/ SGet
 
+RedEnd == /\ pc[Red] = "RedEnd"
+          /\ Api.redact
+          /\ \E r \in {r \in Runs : ends[r] # <<>> /\ ~red[r] /\ (lease[r].o = NoOwner \/ lease[r].left = 0)}:
+               red' = [red EXCEPT ![r] = TRUE]
+          /\ pc' = [pc EXCEPT ![Red] = "Done"]
+          /\ UNCHANGED << marker, result, ends, approved, start, lims, creq, 
+                          lease, job, jr, holds, cc, outc, ret, reply, ctxDead, 
+                          stalled, copt, eo, why, srun, sk, sseen, sround, 
+                          sret, nsRep, listed, pri, cand, tk, fire, orun, 
+                          ocall, cret, ambig, crashes, stalls, fired, seenEnds, 
+                          fireAfterCancel, resumedEnded, recErr, crashLost, 
+                          orphan, age, rolled, filterBroken, optBroken, 
+                          overLimit, sOpen, sErased, nsCnt >>
+
+redactOp == RedEnd
+
 (* Allow infinite stuttering to prevent deadlock on termination. *)
 Terminating == /\ \A self \in ProcSet: pc[self] = "Done"
                /\ UNCHANGED vars
 
-Next == resolveOp \/ cancelOp \/ statOp
+Next == resolveOp \/ cancelOp \/ statOp \/ redactOp
            \/ (\E self \in Drivers: drv(self))
            \/ (\E self \in PassProcs: pass(self))
            \/ Terminating
@@ -1609,7 +1681,7 @@ VARIABLE spent   \* Timed: the processes that took their step in this tick
 
 \* The variables P14's extension added; no fault or tick changes them but a crash's.
 p14Vars == <<start, lims, creq, copt, eo, why, srun, sk, sseen, sround, sret, rolled,
-             filterBroken, optBroken, overLimit, sOpen>>
+             filterBroken, optBroken, overLimit, sOpen, sErased>>
 
 allVars == <<vars, spent>>
 TimedProcs == Drivers \cup PassProcs
@@ -1638,7 +1710,7 @@ Tick ==
   /\ fire' = [q \in PassProcs |-> fire[q] \/ tk[q] <= 1]
   /\ age' = [r \in Runs |-> IF Orphaned(r) /\ age[r] <= Bound THEN age[r] + 1 ELSE age[r]]
   /\ spent' = [p \in TimedProcs |-> FALSE]
-  /\ UNCHANGED <<marker, result, ends, approved, job, jr, holds, cc, outc, ret, reply, ctxDead,
+  /\ UNCHANGED <<marker, result, ends, red, approved, job, jr, holds, cc, outc, ret, reply, ctxDead,
                  stalled, listed, pri, cand, orun, ocall, cret, ambig, crashes, stalls, fired,
                  seenEnds, fireAfterCancel, resumedEnded, recErr, crashLost, orphan, pc,
                  p14Vars, nsRep, nsCnt>>
@@ -1665,7 +1737,7 @@ CrashOf(P, restart) ==
   /\ listed' = [q \in PassProcs |-> IF q \in P THEN {} ELSE listed[q]]
   /\ fire' = [q \in PassProcs |-> IF q \in P THEN TRUE ELSE fire[q]]
   /\ tk' = [q \in PassProcs |-> IF q \in P THEN Interval ELSE tk[q]]
-  /\ UNCHANGED <<marker, result, ends, approved, jr, cc, outc, ret, reply, pri, cand, orun, ocall,
+  /\ UNCHANGED <<marker, result, ends, red, approved, jr, cc, outc, ret, reply, pri, cand, orun, ocall,
                  cret, ambig, stalls, fired, seenEnds, fireAfterCancel, resumedEnded, recErr, age,
                  spent, p14Vars>>
   \* A restarted worker is a new process: it has reported no run yet.
@@ -1682,14 +1754,14 @@ Stall(p) ==
   /\ stalls < MaxStall /\ holds[p] # 0 /\ ~stalled[p] /\ pc[p] \notin {"Done", "DIdle"}
   /\ stalls' = stalls + 1
   /\ stalled' = [stalled EXCEPT ![p] = TRUE]
-  /\ UNCHANGED <<marker, result, ends, approved, lease, job, jr, holds, cc, outc, ret, reply,
+  /\ UNCHANGED <<marker, result, ends, red, approved, lease, job, jr, holds, cc, outc, ret, reply,
                  ctxDead, listed, pri, cand, tk, fire, orun, ocall, cret, ambig, crashes, fired,
                  seenEnds, fireAfterCancel, resumedEnded, recErr, crashLost, orphan, age, pc,
                  spent, p14Vars, nsRep, nsCnt>>
 Wake(p) ==
   /\ stalled[p]
   /\ stalled' = [stalled EXCEPT ![p] = FALSE]
-  /\ UNCHANGED <<marker, result, ends, approved, lease, job, jr, holds, cc, outc, ret, reply,
+  /\ UNCHANGED <<marker, result, ends, red, approved, lease, job, jr, holds, cc, outc, ret, reply,
                  ctxDead, listed, pri, cand, tk, fire, orun, ocall, cret, ambig, crashes, stalls,
                  fired, seenEnds, fireAfterCancel, resumedEnded, recErr, crashLost, orphan, age,
                  pc, spent, p14Vars, nsRep, nsCnt>>
@@ -1698,7 +1770,7 @@ Wake(p) ==
 LeaseNotice(p) ==
   /\ holds[p] # 0 /\ ~stalled[p] /\ ~ctxDead[p] /\ ~LiveFor(p)
   /\ ctxDead' = [ctxDead EXCEPT ![p] = TRUE]
-  /\ UNCHANGED <<marker, result, ends, approved, lease, job, jr, holds, cc, outc, ret, reply,
+  /\ UNCHANGED <<marker, result, ends, red, approved, lease, job, jr, holds, cc, outc, ret, reply,
                  stalled, listed, pri, cand, tk, fire, orun, ocall, cret, ambig, crashes, stalls,
                  fired, seenEnds, fireAfterCancel, resumedEnded, recErr, crashLost, orphan, age,
                  pc, spent, p14Vars, nsRep, nsCnt>>
@@ -1712,7 +1784,7 @@ ProcStep(p) ==
 FullInit == Init /\ spent = [p \in TimedProcs |-> FALSE]
 FullNext ==
   \/ \E p \in TimedProcs : ProcStep(p)
-  \/ (resolveOp \/ cancelOp \/ statOp) /\ UNCHANGED spent
+  \/ (resolveOp \/ cancelOp \/ statOp \/ redactOp) /\ UNCHANGED spent
   \/ Tick
   \/ Crash
   \/ \E p \in Drivers : Stall(p) \/ Wake(p) \/ LeaseNotice(p)
@@ -1792,7 +1864,10 @@ PickedUp == \A r \in Runs : orphan[r] ~> (~orphan[r] \/ Ended(r))
 \* marker. The first end marker never changes once written (A2, A4), so a terminal answer that
 \* matches it now matched it when it was given.
 StatusTruthful ==
-  /\ sret \in {"complete", "aborted", "cancelled"} => Ended(srun) /\ Head(ends[srun]) = sret
+  /\ sret \in {"complete", "aborted", "cancelled"} => Ended(srun) /\ ~sErased /\ Head(ends[srun]) = sret
+  \* An erased end marker is an end of unknown kind: how the run ended is not read from the tombstone's
+  \* name (it is outside the leaf hash, so a rename would flip it), and never reported as a kind.
+  /\ sret = "ended" => Ended(srun) /\ red[srun]
   /\ sret = "started" => sOpen
 
 \* D3: no effect fires for a call whose tool is outside the run's journaled filter, whichever
@@ -1827,6 +1902,12 @@ NotStartedOnce == \A w \in Workers, r \in Runs : nsCnt[w][r] <= 1
 \* a run for good because it once had no run:start.
 HaltedRun(r) == \E c \in Calls : Live(r, c) /\ ~\E d \in Drivers : jr[d] = r /\ pc[d] \notin {"DIdle", "Done"}
 StartedRunSettles == \A r \in Runs : start[r] # NoStart ~> (Ended(r) \/ HaltedRun(r))
+
+\* A redacted end marker is still the run's end: everything that reports a run's end (Status, Cancel)
+\* agrees with the journal, which keeps the marker's name and place, whether or not its content is
+\* gone. (StatusTruthful, VerdictAgreement and OneEnd state it for the readers; this one names the
+\* case: a redaction only ever lands on a run that is over.)
+RedactedIsEnded == \A r \in Runs : red[r] => Ended(r)
 
 \* Vacuity, expected violated: an effect fires.
 EffectNotReachable == \A r \in Runs, c \in Calls : fired[r][c] = 0

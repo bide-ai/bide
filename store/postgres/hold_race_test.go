@@ -37,7 +37,7 @@ func TestHold_PlacedWhileTheRedactionWaitsIsHonoured(t *testing.T) {
 	redacted, held := make(chan res, 1), make(chan time.Time, 1)
 	go func() {
 		var code string
-		if err := r.raw.QueryRowContext(ctx, `SELECT rrschema.bide_redact_v2($1, $2, $3, $4)`, run, "tool:x", tool, int64(ms)).Scan(&code); err != nil {
+		if err := r.raw.QueryRowContext(ctx, `SELECT rrschema.bide_redact_v3($1, $2, $3, $4)`, run, "tool:x", tool, int64(ms)).Scan(&code); err != nil {
 			code = err.Error()
 		}
 		redacted <- res{code, time.Now()}
@@ -96,7 +96,7 @@ func TestRedactFunction_RefusesAStaleSnapshot(t *testing.T) {
 		}
 		defer tx.Rollback()
 		var code string
-		if err := tx.QueryRowContext(ctx, `SELECT rrschema.bide_redact_v2($1, $2, $3, $4)`, run, name, cur, int64(ms)).Scan(&code); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT rrschema.bide_redact_v3($1, $2, $3, $4)`, run, name, cur, int64(ms)).Scan(&code); err != nil {
 			t.Fatal(err)
 		}
 		if err := tx.Commit(); err != nil {
@@ -123,26 +123,32 @@ func TestRedactFunction_RefusesAStaleSnapshot(t *testing.T) {
 	}
 }
 
-// The migration withdraws EXECUTE on the first version of the redaction function, which does not read
-// holds, from PUBLIC and from every role it was granted to: after it, the erasing role cannot call it,
-// and still can call the current one. The function is revoked, not replaced or dropped.
-func TestMigration_RevokesTheFirstRedactionFunction(t *testing.T) {
+// The migration withdraws EXECUTE on every older version of the redaction function (v1 reads no
+// holds; v2 refuses an end marker the current one erases) from PUBLIC and from every role it was
+// granted to: after it, the erasing role cannot call any of them, and still can call the current one.
+// The functions are revoked, not replaced or dropped; a name that is not an older version is left alone.
+func TestMigration_RevokesEveryOlderRedactionFunction(t *testing.T) {
 	r := newRedactRig(t)
 	ctx := context.Background()
 	const ms = 1_700_000_000_000
-	// A schema from the first version: v1 exists, owned by the schema's owner, executable by PUBLIC and
-	// explicitly by the erasing role, and it erases whatever it is asked to.
-	rv120Exec(t, r.admin,
-		`CREATE FUNCTION rrschema.bide_redact_v1(r text, n text, cur bytea, ms bigint) RETURNS text LANGUAGE sql AS $$ SELECT 'replaced' $$`,
-		`ALTER FUNCTION rrschema.bide_redact_v1(text, text, bytea, bigint) OWNER TO rr_owner`,
-		`GRANT EXECUTE ON FUNCTION rrschema.bide_redact_v1(text, text, bytea, bigint) TO PUBLIC, rr_redactor, rr_app`,
-	)
-	callV1 := func() error {
-		var code string
-		return r.raw.QueryRowContext(ctx, `SELECT rrschema.bide_redact_v1('x', 'y', '\\x00'::bytea, 1)`).Scan(&code)
+	// A schema from an earlier version: each old function exists, owned by the schema's owner,
+	// executable by PUBLIC and explicitly by the erasing role, and erases whatever it is asked to.
+	olds := []string{"bide_redact_v1", "bide_redact_v2"}
+	for _, f := range append(olds, "bide_redact_v10", "bide_redact_v02", "bide_redact_vx") {
+		rv120Exec(t, r.admin,
+			`CREATE FUNCTION rrschema.`+f+`(r text, n text, cur bytea, ms bigint) RETURNS text LANGUAGE sql AS $$ SELECT 'replaced' $$`,
+			`ALTER FUNCTION rrschema.`+f+`(text, text, bytea, bigint) OWNER TO rr_owner`,
+			`GRANT EXECUTE ON FUNCTION rrschema.`+f+`(text, text, bytea, bigint) TO PUBLIC, rr_redactor, rr_app`,
+		)
 	}
-	if err := callV1(); err != nil {
-		t.Fatalf("setup: the erasing role cannot call v1 before the migration: %v", err)
+	call := func(f string) error {
+		var code string
+		return r.raw.QueryRowContext(ctx, `SELECT rrschema.`+f+`('x', 'y', '\\x00'::bytea, 1)`).Scan(&code)
+	}
+	for _, f := range olds {
+		if err := call(f); err != nil {
+			t.Fatalf("setup: the erasing role cannot call %s before the migration: %v", f, err)
+		}
 	}
 	_, base := rv120Admin(t)
 	res, err := Migrate(ctx, rv120DSN(t, base, "rr_owner", ""), WithSchema("rrschema"))
@@ -152,24 +158,38 @@ func TestMigration_RevokesTheFirstRedactionFunction(t *testing.T) {
 	if containsPrefix(res.Created, "function") {
 		t.Fatalf("the migration created %v: it must only revoke", res.Created)
 	}
-	if err := callV1(); err == nil || sqlState(err) != "42501" {
-		t.Fatalf("the erasing role called v1 after the migration: %v (want permission denied)", err)
+	grantees := func(f string) (n int) {
+		t.Helper()
+		if err := r.admin.QueryRowContext(ctx, `SELECT count(*) FROM pg_proc p CROSS JOIN LATERAL aclexplode(p.proacl) a WHERE p.proname = $1 AND p.pronamespace = 'rrschema'::regnamespace AND a.grantee <> p.proowner`, f).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
 	}
-	var stillThere bool
-	if err := r.admin.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'rrschema' AND p.proname = 'bide_redact_v1')`).Scan(&stillThere); err != nil || !stillThere {
-		t.Fatalf("v1 was dropped or replaced (%v): the migration only revokes", err)
+	for _, f := range olds {
+		if err := call(f); err == nil || sqlState(err) != "42501" {
+			t.Fatalf("the erasing role called %s after the migration: %v (want permission denied)", f, err)
+		}
+		var stillThere bool
+		if err := r.admin.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'rrschema' AND p.proname = $1)`, f).Scan(&stillThere); err != nil || !stillThere {
+			t.Fatalf("%s was dropped or replaced (%v): the migration only revokes", f, err)
+		}
+		// Nobody but the owner holds EXECUTE on it any more.
+		if n := grantees(f); n != 0 {
+			t.Fatalf("%d role(s) besides the owner still hold a privilege on %s", n, f)
+		}
 	}
-	// Nobody but the owner holds EXECUTE on it any more.
-	var grantees int
-	if err := r.admin.QueryRowContext(ctx, `SELECT count(*) FROM pg_proc p CROSS JOIN LATERAL aclexplode(p.proacl) a WHERE p.proname = 'bide_redact_v1' AND p.pronamespace = 'rrschema'::regnamespace AND a.grantee <> p.proowner`).Scan(&grantees); err != nil || grantees != 0 {
-		t.Fatalf("%d role(s) besides the owner still hold a privilege on v1 (%v)", grantees, err)
+	// Names that are not an older version of this function (a later or malformed number) are not touched.
+	for _, f := range []string{"bide_redact_v10", "bide_redact_v02", "bide_redact_vx"} {
+		if n := grantees(f); n == 0 {
+			t.Errorf("%s lost its grants: only the older versions v1 and v2 are revoked", f)
+		}
 	}
 	// The current function still works for the erasing role.
 	run := uniqueID(t, "after-")
 	r.put(run, "run:complete", agent.StepValue, `"ok"`)
 	tool := r.put(run, "tool:x", agent.StepToolResult, `{"pii":1}`)
 	if got := r.call(run, "tool:x", tool, ms); got != "replaced" {
-		t.Errorf("v2 after the migration: code %q", got)
+		t.Errorf("the current function after the migration: code %q", got)
 	}
 	// A second migration is harmless.
 	if _, err := Migrate(ctx, rv120DSN(t, base, "rr_owner", ""), WithSchema("rrschema")); err != nil {

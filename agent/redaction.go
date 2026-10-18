@@ -165,7 +165,7 @@ var redactionClasses = []struct {
 	{"@llm/", classPayload, ""},
 	{"@retrieval/", classPayload, ""},
 	{runStartStep, classPayload, ""},
-	{"run:", classProtected, "a run state record (an end marker, cancellation, limits)"},
+	{"run:", classProtected, "a run state record (cancellation, limits); the end markers are erasable when named (RedactionProtected), and the Payloads preset never selects them"},
 	{"tool:", classPayload, ""},
 	{"attempt:", classProtected, "an attempt marker: the at-most-once evidence"},
 	{"approval-tally:", classProtected, "a record an approval count rests on"},
@@ -205,8 +205,8 @@ func classOf(name string) (class redactionClass, why string, explicit bool) {
 
 // RedactionProtected reports why a record named name, of kind kind, may never be redacted, or ""
 // if it may. The protected records are the ones a verifier or the engine reads the content or the
-// structure of: the journal header, the end markers (a tombstone has no kind, so a run whose end
-// marker was replaced would read as running), the other run: records except run:start, attempt
+// structure of: the journal header, the run: records except run:start and the end markers (an end
+// marker's tombstone keeps its name, which is how every reader finds the end), attempt
 // and not-started markers and saga failures (the at-most-once and rollback evidence), the saga
 // compensation and sub-run link records, the records an approval count and its revocation basis
 // rest on, and the audit and flow records. The payload records (run:start's input and principal,
@@ -221,10 +221,13 @@ func RedactionProtected(name string, kind StepKind) string {
 	case StepSagaFail:
 		return "a saga failure: the rollback evidence"
 	}
+	if slices.Contains(endOfRunMarkers, name) {
+		// An end marker's content (the final answer, the cancellation or failure text) is erasable when
+		// it is named: its tombstone keeps its place, and every reader finds the run's end by it, though
+		// not how the run ended (a tombstone's name is not attested; see endMarker).
+		return ""
+	}
 	if class, why, _ := classOf(name); class == classProtected {
-		if slices.Contains(endOfRunMarkers, name) {
-			return "an end marker: it says the run is over, and Status and Recover read it by kind and name"
-		}
 		return why
 	}
 	return ""

@@ -102,7 +102,7 @@ func follow(v *View, seqs []int64) {
 // ended reports whether a run in state has its end marker: nothing more is journaled for it.
 func ended(state string) bool {
 	switch agent.RunState(state) {
-	case agent.RunCompleted, agent.RunAborted, agent.RunCancelled:
+	case agent.RunCompleted, agent.RunAborted, agent.RunCancelled, agent.RunEnded:
 		return true
 	}
 	return false

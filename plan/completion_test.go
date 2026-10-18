@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/agent/agenttest"
@@ -633,5 +634,43 @@ func TestConform_CompletionComparedAsJSONValues(t *testing.T) {
 	}
 	if ok, diffs, err := flow.Conform(ctx, forged, "r"); err != nil || !ok {
 		t.Fatalf("Conform = %v, %q, %v; want the escaped and unescaped outputs to be one value", ok, diffs, err)
+	}
+}
+
+// A completion whose content was erased is not a divergence: the run ended, and there is no output left
+// to compare, so Conform neither reports "not completed by this flow" nor checks the terminal output.
+func TestConform_AnErasedCompletionIsNotADivergence(t *testing.T) {
+	ctx := context.Background()
+	mem := agent.NewMemStore()
+	j := agenttest.MustJournal(mem)
+	var fired int
+	flow := effectFlow(t, &fired, Idempotent())
+	_, _ = flow.Run(ctx, agenttest.MustJournal(noComplete{mem}), "r", 5)
+	if _, err := flow.Run(ctx, agenttest.MustJournal(noComplete{mem}), "r", 5); !errors.Is(err, errNoComplete) {
+		t.Fatalf("drive: %v", err)
+	}
+	if _, err := journaltest.Do(ctx, j, "r", "run:complete", func(context.Context) (agent.Record, error) {
+		return agent.Record{Kind: agent.StepValue, Result: json.RawMessage(`{"flow":"charge-flow","output":"charged 6"}`)}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, _ := flow.Conform(ctx, j, "r"); ok {
+		t.Fatal("setup: the wrong completion conforms")
+	}
+	redactName(t, j, "r", "run:complete")
+	if ok, diffs, err := flow.Conform(ctx, j, "r"); err != nil || !ok {
+		t.Fatalf("Conform of a run whose completion was erased = %v, %q, %v; want it to conform", ok, diffs, err)
+	}
+}
+
+func redactName(t *testing.T, j *agent.Journal, run, name string) {
+	t.Helper()
+	ctx := context.Background()
+	plan, err := agent.PlanRedaction(ctx, j, run, agent.RedactionSelector{Names: []string{name}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.Redact(ctx, j, plan, time.Now()); err != nil {
+		t.Fatalf("Redact: %v", err)
 	}
 }

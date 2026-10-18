@@ -595,7 +595,7 @@ erases and an "end" record after; if it stops partway, run the same plan again.
   -name value
     	erase the record with this key; repeat
   -payloads
-    	erase every record whose content is payload: the input and principal, model turns, tool results, user steps, signals, approval requests (never a protected record, never an approval decision unless -include-approvals)
+    	erase every record whose content is payload: the input and principal, model turns, tool results, user steps, signals, approval requests (never an end marker, which is erased only by naming it; never a protected record, never an approval decision unless -include-approvals)
   -plan-digest string
     	with -execute: the plan digest a dry run printed; the erasure runs only if the plan is still exactly that
   -postgres-env string
@@ -607,7 +607,7 @@ erases and an "end" record after; if it stops partway, run the same plan again.
   -reason string
     	with -execute: why (recorded in the trail)
   -redact-postgres-env string
-    	the environment variable that holds the DSN of the role that may erase (EXECUTE on bide_redact_v2 and no table privilege); default: the -postgres-env role
+    	the environment variable that holds the DSN of the role that may erase (EXECUTE on bide_redact_v3 and no table privilege); default: the -postgres-env role
   -run string
     	the run to erase from
   -schema string

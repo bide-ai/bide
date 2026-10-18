@@ -472,7 +472,7 @@ func runStarted(recs []agent.Record) time.Time {
 // earlier version's records the reason alone).
 func abortedAt(recs []agent.Record) time.Time {
 	for _, r := range recs {
-		if r.Name == "run:aborted" {
+		if r.Name == "run:aborted" && !r.Redacted {
 			var v struct {
 				At string `json:"aborted_at"`
 			}

@@ -1441,12 +1441,12 @@ and their resumers (`ResumeTyped`), and image input.
 
 ### Model-code map
 
-<!-- modelsync: no-code lifecycle Stall Wake Crash -->
+<!-- modelsync: no-code lifecycle Stall Wake Crash RedEnd -->
 <!-- modelsync: map lifecycle -->
 | Label | Go |
 |---|---|
 | `DIdle` | `Lease` (`AcquireLease` under `<holder>#<token>`, `leaseToken`); for the primary, the caller's `Lease` around `Agent.Run`, or a plain `Agent.Run` |
-| `DCheck` | `recoverRun`'s `runEnded` under the lease: `Store.Get` of each name in `endOfRunMarkers`; P14's dispatch: `startUnderLease` (one `Get` of `run:start`, decoded in one pass, `decodeStartEntry`), a run with none skipped and reported once per process (`ErrNotStarted` through `WithRecoverErrors`; the process remembers its 65,536 most recent reports, an LRU the model does not bound) |
+| `DCheck` | `recoverRun`'s `runEnded` under the lease: `Store.Get` of each name in `endOfRunMarkers`; P14's dispatch: `startUnderLease` (one `Get` of `run:start`, decoded in one pass, `decodeStartEntry`), a run with none skipped and reported once per process (`ErrNotStarted` through `WithRecoverErrors`; the process remembers its 65,536 most recent reports, an LRU the model does not bound); a run holding a redacted record is refused, whatever it holds: `Journal.open`'s refusal, which `Recover` reports as the run's error) |
 | `DResume` | `recoverRun` calling `resume(ctx, runID)` |
 | `DOpen` | `Agent.runLoop`: `Journal.open`, `firstEnd` (the first end marker in the `Load` is the run's end: `completedAnswer` for a completed run, to a drive with the input it answered (`checkFinishedStart`, #137), `endedErr` for a cancelled one), `openPlan` (`run:start`'s options and the limit amendments from the same `Load`, `holdDrive`'s `ErrConfig` comparison), the resume gate (`toolHalt`, `HaltCrashed`), a saga's rollback request in the `Load` (`cancelTrip`), the approval pre-pass (`ApprovalPending`) |
 | `DStart` | `openPlan`: the first drive's `run:start` insert (`newStart`, the caller's options; `Journal.put`, first writer wins); `openPlan` reports the write and `Agent.runLoop`'s open loads the run again (`goto DOpen`, #138 review) |
@@ -1467,6 +1467,7 @@ and their resumers (`ResumeTyped`), and image input.
 | `Tick` | wall-clock time: `driveWithRenew`'s renewal, lease expiry, `RecoverLoop`'s `time.Ticker` |
 | `Stall`, `Wake`, `LeaseNotice` | a process pause; `renewLoop` returning `ErrLeaseLost` and cancelling the drive |
 | `Crash` | a process dies (a worker restarts) |
+| `RedEnd` | an operator erases a finished run's end marker (`bide journal redact`, `agent.Redact`; no code in the run's own path): the row keeps its name and place, and the readers of an end marker read it by name (`firstEnd`) |
 
 `Leaser.ReapLeases`, which each lapsed pass of `RecoverLoop` calls first, is not modeled: it deletes the
 lapsed leases of ended runs, of runs with no entry and of session and sub-agent runs (an ID with a
@@ -1551,7 +1552,7 @@ The model states P14's rules (`docs/design/api-v1.md`, item 1: D1 `Cancel`, D3 t
 filter, D8 `Status`, the journaling rule, recovery dispatch) as the drive, `Cancel`, `Status` and
 recovery steps above, under `Api = ApiP14` (`LifecycleMC.tla`). The passing configurations
 (`life-cancel`, `life-cancel-plain`, `life-cancel-saga`, `life-status`, `life-status-load`,
-`life-filter`, `life-limits`, `life-not-started`, and the nightly `deep-cancel-plain`,
+`life-filter`, `life-limits`, `life-not-started`, `life-redact`, and the nightly `deep-cancel-plain`,
 `deep-cancel-saga`, `deep-options`, `deep-filter`) check every property under them; each rule
 has a regression or finding that fails without it. P14 implements these rules; a change to one
 changes the model first.
@@ -1665,6 +1666,22 @@ in `regress/`, as L2 and L3 are: each keeps failing under the rule it replaced.
   skip rather than the report, a run found unstarted (a worker took its lease before the
   primary's first drive) is skipped for good once the primary starts it and dies (a liveness
   trace). Adopted rule: rule 15.
+- **L8: an erased end marker is still an end** (`regress/redacted-not-end`, `StatusTruthful`).
+  Erasing a finished run's `run:complete` or `run:cancelled` replaces it with a tombstone. A
+  reader that decides whether a run ended by decoding the marker finds nothing to decode and
+  reports a finished run started, or open for resumption. Adopted rule: a tombstone at an
+  end-marker name counts as an end, decided by the row's name and never by content
+  (`life-redact`), and a drive of a run holding a redacted record is refused
+  (`Journal.open`). `RedEnd` is the erasure itself: the operator's tool, outside the code the
+  model marks.
+- **L9: an erased end marker is an end of unknown kind** (`regress/redacted-kind-from-name`,
+  `StatusTruthful`). A tombstone's name, in the row and inside it, is outside the leaf hash, so
+  someone with write access can rename one with no key and every root and signed head still
+  verifies. A reader that took the kind of the end from that name would report a completed run as
+  cancelled, or an aborted saga as completed. Adopted rule: a redacted end marker is an end whose
+  kind is not read (`agent.RunEnded`, `RunStatus.EndRedacted`; Cancel reports `ErrRunEnded`,
+  never the nil of an already cancelled run); only the signed redaction trail, which records the
+  name at the position, says what the marker was (`bide audit redactions`, `NAME_MISMATCH`).
 
 ### Configurations
 
@@ -1691,6 +1708,7 @@ pull-request job (about 55 before P14's extension; measured on the CI runner).
 | `live-pickup` | ci | PickedUp under v0.9.0's rule: a halted run listed before a leased primary's run, the primary dies; every step and the clock weakly fair. | 7,775 | 3 s |
 | `life-cancel-saga` | ci | Cancel (P14) on a saga of two calls under the adopted rule (L4): a rollback request, answered by the drive's rollback and run:cancelled. A leased primary, a worker, a crash. | 99,008 | 3 s |
 | `life-status` | ci | Status (D8) by Gets with the re-read (L6): a saga of one call, a plain Run, Cancel racing completion and the rollback. | 1,113 | <1 s |
+| `life-redact` | ci | A finished run's end marker is erased (redacted): the run is still ended, a drive refuses it, and Status says it ended without a kind (`ended`; the kind is not read from the tombstone's name); one plain run, Cancel racing, a worker. | 3,118 | <1 s |
 | `life-status-load` | ci | Status (D8) by one Load, the same scenario. | 450 | <1 s |
 | `life-filter` | ci | The tool filter (D3), journaled and enforced at dispatch (L5): the primary filters call 2's tool out, a worker recovers the run passing no filter; a crash. | 6,634 | 1 s |
 | `life-limits` | ci | The journaling rule (B1): a primary with a one-turn limit; a later Resume raises it (an amendment), or passes another prompt or filter (ErrConfig); a worker; a crash. | 89,248 | 3 s |
@@ -1735,6 +1753,8 @@ options. L4 to L7 were findings against P14's design as first written; their rul
 | `regress/cancel-saga-marker` | regress | L4: D1 as written, Cancel writes run:cancelled on a saga too; recovery excludes the run, so a saga cancelled while no drive will reach a check (or completed after the marker) is never rolled back (Api.sagaCancel "marker"). | `CancelRollsBack` | 13 states |
 | `regress/filter-request-only` | regress | L5: the tool filter only narrows Request.Tools; a turn naming a filtered-out tool is dispatched and fires (Api.filter "request"). | `FilterHonoured` | 11 states |
 | `regress/status-gets` | regress | L6: Status by one Get per end marker reads run:complete before the run completes and run:cancelled after Cancel lands, and reports a completed run cancelled (Api.status "gets"). | `StatusTruthful` | 17 states |
+| `regress/redacted-kind-from-name` | regress | L9: a reader that takes the kind of an erased end marker from the tombstone's name, which is outside the leaf hash, reports a redacted run as completed, aborted or cancelled by a name a rename can change (Bug "RedactedKindFromName"). | `StatusTruthful` | 1,745 states |
+| `regress/redacted-not-end` | regress | L8: a reader that decides a run has ended by reading the end marker's content sees an erased marker as no marker, and Status reports a completed, then redacted, run as started (Bug "RedactedNotEnd"). | `StatusTruthful` | 866 states |
 | `regress/not-started-remembered` | regress | L7: recovery remembers a run it found with no run:start and skips it for good; the primary starts the run after that pass and dies (Api.notStarted "remember"). | `StartedRunSettles` (liveness) | a lasso |
 | `limits/stall-resume-finished` | limit | #114's documented residual: a worker stalls past its TTL between the re-check and resume; the primary takes the lapsed lease and finishes the run; the worker wakes and resumes it. | `NoResumeOfFinished` | 18 states |
 | `limits/plain-run-resume-finished` | limit | #114's other residual: a plain Run holds no lease, so it can finish the run between a worker's re-check and resume. | `NoResumeOfFinished` | 15 states |
