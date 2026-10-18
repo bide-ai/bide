@@ -54,8 +54,8 @@ const Exits = `0  success
 3  the journal, the policy or the key could not be read or opened; nothing was written
 5  half done: an audited record landed in the control run or on the stop trail but not both. The
    message says which; "bide stop -reaudit" (a stop in force, trail missing) or "bide stop
-   -apply-pending" (a lift on the trail, not in force) completes it. Do not repeat the command: a
-   repeated stop is a second stop`
+   -apply-pending" (a lift on the trail, not in force) completes it. Repeating a stop only reports
+   it in force (nothing is written), so it repairs nothing`
 
 // Opened is a journal store opened for bide stop: the store the runs use and, beside it, the event store the
 // stop trail lives in.

@@ -3115,7 +3115,8 @@ nothing in the model starts it again.
   `SyncRead` any earlier prefix; `ReadFail`: held under `FailClosed`, else it proceeds), then
   `Begin`, which can follow a stop committed after the read (the call is in flight and finishes),
   then `Finish`. A crash with a marker and no result halts the call (`Crash`).
-- **Modelling limits**: at most one write crashes between its two steps (`MaxWriteCrash = 1`) and a record is inserted into the control log once. More crashes would grow the trail without adding a kind of state (the crashed records are the same ones), so the bound keeps the state space finite; a second crash is covered by the Go tests (`TestStopTrail_WriteOrderAndFailure`, `TestVerifyStops_UnappliedRecordsAreNotForgeries`, `TestVerifyStops_SupersededRecords`), not by the model. The once-only insert matches the code because control-run names are content-derived. A set record's name is its StopID, which excludes the signature, so two sets with the same content and different signatures would share a name; that cannot arise, because a retried `SetStop` is a new record (its `At` differs, so its StopID differs).
+- **Generations** (`SetInsertable`, `GenRule`). A set is named by its stop key (`ScopeOf`: the scope and the compensation) and a generation. A writer reads the control run up to some point (any prefix: it may be stale); if a stop is in force for the key in what it read it reports "already stopped" and writes nothing; otherwise it names the record by the key and one more than the greatest generation it saw, and the insert fails if that name is taken (a writer that read the same state chose the same generation, so exactly one succeeds, and the loser reads again and finds the winner's stop in force). `OneActivePerScope`: two stops of one key are never in force together. Without the rule (`GenRule = FALSE`, a set named by its own content) two concurrent writers both land (`regress/no-generation`). A forged record may take a name; it never blocks a writer (the next generation is one more than the greatest name present) and an unsigned set in an audited process is ignored by the fold. The fold is unchanged: records written before generations are read as before.
+- **Modelling limits**: at most one write crashes between its two steps (`MaxWriteCrash = 1`) and a record is inserted into the control log once. More crashes would grow the trail without adding a kind of state (the crashed records are the same ones), so the bound keeps the state space finite; a second crash is covered by the Go tests (`TestStopTrail_WriteOrderAndFailure`, `TestVerifyStops_UnappliedRecordsAreNotForgeries`, `TestVerifyStops_SupersededRecords`), not by the model. A lift's, transition's and mode record's name is content-derived, so a record of those kinds is inserted once; a set's name is its scope key and generation (below), and its insert is once-only too.
 - **Not modelled**: forks, rollbacks and competing roots of the policy chain (Go tests; each makes the stops unknowable), the "stops unknowable" signal for records that do not verify (a Go test), scope matching (a pure function, unit-tested), the reader's staleness bound in
   time (the model is the case of a maximum staleness of 0; the bound is an engineering figure of the
   Go code, and a bounded cache is covered by the Go tests when the switch lands), a split of the
@@ -3135,6 +3136,7 @@ nothing in the model starts it again.
 | `TrailAgreesWithLog` | invariant | once every write has finished and the trail holds exactly the log's signed records, the trail's fold equals the log's |
 | `ForeignNoEffect` | invariant | a record for another deployment changes nothing in an audited process |
 | `BasicSignedStopNeedsSignedLift` | invariant | a basic process does not lift a stop set under a signed record on a plain lift |
+| `OneActivePerScope` | invariant | two stops of one key (scope and compensation) are never in force together: a concurrent duplicate is refused at the once-only insert |
 | `StopsNeverDropped` | property | a stop never goes back: none, active, lifted |
 | `OnlyBeginFires` | property | only a call's `Begin` starts the effect: a stop, a lift, a transition or a mode record never does |
 
@@ -3145,7 +3147,7 @@ nothing in the model starts it again.
 | Model action | Go code |
 |---|---|
 | `ApplyC`, `EffC` | `StopControl.State` (`agent/stop_control.go`): the fold, with `countLifts` (`Relift`) |
-| `Write`, `StartWrite`, `FinishWrite` | `StopControl.write` (`agent/stop_control.go`): a record is written to the control run, and with a trail in two steps in the order the model has (a stop to the control run first; every other record to the trail first) |
+| `Write`, `StartWrite`, `FinishWrite` | `StopControl.write` (`agent/stop_control.go`): a record is written to the control run, and with a trail in two steps in the order the model has (a stop to the control run first; every other record to the trail first); a set's insert is once-only under its scope key and generation (`SetInsertable`; `SetStop` reads, finds the stop in force or the next generation, and on a lost insert reads again) |
 | `Reaudit` | `StopControl.Reaudit` (`agent/stop_trail.go`): the records the control run holds that the trail lacks are appended |
 | `WriteCrash`, `Forge` | no Go region (a crash between the two writes, and a write straight into the control run by someone with store access) |
 | `Claim` | the claim of a call's attempt marker (`agent/loop.go`, `claimNextAttempt`): the stop check follows it |
@@ -3169,6 +3171,8 @@ nothing in the model starts it again.
 | `stop-trail-agree-reach` | ci | reachability: a quiescent trail of more than one record that agrees with the log (`QuiescentAgreeNotReachable` violated) |
 | `stop-trail-reach` | ci | reachability: a stop in force whose trail write has not happened (`UntrailedStopNotReachable` violated) |
 | `stop-two-stops` | ci | two stops and two calls: each stop holds only its own call |
+| `stop-same-scope` | ci | two stops of one key (scope and compensation), one call: a concurrent duplicate is refused at the insert, so at most one is in force (545,043 states, 13 s) |
+| `stop-same-scope-reach` | ci | reachability: a second stop of the key after the first is lifted (`SecondSetNotReachable` violated) |
 | `stop-blocked-reach` | ci | reachability: a call reads a stop and is not started (`BlockedNotReachable` violated) |
 | `stop-lift-reach` | ci | reachability: an audited lift by a quorum of two (`AuditedLiftNotReachable` violated) |
 | `stop-rotated-reach` | ci | reachability: policy 2 in force with a policy-1 stop active (`RotatedNotReachable` violated) |
@@ -3202,4 +3206,5 @@ Each is in `stop/regress/` and must fail with its named property:
 - `lift-store-first` (`EffectiveImpliesTrailed`): a lift written to the control log before the trail is in force without its evidence (asked for in the review of the stop trail's PR).
 - `no-dep-check` (`ForeignNoEffect`): the fold ignores the deployment ID, so staging's records take effect in production (found in the review of #393).
 - `basic-plain-lift` (`BasicSignedStopNeedsSignedLift`): a basic process on an audited deployment lifts a signed stop on a plain lift (found in the review of #393).
+- `no-generation` (`OneActivePerScope`): a set named by its own content, not by its key and a generation: two operators who stop the same scope at once both land, and the scope is in force twice (asked for after the review of the stop command).
 - `lift-refires` (`AtMostOnce`): a lift starts a halted call again, and it fires twice.

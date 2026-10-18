@@ -12,7 +12,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -856,5 +858,41 @@ func TestStop_OtherCommandsIgnoreTheControlRun(t *testing.T) {
 		if strings.Contains(a.out+a.err, agent.StopControlRun) {
 			t.Errorf("%v names the control run:\n%s", cmds[i], a.out)
 		}
+	}
+}
+
+// Several commands that stop the same scope at the same instant leave one stop in force, from the command
+// line, on a real SQLite journal: the losers report the stop in force and write nothing.
+func TestStop_ConcurrentIdenticalStopsLeaveOne(t *testing.T) {
+	e := newStopEnv(t, 0)
+	const n = 8
+	var wg sync.WaitGroup
+	codes := make([]int, n)
+	outs := make([]string, n)
+	errs := make([]string, n)
+	start := make(chan struct{})
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			codes[i], outs[i], errs[i] = e.stop("", "-tool", "pay", "-reason", "incident", "-as", "op"+strconv.Itoa(i))
+		}()
+	}
+	close(start)
+	wg.Wait()
+	inForce := 0
+	for i := range n {
+		switch {
+		case codes[i] == 0 && strings.Contains(outs[i], "in force"):
+			inForce++
+		case codes[i] == 0 && strings.Contains(outs[i], "already stopped"):
+		default:
+			t.Fatalf("command %d: exit %d\n%s\n%s", i, codes[i], outs[i], errs[i])
+		}
+	}
+	st := e.state(false)
+	if inForce != 1 || len(st.Active()) != 1 || e.recordCount() != 1 {
+		t.Fatalf("%d commands reported the stop in force, %d stops active, %d records", inForce, len(st.Active()), e.recordCount())
 	}
 }

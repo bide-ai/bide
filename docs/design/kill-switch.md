@@ -544,8 +544,7 @@ is `-db` or `-postgres-env` only (no literal DSN on the command line); a stop is
 prompt when stdin is not a terminal, and a lift, `-apply-pending`, `-upgrade` and `-downgrade` are
 refused without a terminal unless `-yes` (the lift is the dangerous direction); a repeated stop of the
 same scope writes nothing; `-reaudit` and `-apply-pending` complete the half-landed writes (a repeated
-stop would be a second stop, because the record's time is part of its identity, so "repeat the command"
-is not the repair); exit statuses are 0, 1, 2, 3 and 5 (half done). `bide stop` appends leaves to the
+stop finds the stop in force and writes nothing, so it does not repair the trail either); exit statuses are 0, 1, 2, 3 and 5 (half done). `bide stop` appends leaves to the
 trail only: signed heads come from `bide audit stops -sign-head -log-key -head-out` (`bide-hsm audit stops` for a log key
 in an HSM or a KMS), a separate job that verifies the trail against the control run, signs exactly the
 verified records and appends the head to a file `-sth` reads.
