@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // stateVersion is the "version" of the state file.
@@ -38,7 +39,11 @@ type stateStore struct {
 	beforeRename func() error
 	afterRename  func() // test hook: runs after the rename, before the directory sync
 	syncDir      func(dir string) error
-	saves        int
+	// renameFile, retryable and sleep stand in for os.Rename, retryableRename and time.Sleep in tests.
+	renameFile func(from, to string) error
+	retryable  func(error) bool
+	sleep      func(time.Duration)
+	saves      int
 }
 
 // saveCount is how many state files this store has written.
@@ -139,7 +144,7 @@ func (s *stateStore) save(d *dedupe, c *idSet) error {
 		werr = s.beforeRename()
 	}
 	if werr == nil {
-		werr = os.Rename(tmp, s.path)
+		werr = s.rename(tmp, s.path)
 	}
 	if werr != nil {
 		os.Remove(tmp)
@@ -157,6 +162,22 @@ func (s *stateStore) save(d *dedupe, c *idSet) error {
 	}
 	s.saves++
 	return nil
+}
+
+// rename replaces the state file with tmp, retrying briefly when the operating system refuses because another
+// process has the file open (Windows; see retryableRename).
+func (s *stateStore) rename(tmp, path string) error {
+	rename, retryable, sleep := s.renameFile, s.retryable, s.sleep
+	if rename == nil {
+		rename = os.Rename
+	}
+	if retryable == nil {
+		retryable = retryableRename
+	}
+	if sleep == nil {
+		sleep = time.Sleep
+	}
+	return renameWithRetry(rename, retryable, sleep, tmp, path)
 }
 
 func unwrapPath(err error) error {

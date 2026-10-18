@@ -1099,15 +1099,26 @@ func sendEvents(t *testing.T, rg *rig, n int, prefix string) {
 
 func seenInFile(t *testing.T, path string) int {
 	t.Helper()
-	b, err := os.ReadFile(path)
+	n, err := readSeen(t, path)
 	if err != nil {
 		t.Fatal(err)
+	}
+	return n
+}
+
+// readSeen is seenInFile that returns the open or read error: on Windows a reader that opens the state file
+// while the relay's rename replaces it gets a sharing violation, which a poller treats as "not yet".
+func readSeen(t *testing.T, path string) (int, error) {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
 	}
 	var st stateFile
 	if err := json.Unmarshal(b, &st); err != nil {
 		t.Fatal(err)
 	}
-	return len(st.Seen)
+	return len(st.Seen), nil
 }
 
 func TestStateWritesAreCoalescedAndFlushedWithinTheDelay(t *testing.T) {
@@ -1118,7 +1129,10 @@ func TestStateWritesAreCoalescedAndFlushedWithinTheDelay(t *testing.T) {
 	if n := h.state.saveCount() - base; n > 10 {
 		t.Fatalf("%d writes for 40 events inside one window; writes are not coalesced", n)
 	}
-	waitFor2(t, "the flush", func() bool { return seenInFile(t, path) == 40 })
+	waitFor2(t, "the flush", func() bool {
+		n, err := readSeen(t, path)
+		return err == nil && n == 40 // an open error is the rename in progress: not yet
+	})
 	h.Close()
 }
 

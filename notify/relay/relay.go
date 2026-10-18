@@ -110,12 +110,14 @@ type Handler struct {
 	cleared *idSet
 	state   *stateStore
 	// pmu guards the pending state write.
-	pmu    sync.Mutex
-	dirty  bool
-	timer  *time.Timer
-	closed bool
-	delay  time.Duration
-	clears func(notify.Payload) string
+	pmu   sync.Mutex
+	dirty bool
+	// retryDelay, if set, replaces stateRetryDelay; tests shorten it.
+	retryDelay time.Duration
+	timer      *time.Timer
+	closed     bool
+	delay      time.Duration
+	clears     func(notify.Payload) string
 }
 
 // New returns a Handler, or an error for a configuration that cannot work.
@@ -347,9 +349,25 @@ func (h *Handler) flush() {
 	h.saveLocked()
 }
 
+// stateRetryDelay is the least wait before a failed save is tried again.
+const stateRetryDelay = time.Second
+
+// saveLocked saves the state, with h.pmu held. A save that fails is logged, and the state stays dirty with a
+// retry scheduled, so it is written when the file can be written again (a Close writes it too), not only when
+// the next event changes it.
 func (h *Handler) saveLocked() {
-	if err := h.state.save(h.seen, h.cleared); err != nil {
-		h.log("relay: %v (the memory of forwarded and cleared events is in the process only until this works)", err)
+	err := h.state.save(h.seen, h.cleared)
+	if err == nil {
+		return
+	}
+	h.log("relay: %v (the memory of forwarded and cleared events is in the process only until this works)", err)
+	h.dirty = true
+	if h.timer == nil && !h.closed {
+		floor := h.retryDelay
+		if floor <= 0 {
+			floor = stateRetryDelay
+		}
+		h.timer = time.AfterFunc(max(h.delay, floor), h.flush)
 	}
 }
 
