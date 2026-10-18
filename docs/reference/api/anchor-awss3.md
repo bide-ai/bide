@@ -32,6 +32,7 @@ Package awss3 is an audit.Anchor that writes every signed tree head as an object
 
 **Functions**
 
+- `func Layout() anchorobj.Layout`: Layout is this backend's naming and encoding of anchored heads: its object format and partition tag.
 - `func LoadDir(dir string, v audit.Verifier) ([]audit.SignedTreeHead, error)`: LoadDir reads a downloaded set of anchored objects (for example the output of "aws s3 sync" of the anchor prefix) and verifies each against v.
 - `func PolicyFor(template string, p PolicyParams) string`: PolicyFor fills a policy template in.
 

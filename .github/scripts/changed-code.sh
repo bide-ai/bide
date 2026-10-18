@@ -94,7 +94,7 @@ if [ -n "$codeish" ]; then
   other=$(printf '%s\n%s\n' "$other" "$codeish" | grep -v '^$' | LC_ALL=C sort -u)
 fi
 # Documents that Go tests compare with the code count as code: the command reference tests
-# (cmd/bide, cmd/bide/bide-hsm, anchor/awss3/cmd/bide-anchor reference_test.go) fail when docs/reference/cli.md, bide-hsm.md or bide-anchor.md
+# (cmd/bide, cmd/bide/bide-hsm, cmd/bide-anchor reference_test.go) fail when docs/reference/cli.md, bide-hsm.md or bide-anchor.md
 # differs from the commands' help, TestAPIReference (internal/tools/apiref) fails when
 # docs/reference/api/ or the package table in docs/trust/stability.md differs from the sources, and
 # doccheck and TestRepoReleaseNotes read docs/releases/.

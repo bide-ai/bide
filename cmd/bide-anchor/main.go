@@ -1,7 +1,8 @@
-// Command bide-anchor verifies and exports the signed tree heads that the awss3 anchor wrote to an S3
-// bucket under Object Lock.
+// Command bide-anchor verifies and exports the signed tree heads that an object-store anchor wrote to a
+// bucket under Object Lock (-backend s3: the awss3 anchor; the Google Cloud Storage backend is added with
+// its package).
 //
-//	bide-anchor verify -dir ./downloaded -pubkey ed25519:<hex> [-run ID] [-kind journal]
+//	bide-anchor verify [-backend s3] -dir ./downloaded -pubkey ed25519:<hex> [-run ID] [-kind journal]
 //	bide-anchor export -pubkey K -run ID (-dir ./downloaded | -bucket B -owner ACCOUNT) [-o heads.jsonl]
 //	bide-anchor check  -pubkey K -run ID -bucket B -owner ACCOUNT
 //
@@ -19,7 +20,9 @@
 // Credentials and the region come from the AWS SDK's default chain, never from flags. A server other
 // than AWS (a test MinIO) is selected with AWS_ENDPOINT_URL_S3 and -path-style.
 //
-// Exit status: 0 verified, 1 an object or head did not verify or check found something, 2 usage or I/O.
+// Exit status: 0 verified, 1 an object or head did not verify or check found something, 2 usage or I/O (including an unreadable -dir),
+// 3 the bucket's state is unknown (an online read was unavailable, denied or timed out: retry, and
+// alert if it persists). An aborted audit is never 0, and it is not a finding.
 package main
 
 import (
@@ -57,15 +60,18 @@ func defaultClient(ctx context.Context, pathStyle bool) (awss3.Client, error) {
 }
 
 const usage = `usage:
-  bide-anchor verify -dir DIR -pubkey KEY [-run ID] [-kind journal|events]
-  bide-anchor export -pubkey KEY -run ID [-kind journal|events] (-dir DIR | -bucket B -owner ACCOUNT [-prefix P] [-path-style]) [-o FILE]
-  bide-anchor check  -pubkey KEY -run ID [-kind journal|events] -bucket B -owner ACCOUNT [-prefix P] [-path-style]
+  bide-anchor verify [-backend B] -dir DIR -pubkey KEY [-run ID] [-kind journal|events]
+  bide-anchor export [-backend B] -pubkey KEY -run ID [-kind journal|events] (-dir DIR | -bucket B -owner ACCOUNT [-prefix P] [-path-style]) [-o FILE]
+  bide-anchor check  [-backend B] -pubkey KEY -run ID [-kind journal|events] -bucket B -owner ACCOUNT [-prefix P] [-path-style]
 KEY is the log operator's public key (ed25519:<hex>, or a file holding it).`
 
 const (
 	exitOK       = 0
 	exitFindings = 1
-	exitUsage    = 2
+	// exitUnknown: an online read was refused, failed or could not finish (unavailable, denied, timed out),
+	// so the bucket's state is unknown. It is never 0 and never 1: retry, and alert if it persists.
+	exitUnknown = 3
+	exitUsage   = 2
 )
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk clientFunc) int {
@@ -78,11 +84,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 	fs.SetOutput(stderr)
 	var (
 		dir, run, bucket, ownerID, prefix, out string
-		pubkey                                 string
+		pubkey, backendName                    string
 		kind                                   = audit.TreeJournal
 		pathStyle, force                       bool
+		timeout                                = 5 * time.Minute
 	)
 	// Each command takes only the flags that mean something to it, so its help lists only those.
+	fs.StringVar(&backendName, "backend", "s3", "the object store the anchor wrote to: "+backendNames)
 	fs.StringVar(&pubkey, "pubkey", "", "the log operator's public key (ed25519:<hex>, or a file holding it)")
 	fs.StringVar(&kind, "kind", audit.TreeJournal, "the tree kind: journal, or events for a notification or event trail")
 	switch cmd {
@@ -96,6 +104,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 			fs.StringVar(&out, "o", "", "write to this file instead of standard output")
 			fs.BoolVar(&force, "force", false, "with -bucket: export even when the lock audit has findings")
 		}
+		fs.DurationVar(&timeout, "timeout", timeout, "with -bucket: give up after this long and exit 3 (state unknown); 0: no limit")
 		fs.StringVar(&bucket, "bucket", "", "read this anchor bucket (online, with read-only credentials)")
 		fs.StringVar(&ownerID, "owner", "", "the 12-digit AWS account ID that owns the bucket (with -bucket)")
 		fs.StringVar(&prefix, "prefix", "", "the key prefix the anchor was configured with (default bide-anchor/)")
@@ -154,14 +163,22 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 		}
 	}
 
-	var reader *awss3.Reader
+	if timeout < 0 {
+		return fail(exitUsage, "-timeout must not be negative")
+	}
+	be, err := lookupBackend(backendName, mk)
+	if err != nil {
+		return fail(exitUsage, "%v", err)
+	}
+	var reader headReader
 	if online {
-		c, err := mk(ctx, pathStyle)
-		if err != nil {
-			return fail(exitUsage, "AWS configuration: %v", err)
+		if timeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, timeout)
+			defer cancel()
 		}
-		reader, err = awss3.NewReader(awss3.ReaderConfig{Client: c, Bucket: bucket, ExpectedBucketOwner: ownerID, Prefix: prefix, Verifier: v,
-			OnSkip: func(f awss3.Finding) {
+		reader, err = be.open(ctx, openOptions{bucket: bucket, owner: ownerID, prefix: prefix, pathStyle: pathStyle, verifier: v,
+			onSkip: func(f string) {
 				fmt.Fprintf(stderr, "bide-anchor: skipped an object that is no anchored head: %s\n", f)
 			}})
 		if err != nil {
@@ -173,7 +190,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 	case "check":
 		rep, err := reader.Audit(ctx, kind, run, time.Now())
 		if err != nil {
-			return fail(exitFindings, "%v", err)
+			return failRead(be, fail, err)
 		}
 		fmt.Fprintf(stdout, "%d verified head(s) for %s %q\n", len(rep.Heads), kind, run)
 		for _, f := range rep.Findings {
@@ -197,8 +214,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 		return exitOK
 
 	case "verify":
-		heads, err := awss3.LoadDir(dir, v)
+		heads, err := be.loadDir(dir, v)
 		if err != nil {
+			if !be.isFinding(err) {
+				return fail(exitUsage, "cannot read %s: %v", dir, err) // an I/O failure, not a verdict about the objects
+			}
 			fmt.Fprintf(stdout, "FAIL: %v\n", err)
 			return exitFindings
 		}
@@ -226,7 +246,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 			// marker, is evidence somebody should look at before it is relied on.
 			rep, aerr := reader.Audit(ctx, kind, run, time.Now())
 			if aerr != nil {
-				return fail(exitFindings, "%v", aerr)
+				return failRead(be, fail, aerr)
 			}
 			if len(rep.Findings) > 0 && !force {
 				for _, f := range rep.Findings {
@@ -236,16 +256,22 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 			}
 			heads, err = reader.Heads(ctx, kind, run)
 		} else {
-			heads, err = awss3.LoadDir(dir, v)
+			heads, err = be.loadDir(dir, v)
 			heads = filter(heads, kind, run, true)
 			if err == nil && len(heads) == 0 {
-				err = fmt.Errorf("%w for %s %q", awss3.ErrNotFound, kind, run)
+				err = fmt.Errorf("%w for %s %q", be.errNotFound, kind, run)
 			}
 		}
 		if errors.Is(err, awss3.ErrEquivocation) {
 			return fail(exitFindings, "%v; not exporting", err)
 		}
 		if err != nil {
+			if online {
+				return failRead(be, fail, err)
+			}
+			if !be.isFinding(err) {
+				return fail(exitUsage, "cannot read %s: %v", dir, err)
+			}
 			return fail(exitFindings, "%v", err)
 		}
 		if conflicts := equivocations(heads); len(conflicts) > 0 {
@@ -353,4 +379,15 @@ func readKey(s string) (audit.Verifier, error) {
 		return nil, fmt.Errorf("public key in %s: %w", s, err)
 	}
 	return v, nil
+}
+
+// failRead reports an error from an online read. An error that is a finding (a head the log key did not
+// sign, two histories, no head) exits 1. Any other (the store unavailable, access denied, a timeout)
+// means the bucket's state is unknown, and exits 3, so that a script cannot take it for either a pass or
+// a finding.
+func failRead(be backend, fail func(int, string, ...any) int, err error) int {
+	if be.isFinding(err) {
+		return fail(exitFindings, "%v", err)
+	}
+	return fail(exitUnknown, "the state of the bucket is unknown (the read did not complete; retry, and alert if it persists): %v", err)
 }

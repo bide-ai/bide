@@ -5,6 +5,7 @@ use (
 	./anchor/awss3
 	./anchor/gcs
 	./cmd/bide
+	./cmd/bide-anchor
 	./cmd/bide/bide-hsm
 	./cmd/bide/bide-hsm/azuretest
 	./cmd/bide/bide-hsm/emulatortest

@@ -5,15 +5,18 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bide-ai/bide/anchor/awss3"
 	"github.com/bide-ai/bide/anchor/awss3/awss3test"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/audit/anchorobj"
 )
 
 const owner = "111122223333"
@@ -243,5 +246,117 @@ func TestDirMustBeADirectory(t *testing.T) {
 		if code, _, errs := e.do(args(dir)...); code != 0 {
 			t.Errorf("%s -dir DIR = %d %s; want 0", cmd, code, errs)
 		}
+	}
+}
+
+func TestBackendFlag(t *testing.T) {
+	e := setup(t)
+	e.publish(t, e.head(t, "r1", 1, "a"))
+	dir := e.dump(t)
+	if code, out, errs := e.do("verify", "-backend", "s3", "-dir", dir, "-pubkey", e.pub); code != 0 {
+		t.Fatalf("-backend s3 = %d\n%s%s", code, out, errs)
+	}
+	code, _, errs := e.do("verify", "-backend", "gcs", "-dir", dir, "-pubkey", e.pub)
+	if code != exitUsage || !strings.Contains(errs, "not in this build yet") {
+		t.Errorf("-backend gcs = %d %q; want a usage error saying it is not built in yet", code, errs)
+	}
+	code, _, errs = e.do("check", "-backend", "azure", "-bucket", "b", "-owner", owner, "-pubkey", e.pub, "-run", "r1")
+	if code != exitUsage || !strings.Contains(errs, `"azure" is not one of: s3`) {
+		t.Errorf("-backend azure = %d %q; want a usage error naming the backends", code, errs)
+	}
+}
+
+// The S3 layout is valid, and it is the one the backend reads. When another backend is linked (the GCS
+// one), this is where its Layout is checked not to collide with this one: only a program that links
+// both can import both without dragging both SDKs into each module.
+func TestBackendLayoutsDoNotCollide(t *testing.T) {
+	l := awss3.Layout()
+	if err := l.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	layouts := map[string]anchorobj.Layout{"s3": l}
+	for a, la := range layouts {
+		for b, lb := range layouts {
+			if a != b && la.Collides(lb) {
+				t.Errorf("the %s and %s layouts collide: one could take the other's objects", a, b)
+			}
+		}
+	}
+}
+
+// An online read that cannot finish is "unknown" (3), never a pass (0) and not a finding (1).
+func TestAbortedAuditIsUnknown(t *testing.T) {
+	e := setup(t)
+	e.publish(t, e.head(t, "r1", 1, "a"))
+	for name, fault := range map[string]error{"unavailable": errors.New("connection reset"), "denied": awss3test.APIError("AccessDenied", 403)} {
+		e.fake.Hook = func(op string, _ int) error {
+			if op == "ListObjectVersions" {
+				return fault
+			}
+			return nil
+		}
+		for _, args := range [][]string{
+			{"check", "-bucket", "b", "-owner", owner, "-pubkey", e.pub, "-run", "r1"},
+			{"export", "-bucket", "b", "-owner", owner, "-pubkey", e.pub, "-run", "r1"},
+		} {
+			code, out, errs := e.do(args...)
+			if code != exitUnknown || !strings.Contains(errs, "state of the bucket is unknown") || strings.Contains(out, "PASS") {
+				t.Errorf("%s %v = %d\n%s%s; want %d and no PASS", name, args[0], code, out, errs, exitUnknown)
+			}
+		}
+	}
+	e.fake.Hook = nil
+	// A verdict about the objects is still a finding: a head signed by another key.
+	other := audit.Ed25519Signer{Priv: ed25519.NewKeyFromSeed(bytes.Repeat([]byte{9}, 32))}
+	if code, _, _ := e.do("check", "-bucket", "b", "-owner", owner, "-pubkey", audit.FormatPublicKey(other.Alg(), other.PublicKey()), "-run", "r1"); code != exitFindings {
+		t.Errorf("a head the key did not sign = exit %d, want %d", code, exitFindings)
+	}
+}
+
+// A read that never answers is cut off by -timeout and exits 3, not hangs.
+func TestTimeoutExitsUnknown(t *testing.T) {
+	e := setup(t)
+	e.publish(t, e.head(t, "r1", 1, "a"))
+	var out, errb bytes.Buffer
+	blocked := func(context.Context, bool) (awss3.Client, error) { return blockedClient{e.fake}, nil }
+	start := time.Now()
+	code := run(context.Background(), []string{"check", "-timeout", "200ms", "-bucket", "b", "-owner", owner, "-pubkey", e.pub, "-run", "r1"}, &out, &errb, blocked)
+	if code != exitUnknown || strings.Contains(out.String(), "PASS") || time.Since(start) > 5*time.Second {
+		t.Fatalf("exit %d after %v\n%s%s; want %d soon, no PASS", code, time.Since(start), out.String(), errb.String(), exitUnknown)
+	}
+	if code, _, _ := e.do("check", "-timeout", "-1s", "-bucket", "b", "-owner", owner, "-pubkey", e.pub, "-run", "r1"); code != exitUsage {
+		t.Errorf("a negative -timeout = exit %d, want usage", code)
+	}
+}
+
+// blockedClient answers a listing only when its context ends.
+type blockedClient struct{ *awss3test.Fake }
+
+func (blockedClient) ListObjectVersions(ctx context.Context, _ *s3.ListObjectVersionsInput, _ ...func(*s3.Options)) (*s3.ListObjectVersionsOutput, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// An unreadable directory is an I/O failure (2), not a verdict about objects (1).
+func TestUnreadableDirIsNotAFinding(t *testing.T) {
+	e := setup(t)
+	missing := filepath.Join(t.TempDir(), "nope")
+	for _, cmd := range [][]string{{"verify", "-dir", missing}, {"export", "-dir", missing, "-run", "r1"}} {
+		code, out, errs := e.do(append(cmd, "-pubkey", e.pub)...)
+		if code != exitUsage || strings.Contains(out, "FAIL") || !strings.Contains(errs, "-dir") {
+			t.Errorf("%v = %d\n%s%s; want %d and a message naming -dir", cmd, code, out, errs, exitUsage)
+		}
+	}
+	// An object that does not verify is still a finding.
+	e.publish(t, e.head(t, "r1", 1, "a"))
+	dir := e.dump(t)
+	filepath.WalkDir(dir, func(p string, d os.DirEntry, _ error) error {
+		if !d.IsDir() {
+			os.WriteFile(p, []byte("junk"), 0o644)
+		}
+		return nil
+	})
+	if code, _, _ := e.do("verify", "-dir", dir, "-pubkey", e.pub); code != exitFindings {
+		t.Errorf("a damaged object = exit %d, want %d", code, exitFindings)
 	}
 }

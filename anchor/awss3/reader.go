@@ -81,6 +81,7 @@ type ref struct{ key, version string }
 // reports them.
 func (r *Reader) scan(ctx context.Context, prefix string, fn func(ref) (stop bool, err error)) error {
 	var marker, vmarker *string
+	pages := 0
 	for {
 		out, err := r.c.ListObjectVersions(ctx, &s3.ListObjectVersionsInput{Bucket: aws.String(r.bucket), Prefix: aws.String(prefix),
 			ExpectedBucketOwner: aws.String(r.owner), KeyMarker: marker, VersionIdMarker: vmarker})
@@ -94,6 +95,9 @@ func (r *Reader) scan(ctx context.Context, prefix string, fn func(ref) (stop boo
 		}
 		if !aws.ToBool(out.IsTruncated) {
 			return nil
+		}
+		if err := advance(prefix, &pages, marker, vmarker, out.NextKeyMarker, out.NextVersionIdMarker); err != nil {
+			return err
 		}
 		marker, vmarker = out.NextKeyMarker, out.NextVersionIdMarker
 	}
@@ -316,6 +320,7 @@ func (r *Reader) Audit(ctx context.Context, kind, runID string, now time.Time) (
 	prefix := r.prefix + partitionOf(kind, runID) + "/"
 	var rep Report
 	versions := map[string]int{}
+	pages := 0
 	var claimed []claim // objects that are no verified head, and the size their key claims
 	var marker, vmarker *string
 	for {
@@ -345,6 +350,9 @@ func (r *Reader) Audit(ctx context.Context, kind, runID string, now time.Time) (
 		}
 		if !aws.ToBool(out.IsTruncated) {
 			break
+		}
+		if err := advance(prefix, &pages, marker, vmarker, out.NextKeyMarker, out.NextVersionIdMarker); err != nil {
+			return Report{}, err
 		}
 		marker, vmarker = out.NextKeyMarker, out.NextVersionIdMarker
 	}
@@ -422,4 +430,23 @@ func (r *Reader) auditVersion(ctx context.Context, key, ver string, now time.Tim
 // live bucket.
 func LoadDir(dir string, v audit.Verifier) ([]audit.SignedTreeHead, error) {
 	return layout.LoadDir(dir, v, ErrNotFound, ErrEquivocation)
+}
+
+// maxListPages bounds how many pages one listing may take: at the 1,000 versions a page holds that is
+// a hundred million objects, far past any partition this package writes.
+const maxListPages = 100_000
+
+// advance checks that a truncated listing moves forward: it has a next marker that differs from the one
+// just sent, and has not run past maxListPages. A server that says "truncated" and gives no way on, or
+// repeats a page, would otherwise be asked again for ever. The error wraps ErrUnavailable: the state of
+// the bucket is unknown, which is not a verdict about its objects.
+func advance(prefix string, pages *int, markerSent, vmarkerSent, nextKey, nextVersion *string) error {
+	*pages++
+	if *pages > maxListPages {
+		return fmt.Errorf("awss3: list %s: more than %d pages: %w", prefix, maxListPages, ErrUnavailable)
+	}
+	if nextKey == nil && nextVersion == nil || aws.ToString(nextKey) == aws.ToString(markerSent) && aws.ToString(nextVersion) == aws.ToString(vmarkerSent) {
+		return fmt.Errorf("awss3: list %s: the listing is truncated but does not advance: %w", prefix, ErrUnavailable)
+	}
+	return nil
 }
