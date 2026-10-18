@@ -39,7 +39,7 @@ type EscalationStep struct {
 // receiver of the event it is about (an escalated event, its step's).
 func routableKind(k NotificationKind) bool {
 	switch k {
-	case NotificationOutcomeUnknown, NotificationApprovalPending, NotificationApprovalExpired, NotificationRunAborted, NotificationRecoveryFailing:
+	case NotificationOutcomeUnknown, NotificationApprovalPending, NotificationApprovalExpired, NotificationRunAborted, NotificationRecoveryFailing, NotificationStopSet, NotificationStopLifted:
 		return true
 	}
 	return false
@@ -121,9 +121,9 @@ func WithNotifyApproverRoute(approver, receiver string) NotifyOption {
 func WithNotifyEscalation(kind NotificationKind, steps ...EscalationStep) NotifyOption {
 	return notifyOption(func(c *notifyConfig) error {
 		switch kind {
-		case NotificationOutcomeUnknown, NotificationApprovalPending, NotificationRecoveryFailing:
+		case NotificationOutcomeUnknown, NotificationApprovalPending, NotificationRecoveryFailing, NotificationStopSet:
 		default:
-			return fmt.Errorf("WithNotifyEscalation(%q): only an outcome_unknown, approval_pending or recovery_failing event can stop being current, so only those can be escalated: %w", kind, ErrConfig)
+			return fmt.Errorf("WithNotifyEscalation(%q): only an outcome_unknown, approval_pending, recovery_failing or stop_set event can stop being current, so only those can be escalated: %w", kind, ErrConfig)
 		}
 		if len(steps) < 1 || len(steps) > maxEscalationSteps {
 			return fmt.Errorf("WithNotifyEscalation(%q): %d steps; need 1 to %d: %w", kind, len(steps), maxEscalationSteps, ErrConfig)
@@ -253,6 +253,13 @@ func kindOfKey(key string) NotificationKind {
 		return NotificationRecoveryFailing
 	case strings.HasPrefix(key, "expired:"):
 		return NotificationApprovalExpired
+	case strings.HasPrefix(key, "stop:"):
+		if _, lifted, ok := stopIDOfKey(key); ok {
+			if lifted {
+				return NotificationStopLifted
+			}
+			return NotificationStopSet
+		}
 	}
 	return ""
 }
@@ -453,6 +460,15 @@ func (e *notifyEngine) fillDetail(ctx context.Context, ev *notifyEvent) {
 		run = ev.runID
 	}
 	switch {
+	case ev.stop != nil && ev.stop.Scope.Kind == "" && e.cfg.stops != nil:
+		// A stop event rebuilt from the trail has only its ID: the control run holds the rest.
+		if st, err := e.cfg.stops.State(ctx); err == nil {
+			for _, s := range st.Stops {
+				if s.ID == ev.stop.ID {
+					*ev.stop = NotifyStop{ID: s.ID, Scope: s.Scope, Reason: s.Reason, Compensation: s.Compensation, By: s.By, Host: s.Host, Mode: st.Mode, Signed: s.Signed, LiftedBy: s.LiftedBy}
+				}
+			}
+		}
 	case ev.approval != nil && ev.approval.ToolName == "":
 		call := ev.approval.ToolUseID
 		var rec Record

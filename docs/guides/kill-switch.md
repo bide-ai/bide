@@ -10,7 +10,7 @@ how to use what has shipped.
 Shipped: the control run, the engine's holds, recovery, the signed audit trail with `bide audit
 stops`, the model (`agent.StopControl`, `agent.StopSwitch`, `agent.WithStopSwitch`,
 `audit.NewStopTrail`), and the operator command `bide stop` (and `bide-hsm stop` for a key in an HSM
-or a KMS). `bide view` shows an active stop on every page and which runs it holds. Not shipped yet: the notifications.
+or a KMS). `bide view` shows an active stop on every page and which runs it holds. A stop and its lift notify through the [notifier](#notifications). Not shipped yet: `bide audit notifications` coverage of them.
 
 ## What a stop does
 
@@ -199,6 +199,51 @@ name the root, `WithStopRoot`); a pin the chain does not reach, or a basic proce
 signed stops, makes the stops *unknowable*, and the engine then holds side-effect calls a stop
 could cover until the process is configured. That is the safe direction. Forged records in an
 audited deployment are only rejected (`StopState.Rejected`). See the [design note](../design/kill-switch.md#7a-modes-basic-and-audited).
+
+## Notifications
+
+A stop that is set, and a stop that is lifted, are events a person must hear of: `stop_set` (key
+`stop:<id>`) and `stop_lifted` (key `stop:<id>:lifted`) go through the [notifier](notifications.md), so
+delivery has the notification trail's claim, acknowledgement, retry, overdue and escalation, and survives
+the death of the process that set the stop. They are observed from the control run, never raised by a drive,
+by two paths that name an event by the same key:
+
+<!-- docsnip: skip a sketch: the journal, webhook, trail and control are the deployment's own -->
+```go
+// The durable path: a periodic sweep reads the control run (stops set or lifted within the last
+// WithNotifyStopsWithin, default 7 days).
+agent.NotifyPending(ctx, journal, webhook, trail, agent.WithNotifyStops(ctl))
+
+// The prompt path: a process with a switch learns of a change within its poll interval.
+n, _ := agent.NewStopNotifier(journal, agent.WithNotifier(webhook, trail), ctl)
+sw, _ := agent.NewStopSwitch(ctl, agent.WithStopObserver(n.Observe))
+```
+
+- The trail's claim on the event key is the one dedupe: any number of processes, and both paths, send one
+  notification. A `stop_set` that is lifted before anyone was told of it owes nothing and is not sent; the
+  lift is.
+- An audited stop is lifted by its quorum, so `stop_lifted` is raised once, when the quorum lands, and a
+  partial lift raises nothing (it is in `bide stop -list`). The all-clear of a `stop_set` has reason `lifted`.
+- The window (`WithNotifyStopsWithin`, default 7 days) is judged per event: a `stop_set` is news while the
+  set is recent, a `stop_lifted` while the lift is recent, so a stop that ran for a month is told when it is
+  lifted. A stop set and lifted long ago raises nothing.
+- **Every process that notifies over a trail holding stop events needs the control** (`WithNotifyStops`, or a
+  `StopNotifier`): without it a process cannot tell whether a stop still stands, so it leaves `stop_set`
+  events alone (it does not escalate them or write their all-clear) and reports once, through
+  `WithNotifyErrors`, that its stop notifications are off.
+- Operator text (the reason, the setter) is in the structured `stop` field only, never in the payload's
+  `summary`, and the Slack relay shows it in code spans, so it cannot format or mention anything.
+- Only stops the control accepts are news: a forged or foreign record raises nothing.
+- Routing (`WithNotifyRoute(agent.NotificationStopSet, ...)`) and escalation (`WithNotifyEscalation` for
+  `stop_set`) apply: a stop nobody acknowledged reaches the next receiver. The payload (`stop`) carries the
+  scope, the setter, the reason, the mode and the compensation flag, never a key or a secret.
+- The observer never delays or fails a check point. The switch hands each change to it through a slot that
+  keeps only the latest state, on a goroutine of its own: an observer that blocks costs its later calls and
+  nothing else, and one that panics ends only its call. A notifier that blocks or panics costs the
+  notification, which the sweep finds again.
+- `bide stop` does not notify: it has no notifier. A deployment runs the sweep (or a `StopNotifier`) in the
+  process that already holds its notifier, and checks the receiver with `bide notify test -kind stop_set`.
+  `bide audit notifications` does not yet check that every stop was told (a follow-up).
 
 ## The audit trail
 

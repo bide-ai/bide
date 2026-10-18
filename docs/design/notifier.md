@@ -78,7 +78,9 @@ Step that crashes mid-POST would halt that run on the notifier, a halt about a h
 | `recovery_failing` | a run has kept failing recovery for longer than `D` (default 15 minutes): a Resumer error, not resumable, or store errors | `recovery:<run>:<k>` |
 | `notification_overdue` | an event is not acknowledged by its deadline (below) | `overdue:<event key>` |
 | `approval_expired` | the all-clear of an `approval_pending` event finds the gate expired (its deadline passed with no approval; reason `expired`) | `expired:<run>:<call id>` |
-| `resolved` | an `outcome_unknown`, `approval_pending` or `recovery_failing` event that a receiver was, or may have been, told of stopped being current: the all-clear (below) | `resolved:<event key>` |
+| `stop_set` | the kill switch's control run holds an accepted stop within the sweep's window (`WithNotifyStops`), or a `StopSwitch` observer sees one ([kill switch](../guides/kill-switch.md#notifications)); resolvable: the all-clear (reason `lifted`) ends it | `stop:<stop id>` |
+| `stop_lifted` | such a stop's lift rule is met; a fact | `stop:<stop id>:lifted` |
+| `resolved` | an `outcome_unknown`, `approval_pending`, `recovery_failing` or `stop_set` event that a receiver was, or may have been, told of stopped being current: the all-clear (below) | `resolved:<event key>` |
 | `digest` | a periodic summary of runs halted or waiting longer than `X` (below) | `digest:<bucket>` |
 
 Ids are encoded as attempt keys encode them.

@@ -110,6 +110,7 @@ type StopSwitch struct {
 	poll     time.Duration
 	maxStale time.Duration
 	onError  func(error)
+	observer *stopObserver // told of each appearance or lift of a stop (WithStopObserver)
 
 	sem chan struct{} // held by the one reader; it alone touches recs and after
 
@@ -185,6 +186,9 @@ func (s *StopSwitch) refresh(ctx context.Context) error {
 	s.mu.Unlock()
 	if len(recs) != n && st.ChainErr != "" && s.onError != nil {
 		s.onError(fmt.Errorf("kill switch: %s", st.ChainErr))
+	}
+	if s.observer != nil {
+		s.observer.observe(st) // hands off at once: never waits on the observer
 	}
 	return nil
 }

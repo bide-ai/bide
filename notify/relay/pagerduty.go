@@ -131,8 +131,10 @@ func DefaultResolveTarget(p notify.Payload) (string, bool) {
 // failing recovery are errors, and an approval waiting is a warning.
 func DefaultSeverity(p notify.Payload) string {
 	switch p.Kind {
-	case "outcome_unknown", "notification_overdue", "escalated":
+	case "outcome_unknown", "notification_overdue", "escalated", "stop_set":
 		return "critical"
+	case "stop_lifted":
+		return "info"
 	case "run_aborted", "recovery_failing", "approval_expired":
 		return "error"
 	case "approval_pending":
@@ -191,6 +193,9 @@ func PagerDutyTrigger(routingKey, source, severity string, p notify.Payload) Pag
 	}
 	if h := p.Halt; h != nil {
 		details["halt_cause"] = h.Cause
+	}
+	if s := p.Stop; s != nil {
+		details["stop"] = map[string]any{"id": s.ID, "scope": s.Scope, "name": s.Name, "by": s.By, "signed": s.Signed, "mode": s.Mode, "compensation": s.Compensation, "reason": s.Reason}
 	}
 	if a := p.Abort; a != nil {
 		details["abort_reason"] = a.Reason

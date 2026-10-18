@@ -164,8 +164,11 @@ type StopEntry struct {
 	// LiftedBy names the lifters whose records counted. LiftsHeld and LiftsNeeded say how far an
 	// active stop is from being lifted.
 	// AdoptedFrom is the digest of the plain record this stop re-states (a move to audited mode).
-	AdoptedFrom            string
-	LiftedBy               []string
+	AdoptedFrom string
+	LiftedBy    []string
+	// LiftedAt is the writer's time of the record that met the lift rule (a lift, or the policy transition
+	// that brought the quorum), informational like every record's At; empty for a stop not lifted.
+	LiftedAt               string
 	LiftsHeld, LiftsNeeded int
 	digest                 string
 	liftSet                map[string]bool
@@ -448,7 +451,7 @@ func (c *StopControl) foldFrom(recs []Record, audited bool, start StopPolicy, st
 					continue
 				}
 				unverified(r)
-				s.Lifted, s.LiftedBy = true, []string{r.By}
+				s.Lifted, s.LiftedBy, s.LiftedAt = true, []string{r.By}, r.At
 				continue
 			}
 			if !cur.verify(r, "lifter") {
@@ -458,6 +461,9 @@ func (c *StopControl) foldFrom(recs []Record, audited bool, start StopPolicy, st
 			}
 			s.liftSet[r.By] = true
 			countLifts(s, cur)
+			if s.Lifted && s.LiftedAt == "" {
+				s.LiftedAt = r.At
+			}
 		case "mode", "apply":
 			// Evidence only (a change of mode; the application of pending records): neither changes what the
 			// fold accepts.
@@ -531,6 +537,9 @@ func (c *StopControl) foldFrom(recs []Record, audited bool, start StopPolicy, st
 			for i := range st.Stops {
 				if !st.Stops[i].Lifted {
 					countLifts(&st.Stops[i], cur)
+					if st.Stops[i].Lifted && st.Stops[i].LiftedAt == "" {
+						st.Stops[i].LiftedAt = r.At // the transition that brought a quorum of the new policy's lifters
+					}
 				}
 			}
 		}

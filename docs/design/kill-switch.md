@@ -688,3 +688,14 @@ a break-it review before merge (this touches claims, journal, leases, sagas and 
     at the upgrade stay active and need an audited lift. Recommend exactly this. Open for you:
     whether an upgrade should also be refused while a stop is active (I recommend allowing it, as
     the direction is stricter, and refusing would block an operator who wants audit mid-incident).
+
+**As built (PR 5a).** The notifier observes the control run (decision 16). `stop_set` (key `stop:<id>`) and
+`stop_lifted` (`stop:<id>:lifted`) are kinds of the notifier: a sweep (`NotifyPending` with `WithNotifyStops`)
+reads the control run, and `StopNotifier.Observe`, given to a `StopSwitch` as `WithStopObserver`, tells of a
+change within the switch's poll interval. The trail's claim on the key is the one dedupe between the two paths
+and between processes. The observer is handed each change through a single latest-state slot on a goroutine of
+its own, so it never delays or fails a check point, and a notifier error or panic costs the notification only
+(the sweep finds it again). A `stop_set` is ended by the usual all-clear (reason `lifted`); `stop_lifted` is a
+fact raised once, when the lift rule is met, so an audited stop's partial lifts raise nothing; a record the
+fold rejects raises nothing. Model 14 abstracts the notifier's event kinds (it models trail records and event
+keys), so it is unchanged. `bide audit notifications` does not yet check that every stop was told.

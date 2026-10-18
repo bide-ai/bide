@@ -163,6 +163,8 @@ type Payload struct {
 	Abort      *Abort     `json:"abort"`
 	Failing    *Failing   `json:"failing"`
 
+	Stop *Stop `json:"stop"`
+
 	Clears *Clears `json:"clears"`
 
 	Escalates *Escalates `json:"escalates"`
@@ -245,6 +247,25 @@ type Step struct {
 ```
 
 Step names the operation an event is about.
+
+## type Stop
+
+```go
+type Stop struct {
+	ID           string   `json:"id"`
+	Scope        string   `json:"scope"`
+	Name         string   `json:"name,omitempty"`
+	Reason       string   `json:"reason"`
+	By           string   `json:"by"`
+	Host         string   `json:"host,omitempty"`
+	Mode         string   `json:"mode"`
+	Signed       bool     `json:"signed"`
+	Compensation string   `json:"compensation"`
+	LiftedBy     []string `json:"lifted_by,omitempty"`
+}
+```
+
+Stop is the detail of a stop\_set or stop\_lifted event.
 
 ## type View
 

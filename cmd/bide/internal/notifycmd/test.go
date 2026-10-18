@@ -3,6 +3,7 @@ package notifycmd
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"flag"
@@ -30,6 +31,8 @@ var kinds = []agent.NotificationKind{
 	agent.NotificationOverdue,
 	agent.NotificationResolved,
 	agent.NotificationEscalated,
+	agent.NotificationStopSet,
+	agent.NotificationStopLifted,
 }
 
 func kindNames() string {
@@ -91,6 +94,19 @@ func sampleNotification(kind agent.NotificationKind, now time.Time, run string) 
 		n.Approval = &agent.NotifyApproval{ToolUseID: "call_test", ToolName: "refund", Need: 2, Of: 3, Approvers: []string{"alice", "bob", "carol"}, Approved: 1}
 		n.Escalates = &agent.NotifyEscalates{Key: orig, ID: agent.NotifyID(orig), Kind: agent.NotificationApprovalPending, Level: 1}
 		n.Reason, n.Receiver = "undecided", "escalation-test"
+	case agent.NotificationStopSet, agent.NotificationStopLifted:
+		// A stop that does not exist: its ID is the digest of the sample's run, so each test is a new event.
+		sum := sha256.Sum256([]byte(run))
+		id := hex.EncodeToString(sum[:])
+		n.Stop = &agent.NotifyStop{ID: id, Scope: agent.StopScope{Kind: agent.StopTool, Name: "refund"}, Reason: "bide notify test", Compensation: agent.CompensationAllow, By: "notify-test", Host: "localhost", Mode: agent.StopBasic}
+		n.Deadline = time.Time{}
+		n.Key = agent.StopSetKey(id)
+		if kind == agent.NotificationStopLifted {
+			n.Key = agent.StopLiftedKey(id)
+			n.Stop.LiftedBy = []string{"notify-test"}
+		} else {
+			n.Deadline = now.Add(5 * time.Minute)
+		}
 	default:
 		return agent.Notification{}, fmt.Errorf("unknown kind %q (one of %s)", kind, kindNames())
 	}

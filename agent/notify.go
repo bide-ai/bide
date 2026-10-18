@@ -26,7 +26,7 @@ const (
 	NotificationRecoveryFailing NotificationKind = "recovery_failing"
 	// NotificationOverdue: an event was not acknowledged by its deadline.
 	NotificationOverdue NotificationKind = "notification_overdue"
-	// NotificationResolved: an outcome_unknown, approval_pending or recovery_failing event that a
+	// NotificationResolved: an outcome_unknown, approval_pending, recovery_failing or stop_set event that a
 	// receiver has, or may have, stopped being current (the halt was resolved, the gate decided, the
 	// run ended, recovery recovered). Notification.Clears says which event, so a receiver can close
 	// its incident; it is the all clear.
@@ -36,11 +36,13 @@ const (
 	// the call will not run. It is raised when the pending approval's all-clear finds the expiry
 	// (its reason is "expired"), and it is a fact: it never stops being current.
 	NotificationApprovalExpired NotificationKind = "approval_expired"
-	// NotificationEscalated: an outcome_unknown, approval_pending or recovery_failing event was not
+	// NotificationEscalated: an outcome_unknown, approval_pending, recovery_failing or stop_set event was not
 	// acknowledged (an approval: not decided) by its deadline, and the next receiver of its
 	// escalation chain is told. Notification.Escalates says which event and which step of the chain.
 	NotificationEscalated NotificationKind = "escalated"
 )
+
+// The kill switch's kinds, NotificationStopSet and NotificationStopLifted, are in notify_stop.go.
 
 // DefaultReceiver is the name of the receiver WithNotifier's Notifier is, in Notification.Receiver
 // and in WithNotifyRoute, WithNotifyApproverRoute and EscalationStep.
@@ -123,6 +125,7 @@ type Notification struct {
 
 	Halt      *NotifyHalt      // for NotificationOutcomeUnknown
 	Approval  *NotifyApproval  // for NotificationApprovalPending
+	Stop      *NotifyStop      // for NotificationStopSet and NotificationStopLifted
 	Principal *Principal       // the run's principal, nil if it has none
 	Clears    *NotifyClears    // for NotificationResolved
 	Escalates *NotifyEscalates // for NotificationEscalated

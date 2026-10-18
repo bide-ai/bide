@@ -145,18 +145,25 @@ Schema `bide.notification.v1`:
   },
   "abort": null,
   "failing": null,
+  "stop": null,
   "clears": null,
   "view": { "command": "bide view -db /var/lib/orders/run.db -run orders-1042", "url": null }
 }
 ```
 
 `kind` is `outcome_unknown`, `approval_pending`, `approval_expired`, `run_aborted`,
-`recovery_failing`, `notification_overdue`, `resolved` or `escalated`. `approval_expired` says that
+`recovery_failing`, `notification_overdue`, `resolved`, `escalated`, `stop_set` or `stop_lifted`. `approval_expired` says that
 an approval gate's deadline (`ApprovalPolicy.Timeout`) passed with no approval, so the call will not
 run; it is sent when the pending approval's all-clear finds the expiry, whose reason is then
 `expired` (the other reasons: `resolved`, `decided`, `ended`, `recovered`), and it carries the
-gate's `approval` detail. At most one of `halt`, `approval`, `abort`,
-`failing` and `clears` is set, as the kind says; an `escalated` notification carries the detail of the
+gate's `approval` detail. `stop_set` and `stop_lifted` are the [kill switch's](kill-switch.md#notifications)
+events: a stop was set (it is ended by the usual all-clear, reason `lifted`), and a stop was lifted by the
+lift rule in force (a fact; an audited stop's partial lifts raise nothing). They carry `stop`: `id`, `scope`
+(`global`, `tool`, `flow` or `agent`) and `name`, the operator's `reason` (text: show it, never trust it),
+`by` and `host` (asserted in basic mode, authenticated by the signature when `signed`), `mode`,
+`compensation`, and for `stop_lifted` `lifted_by`; never a key, a signature or a secret. Their `run_id` is
+`@stop`, the kill switch's control run, and their view command is `bide stop -db <db> -show <id>`. At most one of `halt`, `approval`, `abort`,
+`failing`, `stop` and `clears` is set, as the kind says; an `escalated` notification carries the detail of the
 event it escalates and sets `escalates` (see [Routing and escalation](#routing-and-escalation)), and
 every payload names its `receiver`. `summary` is generated from the structured fields, so a chat
 message can post it as it is. `notification_overdue`, `resolved` and `escalated` also carry a `reason`.
@@ -297,8 +304,8 @@ the point: if the approval is still undecided when the five minutes are up (even
 channel acknowledged the message), `lead` is told, and the chain continues while the gate stands.
 
 **Routing.** A route sends the events of one kind to one receiver. The kinds are `outcome_unknown`,
-`approval_pending`, `approval_expired`, `run_aborted` and `recovery_failing`; an event with no route
-goes to `default`. An `approval_expired` event follows the approver routes as `approval_pending`
+`approval_pending`, `approval_expired`, `run_aborted`, `recovery_failing`, `stop_set` and `stop_lifted`; an event with no route
+goes to `default`. A `stop_set` event can be escalated like a halt: an unacknowledged stop reaches the next receiver. An `approval_expired` event follows the approver routes as `approval_pending`
 does.
 The all-clear of an event goes to the receiver the event went to, so that the incident it closes is
 the one that was opened; an overdue notice does too, unless `WithOverdueNotifier` names another.
@@ -443,7 +450,7 @@ says which stage failed and what to try, and exits 1:
 | `no response ... connection refused` | Nothing is listening at that address. |
 
 `-kind` picks the sample's kind (`approval_pending` by default; `approval_expired`, `outcome_unknown`,
-`run_aborted`, `recovery_failing`, `notification_overdue` and `resolved` too). To watch a relay open and close a
+`run_aborted`, `recovery_failing`, `notification_overdue`, `resolved`, `stop_set` and `stop_lifted` too). To watch a relay open and close a
 PagerDuty incident, send `-kind approval_pending -run notify-test-demo`, then `-kind resolved -run
 notify-test-demo`: the `resolved` is the all-clear of that approval. `-ca`, `-pin`, `-client-cert` and `-client-key`
 are the receiver-side checks of the [mutual TLS](#mutual-tls-a-private-ca-and-a-key-pin) section;
@@ -494,7 +501,7 @@ For each request the relay verifies the signature, the timestamp and the signed 
   `id` of the payload, the SHA-256 of the event key). It is the same on every delivery of the event,
   so PagerDuty folds repeats into one incident; a resolve names the same key. Severity follows the
   kind: `outcome_unknown` and `notification_overdue` are `critical`, `run_aborted`,
-  `recovery_failing` and `approval_expired` are `error`, and `approval_pending` is `warning`. `-pagerduty-url` points at the
+  `recovery_failing` and `approval_expired` are `error`, `approval_pending` is `warning`, `stop_set` is `critical` and `stop_lifted` is `info`. `-pagerduty-url` points at the
   EU endpoint.
 - Error text and tool arguments are never forwarded, even if the sender allowed them with
   `WithFields`: a message in a chat room or on a pager has left the access control the viewer applies.

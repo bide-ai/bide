@@ -19,7 +19,7 @@ import (
 // run_aborted is a fact and never does; a resolved or overdue notice is not an incident.
 func resolvable(kind string) bool {
 	switch NotificationKind(kind) {
-	case NotificationOutcomeUnknown, NotificationApprovalPending, NotificationRecoveryFailing, NotificationEscalated:
+	case NotificationOutcomeUnknown, NotificationApprovalPending, NotificationRecoveryFailing, NotificationEscalated, NotificationStopSet:
 		return true
 	}
 	return false
@@ -98,6 +98,12 @@ func eventFromKey(es *NotifyEvent) (notifyEvent, bool) {
 			return notifyEvent{}, false
 		}
 		ev.episode = episode
+	case NotificationStopSet, NotificationStopLifted: // stop:<id>, stop:<id>:lifted
+		id, _, ok := stopIDOfKey(es.Key)
+		if !ok {
+			return notifyEvent{}, false
+		}
+		ev.runID, ev.stop = StopControlRun, &NotifyStop{ID: id}
 	default:
 		return notifyEvent{}, false
 	}
@@ -221,6 +227,12 @@ func (e *notifyEngine) clearScanFold(ctx context.Context, st NotifyState, listed
 			continue
 		}
 		if !resolvable(es.Kind) {
+			continue
+		}
+		if NotificationKind(es.Kind) == NotificationStopSet && e.cfg.stops == nil {
+			// Without the control this process cannot tell whether the stop still stands: it must neither
+			// escalate it for ever nor say it ended, so it leaves the event to a process that has the control.
+			e.stopsOff()
 			continue
 		}
 		if es.Cleared == nil && NotificationKind(es.Kind) != NotificationEscalated && len(e.cfg.escalation[NotificationKind(es.Kind)]) > 0 {
