@@ -46,6 +46,8 @@ CONSTANTS
   ModeFromStore,     \* regress: a mode record in the store flips the process to audited
   AcceptPlain,       \* regress: an audited process accepts a plain record
   MaxLog, MaxAtt, MaxCrash,
+  MaxWriteCrash,     \* how many writes may crash between their two steps
+
   Check,             \* TRUE: a call reads the control log after its claim; FALSE: it starts at once
   SyncRead,          \* TRUE: that read sees every record committed before the claim; FALSE: a cache
   FailClosed,        \* TRUE: a read that fails holds the call; FALSE: it proceeds
@@ -53,6 +55,7 @@ CONSTANTS
   LiftRefires,       \* regress: a lift starts a halted call again
   WithTrail,         \* TRUE: records are also written to the audit trail, in two steps (the order of the Go control)
   UseKinds,          \* the record kinds in play (a subset of set, lift, pol, mode: a configuration may narrow them to keep a deep check small)
+  ApplySuffixOnly,   \* TRUE: a pending trail record is re-applied only while no log record follows it on the trail (ApplyPending's rule)
   CatchUp,           \* TRUE: before a record that rests on earlier ones goes to the trail, the log's records the trail lacks are appended (in log order)
   LiftStoreFirst     \* regress: a record that is not a stop is written to the control run before the trail
 
@@ -133,6 +136,7 @@ Covers(s, c) == Active(s, c)
 VARIABLES
   log,        \* the control log
   trail,      \* the audit trail: the sequence of records written to it, in order (WithTrail)
+  wcrash,     \* writes that crashed between their two steps
   pend,       \* the record being written in two steps (a set of at most one)
 
   calls,      \* c -> "idle", "claimed", "cleared", "started", "done", "halted"
@@ -143,18 +147,18 @@ VARIABLES
   crashes,
   blocked     \* a call has been held back by a stop that was read
 
-vars == <<log, trail, pend, calls, att, claimLen, rd, fired, crashes, blocked>>
+vars == <<log, trail, pend, wcrash, calls, att, claimLen, rd, fired, crashes, blocked>>
 
 TypeOK ==
   /\ log \in Seq(Records) /\ Len(log) <= MaxLog
   /\ calls \in [Calls -> {"idle", "claimed", "cleared", "started", "done", "halted"}]
   /\ att \in [Calls -> 0..MaxAtt] /\ crashes \in 0..MaxCrash /\ blocked \in BOOLEAN
-  /\ trail \in Seq(Records) /\ pend \subseteq Records /\ Cardinality(pend) <= 1
+  /\ trail \in Seq(Records) /\ wcrash \in 0..MaxWriteCrash /\ pend \subseteq Records /\ Cardinality(pend) <= 1
 
 Init ==
   /\ log = <<>> /\ calls = [c \in Calls |-> "idle"] /\ att = [c \in Calls |-> 0]
   /\ claimLen = [c \in Calls |-> 0] /\ rd = [c \in Calls |-> -1] /\ fired = [c \in Calls |-> 0]
-  /\ crashes = 0 /\ blocked = FALSE /\ trail = <<>> /\ pend = {}
+  /\ crashes = 0 /\ blocked = FALSE /\ trail = <<>> /\ pend = {} /\ wcrash = 0
 
 \* protocol:stop begin Write StartWrite FinishWrite Reaudit (the Go regions carry the markers)
 \* Without a trail a record is one atomic write to the control log.
@@ -162,7 +166,7 @@ Write(r) ==
   /\ ~WithTrail
   /\ Len(log) < MaxLog
   /\ log' = Append(log, r)
-  /\ UNCHANGED <<trail, pend, calls, att, claimLen, rd, fired, crashes, blocked>>
+  /\ UNCHANGED <<trail, pend, wcrash, calls, att, claimLen, rd, fired, crashes, blocked>>
 
 Claim(c) ==
   /\ calls[c] = "idle" /\ att[c] < MaxAtt
@@ -170,7 +174,7 @@ Claim(c) ==
   /\ claimLen' = [claimLen EXCEPT ![c] = Len(log)]
   /\ rd' = [rd EXCEPT ![c] = IF Check THEN -1 ELSE 0]
   /\ calls' = [calls EXCEPT ![c] = IF Check THEN "claimed" ELSE "cleared"]
-  /\ UNCHANGED <<log, trail, pend, fired, crashes, blocked>>
+  /\ UNCHANGED <<log, trail, pend, wcrash, fired, crashes, blocked>>
 
 \* The check after the claim: it reads the control log (everything committed so far, or, without
 \* SyncRead, any earlier prefix), and the attempt is cleared to start, or voided (not started) when a
@@ -181,37 +185,37 @@ ReadOk(c) ==
        IF Covers(Eff(log, n), c)
          THEN /\ calls' = [calls EXCEPT ![c] = "idle"] /\ blocked' = TRUE /\ rd' = rd
          ELSE /\ calls' = [calls EXCEPT ![c] = "cleared"] /\ rd' = [rd EXCEPT ![c] = n] /\ blocked' = blocked
-  /\ UNCHANGED <<log, trail, pend, att, claimLen, fired, crashes>>
+  /\ UNCHANGED <<log, trail, pend, wcrash, att, claimLen, fired, crashes>>
 
 ReadFail(c) ==
   /\ ReadFails /\ calls[c] = "claimed"
   /\ IF FailClosed
        THEN /\ calls' = [calls EXCEPT ![c] = "idle"] /\ rd' = rd
        ELSE /\ calls' = [calls EXCEPT ![c] = "cleared"] /\ rd' = [rd EXCEPT ![c] = 0]
-  /\ UNCHANGED <<log, trail, pend, att, claimLen, fired, crashes, blocked>>
+  /\ UNCHANGED <<log, trail, pend, wcrash, att, claimLen, fired, crashes, blocked>>
 
 \* A stop may be committed between the read and the start: the call is in flight and finishes.
 Begin(c) ==
   /\ calls[c] = "cleared"
   /\ calls' = [calls EXCEPT ![c] = "started"] /\ fired' = [fired EXCEPT ![c] = @ + 1]
-  /\ UNCHANGED <<log, trail, pend, att, claimLen, rd, crashes, blocked>>
+  /\ UNCHANGED <<log, trail, pend, wcrash, att, claimLen, rd, crashes, blocked>>
 
 Finish(c) ==
   /\ calls[c] = "started"
   /\ calls' = [calls EXCEPT ![c] = "done"]
-  /\ UNCHANGED <<log, trail, pend, att, claimLen, rd, fired, crashes, blocked>>
+  /\ UNCHANGED <<log, trail, pend, wcrash, att, claimLen, rd, fired, crashes, blocked>>
 
 \* A crash with a marker and no result: the outcome is unknown, the call halts, for good.
 Crash(c) ==
   /\ crashes < MaxCrash /\ calls[c] \in {"claimed", "cleared", "started"}
   /\ calls' = [calls EXCEPT ![c] = "halted"] /\ crashes' = crashes + 1
-  /\ UNCHANGED <<log, trail, pend, att, claimLen, rd, fired, blocked>>
+  /\ UNCHANGED <<log, trail, pend, wcrash, att, claimLen, rd, fired, blocked>>
 
 \* Regress only: a lift starts a halted call that had fired again.
 Refire(c) ==
   /\ LiftRefires /\ calls[c] = "halted" /\ \E i \in StopIds : Eff(log, Len(log)).st[i].phase = "lifted"
   /\ calls' = [calls EXCEPT ![c] = "cleared"] /\ rd' = [rd EXCEPT ![c] = Len(log)]
-  /\ UNCHANGED <<log, trail, pend, att, claimLen, fired, crashes, blocked>>
+  /\ UNCHANGED <<log, trail, pend, wcrash, att, claimLen, fired, crashes, blocked>>
 
 \* With a trail, a signed record is written in two steps. A stop is written to the control log first (it is
 \* in force at once) and to the trail second; every other record is written to the trail first, so none is in
@@ -230,37 +234,37 @@ StartWrite(r) ==
   /\ r.k = "lift" => Eff(log, Len(log)).st[r.stop].phase /= "none"   \* a lift names a stop the control run holds
   \* A record already on the trail but not in the log (a write that crashed) is only re-applied while no log
   \* record follows it on the trail: ApplyPending leaves a superseded one, so the orders cannot diverge.
-  /\ (r \in TrailSet /\ r \notin Range(log)) => \A i \in 1..Len(trail) : trail[i] = r => \A j \in (i + 1)..Len(trail) : trail[j] \notin Range(log)
+  /\ ApplySuffixOnly => ((r \in TrailSet /\ r \notin Range(log)) => \A i \in 1..Len(trail) : trail[i] = r => \A j \in (i + 1)..Len(trail) : trail[j] \notin Range(log))
   /\ IF StoreFirst(r) THEN log' = Append(log, r) /\ trail' = trail
        ELSE /\ CaughtUp
             /\ log' = log
             /\ trail' = IF r \in TrailSet THEN trail ELSE Append(trail, r)
   /\ pend' = {r}
-  /\ UNCHANGED <<calls, att, claimLen, rd, fired, crashes, blocked>>
+  /\ UNCHANGED <<wcrash, calls, att, claimLen, rd, fired, crashes, blocked>>
 
 FinishWrite ==
   /\ WithTrail /\ pend /= {}
   /\ LET p == CHOOSE x \in pend : TRUE IN
        IF StoreFirst(p) THEN trail' = (IF p \in TrailSet THEN trail ELSE Append(trail, p)) /\ log' = log ELSE Len(log) < MaxLog /\ log' = Append(log, p) /\ trail' = trail
   /\ pend' = {}
-  /\ UNCHANGED <<calls, att, claimLen, rd, fired, crashes, blocked>>
+  /\ UNCHANGED <<wcrash, calls, att, claimLen, rd, fired, crashes, blocked>>
 
 WriteCrash ==
-  /\ WithTrail /\ pend /= {} /\ pend' = {}
+  /\ WithTrail /\ pend /= {} /\ wcrash < MaxWriteCrash /\ pend' = {} /\ wcrash' = wcrash + 1
   /\ UNCHANGED <<log, trail, calls, att, claimLen, rd, fired, crashes, blocked>>
 
 \* A writer with store access and no key writes an unsigned record straight into the control log.
 Forge(r) ==
   /\ WithTrail /\ ~r.sig /\ Len(log) < MaxLog
   /\ log' = Append(log, r)
-  /\ UNCHANGED <<trail, pend, calls, att, claimLen, rd, fired, crashes, blocked>>
+  /\ UNCHANGED <<trail, pend, wcrash, calls, att, claimLen, rd, fired, crashes, blocked>>
 
 Reaudit ==
   /\ WithTrail /\ \E i \in 1..Len(log) :
        /\ log[i].sig /\ log[i] \notin TrailSet
        /\ \A j \in 1..(i - 1) : log[j].sig => log[j] \in TrailSet   \* in log order, every earlier record first
        /\ trail' = Append(trail, log[i])
-  /\ UNCHANGED <<log, pend, calls, att, claimLen, rd, fired, crashes, blocked>>
+  /\ UNCHANGED <<log, pend, wcrash, calls, att, claimLen, rd, fired, crashes, blocked>>
 \* protocol:stop end
 
 Next == \/ \E r \in Records : Write(r) \/ StartWrite(r) \/ Forge(r)
