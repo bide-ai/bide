@@ -3171,7 +3171,7 @@ nothing in the model starts it again.
 | `stop-blocked-reach` | ci | reachability: a call reads a stop and is not started (`BlockedNotReachable` violated) |
 | `stop-lift-reach` | ci | reachability: an audited lift by a quorum of two (`AuditedLiftNotReachable` violated) |
 | `stop-rotated-reach` | ci | reachability: policy 2 in force with a policy-1 stop active (`RotatedNotReachable` violated) |
-| `deep-stop-trail` | nightly | the write order with a trail at three records |
+| `deep-stop-trail` | nightly | the write order with a trail at three records and one crashed write (723,639 states, 12 s) |
 | `deep-stop` | nightly | the audited process at four records |
 
 ### Counterexample configurations
@@ -3187,6 +3187,7 @@ Each is in `stop/regress/` and must fail with its named property:
 - `no-chain` (`AgreesWithChain`): a process that does not walk the chain from the root drops a stop set under policy 1 silently (found in the review of #393).
 - `unknowable-on-forgery` (`NoSpuriousUnknowable`): one forged record makes an audited process's stops unknowable, so a store-write attacker pauses every covered call (the lead's review of fac3710c).
 - `untrusted-root` (`AgreesWithChain`): a stored root the process does not trust starts the chain: an attacker's root plus a transition into the pinned policy drops the genuine stops silently (found in the review of #393).
+- `apply-reorders` (`TrailAgreesWithLog`): a pending trail record is re-applied after later writes, so the control log holds it after records the trail has behind it and the two folds differ: found by the model while the stop trail was reviewed, and why `ApplyPending` applies only the records at the end of the trail.
 - `no-catch-up` (`TrailAgreesWithLog`): a lift goes on the trail without the catch-up: after a stop whose trail write failed, the lift is on the trail ahead of its stop, Reaudit appends the stop behind it, and the trail folds to a stop shown in force (found in the review of the stop trail's PR).
 - `lift-store-first` (`EffectiveImpliesTrailed`): a lift written to the control log before the trail is in force without its evidence (asked for in the review of the stop trail's PR).
 - `no-dep-check` (`ForeignNoEffect`): the fold ignores the deployment ID, so staging's records take effect in production (found in the review of #393).
