@@ -20,7 +20,9 @@
 // Credentials and the region come from the AWS SDK's default chain, never from flags. A server other
 // than AWS (a test MinIO) is selected with AWS_ENDPOINT_URL_S3 and -path-style.
 //
-// Exit status: 0 verified, 1 an object or head did not verify or check found something, 2 usage or I/O.
+// Exit status: 0 verified, 1 an object or head did not verify or check found something, 2 usage or I/O,
+// 3 the bucket's state is unknown (an online read was unavailable, denied or timed out: retry, and
+// alert if it persists). An aborted audit is never 0, and it is not a finding.
 package main
 
 import (
@@ -66,7 +68,10 @@ KEY is the log operator's public key (ed25519:<hex>, or a file holding it).`
 const (
 	exitOK       = 0
 	exitFindings = 1
-	exitUsage    = 2
+	// exitUnknown: an online read was refused, failed or could not finish (unavailable, denied, timed out),
+	// so the bucket's state is unknown. It is never 0 and never 1: retry, and alert if it persists.
+	exitUnknown = 3
+	exitUsage   = 2
 )
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk clientFunc) int {
@@ -175,7 +180,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 	case "check":
 		rep, err := reader.Audit(ctx, kind, run, time.Now())
 		if err != nil {
-			return fail(exitFindings, "%v", err)
+			return failRead(be, fail, err)
 		}
 		fmt.Fprintf(stdout, "%d verified head(s) for %s %q\n", len(rep.Heads), kind, run)
 		for _, f := range rep.Findings {
@@ -228,7 +233,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 			// marker, is evidence somebody should look at before it is relied on.
 			rep, aerr := reader.Audit(ctx, kind, run, time.Now())
 			if aerr != nil {
-				return fail(exitFindings, "%v", aerr)
+				return failRead(be, fail, aerr)
 			}
 			if len(rep.Findings) > 0 && !force {
 				for _, f := range rep.Findings {
@@ -248,6 +253,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 			return fail(exitFindings, "%v; not exporting", err)
 		}
 		if err != nil {
+			if online {
+				return failRead(be, fail, err)
+			}
 			return fail(exitFindings, "%v", err)
 		}
 		if conflicts := equivocations(heads); len(conflicts) > 0 {
@@ -355,4 +363,15 @@ func readKey(s string) (audit.Verifier, error) {
 		return nil, fmt.Errorf("public key in %s: %w", s, err)
 	}
 	return v, nil
+}
+
+// failRead reports an error from an online read. An error that is a finding (a head the log key did not
+// sign, two histories, no head) exits 1. Any other (the store unavailable, access denied, a timeout)
+// means the bucket's state is unknown, and exits 3, so that a script cannot take it for either a pass or
+// a finding.
+func failRead(be backend, fail func(int, string, ...any) int, err error) int {
+	if be.isFinding(err) {
+		return fail(exitFindings, "%v", err)
+	}
+	return fail(exitUnknown, "the state of the bucket is unknown (the read did not complete; retry, and alert if it persists): %v", err)
 }

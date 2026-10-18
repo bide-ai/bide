@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -279,5 +280,34 @@ func TestBackendLayoutsDoNotCollide(t *testing.T) {
 				t.Errorf("the %s and %s layouts collide: one could take the other's objects", a, b)
 			}
 		}
+	}
+}
+
+// An online read that cannot finish is "unknown" (3), never a pass (0) and not a finding (1).
+func TestAbortedAuditIsUnknown(t *testing.T) {
+	e := setup(t)
+	e.publish(t, e.head(t, "r1", 1, "a"))
+	for name, fault := range map[string]error{"unavailable": errors.New("connection reset"), "denied": awss3test.APIError("AccessDenied", 403)} {
+		e.fake.Hook = func(op string, _ int) error {
+			if op == "ListObjectVersions" {
+				return fault
+			}
+			return nil
+		}
+		for _, args := range [][]string{
+			{"check", "-bucket", "b", "-owner", owner, "-pubkey", e.pub, "-run", "r1"},
+			{"export", "-bucket", "b", "-owner", owner, "-pubkey", e.pub, "-run", "r1"},
+		} {
+			code, out, errs := e.do(args...)
+			if code != exitUnknown || !strings.Contains(errs, "state of the bucket is unknown") || strings.Contains(out, "PASS") {
+				t.Errorf("%s %v = %d\n%s%s; want %d and no PASS", name, args[0], code, out, errs, exitUnknown)
+			}
+		}
+	}
+	e.fake.Hook = nil
+	// A verdict about the objects is still a finding: a head signed by another key.
+	other := audit.Ed25519Signer{Priv: ed25519.NewKeyFromSeed(bytes.Repeat([]byte{9}, 32))}
+	if code, _, _ := e.do("check", "-bucket", "b", "-owner", owner, "-pubkey", audit.FormatPublicKey(other.Alg(), other.PublicKey()), "-run", "r1"); code != exitFindings {
+		t.Errorf("a head the key did not sign = exit %d, want %d", code, exitFindings)
 	}
 }

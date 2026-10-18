@@ -14,7 +14,7 @@ How the anchor works, the bucket and IAM setup, and what each check shows and do
 [the anchoring guide](../guides/anchoring.md). Flags take one dash, as in `bide`. Credentials and the region
 come from the AWS SDK's default chain, never from flags; a server other than AWS is selected with
 `AWS_ENDPOINT_URL_S3` and `-path-style`. Exit status is 0 for success, 1 for a head or object that did not verify
-or a finding, and 2 for a usage error.
+or a finding, 2 for a usage error, and 3 when the bucket's state is unknown: an online read was unavailable, denied or timed out, so the audit did not finish. Retry, and alert if it persists; an aborted audit is never a pass and is not a finding.
 
 | Command | What it does |
 |---|---|

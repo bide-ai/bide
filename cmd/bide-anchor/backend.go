@@ -22,6 +22,9 @@ type backend struct {
 	loadDir func(dir string, v audit.Verifier) ([]audit.SignedTreeHead, error)
 	// errNotFound is the backend's "no head anchored" error, wrapped when an offline set holds none.
 	errNotFound error
+	// isFinding reports whether a read error is a verdict about the objects (a head that does not verify,
+	// two histories, none anchored) rather than a failure to read them.
+	isFinding func(error) bool
 	// ownerFlag is the name of the flag that names the account or project that owns the bucket,
 	// and what it holds, for messages.
 	ownerFlag, ownerWhat string
@@ -66,9 +69,12 @@ func s3Backend(mk clientFunc) backend {
 	return backend{
 		name:        "s3",
 		errNotFound: awss3.ErrNotFound,
-		ownerFlag:   "-owner",
-		ownerWhat:   "the 12-digit AWS account ID that owns the bucket",
-		loadDir:     awss3.LoadDir,
+		isFinding: func(err error) bool {
+			return errors.Is(err, awss3.ErrNotFound) || errors.Is(err, awss3.ErrObject) || errors.Is(err, awss3.ErrBadSignature) || errors.Is(err, awss3.ErrEquivocation)
+		},
+		ownerFlag: "-owner",
+		ownerWhat: "the 12-digit AWS account ID that owns the bucket",
+		loadDir:   awss3.LoadDir,
 		open: func(ctx context.Context, o openOptions) (headReader, error) {
 			c, err := mk(ctx, o.pathStyle)
 			if err != nil {

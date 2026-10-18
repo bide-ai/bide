@@ -273,7 +273,7 @@ heads verifies and exports without complaint, which is a rollback of the evidenc
 `verify` and `export` print with the journal's current size. `check`
 (online) reads every version of every object and reports a finding for each delete marker, each object that
 is not locked, each retention that has ended (the object can be deleted now), each governance-mode lock,
-each key with more than one version, and each object that is not a verified head. Findings exit 1.
+each key with more than one version, and each object that is not a verified head. Findings exit 1. An audit that could not finish (the listing or a read was unavailable, denied or timed out) exits **3**: the bucket's state is unknown, which is neither a pass nor a finding, so retry and alert if it persists; `bide-anchor` never exits 0 after an aborted audit.
 
 Neither command shows that the **journal** matches the heads. That check is `bide audit` against the exported
 heads.
