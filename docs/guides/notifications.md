@@ -673,6 +673,17 @@ Against a run whose approval waits and which no notifier saw, it fails (exit 1) 
 
 <img src="./img/cli-audit-notifications-fail-dark.png" alt="bide audit notifications on run refund-2002: a red FAIL never_notified line for its approval_pending event, saying the journal shows the event and the trail has no record of it, and a final FAIL: 1 problem">
 
+**The kill switch's stops** are checked from the control run, with a store (`-db`, `-postgres-env`) and no
+`-run` (with `-run` the audit prints an INFO line that the stops were not checked): every stop in force must
+have been told (`stop_set`, `never_notified` if it was not), whatever its recorded time says, because that
+time is its writer's own. A stop that is lifted owes its all-clear and its `stop_lifted`; `-stops-within`
+(default 7 days, the notifier's `WithNotifyStopsWithin`) limits only stops that are over, and a stop set and
+lifted before any notifier looked owes only the lift. A control run record dated in the future, or more than
+five minutes before an earlier record, is a problem of its own. The stops are read as the deployment's mode judges them: give `-stop-policy` (and
+`-stop-root`) for an audited deployment; without it a control run that holds signed records is refused (exit
+4), because the audit could not read it and would pass what it did not check. See the
+[kill switch guide](kill-switch.md#notifications).
+
 Two things to set up on your side:
 
 - **Sign and anchor the trail.** Wrap the event store the trail lives in with an

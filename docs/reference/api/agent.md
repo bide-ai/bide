@@ -193,6 +193,7 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `func SameStopRecord(a, b StopRecord) bool`: SameStopRecord reports whether a and b are the same record: the same canonical bytes, signature included.
 - `func Sleep(ctx context.Context, name string, d time.Duration) error`: Sleep pauses the current run until d has elapsed from the FIRST time this timer was reached, durably.
 - `func SplitToKey(key string) (receiver, base string, ok bool)`: SplitToKey splits the key of a fan-out delivery, "to:&lt;receiver&gt;:&lt;key&gt;" (see ToKey), into the receiver and the key of the event it delivers.
+- `func StopClockAnomalies(recs []StopRecord, now time.Time, skew time.Duration) []string`: StopClockAnomalies are the records of a control run, in store order, whose time is not believable: dated more than skew after now, or more than skew before an earlier record of the log.
 - `func StopDigest(r StopRecord) string`: StopDigest returns the hex SHA-256 of the canonical bytes of the whole record r, signature included: what a lift's SetDigest names.
 - `func StopIDOf(r StopRecord) string`: StopIDOf returns the ID of the stop a set record makes: the hex SHA-256 of its canonical bytes without StopID and Signature.
 - `func StopLiftedKey(id string) string`: StopLiftedKey is the event key of the stop with the given ID being lifted (NotificationStopLifted).
@@ -1397,6 +1398,7 @@ JournalNotifyEvent is an event the journal of a run records that needs a person:
 **Constructors and functions**
 
 - `func JournalNotifyEvents(runID string, recs []Record) []JournalNotifyEvent`: JournalNotifyEvents returns the events recs, the history of runID, records that need a person, in journal order (gates, then halts in key order, then the abort).
+- `func StopNotifyEvents(st StopState, now time.Time, within time.Duration, observed func(key string) bool) []JournalNotifyEvent`: StopNotifyEvents are the events a state of the control run owes a notifier at now, with a window of within (0: the notifier's default, 7 days), as the journal-side facts audit.VerifyNotifications compares with the trail of the control run: a stop\_set for each stop in force (and each lifted one that is owed, see stopsOwed; Current while the stop stands, with the time it was lifted as ResolvedAt otherwise), and a stop\_lifted for each lift owed.
 
 ## type JournalOption
 
@@ -1816,6 +1818,10 @@ NotificationKind says what a Notification is about.
 - `const NotificationEscalated NotificationKind = "escalated"`: NotificationEscalated: an outcome\_unknown, approval\_pending, recovery\_failing or stop\_set event was not acknowledged (an approval: not decided) by its deadline, and the next receiver of its escalation chain is told.
 - `const NotificationStopSet NotificationKind = "stop_set"`: NotificationStopSet: a stop was set.
 - `const NotificationStopLifted NotificationKind = "stop_lifted"`: NotificationStopLifted: a stop was lifted, by the lift rule in force (an audited stop needs its quorum, so one partial lift raises nothing).
+
+**Constructors and functions**
+
+- `func ParseStopKey(key string) (id string, kind NotificationKind, ok bool)`: ParseStopKey is the stop and the kind an event key names: StopSetKey is a stop\_set, StopLiftedKey a stop\_lifted.
 
 ## type Notifier
 
@@ -3293,7 +3299,7 @@ StopNotifier tells a notifier when a stop is set or lifted, from a StopSwitch's 
 **Methods**
 
 - `func (n *StopNotifier) Flush(ctx context.Context) error`: Flush waits for the deliveries in flight to finish their round and stops the worker, as Agent.FlushNotifications does.
-- `func (n *StopNotifier) Observe(st StopState)`: Observe queues the events st owes and returns at once.
+- `func (n *StopNotifier) Observe(st StopState)`: Observe queues the events st owes.
 
 ## type StopOption
 

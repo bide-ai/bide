@@ -827,7 +827,7 @@ func TestStop_LiftShowsHeldRuns(t *testing.T) {
 }
 
 // The control run holds records and is not a run: the other commands that list a store's runs read the same
-// answer with and without a stop in force, and never name it.
+// answer with and without a stop in force, and never name it as a run.
 func TestStop_OtherCommandsIgnoreTheControlRun(t *testing.T) {
 	e := newStopEnv(t, 0)
 	s, err := sqlite.Open(e.db)
@@ -838,9 +838,9 @@ func TestStop_OtherCommandsIgnoreTheControlRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.Close()
+	// (bide audit notifications is not here: it now owes the stop's own notification, which is its own test.)
 	cmds := [][]string{
 		{"approve", "-db", e.db, "-list"},
-		{"audit", "notifications", "-db", e.db, "-unanchored"},
 	}
 	type answer struct {
 		code     int

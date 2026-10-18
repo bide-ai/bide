@@ -94,29 +94,133 @@ func WithNotifyStopsWithin(d time.Duration) NotifyOption {
 	})
 }
 
-// stopEvents are the events a state of the control run owes: a stop_set for each stop within the window, and a
-// stop_lifted for each of them that is lifted. The state is read as a process judges it, so a record it
-// rejects raises nothing.
-func (e *notifyEngine) stopEvents(st StopState) []notifyEvent {
-	within := e.cfg.stopWithin
+// ownedStop is one stop of a control run state and which of its two events are owed.
+type ownedStop struct {
+	entry         StopEntry
+	set, lifted   bool // the stop_set and the stop_lifted are owed
+	setAt, liftAt time.Time
+}
+
+// stopClockSkew is how far past now a record's time may be before it is read as unknown: a time the writer
+// chose and that is in the future is no evidence of when the record was written.
+const stopClockSkew = 5 * time.Minute
+
+// stopsOwed says, for each stop of st, which events a notifier owes at now with a window of within (0 is the
+// default). A record's time (StopRecord.At) is the writer's own, so no event is made to depend on it alone:
+//
+//   - every stop in force is owed its stop_set, whatever its time says (a backdated or future-dated stop is
+//     still a stop nobody may be left uninformed of);
+//   - a lifted stop is owed its stop_lifted while the lift is recent, and also when its stop_set is on the
+//     trail (observed): a stop a notifier told of is owed its end, however its lift is dated. A stop lifted
+//     long ago and never told of is history and owes nothing, and a stop that is lifted and was never
+//     observed owes no stop_set (nothing was current to tell) unless its set is recent;
+//   - a time in the future past stopClockSkew is read as unknown (the zero time), so it neither hides an event
+//     as "not yet due" nor dates it.
+//
+// observed says whether a key is on the control run's notification trail (nil: none is). The notifier and
+// bide audit notifications judge by this one function.
+func stopsOwed(st StopState, now time.Time, within time.Duration, observed func(string) bool) []ownedStop {
 	if within <= 0 {
 		within = defaultStopNotifyWithin
 	}
+	if observed == nil {
+		observed = func(string) bool { return false }
+	}
+	parse := func(stamp string) (time.Time, bool) {
+		t, err := time.Parse(time.RFC3339Nano, stamp)
+		if err != nil || t.After(now.Add(stopClockSkew)) {
+			return time.Time{}, false
+		}
+		return t, true
+	}
+	recent := func(stamp string) bool { // a time that does not parse, or lies in the future, is not old
+		t, ok := parse(stamp)
+		return !ok || now.Sub(t) <= within
+	}
+	var out []ownedStop
+	for _, s := range st.Stops {
+		told := observed(StopSetKey(s.ID))
+		o := ownedStop{entry: s}
+		o.setAt, _ = parse(s.At)
+		o.liftAt, _ = parse(s.LiftedAt)
+		o.set = !s.Lifted || recent(s.At) || told
+		o.lifted = s.Lifted && (recent(cmp.Or(s.LiftedAt, s.At)) || told)
+		if o.set || o.lifted {
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
+// StopNotifyEvents are the events a state of the control run owes a notifier at now, with a window of within
+// (0: the notifier's default, 7 days), as the journal-side facts audit.VerifyNotifications compares with the
+// trail of the control run: a stop_set for each stop in force (and each lifted one that is owed, see stopsOwed;
+// Current while the stop stands, with the time it was lifted as ResolvedAt otherwise), and a stop_lifted for
+// each lift owed. observed says whether a key is on that trail. It is what the notifier itself raises
+// (WithNotifyStops).
+func StopNotifyEvents(st StopState, now time.Time, within time.Duration, observed func(key string) bool) []JournalNotifyEvent {
+	var out []JournalNotifyEvent
+	for _, o := range stopsOwed(st, now, within, observed) {
+		if o.set {
+			out = append(out, JournalNotifyEvent{Key: StopSetKey(o.entry.ID), Kind: NotificationStopSet, RunID: StopControlRun, At: o.setAt, Current: !o.entry.Lifted, ResolvedAt: o.liftAt})
+		}
+		if o.lifted {
+			out = append(out, JournalNotifyEvent{Key: StopLiftedKey(o.entry.ID), Kind: NotificationStopLifted, RunID: StopControlRun, At: o.liftAt, Current: true})
+		}
+	}
+	return out
+}
+
+// StopClockAnomalies are the records of a control run, in store order, whose time is not believable: dated
+// more than skew after now, or more than skew before an earlier record of the log. A record's time is its
+// writer's own, so an anomaly is a finding, not an answer to when it was written.
+func StopClockAnomalies(recs []StopRecord, now time.Time, skew time.Duration) []string {
+	var out []string
+	var latest time.Time
+	for i, r := range recs {
+		t, err := time.Parse(time.RFC3339Nano, r.At)
+		if err != nil {
+			continue
+		}
+		switch {
+		case t.After(now.Add(skew)):
+			out = append(out, fmt.Sprintf("record %d (%s by %s) is dated %s, in the future", i+1, r.Kind, r.By, r.At))
+		case !latest.IsZero() && t.Before(latest.Add(-skew)):
+			out = append(out, fmt.Sprintf("record %d (%s by %s) is dated %s, more than %s before an earlier record of the control run", i+1, r.Kind, r.By, r.At, skew))
+		}
+		if t.After(latest) && !t.After(now.Add(skew)) {
+			latest = t
+		}
+	}
+	return out
+}
+
+// ParseStopKey is the stop and the kind an event key names: StopSetKey is a stop_set, StopLiftedKey a
+// stop_lifted. ok is false for any other key.
+func ParseStopKey(key string) (id string, kind NotificationKind, ok bool) {
+	id, lifted, ok := stopIDOfKey(key)
+	switch {
+	case !ok:
+		return "", "", false
+	case lifted:
+		return id, NotificationStopLifted, true
+	}
+	return id, NotificationStopSet, true
+}
+
+// stopEvents are the events a state of the control run owes: a stop_set for each stop whose set is within
+// the window, and a stop_lifted for each lift within it. The state is read as a process judges it, so a record
+// it rejects raises nothing.
+func (e *notifyEngine) stopEvents(st StopState, observed func(string) bool) []notifyEvent {
 	now := e.cfg.now()
 	var out []notifyEvent
-	recent := func(stamp string) bool { // a time that does not parse is not old
-		at, err := time.Parse(time.RFC3339Nano, stamp)
-		return err != nil || now.Sub(at) <= within
-	}
-	for _, s := range st.Stops {
-		at, _ := time.Parse(time.RFC3339Nano, s.At)
+	for _, o := range stopsOwed(st, now, e.cfg.stopWithin, observed) {
+		s := o.entry
 		info := &NotifyStop{ID: s.ID, Scope: s.Scope, Reason: s.Reason, Compensation: s.Compensation, By: s.By, Host: s.Host, Mode: st.Mode, Signed: s.Signed}
-		// The set is news while it is recent. The lift is news while the lift is recent, however long the stop
-		// ran: a stop that was set a month ago and is lifted now is told as a lift.
-		if recent(s.At) {
-			out = append(out, notifyEvent{key: StopSetKey(s.ID), kind: NotificationStopSet, runID: StopControlRun, eventAt: at, stop: info})
+		if o.set {
+			out = append(out, notifyEvent{key: StopSetKey(s.ID), kind: NotificationStopSet, runID: StopControlRun, eventAt: o.setAt, stop: info})
 		}
-		if s.Lifted && recent(cmp.Or(s.LiftedAt, s.At)) {
+		if o.lifted {
 			lifted := *info
 			lifted.LiftedBy = append([]string(nil), s.LiftedBy...)
 			out = append(out, notifyEvent{key: StopLiftedKey(s.ID), kind: NotificationStopLifted, runID: StopControlRun, eventAt: now, stop: &lifted})
@@ -151,6 +255,22 @@ func (e *notifyEngine) stopStillSet(ctx context.Context, id string) (bool, error
 	return false, nil // not accepted (rejected, or not in this view): it does not stand
 }
 
+// observeTimeout bounds the read of the control run's trail that Observe makes (it runs on the observer's goroutine,
+// off every check point).
+const observeTimeout = 10 * time.Second
+
+// observedStops says whether a key is on the notification trail of the control run: what stopsOwed asks to know
+// which lifted stops were told of. A trail that cannot be read counts as holding nothing (and is reported).
+func (e *notifyEngine) observedStops(ctx context.Context) func(string) bool {
+	recs, err := e.trail.Load(ctx, NotifyTrailName(StopControlRun))
+	if err != nil {
+		e.report(fmt.Errorf("notify: read the stop trail: %w", err))
+		return nil
+	}
+	st := FoldNotify(recs)
+	return func(key string) bool { return st.Events[key] != nil }
+}
+
 // sweepStops is the part of NotifyPending that reads the control run.
 func (e *notifyEngine) sweepStops(ctx context.Context) []error {
 	if e.cfg.stops == nil {
@@ -164,7 +284,7 @@ func (e *notifyEngine) sweepStops(ctx context.Context) []error {
 	// No scan is queued here: the sweep's run listing reaches the control run (an unfinished run) and queues
 	// its trail's scan, and each stop event below is judged again by its round, which writes the all-clear
 	// of a stop that has been lifted.
-	for _, ev := range e.stopEvents(st) {
+	for _, ev := range e.stopEvents(st, e.observedStops(ctx)) {
 		if err := e.roundRouted(ctx, ev); err != nil {
 			errs = append(errs, fmt.Errorf("notification sweep: stop %s: %w", ev.stop.ID, err))
 		}
@@ -200,9 +320,12 @@ func NewStopNotifier(j *Journal, o NotifierOption, ctl *StopControl) (*StopNotif
 	return &StopNotifier{e: e}, nil
 }
 
-// Observe queues the events st owes and returns at once. It is the function to give WithStopObserver.
+// Observe queues the events st owes. It is the function to give WithStopObserver, which calls it off every check
+// point, on a goroutine of the switch's own (it reads the control run's trail, bounded by observeTimeout).
 func (n *StopNotifier) Observe(st StopState) {
-	for _, ev := range n.e.stopEvents(st) {
+	ctx, cancel := context.WithTimeout(context.Background(), observeTimeout)
+	defer cancel()
+	for _, ev := range n.e.stopEvents(st, n.e.observedStops(ctx)) {
 		n.e.submit(ev)
 	}
 	n.e.queueScanTrail(StopControlRun)

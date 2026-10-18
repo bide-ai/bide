@@ -10,7 +10,7 @@ how to use what has shipped.
 Shipped: the control run, the engine's holds, recovery, the signed audit trail with `bide audit
 stops`, the model (`agent.StopControl`, `agent.StopSwitch`, `agent.WithStopSwitch`,
 `audit.NewStopTrail`), and the operator command `bide stop` (and `bide-hsm stop` for a key in an HSM
-or a KMS). `bide view` shows an active stop on every page and which runs it holds. A stop and its lift notify through the [notifier](#notifications). Not shipped yet: `bide audit notifications` coverage of them.
+or a KMS). `bide view` shows an active stop on every page and which runs it holds. A stop and its lift notify through the [notifier](#notifications). `bide audit notifications` checks that they were told.
 
 ## What a stop does
 
@@ -227,9 +227,12 @@ sw, _ := agent.NewStopSwitch(ctl, agent.WithStopObserver(n.Observe))
   lift is.
 - An audited stop is lifted by its quorum, so `stop_lifted` is raised once, when the quorum lands, and a
   partial lift raises nothing (it is in `bide stop -list`). The all-clear of a `stop_set` has reason `lifted`.
-- The window (`WithNotifyStopsWithin`, default 7 days) is judged per event: a `stop_set` is news while the
-  set is recent, a `stop_lifted` while the lift is recent, so a stop that ran for a month is told when it is
-  lifted. A stop set and lifted long ago raises nothing.
+- Every stop in force is told, whatever its recorded time says: a record's time is its writer's own, so a
+  stop recorded now with a backdated or future time is still news. The window (`WithNotifyStopsWithin`,
+  default 7 days) limits only stops that are over: a stop that ran for a month is told when it is lifted
+  (its `stop_lifted`), a stop that was told of is owed its end whatever the lift's time says, and a stop set
+  and lifted long ago and never told of raises nothing. A time more than five minutes in the future is
+  read as unknown and dates nothing.
 - **Every process that notifies over a trail holding stop events needs the control** (`WithNotifyStops`, or a
   `StopNotifier`): without it a process cannot tell whether a stop still stands, so it leaves `stop_set`
   events alone (it does not escalate them or write their all-clear) and reports once, through
@@ -246,7 +249,9 @@ sw, _ := agent.NewStopSwitch(ctl, agent.WithStopObserver(n.Observe))
   notification, which the sweep finds again.
 - `bide stop` does not notify: it has no notifier. A deployment runs the sweep (or a `StopNotifier`) in the
   process that already holds its notifier, and checks the receiver with `bide notify test -kind stop_set`.
-  `bide audit notifications` does not yet check that every stop was told (a follow-up).
+  `bide audit notifications -db` checks that every stop and every lift was told, from the control run
+  (`-stop-policy` and `-stop-root` for an audited deployment, `-stops-within` as the notifier's window). The audit also reports a control run record dated in the future, or
+  more than five minutes before an earlier record, as a problem of its own.
 
 ## The audit trail
 

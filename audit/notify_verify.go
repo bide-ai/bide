@@ -94,6 +94,15 @@ type NotifyVerifyInput struct {
 	// Journals are run journals the events are cross-checked against: every gate, halt and abort
 	// they show is expected in the trail of its root run.
 	Journals []JournalExport
+	// Stops is the state of the kill switch's control run, as the deployment's own mode judges it: the events
+	// it owes a notifier (agent.StopNotifyEvents, at Now, with the window StopsWithin, 0 the notifier's default)
+	// are expected in the trail of the control run, and a stop that is lifted owes its all-clear and its lift.
+	// Which lifts are owed depends on which stops the trail shows were told of, so it is judged here, not by
+	// the caller. StopAnomalies are findings about the control run itself (agent.StopClockAnomalies): each is
+	// a problem.
+	Stops         *agent.StopState
+	StopsWithin   time.Duration
+	StopAnomalies []string
 
 	// Routing, if set, is the notifier's routing (agent.RoutingOf, the same options the notifier was
 	// built with): each event that needs a person must have been delivered to the receivers it
@@ -225,7 +234,7 @@ func (r NotifyReport) CountsByReceiver() map[string]map[NotifyStatus]int {
 var notifyKinds = []agent.NotificationKind{
 	agent.NotificationOutcomeUnknown, agent.NotificationApprovalPending, agent.NotificationRunAborted,
 	agent.NotificationRecoveryFailing, agent.NotificationOverdue, agent.NotificationResolved,
-	agent.NotificationEscalated,
+	agent.NotificationEscalated, agent.NotificationStopSet, agent.NotificationStopLifted,
 }
 
 var notifyRecordKinds = []agent.NotifyRecordKind{
@@ -234,7 +243,7 @@ var notifyRecordKinds = []agent.NotifyRecordKind{
 	agent.NotifyCheckpoint, agent.NotifySeal, agent.NotifySegment, agent.NotifyBackfilled,
 }
 
-var notifyClearReasons = []string{"resolved", "decided", "ended", "recovered"}
+var notifyClearReasons = []string{"resolved", "decided", "ended", "recovered", "lifted"}
 
 // decodeNotifyLeafStrict reads a notification record from a stored event leaf, and refuses what
 // the engine's NotifyTrail.Load keeps: a field it does not know, a duplicate key, a record kind
@@ -348,6 +357,10 @@ func VerifyNotifications(in NotifyVerifyInput) (NotifyReport, error) {
 			owed[name] = append(owed[name], ev)
 		}
 	}
+	stopTrail := agent.NotifyTrailName(agent.StopControlRun)
+	if in.Stops != nil && len(in.Stops.Stops) > 0 && !slices.Contains(names, stopTrail) {
+		names = append(names, stopTrail)
+	}
 	for name := range owed {
 		if trails[name] == nil {
 			names = append(names, name)
@@ -383,6 +396,14 @@ func VerifyNotifications(in NotifyVerifyInput) (NotifyReport, error) {
 			all[name] = recs
 		}
 	}
+	if in.Stops != nil {
+		var observed func(string) bool
+		if recs, ok := all[stopTrail]; ok {
+			st := agent.FoldNotify(recs)
+			observed = func(key string) bool { return st.Events[key] != nil }
+		}
+		owed[stopTrail] = append(owed[stopTrail], agent.StopNotifyEvents(*in.Stops, in.Now, in.StopsWithin, observed)...)
+	}
 	openV := checkOpenGroup(all, in.MaxClockSkew, !in.Unanchored)
 	coverV := checkOpenCoverage(all, in.MaxClockSkew)
 	for _, name := range names {
@@ -416,6 +437,9 @@ func VerifyNotifications(in NotifyVerifyInput) (NotifyReport, error) {
 		for _, v := range tr.Violations {
 			rep.Problems = append(rep.Problems, fmt.Sprintf("trail %s: %s", tr.Trail, v))
 		}
+	}
+	for _, a := range in.StopAnomalies {
+		rep.Problems = append(rep.Problems, "kill switch control run: "+a)
 	}
 	for _, e := range rep.Events {
 		if e.Status.Problem() || in.Strict && e.Status.Warning() {
@@ -599,6 +623,10 @@ func checkNotifyTrail(trail string, recs []agent.NotifyRecord, skew time.Duratio
 				requirePrefix(bad, i, key, "approval:")
 			case agent.NotificationRunAborted:
 				requirePrefix(bad, i, r.Key, "aborted:")
+			case agent.NotificationStopSet, agent.NotificationStopLifted:
+				if _, kind, ok := agent.ParseStopKey(key); !ok || kind != e.kind {
+					bad(i, "key %q is not the key of a %s event (stop:<id>, or stop:<id>:lifted)", r.Key, e.kind)
+				}
 			case agent.NotificationRecoveryFailing:
 				requirePrefix(bad, i, r.Key, "recovery:")
 				if !episodeOpen {
@@ -879,7 +907,7 @@ func (in NotifyVerifyInput) verdicts(trail string, recs []agent.NotifyRecord, jo
 
 func owesAllClear(kind string) bool {
 	switch agent.NotificationKind(kind) {
-	case agent.NotificationOutcomeUnknown, agent.NotificationApprovalPending, agent.NotificationRecoveryFailing, agent.NotificationEscalated:
+	case agent.NotificationOutcomeUnknown, agent.NotificationApprovalPending, agent.NotificationRecoveryFailing, agent.NotificationEscalated, agent.NotificationStopSet:
 		return true
 	}
 	return false
