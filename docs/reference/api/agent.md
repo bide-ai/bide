@@ -84,6 +84,7 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `var ErrRedactChanged`: ErrRedactChanged is a redaction of an entry whose bytes are not the bytes the caller read: another writer changed it, or the caller's copy is not what is stored.
 - `var ErrRedactNoEntry`: ErrRedactNoEntry is a redaction of an entry the run does not hold.
 - `var ErrAlreadyResolved`: ErrAlreadyResolved is the condition of a resolution refused because the operation already has a different recorded outcome (see HaltAlreadyResolved).
+- `var ErrAlreadyStopped = errors.New("agent: already stopped")`: ErrAlreadyStopped is matched (errors.Is) by the \*AlreadyStoppedError SetStop returns, with the stop in force, when the scope with that compensation is already stopped.
 - `var ErrApprovalExpired = errors.New("approval expired")`: ErrApprovalExpired is returned (wrapped) when an approval gate's deadline has passed: by Approve and SubmitDecision for a decision on such a gate (also ErrConfig: nothing is recorded), and by a plan flow for a node whose gate expired (also plan.ErrApprovalDenied).
 - `var ErrGateNeedsNewRun = errors.New("the gate needs a new run")`: ErrGateNeedsNewRun is wrapped (with ErrConfig) by the error of a certificate-bound gate that cannot go on in place: its recorded count passed without excluding the requester and the policy now excludes them, so no re-ask can be named.
 - `var ErrHoldExists`: ErrHoldExists is a PlaceHold of an ID that is active.
@@ -97,6 +98,7 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `var ErrRedactHeld`: ErrRedactHeld is a redaction of a run an active hold covers.
 - `var ErrRunCancelled = errors.New("run cancelled")`: ErrRunCancelled is the end of a run that was cancelled (see Cancel): the first of the run's end markers in journal order is run:cancelled.
 - `var ErrRunEnded = errors.New("run already ended")`: ErrRunEnded is Cancel's answer for a run that is already over: its first end marker is run:complete or run:aborted, so there is nothing left to cancel.
+- `var ErrStopContended`: ErrStopContended is returned by SetStop when it lost the insert to other writers more times than it retries: the control run is changing faster than the call can read it.
 - `var ErrStopRejected`: ErrStopRejected is returned when a record was written but the control run's fold does not accept it (a policy transition raced it, or its signature does not verify under the policy in force at its position): it has no effect.
 - `var ErrStopsUnknowable`: ErrStopsUnknowable is returned by StopState.UnknowableErr when a control genuinely cannot judge which stops are in force: a basic process that holds an active stop set under a signed record (it lacks the deployment's policy), or an audited process whose pin the stored chain does not reach, or whose chain forks or competes.
 - `var ErrToolNotCalled = errors.New("tool not called")`: ErrToolNotCalled marks a tool call that is known never to have reached its tool, so its side effect cannot have happened.
@@ -290,6 +292,19 @@ Alg names a signature scheme: "ed25519", "ecdsa-p256", "ml-dsa-65", or "ed25519+
 **Constants**
 
 - `const AlgCertificate Alg = "x509"`: AlgCertificate is the Alg a certificate-bound verifier reports.
+
+## type AlreadyStoppedError
+
+```go
+type AlreadyStoppedError struct{ Entry StopEntry }
+```
+
+AlreadyStoppedError is returned by SetStop when a stop with the same scope and compensation is already in force: Entry is that stop, set by someone else or by an earlier call.
+
+**Methods**
+
+- `func (e *AlreadyStoppedError) Error() string`: Error implements error.
+- `func (e *AlreadyStoppedError) Unwrap() error`: Unwrap lets errors.Is(err, ErrAlreadyStopped) match.
 
 ## type AnswerOption
 
@@ -3369,6 +3384,8 @@ type StopRecord struct {
 	SetDigest    string     `json:"set_digest,omitempty"`
 	Scope        *StopScope `json:"scope,omitempty"`
 	Compensation string     `json:"compensation,omitempty"`
+
+	Gen int `json:"gen,omitempty"`
 
 	To  StopMode `json:"to,omitempty"`
 	Seq int      `json:"seq,omitempty"`
