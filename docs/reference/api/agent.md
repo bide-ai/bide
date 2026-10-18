@@ -37,7 +37,7 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `const MaxEscalationSteps = maxEscalationSteps`: MaxEscalationSteps is the most steps an escalation chain may have.
 - `const MaxStopReason = 1024`: MaxStopReason bounds the reason of a stop, a lift or a mode change, in bytes.
 - `const NotifyDigestTrail = "notify:@digest"`: NotifyDigestTrail is the name of the trail the periodic digest uses; it belongs to no run.
-- `const NotifyOpenTrail = "notify:@open"`: NotifyOpenTrail is the prefix of the trail that lists the events whose all-clear may still be owed: a watch record before an outcome\_unknown, approval\_pending or recovery\_failing event is observed, an unwatch record when nothing more is owed for it.
+- `const NotifyOpenTrail = "notify:@open"`: NotifyOpenTrail is the prefix of the trail that lists the events whose all-clear may still be owed: a watch record before an outcome\_unknown, approval\_pending, recovery\_failing or stop\_set event is observed, an unwatch record when nothing more is owed for it.
 - `const OpenFirstYear = 2026`: OpenFirstYear is the first year an open-trail index can exist: the year the open trail began.
 - `const PendingExecHoldReapproval`: PendingExecHoldReapproval is ApprovalPending.Reason for a certificate-bound gate whose counted approvals were held before execution (ExecHold: a counted decision no longer holds): the call did not run, and it runs once approvers decide again and a new count passes (ApprovalIdentTallyStep of the next generation).
 - `const PendingIdentReapproval`: PendingIdentReapproval is ApprovalPending.Reason for a certificate-bound gate whose recorded tally is a plain-name one (approval-tally:&lt;id&gt;), counted without the approvers' certificates: the gate does not run the call on it, and asks again; the new count is recorded under ApprovalIdentTallyStep.
@@ -194,7 +194,9 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `func SplitToKey(key string) (receiver, base string, ok bool)`: SplitToKey splits the key of a fan-out delivery, "to:&lt;receiver&gt;:&lt;key&gt;" (see ToKey), into the receiver and the key of the event it delivers.
 - `func StopDigest(r StopRecord) string`: StopDigest returns the hex SHA-256 of the canonical bytes of the whole record r, signature included: what a lift's SetDigest names.
 - `func StopIDOf(r StopRecord) string`: StopIDOf returns the ID of the stop a set record makes: the hex SHA-256 of its canonical bytes without StopID and Signature.
+- `func StopLiftedKey(id string) string`: StopLiftedKey is the event key of the stop with the given ID being lifted (NotificationStopLifted).
 - `func StopPolicyDigest(d StopPolicyDoc) string`: StopPolicyDigest returns the hex SHA-256 of the canonical bytes of a policy document.
+- `func StopSetKey(id string) string`: StopSetKey is the event key of the stop with the given ID being set (NotificationStopSet).
 - `func StopSigningBytes(r StopRecord) []byte`: StopSigningBytes returns the bytes a signature of r covers: the label, the record's kind and its canonical body (StopID included, Signature excluded).
 - `func SubRunID(parent, toolUseID string) string`: SubRunID returns the run ID of the sub-agent run that the call toolUseID of run parent starts: parent, '&gt;', then toolUseID encoded (see encodeID).
 - `func SubmitDecision(ctx context.Context, store *Journal, d Decision, opts ...ApproveOption) error`: SubmitDecision records d, one approver's signed decision on an m-of-n gated call.
@@ -1765,6 +1767,7 @@ type Notification struct {
 
 	Halt      *NotifyHalt
 	Approval  *NotifyApproval
+	Stop      *NotifyStop
 	Principal *Principal
 	Clears    *NotifyClears
 	Escalates *NotifyEscalates
@@ -1794,9 +1797,11 @@ NotificationKind says what a Notification is about.
 - `const NotificationRunAborted NotificationKind = "run_aborted"`: NotificationRunAborted: the run reached the run:aborted end marker.
 - `const NotificationRecoveryFailing NotificationKind = "recovery_failing"`: NotificationRecoveryFailing: recovery has kept failing for a run for longer than the configured time.
 - `const NotificationOverdue NotificationKind = "notification_overdue"`: NotificationOverdue: an event was not acknowledged by its deadline.
-- `const NotificationResolved NotificationKind = "resolved"`: NotificationResolved: an outcome\_unknown, approval\_pending or recovery\_failing event that a receiver has, or may have, stopped being current (the halt was resolved, the gate decided, the run ended, recovery recovered).
+- `const NotificationResolved NotificationKind = "resolved"`: NotificationResolved: an outcome\_unknown, approval\_pending, recovery\_failing or stop\_set event that a receiver has, or may have, stopped being current (the halt was resolved, the gate decided, the run ended, recovery recovered).
 - `const NotificationApprovalExpired NotificationKind = "approval_expired"`: NotificationApprovalExpired: an approval gate a receiver was, or may have been, told of (approval\_pending) expired: its deadline (ApprovalPolicy.Timeout) passed with no approval, so the call will not run.
-- `const NotificationEscalated NotificationKind = "escalated"`: NotificationEscalated: an outcome\_unknown, approval\_pending or recovery\_failing event was not acknowledged (an approval: not decided) by its deadline, and the next receiver of its escalation chain is told.
+- `const NotificationEscalated NotificationKind = "escalated"`: NotificationEscalated: an outcome\_unknown, approval\_pending, recovery\_failing or stop\_set event was not acknowledged (an approval: not decided) by its deadline, and the next receiver of its escalation chain is told.
+- `const NotificationStopSet NotificationKind = "stop_set"`: NotificationStopSet: a stop was set.
+- `const NotificationStopLifted NotificationKind = "stop_lifted"`: NotificationStopLifted: a stop was lifted, by the lift rule in force (an audited stop needs its quorum, so one partial lift raises nothing).
 
 ## type Notifier
 
@@ -1968,6 +1973,8 @@ NotifyOption configures the notifier WithNotifier and NotifyPending build.
 - `func WithNotifyRecoveryFailingAfter(d time.Duration) NotifyOption`: WithNotifyRecoveryFailingAfter sets how long recovery must keep failing for a run before a NotificationRecoveryFailing event is raised (default 15 minutes).
 - `func WithNotifyRetry(base, max time.Duration) NotifyOption`: WithNotifyRetry sets the backoff between rounds of a failing delivery: base, doubling per failure, up to max (defaults 1 second and 15 minutes).
 - `func WithNotifyRoute(kind NotificationKind, receiver string) NotifyOption`: WithNotifyRoute sends events of kind to the named receiver instead of the default one.
+- `func WithNotifyStops(ctl *StopControl) NotifyOption`: WithNotifyStops makes NotifyPending also read ctl's control run and notify of each stop that was set or lifted within the last WithNotifyStopsWithin (default 7 days).
+- `func WithNotifyStopsWithin(d time.Duration) NotifyOption`: WithNotifyStopsWithin sets how far back stop events are raised (see WithNotifyStops); at least one minute.
 - `func WithNotifyUpgradeWindow(d time.Duration) NotifyOption`: WithNotifyUpgradeWindow sets how long after the first backfill pass the second runs (default 24 hours).
 - `func WithOverdueNotifier(n Notifier) NotifyOption`: WithOverdueNotifier sends NotificationOverdue events to n instead of the main Notifier, for the usual case where the main sink being down is why the event is overdue.
 
@@ -2096,6 +2103,25 @@ NotifyState is a notification trail folded to what a notifier needs to decide it
 
 - `func (s NotifyState) ByReceiver() map[string][]string`: ByReceiver groups the keys of the events in the trail by the receiver they are to (DefaultReceiver for the default one), each in the order observed: the per-receiver view of a run's deliveries, whose acknowledgement an auditor reads from Events`key`.
 - `func (s *NotifyState) RecoveryFailingDue(now time.Time, d time.Duration) bool`: RecoveryFailingDue reports whether the open recovery failure episode has lasted longer than d at now, so a recovery\_failing event is due.
+
+## type NotifyStop
+
+```go
+type NotifyStop struct {
+	ID           string
+	Scope        StopScope
+	Reason       string
+	Compensation string
+
+	By, Host string
+	Mode     StopMode
+	Signed   bool
+
+	LiftedBy []string
+}
+```
+
+NotifyStop is the structured detail of a NotificationStopSet or NotificationStopLifted notification.
 
 ## type NotifyTrail
 
@@ -3231,6 +3257,25 @@ StopMode is the mode a deployment's stops run under: StopBasic (the default) or 
 - `const StopBasic StopMode = "basic"`: StopBasic needs no keys: anyone who can write the store sets and lifts a stop, and the records are plain and unsigned.
 - `const StopAudited StopMode = "audited"`: StopAudited signs every record with an enrolled key, lifts by a quorum and records to an anchored trail (package audit).
 
+## type StopNotifier
+
+```go
+type StopNotifier struct {
+	// contains filtered or unexported fields
+}
+```
+
+StopNotifier tells a notifier when a stop is set or lifted, from a StopSwitch's observations of the control run.
+
+**Constructors and functions**
+
+- `func NewStopNotifier(j *Journal, o NotifierOption, ctl *StopControl) (*StopNotifier, error)`: NewStopNotifier binds o, a WithNotifier option, to j and ctl.
+
+**Methods**
+
+- `func (n *StopNotifier) Flush(ctx context.Context) error`: Flush waits for the deliveries in flight to finish their round and stops the worker, as Agent.FlushNotifications does.
+- `func (n *StopNotifier) Observe(st StopState)`: Observe queues the events st owes and returns at once.
+
 ## type StopOption
 
 ```go
@@ -3482,6 +3527,7 @@ StopSwitchOption configures NewStopSwitch.
 **Constructors and functions**
 
 - `func WithStopErrors(fn func(error)) StopSwitchOption`: WithStopErrors sets the function a StopSwitch hands a failed read of the control run, and the alerts of a control that cannot judge the stops (StopState.ChainErr, Unverified in a basic control).
+- `func WithStopObserver(fn func(StopState)) StopSwitchOption`: WithStopObserver gives a StopSwitch a function that is told, with the control run's state, each time a stop has appeared or been lifted since it last was (the first successful read included).
 - `func WithStopPoll(d time.Duration) StopSwitchOption`: WithStopPoll sets how often a StopSwitch reads the control run for the checks that use its cache (a drive's start, a turn's start, a call before its claim): the latency bound of a stop for them.
 - `func WithStopStaleness(d time.Duration) StopSwitchOption`: WithStopStaleness sets how old the last successful read may be for a side-effect call to run when the control run cannot be read now: past it the call is held (StopCauseUnreadable).
 
