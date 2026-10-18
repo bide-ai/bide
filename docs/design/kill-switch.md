@@ -548,7 +548,13 @@ stop would be a second stop, because the record's time is part of its identity, 
 is not the repair); exit statuses are 0, 1, 2, 3 and 5 (half done). `bide stop` appends leaves to the
 trail only: signed heads come from `bide audit stops -sign-head -log-key -head-out` (`bide-hsm audit stops` for a log key
 in an HSM or a KMS), a separate job that verifies the trail against the control run, signs exactly the
-verified records and appends the head to a file `-sth` reads. The viewer banner, the per-run "held by stop" state and the run count on a lift follow.
+verified records and appends the head to a file `-sth` reads.
+**As built (PR 4b).** `bide view` reads the control run through an `agent.StopControl` (basic, or audited
+with `-stop-policy` and `-stop-root`), serves the banner on every store page (cached with the run list) and
+`/stops.json`, and marks runs held by a stop. The journal does not record the agent identity that drives a
+run (`Identity.Actor` is the deployment's), so an agent stop can only say "may be held"; global, flow and
+tool stops are decided from the journal (a tool stop from calls with no result). `bide stop -lift` counts
+the held runs by the same rule. The control run is excluded from the viewer's run listing.
 
 ## 12. Formal model
 

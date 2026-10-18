@@ -10,7 +10,7 @@ how to use what has shipped.
 Shipped: the control run, the engine's holds, recovery, the signed audit trail with `bide audit
 stops`, the model (`agent.StopControl`, `agent.StopSwitch`, `agent.WithStopSwitch`,
 `audit.NewStopTrail`), and the operator command `bide stop` (and `bide-hsm stop` for a key in an HSM
-or a KMS). Not shipped yet: the viewer banner and the notifications.
+or a KMS). `bide view` shows an active stop on every page and which runs it holds. Not shipped yet: the notifications.
 
 ## What a stop does
 
@@ -143,6 +143,31 @@ trail write fails the stop IS in force; run `bide stop -reaudit` (same `-db` and
 on the trail. Do not repeat the stop: a repeat is a second stop with its own ID. A lift is written to the
 trail first; if the control-run write then fails, the lift is on the trail and not in force, and
 `bide stop -apply-pending` makes it effective. `bide audit stops` shows the same two states.
+
+## What `bide view` shows
+
+`bide view -db run.db` (or `-postgres-env`) reads the control run beside the runs and stays read-only.
+
+- **A banner on every page** while a stop is in force: its scope, reason, who set it and how long ago,
+  how many lifts it holds of how many it needs, whether compensation is held too, and the mode. It also
+  appears, red, when the stops **cannot be judged** (a basic viewer on a signed deployment, a policy chain
+  it cannot walk), when signed records **cannot be checked**, when records were **rejected** (a forged
+  record, or one signed under a policy that does not enrol the signer), and when the control run **cannot
+  be read**: the page never says "no stop" about a control run it could not read. Text from the store is
+  cleaned of control and bidirectional characters, escaped and cut.
+- **`-stop-policy FILE`** (and `-stop-root`) read the control run as an audited deployment does and check
+  every signature. Without it the viewer reads as a basic one and the banner says "signatures not
+  verified".
+- **Which runs a stop holds**, in the run list and on a run's page, as "held by stop <id>". A global stop
+  holds every run that is not over, not halted for an unknown outcome and not made of durable steps with
+  no `run:start`; a flow stop the runs of that flow; a tool stop a run with a call to that tool that the
+  journal shows no result for. **An agent stop can only say "may be held"**: an agent stop covers runs by
+  the identity of the process that drives them (`Identity.Actor`), which the journal does not record. The
+  state is derived from the journal: the viewer cannot tell a run a live process is holding from one no
+  process is driving, and a held run is held at its next drive (a call that has begun finishes).
+- `/stops.json` serves the banner as JSON. `bide stop -lift` shows how many runs the stop holds, by the
+  same rule, before it asks.
+- The control run (`@stop`) is not a run: it is not listed, counted or shown as needing attention.
 
 ## Basic and audited mode
 
