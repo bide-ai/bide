@@ -261,6 +261,22 @@ jobs:
           # -count=1: the architecture test runs go list, whose result the test cache cannot see change.
           echo "== vet and test cmd/bide -tags bide_audit_only =="
           ( cd cmd/bide && go vet -tags bide_audit_only ./... && go test -tags bide_audit_only -count=1 . )
+      - name: go mod tidy leaves no diff (all modules)
+        if: needs.changes.outputs.code != 'false'
+        # The release runs go mod tidy on each published module, and TestDirectRequires (cmd/bide)
+        # checks the direct requires after it. A direct import of a module that go.mod marks
+        # // indirect (a test importing pgx, say) builds and tests fine on main, and only the release's
+        # tidy exposes it, so main must already be tidy. Tidy ignores go.work, so each module is
+        # tidied on its own, as the release does.
+        run: |
+          for m in $MODULES; do
+            echo "== tidy $m =="
+            ( cd "$m" && go mod tidy )
+          done
+          if ! git diff --exit-code -- '*go.mod' '*go.sum'; then
+            echo "go mod tidy changes the files above. Run go mod tidy in each module and commit the result."
+            exit 1
+          fi
       - name: Reproducible bide builds
         # In the merge queue and on main (heavy), not on a pull request.
         if: needs.changes.outputs.heavy != 'false'
