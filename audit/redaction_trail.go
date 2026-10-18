@@ -237,15 +237,7 @@ func AppendRedactionRecord(ctx context.Context, store EventStore, r RedactionRec
 		}
 		// The record is bound to the position it is appended at and to the leaf before it, so every
 		// retry after a lost race signs it again at the new position.
-		r.Position, r.Prev = len(leaves), prevHash(leaves, len(leaves))
-		if err := r.sign(signer); err != nil {
-			return err
-		}
-		leaf, err := redactionLeaf(r)
-		if err != nil {
-			return err
-		}
-		err = store.Append(ctx, RedactionTrailName, len(leaves), leaf)
+		err = appendRedactionRecordAt(ctx, store, r, signer, leaves)
 		if err == nil {
 			return nil
 		}
@@ -254,6 +246,22 @@ func AppendRedactionRecord(ctx context.Context, store EventStore, r RedactionRec
 		}
 	}
 	return fmt.Errorf("audit: append to the redaction trail: position taken again and again: %w", ErrSeqTaken)
+}
+
+// appendRedactionRecordAt signs r at the position after leaves (the trail as the caller read it) and
+// appends it there. A different leaf already at that position fails with ErrSeqTaken: a caller that
+// decided what to write from leaves reads the trail again and decides again.
+func appendRedactionRecordAt(ctx context.Context, store EventStore, r RedactionRecord, signer Signer, leaves [][]byte) error {
+	r.Format = RedactionRecordFormat
+	r.Position, r.Prev = len(leaves), prevHash(leaves, len(leaves))
+	if err := r.sign(signer); err != nil {
+		return err
+	}
+	leaf, err := redactionLeaf(r)
+	if err != nil {
+		return err
+	}
+	return store.Append(ctx, RedactionTrailName, len(leaves), leaf)
 }
 
 // LoadRedactionTrail returns the records of the redaction trail in store, in order.
@@ -933,34 +941,45 @@ func PlaceLegalHold(ctx context.Context, trail EventStore, holder agent.Holder, 
 	if err := CheckRedactionTrail(ctx, trail, signer, deployment, prior); err != nil {
 		return err
 	}
-	active, _, err := trailHolds(ctx, trail, signer, deployment)
-	if err != nil {
-		return err
-	}
-	if _, ok := active[h.ID]; ok {
-		return fmt.Errorf("audit: PlaceLegalHold: the trail already shows hold %q in force: %w", h.ID, agent.ErrHoldExists)
-	}
-	// An earlier placement whose record could not be written left the hold in the store: if the
-	// store holds exactly this hold, record it and do not place it again; if it holds another, refuse.
-	inStore, err := holder.Holds(ctx)
-	if err != nil {
-		return err
-	}
-	if i := slices.IndexFunc(inStore, func(x agent.Hold) bool { return x.ID == h.ID }); i >= 0 {
-		got := inStore[i]
-		if got.Matter != h.Matter || got.Tree != h.Tree || !slices.Equal(got.Runs, slices.Compact(slices.Sorted(slices.Values(h.Runs)))) {
-			return fmt.Errorf("audit: PlaceLegalHold: the store holds a different hold %q (another matter, runs or tree setting): %w", h.ID, agent.ErrHoldExists)
+	for range holdRetries {
+		active, _, leaves, err := trailHolds(ctx, trail, signer, deployment)
+		if err != nil {
+			return err
 		}
-	} else if err := holder.PlaceHold(ctx, h); err != nil {
-		return err
+		if _, ok := active[h.ID]; ok {
+			return fmt.Errorf("audit: PlaceLegalHold: the trail already shows hold %q in force: %w", h.ID, agent.ErrHoldExists)
+		}
+		// An earlier placement whose record could not be written left the hold in the store: if the
+		// store holds exactly this hold, record it and do not place it again; if it holds another, refuse.
+		inStore, err := holder.Holds(ctx)
+		if err != nil {
+			return err
+		}
+		if i := slices.IndexFunc(inStore, func(x agent.Hold) bool { return x.ID == h.ID }); i >= 0 {
+			got := inStore[i]
+			if got.Matter != h.Matter || got.Tree != h.Tree || !slices.Equal(got.Runs, slices.Compact(slices.Sorted(slices.Values(h.Runs)))) {
+				return fmt.Errorf("audit: PlaceLegalHold: the store holds a different hold %q (another matter, runs or tree setting): %w", h.ID, agent.ErrHoldExists)
+			}
+		} else if err := holder.PlaceHold(ctx, h); err != nil {
+			return err
+		}
+		rec := RedactionRecord{Phase: RedactionHoldPlaced, Reason: reason, Ticket: ticket, Executor: executor, AtMs: now.UnixMilli(),
+			Deployment: strings.TrimSpace(deployment), HoldID: h.ID, HoldMatter: h.Matter, HoldRuns: slices.Compact(slices.Sorted(slices.Values(h.Runs))), HoldTree: h.Tree}
+		err = appendRedactionRecordAt(ctx, trail, rec, signer, leaves)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, ErrSeqTaken) {
+			return fmt.Errorf("audit: hold %q is in force in the store but could not be recorded in the redaction trail (bide audit redactions reports it as HOLD_NOT_IN_TRAIL until it is): %w", h.ID, err)
+		}
+		// Another writer recorded first: read the trail again and decide again (it may now show this hold).
 	}
-	rec := RedactionRecord{Phase: RedactionHoldPlaced, Reason: reason, Ticket: ticket, Executor: executor, AtMs: now.UnixMilli(),
-		Deployment: strings.TrimSpace(deployment), HoldID: h.ID, HoldMatter: h.Matter, HoldRuns: slices.Compact(slices.Sorted(slices.Values(h.Runs))), HoldTree: h.Tree}
-	if err := AppendRedactionRecord(ctx, trail, rec, signer); err != nil {
-		return fmt.Errorf("audit: hold %q is in force in the store but could not be recorded in the redaction trail (bide audit redactions reports it as HOLD_NOT_IN_TRAIL until it is): %w", h.ID, err)
-	}
-	return nil
+	return fmt.Errorf("audit: hold %q is in force in the store but could not be recorded in the redaction trail: position taken again and again: %w", h.ID, ErrSeqTaken)
 }
+
+// holdRetries bounds how often PlaceLegalHold and LiftLegalHold decide again after another writer took
+// the trail position they read.
+const holdRetries = 8
 
 // LiftLegalHold lifts the hold id in holder (the store) after recording the lift in the redaction trail:
 // the record comes first, so a hold is never lifted without evidence, and a failure to lift after the
@@ -977,65 +996,71 @@ func LiftLegalHold(ctx context.Context, trail EventStore, holder agent.Holder, s
 	if err := CheckRedactionTrail(ctx, trail, signer, deployment, prior); err != nil {
 		return err
 	}
-	active, lifted, err := trailHolds(ctx, trail, signer, deployment)
-	if err != nil {
-		return err
-	}
-	all, err := holder.Holds(ctx)
-	if err != nil {
-		return err
-	}
-	var stored *agent.Hold
-	if i := slices.IndexFunc(all, func(h agent.Hold) bool { return h.ID == id }); i >= 0 {
-		stored = &all[i]
-	}
-	liftInStore := func() error {
-		if ok, err := holder.LiftHold(ctx, id); err != nil {
-			return fmt.Errorf("audit: the lift of hold %q is recorded in the redaction trail but the store did not lift it, so it stays in force (run the lift again): %w", id, err)
-		} else if !ok {
-			return fmt.Errorf("audit: the lift of hold %q is recorded, and the store held no such hold any more: %w", id, agent.ErrConfig)
+	for range holdRetries {
+		active, lifted, leaves, err := trailHolds(ctx, trail, signer, deployment)
+		if err != nil {
+			return err
 		}
-		return nil
-	}
-	placed, inTrail := active[id]
-	switch {
-	case !inTrail && stored != nil && lifted[id]:
-		// The record was written and the store step failed: finish it, with no second record.
+		all, err := holder.Holds(ctx)
+		if err != nil {
+			return err
+		}
+		var stored *agent.Hold
+		if i := slices.IndexFunc(all, func(h agent.Hold) bool { return h.ID == id }); i >= 0 {
+			stored = &all[i]
+		}
+		liftInStore := func() error {
+			if ok, err := holder.LiftHold(ctx, id); err != nil {
+				return fmt.Errorf("audit: the lift of hold %q is recorded in the redaction trail but the store did not lift it, so it stays in force (run the lift again): %w", id, err)
+			} else if !ok {
+				return fmt.Errorf("audit: the lift of hold %q is recorded, and the store held no such hold any more: %w", id, agent.ErrConfig)
+			}
+			return nil
+		}
+		placed, inTrail := active[id]
+		switch {
+		case !inTrail && stored != nil && lifted[id]:
+			// The record was written and the store step failed: finish it, with no second record.
+			return liftInStore()
+		case !inTrail && stored != nil:
+			return fmt.Errorf("audit: LiftLegalHold: the store holds hold %q and the trail never recorded it (placed outside the tool): record it by placing it again with the same matter and runs, then lift it: %w", id, agent.ErrConfig)
+		case !inTrail:
+			return fmt.Errorf("audit: LiftLegalHold: neither the store nor the trail shows a hold %q in force: %w", id, agent.ErrConfig)
+		}
+		// The trail shows the hold in force. If the store lacks it (lifted by hand), the lift is still
+		// recorded, with a note, so the trail stops showing it.
+		h, why := holdOf(placed), reason
+		if stored != nil {
+			h = *stored
+		} else {
+			why += " (the store held no such hold: it had been lifted outside the tool)"
+		}
+		rec := RedactionRecord{Phase: RedactionHoldLifted, Reason: why, Ticket: ticket, Executor: executor, AtMs: now.UnixMilli(),
+			Deployment: strings.TrimSpace(deployment), HoldID: h.ID, HoldMatter: h.Matter, HoldRuns: h.Runs, HoldTree: h.Tree}
+		if err := appendRedactionRecordAt(ctx, trail, rec, signer, leaves); err != nil {
+			if errors.Is(err, ErrSeqTaken) {
+				continue // another writer recorded first: read the trail again and decide again
+			}
+			return fmt.Errorf("audit: the lift of hold %q could not be recorded in the redaction trail, so the hold stays in force: %w", id, err)
+		}
+		if stored == nil {
+			return nil
+		}
 		return liftInStore()
-	case !inTrail && stored != nil:
-		return fmt.Errorf("audit: LiftLegalHold: the store holds hold %q and the trail never recorded it (placed outside the tool): record it by placing it again with the same matter and runs, then lift it: %w", id, agent.ErrConfig)
-	case !inTrail:
-		return fmt.Errorf("audit: LiftLegalHold: neither the store nor the trail shows a hold %q in force: %w", id, agent.ErrConfig)
 	}
-	// The trail shows the hold in force. If the store lacks it (lifted by hand), the lift is still
-	// recorded, with a note, so the trail stops showing it.
-	h := holdOf(placed)
-	if stored != nil {
-		h = *stored
-	} else {
-		reason += " (the store held no such hold: it had been lifted outside the tool)"
-	}
-	rec := RedactionRecord{Phase: RedactionHoldLifted, Reason: reason, Ticket: ticket, Executor: executor, AtMs: now.UnixMilli(),
-		Deployment: strings.TrimSpace(deployment), HoldID: h.ID, HoldMatter: h.Matter, HoldRuns: h.Runs, HoldTree: h.Tree}
-	if err := AppendRedactionRecord(ctx, trail, rec, signer); err != nil {
-		return fmt.Errorf("audit: the lift of hold %q could not be recorded in the redaction trail, so the hold stays in force: %w", id, err)
-	}
-	if stored == nil {
-		return nil
-	}
-	return liftInStore()
+	return fmt.Errorf("audit: the lift of hold %q could not be recorded in the redaction trail: position taken again and again, so the hold stays in force: %w", id, ErrSeqTaken)
 }
 
 // trailHolds reads the redaction trail and returns the holds in force by it (the latest verified
 // placement of each, not lifted since) and the IDs whose latest verified event is a matching lift.
-func trailHolds(ctx context.Context, trail EventStore, signer Signer, deployment string) (active map[string]RedactionRecord, lifted map[string]bool, err error) {
+func trailHolds(ctx context.Context, trail EventStore, signer Signer, deployment string) (active map[string]RedactionRecord, lifted map[string]bool, leaves [][]byte, err error) {
 	v, err := NewVerifier(signer.Alg(), signer.PublicKey())
 	if err != nil {
-		return nil, nil, fmt.Errorf("audit: the signer's public key: %w", err)
+		return nil, nil, nil, fmt.Errorf("audit: the signer's public key: %w", err)
 	}
-	leaves, err := trail.Load(ctx, RedactionTrailName)
+	leaves, err = trail.Load(ctx, RedactionTrailName)
 	if err != nil {
-		return nil, nil, fmt.Errorf("audit: load the redaction trail: %w", err)
+		return nil, nil, nil, fmt.Errorf("audit: load the redaction trail: %w", err)
 	}
 	recs, trusted, _ := classifyTrail(RedactionVerifyInput{Trail: leaves, Verifier: v, Deployment: strings.TrimSpace(deployment)})
 	active, lifted = map[string]RedactionRecord{}, map[string]bool{}
@@ -1056,7 +1081,7 @@ func trailHolds(ctx context.Context, trail EventStore, signer Signer, deployment
 			}
 		}
 	}
-	return active, lifted, nil
+	return active, lifted, leaves, nil
 }
 
 func checkHoldArgs(trail EventStore, holder agent.Holder, signer Signer, deployment, reason, ticket, executor string, now time.Time) error {
