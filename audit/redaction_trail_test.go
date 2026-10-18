@@ -980,7 +980,7 @@ func TestAcknowledgeRecord_AcknowledgesExactlyTheNamedLeaf(t *testing.T) {
 		t.Fatal(err)
 	}
 	rep, err = verify()
-	if err == nil || strings.Count(kinds(rep), "BAD_SIGNATURE") != 1 || len(rep.Notes) != 1 || !strings.Contains(rep.Notes[0], "acknowledged") {
+	if err == nil || strings.Count(kinds(rep), "BAD_SIGNATURE") != 1 || len(rep.Notes) != 1 || !strings.Contains(rep.Notes[0], "acknowledged") || !strings.Contains(rep.Notes[0], "SEC-7") || !strings.Contains(rep.Notes[0], "operator") || !strings.Contains(rep.Notes[0], "2023-11-14") {
 		t.Fatalf("after acknowledging one: %+v, %v; want one BAD_SIGNATURE left and a note", rep, err)
 	}
 	if err := r.ack(r.signer, p1); err != nil {

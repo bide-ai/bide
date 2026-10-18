@@ -509,15 +509,16 @@ func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error) {
 	recs, trusted, pend := classifyTrail(in)
 	// A planted, replayed or unreadable leaf is a finding, unless the redaction key signed an
 	// acknowledgement of exactly that leaf (its position and hash) after it.
-	acked := map[[2]string]bool{}
+	acked := map[[2]string]RedactionRecord{}
 	for i, r := range recs {
 		if trusted[i] && r.Phase == RedactionAcknowledge && r.AckPosition < i {
-			acked[[2]string{fmt.Sprint(r.AckPosition), r.AckLeafHash}] = true
+			acked[[2]string{fmt.Sprint(r.AckPosition), r.AckLeafHash}] = r
 		}
 	}
 	for _, f := range pend {
-		if acked[[2]string{fmt.Sprint(f.pos), hex.EncodeToString(leafHash(in.Trail[f.pos]))}] {
-			rep.Notes = append(rep.Notes, fmt.Sprintf("trail record %d (%s) is acknowledged by a signed record of the redaction key: %s", f.pos, f.kind, f.detail))
+		if a, ok := acked[[2]string{fmt.Sprint(f.pos), hex.EncodeToString(leafHash(in.Trail[f.pos]))}]; ok {
+			rep.Notes = append(rep.Notes, fmt.Sprintf("trail record %d (%s) is acknowledged: by %s, ticket %s, at %s (%s); %s", f.pos, f.kind,
+				a.Executor, a.Ticket, time.UnixMilli(a.AtMs).UTC().Format(time.RFC3339), a.Reason, f.detail))
 			continue
 		}
 		add(f.kind, f.run, "%s", f.detail)
