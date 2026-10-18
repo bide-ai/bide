@@ -325,6 +325,8 @@ type Report struct {
 // two verified heads of one size with different roots, and each bucket-level protection that is gone
 // (the retention policy absent, unlocked or under the minimum; versioning, uniform bucket-level access
 // or public access prevention off; with ReaderConfig.KMSKey, another default key). It needs read access and no write access. An
+// error (a listing or read that is unavailable or denied) means the state is unknown: the audit did not
+// pass, retry it. An
 // empty Findings with Heads is what an intact anchor looks like; it is not proof the journal is intact
 // (check the journal against the heads).
 func (r *Reader) Audit(ctx context.Context, kind, runID string, now time.Time) (Report, error) {

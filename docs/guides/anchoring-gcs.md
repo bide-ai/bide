@@ -213,6 +213,13 @@ Cloud Storage bucket yet: a `-backend gcs` option, with `-project` taking the pr
   -heads` and `verify-decision-coverage -heads` read once you write them one per line as JSON; `Audit` returns the
   findings listed above, to be run on a schedule and alerted on.
 
+**An audit that returns an error did not pass.** `Audit`, `Heads`, `Latest` and `Head` fail closed: a
+listing or a read that is unavailable (`ErrUnavailable`) or denied (`ErrDenied`) aborts with that error,
+and an aborted audit means the bucket's state is **unknown**, not that it is intact; retry it, and alert
+if it keeps failing. Only a fact the Reader positively saw becomes a finding, such as a generation that
+vanished between the listing and the read. `bide-anchor` will follow the same rule when it gains a GCS
+backend: a non-zero exit with no findings means the check could not be completed.
+
 Credentials come from Application Default Credentials, never from flags. Neither shows that the **journal**
 matches the heads: that is `bide audit` against the exported heads.
 
