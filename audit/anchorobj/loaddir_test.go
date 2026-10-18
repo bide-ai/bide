@@ -22,8 +22,15 @@ func load(dir string, v audit.Verifier) ([]audit.SignedTreeHead, error) {
 // write stores a head's object in dir as an export of the bucket would: <partition>/<name>.
 func write(t *testing.T, dir string, sth audit.SignedTreeHead) string {
 	t.Helper()
+	return writeUnder(t, dir, "p", sth)
+}
+
+// writeUnder is write with the exported prefix directory chosen, since an export may be assembled from
+// several downloads.
+func writeUnder(t *testing.T, dir, parent string, sth audit.SignedTreeHead) string {
+	t.Helper()
 	partition, name, body := encoded(t, testLayout, sth)
-	p := filepath.Join(dir, "p", partition, name)
+	p := filepath.Join(dir, parent, partition, name)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -144,12 +151,37 @@ func TestLoadDirRefusesWhatIsNotAnAnchor(t *testing.T) {
 		t.Errorf("head under another partition = %v", err)
 	}
 	if runtime.GOOS != "windows" {
+		// A symbolic link with a valid object name pointing at a valid object: refused, since a link
+		// can point outside the exported set.
 		link := t.TempDir()
-		if err := os.Symlink(p, filepath.Join(link, "l")); err != nil {
+		part, name, _ := encoded(t, testLayout, good)
+		if err := os.MkdirAll(filepath.Join(link, part), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := load(link, k.v); !errors.Is(err, errObject) {
-			t.Errorf("symlink = %v; want the object error", err)
+		if err := os.Symlink(p, filepath.Join(link, part, name)); err != nil {
+			t.Fatal(err)
 		}
+		if _, err := load(link, k.v); !errors.Is(err, errObject) || !strings.Contains(err.Error(), "not a regular file") {
+			t.Errorf("symlink = %v; want the object error naming a non-regular file", err)
+		}
+	}
+	if _, err := testLayout.LoadDir(dir, k.v, nil, errEquiv); !errors.Is(err, agent.ErrConfig) {
+		t.Errorf("nil not-found error = %v; want agent.ErrConfig", err)
+	}
+	if _, err := testLayout.LoadDir(dir, k.v, errNone, nil); !errors.Is(err, agent.ErrConfig) {
+		t.Errorf("nil equivocation error = %v; want agent.ErrConfig", err)
+	}
+}
+
+// The heads of one partition need not sit together on disk: an export assembled from several downloads
+// has them under different parents, with other partitions in between.
+func TestLoadDirFindsEquivocationAcrossParentDirectories(t *testing.T) {
+	k := newKeys(t, 1)
+	dir := t.TempDir()
+	writeUnder(t, dir, "p1", k.head(t, "r", 4, 1, "history A"))
+	writeUnder(t, dir, "p1b", k.head(t, "q", 4, 1, "other"))
+	writeUnder(t, dir, "p2", k.head(t, "r", 4, 2, "history B"))
+	if _, err := load(dir, k.v); !errors.Is(err, errEquiv) {
+		t.Fatalf("LoadDir = %v; want the equivocation error across parents", err)
 	}
 }
