@@ -209,8 +209,21 @@ changelog_has() {
 # section for the version, update its compare links, and delete the fragments (see
 # internal/tools/changelog). Run it in the release pull request, which then shows the assembled
 # section for review.
+# candidate_before text version: prints the newest release heading of the changelog text when version
+# is a final release (no pre-release) and that heading is a candidate of the same version: the tool
+# assembles only the fragments added since it, so the final's section would be short.
+candidate_before() {
+  local head
+  head=$(awk '/^## \[[0-9]/ {print; exit}' <<<"$1")
+  [[ "$2" != *-* && "$head" == "## [${2#v}-"* ]] && echo "$head"
+  return 0
+}
+
 assemble_changelog() {
   is_version "$1" || die "$1 is not a version like v0.8.0"
+  local cand
+  cand=$(candidate_before "$(cat "$(git rev-parse --show-toplevel)/CHANGELOG.md")" "$1")
+  [ -z "$cand" ] || echo "release: WARNING: the newest release in CHANGELOG.md is a candidate ($cand): the assembled $1 section lists only the fragments since it. Merge the candidate's section into it and point its compare link at the previous final release (CONTRIBUTING.md, Releasing)." >&2
   (cd "$(git rev-parse --show-toplevel)" && go run ./internal/tools/changelog assemble -version "${1#v}" -date "$2")
 }
 
@@ -630,6 +643,11 @@ self_test() {
   for v in v0.21.0-rc..1 v0.21.0--. v0.21.0-01 v0.21.0-rc.01 v0.21.0-rc. v0.21.0- v0.21.0+b v01.0.0 v1.02.3 0.21.0 "v0.21.0 "; do
     is_version "$v" && { echo "self-test: \"$v\" was accepted as a version"; fail=true; }
   done
+  local cl=$'# Changelog\n\n## [Unreleased]\n\n## [0.21.0-rc.1] - 2026-10-19\n\n## [0.20.0] - 2026-10-16\n'
+  [ -n "$(candidate_before "$cl" v0.21.0)" ] || { echo "self-test: a final after its candidate was not warned about"; fail=true; }
+  [ -z "$(candidate_before "$cl" v0.21.0-rc.2)" ] || { echo "self-test: a second candidate was warned about"; fail=true; }
+  [ -z "$(candidate_before "$cl" v0.22.0)" ] || { echo "self-test: another version was warned about"; fail=true; }
+  [ -z "$(candidate_before $'# Changelog\n\n## [Unreleased]\n\n## [0.20.0] - 2026-10-16\n' v0.21.0)" ] || { echo "self-test: a final after a final was warned about"; fail=true; }
   self_test_push || fail=true
   self_test_ci || fail=true
   self_test_changelog || fail=true
