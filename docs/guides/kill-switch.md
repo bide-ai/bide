@@ -78,7 +78,9 @@ bide stop -db run.db -lift 3f9c2a10 -reason "provider recovered" -yes
 - **There is no default scope.** Exactly one of `-all`, `-tool NAME`, `-flow NAME` and `-agent NAME` sets
   a stop (the last three repeat, one stop each). A bare `bide stop -db run.db` lists the active stops
   and exits 2: it never stops anything by accident. Setting a scope that is already stopped writes
-  nothing and says so.
+  nothing and says so (the check reads the control run just before the write, but it cannot be atomic:
+  two operators setting the same scope at the same instant can both write, and each of those stops needs
+  its own lift).
 - `-reason` is required, at most 1 KiB, and is shown in logs, notifications and the viewer: put no
   secret and no customer data in it. `-block-compensation` holds a saga's rollback too.
 - **An `-agent` stop covers runs whose identity names that agent.** A run with no identity

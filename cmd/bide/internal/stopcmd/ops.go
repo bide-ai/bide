@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -104,6 +105,16 @@ func (c *cmd) setStops(ctx context.Context, ctl *agent.StopControl, doc *agent.S
 		return c.fail(exitFailed, "not confirmed: nothing was written")
 	}
 	for i, sc := range todo {
+		// Read again just before the write: a second operator may have set the same scope since the first
+		// read. The check cannot be atomic (a record's time is part of its identity), so two commands at the
+		// same instant can still both write; the guide says a duplicate needs its own lift.
+		if cur, err := ctl.State(ctx); err == nil {
+			if dup := slices.IndexFunc(cur.Active(), func(a agent.StopEntry) bool { return a.Scope == sc && a.Compensation == comp }); dup >= 0 {
+				a := cur.Active()[dup]
+				fmt.Fprintf(c.out, "already stopped: %s (stop %s, set by %s %s); nothing written\n", sc, short(a.ID), a.By, ago(a.At))
+				continue
+			}
+		}
 		e, err := ctl.SetStop(ctx, agent.StopRequest{Scope: sc, Reason: c.f.reason, Compensation: comp, By: by, Host: host, Signer: signer})
 		if err == nil {
 			err = c.landed(ctx, ctl, st, e.ID)
