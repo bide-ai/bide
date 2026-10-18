@@ -19,7 +19,7 @@ const MaxObjectBytes = 1 << 20
 
 // LoadDir reads a downloaded set of anchored objects (for example the output of "aws s3 sync" or
 // "gcloud storage cp -r" of the anchor prefix) and verifies each against v. The set is every regular file
-// under dir whose path ends in <partition>/<object name>; any other file, a symbolic link, a file larger
+// under dir (a directory) whose path ends in <partition>/<object name>; any other file, a symbolic link, a file larger
 // than MaxObjectBytes and an object that does not decode under l are errors wrapping l.ErrObject (and
 // l.ErrBadSignature for a signature that does not verify), so a stray or renamed file is not ignored. It
 // needs no network. It returns the heads sorted by partition, then size.
@@ -38,6 +38,11 @@ func (l Layout) LoadDir(dir string, v audit.Verifier, errNotFound, errEquivocati
 	}
 	if errNotFound == nil || errEquivocation == nil {
 		return nil, fmt.Errorf("anchorobj: LoadDir needs the not-found and equivocation errors to wrap: %w", agent.ErrConfig)
+	}
+	if st, err := os.Stat(dir); err != nil {
+		return nil, err
+	} else if !st.IsDir() {
+		return nil, fmt.Errorf("%w: %s is not a directory", l.ErrObject, dir)
 	}
 	type item struct {
 		partition string

@@ -185,3 +185,16 @@ func TestLoadDirFindsEquivocationAcrossParentDirectories(t *testing.T) {
 		t.Fatalf("LoadDir = %v; want the equivocation error across parents", err)
 	}
 }
+
+// The argument is a directory: a path to one object file is not a one-head export.
+func TestLoadDirRefusesAFileAndAMissingPath(t *testing.T) {
+	k := newKeys(t, 1)
+	dir := t.TempDir()
+	p := write(t, dir, k.head(t, "r", 3, 1, "a"))
+	if _, err := load(p, k.v); !errors.Is(err, errObject) {
+		t.Errorf("LoadDir of a file = %v; want the object error", err)
+	}
+	if _, err := load(filepath.Join(dir, "missing"), k.v); err == nil {
+		t.Error("LoadDir of a missing path passed")
+	}
+}
