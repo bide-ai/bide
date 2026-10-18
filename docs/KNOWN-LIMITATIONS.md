@@ -741,3 +741,5 @@ processes few, or use Postgres. Its leases coordinate the processes that share o
 one machine, not nodes: the file must be on a local disk, since SQLite's locking does not work over
 NFS. Use Postgres for more than one node. A forward jump of the system clock expires SQLite leases
 early (their expiry is computed from the clock), which the attempt claims keep safe.
+
+**A stop set and lifted with both times backdated can go unnotified.** A stop record's time is its writer's own, so the notifier and `bide audit notifications` do not trust it for a stop in force. A stop that is set and lifted before any notifier looked, with both records dated more than the window (`-stops-within`, default 7 days) in the past and no earlier record of the control run to make them a clock anomaly, is read as history and owes nothing. Its records are still in the control run (`bide stop -list`). Dating the control run by a time the writer does not choose (such as a signed trail head) would close it.
