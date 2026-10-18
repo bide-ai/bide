@@ -142,8 +142,9 @@ n=$(cat "$FAKE_GH_COUNT" 2>/dev/null || echo 0); echo $((n + 1)) > "$FAKE_GH_COU
 FAKE
   chmod +x "$tmp/flaky"
   echo 0 > "$tmp/count"
-  if ! BIDE_GH="$tmp/flaky" FAKE_GH_COUNT="$tmp/count" FAKE_GH_OK_AFTER=1 BIDE_VERIFY_ATTEMPTS=3 BIDE_VERIFY_SLEEP=0 "$self" v1.2.3 "$tmp/a.tar.gz" >/dev/null 2>&1; then
+  if ! BIDE_GH="$tmp/flaky" FAKE_GH_COUNT="$tmp/count" FAKE_GH_OK_AFTER=1 BIDE_VERIFY_ATTEMPTS=3 BIDE_VERIFY_SLEEP=0 "$self" v1.2.3 "$tmp/a.tar.gz" >"$tmp/out" 2>&1; then
     echo "self-test: a lookup that succeeds on the second attempt was refused"; ok=false; fi
+  grep -qF "retrying" "$tmp/out" || { echo "self-test: a retried lookup did not say so"; ok=false; }
   echo 0 > "$tmp/count"
   if BIDE_GH="$tmp/flaky" FAKE_GH_COUNT="$tmp/count" FAKE_GH_OK_AFTER=99 BIDE_VERIFY_ATTEMPTS=3 BIDE_VERIFY_SLEEP=0 "$self" v1.2.3 "$tmp/a.tar.gz" >/dev/null 2>&1; then
     echo "self-test: a lookup that never succeeds passed"; ok=false; fi
