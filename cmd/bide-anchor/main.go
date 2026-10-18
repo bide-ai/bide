@@ -20,7 +20,7 @@
 // Credentials and the region come from the AWS SDK's default chain, never from flags. A server other
 // than AWS (a test MinIO) is selected with AWS_ENDPOINT_URL_S3 and -path-style.
 //
-// Exit status: 0 verified, 1 an object or head did not verify or check found something, 2 usage or I/O,
+// Exit status: 0 verified, 1 an object or head did not verify or check found something, 2 usage or I/O (including an unreadable -dir),
 // 3 the bucket's state is unknown (an online read was unavailable, denied or timed out: retry, and
 // alert if it persists). An aborted audit is never 0, and it is not a finding.
 package main
@@ -87,6 +87,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 		pubkey, backendName                    string
 		kind                                   = audit.TreeJournal
 		pathStyle, force                       bool
+		timeout                                = 5 * time.Minute
 	)
 	// Each command takes only the flags that mean something to it, so its help lists only those.
 	fs.StringVar(&backendName, "backend", "s3", "the object store the anchor wrote to: "+backendNames)
@@ -103,6 +104,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 			fs.StringVar(&out, "o", "", "write to this file instead of standard output")
 			fs.BoolVar(&force, "force", false, "with -bucket: export even when the lock audit has findings")
 		}
+		fs.DurationVar(&timeout, "timeout", timeout, "with -bucket: give up after this long and exit 3 (state unknown); 0: no limit")
 		fs.StringVar(&bucket, "bucket", "", "read this anchor bucket (online, with read-only credentials)")
 		fs.StringVar(&ownerID, "owner", "", "the 12-digit AWS account ID that owns the bucket (with -bucket)")
 		fs.StringVar(&prefix, "prefix", "", "the key prefix the anchor was configured with (default bide-anchor/)")
@@ -161,12 +163,20 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 		}
 	}
 
+	if timeout < 0 {
+		return fail(exitUsage, "-timeout must not be negative")
+	}
 	be, err := lookupBackend(backendName, mk)
 	if err != nil {
 		return fail(exitUsage, "%v", err)
 	}
 	var reader headReader
 	if online {
+		if timeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, timeout)
+			defer cancel()
+		}
 		reader, err = be.open(ctx, openOptions{bucket: bucket, owner: ownerID, prefix: prefix, pathStyle: pathStyle, verifier: v,
 			onSkip: func(f string) {
 				fmt.Fprintf(stderr, "bide-anchor: skipped an object that is no anchored head: %s\n", f)
@@ -206,6 +216,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 	case "verify":
 		heads, err := be.loadDir(dir, v)
 		if err != nil {
+			if !be.isFinding(err) {
+				return fail(exitUsage, "cannot read %s: %v", dir, err) // an I/O failure, not a verdict about the objects
+			}
 			fmt.Fprintf(stdout, "FAIL: %v\n", err)
 			return exitFindings
 		}
@@ -255,6 +268,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 		if err != nil {
 			if online {
 				return failRead(be, fail, err)
+			}
+			if !be.isFinding(err) {
+				return fail(exitUsage, "cannot read %s: %v", dir, err)
 			}
 			return fail(exitFindings, "%v", err)
 		}

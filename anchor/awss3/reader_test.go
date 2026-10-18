@@ -1,7 +1,10 @@
 package awss3_test
 
 import (
+	"context"
 	"errors"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"os"
 	"path/filepath"
 	"strings"
@@ -332,4 +335,55 @@ func TestPublishRefusesAnExistingObjectUnderAWeakerLock(t *testing.T) {
 	if err := a4.Publish(ctx, "r", h); !errors.Is(err, awss3.ErrWeak) {
 		t.Errorf("Publish over an object with no LastModified = %v, want ErrWeak", err)
 	}
+}
+
+// A listing that says it is truncated and gives no way on, or repeats a page, would be asked again for
+// ever. Every read fails with ErrUnavailable (a state that is unknown, not a verdict) instead.
+func TestAListingThatDoesNotAdvanceFails(t *testing.T) {
+	k := newKeys(t, 1)
+	for name, page := range map[string]func(prev *s3.ListObjectVersionsOutput) *s3.ListObjectVersionsOutput{
+		"no markers": func(*s3.ListObjectVersionsOutput) *s3.ListObjectVersionsOutput {
+			return &s3.ListObjectVersionsOutput{IsTruncated: aws.Bool(true)}
+		},
+		"the same markers": func(*s3.ListObjectVersionsOutput) *s3.ListObjectVersionsOutput {
+			return &s3.ListObjectVersionsOutput{IsTruncated: aws.Bool(true), NextKeyMarker: aws.String("k"), NextVersionIdMarker: aws.String("v")}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := awss3test.New(bucket)
+			c := &stuckClient{Fake: f, page: page}
+			r, err := awss3.NewReader(awss3.ReaderConfig{Client: c, Bucket: bucket, ExpectedBucketOwner: owner, Verifier: k.v})
+			if err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				for what, call := range map[string]func() error{
+					"Latest": func() error { _, err := r.Latest(ctx, audit.TreeJournal, "r"); return err },
+					"Heads":  func() error { _, err := r.Heads(ctx, audit.TreeJournal, "r"); return err },
+					"Audit":  func() error { _, err := r.Audit(ctx, audit.TreeJournal, "r", time.Now()); return err },
+				} {
+					if err := call(); !errors.Is(err, awss3.ErrUnavailable) {
+						t.Errorf("%s = %v, want ErrUnavailable", what, err)
+					}
+				}
+			}()
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+				t.Fatal("a listing that does not advance was asked for again and again")
+			}
+		})
+	}
+}
+
+// stuckClient answers ListObjectVersions with the same truncated page for ever.
+type stuckClient struct {
+	*awss3test.Fake
+	page func(*s3.ListObjectVersionsOutput) *s3.ListObjectVersionsOutput
+}
+
+func (c *stuckClient) ListObjectVersions(_ context.Context, _ *s3.ListObjectVersionsInput, _ ...func(*s3.Options)) (*s3.ListObjectVersionsOutput, error) {
+	return c.page(nil), nil
 }

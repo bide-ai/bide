@@ -64,6 +64,8 @@ Usage of bide-anchor export:
     	the log operator's public key (ed25519:<hex>, or a file holding it)
   -run string
     	the run or trail ID
+  -timeout duration
+    	with -bucket: give up after this long and exit 3 (state unknown); 0: no limit (default 5m0s)
 ```
 
 ## bide-anchor check
@@ -86,4 +88,6 @@ Usage of bide-anchor check:
     	the log operator's public key (ed25519:<hex>, or a file holding it)
   -run string
     	the run or trail ID
+  -timeout duration
+    	with -bucket: give up after this long and exit 3 (state unknown); 0: no limit (default 5m0s)
 ```

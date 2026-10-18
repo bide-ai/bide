@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bide-ai/bide/anchor/awss3"
 	"github.com/bide-ai/bide/anchor/awss3/awss3test"
 	"github.com/bide-ai/bide/audit"
@@ -309,5 +310,53 @@ func TestAbortedAuditIsUnknown(t *testing.T) {
 	other := audit.Ed25519Signer{Priv: ed25519.NewKeyFromSeed(bytes.Repeat([]byte{9}, 32))}
 	if code, _, _ := e.do("check", "-bucket", "b", "-owner", owner, "-pubkey", audit.FormatPublicKey(other.Alg(), other.PublicKey()), "-run", "r1"); code != exitFindings {
 		t.Errorf("a head the key did not sign = exit %d, want %d", code, exitFindings)
+	}
+}
+
+// A read that never answers is cut off by -timeout and exits 3, not hangs.
+func TestTimeoutExitsUnknown(t *testing.T) {
+	e := setup(t)
+	e.publish(t, e.head(t, "r1", 1, "a"))
+	var out, errb bytes.Buffer
+	blocked := func(context.Context, bool) (awss3.Client, error) { return blockedClient{e.fake}, nil }
+	start := time.Now()
+	code := run(context.Background(), []string{"check", "-timeout", "200ms", "-bucket", "b", "-owner", owner, "-pubkey", e.pub, "-run", "r1"}, &out, &errb, blocked)
+	if code != exitUnknown || strings.Contains(out.String(), "PASS") || time.Since(start) > 5*time.Second {
+		t.Fatalf("exit %d after %v\n%s%s; want %d soon, no PASS", code, time.Since(start), out.String(), errb.String(), exitUnknown)
+	}
+	if code, _, _ := e.do("check", "-timeout", "-1s", "-bucket", "b", "-owner", owner, "-pubkey", e.pub, "-run", "r1"); code != exitUsage {
+		t.Errorf("a negative -timeout = exit %d, want usage", code)
+	}
+}
+
+// blockedClient answers a listing only when its context ends.
+type blockedClient struct{ *awss3test.Fake }
+
+func (blockedClient) ListObjectVersions(ctx context.Context, _ *s3.ListObjectVersionsInput, _ ...func(*s3.Options)) (*s3.ListObjectVersionsOutput, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// An unreadable directory is an I/O failure (2), not a verdict about objects (1).
+func TestUnreadableDirIsNotAFinding(t *testing.T) {
+	e := setup(t)
+	missing := filepath.Join(t.TempDir(), "nope")
+	for _, cmd := range [][]string{{"verify", "-dir", missing}, {"export", "-dir", missing, "-run", "r1"}} {
+		code, out, errs := e.do(append(cmd, "-pubkey", e.pub)...)
+		if code != exitUsage || strings.Contains(out, "FAIL") || !strings.Contains(errs, "cannot read") {
+			t.Errorf("%v = %d\n%s%s; want %d and a read error", cmd, code, out, errs, exitUsage)
+		}
+	}
+	// An object that does not verify is still a finding.
+	e.publish(t, e.head(t, "r1", 1, "a"))
+	dir := e.dump(t)
+	filepath.WalkDir(dir, func(p string, d os.DirEntry, _ error) error {
+		if !d.IsDir() {
+			os.WriteFile(p, []byte("junk"), 0o644)
+		}
+		return nil
+	})
+	if code, _, _ := e.do("verify", "-dir", dir, "-pubkey", e.pub); code != exitFindings {
+		t.Errorf("a damaged object = exit %d, want %d", code, exitFindings)
 	}
 }
