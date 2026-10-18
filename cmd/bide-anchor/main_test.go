@@ -343,8 +343,8 @@ func TestUnreadableDirIsNotAFinding(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "nope")
 	for _, cmd := range [][]string{{"verify", "-dir", missing}, {"export", "-dir", missing, "-run", "r1"}} {
 		code, out, errs := e.do(append(cmd, "-pubkey", e.pub)...)
-		if code != exitUsage || strings.Contains(out, "FAIL") || !strings.Contains(errs, "cannot read") {
-			t.Errorf("%v = %d\n%s%s; want %d and a read error", cmd, code, out, errs, exitUsage)
+		if code != exitUsage || strings.Contains(out, "FAIL") || !strings.Contains(errs, "-dir") {
+			t.Errorf("%v = %d\n%s%s; want %d and a message naming -dir", cmd, code, out, errs, exitUsage)
 		}
 	}
 	// An object that does not verify is still a finding.
