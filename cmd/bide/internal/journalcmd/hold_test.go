@@ -84,7 +84,7 @@ func TestHoldRefusalsAndUsage(t *testing.T) {
 		"place without a matter": {[]string{"place", "-db", r.db, "-id", "x", "-run", "r1", "-reason", "r", "-ticket", "t", "-deployment", "test", "-sign-key", r.key, "-head-out", r.headOut}, 2, "-matter"},
 		"no store":               {[]string{"list"}, 2, "-db"},
 		"a dsn as an argument":   {[]string{"list", "-db", r.db, "postgres://u:p@h/db"}, 2, "never an argument"},
-		"lift of an unknown id":  {append([]string{}, r.liftArgs()...), 1, "no hold"},
+		"lift of an unknown id":  {append([]string{}, r.liftArgs()...), 1, "shows a hold"},
 	} {
 		code, _, errb := r.hold(tc.args...)
 		if code != tc.want || !strings.Contains(errb, tc.msg) {
