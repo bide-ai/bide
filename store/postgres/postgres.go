@@ -173,6 +173,7 @@ var (
 	_ agent.Store    = (*Store)(nil)
 	_ agent.Lister   = (*Store)(nil)
 	_ agent.Redactor = (*Store)(nil)
+	_ agent.Holder   = (*Store)(nil)
 	_ agent.Leaser   = (*Store)(nil)
 )
 
@@ -183,7 +184,10 @@ var (
 // cannot take over a table or the next_seq function in this process. Which schema an unpinned Open
 // uses is another matter (see storeSchema and WithSchema).
 type tables struct {
-	steps, leases, version, events      string     // bare names, as in the catalog
+	steps, leases, version, events      string   // bare names, as in the catalog
+	holds, qHolds                       string   // the legal holds table, bare and schema-qualified
+	placeHold, liftHold                 writeSQL // see Store.PlaceHold
+	listHolds                           selectSQL
 	nextSeq                             string     // the next_seq function's bare name
 	qSteps, qLeases, qVersion, qNextSeq string     // schema-qualified, as SQL
 	qEvents                             string     // the events table, schema-qualified
@@ -249,9 +253,11 @@ func newTables(prefix, schema string) (tables, error) {
 	q := quoteIdent(schema) + "."
 	t.qSteps, t.qLeases, t.qVersion, t.qNextSeq = q+t.steps, q+t.leases, q+t.version, q+t.nextSeq
 	t.qEvents = q + t.events
+	t.holds = prefix + "holds"
+	t.qHolds = q + t.holds
 	t.qRedact = q + t.redact
-	var names [6][]sqlTok
-	for i, n := range []string{t.qNextSeq, t.qSteps, t.qLeases, t.qVersion, t.qEvents, t.qRedact} {
+	var names [7][]sqlTok
+	for i, n := range []string{t.qNextSeq, t.qSteps, t.qLeases, t.qVersion, t.qEvents, t.qRedact, t.qHolds} {
 		var err error
 		if names[i], err = parseName(n); err != nil {
 			return tables{}, fmt.Errorf("postgres: schema %q: %w (%w)", schema, err, agent.ErrConfig)
@@ -326,6 +332,21 @@ func newTables(prefix, schema string) (tables, error) {
 		return tables{}, err
 	}
 	if t.loadEvents, err = newSelect(`SELECT seq, leaf FROM `+t.qEvents+` WHERE run_id OPERATOR(pg_catalog.=) $1 AND seq OPERATOR(pg_catalog.>=) $2 ORDER BY seq LIMIT $3`, events); err != nil {
+		return tables{}, err
+	}
+	// Legal holds (see agent.Holder): one statement each, so atomic. The insert takes a hold only if its
+	// ID is not active, and one row per run.
+	holdsRel := [][]sqlTok{names[6]}
+	if t.placeHold, err = newWrite(`INSERT INTO `+t.qHolds+` (hold_id, run_id, tree, matter, placed_at_ms)
+		SELECT DISTINCT $1::pg_catalog.text, r, $3::pg_catalog.bool, $4::pg_catalog.text, $5::pg_catalog.int8
+		FROM pg_catalog.unnest($2::pg_catalog.text[]) AS r
+		WHERE NOT EXISTS (SELECT 1 FROM `+t.qHolds+` WHERE hold_id OPERATOR(pg_catalog.=) $1::pg_catalog.text)`, nil, holdsRel); err != nil {
+		return tables{}, err
+	}
+	if t.liftHold, err = newWrite(`DELETE FROM `+t.qHolds+` WHERE hold_id OPERATOR(pg_catalog.=) $1::pg_catalog.text`, nil, holdsRel); err != nil {
+		return tables{}, err
+	}
+	if t.listHolds, err = newSelect(`SELECT hold_id, run_id, tree, matter, placed_at_ms FROM `+t.qHolds+` ORDER BY hold_id, run_id`, holdsRel); err != nil {
 		return tables{}, err
 	}
 	if t.readVersion, err = newSelect(versionQuery(t.qVersion), [][]sqlTok{names[3]}); err != nil {
@@ -692,7 +713,7 @@ func (s *Store) migrate(ctx context.Context, dryRun bool) (MigrationResult, erro
 	}
 	// What the migration will create, for the result: the tables that are missing (a v0.9.0
 	// journal has no events table) and, below, the function and the indexes.
-	for _, table := range []string{s.t.steps, s.t.leases, s.t.version, s.t.events} {
+	for _, table := range []string{s.t.steps, s.t.leases, s.t.version, s.t.events, s.t.holds} {
 		var isTable sql.NullBool
 		if err := tx.QueryRowContext(ctx, relationIsTable, table, s.schema).Scan(&isTable); errors.Is(err, sql.ErrNoRows) {
 			res.Created = append(res.Created, "table "+quoteIdent(s.schema)+"."+table)
@@ -738,8 +759,16 @@ func (s *Store) migrate(ctx context.Context, dryRun bool) (MigrationResult, erro
 			seq    pg_catalog.int8  NOT NULL CHECK (seq OPERATOR(pg_catalog.>=) 0),
 			leaf   pg_catalog.bytea NOT NULL,
 			PRIMARY KEY (run_id, seq)
+		);
+		CREATE TABLE IF NOT EXISTS %[6]s (
+			hold_id      pg_catalog.text  NOT NULL,
+			run_id       pg_catalog.text  NOT NULL,
+			tree         pg_catalog.bool  NOT NULL,
+			matter       pg_catalog.text  NOT NULL,
+			placed_at_ms pg_catalog.int8  NOT NULL,
+			PRIMARY KEY (hold_id, run_id)
 		);`,
-		s.t.qSteps, s.t.qLeases, s.t.qVersion, schemaVersion, s.t.qEvents)); err != nil {
+		s.t.qSteps, s.t.qLeases, s.t.qVersion, schemaVersion, s.t.qEvents, s.t.qHolds)); err != nil {
 		return res, err
 	}
 	// The lapsed listing's indexes (see runsPage): expiry finds the few lapsed leases among many

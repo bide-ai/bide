@@ -25,7 +25,7 @@ func TestRV120_SchemaRenameBreaksNextSeq(t *testing.T) {
 		_, _, err = s.Insert(ctx, "r", "a", nil)
 		t.Logf("Insert after rename: %v", err)
 	}
-	rv120Exec(t, admin, `DROP FUNCTION rv120ren_new.bide_next_seq_v1(text)`, `DROP FUNCTION rv120ren_new.bide_redact_v1(text, text, bytea, bigint)`)
+	rv120Exec(t, admin, `DROP FUNCTION rv120ren_new.bide_next_seq_v1(text)`, `DROP FUNCTION rv120ren_new.bide_redact_v2(text, text, bytea, bigint)`)
 	s, err = Open(ctx, rv120DSN(t, base, "", "rv120ren_new"))
 	if err != nil {
 		t.Fatalf("Open after DROP FUNCTION: %v", err)

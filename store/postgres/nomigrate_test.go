@@ -91,7 +91,7 @@ func TestWithoutMigration_LeastPrivilege(t *testing.T) {
 	if res.DryRun || res.Before != 0 || res.After != schemaVersion || res.Schema != schema || len(res.Statements) < 4 {
 		t.Fatalf("Migrate = %+v", res)
 	}
-	assertTables(4)
+	assertTables(5)
 	again, err := Migrate(ctx, ownerDSN, WithSchema(schema))
 	if err != nil {
 		t.Fatalf("second Migrate: %v", err)
@@ -102,7 +102,7 @@ func TestWithoutMigration_LeastPrivilege(t *testing.T) {
 	if len(again.Created) != 0 {
 		t.Fatalf("second Migrate created %v", again.Created)
 	}
-	if len(res.Created) != 8 { // four tables, two functions and two indexes
+	if len(res.Created) != 9 { // five tables, two functions and two indexes
 		t.Fatalf("first Migrate created %v", res.Created)
 	}
 	for _, st := range again.Statements { // idempotent: no function and no index on a current schema

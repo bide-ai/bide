@@ -85,7 +85,7 @@ func redact(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	db := fs.String("db", "", "the SQLite journal to erase from")
 	pgEnv := fs.String("postgres-env", "", "the environment variable that holds the Postgres DSN of a role that can read the journal (never given on the command line)")
-	redactEnv := fs.String("redact-postgres-env", "", "the environment variable that holds the DSN of the role that may erase (EXECUTE on bide_redact_v1 and no table privilege); default: the -postgres-env role")
+	redactEnv := fs.String("redact-postgres-env", "", "the environment variable that holds the DSN of the role that may erase (EXECUTE on bide_redact_v2 and no table privilege); default: the -postgres-env role")
 	schema := fs.String("schema", "", "with -postgres-env: the schema that holds the journal (recommended; without it the DSN's search path decides)")
 	run := fs.String("run", "", "the run to erase from")
 	var names, prefixes, kinds stringList

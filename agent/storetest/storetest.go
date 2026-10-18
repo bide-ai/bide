@@ -45,6 +45,11 @@ func Run(t *testing.T, open func(t *testing.T) agent.Store) {
 	if _, ok := agent.Capability[agent.Redactor](open(t)); ok {
 		t.Run("Redactor", func(t *testing.T) { Redactor(t, open) })
 	}
+	if _, ok := agent.Capability[agent.Holder](open(t)); ok {
+		if _, ok := agent.Capability[agent.Redactor](open(t)); ok {
+			t.Run("Holder", func(t *testing.T) { Holder(t, open) })
+		}
+	}
 	t.Run("Header_First", func(t *testing.T) { headerFirst(t, open(t)) })
 	t.Run("Header_ConcurrentFirstWriters", func(t *testing.T) { concurrentFirstWriters(t, open) })
 	t.Run("Header_UnsupportedFormatRefused", func(t *testing.T) { unsupportedFormat(t, open(t)) })

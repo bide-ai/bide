@@ -85,6 +85,7 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `var ErrAlreadyResolved`: ErrAlreadyResolved is the condition of a resolution refused because the operation already has a different recorded outcome (see HaltAlreadyResolved).
 - `var ErrApprovalExpired = errors.New("approval expired")`: ErrApprovalExpired is returned (wrapped) when an approval gate's deadline has passed: by Approve and SubmitDecision for a decision on such a gate (also ErrConfig: nothing is recorded), and by a plan flow for a node whose gate expired (also plan.ErrApprovalDenied).
 - `var ErrGateNeedsNewRun = errors.New("the gate needs a new run")`: ErrGateNeedsNewRun is wrapped (with ErrConfig) by the error of a certificate-bound gate that cannot go on in place: its recorded count passed without excluding the requester and the policy now excludes them, so no re-ask can be named.
+- `var ErrHoldExists`: ErrHoldExists is a PlaceHold of an ID that is active.
 - `var ErrInvalidStop = errors.New("agent: invalid stop record")`: ErrInvalidStop marks a stop record that is malformed, or that no policy in force authorises.
 - `var ErrJournalVersion`: ErrJournalVersion is a run whose journal this version cannot read or write: its header names a journal format this version does not support, or the journal has no header first (written before the header existed, or by something other than a Journal).
 - `var ErrLeaseLost = errors.New("run lease lost")`: ErrLeaseLost ends a drive whose run lease was lost while it ran: the store reported the lease no longer held (it lapsed and another process took it), or no renewal succeeded before the renewal cutoff (see Lease).
@@ -92,6 +93,7 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `var ErrNotResumable`: ErrNotResumable is a Resumer's answer for a run it does not drive (another kind, a typed run whose schema is not its type's).
 - `var ErrNotStarted`: ErrNotStarted is a run with no run:start record: one never driven (a Signal sent to a mistyped run ID, say), or one whose first drive has not written it yet.
 - `var ErrNotifyPermanent`: ErrNotifyPermanent marks a Notifier error as one a retry within the round cannot fix.
+- `var ErrRedactHeld`: ErrRedactHeld is a redaction of a run an active hold covers.
 - `var ErrRunCancelled = errors.New("run cancelled")`: ErrRunCancelled is the end of a run that was cancelled (see Cancel): the first of the run's end markers in journal order is run:cancelled.
 - `var ErrRunEnded = errors.New("run already ended")`: ErrRunEnded is Cancel's answer for a run that is already over: its first end marker is run:complete or run:aborted, so there is nothing left to cancel.
 - `var ErrStopRejected`: ErrStopRejected is returned when a record was written but the control run's fold does not accept it (a policy transition raced it, or its signature does not verify under the policy in force at its position): it has no effect.
@@ -130,6 +132,7 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `func Capability[T any](store Store) (T, bool)`: Capability returns store's implementation of the optional capability T (Lister, Leaser, or any other interface a store may implement beyond Store), looking through wrappers.
 - `func CertLeafHash(der []byte) [32]byte`: CertLeafHash is the SHA-256 of a leaf certificate's DER: what a v4 decision signs in place of the certificate itself.
 - `func CertRecordVerifies(iv CertIntakeVerifier, s ApprovalSubject, r Record) bool`: CertRecordVerifies reports whether r is a valid decision of a certificate-bound approver for s as the intake judges (CertIntakeVerifier): its chain, identity, scheme and signature hold now and nothing in its chain is revoked.
+- `func CheckHold(h Hold) error`: CheckHold checks the parts of a hold no store needs to decide: an ID, a matter and runs that are not blank.
 - `func CheckRedaction(runID, name string, current, tombstone []byte) error`: CheckRedaction checks the part of a redaction that needs no store: that tombstone is a well-formed tombstone (TombstoneLeafHash), that the leaf hash it keeps is the leaf hash of current (LeafHash), and that the record current holds, named name in run runID, is not protected (RedactionProtected).
 - `func DecisionStep(d Decision) string`: DecisionStep returns the journal name SubmitDecision gives the record of d first: distinct for each distinct decision (call, approver, verdict, scheme and decision time), and the same for every resubmission of it, whatever its signature bytes, which is why that is a no-op.
 - `func DigestKey(bucket string) string`: DigestKey is the event key of the digest for time bucket (an opaque, stable label).
@@ -1112,6 +1115,45 @@ HaltTooYoung is returned by ResolveHalt when WithMinHaltAge is set and the halt 
 
 - `func (e *HaltTooYoung) Error() string`: Error names the run and operation, the halt's age and the minimum it must reach.
 
+## type Hold
+
+```go
+type Hold struct {
+	ID string `json:"id"`
+
+	Matter string `json:"matter"`
+
+	Runs []string `json:"runs"`
+	Tree bool     `json:"tree,omitempty"`
+
+	PlacedAtMs int64 `json:"placed_at_ms"`
+}
+```
+
+A Hold is a legal hold: a promise that the records of some runs are not erased while a matter is open.
+
+**Constructors and functions**
+
+- `func HoldsOf(ctx context.Context, store Store, runID string) ([]Hold, error)`: HoldsOf returns the active holds in store's Holder that cover runID, or none for a store with no Holder.
+
+**Methods**
+
+- `func (h Hold) Covers(runID string) bool`: Covers reports whether the hold covers runID: it is one of the hold's runs, or, for a hold with Tree, a sub-agent run below one of them.
+
+## type Holder
+
+```go
+type Holder interface {
+	PlaceHold(ctx context.Context, h Hold) error
+
+	LiftHold(ctx context.Context, id string) (bool, error)
+
+	Holds(ctx context.Context) ([]Hold, error)
+}
+```
+
+Holder is the optional store capability that keeps legal holds.
+
 ## type Identity
 
 ```go
@@ -1468,8 +1510,11 @@ MemStore is an in-memory Store for tests and local development.
 
 - `func (m *MemStore) AcquireLease(_ context.Context, runID, holder string, ttl time.Duration) (bool, error)`: AcquireLease implements Leaser.
 - `func (m *MemStore) Get(ctx context.Context, runID, name string) (Entry, bool, error)`: Get implements Store.
+- `func (m *MemStore) Holds(ctx context.Context) ([]Hold, error)`: Holds implements Holder.
 - `func (m *MemStore) Insert(ctx context.Context, runID, name string, data []byte) (Entry, bool, error)`: Insert implements Store.
+- `func (m *MemStore) LiftHold(ctx context.Context, id string) (bool, error)`: LiftHold implements Holder.
 - `func (m *MemStore) Load(ctx context.Context, runID string, after int64) iter.Seq2[Entry, error]`: Load implements Store.
+- `func (m *MemStore) PlaceHold(ctx context.Context, h Hold) error`: PlaceHold implements Holder.
 - `func (m *MemStore) ReapLeases(_ context.Context, ended []string) (int, error)`: ReapLeases implements Leaser.
 - `func (m *MemStore) Redact(ctx context.Context, runID, name string, current, tombstone []byte) (bool, error)`: Redact implements Redactor.
 - `func (m *MemStore) ReleaseLease(_ context.Context, runID, holder string) error`: ReleaseLease implements Leaser.
@@ -2189,6 +2234,17 @@ Pause is the error a run returns when it has stopped durably and is waiting on s
 
 - `func AsPause(err error) (Pause, bool)`: AsPause returns the first Pause in err's chain, if there is one.
 
+## type PlannedHold
+
+```go
+type PlannedHold struct {
+	ID     string `json:"id"`
+	Matter string `json:"matter"`
+}
+```
+
+PlannedHold names a legal hold that covers a planned run.
+
 ## type PlannedRedaction
 
 ```go
@@ -2419,6 +2475,8 @@ type RedactState struct {
 	Leased bool
 
 	ParentLive bool
+
+	Held bool
 }
 ```
 
@@ -2441,7 +2499,9 @@ type RedactionPlan struct {
 	Terminal bool `json:"terminal"`
 
 	Refusal string `json:"refusal,omitempty"`
-	Digest  string `json:"digest"`
+
+	Holds  []PlannedHold `json:"holds,omitempty"`
+	Digest string        `json:"digest"`
 }
 ```
 

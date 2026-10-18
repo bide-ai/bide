@@ -110,7 +110,7 @@ A runtime does not validate models. It can make the evidence for inventory, moni
 | Kill switch to stop agents | In progress; not on main | [Roadmap](../ROADMAP.md) |
 | Independent time: RFC 3161 is not yet used by any gate, endpoint or command | Verifier exists; wiring left | [Roadmap](../ROADMAP.md#bank-readiness), [known limitations](../KNOWN-LIMITATIONS.md#audit-and-proofs) |
 | External security review | Not done; no third party has assessed bide | [Threat model](threat-model.md#what-bide-does-not-address-in-one-list) |
-| Legal hold, a second person's signed authorization of an erasure, erasure of final results, session transcripts and event-store copies | Designed, not built ([design](../design/journal-redaction.md)) | [Retention guide](../guides/retention.md#erasing-personal-data) |
+| A command for legal holds and their signed record in the trail (the store already refuses to erase a held run: `agent.Holder`), a second person's signed authorization of an erasure, erasure of final results, session transcripts and event-store copies | Designed, not built ([design](../design/journal-redaction.md)) | [Retention guide](../guides/retention.md#erasing-personal-data) |
 | Hardware HSM trial | Left | [Roadmap](../ROADMAP.md#bank-readiness) |
 | Keys issued through an institution's SSO | Left | [Roadmap](../ROADMAP.md#bank-readiness) |
 | Passkey (WebAuthn) approvals | Left | [Roadmap](../ROADMAP.md#notifications-and-approvals) |

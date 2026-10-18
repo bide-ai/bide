@@ -3,8 +3,10 @@ package agent
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"iter"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -19,6 +21,7 @@ import (
 type MemStore struct {
 	mu     sync.Mutex
 	runs   map[string]*memRun
+	holds  map[string]Hold     // active legal holds by ID (see Holder)
 	leases map[string]memLease // run leasing (see lease.go); in-process, for tests and the reference
 	now    func() time.Time    // lease clock (settable in tests); defaults to time.Now
 }
@@ -60,6 +63,7 @@ var (
 	_ Lister   = (*MemStore)(nil)
 	_ Leaser   = (*MemStore)(nil)
 	_ Redactor = (*MemStore)(nil)
+	_ Holder   = (*MemStore)(nil)
 )
 
 // Insert implements Store.
@@ -200,7 +204,10 @@ func (m *MemStore) Redact(ctx context.Context, runID, name string, current, tomb
 				st.ParentLive = st.ParentLive || !over
 			}
 		}
-		if bytes.Equal(st.Row.Data, current) && st.Ended && !st.Leased && !st.ParentLive {
+		for _, h := range m.holds {
+			st.Held = st.Held || h.Covers(runID)
+		}
+		if bytes.Equal(st.Row.Data, current) && st.Ended && !st.Leased && !st.ParentLive && !st.Held {
 			entries := slices.Clone(r.entries)
 			entries[i].Data = bytes.Clone(tombstone)
 			r.entries = entries
@@ -208,4 +215,56 @@ func (m *MemStore) Redact(ctx context.Context, runID, name string, current, tomb
 		}
 	}
 	return false, st.Explain(runID, name, current, tombstone)
+}
+
+// PlaceHold implements Holder.
+func (m *MemStore) PlaceHold(ctx context.Context, h Hold) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := CheckHold(h); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.init()
+	if _, ok := m.holds[h.ID]; ok {
+		return fmt.Errorf("hold %q: %w", h.ID, ErrHoldExists)
+	}
+	if m.holds == nil {
+		m.holds = map[string]Hold{}
+	}
+	h.Runs = slices.Sorted(slices.Values(h.Runs))
+	h.Runs = slices.Compact(h.Runs)
+	h.PlacedAtMs = m.now().UnixMilli()
+	m.holds[h.ID] = h
+	return nil
+}
+
+// LiftHold implements Holder.
+func (m *MemStore) LiftHold(ctx context.Context, id string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.holds[id]
+	delete(m.holds, id)
+	return ok, nil
+}
+
+// Holds implements Holder.
+func (m *MemStore) Holds(ctx context.Context) ([]Hold, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]Hold, 0, len(m.holds))
+	for _, h := range m.holds {
+		h.Runs = slices.Clone(h.Runs)
+		out = append(out, h)
+	}
+	slices.SortFunc(out, func(a, b Hold) int { return strings.Compare(a.ID, b.ID) })
+	return out, nil
 }
