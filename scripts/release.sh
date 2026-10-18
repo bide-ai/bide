@@ -80,7 +80,14 @@ note() { echo "    $*"; }
 
 usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
-is_version() { [[ "$1" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; }
+# is_version v: a semantic version with a leading v and an optional pre-release, the one pattern
+# module-sbom.sh (VERSION_RX) and the changelog tool use: no leading zeros in the numbers or in a
+# numeric identifier, no empty identifier, no build metadata. A version it accepts is accepted by
+# the later steps; one it refuses stops the release here, not late.
+is_version() {
+  local id='(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
+  [[ "$1" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-$id(\.$id)*)?$ ]]
+}
 
 module_path() { # dir: the module path a nested directory holds
   echo "$ROOT_MODULE/$1"
@@ -616,6 +623,13 @@ self_test() {
   printf '%s\n' "$main" | grep -qx 'package main' || { echo "self-test: the consumer is not a main package"; fail=true; }
   [ "$(PUBLISHED="a cmd/x b" COMMANDS="cmd/x" "$0" --list-commands 2>/dev/null | tr '\n' ' ')" = "cmd/bide cmd/bide/bide-hsm cmd/bide-view " ] ||
     { echo "self-test: --list-commands does not print the commands"; fail=true; }
+  local v
+  for v in v0.21.0 v0.21.0-rc.1 v0.21.0-rc.10 v0.21.0-beta v0.21.0-0.3.7 v0.21.0-x-y.z; do
+    is_version "$v" || { echo "self-test: $v was refused as a version"; fail=true; }
+  done
+  for v in v0.21.0-rc..1 v0.21.0--. v0.21.0-01 v0.21.0-rc.01 v0.21.0-rc. v0.21.0- v0.21.0+b v01.0.0 v1.02.3 0.21.0 "v0.21.0 "; do
+    is_version "$v" && { echo "self-test: \"$v\" was accepted as a version"; fail=true; }
+  done
   self_test_push || fail=true
   self_test_ci || fail=true
   self_test_changelog || fail=true

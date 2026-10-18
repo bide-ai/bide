@@ -211,6 +211,15 @@ tree between releases.
    tag (`https://raw.githubusercontent.com/bide-ai/bide/vX.Y.Z/docs/guides/img/...`); `doccheck`
    enforces it. Merge it and wait for CI on main to pass for that commit. The release script
    refuses a commit that still has fragments.
+
+   A release candidate (`vX.Y.Z-rc.N`) is assembled the same way, as `## [X.Y.Z-rc.N]`, with
+   `docs/releases/vX.Y.Z-rc.N.md`, and gets no Homebrew formula. The tool assembles only the
+   fragments added since the last release or candidate, so for the final `vX.Y.Z` its section would
+   list only what changed since the last candidate, and its `[X.Y.Z]` compare link would start at
+   that candidate. The final release's changelog section and notes must list everything since the
+   previous final release: retitle the candidate's section to `[X.Y.Z]` (merging the sections of
+   several candidates into it), assemble the new fragments into it, point its compare link at the
+   previous final release, and write `docs/releases/vX.Y.Z.md` as the full list.
 2. From a clean checkout of main, dry-run the release. Nothing leaves the machine: the script
    works in a scratch clone and pushes to a scratch repository that stands in for GitHub, and the
    go command resolves the bide modules from it.
