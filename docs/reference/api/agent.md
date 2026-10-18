@@ -84,6 +84,7 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `var ErrRedactChanged`: ErrRedactChanged is a redaction of an entry whose bytes are not the bytes the caller read: another writer changed it, or the caller's copy is not what is stored.
 - `var ErrRedactNoEntry`: ErrRedactNoEntry is a redaction of an entry the run does not hold.
 - `var ErrAlreadyResolved`: ErrAlreadyResolved is the condition of a resolution refused because the operation already has a different recorded outcome (see HaltAlreadyResolved).
+- `var ErrAlreadyStopped = errors.New("agent: already stopped")`: ErrAlreadyStopped is matched (errors.Is) by the \*AlreadyStoppedError SetStop returns, with the stop in force, when the scope with that compensation is already stopped.
 - `var ErrApprovalExpired = errors.New("approval expired")`: ErrApprovalExpired is returned (wrapped) when an approval gate's deadline has passed: by Approve and SubmitDecision for a decision on such a gate (also ErrConfig: nothing is recorded), and by a plan flow for a node whose gate expired (also plan.ErrApprovalDenied).
 - `var ErrGateNeedsNewRun = errors.New("the gate needs a new run")`: ErrGateNeedsNewRun is wrapped (with ErrConfig) by the error of a certificate-bound gate that cannot go on in place: its recorded count passed without excluding the requester and the policy now excludes them, so no re-ask can be named.
 - `var ErrHoldExists`: ErrHoldExists is a PlaceHold of an ID that is active.
@@ -290,6 +291,19 @@ Alg names a signature scheme: "ed25519", "ecdsa-p256", "ml-dsa-65", or "ed25519+
 **Constants**
 
 - `const AlgCertificate Alg = "x509"`: AlgCertificate is the Alg a certificate-bound verifier reports.
+
+## type AlreadyStoppedError
+
+```go
+type AlreadyStoppedError struct{ Entry StopEntry }
+```
+
+AlreadyStoppedError is returned by SetStop when a stop with the same scope and compensation is already in force: Entry is that stop, set by someone else or by an earlier call.
+
+**Methods**
+
+- `func (e *AlreadyStoppedError) Error() string`: Error implements error.
+- `func (e *AlreadyStoppedError) Unwrap() error`: Unwrap lets errors.Is(err, ErrAlreadyStopped) match.
 
 ## type AnswerOption
 
@@ -3369,6 +3383,8 @@ type StopRecord struct {
 	SetDigest    string     `json:"set_digest,omitempty"`
 	Scope        *StopScope `json:"scope,omitempty"`
 	Compensation string     `json:"compensation,omitempty"`
+
+	Gen int `json:"gen,omitempty"`
 
 	To  StopMode `json:"to,omitempty"`
 	Seq int      `json:"seq,omitempty"`

@@ -78,9 +78,12 @@ bide stop -db run.db -lift 3f9c2a10 -reason "provider recovered" -yes
 - **There is no default scope.** Exactly one of `-all`, `-tool NAME`, `-flow NAME` and `-agent NAME` sets
   a stop (the last three repeat, one stop each). A bare `bide stop -db run.db` lists the active stops
   and exits 2: it never stops anything by accident. Setting a scope that is already stopped writes
-  nothing and says so (the check reads the control run just before the write, but it cannot be atomic:
-  two operators setting the same scope at the same instant can both write, and each of those stops needs
-  its own lift).
+  nothing and says so. This holds when two operators set the same scope at the same instant: a stop is
+  named by its scope, its compensation and a generation, the insert is once-only, and the one that loses
+  reads again, finds the winner's stop in force, and writes nothing, so a scope is never in force twice and
+  needs one lift. A writer with store access and no key cannot make a stop impossible to set: a junk entry under a generation name is stepped over and never moves the generation, and a stop that cannot get a generation name is written under its content-derived name, which cannot be taken (in that case it can duplicate a stop written at the same moment, which is the safe direction). The compensation is part of what a stop is: `-block-compensation` is never refused
+  because a weaker stop of the same target (one that lets a rollback run) is in force, so the stricter stop is
+  written beside it.
 - `-reason` is required, at most 1 KiB, and is shown in logs, notifications and the viewer: put no
   secret and no customer data in it. `-block-compensation` holds a saga's rollback too.
 - **An `-agent` stop covers runs whose identity names that agent.** A run with no identity
@@ -140,7 +143,7 @@ basic by a signed `-downgrade` is basic again.
 
 **Exit 5, half done.** An audited stop is written to the control run first and the trail second. If the
 trail write fails the stop IS in force; run `bide stop -reaudit` (same `-db` and `-stop-policy`) to put it
-on the trail. Do not repeat the stop: a repeat is a second stop with its own ID. A lift is written to the
+on the trail. Repeating the stop is harmless (it reports the stop in force and writes nothing) and does not put it on the trail: `-reaudit` does. A lift is written to the
 trail first; if the control-run write then fails, the lift is on the trail and not in force, and
 `bide stop -apply-pending` makes it effective. `bide audit stops` shows the same two states.
 
