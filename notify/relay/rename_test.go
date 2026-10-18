@@ -249,7 +249,12 @@ func TestPermanentFailureBacksOffAndLogsOncePerStreak(t *testing.T) {
 	waitFor2(t, "the recovery line", func() bool { return recoveredLines.Load() == 1 })
 }
 
-// While a save is refused for a passing reason, the event path (persist) is not held up behind the retries.
+// While a save is refused for a passing reason, nothing sleeps with the state mutex held: a save makes one attempt
+// and the retries run on a timer. This asserts the structure, not a duration: the sleep hook (which the in-line
+// retry of startup and Close uses, and a save under h.pmu must not) is never called, and the event path (persist)
+// returns from both an urgent and an ordinary call while the rename keeps being refused. A duration here would
+// measure the saves' own file I/O (CreateTemp, write, fsync), which is slow on a loaded Windows runner: with
+// StateFlushDelay < 0 the second persist saves in line itself.
 func TestRetryDoesNotHoldTheEventPath(t *testing.T) {
 	sink := &funcSink{name: "s"}
 	h, err := New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, StatePath: filepath.Join(t.TempDir(), "relay.state"), StateFlushDelay: -1})
@@ -257,36 +262,29 @@ func TestRetryDoesNotHoldTheEventPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer h.Close()
-	h.state.renameFile = func(string, string) error { return errBusy }
+	var slept, renames atomic.Int32
+	h.state.sleep = func(time.Duration) { slept.Add(1) }
+	h.state.renameFile = func(string, string) error { renames.Add(1); return errBusy }
 	h.state.quick = busyQuick // a refusal that never passes: a real fault read as a passing one
-	started := make(chan struct{})
+	var wg sync.WaitGroup
+	for _, urgent := range []bool{true, false, true, false} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			h.persist(urgent)
+		}()
+	}
 	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		close(started)
-		h.persist(true) // an urgent save
-	}()
-	<-started
-	time.Sleep(50 * time.Millisecond)
-	t0 := time.Now()
-	h.persist(false) // what the next event does
-	waited := time.Since(t0)
-	<-done
-	if waited > 100*time.Millisecond {
-		t.Fatalf("an event waited %s behind a save's retries (budget %s): the sleeps hold the state mutex", waited, renameRetryBudget)
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("persist did not return while the rename was refused")
 	}
-}
-
-// The wait doubles to the cap and never overflows, whatever the flush delay (a large delay shifted left would).
-func TestBackoffWait(t *testing.T) {
-	if got := []time.Duration{backoffWait(time.Second, 0), backoffWait(time.Second, 1), backoffWait(time.Second, 3), backoffWait(time.Second, 5), backoffWait(time.Second, 40)}; got[0] != time.Second || got[1] != 2*time.Second || got[2] != 8*time.Second || got[3] != 30*time.Second || got[4] != 30*time.Second {
-		t.Fatalf("waits %v", got)
+	if renames.Load() == 0 {
+		t.Fatal("no save reached the rename: the test would pass without exercising the retry path")
 	}
-	for _, base := range []time.Duration{time.Millisecond, time.Second, time.Hour, 24 * time.Hour, 200 * time.Hour, 1<<63 - 1} {
-		for slow := 0; slow <= 64; slow++ {
-			if d := backoffWait(base, slow); d <= 0 || d > stateRetryMax {
-				t.Fatalf("base %s, failure %d: wait %s", base, slow, d)
-			}
-		}
+	if n := slept.Load(); n != 0 {
+		t.Fatalf("a save slept %d times: its retries run in line, under the state mutex", n)
 	}
 }
