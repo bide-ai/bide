@@ -186,7 +186,7 @@ func TestLiftIsNotHeldUpByTheRunCount(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the lift waited on the run count")
 	}
-	if code != 0 || !strings.Contains(out, "not counted") || len(active(t, st)) != 0 {
+	if code != 0 || !strings.Contains(out, "at least 0 held (count incomplete") || len(active(t, st)) != 0 {
 		t.Fatalf("exit %d\n%s", code, out)
 	}
 }

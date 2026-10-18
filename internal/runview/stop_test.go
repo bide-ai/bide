@@ -656,7 +656,7 @@ func TestHeldCount_CapAndDeadlineMidCount(t *testing.T) {
 	maxHeldRead = old
 	ctx, cancel := context.WithCancel(context.Background())
 	j, _ := agent.NewJournal(cancelOnLoad{r.store, cancel})
-	if c := HeldCount(ctx, JournalSource{J: j}, e); c.ListErr == "" || c.Read > 1 {
+	if c := HeldCount(ctx, JournalSource{J: j}, e); c.ListErr == "" || !c.Incomplete || c.Read > 1 {
 		t.Fatalf("a deadline mid-count must stop it: %+v", c)
 	}
 }

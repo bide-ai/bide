@@ -174,8 +174,8 @@ trail first; if the control-run write then fails, the lift is on the trail and n
   state is derived from the journal: the viewer cannot tell a run a live process is holding from one no
   process is driving, and a held run is held at its next drive (a call that has begun finishes).
 - `/stops.json` serves the banner as JSON. `bide stop -lift` shows how many runs the stop holds, by the
-  same rule, before it asks (it lists at most 2000 unfinished runs and gives up after 5 seconds, so a huge or
-  slow store never holds up a lift).
+  same rule, before it asks (it lists at most 2000 unfinished runs and stops after 5 seconds, showing "at least N held
+  (count incomplete)" and going on to the question, so a huge or slow store never holds up a lift).
 - The control run (`@stop`) is not a run: it is not listed, counted or shown as needing attention.
 
 ## Basic and audited mode

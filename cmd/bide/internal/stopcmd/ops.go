@@ -613,6 +613,9 @@ func (c *cmd) printHeld(ctx context.Context, j *agent.Journal, e agent.StopEntry
 	defer cancel()
 	n := runview.HeldCount(cctx, runview.JournalSource{J: j}, e)
 	switch {
+	case n.Incomplete:
+		fmt.Fprintf(c.out, "runs held     at least %d held (count incomplete: %s after %s read)\n", n.Held, n.ListErr, countWord(n.Read, "unfinished run"))
+		return
 	case n.ListErr != "":
 		fmt.Fprintf(c.out, "runs held     not counted: the runs could not be listed (%s)\n", n.ListErr)
 		return
