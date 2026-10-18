@@ -178,7 +178,7 @@ Object Lock ([anchoring](anchoring.md)). In compliance mode, in an AWS account t
 operators do not administer, an operator cannot remove or rewrite a head before its retention date;
 they can still stop publishing, and after the retention date, close the account or disable the KMS key
 (see the table in the guide). An anchored head carries its run or trail ID in clear, and a write-once
-anchor cannot be redacted, so run IDs sent to it must hold no personal data.
+anchor cannot be redacted, so run IDs sent to it must hold no personal data. `anchor/gcs` does the same with a Google Cloud Storage bucket whose retention policy is locked ([anchoring](anchoring-gcs.md)); a locked policy cannot be shortened or removed by anyone, but a project owner can wait out the retention and delete.
 
 ## Key custody
 

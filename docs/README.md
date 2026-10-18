@@ -46,6 +46,7 @@ proofs. Each entry notes who it is for.
 - **[SSO certificates](guides/sso-certificates.md)**: a tested recipe for approver certificates issued after a single sign-on login (step-ca with an OIDC provisioner, the certificate template, the approver's renewal script, revocation and step-ca's CRL limits), with the end-to-end test in `examples/sso-certs`.
 - **[Security model](guides/security-model.md)**: the cryptographic guarantees and their exact scope (confidentiality is out of scope).
 - **[Anchoring](guides/anchoring.md)**: publish every signed head to an S3 bucket under Object Lock (`anchor/awss3`), read back and verified, with IAM policies, failure modes and `bide-anchor` to verify the objects. Tested against MinIO and a fake, never AWS.
+- **[Anchoring in Google Cloud Storage](guides/anchoring-gcs.md)**: the same for a bucket with a locked retention policy (`anchor/gcs`), with custom IAM roles, failure modes and a runbook for a real-bucket run.
 - **[Key custody](guides/key-custody.md)**: signing keys in a PKCS#11 HSM, AWS KMS, Google Cloud KMS or Azure Key Vault instead of key files, behind `audit.Signer`.
 - **[Delegation](guides/delegation.md)**: signed grants, attenuating delegation, and earned authority.
 - **[Governance](guides/governance.md)**: convergent governed state (Tier-2), federation, and gsm-backed synthesis and coordination.

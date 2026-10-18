@@ -1,0 +1,182 @@
+package gcs_test
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/bide-ai/bide/anchor/gcs"
+	"github.com/bide-ai/bide/anchor/gcs/gcstest"
+	"github.com/bide-ai/bide/audit"
+)
+
+// An auditor's Reader.Audit reports the state of each object, but the bucket's own protections (the
+// policy being locked, versioning, uniform access, public access prevention) can change after New: an
+// unlocked policy can be removed, versioning suspended. Does the Reader or Audit notice?
+func TestAuditReportsABucketThatLostItsProtections(t *testing.T) {
+	k := newKeys(t, 1)
+	for name, mod := range map[string]func(*gcs.BucketInfo){
+		"policy not locked": func(b *gcs.BucketInfo) { b.RetentionLocked = false },
+		"no versioning":     func(b *gcs.BucketInfo) { b.Versioning = false },
+		"no uniform access": func(b *gcs.BucketInfo) { b.UniformAccess = false },
+		"public access ok":  func(b *gcs.BucketInfo) { b.PublicAccessPrevented = false },
+		"shorter policy":    func(b *gcs.BucketInfo) { b.RetentionPeriod = 25 * time.Hour },
+		"another key":       func(b *gcs.BucketInfo) { b.DefaultKMSKey = "projects/p/locations/l/keyRings/r/cryptoKeys/other" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := gcstest.New()
+			a := newAnchor(t, f, nil)
+			publish(t, a, k.head(t, "r1", 3, 1))
+			f.Configure(mod)
+			r, err := gcs.NewReader(ctx, gcs.ReaderConfig{Store: f, ExpectedProjectNumber: gcstest.ProjectNumber, Verifier: k.v, KMSKey: kmsKey, Retention: 30 * 24 * time.Hour})
+			if err != nil {
+				t.Fatalf("NewReader refused a bucket Audit should report on: %v", err)
+			}
+			rep, err := r.Audit(ctx, "journal", "r1", f.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(rep.Findings) == 0 {
+				t.Errorf("%s: the bucket's protection is gone and Audit reports nothing", name)
+			}
+			if !hasFinding(rep, "bucket") {
+				t.Errorf("%s: findings %v do not name the bucket", name, rep.Findings)
+			}
+		})
+	}
+}
+
+// Heads promises increasing size, "heads of one size in name order" (the order Head returns them in).
+func TestHeadsListsOneSizeInNameOrder(t *testing.T) {
+	k := newKeys(t, 1)
+	f := gcstest.New()
+	a := newAnchor(t, f, nil)
+	for ts := int64(1); ts <= 4; ts++ {
+		publish(t, a, k.headRoot(t, "r1", 4, ts, "same"))
+	}
+	publish(t, a, k.head(t, "r1", 2, 1))
+	r := newReader(t, f, k.v)
+	hs, err := r.Heads(ctx, "journal", "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	same, err := r.Head(ctx, "journal", "r1", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got, want []int64
+	for _, h := range hs {
+		if h.Size == 4 {
+			got = append(got, h.TimestampNanos)
+		}
+	}
+	for _, h := range same {
+		want = append(want, h.TimestampNanos)
+	}
+	t.Logf("Heads: %v; Head (name order): %v", got, want)
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("Heads lists the heads of one size in the reverse of name order: %v, Head gives %v", got, want)
+		}
+	}
+}
+
+// A bucket that still has every protection is no finding, and a reader without a configured key does not
+// judge the key.
+func TestAuditOfAnIntactBucketHasNoBucketFinding(t *testing.T) {
+	k := newKeys(t, 1)
+	f := gcstest.New()
+	publish(t, newAnchor(t, f, nil), k.head(t, "r1", 3, 1))
+	rep, err := newReader(t, f, k.v).Audit(ctx, "journal", "r1", f.Now())
+	if err != nil || len(rep.Findings) != 0 {
+		t.Fatalf("Audit = %+v, %v", rep.Findings, err)
+	}
+	f.Configure(func(b *gcs.BucketInfo) { b.DefaultKMSKey = "projects/p/locations/l/keyRings/r/cryptoKeys/other" })
+	if rep, _ := newReader(t, f, k.v).Audit(ctx, "journal", "r1", f.Now()); hasFinding(rep, "default key") {
+		t.Errorf("a reader without a configured key judged the key: %v", rep.Findings)
+	}
+	r := newReader(t, f, k.v)
+	f.FailNext("Bucket", gcs.ErrUnavailable, 1)
+	if _, err := r.Audit(ctx, "journal", "r1", f.Now()); !errors.Is(err, gcs.ErrUnavailable) {
+		t.Errorf("Audit with an unreadable bucket = %v; want ErrUnavailable", err)
+	}
+}
+
+// A generation that is listed and then cannot be read (deleted at the end of its retention, or hidden)
+// is a positive fact. The head readers fail closed on it: a caller that checks freshness must not be
+// shown an older head as the latest. Audit reports it as a finding instead of aborting.
+func TestAVanishedGenerationFailsTheHeadReadersAndIsAnAuditFinding(t *testing.T) {
+	k := newKeys(t, 1)
+	f := gcstest.New()
+	a := newAnchor(t, f, nil)
+	publish(t, a, k.head(t, "r1", 3, 1))
+	publish(t, a, k.head(t, "r1", 5, 2))
+	f.VanishOnRead(f.Names()[0]) // the size 5 head's name sorts first
+	r := newReader(t, f, k.v)
+	if got, err := r.Latest(ctx, "journal", "r1"); !errors.Is(err, gcs.ErrVanished) {
+		t.Fatalf("Latest = size %d, %v; want ErrVanished, not the older head", got.Size, err)
+	}
+	if _, err := r.Heads(ctx, "journal", "r1"); !errors.Is(err, gcs.ErrVanished) {
+		t.Fatalf("Heads = %v; want ErrVanished", err)
+	}
+	if _, err := r.Head(ctx, "journal", "r1", 5); !errors.Is(err, gcs.ErrVanished) {
+		t.Fatalf("Head(5) = %v; want ErrVanished", err)
+	}
+	if _, err := r.Head(ctx, "journal", "r1", 3); err != nil {
+		t.Fatalf("Head(3) = %v; a size whose generations are readable is unaffected", err)
+	}
+	rep, err := r.Audit(ctx, "journal", "r1", f.Now())
+	if err != nil || !hasFinding(rep, "vanished") || len(rep.Heads) != 1 {
+		t.Fatalf("Audit = %+v, %v; want a vanished finding and the readable head", rep.Findings, err)
+	}
+}
+
+// A locked policy under the 24-hour minimum is a bucket finding even when the reader was not told the
+// anchor's configured retention.
+func TestAuditReportsAPolicyBelowTheMinimum(t *testing.T) {
+	k := newKeys(t, 1)
+	f := gcstest.New()
+	publish(t, newAnchor(t, f, nil), k.head(t, "r1", 3, 1))
+	f.Configure(func(b *gcs.BucketInfo) { b.RetentionPeriod = time.Hour })
+	rep, err := newReader(t, f, k.v).Audit(ctx, "journal", "r1", f.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasFinding(rep, "below the minimum") {
+		t.Fatalf("a 1h policy is not reported: %v", rep.Findings)
+	}
+}
+
+func TestLoadDirRefusesNothingAndEquivocation(t *testing.T) {
+	k := newKeys(t, 1)
+	write := func(dir string, h audit.SignedTreeHead) {
+		t.Helper()
+		name, body := nameAndBody(t, k, h)
+		p := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := gcs.LoadDir(t.TempDir(), k.v); !errors.Is(err, gcs.ErrNotFound) {
+		t.Fatalf("LoadDir of an empty directory = %v; want ErrNotFound, never zero heads and nil", err)
+	}
+	dir := t.TempDir()
+	write(dir, k.headRoot(t, "r", 4, 1, "history A"))
+	write(dir, k.headRoot(t, "r", 4, 2, "history B"))
+	if _, err := gcs.LoadDir(dir, k.v); !errors.Is(err, gcs.ErrEquivocation) {
+		t.Fatalf("LoadDir with two histories = %v; want ErrEquivocation", err)
+	}
+	// Same root at one size (two writers around a lease handoff) and equal sizes in different trees are fine.
+	ok := t.TempDir()
+	write(ok, k.headRoot(t, "r", 4, 1, "same"))
+	write(ok, k.headRoot(t, "r", 4, 2, "same"))
+	write(ok, k.headRoot(t, "q", 4, 1, "other"))
+	if hs, err := gcs.LoadDir(ok, k.v); err != nil || len(hs) != 3 {
+		t.Fatalf("LoadDir = %d heads, %v; want 3 and no error", len(hs), err)
+	}
+}

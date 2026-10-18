@@ -1,0 +1,11 @@
+{
+  "title": "Bide anchor hold releaser",
+  "description": "Releases temporary holds on anchored heads. Give it to an identity other than the writer's; it cannot create or delete objects, and cannot shorten a retention.",
+  "stage": "GA",
+  "includedPermissions": [
+    "storage.buckets.get",
+    "storage.objects.get",
+    "storage.objects.list",
+    "storage.objects.update"
+  ]
+}
