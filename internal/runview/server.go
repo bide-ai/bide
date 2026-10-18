@@ -74,6 +74,12 @@ func (s JournalSource) CanList() bool {
 // completed has nothing a person must do, so the Needs attention list reads none. An aborted or
 // cancelled run is listed (a halt outlives either).
 func (s JournalSource) Unfinished(ctx context.Context) ([]string, error) {
+	return s.UnfinishedLimit(ctx, 0)
+}
+
+// UnfinishedLimit is Unfinished that stops listing after limit runs (no limit when limit is 0), so a store
+// with a very large number of unfinished runs is not loaded whole to read the first few.
+func (s JournalSource) UnfinishedLimit(ctx context.Context, limit int) ([]string, error) {
 	l, ok := agent.Capability[agent.Lister](s.J.Store())
 	if !ok {
 		return nil, nil
@@ -85,6 +91,9 @@ func (s JournalSource) Unfinished(ctx context.Context) ([]string, error) {
 		}
 		if id != agent.StopControlRun {
 			ids = append(ids, id)
+			if limit > 0 && len(ids) >= limit {
+				break
+			}
 		}
 	}
 	return ids, nil

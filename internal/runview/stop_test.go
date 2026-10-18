@@ -494,3 +494,126 @@ func TestBuildOpenTools(t *testing.T) {
 		t.Fatalf("openTools = %v, want [refund]", v.openTools)
 	}
 }
+
+// An audited viewer on a deployment that has not upgraded: plain stops are in force for the deployment's basic
+// processes and ignored by audited ones. The banner says so instead of saying nothing is stopped.
+func TestStopBanner_AuditedViewerOnABasicDeployment(t *testing.T) {
+	r := newStopRig(t)
+	r.set(global(), "incident")
+	pol, _ := auditedPolicy(t, "ops")
+	actl := auditedControl(t, r.j, pol)
+	feed := &StopFeed{Control: actl, Plain: r.ctl, Verified: true}
+	b, _ := Options{Stops: feed}.banner(context.Background())
+	if b.PlainIgnored != 1 || b.Stopped() || !b.Show() {
+		t.Fatalf("banner %+v", b)
+	}
+	_, body := get(t, r.handler(feed), "/")
+	if !strings.Contains(body, "STOPPED FOR BASIC PROCESSES") || !strings.Contains(body, "ignored by audited ones") || !strings.Contains(body, `class="stopbanner sb-stop"`) {
+		t.Fatalf("the page does not say it:\n%.900s", body)
+	}
+	_, js := get(t, r.handler(feed), "/stops.json")
+	if !strings.Contains(js, `"plain_ignored": 1`) {
+		t.Fatalf("stops.json: %s", js)
+	}
+	// An audited viewer with nothing plain in force says nothing about it.
+	r2 := newStopRig(t)
+	pol2, _ := auditedPolicy(t, "ops")
+	b2, _ := Options{Stops: &StopFeed{Control: auditedControl(t, r2.j, pol2), Plain: r2.ctl, Verified: true}}.banner(context.Background())
+	if b2.PlainIgnored != 0 || b2.Show() {
+		t.Fatalf("banner %+v", b2)
+	}
+}
+
+// The banner says when the control run was read: it is served again for a couple of seconds.
+func TestStopBanner_SaysWhenItWasRead(t *testing.T) {
+	r := newStopRig(t)
+	r.set(global(), "incident")
+	before := time.Now().Add(-time.Second)
+	h := r.handler(&StopFeed{Control: r.ctl})
+	_, body := get(t, h, "/")
+	_, js := get(t, h, "/stops.json")
+	var b StopBanner
+	if err := json.Unmarshal([]byte(js), &b); err != nil {
+		t.Fatal(err)
+	}
+	at, err := time.Parse(time.RFC3339, b.ReadAt)
+	if err != nil || at.Before(before.Truncate(time.Second)) || !strings.Contains(body, "read "+b.ReadAt) {
+		t.Fatalf("read_at %q (%v)\n%s", b.ReadAt, err, body)
+	}
+}
+
+// countingLister counts the runs a listing yields.
+type countingLister struct {
+	agent.Store
+	yielded *int
+}
+
+func (c countingLister) Runs(ctx context.Context, f agent.RunFilter) iter.Seq2[string, error] {
+	return func(yield func(string, error) bool) {
+		l, _ := agent.Capability[agent.Lister](c.Store)
+		for id, err := range l.Runs(ctx, f) {
+			*c.yielded++
+			if !yield(id, err) {
+				return
+			}
+		}
+	}
+}
+
+// Counting held runs lists at most maxHeldRead+1 runs, never the whole store, and gives up when its context
+// ends instead of holding up a lift.
+func TestHeldCount_IsBoundedAndHonorsItsContext(t *testing.T) {
+	r := newStopRig(t)
+	yielded := 0
+	src := JournalSource{J: func() *agent.Journal { j, _ := agent.NewJournal(countingLister{r.store, &yielded}); return j }()}
+	ids, err := src.UnfinishedLimit(context.Background(), 3)
+	if err != nil || len(ids) != 3 || yielded > 4 {
+		t.Fatalf("%d ids, %d yielded, %v: the listing must stop at the limit", len(ids), yielded, err)
+	}
+	if all, _ := src.UnfinishedLimit(context.Background(), 0); len(all) <= 3 {
+		t.Fatalf("no limit lists everything: %d", len(all))
+	}
+	e := r.set(global(), "incident")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if c := HeldCount(ctx, src, e); c.ListErr == "" || c.Held != 0 {
+		t.Fatalf("a cancelled count must say so: %+v", c)
+	}
+	if c := HeldCount(context.Background(), src, e); c.ListErr != "" || c.Held == 0 {
+		t.Fatalf("%+v", c)
+	}
+}
+
+// A saga that is rolling back keeps compensating under a stop that does not block compensation: it is only
+// "may be held". A stop that blocks compensation holds it.
+func TestHeldBy_SagaRollback(t *testing.T) {
+	r := newStopRig(t)
+	recs := []agent.Record{
+		{Name: "run:start", Kind: agent.StepValue, Result: json.RawMessage(`{"input":{"role":"user","parts":[{"type":"text","text":"go"}]},"saga":true}`)},
+		{Name: "m0", Kind: agent.StepModel, Message: &agent.Message{Role: agent.RoleAssistant, Parts: []agent.Part{agent.ToolUse{ID: "c1", Name: "charge", Args: json.RawMessage(`{}`)}, agent.ToolUse{ID: "c2", Name: "ship", Args: json.RawMessage(`{}`)}}}},
+		{Name: "tool:c1", Kind: agent.StepToolResult, ToolUseID: "c1", Result: json.RawMessage(`"ok"`)},
+		{Name: "saga:c2", Kind: agent.StepSagaFail, ToolUseID: "c2", Result: json.RawMessage(`"failed"`)},
+	}
+	v := Build(context.Background(), "saga-1", recs, nil)
+	if !v.rollingBack {
+		t.Fatalf("a saga with a failed step is rolling back: state %s", v.State)
+	}
+	plain := r.set(agent.StopScope{Kind: agent.StopFlow, Name: "x"}, "unused")
+	_ = plain
+	stGlobal := agent.StopState{Mode: agent.StopBasic, Stops: []agent.StopEntry{{ID: strings.Repeat("a", 64), Scope: global(), Compensation: agent.CompensationAllow}}}
+	if h := heldBy(stGlobal, v); len(h) != 1 || !h[0].May {
+		t.Fatalf("a stop that lets compensation continue: %+v", h)
+	}
+	stBlock := agent.StopState{Mode: agent.StopBasic, Stops: []agent.StopEntry{{ID: strings.Repeat("b", 64), Scope: global(), Compensation: agent.CompensationBlock}}}
+	if h := heldBy(stBlock, v); len(h) != 1 || h[0].May {
+		t.Fatalf("a stop that blocks compensation: %+v", h)
+	}
+	// Not a saga, or one that has not failed: held for certain.
+	v2 := Build(context.Background(), "plain-1", recs[:3], nil)
+	if v2.rollingBack {
+		t.Fatal("a saga with no failed step is not rolling back")
+	}
+	if h := heldBy(stGlobal, v2); len(h) != 1 || h[0].May {
+		t.Fatalf("%+v", h)
+	}
+}

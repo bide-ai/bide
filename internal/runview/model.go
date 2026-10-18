@@ -60,6 +60,10 @@ type View struct {
 
 	// openTools are the tools of the calls a model turn requested that the journal shows no result for.
 	openTools []string
+	// rollingBack is set for a saga run that has not ended and has a failed step: its compensation is under way
+	// or due, and a stop that does not block compensation does not hold it.
+	rollingBack bool
+	saga        bool
 }
 
 // Event is one journal record, as a timeline row.
@@ -270,6 +274,7 @@ func Build(ctx context.Context, runID string, recs []agent.Record, flow *Flow) *
 					e.Badges = append(e.Badges, "tools: "+strings.Join(st.Tools, ", "))
 				}
 				if st.Saga {
+					v.saga = true
 					e.Badges = append(e.Badges, "saga")
 				}
 			}
@@ -391,6 +396,8 @@ func Build(ctx context.Context, runID string, recs []agent.Record, flow *Flow) *
 		}
 		v.Events = append(v.Events, e)
 	}
+
+	v.rollingBack = v.saga && !ended(v.State) && slices.ContainsFunc(recs, func(r agent.Record) bool { return r.Kind == agent.StepSagaFail })
 
 	timeline(v.Events, started)
 	v.Halts = halts(runID, recs, calls)

@@ -563,5 +563,9 @@ func stopFeed(j *agent.Journal, f flags) (*StopFeed, error) {
 	if err != nil {
 		return nil, fmt.Errorf("-stop-policy %s: %w", f.stopPolicy, err)
 	}
-	return &StopFeed{Control: ctl, Verified: true}, nil
+	plain, err := agent.NewStopControl(j, agent.WithStopMode(agent.StopBasic))
+	if err != nil {
+		return nil, err
+	}
+	return &StopFeed{Control: ctl, Plain: plain, Verified: true}, nil
 }

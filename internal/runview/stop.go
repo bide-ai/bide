@@ -17,6 +17,10 @@ import (
 // all it does: the viewer never sets or lifts a stop.
 type StopFeed struct {
 	Control *agent.StopControl
+	// Plain, set with an audited Control, is a basic control over the same journal: the stops it sees that
+	// are not signed are stops a basic process enforces and an audited one ignores, which the banner says
+	// (a deployment that has not upgraded, read by a viewer given the stop policy).
+	Plain *agent.StopControl
 	// Verified is true when the control checks signatures: the viewer was given the deployment's stop policy.
 	Verified bool
 }
@@ -61,12 +65,18 @@ type StopBanner struct {
 	RejectedTotal int      `json:"rejected_total,omitempty"`
 	// ReadErr says the control run could not be read, by class: the banner never claims "no stop" then.
 	ReadErr string `json:"read_error,omitempty"`
+	// PlainIgnored counts plain (unsigned) stops in force for basic processes that this audited view ignores:
+	// a deployment that has not moved to audited mode, or a process still configured basic, is stopped while
+	// the audited processes are not.
+	PlainIgnored int `json:"plain_ignored,omitempty"`
+	// ReadAt is when the control run was read (the banner is served again for a couple of seconds).
+	ReadAt string `json:"read_at,omitempty"`
 }
 
 // Show reports whether the banner has anything to say. A control run with no stop, no rejected record and
 // nothing unreadable shows no banner.
 func (b StopBanner) Show() bool {
-	return len(b.Active) > 0 || b.MoreActive > 0 || b.Unknowable != "" || b.Unverified > 0 || b.RejectedTotal > 0 || b.ReadErr != ""
+	return len(b.Active) > 0 || b.MoreActive > 0 || b.Unknowable != "" || b.Unverified > 0 || b.RejectedTotal > 0 || b.ReadErr != "" || b.PlainIgnored > 0
 }
 
 // Stopped reports whether a stop is in force.
@@ -76,6 +86,9 @@ func (b StopBanner) Stopped() bool { return len(b.Active) > 0 || b.MoreActive > 
 type stopRead struct {
 	st  agent.StopState
 	err error
+	// plain counts the unsigned stops in force in a basic reading of the same journal (see StopFeed.Plain).
+	plain int
+	at    time.Time
 }
 
 // stopState reads the control run, served again for cacheTTL, so many viewers and a refreshing page cost the
@@ -88,7 +101,17 @@ func (o Options) stopState(ctx context.Context) (stopRead, bool) {
 		bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), buildTimeout)
 		defer cancel()
 		st, err := o.Stops.Control.State(bctx)
-		return stopRead{st, err}
+		r := stopRead{st: st, err: err, at: time.Now()}
+		if err == nil && o.Stops.Plain != nil {
+			if ps, perr := o.Stops.Plain.State(bctx); perr == nil {
+				for _, s := range ps.Active() {
+					if !s.Signed {
+						r.plain++
+					}
+				}
+			}
+		}
+		return r
 	}
 	if o.cache == nil {
 		return read(), true
@@ -110,6 +133,9 @@ func (o Options) banner(ctx context.Context) (StopBanner, bool) {
 // dress the banner up.
 func buildStopBanner(r stopRead, verified bool, now time.Time) StopBanner {
 	b := StopBanner{Mode: string(r.st.Mode), Verified: verified, Active: []StopLine{}}
+	if !r.at.IsZero() {
+		b.ReadAt = r.at.UTC().Format(time.RFC3339)
+	}
 	if r.err != nil {
 		b.ReadErr = errClass(r.err)
 		b.Mode = ""
@@ -119,6 +145,10 @@ func buildStopBanner(r stopRead, verified bool, now time.Time) StopBanner {
 		b.Unknowable = cleanLine(err.Error(), 300)
 	}
 	b.Unverified = r.st.Unverified
+	b.PlainIgnored = r.plain
+	if !r.at.IsZero() {
+		b.ReadAt = r.at.UTC().Format(time.RFC3339)
+	}
 	for _, s := range r.st.Active() {
 		if len(b.Active) == maxBannerStops {
 			b.MoreActive++
@@ -244,6 +274,11 @@ func heldBy(st agent.StopState, v *View) []StopHold {
 			if !held {
 				continue
 			}
+			// A saga that is rolling back keeps compensating under a stop that does not block compensation:
+			// its forward calls are held, its rollback is not.
+			if v.rollingBack && s.Compensation != agent.CompensationBlock {
+				hold.May = true
+			}
 		}
 		out = append(out, hold)
 	}
@@ -268,7 +303,7 @@ type HeldCounts struct {
 // lifting a stop is about to let carry on. It is a read of every unfinished run, bounded by maxHeldRead.
 func HeldCount(ctx context.Context, src JournalSource, e agent.StopEntry) HeldCounts {
 	var c HeldCounts
-	ids, err := src.Unfinished(ctx)
+	ids, err := src.UnfinishedLimit(ctx, maxHeldRead+1)
 	if err != nil {
 		c.ListErr = errClass(err)
 		return c
@@ -279,6 +314,10 @@ func HeldCount(ctx context.Context, src JournalSource, e agent.StopEntry) HeldCo
 	e.Lifted = false
 	st := agent.StopState{Mode: agent.StopBasic, Stops: []agent.StopEntry{e}}
 	for _, id := range ids {
+		if ctx.Err() != nil {
+			c.ListErr = errClass(ctx.Err())
+			return c
+		}
 		recs, err := src.History(ctx, id)
 		if err != nil {
 			c.Unread++
