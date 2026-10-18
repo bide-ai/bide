@@ -5,7 +5,7 @@
 #   scripts/release.sh --check-tag TAG     (CI: the module a nested tag names is releasable)
 #   scripts/release.sh --check-classification
 #   scripts/release.sh --list-published | --list-commands | --consumer-main   (scripts/module-sbom.sh)
-#   scripts/release.sh --assemble-changelog vX.Y.Z YYYY-MM-DD   (release PR: fragments into CHANGELOG.md)
+#   scripts/release.sh --assemble-changelog vX.Y.Z[-rc.N] YYYY-MM-DD   (release PR: fragments into CHANGELOG.md)
 #   scripts/release.sh --self-test
 #
 # On main, every nested module requires github.com/bide-ai/bide v0.0.0 (and govern v0.0.0 for the
