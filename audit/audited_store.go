@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"maps"
+	"slices"
 	"sync"
 	"time"
 
@@ -27,10 +29,19 @@ type AuditedStore struct {
 	anchor Anchor
 	now    func() int64
 	onErr  func(runID string, err error)
+	// onRecovered is called when a publish succeeds after a streak of failed timer publishes.
+	onRecovered func(runID string)
 
 	mu       sync.Mutex
 	lastSize map[string]int         // per-run journal length already anchored
 	runLocks map[string]*sync.Mutex // serializes anchoring within a run (see anchorIfGrown)
+
+	minInterval time.Duration    // WithMinInterval; 0 anchors every growth
+	wall        func() time.Time // the clock the interval is measured on
+	after       func(time.Duration, func()) (stop func() bool)
+	lastPub     map[string]time.Time   // when a run's head was last published
+	pending     map[string]func() bool // runs whose growth is held back, and the timer that publishes it
+	retrying    map[string]int         // runs whose timer publish failed, and how many times in a row
 }
 
 // NewAuditedStore wraps inner so each journal growth is signed by signer (ed25519, ML-DSA-65, or
@@ -60,6 +71,11 @@ func NewAuditedStore(inner agent.Store, signer Signer, anchor Anchor) (*AuditedS
 		now:      func() int64 { return time.Now().UnixNano() },
 		lastSize: map[string]int{},
 		runLocks: map[string]*sync.Mutex{},
+		wall:     time.Now,
+		after:    func(d time.Duration, f func()) func() bool { return time.AfterFunc(d, f).Stop },
+		lastPub:  map[string]time.Time{},
+		pending:  map[string]func() bool{},
+		retrying: map[string]int{},
 	}, nil
 }
 
@@ -73,8 +89,178 @@ func (a *AuditedStore) OnError(fn func(runID string, err error)) *AuditedStore {
 	return a
 }
 
+// OnRecovered sets a hook called when a run's head is published after a streak of failed publishes
+// by the WithMinInterval timer: OnError reports the first failure of a streak only, and this ends it.
+// Returns the store.
+func (a *AuditedStore) OnRecovered(fn func(runID string)) *AuditedStore {
+	a.onRecovered = fn
+	return a
+}
+
+// retryDelay is the wait before the n-th retry of a held-back publish (n from 1): the interval (at least
+// a second), doubled for each failure, and capped at five minutes or the interval if that is longer.
+func retryDelay(interval time.Duration, n int) time.Duration {
+	base := max(interval, time.Second)
+	limit := max(base, 5*time.Minute)
+	d := base
+	for i := 1; i < n && d < limit; i++ {
+		d *= 2
+		if d <= 0 {
+			return limit
+		}
+	}
+	return min(d, limit)
+}
+
+// WithMinInterval limits how often a run's head is published: after one head, growth of the same run
+// is held back until d has passed, and then published as one head that covers all of it. Without it
+// (the default, or d not positive) every journal write publishes a head, which for an anchor that
+// keeps each head for years (an S3 Object Lock bucket, say) is one retained object per write.
+//
+// What stays immediate: a run's first head, the write of its end marker (run:complete, run:aborted or
+// run:cancelled), Reanchor, and Flush. What is bounded: while this process lives, a record is covered
+// by a published head at most d (plus one publish) after it was written, because held-back growth is
+// published by a timer, not only by a later write. A process that dies loses the timer: the
+// records it held back stay unanchored until the next start or recovery pass anchors them
+// (ReanchorRuns, which a deployment calls at start), not for d. Heads of one run still only grow.
+// Call Flush before the process exits. It returns the store; configure it before the first write.
+func (a *AuditedStore) WithMinInterval(d time.Duration) *AuditedStore {
+	a.minInterval = max(d, 0)
+	return a
+}
+
+// Flush publishes now every run whose growth WithMinInterval held back, stopping their timers, and
+// returns the first error (it still tries the others). Call it before the process exits, so the last
+// records are covered. It publishes nothing for a run whose head is current.
+func (a *AuditedStore) Flush(ctx context.Context) error {
+	a.mu.Lock()
+	runs := make([]string, 0, len(a.pending))
+	for r := range a.pending {
+		runs = append(runs, r)
+	}
+	a.mu.Unlock()
+	slices.Sort(runs)
+	var first error
+	for _, r := range runs {
+		if err := a.anchorIfGrown(ctx, r, true); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
+// ReanchorRuns is the restart path for WithMinInterval: it anchors now every run f admits whose journal
+// this store has not anchored, which after a start is every run, since the store remembers nothing of
+// an earlier process. Growth held back by a process that died (its timer died with it) stays
+// unanchored until this runs, so call it at start, or in the recovery pass, with a filter that skips
+// the runs that ended (agent.RunFilter{ExcludeHolding: ...} with the end markers: the write of a
+// run's end anchors at once). It publishes one head per run it lists, the current one, which a
+// monitor reads as the same size as an earlier head, not a change. It needs a store that lists runs
+// (agent.Lister, found through Unwrap) and returns an error wrapping agent.ErrConfig without one. It
+// tries every run, and returns the first error.
+func (a *AuditedStore) ReanchorRuns(ctx context.Context, f agent.RunFilter) error {
+	l, ok := agent.Capability[agent.Lister](a.inner)
+	if !ok {
+		return fmt.Errorf("audit: ReanchorRuns: the store cannot list runs (it is not an agent.Lister): %w", agent.ErrConfig)
+	}
+	var first error
+	for runID, err := range l.Runs(ctx, f) {
+		if err == nil {
+			err = a.anchorIfGrown(ctx, runID, true)
+		}
+		if err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
+// Pending returns, sorted, the runs whose growth WithMinInterval is holding back.
+func (a *AuditedStore) Pending() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Sorted(maps.Keys(a.pending))
+}
+
+// holdBack reports whether runID's growth must wait for the minimum interval, and arms the timer
+// that publishes it when it does.
+func (a *AuditedStore) holdBack(runID string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.minInterval <= 0 {
+		return false
+	}
+	last, ok := a.lastPub[runID]
+	if !ok {
+		return false
+	}
+	wait := a.minInterval - a.wall().Sub(last)
+	if wait <= 0 {
+		return false
+	}
+	if _, armed := a.pending[runID]; !armed {
+		a.pending[runID] = a.after(wait, func() { a.fire(runID) })
+	}
+	return true
+}
+
+// fire publishes the growth held back for runID: the timer's work.
+func (a *AuditedStore) fire(runID string) {
+	a.mu.Lock()
+	delete(a.pending, runID) // disarmed: a failed publish must not leave the run looking armed
+	a.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), heldBackTimeout)
+	defer cancel()
+	if err := a.anchorIfGrown(ctx, runID, true); err != nil {
+		a.mu.Lock()
+		a.retrying[runID]++
+		first, n := a.retrying[runID] == 1, a.retrying[runID]
+		a.mu.Unlock()
+		if first && a.onErr != nil { // one report per streak of failures, not one per retry
+			a.onErr(runID, err)
+		}
+		// The growth is still unanchored: try again after another interval, so that the bound holds
+		// through an outage and Flush and Pending still know the run.
+		a.mu.Lock()
+		if _, armed := a.pending[runID]; !armed {
+			a.pending[runID] = a.after(retryDelay(a.minInterval, n), func() { a.fire(runID) })
+		}
+		a.mu.Unlock()
+	}
+}
+
+// heldBackTimeout bounds one publish of held-back growth, which no caller's context covers.
+const heldBackTimeout = 30 * time.Second
+
+// published records that runID's head was just published and disarms its timer.
+func (a *AuditedStore) published(runID string) {
+	a.mu.Lock()
+	a.lastPub[runID] = a.wall()
+	recovered := a.retrying[runID] > 0
+	delete(a.retrying, runID)
+	onRec := a.onRecovered
+	stop := a.pending[runID]
+	delete(a.pending, runID)
+	a.mu.Unlock()
+	if stop != nil {
+		stop()
+	}
+	if recovered && onRec != nil {
+		onRec(runID)
+	}
+}
+
 // journalHeader is the name of a run's journal header, its first entry (see agent.StepHeader).
 const journalHeader = "@journal"
+
+// The journal entries that end a run (agent.runCompleteStep and runAbortedStep): the write of either
+// is anchored at once, whatever WithMinInterval says.
+const (
+	runCompleteName = "run:complete"
+	runAbortedName  = "run:aborted"
+	// runCancelledName is the third end marker (agent.Cancel).
+	runCancelledName = "run:cancelled"
+)
 
 // Insert stores the entry in the inner store, then anchors the run's tree head if the journal grew
 // past the last anchored head. It anchors after every insert but the journal header's (a journal
@@ -101,7 +287,7 @@ func (a *AuditedStore) Insert(ctx context.Context, runID, name string, data []by
 		}
 		return e, inserted, err
 	}
-	if aerr := a.anchorIfGrown(ctx, runID); aerr != nil && a.onErr != nil {
+	if aerr := a.anchorIfGrown(ctx, runID, name == runCompleteName || name == runAbortedName || name == runCancelledName); aerr != nil && a.onErr != nil {
 		a.onErr(runID, aerr)
 	}
 	return e, inserted, err
@@ -118,7 +304,7 @@ func (a *AuditedStore) Insert(ctx context.Context, runID, name string, data []by
 // same store (another process, or after a restart) publishes the current head again, which a
 // monitor reads as the same size, not a change.
 func (a *AuditedStore) Reanchor(ctx context.Context, runID string) error {
-	return a.anchorIfGrown(ctx, runID)
+	return a.anchorIfGrown(ctx, runID, true)
 }
 
 // protocol:identity end
@@ -150,7 +336,10 @@ func (a *AuditedStore) Unwrap() agent.Store { return a.inner }
 // run's committed size going down, which reads to a monitor as the journal being rolled back.
 // The anchored size advances only when a publish succeeds, so a failed publish is retried by the
 // run's next write. Different runs anchor independently.
-func (a *AuditedStore) anchorIfGrown(ctx context.Context, runID string) error {
+//
+// With WithMinInterval, growth within the interval of the run's last head is held back (a timer
+// publishes it) unless force is set: the run's end, Reanchor and Flush force.
+func (a *AuditedStore) anchorIfGrown(ctx context.Context, runID string, force bool) error {
 	a.mu.Lock()
 	rl, ok := a.runLocks[runID]
 	if !ok {
@@ -171,6 +360,9 @@ func (a *AuditedStore) anchorIfGrown(ctx context.Context, runID string) error {
 	if !grown || len(recs) == 1 && recs[0].Kind == agent.StepHeader {
 		return nil // nothing new, or the header alone (its run's first record failed)
 	}
+	if !force && a.holdBack(runID) {
+		return nil
+	}
 	th, err := journalHead(runID, recs, a.now())
 	if err != nil {
 		return err
@@ -185,6 +377,7 @@ func (a *AuditedStore) anchorIfGrown(ctx context.Context, runID string) error {
 	a.mu.Lock()
 	a.lastSize[runID] = len(recs)
 	a.mu.Unlock()
+	a.published(runID)
 	return nil
 }
 

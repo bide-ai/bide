@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -99,6 +100,7 @@ func (c *cli) verifyReceipts(args []string) {
 		return
 	}
 
+	c.reportUnheadedTails(byRun, signed, logKey)
 	failed, pending, accepted := 0, 0, 0
 	for i, r := range rs {
 		what := fmt.Sprintf("%s %s on call %s of run %s (record %s)", cleanText(r.Approver), approvedWord(r.Approved), cleanText(r.ToolUseID), cleanText(r.RunID), cleanText(r.Record))
@@ -335,4 +337,41 @@ func (c *cli) certReceipt(what string, r audit.DecisionReceipt, ci *audit.CertId
 	c.printf("IDENTITY  %s: %s; identity %s%s accepted at %s (%s), certificate valid %s to %s, leaf %s; revocation status NOT checked, so this is not the gate's verdict\n", what, f.Verdict,
 		cleanText(id.Identifier), name, agent.FormatTimestamp(id.AnchoredAt), id.TimeSource, agent.FormatTimestamp(id.NotBefore), agent.FormatTimestamp(id.NotAfter), id.LeafHash[:16])
 	return certAccepted
+}
+
+// reportUnheadedTails prints, for each journal given, how many of its records are after the newest
+// signed head that verifies under logKey: the tail that coalescing (a minimum interval between heads),
+// an anchor outage or a process that stopped leaves under no head. A receipt for a decision in that tail
+// is pending, not failed; this line says how far the tail goes. It reads only the heads of the journal's
+// own run and fails nothing.
+func (c *cli) reportUnheadedTails(byRun map[string][]agent.Record, heads []audit.SignedTreeHead, logKey audit.Verifier) {
+	runs := make([]string, 0, len(byRun))
+	for r := range byRun {
+		runs = append(runs, r)
+	}
+	slices.Sort(runs)
+	for _, r := range runs {
+		// A head counts only if it verifies, is this run's, and is the root of this journal's own prefix
+		// (a mismatched head covers nothing here): the rule verify-decision-coverage uses.
+		rep, err := audit.CheckDecisionCoverage(r, byRun[r], heads, logKey, audit.CoverageBound{})
+		if err != nil {
+			continue
+		}
+		newest := rep.LargestHead
+		if tail := len(byRun[r]) - newest; tail > 0 {
+			var signedAt time.Time
+			for _, h := range heads {
+				if h.RunID == r && h.Kind == audit.TreeJournal && h.Size == newest && h.Verify(logKey) == nil {
+					if t := time.Unix(0, h.TimestampNanos); t.After(signedAt) {
+						signedAt = t
+					}
+				}
+			}
+			when := "no counted head covers any of it"
+			if newest > 0 && !signedAt.IsZero() {
+				when = fmt.Sprintf("the newest counted head covers %d and was signed %s ago", newest, time.Since(signedAt).Round(time.Second))
+			}
+			c.printf("INFO  run %s: records %d to %d (%d, positions from 0) are under no signed head yet; %s (a head held back by a minimum interval, or a failed publish: verify-decision-coverage -max-unanchored tells them apart)\n", cleanText(r), newest, len(byRun[r])-1, tail, when)
+		}
+	}
 }

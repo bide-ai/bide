@@ -108,6 +108,31 @@ func TestCLI_VerifyDecisionCoverage(t *testing.T) {
 	if code, stdout, _ = cover("-heads", paths["whole"], "-max-records", "1"); code != 0 || strings.Contains(stdout, "pending") {
 		t.Fatalf("whole-journal head: exit %d\n%s", code, stdout)
 	}
+	// The tail under no head is stated: the records after the newest head, and none when it covers all.
+	if code, stdout, _ = cover("-heads", paths["before"]); !strings.Contains(stdout, "are under no signed head yet") {
+		t.Fatalf("no tail line for a head that leaves records after it: exit %d\n%s", code, stdout)
+	}
+	if _, stdout, _ = cover("-heads", paths["whole"]); strings.Contains(stdout, "under no signed head") {
+		t.Fatalf("a tail line for a head that covers the whole journal:\n%s", stdout)
+	}
+	// -max-unanchored separates a head held back from a stale one: the head was signed a minute
+	// before the real clock.
+	if code, stdout, _ = cover("-heads", paths["before"], "-max-unanchored", "1h"); code != 0 || !strings.Contains(stdout, "within -max-unanchored") || !strings.Contains(stdout, "positions from 0") {
+		t.Fatalf("a tail inside -max-unanchored: exit %d\n%s", code, stdout)
+	}
+	late := time.Now().Add(3 * time.Hour).UTC().Format(time.RFC3339)
+	if code, stdout, _ = cover("-heads", paths["before"], "-max-unanchored", "1h", "-now", late); code != exitNotVerified || !strings.Contains(stdout, "likely failed publish") {
+		t.Fatalf("a tail over -max-unanchored: exit %d\n%s", code, stdout)
+	}
+	if code, stdout, _ = cover("-heads", paths["whole"], "-max-unanchored", "1h", "-now", late); code != 0 {
+		t.Fatalf("a head covering the whole journal must pass however old: exit %d\n%s", code, stdout)
+	}
+	if code, stdout, _ = cover("-heads", paths["before"], "-now", late); code != 0 || !strings.Contains(stdout, "cannot say whether") {
+		t.Fatalf("without -max-unanchored the tail is reported and not failed: exit %d\n%s", code, stdout)
+	}
+	if code, _, _ = cover("-heads", paths["before"], "-max-unanchored", "-1s"); code != exitUsage {
+		t.Fatalf("a negative -max-unanchored: exit %d, want usage", code)
+	}
 	// By age: both decisions were recorded at 12:00:02, an hour and a bit before -now.
 	code, stdout, _ = cover("-heads", paths["before"], "-max-age", "1h", "-max-age-tolerance", "5m", "-now", "2026-10-13T13:03:00Z")
 	if code != 0 {

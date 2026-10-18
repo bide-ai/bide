@@ -65,13 +65,19 @@ const (
 // concurrent use; configure it (WithClock, OnError, WithTimeout, WithCooldown) before the first
 // write.
 type AuditedEventStore struct {
-	inner    EventStore
-	signer   Signer
-	anchor   Anchor
-	now      func() int64
-	onErr    func(trail string, err error)
-	timeout  time.Duration
-	cooldown time.Duration
+	inner  EventStore
+	signer Signer
+	anchor Anchor
+	now    func() int64
+	onErr  func(trail string, err error)
+	// onRecovered is called when a head is published after a streak of failed timer publishes.
+	onRecovered func(trail string)
+	timeout     time.Duration
+	cooldown    time.Duration
+
+	minInterval time.Duration // WithMinInterval; 0 anchors every growth
+	wall        func() time.Time
+	after       func(time.Duration, func()) (stop func() bool)
 
 	mu       sync.Mutex
 	trails   map[string]*anchoredTrail
@@ -88,6 +94,9 @@ type anchoredTrail struct {
 	dirty    bool          // a write or an attempt left the trail possibly unanchored; guarded by mu
 	epoch    uint64        // counts the times dirty was set, so a publish clears only what it covered
 	appended uint64        // counts the appends that grew the trail, so the publisher knows what it has not seen
+	lastPub  time.Time     // when a head of the trail was last published; guarded by mu
+	retrying int           // how many timer publishes failed in a row; guarded by mu
+	hold     func() bool   // stops the timer that publishes growth WithMinInterval held back; nil when none is armed; guarded by mu
 }
 
 var _ EventStore = (*AuditedEventStore)(nil)
@@ -109,6 +118,8 @@ func NewAuditedEventStore(inner EventStore, signer Signer, anchor Anchor) (*Audi
 		inner: inner, signer: signer, anchor: anchor,
 		now:     func() int64 { return time.Now().UnixNano() },
 		timeout: DefaultAnchorTimeout, cooldown: DefaultAnchorCooldown,
+		wall:   time.Now,
+		after:  func(d time.Duration, f func()) func() bool { return time.AfterFunc(d, f).Stop },
 		trails: map[string]*anchoredTrail{},
 	}, nil
 }
@@ -144,6 +155,95 @@ func (a *AuditedEventStore) WithCooldown(d time.Duration) *AuditedEventStore {
 		a.cooldown = d
 	}
 	return a
+}
+
+// OnRecovered sets a hook called when a trail's head is published after a streak of failed publishes by
+// the WithMinInterval timer: OnError reports the first failure of a streak only, and this ends it.
+// It returns the store.
+func (a *AuditedEventStore) OnRecovered(fn func(trail string)) *AuditedEventStore {
+	a.onRecovered = fn
+	return a
+}
+
+// WithMinInterval limits how often a trail's head is published: after one head, growth of the same
+// trail is held back until d has passed, and then published as one head that covers all of it.
+// Without it (the default, or d not positive) every append that the background publisher sees
+// publishes a head, which for an anchor that keeps each head for years is one retained object per
+// append at worst.
+//
+// What stays immediate: a trail's first head, Reanchor, ReanchorPending, AnchorTrails (the
+// notifier's sweep and recovery pass) and Flush. What is bounded: while this process lives, a record
+// is covered by a published head at most d (plus one publish) after it was appended, because held-back
+// growth is published by a timer, not only by a later append. A process that dies loses the timer: the
+// records it held back stay unanchored until the next start or recovery pass anchors the trail
+// (AnchorTrails, the notifier's sweep and recovery pass, or Reanchor), not for d. The cooldown after a failed publish still applies.
+// It returns the store; configure it before the first write.
+func (a *AuditedEventStore) WithMinInterval(d time.Duration) *AuditedEventStore {
+	a.minInterval = max(d, 0)
+	return a
+}
+
+// holdBack reports whether trail's growth must wait for the minimum interval, and arms the timer that
+// publishes it when it does.
+func (a *AuditedEventStore) holdBack(trail string) bool {
+	t := a.trailOf(trail)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.minInterval <= 0 || t.lastPub.IsZero() {
+		return false
+	}
+	wait := a.minInterval - a.wall().Sub(t.lastPub)
+	if wait <= 0 {
+		return false
+	}
+	if t.hold == nil {
+		t.hold = a.after(wait, func() { a.fire(trail, t) })
+	}
+	return true
+}
+
+// fire publishes the growth held back for trail: the timer's work. It respects the cooldown.
+func (a *AuditedEventStore) fire(trail string, t *anchoredTrail) {
+	a.mu.Lock()
+	t.hold = nil
+	a.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), a.timeout)
+	defer cancel()
+	err := a.anchorTrailOpts(ctx, trail, false, true)
+	if err != nil {
+		a.mu.Lock()
+		t.retrying++
+		first := t.retrying == 1
+		a.mu.Unlock()
+		if first { // one report per streak of failures, not one per retry
+			a.report(trail, err)
+		}
+	}
+	// Still unanchored (a failed publish, or a skip during the cooldown): try again after another
+	// interval, so that the bound holds through an outage and Flush still publishes the trail.
+	a.mu.Lock()
+	if t.dirty && t.hold == nil {
+		t.hold = a.after(retryDelay(a.minInterval, t.retrying), func() { a.fire(trail, t) })
+	}
+	a.mu.Unlock()
+}
+
+// published records that a head of the trail was just published and disarms its timer.
+func (a *AuditedEventStore) published(name string, t *anchoredTrail) {
+	a.mu.Lock()
+	t.lastPub = a.wall()
+	recovered := t.retrying > 0
+	t.retrying = 0
+	onRec := a.onRecovered
+	stop := t.hold
+	t.hold = nil
+	a.mu.Unlock()
+	if stop != nil {
+		stop()
+	}
+	if recovered && onRec != nil {
+		onRec(name)
+	}
 }
 
 // Unwrap returns the wrapped store, so a decorator above this one, and NotifyTrail, find it and
@@ -236,13 +336,16 @@ func (a *AuditedEventStore) nextAppended(seen map[string]uint64) (name string, a
 // covered by the next sweep or recovery pass. Agent.FlushNotifications does not wait for this
 // publisher: it signs the notify trails itself (AnchorTrails) and reports a failure to its own
 // error handler, so a caller that needs the OnError reports of the appends it made calls Flush.
+//
+// With WithMinInterval it also publishes, now, the growth that was held back, and returns the first
+// error of those (it still tries the others).
 func (a *AuditedEventStore) Flush(ctx context.Context) error {
 	for {
 		a.mu.Lock()
 		running, idle := a.running, a.idle
 		a.mu.Unlock()
 		if !running {
-			return nil
+			break
 		}
 		select {
 		case <-idle:
@@ -250,6 +353,27 @@ func (a *AuditedEventStore) Flush(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+	var first error
+	for _, name := range a.heldBack() {
+		if err := a.anchorTrailOpts(ctx, name, false, true); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
+// heldBack returns, sorted, the trails whose growth WithMinInterval is holding back.
+func (a *AuditedEventStore) heldBack() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var out []string
+	for name, t := range a.trails {
+		if t.hold != nil {
+			out = append(out, name)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // Reanchor publishes a head over trail now if it holds records no head this store published
@@ -311,7 +435,7 @@ func (a *AuditedEventStore) AnchorTrails(ctx context.Context, trails []string) e
 			}
 			return nil
 		}
-		if err := a.anchorTrail(ctx, n, false); err != nil {
+		if err := a.anchorTrailOpts(ctx, n, false, true); err != nil {
 			return err
 		}
 	}
@@ -408,9 +532,18 @@ func (a *AuditedEventStore) release() {
 // a head that hangs holds up neither this call nor (after the cooldown starts) any other, while
 // the trail's slot stays held until it ends, which keeps the heads of a trail in order.
 func (a *AuditedEventStore) anchorTrail(ctx context.Context, trail string, force bool) error {
+	return a.anchorTrailOpts(ctx, trail, force, force)
+}
+
+// anchorTrailOpts is anchorTrail with the minimum interval separate from the cooldown: force skips
+// the cooldown (and the interval), skipInterval only the interval.
+func (a *AuditedEventStore) anchorTrailOpts(ctx context.Context, trail string, force, skipInterval bool) error {
 	if !force && a.coolingDown() {
 		a.markDirty(trail) // no waiting on a trail's slot, nor a read, for an anchor that is down
 		return nil
+	}
+	if !skipInterval && a.holdBack(trail) {
+		return nil // the trail stays dirty, and the timer publishes it
 	}
 	t := a.trailOf(trail)
 	tctx, cancel := context.WithTimeout(ctx, a.timeout)
@@ -482,5 +615,6 @@ func (a *AuditedEventStore) publishGrown(ctx context.Context, trail string, t *a
 	a.settle(true)
 	t.size = size
 	a.clean(t, epoch)
+	a.published(trail, t)
 	return nil
 }
