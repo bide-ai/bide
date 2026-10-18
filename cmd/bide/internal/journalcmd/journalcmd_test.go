@@ -568,3 +568,39 @@ func TestNothingToEraseStillReportsABusyCheckpoint(t *testing.T) {
 		t.Fatalf("nothing to erase, checkpoint busy: exit %d\n%s%s", code, out, errb)
 	}
 }
+
+// Naming the end marker erases it with the other payloads, and bide audit redactions then says how the
+// run ended, from the signed trail: the journal itself says only that the run is over.
+func TestErasedEndMarkerIsReportedPerTrail(t *testing.T) {
+	r := newRig(t)
+	named := append(r.base(), "-name", "run:complete")
+	_, out, _ := r.run(named...)
+	if !strings.Contains(out, "run:complete") || strings.Contains(out, "end marker not selected") {
+		t.Fatalf("a dry run naming run:complete does not list it for replacement:\n%s", out)
+	}
+	code, out, errb := r.run(r.execArgs(digestOf(t, out), "-name", "run:complete")...)
+	if code != 0 || !strings.Contains(out, "DONE") {
+		t.Fatalf("execute: %d\n%s\n%s", code, out, errb)
+	}
+	b, err := os.ReadFile(r.headOut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sth := filepath.Join(r.dir, "trail.sth")
+	os.WriteFile(sth, b, 0o644)
+	auditcli.Stores = &auditcli.StoreOpeners{SQLite: func(path string) (auditcli.NotifyStores, error) {
+		s, err := sqlite.OpenReadOnly(path)
+		if err != nil {
+			return auditcli.NotifyStores{}, err
+		}
+		return auditcli.NotifyStores{Journal: s, Events: s.EventStore(), Close: s.Close}, nil
+	}}
+	t.Cleanup(func() { auditcli.Stores = nil })
+	var ao, ae bytes.Buffer
+	if code := auditcli.Main("test", []string{"redactions", "-db", r.db, "-sth", sth, "-pubkey", r.pub, "-deployment", "test"}, &ao, &ae); code != 0 || !strings.Contains(ao.String(), "PASS") {
+		t.Fatalf("bide audit redactions = %d\n%s\n%s", code, ao.String(), ae.String())
+	}
+	if !strings.Contains(ao.String(), "run r1: ended: completed (per trail)") {
+		t.Errorf("the audit does not say how the run ended, per the trail:\n%s", ao.String())
+	}
+}

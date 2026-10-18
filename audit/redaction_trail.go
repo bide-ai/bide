@@ -503,6 +503,33 @@ type RedactionReport struct {
 	Holds []agent.Hold `json:"holds,omitempty"`
 	// Notes are things that are not findings: an earlier failed pass that a later pass finished.
 	Notes []string `json:"notes,omitempty"`
+	// Ended are the runs whose end marker was erased and whose tombstone the signed trail accounts
+	// for (name, leaf hash and time all match): how each ended, as the trail recorded it. The journal
+	// itself says only that the run is over (agent.RunEnded), because a tombstone's name is outside
+	// the leaf hash; the signed trail is the one source of the kind.
+	Ended []ErasedEnd `json:"ended,omitempty"`
+}
+
+// ErasedEnd is a run whose end marker was erased, with how it ended per the signed redaction trail.
+type ErasedEnd struct {
+	RunID string `json:"run_id"`
+	// Marker is the end marker's name the trail recorded: run:complete, run:aborted or run:cancelled.
+	Marker string `json:"marker"`
+	// Kind is how the run ended: completed, aborted or cancelled.
+	Kind string `json:"kind"`
+}
+
+// endKindOfMarker is how a run ended, for the name of its end marker.
+func endKindOfMarker(name string) string {
+	switch name {
+	case "run:complete":
+		return "completed"
+	case "run:aborted":
+		return "aborted"
+	case "run:cancelled":
+		return "cancelled"
+	}
+	return ""
 }
 
 // OK reports whether nothing was found.
@@ -722,8 +749,10 @@ func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error) {
 		}
 	}
 	checked := map[string]bool{}
-	for run, journal := range in.Journals {
+	for _, run := range slices.Sorted(maps.Keys(in.Journals)) {
+		journal := in.Journals[run]
 		checked[run] = true
+		endSeen := false // an end marker earlier in the journal: the first one is the run's end
 		for i, rec := range journal {
 			ref, isListed := listed[key{run, i}]
 			if rec.Redacted {
@@ -742,8 +771,21 @@ func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error) {
 					add(FindingHashMismatch, run, "record %d (%q): the tombstone keeps leaf hash %x and the trail recorded %s", i, rec.Name, leaf, ref.LeafHash)
 				case !slices.Contains(times[key{run, i}], at):
 					add(FindingTimeMismatch, run, "record %d (%q): the tombstone is stamped %d and no pass of the trail that listed it was stamped then", i, rec.Name, at)
+				default:
+					// The trail accounts for this tombstone, so the name it recorded is attested: if it is an
+					// end marker and the first one, the trail says how the run ended.
+					if kind := endKindOfMarker(ref.Name); kind != "" && !endSeen {
+						rep.Ended = append(rep.Ended, ErasedEnd{RunID: run, Marker: ref.Name, Kind: kind})
+						endSeen = true
+					}
+				}
+				if endKindOfMarker(rec.Name) != "" {
+					endSeen = true
 				}
 				continue
+			}
+			if endKindOfMarker(rec.Name) != "" {
+				endSeen = true
 			}
 			if isListed {
 				add(FindingNotErased, run, "record %d (%q) is listed as erased in the trail and still holds content", i, rec.Name)

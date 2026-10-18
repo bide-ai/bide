@@ -9,6 +9,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -189,4 +191,68 @@ func TestRedactionEndMarker_EveryReaderStillReadsTheRun(t *testing.T) {
 	if _, err := audit.NewTreeHead(ctx, fj, "gov", p11Now()); err != nil {
 		t.Fatalf("NewTreeHead over a redacted end marker: %v", err)
 	}
+}
+
+// The signed trail is the one source of how an erased run ended: the report names, for a run whose end
+// marker was erased and whose tombstone the trail accounts for, the marker the trail recorded and how
+// the run ended. A tombstone renamed to another end marker is NAME_MISMATCH and reports no kind, and a
+// run whose end marker is not erased reports none (the journal says how it ended).
+func TestRedactionEndMarker_TheTrailSaysHowTheRunEnded(t *testing.T) {
+	ctx := context.Background()
+	r := newTrailRig(t)
+	if _, err := audit.RedactJournal(ctx, r.j, r.trail, mustPlan(t, r, "run:complete"), r.options); err != nil {
+		t.Fatal(err)
+	}
+	leaves, head := r.signedTrail()
+	rep, err := r.verify(leaves, head)
+	want := []audit.ErasedEnd{{RunID: "gov", Marker: "run:complete", Kind: "completed"}}
+	if err != nil || !slices.Equal(rep.Ended, want) {
+		t.Fatalf("report = %+v, %v; want OK with Ended %v", rep, err, want)
+	}
+	// Renamed to run:cancelled (row and tombstone), as someone with write access could with no key.
+	renamed := agent.NewMemStore()
+	for e, err := range r.store.Load(ctx, "gov", -1) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		name, data := e.Name, e.Data
+		if name == "run:complete" {
+			leaf, ok := agent.TombstoneLeafHash(data)
+			at, _ := agent.TombstoneMillis(data)
+			if !ok {
+				t.Fatal("not a tombstone")
+			}
+			name = "run:cancelled"
+			data = []byte(fmt.Sprintf(`{"redacted":{"leaf_hash":"%x","at_ms":%d,"name":"run:cancelled"}}`, leaf, at))
+		}
+		if _, _, err := renamed.Insert(ctx, "gov", name, data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recs, err := agenttest.MustJournal(renamed).History(ctx, "gov")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep, err = audit.VerifyRedactions(audit.RedactionVerifyInput{Deployment: "test", Trail: leaves, Heads: []audit.SignedTreeHead{head}, Verifier: r.v, Journals: map[string][]agent.Record{"gov": recs}})
+	if err == nil || !strings.Contains(kinds(rep), "NAME_MISMATCH") || len(rep.Ended) != 0 {
+		t.Fatalf("renamed: report = %+v, %v; want NAME_MISMATCH and no kind", rep, err)
+	}
+	// An end marker that is not erased reports no kind: the journal says how the run ended.
+	r2 := newTrailRig(t)
+	if _, err := audit.RedactJournal(ctx, r2.j, r2.trail, r2.plan, r2.options); err != nil {
+		t.Fatal(err)
+	}
+	leaves2, head2 := r2.signedTrail()
+	if rep, err := r2.verify(leaves2, head2); err != nil || len(rep.Ended) != 0 {
+		t.Fatalf("a run with its end marker kept: report = %+v, %v; want no Ended", rep, err)
+	}
+}
+
+func mustPlan(t *testing.T, r *trailRig, names ...string) agent.RedactionPlan {
+	t.Helper()
+	plan, err := agent.PlanRedaction(context.Background(), r.j, "gov", agent.RedactionSelector{Names: names})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return plan
 }

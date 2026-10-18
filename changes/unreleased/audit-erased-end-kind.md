@@ -1,0 +1,3 @@
+Section: Added
+
+`bide audit redactions` now says how a run ended when its end marker was erased: for each run whose erased end marker the signed redaction trail accounts for (name, leaf hash and time all match), it prints `run r1: ended: completed (per trail)` (or aborted, or cancelled), and `audit.RedactionReport.Ended` carries the run, the marker the trail recorded and the kind. The journal itself says only that such a run is over (`agent.RunEnded`), because a tombstone's name is outside the leaf hash and can be renamed with no key; the signed trail is the one source of the kind. A tombstone renamed to another end marker is still `NAME_MISMATCH` and reports no kind, and a run whose end marker is kept reports none.
