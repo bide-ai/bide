@@ -62,6 +62,9 @@ func TestReview2_ConcurrentSameLiftLeavesNoFinding(t *testing.T) {
 	if verr != nil {
 		t.Fatalf("a concurrent lift leaves findings: %s", kinds(rep))
 	}
+	if err == nil {
+		t.Error("the second lift reports success though the first one did it and recorded it")
+	}
 }
 
 func TestReview2_SpanNoteAndFileModeNote(t *testing.T) {
