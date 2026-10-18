@@ -184,13 +184,17 @@ func Section(frags []Fragment) string {
 	return b.String()
 }
 
+// semver is a semantic version as scripts/release.sh reads it, without the leading v: no leading zeros,
+// and an optional pre-release of non-empty dot-separated identifiers (0.21.0-rc.1).
+const semver = `(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?`
+
 var (
-	versionRE   = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
+	versionRE   = regexp.MustCompile(`^` + semver + `$`)
 	dateRE      = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
-	unreleased  = regexp.MustCompile(`^\[Unreleased\]: (\S+)/compare/v(\d+\.\d+\.\d+)\.\.\.HEAD$`)
+	unreleased  = regexp.MustCompile(`^\[Unreleased\]: (\S+)/compare/v(` + semver + `)\.\.\.HEAD$`)
 	prRefRE     = regexp.MustCompile(`\[#(\d+)\]`)
 	prDefRE     = regexp.MustCompile(`^\[#(\d+)\]: `)
-	releaseHead = regexp.MustCompile(`^## \[\d+\.\d+\.\d+\]`)
+	releaseHead = regexp.MustCompile(`^## \[` + semver + `\]`)
 )
 
 // Assemble returns changelog with the fragments folded in as the section for version released on
@@ -203,7 +207,7 @@ var (
 func Assemble(changelog string, frags []Fragment, version, date string) (string, error) {
 	version = strings.TrimPrefix(version, "v")
 	if !versionRE.MatchString(version) {
-		return "", fmt.Errorf("version %q is not like 0.16.0", version)
+		return "", fmt.Errorf("version %q is not like 0.16.0 or 0.16.0-rc.1", version)
 	}
 	if !dateRE.MatchString(date) {
 		return "", fmt.Errorf("date %q is not like 2026-10-20", date)

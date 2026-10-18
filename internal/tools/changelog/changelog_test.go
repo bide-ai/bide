@@ -333,3 +333,57 @@ func TestRunCheck(t *testing.T) {
 		t.Errorf("code with a fragment: exit %d", c)
 	}
 }
+
+// A release candidate is assembled like a release: its section sits above the last release, the
+// [Unreleased] link moves to its tag, and a later assembly (the final release, or rc.2) finds the
+// candidate's section and link as the release before it.
+func TestAssemblePrerelease(t *testing.T) {
+	frags := []Fragment{frag(t, "a.md", "Section: Added\n\nnew thing\n")}
+	rc, err := Assemble(sample, frags, "v0.16.0-rc.1", "2026-10-20")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"## [0.16.0-rc.1] - 2026-10-20\n",
+		"[Unreleased]: https://github.com/o/r/compare/v0.16.0-rc.1...HEAD\n",
+		"[0.16.0-rc.1]: https://github.com/o/r/compare/v0.15.0...v0.16.0-rc.1\n",
+	} {
+		if !strings.Contains(rc, want) {
+			t.Errorf("the candidate's changelog lacks %q:\n%s", want, rc)
+		}
+	}
+	if _, err := Assemble(rc, frags, "0.16.0-rc.1", "2026-10-20"); err == nil {
+		t.Error("a candidate already in the changelog was accepted")
+	}
+	next, err := Assemble(rc, frags, "0.16.0-rc.2", "2026-10-21")
+	if err != nil {
+		t.Fatalf("the second candidate: %v", err)
+	}
+	if !strings.Contains(next, "[0.16.0-rc.2]: https://github.com/o/r/compare/v0.16.0-rc.1...v0.16.0-rc.2\n") ||
+		strings.Index(next, "## [0.16.0-rc.2]") > strings.Index(next, "## [0.16.0-rc.1]") {
+		t.Errorf("the second candidate does not follow the first:\n%s", next)
+	}
+	final, err := Assemble(rc, frags, "0.16.0", "2026-10-22")
+	if err != nil {
+		t.Fatalf("the final release after a candidate: %v", err)
+	}
+	if !strings.Contains(final, "[0.16.0]: https://github.com/o/r/compare/v0.16.0-rc.1...v0.16.0\n") {
+		t.Errorf("the final release does not compare with the candidate:\n%s", final)
+	}
+}
+
+// Versions are semantic versions as scripts/release.sh reads them: no leading zeros, a pre-release of
+// non-empty dot-separated identifiers.
+func TestAssembleVersionShape(t *testing.T) {
+	f := []Fragment{frag(t, "a.md", "Section: Added\n\nx\n")}
+	for _, v := range []string{"0.16.0-", "0.16.0-rc..1", "0.16.0-rc.01", "0.16.0-01", "0.16.0-rc.1.", "01.2.3", "1.02.3", "0.16.0+build", "0.16.0-rc_1", "v0.16.0-rc 1"} {
+		if _, err := Assemble(sample, f, v, "2026-10-20"); err == nil {
+			t.Errorf("version %q was accepted", v)
+		}
+	}
+	for _, v := range []string{"0.16.0", "v0.16.0-rc.1", "0.16.0-rc.10", "0.16.0-beta", "0.16.0-0.3.7", "0.16.0-x-y.z"} {
+		if _, err := Assemble(sample, f, v, "2026-10-20"); err != nil {
+			t.Errorf("version %q was refused: %v", v, err)
+		}
+	}
+}
