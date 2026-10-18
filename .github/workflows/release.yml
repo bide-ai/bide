@@ -39,7 +39,7 @@ jobs:
       contents: read
       id-token: write
       attestations: write
-    uses: bide-ai/release-builder/.github/workflows/build.yml@e84bc18f472a1e1791e766f3d9d80f71e11d303b # v1.0.0
+    uses: bide-ai/release-builder/.github/workflows/build.yml@f0279be1dd065a9b9cc56d06920baec9983e540f # v1.0.1
     with:
       go-version: '1.27.2'
       snapshot: ${{ github.event_name == 'workflow_dispatch' }}
@@ -105,8 +105,10 @@ jobs:
       # The Homebrew formula (scripts/brew-formula.sh) generated from this release's checksums: a
       # formula, not a cask, so Linux keeps Homebrew. It is attached to the release as bide.rb; the
       # homebrew job pushes it to the tap.
+      # A pre-release (a tag with a hyphen, v0.21.0-rc.1) gets no formula: brew would offer it as the
+      # current version of bide.
       - name: Homebrew formula
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && !contains(github.ref_name, '-')
         run: scripts/brew-formula.sh "$GITHUB_REF_NAME" rel/checksums.txt > rel/bide.rb && cat rel/bide.rb
       # Notes: docs/releases/<tag>.md when it exists, else the changelog goreleaser generated, else
       # GitHub's generated notes. A tag with a hyphen is a prerelease.
@@ -136,7 +138,7 @@ jobs:
   # tap) it is pushed; without one the maintainer copies bide.rb from the release into the tap by hand
   # (CONTRIBUTING.md, "Releasing").
   homebrew:
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && !contains(github.ref_name, '-')
     needs: [build, release]
     runs-on: ubuntu-latest
     permissions:
@@ -181,7 +183,7 @@ jobs:
       contents: read
       id-token: write
       attestations: write
-    uses: bide-ai/release-builder/.github/workflows/module-sbom.yml@e84bc18f472a1e1791e766f3d9d80f71e11d303b # v1.0.0
+    uses: bide-ai/release-builder/.github/workflows/module-sbom.yml@f0279be1dd065a9b9cc56d06920baec9983e540f # v1.0.1
     with:
       go-version: '1.27.2'
       version: ${{ github.ref_type == 'tag' && github.ref_name || '' }}

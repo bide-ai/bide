@@ -60,6 +60,15 @@ SYFT
   if (cd "$tmp/cwd" && PATH="$tmp/bin:$PATH" FAKE_VERSION=v9.9.9 FAKE_MODULES="$mods" "$here/module-sbom.sh" v9.9.9 - >"$tmp/log" 2>&1); then
     echo "self-test: OUT - was accepted"; ok=false
   fi
+  # A pre-release version is a release version; garbage after the patch number is not.
+  (cd "$tmp/cwd" && PATH="$tmp/bin:$PATH" FAKE_VERSION=v9.9.9-rc.1 FAKE_MODULES="$mods" "$here/module-sbom.sh" v9.9.9-rc.1 pre.json >"$tmp/log" 2>&1) \
+    && [ -s "$tmp/cwd/pre.json" ] || { echo "self-test: a pre-release version was refused:"; sed 's/^/    /' "$tmp/log"; ok=false; }
+  local bad
+  for bad in v9.9 v9.9.9x v9.9.9- 'v9.9.9-a b' 9.9.9 'v9.9.9;rm' v9.9.9-. v9.9.9-.. v9.9.9-rc..1 v01.0.0 v9.9.9-01; do
+    # Refused by the version check itself (its message), not by a later step failing for another reason.
+    (cd "$tmp/cwd" && PATH="$tmp/bin:$PATH" FAKE_VERSION=v9.9.9 FAKE_MODULES="$mods" "$here/module-sbom.sh" "$bad" bad.json >"$tmp/log" 2>&1) || true
+    grep -qF "is not a release version" "$tmp/log" || { echo "self-test: version '$bad' was not refused by the version check"; ok=false; }
+  done
   rm -rf "$tmp"
   $ok && echo "self-test: ok"
 }
@@ -79,7 +88,10 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-[[ "$VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || die "$VERSION is not a release version like v0.17.0"
+# Semantic versioning 2.0.0 without build metadata: no leading zeros, non-empty dot-separated
+# pre-release identifiers (the release builder's module-sbom.yml checks the same).
+VERSION_RX='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$'
+[[ "$VERSION" =~ $VERSION_RX ]] || die "$VERSION is not a release version like v0.17.0 or v0.17.0-rc.1"
 [[ "$WAIT" =~ ^[0-9]+$ ]] || die "--wait takes a number of minutes"
 command -v syft >/dev/null || die "syft is not on the path"
 
