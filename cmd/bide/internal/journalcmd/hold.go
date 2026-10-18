@@ -41,12 +41,20 @@ const holdUsage = `usage: bide journal hold place (-db <file> | -postgres-env <v
                                -reason <text> -ticket <id> -deployment <name> -sign-key <file> -head-out <file>
        bide journal hold lift  (-db <file> | -postgres-env <var>) -id <hold> -reason <text> -ticket <id>
                                -deployment <name> -sign-key <file> -head-out <file>
+                               [-authorization <file> -authorizer-pubkey <key>... [-require-authorization]]
+       bide journal hold authorize (-db <file> | -postgres-env <var>) -id <hold> -reason <text> -ticket <id>
+                               -deployment <name> -trail-pubkey <key> -authorizer-key <file> -out <file>
+                               [-valid-for <duration>] [-lifter-key-id <id>] [-execute]
        bide journal hold list  (-db <file> | -postgres-env <var>)
 
   place   keep the named runs (and with -tree the sub-agent runs below them) from being erased; one hold
           can name several runs, so a matter is one hold. The store enforces it first, then the placement
           is recorded in the signed redaction trail.
   lift    record the lift in the trail first, then remove the hold; a hold is never lifted without evidence.
+  authorize  a second person signs, with a key of their own, their consent to lift one hold, bound to the
+          placement in force, the deployment and a validity; without -execute it shows what it would sign.
+          lift -authorization checks it first and embeds it in the lift's record; -require-authorization
+          refuses a lift without one. bide audit redactions checks it offline (LIFT_UNAUTHORIZED).
   list    the holds in force in the store.
 
 A hold stops bide's own erasure. It does not stop a database administrator, a restore or a hand-written

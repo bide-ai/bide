@@ -49,6 +49,7 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `const EvidenceFormatV5 = "bide.audit.evidence.v5"`: EvidenceFormatV5 is the previous evidence format, whose seal covers the whole package JSON rather than its digest.
 - `const GrantFormat = "bide.audit.grant.v2"`: GrantFormat tags the canonical bytes of a grant (Grant.Bytes), which are both signed and digested.
 - `const JournalExportFormat = "bide.audit.journal-export.v1"`: JournalExportFormat is the format of a JournalExport.
+- `const LiftAuthorizationFormat = "bide.audit.redaction-authorization.v1"`: LiftAuthorizationFormat is the format of a LiftAuthorization.
 - `const MaxStopRecords = 20000`: MaxStopRecords bounds the records VerifyStops reads from the control run for its comparison with the trail: past it the comparison is not made and the count is a problem, so a flood of records written into the control run is a finding, not a hang.
 - `const NoteNoRecordedTime = "no recorded time"`: NoteNoRecordedTime is DecisionCoverage.Note for a decision whose record has no usable recorded\_at.
 - `const NoteRedacted = "redacted, name not attested"`: NoteRedacted is DecisionCoverage.Note for a decision whose record a redaction replaced with a tombstone: its approver, verdict and recorded\_at are gone, and it is bounded like any other.
@@ -68,6 +69,7 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `var ErrRedactNoTrail`: ErrRedactNoTrail is a redaction whose begin record could not be written.
 - `var EarnedRules`: EarnedRules is the ScopeRules an earned grant attenuates its root under.
 - `var ErrCRLSignature`: ErrCRLSignature is wrapped by VerifyCRL when the CRL's algorithm is outside the profile, its signature does not verify under the issuer's certificate, or it names another issuer.
+- `var ErrLiftUnauthorized`: ErrLiftUnauthorized is a lift of a legal hold that needs a second person's signed authorization and has none that checks out: it is refused, and the hold stays in force.
 - `var ErrRootMismatch`: ErrRootMismatch is wrapped by the error of a proof or check that finds a signed tree head's root is not the root of the run's journal at the head's size: the journal was changed after the head was signed, or the head is for another history.
 - `var ErrSeqTaken`: ErrSeqTaken is what EventStore.Append returns, wrapped, when a different leaf is already stored at the requested seq: the position was taken.
 - `var ErrSnapshotFull`: ErrSnapshotFull is returned by AddCRLNoEvict when adding the CRL would evict another.
@@ -101,7 +103,7 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `func Head(ctx context.Context, store *agent.Journal, runID string) ([]byte, error)`: Head returns the hash-chain commitment to runID's journal: head\_0 = H(domain), and head\_i = H(head\_{i-1} || stored(record\_i)) over the records in persisted order, where stored is the bytes the journal stores for the record (agent.Record.Raw), verbatim.
 - `func JournalLeafHash(recordBytes []byte) []byte`: JournalLeafHash returns the RFC 6962 leaf hash of a journal record from the bytes the journal stores for it: SHA-256(0x00 || "bide.audit.journal-leaf.v1\\x00" || recordBytes).
 - `func KeyID(alg string, pub []byte) string`: KeyID is the key identity the audit verifiers report from KeyIDs: alg, a colon, and the lowercase hex SHA-256 of the public key's encoding (for Ed25519 the 32-byte key, for ML-DSA its FIPS 204 encoding).
-- `func LiftLegalHold(ctx context.Context, trail EventStore, holder agent.Holder, signer Signer, deployment string, prior []SignedTreeHead, id, reason, ticket, executor string, now time.Time) error`: LiftLegalHold lifts the hold id in holder (the store) after recording the lift in the redaction trail: the record comes first, so a hold is never lifted without evidence, and a failure to lift after the record leaves a hold still in force that the audit reports (HOLD\_NOT\_IN\_STORE reads the other way, a hold the trail shows active and the store lacks; this case shows as the store holding a hold the trail shows lifted, HOLD\_NOT\_IN\_TRAIL).
+- `func LiftLegalHold(ctx context.Context, trail EventStore, holder agent.Holder, signer Signer, deployment string, prior []SignedTreeHead, id, reason, ticket, executor string, now time.Time, opts ...LiftOption) error`: LiftLegalHold lifts the hold id in holder (the store) after recording the lift in the redaction trail: the record comes first, so a hold is never lifted without evidence, and a failure to lift after the record leaves a hold still in force that the audit reports (HOLD\_NOT\_IN\_STORE reads the other way, a hold the trail shows active and the store lacks; this case shows as the store holding a hold the trail shows lifted, HOLD\_NOT\_IN\_TRAIL).
 - `func NumericAtMost(parent, child string) bool`: NumericAtMost is the ScopeRule for an integer upper bound (a limit): the child's value, parsed as a base-10 integer, must be at most the parent's.
 - `func PersistEvent(ctx context.Context, evStore EventStore, runID string, seq int, e agent.RunEvent) error`: PersistEvent appends one event's canonical leaf to evStore at position seq, for callers streaming events into a store directly; prefer PersistJournal for the crash-safe path.
 - `func PersistJournal(ctx context.Context, evStore EventStore, jStore *agent.Journal, runID string) error`: PersistJournal mirrors runID's durable event trail into evStore by projecting the journal (agent.ReplayEvents) and appending each canonical event leaf at its position.
@@ -1330,6 +1332,57 @@ KeySet names one absence key set: the tree Kind its signed heads commit to, the 
 
 - `func KeySetForKey(key string) (KeySet, bool)`: KeySetForKey returns the built-in key set a key belongs to, by its prefix.
 
+## type LiftAuthorization
+
+```go
+type LiftAuthorization struct {
+	Format string `json:"format"`
+	Kind   string `json:"kind"`
+
+	Deployment string `json:"deployment"`
+
+	HoldID     string   `json:"hold_id"`
+	HoldMatter string   `json:"hold_matter"`
+	HoldRuns   []string `json:"hold_runs"`
+	HoldTree   bool     `json:"hold_tree,omitempty"`
+
+	PlacedPosition int    `json:"placed_position"`
+	PlacedLeaf     string `json:"placed_leaf"`
+	TrailSize      int    `json:"trail_size"`
+	Reason         string `json:"reason"`
+	Ticket         string `json:"ticket"`
+
+	LifterKeyID    string `json:"lifter_key_id,omitempty"`
+	AuthorizedAtMs int64  `json:"authorized_at_ms"`
+	NotAfterMs     int64  `json:"not_after_ms"`
+
+	Alg       string `json:"alg"`
+	PublicKey []byte `json:"public_key"`
+	KeyID     string `json:"key_id"`
+	Signature []byte `json:"signature"`
+}
+```
+
+A LiftAuthorization is a second person's signed consent to lift one placement of one legal hold.
+
+**Constructors and functions**
+
+- `func NewLiftAuthorization(ctx context.Context, trail EventStore, trailKey Verifier, authorizer Signer, deployment, holdID, reason, ticket, lifterKeyID string, now time.Time, validFor time.Duration) (LiftAuthorization, error)`: NewLiftAuthorization reads the redaction trail (its records verified under trailKey, the key that signs the trail) and returns authorizer's signed consent to lift the hold holdID as the trail shows it now.
+
+## type LiftOption
+
+```go
+type LiftOption func(*liftConfig)
+```
+
+LiftOption is an option of LiftLegalHold.
+
+**Constructors and functions**
+
+- `func RequireLiftAuthorization() LiftOption`: RequireLiftAuthorization makes LiftLegalHold refuse a lift that has no valid authorization (ErrLiftUnauthorized).
+- `func WithLiftAuthorization(a LiftAuthorization) LiftOption`: WithLiftAuthorization gives LiftLegalHold the second person's authorization to embed in the lift's record.
+- `func WithLiftAuthorizers(v ...Verifier) LiftOption`: WithLiftAuthorizers pins the keys an authorization must be signed by.
+
 ## type MLDSASigner
 
 ```go
@@ -1763,6 +1816,7 @@ RedactionFindingKind names what VerifyRedactions found wrong.
 - `const FindingUncovered RedactionFindingKind = "UNCOVERED"`: FindingUncovered: a redaction that ran with no covering signed head.
 - `const FindingUnderHold RedactionFindingKind = "REDACTED_UNDER_HOLD"`: FindingUnderHold: a pass erased records of a run a legal hold in force covered.
 - `const FindingHoldUnmatched RedactionFindingKind = "HOLD_UNMATCHED"`: FindingHoldUnmatched: a hold\_lifted record for a hold the trail shows no active placement of, or a placement of an ID already active.
+- `const FindingLiftUnauthorized RedactionFindingKind = "LIFT_UNAUTHORIZED"`: FindingLiftUnauthorized: a hold lift that has no second-person authorization where one is required, or whose embedded authorization does not check out (a bad signature, another hold or placement, expired at the lift, the lifter's own key, or a key that is not a pinned authorizer).
 - `const FindingHoldNotInStore RedactionFindingKind = "HOLD_NOT_IN_STORE"`: FindingHoldNotInStore: the trail says a hold is active and the store holds none: lifted by hand.
 - `const FindingHoldNotInTrail RedactionFindingKind = "HOLD_NOT_IN_TRAIL"`: FindingHoldNotInTrail: the store holds a hold the trail never recorded: placed by hand.
 - `const FindingHoldDiffers RedactionFindingKind = "HOLD_DIFFERS"`: FindingHoldDiffers: the store's hold and the trail's have the same ID and differ in runs, tree setting or matter.
@@ -1843,6 +1897,8 @@ type RedactionRecord struct {
 	HoldRuns   []string `json:"hold_runs,omitempty"`
 	HoldTree   bool     `json:"hold_tree,omitempty"`
 
+	Authorization *LiftAuthorization `json:"authorization,omitempty"`
+
 	Alg       string `json:"alg"`
 	Signature []byte `json:"signature"`
 }
@@ -1897,6 +1953,10 @@ type RedactionVerifyInput struct {
 	Deployment string
 
 	StoreHolds *[]agent.Hold
+
+	LiftAuthorizers []Verifier
+
+	RequireLiftAuthorization bool
 
 	Journals map[string][]agent.Record
 }
