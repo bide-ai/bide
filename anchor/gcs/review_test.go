@@ -129,3 +129,19 @@ func TestAVanishedGenerationFailsTheHeadReadersAndIsAnAuditFinding(t *testing.T)
 		t.Fatalf("Audit = %+v, %v; want a vanished finding and the readable head", rep.Findings, err)
 	}
 }
+
+// A locked policy under the 24-hour minimum is a bucket finding even when the reader was not told the
+// anchor's configured retention.
+func TestAuditReportsAPolicyBelowTheMinimum(t *testing.T) {
+	k := newKeys(t, 1)
+	f := gcstest.New()
+	publish(t, newAnchor(t, f, nil), k.head(t, "r1", 3, 1))
+	f.Configure(func(b *gcs.BucketInfo) { b.RetentionPeriod = time.Hour })
+	rep, err := newReader(t, f, k.v).Audit(ctx, "journal", "r1", f.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasFinding(rep, "below the minimum") {
+		t.Fatalf("a 1h policy is not reported: %v", rep.Findings)
+	}
+}
