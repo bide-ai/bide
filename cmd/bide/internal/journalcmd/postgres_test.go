@@ -57,8 +57,8 @@ func TestPostgresErasureThroughTheRedactionRole(t *testing.T) {
 			}
 		}
 	}
-	const schema, owner, app, red = "jcschema", "jc_owner", "jc_app", "jc_redactor"
-	for _, r := range []string{owner, app, red} {
+	const schema, owner, app, red, holder = "jcschema", "jc_owner", "jc_app", "jc_redactor", "jc_holder"
+	for _, r := range []string{owner, app, red, holder} {
 		admin.ExecContext(ctx, `DROP OWNED BY `+r+` CASCADE`)
 		admin.ExecContext(ctx, `DROP ROLE IF EXISTS `+r)
 		exec(`CREATE ROLE ` + r + ` LOGIN PASSWORD '` + pgPassword + `'`)
@@ -67,7 +67,7 @@ func TestPostgresErasureThroughTheRedactionRole(t *testing.T) {
 	exec(`CREATE SCHEMA ` + schema + ` AUTHORIZATION ` + owner)
 	t.Cleanup(func() {
 		admin.ExecContext(context.Background(), `DROP SCHEMA IF EXISTS `+schema+` CASCADE`)
-		for _, r := range []string{owner, app, red} {
+		for _, r := range []string{owner, app, red, holder} {
 			admin.ExecContext(context.Background(), `DROP OWNED BY `+r+` CASCADE`)
 			admin.ExecContext(context.Background(), `DROP ROLE IF EXISTS `+r)
 		}
@@ -81,6 +81,12 @@ func TestPostgresErasureThroughTheRedactionRole(t *testing.T) {
 		`GRANT SELECT, INSERT, UPDATE, DELETE ON `+schema+`.bide_leases TO `+app,
 		`GRANT SELECT ON `+schema+`.bide_schema_version TO `+app+`, `+red,
 		`GRANT SELECT ON `+schema+`.bide_holds TO `+app,
+		// The role that places and lifts holds: the holds table, and the events table the trail is kept in.
+		`GRANT USAGE ON SCHEMA `+schema+` TO `+holder,
+		`GRANT SELECT ON `+schema+`.bide_schema_version, `+schema+`.bide_steps TO `+holder,
+		`GRANT SELECT, INSERT ON `+schema+`.bide_events TO `+holder,
+		`GRANT SELECT, INSERT, DELETE ON `+schema+`.bide_holds TO `+holder,
+		`GRANT EXECUTE ON FUNCTION `+schema+`.bide_next_seq_v1(text) TO `+holder,
 		`GRANT EXECUTE ON FUNCTION `+schema+`.bide_next_seq_v1(text) TO `+app,
 		`GRANT EXECUTE ON FUNCTION `+schema+`.bide_redact_v2(text, text, bytea, bigint) TO `+red,
 	)
@@ -195,6 +201,37 @@ func TestPostgresErasureThroughTheRedactionRole(t *testing.T) {
 	var ao, ae bytes.Buffer
 	if code := auditcli.Main("test", args, &ao, &ae); code != 0 || !strings.Contains(ao.String(), "PASS") {
 		t.Fatalf("bide audit redactions on Postgres = %d\n%s%s", code, ao.String(), ae.String())
+	}
+	// A legal hold, placed by the holds role through the command: the erasure of the run is then refused
+	// (the application role cannot place one), the audit still passes, and the hold is listed.
+	holdDSN := pgDSN(t, base, holder)
+	env["JC_HOLD"] = holdDSN
+	holdCLI := func(args ...string) (int, string, string) {
+		var out, errb bytes.Buffer
+		code := Main(append([]string{"hold"}, args...), &out, &errb)
+		return code, out.String(), errb.String()
+	}
+	if code, _, errb := holdCLI("place", "-postgres-env", "JC_APP", "-schema", schema, "-id", "H-1", "-matter", "inquiry", "-run", run, "-reason", "r", "-ticket", "t", "-deployment", "bank-a", "-sign-key", keyPath, "-head-out", headOut); code != 1 {
+		t.Fatalf("the application role placed a hold: %d %s", code, errb)
+	}
+	if code, out, errb := holdCLI("place", "-postgres-env", "JC_HOLD", "-schema", schema, "-id", "H-1", "-matter", "inquiry", "-run", run, "-tree", "-reason", "inquiry opened", "-ticket", "LEGAL-5", "-deployment", "bank-a", "-sign-key", keyPath, "-head-out", headOut); code != 0 {
+		t.Fatalf("the holds role could not place a hold: %d %s%s", code, out, errb)
+	}
+	if code, out, _ := cli("-run", run); code != 0 || !strings.Contains(out, "REFUSED") || !strings.Contains(out, "H-1") {
+		t.Fatalf("the dry run under a hold: %d\n%s", code, out)
+	}
+	hb, _ = os.ReadFile(headOut)
+	args = args[:0]
+	args = append(args, "redactions", "-postgres-env", "JC_APP", "-run", run, "-deployment", "bank-a", "-pubkey", keyPath+".pub")
+	for i, line := range bytes.Split(bytes.TrimSpace(hb), []byte("\n")) {
+		f := filepath.Join(dir, "after"+string(rune('0'+i))+".sth")
+		os.WriteFile(f, line, 0o644)
+		args = append(args, "-sth", f)
+	}
+	ao.Reset()
+	ae.Reset()
+	if code := auditcli.Main("test", args, &ao, &ae); code != 0 || !strings.Contains(ao.String(), "legal hold H-1 in force") {
+		t.Fatalf("bide audit redactions with a hold = %d\n%s%s", code, ao.String(), ae.String())
 	}
 	// And the role that erased can read nothing.
 	redStore, err := postgres.Open(ctx, redDSN, postgres.WithSchema(schema), postgres.WithoutMigration())
