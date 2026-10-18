@@ -150,7 +150,7 @@ func (c *cli) usageError(msg string) {
 	if msg != "" {
 		fmt.Fprintln(c.stderr, c.errStyle().ErrorPrefix()+msg)
 	}
-	fmt.Fprint(c.stderr, usageText)
+	fmt.Fprint(c.stderr, usage())
 	c.errs = append(c.errs, &cliError{class: errUsage, err: errors.New("usage error"), shown: true})
 	panic(abort{})
 }
@@ -202,10 +202,28 @@ func (c *cli) call(verb func([]string), args []string) (err error) {
 	return nil
 }
 
+// Program is the command's name in its usage errors and its -json report: "bide audit", or "bide-hsm audit"
+// when bide-hsm runs the stops verb.
+var Program = "bide audit"
+
+// OnlyVerb, when set, is the one verb the command runs (bide-hsm audit runs stops only), and UsageText, when
+// set, replaces the usage text the command prints for it.
+var (
+	OnlyVerb  string
+	UsageText string
+)
+
+func usage() string {
+	if UsageText != "" {
+		return UsageText
+	}
+	return usageText
+}
+
 // flagSet returns a verb's flag set, with the -max-input-bytes, -max-clock-skew, -json and -color
 // flags every verb shares.
 func (c *cli) flagSet(name string) *flag.FlagSet {
-	fs := flag.NewFlagSet("bide audit "+name, flag.ContinueOnError)
+	fs := flag.NewFlagSet(Program+" "+name, flag.ContinueOnError)
 	fs.SetOutput(c.stderr)
 	fs.Int64Var(&maxInputBytes, "max-input-bytes", defaultMaxInputBytes, "the largest input file, in bytes, the verb reads; a larger one is an error")
 	fs.DurationVar(&maxClockSkew, "max-clock-skew", audit.DefaultClockSkew, "how far past this machine's clock a signed head's timestamp may be")
@@ -279,7 +297,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	c := &cli{stdout: stdout, stderr: stderr, out: stdout}
 	top := flag.NewFlagSet("bide audit", flag.ContinueOnError)
 	top.SetOutput(stderr)
-	top.Usage = func() { fmt.Fprint(stderr, usageText) }
+	top.Usage = func() { fmt.Fprint(stderr, usage()) }
 	showVersion := top.Bool("version", false, "print the version and the artifact formats this version reads")
 	top.BoolVar(&c.json, "json", false, "print one JSON report on stdout instead of the text report")
 	top.Var(&c.color, "color", term.FlagUsage+"; -json is never colored")
@@ -295,14 +313,20 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return exitVerified
 	}
 	if top.NArg() == 0 {
-		fmt.Fprint(stderr, usageText)
+		fmt.Fprint(stderr, usage())
 		return exitFor(errUsage)
 	}
 	c.verb = top.Arg(0)
 	verb, ok := verbs[c.verb]
+	if OnlyVerb != "" && c.verb != OnlyVerb {
+		// Not echoed: an argument given in the verb's place can be a key reference holding a secret.
+		fmt.Fprintf(stderr, "%s%s: the one verb is %s\n", c.errStyle().ErrorPrefix(), Program, OnlyVerb)
+		fmt.Fprint(stderr, usage())
+		return exitFor(errUsage)
+	}
 	if !ok {
 		fmt.Fprintf(stderr, "%sbide audit: unknown verb %q\n", c.errStyle().ErrorPrefix(), c.verb)
-		fmt.Fprint(stderr, usageText)
+		fmt.Fprint(stderr, usage())
 		return exitFor(errUsage)
 	}
 	err := c.call(func(a []string) { verb(c, a) }, top.Args()[1:])
@@ -368,7 +392,7 @@ func (c *cli) writeReport(code int, errs []string) {
 		errs = []string{}
 	}
 	rep := report{
-		Tool: "bide audit", Version: toolVersion(), Verb: c.verb, ExitCode: code,
+		Tool: Program, Version: toolVersion(), Verb: c.verb, ExitCode: code,
 		Result: resultName(c.verb, code), Verified: code == exitVerified && !produceVerbs[c.verb],
 		Output: out, Errors: errs, Artifact: c.artifact,
 	}

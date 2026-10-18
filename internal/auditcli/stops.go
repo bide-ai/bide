@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"math"
@@ -32,7 +33,14 @@ func (c *cli) stops(args []string) {
 	db := fs.String("db", "", "read the trail and the control run from this SQLite database (opened read-only) instead of from a file")
 	pgEnv := fs.String("postgres-env", "", "read them from the Postgres database whose DSN is in this environment variable (never given on the command line)")
 	signHead := fs.Bool("sign-head", false, "after verifying the trail against the control run (-db or -postgres-env, required), sign a head over exactly the verified records with -log-key and append it, as one JSON line, to -head-out; the heads in that file are read back by -sth. Run it on a schedule: with no -max-unattested the audit fails on any record after the newest signed head")
-	logKey := fs.String("log-key", "", "with -sign-head: the private key file that signs the head (as bide keygen writes it; on Unix not readable by group or others). It is the deployment's log key, not an approver's: -pubkey names its public half")
+	logKeyHelp := LogKeyHelp
+	if logKeyHelp == "" {
+		logKeyHelp = "the private key file that signs the head (as bide keygen writes it; on Unix not readable by group or others)"
+	}
+	logKey := fs.String("log-key", "", "with -sign-head: "+logKeyHelp+". It is the deployment's log key, not an approver's: -pubkey names its public half")
+	if LogKeyFlags != nil {
+		LogKeyFlags(fs)
+	}
 	headOut := fs.String("head-out", "", "with -sign-head: the file the signed head is appended to (created if absent); it is verified first, so a trail that shrank or was rewritten since an earlier head is refused, not re-signed")
 	maxTail := fs.Duration("max-unattested", 0, "accept records after the newest signed head for this long: a tail older than that fails, and with 0 (default) any unattested tail fails, since whoever can write the trail's store could have deleted the newest records unseen")
 	asOf := fs.String("as-of", "", "judge the heads and the tail as of this RFC 3339 time (default now)")
@@ -236,6 +244,14 @@ func (c *cli) stopReport(rep audit.StopReport, maxTail time.Duration) {
 // (a key file, the file form bide keygen writes); the audit-only build leaves it nil, so -sign-head is refused
 // there and the verifier's import graph stays the standard library and the core module.
 var LoadLogSigner func(ref string) (audit.Signer, error)
+
+// LogKeyHelp, when set, replaces the description of what -log-key names (the default is a key file), and
+// LogKeyFlags, when set, adds flags to the stops verb that say how the key is opened. bide-hsm audit stops sets
+// both: its -log-key is a reference to a key in an HSM or a KMS, opened by LoadLogSigner.
+var (
+	LogKeyHelp  string
+	LogKeyFlags func(fs *flag.FlagSet)
+)
 
 // readHeadFile reads the signed heads in path: one JSON head, or several, one per line (the form -head-out
 // appends), each read strictly.

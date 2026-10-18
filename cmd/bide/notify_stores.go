@@ -3,12 +3,9 @@
 package main
 
 import (
-	"context"
-
 	"github.com/bide-ai/bide/cmd/bide/internal/approvecmd"
+	"github.com/bide-ai/bide/cmd/bide/internal/auditstores"
 	"github.com/bide-ai/bide/internal/auditcli"
-	"github.com/bide-ai/bide/store/postgres"
-	"github.com/bide-ai/bide/store/sqlite"
 )
 
 // bide audit notifications -db and -postgres-env read the journal and the notification trails from
@@ -17,20 +14,5 @@ import (
 func init() {
 	// bide audit stops -sign-head signs with a key file, as bide stop does.
 	auditcli.LoadLogSigner = approvecmd.LoadSigner
-	auditcli.Stores = &auditcli.StoreOpeners{
-		SQLite: func(path string) (auditcli.NotifyStores, error) {
-			s, err := sqlite.OpenReadOnly(path)
-			if err != nil {
-				return auditcli.NotifyStores{}, err
-			}
-			return auditcli.NotifyStores{Journal: s, Events: s.EventStore(), Close: s.Close}, nil
-		},
-		Postgres: func(dsn string) (auditcli.NotifyStores, error) {
-			s, err := postgres.OpenReadOnly(context.Background(), dsn)
-			if err != nil {
-				return auditcli.NotifyStores{}, err
-			}
-			return auditcli.NotifyStores{Journal: s, Events: s.EventStore(), Close: s.Close}, nil
-		},
-	}
+	auditcli.Stores = auditstores.Openers()
 }
