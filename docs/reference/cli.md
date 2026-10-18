@@ -600,7 +600,7 @@ erases and an "end" record after; if it stops partway, run the same plan again.
   -reason string
     	with -execute: why (recorded in the trail)
   -redact-postgres-env string
-    	the environment variable that holds the DSN of the role that may erase (EXECUTE on bide_redact_v1 and no table privilege); default: the -postgres-env role
+    	the environment variable that holds the DSN of the role that may erase (EXECUTE on bide_redact_v2 and no table privilege); default: the -postgres-env role
   -run string
     	the run to erase from
   -schema string

@@ -69,7 +69,7 @@ var (
 		"in": true, "case": true, "using": true, "array": true}
 	// sqlTypes are the types a statement may cast to, each written pg_catalog.<type>, optionally
 	// as an array (<type>[]).
-	sqlTypes = map[string]bool{"text": true, "bytea": true, "int8": true, "int2": true, "float8": true, "interval": true, "oidvector": true, "regtype": true, "oid": true}
+	sqlTypes = map[string]bool{"text": true, "bool": true, "bytea": true, "int8": true, "int2": true, "float8": true, "interval": true, "oidvector": true, "regtype": true, "oid": true}
 	// sqlOperators are the operators a statement may use.
 	sqlOperators = map[string]bool{"=": true, "<>": true, "<": true, ">": true, "<=": true, ">=": true, "+": true, "-": true, "*": true}
 )
