@@ -323,6 +323,7 @@ AuditedEventStore wraps an EventStore so every append is continuously anchored, 
 - `func (a *AuditedEventStore) Flush(ctx context.Context) error`: Flush waits until the background publisher has tried every trail appended to before the call (or ctx is done, whose error it returns).
 - `func (a *AuditedEventStore) Load(ctx context.Context, trail string) ([][]byte, error)`: Load reads through to the inner store.
 - `func (a *AuditedEventStore) OnError(fn func(trail string, err error)) *AuditedEventStore`: OnError sets a hook called when anchoring a write fails: a head could not be built, signed or published, an attempt timed out, or the write's context was done.
+- `func (a *AuditedEventStore) OnRecovered(fn func(trail string)) *AuditedEventStore`: OnRecovered sets a hook called when a trail's head is published after a streak of failed publishes by the WithMinInterval timer: OnError reports the first failure of a streak only, and this ends it.
 - `func (a *AuditedEventStore) Reanchor(ctx context.Context, trail string) error`: Reanchor publishes a head over trail now if it holds records no head this store published covers.
 - `func (a *AuditedEventStore) ReanchorPending(ctx context.Context) error`: ReanchorPending reanchors every trail that a failure, a skipped attempt or a done context left possibly unanchored, one after the other, and stops at the first error.
 - `func (a *AuditedEventStore) Unanchored() []string`: Unanchored returns, sorted, the trails that may hold records no published head covers: those whose last attempt failed, timed out or was skipped.
@@ -354,6 +355,7 @@ AuditedStore wraps a store so every journal write is continuously anchored: when
 - `func (a *AuditedStore) Insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error)`: Insert stores the entry in the inner store, then anchors the run's tree head if the journal grew past the last anchored head.
 - `func (a *AuditedStore) Load(ctx context.Context, runID string, after int64) iter.Seq2[agent.Entry, error]`: Load reads through to the inner store.
 - `func (a *AuditedStore) OnError(fn func(runID string, err error)) *AuditedStore`: OnError sets a hook called when anchoring a write fails (Publish, or committing the root).
+- `func (a *AuditedStore) OnRecovered(fn func(runID string)) *AuditedStore`: OnRecovered sets a hook called when a run's head is published after a streak of failed publishes by the WithMinInterval timer: OnError reports the first failure of a streak only, and this ends it.
 - `func (a *AuditedStore) Pending() []string`: Pending returns, sorted, the runs whose growth WithMinInterval is holding back.
 - `func (a *AuditedStore) Reanchor(ctx context.Context, runID string) error`: Reanchor anchors runID's journal now, if it holds records no published head covers.
 - `func (a *AuditedStore) ReanchorRuns(ctx context.Context, f agent.RunFilter) error`: ReanchorRuns is the restart path for WithMinInterval: it anchors now every run f admits whose journal this store has not anchored, which after a start is every run, since the store remembers nothing of an earlier process.
