@@ -270,6 +270,9 @@ func TestStop_AuditedQuorumTrailAndNoSecretsInOutput(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "in force") || strings.Contains(out, "not signed") {
 		t.Fatalf("set: exit %d\n%s\n%s", code, out, errOut)
 	}
+	if n := strings.Count(out, "in force:"); n != 1 || !strings.Contains(out, "(writing the audit trail)") {
+		t.Fatalf("a stop is reported in force once, the moment it is (%d lines):\n%s", n, out)
+	}
 	st := e.state(true)
 	if len(st.Active()) != 1 || !st.Active()[0].Signed || st.Active()[0].By != "ops" || st.Active()[0].LiftsNeeded != 2 {
 		t.Fatalf("state %+v", st.Stops)
@@ -420,9 +423,13 @@ func TestStop_HalfLandedStopExits5AndReauditCompletesIt(t *testing.T) {
 		t.Fatalf("seed: exit %d\n%s", code, errOut)
 	}
 	*trailDown = true
-	code, _, errOut := e.stop("ops", "-tool", "refund", "-reason", "incident")
+	code, out, errOut := e.stop("ops", "-tool", "refund", "-reason", "incident")
 	if code != 5 || !strings.Contains(errOut, "in force") || !strings.Contains(errOut, "-reaudit") {
 		t.Fatalf("exit %d, want 5\n%s", code, errOut)
+	}
+	// The operator is told the stop is in force the moment it is, before the trail write that failed.
+	if !strings.Contains(out, "in force: tool refund (writing the audit trail)") {
+		t.Fatalf("no early \"in force\" line:\n%s", out)
 	}
 	if _, ok := e.state(true).Covering(agent.StopQuery{Tool: "refund"}); !ok {
 		t.Fatal("exit 5 on a stop must mean the stop IS in force")
@@ -431,7 +438,7 @@ func TestStop_HalfLandedStopExits5AndReauditCompletesIt(t *testing.T) {
 		t.Fatalf("audit stops must find the missing trail record: exit %d\n%s", code, out)
 	}
 	*trailDown = false
-	code, out, errOut := runBide("stop", "-db", e.db, "-reaudit", "-stop-policy", e.policy)
+	code, out, errOut = runBide("stop", "-db", e.db, "-reaudit", "-stop-policy", e.policy)
 	if code != 0 || !strings.Contains(out, "appended 1 record") {
 		t.Fatalf("reaudit: exit %d\n%s\n%s", code, out, errOut)
 	}

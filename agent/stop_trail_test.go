@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -130,11 +131,12 @@ func TestStopTrail_ConcurrentWritersLoseNothing(t *testing.T) {
 	tr := NewMemStopTrail()
 	store := NewMemStore()
 	var wg sync.WaitGroup
-	for i := range 8 {
+	// Thirty-two operators at once: a fixed number of tries ran out with ten, under -race.
+	for i := range 32 {
 		wg.Go(func() {
 			c := trailed(t, store, tr, auditedPolicy(1, false))
 			by := []string{"ops1", "ops2"}[i%2]
-			if _, err := c.SetStop(ctx, StopRequest{Scope: StopScope{Kind: StopTool, Name: string(rune('a' + i))}, By: by, Signer: sign(by)}); err != nil {
+			if _, err := c.SetStop(ctx, StopRequest{Scope: StopScope{Kind: StopTool, Name: fmt.Sprintf("tool-%d", i)}, By: by, Signer: sign(by)}); err != nil {
 				t.Error(err)
 			}
 		})
@@ -312,5 +314,185 @@ func TestStopTrail_RacingControlsLeaveAgreeingFolds(t *testing.T) {
 				t.Fatalf("round %d: stop %.12s differs: trail lifted %v, control %v (known %v)", round, s.ID, s.Lifted, l, ok)
 			}
 		}
+	}
+}
+
+// An append that keeps losing the race for its position stops at its caller's deadline, with an error that says
+// so, rather than at a fixed number of tries.
+type alwaysConflict struct{ StopTrail }
+
+func (alwaysConflict) Append(context.Context, string, int, StopRecord) error { return ErrTrailConflict }
+
+func TestStopTrail_AppendRetriesUntilTheDeadline(t *testing.T) {
+	c := trailed(t, NewMemStore(), alwaysConflict{NewMemStopTrail()}, auditedPolicy(1, false))
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := c.appendTrail(ctx, StopRecord{Kind: "set"})
+	if !errors.Is(err, ErrTrailConflict) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("%v", err)
+	}
+	if d := time.Since(start); d < 250*time.Millisecond || d > 2*time.Second {
+		t.Fatalf("gave up after %v: it must retry until the deadline", d)
+	}
+}
+
+// A caller that cancels is told it cancelled (and that no position was won): not that it ran out of time.
+func TestStopTrail_ACancelledAppendSaysSo(t *testing.T) {
+	c := trailed(t, NewMemStore(), alwaysConflict{NewMemStopTrail()}, auditedPolicy(1, false))
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(50*time.Millisecond, cancel)
+	err := c.appendTrail(ctx, StopRecord{Kind: "set"})
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, ErrTrailConflict) || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("%v", err)
+	}
+}
+
+// toggleTrail conflicts on every append while down is set, and otherwise is the trail beneath it.
+type toggleTrail struct {
+	StopTrail
+	down *atomic.Bool
+}
+
+func (t toggleTrail) Append(ctx context.Context, name string, seq int, r StopRecord) error {
+	if t.down.Load() {
+		return ErrTrailConflict
+	}
+	return t.StopTrail.Append(ctx, name, seq, r)
+}
+
+// A stop's own trail write gets the short budget: the stop is in force before it starts, so waiting only
+// delays the answer; a write that gives up is the designed exit 5, and Reaudit completes it.
+func TestStopTrail_ASetsTrailWriteHasTheShortBudget(t *testing.T) {
+	ctx := context.Background()
+	old := stopSetTrailBudget
+	stopSetTrailBudget = 150 * time.Millisecond
+	defer func() { stopSetTrailBudget = old }()
+	var down atomic.Bool
+	c := trailed(t, NewMemStore(), toggleTrail{NewMemStopTrail(), &down}, auditedPolicy(1, false))
+	if _, err := c.SetStop(ctx, StopRequest{Scope: StopScope{Kind: StopTool, Name: "first"}, By: "ops1", Signer: sign("ops1")}); err != nil { // the root record goes first, with the trail up
+		t.Fatal(err)
+	}
+	down.Store(true)
+	start := time.Now()
+	e, err := c.SetStop(ctx, StopRequest{Scope: StopScope{Kind: StopTool, Name: "refund"}, By: "ops1", Signer: sign("ops1")})
+	var te *StopTrailError
+	if !errors.As(err, &te) || !te.StoreWritten || !errors.Is(err, ErrTrailConflict) {
+		t.Fatalf("%v", err)
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("a stop waited %v for its trail write", d)
+	}
+	if len(mustState(t, c).Active()) != 2 || e.ID == "" {
+		t.Fatalf("the stop is in force: %+v %+v", mustState(t, c).Active(), e)
+	}
+	down.Store(false)
+	if n, err := c.Reaudit(ctx); err != nil || n == 0 {
+		t.Fatalf("Reaudit: %d %v", n, err)
+	}
+}
+
+// A lift and its catch-up records share one budget: a contended trail does not cost a budget per pending record.
+func TestStopTrail_ALiftAndItsCatchUpShareOneBudget(t *testing.T) {
+	ctx := context.Background()
+	old := stopTrailBudget
+	stopTrailBudget = 400 * time.Millisecond
+	defer func() { stopTrailBudget = old }()
+	store := NewMemStore()
+	untrailed := audited(t, store, auditedPolicy(1, false)) // no trail: its records are what the catch-up must append
+	var first StopEntry
+	for i := range 6 {
+		e, err := untrailed.SetStop(ctx, StopRequest{Scope: StopScope{Kind: StopTool, Name: string(rune('a' + i))}, By: "ops1", Signer: sign("ops1")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			first = e
+		}
+	}
+	var down atomic.Bool
+	c := trailed(t, store, toggleTrail{NewMemStopTrail(), &down}, auditedPolicy(1, false))
+	down.Store(true)
+	start := time.Now()
+	_, err := c.LiftStop(ctx, first.ID, LiftRequest{By: "ops1", Signer: sign("ops1")})
+	var te *StopTrailError
+	if !errors.As(err, &te) || te.StoreWritten {
+		t.Fatalf("%v", err)
+	}
+	if d := time.Since(start); d > 1200*time.Millisecond {
+		t.Fatalf("the lift waited %v: six pending records must share one 400ms budget, not have one each", d)
+	}
+	if len(mustState(t, c).Active()) != 6 {
+		t.Fatal("a lift whose trail write failed is not in force")
+	}
+}
+
+// With no deadline of its own an append retries for the default budget, and no longer.
+func TestStopTrail_AnAppendWithNoDeadlineHasTheDefaultBudget(t *testing.T) {
+	old := stopTrailBudget
+	stopTrailBudget = 250 * time.Millisecond
+	defer func() { stopTrailBudget = old }()
+	c := trailed(t, NewMemStore(), alwaysConflict{NewMemStopTrail()}, auditedPolicy(1, false))
+	start := time.Now()
+	err := c.appendTrail(context.Background(), StopRecord{Kind: "set"})
+	if !errors.Is(err, ErrTrailConflict) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("%v", err)
+	}
+	if d := time.Since(start); d < 200*time.Millisecond || d > 3*time.Second {
+		t.Fatalf("gave up after %v, want about the 250ms budget", d)
+	}
+}
+
+// deadlineTrail records the deadline each append was given and takes a while before it lands.
+type deadlineTrail struct {
+	StopTrail
+	mu        sync.Mutex
+	deadlines []time.Time
+}
+
+func (d *deadlineTrail) Append(ctx context.Context, name string, seq int, r StopRecord) error {
+	dl, _ := ctx.Deadline()
+	d.mu.Lock()
+	d.deadlines = append(d.deadlines, dl)
+	d.mu.Unlock()
+	time.Sleep(60 * time.Millisecond)
+	return d.StopTrail.Append(ctx, name, seq, r)
+}
+
+// The catch-up appends and the record's own append of one write are given one and the same deadline: a lift that
+// must land several records on a contended trail has one budget in all, not one per record.
+func TestStopTrail_TheCatchUpAndTheRecordShareOneDeadline(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	untrailed := audited(t, store, auditedPolicy(1, false))
+	var first StopEntry
+	for i := range 3 {
+		e, err := untrailed.SetStop(ctx, StopRequest{Scope: StopScope{Kind: StopTool, Name: string(rune('a' + i))}, By: "ops1", Signer: sign("ops1")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			first = e
+		}
+	}
+	tr := &deadlineTrail{StopTrail: NewMemStopTrail()}
+	c := trailed(t, store, tr, auditedPolicy(1, false))
+	if _, err := c.LiftStop(ctx, first.ID, LiftRequest{By: "ops1", Signer: sign("ops1")}); err != nil {
+		t.Fatal(err)
+	}
+	if len(tr.deadlines) < 4 { // the root, three stops, and the lift
+		t.Fatalf("%d appends", len(tr.deadlines))
+	}
+	lo, hi := tr.deadlines[0], tr.deadlines[0]
+	for _, d := range tr.deadlines {
+		if d.Before(lo) {
+			lo = d
+		}
+		if d.After(hi) {
+			hi = d
+		}
+	}
+	if hi.Sub(lo) > 20*time.Millisecond {
+		t.Fatalf("the appends of one write were given deadlines %v apart: they must share one", hi.Sub(lo))
 	}
 }

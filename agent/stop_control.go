@@ -76,6 +76,20 @@ func WithStopVerifier(nv StopVerifierFunc) StopOption {
 	return stopOption(func(c *StopControl) error { c.nv = nv; return nil })
 }
 
+// WithStopInForce gives the control a function that is told, with the stop, the moment a stop has been written to
+// the control run and is therefore in force, before its audit trail write starts (which can take a while under
+// contention, and fail): a command can say "in force" at once. It is called only for a control with a trail, on
+// the goroutine of SetStop, and must return quickly.
+func WithStopInForce(fn func(StopEntry)) StopOption {
+	return stopOption(func(c *StopControl) error {
+		if fn == nil {
+			return fmt.Errorf("WithStopInForce: nil function: %w", ErrConfig)
+		}
+		c.onInForce = fn
+		return nil
+	})
+}
+
 // WithStopClock sets the clock that stamps a record's At (default time.Now).
 func WithStopClock(now func() time.Time) StopOption {
 	return stopOption(func(c *StopControl) error {
@@ -98,6 +112,8 @@ type StopControl struct {
 	trail  StopTrail
 	root   string // digest of the trusted root policy; the pin's when empty
 	now    func() time.Time
+
+	onInForce func(StopEntry) // WithStopInForce
 }
 
 // NewStopControl returns the control over j's store.
@@ -950,7 +966,14 @@ func (c *StopControl) write(ctx context.Context, st StopState, r *StopRecord, si
 		if err := put(); err != nil {
 			return err
 		}
-		if err := c.appendTrail(ctx, *r); err != nil {
+		if c.onInForce != nil {
+			if e, err := c.find(ctx, r.StopID, name); err == nil {
+				c.onInForce(e)
+			}
+		}
+		tctx, cancel := context.WithTimeout(ctx, stopSetTrailBudget)
+		defer cancel()
+		if err := c.appendTrail(tctx, *r); err != nil {
 			return &StopTrailError{Record: name, StoreWritten: true, Err: err}
 		}
 		return nil
@@ -959,10 +982,12 @@ func (c *StopControl) write(ctx context.Context, st StopState, r *StopRecord, si
 	// predecessors) goes to the trail, the records of the control run that the trail lacks are appended
 	// in store order, so the trail is never left holding a record without what it rests on: a stop whose
 	// own trail write failed is evidenced before the lift of it.
-	if _, err := c.Reaudit(ctx); err != nil {
+	tctx, cancel := context.WithTimeout(ctx, stopTrailBudget) // the catch-up and the record's own append share it
+	defer cancel()
+	if _, err := c.Reaudit(tctx); err != nil {
 		return &StopTrailError{Record: name, Err: err}
 	}
-	if err := c.appendTrail(ctx, *r); err != nil {
+	if err := c.appendTrail(tctx, *r); err != nil {
 		return &StopTrailError{Record: name, Err: err}
 	}
 	return put()
