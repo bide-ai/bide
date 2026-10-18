@@ -489,3 +489,74 @@ func TestAWrongTrailDatabaseIsRefusedBeforeErasing(t *testing.T) {
 		t.Fatalf("the refused attempt wrote %d record(s) to the wrong trail (%v)", len(leaves), err)
 	}
 }
+
+// A refusal before the first trail record writes no head: there is nothing new to attest.
+func TestARefusalBeforeTheTrailWritesNoHead(t *testing.T) {
+	r := newRig(t)
+	_, out, _ := r.run(r.base()...)
+	d := digestOf(t, out)
+	s, err := sqlite.Open(r.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	// The head on file is signed by another key than -pubkey names, so none covers the run: RedactJournal
+	// refuses after the trail check and before its first record.
+	other := filepath.Join(r.dir, "other.key")
+	var o, e bytes.Buffer
+	approvecmd.KeygenMain([]string{"-out", other, "-color", "never"}, &o, &e)
+	args := append(r.base(), "-execute", "-plan-digest", d, "-reason", "r", "-ticket", "t", "-deployment", "test", "-sign-key", r.key, "-head-out", r.headOut, "-pubkey", other+".pub", "-sth", r.head)
+	if code, _, errb := r.run(args...); code != 1 || !strings.Contains(errb, "no signed journal head") || !strings.Contains(errb, "nothing was erased or written") {
+		t.Fatalf("refusal: %d %s", code, errb)
+	}
+	if _, err := os.Stat(r.headOut); err == nil {
+		t.Error("a refused command wrote a head")
+	}
+	leaves, _ := s.EventStore().Load(context.Background(), audit.RedactionTrailName)
+	if len(leaves) != 0 {
+		t.Errorf("a refused command wrote %d trail record(s)", len(leaves))
+	}
+}
+
+// Running the same plan again after an erasure, to finish compaction a reader had blocked: with nothing
+// left to erase, a checkpoint that is still busy is reported, not called success.
+func TestNothingToEraseStillReportsABusyCheckpoint(t *testing.T) {
+	r := newRig(t)
+	_, out, _ := r.run(r.base()...)
+	if code, _, errb := r.run(r.execArgs(digestOf(t, out))...); code != 0 {
+		t.Fatalf("erase: %d %s", code, errb)
+	}
+	other, err := sql.Open("sqlite", r.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	tx, err := other.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(context.Background(), `SELECT data FROM bide_steps`)
+	if err != nil || !rows.Next() {
+		t.Fatalf("reader: %v", err)
+	}
+	defer rows.Close()
+	// Something else writes while the reader holds its snapshot, so the log has frames the checkpoint
+	// cannot finish with.
+	w, err := sqlite.Open(r.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := w.AcquireLease(context.Background(), "other-run", "h", time.Minute); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	w.Close()
+	// A selection that matches no record: no trail record is written, only the compaction runs.
+	none := []string{"-db", r.db, "-run", "r1", "-name", "no-such-record"}
+	_, out, _ = r.run(none...)
+	args := append(none, "-execute", "-plan-digest", digestOf(t, out), "-reason", "r", "-ticket", "t", "-deployment", "test", "-sign-key", r.key, "-head-out", r.headOut, "-pubkey", r.pub, "-sth", r.head)
+	code, out, errb := r.run(args...)
+	if code != 1 || !strings.Contains(out, "STORAGE NOT COMPACTED") || !strings.Contains(errb, "not compacted") {
+		t.Fatalf("nothing to erase, checkpoint busy: exit %d\n%s%s", code, out, errb)
+	}
+}

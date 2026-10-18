@@ -35,6 +35,7 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `const RedactionTrailName = "redact:@log"`: RedactionTrailName is the name of the deployment's redaction trail in an EventStore.
 - `const RedactionRecordFormat = "bide.audit.redaction-record.v1"`: RedactionRecordFormat is the format of a RedactionRecord.
 - `const RedactionBegin = "begin"`, `const RedactionEnd = "end"`: Phases of a RedactionRecord.
+- `const RedactionAcknowledge = "acknowledge"`: RedactionAcknowledge is the phase of a record in which an operator acknowledges a planted leaf (see AcknowledgeRecord).
 - `const TreeJournal = "journal"`: TreeJournal is a run's journal: one leaf per record, in persisted order (NewTreeHead).
 - `const TreeEvents = "events"`: TreeEvents is a run's semantic event stream (EventLog.TreeHead).
 - `const TreeToolUse = absenceKindPrefix + "tool-use"`: TreeToolUse is the sorted, distinct tool-use keys of a run's completed tool calls (ToolUseKeys), the tree tool-call absence proofs verify against.
@@ -73,6 +74,7 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 **Functions**
 
 - `func AbsenceRoot(records []agent.Record, set KeySet) (root []byte, size int, err error)`: AbsenceRoot is the RFC 6962 Merkle root over the run's sorted, distinct keys in set, and the number of keys.
+- `func AcknowledgeRecord(ctx context.Context, store EventStore, signer Signer, deployment string, position int, reason, ticket, executor string, now time.Time) error`: AcknowledgeRecord appends to the redaction trail a record, signed with signer (the redaction key), in which the operator acknowledges the leaf at position: a planted, replayed or unreadable one that VerifyRedactions reports and that the operator has investigated.
 - `func AppendRedactionRecord(ctx context.Context, store EventStore, r RedactionRecord, signer Signer) error`: AppendRedactionRecord signs r with signer (the redaction key) and appends it to the redaction trail in store, at the next position.
 - `func ApprovalArgsDigest(s agent.ApprovalSubject) string`: ApprovalArgsDigest returns the SHA-256 of the canonical arguments of s, in lowercase hex: the digest a signature over agent.ApprovalDecisionBytes(s, ...) binds.
 - `func AttenuatingSubAgent(name, description string, sub *agent.Agent, cfg AttenuationConfig, opts ...agent.ToolOption) agent.Tool`: AttenuatingSubAgent wraps a sub-agent as a delegation Tool that attenuates authority by default.
@@ -81,6 +83,7 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `func CheckCRLURL(raw string) (*url.URL, error)`: CheckCRLURL applies the URL rules of a CRL source: http or https, a host, no userinfo, no fragment.
 - `func CheckDeclaredGoDebug(declared, environment string) error`: CheckDeclaredGoDebug compares the x509 GODEBUG settings an operator declares (CertApprover.GoDebug) with the process's real environment value, which the caller reads (os.Getenv("GODEBUG"): the engine itself reads no environment), and returns an error wrapping agent.ErrConfig when they differ.
 - `func CheckEd25519PublicKey(pub []byte) error`: CheckEd25519PublicKey reports whether pub is a usable Ed25519 verification key: 32 bytes, the canonical encoding (y &lt; p, and no sign bit on x = 0) of a point on the curve, in the prime-order subgroup (`L`A is the identity), and not the identity itself, which leaves no small-order point.
+- `func CheckRedactionTrail(ctx context.Context, store EventStore, signer Signer, deployment string, prior []SignedTreeHead) error`: CheckRedactionTrail checks, as RedactJournal does before it appends, that the redaction trail in store is the one the earlier heads attest, and returns ErrRedactTrailUntrusted if it is not.
 - `func CheckTimestamp(th TreeHead, now time.Time, skew time.Duration) error`: CheckTimestamp applies the timestamp rule to one signed head: its TimestampNanos must be positive and not later than now plus skew.
 - `func CheckTimestampOrder(earlier, later TreeHead) error`: CheckTimestampOrder checks that later, a head that extends earlier, was not signed before it.
 - `func ConvergenceLeafName(digest string) string`: ConvergenceLeafName is the journal name of the convergence leaf RecordConvergence writes for digest.
@@ -1800,6 +1803,9 @@ type RedactionRecord struct {
 	Prev     []byte `json:"prev,omitempty"`
 
 	Deployment string `json:"deployment,omitempty"`
+
+	AckPosition int    `json:"ack_position,omitempty"`
+	AckLeafHash string `json:"ack_leaf_hash,omitempty"`
 
 	Alg       string `json:"alg"`
 	Signature []byte `json:"signature"`

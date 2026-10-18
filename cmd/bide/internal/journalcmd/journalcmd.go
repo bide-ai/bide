@@ -35,7 +35,7 @@ import (
 )
 
 // Verbs are the verbs of bide journal.
-func Verbs() []string { return []string{"redact"} }
+func Verbs() []string { return []string{"redact", "acknowledge"} }
 
 // getenv is replaced by tests.
 var getenv = os.Getenv
@@ -50,11 +50,14 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	if args[0] != "redact" {
-		fmt.Fprintf(stderr, "%sbide journal: unknown verb %q\n\n%s", term.For(stderr, term.Auto).ErrorPrefix(), args[0], usage)
-		return 2
+	switch args[0] {
+	case "redact":
+		return redact(args[1:], stdout, stderr)
+	case "acknowledge":
+		return acknowledge(args[1:], stdout, stderr)
 	}
-	return redact(args[1:], stdout, stderr)
+	fmt.Fprintf(stderr, "%sbide journal: unknown verb %q\n\n%s", term.For(stderr, term.Auto).ErrorPrefix(), args[0], usage)
+	return 2
 }
 
 const usage = `usage: bide journal redact (-db <file> | -postgres-env <var> [-schema <name>]) -run <id> <selection>
@@ -63,6 +66,9 @@ const usage = `usage: bide journal redact (-db <file> | -postgres-env <var> [-sc
   redact  replace the content of records of a finished run with tombstones that keep each record's
           position, name and leaf hash, so the run's signed heads and every other record's proof
           still verify, and record the erasure in a signed trail. Run bide journal redact -h.
+  acknowledge  sign a note that a leaf in the redaction trail that the tool did not write (a planted
+          one that bide audit redactions reports) has been investigated; the audit then reports it as
+          acknowledged. Run bide journal acknowledge -h.
 `
 
 // stringList is a repeatable flag.
@@ -123,7 +129,7 @@ Before erasing, make every piece of evidence you will need: a journal that holds
 longer produce a new absence proof, run certificate or event stream. The command refuses to erase a
 run that no signed journal head (-sth, verified under -pubkey) covers, unless -allow-uncovered.
 
-It refuses a run that is not over, whose lease is live, whose parent is not over, that belongs to a
+It refuses a run that is not over, whose lease is live (probed by taking the lease and giving it back; a role that cannot take a lease skips the probe and the store's own refusal applies), whose parent is not over, that belongs to a
 session, that holds protected records (they are kept and listed), and a run the event store holds
 events of (unless -keep-event-copies). It writes a "begin" record to the redaction trail before it
 erases and an "end" record after; if it stops partway, run the same plan again.
@@ -320,6 +326,21 @@ erases and an "end" record after; if it stops partway, run the same plan again.
 		// signed over it either.
 		emit(stdout, rep, *asJSON, st, 1)
 		return fail("%v", passErr)
+	}
+	if after, err := trail.Load(ctx, audit.RedactionTrailName); err == nil && len(after) == len(existing) {
+		// Nothing was written (a refusal before the first record): there is nothing new to attest.
+		if passErr != nil {
+			emit(stdout, rep, *asJSON, st, 1)
+			return fail("%v (nothing was erased or written)", passErr)
+		}
+		rep.Executed = true
+		fmt.Fprintln(stderr, "bide journal redact: nothing to erase: every selected record is already redacted or none was selected; no trail record or head was written")
+		if rep.Compaction != nil && !rep.Compaction.Complete && !rep.Compaction.ByOperator {
+			// Running the command again to finish an earlier pass's compaction: still not a success while the engine holds the old bytes.
+			emit(stdout, rep, *asJSON, st, 1)
+			return fail("the storage was not compacted, so the old bytes of an earlier erasure may remain in the database's files: close the readers of the database and run the compaction again")
+		}
+		return emit(stdout, rep, *asJSON, st, 0)
 	}
 	// The trail's head is signed after a failed pass too: the begin and end records it wrote are
 	// attested, so the next attempt finds a trail its earlier heads cover.
