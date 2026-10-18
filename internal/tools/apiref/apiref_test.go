@@ -164,3 +164,26 @@ func TestStabilityPage(t *testing.T) {
 		}
 	}
 }
+
+// TestCoreStaysCore: symbols that sit beside experimental ones or are part of a frozen contract
+// keep the label of their package in the generated reference, so a symbol rule cannot sweep them.
+func TestCoreStaysCore(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join(repoRoot, "docs", "reference", "api", "agent.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"RedactURLs", "WithToolErrorRedactor", "LeafHash", "NewTombstone", "TombstoneLeafHash", "TombstoneMillis", "TombstoneName"} {
+		found := false
+		for _, line := range strings.Split(string(b), "\n") {
+			if strings.HasPrefix(line, "- `func "+n+"(") {
+				found = true
+				if strings.Contains(line, "(experimental)") {
+					t.Errorf("%s is labelled experimental; it is the tool-error redactor or the tombstone format and stays core", n)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("agent.%s is not in the generated reference", n)
+		}
+	}
+}

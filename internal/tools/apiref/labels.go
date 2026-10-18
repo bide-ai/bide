@@ -76,10 +76,30 @@ type SymbolRule struct {
 }
 
 // SymbolRules label the parts of a package that are further along, or less far along, than the
-// package. None is needed now: the certificate verification core (#313) was labelled a building
-// block while package audit was core as a whole and the approval gates did not count a
-// certificate-bound decision; since the gate change (#351) they do.
-var SymbolRules = []SymbolRule{}
+// package. The kill switch, accountable erasure (redaction) and legal holds are experimental
+// inside the core packages: their API may change in a minor release while the audit guarantees
+// they state hold (docs/trust/stability.md).
+var SymbolRules = []SymbolRule{
+	{
+		Package: "agent",
+		// redact.go is the tool-error URL redactor (core) and redaction.go also holds the tombstone
+		// format (LeafHash, NewTombstone, Tombstone*), which is part of the store contract and stays
+		// core, so redaction.go is labelled by name.
+		Files: []string{"hold.go", "notify_stop.go", "redact_run.go",
+			"stop_control.go", "stop_hold.go", "stop_policy.go", "stop_record.go", "stop_switch.go", "stop_trail.go"},
+		Names: []string{"WithRecoverStop", "RunEnded", "Redactor", "Compactor", "CompactionReport", "RedactState",
+			"ErrRedactNotTerminal", "ErrRedactLeased", "ErrRedactProtected", "ErrRedactMismatch", "ErrRedactSession",
+			"ErrRedactParentLive", "ErrRedactChanged", "ErrRedactNoEntry", "RedactionProtected", "RedactionEndMarkers",
+			"CheckRedaction", "RedactionAncestors", "RedactionSession"},
+		Label: Experimental,
+	},
+	{
+		Package: "audit",
+		Files:   []string{"hold_authorization.go", "redaction_trail.go", "stop_trail.go", "stop_verify.go"},
+		Names:   []string{"ErrRedacted", "NoteRedacted"},
+		Label:   Experimental,
+	},
+}
 
 // labelOf is the label of a symbol: a matching rule's, else the package's.
 func (c Config) labelOf(pkg *Package, name, file string) string {

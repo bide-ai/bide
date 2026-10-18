@@ -7,6 +7,8 @@ has not begun. When the stop is lifted the runs carry on where they were. The de
 failure modes and the formal model, is in the [design note](../design/kill-switch.md); this page is
 how to use what has shipped.
 
+**Stability.** The kill switch is experimental in v0.21.0: its Go API and the `bide stop` flags may change in a minor release, with a changelog entry; its records follow the pre-1.0 format policy of [stability](../trust/stability.md#what-stays-verifiable-across-versions). What the guide says a stop does while it is in force does not depend on that label ([stability](../trust/stability.md#package-stability)).
+
 Shipped: the control run, the engine's holds, recovery, the signed audit trail with `bide audit
 stops`, the model (`agent.StopControl`, `agent.StopSwitch`, `agent.WithStopSwitch`,
 `audit.NewStopTrail`), and the operator command `bide stop` (and `bide-hsm stop` for a key in an HSM

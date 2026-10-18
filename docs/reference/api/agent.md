@@ -28,14 +28,14 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `const TierIndependentFinal = "independent-final"`, `const TierLogclockFinal = "logclock-final"`, `const TierProvisional = "provisional"`: Identity tiers (IdentityDecision.Tier).
 - `const BasisAtOrAfterDecision = "at-or-after-decision"`, `const BasisLiveBeforeDecision = "live-before-decision"`: Status bases (IdentityDecision.BasisKind).
 - `const TimeSourceLogSignerClock = "log-signer-clock"`, `const TimeSourceRFC3161 = "rfc3161"`, `const TimeSourceAnchorReceipt = "anchor-receipt"`: Time sources (IdentityDecision.TimeSource).
-- `const CompensationAllow = "allow"`, `const CompensationBlock = "block"`: Compensation says whether a stop also holds the compensation (the rollback) of the calls it covers.
+- `const CompensationAllow = "allow"`, `const CompensationBlock = "block"`: Compensation says whether a stop also holds the compensation (the rollback) of the calls it covers. *(experimental)*
 - `const DecisionFormat = "bide.approval.v3"`: DecisionFormat names the signed decision format this version writes and accepts: the domain tag of ApprovalDecisionBytes without its newline.
 - `const DecisionFormatCert = "bide.approval.v4"`: DecisionFormatCert names the signed decision format of a certificate-bound approver: the v3 layout plus the SHA-256 of the signer's leaf certificate (ApprovalDecisionBytesCert).
 - `const DefaultReceiver = "default"`: DefaultReceiver is the name of the receiver WithNotifier's Notifier is, in Notification.Receiver and in WithNotifyRoute, WithNotifyApproverRoute and EscalationStep.
 - `const ExpiredResult`: ExpiredResult is the result an agent's model reads for a call whose approval gate expired: an error result, as for a denial.
 - `const JournalFormat = "bide.journal.v1-dev"`: JournalFormat is the journal format this version writes: the format every run's header names (see StepHeader).
 - `const MaxEscalationSteps = maxEscalationSteps`: MaxEscalationSteps is the most steps an escalation chain may have.
-- `const MaxStopReason = 1024`: MaxStopReason bounds the reason of a stop, a lift or a mode change, in bytes.
+- `const MaxStopReason = 1024`: MaxStopReason bounds the reason of a stop, a lift or a mode change, in bytes. *(experimental)*
 - `const NotifyDigestTrail = "notify:@digest"`: NotifyDigestTrail is the name of the trail the periodic digest uses; it belongs to no run.
 - `const NotifyOpenTrail = "notify:@open"`: NotifyOpenTrail is the prefix of the trail that lists the events whose all-clear may still be owed: a watch record before an outcome\_unknown, approval\_pending, recovery\_failing or stop\_set event is observed, an unwatch record when nothing more is owed for it.
 - `const OpenFirstYear = 2026`: OpenFirstYear is the first year an open-trail index can exist: the year the open trail began.
@@ -46,9 +46,9 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `const PendingSoDReapproval`: PendingSoDReapproval is ApprovalPending.Reason for a gate whose recorded tally passed without excluding the requester (ApprovalPolicy.ExcludePrincipal) while its policy now excludes it: the call did not run, and it runs once enough approvers who are not requesters have decided.
 - `const ReanchorMinInterval = 10 * time.Second`: ReanchorMinInterval is the least time between two forced heads of one run: anchoring signs with the log key, which may be an HSM or KMS key with quotas and cost, so the gate rate-limits it.
 - `const SaltSize = 32`: SaltSize is the length of Record.Salt: 32 bytes (256 bits) from crypto/rand.
-- `const StopControlRun = "@stop"`: StopControlRun is the run ID of the control run: the journal run in which a store holds the stop, lift and mode records.
-- `const StopFormat = "bide.stop/1"`: StopFormat names the format of a stop record.
-- `const StopTrailName = "stop"`: StopTrailName is the name of the audit trail of a deployment's stops: an append-only sequence of the control run's signed records, committed, signed and anchored by the audit package (audit.StopTrail over an audit.AuditedEventStore).
+- `const StopControlRun = "@stop"`: StopControlRun is the run ID of the control run: the journal run in which a store holds the stop, lift and mode records. *(experimental)*
+- `const StopFormat = "bide.stop/1"`: StopFormat names the format of a stop record. *(experimental)*
+- `const StopTrailName = "stop"`: StopTrailName is the name of the audit trail of a deployment's stops: an append-only sequence of the control run's signed records, committed, signed and anchored by the audit package (audit.StopTrail over an audit.AuditedEventStore). *(experimental)*
 
 **Variables**
 
@@ -75,31 +75,31 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `var ErrInvalidApproval`: ErrInvalidApproval is an approver decision rejected at submission by SubmitDecision's WithDecisionCheck: no such tool call, an unknown approver, or a signature that does not verify for this exact call.
 - `var ErrStatusUnavailable`: ErrStatusUnavailable is a certificate-bound decision submitted (with WithDecisionCheck) while the revocation status of its chain is missing or stale: the decision is not refused, the gate cannot judge it yet, and nothing is written.
 - `var ErrAlreadyDecided`: ErrAlreadyDecided is a decision submitted (with WithDecisionCheck) by an approver whose earlier valid decision on the same call already counts; the new one would be ignored.
-- `var ErrRedactNotTerminal`: ErrRedactNotTerminal is a redaction in a run with no end marker.
-- `var ErrRedactLeased`: ErrRedactLeased is a redaction in a run whose lease is live: a driver may be running it.
-- `var ErrRedactProtected`: ErrRedactProtected is a redaction of a record a verifier or the engine needs (see RedactionProtected).
-- `var ErrRedactMismatch`: ErrRedactMismatch is a tombstone whose leaf hash is not the leaf hash of the bytes it replaces, or one that is not a well-formed tombstone.
-- `var ErrRedactSession`: ErrRedactSession is a redaction in a session's journal or turn run: the session reads its turns' runs and never ends, so a redaction there is refused.
-- `var ErrRedactParentLive`: ErrRedactParentLive is a redaction in a sub-agent's run while a run above it is not over: the parent reads the child's records when it replays the call.
-- `var ErrRedactChanged`: ErrRedactChanged is a redaction of an entry whose bytes are not the bytes the caller read: another writer changed it, or the caller's copy is not what is stored.
-- `var ErrRedactNoEntry`: ErrRedactNoEntry is a redaction of an entry the run does not hold.
+- `var ErrRedactNotTerminal`: ErrRedactNotTerminal is a redaction in a run with no end marker. *(experimental)*
+- `var ErrRedactLeased`: ErrRedactLeased is a redaction in a run whose lease is live: a driver may be running it. *(experimental)*
+- `var ErrRedactProtected`: ErrRedactProtected is a redaction of a record a verifier or the engine needs (see RedactionProtected). *(experimental)*
+- `var ErrRedactMismatch`: ErrRedactMismatch is a tombstone whose leaf hash is not the leaf hash of the bytes it replaces, or one that is not a well-formed tombstone. *(experimental)*
+- `var ErrRedactSession`: ErrRedactSession is a redaction in a session's journal or turn run: the session reads its turns' runs and never ends, so a redaction there is refused. *(experimental)*
+- `var ErrRedactParentLive`: ErrRedactParentLive is a redaction in a sub-agent's run while a run above it is not over: the parent reads the child's records when it replays the call. *(experimental)*
+- `var ErrRedactChanged`: ErrRedactChanged is a redaction of an entry whose bytes are not the bytes the caller read: another writer changed it, or the caller's copy is not what is stored. *(experimental)*
+- `var ErrRedactNoEntry`: ErrRedactNoEntry is a redaction of an entry the run does not hold. *(experimental)*
 - `var ErrAlreadyResolved`: ErrAlreadyResolved is the condition of a resolution refused because the operation already has a different recorded outcome (see HaltAlreadyResolved).
-- `var ErrAlreadyStopped = errors.New("agent: already stopped")`: ErrAlreadyStopped is matched (errors.Is) by the \*AlreadyStoppedError SetStop returns, with the stop in force, when the scope with that compensation is already stopped.
+- `var ErrAlreadyStopped = errors.New("agent: already stopped")`: ErrAlreadyStopped is matched (errors.Is) by the \*AlreadyStoppedError SetStop returns, with the stop in force, when the scope with that compensation is already stopped. *(experimental)*
 - `var ErrApprovalExpired = errors.New("approval expired")`: ErrApprovalExpired is returned (wrapped) when an approval gate's deadline has passed: by Approve and SubmitDecision for a decision on such a gate (also ErrConfig: nothing is recorded), and by a plan flow for a node whose gate expired (also plan.ErrApprovalDenied).
 - `var ErrGateNeedsNewRun = errors.New("the gate needs a new run")`: ErrGateNeedsNewRun is wrapped (with ErrConfig) by the error of a certificate-bound gate that cannot go on in place: its recorded count passed without excluding the requester and the policy now excludes them, so no re-ask can be named.
-- `var ErrHoldExists`: ErrHoldExists is a PlaceHold of an ID that is active.
-- `var ErrInvalidStop = errors.New("agent: invalid stop record")`: ErrInvalidStop marks a stop record that is malformed, or that no policy in force authorises.
+- `var ErrHoldExists`: ErrHoldExists is a PlaceHold of an ID that is active. *(experimental)*
+- `var ErrInvalidStop = errors.New("agent: invalid stop record")`: ErrInvalidStop marks a stop record that is malformed, or that no policy in force authorises. *(experimental)*
 - `var ErrJournalVersion`: ErrJournalVersion is a run whose journal this version cannot read or write: its header names a journal format this version does not support, or the journal has no header first (written before the header existed, or by something other than a Journal).
 - `var ErrLeaseLost = errors.New("run lease lost")`: ErrLeaseLost ends a drive whose run lease was lost while it ran: the store reported the lease no longer held (it lapsed and another process took it), or no renewal succeeded before the renewal cutoff (see Lease).
 - `var ErrNoLiveAttempt`: ErrNoLiveAttempt is the condition of a resolution refused because the operation named has no live attempt marker: it never halted (it was never attempted, or its only attempts are recorded as not started and are re-attempted by the next drive).
 - `var ErrNotResumable`: ErrNotResumable is a Resumer's answer for a run it does not drive (another kind, a typed run whose schema is not its type's).
 - `var ErrNotStarted`: ErrNotStarted is a run with no run:start record: one never driven (a Signal sent to a mistyped run ID, say), or one whose first drive has not written it yet.
 - `var ErrNotifyPermanent`: ErrNotifyPermanent marks a Notifier error as one a retry within the round cannot fix.
-- `var ErrRedactHeld`: ErrRedactHeld is a redaction of a run an active hold covers.
+- `var ErrRedactHeld`: ErrRedactHeld is a redaction of a run an active hold covers. *(experimental)*
 - `var ErrRunCancelled = errors.New("run cancelled")`: ErrRunCancelled is the end of a run that was cancelled (see Cancel): the first of the run's end markers in journal order is run:cancelled.
 - `var ErrRunEnded = errors.New("run already ended")`: ErrRunEnded is Cancel's answer for a run that is already over: its first end marker is run:complete or run:aborted, so there is nothing left to cancel.
-- `var ErrStopRejected`: ErrStopRejected is returned when a record was written but the control run's fold does not accept it (a policy transition raced it, or its signature does not verify under the policy in force at its position): it has no effect.
-- `var ErrStopsUnknowable`: ErrStopsUnknowable is returned by StopState.UnknowableErr when a control genuinely cannot judge which stops are in force: a basic process that holds an active stop set under a signed record (it lacks the deployment's policy), or an audited process whose pin the stored chain does not reach, or whose chain forks or competes.
+- `var ErrStopRejected`: ErrStopRejected is returned when a record was written but the control run's fold does not accept it (a policy transition raced it, or its signature does not verify under the policy in force at its position): it has no effect. *(experimental)*
+- `var ErrStopsUnknowable`: ErrStopsUnknowable is returned by StopState.UnknowableErr when a control genuinely cannot judge which stops are in force: a basic process that holds an active stop set under a signed record (it lacks the deployment's policy), or an audited process whose pin the stored chain does not reach, or whose chain forks or competes. *(experimental)*
 - `var ErrToolNotCalled = errors.New("tool not called")`: ErrToolNotCalled marks a tool call that is known never to have reached its tool, so its side effect cannot have happened.
 - `var ErrTrailConflict`: ErrTrailConflict is returned by NotifyTrail.Append when the position is already taken by a different record: another process won the append.
 - `var ErrTurnContended`: ErrTurnContended is returned by a Session's Send, SendOnce, Send and SendOnce when another driver holds the lease on the turn's run (see Session): another worker, or, while a cancelled saga turn's rollback is in progress, another caller on the same session handle (see Session.Send).
@@ -134,8 +134,8 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `func Capability[T any](store Store) (T, bool)`: Capability returns store's implementation of the optional capability T (Lister, Leaser, or any other interface a store may implement beyond Store), looking through wrappers.
 - `func CertLeafHash(der []byte) [32]byte`: CertLeafHash is the SHA-256 of a leaf certificate's DER: what a v4 decision signs in place of the certificate itself.
 - `func CertRecordVerifies(iv CertIntakeVerifier, s ApprovalSubject, r Record) bool`: CertRecordVerifies reports whether r is a valid decision of a certificate-bound approver for s as the intake judges (CertIntakeVerifier): its chain, identity, scheme and signature hold now and nothing in its chain is revoked.
-- `func CheckHold(h Hold) error`: CheckHold checks the parts of a hold no store needs to decide: an ID, a matter and runs that are not blank.
-- `func CheckRedaction(runID, name string, current, tombstone []byte) error`: CheckRedaction checks the part of a redaction that needs no store: that tombstone is a well-formed tombstone (TombstoneLeafHash), that the leaf hash it keeps is the leaf hash of current (LeafHash), and that the record current holds, named name in run runID, is not protected (RedactionProtected).
+- `func CheckHold(h Hold) error`: CheckHold checks the parts of a hold no store needs to decide: an ID, a matter and runs that are not blank. *(experimental)*
+- `func CheckRedaction(runID, name string, current, tombstone []byte) error`: CheckRedaction checks the part of a redaction that needs no store: that tombstone is a well-formed tombstone (TombstoneLeafHash), that the leaf hash it keeps is the leaf hash of current (LeafHash), and that the record current holds, named name in run runID, is not protected (RedactionProtected). *(experimental)*
 - `func DecisionStep(d Decision) string`: DecisionStep returns the journal name SubmitDecision gives the record of d first: distinct for each distinct decision (call, approver, verdict, scheme and decision time), and the same for every resubmission of it, whatever its signature bytes, which is why that is a no-op.
 - `func DigestKey(bucket string) string`: DigestKey is the event key of the digest for time bucket (an opaque, stable label).
 - `func EncodeRecord(r Record) ([]byte, error)`: EncodeRecord returns the journal encoding of r: the bytes a store persists for it and the bytes an audit leaf commits to.
@@ -179,10 +179,10 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `func RecoverLoop(ctx context.Context, store *Journal, resume Resumer, opts ...RecoverLoopOption) error`: RecoverLoop re-drives in-flight runs until ctx is done, so a run whose holder dies is taken over automatically: Recover is a single pass, and a run another holder leases at that moment is left for a later one.
 - `func RecoveryKey(runID string, episode int) string`: RecoveryKey is the event key of runID's episode-th recovery failure (episode counts the recovered records before it, from zero).
 - `func RedactURLs(s string) string`: RedactURLs returns s with every URL in it redacted: its userinfo, each query parameter's value, and its fragment become REDACTED, and its scheme, host, path, and query parameter names are kept.
-- `func RedactionAncestors(runID string) []string`: RedactionAncestors returns the runs above runID, nearest first, whose records runID's are read with: for a sub-agent's run "a&gt;b&gt;c" they are "a&gt;b" and "a".
-- `func RedactionEndMarkers() []string`: RedactionEndMarkers returns the names of the end markers: a run that holds one of them is over, and only such a run may be redacted.
-- `func RedactionProtected(name string, kind StepKind) string`: RedactionProtected reports why a record named name, of kind kind, may never be redacted, or "" if it may.
-- `func RedactionSession(runID string) bool`: RedactionSession reports whether runID is a session's journal or turn run (agent.IsSessionRun), or a sub-agent run inside one: they are never redacted.
+- `func RedactionAncestors(runID string) []string`: RedactionAncestors returns the runs above runID, nearest first, whose records runID's are read with: for a sub-agent's run "a&gt;b&gt;c" they are "a&gt;b" and "a". *(experimental)*
+- `func RedactionEndMarkers() []string`: RedactionEndMarkers returns the names of the end markers: a run that holds one of them is over, and only such a run may be redacted. *(experimental)*
+- `func RedactionProtected(name string, kind StepKind) string`: RedactionProtected reports why a record named name, of kind kind, may never be redacted, or "" if it may. *(experimental)*
+- `func RedactionSession(runID string) bool`: RedactionSession reports whether runID is a session's journal or turn run (agent.IsSessionRun), or a sub-agent run inside one: they are never redacted. *(experimental)*
 - `func RenderMermaid(ctx context.Context, d *Journal, runID string) (string, error)`: RenderMermaid returns a Mermaid flowchart of a run's journaled steps, the "graph as derived OUTPUT" (Option B): you write plain Go, and the graph is rendered from what actually ran, not hand-authored.
 - `func ReportNotifyAck(ctx context.Context, ack NotifyAck)`: ReportNotifyAck is called by a Notifier, with the context it was given, to say how a delivery it is about to acknowledge was authenticated and answered.
 - `func ResolveHalt(ctx context.Context, store *Journal, ref HaltRef, out Outcome, opts ...ResolveOption) error`: ResolveHalt is the sanctioned escape from an \*OutcomeUnknown halt.
@@ -190,16 +190,16 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `func RootRunID(runID string) string`: RootRunID returns the run that drives runID: the run itself, or for a sub-agent's run the root run to re-invoke to continue it (ApprovalPending.RootRunID for a gate inside a sub-agent).
 - `func SameApprover(a, b string) bool`: SameApprover reports whether two ids name one approver: equal ignoring ASCII case, the rule Validate holds a policy's ids to, and the rule a gate that excludes the requester matches a requester to an approver id by.
 - `func SameNotifyRecord(a, b NotifyRecord) bool`: SameNotifyRecord reports whether a and b are the same record: the same canonical JSON, so times compare by instant and not by location or monotonic clock reading.
-- `func SameStopRecord(a, b StopRecord) bool`: SameStopRecord reports whether a and b are the same record: the same canonical bytes, signature included.
+- `func SameStopRecord(a, b StopRecord) bool`: SameStopRecord reports whether a and b are the same record: the same canonical bytes, signature included. *(experimental)*
 - `func Sleep(ctx context.Context, name string, d time.Duration) error`: Sleep pauses the current run until d has elapsed from the FIRST time this timer was reached, durably.
 - `func SplitToKey(key string) (receiver, base string, ok bool)`: SplitToKey splits the key of a fan-out delivery, "to:&lt;receiver&gt;:&lt;key&gt;" (see ToKey), into the receiver and the key of the event it delivers.
-- `func StopClockAnomalies(recs []StopRecord, now time.Time, skew time.Duration) []string`: StopClockAnomalies are the records of a control run, in store order, whose time is not believable: dated more than skew after now, or more than skew before an earlier record of the log.
-- `func StopDigest(r StopRecord) string`: StopDigest returns the hex SHA-256 of the canonical bytes of the whole record r, signature included: what a lift's SetDigest names.
-- `func StopIDOf(r StopRecord) string`: StopIDOf returns the ID of the stop a set record makes: the hex SHA-256 of its canonical bytes without StopID and Signature.
-- `func StopLiftedKey(id string) string`: StopLiftedKey is the event key of the stop with the given ID being lifted (NotificationStopLifted).
-- `func StopPolicyDigest(d StopPolicyDoc) string`: StopPolicyDigest returns the hex SHA-256 of the canonical bytes of a policy document.
-- `func StopSetKey(id string) string`: StopSetKey is the event key of the stop with the given ID being set (NotificationStopSet).
-- `func StopSigningBytes(r StopRecord) []byte`: StopSigningBytes returns the bytes a signature of r covers: the label, the record's kind and its canonical body (StopID included, Signature excluded).
+- `func StopClockAnomalies(recs []StopRecord, now time.Time, skew time.Duration) []string`: StopClockAnomalies are the records of a control run, in store order, whose time is not believable: dated more than skew after now, or more than skew before an earlier record of the log. *(experimental)*
+- `func StopDigest(r StopRecord) string`: StopDigest returns the hex SHA-256 of the canonical bytes of the whole record r, signature included: what a lift's SetDigest names. *(experimental)*
+- `func StopIDOf(r StopRecord) string`: StopIDOf returns the ID of the stop a set record makes: the hex SHA-256 of its canonical bytes without StopID and Signature. *(experimental)*
+- `func StopLiftedKey(id string) string`: StopLiftedKey is the event key of the stop with the given ID being lifted (NotificationStopLifted). *(experimental)*
+- `func StopPolicyDigest(d StopPolicyDoc) string`: StopPolicyDigest returns the hex SHA-256 of the canonical bytes of a policy document. *(experimental)*
+- `func StopSetKey(id string) string`: StopSetKey is the event key of the stop with the given ID being set (NotificationStopSet). *(experimental)*
+- `func StopSigningBytes(r StopRecord) []byte`: StopSigningBytes returns the bytes a signature of r covers: the label, the record's kind and its canonical body (StopID included, Signature excluded). *(experimental)*
 - `func SubRunID(parent, toolUseID string) string`: SubRunID returns the run ID of the sub-agent run that the call toolUseID of run parent starts: parent, '&gt;', then toolUseID encoded (see encodeID).
 - `func SubmitDecision(ctx context.Context, store *Journal, d Decision, opts ...ApproveOption) error`: SubmitDecision records d, one approver's signed decision on an m-of-n gated call.
 - `func SupersededTallies(byName map[string]Record, outcome string) []string`: SupersededTallies returns the names of the tallies that outcome, the gate's outcome (as RecordedTally returns it, among byName) supersedes, oldest first: the tally its Supersedes names, and that one's, and so on.
@@ -299,12 +299,12 @@ Alg names a signature scheme: "ed25519", "ecdsa-p256", "ml-dsa-65", or "ed25519+
 type AlreadyStoppedError struct{ Entry StopEntry }
 ```
 
-AlreadyStoppedError is returned by SetStop when a stop with the same scope and compensation is already in force: Entry is that stop, set by someone else or by an earlier call.
+AlreadyStoppedError is returned by SetStop when a stop with the same scope and compensation is already in force: Entry is that stop, set by someone else or by an earlier call. *(experimental)*
 
 **Methods**
 
-- `func (e *AlreadyStoppedError) Error() string`: Error implements error.
-- `func (e *AlreadyStoppedError) Unwrap() error`: Unwrap lets errors.Is(err, ErrAlreadyStopped) match.
+- `func (e *AlreadyStoppedError) Error() string`: Error implements error. *(experimental)*
+- `func (e *AlreadyStoppedError) Unwrap() error`: Unwrap lets errors.Is(err, ErrAlreadyStopped) match. *(experimental)*
 
 ## type AnswerOption
 
@@ -325,7 +325,7 @@ type ApplyRequest struct {
 }
 ```
 
-ApplyRequest names who applies pending records: an enrolled approver of the policy in force, with the key to sign the record that says so.
+ApplyRequest names who applies pending records: an enrolled approver of the policy in force, with the key to sign the record that says so. *(experimental)*
 
 ## type ApprovalDeadline
 
@@ -758,7 +758,7 @@ type CompactionReport struct {
 }
 ```
 
-CompactionReport says what Compact did.
+CompactionReport says what Compact did. *(experimental)*
 
 ## type Compactor
 
@@ -768,7 +768,7 @@ type Compactor interface {
 }
 ```
 
-Compactor is the optional store capability that makes an erasure complete at the storage layer: a store whose engine keeps the bytes a redaction replaced (SQLite's write-ahead log and freed pages) overwrites them.
+Compactor is the optional store capability that makes an erasure complete at the storage layer: a store whose engine keeps the bytes a redaction replaced (SQLite's write-ahead log and freed pages) overwrites them. *(experimental)*
 
 ## type Compensator
 
@@ -1160,15 +1160,15 @@ type Hold struct {
 }
 ```
 
-A Hold is a legal hold: a promise that the records of some runs are not erased while a matter is open.
+A Hold is a legal hold: a promise that the records of some runs are not erased while a matter is open. *(experimental)*
 
 **Constructors and functions**
 
-- `func HoldsOf(ctx context.Context, store Store, runID string) ([]Hold, error)`: HoldsOf returns the active holds in store's Holder that cover runID, or none for a store with no Holder.
+- `func HoldsOf(ctx context.Context, store Store, runID string) ([]Hold, error)`: HoldsOf returns the active holds in store's Holder that cover runID, or none for a store with no Holder. *(experimental)*
 
 **Methods**
 
-- `func (h Hold) Covers(runID string) bool`: Covers reports whether the hold covers runID: it is one of the hold's runs, or, for a hold with Tree, a sub-agent run below one of them.
+- `func (h Hold) Covers(runID string) bool`: Covers reports whether the hold covers runID: it is one of the hold's runs, or, for a hold with Tree, a sub-agent run below one of them. *(experimental)*
 
 ## type Holder
 
@@ -1182,7 +1182,7 @@ type Holder interface {
 }
 ```
 
-Holder is the optional store capability that keeps legal holds.
+Holder is the optional store capability that keeps legal holds. *(experimental)*
 
 ## type Identity
 
@@ -1398,7 +1398,7 @@ JournalNotifyEvent is an event the journal of a run records that needs a person:
 **Constructors and functions**
 
 - `func JournalNotifyEvents(runID string, recs []Record) []JournalNotifyEvent`: JournalNotifyEvents returns the events recs, the history of runID, records that need a person, in journal order (gates, then halts in key order, then the abort).
-- `func StopNotifyEvents(st StopState, now time.Time, within time.Duration, observed func(key string) bool) []JournalNotifyEvent`: StopNotifyEvents are the events a state of the control run owes a notifier at now, with a window of within (0: the notifier's default, 7 days), as the journal-side facts audit.VerifyNotifications compares with the trail of the control run: a stop\_set for each stop in force (and each lifted one that is owed, see stopsOwed; Current while the stop stands, with the time it was lifted as ResolvedAt otherwise), and a stop\_lifted for each lift owed.
+- `func StopNotifyEvents(st StopState, now time.Time, within time.Duration, observed func(key string) bool) []JournalNotifyEvent`: StopNotifyEvents are the events a state of the control run owes a notifier at now, with a window of within (0: the notifier's default, 7 days), as the journal-side facts audit.VerifyNotifications compares with the trail of the control run: a stop\_set for each stop in force (and each lifted one that is owed, see stopsOwed; Current while the stop stands, with the time it was lifted as ResolvedAt otherwise), and a stop\_lifted for each lift owed. *(experimental)*
 
 ## type JournalOption
 
@@ -1437,7 +1437,7 @@ type KeptRecord struct {
 }
 ```
 
-KeptRecord is a record a selector chose and a redaction keeps, and why.
+KeptRecord is a record a selector chose and a redaction keeps, and why. *(experimental)*
 
 ## type LeaseControl
 
@@ -1492,7 +1492,7 @@ type LiftRequest struct {
 }
 ```
 
-LiftRequest is what LiftStop takes: one lifter's approval.
+LiftRequest is what LiftStop takes: one lifter's approval. *(experimental)*
 
 ## type Lister
 
@@ -1531,16 +1531,16 @@ type MemStopTrail struct {
 }
 ```
 
-MemStopTrail is an in-memory StopTrail, safe for concurrent use.
+MemStopTrail is an in-memory StopTrail, safe for concurrent use. *(experimental)*
 
 **Constructors and functions**
 
-- `func NewMemStopTrail() *MemStopTrail`: NewMemStopTrail returns an empty in-memory stop trail.
+- `func NewMemStopTrail() *MemStopTrail`: NewMemStopTrail returns an empty in-memory stop trail. *(experimental)*
 
 **Methods**
 
-- `func (m *MemStopTrail) Append(_ context.Context, trail string, seq int, rec StopRecord) error`: Append implements StopTrail.
-- `func (m *MemStopTrail) Load(_ context.Context, trail string) ([]StopRecord, error)`: Load implements StopTrail.
+- `func (m *MemStopTrail) Append(_ context.Context, trail string, seq int, rec StopRecord) error`: Append implements StopTrail. *(experimental)*
+- `func (m *MemStopTrail) Load(_ context.Context, trail string) ([]StopRecord, error)`: Load implements StopTrail. *(experimental)*
 
 ## type MemStore
 
@@ -1633,7 +1633,7 @@ type ModeRequest struct {
 }
 ```
 
-ModeRequest is what ChangeMode takes: one signer's evidence record of a change of mode.
+ModeRequest is what ChangeMode takes: one signer's evidence record of a change of mode. *(experimental)*
 
 ## type Model
 
@@ -1816,12 +1816,12 @@ NotificationKind says what a Notification is about.
 - `const NotificationResolved NotificationKind = "resolved"`: NotificationResolved: an outcome\_unknown, approval\_pending, recovery\_failing or stop\_set event that a receiver has, or may have, stopped being current (the halt was resolved, the gate decided, the run ended, recovery recovered).
 - `const NotificationApprovalExpired NotificationKind = "approval_expired"`: NotificationApprovalExpired: an approval gate a receiver was, or may have been, told of (approval\_pending) expired: its deadline (ApprovalPolicy.Timeout) passed with no approval, so the call will not run.
 - `const NotificationEscalated NotificationKind = "escalated"`: NotificationEscalated: an outcome\_unknown, approval\_pending, recovery\_failing or stop\_set event was not acknowledged (an approval: not decided) by its deadline, and the next receiver of its escalation chain is told.
-- `const NotificationStopSet NotificationKind = "stop_set"`: NotificationStopSet: a stop was set.
-- `const NotificationStopLifted NotificationKind = "stop_lifted"`: NotificationStopLifted: a stop was lifted, by the lift rule in force (an audited stop needs its quorum, so one partial lift raises nothing).
+- `const NotificationStopSet NotificationKind = "stop_set"`: NotificationStopSet: a stop was set. *(experimental)*
+- `const NotificationStopLifted NotificationKind = "stop_lifted"`: NotificationStopLifted: a stop was lifted, by the lift rule in force (an audited stop needs its quorum, so one partial lift raises nothing). *(experimental)*
 
 **Constructors and functions**
 
-- `func ParseStopKey(key string) (id string, kind NotificationKind, ok bool)`: ParseStopKey is the stop and the kind an event key names: StopSetKey is a stop\_set, StopLiftedKey a stop\_lifted.
+- `func ParseStopKey(key string) (id string, kind NotificationKind, ok bool)`: ParseStopKey is the stop and the kind an event key names: StopSetKey is a stop\_set, StopLiftedKey a stop\_lifted. *(experimental)*
 
 ## type Notifier
 
@@ -1993,8 +1993,8 @@ NotifyOption configures the notifier WithNotifier and NotifyPending build.
 - `func WithNotifyRecoveryFailingAfter(d time.Duration) NotifyOption`: WithNotifyRecoveryFailingAfter sets how long recovery must keep failing for a run before a NotificationRecoveryFailing event is raised (default 15 minutes).
 - `func WithNotifyRetry(base, max time.Duration) NotifyOption`: WithNotifyRetry sets the backoff between rounds of a failing delivery: base, doubling per failure, up to max (defaults 1 second and 15 minutes).
 - `func WithNotifyRoute(kind NotificationKind, receiver string) NotifyOption`: WithNotifyRoute sends events of kind to the named receiver instead of the default one.
-- `func WithNotifyStops(ctl *StopControl) NotifyOption`: WithNotifyStops makes NotifyPending also read ctl's control run and notify of each stop that was set, and each that was lifted, within the last WithNotifyStopsWithin (default 7 days; the set and the lift are judged by their own times).
-- `func WithNotifyStopsWithin(d time.Duration) NotifyOption`: WithNotifyStopsWithin sets how far back stop events are raised (see WithNotifyStops); at least one minute.
+- `func WithNotifyStops(ctl *StopControl) NotifyOption`: WithNotifyStops makes NotifyPending also read ctl's control run and notify of each stop that was set, and each that was lifted, within the last WithNotifyStopsWithin (default 7 days; the set and the lift are judged by their own times). *(experimental)*
+- `func WithNotifyStopsWithin(d time.Duration) NotifyOption`: WithNotifyStopsWithin sets how far back stop events are raised (see WithNotifyStops); at least one minute. *(experimental)*
 - `func WithNotifyUpgradeWindow(d time.Duration) NotifyOption`: WithNotifyUpgradeWindow sets how long after the first backfill pass the second runs (default 24 hours).
 - `func WithOverdueNotifier(n Notifier) NotifyOption`: WithOverdueNotifier sends NotificationOverdue events to n instead of the main Notifier, for the usual case where the main sink being down is why the event is overdue.
 
@@ -2141,7 +2141,7 @@ type NotifyStop struct {
 }
 ```
 
-NotifyStop is the structured detail of a NotificationStopSet or NotificationStopLifted notification.
+NotifyStop is the structured detail of a NotificationStopSet or NotificationStopLifted notification. *(experimental)*
 
 ## type NotifyTrail
 
@@ -2225,7 +2225,7 @@ Option configures an Agent: New applies options to a new agent, and With to a co
 - `func WithMiddleware(mw ...Middleware) Option`: WithMiddleware appends model-call middleware, after any the agent has; the first one added is the outermost.
 - `func WithOptions(opts ...Option) Option`: WithOptions groups options into one, applied in order where it appears.
 - `func WithRetrieval(r Retriever, k int, opts ...RetrievalOption) Option`: WithRetrieval adds classic retrieval-augmented generation: for each run, the agent retrieves the top-k documents for the run's user message, as a journaled engine step, and adds them to every model request of the run as a user message placed just before that user message (after the system prompt and any earlier turns).
-- `func WithStopSwitch(sw *StopSwitch) Option`: WithStopSwitch gives the agent a kill switch (see StopSwitch, and docs/design/kill-switch.md): its runs are held, as a pause (\*Stopped), where a stop covers them, before any side effect that has not begun.
+- `func WithStopSwitch(sw *StopSwitch) Option`: WithStopSwitch gives the agent a kill switch (see StopSwitch, and docs/design/kill-switch.md): its runs are held, as a pause (\*Stopped), where a stop covers them, before any side effect that has not begun. *(experimental)*
 - `func WithSystemPromptFunc(fn func(ctx context.Context, run RunInfo) (string, error)) Option`: WithSystemPromptFunc sets a system message computed for each drive of a run (each Run, Stream or resume), from the run's context and its RunInfo, so it can carry dynamic context (the date, the tenant, state read from elsewhere).
 - `func WithToolErrorRedactor(fn func(tool string, err error) string) Option`: WithToolErrorRedactor sets the text recorded for a tool call that fails (see Agent.WithToolErrorRedactor for what it covers).
 - `func WithToolMiddleware(mw ...ToolMiddleware) Option`: WithToolMiddleware appends tool-call middleware, after any the agent has; the first one added is the outermost (see ToolMiddleware).
@@ -2323,7 +2323,7 @@ type PendingStop struct {
 }
 ```
 
-PendingStop is a record on the trail that the control run lacks and that ApplyPending would consider: signed, not a stop, well formed.
+PendingStop is a record on the trail that the control run lacks and that ApplyPending would consider: signed, not a stop, well formed. *(experimental)*
 
 ## type PlannedHold
 
@@ -2334,7 +2334,7 @@ type PlannedHold struct {
 }
 ```
 
-PlannedHold names a legal hold that covers a planned run.
+PlannedHold names a legal hold that covers a planned run. *(experimental)*
 
 ## type PlannedRedaction
 
@@ -2353,7 +2353,7 @@ type PlannedRedaction struct {
 }
 ```
 
-PlannedRedaction is one record a redaction would replace (or already replaced).
+PlannedRedaction is one record a redaction would replace (or already replaced). *(experimental)*
 
 ## type Principal
 
@@ -2554,7 +2554,7 @@ RecoverStopOption is the option WithRecoverStop returns; it applies to Recover a
 
 **Constructors and functions**
 
-- `func WithRecoverStop(sw *StopSwitch) RecoverStopOption`: WithRecoverStop gives Recover and RecoverLoop the process's kill switch (see StopSwitch).
+- `func WithRecoverStop(sw *StopSwitch) RecoverStopOption`: WithRecoverStop gives Recover and RecoverLoop the process's kill switch (see StopSwitch). *(experimental)*
 
 ## type RedactState
 
@@ -2571,11 +2571,11 @@ type RedactState struct {
 }
 ```
 
-RedactState is what a Redactor read after its conditional replacement changed nothing, to say why.
+RedactState is what a Redactor read after its conditional replacement changed nothing, to say why. *(experimental)*
 
 **Methods**
 
-- `func (s RedactState) Explain(runID, name string, current, tombstone []byte) error`: Explain says what a replacement that changed nothing meant: it returns nil if the entry already holds the tombstone's redaction (nothing to do), and otherwise an error that wraps the ErrRedact sentinel that names the refusal.
+- `func (s RedactState) Explain(runID, name string, current, tombstone []byte) error`: Explain says what a replacement that changed nothing meant: it returns nil if the entry already holds the tombstone's redaction (nothing to do), and otherwise an error that wraps the ErrRedact sentinel that names the refusal. *(experimental)*
 
 ## type RedactionPlan
 
@@ -2596,11 +2596,11 @@ type RedactionPlan struct {
 }
 ```
 
-RedactionPlan is what a redaction of one run would do: the records it replaces, the selected records it keeps, and a digest of the replacements.
+RedactionPlan is what a redaction of one run would do: the records it replaces, the selected records it keeps, and a digest of the replacements. *(experimental)*
 
 **Constructors and functions**
 
-- `func PlanRedaction(ctx context.Context, j *Journal, runID string, sel RedactionSelector) (RedactionPlan, error)`: PlanRedaction reads runID's journal and returns what redacting the records sel selects would do, without writing anything.
+- `func PlanRedaction(ctx context.Context, j *Journal, runID string, sel RedactionSelector) (RedactionPlan, error)`: PlanRedaction reads runID's journal and returns what redacting the records sel selects would do, without writing anything. *(experimental)*
 
 ## type RedactionResult
 
@@ -2611,12 +2611,12 @@ type RedactionResult struct {
 }
 ```
 
-RedactionResult is what Redact did.
+RedactionResult is what Redact did. *(experimental)*
 
 **Constructors and functions**
 
-- `func Redact(ctx context.Context, j *Journal, plan RedactionPlan, at time.Time) (RedactionResult, error)`: Redact replaces the records plan names with tombstones, in position order, each in its own transaction of the store's Redactor (so a crash leaves a prefix replaced and a second call with the same plan finishes the rest).
-- `func RedactUsing(ctx context.Context, j *Journal, store Redactor, plan RedactionPlan, at time.Time) (RedactionResult, error)`: RedactUsing is Redact with the Redactor given: the journal reads the records (plan and bytes) and store replaces them.
+- `func Redact(ctx context.Context, j *Journal, plan RedactionPlan, at time.Time) (RedactionResult, error)`: Redact replaces the records plan names with tombstones, in position order, each in its own transaction of the store's Redactor (so a crash leaves a prefix replaced and a second call with the same plan finishes the rest). *(experimental)*
+- `func RedactUsing(ctx context.Context, j *Journal, store Redactor, plan RedactionPlan, at time.Time) (RedactionResult, error)`: RedactUsing is Redact with the Redactor given: the journal reads the records (plan and bytes) and store replaces them. *(experimental)*
 
 ## type RedactionSelector
 
@@ -2632,7 +2632,7 @@ type RedactionSelector struct {
 }
 ```
 
-RedactionSelector chooses the records of one run a redaction replaces.
+RedactionSelector chooses the records of one run a redaction replaces. *(experimental)*
 
 ## type Redactor
 
@@ -2642,7 +2642,7 @@ type Redactor interface {
 }
 ```
 
-Redactor is the optional store capability that replaces one entry's bytes with a redaction tombstone (see Record.Redacted).
+Redactor is the optional store capability that replaces one entry's bytes with a redaction tombstone (see Record.Redacted). *(experimental)*
 
 ## type Rejection
 
@@ -2653,7 +2653,7 @@ type Rejection struct {
 }
 ```
 
-Rejection is a record in the control run that has no effect, and why.
+Rejection is a record in the control run that has no effect, and why. *(experimental)*
 
 ## type Request
 
@@ -2983,7 +2983,7 @@ RunState is a run's state as Status reads it from the run's journal.
 - `const RunCompleted RunState = "completed"`: RunCompleted is a run whose first end marker is run:complete.
 - `const RunAborted RunState = "aborted"`: RunAborted is a saga whose first end marker is run:aborted: a step failed and its rollback finished.
 - `const RunCancelled RunState = "cancelled"`: RunCancelled is a run whose first end marker is run:cancelled.
-- `const RunEnded RunState = "ended"`: RunEnded is a run whose first end marker was redacted (RunStatus.EndRedacted): it is over, but how it ended (completed, aborted or cancelled) is not attested, because a tombstone's name is outside the leaf hash, so Status never reads it from the name.
+- `const RunEnded RunState = "ended"`: RunEnded is a run whose first end marker was redacted (RunStatus.EndRedacted): it is over, but how it ended (completed, aborted or cancelled) is not attested, because a tombstone's name is outside the leaf hash, so Status never reads it from the name. *(experimental)*
 
 ## type RunStatus
 
@@ -3197,7 +3197,7 @@ type StopApprover struct {
 }
 ```
 
-StopApprover is an enrolled approver in a StopPolicyDoc: the signature scheme and the public key.
+StopApprover is an enrolled approver in a StopPolicyDoc: the signature scheme and the public key. *(experimental)*
 
 ## type StopCause
 
@@ -3205,13 +3205,13 @@ StopApprover is an enrolled approver in a StopPolicyDoc: the signature scheme an
 type StopCause string
 ```
 
-StopCause says why a run was held by a stop (see Stopped).
+StopCause says why a run was held by a stop (see Stopped). *(experimental)*
 
 **Constants**
 
-- `const StopCauseStop StopCause = "stop"`: StopCauseStop: an active stop covers the run, the tool or the agent.
-- `const StopCauseUnreadable StopCause = "unreadable"`: StopCauseUnreadable: no stop is known, and the control run could not be read within the staleness bound, so a side-effect call is held (fail closed).
-- `const StopCauseUnknowable StopCause = "unknowable"`: StopCauseUnknowable: the stops cannot be judged (StopState.UnknowableErr), so a side-effect call a stop could cover is held (fail closed).
+- `const StopCauseStop StopCause = "stop"`: StopCauseStop: an active stop covers the run, the tool or the agent. *(experimental)*
+- `const StopCauseUnreadable StopCause = "unreadable"`: StopCauseUnreadable: no stop is known, and the control run could not be read within the staleness bound, so a side-effect call is held (fail closed). *(experimental)*
+- `const StopCauseUnknowable StopCause = "unknowable"`: StopCauseUnknowable: the stops cannot be judged (StopState.UnknowableErr), so a side-effect call a stop could cover is held (fail closed). *(experimental)*
 
 ## type StopControl
 
@@ -3221,24 +3221,24 @@ type StopControl struct {
 }
 ```
 
-StopControl reads and writes the control run: the stops, lifts, mode and policy records of a deployment.
+StopControl reads and writes the control run: the stops, lifts, mode and policy records of a deployment. *(experimental)*
 
 **Constructors and functions**
 
-- `func NewStopControl(j *Journal, opts ...StopOption) (*StopControl, error)`: NewStopControl returns the control over j's store.
+- `func NewStopControl(j *Journal, opts ...StopOption) (*StopControl, error)`: NewStopControl returns the control over j's store. *(experimental)*
 
 **Methods**
 
-- `func (c *StopControl) ApplyPending(ctx context.Context, req ApplyRequest) (applied, superseded int, err error)`: ApplyPending writes to the control run the records of the trail that it lacks and that are not stops: what a crash between "trail first" and the control-run write leaves (a lift, a policy transition, the root or a mode change that was signed and evidenced and never took effect).
-- `func (c *StopControl) ChangeMode(ctx context.Context, req ModeRequest) (StopState, error)`: ChangeMode records that the deployment changed mode: evidence for history and the audit trail, which changes nothing a process does (the mode is each process's configuration, rolled out by the operator).
-- `func (c *StopControl) LiftStop(ctx context.Context, id string, req LiftRequest) (StopEntry, error)`: LiftStop adds one lifter's approval of lifting stop id and returns the stop as State then reports it (Lifted when the rule is met, else LiftsHeld of LiftsNeeded).
-- `func (c *StopControl) Mode() StopMode`: Mode is the mode the control runs under: the declared one, else audited with a policy and basic without (an undeclared mode is refused as soon as the control run holds a record).
-- `func (c *StopControl) PendingRecords(ctx context.Context) ([]PendingStop, error)`: PendingRecords lists the records ApplyPending would consider, with each one's signer (Record.By) and age, so an operator sees what a run would make effective before making it so.
-- `func (c *StopControl) Reaudit(ctx context.Context) (int, error)`: Reaudit appends to the trail every record of the control run that it lacks and that the control accepts (a record the fold rejects is a forgery, and copying it would turn a finding into evidence), in store order, and returns how many it appended: how a stop whose trail write failed (a \*StopTrailError) is completed, and a trail that fell behind is caught up.
-- `func (c *StopControl) RotatePolicy(ctx context.Context, next StopPolicy, req LiftRequest) (StopState, error)`: RotatePolicy adds one lifter's approval of replacing the policy in force with next, and returns the state afterwards (PolicySeq has advanced once a quorum of the policy in force has approved the same document).
-- `func (c *StopControl) SetStop(ctx context.Context, req StopRequest) (StopEntry, error)`: SetStop sets a stop and returns it as State reports it.
-- `func (c *StopControl) State(ctx context.Context) (StopState, error)`: State folds the control run into the effective state.
-- `func (c *StopControl) StopRecords(ctx context.Context) ([]StopRecord, error)`: StopRecords returns the control run's decodable records, in store order: what the trail is compared with.
+- `func (c *StopControl) ApplyPending(ctx context.Context, req ApplyRequest) (applied, superseded int, err error)`: ApplyPending writes to the control run the records of the trail that it lacks and that are not stops: what a crash between "trail first" and the control-run write leaves (a lift, a policy transition, the root or a mode change that was signed and evidenced and never took effect). *(experimental)*
+- `func (c *StopControl) ChangeMode(ctx context.Context, req ModeRequest) (StopState, error)`: ChangeMode records that the deployment changed mode: evidence for history and the audit trail, which changes nothing a process does (the mode is each process's configuration, rolled out by the operator). *(experimental)*
+- `func (c *StopControl) LiftStop(ctx context.Context, id string, req LiftRequest) (StopEntry, error)`: LiftStop adds one lifter's approval of lifting stop id and returns the stop as State then reports it (Lifted when the rule is met, else LiftsHeld of LiftsNeeded). *(experimental)*
+- `func (c *StopControl) Mode() StopMode`: Mode is the mode the control runs under: the declared one, else audited with a policy and basic without (an undeclared mode is refused as soon as the control run holds a record). *(experimental)*
+- `func (c *StopControl) PendingRecords(ctx context.Context) ([]PendingStop, error)`: PendingRecords lists the records ApplyPending would consider, with each one's signer (Record.By) and age, so an operator sees what a run would make effective before making it so. *(experimental)*
+- `func (c *StopControl) Reaudit(ctx context.Context) (int, error)`: Reaudit appends to the trail every record of the control run that it lacks and that the control accepts (a record the fold rejects is a forgery, and copying it would turn a finding into evidence), in store order, and returns how many it appended: how a stop whose trail write failed (a \*StopTrailError) is completed, and a trail that fell behind is caught up. *(experimental)*
+- `func (c *StopControl) RotatePolicy(ctx context.Context, next StopPolicy, req LiftRequest) (StopState, error)`: RotatePolicy adds one lifter's approval of replacing the policy in force with next, and returns the state afterwards (PolicySeq has advanced once a quorum of the policy in force has approved the same document). *(experimental)*
+- `func (c *StopControl) SetStop(ctx context.Context, req StopRequest) (StopEntry, error)`: SetStop sets a stop and returns it as State reports it. *(experimental)*
+- `func (c *StopControl) State(ctx context.Context) (StopState, error)`: State folds the control run into the effective state. *(experimental)*
+- `func (c *StopControl) StopRecords(ctx context.Context) ([]StopRecord, error)`: StopRecords returns the control run's decodable records, in store order: what the trail is compared with. *(experimental)*
 
 ## type StopEntry
 
@@ -3263,11 +3263,11 @@ type StopEntry struct {
 }
 ```
 
-StopEntry is one stop as State reports it.
+StopEntry is one stop as State reports it. *(experimental)*
 
 **Methods**
 
-- `func (s StopEntry) Covers(q StopQuery) bool`: Covers reports whether s covers q: a global stop covers everything; a tool, flow or agent stop covers a query that names exactly its name.
+- `func (s StopEntry) Covers(q StopQuery) bool`: Covers reports whether s covers q: a global stop covers everything; a tool, flow or agent stop covers a query that names exactly its name. *(experimental)*
 
 ## type StopMode
 
@@ -3275,12 +3275,12 @@ StopEntry is one stop as State reports it.
 type StopMode string
 ```
 
-StopMode is the mode a deployment's stops run under: StopBasic (the default) or StopAudited.
+StopMode is the mode a deployment's stops run under: StopBasic (the default) or StopAudited. *(experimental)*
 
 **Constants**
 
-- `const StopBasic StopMode = "basic"`: StopBasic needs no keys: anyone who can write the store sets and lifts a stop, and the records are plain and unsigned.
-- `const StopAudited StopMode = "audited"`: StopAudited signs every record with an enrolled key, lifts by a quorum and records to an anchored trail (package audit).
+- `const StopBasic StopMode = "basic"`: StopBasic needs no keys: anyone who can write the store sets and lifts a stop, and the records are plain and unsigned. *(experimental)*
+- `const StopAudited StopMode = "audited"`: StopAudited signs every record with an enrolled key, lifts by a quorum and records to an anchored trail (package audit). *(experimental)*
 
 ## type StopNotifier
 
@@ -3290,16 +3290,16 @@ type StopNotifier struct {
 }
 ```
 
-StopNotifier tells a notifier when a stop is set or lifted, from a StopSwitch's observations of the control run.
+StopNotifier tells a notifier when a stop is set or lifted, from a StopSwitch's observations of the control run. *(experimental)*
 
 **Constructors and functions**
 
-- `func NewStopNotifier(j *Journal, o NotifierOption, ctl *StopControl) (*StopNotifier, error)`: NewStopNotifier binds o, a WithNotifier option, to j and ctl.
+- `func NewStopNotifier(j *Journal, o NotifierOption, ctl *StopControl) (*StopNotifier, error)`: NewStopNotifier binds o, a WithNotifier option, to j and ctl. *(experimental)*
 
 **Methods**
 
-- `func (n *StopNotifier) Flush(ctx context.Context) error`: Flush waits for the deliveries in flight to finish their round and stops the worker, as Agent.FlushNotifications does.
-- `func (n *StopNotifier) Observe(st StopState)`: Observe queues the events st owes.
+- `func (n *StopNotifier) Flush(ctx context.Context) error`: Flush waits for the deliveries in flight to finish their round and stops the worker, as Agent.FlushNotifications does. *(experimental)*
+- `func (n *StopNotifier) Observe(st StopState)`: Observe queues the events st owes. *(experimental)*
 
 ## type StopOption
 
@@ -3309,17 +3309,17 @@ type StopOption interface {
 }
 ```
 
-StopOption configures NewStopControl.
+StopOption configures NewStopControl. *(experimental)*
 
 **Constructors and functions**
 
-- `func WithStopClock(now func() time.Time) StopOption`: WithStopClock sets the clock that stamps a record's At (default time.Now).
-- `func WithStopInForce(fn func(StopEntry)) StopOption`: WithStopInForce gives the control a function that is told, with the stop, the moment a stop has been written to the control run and is therefore in force, before its audit trail write starts (which can take a while under contention, and fail): a command can say "in force" at once.
-- `func WithStopMode(m StopMode) StopOption`: WithStopMode declares the mode of this process: StopBasic, or StopAudited (which needs WithStopPolicy).
-- `func WithStopPolicy(p StopPolicy) StopOption`: WithStopPolicy gives the control the audited-mode policy: the trust root, the policy this process pins (normally the one the deployment started audited mode with).
-- `func WithStopRoot(digest string) StopOption`: WithStopRoot names the digest (StopPolicy.Digest) of the deployment's root policy, the only policy that may start the chain a process walks.
-- `func WithStopTrail(t StopTrail) StopOption`: WithStopTrail gives an audited control the trail its records are also written to.
-- `func WithStopVerifier(nv StopVerifierFunc) StopOption`: WithStopVerifier gives the control the means to build the verifiers of a policy a transition carries (audit.NewVerifier).
+- `func WithStopClock(now func() time.Time) StopOption`: WithStopClock sets the clock that stamps a record's At (default time.Now). *(experimental)*
+- `func WithStopInForce(fn func(StopEntry)) StopOption`: WithStopInForce gives the control a function that is told, with the stop, the moment a stop has been written to the control run and is therefore in force, before its audit trail write starts (which can take a while under contention, and fail): a command can say "in force" at once. *(experimental)*
+- `func WithStopMode(m StopMode) StopOption`: WithStopMode declares the mode of this process: StopBasic, or StopAudited (which needs WithStopPolicy). *(experimental)*
+- `func WithStopPolicy(p StopPolicy) StopOption`: WithStopPolicy gives the control the audited-mode policy: the trust root, the policy this process pins (normally the one the deployment started audited mode with). *(experimental)*
+- `func WithStopRoot(digest string) StopOption`: WithStopRoot names the digest (StopPolicy.Digest) of the deployment's root policy, the only policy that may start the chain a process walks. *(experimental)*
+- `func WithStopTrail(t StopTrail) StopOption`: WithStopTrail gives an audited control the trail its records are also written to. *(experimental)*
+- `func WithStopVerifier(nv StopVerifierFunc) StopOption`: WithStopVerifier gives the control the means to build the verifiers of a policy a transition carries (audit.NewVerifier). *(experimental)*
 
 ## type StopPolicy
 
@@ -3337,17 +3337,17 @@ type StopPolicy struct {
 }
 ```
 
-StopPolicy is who may set and lift stops in audited mode: the enrolled setters and lifters (by approver id), how to verify an id's signatures, and the lift rule.
+StopPolicy is who may set and lift stops in audited mode: the enrolled setters and lifters (by approver id), how to verify an id's signatures, and the lift rule. *(experimental)*
 
 **Constructors and functions**
 
-- `func PolicyFromDoc(d StopPolicyDoc, nv StopVerifierFunc) (StopPolicy, error)`: PolicyFromDoc builds the policy a transition names, with verifiers made by nv, and validates it.
+- `func PolicyFromDoc(d StopPolicyDoc, nv StopVerifierFunc) (StopPolicy, error)`: PolicyFromDoc builds the policy a transition names, with verifiers made by nv, and validates it. *(experimental)*
 
 **Methods**
 
-- `func (p StopPolicy) Digest() string`: Digest returns the digest of the policy's document; "" for a policy that does not validate.
-- `func (p StopPolicy) Doc() (StopPolicyDoc, error)`: Doc returns the policy as a transition carries it; it fails as Validate does.
-- `func (p StopPolicy) Validate() error`: Validate reports whether the policy is well formed and can be satisfied: a verifier for every enrolled id that exposes its public key, one seat per signing key (two ids never share a key identity), at least LiftQuorum lifters, and, with LiftNeedsOther, a lifter other than the setter of any stop.
+- `func (p StopPolicy) Digest() string`: Digest returns the digest of the policy's document; "" for a policy that does not validate. *(experimental)*
+- `func (p StopPolicy) Doc() (StopPolicyDoc, error)`: Doc returns the policy as a transition carries it; it fails as Validate does. *(experimental)*
+- `func (p StopPolicy) Validate() error`: Validate reports whether the policy is well formed and can be satisfied: a verifier for every enrolled id that exposes its public key, one seat per signing key (two ids never share a key identity), at least LiftQuorum lifters, and, with LiftNeedsOther, a lifter other than the setter of any stop. *(experimental)*
 
 ## type StopPolicyDoc
 
@@ -3362,7 +3362,7 @@ type StopPolicyDoc struct {
 }
 ```
 
-StopPolicyDoc is a stop policy as the control run carries it in a policy transition: the enrolled approvers with their public keys, the roles, and the lift rule.
+StopPolicyDoc is a stop policy as the control run carries it in a policy transition: the enrolled approvers with their public keys, the roles, and the lift rule. *(experimental)*
 
 ## type StopQuery
 
@@ -3373,7 +3373,7 @@ type StopQuery struct {
 }
 ```
 
-StopQuery is what a check point asks: which stop, if any, covers this.
+StopQuery is what a check point asks: which stop, if any, covers this. *(experimental)*
 
 ## type StopRecord
 
@@ -3418,16 +3418,16 @@ type StopRecord struct {
 }
 ```
 
-StopRecord is one record of the control run.
+StopRecord is one record of the control run. *(experimental)*
 
 **Constructors and functions**
 
-- `func DiffStopRecords(store, trail []StopRecord) (storeOnly, trailOnly []StopRecord)`: DiffStopRecords returns the records of store that are not in trail, and those of trail that are not in store, by content.
+- `func DiffStopRecords(store, trail []StopRecord) (storeOnly, trailOnly []StopRecord)`: DiffStopRecords returns the records of store that are not in trail, and those of trail that are not in store, by content. *(experimental)*
 
 **Methods**
 
-- `func (r StopRecord) Signed() bool`: Signed reports whether r carries a signature.
-- `func (r StopRecord) Validate() error`: Validate reports whether r is a well-formed record of its kind (not whether it is authorised): its format, mode, time, operator, reason, signature presence, and the fields its kind needs.
+- `func (r StopRecord) Signed() bool`: Signed reports whether r carries a signature. *(experimental)*
+- `func (r StopRecord) Validate() error`: Validate reports whether r is a well-formed record of its kind (not whether it is authorised): its format, mode, time, operator, reason, signature presence, and the fields its kind needs. *(experimental)*
 
 ## type StopRequest
 
@@ -3443,7 +3443,7 @@ type StopRequest struct {
 }
 ```
 
-StopRequest is what SetStop takes.
+StopRequest is what SetStop takes. *(experimental)*
 
 ## type StopScope
 
@@ -3454,12 +3454,12 @@ type StopScope struct {
 }
 ```
 
-StopScope is what a stop covers: a kind and, except for StopGlobal, an exact name.
+StopScope is what a stop covers: a kind and, except for StopGlobal, an exact name. *(experimental)*
 
 **Methods**
 
-- `func (s StopScope) String() string`: String is the scope as a person reads it: "global", "tool refund".
-- `func (s StopScope) Validate() error`: Validate reports whether s names a scope: a known kind, no name for StopGlobal, and for every other kind a name of valid UTF-8, with no control or bidirectional character, at most 256 bytes.
+- `func (s StopScope) String() string`: String is the scope as a person reads it: "global", "tool refund". *(experimental)*
+- `func (s StopScope) Validate() error`: Validate reports whether s names a scope: a known kind, no name for StopGlobal, and for every other kind a name of valid UTF-8, with no control or bidirectional character, at most 256 bytes. *(experimental)*
 
 ## type StopScopeKind
 
@@ -3467,14 +3467,14 @@ StopScope is what a stop covers: a kind and, except for StopGlobal, an exact nam
 type StopScopeKind string
 ```
 
-StopScopeKind says what a stop covers.
+StopScopeKind says what a stop covers. *(experimental)*
 
 **Constants**
 
-- `const StopGlobal StopScopeKind = "global"`: StopGlobal covers every run.
-- `const StopTool StopScopeKind = "tool"`: StopTool covers the calls of the tool with exactly the scope's name.
-- `const StopFlow StopScopeKind = "flow"`: StopFlow covers the runs and nodes of the plan flow with exactly the scope's name.
-- `const StopAgent StopScopeKind = "agent"`: StopAgent covers the runs of the agent whose Identity.Actor is exactly the scope's name.
+- `const StopGlobal StopScopeKind = "global"`: StopGlobal covers every run. *(experimental)*
+- `const StopTool StopScopeKind = "tool"`: StopTool covers the calls of the tool with exactly the scope's name. *(experimental)*
+- `const StopFlow StopScopeKind = "flow"`: StopFlow covers the runs and nodes of the plan flow with exactly the scope's name. *(experimental)*
+- `const StopAgent StopScopeKind = "agent"`: StopAgent covers the runs of the agent whose Identity.Actor is exactly the scope's name. *(experimental)*
 
 ## type StopSigner
 
@@ -3485,7 +3485,7 @@ type StopSigner interface {
 }
 ```
 
-StopSigner signs a stop record in audited mode.
+StopSigner signs a stop record in audited mode. *(experimental)*
 
 ## type StopState
 
@@ -3510,18 +3510,18 @@ type StopState struct {
 }
 ```
 
-StopState is the effective state of the control run for one control.
+StopState is the effective state of the control run for one control. *(experimental)*
 
 **Constructors and functions**
 
-- `func VerifyStopRecords(recs []StopRecord, opts ...StopOption) (StopState, error)`: VerifyStopRecords folds records (a control run's, or a stop trail's) under the policy the options give, with no store: what bide audit stops does to a trail.
+- `func VerifyStopRecords(recs []StopRecord, opts ...StopOption) (StopState, error)`: VerifyStopRecords folds records (a control run's, or a stop trail's) under the policy the options give, with no store: what bide audit stops does to a trail. *(experimental)*
 
 **Methods**
 
-- `func (s StopState) Active() []StopEntry`: Active returns the stops that are not lifted, in the order they were set.
-- `func (s StopState) Covering(q StopQuery) (StopEntry, bool)`: Covering returns the first active stop that covers q.
-- `func (s StopState) Rejects(r StopRecord) bool`: Rejects reports whether the fold rejected r (a record it did not accept: not signed by an enrolled approver of the policy in force, for another deployment, malformed, and so on).
-- `func (s StopState) UnknowableErr() error`: UnknowableErr returns ErrStopsUnknowable when the control cannot judge which stops are in force (see the error).
+- `func (s StopState) Active() []StopEntry`: Active returns the stops that are not lifted, in the order they were set. *(experimental)*
+- `func (s StopState) Covering(q StopQuery) (StopEntry, bool)`: Covering returns the first active stop that covers q. *(experimental)*
+- `func (s StopState) Rejects(r StopRecord) bool`: Rejects reports whether the fold rejected r (a record it did not accept: not signed by an enrolled approver of the policy in force, for another deployment, malformed, and so on). *(experimental)*
+- `func (s StopState) UnknowableErr() error`: UnknowableErr returns ErrStopsUnknowable when the control cannot judge which stops are in force (see the error). *(experimental)*
 
 ## type StopSwitch
 
@@ -3531,16 +3531,16 @@ type StopSwitch struct {
 }
 ```
 
-StopSwitch is what an Agent consults (WithStopSwitch): a StopControl and the records it has read.
+StopSwitch is what an Agent consults (WithStopSwitch): a StopControl and the records it has read. *(experimental)*
 
 **Constructors and functions**
 
-- `func NewStopSwitch(ctl *StopControl, opts ...StopSwitchOption) (*StopSwitch, error)`: NewStopSwitch returns a switch over ctl.
+- `func NewStopSwitch(ctl *StopControl, opts ...StopSwitchOption) (*StopSwitch, error)`: NewStopSwitch returns a switch over ctl. *(experimental)*
 
 **Methods**
 
-- `func (s *StopSwitch) GlobalStop(ctx context.Context) (StopEntry, bool)`: GlobalStop returns the active global stop, if there is one, from a cached read (a read when it is older than the poll interval): what a recovery pass asks, so that it lists nothing while everything is stopped.
-- `func (s *StopSwitch) Hold(ctx context.Context, ref RunRef, q StopQuery, sideEffect, sync bool) *Stopped`: Hold decides whether q is held, for run ref.
+- `func (s *StopSwitch) GlobalStop(ctx context.Context) (StopEntry, bool)`: GlobalStop returns the active global stop, if there is one, from a cached read (a read when it is older than the poll interval): what a recovery pass asks, so that it lists nothing while everything is stopped. *(experimental)*
+- `func (s *StopSwitch) Hold(ctx context.Context, ref RunRef, q StopQuery, sideEffect, sync bool) *Stopped`: Hold decides whether q is held, for run ref. *(experimental)*
 
 ## type StopSwitchOption
 
@@ -3550,14 +3550,14 @@ type StopSwitchOption interface {
 }
 ```
 
-StopSwitchOption configures NewStopSwitch.
+StopSwitchOption configures NewStopSwitch. *(experimental)*
 
 **Constructors and functions**
 
-- `func WithStopErrors(fn func(error)) StopSwitchOption`: WithStopErrors sets the function a StopSwitch hands a failed read of the control run, and the alerts of a control that cannot judge the stops (StopState.ChainErr, Unverified in a basic control).
-- `func WithStopObserver(fn func(StopState)) StopSwitchOption`: WithStopObserver gives a StopSwitch a function that is told, with the control run's state, each time a stop has appeared or been lifted since it last was (the first successful read included).
-- `func WithStopPoll(d time.Duration) StopSwitchOption`: WithStopPoll sets how often a StopSwitch reads the control run for the checks that use its cache (a drive's start, a turn's start, a call before its claim): the latency bound of a stop for them.
-- `func WithStopStaleness(d time.Duration) StopSwitchOption`: WithStopStaleness sets how old the last successful read may be for a side-effect call to run when the control run cannot be read now: past it the call is held (StopCauseUnreadable).
+- `func WithStopErrors(fn func(error)) StopSwitchOption`: WithStopErrors sets the function a StopSwitch hands a failed read of the control run, and the alerts of a control that cannot judge the stops (StopState.ChainErr, Unverified in a basic control). *(experimental)*
+- `func WithStopObserver(fn func(StopState)) StopSwitchOption`: WithStopObserver gives a StopSwitch a function that is told, with the control run's state, each time a stop has appeared or been lifted since it last was (the first successful read included). *(experimental)*
+- `func WithStopPoll(d time.Duration) StopSwitchOption`: WithStopPoll sets how often a StopSwitch reads the control run for the checks that use its cache (a drive's start, a turn's start, a call before its claim): the latency bound of a stop for them. *(experimental)*
+- `func WithStopStaleness(d time.Duration) StopSwitchOption`: WithStopStaleness sets how old the last successful read may be for a side-effect call to run when the control run cannot be read now: past it the call is held (StopCauseUnreadable). *(experimental)*
 
 ## type StopTrail
 
@@ -3569,7 +3569,7 @@ type StopTrail interface {
 }
 ```
 
-StopTrail is the port of the stop trail: a named, append-only sequence of StopRecords with insert-if-absent at a position, as NotifyTrail is for notifications.
+StopTrail is the port of the stop trail: a named, append-only sequence of StopRecords with insert-if-absent at a position, as NotifyTrail is for notifications. *(experimental)*
 
 ## type StopTrailError
 
@@ -3581,12 +3581,12 @@ type StopTrailError struct {
 }
 ```
 
-StopTrailError is returned when a record could not be written to the stop trail.
+StopTrailError is returned when a record could not be written to the stop trail. *(experimental)*
 
 **Methods**
 
-- `func (e *StopTrailError) Error() string`: Error implements error.
-- `func (e *StopTrailError) Unwrap() error`: Unwrap returns the trail's error.
+- `func (e *StopTrailError) Error() string`: Error implements error. *(experimental)*
+- `func (e *StopTrailError) Unwrap() error`: Unwrap returns the trail's error. *(experimental)*
 
 ## type StopVerifierFunc
 
@@ -3594,7 +3594,7 @@ StopTrailError is returned when a record could not be written to the stop trail.
 type StopVerifierFunc func(alg Alg, publicKey []byte) (ApproverVerifier, error)
 ```
 
-StopVerifierFunc builds a verifier from a scheme and a public key, for the approvers of a policy a transition names (audit.NewVerifier has this form).
+StopVerifierFunc builds a verifier from a scheme and a public key, for the approvers of a policy a transition names (audit.NewVerifier has this form). *(experimental)*
 
 ## type Stopped
 
@@ -3613,11 +3613,11 @@ type Stopped struct {
 }
 ```
 
-Stopped is returned by a run that a kill switch held (see StopSwitch): a pause, not a failure.
+Stopped is returned by a run that a kill switch held (see StopSwitch): a pause, not a failure. *(experimental)*
 
 **Methods**
 
-- `func (e *Stopped) Error() string`: Error implements error.
+- `func (e *Stopped) Error() string`: Error implements error. *(experimental)*
 
 ## type Store
 
