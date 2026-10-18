@@ -376,7 +376,7 @@ func TestAssemblePrerelease(t *testing.T) {
 // non-empty dot-separated identifiers.
 func TestAssembleVersionShape(t *testing.T) {
 	f := []Fragment{frag(t, "a.md", "Section: Added\n\nx\n")}
-	for _, v := range []string{"0.16.0-", "0.16.0-rc..1", "0.16.0-rc.01", "0.16.0-rc.1.", "01.2.3", "1.02.3", "0.16.0+build", "0.16.0-rc_1", "v0.16.0-rc 1"} {
+	for _, v := range []string{"0.16.0-", "0.16.0-rc..1", "0.16.0-rc.01", "0.16.0-01", "0.16.0-rc.1.", "01.2.3", "1.02.3", "0.16.0+build", "0.16.0-rc_1", "v0.16.0-rc 1"} {
 		if _, err := Assemble(sample, f, v, "2026-10-20"); err == nil {
 			t.Errorf("version %q was accepted", v)
 		}
