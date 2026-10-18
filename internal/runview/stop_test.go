@@ -481,3 +481,16 @@ func TestViewStopFlagUsageErrors(t *testing.T) {
 		t.Errorf("a policy that does not exist: exit %d\n%s", code, errb.String())
 	}
 }
+
+// openTools are the tools of calls the journal shows no result for, and only those.
+func TestBuildOpenTools(t *testing.T) {
+	recs := []agent.Record{
+		{Name: "run:start", Kind: agent.StepValue, Result: json.RawMessage(`{"input":{"role":"user","parts":[{"type":"text","text":"go"}]}}`)},
+		{Name: "m0", Kind: agent.StepModel, Message: &agent.Message{Role: agent.RoleAssistant, Parts: []agent.Part{agent.ToolUse{ID: "c1", Name: "lookup", Args: json.RawMessage(`{}`)}, agent.ToolUse{ID: "c2", Name: "refund", Args: json.RawMessage(`{}`)}}}},
+		{Name: "tool:c1", Kind: agent.StepToolResult, ToolUseID: "c1", Result: json.RawMessage(`"ok"`)},
+	}
+	v := Build(context.Background(), "r", recs, nil)
+	if !slices.Equal(v.openTools, []string{"refund"}) {
+		t.Fatalf("openTools = %v, want [refund]", v.openTools)
+	}
+}
