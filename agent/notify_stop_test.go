@@ -519,3 +519,36 @@ func TestStopNotify_AProcessWithoutTheControlLeavesStopSetAlone(t *testing.T) {
 		t.Fatalf("it reported that stop notifications are off %d times, want once", got)
 	}
 }
+
+// The same for an audited stop: its lift time is the time of the record that met the quorum.
+func TestStopNotify_TheLiftOfAnOldAuditedStopIsNotified(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	setClk := &notifyClock{t: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)}
+	ctl := audited(t, store, auditedPolicy(2, true), WithStopClock(setClk.now))
+	e, err := ctl.SetStop(ctx, StopRequest{Scope: StopScope{Kind: StopGlobal}, Reason: "incident", By: "ops1", Signer: sign("ops1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trail, sink := NewMemNotifyTrail(), &fakeSink{}
+	clk := &notifyClock{t: setClk.now()}
+	if err := stopSweep(t, ctl, sink, trail, clk); err != nil {
+		t.Fatal(err)
+	}
+	setClk.advance(10 * 24 * time.Hour)
+	clk.advance(10 * 24 * time.Hour)
+	for _, by := range []string{"ops1", "risk"} {
+		if _, err := ctl.LiftStop(ctx, e.ID, LiftRequest{By: by, Signer: sign(by)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if st := mustState(t, ctl); len(st.Stops) != 1 || st.Stops[0].LiftedAt == "" || st.Stops[0].LiftedAt == st.Stops[0].At {
+		t.Fatalf("LiftedAt %+v", st.Stops)
+	}
+	if err := stopSweep(t, ctl, sink, trail, clk); err != nil {
+		t.Fatal(err)
+	}
+	if got := kindsOf(sink); !slices.Contains(got, NotificationStopLifted) {
+		t.Fatalf("%v: the lift of an old audited stop was not told", got)
+	}
+}
