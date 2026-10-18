@@ -3,6 +3,7 @@ package flowedit
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -301,6 +302,8 @@ func fakeGit(t *testing.T) (setMsg func(string)) {
 	}
 	if err := exec.Command(filepath.Join(dir, "git")).Run(); err == nil {
 		t.Fatal("the stand-in git succeeded")
+	} else if ee, ok := errors.AsType[*exec.ExitError](err); !ok || ee.ExitCode() != 128 {
+		t.Skipf("cannot run a script from the temporary directory (a noexec mount?): %v", err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	old := gitTimeout
@@ -387,5 +390,33 @@ func TestBaselineIgnoresTheUsersLineEndingSettings(t *testing.T) {
 	got, err := gitShow(dir, "HEAD", "refund.yaml")
 	if err != nil || string(got) != weakFlow {
 		t.Errorf("the baseline read as %q (%v), want the committed bytes", got, err)
+	}
+}
+
+// A git that answers and exits 0 but leaves a helper running (a detached gc, a credential or fsmonitor helper)
+// that holds its pipes: the answer is complete, and the bound on waiting for the pipes does not turn it into a
+// failure.
+func TestGitShowAcceptsASuccessfulGitWhoseHelperHoldsThePipes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a shell script stands in for git")
+	}
+	dir := t.TempDir()
+	script := "#!/bin/sh\nif [ -n \"$BIDE_FAKE_GIT_WARM\" ]; then exit 0; fi\nsleep 8 &\nprintf '%s' \"$BIDE_FAKE_GIT_OUT\"\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	warm := exec.Command(filepath.Join(dir, "git"))
+	warm.Env = append(os.Environ(), "BIDE_FAKE_GIT_WARM=1") // the first run of a new executable can be slow: not under the deadline
+	if err := warm.Run(); err != nil {
+		t.Skipf("cannot run a script from the temporary directory (a noexec mount?): %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("BIDE_FAKE_GIT_OUT", "hello baseline\n")
+	old := gitTimeout
+	gitTimeout = 5 * time.Minute
+	t.Cleanup(func() { gitTimeout = old })
+	out, err := gitShow(t.TempDir(), "HEAD", "refund.yaml")
+	if err != nil || string(out) != "hello baseline\n" {
+		t.Fatalf("a git that answered and exited 0 is reported as a failure: %q, %v", out, err)
 	}
 }

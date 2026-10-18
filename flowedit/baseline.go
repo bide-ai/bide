@@ -76,8 +76,7 @@ func Compare(name, source string, baseline, text []byte) *Weakening {
 }
 
 // gitTimeout is how long gitShow waits for git: a generous bound for a local `git show`, there so that a git that
-// hangs (a stalled network file system, a credential helper that waits) cannot hang the editor's start. A tests
-// shortens or lengthens it.
+// hangs (a stalled network file system, a credential helper that waits) cannot hang the editor's start. A test sets it, so no test that does may run in parallel.
 var gitTimeout = 15 * time.Second
 
 // gitShow reads name as it is at rev in the git working tree that holds dir: `git show
@@ -101,9 +100,14 @@ func gitShow(dir, rev, name string) ([]byte, error) {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
+	if err != nil && errors.Is(err, exec.ErrWaitDelay) && ctx.Err() == nil && cmd.ProcessState != nil && cmd.ProcessState.Success() {
+		// git answered and exited 0; a helper it left running holds the pipes. What it wrote is complete.
+		err = nil
+	}
 	if err != nil {
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			// Our own deadline, not git's answer: say so, rather than the "signal: killed" the kill leaves.
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) && (cmd.ProcessState == nil || cmd.ProcessState.ExitCode() == -1) {
+			// Our own deadline stopped git (it did not exit on its own), not git's answer: say so, rather than
+			// the "signal: killed" the kill leaves.
 			return nil, fmt.Errorf("git show %s:./%s: git did not answer within %s and was stopped (a slow or loaded machine, or a hung file system)", rev, name, gitTimeout)
 		}
 		msg := strings.TrimSpace(stderr.String())
