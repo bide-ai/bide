@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -296,7 +297,7 @@ func fakeGit(t *testing.T) (setMsg func(string)) {
 		t.Skip("a shell script stands in for git")
 	}
 	dir := t.TempDir()
-	script := "#!/bin/sh\nif [ -n \"$BIDE_FAKE_GIT_SLOW\" ]; then sleep 30; fi\necho \"$BIDE_FAKE_GIT_MSG\" >&2\nexit 128\n"
+	script := "#!/bin/sh\nif [ -n \"$BIDE_FAKE_GIT_SLOW\" ]; then sleep 30 & echo $! > \"$BIDE_FAKE_GIT_PIDFILE\"; wait; fi\necho \"$BIDE_FAKE_GIT_MSG\" >&2\nexit 128\n"
 	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -318,6 +319,18 @@ func TestBaselineSaysWhenGitDidNotAnswer(t *testing.T) {
 	fakeGit(t)
 	gitTimeout = 300 * time.Millisecond
 	t.Setenv("BIDE_FAKE_GIT_SLOW", "1")
+	// The child that holds the pipes outlives the stopped git: stop it when the test ends, so it leaves no orphan.
+	pidfile := filepath.Join(t.TempDir(), "child.pid")
+	t.Setenv("BIDE_FAKE_GIT_PIDFILE", pidfile)
+	t.Cleanup(func() {
+		if b, err := os.ReadFile(pidfile); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
+				if p, err := os.FindProcess(pid); err == nil {
+					p.Kill()
+				}
+			}
+		}
+	})
 	start := time.Now()
 	s, _ := newTestServer(t, "refund.yaml", weakFlow)
 	d, err := s.Doc()
