@@ -134,7 +134,7 @@ func TestDryRunListsAndChangesNothing(t *testing.T) {
 			t.Errorf("the dry run lacks %q:\n%s", want, out)
 		}
 	}
-	for _, secret := range []string{"Alice", "4111"} {
+	for _, secret := range []string{"Alice", "4111-1111"} {
 		if strings.Contains(out, secret) {
 			t.Errorf("the dry run printed content (%q)", secret)
 		}
@@ -152,7 +152,7 @@ func TestExecuteErasesAndIsAccountable(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "DONE") {
 		t.Fatalf("execute: %d\n%s\n%s", code, out, errb)
 	}
-	if c := r.content(); strings.Contains(c, "Alice") || strings.Contains(c, "4111") {
+	if c := r.content(); strings.Contains(c, "Alice") || strings.Contains(c, "4111-1111") {
 		t.Fatalf("content remains: %s", c)
 	}
 	// bide audit redactions passes on the redacted database with the head the command wrote.
@@ -367,7 +367,7 @@ func TestExecuteLeavesNoBytesInTheFiles(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "storage: wal_checkpoint(TRUNCATE)") {
 		t.Fatalf("execute: %d\n%s%s", code, out, errb)
 	}
-	for _, secret := range []string{"Alice", "4111"} {
+	for _, secret := range []string{"Alice", "4111-1111"} {
 		if inDB, inWAL := fileHolds(t, r.db, secret); inDB || inWAL {
 			t.Errorf("%q is still in the database file (%v) or the WAL (%v) after -execute", secret, inDB, inWAL)
 		}

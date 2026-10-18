@@ -130,7 +130,8 @@ func TestRedact_RealRun(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if bytes.Contains(e.Data, []byte("4111")) || bytes.Contains(e.Data, []byte("Alice")) {
+		// Search for the whole strings: a tombstone's at_ms or leaf hash can contain "4111" by chance.
+		if bytes.Contains(e.Data, []byte("4111-1111")) || bytes.Contains(e.Data, []byte("Alice")) {
 			t.Errorf("entry %q still holds the content: %s", e.Name, e.Data)
 		}
 	}

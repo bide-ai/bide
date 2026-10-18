@@ -250,7 +250,7 @@ func content(t *testing.T, ctx context.Context, j *agent.Journal, run string) bo
 		if err != nil {
 			t.Fatal(err)
 		}
-		if bytes.Contains(e.Data, []byte("Alice")) || bytes.Contains(e.Data, []byte("4111")) {
+		if bytes.Contains(e.Data, []byte("Alice")) || bytes.Contains(e.Data, []byte("4111-1111")) {
 			return true
 		}
 	}
