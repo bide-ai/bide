@@ -1287,3 +1287,28 @@ func TestLegalHold_RefusalsAndOrder(t *testing.T) {
 		t.Errorf("a refused placement reached the store: %+v", hs)
 	}
 }
+
+// A pass that begins under a hold and never writes its end may have erased: the audit says so.
+func TestLegalHold_ABeginUnderAHoldWithNoEndIsFound(t *testing.T) {
+	ctx := context.Background()
+	r := newTrailRig(t)
+	if err := r.placeHold("h1", "gov"); err != nil {
+		t.Fatal(err)
+	}
+	begin := audit.RedactionRecord{Phase: audit.RedactionBegin, Deployment: "test", RunID: "gov", PlanDigest: "p1", Reason: "x", Ticket: "x", Executor: "x", AtMs: 1,
+		Records: []audit.RedactedRef{{Position: 1, Name: "note", LeafHash: strings.Repeat("a", 64)}}}
+	if err := audit.AppendRedactionRecord(ctx, r.trail, begin, r.signer); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := r.verifyHolds(true)
+	if err == nil || !strings.Contains(kinds(rep), "REDACTED_UNDER_HOLD") {
+		t.Fatalf("report = %+v, %v; want REDACTED_UNDER_HOLD for the pass with no end", rep, err)
+	}
+	found := false
+	for _, f := range rep.Findings {
+		found = found || strings.Contains(f.Detail, "no end record")
+	}
+	if !found {
+		t.Errorf("the finding does not say there is no end record: %+v", rep.Findings)
+	}
+}

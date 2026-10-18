@@ -535,6 +535,8 @@ usage: bide journal redact (-db <file> | -postgres-env <var> [-schema <name>]) -
   redact  replace the content of records of a finished run with tombstones that keep each record's
           position, name and leaf hash, so the run's signed heads and every other record's proof
           still verify, and record the erasure in a signed trail. Run bide journal redact -h.
+  hold    place, lift and list legal holds: the store refuses to erase a held run, and the signed
+          redaction trail records who placed and lifted each hold. Run bide journal hold -h.
   acknowledge  sign a note that a leaf in the redaction trail that the tool did not write (a planted
           one that bide audit redactions reports) has been investigated; the audit then reports it as
           acknowledged. Run bide journal acknowledge -h.
@@ -659,6 +661,27 @@ not another leaf later at that position. It cannot be undone: the trail is appen
     	the SQLite file that holds the redaction trail, when kept apart from the journal
   -trail-postgres-env string
     	the environment variable that holds the DSN of the Postgres database that holds the redaction trail
+```
+
+### bide journal hold
+
+```text
+usage: bide journal hold place (-db <file> | -postgres-env <var>) -id <hold> -matter <text> -run <id>... [-tree]
+                               -reason <text> -ticket <id> -deployment <name> -sign-key <file> -head-out <file>
+       bide journal hold lift  (-db <file> | -postgres-env <var>) -id <hold> -reason <text> -ticket <id>
+                               -deployment <name> -sign-key <file> -head-out <file>
+       bide journal hold list  (-db <file> | -postgres-env <var>)
+
+  place   keep the named runs (and with -tree the sub-agent runs below them) from being erased; one hold
+          can name several runs, so a matter is one hold. The store enforces it first, then the placement
+          is recorded in the signed redaction trail.
+  lift    record the lift in the trail first, then remove the hold; a hold is never lifted without evidence.
+  list    the holds in force in the store.
+
+A hold stops bide's own erasure. It does not stop a database administrator, a restore or a hand-written
+DELETE, and it does not protect the anchor (an object-store legal hold on the anchor is a separate
+control). On Postgres the connecting role needs SELECT, INSERT and DELETE on the holds table and nothing
+else; the role that erases cannot read or change it.
 ```
 
 ## bide approve
@@ -1359,7 +1382,11 @@ bide audit: produce and verify audit proof bundles
          erased that still holds content is NOT_ERASED; a tombstone not stamped at the time of a pass
          that listed it is TIME_MISMATCH; a run the trail names with no journal given is UNCHECKED (a
          trail checked against no journal checked nothing); a redaction that ran without a covering
-         signed journal head is UNCOVERED, and one that left the run's events in the event store is EVENT_COPIES_KEPT. A pass is judged by its last record, so a failed pass that
+         signed journal head is UNCOVERED, and one that left the run's events in the event store is EVENT_COPIES_KEPT; a pass that began under a
+         legal hold the trail shows over the run is REDACTED_UNDER_HOLD; the holds in force by the trail are
+         listed and, against a database, compared with its holds (HOLD_NOT_IN_STORE: lifted by hand,
+         HOLD_NOT_IN_TRAIL: placed by hand, HOLD_DIFFERS), and a lift or placement the trail does not match
+         is HOLD_UNMATCHED. A pass is judged by its last record, so a failed pass that
          the same plan later finished is a note, not a finding. -db and -postgres-env read every run's
          journal (and the trail, unless -trail-db or -trail-postgres-env name the store it is kept in
          apart from the journal) from a store, in the full bide command; the audit-only build reads
