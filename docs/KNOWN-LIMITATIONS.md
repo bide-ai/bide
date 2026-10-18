@@ -520,7 +520,7 @@ its heads, and erase through the command, since an erasure outside it is reporte
 command signs the trail with a key file; HSM and KMS signing go through the library until `bide-hsm`
 gains it. On SQLite it overwrites the replaced bytes and truncates the write-ahead log, which a reader
 holding the database open prevents (the command says so and exits 1); on Postgres the replaced row
-versions stay until the operator's `VACUUM`. Legal holds (`agent.Holder`) stop the store from erasing a held run, but placing and lifting them are not yet recorded in the signed trail and there is no command for them: they are library calls. A record someone redacted by hand and stamped with the time of an unfinished pass of the trail counts as accounted, limited to the records that pass was authorised to erase.
+versions stay until the operator's `VACUUM`. Legal holds (`bide journal hold`, `agent.Holder`) stop the store from erasing a held run and are recorded in the signed trail, but they stop only bide's own erasure (not a database administrator, a restore or a hand-written `DELETE`), and lifting one does not yet need a second person's signed authorization. A record someone redacted by hand and stamped with the time of an unfinished pass of the trail counts as accounted, limited to the records that pass was authorised to erase.
 A journal holding a tombstone cannot produce a new absence set, run certificate or event stream
 (`audit.ErrRedacted`): make that evidence first. It does not erase the run's final result
 (`run:complete` is an end marker and stays), the record names, copies in exported journals,

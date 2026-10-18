@@ -216,7 +216,11 @@ const usageText = `bide audit: produce and verify audit proof bundles
          erased that still holds content is NOT_ERASED; a tombstone not stamped at the time of a pass
          that listed it is TIME_MISMATCH; a run the trail names with no journal given is UNCHECKED (a
          trail checked against no journal checked nothing); a redaction that ran without a covering
-         signed journal head is UNCOVERED, and one that left the run's events in the event store is EVENT_COPIES_KEPT. A pass is judged by its last record, so a failed pass that
+         signed journal head is UNCOVERED, and one that left the run's events in the event store is EVENT_COPIES_KEPT; a pass that began under a
+         legal hold the trail shows over the run is REDACTED_UNDER_HOLD; the holds in force by the trail are
+         listed and, against a database, compared with its holds (HOLD_NOT_IN_STORE: lifted by hand,
+         HOLD_NOT_IN_TRAIL: placed by hand, HOLD_DIFFERS), and a lift or placement the trail does not match
+         is HOLD_UNMATCHED. A pass is judged by its last record, so a failed pass that
          the same plan later finished is a note, not a finding. -db and -postgres-env read every run's
          journal (and the trail, unless -trail-db or -trail-postgres-env name the store it is kept in
          apart from the journal) from a store, in the full bide command; the audit-only build reads

@@ -36,6 +36,8 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `const RedactionRecordFormat = "bide.audit.redaction-record.v1"`: RedactionRecordFormat is the format of a RedactionRecord.
 - `const RedactionBegin = "begin"`, `const RedactionEnd = "end"`: Phases of a RedactionRecord.
 - `const RedactionAcknowledge = "acknowledge"`: RedactionAcknowledge is the phase of a record in which an operator acknowledges a planted leaf (see AcknowledgeRecord).
+- `const RedactionHoldPlaced = "hold_placed"`: RedactionHoldPlaced and RedactionHoldLifted are the phases of the records of a legal hold being placed and lifted (see PlaceLegalHold and LiftLegalHold).
+- `const RedactionHoldLifted = "hold_lifted"`: Phases of a RedactionRecord.
 - `const TreeJournal = "journal"`: TreeJournal is a run's journal: one leaf per record, in persisted order (NewTreeHead).
 - `const TreeEvents = "events"`: TreeEvents is a run's semantic event stream (EventLog.TreeHead).
 - `const TreeToolUse = absenceKindPrefix + "tool-use"`: TreeToolUse is the sorted, distinct tool-use keys of a run's completed tool calls (ToolUseKeys), the tree tool-call absence proofs verify against.
@@ -99,9 +101,11 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `func Head(ctx context.Context, store *agent.Journal, runID string) ([]byte, error)`: Head returns the hash-chain commitment to runID's journal: head\_0 = H(domain), and head\_i = H(head\_{i-1} || stored(record\_i)) over the records in persisted order, where stored is the bytes the journal stores for the record (agent.Record.Raw), verbatim.
 - `func JournalLeafHash(recordBytes []byte) []byte`: JournalLeafHash returns the RFC 6962 leaf hash of a journal record from the bytes the journal stores for it: SHA-256(0x00 || "bide.audit.journal-leaf.v1\\x00" || recordBytes).
 - `func KeyID(alg string, pub []byte) string`: KeyID is the key identity the audit verifiers report from KeyIDs: alg, a colon, and the lowercase hex SHA-256 of the public key's encoding (for Ed25519 the 32-byte key, for ML-DSA its FIPS 204 encoding).
+- `func LiftLegalHold(ctx context.Context, trail EventStore, holder agent.Holder, signer Signer, deployment string, prior []SignedTreeHead, id, reason, ticket, executor string, now time.Time) error`: LiftLegalHold lifts the hold id in holder (the store) after recording the lift in the redaction trail: the record comes first, so a hold is never lifted without evidence, and a failure to lift after the record leaves a hold still in force that the audit reports (HOLD\_NOT\_IN\_STORE reads the other way, a hold the trail shows active and the store lacks; this case shows as the store holding a hold the trail shows lifted, HOLD\_NOT\_IN\_TRAIL).
 - `func NumericAtMost(parent, child string) bool`: NumericAtMost is the ScopeRule for an integer upper bound (a limit): the child's value, parsed as a base-10 integer, must be at most the parent's.
 - `func PersistEvent(ctx context.Context, evStore EventStore, runID string, seq int, e agent.RunEvent) error`: PersistEvent appends one event's canonical leaf to evStore at position seq, for callers streaming events into a store directly; prefer PersistJournal for the crash-safe path.
 - `func PersistJournal(ctx context.Context, evStore EventStore, jStore *agent.Journal, runID string) error`: PersistJournal mirrors runID's durable event trail into evStore by projecting the journal (agent.ReplayEvents) and appending each canonical event leaf at its position.
+- `func PlaceLegalHold(ctx context.Context, trail EventStore, holder agent.Holder, signer Signer, deployment string, prior []SignedTreeHead, h agent.Hold, reason, ticket, executor string, now time.Time) error`: PlaceLegalHold places h in holder (the store) and records it in the redaction trail: a record signed with signer (the redaction key) naming the hold, its matter, the runs it covers, the reason, the ticket and who.
 - `func PlainDistributionPoints(c *x509.Certificate) ([][]string, bool)`: PlainDistributionPoints returns the URIs of each of c's CRL distribution points that is a plain point: one that holds only a fullName (no reasons, no cRLIssuer, no relative name), in the order the certificate has them, each point's URIs in order.
 - `func PoliciesUsed(records []agent.Record) ([]string, error)`: PoliciesUsed returns the sorted, distinct policy digests exercised by governed actions in the run.
 - `func PolicyLeafName(digest string) string`: PolicyLeafName is the journal name of the policy leaf RecordPolicy writes for digest.
@@ -1739,6 +1743,11 @@ RedactionFindingKind names what VerifyRedactions found wrong.
 - `const FindingNameMismatch RedactionFindingKind = "NAME_MISMATCH"`: FindingNameMismatch: a tombstone's name is not the name the trail recorded at that position.
 - `const FindingHashMismatch RedactionFindingKind = "HASH_MISMATCH"`: FindingHashMismatch: a tombstone's leaf hash is not the one the trail recorded.
 - `const FindingUncovered RedactionFindingKind = "UNCOVERED"`: FindingUncovered: a redaction that ran with no covering signed head.
+- `const FindingUnderHold RedactionFindingKind = "REDACTED_UNDER_HOLD"`: FindingUnderHold: a pass erased records of a run a legal hold in force covered.
+- `const FindingHoldUnmatched RedactionFindingKind = "HOLD_UNMATCHED"`: FindingHoldUnmatched: a hold\_lifted record for a hold the trail shows no active placement of, or a placement of an ID already active.
+- `const FindingHoldNotInStore RedactionFindingKind = "HOLD_NOT_IN_STORE"`: FindingHoldNotInStore: the trail says a hold is active and the store holds none: lifted by hand.
+- `const FindingHoldNotInTrail RedactionFindingKind = "HOLD_NOT_IN_TRAIL"`: FindingHoldNotInTrail: the store holds a hold the trail never recorded: placed by hand.
+- `const FindingHoldDiffers RedactionFindingKind = "HOLD_DIFFERS"`: FindingHoldDiffers: the store's hold and the trail's have the same ID and differ in runs, tree setting or matter.
 - `const FindingReordered RedactionFindingKind = "REORDERED"`: FindingReordered: a trail record that is not at the position, or after the record, it was signed for: a replayed, copied or reordered record.
 - `const FindingBadSignature RedactionFindingKind = "BAD_SIGNATURE"`: FindingBadSignature: a trail record with no signature, or one that does not verify under the key: not the tool's, whatever head covers it.
 - `const FindingEventCopies RedactionFindingKind = "EVENT_COPIES_KEPT"`: FindingEventCopies: an erasure that left the run's events in the event store.
@@ -1811,6 +1820,11 @@ type RedactionRecord struct {
 	AckPosition int    `json:"ack_position,omitempty"`
 	AckLeafHash string `json:"ack_leaf_hash,omitempty"`
 
+	HoldID     string   `json:"hold_id,omitempty"`
+	HoldMatter string   `json:"hold_matter,omitempty"`
+	HoldRuns   []string `json:"hold_runs,omitempty"`
+	HoldTree   bool     `json:"hold_tree,omitempty"`
+
 	Alg       string `json:"alg"`
 	Signature []byte `json:"signature"`
 }
@@ -1832,6 +1846,8 @@ type RedactionReport struct {
 	Anchored   bool               `json:"anchored"`
 	HeadSize   int                `json:"head_size,omitempty"`
 	Findings   []RedactionFinding `json:"findings,omitempty"`
+
+	Holds []agent.Hold `json:"holds,omitempty"`
 
 	Notes []string `json:"notes,omitempty"`
 }
@@ -1859,6 +1875,8 @@ type RedactionVerifyInput struct {
 	Unanchored bool
 
 	Deployment string
+
+	StoreHolds *[]agent.Hold
 
 	Journals map[string][]agent.Record
 }

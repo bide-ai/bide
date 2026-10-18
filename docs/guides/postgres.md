@@ -66,7 +66,7 @@ Pin the schema with `WithSchema`: the store then trusts the schema's owner and a
 |---|---|
 | `bide_owner` | Owns the schema, the tables and `bide_next_seq_v1`. Runs `bide migrate`. Not used by the running service |
 | `bide_app` | `USAGE` on the schema. `SELECT`, `INSERT` on `bide_steps` and `bide_events`. `SELECT`, `INSERT`, `UPDATE`, `DELETE` on `bide_leases`. `SELECT` on `bide_schema_version`. `EXECUTE` on `bide_next_seq_v1(text)`. **No `CREATE`** |
-| `bide_reader` | `USAGE` on the schema, `SELECT` on the four tables; opens the store with `postgres.OpenReadOnly` |
+| `bide_reader` | `USAGE` on the schema, `SELECT` on the four tables, and on `bide_holds` for `bide audit redactions -postgres-env` (it compares the holds with the trail's); opens the store with `postgres.OpenReadOnly` |
 | `bide_redactor` | Only for erasing personal data from finished runs ([retention guide](retention.md#erasing-personal-data)): `USAGE` on the schema and `EXECUTE` on `bide_redact_v2(text, text, bytea, bigint)`. **No privilege on any table**: it cannot read, insert, update or delete a row itself. The function is `SECURITY DEFINER`, owned by `bide_owner`, and does the whole redaction server-side (see below), so raw SQL by this role cannot write anything a redaction would not. Do not give it to the application |
 
 ```sql
@@ -78,7 +78,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON bide.bide_leases TO bide_app;
 GRANT SELECT ON bide.bide_schema_version TO bide_app;
 REVOKE ALL ON FUNCTION bide.bide_next_seq_v1(text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION bide.bide_next_seq_v1(text) TO bide_app;
-GRANT SELECT ON bide.bide_steps, bide.bide_events, bide.bide_leases, bide.bide_schema_version TO bide_reader;
+GRANT SELECT ON bide.bide_steps, bide.bide_events, bide.bide_leases, bide.bide_schema_version, bide.bide_holds TO bide_reader;
 -- only for the tool that erases personal data (agent.Redact); the migration created the function
 -- and withdrew EXECUTE from PUBLIC:
 GRANT USAGE ON SCHEMA bide TO bide_redactor;
