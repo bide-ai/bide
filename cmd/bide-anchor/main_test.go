@@ -14,6 +14,7 @@ import (
 	"github.com/bide-ai/bide/anchor/awss3"
 	"github.com/bide-ai/bide/anchor/awss3/awss3test"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/audit/anchorobj"
 )
 
 const owner = "111122223333"
@@ -260,5 +261,23 @@ func TestBackendFlag(t *testing.T) {
 	code, _, errs = e.do("check", "-backend", "azure", "-bucket", "b", "-owner", owner, "-pubkey", e.pub, "-run", "r1")
 	if code != exitUsage || !strings.Contains(errs, `"azure" is not one of: s3`) {
 		t.Errorf("-backend azure = %d %q; want a usage error naming the backends", code, errs)
+	}
+}
+
+// The S3 layout is valid, and it is the one the backend reads. When another backend is linked (the GCS
+// one), this is where its Layout is checked not to collide with this one: only a program that links
+// both can import both without dragging both SDKs into each module.
+func TestBackendLayoutsDoNotCollide(t *testing.T) {
+	l := awss3.Layout()
+	if err := l.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	layouts := map[string]anchorobj.Layout{"s3": l}
+	for a, la := range layouts {
+		for b, lb := range layouts {
+			if a != b && la.Collides(lb) {
+				t.Errorf("the %s and %s layouts collide: one could take the other's objects", a, b)
+			}
+		}
 	}
 }

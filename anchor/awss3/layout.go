@@ -25,6 +25,11 @@ const (
 // layout is this backend's naming and encoding of anchored heads.
 var layout = anchorobj.Layout{Format: ObjectFormat, PartitionTag: layoutTag, ErrObject: ErrObject, ErrBadSignature: ErrBadSignature}
 
+// Layout is this backend's naming and encoding of anchored heads: its object format and partition tag.
+// A program that links more than one object-store backend (bide-anchor) checks with Layout.Collides
+// that no two backends could take each other's objects.
+func Layout() anchorobj.Layout { return layout }
+
 // partitionOf is the partition name of a tree kind and run ID.
 func partitionOf(kind, runID string) string { return layout.Partition(kind, runID) }
 
