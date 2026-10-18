@@ -3171,8 +3171,17 @@ nothing in the model starts it again.
 | `stop-blocked-reach` | ci | reachability: a call reads a stop and is not started (`BlockedNotReachable` violated) |
 | `stop-lift-reach` | ci | reachability: an audited lift by a quorum of two (`AuditedLiftNotReachable` violated) |
 | `stop-rotated-reach` | ci | reachability: policy 2 in force with a policy-1 stop active (`RotatedNotReachable` violated) |
-| `deep-stop-trail` | nightly | the write order with a trail at three records and one crashed write (723,639 states, 12 s) |
+| `deep-stop-trail` | nightly | the write order with a trail at three records and one crashed write, every kind of record in play (584,224 states, 13 s) |
+| `deep-stop-trail-slp` | nightly | the same at four records with only stops, lifts and policy transitions in play: a lift judged under the policy in force after a rotation, and a pending approval re-applied after later writes (8,338,462 states, 3 min) |
 | `deep-stop` | nightly | the audited process at four records |
+
+Which kinds of record each configuration has in play (`UseKinds`): every configuration has all four of a
+stop, a lift, a policy transition and a mode record (as signed records, plus unsigned and forged ones) except
+`deep-stop-trail-slp`, which narrows them to stops, lifts and transitions to reach four records. The
+interactions between a stop, a lift and a transition are therefore covered at three records by the CI
+configuration `stop-rotation` (the policy in force at each record) and `stop-trail`, and at three and four
+records by the nightly `deep-stop-trail` and `deep-stop-trail-slp`. The trail configurations (`stop-trail`,
+`deep-stop-trail*`) have one crashed write (`MaxWriteCrash`); a record is inserted into the control log once.
 
 ### Counterexample configurations
 
