@@ -16,6 +16,7 @@ Package anchorobj is the part of an object-store audit anchor that does not depe
 - `const DigestHex = 32`: DigestHex is the length of the digest in an object name, in hex digits.
 - `const ObjectSuffix = ".json"`: ObjectSuffix ends every object name.
 - `const PartitionLen = 64`: PartitionLen is the length of a partition name (a hex SHA-256).
+- `const MaxObjectBytes = 1 << 20`: MaxObjectBytes bounds what is read for one object: a head is a few hundred bytes plus the run ID, and no object an anchor writes is near this size.
 
 **Functions**
 
@@ -47,6 +48,7 @@ Layout is one backend's naming and encoding of anchored heads.
 - `func (l Layout) Decode(partition, name string, body []byte, v audit.Verifier) (audit.SignedTreeHead, error)`: Decode checks that body is the object the key names (partition and name) and returns its head.
 - `func (l Layout) Encode(sth audit.SignedTreeHead) ([]byte, error)`: Encode is the body of the object that anchors sth.
 - `func (l Layout) Key(prefix, kind, runID string, size int, body []byte) string`: Key is the full key of a body for a head of the given kind, run and size.
+- `func (l Layout) LoadDir(dir string, v audit.Verifier, errNotFound, errEquivocation error) ([]audit.SignedTreeHead, error)`: LoadDir reads a downloaded set of anchored objects (for example the output of "aws s3 sync" or "gcloud storage cp -r" of the anchor prefix) and verifies each against v.
 - `func (l Layout) Partition(kind, runID string) string`: Partition is the partition name of a tree kind and run ID.
 - `func (l Layout) Validate() error`: Validate reports why l cannot be used: an empty format, a partition tag that does not end in a NUL byte (so that one tag could be a prefix of another), or a missing error value (an error wrapping a nil error would match nothing).
 

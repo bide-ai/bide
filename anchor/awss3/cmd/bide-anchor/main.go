@@ -233,6 +233,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 				err = fmt.Errorf("%w for %s %q", awss3.ErrNotFound, kind, run)
 			}
 		}
+		if errors.Is(err, awss3.ErrEquivocation) {
+			return fail(exitFindings, "%v; not exporting", err)
+		}
 		if err != nil {
 			return fail(exitFindings, "%v", err)
 		}

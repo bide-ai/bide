@@ -201,3 +201,15 @@ func TestUsageErrors(t *testing.T) {
 		}
 	}
 }
+
+// An empty directory has nothing to verify: neither command passes on it.
+func TestEmptyDirectoryFailsBothCommands(t *testing.T) {
+	e := setup(t)
+	dir := t.TempDir()
+	if code, out, _ := e.do("verify", "-dir", dir, "-pubkey", e.pub); code != 1 || !strings.Contains(out, "nothing to verify") {
+		t.Errorf("verify of an empty directory = %d %s; want exit 1 naming nothing to verify", code, out)
+	}
+	if code, _, errs := e.do("export", "-dir", dir, "-pubkey", e.pub, "-run", "r1"); code != 1 || !strings.Contains(errs, "nothing to verify") {
+		t.Errorf("export of an empty directory = %d %s; want exit 1 naming nothing to verify", code, errs)
+	}
+}
