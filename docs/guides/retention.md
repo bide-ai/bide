@@ -170,6 +170,38 @@ Sign the trail's head with `audit.SignRedactionTrail(ctx, trail, signer, verifie
 
 **What a planted record means for you.** A signed head over the trail attests that the leaves exist, not that the tool wrote them. A record planted in the trail is reported by every later `bide audit redactions` run, so that deployment's audit does not pass again until the plant is dealt with: a planted record never blocks an erasure and never accounts for one, and it stays in the trail because the trail is append-only. When you see `BAD_SIGNATURE`, `REORDERED` or `MALFORMED`, investigate who could append to the event store (the application's role should not be able to reach the trail's database: keep the trail apart, `-trail-db`), and treat the trail as untrusted from that position. Then either start a new deployment name and trail epoch (a new `Deployment`, a trail store of its own, and your anchor keeping the old trail and its heads), or, once it is built, acknowledge the record with a signed note (a signed `ACKNOWLEDGED` record naming the planted leaf's position and hash, which the audit then reports as acknowledged; this is planned and not yet in bide). It reads exported files (`-trail`, `-journal`, `-sth`, `-pubkey`) or a database (`-db`, `-postgres-env`). The trail is only as good as its anchoring: anchor its signed heads.
 
+### The command
+
+`bide journal redact` is the way to erase: a dry run, then an erasure that writes to the signed trail before and after it erases.
+
+```text
+# 1. List the plan. Nothing changes; no record content is printed; the output ends with a plan digest.
+bide journal redact -db journal.db -run r1 -payloads
+
+# 2. Erase: the same selection, the digest you reviewed, why, who authorised, the deployment name,
+#    the log signing key, the journal head that covers the run, and the file the signed trail head goes to.
+bide journal redact -db journal.db -run r1 -payloads -execute -plan-digest <digest> \
+    -reason "customer erasure request" -ticket PRIV-42 -deployment bank-a \
+    -sign-key log.key -head-out redaction-heads.jsonl -pubkey log.pub -sth r1.sth
+
+# 3. Verify the trail against the journals, offline or against the database; give every head in the file.
+bide audit redactions -db journal.db -deployment bank-a -pubkey log.pub -sth head1.json ...
+```
+
+What it does and refuses, in the order it checks:
+
+1. It refuses a run that is not over, whose lease is live, whose parent is not over, or that belongs to a session, and lists protected records as kept. A live lease is checked before anything is written, so a refused run leaves nothing in the trail.
+2. **It refuses a run that no signed journal head covers**: `-sth` heads that verify under `-pubkey`, match the journal and cover all of it. `-allow-uncovered` erases anyway; that is recorded in the trail and `bide audit redactions` fails on it (`UNCOVERED`).
+3. It refuses a run whose events the event store (`bide_events`) holds, unless `-keep-event-copies`, which is recorded with the number of events left (`EVENT_COPIES_KEPT`).
+4. It refuses unless `-plan-digest` is the digest of the plan it computes now, so what was reviewed is what runs.
+5. It checks the trail against the signed heads it has had so far (the `-head-out` file) and refuses, before erasing anything, if the trail does not match them (a typo in `-trail-db` starts a new trail). A trail that already holds records and has no earlier head is refused too, unless `-accept-unheaded-trail`: nothing attests those records.
+6. It appends a `begin` record, erases each record in its own transaction, appends an `end` record, and signs the trail's head with `-sign-key` (a key file, mode 0600, never an argument) and appends it to `-head-out`, also after a failed pass, so the attempt is attested. **Anchor those heads**: an unanchored trail proves nothing about deletions. If a pass stops partway, run the same command again.
+7. It then makes the storage let go of the bytes. On SQLite it ran the erasure with `secure_delete` on, so the replaced bytes were overwritten in the page, and it now checkpoints and truncates the write-ahead log; the report says what the engine reported, and **if a reader holds the database open the checkpoint cannot finish: the command says "STORAGE NOT COMPACTED", exits 1 and tells you to close the readers and run it again** (the old bytes may remain in the log or the file until then). On Postgres the replaced row versions stay as dead tuples until `VACUUM`; that, and replicas, WAL archives and backups, are the operator's, and the report says so.
+
+Keep the trail where the erasing role cannot rewrite it (`-trail-db`, `-trail-postgres-env`, which honours `-schema`: a separate database). On Postgres give the erasing role its own DSN (`-redact-postgres-env`) and read with another (`-postgres-env`): the role that erases holds only `EXECUTE` on the redaction function and can read nothing. `-subruns` plans each sub-agent run of the root as well, each recorded on its own. The report ends with the copies the command cannot reach (see the scope list below). The trail is signed with a key file from the command line; HSM and KMS signers go through the library (`audit.RedactJournal`, `audit.SignRedactionTrail`) until `bide-hsm` gains it.
+
+`bide audit redactions` checks the trail; see [The redaction trail](#the-redaction-trail) for its findings.
+
 Scope: what a redaction does not reach. Say this to the people who ask you to erase:
 
 - Copies outside this database: exported journals (`audit.ExportJournal`), evidence packages, proofs and approvers' receipts hold the bytes they were made from, including the salt; erase them yourself.
@@ -182,7 +214,7 @@ Who may erase: the application's database role should not be able to. On Postgre
 
 ## What deleting does
 
-**What bide gives you.** The journal port has no update and no delete (`agent.Store`, rule A6). A store may replace a record's bytes with a reserved tombstone (`{"redacted":{"leaf_hash":"<64 lower-case hex>","at_ms":<ms>,"name":"<name>"}}`, in exactly this byte form: a tombstone with a duplicate or differently cased member, extra space or another member is not read as one) that keeps its position, its name and its leaf hash, so other records' proofs and the root are unchanged; readers (`audit`, `bide view`, `verify-receipts`, which reports `redacted (anchored)`) understand a tombstone. SQLite, Postgres and `MemStore` implement the optional `agent.Redactor` capability that writes one, and `agent.PlanRedaction` and `agent.Redact` use it; see [Erasing personal data](#erasing-personal-data). There is no command yet (`bide journal redact` is planned, see [the design](../design/journal-redaction.md)); `audit.RedactJournal` and `bide audit redactions` are the accountable path and its check. A run that holds a tombstone is over and cannot be driven again. A redacted record can no longer be proven, and a journal holding one refuses to project the absence key sets, a run certificate or the event stream (`audit.ErrRedacted`).
+**What bide gives you.** The journal port has no update and no delete (`agent.Store`, rule A6). A store may replace a record's bytes with a reserved tombstone (`{"redacted":{"leaf_hash":"<64 lower-case hex>","at_ms":<ms>,"name":"<name>"}}`, in exactly this byte form: a tombstone with a duplicate or differently cased member, extra space or another member is not read as one) that keeps its position, its name and its leaf hash, so other records' proofs and the root are unchanged; readers (`audit`, `bide view`, `verify-receipts`, which reports `redacted (anchored)`) understand a tombstone. SQLite, Postgres and `MemStore` implement the optional `agent.Redactor` capability that writes one, and `agent.PlanRedaction` and `agent.Redact` use it; see [Erasing personal data](#erasing-personal-data). `bide journal redact` is the command, `audit.RedactJournal` the library behind it, and `bide audit redactions` the check ([the design](../design/journal-redaction.md)). A run that holds a tombstone is over and cannot be driven again. A redacted record can no longer be proven, and a journal holding one refuses to project the absence key sets, a run certificate or the event stream (`audit.ErrRedacted`).
 
 **How tampering is detected.** Detection is by position. A signed head commits to the first N records; a journal that differs from it in that prefix (a record removed, changed or reordered) no longer hashes to the head's root. A record after the newest head is not covered. Deleting a record from a journal you then present with its head is therefore found, and deleting without the head is not.
 

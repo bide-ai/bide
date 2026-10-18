@@ -338,3 +338,23 @@ func RedactionSession(runID string) bool {
 		id = id[:i]
 	}
 }
+
+// Compactor is the optional store capability that makes an erasure complete at the storage layer: a
+// store whose engine keeps the bytes a redaction replaced (SQLite's write-ahead log and freed pages)
+// overwrites them. A store opts in by implementing Compact; the command calls it after a pass. Postgres
+// does not: its dead tuples go with VACUUM, which the operator runs.
+type Compactor interface {
+	// Compact makes the replaced bytes unrecoverable from the store's own files, as far as the engine
+	// allows, and reports whether it could. It does not claim success it did not get: a reader that
+	// holds the database open can keep the engine from finishing, which Complete false reports.
+	Compact(ctx context.Context) (CompactionReport, error)
+}
+
+// CompactionReport says what Compact did.
+type CompactionReport struct {
+	// Complete is whether the engine finished (for SQLite, the WAL checkpoint ran to the end and the
+	// log was truncated). False means old bytes may remain: close the readers and run it again.
+	Complete bool `json:"complete"`
+	// Detail says what the engine reported, for the operator.
+	Detail string `json:"detail"`
+}

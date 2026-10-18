@@ -122,6 +122,7 @@ Temporal 借助一个服务器和一支 worker 机群提供持久化执行。而
 - **截止时间。** 使用 `Timeout` 时，未能按时获得批准的关卡会过期：过期被记录为关卡的结果，调用永不执行，迟到的决定不被计入，通知器会发出通知（`approval_expired`）。见[截止时间](../../docs/guides/hitl-approval.md#deadlines)。
 - **密钥置于应用之外。** 审计日志和批准人的签名密钥可以放在 PKCS#11 HSM、AWS KMS、Google Cloud KMS 或 Azure Key Vault 中，位于同一个 `audit.Signer` 接口之后，使用 Ed25519 或 ECDSA P-256。验证方只持有公钥。这是密钥托管，不是合规认证：[密钥托管](../../docs/guides/key-custody.md)列出了每种签名器所针对的测试对象（SoftHSM2 和模拟器，从不是真实的云）以及它不检查的内容。
 - **有记录的通知。** 运行停止或等待批准时会发出通知（已签名的 HTTPS webhook，`notify.NewWebhook`），审计轨迹记录每次尝试以及接收端是否确认。确认的意思是你的端点返回了 2xx，而不是有人读过它。通知可按类别或批准人路由，在截止时间前无人确认时升级，事件不再有效时发出 `resolved` 解除通知。该轨迹可用与日志相同的签名器签名并锚定（可选；发布尽力而为，从不延迟投递）。批准人也可以打开通知中的链接，在浏览器页面里用不可导出的密钥签名（由你的组织托管，需要 `WithAuth`）。参见[通知](../../docs/guides/notifications.md)。
+- **[删除个人数据](../../docs/guides/retention.md#erasing-personal-data)**：`bide journal redact` 先给出演练计划，再把已结束运行中选定的记录替换为墓碑，墓碑保留它们在已签名头中的位置，并把每次删除记录到已签名的轨迹中，由 `bide audit redactions` 校验。它不涉及日志之外的副本（导出文件、备份、事件存储、模型提供方）；指南列出了它做不到的事。
 
 范围见[已知限制](../../docs/KNOWN-LIMITATIONS.md#approval-and-quorum)：批准人是固定的具名集合；把密钥关联到某个人是你的身份提供方的工作；决定的时间是批准人自己的声明。
 

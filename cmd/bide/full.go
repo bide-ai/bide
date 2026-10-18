@@ -15,6 +15,7 @@ import (
 	"github.com/bide-ai/bide/cmd/bide/internal/editcmd"
 	"github.com/bide-ai/bide/cmd/bide/internal/identitycmd"
 	"github.com/bide-ai/bide/cmd/bide/internal/initcmd"
+	"github.com/bide-ai/bide/cmd/bide/internal/journalcmd"
 	"github.com/bide-ai/bide/cmd/bide/internal/migratecmd"
 	"github.com/bide-ai/bide/cmd/bide/internal/notifycmd"
 	"github.com/bide-ai/bide/cmd/bide/internal/samplecmd"
@@ -76,6 +77,13 @@ func fullCommands() []command {
 			run:     notifycmd.Main,
 			exits:   commonExits,
 			verbs:   notifycmd.Verbs(),
+		},
+		{
+			name:    "journal",
+			summary: "erase personal data from finished runs of a journal, accountably: a dry-run plan, then a signed record of each erasure",
+			run:     journalcmd.Main,
+			exits:   commonExits,
+			verbs:   journalcmd.Verbs(),
 		},
 		{
 			name:    "approve",

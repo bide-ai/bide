@@ -57,10 +57,11 @@ type Store struct {
 }
 
 var (
-	_ agent.Store    = (*Store)(nil)
-	_ agent.Redactor = (*Store)(nil)
-	_ agent.Lister   = (*Store)(nil)
-	_ agent.Leaser   = (*Store)(nil)
+	_ agent.Store     = (*Store)(nil)
+	_ agent.Redactor  = (*Store)(nil)
+	_ agent.Compactor = (*Store)(nil)
+	_ agent.Lister    = (*Store)(nil)
+	_ agent.Leaser    = (*Store)(nil)
 )
 
 // tables holds the table names, prefixed, and the statements built from them.
@@ -408,7 +409,7 @@ func (s *Store) Redact(ctx context.Context, runID, name string, current, tombsto
 	if err != nil {
 		return false, fmt.Errorf("redact step %q: %w (%w)", name, err, agent.ErrStorage)
 	}
-	res, err := s.write(ctx, s.t.redact, runID, name, tombstone, current, string(markers), string(ancestors))
+	res, err := s.writeSecure(ctx, s.t.redact, runID, name, tombstone, current, string(markers), string(ancestors))
 	if err != nil {
 		return false, fmt.Errorf("redact step %q: %w (%w)", name, err, agent.ErrStorage)
 	}
@@ -439,6 +440,64 @@ func (s *Store) Redact(ctx context.Context, runID, name string, current, tombsto
 		}
 	}
 	return false, st.Explain(runID, name, current, tombstone)
+}
+
+// writeSecure runs one write statement with secure_delete on, on the writer's connection, so the
+// bytes the statement replaces are overwritten with zeros in the page rather than left in it. The
+// pragma is switched back off afterwards: it makes every write slower, and only an erasure needs it.
+func (s *Store) writeSecure(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	leave, err := s.gate.Enter(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer leave()
+	conn, err := s.w.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `PRAGMA secure_delete = ON`); err != nil {
+		return nil, fmt.Errorf("secure_delete: %w", err)
+	}
+	defer conn.ExecContext(context.WithoutCancel(ctx), `PRAGMA secure_delete = OFF`)
+	return conn.ExecContext(ctx, query, args...)
+}
+
+// compactBusyTimeout is how long Compact waits for a reader before it reports the checkpoint busy.
+const compactBusyTimeout = 2 * time.Second
+
+// Compact implements agent.Compactor: it checkpoints the write-ahead log and truncates it
+// (PRAGMA wal_checkpoint(TRUNCATE)), which copies the pages an erasure rewrote (their old bytes
+// zeroed, see Redact) into the database file and empties the log that held the old pages. A reader
+// that holds the database open can keep the checkpoint from finishing; the engine then reports it
+// busy, and so does the result (Complete false), and the old bytes may remain in the log or the
+// file until the readers are closed and Compact runs again. It does not VACUUM: free pages from
+// earlier deletions are not its concern, and a VACUUM rewrites the whole file.
+func (s *Store) Compact(ctx context.Context) (agent.CompactionReport, error) {
+	leave, err := s.gate.Enter(ctx)
+	if err != nil {
+		return agent.CompactionReport{}, err
+	}
+	defer leave()
+	conn, err := s.w.Conn(ctx)
+	if err != nil {
+		return agent.CompactionReport{}, err
+	}
+	defer conn.Close()
+	// A reader keeps the checkpoint waiting; do not wait the writers' long timeout for it.
+	if _, err := conn.ExecContext(ctx, fmt.Sprintf(`PRAGMA busy_timeout = %d`, compactBusyTimeout.Milliseconds())); err != nil {
+		return agent.CompactionReport{}, fmt.Errorf("busy_timeout: %w (%w)", err, agent.ErrStorage)
+	}
+	defer conn.ExecContext(context.WithoutCancel(ctx), fmt.Sprintf(`PRAGMA busy_timeout = %d`, writeBusyTimeout.Milliseconds()))
+	var busy, logFrames, checkpointed int
+	if err := conn.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &logFrames, &checkpointed); err != nil {
+		return agent.CompactionReport{}, fmt.Errorf("wal checkpoint: %w (%w)", err, agent.ErrStorage)
+	}
+	detail := fmt.Sprintf("wal_checkpoint(TRUNCATE): busy=%d, log frames=%d, checkpointed=%d", busy, logFrames, checkpointed)
+	if busy != 0 {
+		return agent.CompactionReport{Detail: detail + ": a reader holds the database open, so the log was not truncated and the old bytes may remain; close the readers and run the compaction again"}, nil
+	}
+	return agent.CompactionReport{Complete: true, Detail: detail}, nil
 }
 
 // write runs one write statement on the writer connection when it is this process's turn at the
