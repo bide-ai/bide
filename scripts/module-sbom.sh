@@ -60,6 +60,15 @@ SYFT
   if (cd "$tmp/cwd" && PATH="$tmp/bin:$PATH" FAKE_VERSION=v9.9.9 FAKE_MODULES="$mods" "$here/module-sbom.sh" v9.9.9 - >"$tmp/log" 2>&1); then
     echo "self-test: OUT - was accepted"; ok=false
   fi
+  # A pre-release version is a release version; garbage after the patch number is not.
+  (cd "$tmp/cwd" && PATH="$tmp/bin:$PATH" FAKE_VERSION=v9.9.9-rc.1 FAKE_MODULES="$mods" "$here/module-sbom.sh" v9.9.9-rc.1 pre.json >"$tmp/log" 2>&1) \
+    && [ -s "$tmp/cwd/pre.json" ] || { echo "self-test: a pre-release version was refused:"; sed 's/^/    /' "$tmp/log"; ok=false; }
+  local bad
+  for bad in v9.9 v9.9.9x v9.9.9- 'v9.9.9-$x' 9.9.9 'v9.9.9;rm'; do
+    if (cd "$tmp/cwd" && PATH="$tmp/bin:$PATH" FAKE_VERSION=v9.9.9 FAKE_MODULES="$mods" "$here/module-sbom.sh" "$bad" bad.json >"$tmp/log" 2>&1); then
+      echo "self-test: version '$bad' was accepted"; ok=false
+    fi
+  done
   rm -rf "$tmp"
   $ok && echo "self-test: ok"
 }
@@ -79,7 +88,7 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-[[ "$VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || die "$VERSION is not a release version like v0.17.0"
+[[ "$VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]] || die "$VERSION is not a release version like v0.17.0 or v0.17.0-rc.1"
 [[ "$WAIT" =~ ^[0-9]+$ ]] || die "--wait takes a number of minutes"
 command -v syft >/dev/null || die "syft is not on the path"
 
