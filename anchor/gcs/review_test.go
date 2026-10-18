@@ -101,23 +101,31 @@ func TestAuditOfAnIntactBucketHasNoBucketFinding(t *testing.T) {
 	}
 }
 
-// A generation that is deleted between the listing and the read (the end of its retention) is a finding
-// or a report, not an abort of the whole read.
-func TestAGenerationThatVanishesDoesNotAbortTheRead(t *testing.T) {
+// A generation that is listed and then cannot be read (deleted at the end of its retention, or hidden)
+// is a positive fact. The head readers fail closed on it: a caller that checks freshness must not be
+// shown an older head as the latest. Audit reports it as a finding instead of aborting.
+func TestAVanishedGenerationFailsTheHeadReadersAndIsAnAuditFinding(t *testing.T) {
 	k := newKeys(t, 1)
 	f := gcstest.New()
 	a := newAnchor(t, f, nil)
 	publish(t, a, k.head(t, "r1", 3, 1))
 	publish(t, a, k.head(t, "r1", 5, 2))
-	names := f.Names()
-	f.VanishOnRead(names[0]) // the size 5 head's name sorts first
-	r, skipped := newReaderSkips(t, f, k.v)
-	got, err := r.Latest(ctx, "journal", "r1")
-	if err != nil || got.Size != 3 || len(*skipped) != 1 {
-		t.Fatalf("Latest = %v, %v, skipped %v; want the size 3 head and one report", got.Size, err, *skipped)
+	f.VanishOnRead(f.Names()[0]) // the size 5 head's name sorts first
+	r := newReader(t, f, k.v)
+	if got, err := r.Latest(ctx, "journal", "r1"); !errors.Is(err, gcs.ErrVanished) {
+		t.Fatalf("Latest = size %d, %v; want ErrVanished, not the older head", got.Size, err)
+	}
+	if _, err := r.Heads(ctx, "journal", "r1"); !errors.Is(err, gcs.ErrVanished) {
+		t.Fatalf("Heads = %v; want ErrVanished", err)
+	}
+	if _, err := r.Head(ctx, "journal", "r1", 5); !errors.Is(err, gcs.ErrVanished) {
+		t.Fatalf("Head(5) = %v; want ErrVanished", err)
+	}
+	if _, err := r.Head(ctx, "journal", "r1", 3); err != nil {
+		t.Fatalf("Head(3) = %v; a size whose generations are readable is unaffected", err)
 	}
 	rep, err := r.Audit(ctx, "journal", "r1", f.Now())
-	if err != nil || !hasFinding(rep, "vanished") {
-		t.Fatalf("Audit = %+v, %v; want a vanished finding", rep.Findings, err)
+	if err != nil || !hasFinding(rep, "vanished") || len(rep.Heads) != 1 {
+		t.Fatalf("Audit = %+v, %v; want a vanished finding and the readable head", rep.Findings, err)
 	}
 }

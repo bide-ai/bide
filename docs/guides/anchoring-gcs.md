@@ -150,8 +150,9 @@ head look like the latest. `Audit` reports:
   shorter than the anchor was configured with; versioning, uniform bucket-level access or public access
   prevention off; and, with `ReaderConfig.KMSKey`, another default key. `NewReader` refuses only a bucket
   owned by another project, so that a read-only check still runs on a bucket that has lost a protection;
-- every generation deleted between the listing and the read (a partition at the end of its retention is
-  reported, not an abort);
+- every generation deleted between the listing and the read (`Audit` reports it and goes on; `Latest`,
+  `Heads` and `Head` fail with `gcs.ErrVanished`, since under a locked policy it is a signal and an older
+  head must not be shown as the latest);
 - every name with more than one generation;
 - every object that is no verified head, and when its name claims a size larger than the largest verified
   head;
@@ -217,7 +218,8 @@ Cloud Storage bucket yet: a `-backend gcs` option, with `-project` taking the pr
 listing or a read that is unavailable (`ErrUnavailable`) or denied (`ErrDenied`) aborts with that error,
 and an aborted audit means the bucket's state is **unknown**, not that it is intact; retry it, and alert
 if it keeps failing. Only a fact the Reader positively saw becomes a finding, such as a generation that
-vanished between the listing and the read. `bide-anchor` will follow the same rule when it gains a GCS
+vanished between the listing and the read (and `Latest`, `Heads` and `Head` fail on that generation with
+`gcs.ErrVanished` rather than show an older head as the latest). `bide-anchor` will follow the same rule when it gains a GCS
 backend: a non-zero exit with no findings means the check could not be completed.
 
 Credentials come from Application Default Credentials, never from flags. Neither shows that the **journal**

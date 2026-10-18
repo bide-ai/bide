@@ -138,9 +138,9 @@ func (r *Reader) loadOne(ctx context.Context, x ObjectInfo) (sth audit.SignedTre
 	case errors.Is(err, ErrObject):
 		return skip(err.Error())
 	case errors.Is(err, ErrNoObject):
-		// Listed and then gone: deleted at the end of its retention while this read was running. Report
-		// it and read on; an auditor must still be able to read a partition that is being cleaned up.
-		return skip("the generation vanished between the listing and the read (deleted, retention ended?)")
+		// Listed and then gone (deleted at the end of its retention, or hidden): fail closed, naming it.
+		// Skipping it would show an older head as the latest.
+		return audit.SignedTreeHead{}, false, fmt.Errorf("%w: %s generation %s (deleted at the end of its retention, or hidden): run Reader.Audit to see the rest: %w", ErrVanished, x.Name, gen(x), err)
 	case err != nil:
 		return audit.SignedTreeHead{}, false, err
 	}
@@ -194,10 +194,9 @@ func (r *Reader) list(ctx context.Context, prefix string) ([]ObjectInfo, error) 
 // ReaderConfig.OnSkip, so a stray object cannot make a partition unreadable; if what it skipped claimed a
 // larger size than the head returned, a caller that must know uses bide-anchor check or Audit,
 // which fail on it. A well-formed head whose signature does not verify is an error (ErrBadSignature),
-// not skipped. A generation that vanishes between the listing and the read (deleted at the end of its
-// retention) is skipped and reported the same way, so a caller that ignores OnSkip is shown an older head
-// as the latest without an error; Audit reports the vanished generation, and a caller that must know uses
-// it. Latest lists generations, so an overwrite or a delete of the newest head's live object
+// not skipped. A generation that was listed and cannot be read (deleted at the end of its retention, or
+// hidden) is an error wrapping ErrVanished, never a skip: under a locked policy it is a signal, and an
+// older head must not be shown as the latest. Audit reports it as a finding. Latest lists generations, so an overwrite or a delete of the newest head's live object
 // does not make an older head look like the latest.
 func (r *Reader) Latest(ctx context.Context, kind, runID string) (audit.SignedTreeHead, error) {
 	var best []audit.SignedTreeHead
@@ -237,8 +236,8 @@ func (r *Reader) Latest(ctx context.Context, kind, runID string) (audit.SignedTr
 }
 
 // Heads returns every head anchored for the tree, in increasing size (heads of one size in name
-// order), each verified, with the skipping of Latest. It returns an error wrapping ErrEquivocation
-// when two heads of one size commit to different roots, and ErrNotFound when there is none.
+// order), each verified, with the skipping of Latest and its ErrVanished. It returns an error wrapping
+// ErrEquivocation when two heads of one size commit to different roots, and ErrNotFound when there is none.
 func (r *Reader) Heads(ctx context.Context, kind, runID string) ([]audit.SignedTreeHead, error) {
 	refs, err := r.list(ctx, r.prefix+partitionOf(kind, runID)+"/")
 	if err != nil {

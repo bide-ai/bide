@@ -21,6 +21,11 @@ var (
 	ErrConflict = errors.New("gcs: name holds a different object")
 	// ErrNotFound is returned by the Reader when a partition holds no head.
 	ErrNotFound = errors.New("gcs: no anchored head")
+	// ErrVanished is returned by the Reader when a generation that was listed cannot be read: it was
+	// deleted between the listing and the read (at the end of its retention) or is hidden. Under a locked
+	// retention policy that is a signal of tampering or of a misconfiguration, and it must not be read as
+	// "the older heads are the latest". The error names the generation. Audit reports it as a finding.
+	ErrVanished = errors.New("gcs: a listed generation cannot be read")
 	// ErrBadSignature wraps (with ErrObject) the error of an object that is a well-formed head of its
 	// partition whose signature does not verify under the log key: a forgery, a head signed by another
 	// key (a rotated one, say), or a re-signed one. The Reader never skips it, since skipping would
