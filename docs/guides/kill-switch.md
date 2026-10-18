@@ -120,6 +120,14 @@ for the role (once a policy transition has taken effect the control judges the r
 prints how many lifts the stop holds and how many more it needs; the stop stays in force until the quorum
 is met. Every audited write goes to the control run and the stop trail, in the order below.
 
+The command refuses, with exit 1 and nothing written, a record the deployment's processes would ignore,
+rather than report it as in force: a plain stop or lift on an audited deployment (give `-stop-policy`,
+`-as` and `-key`), a policy file whose chain the store does not reach (the wrong root, or a fork: give
+the deployment's root policy, or `-stop-root`), and the first audited write over stops that were set
+plain (run `-upgrade` first, which adopts them). After a write it reads the control run back and fails if
+the record was rejected or the stop is not in force in the policy's view. A deployment that moved back to
+basic by a signed `-downgrade` is basic again.
+
 - `-reaudit` appends to the trail what the control run has and the trail lacks.
 - `-apply-pending` lists the signed records that sit on the trail and never took effect, each with its
   signer and age (and SUPERSEDED ones, which it leaves), asks, and makes them effective under your signed
