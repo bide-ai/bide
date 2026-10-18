@@ -335,6 +335,11 @@ erases and an "end" record after; if it stops partway, run the same plan again.
 		}
 		rep.Executed = true
 		fmt.Fprintln(stderr, "bide journal redact: nothing to erase: every selected record is already redacted or none was selected; no trail record or head was written")
+		if rep.Compaction != nil && !rep.Compaction.Complete && !rep.Compaction.ByOperator {
+			// Running the command again to finish an earlier pass's compaction: still not a success while the engine holds the old bytes.
+			emit(stdout, rep, *asJSON, st, 1)
+			return fail("the storage was not compacted, so the old bytes of an earlier erasure may remain in the database's files: close the readers of the database and run the compaction again")
+		}
 		return emit(stdout, rep, *asJSON, st, 0)
 	}
 	// The trail's head is signed after a failed pass too: the begin and end records it wrote are
