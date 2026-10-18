@@ -9,14 +9,13 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/audit"
-	"github.com/bide-ai/bide/cmd/bide/internal/approvecmd"
 	"github.com/bide-ai/bide/internal/term"
 )
 
 // acknowledge is bide journal acknowledge: the operator's signed note that a leaf in the redaction
 // trail that the tool did not write has been looked into. It writes one acknowledge record (the
 // leaf's position and the hash of its bytes, the reason, the ticket, who) and a new signed head.
-func acknowledge(args []string, stdout, stderr io.Writer) int {
+func acknowledge(args []string, stdout, stderr io.Writer, k Keys) int {
 	fs := flag.NewFlagSet("bide journal acknowledge", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	db := fs.String("db", "", "the SQLite journal whose event store holds the redaction trail")
@@ -32,6 +31,9 @@ func acknowledge(args []string, stdout, stderr io.Writer) int {
 	headOut := fs.String("head-out", "", "the file of the trail's signed heads: it is read for the earlier heads and the new head is appended to it")
 	acceptUnheaded := fs.Bool("accept-unheaded-trail", false, "sign although the trail holds records and no earlier head attests them")
 	color := term.Flag(fs)
+	if k.Flags != nil {
+		k.Flags(fs)
+	}
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), `usage: bide journal acknowledge (-db <file> | -postgres-env <var> | -trail-db <file> | -trail-postgres-env <var>)
                                 -position <n> -reason <text> -ticket <id> -deployment <name> -sign-key <file> -head-out <file>
@@ -74,9 +76,12 @@ not another leaf later at that position. It cannot be undone: the trail is appen
 	}
 	ctx, stop := signalContext()
 	defer stop()
-	signer, err := approvecmd.LoadSigner(*signKey)
+	signer, err := k.Load(*signKey)
 	if err != nil {
 		return fail("%v", err)
+	}
+	if cl, ok := signer.(io.Closer); ok {
+		defer cl.Close()
 	}
 	var trail audit.EventStore
 	if *db != "" || *pgEnv != "" {

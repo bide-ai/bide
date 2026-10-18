@@ -1,16 +1,18 @@
 package journalcmd
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
-	"github.com/bide-ai/bide/cmd/bide/internal/approvecmd"
 	"github.com/bide-ai/bide/internal/term"
 )
 
@@ -19,7 +21,7 @@ import (
 // Placing and lifting are recorded in the signed redaction trail (who, when, the matter, the runs, the
 // reason, the ticket), and bide audit redactions reports the holds in force, a hold the store and the
 // trail disagree about, and any erasure that crossed one.
-func hold(args []string, stdout, stderr io.Writer) int {
+func hold(args []string, stdout, stderr io.Writer, k Keys) int {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "-help" || args[0] == "--help" {
 		fmt.Fprint(stderr, holdUsage)
 		if len(args) == 0 {
@@ -28,8 +30,8 @@ func hold(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	switch args[0] {
-	case "place", "lift", "list":
-		return holdVerb(args[0], args[1:], stdout, stderr)
+	case "place", "lift", "list", "authorize":
+		return holdVerb(args[0], args[1:], stdout, stderr, k)
 	}
 	fmt.Fprintf(stderr, "%sbide journal hold: unknown verb %q\n\n%s", term.For(stderr, term.Auto).ErrorPrefix(), args[0], holdUsage)
 	return 2
@@ -53,7 +55,7 @@ control). On Postgres the connecting role needs SELECT, INSERT and DELETE on the
 else; the role that erases cannot read or change it.
 `
 
-func holdVerb(verb string, args []string, stdout, stderr io.Writer) int {
+func holdVerb(verb string, args []string, stdout, stderr io.Writer, k Keys) int {
 	fs := flag.NewFlagSet("bide journal hold "+verb, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	db := fs.String("db", "", "the SQLite journal")
@@ -71,8 +73,21 @@ func holdVerb(verb string, args []string, stdout, stderr io.Writer) int {
 	deployment := fs.String("deployment", "", "place and lift: the deployment name signed into every trail record")
 	signKey := fs.String("sign-key", "", "place and lift: the log signing key file that signs the record and the trail's head (never printed)")
 	headOut := fs.String("head-out", "", "place and lift: the file of the trail's signed heads: read for the earlier heads, and the new head is appended")
+	authFile := fs.String("authorization", "", "lift: the second person's signed authorization (bide journal hold authorize), embedded in the lift's record")
+	var authorizerPubs stringList
+	fs.Var(&authorizerPubs, "authorizer-pubkey", "lift: a public key (a file or <scheme>:<hex>) an authorization must be signed by; repeat. authorize: not used")
+	requireAuth := fs.Bool("require-authorization", false, "lift: refuse unless a valid second-person authorization is given (needs -authorizer-pubkey)")
+	trailPub := fs.String("trail-pubkey", "", "authorize: the public key of the redaction trail's signing key (a file or <scheme>:<hex>), to read the trail")
+	authorizerKey := fs.String("authorizer-key", "", "authorize: the authorizer's own signing key: a key file, or with bide-hsm a key reference (never the trail's key)")
+	validFor := fs.Duration("valid-for", 24*time.Hour, "authorize: how long the authorization is valid")
+	lifterKeyID := fs.String("lifter-key-id", "", "authorize: the KeyID of the trail key that must sign the lift (optional)")
+	out := fs.String("out", "", "authorize: where to write the authorization (created, never overwritten)")
+	execute := fs.Bool("execute", false, "authorize: sign and write the authorization; without it the command shows what it would sign and writes nothing")
 	acceptUnheaded := fs.Bool("accept-unheaded-trail", false, "place and lift: sign although the trail holds records and no earlier head attests them")
 	color := term.Flag(fs)
+	if k.Flags != nil {
+		k.Flags(fs)
+	}
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -98,8 +113,20 @@ func holdVerb(verb string, args []string, stdout, stderr io.Writer) int {
 		return usageErr("-id is required")
 	case verb == "place" && (strings.TrimSpace(*matter) == "" || len(runs) == 0):
 		return usageErr("place needs -matter and at least one -run")
-	case verb != "list" && (strings.TrimSpace(*reason) == "" || strings.TrimSpace(*ticket) == "" || strings.TrimSpace(*deployment) == "" || *signKey == "" || *headOut == ""):
+	case verb == "authorize" && (strings.TrimSpace(*reason) == "" || strings.TrimSpace(*ticket) == "" || strings.TrimSpace(*deployment) == "" || *trailPub == "" || *authorizerKey == "" || *out == ""):
+		return usageErr("authorize needs -reason, -ticket, -deployment, -trail-pubkey, -authorizer-key and -out")
+	case verb == "authorize" && *validFor <= 0:
+		return usageErr("-valid-for must be positive")
+	case verb != "list" && verb != "authorize" && (strings.TrimSpace(*reason) == "" || strings.TrimSpace(*ticket) == "" || strings.TrimSpace(*deployment) == "" || *signKey == "" || *headOut == ""):
 		return usageErr("-reason, -ticket, -deployment, -sign-key and -head-out are required")
+	case verb != "lift" && (*authFile != "" || len(authorizerPubs) > 0 || *requireAuth):
+		return usageErr("-authorization, -authorizer-pubkey and -require-authorization are for lift")
+	case verb != "authorize" && (*trailPub != "" || *authorizerKey != "" || *lifterKeyID != "" || *out != "" || *execute):
+		return usageErr("-trail-pubkey, -authorizer-key, -lifter-key-id, -out and -execute are for authorize")
+	case *requireAuth && len(authorizerPubs) == 0:
+		return usageErr("-require-authorization needs -authorizer-pubkey: without the authorizers' keys any key would do")
+	case *requireAuth && *authFile == "":
+		return usageErr("-require-authorization needs -authorization")
 	}
 	ctx, stop := signalContext()
 	defer stop()
@@ -108,6 +135,9 @@ func holdVerb(verb string, args []string, stdout, stderr io.Writer) int {
 		return fail("%v", err)
 	}
 	defer rd.close()
+	if verb == "authorize" {
+		return holdAuthorize(ctx, rd, k, stdout, fail, *trailDB, *trailEnv, *schema, *trailPub, *authorizerKey, *deployment, *id, *reason, *ticket, *lifterKeyID, *out, *validFor, *execute)
+	}
 	holder, ok := agent.Capability[agent.Holder](rd.journal.Store())
 	if !ok {
 		return fail("this store keeps no legal holds")
@@ -129,9 +159,12 @@ func holdVerb(verb string, args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	signer, err := approvecmd.LoadSigner(*signKey)
+	signer, err := k.Load(*signKey)
 	if err != nil {
 		return fail("%v", err)
+	}
+	if cl, ok := signer.(io.Closer); ok {
+		defer cl.Close()
 	}
 	trail := rd.trail
 	if *trailDB != "" || *trailEnv != "" {
@@ -163,7 +196,25 @@ func holdVerb(verb string, args []string, stdout, stderr io.Writer) int {
 	case "place":
 		err = audit.PlaceLegalHold(ctx, trail, holder, signer, *deployment, prior, agent.Hold{ID: *id, Matter: *matter, Runs: runs, Tree: *tree}, *reason, *ticket, exec, now)
 	case "lift":
-		err = audit.LiftLegalHold(ctx, trail, holder, signer, *deployment, prior, *id, *reason, *ticket, exec, now)
+		var opts []audit.LiftOption
+		if *authFile != "" {
+			var a audit.LiftAuthorization
+			if rerr := readJSON(*authFile, &a); rerr != nil {
+				return fail("%v", rerr)
+			}
+			opts = append(opts, audit.WithLiftAuthorization(a))
+		}
+		for _, p := range authorizerPubs {
+			v, perr := readPubKey(p)
+			if perr != nil {
+				return fail("%v", perr)
+			}
+			opts = append(opts, audit.WithLiftAuthorizers(v))
+		}
+		if *requireAuth {
+			opts = append(opts, audit.RequireLiftAuthorization())
+		}
+		err = audit.LiftLegalHold(ctx, trail, holder, signer, *deployment, prior, *id, *reason, *ticket, exec, now, opts...)
 	}
 	// Whatever happened, a record the trail gained is attested by a new head.
 	if after, lerr := trail.Load(ctx, audit.RedactionTrailName); lerr == nil && len(after) > len(existing) {
@@ -196,3 +247,76 @@ func cleanAll(ss []string) []string {
 	}
 	return out
 }
+
+// holdAuthorize is bide journal hold authorize: a second person reads the redaction trail, sees which
+// hold is in force and signs, with a key of their own, their consent to lift it. Without -execute it
+// shows what it would sign.
+func holdAuthorize(ctx context.Context, rd *reader, k Keys, stdout io.Writer, fail func(string, ...any) int, trailDB, trailEnv, schema, trailPub, authorizerKey, deployment, id, reason, ticket, lifterKeyID, out string, validFor time.Duration, execute bool) int {
+	tk, err := readPubKey(trailPub)
+	if err != nil {
+		return fail("%v", err)
+	}
+	trail := rd.trail
+	if trailDB != "" || trailEnv != "" {
+		ts, closeTrail, err := openTrail(ctx, rd, trailDB, trailEnv, schema)
+		if err != nil {
+			return fail("%v", err)
+		}
+		defer closeTrail()
+		trail = ts
+	}
+	if !execute {
+		fmt.Fprintf(stdout, "dry run: nothing is signed or written. Run again with -execute to sign.\n")
+	}
+	// The key is loaded after the trail is read and the arguments are valid, and what it signs is shown first.
+	signer, err := k.Load(authorizerKey)
+	if err != nil {
+		return fail("%v", err)
+	}
+	if cl, ok := signer.(io.Closer); ok {
+		defer cl.Close()
+	}
+	now := time.Now()
+	var sg audit.Signer = signer
+	if !execute {
+		sg = noSign{signer} // a dry run shows the authorization and asks the key (an HSM, a KMS) for nothing
+	}
+	a, err := audit.NewLiftAuthorization(ctx, trail, tk, sg, deployment, id, reason, ticket, lifterKeyID, now, validFor)
+	if err != nil {
+		return fail("%v", err)
+	}
+	tree := ""
+	if a.HoldTree {
+		tree = " and their sub-agent runs"
+	}
+	fmt.Fprintf(stdout, "authorize the lift of hold %s\n  matter       %s\n  covers       %s%s\n  placement    trail record %d (leaf %s)\n  deployment   %s\n  reason       %s\n  ticket       %s\n  valid until  %s\n  your key     %s\n",
+		clean(a.HoldID), clean(a.HoldMatter), strings.Join(cleanAll(a.HoldRuns), ", "), tree, a.PlacedPosition, a.PlacedLeaf[:16], clean(a.Deployment), clean(a.Reason), clean(a.Ticket), time.UnixMilli(a.NotAfterMs).UTC().Format(time.RFC3339), a.KeyID)
+	if lifterKeyID != "" {
+		fmt.Fprintf(stdout, "  lifter key   %s\n", clean(lifterKeyID))
+	}
+	if !execute {
+		return 0
+	}
+	b, err := json.MarshalIndent(a, "", "  ")
+	if err != nil {
+		return fail("%v", err)
+	}
+	f, err := os.OpenFile(out, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return fail("write the authorization: %v", err)
+	}
+	if _, err := f.Write(append(b, '\n')); err != nil {
+		f.Close()
+		return fail("write the authorization: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		return fail("write the authorization: %v", err)
+	}
+	fmt.Fprintf(stdout, "authorization written to %s\n", out)
+	return 0
+}
+
+// noSign is a signer whose signature is a placeholder: the dry run of hold authorize never uses the key.
+type noSign struct{ audit.Signer }
+
+func (noSign) Sign([]byte) ([]byte, error) { return []byte("dry run"), nil }

@@ -235,8 +235,11 @@ const usageText = `bide audit: produce and verify audit proof bundles
          legal hold the trail shows over the run is REDACTED_UNDER_HOLD; the holds in force by the trail are
          listed and, against a database, compared with its holds (HOLD_NOT_IN_STORE: lifted by hand,
          HOLD_NOT_IN_TRAIL: placed by hand, HOLD_DIFFERS), and a lift or placement the trail does not match
-         is HOLD_UNMATCHED. For a run whose end marker was erased and which the trail accounts for, the
-         report says how it ended, per the trail (the journal says only that the run is over). A pass is judged by its last record, so a failed pass that
+         is HOLD_UNMATCHED. A lift's embedded second-person authorization is checked (a bad signature,
+         another hold or placement, expired at the lift, or the lifter's own key is LIFT_UNAUTHORIZED), with
+         -authorizer-pubkey also against the keys given, and -require-lift-authorization makes one mandatory.
+         For a run whose end marker was erased and which the trail accounts for, the report says how it
+         ended, per the trail (the journal says only that the run is over). A pass is judged by its last record, so a failed pass that
          the same plan later finished is a note, not a finding. -db and -postgres-env read every run's
          journal (and the trail, unless -trail-db or -trail-postgres-env name the store it is kept in
          apart from the journal) from a store, in the full bide command; the audit-only build reads
