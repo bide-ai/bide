@@ -1066,6 +1066,22 @@ bide audit: produce and verify audit proof bundles
          journal order or after the signed head, and a time that is not canonical (printed
          quoted); these notes never change the verdict
 
+  stops (-trail <file> | -db <file> | -postgres-env <var>) -stop-policy <file> [-stop-root <digest>]
+        (-sth <file>... -pubkey <hex|file> | -unanchored) [-max-unattested <duration>] [-as-of <time>]
+         verify the kill switch's stop trail: each record is read strictly and must verify, under the
+         policy the deployment pinned (-stop-policy, a JSON policy document with the approvers' public
+         keys, the setters and lifters, the lift quorum and the deployment ID) and the chain of signed
+         policy transitions from its root, in the order the trail holds them (a forged or foreign record
+         is a problem, and a pin the chain does not reach is one too); with signed heads (-sth, from
+         audit.SignStopTrail or the anchor log of the store that anchors it, each verified) the trail's
+         first records are exactly what the newest head commits to, so a deleted or reordered record is
+         found; records after it are not attested, so with no -max-unattested any such tail fails (whoever
+         can write the trail's store could have deleted the newest records unseen) and -max-unattested
+         accepts a tail younger than that. With -db or -postgres-env it also compares the trail with
+         the control run record for record: a record in force without evidence, or a forged record in
+         the trail, fails; a signed record on the trail that never reached the control run (a crash
+         between the two writes) is listed as UNAPPLIED, or SUPERSEDED when a later record went on without it, and does not fail; agent.StopControl.ApplyPending applies an unapplied one. It prints each stop and whether it is in force
+
   notifications (-trail <file>... [-journal <file>...] | -db <file> | -postgres-env <var>) [-run <id>]
                 (-sth <file>... -pubkey <hex|file> | -unanchored) [-max-ack <duration>] [-max-unattested <duration>]
                 [-strict] [-routing <file>] [-as-of <time>]
@@ -1311,6 +1327,40 @@ Usage of bide audit redactions:
     	read the redaction trail from this SQLite file (opened read-only), when it is kept apart from the journal; the journals then come from -db or -postgres-env, or -journal
   -trail-postgres-env string
     	read the redaction trail from the Postgres database whose DSN is in this environment variable (never given on the command line)
+  -unanchored
+    	accept a trail with no signed head: it is read, and nothing attests that it is complete or unaltered
+```
+
+### bide audit stops
+
+```text
+Usage of bide audit stops:
+  -as-of string
+    	judge the heads and the tail as of this RFC 3339 time (default now)
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never; -json is never colored
+  -db string
+    	read the trail and the control run from this SQLite database (opened read-only) instead of from a file
+  -json
+    	print one JSON report on stdout instead of the text report
+  -max-clock-skew duration
+    	how far past this machine's clock a signed head's timestamp may be (default 5m0s)
+  -max-input-bytes int
+    	the largest input file, in bytes, the verb reads; a larger one is an error (default 268435456)
+  -max-unattested duration
+    	accept records after the newest signed head for this long: a tail older than that fails, and with 0 (default) any unattested tail fails, since whoever can write the trail's store could have deleted the newest records unseen
+  -postgres-env string
+    	read them from the Postgres database whose DSN is in this environment variable (never given on the command line)
+  -pubkey string
+    	the public key as <scheme>:<hex> (ed25519, ecdsa-p256, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it; it verifies every -sth
+  -sth value
+    	a signed tree head over the trail, as JSON (audit.SignStopTrail, or an entry's sth from the anchor log of the store that anchors it); repeat for as many as you have: each must verify and match a prefix of the trail, the largest is the newest
+  -stop-policy string
+    	the stop policy the deployment pinned, as a JSON document (agent.StopPolicyDoc): the approvers' public keys, the setters and lifters, the lift quorum and the deployment ID; every record must verify under it and the chain of policy transitions from its root
+  -stop-root string
+    	the digest (agent.StopPolicy.Digest) of the deployment's root policy, when -stop-policy is a later one the chain reaches; default the pinned policy itself
+  -trail string
+    	a stop trail export (audit.ExportStopTrail as JSON)
   -unanchored
     	accept a trail with no signed head: it is read, and nothing attests that it is complete or unaltered
 ```

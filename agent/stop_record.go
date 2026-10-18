@@ -130,6 +130,9 @@ type StopRecord struct {
 	// Seq is the transition's number, from 1. Each approval of a transition carries the whole document.
 	Policy     *StopPolicyDoc `json:"policy,omitempty"`
 	PrevDigest string         `json:"prev_digest,omitempty"`
+	// Applied, on an "apply" record, are the digests (StopDigest) of the pending trail records its signer applied
+	// to the control run (StopControl.ApplyPending): who applied what, and when, is itself a signed record.
+	Applied []string `json:"applied,omitempty"`
 	// Reason is the operator's text, at most MaxStopReason bytes. It holds no secret: it is shown in
 	// logs, notifications and the viewer.
 	Reason string `json:"reason,omitempty"`
@@ -212,7 +215,11 @@ func checkStopText(what, s string, max int) error {
 	return nil
 }
 
-// validate reports whether r is a well-formed record of its kind (not whether it is authorised).
+// Validate reports whether r is a well-formed record of its kind (not whether it is authorised): its
+// format, mode, time, operator, reason, signature presence, and the fields its kind needs.
+func (r StopRecord) Validate() error { return r.validate() }
+
+// validate is Validate.
 func (r StopRecord) validate() error {
 	if r.Format != StopFormat {
 		return fmt.Errorf("stop record format %q is not %q: %w", r.Format, StopFormat, ErrInvalidStop)
@@ -248,6 +255,10 @@ func (r StopRecord) validate() error {
 		if r.Seq < 1 || r.To != StopBasic && r.To != StopAudited {
 			return fmt.Errorf("stop record: a mode change needs a number and a mode: %w", ErrInvalidStop)
 		}
+	case "apply":
+		if len(r.Applied) == 0 || r.Mode != StopAudited {
+			return fmt.Errorf("stop record: an apply record names the records it applied and is signed: %w", ErrInvalidStop)
+		}
 	case "root":
 		if r.Policy == nil || r.Mode != StopAudited {
 			return fmt.Errorf("stop record: a root record carries the first policy and is signed: %w", ErrInvalidStop)
@@ -274,6 +285,9 @@ func stopRecordStep(r StopRecord) string {
 		return "@stop/set/" + r.StopID
 	case "lift":
 		return "@stop/lift/" + r.StopID + "/" + encodeID(r.By) + "/" + d
+	}
+	if r.Kind == "apply" {
+		return "@stop/apply/" + encodeID(r.By) + "/" + d
 	}
 	if r.Kind == "root" {
 		return "@stop/root/" + StopPolicyDigest(*r.Policy) + "/" + encodeID(r.By) + "/" + d

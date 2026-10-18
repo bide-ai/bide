@@ -7,10 +7,10 @@ has not begun. When the stop is lifted the runs carry on where they were. The de
 failure modes and the formal model, is in the [design note](../design/kill-switch.md); this page is
 how to use what has shipped.
 
-Shipped: the control run, the engine's holds, recovery and the model (`agent.StopControl`,
-`agent.StopSwitch`, `agent.WithStopSwitch`). Not shipped yet: `bide stop`, the viewer banner, the
-signed audit trail and the notifications; until they are, a stop is set and lifted from Go
-(`StopControl.SetStop`, `LiftStop`).
+Shipped: the control run, the engine's holds, recovery, the signed audit trail with `bide audit
+stops`, and the model (`agent.StopControl`, `agent.StopSwitch`, `agent.WithStopSwitch`,
+`audit.NewStopTrail`). Not shipped yet: `bide stop`, the viewer banner and the notifications; until
+they are, a stop is set and lifted from Go (`StopControl.SetStop`, `LiftStop`).
 
 ## What a stop does
 
@@ -86,6 +86,44 @@ name the root, `WithStopRoot`); a pin the chain does not reach, or a basic proce
 signed stops, makes the stops *unknowable*, and the engine then holds side-effect calls a stop
 could cover until the process is configured. That is the safe direction. Forged records in an
 audited deployment are only rejected (`StopState.Rejected`). See the [design note](../design/kill-switch.md#7a-modes-basic-and-audited).
+
+## The audit trail
+
+An audited control writes every record to a **stop trail** too (`agent.WithStopTrail`,
+`audit.NewStopTrail` over an `audit.EventStore`): a salted, Merkle-committed event leaf per signed
+record, whose heads an `audit.AuditedEventStore` signs and anchors like any other trail. The control
+run enforces a stop; the trail is its evidence. The order keeps the evidence at least as strong as
+the effect: a **stop** is written to the control run first, so it is in force at once, and to the
+trail second; **every other record** (a lift, a policy transition, the root, a mode change) is
+written to the trail first, so none is in force without its evidence. A failed trail write is a
+`*agent.StopTrailError`: for a stop it says the stop *is* in force and carries the stop, and
+`StopControl.Reaudit` appends what the trail lacks; for any other record nothing was written. Before
+a record that rests on earlier ones (a lift names its stop, a transition its root) goes to the trail, the
+control run's records the trail lacks are appended first, in store order, so the trail never holds a
+lift ahead of its stop. Only records the control accepts are appended: a forged record written straight
+into the control run is a finding of `bide audit stops`, never evidence.
+
+`bide audit stops` verifies the trail offline: each record must verify under the policy the
+deployment pinned (`-stop-policy`, the policy document with the approvers' public keys) and the chain
+of signed transitions from its root; with signed heads (`-sth`, `-pubkey`) a deleted or reordered
+record is found; and against the store (`-db`, `-postgres-env`) every record of the control run must
+be in the trail and the reverse (a stop written around the trail, or a row deleted from the store).
+Basic mode keeps no trail. Records after the newest signed head are not attested: with no
+`-max-unattested` any such tail fails (whoever can write the trail's store could have deleted the newest
+records unseen), and `-max-unattested` accepts a tail younger than that.
+
+A crash between "trail first" and the control-run write leaves a signed lift (or transition, root, mode
+change) on the trail that never took effect. That is not a forgery: `bide audit stops` lists it as
+**UNAPPLIED** and passes, and `StopControl.ApplyPending` writes it to the control run if the control would
+accept it. That is an **operator action**: a signature cannot be revoked, so a signed lift that sat on
+the trail can be made effective by whoever runs it, however old. `PendingRecords` lists each pending
+record with its signer and age first. `ApplyPending` is signed: the applier (an approver the policy
+enrols) writes an `apply` record, to the trail and the control run, naming the digests applied, before it
+applies any, so who applied what, and when, is evidence; an applier the policy does not enrol is refused
+before anything is written. It applies only the records at the end of the trail; one that a stored record follows (the operator tried
+again, and the new record went through) is **SUPERSEDED**: listed, not a failure, not in the stops shown,
+and not applied, since applying it would put it after records the trail has behind it. A record on the
+trail that the fold rejects, or a stop on the trail that the control run lacks, is a problem.
 
 ## How fast, and when the control run cannot be read
 
