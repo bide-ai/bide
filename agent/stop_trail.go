@@ -73,9 +73,15 @@ func (StopRecord) agentEvent() {}
 // SameStopRecord reports whether a and b are the same record: the same canonical bytes, signature included.
 func SameStopRecord(a, b StopRecord) bool { return StopDigest(a) == StopDigest(b) }
 
-// stopTrailBudget bounds an append that has no deadline of its own: how long it keeps retrying after losing
-// races for its position. A caller's earlier deadline wins.
-const stopTrailBudget = 30 * time.Second
+// stopTrailBudget bounds the trail writes of one call that has no deadline of its own (a lift with its catch-up
+// records, a Reaudit): how long they keep retrying after losing races for a position, all together. A caller's
+// earlier deadline wins. stopSetTrailBudget is the shorter one for a stop's own trail write: the stop is in force
+// before it starts, so waiting only delays the answer, and a write that gives up is exit 5 of `bide stop`, which
+// -reaudit repairs. Variables so a test can shorten them.
+var (
+	stopTrailBudget    = 30 * time.Second
+	stopSetTrailBudget = 5 * time.Second
+)
 
 // stopTrailBackoff is the wait before the retry after the try-th lost race: 1 ms doubling to 64 ms, jittered
 // by +-50%, so writers that collided do not collide again in step.
@@ -89,8 +95,11 @@ func stopTrailBackoff(try int) time.Duration {
 // again until the caller's deadline (or stopTrailBudget, when it has none): a fixed number of tries ran out
 // with ten operators writing at once, and a trail write that gives up turns a stop into exit 5.
 func (c *StopControl) appendTrail(ctx context.Context, rec StopRecord) error {
-	ctx, cancel := context.WithTimeout(ctx, stopTrailBudget)
-	defer cancel()
+	if _, ok := ctx.Deadline(); !ok { // a caller (write, Reaudit) that has a budget of its own shares it
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, stopTrailBudget)
+		defer cancel()
+	}
 	for try := 0; ; try++ {
 		have, err := c.trail.Load(ctx, StopTrailName)
 		if err != nil {
@@ -110,7 +119,10 @@ func (c *StopControl) appendTrail(ctx context.Context, rec StopRecord) error {
 		select {
 		case <-time.After(stopTrailBackoff(try)):
 		case <-ctx.Done():
-			return fmt.Errorf("stop trail: no position before the deadline (%d tries): %w", try+1, ErrTrailConflict)
+			// The context's own error is in the chain: a caller that cancelled (Ctrl-C, a shutdown) is told it
+			// was cancelled, one that ran out of time that the deadline passed, and both that the position was
+			// never won.
+			return fmt.Errorf("stop trail: no position won in %d tries before the context ended: %w (%w)", try+1, ctx.Err(), ErrTrailConflict)
 		}
 	}
 }
@@ -170,6 +182,11 @@ func DiffStopRecords(store, trail []StopRecord) (storeOnly, trailOnly []StopReco
 func (c *StopControl) Reaudit(ctx context.Context) (int, error) {
 	if c.trail == nil {
 		return 0, fmt.Errorf("Reaudit needs a stop trail (WithStopTrail): %w", ErrConfig)
+	}
+	if _, ok := ctx.Deadline(); !ok { // one budget for every record it appends
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, stopTrailBudget)
+		defer cancel()
 	}
 	recs, err := c.StopRecords(ctx)
 	if err != nil {

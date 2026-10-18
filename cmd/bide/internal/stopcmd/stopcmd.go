@@ -163,16 +163,17 @@ type flags struct {
 }
 
 type cmd struct {
-	f      flags
-	fs     *flag.FlagSet
-	in     *bufio.Reader
-	inRaw  io.Reader
-	out    io.Writer
-	errw   io.Writer
-	st     term.Style
-	stores Stores
-	src    approvecmd.KeySource
-	j      *agent.Journal // the journal the control runs over, for the checks that read a second view of it
+	f         flags
+	fs        *flag.FlagSet
+	in        *bufio.Reader
+	inRaw     io.Reader
+	out       io.Writer
+	errw      io.Writer
+	st        term.Style
+	stores    Stores
+	src       approvecmd.KeySource
+	announced map[string]bool // the stops already reported in force (before their trail write)
+	j         *agent.Journal  // the journal the control runs over, for the checks that read a second view of it
 }
 
 // Main runs bide stop with a key file as the key source.
@@ -191,7 +192,7 @@ func FileKeys() approvecmd.KeySource {
 
 // MainWith is Main with the approver's key taken from src (bide-hsm stop: a key in an HSM or a KMS).
 func MainWith(args []string, in io.Reader, stdout, stderr io.Writer, stores Stores, src approvecmd.KeySource) int {
-	c := &cmd{inRaw: in, in: bufio.NewReader(in), out: stdout, errw: stderr, stores: stores, src: src}
+	c := &cmd{inRaw: in, in: bufio.NewReader(in), out: stdout, errw: stderr, stores: stores, src: src, announced: map[string]bool{}}
 	f := &c.f
 	c.fs = flag.NewFlagSet(src.Prog, flag.ContinueOnError)
 	fs := c.fs
@@ -404,6 +405,12 @@ func (c *cmd) control(o Opened) (*agent.StopControl, *agent.StopPolicyDoc, error
 	}
 	if o.Events != nil {
 		opts = append(opts, agent.WithStopTrail(audit.NewStopTrail(o.Events)))
+		// A stop is in force when it is in the control run: say so before the trail write, which can wait on
+		// other operators (and, if it gives up, is exit 5 and -reaudit).
+		opts = append(opts, agent.WithStopInForce(func(e agent.StopEntry) {
+			fmt.Fprintf(c.out, "stop %s in force: %s (writing the audit trail)\n", c.st.Bold(e.ID), e.Scope)
+			c.announced[e.ID] = true
+		}))
 	}
 	ctl, err := agent.NewStopControl(j, opts...)
 	return ctl, &doc, err

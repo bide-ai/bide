@@ -126,7 +126,9 @@ func (c *cmd) setStops(ctx context.Context, ctl *agent.StopControl, doc *agent.S
 			}
 			return c.errCode(err)
 		}
-		fmt.Fprintf(c.out, "stop %s in force: %s\n", c.st.Bold(e.ID), sc)
+		if !c.announced[e.ID] { // a stop with a trail was reported the moment it was in force
+			fmt.Fprintf(c.out, "stop %s in force: %s\n", c.st.Bold(e.ID), sc)
+		}
 	}
 	return exitOK
 }
