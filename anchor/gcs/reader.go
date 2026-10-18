@@ -194,7 +194,10 @@ func (r *Reader) list(ctx context.Context, prefix string) ([]ObjectInfo, error) 
 // ReaderConfig.OnSkip, so a stray object cannot make a partition unreadable; if what it skipped claimed a
 // larger size than the head returned, a caller that must know uses bide-anchor check or Audit,
 // which fail on it. A well-formed head whose signature does not verify is an error (ErrBadSignature),
-// not skipped. Latest lists generations, so an overwrite or a delete of the newest head's live object
+// not skipped. A generation that vanishes between the listing and the read (deleted at the end of its
+// retention) is skipped and reported the same way, so a caller that ignores OnSkip is shown an older head
+// as the latest without an error; Audit reports the vanished generation, and a caller that must know uses
+// it. Latest lists generations, so an overwrite or a delete of the newest head's live object
 // does not make an older head look like the latest.
 func (r *Reader) Latest(ctx context.Context, kind, runID string) (audit.SignedTreeHead, error) {
 	var best []audit.SignedTreeHead
