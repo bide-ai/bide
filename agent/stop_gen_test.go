@@ -114,6 +114,39 @@ func TestSetStop_AnotherCompensationIsAnotherStop(t *testing.T) {
 	if _, err := c.SetStop(ctx, req); !errors.Is(err, ErrAlreadyStopped) {
 		t.Fatalf("the same scope and compensation again: %v", err)
 	}
+	// Each compensation has its own generations: the key names the scope and the compensation.
+	for _, r := range mustRecords(t, c) {
+		if r.Kind == "set" && r.Gen != 1 {
+			t.Fatalf("%s set has generation %d, want 1: the compensations share a sequence", r.Compensation, r.Gen)
+		}
+	}
+}
+
+// A generation belongs to a set record and is positive.
+func TestStopRecord_GenerationValidation(t *testing.T) {
+	scope := toolScope("refund")
+	set := func(gen int) StopRecord {
+		r := StopRecord{Format: StopFormat, Kind: "set", Mode: StopBasic, Scope: &scope, Compensation: CompensationAllow, Gen: gen, By: "a", At: nowStr()}
+		r.StopID = StopIDOf(r)
+		return r
+	}
+	if err := set(1).Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := set(0).Validate(); err != nil {
+		t.Fatalf("a record from before generations: %v", err)
+	}
+	if err := set(-1).Validate(); !errors.Is(err, ErrInvalidStop) {
+		t.Fatalf("a negative generation: %v", err)
+	}
+	lift := StopRecord{Format: StopFormat, Kind: "lift", Mode: StopBasic, StopID: "x", SetDigest: "y", Gen: 1, By: "a", At: nowStr()}
+	if err := lift.Validate(); !errors.Is(err, ErrInvalidStop) {
+		t.Fatalf("a generation on a lift: %v", err)
+	}
+	lift.Gen = 0
+	if err := lift.Validate(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // A lift that races a set of the same scope loses nothing: the set either finds the stop still in force (and
