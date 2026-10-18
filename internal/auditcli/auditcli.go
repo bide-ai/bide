@@ -33,6 +33,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -90,9 +91,17 @@ func Main(stamped string, args []string, stdout, stderr io.Writer) int {
 	return MainWith(stamped, args, stdout, stderr, Options{})
 }
 
+var mainMu sync.Mutex
+
 // MainWith is Main with options: bide-hsm audit stops runs the stops verb alone, with the log key opened by
 // reference.
+//
+// Invocations are serialised: the verbs share a few settings (the input cap, the clock skew, the version) that
+// their flags write, so two at once in one process would race. A command line runs one per process; the lock
+// is for a test or a program that calls it from several goroutines.
 func MainWith(stamped string, args []string, stdout, stderr io.Writer, opts Options) int {
+	mainMu.Lock()
+	defer mainMu.Unlock()
 	version = stamped
 	return runWith(args, stdout, stderr, opts)
 }

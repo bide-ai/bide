@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -220,5 +221,36 @@ func TestAuditStopsUsageAndSecrets(t *testing.T) {
 	}
 	if r := e.run("audit", "stops", "-h"); !strings.Contains(r.errOut, "reference to the log key in an HSM or KMS") {
 		t.Fatalf("help: %d\n%s", r.code, r.all())
+	}
+}
+
+// Calls at once are safe: each carries its own options, and auditcli serialises the invocations that share its
+// flag settings. Under -race this fails if any of that is shared unguarded; the heads that come out are those of
+// serial runs (one signed over the new records, the rest find nothing new).
+func TestAuditStopsConcurrentCalls(t *testing.T) {
+	e := newAuditEnv(t)
+	e.stop("-all", "-reason", "incident")
+	var wg sync.WaitGroup
+	codes := make([]int, 6)
+	for i := range codes {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if i%2 == 0 {
+				codes[i] = e.audit().code
+			} else {
+				codes[i] = e.sign().code
+			}
+		}()
+	}
+	wg.Wait()
+	for i, c := range codes {
+		// A signing call exits 0. A plain audit exits 1 until the first head exists, then 0.
+		if (i%2 == 1 && c != 0) || (i%2 == 0 && c != 0 && c != 1) {
+			t.Errorf("call %d: exit %d", i, c)
+		}
+	}
+	if n := e.headLines(); n != 1 {
+		t.Fatalf("%d heads after concurrent runs over one unchanged trail, want 1", n)
 	}
 }
