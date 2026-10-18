@@ -185,6 +185,14 @@ func TestRefusals(t *testing.T) {
 	r := newRig(t)
 	_, out, _ := r.run(r.base()...)
 	d := digestOf(t, out)
+	// A digest that differs from d in its first character (not "00" + d[2:], which equals d
+	// whenever d starts with "00").
+	wrong := []byte(d)
+	if wrong[0] == '0' {
+		wrong[0] = '1'
+	} else {
+		wrong[0] = '0'
+	}
 	cases := []struct {
 		name string
 		args []string
@@ -198,7 +206,7 @@ func TestRefusals(t *testing.T) {
 		{"execute without a reason", append(r.base(), "-execute", "-plan-digest", d), 2, "-execute needs"},
 		{"execute flags without -execute", append(r.base(), "-reason", "x"), 2, "go with -execute"},
 		{"execute without a head", append(r.base(), "-execute", "-plan-digest", d, "-reason", "r", "-ticket", "t", "-deployment", "test", "-sign-key", r.key, "-head-out", r.headOut), 2, "signed journal head"},
-		{"wrong digest", r.execArgs("00" + d[2:]), 1, "not the one reviewed"},
+		{"wrong digest", r.execArgs(string(wrong)), 1, "not the one reviewed"},
 		{"missing key", r.execArgs(d, "-sign-key", filepath.Join(r.dir, "nope")), 1, "nope"},
 		{"unknown run", []string{"-db", r.db, "-run", "nope", "-payloads", "-execute", "-plan-digest", "x", "-reason", "r", "-ticket", "t", "-deployment", "test", "-sign-key", r.key, "-head-out", r.headOut, "-allow-uncovered"}, 1, "not over"},
 	}
