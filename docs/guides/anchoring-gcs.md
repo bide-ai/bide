@@ -201,9 +201,19 @@ at least a write and a read-back.
 
 ## Verifying the heads
 
-`bide-anchor` (the command of the [S3 anchor](anchoring.md#verifying-bide-anchor)) does not read a Google
-Cloud Storage bucket yet: a `-backend gcs` option, with `-project` taking the project number in place of S3's
-`-owner`, is planned as a separate change. Until then the library does what the command does:
+`bide-anchor` (the command of the [S3 anchor](anchoring.md#verifying-bide-anchor), `go install
+github.com/bide-ai/bide/cmd/bide-anchor@latest`) reads a Google Cloud Storage bucket with `-backend gcs`, and
+`-project NUMBER` (the project number, not its ID) takes the place of S3's `-owner`:
+
+```sh
+gcloud storage cp -r gs://bank-bide-anchor/bide-anchor ./anchor/
+bide-anchor verify -backend gcs -dir ./anchor -pubkey ed25519:<hex>
+bide-anchor check  -backend gcs -bucket bank-bide-anchor -project 123456789012 -pubkey ed25519:<hex> -run run-123
+bide-anchor export -backend gcs -bucket bank-bide-anchor -project 123456789012 -pubkey ed25519:<hex> -run run-123 -o heads.jsonl
+```
+
+The commands, the exit codes and the findings are those of the S3 anchor ([reference](../reference/bide-anchor.md)).
+The command does what the library does:
 
 - `gcs.LoadDir(dir, verifier)` verifies a downloaded copy of the objects offline (for example
   `gcloud storage cp -r gs://bank-bide-anchor/bide-anchor ./anchor/`), as `bide-anchor verify` does for S3. It
@@ -222,8 +232,7 @@ listing or a read that is unavailable (`ErrUnavailable`) or denied (`ErrDenied`)
 and an aborted audit means the bucket's state is **unknown**, not that it is intact; retry it, and alert
 if it keeps failing. Only a fact the Reader positively saw becomes a finding, such as a generation that
 vanished between the listing and the read (and `Latest`, `Heads` and `Head` fail on that generation with
-`gcs.ErrVanished` rather than show an older head as the latest). `bide-anchor` will follow the same rule when it gains a GCS
-backend: a non-zero exit with no findings means the check could not be completed.
+`gcs.ErrVanished` rather than show an older head as the latest). `bide-anchor -backend gcs` follows the same rule: it exits 3, never 0 and not 1, when the check could not be completed, and a vanished generation is a finding (exit 1).
 
 Credentials come from Application Default Credentials, never from flags. Neither shows that the **journal**
 matches the heads: that is `bide audit` against the exported heads.

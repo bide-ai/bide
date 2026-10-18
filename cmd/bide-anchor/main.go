@@ -1,6 +1,6 @@
 // Command bide-anchor verifies and exports the signed tree heads that an object-store anchor wrote to a
-// bucket under Object Lock (-backend s3: the awss3 anchor; the Google Cloud Storage backend is added with
-// its package).
+// bucket under Object Lock (-backend s3: the awss3 anchor, the default; -backend gcs: the Google Cloud
+// Storage anchor).
 //
 //	bide-anchor verify [-backend s3] -dir ./downloaded -pubkey ed25519:<hex> [-run ID] [-kind journal]
 //	bide-anchor export -pubkey K -run ID (-dir ./downloaded | -bucket B -owner ACCOUNT) [-o heads.jsonl]
@@ -61,8 +61,8 @@ func defaultClient(ctx context.Context, pathStyle bool) (awss3.Client, error) {
 
 const usage = `usage:
   bide-anchor verify [-backend B] -dir DIR -pubkey KEY [-run ID] [-kind journal|events]
-  bide-anchor export [-backend B] -pubkey KEY -run ID [-kind journal|events] (-dir DIR | -bucket B -owner ACCOUNT [-prefix P] [-path-style]) [-o FILE]
-  bide-anchor check  [-backend B] -pubkey KEY -run ID [-kind journal|events] -bucket B -owner ACCOUNT [-prefix P] [-path-style]
+  bide-anchor export [-backend B] -pubkey KEY -run ID [-kind journal|events] (-dir DIR | -bucket B (-owner ACCOUNT | -project NUMBER) [-prefix P] [-path-style]) [-o FILE]
+  bide-anchor check  [-backend B] -pubkey KEY -run ID [-kind journal|events] -bucket B (-owner ACCOUNT | -project NUMBER) [-prefix P] [-path-style]
 KEY is the log operator's public key (ed25519:<hex>, or a file holding it).`
 
 const (
@@ -83,11 +83,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 	fs := flag.NewFlagSet("bide-anchor "+cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		dir, run, bucket, ownerID, prefix, out string
-		pubkey, backendName                    string
-		kind                                   = audit.TreeJournal
-		pathStyle, force                       bool
-		timeout                                = 5 * time.Minute
+		dir, run, bucket, ownerID, project, prefix, out string
+		pubkey, backendName                             string
+		kind                                            = audit.TreeJournal
+		pathStyle, force                                bool
+		timeout                                         = 5 * time.Minute
 	)
 	// Each command takes only the flags that mean something to it, so its help lists only those.
 	fs.StringVar(&backendName, "backend", "s3", "the object store the anchor wrote to: "+backendNames)
@@ -106,7 +106,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 		}
 		fs.DurationVar(&timeout, "timeout", timeout, "with -bucket: give up after this long and exit 3 (state unknown); 0: no limit")
 		fs.StringVar(&bucket, "bucket", "", "read this anchor bucket (online, with read-only credentials)")
-		fs.StringVar(&ownerID, "owner", "", "the 12-digit AWS account ID that owns the bucket (with -bucket)")
+		fs.StringVar(&ownerID, "owner", "", "-backend s3: the 12-digit AWS account ID that owns the bucket (with -bucket)")
+		fs.StringVar(&project, "project", "", "-backend gcs: the number of the Google Cloud project that owns the bucket (with -bucket)")
 		fs.StringVar(&prefix, "prefix", "", "the key prefix the anchor was configured with (default bide-anchor/)")
 		fs.BoolVar(&pathStyle, "path-style", false, "use path-style addressing (a non-AWS server)")
 	}
@@ -147,7 +148,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 	case cmd == "verify" && (dir == "" || online):
 		return fail(exitUsage, "verify takes -dir (and no -bucket): it works offline on downloaded objects; use check for a bucket")
 	case cmd == "check" && (!online || dir != ""):
-		return fail(exitUsage, "check takes -bucket and -owner (and no -dir)")
+		return fail(exitUsage, "check takes -bucket and -owner or -project (and no -dir)")
 	case cmd == "export" && online == (dir != ""):
 		return fail(exitUsage, "export takes either -dir or -bucket, not both or neither")
 	case cmd != "verify" && run == "":
@@ -177,7 +178,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 			ctx, cancel = context.WithTimeout(ctx, timeout)
 			defer cancel()
 		}
-		reader, err = be.open(ctx, openOptions{bucket: bucket, owner: ownerID, prefix: prefix, pathStyle: pathStyle, verifier: v,
+		reader, err = be.open(ctx, openOptions{bucket: bucket, owner: ownerID, project: project, prefix: prefix, pathStyle: pathStyle, verifier: v,
 			onSkip: func(f string) {
 				fmt.Fprintf(stderr, "bide-anchor: skipped an object that is no anchored head: %s\n", f)
 			}})

@@ -38,7 +38,7 @@ only when that adapter is imported.
 | flow editor | `…/flowedit` | go.yaml.in/yaml/v3 (it splices a flow config's YAML text, which the core module, with no dependency, cannot) |
 | bide command | `…/cmd/bide` | the two store modules, `flowedit`, go.yaml.in/yaml/v3 (a program, installed with `go install`, not imported) |
 | bide-hsm command | `…/cmd/bide/bide-hsm` | the PKCS#11, AWS KMS, Google Cloud KMS and Azure Key Vault signers (`signer/pkcs11` needs cgo), the AWS SDK, the Cloud KMS client, the two store modules, and `cmd/bide` for its internal approval code (a program, built from source with `go install`; not in the release archives) |
-| bide-anchor command | `…/cmd/bide-anchor` | the AWS SDK for Go v2 (through `anchor/awss3`); a program, installed with `go install`, with `-backend` choosing the object store |
+| bide-anchor command | `…/cmd/bide-anchor` | the AWS SDK for Go v2 (through `anchor/awss3`) and the Cloud Storage client (through `anchor/gcs`); a program, installed with `go install`, with `-backend` choosing the object store |
 | bide-view (deprecated) | `…/cmd/bide-view` | none: a program that only points to `bide view`, removed after v0.14.0 |
 
 The core module keeps everything with no heavy deps: `agent` (loop), `approvals` (the HTTP intake for signed approval decisions, and the browser approve page), `schema`, `middleware`,
