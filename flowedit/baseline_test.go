@@ -295,7 +295,7 @@ func fakeGit(t *testing.T) (setMsg func(string)) {
 		t.Skip("a shell script stands in for git")
 	}
 	dir := t.TempDir()
-	script := "#!/bin/sh\nif [ -n \"$BIDE_FAKE_GIT_SLOW\" ]; then exec sleep 30; fi\necho \"$BIDE_FAKE_GIT_MSG\" >&2\nexit 128\n"
+	script := "#!/bin/sh\nif [ -n \"$BIDE_FAKE_GIT_SLOW\" ]; then sleep 30; fi\necho \"$BIDE_FAKE_GIT_MSG\" >&2\nexit 128\n"
 	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -321,7 +321,7 @@ func TestBaselineSaysWhenGitDidNotAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if took := time.Since(start); took > 20*time.Second {
+	if took := time.Since(start); took > 10*time.Second {
 		t.Fatalf("the editor waited %v for a git that does not answer", took)
 	}
 	if note := s.BaselineNote(); !strings.Contains(note, "did not answer within 300ms") || strings.Contains(note, "signal: killed") {
