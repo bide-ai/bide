@@ -351,12 +351,13 @@ func (c *cli) reportUnheadedTails(byRun map[string][]agent.Record, heads []audit
 	}
 	slices.Sort(runs)
 	for _, r := range runs {
-		newest := 0
-		for _, h := range heads {
-			if h.RunID == r && h.Kind == audit.TreeJournal && h.Size <= len(byRun[r]) && h.Size > newest && h.Verify(logKey) == nil {
-				newest = h.Size
-			}
+		// A head counts only if it verifies, is this run's, and is the root of this journal's own prefix
+		// (a mismatched head covers nothing here): the rule verify-decision-coverage uses.
+		rep, err := audit.CheckDecisionCoverage(r, byRun[r], heads, logKey, audit.CoverageBound{})
+		if err != nil {
+			continue
 		}
+		newest := rep.LargestHead
 		if tail := len(byRun[r]) - newest; tail > 0 {
 			c.printf("INFO  run %s: the last %d of %d journal record(s) are under no signed head (the newest covers %d)\n", cleanText(r), tail, len(byRun[r]), newest)
 		}

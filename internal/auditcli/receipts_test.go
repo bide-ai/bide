@@ -312,3 +312,14 @@ func TestVerifyReceipts_BadInputs(t *testing.T) {
 		t.Fatalf("no flags: %d", code)
 	}
 }
+
+// A head that verifies but is not the root of the journal's prefix covers nothing, so it must not
+// shorten the reported tail.
+func TestVerifyReceipts_TailIgnoresAHeadWithAnotherRoot(t *testing.T) {
+	f := newReceiptFixture(t)
+	_, deletedHeads := f.removeDecision() // a head signed over a different journal (one record shorter)
+	_, out, _ := runCLI(f.args(deletedHeads)...)
+	if !strings.Contains(out, "(the newest covers 0)") {
+		t.Fatalf("a head over another journal was counted as covering:\n%s", out)
+	}
+}
