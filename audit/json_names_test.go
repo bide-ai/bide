@@ -61,6 +61,7 @@ var auditArtifacts = []any{
 	audit.RedactionReport{},
 	audit.RedactionFinding{},
 	audit.ErasedEnd{},
+	audit.LiftAuthorization{},
 	audit.StopTrailExport{},
 	audit.StopReport{},
 	audit.StopReportEntry{},

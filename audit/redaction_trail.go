@@ -107,6 +107,9 @@ type RedactionRecord struct {
 	HoldMatter string   `json:"hold_matter,omitempty"`
 	HoldRuns   []string `json:"hold_runs,omitempty"`
 	HoldTree   bool     `json:"hold_tree,omitempty"`
+	// Authorization, on a hold_lifted record only, is the second person's signed consent to the lift
+	// (LiftAuthorization), embedded so a verifier checks it without the original file.
+	Authorization *LiftAuthorization `json:"authorization,omitempty"`
 	// Alg and Signature sign the record's other members under the redaction key: a record without a
 	// signature that verifies is not the tool's, whatever signed head covers it.
 	Alg       string `json:"alg"`
@@ -446,6 +449,10 @@ const (
 	FindingUnderHold RedactionFindingKind = "REDACTED_UNDER_HOLD"
 	// FindingHoldUnmatched: a hold_lifted record for a hold the trail shows no active placement of, or a placement of an ID already active.
 	FindingHoldUnmatched RedactionFindingKind = "HOLD_UNMATCHED"
+	// FindingLiftUnauthorized: a hold lift that has no second-person authorization where one is required, or
+	// whose embedded authorization does not check out (a bad signature, another hold or placement, expired
+	// at the lift, the lifter's own key, or a key that is not a pinned authorizer).
+	FindingLiftUnauthorized RedactionFindingKind = "LIFT_UNAUTHORIZED"
 	// FindingHoldNotInStore: the trail says a hold is active and the store holds none: lifted by hand.
 	FindingHoldNotInStore RedactionFindingKind = "HOLD_NOT_IN_STORE"
 	// FindingHoldNotInTrail: the store holds a hold the trail never recorded: placed by hand.
@@ -487,6 +494,12 @@ type RedactionVerifyInput struct {
 	// StoreHolds, when not nil, are the legal holds the store holds (agent.Holder.Holds): they are
 	// compared with the holds the trail shows active, and a hold in one and not the other is a finding.
 	StoreHolds *[]agent.Hold
+	// LiftAuthorizers pins the keys a hold lift's embedded authorization must be signed by; with none,
+	// an authorization is checked for everything but who the authorizer is.
+	LiftAuthorizers []Verifier
+	// RequireLiftAuthorization says a hold lift needs a valid second-person authorization: one with
+	// none is LIFT_UNAUTHORIZED. It needs LiftAuthorizers (without keys pinned, any key would do).
+	RequireLiftAuthorization bool
 	// Journals are the journals to check against, by run ID: the records as read (a store's History,
 	// or JournalExport.Journal). A run the trail names that has no journal here is not checked.
 	Journals map[string][]agent.Record
@@ -545,6 +558,14 @@ func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error) {
 		return rep, fmt.Errorf("audit: VerifyRedactions: a deployment name is required: every record is signed for one: %w", agent.ErrConfig)
 	}
 	in.Deployment = strings.TrimSpace(in.Deployment)
+	if in.Verifier != nil {
+		if err := checkAuthorizersApart(in.LiftAuthorizers, string(in.Verifier.Alg()), in.Verifier.PublicKey()); err != nil {
+			return rep, err
+		}
+	}
+	if in.RequireLiftAuthorization && len(in.LiftAuthorizers) == 0 {
+		return rep, fmt.Errorf("audit: VerifyRedactions: requiring lift authorizations needs the authorizers' keys (without them any key would do): %w", agent.ErrConfig)
+	}
 	add := func(k RedactionFindingKind, run, format string, a ...any) {
 		rep.Findings = append(rep.Findings, RedactionFinding{Kind: k, RunID: run, Detail: fmt.Sprintf(format, a...)})
 	}
@@ -621,6 +642,21 @@ func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error) {
 			if _, ok := active[r.HoldID]; !ok {
 				add(FindingHoldUnmatched, "", "trail record %d lifts hold %q, which the trail shows no active placement of", i, r.HoldID)
 				continue
+			}
+			placed := active[r.HoldID]
+			switch {
+			case r.Authorization == nil:
+				if in.RequireLiftAuthorization {
+					add(FindingLiftUnauthorized, "", "trail record %d lifts hold %q with no second-person authorization, and one is required", i, r.HoldID)
+				}
+			case placed.Position < 0 || placed.Position >= len(in.Trail):
+				add(FindingLiftUnauthorized, "", "trail record %d lifts hold %q: the placement it authorizes is not in the trail", i, r.HoldID)
+			default:
+				if why := checkLiftAuthorization(*r.Authorization, r, placed, in.Trail[placed.Position], string(in.Verifier.Alg()), in.Verifier.PublicKey(), in.LiftAuthorizers); why != "" {
+					add(FindingLiftUnauthorized, "", "trail record %d lifts hold %q with an authorization that does not check out: %s", i, r.HoldID, why)
+				} else if len(in.LiftAuthorizers) == 0 {
+					rep.Notes = append(rep.Notes, fmt.Sprintf("hold %s was lifted with the authorization of key %s; no authorizer keys were given, so who that is was not checked", r.HoldID, r.Authorization.KeyID))
+				}
 			}
 			delete(active, r.HoldID)
 		case RedactionBegin:
@@ -1028,8 +1064,15 @@ const holdRetries = 8
 // record leaves a hold still in force that the audit reports (HOLD_NOT_IN_STORE reads the other way, a
 // hold the trail shows active and the store lacks; this case shows as the store holding a hold the trail
 // shows lifted, HOLD_NOT_IN_TRAIL). It refuses a hold the store does not hold.
-func LiftLegalHold(ctx context.Context, trail EventStore, holder agent.Holder, signer Signer, deployment string, prior []SignedTreeHead, id, reason, ticket, executor string, now time.Time) error {
+func LiftLegalHold(ctx context.Context, trail EventStore, holder agent.Holder, signer Signer, deployment string, prior []SignedTreeHead, id, reason, ticket, executor string, now time.Time, opts ...LiftOption) error {
 	if err := checkHoldArgs(trail, holder, signer, deployment, reason, ticket, executor, now); err != nil {
+		return err
+	}
+	var cfg liftConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+	if err := checkAuthorizersApart(cfg.authorizers, string(signer.Alg()), signer.PublicKey()); err != nil {
 		return err
 	}
 	if strings.TrimSpace(id) == "" {
@@ -1079,6 +1122,17 @@ func LiftLegalHold(ctx context.Context, trail EventStore, holder agent.Holder, s
 		}
 		rec := RedactionRecord{Phase: RedactionHoldLifted, Reason: why, Ticket: ticket, Executor: executor, AtMs: now.UnixMilli(),
 			Deployment: strings.TrimSpace(deployment), HoldID: h.ID, HoldMatter: h.Matter, HoldRuns: h.Runs, HoldTree: h.Tree}
+		switch {
+		case cfg.auth != nil:
+			// Checked against the placement in force, as the verifier will check it, before anything is written.
+			if why := checkLiftAuthorization(*cfg.auth, rec, placed, leaves[placed.Position], string(signer.Alg()), signer.PublicKey(), cfg.authorizers); why != "" {
+				return fmt.Errorf("audit: LiftLegalHold: the authorization of the lift of hold %q is refused: %s, so the hold stays in force: %w", id, why, ErrLiftUnauthorized)
+			}
+			a := *cfg.auth
+			rec.Authorization = &a
+		case cfg.require:
+			return fmt.Errorf("audit: LiftLegalHold: the lift of hold %q has no authorization, so the hold stays in force: %w", id, ErrLiftUnauthorized)
+		}
 		if err := appendRedactionRecordAt(ctx, trail, rec, signer, leaves); err != nil {
 			if errors.Is(err, ErrSeqTaken) {
 				continue // another writer recorded first: read the trail again and decide again
@@ -1100,6 +1154,11 @@ func trailHolds(ctx context.Context, trail EventStore, signer Signer, deployment
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("audit: the signer's public key: %w", err)
 	}
+	return trailHoldsWith(ctx, trail, v, deployment)
+}
+
+// trailHoldsWith is trailHolds with the verifier of the trail's key.
+func trailHoldsWith(ctx context.Context, trail EventStore, v Verifier, deployment string) (active map[string]RedactionRecord, lifted map[string]bool, leaves [][]byte, err error) {
 	leaves, err = trail.Load(ctx, RedactionTrailName)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("audit: load the redaction trail: %w", err)

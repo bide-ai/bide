@@ -43,6 +43,27 @@ var getenv = os.Getenv
 // Main runs bide journal with args (after "journal") and returns the exit status: 0 when the plan was
 // listed or the erasure finished, 1 when it was refused or failed, 2 for a usage error.
 func Main(args []string, stdout, stderr io.Writer) int {
+	return MainWith(args, stdout, stderr, FileKeys())
+}
+
+// Keys says where the signing keys of bide journal come from: a key file (FileKeys), or, for bide-hsm,
+// a reference to a key in an HSM or a KMS. -sign-key (and -authorizer-key of bide journal hold
+// authorize) name the key; Load turns the name into a signer, after the arguments are validated and
+// the stores are open, so a bad flag never touches an HSM. A signer that is an io.Closer is closed
+// when the command ends.
+type Keys struct {
+	// Flags registers the source's own flags in each verb's flag set. Optional.
+	Flags func(fs *flag.FlagSet)
+	// Load returns the signer for the value of a key flag. It must never put key material, a PIN or a
+	// credential in an error.
+	Load func(ref string) (audit.Signer, error)
+}
+
+// FileKeys is the key source of bide journal: a key file bide keygen wrote.
+func FileKeys() Keys { return Keys{Load: approvecmd.LoadSigner} }
+
+// MainWith is Main with the signing keys from k.
+func MainWith(args []string, stdout, stderr io.Writer, k Keys) int {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "-help" || args[0] == "--help" || args[0] == "help" {
 		fmt.Fprint(stderr, usage)
 		if len(args) == 0 {
@@ -52,11 +73,11 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	}
 	switch args[0] {
 	case "redact":
-		return redact(args[1:], stdout, stderr)
+		return redact(args[1:], stdout, stderr, k)
 	case "acknowledge":
-		return acknowledge(args[1:], stdout, stderr)
+		return acknowledge(args[1:], stdout, stderr, k)
 	case "hold":
-		return hold(args[1:], stdout, stderr)
+		return hold(args[1:], stdout, stderr, k)
 	}
 	fmt.Fprintf(stderr, "%sbide journal: unknown verb %q\n\n%s", term.For(stderr, term.Auto).ErrorPrefix(), args[0], usage)
 	return 2
@@ -90,7 +111,7 @@ var copiesNotReached = []string{
 	"govern event logs, which hold application-chosen strings",
 }
 
-func redact(args []string, stdout, stderr io.Writer) int {
+func redact(args []string, stdout, stderr io.Writer, k Keys) int {
 	fs := flag.NewFlagSet("bide journal redact", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	db := fs.String("db", "", "the SQLite journal to erase from")
@@ -122,6 +143,9 @@ func redact(args []string, stdout, stderr io.Writer) int {
 	keepEvents := fs.Bool("keep-event-copies", false, "with -execute: erase although the event store holds events of the run, which stay (recorded)")
 	asJSON := fs.Bool("json", false, "print the plan and result as one JSON document")
 	color := term.Flag(fs)
+	if k.Flags != nil {
+		k.Flags(fs)
+	}
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), `usage: bide journal redact (-db <file> | -postgres-env <var>) -run <id> (-name <key> | -prefix <p> | -kind <k> | -payloads)...
 
@@ -226,9 +250,12 @@ erases and an "end" record after; if it stops partway, run the same plan again.
 	if !strings.EqualFold(*digest, combined) {
 		return fail("refused: the plan is not the one reviewed (digest %s, not %s): the journal changed, or the selection did; list the plan again", combined, *digest)
 	}
-	signer, err := approvecmd.LoadSigner(*signKey)
+	signer, err := k.Load(*signKey)
 	if err != nil {
 		return fail("%v", err)
+	}
+	if cl, ok := signer.(io.Closer); ok {
+		defer cl.Close()
 	}
 	var verifier audit.Verifier
 	var heads []audit.SignedTreeHead

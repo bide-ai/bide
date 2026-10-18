@@ -78,7 +78,10 @@ type Verifier interface {
 	Verify(message, signature []byte) bool
 	// KeyIDs identifies the signing keys behind Verify (see agent.ApproverVerifier.KeyIDs and
 	// KeyID), so every Verifier is an agent.ApproverVerifier. A verifier without a usable key
-	// reports none.
+	// reports none. It MUST list one ID per independent key component (a hybrid key lists its
+	// Ed25519 and its ML-DSA component separately), because seat, quorum and second-person checks
+	// (approvals, the stop quorum, a hold lift's authorizer) treat two keys whose sets intersect as one
+	// person; a verifier that reports one combined ID for a hybrid key defeats them.
 	KeyIDs() []string
 }
 

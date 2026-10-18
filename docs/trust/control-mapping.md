@@ -110,7 +110,7 @@ A runtime does not validate models. It can make the evidence for inventory, moni
 | Kill switch | On main. `bide stop` (set, list, lift, audited with a lift quorum), `bide audit stops`, the `bide view` banner, and the notifications (`stop_set`, `stop_lifted`) with `bide audit notifications` checking that each was told | [Kill switch guide](../guides/kill-switch.md), [roadmap](../ROADMAP.md) |
 | Independent time: RFC 3161 is not yet used by any gate, endpoint or command | Verifier exists; wiring left | [Roadmap](../ROADMAP.md#bank-readiness), [known limitations](../KNOWN-LIMITATIONS.md#audit-and-proofs) |
 | External security review | Not done; no third party has assessed bide | [Threat model](threat-model.md#what-bide-does-not-address-in-one-list) |
-| A second person's signed authorization of a hold's lift or of an erasure, erasure of final results, session transcripts and event-store copies | Designed, not built ([design](../design/journal-redaction.md)) | [Retention guide](../guides/retention.md#erasing-personal-data) |
+| A second person's signed authorization of an erasure, erasure of session transcripts and event-store copies | Designed, not built ([design](../design/journal-redaction.md)) | [Retention guide](../guides/retention.md#erasing-personal-data) |
 | Hardware HSM trial | Left | [Roadmap](../ROADMAP.md#bank-readiness) |
 | Keys issued through an institution's SSO | Left | [Roadmap](../ROADMAP.md#bank-readiness) |
 | Passkey (WebAuthn) approvals | Left | [Roadmap](../ROADMAP.md#notifications-and-approvals) |

@@ -32,6 +32,9 @@ func (c *cli) redactions(args []string) {
 	trailDB := fs.String("trail-db", "", "read the redaction trail from this SQLite file (opened read-only), when it is kept apart from the journal; the journals then come from -db or -postgres-env, or -journal")
 	trailEnv := fs.String("trail-postgres-env", "", "read the redaction trail from the Postgres database whose DSN is in this environment variable (never given on the command line)")
 	run := fs.String("run", "", "with -db or -postgres-env: only this run and its sub-runs; default every run")
+	var authorizers stringList
+	fs.Var(&authorizers, "authorizer-pubkey", "the "+pubkeyHelp+" of a key a legal hold lift's authorization (bide journal hold authorize) must be signed by; repeat. A lift's embedded authorization is checked either way; with these keys it must also be signed by one of them")
+	requireLift := fs.Bool("require-lift-authorization", false, "every legal hold lift needs a valid second-person authorization: one with none is LIFT_UNAUTHORIZED (needs -authorizer-pubkey)")
 	c.parse(fs, args)
 
 	haveFiles := *trailPath != "" || len(journals) > 0
@@ -56,6 +59,8 @@ func (c *cli) redactions(args []string) {
 		c.usageLine(fs.Name() + ": this build reads exported files only (-trail, -journal); -db and -postgres-env are in the full bide command")
 	case strings.TrimSpace(*deployment) == "":
 		c.usageLine(fs.Name() + ": missing -deployment: every trail record is signed for one deployment, and the check verifies it")
+	case *requireLift && len(authorizers) == 0:
+		c.usageLine(fs.Name() + ": -require-lift-authorization needs -authorizer-pubkey: without the authorizers' keys any key would do")
 	case *pubkey == "":
 		c.usageLine(fs.Name() + ": missing -pubkey: every trail record is signed with the redaction key, and the check verifies each (give -unanchored to read a trail with no signed head)")
 	}
@@ -65,6 +70,14 @@ func (c *cli) redactions(args []string) {
 		v, err := readPubKey(*pubkey)
 		ok = c.note(err) && ok
 		in.Verifier = v
+	}
+	in.RequireLiftAuthorization = *requireLift
+	for _, p := range authorizers {
+		v, err := readPubKey(p)
+		ok = c.note(err) && ok
+		if err == nil {
+			in.LiftAuthorizers = append(in.LiftAuthorizers, v)
+		}
 	}
 	for _, p := range heads {
 		var h audit.SignedTreeHead
