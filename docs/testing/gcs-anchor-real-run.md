@@ -111,9 +111,9 @@ KNOWN-LIMITATIONS lists what is still not verified.
 | A create that sets a per-object retention needs only the writer role | **No.** It is refused with a 403 naming `storage.objects.setRetention`. `gcs.WriterObjectRetentionRole` (the writer plus that permission) exists for `Config.ObjectRetention`. |
 | A retained generation cannot be deleted | Confirmed: HTTP 403. |
 | Deleting the live object only makes it noncurrent | Confirmed, and the audit then lists the noncurrent generation. With a temporary hold on it the delete is refused (403, "cannot be deleted, overwritten or archived until hold is removed"). |
-| What soft delete does to a locked object | A live delete produced a noncurrent generation; `gcloud storage ls --soft-deleted` listed nothing. Behaviour at expiry was not observed. |
+| What soft delete does to a locked object | A live delete produced a noncurrent generation; `gcloud storage ls --soft-deleted` listed nothing. After the retention ended a delete produced soft-deleted objects (listed for the soft delete period) and the bucket was still deletable: see Teardown. |
 | The hold releaser role is enough to release a hold, and cannot delete | Confirmed with a service account holding only that role. |
-| The lien | Cloud Storage created a lien on `resourcemanager.projects.delete` (origin `storage.googleapis.com`) one second after the bucket was created with a retention policy, not when the policy was locked. Not removed; project deletion not attempted. |
+| The lien | Cloud Storage created a lien on `resourcemanager.projects.delete` (origin `storage.googleapis.com`) one second after the bucket was created with a retention policy, not when the policy was locked. Not removed on 2026-10-17; see Teardown for what removing it and deleting the project showed. |
 
 ### Evidence for the table
 
@@ -165,12 +165,33 @@ the Anchor and the Reader then run as those identities while the bucket probes u
 
 ## Teardown (after the retention ends)
 
-1. Wait until 24 hours after the last object was written (the test's last `publish`).
-2. Delete the objects, then the bucket: `gcloud storage rm --recursive gs://$BUCKET` (this needs
-   `storage.objects.delete`, and fails with a retention message before the period ends; that failure is
-   expected and means the lock works).
-3. Schedule the key version for destruction.
-4. The lien: while the bucket exists, Cloud Storage keeps a lien on deleting the project. Once the bucket
-   is gone, delete the project. If you must delete the project while the lien is held, list and remove
-   it deliberately (`gcloud alpha resource-manager liens list --project=$PROJECT`), knowing what that
-   means for the locked data.
+Done for the run of 2026-10-17, on 2026-10-18 after the last object's retention ended (23:26:55 UTC). What
+happened, in order (account names removed from every output):
+
+1. **Delete the objects.** `gcloud storage rm -r --all-versions "gs://$BUCKET/**"` removed all 12
+   generations with no error: none was under a hold and every retention had ended. Before the end of the
+   retention the same delete is refused, which is the lock working. After it, `ls --all-versions` found
+   nothing, but `gcloud storage ls --soft-deleted -r "gs://$BUCKET/**"` listed all 12: **a delete after expiry
+   goes through soft delete**, so with the default 7-day soft delete a deleted head stays recoverable for 7
+   days. (Before expiry a delete of the live object made the generation noncurrent and nothing was
+   soft-deleted.)
+2. **Delete the bucket.** `gcloud storage buckets delete gs://$BUCKET --quiet` succeeded while the 12
+   soft-deleted generations still existed, and the bucket was then gone (404). A bucket with a locked policy
+   is deletable once nothing in it is within its retention; soft-deleted objects do not block it.
+3. **Delete the identities.** The service accounts (which removes the token-creator grants, bindings on
+   them) and the custom roles; the lists were empty afterwards.
+4. **Schedule the key version for destruction.** `gcloud kms keys versions destroy 1 --key=anchor
+   --keyring=anchor --location=$LOC`: state ENABLED to DESTROY_SCHEDULED, destroy time 30 days later
+   (2026-11-17). The key and the key ring remain; they cannot be deleted.
+5. **The project.** `gcloud projects delete $PROJECT --quiet` was REFUSED with `PROJECT_DELETE_LIEN` ("Remove
+   the lien to allow deletion", `resourcemanager.projects.delete`, origin `storage.googleapis.com`), although
+   the bucket was gone: **the lien is not removed when the bucket is deleted** (checked at once and minutes
+   later; whether it clears on its own after a longer time was not observed). It had to be removed by hand:
+   `DELETE https://cloudresourcemanager.googleapis.com/v1/liens/LIEN_ID` (the same call the Resource Manager
+   API reference documents, or `gcloud alpha resource-manager liens delete`; the API must be enabled in the
+   project). Then `gcloud projects delete` succeeded and the project showed `DELETE_REQUESTED` (it can be
+   undeleted for 30 days).
+
+What this does not show: what happens to a locked bucket's data when a project is deleted with the lien
+removed while objects are still within their retention. The bucket was empty and deleted before the project
+was; do not read this run as showing that a project owner cannot do that.
