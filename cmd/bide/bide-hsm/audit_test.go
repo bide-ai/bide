@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/cmd/bide/bide-hsm/internal/fakekms"
+	"github.com/bide-ai/bide/internal/auditcli"
 	"github.com/bide-ai/bide/signer/awskms"
 	"github.com/bide-ai/bide/store/sqlite"
 )
@@ -252,5 +254,27 @@ func TestAuditStopsConcurrentCalls(t *testing.T) {
 	}
 	if n := e.headLines(); n != 1 {
 		t.Fatalf("%d heads after concurrent runs over one unchanged trail, want 1", n)
+	}
+}
+
+// bide-hsm audit leaves plain bide audit as it was: after a call (clean or refused) the plain command still names
+// itself, offers every verb, and has no -log-key key flags.
+func TestAuditStopsLeavesBideAuditUnchanged(t *testing.T) {
+	e := newAuditEnv(t)
+	e.stop("-all", "-reason", "incident")
+	for _, ref := range []string{"awskms:arn:aws:kms:us-east-1:1:key/none", "garbage"} {
+		if r := e.sign("-log-key", ref); r.code == 0 {
+			t.Fatalf("signed with %s", ref)
+		}
+	}
+	var out, errb bytes.Buffer
+	if code := auditcli.Main("", []string{"stops", "-h"}, &out, &errb); code != 2 ||
+		!strings.Contains(errb.String(), "bide audit stops") || strings.Contains(errb.String(), "bide-hsm") || strings.Contains(errb.String(), "-allow-extractable") {
+		t.Fatalf("plain bide audit stops -h: %d\n%s", code, errb.String())
+	}
+	out.Reset()
+	errb.Reset()
+	if code := auditcli.Main("", []string{"verify", "-bundle", "x"}, &out, &errb); code == 2 && strings.Contains(errb.String(), "the one verb") {
+		t.Fatalf("plain bide audit refused another verb: %s", errb.String())
 	}
 }
