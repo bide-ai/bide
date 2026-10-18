@@ -161,6 +161,9 @@ func newAnchor(cfg Config) (*Anchor, error) {
 	bad := func(format string, args ...any) (*Anchor, error) {
 		return nil, fmt.Errorf("awss3: "+format+": %w", append(args, agent.ErrConfig)...)
 	}
+	if err := layout.Validate(); err != nil {
+		return bad("the object layout is invalid: %v", err)
+	}
 	switch {
 	case cfg.Client == nil:
 		return bad("Config.Client is nil")

@@ -43,6 +43,7 @@ Layout is one backend's naming and encoding of anchored heads.
 
 **Methods**
 
+- `func (l Layout) Collides(other Layout) bool`: Collides reports whether two layouts could take each other's objects: the same format or the same partition tag.
 - `func (l Layout) Decode(partition, name string, body []byte, v audit.Verifier) (audit.SignedTreeHead, error)`: Decode checks that body is the object the key names (partition and name) and returns its head.
 - `func (l Layout) Encode(sth audit.SignedTreeHead) ([]byte, error)`: Encode is the body of the object that anchors sth.
 - `func (l Layout) Key(prefix, kind, runID string, size int, body []byte) string`: Key is the full key of a body for a head of the given kind, run and size.

@@ -207,3 +207,37 @@ func TestLayoutValidate(t *testing.T) {
 		}
 	}
 }
+
+func TestCollides(t *testing.T) {
+	if testLayout.Collides(otherLayout) || otherLayout.Collides(testLayout) {
+		t.Error("distinct layouts collide")
+	}
+	sameTag, sameFormat := otherLayout, otherLayout
+	sameTag.PartitionTag = testLayout.PartitionTag
+	sameFormat.Format = testLayout.Format
+	if !testLayout.Collides(sameTag) || !testLayout.Collides(sameFormat) {
+		t.Error("layouts sharing a tag or a format do not collide")
+	}
+}
+
+func TestDecodeRefusesAnInvalidLayout(t *testing.T) {
+	k := newKeys(t, 1)
+	p, n, body := encoded(t, testLayout, k.head(t, "r", 4, 7, "a"))
+	bad := testLayout
+	bad.ErrObject = nil
+	if _, err := bad.Decode(p, n, body, k.v); err == nil || strings.Contains(err.Error(), "%!w") {
+		t.Fatalf("Decode with a nil ErrObject = %v; want a clear validation error", err)
+	}
+}
+
+func TestCheckEquivocationGuards(t *testing.T) {
+	k := newKeys(t, 1)
+	if err := anchorobj.CheckEquivocation([]audit.SignedTreeHead{k.head(t, "r", 4, 1, "A")}, nil); err == nil {
+		t.Error("a nil equivocation error was accepted")
+	}
+	// Two runs with a head of one size and different roots are not equivocation: they are not one tree.
+	err := anchorobj.CheckEquivocation([]audit.SignedTreeHead{k.head(t, "r", 4, 1, "A"), k.head(t, "q", 4, 1, "B")}, errEquiv)
+	if err == nil || errors.Is(err, errEquiv) || !strings.Contains(err.Error(), "more than one tree") {
+		t.Errorf("CheckEquivocation across runs = %v; want a usage error that is not equivocation", err)
+	}
+}

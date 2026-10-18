@@ -84,8 +84,17 @@ func (l Layout) Validate() error {
 		return errors.New("anchorobj: Layout.PartitionTag must be non-empty and end in a NUL byte")
 	case l.ErrObject == nil || l.ErrBadSignature == nil:
 		return errors.New("anchorobj: Layout.ErrObject and Layout.ErrBadSignature must be set")
+	case errors.Is(l.ErrBadSignature, l.ErrObject) || errors.Is(l.ErrObject, l.ErrBadSignature):
+		return errors.New("anchorobj: Layout.ErrBadSignature and Layout.ErrObject must be distinct errors")
 	}
 	return nil
+}
+
+// Collides reports whether two layouts could take each other's objects: the same format or the same
+// partition tag. Backends must not collide; only a test that sees both layouts can check it, so each
+// backend module tests that its Layout does not collide with the other backends'.
+func (l Layout) Collides(other Layout) bool {
+	return l.Format == other.Format || l.PartitionTag == other.PartitionTag
 }
 
 // Partition is the partition name of a tree kind and run ID.
@@ -177,8 +186,15 @@ func (l Layout) Encode(sth audit.SignedTreeHead) ([]byte, error) {
 // checks the body strictly (no unknown fields), the format, the partition (from the head's kind and run
 // ID), the size and the digest the name carries. When v is not nil it also verifies the head's
 // signature. Every failure wraps l.ErrObject; a signature that does not verify also wraps
-// l.ErrBadSignature.
+// l.ErrBadSignature. A Layout that fails Validate is refused with that error.
+//
+// With a nil v, Decode is a structural check only: the result says the object is the canonical
+// encoding of a head that its name describes, never that the head is authentic. Every Reader passes
+// its Verifier.
 func (l Layout) Decode(partition, name string, body []byte, v audit.Verifier) (audit.SignedTreeHead, error) {
+	if err := l.Validate(); err != nil {
+		return audit.SignedTreeHead{}, err
+	}
 	pn, ok := ParseName(name)
 	if !ok {
 		return audit.SignedTreeHead{}, fmt.Errorf("%w: %q is not an object name", l.ErrObject, name)
@@ -217,10 +233,17 @@ func (l Layout) Decode(partition, name string, body []byte, v audit.Verifier) (a
 // CheckEquivocation returns an error wrapping errEquivocation when two heads of one tree and size
 // commit to different roots: the log key signed two histories. Two heads of one size with the same
 // root (two processes anchoring one run around a lease handoff) are not equivocation. heads need not
-// be sorted; pass the heads of one tree.
+// be sorted. They must be the heads of one tree (one kind and run ID): heads of two trees are an error,
+// not a verdict, since two runs may share a size.
 func CheckEquivocation(heads []audit.SignedTreeHead, errEquivocation error) error {
+	if errEquivocation == nil {
+		return errors.New("anchorobj: CheckEquivocation needs the equivocation error to wrap")
+	}
 	first := map[int]audit.SignedTreeHead{}
 	for _, h := range heads {
+		if h.Kind != heads[0].Kind || h.RunID != heads[0].RunID {
+			return fmt.Errorf("anchorobj: CheckEquivocation was given heads of more than one tree (%s %q and %s %q)", heads[0].Kind, heads[0].RunID, h.Kind, h.RunID)
+		}
 		p, ok := first[h.Size]
 		if !ok {
 			first[h.Size] = h
