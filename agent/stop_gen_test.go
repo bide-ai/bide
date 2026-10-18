@@ -365,3 +365,41 @@ func TestSetStop_UpgradeAdoptsEachStopOnce(t *testing.T) {
 		t.Fatalf("%d adopted, %d active", adopted, len(mustState(t, c).Active()))
 	}
 }
+
+// A stop that holds compensation is never refused because a weaker one (that lets compensation run) is in
+// force, even when both are requested at the same instant: the key holds the compensation, so each is its
+// own stop and both are written.
+func TestSetStop_AStricterStopIsNeverRefused(t *testing.T) {
+	ctx := context.Background()
+	for range 30 {
+		store := NewMemStore()
+		var wg sync.WaitGroup
+		var weakErr, strictErr error
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_, weakErr = newControl(t, store).SetStop(ctx, setReq(toolScope("refund"), "weak"))
+		}()
+		go func() {
+			defer wg.Done()
+			req := setReq(toolScope("refund"), "strict")
+			req.Compensation = CompensationBlock
+			_, strictErr = newControl(t, store).SetStop(ctx, req)
+		}()
+		wg.Wait()
+		if weakErr != nil || strictErr != nil {
+			t.Fatalf("weak %v, strict %v", weakErr, strictErr)
+		}
+		st := mustState(t, newControl(t, store))
+		blocked := false
+		for _, a := range st.Active() {
+			blocked = blocked || a.Compensation == CompensationBlock
+		}
+		if len(st.Active()) != 2 || !blocked {
+			t.Fatalf("%+v: the stricter stop is not in force", st.Active())
+		}
+		if _, ok := st.Covering(StopQuery{Tool: "refund", Compensation: true}); !ok {
+			t.Fatal("compensation is not held")
+		}
+	}
+}

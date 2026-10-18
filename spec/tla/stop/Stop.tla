@@ -31,7 +31,8 @@ EXTENDS Integers, FiniteSets, Sequences
 
 CONSTANTS
   Calls, StopIds, CoverOf, \* the calls; the stops; the calls each stop covers
-  ScopeOf,           \* the stop key each stop has (its scope and compensation): two stops with one key are duplicates
+  TargetOf, CompOf,  \* what each stop covers, and whether it holds compensation ("allow" or "block")
+  KeyIncludesComp,   \* TRUE: a stop's key is its target and its compensation; FALSE (regress): its target alone
   GenRule,           \* TRUE: a set is named by (stop key, generation) and the insert is once-only; FALSE (regress): named by its own content
   MaxGen,            \* the largest generation a set may carry
   MaxPol, SettersOf, LiftersOf, QuorumOf, \* policies 1..MaxPol: roles and lift quorum
@@ -62,6 +63,9 @@ CONSTANTS
   CatchUp,           \* TRUE: before a record that rests on earlier ones goes to the trail, the log's records the trail lacks are appended (in log order)
   LiftStoreFirst     \* regress: a record that is not a stop is written to the control run before the trail
 
+\* The stop key: two stops with one key are duplicates. Compensation is part of the key, so a stop that holds
+\* compensation is never refused because a weaker one (that lets it run) is in force.
+ScopeOf == [i \in StopIds |-> IF KeyIncludesComp THEN <<TargetOf[i], CompOf[i]>> ELSE <<TargetOf[i], "any">>]
 Pols == 1..MaxPol
 Enrolled == UNION {SettersOf[p] \cup LiftersOf[p] : p \in Pols}
 Kinds == {"set", "lift", "pol", "mode", "root"}
@@ -308,6 +312,15 @@ Spec == Init /\ [][Next]_vars
 OneActivePerScope ==
   \A i, j \in StopIds : (i /= j /\ ScopeOf[i] = ScopeOf[j]) =>
     ~(Eff(log, Len(log)).st[i].phase = "active" /\ Eff(log, Len(log)).st[j].phase = "active")
+
+\* A set request is refused ("already stopped") only when a stop in force for the same target is at least as
+\* strict: no request is refused while every stop in force for its target is weaker. (A stop that blocks
+\* compensation is stricter than one that lets it run.)
+StopRank(c) == IF c = "block" THEN 1 ELSE 0
+StricterNeverRefused ==
+  \A i \in StopIds : \A n \in 0..Len(log) :
+    HeldKey(Eff(log, n), ScopeOf[i]) =>
+      \E j \in StopIds : Eff(log, n).st[j].phase = "active" /\ TargetOf[j] = TargetOf[i] /\ StopRank(CompOf[j]) >= StopRank(CompOf[i])
 
 \* The effect starts at most once, whatever the stop, the lift and the crashes do.
 AtMostOnce == \A c \in Calls : fired[c] <= 1

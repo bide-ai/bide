@@ -81,7 +81,9 @@ bide stop -db run.db -lift 3f9c2a10 -reason "provider recovered" -yes
   nothing and says so. This holds when two operators set the same scope at the same instant: a stop is
   named by its scope, its compensation and a generation, the insert is once-only, and the one that loses
   reads again, finds the winner's stop in force, and writes nothing, so a scope is never in force twice and
-  needs one lift.
+  needs one lift. The compensation is part of what a stop is: `-block-compensation` is never refused
+  because a weaker stop of the same target (one that lets a rollback run) is in force, so the stricter stop is
+  written beside it.
 - `-reason` is required, at most 1 KiB, and is shown in logs, notifications and the viewer: put no
   secret and no customer data in it. `-block-compensation` holds a saga's rollback too.
 - **An `-agent` stop covers runs whose identity names that agent.** A run with no identity
