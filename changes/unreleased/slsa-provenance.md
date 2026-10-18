@@ -1,3 +1,0 @@
-Section: Added
-
-Releases now carry SLSA v1 Build Level 3 build provenance: the release workflow calls a reusable workflow of a separate repository (`bide-ai/release-builder`, pinned by commit) that builds with goreleaser and attests every archive, every archive SBOM, `checksums.txt`, `approve-page.SHA256SUMS` and the module set SBOM with GitHub's artifact attestations, and `release.yml` verifies that provenance with a pinned `gh` (`scripts/verify-provenance.sh`) before it signs or publishes anything, failing the release if one file does not verify. The cosign signature identity is unchanged. `docs/trust/verify-releases.md` has the `gh attestation verify` commands and states what the provenance proves and what it does not.

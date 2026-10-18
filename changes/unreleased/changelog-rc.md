@@ -1,3 +1,0 @@
-Section: Fixed
-
-`scripts/release.sh --assemble-changelog` (the changelog tool's `assemble`) now accepts a pre-release version such as `v0.21.0-rc.1`, read as `scripts/release.sh` reads versions (no leading zeros, a pre-release of non-empty dot-separated identifiers), and refuses a malformed one. The candidate's section sits above the last release, the `[Unreleased]` link moves to its tag, and a later assembly (the next candidate or the final release) finds the candidate's section and link as the release before it. Before, assembling a candidate failed with "version is not like 0.16.0" and its section had to be retitled by hand.

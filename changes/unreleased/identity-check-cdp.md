@@ -1,3 +1,0 @@
-Section: Added
-
-`bide identity check -cert` reports `cert.cdp`: with CRLs loaded it fails when the issuer's CRLs carry an issuing distribution point (what step-ca stamps) that none of the leaf's plain CRL distribution points names, which is why no CRL covers the certificate and the gate waits, and it names the fix; it warns when the leaf has several plain distribution points with different names, since status is then read from a CRL covering any one of them, which suits mirrors of one CRL and not a CA that partitions. `audit.PlainDistributionPoints` returns a certificate's plain distribution points, the ones a CRL's issuing distribution point is matched against.

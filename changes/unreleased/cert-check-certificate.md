@@ -1,3 +1,0 @@
-Section: Added
-
-`audit.CertApprover.CheckCertificate` returns the verdict a gate reaches on a decision's certificate chain without a journal, signature or signed head: whether the chain is accepted for the approver and what the revocation status rule makes of it, judged by the counting rule (`audit.CheckCount`) or the pre-execution rule (`audit.CheckExec`) at a given decision and provable time. `VerifyCertDecision` and `VerifyCertExec` now call the same function for that part, so there is no second copy of the verdict; their behavior is unchanged, and a test pins the two to the same answer across the identity tests.
