@@ -158,24 +158,78 @@ func TestStopNotify_ARejectedRecordRaisesNothing(t *testing.T) {
 	}
 }
 
-// Only stops within the window are news; an older one is history.
-func TestStopNotify_TheWindow(t *testing.T) {
-	ctl := newControl(t, NewMemStore())
-	setTool(t, ctl, "refund")
+// A stop in force is told whatever its time says (the time is its writer's); the window limits only the stops
+// that are over: one lifted long ago is history.
+func TestStopNotify_AStopInForceIsToldWhateverItsTimeSays(t *testing.T) {
+	for name, at := range map[string]time.Time{
+		"a month old":   time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC),
+		"backdated":     time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
+		"in the future": time.Date(2031, 1, 1, 0, 0, 0, 0, time.UTC),
+	} {
+		t.Run(name, func(t *testing.T) {
+			setClk := &notifyClock{t: at}
+			ctl := newControl(t, NewMemStore(), WithStopClock(setClk.now))
+			e := setTool(t, ctl, "refund")
+			sink := &fakeSink{}
+			if err := stopSweep(t, ctl, sink, NewMemNotifyTrail(), sweepClock()); err != nil || sink.count() != 1 || sink.calls[0].Key != StopSetKey(e.ID) {
+				t.Fatalf("%v, %v: a stop in force must be told", err, kindsOf(sink))
+			}
+			if at.After(sweepClock().now()) && sink.calls[0].EventAt.After(sweepClock().now()) {
+				t.Fatalf("a time in the future is no evidence of when the stop began, and the event is not dated by it: %v", sink.calls[0].EventAt)
+			}
+		})
+	}
+	// A stop set and lifted long ago (a month) is history: neither event is raised, and a wider window raises both.
+	setClk := &notifyClock{t: time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)}
+	ctl := newControl(t, NewMemStore(), WithStopClock(setClk.now))
+	e := setTool(t, ctl, "refund")
+	setClk.advance(time.Hour)
+	if _, err := ctl.LiftStop(context.Background(), e.ID, LiftRequest{By: "dayna"}); err != nil {
+		t.Fatal(err)
+	}
 	clk := sweepClock()
-	clk.advance(30 * 24 * time.Hour) // a month after the stop was set (2026-10-17)
+	clk.advance(30 * 24 * time.Hour)
 	sink := &fakeSink{}
 	if err := stopSweep(t, ctl, sink, NewMemNotifyTrail(), clk); err != nil || sink.count() != 0 {
-		t.Fatalf("a month-old stop: %v, %d notifications", err, sink.count())
+		t.Fatalf("a stop lifted a month ago: %v, %d notifications", err, sink.count())
 	}
-	if err := stopSweep(t, ctl, sink, NewMemNotifyTrail(), clk, WithNotifyStopsWithin(60*24*time.Hour)); err != nil || sink.count() != 1 {
-		t.Fatalf("within a wider window: %v, %d notifications", err, sink.count())
+	if err := stopSweep(t, ctl, sink, NewMemNotifyTrail(), clk, WithNotifyStopsWithin(90*24*time.Hour)); err != nil || sink.count() == 0 {
+		t.Fatalf("within a wider window: %v, %d", err, sink.count())
 	}
 	if WithNotifyStopsWithin(time.Second) == nil {
 		t.Fatal("nil option")
 	}
 	if err := stopSweep(t, ctl, sink, NewMemNotifyTrail(), clk, WithNotifyStopsWithin(time.Second)); err == nil {
 		t.Fatal("a window under a minute must be refused")
+	}
+}
+
+// The lift of a stop a notifier told of is told whatever the lift's time says; the lift of one it never told
+// of, dated long ago, is history.
+func TestStopNotify_ABackdatedLiftIsToldWhenTheStopWas(t *testing.T) {
+	ctx := context.Background()
+	for _, backdated := range []bool{true, false} {
+		store := NewMemStore()
+		clk := &notifyClock{t: time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)}
+		ctl := newControl(t, store, WithStopClock(clk.now))
+		e := setTool(t, ctl, "refund")
+		trail, sink := NewMemNotifyTrail(), &fakeSink{}
+		if backdated { // the stop is told of, then lifted with a time years ago
+			if err := stopSweep(t, ctl, sink, trail, clk); err != nil || sink.count() != 1 {
+				t.Fatalf("%v %d", err, sink.count())
+			}
+		}
+		lifter := newControl(t, store, WithStopClock(func() time.Time { return time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC) }))
+		if _, err := lifter.LiftStop(ctx, e.ID, LiftRequest{By: "dayna"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := stopSweep(t, ctl, sink, trail, clk, WithNotifyStopsWithin(24*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		got := kindsOf(sink)
+		if backdated != slices.Contains(got, NotificationStopLifted) {
+			t.Fatalf("a stop told of = %v: notifications %v (a lift is told for a stop that was told of, and not for one never told of whose lift is old)", backdated, got)
+		}
 	}
 }
 
@@ -213,7 +267,7 @@ func TestStopNotify_Escalation(t *testing.T) {
 	eng := testEngine(t, ctl.j, def, trail, clk, "p1", WithNotifyReceiver("lead", lead),
 		WithNotifyEscalation(NotificationStopSet, EscalationStep{Receiver: "lead", Deadline: 10 * time.Minute}))
 	eng.cfg.stops = ctl
-	ev := eng.stopEvents(mustState(t, ctl))[0]
+	ev := eng.stopEvents(mustState(t, ctl), nil)[0]
 	_, _ = eng.round(context.Background(), ev) // the sink is down: observed, claimed, not acked
 	clk.advance(6 * time.Minute)
 	chase(t, eng, ev)
@@ -503,7 +557,7 @@ func TestStopNotify_AProcessWithoutTheControlLeavesStopSetAlone(t *testing.T) {
 	opts := []NotifyOption{WithNotifyReceiver("lead", lead), WithNotifyEscalation(NotificationStopSet, EscalationStep{Receiver: "lead", Deadline: 10 * time.Minute})}
 	withStops := testEngine(t, ctl.j, def, trail, clk, "p1", opts...)
 	withStops.cfg.stops = ctl
-	ev := withStops.stopEvents(mustState(t, ctl))[0]
+	ev := withStops.stopEvents(mustState(t, ctl), nil)[0]
 	_, _ = withStops.round(context.Background(), ev) // observed and claimed; the sink is down
 
 	var reports atomic.Int32
@@ -550,5 +604,27 @@ func TestStopNotify_TheLiftOfAnOldAuditedStopIsNotified(t *testing.T) {
 	}
 	if got := kindsOf(sink); !slices.Contains(got, NotificationStopLifted) {
 		t.Fatalf("%v: the lift of an old audited stop was not told", got)
+	}
+}
+
+// A stop set a month ago that nobody was told of and that is lifted now owes its lift and no all-clear: the
+// stop_set is out of the window, so there is no stop_set on the trail to end.
+func TestStopNotify_NoAllClearForAStopSetOutOfTheWindow(t *testing.T) {
+	setClk := &notifyClock{t: time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)}
+	ctl := newControl(t, NewMemStore(), WithStopClock(setClk.now))
+	e := setTool(t, ctl, "refund")
+	clk := sweepClock()
+	setClk.t = clk.now().Add(-time.Minute)
+	if _, err := ctl.LiftStop(context.Background(), e.ID, LiftRequest{By: "dayna"}); err != nil {
+		t.Fatal(err)
+	}
+	sink, trail := &fakeSink{}, NewMemNotifyTrail()
+	for range 2 {
+		if err := stopSweep(t, ctl, sink, trail, clk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := kindsOf(sink); len(got) != 1 || got[0] != NotificationStopLifted {
+		t.Fatalf("notifications %v, want only the stop_lifted", got)
 	}
 }

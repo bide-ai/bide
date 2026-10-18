@@ -19,6 +19,7 @@ type stopRigN struct {
 	es    *audit.MemEventStore
 	trail *audit.NotifyTrail
 	now   time.Time
+	clk   time.Time // the time the control stamps records with: a writer's own clock
 }
 
 func newStopRigN(t *testing.T) *stopRigN {
@@ -28,12 +29,13 @@ func newStopRigN(t *testing.T) *stopRigN {
 		t.Fatal(err)
 	}
 	now := time.Now()
-	ctl, err := agent.NewStopControl(j, agent.WithStopMode(agent.StopBasic), agent.WithStopClock(func() time.Time { return now }))
+	r := &stopRigN{t: t, j: j, es: audit.NewMemEventStore(), now: now, clk: now}
+	r.trail = audit.NewNotifyTrail(r.es)
+	r.ctl, err = agent.NewStopControl(j, agent.WithStopMode(agent.StopBasic), agent.WithStopClock(func() time.Time { return r.clk }))
 	if err != nil {
 		t.Fatal(err)
 	}
-	es := audit.NewMemEventStore()
-	return &stopRigN{t: t, j: j, ctl: ctl, es: es, trail: audit.NewNotifyTrail(es), now: now}
+	return r
 }
 
 func (r *stopRigN) set(tool string) agent.StopEntry {
@@ -71,7 +73,10 @@ func (r *stopRigN) verify(d time.Duration, strict bool) (audit.NotifyReport, err
 	}
 	var in audit.NotifyVerifyInput
 	in.Unanchored, in.Strict, in.Now = true, strict, r.now.Add(d)
-	in.StopEvents = agent.StopNotifyEvents(st, in.Now, 0)
+	in.Stops = &st
+	if recs, err := r.ctl.StopRecords(ctx); err == nil {
+		in.StopAnomalies = agent.StopClockAnomalies(recs, in.Now, audit.DefaultClockSkew)
+	}
 	x, err := audit.ExportNotifyTrail(ctx, r.es, agent.NotifyTrailName(agent.StopControlRun))
 	if err != nil {
 		r.t.Fatal(err)
@@ -167,16 +172,118 @@ func TestVerifyNotifications_ASetAndLiftBetweenSweeps(t *testing.T) {
 	}
 }
 
-// The window: a stop older than it is history and owes nothing.
+// The window limits only stops that are over: a stop set and lifted a month ago is history and owes nothing.
 func TestVerifyNotifications_TheStopWindow(t *testing.T) {
 	r := newStopRigN(t)
-	r.set("refund")
-	if rep, err := r.verify(30*24*time.Hour, false); err != nil || len(rep.Events) != 0 {
-		t.Fatalf("a month-old stop: %v %+v", err, rep.Events)
+	r.clk = r.now.Add(-30 * 24 * time.Hour)
+	e := r.set("refund")
+	r.clk = r.now.Add(-30*24*time.Hour + time.Hour)
+	r.lift(e.ID)
+	if rep, err := r.verify(0, true); err != nil || len(rep.Events) != 0 {
+		t.Fatalf("a stop lifted a month ago: %v %+v", err, rep.Events)
 	}
-	st, _ := r.ctl.State(context.Background())
-	if ev := agent.StopNotifyEvents(st, r.now.Add(30*24*time.Hour), 60*24*time.Hour); len(ev) != 1 {
-		t.Fatalf("a wider window: %v", ev)
+}
+
+// A stop in force is owed whatever its time says: a backdated stop, and one dated in the future (which must not
+// hide as "not yet due"), that nobody was told of fail the audit.
+func TestVerifyNotifications_AStopInForceIsOwedWhateverItsTimeSays(t *testing.T) {
+	for name, at := range map[string]time.Duration{"backdated": -400 * 24 * time.Hour, "a month old": -30 * 24 * time.Hour, "in the future": 400 * 24 * time.Hour} {
+		t.Run(name, func(t *testing.T) {
+			r := newStopRigN(t)
+			r.clk = r.now.Add(at)
+			e := r.set("refund")
+			rep, err := r.verify(time.Hour, false)
+			if err == nil || statusesOf(rep)["stop_set "+agent.StopSetKey(e.ID)] != audit.NotifyStatusNeverNotified {
+				t.Fatalf("%v %v: a stop nobody was told of must fail", err, statusesOf(rep))
+			}
+			r.notify()
+			if rep, err := r.verify(time.Hour, false); name != "in the future" && (err != nil || rep.Counts()[audit.NotifyStatusAcked] != 1) {
+				t.Fatalf("after the notifier: %v %v", err, rep.Problems)
+			}
+		})
+	}
+}
+
+// The lift of a stop the trail shows was told of is owed whatever the lift's time says; the lift of a stop no
+// notifier ever told of, dated long ago, is history.
+func TestVerifyNotifications_ABackdatedLift(t *testing.T) {
+	r := newStopRigN(t)
+	e := r.set("refund")
+	r.notify() // told of
+	r.clk = r.now.Add(-400 * 24 * time.Hour)
+	r.lift(e.ID) // a lift dated more than a year ago
+	rep, err := r.verify(time.Hour, false)
+	if err == nil || statusesOf(rep)["stop_lifted "+agent.StopLiftedKey(e.ID)] != audit.NotifyStatusNeverNotified {
+		t.Fatalf("%v %v: the lift of a stop that was told of must be owed, however it is dated", err, statusesOf(rep))
+	}
+	r.notify()
+	// Every event is now covered: what remains is the finding that the lift's time is not believable.
+	rep, err = r.verify(time.Hour, false)
+	if err == nil || len(rep.Problems) != 1 || !strings.Contains(rep.Problems[0], "kill switch control run: record 2") {
+		t.Fatalf("after the notifier: %v %v: want only the clock anomaly", err, rep.Problems)
+	}
+
+	// Never told of, set and lifted a year ago: history.
+	h := newStopRigN(t)
+	h.clk = h.now.Add(-400 * 24 * time.Hour)
+	e2 := h.set("payout")
+	h.lift(e2.ID)
+	if rep, err := h.verify(time.Hour, true); err != nil || len(rep.Events) != 0 {
+		t.Fatalf("a stop lifted a year ago that was never told of: %v %+v", err, rep.Events)
+	}
+}
+
+// A stop that ran for a month and is lifted now owes its lift and no stop_set (the notifier never raised the old
+// stop_set): the audit does not fail a deployment whose notifier raised only the lift.
+func TestVerifyNotifications_AnOldStopLiftedNowOwesOnlyTheLift(t *testing.T) {
+	r := newStopRigN(t)
+	r.clk = r.now.Add(-30 * 24 * time.Hour)
+	e := r.set("refund")
+	r.clk = r.now.Add(-time.Minute)
+	r.lift(e.ID)
+	r.notify()
+	rep, err := r.verify(time.Hour, true)
+	if err != nil {
+		t.Fatalf("%v %+v", err, rep.Problems)
+	}
+	got := statusesOf(rep)
+	if got["stop_lifted "+agent.StopLiftedKey(e.ID)] != audit.NotifyStatusAcked {
+		t.Fatalf("%v", got)
+	}
+	for k := range got {
+		if strings.HasPrefix(k, "stop_set ") || strings.HasPrefix(k, "resolved ") {
+			t.Fatalf("%s owed for a stop set a month ago that was never told of: %v", k, got)
+		}
+	}
+}
+
+// Times the writers chose that cannot be believed are findings of their own: a record dated in the future, one
+// dated before an earlier record of the log.
+func TestVerifyNotifications_StopClockAnomaliesAreProblems(t *testing.T) {
+	r := newStopRigN(t)
+	r.set("a")
+	r.clk = r.now.Add(-48 * time.Hour)
+	r.set("b") // dated two days before the record that precedes it in the log
+	r.notify()
+	rep, err := r.verify(time.Hour, false)
+	if err == nil || !slices.ContainsFunc(rep.Problems, func(p string) bool {
+		return strings.Contains(p, "kill switch control run") && strings.Contains(p, "before an earlier record")
+	}) {
+		t.Fatalf("%v %v", err, rep.Problems)
+	}
+	f := newStopRigN(t)
+	f.clk = f.now.Add(24 * time.Hour)
+	f.set("a")
+	f.notify()
+	if rep, err := f.verify(time.Hour, false); err == nil || !slices.ContainsFunc(rep.Problems, func(p string) bool { return strings.Contains(p, "in the future") }) {
+		t.Fatalf("%v %v", err, rep.Problems)
+	}
+	// An ordinary control run has none.
+	ok := newStopRigN(t)
+	ok.set("a")
+	ok.notify()
+	if rep, err := ok.verify(time.Hour, false); err != nil || len(rep.Problems) != 0 {
+		t.Fatalf("%v %v", err, rep.Problems)
 	}
 }
 
@@ -189,7 +296,7 @@ func TestStopNotifyEvents_AgreeWithWhatTheNotifierRaises(t *testing.T) {
 	r.notify()
 	st, _ := r.ctl.State(context.Background())
 	owed := map[string]bool{}
-	for _, ev := range agent.StopNotifyEvents(st, r.now.Add(time.Minute), 0) {
+	for _, ev := range agent.StopNotifyEvents(st, r.now.Add(time.Minute), 0, nil) {
 		owed[ev.Key] = true
 	}
 	recs, err := r.trail.Load(context.Background(), agent.NotifyTrailName(agent.StopControlRun))

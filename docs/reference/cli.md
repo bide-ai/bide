@@ -1511,15 +1511,15 @@ Usage of bide audit notifications:
   -routing string
     	the notifier's routing as JSON (agent.RoutingOf, from the options the notifier was built with): every event must have been delivered to the receivers it routes to, and each due escalation step to its receiver; without it per-receiver completeness is not checked
   -run string
-    	with -db or -postgres-env: only this run and its sub-runs; default every run
+    	with -db or -postgres-env: only this run and its sub-runs; default every run (the kill switch's stops belong to no run and are checked only when the audit is of every run)
   -sth value
     	a signed tree head over a trail, as JSON (audit.SignNotifyTrail, or an entry's sth from the anchor log of a notifier that anchors its trail); repeat for as many as you have, any number per trail: each must verify and match a prefix of the trail, the largest is the newest
   -stop-policy string
-    	with -db or -postgres-env: the kill switch's stop policy (the JSON bide stop -stop-policy reads), so the control run's stops are judged as an audited deployment judges them; without it they are read as a basic deployment's, and a control run holding signed records is refused. Every stop the control run holds (within -stops-within) must have been notified (stop_set), and every lift of one (stop_lifted)
+    	with -db or -postgres-env: the kill switch's stop policy (the JSON bide stop -stop-policy reads), so the control run's stops are judged as an audited deployment judges them; without it they are read as a basic deployment's, and a control run holding signed records is refused. Every stop in force must have been notified (stop_set), and every lift of one (stop_lifted)
   -stop-root string
     	with -stop-policy: the digest of the deployment's root policy, when the file is a later policy the chain reaches
   -stops-within duration
-    	with -db or -postgres-env: how far back stop events are owed (the notifier's WithNotifyStopsWithin; a stop set, or lifted, longer ago is history) (default 168h0m0s)
+    	with -db or -postgres-env: how far back a stop that is over is still owed its events (the notifier's WithNotifyStopsWithin; a stop in force is always owed, and one set and lifted longer ago is history) (default 168h0m0s)
   -strict
     	also fail (exit 1) on a warning: a decided gate no notifier observed (unobserved_resolved), or an all-clear owed that cannot be timed (all_clear_untimed)
   -trail value

@@ -1564,7 +1564,9 @@ type NotifyVerifyInput struct {
 
 	Journals []JournalExport
 
-	StopEvents []agent.JournalNotifyEvent
+	Stops         *agent.StopState
+	StopsWithin   time.Duration
+	StopAnomalies []string
 
 	Routing *agent.NotifyRouting
 

@@ -94,10 +94,15 @@ type NotifyVerifyInput struct {
 	// Journals are run journals the events are cross-checked against: every gate, halt and abort
 	// they show is expected in the trail of its root run.
 	Journals []JournalExport
-	// StopEvents are the kill switch's events the control run owes a notifier (agent.StopNotifyEvents of its
-	// state as the deployment's own mode judges it): each is expected in the trail of the control run, and a
-	// stop that is lifted owes its all-clear and its lift.
-	StopEvents []agent.JournalNotifyEvent
+	// Stops is the state of the kill switch's control run, as the deployment's own mode judges it: the events
+	// it owes a notifier (agent.StopNotifyEvents, at Now, with the window StopsWithin, 0 the notifier's default)
+	// are expected in the trail of the control run, and a stop that is lifted owes its all-clear and its lift.
+	// Which lifts are owed depends on which stops the trail shows were told of, so it is judged here, not by
+	// the caller. StopAnomalies are findings about the control run itself (agent.StopClockAnomalies): each is
+	// a problem.
+	Stops         *agent.StopState
+	StopsWithin   time.Duration
+	StopAnomalies []string
 
 	// Routing, if set, is the notifier's routing (agent.RoutingOf, the same options the notifier was
 	// built with): each event that needs a person must have been delivered to the receivers it
@@ -352,9 +357,9 @@ func VerifyNotifications(in NotifyVerifyInput) (NotifyReport, error) {
 			owed[name] = append(owed[name], ev)
 		}
 	}
-	for _, ev := range in.StopEvents {
-		name := agent.NotifyTrailName(ev.RunID)
-		owed[name] = append(owed[name], ev)
+	stopTrail := agent.NotifyTrailName(agent.StopControlRun)
+	if in.Stops != nil && len(in.Stops.Stops) > 0 && !slices.Contains(names, stopTrail) {
+		names = append(names, stopTrail)
 	}
 	for name := range owed {
 		if trails[name] == nil {
@@ -391,6 +396,14 @@ func VerifyNotifications(in NotifyVerifyInput) (NotifyReport, error) {
 			all[name] = recs
 		}
 	}
+	if in.Stops != nil {
+		var observed func(string) bool
+		if recs, ok := all[stopTrail]; ok {
+			st := agent.FoldNotify(recs)
+			observed = func(key string) bool { return st.Events[key] != nil }
+		}
+		owed[stopTrail] = append(owed[stopTrail], agent.StopNotifyEvents(*in.Stops, in.Now, in.StopsWithin, observed)...)
+	}
 	openV := checkOpenGroup(all, in.MaxClockSkew, !in.Unanchored)
 	coverV := checkOpenCoverage(all, in.MaxClockSkew)
 	for _, name := range names {
@@ -424,6 +437,9 @@ func VerifyNotifications(in NotifyVerifyInput) (NotifyReport, error) {
 		for _, v := range tr.Violations {
 			rep.Problems = append(rep.Problems, fmt.Sprintf("trail %s: %s", tr.Trail, v))
 		}
+	}
+	for _, a := range in.StopAnomalies {
+		rep.Problems = append(rep.Problems, "kill switch control run: "+a)
 	}
 	for _, e := range rep.Events {
 		if e.Status.Problem() || in.Strict && e.Status.Warning() {

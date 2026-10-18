@@ -697,13 +697,14 @@ its own, so it never delays or fails a check point, and a notifier error or pani
 (the sweep finds it again). A `stop_set` is ended by the usual all-clear (reason `lifted`); `stop_lifted` is a
 fact raised once, when the lift rule is met, so an audited stop's partial lifts raise nothing; a record the
 fold rejects raises nothing. Model 14 abstracts the notifier's event kinds (it models trail records and event
-keys), so it is unchanged. `bide audit notifications` does not yet check that every stop was told.
+keys), so it is unchanged. `bide audit notifications` checks it (PR 5b, below).
 
 **As built (PR 5b).** `bide audit notifications -db` derives the events a notifier owes from the control run
 (`agent.StopNotifyEvents`, which shares one window rule, `stopsOwed`, with the notifier's own `stopEvents`) and
-checks them against the trail of the control run: every stop within `-stops-within` was told (`stop_set`), a lifted
+checks them against the trail of the control run: every stop in force was told (`stop_set`, whatever its writer-chosen time says; the window limits only stops that are over), a lifted
 stop owes its all-clear and its `stop_lifted`, a stop set and lifted before any notifier looked owes only the
 lift. The control run is read in the mode the deployment pins (`-stop-policy`, `-stop-root`), and one this audit
 cannot judge (signed records without a policy) is an unusable input, never an empty list. The verifier
 reads the two new kinds, the reason `lifted`, and the key shapes (`stop:<id>`, `stop:<id>:lifted`). Model 14
-abstracts event kinds, so it is unchanged.
+abstracts event kinds, so it is unchanged. A record's time (`StopRecord.At`) is the writer's own, so the window never
+hides a stop in force, and the audit reports clock anomalies (`agent.StopClockAnomalies`) as findings.
