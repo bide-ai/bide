@@ -121,9 +121,13 @@ clean: it does not catch a name, an address, free text, an obfuscated email addr
 before its retention date: at one write a second, a busy run produces about 31 million objects a year per
 trail, each kept for the whole retention, and each costs a write, a read-back and a KMS data-key request
 (a bucket key, which `Publish` enables, reduces the KMS requests). Estimate requests, storage and KMS for
-your write rate and retention before you set one; the figures are AWS's and change. A per-trail
-minimum interval, which keeps the window between heads bounded, is planned as a separate change and is
-not in this release.
+your write rate and retention before you set one; the figures are AWS's and change. Bound it with
+`WithMinInterval` on `AuditedStore` and `AuditedEventStore` ([audit guide](audit.md#bounding-how-often-heads-are-published-withmininterval)):
+at most one head per run or trail per interval, a timer so that every record is covered within the interval
+while the process lives, and an immediate head at the first write, the run's end, `Reanchor` and `Flush`. A
+one-hour interval turns a million heads a year per trail into about 8,760, at the cost of up to an hour of
+records not under a head; after a crash they stay unanchored until the next start or recovery pass
+(`ReanchorRuns`). Choose the interval as the longest you accept records being unanchored.
 
 ## The key layout
 
