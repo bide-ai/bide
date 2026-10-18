@@ -172,6 +172,7 @@ type cmd struct {
 	st     term.Style
 	stores Stores
 	src    approvecmd.KeySource
+	j      *agent.Journal // the journal the control runs over, for the checks that read a second view of it
 }
 
 // Main runs bide stop with a key file as the key source.
@@ -428,6 +429,9 @@ func (c *cmd) run(ctx context.Context, es term.Style) int {
 	}
 	ctl, doc, err := c.control(o)
 	if err != nil {
+		return c.errCode(err)
+	}
+	if c.j, err = agent.NewJournal(o.Store); err != nil {
 		return c.errCode(err)
 	}
 	// The key is loaded after the arguments are validated and the journal is open, so a bad flag never

@@ -354,7 +354,7 @@ func TestStop_BasicProcessOnAnAuditedDeploymentIsToldSo(t *testing.T) {
 	}
 	// A plain lift does not lift a stop set under a signed record.
 	code, out, errOut := e.stop("", "-lift", e.state(false).Stops[0].ID, "-reason", "oops", "-yes")
-	if code != 1 || !strings.Contains(errOut, "does not lift it") || len(e.state(true).Active()) != 1 {
+	if code != 1 || !strings.Contains(errOut, "this deployment is audited") || len(e.state(true).Active()) != 1 {
 		t.Fatalf("plain lift: exit %d\n%s\n%s", code, out, errOut)
 	}
 }
@@ -682,5 +682,92 @@ func TestAuditStopsSignHeadUsageAndKeys(t *testing.T) {
 	// A key file that does not exist writes nothing.
 	if code, _, _ := runBide(append(append([]string{}, base...), "-sign-head", "-log-key", filepath.Join(dir, "none.key"), "-head-out", heads, "-pubkey", pub)...); code != 3 || len(headLines(t, heads)) != 0 {
 		t.Fatalf("a missing log key: exit %d", code)
+	}
+}
+
+// recordCount is how many records the control run holds.
+func (e *stopEnv) recordCount() int {
+	e.t.Helper()
+	s, err := sqlite.Open(e.db)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer s.Close()
+	j, _ := agent.NewJournal(s)
+	ctl, _ := agent.NewStopControl(j, agent.WithStopMode(agent.StopBasic))
+	recs, err := ctl.StopRecords(context.Background())
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return len(recs)
+}
+
+// A record the deployment's processes would ignore is refused before anything is written, never reported as
+// in force: a plain stop on an audited deployment, a policy the store's chain does not reach, and the first
+// audited write over plain stops that would vanish from the audited view.
+func TestStop_RefusesWritesTheProcessesWouldIgnore(t *testing.T) {
+	e := newStopEnv(t, 1, "ops")
+	if code, _, errOut := e.stop("ops", "-tool", "refund", "-reason", "incident"); code != 0 {
+		t.Fatalf("set: %d\n%s", code, errOut)
+	}
+	n := e.recordCount()
+	id := e.state(true).Active()[0].ID
+
+	// Plain set, lift, on an audited deployment.
+	for _, args := range [][]string{{"-all", "-reason", "x", "-yes"}, {"-lift", id, "-reason", "x", "-yes"}} {
+		code, out, errOut := e.stop("", args...)
+		if code != 1 || !strings.Contains(errOut, "this deployment is audited") || strings.Contains(out, "in force") || e.recordCount() != n {
+			t.Fatalf("plain %v: exit %d, %d records (was %d)\n%s\n%s", args, code, e.recordCount(), n, out, errOut)
+		}
+	}
+
+	// A policy of the same deployment ID with other keys: the store's chain does not reach it.
+	wrong := newStopEnv(t, 1, "ops")
+	for _, args := range [][]string{{"-all", "-reason", "x"}, {"-lift", id, "-reason", "x", "-yes"}} {
+		full := append([]string{"stop", "-db", e.db}, args...)
+		full = append(full, "-stop-policy", wrong.policy, "-as", "ops", "-key", wrong.keys["ops"])
+		code, out, errOut := runBide(full...)
+		if code != 1 || (args[0] != "-lift" && !strings.Contains(errOut, "nothing was written")) || strings.Contains(out, "in force") || e.recordCount() != n {
+			t.Fatalf("wrong-root %v: exit %d, %d records (was %d)\n%s\n%s", args, code, e.recordCount(), n, out, errOut)
+		}
+	}
+	if len(e.state(true).Active()) != 1 || e.state(true).RejectedTotal != 0 {
+		t.Fatalf("the genuine view was disturbed: %+v", e.state(true))
+	}
+}
+
+func TestStop_FirstAuditedWriteOverPlainStopsNeedsUpgrade(t *testing.T) {
+	e := newStopEnv(t, 1, "ops")
+	if code, _, errOut := e.stop("", "-tool", "refund", "-reason", "plain"); code != 0 {
+		t.Fatalf("plain set: %d\n%s", code, errOut)
+	}
+	n := e.recordCount()
+	code, _, errOut := e.stop("ops", "-tool", "payout", "-reason", "audited")
+	if code != 1 || !strings.Contains(errOut, "-upgrade") || e.recordCount() != n {
+		t.Fatalf("exit %d, %d records (was %d)\n%s", code, e.recordCount(), n, errOut)
+	}
+	if code, _, errOut := e.stop("ops", "-upgrade", "-reason", "go audited", "-yes"); code != 0 {
+		t.Fatalf("upgrade: %d\n%s", code, errOut)
+	}
+	if code, _, errOut := e.stop("ops", "-tool", "payout", "-reason", "audited"); code != 0 {
+		t.Fatalf("audited set after the upgrade: %d\n%s", code, errOut)
+	}
+}
+
+// A deployment that moved back to basic by a signed -downgrade is basic again: a plain stop is honored.
+func TestStop_PlainStopAfterDowngrade(t *testing.T) {
+	e := newStopEnv(t, 1, "ops")
+	if code, _, errOut := e.stop("ops", "-tool", "refund", "-reason", "incident"); code != 0 {
+		t.Fatalf("set: %d\n%s", code, errOut)
+	}
+	id := e.state(true).Active()[0].ID
+	if code, _, errOut := e.stop("ops", "-lift", id, "-reason", "done", "-yes"); code != 0 {
+		t.Fatalf("lift: %d\n%s", code, errOut)
+	}
+	if code, _, errOut := e.stop("ops", "-downgrade", "-reason", "back", "-yes"); code != 0 {
+		t.Fatalf("downgrade: %d\n%s", code, errOut)
+	}
+	if code, out, errOut := e.stop("", "-all", "-reason", "plain again"); code != 0 || !strings.Contains(out, "in force") {
+		t.Fatalf("plain set after the downgrade: %d\n%s\n%s", code, out, errOut)
 	}
 }

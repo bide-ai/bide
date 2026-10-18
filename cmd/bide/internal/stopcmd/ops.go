@@ -61,6 +61,9 @@ func (c *cmd) setStops(ctx context.Context, ctl *agent.StopControl, doc *agent.S
 	if err != nil {
 		return c.errCode(err)
 	}
+	if err := c.guard(ctx, ctl, st, false); err != nil {
+		return c.fail(exitFailed, "%v", err)
+	}
 	var todo []agent.StopScope
 	for _, sc := range scopes {
 		dup := false
@@ -102,6 +105,9 @@ func (c *cmd) setStops(ctx context.Context, ctl *agent.StopControl, doc *agent.S
 	}
 	for i, sc := range todo {
 		e, err := ctl.SetStop(ctx, agent.StopRequest{Scope: sc, Reason: c.f.reason, Compensation: comp, By: by, Host: host, Signer: signer})
+		if err == nil {
+			err = c.landed(ctx, ctl, st, e.ID)
+		}
 		if err != nil {
 			if i > 0 {
 				fmt.Fprintf(c.errw, "%d of %d stops were set before this failure; -list shows them\n", i, len(todo))
@@ -171,6 +177,9 @@ func (c *cmd) liftStop(ctx context.Context, ctl *agent.StopControl, doc *agent.S
 	if err != nil {
 		return c.fail(exitFailed, "%v", err)
 	}
+	if err := c.guard(ctx, ctl, st, false); err != nil {
+		return c.fail(exitFailed, "%v", err)
+	}
 	if e.Lifted {
 		fmt.Fprintf(c.out, "stop %s is already lifted (by %s); nothing written\n", short(e.ID), strings.Join(e.LiftedBy, ", "))
 		return exitOK
@@ -237,6 +246,11 @@ func (c *cmd) printStop(e agent.StopEntry, brief bool) {
 }
 
 func (c *cmd) reauditTrail(ctx context.Context, ctl *agent.StopControl) int {
+	if st, err := ctl.State(ctx); err != nil {
+		return c.errCode(err)
+	} else if err := c.guard(ctx, ctl, st, false); err != nil {
+		return c.fail(exitFailed, "%v", err)
+	}
 	n, err := ctl.Reaudit(ctx)
 	if err != nil {
 		return c.errCode(err)
@@ -248,6 +262,11 @@ func (c *cmd) reauditTrail(ctx context.Context, ctl *agent.StopControl) int {
 func (c *cmd) applyPending(ctx context.Context, ctl *agent.StopControl, signer audit.Signer, by, host string) int {
 	if err := checkReason(c.f.reason); err != nil {
 		return c.fail(exitUsage, "-reason: %v", err)
+	}
+	if st, err := ctl.State(ctx); err != nil {
+		return c.errCode(err)
+	} else if err := c.guard(ctx, ctl, st, false); err != nil {
+		return c.fail(exitFailed, "%v", err)
 	}
 	pend, err := ctl.PendingRecords(ctx)
 	if err != nil {
@@ -308,6 +327,9 @@ func (c *cmd) changeMode(ctx context.Context, ctl *agent.StopControl, o Opened, 
 	st, err := ctl.State(ctx)
 	if err != nil {
 		return c.errCode(err)
+	}
+	if err := c.guard(ctx, ctl, st, to == agent.StopAudited); err != nil {
+		return c.fail(exitFailed, "%v", err)
 	}
 	if to == agent.StopBasic && len(st.Active()) > 0 {
 		return c.fail(exitFailed, "%d stop(s) are active: lift them before leaving audited mode (an operator must not lift a stop by leaving audited mode)", len(st.Active()))
@@ -497,4 +519,74 @@ func (c *cmd) showStop(ctx context.Context, o Opened) int {
 		}
 	}
 	return exitOK
+}
+
+// guard refuses, before anything is written, a write the deployment's processes would not honor. Each case
+// was a record the command could write and report as in force while nothing was stopped:
+//
+//   - a plain record on a deployment that is audited: its audited processes ignore plain records. (A
+//     deployment that moved back to basic, by a signed -downgrade, is basic again.)
+//   - an audited write whose policy the store's chain does not reach (the wrong root, a fork): the record
+//     would be rejected by the processes that hold the real policy, and a competing root would be written.
+//   - the first audited write of a deployment with plain stops in force: the audited view ignores them, so
+//     they would vanish from it while basic processes still enforce them. -upgrade adopts them first.
+func (c *cmd) guard(ctx context.Context, ctl *agent.StopControl, st agent.StopState, upgrading bool) error {
+	recs, err := ctl.StopRecords(ctx)
+	if err != nil {
+		return err
+	}
+	signed, backToBasic := false, false
+	for _, r := range recs {
+		signed = signed || r.Signed()
+		if r.Kind == "mode" {
+			backToBasic = r.To == agent.StopBasic
+		}
+	}
+	if c.f.stopPolicy == "" {
+		if signed && !backToBasic {
+			return errors.New("this deployment is audited: its processes ignore a plain record, so nothing would be stopped or lifted. Give -stop-policy, -as and -key; nothing was written")
+		}
+		return nil
+	}
+	if st.ChainErr != "" {
+		return fmt.Errorf("the store's policy chain does not reach this policy file (%s): give the deployment's root policy, or -stop-root; nothing was written", st.ChainErr)
+	}
+	if err := st.UnknowableErr(); err != nil {
+		return fmt.Errorf("%v; nothing was written", err)
+	}
+	if !signed && !upgrading && c.j != nil {
+		bctl, err := agent.NewStopControl(c.j, agent.WithStopMode(agent.StopBasic))
+		if err != nil {
+			return err
+		}
+		bs, err := bctl.State(ctx)
+		if err != nil {
+			return err
+		}
+		if n := len(bs.Active()); n > 0 {
+			return fmt.Errorf("%s in force were set plain, and an audited record would hide them from audited processes while basic ones still enforce them: run -upgrade first, which adopts them; nothing was written", countWord(n, "stop"))
+		}
+	}
+	return nil
+}
+
+// landed reports whether the record the control just wrote counts in the policy's view: a stop is in force,
+// and no new record was rejected. A record that is written and ignored is a failure, not a success.
+func (c *cmd) landed(ctx context.Context, ctl *agent.StopControl, before agent.StopState, id string) error {
+	after, err := ctl.State(ctx)
+	if err != nil {
+		return err
+	}
+	if after.RejectedTotal > before.RejectedTotal {
+		return fmt.Errorf("the record was written but the control run rejected it (%d rejected record(s)): %w", after.RejectedTotal-before.RejectedTotal, agent.ErrStopRejected)
+	}
+	if id != "" {
+		for _, s := range after.Active() {
+			if s.ID == id {
+				return nil
+			}
+		}
+		return fmt.Errorf("the stop was written but is not in force in the policy's view: %w", agent.ErrStopRejected)
+	}
+	return nil
 }
