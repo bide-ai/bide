@@ -31,18 +31,15 @@ func auditCmd(args []string, stdout, stderr io.Writer, d deps) int {
 	if openers == nil {
 		openers = auditstores.Openers()
 	}
-	oldProg, oldHelp, oldFlags, oldLoad, oldStores, oldOnly, oldUsage := auditcli.Program, auditcli.LogKeyHelp, auditcli.LogKeyFlags, auditcli.LoadLogSigner, auditcli.Stores, auditcli.OnlyVerb, auditcli.UsageText
-	defer func() {
-		auditcli.Program, auditcli.LogKeyHelp, auditcli.LogKeyFlags, auditcli.LoadLogSigner, auditcli.Stores, auditcli.OnlyVerb, auditcli.UsageText = oldProg, oldHelp, oldFlags, oldLoad, oldStores, oldOnly, oldUsage
-	}()
-	auditcli.Program = "bide-hsm audit"
-	auditcli.OnlyVerb = "stops"
-	auditcli.UsageText = auditUsage
-	auditcli.LogKeyHelp = logKeyRefHelp
-	auditcli.LogKeyFlags = func(fs *flag.FlagSet) { kf = addKeyFlags(fs) }
-	auditcli.LoadLogSigner = func(ref string) (audit.Signer, error) { return kf.open(ref, d) }
-	auditcli.Stores = openers
-	return auditcli.Main(version, args, stdout, stderr)
+	return auditcli.MainWith(version, args, stdout, stderr, auditcli.Options{
+		Program:       "bide-hsm audit",
+		OnlyVerb:      "stops",
+		UsageText:     auditUsage,
+		LogKeyHelp:    logKeyRefHelp,
+		LogKeyFlags:   func(fs *flag.FlagSet) { kf = addKeyFlags(fs) },
+		LoadLogSigner: func(ref string) (audit.Signer, error) { return kf.open(ref, d) },
+		Stores:        openers,
+	})
 }
 
 const auditUsage = `bide-hsm audit: bide audit stops, with the log key in an HSM or a cloud KMS

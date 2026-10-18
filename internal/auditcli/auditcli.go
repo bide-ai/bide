@@ -87,8 +87,14 @@ func readInput(path string) ([]byte, error) {
 // stamped is the release version the program was built with (set by the linker), or "" to read
 // it from the build's module information.
 func Main(stamped string, args []string, stdout, stderr io.Writer) int {
+	return MainWith(stamped, args, stdout, stderr, Options{})
+}
+
+// MainWith is Main with options: bide-hsm audit stops runs the stops verb alone, with the log key opened by
+// reference.
+func MainWith(stamped string, args []string, stdout, stderr io.Writer, opts Options) int {
 	version = stamped
-	return run(args, stdout, stderr)
+	return runWith(args, stdout, stderr, opts)
 }
 
 const usageText = `bide audit: produce and verify audit proof bundles

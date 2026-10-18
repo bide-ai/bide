@@ -13,7 +13,6 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/cmd/bide/bide-hsm/internal/fakekms"
-	"github.com/bide-ai/bide/internal/auditcli"
 	"github.com/bide-ai/bide/signer/awskms"
 	"github.com/bide-ai/bide/store/sqlite"
 )
@@ -221,9 +220,5 @@ func TestAuditStopsUsageAndSecrets(t *testing.T) {
 	}
 	if r := e.run("audit", "stops", "-h"); !strings.Contains(r.errOut, "reference to the log key in an HSM or KMS") {
 		t.Fatalf("help: %d\n%s", r.code, r.all())
-	}
-	// The hooks are put back: bide audit in this process is unchanged.
-	if auditcli.Program != "bide audit" || auditcli.OnlyVerb != "" || auditcli.LogKeyFlags != nil {
-		t.Fatal("bide-hsm audit left auditcli configured")
 	}
 }
