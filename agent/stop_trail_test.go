@@ -442,3 +442,57 @@ func TestStopTrail_AnAppendWithNoDeadlineHasTheDefaultBudget(t *testing.T) {
 		t.Fatalf("gave up after %v, want about the 250ms budget", d)
 	}
 }
+
+// deadlineTrail records the deadline each append was given and takes a while before it lands.
+type deadlineTrail struct {
+	StopTrail
+	mu        sync.Mutex
+	deadlines []time.Time
+}
+
+func (d *deadlineTrail) Append(ctx context.Context, name string, seq int, r StopRecord) error {
+	dl, _ := ctx.Deadline()
+	d.mu.Lock()
+	d.deadlines = append(d.deadlines, dl)
+	d.mu.Unlock()
+	time.Sleep(60 * time.Millisecond)
+	return d.StopTrail.Append(ctx, name, seq, r)
+}
+
+// The catch-up appends and the record's own append of one write are given one and the same deadline: a lift that
+// must land several records on a contended trail has one budget in all, not one per record.
+func TestStopTrail_TheCatchUpAndTheRecordShareOneDeadline(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	untrailed := audited(t, store, auditedPolicy(1, false))
+	var first StopEntry
+	for i := range 3 {
+		e, err := untrailed.SetStop(ctx, StopRequest{Scope: StopScope{Kind: StopTool, Name: string(rune('a' + i))}, By: "ops1", Signer: sign("ops1")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			first = e
+		}
+	}
+	tr := &deadlineTrail{StopTrail: NewMemStopTrail()}
+	c := trailed(t, store, tr, auditedPolicy(1, false))
+	if _, err := c.LiftStop(ctx, first.ID, LiftRequest{By: "ops1", Signer: sign("ops1")}); err != nil {
+		t.Fatal(err)
+	}
+	if len(tr.deadlines) < 4 { // the root, three stops, and the lift
+		t.Fatalf("%d appends", len(tr.deadlines))
+	}
+	lo, hi := tr.deadlines[0], tr.deadlines[0]
+	for _, d := range tr.deadlines {
+		if d.Before(lo) {
+			lo = d
+		}
+		if d.After(hi) {
+			hi = d
+		}
+	}
+	if hi.Sub(lo) > 20*time.Millisecond {
+		t.Fatalf("the appends of one write were given deadlines %v apart: they must share one", hi.Sub(lo))
+	}
+}
