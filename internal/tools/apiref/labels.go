@@ -21,6 +21,7 @@ var Labels = map[string]string{
 	"anchor/awss3/awss3test":   Experimental,
 	"approvals":                Core,
 	"audit":                    Core,
+	"audit/anchorobj":          Experimental,
 	"audit/crlrefresh":         Experimental,
 	"audit/eventstoretest":     Core,
 	"audit/rfc3161":            BuildingBlock,

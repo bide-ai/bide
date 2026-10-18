@@ -46,7 +46,10 @@ func TestParseNameRejectsEverythingElse(t *testing.T) {
 	if _, ok := anchorobj.ParseName(good); !ok {
 		t.Fatal("a well-formed name was rejected")
 	}
-	for _, bad := range []string{"", good + "x", strings.ToUpper(good), strings.Replace(good, "-", "_", 1), anchorobj.InvertedSize(5)[1:] + "-" + strings.Repeat("0", anchorobj.DigestHex) + anchorobj.ObjectSuffix,
+	upperDigest := anchorobj.InvertedSize(5) + "-" + strings.Repeat("A", anchorobj.DigestHex) + anchorobj.ObjectSuffix
+	shortDigest := anchorobj.InvertedSize(5) + "-" + strings.Repeat("0", anchorobj.DigestHex-2) + anchorobj.ObjectSuffix
+	longDigest := anchorobj.InvertedSize(5) + "-" + strings.Repeat("0", anchorobj.DigestHex+2) + anchorobj.ObjectSuffix
+	for _, bad := range []string{upperDigest, shortDigest, longDigest, "", good + "x", strings.ToUpper(good), strings.Replace(good, "-", "_", 1), anchorobj.InvertedSize(5)[1:] + "-" + strings.Repeat("0", anchorobj.DigestHex) + anchorobj.ObjectSuffix,
 		anchorobj.InvertedSize(5) + "-" + strings.Repeat("0", anchorobj.DigestHex-1) + anchorobj.ObjectSuffix, anchorobj.InvertedSize(5) + "-" + strings.Repeat("g", anchorobj.DigestHex) + anchorobj.ObjectSuffix,
 		"9999999999999999999-" + strings.Repeat("0", anchorobj.DigestHex) + anchorobj.ObjectSuffix, "-" + good} {
 		if _, ok := anchorobj.ParseName(bad); ok {

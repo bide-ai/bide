@@ -93,8 +93,8 @@ func TestLayoutsDoNotCrossValidate(t *testing.T) {
 	}
 	// Same name and partition, the other backend's format in the body: refused for its format.
 	_, _, ob := encoded(t, otherLayout, sth)
-	if _, err := testLayout.Decode(p, n, ob, k.v); !errors.Is(err, errObject) {
-		t.Fatalf("a body of another format decoded: %v", err)
+	if _, err := testLayout.Decode(p, n, ob, k.v); !errors.Is(err, errObject) || !strings.Contains(err.Error(), "has format") {
+		t.Fatalf("a body of another format: %v; want an error naming its format", err)
 	}
 }
 
@@ -170,5 +170,20 @@ func TestCheckEquivocation(t *testing.T) {
 		if (err != nil) != tc.bad || (err != nil && !errors.Is(err, errEquiv)) {
 			t.Errorf("%s: CheckEquivocation = %v, want bad=%v wrapping the given error", name, err, tc.bad)
 		}
+	}
+}
+
+// A body that is a valid head in another spelling (spacing, member order) and whose name carries its own
+// digest passes every check but the canonical-encoding one, which is what stops two spellings of one head
+// from being two objects the Reader counts twice.
+func TestDecodeRefusesANonCanonicalBodyWhoseNameMatchesIt(t *testing.T) {
+	k := newKeys(t, 1)
+	sth := k.head(t, "r", 4, 7, "a")
+	p, _, body := encoded(t, testLayout, sth)
+	respaced := []byte(strings.Replace(string(body), `,"sth"`, `, "sth"`, 1))
+	name := anchorobj.ObjectName(sth.Size, respaced) // the digest of the respaced bytes
+	_, err := testLayout.Decode(p, name, respaced, k.v)
+	if !errors.Is(err, errObject) || !strings.Contains(err.Error(), "canonical") {
+		t.Fatalf("Decode = %v; want a canonical-encoding refusal", err)
 	}
 }

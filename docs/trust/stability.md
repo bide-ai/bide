@@ -35,6 +35,7 @@ The certificate verification core in `audit` and the certificate-bound approver 
 | `anchor/awss3/awss3test` | experimental |
 | `approvals` | core |
 | `audit` | core |
+| `audit/anchorobj` | experimental |
 | `audit/crlrefresh` | experimental |
 | `audit/eventstoretest` | core |
 | `audit/rfc3161` | building block, not yet used by approval gates |

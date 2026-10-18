@@ -27,7 +27,7 @@ Each package carries one label, declared in one place and checked against
 
 | Module | Packages | Pages |
 |---|---|---|
-| `github.com/bide-ai/bide` | 22 | one page per package, listed below |
+| `github.com/bide-ai/bide` | 23 | one page per package, listed below |
 | `github.com/bide-ai/bide/anchor/awss3` | 2 | [anchor-awss3](anchor-awss3.md) |
 | `github.com/bide-ai/bide/codec/gcf` | 1 | [codec-gcf](codec-gcf.md) |
 | `github.com/bide-ai/bide/flowedit` | 1 | [flowedit](flowedit.md) |
@@ -53,6 +53,7 @@ Each package carries one label, declared in one place and checked against
 | [`agent/storetest`](agent-storetest.md) | core | Package storetest checks that an agent.Store meets the requirements the journal builds on (A1 to A8, documented on agent.Store), that a Journal over it writes and checks the journal format header, and that records round-trip byte for byte. |
 | [`approvals`](approvals.md) | core | Package approvals is the intake an application serves so that approvers can decide on gated calls over HTTP: an http.Handler that shows a pending call from the journal, and takes an approver's signed decision, verifies it against the recorded call, and records it through the application's own journal. |
 | [`audit`](audit.md) | core | Package audit turns an agent's durable journal into a verifiable, tamper-evident record. |
+| [`audit/anchorobj`](audit-anchorobj.md) | experimental | Package anchorobj is the part of an object-store audit anchor that does not depend on any storage SDK: the layout of the objects that hold signed tree heads, their canonical body, the checks a Reader makes on an object it reads back, the equivocation check, and the tripwire for run IDs that look like personal data. |
 | [`audit/crlrefresh`](audit-crlrefresh.md) | experimental | Package crlrefresh keeps the status snapshot of a certificate-bound approver (audit.CertApprover) supplied with the newest verified CRLs of the issuing CAs its policy pins, and archives every CRL it accepts (docs/design/crl-refresher.md, docs/guides/certificate-approvers.md). |
 | [`audit/eventstoretest`](audit-eventstoretest.md) | core | Package eventstoretest checks that an audit.EventStore keeps the contract the event trail builds on: contiguous, append-only positions per run, an idempotent re-append of the same leaf, a refusal (audit.ErrSeqTaken) of a different leaf at a stored position, and exactly one winner among writers racing for one position. |
 | [`audit/rfc3161`](audit-rfc3161.md) | building block, not yet used by approval gates | Package rfc3161 verifies RFC 3161 time-stamp tokens with the standard library alone. |
