@@ -80,6 +80,7 @@ func TestPostgresErasureThroughTheRedactionRole(t *testing.T) {
 		`GRANT SELECT, INSERT ON `+schema+`.bide_steps, `+schema+`.bide_events TO `+app,
 		`GRANT SELECT, INSERT, UPDATE, DELETE ON `+schema+`.bide_leases TO `+app,
 		`GRANT SELECT ON `+schema+`.bide_schema_version TO `+app+`, `+red,
+		`GRANT SELECT ON `+schema+`.bide_holds TO `+app,
 		`GRANT EXECUTE ON FUNCTION `+schema+`.bide_next_seq_v1(text) TO `+app,
 		`GRANT EXECUTE ON FUNCTION `+schema+`.bide_redact_v2(text, text, bytea, bigint) TO `+red,
 	)
