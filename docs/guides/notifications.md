@@ -538,7 +538,11 @@ trigger after a crash is the failure the file prevents. A crash, as opposed to a
 therefore lose the forwarded-delivery entries of the last second: a redelivery of one of those events
 is forwarded once more, a repeat and never a lost notification. A negative `-state-flush` writes every change. It holds delivery IDs,
 cleared IDs and sink names, no payload and no secret. If a write fails the relay logs it and keeps
-forwarding, with its memory in the process as without the file. One file belongs to one relay: the
+forwarding, with its memory in the process as without the file, and retries the write until it works, so the state is not lost when the next event never comes. On
+Windows, where a reader holding the file open (a `tail`, a virus scan) refuses the replacing rename, the
+retries start within milliseconds (about 300 ms in all) and are not logged, and no request waits for
+them; any other failure is logged once and retried after the flush delay (at least a second), with the
+wait doubling to 30 seconds while it keeps failing, and the write that ends the streak is logged too. One file belongs to one relay: the
 relay holds an exclusive operating-system lock (`<file>.lock`, `flock` on Unix, `LockFileEx` on
 Windows) for as long as it runs, and a second relay on the same file refuses to start, naming it. The
 lock belongs to the process, so a relay that crashes or is killed releases it and the next one starts;

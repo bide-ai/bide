@@ -110,12 +110,16 @@ type Handler struct {
 	cleared *idSet
 	state   *stateStore
 	// pmu guards the pending state write.
-	pmu    sync.Mutex
-	dirty  bool
-	timer  *time.Timer
-	closed bool
-	delay  time.Duration
-	clears func(notify.Payload) string
+	pmu   sync.Mutex
+	dirty bool
+	// retryDelay, if set, replaces stateRetryDelay; tests shorten it.
+	retryDelay time.Duration
+	// failures counts the saves that failed in a row, and slowFailures those past the quick retries.
+	failures, slowFailures int
+	timer                  *time.Timer
+	closed                 bool
+	delay                  time.Duration
+	clears                 func(notify.Payload) string
 }
 
 // New returns a Handler, or an error for a configuration that cannot work.
@@ -162,7 +166,7 @@ func New(c Config) (*Handler, error) {
 			h.state.release()
 			return nil, err
 		}
-		if err := h.state.save(h.seen, h.cleared); err != nil { // fail now if it cannot be written
+		if err := h.state.save(h.seen, h.cleared, true); err != nil { // fail now if it cannot be written
 			h.state.release()
 			return nil, err
 		}
@@ -292,7 +296,7 @@ func (h *Handler) Close() error {
 	var err error
 	if h.dirty {
 		h.dirty = false
-		err = h.state.save(h.seen, h.cleared)
+		err = h.state.save(h.seen, h.cleared, true)
 	}
 	h.pmu.Unlock()
 	if rerr := h.state.release(); err == nil {
@@ -347,10 +351,64 @@ func (h *Handler) flush() {
 	h.saveLocked()
 }
 
-func (h *Handler) saveLocked() {
-	if err := h.state.save(h.seen, h.cleared); err != nil {
-		h.log("relay: %v (the memory of forwarded and cleared events is in the process only until this works)", err)
+const (
+	// stateRetryDelay is the least wait before a failed save is tried again once the quick retries are spent,
+	// and it doubles with each failure up to stateRetryMax.
+	stateRetryDelay = time.Second
+	stateRetryMax   = 30 * time.Second
+	// A refusal that may pass (a reader holding the file on Windows) is retried at once on a timer: 5 ms
+	// doubling, up to transientRetries times (about 300 ms in all), without logging.
+	transientRetries = 6
+	transientBase    = 5 * time.Millisecond
+)
+
+// backoffWait is base doubled slow times, never more than stateRetryMax (and never negative: a large base shifted
+// left would overflow, so it doubles one step at a time and stops at the cap).
+func backoffWait(base time.Duration, slow int) time.Duration {
+	d := min(base, stateRetryMax)
+	for i := 0; i < slow && d < stateRetryMax; i++ {
+		d = min(d*2, stateRetryMax)
 	}
+	return d
+}
+
+// saveLocked saves the state, with h.pmu held, in one attempt, so nothing waits behind a sleep. A save that fails
+// leaves the state dirty with a retry on a timer, so it is written when the file can be written again, not only
+// when the next event changes it (Close writes it too): a refusal that may pass is retried within milliseconds
+// and not logged; anything else, or one that does not pass, is logged once per streak of failures and retried
+// after the flush delay (at least a second), doubling to 30 seconds. The save that ends a streak is logged.
+func (h *Handler) saveLocked() {
+	err := h.state.save(h.seen, h.cleared, false)
+	if err == nil {
+		if h.slowFailures > 0 {
+			h.log("relay: the state file was written again after %d failed attempts", h.failures)
+		}
+		h.failures, h.slowFailures = 0, 0
+		return
+	}
+	h.dirty = true
+	h.failures++
+	var after time.Duration
+	if h.failures <= h.state.quickRetries(err) {
+		after = transientBase << (h.failures - 1)
+	} else {
+		floor := h.retryDelay
+		if floor <= 0 {
+			floor = stateRetryDelay
+		}
+		after = backoffWait(max(h.delay, floor), h.slowFailures)
+		if h.slowFailures == 0 {
+			h.log("relay: %v (the memory of forwarded and cleared events is in the process only until this works; retrying, with a growing wait)", err)
+		}
+		h.slowFailures++
+	}
+	if h.closed {
+		return
+	}
+	if h.timer != nil {
+		h.timer.Stop()
+	}
+	h.timer = time.AfterFunc(after, h.flush)
 }
 
 // safeSend turns a panicking sink into an error, so one bad sink cannot leave a delivery marked

@@ -1099,15 +1099,26 @@ func sendEvents(t *testing.T, rg *rig, n int, prefix string) {
 
 func seenInFile(t *testing.T, path string) int {
 	t.Helper()
-	b, err := os.ReadFile(path)
+	n, err := readSeen(t, path)
 	if err != nil {
 		t.Fatal(err)
+	}
+	return n
+}
+
+// readSeen is seenInFile that returns the open or read error: on Windows a reader that opens the state file
+// while the relay's rename replaces it gets a sharing violation, which a poller treats as "not yet".
+func readSeen(t *testing.T, path string) (int, error) {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
 	}
 	var st stateFile
 	if err := json.Unmarshal(b, &st); err != nil {
 		t.Fatal(err)
 	}
-	return len(st.Seen)
+	return len(st.Seen), nil
 }
 
 func TestStateWritesAreCoalescedAndFlushedWithinTheDelay(t *testing.T) {
@@ -1118,7 +1129,7 @@ func TestStateWritesAreCoalescedAndFlushedWithinTheDelay(t *testing.T) {
 	if n := h.state.saveCount() - base; n > 10 {
 		t.Fatalf("%d writes for 40 events inside one window; writes are not coalesced", n)
 	}
-	waitFor2(t, "the flush", func() bool { return seenInFile(t, path) == 40 })
+	waitForSeen(t, path, 40)
 	h.Close()
 }
 
@@ -1139,7 +1150,7 @@ func TestACrashLosesOnlyTheLastWindowOfDedupeEntries(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "relay.state")
 	h, rg := coalescingHandler(t, path, time.Hour)
 	sendEvents(t, rg, 3, "old")
-	h.state.save(h.seen, h.cleared) // written by an earlier window
+	h.state.save(h.seen, h.cleared, false) // written by an earlier window
 	sendEvents(t, rg, 3, "new")
 	h.crash() // no Close: the pending window is lost
 	h2, _ := coalescingHandler(t, path, time.Hour)
@@ -1182,14 +1193,14 @@ func TestSyncDirIsCalledAfterTheRename(t *testing.T) {
 	var order []string
 	h.state.afterRename = func() { order = append(order, "after-rename") }
 	h.state.syncDir = func(dir string) error { order = append(order, "syncdir:"+filepath.Base(dir)); return nil }
-	if err := h.state.save(h.seen, h.cleared); err != nil {
+	if err := h.state.save(h.seen, h.cleared, false); err != nil {
 		t.Fatal(err)
 	}
 	if len(order) != 2 || order[0] != "after-rename" || !strings.HasPrefix(order[1], "syncdir:") {
 		t.Fatalf("order %v: the directory must be synced after the rename", order)
 	}
 	h.state.syncDir = func(string) error { return errors.New("disk") }
-	if err := h.state.save(h.seen, h.cleared); err == nil {
+	if err := h.state.save(h.seen, h.cleared, false); err == nil {
 		t.Fatal("a failed directory sync was not reported")
 	}
 	h.state.syncDir = syncDir
@@ -1219,6 +1230,23 @@ func TestRestoreDropsDuplicateIDsFromTheFile(t *testing.T) {
 	}
 }
 
+// waitForSeen waits for the state file to hold n entries. An open or read error is the rename in progress (on
+// Windows a sharing violation): not yet; if it never clears, the timeout names the last one.
+func waitForSeen(t *testing.T, path string, n int) {
+	t.Helper()
+	var last error
+	got := -1
+	for end := time.Now().Add(5 * time.Second); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+		var m int
+		if m, last = readSeen(t, path); last == nil {
+			if got = m; got == n {
+				return
+			}
+		}
+	}
+	t.Fatalf("timed out waiting for %d entries in the state file: last read %d entries, last error %v", n, got, last)
+}
+
 func waitFor2(t *testing.T, what string, cond func() bool) {
 	t.Helper()
 	for end := time.Now().Add(5 * time.Second); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
@@ -1240,7 +1268,7 @@ func BenchmarkStateSave(b *testing.B) {
 			s := &stateStore{path: filepath.Join(b.TempDir(), "relay.state"), syncDir: syncDir}
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				if err := s.save(d, c); err != nil {
+				if err := s.save(d, c, false); err != nil {
 					b.Fatal(err)
 				}
 			}

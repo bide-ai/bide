@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // stateVersion is the "version" of the state file.
@@ -38,7 +39,11 @@ type stateStore struct {
 	beforeRename func() error
 	afterRename  func() // test hook: runs after the rename, before the directory sync
 	syncDir      func(dir string) error
-	saves        int
+	// renameFile, quick and sleep stand in for os.Rename, renameQuickRetries and time.Sleep in tests.
+	renameFile func(from, to string) error
+	quick      func(error) int
+	sleep      func(time.Duration)
+	saves      int
 }
 
 // saveCount is how many state files this store has written.
@@ -115,7 +120,12 @@ func (s *stateStore) load(d *dedupe, c *idSet) error {
 
 // save writes the current sets. Snapshots are taken under s.mu, so the last save to run holds the
 // newest state.
-func (s *stateStore) save(d *dedupe, c *idSet) error {
+//
+// With wait, a rename the system refuses for a passing reason (see retryableRename) is retried in line for up to
+// renameRetryBudget, which holds the caller for that long: use it where nothing else waits (startup, Close).
+// Without wait the save makes one attempt and returns the error; the Handler schedules the retries on a timer, so
+// no request waits behind a sleeping save.
+func (s *stateStore) save(d *dedupe, c *idSet, wait bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st := stateFile{Version: stateVersion, Cleared: c.snapshot(), Seen: d.snapshot()}
@@ -139,7 +149,7 @@ func (s *stateStore) save(d *dedupe, c *idSet) error {
 		werr = s.beforeRename()
 	}
 	if werr == nil {
-		werr = os.Rename(tmp, s.path)
+		werr = s.rename(tmp, s.path, wait)
 	}
 	if werr != nil {
 		os.Remove(tmp)
@@ -157,6 +167,30 @@ func (s *stateStore) save(d *dedupe, c *idSet) error {
 	}
 	s.saves++
 	return nil
+}
+
+// quickRetries is how many quick retries a refusal err gets (see renameQuickRetries).
+func (s *stateStore) quickRetries(err error) int {
+	if s.quick != nil {
+		return s.quick(err)
+	}
+	return renameQuickRetries(err)
+}
+
+// rename replaces the state file with tmp; with wait it retries briefly when the operating system refuses
+// because another process has the file open (Windows; see renameQuickRetries).
+func (s *stateStore) rename(tmp, path string, wait bool) error {
+	rename, sleep := s.renameFile, s.sleep
+	if rename == nil {
+		rename = os.Rename
+	}
+	if sleep == nil {
+		sleep = time.Sleep
+	}
+	if !wait {
+		return rename(tmp, path)
+	}
+	return renameWithRetry(rename, func(err error) bool { return s.quickRetries(err) > 0 }, sleep, tmp, path)
 }
 
 func unwrapPath(err error) error {
