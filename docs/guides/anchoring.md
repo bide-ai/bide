@@ -262,6 +262,7 @@ bide-anchor check  -bucket bank-bide-anchor -owner 111122223333 -pubkey ed25519:
 `-kind events` and the trail's name. The public key must come from the log operator out of band, not from
 the bucket.
 
+`verify` and `export -dir` take a directory (a path to one object file, or a missing path, is a usage error: exit 2).
 `verify` (offline) checks every object's name, encoding and signature and reports two signed heads of one
 size with different roots: that is the log key signing two histories, and no normal operation does it
 (`awss3.LoadDir`, which both commands use, returns it as an error wrapping `ErrEquivocation`). An empty

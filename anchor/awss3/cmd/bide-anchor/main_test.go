@@ -213,3 +213,35 @@ func TestEmptyDirectoryFailsBothCommands(t *testing.T) {
 		t.Errorf("export of an empty directory = %d %s; want exit 1 naming nothing to verify", code, errs)
 	}
 }
+
+// -dir is a directory: a single object file or a missing path is a usage error (exit 2), not a pass.
+func TestDirMustBeADirectory(t *testing.T) {
+	e := setup(t)
+	e.publish(t, e.head(t, "r1", 1, "a"))
+	dir := e.dump(t)
+	var file string
+	filepath.WalkDir(dir, func(p string, d os.DirEntry, _ error) error {
+		if !d.IsDir() && file == "" {
+			file = p
+		}
+		return nil
+	})
+	for _, cmd := range []string{"verify", "export"} {
+		args := func(d string) []string {
+			a := []string{cmd, "-dir", d, "-pubkey", e.pub}
+			if cmd == "export" {
+				a = append(a, "-run", "r1")
+			}
+			return a
+		}
+		if code, _, errs := e.do(args(file)...); code != 2 || !strings.Contains(errs, "not a directory") {
+			t.Errorf("%s -dir FILE = %d %s; want exit 2 naming a non-directory", cmd, code, errs)
+		}
+		if code, _, _ := e.do(args(filepath.Join(dir, "missing"))...); code != 2 {
+			t.Errorf("%s -dir MISSING = %d; want exit 2", cmd, code)
+		}
+		if code, _, errs := e.do(args(dir)...); code != 0 {
+			t.Errorf("%s -dir DIR = %d %s; want 0", cmd, code, errs)
+		}
+	}
+}
