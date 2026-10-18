@@ -33,6 +33,9 @@ type ReaderConfig struct {
 	// KMSKey, when set, is the Cloud KMS key the heads must be encrypted with; Audit reports an
 	// object encrypted with another key (or a Google-managed one) as a finding.
 	KMSKey string
+	// Retention, when set, is the retention the Anchor was configured with: Audit reports a bucket whose
+	// retention policy is shorter. Without it Audit judges the policy against MinRetention only.
+	Retention time.Duration
 	// OnSkip is called with each object the Reader skips because it claims to be no head (not in the
 	// layout, not the canonical encoding of a head). Without it the finding is logged with log/slog at
 	// Warn. An object that claims to be a head and fails its signature is an error, not a skip.
@@ -50,6 +53,7 @@ type Reader struct {
 	s      Store
 	prefix string
 	kms    string
+	retain time.Duration
 	v      audit.Verifier
 	onSkip func(Finding)
 }
@@ -84,7 +88,7 @@ func NewReader(ctx context.Context, cfg ReaderConfig) (*Reader, error) {
 	if onSkip == nil {
 		onSkip = func(f Finding) { slog.Warn("gcs: skipped an object that is no anchored head: " + f.String()) }
 	}
-	return &Reader{s: cfg.Store, prefix: prefix, kms: cfg.KMSKey, v: cfg.Verifier, onSkip: onSkip}, nil
+	return &Reader{s: cfg.Store, prefix: prefix, kms: cfg.KMSKey, retain: cfg.Retention, v: cfg.Verifier, onSkip: onSkip}, nil
 }
 
 // scan calls fn for each generation under a prefix, in the order the layout sorts them (the largest
@@ -133,6 +137,10 @@ func (r *Reader) loadOne(ctx context.Context, x ObjectInfo) (sth audit.SignedTre
 	switch {
 	case errors.Is(err, ErrObject):
 		return skip(err.Error())
+	case errors.Is(err, ErrNoObject):
+		// Listed and then gone: deleted at the end of its retention while this read was running. Report
+		// it and read on; an auditor must still be able to read a partition that is being cleaned up.
+		return skip("the generation vanished between the listing and the read (deleted, retention ended?)")
 	case err != nil:
 		return audit.SignedTreeHead{}, false, err
 	}
@@ -243,7 +251,9 @@ func (r *Reader) Heads(ctx context.Context, kind, runID string) ([]audit.SignedT
 	if err := checkEquivocation(heads); err != nil {
 		return nil, err
 	}
-	slices.Reverse(heads) // the layout lists the largest size first; callers want them in increasing size
+	// The layout lists the largest size first and, within a size, names in order: increasing size, with
+	// the heads of one size staying in name order.
+	slices.SortStableFunc(heads, func(a, b audit.SignedTreeHead) int { return a.Size - b.Size })
 	return heads, nil
 }
 
@@ -312,16 +322,23 @@ type Report struct {
 // object not encrypted with the configured key (when ReaderConfig.KMSKey is set), every name with more
 // than one generation (the name is never rewritten by this package), every object that is not a
 // verified head (and, when its name claims a size larger than the largest verified head, that too), and
-// two verified heads of one size with different roots. It needs read access and no write access. An
+// two verified heads of one size with different roots, and each bucket-level protection that is gone
+// (the retention policy absent, unlocked or under the minimum; versioning, uniform bucket-level access
+// or public access prevention off; with ReaderConfig.KMSKey, another default key). It needs read access and no write access. An
 // empty Findings with Heads is what an intact anchor looks like; it is not proof the journal is intact
 // (check the journal against the heads).
 func (r *Reader) Audit(ctx context.Context, kind, runID string, now time.Time) (Report, error) {
 	prefix := r.prefix + partitionOf(kind, runID) + "/"
+	b, err := r.s.Bucket(ctx)
+	if err != nil {
+		return Report{}, wrapErr("read the bucket's configuration", err)
+	}
 	infos, err := r.list(ctx, prefix)
 	if err != nil {
 		return Report{}, err
 	}
 	var rep Report
+	rep.Findings = append(rep.Findings, r.bucketFindings(b)...)
 	versions := map[string]int{}
 	var claimed []claim // objects that are no verified head, and the size their name claims
 	for _, x := range infos {
@@ -361,13 +378,48 @@ func (r *Reader) Audit(ctx context.Context, kind, runID string, now time.Time) (
 	return rep, nil
 }
 
+// bucketFindings reports the bucket-level protections that New would have refused the bucket for. The
+// lock lives on the bucket and not on the objects: a policy that is not locked can be removed or
+// shortened by the owner, and the retention dates of the objects go with it.
+func (r *Reader) bucketFindings(b BucketInfo) []Finding {
+	var fs []Finding
+	add := func(p string) { fs = append(fs, Finding{Key: "(bucket)", Problem: "the bucket " + p}) }
+	switch {
+	case b.RetentionPeriod == 0:
+		add("has no retention policy: nothing keeps a head from being deleted")
+	case !b.RetentionLocked:
+		add("has a retention policy that is not locked: its owner can remove or shorten it, and the retention of every head goes with it")
+	case b.RetentionPeriod < MinRetention:
+		add(fmt.Sprintf("has a retention policy of %s, below the minimum %s", b.RetentionPeriod, MinRetention))
+	case r.retain > 0 && b.RetentionPeriod < r.retain:
+		add(fmt.Sprintf("has a retention policy of %s, shorter than the configured %s", b.RetentionPeriod, r.retain))
+	}
+	if !b.Versioning {
+		add("does not have object versioning on: an overwrite leaves no earlier generation")
+	}
+	if !b.UniformAccess {
+		add("does not have uniform bucket-level access on: object ACLs could grant access outside IAM")
+	}
+	if !b.PublicAccessPrevented {
+		add("does not enforce public access prevention")
+	}
+	if r.kms != "" && b.DefaultKMSKey != r.kms {
+		add(fmt.Sprintf("has default key %q, not the configured %q", b.DefaultKMSKey, r.kms))
+	}
+	return fs
+}
+
 func (r *Reader) auditGeneration(ctx context.Context, x ObjectInfo, now time.Time) ([]Finding, *audit.SignedTreeHead, error) {
 	body, err := r.get(ctx, x)
+	var fs []Finding
+	add := func(p string) { fs = append(fs, Finding{Key: x.Name, Version: gen(x), Problem: p}) }
+	if errors.Is(err, ErrNoObject) {
+		add("the generation vanished between the listing and the read (deleted, retention ended?)")
+		return fs, nil, nil
+	}
 	if err != nil && !errors.Is(err, ErrObject) {
 		return nil, nil, err
 	}
-	var fs []Finding
-	add := func(p string) { fs = append(fs, Finding{Key: x.Name, Version: gen(x), Problem: p}) }
 	if !x.Noncurrent.IsZero() {
 		add("a noncurrent generation: the live object was overwritten or deleted since " + x.Noncurrent.UTC().Format(time.RFC3339) + " (this generation is intact and still read)")
 	}

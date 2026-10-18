@@ -145,6 +145,13 @@ head look like the latest. `Audit` reports:
 - every generation no retention covers, and every one whose retention has ended;
 - every per-object retention that is not `Locked`;
 - every object not encrypted with the configured key, when the Reader is given `ReaderConfig.KMSKey`;
+- each bucket-level protection that is gone, because the lock lives on the bucket and not on the objects:
+  the retention policy absent, not locked, under `gcs.MinRetention` or (with `ReaderConfig.Retention`)
+  shorter than the anchor was configured with; versioning, uniform bucket-level access or public access
+  prevention off; and, with `ReaderConfig.KMSKey`, another default key. `NewReader` refuses only a bucket
+  owned by another project, so that a read-only check still runs on a bucket that has lost a protection;
+- every generation deleted between the listing and the read (a partition at the end of its retention is
+  reported, not an abort);
 - every name with more than one generation;
 - every object that is no verified head, and when its name claims a size larger than the largest verified
   head;

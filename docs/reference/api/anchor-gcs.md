@@ -196,7 +196,7 @@ Reader reads anchored heads back from Cloud Storage and verifies them.
 
 **Methods**
 
-- `func (r *Reader) Audit(ctx context.Context, kind, runID string, now time.Time) (Report, error)`: Audit reads every generation of every object of a tree and reports its retention state: Heads are the verified heads, and Findings lists every noncurrent generation (something overwrote or deleted the live object), every generation no retention covers (it can be deleted), every generation whose retention has ended (it can now be deleted), every per-object retention that is not Locked, every object not encrypted with the configured key (when ReaderConfig.KMSKey is set), every name with more than one generation (the name is never rewritten by this package), every object that is not a verified head (and, when its name claims a size larger than the largest verified head, that too), and two verified heads of one size with different roots.
+- `func (r *Reader) Audit(ctx context.Context, kind, runID string, now time.Time) (Report, error)`: Audit reads every generation of every object of a tree and reports its retention state: Heads are the verified heads, and Findings lists every noncurrent generation (something overwrote or deleted the live object), every generation no retention covers (it can be deleted), every generation whose retention has ended (it can now be deleted), every per-object retention that is not Locked, every object not encrypted with the configured key (when ReaderConfig.KMSKey is set), every name with more than one generation (the name is never rewritten by this package), every object that is not a verified head (and, when its name claims a size larger than the largest verified head, that too), and two verified heads of one size with different roots, and each bucket-level protection that is gone (the retention policy absent, unlocked or under the minimum; versioning, uniform bucket-level access or public access prevention off; with ReaderConfig.KMSKey, another default key).
 - `func (r *Reader) Head(ctx context.Context, kind, runID string, size int) ([]audit.SignedTreeHead, error)`: Head returns the heads anchored for the tree at exactly the given size (more than one only when two processes anchored one run at the same size, with the same root), or ErrNotFound; two with different roots are an error wrapping ErrEquivocation.
 - `func (r *Reader) Heads(ctx context.Context, kind, runID string) ([]audit.SignedTreeHead, error)`: Heads returns every head anchored for the tree, in increasing size (heads of one size in name order), each verified, with the skipping of Latest.
 - `func (r *Reader) Latest(ctx context.Context, kind, runID string) (audit.SignedTreeHead, error)`: Latest returns the head of the largest size anchored for the tree of the given kind (audit.TreeJournal or audit.TreeEvents) and run or trail ID.
@@ -212,6 +212,8 @@ type ReaderConfig struct {
 	Prefix string
 
 	KMSKey string
+
+	Retention time.Duration
 
 	OnSkip func(Finding)
 
@@ -306,3 +308,4 @@ Fake is the in-memory bucket.
 - `func (f *Fake) Report(name string, generation int64, fn func(*gcs.ObjectInfo))`: Report changes what Cloud Storage reports for a generation (the live one when generation is 0), as a server that answers inconsistently would.
 - `func (f *Fake) Stat(_ context.Context, name string, generation int64) (gcs.ObjectInfo, error)`: Stat implements gcs.Store.
 - `func (f *Fake) Tamper(name string, generation int64, body []byte)`: Tamper rewrites the bytes of a generation in place, which Cloud Storage does not allow; it models damage or a forged listing that the Reader must catch by checking the bytes.
+- `func (f *Fake) VanishOnRead(name string)`: VanishOnRead makes every read of name fail with ErrNoObject while its listing still shows it, as an object deleted at the end of its retention between a listing and a read.

@@ -11,6 +11,8 @@ import (
 	"cloud.google.com/go/storage"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/iterator"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // sdkStore is a Store over a *storage.Client and one bucket.
@@ -167,6 +169,14 @@ func classify(err error) error {
 			return fmt.Errorf("%w (%w)", ErrUnavailable, err)
 		}
 		return err
+	}
+	if st, ok := status.FromError(err); ok && st.Code() != codes.OK {
+		switch st.Code() {
+		case codes.PermissionDenied, codes.Unauthenticated:
+			return fmt.Errorf("%w (%w)", ErrDenied, err)
+		case codes.NotFound:
+			return fmt.Errorf("%w (%w)", ErrNoObject, err)
+		}
 	}
 	// No API answer: the request did not complete (a transport error, a reset connection, a gRPC
 	// status that is not an HTTP one). Treat it as unavailable: the caller publishes again.

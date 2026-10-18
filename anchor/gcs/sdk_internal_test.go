@@ -9,6 +9,8 @@ import (
 
 	"cloud.google.com/go/storage"
 	"google.golang.org/api/googleapi"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestClassify(t *testing.T) {
@@ -32,6 +34,11 @@ func TestClassify(t *testing.T) {
 		{"cancelled", context.Canceled, ErrUnavailable, nil},
 		{"deadline", fmt.Errorf("x: %w", context.DeadlineExceeded), ErrUnavailable, nil},
 		{"no API answer", errors.New("connection reset"), ErrUnavailable, nil},
+		{"gRPC permission denied", status.Error(codes.PermissionDenied, "no"), ErrDenied, []error{ErrUnavailable}},
+		{"gRPC unauthenticated", status.Error(codes.Unauthenticated, "no"), ErrDenied, []error{ErrUnavailable}},
+		{"gRPC not found", status.Error(codes.NotFound, "no"), ErrNoObject, []error{ErrUnavailable}},
+		{"gRPC unavailable", status.Error(codes.Unavailable, "down"), ErrUnavailable, []error{ErrDenied}},
+		{"gRPC resource exhausted", status.Error(codes.ResourceExhausted, "slow"), ErrUnavailable, nil},
 	} {
 		got := classify(tc.err)
 		if !errors.Is(got, tc.is) {

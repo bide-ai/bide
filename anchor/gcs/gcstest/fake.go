@@ -41,6 +41,7 @@ type Fake struct {
 	calls   []string
 	faults  []*fault
 	alter   func(*gcs.ObjectInfo)
+	vanish  map[string]bool
 }
 
 type fault struct {
@@ -238,7 +239,7 @@ func (f *Fake) Read(_ context.Context, name string, generation, limit int64) ([]
 		return nil, gcs.ObjectInfo{}, ft.err
 	}
 	g := f.find(name, generation)
-	if g == nil {
+	if g == nil || f.vanish[name] {
 		return nil, gcs.ObjectInfo{}, fmt.Errorf("%w: %s generation %d (404)", gcs.ErrNoObject, name, generation)
 	}
 	b := g.body
@@ -382,6 +383,17 @@ func (f *Fake) AlterNextCreate(fn func(*gcs.ObjectInfo)) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.alter = fn
+}
+
+// VanishOnRead makes every read of name fail with ErrNoObject while its listing still shows it, as an
+// object deleted at the end of its retention between a listing and a read.
+func (f *Fake) VanishOnRead(name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.vanish == nil {
+		f.vanish = map[string]bool{}
+	}
+	f.vanish[name] = true
 }
 
 // Names returns every object name, sorted.
