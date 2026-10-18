@@ -47,6 +47,7 @@ Layout is one backend's naming and encoding of anchored heads.
 - `func (l Layout) Encode(sth audit.SignedTreeHead) ([]byte, error)`: Encode is the body of the object that anchors sth.
 - `func (l Layout) Key(prefix, kind, runID string, size int, body []byte) string`: Key is the full key of a body for a head of the given kind, run and size.
 - `func (l Layout) Partition(kind, runID string) string`: Partition is the partition name of a tree kind and run ID.
+- `func (l Layout) Validate() error`: Validate reports why l cannot be used: an empty format, a partition tag that does not end in a NUL byte (so that one tag could be a prefix of another), or a missing error value (an error wrapping a nil error would match nothing).
 
 ## type Name
 

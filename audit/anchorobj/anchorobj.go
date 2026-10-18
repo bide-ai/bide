@@ -38,6 +38,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -70,6 +71,21 @@ type Layout struct {
 	// ErrBadSignature is wrapped (with ErrObject) by the error Decode returns for a well-formed head
 	// whose signature does not verify.
 	ErrBadSignature error
+}
+
+// Validate reports why l cannot be used: an empty format, a partition tag that does not end in a NUL
+// byte (so that one tag could be a prefix of another), or a missing error value (an error wrapping a nil
+// error would match nothing). A backend checks its own Layout, in a test or at start.
+func (l Layout) Validate() error {
+	switch {
+	case l.Format == "":
+		return errors.New("anchorobj: Layout.Format is empty")
+	case !strings.HasSuffix(l.PartitionTag, "\x00") || len(l.PartitionTag) < 2:
+		return errors.New("anchorobj: Layout.PartitionTag must be non-empty and end in a NUL byte")
+	case l.ErrObject == nil || l.ErrBadSignature == nil:
+		return errors.New("anchorobj: Layout.ErrObject and Layout.ErrBadSignature must be set")
+	}
+	return nil
 }
 
 // Partition is the partition name of a tree kind and run ID.

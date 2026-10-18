@@ -187,3 +187,23 @@ func TestDecodeRefusesANonCanonicalBodyWhoseNameMatchesIt(t *testing.T) {
 		t.Fatalf("Decode = %v; want a canonical-encoding refusal", err)
 	}
 }
+
+func TestLayoutValidate(t *testing.T) {
+	if err := testLayout.Validate(); err != nil {
+		t.Fatalf("a good layout is invalid: %v", err)
+	}
+	for name, mod := range map[string]func(*anchorobj.Layout){
+		"no format":          func(l *anchorobj.Layout) { l.Format = "" },
+		"no tag":             func(l *anchorobj.Layout) { l.PartitionTag = "" },
+		"tag without a NUL":  func(l *anchorobj.Layout) { l.PartitionTag = "bide.audit.test-anchor.partition.v1" },
+		"tag of only a NUL":  func(l *anchorobj.Layout) { l.PartitionTag = "\x00" },
+		"no ErrObject":       func(l *anchorobj.Layout) { l.ErrObject = nil },
+		"no ErrBadSignature": func(l *anchorobj.Layout) { l.ErrBadSignature = nil },
+	} {
+		l := testLayout
+		mod(&l)
+		if l.Validate() == nil {
+			t.Errorf("%s: Validate accepted it", name)
+		}
+	}
+}
