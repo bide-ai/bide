@@ -99,6 +99,7 @@ type cli struct {
 	json           bool
 	verb           string
 	errs           []error
+	opts           Options
 	artifact       json.RawMessage // a produce verb's artifact, embedded in the -json report
 	color          term.Mode       // -color
 	st             term.Style      // the report's colors: off under -json and off a terminal
@@ -150,7 +151,7 @@ func (c *cli) usageError(msg string) {
 	if msg != "" {
 		fmt.Fprintln(c.stderr, c.errStyle().ErrorPrefix()+msg)
 	}
-	fmt.Fprint(c.stderr, usageText)
+	fmt.Fprint(c.stderr, c.usage())
 	c.errs = append(c.errs, &cliError{class: errUsage, err: errors.New("usage error"), shown: true})
 	panic(abort{})
 }
@@ -202,10 +203,59 @@ func (c *cli) call(verb func([]string), args []string) (err error) {
 	return nil
 }
 
+// Options set how the command presents itself and which verb it runs. The zero value is bide audit. It is
+// passed to MainWith and held by the invocation, so two commands in one process do not share it.
+type Options struct {
+	// Program is the command's name in its usage errors and its -json report (default "bide audit").
+	Program string
+	// OnlyVerb, when set, is the one verb the command runs; any other is a usage error that does not echo it.
+	OnlyVerb string
+	// UsageText replaces the usage text the command prints.
+	UsageText string
+	// LogKeyHelp replaces the description of what the stops verb's -log-key names (default: a key file).
+	LogKeyHelp string
+	// LogKeyFlags adds flags to the stops verb that say how the log key is opened.
+	LogKeyFlags func(fs *flag.FlagSet)
+	// LoadLogSigner replaces the package's LoadLogSigner for the stops verb's -sign-head.
+	LoadLogSigner func(ref string) (audit.Signer, error)
+	// Stores replaces the package's Stores for the stops verb's -db and -postgres-env.
+	Stores *StoreOpeners
+}
+
+func (c *cli) program() string {
+	if c.opts.Program != "" {
+		return c.opts.Program
+	}
+	return "bide audit"
+}
+
+func (c *cli) usage() string {
+	if c.opts.UsageText != "" {
+		return c.opts.UsageText
+	}
+	return usageText
+}
+
+// logSigner is the loader of the stops verb's -log-key: the option's, else the package's.
+func (c *cli) logSigner() func(string) (audit.Signer, error) {
+	if c.opts.LoadLogSigner != nil {
+		return c.opts.LoadLogSigner
+	}
+	return LoadLogSigner
+}
+
+// storeOpeners are the openers of the stops verb's store: the option's, else the package's.
+func (c *cli) storeOpeners() *StoreOpeners {
+	if c.opts.Stores != nil {
+		return c.opts.Stores
+	}
+	return Stores
+}
+
 // flagSet returns a verb's flag set, with the -max-input-bytes, -max-clock-skew, -json and -color
 // flags every verb shares.
 func (c *cli) flagSet(name string) *flag.FlagSet {
-	fs := flag.NewFlagSet("bide audit "+name, flag.ContinueOnError)
+	fs := flag.NewFlagSet(c.program()+" "+name, flag.ContinueOnError)
 	fs.SetOutput(c.stderr)
 	fs.Int64Var(&maxInputBytes, "max-input-bytes", defaultMaxInputBytes, "the largest input file, in bytes, the verb reads; a larger one is an error")
 	fs.DurationVar(&maxClockSkew, "max-clock-skew", audit.DefaultClockSkew, "how far past this machine's clock a signed head's timestamp may be")
@@ -276,10 +326,15 @@ var produceVerbs = map[string]bool{"prove": true, "prove-absent": true}
 // run runs one command line (without the program name) and returns its exit status. Every status
 // the CLI exits with is chosen here, by exitFor.
 func run(args []string, stdout, stderr io.Writer) int {
-	c := &cli{stdout: stdout, stderr: stderr, out: stdout}
+	return runWith(args, stdout, stderr, Options{})
+}
+
+// runWith is run with options.
+func runWith(args []string, stdout, stderr io.Writer, opts Options) int {
+	c := &cli{stdout: stdout, stderr: stderr, out: stdout, opts: opts}
 	top := flag.NewFlagSet("bide audit", flag.ContinueOnError)
 	top.SetOutput(stderr)
-	top.Usage = func() { fmt.Fprint(stderr, usageText) }
+	top.Usage = func() { fmt.Fprint(stderr, c.usage()) }
 	showVersion := top.Bool("version", false, "print the version and the artifact formats this version reads")
 	top.BoolVar(&c.json, "json", false, "print one JSON report on stdout instead of the text report")
 	top.Var(&c.color, "color", term.FlagUsage+"; -json is never colored")
@@ -295,14 +350,20 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return exitVerified
 	}
 	if top.NArg() == 0 {
-		fmt.Fprint(stderr, usageText)
+		fmt.Fprint(stderr, c.usage())
 		return exitFor(errUsage)
 	}
 	c.verb = top.Arg(0)
 	verb, ok := verbs[c.verb]
+	if c.opts.OnlyVerb != "" && c.verb != c.opts.OnlyVerb {
+		// Not echoed: an argument given in the verb's place can be a key reference holding a secret.
+		fmt.Fprintf(stderr, "%s%s: the one verb is %s\n", c.errStyle().ErrorPrefix(), c.program(), c.opts.OnlyVerb)
+		fmt.Fprint(stderr, c.usage())
+		return exitFor(errUsage)
+	}
 	if !ok {
 		fmt.Fprintf(stderr, "%sbide audit: unknown verb %q\n", c.errStyle().ErrorPrefix(), c.verb)
-		fmt.Fprint(stderr, usageText)
+		fmt.Fprint(stderr, c.usage())
 		return exitFor(errUsage)
 	}
 	err := c.call(func(a []string) { verb(c, a) }, top.Args()[1:])
@@ -368,7 +429,7 @@ func (c *cli) writeReport(code int, errs []string) {
 		errs = []string{}
 	}
 	rep := report{
-		Tool: "bide audit", Version: toolVersion(), Verb: c.verb, ExitCode: code,
+		Tool: c.program(), Version: toolVersion(), Verb: c.verb, ExitCode: code,
 		Result: resultName(c.verb, code), Verified: code == exitVerified && !produceVerbs[c.verb],
 		Output: out, Errors: errs, Artifact: c.artifact,
 	}

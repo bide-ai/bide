@@ -199,9 +199,26 @@ which `-sth stop-heads.jsonl` reads back. The heads already in the file are veri
 so a trail that shrank or was rewritten since an earlier head is refused, not re-signed; with nothing
 new it signs nothing. Exit statuses are `bide audit`'s (1: the trail does not verify, nothing is signed;
 3: the key could not sign or the file could not be written). `-log-key` is a key file; a log key held in
-an HSM or a KMS is signed by an anchoring process that uses `audit.AuditedEventStore`, not by this job,
-and the head file is not itself anchored: publish it somewhere the deployment's store writers cannot
-edit.
+an HSM or a KMS is signed by `bide-hsm audit stops`, below. The head file is not itself anchored: publish
+it somewhere the deployment's store writers cannot edit.
+
+With the log key in an HSM or a KMS, run the same job with `bide-hsm`:
+
+```
+bide-hsm audit stops -db run.db -stop-policy stop-policy.json \
+    -sign-head -log-key 'awskms:arn:aws:kms:us-east-1:111122223333:key/1234abcd-...' \
+    -pubkey log.pub -head-out stop-heads.jsonl
+```
+
+It is `bide audit stops` (the verification, the head file, the refusals and the exit statuses are the same
+code), with `-log-key` naming the key by reference (a `pkcs11:` URI, `awskms:`, `gcpkms:` or `azurekv:`, as
+for `bide-hsm stop`) and the key flags of `bide-hsm approve` (`-alg`, `-allow-extractable`,
+`-allow-software-key`, `-verify-attestation`) added. The reference holds no secret: a PKCS#11 PIN comes
+from `pin-source`, and a KMS key from the SDK's credential chain. The key is opened only when there is
+something to sign, after the trail has verified and the key is checked against `-pubkey`: a trail that does
+not verify signs nothing and opens no key, and a run with nothing new (the newest head already commits to
+every record) opens none either. `bide-hsm audit` runs the `stops` verb only; the other `bide audit` verbs
+sign nothing.
 
 `bide audit stops` verifies the trail offline: each record must verify under the policy the
 deployment pinned (`-stop-policy`, the policy document with the approvers' public keys) and the chain

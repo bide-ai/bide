@@ -366,6 +366,7 @@ bide-hsm: bide approve for approvers whose keys are in an HSM or a cloud KMS
   bide-hsm approve -db <file> -run <id> -call <tool-use id> -as <approver> -key <key ref> -approver-keys <keys> [flags]
   bide-hsm approve -db <file> -list
   bide-hsm stop    -db <file> -all|-tool <name>|-flow <name>|-agent <name> -reason <text> -stop-policy <file> -as <approver> -key <key ref>
+  bide-hsm audit   stops -db <file> -stop-policy <file> -pubkey <key> -sign-head -log-key <key ref> -head-out <file>
   bide-hsm pubkey  -key <key ref> [-as <approver>]
   bide-hsm csr     -key <key ref> [-out <file>] [-policy <policy file> -as <approver>]
   bide-hsm version
@@ -376,7 +377,8 @@ sign the decision, checks it against the call, records it, and writes a receipt.
 bide-hsm pubkey prints the approver-keys entry that enrols a key. bide-hsm csr writes a certificate
 signing request for a key, signed by the key, for a certificate-bound approver. bide-hsm stop is bide stop
 for the kill switch's audited mode, with -key naming the HSM or KMS key that signs the stop, the lift or the
-change of mode. Each command takes -h.
+change of mode. bide-hsm audit stops is bide audit stops, whose -sign-head signs the stop trail's head with
+-log-key naming the log key in an HSM or KMS. Each command takes -h.
 
 A key reference is one of:
 

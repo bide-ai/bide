@@ -26,6 +26,7 @@ import (
 	"github.com/bide-ai/bide/cmd/bide/bide-hsm/internal/keyref"
 	"github.com/bide-ai/bide/cmd/bide/internal/approvecmd"
 	"github.com/bide-ai/bide/cmd/bide/internal/stopcmd"
+	"github.com/bide-ai/bide/internal/auditcli"
 	"github.com/bide-ai/bide/internal/term"
 	"github.com/bide-ai/bide/signer/awskms"
 	"github.com/bide-ai/bide/signer/azurekv"
@@ -43,6 +44,8 @@ type deps struct {
 	stores approvecmd.Stores
 	// stopStores are the journals bide-hsm stop opens, with the event store of the stop trail.
 	stopStores stopcmd.Stores
+	// auditStores are the read-only stores bide-hsm audit stops reads; nil opens SQLite and Postgres.
+	auditStores *auditcli.StoreOpeners
 }
 
 func main() {
@@ -97,6 +100,7 @@ const usage = `bide-hsm: bide approve for approvers whose keys are in an HSM or 
   bide-hsm approve -db <file> -run <id> -call <tool-use id> -as <approver> -key <key ref> -approver-keys <keys> [flags]
   bide-hsm approve -db <file> -list
   bide-hsm stop    -db <file> -all|-tool <name>|-flow <name>|-agent <name> -reason <text> -stop-policy <file> -as <approver> -key <key ref>
+  bide-hsm audit   stops -db <file> -stop-policy <file> -pubkey <key> -sign-head -log-key <key ref> -head-out <file>
   bide-hsm pubkey  -key <key ref> [-as <approver>]
   bide-hsm csr     -key <key ref> [-out <file>] [-policy <policy file> -as <approver>]
   bide-hsm version
@@ -107,7 +111,8 @@ sign the decision, checks it against the call, records it, and writes a receipt.
 bide-hsm pubkey prints the approver-keys entry that enrols a key. bide-hsm csr writes a certificate
 signing request for a key, signed by the key, for a certificate-bound approver. bide-hsm stop is bide stop
 for the kill switch's audited mode, with -key naming the HSM or KMS key that signs the stop, the lift or the
-change of mode. Each command takes -h.
+change of mode. bide-hsm audit stops is bide audit stops, whose -sign-head signs the stop trail's head with
+-log-key naming the log key in an HSM or KMS. Each command takes -h.
 
 ` + keyRefHelp
 
@@ -150,6 +155,8 @@ func run(args []string, in io.Reader, stdout, stderr io.Writer, d deps) int {
 		return approvecmd.MainWith(args[1:], in, stdout, stderr, d.stores, keySource(d))
 	case "stop":
 		return stopcmd.MainWith(args[1:], in, stdout, stderr, d.stopStores, stopKeySource(d))
+	case "audit":
+		return auditCmd(args[1:], stdout, stderr, d)
 	case "pubkey":
 		return pubkey(args[1:], stdout, stderr, d)
 	case "csr":
@@ -161,7 +168,7 @@ func run(args []string, in io.Reader, stdout, stderr io.Writer, d deps) int {
 		return 0
 	}
 	fmt.Fprintf(stderr, "%sbide-hsm: unknown command %q\n", term.For(stderr, term.Auto).ErrorPrefix(), args[0])
-	fmt.Fprintln(stderr, "commands: approve, stop, pubkey, csr, version (bide-hsm -h)")
+	fmt.Fprintln(stderr, "commands: approve, stop, audit, pubkey, csr, version (bide-hsm -h)")
 	return 2
 }
 
