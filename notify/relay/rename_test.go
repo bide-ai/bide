@@ -262,9 +262,9 @@ func TestRetryDoesNotHoldTheEventPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer h.Close()
-	var slept atomic.Int32
+	var slept, renames atomic.Int32
 	h.state.sleep = func(time.Duration) { slept.Add(1) }
-	h.state.renameFile = func(string, string) error { return errBusy }
+	h.state.renameFile = func(string, string) error { renames.Add(1); return errBusy }
 	h.state.quick = busyQuick // a refusal that never passes: a real fault read as a passing one
 	var wg sync.WaitGroup
 	for _, urgent := range []bool{true, false, true, false} {
@@ -280,6 +280,9 @@ func TestRetryDoesNotHoldTheEventPath(t *testing.T) {
 	case <-done:
 	case <-time.After(30 * time.Second):
 		t.Fatal("persist did not return while the rename was refused")
+	}
+	if renames.Load() == 0 {
+		t.Fatal("no save reached the rename: the test would pass without exercising the retry path")
 	}
 	if n := slept.Load(); n != 0 {
 		t.Fatalf("a save slept %d times: its retries run in line, under the state mutex", n)
