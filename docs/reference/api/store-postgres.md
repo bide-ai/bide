@@ -96,8 +96,11 @@ Store is a Postgres-backed agent.Store.
 - `func (s *Store) Close() error`: Close closes the connection pool Open opened.
 - `func (s *Store) EventStore() *EventStore`: EventStore returns the audit.EventStore over s's database.
 - `func (s *Store) Get(ctx context.Context, runID, name string) (agent.Entry, bool, error)`: Get implements agent.Store.
+- `func (s *Store) Holds(ctx context.Context) ([]agent.Hold, error)`: Holds implements agent.Holder.
 - `func (s *Store) Insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error)`: Insert implements agent.Store.
+- `func (s *Store) LiftHold(ctx context.Context, id string) (bool, error)`: LiftHold implements agent.Holder.
 - `func (s *Store) Load(ctx context.Context, runID string, after int64) iter.Seq2[agent.Entry, error]`: Load implements agent.Store.
+- `func (s *Store) PlaceHold(ctx context.Context, h agent.Hold) error`: PlaceHold implements agent.Holder with one statement that inserts a row per run the hold names, only if no hold has the ID.
 - `func (s *Store) ReapLeases(ctx context.Context, ended []string) (int, error)`: ReapLeases implements agent.Leaser: one DELETE of the lapsed leases whose run is finished (holds an entry named in ended), not in the steps table, or a session's or a sub-agent's (its ID contains '&gt;'), which checks the expiry itself, so a lease taken or renewed meanwhile is kept.
 - `func (s *Store) Redact(ctx context.Context, runID, name string, current, tombstone []byte) (bool, error)`: Redact implements agent.Redactor by calling the redaction function (see redactVersion), which replaces the entry only if it holds current, the run is over, no lease on it is live, no run above it is still being driven, and it is not a session's run, and builds the tombstone itself.
 - `func (s *Store) ReleaseLease(ctx context.Context, runID, holder string) error`: ReleaseLease implements agent.Leaser: relinquish runID if held by holder (a no-op otherwise).

@@ -64,8 +64,11 @@ Store is a SQLite-backed agent.Store.
 - `func (s *Store) Compact(ctx context.Context) (agent.CompactionReport, error)`: Compact implements agent.Compactor: it checkpoints the write-ahead log and truncates it (PRAGMA wal\_checkpoint(TRUNCATE)), which copies the pages an erasure rewrote (their old bytes zeroed, see Redact) into the database file and empties the log that held the old pages.
 - `func (s *Store) EventStore() *EventStore`: EventStore returns the audit.EventStore over s's database.
 - `func (s *Store) Get(ctx context.Context, runID, name string) (agent.Entry, bool, error)`: Get implements agent.Store.
+- `func (s *Store) Holds(ctx context.Context) ([]agent.Hold, error)`: Holds implements agent.Holder.
 - `func (s *Store) Insert(ctx context.Context, runID, name string, data []byte) (agent.Entry, bool, error)`: Insert implements agent.Store.
+- `func (s *Store) LiftHold(ctx context.Context, id string) (bool, error)`: LiftHold implements agent.Holder.
 - `func (s *Store) Load(ctx context.Context, runID string, after int64) iter.Seq2[agent.Entry, error]`: Load implements agent.Store.
+- `func (s *Store) PlaceHold(ctx context.Context, h agent.Hold) error`: PlaceHold implements agent.Holder: one statement, so atomic, that inserts a row for each run the hold names; a hold whose ID is active already violates the key and is refused.
 - `func (s *Store) ReapLeases(ctx context.Context, ended []string) (int, error)`: ReapLeases implements agent.Leaser with one DELETE, which checks the expiry in the same statement, so a lease taken or renewed meanwhile is kept.
 - `func (s *Store) Redact(ctx context.Context, runID, name string, current, tombstone []byte) (bool, error)`: Redact implements agent.Redactor with one UPDATE that replaces the entry only if it holds current, the run holds an end marker and no lease on the run is live (see agent.Redactor).
 - `func (s *Store) ReleaseLease(ctx context.Context, runID, holder string) error`: ReleaseLease implements agent.Leaser: it deletes runID's lease if holder holds it.
