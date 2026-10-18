@@ -648,8 +648,10 @@ func TestHeldCount_CapAndDeadlineMidCount(t *testing.T) {
 	old := maxHeldRead
 	maxHeldRead = 3
 	defer func() { maxHeldRead = old }()
-	if c := HeldCount(context.Background(), JournalSource{J: r.j}, e); !c.Truncated || c.Read != 3 {
-		t.Fatalf("the cap: %+v", c)
+	yielded := 0
+	cj, _ := agent.NewJournal(countingLister{r.store, &yielded})
+	if c := HeldCount(context.Background(), JournalSource{J: cj}, e); !c.Truncated || c.Read != 3 || yielded > 5 {
+		t.Fatalf("the cap: %+v, %d runs listed (the listing itself must stop at the cap)", c, yielded)
 	}
 	maxHeldRead = old
 	ctx, cancel := context.WithCancel(context.Background())
