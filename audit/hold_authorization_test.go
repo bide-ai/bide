@@ -125,6 +125,36 @@ func TestLiftAuthorization_RefusedWhenItDoesNotCover(t *testing.T) {
 			a.PlacedPosition++
 			return resign(r.t, a, r.authz)
 		}},
+		"another placement leaf": {prep: func(r *authRig) audit.LiftAuthorization {
+			a := r.authorize(time.Hour)
+			a.PlacedLeaf = strings.Repeat("0", len(a.PlacedLeaf))
+			return resign(r.t, a, r.authz)
+		}},
+		"another matter": {prep: func(r *authRig) audit.LiftAuthorization {
+			a := r.authorize(time.Hour)
+			a.HoldMatter = "a different matter"
+			return resign(r.t, a, r.authz)
+		}},
+		"other runs": {prep: func(r *authRig) audit.LiftAuthorization {
+			a := r.authorize(time.Hour)
+			a.HoldRuns = []string{"gov", "extra"}
+			return resign(r.t, a, r.authz)
+		}},
+		"another tree setting": {prep: func(r *authRig) audit.LiftAuthorization {
+			a := r.authorize(time.Hour)
+			a.HoldTree = !a.HoldTree
+			return resign(r.t, a, r.authz)
+		}},
+		"signed before the placement": {prep: func(r *authRig) audit.LiftAuthorization {
+			a := r.authorize(time.Hour)
+			a.TrailSize = a.PlacedPosition
+			return resign(r.t, a, r.authz)
+		}},
+		"a key ID that is not the key's": {prep: func(r *authRig) audit.LiftAuthorization {
+			a := r.authorize(time.Hour)
+			a.KeyID = "ecdsa-p256:00"
+			return resign(r.t, a, r.authz)
+		}},
 		"a tampered signature": {prep: func(r *authRig) audit.LiftAuthorization {
 			a := r.authorize(time.Hour)
 			a.Signature[0] ^= 1
