@@ -31,7 +31,7 @@ func TestSaveWaitsForAReaderToCloseTheStateFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "relay.state")
 	d, c := newDedupe(10), newIDSet(10)
 	s := &stateStore{path: path}
-	if err := s.save(d, c); err != nil {
+	if err := s.save(d, c, true); err != nil {
 		t.Fatal(err)
 	}
 	r, err := os.Open(path) // Go opens without FILE_SHARE_DELETE: the rename is refused while this is open
@@ -40,7 +40,7 @@ func TestSaveWaitsForAReaderToCloseTheStateFile(t *testing.T) {
 	}
 	d.restore(agent.NotifyID("e1"), []string{"s"})
 	time.AfterFunc(60*time.Millisecond, func() { r.Close() })
-	if err := s.save(d, c); err != nil {
+	if err := s.save(d, c, true); err != nil {
 		r.Close()
 		t.Fatalf("the save failed while a reader held the file: %v", err)
 	}

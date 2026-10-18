@@ -120,7 +120,12 @@ func (s *stateStore) load(d *dedupe, c *idSet) error {
 
 // save writes the current sets. Snapshots are taken under s.mu, so the last save to run holds the
 // newest state.
-func (s *stateStore) save(d *dedupe, c *idSet) error {
+//
+// With wait, a rename the system refuses for a passing reason (see retryableRename) is retried in line for up to
+// renameRetryBudget, which holds the caller for that long: use it where nothing else waits (startup, Close).
+// Without wait the save makes one attempt and returns the error; the Handler schedules the retries on a timer, so
+// no request waits behind a sleeping save.
+func (s *stateStore) save(d *dedupe, c *idSet, wait bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st := stateFile{Version: stateVersion, Cleared: c.snapshot(), Seen: d.snapshot()}
@@ -144,7 +149,7 @@ func (s *stateStore) save(d *dedupe, c *idSet) error {
 		werr = s.beforeRename()
 	}
 	if werr == nil {
-		werr = s.rename(tmp, s.path)
+		werr = s.rename(tmp, s.path, wait)
 	}
 	if werr != nil {
 		os.Remove(tmp)
@@ -164,9 +169,17 @@ func (s *stateStore) save(d *dedupe, c *idSet) error {
 	return nil
 }
 
-// rename replaces the state file with tmp, retrying briefly when the operating system refuses because another
-// process has the file open (Windows; see retryableRename).
-func (s *stateStore) rename(tmp, path string) error {
+// transient reports whether err is a refusal that may pass on its own (see retryableRename).
+func (s *stateStore) transient(err error) bool {
+	if s.retryable != nil {
+		return s.retryable(err)
+	}
+	return retryableRename(err)
+}
+
+// rename replaces the state file with tmp; with wait it retries briefly when the operating system refuses
+// because another process has the file open (Windows; see retryableRename).
+func (s *stateStore) rename(tmp, path string, wait bool) error {
 	rename, retryable, sleep := s.renameFile, s.retryable, s.sleep
 	if rename == nil {
 		rename = os.Rename
@@ -176,6 +189,9 @@ func (s *stateStore) rename(tmp, path string) error {
 	}
 	if sleep == nil {
 		sleep = time.Sleep
+	}
+	if !wait {
+		return rename(tmp, path)
 	}
 	return renameWithRetry(rename, retryable, sleep, tmp, path)
 }
