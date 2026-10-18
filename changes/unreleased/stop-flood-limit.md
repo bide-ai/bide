@@ -1,0 +1,3 @@
+Section: Changed
+
+A writer with store write access cannot stop a kill switch stop from landing, but can slow it: every reader of the control run folds every entry, so `SetStop`, `State()` and the stop check before each call grow linearly with the junk entries a writer adds under `@stop/set/` (measured, one global `SetStop` with 100,000 junk entries: 0.84 s on SQLite, 2.0 s on Postgres; with 10,000: 0.1 s and 0.15 s). This is now stated in the kill-switch guide and in the known limitations, and a guard test on SQLite (and on Postgres with `PG_DSN`) fails if 10,000 junk entries push `SetStop` or `State()` past a generous bound. Keep the control run's store writable only by the processes that operate the kill switch.
