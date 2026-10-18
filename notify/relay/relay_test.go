@@ -1287,6 +1287,16 @@ func TestSlackMessageOfAStopEscapesOperatorText(t *testing.T) {
 	if strings.Contains(out, "da`yna") || strings.Contains(out, "`more`") {
 		t.Fatalf("a backtick of operator text could open a code span: %s", out)
 	}
+	// Formatting characters of operator text have no effect: the text is in a code span.
+	p := stopPayload("stop_set")
+	p.Stop.Reason = "*LIFTED* _all clear_ ~x~ :tada:"
+	p.Stop.By = "*root*"
+	b2, _ := json.Marshal(SlackMessage(p, ""))
+	for _, want := range []string{"`*LIFTED* _all clear_ ~x~ :tada:`", "`*root* (asserted)`"} {
+		if !strings.Contains(string(b2), want) {
+			t.Fatalf("operator text is not in a code span (%s): %s", want, b2)
+		}
+	}
 	for _, want := range []string{"Agents stopped", "tool refund", "(asserted)", `\u0026lt;!channel\u0026gt;`, "*Reason*"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the message lacks %q: %s", want, out)

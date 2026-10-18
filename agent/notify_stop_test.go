@@ -445,3 +445,77 @@ func (blockSink) Notify(ctx context.Context, _ Notification) error { <-ctx.Done(
 type stopPanicSink struct{}
 
 func (stopPanicSink) Notify(context.Context, Notification) error { panic("sink bug") }
+
+// The lift of a long-running stop is told: the window is judged on the time of the lift, not of the set.
+func TestStopNotify_TheLiftOfAnOldStopIsNotified(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	setClk := &notifyClock{t: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)}
+	ctl := newControl(t, store, WithStopClock(setClk.now))
+	e := setTool(t, ctl, "refund")
+	trail, sink := NewMemNotifyTrail(), &fakeSink{}
+	clk := &notifyClock{t: setClk.now()}
+	if err := stopSweep(t, ctl, sink, trail, clk); err != nil || sink.count() != 1 {
+		t.Fatalf("the set: %v, %d", err, sink.count())
+	}
+	// Eight days later (past the default window of seven) the stop is lifted.
+	setClk.advance(8 * 24 * time.Hour)
+	clk.advance(8 * 24 * time.Hour)
+	if _, err := ctl.LiftStop(ctx, e.ID, LiftRequest{By: "dayna"}); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := stopSweep(t, ctl, sink, trail, clk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := kindsOf(sink)
+	slices.Sort(got)
+	if want := []NotificationKind{NotificationResolved, NotificationStopLifted, NotificationStopSet}; !slices.Equal(got, want) {
+		t.Fatalf("notifications %v, want %v: the lift of a stop older than the window was not told", got, want)
+	}
+}
+
+// A stop set and lifted long ago is history: neither event is raised for it.
+func TestStopNotify_ALongAgoLiftIsNotNews(t *testing.T) {
+	ctx := context.Background()
+	setClk := &notifyClock{t: time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)}
+	ctl := newControl(t, NewMemStore(), WithStopClock(setClk.now))
+	e := setTool(t, ctl, "refund")
+	setClk.advance(time.Hour)
+	if _, err := ctl.LiftStop(ctx, e.ID, LiftRequest{By: "dayna"}); err != nil {
+		t.Fatal(err)
+	}
+	clk := &notifyClock{t: setClk.now().Add(30 * 24 * time.Hour)}
+	sink := &fakeSink{}
+	if err := stopSweep(t, ctl, sink, NewMemNotifyTrail(), clk); err != nil || sink.count() != 0 {
+		t.Fatalf("%v, %d notifications for a stop lifted a month ago", err, sink.count())
+	}
+}
+
+// A process that is not given the control (no WithNotifyStops) cannot tell whether a stop still stands: it
+// leaves stop_set events alone, so it neither escalates one forever nor claims it ended, and says so once.
+func TestStopNotify_AProcessWithoutTheControlLeavesStopSetAlone(t *testing.T) {
+	ctl := newControl(t, NewMemStore())
+	setTool(t, ctl, "refund")
+	trail, clk := NewMemNotifyTrail(), routeClock()
+	def, lead := &fakeSink{fail: 1000}, &fakeSink{}
+	opts := []NotifyOption{WithNotifyReceiver("lead", lead), WithNotifyEscalation(NotificationStopSet, EscalationStep{Receiver: "lead", Deadline: 10 * time.Minute})}
+	withStops := testEngine(t, ctl.j, def, trail, clk, "p1", opts...)
+	withStops.cfg.stops = ctl
+	ev := withStops.stopEvents(mustState(t, ctl))[0]
+	_, _ = withStops.round(context.Background(), ev) // observed and claimed; the sink is down
+
+	var reports atomic.Int32
+	without := testEngine(t, ctl.j, def, trail, clk, "p2", append(opts, WithNotifyErrors(func(error) { reports.Add(1) }))...)
+	clk.advance(30 * time.Minute)
+	for range 3 {
+		scanAndFlush(t, without, StopControlRun)
+	}
+	if lead.count() != 0 {
+		t.Fatalf("a process that cannot judge the stop escalated it: %v", kindsOf(lead))
+	}
+	if got := reports.Load(); got != 1 {
+		t.Fatalf("it reported that stop notifications are off %d times, want once", got)
+	}
+}

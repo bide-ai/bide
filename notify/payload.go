@@ -337,14 +337,12 @@ func (p *Payload) stopDetail(w *Webhook, n agent.Notification) {
 		if s.Scope.Kind != agent.StopGlobal {
 			what = s.Scope.String()
 		}
-		who := s.By
-		if !s.Signed {
-			who += " (asserted, not authenticated)"
-		}
+		// The summary names the scope and no operator text (the setter, the reason): a chat message posts it
+		// as it is, and text an operator typed would format it. The structured stop carries them.
 		if n.Kind == agent.NotificationStopLifted {
-			p.Summary = fmt.Sprintf("The stop of %s was lifted (set by %s). Held runs carry on when they are next driven.", what, who)
+			p.Summary = fmt.Sprintf("The stop of %s was lifted. Held runs carry on when they are next driven.", what)
 		} else {
-			p.Summary = fmt.Sprintf("Agents are stopped: %s, set by %s. Reason: %s", what, who, clip(s.Reason, 300))
+			p.Summary = fmt.Sprintf("Agents are stopped: %s. The stop names who set it and why.", what)
 		}
 	} else {
 		p.View.Command = "bide stop -db " + db + " -list"

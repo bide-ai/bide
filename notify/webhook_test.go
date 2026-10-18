@@ -747,6 +747,16 @@ func TestPayloadOfAStopEvent(t *testing.T) {
 	if !strings.Contains(m["summary"].(string), "was lifted") {
 		t.Fatalf("summary %q", m["summary"])
 	}
+	// The summary carries no operator text: a chat message posts it as it is.
+	for _, kind := range []agent.NotificationKind{agent.NotificationStopSet, agent.NotificationStopLifted} {
+		m, _ := notifyJSON(t, w, stopNotification(kind))
+		sum := m["summary"].(string)
+		for _, text := range []string{"dayna", "channel", "incident"} {
+			if strings.Contains(sum, text) {
+				t.Fatalf("%s: the summary %q holds operator text %q", kind, sum, text)
+			}
+		}
+	}
 	// A stop with no detail still has a view command that works.
 	n := stopNotification(agent.NotificationStopSet)
 	n.Stop = nil

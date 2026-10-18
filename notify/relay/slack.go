@@ -129,11 +129,11 @@ func SlackMessage(p notify.Payload, viewURL string) SlackMsg {
 		if !s.Signed {
 			who += " (asserted)"
 		}
-		// Operator text: escaped, and with no backtick that could open a code span.
-		plain := func(v string) string { return strings.ReplaceAll(escapeSlack(v), "`", "'") }
-		fields = append(fields, mrkdwn("*Set by*\n"+plain(who)), mrkdwn("*Mode*\n"+code(s.Mode)))
+		// Operator text goes in code spans: nothing inside one is formatted (*bold*, _italic_, ~strike~, :emoji:)
+		// or turned into a mention or a link, and code() leaves no backtick to end the span early.
+		fields = append(fields, mrkdwn("*Set by*\n"+code(who)), mrkdwn("*Mode*\n"+code(s.Mode)))
 		if s.Reason != "" {
-			fields = append(fields, mrkdwn("*Reason*\n"+plain(s.Reason)))
+			fields = append(fields, mrkdwn("*Reason*\n"+code(s.Reason)))
 		}
 	}
 	if p.Principal != nil && p.Principal.OnBehalfOf != "" {

@@ -229,6 +229,12 @@ func (e *notifyEngine) clearScanFold(ctx context.Context, st NotifyState, listed
 		if !resolvable(es.Kind) {
 			continue
 		}
+		if NotificationKind(es.Kind) == NotificationStopSet && e.cfg.stops == nil {
+			// Without the control this process cannot tell whether the stop still stands: it must neither
+			// escalate it for ever nor say it ended, so it leaves the event to a process that has the control.
+			e.stopsOff()
+			continue
+		}
 		if es.Cleared == nil && NotificationKind(es.Kind) != NotificationEscalated && len(e.cfg.escalation[NotificationKind(es.Kind)]) > 0 {
 			// The chain of an event is chased by whoever sees the event: a process that died with
 			// its chase in memory leaves it to this one.

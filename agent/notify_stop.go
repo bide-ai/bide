@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -67,8 +69,10 @@ func stopIDOfKey(key string) (id string, lifted, ok bool) {
 // not news, and a notifier started for the first time must not announce a year of stops.
 const defaultStopNotifyWithin = 7 * 24 * time.Hour
 
-// WithNotifyStops makes NotifyPending also read ctl's control run and notify of each stop that was set or
-// lifted within the last WithNotifyStopsWithin (default 7 days). Without it a sweep raises no stop events.
+// WithNotifyStops makes NotifyPending also read ctl's control run and notify of each stop that was set, and
+// each that was lifted, within the last WithNotifyStopsWithin (default 7 days; the set and the lift are judged
+// by their own times). Without it a sweep raises no stop events, and it leaves the stop_set events on the trail
+// alone: it cannot tell whether they still stand (it reports that once, to WithNotifyErrors).
 func WithNotifyStops(ctl *StopControl) NotifyOption {
 	return notifyOption(func(c *notifyConfig) error {
 		if ctl == nil {
@@ -100,20 +104,34 @@ func (e *notifyEngine) stopEvents(st StopState) []notifyEvent {
 	}
 	now := e.cfg.now()
 	var out []notifyEvent
+	recent := func(stamp string) bool { // a time that does not parse is not old
+		at, err := time.Parse(time.RFC3339Nano, stamp)
+		return err != nil || now.Sub(at) <= within
+	}
 	for _, s := range st.Stops {
-		at, err := time.Parse(time.RFC3339Nano, s.At)
-		if err == nil && now.Sub(at) > within {
-			continue
-		}
+		at, _ := time.Parse(time.RFC3339Nano, s.At)
 		info := &NotifyStop{ID: s.ID, Scope: s.Scope, Reason: s.Reason, Compensation: s.Compensation, By: s.By, Host: s.Host, Mode: st.Mode, Signed: s.Signed}
-		out = append(out, notifyEvent{key: StopSetKey(s.ID), kind: NotificationStopSet, runID: StopControlRun, eventAt: at, stop: info})
-		if s.Lifted {
+		// The set is news while it is recent. The lift is news while the lift is recent, however long the stop
+		// ran: a stop that was set a month ago and is lifted now is told as a lift.
+		if recent(s.At) {
+			out = append(out, notifyEvent{key: StopSetKey(s.ID), kind: NotificationStopSet, runID: StopControlRun, eventAt: at, stop: info})
+		}
+		if s.Lifted && recent(cmp.Or(s.LiftedAt, s.At)) {
 			lifted := *info
 			lifted.LiftedBy = append([]string(nil), s.LiftedBy...)
 			out = append(out, notifyEvent{key: StopLiftedKey(s.ID), kind: NotificationStopLifted, runID: StopControlRun, eventAt: now, stop: &lifted})
 		}
 	}
 	return out
+}
+
+// stopsOff reports, once, that this process saw a stop event it cannot judge because it was not given the
+// control (WithNotifyStops, NewStopNotifier): its stop notifications are off, and a process that has the
+// control handles them.
+func (e *notifyEngine) stopsOff() {
+	e.stopsOffOnce.Do(func() {
+		e.report(errors.New("notify: the trail holds stop events and this process was not given the stop control (WithNotifyStops): it leaves them to a process that was"))
+	})
 }
 
 // stopStillSet reports whether the stop id is in force in the control run now.

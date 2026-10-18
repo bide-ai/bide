@@ -1973,7 +1973,7 @@ NotifyOption configures the notifier WithNotifier and NotifyPending build.
 - `func WithNotifyRecoveryFailingAfter(d time.Duration) NotifyOption`: WithNotifyRecoveryFailingAfter sets how long recovery must keep failing for a run before a NotificationRecoveryFailing event is raised (default 15 minutes).
 - `func WithNotifyRetry(base, max time.Duration) NotifyOption`: WithNotifyRetry sets the backoff between rounds of a failing delivery: base, doubling per failure, up to max (defaults 1 second and 15 minutes).
 - `func WithNotifyRoute(kind NotificationKind, receiver string) NotifyOption`: WithNotifyRoute sends events of kind to the named receiver instead of the default one.
-- `func WithNotifyStops(ctl *StopControl) NotifyOption`: WithNotifyStops makes NotifyPending also read ctl's control run and notify of each stop that was set or lifted within the last WithNotifyStopsWithin (default 7 days).
+- `func WithNotifyStops(ctl *StopControl) NotifyOption`: WithNotifyStops makes NotifyPending also read ctl's control run and notify of each stop that was set, and each that was lifted, within the last WithNotifyStopsWithin (default 7 days; the set and the lift are judged by their own times).
 - `func WithNotifyStopsWithin(d time.Duration) NotifyOption`: WithNotifyStopsWithin sets how far back stop events are raised (see WithNotifyStops); at least one minute.
 - `func WithNotifyUpgradeWindow(d time.Duration) NotifyOption`: WithNotifyUpgradeWindow sets how long after the first backfill pass the second runs (default 24 hours).
 - `func WithOverdueNotifier(n Notifier) NotifyOption`: WithOverdueNotifier sends NotificationOverdue events to n instead of the main Notifier, for the usual case where the main sink being down is why the event is overdue.
@@ -3231,8 +3231,10 @@ type StopEntry struct {
 
 	Lifted bool
 
-	AdoptedFrom            string
-	LiftedBy               []string
+	AdoptedFrom string
+	LiftedBy    []string
+
+	LiftedAt               string
 	LiftsHeld, LiftsNeeded int
 	// contains filtered or unexported fields
 }

@@ -224,6 +224,15 @@ sw, _ := agent.NewStopSwitch(ctl, agent.WithStopObserver(n.Observe))
   lift is.
 - An audited stop is lifted by its quorum, so `stop_lifted` is raised once, when the quorum lands, and a
   partial lift raises nothing (it is in `bide stop -list`). The all-clear of a `stop_set` has reason `lifted`.
+- The window (`WithNotifyStopsWithin`, default 7 days) is judged per event: a `stop_set` is news while the
+  set is recent, a `stop_lifted` while the lift is recent, so a stop that ran for a month is told when it is
+  lifted. A stop set and lifted long ago raises nothing.
+- **Every process that notifies over a trail holding stop events needs the control** (`WithNotifyStops`, or a
+  `StopNotifier`): without it a process cannot tell whether a stop still stands, so it leaves `stop_set`
+  events alone (it does not escalate them or write their all-clear) and reports once, through
+  `WithNotifyErrors`, that its stop notifications are off.
+- Operator text (the reason, the setter) is in the structured `stop` field only, never in the payload's
+  `summary`, and the Slack relay shows it in code spans, so it cannot format or mention anything.
 - Only stops the control accepts are news: a forged or foreign record raises nothing.
 - Routing (`WithNotifyRoute(agent.NotificationStopSet, ...)`) and escalation (`WithNotifyEscalation` for
   `stop_set`) apply: a stop nobody acknowledged reaches the next receiver. The payload (`stop`) carries the

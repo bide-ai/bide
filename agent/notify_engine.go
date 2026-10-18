@@ -142,6 +142,8 @@ type notifyEngine struct {
 	stuckAll  int                   // and in all
 	inHandler map[uint64]int        // goroutines now inside the user's error handler, by goroutine ID
 	w         *notifyWorker
+
+	stopsOffOnce sync.Once // the report that stop events are left alone (see stopsOff)
 }
 
 // newNotifyEngine builds an engine for deliverer kind ("drive", "recover", "sweep", "flow"). Its
