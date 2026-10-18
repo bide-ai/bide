@@ -4,7 +4,7 @@ go 1.27.0
 
 require (
 	cloud.google.com/go/storage v1.69.0
-	github.com/bide-ai/bide v0.0.0
+	github.com/bide-ai/bide v0.21.0-rc.1
 	google.golang.org/api v0.288.0
 	google.golang.org/grpc v1.83.2
 )
@@ -55,5 +55,3 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260715232425-e75dac1f907d // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
-
-replace github.com/bide-ai/bide => ../../
