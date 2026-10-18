@@ -115,6 +115,9 @@ func (c *cli) redactions(args []string) {
 		}
 		c.printf("INFO  legal hold %s in force by the trail: matter %q, covers %s%s\n", cleanText(h.ID), cleanText(h.Matter), cleanText(strings.Join(h.Runs, ", ")), tree)
 	}
+	for _, e := range rep.Ended {
+		c.printf("INFO  run %s: ended: %s (per trail); its end marker %s was erased, so the journal itself says only that the run is over\n", cleanText(e.RunID), e.Kind, cleanText(e.Marker))
+	}
 	for _, n := range rep.Notes {
 		c.printf("INFO  %s\n", cleanText(n))
 	}
