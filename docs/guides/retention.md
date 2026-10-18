@@ -126,6 +126,8 @@ Binding an approver's key to a person with a bank-issued certificate, and checki
 
 ## Erasing personal data
 
+**Stability.** Erasure (`bide journal redact`, `agent.Redactor`, the redaction trail) and legal holds (`bide journal hold`, `agent.Holder`) are experimental in v0.21.0: the Go API and the flags may change in a minor release, with a changelog entry; its tombstones and trail records follow the pre-1.0 format policy of [stability](../trust/stability.md#what-stays-verifiable-across-versions), except that the tombstone format is part of the store contract. The accounting this section describes holds meanwhile: an erasure is signed in the trail or `bide audit redactions` reports it ([stability](../trust/stability.md#package-stability)).
+
 **Make every piece of evidence you will need before you redact.** A journal that holds a tombstone cannot produce a new absence key set (`prove-absent`), used-policy set, run certificate or event stream (`audit.ErrRedacted`), because the content that defines them is gone. Signed heads, evidence packages, receipts, proofs of records that remain, and consistency proofs made earlier keep verifying. So, for a run, before erasing anything: make the evidence packages and run certificate you may need, the absence heads you may want, persist the event trail if you keep one, export the journal if you will keep the other records, and have a signed head that covers the run's current size anchored where you keep heads. A redaction cannot be undone, and none of these can be made afterwards.
 
 What a redaction does, exactly:

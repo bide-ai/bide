@@ -32,12 +32,12 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `const EventInclusionFormat = "bide.audit.event-inclusion.v3"`: EventInclusionFormat is the format of an EventInclusion.
 - `const STHFormat = "bide.audit.sth.v5"`: STHFormat is the format of a SignedTreeHead, and the tag of the bytes it signs.
 - `const AnchorEntryFormat = "bide.audit.anchor-entry.v1"`: AnchorEntryFormat is the format of an AnchorEntry.
-- `const RedactionTrailName = "redact:@log"`: RedactionTrailName is the name of the deployment's redaction trail in an EventStore.
-- `const RedactionRecordFormat = "bide.audit.redaction-record.v1"`: RedactionRecordFormat is the format of a RedactionRecord.
-- `const RedactionBegin = "begin"`, `const RedactionEnd = "end"`: Phases of a RedactionRecord.
-- `const RedactionAcknowledge = "acknowledge"`: RedactionAcknowledge is the phase of a record in which an operator acknowledges a planted leaf (see AcknowledgeRecord).
-- `const RedactionHoldPlaced = "hold_placed"`: RedactionHoldPlaced and RedactionHoldLifted are the phases of the records of a legal hold being placed and lifted (see PlaceLegalHold and LiftLegalHold).
-- `const RedactionHoldLifted = "hold_lifted"`: Phases of a RedactionRecord.
+- `const RedactionTrailName = "redact:@log"`: RedactionTrailName is the name of the deployment's redaction trail in an EventStore. *(experimental)*
+- `const RedactionRecordFormat = "bide.audit.redaction-record.v1"`: RedactionRecordFormat is the format of a RedactionRecord. *(experimental)*
+- `const RedactionBegin = "begin"`, `const RedactionEnd = "end"`: Phases of a RedactionRecord. *(experimental)*
+- `const RedactionAcknowledge = "acknowledge"`: RedactionAcknowledge is the phase of a record in which an operator acknowledges a planted leaf (see AcknowledgeRecord). *(experimental)*
+- `const RedactionHoldPlaced = "hold_placed"`: RedactionHoldPlaced and RedactionHoldLifted are the phases of the records of a legal hold being placed and lifted (see PlaceLegalHold and LiftLegalHold). *(experimental)*
+- `const RedactionHoldLifted = "hold_lifted"`: Phases of a RedactionRecord. *(experimental)*
 - `const TreeJournal = "journal"`: TreeJournal is a run's journal: one leaf per record, in persisted order (NewTreeHead).
 - `const TreeEvents = "events"`: TreeEvents is a run's semantic event stream (EventLog.TreeHead).
 - `const TreeToolUse = absenceKindPrefix + "tool-use"`: TreeToolUse is the sorted, distinct tool-use keys of a run's completed tool calls (ToolUseKeys), the tree tool-call absence proofs verify against.
@@ -50,12 +50,12 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `const GrantFormat = "bide.audit.grant.v2"`: GrantFormat tags the canonical bytes of a grant (Grant.Bytes), which are both signed and digested.
 - `const JournalExportFormat = "bide.audit.journal-export.v1"`: JournalExportFormat is the format of a JournalExport.
 - `const LiftAuthorizationFormat = "bide.audit.redaction-authorization.v1"`: LiftAuthorizationFormat is the format of a LiftAuthorization.
-- `const MaxStopRecords = 20000`: MaxStopRecords bounds the records VerifyStops reads from the control run for its comparison with the trail: past it the comparison is not made and the count is a problem, so a flood of records written into the control run is a finding, not a hang.
+- `const MaxStopRecords = 20000`: MaxStopRecords bounds the records VerifyStops reads from the control run for its comparison with the trail: past it the comparison is not made and the count is a problem, so a flood of records written into the control run is a finding, not a hang. *(experimental)*
 - `const NoteNoRecordedTime = "no recorded time"`: NoteNoRecordedTime is DecisionCoverage.Note for a decision whose record has no usable recorded\_at.
-- `const NoteRedacted = "redacted, name not attested"`: NoteRedacted is DecisionCoverage.Note for a decision whose record a redaction replaced with a tombstone: its approver, verdict and recorded\_at are gone, and it is bounded like any other.
+- `const NoteRedacted = "redacted, name not attested"`: NoteRedacted is DecisionCoverage.Note for a decision whose record a redaction replaced with a tombstone: its approver, verdict and recorded\_at are gone, and it is bounded like any other. *(experimental)*
 - `const NotifyTrailExportFormat = "bide.audit.notify-trail-export.v1"`: NotifyTrailExportFormat is the format of a NotifyTrailExport.
 - `const ReceiptFormat = "bide.audit.decision-receipt.v1"`: ReceiptFormat identifies a decision receipt.
-- `const StopTrailExportFormat = "bide.audit.stop-trail-export.v1"`: StopTrailExportFormat is the format of a StopTrailExport.
+- `const StopTrailExportFormat = "bide.audit.stop-trail-export.v1"`: StopTrailExportFormat is the format of a StopTrailExport. *(experimental)*
 
 **Variables**
 
@@ -63,10 +63,10 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `var ErrFormat`: ErrFormat reports an artifact whose "format" is missing or is not the one this version of the package reads: an artifact produced by an older (or newer) release.
 - `var ErrNotVerified = errors.New("audit: not verified")`: ErrNotVerified reports an artifact that was read and understood and does not hold.
 - `var ErrCertificateBound`: ErrCertificateBound reports a certificate-bound decision receipt given to DecisionReceipt.Verify, which knows only a key: use DecisionReceipt.VerifyCertificate.
-- `var ErrRedacted`: ErrRedacted reports a journal holding a redacted record (agent.Record.Redacted) given to a producer that projects what the records say (an absence key set, a used-policy set, the event stream): the redacted record's content is gone, so the projection would silently omit it, and a key set without it would prove absent a call the journal tree commits.
-- `var ErrRedactNoHead`: ErrRedactNoHead is a redaction of a run no verified signed head covers.
-- `var ErrRedactTrailUntrusted`: ErrRedactTrailUntrusted is a redaction whose trail does not match the signed heads given: it is not the trail they attest (records deleted or changed, or another trail altogether).
-- `var ErrRedactNoTrail`: ErrRedactNoTrail is a redaction whose begin record could not be written.
+- `var ErrRedacted`: ErrRedacted reports a journal holding a redacted record (agent.Record.Redacted) given to a producer that projects what the records say (an absence key set, a used-policy set, the event stream): the redacted record's content is gone, so the projection would silently omit it, and a key set without it would prove absent a call the journal tree commits. *(experimental)*
+- `var ErrRedactNoHead`: ErrRedactNoHead is a redaction of a run no verified signed head covers. *(experimental)*
+- `var ErrRedactTrailUntrusted`: ErrRedactTrailUntrusted is a redaction whose trail does not match the signed heads given: it is not the trail they attest (records deleted or changed, or another trail altogether). *(experimental)*
+- `var ErrRedactNoTrail`: ErrRedactNoTrail is a redaction whose begin record could not be written. *(experimental)*
 - `var EarnedRules`: EarnedRules is the ScopeRules an earned grant attenuates its root under.
 - `var ErrCRLSignature`: ErrCRLSignature is wrapped by VerifyCRL when the CRL's algorithm is outside the profile, its signature does not verify under the issuer's certificate, or it names another issuer.
 - `var ErrLiftUnauthorized`: ErrLiftUnauthorized is a lift of a legal hold that needs a second person's signed authorization and has none that checks out: it is refused, and the hold stays in force.
@@ -80,8 +80,8 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 **Functions**
 
 - `func AbsenceRoot(records []agent.Record, set KeySet) (root []byte, size int, err error)`: AbsenceRoot is the RFC 6962 Merkle root over the run's sorted, distinct keys in set, and the number of keys.
-- `func AcknowledgeRecord(ctx context.Context, store EventStore, signer Signer, deployment string, position int, reason, ticket, executor string, now time.Time) error`: AcknowledgeRecord appends to the redaction trail a record, signed with signer (the redaction key), in which the operator acknowledges the leaf at position: a planted, replayed or unreadable one that VerifyRedactions reports and that the operator has investigated.
-- `func AppendRedactionRecord(ctx context.Context, store EventStore, r RedactionRecord, signer Signer) error`: AppendRedactionRecord signs r with signer (the redaction key) and appends it to the redaction trail in store, at the next position.
+- `func AcknowledgeRecord(ctx context.Context, store EventStore, signer Signer, deployment string, position int, reason, ticket, executor string, now time.Time) error`: AcknowledgeRecord appends to the redaction trail a record, signed with signer (the redaction key), in which the operator acknowledges the leaf at position: a planted, replayed or unreadable one that VerifyRedactions reports and that the operator has investigated. *(experimental)*
+- `func AppendRedactionRecord(ctx context.Context, store EventStore, r RedactionRecord, signer Signer) error`: AppendRedactionRecord signs r with signer (the redaction key) and appends it to the redaction trail in store, at the next position. *(experimental)*
 - `func ApprovalArgsDigest(s agent.ApprovalSubject) string`: ApprovalArgsDigest returns the SHA-256 of the canonical arguments of s, in lowercase hex: the digest a signature over agent.ApprovalDecisionBytes(s, ...) binds.
 - `func AttenuatingSubAgent(name, description string, sub *agent.Agent, cfg AttenuationConfig, opts ...agent.ToolOption) agent.Tool`: AttenuatingSubAgent wraps a sub-agent as a delegation Tool that attenuates authority by default.
 - `func CRLTBSHash(der []byte) ([32]byte, bool)`: CRLTBSHash is the SHA-256 of the TBSCertList of a CRL's DER, for comparing two CRLs without their (possibly randomised) signatures.
@@ -89,7 +89,7 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `func CheckCRLURL(raw string) (*url.URL, error)`: CheckCRLURL applies the URL rules of a CRL source: http or https, a host, no userinfo, no fragment.
 - `func CheckDeclaredGoDebug(declared, environment string) error`: CheckDeclaredGoDebug compares the x509 GODEBUG settings an operator declares (CertApprover.GoDebug) with the process's real environment value, which the caller reads (os.Getenv("GODEBUG"): the engine itself reads no environment), and returns an error wrapping agent.ErrConfig when they differ.
 - `func CheckEd25519PublicKey(pub []byte) error`: CheckEd25519PublicKey reports whether pub is a usable Ed25519 verification key: 32 bytes, the canonical encoding (y &lt; p, and no sign bit on x = 0) of a point on the curve, in the prime-order subgroup (`L`A is the identity), and not the identity itself, which leaves no small-order point.
-- `func CheckRedactionTrail(ctx context.Context, store EventStore, signer Signer, deployment string, prior []SignedTreeHead) error`: CheckRedactionTrail checks, as RedactJournal does before it appends, that the redaction trail in store is the one the earlier heads attest, and returns ErrRedactTrailUntrusted if it is not.
+- `func CheckRedactionTrail(ctx context.Context, store EventStore, signer Signer, deployment string, prior []SignedTreeHead) error`: CheckRedactionTrail checks, as RedactJournal does before it appends, that the redaction trail in store is the one the earlier heads attest, and returns ErrRedactTrailUntrusted if it is not. *(experimental)*
 - `func CheckTimestamp(th TreeHead, now time.Time, skew time.Duration) error`: CheckTimestamp applies the timestamp rule to one signed head: its TimestampNanos must be positive and not later than now plus skew.
 - `func CheckTimestampOrder(earlier, later TreeHead) error`: CheckTimestampOrder checks that later, a head that extends earlier, was not signed before it.
 - `func ConvergenceLeafName(digest string) string`: ConvergenceLeafName is the journal name of the convergence leaf RecordConvergence writes for digest.
@@ -103,11 +103,11 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `func Head(ctx context.Context, store *agent.Journal, runID string) ([]byte, error)`: Head returns the hash-chain commitment to runID's journal: head\_0 = H(domain), and head\_i = H(head\_{i-1} || stored(record\_i)) over the records in persisted order, where stored is the bytes the journal stores for the record (agent.Record.Raw), verbatim.
 - `func JournalLeafHash(recordBytes []byte) []byte`: JournalLeafHash returns the RFC 6962 leaf hash of a journal record from the bytes the journal stores for it: SHA-256(0x00 || "bide.audit.journal-leaf.v1\\x00" || recordBytes).
 - `func KeyID(alg string, pub []byte) string`: KeyID is the key identity the audit verifiers report from KeyIDs: alg, a colon, and the lowercase hex SHA-256 of the public key's encoding (for Ed25519 the 32-byte key, for ML-DSA its FIPS 204 encoding).
-- `func LiftLegalHold(ctx context.Context, trail EventStore, holder agent.Holder, signer Signer, deployment string, prior []SignedTreeHead, id, reason, ticket, executor string, now time.Time, opts ...LiftOption) error`: LiftLegalHold lifts the hold id in holder (the store) after recording the lift in the redaction trail: the record comes first, so a hold is never lifted without evidence, and a failure to lift after the record leaves a hold still in force that the audit reports (HOLD\_NOT\_IN\_STORE reads the other way, a hold the trail shows active and the store lacks; this case shows as the store holding a hold the trail shows lifted, HOLD\_NOT\_IN\_TRAIL).
+- `func LiftLegalHold(ctx context.Context, trail EventStore, holder agent.Holder, signer Signer, deployment string, prior []SignedTreeHead, id, reason, ticket, executor string, now time.Time, opts ...LiftOption) error`: LiftLegalHold lifts the hold id in holder (the store) after recording the lift in the redaction trail: the record comes first, so a hold is never lifted without evidence, and a failure to lift after the record leaves a hold still in force that the audit reports (HOLD\_NOT\_IN\_STORE reads the other way, a hold the trail shows active and the store lacks; this case shows as the store holding a hold the trail shows lifted, HOLD\_NOT\_IN\_TRAIL). *(experimental)*
 - `func NumericAtMost(parent, child string) bool`: NumericAtMost is the ScopeRule for an integer upper bound (a limit): the child's value, parsed as a base-10 integer, must be at most the parent's.
 - `func PersistEvent(ctx context.Context, evStore EventStore, runID string, seq int, e agent.RunEvent) error`: PersistEvent appends one event's canonical leaf to evStore at position seq, for callers streaming events into a store directly; prefer PersistJournal for the crash-safe path.
 - `func PersistJournal(ctx context.Context, evStore EventStore, jStore *agent.Journal, runID string) error`: PersistJournal mirrors runID's durable event trail into evStore by projecting the journal (agent.ReplayEvents) and appending each canonical event leaf at its position.
-- `func PlaceLegalHold(ctx context.Context, trail EventStore, holder agent.Holder, signer Signer, deployment string, prior []SignedTreeHead, h agent.Hold, reason, ticket, executor string, now time.Time) error`: PlaceLegalHold places h in holder (the store) and records it in the redaction trail: a record signed with signer (the redaction key) naming the hold, its matter, the runs it covers, the reason, the ticket and who.
+- `func PlaceLegalHold(ctx context.Context, trail EventStore, holder agent.Holder, signer Signer, deployment string, prior []SignedTreeHead, h agent.Hold, reason, ticket, executor string, now time.Time) error`: PlaceLegalHold places h in holder (the store) and records it in the redaction trail: a record signed with signer (the redaction key) naming the hold, its matter, the runs it covers, the reason, the ticket and who. *(experimental)*
 - `func PlainDistributionPoints(c *x509.Certificate) ([][]string, bool)`: PlainDistributionPoints returns the URIs of each of c's CRL distribution points that is a plain point: one that holds only a fullName (no reasons, no cRLIssuer, no relative name), in the order the certificate has them, each point's URIs in order.
 - `func PoliciesUsed(records []agent.Record) ([]string, error)`: PoliciesUsed returns the sorted, distinct policy digests exercised by governed actions in the run.
 - `func PolicyLeafName(digest string) string`: PolicyLeafName is the journal name of the policy leaf RecordPolicy writes for digest.
@@ -118,13 +118,13 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `func RecordPolicy(ctx context.Context, store *agent.Journal, runID string, policy []byte, digest string) (agent.Record, error)`: RecordPolicy commits the serialized policy as a dedicated journal leaf (idempotent per (runID, digest)), so the policy is covered by the same STH and inclusion proofs as the actions taken under it.
 - `func RecordRunCertificate(ctx context.Context, store *agent.Journal, runID string, cert RunCertificate) (agent.Record, error)`: RecordRunCertificate anchors a RunCertificate as a dedicated journal leaf (idempotent per runID), so the certificate is itself covered by a signed tree head and inclusion proofs, mirroring RecordPolicy / RecordConvergence.
 - `func RecordStream(log *EventLog, stream *agent.RunStream, onEvent func(agent.RunEvent)) (*agent.Result, error)`: RecordStream drains stream through log, committing every event, while forwarding each event to onEvent (nil to skip), then returns the run's Result and error, as RunStream.Result does (the Result is non-nil whenever the run ID is valid, whatever the error, including \*ApprovalPending and \*OutcomeUnknown).
-- `func RedactJournal(ctx context.Context, j *agent.Journal, trail EventStore, plan agent.RedactionPlan, opt RedactionOptions) (agent.RedactionResult, error)`: RedactJournal erases the records plan names, accountably: it checks the plan can run and that a signed head covers the run, appends a begin record to the redaction trail in trail, runs agent.Redact, and appends an end record, even when the redaction failed partway (its error is in the record).
+- `func RedactJournal(ctx context.Context, j *agent.Journal, trail EventStore, plan agent.RedactionPlan, opt RedactionOptions) (agent.RedactionResult, error)`: RedactJournal erases the records plan names, accountably: it checks the plan can run and that a signed head covers the run, appends a begin record to the redaction trail in trail, runs agent.Redact, and appends an end record, even when the redaction failed partway (its error is in the record). *(experimental)*
 - `func RedactURL(raw string) string`: RedactURL removes the userinfo, query and fragment from a URL, so a token in one is never printed.
 - `func Root(ctx context.Context, store *agent.Journal, runID string) ([]byte, error)`: Root returns the RFC 6962 Merkle root committing to runID's journal (records in persisted order, each leaf = the canonical record bytes).
 - `func Sign(head []byte, s Signer) ([]byte, error)`: Sign returns s's signature over a head commitment ("bide.audit.head.v1\\x00" || head).
 - `func StatusFresh(now, this, next time.Time, maxAge, skew, tolerance time.Duration) bool`: StatusFresh is the live freshness test the status rule applies to every CRL, so a refresher's alarm cannot disagree with a gate: a CRL is fresh when now is before nextUpdate, its age is at most maxAge plus the declared thisUpdate skew, and thisUpdate is not beyond the coverage tolerance in the future.
-- `func StopPolicyFromDoc(d agent.StopPolicyDoc) (agent.StopPolicy, error)`: StopPolicyFromDoc builds the stop policy a document names, with this package's verifiers, and validates it.
-- `func StopVerifierFromAudit(alg agent.Alg, pub []byte) (agent.ApproverVerifier, error)`: StopVerifierFromAudit builds the verifier of a policy document's approver with this package's verifiers (agent.StopVerifierFunc): pass it to agent.WithStopVerifier, or to agent.PolicyFromDoc.
+- `func StopPolicyFromDoc(d agent.StopPolicyDoc) (agent.StopPolicy, error)`: StopPolicyFromDoc builds the stop policy a document names, with this package's verifiers, and validates it. *(experimental)*
+- `func StopVerifierFromAudit(alg agent.Alg, pub []byte) (agent.ApproverVerifier, error)`: StopVerifierFromAudit builds the verifier of a policy document's approver with this package's verifiers (agent.StopVerifierFunc): pass it to agent.WithStopVerifier, or to agent.PolicyFromDoc. *(experimental)*
 - `func ToolUseKey(r agent.Record) []string`: ToolUseKey is the KeyFunc of ToolUseKeys: every record that shows a call ran or may have run, keyed by its ToolUseID.
 - `func ToolUseKeyFor(toolUseID string) string`: ToolUseKeyFor is the absence key for a tool-use id: pass it to ProveAbsent / ProveAbsentBundle with ToolUseKeys to prove no tool call with that id happened in the run.
 - `func UnmarshalStrict(data []byte, v any) error`: UnmarshalStrict decodes a JSON proof artifact (a bundle, certificate, evidence package, or tree head) so that what a person reads in the file is exactly what is verified.
@@ -930,7 +930,7 @@ type ErasedEnd struct {
 }
 ```
 
-ErasedEnd is a run whose end marker was erased, with how it ended per the signed redaction trail.
+ErasedEnd is a run whose end marker was erased, with how it ended per the signed redaction trail. *(experimental)*
 
 ## type EventInclusion
 
@@ -1781,7 +1781,7 @@ type RedactedRef struct {
 }
 ```
 
-A RedactedRef names one record a redaction replaces: its position in the run's journal, its name, kind and stored length, and the hex leaf hash its tombstone keeps.
+A RedactedRef names one record a redaction replaces: its position in the run's journal, its name, kind and stored length, and the hex leaf hash its tombstone keeps. *(experimental)*
 
 ## type RedactionFinding
 
@@ -1793,7 +1793,7 @@ type RedactionFinding struct {
 }
 ```
 
-A RedactionFinding is one problem VerifyRedactions found.
+A RedactionFinding is one problem VerifyRedactions found. *(experimental)*
 
 ## type RedactionFindingKind
 
@@ -1801,31 +1801,31 @@ A RedactionFinding is one problem VerifyRedactions found.
 type RedactionFindingKind string
 ```
 
-RedactionFindingKind names what VerifyRedactions found wrong.
+RedactionFindingKind names what VerifyRedactions found wrong. *(experimental)*
 
 **Constants**
 
-- `const FindingUnanchored RedactionFindingKind = "UNANCHORED"`: FindingUnanchored: the trail has no signed head, so nothing shows it is complete.
-- `const FindingTrailAltered RedactionFindingKind = "TRAIL_ALTERED"`: FindingTrailAltered: a head contradicts the trail (records deleted or changed).
-- `const FindingUnattestedTail RedactionFindingKind = "UNATTESTED_TAIL"`: FindingUnattestedTail: records after the newest signed head.
-- `const FindingIncomplete RedactionFindingKind = "INCOMPLETE"`: FindingIncomplete: a begin with no end: an unfinished pass.
-- `const FindingUnaccounted RedactionFindingKind = "UNACCOUNTED"`: FindingUnaccounted: a tombstone no trail record names (a redaction made by hand).
-- `const FindingNotErased RedactionFindingKind = "NOT_ERASED"`: FindingNotErased: a record the trail lists as erased still holds content.
-- `const FindingNameMismatch RedactionFindingKind = "NAME_MISMATCH"`: FindingNameMismatch: a tombstone's name is not the name the trail recorded at that position.
-- `const FindingHashMismatch RedactionFindingKind = "HASH_MISMATCH"`: FindingHashMismatch: a tombstone's leaf hash is not the one the trail recorded.
-- `const FindingUncovered RedactionFindingKind = "UNCOVERED"`: FindingUncovered: a redaction that ran with no covering signed head.
-- `const FindingUnderHold RedactionFindingKind = "REDACTED_UNDER_HOLD"`: FindingUnderHold: a pass erased records of a run a legal hold in force covered.
-- `const FindingHoldUnmatched RedactionFindingKind = "HOLD_UNMATCHED"`: FindingHoldUnmatched: a hold\_lifted record for a hold the trail shows no active placement of, or a placement of an ID already active.
-- `const FindingLiftUnauthorized RedactionFindingKind = "LIFT_UNAUTHORIZED"`: FindingLiftUnauthorized: a hold lift that has no second-person authorization where one is required, or whose embedded authorization does not check out (a bad signature, another hold or placement, expired at the lift, the lifter's own key, or a key that is not a pinned authorizer).
-- `const FindingHoldNotInStore RedactionFindingKind = "HOLD_NOT_IN_STORE"`: FindingHoldNotInStore: the trail says a hold is active and the store holds none: lifted by hand.
-- `const FindingHoldNotInTrail RedactionFindingKind = "HOLD_NOT_IN_TRAIL"`: FindingHoldNotInTrail: the store holds a hold the trail never recorded: placed by hand.
-- `const FindingHoldDiffers RedactionFindingKind = "HOLD_DIFFERS"`: FindingHoldDiffers: the store's hold and the trail's have the same ID and differ in runs, tree setting or matter.
-- `const FindingReordered RedactionFindingKind = "REORDERED"`: FindingReordered: a trail record that is not at the position, or after the record, it was signed for: a replayed, copied or reordered record.
-- `const FindingBadSignature RedactionFindingKind = "BAD_SIGNATURE"`: FindingBadSignature: a trail record with no signature, or one that does not verify under the key: not the tool's, whatever head covers it.
-- `const FindingEventCopies RedactionFindingKind = "EVENT_COPIES_KEPT"`: FindingEventCopies: an erasure that left the run's events in the event store.
-- `const FindingTimeMismatch RedactionFindingKind = "TIME_MISMATCH"`: FindingTimeMismatch: a tombstone stamped at a time no pass of the trail that listed it carries.
-- `const FindingUnchecked RedactionFindingKind = "UNCHECKED"`: FindingUnchecked: the trail names a run no journal was given for.
-- `const FindingMalformed RedactionFindingKind = "MALFORMED"`: FindingMalformed: a trail record that does not read.
+- `const FindingUnanchored RedactionFindingKind = "UNANCHORED"`: FindingUnanchored: the trail has no signed head, so nothing shows it is complete. *(experimental)*
+- `const FindingTrailAltered RedactionFindingKind = "TRAIL_ALTERED"`: FindingTrailAltered: a head contradicts the trail (records deleted or changed). *(experimental)*
+- `const FindingUnattestedTail RedactionFindingKind = "UNATTESTED_TAIL"`: FindingUnattestedTail: records after the newest signed head. *(experimental)*
+- `const FindingIncomplete RedactionFindingKind = "INCOMPLETE"`: FindingIncomplete: a begin with no end: an unfinished pass. *(experimental)*
+- `const FindingUnaccounted RedactionFindingKind = "UNACCOUNTED"`: FindingUnaccounted: a tombstone no trail record names (a redaction made by hand). *(experimental)*
+- `const FindingNotErased RedactionFindingKind = "NOT_ERASED"`: FindingNotErased: a record the trail lists as erased still holds content. *(experimental)*
+- `const FindingNameMismatch RedactionFindingKind = "NAME_MISMATCH"`: FindingNameMismatch: a tombstone's name is not the name the trail recorded at that position. *(experimental)*
+- `const FindingHashMismatch RedactionFindingKind = "HASH_MISMATCH"`: FindingHashMismatch: a tombstone's leaf hash is not the one the trail recorded. *(experimental)*
+- `const FindingUncovered RedactionFindingKind = "UNCOVERED"`: FindingUncovered: a redaction that ran with no covering signed head. *(experimental)*
+- `const FindingUnderHold RedactionFindingKind = "REDACTED_UNDER_HOLD"`: FindingUnderHold: a pass erased records of a run a legal hold in force covered. *(experimental)*
+- `const FindingHoldUnmatched RedactionFindingKind = "HOLD_UNMATCHED"`: FindingHoldUnmatched: a hold\_lifted record for a hold the trail shows no active placement of, or a placement of an ID already active. *(experimental)*
+- `const FindingLiftUnauthorized RedactionFindingKind = "LIFT_UNAUTHORIZED"`: FindingLiftUnauthorized: a hold lift that has no second-person authorization where one is required, or whose embedded authorization does not check out (a bad signature, another hold or placement, expired at the lift, the lifter's own key, or a key that is not a pinned authorizer). *(experimental)*
+- `const FindingHoldNotInStore RedactionFindingKind = "HOLD_NOT_IN_STORE"`: FindingHoldNotInStore: the trail says a hold is active and the store holds none: lifted by hand. *(experimental)*
+- `const FindingHoldNotInTrail RedactionFindingKind = "HOLD_NOT_IN_TRAIL"`: FindingHoldNotInTrail: the store holds a hold the trail never recorded: placed by hand. *(experimental)*
+- `const FindingHoldDiffers RedactionFindingKind = "HOLD_DIFFERS"`: FindingHoldDiffers: the store's hold and the trail's have the same ID and differ in runs, tree setting or matter. *(experimental)*
+- `const FindingReordered RedactionFindingKind = "REORDERED"`: FindingReordered: a trail record that is not at the position, or after the record, it was signed for: a replayed, copied or reordered record. *(experimental)*
+- `const FindingBadSignature RedactionFindingKind = "BAD_SIGNATURE"`: FindingBadSignature: a trail record with no signature, or one that does not verify under the key: not the tool's, whatever head covers it. *(experimental)*
+- `const FindingEventCopies RedactionFindingKind = "EVENT_COPIES_KEPT"`: FindingEventCopies: an erasure that left the run's events in the event store. *(experimental)*
+- `const FindingTimeMismatch RedactionFindingKind = "TIME_MISMATCH"`: FindingTimeMismatch: a tombstone stamped at a time no pass of the trail that listed it carries. *(experimental)*
+- `const FindingUnchecked RedactionFindingKind = "UNCHECKED"`: FindingUnchecked: the trail names a run no journal was given for. *(experimental)*
+- `const FindingMalformed RedactionFindingKind = "MALFORMED"`: FindingMalformed: a trail record that does not read. *(experimental)*
 
 ## type RedactionOptions
 
@@ -1856,7 +1856,7 @@ type RedactionOptions struct {
 }
 ```
 
-RedactionOptions are what an accountable redaction needs besides the plan.
+RedactionOptions are what an accountable redaction needs besides the plan. *(experimental)*
 
 ## type RedactionRecord
 
@@ -1904,12 +1904,12 @@ type RedactionRecord struct {
 }
 ```
 
-A RedactionRecord is one leaf of the redaction trail.
+A RedactionRecord is one leaf of the redaction trail. *(experimental)*
 
 **Constructors and functions**
 
-- `func DecodeRedactionLeaf(leaf []byte) (RedactionRecord, error)`: DecodeRedactionLeaf reads a redaction record from a stored event leaf.
-- `func LoadRedactionTrail(ctx context.Context, store EventStore) ([]RedactionRecord, error)`: LoadRedactionTrail returns the records of the redaction trail in store, in order.
+- `func DecodeRedactionLeaf(leaf []byte) (RedactionRecord, error)`: DecodeRedactionLeaf reads a redaction record from a stored event leaf. *(experimental)*
+- `func LoadRedactionTrail(ctx context.Context, store EventStore) ([]RedactionRecord, error)`: LoadRedactionTrail returns the records of the redaction trail in store, in order. *(experimental)*
 
 ## type RedactionReport
 
@@ -1929,15 +1929,15 @@ type RedactionReport struct {
 }
 ```
 
-A RedactionReport is the result of VerifyRedactions.
+A RedactionReport is the result of VerifyRedactions. *(experimental)*
 
 **Constructors and functions**
 
-- `func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error)`: VerifyRedactions checks the redaction trail against its signed heads and the journals.
+- `func VerifyRedactions(in RedactionVerifyInput) (RedactionReport, error)`: VerifyRedactions checks the redaction trail against its signed heads and the journals. *(experimental)*
 
 **Methods**
 
-- `func (r RedactionReport) OK() bool`: OK reports whether nothing was found.
+- `func (r RedactionReport) OK() bool`: OK reports whether nothing was found. *(experimental)*
 
 ## type RedactionVerifyInput
 
@@ -1962,7 +1962,7 @@ type RedactionVerifyInput struct {
 }
 ```
 
-RedactionVerifyInput is what VerifyRedactions checks.
+RedactionVerifyInput is what VerifyRedactions checks. *(experimental)*
 
 ## type RejectedHead
 
@@ -2103,9 +2103,9 @@ SignedTreeHead is a TreeHead with a signature over its canonical encoding under 
 
 - `func SignAbsenceRoot(records []agent.Record, set KeySet, journal TreeHead, s Signer, timestamp int64) (SignedTreeHead, error)`: SignAbsenceRoot commits and signs a run's key set in one call: NewAbsenceTreeHead, then SignTreeHead with s.
 - `func SignNotifyTrail(ctx context.Context, store EventStore, trail string, s Signer, now time.Time) (SignedTreeHead, error)`: SignNotifyTrail signs a tree head over the leaves store holds for trail, at now.
-- `func SignRedactionTrail(ctx context.Context, store EventStore, signer Signer, v Verifier, deployment string, prior []SignedTreeHead, now time.Time) (SignedTreeHead, error)`: SignRedactionTrail signs a tree head over the redaction trail in store, after checking the trail is the one the earlier heads attest: every head in prior must verify under v, be a head of the trail, and commit to a prefix of it, and every record in the trail must carry a signature that verifies under v.
-- `func SignStopTrail(ctx context.Context, store EventStore, trail string, s Signer, now time.Time) (SignedTreeHead, error)`: SignStopTrail signs a tree head over the leaves store holds for trail, at now: the head AuditedEventStore publishes as records arrive, for a deployment that signs on its own schedule.
-- `func SignStopTrailExport(exp StopTrailExport, s Signer, now time.Time) (SignedTreeHead, error)`: SignStopTrailExport signs a tree head over exactly the leaves exp carries, at now: the head `bide audit stops -sign-head` appends to a head file after it has verified those leaves.
+- `func SignRedactionTrail(ctx context.Context, store EventStore, signer Signer, v Verifier, deployment string, prior []SignedTreeHead, now time.Time) (SignedTreeHead, error)`: SignRedactionTrail signs a tree head over the redaction trail in store, after checking the trail is the one the earlier heads attest: every head in prior must verify under v, be a head of the trail, and commit to a prefix of it, and every record in the trail must carry a signature that verifies under v. *(experimental)*
+- `func SignStopTrail(ctx context.Context, store EventStore, trail string, s Signer, now time.Time) (SignedTreeHead, error)`: SignStopTrail signs a tree head over the leaves store holds for trail, at now: the head AuditedEventStore publishes as records arrive, for a deployment that signs on its own schedule. *(experimental)*
+- `func SignStopTrailExport(exp StopTrailExport, s Signer, now time.Time) (SignedTreeHead, error)`: SignStopTrailExport signs a tree head over exactly the leaves exp carries, at now: the head `bide audit stops -sign-head` appends to a head file after it has verified those leaves. *(experimental)*
 - `func SignTreeHead(th TreeHead, s Signer) (SignedTreeHead, error)`: SignTreeHead signs th under s's scheme.
 
 **Methods**
@@ -2308,11 +2308,11 @@ type StopReport struct {
 }
 ```
 
-StopReport is what VerifyStops found.
+StopReport is what VerifyStops found. *(experimental)*
 
 **Constructors and functions**
 
-- `func VerifyStops(in StopVerifyInput) (StopReport, error)`: VerifyStops checks a stop trail: that its signed heads verify and commit to prefixes of it (so no record was deleted, changed or reordered since a head covered it), that every record decodes and verifies under the policy the deployment pinned and the chain of policy transitions from its root (a record that does not is a problem: a forgery written into the trail, or a trail from another deployment), that the chain can be trusted, and, with the control run, that the two hold the same records.
+- `func VerifyStops(in StopVerifyInput) (StopReport, error)`: VerifyStops checks a stop trail: that its signed heads verify and commit to prefixes of it (so no record was deleted, changed or reordered since a head covered it), that every record decodes and verifies under the policy the deployment pinned and the chain of policy transitions from its root (a record that does not is a problem: a forgery written into the trail, or a trail from another deployment), that the chain can be trusted, and, with the control run, that the two hold the same records. *(experimental)*
 
 ## type StopReportEntry
 
@@ -2332,7 +2332,7 @@ type StopReportEntry struct {
 }
 ```
 
-StopReportEntry is one stop as VerifyStops reports it.
+StopReportEntry is one stop as VerifyStops reports it. *(experimental)*
 
 ## type StopReportRecord
 
@@ -2345,7 +2345,7 @@ type StopReportRecord struct {
 }
 ```
 
-StopReportRecord names a record in a comparison finding.
+StopReportRecord names a record in a comparison finding. *(experimental)*
 
 ## type StopTrail
 
@@ -2355,17 +2355,17 @@ type StopTrail struct {
 }
 ```
 
-StopTrail adapts an EventStore to agent.StopTrail: the stop trail of a deployment is an event trail of its own (named agent.StopTrailName), each signed stop record a salted, canonical event leaf committed like any other, so EventLog, TreeHead, Prove and ProveConsistency work on it, an AuditedEventStore signs and anchors its heads, and bide audit stops can verify it.
+StopTrail adapts an EventStore to agent.StopTrail: the stop trail of a deployment is an event trail of its own (named agent.StopTrailName), each signed stop record a salted, canonical event leaf committed like any other, so EventLog, TreeHead, Prove and ProveConsistency work on it, an AuditedEventStore signs and anchors its heads, and bide audit stops can verify it. *(experimental)*
 
 **Constructors and functions**
 
-- `func NewStopTrail(store EventStore) *StopTrail`: NewStopTrail returns a StopTrail over store.
+- `func NewStopTrail(store EventStore) *StopTrail`: NewStopTrail returns a StopTrail over store. *(experimental)*
 
 **Methods**
 
-- `func (t *StopTrail) AnchorTrails(ctx context.Context, trails []string) error`: AnchorTrails asks the AuditedEventStore beneath the trail's store (found through Unwrap) to publish a head for each named trail that has grown past its last one.
-- `func (t *StopTrail) Append(ctx context.Context, trail string, seq int, rec agent.StopRecord) error`: Append implements agent.StopTrail.
-- `func (t *StopTrail) Load(ctx context.Context, trail string) ([]agent.StopRecord, error)`: Load implements agent.StopTrail.
+- `func (t *StopTrail) AnchorTrails(ctx context.Context, trails []string) error`: AnchorTrails asks the AuditedEventStore beneath the trail's store (found through Unwrap) to publish a head for each named trail that has grown past its last one. *(experimental)*
+- `func (t *StopTrail) Append(ctx context.Context, trail string, seq int, rec agent.StopRecord) error`: Append implements agent.StopTrail. *(experimental)*
+- `func (t *StopTrail) Load(ctx context.Context, trail string) ([]agent.StopRecord, error)`: Load implements agent.StopTrail. *(experimental)*
 
 ## type StopTrailExport
 
@@ -2377,11 +2377,11 @@ type StopTrailExport struct {
 }
 ```
 
-A StopTrailExport is the stop trail as the leaves its EventStore holds, in position order: what VerifyStops and bide audit stops read when they hold no store.
+A StopTrailExport is the stop trail as the leaves its EventStore holds, in position order: what VerifyStops and bide audit stops read when they hold no store. *(experimental)*
 
 **Constructors and functions**
 
-- `func ExportStopTrail(ctx context.Context, store EventStore, trail string) (StopTrailExport, error)`: ExportStopTrail returns the trail named trail in store as a StopTrailExport.
+- `func ExportStopTrail(ctx context.Context, store EventStore, trail string) (StopTrailExport, error)`: ExportStopTrail returns the trail named trail in store as a StopTrailExport. *(experimental)*
 
 ## type StopVerifyInput
 
@@ -2405,7 +2405,7 @@ type StopVerifyInput struct {
 }
 ```
 
-StopVerifyInput is what VerifyStops checks: a stop trail, the signed heads over it, the policy the deployment pinned, and, when the control run is at hand, its records to compare with.
+StopVerifyInput is what VerifyStops checks: a stop trail, the signed heads over it, the policy the deployment pinned, and, when the control run is at hand, its records to compare with. *(experimental)*
 
 ## type TimeCheck
 
