@@ -75,6 +75,11 @@ func Compare(name, source string, baseline, text []byte) *Weakening {
 	return w
 }
 
+// gitTimeout is how long gitShow waits for git: a generous bound for a local `git show`, there so that a git that
+// hangs (a stalled network file system, a credential helper that waits) cannot hang the editor's start. A tests
+// shortens or lengthens it.
+var gitTimeout = 15 * time.Second
+
 // gitShow reads name as it is at rev in the git working tree that holds dir: `git show
 // rev:./name`, run in dir. It returns an error when git is not installed, dir is not in a
 // repository, or the file is not at that revision.
@@ -86,15 +91,21 @@ func gitShow(dir, rev, name string) ([]byte, error) {
 	if err != nil {
 		return nil, errors.New("git is not available")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, git, "-c", "core.autocrlf=false", "-c", "core.eol=lf", "show", rev+":./"+filepath.ToSlash(name))
 	cmd.Dir = dir
 	cmd.Env = append(cmd.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0")
+	// A git killed at the deadline can leave a child (a helper it started) holding the pipes; do not wait for it.
+	cmd.WaitDelay = 2 * time.Second
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			// Our own deadline, not git's answer: say so, rather than the "signal: killed" the kill leaves.
+			return nil, fmt.Errorf("git show %s:./%s: git did not answer within %s and was stopped (a slow or loaded machine, or a hung file system)", rev, name, gitTimeout)
+		}
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
 			msg = err.Error()
