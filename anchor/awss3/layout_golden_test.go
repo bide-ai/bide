@@ -9,9 +9,9 @@ import "testing"
 func TestObjectLayoutIsByteIdentical(t *testing.T) {
 	k := newKeys(t, 1)
 	for _, c := range []struct {
-		run        string
-		size       int
-		ts         int64
+		run       string
+		size      int
+		ts        int64
 		key, body string
 	}{
 		{"run-1", 3, 100,
