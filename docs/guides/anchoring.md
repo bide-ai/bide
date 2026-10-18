@@ -7,7 +7,7 @@ model](security-model.md#anchoring-the-condition-on-tamper-evidence)). `audit.An
 the only implementation in the core module is the in-memory `audit.MemAnchorLog`, for tests. This guide
 covers the first production one: `github.com/bide-ai/bide/anchor/awss3`, which writes every signed head
 as an object in an S3 bucket under Object Lock (a write-once store), and the `bide-anchor` command that
-verifies what it wrote.
+verifies what it wrote. A second production anchor, for a Google Cloud Storage bucket with a locked retention policy, is in [anchoring in Google Cloud Storage](anchoring-gcs.md).
 
 This is tamper evidence, not a compliance certification. It is tested against MinIO (which implements
 Object Lock) and a fake, never against AWS ([what it is tested against](#what-it-is-tested-against)).

@@ -3,6 +3,7 @@ go 1.27.0
 use (
 	.
 	./anchor/awss3
+	./anchor/gcs
 	./cmd/bide
 	./cmd/bide/bide-hsm
 	./cmd/bide/bide-hsm/azuretest

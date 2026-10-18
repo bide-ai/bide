@@ -35,6 +35,8 @@ The certificate verification core in `audit` and the certificate-bound approver 
 | `agent/storetest` | core |
 | `anchor/awss3` | experimental |
 | `anchor/awss3/awss3test` | experimental |
+| `anchor/gcs` | experimental |
+| `anchor/gcs/gcstest` | experimental |
 | `approvals` | core |
 | `audit` | core |
 | `audit/anchorobj` | experimental |

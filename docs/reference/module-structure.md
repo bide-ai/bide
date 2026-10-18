@@ -33,6 +33,7 @@ only when that adapter is imported.
 | PKCS#11 signer | `…/signer/pkcs11` | miekg/pkcs11 (needs cgo; without it the module builds and `Open` returns `ErrNoCgo`) |
 | AWS KMS signer | `…/signer/awskms` | the AWS SDK for Go v2 KMS client |
 | S3 Object Lock anchor | `…/anchor/awss3` | the AWS SDK for Go v2 S3 client (and its `bide-anchor` command) |
+| Google Cloud Storage anchor | `…/anchor/gcs` | cloud.google.com/go/storage (a locked bucket retention policy; no command of its own yet) |
 | gcf codec | `…/codec/gcf` | blackwell-systems/gcf-go |
 | flow editor | `…/flowedit` | go.yaml.in/yaml/v3 (it splices a flow config's YAML text, which the core module, with no dependency, cannot) |
 | bide command | `…/cmd/bide` | the two store modules, `flowedit`, go.yaml.in/yaml/v3 (a program, installed with `go install`, not imported) |

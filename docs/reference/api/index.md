@@ -29,6 +29,7 @@ Each package carries one label, declared in one place and checked against
 |---|---|---|
 | `github.com/bide-ai/bide` | 23 | one page per package, listed below |
 | `github.com/bide-ai/bide/anchor/awss3` | 2 | [anchor-awss3](anchor-awss3.md) |
+| `github.com/bide-ai/bide/anchor/gcs` | 2 | [anchor-gcs](anchor-gcs.md) |
 | `github.com/bide-ai/bide/codec/gcf` | 1 | [codec-gcf](codec-gcf.md) |
 | `github.com/bide-ai/bide/flowedit` | 1 | [flowedit](flowedit.md) |
 | `github.com/bide-ai/bide/govern` | 2 | [govern](govern.md) |
@@ -73,6 +74,8 @@ Each package carries one label, declared in one place and checked against
 | [`schema`](schema.md) | core | Package schema derives JSON Schema from Go types and emits provider-specific dialects. |
 | [`anchor/awss3`](anchor-awss3.md) | experimental | Package awss3 is an audit.Anchor that writes every signed tree head as an object in an S3 bucket under Object Lock (a WORM store), and a Reader that reads the heads back and verifies them. |
 | [`anchor/awss3/awss3test`](anchor-awss3.md) | experimental | Package awss3test is an in-memory S3 bucket with versioning and Object Lock, for testing code that uses the awss3 package without a network. |
+| [`anchor/gcs`](anchor-gcs.md) | experimental | Package gcs is an audit.Anchor that writes every signed tree head as an object in a Google Cloud Storage bucket whose retention policy is locked (a WORM store), and a Reader that reads the heads back and verifies them. |
+| [`anchor/gcs/gcstest`](anchor-gcs.md) | experimental | Package gcstest is an in-memory gcs.Store that models the parts of Cloud Storage the anchor relies on: object generations, create-only writes (ifGenerationMatch=0), a bucket retention policy that can be locked, noncurrent generations under versioning, temporary holds, per-object retention and Cloud KMS keys. |
 | [`codec/gcf`](codec-gcf.md) | core | Package gcf provides a provider.ToolResultCodec that encodes tool results as GCF (Graph Compact Format) instead of JSON when they are sent to the model. |
 | [`flowedit`](flowedit.md) | experimental | Package flowedit is the edit engine of the flow editor (docs/design/visual-editor.md): it applies one operation to the text of a flow config by splicing, so every byte outside the edit is the original byte, and it returns the text only after checking that the result means what the operation says (it re-parses the result and compares it with the operation applied to the data). |
 | [`govern`](govern.md) | experimental | Package govern is the Tier-2 (distributed / concurrent) compensating-agent layer: it integrates the gsm "Governed State Machine" library so that MULTIPLE concurrent agents mutating SHARED state converge to the same valid state regardless of interleaving, as certified by gsm's build-time normalization-confluence verification (WFC + CC). |

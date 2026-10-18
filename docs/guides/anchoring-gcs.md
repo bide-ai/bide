@@ -28,7 +28,7 @@ What an operator who controls the **anchor** project can still do, and what you 
 | Delete the bucket's objects, or the bucket | after retention only: a bucket with a locked policy cannot be deleted while any object is inside its retention | As above. |
 | Delete the project | Cloud Storage puts a lien on project deletion when a bucket is given a retention policy (the real run saw it appear one second after the bucket was created with one), on a best-effort basis, and a project owner can remove a lien. Google's documentation does not say what happens to locked data when a project whose lien was removed is deleted, and this package does not claim anything about it | Keep the anchor project in a folder whose organization policies and IAM deny policies the application's administrators cannot change, with break-glass access under MFA. Treat the lien as a speed bump, not a control. |
 | Disable or destroy the Cloud KMS key | the key's IAM is theirs | The heads become unreadable, not altered: the Reader fails instead of returning a wrong head. Keep the key in the anchor project (or a key project of its own) and deny the application's identities any administrative role on it. |
-| Make the live object of a name noncurrent | with versioning on, deleting or overwriting the live object keeps the generation; a locked policy lets the live object become noncurrent | `Reader.Latest`, `Heads` and `Audit` list noncurrent generations, so nothing is hidden, and `Audit` and `bide-anchor check` report each noncurrent generation. The writer role has no delete permission, which also means it cannot overwrite (replacing an object needs both `storage.objects.create` and `storage.objects.delete`). |
+| Make the live object of a name noncurrent | with versioning on, deleting or overwriting the live object keeps the generation; a locked policy lets the live object become noncurrent | `Reader.Latest`, `Heads` and `Audit` list noncurrent generations, so nothing is hidden, and `Audit` reports each noncurrent generation. The writer role has no delete permission, which also means it cannot overwrite (replacing an object needs both `storage.objects.create` and `storage.objects.delete`). |
 | Write a forged head | any identity that can create objects | The Reader verifies each head's signature under the log's public key and refuses an object that does not verify. |
 | Lengthen the retention | `storage.buckets.update` | This only makes the anchor stronger. |
 | Stop publishing | nothing stops the application from not calling `Publish` | Heads are only evidence for what they cover: a monitor compares the latest head's size with the journal's. |
@@ -79,6 +79,7 @@ one and `Audit` reports one.
 
 ## Use it
 
+<!-- docsnip: setup import "cloud.google.com/go/storage"; ctx context.Context; inner agent.Store; signer audit.Signer -->
 ```go
 client, err := storage.NewClient(ctx) // Application Default Credentials
 if err != nil {
@@ -138,7 +139,7 @@ names in order, which gives the layout's "the largest head lists first".
 generations instead of versions. Cloud Storage has no delete marker: deleting or overwriting the live
 object of a name turns that generation noncurrent and, with versioning on, keeps it. The Reader lists
 noncurrent generations (`versions=true`), so a deleted or overwritten newest head does not make an older
-head look like the latest. `Audit` and `bide-anchor check` report:
+head look like the latest. `Audit` reports:
 
 - every noncurrent generation (something deleted or overwrote the live object);
 - every generation no retention covers, and every one whose retention has ended;
@@ -190,15 +191,23 @@ break-glass group, and organization policies such as `constraints/gcp.restrictNo
 third place; they record who wrote, read and tried to delete, and cost per volume, and each head produces
 at least a write and a read-back.
 
-## Verifying: `bide-anchor`
+## Verifying the heads
 
-The `bide-anchor` command gains a Google Cloud Storage backend (`-backend gcs`, with `-project` taking the
-project number in place of S3's `-owner`) so that the Google SDK is not in `bide`. The same three commands
-apply: `verify` and `export -dir` work offline on a copy of the objects (for example
-`gcloud storage cp -r gs://bank-bide-anchor/bide-anchor ./anchor/`) and cannot see retention state or show
-that the copy is complete (compare the largest size with the journal's); `check` and `export -bucket`
-read the bucket with a reader identity. Credentials come from Application Default Credentials, never from
-flags. The command's reference is [bide-anchor](../reference/bide-anchor.md).
+`bide-anchor` (the command of the [S3 anchor](anchoring.md#verifying-bide-anchor)) does not read a Google
+Cloud Storage bucket yet: a `-backend gcs` option, with `-project` taking the project number in place of S3's
+`-owner`, is planned as a separate change. Until then the library does what the command does:
+
+- `gcs.LoadDir(dir, verifier)` verifies a downloaded copy of the objects offline (for example
+  `gcloud storage cp -r gs://bank-bide-anchor/bide-anchor ./anchor/`), as `bide-anchor verify` does for S3. It
+  cannot see retention state, and it cannot show that the copy is complete: a stale copy that lacks the
+  newest heads verifies without complaint, so compare the largest size with the journal's.
+- `gcs.NewReader(...)` then `Heads`, `Latest` and `Audit` read the bucket with a reader identity.
+  `Reader.Heads` returns the verified heads in increasing size, the list that `bide audit verify-receipts
+  -heads` and `verify-decision-coverage -heads` read once you write them one per line as JSON; `Audit` returns the
+  findings listed above, to be run on a schedule and alerted on.
+
+Credentials come from Application Default Credentials, never from flags. Neither shows that the **journal**
+matches the heads: that is `bide audit` against the exported heads.
 
 ## What it is tested against
 
