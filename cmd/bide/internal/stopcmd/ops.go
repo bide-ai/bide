@@ -605,7 +605,7 @@ func (c *cmd) landed(ctx context.Context, ctl *agent.StopControl, before agent.S
 }
 
 // heldTimeout bounds the count of held runs: it is a courtesy before the prompt and must not hold up a lift.
-const heldTimeout = 5 * time.Second
+var heldTimeout = 5 * time.Second
 
 // printHeld says how many unfinished runs the stop holds: what the lift lets carry on.
 func (c *cmd) printHeld(ctx context.Context, j *agent.Journal, e agent.StopEntry) {

@@ -617,3 +617,44 @@ func TestHeldBy_SagaRollback(t *testing.T) {
 		t.Fatalf("%+v", h)
 	}
 }
+
+// A plain stop under an audited viewer is enough for a banner by itself.
+func TestStopBanner_PlainIgnoredAloneShowsABanner(t *testing.T) {
+	b := buildStopBanner(stopRead{st: agent.StopState{Mode: agent.StopAudited}, plain: 2}, true, time.Now())
+	if b.PlainIgnored != 2 || !b.Show() {
+		t.Fatalf("%+v", b)
+	}
+}
+
+// cancelOnLoad cancels a context the first time a run's records are read, as a deadline passing mid-count.
+type cancelOnLoad struct {
+	agent.Store
+	cancel context.CancelFunc
+}
+
+func (c cancelOnLoad) Load(ctx context.Context, run string, after int64) iter.Seq2[agent.Entry, error] {
+	c.cancel()
+	return c.Store.Load(ctx, run, after)
+}
+
+func (c cancelOnLoad) Runs(ctx context.Context, f agent.RunFilter) iter.Seq2[string, error] {
+	l, _ := agent.Capability[agent.Lister](c.Store)
+	return l.Runs(ctx, f)
+}
+
+func TestHeldCount_CapAndDeadlineMidCount(t *testing.T) {
+	r := newStopRig(t)
+	e := r.set(global(), "incident")
+	old := maxHeldRead
+	maxHeldRead = 3
+	defer func() { maxHeldRead = old }()
+	if c := HeldCount(context.Background(), JournalSource{J: r.j}, e); !c.Truncated || c.Read != 3 {
+		t.Fatalf("the cap: %+v", c)
+	}
+	maxHeldRead = old
+	ctx, cancel := context.WithCancel(context.Background())
+	j, _ := agent.NewJournal(cancelOnLoad{r.store, cancel})
+	if c := HeldCount(ctx, JournalSource{J: j}, e); c.ListErr == "" || c.Read > 1 {
+		t.Fatalf("a deadline mid-count must stop it: %+v", c)
+	}
+}

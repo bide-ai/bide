@@ -146,9 +146,6 @@ func buildStopBanner(r stopRead, verified bool, now time.Time) StopBanner {
 	}
 	b.Unverified = r.st.Unverified
 	b.PlainIgnored = r.plain
-	if !r.at.IsZero() {
-		b.ReadAt = r.at.UTC().Format(time.RFC3339)
-	}
 	for _, s := range r.st.Active() {
 		if len(b.Active) == maxBannerStops {
 			b.MoreActive++
@@ -286,7 +283,7 @@ func heldBy(st agent.StopState, v *View) []StopHold {
 }
 
 // maxHeldRead bounds how many unfinished runs HeldCount reads.
-const maxHeldRead = 2000
+var maxHeldRead = 2000
 
 // HeldCounts is how many of a store's unfinished runs one stop holds (see HeldCount).
 type HeldCounts struct {

@@ -2,14 +2,18 @@ package stopcmd
 
 import (
 	"bytes"
+	"context"
 	"io"
+	"iter"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/sample"
 )
 
 type nopCloser struct{}
@@ -132,5 +136,57 @@ func TestStrayArgumentIsNotEchoed(t *testing.T) {
 	code := MainWith([]string{"-db", tempDB(t), "-all", "-reason", "r", "pkcs11:pin-value=hunter2"}, strings.NewReader(""), &out, &errb, stores, src)
 	if code != 2 || strings.Contains(errb.String()+out.String(), "hunter2") {
 		t.Fatalf("exit %d\n%s%s", code, out.String(), errb.String())
+	}
+}
+
+// slowRuns lets the runs be listed and then never answers a read of one: a store that hangs mid-count.
+type slowRuns struct{ agent.Store }
+
+func (s slowRuns) Load(ctx context.Context, run string, after int64) iter.Seq2[agent.Entry, error] {
+	if run == agent.StopControlRun {
+		return s.Store.Load(ctx, run, after)
+	}
+	return func(yield func(agent.Entry, error) bool) {
+		<-ctx.Done()
+		yield(agent.Entry{}, ctx.Err())
+	}
+}
+
+func (s slowRuns) Runs(ctx context.Context, f agent.RunFilter) iter.Seq2[string, error] {
+	l, _ := agent.Capability[agent.Lister](s.Store)
+	return l.Runs(ctx, f)
+}
+
+// The held-run count is a courtesy: a store that hangs while it is counted must not hold up the lift.
+func TestLiftIsNotHeldUpByTheRunCount(t *testing.T) {
+	st := agent.NewMemStore()
+	if _, err := sample.Write(context.Background(), st, ""); err != nil {
+		t.Fatal(err)
+	}
+	stores := Stores{SQLite: func(string, bool) (Opened, error) {
+		return Opened{Store: slowRuns{st}, Events: audit.NewMemEventStore(), Close: nopCloser{}}, nil
+	}}
+	db := tempDB(t)
+	if code, _, errOut := run(t, stores, false, "", "-db", db, "-all", "-reason", "r"); code != 0 {
+		t.Fatalf("set: %d %s", code, errOut)
+	}
+	old := heldTimeout
+	heldTimeout = 50 * time.Millisecond
+	defer func() { heldTimeout = old }()
+	id := active(t, st)[0].ID
+	done := make(chan struct{})
+	var code int
+	var out string
+	go func() {
+		code, out, _ = run(t, stores, false, "", "-db", db, "-lift", id, "-reason", "r", "-yes")
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the lift waited on the run count")
+	}
+	if code != 0 || !strings.Contains(out, "not counted") || len(active(t, st)) != 0 {
+		t.Fatalf("exit %d\n%s", code, out)
 	}
 }
