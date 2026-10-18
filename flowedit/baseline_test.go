@@ -3,12 +3,15 @@ package flowedit
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bide-ai/bide/internal/runview"
 )
@@ -281,25 +284,75 @@ func TestBaselineFromGit(t *testing.T) {
 	}
 }
 
-// fakeGit puts a git on PATH that prints msg to stderr and exits 128, for the commands the baseline
-// runs.
-func fakeGit(t *testing.T, msg string) {
+// fakeGit puts a git on PATH that prints $BIDE_FAKE_GIT_MSG to stderr and exits 128 (or, with
+// $BIDE_FAKE_GIT_SLOW set, waits), for the commands the baseline runs. It returns the function that sets the
+// message. The script is written and run once here, with no deadline, before a test uses it: the first run of a
+// newly written executable can take many seconds on a loaded machine (macOS scans it; 18 s measured under a load
+// of 50), which is longer than the baseline's own deadline, so a script written per case was killed by it and the
+// case saw "signal: killed". Later runs of the same file take milliseconds. The deadline is also raised for the
+// test, so a slow machine cannot turn into a failure.
+func fakeGit(t *testing.T) (setMsg func(string)) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("a shell script stands in for git")
 	}
 	dir := t.TempDir()
-	script := "#!/bin/sh\necho '" + msg + "' >&2\nexit 128\n"
+	script := "#!/bin/sh\nif [ -n \"$BIDE_FAKE_GIT_SLOW\" ]; then sleep 30 & echo $! > \"$BIDE_FAKE_GIT_PIDFILE\"; wait; fi\necho \"$BIDE_FAKE_GIT_MSG\" >&2\nexit 128\n"
 	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := exec.Command(filepath.Join(dir, "git")).Run(); err == nil {
+		t.Fatal("the stand-in git succeeded")
+	} else if ee, ok := errors.AsType[*exec.ExitError](err); !ok || ee.ExitCode() != 128 {
+		t.Skipf("cannot run a script from the temporary directory (a noexec mount?): %v", err)
+	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	old := gitTimeout
+	gitTimeout = 5 * time.Minute
+	t.Cleanup(func() { gitTimeout = old })
+	return func(msg string) { t.Setenv("BIDE_FAKE_GIT_MSG", msg) }
+}
+
+// A git that does not answer within the deadline is stopped and the baseline says so (not the "signal: killed"
+// the kill leaves), and the editor still opens with the file as it was.
+func TestBaselineSaysWhenGitDidNotAnswer(t *testing.T) {
+	fakeGit(t)
+	gitTimeout = 300 * time.Millisecond
+	t.Setenv("BIDE_FAKE_GIT_SLOW", "1")
+	// The child that holds the pipes outlives the stopped git: stop it when the test ends, so it leaves no orphan.
+	pidfile := filepath.Join(t.TempDir(), "child.pid")
+	t.Setenv("BIDE_FAKE_GIT_PIDFILE", pidfile)
+	t.Cleanup(func() {
+		if b, err := os.ReadFile(pidfile); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
+				if p, err := os.FindProcess(pid); err == nil {
+					p.Kill()
+				}
+			}
+		}
+	})
+	start := time.Now()
+	s, _ := newTestServer(t, "refund.yaml", weakFlow)
+	d, err := s.Doc()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(start); took > 10*time.Second {
+		t.Fatalf("the editor waited %v for a git that does not answer", took)
+	}
+	if note := s.BaselineNote(); !strings.Contains(note, "did not answer within 300ms") || strings.Contains(note, "signal: killed") {
+		t.Fatalf("note %q", note)
+	}
+	if !strings.Contains(d.Weakening.Baseline, "git HEAD was not used: ") {
+		t.Fatalf("baseline %q", d.Weakening.Baseline)
+	}
 }
 
 // A git that fails for any reason but "the file is not in git" does not quietly turn the baseline into
 // "the file as opened": the reason is in the baseline's name (which the page shows every time) and in
 // BaselineNote (which bide edit prints). An untracked file and a non-repository are ordinary.
 func TestBaselineSaysWhyGitWasNotUsed(t *testing.T) {
+	setMsg := fakeGit(t)
 	for name, c := range map[string]struct {
 		msg  string
 		note bool
@@ -310,7 +363,7 @@ func TestBaselineSaysWhyGitWasNotUsed(t *testing.T) {
 		"untracked":         {"fatal: path 'f.yaml' exists on disk, but not in 'HEAD'", false},
 		"no such path":      {"fatal: path 'f.yaml' does not exist in 'HEAD'", false},
 	} {
-		fakeGit(t, c.msg)
+		setMsg(c.msg)
 		s, _ := newTestServer(t, "refund.yaml", weakFlow)
 		d, err := s.Doc()
 		if err != nil {
@@ -350,5 +403,33 @@ func TestBaselineIgnoresTheUsersLineEndingSettings(t *testing.T) {
 	got, err := gitShow(dir, "HEAD", "refund.yaml")
 	if err != nil || string(got) != weakFlow {
 		t.Errorf("the baseline read as %q (%v), want the committed bytes", got, err)
+	}
+}
+
+// A git that answers and exits 0 but leaves a helper running (a detached gc, a credential or fsmonitor helper)
+// that holds its pipes: the answer is complete, and the bound on waiting for the pipes does not turn it into a
+// failure.
+func TestGitShowAcceptsASuccessfulGitWhoseHelperHoldsThePipes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a shell script stands in for git")
+	}
+	dir := t.TempDir()
+	script := "#!/bin/sh\nif [ -n \"$BIDE_FAKE_GIT_WARM\" ]; then exit 0; fi\nsleep 8 &\nprintf '%s' \"$BIDE_FAKE_GIT_OUT\"\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	warm := exec.Command(filepath.Join(dir, "git"))
+	warm.Env = append(os.Environ(), "BIDE_FAKE_GIT_WARM=1") // the first run of a new executable can be slow: not under the deadline
+	if err := warm.Run(); err != nil {
+		t.Skipf("cannot run a script from the temporary directory (a noexec mount?): %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("BIDE_FAKE_GIT_OUT", "hello baseline\n")
+	old := gitTimeout
+	gitTimeout = 5 * time.Minute
+	t.Cleanup(func() { gitTimeout = old })
+	out, err := gitShow(t.TempDir(), "HEAD", "refund.yaml")
+	if err != nil || string(out) != "hello baseline\n" {
+		t.Fatalf("a git that answered and exited 0 is reported as a failure: %q, %v", out, err)
 	}
 }
