@@ -672,7 +672,7 @@ func (c *StopControl) SetStop(ctx context.Context, req StopRequest) (StopEntry, 
 		}
 		r := StopRecord{Format: StopFormat, Kind: "set", Mode: st.Mode, Scope: &req.Scope, Compensation: comp, Gen: gen, Reason: req.Reason, By: req.By, Host: req.Host, AdoptedFrom: req.AdoptedFrom}
 		err = c.write(ctx, st, &r, req.Signer, true)
-		if errors.Is(err, errStopNameTaken) && gen > 0 {
+		if errors.Is(err, errStopNameTaken) && gen > 0 { // the backstop name is content-derived and cannot be taken: never loop on it
 			continue
 		}
 		if err != nil {
@@ -728,10 +728,10 @@ func nextSetGen(recs []Record, scope StopScope, comp string) (gen int, ok bool) 
 		}
 		g, err := strconv.Atoi(rest)
 		if err != nil || g < 1 || g > maxSetGen || strconv.Itoa(g) != rest {
-			continue // not a generation name
+			continue // not a generation name (these bounds only keep the table small: a number past them could never be reached by the search below)
 		}
 		taken[g] = true
-		if r, err := decodeStopRecord(rec.Result); err == nil && r.Kind == "set" && r.Gen == g && r.Scope != nil && *r.Scope == scope && r.Compensation == comp && stopRecordStep(r) == rec.Name {
+		if r, err := decodeStopRecord(rec.Result); err == nil && r.Kind == "set" && r.Scope != nil && *r.Scope == scope && r.Compensation == comp && stopRecordStep(r) == rec.Name {
 			greatest = max(greatest, g)
 		}
 	}

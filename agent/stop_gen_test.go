@@ -612,3 +612,24 @@ func TestChangeMode_RerunAfterACrashBeforeTheModeRecord(t *testing.T) {
 		t.Fatalf("%d signed sets, %d mode records", sets, modes)
 	}
 }
+
+// Only the canonical number is a generation name: "007" does not take generation 7.
+func TestSetStop_ANonCanonicalNameTakesNoGeneration(t *testing.T) {
+	ctx := context.Background()
+	c := newControl(t, NewMemStore())
+	scope := toolScope("refund")
+	for range 6 { // six stops, each lifted: the next generation is 7
+		e, err := c.SetStop(ctx, setReq(scope, "a"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.LiftStop(ctx, e.ID, LiftRequest{By: "a"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	squat(t, c, scope, "007")
+	e, err := c.SetStop(ctx, setReq(scope, "a"))
+	if err != nil || lastSetGen(t, c, e.ID) != 7 {
+		t.Fatalf("%v: generation %d, want 7 (007 is not generation 7)", err, lastSetGen(t, c, e.ID))
+	}
+}
