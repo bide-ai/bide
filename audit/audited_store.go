@@ -39,6 +39,7 @@ type AuditedStore struct {
 	after       func(time.Duration, func()) (stop func() bool)
 	lastPub     map[string]time.Time   // when a run's head was last published
 	pending     map[string]func() bool // runs whose growth is held back, and the timer that publishes it
+	retrying    map[string]bool        // runs whose timer publish failed and has not yet succeeded
 }
 
 // NewAuditedStore wraps inner so each journal growth is signed by signer (ed25519, ML-DSA-65, or
@@ -72,6 +73,7 @@ func NewAuditedStore(inner agent.Store, signer Signer, anchor Anchor) (*AuditedS
 		after:    func(d time.Duration, f func()) func() bool { return time.AfterFunc(d, f).Stop },
 		lastPub:  map[string]time.Time{},
 		pending:  map[string]func() bool{},
+		retrying: map[string]bool{},
 	}, nil
 }
 
@@ -185,7 +187,11 @@ func (a *AuditedStore) fire(runID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), heldBackTimeout)
 	defer cancel()
 	if err := a.anchorIfGrown(ctx, runID, true); err != nil {
-		if a.onErr != nil {
+		a.mu.Lock()
+		first := !a.retrying[runID]
+		a.retrying[runID] = true
+		a.mu.Unlock()
+		if first && a.onErr != nil { // one report per streak of failures, not one per retry
 			a.onErr(runID, err)
 		}
 		// The growth is still unanchored: try again after another interval, so that the bound holds
@@ -205,6 +211,7 @@ const heldBackTimeout = 30 * time.Second
 func (a *AuditedStore) published(runID string) {
 	a.mu.Lock()
 	a.lastPub[runID] = a.wall()
+	delete(a.retrying, runID)
 	stop := a.pending[runID]
 	delete(a.pending, runID)
 	a.mu.Unlock()

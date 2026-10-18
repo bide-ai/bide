@@ -546,3 +546,33 @@ func TestMinInterval_ATimerRetriesAfterAnOutage(t *testing.T) {
 		t.Fatalf("heads %v pending %v, want the retry to cover all %d records", got, r.store.Pending(), len(recs))
 	}
 }
+
+// A long outage reports the failure once, not on every retry.
+func TestMinInterval_ARetryStreakIsReportedOnce(t *testing.T) {
+	r := newIntervalRig(t, 10*time.Second)
+	r.write(t, "a")
+	r.write(t, "b")
+	r.anchor.mu.Lock()
+	r.anchor.fail = errors.New("anchor down")
+	r.anchor.mu.Unlock()
+	for range 5 {
+		r.clk.Advance(10 * time.Second)
+	}
+	if len(r.errs) != 1 {
+		t.Fatalf("%d reports over 5 failed retries, want 1", len(r.errs))
+	}
+	r.anchor.mu.Lock()
+	r.anchor.fail = nil
+	r.anchor.mu.Unlock()
+	r.clk.Advance(10 * time.Second)
+	r.write(t, "c")
+	r.clk.Advance(10 * time.Second)
+	r.anchor.mu.Lock()
+	r.anchor.fail = errors.New("down again")
+	r.anchor.mu.Unlock()
+	r.write(t, "d")
+	r.clk.Advance(10 * time.Second)
+	if len(r.errs) != 2 {
+		t.Fatalf("%d reports after a second streak, want 2", len(r.errs))
+	}
+}

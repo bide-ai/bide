@@ -156,7 +156,7 @@ of it, by a timer at the end of the interval, not only by a later write.
   and recovery pass). The cooldown after a failed publish still applies to a trail.
 - **The window, while the process lives:** a record is covered by a published head at most `d` (plus one
   publish) after it was written. It is not "one head per `d`" in the other direction: there is never a
-  later gap, because the timer publishes what no later write does. A failed publish on the timer goes to `OnError` and the timer is re-armed for another interval (at least a second), so the bound survives an outage and `Flush` and `Pending` still know the run.
+  later gap, because the timer publishes what no later write does. A failed publish on the timer goes to `OnError` (once per streak of failures, not once per retry) and the timer is re-armed for another interval (at least a second), so the bound survives an outage and `Flush` and `Pending` still know the run.
 - **The window after a crash:** a process that dies loses its timers, so what it held back stays
   unanchored **until the next start or recovery pass**, not for `d`. `AuditedStore.ReanchorRuns(ctx,
   filter)` is that pass for journals: call it at start (with `agent.RunFilter{ExcludeHolding: ...}` set to the

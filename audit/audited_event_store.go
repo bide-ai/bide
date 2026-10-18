@@ -93,6 +93,7 @@ type anchoredTrail struct {
 	epoch    uint64        // counts the times dirty was set, so a publish clears only what it covered
 	appended uint64        // counts the appends that grew the trail, so the publisher knows what it has not seen
 	lastPub  time.Time     // when a head of the trail was last published; guarded by mu
+	retrying bool          // the timer's publish failed and no publish has succeeded since; guarded by mu
 	hold     func() bool   // stops the timer that publishes growth WithMinInterval held back; nil when none is armed; guarded by mu
 }
 
@@ -200,7 +201,13 @@ func (a *AuditedEventStore) fire(trail string, t *anchoredTrail) {
 	defer cancel()
 	err := a.anchorTrailOpts(ctx, trail, false, true)
 	if err != nil {
-		a.report(trail, err)
+		a.mu.Lock()
+		first := !t.retrying
+		t.retrying = true
+		a.mu.Unlock()
+		if first { // one report per streak of failures, not one per retry
+			a.report(trail, err)
+		}
 	}
 	// Still unanchored (a failed publish, or a skip during the cooldown): try again after another
 	// interval, so that the bound holds through an outage and Flush still publishes the trail.
@@ -215,6 +222,7 @@ func (a *AuditedEventStore) fire(trail string, t *anchoredTrail) {
 func (a *AuditedEventStore) published(t *anchoredTrail) {
 	a.mu.Lock()
 	t.lastPub = a.wall()
+	t.retrying = false
 	stop := t.hold
 	t.hold = nil
 	a.mu.Unlock()
