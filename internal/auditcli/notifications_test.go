@@ -282,6 +282,12 @@ func TestNotificationsVerb_ReadsEveryRunFromAStore(t *testing.T) {
 	if code != 0 || strings.Contains(out, "notify:b") || !strings.Contains(out, "notify:a") {
 		t.Fatalf("-run a: exit %d\n%s", code, out)
 	}
+	if !strings.Contains(out, "INFO  the kill switch's stops are not checked") {
+		t.Fatalf("-run a must say that the stops were not checked, so a PASS is not read as covering them:\n%s", out)
+	}
+	if _, all, _ := runCLI("notifications", "-db", "x.db", "-unanchored"); strings.Contains(all, "stops are not checked") {
+		t.Fatalf("an audit of every run checks the stops:\n%s", all)
+	}
 	if code, _, errOut := runCLI("notifications", "-db", "x.db", "-unanchored", "-run", "nope"); code != 4 || !strings.Contains(errOut, "no such run") {
 		t.Fatalf("-run nope: exit %d\n%s", code, errOut)
 	}

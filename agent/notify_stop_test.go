@@ -628,3 +628,23 @@ func TestStopNotify_NoAllClearForAStopSetOutOfTheWindow(t *testing.T) {
 		t.Fatalf("notifications %v, want only the stop_lifted", got)
 	}
 }
+
+// A time that is unknown (in the future past the skew) is not read as old: a stop set under one, lifted and
+// never told of, is still owed its stop_set, because nothing says it is history.
+func TestStopNotify_AFutureDatedSetThatWasLiftedIsNotHistory(t *testing.T) {
+	clk := sweepClock()
+	future := &notifyClock{t: clk.now().Add(400 * 24 * time.Hour)}
+	store := NewMemStore()
+	ctl := newControl(t, store, WithStopClock(future.now))
+	e := setTool(t, ctl, "refund")
+	if _, err := newControl(t, store, WithStopClock(clk.now)).LiftStop(context.Background(), e.ID, LiftRequest{By: "dayna"}); err != nil {
+		t.Fatal(err)
+	}
+	sink := &fakeSink{}
+	if err := stopSweep(t, ctl, sink, NewMemNotifyTrail(), clk); err != nil {
+		t.Fatal(err)
+	}
+	if got := kindsOf(sink); !slices.Contains(got, NotificationStopSet) {
+		t.Fatalf("notifications %v: a stop set under a time that cannot be believed was dropped as history", got)
+	}
+}
