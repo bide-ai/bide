@@ -629,22 +629,26 @@ func TestStopNotify_NoAllClearForAStopSetOutOfTheWindow(t *testing.T) {
 	}
 }
 
-// A time that is unknown (in the future past the skew) is not read as old: a stop set under one, lifted and
-// never told of, is still owed its stop_set, because nothing says it is history.
-func TestStopNotify_AFutureDatedSetThatWasLiftedIsNotHistory(t *testing.T) {
-	clk := sweepClock()
-	future := &notifyClock{t: clk.now().Add(400 * 24 * time.Hour)}
-	store := NewMemStore()
-	ctl := newControl(t, store, WithStopClock(future.now))
-	e := setTool(t, ctl, "refund")
-	if _, err := newControl(t, store, WithStopClock(clk.now)).LiftStop(context.Background(), e.ID, LiftRequest{By: "dayna"}); err != nil {
-		t.Fatal(err)
+// A time that is unknown (in the future past the skew, or unparseable) is not read as old: a lifted stop whose
+// set is dated so is still owed its stop_set event (the audit then reads the notifier's clearing of it), while
+// a believable old time makes it history.
+func TestStopNotify_AnUnknownTimeIsNotOld(t *testing.T) {
+	now := sweepClock().now()
+	owes := func(at string) bool {
+		st := StopState{Stops: []StopEntry{{ID: "s1", Lifted: true, At: at, LiftedAt: now.Add(-400 * 24 * time.Hour).Format(time.RFC3339Nano)}}}
+		for _, ev := range StopNotifyEvents(st, now, 0, nil) {
+			if ev.Kind == NotificationStopSet {
+				return true
+			}
+		}
+		return false
 	}
-	sink := &fakeSink{}
-	if err := stopSweep(t, ctl, sink, NewMemNotifyTrail(), clk); err != nil {
-		t.Fatal(err)
+	for name, at := range map[string]string{"the future": now.Add(400 * 24 * time.Hour).Format(time.RFC3339Nano), "unparseable": "not a time"} {
+		if !owes(at) {
+			t.Errorf("a stop set at %s owes no stop_set: an unknown time was read as old", name)
+		}
 	}
-	if got := kindsOf(sink); !slices.Contains(got, NotificationStopSet) {
-		t.Fatalf("notifications %v: a stop set under a time that cannot be believed was dropped as history", got)
+	if owes(now.Add(-400 * 24 * time.Hour).Format(time.RFC3339Nano)) {
+		t.Error("a stop set and lifted over a year ago owes a stop_set")
 	}
 }
