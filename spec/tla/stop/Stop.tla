@@ -34,7 +34,9 @@ CONSTANTS
   TargetOf, CompOf,  \* what each stop covers, and whether it holds compensation ("allow" or "block")
   KeyIncludesComp,   \* TRUE: a stop's key is its target and its compensation; FALSE (regress): its target alone
   GenRule,           \* TRUE: a set is named by (stop key, generation) and the insert is once-only; FALSE (regress): named by its own content
-  MaxGen,            \* the largest generation a set may carry
+  MaxGen,            \* the largest generation a set may carry (a name past it is not a generation)
+  Backstop,          \* TRUE: when no generation name is free a set is written under its content-derived name; FALSE (regress): it is not written
+  MaxJunk,           \* how many names a writer with store access and no key may take (entries that are not stops)
   MaxPol, SettersOf, LiftersOf, QuorumOf, \* policies 1..MaxPol: roles and lift quorum
   NeedsOther,        \* the fold's lift rule: one lifter is not the setter
   WantOther,         \* what the invariant demands of a lift (equal to NeedsOther unless a regress)
@@ -87,7 +89,7 @@ Records == { r \in [k : Kinds, by : People, sig : BOOLEAN, stop : StopIds, to : 
                /\ r.k \notin {"pol"} => r.to = 1
                /\ r.k = "mode" => ~r.sig
                /\ r.k /= "set" => r.gen = 0
-               /\ r.k = "set" => r.gen \in (IF GenRule THEN 1..MaxGen ELSE {0}) }
+               /\ r.k = "set" => r.gen \in (IF GenRule THEN 0..MaxGen ELSE {0}) }
 
 Stop0 == [phase |-> "none", setter |-> None, lifts |-> {}, how |-> None, signed |-> FALSE]
 Init0C(ch) == [unv |-> FALSE, audited |-> (Cfg = "audited"), pol |-> IF ch THEN 1 ELSE MaxPol, tps |-> {},
@@ -142,22 +144,35 @@ Unk(s) == IF s.audited THEN (Pin > s.pol \/ s.unv) ELSE \E i \in StopIds : s.st[
 \* A stop in force for the key sc.
 HeldKey(s, sc) == \E i \in StopIds : s.st[i].phase = "active" /\ ScopeOf[i] = sc
 \* The name a set has in the control run: with GenRule the stop key and the generation (so two writers that
-\* chose the same generation collide), without it the set's own content (here its stop), which never collides.
-SetName(r) == IF GenRule THEN <<ScopeOf[r.stop], r.gen>> ELSE <<r.stop, 0>>
+\* chose the same generation collide), without it, or at generation 0 (the backstop), the set's own content
+\* (here its stop), which never collides.
+SetName(r) == IF GenRule /\ r.gen > 0 THEN <<ScopeOf[r.stop], r.gen>> ELSE <<r.stop, 0>>
 \* The greatest generation among the sets of key sc in the first n records of l (0 if none).
 MaxGenOf(l, n, sc) ==
   LET gs == {l[i].gen : i \in {j \in 1..n : l[j].k = "set" /\ ScopeOf[l[j].stop] = sc}} IN
   IF gs = {} THEN 0 ELSE CHOOSE g \in gs : \A h \in gs : h <= g
-\* The insert of a set record r into log l. A writer reads the log up to some n (any prefix: it may be stale);
-\* if a stop is in force for the key in what it read it reports "already stopped" and writes nothing; else it
-\* names the record by the key and one more than the greatest generation it saw; and the insert fails if that
-\* name is taken. Another record kind is not a set and is not constrained.
-SetInsertable(l, r) ==
+\* The names the sets of the first n records of l hold.
+NamesOf(l, n) == {SetName(l[i]) : i \in {j \in 1..n : l[j].k = "set"}}
+\* The generation a writer chooses: the first free one after the greatest of the sets that are records, free
+\* of every name it saw (the records' names and the junk it saw), and within MaxGen; 0 when there is none, which
+\* is the backstop's (content-derived) name. A junk name never moves the generation: it is only skipped.
+NextGen(l, n, sc, jv) ==
+  LET m == MaxGenOf(l, n, sc)
+      taken == NamesOf(l, n) \cup jv
+      free == {g \in (m + 1)..MaxGen : <<sc, g>> \notin taken} IN
+  IF free = {} THEN 0 ELSE CHOOSE g \in free : \A h \in free : g <= h
+\* The insert of a set record r into log l with junk jk on the store. A writer reads the log up to some n (any
+\* prefix: it may be stale) and the junk it saw (any subset); if a stop is in force for the key in what it read it
+\* reports "already stopped" and writes nothing; else it names the record by the key and NextGen, or, when no
+\* generation is free, by its content (the backstop, if there is one); and the insert fails if that name is taken.
+\* Another record kind is not a set and is not constrained.
+SetInsertable(l, jk, r) ==
   r.k = "set" =>
-    /\ \E n \in 0..Len(l) :
+    /\ \E n \in 0..Len(l), jv \in SUBSET jk :
          /\ ~HeldKey(Eff(l, n), ScopeOf[r.stop])
-         /\ r.gen = IF GenRule THEN 1 + MaxGenOf(l, n, ScopeOf[r.stop]) ELSE 0
-    /\ SetName(r) \notin {SetName(l[i]) : i \in {j \in 1..Len(l) : l[j].k = "set"}}
+         /\ r.gen = IF GenRule THEN NextGen(l, n, ScopeOf[r.stop], jv) ELSE 0
+    /\ (r.gen = 0 /\ GenRule) => Backstop
+    /\ SetName(r) \notin NamesOf(l, Len(l)) \cup jk
 
 Active(s, c) == \E i \in StopIds : s.st[i].phase = "active" /\ c \in CoverOf[i]
 Covers(s, c) == Active(s, c)
@@ -174,29 +189,31 @@ VARIABLES
   rd,         \* c -> length of the log prefix the latest attempt's read saw (-1: none)
   fired,      \* c -> times the effect started
   crashes,
-  blocked     \* a call has been held back by a stop that was read
+  blocked,    \* a call has been held back by a stop that was read
+  junk        \* the names taken by entries that are not stops (a writer with store access and no key)
 
-vars == <<log, trail, pend, wcrash, calls, att, claimLen, rd, fired, crashes, blocked>>
+vars == <<log, trail, pend, wcrash, calls, att, claimLen, rd, fired, crashes, blocked, junk>>
 
 TypeOK ==
   /\ log \in Seq(Records) /\ Len(log) <= MaxLog
   /\ calls \in [Calls -> {"idle", "claimed", "cleared", "started", "done", "halted"}]
   /\ att \in [Calls -> 0..MaxAtt] /\ crashes \in 0..MaxCrash /\ blocked \in BOOLEAN
   /\ trail \in Seq(Records) /\ wcrash \in 0..MaxWriteCrash /\ pend \subseteq Records /\ Cardinality(pend) <= 1
+  /\ junk \subseteq {<<k, g>> : k \in {ScopeOf[i] : i \in StopIds}, g \in 1..MaxGen} /\ Cardinality(junk) <= MaxJunk
 
 Init ==
   /\ log = <<>> /\ calls = [c \in Calls |-> "idle"] /\ att = [c \in Calls |-> 0]
   /\ claimLen = [c \in Calls |-> 0] /\ rd = [c \in Calls |-> -1] /\ fired = [c \in Calls |-> 0]
-  /\ crashes = 0 /\ blocked = FALSE /\ trail = <<>> /\ pend = {} /\ wcrash = 0
+  /\ crashes = 0 /\ blocked = FALSE /\ trail = <<>> /\ pend = {} /\ wcrash = 0 /\ junk = {}
 
 \* protocol:stop begin Write StartWrite FinishWrite Reaudit (the Go regions carry the markers)
 \* Without a trail a record is one atomic write to the control log.
 Write(r) ==
   /\ ~WithTrail
   /\ Len(log) < MaxLog
-  /\ SetInsertable(log, r)
+  /\ SetInsertable(log, junk, r)
   /\ log' = Append(log, r)
-  /\ UNCHANGED <<trail, pend, wcrash, calls, att, claimLen, rd, fired, crashes, blocked>>
+  /\ UNCHANGED <<junk, trail, pend, wcrash, calls, att, claimLen, rd, fired, crashes, blocked>>
 
 Claim(c) ==
   /\ calls[c] = "idle" /\ att[c] < MaxAtt
@@ -204,7 +221,7 @@ Claim(c) ==
   /\ claimLen' = [claimLen EXCEPT ![c] = Len(log)]
   /\ rd' = [rd EXCEPT ![c] = IF Check THEN -1 ELSE 0]
   /\ calls' = [calls EXCEPT ![c] = IF Check THEN "claimed" ELSE "cleared"]
-  /\ UNCHANGED <<log, trail, pend, wcrash, fired, crashes, blocked>>
+  /\ UNCHANGED <<junk, log, trail, pend, wcrash, fired, crashes, blocked>>
 
 \* The check after the claim: it reads the control log (everything committed so far, or, without
 \* SyncRead, any earlier prefix), and the attempt is cleared to start, or voided (not started) when a
@@ -215,37 +232,37 @@ ReadOk(c) ==
        IF Covers(Eff(log, n), c)
          THEN /\ calls' = [calls EXCEPT ![c] = "idle"] /\ blocked' = TRUE /\ rd' = rd
          ELSE /\ calls' = [calls EXCEPT ![c] = "cleared"] /\ rd' = [rd EXCEPT ![c] = n] /\ blocked' = blocked
-  /\ UNCHANGED <<log, trail, pend, wcrash, att, claimLen, fired, crashes>>
+  /\ UNCHANGED <<junk, log, trail, pend, wcrash, att, claimLen, fired, crashes>>
 
 ReadFail(c) ==
   /\ ReadFails /\ calls[c] = "claimed"
   /\ IF FailClosed
        THEN /\ calls' = [calls EXCEPT ![c] = "idle"] /\ rd' = rd
        ELSE /\ calls' = [calls EXCEPT ![c] = "cleared"] /\ rd' = [rd EXCEPT ![c] = 0]
-  /\ UNCHANGED <<log, trail, pend, wcrash, att, claimLen, fired, crashes, blocked>>
+  /\ UNCHANGED <<junk, log, trail, pend, wcrash, att, claimLen, fired, crashes, blocked>>
 
 \* A stop may be committed between the read and the start: the call is in flight and finishes.
 Begin(c) ==
   /\ calls[c] = "cleared"
   /\ calls' = [calls EXCEPT ![c] = "started"] /\ fired' = [fired EXCEPT ![c] = @ + 1]
-  /\ UNCHANGED <<log, trail, pend, wcrash, att, claimLen, rd, crashes, blocked>>
+  /\ UNCHANGED <<junk, log, trail, pend, wcrash, att, claimLen, rd, crashes, blocked>>
 
 Finish(c) ==
   /\ calls[c] = "started"
   /\ calls' = [calls EXCEPT ![c] = "done"]
-  /\ UNCHANGED <<log, trail, pend, wcrash, att, claimLen, rd, fired, crashes, blocked>>
+  /\ UNCHANGED <<junk, log, trail, pend, wcrash, att, claimLen, rd, fired, crashes, blocked>>
 
 \* A crash with a marker and no result: the outcome is unknown, the call halts, for good.
 Crash(c) ==
   /\ crashes < MaxCrash /\ calls[c] \in {"claimed", "cleared", "started"}
   /\ calls' = [calls EXCEPT ![c] = "halted"] /\ crashes' = crashes + 1
-  /\ UNCHANGED <<log, trail, pend, wcrash, att, claimLen, rd, fired, blocked>>
+  /\ UNCHANGED <<junk, log, trail, pend, wcrash, att, claimLen, rd, fired, blocked>>
 
 \* Regress only: a lift starts a halted call that had fired again.
 Refire(c) ==
   /\ LiftRefires /\ calls[c] = "halted" /\ \E i \in StopIds : Eff(log, Len(log)).st[i].phase = "lifted"
   /\ calls' = [calls EXCEPT ![c] = "cleared"] /\ rd' = [rd EXCEPT ![c] = Len(log)]
-  /\ UNCHANGED <<log, trail, pend, wcrash, att, claimLen, fired, crashes, blocked>>
+  /\ UNCHANGED <<junk, log, trail, pend, wcrash, att, claimLen, fired, crashes, blocked>>
 
 \* With a trail, a signed record is written in two steps. A stop is written to the control log first (it is
 \* in force at once) and to the trail second; every other record is written to the trail first, so none is in
@@ -261,7 +278,7 @@ CaughtUp == ~CatchUp \/ SignedLog \subseteq TrailSet
 
 StartWrite(r) ==
   /\ WithTrail /\ pend = {} /\ r.sig /\ Len(log) < MaxLog
-  /\ SetInsertable(log, r)
+  /\ SetInsertable(log, junk, r)
   /\ r \notin Range(log)   \* a record is inserted once: the control run's names are content-derived, so the same record is not written twice
   /\ r.k = "lift" => Eff(log, Len(log)).st[r.stop].phase /= "none"   \* a lift names a stop the control run holds
   \* A record already on the trail but not in the log (a write that crashed) is only re-applied while no log
@@ -272,35 +289,43 @@ StartWrite(r) ==
             /\ log' = log
             /\ trail' = IF r \in TrailSet THEN trail ELSE Append(trail, r)
   /\ pend' = {r}
-  /\ UNCHANGED <<wcrash, calls, att, claimLen, rd, fired, crashes, blocked>>
+  /\ UNCHANGED <<junk, wcrash, calls, att, claimLen, rd, fired, crashes, blocked>>
 
 FinishWrite ==
   /\ WithTrail /\ pend /= {}
   /\ LET p == CHOOSE x \in pend : TRUE IN
        IF StoreFirst(p) THEN trail' = (IF p \in TrailSet THEN trail ELSE Append(trail, p)) /\ log' = log ELSE Len(log) < MaxLog /\ log' = Append(log, p) /\ trail' = trail
   /\ pend' = {}
-  /\ UNCHANGED <<wcrash, calls, att, claimLen, rd, fired, crashes, blocked>>
+  /\ UNCHANGED <<junk, wcrash, calls, att, claimLen, rd, fired, crashes, blocked>>
 
 WriteCrash ==
   /\ WithTrail /\ pend /= {} /\ wcrash < MaxWriteCrash /\ pend' = {} /\ wcrash' = wcrash + 1
-  /\ UNCHANGED <<log, trail, calls, att, claimLen, rd, fired, crashes, blocked>>
+  /\ UNCHANGED <<junk, log, trail, calls, att, claimLen, rd, fired, crashes, blocked>>
 
 \* A writer with store access and no key writes an unsigned record straight into the control log.
 Forge(r) ==
   /\ WithTrail /\ ~r.sig /\ Len(log) < MaxLog
-  /\ r.k = "set" => SetName(r) \notin {SetName(log[i]) : i \in {j \in 1..Len(log) : log[j].k = "set"}}   \* a forger cannot overwrite a name either
+  /\ r.k = "set" => SetName(r) \notin NamesOf(log, Len(log)) \cup junk   \* a forger cannot overwrite a name either
   /\ log' = Append(log, r)
-  /\ UNCHANGED <<trail, pend, wcrash, calls, att, claimLen, rd, fired, crashes, blocked>>
+  /\ UNCHANGED <<junk, trail, pend, wcrash, calls, att, claimLen, rd, fired, crashes, blocked>>
 
 Reaudit ==
   /\ WithTrail /\ \E i \in 1..Len(log) :
        /\ log[i].sig /\ log[i] \notin TrailSet
        /\ \A j \in 1..(i - 1) : log[j].sig => log[j] \in TrailSet   \* in log order, every earlier record first
        /\ trail' = Append(trail, log[i])
-  /\ UNCHANGED <<log, pend, wcrash, calls, att, claimLen, rd, fired, crashes, blocked>>
+  /\ UNCHANGED <<junk, log, pend, wcrash, calls, att, claimLen, rd, fired, crashes, blocked>>
 \* protocol:stop end
 
+\* A writer with store access and no key takes a name: an entry that is not a stop, under a name a writer might
+\* choose (the key is a public hash). It never decodes, so it moves no generation; it only occupies a name.
+Squat(k, g) ==
+  /\ Cardinality(junk) < MaxJunk /\ <<k, g>> \notin junk /\ <<k, g>> \notin NamesOf(log, Len(log))
+  /\ junk' = junk \cup {<<k, g>>}
+  /\ UNCHANGED <<log, trail, pend, wcrash, calls, att, claimLen, rd, fired, crashes, blocked>>
+
 Next == \/ \E r \in Records : Write(r) \/ StartWrite(r) \/ Forge(r)
+        \/ \E k \in {ScopeOf[i] : i \in StopIds}, g \in 1..MaxGen : Squat(k, g)
         \/ FinishWrite \/ WriteCrash \/ Reaudit
         \/ \E c \in Calls : Claim(c) \/ ReadOk(c) \/ ReadFail(c) \/ Begin(c) \/ Finish(c) \/ Crash(c) \/ Refire(c)
 
@@ -321,6 +346,16 @@ StricterNeverRefused ==
   \A i \in StopIds : \A n \in 0..Len(log) :
     HeldKey(Eff(log, n), ScopeOf[i]) =>
       \E j \in StopIds : Eff(log, n).st[j].phase = "active" /\ TargetOf[j] = TargetOf[i] /\ StopRank(CompOf[j]) >= StopRank(CompOf[i])
+
+\* A stop can always be set when none is in force for its target: no squatter, whatever names it takes, leaves a
+\* stop that was never written (and none in force for its key) without a name to be written under. (A stop
+\* written under the backstop's name may then be a duplicate of one written concurrently: the safe direction.)
+\* (A stop id stands for one record's content, and its content-derived name, which no one can have taken before
+\* the record exists: the invariant is about a stop whose own name is unused.)
+SetNeverBlocked ==
+  \A i \in StopIds :
+    (Eff(log, Len(log)).st[i].phase = "none" /\ ~HeldKey(Eff(log, Len(log)), ScopeOf[i]) /\ <<i, 0>> \notin NamesOf(log, Len(log))) =>
+      \E r \in Records : r.k = "set" /\ r.stop = i /\ SetInsertable(log, junk, r)
 
 \* The effect starts at most once, whatever the stop, the lift and the crashes do.
 AtMostOnce == \A c \in Calls : fired[c] <= 1
