@@ -149,6 +149,9 @@ func badConfig(format string, args ...any) error {
 }
 
 func newAnchor(cfg Config) (*Anchor, error) {
+	if err := layout.Validate(); err != nil {
+		return nil, badConfig("the object layout is invalid: %v", err)
+	}
 	switch {
 	case cfg.Store == nil:
 		return nil, badConfig("Config.Store is nil")
