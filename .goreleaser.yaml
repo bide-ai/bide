@@ -78,32 +78,12 @@ sboms:
       - "{{ .ArtifactName }}.sbom.json"
     args: ["$artifact", "--output", "spdx-json=$document"]
 
-# Keyless signatures: cosign signs with the release workflow's GitHub OIDC identity (no key to
-# keep), and each signature is a Sigstore bundle (signature, Fulcio certificate and Rekor entry)
-# named <file>.sigstore.json. `checksum` signs checksums.txt, which lists every archive and SBOM, so
-# one verification covers them all; `archive` signs each archive on its own, and `sbom` each SBOM, so
-# an SBOM handed to a vulnerability scanner or an inventory carries its own proof of origin. docs/trust/verify-releases.md
-# has the verification commands. The release workflow skips this in its snapshot dry run, so a dry
-# run writes nothing to the public transparency log.
-signs:
-  - id: checksum
-    cmd: cosign
-    artifacts: checksum
-    signature: "${artifact}.sigstore.json"
-    args: ["sign-blob", "--yes", "--bundle=${signature}", "${artifact}"]
-    output: true
-  - id: archive
-    cmd: cosign
-    artifacts: archive
-    signature: "${artifact}.sigstore.json"
-    args: ["sign-blob", "--yes", "--bundle=${signature}", "${artifact}"]
-    output: true
-  - id: sbom
-    cmd: cosign
-    artifacts: sbom
-    signature: "${artifact}.sigstore.json"
-    args: ["sign-blob", "--yes", "--bundle=${signature}", "${artifact}"]
-    output: true
+# Signing and publishing are not done here. The release builder (github.com/bide-ai/release-builder,
+# called by .github/workflows/release.yml) runs goreleaser with --skip=publish,sign, attests the
+# archives, their SBOMs and checksums.txt with SLSA Build L3 provenance, and release.yml verifies that
+# provenance, signs checksums.txt, each archive and each SBOM keylessly with cosign (a Sigstore bundle
+# named <file>.sigstore.json each) and publishes the release. docs/trust/verify-releases.md has the
+# verification commands.
 
 changelog:
   use: github
@@ -115,6 +95,10 @@ changelog:
       - "^chore:"
       - "^ci:"
 
+# Only the repository the changelog is read from (changelog.use: github) comes from this block, because
+# goreleaser does not publish here. release.yml creates the release itself: the title "bide <tag>",
+# the notes (docs/releases/<tag>.md, else the changelog goreleaser writes to dist/CHANGELOG.md) and the
+# prerelease mark for a tag with a hyphen.
 release:
   github:
     owner: bide-ai

@@ -219,9 +219,12 @@ jobs:
           # The Homebrew formula the release workflow writes pins a sha256 per archive and refuses
           # a checksums file that lacks one.
           scripts/brew-formula.sh --self-test
-          # The release's provenance check passes gh the repository, workflow, tag and predicate
+          # The release's provenance check passes gh the repository, builder workflow and commit, ref and predicate
           # to enforce, and fails on one file that does not verify or on no files at all.
           scripts/verify-provenance.sh --self-test
+          # The pinned gh the release verifies provenance with is installed only if its checksum
+          # matches.
+          scripts/install-gh.sh --self-test
       - name: Benchmark summary script
         if: needs.changes.outputs.code != 'false'
         run: |

@@ -14,6 +14,12 @@ updates:
       interval: weekly
       day: monday
     groups:
+      # The release builder is its own pull request: its pin is the signer commit the release's
+      # provenance is verified against, so a move to another builder commit is reviewed as a change
+      # to the release's security (docs/trust/verify-releases.md, "For maintainers").
+      release-builder:
+        patterns:
+          - "bide-ai/release-builder"
       actions:
         patterns:
           - "*"
