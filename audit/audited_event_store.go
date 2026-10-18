@@ -198,9 +198,17 @@ func (a *AuditedEventStore) fire(trail string, t *anchoredTrail) {
 	a.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), a.timeout)
 	defer cancel()
-	if err := a.anchorTrailOpts(ctx, trail, false, true); err != nil {
+	err := a.anchorTrailOpts(ctx, trail, false, true)
+	if err != nil {
 		a.report(trail, err)
 	}
+	// Still unanchored (a failed publish, or a skip during the cooldown): try again after another
+	// interval, so that the bound holds through an outage and Flush still publishes the trail.
+	a.mu.Lock()
+	if t.dirty && t.hold == nil {
+		t.hold = a.after(max(a.minInterval, time.Second), func() { a.fire(trail, t) })
+	}
+	a.mu.Unlock()
 }
 
 // published records that a head of the trail was just published and disarms its timer.

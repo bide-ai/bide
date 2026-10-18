@@ -263,8 +263,8 @@ func TestMinInterval_ATimerFailureIsReportedAndTheNextWriteRecovers(t *testing.T
 	if len(r.errs) != 1 {
 		t.Fatalf("errors = %v, want the timer's failure reported once", r.errs)
 	}
-	if p := r.store.Pending(); len(p) != 0 {
-		t.Fatalf("Pending = %v after the timer fired: a failed timer must leave the run disarmed, not looking held back", p)
+	if p := r.store.Pending(); len(p) != 1 {
+		t.Fatalf("Pending = %v after the timer failed: the run must be re-armed, so Flush and the next interval retry it", p)
 	}
 	r.anchor.mu.Lock()
 	r.anchor.fail = nil
@@ -426,8 +426,8 @@ func TestMinInterval_EventTrailATimerFailureLeavesItDisarmed(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the timer's failure was not reported")
 	}
-	if h := r.store.HeldBack(); len(h) != 0 {
-		t.Fatalf("HeldBack = %v after the timer fired", h)
+	if h := r.store.HeldBack(); len(h) != 1 {
+		t.Fatalf("HeldBack = %v after the timer failed, want the trail re-armed", h)
 	}
 	if u := r.store.Unanchored(); len(u) != 1 {
 		t.Fatalf("Unanchored = %v, want the trail remembered for a retry", u)
@@ -525,5 +525,24 @@ func TestMinInterval_AfterACrashAnchorTrailsAnchorsHeldBackTrails(t *testing.T) 
 	}
 	if got := anchorB.sizes(); len(got) != 1 || got[0] != 3 {
 		t.Fatalf("heads after the recovery pass = %v, want one of size 3", got)
+	}
+}
+
+// After an outage the re-armed timer publishes by itself, so the bound survives the outage.
+func TestMinInterval_ATimerRetriesAfterAnOutage(t *testing.T) {
+	r := newIntervalRig(t, 10*time.Second)
+	r.write(t, "a")
+	r.write(t, "b")
+	r.anchor.mu.Lock()
+	r.anchor.fail = errors.New("anchor down")
+	r.anchor.mu.Unlock()
+	r.clk.Advance(10 * time.Second)
+	r.anchor.mu.Lock()
+	r.anchor.fail = nil
+	r.anchor.mu.Unlock()
+	r.clk.Advance(10 * time.Second)
+	recs, _ := r.j.History(context.Background(), "run-1")
+	if got := r.anchor.sizes(); got[len(got)-1] != len(recs) || len(r.store.Pending()) != 0 {
+		t.Fatalf("heads %v pending %v, want the retry to cover all %d records", got, r.store.Pending(), len(recs))
 	}
 }

@@ -150,15 +150,13 @@ Object Lock bucket, a timestamping service that bills per token) that is one ret
 run or trail per `d`: growth inside the interval is held back and published as one head that covers all
 of it, by a timer at the end of the interval, not only by a later write.
 
-- **Immediate, always:** a run's or trail's first head, a run's end (the write of `run:complete` or
-  `run:aborted`), `Reanchor`, `Flush` (which also publishes everything held back, so call it before the
+- **Immediate, always:** a run's or trail's first head, a run's end (the write of `run:complete`,
+  `run:aborted` or `run:cancelled`), `Reanchor`, `Flush` (which also publishes everything held back, so call it before the
   process exits), `ReanchorRuns`, and for trails `ReanchorPending` and `AnchorTrails` (the notifier's sweep
   and recovery pass). The cooldown after a failed publish still applies to a trail.
 - **The window, while the process lives:** a record is covered by a published head at most `d` (plus one
   publish) after it was written. It is not "one head per `d`" in the other direction: there is never a
-  later gap, because the timer publishes what no later write does. A failed publish on the timer goes to
-  `OnError`, and the run is not left looking held back: the next write after the interval, `Reanchor` or
-  `Flush` publishes it, as for any failed publish.
+  later gap, because the timer publishes what no later write does. A failed publish on the timer goes to `OnError` and the timer is re-armed for another interval (at least a second), so the bound survives an outage and `Flush` and `Pending` still know the run.
 - **The window after a crash:** a process that dies loses its timers, so what it held back stays
   unanchored **until the next start or recovery pass**, not for `d`. `AuditedStore.ReanchorRuns(ctx,
   filter)` is that pass for journals: call it at start (with `agent.RunFilter{ExcludeHolding: ...}` set to the

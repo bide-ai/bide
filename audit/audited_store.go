@@ -90,8 +90,8 @@ func (a *AuditedStore) OnError(fn func(runID string, err error)) *AuditedStore {
 // (the default, or d not positive) every journal write publishes a head, which for an anchor that
 // keeps each head for years (an S3 Object Lock bucket, say) is one retained object per write.
 //
-// What stays immediate: a run's first head, the write of its end marker (run:complete or
-// run:aborted), Reanchor, and Flush. What is bounded: while this process lives, a record is covered
+// What stays immediate: a run's first head, the write of its end marker (run:complete, run:aborted or
+// run:cancelled), Reanchor, and Flush. What is bounded: while this process lives, a record is covered
 // by a published head at most d (plus one publish) after it was written, because held-back growth is
 // published by a timer, not only by a later write. A process that dies loses the timer: the
 // records it held back stay unanchored until the next start or recovery pass anchors them
@@ -184,8 +184,17 @@ func (a *AuditedStore) fire(runID string) {
 	a.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), heldBackTimeout)
 	defer cancel()
-	if err := a.anchorIfGrown(ctx, runID, true); err != nil && a.onErr != nil {
-		a.onErr(runID, err)
+	if err := a.anchorIfGrown(ctx, runID, true); err != nil {
+		if a.onErr != nil {
+			a.onErr(runID, err)
+		}
+		// The growth is still unanchored: try again after another interval, so that the bound holds
+		// through an outage and Flush and Pending still know the run.
+		a.mu.Lock()
+		if _, armed := a.pending[runID]; !armed {
+			a.pending[runID] = a.after(max(a.minInterval, time.Second), func() { a.fire(runID) })
+		}
+		a.mu.Unlock()
 	}
 }
 
@@ -212,6 +221,8 @@ const journalHeader = "@journal"
 const (
 	runCompleteName = "run:complete"
 	runAbortedName  = "run:aborted"
+	// runCancelledName is the third end marker (agent.Cancel).
+	runCancelledName = "run:cancelled"
 )
 
 // Insert stores the entry in the inner store, then anchors the run's tree head if the journal grew
@@ -239,7 +250,7 @@ func (a *AuditedStore) Insert(ctx context.Context, runID, name string, data []by
 		}
 		return e, inserted, err
 	}
-	if aerr := a.anchorIfGrown(ctx, runID, name == runCompleteName || name == runAbortedName); aerr != nil && a.onErr != nil {
+	if aerr := a.anchorIfGrown(ctx, runID, name == runCompleteName || name == runAbortedName || name == runCancelledName); aerr != nil && a.onErr != nil {
 		a.onErr(runID, aerr)
 	}
 	return e, inserted, err
