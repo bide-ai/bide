@@ -292,8 +292,10 @@ type HeldCounts struct {
 	// not be, and Truncated says more than maxHeldRead were listed and only the first were read.
 	Held, May, Read, Unread int
 	Truncated               bool
-	// ListErr is set when the runs could not be listed, so nothing was counted.
-	ListErr string
+	// ListErr is set when the runs could not be listed, so nothing was counted. Incomplete is set when the count
+	// was cut off (its context ended) after counting some: the counts are then lower bounds.
+	ListErr    string
+	Incomplete bool
 }
 
 // HeldCount reads the unfinished runs of src and counts those the stop e holds, or may hold: what a person
@@ -312,6 +314,7 @@ func HeldCount(ctx context.Context, src JournalSource, e agent.StopEntry) HeldCo
 	st := agent.StopState{Mode: agent.StopBasic, Stops: []agent.StopEntry{e}}
 	for _, id := range ids {
 		if ctx.Err() != nil {
+			c.Incomplete = true
 			c.ListErr = errClass(ctx.Err())
 			return c
 		}
