@@ -160,12 +160,12 @@ trail first; if the control-run write then fails, the lift is on the trail and n
   processes are ignored by audited ones, so part of the deployment is stopped and part is not. Move it with
   `bide stop -upgrade`, or run every process the same mode.
 - **Freshness.** The control run is read at most once every couple of seconds for all pages, so a stop just
-  set or lifted can take that long to show; the banner says when it was read ("read <time>", and `read_at` in
+  set or lifted can take that long to show; the banner says when it was read (`read <time>`, and `read_at` in
   `/stops.json`).
 - **`-stop-policy FILE`** (and `-stop-root`) read the control run as an audited deployment does and check
   every signature. Without it the viewer reads as a basic one and the banner says "signatures not
   verified".
-- **Which runs a stop holds**, in the run list and on a run's page, as "held by stop <id>". A global stop
+- **Which runs a stop holds**, in the run list and on a run's page, as `held by stop <id>`. A global stop
   holds every run that is not over, not halted for an unknown outcome and not made of durable steps with
   no `run:start`; a flow stop the runs of that flow; a tool stop a run with a call to that tool that the
   journal shows no result for. A saga that is rolling back (a failed step) is only "may be held" under a
