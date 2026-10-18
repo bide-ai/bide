@@ -30,7 +30,11 @@ func TestLease_Semantics(t *testing.T) {
 	}
 	defer b.Close()
 
-	const ttl = 300 * time.Millisecond
+	// The live-lease checks use a long TTL, so a slow (-race, loaded) runner cannot let A's lease
+	// expire between two steps and make a correct store look wrong; the expiry checks below
+	// shorten it with a renewal first.
+	const ttl = time.Minute
+	const short = 300 * time.Millisecond
 	if ok, err := a.AcquireLease(ctx, "r", "A", ttl); err != nil || !ok {
 		t.Fatalf("A acquires a free run: %v, %v", ok, err)
 	}
@@ -52,7 +56,10 @@ func TestLease_Semantics(t *testing.T) {
 	if ok, _ := b.AcquireLease(ctx, "r", "B", ttl); ok {
 		t.Fatal("a release by a non-holder freed A's lease")
 	}
-	time.Sleep(ttl + 100*time.Millisecond)
+	if ok, err := a.RenewLease(ctx, "r", "A", short); err != nil || !ok {
+		t.Fatalf("A shortens its live lease: %v, %v", ok, err)
+	}
+	time.Sleep(short + 100*time.Millisecond)
 	if ok, err := a.RenewLease(ctx, "r", "A", ttl); err != nil || ok {
 		t.Fatalf("A renews its expired lease: %v, %v; want refused", ok, err)
 	}
