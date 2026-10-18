@@ -156,7 +156,7 @@ of it, by a timer at the end of the interval, not only by a later write.
   and recovery pass). The cooldown after a failed publish still applies to a trail.
 - **The window, while the process lives:** a record is covered by a published head at most `d` (plus one
   publish) after it was written. It is not "one head per `d`" in the other direction: there is never a
-  later gap, because the timer publishes what no later write does. A failed publish on the timer goes to `OnError` (once per streak of failures, not once per retry) and the timer is re-armed for another interval (at least a second), so the bound survives an outage and `Flush` and `Pending` still know the run.
+  later gap, because the timer publishes what no later write does. A failed publish on the timer goes to `OnError` and the timer is re-armed with a doubling wait (the interval, at least a second, up to five minutes or the interval if longer), so the bound survives an outage and `Flush` and `Pending` still know the run. `OnError` hears the first failure of a streak only, and `OnRecovered(fn)` is called when a publish succeeds after one, so an outage is one page and one all-clear, not a stream.
 - **The window after a crash:** a process that dies loses its timers, so what it held back stays
   unanchored **until the next start or recovery pass**, not for `d`. `AuditedStore.ReanchorRuns(ctx,
   filter)` is that pass for journals: call it at start (with `agent.RunFilter{ExcludeHolding: ...}` set to the
@@ -164,6 +164,7 @@ of it, by a timer at the end of the interval, not only by a later write.
   `Reanchor`). For notification and event trails the notifier's sweep and recovery pass (`AnchorTrails`)
   already is it. Between the crash and that pass the journal is intact and the records are simply not under a
   head; a monitor sees a latest head older than the journal.
+- **How far the tail goes is shown to a verifier.** `bide audit verify-decision-coverage` prints how many of the journal's last records are under no signed head, and `verify-receipts` prints the same for each journal it is given (a receipt for a decision in that tail is pending, not failed). Neither fails on the tail by itself; `verify-decision-coverage -max-records` and `-max-age` are the bounds.
 - Heads of one run still only grow, and `d` of zero (the default) or less turns it off.
   It trades the density of heads for the cost of keeping them: choose `d` as the longest you accept
   records being unanchored, given what it costs to hold a head.

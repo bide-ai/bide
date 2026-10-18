@@ -1164,6 +1164,9 @@ func (c *cli) verifyDecisionCoverage(args []string) {
 		c.printf("DIVERGENT  a head of size %d, signed by the log key for this run, is not this journal's: %s\n", h.Size, cleanText(h.Reason))
 	}
 	c.printf("INFO  run %s: %d records, %d signed heads counted (largest covers %d)\n", cleanText(rep.RunID), rep.Records, rep.Heads, rep.LargestHead)
+	if rep.Records > rep.LargestHead {
+		c.printf("INFO  run %s: the last %d record(s) are under no signed head yet (a minimum interval between heads, an anchor outage, or a process that stopped before it anchored them)\n", cleanText(rep.RunID), rep.Records-rep.LargestHead)
+	}
 	overdue := 0
 	for _, d := range rep.Decisions {
 		who := decisionLabel(d)

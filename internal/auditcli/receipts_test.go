@@ -135,6 +135,9 @@ func TestVerifyReceipts_Anchored(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "PASS  alice approved") || !strings.Contains(out, "committed to by signed heads") {
 		t.Fatalf("%d\n%s\n%s", code, out, errs)
 	}
+	if strings.Contains(out, "under no signed head") {
+		t.Fatalf("a tail line although the heads cover the whole journal:\n%s", out)
+	}
 	// A directory of receipts.
 	args := f.args(f.headsAnchored)
 	args[2] = f.dir
@@ -152,6 +155,9 @@ func TestVerifyReceipts_Pending(t *testing.T) {
 	code, out, errs := runCLI(f.args(f.headsBefore)...)
 	if code != 0 || !strings.Contains(out, "INFO") || !strings.Contains(out, "pending") || !strings.Contains(out, "not yet signed into a head") {
 		t.Fatalf("%d\n%s\n%s", code, out, errs)
+	}
+	if !strings.Contains(out, "are under no signed head (the newest covers") {
+		t.Fatalf("no line saying how far the unheaded tail goes:\n%s", out)
 	}
 }
 

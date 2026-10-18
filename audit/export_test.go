@@ -22,3 +22,6 @@ func (a *AuditedEventStore) SetClock(wall func() time.Time, after func(time.Dura
 
 // HeldBack is the trails whose growth WithMinInterval is holding back.
 func (a *AuditedEventStore) HeldBack() []string { return a.heldBack() }
+
+// RetryDelay is retryDelay.
+func RetryDelay(interval time.Duration, n int) time.Duration { return retryDelay(interval, n) }

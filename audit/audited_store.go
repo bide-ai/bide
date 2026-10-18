@@ -29,6 +29,8 @@ type AuditedStore struct {
 	anchor Anchor
 	now    func() int64
 	onErr  func(runID string, err error)
+	// onRecovered is called when a publish succeeds after a streak of failed timer publishes.
+	onRecovered func(runID string)
 
 	mu       sync.Mutex
 	lastSize map[string]int         // per-run journal length already anchored
@@ -39,7 +41,7 @@ type AuditedStore struct {
 	after       func(time.Duration, func()) (stop func() bool)
 	lastPub     map[string]time.Time   // when a run's head was last published
 	pending     map[string]func() bool // runs whose growth is held back, and the timer that publishes it
-	retrying    map[string]bool        // runs whose timer publish failed and has not yet succeeded
+	retrying    map[string]int         // runs whose timer publish failed, and how many times in a row
 }
 
 // NewAuditedStore wraps inner so each journal growth is signed by signer (ed25519, ML-DSA-65, or
@@ -73,7 +75,7 @@ func NewAuditedStore(inner agent.Store, signer Signer, anchor Anchor) (*AuditedS
 		after:    func(d time.Duration, f func()) func() bool { return time.AfterFunc(d, f).Stop },
 		lastPub:  map[string]time.Time{},
 		pending:  map[string]func() bool{},
-		retrying: map[string]bool{},
+		retrying: map[string]int{},
 	}, nil
 }
 
@@ -85,6 +87,29 @@ func (a *AuditedStore) WithClock(now func() int64) *AuditedStore { a.now = now; 
 func (a *AuditedStore) OnError(fn func(runID string, err error)) *AuditedStore {
 	a.onErr = fn
 	return a
+}
+
+// OnRecovered sets a hook called when a run's head is published after a streak of failed publishes
+// by the WithMinInterval timer: OnError reports the first failure of a streak only, and this ends it.
+// Returns the store.
+func (a *AuditedStore) OnRecovered(fn func(runID string)) *AuditedStore {
+	a.onRecovered = fn
+	return a
+}
+
+// retryDelay is the wait before the n-th retry of a held-back publish (n from 1): the interval (at least
+// a second), doubled for each failure, and capped at five minutes or the interval if that is longer.
+func retryDelay(interval time.Duration, n int) time.Duration {
+	base := max(interval, time.Second)
+	limit := max(base, 5*time.Minute)
+	d := base
+	for i := 1; i < n && d < limit; i++ {
+		d *= 2
+		if d <= 0 {
+			return limit
+		}
+	}
+	return min(d, limit)
 }
 
 // WithMinInterval limits how often a run's head is published: after one head, growth of the same run
@@ -188,8 +213,8 @@ func (a *AuditedStore) fire(runID string) {
 	defer cancel()
 	if err := a.anchorIfGrown(ctx, runID, true); err != nil {
 		a.mu.Lock()
-		first := !a.retrying[runID]
-		a.retrying[runID] = true
+		a.retrying[runID]++
+		first, n := a.retrying[runID] == 1, a.retrying[runID]
 		a.mu.Unlock()
 		if first && a.onErr != nil { // one report per streak of failures, not one per retry
 			a.onErr(runID, err)
@@ -198,7 +223,7 @@ func (a *AuditedStore) fire(runID string) {
 		// through an outage and Flush and Pending still know the run.
 		a.mu.Lock()
 		if _, armed := a.pending[runID]; !armed {
-			a.pending[runID] = a.after(max(a.minInterval, time.Second), func() { a.fire(runID) })
+			a.pending[runID] = a.after(retryDelay(a.minInterval, n), func() { a.fire(runID) })
 		}
 		a.mu.Unlock()
 	}
@@ -211,12 +236,17 @@ const heldBackTimeout = 30 * time.Second
 func (a *AuditedStore) published(runID string) {
 	a.mu.Lock()
 	a.lastPub[runID] = a.wall()
+	recovered := a.retrying[runID] > 0
 	delete(a.retrying, runID)
+	onRec := a.onRecovered
 	stop := a.pending[runID]
 	delete(a.pending, runID)
 	a.mu.Unlock()
 	if stop != nil {
 		stop()
+	}
+	if recovered && onRec != nil {
+		onRec(runID)
 	}
 }
 

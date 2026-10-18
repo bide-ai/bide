@@ -108,6 +108,13 @@ func TestCLI_VerifyDecisionCoverage(t *testing.T) {
 	if code, stdout, _ = cover("-heads", paths["whole"], "-max-records", "1"); code != 0 || strings.Contains(stdout, "pending") {
 		t.Fatalf("whole-journal head: exit %d\n%s", code, stdout)
 	}
+	// The tail under no head is stated: the records after the newest head, and none when it covers all.
+	if code, stdout, _ = cover("-heads", paths["before"]); !strings.Contains(stdout, "are under no signed head yet") {
+		t.Fatalf("no tail line for a head that leaves records after it: exit %d\n%s", code, stdout)
+	}
+	if _, stdout, _ = cover("-heads", paths["whole"]); strings.Contains(stdout, "under no signed head") {
+		t.Fatalf("a tail line for a head that covers the whole journal:\n%s", stdout)
+	}
 	// By age: both decisions were recorded at 12:00:02, an hour and a bit before -now.
 	code, stdout, _ = cover("-heads", paths["before"], "-max-age", "1h", "-max-age-tolerance", "5m", "-now", "2026-10-13T13:03:00Z")
 	if code != 0 {

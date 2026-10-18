@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -99,6 +100,7 @@ func (c *cli) verifyReceipts(args []string) {
 		return
 	}
 
+	c.reportUnheadedTails(byRun, signed, logKey)
 	failed, pending, accepted := 0, 0, 0
 	for i, r := range rs {
 		what := fmt.Sprintf("%s %s on call %s of run %s (record %s)", cleanText(r.Approver), approvedWord(r.Approved), cleanText(r.ToolUseID), cleanText(r.RunID), cleanText(r.Record))
@@ -335,4 +337,28 @@ func (c *cli) certReceipt(what string, r audit.DecisionReceipt, ci *audit.CertId
 	c.printf("IDENTITY  %s: %s; identity %s%s accepted at %s (%s), certificate valid %s to %s, leaf %s; revocation status NOT checked, so this is not the gate's verdict\n", what, f.Verdict,
 		cleanText(id.Identifier), name, agent.FormatTimestamp(id.AnchoredAt), id.TimeSource, agent.FormatTimestamp(id.NotBefore), agent.FormatTimestamp(id.NotAfter), id.LeafHash[:16])
 	return certAccepted
+}
+
+// reportUnheadedTails prints, for each journal given, how many of its records are after the newest
+// signed head that verifies under logKey: the tail that coalescing (a minimum interval between heads),
+// an anchor outage or a process that stopped leaves under no head. A receipt for a decision in that tail
+// is pending, not failed; this line says how far the tail goes. It reads only the heads of the journal's
+// own run and fails nothing.
+func (c *cli) reportUnheadedTails(byRun map[string][]agent.Record, heads []audit.SignedTreeHead, logKey audit.Verifier) {
+	runs := make([]string, 0, len(byRun))
+	for r := range byRun {
+		runs = append(runs, r)
+	}
+	slices.Sort(runs)
+	for _, r := range runs {
+		newest := 0
+		for _, h := range heads {
+			if h.RunID == r && h.Kind == audit.TreeJournal && h.Size <= len(byRun[r]) && h.Size > newest && h.Verify(logKey) == nil {
+				newest = h.Size
+			}
+		}
+		if tail := len(byRun[r]) - newest; tail > 0 {
+			c.printf("INFO  run %s: the last %d of %d journal record(s) are under no signed head (the newest covers %d)\n", cleanText(r), tail, len(byRun[r]), newest)
+		}
+	}
 }

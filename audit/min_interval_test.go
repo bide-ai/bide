@@ -576,3 +576,85 @@ func TestMinInterval_ARetryStreakIsReportedOnce(t *testing.T) {
 		t.Fatalf("%d reports after a second streak, want 2", len(r.errs))
 	}
 }
+
+func TestMinInterval_RetryBacksOffWithACap(t *testing.T) {
+	const iv = 10 * time.Second
+	want := []time.Duration{iv, 2 * iv, 4 * iv, 8 * iv, 16 * iv, 5 * time.Minute, 5 * time.Minute}
+	for i, w := range want {
+		if got := audit.RetryDelay(iv, i+1); got != w {
+			t.Errorf("retry %d waits %v, want %v", i+1, got, w)
+		}
+	}
+	if got := audit.RetryDelay(time.Hour, 50); got != time.Hour {
+		t.Errorf("an interval over the cap waits %v, want the interval", got)
+	}
+	if got := audit.RetryDelay(0, 1); got != time.Second {
+		t.Errorf("a zero interval waits %v, want a second", got)
+	}
+	if got := audit.RetryDelay(time.Duration(1<<62), 1000); got <= 0 {
+		t.Errorf("a huge interval overflowed to %v", got)
+	}
+}
+
+// The retries back off in the clock itself, a streak is reported once, and the recovery is reported.
+func TestMinInterval_BackoffStreakAndRecovery(t *testing.T) {
+	r := newIntervalRig(t, 10*time.Second)
+	var recovered []string
+	r.store.OnRecovered(func(run string) { recovered = append(recovered, run) })
+	r.write(t, "a")
+	r.write(t, "b")
+	r.anchor.mu.Lock()
+	r.anchor.fail = errors.New("anchor down")
+	r.anchor.mu.Unlock()
+	r.clk.Advance(10 * time.Second) // first failure, next try in 20 s
+	tries := func() int { r.anchor.mu.Lock(); defer r.anchor.mu.Unlock(); return len(r.anchor.heads) }
+	r.clk.Advance(15 * time.Second) // 15 s into a 20 s wait: no retry yet
+	if len(r.errs) != 1 {
+		t.Fatalf("reports = %d after 15 s of the 20 s backoff, want only the first failure", len(r.errs))
+	}
+	r.clk.Advance(5 * time.Second)  // retry 1 fails (reported silently), next in 40 s
+	r.clk.Advance(40 * time.Second) // retry 2 fails
+	if len(r.errs) != 1 || len(recovered) != 0 {
+		t.Fatalf("reports %d, recovered %v: one report per streak and no recovery yet", len(r.errs), recovered)
+	}
+	r.anchor.mu.Lock()
+	r.anchor.fail = nil
+	r.anchor.mu.Unlock()
+	before := tries()
+	r.clk.Advance(80 * time.Second)
+	if tries() == before || len(recovered) != 1 || recovered[0] != "run-1" {
+		t.Fatalf("recovered %v, heads %d -> %d; want the recovery reported once after the publish", recovered, before, tries())
+	}
+}
+
+func TestMinInterval_EventTrailRecoveryIsReported(t *testing.T) {
+	r := newEventRig(t, 10*time.Second)
+	rec := make(chan string, 4)
+	r.store.OnRecovered(func(tr string) { rec <- tr })
+	r.appendN(t, 1)
+	r.settle(t, false)
+	r.store.Flush(context.Background())
+	r.appendN(t, 2)
+	r.settle(t, true)
+	r.anchor.mu.Lock()
+	r.anchor.fail = errors.New("anchor down")
+	r.anchor.mu.Unlock()
+	r.clk.Advance(10 * time.Second)
+	select {
+	case <-r.errs:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no failure report")
+	}
+	r.anchor.mu.Lock()
+	r.anchor.fail = nil
+	r.anchor.mu.Unlock()
+	r.clk.Advance(5 * time.Minute)
+	select {
+	case tr := <-rec:
+		if tr != "notify:t" {
+			t.Fatalf("recovered %q", tr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no recovery report")
+	}
+}
