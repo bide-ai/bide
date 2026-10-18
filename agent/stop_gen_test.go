@@ -187,8 +187,8 @@ func TestSetStop_ALiftRacingASet(t *testing.T) {
 	}
 }
 
-// A gap in the generations, or a forged name, never blocks or breaks a writer: the next generation is one
-// more than the greatest name present, every entry counted.
+// A gap in the generations, or a forged name, never blocks or breaks a writer: the next generation is the
+// first free one after the greatest set that is a record, junk stepped over and never counted.
 func TestSetStop_GenerationGapAndForgedNames(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemStore()
@@ -211,7 +211,7 @@ func TestSetStop_GenerationGapAndForgedNames(t *testing.T) {
 			gen = r.Gen
 		}
 	}
-	if gen != 8 || len(mustState(t, c).Active()) != 1 || mustState(t, c).Active()[0].ID != e.ID {
+	if gen != 3 || len(mustState(t, c).Active()) != 1 || mustState(t, c).Active()[0].ID != e.ID {
 		t.Fatalf("generation %d, state %+v", gen, mustState(t, c).Active())
 	}
 	// The garbage is not a record: the fold ignores it, it is reported as rejected, and it is no stop.
@@ -401,5 +401,214 @@ func TestSetStop_AStricterStopIsNeverRefused(t *testing.T) {
 		if _, ok := st.Covering(StopQuery{Tool: "refund", Compensation: true}); !ok {
 			t.Fatal("compensation is not held")
 		}
+	}
+}
+
+// squat takes the name of generation g of scope with an entry that is not a stop, as a writer with store access
+// and no key can.
+func squat(t *testing.T, c *StopControl, scope StopScope, g string) {
+	t.Helper()
+	name := setNamePrefix(scope, CompensationAllow) + g
+	if _, _, err := c.j.putNew(context.Background(), StopControlRun, name, Record{Kind: StepValue, Result: json.RawMessage(`"junk"`)}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func lastSetGen(t *testing.T, c *StopControl, id string) int {
+	t.Helper()
+	for _, r := range mustRecords(t, c) {
+		if r.Kind == "set" && r.StopID == id {
+			return r.Gen
+		}
+	}
+	t.Fatalf("no set record for %s", id)
+	return -1
+}
+
+// A keyless entry under a name a writer would choose never blocks a stop: not an overflowing generation, not a
+// non-canonical number, not a thousand names in a row.
+func TestSetStop_ASquatterNeverBlocksAStop(t *testing.T) {
+	scope := StopScope{Kind: StopGlobal}
+	for _, g := range []string{"9223372036854775807", "9223372036854775806", fmt.Sprint(int64(1) << 62), fmt.Sprint(int64(1)<<31 + 1), "+5", "007", "-1", "0", "x", ""} {
+		c := newControl(t, NewMemStore())
+		squat(t, c, scope, g)
+		e, err := c.SetStop(context.Background(), StopRequest{Scope: scope, Reason: "incident", By: "dayna"})
+		if err != nil {
+			t.Fatalf("a squatted name %q blocked the stop: %v", g, err)
+		}
+		if gen := lastSetGen(t, c, e.ID); gen != 1 || len(mustState(t, c).Active()) != 1 {
+			t.Fatalf("squat %q: generation %d (junk moves no generation), %d active", g, gen, len(mustState(t, c).Active()))
+		}
+	}
+	// A thousand names in a row from the first generation: the writer steps over them.
+	c := newControl(t, NewMemStore())
+	for g := 1; g <= 1000; g++ {
+		squat(t, c, scope, fmt.Sprint(g))
+	}
+	e, err := c.SetStop(context.Background(), StopRequest{Scope: scope, Reason: "incident", By: "dayna"})
+	if err != nil || lastSetGen(t, c, e.ID) != 1001 {
+		t.Fatalf("a thousand squatted names: %v, generation %d", err, lastSetGen(t, c, e.ID))
+	}
+}
+
+// squatEveryInsert takes, just before each insert of a set, the name the insert is about to use: a writer with
+// store access that wins the race every time.
+type squatEveryInsert struct {
+	Store
+	hits *int
+}
+
+func (s squatEveryInsert) Insert(ctx context.Context, run, name string, data []byte) (Entry, bool, error) {
+	if run == StopControlRun && strings.HasPrefix(name, "@stop/set/") && strings.Count(name, "/") == 3 { // a generation name
+		*s.hits++
+		junk, _ := JournalEntry(name, Record{Kind: StepValue, Result: json.RawMessage(`"junk"`)})
+		_, _, _ = s.Store.Insert(ctx, run, name, junk)
+	}
+	return s.Store.Insert(ctx, run, name, data)
+}
+
+// A writer that loses every race for a generation name still lands the stop, under its content-derived name
+// (the backstop): the fold reads it, and a stop is never impossible to set.
+func TestSetStop_ABackstopWhenEveryGenerationNameIsLost(t *testing.T) {
+	ctx := context.Background()
+	hits := 0
+	c := newControl(t, squatEveryInsert{NewMemStore(), &hits})
+	e, err := c.SetStop(ctx, StopRequest{Scope: toolScope("refund"), Reason: "incident", By: "dayna"})
+	if err != nil {
+		t.Fatalf("the stop was not written: %v", err)
+	}
+	if hits != maxSetTries || lastSetGen(t, c, e.ID) != 0 {
+		t.Fatalf("%d generation names tried (want %d), generation %d (want 0, the backstop)", hits, maxSetTries, lastSetGen(t, c, e.ID))
+	}
+	st := mustState(t, c)
+	if len(st.Active()) != 1 || st.Active()[0].ID != e.ID {
+		t.Fatalf("%+v", st.Active())
+	}
+	if _, err := c.SetStop(ctx, StopRequest{Scope: toolScope("refund"), Reason: "again", By: "dayna"}); !errors.Is(err, ErrAlreadyStopped) {
+		t.Fatalf("the backstop stop is in force: %v", err)
+	}
+	// And it is an ordinary stop: it lifts.
+	if l, err := c.LiftStop(ctx, e.ID, LiftRequest{By: "dayna"}); err != nil || !l.Lifted {
+		t.Fatalf("%+v %v", l, err)
+	}
+}
+
+// Only a set that decodes, validates and is named by its own content counts toward the next generation; a
+// generation past the bound is invalid.
+func TestStopRecord_GenerationIsBounded(t *testing.T) {
+	scope := toolScope("refund")
+	r := StopRecord{Format: StopFormat, Kind: "set", Mode: StopBasic, Scope: &scope, Compensation: CompensationAllow, Gen: maxSetGen + 1, By: "a", At: nowStr()}
+	r.StopID = StopIDOf(r)
+	if err := r.Validate(); !errors.Is(err, ErrInvalidStop) {
+		t.Fatalf("a generation past the bound: %v", err)
+	}
+	r.Gen = maxSetGen
+	r.StopID = StopIDOf(r)
+	if err := r.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A set record that decodes (a plain one in an audited deployment, forged) at a high generation moves the next
+// generation by that record and no more; one that does not match its name does not move it.
+func TestSetStop_OnlyValidSetsMoveTheGeneration(t *testing.T) {
+	ctx := context.Background()
+	c := newControl(t, NewMemStore())
+	scope := toolScope("refund")
+	forge := func(gen int, name string) {
+		r := StopRecord{Format: StopFormat, Kind: "set", Mode: StopBasic, Scope: &scope, Compensation: CompensationAllow, Gen: gen, By: "eve", Reason: "x", At: nowStr()}
+		r.StopID = StopIDOf(r)
+		b, _ := json.Marshal(r)
+		if name == "" {
+			name = stopRecordStep(r)
+		}
+		if _, _, err := c.j.putNew(ctx, StopControlRun, name, Record{Kind: StepValue, Result: b}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Valid at generation 40, and a record filed under another generation's name (its content says 3).
+	forge(3, setNamePrefix(scope, CompensationAllow)+"90")
+	forge(40, "")
+	st := mustState(t, c)
+	if len(st.Active()) != 1 { // the valid one is a stop in the basic fold, which accepts any well-formed set
+		t.Fatalf("%d active", len(st.Active()))
+	}
+	// Lift it so a new stop is allowed; the next generation is 41: the record under the wrong name moved nothing.
+	if _, err := c.LiftStop(ctx, st.Active()[0].ID, LiftRequest{By: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	e, err := c.SetStop(ctx, StopRequest{Scope: scope, Reason: "real", By: "dayna"})
+	if err != nil || lastSetGen(t, c, e.ID) != 41 {
+		t.Fatalf("%v generation %d, want 41", err, lastSetGen(t, c, e.ID))
+	}
+}
+
+// An upgrade that meets two plain stops of one scope (an old race left them) adopts the scope once and does
+// not fail halfway; run again after a crash between the adoption and the mode record, it finishes without
+// adopting twice.
+func TestChangeMode_LegacyDuplicatePlainStops(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	basic := newControl(t, store)
+	scope := toolScope("refund")
+	for _, by := range []string{"old1", "old2"} {
+		r := StopRecord{Format: StopFormat, Kind: "set", Mode: StopBasic, Scope: &scope, Compensation: CompensationAllow, Reason: "old", By: by, Host: "h", At: nowStr()}
+		r.StopID = StopIDOf(r)
+		putRaw(t, basic, r)
+	}
+	if n := len(mustState(t, basic).Active()); n != 2 {
+		t.Fatalf("setup: %d plain stops", n)
+	}
+	c := audited(t, store, auditedPolicy(1, false))
+	if _, err := c.ChangeMode(ctx, ModeRequest{To: StopAudited, By: "ops1", Signer: sign("ops1"), Reason: "go audited"}); err != nil {
+		t.Fatalf("the upgrade failed halfway: %v", err)
+	}
+	count := func(kind string) int {
+		n := 0
+		for _, r := range mustRecords(t, c) {
+			if r.Kind == kind && (kind != "set" || r.AdoptedFrom != "") {
+				n++
+			}
+		}
+		return n
+	}
+	if count("set") != 1 || count("mode") != 1 || len(mustState(t, c).Active()) != 1 {
+		t.Fatalf("%d adoptions, %d mode records, %d active", count("set"), count("mode"), len(mustState(t, c).Active()))
+	}
+	// Run again: nothing is adopted twice (the mode record is one more piece of evidence).
+	if _, err := c.ChangeMode(ctx, ModeRequest{To: StopAudited, By: "ops1", Signer: sign("ops1"), Reason: "again"}); err != nil || count("set") != 1 {
+		t.Fatalf("a rerun: %v, %d adoptions", err, count("set"))
+	}
+}
+
+// A crash after the adoption and before the mode record leaves a stop adopted and no record of the change; the
+// upgrade run again writes the record and adopts nothing more.
+func TestChangeMode_RerunAfterACrashBeforeTheModeRecord(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	basic := newControl(t, store)
+	if _, err := basic.SetStop(ctx, setReq(toolScope("refund"), "old")); err != nil {
+		t.Fatal(err)
+	}
+	c := audited(t, store, auditedPolicy(1, false))
+	// The adoption alone: what an upgrade that died before its mode record leaves.
+	adopted, err := c.SetStop(ctx, StopRequest{Scope: toolScope("refund"), Reason: "adopted: incident", By: "ops1", Signer: sign("ops1"), AdoptedFrom: "digest"})
+	if err != nil || !adopted.Signed {
+		t.Fatalf("%+v %v", adopted, err)
+	}
+	if _, err := c.ChangeMode(ctx, ModeRequest{To: StopAudited, By: "ops1", Signer: sign("ops1"), Reason: "finish"}); err != nil {
+		t.Fatalf("the rerun failed: %v", err)
+	}
+	sets, modes := 0, 0
+	for _, r := range mustRecords(t, c) {
+		if r.Kind == "set" && r.Signed() {
+			sets++
+		}
+		if r.Kind == "mode" {
+			modes++
+		}
+	}
+	if sets != 1 || modes != 1 {
+		t.Fatalf("%d signed sets, %d mode records", sets, modes)
 	}
 }

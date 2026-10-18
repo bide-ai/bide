@@ -98,7 +98,6 @@ Package agent is the core of bide, a Go framework for AI agents that move money:
 - `var ErrRedactHeld`: ErrRedactHeld is a redaction of a run an active hold covers.
 - `var ErrRunCancelled = errors.New("run cancelled")`: ErrRunCancelled is the end of a run that was cancelled (see Cancel): the first of the run's end markers in journal order is run:cancelled.
 - `var ErrRunEnded = errors.New("run already ended")`: ErrRunEnded is Cancel's answer for a run that is already over: its first end marker is run:complete or run:aborted, so there is nothing left to cancel.
-- `var ErrStopContended`: ErrStopContended is returned by SetStop when it lost the insert to other writers more times than it retries: the control run is changing faster than the call can read it.
 - `var ErrStopRejected`: ErrStopRejected is returned when a record was written but the control run's fold does not accept it (a policy transition raced it, or its signature does not verify under the policy in force at its position): it has no effect.
 - `var ErrStopsUnknowable`: ErrStopsUnknowable is returned by StopState.UnknowableErr when a control genuinely cannot judge which stops are in force: a basic process that holds an active stop set under a signed record (it lacks the deployment's policy), or an audited process whose pin the stored chain does not reach, or whose chain forks or competes.
 - `var ErrToolNotCalled = errors.New("tool not called")`: ErrToolNotCalled marks a tool call that is known never to have reached its tool, so its side effect cannot have happened.

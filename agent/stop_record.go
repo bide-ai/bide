@@ -246,8 +246,8 @@ func (r StopRecord) validate() error {
 	if (r.Mode == StopAudited) != r.Signed() {
 		return fmt.Errorf("stop record: a record is signed exactly when it is audited: %w", ErrInvalidStop)
 	}
-	if r.Gen < 0 || r.Kind != "set" && r.Gen != 0 {
-		return fmt.Errorf("stop record: a generation belongs to a set record and is not negative: %w", ErrInvalidStop)
+	if r.Gen < 0 || r.Gen > maxSetGen || r.Kind != "set" && r.Gen != 0 {
+		return fmt.Errorf("stop record: a generation belongs to a set record and is between 0 and %d: %w", maxSetGen, ErrInvalidStop)
 	}
 	switch r.Kind {
 	case "set":
@@ -310,6 +310,10 @@ func stopRecordStep(r StopRecord) string {
 	}
 	return fmt.Sprintf("@stop/mode/%010d/%s/%s", r.Seq, encodeID(r.By), d)
 }
+
+// maxSetGen bounds a generation, so no name can overflow it or push it far: a name whose number is past it is
+// not a generation name, and a set that carries a generation past it is not valid.
+const maxSetGen = 1<<31 - 1
 
 // setNamePrefix is the start of the journal names of the sets of one scope and compensation: the digest of
 // the two, and the generation follows. A set that has no generation is named by its stop ID, which holds
