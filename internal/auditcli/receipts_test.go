@@ -135,7 +135,7 @@ func TestVerifyReceipts_Anchored(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "PASS  alice approved") || !strings.Contains(out, "committed to by signed heads") {
 		t.Fatalf("%d\n%s\n%s", code, out, errs)
 	}
-	if strings.Contains(out, "under no signed head") {
+	if strings.Contains(out, "under no signed head yet") {
 		t.Fatalf("a tail line although the heads cover the whole journal:\n%s", out)
 	}
 	// A directory of receipts.
@@ -156,7 +156,7 @@ func TestVerifyReceipts_Pending(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "INFO") || !strings.Contains(out, "pending") || !strings.Contains(out, "not yet signed into a head") {
 		t.Fatalf("%d\n%s\n%s", code, out, errs)
 	}
-	if !strings.Contains(out, "are under no signed head (the newest covers") {
+	if !strings.Contains(out, "are under no signed head yet; the newest counted head covers 4") {
 		t.Fatalf("no line saying how far the unheaded tail goes:\n%s", out)
 	}
 }
@@ -319,7 +319,7 @@ func TestVerifyReceipts_TailIgnoresAHeadWithAnotherRoot(t *testing.T) {
 	f := newReceiptFixture(t)
 	_, deletedHeads := f.removeDecision() // a head signed over a different journal (one record shorter)
 	_, out, _ := runCLI(f.args(deletedHeads)...)
-	if !strings.Contains(out, "(the newest covers 0)") {
+	if !strings.Contains(out, "no counted head covers any of it") {
 		t.Fatalf("a head over another journal was counted as covering:\n%s", out)
 	}
 }

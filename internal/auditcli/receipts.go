@@ -359,7 +359,19 @@ func (c *cli) reportUnheadedTails(byRun map[string][]agent.Record, heads []audit
 		}
 		newest := rep.LargestHead
 		if tail := len(byRun[r]) - newest; tail > 0 {
-			c.printf("INFO  run %s: the last %d of %d journal record(s) are under no signed head (the newest covers %d)\n", cleanText(r), tail, len(byRun[r]), newest)
+			var signedAt time.Time
+			for _, h := range heads {
+				if h.RunID == r && h.Kind == audit.TreeJournal && h.Size == newest && h.Verify(logKey) == nil {
+					if t := time.Unix(0, h.TimestampNanos); t.After(signedAt) {
+						signedAt = t
+					}
+				}
+			}
+			when := "no counted head covers any of it"
+			if newest > 0 && !signedAt.IsZero() {
+				when = fmt.Sprintf("the newest counted head covers %d and was signed %s ago", newest, time.Since(signedAt).Round(time.Second))
+			}
+			c.printf("INFO  run %s: records %d to %d (%d, positions from 0) are under no signed head yet; %s (a head held back by a minimum interval, or a failed publish: verify-decision-coverage -max-unanchored tells them apart)\n", cleanText(r), newest, len(byRun[r])-1, tail, when)
 		}
 	}
 }
