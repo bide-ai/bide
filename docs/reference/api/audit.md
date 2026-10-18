@@ -47,10 +47,12 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `const EvidenceFormatV5 = "bide.audit.evidence.v5"`: EvidenceFormatV5 is the previous evidence format, whose seal covers the whole package JSON rather than its digest.
 - `const GrantFormat = "bide.audit.grant.v2"`: GrantFormat tags the canonical bytes of a grant (Grant.Bytes), which are both signed and digested.
 - `const JournalExportFormat = "bide.audit.journal-export.v1"`: JournalExportFormat is the format of a JournalExport.
+- `const MaxStopRecords = 20000`: MaxStopRecords bounds the records VerifyStops reads from the control run for its comparison with the trail: past it the comparison is not made and the count is a problem, so a flood of records written into the control run is a finding, not a hang.
 - `const NoteNoRecordedTime = "no recorded time"`: NoteNoRecordedTime is DecisionCoverage.Note for a decision whose record has no usable recorded\_at.
 - `const NoteRedacted = "redacted, name not attested"`: NoteRedacted is DecisionCoverage.Note for a decision whose record a redaction replaced with a tombstone: its approver, verdict and recorded\_at are gone, and it is bounded like any other.
 - `const NotifyTrailExportFormat = "bide.audit.notify-trail-export.v1"`: NotifyTrailExportFormat is the format of a NotifyTrailExport.
 - `const ReceiptFormat = "bide.audit.decision-receipt.v1"`: ReceiptFormat identifies a decision receipt.
+- `const StopTrailExportFormat = "bide.audit.stop-trail-export.v1"`: StopTrailExportFormat is the format of a StopTrailExport.
 
 **Variables**
 
@@ -115,6 +117,8 @@ Package audit turns an agent's durable journal into a verifiable, tamper-evident
 - `func Root(ctx context.Context, store *agent.Journal, runID string) ([]byte, error)`: Root returns the RFC 6962 Merkle root committing to runID's journal (records in persisted order, each leaf = the canonical record bytes).
 - `func Sign(head []byte, s Signer) ([]byte, error)`: Sign returns s's signature over a head commitment ("bide.audit.head.v1\\x00" || head).
 - `func StatusFresh(now, this, next time.Time, maxAge, skew, tolerance time.Duration) bool`: StatusFresh is the live freshness test the status rule applies to every CRL, so a refresher's alarm cannot disagree with a gate: a CRL is fresh when now is before nextUpdate, its age is at most maxAge plus the declared thisUpdate skew, and thisUpdate is not beyond the coverage tolerance in the future.
+- `func StopPolicyFromDoc(d agent.StopPolicyDoc) (agent.StopPolicy, error)`: StopPolicyFromDoc builds the stop policy a document names, with this package's verifiers, and validates it.
+- `func StopVerifierFromAudit(alg agent.Alg, pub []byte) (agent.ApproverVerifier, error)`: StopVerifierFromAudit builds the verifier of a policy document's approver with this package's verifiers (agent.StopVerifierFunc): pass it to agent.WithStopVerifier, or to agent.PolicyFromDoc.
 - `func ToolUseKey(r agent.Record) []string`: ToolUseKey is the KeyFunc of ToolUseKeys: every record that shows a call ran or may have run, keyed by its ToolUseID.
 - `func ToolUseKeyFor(toolUseID string) string`: ToolUseKeyFor is the absence key for a tool-use id: pass it to ProveAbsent / ProveAbsentBundle with ToolUseKeys to prove no tool call with that id happened in the run.
 - `func UnmarshalStrict(data []byte, v any) error`: UnmarshalStrict decodes a JSON proof artifact (a bundle, certificate, evidence package, or tree head) so that what a person reads in the file is exactly what is verified.
@@ -2002,6 +2006,7 @@ SignedTreeHead is a TreeHead with a signature over its canonical encoding under 
 - `func SignAbsenceRoot(records []agent.Record, set KeySet, journal TreeHead, s Signer, timestamp int64) (SignedTreeHead, error)`: SignAbsenceRoot commits and signs a run's key set in one call: NewAbsenceTreeHead, then SignTreeHead with s.
 - `func SignNotifyTrail(ctx context.Context, store EventStore, trail string, s Signer, now time.Time) (SignedTreeHead, error)`: SignNotifyTrail signs a tree head over the leaves store holds for trail, at now.
 - `func SignRedactionTrail(ctx context.Context, store EventStore, signer Signer, v Verifier, deployment string, prior []SignedTreeHead, now time.Time) (SignedTreeHead, error)`: SignRedactionTrail signs a tree head over the redaction trail in store, after checking the trail is the one the earlier heads attest: every head in prior must verify under v, be a head of the trail, and commit to a prefix of it, and every record in the trail must carry a signature that verifies under v.
+- `func SignStopTrail(ctx context.Context, store EventStore, trail string, s Signer, now time.Time) (SignedTreeHead, error)`: SignStopTrail signs a tree head over the leaves store holds for trail, at now: the head AuditedEventStore publishes as records arrive, for a deployment that signs on its own schedule.
 - `func SignTreeHead(th TreeHead, s Signer) (SignedTreeHead, error)`: SignTreeHead signs th under s's scheme.
 
 **Methods**
@@ -2173,6 +2178,135 @@ StatusTier is how strong the evidence of absence from the CRLs is.
 **Methods**
 
 - `func (t StatusTier) String() string`: String names the tier.
+
+## type StopReport
+
+```go
+type StopReport struct {
+	Records       int               `json:"records"`
+	Anchored      bool              `json:"anchored"`
+	Heads         int               `json:"heads"`
+	HeadSize      int               `json:"head_size"`
+	HeadTime      time.Time         `json:"head_time"`
+	Tail          int               `json:"tail"`
+	TailAge       time.Duration     `json:"tail_age,omitempty"`
+	Mode          string            `json:"mode"`
+	PolicyDigest  string            `json:"policy_digest,omitempty"`
+	PolicySeq     int               `json:"policy_seq"`
+	Stops         []StopReportEntry `json:"stops"`
+	RejectedTotal int               `json:"rejected_total"`
+	Rejected      []agent.Rejection `json:"rejected,omitempty"`
+	ChainErr      string            `json:"chain_error,omitempty"`
+
+	StoreOnly []StopReportRecord `json:"store_only,omitempty"`
+	TrailOnly []StopReportRecord `json:"trail_only,omitempty"`
+
+	Problems []string `json:"problems,omitempty"`
+
+	Unapplied []StopReportRecord `json:"unapplied,omitempty"`
+
+	Superseded []StopReportRecord `json:"superseded,omitempty"`
+}
+```
+
+StopReport is what VerifyStops found.
+
+**Constructors and functions**
+
+- `func VerifyStops(in StopVerifyInput) (StopReport, error)`: VerifyStops checks a stop trail: that its signed heads verify and commit to prefixes of it (so no record was deleted, changed or reordered since a head covered it), that every record decodes and verifies under the policy the deployment pinned and the chain of policy transitions from its root (a record that does not is a problem: a forgery written into the trail, or a trail from another deployment), that the chain can be trusted, and, with the control run, that the two hold the same records.
+
+## type StopReportEntry
+
+```go
+type StopReportEntry struct {
+	ID           string   `json:"id"`
+	Scope        string   `json:"scope"`
+	Reason       string   `json:"reason,omitempty"`
+	By           string   `json:"by"`
+	At           string   `json:"at"`
+	Signed       bool     `json:"signed"`
+	Lifted       bool     `json:"lifted"`
+	LiftedBy     []string `json:"lifted_by,omitempty"`
+	LiftsHeld    int      `json:"lifts_held,omitempty"`
+	LiftsNeeded  int      `json:"lifts_needed,omitempty"`
+	Compensation string   `json:"compensation,omitempty"`
+}
+```
+
+StopReportEntry is one stop as VerifyStops reports it.
+
+## type StopReportRecord
+
+```go
+type StopReportRecord struct {
+	Kind string `json:"kind"`
+	By   string `json:"by"`
+	At   string `json:"at"`
+	ID   string `json:"id,omitempty"`
+}
+```
+
+StopReportRecord names a record in a comparison finding.
+
+## type StopTrail
+
+```go
+type StopTrail struct {
+	// contains filtered or unexported fields
+}
+```
+
+StopTrail adapts an EventStore to agent.StopTrail: the stop trail of a deployment is an event trail of its own (named agent.StopTrailName), each signed stop record a salted, canonical event leaf committed like any other, so EventLog, TreeHead, Prove and ProveConsistency work on it, an AuditedEventStore signs and anchors its heads, and bide audit stops can verify it.
+
+**Constructors and functions**
+
+- `func NewStopTrail(store EventStore) *StopTrail`: NewStopTrail returns a StopTrail over store.
+
+**Methods**
+
+- `func (t *StopTrail) AnchorTrails(ctx context.Context, trails []string) error`: AnchorTrails asks the AuditedEventStore beneath the trail's store (found through Unwrap) to publish a head for each named trail that has grown past its last one.
+- `func (t *StopTrail) Append(ctx context.Context, trail string, seq int, rec agent.StopRecord) error`: Append implements agent.StopTrail.
+- `func (t *StopTrail) Load(ctx context.Context, trail string) ([]agent.StopRecord, error)`: Load implements agent.StopTrail.
+
+## type StopTrailExport
+
+```go
+type StopTrailExport struct {
+	Format string   `json:"format"`
+	Trail  string   `json:"trail"`
+	Leaves [][]byte `json:"leaves"`
+}
+```
+
+A StopTrailExport is the stop trail as the leaves its EventStore holds, in position order: what VerifyStops and bide audit stops read when they hold no store.
+
+**Constructors and functions**
+
+- `func ExportStopTrail(ctx context.Context, store EventStore, trail string) (StopTrailExport, error)`: ExportStopTrail returns the trail named trail in store as a StopTrailExport.
+
+## type StopVerifyInput
+
+```go
+type StopVerifyInput struct {
+	Trail StopTrailExport
+
+	Heads    []SignedTreeHead
+	Verifier Verifier
+
+	Unanchored bool
+
+	Now          time.Time
+	MaxClockSkew time.Duration
+	MaxTailAge   time.Duration
+
+	Options []agent.StopOption
+
+	Control     []agent.StopRecord
+	HaveControl bool
+}
+```
+
+StopVerifyInput is what VerifyStops checks: a stop trail, the signed heads over it, the policy the deployment pinned, and, when the control run is at hand, its records to compare with.
 
 ## type TimeCheck
 

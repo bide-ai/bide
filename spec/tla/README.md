@@ -3103,10 +3103,19 @@ nothing in the model starts it again.
   plain lift, and its stops are unknowable while one is active (`BasicSignedStopNeedsSignedLift`).
 - **Two stops**, each covering a set of calls (`CoverOf`); a lift names its stop. Lifting needs
   `QuorumOf` distinct lifters of the policy in force and, with `NeedsOther`, one who is not the setter.
+- **The audit trail** (`WithTrail`), a sequence in write order. A signed record is written in two steps. A stop goes to the control
+  log first, so it is in force at once, and to the trail second. Every other record (a lift, a transition,
+  the root, a mode change) goes to the trail first, so none is in force without its evidence
+  (`EffectiveImpliesTrailed`). Before a trail-first record the control catches the trail up (`CaughtUp`: every
+  signed log record is on the trail), so the trail never holds a lift ahead of its stop. A crash between the two
+  steps leaves the first (`WriteCrash`; a crashed lift stays on the trail, unapplied), and `Reaudit`
+  appends, in log order, what the control log holds that the trail lacks; a writer with store access can write
+  unsigned records straight into the control log (`Forge`).
 - **A call**: `Claim`, then the check (`ReadOk`: a synchronous read of the whole log, or without
   `SyncRead` any earlier prefix; `ReadFail`: held under `FailClosed`, else it proceeds), then
   `Begin`, which can follow a stop committed after the read (the call is in flight and finishes),
   then `Finish`. A crash with a marker and no result halts the call (`Crash`).
+- **Modelling limits**: at most one write crashes between its two steps (`MaxWriteCrash = 1`) and a record is inserted into the control log once. More crashes would grow the trail without adding a kind of state (the crashed records are the same ones), so the bound keeps the state space finite; a second crash is covered by the Go tests (`TestStopTrail_WriteOrderAndFailure`, `TestVerifyStops_UnappliedRecordsAreNotForgeries`, `TestVerifyStops_SupersededRecords`), not by the model. The once-only insert matches the code because control-run names are content-derived. A set record's name is its StopID, which excludes the signature, so two sets with the same content and different signatures would share a name; that cannot arise, because a retried `SetStop` is a new record (its `At` differs, so its StopID differs).
 - **Not modelled**: forks, rollbacks and competing roots of the policy chain (Go tests; each makes the stops unknowable), the "stops unknowable" signal for records that do not verify (a Go test), scope matching (a pure function, unit-tested), the reader's staleness bound in
   time (the model is the case of a maximum staleness of 0; the bound is an engineering figure of the
   Go code, and a bounded cache is covered by the Go tests when the switch lands), a split of the
@@ -3122,6 +3131,8 @@ nothing in the model starts it again.
 | `LiftNeedsQuorum` | invariant | an audited lift is by a quorum of lifters of the policy in force, one not the setter when `WantOther` |
 | `AgreesWithChain` | invariant | an audited process's stops agree with the fold that follows every transition from the root, or it says they are unknowable |
 | `NoSpuriousUnknowable` | invariant | an audited process whose pin the chain has reached is never made unknowable by a record that does not verify |
+| `EffectiveImpliesTrailed` | invariant | with a trail, no signed record that is not a stop is in the control log unless it is already on the trail |
+| `TrailAgreesWithLog` | invariant | once every write has finished and the trail holds exactly the log's signed records, the trail's fold equals the log's |
 | `ForeignNoEffect` | invariant | a record for another deployment changes nothing in an audited process |
 | `BasicSignedStopNeedsSignedLift` | invariant | a basic process does not lift a stop set under a signed record on a plain lift |
 | `StopsNeverDropped` | property | a stop never goes back: none, active, lifted |
@@ -3129,12 +3140,14 @@ nothing in the model starts it again.
 
 ### Model-code map
 
-<!-- modelsync: no-code stop Finish Crash Refire Relift -->
+<!-- modelsync: no-code stop Finish Crash Refire Relift WriteCrash Forge -->
 <!-- modelsync: map stop -->
 | Model action | Go code |
 |---|---|
 | `ApplyC`, `EffC` | `StopControl.State` (`agent/stop_control.go`): the fold, with `countLifts` (`Relift`) |
-| `Write` | `StopControl.write` (`agent/stop_control.go`): a record is appended to the control run |
+| `Write`, `StartWrite`, `FinishWrite` | `StopControl.write` (`agent/stop_control.go`): a record is written to the control run, and with a trail in two steps in the order the model has (a stop to the control run first; every other record to the trail first) |
+| `Reaudit` | `StopControl.Reaudit` (`agent/stop_trail.go`): the records the control run holds that the trail lacks are appended |
+| `WriteCrash`, `Forge` | no Go region (a crash between the two writes, and a write straight into the control run by someone with store access) |
 | `Claim` | the claim of a call's attempt marker (`agent/loop.go`, `claimNextAttempt`): the stop check follows it |
 | `ReadOk`, `ReadFail` | the check after the claim and before the call begins: `StopSwitch.view` and `Hold` (`agent/stop_switch.go`), called from `postClaim` (`agent/endmarker.go`) and from the tool handler after the pre-execution gate (`agent/toolexec.go`); a failed read holds the call under the staleness bound |
 | `Begin` | the call begins (`beginCall`, `agent/toolexec.go`): a stop committed after the read leaves the call in flight |
@@ -3152,11 +3165,24 @@ nothing in the model starts it again.
 | `stop-pinned` | ci | a process pinned to policy 2 walks the chain from the root; unknowable until the walk reaches its pin |
 | `stop-replay` | ci | records signed for another deployment change nothing |
 | `stop-attacker-root` | ci | an attacker with keys of their own writes a root and a transition into the pinned policy: only the trusted root starts the chain |
+| `stop-trail` | ci | the write order with a trail, with a crash between the two steps and a store writer |
+| `stop-trail-agree-reach` | ci | reachability: a quiescent trail of more than one record that agrees with the log (`QuiescentAgreeNotReachable` violated) |
+| `stop-trail-reach` | ci | reachability: a stop in force whose trail write has not happened (`UntrailedStopNotReachable` violated) |
 | `stop-two-stops` | ci | two stops and two calls: each stop holds only its own call |
 | `stop-blocked-reach` | ci | reachability: a call reads a stop and is not started (`BlockedNotReachable` violated) |
 | `stop-lift-reach` | ci | reachability: an audited lift by a quorum of two (`AuditedLiftNotReachable` violated) |
 | `stop-rotated-reach` | ci | reachability: policy 2 in force with a policy-1 stop active (`RotatedNotReachable` violated) |
+| `deep-stop-trail` | nightly | the write order with a trail at three records and one crashed write, every kind of record in play (584,224 states, 13 s) |
+| `deep-stop-trail-slp` | nightly | the same at four records with only stops, lifts and policy transitions in play: a lift judged under the policy in force after a rotation, and a pending approval re-applied after later writes (8,338,462 states, 3 min) |
 | `deep-stop` | nightly | the audited process at four records |
+
+Which kinds of record each configuration has in play (`UseKinds`): every configuration has all four of a
+stop, a lift, a policy transition and a mode record (as signed records, plus unsigned and forged ones) except
+`deep-stop-trail-slp`, which narrows them to stops, lifts and transitions to reach four records. The
+interactions between a stop, a lift and a transition are therefore covered at three records by the CI
+configuration `stop-rotation` (the policy in force at each record) and `stop-trail`, and at three and four
+records by the nightly `deep-stop-trail` and `deep-stop-trail-slp`. The trail configurations (`stop-trail`,
+`deep-stop-trail*`) have one crashed write (`MaxWriteCrash`); a record is inserted into the control log once.
 
 ### Counterexample configurations
 
@@ -3171,6 +3197,9 @@ Each is in `stop/regress/` and must fail with its named property:
 - `no-chain` (`AgreesWithChain`): a process that does not walk the chain from the root drops a stop set under policy 1 silently (found in the review of #393).
 - `unknowable-on-forgery` (`NoSpuriousUnknowable`): one forged record makes an audited process's stops unknowable, so a store-write attacker pauses every covered call (the lead's review of fac3710c).
 - `untrusted-root` (`AgreesWithChain`): a stored root the process does not trust starts the chain: an attacker's root plus a transition into the pinned policy drops the genuine stops silently (found in the review of #393).
+- `apply-reorders` (`TrailAgreesWithLog`): a pending trail record is re-applied after later writes, so the control log holds it after records the trail has behind it and the two folds differ: found by the model while the stop trail was reviewed, and why `ApplyPending` applies only the records at the end of the trail.
+- `no-catch-up` (`TrailAgreesWithLog`): a lift goes on the trail without the catch-up: after a stop whose trail write failed, the lift is on the trail ahead of its stop, Reaudit appends the stop behind it, and the trail folds to a stop shown in force (found in the review of the stop trail's PR).
+- `lift-store-first` (`EffectiveImpliesTrailed`): a lift written to the control log before the trail is in force without its evidence (asked for in the review of the stop trail's PR).
 - `no-dep-check` (`ForeignNoEffect`): the fold ignores the deployment ID, so staging's records take effect in production (found in the review of #393).
 - `basic-plain-lift` (`BasicSignedStopNeedsSignedLift`): a basic process on an audited deployment lifts a signed stop on a plain lift (found in the review of #393).
 - `lift-refires` (`AtMostOnce`): a lift starts a halted call again, and it fires twice.

@@ -94,6 +94,7 @@ type StopControl struct {
 	policy *StopPolicy
 	nv     StopVerifierFunc
 	mode   StopMode
+	trail  StopTrail
 	root   string // digest of the trusted root policy; the pin's when empty
 	now    func() time.Time
 }
@@ -119,6 +120,9 @@ func NewStopControl(j *Journal, opts ...StopOption) (*StopControl, error) {
 		return nil, fmt.Errorf("NewStopControl: basic mode takes no WithStopPolicy: %w", ErrConfig)
 	case c.mode == "" && c.policy != nil:
 		c.mode = "" // declared at State, once the control run holds records
+	}
+	if c.trail != nil && c.policy == nil {
+		return nil, fmt.Errorf("NewStopControl: a basic control keeps no stop trail (WithStopTrail needs audited mode): %w", ErrConfig)
 	}
 	return c, nil
 }
@@ -168,7 +172,10 @@ type StopEntry struct {
 }
 
 // Rejection is a record in the control run that has no effect, and why.
-type Rejection struct{ Name, Reason string }
+type Rejection struct {
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
+}
 
 // StopState is the effective state of the control run for one control.
 type StopState struct {
@@ -191,6 +198,8 @@ type StopState struct {
 	// all, so a flood of garbage does not grow the result.
 	Rejected      []Rejection
 	RejectedTotal int
+	// rejectedSet holds every rejected record's name (Rejected is capped), for Reaudit.
+	rejectedSet map[string]bool
 	// Unverified counts, in a basic control, the signed records it cannot check because it has no policy
 	// (the deployment may have moved to audited mode without this process): say so loudly. An audited
 	// control does not count here; its forgeries are in Rejected.
@@ -209,6 +218,10 @@ func (s StopState) UnknowableErr() error {
 	}
 	return nil
 }
+
+// Rejects reports whether the fold rejected r (a record it did not accept: not signed by an enrolled
+// approver of the policy in force, for another deployment, malformed, and so on).
+func (s StopState) Rejects(r StopRecord) bool { return s.rejectedSet[stopRecordStep(r)] }
 
 // Active returns the stops that are not lifted, in the order they were set.
 func (s StopState) Active() []StopEntry {
@@ -359,8 +372,10 @@ func (c *StopControl) stateOf(recs []Record) (StopState, error) {
 func (c *StopControl) foldFrom(recs []Record, audited bool, start StopPolicy, startDigest string) (StopState, bool) {
 	cur := start
 	st := StopState{Mode: c.Mode()}
+	st.rejectedSet = map[string]bool{}
 	reject := func(name, why string) {
 		st.RejectedTotal++
+		st.rejectedSet[name] = true
 		if len(st.Rejected) < maxRejected {
 			st.Rejected = append(st.Rejected, Rejection{name, why})
 		}
@@ -443,7 +458,9 @@ func (c *StopControl) foldFrom(recs []Record, audited bool, start StopPolicy, st
 			}
 			s.liftSet[r.By] = true
 			countLifts(s, cur)
-		case "mode":
+		case "mode", "apply":
+			// Evidence only (a change of mode; the application of pending records): neither changes what the
+			// fold accepts.
 			switch {
 			case !audited:
 				unverified(r)
@@ -623,6 +640,13 @@ func (c *StopControl) SetStop(ctx context.Context, req StopRequest) (StopEntry, 
 	}
 	r := StopRecord{Format: StopFormat, Kind: "set", Mode: st.Mode, Scope: &req.Scope, Compensation: comp, Reason: req.Reason, By: req.By, Host: req.Host, AdoptedFrom: req.AdoptedFrom}
 	if err := c.write(ctx, st, &r, req.Signer, true); err != nil {
+		// A stop that is in force but whose trail write failed is returned with the error: the caller
+		// has the stop (and its ID), and Reaudit completes the evidence.
+		if te, ok := errors.AsType[*StopTrailError](err); ok && te.StoreWritten {
+			if e, ferr := c.find(ctx, r.StopID, stopRecordStep(r)); ferr == nil {
+				return e, err
+			}
+		}
 		return StopEntry{}, err
 	}
 	return c.find(ctx, r.StopID, stopRecordStep(r))
@@ -767,15 +791,9 @@ func (c *StopControl) ensureRoot(ctx context.Context, st StopState, by, host, re
 	return c.write(ctx, st, &root, signer, false)
 }
 
-// protocol:stop begin Write
-
-// write completes r (time, policy digest, ID, signature) and inserts it. An audited control signs.
-func (c *StopControl) write(ctx context.Context, st StopState, r *StopRecord, signer StopSigner, isSet bool) error {
-	if c.policy != nil && r.Kind != "root" && signer != nil {
-		if err := c.ensureRoot(ctx, st, r.By, r.Host, "root of the deployment's policy chain", signer); err != nil {
-			return err
-		}
-	}
+// complete fills in r's time, mode, algorithm, policy digest, deployment and ID, signs it when the control is
+// audited, and validates it.
+func (c *StopControl) complete(st StopState, r *StopRecord, signer StopSigner, isSet bool) error {
 	r.At = c.now().UTC().Format(time.RFC3339Nano)
 	if c.policy != nil {
 		if signer == nil {
@@ -800,12 +818,55 @@ func (c *StopControl) write(ctx context.Context, st StopState, r *StopRecord, si
 	if err := r.validate(); err != nil {
 		return err
 	}
+	return nil
+}
+
+// protocol:stop begin Write StartWrite FinishWrite
+
+// write completes r (time, policy digest, ID, signature) and inserts it. An audited control signs.
+func (c *StopControl) write(ctx context.Context, st StopState, r *StopRecord, signer StopSigner, isSet bool) error {
+	if c.policy != nil && r.Kind != "root" && signer != nil {
+		if err := c.ensureRoot(ctx, st, r.By, r.Host, "root of the deployment's policy chain", signer); err != nil {
+			return err
+		}
+	}
+	if err := c.complete(st, r, signer, isSet); err != nil {
+		return err
+	}
 	b, err := json.Marshal(r)
 	if err != nil {
 		return fmt.Errorf("encode the stop record: %w (%w)", err, ErrStorage)
 	}
-	_, _, err = c.j.putNew(ctx, StopControlRun, stopRecordStep(*r), Record{Kind: StepValue, Result: b})
-	return err
+	name := stopRecordStep(*r)
+	put := func() error {
+		_, _, err := c.j.putNew(ctx, StopControlRun, name, Record{Kind: StepValue, Result: b})
+		return err
+	}
+	if c.trail == nil {
+		return put()
+	}
+	// With a trail: a stop is effective first and evidenced second; every other record is evidenced
+	// first, so none is in force without its evidence (see WithStopTrail).
+	if r.Kind == "set" {
+		if err := put(); err != nil {
+			return err
+		}
+		if err := c.appendTrail(ctx, *r); err != nil {
+			return &StopTrailError{Record: name, StoreWritten: true, Err: err}
+		}
+		return nil
+	}
+	// Before a record that depends on earlier ones (a lift names its stop, a transition its root and
+	// predecessors) goes to the trail, the records of the control run that the trail lacks are appended
+	// in store order, so the trail is never left holding a record without what it rests on: a stop whose
+	// own trail write failed is evidenced before the lift of it.
+	if _, err := c.Reaudit(ctx); err != nil {
+		return &StopTrailError{Record: name, Err: err}
+	}
+	if err := c.appendTrail(ctx, *r); err != nil {
+		return &StopTrailError{Record: name, Err: err}
+	}
+	return put()
 }
 
 // protocol:stop end

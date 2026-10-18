@@ -250,6 +250,7 @@ func TestFormatNames(t *testing.T) {
 		AnchorEntryFormat:       "bide.audit.anchor-entry.v1",
 		JournalExportFormat:     "bide.audit.journal-export.v1",
 		NotifyTrailExportFormat: "bide.audit.notify-trail-export.v1",
+		StopTrailExportFormat:   "bide.audit.stop-trail-export.v1",
 		GrantFormat:             "bide.audit.grant.v2",
 	} {
 		if got != want {

@@ -331,6 +331,8 @@ func eventKind(e agent.RunEvent) (string, error) {
 		return "finished", nil
 	case agent.NotifyRecord:
 		return "notify_" + string(ev.Kind), nil
+	case agent.StopRecord:
+		return "stop_" + ev.Kind, nil
 	default:
 		return "", fmt.Errorf("audit: canonicalize event: unknown event type %T", e)
 	}
