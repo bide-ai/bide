@@ -259,7 +259,7 @@ const usageText = `bide audit: produce and verify audit proof bundles
          -journal and -heads repeat
 
   verify-decision-coverage -journal <file> -heads <file> [-heads <file>...] -pubkey <hex|file>
-                           [-max-records <n>] [-max-age <duration>] [-max-age-tolerance <duration>] [-now <time>]
+                           [-max-records <n>] [-max-age <duration>] [-max-age-tolerance <duration>] [-max-unanchored <duration>] [-now <time>]
          check that every approval decision in a journal export is covered by a signed tree head
          (the operator's or auditor's check, which needs no receipts; the approver runs
          verify-receipts to check their own decisions were kept; both read heads the same way and
@@ -278,7 +278,10 @@ const usageText = `bide audit: produce and verify audit proof bundles
          differs) is divergent, which fails the verb like an overdue decision: a decision deleted
          from an export looks exactly like that, so re-export the journal and run again. Covered
          means in a signed head, not authentic (verify-approvals checks that). Halt resolutions are
-         not checked
+         not checked. The records after the newest counted head are always listed (positions, and
+         when that head was signed); with -max-unanchored the verb fails when the newest head is older
+         than that and records follow it, which separates a head held back by a minimum interval
+         between heads from a failed publish
 
   prove-absent -journal <file> -sth <file> -key (tool:<id>|policy:<digest>) [-out <file>]
          prove a thing did NOT happen (no such tool call / no action under that policy)
@@ -1113,12 +1116,13 @@ func (c *cli) verifyDecisionCoverage(args []string) {
 	maxRecords := fs.Int("max-records", 0, "records the journal may hold after a decision before a head must cover it (0: no bound)")
 	maxAge := fs.Duration("max-age", 0, "how long after its recorded_at a decision may stay uncovered (0: no bound); compares clocks")
 	tolerance := fs.Duration("max-age-tolerance", audit.DefaultDecisionTimeTolerance, "clock skew allowed on top of -max-age")
-	nowText := fs.String("now", "", "the time -max-age is measured to, RFC 3339 (default: this machine's clock)")
+	nowText := fs.String("now", "", "the time -max-age and -max-unanchored are measured to, RFC 3339 (default: this machine's clock)")
+	maxUnanchored := fs.Duration("max-unanchored", 0, "how long the journal's last records may stay under no signed head: fail when the newest counted head was signed longer ago than this and records follow it (0: report the tail, never fail on it); a tail within it is a head held back by a minimum interval between heads, an older one a likely failed publish")
 	c.parse(fs, args)
 
 	c.require(fs, absent("-journal", *journal), absent("-pubkey", *pubkey), required{"-heads", len(heads) == 0})
-	if *maxRecords < 0 || *maxAge < 0 || *tolerance < 0 {
-		c.usageError("verify-decision-coverage: -max-records, -max-age and -max-age-tolerance must not be negative")
+	if *maxRecords < 0 || *maxAge < 0 || *tolerance < 0 || *maxUnanchored < 0 {
+		c.usageError("verify-decision-coverage: -max-records, -max-age, -max-age-tolerance and -max-unanchored must not be negative")
 	}
 	now := time.Now()
 	if *nowText != "" {
@@ -1164,8 +1168,38 @@ func (c *cli) verifyDecisionCoverage(args []string) {
 		c.printf("DIVERGENT  a head of size %d, signed by the log key for this run, is not this journal's: %s\n", h.Size, cleanText(h.Reason))
 	}
 	c.printf("INFO  run %s: %d records, %d signed heads counted (largest covers %d)\n", cleanText(rep.RunID), rep.Records, rep.Heads, rep.LargestHead)
+	tailFailed := false
 	if rep.Records > rep.LargestHead {
-		c.printf("INFO  run %s: the last %d record(s) are under no signed head yet (a minimum interval between heads, an anchor outage, or a process that stopped before it anchored them)\n", cleanText(rep.RunID), rep.Records-rep.LargestHead)
+		tail := rep.Records - rep.LargestHead
+		what := fmt.Sprintf("run %s: records %d to %d (%d, positions from 0) are under no signed head yet", cleanText(rep.RunID), rep.LargestHead, rep.Records-1, tail)
+		var signedAt time.Time
+		for _, h := range sths {
+			if h.RunID == x.RunID && h.Kind == audit.TreeJournal && h.Size == rep.LargestHead && h.Verify(pub) == nil {
+				if t := time.Unix(0, h.TimestampNanos); t.After(signedAt) {
+					signedAt = t
+				}
+			}
+		}
+		switch {
+		case rep.LargestHead == 0 || signedAt.IsZero():
+			c.printf("INFO  %s: no counted head covers any of the journal\n", what)
+			if *maxUnanchored > 0 {
+				tailFailed = true
+				c.printf("FAIL  run %s: -max-unanchored %s is set and no counted head covers the journal at all\n", cleanText(rep.RunID), *maxUnanchored)
+			}
+		default:
+			age := now.Sub(signedAt)
+			c.printf("INFO  %s; the newest counted head was signed %s before %s (the tail is no older than that, by the signer's clock)\n", what, age.Round(time.Second), now.UTC().Format(time.RFC3339))
+			switch {
+			case *maxUnanchored == 0:
+				c.printf("INFO  run %s: without -max-unanchored this cannot say whether the tail is a head held back by a minimum interval between heads, or a failed publish\n", cleanText(rep.RunID))
+			case age <= *maxUnanchored:
+				c.printf("INFO  run %s: the tail is within -max-unanchored %s: consistent with a head held back by a minimum interval\n", cleanText(rep.RunID), *maxUnanchored)
+			default:
+				tailFailed = true
+				c.printf("FAIL  run %s: records follow a head signed %s ago, over -max-unanchored %s: a likely failed publish, or a signer that stopped\n", cleanText(rep.RunID), age.Round(time.Second), *maxUnanchored)
+			}
+		}
 	}
 	overdue := 0
 	for _, d := range rep.Decisions {
@@ -1191,6 +1225,9 @@ func (c *cli) verifyDecisionCoverage(args []string) {
 	}
 	if len(rep.DivergentHeads) > 0 {
 		c.fail("%d signed head(s) do not match the journal given: the export is stale or cut short (re-export the journal and run again), or it has had a record removed or changed since the log signed it; the decisions listed above are not the complete record", len(rep.DivergentHeads))
+	}
+	if tailFailed {
+		c.fail("the journal's last records are under no signed head past -max-unanchored %s", *maxUnanchored)
 	}
 	if overdue > 0 {
 		c.fail("%d of %d decisions are under no signed tree head past the bound", overdue, len(rep.Decisions))

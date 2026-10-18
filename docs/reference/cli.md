@@ -1414,7 +1414,7 @@ bide audit: produce and verify audit proof bundles
          -journal and -heads repeat
 
   verify-decision-coverage -journal <file> -heads <file> [-heads <file>...] -pubkey <hex|file>
-                           [-max-records <n>] [-max-age <duration>] [-max-age-tolerance <duration>] [-now <time>]
+                           [-max-records <n>] [-max-age <duration>] [-max-age-tolerance <duration>] [-max-unanchored <duration>] [-now <time>]
          check that every approval decision in a journal export is covered by a signed tree head
          (the operator's or auditor's check, which needs no receipts; the approver runs
          verify-receipts to check their own decisions were kept; both read heads the same way and
@@ -1433,7 +1433,10 @@ bide audit: produce and verify audit proof bundles
          differs) is divergent, which fails the verb like an overdue decision: a decision deleted
          from an export looks exactly like that, so re-export the journal and run again. Covered
          means in a signed head, not authentic (verify-approvals checks that). Halt resolutions are
-         not checked
+         not checked. The records after the newest counted head are always listed (positions, and
+         when that head was signed); with -max-unanchored the verb fails when the newest head is older
+         than that and records follow it, which separates a head held back by a minimum interval
+         between heads from a failed publish
 
   prove-absent -journal <file> -sth <file> -key (tool:<id>|policy:<digest>) [-out <file>]
          prove a thing did NOT happen (no such tool call / no action under that policy)
@@ -1765,8 +1768,10 @@ Usage of bide audit verify-decision-coverage:
     	the largest input file, in bytes, the verb reads; a larger one is an error (default 268435456)
   -max-records int
     	records the journal may hold after a decision before a head must cover it (0: no bound)
+  -max-unanchored duration
+    	how long the journal's last records may stay under no signed head: fail when the newest counted head was signed longer ago than this and records follow it (0: report the tail, never fail on it); a tail within it is a head held back by a minimum interval between heads, an older one a likely failed publish
   -now string
-    	the time -max-age is measured to, RFC 3339 (default: this machine's clock)
+    	the time -max-age and -max-unanchored are measured to, RFC 3339 (default: this machine's clock)
   -pubkey string
     	the log's public key as <scheme>:<hex> (ed25519, ecdsa-p256, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it
 ```

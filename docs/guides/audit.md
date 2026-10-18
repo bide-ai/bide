@@ -164,7 +164,7 @@ of it, by a timer at the end of the interval, not only by a later write.
   `Reanchor`). For notification and event trails the notifier's sweep and recovery pass (`AnchorTrails`)
   already is it. Between the crash and that pass the journal is intact and the records are simply not under a
   head; a monitor sees a latest head older than the journal.
-- **How far the tail goes is shown to a verifier.** `bide audit verify-decision-coverage` prints how many of the journal's last records are under no signed head, and `verify-receipts` prints the same for each journal it is given (a receipt for a decision in that tail is pending, not failed). Neither fails on the tail by itself; `verify-decision-coverage -max-records` and `-max-age` are the bounds.
+- **How far the tail goes is shown to a verifier.** `bide audit verify-decision-coverage` lists the positions of the journal's last records that are under no signed head and how long ago the newest counted head was signed, and `verify-receipts` prints the count for each journal it is given (a receipt for a decision in that tail is pending, not failed). With `verify-decision-coverage -max-unanchored DURATION` it fails when the newest head is older than that and records follow it: inside the bound the tail is consistent with a head held back by `WithMinInterval`, over it a failed publish or a signer that stopped. Without the flag it reports the tail and cannot tell the two apart. The age is by the signer's clock and is an upper bound on the tail's age.
 - Heads of one run still only grow, and `d` of zero (the default) or less turns it off.
   It trades the density of heads for the cost of keeping them: choose `d` as the longest you accept
   records being unanchored, given what it costs to hold a head.
