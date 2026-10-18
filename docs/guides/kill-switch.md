@@ -10,7 +10,7 @@ how to use what has shipped.
 Shipped: the control run, the engine's holds, recovery, the signed audit trail with `bide audit
 stops`, the model (`agent.StopControl`, `agent.StopSwitch`, `agent.WithStopSwitch`,
 `audit.NewStopTrail`), and the operator command `bide stop` (and `bide-hsm stop` for a key in an HSM
-or a KMS). `bide view` shows an active stop on every page and which runs it holds. Not shipped yet: the notifications.
+or a KMS). `bide view` shows an active stop on every page and which runs it holds. A stop and its lift notify through the [notifier](#notifications). Not shipped yet: `bide audit notifications` coverage of them.
 
 ## What a stop does
 

@@ -107,7 +107,7 @@ A runtime does not validate models. It can make the evidence for inventory, moni
 | Gap | Status | Link |
 |---|---|---|
 | An RFC 3161 timestamp-authority anchor; per-trail coalescing of anchored heads | In progress. The S3 Object Lock anchor (`anchor/awss3`) is covered above, untested against AWS | [Anchoring](../guides/anchoring.md), [Known limitations](../KNOWN-LIMITATIONS.md#anchoring), [roadmap](../ROADMAP.md#bank-readiness) |
-| Kill switch: notifications | In progress. `bide stop` (set, list, lift, audited with a lift quorum), `bide audit stops` and the `bide view` banner are on main | [Kill switch guide](../guides/kill-switch.md), [roadmap](../ROADMAP.md) |
+| Kill switch: audit coverage of its notifications | In progress. `bide stop` (set, list, lift, audited with a lift quorum), `bide audit stops`, the `bide view` banner and the notifications (`stop_set`, `stop_lifted`) are on main; `bide audit notifications` does not yet check them | [Kill switch guide](../guides/kill-switch.md), [roadmap](../ROADMAP.md) |
 | Independent time: RFC 3161 is not yet used by any gate, endpoint or command | Verifier exists; wiring left | [Roadmap](../ROADMAP.md#bank-readiness), [known limitations](../KNOWN-LIMITATIONS.md#audit-and-proofs) |
 | External security review | Not done; no third party has assessed bide | [Threat model](threat-model.md#what-bide-does-not-address-in-one-list) |
 | A second person's signed authorization of a hold's lift or of an erasure, erasure of final results, session transcripts and event-store copies | Designed, not built ([design](../design/journal-redaction.md)) | [Retention guide](../guides/retention.md#erasing-personal-data) |
