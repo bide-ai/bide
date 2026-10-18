@@ -24,7 +24,7 @@ import (
 //
 // It returns a code: "replaced", "already" (the entry already holds the redaction of these bytes),
 // or the reason it replaced nothing: "session", "mismatch", "protected", "no_entry", "changed",
-// "not_terminal", "leased", "parent_live", "held". The Go side (agent.CheckRedaction) makes the same checks
+// "not_terminal", "leased", "parent_live", "held", "isolation". The Go side (agent.CheckRedaction) makes the same checks
 // first, so the function is the second layer and the only one a role with raw SQL meets.
 // TestRedactFunctionMatchesGo pins its classification of record names to agent.RedactionProtected.
 //
@@ -55,6 +55,15 @@ DECLARE
 	stored pg_catalog.bytea;
 	nrows pg_catalog.int8;
 BEGIN
+	-- Each statement below must see every hold that has committed. At READ COMMITTED a statement takes
+	-- its snapshot when it starts, so taking the holds table's SHARE lock first (a hold's INSERT or
+	-- DELETE waits for it, and this waits for the ones in flight) makes the UPDATE's snapshot include
+	-- every hold committed before the lock was granted. A snapshot taken earlier, by a caller at
+	-- REPEATABLE READ or SERIALIZABLE, would not: refuse it.
+	IF pg_catalog.current_setting('transaction_isolation') <> 'read committed' THEN
+		RETURN 'isolation';
+	END IF;
+	LOCK TABLE %[3]s IN SHARE MODE;
 	FOR i IN 2..nseg LOOP
 		IF pg_catalog.left(segs[i], 1) = '@' THEN
 			RETURN 'session';
@@ -171,7 +180,7 @@ func (s *Store) migrateRedact(ctx context.Context, tx *sql.Tx, res *MigrationRes
 		return fmt.Errorf("postgres: look up %s: %w (%w)", s.t.redact, err, agent.ErrStorage)
 	}
 	if have {
-		return nil
+		return s.revokeOldRedact(ctx, tx, run)
 	}
 	res.Created = append(res.Created, "function "+quoteIdent(s.schema)+"."+s.t.redact+"(text, text, bytea, bigint)")
 	body := s.t.redactBody(s.schema)
@@ -183,8 +192,63 @@ func (s *Store) migrateRedact(ctx context.Context, tx *sql.Tx, res *MigrationRes
 		` RETURNS pg_catalog.text LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $bide$`+body+`$bide$`); err != nil {
 		return err
 	}
-	return run("restrict "+s.t.redact, `REVOKE ALL ON FUNCTION `+s.t.qRedact+`(pg_catalog.text, pg_catalog.text, pg_catalog.bytea, pg_catalog.int8) FROM PUBLIC`)
+	if err := run("restrict "+s.t.redact, `REVOKE ALL ON FUNCTION `+s.t.qRedact+`(pg_catalog.text, pg_catalog.text, pg_catalog.bytea, pg_catalog.int8) FROM PUBLIC`); err != nil {
+		return err
+	}
+	return s.revokeOldRedact(ctx, tx, run)
 }
+
+// revokeOldRedact withdraws EXECUTE on bide_redact_v1, the first version of the redaction function,
+// from PUBLIC and from every role it was granted to explicitly. v1 does not read legal holds, so a
+// role that can still call it can erase a held run: the migration never replaces or drops a function,
+// but it can and does revoke. It runs on every migration (revoking again is harmless), and does
+// nothing for a schema that never had v1.
+func (s *Store) revokeOldRedact(ctx context.Context, tx *sql.Tx, run func(failure, stmt string) error) error {
+	v1 := strings.TrimSuffix(s.t.redact, redactVersion) + "v1"
+	var have bool
+	if err := tx.QueryRowContext(ctx, redactPresent, v1, s.schema).Scan(&have); err != nil {
+		return fmt.Errorf("postgres: look up %s: %w (%w)", v1, err, agent.ErrStorage)
+	}
+	if !have {
+		return nil
+	}
+	qv1 := quoteIdent(s.schema) + "." + quoteIdent(v1) + `(pg_catalog.text, pg_catalog.text, pg_catalog.bytea, pg_catalog.int8)`
+	if err := run("revoke "+v1+" from PUBLIC", `REVOKE ALL ON FUNCTION `+qv1+` FROM PUBLIC`); err != nil {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, grantedRedact, v1, s.schema)
+	if err != nil {
+		return fmt.Errorf("postgres: look up the grants on %s: %w (%w)", v1, err, agent.ErrStorage)
+	}
+	var grantees []string
+	for rows.Next() {
+		var g string
+		if err := rows.Scan(&g); err != nil {
+			rows.Close()
+			return fmt.Errorf("postgres: look up the grants on %s: %w (%w)", v1, err, agent.ErrStorage)
+		}
+		grantees = append(grantees, g)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("postgres: look up the grants on %s: %w (%w)", v1, err, agent.ErrStorage)
+	}
+	rows.Close()
+	for _, g := range grantees {
+		if err := run("revoke "+v1+" from "+g, `REVOKE ALL ON FUNCTION `+qv1+` FROM `+g); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// grantedRedact lists, as SQL, the roles other than the owner that hold an explicit privilege on the
+// function $1(text, text, bytea, bigint) in schema $2.
+const grantedRedact = `SELECT pg_catalog.quote_ident(pg_catalog.pg_get_userbyid(a.grantee))
+	FROM pg_catalog.pg_proc AS p CROSS JOIN LATERAL pg_catalog.aclexplode(p.proacl) AS a
+	WHERE p.proname OPERATOR(pg_catalog.=) $1 AND p.proargtypes OPERATOR(pg_catalog.=) '25 25 17 20'::pg_catalog.oidvector
+		AND p.pronamespace OPERATOR(pg_catalog.=) (SELECT n.oid FROM pg_catalog.pg_namespace AS n WHERE n.nspname OPERATOR(pg_catalog.=) $2)
+		AND a.grantee OPERATOR(pg_catalog.<>) 0 AND a.grantee OPERATOR(pg_catalog.<>) p.proowner`
 
 // checkRedactFunction checks the redaction function's definition when the schema has one: a
 // SECURITY DEFINER function is the one place the store runs another role's code, so a function of
@@ -257,6 +321,8 @@ func (s *Store) Redact(ctx context.Context, runID, name string, current, tombsto
 		return false, fmt.Errorf("run %s: %w", runID, agent.ErrRedactNotTerminal)
 	case "leased":
 		return false, fmt.Errorf("run %s: %w", runID, agent.ErrRedactLeased)
+	case "isolation":
+		return false, fmt.Errorf("redact step %q: the redaction function must run at READ COMMITTED (its transaction already took a snapshot, which would not see a hold placed meanwhile): set the erasing role's default_transaction_isolation to 'read committed' (ALTER ROLE ... SET default_transaction_isolation = 'read committed'): %w", name, agent.ErrConfig)
 	case "held":
 		return false, fmt.Errorf("run %s: %w", runID, agent.ErrRedactHeld)
 	case "parent_live":
