@@ -10,7 +10,10 @@
 #   --ref REF             the source ref the build ran for (default refs/tags/TAG; a manual run has a branch)
 #   --source-digest SHA   also require this commit of bide
 #   --builder-sha SHA     the commit of the builder that must have made the provenance (default: the
-#                         one release.yml pins, read from that file; it must pin exactly one)
+#                         one release.yml pins, read from that file; it must pin exactly one). Either
+#                         way it must be an ancestor of the builder repository's main: GitHub runs any
+#                         commit of a repository's fork network named by SHA, so a pin that only exists
+#                         in a fork is refused, whatever the verification would then say.
 #
 # Each file must verify against the attestations GitHub stores for the repository (BIDE_GITHUB_REPO,
 # default bide-ai/bide): SLSA v1 provenance signed with the Sigstore public-good instance by the
@@ -41,6 +44,17 @@ pinned_builder() {
   echo "$pins"
 }
 
+# builder_vouched SHA: the builder repository itself holds SHA on its main (compare: identical, or main
+# is ahead of it). A commit only a fork has is diverged or not found, and so is refused.
+builder_vouched() {
+  local sha=$1 status
+  status=$("$GH" api "repos/$BUILDER/compare/$sha...main" --jq .status 2>/dev/null) || status=unknown
+  case $status in
+    identical|ahead) ;;
+    *) die "builder commit $sha is not on the main branch of $BUILDER (compare says: $status); refusing to trust a pin the builder repository does not hold" ;;
+  esac
+}
+
 verify() {
   local ref="" sha="" wf=build.yml bsha=""
   while [ $# -gt 0 ]; do
@@ -58,6 +72,7 @@ verify() {
   [[ "$wf" =~ ^[a-z0-9-]+\.yml$ ]] || die "--workflow $wf is not a workflow file name"
   [ -n "$bsha" ] || bsha=$(pinned_builder "$wf")
   [[ "$bsha" =~ ^[0-9a-f]{40}$ ]] || die "builder commit '$bsha' is not a full commit SHA"
+  builder_vouched "$bsha"
   local f bad=0
   for f in "$@"; do [ -f "$f" ] || die "no such file: $f"; done
   for f in "$@"; do
@@ -88,6 +103,7 @@ self_test() {
   cat > "$tmp/gh" <<'FAKE'
 #!/usr/bin/env bash
 echo "$*" >> "$FAKE_GH_LOG"
+if [ "$1" = api ]; then echo "${FAKE_COMPARE_STATUS-ahead}"; [ "${FAKE_COMPARE_STATUS-ahead}" != fail ]; exit; fi
 case "$*" in *"${FAKE_GH_FAIL:-__none__}"*) exit 1 ;; esac
 FAKE
   chmod +x "$tmp/gh"
@@ -137,6 +153,7 @@ FAKE
   # A lookup that fails once and then succeeds passes with attempts; one that always fails fails.
   cat > "$tmp/flaky" <<'FAKE'
 #!/usr/bin/env bash
+if [ "$1" = api ]; then echo ahead; exit 0; fi
 n=$(cat "$FAKE_GH_COUNT" 2>/dev/null || echo 0); echo $((n + 1)) > "$FAKE_GH_COUNT"
 [ "$n" -ge "$FAKE_GH_OK_AFTER" ]
 FAKE
@@ -152,6 +169,24 @@ FAKE
   echo 0 > "$tmp/count"
   if BIDE_GH="$tmp/flaky" FAKE_GH_COUNT="$tmp/count" FAKE_GH_OK_AFTER=1 "$self" v1.2.3 "$tmp/a.tar.gz" >/dev/null 2>&1; then
     echo "self-test: with the default one attempt, a failing lookup passed"; ok=false; fi
+
+  # The builder commit must be on the builder's main: only ahead or identical passes; diverged, behind,
+  # not found and an empty answer are refused (a commit that exists only in a fork).
+  local st
+  for st in diverged behind unknown ""; do
+    if FAKE_COMPARE_STATUS=$st "$self" v1.2.3 "$tmp/a.tar.gz" >/dev/null 2>&1; then echo "self-test: a builder commit with compare status '$st' passed"; ok=false; fi
+  done
+  if FAKE_COMPARE_STATUS=fail "$self" v1.2.3 "$tmp/a.tar.gz" >/dev/null 2>&1; then echo "self-test: a builder commit the API did not find passed"; ok=false; fi
+  for st in ahead identical; do
+    FAKE_COMPARE_STATUS=$st "$self" v1.2.3 "$tmp/a.tar.gz" >/dev/null 2>&1 || { echo "self-test: a builder commit with compare status '$st' was refused"; ok=false; }
+  done
+  : > "$tmp/log"
+  FAKE_COMPARE_STATUS=ahead "$self" --builder-sha "$b" v1.2.3 "$tmp/a.tar.gz" >/dev/null 2>&1 || true
+  grep -qF "api repos/bide-ai/release-builder/compare/$b...main" "$tmp/log" || { echo "self-test: an explicit --builder-sha was not checked against the builder's main"; ok=false; }
+  # A refused commit stops before any file is verified.
+  : > "$tmp/log"
+  FAKE_COMPARE_STATUS=diverged "$self" v1.2.3 "$tmp/a.tar.gz" >/dev/null 2>&1 || true
+  if grep -qF "attestation verify" "$tmp/log"; then echo "self-test: files were verified against a builder commit that was refused"; ok=false; fi
 
   # The builder pin: absent, or two different commits for one workflow, is a failure.
   printf 'jobs:\n  build:\n    uses: actions/checkout@%s\n' "$a" > "$tmp/none.yml"
