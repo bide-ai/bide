@@ -84,6 +84,7 @@ Sources: [systemonemodels.org alternatives](https://systemonemodels.org/examples
 
 Names are provisional; the shape is the commitment.
 
+<!-- docsnip: skip design proposal: the types are not built yet -->
 ```go
 // QuestionKind is Choice, Score or Noul.
 type Question struct {
