@@ -32,6 +32,7 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/cmd/bide/internal/approvecmd"
+	"github.com/bide-ai/bide/cmd/bide/internal/stopcmd"
 	"github.com/bide-ai/bide/internal/runview"
 	"github.com/bide-ai/bide/store/postgres"
 	"github.com/bide-ai/bide/store/sqlite"
@@ -69,6 +70,9 @@ var stores = runview.Stores{
 // approveStores opens the journals bide approve decides on: read-write to record a decision,
 // read-only to list the calls that wait.
 var approveStores = approvecmd.JournalStores()
+
+// stopStores opens the journals bide stop sets and lifts stops in, with the event store of the stop trail.
+var stopStores = stopcmd.JournalStores()
 
 // yamlToJSON converts a YAML flow config to the JSON plan reads. A YAML document is decoded into
 // plain values (a duplicate key is an error, as plan's strict JSON reading refuses one), and every
