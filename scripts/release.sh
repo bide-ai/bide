@@ -59,14 +59,14 @@ PROXY=https://proxy.golang.org
 . "$(cd "$(dirname "$0")" && pwd)/proxy-wait.sh"
 
 # Libraries users import. Each is tagged <dir>/vX.Y.Z at every release.
-PUBLISHED="govern store/sqlite store/postgres mcptools trace codec/gcf anchor/awss3 anchor/gcs govern/sqlitelog govern/redislog govern/postgreslog signer/pkcs11 signer/awskms signer/azurekv signer/gcpkms flowedit cmd/bide cmd/bide/bide-hsm cmd/bide-view"
+PUBLISHED="govern store/sqlite store/postgres mcptools trace codec/gcf anchor/awss3 anchor/gcs govern/sqlitelog govern/redislog govern/postgreslog signer/pkcs11 signer/awskms signer/azurekv signer/gcpkms flowedit cmd/bide cmd/bide/bide-hsm cmd/bide-anchor cmd/bide-view"
 # Published modules whose root package is a command (package main), installed with go install. The
 # consumer check builds them instead of importing them, since a program cannot be imported.
 # cmd/bide-view is a signpost to bide view, tagged one last time at v0.14.0 and then removed.
 # cmd/bide/bide-hsm is bide approve for keys in an HSM or a KMS; it needs cgo, so it is released as
 # source (go install) and not as a prebuilt binary (see .goreleaser.yaml). It lives under cmd/bide
 # so that it can use that module's internal approvecmd package.
-COMMANDS="cmd/bide cmd/bide/bide-hsm cmd/bide-view"
+COMMANDS="cmd/bide cmd/bide/bide-hsm cmd/bide-anchor cmd/bide-view"
 # Modules that exist only to keep their dependencies out of the core. They keep their replace
 # directives and are never tagged.
 REPO_ONLY="cmd/bide/bide-hsm/azuretest cmd/bide/bide-hsm/emulatortest signer/gcpkms/emulatortest signer/awskms/emulatortest examples/approval examples/govern examples/hsm-signing examples/mcp examples/observability examples/plan examples/sso-certs examples/stripe-refund integration benchmarks"
@@ -634,7 +634,7 @@ self_test() {
   printf '%s\n' "$main" | grep -qx "	_ \"$ROOT_MODULE/b\"" || { echo "self-test: the consumer does not import library b"; fail=true; }
   printf '%s\n' "$main" | grep -q "cmd/x" && { echo "self-test: the consumer imports a command"; fail=true; }
   printf '%s\n' "$main" | grep -qx 'package main' || { echo "self-test: the consumer is not a main package"; fail=true; }
-  [ "$(PUBLISHED="a cmd/x b" COMMANDS="cmd/x" "$0" --list-commands 2>/dev/null | tr '\n' ' ')" = "cmd/bide cmd/bide/bide-hsm cmd/bide-view " ] ||
+  [ "$(PUBLISHED="a cmd/x b" COMMANDS="cmd/x" "$0" --list-commands 2>/dev/null | tr '\n' ' ')" = "cmd/bide cmd/bide/bide-hsm cmd/bide-anchor cmd/bide-view " ] ||
     { echo "self-test: --list-commands does not print the commands"; fail=true; }
   local v
   for v in v0.21.0 v0.21.0-rc.1 v0.21.0-rc.10 v0.21.0-beta v0.21.0-0.3.7 v0.21.0-x-y.z; do

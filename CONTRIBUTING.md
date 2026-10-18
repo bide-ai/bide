@@ -190,7 +190,7 @@ go run ./internal/tools/changelog check -base origin/main -head HEAD
 The core module and the library modules are released together under one version. Published
 modules, tagged `<dir>/vX.Y.Z` at every release: `govern`, `store/sqlite`, `store/postgres`, `mcptools`,
 `trace`, `codec/gcf`, `anchor/awss3`, `anchor/gcs`, `govern/sqlitelog`, `govern/redislog`, `govern/postgreslog`, `signer/pkcs11`, `signer/awskms`, `signer/azurekv`, `signer/gcpkms`, and the commands
-`cmd/bide`, `cmd/bide/bide-hsm` (installed from source with `go install`, never built into the release archives: it needs cgo) and `cmd/bide-view` (the latter one last time, at v0.14.0). Repo-only
+`cmd/bide`, `cmd/bide-anchor` (verifies the heads of the object-store anchors), `cmd/bide/bide-hsm` (installed from source with `go install`, never built into the release archives: it needs cgo) and `cmd/bide-view` (the latter one last time, at v0.14.0). Repo-only
 modules, never tagged: `examples/*`, `integration`, `benchmarks` and the test-only emulator modules (`signer/awskms/emulatortest`, `signer/gcpkms/emulatortest`, `cmd/bide/bide-hsm/emulatortest`, `cmd/bide/bide-hsm/azuretest`). The lists live in
 `scripts/release.sh`, and the Lint job fails if a module is in neither.
 
@@ -259,7 +259,7 @@ tree between releases.
       for the proxy the same way;
    3. does the same for the governed-event logs, which also require `govern` at `vX.Y.Z`, and for
       the `bide` command, which requires the stores;
-   3a. then for `bide-hsm`, which requires `bide`, the stores and the two signers; it is installed
+   3a. then for `bide-anchor` (requires the core and `anchor/awss3`), and for `bide-hsm`, which requires `bide`, the stores and the two signers; it is installed
       from the proxy and `bide-hsm version` must report the release;
    4. checks each module with `go list -m <module>@vX.Y.Z` against the proxy, and builds a scratch
       consumer module that `go get`s every published module at `vX.Y.Z` with an empty module cache,

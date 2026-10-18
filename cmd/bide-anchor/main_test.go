@@ -245,3 +245,20 @@ func TestDirMustBeADirectory(t *testing.T) {
 		}
 	}
 }
+
+func TestBackendFlag(t *testing.T) {
+	e := setup(t)
+	e.publish(t, e.head(t, "r1", 1, "a"))
+	dir := e.dump(t)
+	if code, out, errs := e.do("verify", "-backend", "s3", "-dir", dir, "-pubkey", e.pub); code != 0 {
+		t.Fatalf("-backend s3 = %d\n%s%s", code, out, errs)
+	}
+	code, _, errs := e.do("verify", "-backend", "gcs", "-dir", dir, "-pubkey", e.pub)
+	if code != exitUsage || !strings.Contains(errs, "not in this build yet") {
+		t.Errorf("-backend gcs = %d %q; want a usage error saying it is not built in yet", code, errs)
+	}
+	code, _, errs = e.do("check", "-backend", "azure", "-bucket", "b", "-owner", owner, "-pubkey", e.pub, "-run", "r1")
+	if code != exitUsage || !strings.Contains(errs, `"azure" is not one of: s3`) {
+		t.Errorf("-backend azure = %d %q; want a usage error naming the backends", code, errs)
+	}
+}

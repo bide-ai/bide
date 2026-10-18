@@ -1,7 +1,8 @@
-// Command bide-anchor verifies and exports the signed tree heads that the awss3 anchor wrote to an S3
-// bucket under Object Lock.
+// Command bide-anchor verifies and exports the signed tree heads that an object-store anchor wrote to a
+// bucket under Object Lock (-backend s3: the awss3 anchor; the Google Cloud Storage backend is added with
+// its package).
 //
-//	bide-anchor verify -dir ./downloaded -pubkey ed25519:<hex> [-run ID] [-kind journal]
+//	bide-anchor verify [-backend s3] -dir ./downloaded -pubkey ed25519:<hex> [-run ID] [-kind journal]
 //	bide-anchor export -pubkey K -run ID (-dir ./downloaded | -bucket B -owner ACCOUNT) [-o heads.jsonl]
 //	bide-anchor check  -pubkey K -run ID -bucket B -owner ACCOUNT
 //
@@ -57,9 +58,9 @@ func defaultClient(ctx context.Context, pathStyle bool) (awss3.Client, error) {
 }
 
 const usage = `usage:
-  bide-anchor verify -dir DIR -pubkey KEY [-run ID] [-kind journal|events]
-  bide-anchor export -pubkey KEY -run ID [-kind journal|events] (-dir DIR | -bucket B -owner ACCOUNT [-prefix P] [-path-style]) [-o FILE]
-  bide-anchor check  -pubkey KEY -run ID [-kind journal|events] -bucket B -owner ACCOUNT [-prefix P] [-path-style]
+  bide-anchor verify [-backend B] -dir DIR -pubkey KEY [-run ID] [-kind journal|events]
+  bide-anchor export [-backend B] -pubkey KEY -run ID [-kind journal|events] (-dir DIR | -bucket B -owner ACCOUNT [-prefix P] [-path-style]) [-o FILE]
+  bide-anchor check  [-backend B] -pubkey KEY -run ID [-kind journal|events] -bucket B -owner ACCOUNT [-prefix P] [-path-style]
 KEY is the log operator's public key (ed25519:<hex>, or a file holding it).`
 
 const (
@@ -78,11 +79,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 	fs.SetOutput(stderr)
 	var (
 		dir, run, bucket, ownerID, prefix, out string
-		pubkey                                 string
+		pubkey, backendName                    string
 		kind                                   = audit.TreeJournal
 		pathStyle, force                       bool
 	)
 	// Each command takes only the flags that mean something to it, so its help lists only those.
+	fs.StringVar(&backendName, "backend", "s3", "the object store the anchor wrote to: "+backendNames)
 	fs.StringVar(&pubkey, "pubkey", "", "the log operator's public key (ed25519:<hex>, or a file holding it)")
 	fs.StringVar(&kind, "kind", audit.TreeJournal, "the tree kind: journal, or events for a notification or event trail")
 	switch cmd {
@@ -154,14 +156,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 		}
 	}
 
-	var reader *awss3.Reader
+	be, err := lookupBackend(backendName, mk)
+	if err != nil {
+		return fail(exitUsage, "%v", err)
+	}
+	var reader headReader
 	if online {
-		c, err := mk(ctx, pathStyle)
-		if err != nil {
-			return fail(exitUsage, "AWS configuration: %v", err)
-		}
-		reader, err = awss3.NewReader(awss3.ReaderConfig{Client: c, Bucket: bucket, ExpectedBucketOwner: ownerID, Prefix: prefix, Verifier: v,
-			OnSkip: func(f awss3.Finding) {
+		reader, err = be.open(ctx, openOptions{bucket: bucket, owner: ownerID, prefix: prefix, pathStyle: pathStyle, verifier: v,
+			onSkip: func(f string) {
 				fmt.Fprintf(stderr, "bide-anchor: skipped an object that is no anchored head: %s\n", f)
 			}})
 		if err != nil {
@@ -197,7 +199,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 		return exitOK
 
 	case "verify":
-		heads, err := awss3.LoadDir(dir, v)
+		heads, err := be.loadDir(dir, v)
 		if err != nil {
 			fmt.Fprintf(stdout, "FAIL: %v\n", err)
 			return exitFindings
@@ -236,10 +238,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 			}
 			heads, err = reader.Heads(ctx, kind, run)
 		} else {
-			heads, err = awss3.LoadDir(dir, v)
+			heads, err = be.loadDir(dir, v)
 			heads = filter(heads, kind, run, true)
 			if err == nil && len(heads) == 0 {
-				err = fmt.Errorf("%w for %s %q", awss3.ErrNotFound, kind, run)
+				err = fmt.Errorf("%w for %s %q", be.errNotFound, kind, run)
 			}
 		}
 		if errors.Is(err, awss3.ErrEquivocation) {

@@ -244,8 +244,8 @@ problem, and keep the events for denied deletes and for everything from other pr
 
 ## Verifying: `bide-anchor`
 
-`bide-anchor` is a small command in the same module (`go install
-github.com/bide-ai/bide/anchor/awss3/cmd/bide-anchor@latest`), so the AWS SDK is not in `bide`.
+`bide-anchor` is a small command in its own module (`go install
+github.com/bide-ai/bide/cmd/bide-anchor@latest`), so the cloud SDKs are not in `bide`. `-backend s3` (the default) reads this anchor; further backends are added with their packages.
 
 ```sh
 # Offline: a directory of downloaded objects (an auditor's copy; no network, no credentials).
