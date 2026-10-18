@@ -231,6 +231,7 @@ CaughtUp == ~CatchUp \/ SignedLog \subseteq TrailSet
 
 StartWrite(r) ==
   /\ WithTrail /\ pend = {} /\ r.sig /\ Len(log) < MaxLog
+  /\ r \notin Range(log)   \* a record is inserted once: the control run's names are content-derived, so the same record is not written twice
   /\ r.k = "lift" => Eff(log, Len(log)).st[r.stop].phase /= "none"   \* a lift names a stop the control run holds
   \* A record already on the trail but not in the log (a write that crashed) is only re-applied while no log
   \* record follows it on the trail: ApplyPending leaves a superseded one, so the orders cannot diverge.
