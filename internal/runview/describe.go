@@ -124,7 +124,7 @@ func checkDepth(b []byte) error {
 				return fmt.Errorf("nested more than %d levels deep", maxDescriptionDepth)
 			}
 		case c == ']' || c == '}':
-			depth--
+			depth = max(depth-1, 0) // a stray closer is the decoder's to refuse; it must not buy depth
 		}
 	}
 	return nil

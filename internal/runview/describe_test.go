@@ -736,7 +736,8 @@ func TestCheckDepth(t *testing.T) {
 		"brackets in a string": {`{"a":"` + strings.Repeat("[", 500) + `"}`, true},
 		"escaped quote":        {`{"a":"x\"` + strings.Repeat("[", 500) + `"}`, true},
 		"escaped backslash, then the string ends": {`{"a":"\\"` + string(deep(maxDescriptionDepth+1)), false},
-		"object nesting": {strings.Repeat(`{"a":`, maxDescriptionDepth+1) + "1" + strings.Repeat("}", maxDescriptionDepth+1), false},
+		"stray closers buy no depth":              {strings.Repeat("]", 100) + string(deep(maxDescriptionDepth+1)), false},
+		"object nesting":                          {strings.Repeat(`{"a":`, maxDescriptionDepth+1) + "1" + strings.Repeat("}", maxDescriptionDepth+1), false},
 	} {
 		if err := checkDepth([]byte(c.in)); (err == nil) != c.ok {
 			t.Errorf("%s: %v, want ok=%v", name, err, c.ok)
