@@ -240,12 +240,12 @@ func TestGCSBackendKeyAndRetentionExpectations(t *testing.T) {
 			t.Errorf("%s = exit %d (%s), want %d", name, code, errs, exitUsage)
 		}
 	}
-	// S3 refuses what it would ignore.
+	// A Cloud KMS key name is not an S3 key, and -lock-mode is not for gcs.
 	s3e := setup(t)
-	for _, extra := range [][]string{{"-kms-key", gcstest.DefaultKMSKey}, {"-retention", "48h"}} {
-		args := append([]string{"check", "-bucket", "b", "-owner", owner, "-pubkey", s3e.pub, "-run", "r1"}, extra...)
-		if code, _, errs := s3e.do(args...); code != exitUsage || !strings.Contains(errs, "are for -backend gcs") {
-			t.Errorf("s3 with %v = exit %d (%s), want %d", extra, code, errs, exitUsage)
-		}
+	if code, _, errs := s3e.do("check", "-bucket", "b", "-owner", owner, "-pubkey", s3e.pub, "-run", "r1", "-kms-key", gcstest.DefaultKMSKey); code != exitUsage || !strings.Contains(errs, "Cloud KMS key name") {
+		t.Errorf("s3 with a Cloud KMS key = exit %d (%s), want %d", code, errs, exitUsage)
+	}
+	if code, _, errs := e.do("check", with("-lock-mode", "COMPLIANCE")...); code != exitUsage || !strings.Contains(errs, "-lock-mode is for -backend s3") {
+		t.Errorf("gcs with -lock-mode = exit %d (%s), want %d", code, errs, exitUsage)
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/audit/anchorobj"
@@ -32,6 +33,18 @@ type ReaderConfig struct {
 	ExpectedBucketOwner string
 	// Prefix is the prefix the Anchor was configured with (default "bide-anchor/").
 	Prefix string
+	// KMSKeyID, when set, is the KMS key (an ID, ARN or alias ARN) the heads must be encrypted with:
+	// Audit reports a bucket whose default encryption is not SSE-KMS with that key, and an object
+	// that is not encrypted with it. Without it the bucket's and the objects' encryption is not judged.
+	KMSKeyID string
+	// Retention, when set, is the retention the Anchor was configured with: Audit reports a bucket whose
+	// default retention is shorter, and an object retained for less than this from its own write. Without
+	// it Audit judges the bucket's default retention against MinRetention only.
+	Retention time.Duration
+	// Mode, when set, is the object lock mode the Anchor was configured with (COMPLIANCE or GOVERNANCE).
+	// Audit reports a bucket whose default mode is weaker. With GOVERNANCE an object locked in governance
+	// mode is not a finding by itself (it is the configuration); without it, or with COMPLIANCE, it is.
+	Mode types.ObjectLockMode
 	// OnSkip is called with each object the Reader skips because it claims to be no head (not in the
 	// layout, not the canonical encoding of a head). Without it the finding is logged with log/slog at
 	// Warn. An object that claims to be a head and fails its signature is an error, not a skip.
@@ -52,6 +65,10 @@ type Reader struct {
 	prefix string
 	v      audit.Verifier
 	onSkip func(Finding)
+
+	kms       string
+	retention time.Duration
+	mode      types.ObjectLockMode
 }
 
 // NewReader returns a Reader. It refuses (an error wrapping agent.ErrConfig) an incomplete configuration.
@@ -64,11 +81,20 @@ func NewReader(cfg ReaderConfig) (*Reader, error) {
 	if cfg.Verifier == nil {
 		return nil, fmt.Errorf("awss3: ReaderConfig.Verifier is nil: %w", agent.ErrConfig)
 	}
+	switch cfg.Mode {
+	case "", types.ObjectLockModeCompliance, types.ObjectLockModeGovernance:
+	default:
+		return nil, fmt.Errorf("awss3: ReaderConfig.Mode %q is not COMPLIANCE or GOVERNANCE: %w", cfg.Mode, agent.ErrConfig)
+	}
+	if cfg.Retention < 0 {
+		return nil, fmt.Errorf("awss3: ReaderConfig.Retention %s is negative: %w", cfg.Retention, agent.ErrConfig)
+	}
 	onSkip := cfg.OnSkip
 	if onSkip == nil {
 		onSkip = func(f Finding) { slog.Warn("awss3: skipped an object that is no anchored head: " + f.String()) }
 	}
-	return &Reader{c: cfg.Client, bucket: cfg.Bucket, owner: cfg.ExpectedBucketOwner, prefix: a.prefix, v: cfg.Verifier, onSkip: onSkip}, nil
+	return &Reader{c: cfg.Client, bucket: cfg.Bucket, owner: cfg.ExpectedBucketOwner, prefix: a.prefix, v: cfg.Verifier, onSkip: onSkip,
+		kms: cfg.KMSKeyID, retention: cfg.Retention, mode: cfg.Mode}, nil
 }
 
 // ref is one stored version of a key.
@@ -319,6 +345,11 @@ type Report struct {
 func (r *Reader) Audit(ctx context.Context, kind, runID string, now time.Time) (Report, error) {
 	prefix := r.prefix + partitionOf(kind, runID) + "/"
 	var rep Report
+	bucket, err := r.bucketFindings(ctx)
+	if err != nil {
+		return Report{}, err
+	}
+	rep.Findings = append(rep.Findings, bucket...)
 	versions := map[string]int{}
 	pages := 0
 	var claimed []claim // objects that are no verified head, and the size their key claims
@@ -393,8 +424,21 @@ func (r *Reader) auditVersion(ctx context.Context, key, ver string, now time.Tim
 	switch {
 	case out.ObjectLockMode == "":
 		add("not locked: it can be deleted or overwritten")
-	case out.ObjectLockMode == types.ObjectLockModeGovernance:
+	case out.ObjectLockMode == types.ObjectLockModeGovernance && r.mode != types.ObjectLockModeGovernance:
 		add("locked in governance mode: a principal with s3:BypassGovernanceRetention can delete it")
+	}
+	if r.retention > 0 && out.ObjectLockMode != "" && out.ObjectLockRetainUntilDate != nil && out.LastModified != nil {
+		if floor := out.LastModified.Add(r.retention).Add(-time.Minute); out.ObjectLockRetainUntilDate.Before(floor) {
+			add(fmt.Sprintf("retained until %s, less than the expected %s after its write (%s)", out.ObjectLockRetainUntilDate.UTC().Format(time.RFC3339), r.retention, out.LastModified.UTC().Format(time.RFC3339)))
+		}
+	}
+	if r.kms != "" {
+		switch {
+		case out.ServerSideEncryption != types.ServerSideEncryptionAwsKms:
+			add(fmt.Sprintf("encrypted with %q, not with the expected KMS key", out.ServerSideEncryption))
+		case aws.ToString(out.SSEKMSKeyId) == "" || !kmsMatches(r.kms, aws.ToString(out.SSEKMSKeyId)):
+			add(fmt.Sprintf("encrypted with KMS key %q, not the expected %q", aws.ToString(out.SSEKMSKeyId), r.kms))
+		}
 	}
 	if out.ObjectLockMode != "" && (out.ObjectLockRetainUntilDate == nil || !out.ObjectLockRetainUntilDate.After(now)) {
 		add("its retention has ended: it can be deleted")
@@ -449,4 +493,86 @@ func advance(prefix string, pages *int, markerSent, vmarkerSent, nextKey, nextVe
 		return fmt.Errorf("awss3: list %s: the listing is truncated but does not advance: %w", prefix, ErrUnavailable)
 	}
 	return nil
+}
+
+// bucketFindings reads the bucket's own configuration (versioning, Object Lock, default encryption) and
+// reports what is weaker than an anchor needs, or than the expectations in ReaderConfig say. A read that
+// fails (unavailable, denied: the reader's policy lacks the s3:GetBucketVersioning,
+// s3:GetBucketObjectLockConfiguration or s3:GetEncryptionConfiguration action) is an error, not a pass:
+// the state of the bucket is unknown.
+func (r *Reader) bucketFindings(ctx context.Context) ([]Finding, error) {
+	var fs []Finding
+	add := func(p string) { fs = append(fs, Finding{Key: "bucket " + r.bucket, Problem: p}) }
+	bucket, owner := aws.String(r.bucket), aws.String(r.owner)
+
+	v, err := r.c.GetBucketVersioning(ctx, &s3.GetBucketVersioningInput{Bucket: bucket, ExpectedBucketOwner: owner})
+	if err != nil {
+		return nil, wrapErr("read the bucket's versioning", err)
+	}
+	if v.Status != types.BucketVersioningStatusEnabled {
+		add(fmt.Sprintf("versioning is %q, not Enabled: an overwrite or delete of a head would not keep the earlier version", v.Status))
+	}
+
+	lc, err := r.c.GetObjectLockConfiguration(ctx, &s3.GetObjectLockConfigurationInput{Bucket: bucket, ExpectedBucketOwner: owner})
+	var lock *types.ObjectLockConfiguration
+	switch {
+	case err == nil:
+		lock = lc.ObjectLockConfiguration
+	case isAPICode(err, "ObjectLockConfigurationNotFoundError"):
+	default:
+		return nil, wrapErr("read the bucket's Object Lock configuration", err)
+	}
+	switch {
+	case lock == nil || lock.ObjectLockEnabled != types.ObjectLockEnabledEnabled:
+		add("Object Lock is not enabled")
+	case lock.Rule == nil || lock.Rule.DefaultRetention == nil:
+		add("it has no default retention: a head written without per-object retention is not locked")
+	default:
+		dr := lock.Rule.DefaultRetention
+		period := time.Duration(aws.ToInt32(dr.Days)) * 24 * time.Hour
+		if y := aws.ToInt32(dr.Years); y > 0 {
+			period = time.Duration(y) * 365 * 24 * time.Hour
+		}
+		if period < MinRetention {
+			add(fmt.Sprintf("its default retention is %s, below the minimum %s", period, MinRetention))
+		}
+		if r.retention > 0 && period < r.retention {
+			add(fmt.Sprintf("its default retention is %s, shorter than the expected %s", period, r.retention))
+		}
+		if r.mode == types.ObjectLockModeCompliance && dr.Mode != types.ObjectLockRetentionModeCompliance {
+			add(fmt.Sprintf("its default retention mode is %s, weaker than the expected COMPLIANCE", dr.Mode))
+		}
+	}
+
+	if r.kms != "" {
+		enc, err := r.c.GetBucketEncryption(ctx, &s3.GetBucketEncryptionInput{Bucket: bucket, ExpectedBucketOwner: owner})
+		switch {
+		case err == nil:
+			var def *types.ServerSideEncryptionByDefault
+			if c := enc.ServerSideEncryptionConfiguration; c != nil {
+				for _, rule := range c.Rules {
+					if rule.ApplyServerSideEncryptionByDefault != nil {
+						def = rule.ApplyServerSideEncryptionByDefault
+						break
+					}
+				}
+			}
+			switch {
+			case def == nil || def.SSEAlgorithm != types.ServerSideEncryptionAwsKms:
+				add("its default encryption is not SSE-KMS, but a KMS key is expected")
+			case aws.ToString(def.KMSMasterKeyID) == "" || !kmsMatches(r.kms, aws.ToString(def.KMSMasterKeyID)):
+				add(fmt.Sprintf("its default KMS key is %q, not the expected %q", aws.ToString(def.KMSMasterKeyID), r.kms))
+			}
+		case isAPICode(err, "ServerSideEncryptionConfigurationNotFoundError"):
+			add("it has no default encryption configuration, but a KMS key is expected")
+		default:
+			return nil, wrapErr("read the bucket's default encryption", err)
+		}
+	}
+	return fs, nil
+}
+
+func isAPICode(err error, code string) bool {
+	var ae smithy.APIError
+	return errors.As(err, &ae) && ae.ErrorCode() == code
 }

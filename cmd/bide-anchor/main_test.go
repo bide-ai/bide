@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/bide-ai/bide/anchor/awss3"
 	"github.com/bide-ai/bide/anchor/awss3/awss3test"
 	"github.com/bide-ai/bide/anchor/gcs"
@@ -366,4 +367,64 @@ func TestUnreadableDirIsNotAFinding(t *testing.T) {
 	if code, _, _ := e.do("verify", "-dir", dir, "-pubkey", e.pub); code != exitFindings {
 		t.Errorf("a damaged object = exit %d, want %d", code, exitFindings)
 	}
+}
+
+const s3Key = "arn:aws:kms:eu-west-1:111122223333:key/k"
+
+// For -backend s3, -kms-key, -retention and -lock-mode turn the bucket's own configuration into expectations:
+// a swapped default key, a shorter default retention or a weaker lock mode is a finding (1), a malformed
+// value is usage (2), and a bucket-configuration read that is denied or unavailable is unknown (3).
+func TestS3BackendBucketExpectations(t *testing.T) {
+	e := setup(t)
+	e.fake.DefaultKMSKeyID = s3Key
+	e.publish(t, e.head(t, "r1", 1, "a"))
+	base := []string{"-bucket", "b", "-owner", owner, "-pubkey", e.pub, "-run", "r1"}
+	with := func(extra ...string) []string { return append(append([]string{}, base...), extra...) }
+
+	if code, out, errs := e.do(append([]string{"check"}, with("-kms-key", s3Key, "-retention", "48h", "-lock-mode", "COMPLIANCE")...)...); code != 0 {
+		t.Fatalf("every expectation met = %d\n%s%s", code, out, errs)
+	}
+	for name, extra := range map[string][]string{
+		"another key":      {"-kms-key", "arn:aws:kms:eu-west-1:111122223333:key/other"},
+		"longer retention": {"-retention", "100000h"},
+	} {
+		for _, cmd := range []string{"check", "export"} {
+			if code, out, errs := e.do(append([]string{cmd}, with(extra...)...)...); code != exitFindings {
+				t.Errorf("%s %s = %d\n%s%s; want %d", name, cmd, code, out, errs, exitFindings)
+			}
+		}
+	}
+	e.fake.DefaultMode = types.ObjectLockRetentionModeGovernance
+	if code, out, _ := e.do(append([]string{"check"}, with("-lock-mode", "COMPLIANCE")...)...); code != exitFindings || !strings.Contains(out, "weaker than the expected COMPLIANCE") {
+		t.Errorf("a governance default where compliance is expected = %d\n%s", code, out)
+	}
+	e.fake.DefaultMode = types.ObjectLockRetentionModeCompliance
+
+	for name, extra := range map[string][]string{
+		"bad lock mode":  {"-lock-mode", "WORM"},
+		"zero retention": {"-retention", "0s"},
+		"negative":       {"-retention", "-1h"},
+	} {
+		if code, _, errs := e.do(append([]string{"check"}, with(extra...)...)...); code != exitUsage {
+			t.Errorf("%s = exit %d (%s), want %d", name, code, errs, exitUsage)
+		}
+	}
+	// Reading the bucket's configuration denied or unavailable: unknown, never a pass.
+	for _, op := range []string{"GetBucketVersioning", "GetObjectLockConfiguration", "GetBucketEncryption"} {
+		for name, fault := range map[string]error{"denied": awss3test.APIError("AccessDenied", 403), "unavailable": errors.New("connection reset")} {
+			e.fake.Hook = func(o string, _ int) error {
+				if o == op {
+					return fault
+				}
+				return nil
+			}
+			for _, cmd := range []string{"check", "export"} {
+				code, out, errs := e.do(append([]string{cmd}, with("-kms-key", s3Key)...)...)
+				if code != exitUnknown || strings.Contains(out, "PASS") {
+					t.Errorf("%s with %s %s = %d\n%s%s; want %d", cmd, op, name, code, out, errs, exitUnknown)
+				}
+			}
+		}
+	}
+	e.fake.Hook = nil
 }

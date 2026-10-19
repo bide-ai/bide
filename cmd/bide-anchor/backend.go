@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
 	"github.com/bide-ai/bide/anchor/awss3"
 	"github.com/bide-ai/bide/audit"
@@ -32,8 +35,9 @@ type backend struct {
 // openOptions are the flags an online command gives its backend.
 type openOptions struct {
 	bucket, owner, project, prefix string
-	kmsKey                         string        // -kms-key (gcs)
-	retention                      time.Duration // -retention (gcs)
+	kmsKey                         string        // -kms-key
+	retention                      time.Duration // -retention
+	lockMode                       string        // -lock-mode (s3)
 	pathStyle                      bool
 	verifier                       audit.Verifier
 	onSkip                         func(string) // an object the reader skipped because it claims to be no head
@@ -84,18 +88,15 @@ func s3Backend(mk clientFunc) backend {
 			if o.project != "" {
 				return nil, fmt.Errorf("%w: -project is for -backend gcs; the s3 backend takes -owner", errUsage)
 			}
-			// The S3 reader checks no expectation about the bucket's key or retention (it reports each
-			// object's lock state, not the bucket's configuration), so these flags would promise a check
-			// that does not happen: refuse them rather than ignore them.
-			if o.kmsKey != "" || o.retention != 0 {
-				return nil, fmt.Errorf("%w: -kms-key and -retention are for -backend gcs; the s3 reader checks no expectation about the bucket's key or retention", errUsage)
+			if o.kmsKey != "" && strings.HasPrefix(o.kmsKey, "projects/") {
+				return nil, fmt.Errorf("%w: -kms-key %q is a Cloud KMS key name; for -backend s3 give a KMS key ID, ARN or alias ARN", errUsage, o.kmsKey)
 			}
 			c, err := mk(ctx, o.pathStyle)
 			if err != nil {
 				return nil, fmt.Errorf("%w: AWS configuration: %w", errUsage, err)
 			}
 			r, err := awss3.NewReader(awss3.ReaderConfig{Client: c, Bucket: o.bucket, ExpectedBucketOwner: o.owner, Prefix: o.prefix,
-				Verifier: o.verifier, OnSkip: func(f awss3.Finding) { o.onSkip(f.String()) }})
+				KMSKeyID: o.kmsKey, Retention: o.retention, Mode: types.ObjectLockMode(o.lockMode), Verifier: o.verifier, OnSkip: func(f awss3.Finding) { o.onSkip(f.String()) }})
 			if err != nil {
 				return nil, err
 			}

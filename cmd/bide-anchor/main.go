@@ -88,7 +88,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 		pubkey, backendName                             string
 		kind                                            = audit.TreeJournal
 		pathStyle, force                                bool
-		kmsKey                                          string
+		kmsKey, lockMode                                string
 		retention                                       time.Duration
 		timeout                                         = 5 * time.Minute
 	)
@@ -112,8 +112,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 		fs.StringVar(&ownerID, "owner", "", "-backend s3: the 12-digit AWS account ID that owns the bucket (with -bucket)")
 		fs.StringVar(&project, "project", "", "-backend gcs: the number of the Google Cloud project that owns the bucket (with -bucket)")
 		fs.StringVar(&prefix, "prefix", "", "the key prefix the anchor was configured with (default bide-anchor/)")
-		fs.StringVar(&kmsKey, "kms-key", "", "-backend gcs: the Cloud KMS key (projects/P/locations/L/keyRings/R/cryptoKeys/K) the heads must be encrypted with: an object or bucket default with another key is a finding")
-		fs.DurationVar(&retention, "retention", 0, "-backend gcs: the retention the anchor was configured with: a bucket retention policy shorter than this is a finding (without it only the 24 h minimum is checked)")
+		fs.StringVar(&kmsKey, "kms-key", "", "the KMS key the heads must be encrypted with (gcs: projects/P/locations/L/keyRings/R/cryptoKeys/K; s3: a key ID, ARN or alias ARN): a bucket default or an object with another key is a finding")
+		fs.DurationVar(&retention, "retention", 0, "the retention the anchor was configured with: a bucket retention shorter than this (and, for s3, an object retained for less from its own write) is a finding; without it only the 24 h minimum is checked")
+		fs.StringVar(&lockMode, "lock-mode", "", "-backend s3: the object lock mode the anchor was configured with, COMPLIANCE or GOVERNANCE: a bucket default that is weaker is a finding, and with GOVERNANCE a governance-locked object is not")
 		fs.BoolVar(&pathStyle, "path-style", false, "use path-style addressing (a non-AWS server)")
 	}
 	switch cmd {
@@ -172,6 +173,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 	if timeout < 0 {
 		return fail(exitUsage, "-timeout must not be negative")
 	}
+	if lockMode != "" && lockMode != "COMPLIANCE" && lockMode != "GOVERNANCE" {
+		return fail(exitUsage, "-lock-mode %q is not COMPLIANCE or GOVERNANCE", lockMode)
+	}
 	if flagSet(fs, "retention") && retention <= 0 {
 		return fail(exitUsage, "-retention must be positive")
 	}
@@ -186,7 +190,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 			ctx, cancel = context.WithTimeout(ctx, timeout)
 			defer cancel()
 		}
-		reader, err = be.open(ctx, openOptions{bucket: bucket, owner: ownerID, project: project, kmsKey: kmsKey, retention: retention, prefix: prefix, pathStyle: pathStyle, verifier: v,
+		reader, err = be.open(ctx, openOptions{bucket: bucket, owner: ownerID, project: project, kmsKey: kmsKey, retention: retention, lockMode: lockMode, prefix: prefix, pathStyle: pathStyle, verifier: v,
 			onSkip: func(f string) {
 				fmt.Fprintf(stderr, "bide-anchor: skipped an object that is no anchored head: %s\n", f)
 			}})

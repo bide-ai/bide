@@ -15,7 +15,13 @@
     {
       "Sid": "ListTheBucket",
       "Effect": "Allow",
-      "Action": ["s3:ListBucket", "s3:ListBucketVersions"],
+      "Action": [
+        "s3:ListBucket",
+        "s3:ListBucketVersions",
+        "s3:GetBucketVersioning",
+        "s3:GetBucketObjectLockConfiguration",
+        "s3:GetEncryptionConfiguration"
+      ],
       "Resource": "arn:aws:s3:::BUCKET"
     },
     {

@@ -142,3 +142,26 @@ func TestBucketPolicyPinsLockRetentionAndKey(t *testing.T) {
 		t.Error("LockMode did not reach the policy")
 	}
 }
+
+// Every S3 call the Reader makes is allowed by the reader policy, and the policy has no write.
+func TestReaderPolicyCoversEveryReaderCall(t *testing.T) {
+	allowed := actions(t, awss3.ReaderPolicy, "Allow")
+	for call, acts := range map[string][]string{
+		"ListObjectVersions":         {"s3:ListBucketVersions"},
+		"GetObject":                  {"s3:GetObject", "s3:GetObjectVersion", "s3:GetObjectRetention", "s3:GetObjectLegalHold"},
+		"GetBucketVersioning":        {"s3:GetBucketVersioning"},
+		"GetObjectLockConfiguration": {"s3:GetBucketObjectLockConfiguration"},
+		"GetBucketEncryption":        {"s3:GetEncryptionConfiguration"},
+	} {
+		for _, a := range acts {
+			if !slices.Contains(allowed, a) {
+				t.Errorf("the Reader calls %s, which needs %s, but the reader policy does not allow it", call, a)
+			}
+		}
+	}
+	for _, a := range allowed {
+		if strings.HasPrefix(a, "s3:Put") || strings.Contains(strings.ToLower(a), "delete") {
+			t.Errorf("the reader policy allows %s", a)
+		}
+	}
+}

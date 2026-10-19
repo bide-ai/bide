@@ -53,7 +53,9 @@ Usage of bide-anchor export:
   -kind string
     	the tree kind: journal, or events for a notification or event trail (default "journal")
   -kms-key string
-    	-backend gcs: the Cloud KMS key (projects/P/locations/L/keyRings/R/cryptoKeys/K) the heads must be encrypted with: an object or bucket default with another key is a finding
+    	the KMS key the heads must be encrypted with (gcs: projects/P/locations/L/keyRings/R/cryptoKeys/K; s3: a key ID, ARN or alias ARN): a bucket default or an object with another key is a finding
+  -lock-mode string
+    	-backend s3: the object lock mode the anchor was configured with, COMPLIANCE or GOVERNANCE: a bucket default that is weaker is a finding, and with GOVERNANCE a governance-locked object is not
   -o string
     	write to this file instead of standard output
   -owner string
@@ -67,7 +69,7 @@ Usage of bide-anchor export:
   -pubkey string
     	the log operator's public key (ed25519:<hex>, or a file holding it)
   -retention duration
-    	-backend gcs: the retention the anchor was configured with: a bucket retention policy shorter than this is a finding (without it only the 24 h minimum is checked)
+    	the retention the anchor was configured with: a bucket retention shorter than this (and, for s3, an object retained for less from its own write) is a finding; without it only the 24 h minimum is checked
   -run string
     	the run or trail ID
   -timeout duration
@@ -85,7 +87,9 @@ Usage of bide-anchor check:
   -kind string
     	the tree kind: journal, or events for a notification or event trail (default "journal")
   -kms-key string
-    	-backend gcs: the Cloud KMS key (projects/P/locations/L/keyRings/R/cryptoKeys/K) the heads must be encrypted with: an object or bucket default with another key is a finding
+    	the KMS key the heads must be encrypted with (gcs: projects/P/locations/L/keyRings/R/cryptoKeys/K; s3: a key ID, ARN or alias ARN): a bucket default or an object with another key is a finding
+  -lock-mode string
+    	-backend s3: the object lock mode the anchor was configured with, COMPLIANCE or GOVERNANCE: a bucket default that is weaker is a finding, and with GOVERNANCE a governance-locked object is not
   -owner string
     	-backend s3: the 12-digit AWS account ID that owns the bucket (with -bucket)
   -path-style
@@ -97,7 +101,7 @@ Usage of bide-anchor check:
   -pubkey string
     	the log operator's public key (ed25519:<hex>, or a file holding it)
   -retention duration
-    	-backend gcs: the retention the anchor was configured with: a bucket retention policy shorter than this is a finding (without it only the 24 h minimum is checked)
+    	the retention the anchor was configured with: a bucket retention shorter than this (and, for s3, an object retained for less from its own write) is a finding; without it only the 24 h minimum is checked
   -run string
     	the run or trail ID
   -timeout duration
