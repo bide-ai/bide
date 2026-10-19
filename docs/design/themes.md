@@ -150,7 +150,7 @@ excluded by the CSP and the "no request off this server" rule.
 ## The theme file
 
 JSON, strict (unknown keys are errors, duplicate keys are errors, at most 16 KiB), parsed by a new
-root-module package (`internal/theme` at first; stdlib only; it becomes public, with a 0.x API, in the PR that adds the Go embedding option, so a Go host can then build and check a theme). A theme names a shipped base and overrides from it, so a custom theme can be five
+root-module package (`internal/theme` at first; stdlib only; the nested modules `flowedit` and `cmd/bide` can import it only because their paths sit under the root module's, and an architecture test pins the allowed importers: `internal/runview`, `internal/tools`, `flowedit`, `cmd/bide` and, for the approve page's build, `approvals`; it becomes public, with a 0.x API, in the PR that adds the Go embedding option, so a Go host can then build and check a theme). A theme names a shipped base and overrides from it, so a custom theme can be five
 lines:
 
 ```json
@@ -218,7 +218,7 @@ accessibility policy name.
 | C2 | Non-text contrast | `focus` on `bg` and `surface`; `border_strong` on `surface` and `bg`; `idle` on `bg` and `surface`; every semantic `fg` on `bg` and `surface` (strokes and icons; already implied by C1); `info` and `idle` (edges) on `canvas_bg` | 3:1 |
 | C3 | Status colours are distinct | `ok`, `warning`, `alert`, `info` (`fg`), pairwise, CIEDE2000 in CIELAB (D65) | at least 20 |
 | C4 | Domain colours are distinct | each of `gated`, `effect`, `idem`, `idle` against every other semantic `fg` (and each other), CIEDE2000; `idle` is included so "not reached" cannot look like "completed" | at least 10 |
-| C8 | Polarity | `alert` is warm (CIELAB hue 340 to 100 degrees) and `ok` is not; `ok`, `warning`, `alert` have chroma of at least 20, so the hue means something | as stated |
+| C8 | Polarity | `alert` is warm (CIELAB hue 340 to 100 degrees) and `ok` is not; `alert` is warmer than `warning`, meaning its hue is nearer 30 degrees (red) than `warning`'s on the circle, so the two cannot swap warmth; `ok`, `warning`, `alert` have chroma of at least 20, so the hue means something | as stated |
 | C5 | Distinct from the ground | each semantic `fg` against `bg`, `surface`: this is C2 (3:1); and each semantic `bg` tint against its `fg`: C1 | as C1, C2 |
 | C6 | Colour-blind separation (enforced for shipped themes, advisory for custom) | the C3 pairs after simulating protanopia, deuteranopia and tritanopia (Machado et al. 2009, severity 1.0) | at least 8; a failure fails the build for a shipped theme and is a warning, not a refusal, for a custom theme |
 | C7 | Ranges | the format rules above, `radius` ordering, `type_scale`, `density`, `scrim` | as listed |
@@ -421,7 +421,7 @@ reviewer before the decisions are taken (see the pull request).
 
 - **Validator unit tests.** Table tests for every check, on both sides of each threshold. The
   contrast function against the published WCAG examples (`#767676` on white is 4.54 and passes,
-  `#777777` is 4.48 and fails); a pair test for C8 (blue ok with orange alert passes, the swap fails); CIEDE2000 against Sharma, Wu and Dalal's published 34 test pairs;
+  `#777777` is 4.48 and fails); a pair test for C8 (blue ok with orange alert passes, the swap fails, and an alert yellower than the warning fails); CIEDE2000 against Sharma, Wu and Dalal's published 34 test pairs;
   the colour-blindness matrices against published reference values. Parser tests: unknown keys,
   duplicate keys, every forbidden colour form, an over-size file, an out-of-range length, a shipped
   name. A mutation check after the first commit: move a threshold by one step and a test must fail.
@@ -479,7 +479,7 @@ decorative borders.
 |---|---|---|
 | 1 | The `theme` package: parser, normaliser, checks C1 to C8, `CSS`, the shipped `light` and `dark` (today's values retuned so they pass C6 and C4: a visible change) and `high-contrast` as embedded JSON, the CI test, `bide theme check`. No page changes | No |
 | 2 | The viewer on generated tokens: `theme.css` served and the three palette blocks removed from `style.css`; `theme.js` and the toggle learn three themes and the remembered-name check; `-theme` and `-theme-default` on `bide view`; the Chrome matrix over the viewer's pages (screenshots match the previous output except for the retuned colours); the guide `docs/guides/themes.md` | No (`style.css` is shared but is the viewer's) |
-| 3 | The colour-only fixes A1 to A5, A7 to A9 in `graph.css`, `diff.css`, `extras.css`, `svg.go`, `live.js`; the retuned `idem`; the audit test | No |
+| 3 | The colour-only fixes A1 to A5, A7 to A9 in `graph.css`, `diff.css`, `extras.css`, `svg.go`, `live.js`; the audit test (`idem` is retuned once, in PR 1, so PR 2's screenshot comparison has one baseline) | No |
 | 4 | `forced-colors` and `prefers-contrast`: the mapping, the shape ladder completed, `border_strong` on every control in the viewer's CSS, the `info` token adopted where the pages use `accent` for a state; the high-contrast theme goes live | No |
 | 5 | The approve page: option B (its palette is the generated block, with a golden test that `app.css` equals the generator output, and `page.js` imports nothing from the shared `theme.js`), the `border_strong` control edges and the disabled-button edge (A6, A12), the same tests, the bundle hash test, a release-notes line saying the page's hash changes. Any edit to a shipped theme is also an approve-bundle change and is noted as one in the changelog | No |
 | 6 | The editor adopts it: `editor.css` and `editor.js` (the toggle function, `.btn.primary` to `on_accent`, the control borders to `border_strong`, the `.node.sel` ring to `focus`), `-theme` on `bide edit`, the per-theme Chrome states | **Yes**, about 30 changed lines; the PR waits for a quiet moment in phase 2 and rebases on it (rebase, force-push with lease, no update-branch) |
