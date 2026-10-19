@@ -39,6 +39,9 @@ func gcsBackend() backend {
 			if o.owner != "" {
 				return nil, fmt.Errorf("%w: -owner is for -backend s3; the gcs backend takes -project", errUsage)
 			}
+			if o.lockMode != "" {
+				return nil, fmt.Errorf("%w: -lock-mode is for -backend s3 (Object Lock modes); a Cloud Storage retention policy is locked or not", errUsage)
+			}
 			n, err := strconv.ParseUint(o.project, 10, 64)
 			if err != nil || n == 0 {
 				return nil, fmt.Errorf("%w: -project %q is not a project number (digits, not the project ID)", errUsage, o.project)

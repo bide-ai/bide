@@ -171,6 +171,12 @@ type ReaderConfig struct {
 
 	Prefix string
 
+	KMSKeyID string
+
+	Retention time.Duration
+
+	Mode types.ObjectLockMode
+
 	OnSkip func(Finding)
 
 	Verifier audit.Verifier
@@ -204,14 +210,18 @@ Package awss3test is an in-memory S3 bucket with versioning and Object Lock, for
 
 ```go
 type Fake struct {
-	Bucket        string
-	Owner         string
-	Versioning    types.BucketVersioningStatus
-	LockEnabled   bool
-	DefaultMode   types.ObjectLockRetentionMode
-	DefaultDays   int32
-	DefaultKMS    bool
-	NoEncryptRead bool
+	Bucket      string
+	Owner       string
+	Versioning  types.BucketVersioningStatus
+	LockEnabled bool
+	DefaultMode types.ObjectLockRetentionMode
+	DefaultDays int32
+
+	DefaultYears int32
+	DefaultKMS   bool
+
+	DefaultKMSKeyID string
+	NoEncryptRead   bool
 
 	Clock func() time.Time
 

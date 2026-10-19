@@ -3,6 +3,7 @@ package awss3_test
 import (
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -156,5 +157,61 @@ func TestObjectLockServerGovernanceAndLegalHold(t *testing.T) {
 	// The legal hold keeps the version even from the bypass.
 	if _, err := c.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(b), Key: v.Key, VersionId: v.VersionId, BypassGovernanceRetention: aws.Bool(true)}); err == nil {
 		t.Error("the server deleted a version under legal hold")
+	}
+}
+
+// The Reader's bucket-configuration findings against a real server: versioning, Object Lock, the default
+// retention and the default encryption are read with the same calls the reader's policy allows.
+func TestObjectLockServerBucketConfigurationFindings(t *testing.T) {
+	c := realClient(t)
+	k := newKeys(t, 1)
+	reader := func(b string, mod func(*awss3.ReaderConfig)) *awss3.Reader {
+		cfg := awss3.ReaderConfig{Client: c, Bucket: b, ExpectedBucketOwner: owner, Verifier: k.v, OnSkip: func(awss3.Finding) {}}
+		if mod != nil {
+			mod(&cfg)
+		}
+		r, err := awss3.NewReader(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	audit1 := func(r *awss3.Reader) []string {
+		rep, err := r.Audit(ctx, audit.TreeJournal, "run-1", time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, f := range rep.Findings {
+			out = append(out, f.String())
+		}
+		return out
+	}
+	has := func(got []string, sub string) bool {
+		for _, g := range got {
+			if strings.Contains(g, sub) {
+				return true
+			}
+		}
+		return false
+	}
+
+	good := newBucket(t, c, true, types.ObjectLockRetentionModeCompliance, 2)
+	if got := audit1(reader(good, func(c *awss3.ReaderConfig) { c.Retention = 48 * time.Hour; c.Mode = types.ObjectLockModeCompliance })); len(got) != 0 {
+		t.Errorf("an anchor bucket with its expectations met: %v", got)
+	}
+	if got := audit1(reader(good, func(c *awss3.ReaderConfig) { c.Retention = 30 * 24 * time.Hour })); !has(got, "shorter than the expected") {
+		t.Errorf("a longer expected retention: %v", got)
+	}
+	if got := audit1(reader(good, func(c *awss3.ReaderConfig) { c.KMSKeyID = "arn:aws:kms:us-east-1:111122223333:key/abcd" })); !has(got, "encryption") {
+		t.Errorf("an expected KMS key on a bucket without one: %v", got)
+	}
+	gov := newBucket(t, c, true, types.ObjectLockRetentionModeGovernance, 2)
+	if got := audit1(reader(gov, func(c *awss3.ReaderConfig) { c.Mode = types.ObjectLockModeCompliance })); !has(got, "weaker than the expected COMPLIANCE") {
+		t.Errorf("a governance default where compliance is expected: %v", got)
+	}
+	noDefault := newBucket(t, c, true, "", 0)
+	if got := audit1(reader(noDefault, nil)); !has(got, "no default retention") {
+		t.Errorf("a bucket with no default retention: %v", got)
 	}
 }

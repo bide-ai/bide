@@ -219,8 +219,7 @@ bucket against what it can tell is wrong (an unlocked or missing retention polic
 versioning off, uniform access or public access prevention off) but not against what you meant: a bucket whose
 default key was swapped, or whose locked retention was shortened but is still over 24 hours, then passes.
 With them a mismatch is a finding (exit 1), and a malformed key or a retention that is not positive is exit 2.
-The S3 reader checks no such expectation (it reports each object's lock state, not the bucket's configuration), so the
-s3 backend refuses these flags (exit 2) instead of ignoring them.
+`-backend s3` takes `-kms-key` and `-retention` too, and `-lock-mode` ([the S3 guide](anchoring.md#verifying-bide-anchor)); `-lock-mode` is refused for gcs and a Cloud KMS key name is refused for s3 (exit 2).
 
 What each exit status means for a bucket, for either backend:
 
@@ -231,7 +230,7 @@ What each exit status means for a bucket, for either backend:
 | 2 | a mistake in the call or its configuration | a flag the backend does not take, a malformed `-project`, no credentials, a bad prefix, `-dir` that is not a directory |
 | 3 | the bucket's state is unknown | a listing or read, or the read of the bucket's own configuration, that is unavailable, denied or timed out; retry, and alert if it persists |
 
-S3 differs in one case: a bucket that another account owns is refused by S3 as a denied read (exit 3), since S3 does not say whose bucket it is; gcs reads the owner, so it reports it as a finding.
+S3 differs in one case: a bucket that another account owns is refused by S3 as a denied read (exit 3), since S3 does not say whose bucket it is; gcs reads the owner, so it reports it as a finding. For S3 a bucket-configuration read the reader's policy does not allow is also exit 3.
 The command does what the library does:
 
 - `gcs.LoadDir(dir, verifier)` verifies a downloaded copy of the objects offline (for example

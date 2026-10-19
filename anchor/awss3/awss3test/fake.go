@@ -41,14 +41,18 @@ type Fake struct {
 	mu sync.Mutex
 
 	// Configuration, set by a test before use (New sets a correct anchor bucket).
-	Bucket        string
-	Owner         string // the account that owns the bucket
-	Versioning    types.BucketVersioningStatus
-	LockEnabled   bool
-	DefaultMode   types.ObjectLockRetentionMode // "" for no default retention
-	DefaultDays   int32
-	DefaultKMS    bool // the bucket's default encryption is SSE-KMS
-	NoEncryptRead bool // GetBucketEncryption fails with AccessDenied
+	Bucket      string
+	Owner       string // the account that owns the bucket
+	Versioning  types.BucketVersioningStatus
+	LockEnabled bool
+	DefaultMode types.ObjectLockRetentionMode // "" for no default retention
+	DefaultDays int32
+	// DefaultYears, when set, makes the default retention years and not DefaultDays.
+	DefaultYears int32
+	DefaultKMS   bool // the bucket's default encryption is SSE-KMS
+	// DefaultKMSKeyID is the KMS key ARN the bucket's default encryption names (empty: an AWS-managed key).
+	DefaultKMSKeyID string
+	NoEncryptRead   bool // GetBucketEncryption fails with AccessDenied
 
 	// Clock is the bucket's time (default time.Now).
 	Clock func() time.Time
@@ -74,7 +78,7 @@ type Fake struct {
 // with Object Lock and a 365-day compliance default retention, and SSE-KMS default encryption.
 func New(bucket string) *Fake {
 	return &Fake{Bucket: bucket, Owner: "111122223333", Versioning: types.BucketVersioningStatusEnabled,
-		LockEnabled: true, DefaultMode: types.ObjectLockRetentionModeCompliance, DefaultDays: 365, DefaultKMS: true,
+		LockEnabled: true, DefaultMode: types.ObjectLockRetentionModeCompliance, DefaultDays: 365, DefaultKMS: true, DefaultKMSKeyID: "arn:aws:kms:eu-west-1:111122223333:key/abcd-1234",
 		keys: map[string][]*Version{}, calls: map[string]int{}, Seen: map[string][]string{}}
 }
 
@@ -162,7 +166,11 @@ func (f *Fake) GetObjectLockConfiguration(_ context.Context, in *s3.GetObjectLoc
 	}
 	cfg := &types.ObjectLockConfiguration{ObjectLockEnabled: types.ObjectLockEnabledEnabled}
 	if f.DefaultMode != "" {
-		cfg.Rule = &types.ObjectLockRule{DefaultRetention: &types.DefaultRetention{Mode: f.DefaultMode, Days: aws.Int32(f.DefaultDays)}}
+		dr := &types.DefaultRetention{Mode: f.DefaultMode, Days: aws.Int32(f.DefaultDays)}
+		if f.DefaultYears > 0 {
+			dr = &types.DefaultRetention{Mode: f.DefaultMode, Years: aws.Int32(f.DefaultYears)}
+		}
+		cfg.Rule = &types.ObjectLockRule{DefaultRetention: dr}
 	}
 	return &s3.GetObjectLockConfigurationOutput{ObjectLockConfiguration: cfg}, nil
 }
@@ -181,7 +189,7 @@ func (f *Fake) GetBucketEncryption(_ context.Context, in *s3.GetBucketEncryption
 		alg = types.ServerSideEncryptionAwsKms
 	}
 	return &s3.GetBucketEncryptionOutput{ServerSideEncryptionConfiguration: &types.ServerSideEncryptionConfiguration{
-		Rules: []types.ServerSideEncryptionRule{{ApplyServerSideEncryptionByDefault: &types.ServerSideEncryptionByDefault{SSEAlgorithm: alg}}}}}, nil
+		Rules: []types.ServerSideEncryptionRule{{ApplyServerSideEncryptionByDefault: &types.ServerSideEncryptionByDefault{SSEAlgorithm: alg, KMSMasterKeyID: kmsID(f)}}}}}, nil
 }
 
 // PutObject stores a new version, honouring If-None-Match, the lock headers and SSE-KMS, as S3 does.
@@ -402,4 +410,11 @@ func (f *Fake) Keys() []string {
 		}
 	}
 	return out
+}
+
+func kmsID(f *Fake) *string {
+	if f.DefaultKMS && f.DefaultKMSKeyID != "" {
+		return &f.DefaultKMSKeyID
+	}
+	return nil
 }
