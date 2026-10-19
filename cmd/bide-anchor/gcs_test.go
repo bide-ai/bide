@@ -161,3 +161,46 @@ func TestGCSBackendEquivocation(t *testing.T) {
 		t.Errorf("online export of a fork = exit %d, want %d", code, exitFindings)
 	}
 }
+
+// Weaker protection on the bucket is a verdict about the bucket (a finding, 1), not an error in the call (2)
+// and not an unknown (3): an unlocked retention policy, versioning off, a shorter retention.
+func TestGCSBackendWeakBucketIsAFinding(t *testing.T) {
+	e := gcsSetup(t)
+	e.publish(t, e.head(t, "r1", 1, "a"))
+	online := []string{"-bucket", "b", "-project", e.proj, "-pubkey", e.pub, "-run", "r1"}
+	if code, out, errs := e.do("check", online...); code != 0 {
+		t.Fatalf("an intact bucket = %d\n%s%s", code, out, errs)
+	}
+	orig, err := e.fake.Bucket(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, weaken := range map[string]func(*gcs.BucketInfo){
+		"retention policy unlocked": func(b *gcs.BucketInfo) { b.RetentionLocked = false },
+		"retention policy removed":  func(b *gcs.BucketInfo) { b.RetentionPeriod = 0; b.RetentionLocked = false },
+		"versioning off":            func(b *gcs.BucketInfo) { b.Versioning = false },
+		"public access allowed":     func(b *gcs.BucketInfo) { b.PublicAccessPrevented = false },
+	} {
+		e.fake.Configure(weaken)
+		code, out, errs := e.do("check", online...)
+		if code != exitFindings || !strings.Contains(out, "FINDING") {
+			t.Errorf("%s: check = %d\n%s%s; want %d and a finding", name, code, out, errs, exitFindings)
+		}
+		if code, _, _ := e.do("export", online...); code != exitFindings {
+			t.Errorf("%s: export = exit %d, want %d (refused without -force)", name, code, exitFindings)
+		}
+		e.fake.Configure(func(b *gcs.BucketInfo) { *b = orig })
+	}
+}
+
+// A run with nothing anchored is a verdict (1: ErrNotFound), not an unknown (3) and not a pass.
+func TestGCSBackendNothingAnchoredIsAFinding(t *testing.T) {
+	e := gcsSetup(t)
+	e.publish(t, e.head(t, "r1", 1, "a"))
+	for _, cmd := range []string{"check", "export"} {
+		code, out, errs := e.do(cmd, "-bucket", "b", "-project", e.proj, "-pubkey", e.pub, "-run", "absent")
+		if code != exitFindings || strings.Contains(out, "PASS") {
+			t.Errorf("%s of a run with no head = %d\n%s%s; want %d", cmd, code, out, errs, exitFindings)
+		}
+	}
+}

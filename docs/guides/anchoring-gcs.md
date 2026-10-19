@@ -213,6 +213,16 @@ bide-anchor export -backend gcs -bucket bank-bide-anchor -project 123456789012 -
 ```
 
 The commands, the exit codes and the findings are those of the S3 anchor ([reference](../reference/bide-anchor.md)).
+What each exit status means for a bucket, for either backend:
+
+| Exit | Meaning | Examples |
+|---|---|---|
+| 0 | every head verifies, and the bucket's protection is as expected | |
+| 1 | a verdict about the bucket or its objects | a head the log key did not sign; two histories; no head anchored; a generation that vanished (gcs); weaker protection (a retention policy that is not locked, shorter or gone, versioning off, public access allowed); a bucket owned by another project (gcs); a delete marker or noncurrent generation |
+| 2 | a mistake in the call or its configuration | a flag the backend does not take, a malformed `-project`, no credentials, a bad prefix, `-dir` that is not a directory |
+| 3 | the bucket's state is unknown | a listing or read, or the read of the bucket's own configuration, that is unavailable, denied or timed out; retry, and alert if it persists |
+
+S3 differs in one case: a bucket that another account owns is refused by S3 as a denied read (exit 3), since S3 does not say whose bucket it is; gcs reads the owner, so it reports it as a finding.
 The command does what the library does:
 
 - `gcs.LoadDir(dir, verifier)` verifies a downloaded copy of the objects offline (for example
