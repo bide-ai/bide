@@ -1,7 +1,9 @@
 package flowedit
 
 import (
+	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -59,6 +61,13 @@ func FuzzApplyOperation(f *testing.F) {
 			{Op: "remove_node", Node: node},
 			{Op: "set_entry", Value: node},
 			{Op: "set_entry"},
+			{Op: "move_node", Node: node, Value: "up"},
+			{Op: "move_node", Node: node, Value: "down"},
+			{Op: "move_wiring", Index: int(pick) % 4, Value: "up"},
+			{Op: "move_wiring", Index: int(pick) % 4, Value: "down"},
+			{Op: "set_flow", Value: "zz flow"},
+			{Op: "set_in", Value: "T"},
+			{Op: "set_out"},
 		}
 		op := ops[int(pick)%len(ops)]
 		r, err := ApplyOperation(name, text, op)
@@ -75,8 +84,20 @@ func FuzzApplyOperation(f *testing.F) {
 		}
 		// Undo the same operation's effect on bytes it did not touch: the result is a splice, so a
 		// no-op reapplication changes nothing more.
+		if strings.HasPrefix(op.Op, "move_") {
+			// A move is not idempotent; its inverse is the move the other way, which restores the bytes.
+			inv := op
+			inv.Value = map[string]string{"up": "down", "down": "up"}[op.Value]
+			if op.Op == "move_wiring" {
+				inv.Index += map[string]int{"up": -1, "down": 1}[op.Value]
+			}
+			if back, err := ApplyOperation(name, out, inv); err == nil && string(back.Text) != string(text) && r.Changed && bytes.HasSuffix(text, []byte("\n")) {
+				t.Fatalf("%+v: moving back did not restore the bytes:\n%s\n=====\n%s", op, text, back.Text)
+			}
+			return
+		}
 		again, err := ApplyOperation(name, out, op)
-		if err == nil && string(again.Text) != string(out) && op.Op != "add_assertion" && op.Op != "remove_assertion" {
+		if err == nil && string(again.Text) != string(out) && op.Op != "add_assertion" && op.Op != "remove_assertion" && !isStructureOp(op.Op) {
 			t.Fatalf("%+v is not idempotent:\n%s\n=====\n%s", op, out, again.Text)
 		}
 	})

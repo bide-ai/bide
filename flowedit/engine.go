@@ -34,6 +34,10 @@ const (
 	Insert
 	// Delete removes the map entry or sequence item at Path.
 	Delete
+	// Swap exchanges the items Index and Index+1 of the sequence at Path. Each item keeps its own
+	// text, its comments above and its trailing comment, byte for byte; what lies between them (a
+	// blank line, a comment that belongs to the file) stays where it is.
+	Swap
 )
 
 // Op is one operation. Path elements are string keys and int indices.
@@ -167,6 +171,8 @@ func applyLF(src []byte, op Op) (res *Result, err error) {
 		lo, hi, frag, err = d.insert(op)
 	case Delete:
 		lo, hi, frag, err = d.del(op)
+	case Swap:
+		lo, hi, frag, err = d.swap(op)
 	default:
 		err = refuse("unknown operation")
 	}
