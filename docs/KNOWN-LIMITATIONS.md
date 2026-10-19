@@ -428,8 +428,6 @@ Removing a node leaves any `assert` line that names it (the check reports it as 
 because removing an assertion is itself a weakening. A node that is an input of a join cannot be removed
 in the editor yet; edit the source.
 
-**`plan` and `bide check` accept node names with characters that do not print.** A name with a direction override or a zero-width space loads and checks clean, and `bide check`, `bide view` and the diff draw it raw. The editor refuses such names in new ones and shows an existing one escaped, but it does not change what the loader accepts.
-
 **The editor's accessibility has automated and keyboard tests and no manual screen-reader pass yet.** The
 keyboard-only run and axe-core in Chrome (light and dark, five states) pass in CI; they are not a screen
 reader. To check by hand with VoiceOver, NVDA or Orca: the outline reads as a list of buttons named by

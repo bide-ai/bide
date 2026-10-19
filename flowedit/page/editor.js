@@ -24,7 +24,7 @@ const token = (/(?:^#|&)t=([0-9a-f]+)/.exec(location.hash) || [])[1] || '';
 // screen reader reads: aria-label, title, placeholder, alt), replace(), announce(), and the drawing's
 // text, titles and labels. The inputs a name is edited in, the source and option values keep the raw
 // text.
-const NONPRINT = /[^\p{L}\p{M}\p{N}\p{P}\p{S} \t\n\r]/gu;
+const NONPRINT = /[^\p{L}\p{M}\p{N}\p{P}\p{S} \t\n\r]|[\p{Default_Ignorable_Code_Point}\u2800]|^\p{M}/gu;
 export const shown = (s) => String(s).replace(NONPRINT, (c) => '\\u{' + c.codePointAt(0).toString(16).toUpperCase() + '}');
 
 // h builds an element: h('p', {class: 'x'}, 'text', child).

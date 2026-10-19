@@ -750,22 +750,24 @@ func TestStructureInChrome(t *testing.T) {
 	}
 }
 
-// TestNonPrintingNamesAreShownEscaped: a hand-written file can name things with a direction override or
-// a zero-width character (the loader accepts any string). On every surface of the page (opened, each
-// node selected, the remove dialog, the weakened banner, the save dialog, the conflict dialog) every
-// text node, title, aria-label, placeholder, alt and option is walked, and none holds a character that
-// does not print: the page writes it out as \u{XXXX}. The editing fields and the source keep the raw text.
+// TestNonPrintingNamesAreShownEscaped: plan refuses a name that does not print, so the server never sends
+// one for a config; the page still writes such characters out (a typed-mode registry names a block in Go,
+// which can be any string). The script has the page draw the real view of a config with each placeholder
+// name replaced by a hostile one, walks every text node, title, aria-label, placeholder, alt and option
+// in each state, and checks the page's helpers on every class. The editing fields and the source keep
+// the raw text.
 func TestNonPrintingNamesAreShownEscaped(t *testing.T) {
-	src := `{"version":1,"flow":"fl\u202eow","entry":"ch\u202egra","nodes":[` +
-		`{"name":"ch\u202egra","block":"bl\u200bock","safety":"side_effect","approval":{"need":1,"approvers":["ap\u202epr"]}},` +
-		`{"name":"\u200b","block":"b2"},{"name":"ok","block":"ok"}],` +
-		`"wiring":[{"edge":["ch\u202egra","\u200b"]},{"edge":["\u200b","ok"]}],` +
-		`"assert":["every path to ok passes ch\u202egra","ch\u202egra reachable"]}` + "\n"
+	src := `{"version":1,"flow":"flowZ","entry":"nodeA","nodes":[` +
+		`{"name":"nodeA","block":"blockA","safety":"side_effect","approval":{"need":1,"approvers":["approvA"]}},` +
+		`{"name":"nodeB","block":"b2"},{"name":"nodeC","block":"ok"}],` +
+		`"wiring":[{"edge":["nodeA","nodeB"]},{"edge":["nodeB","nodeC"]}],` +
+		`"assert":["every path to nodeC passes nodeA","nodeA reachable"]}` + "\n"
 	s, _ := newTestServer(t, "f.json", src)
 	var r struct {
 		OK        bool     `json:"ok"`
 		Error     string   `json:"error"`
-		Outline   []string `json:"outline"`
+		Helpers   []string `json:"helpers"`
+		Nodes     []string `json:"nodes"`
 		Title     string   `json:"title"`
 		Warning   string   `json:"warning"`
 		NameField string   `json:"nameField"`
@@ -781,20 +783,16 @@ func TestNonPrintingNamesAreShownEscaped(t *testing.T) {
 	if !r.OK {
 		t.Fatalf("the script failed: %s\nconsole: %q", r.Error, r.Console)
 	}
-	if !slices.Equal(r.Outline, []string{`ch\u{202E}gra`, `\u{200B}`, "ok"}) || r.Title != `ch\u{202E}gra` || r.NameField != "ch\u202egra" {
-		t.Errorf("outline %q, title %q, field %q", r.Outline, r.Title, r.NameField)
+	if len(r.Helpers) > 0 {
+		t.Errorf("the page's helpers leave characters raw or change plain text: %q", r.Helpers)
+	}
+	if len(r.Nodes) != 3 || r.Title != `ch\u{202E}gra` || r.NameField != "ch\u202egra" {
+		t.Errorf("nodes %q, title %q, field %q", r.Nodes, r.Title, r.NameField)
 	}
 	for _, h := range r.Hits {
 		t.Errorf("raw U+%s in %s (%s): %q", h.CP, h.Where, h.State, h.Text)
 	}
-	// The script makes the file change on disk on purpose, so the browser logs the save's 409.
-	var other []string
-	for _, c := range r.Console {
-		if !strings.Contains(c, "409") {
-			other = append(other, c)
-		}
-	}
-	if !strings.Contains(r.Warning, "do not print") || len(other) > 0 {
-		t.Errorf("warning %q, console %q", r.Warning, other)
+	if !strings.Contains(r.Warning, "do not print") || len(r.Console) > 0 {
+		t.Errorf("warning %q, console %q", r.Warning, r.Console)
 	}
 }

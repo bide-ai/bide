@@ -443,11 +443,26 @@ func ToJSONIf(name string, text []byte) ([]byte, error) {
 	return text, nil
 }
 
+// sameJSON compares two documents as data, reading an assert line as the grammar does (whitespace
+// between words collapsed: a rename writes a line it changed through the grammar).
 func sameJSON(a, b []byte) bool {
 	var x, y any
 	if json.Unmarshal(a, &x) != nil || json.Unmarshal(b, &y) != nil {
 		return false
 	}
+	norm := func(v any) {
+		if m, ok := v.(map[string]any); ok {
+			if lines, ok := m["assert"].([]any); ok {
+				for i, l := range lines {
+					if s, ok := l.(string); ok {
+						lines[i] = strings.Join(strings.Fields(s), " ")
+					}
+				}
+			}
+		}
+	}
+	norm(x)
+	norm(y)
 	return reflect.DeepEqual(x, y)
 }
 
@@ -536,6 +551,15 @@ func TestNamesCannotSpoof(t *testing.T) {
 		"unassigned":             "a\U000e0fffb",
 		"tab":                    "a\tb",
 		"byte order mark":        "a\ufeffb",
+		"hangul filler":          "a\u3164",
+		"halfwidth filler":       "a\uffa0b",
+		"braille blank":          "\u2800",
+		"grapheme joiner":        "a\u034fb",
+		"khmer inherent vowel":   "a\u17b4b",
+		"variation selector":     "a\ufe0f",
+		"zero-width non-joiner":  "a\u200cb",
+		"mongolian selector":     "a\u180bb",
+		"leading mark":           "\u0301a",
 	} {
 		for _, op := range []Operation{{Op: "add_node", Node: name, Value: "b"}, {Op: "rename_node", Node: "receipt", Value: name}} {
 			if why := refusalOf(t, "f.yaml", structFlow, op); !strings.Contains(why, "invisible") && !strings.Contains(why, "starts or ends") {

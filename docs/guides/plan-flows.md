@@ -699,7 +699,7 @@ the error names the field and writes the character out, for example `nodes[2].na
 holds a character that does not print (U+202E)`. **This also refuses some legitimate text, on purpose:** a Persian
 or Urdu word spelled with a zero-width non-joiner, an Indic conjunct spelled with a zero-width joiner,
 an emoji sequence joined by one (a family, a rainbow flag), an emoji with a variation selector (a
-red heart as `U+2764 U+FE0F`), and a left-to-right or right-to-left mark in a name that mixes scripts
+red heart as `U+2764 U+FE0F`, a check mark, a keycap such as 1 with `U+FE0F U+20E3`; the bare symbol is a valid name), and a left-to-right or right-to-left mark in a name that mixes scripts
 and digits. The reason is that two names differing only by an invisible character read the same and
 one can impersonate the other. The way out is to transliterate the name, or spell it without the
 joiner, selector or mark. The Default_Ignorable set is taken from the Unicode tables of the Go

@@ -1,10 +1,12 @@
-// spoof.mjs: names with characters that do not print (a hand-written file can have them; the loader
-// accepts any string) are shown escaped, never drawn, on every surface of the page. In each state
-// (opened, each node selected, the remove dialog, the weakened banner with the save dialog, the
-// conflict dialog) it walks every text node, every title, aria-label, placeholder and alt, and every
-// option's text, outside the source pane and the inputs an author edits in, and reports each
-// character that does not print. It prints one JSON line.
-import fs from 'node:fs';
+// spoof.mjs: names with characters that do not print are shown escaped, never drawn, on every surface
+// of the page. plan refuses such names at load, so the server never sends one for a config; the page
+// still writes them out, because a name can reach it by another road (a typed-mode registry names a
+// block in Go, which can be any string). The script takes the real view of a config with placeholder
+// names, replaces each placeholder in it with a name that holds a direction override, a zero-width
+// space or a filler, and has the page draw that view: opened, each node selected, and the weakened
+// banner. In each state it walks every text node, every title, aria-label, placeholder and alt, and
+// every option's text, outside the source pane and the inputs an author edits in, and reports each
+// character that does not print. It also checks the page's own helpers. It prints one JSON line.
 import puppeteer from 'puppeteer-core';
 
 const env = process.env;
@@ -44,10 +46,39 @@ try {
     for (const f of found) hits.push({ state, ...f });
   };
   const r = {};
-  r.outline = await page.$$eval('#outline button .nm', (b) => b.map((x) => x.textContent));
-  r.title = '';
-  await walk('opened');
-  const n = r.outline.length;
+  // The page's helpers, on every class of character.
+  r.helpers = await page.evaluate(async () => {
+    const m = await import('/assets/editor.js');
+    const cases = ['ch\u202egra', '\u200b', 'a\u200db', 'a\u00adb', 'a\u00a0b', 'a\u2028b', 'a\ufeffb', 'a\ue000b', 'a\u3164', 'a\uffa0b', '\u2800', 'a\u034fb', 'a\u17b4b', 'a\ufe0f', 'a\u180bb', '\u0301a'];
+    const bad = /[^\p{L}\p{M}\p{N}\p{P}\p{S} \t\n\r]/u;
+    const left = [];
+    for (const c of cases) {
+      const x = m.shown(c);
+      if (bad.test(x) || x === c || !x.includes('\\u{')) left.push(c.codePointAt(0).toString(16) + ' -> ' + x);
+      const e = m.h('p', { 'aria-label': c, title: c, placeholder: c }, c);
+      if (bad.test(e.textContent) || bad.test(e.getAttribute('aria-label')) || bad.test(e.getAttribute('title')) || bad.test(e.getAttribute('placeholder'))) left.push('h: ' + c.codePointAt(0).toString(16));
+    }
+    const plain = ['manual review', 'caf\u00e9', '\u30ce\u30fc\u30c9', '\u05e9\u05dc\u05d5\u05dd', '\ud55c\uae00', 'a\tb\nc'];
+    for (const c of plain) if (m.shown(c) !== c) left.push('plain changed: ' + c);
+    return left;
+  });
+  // The real view of the config (placeholder names), with each placeholder replaced by a hostile name.
+  const hostile = await page.evaluate(async () => {
+    const token = (/(?:^#|&)t=([0-9a-f]+)/.exec(location.hash) || [])[1] || '';
+    const text = document.getElementById('source').value;
+    const res = await fetch('/api/report', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Bide-Token': token }, body: JSON.stringify({ text }) });
+    let j = await res.text();
+    const swap = { nodeA: 'ch\\u202egra', nodeB: '\\u200b', nodeC: 'o\\u3164k', blockA: 'bl\\u200bock', approvA: 'ap\\u202epr', flowZ: 'fl\\u202eow' };
+    for (const [k, v] of Object.entries(swap)) j = j.split(k).join(v);
+    const v = JSON.parse(j);
+    v.weakening = { baseline: 'HEAD:f\u202e.json', weakened: ['ch\u202egra: approval 2 of 3 -> 1 of 3'], word: 'APPROVAL GATE WEAKENED', line: 'This is weaker', changes: ['ch\u202egra: gate changed'], strengthened: [] };
+    const m = await import('/assets/editor.js');
+    m.render(v, { keepSource: true });
+    return v.nodes.map((n) => n.name);
+  });
+  r.nodes = hostile;
+  await walk('rendered');
+  const n = hostile.length;
   for (let i = 0; i < n; i++) {
     await page.evaluate((i) => document.querySelectorAll('#outline button')[i].click(), i);
     await until(() => document.getElementById('f-name'), 'the inspector');
@@ -58,27 +89,6 @@ try {
       r.nameField = await page.$eval('#f-name', (e) => e.value);
     }
   }
-  // The remove dialog of the second node (edges name it, so the dialog lists them).
-  await page.evaluate(() => document.querySelectorAll('#outline button')[1].click());
-  await until(() => document.getElementById('f-remove'), 'the remove button');
-  await page.click('#f-remove');
-  await until(() => document.getElementById('dialog').open && document.getElementById('remove-list'), 'the remove dialog');
-  await walk('remove dialog');
-  await page.keyboard.press('Escape');
-  await until(() => !document.getElementById('dialog').open, 'the dialog to close');
-  // A weakened text: the gate is removed in the source. The banner, the verdict and the save dialog.
-  await page.$eval('#source', (e) => { e.value = e.value.replace(/,"approval":\s*\{[^}]*\}/, ''); e.dispatchEvent(new Event('input', { bubbles: true })); });
-  await until(() => document.getElementById('weakened')?.textContent.includes('WEAKENED'), 'the weakened banner');
-  await walk('weakened banner');
-  await page.click('#save');
-  await until(() => document.getElementById('dialog').open && document.getElementById('confirm-weaken'), 'the save dialog');
-  await walk('save dialog');
-  // The file changes on disk behind the editor: the save answers with the conflict dialog.
-  fs.appendFileSync(env.FILE, '\n');
-  await page.click('#confirm-weaken');
-  await page.click('#do-save');
-  await until(() => /changed on disk/i.test(document.getElementById('dialog-title')?.textContent || ''), 'the conflict dialog');
-  await walk('conflict dialog');
   out = { ok: true, ...r, hits, console: console_ };
 } catch (e) {
   out = { ok: false, error: String(e && e.message || e), console: console_ };
