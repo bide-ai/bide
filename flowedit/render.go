@@ -74,7 +74,9 @@ func scalar(v any, q byte, flow, js bool) (string, error) {
 		if strings.Contains(out, "\n") {
 			return "", refuse("a string the library folds")
 		}
-		if flow && !strings.HasPrefix(out, "\"") && !strings.HasPrefix(out, "'") && strings.ContainsAny(out, ",[]{}") {
+		// A plain scalar with a quote character in it is valid inside a flow collection, but the scanner that
+		// finds where an entry ends reads the quote as the start of a string; write it quoted.
+		if flow && !strings.HasPrefix(out, "\"") && !strings.HasPrefix(out, "'") && strings.ContainsAny(out, ",[]{}'\"") {
 			return dq(), nil
 		}
 		return out, nil
@@ -147,8 +149,9 @@ func (d *doc) blockEntry(pad, key string, v any, flow bool) (string, error) {
 		return pad + k + ":\n" + body, err
 	case []any:
 		var b strings.Builder
+		items := d.itemFlowHint(key) // the items are written in the style this key's items have elsewhere
 		for _, e := range x {
-			s, err := d.blockItem(inner, 2, e, false)
+			s, err := d.blockItem(inner, 2, e, items && isComposite(e))
 			if err != nil {
 				return "", err
 			}
@@ -157,6 +160,35 @@ func (d *doc) blockEntry(pad, key string, v any, flow bool) (string, error) {
 		return pad + k + ":\n" + b.String(), nil
 	}
 	return "", refuse("value")
+}
+
+// flowByDefault are the config keys whose lists the repository writes as flow lists (edge: [a, b],
+// when: [{pred: p, to: t}]), used when the document has no such list to copy the style from.
+var flowByDefault = map[string]bool{"edge": true, "when": true}
+
+// itemFlowHint reports whether the items of the first list under key in the document are flow
+// collections (a list of {pred: p, to: t} mappings), so a new list under that key is written alike.
+func (d *doc) itemFlowHint(key string) bool {
+	var flow, found bool
+	var walk func(n *yaml.Node)
+	walk = func(n *yaml.Node) {
+		switch n.Kind {
+		case yaml.MappingNode:
+			for i := 0; i+1 < len(n.Content); i += 2 {
+				v := n.Content[i+1]
+				if !found && n.Content[i].Value == key && v.Kind == yaml.SequenceNode && len(v.Content) > 0 {
+					found, flow = true, isFlow(v.Content[0])
+				}
+				walk(v)
+			}
+		case yaml.SequenceNode:
+			for _, c := range n.Content {
+				walk(c)
+			}
+		}
+	}
+	walk(d.root)
+	return flow
 }
 
 func empty(v any) bool {
@@ -172,7 +204,16 @@ func empty(v any) bool {
 func (d *doc) blockMap(pad string, m Map) (string, error) {
 	var b strings.Builder
 	for _, kv := range m {
-		s, err := d.blockEntry(pad, kv.Key, kv.Val, false)
+		// A nested list or mapping is written in the style the document uses for that key elsewhere
+		// (edge: [a, b] stays a flow list); a key it does not use elsewhere is written in block style.
+		flow := false
+		if isComposite(kv.Val) {
+			var found bool
+			if flow, found = d.keyStyle(kv.Key); !found {
+				flow = flowByDefault[kv.Key]
+			}
+		}
+		s, err := d.blockEntry(pad, kv.Key, kv.Val, flow)
 		if err != nil {
 			return "", err
 		}

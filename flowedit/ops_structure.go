@@ -2,6 +2,7 @@ package flowedit
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -19,6 +20,9 @@ import (
 // still caught.
 
 func isStructureOp(op string) bool {
+	if isWiringOp(op) {
+		return true
+	}
 	switch op {
 	case "add_node", "remove_node", "rename_node", "set_entry", "move_node", "move_wiring", "set_flow", "set_in", "set_out":
 		return true
@@ -67,9 +71,70 @@ type wireDoc struct {
 	Inputs []string `json:"inputs"`
 }
 
+// explainUnreadable is the refusal for a config whose shape the operations cannot read: one sentence
+// naming the element and what it holds, and where to fix it.
+func explainUnreadable(data []byte, err error) error {
+	var ute *json.UnmarshalTypeError
+	if !errors.As(err, &ute) {
+		return refuse("the config cannot be read for this operation (%v); edit it in the source", err)
+	}
+	kind := func() string {
+		switch ute.Type.Kind() {
+		case reflect.Slice:
+			return "a list"
+		case reflect.Struct, reflect.Map:
+			return "a mapping"
+		case reflect.String:
+			return "text"
+		}
+		return "a " + ute.Type.Kind().String()
+	}
+	got := map[string]string{"string": "text", "number": "a number", "object": "a mapping", "array": "a list", "bool": "true or false"}[ute.Value]
+	if got == "" {
+		got = ute.Value
+	}
+	var top map[string]json.RawMessage
+	_ = json.Unmarshal(data, &top)
+	for _, key := range []string{"nodes", "wiring"} {
+		raw, ok := top[key]
+		if !ok {
+			continue
+		}
+		var items []json.RawMessage
+		if json.Unmarshal(raw, &items) != nil {
+			return refuse("%s is not a list; edit it in the source", key)
+		}
+		for i, it := range items {
+			var w wireDoc
+			var e error
+			if key == "wiring" {
+				e = json.Unmarshal(it, &w)
+			} else {
+				var n struct {
+					Name string `json:"name"`
+				}
+				e = json.Unmarshal(it, &n)
+			}
+			if e != nil {
+				var ie *json.UnmarshalTypeError
+				if errors.As(e, &ie) && ie.Field != "" {
+					return refuse("%s[%d].%s is %s, not %s; edit it in the source", key, i, ie.Field, got, kind())
+				}
+				return refuse("%s[%d] is not a mapping the editor can read; edit it in the source", key, i)
+			}
+		}
+	}
+	if ute.Field != "" {
+		return refuse("%s is %s, not %s; edit it in the source", ute.Field, got, kind())
+	}
+	return refuse("the config has a value of the wrong type; edit it in the source")
+}
+
 type structDoc struct {
-	Entry string `json:"entry"`
-	Nodes []struct {
+	// wireRaw is the keys of each wiring element, raw (see applyStructure).
+	wireRaw []map[string]json.RawMessage
+	Entry   string `json:"entry"`
+	Nodes   []struct {
 		Name string `json:"name"`
 	} `json:"nodes"`
 	Wiring []wireDoc `json:"wiring"`
@@ -106,7 +171,7 @@ func (c *structDoc) isJoin(name string) bool {
 func applyStructure(name string, src, data []byte, op Operation) (*Applied, error) {
 	var cfg structDoc
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return nil, refuse("the config cannot be read for this operation: %v", err)
+		return nil, explainUnreadable(data, err)
 	}
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(data, &top); err != nil {
@@ -116,6 +181,13 @@ func applyStructure(name string, src, data []byte, op Operation) (*Applied, erro
 	if err := json.Unmarshal(data, &generic); err != nil {
 		return nil, refuse("the config cannot be read: %v", err)
 	}
+	// Each wiring element as raw keys, so a key that is present with a null value can be told from an
+	// absent one.
+	var wireRaw []map[string]json.RawMessage
+	if raw, ok := top["wiring"]; ok {
+		_ = json.Unmarshal(raw, &wireRaw)
+	}
+	cfg.wireRaw = wireRaw
 	var (
 		steps   []Op
 		cascade []string
@@ -136,6 +208,10 @@ func applyStructure(name string, src, data []byte, op Operation) (*Applied, erro
 		steps, err = planMoveWiring(&cfg, op)
 	case "set_flow", "set_in", "set_out":
 		steps, err = planSetScalar(&cfg, top, op)
+	default:
+		if isWiringOp(op.Op) {
+			steps, err = planWiring(&cfg, top, op)
+		}
 	}
 	if err != nil {
 		return nil, err
@@ -541,6 +617,12 @@ func expectStructure(old any, op Operation) (any, error) {
 	}
 	nodes, _ := doc["nodes"].([]any)
 	wiring, _ := doc["wiring"].([]any)
+	if isWiringOp(op.Op) {
+		if err := expectWiring(doc, op); err != nil {
+			return nil, err
+		}
+		return doc, nil
+	}
 	switch op.Op {
 	case "add_node":
 		doc["nodes"] = append(nodes, map[string]any{"name": op.Node, "block": op.Value})

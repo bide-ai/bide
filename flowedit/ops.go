@@ -12,7 +12,7 @@ import (
 type Operation struct {
 	// Op names the operation: "set_safety", "set_block", "set_approval", "clear_approval",
 	// "add_assertion", "set_assertion", "remove_assertion", "add_node", "remove_node",
-	// "rename_node", "set_entry", "move_node", "move_wiring", "set_flow", "set_in" or "set_out".
+	// "rename_node", "set_entry", "move_node", "move_wiring", "set_flow", "set_in", "set_out", "add_edge", "remove_edge", "add_switch", "remove_switch", "add_arm", "remove_arm", "set_arm", "move_arm" or "set_else".
 	Op string `json:"op"`
 	// Node is the node the operation is on, by its name in the config.
 	Node string `json:"node"`
@@ -36,6 +36,10 @@ type Operation struct {
 	// removes the line at Index. They name no node: Node is ignored.
 	Assertion *Assertion `json:"assertion,omitempty"`
 	Index     int        `json:"index,omitempty"`
+	// Pred and To are for the wiring operations (ops_wiring.go): the predicate of an arm and the node an
+	// edge, an arm or an else goes to.
+	Pred string `json:"pred,omitempty"`
+	To   string `json:"to,omitempty"`
 	// DryRun asks what remove_node would also remove: the answer is the list in Applied.Cascade and
 	// the text is unchanged. Confirm is that list, sent back with the real remove_node; a remove
 	// whose list is not empty is refused unless Confirm equals it, so what is removed is what was

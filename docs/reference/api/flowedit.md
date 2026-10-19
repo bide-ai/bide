@@ -57,6 +57,18 @@ type Approval struct {
 
 Approval is a node's approval gate as the config writes it: Need decisions from the Approvers, never counting the run's requester when ExcludePrincipal is set, and a deadline (a Go duration such as "48h", "" for none).
 
+### type Arm
+
+```go
+type Arm struct {
+	Pred    string `json:"pred"`
+	To      string `json:"to"`
+	LoopMax int    `json:"loop_max,omitempty"`
+}
+```
+
+Arm is one arm of a switch; LoopMax is above 0 for a loop-back arm.
+
 ### type Assertion
 
 ```go
@@ -217,6 +229,9 @@ type Operation struct {
 	Assertion *Assertion `json:"assertion,omitempty"`
 	Index     int        `json:"index,omitempty"`
 
+	Pred string `json:"pred,omitempty"`
+	To   string `json:"to,omitempty"`
+
 	DryRun  bool     `json:"dry_run,omitempty"`
 	Confirm []string `json:"confirm,omitempty"`
 }
@@ -368,6 +383,8 @@ type View struct {
 	Nodes  []Node   `json:"nodes,omitempty"`
 	Wiring []string `json:"wiring,omitempty"`
 
+	Wires []Wire `json:"wires,omitempty"`
+
 	Graph string `json:"graph,omitempty"`
 
 	Weakening *Weakening `json:"weakening,omitempty"`
@@ -404,3 +421,21 @@ Weakening is the answer to "is this text a weaker flow than the one we started f
 **Constructors and functions**
 
 - `func Compare(name, source string, baseline, text []byte) *Weakening`: Compare classifies text against baseline, both the contents of a config file called name.
+
+### type Wire
+
+```go
+type Wire struct {
+	Kind   string   `json:"kind"`
+	From   string   `json:"from,omitempty"`
+	To     string   `json:"to,omitempty"`
+	Over   string   `json:"over,omitempty"`
+	Arms   []Arm    `json:"arms,omitempty"`
+	Else   string   `json:"else,omitempty"`
+	Join   string   `json:"join,omitempty"`
+	Inputs []string `json:"inputs,omitempty"`
+	Merge  string   `json:"merge,omitempty"`
+}
+```
+
+Wire is one element of the config's wiring as the page edits it: an edge (From, To), a switch (Over, its Arms and Else) or a join (Join, Inputs, Merge).

@@ -51,6 +51,8 @@ type View struct {
 	// Wiring the edges, switches and joins in config order.
 	Nodes  []Node   `json:"nodes,omitempty"`
 	Wiring []string `json:"wiring,omitempty"`
+	// Wires are the same elements as data, in the same order: what the page edits wiring from.
+	Wires []Wire `json:"wires,omitempty"`
 	// Graph is the layered drawing as one SVG document with every label escaped. The page parses
 	// it with DOMParser and never assigns it as markup.
 	Graph string `json:"graph,omitempty"`
@@ -156,7 +158,8 @@ func BuildView(name string, text []byte) *View {
 	}
 	v.AssertionForms = assertionFormsOf(lines)
 	v.Nodes = outline(data, r)
-	v.Wiring = wiring(data)
+	v.Wires = wires(data)
+	v.Wiring = wiring(v.Wires)
 	return v
 }
 
@@ -207,34 +210,70 @@ func outline(data []byte, r plan.ConfigReport) []Node {
 	return out
 }
 
-// wiring lists the config's wiring elements as lines of text, one per element and in the order the
-// config has them: the page addresses an element by its position in this list (move_wiring), so the
-// list must be the config's order, not the topology's grouping by kind. data is the JSON the config
-// reads as; an element it cannot read is skipped by the strict check before it gets here.
-func wiring(data []byte) []string {
+// Wire is one element of the config's wiring as the page edits it: an edge (From, To), a switch (Over,
+// its Arms and Else) or a join (Join, Inputs, Merge).
+type Wire struct {
+	Kind   string   `json:"kind"` // "edge", "switch", "join", or "other" for an element that is none
+	From   string   `json:"from,omitempty"`
+	To     string   `json:"to,omitempty"`
+	Over   string   `json:"over,omitempty"`
+	Arms   []Arm    `json:"arms,omitempty"`
+	Else   string   `json:"else,omitempty"`
+	Join   string   `json:"join,omitempty"`
+	Inputs []string `json:"inputs,omitempty"`
+	Merge  string   `json:"merge,omitempty"`
+}
+
+// Arm is one arm of a switch; LoopMax is above 0 for a loop-back arm.
+type Arm struct {
+	Pred    string `json:"pred"`
+	To      string `json:"to"`
+	LoopMax int    `json:"loop_max,omitempty"`
+}
+
+// wires reads the config's wiring elements in the order the config has them: the page addresses an
+// element by its position (move_wiring), so the list is the config's order, not the topology's
+// grouping by kind. data is the JSON the config reads as; an element it cannot read is skipped by the
+// strict check before it gets here.
+func wires(data []byte) []Wire {
 	var cfg struct {
 		Wiring []struct {
 			Edge   []string `json:"edge"`
 			Switch string   `json:"switch"`
-			When   []struct {
-				Pred    string `json:"pred"`
-				To      string `json:"to"`
-				LoopMax int    `json:"loop_max"`
-			} `json:"when"`
+			When   []Arm    `json:"when"`
 			Else   string   `json:"else"`
 			Join   string   `json:"join"`
 			Inputs []string `json:"inputs"`
+			Merge  string   `json:"merge"`
 		} `json:"wiring"`
 	}
 	if json.Unmarshal(data, &cfg) != nil {
 		return nil
 	}
-	var out []string
+	var out []Wire
 	for _, w := range cfg.Wiring {
 		switch {
 		case w.Switch != "":
+			out = append(out, Wire{Kind: "switch", Over: w.Switch, Arms: w.When, Else: w.Else})
+		case w.Join != "":
+			out = append(out, Wire{Kind: "join", Join: w.Join, Inputs: w.Inputs, Merge: w.Merge})
+		case len(w.Edge) == 2:
+			out = append(out, Wire{Kind: "edge", From: w.Edge[0], To: w.Edge[1]})
+		default:
+			out = append(out, Wire{Kind: "other"})
+		}
+	}
+	return out
+}
+
+// wiring lists the wiring elements as lines of text, one per element, in the config's order.
+func wiring(ws []Wire) []string {
+	var out []string
+	for _, w := range ws {
+		switch w.Kind {
+		case "switch":
 			var arms []string
-			for _, a := range w.When {
+			for _, a := range w.Arms {
 				if a.LoopMax > 0 {
 					arms = append(arms, fmt.Sprintf("%s -> %s (loop, at most %d)", a.Pred, a.To, a.LoopMax))
 				} else {
@@ -244,11 +283,11 @@ func wiring(data []byte) []string {
 			if w.Else != "" {
 				arms = append(arms, "else -> "+w.Else)
 			}
-			out = append(out, "switch "+w.Switch+": "+strings.Join(arms, "; "))
-		case w.Join != "":
+			out = append(out, "switch "+w.Over+": "+strings.Join(arms, "; "))
+		case "join":
 			out = append(out, "join "+w.Join+": "+strings.Join(w.Inputs, ", "))
-		case len(w.Edge) == 2:
-			out = append(out, w.Edge[0]+" -> "+w.Edge[1])
+		case "edge":
+			out = append(out, w.From+" -> "+w.To)
 		default:
 			out = append(out, "(a wiring element that is not an edge, a switch or a join)")
 		}

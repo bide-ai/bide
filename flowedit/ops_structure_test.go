@@ -452,6 +452,18 @@ func sameJSON(a, b []byte) bool {
 	}
 	norm := func(v any) {
 		if m, ok := v.(map[string]any); ok {
+			// A null key of a wiring element (else: or when: with nothing after it) is an absent one.
+			if ws, ok := m["wiring"].([]any); ok {
+				for _, w := range ws {
+					if wm, ok := w.(map[string]any); ok {
+						for k, v := range wm {
+							if v == nil {
+								delete(wm, k)
+							}
+						}
+					}
+				}
+			}
 			if lines, ok := m["assert"].([]any); ok {
 				for i, l := range lines {
 					if s, ok := l.(string); ok {
@@ -463,7 +475,8 @@ func sameJSON(a, b []byte) bool {
 	}
 	norm(x)
 	norm(y)
-	return reflect.DeepEqual(x, y)
+	// An absent, null and empty list of nodes or wiring are one thing to the config.
+	return reflect.DeepEqual(canonical(x), canonical(y))
 }
 
 // A join's inputs are names too: a rename follows them, and the join keeps the rest of its element.

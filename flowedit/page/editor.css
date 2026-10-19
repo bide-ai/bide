@@ -63,3 +63,7 @@ dialog h2 { margin-top: 0; }
 .skip a { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .skip a:focus { position: static; width: auto; height: auto; overflow: visible; clip: auto; display: inline-block; margin: var(--s1); padding: var(--s1) var(--s3); background: var(--card); color: var(--fg); border: 2px solid var(--accent); border-radius: var(--r-sm); font-weight: 600; }
 [tabindex="-1"]:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+.conns { list-style: none; margin: 0 0 var(--s3); padding: 0; }
+.conns li { margin: var(--s1) 0; display: flex; gap: var(--s2); align-items: center; flex-wrap: wrap; }
+.conns .arm input[type="text"] { width: 9em; flex: none; }
+.conns .arm select { width: auto; }

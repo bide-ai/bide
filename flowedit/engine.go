@@ -805,8 +805,24 @@ func (d *doc) afterLast(p *yaml.Node, text string) (int, int, string, error) {
 // flowHint reports whether a composite inserted by op should be written in flow style, copying
 // what the document does for the same key (or sequence).
 func (d *doc) flowHint(op Op) bool {
-	want := op.Key
-	var found, flow bool
+	flow, found := d.keyStyle(op.Key)
+	if found {
+		return flow
+	}
+	if op.Key != "" && flowByDefault[op.Key] && isComposite(op.Value) {
+		return true // a key the repository writes as a flow list, with none in this file to copy
+	}
+	// No key to copy: follow the container's own style for items (a sequence of flow mappings).
+	if l, err := d.locate(op.Path); err == nil && l.node.Kind == yaml.SequenceNode && len(l.node.Content) > 0 {
+		return isFlow(l.node.Content[0])
+	}
+	return false
+}
+
+// keyStyle reports whether the first composite value under key in the document is a flow collection,
+// and whether there is one at all.
+func (d *doc) keyStyle(key string) (flow, found bool) {
+	want := key
 	var walk func(n *yaml.Node, inSeq bool)
 	walk = func(n *yaml.Node, inSeq bool) {
 		switch n.Kind {
@@ -824,14 +840,7 @@ func (d *doc) flowHint(op Op) bool {
 		}
 	}
 	walk(d.root, false)
-	if found {
-		return flow
-	}
-	// No key to copy: follow the container's own style for items (a sequence of flow mappings).
-	if l, err := d.locate(op.Path); err == nil && l.node.Kind == yaml.SequenceNode && len(l.node.Content) > 0 {
-		return isFlow(l.node.Content[0])
-	}
-	return false
+	return flow, found
 }
 
 func toGo(n *yaml.Node) any {

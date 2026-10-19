@@ -895,3 +895,77 @@ func TestMovesInChrome(t *testing.T) {
 		t.Errorf("a refused flow name: %q", r.Refusal)
 	}
 }
+
+// TestWiringInChrome: edges, a switch, its arms and its else by the keyboard.
+func TestWiringInChrome(t *testing.T) {
+	s, _ := newTestServer(t, "refund.yaml", weakFlow)
+	var r struct {
+		OK                bool     `json:"ok"`
+		Error             string   `json:"error"`
+		Original          string   `json:"original"`
+		WithAudit         string   `json:"withAudit"`
+		EdgesOutBefore    int      `json:"edgesOutBefore"`
+		InLine            string   `json:"inLine"`
+		AfterEdge         string   `json:"afterEdge"`
+		FocusAfterEdge    string   `json:"focusAfterEdge"`
+		OutsAfter         []string `json:"outsAfter"`
+		LiveEdge          string   `json:"liveEdge"`
+		AfterRemoveEdge   string   `json:"afterRemoveEdge"`
+		DupEdge           string   `json:"dupEdge"`
+		SwitchOffered     bool     `json:"switchOffered"`
+		AfterSwitch       string   `json:"afterSwitch"`
+		ArmsOne           int      `json:"armsOne"`
+		RmDisabledOnly    bool     `json:"rmDisabledOnly"`
+		AfterArm          string   `json:"afterArm"`
+		AfterSetArm       string   `json:"afterSetArm"`
+		AfterMoveArm      string   `json:"afterMoveArm"`
+		FocusAfterMove    string   `json:"focusAfterMove"`
+		AfterElse         string   `json:"afterElse"`
+		AfterRemoveArm    string   `json:"afterRemoveArm"`
+		LastRmDisabled    bool     `json:"lastRmDisabled"`
+		AfterRemoveSwitch string   `json:"afterRemoveSwitch"`
+		Console           []string `json:"console"`
+		Failed            []string `json:"failed"`
+		OffOrigin         []string `json:"offOrigin"`
+	}
+	runScript(t, "wiring.mjs", s, &r)
+	if !r.OK {
+		t.Fatalf("the script failed: %s\nconsole: %q\nfailed requests: %q", r.Error, r.Console, r.Failed)
+	}
+	if len(r.Console) > 0 || len(r.Failed) > 0 || len(r.OffOrigin) > 0 {
+		t.Errorf("the browser reported console %q, failed requests %q, requests off the origin %q", r.Console, r.Failed, r.OffOrigin)
+	}
+	if r.EdgesOutBefore != 0 || r.InLine != "Edges in: charge." {
+		t.Errorf("receipt's connections: %d edges out, %q", r.EdgesOutBefore, r.InLine)
+	}
+	if !strings.Contains(r.AfterEdge, "  - edge: [charge, receipt]\n  - edge: [receipt, audit]\n") || r.FocusAfterEdge != "c-edge-to" || len(r.OutsAfter) != 1 || !strings.Contains(r.LiveEdge, "Edge added") {
+		t.Errorf("after adding an edge: focus %q, outs %q, live %q\n%s", r.FocusAfterEdge, r.OutsAfter, r.LiveEdge, r.AfterEdge)
+	}
+	if r.AfterRemoveEdge != r.WithAudit {
+		t.Errorf("removing the edge did not restore the text:\n%s", r.AfterRemoveEdge)
+	}
+	if !strings.Contains(r.DupEdge, "already there") {
+		t.Errorf("a duplicate edge: %q", r.DupEdge)
+	}
+	if !r.SwitchOffered || !strings.Contains(r.AfterSwitch, "  - switch: audit\n    when: [{pred: big, to: receipt}]\n") || r.ArmsOne != 1 || !r.RmDisabledOnly {
+		t.Errorf("a switch: %d arms, remove disabled %v\n%s", r.ArmsOne, r.RmDisabledOnly, r.AfterSwitch)
+	}
+	if !strings.Contains(r.AfterArm, "when: [{pred: big, to: receipt}, {pred: small, to: charge}]\n") {
+		t.Errorf("an arm added:\n%s", r.AfterArm)
+	}
+	if !strings.Contains(r.AfterSetArm, "{pred: small, to: validate}") {
+		t.Errorf("an arm changed:\n%s", r.AfterSetArm)
+	}
+	if !strings.Contains(r.AfterMoveArm, "when: [{pred: small, to: validate}, {pred: big, to: receipt}]\n") || r.FocusAfterMove != "c-arm-down-0" {
+		t.Errorf("an arm moved: focus %q\n%s", r.FocusAfterMove, r.AfterMoveArm)
+	}
+	if !strings.Contains(r.AfterElse, "when: [{pred: small, to: validate}, {pred: big, to: receipt}]\n    else: charge\n") {
+		t.Errorf("an else:\n%s", r.AfterElse)
+	}
+	if !strings.Contains(r.AfterRemoveArm, "when: [{pred: big, to: receipt}]\n") || !r.LastRmDisabled {
+		t.Errorf("an arm removed: last remove disabled %v\n%s", r.LastRmDisabled, r.AfterRemoveArm)
+	}
+	if r.AfterRemoveSwitch != r.WithAudit {
+		t.Errorf("removing the switch did not restore the text:\n%s", r.AfterRemoveSwitch)
+	}
+}
