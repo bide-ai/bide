@@ -1,0 +1,76 @@
+# Themes
+
+A theme sets the colours, fonts, spacing and corner radius of bide's visual pages: the run viewer
+(`bide view`), the flow editor (`bide edit`) and, in a later release, the approve page. The design,
+including what a theme can never change, is in [Themes](../design/themes.md).
+
+**Status.** This release adds the theme file format and the checker, `bide theme check`. The pages
+do not load a theme file yet; the checker lets you write and test one now.
+
+A theme is data: a JSON file of typed values, never CSS. It cannot add a selector, a property, a URL
+or a function, so it cannot hide, move or restyle a control. It also cannot change a word, an icon,
+a dash pattern or a border style: the meaning of each state (completed, waiting, halted, gated) is
+carried by those, and a theme only chooses the colours that go with them.
+
+## The file
+
+```json
+{
+  "bide_theme": 1,
+  "name": "acme-night",
+  "base": "dark",
+  "surface": { "bg": "#0e1116", "surface": "#161b22", "accent": "#79b8ff" },
+  "semantic": { "ok": { "fg": "#56d364", "bg": "#12261a" } },
+  "radius": { "sm": 4, "md": 8, "lg": 12 }
+}
+```
+
+`base` is one of the shipped themes (`light`, `dark`, `high-contrast`); every key you leave out is
+taken from it, and the checks run on the result. `name` is lower case letters, digits and hyphens
+(2 to 32 characters) and is not a shipped name. The file is at most 16 KiB. Keys are exact: an
+unknown key, a repeated key, or `"BG"` for `"bg"` is an error.
+
+A colour is `#rgb` or `#rrggbb` and nothing else (no names, no `rgb()`, no `var()`, no alpha).
+
+| Key | Holds |
+|---|---|
+| `surface.bg`, `surface`, `surface2` | the page, a card or input, a pill or code block |
+| `surface.text`, `muted` | body text, secondary text |
+| `surface.border`, `border_strong` | decorative borders, the edge of a control (it must reach 3:1) |
+| `surface.accent`, `accent_bg`, `on_accent`, `focus` | links and the primary button, its tint, text on the button, the focus ring |
+| `surface.canvas_bg`, `node_fill` | the flow graph's ground and the fill of a node with no state |
+| `semantic.ok`, `info`, `warning`, `alert`, `gated`, `effect`, `idem` | each `{ "fg", "bg" }`: the colour of the state and its tint |
+| `semantic.idle` | `{ "fg" }`: not reached, unknown, an edge not taken |
+| `semantic.on` | `{ "fg" }`: a glyph drawn on a solid state colour |
+| `syntax.key`, `str`, `num`, `bool`, `null`, `punct` | JSON highlighting |
+| `shadow` | `none`, `soft`, `strong` |
+| `scrim` | the darkness behind a dialog, 0.40 to 0.80 |
+| `font_ui` | `system-sans`, `system-serif`, `humanist`, `rounded` |
+| `font_mono` | `system-mono`, `code` |
+| `type_scale` | a multiplier, 0.90 to 1.25 |
+| `density` | `compact`, `normal`, `roomy` |
+| `radius` | `{ "sm", "md", "lg" }`, whole pixels 0 to 16, `sm <= md <= lg` |
+
+Fonts are a fixed list: a theme cannot name a family, load a web font, or pick a face that renders
+`0` and `O` alike on a page that shows digests and ids.
+
+## The checks
+
+`bide theme check theme.json` parses a file, resolves it against its base, and prints each failed
+measure with its value and threshold. It exits 0 when the theme passes, 1 when it is refused or
+cannot be read, and 2 for a usage error. `-v` prints every measure.
+
+| Check | What | Threshold |
+|---|---|---|
+| C1 | Text contrast (WCAG 2.x ratio): text and muted on every ground and tint, each state colour on the grounds and its tint, glyph on state colour, accent, syntax colours | 4.5:1 |
+| C2 | Non-text contrast: focus ring, control edge, idle | 3:1 |
+| C3 | The status colours `ok`, `warning`, `alert`, `info` are distinct (CIEDE2000) | at least 20 |
+| C4 | `gated`, `effect`, `idem` and `idle` are distinct from every other state colour | at least 10 |
+| C6 | C3 again after simulating protanopia, deuteranopia and tritanopia | at least 8; a warning for your theme, an error for a shipped one |
+| C8 | `alert` is warm (hue 340 to 100 degrees) and `ok` is not; `ok`, `warning` and `alert` have chroma of at least 20 | as stated |
+
+Ranges and enums (C7) are checked while the file is read. A theme that fails any check but C6 is
+refused. Every key and value in an error is quoted, so a file cannot print a terminal escape.
+
+What the pages do with a theme, how the toggle and the `-theme` flag work, and what happens under
+forced colours and `prefers-contrast` come with the releases that wire the pages to it.
