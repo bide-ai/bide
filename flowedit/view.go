@@ -59,6 +59,9 @@ type View struct {
 	// Weakening compares the text with the baseline (the committed file, or the file as the editor
 	// opened it). The server sets it; BuildView, which sees one text, does not.
 	Weakening *Weakening `json:"weakening,omitempty"`
+	// Typed is set when the editor knows the program's blocks (WithRegistry, WithBlocks): what the
+	// typed check rests on, the digest and the palette.
+	Typed *TypedView `json:"typed,omitempty"`
 }
 
 // Verdict is the banner the page opens with: Class (good, bad, warn, info), the state in capitals
@@ -97,6 +100,10 @@ type Node struct {
 	Approval *Approval `json:"approval,omitempty"`
 	// Problems are this node's problems, as text.
 	Problems []string `json:"problems,omitempty"`
+	// In and Out are the node's input and output type names, as the digest writes them; set in typed
+	// mode only.
+	In  string `json:"in,omitempty"`
+	Out string `json:"out,omitempty"`
 }
 
 // Doc is the config file as the server read it.
@@ -122,8 +129,14 @@ func hashOf(b []byte) string {
 
 // BuildView is the View of text, the contents of the file called name. It never fails: a text that
 // is not a config gives a View with ParseError and nothing else.
-func BuildView(name string, text []byte) *View {
+func BuildView(name string, text []byte) *View { return buildView(name, text, nil) }
+
+// buildView is BuildView for an editor that may know the program's blocks (ty not nil).
+func buildView(name string, text []byte, ty *typing) *View {
 	v := &View{Name: name, Format: formatOf(name), Text: string(text), Mode: ModeLine}
+	if ty != nil {
+		v.Mode = ty.label()
+	}
 	data := text
 	if v.Format == "yaml" {
 		var err error
@@ -131,8 +144,12 @@ func BuildView(name string, text []byte) *View {
 			return parseFailure(v, "YAML: "+err.Error())
 		}
 	}
-	cv := runview.BuildConfig(runview.Config{Name: name, Data: data})
+	cfg := runview.Config{Name: name, Data: data}
 	r := plan.InspectConfig(data, nil)
+	if ty != nil {
+		cfg, r = ty.config(name, data), ty.inspect(data)
+	}
+	cv := runview.BuildConfig(cfg)
 	v.Flow, v.Entry, v.In, v.Out = r.Topology.Flow, r.Topology.Entry, r.Topology.In, r.Topology.Out
 	v.Errors, v.Warnings, v.Problems, v.Assertions = cv.Errors, cv.Warnings, cv.Problems, cv.Assertions
 	v.Verdict = Verdict{Class: cv.Verdict.Class, Word: cv.Verdict.Word, Icon: cv.Verdict.Icon, Line: cv.Verdict.Line, Details: cv.Verdict.Details}
@@ -160,6 +177,14 @@ func BuildView(name string, text []byte) *View {
 	v.Nodes = outline(data, r)
 	v.Wires = wires(data)
 	v.Wiring = wiring(v.Wires)
+	if ty != nil {
+		v.Typed = ty.view(r)
+		for i, n := range r.Topology.Nodes {
+			if i < len(v.Nodes) && v.Nodes[i].Name == n.Name {
+				v.Nodes[i].In, v.Nodes[i].Out = n.InCanonical, n.OutCanonical
+			}
+		}
+	}
 	return v
 }
 

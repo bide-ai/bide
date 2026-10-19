@@ -39,6 +39,13 @@ type Weakening struct {
 
 // Compare classifies text against baseline, both the contents of a config file called name.
 func Compare(name, source string, baseline, text []byte) *Weakening {
+	return compare(name, source, baseline, text, nil)
+}
+
+// compare is Compare for an editor that may know the program's blocks (ty not nil): the gates and
+// safety they declare in Go are then known on both sides, which is what ends the structural check's
+// "possibly weakened" for a block changed to another (G4).
+func compare(name, source string, baseline, text []byte, ty *typing) *Weakening {
 	w := &Weakening{Baseline: source}
 	cfg := func(b []byte) (runview.Config, error) {
 		data := b
@@ -47,6 +54,9 @@ func Compare(name, source string, baseline, text []byte) *Weakening {
 			if data, err = ToJSON(b); err != nil {
 				return runview.Config{}, err
 			}
+		}
+		if ty != nil {
+			return ty.config(name, data), nil
 		}
 		return runview.Config{Name: name, Data: data}, nil
 	}
@@ -73,6 +83,11 @@ func Compare(name, source string, baseline, text []byte) *Weakening {
 		w.Word, w.Line = d.Verdict.Word, d.Verdict.Line
 	}
 	return w
+}
+
+// compare is Compare with what this editor knows of the program.
+func (s *Server) compare(text []byte) *Weakening {
+	return compare(s.name, s.baselineSource, s.baseline, text, s.typing)
 }
 
 // gitTimeout is how long gitShow waits for git: a generous bound for a local `git show`, there so that a git that

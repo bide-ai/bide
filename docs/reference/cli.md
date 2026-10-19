@@ -320,13 +320,21 @@ Exit status:
 A local page for a flow config: the graph, the approval gates, the assertions, and what an edit weakens; edit the source and save.
 
 ```text
-usage: bide edit [-addr <host:port>] [-base <git revision>] [-color auto|always|never] <flow.yaml|flow.json>
+usage: bide edit [-addr <host:port>] [-base <git revision>] [-blocks <description.json>] [-color auto|always|never] <flow.yaml|flow.json>
 
 Opens a local page for one flow config: the declared graph, an outline of its nodes and wiring,
 each node's approval gate and safety, the assertions and their verdicts, the problems bide check
 finds, and the source. The page shows what bide check and bide view -config show for the file,
 computed by the same code, and labels the check as structural: block and type names are checked
 when a program loads the flow with its plan.Registry.
+
+With -blocks, a description of the program's registered blocks (json.Marshal of plan.Registry.Describe),
+the editor is typed: it lists the blocks in a palette with their types, safety and gates, checks the
+types along every connection, shows the digest a run would journal, refuses an operation that
+connects what does not fit, and knows the gate a block declares in Go when a block is changed. Every
+typed result is labelled as resting on the file, not checked against the program: the check made
+with the program's own plan.Registry is the control. A program can embed the editor beside its
+Registry instead (package flowedit, WithRegistry).
 
 You can edit the file's source in the page and see the check as you type; nothing is written until
 you save, and a save shows the diff of the bytes it will write and the comments it removes. The page
@@ -346,6 +354,8 @@ A save is refused, and writes nothing, if the file changed on disk since the pag
     	address to serve on: a loopback IP (127.0.0.1 or ::1) or localhost, with a port (default "127.0.0.1:8585")
   -base string
     	compare with the file at this git revision (a branch, tag or commit) instead of at HEAD; the file must be in it
+  -blocks string
+    	a description of the program's registered blocks (json.Marshal of plan.Registry.Describe): typed mode, labelled as per the file, not checked against the program
   -color when
     	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
 

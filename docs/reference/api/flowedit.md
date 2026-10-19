@@ -195,6 +195,9 @@ type Node struct {
 	Approval *Approval `json:"approval,omitempty"`
 
 	Problems []string `json:"problems,omitempty"`
+
+	In  string `json:"in,omitempty"`
+	Out string `json:"out,omitempty"`
 }
 ```
 
@@ -253,6 +256,28 @@ Option configures New.
 **Constructors and functions**
 
 - `func WithBase(rev string) Option`: WithBase compares edits with the file at the git revision rev (a branch, tag or commit, as `git show rev:./file` takes it) instead of at HEAD.
+- `func WithBlocks(d plan.RegistryDescription) Option`: WithBlocks makes the editor typed against a description of the program's registrations (plan.Registry.Describe, read from a file by bide edit -blocks).
+- `func WithRegistry(reg *plan.Registry) Option`: WithRegistry makes the editor typed against the program's Registry: it checks the config as Load does (block, predicate and merge names, the types along every edge, safety, the gates the blocks declare in Go, the digest), lists the blocks in a palette, and refuses an operation that connects what does not fit.
+
+### type PaletteBlock
+
+```go
+type PaletteBlock struct {
+	Name string `json:"name"`
+
+	Kind   string   `json:"kind"`
+	In     string   `json:"in,omitempty"`
+	Inputs []string `json:"inputs,omitempty"`
+	Out    string   `json:"out"`
+
+	Safety string `json:"safety"`
+	Gate   string `json:"gate,omitempty"`
+
+	Used bool `json:"used"`
+}
+```
+
+PaletteBlock is one registered block or merge as the palette shows it.
 
 ### type Preview
 
@@ -341,6 +366,21 @@ type Stat struct {
 
 Stat is one key number under the verdict.
 
+### type TypedView
+
+```go
+type TypedView struct {
+	Source string `json:"source"`
+	Label  string `json:"label"`
+
+	Digest string `json:"digest,omitempty"`
+
+	Palette []PaletteBlock `json:"palette"`
+}
+```
+
+TypedView is what typed mode adds to a View: what the check rests on, the digest, and the blocks the program offers.
+
 ### type Verdict
 
 ```go
@@ -391,6 +431,8 @@ type View struct {
 	Graph string `json:"graph,omitempty"`
 
 	Weakening *Weakening `json:"weakening,omitempty"`
+
+	Typed *TypedView `json:"typed,omitempty"`
 }
 ```
 

@@ -35,8 +35,7 @@ wiring elements, and set the flow's name and types (see [Order, wiring order and
 settings](#order-wiring-order-and-the-flows-settings)), and wire edges, switches, arms and `else` (see
 [Connections](#connections-edges-switches-arms-and-else)), set an arm's loop bound, and add, change and
 remove joins (see [Joins and loops](#joins-and-loops)). It does **not**
-yet: know your `plan.Registry` (it checks structure only, so no block palette,
-type-compatible connections or digest); compare with a journaled run; or let you place nodes on the canvas
+yet: show a block palette or the digest in the page (the server already has them: see [Typed mode](#typed-mode-the-programs-blocks)); compare with a journaled run; or let you place nodes on the canvas
 (the layout is derived from the topology, on purpose). A config with an anchor or alias anywhere,
 a repeated key, a key that is not a string, NaN or infinity, or mixed line ends is refused by the editor
 with the reason (edit it in a text editor); `plan` itself accepts an anchor or alias, and refuses the others too. The design note
@@ -408,10 +407,47 @@ machine, who can edit the file directly.
 `bide edit` is in the full `bide` binary and not in a `bide_audit_only` build, which holds no YAML
 reader and writes no files.
 
+## Typed mode: the program's blocks
+
+Alone, the editor knows block names only from the config, so it checks structure: it cannot check types,
+cannot see a gate or a safety class a block declares in Go, and cannot show the digest. Typed mode gives it the
+program's blocks, in one of two forms:
+
+- `bide edit -blocks blocks.json flow.yaml`: a description of the program's registrations, which the program writes
+  once with `json.Marshal` of `plan.Registry.Describe()`. The file is read once at start (a regular file of at most
+  1 MiB, strict JSON, validated), never uploaded by the page, and it is only a file: it can be stale or wrong, so every
+  typed result is labelled **checked per description file, not checked against the program**. The check made with the
+  program's own `plan.Registry` (`plan/planview`, or the embedded editor below) is the control.
+- Embedding: `flowedit.New(path, flowedit.WithRegistry(reg))` checks as `Load` does, with the program's Registry.
+  Register everything before `New`; a Registry that reports errors (a duplicate) is refused, as `Load` would.
+  `flowedit.WithBlocks(description)` is the file form for a host that has the description as a value (it is copied).
+  The two are alternatives.
+
+With either, the server checks every text with `plan.InspectConfig` (or `InspectConfigDescribed`) and
+`plan.AllowUnusedBlocks()`: a block the program offers that the config does not use is not a problem (a palette lists
+blocks that are not placed yet), though `Load` refuses it. The document the page reads gains `typed`: the source and
+the label, the digest a run would journal (while there are no errors), and the palette: each block and merge with its
+kind, input and output type names, declared safety and declared gate in words, and whether the config uses it; each
+node gains `in` and `out`, the type names the digest writes. The page computes no types.
+
+- **Types are checked on every edit.** An operation that connects what does not fit (a block whose input is not
+  what the node before it produces, a predicate that tests another type than the switched node, a join input of
+  another type than its merge takes, a terminal of another type than the flow's output) is refused by the server with
+  `plan`'s reason, and the text does not change. A problem the text already had is not the operation's and does not
+  refuse it. The structural editor takes the same operation and shows the result as a problem.
+- **The weakened banner knows the Go gates.** When a node's block is changed, the gate and safety the old and the new
+  block declare in Go are known on both sides, so changing a block that declares an approval gate to one that does
+  not is reported as the gate removed (and the other way as strengthened), where the structural editor can only say
+  it may have weakened the policy. A save that needs confirmation still needs it.
+- **Limits.** A description tells types apart by name only (two distinct types spelled alike are one; see the
+  [known limitations](../KNOWN-LIMITATIONS.md)). A host that checks descriptions from sources it does not trust should
+  do it in a short-lived process (a process keeps one stand-in type per type name it has been given, about 25 MB at most).
+
 ## Flags
 
 | Flag | Meaning |
 |---|---|
+| `-blocks` | A description of the program's registered blocks: typed mode, labelled as per the file. See [Typed mode](#typed-mode-the-programs-blocks). A file that cannot be read or is not valid makes `bide edit` exit 1. |
 | `-base` | Compare with the file at this git revision instead of at `HEAD`; the file must be in it, or `bide edit` exits 1. |
 | `-addr` | Address to serve on: a loopback IP (`127.0.0.1` or `::1`) or `localhost`, with a port. Default `127.0.0.1:8585`. |
 | `-color` | `auto`, `always` or `never`, for the line it prints. |
@@ -425,7 +461,7 @@ The command is a thin wrapper over package `github.com/bide-ai/bide/flowedit`: `
 returns a `*Server` whose `Handler()` is an `http.Handler` that does not depend on a listener or on
 the address, so another host can serve the same page. `flowedit.BuildView` is the page's data for
 a text: the same answers `bide check` gives, as a value. `flowedit.Compare` is the weakening verdict
-for a text against a baseline, and `flowedit.WithBase` is the `-base` option of `flowedit.New`.
+for a text against a baseline, and `flowedit.WithBase` is the `-base` option of `flowedit.New`. `flowedit.WithRegistry` and `flowedit.WithBlocks` make the editor typed (see [Typed mode](#typed-mode-the-programs-blocks)); a host can change the file, the base, the Registry or description, and nothing about who may use the editor: the loopback, `Host`, `Origin` and token checks, the content security policy and the one writable path are the handler's, whatever it is mounted on.
 `flowedit.ApplyOperation` applies one editor operation (set a node's safety or block, set or clear
 its approval gate: `need`, approvers, `exclude_principal`, `timeout`; add, replace or remove an
 assertion from one of the six forms, `flowedit.Assertion`) to a config's text by splicing,
