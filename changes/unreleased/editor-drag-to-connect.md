@@ -1,0 +1,3 @@
+Section: Added
+
+bide edit can add an edge by dragging from the small circle at a node's right edge in the flow onto another node (the last step of the editor's structure phase). It sends the same add_edge operation the inspector's Connections form does, so it has the same refusals, verification and weakened banner, and it is an extra: the circle is hidden from assistive technology and not in the Tab order, every connection can be made and removed from the inspector by keyboard, and dropping on the same node, on nothing or pressing Escape cancels with no change. The layout stays derived from the topology; nothing about where a node is drawn is stored.

@@ -490,7 +490,7 @@ function connectionsForm(n, v) {
     kids.push(pick('c-sw-to', 'Make this a switch: first target', targets, targets[0]));
     kids.push(h('div', { class: 'inline' }, btn('c-sw-add', 'Make a switch', 'Make ' + n.name + ' a switch', () => operate({ op: 'add_switch', node: n.name, pred: val('c-sw-pred').trim(), to: val('c-sw-to') }, 'c-sw-pred'), !targets.length)));
   }
-  kids.push(h('p', { class: 'muted small' }, 'The gate check follows paths: a new edge or arm that reaches a gated node by another way shows the weakened banner.'));
+  kids.push(h('p', { class: 'muted small' }, 'You can also drag from the small circle at a node\'s right edge in the flow onto another node to add an edge. The gate check follows paths: a new edge or arm that reaches a gated node by another way shows the weakened banner.'));
   return h('fieldset', { class: 'structure', id: 'connections' }, kids);
 }
 
@@ -699,7 +699,7 @@ async function operate(op, focusId, selectAfter) {
     } else {
       announce('No change: the text already says that.');
     }
-    const target = $(focusId);
+    const target = focusId ? $(focusId) : null;
     if (target) target.focus();
   } catch (err) {
     const box = errBox();
@@ -938,8 +938,75 @@ export function renderCanvas(v) {
     for (const t of g.querySelectorAll('text')) t.setAttribute('aria-hidden', 'true');
     g.addEventListener('click', () => select(name));
     g.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(name); } });
+    addPort(svg, g, name);
   }
   markSelected();
+}
+
+// ---- drag to connect: an extra, never the only way ----
+//
+// A small circle at a node's right edge can be dragged onto another node to add an edge from the first
+// to the second, the same add_edge the Connections form sends (so the same refusals, the same
+// verification, the same weakened banner). It is a pointer shortcut and nothing depends on it:
+// every connection can be made, and removed, from the inspector by keyboard, and the circle is
+// hidden from assistive technology and not in the Tab order. Escape cancels a drag in progress.
+function addPort(svg, g, from) {
+  const box = g.querySelector('rect.box');
+  if (!box) return;
+  const x = Number(box.getAttribute('x')) + Number(box.getAttribute('width'));
+  const y = Number(box.getAttribute('y')) + Number(box.getAttribute('height')) / 2;
+  const port = document.createElementNS(SVGNS, 'circle');
+  port.setAttribute('class', 'port');
+  port.setAttribute('cx', String(x));
+  port.setAttribute('cy', String(y));
+  port.setAttribute('r', '8');
+  port.setAttribute('aria-hidden', 'true');
+  g.append(port);
+  const at = (e) => {
+    const pt = svg.createSVGPoint();
+    pt.x = e.clientX;
+    pt.y = e.clientY;
+    return pt.matrixTransform(svg.getScreenCTM().inverse());
+  };
+  port.addEventListener('click', (e) => e.stopPropagation()); // a drag is not a selection
+  port.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    port.setPointerCapture(e.pointerId);
+    select(from);
+    const line = document.createElementNS(SVGNS, 'line');
+    line.setAttribute('class', 'drag');
+    line.setAttribute('x1', String(x));
+    line.setAttribute('y1', String(y));
+    line.setAttribute('x2', String(x));
+    line.setAttribute('y2', String(y));
+    svg.append(line);
+    let cancelled = false;
+    const finish = () => {
+      line.remove();
+      port.removeEventListener('pointermove', move);
+      port.removeEventListener('pointerup', up);
+      port.removeEventListener('pointercancel', cancel);
+      document.removeEventListener('keydown', key, true);
+    };
+    const move = (m) => { const p = at(m); line.setAttribute('x2', String(p.x)); line.setAttribute('y2', String(p.y)); };
+    const cancel = () => { cancelled = true; finish(); announce('Connection cancelled'); };
+    const key = (k) => { if (k.key === 'Escape') { k.preventDefault(); cancel(); } };
+    const up = (u) => {
+      if (cancelled) return;
+      const hit = document.elementFromPoint(u.clientX, u.clientY);
+      const to = hit && hit.closest ? hit.closest('g.node') : null;
+      finish();
+      const target = to && to.getAttribute('data-id');
+      if (!target || target === from) { announce('Connection cancelled'); return; }
+      operate({ op: 'add_edge', node: from, to: target }, null);
+    };
+    port.addEventListener('pointermove', move);
+    port.addEventListener('pointerup', up);
+    port.addEventListener('pointercancel', cancel);
+    document.addEventListener('keydown', key, true);
+  });
 }
 
 function markSelected() {

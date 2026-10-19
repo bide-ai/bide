@@ -216,6 +216,17 @@ saving needs the confirmation.
   and waits for that list to be confirmed, as removing a node does; an `assert` line that names it
   stays and the check reports it.
 
+## Drag to connect
+
+An extra, never the only way. Each node in the flow has a small circle at its right edge; drag it onto
+another node to add an edge from the first to the second. It sends the same `add_edge` the Connections
+form does, so it has the same refusals (an edge into a join, out of a switched node, a duplicate: the
+reason is shown and announced), the same verification, and shows the same weakened banner when the new
+edge reaches a gated node by another way. Dropping on the same node, on nothing, or pressing Escape
+cancels with no change. The circle is a pointer shortcut: it is hidden from assistive technology and is
+not in the Tab order, because every connection can be made, and removed, from the inspector by
+keyboard. The layout stays derived: nothing about where a node is drawn is stored.
+
 ## The assertions panel
 
 Below the flow, the panel lists the config's `assert` lines, each with its verdict (`holds`,
@@ -347,7 +358,7 @@ shows `CONFIG DOES NOT PARSE` and the reason, and no graph.
 
 The editor is built to be used without a pointer and without dragging.
 
-- **No operation needs a pointer or dragging.** Every control is a native button, field, select or
+- **No operation needs a pointer or dragging** (drag to connect is a shortcut for the inspector's add-edge control). Every control is a native button, field, select or
   checkbox, reached by Tab; one test drives the path of selecting a node, setting its safety, editing
   its gate, adding an assertion, undoing and redoing, and saving with the confirmation a weakening
   needs, by keyboard alone (the other controls are not each driven by a test). The outline is one Tab

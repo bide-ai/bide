@@ -1112,3 +1112,57 @@ func TestUndoCoversStructureEditsInChrome(t *testing.T) {
 		t.Errorf("typing after Undo: redo enabled before %v, redo disabled after typing %v", r.RedoEnabledAfterUndo, r.RedoDisabledAfterTyping)
 	}
 }
+
+// TestDragToConnectInChrome: drag from the circle at a node's edge onto another node adds the edge;
+// a drag onto the same node, onto nothing or ended by Escape changes nothing; a refused drag says why;
+// and the circle is hidden from assistive technology and not in the Tab order.
+func TestDragToConnectInChrome(t *testing.T) {
+	s, _ := newTestServer(t, "refund.yaml", weakFlow)
+	var r struct {
+		OK                bool     `json:"ok"`
+		Error             string   `json:"error"`
+		WithAudit         string   `json:"withAudit"`
+		Ports             int      `json:"ports"`
+		PortHidden        bool     `json:"portHidden"`
+		TabStops          int      `json:"tabStops"`
+		LineWhileDragging int      `json:"lineWhileDragging"`
+		AfterDrag         string   `json:"afterDrag"`
+		LineAfter         int      `json:"lineAfter"`
+		Live              string   `json:"live"`
+		Selected          string   `json:"selected"`
+		SameNodeUnchanged bool     `json:"sameNodeUnchanged"`
+		SameNodeLive      string   `json:"sameNodeLive"`
+		NothingUnchanged  bool     `json:"nothingUnchanged"`
+		LineBeforeEscape  int      `json:"lineBeforeEscape"`
+		LineAfterEscape   int      `json:"lineAfterEscape"`
+		EscapeUnchanged   bool     `json:"escapeUnchanged"`
+		EscapeLive        string   `json:"escapeLive"`
+		Refusal           string   `json:"refusal"`
+		RefusedUnchanged  bool     `json:"refusedUnchanged"`
+		Console           []string `json:"console"`
+		Failed            []string `json:"failed"`
+		OffOrigin         []string `json:"offOrigin"`
+	}
+	runScript(t, "drag.mjs", s, &r)
+	if !r.OK {
+		t.Fatalf("the script failed: %s\nconsole: %q\nfailed requests: %q", r.Error, r.Console, r.Failed)
+	}
+	if len(r.Console) > 0 || len(r.Failed) > 0 || len(r.OffOrigin) > 0 {
+		t.Errorf("the browser reported console %q, failed requests %q, requests off the origin %q", r.Console, r.Failed, r.OffOrigin)
+	}
+	if r.Ports != 4 || !r.PortHidden || r.TabStops != 4 {
+		t.Errorf("the circles: %d, hidden and out of the Tab order %v, node tab stops %d", r.Ports, r.PortHidden, r.TabStops)
+	}
+	if r.LineWhileDragging != 1 || r.LineAfter != 0 || !strings.Contains(r.AfterDrag, "  - edge: [receipt, audit]\n") || !strings.Contains(r.Live, "Edge added") || r.Selected != "receipt" {
+		t.Errorf("the drag: line while dragging %d, after %d, live %q, selected %q\n%s", r.LineWhileDragging, r.LineAfter, r.Live, r.Selected, r.AfterDrag)
+	}
+	if !r.SameNodeUnchanged || r.SameNodeLive != "Connection cancelled" || !r.NothingUnchanged {
+		t.Errorf("cancelled drags: same node unchanged %v (%q), nothing unchanged %v", r.SameNodeUnchanged, r.SameNodeLive, r.NothingUnchanged)
+	}
+	if r.LineBeforeEscape != 1 || r.LineAfterEscape != 0 || !r.EscapeUnchanged || r.EscapeLive != "Connection cancelled" {
+		t.Errorf("Escape: line before %d after %d, unchanged %v, live %q", r.LineBeforeEscape, r.LineAfterEscape, r.EscapeUnchanged, r.EscapeLive)
+	}
+	if !strings.Contains(r.Refusal, "already there") || !r.RefusedUnchanged {
+		t.Errorf("a refused drag: %q, unchanged %v", r.Refusal, r.RefusedUnchanged)
+	}
+}
