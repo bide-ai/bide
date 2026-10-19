@@ -490,7 +490,7 @@ function connectionsForm(n, v) {
     kids.push(pick('c-sw-to', 'Make this a switch: first target', targets, targets[0]));
     kids.push(h('div', { class: 'inline' }, btn('c-sw-add', 'Make a switch', 'Make ' + n.name + ' a switch', () => operate({ op: 'add_switch', node: n.name, pred: val('c-sw-pred').trim(), to: val('c-sw-to') }, 'c-sw-pred'), !targets.length)));
   }
-  kids.push(h('p', { class: 'muted small' }, 'The gate check follows paths: a new edge or arm that reaches a gated node by another way shows the weakened banner.'));
+  kids.push(h('p', { class: 'muted small' }, 'You can also drag from the small circle at a node\'s right edge in the flow onto another node to add an edge. The gate check follows paths: a new edge or arm that reaches a gated node by another way shows the weakened banner.'));
   return h('fieldset', { class: 'structure', id: 'connections' }, kids);
 }
 
@@ -699,7 +699,7 @@ async function operate(op, focusId, selectAfter) {
     } else {
       announce('No change: the text already says that.');
     }
-    const target = $(focusId);
+    const target = focusId ? $(focusId) : null;
     if (target) target.focus();
   } catch (err) {
     const box = errBox();
@@ -924,6 +924,7 @@ export function renderCanvas(v) {
   const doc = new DOMParser().parseFromString(v.graph, 'image/svg+xml');
   const svg = doc.documentElement;
   if (svg.localName !== 'svg' || doc.querySelector('parsererror')) { wrap.replaceChildren(h('p', { class: 'bad' }, 'The graph could not be drawn.')); return; }
+  abortDrag(); // the port being dragged is about to leave the page
   wrap.replaceChildren(document.adoptNode(svg));
   for (const t of wrap.querySelectorAll('text, title')) if (t.children.length === 0) t.textContent = shown(t.textContent);
   for (const e of wrap.querySelectorAll('[aria-label], [title]')) for (const a of ['aria-label', 'title']) if (e.hasAttribute(a)) e.setAttribute(a, shown(e.getAttribute(a)));
@@ -938,8 +939,114 @@ export function renderCanvas(v) {
     for (const t of g.querySelectorAll('text')) t.setAttribute('aria-hidden', 'true');
     g.addEventListener('click', () => select(name));
     g.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(name); } });
+    addPort(svg, g, name);
   }
+  if (typeof ResizeObserver === 'function') new ResizeObserver(() => { for (const fo of svg.querySelectorAll('foreignObject.port-hit')) fitHit(svg, fo); }).observe(svg);
   markSelected();
+}
+
+// ---- drag to connect: an extra, never the only way ----
+//
+// A small circle at a node's right edge can be dragged onto another node to add an edge from the first
+// to the second, the same add_edge the Connections form sends (so the same refusals, the same
+// verification, the same weakened banner). It is a pointer shortcut and nothing depends on it:
+// every connection can be made, and removed, from the inspector by keyboard, and the circle is
+// hidden from assistive technology and not in the Tab order. Escape cancels a drag in progress.
+// Keep a port's hit area at least 44 CSS px square at the svg's current scale (the svg is scaled to the
+// window's width, so this runs again when its size changes).
+function fitHit(svg, fo) {
+  const ctm = svg.getScreenCTM();
+  const scale = ctm && ctm.a > 0 ? ctm.a : 1;
+  const side = Math.max(16, 44 / scale);
+  const x = Number(fo.getAttribute('data-cx'));
+  const y = Number(fo.getAttribute('data-cy'));
+  fo.setAttribute('x', String(x - side / 2));
+  fo.setAttribute('y', String(y - side / 2));
+  fo.setAttribute('width', String(side));
+  fo.setAttribute('height', String(side));
+}
+
+// The drag in progress, if any: its cleanup, so a redraw or a second pointer can end it.
+let activeDrag = null;
+function abortDrag() { if (activeDrag) activeDrag(); }
+
+function addPort(svg, g, from) {
+  const box = g.querySelector('rect.box');
+  if (!box) return;
+  const x = Number(box.getAttribute('x')) + Number(box.getAttribute('width'));
+  const y = Number(box.getAttribute('y')) + Number(box.getAttribute('height')) / 2;
+  const port = document.createElementNS(SVGNS, 'circle');
+  port.setAttribute('class', 'port');
+  port.setAttribute('cx', String(x));
+  port.setAttribute('cy', String(y));
+  port.setAttribute('r', '8');
+  port.setAttribute('aria-hidden', 'true');
+  g.append(port);
+  // The circle is only the picture. What takes the pointer is an HTML box in a foreignObject, at least
+  // 44 CSS px square whatever the svg's scale: Chrome honours touch-action on HTML elements but not on
+  // SVG shapes, and a touch that starts here must not be taken for a scroll while a touch anywhere
+  // else on the flow still scrolls the page.
+  const fo = document.createElementNS(SVGNS, 'foreignObject');
+  fo.setAttribute('class', 'port-hit');
+  fo.setAttribute('data-cx', String(x));
+  fo.setAttribute('data-cy', String(y));
+  const hit = document.createElementNS('http://www.w3.org/1999/xhtml', 'div');
+  hit.setAttribute('class', 'port-hit-box');
+  hit.setAttribute('aria-hidden', 'true');
+  fo.append(hit);
+  g.append(fo);
+  fitHit(svg, fo);
+  const handle = hit;
+  const at = (e) => {
+    const pt = svg.createSVGPoint();
+    pt.x = e.clientX;
+    pt.y = e.clientY;
+    return pt.matrixTransform(svg.getScreenCTM().inverse());
+  };
+  handle.addEventListener('click', (e) => e.stopPropagation()); // a drag is not a selection
+  handle.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    abortDrag();
+    handle.setPointerCapture(e.pointerId);
+    select(from);
+    const line = document.createElementNS(SVGNS, 'line');
+    line.setAttribute('class', 'drag');
+    line.setAttribute('x1', String(x));
+    line.setAttribute('y1', String(y));
+    line.setAttribute('x2', String(x));
+    line.setAttribute('y2', String(y));
+    svg.append(line);
+    let cancelled = false;
+    const finish = () => {
+      if (activeDrag === cancel) activeDrag = null;
+      line.remove();
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', up);
+      handle.removeEventListener('pointercancel', cancel);
+      handle.removeEventListener('lostpointercapture', cancel);
+      document.removeEventListener('keydown', key, true);
+    };
+    const move = (m) => { const p = at(m); line.setAttribute('x2', String(p.x)); line.setAttribute('y2', String(p.y)); };
+    const cancel = () => { if (cancelled) return; cancelled = true; finish(); announce('Connection cancelled'); };
+    const key = (k) => { if (k.key === 'Escape') { k.preventDefault(); cancel(); } };
+    const up = (u) => {
+      if (cancelled) return;
+      const under = document.elementFromPoint(u.clientX, u.clientY);
+      const to = under && under.closest ? under.closest('g.node') : null;
+      finish();
+      const target = to && to.getAttribute('data-id');
+      if (!target || target === from) { announce('Connection cancelled'); return; }
+      operate({ op: 'add_edge', node: from, to: target }, null);
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', up);
+    handle.addEventListener('pointercancel', cancel);
+    handle.addEventListener('lostpointercapture', cancel);
+    activeDrag = cancel;
+    document.addEventListener('keydown', key, true);
+  });
 }
 
 function markSelected() {

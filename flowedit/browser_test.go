@@ -1112,3 +1112,92 @@ func TestUndoCoversStructureEditsInChrome(t *testing.T) {
 		t.Errorf("typing after Undo: redo enabled before %v, redo disabled after typing %v", r.RedoEnabledAfterUndo, r.RedoDisabledAfterTyping)
 	}
 }
+
+// TestDragToConnectInChrome: drag from the circle at a node's edge onto another node adds the edge;
+// a drag onto the same node, onto nothing or ended by Escape changes nothing; a refused drag says why;
+// and the circle is hidden from assistive technology and not in the Tab order.
+func TestDragToConnectInChrome(t *testing.T) {
+	s, _ := newTestServer(t, "refund.yaml", weakFlow)
+	var r struct {
+		OK                  bool     `json:"ok"`
+		Error               string   `json:"error"`
+		WithAudit           string   `json:"withAudit"`
+		Ports               int      `json:"ports"`
+		PortHidden          bool     `json:"portHidden"`
+		TabStops            int      `json:"tabStops"`
+		LineWhileDragging   int      `json:"lineWhileDragging"`
+		AfterDrag           string   `json:"afterDrag"`
+		LineAfter           int      `json:"lineAfter"`
+		Live                string   `json:"live"`
+		Selected            string   `json:"selected"`
+		SameNodeUnchanged   bool     `json:"sameNodeUnchanged"`
+		SameNodeLive        string   `json:"sameNodeLive"`
+		NothingUnchanged    bool     `json:"nothingUnchanged"`
+		LineBeforeEscape    int      `json:"lineBeforeEscape"`
+		LineAfterEscape     int      `json:"lineAfterEscape"`
+		EscapeUnchanged     bool     `json:"escapeUnchanged"`
+		EscapeLive          string   `json:"escapeLive"`
+		Refusal             string   `json:"refusal"`
+		RefusedUnchanged    bool     `json:"refusedUnchanged"`
+		LineBeforeLost      int      `json:"lineBeforeLostCapture"`
+		LineAfterLost       int      `json:"lineAfterLostCapture"`
+		LostUnchanged       bool     `json:"lostCaptureUnchanged"`
+		LineBeforeRedraw    int      `json:"lineBeforeRedraw"`
+		EscapePrevented     *bool    `json:"escapePrevented"`
+		PortsAfterRedraw    int      `json:"portsAfterRedraw"`
+		EscapeAnnounced     bool     `json:"escapeAnnounced"`
+		SvgWidthWide        float64  `json:"svgWidthWide"`
+		SvgWidthNarrow      float64  `json:"svgWidthNarrow"`
+		HitSizeNarrow       float64  `json:"hitSizeNarrow"`
+		HitSize             float64  `json:"hitSize"`
+		PageScrollable      bool     `json:"pageScrollable"`
+		CornerIsSvg         bool     `json:"cornerIsSvg"`
+		TouchScrolled       float64  `json:"touchScrolled"`
+		DragStartedByScroll bool     `json:"dragStartedByScroll"`
+		BelowFirstViewport  bool     `json:"belowFirstViewport"`
+		ScrolledTo          float64  `json:"scrolledTo"`
+		Console             []string `json:"console"`
+		Failed              []string `json:"failed"`
+		OffOrigin           []string `json:"offOrigin"`
+	}
+	runScript(t, "drag.mjs", s, &r)
+	if !r.OK {
+		t.Fatalf("the script failed: %s\nconsole: %q\nfailed requests: %q", r.Error, r.Console, r.Failed)
+	}
+	if len(r.Console) > 0 || len(r.Failed) > 0 || len(r.OffOrigin) > 0 {
+		t.Errorf("the browser reported console %q, failed requests %q, requests off the origin %q", r.Console, r.Failed, r.OffOrigin)
+	}
+	if r.Ports != 4 || !r.PortHidden || r.TabStops != 4 {
+		t.Errorf("the circles: %d, hidden and out of the Tab order %v, node tab stops %d", r.Ports, r.PortHidden, r.TabStops)
+	}
+	if r.LineWhileDragging != 1 || r.LineAfter != 0 || !strings.Contains(r.AfterDrag, "  - edge: [receipt, audit]\n") || !strings.Contains(r.Live, "Edge added") || r.Selected != "receipt" {
+		t.Errorf("the drag: line while dragging %d, after %d, live %q, selected %q\n%s", r.LineWhileDragging, r.LineAfter, r.Live, r.Selected, r.AfterDrag)
+	}
+	if !r.SameNodeUnchanged || r.SameNodeLive != "Connection cancelled" || !r.NothingUnchanged {
+		t.Errorf("cancelled drags: same node unchanged %v (%q), nothing unchanged %v", r.SameNodeUnchanged, r.SameNodeLive, r.NothingUnchanged)
+	}
+	if r.LineBeforeEscape != 1 || r.LineAfterEscape != 0 || !r.EscapeUnchanged || r.EscapeLive != "Connection cancelled" {
+		t.Errorf("Escape: line before %d after %d, unchanged %v, live %q", r.LineBeforeEscape, r.LineAfterEscape, r.EscapeUnchanged, r.EscapeLive)
+	}
+	if !strings.Contains(r.Refusal, "already there") || !r.RefusedUnchanged {
+		t.Errorf("a refused drag: %q, unchanged %v", r.Refusal, r.RefusedUnchanged)
+	}
+	if r.LineBeforeLost != 1 || r.LineAfterLost != 0 || !r.LostUnchanged {
+		t.Errorf("lost pointer capture: line before %d after %d, unchanged %v", r.LineBeforeLost, r.LineAfterLost, r.LostUnchanged)
+	}
+	if r.LineBeforeRedraw != 1 || r.EscapePrevented == nil || *r.EscapePrevented || r.EscapeAnnounced || r.PortsAfterRedraw != 4 {
+		t.Errorf("a redraw in a drag: line before %d, a later Escape prevented %v, ports %d", r.LineBeforeRedraw, r.EscapePrevented, r.PortsAfterRedraw)
+	}
+	if r.HitSize < 44 {
+		t.Errorf("the circle's touch target is %v px, want at least 44", r.HitSize)
+	}
+	if r.SvgWidthNarrow >= r.SvgWidthWide || r.HitSizeNarrow < 43.99 {
+		t.Errorf("after the window is narrowed (svg %v px wide, was %v) the touch target is %v px, want at least 44", r.SvgWidthNarrow, r.SvgWidthWide, r.HitSizeNarrow)
+	}
+	if !r.PageScrollable || !r.CornerIsSvg || r.TouchScrolled <= 0 || r.DragStartedByScroll {
+		t.Errorf("a touch away from the circle must scroll the page: scrollable %v, corner is bare svg %v, scrolled to %v, started a drag %v", r.PageScrollable, r.CornerIsSvg, r.TouchScrolled, r.DragStartedByScroll)
+	}
+	if r.ScrolledTo <= 0 || !r.BelowFirstViewport {
+		t.Errorf("the scrolled drag was not made with the page scrolled (scrollY %v, nodes below the first viewport %v)", r.ScrolledTo, r.BelowFirstViewport)
+	}
+}
