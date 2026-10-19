@@ -74,7 +74,7 @@ func TestDescribeReportsEveryRegistration(t *testing.T) {
 		{Name: "pay", Kind: "step", In: mid, Out: out, Safety: "idempotent", Gate: &GateDescription{Need: 2, Approvers: []string{"ops", "fin", "risk"}, ExcludePrincipal: true, Timeout: "1h30m0s"}},
 		{Name: "prepare", Kind: "step", In: in, Out: mid, Safety: "side_effect"},
 		{Name: "refund", Kind: "tool", In: mid, Out: out, Safety: "side_effect", Gate: &GateDescription{Need: 1, Approvers: []string{"ops", "fin"}}},
-		{Name: "sign", Kind: "step", In: mid, Out: out, Safety: "side_effect", Gate: &GateDescription{Single: true, Need: 1}},
+		{Name: "sign", Kind: "step", In: mid, Out: out, Safety: "side_effect", Gate: &GateDescription{Single: true}},
 	}
 	if !reflect.DeepEqual(d.Blocks, want) {
 		g, _ := json.MarshalIndent(d.Blocks, "", " ")
@@ -84,7 +84,7 @@ func TestDescribeReportsEveryRegistration(t *testing.T) {
 	if want := []PredicateDescription{{"big", mid}, {"small", mid}}; !reflect.DeepEqual(d.Predicates, want) {
 		t.Errorf("predicates %+v", d.Predicates)
 	}
-	wantM := []MergeDescription{{Name: "all3", Inputs: []string{mid, mid, out}, Out: mid, Safety: "idempotent"}, {Name: "both", Inputs: []string{mid, out}, Out: out, Safety: "readonly", Gate: &GateDescription{Single: true, Need: 1}}}
+	wantM := []MergeDescription{{Name: "all3", Inputs: []string{mid, mid, out}, Out: mid, Safety: "idempotent"}, {Name: "both", Inputs: []string{mid, out}, Out: out, Safety: "readonly", Gate: &GateDescription{Single: true}}}
 	if !reflect.DeepEqual(d.Merges, wantM) {
 		t.Errorf("merges %+v", d.Merges)
 	}
@@ -139,6 +139,68 @@ func TestDescribeReturnsCopies(t *testing.T) {
 	}
 	if again := reg.Describe(); again.Blocks[2].Gate.Approvers[0] != "ops" {
 		t.Errorf("a second description saw the first's edit: %+v", again.Blocks[2].Gate)
+	}
+}
+
+// A gate a registration accepts can still be one Build refuses. Describe reports it as declared,
+// exactly as the topology and the digest carry it (Single is the real flag, the deadline is
+// truncated to milliseconds as topologyGate does), and names the block in Errors.
+func TestDescribeGatesAsDeclared(t *testing.T) {
+	single := func(f func(p *agent.ApprovalPolicy)) *agent.ApprovalPolicy {
+		p := agent.SingleApproval()
+		f(p)
+		return p
+	}
+	cases := []struct {
+		name  string
+		p     *agent.ApprovalPolicy
+		valid bool
+	}{
+		{"single", agent.SingleApproval(), true},
+		{"single+timeout", single(func(p *agent.ApprovalPolicy) { p.Timeout = time.Hour }), true},
+		{"literal need1 none", &agent.ApprovalPolicy{Need: 1}, false},
+		{"literal need1 excl", &agent.ApprovalPolicy{Need: 1, ExcludePrincipal: true}, false},
+		{"single+excl", single(func(p *agent.ApprovalPolicy) { p.ExcludePrincipal = true }), false},
+		{"1500us", &agent.ApprovalPolicy{Need: 1, Approvers: []string{"a"}, Timeout: 1500 * time.Microsecond}, false},
+		{"500us", &agent.ApprovalPolicy{Need: 1, Approvers: []string{"a"}, Timeout: 500 * time.Microsecond}, false},
+		{"1400us", &agent.ApprovalPolicy{Need: 1, Approvers: []string{"a"}, Timeout: 1400 * time.Microsecond}, false},
+		{"negative", &agent.ApprovalPolicy{Need: 1, Approvers: []string{"a"}, Timeout: -time.Second}, false},
+		{"m of n", &agent.ApprovalPolicy{Need: 2, Approvers: []string{"a", "b"}, ExcludePrincipal: true, Timeout: 90 * time.Minute}, true},
+	}
+	for _, c := range cases {
+		reg := NewRegistry()
+		step := func(_ context.Context, in dsIn) (dsMid, error) { return dsMid{}, nil }
+		if err := reg.RegisterStep(c.name, step, Approval(c.p)); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		d := reg.Describe()
+		if len(d.Blocks) != 1 {
+			t.Fatalf("%s: %d blocks", c.name, len(d.Blocks))
+		}
+		got, want := d.Blocks[0].Gate, topologyGate(reg.blocks[c.name].approval)
+		if got == nil || got.Single != want.Single || got.Need != want.Need || got.ExcludePrincipal != want.ExcludePrincipal || !reflect.DeepEqual(got.Approvers, want.Approvers) {
+			t.Errorf("%s: described %+v, topology carries %+v", c.name, got, want)
+		}
+		if (got.Timeout != "") != (want.TimeoutMS != 0) || got.Timeout != "" && got.Timeout != (time.Duration(want.TimeoutMS)*time.Millisecond).String() {
+			t.Errorf("%s: timeout %q, topology carries %d ms", c.name, got.Timeout, want.TimeoutMS)
+		}
+		refused := reg.blocks[c.name].approval.Validate() != nil
+		if refused == c.valid {
+			t.Fatalf("%s: Validate refuses = %v, the case says valid = %v", c.name, refused, c.valid)
+		}
+		if has := len(d.Errors) == 1 && strings.Contains(d.Errors[0], `block "`+c.name+`": approval gate:`); has != refused || !refused && len(d.Errors) != 0 {
+			t.Errorf("%s: errors %q, Validate refuses = %v", c.name, d.Errors, refused)
+		}
+	}
+}
+
+func TestDescribeReportsABadMergeGate(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.RegisterJoin2("m", dsJoin, Approval(&agent.ApprovalPolicy{Need: 1})); err != nil {
+		t.Fatal(err)
+	}
+	if d := reg.Describe(); len(d.Errors) != 1 || !strings.Contains(d.Errors[0], `merge "m": approval gate:`) || d.Merges[0].Gate == nil {
+		t.Errorf("errors %q, merges %+v", d.Errors, d.Merges)
 	}
 }
 

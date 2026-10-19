@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"fmt"
 	"sort"
 	"time"
 
@@ -26,9 +27,10 @@ type RegistryDescription struct {
 	// Merges are the fan-in merge blocks, by name. They are a namespace of their own: a name may
 	// be both a block and a merge.
 	Merges []MergeDescription `json:"merges"`
-	// Errors are the registration errors Load would report (a duplicate name, a tool the agent
-	// refuses), in registration order. A duplicate never replaces the first registration, so the
-	// lists above hold the first.
+	// Errors lists the registrations the Registry refused or Build would refuse, so a description
+	// with any is of a program Load will not load: a duplicate name or a tool the agent refuses (in
+	// registration order; a duplicate never replaces the first registration, so the lists above hold
+	// the first), then each block or merge whose approval gate Validate refuses, by name.
 	Errors []string `json:"errors,omitempty"`
 }
 
@@ -51,8 +53,8 @@ type BlockDescription struct {
 
 // GateDescription is an approval gate declared in Go.
 type GateDescription struct {
-	// Single is the one-decision gate agent.SingleApproval returns; Need and Approvers are then
-	// 1 and empty.
+	// Single is the one-decision gate agent.SingleApproval returns; Need is then 0 and Approvers empty, as
+	// the topology carries it.
 	Single bool `json:"single,omitempty"`
 	// Need, Approvers and ExcludePrincipal are the agent.ApprovalPolicy fields of the same names.
 	Need             int      `json:"need"`
@@ -83,7 +85,8 @@ type MergeDescription struct {
 }
 
 // Describe returns what r has registered (see RegistryDescription). It is read-only and sorted by
-// name, so the same registrations give the same description whatever order they were made in.
+// name, so registrations of distinct names give the same description whatever order they were made in
+// (with a duplicate name the first registration wins, and Errors follows registration order).
 // Like Register, it is not safe to call while another goroutine registers.
 //
 // Experimental: part of the editor's typed mode, and may change in any 0.x release.
@@ -94,7 +97,11 @@ func (r *Registry) Describe() RegistryDescription {
 		Predicates: []PredicateDescription{},
 		Merges:     []MergeDescription{},
 	}
+	var gateErrs []string
 	for name, b := range r.blocks {
+		if w := gateProblem(b.approval); w != "" {
+			gateErrs = append(gateErrs, fmt.Sprintf("block %q: approval gate: %s", name, w))
+		}
 		d.Blocks = append(d.Blocks, BlockDescription{
 			Name:   name,
 			Kind:   blockKindName(b.kind),
@@ -108,6 +115,9 @@ func (r *Registry) Describe() RegistryDescription {
 		d.Predicates = append(d.Predicates, PredicateDescription{Name: name, Switched: canonicalType(p.mType)})
 	}
 	for name, m := range r.merges {
+		if w := gateProblem(m.approval); w != "" {
+			gateErrs = append(gateErrs, fmt.Sprintf("merge %q: approval gate: %s", name, w))
+		}
 		in := make([]string, len(m.inTypes))
 		for i, t := range m.inTypes {
 			in[i] = canonicalType(t)
@@ -126,6 +136,8 @@ func (r *Registry) Describe() RegistryDescription {
 	for _, err := range r.errs {
 		d.Errors = append(d.Errors, err.Error())
 	}
+	sort.Strings(gateErrs)
+	d.Errors = append(d.Errors, gateErrs...)
 	return d
 }
 
@@ -151,18 +163,30 @@ func safetyWord(s agent.Safety) string {
 	return "side_effect"
 }
 
+// describeGate is p as the topology and the digest carry it (topologyGate), with the deadline as a
+// Go duration. It describes the gate as declared: one that agent.ApprovalPolicy.Validate refuses is
+// still described, and reported by gateProblem.
 func describeGate(p *agent.ApprovalPolicy) *GateDescription {
-	if p == nil {
+	tg := topologyGate(p)
+	if tg == nil {
 		return nil
 	}
-	g := &GateDescription{
-		Single:           len(p.Approvers) == 0 && p.Need == 1, // an m-of-n gate with no approvers is refused (ErrConfig)
-		Need:             p.Need,
-		Approvers:        append([]string(nil), p.Approvers...),
-		ExcludePrincipal: p.ExcludePrincipal,
-	}
-	if p.Timeout > 0 {
-		g.Timeout = p.Timeout.Round(time.Millisecond).String()
+	g := &GateDescription{Single: tg.Single, Need: tg.Need, Approvers: tg.Approvers, ExcludePrincipal: tg.ExcludePrincipal}
+	if tg.TimeoutMS != 0 {
+		g.Timeout = (time.Duration(tg.TimeoutMS) * time.Millisecond).String()
 	}
 	return g
+}
+
+// gateProblem is why Build would refuse p, empty when it would not: a gate a registration accepts
+// can still be one Validate refuses (a literal {Need: 1} with no approvers, a negative or
+// fractional-millisecond deadline).
+func gateProblem(p *agent.ApprovalPolicy) string {
+	if p == nil {
+		return ""
+	}
+	if err := p.Validate(); err != nil {
+		return err.Error()
+	}
+	return ""
 }
