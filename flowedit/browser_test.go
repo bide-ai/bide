@@ -1077,7 +1077,7 @@ func TestUndoCoversStructureEditsInChrome(t *testing.T) {
 	if len(r.Console) > 0 || len(r.Failed) > 0 || len(r.OffOrigin) > 0 {
 		t.Errorf("the browser reported console %q, failed requests %q, requests off the origin %q", r.Console, r.Failed, r.OffOrigin)
 	}
-	if r.Steps != 9 || len(r.UndoMatches) != 9 || len(r.RedoMatches) != 9 {
+	if r.Steps != 10 || len(r.UndoMatches) != 10 || len(r.RedoMatches) != 10 {
 		t.Fatalf("steps %d, undos %d, redos %d", r.Steps, len(r.UndoMatches), len(r.RedoMatches))
 	}
 	for i, ok := range r.UndoMatches {

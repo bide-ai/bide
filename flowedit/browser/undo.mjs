@@ -47,6 +47,7 @@ try {
   await step('move it up', async () => { await page.click('#f-up'); });
   await step('an edge', async () => { await pick('receipt'); await page.select('#c-edge-to', 'audit2'); await page.click('#c-edge-add'); });
   await step('a switch', async () => { await pick('audit2'); await typed('#c-sw-pred', 'p'); await page.select('#c-sw-to', 'receipt'); await page.click('#c-sw-add'); });
+  await step('an else (a loop needs an exit)', async () => { await page.select('#c-else', 'validate'); await page.click('#c-else-set'); });
   await step('a loop bound', async () => { await typed('#c-arm-max-0', '2'); await page.keyboard.press('Enter'); });
   await step('a join', async () => {
     await page.focus('#add-join summary'); await page.keyboard.press('Enter');
