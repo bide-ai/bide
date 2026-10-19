@@ -84,7 +84,12 @@ type DiffView struct {
 	Flow    string `json:"flow"`
 	// Typed reports both sides were checked against a plan.Registry, so their digests are known
 	// (unless a side has errors).
-	Typed     bool     `json:"typed"`
+	Typed bool `json:"typed"`
+	// Basis is what the typed result rests on: SourceRegistry when both sides were checked against
+	// a Registry, SourceDescription when a side was checked against a description file only (what
+	// that side's blocks declare is then as the file says, not checked against the program), empty
+	// when structural.
+	Basis     string   `json:"basis,omitempty"`
 	OldDigest string   `json:"old_digest,omitempty"`
 	NewDigest string   `json:"new_digest,omitempty"`
 	Changes   []Change `json:"changes"`
@@ -116,6 +121,16 @@ type Counts struct {
 	EdgesChanged int `json:"edges_changed"`
 }
 
+// BasisLine says, when a side was checked against a description file, that its gates, safety and
+// types are as the file says; empty otherwise. The check against the program's Registry is the
+// control.
+func (v *DiffView) BasisLine() string {
+	if v.Basis != SourceDescription {
+		return ""
+	}
+	return DescriptionNote
+}
+
 // DigestLine says how the digest changed, in words, for the text summary and the page.
 func (v *DiffView) DigestLine() string {
 	switch {
@@ -132,8 +147,8 @@ func (v *DiffView) DigestLine() string {
 // BuildDiff compares d.New with d.Old and draws the new flow with the old one's removed nodes and
 // edges as ghosts. It fails only when a side cannot be read as a flow config at all.
 func BuildDiff(d Diff) (*DiffView, error) {
-	o := plan.InspectConfig(d.Old.Data, d.Old.Registry)
-	n := plan.InspectConfig(d.New.Data, d.New.Registry)
+	o := d.Old.inspect()
+	n := d.New.inspect()
 	for _, s := range []struct {
 		name string
 		r    plan.ConfigReport
@@ -144,6 +159,12 @@ func BuildDiff(d Diff) (*DiffView, error) {
 	}
 	v := &DiffView{Name: d.New.Name, OldName: d.Old.Name, Flow: n.Topology.Flow, Typed: o.Typed && n.Typed,
 		OldDigest: o.Digest, NewDigest: n.Digest, OldErrors: errorCount(o), NewErrors: errorCount(n)}
+	if v.Typed {
+		v.Basis = SourceRegistry
+		if (o.Typed && d.Old.source() == SourceDescription) || (n.Typed && d.New.source() == SourceDescription) {
+			v.Basis = SourceDescription
+		}
+	}
 	v.Changes = diffChanges(o, n, safeties(d.Old.Data), safeties(d.New.Data))
 	for _, c := range v.Changes {
 		switch {
@@ -233,6 +254,9 @@ func CheckDiffStyled(w io.Writer, d Diff, st term.Style) (weakened bool, err err
 		} else {
 			fmt.Fprintf(w, "%s: %d %s from %s (%s); %s\n", name, len(v.Changes), changes, v.OldName, counts, v.DigestLine())
 		}
+	}
+	if l := v.BasisLine(); l != "" {
+		fmt.Fprintf(w, "%s: %s\n", name, st.Dim(l))
 	}
 	return len(v.Weakened) > 0, nil
 }

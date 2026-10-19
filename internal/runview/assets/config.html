@@ -15,7 +15,7 @@
 </section>{{end}}
 
 <section class="cards">
-  <div class="card"><h3>Check</h3><p class="cval">{{if .Typed}}Full{{else}}Structural{{end}}</p><p class="cline">{{if .Typed}}Blocks and types checked against your plan.Registry.{{else}}Types and blocks need your plan.Registry.{{end}}</p>
+  <div class="card"><h3>Check</h3><p class="cval">{{if .Typed}}Full{{else}}Structural{{end}}</p><p class="cline">{{if eq .Source "description"}}Per a description file, not checked against the program.{{else if .Typed}}Blocks and types checked against your plan.Registry.{{else}}Types and blocks need your plan.Registry.{{end}}</p>
   <details><summary>details</summary><p class="small">{{.CheckLabel}}</p><p class="muted small">Nothing runs: the page shows the flow as declared.</p></details></div>
   <div class="card"><h3>Digest</h3>{{if .Digest}}<p class="cval mono">{{slice .Digest 0 (min 12 (len .Digest))}}</p><p class="cline">The flow:digest a run of this flow journals.</p>
   <details><summary>full digest</summary><p><code class="wrap">{{.Digest}}</code></p><p class="muted small">plan.TopologyDigest</p></details>

@@ -153,13 +153,22 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("bide check", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), `usage: bide check [-strict] <flow.yaml|flow.json>...
-       bide check <flow.yaml|flow.json> -diff <old config|git revision> [-check [-fail-on-weaken]]
+		fmt.Fprint(fs.Output(), `usage: bide check [-strict] [-blocks <description.json>] <flow.yaml|flow.json>...
+       bide check <flow.yaml|flow.json> -diff <old config|git revision> [-blocks <description.json> [-old-blocks <description.json>]] [-check [-fail-on-weaken]]
 
 Checks each plan flow config without running it, and prints one "file:node: message" line per
 problem ("file:from->to: message" for an edge or arm). The check is structural: types and
 registered blocks are checked when a program serves the page with its plan.Registry (package
 plan/planview). It is the check bide view -config shows on the graph.
+
+With -blocks it also checks them, by name, against a description of the program's registered
+blocks (a program writes one with json.Marshal of plan.Registry.Describe): block, predicate and
+merge names, the types along every edge, safety, the approval gates the blocks declare in Go, and the
+digest. The result is labelled as per the file and not checked against the program: a description can
+be stale or wrong, and the check made with the program's own plan.Registry (package plan/planview) is
+the control. With -diff, -blocks describes both versions, or the new one when -old-blocks describes
+the earlier one (a block registered and never used is an error, so the earlier version needs the
+description of the program as it was).
 
 A config's assert lines are checked too, by reachability on the declared graph:
 
@@ -194,6 +203,8 @@ NO_COLOR set to any value, turns color off; -color=always keeps it on.
 		fs.PrintDefaults()
 	}
 	strict := fs.Bool("strict", false, "exit 1 on a warning too")
+	blocks := fs.String("blocks", "", "a description of the program's registered blocks (json.Marshal of plan.Registry.Describe): check blocks, types, safety and gates by name; labelled as per the file, not checked against the program")
+	oldBlocks := fs.String("old-blocks", "", "with -diff: the description for the earlier version (default: the -blocks file)")
 	diff := fs.String("diff", "", "compare the one config given with this earlier version: a file, or else a git revision (<rev>:<path>, or <rev> for the config's path at rev)")
 	check := fs.Bool("check", false, "with -diff: serve nothing and print each change, then a summary line")
 	failOnWeaken := fs.Bool("fail-on-weaken", false, "with -diff -check: exit 1 if an approval gate was removed or weakened (its need lowered, an approver added without raising the need, exclude_principal dropped, its timeout removed or lengthened, a node newly reachable without a gate or a lowered safety, a Switch condition changed beside an ungated effect, or an assert line removed, loosened, or kept and no longer holding)")
@@ -217,6 +228,9 @@ NO_COLOR set to any value, turns color off; -color=always keeps it on.
 	if *diff == "" && (*check || *failOnWeaken) {
 		return usage("-check and -fail-on-weaken need -diff")
 	}
+	if *oldBlocks != "" && (*diff == "" || *blocks == "") {
+		return usage("-old-blocks needs -diff and -blocks")
+	}
 	if *diff != "" {
 		if len(files) != 1 {
 			return usage("-diff compares one flow config")
@@ -231,6 +245,12 @@ NO_COLOR set to any value, turns color off; -color=always keeps it on.
 		if *strict {
 			a = append(a, "-strict")
 		}
+		if *blocks != "" {
+			a = append(a, "-blocks", *blocks)
+		}
+		if *oldBlocks != "" {
+			a = append(a, "-old-blocks", *oldBlocks)
+		}
 		return runview.Main(a, stdout, stderr, stores)
 	}
 	code := 0
@@ -238,6 +258,9 @@ NO_COLOR set to any value, turns color off; -color=always keeps it on.
 		a := []string{"-config", file, "-check", "-color", color.String()}
 		if *strict {
 			a = append(a, "-strict")
+		}
+		if *blocks != "" {
+			a = append(a, "-blocks", *blocks)
 		}
 		code = max(code, runview.Main(a, stdout, stderr, stores))
 	}
