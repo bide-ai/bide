@@ -25,6 +25,10 @@ try {
   await page.evaluate(axeSource);
   const until = (fn, arg, what) => page.waitForFunction(fn, { timeout: 10000 }, arg).catch(() => { throw new Error('timed out waiting for ' + what); });
   const check = async (state) => {
+    // The page redraws a moment after an edit (the source is checked 250 ms after the last key, a gate
+    // draft 200 ms after the last change). Axe runs once nothing is in flight and the page has been
+    // quiet for longer than both, so it never reads a half-drawn state.
+    await page.waitForNetworkIdle({ idleTime: 500, timeout: 10000 });
     for (const theme of ['light', 'dark']) {
       await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme);
       const r = await page.evaluate(() => window.axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa', 'best-practice'] } }));

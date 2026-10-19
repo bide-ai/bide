@@ -1,6 +1,7 @@
 package flowedit
 
 import (
+	"fmt"
 	"reflect"
 	"sort"
 	"strings"
@@ -126,55 +127,91 @@ func verifySwap(old, out []byte, op Op) error {
 	if len(seqOld.Content) != len(seqNew.Content) {
 		return refuse("the list changed length")
 	}
-	first := headLine(ol, seqOld.Content[op.Index])
-	last := lastLine(seqOld.Content[op.Index+1])
-	// The second item may end on a line no node starts on (a closing bracket, a block scalar's text).
-	if e, err := do.entryEnd(seqOld, op.Index+1, isFlow(seqOld)); err == nil && e > 0 {
-		last = max(last, do.lineOf(e-1))
-	}
-	if isFlow(seqOld) {
+	flow := isFlow(seqOld)
+	if flow {
 		// The items share lines with their neighbours and with the brackets, so the result is checked
 		// as bytes: the same bytes in another order.
 		if !sameBytes(old, out) {
 			return refuse("the exchange is not a permutation of the old bytes")
 		}
-		first = seqOld.Content[op.Index].Line - 1
 	} else if !sameLines(ol, nl) {
 		return refuse("the exchange is not a permutation of the old lines")
 	}
-	for k := 0; k < first; k++ {
-		if ol[k] != nl[k] {
-			return refuse("the exchange changed a line before the two items")
-		}
+	// The text, cut at the parser's item boundaries into what each item owns (the comments directly
+	// above it, its own lines, a trailing comment) and the gaps between them (and before the first
+	// and after the last). Every gap must be as it was, in place, and each item must be the old item,
+	// all its lines, wherever it now stands.
+	ownOld, gapsOld, err := partition(do, ol, seqOld, flow)
+	if err != nil {
+		return err
 	}
-	for k := last + 1; k < len(ol); k++ {
-		if ol[k] != nl[k] {
-			return refuse("the exchange changed a line after the two items")
-		}
+	ownNew, gapsNew, err := partition(dn, nl, seqNew, flow)
+	if err != nil {
+		return err
 	}
-	// the comments: each item is the item it was, with the comments above it and its own lines
-	if isFlow(seqOld) {
-		return nil // a flow list has no comment lines to own; the line checks above are the check
+	if !reflect.DeepEqual(gapsOld, gapsNew) {
+		return refuse("the exchange changed what lies between or around the two items")
 	}
-	sigma := func(k int) int {
+	for k := range ownOld {
+		j := k
 		switch k {
 		case op.Index:
-			return op.Index + 1
+			j = op.Index + 1
 		case op.Index + 1:
-			return op.Index
+			j = op.Index
 		}
-		return k
-	}
-	for k := range seqOld.Content {
-		o, n := seqOld.Content[k], seqNew.Content[sigma(k)]
-		if !reflect.DeepEqual(headComments(ol, o), headComments(nl, n)) {
-			return refuse("an item lost or gained a comment above it")
-		}
-		if ol[o.Line-1] != nl[n.Line-1] || ol[lastLine(o)] != nl[lastLine(n)] {
-			return refuse("an item's first or last line changed")
+		if ownOld[k] != ownNew[j] {
+			return refuse("an item's text, or a comment that belongs to it, changed")
 		}
 	}
 	return nil
+}
+
+// partition cuts the text of a list into what each item owns and the gaps around them: gaps[0] is
+// everything before the first item, gaps[k] what lies between item k-1 and item k, and gaps[len(own)]
+// everything after the last. For a block list the pieces are whole lines, and an item owns the comment
+// lines directly above it through the last line of its entry; for a flow list they are byte ranges
+// of the text, an item being what lies between its own delimiters.
+func partition(d *doc, lines []string, seq *yaml.Node, flow bool) (own []string, gaps []string, err error) {
+	n := len(seq.Content)
+	if flow {
+		prev := 0
+		for _, it := range seq.Content {
+			s := d.start(it)
+			e, err := d.end(it, true)
+			if err != nil {
+				return nil, nil, err
+			}
+			if s < prev || e < s {
+				return nil, nil, refuse("the items overlap")
+			}
+			gaps = append(gaps, string(d.src[prev:s]))
+			own = append(own, string(d.src[s:e]))
+			prev = e
+		}
+		return own, append(gaps, string(d.src[prev:])), nil
+	}
+	next := 0
+	for k := 0; k < n; k++ {
+		first := headLine(lines, seq.Content[k])
+		e, err := d.entryEnd(seq, k, false)
+		if err != nil {
+			return nil, nil, err
+		}
+		last := d.lineOf(e - 1)
+		if first < next || last < first {
+			return nil, nil, refuse("the items overlap")
+		}
+		gaps = append(gaps, lineBlock(lines[next:first]))
+		own = append(own, lineBlock(lines[first:last+1]))
+		next = last + 1
+	}
+	return own, append(gaps, lineBlock(lines[next:])), nil
+}
+
+// lineBlock is lines as one comparable string that tells no lines from one empty line.
+func lineBlock(lines []string) string {
+	return fmt.Sprintf("%d|%s", len(lines), strings.Join(lines, "\n"))
 }
 
 func sameBytes(a, b []byte) bool {
@@ -202,28 +239,6 @@ func headLine(lines []string, n *yaml.Node) int {
 		l--
 	}
 	return l
-}
-
-// headComments are the comment lines directly above n, in order.
-func headComments(lines []string, n *yaml.Node) []string {
-	l := n.Line - 1
-	var c []string
-	for l > 0 && strings.HasPrefix(strings.TrimLeft(lines[l-1], " \t"), "#") {
-		l--
-		c = append([]string{lines[l]}, c...)
-	}
-	return c
-}
-
-// lastLine is the last line (0-based) on which n or anything inside it starts.
-func lastLine(n *yaml.Node) int {
-	m := n.Line - 1
-	for _, c := range n.Content {
-		if l := lastLine(c); l > m {
-			m = l
-		}
-	}
-	return m
 }
 
 func nodeAt(root *yaml.Node, path []any) (*yaml.Node, error) {

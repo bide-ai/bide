@@ -255,3 +255,39 @@ func TestVerifySwapLinesAroundThePair(t *testing.T) {
 		}
 	}
 }
+
+// Wrong exchanges that move text between the items, or the gap between them, are refused: the data,
+// the lines and the comments directly above each item all look right, and only the partition of the
+// text into each item's own lines and the gaps around them tells.
+func TestVerifySwapOwnLinesAndGaps(t *testing.T) {
+	op := Op{Kind: Swap, Path: []any{"xs"}, Index: 0}
+	for name, c := range map[string]struct{ old, good, bad string }{
+		"a comment inside an item moved into the other": {
+			"xs:\n  - name: a\n    # inner a\n    block: x\n  - name: b\n    block: y\n",
+			"xs:\n  - name: b\n    block: y\n  - name: a\n    # inner a\n    block: x\n",
+			"xs:\n  - name: b\n    # inner a\n    block: y\n  - name: a\n    block: x\n"},
+		"the blank line between the items moved after the second": {
+			"xs:\n  - a\n\n  - b\n  - c\n",
+			"xs:\n  - b\n\n  - a\n  - c\n",
+			"xs:\n  - b\n  - a\n\n  - c\n"},
+		"a trailing comment moved to the other item": {
+			"xs:\n  - a   # about a\n  - b\n",
+			"xs:\n  - b\n  - a   # about a\n",
+			"xs:\n  - b   # about a\n  - a\n"},
+		"the spaces of a flow list traded between its gaps": {
+			"xs: [a, b,   c]\n",
+			"xs: [b, a,   c]\n",
+			"xs: [b,   a, c]\n"},
+		"the flow gap changed": {
+			"xs: [a,   b,   c]\n",
+			"xs: [b,   a,   c]\n",
+			"xs: [b, a,   c]\n"},
+	} {
+		if err := Verify([]byte(c.old), []byte(c.good), op); err != nil {
+			t.Errorf("%s: the right result was refused: %v", name, err)
+		}
+		if err := Verify([]byte(c.old), []byte(c.bad), op); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
