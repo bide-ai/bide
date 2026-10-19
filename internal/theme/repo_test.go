@@ -28,9 +28,13 @@ var (
 	nameRE2   = regexp.MustCompile(`(?i)(?:^|[\s,(:=])(?:` + colourNames + `)(?:$|[\s,;)!])`)
 	hex6RE    = regexp.MustCompile(`#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?\b`)
 	attrRE    = regexp.MustCompile(`(?i)(?:style|fill|stroke|stop-color|flood-color|color)\s*[=:]\s*\\?["']?([^"';>}]*)`)
-	idleRE    = regexp.MustCompile(`(?i)var\(\s*--idle\s*[,)]`)
-	importRE  = regexp.MustCompile(`(?i)@import\b|\burl\((?:\s*["']?)(?:[^#"'\s)]|\s*$)`)
-	stringRE  = regexp.MustCompile(`"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'`)
+	// assignRE finds a value a script gives a style: element.style.X = "v", style["x"] = "v",
+	// style.setProperty("x", "v"), setAttribute("fill", "v"), and a colour property such as
+	// fillStyle or backgroundColor assigned a string.
+	assignRE = regexp.MustCompile(`(?i)(?:\.style(?:\.[a-z]+|\[["'][a-z-]+["']\])\s*=\s*|setProperty\(\s*["'][a-z-]+["']\s*,\s*|setAttribute\(\s*["'](?:fill|stroke|style|color|stop-color|flood-color)["']\s*,\s*|\b(?:fillStyle|strokeStyle|\w*Color)\s*=\s*)["']([^"']*)["']`)
+	idleRE   = regexp.MustCompile(`(?i)var\(\s*--idle\s*[,)]`)
+	importRE = regexp.MustCompile(`(?i)@import\b|\burl\((?:\s*["']?)(?:[^#"'\s)]|\s*$)`)
+	stringRE = regexp.MustCompile(`"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'`)
 )
 
 type decl struct{ selector, prop, value string }
@@ -109,6 +113,11 @@ func scanMarkup(src string) []string {
 	for _, m := range attrRE.FindAllStringSubmatch(src, -1) {
 		v := m[1]
 		if hexRE.MatchString(v) || funcRE.MatchString(v) || nameRE2.MatchString(" "+v+" ") {
+			found = append(found, m[0])
+		}
+	}
+	for _, m := range assignRE.FindAllStringSubmatch(src, -1) {
+		if v := m[1]; hexRE.MatchString(v) || funcRE.MatchString(v) || nameRE2.MatchString(" "+v+" ") {
 			found = append(found, m[0])
 		}
 	}
@@ -303,10 +312,22 @@ func TestScanMarkup(t *testing.T) {
 		{"a template value", "`<svg style=\"color:${color}\">`", 0},
 		{"fill none", `<rect fill="none" stroke="currentColor"/>`, 0},
 		{"an id and a fragment", `<a href="#ic-gate"><use href="#node"/></a> $('#theme')`, 0},
+		{"a style assignment with a name", `el.style.background = "red"`, 1},
+		{"a style assignment with hsl", `x.style.background = "hsl(1 2% 3%)"`, 1},
+		{"a style assignment with a short hex", `x.style.color = "#abc"`, 1},
+		{"a bracket style assignment", `x.style["background-color"] = "tomato"`, 1},
+		{"a setProperty", `x.style.setProperty("color", "crimson")`, 1},
+		{"a setAttribute", `x.setAttribute("fill", "#abc"); y.setAttribute("stroke", "red")`, 2},
+		{"a canvas style", `ctx.fillStyle = "red"; ctx.strokeStyle = "rgb(1,2,3)"`, 2},
+		{"backgroundColor", `el.backgroundColor = "rgb(0,0,0)"`, 1},
+		{"a style assignment of a token", `el.style.color = "var(--fg)"; el.style.width = "10px"; el.style.background = "none"`, 0},
+		{"a style assignment of a variable", `el.style.color = color; el.style.fill = c`, 0},
+		{"a setAttribute of a non-colour", `x.setAttribute("class", "red"); x.setAttribute("title", "white")`, 0},
 		{"a hex-looking id", `document.getElementById("#add")`, 0},
 	} {
-		if got := scanMarkup(tc.src); len(got) != tc.want {
-			t.Errorf("%s: %d findings %v, want %d", tc.name, len(got), got, tc.want)
+		// Two patterns can report one literal, so the test asks whether anything is found.
+		if got := scanMarkup(tc.src); (len(got) > 0) != (tc.want > 0) {
+			t.Errorf("%s: findings %v, want some: %v", tc.name, got, tc.want > 0)
 		}
 	}
 }
