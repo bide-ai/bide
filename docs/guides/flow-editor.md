@@ -192,7 +192,8 @@ saving needs the confirmation.
   loop-back (`loop_max`: when its predicate holds, the value goes back to an earlier node and that part
   runs again, at most that many times before the run declares a runaway loop); 0 removes the key and
   the arm is an ordinary forward arm. The editor does not check that the target is an earlier node of
-  the loop; the report does.
+  the loop (an ancestor of the switch): neither does the page's check, and `plan.Load` refuses a loop-back arm to a
+  node that is not one, so a bound on a forward arm is caught when a program loads the flow.
 - **A join** fans the results of several nodes into one. It is not a declared node but a wiring
   element (`join`, `inputs`, `merge`), and is listed in the outline with the nodes. **Add a join** is a
   disclosure under the outline: a name, a merge block and the inputs, chosen from the nodes. On a
@@ -200,7 +201,8 @@ saving needs the confirmation.
   block takes them: **Up**, **Down**, **Remove**, **Add input**) and **Remove join**; a join has the same
   safety and approval gate forms a node has, written on its wiring element, and edges out
   (**Connections**). A join has no block, name, position or entry of its own to edit. The editor checks
-  what the config says (an input is a declared node or join, named once, not the join itself; a join
+  what the config says (an input is a declared node or join, named once, not the join itself, and a join
+  input is defined earlier in the wiring, which `plan.Load` requires and which rules out a cycle of joins; a join
   needs at least one input and a merge block). **It cannot check that the merge block is registered
   or that its arity and types fit the inputs:** `plan.Load` does, with the program's registry.
 - **Removing a join** lists first what goes with it (the edges out of it, a switch on it, its comments)

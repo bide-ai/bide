@@ -154,6 +154,9 @@ func (c *structDoc) nodeIndex(name string) (int, error) {
 		idx = i
 	}
 	if idx < 0 {
+		if c.isJoin(name) {
+			return 0, refuse("%q is a join, not a node: its inputs, merge and removal have their own controls, and a join is renamed or moved in the source", name)
+		}
 		return 0, refuse("no node is named %q", name)
 	}
 	return idx, nil
@@ -342,6 +345,11 @@ func planMoveWiring(cfg *structDoc, op Operation) ([]Op, error) {
 	}
 	if j < 0 || j+1 >= len(cfg.Wiring) {
 		return nil, refuse("wiring element %d is already the %s", op.Index+1, map[int]string{-1: "first", 1: "last"}[delta])
+	}
+	order := slices.Clone(cfg.Wiring)
+	order[j], order[j+1] = order[j+1], order[j]
+	if err := joinsInOrder(order); err != nil {
+		return nil, err
 	}
 	return []Op{{Kind: Swap, Path: []any{"wiring"}, Index: j}}, nil
 }

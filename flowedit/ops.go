@@ -288,25 +288,56 @@ func planApproval(a *Approval, idx int, n nodeDoc, at func(...any) []any, put fu
 	return steps, nil
 }
 
-// listSteps turns the list at path from old into want by the smallest change: it keeps the common
-// start and end and replaces what is between them, so adding an approver at the end is one inserted
-// item and removing one is one deleted item.
+// listSteps turns the list at path from old into want by the smallest change: the items the two lists
+// share, taken as the longest common subsequence, stay exactly where they are (their comments, their
+// style, the style of the list), the new items are inserted at their places, and only the old items
+// that are not in want are deleted. Adding an approver at the end is one inserted item and removing
+// one is one deleted item. The insertions come before the deletions, so a list is never left empty
+// in between (a block list with nothing in it cannot be written into).
 func listSteps(path []any, old, want []string) []Op {
-	lo := 0
-	for lo < len(old) && lo < len(want) && old[lo] == want[lo] {
-		lo++
+	n, m := len(old), len(want)
+	dp := make([][]int, n+1)
+	for i := range dp {
+		dp[i] = make([]int, m+1)
 	}
-	oe, we := len(old), len(want)
-	for oe > lo && we > lo && old[oe-1] == want[we-1] {
-		oe--
-		we--
+	for i := n - 1; i >= 0; i-- {
+		for j := m - 1; j >= 0; j-- {
+			if old[i] == want[j] {
+				dp[i][j] = dp[i+1][j+1] + 1
+			} else {
+				dp[i][j] = max(dp[i+1][j], dp[i][j+1])
+			}
+		}
+	}
+	type entry struct {
+		val         string
+		isNew, drop bool
+	}
+	var merged []entry
+	for i, j := 0, 0; i < n || j < m; {
+		switch {
+		case i < n && j < m && old[i] == want[j]:
+			merged = append(merged, entry{val: old[i]})
+			i++
+			j++
+		case i < n && (j >= m || dp[i+1][j] >= dp[i][j+1]):
+			merged = append(merged, entry{val: old[i], drop: true})
+			i++
+		default:
+			merged = append(merged, entry{val: want[j], isNew: true})
+			j++
+		}
 	}
 	var steps []Op
-	for i := oe - 1; i >= lo; i-- { // from the end, so the indexes of the rest stay valid
-		steps = append(steps, Op{Kind: Delete, Path: append(slices.Clone(path), i)})
+	for k, e := range merged {
+		if e.isNew {
+			steps = append(steps, Op{Kind: Insert, Path: slices.Clone(path), Index: k, Value: e.val})
+		}
 	}
-	for i := lo; i < we; i++ {
-		steps = append(steps, Op{Kind: Insert, Path: slices.Clone(path), Index: i, Value: want[i]})
+	for k := len(merged) - 1; k >= 0; k-- { // from the end, so the indexes of the rest stay valid
+		if merged[k].drop {
+			steps = append(steps, Op{Kind: Delete, Path: append(slices.Clone(path), k)})
+		}
 	}
 	return steps
 }

@@ -41,9 +41,33 @@ func (c *structDoc) joinAt(name string) (int, error) {
 	return at, nil
 }
 
+// joinsInOrder refuses a wiring order in which a join reads another join that is defined after it:
+// plan.Load registers a join when it reaches its wiring element, so an input that is a join must come
+// earlier (which also rules out a cycle of joins).
+func joinsInOrder(wiring []wireDoc) error {
+	at := map[string]int{}
+	for i, w := range wiring {
+		if w.Join != "" {
+			at[w.Join] = i
+		}
+	}
+	for i, w := range wiring {
+		if w.Join == "" {
+			continue
+		}
+		for _, in := range w.Inputs {
+			if p, ok := at[in]; ok && p >= i {
+				return refuse("the join %q would read the join %q, which comes after it in the wiring; plan.Load reads a join's inputs in order, so %q must come first", w.Join, in, in)
+			}
+		}
+	}
+	return nil
+}
+
 // checkInputs checks the producers a join fans in: at least one, each a declared node or a join other
-// than the join itself, none twice.
-func (c *structDoc) checkInputs(self string, inputs []string) error {
+// than the join itself, none twice. selfAt is the join's position in the wiring (the length of the wiring
+// for a join about to be added): an input that is a join must come before it.
+func (c *structDoc) checkInputs(self string, inputs []string, selfAt int) error {
 	if len(inputs) == 0 {
 		return refuse("a join needs at least one input")
 	}
@@ -56,6 +80,11 @@ func (c *structDoc) checkInputs(self string, inputs []string) error {
 			return refuse("no node is named %q", in)
 		case seen[in]:
 			return refuse("the input %q is named twice", in)
+		}
+		if c.isJoin(in) {
+			if p, err := c.joinAt(in); err != nil || p >= selfAt {
+				return refuse("the join %q comes after %q in the wiring; plan.Load reads a join's inputs in order, so an input that is a join must come first (move it up in the wiring)", in, self)
+			}
 		}
 		seen[in] = true
 	}
@@ -77,7 +106,7 @@ func planJoin(cfg *structDoc, top map[string]json.RawMessage, op Operation) ([]O
 		if err := checkName(op.Value); err != nil {
 			return nil, err
 		}
-		if err := cfg.checkInputs(op.Node, op.Inputs); err != nil {
+		if err := cfg.checkInputs(op.Node, op.Inputs, len(cfg.Wiring)); err != nil {
 			return nil, err
 		}
 		inputs := make([]any, len(op.Inputs))
@@ -98,7 +127,7 @@ func planJoin(cfg *structDoc, top map[string]json.RawMessage, op Operation) ([]O
 		if err != nil {
 			return nil, err
 		}
-		if err := cfg.checkInputs(op.Node, op.Inputs); err != nil {
+		if err := cfg.checkInputs(op.Node, op.Inputs, at); err != nil {
 			return nil, err
 		}
 		w := cfg.Wiring[at]

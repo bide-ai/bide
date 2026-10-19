@@ -244,3 +244,59 @@ func TestNewJoinInputsAreWrittenAsAFlowList(t *testing.T) {
 		t.Errorf("\n%s", got)
 	}
 }
+
+// Items a list edit keeps stay as they are: their comments, and the style of the list.
+func TestListEditsKeepTheItemsTheyKeep(t *testing.T) {
+	joinSrc := "version: 1\nflow: f\nentry: a\nnodes:\n  - {name: a, block: a}\n  - {name: b, block: b}\n  - {name: c, block: c}\nwiring:\n  - join: j\n    inputs:\n      - a   # first\n      # second\n      - b\n    merge: m\n"
+	got := mustApply(t, "f.yaml", joinSrc, Operation{Op: "set_join_inputs", Node: "j", Inputs: []string{"b", "c"}})
+	want := "    inputs:\n      # second\n      - b\n      - c\n"
+	if !strings.Contains(got, want) || strings.Contains(got, "inputs: [") {
+		t.Errorf("join inputs:\n%s", got)
+	}
+	gateSrc := "version: 1\nflow: f\nentry: a\nnodes:\n  - name: a\n    block: a\n    approval:\n      need: 1\n      approvers:\n        - x   # first\n        # about y\n        - y\n"
+	got = mustApply(t, "f.yaml", gateSrc, Operation{Op: "set_approval", Node: "a", Approval: &Approval{Need: 1, Approvers: []string{"y", "z"}}})
+	if !strings.Contains(got, "        # about y\n        - y\n        - z\n") || strings.Contains(got, "approvers: [") || strings.Contains(got, "# first") && strings.Contains(got, "- x") {
+		t.Errorf("approvers:\n%s", got)
+	}
+	// Removing one approver is exactly one deleted item; adding one is exactly one inserted item.
+	got = mustApply(t, "f.yaml", gateSrc, Operation{Op: "set_approval", Node: "a", Approval: &Approval{Need: 1, Approvers: []string{"y"}}})
+	if want := strings.Replace(gateSrc, "        - x   # first\n", "", 1); got != want {
+		t.Errorf("removing x:\n%s", got)
+	}
+	got = mustApply(t, "f.yaml", gateSrc, Operation{Op: "set_approval", Node: "a", Approval: &Approval{Need: 1, Approvers: []string{"x", "y", "z"}}})
+	if want := gateSrc + "        - z\n"; got != want {
+		t.Errorf("adding z:\n%s", got)
+	}
+	// A whole new list into a block list never leaves it empty in between.
+	got = mustApply(t, "f.yaml", gateSrc, Operation{Op: "set_approval", Node: "a", Approval: &Approval{Need: 1, Approvers: []string{"p", "q"}}})
+	if !strings.Contains(got, "- p") || !strings.Contains(got, "- q") || strings.Contains(got, "- x") {
+		t.Errorf("replacing all:\n%s", got)
+	}
+}
+
+// plan.Load registers a join when it reaches its wiring element, so a join that reads a join defined
+// after it is refused, and so is a wiring order that would make one; a cycle of joins cannot be made.
+func TestJoinInputsMustBeDefinedBefore(t *testing.T) {
+	src := "version: 1\nflow: f\nentry: a\nnodes:\n  - {name: a, block: a}\n  - {name: b, block: b}\n  - {name: c, block: c}\nwiring:\n  - join: j1\n    inputs: [a, b]\n    merge: m\n  - join: j2\n    inputs: [j1, c]\n    merge: m\n"
+	if why := refusalOf(t, "f.yaml", src, Operation{Op: "set_join_inputs", Node: "j1", Inputs: []string{"a", "j2"}}); !strings.Contains(why, "comes after") {
+		t.Errorf("a later join as an input: %q", why)
+	}
+	if why := refusalOf(t, "f.yaml", src, Operation{Op: "move_wiring", Index: 0, Value: "down"}); !strings.Contains(why, "comes after it") && !strings.Contains(why, "must come first") {
+		t.Errorf("a move that puts a join before its input: %q", why)
+	}
+	// An earlier join is fine, as an input of a later one, and in a new join.
+	mustApply(t, "f.yaml", src, Operation{Op: "set_join_inputs", Node: "j2", Inputs: []string{"c", "j1"}})
+	mustApply(t, "f.yaml", src, Operation{Op: "add_join", Node: "j3", Inputs: []string{"j1", "j2"}, Value: "m"})
+}
+
+func TestRenamingOrMovingAJoinSaysItIsAJoin(t *testing.T) {
+	for _, op := range []Operation{
+		{Op: "rename_node", Node: "j", Value: "k"},
+		{Op: "move_node", Node: "j", Value: "up"},
+		{Op: "remove_node", Node: "j"},
+	} {
+		if why := refusalOf(t, "f.yaml", joinFlow, op); !strings.Contains(why, "is a join, not a node") {
+			t.Errorf("%+v: %q", op, why)
+		}
+	}
+}
