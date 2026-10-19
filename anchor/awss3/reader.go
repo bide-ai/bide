@@ -33,9 +33,11 @@ type ReaderConfig struct {
 	ExpectedBucketOwner string
 	// Prefix is the prefix the Anchor was configured with (default "bide-anchor/").
 	Prefix string
-	// KMSKeyID, when set, is the KMS key (a key ID or its ARN, not an alias) the heads must be encrypted with:
-	// Audit reports a bucket whose default encryption is not SSE-KMS with that key, and an object
-	// that is not encrypted with it. Without it the bucket's and the objects' encryption is not judged.
+	// KMSKeyID, when set, is the AWS KMS key the heads must be encrypted with: a key ID (a UUID), a
+	// multi-Region key ID (mrk- and 32 hex digits) or a key ARN, and nothing else (an alias is refused, and
+	// so is the key name of an S3-compatible server). Audit reports a bucket whose default encryption is not
+	// SSE-KMS with that key, and an object that is not encrypted with it. Without it the bucket's and the
+	// objects' encryption is not judged.
 	KMSKeyID string
 	// Retention, when set, is the retention the Anchor was configured with: Audit reports a bucket whose
 	// default retention is shorter, and an object retained for less than this from its own write. Without

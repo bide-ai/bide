@@ -53,7 +53,7 @@ Usage of bide-anchor export:
   -kind string
     	the tree kind: journal, or events for a notification or event trail (default "journal")
   -kms-key string
-    	the KMS key the heads must be encrypted with (gcs: projects/P/locations/L/keyRings/R/cryptoKeys/K; s3: a key ID (UUID), an mrk- key ID or a key ARN, nothing else, not an alias): a bucket default or an object with another key is a finding
+    	the KMS key the heads must be encrypted with (gcs: projects/P/locations/L/keyRings/R/cryptoKeys/K; s3: an AWS KMS key ID (UUID), an mrk- key ID or a key ARN, nothing else, not an alias; leave it out on an S3-compatible server with named keys): a bucket default or an object with another key is a finding
   -lock-mode string
     	-backend s3: the object lock mode the anchor was configured with, COMPLIANCE or GOVERNANCE: a bucket default that is weaker is a finding, and with GOVERNANCE a governance-locked object is not
   -o string
@@ -87,7 +87,7 @@ Usage of bide-anchor check:
   -kind string
     	the tree kind: journal, or events for a notification or event trail (default "journal")
   -kms-key string
-    	the KMS key the heads must be encrypted with (gcs: projects/P/locations/L/keyRings/R/cryptoKeys/K; s3: a key ID (UUID), an mrk- key ID or a key ARN, nothing else, not an alias): a bucket default or an object with another key is a finding
+    	the KMS key the heads must be encrypted with (gcs: projects/P/locations/L/keyRings/R/cryptoKeys/K; s3: an AWS KMS key ID (UUID), an mrk- key ID or a key ARN, nothing else, not an alias; leave it out on an S3-compatible server with named keys): a bucket default or an object with another key is a finding
   -lock-mode string
     	-backend s3: the object lock mode the anchor was configured with, COMPLIANCE or GOVERNANCE: a bucket default that is weaker is a finding, and with GOVERNANCE a governance-locked object is not
   -owner string

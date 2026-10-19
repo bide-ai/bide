@@ -118,7 +118,9 @@ type Config struct {
 	// ID (mrk- and 32 hex digits) or a key ARN, and nothing else. Required unless EncryptionNone is set. An
 	// alias is refused, with every other string that is no key: S3 reports the ARN of the key an alias
 	// resolves to, so the read-back could not tell which key it was, and would take any key for the one
-	// meant. Pass the ARN of the key the alias points to.
+	// meant. Pass the ARN of the key the alias points to. The key is an AWS KMS key: an S3-compatible server
+	// with named keys of its own (MinIO with a KES key name, say) cannot be configured with one here; use
+	// EncryptionNone there, which means the anchor does not check the key.
 	KMSKeyID string
 	// EncryptionNone allows a store without SSE-KMS. For tests against a server that has no KMS;
 	// do not set it in production.
