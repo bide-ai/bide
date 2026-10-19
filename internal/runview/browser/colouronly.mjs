@@ -148,7 +148,7 @@ try {
         const box = n.querySelector('.box'), s = getComputedStyle(box), mark = n.querySelector('.nmark');
         return {
           classes: [...n.classList], dash: s.strokeDasharray, width: parseFloat(s.strokeWidth), boxVis: window.__h.shapeVis(box),
-          mark: mark ? { shape: mark.firstElementChild.tagName.toLowerCase(), text: mark.querySelector('text').textContent, shapeVis: window.__h.shapeVis(mark.firstElementChild), textVis: window.__h.textVis(mark.querySelector('text')) } : null,
+          mark: mark ? { inside: (() => { const b = box.getBoundingClientRect(), m = mark.getBoundingClientRect(), cx = m.left + m.width / 2, cy = m.top + m.height / 2; return cx >= b.left - 2 && cx <= b.right + 2 && cy >= b.top - 2 && cy <= b.bottom + 2; })(), shape: mark.firstElementChild.tagName.toLowerCase(), text: mark.querySelector('text').textContent, shapeVis: window.__h.shapeVis(mark.firstElementChild), textVis: window.__h.textVis(mark.querySelector('text')) } : null,
         };
       });
       const key = d.classes.filter((c) => !c.startsWith('risk-')).join(' ');
