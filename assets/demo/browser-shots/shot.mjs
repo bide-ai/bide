@@ -5,7 +5,7 @@ const browser = await puppeteer.launch({ executablePath: process.env.CHROME_BIN,
 try {
   for (const theme of ['dark', 'light']) {
     const page = await browser.newPage();
-    await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: theme }]);
+    await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: theme }, { name: 'prefers-reduced-motion', value: 'reduce' }]);
     await page.setViewport({ width: +width, height: 900, deviceScaleFactor: 2 });
     await page.goto(url, { waitUntil: 'networkidle0' });
     const h = await page.evaluate(() => document.documentElement.scrollHeight);

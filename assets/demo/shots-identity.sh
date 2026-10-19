@@ -23,31 +23,13 @@ work=/tmp/bide-identity # a fixed, short path: the Needs attention list shows it
 rm -rf "$work" && mkdir -p "$work"
 trap 'kill $(jobs -p) 2>/dev/null || true; wait 2>/dev/null; rm -rf "$work"' EXIT
 
-for c in "${CHROME:-}" \
-  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-  "/Applications/Chromium.app/Contents/MacOS/Chromium" \
-  "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge" \
-  "$(command -v chromium || true)" "$(command -v google-chrome || true)"; do
-  [ -n "$c" ] && [ -x "$c" ] && { CHROME=$c; break; }
-done
-[ -n "${CHROME:-}" ] || { echo "shots-identity.sh: no Chromium-based browser found; set CHROME" >&2; exit 1; }
+. "$here/lib.sh"
+shot_init
 
 (cd "$root/cmd/bide" && go build -o "$work/bide" .)
 mkdir -p "$out"
 cd "$work"
 
-shot() { # name url height
-  local flags=(--headless=new --disable-gpu --hide-scrollbars --virtual-time-budget=3000 --window-size=1200,"$3"
-    --user-data-dir="$work/profile-$1" --screenshot="$out/$1-$theme.png")
-  if [ "$theme" = dark ]; then flags+=(--force-dark-mode); else flags+=(--blink-settings=preferredColorScheme=1); fi
-  rm -f "$out/$1-$theme.png"
-  for _ in 1 2 3; do # a headless browser sometimes exits before it writes the file
-    "$CHROME" "${flags[@]}" "$2" > /dev/null 2>&1 || true
-    [ -s "$out/$1-$theme.png" ] && break
-  done
-  [ -s "$out/$1-$theme.png" ] || { echo "shots-identity.sh: no screenshot of $2" >&2; exit 1; }
-  echo "$out/$1-$theme.png"
-}
 wait_for() { # url: retry for up to 30 s
   for _ in $(seq 300); do curl -sf -o /dev/null "$1" && return 0; sleep 0.1; done
   echo "shots-identity.sh: timed out waiting for $1" >&2; exit 1
