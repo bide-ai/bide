@@ -3,8 +3,10 @@ package theme
 import (
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
+	"unicode"
 )
 
 // custom builds a custom theme file: a base plus the given top-level overrides.
@@ -496,5 +498,60 @@ func TestDerivedColors(t *testing.T) {
 	th, _, _ = Parse(custom("dark", surface("text", "#ffffff")))
 	if got := th.c["surface.canvas_bg"].String(); got != "#1c1c20" {
 		t.Errorf("canvas_bg = %s, want the base's", got)
+	}
+}
+
+// hostile is text a file could carry into an error whatever the decoder's wording: an escape, a
+// control string, a newline that would forge a line, a bidi override, a separator, an invalid byte.
+var hostile = []string{
+	"\x1b[31mRED", "\x1b]0;title\x07", "\x1b[2J", "x\n/p.json: theme \"dark\" ok (0 errors)", "a\rb",
+	"\u202eevil", "\u2028\u2029", "\u0085", "\u009b31m", "bad\xffbyte", "nul\x00", "del\x7f",
+}
+
+// TestFileErrorEscapesWhateverTheDecoderSays: the decoder's message, with each hostile string where
+// the decoder might put a key or a value, comes out with no control, separator, bidi or invalid
+// character and on one line. This does not depend on the Go version's wording.
+func TestFileErrorEscapesWhateverTheDecoderSays(t *testing.T) {
+	for _, h := range hostile {
+		for _, wording := range []string{
+			"json: cannot unmarshal number into Go struct field wire.surface." + h + " of type string",
+			"json: cannot unmarshal number into Go struct field wire.surface of type string",
+			"$.surface: " + h + " is not a field of theme.wire",
+			h,
+		} {
+			msg := fileError(errors.New(wording)).Error()
+			if strings.ContainsAny(msg, "\n\r") {
+				t.Errorf("fileError(%q) has a line break: %q", wording, msg)
+			}
+			for _, c := range msg {
+				if !unicode.IsPrint(c) {
+					t.Errorf("fileError(%q) holds the non-printing %q: %q", wording, c, msg)
+					break
+				}
+			}
+		}
+	}
+}
+
+// TestCommandEscapesErrorText: the command prints a path and an error from the file system or the
+// decoder escaped, on one line each, with a path it was given that holds the hostile text.
+func TestCommandEscapesErrorText(t *testing.T) {
+	dir := t.TempDir()
+	for _, h := range hostile {
+		code, out, errs := run("check", filepath.Join(dir, "no such "+h))
+		if code != 1 {
+			t.Errorf("a missing file named %q: exit %d", h, code)
+		}
+		for _, stream := range []string{out, errs} {
+			if strings.Count(stream, "\n") > 1 {
+				t.Errorf("a path named %q made %d lines: %q", h, strings.Count(stream, "\n"), stream)
+			}
+			for _, c := range strings.TrimSuffix(stream, "\n") {
+				if !unicode.IsPrint(c) {
+					t.Errorf("a path named %q: output holds the non-printing %q: %q", h, c, stream)
+					break
+				}
+			}
+		}
 	}
 }
