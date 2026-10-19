@@ -722,6 +722,14 @@ journal's topology, a step or predicate name) as `\u{XXXX}`; the JSON endpoints 
   match the join's declared `inputs`; an unknown or mis-arity merge is a load error naming the join.
   A join is entered only by its inputs: an `edge` into it from any other node, a repeated input
   edge, or a `switch` arm routing to it is a load error, since the merge would drop that value.
+  A join's inputs are registered in wiring order, so an input that is itself a join must be defined
+  earlier in `wiring[]` (which also rules out a cycle of joins). `bide check` and `bide view -config` report
+  this without a Registry.
+- **Loops:** an arm with `loop_max` above 0 is a bounded back-edge to an earlier loop head. The head must
+  reach the switch in the forward graph (the edges, a join's inputs and the arms that do not loop back),
+  a switch has at most one loop-back arm, and it needs an exit (another arm or an `else`). `bide check` and
+  `bide view -config` report these without a Registry; the body of the loop (no inner switch, no unrelated
+  node between head and switch) is checked when a program loads the flow.
 - **Structural checks `Build` does not give:** a node cannot be both switched-over and have an
   outgoing edge, and a `wiring[]` element must set exactly one of `edge`/`switch`/`join`.
 
