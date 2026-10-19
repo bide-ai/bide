@@ -25,15 +25,15 @@ try {
   await page.evaluate(axeSource);
   const until = (fn, arg, what) => page.waitForFunction(fn, { timeout: 10000 }, arg).catch(() => { throw new Error('timed out waiting for ' + what); });
   const check = async (state) => {
-    // The page redraws a moment after an edit (the source is checked 250 ms after the last key, a gate
-    // draft 200 ms after the last change). Axe runs once nothing is in flight and the page has been
-    // quiet for longer than both, so it never reads a half-drawn state.
-    await page.waitForNetworkIdle({ idleTime: 500, timeout: 10000 });
+    // The page says when it is at rest (data-busy on <html> counts its requests in flight and the
+    // pauses it waits out before it asks the server), so axe never reads a half-drawn state and no
+    // guess of how long a redraw takes is involved.
+    await page.waitForFunction(() => document.documentElement.dataset.busy === '0', { timeout: 10000 }).catch(() => { throw new Error('timed out waiting for the page to be at rest in: ' + state); });
     for (const theme of ['light', 'dark']) {
       await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme);
       const r = await page.evaluate(() => window.axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa', 'best-practice'] } }));
       results[`${state} (${theme})`] = {
-        violations: r.violations.map((v) => ({ id: v.id, impact: v.impact, help: v.help, nodes: v.nodes.map((n) => n.target.join(' ')).slice(0, 5) })),
+        violations: r.violations.map((v) => ({ id: v.id, impact: v.impact, help: v.help, nodes: v.nodes.map((n) => n.target.join(' ') + ' :: ' + String(n.html).slice(0, 200) + ' :: ' + String(n.failureSummary).replace(/\s+/g, ' ').slice(0, 300)).slice(0, 5) })),
         passes: r.passes.length,
       };
     }

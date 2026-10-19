@@ -63,14 +63,51 @@ async function applyOp(text, operation) {
 }
 
 async function api(path, body = {}) {
-  const res = await fetch(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Bide-Token': token },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw Object.assign(new Error(data.error || res.status + ' ' + res.statusText), { status: res.status, data });
-  return data;
+  busy(1);
+  try {
+    const res = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Bide-Token': token },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw Object.assign(new Error(data.error || res.status + ' ' + res.statusText), { status: res.status, data });
+    return data;
+  } finally {
+    busy(-1);
+  }
+}
+
+// ---- at rest ----
+//
+// <html data-busy> is the number of things the page has started and not finished: requests in flight
+// and the pauses it waits out before it asks the server (the check of what was typed, of a gate draft,
+// of an assertion). It is "0" when the page has nothing under way, so a test, or a tool that drives
+// the page, waits for that and not for a guess of how long a redraw takes.
+let busyN = 0;
+function busy(d) {
+  busyN += d;
+  document.documentElement.dataset.busy = String(busyN);
+}
+document.documentElement.dataset.busy = '0';
+
+// pause is one pending timer: set replaces the one before it, and the pause counts as busy until its
+// function has finished.
+function pause() {
+  let t = 0;
+  let pending = false;
+  return {
+    cancel() { if (pending) { clearTimeout(t); pending = false; busy(-1); } },
+    set(fn, ms) {
+      this.cancel();
+      pending = true;
+      busy(1);
+      t = setTimeout(async () => {
+        pending = false;
+        try { await fn(); } finally { busy(-1); }
+      }, ms);
+    },
+  };
 }
 
 const $ = (id) => document.getElementById(id);
@@ -410,7 +447,7 @@ function gateForm(n) {
   }
   let needBad = false;
   const operation = () => ({ op: 'set_approval', node: n.name, approval: draft });
-  let timer = 0;
+  const timer = pause();
   let seq = 0;
   function drawApprovers() {
     list.replaceChildren(...draft.approvers.map((id, i) => {
@@ -423,16 +460,16 @@ function gateForm(n) {
   function changed() {
     apply.disabled = needBad;
     if (needBad) {
-      clearTimeout(timer);
+      timer.cancel();
       ++seq;
       kofn.textContent = '';
       setFeedback('bad', ['Decisions needed must be a whole number such as 2.']);
       return;
     }
     kofn.textContent = draft.approvers.length ? draft.need + ' of ' + draft.approvers.length + ' approver' + (draft.approvers.length === 1 ? '' : 's') + ' must sign' + (draft.exclude_principal ? ', never counting the person who started the run' : '') + (draft.timeout ? '; the gate expires after ' + shown(draft.timeout) : '') + '.' : 'No approvers yet.';
-    clearTimeout(timer);
+    timer.cancel();
     const mine = ++seq;
-    timer = setTimeout(async () => {
+    timer.set(async () => {
       try {
         const e = await applyOp(state.text, operation());
         if (mine !== seq) return;
@@ -653,7 +690,7 @@ function assertionForm(v, editing) {
   const submit = h('button', { type: 'button', class: 'btn primary', id: 'a-submit' }, editing >= 0 ? 'Save assertion' : 'Add assertion');
   const cancel = editing >= 0 ? h('button', { type: 'button', class: 'btn', id: 'a-cancel' }, 'Cancel') : null;
   const operation = () => ({ op: editing >= 0 ? 'set_assertion' : 'add_assertion', index: editing >= 0 ? editing : 0, assertion: { ...d } });
-  let timer = 0;
+  const timer = pause();
   let seq = 0;
   function draw() {
     const kids = [];
@@ -676,9 +713,9 @@ function assertionForm(v, editing) {
     fields.replaceChildren(...kids);
   }
   function changed() {
-    clearTimeout(timer);
+    timer.cancel();
     const mine = ++seq;
-    timer = setTimeout(async () => {
+    timer.set(async () => {
       try {
         const e = await applyOp(state.text, operation());
         if (mine !== seq) return;
@@ -789,7 +826,7 @@ function renderState() {
 // Typing in the source asks the server for the check of the new text (the page validates nothing
 // itself) after a short pause. A slower answer to an older text is dropped.
 let typing = 0;
-let timer = 0;
+const timer = pause();
 let lastTyped = 0;
 function onInput() {
   const now = Date.now();
@@ -797,9 +834,9 @@ function onInput() {
   lastTyped = now;
   state.text = $('source').value;
   renderState();
-  clearTimeout(timer);
+  timer.cancel();
   const mine = ++typing;
-  timer = setTimeout(async () => {
+  timer.set(async () => {
     try {
       const v = await api('/api/report', { text: state.text });
       if (mine === typing) render(v, { keepSource: true });
