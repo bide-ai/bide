@@ -1104,8 +1104,8 @@ func readOld(arg, newPath string, toJSON func([]byte) ([]byte, error)) (Config, 
 	if err != nil {
 		return Config{}, fmt.Errorf("-diff %q: no such file, and git show %s failed: %s", arg, spec, cmp.Or(strings.TrimSpace(stderr.String()), err.Error()))
 	}
-	if len(out) > maxInput {
-		return Config{}, fmt.Errorf("-diff %q: larger than %d bytes", arg, maxInput)
+	if len(out) > maxConfig {
+		return Config{}, fmt.Errorf("-diff %q: larger than %d bytes", arg, maxConfig)
 	}
 	return configFrom(spec, path, out, toJSON)
 }

@@ -487,12 +487,12 @@ func readConfig(path string, toJSON func([]byte) ([]byte, error)) (Config, error
 		return Config{}, err
 	}
 	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, maxInput+1))
+	b, err := io.ReadAll(io.LimitReader(f, maxConfig+1))
 	if err != nil {
 		return Config{}, err
 	}
-	if len(b) > maxInput {
-		return Config{}, fmt.Errorf("larger than %d bytes", maxInput)
+	if len(b) > maxConfig {
+		return Config{}, fmt.Errorf("larger than %d bytes", maxConfig)
 	}
 	return configFrom(path, path, b, toJSON)
 }
@@ -536,6 +536,9 @@ func readApproverKeys(path string) (agent.ApproverVerifierFor, error) {
 
 // maxInput caps an input file, as bide audit's default -max-input-bytes does.
 const maxInput = 256 << 20
+
+// maxConfig caps a flow config file, as plan.LoadReader does: far past any topology.
+const maxConfig = 16 << 20
 
 func readStrict(path string, v any) error {
 	f, err := os.Open(path)
