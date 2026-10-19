@@ -49,6 +49,10 @@ type report struct {
 	Findings []string
 }
 
+// errUsage wraps an error that is a mistake in how the command was called or set up (a flag the backend
+// does not take, a malformed project number, no credentials): exit 2.
+var errUsage = errors.New("usage")
+
 // backendNames is the names -backend accepts, for messages.
 const backendNames = "s3, gcs"
 
@@ -76,11 +80,11 @@ func s3Backend(mk clientFunc) backend {
 		loadDir:   awss3.LoadDir,
 		open: func(ctx context.Context, o openOptions) (headReader, error) {
 			if o.project != "" {
-				return nil, errors.New("-project is for -backend gcs; the s3 backend takes -owner")
+				return nil, fmt.Errorf("%w: -project is for -backend gcs; the s3 backend takes -owner", errUsage)
 			}
 			c, err := mk(ctx, o.pathStyle)
 			if err != nil {
-				return nil, fmt.Errorf("AWS configuration: %w", err)
+				return nil, fmt.Errorf("%w: AWS configuration: %w", errUsage, err)
 			}
 			r, err := awss3.NewReader(awss3.ReaderConfig{Client: c, Bucket: o.bucket, ExpectedBucketOwner: o.owner, Prefix: o.prefix,
 				Verifier: o.verifier, OnSkip: func(f awss3.Finding) { o.onSkip(f.String()) }})

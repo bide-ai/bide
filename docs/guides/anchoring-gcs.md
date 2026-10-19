@@ -232,7 +232,7 @@ listing or a read that is unavailable (`ErrUnavailable`) or denied (`ErrDenied`)
 and an aborted audit means the bucket's state is **unknown**, not that it is intact; retry it, and alert
 if it keeps failing. Only a fact the Reader positively saw becomes a finding, such as a generation that
 vanished between the listing and the read (and `Latest`, `Heads` and `Head` fail on that generation with
-`gcs.ErrVanished` rather than show an older head as the latest). `bide-anchor -backend gcs` follows the same rule: it exits 3, never 0 and not 1, when the check could not be completed, and a vanished generation is a finding (exit 1).
+`gcs.ErrVanished` rather than show an older head as the latest). `bide-anchor -backend gcs` follows the same rule: it exits 3, never 0 and not 1, when the check could not be completed (including a bucket whose own configuration cannot be read), and a vanished generation is a finding (exit 1). A bucket owned by another project than `-project` is also a finding (exit 1: the name may have been deleted and created again by someone else), where S3 reports the same situation as a denied read (exit 3), since S3 does not say whose bucket it is. A mistake in the call (a flag the backend does not take, a malformed project number, no credentials) is exit 2.
 
 Credentials come from Application Default Credentials, never from flags. Neither shows that the **journal**
 matches the heads: that is `bide audit` against the exported heads.

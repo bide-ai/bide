@@ -106,8 +106,9 @@ func TestGCSBackendOfflineAndOnline(t *testing.T) {
 		t.Fatalf("online export = %d\n%q%s", code, out, errs)
 	}
 	// The wrong project, the wrong flag and a project ID in place of the number are refused before any read.
-	if code, _, errs := e.do("check", "-bucket", "b", "-project", "999", "-pubkey", e.pub, "-run", "r1"); code == 0 {
-		t.Errorf("a bucket of another project passed: %s", errs)
+	// A bucket that another project owns is a fact the reader saw: a finding (1), not usage.
+	if code, _, errs := e.do("check", "-bucket", "b", "-project", "999", "-pubkey", e.pub, "-run", "r1"); code != exitFindings || !strings.Contains(errs, "owned by project") {
+		t.Errorf("a bucket of another project = exit %d %q, want %d", code, errs, exitFindings)
 	}
 	if code, _, errs := e.do("check", "-bucket", "b", "-owner", "111122223333", "-pubkey", e.pub, "-run", "r1"); code != exitUsage || !strings.Contains(errs, "-owner is for -backend s3") {
 		t.Errorf("gcs with -owner = %d %q", code, errs)
@@ -122,6 +123,15 @@ func TestGCSBackendAbortedAuditIsUnknown(t *testing.T) {
 	e := gcsSetup(t)
 	e.publish(t, e.head(t, "r1", 1, "a"))
 	online := []string{"-bucket", "b", "-project", e.proj, "-pubkey", e.pub, "-run", "r1"}
+	// Reading the bucket's own configuration (at open) that fails is unknown, not usage.
+	for _, fault := range []error{errors.New("connection reset"), gcs.ErrUnavailable, gcs.ErrDenied} {
+		for _, cmd := range []string{"check", "export"} {
+			e.fake.FailNext("Bucket", fault, 1)
+			if code, out, errs := e.do(cmd, online...); code != exitUnknown || strings.Contains(out, "PASS") {
+				t.Errorf("%s with the bucket unreadable (%v) = %d\n%s%s; want %d", cmd, fault, code, out, errs, exitUnknown)
+			}
+		}
+	}
 	for _, m := range []string{"List", "Read"} {
 		for _, cmd := range []string{"check", "export"} {
 			e.fake.FailNext(m, errors.New("connection reset"), 1) // the first call fails, which aborts the audit

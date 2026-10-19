@@ -264,3 +264,18 @@ func TestLoadDir(t *testing.T) {
 		t.Fatalf("LoadDir with a stray file = %v; want ErrObject", err)
 	}
 }
+
+// A bucket another project owns is ErrWrongProject (and still a configuration error), so a caller can tell
+// the fact from a failure to read the bucket.
+func TestNewReaderWrongProjectIsDistinct(t *testing.T) {
+	k := newKeys(t, 1)
+	f := gcstest.New()
+	_, err := gcs.NewReader(ctx, gcs.ReaderConfig{Store: f, ExpectedProjectNumber: gcstest.ProjectNumber + 1, Verifier: k.v})
+	if !errors.Is(err, gcs.ErrWrongProject) || !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("NewReader = %v, want ErrWrongProject and agent.ErrConfig", err)
+	}
+	f.FailNext("Bucket", gcs.ErrUnavailable, 1)
+	if _, err := gcs.NewReader(ctx, gcs.ReaderConfig{Store: f, ExpectedProjectNumber: gcstest.ProjectNumber, Verifier: k.v}); errors.Is(err, gcs.ErrWrongProject) || !errors.Is(err, gcs.ErrUnavailable) {
+		t.Fatalf("an unreadable bucket = %v, want ErrUnavailable and not ErrWrongProject", err)
+	}
+}

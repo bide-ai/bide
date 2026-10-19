@@ -40,6 +40,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/anchor/awss3"
 	"github.com/bide-ai/bide/audit"
 )
@@ -183,7 +184,16 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 				fmt.Fprintf(stderr, "bide-anchor: skipped an object that is no anchored head: %s\n", f)
 			}})
 		if err != nil {
-			return fail(exitUsage, "%v", err)
+			// Opening may read the bucket (gcs checks its owner): a verdict is a finding (1), a mistake in
+			// the call or its configuration is usage (2), and a read that did not finish is unknown (3).
+			switch {
+			case be.isFinding(err):
+				return fail(exitFindings, "%v", err)
+			case errors.Is(err, errUsage) || errors.Is(err, agent.ErrConfig):
+				return fail(exitUsage, "%v", err)
+			default:
+				return failRead(be, fail, err)
+			}
 		}
 	}
 
