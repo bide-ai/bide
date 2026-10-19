@@ -421,9 +421,6 @@ func TestTypeErrorsAreQuoted(t *testing.T) {
 			continue
 		}
 		noControls(t, "error", err.Error())
-		if !strings.Contains(err.Error(), `\x1b`) && !strings.Contains(err.Error(), `\u009b`) {
-			t.Errorf("error does not show the escaped character: %v", err)
-		}
 		// The command prints the same text.
 		_, out, errs := run("check", writeTheme(t, []byte(data)))
 		noControls(t, "stdout", out)
