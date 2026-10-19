@@ -160,7 +160,7 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 	fs.StringVar(&f.stopPolicy, "stop-policy", "", "the kill switch's stop policy (the JSON document bide stop -stop-policy reads), so the banner and the held-by-stop states judge the control run as an audited deployment does and check its signatures; without it the control run is read as a basic one and the banner says signatures are not verified")
 	fs.StringVar(&f.stopRoot, "stop-root", "", "with -stop-policy: the digest of the deployment's root policy, when the file is a later policy the chain reaches")
 	addr := fs.String("addr", "127.0.0.1:8484", "address to serve on: a loopback IP (127.0.0.1 or ::1) or localhost, with a port")
-	fs.StringVar(&f.theme, "theme", "", "a theme file (JSON, see docs/guides/themes.md; check it with bide theme check) the pages offer beside light, dark and high-contrast; refused, with the failed checks, if it fails them")
+	fs.StringVar(&f.theme, "theme", "", "a theme file (JSON, see docs/guides/themes.md; check it first with bide theme check) the pages offer beside light, dark and high-contrast; refused, with the failed checks, and nothing served, if it is not valid or fails a contrast, distinctness or polarity check (C1 to C4, C8); the colour-blindness check (C6) only prints a warning")
 	fs.StringVar(&f.themeDefault, "theme-default", "", "the theme a reader starts in (light, dark, high-contrast, or the -theme file's name), instead of following the system setting; a reader's own choice still wins")
 	color := term.Flag(fs)
 	if err := fs.Parse(args); err != nil {
@@ -192,7 +192,7 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 				return 1
 			}
 			for _, m := range rep.Failures(theme.Warning) {
-				fmt.Fprintf(stderr, "%s: warning %s %s\n", f.theme, m.Check, m.Subject)
+				fmt.Fprintf(stderr, "%s: warning %s %s: a reader with a colour-vision deficiency may not tell these apart; see bide theme check -v\n", f.theme, m.Check, m.Subject)
 			}
 			extra = append(extra, th)
 		}

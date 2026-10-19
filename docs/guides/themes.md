@@ -80,8 +80,10 @@ refused. Every key and value in an error is quoted, so a file cannot print a ter
 ## Using a theme
 
 - `bide view -theme theme.json ...` adds the theme to the pages' list, after the shipped ones. A
-  theme that fails a check is refused before anything is served, with each failed check on stderr; a
-  warning (the colour-blindness check) is printed and the theme is served.
+  file that is not a valid theme (a parse error, an unknown or repeated key, an out-of-range value) or
+  that fails a contrast, distinctness or polarity check (C1 to C4, C8) is refused before anything is
+  served, with each failure on stderr and exit status 1. The colour-blindness check (C6) only warns:
+  the warning is printed and the theme is served.
 - `-theme-default name` starts the pages in `light`, `dark`, `high-contrast` or your theme, instead of
   following the system's light or dark setting. A reader who has switched themes keeps their own
   choice, which the browser remembers.

@@ -298,7 +298,7 @@ Flags:
   -strict
     	with -check: exit 1 on a warning too
   -theme string
-    	a theme file (JSON, see docs/guides/themes.md; check it with bide theme check) the pages offer beside light, dark and high-contrast; refused, with the failed checks, if it fails them
+    	a theme file (JSON, see docs/guides/themes.md; check it first with bide theme check) the pages offer beside light, dark and high-contrast; refused, with the failed checks, and nothing served, if it is not valid or fails a contrast, distinctness or polarity check (C1 to C4, C8); the colour-blindness check (C6) only prints a warning
   -theme-default string
     	the theme a reader starts in (light, dark, high-contrast, or the -theme file's name), instead of following the system setting; a reader's own choice still wins
   -topology string

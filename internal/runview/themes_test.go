@@ -168,7 +168,41 @@ func TestMainThemeFlags(t *testing.T) {
 	if code, _ := run("-config", cfg, "-check", "-theme-default", "dark"); code != 2 {
 		t.Errorf("-theme-default with -check: exit %d", code)
 	}
-	code, _, errs := serveMain(t, []string{"-config", cfg, "-theme", good, "-theme-default", "acme-night"}, func(base string) {
+	// Which checks refuse: the format, and every contrast, distinctness and polarity check.
+	for name, over := range map[string]map[string]any{
+		"C1 text contrast":    {"surface": map[string]any{"text": "#121214"}},
+		"C2 control edge":     {"surface": map[string]any{"border_strong": "#25252a"}},
+		"C3 status colours":   {"semantic": map[string]any{"warning": map[string]any{"fg": "#f89487"}}},
+		"C4 domain colours":   {"semantic": map[string]any{"idem": map[string]any{"fg": "#92b8f6"}}},
+		"C8 polarity":         {"semantic": map[string]any{"alert": map[string]any{"fg": "#7ad3a4"}, "ok": map[string]any{"fg": "#f89487"}}},
+		"a key outside C7":    {"scrim": 0.9},
+		"an unknown key":      {"fonts": "x"},
+		"a colour that isn't": {"surface": map[string]any{"bg": "red"}},
+	} {
+		if code, errs := run("-config", cfg, "-theme", writeThemeFile(t, over)); code != 1 || errs == "" {
+			t.Errorf("%s: exit %d, stderr %q; want the theme refused", name, code, errs)
+		}
+	}
+	// C6 alone only warns: the theme is served, and the warning names the pair.
+	cb := writeThemeFile(t, map[string]any{"base": "light", "name": "acme-day", "semantic": map[string]any{
+		"ok": map[string]any{"fg": "#1b6a32"}, "warning": map[string]any{"fg": "#835400"}, "alert": map[string]any{"fg": "#b0241c"},
+	}})
+	code, _, errs := serveMain(t, []string{"-config", cfg, "-theme", cb}, func(base string) {
+		resp, err := http.Get(base + "assets/style.css")
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		if !strings.Contains(string(b), `:root[data-theme="acme-day"]`) {
+			t.Error("a theme with only a colour-blindness warning is not served")
+		}
+	})
+	if code != 0 || !strings.Contains(errs, "warning C6") {
+		t.Errorf("a C6-only theme: exit %d, stderr %q; want it served with a C6 warning", code, errs)
+	}
+	code, _, errs = serveMain(t, []string{"-config", cfg, "-theme", good, "-theme-default", "acme-night"}, func(base string) {
 		css, err := http.Get(base + "assets/style.css")
 		if err != nil {
 			t.Error(err)
