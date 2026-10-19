@@ -114,8 +114,9 @@ type Config struct {
 	// LegalHold also places a legal hold on each head. A hold has no end date and is released with
 	// s3:PutObjectLegalHold, which the writer then holds too: release it with a separate identity.
 	LegalHold bool
-	// KMSKeyID is the KMS key (a key ID or its ARN, not an alias) each head is encrypted with (SSE-KMS).
-	// Required unless EncryptionNone is set. An alias is refused: S3 reports the ARN of the key an alias
+	// KMSKeyID is the KMS key each head is encrypted with (SSE-KMS): a key ID (a UUID), a multi-Region key
+	// ID (mrk- and 32 hex digits) or a key ARN, and nothing else. Required unless EncryptionNone is set. An
+	// alias is refused, with every other string that is no key: S3 reports the ARN of the key an alias
 	// resolves to, so the read-back could not tell which key it was, and would take any key for the one
 	// meant. Pass the ARN of the key the alias points to.
 	KMSKeyID string
@@ -177,8 +178,8 @@ func newAnchor(cfg Config) (*Anchor, error) {
 		return bad("Config.Retention %s is below the minimum %s", cfg.Retention, MinRetention)
 	case cfg.KMSKeyID == "" && !cfg.EncryptionNone:
 		return bad("Config.KMSKeyID is empty: set the KMS key the heads are encrypted with")
-	case isKMSAlias(cfg.KMSKeyID):
-		return bad("Config.KMSKeyID %q is an alias: S3 reports the key ARN an alias resolves to, which the read-back cannot check against an alias, so it would take any key for the one meant; pass the ARN of the key the alias points to", cfg.KMSKeyID)
+	case cfg.KMSKeyID != "" && checkKMSKey("Config.KMSKeyID", cfg.KMSKeyID) != nil:
+		return bad("%v", checkKMSKey("Config.KMSKeyID", cfg.KMSKeyID))
 	case cfg.KMSKeyID != "" && cfg.EncryptionNone:
 		return bad("Config.KMSKeyID and Config.EncryptionNone are both set")
 	}
@@ -486,8 +487,8 @@ func (a *Anchor) checkStored(key string, mode types.ObjectLockMode, until *time.
 }
 
 // kmsMatches reports whether the key S3 reports (always an ARN) is the configured one: equal when
-// the configuration is an ARN, or the ARN's key ID when it is a bare ID. An alias is refused where the
-// configuration is read (isKMSAlias), so it never reaches here: S3 resolves an alias to the key's ARN,
+// the configuration is an ARN, or the ARN's key ID when it is a bare ID. Only a key ID or ARN is accepted
+// where the configuration is read (checkKMSKey), so an alias never reaches here: S3 resolves an alias to the key's ARN,
 // which this package cannot know, and matching it would take any key for the one meant.
 func kmsMatches(configured, reported string) bool {
 	switch {

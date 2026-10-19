@@ -283,7 +283,9 @@ func TestPublishRefusesAnObjectThatReadsBackWeaker(t *testing.T) {
 		{"no lock", func(v *awss3test.Version) { v.LockMode = "" }, awss3.ErrWeak},
 		{"short retention", func(v *awss3test.Version) { v.RetainUntil = v.RetainUntil.Add(-24 * time.Hour) }, awss3.ErrWeak},
 		{"no encryption", func(v *awss3test.Version) { v.SSE = "" }, awss3.ErrWeak},
-		{"another KMS key", func(v *awss3test.Version) { v.KMSKey = "arn:aws:kms:eu-west-1:111122223333:key/other" }, awss3.ErrWeak},
+		{"another KMS key", func(v *awss3test.Version) {
+			v.KMSKey = "arn:aws:kms:eu-west-1:111122223333:key/aaaabbbb-cc00-4dd1-8ee2-ffff00001111"
+		}, awss3.ErrWeak},
 		{"no version ID", func(v *awss3test.Version) { v.ID = "null" }, awss3.ErrWeak},
 		{"different bytes", func(v *awss3test.Version) { v.Body = append([]byte(nil), v.Body[:len(v.Body)-2]...) }, awss3.ErrConflict},
 	} {

@@ -89,8 +89,10 @@ func NewReader(cfg ReaderConfig) (*Reader, error) {
 	default:
 		return nil, fmt.Errorf("awss3: ReaderConfig.Mode %q is not COMPLIANCE or GOVERNANCE: %w", cfg.Mode, agent.ErrConfig)
 	}
-	if isKMSAlias(cfg.KMSKeyID) {
-		return nil, fmt.Errorf("awss3: ReaderConfig.KMSKeyID %q is an alias: S3 reports the key ARN an alias resolves to, which the reader cannot check against an alias, so the expectation would match any key; pass the ARN of the key the alias points to: %w", cfg.KMSKeyID, agent.ErrConfig)
+	if cfg.KMSKeyID != "" {
+		if err := checkKMSKey("ReaderConfig.KMSKeyID", cfg.KMSKeyID); err != nil {
+			return nil, fmt.Errorf("awss3: %w: %w", err, agent.ErrConfig)
+		}
 	}
 	if cfg.Retention < 0 {
 		return nil, fmt.Errorf("awss3: ReaderConfig.Retention %s is negative: %w", cfg.Retention, agent.ErrConfig)
@@ -581,9 +583,4 @@ func (r *Reader) bucketFindings(ctx context.Context) ([]Finding, error) {
 func isAPICode(err error, code string) bool {
 	var ae smithy.APIError
 	return errors.As(err, &ae) && ae.ErrorCode() == code
-}
-
-// isKMSAlias reports whether a key reference is an alias (alias/name, or an alias ARN).
-func isKMSAlias(k string) bool {
-	return strings.HasPrefix(k, "alias/") || strings.Contains(k, ":alias/")
 }
