@@ -11,7 +11,7 @@ journal format can change between pre-releases without a version bump. Curated h
 
 Unreleased changes are in `changes/unreleased/`.
 
-## [0.21.0-rc.1] - 2026-10-19
+## [0.21.0] - 2026-10-19
 
 ### Added
 
@@ -72,6 +72,7 @@ Unreleased changes are in `changes/unreleased/`.
 - Corrects the roadmap and `docs/KNOWN-LIMITATIONS.md`, which still said gates do not use the certificate-bound approver checks: they have since v0.19.0 (v0.20.0 added the CRL refresher), and the roadmap now lists what is left (the RFC 3161 verifier is not called by any gate yet, `bide identity check`, `bide-hsm csr`, keys issued through SSO).
 - The stop trail's append now retries after losing a race for its position until its caller's deadline (30 seconds when the caller has none), waiting a jittered, growing time between tries, instead of giving up after eight tries. With ten operators writing at once the eight tries ran out (under the race detector, in a test), and a trail write that gives up turns a stop that is in force into exit 5 of `bide stop`; thirty-two concurrent writers now all land. A stop's own trail write keeps trying for 5 seconds (the stop is already in force, and a write that gives up is exit 5, which `bide stop -reaudit` repairs); a lift and the catch-up records before it share one 30-second budget; a caller that cancels gets an error that satisfies `errors.Is(err, context.Canceled)` as well as `ErrTrailConflict`; and `bide stop` prints "in force" the moment the stop is in the control run, before the trail write (`agent.WithStopInForce`).
 - The release's `go mod tidy` made `github.com/jackc/pgx/v5` a direct requirement of `cmd/bide` and failed `TestDirectRequires`, because a journalcmd test imported its `stdlib` package directly while `go.mod` listed it as indirect; the test now relies on the driver `store/postgres` registers, and the stale indirect requirements in four example modules are tidied. CI now runs `go mod tidy` in every module and fails if it changes a `go.mod` or `go.sum`, so a direct import of a module marked indirect fails on the pull request and not at release time.
+- `bide edit` says so when git did not answer within its 15 second deadline ("git did not answer within 15s and was stopped"), instead of the "signal: killed" the kill leaves, still falls back to the file as it was opened, and no longer waits on a helper process that a git left holding its pipes (the wait is bounded to 2 seconds; a git that answered and exited 0 still counts as an answer). Test only: the stand-in git of the baseline tests is written and run once before the test uses it, because the first run of a newly written executable took 18 seconds on a loaded machine and the release run killed every case at the deadline.
 
 ## [0.20.0] - 2026-10-16
 
@@ -1129,8 +1130,8 @@ First public release.
 - `bide-audit` standalone verifier, prebuilt for Linux, macOS and Windows on amd64 and arm64.
 - `eval` statistical evaluation harness, `chaos` crash-injection harness, and `cmd/bench`.
 
-[Unreleased]: https://github.com/bide-ai/bide/compare/v0.21.0-rc.1...HEAD
-[0.21.0-rc.1]: https://github.com/bide-ai/bide/compare/v0.20.0...v0.21.0-rc.1
+[Unreleased]: https://github.com/bide-ai/bide/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/bide-ai/bide/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/bide-ai/bide/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/bide-ai/bide/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/bide-ai/bide/compare/v0.17.0...v0.18.0
