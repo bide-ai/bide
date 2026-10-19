@@ -225,7 +225,7 @@ func Load[In, Out any](data []byte, reg *Registry, opts ...LoadOption) (*Flow[In
 
 	// Assemble and check the spec (drift, structural, and intra-graph type checks that
 	// do not need In/Out). Validate shares this exact path.
-	core, err := assemble(&cfg, reg)
+	core, err := assemble(&cfg, reg, false)
 	if err != nil {
 		return nil, err
 	}
@@ -314,7 +314,7 @@ func Validate(data []byte, reg *Registry) error {
 	if err := parseConfig(data, &cfg); err != nil {
 		return fmt.Errorf("plan: validate: parse config: %w", err)
 	}
-	_, err := assemble(&cfg, reg)
+	_, err := assemble(&cfg, reg, false)
 	return err
 }
 
@@ -504,7 +504,7 @@ func snakeCase(k string) string {
 // running every check that does not require the flow's In/Out type parameters. It
 // is shared by Load (which then adds the In/Out boundary checks and Build) and
 // Validate (which stops here). It reports all resolution failures at once.
-func assemble(cfg *config, reg *Registry) (*builderCore, error) {
+func assemble(cfg *config, reg *Registry, allowUnused bool) (*builderCore, error) {
 	// 0. Surface any duplicate registrations collected on the Registry: a drifted
 	// registry is itself a load failure.
 	var problems []string
@@ -627,6 +627,9 @@ func assemble(cfg *config, reg *Registry) (*builderCore, error) {
 	}
 	sort.Strings(unused)
 	for _, name := range unused {
+		if allowUnused {
+			break
+		}
 		problems = append(problems, fmt.Sprintf("block %q is registered but never used by the config, so add a node that uses it or remove the registration", name))
 	}
 
