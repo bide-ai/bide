@@ -102,15 +102,47 @@ func TestDepthLimit_Boundary(t *testing.T) {
 	}
 }
 
-// Check does not rebuild the path to a value at every level: reading a legitimately deep document
-// takes memory that grows with its size, not with the square of its depth.
+// allocated is the bytes f allocates, averaged over runs.
+func allocated(runs int, f func()) uint64 {
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	for range runs {
+		f()
+	}
+	runtime.ReadMemStats(&after)
+	return (after.TotalAlloc - before.TotalAlloc) / uint64(runs)
+}
+
+// Check does not rebuild the path to a value at every level: the memory to read a document grows
+// in proportion to its depth. Doubling the depth from 64 to 128 at most doubles the allocation
+// (a path rebuilt at every level quadruples it), whatever the absolute numbers are.
 func TestCheck_PathIsBuiltLazily(t *testing.T) {
-	doc := deepArrays(MaxDepth)
-	bounded(t, 256<<10, func() {
-		for range 20 {
+	long := strings.Repeat("k", 64)
+	nest := func(n int) []byte {
+		return []byte(strings.Repeat(`{"`+long+`":`, n) + "1" + strings.Repeat("}", n))
+	}
+	measure := func(n int) uint64 {
+		doc := nest(n)
+		return allocated(50, func() {
 			if err := Check(doc, reflect.TypeFor[any](), nil); err != nil {
 				t.Fatal(err)
 			}
+		})
+	}
+	small, big := measure(MaxDepth/2), measure(MaxDepth)
+	if ratio := float64(big) / float64(small); ratio > 2.5 {
+		t.Fatalf("allocation grew %.1fx (%d to %d bytes) when the depth doubled; want linear growth", ratio, small, big)
+	}
+}
+
+// 100 KB of brackets, the size that took seconds and gigabytes before the limit, is refused at once
+// under either encoding/json.
+func TestDepthLimit_LargeInputIsBounded(t *testing.T) {
+	doc := deepArrays(50_000)
+	bounded(t, 1<<20, func() {
+		if err := Check(doc, reflect.TypeFor[any](), nil); err == nil {
+			t.Fatal("accepted")
 		}
 	})
 }
