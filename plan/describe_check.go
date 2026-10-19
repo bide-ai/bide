@@ -241,14 +241,14 @@ func describedGate(g *GateDescription) (*agent.ApprovalPolicy, error) {
 // should do it in a short-lived process.
 //
 // Experimental: may change in any 0.x release.
-func InspectConfigDescribed(data []byte, d RegistryDescription) ConfigReport {
+func InspectConfigDescribed(data []byte, d RegistryDescription, opts ...InspectOption) ConfigReport {
 	reg, err := registryFromDescription(d)
 	if err != nil {
-		r := inspectConfig(data, nil)
+		r := inspectConfig(data, nil, nil)
 		r.Problems = append([]ConfigProblem{{Message: "blocks description: " + err.Error(), Severity: "error"}}, r.Problems...)
 		return r
 	}
-	return inspectConfig(data, reg)
+	return inspectConfig(data, reg, opts)
 }
 
 // reflect.StructOf keeps every type it makes for the life of the process, so the names a process

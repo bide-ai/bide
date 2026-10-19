@@ -162,8 +162,8 @@ ConfigReport is what InspectConfig finds in a flow config: the graph it declares
 
 **Constructors and functions**
 
-- `func InspectConfig(data []byte, reg *Registry) (r ConfigReport)`: InspectConfig checks a flow config without running or building a Flow, for a viewer or a CI check.
-- `func InspectConfigDescribed(data []byte, d RegistryDescription) ConfigReport`: InspectConfigDescribed is InspectConfig for a program's registrations known only as a description: it runs the same checks (the same code) on a Registry built from d, so blocks, predicates, merges, types, safety, gates and the digest are checked without the program.
+- `func InspectConfig(data []byte, reg *Registry, opts ...InspectOption) (r ConfigReport)`: InspectConfig checks a flow config without running or building a Flow, for a viewer or a CI check.
+- `func InspectConfigDescribed(data []byte, d RegistryDescription, opts ...InspectOption) ConfigReport`: InspectConfigDescribed is InspectConfig for a program's registrations known only as a description: it runs the same checks (the same code) on a Registry built from d, so blocks, predicates, merges, types, safety, gates and the digest are checked without the program.
 
 **Methods**
 
@@ -235,6 +235,18 @@ Handle\[I,O\] is a compile-time name for a durable step consuming I and producin
 **Methods**
 
 - `func (h Handle[I, O]) Name() string`: Name returns the durable journal-step key this handle names.
+
+## type InspectOption
+
+```go
+type InspectOption func(*inspectOptions)
+```
+
+InspectOption changes what InspectConfig and InspectConfigDescribed check.
+
+**Constructors and functions**
+
+- `func AllowUnusedBlocks() InspectOption`: AllowUnusedBlocks makes a registered block the config does not use no problem.
 
 ## type LoadOption
 
