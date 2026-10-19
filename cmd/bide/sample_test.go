@@ -36,7 +36,7 @@ func TestSampleCommands(t *testing.T) {
 		{[]string{"audit", "verify-evidence", "-evidence", in("refund-1049.evidence.json"), "-pubkey", in("log.pub")}, 0, `run "refund-1049" evidence verified`},
 		{[]string{"check", in("flows/refund-v1.yaml")}, 0, "4 hold, 0 violated"},
 		{[]string{"check", in("flows/refund-v2.yaml")}, 0, "3 hold, 0 violated"},
-		{[]string{"check", in("flows/refund-bypass.yaml")}, 1, "counterexample: validate -> lookup -> charge"},
+		{[]string{"check", in("flows/refund-bypass.yaml")}, 1, "counterexample: validate -> lookup -> charge_vip"},
 		{[]string{"check", in("flows/refund-v2.yaml"), "-diff", in("flows/refund-v1.yaml"), "-check"}, 0, "approval policy weakened"},
 		{[]string{"check", in("flows/refund-v2.yaml"), "-diff", in("flows/refund-v1.yaml"), "-check", "-fail-on-weaken"}, 1, "review: approval 2 of 3 -> 1 of 3"},
 		{[]string{"check", in("flows/refund-v1.yaml"), "-diff", in("flows/refund-v2.yaml"), "-check", "-fail-on-weaken"}, 0, "strengthened"},

@@ -726,13 +726,19 @@ journal's topology, a step or predicate name) as `\u{XXXX}`; the JSON endpoints 
   earlier in `wiring[]` (which also rules out a cycle of joins). `bide check` and `bide view -config` report
   this without a Registry, and so a reference to a join (an edge out of it, a switch over it) before its element,
   an edge, arm or `else` into a join, a node that is switched over and has an edge out, and two switches over
-  one node. Not yet reported without a Registry: a cycle that is not a loop, a node unreachable from the entry,
-  a node fed by several producers without a join, and a loop body that is not contiguous.
+  one node.
 - **Loops:** an arm with `loop_max` above 0 is a bounded back-edge to an earlier loop head. The head must
   reach the switch in the forward graph (the edges, a join's inputs and the arms that do not loop back),
-  a switch has at most one loop-back arm, and it needs an exit (another arm or an `else`). `bide check` and
-  `bide view -config` report these without a Registry; the body of the loop (no inner switch, no unrelated
-  node between head and switch) is checked when a program loads the flow.
+  a switch has at most one loop-back arm, and it needs an exit (another arm or an `else`). The loop's body is a
+  simple region: no inner switch or nested loop, no edge that leaves it or enters it past its head, and no
+  node between the head and the switch that is not on the loop path. `bide check` and `bide view -config`
+  report all of these without a Registry.
+- **The rest of the wiring:** a cycle that is not a loop, a node not reached from the entry (an edge or an
+  arm must lead to it: a node you have declared and not wired in yet is reported this way), a node fed by
+  several producers (combine them with a join), and a join's inputs that sit on mutually exclusive arms of
+  a switch or that a switch can skip. `bide check` and `bide view -config` report these without a Registry,
+  so what only `plan.Load` with your Registry can still refuse is what needs the Go side: a block, predicate
+  or merge name that is not registered, the types, a merge block's arity and a node's own gate.
 - **Structural checks `Build` does not give:** a node cannot be both switched-over and have an
   outgoing edge, and a `wiring[]` element must set exactly one of `edge`/`switch`/`join`.
 

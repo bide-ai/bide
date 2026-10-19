@@ -24,7 +24,7 @@ func TestCheck(t *testing.T) {
 		t.Errorf("bide check %s: exit %d, want 0 and 4 holding assertions\n%s%s", policy, code, stdout, stderr)
 	}
 	code, stdout, stderr = runBide("check", bypass)
-	if code != 1 || !strings.Contains(stdout, "is violated") || !strings.Contains(stdout, "(counterexample: validate -> lookup -> charge)") {
+	if code != 1 || !strings.Contains(stdout, "is violated") || !strings.Contains(stdout, "(counterexample: validate -> lookup -> charge_vip)") {
 		t.Errorf("bide check %s: exit %d, want 1 and the counterexample\n%s%s", bypass, code, stdout, stderr)
 	}
 	if code, _, _ := runBide("check"); code != 2 {

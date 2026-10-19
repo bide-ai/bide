@@ -47,7 +47,7 @@ import (
 
 // Flows are the sample's flow configs (flows/*.yaml): refund-v1 (the gate needs 2 of 3, and four
 // assertions hold), refund-v2 (the gate needs 1 of 3, a weakened approval policy), and
-// refund-bypass (a vip arm skips the gate: a violated assertion).
+// refund-bypass (a vip arm reaches a second, ungated charge step: a violated assertion).
 //
 //go:embed flows/*.yaml
 var Flows embed.FS
