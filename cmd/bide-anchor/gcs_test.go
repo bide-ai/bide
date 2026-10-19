@@ -204,3 +204,48 @@ func TestGCSBackendNothingAnchoredIsAFinding(t *testing.T) {
 		}
 	}
 }
+
+// -kms-key and -retention turn the bucket's key and retention into expectations: a swapped default key or
+// a shorter locked retention is a finding (1), a malformed or non-positive value is usage (2), and the S3
+// backend, which checks no such expectation, refuses them (2) instead of ignoring them.
+func TestGCSBackendKeyAndRetentionExpectations(t *testing.T) {
+	e := gcsSetup(t)
+	e.publish(t, e.head(t, "r1", 1, "a"))
+	base := []string{"-bucket", "b", "-project", e.proj, "-pubkey", e.pub, "-run", "r1"}
+	with := func(extra ...string) []string { return append(append([]string{}, base...), extra...) }
+	bucket, _ := e.fake.Bucket(context.Background())
+
+	if code, out, errs := e.do("check", with("-kms-key", gcstest.DefaultKMSKey, "-retention", bucket.RetentionPeriod.String())...); code != 0 {
+		t.Fatalf("the expected key and retention = %d\n%s%s; want 0", code, out, errs)
+	}
+	// The default key swapped, and a retention longer than the bucket's policy.
+	if code, out, _ := e.do("check", with("-kms-key", "projects/p/locations/europe-west1/keyRings/r/cryptoKeys/other")...); code != exitFindings || !strings.Contains(out, "FINDING") {
+		t.Errorf("a different expected key = %d\n%s; want a finding", code, out)
+	}
+	if code, out, _ := e.do("check", with("-retention", (bucket.RetentionPeriod+time.Hour).String())...); code != exitFindings || !strings.Contains(out, "FINDING") {
+		t.Errorf("a longer expected retention = %d\n%s; want a finding", code, out)
+	}
+	if code, _, _ := e.do("export", with("-retention", (bucket.RetentionPeriod+time.Hour).String())...); code != exitFindings {
+		t.Errorf("export with a longer expected retention = exit %d, want %d", code, exitFindings)
+	}
+	// Mistakes in the flags are usage.
+	for name, extra := range map[string][]string{
+		"malformed key":    {"-kms-key", "alias/anchor"},
+		"key with version": {"-kms-key", gcstest.DefaultKMSKey + "/cryptoKeyVersions/1"},
+		"zero retention":   {"-retention", "0s"},
+		"negative":         {"-retention", "-1h"},
+		"unparseable":      {"-retention", "soon"},
+	} {
+		if code, _, errs := e.do("check", with(extra...)...); code != exitUsage {
+			t.Errorf("%s = exit %d (%s), want %d", name, code, errs, exitUsage)
+		}
+	}
+	// S3 refuses what it would ignore.
+	s3e := setup(t)
+	for _, extra := range [][]string{{"-kms-key", gcstest.DefaultKMSKey}, {"-retention", "48h"}} {
+		args := append([]string{"check", "-bucket", "b", "-owner", owner, "-pubkey", s3e.pub, "-run", "r1"}, extra...)
+		if code, _, errs := s3e.do(args...); code != exitUsage || !strings.Contains(errs, "are for -backend gcs") {
+			t.Errorf("s3 with %v = exit %d (%s), want %d", extra, code, errs, exitUsage)
+		}
+	}
+}

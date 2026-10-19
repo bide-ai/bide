@@ -213,6 +213,15 @@ bide-anchor export -backend gcs -bucket bank-bide-anchor -project 123456789012 -
 ```
 
 The commands, the exit codes and the findings are those of the S3 anchor ([reference](../reference/bide-anchor.md)).
+`check` and `export -bucket` also take two expectations for `-backend gcs`: `-kms-key` (the full key name, no
+version) and `-retention` (the retention the anchor was configured with). Without them the command checks the
+bucket against what it can tell is wrong (an unlocked or missing retention policy, one under 24 hours,
+versioning off, uniform access or public access prevention off) but not against what you meant: a bucket whose
+default key was swapped, or whose locked retention was shortened but is still over 24 hours, then passes.
+With them a mismatch is a finding (exit 1), and a malformed key or a retention that is not positive is exit 2.
+The S3 reader checks no such expectation (it reports each object's lock state, not the bucket's configuration), so the
+s3 backend refuses these flags (exit 2) instead of ignoring them.
+
 What each exit status means for a bucket, for either backend:
 
 | Exit | Meaning | Examples |

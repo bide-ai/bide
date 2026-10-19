@@ -32,6 +32,8 @@ type backend struct {
 // openOptions are the flags an online command gives its backend.
 type openOptions struct {
 	bucket, owner, project, prefix string
+	kmsKey                         string        // -kms-key (gcs)
+	retention                      time.Duration // -retention (gcs)
 	pathStyle                      bool
 	verifier                       audit.Verifier
 	onSkip                         func(string) // an object the reader skipped because it claims to be no head
@@ -81,6 +83,12 @@ func s3Backend(mk clientFunc) backend {
 		open: func(ctx context.Context, o openOptions) (headReader, error) {
 			if o.project != "" {
 				return nil, fmt.Errorf("%w: -project is for -backend gcs; the s3 backend takes -owner", errUsage)
+			}
+			// The S3 reader checks no expectation about the bucket's key or retention (it reports each
+			// object's lock state, not the bucket's configuration), so these flags would promise a check
+			// that does not happen: refuse them rather than ignore them.
+			if o.kmsKey != "" || o.retention != 0 {
+				return nil, fmt.Errorf("%w: -kms-key and -retention are for -backend gcs; the s3 reader checks no expectation about the bucket's key or retention", errUsage)
 			}
 			c, err := mk(ctx, o.pathStyle)
 			if err != nil {

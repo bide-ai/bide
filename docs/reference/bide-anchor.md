@@ -52,6 +52,8 @@ Usage of bide-anchor export:
     	with -bucket: export even when the lock audit has findings
   -kind string
     	the tree kind: journal, or events for a notification or event trail (default "journal")
+  -kms-key string
+    	-backend gcs: the Cloud KMS key (projects/P/locations/L/keyRings/R/cryptoKeys/K) the heads must be encrypted with: an object or bucket default with another key is a finding
   -o string
     	write to this file instead of standard output
   -owner string
@@ -64,6 +66,8 @@ Usage of bide-anchor export:
     	-backend gcs: the number of the Google Cloud project that owns the bucket (with -bucket)
   -pubkey string
     	the log operator's public key (ed25519:<hex>, or a file holding it)
+  -retention duration
+    	-backend gcs: the retention the anchor was configured with: a bucket retention policy shorter than this is a finding (without it only the 24 h minimum is checked)
   -run string
     	the run or trail ID
   -timeout duration
@@ -80,6 +84,8 @@ Usage of bide-anchor check:
     	read this anchor bucket (online, with read-only credentials)
   -kind string
     	the tree kind: journal, or events for a notification or event trail (default "journal")
+  -kms-key string
+    	-backend gcs: the Cloud KMS key (projects/P/locations/L/keyRings/R/cryptoKeys/K) the heads must be encrypted with: an object or bucket default with another key is a finding
   -owner string
     	-backend s3: the 12-digit AWS account ID that owns the bucket (with -bucket)
   -path-style
@@ -90,6 +96,8 @@ Usage of bide-anchor check:
     	-backend gcs: the number of the Google Cloud project that owns the bucket (with -bucket)
   -pubkey string
     	the log operator's public key (ed25519:<hex>, or a file holding it)
+  -retention duration
+    	-backend gcs: the retention the anchor was configured with: a bucket retention policy shorter than this is a finding (without it only the 24 h minimum is checked)
   -run string
     	the run or trail ID
   -timeout duration

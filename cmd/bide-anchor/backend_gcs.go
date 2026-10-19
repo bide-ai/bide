@@ -47,7 +47,7 @@ func gcsBackend() backend {
 			if err != nil {
 				return nil, err
 			}
-			r, err := gcs.NewReader(ctx, gcs.ReaderConfig{Store: st, ExpectedProjectNumber: n, Prefix: o.prefix, Verifier: o.verifier,
+			r, err := gcs.NewReader(ctx, gcs.ReaderConfig{Store: st, ExpectedProjectNumber: n, Prefix: o.prefix, KMSKey: o.kmsKey, Retention: o.retention, Verifier: o.verifier,
 				OnSkip: func(f gcs.Finding) { o.onSkip(f.String()) }})
 			if err != nil {
 				return nil, err
