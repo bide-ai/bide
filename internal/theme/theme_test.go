@@ -3,8 +3,10 @@ package theme
 import (
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
+	"unicode"
 )
 
 // custom builds a custom theme file: a base plus the given top-level overrides.
@@ -497,4 +499,122 @@ func TestDerivedColors(t *testing.T) {
 	if got := th.c["surface.canvas_bg"].String(); got != "#1c1c20" {
 		t.Errorf("canvas_bg = %s, want the base's", got)
 	}
+}
+
+// hostile is text a file could carry into an error whatever the decoder's wording, with the exact
+// escaped form each must come out as. The expectations are written out, not derived, so a wrong
+// escaping rule fails them.
+var hostile = []struct{ in, want string }{
+	{"\x1b[31mRED", `\x1b[31mRED`},
+	{"\x1b]0;title\x07", `\x1b]0;title\a`},
+	{"\x1b[2J", `\x1b[2J`},
+	{"x\n/p.json: theme \"dark\" ok (0 errors)", `x\n/p.json: theme "dark" ok (0 errors)`},
+	{"a\rb", `a\rb`},
+	{"tab\there", `tab\there`},
+	{"\u202eevil", `\u202eevil`},
+	{"\u2066x\u2069", `\u2066x\u2069`},
+	{"\u2028\u2029", `\u2028\u2029`},
+	{"\u0085", `\u0085`},
+	{"\u009b31m", `\u009b31m`},
+	{"\u200bzero", `\u200bzero`},
+	{"\ufeffbom", `\ufeffbom`},
+	{"bad\xffbyte", `bad\xffbyte`},
+	{"nul\x00", `nul\x00`},
+	{"del\x7f", `del\x7f`},
+	{"caf\u00e9 \u65e5\u672c", "caf\u00e9 \u65e5\u672c"}, // printable non-ASCII is kept
+}
+
+// TestFileErrorEscapesWhateverTheDecoderSays: the decoder's message, with each hostile string where
+// the decoder might put a key or a value, comes out with the hostile string in its exact escaped
+// form and nothing else changed. It does not depend on the Go version's wording.
+func TestFileErrorEscapesWhateverTheDecoderSays(t *testing.T) {
+	for _, h := range hostile {
+		for _, wording := range []string{
+			"json: cannot unmarshal number into Go struct field wire.surface.%s of type string",
+			"json: cannot unmarshal number into Go struct field wire.surface of type string",
+			"$.surface: %s is not a field of theme.wire",
+			"%s",
+		} {
+			in := strings.Replace(wording, "%s", h.in, 1)
+			want := "theme file: " + strings.Replace(wording, "%s", h.want, 1)
+			if got := fileError(errors.New(in)).Error(); got != want {
+				t.Errorf("fileError(%q) = %q, want %q", in, got, want)
+			}
+		}
+	}
+}
+
+// TestParseWiresFileError: the decoder's own errors, for files that hold hostile keys, reach Parse's
+// caller escaped: each message is one line of printable characters and, where the key appears in it
+// (a duplicate or an unknown key; whether a type mismatch names the key depends on the Go version),
+// it appears in its exact escaped form.
+func TestParseWiresFileError(t *testing.T) {
+	esc := `\x1b[2J`
+	for name, tc := range map[string]struct {
+		file       string
+		wantEscape bool // the message must show the key
+	}{
+		"a duplicate key":        {"{\"bide_theme\":1,\"name\":\"zz\",\"base\":\"dark\",\"surface\":{\"\\u001b[2J\":\"#fff\",\"\\u001b[2J\":\"#000\"}}", true},
+		"an unknown top key":     {"{\"bide_theme\":1,\"name\":\"zz\",\"base\":\"dark\",\"\\u001b[2J\":1}", true},
+		"a type mismatch":        {"{\"bide_theme\":1,\"name\":\"zz\",\"base\":\"dark\",\"surface\":{\"\\u001b[2J\":5}}", false},
+		"a mismatch in a radius": {"{\"bide_theme\":1,\"name\":\"zz\",\"base\":\"dark\",\"radius\":{\"\\u001b[2J\":\"x\"}}", false},
+	} {
+		_, _, err := Parse([]byte(tc.file))
+		if err == nil {
+			t.Errorf("%s: accepted", name)
+			continue
+		}
+		msg := err.Error()
+		if strings.ContainsAny(msg, "\n\r") {
+			t.Errorf("%s: a line break in %q", name, msg)
+		}
+		for _, c := range msg {
+			if !unicode.IsPrint(c) {
+				t.Errorf("%s: the non-printing %q in %q", name, c, msg)
+				break
+			}
+		}
+		if tc.wantEscape && !strings.Contains(msg, esc) {
+			t.Errorf("%s: %q does not show the key as %q", name, msg, esc)
+		}
+	}
+}
+
+// TestCommandEscapesErrorText: the command prints a path and an error from the file system or the
+// decoder escaped, one line each, with a path it was given that holds the hostile text, and with a
+// file whose content does.
+func TestCommandEscapesErrorText(t *testing.T) {
+	dir := t.TempDir()
+	single := func(what, stream string) {
+		t.Helper()
+		if strings.Count(stream, "\n") > 1 {
+			t.Errorf("%s made %d lines: %q", what, strings.Count(stream, "\n"), stream)
+		}
+		for _, c := range strings.TrimSuffix(stream, "\n") {
+			if !unicode.IsPrint(c) {
+				t.Errorf("%s: output holds the non-printing %q: %q", what, c, stream)
+				break
+			}
+		}
+	}
+	for _, h := range hostile {
+		// Joined as text, not with filepath.Join, which cleans a "/" in the name on Windows.
+		code, out, errs := run("check", dir+string(filepath.Separator)+"no such "+h.in)
+		if code != 1 {
+			t.Errorf("a missing file named %q: exit %d", h.in, code)
+		}
+		single("a path named "+h.in, out)
+		single("a path named "+h.in, errs)
+		if !strings.Contains(errs, "no such "+h.want) {
+			t.Errorf("the path %q is not shown as %q: %q", h.in, "no such "+h.want, errs)
+		}
+	}
+	// A file whose content holds a hostile key: the unknown-key message quotes it exactly.
+	p := writeTheme(t, []byte("{\"bide_theme\":1,\"name\":\"zz\",\"base\":\"dark\",\"surface\":{\"\\u001b[2J\\u202e\":\"#fff\"}}"))
+	code, out, errs := run("check", p)
+	if code != 1 || !strings.Contains(errs, `surface.\x1b[2J\u202e`) {
+		t.Errorf("a hostile key in a file: exit %d, stderr %q", code, errs)
+	}
+	single("a hostile key", out)
+	single("a hostile key", errs)
 }

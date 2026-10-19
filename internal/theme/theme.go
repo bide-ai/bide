@@ -214,7 +214,7 @@ func parse(data []byte, bases map[string]*Theme) (*Theme, error) {
 	if err := strictjson.Unmarshal(data, &w, nil); err != nil {
 		// encoding/json puts a map key it was given into its type errors unquoted, so a hostile key
 		// would reach a terminal as an escape sequence: escape every non-printable rune.
-		return nil, errors.New("theme file: " + printable(err.Error()))
+		return nil, fileError(err)
 	}
 	custom := bases != nil
 	var errs []string
@@ -384,6 +384,15 @@ func (t *Theme) Dark() bool { return t.c["surface.bg"].luminance() < 0.18 }
 
 // round2 rounds to two decimals, the precision of every generated number.
 func round2(v float64) float64 { return math.Round(v*100) / 100 }
+
+// fileError is the error of a theme file that did not decode. The text comes from the decoder and
+// may hold a key or value of the file (which of them depends on the Go version), so it is escaped.
+func fileError(err error) error { return errors.New("theme file: " + printable(err.Error())) }
+
+// Escape returns s with every character that does not print written as a Go escape (\x1b, \n,
+// \u202e), so text from a file or a file name is safe to write to a terminal or a log. A caller that
+// prints a path or a value of a theme file uses it.
+func Escape(s string) string { return printable(s) }
 
 // printable returns s with every rune that is not printable (a control character, an escape, a
 // newline, a byte that is not UTF-8) written as a Go escape, so text from a hostile file is safe to

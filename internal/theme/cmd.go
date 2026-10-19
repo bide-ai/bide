@@ -62,6 +62,16 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	return status
 }
 
+// Load reads and checks a custom theme file: Parse on the file's bytes, read with the size limit.
+// The report is returned with an error from a failed check as well as with success.
+func Load(path string) (*Theme, Report, error) {
+	data, err := readLimited(path)
+	if err != nil {
+		return nil, Report{}, errors.New(printable(err.Error()))
+	}
+	return Parse(data)
+}
+
 // readLimited reads a theme file, refusing one over MaxSize without reading the rest of it, so a
 // device or a huge file named by mistake cannot exhaust memory.
 func readLimited(path string) ([]byte, error) {

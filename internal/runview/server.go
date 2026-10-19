@@ -10,6 +10,7 @@ import (
 	"iter"
 	"net"
 	"net/http"
+	"path"
 	"slices"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
 	safetext "github.com/bide-ai/bide/internal/printable"
+	"github.com/bide-ai/bide/internal/theme"
 	"github.com/bide-ai/bide/plan"
 )
 
@@ -153,6 +155,12 @@ type Options struct {
 	// while a stop is in force (or the control run cannot be judged, or holds rejected records), a run's page
 	// and the run list say which runs a stop holds, and /stops.json serves the same state.
 	Stops *StopFeed
+	// Themes are custom themes (see internal/theme) the pages offer beside the shipped light, dark
+	// and high-contrast; DefaultTheme, when not empty, names the one a reader starts in. Handler
+	// panics on a DefaultTheme that names no theme and on two themes with one name: they are a host
+	// program's mistake, and bide view checks both before it calls Handler.
+	Themes       []*theme.Theme
+	DefaultTheme string
 	// Now is the clock the Needs attention list measures waits by; nil is time.Now.
 	Now func() time.Time
 
@@ -170,7 +178,7 @@ type Options struct {
 func Handler(o Options) http.Handler {
 	o.cache = &ttlCache{}
 	mux := http.NewServeMux()
-	mux.Handle("GET /assets/", http.FileServerFS(assets))
+	mux.Handle("GET /assets/", http.StripPrefix("/assets/", typed(http.FileServerFS(AssetsWith(o.DefaultTheme, o.Themes...)))))
 	if o.Config != nil {
 		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { render(w, "config.html", BuildConfig(*o.Config)) })
 		mux.HandleFunc("GET /config.json", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, BuildConfig(*o.Config)) })
@@ -450,4 +458,31 @@ func (s staticStore) Load(_ context.Context, _ string, after int64) iter.Seq2[ag
 			}
 		}
 	}
+}
+
+// assetTypes is the Content-Type of each kind of file /assets/ serves, by extension, and the list of
+// kinds it serves at all: the pages' scripts and styles. It is a fixed table and not the operating
+// system's: Go reads the type of an extension from the platform (on Windows, the registry), so a
+// machine that maps .js or .css to text/plain, by mistake or on purpose, would with nosniff leave
+// every page without its script and style. The page templates (.html) are in the same directory and
+// are not served.
+var assetTypes = map[string]string{
+	".js":   "text/javascript; charset=utf-8",
+	".css":  "text/css; charset=utf-8",
+	".json": "application/json",
+	".svg":  "image/svg+xml",
+}
+
+// typed serves only the extensions in assetTypes, each with its table type set before the file
+// server writes it. Anything else, a template, a directory listing or an unknown extension, is 404.
+func typed(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t, ok := assetTypes[path.Ext(r.URL.Path)]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", t)
+		h.ServeHTTP(w, r)
+	})
 }
