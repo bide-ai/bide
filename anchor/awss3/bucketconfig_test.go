@@ -214,3 +214,48 @@ func TestReaderRefusesAKMSAlias(t *testing.T) {
 		}
 	}
 }
+
+// A bare key ID names a key, not an alias: it must not match an alias ARN whose name equals it.
+func TestBareKeyIDDoesNotMatchAnAliasARN(t *testing.T) {
+	k := newKeys(t, 1)
+	f := awss3test.New(bucket)
+	publish(t, f, k, "r", 1)
+	r := expecting(t, f, k.v, func(c *awss3.ReaderConfig) { c.KMSKeyID = "abcd-1234" })
+	if got := findingsOf(t, r); len(got) != 0 {
+		t.Fatalf("a bare ID against its key ARN: %v", got)
+	}
+	f.DefaultKMSKeyID = "arn:aws:kms:eu-west-1:111122223333:alias/abcd-1234"
+	got := findingsOf(t, r)
+	if len(got) != 1 || !strings.Contains(got[0], "default KMS key is") {
+		t.Fatalf("a bare ID against an alias ARN of the same name: %v; want a finding", got)
+	}
+}
+
+// A default retention in years counts as 365 days a year: 7 years is 2555 days to the check.
+func TestDefaultRetentionInYearsCountsAs365DaysAYear(t *testing.T) {
+	k := newKeys(t, 1)
+	f := awss3test.New(bucket)
+	publish(t, f, k, "r", 1)
+	f.DefaultYears = 7
+	audit := func(days int) []string {
+		r := expecting(t, f, k.v, func(c *awss3.ReaderConfig) { c.Retention = time.Duration(days) * 24 * time.Hour })
+		return bucketOnly(findingsOf(t, r))
+	}
+	if got := audit(2555); len(got) != 0 {
+		t.Errorf("7 years against 2555 days: %v", got)
+	}
+	if got := audit(2557); len(got) != 1 || !strings.Contains(got[0], "shorter than the expected") {
+		t.Errorf("7 years against 2557 days: %v; want the documented finding", got)
+	}
+}
+
+// bucketOnly keeps the findings about the bucket and drops those about objects.
+func bucketOnly(all []string) []string {
+	var out []string
+	for _, f := range all {
+		if strings.HasPrefix(f, "bucket "+bucket) {
+			out = append(out, f)
+		}
+	}
+	return out
+}

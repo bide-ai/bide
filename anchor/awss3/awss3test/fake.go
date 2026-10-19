@@ -47,7 +47,9 @@ type Fake struct {
 	LockEnabled bool
 	DefaultMode types.ObjectLockRetentionMode // "" for no default retention
 	DefaultDays int32
-	DefaultKMS  bool // the bucket's default encryption is SSE-KMS
+	// DefaultYears, when set, makes the default retention years and not DefaultDays.
+	DefaultYears int32
+	DefaultKMS   bool // the bucket's default encryption is SSE-KMS
 	// DefaultKMSKeyID is the KMS key ARN the bucket's default encryption names (empty: an AWS-managed key).
 	DefaultKMSKeyID string
 	NoEncryptRead   bool // GetBucketEncryption fails with AccessDenied
@@ -164,7 +166,11 @@ func (f *Fake) GetObjectLockConfiguration(_ context.Context, in *s3.GetObjectLoc
 	}
 	cfg := &types.ObjectLockConfiguration{ObjectLockEnabled: types.ObjectLockEnabledEnabled}
 	if f.DefaultMode != "" {
-		cfg.Rule = &types.ObjectLockRule{DefaultRetention: &types.DefaultRetention{Mode: f.DefaultMode, Days: aws.Int32(f.DefaultDays)}}
+		dr := &types.DefaultRetention{Mode: f.DefaultMode, Days: aws.Int32(f.DefaultDays)}
+		if f.DefaultYears > 0 {
+			dr = &types.DefaultRetention{Mode: f.DefaultMode, Years: aws.Int32(f.DefaultYears)}
+		}
+		cfg.Rule = &types.ObjectLockRule{DefaultRetention: dr}
 	}
 	return &s3.GetObjectLockConfigurationOutput{ObjectLockConfiguration: cfg}, nil
 }

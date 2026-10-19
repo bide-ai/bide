@@ -69,7 +69,7 @@ Usage of bide-anchor export:
   -pubkey string
     	the log operator's public key (ed25519:<hex>, or a file holding it)
   -retention duration
-    	the retention the anchor was configured with: a bucket retention shorter than this (and, for s3, an object retained for less from its own write) is a finding; without it only the 24 h minimum is checked
+    	the retention the anchor was configured with: a bucket retention shorter than this (and, for s3, an object retained for less from its own write) is a finding; without it only the 24 h minimum is checked. A default retention in years counts as 365 days a year (7 years: 2555 days, 61320h), so pass at most that
   -run string
     	the run or trail ID
   -timeout duration
@@ -101,7 +101,7 @@ Usage of bide-anchor check:
   -pubkey string
     	the log operator's public key (ed25519:<hex>, or a file holding it)
   -retention duration
-    	the retention the anchor was configured with: a bucket retention shorter than this (and, for s3, an object retained for less from its own write) is a finding; without it only the 24 h minimum is checked
+    	the retention the anchor was configured with: a bucket retention shorter than this (and, for s3, an object retained for less from its own write) is a finding; without it only the 24 h minimum is checked. A default retention in years counts as 365 days a year (7 years: 2555 days, 61320h), so pass at most that
   -run string
     	the run or trail ID
   -timeout duration

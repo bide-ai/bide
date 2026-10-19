@@ -491,6 +491,8 @@ func kmsMatches(configured, reported string) bool {
 	case strings.HasPrefix(configured, "alias/") || strings.Contains(configured, ":alias/"):
 		return strings.HasPrefix(reported, "arn:")
 	default:
-		return strings.HasSuffix(reported, "/"+configured)
+		// A bare key ID names a key, not an alias: it matches only a key ARN (...:key/<id>), never an
+		// alias ARN whose name happens to equal it.
+		return strings.HasSuffix(reported, ":key/"+configured)
 	}
 }

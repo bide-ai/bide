@@ -216,7 +216,9 @@ type Fake struct {
 	LockEnabled bool
 	DefaultMode types.ObjectLockRetentionMode
 	DefaultDays int32
-	DefaultKMS  bool
+
+	DefaultYears int32
+	DefaultKMS   bool
 
 	DefaultKMSKeyID string
 	NoEncryptRead   bool

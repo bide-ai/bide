@@ -39,7 +39,10 @@ type ReaderConfig struct {
 	KMSKeyID string
 	// Retention, when set, is the retention the Anchor was configured with: Audit reports a bucket whose
 	// default retention is shorter, and an object retained for less than this from its own write. Without
-	// it Audit judges the bucket's default retention against MinRetention only.
+	// it Audit judges the bucket's default retention against MinRetention only. A default retention set in
+	// years counts as 365 days a year here, the shortest a calendar year is, so that it is never taken for
+	// longer than it is: a bucket given 7 years (2555 days to this check, 2557 or 2558 to S3) needs
+	// Retention of 2555 days, or less, to pass.
 	Retention time.Duration
 	// Mode, when set, is the object lock mode the Anchor was configured with (COMPLIANCE or GOVERNANCE).
 	// Audit reports a bucket whose default mode is weaker. With GOVERNANCE an object locked in governance
