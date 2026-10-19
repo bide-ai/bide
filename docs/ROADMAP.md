@@ -58,7 +58,7 @@ Go teams using other agent frameworks can keep them and put bide under the dange
 
 ### The visual builder
 
-- An editor that writes a flow config, `bide edit` (in progress: [design](design/visual-editor.md)). Next after its first phase: editing structure (adding, removing and renaming nodes is in; edges, switches and joins are next), a typed mode that knows the program's registered blocks, and comparing a change against past runs.
+- An editor that writes a flow config, `bide edit` (in progress: [design](design/visual-editor.md)). Next after its first phase: editing structure (adding, removing, renaming and moving nodes, edges, switches, arms and else are in; loop bounds and joins are next), a typed mode that knows the program's registered blocks, and comparing a change against past runs.
 - A GitHub Action that posts a config diff on a pull request, and an HTML export of a page.
 
 ## Later: bide beyond Go

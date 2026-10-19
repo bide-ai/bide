@@ -68,6 +68,16 @@ func FuzzApplyOperation(f *testing.F) {
 			{Op: "set_flow", Value: "zz flow"},
 			{Op: "set_in", Value: "T"},
 			{Op: "set_out"},
+			{Op: "add_edge", Node: node, To: other},
+			{Op: "remove_edge", Node: node, To: other},
+			{Op: "add_switch", Node: node, Pred: "p", To: other},
+			{Op: "remove_switch", Node: node},
+			{Op: "add_arm", Node: node, Pred: "q", To: other},
+			{Op: "remove_arm", Node: node, Index: int(pick) % 3},
+			{Op: "set_arm", Node: node, Index: int(pick) % 3, Pred: "r", To: other},
+			{Op: "move_arm", Node: node, Index: int(pick) % 3, Value: "down"},
+			{Op: "set_else", Node: node, To: other},
+			{Op: "set_else", Node: node},
 		}
 		op := ops[int(pick)%len(ops)]
 		r, err := ApplyOperation(name, text, op)
@@ -84,7 +94,7 @@ func FuzzApplyOperation(f *testing.F) {
 		}
 		// Undo the same operation's effect on bytes it did not touch: the result is a splice, so a
 		// no-op reapplication changes nothing more.
-		if strings.HasPrefix(op.Op, "move_") {
+		if strings.HasPrefix(op.Op, "move_") && op.Op != "move_arm" {
 			// A move is not idempotent; its inverse is the move the other way, which restores the bytes.
 			inv := op
 			inv.Value = map[string]string{"up": "down", "down": "up"}[op.Value]

@@ -337,7 +337,79 @@ export function renderInspector(v) {
         h('datalist', { id: 'f-blocks' }, blocks.map((b) => h('option', { value: b }))),
         h('p', { class: 'muted small' }, 'A block name is chosen, not written: its Go code is registered in your program.')),
       gateForm(n),
-      structureForm(n, v)));
+      structureForm(n, v),
+      connectionsForm(n, v)));
+}
+
+// ---- connections: the edges out of a node, its switch, arms and else ----
+//
+// A node has edges out or a switch, not both (plan.Load refuses both), so the form offers one or
+// the other. Targets are chosen from the declared nodes, never typed, so an edge to a node that is not
+// there cannot be written; a predicate is a name a program registers, typed.
+
+function pick(id, label, names, value, { none } = {}) {
+  const sel = h('select', { id }, none ? h('option', { value: '' }, none) : null,
+    names.map((x) => h('option', { value: x, selected: x === value }, x)));
+  return field(id, label, sel);
+}
+
+function connectionsForm(n, v) {
+  const wires = v.wires || [];
+  const names = (v.nodes || []).map((x) => x.name);
+  const others = names.filter((x) => x !== n.name);
+  const joins = new Set(wires.filter((w) => w.kind === 'join').map((w) => w.join));
+  const targets = others.filter((x) => !joins.has(x));
+  const outs = wires.filter((w) => w.kind === 'edge' && w.from === n.name);
+  const ins = wires.filter((w) => w.kind === 'edge' && w.to === n.name);
+  const sw = wires.find((w) => w.kind === 'switch' && w.over === n.name);
+  const val = (id) => $(id).value;
+  const btn = (id, text, label, onClick, disabled) => {
+    const b = h('button', { type: 'button', class: 'btn', id, 'aria-label': label, disabled: !!disabled }, text);
+    b.addEventListener('click', onClick);
+    return b;
+  };
+  const kids = [h('legend', {}, 'Connections')];
+  kids.push(h('p', { class: 'small', id: 'c-in' }, ins.length ? 'Edges in: ' + ins.map((w) => w.from).join(', ') + '.' : 'No edge leads here.'));
+  if (!sw) {
+    kids.push(h('ul', { class: 'conns', id: 'c-outs', 'aria-label': 'Edges out of ' + n.name },
+      outs.map((w, i) => h('li', {}, h('span', {}, n.name + ' \u2192 ' + w.to), ' ',
+        btn('c-rm-edge-' + i, 'Remove', 'Remove edge: ' + n.name + ' to ' + w.to, () => operate({ op: 'remove_edge', node: n.name, to: w.to }, 'c-edge-to'))))));
+    if (!outs.length) kids.push(h('p', { class: 'muted small' }, 'No edge leaves this node.'));
+    kids.push(pick('c-edge-to', 'Add an edge to', targets, targets[0]));
+    kids.push(h('div', { class: 'inline' }, btn('c-edge-add', 'Add edge', 'Add edge from ' + n.name, () => operate({ op: 'add_edge', node: n.name, to: val('c-edge-to') }, 'c-edge-to'), !targets.length)));
+  }
+  if (sw) {
+    const arms = sw.arms || [];
+    const rows = arms.map((a, i) => {
+      const pred = h('input', { id: 'c-arm-pred-' + i, type: 'text', value: a.pred, autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Predicate of arm ' + (i + 1) });
+      const to = h('select', { id: 'c-arm-to-' + i, 'aria-label': 'Target of arm ' + (i + 1) }, targets.map((x) => h('option', { value: x, selected: x === a.to }, x)));
+      const move = (dir) => btn('c-arm-' + dir + '-' + i, dir === 'up' ? 'Up' : 'Down', 'Move up: arm ' + (i + 1), () => {
+        const to = dir === 'up' ? i - 1 : i + 1;
+        const edge = dir === 'up' ? to === 0 : to === arms.length - 1;
+        operate({ op: 'move_arm', node: n.name, index: i, value: dir }, 'c-arm-' + (edge ? (dir === 'up' ? 'down' : 'up') : dir) + '-' + to);
+      }, dir === 'up' ? i === 0 : i === arms.length - 1);
+      const down = move('down'); down.setAttribute('aria-label', 'Move down: arm ' + (i + 1));
+      return h('li', { class: 'arm' }, h('span', { class: 'sr-only' }, 'Arm ' + (i + 1) + (a.loop_max ? ', loop-back' : '') + ': '), pred, ' \u2192 ', to, ' ',
+        btn('c-arm-set-' + i, 'Set', 'Set arm ' + (i + 1), () => operate({ op: 'set_arm', node: n.name, index: i, pred: val('c-arm-pred-' + i).trim(), to: val('c-arm-to-' + i) }, 'c-arm-set-' + i)),
+        move('up'), down,
+        btn('c-arm-rm-' + i, 'Remove', 'Remove arm ' + (i + 1), () => operate({ op: 'remove_arm', node: n.name, index: i }, 'c-arm-pred-' + Math.max(0, i - 1)), arms.length === 1));
+    });
+    kids.push(h('p', { class: 'small' }, n.name + ' is switched over: the first arm whose predicate holds routes the value. It has arms instead of edges.'));
+    kids.push(h('ol', { class: 'conns', id: 'c-arms', 'aria-label': 'Arms of the switch on ' + n.name }, rows));
+    kids.push(h('div', { class: 'field' }, h('label', { for: 'c-arm-pred' }, 'Add an arm: predicate'), h('input', { id: 'c-arm-pred', type: 'text', autocomplete: 'off', spellcheck: 'false' })));
+    kids.push(pick('c-arm-to', 'Add an arm: target', targets, targets[0]));
+    kids.push(h('div', { class: 'inline' }, btn('c-arm-add', 'Add arm', 'Add arm to the switch on ' + n.name, () => operate({ op: 'add_arm', node: n.name, pred: val('c-arm-pred').trim(), to: val('c-arm-to') }, 'c-arm-pred'), !targets.length)));
+    kids.push(pick('c-else', 'Else (when no arm holds)', targets, sw.else || '', { none: 'no else' }));
+    kids.push(h('div', { class: 'inline' }, btn('c-else-set', 'Set else', 'Set the else of the switch on ' + n.name, () => operate({ op: 'set_else', node: n.name, to: val('c-else') }, 'c-else'))));
+    kids.push(h('div', { class: 'inline' }, btn('c-sw-rm', 'Remove switch', 'Remove the switch on ' + n.name, () => operate({ op: 'remove_switch', node: n.name }, 'c-edge-to'))));
+    if (arms.length === 1) kids.push(h('p', { class: 'muted small' }, 'The only arm cannot be removed; remove the switch instead.'));
+  } else if (!outs.length) {
+    kids.push(h('div', { class: 'field' }, h('label', { for: 'c-sw-pred' }, 'Make this a switch: first predicate'), h('input', { id: 'c-sw-pred', type: 'text', autocomplete: 'off', spellcheck: 'false' })));
+    kids.push(pick('c-sw-to', 'Make this a switch: first target', targets, targets[0]));
+    kids.push(h('div', { class: 'inline' }, btn('c-sw-add', 'Make a switch', 'Make ' + n.name + ' a switch', () => operate({ op: 'add_switch', node: n.name, pred: val('c-sw-pred').trim(), to: val('c-sw-to') }, 'c-sw-pred'), !targets.length)));
+  }
+  kids.push(h('p', { class: 'muted small' }, 'The gate check follows paths: a new edge or arm that reaches a gated node by another way shows the weakened banner.'));
+  return h('fieldset', { class: 'structure', id: 'connections' }, kids);
 }
 
 // structureForm is the node's name, its place as the entry, and its removal. A rename rewrites every
@@ -565,6 +637,15 @@ function opWords(op) {
     case 'rename_node': return op.node + ' renamed to ' + op.value;
     case 'set_entry': return 'Entry node: ' + op.value;
     case 'move_node': return op.node + ' moved ' + op.value;
+    case 'add_edge': return 'Edge added: ' + op.node + ' to ' + op.to;
+    case 'remove_edge': return 'Edge removed: ' + op.node + ' to ' + op.to;
+    case 'add_switch': return op.node + ' is now a switch';
+    case 'remove_switch': return 'Switch on ' + op.node + ' removed';
+    case 'add_arm': return 'Arm added to the switch on ' + op.node;
+    case 'remove_arm': return 'Arm ' + (op.index + 1) + ' removed from the switch on ' + op.node;
+    case 'set_arm': return 'Arm ' + (op.index + 1) + ' of the switch on ' + op.node + ' set';
+    case 'move_arm': return 'Arm ' + (op.index + 1) + ' of the switch on ' + op.node + ' moved ' + op.value;
+    case 'set_else': return op.to ? 'Else of the switch on ' + op.node + ' set' : 'Else of the switch on ' + op.node + ' removed';
     case 'move_wiring': return 'Wiring element ' + (op.index + 1) + ' moved ' + op.value;
     case 'set_flow': return 'Flow name set';
     case 'set_in': return op.value ? 'Input type set' : 'Input type removed';

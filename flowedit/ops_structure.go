@@ -19,6 +19,9 @@ import (
 // still caught.
 
 func isStructureOp(op string) bool {
+	if isWiringOp(op) {
+		return true
+	}
 	switch op {
 	case "add_node", "remove_node", "rename_node", "set_entry", "move_node", "move_wiring", "set_flow", "set_in", "set_out":
 		return true
@@ -136,6 +139,10 @@ func applyStructure(name string, src, data []byte, op Operation) (*Applied, erro
 		steps, err = planMoveWiring(&cfg, op)
 	case "set_flow", "set_in", "set_out":
 		steps, err = planSetScalar(&cfg, top, op)
+	default:
+		if isWiringOp(op.Op) {
+			steps, err = planWiring(&cfg, top, op)
+		}
 	}
 	if err != nil {
 		return nil, err
@@ -541,6 +548,12 @@ func expectStructure(old any, op Operation) (any, error) {
 	}
 	nodes, _ := doc["nodes"].([]any)
 	wiring, _ := doc["wiring"].([]any)
+	if isWiringOp(op.Op) {
+		if err := expectWiring(doc, op); err != nil {
+			return nil, err
+		}
+		return doc, nil
+	}
 	switch op.Op {
 	case "add_node":
 		doc["nodes"] = append(nodes, map[string]any{"name": op.Node, "block": op.Value})

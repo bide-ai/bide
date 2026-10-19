@@ -32,8 +32,9 @@ the forms for a node's safety, block and approval gate, the assertions panel, an
 work below. The second phase (structure) is being added in steps; so far you can add, remove and
 rename a node, write the entry (see [Nodes](#nodes-add-remove-rename-and-the-entry)), reorder nodes and
 wiring elements, and set the flow's name and types (see [Order, wiring order and the flow's
-settings](#order-wiring-order-and-the-flows-settings)). It does **not**
-yet: wire edges, switches and joins (edit the source for those); know your `plan.Registry` (it checks structure only, so no block palette,
+settings](#order-wiring-order-and-the-flows-settings)), and wire edges, switches, arms and `else` (see
+[Connections](#connections-edges-switches-arms-and-else)). It does **not**
+yet: set a loop bound, or add or change joins (edit the source for those); know your `plan.Registry` (it checks structure only, so no block palette,
 type-compatible connections or digest); compare with a journaled run; or let you place nodes on the canvas
 (the layout is derived from the topology, on purpose). A config with an anchor or alias anywhere,
 a repeated key, a key that is not a string, NaN or infinity, or mixed line ends is refused by the editor
@@ -156,6 +157,33 @@ Each is an exchange of two neighbouring list items, or a change of one value, ap
 verified: the result must be the old text with those two items exchanged and nothing else (the same
 lines in another order, every line outside the pair where it was, each item with the comments it had
 above it), checked independently of the code that made the splice.
+
+## Connections: edges, switches, arms and else
+
+The inspector's **Connections** section edits the wiring of the selected node. Each change is a splice
+verified like the others, and the result is checked against the data the operation should produce.
+Targets are chosen from the declared nodes, never typed, so an edge to a node that is not there cannot
+be written; a predicate is a name a program registers, so it is typed (the editor cannot check that it
+is registered; `plan.Load` does).
+
+- **Edges.** The section lists the edges out of the node, each with **Remove**, and the nodes that
+  lead to it. **Add an edge to** a chosen node writes `edge: [from, to]` at the end of the wiring, in the
+  style of the file (a flow list when the file has none to copy, as the examples have it).
+- **A switch.** A node has edges out or a switch, never both (`plan.Load` refuses both), so a node with
+  an edge out offers no switch and a switched node offers arms instead of edges. **Make a switch**
+  needs a first predicate and target; a switch always has an arm.
+- **Arms.** Each arm has its predicate and target to change (**Set**), **Up** and **Down** (the first
+  arm whose predicate holds routes, so the order matters and is part of the digest), and **Remove**.
+  The only arm of a switch is not removed one arm at a time; **Remove switch** is the explicit
+  operation. **Add an arm** takes a predicate and a target.
+- **Else.** **Set else** picks the fallback target, or "no else" to remove it.
+
+The editor does not write what `plan.Load` refuses: an edge or arm to an undeclared node, an edge into
+a join (a join is entered only by its inputs), an edge from a switched node, a switch on a node with an
+edge out, an edge from a node to itself, a duplicate edge or arm, or a switch with no arm. The report
+still shows each if it arrives through the source. **A new edge or arm that reaches a gated node by
+another way is a weakening the gate check sees:** the banner appears with the same words as in CI, and
+saving needs the confirmation.
 
 ## The assertions panel
 
