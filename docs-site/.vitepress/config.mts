@@ -87,6 +87,7 @@ export default defineConfig({
         items: [
           { text: 'Run viewer', link: '/guides/run-viewer' },
           { text: 'Flow editor', link: '/guides/flow-editor' },
+          { text: 'Themes', link: '/guides/themes' },
           { text: 'Debugging and recovery', link: '/guides/debugging' },
         ],
       },
@@ -104,6 +105,9 @@ export default defineConfig({
           { text: 'Delegation', link: '/guides/delegation' },
           { text: 'Governance', link: '/guides/governance' },
           { text: 'Quorum', link: '/guides/quorum' },
+          { text: 'Kill switch', link: '/guides/kill-switch' },
+          { text: 'Anchoring (S3)', link: '/guides/anchoring' },
+          { text: 'Anchoring (Google Cloud Storage)', link: '/guides/anchoring-gcs' },
         ],
       },
       {

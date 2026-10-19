@@ -33,7 +33,7 @@ proofs. Each entry notes who it is for.
 ## Guides: inspect
 
 - **[Flow editor](guides/flow-editor.md)**: `bide edit`, a local page for a flow config: the graph, an outline, each node's approval gate and safety, the assertions and the check, with the source editable, a banner when an edit weakens the flow, and a save that shows the diff first.
-- **[Themes](guides/themes.md)**: the file format of a theme for the run viewer and the editor, the checks a theme must pass, and `bide theme check`. The pages do not load a theme yet.
+- **[Themes](guides/themes.md)**: the file format of a theme for the run viewer (the editor takes themes in a later release), the checks a theme must pass, and `bide theme check`. `bide view` draws from the checked themes and takes a theme file of your own with `-theme`.
 - **[Run viewer](guides/run-viewer.md)**: `bide view`, a read-only local page for a journal's runs (a run list filtered by state, kind and run ID) and for one run: timeline, flow path, halts, approval gates, and the audit verdict; it follows a run in progress.
 - **[Debugging and recovery](guides/debugging.md)**: replay, event reconstruction, Mermaid diagrams, and crash recovery.
 
@@ -46,8 +46,8 @@ proofs. Each entry notes who it is for.
 - **[Certificate-bound approvers](guides/certificate-approvers.md)**: operating approvers whose decisions carry a certificate from the bank's own CA: what to declare from the CA, keeping the CRLs current with the CRL refresher (`bide identity fetch-crl`), the pre-flight before go-live and when a decision is refused (`bide identity check`), publishing a CRL after revoking, the status check before a call runs, and the published revocation latency.
 - **[SSO certificates](guides/sso-certificates.md)**: a tested recipe for approver certificates issued after a single sign-on login (step-ca with an OIDC provisioner, the certificate template, the approver's renewal script, revocation and step-ca's CRL limits), with the end-to-end test in `examples/sso-certs`.
 - **[Security model](guides/security-model.md)**: the cryptographic guarantees and their exact scope (confidentiality is out of scope).
-- **[Anchoring](guides/anchoring.md)**: publish every signed head to an S3 bucket under Object Lock (`anchor/awss3`), read back and verified, with IAM policies, failure modes and `bide-anchor` to verify the objects. Tested against MinIO and a fake, never AWS.
-- **[Anchoring in Google Cloud Storage](guides/anchoring-gcs.md)**: the same for a bucket with a locked retention policy (`anchor/gcs`), with custom IAM roles, failure modes and a runbook for a real-bucket run.
+- **[Anchoring](guides/anchoring.md)**: publish every signed head to an S3 bucket under Object Lock (`anchor/awss3`), read back and verified, with IAM policies, failure modes and `bide-anchor` to verify the objects and to audit the bucket's configuration. Tested against MinIO and a fake, never AWS.
+- **[Anchoring in Google Cloud Storage](guides/anchoring-gcs.md)**: the same for a bucket with a locked retention policy (`anchor/gcs`), with custom IAM roles, failure modes, `bide-anchor -backend gcs` and a runbook for a real-bucket run.
 - **[Key custody](guides/key-custody.md)**: signing keys in a PKCS#11 HSM, AWS KMS, Google Cloud KMS or Azure Key Vault instead of key files, behind `audit.Signer`.
 - **[Delegation](guides/delegation.md)**: signed grants, attenuating delegation, and earned authority.
 - **[Governance](guides/governance.md)**: convergent governed state (Tier-2), federation, and gsm-backed synthesis and coordination.
@@ -93,4 +93,4 @@ For security and risk reviewers. Read with the guarantee and the known limitatio
 
 ## Design notes
 
-- **[Durable signals](design/design-durable-signals.md)**, **[m-of-n approval](design/design-mofn-approval.md)**, **[Compaction](design/compaction.md)**, **[Chaos benchmark](design/chaos-benchmark.md)**, **[Formal models](design/formal-models.md)** (accepted, in progress), **[The bide protocol](design/protocol.md)** (accepted; not implemented), **[Probes](design/probes.md)** (draft; not implemented), **[Tooling and onboarding](design/tooling-and-onboarding.md)** (accepted; in progress), **[Visual editor](design/visual-editor.md)** (draft; not implemented), **[Themes](design/themes.md)** (proposed; not implemented), **[Decision layer](design/decision-layer.md)** (accepted; not implemented).
+- **[Durable signals](design/design-durable-signals.md)**, **[m-of-n approval](design/design-mofn-approval.md)**, **[Compaction](design/compaction.md)**, **[Chaos benchmark](design/chaos-benchmark.md)**, **[Formal models](design/formal-models.md)** (accepted, in progress), **[The bide protocol](design/protocol.md)** (accepted; not implemented), **[Probes](design/probes.md)** (draft; not implemented), **[Tooling and onboarding](design/tooling-and-onboarding.md)** (accepted; in progress), **[Visual editor](design/visual-editor.md)** (draft; not implemented), **[Themes](design/themes.md)** (accepted; in progress: the theme file, `bide theme check` and the viewer are built), **[Decision layer](design/decision-layer.md)** (accepted; not implemented).

@@ -98,7 +98,7 @@ Notes:
 ## A short checklist
 
 - [ ] Log key, grant key and approver keys held by different principals; log key not in the application database.
-- [ ] Heads anchored to a separate trust domain; anchor not writable by the operators of the database. With `anchor/gcs`: a locked retention policy, a separate project, `Reader.Audit` run on a schedule by a read-only identity and its findings alerted, `OnError` on the store alerted, no personal data in run or trail IDs. With `anchor/awss3`: compliance mode, a separate account, `bide-anchor check` run on a schedule by a read-only role and its findings alerted, `OnError` on the store alerted, no personal data in run or trail IDs.
+- [ ] Heads anchored to a separate trust domain; anchor not writable by the operators of the database. With `anchor/gcs`: a locked retention policy, a separate project, `bide-anchor check -backend gcs` (or `Reader.Audit`) run on a schedule by a read-only identity and its findings alerted, `OnError` on the store alerted, no personal data in run or trail IDs. With `anchor/awss3`: compliance mode, a separate account, `bide-anchor check` run on a schedule by a read-only role and its findings alerted, `OnError` on the store alerted, no personal data in run or trail IDs.
 - [ ] Key register with dated rotations; old public keys retained.
 - [ ] Completed runs exported to WORM storage with heads, evidence, keys, policy and the verifying `bide` version; archive verified.
 - [ ] Restore procedure tested, including reconciliation of in-flight runs against downstream systems.

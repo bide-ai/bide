@@ -409,7 +409,7 @@ grew (`ProveConsistency`) and that a specific STH was anchored (`Prove`). In a r
 deployment the anchor lives in a different trust domain than the journal; this in-memory
 version is for tests and local dev. See the [audit guide](../guides/audit.md).
 
-**Production adapter.** `anchor/awss3` (its own module, so the AWS SDK stays out of the core) writes each head as an object in an S3 bucket under Object Lock, reads it back, and ships `bide-anchor` to verify the set. See [anchoring](../guides/anchoring.md). `anchor/gcs` is the same for a Google Cloud Storage bucket with a locked retention policy ([anchoring in Google Cloud Storage](../guides/anchoring-gcs.md)); both build on the SDK-free `audit/anchorobj`.
+**Production adapter.** `anchor/awss3` (its own module, so the AWS SDK stays out of the core) writes each head as an object in an S3 bucket under Object Lock, reads it back, and ships `bide-anchor` to verify the set and audit the bucket. See [anchoring](../guides/anchoring.md). `anchor/gcs` is the same for a Google Cloud Storage bucket with a locked retention policy ([anchoring in Google Cloud Storage](../guides/anchoring-gcs.md)), and `bide-anchor -backend gcs` reads it; both build on the SDK-free `audit/anchorobj`.
 
 ## `EventStore`: durable event-trail persistence (`audit`)
 

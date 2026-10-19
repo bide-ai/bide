@@ -26,7 +26,7 @@ and `help`, and its import graph is the standard library and the core module (se
 | [`bide demo`](#bide-demo) | kill an agent mid-payment and watch it not charge twice (no API key) |
 | [`bide doctor`](#bide-doctor) | check that a first run can work: Go, SQLite, the module cache, model keys, your project |
 | [`bide sample`](#bide-sample) | write a sample journal of varied runs, with evidence and flow configs, and open bide view on it |
-| [`bide theme`](#bide-theme) | check a theme file for the run viewer and the editor against the contrast and distinctness rules |
+| [`bide theme`](#bide-theme) | check a theme file for the run viewer (the editor follows in a later release) against the contrast and distinctness rules |
 | [`bide view`](#bide-view) | a read-only local page for one run of a journal, or a flow config's graph |
 | [`bide edit`](#bide-edit) | a local page for a flow config: the graph, the approval gates, the assertions, and what an edit weakens; edit the source and save |
 | [`bide notify`](#bide-notify) | set up and test the webhook notifier: test a receiver, run a local one, relay to Slack and PagerDuty |
@@ -175,7 +175,7 @@ Exit status:
 
 ## bide theme
 
-Check a theme file for the run viewer and the editor against the contrast and distinctness rules.
+Check a theme file for the run viewer (the editor follows in a later release) against the contrast and distinctness rules.
 
 ```text
 usage: bide theme check [-v] <theme.json>...
