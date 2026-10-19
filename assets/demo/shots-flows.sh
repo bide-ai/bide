@@ -20,16 +20,13 @@ work=$(mktemp -d)
 trap 'kill $(jobs -p) 2>/dev/null || true; wait 2>/dev/null; rm -rf "$work"' EXIT
 
 . "$here/lib.sh"
+require_free "$port" "$((port + 1))" "$((port + 2))" "$((port + 3))" "$((port + 4))"
 shot_init
 
 (cd "$root/cmd/bide" && GOWORK=off go build -o "$work/bide" .)
 (cd "$root/examples/approval" && GOWORK=off go build -o "$work/flow" ./flow)
 mkdir -p "$out"
 
-wait_for() { # url: retry for up to 30 s
-  for _ in $(seq 300); do curl -sf -o /dev/null "$1" && return 0; sleep 0.1; done
-  echo "shots-flows.sh: timed out waiting for $1" >&2; exit 1
-}
 
 # The plan flows of examples/plan, from that directory as the guide runs them.
 cd "$root/examples/plan"

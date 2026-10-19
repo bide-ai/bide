@@ -25,10 +25,21 @@ Regenerate before each release, as part of the final docs pass: the viewer, the 
 change between releases, and a picture that was right a month ago is not a promise. Run
 `scripts/shots.sh`, look at each image, and commit the ones that changed with the release's docs.
 
+## Checks
+
+`scripts/shots.sh` ends by comparing each image it wrote with the committed one and fails if the
+dimensions changed or the file shrank by more than half (a blank page or an error page is a few kilobytes);
+look at the image, then `SHOTS_ALLOW_CHANGE=1 scripts/shots.sh` accepts a change that is real. Look at
+every image before committing it: the check cannot tell a wrong page from a right one that is smaller.
+
 ## How a picture is taken
 
-One program, `browser-shots/capture.mjs`, takes every viewer and editor picture (the share card is
-the file the page's own button saves, `share.mjs`; the GIF's frames are `live-capture.mjs`). The
+One program, `browser-shots/capture.mjs`, takes the viewer's and the flow pictures. The others have
+their own because they do something more: the editor pictures drive the page (`edit-shots.mjs`), the share
+card is the file the page's own button saves (`share.mjs`), the GIF's frames wait while a run lands
+(`live-capture.mjs`), and the Needs attention list is taken at 2x with the approve page and the relay
+(`shot.mjs`, `browser-shots.sh`). Every one fails on a page that is not the one meant: a response that is not
+2xx, a page with no `<main>`, a run page that does not name its run. The
 page is shown in the named color scheme (`prefers-color-scheme`) with `prefers-reduced-motion:
 reduce`, so the graph's flowing dashes and the live pulse stand still; the window is 1200 pixels
 wide (900 for the live GIF, 1280 for the editor) at 1x, scrollbars are hidden, and the program waits for
@@ -36,8 +47,10 @@ the network and the fonts to settle before it photographs. The height of each pi
 its script names, so the guide's image sizes do not move.
 
 The data is fixed where it can be: `bide sample` writes the same runs on every call, and the
-examples' flows and configs are files in the repository. The scripts name their ports and build
-the binaries they use from the checkout.
+examples' flows and configs are files in the repository. The scripts refuse to start if a port they need is in use, and stop if the server they started exits,
+so a stale server can never answer for it. The Needs attention pictures of the deadline and identity
+demos show their database path, `/tmp/bide-demo/…`, a fixed neutral directory made for the run (mode
+700, only if nothing is there or it is yours) and not a random one.
 
 ## What is not frozen
 
@@ -50,5 +63,5 @@ the binaries they use from the checkout.
 - **The Chrome the scripts find.** `CHROME_BIN` first, then a Chrome for Testing that puppeteer
   installed, then the usual paths. Set `CHROME_BIN` to pin it.
 
-Install: the first run installs puppeteer-core from `browser-shots/package-lock.json` with
-`npm ci --ignore-scripts`; nothing is downloaded but that package.
+Install: the first run installs puppeteer-core and its dependencies from
+`browser-shots/package-lock.json` with `npm ci --ignore-scripts`; no browser is downloaded.

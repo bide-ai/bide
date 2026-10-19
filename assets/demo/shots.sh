@@ -20,16 +20,13 @@ work=$(mktemp -d)
 trap 'kill $(jobs -p) 2>/dev/null || true; wait 2>/dev/null; rm -rf "$work"' EXIT
 
 . "$here/lib.sh"
+require_free "$port" "$((port + 1))" "$((port + 2))"
 shot_init
 
 (cd "$root/cmd/bide" && go build -o "$work/bide" .)
 mkdir -p "$out"
 cd "$work"
 
-wait_for() { # url: retry for up to 30 s
-  for _ in $(seq 300); do curl -sf -o /dev/null "$1" && return 0; sleep 0.1; done
-  echo "shots.sh: timed out waiting for $1" >&2; exit 1
-}
 
 ./bide sample -out sample -no-browser -addr "127.0.0.1:$port" > /dev/null &
 wait_for "http://127.0.0.1:$port/"

@@ -28,7 +28,11 @@ export CHROME_BIN
 
 (cd "$root/cmd/bide" && GOWORK=off go build -o "$work/bide" .)
 (cd "$root" && GOWORK=off go build -o "$work/intake" ./assets/demo/browser-shots/intake)
+. "$here/../lib.sh" # require_free
 only=${ONLY:-approve needs-attention relay}
+for part in $only; do
+  case $part in needs-attention) require_free 8631 ;; relay) require_free 8641 8642 ;; esac
+done
 want() { case " $only " in *" $1 "*) return 0;; esac; return 1; }
 wait_for() { for _ in $(seq 300); do curl -sf -o /dev/null "$1" && return 0; sleep 0.1; done; echo "timed out waiting for $1" >&2; exit 1; }
 

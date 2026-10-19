@@ -22,6 +22,7 @@ work=$(mktemp -d)
 trap 'kill $(jobs -p) 2>/dev/null || true; wait 2>/dev/null; rm -rf "$work"' EXIT
 
 . "$here/lib.sh"
+require_free "$port"
 shot_init
 
 (cd "$root/cmd/bide" && go build -o "$work/bide" .)

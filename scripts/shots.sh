@@ -33,3 +33,26 @@ for g in "${groups[@]}"; do
     *) echo "scripts/shots.sh: unknown group $g" >&2; exit 2 ;;
   esac
 done
+
+# Every image the run wrote is compared with the committed one: a changed size, or a file that shrank by
+# more than half (a 404 page or a blank render is a few kilobytes against a page's hundred), is a failure
+# until looked at (SHOTS_ALLOW_CHANGE=1 accepts what you looked at).
+out=${OUT:-$(cd "$here/.." && pwd)/docs/guides/img}
+repo=$(cd "$here/.." && pwd)
+bad=0
+for f in "$out"/*.png "$out"/*.gif; do
+  [ -e "$f" ] || continue
+  rel=${f#"$repo"/}
+  old=$(git -C "$repo" cat-file -s "HEAD:$rel" 2> /dev/null) || continue   # a new image has nothing to compare with
+  git -C "$repo" diff --quiet -- "$rel" 2> /dev/null && continue            # unchanged
+  new=$(wc -c < "$f" | tr -d ' ')
+  dims() { python3 -c 'import sys; from PIL import Image; print("x".join(map(str, Image.open(sys.stdin.buffer).size)))'; }
+  od=$(git -C "$repo" show "HEAD:$rel" | dims) || od=?
+  nd=$(dims < "$f") || nd=?
+  if [ "$od" != "$nd" ]; then echo "shots: $rel is $nd, was $od" >&2; bad=1
+  elif [ $((new * 2)) -lt "$old" ]; then echo "shots: $rel shrank from $old to $new bytes: is it the page meant?" >&2; bad=1; fi
+done
+if [ $bad = 1 ] && [ "${SHOTS_ALLOW_CHANGE:-}" != 1 ]; then
+  echo "shots: look at the images above; SHOTS_ALLOW_CHANGE=1 accepts them" >&2
+  exit 1
+fi

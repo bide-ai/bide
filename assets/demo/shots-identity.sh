@@ -19,21 +19,17 @@ root=$(cd "$here/../.." && pwd)
 theme=${THEME:-dark}
 out=${OUT:-$root/docs/guides/img}
 port=${PORT:-8651}
-work=/tmp/bide-identity # a fixed, short path: the Needs attention list shows it, so the images are reproducible
-rm -rf "$work" && mkdir -p "$work"
-trap 'kill $(jobs -p) 2>/dev/null || true; wait 2>/dev/null; rm -rf "$work"' EXIT
-
+work=/tmp/bide-demo # a fixed, neutral path: the Needs attention list shows it, so no user name or random suffix is in the picture
 . "$here/lib.sh"
+require_free "$port"
+private_dir "$work"
+trap 'kill $(jobs -p) 2>/dev/null || true; wait 2>/dev/null; rm -rf "$work"' EXIT
 shot_init
 
 (cd "$root/cmd/bide" && go build -o "$work/bide" .)
 mkdir -p "$out"
 cd "$work"
 
-wait_for() { # url: retry for up to 30 s
-  for _ in $(seq 300); do curl -sf -o /dev/null "$1" && return 0; sleep 0.1; done
-  echo "shots-identity.sh: timed out waiting for $1" >&2; exit 1
-}
 (cd "$root/cmd/bide" && BIDE_IDENTITY_DEMO_DIR="$work" GOWORK=off go test -tags identitydemo ./internal/identitydemo -run TestWriteDemoJournal -count=1 > /dev/null)
 
 serve() { # port args...: bide view, read-only, on a loopback port
