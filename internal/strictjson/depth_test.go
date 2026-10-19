@@ -33,9 +33,9 @@ func bounded(t *testing.T, limit uint64, f func()) {
 	}
 }
 
-// A document nested past MaxDepth is refused before any decoder runs, with an error naming the
-// limit and the offset of the bracket that crossed it and nothing of the content, in constant
-// memory however deep the document is.
+// A document whose structure is nested past MaxDepth is refused, with an error naming the limit and
+// the offset of the bracket that crossed it and nothing of the content, in constant memory however
+// deep the document is (past MaxVerbatimDepth before any decoder runs).
 func TestDepthLimit_RefusesDeepDocuments(t *testing.T) {
 	for name, doc := range map[string][]byte{
 		"arrays":     deepArrays(30_000),
@@ -49,14 +49,13 @@ func TestDepthLimit_RefusesDeepDocuments(t *testing.T) {
 					func() error { return Check(doc, reflect.TypeFor[any](), nil) },
 					func() error { return CheckValue(doc, reflect.TypeFor[any](), "$.x", nil) },
 					func() error { var v any; return Unmarshal(doc, &v, nil) },
-					func() error { var v json.RawMessage; return Unmarshal(doc, &v, &Options{AllowUnknown: true}) },
 				} {
 					err := f()
 					if err == nil {
 						t.Fatal("a document nested past the limit was accepted")
 					}
 					msg := err.Error()
-					if !strings.Contains(msg, "nesting deeper than 128") || !strings.Contains(msg, "offset") {
+					if !strings.Contains(msg, "nesting deeper than 128 levels at offset") && !strings.Contains(msg, "nesting deeper than 10000 levels at offset") {
 						t.Fatalf("error %q does not name the depth limit and the offset", msg)
 					}
 					if strings.Contains(msg, "[[[") || strings.Contains(msg, `"a"`) {
@@ -65,6 +64,54 @@ func TestDepthLimit_RefusesDeepDocuments(t *testing.T) {
 				}
 			})
 		})
+	}
+}
+
+// A journal keeps a tool call's input and a tool's result verbatim, whatever a model or tool made
+// them, and a record carrying one must stay readable: json.RawMessage content is held to
+// MaxVerbatimDepth, not MaxDepth. Structure around it still is held to MaxDepth.
+func TestDepthLimit_VerbatimJSONIsHeldToTheHigherLimit(t *testing.T) {
+	type record struct {
+		Kind  string          `json:"kind"`
+		Input json.RawMessage `json:"input"`
+	}
+	doc := func(n int) []byte {
+		return []byte(`{"kind":"call","input":` + string(deepObjects(n)) + `}`)
+	}
+	for _, n := range []int{MaxDepth, MaxDepth + 3, 500, 9000, MaxVerbatimDepth - 1} {
+		var r record
+		if err := Unmarshal(doc(n), &r, nil); err != nil {
+			t.Errorf("a record with a verbatim input %d deep: %v", n, err)
+		}
+	}
+	for _, n := range []int{MaxVerbatimDepth, 100_000} {
+		d := doc(n)
+		bounded(t, 1<<20, func() {
+			var r record
+			err := Unmarshal(d, &r, nil)
+			if err == nil || !strings.Contains(err.Error(), "nesting deeper than 10000 levels at offset") {
+				t.Errorf("a record with a verbatim input %d deep: %v, want a refusal naming 10000", n, err)
+			}
+		})
+	}
+	// Verbatim levels are not structure: 100 levels of structure around a 9000-deep input is read,
+	// and one more level of structure than MaxDepth is not, however shallow the input.
+	wrap := func(n int, in string) []byte {
+		return []byte(strings.Repeat(`[`, n) + in + strings.Repeat(`]`, n))
+	}
+	var v any
+	if err := Unmarshal(wrap(100, `1`), &v, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := Unmarshal(wrap(MaxDepth+1, `1`), &v, nil); err == nil {
+		t.Fatal("structure past MaxDepth accepted")
+	}
+	type deep struct {
+		A []json.RawMessage `json:"a"`
+	}
+	var d deep
+	if err := Unmarshal([]byte(`{"a":[`+string(deepArrays(9000))+`]}`), &d, nil); err != nil {
+		t.Fatalf("a verbatim element 9000 deep: %v", err)
 	}
 }
 
@@ -153,4 +200,16 @@ func TestCheck_ErrorPath(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), `$.a[0]: duplicate name "b"`) {
 		t.Fatalf("got %v", err)
 	}
+}
+
+// CheckValue, which hooks use on a value inside a document, scans its raw bytes for the verbatim
+// limit too.
+func TestCheckValue_RefusesDeepVerbatim(t *testing.T) {
+	doc := deepArrays(100_000)
+	bounded(t, 1<<20, func() {
+		err := CheckValue(doc, reflect.TypeFor[json.RawMessage](), "$.x", nil)
+		if err == nil || !strings.Contains(err.Error(), "$.x: nesting deeper than 10000 levels at offset") {
+			t.Fatalf("CheckValue = %v", err)
+		}
+	})
 }

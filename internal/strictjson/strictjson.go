@@ -54,12 +54,19 @@ type Options struct {
 	AllowUnknown bool
 }
 
-// MaxDepth is the deepest nesting of arrays and objects a document may have. The deepest document
-// bide reads from its fixtures, examples, golden exports and test data nests 5 levels (the
-// journal records in agent/testdata), and the deepest any test reads is 7; 128 leaves an order of
-// magnitude of headroom, and is the nesting past which a document is an attack, not data. Check
-// refuses a deeper document before any decoder runs, so no reader spends time or memory on it.
+// MaxDepth is the deepest nesting of arrays and objects the structure of a document may have. The
+// deepest document bide reads from its fixtures, examples, golden exports and test data nests 5
+// levels (the journal records in agent/testdata), and the deepest any test reads is 7; 128 leaves
+// an order of magnitude of headroom, and is the nesting past which a document is an attack, not
+// data. JSON kept verbatim (json.RawMessage, as a journal keeps a tool call's input and a tool's
+// result, whatever a model or a tool made it) is not structure bide defines, so it is held to
+// MaxVerbatimDepth instead: a record carrying a deep tool input must stay readable.
 const MaxDepth = 128
+
+// MaxVerbatimDepth is the deepest nesting any document may have, structure and verbatim JSON
+// together. It is encoding/json's own limit. Check refuses a deeper document before any decoder
+// runs, so no reader spends time or memory on it.
+const MaxVerbatimDepth = 10000
 
 // ErrTrailingData reports data after the one JSON value.
 var ErrTrailingData = errors.New("trailing data after the value")
@@ -95,7 +102,7 @@ func Unmarshal(data []byte, v any, opts *Options) error {
 // lone surrogate, and in a []byte, base64 that is the standard encoding of its bytes. JSON kept
 // verbatim (json.RawMessage) is checked for duplicate names only.
 func Check(data []byte, t reflect.Type, opts *Options) error {
-	if err := checkDepth(data); err != nil {
+	if err := checkDepth(data, MaxVerbatimDepth); err != nil {
 		return err
 	}
 	s := newDecoder(data, opts)
@@ -111,18 +118,18 @@ func Check(data []byte, t reflect.Type, opts *Options) error {
 // CheckValue checks the first JSON value in raw against t, as Check does, naming path in its
 // errors. It does not look past that value.
 func CheckValue(raw []byte, t reflect.Type, at string, opts *Options) error {
-	if err := checkDepth(raw); err != nil {
+	if err := checkDepth(raw, MaxVerbatimDepth); err != nil {
 		return fmt.Errorf("%s: %w", at, err)
 	}
 	return newDecoder(raw, opts).value(t, &path{name: at}, false)
 }
 
-// checkDepth refuses data nested deeper than MaxDepth, scanning it once without allocating. A
+// checkDepth refuses data nested deeper than limit, scanning it once without allocating. A
 // bracket inside a string does not count, and an escape inside a string is skipped whole, so a
 // quote after a backslash does not end the string. Brackets are not paired here (the decoder
 // rejects a malformed document): only the count of those open at once is bounded. The error names
 // the limit and the offset of the bracket that crossed it, never the content.
-func checkDepth(data []byte) error {
+func checkDepth(data []byte, limit int) error {
 	depth := 0
 	for i := 0; i < len(data); i++ {
 		switch data[i] {
@@ -133,14 +140,18 @@ func checkDepth(data []byte) error {
 				}
 			}
 		case '[', '{':
-			if depth++; depth > MaxDepth {
-				return fmt.Errorf("nesting deeper than %d levels at offset %d", MaxDepth, i)
+			if depth++; depth > limit {
+				return errDepth(limit, i)
 			}
 		case ']', '}':
 			depth--
 		}
 	}
 	return nil
+}
+
+func errDepth(limit, offset int) error {
+	return fmt.Errorf("nesting deeper than %d levels at offset %d", limit, offset)
 }
 
 // path is the position of a value in the document, kept as a chain from the value up to the root
@@ -182,6 +193,7 @@ type decoder struct {
 	dec  *json.Decoder
 	data []byte
 	opts *Options
+	deep int // arrays and objects open around the value being read, verbatim ones not counted
 }
 
 func newDecoder(data []byte, opts *Options) *decoder {
@@ -251,6 +263,12 @@ func (s *decoder) value(t reflect.Type, at *path, verbatim bool) error {
 			}
 		}
 		return nil
+	}
+	if !verbatim {
+		if s.deep++; s.deep > MaxDepth {
+			return errDepth(MaxDepth, int(s.dec.InputOffset())-1)
+		}
+		defer func() { s.deep-- }()
 	}
 	custom := t == nil || t.Kind() == reflect.Interface ||
 		reflect.PointerTo(t).Implements(unmarshalerType) || t.Implements(unmarshalerType)
