@@ -396,7 +396,7 @@ func TestS3BackendBucketExpectations(t *testing.T) {
 	}
 	// An alias cannot be checked against the key ARN S3 reports: refused (2), naming the fix.
 	for _, alias := range []string{"alias/bide-anchor", "arn:aws:kms:eu-west-1:111122223333:alias/bide-anchor", "ALIAS/x", " alias/x", "key", "arn:aws:kms:eu-west-1:111122223333:key/k"} {
-		if code, _, errs := e.do(append([]string{"check"}, with("-kms-key", alias)...)...); code != exitUsage || !strings.Contains(errs, "pass the ARN of the key the alias points to") {
+		if code, _, errs := e.do(append([]string{"check"}, with("-kms-key", alias)...)...); code != exitUsage || !strings.Contains(errs, "for an alias, pass the ARN of the key it points to") {
 			t.Errorf("-kms-key %s = exit %d (%s), want %d naming the fix", alias, code, errs, exitUsage)
 		}
 	}

@@ -24,5 +24,5 @@ func checkKMSKey(field, k string) error {
 	if validKMSKey(k) {
 		return nil
 	}
-	return fmt.Errorf("%s %q is not a KMS key ID (a UUID), a multi-Region key ID (mrk- and 32 hex digits) or a key ARN (arn:<partition>:kms:<region>:<account>:key/<id>); an alias is refused, since S3 reports the ARN of the key an alias resolves to and the check could not tell which key it was: pass the ARN of the key the alias points to", field, k)
+	return fmt.Errorf("%s: KMS key must be a key ID or key ARN (got %q): a lower-case UUID, mrk- and 32 lower-case hex digits, or arn:<partition>:kms:<region>:<account>:key/<one of those>, with no spaces or other characters; for an alias, pass the ARN of the key it points to", field, k)
 }

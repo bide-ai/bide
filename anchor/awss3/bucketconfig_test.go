@@ -2,6 +2,8 @@ package awss3_test
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -207,7 +209,7 @@ func TestReaderRefusesAKMSAlias(t *testing.T) {
 	k := newKeys(t, 1)
 	for _, key := range []string{"alias/bide-anchor", "arn:aws:kms:eu-west-1:111122223333:alias/bide-anchor"} {
 		_, err := awss3.NewReader(awss3.ReaderConfig{Client: f, Bucket: bucket, ExpectedBucketOwner: owner, Verifier: k.v, KMSKeyID: key})
-		if !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "pass the ARN of the key the alias points to") {
+		if !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "for an alias, pass the ARN of the key it points to") {
 			t.Errorf("KMSKeyID %q: NewReader = %v, want agent.ErrConfig naming the fix", key, err)
 		}
 	}
@@ -304,15 +306,39 @@ func TestOnlyAKeyIDOrARNIsAcceptedAsTheKMSKey(t *testing.T) {
 	for _, key := range bad {
 		f := awss3test.New(bucket)
 		_, err := awss3.NewReader(awss3.ReaderConfig{Client: f, Bucket: bucket, ExpectedBucketOwner: owner, Verifier: k.v, KMSKeyID: key})
-		if !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "pass the ARN of the key the alias points to") {
+		if !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "for an alias, pass the ARN of the key it points to") {
 			t.Errorf("the Reader accepted or mis-reported %q: %v", key, err)
 		}
 		_, err = awss3.New(ctx, awss3.Config{Client: f, Bucket: bucket, ExpectedBucketOwner: owner, Retention: 30 * 24 * time.Hour, KMSKeyID: key, OnWarn: func(error) {}})
-		if !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "pass the ARN of the key the alias points to") {
+		if !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "for an alias, pass the ARN of the key it points to") {
 			t.Errorf("New accepted or mis-reported %q: %v", key, err)
 		}
 		if n := f.Calls("PutObject") + f.Calls("HeadBucket"); n != 0 {
 			t.Errorf("%q: %d requests were made before the refusal", key, n)
 		}
+	}
+}
+
+// The Upgrading note quotes the refusal's text so that an operator can search a log for it: the real
+// message contains every piece the note quotes.
+func TestUpgradingNoteQuotesTheRefusalText(t *testing.T) {
+	frag, err := os.ReadFile(filepath.Join("..", "..", "changes", "unreleased", "awss3-refuse-kms-alias.md"))
+	if err != nil {
+		t.Skip("the changelog fragment is assembled at release: " + err.Error())
+	}
+	_, got := awss3.New(ctx, awss3.Config{Client: awss3test.New(bucket), Bucket: bucket, ExpectedBucketOwner: owner, Retention: 30 * 24 * time.Hour, KMSKeyID: "alias/x"})
+	if got == nil {
+		t.Fatal("New accepted an alias")
+	}
+	for _, piece := range []string{"awss3: Config.KMSKeyID: KMS key must be a key ID or key ARN (got ", "a lower-case UUID, mrk- and 32 lower-case hex digits, or arn:<partition>:kms:<region>:<account>:key/<one of those>", "for an alias, pass the ARN of the key it points to"} {
+		if !strings.Contains(got.Error(), piece) {
+			t.Errorf("the error does not contain %q", piece)
+		}
+		if !strings.Contains(string(frag), piece) {
+			t.Errorf("the Upgrading note does not quote %q", piece)
+		}
+	}
+	if !strings.Contains(string(frag), "upper-case key ID") {
+		t.Error("the Upgrading note does not say upper-case key IDs are refused")
 	}
 }
