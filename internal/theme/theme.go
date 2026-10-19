@@ -386,14 +386,15 @@ func (t *Theme) Dark() bool { return t.c["surface.bg"].luminance() < 0.18 }
 func round2(v float64) float64 { return math.Round(v*100) / 100 }
 
 // printable returns s with every rune that is not printable (a control character, an escape, a
-// byte that is not UTF-8) written as a Go escape, so text from a hostile file is safe to print.
+// newline, a byte that is not UTF-8) written as a Go escape, so text from a hostile file is safe to
+// print and cannot start a line of its own.
 func printable(s string) string {
 	var b strings.Builder
 	for i, r := range s {
 		switch {
 		case r == utf8.RuneError && s[i] != 0xEF: // an invalid byte, not a written U+FFFD
 			fmt.Fprintf(&b, "\\x%02x", s[i])
-		case r == '\n' || unicode.IsPrint(r):
+		case unicode.IsPrint(r):
 			b.WriteRune(r)
 		default:
 			b.WriteString(strings.Trim(strconv.QuoteRune(r), "'"))

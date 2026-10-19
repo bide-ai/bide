@@ -431,8 +431,18 @@ func TestTypeErrorsAreQuoted(t *testing.T) {
 	}
 }
 
+// TestNoForgedLines: a key with a newline cannot start a line of output that looks like the
+// command's own.
+func TestNoForgedLines(t *testing.T) {
+	data := "{\"bide_theme\":1,\"name\":\"zz\",\"base\":\"dark\",\"surface\":{\"x\\n/p.json: theme \\\"dark\\\" ok (0 errors)\":5}}"
+	_, out, errs := run("check", writeTheme(t, []byte(data)))
+	if out != "" || strings.Count(errs, "\n") != 1 {
+		t.Errorf("a newline in a key made %d lines: out %q err %q", strings.Count(errs, "\n"), out, errs)
+	}
+}
+
 func TestPrintable(t *testing.T) {
-	for in, want := range map[string]string{"plain é text": "plain é text", "a\nb": "a\nb", "\x1b[31m": `\x1b[31m`, "\x00": `\x00`, "bad\xffbyte": `bad\xffbyte`, "\u009b": `\u009b`, "\u2028": `\u2028`} {
+	for in, want := range map[string]string{"plain é text": "plain é text", "a\nb": `a\nb`, "\x1b[31m": `\x1b[31m`, "\x00": `\x00`, "bad\xffbyte": `bad\xffbyte`, "\u009b": `\u009b`, "\u2028": `\u2028`} {
 		if got := printable(in); got != want {
 			t.Errorf("printable(%q) = %q, want %q", in, got, want)
 		}
