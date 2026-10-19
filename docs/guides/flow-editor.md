@@ -26,11 +26,12 @@ with every request, and it is not sent to the server as part of the address or i
 
 ## What it does and does not do
 
-This is the first phase of the editor (the accountability editor), and it is complete as designed: the
+The first phase of the editor (the accountability editor) is complete as designed: the
 read-only views, the baseline and the weakened banner, the source pane with a diff and an atomic save,
 the forms for a node's safety, block and approval gate, the assertions panel, and the accessibility
-work below. It does **not** yet: add, remove, rename or reorder nodes, or wire edges, switches and joins
-(edit the source for structure); know your `plan.Registry` (it checks structure only, so no block palette,
+work below. The second phase (structure) is being added in steps; so far you can add, remove and
+rename a node and write the entry (see [Nodes](#nodes-add-remove-rename-and-the-entry)). It does **not**
+yet: reorder nodes, or wire edges, switches and joins (edit the source for those); know your `plan.Registry` (it checks structure only, so no block palette,
 type-compatible connections or digest); compare with a journaled run; or let you place nodes on the canvas
 (the layout is derived from the topology, on purpose). A config with an anchor or alias anywhere,
 a repeated key, a key that is not a string, NaN or infinity, or mixed line ends is refused by the editor
@@ -89,6 +90,37 @@ A form change is an undoable step (the history keeps the last 100 steps; each is
 text, and a burst of typing in the source is one step. After a change the focus returns to the
 control you changed. A changed gate, safety or block is compared with the baseline like any other
 edit, so the weakened banner appears when the change weakens the flow, with the same words as in CI.
+
+## Nodes: add, remove, rename and the entry
+
+These are operations like the forms above, and are checked the same way: the server applies the
+change as a splice, then checks that the result decodes to exactly what the operation should produce
+(computed from the operation and the old data alone, not from the splices), and returns nothing it has
+not verified. The node controls are in the outline (**Add a node**) and the inspector (**Node**).
+
+- **Add a node**: a name and a block. The node goes at the end of the node list in the style of the
+  last one, and is wired to nothing yet. The name must be new, not a join's name, and have no padding
+  or control character.
+- **Rename** rewrites the name everywhere the file uses it: the node, the `entry`, edges, a switch and
+  its arms and `else`, a join's inputs, and `assert` lines. An assertion is rewritten through the
+  assertion grammar and never by text search, so an assertion line that mentions the node but is not
+  one of the six forms (or a name the grammar cannot hold, such as one with a double quote) makes the
+  rename refuse with the line, and nothing changes. **A rename of a gated node reads as weakened.** The
+  gate comparison follows names, so it sees the old node removed and a new, ungated one added; the
+  banner says so, and so does `bide check -diff`. This is on purpose: the check over-reports rather
+  than trust the editor to say which names are the same node.
+- **Remove node** first asks the server what else goes with the node and shows that list: the edges
+  that name it, the arms and `else` that route to it (a switch left with no arm goes whole), and the
+  comments attached to it. Nothing is removed until you confirm that list, and the server refuses a
+  removal whose list is not the one it computes, so what is removed is what you were shown. A node
+  that is an input of a join is not removed (change the join first). `assert` lines that name the
+  node are listed and **left in place**: removing an assertion would weaken the policy, and the
+  check reports the line as naming a node that is gone. **Undo** brings a removal back.
+- **The entry node.** A config with no `entry` key starts at its first node, and the topology digest
+  commits to the entry. The editor never changes the entry without you: adding a node never does,
+  but removing the entry node, or the first node of a config with no `entry`, is refused, and the
+  refusal points at **Make this the entry node**, which writes `entry:` into the file. Clearing the
+  entry is allowed only when the first node is the entry already.
 
 ## The assertions panel
 

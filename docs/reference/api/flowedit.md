@@ -33,6 +33,8 @@ Package flowedit is the edit engine of the flow editor (docs/design/visual-edito
 type Applied struct {
 	Text    []byte
 	Changed bool
+
+	Cascade []string
 }
 ```
 
@@ -112,6 +114,8 @@ Doc is the config file as the server read it.
 type Edited struct {
 	View
 	Changed bool `json:"changed"`
+
+	Cascade []string `json:"cascade,omitempty"`
 }
 ```
 
@@ -211,6 +215,9 @@ type Operation struct {
 
 	Assertion *Assertion `json:"assertion,omitempty"`
 	Index     int        `json:"index,omitempty"`
+
+	DryRun  bool     `json:"dry_run,omitempty"`
+	Confirm []string `json:"confirm,omitempty"`
 }
 ```
 

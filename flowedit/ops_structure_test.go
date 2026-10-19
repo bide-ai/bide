@@ -450,3 +450,42 @@ func sameJSON(a, b []byte) bool {
 	}
 	return reflect.DeepEqual(x, y)
 }
+
+// A join's inputs are names too: a rename follows them, and the join keeps the rest of its element.
+func TestRenameFollowsJoinInputs(t *testing.T) {
+	src := `version: 1
+flow: f
+nodes:
+  - {name: a, block: a}
+  - {name: b, block: b}
+  - {name: c, block: c}
+wiring:
+  - edge: [a, b]
+  - edge: [a, c]
+  - join: m
+    inputs: [b, c]   # both branches
+    merge: mm
+`
+	got := mustApply(t, "f.yaml", src, Operation{Op: "rename_node", Node: "c", Value: "cc"})
+	if want := strings.NewReplacer("name: c,", "name: cc,", "edge: [a, c]", "edge: [a, cc]", "inputs: [b, c]", "inputs: [b, cc]").Replace(src); got != want {
+		t.Errorf("\n%s", got)
+	}
+}
+
+// What a removal takes with it includes the comments attached to the node, so they are not lost in a
+// long diff, and the list must be confirmed even when nothing else is wired to the node.
+func TestRemoveListsTheCommentsItTakes(t *testing.T) {
+	src := "version: 1\nflow: f\nentry: a\nnodes:\n  - {name: a, block: a}\n  # the extra one\n  - {name: lone, block: l}   # trailing\nwiring: []\n"
+	r, err := ApplyOperation("f.yaml", []byte(src), Operation{Op: "remove_node", Node: "lone", DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(r.Cascade, []string{"comment: # the extra one", "comment: # trailing"}) {
+		t.Fatalf("%q", r.Cascade)
+	}
+	refusalOf(t, "f.yaml", src, Operation{Op: "remove_node", Node: "lone"})
+	got := mustApply(t, "f.yaml", src, Operation{Op: "remove_node", Node: "lone", Confirm: r.Cascade})
+	if strings.Contains(got, "lone") || strings.Contains(got, "extra") {
+		t.Errorf("\n%s", got)
+	}
+}

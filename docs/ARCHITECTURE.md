@@ -88,7 +88,7 @@ Governed multi-agent state on gsm. [govern.go](../govern/govern.go) (the package
 
 ### flowedit
 
-The engine behind `bide edit`. [engine.go](../flowedit/engine.go) (the package doc and edit engine), [ops.go](../flowedit/ops.go) (the closed set of edit operations), [verify.go](../flowedit/verify.go) (checks an edit changed only what it should), [baseline.go](../flowedit/baseline.go) (does an edit weaken the flow), [save.go](../flowedit/save.go) (preview and atomic save), [server.go](../flowedit/server.go) (the local HTTP page), [view.go](../flowedit/view.go) and [render.go](../flowedit/render.go).
+The engine behind `bide edit`. [engine.go](../flowedit/engine.go) (the package doc and edit engine), [ops.go](../flowedit/ops.go) (the closed set of edit operations), [ops_structure.go](../flowedit/ops_structure.go) (add, remove and rename a node, the entry), [verify.go](../flowedit/verify.go) (checks an edit changed only what it should), [baseline.go](../flowedit/baseline.go) (does an edit weaken the flow), [save.go](../flowedit/save.go) (preview and atomic save), [server.go](../flowedit/server.go) (the local HTTP page), [view.go](../flowedit/view.go) and [render.go](../flowedit/render.go).
 
 ### cmd/bide
 
