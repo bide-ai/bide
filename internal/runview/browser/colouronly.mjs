@@ -73,11 +73,11 @@ const helpers = () => {
     };
   };
   // The controls a page draws: what marks each one's edge, against what it sits on.
-  const controls = () => [...document.querySelectorAll('input:not([type=hidden]), select, textarea, button')]
+  const controls = () => [...document.querySelectorAll('input:not([type=hidden]), select, textarea, button, a.chip')]
     .filter((e) => chainShown(e) && e.getClientRects().length > 0 && e.getBoundingClientRect().width > 0)
     .map((e) => {
       const s = getComputedStyle(e), bc = rgb(s.borderTopColor) || [0, 0, 0, 0], fc = rgb(s.backgroundColor) || [0, 0, 0, 0];
-      return { tag: e.tagName.toLowerCase(), id: e.id, cls: e.className, borderWidth: parseFloat(s.borderTopWidth), borderStyle: s.borderTopStyle, border: bc.slice(0, 3), borderAlpha: bc[3], fill: fc.slice(0, 3), fillAlpha: fc[3], parentBG: bgOf(e.parentElement) };
+      return { tag: e.tagName.toLowerCase(), id: e.id, cls: e.className, borderWidth: parseFloat(s.borderTopWidth), borderStyle: s.borderTopStyle, border: bc.slice(0, 3), borderAlpha: bc[3], fill: fc.slice(0, 3), fillAlpha: fc[3], parentBG: bgOf(e.parentElement), parentClass: e.parentElement ? e.parentElement.className : '' };
     });
   window.__h = { alpha, chainOpacity, chainShown, shapeVis, textVis, controls };
 };
@@ -93,7 +93,7 @@ try {
     await page.evaluate(helpers);
     if (mode.features) await page.emulateMediaFeatures(mode.features);
     await page.evaluate((t) => { if (t) document.documentElement.setAttribute('data-theme', t); else document.documentElement.removeAttribute('data-theme'); }, mode.theme);
-    await page.evaluate(() => { window.__bg = getComputedStyle(document.body).backgroundColor; window.__fg = getComputedStyle(document.body).color; });
+    await page.evaluate(() => { window.__bg = getComputedStyle(document.body).backgroundColor; window.__fg = getComputedStyle(document.body).color; window.__bgToken = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim(); });
     return page;
   };
 
@@ -201,8 +201,20 @@ try {
     for (const name of ['config', 'configHeld', 'diff', 'run', 'runWaiting', 'runHalted']) {
       const page = await open(name);
       P[name] = name === 'configHeld' ? {} : await graph(page);
-      P[name].body = await page.evaluate(() => ({ bg: window.__bg, fg: window.__fg }));
-      P[name].controls = await page.evaluate(() => window.__h.controls());
+      if (name === 'run') {
+        // A node in the state class no fixture draws (attempted), computed by the same stylesheet.
+        P[name].attemptedBox = await page.evaluate(() => {
+          const n = document.querySelector('svg.graph g.node').cloneNode(true);
+          n.setAttribute('class', 'node attempted');
+          document.querySelector('svg.graph').appendChild(n);
+          const s = getComputedStyle(n.querySelector('.box'));
+          const r = { dash: s.strokeDasharray, width: parseFloat(s.strokeWidth) };
+          n.remove();
+          return r;
+        });
+      }
+      P[name].body = await page.evaluate(() => ({ bg: window.__bg, fg: window.__fg, bgToken: window.__bgToken }));
+      P[name].controls = await page.evaluate(() => { document.querySelectorAll('details').forEach((d) => { d.open = true; }); return window.__h.controls(); });
       P[name].stats = await stats(page);
       if (name === 'run') {
         // New timeline rows: the live script's marking, run on this page's own rows.
@@ -242,6 +254,20 @@ try {
       await page.close();
     }
 
+  }
+  // A request and a choice: more contrast beside a theme stored by the reader (their choice wins) and
+  // beside a host's default (the request wins), and the host's default alone.
+  const combos = {
+    'prefers-contrast+stored': { page: 'run', theme: 'dark', features: [{ name: 'prefers-contrast', value: 'more' }] },
+    'prefers-contrast+default': { page: 'runDefault', theme: null, features: [{ name: 'prefers-contrast', value: 'more' }] },
+    'default': { page: 'runDefault', theme: null },
+  };
+  out.combos = {};
+  for (const [key, c] of Object.entries(combos)) {
+    mode = c;
+    const page = await open(c.page);
+    out.combos[key] = await page.evaluate(() => ({ bg: window.__bg, fg: window.__fg, bgToken: window.__bgToken, current: window.bideTheme.current() }));
+    await page.close();
   }
   out.ok = true;
 } catch (e) {

@@ -214,6 +214,9 @@ func TestColourOnlyWords(t *testing.T) {
 		t.Error("A7: no style for the new badge")
 	}
 	view := read("view.js")
+	if !strings.Contains(view, "your system's colors are in force") || !strings.Contains(view, "bideTheme.forced()") {
+		t.Error("the theme button's label does not say that the system's colors are in force under forced colors")
+	}
 	if !strings.Contains(view, `setAttribute("aria-current", "true")`) || !strings.Contains(view, `removeAttribute("aria-current")`) {
 		t.Error("A8: view.js does not mark the current row with aria-current")
 	}
@@ -297,6 +300,20 @@ func TestStateColoursUseInfo(t *testing.T) {
 		if strings.Contains(joined, "var(--accent") || !strings.Contains(joined, "var(--info") {
 			t.Errorf("%s is a state drawn with the info color but reads %s", sel, joined)
 		}
+	}
+	if c := cssProps(t, ".pill.live")["color"]; c != "var(--info)" {
+		t.Errorf(".pill.live text is %q, want var(--info)", c)
+	}
+	// The live pill and a new row sit on the declared info tint (which C1 checks the info text on),
+	// not on a mix of colours nothing checks.
+	for _, sel := range []string{".pill.live", ".ev.fresh"} {
+		if bg := cssProps(t, sel)["background"]; bg != "var(--info-bg)" {
+			t.Errorf("%s background is %q, want var(--info-bg)", sel, bg)
+		}
+	}
+	// The focus ring is the theme's focus colour.
+	if o := cssProps(t, "a:focus-visible")["outline"]; !strings.Contains(o, "var(--focus)") {
+		t.Errorf("the focus ring is %q, want var(--focus)", o)
 	}
 	// Links, the focus ring and the selected row stay on accent.
 	for _, sel := range []string{"a", "table.runlist tbody tr.cur"} {

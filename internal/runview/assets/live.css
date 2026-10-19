@@ -1,10 +1,10 @@
 /* bide view live mode (live.js): the indicator, and the timeline rows the last update added. */
-.pill.live { background: color-mix(in srgb, var(--info) 18%, var(--card)); color: var(--info); font-weight: 600; }
+.pill.live { background: var(--info-bg); color: var(--info); font-weight: 600; }
 .pill.live::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: currentColor; margin-right: 6px; vertical-align: 1px; animation: live-pulse 1.6s ease-in-out infinite; }
 .pill.live.stale { background: var(--warn-bg); color: var(--warn); }
 .pill.live.stale::before { animation: none; opacity: .5; }
 @keyframes live-pulse { 50% { opacity: .25; } }
 @media (prefers-reduced-motion: reduce) { .pill.live::before { animation: none; } }
-.ev.fresh { background: color-mix(in srgb, var(--info) 12%, var(--card)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--info) 45%, transparent); }
+.ev.fresh { background: var(--info-bg); box-shadow: inset 0 0 0 1px var(--info); }
 .newbadge { color: var(--info); border-color: var(--info); font-weight: 600; }
 .ev.fresh .seq { color: var(--info); font-weight: 600; }

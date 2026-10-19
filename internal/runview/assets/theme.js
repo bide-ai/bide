@@ -33,7 +33,9 @@
     if (say) say.textContent = "Theme: " + n;
     return n;
   };
-  window.bideTheme = { names, current, next, toggle };
+  // forced: the system forces colors, so no theme is in force and the toggle has nothing to switch.
+  const forced = () => media("(forced-colors: active)");
+  window.bideTheme = { names, current, next, toggle, forced };
   try {
     const t = localStorage.getItem("bide-theme");
     if (t && names().includes(t)) root.setAttribute("data-theme", t);

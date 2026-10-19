@@ -99,7 +99,7 @@ refused. Every key and value in an error is quoted, so a file cannot print a ter
   active`), the system's colours win over every theme, a default and a reader's choice, and a theme
   file cannot change that. Every state then draws in one colour, so the graph tells the run states by
   the shape of the node's box: a thin solid box is done, dashes attempted, dash-dot waiting, a heavy
-  solid box halted, dots not reached. The glyph and the words in each node stay.
+  solid box halted, dots not reached. The glyph and the words in each node stay. The theme button then says that the system's colours are in force, and the focus ring is the system's Highlight colour. Which pairs the system's palette makes readable is the system's choice (a Windows contrast theme sets them); bide maps its roles to the system colours and does not check the palette.
 - **Controls.** The edge of every input, select and button is the `border_strong` colour, which
   must reach 3:1 against the surface under it in every theme. Decorative borders (cards, tables)
   use the quieter `border`.

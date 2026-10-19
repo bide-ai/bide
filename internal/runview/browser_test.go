@@ -172,6 +172,7 @@ type controlOut struct {
 	Fill        [3]float64 `json:"fill"`
 	FillAlpha   float64    `json:"fillAlpha"`
 	ParentBG    [3]float64 `json:"parentBG"`
+	ParentClass string     `json:"parentClass"`
 }
 
 // edgeShown: a control can be told from what it sits on: its border (a line of a pixel or more, in
@@ -183,10 +184,15 @@ func (c controlOut) edgeShown() bool {
 }
 
 type pageOut struct {
+	AttemptedBox *struct {
+		Dash  string  `json:"dash"`
+		Width float64 `json:"width"`
+	} `json:"attemptedBox"`
 	Controls []controlOut `json:"controls"`
 	Body     struct {
-		BG string `json:"bg"`
-		FG string `json:"fg"`
+		BG      string `json:"bg"`
+		FG      string `json:"fg"`
+		BGToken string `json:"bgToken"`
 	} `json:"body"`
 	Edges []edgeOut `json:"edges"`
 	Nodes []nodeOut `json:"nodes"`
@@ -208,10 +214,16 @@ type pageOut struct {
 }
 
 type chromeOut struct {
-	OK      bool                          `json:"ok"`
-	Error   string                        `json:"error"`
-	Themes  map[string]map[string]pageOut `json:"themes"`
-	Console []string                      `json:"console"`
+	OK     bool                          `json:"ok"`
+	Error  string                        `json:"error"`
+	Themes map[string]map[string]pageOut `json:"themes"`
+	Combos map[string]struct {
+		BG      string `json:"bg"`
+		FG      string `json:"fg"`
+		BGToken string `json:"bgToken"`
+		Current string `json:"current"`
+	} `json:"combos"`
+	Console []string `json:"console"`
 }
 
 // everyStateFixtures serves a page for each state the audit names: a config with a counterexample,
@@ -256,6 +268,7 @@ func everyStateFixtures(t *testing.T) map[string]string {
 		t.Fatal("the gated run did not pause")
 	}
 	serve("runWaiting", "/run?id=g1", Options{Source: JournalSource{J: gj}})
+	serve("runDefault", "/run?id=f1", Options{Source: JournalSource{J: j}, DefaultTheme: "dark"})
 	cs := &crashStore{Store: agent.NewMemStore(), lose: "node:charge", armed: true}
 	hf := refundFlow(t, &charges)
 	if _, err := hf.Run(context.Background(), agenttest.MustJournal(cs), "h1", order{ID: "o-1", Amount: 250}); !errors.Is(err, errCrash) {
@@ -308,6 +321,7 @@ func TestColourOnlyInChrome(t *testing.T) {
 	for _, c := range out.Console {
 		t.Errorf("console: %s", c)
 	}
+	checkCombos(t, out)
 	for _, theme := range []string{"light", "dark", "high-contrast", "prefers-contrast", "forced-colors"} {
 		pages, ok := out.Themes[theme]
 		if !ok {
@@ -548,10 +562,38 @@ func checkMode(t *testing.T, mode string, pages map[string]pageOut) {
 			}
 		}
 	}
+	// The controls the fix is about are among those measured, so a rule that moves one back to the
+	// quiet border cannot hide in an unmeasured corner.
+	seen := map[string]bool{}
+	for _, page := range []string{"runs", "run", "config", "diff"} {
+		for _, c := range pages[page].Controls {
+			for _, k := range []string{"hbtn", "chip", "copy"} {
+				if strings.Contains(c.Class, k) {
+					seen[k] = true
+				}
+			}
+			if c.Tag == "input" || c.Tag == "select" {
+				seen["field"] = true
+			}
+			if c.Tag == "button" && c.ParentClass == "gtools" {
+				seen["gtools"] = true
+			}
+		}
+	}
+	for _, k := range []string{"hbtn", "chip", "copy", "field", "gtools"} {
+		if !seen[k] {
+			t.Errorf("A6: no %s control was measured", k)
+		}
+	}
 	if measured < 6 {
 		t.Errorf("A6: only %d controls were measured; the pages' controls moved or are hidden", measured)
 	}
 	body := pages["run"].Body
+	// The root's --bg custom property: a value Chrome does not force, so it shows which block won.
+	wantToken := map[string]string{"light": "#f6f6f2", "dark": "#121214", "high-contrast": "#ffffff", "prefers-contrast": "#ffffff", "forced-colors": "Canvas"}[mode]
+	if body.BGToken != wantToken {
+		t.Errorf("%s: the root's --bg is %q, want %q (the wrong theme block won)", mode, body.BGToken, wantToken)
+	}
 	switch mode {
 	case "light", "dark", "high-contrast", "prefers-contrast":
 		// light and high-contrast both have a white ground; their text differs: #1a1a17 and black.
@@ -581,7 +623,13 @@ func checkMode(t *testing.T, mode string, pages map[string]pageOut) {
 			}
 		}
 	}
-	for _, k := range []string{"done", "waiting", "halted", "not-reached"} {
+	// An attempted step needs a journal with a retried attempt in progress, which no fixture here
+	// builds; the script draws one on the run page by giving a node the state's class, and the
+	// browser computes it with the same stylesheet.
+	if a := pages["run"].AttemptedBox; a != nil {
+		states["attempted"] = line{a.Dash, a.Width}
+	}
+	for _, k := range []string{"done", "attempted", "waiting", "halted", "not-reached"} {
 		if _, ok := states[k]; !ok {
 			t.Errorf("forced colors: no %s node drawn on the run pages", k)
 		}
@@ -596,6 +644,26 @@ func checkMode(t *testing.T, mode string, pages map[string]pageOut) {
 			if !distinct(states[a], states[b]) {
 				t.Errorf("forced colors: the %s and %s boxes are one line to the eye (computed %v and %v)", a, b, states[a], states[b])
 			}
+		}
+	}
+}
+
+// checkCombos: a request beside a choice. The reader's own theme beats a request for more contrast;
+// a request beats a host's default; the default alone is in force.
+func checkCombos(t *testing.T, out chromeOut) {
+	t.Helper()
+	for key, want := range map[string]struct{ token, fg, current string }{
+		"prefers-contrast+stored":  {"#121214", "rgb(236, 236, 231)", "dark"},
+		"prefers-contrast+default": {"#ffffff", "rgb(0, 0, 0)", "high-contrast"},
+		"default":                  {"#121214", "rgb(236, 236, 231)", "dark"},
+	} {
+		got, ok := out.Combos[key]
+		if !ok {
+			t.Errorf("no measurement for %s", key)
+			continue
+		}
+		if got.BGToken != want.token || got.FG != want.fg || got.Current != want.current {
+			t.Errorf("%s: --bg %q, text %s, current theme %q; want %q, %s, %q", key, got.BGToken, got.FG, got.Current, want.token, want.fg, want.current)
 		}
 	}
 }

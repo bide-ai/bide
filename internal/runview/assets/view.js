@@ -214,7 +214,9 @@
   // blocked, so every access is guarded). The button names the theme it shows and the one it switches to.
   const labelTheme = () => {
     const b = document.getElementById("theme");
-    if (b && window.bideTheme) b.setAttribute("aria-label", "Theme: " + window.bideTheme.current() + ". Switch to " + window.bideTheme.next());
+    if (b && window.bideTheme) {
+      b.setAttribute("aria-label", window.bideTheme.forced() ? "Theme: your system's colors are in force" : "Theme: " + window.bideTheme.current() + ". Switch to " + window.bideTheme.next());
+    }
   };
   const toggleTheme = () => {
     if (!window.bideTheme) return;
