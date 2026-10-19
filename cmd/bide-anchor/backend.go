@@ -89,7 +89,7 @@ func s3Backend(mk clientFunc) backend {
 				return nil, fmt.Errorf("%w: -project is for -backend gcs; the s3 backend takes -owner", errUsage)
 			}
 			if o.kmsKey != "" && strings.HasPrefix(o.kmsKey, "projects/") {
-				return nil, fmt.Errorf("%w: -kms-key %q is a Cloud KMS key name; for -backend s3 give a KMS key ID, ARN or alias ARN", errUsage, o.kmsKey)
+				return nil, fmt.Errorf("%w: -kms-key %q is a Cloud KMS key name; for -backend s3 give a KMS key ID or key ARN (not an alias)", errUsage, o.kmsKey)
 			}
 			c, err := mk(ctx, o.pathStyle)
 			if err != nil {

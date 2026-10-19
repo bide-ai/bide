@@ -394,6 +394,12 @@ func TestS3BackendBucketExpectations(t *testing.T) {
 			}
 		}
 	}
+	// An alias cannot be checked against the key ARN S3 reports: refused (2), naming the fix.
+	for _, alias := range []string{"alias/bide-anchor", "arn:aws:kms:eu-west-1:111122223333:alias/bide-anchor"} {
+		if code, _, errs := e.do(append([]string{"check"}, with("-kms-key", alias)...)...); code != exitUsage || !strings.Contains(errs, "pass the ARN of the key the alias points to") {
+			t.Errorf("-kms-key %s = exit %d (%s), want %d naming the fix", alias, code, errs, exitUsage)
+		}
+	}
 	e.fake.DefaultMode = types.ObjectLockRetentionModeGovernance
 	if code, out, _ := e.do(append([]string{"check"}, with("-lock-mode", "COMPLIANCE")...)...); code != exitFindings || !strings.Contains(out, "weaker than the expected COMPLIANCE") {
 		t.Errorf("a governance default where compliance is expected = %d\n%s", code, out)

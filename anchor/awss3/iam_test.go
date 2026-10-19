@@ -2,6 +2,8 @@ package awss3_test
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -162,6 +164,31 @@ func TestReaderPolicyCoversEveryReaderCall(t *testing.T) {
 	for _, a := range allowed {
 		if strings.HasPrefix(a, "s3:Put") || strings.Contains(strings.ToLower(a), "delete") {
 			t.Errorf("the reader policy allows %s", a)
+		}
+	}
+}
+
+// The guide names every action the shipped reader policy grants for reading the bucket's configuration, and
+// the changelog fragment that tells readers to add them names the same three.
+func TestGuideAndChangelogNameTheReaderActions(t *testing.T) {
+	guide, err := os.ReadFile(filepath.Join("..", "..", "docs", "guides", "anchoring.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frag, err := os.ReadFile(filepath.Join("..", "..", "changes", "unreleased", "awss3-bucket-configuration.md"))
+	if err != nil {
+		t.Skip("the changelog fragment is assembled at release: " + err.Error())
+	}
+	policy := actions(t, awss3.ReaderPolicy, "Allow")
+	for _, a := range []string{"s3:GetBucketVersioning", "s3:GetBucketObjectLockConfiguration", "s3:GetEncryptionConfiguration"} {
+		if !slices.Contains(policy, a) {
+			t.Errorf("the reader policy lacks %s", a)
+		}
+		if !strings.Contains(string(guide), a) {
+			t.Errorf("the guide does not name %s", a)
+		}
+		if !strings.Contains(string(frag), a) {
+			t.Errorf("the changelog fragment does not name %s", a)
 		}
 	}
 }

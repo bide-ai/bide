@@ -195,3 +195,22 @@ func TestReaderConfigRefusesWhatCannotBeExpected(t *testing.T) {
 		}
 	}
 }
+
+// An alias cannot be checked against the key ARN S3 reports, so an alias expectation would match any key:
+// the Reader refuses it rather than weaken the check.
+func TestReaderRefusesAKMSAlias(t *testing.T) {
+	f := awss3test.New(bucket)
+	k := newKeys(t, 1)
+	for _, key := range []string{"alias/bide-anchor", "arn:aws:kms:eu-west-1:111122223333:alias/bide-anchor"} {
+		_, err := awss3.NewReader(awss3.ReaderConfig{Client: f, Bucket: bucket, ExpectedBucketOwner: owner, Verifier: k.v, KMSKeyID: key})
+		if !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "pass the ARN of the key the alias points to") {
+			t.Errorf("KMSKeyID %q: NewReader = %v, want agent.ErrConfig naming the fix", key, err)
+		}
+	}
+	// A key ID and a key ARN are accepted.
+	for _, key := range []string{"abcd-1234", bucketKey} {
+		if _, err := awss3.NewReader(awss3.ReaderConfig{Client: f, Bucket: bucket, ExpectedBucketOwner: owner, Verifier: k.v, KMSKeyID: key}); err != nil {
+			t.Errorf("KMSKeyID %q refused: %v", key, err)
+		}
+	}
+}
