@@ -103,6 +103,37 @@ try {
   await until(() => /already there/.test(document.getElementById('live').textContent), null, 'the refusal');
   r.refusal = await text('#live');
   r.refusedUnchanged = (await source()) === before;
+  // A drag that loses its pointer capture ends with no change and no line left on the page.
+  a = await center(port);
+  await page.mouse.move(a.x, a.y);
+  await page.mouse.down();
+  await page.mouse.move(a.x + 20, a.y + 20, { steps: 3 });
+  r.lineBeforeLostCapture = await dragLines();
+  await page.$eval(port, (p) => p.releasePointerCapture(1));
+  await page.mouse.up();
+  await atRest();
+  r.lineAfterLostCapture = await dragLines();
+  r.lostCaptureUnchanged = (await source()) === before;
+
+  // A redraw in the middle of a drag (the source is edited) ends the drag, and the Escape that
+  // follows is left alone: the drag's key handler must not outlive it.
+  a = await center(port);
+  await page.mouse.move(a.x, a.y);
+  await page.mouse.down();
+  await page.mouse.move(a.x + 20, a.y + 20, { steps: 3 });
+  r.lineBeforeRedraw = await dragLines();
+  await page.evaluate(() => {
+    const s = document.getElementById('source');
+    s.value = s.value + '\n# redraw';
+    s.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await until(() => document.querySelectorAll('#canvas line.drag').length === 0, null, 'the redraw to end the drag');
+  await page.mouse.up();
+  await atRest();
+  await page.evaluate(() => { window.__escPrevented = null; document.addEventListener('keydown', (e) => { if (e.key === 'Escape') window.__escPrevented = e.defaultPrevented; }); });
+  await page.keyboard.press('Escape');
+  r.escapePrevented = await page.evaluate(() => window.__escPrevented);
+  r.portsAfterRedraw = await page.$$eval('#canvas .port', (p) => p.length);
   out = { ok: true, ...r, console: console_, failed, offOrigin };
 } catch (e) {
   const live = await page?.$eval('#live', (x) => x.textContent).catch(() => '?');

@@ -1139,6 +1139,12 @@ func TestDragToConnectInChrome(t *testing.T) {
 		EscapeLive        string   `json:"escapeLive"`
 		Refusal           string   `json:"refusal"`
 		RefusedUnchanged  bool     `json:"refusedUnchanged"`
+		LineBeforeLost    int      `json:"lineBeforeLostCapture"`
+		LineAfterLost     int      `json:"lineAfterLostCapture"`
+		LostUnchanged     bool     `json:"lostCaptureUnchanged"`
+		LineBeforeRedraw  int      `json:"lineBeforeRedraw"`
+		EscapePrevented   *bool    `json:"escapePrevented"`
+		PortsAfterRedraw  int      `json:"portsAfterRedraw"`
 		Console           []string `json:"console"`
 		Failed            []string `json:"failed"`
 		OffOrigin         []string `json:"offOrigin"`
@@ -1164,5 +1170,11 @@ func TestDragToConnectInChrome(t *testing.T) {
 	}
 	if !strings.Contains(r.Refusal, "already there") || !r.RefusedUnchanged {
 		t.Errorf("a refused drag: %q, unchanged %v", r.Refusal, r.RefusedUnchanged)
+	}
+	if r.LineBeforeLost != 1 || r.LineAfterLost != 0 || !r.LostUnchanged {
+		t.Errorf("lost pointer capture: line before %d after %d, unchanged %v", r.LineBeforeLost, r.LineAfterLost, r.LostUnchanged)
+	}
+	if r.LineBeforeRedraw != 1 || r.EscapePrevented == nil || *r.EscapePrevented || r.PortsAfterRedraw != 4 {
+		t.Errorf("a redraw in a drag: line before %d, a later Escape prevented %v, ports %d", r.LineBeforeRedraw, r.EscapePrevented, r.PortsAfterRedraw)
 	}
 }

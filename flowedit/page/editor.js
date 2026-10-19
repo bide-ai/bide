@@ -924,6 +924,7 @@ export function renderCanvas(v) {
   const doc = new DOMParser().parseFromString(v.graph, 'image/svg+xml');
   const svg = doc.documentElement;
   if (svg.localName !== 'svg' || doc.querySelector('parsererror')) { wrap.replaceChildren(h('p', { class: 'bad' }, 'The graph could not be drawn.')); return; }
+  abortDrag(); // the port being dragged is about to leave the page
   wrap.replaceChildren(document.adoptNode(svg));
   for (const t of wrap.querySelectorAll('text, title')) if (t.children.length === 0) t.textContent = shown(t.textContent);
   for (const e of wrap.querySelectorAll('[aria-label], [title]')) for (const a of ['aria-label', 'title']) if (e.hasAttribute(a)) e.setAttribute(a, shown(e.getAttribute(a)));
@@ -950,6 +951,10 @@ export function renderCanvas(v) {
 // verification, the same weakened banner). It is a pointer shortcut and nothing depends on it:
 // every connection can be made, and removed, from the inspector by keyboard, and the circle is
 // hidden from assistive technology and not in the Tab order. Escape cancels a drag in progress.
+// The drag in progress, if any: its cleanup, so a redraw or a second pointer can end it.
+let activeDrag = null;
+function abortDrag() { if (activeDrag) activeDrag(); }
+
 function addPort(svg, g, from) {
   const box = g.querySelector('rect.box');
   if (!box) return;
@@ -973,6 +978,7 @@ function addPort(svg, g, from) {
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
+    abortDrag();
     port.setPointerCapture(e.pointerId);
     select(from);
     const line = document.createElementNS(SVGNS, 'line');
@@ -984,14 +990,16 @@ function addPort(svg, g, from) {
     svg.append(line);
     let cancelled = false;
     const finish = () => {
+      if (activeDrag === cancel) activeDrag = null;
       line.remove();
       port.removeEventListener('pointermove', move);
       port.removeEventListener('pointerup', up);
       port.removeEventListener('pointercancel', cancel);
+      port.removeEventListener('lostpointercapture', cancel);
       document.removeEventListener('keydown', key, true);
     };
     const move = (m) => { const p = at(m); line.setAttribute('x2', String(p.x)); line.setAttribute('y2', String(p.y)); };
-    const cancel = () => { cancelled = true; finish(); announce('Connection cancelled'); };
+    const cancel = () => { if (cancelled) return; cancelled = true; finish(); announce('Connection cancelled'); };
     const key = (k) => { if (k.key === 'Escape') { k.preventDefault(); cancel(); } };
     const up = (u) => {
       if (cancelled) return;
@@ -1005,6 +1013,8 @@ function addPort(svg, g, from) {
     port.addEventListener('pointermove', move);
     port.addEventListener('pointerup', up);
     port.addEventListener('pointercancel', cancel);
+    port.addEventListener('lostpointercapture', cancel);
+    activeDrag = cancel;
     document.addEventListener('keydown', key, true);
   });
 }
