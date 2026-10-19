@@ -6,6 +6,7 @@
 #
 #   assets/demo/browser-shots/browser-shots.sh                  # into docs/guides/img
 #   OUT=/tmp/shots CHROME_BIN=/path/to/chrome assets/demo/browser-shots/browser-shots.sh
+#   ONLY=needs-attention assets/demo/browser-shots/browser-shots.sh   # one part: approve, needs-attention or relay
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -27,9 +28,16 @@ export CHROME_BIN
 
 (cd "$root/cmd/bide" && GOWORK=off go build -o "$work/bide" .)
 (cd "$root" && GOWORK=off go build -o "$work/intake" ./assets/demo/browser-shots/intake)
+. "$here/../lib.sh" # require_free
+only=${ONLY:-approve needs-attention relay}
+for part in $only; do
+  case $part in needs-attention) require_free 8631 ;; relay) require_free 8641 8642 ;; esac
+done
+want() { case " $only " in *" $1 "*) return 0;; esac; return 1; }
 wait_for() { for _ in $(seq 300); do curl -sf -o /dev/null "$1" && return 0; sleep 0.1; done; echo "timed out waiting for $1" >&2; exit 1; }
 
 # 1. The approve page: a real intake with an agent paused at a refund, finance already approved.
+if want approve; then
 for theme in dark light; do
   export THEME=$theme ENROL_DIR=$(mktemp -d "$work/enrol.XXXX")
   "$work/intake" > "$ENROL_DIR/log" 2>&1 &
@@ -38,13 +46,21 @@ for theme in dark light; do
   (cd "$here" && node approve.mjs) || { cat "$ENROL_DIR/log" >&2; exit 1; }
   kill $pid; wait $pid 2>/dev/null || true
 done
+fi
 
 # 2. bide view's Needs attention list, from bide sample.
-(cd "$work" && ./bide sample -out sample -no-browser -addr 127.0.0.1:8631 > /dev/null) &
+if want needs-attention; then
+# exec, so the PID is the server itself, and the server is stopped by that PID: "kill %%" named whichever job
+# was current, and left this one running on its port for the next script to find.
+(cd "$work" && exec ./bide sample -out sample -no-browser -addr 127.0.0.1:8631 > /dev/null) &
+sample_pid=$!
 wait_for http://127.0.0.1:8631/
 (cd "$here" && node shot.mjs http://127.0.0.1:8631/attention run-viewer-needs-attention 1200)
-kill %% 2>/dev/null || true
+kill "$sample_pid" 2>/dev/null || true
+wait "$sample_pid" 2>/dev/null || true
+fi
 
+if want relay; then
 # 3. The relay: a stub stands in for Slack and PagerDuty and records what the relay sends.
 cap=$work/cap; mkdir -p "$cap"
 node "$here/stub.mjs" "$cap" > "$cap/stub.log" 2>&1 &
@@ -57,8 +73,12 @@ sleep 1
 "$work/bide" notify test -url http://127.0.0.1:8642/ -kind resolved -run refund-1043 > /dev/null
 sleep 1
 (cd "$here" && node relay.mjs "$cap" "$cap/relay.log")
+fi
 # The screenshots are 2x; a 256-color palette is visually the same and several times smaller.
-for f in "$OUT"/approve-page-*.png "$OUT"/notify-relay-slack-*.png "$OUT"/run-viewer-needs-attention-*.png; do
+for part in $only; do
+  case $part in approve) pat=approve-page;; relay) pat=notify-relay-slack;; needs-attention) pat=run-viewer-needs-attention;; *) echo "browser-shots.sh: unknown part $part" >&2; exit 2;; esac
+  for f in "$OUT"/$pat-*.png; do
   python3 "$here/../optimize-png.py" "$f" "$f.tmp" && mv "$f.tmp" "$f"
+  done
 done
 ls -1 "$OUT" | grep -E '^(approve-page|notify-relay-slack|run-viewer-needs-attention)'

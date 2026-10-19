@@ -5,9 +5,12 @@ const browser = await puppeteer.launch({ executablePath: process.env.CHROME_BIN,
 try {
   for (const theme of ['dark', 'light']) {
     const page = await browser.newPage();
-    await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: theme }]);
+    await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: theme }, { name: 'prefers-reduced-motion', value: 'reduce' }]);
     await page.setViewport({ width: +width, height: 900, deviceScaleFactor: 2 });
-    await page.goto(url, { waitUntil: 'networkidle0' });
+    const resp = await page.goto(url, { waitUntil: 'networkidle0' });
+    // The picture is of the page that was meant: a 2xx with a <main>, as capture.mjs checks.
+    if (!resp || !resp.ok()) throw new Error(`${url} answered ${resp ? resp.status() : 'nothing'}`);
+    await page.waitForSelector('main', { timeout: 15000 });
     const h = await page.evaluate(() => document.documentElement.scrollHeight);
     await page.setViewport({ width: +width, height: h, deviceScaleFactor: 2 });
     await page.screenshot({ path: `${process.env.OUT}/${name}-${theme}.png` });

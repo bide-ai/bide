@@ -3,34 +3,27 @@
 # It drives examples/approval step by step against a SQLite journal while bide view serves the run,
 # and captures the page as it follows the run: in progress, waiting for approval (none, then one, of
 # the two approvals its 2-of-3 gate needs), in progress again once the refund runs, and completed.
-# Each capture opens the page, keeps it open while the next step lands, and then captures it, so it
-# shows the page updated in place by its script, with the new timeline rows marked. (A headless
-# browser captures a page once it has loaded, so the page is framed by a holder page whose load a
-# small local server delays.) The frames are joined into a GIF.
+# Each capture opens the page, keeps it open while the next step lands, and then photographs it, so it
+# shows the page updated in place by its script, with the new timeline rows marked. The frames are
+# joined into a GIF.
 #
 #   assets/demo/live.sh                          # docs/guides/img/run-viewer-live-dark.gif
-#   THEME=light FRAMES=/tmp/frames assets/demo/live.sh   # light, keeping each frame as a PNG
+#   THEME=light FRAMES=/tmp/frames IMG=/tmp/gif assets/demo/live.sh   # light, keeping each frame as a PNG, GIF into /tmp/gif
 #
-# Needs a Chromium-based browser (set CHROME to its binary if it is not found), ffmpeg and python3.
+# Needs a Chrome (CHROME_BIN), node 20 or later and ffmpeg.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
-img=$root/docs/guides/img
+img=${IMG:-$root/docs/guides/img}
 theme=${THEME:-dark}
 port=${PORT:-8593}
-hold=$((port + 1))
 work=$(mktemp -d)
 trap 'kill $(jobs -p) 2>/dev/null || true; wait 2>/dev/null; rm -rf "$work"' EXIT
 
-for c in "${CHROME:-}" \
-  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-  "/Applications/Chromium.app/Contents/MacOS/Chromium" \
-  "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge" \
-  "$(command -v chromium || true)" "$(command -v google-chrome || true)"; do
-  [ -n "$c" ] && [ -x "$c" ] && { CHROME=$c; break; }
-done
-[ -n "${CHROME:-}" ] || { echo "live.sh: no Chromium-based browser found; set CHROME" >&2; exit 1; }
+. "$here/lib.sh"
+require_free "$port"
+shot_init
 
 (cd "$root/cmd/bide" && go build -o "$work/bide" .)
 (cd "$root/examples/approval" && go build -o "$work/approval" .)
@@ -45,42 +38,13 @@ wait_for() { # cmd...: retry for up to 30 s
 view() { curl -sf "http://127.0.0.1:$port/run.json?id=refund-42"; }
 state() { view | grep -q "\"state\": \"$1\""; }
 
-# The holder: /frame?ms=<ms> frames the run page and finishes loading after ms milliseconds.
-python3 - "$hold" "$url" "$theme" <<'PY' > /dev/null 2>&1 &
-import http.server, sys, time, urllib.parse
-port, url, theme = int(sys.argv[1]), sys.argv[2], sys.argv[3]
-bg = "#18181a" if theme == "dark" else "#fafaf8"
-class H(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-        ms = int(q.get("ms", ["0"])[0])
-        if self.path.startswith("/hold"):
-            time.sleep(ms / 1000)
-            self.send_response(204)
-            self.end_headers()
-            return
-        body = (f'<!doctype html><style>html,body{{margin:0;background:{bg};overflow:hidden}}'
-                f'iframe{{border:0;width:100vw;height:100vh}}</style>'
-                f'<iframe src="{url}"></iframe><img alt="" src="/hold?ms={ms}">').encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.end_headers()
-        self.wfile.write(body)
-    def log_message(self, *a):
-        pass
-http.server.ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
-PY
-
 # capture name ms: open the run page in the background, keep it open ms milliseconds (its script
-# polling) and capture it; cap is the browser's PID. Returns once the page has loaded, so the step
-# the caller takes next lands while the page is open.
+# polling) and photograph it (browser-shots/live-capture.mjs); cap is the capture's PID. Returns once
+# the page has loaded, so the step the caller takes next lands while the page is open.
 capture() {
-  local flags=(--headless=new --disable-gpu --hide-scrollbars --window-size=900,1500
-    --user-data-dir="$work/profile-$1" --screenshot="$work/$1.png")
-  if [ "$theme" = dark ]; then flags+=(--force-dark-mode); else flags+=(--blink-settings=preferredColorScheme=1); fi
-  "$CHROME" "${flags[@]}" "http://127.0.0.1:$hold/frame?ms=$2" > /dev/null 2>&1 &
+  (cd "$(shot_dir)" && node live-capture.mjs "$work/$1.png" "$url" "$2" "$theme") > "$work/$1.log" 2>&1 &
   cap=$!
-  sleep 2
+  for _ in $(seq 300); do grep -q loaded "$work/$1.log" 2>/dev/null && break; sleep 0.1; done
 }
 
 # 1. The run starts, and its first model turn is held: in progress.
