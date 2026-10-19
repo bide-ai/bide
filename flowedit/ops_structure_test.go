@@ -489,3 +489,32 @@ func TestRemoveListsTheCommentsItTakes(t *testing.T) {
 		t.Errorf("\n%s", got)
 	}
 }
+
+// An assertion left naming a removed node is loud: the check reports an error for it, the view's
+// verdict counts it, and the weakening classifier sees nothing silently pass.
+func TestRemoveLeavesALoudAssertionError(t *testing.T) {
+	op := Operation{Op: "remove_node", Node: "receipt", Confirm: removeList(t, structFlow, "receipt")}
+	got := mustApply(t, "f.yaml", structFlow, op)
+	v := BuildView("f.yaml", []byte(got))
+	if v.Errors == 0 {
+		t.Fatalf("no error after removing a node an assertion names: %+v", v.Verdict)
+	}
+	found := false
+	for _, p := range v.Problems {
+		if strings.Contains(p.Message, "receipt") {
+			found = true
+		}
+	}
+	for _, a := range v.Assertions {
+		if strings.Contains(a.Text, "receipt") && !a.Holds {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("nothing names the missing node: problems %+v assertions %+v", v.Problems, v.Assertions)
+	}
+	if v.Verdict.Class == "good" {
+		t.Errorf("the verdict is %q", v.Verdict.Word)
+	}
+	t.Logf("%s | %s", v.Verdict.Word, v.Verdict.Line)
+}
