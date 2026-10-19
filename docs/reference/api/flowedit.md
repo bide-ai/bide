@@ -145,6 +145,7 @@ Kind is the kind of an Operation.
 - `const Set Kind`: Set replaces the scalar at Path, or adds the key when Path names a missing map key.
 - `const Insert Kind`: Insert adds Value at Index of the sequence at Path, or, when Path names a map, adds the key Key with Value.
 - `const Delete Kind`: Delete removes the map entry or sequence item at Path.
+- `const Swap Kind`: Swap exchanges the items Index and Index+1 of the sequence at Path.
 
 ### type Map
 
@@ -352,6 +353,9 @@ type View struct {
 
 	Flow  string `json:"flow,omitempty"`
 	Entry string `json:"entry,omitempty"`
+
+	In  string `json:"in,omitempty"`
+	Out string `json:"out,omitempty"`
 
 	Verdict    Verdict                `json:"verdict"`
 	Errors     int                    `json:"errors"`

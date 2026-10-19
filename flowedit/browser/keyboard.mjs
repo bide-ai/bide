@@ -76,6 +76,21 @@ try {
 
   // An assertion from its form: Tab to the template, choose, Tab to the node, Tab to Add.
   await tabTo('the assertion template', '#a-template');
+  // Skip links (WCAG 2.4.1): from this form, back to the region's own skip link, and Enter takes the
+  // focus to the toolbar's first control, Save. The key presses it takes are bounded at 5 by the Go test.
+  let presses = 0;
+  for (; presses < 20;) {
+    presses++;
+    await page.keyboard.down('Shift'); await page.keyboard.press('Tab'); await page.keyboard.up('Shift');
+    if (await page.evaluate(() => document.activeElement?.matches('section[aria-labelledby="h-assert"] a[data-skip="toolbar"]'))) break;
+  }
+  r.skipLinkLabel = await page.evaluate(() => document.activeElement?.textContent);
+  r.skipVisible = await page.evaluate(() => { const b = document.activeElement.getBoundingClientRect(); return b.width > 40 && b.height > 12; });
+  await page.keyboard.press('Enter');
+  presses++;
+  tabs['Skip to Save'] = presses;
+  r.focusAfterSkip = await active();
+  await tabTo('the assertion template again', '#a-template', { max: 120 });
   await page.keyboard.type('u'); // typeahead: "Unreachable: ..."
   await until(() => document.getElementById('a-node'), null, 'the node field');
   await tabTo('the assertion node', '#a-node', { max: 3 });

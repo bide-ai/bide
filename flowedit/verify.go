@@ -27,6 +27,9 @@ func Verify(old, out []byte, op Op) (err error) {
 			err = refuse("internal: unplaceable structure (%v)", r)
 		}
 	}()
+	if op.Kind == Swap {
+		return verifySwap(old, out, op)
+	}
 	do, err := parse(old)
 	if err != nil {
 		return err

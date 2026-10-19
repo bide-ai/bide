@@ -625,6 +625,9 @@ func TestKeyboardOnlyInChrome(t *testing.T) {
 		AfterGate           string         `json:"afterGate"`
 		FocusAfterGate      string         `json:"focusAfterGate"`
 		FocusAfterAssertion string         `json:"focusAfterAssertion"`
+		FocusAfterSkip      string         `json:"focusAfterSkip"`
+		SkipLinkLabel       string         `json:"skipLinkLabel"`
+		SkipVisible         bool           `json:"skipVisible"`
 		DialogFocus         string         `json:"dialogFocus"`
 		DialogTitle         string         `json:"dialogTitle"`
 		WeakensShown        bool           `json:"weakensShown"`
@@ -664,9 +667,23 @@ func TestKeyboardOnlyInChrome(t *testing.T) {
 	if got, _ := os.ReadFile(p); string(got) != want || r.Disk != want {
 		t.Errorf("the file on disk:\n%s\nwant\n%s", r.Disk, want)
 	}
+	// Forward moves are bounded at 40. The standard for reaching the toolbar from the assertion form is
+	// the skip link: at most 5 key presses (Shift+Tab to the region's link, Enter) and the focus is on
+	// Save. Walking back over the whole page with Shift+Tab to Undo and Save is bounded at 50 only as
+	// a guard against the page growing a control at a time.
+	if r.FocusAfterSkip != "save" || r.SkipLinkLabel != "Skip to toolbar" || !r.SkipVisible {
+		t.Errorf("the skip link: label %q, visible on focus %v, focus after %q", r.SkipLinkLabel, r.SkipVisible, r.FocusAfterSkip)
+	}
 	for name, n := range r.Tabs {
-		if n > 40 {
-			t.Errorf("%d Tab presses to reach %s", n, name)
+		limit := 40
+		switch name {
+		case "Undo", "Save":
+			limit = 50
+		case "Skip to Save":
+			limit = 5
+		}
+		if n > limit {
+			t.Errorf("%d Tab presses to reach %s (limit %d)", n, name, limit)
 		}
 	}
 }
@@ -794,5 +811,87 @@ func TestNonPrintingNamesAreShownEscaped(t *testing.T) {
 	}
 	if !strings.Contains(r.Warning, "do not print") || len(r.Console) > 0 {
 		t.Errorf("warning %q, console %q", r.Warning, r.Console)
+	}
+}
+
+// TestMovesInChrome: reorder and the flow settings by the keyboard: a node up and down from the
+// inspector, a wiring element from the wiring list, the flow's name and the documentation types, and a
+// value the server refuses.
+func TestMovesInChrome(t *testing.T) {
+	s, _ := newTestServer(t, "refund.yaml", weakFlow)
+	var r struct {
+		OK                   bool     `json:"ok"`
+		Error                string   `json:"error"`
+		Original             string   `json:"original"`
+		OutlineBefore        []string `json:"outlineBefore"`
+		Position             string   `json:"position"`
+		UpLabel              string   `json:"upLabel"`
+		DownDisabledAtEnd    bool     `json:"downDisabledAtEnd"`
+		AfterUp              string   `json:"afterUp"`
+		OutlineAfterUp       []string `json:"outlineAfterUp"`
+		PositionAfterUp      string   `json:"positionAfterUp"`
+		FocusAfterUp         string   `json:"focusAfterUp"`
+		LiveAfterUp          string   `json:"liveAfterUp"`
+		AfterDown            string   `json:"afterDown"`
+		StateAfterDown       string   `json:"stateAfterDown"`
+		FirstUpDisabled      bool     `json:"firstUpDisabled"`
+		WiringItems          []string `json:"wiringItems"`
+		WireStops            int      `json:"wireStops"`
+		MoveBeforeSelect     bool     `json:"moveBeforeSelect"`
+		WirePos              string   `json:"wirePos"`
+		WireLabel            string   `json:"wireLabel"`
+		UpDisabledAfter      bool     `json:"upDisabledAfter"`
+		WirePosAfter         string   `json:"wirePosAfter"`
+		SettingsOpenAtStart  bool     `json:"settingsOpenAtStart"`
+		AfterWiring          string   `json:"afterWiring"`
+		FocusAfterWiring     string   `json:"focusAfterWiring"`
+		FirstUpDisabledAfter bool     `json:"firstUpDisabledAfter"`
+		AfterFlow            string   `json:"afterFlow"`
+		FocusAfterFlow       string   `json:"focusAfterFlow"`
+		AfterIn              string   `json:"afterIn"`
+		AfterInCleared       string   `json:"afterInCleared"`
+		Refusal              string   `json:"refusal"`
+		SourceAfterRefusal   string   `json:"sourceAfterRefusal"`
+		Console              []string `json:"console"`
+		Failed               []string `json:"failed"`
+		OffOrigin            []string `json:"offOrigin"`
+	}
+	runScript(t, "moves.mjs", s, &r)
+	if !r.OK {
+		t.Fatalf("the script failed: %s\nconsole: %q\nfailed requests: %q", r.Error, r.Console, r.Failed)
+	}
+	if len(r.Console) > 0 || len(r.Failed) > 0 || len(r.OffOrigin) > 0 {
+		t.Errorf("the browser reported console %q, failed requests %q, requests off the origin %q", r.Console, r.Failed, r.OffOrigin)
+	}
+	receipt := "  - {name: receipt, block: receipt, safety: idempotent}\n"
+	charge := "  - name: charge\n    block: charge\n    safety: side_effect\n    approval:\n      need: 2\n      approvers: [ops, finance, risk]\n      exclude_principal: true\n      timeout: 24h\n"
+	if !strings.Contains(weakFlow, charge+receipt) {
+		t.Fatal("the sample is not what the test expects")
+	}
+	if r.Position != "Position 3 of 3." || r.UpLabel != "Move up: receipt" || !r.DownDisabledAtEnd {
+		t.Errorf("the move controls: %q %q down disabled %v", r.Position, r.UpLabel, r.DownDisabledAtEnd)
+	}
+	up := strings.Replace(weakFlow, charge+receipt, receipt+charge, 1)
+	if r.AfterUp != up || !slices.Equal(r.OutlineAfterUp, []string{"validate", "receipt", "charge"}) || r.PositionAfterUp != "Position 2 of 3." || r.FocusAfterUp != "f-up" || !strings.Contains(r.LiveAfterUp, "receipt moved up") {
+		t.Errorf("after moving up: position %q focus %q live %q outline %q\n%s", r.PositionAfterUp, r.FocusAfterUp, r.LiveAfterUp, r.OutlineAfterUp, r.AfterUp)
+	}
+	if r.AfterDown != weakFlow || r.StateAfterDown != "saved" {
+		t.Errorf("down did not restore the text (state %q)\n%s", r.StateAfterDown, r.AfterDown)
+	}
+	if !r.FirstUpDisabled {
+		t.Error("the first node's Move up is enabled")
+	}
+	if !slices.Equal(r.WiringItems, []string{"0", "1"}) || r.WireStops != 1 || !r.MoveBeforeSelect || r.WirePos != "Wiring element 2 of 2 is selected." || r.WireLabel != "Move up: wiring element 2" || r.SettingsOpenAtStart {
+		t.Errorf("wiring list: items %q, tab stops %d, move disabled before a selection %v, %q, %q, settings open at start %v", r.WiringItems, r.WireStops, r.MoveBeforeSelect, r.WirePos, r.WireLabel, r.SettingsOpenAtStart)
+	}
+	wiring := "  - edge: [validate, charge]\n  - edge: [charge, receipt]\n"
+	if r.AfterWiring != strings.Replace(weakFlow, wiring, "  - edge: [charge, receipt]\n  - edge: [validate, charge]\n", 1) || r.FocusAfterWiring != "w-down" || !r.UpDisabledAfter || r.WirePosAfter != "Wiring element 1 of 2 is selected." {
+		t.Errorf("after moving wiring: focus %q\n%s", r.FocusAfterWiring, r.AfterWiring)
+	}
+	if !strings.Contains(r.AfterFlow, "flow: refund v2\n") || r.FocusAfterFlow != "fs-flow" || !strings.Contains(r.AfterIn, "in: Order\n") || strings.Contains(r.AfterInCleared, "in:") {
+		t.Errorf("flow settings: focus %q\n%s\n%s\n%s", r.FocusAfterFlow, r.AfterFlow, r.AfterIn, r.AfterInCleared)
+	}
+	if !strings.Contains(r.Refusal, "cannot be empty") || r.SourceAfterRefusal != r.AfterInCleared {
+		t.Errorf("a refused flow name: %q", r.Refusal)
 	}
 }

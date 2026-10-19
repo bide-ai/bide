@@ -722,3 +722,41 @@ func TestViewCarriesTheDeclaredGate(t *testing.T) {
 		t.Error("a gate that is not a mapping is not reported")
 	}
 }
+
+// The wiring list is in the config's order, one line per element, whatever the kinds: the page
+// addresses an element by its position in it.
+func TestWiringListIsInConfigOrder(t *testing.T) {
+	text := `{"version":1,"flow":"f","entry":"a","nodes":[{"name":"a","block":"a"},{"name":"b","block":"b"},{"name":"c","block":"c"},{"name":"d","block":"d"},{"name":"e","block":"e"}],` +
+		`"wiring":[{"switch":"a","when":[{"pred":"big","to":"b"},{"pred":"again","to":"a","loop_max":3}],"else":"c"},{"edge":["b","d"]},{"join":"j","inputs":["c","d"],"merge":"m"},{"edge":["c","e"]}]}`
+	v := BuildView("f.json", []byte(text))
+	want := []string{
+		"switch a: big -> b; again -> a (loop, at most 3); else -> c",
+		"b -> d",
+		"join j: c, d",
+		"c -> e",
+	}
+	if !slices.Equal(v.Wiring, want) {
+		t.Errorf("wiring %q, want %q", v.Wiring, want)
+	}
+}
+
+// Moving the element at position i of the wiring list swaps lines i and i+1 of that list, for a list
+// of mixed kinds (the page sends the list position as the operation's index).
+func TestMoveWiringByListPosition(t *testing.T) {
+	text := "version: 1\nflow: f\nentry: a\nnodes:\n  - {name: a, block: a}\n  - {name: b, block: b}\n  - {name: c, block: c}\n  - {name: d, block: d}\n  - {name: e, block: e}\nwiring:\n  - switch: a\n    when:\n      - {pred: big, to: b}\n    else: c\n  - edge: [b, d]\n  - join: j\n    inputs: [c, d]\n    merge: m\n  - edge: [c, e]\n"
+	before := BuildView("f.yaml", []byte(text)).Wiring
+	if len(before) != 4 {
+		t.Fatalf("%q", before)
+	}
+	for i := 0; i+1 < len(before); i++ {
+		r, err := ApplyOperation("f.yaml", []byte(text), Operation{Op: "move_wiring", Index: i, Value: "down"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := slices.Clone(before)
+		want[i], want[i+1] = want[i+1], want[i]
+		if got := BuildView("f.yaml", r.Text).Wiring; !slices.Equal(got, want) {
+			t.Errorf("moving %d down: %q, want %q", i, got, want)
+		}
+	}
+}

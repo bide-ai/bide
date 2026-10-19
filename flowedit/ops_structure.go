@@ -20,7 +20,7 @@ import (
 
 func isStructureOp(op string) bool {
 	switch op {
-	case "add_node", "remove_node", "rename_node", "set_entry":
+	case "add_node", "remove_node", "rename_node", "set_entry", "move_node", "move_wiring", "set_flow", "set_in", "set_out":
 		return true
 	}
 	return false
@@ -130,6 +130,12 @@ func applyStructure(name string, src, data []byte, op Operation) (*Applied, erro
 		steps, err = planRename(&cfg, op)
 	case "set_entry":
 		steps, err = planSetEntry(&cfg, top, op)
+	case "move_node":
+		steps, err = planMoveNode(&cfg, op)
+	case "move_wiring":
+		steps, err = planMoveWiring(&cfg, op)
+	case "set_flow", "set_in", "set_out":
+		steps, err = planSetScalar(&cfg, top, op)
 	}
 	if err != nil {
 		return nil, err
@@ -201,6 +207,87 @@ func asMap(v any) map[string]any {
 		return map[string]any{}
 	}
 	return m
+}
+
+// direction reads op.Value as up or down: the position the item moves to is one earlier or one later.
+func direction(v string) (delta int, err error) {
+	switch v {
+	case "up":
+		return -1, nil
+	case "down":
+		return 1, nil
+	}
+	return 0, refuse("move %q: want up or down", v)
+}
+
+// planMoveNode exchanges a node with its neighbour. Order is data (the topology digest commits to the
+// order of nodes), and a config with no entry key starts at its first node, so a move that would put a
+// different node first is refused until the entry is written.
+func planMoveNode(cfg *structDoc, op Operation) ([]Op, error) {
+	idx, err := cfg.nodeIndex(op.Node)
+	if err != nil {
+		return nil, err
+	}
+	delta, err := direction(op.Value)
+	if err != nil {
+		return nil, err
+	}
+	j := idx
+	if delta < 0 {
+		j = idx - 1
+	}
+	if j < 0 || j+1 >= len(cfg.Nodes) {
+		return nil, refuse("%q is already the %s node", op.Node, map[int]string{-1: "first", 1: "last"}[delta])
+	}
+	if cfg.Entry == "" && j == 0 {
+		return nil, implicitEntryRefusal("moving "+fmt.Sprintf("%q", op.Node), cfg.Nodes[0].Name)
+	}
+	return []Op{{Kind: Swap, Path: []any{"nodes"}, Index: j}}, nil
+}
+
+// planMoveWiring exchanges the wiring element at op.Index with its neighbour.
+func planMoveWiring(cfg *structDoc, op Operation) ([]Op, error) {
+	delta, err := direction(op.Value)
+	if err != nil {
+		return nil, err
+	}
+	if op.Index < 0 || op.Index >= len(cfg.Wiring) {
+		return nil, refuse("the config has no wiring element at position %d (it has %d)", op.Index, len(cfg.Wiring))
+	}
+	j := op.Index
+	if delta < 0 {
+		j--
+	}
+	if j < 0 || j+1 >= len(cfg.Wiring) {
+		return nil, refuse("wiring element %d is already the %s", op.Index+1, map[int]string{-1: "first", 1: "last"}[delta])
+	}
+	return []Op{{Kind: Swap, Path: []any{"wiring"}, Index: j}}, nil
+}
+
+// planSetScalar sets the flow's name, or the documentation type names in and out ("" removes them).
+func planSetScalar(cfg *structDoc, top map[string]json.RawMessage, op Operation) ([]Op, error) {
+	key := strings.TrimPrefix(op.Op, "set_")
+	if op.Value == "" && key != "flow" {
+		if _, has := top[key]; !has {
+			return nil, nil
+		}
+		return []Op{{Kind: Delete, Path: []any{key}}}, nil
+	}
+	if op.Value == "" {
+		return nil, refuse("the flow's name cannot be empty")
+	}
+	if err := checkName(op.Value); err != nil {
+		return nil, err
+	}
+	raw, has := top[key]
+	if !has {
+		return []Op{{Kind: Insert, Path: nil, Key: key, Value: op.Value}}, nil
+	}
+	var cur string
+	if json.Unmarshal(raw, &cur) == nil && cur == op.Value {
+		return nil, nil
+	}
+	return []Op{{Kind: Set, Path: []any{key}, Value: op.Value}}, nil
 }
 
 func nodeMap(name, block string) Map { return Map{{"name", name}, {"block", block}} }
@@ -508,6 +595,34 @@ func expectStructure(old any, op Operation) (any, error) {
 					lines[i] = t
 				}
 			}
+		}
+	case "move_node", "move_wiring":
+		list, key := nodes, "nodes"
+		j := -1
+		if op.Op == "move_wiring" {
+			list, key = wiring, "wiring"
+			j = op.Index
+		} else {
+			for i, n := range nodes {
+				if asMap(n)["name"] == op.Node {
+					j = i
+				}
+			}
+		}
+		if op.Value == "up" {
+			j--
+		}
+		if j < 0 || j+1 >= len(list) {
+			return nil, fmt.Errorf("no pair at %d", j)
+		}
+		list[j], list[j+1] = list[j+1], list[j]
+		doc[key] = list
+	case "set_flow", "set_in", "set_out":
+		key := strings.TrimPrefix(op.Op, "set_")
+		if op.Value == "" && key != "flow" {
+			delete(doc, key)
+		} else {
+			doc[key] = op.Value
 		}
 	case "remove_node":
 		var keptNodes []any

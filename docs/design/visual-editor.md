@@ -708,6 +708,13 @@ Each phase is one or more pull requests, each with its docs, changelog fragment 
      banner and the diff for every step. Undo and redo themselves shipped in phase 1; the phase 2
      work on them is only that they cover the new operations.
   7. **The page budget** is reported per pull request, and raised only by the maintainer.
+  8. **Skip links, not a bigger Tab budget.** The structure controls make a full Shift+Tab walk from
+     the assertion form back to Save longer than phase 1's bound of 40. Rather than raise that bound,
+     the page gets WCAG 2.4.1 skip links (Skip to toolbar, outline, inspector, assertions, at the top
+     and at the start of the inspector and the assertions) and labelled landmarks. The standard the
+     test holds is: from the assertion form to Save in at most 5 key presses by the skip link; the raw
+     walk is bounded at 50 only as a regression guard. Lists are one Tab stop (a roving list) with one
+     shared Move pair, and the flow settings are a closed disclosure. No keyboard shortcuts in phase 2.
 - **Phase 3, typed mode.** A read-only `Registry` description (below), `-blocks`, embedding in a Go
   program, a palette, type-compatible connections, the digest, Go-declared gates and safety visible
   (which ends G4's "unknown").

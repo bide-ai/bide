@@ -35,6 +35,9 @@ type View struct {
 	// Flow is the flow's name, Entry its entry node.
 	Flow  string `json:"flow,omitempty"`
 	Entry string `json:"entry,omitempty"`
+	// In and Out are the config's documentation type names, "" when it has none.
+	In  string `json:"in,omitempty"`
+	Out string `json:"out,omitempty"`
 	// Verdict is the answer `bide view -config` opens with.
 	Verdict    Verdict                `json:"verdict"`
 	Errors     int                    `json:"errors"`
@@ -128,7 +131,7 @@ func BuildView(name string, text []byte) *View {
 	}
 	cv := runview.BuildConfig(runview.Config{Name: name, Data: data})
 	r := plan.InspectConfig(data, nil)
-	v.Flow, v.Entry = r.Topology.Flow, r.Topology.Entry
+	v.Flow, v.Entry, v.In, v.Out = r.Topology.Flow, r.Topology.Entry, r.Topology.In, r.Topology.Out
 	v.Errors, v.Warnings, v.Problems, v.Assertions = cv.Errors, cv.Warnings, cv.Problems, cv.Assertions
 	v.Verdict = Verdict{Class: cv.Verdict.Class, Word: cv.Verdict.Word, Icon: cv.Verdict.Icon, Line: cv.Verdict.Line, Details: cv.Verdict.Details}
 	for _, s := range cv.Verdict.Stats {
@@ -153,7 +156,7 @@ func BuildView(name string, text []byte) *View {
 	}
 	v.AssertionForms = assertionFormsOf(lines)
 	v.Nodes = outline(data, r)
-	v.Wiring = wiring(r.Topology)
+	v.Wiring = wiring(data)
 	return v
 }
 
@@ -204,28 +207,51 @@ func outline(data []byte, r plan.ConfigReport) []Node {
 	return out
 }
 
-// wiring lists the edges, switches and joins of the declared graph as lines of text.
-func wiring(t plan.Topology) []string {
+// wiring lists the config's wiring elements as lines of text, one per element and in the order the
+// config has them: the page addresses an element by its position in this list (move_wiring), so the
+// list must be the config's order, not the topology's grouping by kind. data is the JSON the config
+// reads as; an element it cannot read is skipped by the strict check before it gets here.
+func wiring(data []byte) []string {
+	var cfg struct {
+		Wiring []struct {
+			Edge   []string `json:"edge"`
+			Switch string   `json:"switch"`
+			When   []struct {
+				Pred    string `json:"pred"`
+				To      string `json:"to"`
+				LoopMax int    `json:"loop_max"`
+			} `json:"when"`
+			Else   string   `json:"else"`
+			Join   string   `json:"join"`
+			Inputs []string `json:"inputs"`
+		} `json:"wiring"`
+	}
+	if json.Unmarshal(data, &cfg) != nil {
+		return nil
+	}
 	var out []string
-	for _, e := range t.Edges {
-		out = append(out, e.From+" -> "+e.To)
-	}
-	for _, b := range t.Branches {
-		var arms []string
-		for _, a := range b.Arms {
-			switch {
-			case a.Else:
-				arms = append(arms, "else -> "+a.Target)
-			case a.LoopBack:
-				arms = append(arms, fmt.Sprintf("%s -> %s (loop, at most %d)", a.Pred, a.Target, a.LoopMax))
-			default:
-				arms = append(arms, a.Pred+" -> "+a.Target)
+	for _, w := range cfg.Wiring {
+		switch {
+		case w.Switch != "":
+			var arms []string
+			for _, a := range w.When {
+				if a.LoopMax > 0 {
+					arms = append(arms, fmt.Sprintf("%s -> %s (loop, at most %d)", a.Pred, a.To, a.LoopMax))
+				} else {
+					arms = append(arms, a.Pred+" -> "+a.To)
+				}
 			}
+			if w.Else != "" {
+				arms = append(arms, "else -> "+w.Else)
+			}
+			out = append(out, "switch "+w.Switch+": "+strings.Join(arms, "; "))
+		case w.Join != "":
+			out = append(out, "join "+w.Join+": "+strings.Join(w.Inputs, ", "))
+		case len(w.Edge) == 2:
+			out = append(out, w.Edge[0]+" -> "+w.Edge[1])
+		default:
+			out = append(out, "(a wiring element that is not an edge, a switch or a join)")
 		}
-		out = append(out, "switch "+b.Over+": "+strings.Join(arms, "; "))
-	}
-	for _, j := range t.Joins {
-		out = append(out, "join "+j.Name+": "+strings.Join(j.Inputs, ", "))
 	}
 	return out
 }
