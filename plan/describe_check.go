@@ -18,11 +18,11 @@ const (
 	maxDescribedEntries = 20000
 	maxDescribedName    = 512
 	maxDescribedType    = 1024
-	maxDescribedErrors  = 1000
 	maxDescribedError   = 4096
 )
 
-// Validate reports whether d is a description this release reads: its version, every name and
+// Validate reports whether d is a description this release reads: its version, no registration
+// errors (a program whose Registry refused something does not load), every name and
 // type name present, printable and within bounds, every kind and safety one of the known words,
 // every gate a policy agent.ApprovalPolicy.Validate accepts, no name twice in a namespace, and a
 // merge of arity two or three (the arities Registry registers). A Describe result is always
@@ -34,13 +34,14 @@ func (d RegistryDescription) Validate() error {
 	if n := len(d.Blocks) + len(d.Predicates) + len(d.Merges); n > maxDescribedEntries {
 		return fmt.Errorf("description has %d entries, more than the %d this release reads", n, maxDescribedEntries)
 	}
-	if len(d.Errors) > maxDescribedErrors {
-		return fmt.Errorf("description has %d errors, more than the %d this release reads", len(d.Errors), maxDescribedErrors)
-	}
-	for _, e := range d.Errors {
+	if len(d.Errors) > 0 {
+		// The program's own Registry refused something, so Load will not load it: there is nothing
+		// sound to check a config against. The first error is shown as the reason.
+		e := d.Errors[0]
 		if !utf8.ValidString(e) || len(e) > maxDescribedError {
-			return errors.New("description has an error text that is not valid UTF-8 or is too long")
+			e = "(not shown)"
 		}
+		return fmt.Errorf("the program's Registry reported %d error(s), so Load will not load it; the first: %s", len(d.Errors), e)
 	}
 	seen := map[string]bool{}
 	for _, b := range d.Blocks {
@@ -208,6 +209,7 @@ func registryFromDescription(d RegistryDescription) (*Registry, error) {
 		return nil, err
 	}
 	reg := NewRegistry()
+	reg.inert = true
 	for _, b := range d.Blocks {
 		kind := kindStep
 		switch b.Kind {
@@ -231,9 +233,6 @@ func registryFromDescription(d RegistryDescription) (*Registry, error) {
 		safety, _ := describedSafety(m.Safety)
 		gate, _ := describedGate(m.Gate)
 		reg.merges[m.Name] = &regMerge{approval: gate, safety: safety, arity: len(in), inTypes: in, outType: describedType(m.Out)}
-	}
-	for _, e := range d.Errors {
-		reg.errs = append(reg.errs, errors.New(e))
 	}
 	return reg, nil
 }

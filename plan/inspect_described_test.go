@@ -3,11 +3,14 @@ package plan
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/bide-ai/bide/agent"
 )
 
 // describedCase is a registry and a valid config for it, the seed of the differential test.
@@ -335,7 +338,8 @@ func TestRegistryDescriptionValidate(t *testing.T) {
 				d.Predicates = append(d.Predicates, PredicateDescription{Name: fmt.Sprint(len(d.Predicates)), Switched: "x"})
 			}
 		}, "entries"},
-		{"errors", func(d *RegistryDescription) { d.Errors = []string{"a\xff"} }, "error text"},
+		{"errors", func(d *RegistryDescription) { d.Errors = []string{`duplicate block registration "x"`} }, "reported 1 error"},
+		{"errors, hostile text", func(d *RegistryDescription) { d.Errors = []string{"a\xff"} }, "(not shown)"},
 	}
 	for _, c := range cases {
 		d := describedRegistry(t, false).Describe()
@@ -364,19 +368,83 @@ func FuzzInspectConfigDescribed(f *testing.F) {
 	})
 }
 
-// Registration errors travel in the description, so a duplicate the program made is reported as
-// Load reports it.
-func TestInspectConfigDescribedCarriesRegistrationErrors(t *testing.T) {
+// A program whose Registry refused a registration does not load, so its description is refused
+// with the reason: the registry's own error text reaches the reader.
+func TestInspectConfigDescribedRefusesAProgramThatDoesNotLoad(t *testing.T) {
 	reg := triageRegistry(t)
 	if err := reg.RegisterStep("classify", cfgClassify); err == nil {
 		t.Fatal("no duplicate error")
 	}
-	real := InspectConfig([]byte(triageConfig), reg)
+	if !InspectConfig([]byte(triageConfig), reg).Errors() {
+		t.Fatal("the real check passes a duplicate registration")
+	}
 	got := InspectConfigDescribed([]byte(triageConfig), reg.Describe())
-	if !real.Errors() || normalized(t, real, reg) != normalized(t, got, reg) {
-		t.Errorf("real %+v\ndescribed %+v", real.Problems, got.Problems)
+	if got.Typed || !got.Errors() || !strings.Contains(got.Problems[0].Message, `duplicate block registration "classify"`) {
+		t.Errorf("typed %v, problems %+v", got.Typed, got.Problems)
 	}
-	if !strings.Contains(got.Problems[0].Message, `duplicate block registration "classify"`) {
-		t.Errorf("problems %+v", got.Problems)
+}
+
+// The Registry built from a description exists only to check: it holds nothing but stand-in types,
+// so a check never compares a stand-in with a real type, and Load and Validate refuse it, so it
+// cannot be run.
+func TestDescribedRegistryIsInertAndHoldsOnlyStandIns(t *testing.T) {
+	reg, err := registryFromDescription(describedRegistry(t, false).Describe())
+	if err != nil {
+		t.Fatal(err)
 	}
+	stand := func(ty reflect.Type) {
+		t.Helper()
+		if _, ok := describedTypeName(ty); !ok {
+			t.Errorf("a real type %v in a described Registry", ty)
+		}
+	}
+	for _, b := range reg.blocks {
+		stand(b.inType)
+		stand(b.outType)
+		if b.run != nil {
+			t.Error("a described block has behavior")
+		}
+	}
+	for _, p := range reg.preds {
+		stand(p.mType)
+		if p.pred != nil {
+			t.Error("a described predicate has behavior")
+		}
+	}
+	for _, m := range reg.merges {
+		for _, ty := range m.inTypes {
+			stand(ty)
+		}
+		stand(m.outType)
+		if m.merge != nil {
+			t.Error("a described merge has behavior")
+		}
+	}
+	if _, err := Load[dsIn, dsOut]([]byte(describedFlowConfig), reg, WithLoadedModel(&fakeModel{reply: `{}`})); err == nil || !errors.Is(err, agent.ErrConfig) {
+		t.Errorf("Load of a described Registry: %v", err)
+	}
+	if err := Validate([]byte(describedFlowConfig), reg); err == nil {
+		t.Error("Validate accepted a described Registry")
+	}
+}
+
+// Whatever string a description holds as a type name, the stand-in type made for it carries exactly
+// that string back and never panics, so a name cannot break out of the tag it is stored in.
+func FuzzDescribedType(f *testing.F) {
+	for _, s := range []string{"", "int", "a.B", `"`, "`", `\`, "\"x\" y:\"z\"", "\x00", "\xff\xfe", "\u202e", strings.Repeat("a", 5000), `name:"x"`} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, name string) {
+		ty := describedType(name)
+		got, ok := describedTypeName(ty)
+		if !ok || got != name {
+			t.Fatalf("%q came back as %q (%v)", name, got, ok)
+		}
+		if describedType(name) != ty {
+			t.Fatalf("%q: two stand-ins", name)
+		}
+		if canonicalType(ty) != name || typeName(ty) != name {
+			t.Fatalf("%q written as %q / %q", name, canonicalType(ty), typeName(ty))
+		}
+	})
 }
