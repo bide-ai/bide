@@ -17,6 +17,12 @@ const SVGNS = 'http://www.w3.org/2000/svg';
 
 const token = (/(?:^#|&)t=([0-9a-f]+)/.exec(location.hash) || [])[1] || '';
 
+// shown is text with every character that does not print written as \u{XXXX}: a name in a hand-written
+// file can hold a direction override or a zero-width character (the loader accepts any string), and
+// the page must not draw one as another name. The input a name is edited in keeps the raw text.
+const NONPRINT = /[^\p{L}\p{M}\p{N}\p{P}\p{S} ]/gu;
+export const shown = (s) => String(s).replace(NONPRINT, (c) => '\\u{' + c.codePointAt(0).toString(16).toUpperCase() + '}');
+
 // h builds an element: h('p', {class: 'x'}, 'text', child).
 export function h(tag, attrs = {}, ...kids) {
   const e = document.createElement(tag);
@@ -143,13 +149,13 @@ export function renderOutline(v) {
   const stop = Math.max(0, nodes.findIndex((n) => n.name === selected));
   replace('outline', nodes.map((n, i) => {
     const b = h('button', { type: 'button', 'data-node': n.name, 'aria-current': n.name === selected ? 'true' : 'false', tabindex: i === stop ? '0' : '-1' },
-      h('span', { class: 'nm' }, n.name),
+      h('span', { class: 'nm' }, shown(n.name)),
       h('span', { class: 'meta' }, [n.kind, n.block, n.risk, n.gate ? 'gate ' + n.gate : ''].filter(Boolean).join(' · ')),
       (n.problems || []).map((p) => h('span', { class: 'prob' }, p)));
     b.addEventListener('click', () => select(n.name));
     return h('li', {}, b);
   }));
-  replace('wiring', (v.wiring || []).map((w) => h('li', {}, w)));
+  replace('wiring', (v.wiring || []).map((w) => h('li', {}, shown(w))));
   replace('an-blocks', [...new Set(nodes.map((x) => x.block).filter(Boolean))].map((b) => h('option', { value: b })));
 }
 
@@ -196,7 +202,8 @@ export function renderInspector(v) {
   setBlock.addEventListener('click', () => operate({ op: 'set_block', node: n.name, value: block.value.trim() }, 'f-block'));
   block.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); setBlock.click(); } });
   replace('inspector',
-    h('h3', {}, n.name),
+    h('h3', {}, shown(n.name)),
+    shown(n.name) !== n.name ? h('p', { class: 'warn small', id: 'f-name-escaped' }, 'This name has characters that do not print, written out here as \\u{code}. Rename it.') : null,
     h('dl', {}, row('kind', n.kind), row('crash behavior', n.risk), row('approval gate', n.gate || 'none'), row('problems', (n.problems || []).join('; '))),
     h('p', { id: 'op-error', class: 'bad small', role: 'alert' }),
     h('div', { class: 'form' },
@@ -250,13 +257,13 @@ async function removeNode(n, opener) {
   const list = dry.cascade || [];
   const op = { op: 'remove_node', node: n.name, confirm: list };
   if (!list.length) { operate({ op: 'remove_node', node: n.name }, 'an-name', ''); return; }
-  const go = h('button', { type: 'button', class: 'btn primary', id: 'do-remove' }, 'Remove ' + n.name);
+  const go = h('button', { type: 'button', class: 'btn primary', id: 'do-remove' }, 'Remove ' + shown(n.name));
   const cancel = h('button', { type: 'button', class: 'btn' }, 'Cancel');
   cancel.addEventListener('click', () => closeDialog(opener));
   go.addEventListener('click', () => { closeDialog(); operate(op, 'an-name', ''); });
-  openDialog('Remove ' + n.name + '?', [
+  openDialog('Remove ' + shown(n.name) + '?', [
     h('p', {}, 'Removing it also changes:'),
-    h('ul', { id: 'remove-list' }, list.map((x) => h('li', {}, x))),
+    h('ul', { id: 'remove-list' }, list.map((x) => h('li', {}, shown(x)))),
     h('p', { class: 'muted small' }, 'Nothing is written to the file until you save, and Undo brings it back.'),
   ], [go, cancel], cancel, opener);
 }
@@ -520,7 +527,7 @@ export function renderAssertions(v) {
 }
 
 function nodeSelect(id, label, v, value, onChange) {
-  const sel = h('select', { id }, (v.nodes || []).map((n) => h('option', { value: n.name, selected: n.name === value }, n.name)));
+  const sel = h('select', { id }, (v.nodes || []).map((n) => h('option', { value: n.name, selected: n.name === value }, shown(n.name))));
   sel.addEventListener('change', onChange);
   return field(id, label, sel);
 }
@@ -595,8 +602,8 @@ export function renderProblems(v) {
   if (list.length === 0) { replace('problems', h('p', { class: 'good' }, 'None found.')); return; }
   replace('problems', h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Where'), h('th', {}, 'Problem'))),
     h('tbody', {}, list.map((p) => h('tr', {},
-      h('td', {}, h('code', {}, p.node || (p.from || p.to ? (p.from || '') + ' → ' + (p.to || '') : 'config'))),
-      h('td', { class: p.severity === 'error' ? 'bad' : 'warn' }, p.severity + ': ' + p.message))))));
+      h('td', {}, h('code', {}, shown(p.node || (p.from || p.to ? (p.from || '') + ' → ' + (p.to || '') : 'config')))),
+      h('td', { class: p.severity === 'error' ? 'bad' : 'warn' }, p.severity + ': ' + shown(p.message)))))));
 }
 
 export function renderCanvas(v) {
@@ -606,6 +613,7 @@ export function renderCanvas(v) {
   const svg = doc.documentElement;
   if (svg.localName !== 'svg' || doc.querySelector('parsererror')) { wrap.replaceChildren(h('p', { class: 'bad' }, 'The graph could not be drawn.')); return; }
   wrap.replaceChildren(document.adoptNode(svg));
+  for (const t of wrap.querySelectorAll('text')) if (t.children.length === 0) t.textContent = shown(t.textContent);
   for (const g of wrap.querySelectorAll('g.node')) {
     const name = g.getAttribute('data-id');
     g.setAttribute('role', 'button'); // the drawing marks a node as an image; here it can be pressed

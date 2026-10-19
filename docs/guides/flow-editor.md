@@ -101,6 +101,7 @@ not verified. The node controls are in the outline (**Add a node**) and the insp
 - **Add a node**: a name and a block. The node goes at the end of the node list in the style of the
   last one, and is wired to nothing yet. The name must be new, not a join's name, and have no padding
   or control character, and no invisible, direction-changing or non-plain space character (so a name cannot read as another in a diff; an emoji sequence that needs a zero-width joiner is refused too).
+- **A name already in the file** that has characters that do not print (a direction override, a zero-width space; the loader accepts any string) is shown with each written as `\u{code}` in the outline, the inspector, the drawing and the dialogs, with a note to rename it, so it cannot read as another name. The rename field keeps the raw text.
 - **Rename** rewrites the name everywhere the file uses it: the node, the `entry`, edges, a switch and
   its arms and `else`, a join's inputs, and `assert` lines. An assertion is rewritten through the
   assertion grammar and never by text search, so an assertion line that mentions the node but is not

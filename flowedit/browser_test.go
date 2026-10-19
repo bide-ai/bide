@@ -749,3 +749,36 @@ func TestStructureInChrome(t *testing.T) {
 		t.Errorf("renaming a gated node: banner %q\n%s", r.BannerAfterGatedRename, r.AfterGatedRename)
 	}
 }
+
+// TestNonPrintingNamesAreShownEscaped: a hand-written file can name a node with a direction override
+// (the loader accepts any string). The page writes such characters out and never draws them, so the
+// name cannot read as another; the editing field keeps the raw name.
+func TestNonPrintingNamesAreShownEscaped(t *testing.T) {
+	src := "version: 1\nflow: f\nentry: a\nnodes:\n  - {name: a, block: a}\n  - {name: \"ch\\u202Egra\", block: b}\nwiring:\n  - edge: [a, \"ch\\u202Egra\"]\n"
+	s, _ := newTestServer(t, "f.yaml", src)
+	var r struct {
+		OK        bool     `json:"ok"`
+		Error     string   `json:"error"`
+		Outline   []string `json:"outline"`
+		Graph     []string `json:"graph"`
+		Title     string   `json:"title"`
+		Warning   string   `json:"warning"`
+		NameField string   `json:"nameField"`
+		Console   []string `json:"console"`
+	}
+	runScript(t, "spoof.mjs", s, &r)
+	if !r.OK {
+		t.Fatalf("the script failed: %s", r.Error)
+	}
+	if !slices.Equal(r.Outline, []string{"a", `ch\u{202E}gra`}) || r.Title != `ch\u{202E}gra` || r.NameField != "ch‮gra" {
+		t.Errorf("outline %q, title %q, field %q", r.Outline, r.Title, r.NameField)
+	}
+	for _, g := range r.Graph {
+		if strings.Contains(g, "‮") {
+			t.Errorf("the drawing has a raw override: %q", g)
+		}
+	}
+	if !strings.Contains(r.Warning, "do not print") || len(r.Console) > 0 {
+		t.Errorf("warning %q, console %q", r.Warning, r.Console)
+	}
+}
