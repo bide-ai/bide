@@ -183,9 +183,8 @@ usage: bide theme check [-v] <theme.json>...
   -v    print every measure, not only the failures and warnings
 
 Exit status:
-  0  success
-  1  failure: an input cannot be read or the command failed; for check, an error was found
-     (with -strict, any problem)
+  0  every file passes its checks
+  1  a file is refused (it fails a check or is not a valid theme) or cannot be read
   2  usage error: a bad flag or argument; nothing was read
 ```
 

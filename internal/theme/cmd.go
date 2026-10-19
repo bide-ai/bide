@@ -38,15 +38,15 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	}
 	status := 0
 	for _, path := range fs.Args() {
-		data, err := os.ReadFile(path)
+		data, err := readLimited(path)
 		if err != nil {
-			fmt.Fprintf(stderr, "bide theme check: %v\n", err)
+			fmt.Fprintf(stderr, "bide theme check: %s\n", printable(err.Error()))
 			status = 1
 			continue
 		}
 		th, report, err := Parse(data)
 		if err != nil && report.Theme == "" {
-			fmt.Fprintf(stderr, "%s: %v\n", path, err)
+			fmt.Fprintf(stderr, "%s: %s\n", printable(path), printable(err.Error()))
 			status = 1
 			continue
 		}
@@ -54,12 +54,30 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		if th != nil {
 			name = th.Name()
 		}
-		printReport(stdout, path, name, report, *verbose)
+		printReport(stdout, printable(path), printable(name), report, *verbose)
 		if err != nil {
 			status = 1
 		}
 	}
 	return status
+}
+
+// readLimited reads a theme file, refusing one over MaxSize without reading the rest of it, so a
+// device or a huge file named by mistake cannot exhaust memory.
+func readLimited(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, MaxSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > MaxSize {
+		return nil, fmt.Errorf("%s: theme file is over the %d byte limit", path, MaxSize)
+	}
+	return data, nil
 }
 
 func usage(w io.Writer) {

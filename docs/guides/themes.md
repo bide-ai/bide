@@ -30,6 +30,8 @@ taken from it, and the checks run on the result. `name` is lower case letters, d
 (2 to 32 characters) and is not a shipped name. The file is at most 16 KiB. Keys are exact: an
 unknown key, a repeated key, or `"BG"` for `"bg"` is an error.
 
+If you set `surface.accent` and not `semantic.info.fg` or `surface.focus`, those follow the accent (and `info.bg` follows `accent_bg`); if you set `surface.surface` and not `canvas_bg` or `node_fill`, those follow the surface. Set them yourself to keep them apart.
+
 A colour is `#rgb` or `#rrggbb` and nothing else (no names, no `rgb()`, no `var()`, no alpha).
 
 | Key | Holds |

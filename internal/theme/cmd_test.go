@@ -50,6 +50,10 @@ func TestMainCheck(t *testing.T) {
 		t.Errorf("hostile theme: code %d, err %q", code, errs)
 	}
 
+	big := writeTheme(t, append(custom("dark", nil), []byte(strings.Repeat(" ", MaxSize))...))
+	if code, _, errs = run("check", big); code != 1 || !strings.Contains(errs, "byte limit") {
+		t.Errorf("oversize file: code %d, err %q", code, errs)
+	}
 	if code, _, errs = run("check", filepath.Join(t.TempDir(), "missing.json")); code != 1 || errs == "" {
 		t.Errorf("missing file: code %d, err %q", code, errs)
 	}

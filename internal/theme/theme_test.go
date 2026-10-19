@@ -395,3 +395,99 @@ func TestHueDistance(t *testing.T) {
 		}
 	}
 }
+
+func noControls(t *testing.T, what, s string) {
+	t.Helper()
+	for _, c := range s {
+		if c < 0x20 && c != '\n' || c == 0x7f || c == 0xfffd {
+			t.Errorf("%s holds the control character %q: %q", what, c, s)
+			return
+		}
+	}
+}
+
+// TestTypeErrorsAreQuoted: encoding/json puts a map key into its type errors raw, so a key with an
+// escape sequence and a value of the wrong type must still print safely.
+func TestTypeErrorsAreQuoted(t *testing.T) {
+	for _, data := range []string{
+		"{\"bide_theme\":1,\"name\":\"zz\",\"base\":\"dark\",\"surface\":{\"\\u001b[31mRED\":5}}",
+		"{\"bide_theme\":1,\"name\":\"zz\",\"base\":\"dark\",\"semantic\":{\"ok\":{\"\\u001b]0;x\\u0007\":5}}}",
+		"{\"bide_theme\":1,\"name\":\"zz\",\"base\":\"dark\",\"radius\":{\"\\u001b[2J\":\"x\"}}",
+		"{\"bide_theme\":1,\"name\":\"zz\",\"base\":\"dark\",\"syntax\":{\"a\\u009bb\":7}}",
+	} {
+		_, _, err := Parse([]byte(data))
+		if err == nil {
+			t.Errorf("accepted %s", data)
+			continue
+		}
+		noControls(t, "error", err.Error())
+		if !strings.Contains(err.Error(), `\x1b`) && !strings.Contains(err.Error(), `\u009b`) {
+			t.Errorf("error does not show the escaped character: %v", err)
+		}
+		// The command prints the same text.
+		_, out, errs := run("check", writeTheme(t, []byte(data)))
+		noControls(t, "stdout", out)
+		noControls(t, "stderr", errs)
+	}
+}
+
+func TestPrintable(t *testing.T) {
+	for in, want := range map[string]string{"plain é text": "plain é text", "a\nb": "a\nb", "\x1b[31m": `\x1b[31m`, "\x00": `\x00`, "bad\xffbyte": `bad\xffbyte`, "\u009b": `\u009b`, "\u2028": `\u2028`} {
+		if got := printable(in); got != want {
+			t.Errorf("printable(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestUncheckedThemeHasNoCSS: a theme that did not come from Parse or Shipped is not a theme.
+func TestUncheckedThemeHasNoCSS(t *testing.T) {
+	mustPanic := func(name string, f func()) {
+		defer func() {
+			if recover() == nil {
+				t.Errorf("%s did not panic", name)
+			}
+		}()
+		f()
+	}
+	mustPanic("the zero Theme", func() { CSS([]*Theme{{}}) })
+	mustPanic("a zero Theme beside good ones", func() { CSS(append(Shipped(), new(Theme))) })
+	d, _ := Lookup("dark")
+	mustPanic("two themes with one name", func() { CSS([]*Theme{d, d}) })
+}
+
+// TestDerivedColors: a custom theme that sets accent and not info, focus, or that sets surface and
+// not canvas_bg and node_fill, gets the derived colours from what it set; one that sets them keeps
+// its own.
+func TestDerivedColors(t *testing.T) {
+	th, _, err := Parse(custom("light", map[string]any{"surface": map[string]any{
+		"surface": "#fcfcfa", "accent": "#174a9e", "accent_bg": "#e0e9f8",
+	}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for k, want := range map[string]string{
+		"semantic.info.fg": "#174a9e", "semantic.info.bg": "#e0e9f8", "surface.focus": "#174a9e",
+		"surface.canvas_bg": "#fcfcfa", "surface.node_fill": "#fcfcfa",
+	} {
+		if got := th.c[k].String(); got != want {
+			t.Errorf("%s = %s, want %s", k, got, want)
+		}
+	}
+	th, _, err = Parse(custom("light", map[string]any{
+		"surface":  map[string]any{"surface": "#fcfcfa", "accent": "#174a9e", "focus": "#000000", "canvas_bg": "#ffffff"},
+		"semantic": map[string]any{"info": map[string]any{"fg": "#1b52b0"}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for k, want := range map[string]string{"semantic.info.fg": "#1b52b0", "surface.focus": "#000000", "surface.canvas_bg": "#ffffff", "surface.node_fill": "#fcfcfa"} {
+		if got := th.c[k].String(); got != want {
+			t.Errorf("%s = %s, want %s", k, got, want)
+		}
+	}
+	// A theme that sets none of the sources keeps its base's values.
+	th, _, _ = Parse(custom("dark", surface("text", "#ffffff")))
+	if got := th.c["surface.canvas_bg"].String(); got != "#1c1c20" {
+		t.Errorf("canvas_bg = %s, want the base's", got)
+	}
+}

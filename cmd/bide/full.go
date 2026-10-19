@@ -63,7 +63,9 @@ func fullCommands() []command {
 			name:    "theme",
 			summary: "check a theme file for the run viewer and the editor against the contrast and distinctness rules",
 			run:     theme.Main,
-			exits:   commonExits,
+			exits: `0  every file passes its checks
+1  a file is refused (it fails a check or is not a valid theme) or cannot be read
+2  usage error: a bad flag or argument; nothing was read`,
 		},
 		{
 			name:    "view",

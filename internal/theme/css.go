@@ -68,6 +68,16 @@ func CSS(themes []*Theme) string {
 	if len(themes) == 0 {
 		return ""
 	}
+	seen := map[string]bool{}
+	for _, t := range themes {
+		if !t.checked {
+			panic("theme: CSS of a theme that did not come from Parse or Shipped")
+		}
+		if seen[t.name] {
+			panic("theme: CSS given two themes named " + t.name)
+		}
+		seen[t.name] = true
+	}
 	def := themes[0]
 	var dark *Theme
 	names := make([]string, len(themes))

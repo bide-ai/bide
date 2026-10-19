@@ -17,8 +17,11 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/bide-ai/bide/internal/strictjson"
 )
@@ -97,6 +100,8 @@ type Theme struct {
 	typeScale float64
 	density   string
 	radius    [3]int
+
+	checked bool // set by parse: only a parsed or shipped theme is one
 
 	report Report
 }
@@ -207,7 +212,9 @@ func parse(data []byte, bases map[string]*Theme) (*Theme, error) {
 	}
 	var w wire
 	if err := strictjson.Unmarshal(data, &w, nil); err != nil {
-		return nil, fmt.Errorf("theme file: %w", err)
+		// encoding/json puts a map key it was given into its type errors unquoted, so a hostile key
+		// would reach a terminal as an escape sequence: escape every non-printable rune.
+		return nil, errors.New("theme file: " + printable(err.Error()))
 	}
 	custom := bases != nil
 	var errs []string
@@ -238,6 +245,7 @@ func parse(data []byte, bases map[string]*Theme) (*Theme, error) {
 		bad("a shipped theme has no base")
 	}
 
+	set := map[string]bool{}
 	setColor := func(path, val string) {
 		if !slotSet[path] {
 			bad("unknown key %q", path)
@@ -249,6 +257,7 @@ func parse(data []byte, bases map[string]*Theme) (*Theme, error) {
 			return
 		}
 		t.c[path] = c
+		set[path] = true
 	}
 	for _, k := range sortedKeys(w.Surface) {
 		setColor("surface."+k, w.Surface[k])
@@ -305,6 +314,20 @@ func parse(data []byte, bases map[string]*Theme) (*Theme, error) {
 		}
 	}
 
+	// A custom theme that sets a source colour and not the colour derived from it gets the derived
+	// one from the source, as the design note says: info follows accent, the focus ring follows the
+	// accent, the canvas and a node follow the surface. One that sets the derived colour keeps it.
+	if custom {
+		for _, d := range [][2]string{
+			{"semantic.info.fg", "surface.accent"}, {"semantic.info.bg", "surface.accent_bg"}, {"surface.focus", "surface.accent"},
+			{"surface.canvas_bg", "surface.surface"}, {"surface.node_fill", "surface.surface"},
+		} {
+			if !set[d[0]] && set[d[1]] {
+				t.c[d[0]] = t.c[d[1]]
+			}
+		}
+	}
+
 	// A shipped theme is complete: every key present, none inherited.
 	if !custom {
 		for _, s := range slots {
@@ -329,6 +352,7 @@ func parse(data []byte, bases map[string]*Theme) (*Theme, error) {
 		return nil, errors.New("theme: " + strings.Join(errs, "; "))
 	}
 
+	t.checked = true
 	t.report = Check(t)
 	if err := t.report.Err(); err != nil {
 		return nil, err
@@ -360,3 +384,20 @@ func (t *Theme) Dark() bool { return t.c["surface.bg"].luminance() < 0.18 }
 
 // round2 rounds to two decimals, the precision of every generated number.
 func round2(v float64) float64 { return math.Round(v*100) / 100 }
+
+// printable returns s with every rune that is not printable (a control character, an escape, a
+// byte that is not UTF-8) written as a Go escape, so text from a hostile file is safe to print.
+func printable(s string) string {
+	var b strings.Builder
+	for i, r := range s {
+		switch {
+		case r == utf8.RuneError && s[i] != 0xEF: // an invalid byte, not a written U+FFFD
+			fmt.Fprintf(&b, "\\x%02x", s[i])
+		case r == '\n' || unicode.IsPrint(r):
+			b.WriteRune(r)
+		default:
+			b.WriteString(strings.Trim(strconv.QuoteRune(r), "'"))
+		}
+	}
+	return b.String()
+}
