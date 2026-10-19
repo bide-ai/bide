@@ -71,6 +71,9 @@ func (s *Server) confirmations(text []byte) []string {
 	if w.CompareError != "" {
 		items = append(items, "not compared with "+w.Baseline+": "+w.CompareError)
 	}
+	if w.NotCertified != "" {
+		items = append(items, w.NotCertified)
+	}
 	return items
 }
 

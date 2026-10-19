@@ -458,6 +458,8 @@ type Weakening struct {
 	Changes []string `json:"changes,omitempty"`
 
 	CompareError string `json:"compare_error,omitempty"`
+
+	NotCertified string `json:"not_certified,omitempty"`
 }
 ```
 

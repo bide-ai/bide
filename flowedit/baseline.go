@@ -35,6 +35,12 @@ type Weakening struct {
 	// CompareError is set when the two could not be compared (the text does not parse): nothing can
 	// be said about weakening, which is not the same as none, so a save names it.
 	CompareError string `json:"compare_error,omitempty"`
+	// NotCertified is set in typed mode when the text, or the baseline, has errors against the
+	// program's blocks, so the typed comparison had nothing sound to read: the comparison was made
+	// structurally, as the structural editor makes it, and what the blocks declare in Go is not known.
+	// A save names it and needs the same confirmation a weakening needs, so a typed editor is never
+	// less strict than a structural one.
+	NotCertified string `json:"not_certified,omitempty"`
 }
 
 // Compare classifies text against baseline, both the contents of a config file called name.
@@ -75,6 +81,7 @@ func compare(name, source string, baseline, text []byte, ty *typing) *Weakening 
 		w.CompareError = err.Error()
 		return w
 	}
+	w.NotCertified = d.Fallback
 	for _, c := range d.Changes {
 		w.Changes = append(w.Changes, c.String())
 	}

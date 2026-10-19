@@ -438,7 +438,10 @@ node gains `in` and `out`, the type names the digest writes. The page computes n
 - **The weakened banner knows the Go gates.** When a node's block is changed, the gate and safety the old and the new
   block declare in Go are known on both sides, so changing a block that declares an approval gate to one that does
   not is reported as the gate removed (and the other way as strengthened), where the structural editor can only say
-  it may have weakened the policy. A save that needs confirmation still needs it.
+  it may have weakened the policy. A save that needs confirmation still needs it. A typed editor is never less strict
+  than a structural one: when the text (or the baseline) has errors against the blocks, a block the program lacks or a
+  type that does not fit, the comparison is made structurally and is **not certified**; a save of it needs the same
+  confirmation a weakening needs.
 - **Limits.** A description tells types apart by name only (two distinct types spelled alike are one; see the
   [known limitations](../KNOWN-LIMITATIONS.md)). A host that checks descriptions from sources it does not trust should
   do it in a short-lived process (a process keeps one stand-in type per type name it has been given, about 25 MB at most).

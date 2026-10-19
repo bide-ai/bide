@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -286,5 +287,87 @@ func TestTypedOptionsRefuseWhatCannotBeTyped(t *testing.T) {
 	doc, err := s.Doc()
 	if err != nil || len(doc.Typed.Palette) != 7 || doc.Typed.Palette[0].Name == "hijacked" {
 		t.Errorf("palette %+v (%v)", doc.Typed.Palette, err)
+	}
+}
+
+// A typed editor is never less strict than a structural one. For each edit of a baseline, the typed
+// verdict keeps every weakening the structural one reports that is not a "possibly" the program's
+// blocks answer; and when the text has errors against the blocks (a block the program lacks, a type
+// that does not fit), the comparison is the structural one, in full, named not certified, and a save
+// of it needs the confirmation a weakening needs.
+func TestTypedEditorIsNeverLessStrictThanStructural(t *testing.T) {
+	reg := typedRegistry(t)
+	baseline := testFlow
+	edits := map[string]func(string) string{
+		"gate dropped": func(s string) string {
+			return strings.Replace(s, "    approval: {need: 2, approvers: [ops, finance, risk], exclude_principal: true}\n", "", 1)
+		},
+		"need lowered":     func(s string) string { return strings.Replace(s, "need: 2", "need: 1", 1) },
+		"block changed":    func(s string) string { return strings.Replace(s, "block: charge", "block: plain", 1) },
+		"to a gated block": func(s string) string { return strings.Replace(s, "block: charge", "block: gated", 1) },
+		"unknown block":    func(s string) string { return strings.Replace(s, "block: charge", "block: nowhere", 1) },
+		"misfit block":     func(s string) string { return strings.Replace(s, "block: charge", "block: count", 1) },
+		"safety lowered":   func(s string) string { return strings.Replace(s, "safety: readonly", "safety: side_effect", 1) },
+		"effect added": func(s string) string {
+			return strings.Replace(s, "  - {name: receipt", "  - {name: audit, block: plain}\n  - {name: receipt", 1)
+		},
+		"unchanged": func(s string) string { return s },
+	}
+	type key struct{ node, kind string }
+	keys := func(w *Weakening) map[key]bool {
+		out := map[key]bool{}
+		for _, l := range w.Weakened {
+			if !strings.Contains(l, "not visible without") {
+				out[key{strings.SplitN(l, ":", 2)[0], ""}] = true
+			}
+		}
+		return out
+	}
+	for kind, opt := range map[string]Option{"registry": WithRegistry(reg), "description": WithBlocks(reg.Describe())} {
+		p := filepath.Join(t.TempDir(), "refund.yaml")
+		if err := os.WriteFile(p, []byte(baseline), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		typed, err := newServer(t, p, opt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		structural, err := newServer(t, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for name, edit := range edits {
+			text := []byte(edit(baseline))
+			wt, ws := typed.compare(text), structural.compare(text)
+			if wt.CompareError != ws.CompareError {
+				t.Errorf("%s/%s: compare errors %q vs %q", kind, name, wt.CompareError, ws.CompareError)
+			}
+			if wt.NotCertified != "" {
+				if !slices.Equal(wt.Weakened, ws.Weakened) {
+					t.Errorf("%s/%s: not certified, weakened %q vs the structural %q", kind, name, wt.Weakened, ws.Weakened)
+				}
+				if c := typed.confirmations(text); len(c) == 0 || !strings.Contains(strings.Join(c, "\n"), "not certified") {
+					t.Errorf("%s/%s: a save of an uncertified comparison needs no confirmation: %q", kind, name, c)
+				}
+				continue
+			}
+			for k := range keys(ws) {
+				if !keys(wt)[k] {
+					t.Errorf("%s/%s: the structural weakening %v vanished: %q vs %q", kind, name, k, wt.Weakened, ws.Weakened)
+				}
+			}
+			if len(structural.confirmations(text)) > 0 && len(typed.confirmations(text)) == 0 && len(keys(ws)) > 0 {
+				t.Errorf("%s/%s: the typed save needs no confirmation, the structural one does", kind, name)
+			}
+		}
+	}
+	// The two cases the test is about are really in it: an uncertified comparison and a certified one.
+	ty := typedServers(t, "refund.yaml", baseline)["registry"]
+	if w := ty.compare([]byte(edits["unknown block"](baseline))); w.NotCertified == "" {
+		t.Errorf("an unknown block is certified: %+v", w)
+	}
+	gs := typedServers(t, "pay.yaml", gateSwapFlow)["registry"]
+	if w := gs.compare([]byte(strings.Replace(gateSwapFlow, "block: gated", "block: plain", 1))); w.NotCertified != "" || len(w.Weakened) == 0 {
+		t.Errorf("a known block swap: %+v", w)
 	}
 }
