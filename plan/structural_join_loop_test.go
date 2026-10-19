@@ -144,3 +144,63 @@ func TestStructuralLoopHeadReachesThroughAJoin(t *testing.T) {
 		t.Errorf("a join that reads itself: %q", errs)
 	}
 }
+
+// More of what Load refuses and the structural check let through: a reference to a join before the
+// join's wiring element (Load registers a join when it reaches the element, so the name is unknown
+// until then), and the shapes of edges and switches around joins and switches.
+func TestStructuralCheckJoinReferencesAndSwitchShapes(t *testing.T) {
+	const join = `{"join":"j","inputs":["b","c"],"merge":"sum"}`
+	const fan = `{"edge":["a","b"]},{"edge":["a","c"]},`
+	for name, c := range map[string]struct {
+		names        []string
+		control, bad string // control "" when no config of this shape loads
+		want         string
+	}{
+		"an edge from a join before the join": {[]string{"a", "b", "c", "d"},
+			fan + join + `,{"edge":["j","d"]}`,
+			fan + `{"edge":["j","d"]},` + join,
+			`the join "j", which is defined after it`},
+		"a switch over a join before the join": {[]string{"a", "b", "c", "d", "e"},
+			fan + join + `,{"switch":"j","when":[{"pred":"neg","to":"d"}],"else":"e"}`,
+			fan + `{"switch":"j","when":[{"pred":"neg","to":"d"}],"else":"e"},` + join,
+			`the join "j", which is defined after it`},
+		"an arm to a join": {[]string{"a", "b", "c", "d", "e"},
+			``,
+			`{"edge":["a","b"]},{"edge":["a","c"]},{"edge":["a","d"]},{"switch":"d","when":[{"pred":"neg","to":"j"}],"else":"e"},` + join,
+			`routes to the join "j"; a join is entered only by its inputs`},
+		"an else to a join": {[]string{"a", "b", "c", "d", "e"},
+			``,
+			`{"edge":["a","b"]},{"edge":["a","c"]},{"edge":["a","d"]},{"switch":"d","when":[{"pred":"neg","to":"e"}],"else":"j"},` + join,
+			`routes to the join "j"; a join is entered only by its inputs`},
+		"an edge into a join": {[]string{"a", "b", "c", "d"},
+			``,
+			fan + `{"edge":["a","d"]},` + join + `,{"edge":["d","j"]}`,
+			`is an edge into the join "j"; a join is entered only by its inputs`},
+		"a switched node with an edge out": {[]string{"a", "b", "c", "d"},
+			`{"edge":["a","b"]},{"switch":"b","when":[{"pred":"neg","to":"c"}],"else":"d"}`,
+			`{"edge":["a","b"]},{"edge":["b","c"]},{"switch":"b","when":[{"pred":"neg","to":"d"}],"else":"c"}`,
+			`"b" is switched over and has an edge out`},
+		"two switches on one node": {[]string{"a", "b", "c", "d"},
+			`{"edge":["a","b"]},{"switch":"b","when":[{"pred":"neg","to":"c"}],"else":"d"}`,
+			`{"edge":["a","b"]},{"switch":"b","when":[{"pred":"neg","to":"c"}],"else":"d"},{"switch":"b","when":[{"pred":"neg","to":"d"}],"else":"c"}`,
+			`more than one switch is over "b"`},
+	} {
+		cfg := func(w string) string {
+			return `{"version":1,"flow":"f","nodes":[` + structuralNodes(c.names...) + `],"wiring":[` + w + `]}`
+		}
+		if c.control != "" {
+			if _, err := Load[int, int]([]byte(cfg(c.control)), structuralReg(t, c.names...)); err != nil {
+				t.Fatalf("%s: the control does not load: %v", name, err)
+			}
+			if errs := problemsOf(cfg(c.control)); len(errs) != 0 {
+				t.Errorf("%s: the control has structural errors: %q", name, errs)
+			}
+		}
+		if _, err := Load[int, int]([]byte(cfg(c.bad)), structuralReg(t, c.names...)); err == nil {
+			t.Fatalf("%s: Load accepted it; the test is wrong", name)
+		}
+		if errs := problemsOf(cfg(c.bad)); !slicesContain(errs, c.want) {
+			t.Errorf("%s: the structural check says %q, want an error containing %q", name, errs, c.want)
+		}
+	}
+}

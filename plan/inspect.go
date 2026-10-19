@@ -351,7 +351,60 @@ func structural(cfg *config, r *ConfigReport) {
 		}
 	}
 	joinOrder(cfg, errAt)
+	joinsAndSwitches(cfg, errAt)
 	loopShape(cfg, declared, errAt)
+}
+
+// joinsAndSwitches reports what Load and Build refuse about how edges and switches meet joins and
+// switches, which the wiring alone shows: a join referenced (as the source of an edge or the node a
+// switch is over) before its wiring element, an edge, arm or else into a join (a join is entered only
+// by its inputs), a node that is switched over and has an edge out, and two switches over one node.
+func joinsAndSwitches(cfg *config, errAt func(ConfigProblem)) {
+	joinAt := map[string]int{}
+	for i, w := range cfg.Wiring {
+		if w.isJoin() && w.Join != "" && !w.isEdge() && !w.isSwitch() {
+			joinAt[w.Join] = i
+		}
+	}
+	later := func(i int, name string) bool { p, ok := joinAt[name]; return ok && p > i }
+	isJoin := func(name string) bool { _, ok := joinAt[name]; return ok }
+	switched := map[string]int{}
+	for i, w := range cfg.Wiring {
+		if w.isSwitch() && !w.isEdge() {
+			if first, ok := switched[w.Switch]; ok {
+				errAt(ConfigProblem{Node: w.Switch, Message: fmt.Sprintf("wiring[%d] more than one switch is over %q (the first is wiring[%d])", i, w.Switch, first)})
+			} else {
+				switched[w.Switch] = i
+			}
+		}
+	}
+	for i, w := range cfg.Wiring {
+		switch {
+		case w.isEdge() && len(w.Edge) == 2:
+			from, to := w.Edge[0], w.Edge[1]
+			if later(i, from) {
+				errAt(ConfigProblem{From: from, To: to, Message: fmt.Sprintf("wiring[%d] edge %q -> %q leaves the join %q, which is defined after it in the wiring (a join is registered when its element is reached)", i, from, to, from)})
+			}
+			if isJoin(to) {
+				errAt(ConfigProblem{From: from, To: to, Message: fmt.Sprintf("wiring[%d] edge %q -> %q is an edge into the join %q; a join is entered only by its inputs", i, from, to, to)})
+			}
+			if _, ok := switched[from]; ok {
+				errAt(ConfigProblem{From: from, To: to, Message: fmt.Sprintf("wiring[%d] node %q is switched over and has an edge out (a node has a switch or an edge out, not both)", i, from)})
+			}
+		case w.isSwitch() && !w.isEdge():
+			if later(i, w.Switch) {
+				errAt(ConfigProblem{Node: w.Switch, Message: fmt.Sprintf("wiring[%d] the switch is over the join %q, which is defined after it in the wiring (a join is registered when its element is reached)", i, w.Switch)})
+			}
+			for j, a := range w.When {
+				if isJoin(a.To) {
+					errAt(ConfigProblem{From: w.Switch, To: a.To, Message: fmt.Sprintf("wiring[%d].when[%d] routes to the join %q; a join is entered only by its inputs", i, j, a.To)})
+				}
+			}
+			if isJoin(w.Else) {
+				errAt(ConfigProblem{From: w.Switch, To: w.Else, Message: fmt.Sprintf("wiring[%d] else routes to the join %q; a join is entered only by its inputs", i, w.Else)})
+			}
+		}
+	}
 }
 
 // joinOrder reports a join that reads a join defined after it in the wiring. plan.Load registers a join

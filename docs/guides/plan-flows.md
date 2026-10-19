@@ -724,7 +724,10 @@ journal's topology, a step or predicate name) as `\u{XXXX}`; the JSON endpoints 
   edge, or a `switch` arm routing to it is a load error, since the merge would drop that value.
   A join's inputs are registered in wiring order, so an input that is itself a join must be defined
   earlier in `wiring[]` (which also rules out a cycle of joins). `bide check` and `bide view -config` report
-  this without a Registry.
+  this without a Registry, and so a reference to a join (an edge out of it, a switch over it) before its element,
+  an edge, arm or `else` into a join, a node that is switched over and has an edge out, and two switches over
+  one node. Not yet reported without a Registry: a cycle that is not a loop, a node unreachable from the entry,
+  and a loop body that is not contiguous.
 - **Loops:** an arm with `loop_max` above 0 is a bounded back-edge to an earlier loop head. The head must
   reach the switch in the forward graph (the edges, a join's inputs and the arms that do not loop back),
   a switch has at most one loop-back arm, and it needs an exit (another arm or an `else`). `bide check` and
