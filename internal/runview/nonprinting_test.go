@@ -104,6 +104,9 @@ func TestViewerPagesWriteJournalNamesOut(t *testing.T) {
 				break
 			}
 		}
+		if strings.HasPrefix(target, "/run?") && !strings.Contains(body, "data-detail=") {
+			t.Errorf("GET %s: the drawing has no data-detail, which view.js renders; the check below would prove nothing", target)
+		}
 		if target != "/attention" && !strings.Contains(body, `\u{202E}`) {
 			t.Errorf("GET %s: the names are not written out", target)
 		}
