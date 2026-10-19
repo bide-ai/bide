@@ -750,35 +750,51 @@ func TestStructureInChrome(t *testing.T) {
 	}
 }
 
-// TestNonPrintingNamesAreShownEscaped: a hand-written file can name a node with a direction override
-// (the loader accepts any string). The page writes such characters out and never draws them, so the
-// name cannot read as another; the editing field keeps the raw name.
+// TestNonPrintingNamesAreShownEscaped: a hand-written file can name things with a direction override or
+// a zero-width character (the loader accepts any string). On every surface of the page (opened, each
+// node selected, the remove dialog, the weakened banner, the save dialog, the conflict dialog) every
+// text node, title, aria-label, placeholder, alt and option is walked, and none holds a character that
+// does not print: the page writes it out as \u{XXXX}. The editing fields and the source keep the raw text.
 func TestNonPrintingNamesAreShownEscaped(t *testing.T) {
-	src := "version: 1\nflow: f\nentry: a\nnodes:\n  - {name: a, block: a}\n  - {name: \"ch\\u202Egra\", block: b}\nwiring:\n  - edge: [a, \"ch\\u202Egra\"]\n"
-	s, _ := newTestServer(t, "f.yaml", src)
+	src := `{"version":1,"flow":"fl\u202eow","entry":"ch\u202egra","nodes":[` +
+		`{"name":"ch\u202egra","block":"bl\u200bock","safety":"side_effect","approval":{"need":1,"approvers":["ap\u202epr"]}},` +
+		`{"name":"\u200b","block":"b2"},{"name":"ok","block":"ok"}],` +
+		`"wiring":[{"edge":["ch\u202egra","\u200b"]},{"edge":["\u200b","ok"]}],` +
+		`"assert":["every path to ok passes ch\u202egra","ch\u202egra reachable"]}` + "\n"
+	s, _ := newTestServer(t, "f.json", src)
 	var r struct {
 		OK        bool     `json:"ok"`
 		Error     string   `json:"error"`
 		Outline   []string `json:"outline"`
-		Graph     []string `json:"graph"`
 		Title     string   `json:"title"`
 		Warning   string   `json:"warning"`
 		NameField string   `json:"nameField"`
-		Console   []string `json:"console"`
+		Hits      []struct {
+			State string `json:"state"`
+			Where string `json:"where"`
+			Text  string `json:"text"`
+			CP    string `json:"cp"`
+		} `json:"hits"`
+		Console []string `json:"console"`
 	}
 	runScript(t, "spoof.mjs", s, &r)
 	if !r.OK {
-		t.Fatalf("the script failed: %s", r.Error)
+		t.Fatalf("the script failed: %s\nconsole: %q", r.Error, r.Console)
 	}
-	if !slices.Equal(r.Outline, []string{"a", `ch\u{202E}gra`}) || r.Title != `ch\u{202E}gra` || r.NameField != "ch‮gra" {
+	if !slices.Equal(r.Outline, []string{`ch\u{202E}gra`, `\u{200B}`, "ok"}) || r.Title != `ch\u{202E}gra` || r.NameField != "ch\u202egra" {
 		t.Errorf("outline %q, title %q, field %q", r.Outline, r.Title, r.NameField)
 	}
-	for _, g := range r.Graph {
-		if strings.Contains(g, "‮") {
-			t.Errorf("the drawing has a raw override: %q", g)
+	for _, h := range r.Hits {
+		t.Errorf("raw U+%s in %s (%s): %q", h.CP, h.Where, h.State, h.Text)
+	}
+	// The script makes the file change on disk on purpose, so the browser logs the save's 409.
+	var other []string
+	for _, c := range r.Console {
+		if !strings.Contains(c, "409") {
+			other = append(other, c)
 		}
 	}
-	if !strings.Contains(r.Warning, "do not print") || len(r.Console) > 0 {
-		t.Errorf("warning %q, console %q", r.Warning, r.Console)
+	if !strings.Contains(r.Warning, "do not print") || len(other) > 0 {
+		t.Errorf("warning %q, console %q", r.Warning, other)
 	}
 }

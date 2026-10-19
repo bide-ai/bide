@@ -17,22 +17,27 @@ const SVGNS = 'http://www.w3.org/2000/svg';
 
 const token = (/(?:^#|&)t=([0-9a-f]+)/.exec(location.hash) || [])[1] || '';
 
-// shown is text with every character that does not print written as \u{XXXX}: a name in a hand-written
-// file can hold a direction override or a zero-width character (the loader accepts any string), and
-// the page must not draw one as another name. The input a name is edited in keeps the raw text.
-const NONPRINT = /[^\p{L}\p{M}\p{N}\p{P}\p{S} ]/gu;
+// shown is text with every character that does not print written as \u{XXXX} (a line break and a tab
+// stay): a name in a hand-written file can hold a direction override or a zero-width character (the
+// loader accepts any string), and the page must not draw one as another name. It is applied at the
+// choke points, so no surface can forget it: h() (every text child, and the attributes a reader or a
+// screen reader reads: aria-label, title, placeholder, alt), replace(), announce(), and the drawing's
+// text, titles and labels. The inputs a name is edited in, the source and option values keep the raw
+// text.
+const NONPRINT = /[^\p{L}\p{M}\p{N}\p{P}\p{S} \t\n\r]/gu;
 export const shown = (s) => String(s).replace(NONPRINT, (c) => '\\u{' + c.codePointAt(0).toString(16).toUpperCase() + '}');
 
 // h builds an element: h('p', {class: 'x'}, 'text', child).
+const READ_ATTRS = new Set(['aria-label', 'title', 'placeholder', 'alt', 'aria-description']);
 export function h(tag, attrs = {}, ...kids) {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
     if (v === false || v == null) continue;
-    e.setAttribute(k, v === true ? '' : String(v));
+    e.setAttribute(k, v === true ? '' : READ_ATTRS.has(k) ? shown(v) : String(v));
   }
   for (const k of kids.flat()) {
     if (k == null || k === false) continue;
-    e.append(typeof k === 'string' ? document.createTextNode(k) : k);
+    e.append(typeof k === 'string' ? document.createTextNode(shown(k)) : k);
   }
   return e;
 }
@@ -69,7 +74,7 @@ async function api(path, body = {}) {
 }
 
 const $ = (id) => document.getElementById(id);
-const replace = (id, ...kids) => $(id).replaceChildren(...kids.flat().filter(Boolean));
+const replace = (id, ...kids) => $(id).replaceChildren(...kids.flat().filter(Boolean).map((k) => (typeof k === 'string' ? shown(k) : k)));
 // announce speaks through the live region. The same words twice in a row (Undone, Undone) must be
 // heard twice, and a region whose text does not change is not announced, so a no-break space is
 // alternated on the end.
@@ -78,7 +83,7 @@ let flip = false;
 const announce = (msg) => {
   flip = msg === lastSpoken ? !flip : false;
   lastSpoken = msg;
-  $('live').textContent = msg + (flip ? '\u00a0' : '');
+  $('live').textContent = shown(msg) + (flip ? '\u00a0' : '');
 };
 // A verdict is announced when it changes, not on every keystroke that leaves it as it was.
 let lastVerdict = '';
@@ -156,7 +161,7 @@ export function renderOutline(v) {
     return h('li', {}, b);
   }));
   replace('wiring', (v.wiring || []).map((w) => h('li', {}, shown(w))));
-  replace('an-blocks', [...new Set(nodes.map((x) => x.block).filter(Boolean))].map((b) => h('option', { value: b })));
+  replace('an-blocks', [...new Set(nodes.map((x) => x.block).filter(Boolean))].filter((b) => shown(b) === b).map((b) => h('option', { value: b })));
 }
 
 function outlineKeys(e) {
@@ -194,7 +199,8 @@ export function renderInspector(v) {
     return;
   }
   const row = (k, val) => val ? [h('dt', {}, k), h('dd', {}, val)] : [];
-  const blocks = [...new Set((v.nodes || []).map((x) => x.block).filter(Boolean))];
+  // A suggestion is offered only when it prints: a datalist cannot show an escaped value and insert the raw one.
+  const blocks = [...new Set((v.nodes || []).map((x) => x.block).filter(Boolean))].filter((b) => shown(b) === b);
   const safety = h('select', { id: 'f-safety' }, SAFETIES.map(([val, label]) => h('option', { value: val, selected: val === (n.safety || '') }, label)));
   safety.addEventListener('change', () => operate({ op: 'set_safety', node: n.name, value: safety.value }, 'f-safety'));
   const block = h('input', { id: 'f-block', type: 'text', value: n.block || '', list: 'f-blocks', autocomplete: 'off', spellcheck: 'false' });
@@ -250,7 +256,7 @@ async function removeNode(n, opener) {
   try {
     dry = await applyOp(state.text, { op: 'remove_node', node: n.name, dry_run: true });
   } catch (err) {
-    if (box) box.textContent = 'Not applied: ' + err.message;
+    if (box) box.textContent = shown('Not applied: ' + err.message);
     announce('Not applied: ' + err.message);
     return;
   }
@@ -327,7 +333,7 @@ function gateForm(n) {
       setFeedback('bad', ['Decisions needed must be a whole number such as 2.']);
       return;
     }
-    kofn.textContent = draft.approvers.length ? draft.need + ' of ' + draft.approvers.length + ' approver' + (draft.approvers.length === 1 ? '' : 's') + ' must sign' + (draft.exclude_principal ? ', never counting the person who started the run' : '') + (draft.timeout ? '; the gate expires after ' + draft.timeout : '') + '.' : 'No approvers yet.';
+    kofn.textContent = draft.approvers.length ? draft.need + ' of ' + draft.approvers.length + ' approver' + (draft.approvers.length === 1 ? '' : 's') + ' must sign' + (draft.exclude_principal ? ', never counting the person who started the run' : '') + (draft.timeout ? '; the gate expires after ' + shown(draft.timeout) : '') + '.' : 'No approvers yet.';
     clearTimeout(timer);
     const mine = ++seq;
     timer = setTimeout(async () => {
@@ -392,7 +398,7 @@ async function operate(op, focusId, selectAfter) {
     if (state.text !== sent) {
       const msg = 'Not applied: the text changed while the edit was being applied. Apply it again.';
       const box = errBox();
-      if (box) box.textContent = msg;
+      if (box) box.textContent = shown(msg);
       announce(msg);
       return;
     }
@@ -410,7 +416,7 @@ async function operate(op, focusId, selectAfter) {
     if (target) target.focus();
   } catch (err) {
     const box = errBox();
-    if (box) box.textContent = 'Not applied: ' + err.message;
+    if (box) box.textContent = shown('Not applied: ' + err.message);
     announce('Not applied: ' + err.message);
   }
   return applied;
@@ -613,7 +619,8 @@ export function renderCanvas(v) {
   const svg = doc.documentElement;
   if (svg.localName !== 'svg' || doc.querySelector('parsererror')) { wrap.replaceChildren(h('p', { class: 'bad' }, 'The graph could not be drawn.')); return; }
   wrap.replaceChildren(document.adoptNode(svg));
-  for (const t of wrap.querySelectorAll('text')) if (t.children.length === 0) t.textContent = shown(t.textContent);
+  for (const t of wrap.querySelectorAll('text, title')) if (t.children.length === 0) t.textContent = shown(t.textContent);
+  for (const e of wrap.querySelectorAll('[aria-label], [title]')) for (const a of ['aria-label', 'title']) if (e.hasAttribute(a)) e.setAttribute(a, shown(e.getAttribute(a)));
   for (const g of wrap.querySelectorAll('g.node')) {
     const name = g.getAttribute('data-id');
     g.setAttribute('role', 'button'); // the drawing marks a node as an image; here it can be pressed
@@ -653,7 +660,7 @@ const dirty = () => state.text !== state.disk;
 export function render(v, { keepSource = false } = {}) {
   view = v;
   if (selected && !(v.nodes || []).some((n) => n.name === selected)) selected = '';
-  $('file').textContent = v.name + ' (' + v.format + ')';
+  $('file').textContent = shown(v.name + ' (' + v.format + ')');
   $('modeline').textContent = v.mode;
   if (!keepSource) $('source').value = v.text;
   renderWeakening(v);
@@ -730,7 +737,7 @@ function diffBlock(diff) {
 let dialogOpener = null;
 function openDialog(title, body, actions, labelFor, opener) {
   if (opener) dialogOpener = opener;
-  $('dialog-title').textContent = title;
+  $('dialog-title').textContent = shown(title);
   replace('dialog-body', body);
   replace('dialog-actions', actions);
   if (!dlg().open) dlg().showModal();
@@ -784,7 +791,7 @@ async function commit(pv, opener, status) {
   } catch (e) {
     if (e.status === 409) { conflictDialog(e.data.hash, e.data.diff, opener); return; }
     if (e.status === 422) { closeDialog(); save(); return; } // the text changed under the confirmation: ask again
-    status.textContent = 'Not saved: ' + e.message;
+    status.textContent = shown('Not saved: ' + e.message);
   }
 }
 
