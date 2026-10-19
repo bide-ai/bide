@@ -441,7 +441,10 @@ node gains `in` and `out`, the type names the digest writes. The page computes n
   it may have weakened the policy. A save that needs confirmation still needs it. A typed editor is never less strict
   than a structural one: when the text (or the baseline) has errors against the blocks, a block the program lacks or a
   type that does not fit, the comparison is made structurally and is **not certified**; a save of it needs the same
-  confirmation a weakening needs.
+  confirmation a weakening needs. The baseline is read with the same blocks as the text, the program as it is now (the
+  editor knows no other): a gate removed in Go since the baseline, with the config unchanged, is a change to the
+  program and not to the config, so it is not shown here (the structural editor does not show it either); review it in
+  the Go diff, or compare the two programs' descriptions with `bide check -diff -blocks ... -old-blocks ...`.
 - **Limits.** A description tells types apart by name only (two distinct types spelled alike are one; see the
   [known limitations](../KNOWN-LIMITATIONS.md)). A host that checks descriptions from sources it does not trust should
   do it in a short-lived process (a process keeps one stand-in type per type name it has been given, about 25 MB at most).
