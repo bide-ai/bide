@@ -172,25 +172,27 @@ happened, in order (account names removed from every output):
    generations with no error: none was under a hold and every retention had ended. Before the end of the
    retention the same delete is refused, which is the lock working. After it, `ls --all-versions` found
    nothing, but `gcloud storage ls --soft-deleted -r "gs://$BUCKET/**"` listed all 12: **a delete after expiry
-   goes through soft delete**, so with the default 7-day soft delete a deleted head stays recoverable for 7
-   days. (Before expiry a delete of the live object made the generation noncurrent and nothing was
+   goes through soft delete**: with the default 7-day soft delete the objects stayed listed as soft-deleted
+   (Google documents that soft-deleted objects can be restored during that period; no restore was tried). (Before expiry a delete of the live object made the generation noncurrent and nothing was
    soft-deleted.)
 2. **Delete the bucket.** `gcloud storage buckets delete gs://$BUCKET --quiet` succeeded while the 12
    soft-deleted generations still existed, and the bucket was then gone (404). One bucket with a locked policy
    was deletable once nothing in it was within its retention, with soft-deleted objects (7-day soft delete)
    still present; that is one observation, not a documented rule.
-3. **Delete the identities.** The service accounts (which removes the token-creator grants, bindings on
-   them) and the custom roles; the lists were empty afterwards.
+3. **Delete the identities.** The service accounts and the custom roles were deleted (the token-creator grants
+   were bindings on the service accounts, so deleting them is what removes the grants; Google documents
+   that). The output of this step was not captured, so it is not quoted here.
 4. **Schedule the key version for destruction.** `gcloud kms keys versions destroy 1 --key=anchor
    --keyring=anchor --location=$LOC`: state ENABLED to DESTROY_SCHEDULED, destroy time 30 days later
-   (2026-11-17). The key and the key ring remain; they cannot be deleted.
+   (2026-11-17). The key and the key ring remain (Google documents that key rings and keys cannot be deleted; this run did
+   not try).
 5. **The project.** `gcloud projects delete $PROJECT --quiet` was REFUSED with `PROJECT_DELETE_LIEN` ("Remove
    the lien to allow deletion", `resourcemanager.projects.delete`, origin `storage.googleapis.com`), although
    the bucket was gone: **the lien is not removed when the bucket is deleted** (checked at once and minutes
    later; whether it clears on its own after a longer time was not observed). It had to be removed by hand:
-   `DELETE https://cloudresourcemanager.googleapis.com/v1/liens/LIEN_ID` (the same call the Resource Manager
-   API reference documents, or `gcloud alpha resource-manager liens delete`; the API must be enabled in the
-   project). Then `gcloud projects delete` succeeded and the project showed `DELETE_REQUESTED` (Google documents
+   `DELETE https://cloudresourcemanager.googleapis.com/v1/liens/LIEN_ID` (the call that ran; the Resource Manager
+   API must be enabled in the project; `gcloud alpha resource-manager liens delete` is the documented CLI
+   form and was not run). Then `gcloud projects delete` succeeded and the project showed `DELETE_REQUESTED` (Google documents
    that a project can be undeleted for 30 days; this run did not try).
 
 What this does not show: what happens to a locked bucket's data when a project is deleted with the lien
