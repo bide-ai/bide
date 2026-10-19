@@ -78,12 +78,18 @@ func TestCustomThemeAndDefault(t *testing.T) {
 // Assets (what the editor serves) carries the themes too.
 func TestAssetsServed(t *testing.T) {
 	h := Handler(Options{Config: &Config{}})
-	for name, typ := range map[string]string{"style.css": "text/css", "graph.css": "text/css", "theme.js": "text/javascript"} {
+	// The type of a script comes from the platform (Windows reports application/javascript), as it
+	// did before the themes: both are scripts.
+	for name, typ := range map[string]string{"style.css": "text/css", "graph.css": "text/css", "theme.js": ""} {
 		req := httptest.NewRequest("GET", "/assets/"+name, nil)
 		req.Host = "127.0.0.1:8484"
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
-		if rec.Code != 200 || !strings.HasPrefix(rec.Header().Get("Content-Type"), typ) {
+		ct := rec.Header().Get("Content-Type")
+		if name == "theme.js" && (strings.HasPrefix(ct, "text/javascript") || strings.HasPrefix(ct, "application/javascript")) {
+			typ = ct
+		}
+		if rec.Code != 200 || typ == "" || !strings.HasPrefix(ct, typ) {
 			t.Errorf("%s: %d %q", name, rec.Code, rec.Header().Get("Content-Type"))
 		}
 	}
