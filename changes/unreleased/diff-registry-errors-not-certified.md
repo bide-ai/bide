@@ -1,0 +1,3 @@
+Section: Fixed
+
+`bide check -diff`, `bide view -config -diff`, `planview.DiffHandler` and `planview.CheckDiff` no longer pass a diff silently when a side checked against a Registry or a description has errors. Such a side has no approvals or gates to compare, so a gate removed by changing a block read as no change and `-fail-on-weaken` exited 0. The diff is now made structurally, as without the Registry, so a weakening is reported as it would be without it; the result is labelled not certified (`DiffView.Fallback`), its verdict is never good, and `CheckDiff` and `-fail-on-weaken` fail on it. Every result also says how each side was checked (`DiffView.OldBasis`, `NewBasis`).

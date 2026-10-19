@@ -683,15 +683,23 @@ os.WriteFile("blocks.json", b, 0o600)
 The result is labelled **checked per description file, not checked against the program** in the text, the page and
 the diff, because a description is a file: it can be stale, or wrong. The check made with the program's own
 Registry (`plan/planview`) is the control; this one makes the same answer available in a pipeline that does not
-build the program. Two limits: types are told apart by name, so two distinct types spelled the same are one type
-([known limitations](../KNOWN-LIMITATIONS.md)), and a block registered and never used is an error here as it is in
-`Load`. A description whose program's Registry refused a registration (a duplicate, a gate `Validate` refuses) is
-refused, with the registry's error. The file is read once, must be a regular file of at most 1 MiB with no unknown
-field, and is validated before it is used.
+build the program. Types are told apart by name, so two distinct types spelled the same are one type
+([known limitations](../KNOWN-LIMITATIONS.md)). A block the description holds and the config does not use is not reported (a
+description is of the whole program, and a flow uses some of it; `Load` would refuse such a block in a program that
+registers only one flow). A description whose program's Registry refused a registration (a duplicate, a gate
+`Validate` refuses) is refused, with the registry's error. The file is read once, must be a regular file of at most
+1 MiB (a named pipe or a device is refused without waiting on it) with no unknown field, and is validated before it
+is used; an error about its contents is cut to 200 bytes.
 
 With `-diff`, `-blocks` describes both versions; give `-old-blocks` for the earlier one when the program's
 blocks changed (a block the old config uses must be in the old description). A block swapped for one that
-declares no gate is then reported as a weakening, which from the command line alone is only a possible one:
+declares no gate is then reported as a weakening, which from the command line alone is only a possible one.
+
+Adding a description never makes `-diff` less strict than leaving it out. If a side has errors against the
+description (a block the description lacks, a type that does not fit), the typed comparison has nothing sound to read,
+so the diff is made structurally, as without the description, and is labelled **not certified**: the verdict is never
+good and `-fail-on-weaken` fails, whether or not a weakening was found. Every result says how each side was checked
+(`old config per description file, new config structural`), including when only `-old-blocks` is given.
 
 ```sh
 bide check flows/refund-v2.yaml -diff main -blocks blocks.json -old-blocks blocks-main.json -check -fail-on-weaken
@@ -931,7 +939,9 @@ shows no digest. Package `plan/planview` serves the same page (`DiffHandler`) an
 (`CheckDiff`) with a `plan.Registry` for each version, and then shows the digest each version's
 runs journal: a changed digest means a run paused under the old flow will not resume under the new
 one. `plan.Load` refuses a block registered and never used, so each version takes the Registry the
-program had at that version.
+program had at that version. A side that has errors against its Registry (a block it lacks or does not use) has no
+gates the comparison can read, so the diff is then made structurally, as without a Registry, and is reported as not
+certified: `CheckDiff` reports it like a weakening, so `-fail-on-weaken` fails on it.
 
 <!-- docsnip: skip illustrative: old, cfg, oldReg and reg are the program's two config versions and Registries -->
 ```go

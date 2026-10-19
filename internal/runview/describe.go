@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"unicode/utf8"
 
+	safetext "github.com/bide-ai/bide/internal/printable"
 	"github.com/bide-ai/bide/internal/strictjson"
 	"github.com/bide-ai/bide/plan"
 )
@@ -20,7 +22,15 @@ const MaxDescriptionFile = 1 << 20
 // and the description must be valid (RegistryDescription.Validate). A description is untrusted
 // data: this is the only way the viewer and the editor read one, and it is read once.
 func ReadDescription(path string) (*plan.RegistryDescription, error) {
-	f, err := os.Open(path)
+	// A named pipe or a device would block the open (or the read) for ever, so the type is asked
+	// before the file is opened, and again of what was opened (the path may have changed between the
+	// two); the open itself does not wait for a writer where the system can say so.
+	if fi, err := os.Stat(path); err != nil {
+		return nil, err
+	} else if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s: not a regular file", path)
+	}
+	f, err := openNoWait(path)
 	if err != nil {
 		return nil, err
 	}
@@ -49,10 +59,27 @@ func DecodeDescription(b []byte, name string) (*plan.RegistryDescription, error)
 		if errors.Is(err, strictjson.ErrTrailingData) {
 			return nil, fmt.Errorf("%s: data after the description", name)
 		}
-		return nil, fmt.Errorf("%s: %w", name, err)
+		return nil, fmt.Errorf("%s: %s", name, clipFileError(err.Error()))
 	}
 	if err := d.Validate(); err != nil {
-		return nil, fmt.Errorf("%s: %w", name, err)
+		return nil, fmt.Errorf("%s: %s", name, clipFileError(err.Error()))
 	}
 	return &d, nil
+}
+
+// maxErrorText bounds the text of an error about a file's contents: a hostile file can make a
+// decoder's message as long as the file.
+const maxErrorText = 200
+
+// clipFileError is s written out (safetext.Escape) and cut to maxErrorText bytes, with "..." when it was cut.
+func clipFileError(s string) string {
+	s = safetext.Escape(s)
+	if len(s) <= maxErrorText {
+		return s
+	}
+	cut := maxErrorText
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "..."
 }

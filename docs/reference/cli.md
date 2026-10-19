@@ -1244,9 +1244,10 @@ blocks (a program writes one with json.Marshal of plan.Registry.Describe): block
 merge names, the types along every edge, safety, the approval gates the blocks declare in Go, and the
 digest. The result is labelled as per the file and not checked against the program: a description can
 be stale or wrong, and the check made with the program's own plan.Registry (package plan/planview) is
-the control. With -diff, -blocks describes both versions, or the new one when -old-blocks describes
-the earlier one (a block registered and never used is an error, so the earlier version needs the
-description of the program as it was).
+the control. A block the description holds and the config does not use is not reported. With -diff,
+-blocks describes both versions, or the new one when -old-blocks describes the earlier one. Adding a
+description never makes -diff less strict: if a side has errors against it, the diff is made structurally,
+as without it, and is labelled not certified (-fail-on-weaken fails on it).
 
 A config's assert lines are checked too, by reachability on the declared graph:
 

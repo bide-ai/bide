@@ -281,6 +281,13 @@ func diffVerdict(v *DiffView) Verdict {
 	default:
 		d = Verdict{Class: "warn", Word: strings.ToUpper(count(n, "change")), Icon: "tilde", Line: "No approval gate was weakened."}
 	}
+	if v.Fallback != "" {
+		if d.Class == "good" || d.Class == "warn" {
+			d.Class, d.Word, d.Icon, d.Line = "warn", "NOT CERTIFIED", "tilde", v.Fallback
+		} else {
+			d.Details = append(slices.Clone(d.Details), v.Fallback)
+		}
+	}
 	c := v.Counts
 	digest := Stat{Value: "n/a", Label: "digest", Sub: "not computed"}
 	switch {

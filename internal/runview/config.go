@@ -24,6 +24,10 @@ type Config struct {
 	// Description is what the program registered, read from a file (bide check -blocks). It is only
 	// as good as the file: the page and the text say so wherever they report a typed result.
 	Description *plan.RegistryDescription
+	// AllowUnusedBlocks makes a registered block the config does not use no problem
+	// (plan.AllowUnusedBlocks). bide check -blocks sets it: a description is of the whole program, and
+	// a flow config uses some of its blocks.
+	AllowUnusedBlocks bool
 	// Strict makes Check fail on a warning as well as on an error (bide view -check -strict).
 	Strict bool
 }
@@ -54,17 +58,21 @@ func (c Config) source() string {
 
 // inspect is plan.InspectConfig for c, against its Registry or else its Description.
 func (c Config) inspect() plan.ConfigReport {
-	if c.Registry == nil && c.Description != nil {
-		return plan.InspectConfigDescribed(c.Data, *c.Description)
+	var opts []plan.InspectOption
+	if c.AllowUnusedBlocks {
+		opts = append(opts, plan.AllowUnusedBlocks())
 	}
-	return plan.InspectConfig(c.Data, c.Registry)
+	if c.Registry == nil && c.Description != nil {
+		return plan.InspectConfigDescribed(c.Data, *c.Description, opts...)
+	}
+	return plan.InspectConfig(c.Data, c.Registry, opts...)
 }
 
 // ConfigView is what the config page shows.
 type ConfigView struct {
-	Name       string               `json:"name"`
-	Flow       string               `json:"flow"`
-	Typed      bool                 `json:"typed"`
+	Name  string `json:"name"`
+	Flow  string `json:"flow"`
+	Typed bool   `json:"typed"`
 	// Source is what the typed result rests on (SourceRegistry, SourceDescription), empty when
 	// structural.
 	Source     string               `json:"source,omitempty"`

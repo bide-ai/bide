@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/plan"
@@ -158,7 +161,7 @@ func TestDiffBasisWhenSidesDiffer(t *testing.T) {
 		"old described": swapDiff(t, "charge", "post", nil, nR, described(oR), nil),
 		"new described": swapDiff(t, "charge", "post", oR, nil, nil, described(nR)),
 	} {
-		if v.Basis != SourceDescription || v.BasisLine() != DescriptionNote {
+		if v.Basis != SourceDescription || !strings.Contains(v.BasisLine(), DescriptionNote) {
 			t.Errorf("%s: basis %q, line %q", name, v.Basis, v.BasisLine())
 		}
 	}
@@ -179,7 +182,7 @@ func TestDiffDescriptionAgreesWithRegistry(t *testing.T) {
 		oldR, newR := only(t, c[0]), only(t, c[1])
 		a := swapDiff(t, c[0], c[1], oldR, newR, nil, nil)
 		b := swapDiff(t, c[0], c[1], nil, nil, described(oldR), described(newR))
-		a.Basis, b.Basis = "", ""
+		a.Basis, b.Basis, a.OldBasis, b.OldBasis, a.NewBasis, b.NewBasis = "", "", "", "", "", ""
 		ja, _ := json.Marshal(a)
 		jb, _ := json.Marshal(b)
 		// The graph's labels carry reflect's short type names in one and paths in the other.
@@ -222,7 +225,7 @@ func TestDescriptionIsLabelled(t *testing.T) {
 		t.Error("the config page does not say it rests on a description file")
 	}
 	d := Diff{Old: Config{Name: "old.json", Data: []byte(swapCfg("post")), Description: described(reg)}, New: Config{Name: "new.json", Data: []byte(swapCfg("post")), Description: described(reg)}}
-	if _, body := get(t, Handler(Options{Diff: &d}), "/"); !strings.Contains(body, "Checked per a description file") {
+	if _, body := get(t, Handler(Options{Diff: &d}), "/"); !strings.Contains(body, "checked per description file") {
 		t.Error("the diff page does not say it rests on a description file")
 	}
 }
@@ -338,5 +341,283 @@ func TestAnUnusableDescriptionIsNotACleanPass(t *testing.T) {
 	diff, err := BuildDiff(Diff{Old: c, New: Config{Name: "new.json", Data: []byte(swapCfg("post")), Description: described(only(t, "post"))}})
 	if err != nil || diff.Typed || diff.Basis != "" || diff.OldErrors == 0 {
 		t.Errorf("diff: typed %v basis %q old errors %d (%v)", diff.Typed, diff.Basis, diff.OldErrors, err)
+	}
+}
+
+// wholeProgram is a description holding every block the program registers, though a flow config uses
+// only some: the realistic -blocks file. Checking a config against it reports the unused blocks.
+func wholeProgram(t *testing.T) *plan.RegistryDescription {
+	t.Helper()
+	reg := plan.NewRegistry()
+	pass := func(_ context.Context, o order) (order, error) { return o, nil }
+	for _, err := range []error{
+		reg.RegisterStep("intake", pass, plan.ReadOnly()),
+		reg.RegisterStep("charge", pass, plan.Approval(&agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "fin"}})),
+		reg.RegisterStep("single", pass, plan.Approval(agent.SingleApproval())),
+		reg.RegisterStep("post", pass),
+	} {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return described(reg)
+}
+
+// Adding a description must never make check -diff less strict than the same diff without it. A
+// whole-program description makes every flow config report the blocks it does not use, so each side
+// has typed errors; the gate comparison then has nothing to read, and used to say nothing. The diff is
+// then made structurally, as it is without the description, and is not certified.
+func TestDiffWithADescriptionIsNeverLessStrict(t *testing.T) {
+	d := wholeProgram(t)
+	for _, c := range []struct{ from, to string }{{"charge", "post"}, {"single", "post"}, {"charge", "single"}, {"post", "charge"}, {"post", "post"}} {
+		without := Diff{Old: Config{Name: "old.json", Data: []byte(swapCfg(c.from))}, New: Config{Name: "new.json", Data: []byte(swapCfg(c.to))}}
+		with := Diff{Old: Config{Name: "old.json", Data: []byte(swapCfg(c.from)), Description: d}, New: Config{Name: "new.json", Data: []byte(swapCfg(c.to)), Description: d}}
+		var o1, o2 bytes.Buffer
+		weak1, err1 := CheckDiff(&o1, without)
+		weak2, err2 := CheckDiff(&o2, with)
+		if err1 != nil || err2 != nil {
+			t.Fatal(err1, err2)
+		}
+		v1, _ := BuildDiff(without)
+		v2, _ := BuildDiff(with)
+		if weak1 && !weak2 {
+			t.Errorf("%s -> %s: weakened without the description, not with it\\n%s\\n%s", c.from, c.to, o1.String(), o2.String())
+		}
+		if len(v2.Weakened) < len(v1.Weakened) {
+			t.Errorf("%s -> %s: weakened %q with, %q without", c.from, c.to, v2.Weakened, v1.Weakened)
+		}
+		if v2.Fallback == "" || v2.Typed || v2.OldErrors == 0 || !weak2 {
+			t.Errorf("%s -> %s: with errors on both sides the diff is not certified: fallback %q typed %v errors %d/%d exit %v", c.from, c.to, v2.Fallback, v2.Typed, v2.OldErrors, v2.NewErrors, weak2)
+		}
+		if v2.Verdict.Class == "good" {
+			t.Errorf("%s -> %s: verdict %+v", c.from, c.to, v2.Verdict)
+		}
+		if !strings.Contains(o2.String(), "not certified") {
+			t.Errorf("%s -> %s: the text does not say so: %q", c.from, c.to, o2.String())
+		}
+	}
+	// The reported case: a Single gate dropped.
+	with := Diff{Old: Config{Name: "o.json", Data: []byte(swapCfg("single")), Description: d}, New: Config{Name: "n.json", Data: []byte(swapCfg("post")), Description: d}}
+	v, _ := BuildDiff(with)
+	if len(v.Weakened) != 1 || v.Verdict.Class != "bad" || !strings.Contains(strings.Join(v.Verdict.Details, "\n"), "not certified") {
+		t.Errorf("single -> post: %q, verdict %+v", v.Weakened, v.Verdict)
+	}
+	// The same through a Registry that holds more than the config uses.
+	reg := plan.NewRegistry()
+	pass := func(_ context.Context, o order) (order, error) { return o, nil }
+	for _, err := range []error{reg.RegisterStep("intake", pass, plan.ReadOnly()), reg.RegisterStep("charge", pass, plan.Approval(agent.SingleApproval())), reg.RegisterStep("post", pass)} {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	rd := Diff{Old: Config{Name: "o.json", Data: []byte(swapCfg("charge")), Registry: reg}, New: Config{Name: "n.json", Data: []byte(swapCfg("post")), Registry: reg}}
+	if weak, err := CheckDiff(io.Discard, rd); err != nil || !weak {
+		t.Errorf("a Registry with an unused block: weakened %v, %v", weak, err)
+	}
+}
+
+// A description that fits each side exactly is typed and certified; the gate swap reads as the
+// description says. A side that uses a block the description lacks is not certified either.
+func TestDiffFallbackOnlyWhenATypedSideHasErrors(t *testing.T) {
+	exact := Diff{
+		Old: Config{Name: "o.json", Data: []byte(swapCfg("charge")), Description: described(only(t, "charge"))},
+		New: Config{Name: "n.json", Data: []byte(swapCfg("post")), Description: described(only(t, "post"))},
+	}
+	v, _ := BuildDiff(exact)
+	if v.Fallback != "" || !v.Typed || len(v.Weakened) != 1 {
+		t.Errorf("exact descriptions: fallback %q typed %v weakened %q", v.Fallback, v.Typed, v.Weakened)
+	}
+	missing := exact
+	missing.Old.Description = described(only(t, "post")) // the old config uses a block this lacks
+	v, _ = BuildDiff(missing)
+	if v.Fallback == "" || v.Typed || len(v.Weakened) != 1 {
+		t.Errorf("an old block the description lacks: fallback %q typed %v weakened %q", v.Fallback, v.Typed, v.Weakened)
+	}
+	var out bytes.Buffer
+	if weak, err := CheckDiff(&out, missing); err != nil || !weak {
+		t.Errorf("exit: %v %v", weak, err)
+	}
+	// With nothing to weaken and a side that did not check, the verdict is not good and the exit fails.
+	same := Diff{Old: Config{Name: "o.json", Data: []byte(swapCfg("post")), Description: wholeProgram(t)}, New: Config{Name: "n.json", Data: []byte(swapCfg("post")), Description: wholeProgram(t)}}
+	v, _ = BuildDiff(same)
+	if v.Verdict.Class == "good" || v.Fallback == "" {
+		t.Errorf("no changes, errors on both sides: %+v fallback %q", v.Verdict, v.Fallback)
+	}
+	if weak, _ := CheckDiff(io.Discard, same); !weak {
+		t.Error("no changes and a side that did not check passes -fail-on-weaken")
+	}
+}
+
+// Every result line says which side was typed and how: a description for one side only is labelled,
+// not read as a structural result or as a typed one.
+func TestDiffBasisNamesEachSide(t *testing.T) {
+	o, n := only(t, "charge"), only(t, "post")
+	v := swapDiff(t, "charge", "post", nil, n, described(o), nil)
+	if v.OldBasis != SourceDescription || v.NewBasis != SourceRegistry || v.BasisLine() == "" {
+		t.Errorf("description and registry: %q %q %q", v.OldBasis, v.NewBasis, v.BasisLine())
+	}
+	v = swapDiff(t, "charge", "post", nil, nil, described(o), nil)
+	if v.OldBasis != SourceDescription || v.NewBasis != "structural" || !strings.Contains(v.BasisLine(), "old config per description file") || !strings.Contains(v.BasisLine(), "new config structural") {
+		t.Errorf("old only: %q %q %q", v.OldBasis, v.NewBasis, v.BasisLine())
+	}
+	if v = swapDiff(t, "charge", "post", nil, nil, nil, nil); v.OldBasis != "structural" || v.BasisLine() != "" {
+		t.Errorf("neither: %q %q", v.OldBasis, v.BasisLine())
+	}
+	dir := t.TempDir()
+	put := func(name, data string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	b, _ := json.Marshal(o.Describe())
+	var out, errb bytes.Buffer
+	code := Main([]string{"-config", put("n.json", swapCfg("post")), "-diff", put("o.json", swapCfg("charge")), "-check", "-old-blocks", put("ob.json", string(b))}, &out, &errb, Stores{})
+	if code != 0 || !strings.Contains(out.String(), "old config per description file") {
+		t.Errorf("view -old-blocks alone: %d %q %q", code, out.String(), errb.String())
+	}
+}
+
+// ReadDescription never blocks on a file that is not a regular one, and a hostile file cannot make
+// an error message long.
+func TestReadDescriptionHostileFiles(t *testing.T) {
+	dir := t.TempDir()
+	if p, ok := makeFIFO(t, dir); ok {
+		done := make(chan error, 1)
+		go func() { _, err := ReadDescription(p); done <- err }()
+		select {
+		case err := <-done:
+			if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+				t.Errorf("a FIFO: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("ReadDescription blocked on a FIFO")
+		}
+	}
+	deep := filepath.Join(dir, "deep.json")
+	if err := os.WriteFile(deep, bytes.Repeat([]byte("["), MaxDescriptionFile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := ReadDescription(deep)
+	if err == nil || len(err.Error()) > 400 {
+		t.Errorf("a nested file: %d bytes of error", len(fmt.Sprint(err)))
+	}
+	long := filepath.Join(dir, "long.json")
+	if err := os.WriteFile(long, []byte(`{"version":1,"`+strings.Repeat("k", 5000)+`":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadDescription(long); err == nil || len(err.Error()) > 400 || !strings.Contains(err.Error(), "...") {
+		t.Errorf("a long key: %v", err)
+	}
+}
+
+// For every pair of configs and every kind of description a user might hand over (exact for each side,
+// the whole program, one that lacks a block, an empty one), adding the description never lowers the
+// exit status of check -diff -fail-on-weaken, and never drops a weakening the structural check reports,
+// except the "possibly" it could not see past and the description now answers (a block whose Go gate
+// is known).
+func TestDiffDescriptionNeverLessStrictCorpus(t *testing.T) {
+	blocks := []string{"charge", "single", "post"}
+	empty := &plan.RegistryDescription{Version: 1, Blocks: []plan.BlockDescription{}, Predicates: []plan.PredicateDescription{}, Merges: []plan.MergeDescription{}}
+	whole := wholeProgram(t)
+	lacking := func() *plan.RegistryDescription {
+		d := *whole
+		d.Blocks = nil
+		for _, b := range whole.Blocks {
+			if b.Name != "charge" {
+				d.Blocks = append(d.Blocks, b)
+			}
+		}
+		return &d
+	}()
+	kinds := map[string]func(from, to string) (*plan.RegistryDescription, *plan.RegistryDescription){
+		"whole":    func(string, string) (*plan.RegistryDescription, *plan.RegistryDescription) { return whole, whole },
+		"lacking":  func(string, string) (*plan.RegistryDescription, *plan.RegistryDescription) { return lacking, lacking },
+		"empty":    func(string, string) (*plan.RegistryDescription, *plan.RegistryDescription) { return empty, empty },
+		"old only": func(string, string) (*plan.RegistryDescription, *plan.RegistryDescription) { return whole, nil },
+		"new only": func(string, string) (*plan.RegistryDescription, *plan.RegistryDescription) { return nil, whole },
+	}
+	type key struct{ node, kind string }
+	weakKeys := func(v *DiffView) map[key]bool {
+		out := map[key]bool{}
+		for _, c := range v.Changes {
+			if c.Gate == "weakened" && !strings.Contains(strings.Join(c.Details, " "), "not visible without") {
+				out[key{c.Node, c.Weakening}] = true
+			}
+		}
+		return out
+	}
+	n := 0
+	for _, from := range blocks {
+		for _, to := range blocks {
+			base := Diff{Old: Config{Name: "o.json", Data: []byte(swapCfg(from))}, New: Config{Name: "n.json", Data: []byte(swapCfg(to))}}
+			without, _ := BuildDiff(base)
+			exitWithout, _ := CheckDiff(io.Discard, base)
+			for name, mk := range kinds {
+				od, nd := mk(from, to)
+				d := base
+				d.Old.Description, d.New.Description = od, nd
+				with, err := BuildDiff(d)
+				if err != nil {
+					t.Fatal(err)
+				}
+				exitWith, _ := CheckDiff(io.Discard, d)
+				n++
+				if exitWithout && !exitWith {
+					t.Errorf("%s %s->%s: fails without the description, passes with it", name, from, to)
+				}
+				if with.Fallback != "" {
+					// Not certified: the structural result, in full.
+					if len(with.Weakened) != len(without.Weakened) || !exitWith {
+						t.Errorf("%s %s->%s: fallback weakened %q vs %q, exit %v", name, from, to, with.Weakened, without.Weakened, exitWith)
+					}
+					continue
+				}
+				if with.Verdict.Class == "good" && without.Verdict.Class == "bad" && len(weakKeys(without)) > 0 {
+					t.Errorf("%s %s->%s: good with, bad without, and the weakening was not a 'possibly'", name, from, to)
+				}
+				for k := range weakKeys(without) {
+					if !weakKeys(with)[k] {
+						t.Errorf("%s %s->%s: the weakening %v of the structural check vanished", name, from, to, k)
+					}
+				}
+			}
+		}
+	}
+	if n < 40 {
+		t.Errorf("only %d diffs", n)
+	}
+}
+
+// The realistic use: one description of the whole program for every flow config. The blocks a config
+// does not use are not reported (a description is of the program; a flow uses some of it), so the gate
+// swap is judged by what the description says, typed and certified, and fails -fail-on-weaken.
+func TestMainWholeProgramDescription(t *testing.T) {
+	dir := t.TempDir()
+	put := func(name, data string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	b, _ := json.Marshal(wholeProgram(t))
+	desc := put("blocks.json", string(b))
+	run := func(args ...string) (int, string) {
+		var out, errb bytes.Buffer
+		code := Main(args, &out, &errb, Stores{})
+		return code, out.String() + errb.String()
+	}
+	code, out := run("-config", put("new.json", swapCfg("post")), "-diff", put("old.json", swapCfg("single")), "-check", "-fail-on-weaken", "-blocks", desc)
+	if code != 1 || !strings.Contains(out, "approval one decision -> none") || strings.Contains(out, "not certified") || strings.Contains(out, "error") {
+		t.Errorf("single -> post: %d %q", code, out)
+	}
+	code, out = run("-config", put("n2.json", swapCfg("single")), "-diff", put("o2.json", swapCfg("post")), "-check", "-fail-on-weaken", "-blocks", desc)
+	if code != 0 || !strings.Contains(out, "strengthened") && !strings.Contains(out, "1 change") {
+		t.Errorf("post -> single: %d %q", code, out)
+	}
+	if code, out = run("-config", put("c.json", swapCfg("post")), "-check", "-blocks", desc); code != 0 || strings.Contains(out, "registered but never used") {
+		t.Errorf("one config: %d %q", code, out)
 	}
 }

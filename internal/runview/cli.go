@@ -249,7 +249,7 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 				fmt.Fprintf(stderr, "%s%v\n", es.ErrorPrefix(), err)
 				return 1
 			}
-			c.Description, oldDesc = desc, desc
+			c.Description, c.AllowUnusedBlocks, oldDesc = desc, true, desc
 		}
 		if f.oldBlocks != "" {
 			if oldDesc, err = ReadDescription(f.oldBlocks); err != nil {
@@ -263,7 +263,7 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 				fmt.Fprintln(stderr, es.ErrorPrefix()+"bide view:", err)
 				return 1
 			}
-			old.Description = oldDesc
+			old.Description, old.AllowUnusedBlocks = oldDesc, oldDesc != nil
 			d := Diff{Old: old, New: c}
 			if _, err := BuildDiff(d); err != nil {
 				fmt.Fprintln(stderr, es.ErrorPrefix()+"bide view:", err)

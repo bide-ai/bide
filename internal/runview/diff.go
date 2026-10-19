@@ -89,7 +89,16 @@ type DiffView struct {
 	// a Registry, SourceDescription when a side was checked against a description file only (what
 	// that side's blocks declare is then as the file says, not checked against the program), empty
 	// when structural.
-	Basis     string   `json:"basis,omitempty"`
+	Basis string `json:"basis,omitempty"`
+	// OldBasis and NewBasis say how each side was checked: SourceRegistry, SourceDescription, or
+	// "structural".
+	OldBasis string `json:"old_basis"`
+	NewBasis string `json:"new_basis"`
+	// Fallback is set when a side checked against a Registry or a description had errors, so the typed
+	// comparison had nothing sound to read: the diff was made structurally, as it is without them,
+	// which never reads a gate as stronger than it can tell. It says so in words and the diff is not
+	// certified: -fail-on-weaken fails on it, and the verdict is never good.
+	Fallback  string   `json:"fallback,omitempty"`
 	OldDigest string   `json:"old_digest,omitempty"`
 	NewDigest string   `json:"new_digest,omitempty"`
 	Changes   []Change `json:"changes"`
@@ -121,14 +130,56 @@ type Counts struct {
 	EdgesChanged int `json:"edges_changed"`
 }
 
-// BasisLine says, when a side was checked against a description file, that its gates, safety and
-// types are as the file says; empty otherwise. The check against the program's Registry is the
-// control.
-func (v *DiffView) BasisLine() string {
-	if v.Basis != SourceDescription {
-		return ""
+// basisOf is how a side was checked: its source when the check was typed, else "structural".
+func basisOf(c Config, r plan.ConfigReport) string {
+	if r.Typed {
+		return c.source()
 	}
-	return DescriptionNote
+	return "structural"
+}
+
+// fallbackText says why a diff was made structurally and is not certified.
+func fallbackText(d Diff, oldErrs, newErrs int) string {
+	var which []string
+	if d.Old.source() != "" && oldErrs > 0 {
+		which = append(which, fmt.Sprintf("the old config has %d error%s", oldErrs, plural(oldErrs)))
+	}
+	if d.New.source() != "" && newErrs > 0 {
+		which = append(which, fmt.Sprintf("the new config has %d error%s", newErrs, plural(newErrs)))
+	}
+	against := "the plan.Registry"
+	if d.Old.source() == SourceDescription || d.New.source() == SourceDescription {
+		against = "the description file"
+	}
+	return "not certified: " + strings.Join(which, " and ") + " against " + against + " (bide check lists them), so the gates were compared structurally, as without it, and what the blocks declare in Go is not known"
+}
+
+// BasisLine says how each side was checked when that is not plainly "both structural" or "both against
+// the Registry": a description file for either side (its gates, safety and types are as the file says;
+// the check against the program's Registry is the control), a different basis per side, or a diff
+// that fell back to the structural comparison and is not certified. Empty otherwise.
+func (v *DiffView) BasisLine() string {
+	if v.Fallback != "" {
+		return v.Fallback
+	}
+	label := func(b string) string {
+		switch b {
+		case SourceDescription:
+			return "per description file"
+		case SourceRegistry:
+			return "checked against the program's Registry"
+		}
+		return "structural"
+	}
+	switch {
+	case v.OldBasis == v.NewBasis && v.OldBasis == SourceDescription:
+		return DescriptionNote
+	case v.OldBasis == v.NewBasis:
+		return ""
+	case v.OldBasis == SourceDescription || v.NewBasis == SourceDescription:
+		return "old config " + label(v.OldBasis) + ", new config " + label(v.NewBasis) + ": " + DescriptionNote
+	}
+	return "old config " + label(v.OldBasis) + ", new config " + label(v.NewBasis)
 }
 
 // DigestLine says how the digest changed, in words, for the text summary and the page.
@@ -138,7 +189,7 @@ func (v *DiffView) DigestLine() string {
 		return "digest unchanged: " + v.NewDigest
 	case v.OldDigest != "" && v.NewDigest != "":
 		return "digest " + v.OldDigest + " -> " + v.NewDigest
-	case v.Typed:
+	case v.Typed || v.Fallback != "":
 		return "digest not computed: a side has errors"
 	}
 	return "digest not computed: the check is structural (the digest commits to the blocks' Go types; see plan/planview)"
@@ -158,7 +209,17 @@ func BuildDiff(d Diff) (*DiffView, error) {
 		}
 	}
 	v := &DiffView{Name: d.New.Name, OldName: d.Old.Name, Flow: n.Topology.Flow, Typed: o.Typed && n.Typed,
-		OldDigest: o.Digest, NewDigest: n.Digest, OldErrors: errorCount(o), NewErrors: errorCount(n)}
+		OldDigest: o.Digest, NewDigest: n.Digest, OldErrors: errorCount(o), NewErrors: errorCount(n),
+		OldBasis: basisOf(d.Old, o), NewBasis: basisOf(d.New, n)}
+	// Adding a Registry or a description must never make the comparison less strict than without it.
+	// A typed report with errors has no approvals and no gates to read, and a comparison of what it
+	// does not have says nothing: compare structurally, as without, and say the diff is not certified.
+	if (d.Old.source() != "" && o.Errors()) || (d.New.source() != "" && n.Errors()) {
+		o, n = Config{Name: d.Old.Name, Data: d.Old.Data}.inspect(), Config{Name: d.New.Name, Data: d.New.Data}.inspect()
+		v.Typed = false
+		v.Fallback = fallbackText(d, v.OldErrors, v.NewErrors)
+		v.OldBasis, v.NewBasis = "structural", "structural"
+	}
 	if v.Typed {
 		v.Basis = SourceRegistry
 		if (o.Typed && d.Old.source() == SourceDescription) || (n.Typed && d.New.source() == SourceDescription) {
@@ -196,7 +257,8 @@ func BuildDiff(d Diff) (*DiffView, error) {
 
 // CheckDiff writes the diff as text, for CI and a pull request comment: one line per change, a
 // line per weakened approval gate, and a summary line with the counts and the digest, each
-// prefixed with the new config's name. It reports whether an approval policy was weakened.
+// prefixed with the new config's name. It reports whether an approval policy was weakened, or the diff could not be certified (DiffView.Fallback:
+// a side checked against a Registry or description had errors, so the gates were compared structurally).
 func CheckDiff(w io.Writer, d Diff) (weakened bool, err error) {
 	return CheckDiffStyled(w, d, term.Style{})
 }
@@ -258,7 +320,7 @@ func CheckDiffStyled(w io.Writer, d Diff, st term.Style) (weakened bool, err err
 	if l := v.BasisLine(); l != "" {
 		fmt.Fprintf(w, "%s: %s\n", name, st.Dim(l))
 	}
-	return len(v.Weakened) > 0, nil
+	return len(v.Weakened) > 0 || v.Fallback != "", nil
 }
 
 // diffRoutes serves the diff page at / and its view at /diff.json.
