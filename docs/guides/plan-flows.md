@@ -703,7 +703,7 @@ red heart as `U+2764 U+FE0F`), and a left-to-right or right-to-left mark in a na
 and digits. The reason is that two names differing only by an invisible character read the same and
 one can impersonate the other. The way out is to transliterate the name, or spell it without the
 joiner, selector or mark. The Default_Ignorable set is taken from the Unicode tables of the Go
-toolchain that built the program (Unicode 15.0.0 for Go 1.27); a rule that allows a joiner only where
+toolchain that built the program (Unicode 17.0.0 for Go 1.27); a rule that allows a joiner only where
 a script needs it, as IDNA does, may come later. Approver ids are held to
 printable ASCII by the gate itself. `bide check`, `bide check -diff`, `bide view` and every page and
 error message the viewer serves write any such character that reaches their output (a file name, a
