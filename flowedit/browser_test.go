@@ -1146,6 +1146,9 @@ func TestDragToConnectInChrome(t *testing.T) {
 		EscapePrevented     *bool    `json:"escapePrevented"`
 		PortsAfterRedraw    int      `json:"portsAfterRedraw"`
 		EscapeAnnounced     bool     `json:"escapeAnnounced"`
+		SvgWidthWide        float64  `json:"svgWidthWide"`
+		SvgWidthNarrow      float64  `json:"svgWidthNarrow"`
+		HitSizeNarrow       float64  `json:"hitSizeNarrow"`
 		HitSize             float64  `json:"hitSize"`
 		PageScrollable      bool     `json:"pageScrollable"`
 		CornerIsSvg         bool     `json:"cornerIsSvg"`
@@ -1187,6 +1190,9 @@ func TestDragToConnectInChrome(t *testing.T) {
 	}
 	if r.HitSize < 44 {
 		t.Errorf("the circle's touch target is %v px, want at least 44", r.HitSize)
+	}
+	if r.SvgWidthNarrow >= r.SvgWidthWide || r.HitSizeNarrow < 43.99 {
+		t.Errorf("after the window is narrowed (svg %v px wide, was %v) the touch target is %v px, want at least 44", r.SvgWidthNarrow, r.SvgWidthWide, r.HitSizeNarrow)
 	}
 	if !r.PageScrollable || !r.CornerIsSvg || r.TouchScrolled <= 0 || r.DragStartedByScroll {
 		t.Errorf("a touch away from the circle must scroll the page: scrollable %v, corner is bare svg %v, scrolled to %v, started a drag %v", r.PageScrollable, r.CornerIsSvg, r.TouchScrolled, r.DragStartedByScroll)

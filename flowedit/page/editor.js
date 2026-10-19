@@ -941,6 +941,7 @@ export function renderCanvas(v) {
     g.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(name); } });
     addPort(svg, g, name);
   }
+  if (typeof ResizeObserver === 'function') new ResizeObserver(() => { for (const fo of svg.querySelectorAll('foreignObject.port-hit')) fitHit(svg, fo); }).observe(svg);
   markSelected();
 }
 
@@ -951,6 +952,20 @@ export function renderCanvas(v) {
 // verification, the same weakened banner). It is a pointer shortcut and nothing depends on it:
 // every connection can be made, and removed, from the inspector by keyboard, and the circle is
 // hidden from assistive technology and not in the Tab order. Escape cancels a drag in progress.
+// Keep a port's hit area at least 44 CSS px square at the svg's current scale (the svg is scaled to the
+// window's width, so this runs again when its size changes).
+function fitHit(svg, fo) {
+  const ctm = svg.getScreenCTM();
+  const scale = ctm && ctm.a > 0 ? ctm.a : 1;
+  const side = Math.max(16, 44 / scale);
+  const x = Number(fo.getAttribute('data-cx'));
+  const y = Number(fo.getAttribute('data-cy'));
+  fo.setAttribute('x', String(x - side / 2));
+  fo.setAttribute('y', String(y - side / 2));
+  fo.setAttribute('width', String(side));
+  fo.setAttribute('height', String(side));
+}
+
 // The drag in progress, if any: its cleanup, so a redraw or a second pointer can end it.
 let activeDrag = null;
 function abortDrag() { if (activeDrag) activeDrag(); }
@@ -971,19 +986,16 @@ function addPort(svg, g, from) {
   // 44 CSS px square whatever the svg's scale: Chrome honours touch-action on HTML elements but not on
   // SVG shapes, and a touch that starts here must not be taken for a scroll while a touch anywhere
   // else on the flow still scrolls the page.
-  const scale = svg.getScreenCTM() ? svg.getScreenCTM().a : 1;
-  const side = Math.max(16, 44 / (scale > 0 ? scale : 1));
   const fo = document.createElementNS(SVGNS, 'foreignObject');
   fo.setAttribute('class', 'port-hit');
-  fo.setAttribute('x', String(x - side / 2));
-  fo.setAttribute('y', String(y - side / 2));
-  fo.setAttribute('width', String(side));
-  fo.setAttribute('height', String(side));
+  fo.setAttribute('data-cx', String(x));
+  fo.setAttribute('data-cy', String(y));
   const hit = document.createElementNS('http://www.w3.org/1999/xhtml', 'div');
   hit.setAttribute('class', 'port-hit-box');
   hit.setAttribute('aria-hidden', 'true');
   fo.append(hit);
   g.append(fo);
+  fitHit(svg, fo);
   const handle = hit;
   const at = (e) => {
     const pt = svg.createSVGPoint();

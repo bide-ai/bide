@@ -191,6 +191,16 @@ try {
   await page.mouse.up();
   await until(() => document.getElementById('source').value.includes('edge: [validate, ledger]'), null, 'the edge from the scrolled drag');
   await atRest();
+  // The window is made narrower after the flow is drawn: the svg is scaled down, and the hit area is
+  // made larger in drawing units to stay at least 44 CSS px.
+  const hitNow = () => page.$eval('#canvas g.node[data-id="receipt"] .port-hit-box', (e) => { const b = e.getBoundingClientRect(); return Math.min(b.width, b.height); });
+  const svgWidth = () => page.$eval('#canvas svg', (e) => e.getBoundingClientRect().width);
+  r.svgWidthWide = await svgWidth();
+  await page.setViewport({ width: 500, height: 500, hasTouch: true });
+  await page.waitForFunction((w) => document.querySelector('#canvas svg').getBoundingClientRect().width < w, { timeout: 5000 }, r.svgWidthWide).catch(() => {});
+  r.svgWidthNarrow = await svgWidth();
+  await page.waitForFunction(() => { const b = document.querySelector('#canvas g.node[data-id="receipt"] .port-hit-box').getBoundingClientRect(); return Math.min(b.width, b.height) >= 43.99; }, { timeout: 3000 }).catch(() => {});
+  r.hitSizeNarrow = await hitNow();
   out = { ok: true, ...r, console: console_, failed, offOrigin };
 } catch (e) {
   const live = await page?.$eval('#live', (x) => x.textContent).catch(() => '?');
