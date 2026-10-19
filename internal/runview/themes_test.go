@@ -91,7 +91,7 @@ func TestAssetsServed(t *testing.T) {
 			t.Cleanup(func() { _ = mime.AddExtensionType(ext, old) })
 		}
 	}
-	want := map[string]string{".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".html": "text/html; charset=utf-8"}
+	want := map[string]string{".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8"}
 	h := Handler(Options{Config: &Config{}})
 	entries, err := fs.ReadDir(rawAssets(), ".")
 	if err != nil {
@@ -99,12 +99,21 @@ func TestAssetsServed(t *testing.T) {
 	}
 	served := 0
 	for _, e := range entries {
-		if path.Ext(e.Name()) == ".html" {
-			continue // the page templates; index.html is redirected by the file server, and none is a script or a style
-		}
 		typ, ok := want[path.Ext(e.Name())]
 		if !ok {
-			t.Errorf("asset %s has an extension the test does not know; add it to assetTypes and to this table", e.Name())
+			// The page templates are in the directory and are not assets: they are 404.
+			if path.Ext(e.Name()) != ".html" {
+				t.Errorf("asset %s has an extension the test does not know; add it to assetTypes and to this table, or serve nothing of it", e.Name())
+			}
+			for _, p := range []string{"/assets/" + e.Name(), "/assets/" + e.Name() + "/", "/assets/"} {
+				req := httptest.NewRequest("GET", p, nil)
+				req.Host = "127.0.0.1:8484"
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, req)
+				if rec.Code != 404 || strings.Contains(rec.Body.String(), "{{") {
+					t.Errorf("GET %s = %d, body %.40q: a template or a listing must be 404", p, rec.Code, rec.Body.String())
+				}
+			}
 			continue
 		}
 		req := httptest.NewRequest("GET", "/assets/"+e.Name(), nil)
@@ -116,12 +125,18 @@ func TestAssetsServed(t *testing.T) {
 		}
 		served++
 	}
-	if served < 12 {
+	if served < 8 {
 		t.Errorf("only %d assets checked", served)
 	}
-	// An extension without an entry is not served as something the browser might run.
-	if got := assetTypes[".exe"]; got != "" {
-		t.Errorf("assetTypes has .exe: %q", got)
+	// An extension without an entry is 404, not served as something the browser might run.
+	for _, p := range []string{"/assets/nope.exe", "/assets/nope.mjs", "/assets/style.CSS", "/assets/style.css.", "/assets/"} {
+		req := httptest.NewRequest("GET", p, nil)
+		req.Host = "127.0.0.1:8484"
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != 404 {
+			t.Errorf("GET %s = %d, want 404", p, rec.Code)
+		}
 	}
 	req := httptest.NewRequest("GET", "/assets/style.css", nil)
 	req.Host = "127.0.0.1:8484"

@@ -460,30 +460,29 @@ func (s staticStore) Load(_ context.Context, _ string, after int64) iter.Seq2[ag
 	}
 }
 
-// assetTypes is the Content-Type of each kind of file the viewer serves, by extension. It is a fixed
-// table and not the operating system's: Go reads the type of an extension from the platform (on
-// Windows, the registry), so a machine that maps .js or .css to text/plain, by mistake or on purpose,
-// would with nosniff leave every page without its script and style.
+// assetTypes is the Content-Type of each kind of file /assets/ serves, by extension, and the list of
+// kinds it serves at all: the pages' scripts and styles. It is a fixed table and not the operating
+// system's: Go reads the type of an extension from the platform (on Windows, the registry), so a
+// machine that maps .js or .css to text/plain, by mistake or on purpose, would with nosniff leave
+// every page without its script and style. The page templates (.html) are in the same directory and
+// are not served.
 var assetTypes = map[string]string{
 	".js":   "text/javascript; charset=utf-8",
 	".css":  "text/css; charset=utf-8",
-	".html": "text/html; charset=utf-8",
 	".json": "application/json",
 	".svg":  "image/svg+xml",
 }
 
-// typed sets the Content-Type of a file from assetTypes before the file server writes it, and
-// application/octet-stream for an extension it has no entry for. A directory listing (no extension)
-// keeps the file server's own text/html.
+// typed serves only the extensions in assetTypes, each with its table type set before the file
+// server writes it. Anything else, a template, a directory listing or an unknown extension, is 404.
 func typed(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if ext := path.Ext(r.URL.Path); ext != "" {
-			t, ok := assetTypes[ext]
-			if !ok {
-				t = "application/octet-stream"
-			}
-			w.Header().Set("Content-Type", t)
+		t, ok := assetTypes[path.Ext(r.URL.Path)]
+		if !ok {
+			http.NotFound(w, r)
+			return
 		}
+		w.Header().Set("Content-Type", t)
 		h.ServeHTTP(w, r)
 	})
 }
