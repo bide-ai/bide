@@ -95,6 +95,14 @@ text, and a burst of typing in the source is one step. After a change the focus 
 control you changed. A changed gate, safety or block is compared with the baseline like any other
 edit, so the weakened banner appears when the change weakens the flow, with the same words as in CI.
 
+**Undo and Redo cover every kind of edit, structure included.** A node added, renamed, moved or
+removed, an edge, a switch, an arm, a loop bound, a join, the flow's name and a gate removed are each
+one step; Undo walks back to the file's exact text one step at a time and Redo forward again. The
+history holds whole texts, and for each one the server computes the check, the weakened banner and
+the diff again, so the page never shows a verdict from an older text. The history is kept across a save:
+after saving, Undo still works, the page says the text differs from the file (`unsaved changes`), and
+Redo back to the saved text says `saved`. A test drives every kind of step and the walk both ways.
+
 ## Nodes: add, remove, rename and the entry
 
 These are operations like the forms above, and are checked the same way: the server applies the

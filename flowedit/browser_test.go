@@ -1043,3 +1043,60 @@ func TestJoinsInChrome(t *testing.T) {
 		t.Errorf("removing the join: title %q, list %q\n%s", r.DialogTitle, r.RemoveList, r.AfterRemove)
 	}
 }
+
+// TestUndoCoversStructureEditsInChrome: Undo and Redo walk a sequence of every kind of structure edit
+// byte for byte, the weakened banner follows each text, and the history survives a save.
+func TestUndoCoversStructureEditsInChrome(t *testing.T) {
+	s, _ := newTestServer(t, "refund.yaml", weakFlow)
+	var r struct {
+		OK                     bool     `json:"ok"`
+		Error                  string   `json:"error"`
+		Steps                  int      `json:"steps"`
+		BannerWhenWeakened     string   `json:"bannerWhenWeakened"`
+		UndoMatches            []bool   `json:"undoMatches"`
+		BannerAfterFirstUndo   string   `json:"bannerAfterFirstUndo"`
+		UndoDisabledAtStart    bool     `json:"undoDisabledAtStart"`
+		StateAtStart           string   `json:"stateAtStart"`
+		Original               string   `json:"original"`
+		RedoMatches            []bool   `json:"redoMatches"`
+		RedoDisabledAtEnd      bool     `json:"redoDisabledAtEnd"`
+		Disk                   string   `json:"disk"`
+		Last                   string   `json:"last"`
+		UndoEnabledAfterSave   bool     `json:"undoEnabledAfterSave"`
+		StateAfterUndoPastSave string   `json:"stateAfterUndoPastSave"`
+		DiskStill              bool     `json:"diskStill"`
+		StateAfterRedoToSaved  string   `json:"stateAfterRedoToSaved"`
+		Console                []string `json:"console"`
+		Failed                 []string `json:"failed"`
+		OffOrigin              []string `json:"offOrigin"`
+	}
+	runScript(t, "undo.mjs", s, &r)
+	if !r.OK {
+		t.Fatalf("the script failed: %s\nconsole: %q\nfailed requests: %q", r.Error, r.Console, r.Failed)
+	}
+	if len(r.Console) > 0 || len(r.Failed) > 0 || len(r.OffOrigin) > 0 {
+		t.Errorf("the browser reported console %q, failed requests %q, requests off the origin %q", r.Console, r.Failed, r.OffOrigin)
+	}
+	if r.Steps != 9 || len(r.UndoMatches) != 9 || len(r.RedoMatches) != 9 {
+		t.Fatalf("steps %d, undos %d, redos %d", r.Steps, len(r.UndoMatches), len(r.RedoMatches))
+	}
+	for i, ok := range r.UndoMatches {
+		if !ok {
+			t.Errorf("undo %d did not give the earlier text and its banner", i+1)
+		}
+	}
+	for i, ok := range r.RedoMatches {
+		if !ok {
+			t.Errorf("redo %d did not give the later text and its banner", i+1)
+		}
+	}
+	if !strings.Contains(r.BannerWhenWeakened, "APPROVAL GATE WEAKENED") || strings.Contains(r.BannerAfterFirstUndo, "APPROVAL GATE WEAKENED") {
+		t.Errorf("the banner: when weakened %q, after undoing the gate removal %q", r.BannerWhenWeakened, r.BannerAfterFirstUndo)
+	}
+	if !r.UndoDisabledAtStart || r.StateAtStart != "saved" || r.Original != weakFlow || !r.RedoDisabledAtEnd {
+		t.Errorf("at the ends: undo disabled %v, state %q, redo disabled %v", r.UndoDisabledAtStart, r.StateAtStart, r.RedoDisabledAtEnd)
+	}
+	if r.Disk != r.Last || !r.UndoEnabledAfterSave || r.StateAfterUndoPastSave != "unsaved changes" || !r.DiskStill || r.StateAfterRedoToSaved != "saved" {
+		t.Errorf("around a save: undo enabled %v, state after undo %q, file untouched %v, state after redo %q", r.UndoEnabledAfterSave, r.StateAfterUndoPastSave, r.DiskStill, r.StateAfterRedoToSaved)
+	}
+}
