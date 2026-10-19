@@ -59,3 +59,4 @@ gocache-*/
 # The editor Chrome job installs puppeteer-core here (flowedit/browser/package-lock.json)
 flowedit/browser/node_modules/
 internal/runview/browser/node_modules/
+approvals/page/test/chrome/node_modules/

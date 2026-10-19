@@ -1,26 +1,26 @@
-body { font: 16px/1.5 system-ui, sans-serif; margin: 0; background: #f6f6f4; color: #1d1d1b; }
+/* The approve page. Every color, font and radius is a custom property, and the properties are not
+   defined here: the build writes them in front of this file (internal/theme, see
+   docs/design/themes.md) from the shipped themes, picked by the reader's system settings
+   (prefers-color-scheme, prefers-contrast, forced-colors) and by nothing else. The page takes no
+   theme from a script, a URL, config.json or its host, so what an approver sees is fixed by the
+   bytes the release pins. */
+body { font: 16px/1.5 var(--font); margin: 0; background: var(--bg); color: var(--fg); }
 main { max-width: 46rem; margin: 0 auto; padding: 1.5rem 1rem 3rem; }
 h1 { font-size: 1.5rem; }
 h2 { font-size: 1.15rem; margin-top: 2rem; }
 h3 { font-size: 1rem; margin-top: 1.5rem; }
 dl { display: grid; grid-template-columns: 6rem 1fr; gap: .25rem 1rem; }
-dt { color: #555; }
+dt { color: var(--muted); }
 dd { margin: 0; overflow-wrap: anywhere; }
-pre { background: #fff; border: 1px solid #bbb; padding: .75rem; max-height: 18rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 14px/1.4 ui-monospace, monospace; }
-code { font: 14px ui-monospace, monospace; overflow-wrap: anywhere; }
-input { font: inherit; padding: .4rem .5rem; width: 16rem; max-width: 100%; }
-button { font: inherit; padding: .5rem 1rem; border: 1px solid #333; background: #1d4d1d; color: #fff; border-radius: 4px; cursor: pointer; }
-button.reject { background: #7a1c1c; }
-button:disabled { background: #999; border-color: #999; cursor: not-allowed; }
-.warn { color: #7a4b00; border-left: 4px solid #c98400; padding-left: .5rem; }
-.note { color: #555; font-size: .9rem; }
-.ok { color: #1d4d1d; font-weight: 600; }
-.bad { color: #7a1c1c; font-weight: 600; }
-@media (prefers-color-scheme: dark) {
-  body { background: #161615; color: #e8e8e4; }
-  pre { background: #1f1f1e; border-color: #555; }
-  dt, .note { color: #aaa; }
-  .warn { color: #e0b060; }
-  .ok { color: #7cc47c; }
-  .bad { color: #e08080; }
-}
+pre { background: var(--card); border: 1px solid var(--line-strong); padding: .75rem; max-height: 18rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 14px/1.4 var(--mono); }
+code { font: 14px var(--mono); overflow-wrap: anywhere; }
+input { font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--line-strong); border-radius: var(--r-sm); padding: .4rem .5rem; width: 16rem; max-width: 100%; }
+button { font: inherit; padding: .5rem 1rem; border: 1px solid var(--good); background: var(--good); color: var(--on-sem); border-radius: var(--r-sm); cursor: pointer; }
+button.reject { border-color: var(--bad); background: var(--bad); }
+/* A disabled button is told by its dashed edge and its quiet text as well as its color. */
+button:disabled { background: transparent; color: var(--muted); border: 2px dashed var(--idle); cursor: not-allowed; }
+a:focus-visible, button:focus-visible, input:focus-visible, pre:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.warn { color: var(--warn); border-left: 4px solid var(--warn); padding-left: .5rem; }
+.note { color: var(--muted); font-size: .9rem; }
+.ok { color: var(--good); font-weight: 600; }
+.bad { color: var(--bad); font-weight: 600; }

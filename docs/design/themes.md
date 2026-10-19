@@ -460,8 +460,9 @@ about 47 KB against a 150 KB budget; the approve bundle about 43 KB, of which `a
   about +2 KB. A custom theme adds about 1.3 KB.
 - Editor: `editor.js` and `editor.css` change by tens of bytes (the toggle, `border_strong`,
   `on_accent`). Well inside the budget.
-- Approve page: about +3 KB for the tokens, the three themes and the forced-colors block (about +7%
-  of the bundle). No new file, so no new SRI attribute and no new entry in the SUMS.
+- Approve page: measured at +5.4 KB (`app.css` 1.5 KB to 6.9 KB; the bundle 43 KB to 49 KB, about
+  +12%): the system-selected `light`, `dark` and `high-contrast` blocks and the forced-colors block,
+  with no per-theme blocks. No new file, so no new SRI attribute and no new entry in the SUMS.
 - The Go side: a package of a few hundred lines (parser, checks, CSS, the two colour-science
   functions) and the shipped theme data. No dependency.
 

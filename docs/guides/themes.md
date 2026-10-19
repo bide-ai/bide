@@ -7,8 +7,8 @@ including what a theme can never change, is in [Themes](../design/themes.md).
 **Status.** The run viewer (`bide view`, and the diff and config pages it serves) draws from the
 checked themes: `light`, `dark` and `high-contrast`, plus a theme file of your own with `-theme`. The
 flow editor shares the viewer's stylesheet and so takes the same tokens, but its own toggle still
-switches between light and dark only; the editor's `-theme` flag and the approve page come in later
-releases.
+switches between light and dark only; the editor's `-theme` flag comes in a later release. The approve
+page uses the shipped themes inside its pinned bundle, chosen by the system's settings alone (below).
 
 A theme is data: a JSON file of typed values, never CSS. It cannot add a selector, a property, a URL
 or a function, so it cannot hide, move or restyle a control. It also cannot change a word, an icon,
@@ -103,6 +103,16 @@ refused. Every key and value in an error is quoted, so a file cannot print a ter
 - **Controls.** The edge of every input, select and button is the `border_strong` colour, which
   must reach 3:1 against the surface under it in every theme. Decorative borders (cards, tables)
   use the quieter `border`.
+
+## The approve page
+
+The approve page takes no theme file and no flag. Its bundle (`index.html`, `page.js`, `app.css`, pinned
+by the signed `approve-page.SHA256SUMS`) carries the shipped themes: `light` and `dark` by your system's
+colour scheme, `high-contrast` when it asks for more contrast, the system's colours under forced colours.
+Nothing a script, a URL, `config.json` or the host supplies can choose or change the look, which is what
+keeps it inside the pin: what an approver sees depends on the pinned bytes and their own system settings.
+A deployment that wants other colours forks the bundle and pins its own hash. See [the approve page's
+design](../design/approve-page.md#what-it-looks-like-and-who-can-change-that).
 
 What a theme can never change is in the [design note](../design/themes.md): no selector, no property, no
 word, icon or shape.

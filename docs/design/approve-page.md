@@ -133,6 +133,25 @@ Very long values are shown in full in a scroll box and are never clipped: a clip
 enabled would sign arguments the approver did not read, which the CLI refuses to do. Signing is also disabled
 until the approver has reached the end of the box, as an aid (see "Controls").
 
+## What it looks like, and who can change that
+
+The page's look is part of the pin. Its stylesheet, `app.css`, is the shipped themes (`light`, `dark`,
+`high-contrast`) written in front of the page's own rules at build time, picked by the reader's system
+settings alone: `prefers-color-scheme`, `prefers-contrast: more` and `forced-colors: active`. There
+is no toggle and no `data-theme`, and the script, the URL, `config.json` (which names the intake and
+the credentials mode and nothing else) and the host supply no theme, colour, font, name or logo, so a
+deployment cannot change what an approver sees without changing a pinned file, and the application
+that serves the page in the application-served mode cannot either. A look that an application could
+choose would let it hide the digest, make REJECT look like the safe button or draw the origin line as
+something else, on the one page whose point is that the approver sees what they sign. (A host that
+wants its own colours forks the bundle and pins its own hash, as for any change to this page; a name
+and logo slot was considered and is not built, see [Themes](../design/themes.md), option C.) The themes are
+the same checked data the run viewer uses: contrast 4.5:1 for text and 3:1 for a control's edge in
+every theme, a disabled button told by a dashed edge as well as its colour, and the system's colours
+under forced colours. A Chrome test (`TestPage_LookInChrome`) draws the page under each look and a Go
+test (`TestPage_TakesNoThemeInput`) holds the no-input property. The bundle is larger by the generated
+themes, about 5 KB (`app.css` 1.5 KB to 6.9 KB).
+
 ## Same-origin, locked down
 
 The page's HTML carries `Content-Security-Policy: default-src 'none'; script-src 'self'; connect-src
