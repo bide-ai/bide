@@ -86,7 +86,7 @@ func CSSDefault(themes []*Theme, def string) string {
 		seen[t.name] = true
 	}
 	root := themes[0]
-	var dark *Theme
+	var dark, contrast *Theme
 	names := make([]string, len(themes))
 	found := def == ""
 	for i, t := range themes {
@@ -96,6 +96,8 @@ func CSSDefault(themes []*Theme, def string) string {
 			root = t
 		case "dark":
 			dark = t
+		case "high-contrast":
+			contrast = t
 		}
 		if t.name == def {
 			found = true
@@ -124,8 +126,52 @@ func CSSDefault(themes []*Theme, def string) string {
 		b.WriteString(inner.String())
 		b.WriteString("}\n")
 	}
+	if contrast != nil {
+		// A reader who asks the system for more contrast gets the high-contrast theme, over the
+		// dark one and over a host's default, unless they chose a theme in the page (data-theme).
+		b.WriteString("@media (prefers-contrast: more) {\n")
+		var inner strings.Builder
+		writeBlock(&inner, ":root:not([data-theme])", contrast.declarations())
+		b.WriteString(inner.String())
+		b.WriteString("}\n")
+	}
 	for _, t := range themes {
 		writeBlock(&b, `:root[data-theme="`+t.name+`"]`, t.declarations())
 	}
+	// Forced colors: the system's colors win over every theme, a host's default and a reader's
+	// choice. The block comes last and is as specific as the theme blocks, so it beats them all.
+	b.WriteString("@media (forced-colors: active) {\n")
+	var forced strings.Builder
+	writeBlock(&forced, ":root:root, :root[data-theme]", forcedDeclarations())
+	b.WriteString(forced.String())
+	b.WriteString("}\n")
 	return b.String()
+}
+
+// forcedColors maps each color slot to the system color that carries its role when the system
+// forces colors: the ground is Canvas, text and every state color are CanvasText (the system offers
+// one text color, so a state is told by its shape, glyph and words), links and the info color are
+// LinkText, quiet strokes and borders GrayText, the control edge ButtonBorder, the focus ring
+// Highlight. docs/design/themes.md has the table and the reasons.
+var forcedColors = map[string]string{
+	"surface.bg": "Canvas", "surface.surface": "Canvas", "surface.surface2": "Canvas", "surface.canvas_bg": "Canvas", "surface.node_fill": "Canvas",
+	"surface.text": "CanvasText", "surface.muted": "CanvasText", "surface.border": "GrayText", "surface.border_strong": "ButtonBorder",
+	"surface.accent": "LinkText", "surface.accent_bg": "Canvas", "surface.on_accent": "Canvas", "surface.focus": "Highlight",
+	"semantic.ok.fg": "CanvasText", "semantic.warning.fg": "CanvasText", "semantic.alert.fg": "CanvasText", "semantic.gated.fg": "CanvasText",
+	"semantic.effect.fg": "CanvasText", "semantic.idem.fg": "CanvasText", "semantic.info.fg": "LinkText", "semantic.idle.fg": "GrayText", "semantic.on.fg": "Canvas",
+	"semantic.ok.bg": "Canvas", "semantic.warning.bg": "Canvas", "semantic.alert.bg": "Canvas", "semantic.gated.bg": "Canvas",
+	"semantic.effect.bg": "Canvas", "semantic.idem.bg": "Canvas", "semantic.info.bg": "Canvas",
+	"syntax.key": "CanvasText", "syntax.str": "CanvasText", "syntax.num": "CanvasText", "syntax.bool": "CanvasText", "syntax.null": "GrayText", "syntax.punct": "GrayText",
+}
+
+// forcedDeclarations are the custom properties of the forced-colors block: the colors above, no
+// shadow, and the dark-or-light of the system (color-scheme is left to the system).
+func forcedDeclarations() []string {
+	var d []string
+	for _, s := range slots {
+		for _, n := range s.css {
+			d = append(d, n+": "+forcedColors[s.path]+";")
+		}
+	}
+	return append(d, "--shadow: none;")
 }

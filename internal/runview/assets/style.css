@@ -35,7 +35,7 @@ pre { white-space: pre-wrap; word-break: break-word; margin: var(--s1) 0; }
 .v-good { --vc: var(--good); --vbg: var(--good-bg); }
 .v-bad { --vc: var(--bad); --vbg: var(--bad-bg); }
 .v-warn { --vc: var(--warn); --vbg: var(--warn-bg); }
-.v-wait { --vc: var(--accent); --vbg: var(--accent-bg); }
+.v-wait { --vc: var(--info); --vbg: var(--info-bg); }
 .v-info { --vc: var(--muted); --vbg: var(--card-2); }
 .vicon { color: var(--vc); font-size: 48px; line-height: 0; flex: none; }
 .vicon .ic { stroke-width: 1.4; }

@@ -16,7 +16,7 @@ func cssProps(t *testing.T, sel string) map[string]string {
 	comment := regexp.MustCompile(`(?s)/\*.*?\*/`)
 	rule := regexp.MustCompile(`([^{}]+)\{([^{}]*)\}`)
 	props := map[string]string{}
-	for _, f := range []string{"style.css", "graph.css", "diff.css", "extras.css", "timeline.css", "live.css"} {
+	for _, f := range []string{"style.css", "graph.css", "diff.css", "extras.css", "timeline.css", "live.css", "runs.css", "attention.css"} {
 		b, err := os.ReadFile("assets/" + f)
 		if err != nil {
 			t.Fatal(err)
@@ -276,6 +276,36 @@ func TestAuditIsComplete(t *testing.T) {
 	for id := range auditStatus {
 		if !inDoc[id] {
 			t.Errorf("auditStatus has %s, which is not a row of the audit table", id)
+		}
+	}
+}
+
+// TestStateColoursUseInfo: what a page says with the info colour (waiting for a person, the path
+// taken, the last node, live) is drawn with --info, not with --accent, which is what a link, the
+// focus ring and the selected row use. The two have one value in every shipped theme; a custom theme
+// may set them apart.
+func TestStateColoursUseInfo(t *testing.T) {
+	for _, sel := range []string{
+		".edge.taken", ".arrowhead.taken", ".node.waiting .box", ".node.waiting .disc", ".node.last .box", ".node.last",
+		".lg.waiting::before", ".lg.lastk::before", ".lg.taken::before", ".v-wait", ".pill.live", ".ev.fresh", ".newbadge", ".ev.fresh .seq",
+		".chip-waiting .count", "table.runlist .pill.state-waiting", ".kind-approval",
+	} {
+		joined := ""
+		for k, v := range cssProps(t, sel) {
+			joined += k + ":" + v + ";"
+		}
+		if strings.Contains(joined, "var(--accent") || !strings.Contains(joined, "var(--info") {
+			t.Errorf("%s is a state drawn with the info color but reads %s", sel, joined)
+		}
+	}
+	// Links, the focus ring and the selected row stay on accent.
+	for _, sel := range []string{"a", "table.runlist tbody tr.cur"} {
+		joined := ""
+		for k, v := range cssProps(t, sel) {
+			joined += k + ":" + v + ";"
+		}
+		if !strings.Contains(joined, "var(--accent") {
+			t.Errorf("%s is interactive and should read --accent: %s", sel, joined)
 		}
 	}
 }

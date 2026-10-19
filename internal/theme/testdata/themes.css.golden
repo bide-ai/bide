@@ -120,6 +120,67 @@
   color-scheme: dark;
 }
 }
+@media (prefers-contrast: more) {
+:root:not([data-theme]) {
+  --bg: #ffffff;
+  --card: #ffffff;
+  --card-2: #f0f0f0;
+  --fg: #000000;
+  --muted: #3a3a36;
+  --line: #595953;
+  --line-strong: #1a1a17;
+  --accent: #1b52b0;
+  --accent-bg: #e8eef7;
+  --on-accent: #ffffff;
+  --focus: #1b52b0;
+  --canvas-bg: #ffffff;
+  --node-fill: #ffffff;
+  --good: #1c6935;
+  --good-bg: #e8f0eb;
+  --info: #1b52b0;
+  --info-bg: #e8eef7;
+  --warn: #966102;
+  --warn-bg: #f4efe6;
+  --bad: #a2221c;
+  --bad-bg: #f6e9e8;
+  --gate: #6a3cae;
+  --gate-bg: #f0ecf7;
+  --side: #9a4408;
+  --side-bg: #f5ece6;
+  --idem: #24646f;
+  --idem-bg: #e9f0f1;
+  --idle: #6b6b64;
+  --on-sem: #ffffff;
+  --j-key: #1b52b0;
+  --j-str: #1b6a32;
+  --j-num: #835400;
+  --j-bool: #6a3cae;
+  --j-null: #55554e;
+  --j-punct: #55554e;
+  --shadow: none;
+  --scrim: rgb(0 0 0 / 0.60);
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --t-xs: 12px;
+  --t-sm: 13.5px;
+  --t-md: 15.5px;
+  --t-lg: 18px;
+  --t-xl: 24px;
+  --t-2xl: 36px;
+  --t-hero: 36px;
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+  --s7: 48px;
+  --r-sm: 2px;
+  --r-md: 4px;
+  --r-lg: 6px;
+  color-scheme: light;
+}
+}
 :root[data-theme="light"] {
   --bg: #f6f6f2;
   --card: #ffffff;
@@ -296,4 +357,44 @@
   --r-md: 4px;
   --r-lg: 6px;
   color-scheme: light;
+}
+@media (forced-colors: active) {
+:root:root, :root[data-theme] {
+  --bg: Canvas;
+  --card: Canvas;
+  --card-2: Canvas;
+  --fg: CanvasText;
+  --muted: CanvasText;
+  --line: GrayText;
+  --line-strong: ButtonBorder;
+  --accent: LinkText;
+  --accent-bg: Canvas;
+  --on-accent: Canvas;
+  --focus: Highlight;
+  --canvas-bg: Canvas;
+  --node-fill: Canvas;
+  --good: CanvasText;
+  --good-bg: Canvas;
+  --info: LinkText;
+  --info-bg: Canvas;
+  --warn: CanvasText;
+  --warn-bg: Canvas;
+  --bad: CanvasText;
+  --bad-bg: Canvas;
+  --gate: CanvasText;
+  --gate-bg: Canvas;
+  --side: CanvasText;
+  --side-bg: Canvas;
+  --idem: CanvasText;
+  --idem-bg: Canvas;
+  --idle: GrayText;
+  --on-sem: Canvas;
+  --j-key: CanvasText;
+  --j-str: CanvasText;
+  --j-num: CanvasText;
+  --j-bool: CanvasText;
+  --j-null: GrayText;
+  --j-punct: GrayText;
+  --shadow: none;
+}
 }

@@ -7,8 +7,8 @@ including what a theme can never change, is in [Themes](../design/themes.md).
 **Status.** The run viewer (`bide view`, and the diff and config pages it serves) draws from the
 checked themes: `light`, `dark` and `high-contrast`, plus a theme file of your own with `-theme`. The
 flow editor shares the viewer's stylesheet and so takes the same tokens, but its own toggle still
-switches between light and dark only; the editor's `-theme` flag, the approve page and forced-colors
-support come in later releases.
+switches between light and dark only; the editor's `-theme` flag and the approve page come in later
+releases.
 
 A theme is data: a JSON file of typed values, never CSS. It cannot add a selector, a property, a URL
 or a function, so it cannot hide, move or restyle a control. It also cannot change a word, an icon,
@@ -89,6 +89,20 @@ refused. Every key and value in an error is quoted, so a file cannot print a ter
   choice, which the browser remembers.
 - The sun button in the header, or `t`, steps through the list, names the theme it shows and announces the change to a screen reader.
 
+## Contrast and forced colours
+
+- **More contrast.** A reader whose system asks for more contrast (`prefers-contrast: more`) gets the
+  `high-contrast` theme: black text on white, borders and strokes at 4.5:1 or more, text at 7:1. It wins
+  over the dark system setting and over a `-theme-default`, and a reader who has chosen a theme in
+  the page keeps their choice.
+- **Forced colours.** When the system forces colours (Windows contrast themes, `forced-colors:
+  active`), the system's colours win over every theme, a default and a reader's choice, and a theme
+  file cannot change that. Every state then draws in one colour, so the graph tells the run states by
+  the shape of the node's box: a thin solid box is done, dashes attempted, dash-dot waiting, a heavy
+  solid box halted, dots not reached. The glyph and the words in each node stay.
+- **Controls.** The edge of every input, select and button is the `border_strong` colour, which
+  must reach 3:1 against the surface under it in every theme. Decorative borders (cards, tables)
+  use the quieter `border`.
+
 What a theme can never change is in the [design note](../design/themes.md): no selector, no property, no
-word, icon or shape. What happens under forced colours and `prefers-contrast` comes with a later
-release.
+word, icon or shape.

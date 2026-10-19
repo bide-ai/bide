@@ -11,8 +11,13 @@
     const list = read("--bide-themes").split(/\s+/).filter(Boolean);
     return list.length ? list : ["light", "dark"];
   };
-  const current = () => root.getAttribute("data-theme") || read("--bide-default") ||
-    (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  // The theme in force: the reader's choice, else a reader's request for more contrast (which the
+  // stylesheet answers with high-contrast over a host's default), else the server's default, else
+  // the system's light or dark.
+  const media = (q) => !!(window.matchMedia && window.matchMedia(q).matches);
+  const current = () => root.getAttribute("data-theme") ||
+    (media("(prefers-contrast: more)") && names().includes("high-contrast") ? "high-contrast" : "") ||
+    read("--bide-default") || (media("(prefers-color-scheme: dark)") ? "dark" : "light");
   const next = () => {
     const list = names();
     return list[(list.indexOf(current()) + 1) % list.length];
