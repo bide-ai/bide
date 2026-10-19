@@ -435,16 +435,18 @@ node gains `in` and `out`, the type names the digest writes. The page computes n
   another type than its merge takes, a terminal of another type than the flow's output) is refused by the server with
   `plan`'s reason, and the text does not change. A problem the text already had is not the operation's and does not
   refuse it. The structural editor takes the same operation and shows the result as a problem.
-- **The weakened banner knows the Go gates.** When a node's block is changed, the gate and safety the old and the new
-  block declare in Go are known on both sides, so changing a block that declares an approval gate to one that does
-  not is reported as the gate removed (and the other way as strengthened), where the structural editor can only say
-  it may have weakened the policy. A save that needs confirmation still needs it. A typed editor is never less strict
-  than a structural one: when the text (or the baseline) has errors against the blocks, a block the program lacks or a
-  type that does not fit, the comparison is made structurally and is **not certified**; a save of it needs the same
-  confirmation a weakening needs. The baseline is read with the same blocks as the text, the program as it is now (the
-  editor knows no other): a gate removed in Go since the baseline, with the config unchanged, is a change to the
-  program and not to the config, so it is not shown here (the structural editor does not show it either); review it in
-  the Go diff, or compare the two programs' descriptions with `bide check -diff -blocks ... -old-blocks ...`.
+- **The weakened banner adds what the program knows and never says less.** The editor does not know the program the
+  baseline was written for (it may have changed since), so the verdict is the typed comparison (both texts read with
+  the blocks as they are now, which knows the gate each block declares in Go: changing a block that declares an
+  approval gate to one that does not reads as the gate removed) together with the structural comparison the structural
+  editor makes, and a weakening either reports is reported and needs the confirmation. A block swapped away from one
+  whose gate was removed in Go since the baseline is therefore still a possible weakening. A typed editor is never less
+  strict than a structural one. When the text, or the baseline, has errors against the blocks (a block the program
+  lacks, a type that does not fit), the comparison is the structural one, named **not certified**, and a save of it
+  needs the same confirmation. A gate removed in Go with the config unchanged is a change to the program, not to the
+  config, and is not shown here (the structural editor does not show it either); review it in the Go diff, or compare
+  the two programs' descriptions with `bide check -diff -blocks ... -old-blocks ...`. Supplying the baseline's blocks to
+  the editor is a possible later option.
 - **Limits.** A description tells types apart by name only (two distinct types spelled alike are one; see the
   [known limitations](../KNOWN-LIMITATIONS.md)). A host that checks descriptions from sources it does not trust should
   do it in a short-lived process (a process keeps one stand-in type per type name it has been given, about 25 MB at most).

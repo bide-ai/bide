@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,7 +26,9 @@ type typing struct {
 // declare in Go, the digest), lists the blocks in a palette, and refuses an operation that connects
 // what does not fit. Register everything before New; the editor only reads the Registry afterwards.
 // New fails for a Registry that reports errors (a duplicate registration), as Load would.
-func WithRegistry(reg *plan.Registry) Option { return func(o *options) { o.reg = reg } }
+func WithRegistry(reg *plan.Registry) Option {
+	return func(o *options) { o.reg, o.regGiven = reg, true }
+}
 
 // WithBlocks makes the editor typed against a description of the program's registrations
 // (plan.Registry.Describe, read from a file by bide edit -blocks). The checks are the same, by type
@@ -38,6 +41,8 @@ func WithBlocks(d plan.RegistryDescription) Option { return func(o *options) { o
 // errors, a description that is not valid.
 func newTyping(o options) (*typing, error) {
 	switch {
+	case o.regGiven && o.reg == nil:
+		return nil, errors.New("flowedit: WithRegistry(nil): there is no Registry to type against")
 	case o.reg != nil && o.blocks != nil:
 		return nil, errors.New("flowedit: WithRegistry and WithBlocks are alternatives; give one")
 	case o.reg != nil:
@@ -63,8 +68,10 @@ func newTyping(o options) (*typing, error) {
 	return nil, nil
 }
 
-// config is the config data as the viewer's checks read it, with what this editor knows of the
-// program. A palette lists blocks the config has not placed, so an unused block is no problem.
+// config is the config as the viewer's checks read it, with what this editor knows of the program.
+// A palette lists blocks the config has not placed, so an unused block is no problem. The weakening
+// verdict also compares the two texts structurally (see compare), because the program the baseline
+// was written for is not the program the editor knows.
 func (t *typing) config(name string, data []byte) runview.Config {
 	c := runview.Config{Name: name, Data: data, AllowUnusedBlocks: true}
 	if t.reg != nil {
@@ -166,7 +173,7 @@ func typeProblem(p plan.ConfigProblem) bool {
 // type problem that before did not, so the operation connected what does not fit. A problem the
 // text already had is not the operation's, and is not refused. The decision is the server's, from
 // the same check that draws the verdict; the page's hints do not decide.
-func (s *Server) typedRefusal(before, after []byte) string {
+func (s *Server) typedRefusal(before, after []byte, op Operation) string {
 	if s.typing == nil {
 		return ""
 	}
@@ -185,7 +192,12 @@ func (s *Server) typedRefusal(before, after []byte) string {
 	had := map[string]bool{}
 	for _, p := range s.typing.inspect(bd).Problems {
 		if typeProblem(p) {
-			had[p.Message] = true
+			// A rename does not make a problem the text already had a new one: compare under the rename.
+			m := p.Message
+			if op.Op == "rename_node" {
+				m = strings.ReplaceAll(m, strconv.Quote(op.Node), strconv.Quote(op.Value))
+			}
+			had[m] = true
 		}
 	}
 	for _, p := range s.typing.inspect(ad).Problems {

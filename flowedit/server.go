@@ -81,9 +81,10 @@ type Server struct {
 type Option func(*options)
 
 type options struct {
-	base   string
-	reg    *plan.Registry
-	blocks *plan.RegistryDescription
+	base     string
+	reg      *plan.Registry
+	regGiven bool // WithRegistry was given, even with nil
+	blocks   *plan.RegistryDescription
 }
 
 // WithBase compares edits with the file at the git revision rev (a branch, tag or commit, as `git
@@ -429,7 +430,7 @@ func (s *Server) apply(w http.ResponseWriter, r *http.Request) {
 	res, err := ApplyOperation(s.name, []byte(req.Text), req.Operation)
 	var rf *Refusal
 	if err == nil && res.Changed {
-		if why := s.typedRefusal([]byte(req.Text), []byte(res.Text)); why != "" {
+		if why := s.typedRefusal([]byte(req.Text), []byte(res.Text), req.Operation); why != "" {
 			err = &Refusal{Reason: why}
 		}
 	}

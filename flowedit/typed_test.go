@@ -127,35 +127,32 @@ wiring:
   - edge: [pay, receipt]
 `
 
-// G4: a node's block changes to one whose Go registration declares no gate. Structurally the gate
-// the old block declared is invisible and the change is only "possibly" a weakening; typed, the gate
-// is known on both sides and the change is judged by what it shows (and the swap the other way is
-// stronger). A save of it needs confirming in each mode.
-func TestTypedEditorKnowsTheGateABlockDeclares(t *testing.T) {
+// A node's block changes to one whose Go registration declares no gate. The typed editor adds what
+// the program knows (the gate the old block declares, written as the viewer writes it), and keeps
+// what the structural editor says, that the new block's gate may be missing: it is never quieter. The
+// swap the other way shows the gate that was added and still needs confirming, as it does
+// structurally, because the baseline was written for a program the editor does not know.
+func TestTypedEditorAddsToWhatTheStructuralEditorSays(t *testing.T) {
 	servers := typedServers(t, "pay.yaml", gateSwapFlow)
+	structural := servers["structural"]
 	for kind, s := range servers {
-		h := s.Handler()
-		w := call(h, s, "/api/apply", applyReq(gateSwapFlow, Operation{Op: "set_block", Node: "pay", Value: "plain"}), nil)
+		w := call(s.Handler(), s, "/api/apply", applyReq(gateSwapFlow, Operation{Op: "set_block", Node: "pay", Value: "plain"}), nil)
 		var e Edited
 		if err := json.Unmarshal(w.Body.Bytes(), &e); err != nil || w.Code != 200 || !e.Changed {
 			t.Fatalf("%s: %d %v %s", kind, w.Code, err, w.Body)
 		}
-		if e.Weakening == nil || len(e.Weakening.Weakened) == 0 {
-			t.Fatalf("%s: weakening %+v", kind, e.Weakening)
+		all := strings.Join(e.Weakening.Weakened, "\n")
+		if !strings.Contains(all, "not visible without the plan.Registry") {
+			t.Errorf("%s: the structural 'possibly' is gone: %q", kind, all)
 		}
-		got := e.Weakening.Weakened[0] // the gate of the node itself comes first
-		if kind == "structural" {
-			if !strings.Contains(got, "not visible without the plan.Registry") {
-				t.Errorf("structural: %q", got)
-			}
-		} else if !strings.Contains(got, "pay: approval 2 of 2: ops, fin -> none") || strings.Contains(got, "not visible") {
-			t.Errorf("%s: %q", kind, got)
+		if kind != "structural" && !strings.Contains(all, "pay: approval 2 of 2: ops, fin -> none") {
+			t.Errorf("%s: the typed gate line is missing: %q", kind, all)
 		}
 		if _, err := s.Save([]byte(e.Text), hashOf([]byte(gateSwapFlow)), nil); err == nil {
 			t.Errorf("%s: a save that removes a gate went through unconfirmed", kind)
 		}
 	}
-	// A block that declares no gate, changed to a gated one, is not a weakening in typed mode.
+	_ = structural
 	plainFlow := strings.Replace(gateSwapFlow, "block: gated", "block: plain", 1)
 	for kind, s := range typedServers(t, "pay.yaml", plainFlow) {
 		w := call(s.Handler(), s, "/api/apply", applyReq(plainFlow, Operation{Op: "set_block", Node: "pay", Value: "gated"}), nil)
@@ -163,14 +160,48 @@ func TestTypedEditorKnowsTheGateABlockDeclares(t *testing.T) {
 		if err := json.Unmarshal(w.Body.Bytes(), &e); err != nil || !e.Changed {
 			t.Fatalf("%s: %d %v %s", kind, w.Code, err, w.Body)
 		}
-		if kind != "structural" && (len(e.Weakening.Weakened) != 0 || len(e.Weakening.Strengthened) != 1) {
-			t.Errorf("%s: weakened %q strengthened %q", kind, e.Weakening.Weakened, e.Weakening.Strengthened)
+		if kind != "structural" && !strings.Contains(strings.Join(e.Weakening.Strengthened, "\n"), "pay: approval none -> 2 of 2: ops, fin") {
+			t.Errorf("%s: the typed gate is not shown as added: %q", kind, e.Weakening.Strengthened)
 		}
-		// Saving it: typed, the gate is known to be added, so nothing needs confirming; structurally the
-		// editor cannot tell and asks.
-		_, err := s.Save([]byte(e.Text), hashOf([]byte(plainFlow)), nil)
-		if (kind == "structural") != (err != nil) {
-			t.Errorf("%s: save of a block changed to a gated one: %v", kind, err)
+		if _, err := s.Save([]byte(e.Text), hashOf([]byte(plainFlow)), nil); err == nil {
+			t.Errorf("%s: the save needs no confirmation, and the structural editor's does", kind)
+		}
+	}
+}
+
+// The program changed since the baseline: the old block's gate was removed in Go, and the config
+// swaps the block. Read with the program as it is now, both blocks are gate-less and the swap looks
+// harmless; the structural editor says the gate may be gone, and the typed editor must not be quieter.
+// The baseline's program is not known, so the editor reports what either comparison reports.
+func TestTypedEditorIsNotQuieterWhenTheProgramChangedSinceTheBaseline(t *testing.T) {
+	reg := plan.NewRegistry() // the program now: "gated" has lost its gate
+	order := func(_ context.Context, o tOrder) (tOrder, error) { return o, nil }
+	for _, err := range []error{
+		reg.RegisterStep("validate", order, plan.ReadOnly()),
+		reg.RegisterStep("gated", order),
+		reg.RegisterStep("plain", order),
+		reg.RegisterStep("receipt", func(_ context.Context, o tOrder) (string, error) { return o.ID, nil }),
+	} {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	text := strings.Replace(gateSwapFlow, "block: gated", "block: plain", 1)
+	for kind, opt := range map[string]Option{"registry": WithRegistry(reg), "description": WithBlocks(reg.Describe()), "structural": func(*options) {}} {
+		p := filepath.Join(t.TempDir(), "pay.yaml")
+		if err := os.WriteFile(p, []byte(gateSwapFlow), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		s, err := newServer(t, p, opt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := s.compare([]byte(text))
+		if len(w.Weakened) == 0 || !strings.Contains(strings.Join(w.Weakened, "\n"), "not visible without") {
+			t.Errorf("%s: weakened %q", kind, w.Weakened)
+		}
+		if c := s.confirmations([]byte(text)); len(c) == 0 {
+			t.Errorf("%s: the save needs no confirmation", kind)
 		}
 	}
 }
@@ -291,8 +322,7 @@ func TestTypedOptionsRefuseWhatCannotBeTyped(t *testing.T) {
 }
 
 // A typed editor is never less strict than a structural one. For each edit of a baseline, the typed
-// verdict keeps every weakening the structural one reports that is not a "possibly" the program's
-// blocks answer; and when the text has errors against the blocks (a block the program lacks, a type
+// verdict keeps every weakening the structural one reports, word for word; and when the text has errors against the blocks (a block the program lacks, a type
 // that does not fit), the comparison is the structural one, in full, named not certified, and a save
 // of it needs the confirmation a weakening needs.
 func TestTypedEditorIsNeverLessStrictThanStructural(t *testing.T) {
@@ -312,16 +342,6 @@ func TestTypedEditorIsNeverLessStrictThanStructural(t *testing.T) {
 			return strings.Replace(s, "  - {name: receipt", "  - {name: audit, block: plain}\n  - {name: receipt", 1)
 		},
 		"unchanged": func(s string) string { return s },
-	}
-	type key struct{ node, kind string }
-	keys := func(w *Weakening) map[key]bool {
-		out := map[key]bool{}
-		for _, l := range w.Weakened {
-			if !strings.Contains(l, "not visible without") {
-				out[key{strings.SplitN(l, ":", 2)[0], ""}] = true
-			}
-		}
-		return out
 	}
 	for kind, opt := range map[string]Option{"registry": WithRegistry(reg), "description": WithBlocks(reg.Describe())} {
 		p := filepath.Join(t.TempDir(), "refund.yaml")
@@ -351,12 +371,12 @@ func TestTypedEditorIsNeverLessStrictThanStructural(t *testing.T) {
 				}
 				continue
 			}
-			for k := range keys(ws) {
-				if !keys(wt)[k] {
-					t.Errorf("%s/%s: the structural weakening %v vanished: %q vs %q", kind, name, k, wt.Weakened, ws.Weakened)
+			for _, x := range ws.Weakened {
+				if !slices.Contains(wt.Weakened, x) {
+					t.Errorf("%s/%s: the structural weakening %q vanished: %q", kind, name, x, wt.Weakened)
 				}
 			}
-			if len(structural.confirmations(text)) > 0 && len(typed.confirmations(text)) == 0 && len(keys(ws)) > 0 {
+			if len(structural.confirmations(text)) > 0 && len(typed.confirmations(text)) == 0 {
 				t.Errorf("%s/%s: the typed save needs no confirmation, the structural one does", kind, name)
 			}
 		}
@@ -367,7 +387,53 @@ func TestTypedEditorIsNeverLessStrictThanStructural(t *testing.T) {
 		t.Errorf("an unknown block is certified: %+v", w)
 	}
 	gs := typedServers(t, "pay.yaml", gateSwapFlow)["registry"]
-	if w := gs.compare([]byte(strings.Replace(gateSwapFlow, "block: gated", "block: plain", 1))); w.NotCertified != "" || len(w.Weakened) == 0 {
+	if w := gs.compare([]byte(strings.Replace(gateSwapFlow, "block: gated", "block: plain", 1))); w.NotCertified != "" || len(w.Weakened) < 2 {
 		t.Errorf("a known block swap: %+v", w)
+	}
+}
+
+// A type misfit the text already has is not the operation's, even when the operation renames a node
+// the misfit names: the problem is compared under the rename. A rename that introduces a misfit of
+// its own (none can; the types do not change) is not what this tests, and a different operation that
+// does is still refused.
+func TestTypedRefusalComparesProblemsUnderARename(t *testing.T) {
+	bad := strings.Replace(testFlow, "block: charge", "block: count", 1) // charge takes an int; validate gives an order
+	for kind, s := range typedServers(t, "refund.yaml", bad) {
+		if kind == "structural" {
+			continue
+		}
+		h := s.Handler()
+		w := call(h, s, "/api/apply", applyReq(bad, Operation{Op: "rename_node", Node: "charge", Value: "bill"}), nil)
+		var e Edited
+		if err := json.Unmarshal(w.Body.Bytes(), &e); err != nil || w.Code != 200 || !e.Changed || !strings.Contains(e.Text, "name: bill") {
+			t.Errorf("%s: a rename of a node in an existing misfit: %d %s", kind, w.Code, w.Body)
+		}
+		// A rename of another node does not matter either, and a new misfit is still refused.
+		w = call(h, s, "/api/apply", applyReq(bad, Operation{Op: "rename_node", Node: "receipt", Value: "slip"}), nil)
+		e = Edited{}
+		if err := json.Unmarshal(w.Body.Bytes(), &e); err != nil || !e.Changed {
+			t.Errorf("%s: a rename elsewhere: %d %s", kind, w.Code, w.Body)
+		}
+		w = call(h, s, "/api/apply", applyReq(testFlow, Operation{Op: "set_block", Node: "charge", Value: "count"}), nil)
+		if !strings.Contains(w.Body.String(), `"refused"`) {
+			t.Errorf("%s: a new misfit after the rename code: %s", kind, w.Body)
+		}
+	}
+}
+
+func TestTypedOptionsRefuseNilAndZero(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "refund.yaml")
+	if err := os.WriteFile(p, []byte(testFlow), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(p, WithRegistry(nil)); err == nil || !strings.Contains(err.Error(), "WithRegistry(nil)") {
+		t.Errorf("WithRegistry(nil): %v", err)
+	}
+	if _, err := New(p, WithBlocks(plan.RegistryDescription{})); err == nil {
+		t.Error("WithBlocks of a zero description made an editor")
+	}
+	var nilReg *plan.Registry
+	if _, err := New(p, WithRegistry(nilReg), WithBlocks(typedRegistry(t).Describe())); err == nil {
+		t.Error("a nil Registry beside a description made an editor")
 	}
 }
