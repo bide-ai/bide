@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bide-ai/bide/anchor/awss3"
 	"github.com/bide-ai/bide/anchor/awss3/awss3test"
+	"github.com/bide-ai/bide/anchor/gcs"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/audit/anchorobj"
 )
@@ -256,13 +257,14 @@ func TestBackendFlag(t *testing.T) {
 	if code, out, errs := e.do("verify", "-backend", "s3", "-dir", dir, "-pubkey", e.pub); code != 0 {
 		t.Fatalf("-backend s3 = %d\n%s%s", code, out, errs)
 	}
-	code, _, errs := e.do("verify", "-backend", "gcs", "-dir", dir, "-pubkey", e.pub)
-	if code != exitUsage || !strings.Contains(errs, "not in this build yet") {
-		t.Errorf("-backend gcs = %d %q; want a usage error saying it is not built in yet", code, errs)
-	}
-	code, _, errs = e.do("check", "-backend", "azure", "-bucket", "b", "-owner", owner, "-pubkey", e.pub, "-run", "r1")
-	if code != exitUsage || !strings.Contains(errs, `"azure" is not one of: s3`) {
+	code, _, errs := e.do("check", "-backend", "azure", "-bucket", "b", "-owner", owner, "-pubkey", e.pub, "-run", "r1")
+	if code != exitUsage || !strings.Contains(errs, `"azure" is not one of: s3, gcs`) {
 		t.Errorf("-backend azure = %d %q; want a usage error naming the backends", code, errs)
+	}
+	// Each backend takes its own owner flag and refuses the other's.
+	code, _, errs = e.do("check", "-backend", "s3", "-bucket", "b", "-project", "123", "-pubkey", e.pub, "-run", "r1")
+	if code != exitUsage || !strings.Contains(errs, "-project is for -backend gcs") {
+		t.Errorf("s3 with -project = %d %q", code, errs)
 	}
 }
 
@@ -274,7 +276,12 @@ func TestBackendLayoutsDoNotCollide(t *testing.T) {
 	if err := l.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	layouts := map[string]anchorobj.Layout{"s3": l}
+	layouts := map[string]anchorobj.Layout{"s3": l, "gcs": gcs.Layout()}
+	for n, ly := range layouts {
+		if err := ly.Validate(); err != nil {
+			t.Fatalf("%s: %v", n, err)
+		}
+	}
 	for a, la := range layouts {
 		for b, lb := range layouts {
 			if a != b && la.Collides(lb) {

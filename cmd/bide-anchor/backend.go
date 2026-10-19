@@ -12,8 +12,7 @@ import (
 
 // A backend is one object store the anchors write to. The command's checks (verify, export, check) are
 // the same for every backend; a backend says how to reach its bucket and how to read an object set.
-// Backends are chosen with -backend. Only s3 is built in today; the Google Cloud Storage backend is
-// added here when its package ships.
+// Backends are chosen with -backend: s3 (anchor/awss3) and gcs (anchor/gcs).
 type backend struct {
 	name string
 	// open returns a reader of the bucket named by o, with read-only credentials.
@@ -32,10 +31,12 @@ type backend struct {
 
 // openOptions are the flags an online command gives its backend.
 type openOptions struct {
-	bucket, owner, prefix string
-	pathStyle             bool
-	verifier              audit.Verifier
-	onSkip                func(string) // an object the reader skipped because it claims to be no head
+	bucket, owner, project, prefix string
+	kmsKey                         string        // -kms-key (gcs)
+	retention                      time.Duration // -retention (gcs)
+	pathStyle                      bool
+	verifier                       audit.Verifier
+	onSkip                         func(string) // an object the reader skipped because it claims to be no head
 }
 
 // headReader reads the heads of one tree from a bucket and reports how they are stored.
@@ -50,8 +51,12 @@ type report struct {
 	Findings []string
 }
 
+// errUsage wraps an error that is a mistake in how the command was called or set up (a flag the backend
+// does not take, a malformed project number, no credentials): exit 2.
+var errUsage = errors.New("usage")
+
 // backendNames is the names -backend accepts, for messages.
-const backendNames = "s3"
+const backendNames = "s3, gcs"
 
 // lookupBackend returns the named backend; mk makes the S3 client.
 func lookupBackend(name string, mk clientFunc) (backend, error) {
@@ -59,7 +64,7 @@ func lookupBackend(name string, mk clientFunc) (backend, error) {
 	case "s3":
 		return s3Backend(mk), nil
 	case "gcs":
-		return backend{}, errors.New("-backend gcs is not in this build yet; this build has: " + backendNames)
+		return gcsBackend(), nil
 	default:
 		return backend{}, fmt.Errorf("-backend %q is not one of: %s", name, backendNames)
 	}
@@ -76,9 +81,18 @@ func s3Backend(mk clientFunc) backend {
 		ownerWhat: "the 12-digit AWS account ID that owns the bucket",
 		loadDir:   awss3.LoadDir,
 		open: func(ctx context.Context, o openOptions) (headReader, error) {
+			if o.project != "" {
+				return nil, fmt.Errorf("%w: -project is for -backend gcs; the s3 backend takes -owner", errUsage)
+			}
+			// The S3 reader checks no expectation about the bucket's key or retention (it reports each
+			// object's lock state, not the bucket's configuration), so these flags would promise a check
+			// that does not happen: refuse them rather than ignore them.
+			if o.kmsKey != "" || o.retention != 0 {
+				return nil, fmt.Errorf("%w: -kms-key and -retention are for -backend gcs; the s3 reader checks no expectation about the bucket's key or retention", errUsage)
+			}
 			c, err := mk(ctx, o.pathStyle)
 			if err != nil {
-				return nil, fmt.Errorf("AWS configuration: %w", err)
+				return nil, fmt.Errorf("%w: AWS configuration: %w", errUsage, err)
 			}
 			r, err := awss3.NewReader(awss3.ReaderConfig{Client: c, Bucket: o.bucket, ExpectedBucketOwner: o.owner, Prefix: o.prefix,
 				Verifier: o.verifier, OnSkip: func(f awss3.Finding) { o.onSkip(f.String()) }})

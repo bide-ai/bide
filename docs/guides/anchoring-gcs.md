@@ -201,9 +201,38 @@ at least a write and a read-back.
 
 ## Verifying the heads
 
-`bide-anchor` (the command of the [S3 anchor](anchoring.md#verifying-bide-anchor)) does not read a Google
-Cloud Storage bucket yet: a `-backend gcs` option, with `-project` taking the project number in place of S3's
-`-owner`, is planned as a separate change. Until then the library does what the command does:
+`bide-anchor` (the command of the [S3 anchor](anchoring.md#verifying-bide-anchor), `go install
+github.com/bide-ai/bide/cmd/bide-anchor@latest`) reads a Google Cloud Storage bucket with `-backend gcs`, and
+`-project NUMBER` (the project number, not its ID) takes the place of S3's `-owner`:
+
+```sh
+gcloud storage cp -r gs://bank-bide-anchor/bide-anchor ./anchor/
+bide-anchor verify -backend gcs -dir ./anchor -pubkey ed25519:<hex>
+bide-anchor check  -backend gcs -bucket bank-bide-anchor -project 123456789012 -pubkey ed25519:<hex> -run run-123
+bide-anchor export -backend gcs -bucket bank-bide-anchor -project 123456789012 -pubkey ed25519:<hex> -run run-123 -o heads.jsonl
+```
+
+The commands, the exit codes and the findings are those of the S3 anchor ([reference](../reference/bide-anchor.md)).
+`check` and `export -bucket` also take two expectations for `-backend gcs`: `-kms-key` (the full key name, no
+version) and `-retention` (the retention the anchor was configured with). Without them the command checks the
+bucket against what it can tell is wrong (an unlocked or missing retention policy, one under 24 hours,
+versioning off, uniform access or public access prevention off) but not against what you meant: a bucket whose
+default key was swapped, or whose locked retention was shortened but is still over 24 hours, then passes.
+With them a mismatch is a finding (exit 1), and a malformed key or a retention that is not positive is exit 2.
+The S3 reader checks no such expectation (it reports each object's lock state, not the bucket's configuration), so the
+s3 backend refuses these flags (exit 2) instead of ignoring them.
+
+What each exit status means for a bucket, for either backend:
+
+| Exit | Meaning | Examples |
+|---|---|---|
+| 0 | every head verifies, and the bucket's protection is as expected | |
+| 1 | a verdict about the bucket or its objects | a head the log key did not sign; two histories; no head anchored; a generation that vanished (gcs); weaker protection (a retention policy that is not locked, shorter or gone, versioning off, public access allowed); a bucket owned by another project (gcs); a delete marker or noncurrent generation |
+| 2 | a mistake in the call or its configuration | a flag the backend does not take, a malformed `-project`, no credentials, a bad prefix, `-dir` that is not a directory |
+| 3 | the bucket's state is unknown | a listing or read, or the read of the bucket's own configuration, that is unavailable, denied or timed out; retry, and alert if it persists |
+
+S3 differs in one case: a bucket that another account owns is refused by S3 as a denied read (exit 3), since S3 does not say whose bucket it is; gcs reads the owner, so it reports it as a finding.
+The command does what the library does:
 
 - `gcs.LoadDir(dir, verifier)` verifies a downloaded copy of the objects offline (for example
   `gcloud storage cp -r gs://bank-bide-anchor/bide-anchor ./anchor/`), as `bide-anchor verify` does for S3. It
@@ -222,8 +251,7 @@ listing or a read that is unavailable (`ErrUnavailable`) or denied (`ErrDenied`)
 and an aborted audit means the bucket's state is **unknown**, not that it is intact; retry it, and alert
 if it keeps failing. Only a fact the Reader positively saw becomes a finding, such as a generation that
 vanished between the listing and the read (and `Latest`, `Heads` and `Head` fail on that generation with
-`gcs.ErrVanished` rather than show an older head as the latest). `bide-anchor` will follow the same rule when it gains a GCS
-backend: a non-zero exit with no findings means the check could not be completed.
+`gcs.ErrVanished` rather than show an older head as the latest). `bide-anchor -backend gcs` follows the same rule: it exits 3, never 0 and not 1, when the check could not be completed (including a bucket whose own configuration cannot be read), and a vanished generation is a finding (exit 1). A bucket owned by another project than `-project` is also a finding (exit 1: the name may have been deleted and created again by someone else), where S3 reports the same situation as a denied read (exit 3), since S3 does not say whose bucket it is. A mistake in the call (a flag the backend does not take, a malformed project number, no credentials) is exit 2.
 
 Credentials come from Application Default Credentials, never from flags. Neither shows that the **journal**
 matches the heads: that is `bide audit` against the exported heads.

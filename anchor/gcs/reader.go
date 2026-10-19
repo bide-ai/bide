@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/audit/anchorobj"
 )
@@ -78,7 +79,7 @@ func NewReader(ctx context.Context, cfg ReaderConfig) (*Reader, error) {
 		return nil, wrapErr("read the bucket's configuration", err)
 	}
 	if b.ProjectNumber != cfg.ExpectedProjectNumber {
-		return nil, badConfig("the bucket is owned by project %d, not the expected %d", b.ProjectNumber, cfg.ExpectedProjectNumber)
+		return nil, fmt.Errorf("gcs: %w: the bucket is owned by project %d, not the expected %d: %w", ErrWrongProject, b.ProjectNumber, cfg.ExpectedProjectNumber, agent.ErrConfig)
 	}
 	onSkip := cfg.OnSkip
 	if onSkip == nil {

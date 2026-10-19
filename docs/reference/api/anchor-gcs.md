@@ -30,6 +30,7 @@ Package gcs is an audit.Anchor that writes every signed tree head as an object i
 - `var ErrConflict`: ErrConflict wraps the error of a name that already holds different bytes than the head being published.
 - `var ErrNotFound = errors.New("gcs: no anchored head")`: ErrNotFound is returned by the Reader when a partition holds no head.
 - `var ErrVanished`: ErrVanished is returned by the Reader when a generation that was listed cannot be read: it was deleted between the listing and the read (at the end of its retention) or is hidden.
+- `var ErrWrongProject`: ErrWrongProject wraps (with agent.ErrConfig) the error of a bucket that another project owns than the one expected: a bucket name that was deleted and created again by someone else, say.
 - `var ErrBadSignature`: ErrBadSignature wraps (with ErrObject) the error of an object that is a well-formed head of its partition whose signature does not verify under the log key: a forgery, a head signed by another key (a rotated one, say), or a re-signed one.
 - `var ErrEquivocation`: ErrEquivocation wraps the error of two validly signed heads of one tree and size that commit to different roots: the log key signed two histories.
 - `var ErrObject`: ErrObject wraps the error of an object that is not a well-formed anchored head: a key and a body that disagree, a body that is not an anchored object, or a head that does not verify.
