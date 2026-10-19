@@ -420,7 +420,7 @@ program's blocks, in one of two forms:
   program's own `plan.Registry` (`plan/planview`, or the embedded editor below) is the control.
 - Embedding: `flowedit.New(path, flowedit.WithRegistry(reg))` checks as `Load` does, with the program's Registry.
   Register everything before `New`; a Registry that reports errors (a duplicate) is refused, as `Load` would.
-  `flowedit.WithBlocks(description)` is the file form for a host that has the description as a value (it is copied).
+  `ExampleWithRegistry` in package `flowedit` is a complete host. `flowedit.WithBlocks(description)` is the file form for a host that has the description as a value (it is copied).
   The two are alternatives.
 
 With either, the server checks every text with `plan.InspectConfig` (or `InspectConfigDescribed`) and
