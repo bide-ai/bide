@@ -1,0 +1,3 @@
+Section: Added
+
+`bide edit -blocks <file>` and `flowedit.WithRegistry` / `flowedit.WithBlocks` make the flow editor typed. The editor then checks the config as `Load` does (by type name for a description file, labelled as not checked against the program), refuses an operation that connects what does not fit, adds the approval gate and safety a block declares in Go to the weakened banner without ever saying less than the structural check (so changing a block to one with no gate reads as the gate removed, and the structural "possibly" stays), and sends the digest, a palette of the program's blocks and each node's types to the page. The page does not show the palette or the digest yet.

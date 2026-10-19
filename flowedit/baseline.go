@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -35,10 +36,49 @@ type Weakening struct {
 	// CompareError is set when the two could not be compared (the text does not parse): nothing can
 	// be said about weakening, which is not the same as none, so a save names it.
 	CompareError string `json:"compare_error,omitempty"`
+	// NotCertified is set in typed mode when the text, or the baseline, has errors against the
+	// program's blocks, so the typed comparison had nothing sound to read: the comparison was made
+	// structurally, as the structural editor makes it, and what the blocks declare in Go is not known.
+	// A save names it and needs the same confirmation a weakening needs, so a typed editor is never
+	// less strict than a structural one.
+	NotCertified string `json:"not_certified,omitempty"`
 }
 
 // Compare classifies text against baseline, both the contents of a config file called name.
 func Compare(name, source string, baseline, text []byte) *Weakening {
+	return compare(name, source, baseline, text, nil)
+}
+
+// compare is Compare for an editor that may know the program's blocks (ty not nil). The program the
+// baseline was written for is not the one the editor knows, so the editor's verdict is never only the
+// typed one: it is the typed comparison (baseline and text read with the blocks as they are now, which
+// knows the gates the blocks declare in Go) together with the structural comparison, the one the
+// structural editor makes, and a weakening either reports is reported. A block swapped away from one
+// whose gate changed in Go since the baseline is therefore still a possible weakening that needs
+// confirming, as it is without the blocks. Typed alone is not enough, and a typed text read against a
+// structural baseline reads every safety the baseline left to its block as lowered; the union keeps
+// the strictness of the one and the precision of the other.
+func compare(name, source string, baseline, text []byte, ty *typing) *Weakening {
+	w := compareWith(name, source, baseline, text, ty)
+	if ty == nil {
+		return w
+	}
+	s := compareWith(name, source, baseline, text, nil)
+	if w.CompareError != "" || s.CompareError != "" {
+		return w
+	}
+	for _, x := range s.Weakened {
+		if !slices.Contains(w.Weakened, x) {
+			w.Weakened = append(w.Weakened, x)
+		}
+	}
+	if len(w.Weakened) > 0 && w.Word == "" {
+		w.Word, w.Line = s.Word, s.Line
+	}
+	return w
+}
+
+func compareWith(name, source string, baseline, text []byte, ty *typing) *Weakening {
 	w := &Weakening{Baseline: source}
 	cfg := func(b []byte) (runview.Config, error) {
 		data := b
@@ -47,6 +87,9 @@ func Compare(name, source string, baseline, text []byte) *Weakening {
 			if data, err = ToJSON(b); err != nil {
 				return runview.Config{}, err
 			}
+		}
+		if ty != nil {
+			return ty.config(name, data), nil
 		}
 		return runview.Config{Name: name, Data: data}, nil
 	}
@@ -65,6 +108,7 @@ func Compare(name, source string, baseline, text []byte) *Weakening {
 		w.CompareError = err.Error()
 		return w
 	}
+	w.NotCertified = d.Fallback
 	for _, c := range d.Changes {
 		w.Changes = append(w.Changes, c.String())
 	}
@@ -73,6 +117,11 @@ func Compare(name, source string, baseline, text []byte) *Weakening {
 		w.Word, w.Line = d.Verdict.Word, d.Verdict.Line
 	}
 	return w
+}
+
+// compare is Compare with what this editor knows of the program.
+func (s *Server) compare(text []byte) *Weakening {
+	return compare(s.name, s.baselineSource, s.baseline, text, s.typing)
 }
 
 // gitTimeout is how long gitShow waits for git: a generous bound for a local `git show`, there so that a git that

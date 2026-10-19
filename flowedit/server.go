@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/internal/runview"
+	"github.com/bide-ai/bide/plan"
 )
 
 // MaxFileSize is the largest config the editor reads, and the largest request body it accepts.
@@ -73,12 +74,18 @@ type Server struct {
 	baselineSource string
 	baselineNote   string     // why git HEAD was not the baseline, when that is not just "not in git"
 	fs             fileSystem // what a save writes with; a test replaces it
+	typing         *typing    // nil: the structural editor
 }
 
 // Option configures New.
 type Option func(*options)
 
-type options struct{ base string }
+type options struct {
+	base     string
+	reg      *plan.Registry
+	regGiven bool // WithRegistry was given, even with nil
+	blocks   *plan.RegistryDescription
+}
 
 // WithBase compares edits with the file at the git revision rev (a branch, tag or commit, as `git
 // show rev:./file` takes it) instead of at HEAD. New fails if the file is not there.
@@ -91,6 +98,10 @@ func New(path string, opts ...Option) (*Server, error) {
 	var o options
 	for _, f := range opts {
 		f(&o)
+	}
+	ty, err := newTyping(o)
+	if err != nil {
+		return nil, err
 	}
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".yaml", ".yml", ".json":
@@ -151,7 +162,7 @@ func New(path string, opts ...Option) (*Server, error) {
 	if _, err := rand.Read(tok[:]); err != nil {
 		return fail(fmt.Errorf("flowedit: no randomness for the session token: %w", err))
 	}
-	return &Server{path: real, root: root, base: base, name: path, token: hex.EncodeToString(tok[:]), baseline: baseline, baselineSource: source, baselineNote: note, fs: osFS}, nil
+	return &Server{path: real, root: root, base: base, name: path, token: hex.EncodeToString(tok[:]), baseline: baseline, baselineSource: source, baselineNote: note, fs: osFS, typing: ty}, nil
 }
 
 // BaselineNote is "" when the baseline is what it should be, and otherwise says why git HEAD was not
@@ -199,8 +210,8 @@ func readConfig(root *os.Root, base, path string) ([]byte, error) {
 
 // view is BuildView with the text compared against the baseline.
 func (s *Server) view(text []byte) *View {
-	v := BuildView(s.name, text)
-	v.Weakening = Compare(s.name, s.baselineSource, s.baseline, text)
+	v := buildView(s.name, text, s.typing)
+	v.Weakening = s.compare(text)
 	return v
 }
 
@@ -418,6 +429,11 @@ func (s *Server) apply(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := ApplyOperation(s.name, []byte(req.Text), req.Operation)
 	var rf *Refusal
+	if err == nil && res.Changed {
+		if why := s.typedRefusal([]byte(req.Text), []byte(res.Text), req.Operation); why != "" {
+			err = &Refusal{Reason: why}
+		}
+	}
 	switch {
 	case errors.As(err, &rf):
 		reply(w, map[string]string{"refused": rf.Reason})

@@ -66,10 +66,13 @@ func (n *NeedsConfirmation) Error() string {
 // confirmations is what a save of text must confirm: the ways it is weaker than the baseline, and a
 // failure to compare.
 func (s *Server) confirmations(text []byte) []string {
-	w := Compare(s.name, s.baselineSource, s.baseline, text)
+	w := s.compare(text)
 	items := slices.Clone(w.Weakened)
 	if w.CompareError != "" {
 		items = append(items, "not compared with "+w.Baseline+": "+w.CompareError)
+	}
+	if w.NotCertified != "" {
+		items = append(items, w.NotCertified)
 	}
 	return items
 }
