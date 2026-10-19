@@ -222,6 +222,30 @@ function renderWireMoves(wiring) {
     h('div', { class: 'inline' }, mv('up'), mv('down')));
 }
 
+// ---- skip links (WCAG 2.4.1): the page has many controls between the regions ----
+//
+// A skip link moves the focus into the region it names: the toolbar's first enabled control (Save,
+// when there is something to save), the outline's tab stop, the inspector's first control, or the
+// heading of the assertions (a heading made focusable for this). The links are hidden until they
+// have the focus.
+function skipTo(target) {
+  const first = (sel) => document.querySelector(sel);
+  const el = {
+    toolbar: () => first('#toolbar button:not(:disabled)'),
+    outline: () => first('#outline button[tabindex="0"]') || $('h-outline'),
+    inspector: () => first('#inspector select, #inspector input, #inspector button:not(:disabled)') || $('h-inspector'),
+    assertions: () => $('h-assert'),
+  }[target];
+  const to = el && el();
+  if (to) to.focus();
+}
+
+function wireSkipLinks() {
+  for (const a of document.querySelectorAll('a[data-skip]')) {
+    a.addEventListener('click', (e) => { e.preventDefault(); skipTo(a.getAttribute('data-skip')); });
+  }
+}
+
 function outlineKeys(e) {
   const items = [...e.currentTarget.querySelectorAll('button')];
   const at = items.indexOf(document.activeElement);
@@ -915,6 +939,7 @@ async function main() {
   $('outline').addEventListener('keydown', outlineKeys);
   $('wiring').addEventListener('keydown', outlineKeys);
   wireAddNode();
+  wireSkipLinks();
   dlg().addEventListener('close', () => {
     if (dlg().open) return; // closed to be opened again (a save that must be asked again)
     const o = dialogOpener;

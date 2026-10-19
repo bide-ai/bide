@@ -298,6 +298,16 @@ The editor is built to be used without a pointer and without dragging.
   is tied to its field, and the draft of a gate or an assertion says what the check thinks in a live
   region, rewritten only when its words change. There is no drag in this phase and none will be
   required.
+- **Skip links and landmarks** (WCAG 2.4.1, bypass blocks). The first controls on the page are the
+  links Skip to toolbar, outline, inspector and assertions; the inspector and the assertions each begin
+  with Skip to toolbar. A link is hidden until it has the focus, then drawn; Enter moves the focus to the
+  region (to Save, the toolbar's first control, when there is something to save). From the assertion
+  form, the toolbar is four key presses away this way (Shift+Tab to the region's link, Enter; the test
+  bounds it at five). The page has labelled landmarks: the banner with a group of editor actions, the
+  main region, the flow, the outline, the inspector (complementary) and the assertions, problems and
+  source, so a screen reader's region navigation works too. Walking back with Shift+Tab over every
+  control also stays under 50 presses; that bound only guards against the page growing a control at a
+  time. The page has no keyboard shortcuts.
 - **Changes are announced** through a live region (the selection, `Saved`, an operation done or
   refused, the verdict, and an alert for the weakened banner), and the focus returns to the control
   you changed. The save dialog is a modal dialog: Tab stays in it, Escape closes it, and the focus

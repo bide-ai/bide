@@ -59,3 +59,7 @@ dialog h2 { margin-top: 0; }
 .wirelist button[aria-current="true"] { border-color: var(--accent); background: var(--accent-bg); border-left-width: 6px; }
 #flow-settings { margin: var(--s3) 0; }
 #flow-settings summary { cursor: pointer; font-weight: 600; }
+.toolbar { display: flex; gap: var(--s2); align-items: center; flex-wrap: wrap; }
+.skip a { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.skip a:focus { position: static; width: auto; height: auto; overflow: visible; clip: auto; display: inline-block; margin: var(--s1); padding: var(--s1) var(--s3); background: var(--card); color: var(--fg); border: 2px solid var(--accent); border-radius: var(--r-sm); font-weight: 600; }
+[tabindex="-1"]:focus { outline: 2px solid var(--accent); outline-offset: 2px; }

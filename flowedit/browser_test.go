@@ -625,6 +625,9 @@ func TestKeyboardOnlyInChrome(t *testing.T) {
 		AfterGate           string         `json:"afterGate"`
 		FocusAfterGate      string         `json:"focusAfterGate"`
 		FocusAfterAssertion string         `json:"focusAfterAssertion"`
+		FocusAfterSkip      string         `json:"focusAfterSkip"`
+		SkipLinkLabel       string         `json:"skipLinkLabel"`
+		SkipVisible         bool           `json:"skipVisible"`
 		DialogFocus         string         `json:"dialogFocus"`
 		DialogTitle         string         `json:"dialogTitle"`
 		WeakensShown        bool           `json:"weakensShown"`
@@ -664,12 +667,20 @@ func TestKeyboardOnlyInChrome(t *testing.T) {
 	if got, _ := os.ReadFile(p); string(got) != want || r.Disk != want {
 		t.Errorf("the file on disk:\n%s\nwant\n%s", r.Disk, want)
 	}
-	// Forward moves are bounded at 40; walking back with Shift+Tab over the whole page to the header's
-	// Undo and Save at 50 (the page has grown by the structure controls; see the keyboard guide).
+	// Forward moves are bounded at 40. The standard for reaching the toolbar from the assertion form is
+	// the skip link: at most 5 key presses (Shift+Tab to the region's link, Enter) and the focus is on
+	// Save. Walking back over the whole page with Shift+Tab to Undo and Save is bounded at 50 only as
+	// a guard against the page growing a control at a time.
+	if r.FocusAfterSkip != "save" || r.SkipLinkLabel != "Skip to toolbar" || !r.SkipVisible {
+		t.Errorf("the skip link: label %q, visible on focus %v, focus after %q", r.SkipLinkLabel, r.SkipVisible, r.FocusAfterSkip)
+	}
 	for name, n := range r.Tabs {
 		limit := 40
-		if name == "Undo" || name == "Save" {
+		switch name {
+		case "Undo", "Save":
 			limit = 50
+		case "Skip to Save":
+			limit = 5
 		}
 		if n > limit {
 			t.Errorf("%d Tab presses to reach %s (limit %d)", n, name, limit)
