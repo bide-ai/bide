@@ -46,8 +46,12 @@ func TestNewTombstone_ReadsBack(t *testing.T) {
 		t.Errorf("TombstoneName = %q, %v", n, ok)
 	}
 	// A tombstone with a changed hash, extra member, upper-case hex, or short hash is not one.
+	// The changed hash flips the first byte, so it differs whatever the record's hash is (the record
+	// carries the time it was made, so its hash, and its first byte, change from run to run).
+	changed := agent.LeafHash(rec)
+	changed[0] ^= 0xff
 	for _, bad := range []string{
-		strings.Replace(want, hex.EncodeToString(agent.LeafHash(rec))[:2], "00", 1),
+		strings.Replace(want, hex.EncodeToString(agent.LeafHash(rec)), hex.EncodeToString(changed), 1),
 		strings.Replace(want, `,"at_ms"`, `,"x":1,"at_ms"`, 1),
 		strings.ToUpper(want[:strings.Index(want, `,"at_ms"`)]) + want[strings.Index(want, `,"at_ms"`):],
 		`{"redacted":{"leaf_hash":"ab","at_ms":1}}`,
