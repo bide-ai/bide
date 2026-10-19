@@ -993,6 +993,7 @@ func TestJoinsInChrome(t *testing.T) {
 		AfterJoinEdge            string   `json:"afterJoinEdge"`
 		JoinOffersSwitch         bool     `json:"joinOffersSwitch"`
 		LoopBefore               string   `json:"loopBefore"`
+		NoExit                   string   `json:"noExit"`
 		AfterLoop                string   `json:"afterLoop"`
 		FocusAfterLoop           string   `json:"focusAfterLoop"`
 		AfterLoopCleared         string   `json:"afterLoopCleared"`
@@ -1028,6 +1029,9 @@ func TestJoinsInChrome(t *testing.T) {
 	}
 	if !strings.Contains(r.AfterJoinEdge, "  - edge: [both, validate]\n") || r.JoinOffersSwitch {
 		t.Errorf("an edge out of the join (a switch offered: %v):\n%s", r.JoinOffersSwitch, r.AfterJoinEdge)
+	}
+	if !strings.Contains(r.NoExit, "no exit arm") {
+		t.Errorf("a loop bound with no exit arm: %q", r.NoExit)
 	}
 	if r.LoopBefore != "0" || !strings.Contains(r.AfterLoop, "{pred: again, to: charge, loop_max: 3}") || r.FocusAfterLoop != "c-arm-max-0" || strings.Contains(r.AfterLoopCleared, "loop_max") {
 		t.Errorf("a loop bound: before %q, focus %q\n%s\n%s", r.LoopBefore, r.FocusAfterLoop, r.AfterLoop, r.AfterLoopCleared)

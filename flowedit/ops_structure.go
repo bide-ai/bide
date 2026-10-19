@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bide-ai/bide/internal/printable"
+	"github.com/bide-ai/bide/plan"
 )
 
 // The structure operations of docs/design/visual-editor.md ("Operations", phase 2): add, remove and
@@ -253,6 +254,14 @@ func applyStructure(name string, src, data []byte, op Operation) (*Applied, erro
 	}
 	if !reflect.DeepEqual(canonical(got), canonical(want)) {
 		return nil, refuse("the result of %s does not match what the operation should produce; nothing was changed (edit this in the source)", op.Op)
+	}
+	if op.Op == "set_loop_max" && op.Max > 0 {
+		// A loop bound that Build would refuse (the target is not an ancestor of the switch, a second loop
+		// arm, no exit arm) is refused with the structural check's reason; the editor holds half-built
+		// flows, but it does not write a loop that is a wiring mistake by its own edit.
+		if why := newLoopShapeError(data, outData); why != "" {
+			return nil, refuse("%s; plan.Load refuses this", why)
+		}
 	}
 	if op.Op == "remove_node" || op.Op == "remove_join" {
 		for _, c := range RemovedComments(src, out) {
@@ -785,4 +794,30 @@ func expectStructure(old any, op Operation) (any, error) {
 		doc["wiring"] = kept
 	}
 	return doc, nil
+}
+
+// newLoopShapeError is the first loop-shape error the structural check finds in after that it did not
+// find in before, or "".
+func newLoopShapeError(before, after []byte) string {
+	shape := func(data []byte) []string {
+		var out []string
+		for _, p := range plan.InspectConfig(data, nil).Problems {
+			if p.Severity != "error" {
+				continue
+			}
+			for _, m := range []string{"loops back to", "loop-back arm", "no exit arm"} {
+				if strings.Contains(p.Message, m) {
+					out = append(out, p.Message)
+				}
+			}
+		}
+		return out
+	}
+	old := shape(before)
+	for _, m := range shape(after) {
+		if !slices.Contains(old, m) {
+			return m
+		}
+	}
+	return ""
 }

@@ -45,7 +45,6 @@ func TestJoinOperationsAreSplices(t *testing.T) {
 		{"remove an input", Operation{Op: "set_join_inputs", Node: "j", Inputs: []string{"c"}}, "inputs: [b, c]", "inputs: [c]"},
 		{"reorder the inputs", Operation{Op: "set_join_inputs", Node: "j", Inputs: []string{"c", "b"}}, "inputs: [b, c]", "inputs: [c, b]"},
 		{"change the merge", Operation{Op: "set_join_merge", Node: "j", Value: "mm2"}, "    merge: mm\n", "    merge: mm2\n"},
-		{"set a loop bound", Operation{Op: "set_loop_max", Node: "d", Index: 1, Max: 5}, "{pred: done, to: e}", "{pred: done, to: e, loop_max: 5}"},
 		{"change a loop bound", Operation{Op: "set_loop_max", Node: "d", Index: 0, Max: 7}, "loop_max: 3}", "loop_max: 7}"},
 		{"remove a loop bound", Operation{Op: "set_loop_max", Node: "d", Index: 0, Max: 0}, "{pred: again, to: b, loop_max: 3}", "{pred: again, to: b}"},
 		{"gate a join", Operation{Op: "set_approval", Node: "j", Approval: &Approval{Need: 1, Approvers: []string{"ops"}}}, "    safety: readonly   # no effect\n", "    safety: readonly   # no effect\n    approval:\n      need: 1\n      approvers:\n        - ops\n"},
@@ -309,4 +308,25 @@ func TestUnplaceableValueIsRefusedInPlainWords(t *testing.T) {
 	if !strings.Contains(why, "cannot edit safely") || strings.Contains(why, "extent") {
 		t.Errorf("%q", why)
 	}
+}
+
+// A loop bound on an arm that does not go back to an ancestor of its switch is refused with the
+// structural check's reason (plan.Load refuses it too); one that does is accepted.
+func TestLoopBoundOnAForwardArmIsRefused(t *testing.T) {
+	src := "version: 1\nflow: f\nentry: a\nnodes:\n  - {name: a, block: a}\n  - {name: b, block: b}\n  - {name: c, block: c}\n  - {name: d, block: d}\nwiring:\n  - edge: [a, b]\n  - switch: b\n    when:\n      - {pred: back, to: a}\n      - {pred: ahead, to: c}\n    else: d\n"
+	why := refusalOf(t, "f.yaml", src, Operation{Op: "set_loop_max", Node: "b", Index: 1, Max: 3})
+	if !strings.Contains(why, "is not an ancestor of the switch over") || !strings.Contains(why, "plan.Load refuses this") {
+		t.Errorf("a forward arm: %q", why)
+	}
+	got := mustApply(t, "f.yaml", src, Operation{Op: "set_loop_max", Node: "b", Index: 0, Max: 3})
+	if !strings.Contains(got, "{pred: back, to: a, loop_max: 3}") {
+		t.Errorf("a back arm:\n%s", got)
+	}
+	// A second loop bound on one switch is refused: Build allows one loop-back arm per switch.
+	if why := refusalOf(t, "f.yaml", got, Operation{Op: "set_loop_max", Node: "b", Index: 1, Max: 2}); !strings.Contains(why, "more than one loop-back arm") {
+		t.Errorf("a second loop arm: %q", why)
+	}
+	// Taking a bound off is never refused, and a config that already has the error is not made to refuse
+	// an unrelated bound change.
+	mustApply(t, "f.yaml", got, Operation{Op: "set_loop_max", Node: "b", Index: 0, Max: 0})
 }

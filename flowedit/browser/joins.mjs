@@ -106,6 +106,17 @@ try {
   await page.click('#c-sw-add');
   await until(() => document.getElementById('c-arm-max-0'), null, 'the arm');
   await atRest();
+  // A loop needs an exit: with only the loop arm the bound is refused, in the check's words.
+  await page.$eval('#c-arm-max-0', (e) => { e.value = ''; });
+  await page.focus('#c-arm-max-0');
+  await page.keyboard.type('3');
+  await page.keyboard.press('Enter');
+  await until(() => /no exit arm/.test(document.getElementById('live').textContent), null, 'the refusal of a loop with no exit');
+  r.noExit = await text('#live');
+  await page.select('#c-else', 'validate');
+  await page.click('#c-else-set');
+  await until(() => document.getElementById('source').value.includes('else: validate'), null, 'the else');
+  await atRest();
   r.loopBefore = await page.$eval('#c-arm-max-0', (e) => e.value);
   await page.$eval('#c-arm-max-0', (e) => { e.value = ''; });
   await page.focus('#c-arm-max-0');
