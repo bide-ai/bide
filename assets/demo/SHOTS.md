@@ -19,6 +19,12 @@ part the guide talks about).
 (`ONLY="approve relay"`), which `scripts/shots.sh` leaves alone: the approve page changes with its own pull
 request. `cli-*.png` and `refund-*.png` are terminal images, made by `cli.sh` and `record.sh`.
 
+## When
+
+Regenerate before each release, as part of the final docs pass: the viewer, the editor and the themes
+change between releases, and a picture that was right a month ago is not a promise. Run
+`scripts/shots.sh`, look at each image, and commit the ones that changed with the release's docs.
+
 ## How a picture is taken
 
 One program, `browser-shots/capture.mjs`, takes every viewer and editor picture (the share card is
