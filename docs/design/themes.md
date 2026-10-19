@@ -245,7 +245,7 @@ Why these numbers, from the current palette (measured with a throwaway script, n
   theme, shipped ones included, and the result is recorded in the guide (decision 6).
 
 The validator is also a command, `bide theme check file.json`, printing the table above for the
-theme with each measured value. A custom theme that fails C1 to C5 or C7 is refused: `bide view` and
+theme with each measured value. A custom theme that fails C1 to C5, C7 or C8 is refused: `bide view` and
 `bide edit` exit before listening, with the report; a Go host gets an error from `theme.Parse` and
 cannot construct an unchecked theme (the type has no exported fields and no other constructor).
 
@@ -426,8 +426,8 @@ reviewer before the decisions are taken (see the pull request).
   the colour-blindness matrices against published reference values. Parser tests: unknown keys,
   duplicate keys, every forbidden colour form, an over-size file, an out-of-range length, a shipped
   name. A mutation check after the first commit: move a threshold by one step and a test must fail.
-- **Shipped themes in CI.** A Go test loads every embedded theme, runs C1 to C7, and fails the build
-  on C1 to C5 and C7 (C6 is printed). Adding a shipped theme adds a row.
+- **Shipped themes in CI.** A Go test loads every embedded theme, runs C1 to C8, and fails the build
+  on C1 to C5, C7 and C8 (C6 is printed). Adding a shipped theme adds a row.
 - **Generator.** A golden CSS per shipped theme, and the grammar fuzz above.
 - **No literal colours in page CSS.** A repository test (new, see decision 12) scans
   `internal/runview/assets/*.css`, `flowedit/page/*.css`, `approvals/page/app.css` for a hex or
@@ -478,7 +478,7 @@ decorative borders.
 
 | PR | What | Touches `flowedit/page`? |
 |---|---|---|
-| 1 | The `theme` package: parser, normaliser, checks C1 to C7, `CSS`, the shipped `light`, `dark` (today's values, so no visible change) and `high-contrast` as embedded JSON, the CI test, `bide theme check`. No page changes | No |
+| 1 | The `theme` package: parser, normaliser, checks C1 to C8, `CSS`, the shipped `light`, `dark` (today's values, so no visible change) and `high-contrast` as embedded JSON, the CI test, `bide theme check`. No page changes | No |
 | 2 | The viewer on generated tokens: `theme.css` served and the three palette blocks removed from `style.css`; `theme.js` and the toggle learn three themes and the remembered-name check; `-theme` and `-theme-default` on `bide view`; the Chrome matrix over the viewer's pages (screenshots must match the previous output for light and dark); the guide `docs/guides/themes.md` | No (`style.css` is shared but is the viewer's) |
 | 3 | The colour-only fixes A1 to A5, A7 to A9 in `graph.css`, `diff.css`, `extras.css`, `svg.go`, `live.js`; the retuned `idem`; the audit test | No |
 | 4 | `forced-colors` and `prefers-contrast`: the mapping, the shape ladder completed, `border_strong` on every control in the viewer's CSS, the `info` token adopted where the pages use `accent` for a state; the high-contrast theme goes live | No |
