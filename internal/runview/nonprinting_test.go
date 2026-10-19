@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -114,5 +115,18 @@ func TestViewerPagesWriteJournalNamesOut(t *testing.T) {
 	// A run page is served from the same escaped writer when fetched whole, as the live script does.
 	if code, body := get(t, h, "/run.json?id="+url.QueryEscape(runID)); code != 200 || !strings.Contains(body, "\u202e") {
 		t.Errorf("the JSON endpoint should carry the names as they are: %d", code)
+	}
+}
+
+// The text/plain body of an error carries the names too (a file name in a failed diff); it is written
+// out like a page, and the JSON endpoints are left alone.
+func TestErrorBodiesWriteNamesOut(t *testing.T) {
+	c := Config{Name: spoofName, Data: []byte(spoofCfg)}
+	h := guard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, c.Name+": it failed", http.StatusInternalServerError)
+	}))
+	code, body := get(t, h, "/")
+	if code != 500 || strings.ContainsRune(body, '\u202e') || !strings.Contains(body, `\u{202E}`) {
+		t.Errorf("%d %q", code, body)
 	}
 }

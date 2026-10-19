@@ -687,14 +687,23 @@ its version. A key whose snake_case spelling is a key at that place (the pre-v1 
 `$.wiring[2].when[0]: "loopMax" is not a config key; version 1 keys are snake_case, write "loop_max"`.
 A name that is not printable is refused too: every identifier a reviewer reads (the flow, `entry`, `in`
 and `out`, node names and blocks, the references in edges, switches, arms and `else`, join names,
-inputs and merges, and the `assert` lines) must print, so it holds no control character, no
-invisible or direction-changing character (a zero-width space, a joiner, U+202E), no space other
-than a plain one, no private-use or unassigned code point, and no space at either end (an `assert`
-line may be padded). Such a name can read as another in a diff or a review; the error names the field
-and writes the character out, for example `nodes[2].name "ch\u{202E}gra" holds a character that does not
-print (U+202E)`. Approver ids are held to printable ASCII by the gate itself. `bide check`, `bide view`
-and `bide edit` also write any such character that reaches their output (a file name, a journal's
-topology) as `\u{XXXX}`. Every parse error wraps `ErrConfig`. `Load` then runs, by
+inputs and merges, and the `assert` lines) must print. It holds no control character, no
+invisible or direction-changing character (a zero-width space, a zero-width joiner or non-joiner, a
+left-to-right or right-to-left mark, U+202E), no space other than a plain one, no private-use or
+unassigned code point, no character that draws as a blank (the Hangul fillers, the Braille blank, the
+grapheme joiner, the Mongolian selectors), no combining mark or variation selector with no character
+before it to combine with, and no space at either end (the words of an `assert` line may be separated
+by any whitespace, as the grammar reads them). Such a name can read as another in a diff or a review;
+the error names the field and writes the character out, for example `nodes[2].name "ch\u{202E}gra"
+holds a character that does not print (U+202E)`. **This also refuses some legitimate text:** a Persian
+or Urdu word spelled with a zero-width non-joiner, an Indic conjunct spelled with a zero-width joiner,
+an emoji sequence joined by one (a family, a rainbow flag), and a left-to-right or right-to-left mark
+in a name that mixes scripts and digits. The way out is to spell the name without the joiner or mark
+(a name needs to be the same text everywhere, not typographically right). Approver ids are held to
+printable ASCII by the gate itself. `bide check`, `bide check -diff`, `bide view` and every page and
+error message the viewer serves write any such character that reaches their output (a file name, a
+journal's topology, a step or predicate name) as `\u{XXXX}`; the JSON endpoints and the other commands
+(`bide edit`'s own messages, `bide init`) are not filtered. Every parse error wraps `ErrConfig`. `Load` then runs, by
 `reflect.Type` identity:
 
 - **Predicate typing:** every switch arm's registered predicate `M` equals the switched node's output

@@ -229,11 +229,15 @@ func guard(h http.Handler) http.Handler {
 }
 
 // escapingWriter writes an HTML response through safetext.Writer, decided at the first write by the
-// content type the handler set.
+// content type the handler set (text/html pages, and the text/plain bodies of an error).
 type escapingWriter struct {
 	http.ResponseWriter
 	out     io.Writer
 	decided bool
+}
+
+func isText(ct string) bool {
+	return strings.HasPrefix(ct, "text/html") || strings.HasPrefix(ct, "text/plain")
 }
 
 func (e *escapingWriter) decide() {
@@ -241,7 +245,7 @@ func (e *escapingWriter) decide() {
 		return
 	}
 	e.decided = true
-	if strings.HasPrefix(e.Header().Get("Content-Type"), "text/html") {
+	if isText(e.Header().Get("Content-Type")) {
 		e.out = safetext.Writer(e.ResponseWriter)
 	}
 }

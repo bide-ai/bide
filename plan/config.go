@@ -383,7 +383,7 @@ func checkPrintable(cfg *config) error {
 		check(at("merge"), w.Merge)
 	}
 	for i, a := range cfg.Assert {
-		check(fmt.Sprintf("assert[%d]", i), strings.Trim(a, " ")) // a line may be padded; what it says must print
+		check(fmt.Sprintf("assert[%d]", i), strings.Join(strings.Fields(a), " ")) // the grammar collapses whitespace between words; what the words say must print
 	}
 	return bad
 }

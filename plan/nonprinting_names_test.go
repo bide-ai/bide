@@ -128,3 +128,31 @@ func TestApproverIDsWithNonPrintingCharactersStayRefused(t *testing.T) {
 		t.Error("an approver id with a direction override was accepted")
 	}
 }
+
+// Blank-rendering characters are refused like invisible ones: a name of one filler reads as empty.
+func TestConfigRefusesBlankRenderingNames(t *testing.T) {
+	for what, v := range map[string]string{
+		"hangul filler": "\u3164", "halfwidth hangul filler": "ab\uffa0", "braille blank": "a\u2800", "grapheme joiner": "a\u034f",
+		"khmer inherent vowel": "a\u17b4", "bare variation selector": "\ufe0f", "leading combining mark": "\u0301a",
+	} {
+		var cfg config
+		if err := parseConfig([]byte(nameCfg("nodes[0].name", v)), &cfg); err == nil {
+			t.Errorf("%s: %q was accepted", what, v)
+		}
+	}
+	for _, v := range []string{"e\u0301", "\u2764\ufe0f", "\u05e9\u05dc\u05d5\u05dd", "\u0645\u0631\u062d\u0628\u0627", "\ud55c\uae00"} {
+		var cfg config
+		if err := parseConfig([]byte(nameCfg("nodes[0].name", v)), &cfg); err != nil {
+			t.Errorf("%q: %v", v, err)
+		}
+	}
+}
+
+// An assert line may separate its words with any whitespace the grammar collapses (a tab, for one).
+func TestAssertLineWhitespaceIsAccepted(t *testing.T) {
+	var cfg config
+	data := `{"version":1,"flow":"f","nodes":[{"name":"a","block":"a"}],"wiring":[],"assert":["a\treachable","  a   reachable  "]}`
+	if err := parseConfig([]byte(data), &cfg); err != nil {
+		t.Errorf("%v", err)
+	}
+}

@@ -75,3 +75,41 @@ func TestWriterJoinsASplitCharacter(t *testing.T) {
 		t.Errorf("%q, want %q", got, want)
 	}
 }
+
+func TestBadRefusesBlankCharacters(t *testing.T) {
+	for name, s := range map[string]string{
+		"hangul filler": "\u3164", "halfwidth hangul filler": "ab\uffa0", "choseong filler": "\u115f", "jungseong filler": "a\u1160",
+		"braille blank": "\u2800", "khmer inherent vowel": "a\u17b4", "khmer inherent aa": "\u17b5", "grapheme joiner": "a\u034f",
+		"mongolian selector": "a\u180b", "mongolian vowel separator": "a\u180e", "bare variation selector": "\ufe0f", "variation selector after a space": "a \ufe0f",
+		"variation selector after a variation selector": "a\ufe0f\ufe0e", "supplement variation selector alone": "\U000e0100",
+		"leading combining mark": "\u0301a", "only marks": "\u0301\u0302",
+	} {
+		if _, bad := Bad(s); !bad {
+			t.Errorf("%s: %q passed", name, s)
+		}
+	}
+	for _, s := range []string{"e\u0301", "\u2764\ufe0f", "\u0661\u0662", "\u05e9\u05dc\u05d5\u05dd", "\u0645\u0631\u062d\u0628\u0627", "\ud55c\uae00", "\u4e2d\u6587", "1\ufe0f\u20e3", "\U0001F44D\U0001F3FD"} {
+		if r, bad := Bad(s); bad {
+			t.Errorf("%q refused for %U", s, r)
+		}
+	}
+}
+
+func TestWriterHoldsASplitColorSequence(t *testing.T) {
+	var b bytes.Buffer
+	w := Writer(&b)
+	for _, p := range []string{"a \x1b[1;3", "1mred\x1b", "[0m"} {
+		if _, err := w.Write([]byte(p)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, want := b.String(), "a \x1b[1;31mred\x1b[0m"; got != want {
+		t.Errorf("%q, want %q", got, want)
+	}
+}
+
+func TestEscapeInvalidUTF8(t *testing.T) {
+	if got, want := Escape("a\xffb"), `a\x{FF}b`; got != want {
+		t.Errorf("%q, want %q", got, want)
+	}
+}
