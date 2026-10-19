@@ -1,3 +1,0 @@
-Section: Fixed
-
-`bide edit` says so when git did not answer within its 15 second deadline ("git did not answer within 15s and was stopped"), instead of the "signal: killed" the kill leaves, still falls back to the file as it was opened, and no longer waits on a helper process that a git left holding its pipes (the wait is bounded to 2 seconds; a git that answered and exited 0 still counts as an answer). Test only: the stand-in git of the baseline tests is written and run once before the test uses it, because the first run of a newly written executable took 18 seconds on a loaded machine and the release run killed every case at the deadline.
