@@ -10,6 +10,7 @@ import (
 	"iter"
 	"net"
 	"net/http"
+	"path"
 	"slices"
 	"strings"
 	"time"
@@ -177,7 +178,7 @@ type Options struct {
 func Handler(o Options) http.Handler {
 	o.cache = &ttlCache{}
 	mux := http.NewServeMux()
-	mux.Handle("GET /assets/", http.StripPrefix("/assets/", http.FileServerFS(AssetsWith(o.DefaultTheme, o.Themes...))))
+	mux.Handle("GET /assets/", http.StripPrefix("/assets/", typed(http.FileServerFS(AssetsWith(o.DefaultTheme, o.Themes...)))))
 	if o.Config != nil {
 		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { render(w, "config.html", BuildConfig(*o.Config)) })
 		mux.HandleFunc("GET /config.json", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, BuildConfig(*o.Config)) })
@@ -457,4 +458,32 @@ func (s staticStore) Load(_ context.Context, _ string, after int64) iter.Seq2[ag
 			}
 		}
 	}
+}
+
+// assetTypes is the Content-Type of each kind of file the viewer serves, by extension. It is a fixed
+// table and not the operating system's: Go reads the type of an extension from the platform (on
+// Windows, the registry), so a machine that maps .js or .css to text/plain, by mistake or on purpose,
+// would with nosniff leave every page without its script and style.
+var assetTypes = map[string]string{
+	".js":   "text/javascript; charset=utf-8",
+	".css":  "text/css; charset=utf-8",
+	".html": "text/html; charset=utf-8",
+	".json": "application/json",
+	".svg":  "image/svg+xml",
+}
+
+// typed sets the Content-Type of a file from assetTypes before the file server writes it, and
+// application/octet-stream for an extension it has no entry for. A directory listing (no extension)
+// keeps the file server's own text/html.
+func typed(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ext := path.Ext(r.URL.Path); ext != "" {
+			t, ok := assetTypes[ext]
+			if !ok {
+				t = "application/octet-stream"
+			}
+			w.Header().Set("Content-Type", t)
+		}
+		h.ServeHTTP(w, r)
+	})
 }

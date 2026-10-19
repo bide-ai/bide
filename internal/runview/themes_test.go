@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"io/fs"
+	"mime"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -74,24 +77,51 @@ func TestCustomThemeAndDefault(t *testing.T) {
 	}
 }
 
-// TestAssetsServed: other assets are served as before, style.css can be ranged and is text/css, and
-// Assets (what the editor serves) carries the themes too.
+// TestAssetsServed: every asset is served with the type of the viewer's own table, whatever the
+// platform's registry says; style.css can be ranged; Assets (what the editor serves) carries the
+// themes too.
 func TestAssetsServed(t *testing.T) {
+	// A machine whose registry maps scripts and styles to text/plain: the table still decides.
+	for _, ext := range []string{".js", ".css", ".html", ".svg", ".json"} {
+		old := mime.TypeByExtension(ext)
+		if err := mime.AddExtensionType(ext, "text/plain; charset=utf-8"); err != nil {
+			t.Fatal(err)
+		}
+		if old != "" {
+			t.Cleanup(func() { _ = mime.AddExtensionType(ext, old) })
+		}
+	}
+	want := map[string]string{".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".html": "text/html; charset=utf-8"}
 	h := Handler(Options{Config: &Config{}})
-	// The type of a script comes from the platform (Windows reports application/javascript), as it
-	// did before the themes: both are scripts.
-	for name, typ := range map[string]string{"style.css": "text/css", "graph.css": "text/css", "theme.js": ""} {
-		req := httptest.NewRequest("GET", "/assets/"+name, nil)
+	entries, err := fs.ReadDir(rawAssets(), ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := 0
+	for _, e := range entries {
+		if path.Ext(e.Name()) == ".html" {
+			continue // the page templates; index.html is redirected by the file server, and none is a script or a style
+		}
+		typ, ok := want[path.Ext(e.Name())]
+		if !ok {
+			t.Errorf("asset %s has an extension the test does not know; add it to assetTypes and to this table", e.Name())
+			continue
+		}
+		req := httptest.NewRequest("GET", "/assets/"+e.Name(), nil)
 		req.Host = "127.0.0.1:8484"
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
-		ct := rec.Header().Get("Content-Type")
-		if name == "theme.js" && (strings.HasPrefix(ct, "text/javascript") || strings.HasPrefix(ct, "application/javascript")) {
-			typ = ct
+		if got := rec.Header().Get("Content-Type"); rec.Code != 200 || got != typ {
+			t.Errorf("%s: %d, Content-Type %q, want %q", e.Name(), rec.Code, got, typ)
 		}
-		if rec.Code != 200 || typ == "" || !strings.HasPrefix(ct, typ) {
-			t.Errorf("%s: %d %q", name, rec.Code, rec.Header().Get("Content-Type"))
-		}
+		served++
+	}
+	if served < 12 {
+		t.Errorf("only %d assets checked", served)
+	}
+	// An extension without an entry is not served as something the browser might run.
+	if got := assetTypes[".exe"]; got != "" {
+		t.Errorf("assetTypes has .exe: %q", got)
 	}
 	req := httptest.NewRequest("GET", "/assets/style.css", nil)
 	req.Host = "127.0.0.1:8484"
