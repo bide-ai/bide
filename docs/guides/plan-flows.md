@@ -770,7 +770,7 @@ refused. Two limits: types are told apart by name, so two distinct types spelled
 comparing Go types, would refuse an edge between them, and the digest already cannot tell them apart), and a type is
 written with its package path in messages. A description is only as good as the program that wrote it; the check that
 holds is the one made with the real Registry. A process keeps one type for each distinct type name it has ever been
-given, so it admits at most 20000 names and 4 MiB of names in all (about 25 MB); past that the check reports an error
+given, so it admits at most 20000 names and 4 MiB of names in all (about 25 MB), and one description at most a quarter of that; past that the check reports an error
 and a long-lived host must restart to check new type names.
 
 ## Limits

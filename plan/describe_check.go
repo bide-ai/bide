@@ -19,6 +19,8 @@ const (
 	maxDescribedEntries = 20000
 	maxDescribedName    = 512
 	maxDescribedType    = 1024
+	maxDescribedTypes   = 5000    // distinct type names in one description: a quarter of the process budget
+	maxDescribedTypeLen = 1 << 20 // bytes of those names, likewise
 	maxGateApprovers    = 256
 	maxApproverID       = 256
 	maxDescribedError   = 4096
@@ -46,6 +48,9 @@ func (d RegistryDescription) Validate() error {
 			e = "(not shown)"
 		}
 		return fmt.Errorf("the program's Registry reported %d error(s), so Load will not load it; the first: %s", len(d.Errors), e)
+	}
+	if err := d.checkTypeBudget(); err != nil {
+		return err
 	}
 	seen := map[string]bool{}
 	for _, b := range d.Blocks {
@@ -107,6 +112,37 @@ func (d RegistryDescription) Validate() error {
 
 // printableText reports whether s is valid UTF-8 without a character that does not print (the rule
 // a config's names are held to, internal/printable).
+// checkTypeBudget refuses a description with more distinct type names than a quarter of the process
+// budget (see reserveStandIns), so a description Validate accepts can be checked in a fresh process
+// and no one description can use the whole budget.
+func (d RegistryDescription) checkTypeBudget() error {
+	seen := map[string]bool{}
+	bytes := 0
+	add := func(n string) {
+		if !seen[n] {
+			seen[n] = true
+			bytes += len(n)
+		}
+	}
+	for _, b := range d.Blocks {
+		add(b.In)
+		add(b.Out)
+	}
+	for _, p := range d.Predicates {
+		add(p.Switched)
+	}
+	for _, m := range d.Merges {
+		for _, in := range m.Inputs {
+			add(in)
+		}
+		add(m.Out)
+	}
+	if len(seen) > maxDescribedTypes || bytes > maxDescribedTypeLen {
+		return fmt.Errorf("description has %d distinct type names (%d bytes), more than the %d names and %d bytes one description may hold", len(seen), bytes, maxDescribedTypes, maxDescribedTypeLen)
+	}
+	return nil
+}
+
 func printableText(s string) bool {
 	_, bad := printable.Bad(s)
 	return utf8.ValidString(s) && !bad
@@ -200,7 +236,9 @@ func describedGate(g *GateDescription) (*agent.ApprovalPolicy, error) {
 // A process keeps one stand-in type for each distinct type name it has been given (reflect keeps
 // them), so it admits at most 20000 names and 4 MiB of names in all, about 25 MB; past that the
 // result is an error problem and the config is checked structurally, until the process restarts. One
-// description counts against that budget with every distinct type name it holds.
+// description counts against that budget with every distinct type name it holds, at most a quarter of
+// it (RegistryDescription.Validate). A host that checks descriptions from sources it does not trust
+// should do it in a short-lived process.
 //
 // Experimental: may change in any 0.x release.
 func InspectConfigDescribed(data []byte, d RegistryDescription) ConfigReport {

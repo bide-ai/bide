@@ -530,3 +530,52 @@ func TestARealTypeWithTheStandInShapeIsNotAStandIn(t *testing.T) {
 		t.Errorf("a real type is spelled %q / %q", canonicalType(ty), typeName(ty))
 	}
 }
+
+// One description may hold a quarter of the process budget in distinct type names, no more: a
+// description Validate accepts can then be checked in a fresh process, and no one description can use
+// it all. Both limits are tested at the boundary.
+func TestValidateBoundsTheDistinctTypeNames(t *testing.T) {
+	mk := func(names []string) RegistryDescription {
+		d := RegistryDescription{Version: 1, Blocks: []BlockDescription{}, Predicates: []PredicateDescription{}, Merges: []MergeDescription{}}
+		for i := 0; i < len(names); i += 2 {
+			out := names[i]
+			if i+1 < len(names) {
+				out = names[i+1]
+			}
+			d.Blocks = append(d.Blocks, BlockDescription{Name: fmt.Sprint("b", i), Kind: "step", In: names[i], Out: out, Safety: "readonly"})
+		}
+		return d
+	}
+	distinct := func(n, size int) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = fmt.Sprintf("%0*d", size, i)
+		}
+		return out
+	}
+	if err := mk(distinct(maxDescribedTypes, 8)).Validate(); err != nil {
+		t.Errorf("exactly the name limit: %v", err)
+	}
+	if err := mk(distinct(maxDescribedTypes+1, 8)).Validate(); err == nil || !strings.Contains(err.Error(), "distinct type names") {
+		t.Errorf("one name over: %v", err)
+	}
+	// Repeats are one name.
+	rep := distinct(10, 8)
+	for len(rep) < 3*maxDescribedTypes {
+		rep = append(rep, rep[len(rep)%10])
+	}
+	if err := mk(rep).Validate(); err != nil {
+		t.Errorf("repeated names: %v", err)
+	}
+	if err := mk(distinct(maxDescribedTypeLen/maxDescribedType, maxDescribedType)).Validate(); err != nil {
+		t.Errorf("exactly the byte limit: %v", err)
+	}
+	if err := mk(distinct(maxDescribedTypeLen/maxDescribedType+1, maxDescribedType)).Validate(); err == nil || !strings.Contains(err.Error(), "bytes") {
+		t.Errorf("one name over the byte limit: %v", err)
+	}
+	// The limits fit in the process budget four times over, so an accepted description is checkable on a
+	// fresh process.
+	if maxDescribedTypes*4 > maxStandInNames || maxDescribedTypeLen*4 > maxStandInBytes {
+		t.Errorf("a description may hold more than a quarter of the process budget: %d/%d names, %d/%d bytes", maxDescribedTypes, maxStandInNames, maxDescribedTypeLen, maxStandInBytes)
+	}
+}
