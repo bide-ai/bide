@@ -31,7 +31,11 @@ func describedRegistry(t *testing.T, reverse bool) *Registry {
 		func() error {
 			return reg.RegisterStep("pay", dsPay, Idempotent(), Approval(&agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "fin", "risk"}, ExcludePrincipal: true, Timeout: 90 * time.Minute}))
 		},
-		func() error { return reg.RegisterStep("sign", dsPay, Approval(agent.SingleApproval())) },
+		func() error {
+			single := agent.SingleApproval()
+			single.Timeout = 2 * time.Hour
+			return reg.RegisterStep("sign", dsPay, Approval(single))
+		},
 		func() error { return reg.RegisterModel[dsMid, dsMid]("draft", "draft {{.}}") },
 		func() error {
 			tool := agent.MustFunc("refund", "refund", func(context.Context, dsMid) (dsOut, error) { return dsOut{}, nil },
@@ -39,6 +43,7 @@ func describedRegistry(t *testing.T, reverse bool) *Registry {
 			return reg.RegisterTool[dsMid, dsOut]("refund", tool)
 		},
 		func() error { return reg.RegisterPredicate("big", func(m dsMid) bool { return m.ID > 9 }) },
+		func() error { return reg.RegisterPredicate("paid", func(o dsOut) bool { return o.Status == "paid" }) },
 		func() error { return reg.RegisterPredicate("small", func(m dsMid) bool { return m.ID < 2 }) },
 		func() error {
 			return reg.RegisterJoin3("all3", func(_ context.Context, a dsMid, b dsMid, c dsOut) (dsMid, error) { return a, nil }, Idempotent())
@@ -74,14 +79,14 @@ func TestDescribeReportsEveryRegistration(t *testing.T) {
 		{Name: "pay", Kind: "step", In: mid, Out: out, Safety: "idempotent", Gate: &GateDescription{Need: 2, Approvers: []string{"ops", "fin", "risk"}, ExcludePrincipal: true, Timeout: "1h30m0s"}},
 		{Name: "prepare", Kind: "step", In: in, Out: mid, Safety: "side_effect"},
 		{Name: "refund", Kind: "tool", In: mid, Out: out, Safety: "side_effect", Gate: &GateDescription{Need: 1, Approvers: []string{"ops", "fin"}}},
-		{Name: "sign", Kind: "step", In: mid, Out: out, Safety: "side_effect", Gate: &GateDescription{Single: true}},
+		{Name: "sign", Kind: "step", In: mid, Out: out, Safety: "side_effect", Gate: &GateDescription{Single: true, Timeout: "2h0m0s"}},
 	}
 	if !reflect.DeepEqual(d.Blocks, want) {
 		g, _ := json.MarshalIndent(d.Blocks, "", " ")
 		w, _ := json.MarshalIndent(want, "", " ")
 		t.Errorf("blocks:\n%s\nwant:\n%s", g, w)
 	}
-	if want := []PredicateDescription{{"big", mid}, {"small", mid}}; !reflect.DeepEqual(d.Predicates, want) {
+	if want := []PredicateDescription{{"big", mid}, {"paid", out}, {"small", mid}}; !reflect.DeepEqual(d.Predicates, want) {
 		t.Errorf("predicates %+v", d.Predicates)
 	}
 	wantM := []MergeDescription{{Name: "all3", Inputs: []string{mid, mid, out}, Out: mid, Safety: "idempotent"}, {Name: "both", Inputs: []string{mid, out}, Out: out, Safety: "readonly", Gate: &GateDescription{Single: true}}}
@@ -210,9 +215,7 @@ func TestDescribeReportsABadMergeGate(t *testing.T) {
 func TestDescribeMatchesWhatLoadResolves(t *testing.T) {
 	reg := describedRegistry(t, false)
 	delete(reg.merges, "both") // a join cannot follow a Switch's arms; TestDescribeMatchesLoadForAJoin has it
-	cfg := `{"version":1,"flow":"d","in":"plan.dsIn","out":"plan.dsOut","entry":"prepare",
-	 "nodes":[{"name":"prepare","block":"prepare"},{"name":"look","block":"lookup"},{"name":"pay","block":"pay"},{"name":"sign","block":"sign"},{"name":"refund","block":"refund"},{"name":"draft","block":"draft"}],
-	 "wiring":[{"edge":["prepare","look"]},{"switch":"look","when":[{"pred":"big","to":"draft"},{"pred":"small","to":"refund"}],"else":"sign"},{"edge":["draft","pay"]}]}`
+	cfg := describedFlowConfig
 	// Load is the reference. A Model node needs a bound model and an m-of-n gate its approvers'
 	// verifiers; the editor's checks bind neither, so the test binds stand-ins.
 	flow, err := Load[dsIn, dsOut]([]byte(cfg), reg, WithLoadedModel(&fakeModel{reply: `{}`}),
@@ -251,7 +254,7 @@ func TestDescribeMatchesWhatLoadResolves(t *testing.T) {
 					t.Errorf("join %s: inputs %q, Load has %q", n.Name, m.Inputs, j.InCanonical)
 				}
 			}
-			gate = describedGate(m.Gate)
+			gate = topologyGateOf(m.Gate)
 			if got := safetyOf(m.Safety); got != safety[n.Name] {
 				t.Errorf("join %s: safety %s, Load has %s", n.Name, got, safety[n.Name])
 			}
@@ -265,7 +268,7 @@ func TestDescribeMatchesWhatLoadResolves(t *testing.T) {
 			if b.In != n.InCanonical || b.Out != n.OutCanonical || b.Kind != string(n.Kind) {
 				t.Errorf("node %s: described %s %s -> %s, Load has %s %s -> %s", n.Name, b.Kind, b.In, b.Out, n.Kind, n.InCanonical, n.OutCanonical)
 			}
-			gate = describedGate(b.Gate)
+			gate = topologyGateOf(b.Gate)
 			if got := safetyOf(b.Safety); got != safety[n.Name] {
 				t.Errorf("node %s: safety %s, Load has %s", n.Name, got, safety[n.Name])
 			}
@@ -311,8 +314,8 @@ func safetyOf(word string) NodeSafety {
 	return SafetySideEffect
 }
 
-// describedGate is the TopologyGate a GateDescription stands for.
-func describedGate(g *GateDescription) *TopologyGate {
+// topologyGateOf is the TopologyGate a GateDescription stands for.
+func topologyGateOf(g *GateDescription) *TopologyGate {
 	if g == nil {
 		return nil
 	}
@@ -350,3 +353,8 @@ func TestDescribeMatchesLoadForAJoin(t *testing.T) {
 		}
 	}
 }
+
+// describedFlowConfig uses every block of describedRegistry but the merge.
+const describedFlowConfig = `{"version":1,"flow":"d","in":"plan.dsIn","out":"plan.dsOut","entry":"prepare",
+	 "nodes":[{"name":"prepare","block":"prepare"},{"name":"look","block":"lookup"},{"name":"pay","block":"pay"},{"name":"sign","block":"sign"},{"name":"refund","block":"refund"},{"name":"draft","block":"draft"}],
+	 "wiring":[{"edge":["prepare","look"]},{"switch":"look","when":[{"pred":"big","to":"draft"},{"pred":"small","to":"refund"}],"else":"sign"},{"edge":["draft","pay"]}]}`

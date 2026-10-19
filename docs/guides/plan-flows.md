@@ -763,6 +763,14 @@ path. It holds no functions, prompts or schemas, it is sorted by name, and the s
 so a program can write it to a file for a tool to read. It is experimental: it may change in any 0.x release. The
 flow editor's typed mode is built on it.
 
+`plan.InspectConfigDescribed(data, description)` checks a config against such a description, with the same code as
+`InspectConfig`, so a tool that has only the file (the flow editor's `-blocks` form) checks blocks, types, safety,
+gates and the digest without the program. `RegistryDescription.Validate` says why a description read from a file is
+refused. Two limits: types are told apart by name, so two distinct types spelled the same are one type (`Load`,
+comparing Go types, would refuse an edge between them, and the digest already cannot tell them apart), and a type is
+written with its package path in messages. A description is only as good as the program that wrote it; the check that
+holds is the one made with the real Registry.
+
 ## Limits
 
 - Fan-in is fixed-arity (`Join2`/`Join3`); unbounded or ragged fan-in is not supported.

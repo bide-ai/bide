@@ -163,6 +163,7 @@ ConfigReport is what InspectConfig finds in a flow config: the graph it declares
 **Constructors and functions**
 
 - `func InspectConfig(data []byte, reg *Registry) (r ConfigReport)`: InspectConfig checks a flow config without running or building a Flow, for a viewer or a CI check.
+- `func InspectConfigDescribed(data []byte, d RegistryDescription) ConfigReport`: InspectConfigDescribed is InspectConfig for a program's registrations known only as a description: it runs the same checks (the same code) on a Registry built from d, so blocks, predicates, merges, types, safety, gates and the digest are checked without the program.
 
 **Methods**
 
@@ -364,6 +365,10 @@ type RegistryDescription struct {
 ```
 
 RegistryDescription is what a Registry has registered, as data: names, kinds, type names, the safety and the approval gate each block declares in Go.
+
+**Methods**
+
+- `func (d RegistryDescription) Validate() error`: Validate reports whether d is a description this release reads: its version, every name and type name present, printable and within bounds, every kind and safety one of the known words, every gate a policy agent.ApprovalPolicy.Validate accepts, no name twice in a namespace, and a merge of arity two or three (the arities Registry registers).
 
 ## type Topology
 
