@@ -463,7 +463,8 @@ func sameJSON(a, b []byte) bool {
 	}
 	norm(x)
 	norm(y)
-	return reflect.DeepEqual(x, y)
+	// An absent, null and empty list of nodes or wiring are one thing to the config.
+	return reflect.DeepEqual(canonical(x), canonical(y))
 }
 
 // A join's inputs are names too: a rename follows them, and the join keeps the rest of its element.

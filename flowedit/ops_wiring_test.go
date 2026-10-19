@@ -156,6 +156,7 @@ func TestWiringRefusals(t *testing.T) {
 func TestWiringOverCorpus(t *testing.T) {
 	files := append(collect(t), generated(150)...)
 	applied, refused, restored := 0, 0, 0
+	differ := map[string]int{}
 	for _, f := range files {
 		name := "f.yaml"
 		if json.Valid([]byte(f.text)) {
@@ -188,12 +189,29 @@ func TestWiringOverCorpus(t *testing.T) {
 				return
 			}
 			if string(back.Text) != f.text {
-				if !strings.Contains(f.text, "wiring") {
-					return // the list was created by the operation; emptying it leaves it as "wiring: []"
+				// Not the same bytes: say why, and require that nothing that matters changed. The data is
+				// the same (the assert lines read through the grammar) and so are the comments.
+				why := "other"
+				switch {
+				case !strings.Contains(f.text, "wiring"):
+					why = "the operation created the wiring list, and emptying it leaves wiring: []"
+				case strings.ContainsFunc(f.text, func(r rune) bool { return r > 127 }):
+					why = "non-ASCII text, which the engine writes escaped"
+				case !strings.HasSuffix(f.text, "\n"):
+					why = "the file has no final newline, which the engine adds"
 				}
-				if strings.HasSuffix(f.text, "\n") && !strings.ContainsFunc(f.text, func(r rune) bool { return r > 127 }) {
-					t.Errorf("%s %+v: the inverse did not restore the bytes\n--- before\n%s\n--- after\n%s", f.name, op, f.text, back.Text)
+				d1, _ := ToJSONIf(name, []byte(f.text))
+				d2, _ := ToJSONIf(name, back.Text)
+				if !sameJSON(d1, d2) {
+					t.Errorf("%s %+v: the inverse changed the data (%s)", f.name, op, why)
 				}
+				if len(RemovedComments(back.Text, []byte(f.text))) != 0 || len(RemovedComments([]byte(f.text), back.Text)) != 0 {
+					t.Errorf("%s %+v: the inverse changed the comments (%s)", f.name, op, why)
+				}
+				if why == "other" {
+					t.Errorf("%s %+v: the inverse did not restore the bytes, and it is not a known reason\n--- before\n%s\n--- after\n%s", f.name, op, f.text, back.Text)
+				}
+				differ[why]++
 				return
 			}
 			restored++
@@ -215,7 +233,7 @@ func TestWiringOverCorpus(t *testing.T) {
 			}
 		}
 	}
-	t.Logf("%d applied, %d refused, %d inverses restored the bytes", applied, refused, restored)
+	t.Logf("%d applied, %d refused, %d inverses restored the bytes; the rest: %v", applied, refused, restored, differ)
 	if applied < 100 || restored < applied/2 {
 		t.Errorf("the corpus exercised too little: %d applied, %d restored", applied, restored)
 	}
