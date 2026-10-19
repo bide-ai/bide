@@ -598,7 +598,8 @@ func TestCommandEscapesErrorText(t *testing.T) {
 		}
 	}
 	for _, h := range hostile {
-		code, out, errs := run("check", filepath.Join(dir, "no such "+h.in))
+		// Joined as text, not with filepath.Join, which cleans a "/" in the name on Windows.
+		code, out, errs := run("check", dir+string(filepath.Separator)+"no such "+h.in)
 		if code != 1 {
 			t.Errorf("a missing file named %q: exit %d", h.in, code)
 		}
