@@ -193,6 +193,8 @@ func TestWiringOverCorpus(t *testing.T) {
 				// the same (the assert lines read through the grammar) and so are the comments.
 				why := "other"
 				switch {
+				case strings.Contains(f.text, "else:\n") || strings.Contains(f.text, "when:\n"):
+					why = "a null else or when was replaced, and the inverse removes it (null and absent are the same)"
 				case !strings.Contains(f.text, "wiring"):
 					why = "the operation created the wiring list, and emptying it leaves wiring: []"
 				case strings.ContainsFunc(f.text, func(r rune) bool { return r > 127 }):
@@ -250,5 +252,50 @@ func TestNewWiringIsWrittenInTheExamplesStyle(t *testing.T) {
 	got = mustApply(t, "f.yaml", src, Operation{Op: "add_switch", Node: "a", Pred: "p", To: "b"})
 	if !strings.HasSuffix(got, "  - switch: a\n    when: [{pred: p, to: b}]\n") {
 		t.Errorf("switch:\n%s", got)
+	}
+}
+
+// A switch whose when or else is null, or whose when is missing, is one the operations can still
+// work on: the null key is replaced.
+func TestWiringOnNullAndMissingKeys(t *testing.T) {
+	base := "version: 1\nflow: f\nentry: a\nnodes:\n  - {name: a, block: a}\n  - {name: b, block: b}\n  - {name: c, block: c}\nwiring:\n"
+	for name, c := range map[string]struct {
+		wiring string
+		op     Operation
+		want   string
+	}{
+		"add an arm to a null when":   {"  - switch: a\n    when:\n", Operation{Op: "add_arm", Node: "a", Pred: "p", To: "b"}, "when: [{pred: p, to: b}]"},
+		"add an arm with no when key": {"  - switch: a\n", Operation{Op: "add_arm", Node: "a", Pred: "p", To: "b"}, "when: [{pred: p, to: b}]"},
+		"add an arm to an empty when": {"  - switch: a\n    when: []\n", Operation{Op: "add_arm", Node: "a", Pred: "p", To: "b"}, "when: [{pred: p, to: b}]"},
+		"set a null else":             {"  - switch: a\n    when: [{pred: p, to: b}]\n    else:\n", Operation{Op: "set_else", Node: "a", To: "c"}, "else: c"},
+	} {
+		got := mustApply(t, "f.yaml", base+c.wiring, c.op)
+		if !strings.Contains(got, c.want) {
+			t.Errorf("%s:\n%s", name, got)
+		}
+		if _, err := ToJSON([]byte(got)); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// A shape the operations cannot read is refused in one sentence that names the element and what it
+// holds, not in the words of the JSON decoder.
+func TestWiringOddShapesAreRefusedInWords(t *testing.T) {
+	base := "version: 1\nflow: f\nentry: a\nnodes:\n  - {name: a, block: a}\n  - {name: b, block: b}\n"
+	for name, c := range map[string]struct {
+		tail string
+		why  string
+	}{
+		"when is text":           {"wiring:\n  - edge: [a, b]\n  - switch: a\n    when: x\n", "wiring[1].when is text, not a list; edit it in the source"},
+		"else is a number":       {"wiring:\n  - switch: a\n    when: [{pred: p, to: b}]\n    else: 5\n", "wiring[0].else is a number, not text; edit it in the source"},
+		"wiring is a mapping":    {"wiring: {x: y}\n", "wiring is not a list; edit it in the source"},
+		"a wiring item is text":  {"wiring:\n  - nope\n", "wiring[0] is not a mapping the editor can read"},
+		"an edge that is a text": {"wiring:\n  - edge: a\n", "wiring[0].edge is text, not a list; edit it in the source"},
+	} {
+		why := refusalOf(t, "f.yaml", base+c.tail, Operation{Op: "add_edge", Node: "a", To: "b"})
+		if !strings.Contains(why, c.why) || strings.Contains(why, "json") || strings.Contains(why, "Go struct") {
+			t.Errorf("%s: %q, want %q", name, why, c.why)
+		}
 	}
 }

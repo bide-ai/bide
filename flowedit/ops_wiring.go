@@ -167,6 +167,15 @@ func planWiring(cfg *structDoc, top map[string]json.RawMessage, op Operation) ([
 				return nil, refuse("the switch on %q already has the arm %s -> %s", op.Node, op.Pred, op.To)
 			}
 		}
+		// A switch whose when is absent or null gets the key written (the null one is replaced); one with a
+		// list gets the arm appended.
+		raw, has := cfg.wireRaw[at]["when"]
+		switch {
+		case !has:
+			return []Op{{Kind: Insert, Path: []any{"wiring", at}, Key: "when", Value: []any{armMap(op.Pred, op.To)}}}, nil
+		case string(raw) == "null":
+			return []Op{{Kind: Delete, Path: slices.Clone(when)}, {Kind: Insert, Path: []any{"wiring", at}, Key: "when", Value: []any{armMap(op.Pred, op.To)}}}, nil
+		}
 		return []Op{{Kind: Insert, Path: when, Index: len(w.When), Value: armMap(op.Pred, op.To)}}, nil
 	case "remove_arm":
 		if err := arm(); err != nil {
@@ -225,6 +234,9 @@ func planWiring(cfg *structDoc, top map[string]json.RawMessage, op Operation) ([
 			return nil, nil
 		case w.Else != "":
 			return []Op{{Kind: Set, Path: []any{"wiring", at, "else"}, Value: op.To}}, nil
+		}
+		if raw, has := cfg.wireRaw[at]["else"]; has && string(raw) == "null" {
+			return []Op{{Kind: Delete, Path: []any{"wiring", at, "else"}}, {Kind: Insert, Path: []any{"wiring", at}, Key: "else", Value: op.To}}, nil
 		}
 		return []Op{{Kind: Insert, Path: []any{"wiring", at}, Key: "else", Value: op.To}}, nil
 	}

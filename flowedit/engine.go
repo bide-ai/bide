@@ -809,6 +809,9 @@ func (d *doc) flowHint(op Op) bool {
 	if found {
 		return flow
 	}
+	if op.Key != "" && flowByDefault[op.Key] && isComposite(op.Value) {
+		return true // a key the repository writes as a flow list, with none in this file to copy
+	}
 	// No key to copy: follow the container's own style for items (a sequence of flow mappings).
 	if l, err := d.locate(op.Path); err == nil && l.node.Kind == yaml.SequenceNode && len(l.node.Content) > 0 {
 		return isFlow(l.node.Content[0])
