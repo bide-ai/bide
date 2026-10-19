@@ -54,6 +54,20 @@ type Options struct {
 	AllowUnknown bool
 }
 
+// MaxDepth is the deepest nesting of arrays and objects the structure of a document may have. The
+// deepest document bide reads from its fixtures, examples, golden exports and test data nests 5
+// levels (the journal records in agent/testdata), and the deepest any test reads is 7; 128 leaves
+// an order of magnitude of headroom, and is the nesting past which a document is an attack, not
+// data. JSON kept verbatim (json.RawMessage, as a journal keeps a tool call's input and a tool's
+// result, whatever a model or a tool made it) is not structure bide defines, so it is held to
+// MaxVerbatimDepth instead: a record carrying a deep tool input must stay readable.
+const MaxDepth = 128
+
+// MaxVerbatimDepth is the deepest nesting any document may have, structure and verbatim JSON
+// together. It is encoding/json's own limit. Check refuses a deeper document before any decoder
+// runs, so no reader spends time or memory on it.
+const MaxVerbatimDepth = 10000
+
 // ErrTrailingData reports data after the one JSON value.
 var ErrTrailingData = errors.New("trailing data after the value")
 
@@ -88,8 +102,11 @@ func Unmarshal(data []byte, v any, opts *Options) error {
 // lone surrogate, and in a []byte, base64 that is the standard encoding of its bytes. JSON kept
 // verbatim (json.RawMessage) is checked for duplicate names only.
 func Check(data []byte, t reflect.Type, opts *Options) error {
+	if err := checkDepth(data, MaxVerbatimDepth); err != nil {
+		return err
+	}
 	s := newDecoder(data, opts)
-	if err := s.value(t, "$", false); err != nil {
+	if err := s.value(t, &path{name: "$"}, false); err != nil {
 		return err
 	}
 	if _, err := s.dec.Token(); err != io.EOF {
@@ -100,8 +117,69 @@ func Check(data []byte, t reflect.Type, opts *Options) error {
 
 // CheckValue checks the first JSON value in raw against t, as Check does, naming path in its
 // errors. It does not look past that value.
-func CheckValue(raw []byte, t reflect.Type, path string, opts *Options) error {
-	return newDecoder(raw, opts).value(t, path, false)
+func CheckValue(raw []byte, t reflect.Type, at string, opts *Options) error {
+	if err := checkDepth(raw, MaxVerbatimDepth); err != nil {
+		return fmt.Errorf("%s: %w", at, err)
+	}
+	return newDecoder(raw, opts).value(t, &path{name: at}, false)
+}
+
+// checkDepth refuses data nested deeper than limit, scanning it once without allocating. A
+// bracket inside a string does not count, and an escape inside a string is skipped whole, so a
+// quote after a backslash does not end the string. Brackets are not paired here (the decoder
+// rejects a malformed document): only the count of those open at once is bounded. The error names
+// the limit and the offset of the bracket that crossed it, never the content.
+func checkDepth(data []byte, limit int) error {
+	depth := 0
+	for i := 0; i < len(data); i++ {
+		switch data[i] {
+		case '"':
+			for i++; i < len(data) && data[i] != '"'; i++ {
+				if data[i] == '\\' {
+					i++
+				}
+			}
+		case '[', '{':
+			if depth++; depth > limit {
+				return errDepth(limit, i)
+			}
+		case ']', '}':
+			depth--
+		}
+	}
+	return nil
+}
+
+func errDepth(limit, offset int) error {
+	return fmt.Errorf("nesting deeper than %d levels at offset %d", limit, offset)
+}
+
+// path is the position of a value in the document, kept as a chain from the value up to the root
+// so that a path is built (String) only when an error or a hook needs it, not at every level.
+type path struct {
+	parent *path
+	name   string // the root's text, an object's key, or empty for an array element
+	index  int    // an array element's index
+	elem   bool
+}
+
+func (p *path) String() string {
+	var parts []*path
+	for ; p != nil; p = p.parent {
+		parts = append(parts, p)
+	}
+	var b strings.Builder
+	for i := len(parts) - 1; i >= 0; i-- {
+		switch q := parts[i]; {
+		case q.parent == nil:
+			b.WriteString(q.name)
+		case q.elem:
+			b.WriteString("[" + strconv.Itoa(q.index) + "]")
+		default:
+			b.WriteString("." + q.name)
+		}
+	}
+	return b.String()
 }
 
 var (
@@ -115,6 +193,7 @@ type decoder struct {
 	dec  *json.Decoder
 	data []byte
 	opts *Options
+	deep int // arrays and objects open around the value being read, verbatim ones not counted
 }
 
 func newDecoder(data []byte, opts *Options) *decoder {
@@ -150,7 +229,7 @@ func (s *decoder) fields(t reflect.Type) map[string]Field {
 
 // value consumes one JSON value, checking it against t (see Check). verbatim is set inside raw
 // JSON, which is kept as written.
-func (s *decoder) value(t reflect.Type, path string, verbatim bool) error {
+func (s *decoder) value(t reflect.Type, at *path, verbatim bool) error {
 	for t != nil && t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
@@ -159,15 +238,15 @@ func (s *decoder) value(t reflect.Type, path string, verbatim bool) error {
 	}
 	if hook, ok := s.opts.Hooks[t]; ok && t != nil {
 		start := s.dec.InputOffset()
-		if err := s.value(nil, path, true); err != nil {
+		if err := s.value(nil, at, true); err != nil {
 			return err
 		}
-		return hook(trimSeparators(s.data[start:s.dec.InputOffset()]), path)
+		return hook(trimSeparators(s.data[start:s.dec.InputOffset()]), at.String())
 	}
 	verbatim = verbatim || t == rawMessageType
 	tok, raw, err := s.token()
 	if err != nil {
-		return fmt.Errorf("%s: %w", path, err)
+		return fmt.Errorf("%s: %w", at, err)
 	}
 	delim, isDelim := tok.(json.Delim)
 	if !isDelim {
@@ -176,14 +255,20 @@ func (s *decoder) value(t reflect.Type, path string, verbatim bool) error {
 			return nil // another scalar: encoding/json checks its type when decoding
 		}
 		if err := oneSpelling(raw); err != nil {
-			return fmt.Errorf("%s: %w", path, err)
+			return fmt.Errorf("%s: %w", at, err)
 		}
 		if t != nil && t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8 {
 			if b, err := base64.StdEncoding.DecodeString(str); err == nil && base64.StdEncoding.EncodeToString(b) != str {
-				return fmt.Errorf("%s: base64 %q is not the standard encoding of its bytes", path, str)
+				return fmt.Errorf("%s: base64 %q is not the standard encoding of its bytes", at, str)
 			}
 		}
 		return nil
+	}
+	if !verbatim {
+		if s.deep++; s.deep > MaxDepth {
+			return errDepth(MaxDepth, int(s.dec.InputOffset())-1)
+		}
+		defer func() { s.deep-- }()
 	}
 	custom := t == nil || t.Kind() == reflect.Interface ||
 		reflect.PointerTo(t).Implements(unmarshalerType) || t.Implements(unmarshalerType)
@@ -194,7 +279,7 @@ func (s *decoder) value(t reflect.Type, path string, verbatim bool) error {
 			elem = t.Elem()
 		}
 		for i := 0; s.dec.More(); i++ {
-			if err := s.value(elem, fmt.Sprintf("%s[%d]", path, i), verbatim); err != nil {
+			if err := s.value(elem, &path{parent: at, index: i, elem: true}, verbatim); err != nil {
 				return err
 			}
 		}
@@ -215,16 +300,16 @@ func (s *decoder) value(t reflect.Type, path string, verbatim bool) error {
 		for s.dec.More() {
 			kt, raw, err := s.token()
 			if err != nil {
-				return fmt.Errorf("%s: %w", path, err)
+				return fmt.Errorf("%s: %w", at, err)
 			}
 			key := kt.(string)
 			if seen[key] {
-				return fmt.Errorf("%s: duplicate name %q", path, key)
+				return fmt.Errorf("%s: duplicate name %q", at, key)
 			}
 			seen[key] = true
 			if !verbatim {
 				if err := oneSpelling(raw); err != nil {
-					return fmt.Errorf("%s: name %w", path, err)
+					return fmt.Errorf("%s: name %w", at, err)
 				}
 			}
 			var next reflect.Type
@@ -236,11 +321,11 @@ func (s *decoder) value(t reflect.Type, path string, verbatim bool) error {
 				case ok:
 					next, nullOK = f.Type, f.NullOK
 				case !s.opts.AllowUnknown:
-					return fmt.Errorf("%s: %q is not a field of %s (names must match exactly)", path, key, t)
+					return fmt.Errorf("%s: %q is not a field of %s (names must match exactly)", at, key, t)
 				default:
 					for name := range fields {
 						if strings.EqualFold(name, key) {
-							return fmt.Errorf("%s: %q is a case variant of field %q of %s (names must match exactly)", path, key, name, t)
+							return fmt.Errorf("%s: %q is a case variant of field %q of %s (names must match exactly)", at, key, name, t)
 						}
 					}
 				}
@@ -248,11 +333,11 @@ func (s *decoder) value(t reflect.Type, path string, verbatim bool) error {
 				next = mapElem
 			}
 			start := s.dec.InputOffset()
-			if err := s.value(next, path+"."+key, verbatim); err != nil {
+			if err := s.value(next, &path{parent: at, name: key}, verbatim); err != nil {
 				return err
 			}
 			if !nullOK && bytes.Equal(trimSeparators(s.data[start:s.dec.InputOffset()]), []byte("null")) {
-				return fmt.Errorf("%s: null for required field %q", path, key)
+				return fmt.Errorf("%s: null for required field %q", at, key)
 			}
 		}
 		if _, err := s.dec.Token(); err != nil { // }
@@ -266,7 +351,7 @@ func (s *decoder) value(t reflect.Type, path string, verbatim bool) error {
 		}
 		if len(missing) > 0 {
 			slices.Sort(missing)
-			return fmt.Errorf("%s: missing required field %q", path, missing[0])
+			return fmt.Errorf("%s: missing required field %q", at, missing[0])
 		}
 		return nil
 	}
