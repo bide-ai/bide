@@ -18,6 +18,7 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/internal/approveline"
+	safetext "github.com/bide-ai/bide/internal/printable"
 	"github.com/bide-ai/bide/internal/term"
 	"github.com/bide-ai/bide/plan"
 )
@@ -165,6 +166,9 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 	}
 	st := term.For(stdout, *color)
 	es := term.For(stderr, *color) // error lines on stderr
+	// Every line the command prints, a file name or a message with a name in it, is written with each
+	// character that does not print written out; the styles above were chosen from the real streams.
+	stdout, stderr = safetext.Writer(stdout), safetext.Writer(stderr)
 	usage := func(msg string) int {
 		fmt.Fprintln(stderr, es.ErrorPrefix()+"bide view:", msg)
 		fs.Usage()

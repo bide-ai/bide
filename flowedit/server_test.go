@@ -432,7 +432,7 @@ func TestPageContract(t *testing.T) {
 // below are valid to plan: a name is any string.
 func TestGraphIsWellFormedAndEscaped(t *testing.T) {
 	hostile := `<img src=x onerror=alert(1)>`
-	text := "version: 1\nflow: f\nentry: a\nnodes:\n  - {name: 'a&b \"q\" ', block: '" + hostile + "', safety: readonly}\n  - {name: '" + hostile + "', block: b, safety: readonly}\nwiring:\n  - edge: ['a&b \"q\" ', '" + hostile + "']\n"
+	text := "version: 1\nflow: f\nentry: a\nnodes:\n  - {name: 'a&b \"q\" z', block: '" + hostile + "', safety: readonly}\n  - {name: '" + hostile + "', block: b, safety: readonly}\nwiring:\n  - edge: ['a&b \"q\" z', '" + hostile + "']\n"
 	v := BuildView("f.yaml", []byte(text))
 	if v.Graph == "" || !strings.HasPrefix(v.Graph, `<svg xmlns="http://www.w3.org/2000/svg" `) {
 		t.Fatalf("graph %.100s", v.Graph)
@@ -511,27 +511,23 @@ func TestReadsRefuseALinkButReadAReplacedFile(t *testing.T) {
 	}
 }
 
-// A node name with a character XML 1.0 cannot hold does not blank the graph: the drawing stays
-// well-formed and the name is shown with U+FFFD in its place.
-func TestGraphSurvivesXMLIllegalNames(t *testing.T) {
-	for _, bad := range []string{"\u0001", "\u000b", "\u001b", "￾", "￿"} {
+// A node name with a character XML 1.0 cannot hold is a name that does not print, which the config
+// check refuses: the view says so (naming the field and writing the character out) and draws no graph,
+// so such a name never reaches the drawing from a config.
+func TestXMLIllegalNamesAreRefusedWithAReason(t *testing.T) {
+	for _, bad := range []string{"\u0001", "\u000b", "\u001b", "\ufffe", "\uffff"} {
 		text := `{"version": 1, "flow": "f", "entry": "a` + bad + `b", "nodes": [{"name": "a` + bad + `b", "block": "x", "safety": "readonly"}], "wiring": []}`
 		text = strings.ReplaceAll(text, bad, fmt.Sprintf(`\u%04x`, []rune(bad)[0]))
 		v := BuildView("f.json", []byte(text))
-		if v.Graph == "" {
-			t.Fatalf("%q: no graph", bad)
+		if v.Graph != "" || v.Errors == 0 {
+			t.Fatalf("%q: graph %t, errors %d", bad, v.Graph != "", v.Errors)
 		}
-		dec := xml.NewDecoder(strings.NewReader(v.Graph))
-		for {
-			if _, err := dec.Token(); err != nil {
-				if err != io.EOF {
-					t.Errorf("%q: the graph is not well-formed: %v", bad, err)
-				}
-				break
-			}
+		why := v.ParseError
+		for _, p := range v.Problems {
+			why += p.Message
 		}
-		if !strings.Contains(v.Graph, "a�b") {
-			t.Errorf("%q: the name is not shown with a marker", bad)
+		if !strings.Contains(why, "entry") || !strings.Contains(why, "does not print") || strings.ContainsRune(why, []rune(bad)[0]) {
+			t.Errorf("%q: the reason is %q", bad, why)
 		}
 	}
 }

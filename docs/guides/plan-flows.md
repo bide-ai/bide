@@ -685,7 +685,16 @@ the value are parse errors, so a typo cannot silently drop a gate or an entry. A
 its version. A key whose snake_case spelling is a key at that place (the pre-v1 `loopMax`, or
 `Safety`) is refused with an error naming the key to write and where it is, for example
 `$.wiring[2].when[0]: "loopMax" is not a config key; version 1 keys are snake_case, write "loop_max"`.
-Every parse error wraps `ErrConfig`. `Load` then runs, by
+A name that is not printable is refused too: every identifier a reviewer reads (the flow, `entry`, `in`
+and `out`, node names and blocks, the references in edges, switches, arms and `else`, join names,
+inputs and merges, and the `assert` lines) must print, so it holds no control character, no
+invisible or direction-changing character (a zero-width space, a joiner, U+202E), no space other
+than a plain one, no private-use or unassigned code point, and no space at either end (an `assert`
+line may be padded). Such a name can read as another in a diff or a review; the error names the field
+and writes the character out, for example `nodes[2].name "ch\u{202E}gra" holds a character that does not
+print (U+202E)`. Approver ids are held to printable ASCII by the gate itself. `bide check`, `bide view`
+and `bide edit` also write any such character that reaches their output (a file name, a journal's
+topology) as `\u{XXXX}`. Every parse error wraps `ErrConfig`. `Load` then runs, by
 `reflect.Type` identity:
 
 - **Predicate typing:** every switch arm's registered predicate `M` equals the switched node's output
