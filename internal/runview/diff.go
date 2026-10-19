@@ -116,6 +116,8 @@ type DiffView struct {
 	Graph     *Graph `json:"graph,omitempty"`
 	// Verdict is the answer the page opens with (see diffVerdict); it is not in the JSON view.
 	Verdict Verdict `json:"-"`
+	// sideOnly is set when only one side had a Registry or description, so the comparison was structural.
+	sideOnly bool
 	// weakKinds is the Weakening of each Weakened entry, in order.
 	weakKinds []string
 }
@@ -177,9 +179,9 @@ func (v *DiffView) BasisLine() string {
 	case v.OldBasis == v.NewBasis:
 		return ""
 	case v.OldBasis == SourceDescription || v.NewBasis == SourceDescription:
-		return "old config " + label(v.OldBasis) + ", new config " + label(v.NewBasis) + ": " + DescriptionNote
+		return "old config " + label(v.OldBasis) + ", new config " + label(v.NewBasis) + "; the comparison is structural, as a description is never compared with a side that has none: " + DescriptionNote
 	}
-	return "old config " + label(v.OldBasis) + ", new config " + label(v.NewBasis)
+	return "old config " + label(v.OldBasis) + ", new config " + label(v.NewBasis) + "; the comparison is structural, as one side has none"
 }
 
 // DigestLine says how the digest changed, in words, for the text summary and the page.
@@ -219,6 +221,15 @@ func BuildDiff(d Diff) (*DiffView, error) {
 		v.Typed = false
 		v.Fallback = fallbackText(d, v.OldErrors, v.NewErrors)
 		v.OldBasis, v.NewBasis = "structural", "structural"
+	} else if o.Typed != n.Typed {
+		// A Registry or description for one side only is never compared with the side that has none: the
+		// typed side knows each node's safety and the gates its blocks declare, the other states only
+		// what its config states, and the classifier reads "unknown" against "known" as a lowering and
+		// as a gate that appeared, so an unchanged config would fail. Compare structurally, as without
+		// it; the labels say which side was described.
+		o, n = Config{Name: d.Old.Name, Data: d.Old.Data}.inspect(), Config{Name: d.New.Name, Data: d.New.Data}.inspect()
+		v.Typed = false
+		v.sideOnly = true
 	}
 	if v.Typed {
 		v.Basis = SourceRegistry

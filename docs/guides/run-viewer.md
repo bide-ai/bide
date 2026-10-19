@@ -692,9 +692,7 @@ registers only one flow). A description whose program's Registry refused a regis
 is used; an error about its contents is cut to 200 bytes.
 
 With `-diff`, `-blocks` describes the config and `-old-blocks` the earlier version, as the program's blocks were
-then (a block the old config uses must be in the old description). A description is never applied to the other side:
-without `-old-blocks` the earlier version is checked structurally, so a gate removed in Go with the config unchanged
-is not read as no change by giving both sides the new description. Give both to compare what the program declared. A block swapped for one that
+then (a block the old config uses must be in the old description). A description is never applied to the other side, and a described side is never compared with one that has none (the described side knows each node's safety and the gates its blocks declare, the other states only what its config states, and that difference would read as a lowering): with one description the comparison is the structural one, labelled with which side was described. Give both to compare what the program declared at each version. A block swapped for one that
 declares no gate is then reported as a weakening, which from the command line alone is only a possible one.
 
 Adding a description never makes `-diff` less strict than leaving it out, unless the description is wrong or stale

@@ -569,6 +569,12 @@ func TestDiffDescriptionNeverLessStrictCorpus(t *testing.T) {
 				if exitWithout && !exitWith {
 					t.Errorf("%s %s->%s: fails without the description, passes with it", name, from, to)
 				}
+				if (od == nil) != (nd == nil) && with.Fallback == "" {
+					// One side only: the comparison is the structural one, change for change.
+					if strings.Join(lines(with.Changes), "\n") != strings.Join(lines(without.Changes), "\n") || len(with.Weakened) != len(without.Weakened) || with.Typed {
+						t.Errorf("%s %s->%s: a one-sided description is not compared structurally: %q vs %q", name, from, to, lines(with.Changes), lines(without.Changes))
+					}
+				}
 				if with.Fallback != "" {
 					// Not certified: the structural result, in full.
 					if len(with.Weakened) != len(without.Weakened) || !exitWith {
@@ -657,11 +663,13 @@ func TestMainAGoSideGateRemovalIsNotHiddenByOneDescription(t *testing.T) {
 	base := []string{"-config", cfg, "-diff", same, "-check", "-fail-on-weaken"}
 	exitPlain, _ := run(base...)
 	exitNew, out := run(append(base, "-blocks", put("new.json", string(ungated)))...)
-	if exitNew < exitPlain || !strings.Contains(out, "old config structural") {
+	// An unchanged config with no Go change on either side must not fail: the typed side knows safety the
+	// structural side leaves unstated, and that is not a lowering.
+	if exitNew != 0 || strings.Contains(out, "lowered") || strings.Contains(out, "weakened") || !strings.Contains(out, "old config structural") {
 		t.Errorf("-blocks alone: exit %d (plain %d) %q", exitNew, exitPlain, out)
 	}
 	exitOld, out := run(append(base, "-old-blocks", put("old.json", string(gated)))...)
-	if exitOld < exitPlain || !strings.Contains(out, "new config structural") {
+	if exitOld != 0 || strings.Contains(out, "lowered") || strings.Contains(out, "weakened") || !strings.Contains(out, "new config structural") {
 		t.Errorf("-old-blocks alone: exit %d (plain %d) %q", exitOld, exitPlain, out)
 	}
 	// Both: the Go-side removal is a weakening and fails the gate.
