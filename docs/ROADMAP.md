@@ -59,7 +59,7 @@ Go teams using other agent frameworks can keep them and put bide under the dange
 ### The visual builder
 
 - An editor that writes a flow config, `bide edit` (in progress: [design](design/visual-editor.md)). Next after its first phase: editing structure (adding, removing, renaming and moving nodes, edges, switches, arms, else, loop bounds and joins are in; drag to connect is next), a typed mode that knows the program's registered blocks, and comparing a change against past runs.
-- Themes for the visual pages ([design](design/themes.md), accepted): the theme file, `bide theme check` and the run viewer's themes (`light`, `dark`, `high-contrast`, and `-theme` for your own) have shipped in the unreleased work, along with the fixes that stop any state being told apart by colour alone. Next: `forced-colors` and `prefers-contrast`, the approve page, the editor taking themes (`bide edit -theme`) and a Go option to embed a theme.
+- Themes for the visual pages ([design](design/themes.md), accepted): the theme file, `bide theme check` and the run viewer's themes (`light`, `dark`, `high-contrast`, and `-theme` for your own) have shipped in the unreleased work, along with the fixes that stop any state being told apart by colour alone. Still to come, in the order of the design note's pull-request table: the remaining steps listed there (`forced-colors` and `prefers-contrast`, the approve page, the editor taking themes with `bide edit -theme`, a Go option to embed a theme); the guide and the design note say which are built.
 - A GitHub Action that posts a config diff on a pull request, and an HTML export of a page.
 
 ## Later: bide beyond Go
