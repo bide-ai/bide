@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # lib.sh: what the shots*.sh scripts share. Source it after setting root (the repository), out (where
 # the images go) and theme (dark or light).
 #
