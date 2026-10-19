@@ -278,6 +278,7 @@ func TestOnlyAKeyIDOrARNIsAcceptedAsTheKMSKey(t *testing.T) {
 	bad := []string{
 		"alias/bide-anchor", "arn:aws:kms:eu-west-1:111122223333:alias/bide-anchor", "alias/bide-anchor\n",
 		" alias/x", "\talias/x", "ALIAS/x", "Alias/x", "my-alias/x", "alias", "key", "k", " " + id, id + " ", id + "\n",
+		"1234ABCD-12ab-34cd-56ef-1234567890ab", "1234abcd-12AB-34cd-56ef-1234567890ab", "1234abcd-12ab-34CD-56ef-1234567890ab", "1234abcd-12ab-34cd-56EF-1234567890ab", "1234abcd-12ab-34cd-56ef-1234567890AB", "mrk-1234ABCD12ab34cd56ef1234567890ab",
 		"1234ABCD-12AB-34CD-56EF-1234567890AB",        // a key ID is lower case
 		"1234abcd-12ab-34cd-56ef-1234567890a",         // too short
 		"mrk-1234abcd12ab34cd56ef1234567890a",         // too short
