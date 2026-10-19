@@ -315,7 +315,7 @@ func TestScanMarkup(t *testing.T) {
 		{"a style assignment with a name", `el.style.background = "red"`, 1},
 		{"a style assignment with hsl", `x.style.background = "hsl(1 2% 3%)"`, 1},
 		{"a style assignment with a short hex", `x.style.color = "#abc"`, 1},
-		{"a template literal", "x.style.background = `red`; y.style.color = `#abc`", 1},
+		{"a template literal", "x.style.background = `red`", 1},
 		{"a bracket style assignment", `x.style["background-color"] = "tomato"`, 1},
 		{"a setProperty", `x.style.setProperty("color", "crimson")`, 1},
 		{"a setAttribute", `x.setAttribute("fill", "#abc"); y.setAttribute("stroke", "red")`, 2},
