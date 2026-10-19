@@ -239,7 +239,7 @@ func TestStructureRefusals(t *testing.T) {
 	}{
 		"add: empty name":              {structFlow, Operation{Op: "add_node", Value: "b"}, "cannot be empty"},
 		"add: padded name":             {structFlow, Operation{Op: "add_node", Node: " x", Value: "b"}, "starts or ends"},
-		"add: name with a line break":  {structFlow, Operation{Op: "add_node", Node: "a\nb", Value: "b"}, "control character"},
+		"add: name with a line break":  {structFlow, Operation{Op: "add_node", Node: "a\nb", Value: "b"}, "control, invisible"},
 		"add: long name":               {structFlow, Operation{Op: "add_node", Node: strings.Repeat("x", 201), Value: "b"}, "more than"},
 		"add: empty block":             {structFlow, Operation{Op: "add_node", Node: "x"}, "block cannot be empty"},
 		"add: duplicate":               {structFlow, Operation{Op: "add_node", Node: "charge", Value: "b"}, "already there"},
@@ -517,4 +517,37 @@ func TestRemoveLeavesALoudAssertionError(t *testing.T) {
 		t.Errorf("the verdict is %q", v.Verdict.Word)
 	}
 	t.Logf("%s | %s", v.Verdict.Word, v.Verdict.Line)
+}
+
+// A name cannot be made to read as another: invisible, bidirectional and other non-printing
+// characters are refused in a new name, by add and by rename.
+func TestNamesCannotSpoof(t *testing.T) {
+	for what, name := range map[string]string{
+		"right-to-left override": "ch\u202egra",
+		"left-to-right isolate":  "a\u2066b",
+		"left-to-right mark":     "a\u200eb",
+		"zero-width space only":  "\u200b",
+		"zero-width joiner":      "a\u200db",
+		"word joiner":            "a\u2060b",
+		"soft hyphen":            "a\u00adb",
+		"no-break space":         "a\u00a0b",
+		"line separator":         "a\u2028b",
+		"private use":            "a\ue000b",
+		"unassigned":             "a\U000e0fffb",
+		"tab":                    "a\tb",
+		"byte order mark":        "a\ufeffb",
+	} {
+		for _, op := range []Operation{{Op: "add_node", Node: name, Value: "b"}, {Op: "rename_node", Node: "receipt", Value: name}} {
+			if why := refusalOf(t, "f.yaml", structFlow, op); !strings.Contains(why, "invisible") && !strings.Contains(why, "starts or ends") {
+				t.Errorf("%s with %s: %q", op.Op, what, why)
+			}
+		}
+	}
+	// Names people use stay: other scripts, accents, symbols, a plain inner space.
+	for _, name := range []string{"é", "ノード", "🚀 rocket", "a-b_c.d", "manual review"} {
+		if name == "manual review" {
+			continue // already a node in structFlow
+		}
+		mustApply(t, "f.yaml", structFlow, Operation{Op: "add_node", Node: name, Value: "b"})
+	}
 }

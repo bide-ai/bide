@@ -100,7 +100,7 @@ not verified. The node controls are in the outline (**Add a node**) and the insp
 
 - **Add a node**: a name and a block. The node goes at the end of the node list in the style of the
   last one, and is wired to nothing yet. The name must be new, not a join's name, and have no padding
-  or control character.
+  or control character, and no invisible, direction-changing or non-plain space character (so a name cannot read as another in a diff; an emoji sequence that needs a zero-width joiner is refused too).
 - **Rename** rewrites the name everywhere the file uses it: the node, the `entry`, edges, a switch and
   its arms and `else`, a join's inputs, and `assert` lines. An assertion is rewritten through the
   assertion grammar and never by text search, so an assertion line that mentions the node but is not
@@ -115,7 +115,7 @@ not verified. The node controls are in the outline (**Add a node**) and the insp
   removal whose list is not the one it computes, so what is removed is what you were shown. A node
   that is an input of a join is not removed (change the join first). `assert` lines that name the
   node are listed and **left in place**: removing an assertion would weaken the policy, and the
-  check reports the line as naming a node that is gone. **Undo** brings a removal back.
+  check reports the line as naming a node that is gone. The list covers what names the node, not every effect: removing a node can leave an assertion that does not name it violated or vacuous (`b reachable` after the only path to `b` is gone), and that is caught by the weakened banner and the save confirmation, not by the dialog. **Undo** brings a removal back.
 - **The entry node.** A config with no `entry` key starts at its first node, and the topology digest
   commits to the entry. The editor never changes the entry without you: adding a node never does,
   but removing the entry node, or the first node of a config with no `entry`, is refused, and the

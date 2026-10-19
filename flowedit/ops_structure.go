@@ -28,8 +28,9 @@ func isStructureOp(op string) bool {
 // maxNameLen bounds a node name the editor will write.
 const maxNameLen = 200
 
-// checkName refuses a name the editor will not write: empty, padded, too long, or holding a control
-// character or a line break. Whether a name is also unique is the caller's check.
+// checkName refuses a name the editor will not write: empty, padded, too long, or holding a character
+// that is not printable (control, invisible, bidirectional, private-use, a space other than a plain
+// one), so no name can read as another in a diff or the outline. Whether a name is also unique is the caller's check.
 func checkName(name string) error {
 	switch {
 	case name == "":
@@ -40,8 +41,12 @@ func checkName(name string) error {
 		return refuse("a name of more than %d bytes", maxNameLen)
 	case !utf8.ValidString(name):
 		return refuse("the name is not valid UTF-8")
-	case strings.IndexFunc(name, unicode.IsControl) >= 0:
-		return refuse("the name %q has a control character", name)
+	case strings.IndexFunc(name, func(r rune) bool { return !unicode.IsPrint(r) }) >= 0:
+		// IsPrint is letters, marks, numbers, punctuation, symbols and the plain space: it refuses
+		// control characters, the invisible and bidirectional format characters (zero-width space,
+		// joiners, direction overrides, soft hyphen), other spaces (no-break, line separator),
+		// private-use and unassigned code points, so a name cannot read as another name in a diff.
+		return refuse("the name %q has a control, invisible or direction-changing character, or a space other than a plain one", name)
 	}
 	return nil
 }
