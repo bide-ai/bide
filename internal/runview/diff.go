@@ -94,6 +94,9 @@ type DiffView struct {
 	// "structural".
 	OldBasis string `json:"old_basis"`
 	NewBasis string `json:"new_basis"`
+	// OldFile and NewFile are the SHA-256 of the description file of each side, when it has one.
+	OldFile string `json:"old_file,omitempty"`
+	NewFile string `json:"new_file,omitempty"`
 	// Fallback is set when a side checked against a Registry or a description had errors, so the typed
 	// comparison had nothing sound to read: the diff was made structurally, as it is without them,
 	// which never reads a gate as stronger than it can tell. It says so in words and the diff is not
@@ -156,6 +159,22 @@ func fallbackText(d Diff, oldErrs, newErrs int) string {
 	return "not certified: " + strings.Join(which, " and ") + " against " + against + " (bide check lists them), so the gates were compared structurally, as without it, and what the blocks declare in Go is not known"
 }
 
+// files names the description files a result rests on by their SHA-256 (what sha256sum prints), so a
+// reviewer can tell which files were used.
+func (v *DiffView) files() string {
+	var parts []string
+	if v.OldFile != "" {
+		parts = append(parts, "earlier file sha256 "+v.OldFile)
+	}
+	if v.NewFile != "" {
+		parts = append(parts, "this file sha256 "+v.NewFile)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(parts, ", ") + ")"
+}
+
 // BasisLine says how each side was checked when that is not plainly "both structural" or "both against
 // the Registry": a description file for either side (its gates, safety and types are as the file says;
 // the check against the program's Registry is the control), a different basis per side, or a diff
@@ -175,11 +194,11 @@ func (v *DiffView) BasisLine() string {
 	}
 	switch {
 	case v.OldBasis == v.NewBasis && v.OldBasis == SourceDescription:
-		return DescriptionNote
+		return "checked per description files, not checked against the programs" + v.files() + ": the gates, safety and types are as the files say; the check against each program's plan.Registry is the control."
 	case v.OldBasis == v.NewBasis:
 		return ""
 	case v.OldBasis == SourceDescription || v.NewBasis == SourceDescription:
-		return "old config " + label(v.OldBasis) + ", new config " + label(v.NewBasis) + "; the comparison is structural, as a description is never compared with a side that has none: " + DescriptionNote
+		return "old config " + label(v.OldBasis) + ", new config " + label(v.NewBasis) + "; the comparison is structural, as a description is never compared with a side that has none" + v.files() + ": " + DescriptionNote
 	}
 	return "old config " + label(v.OldBasis) + ", new config " + label(v.NewBasis) + "; the comparison is structural, as one side has none"
 }
@@ -213,6 +232,12 @@ func BuildDiff(d Diff) (*DiffView, error) {
 	v := &DiffView{Name: d.New.Name, OldName: d.Old.Name, Flow: n.Topology.Flow, Typed: o.Typed && n.Typed,
 		OldDigest: o.Digest, NewDigest: n.Digest, OldErrors: errorCount(o), NewErrors: errorCount(n),
 		OldBasis: basisOf(d.Old, o), NewBasis: basisOf(d.New, n)}
+	if d.Old.source() == SourceDescription {
+		v.OldFile = d.Old.DescriptionSHA256
+	}
+	if d.New.source() == SourceDescription {
+		v.NewFile = d.New.DescriptionSHA256
+	}
 	// Adding a Registry or a description must never make the comparison less strict than without it.
 	// A typed report with errors has no approvals and no gates to read, and a comparison of what it
 	// does not have says nothing: compare structurally, as without, and say the diff is not certified.

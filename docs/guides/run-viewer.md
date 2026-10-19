@@ -702,8 +702,17 @@ so the diff is made structurally, as without the description, and is labelled **
 good and `-fail-on-weaken` fails, whether or not a weakening was found. Every result says how each side was checked
 (`old config per description file, new config structural`), including when only `-old-blocks` is given.
 
+A verdict that rests on description files says so, and names the files by their SHA-256 (what `sha256sum` prints), the
+earlier one and this one, so a reviewer can tell which files were used. Because the result is only as good as the
+files, **generate both in the same CI job from the two versions of the program, never edit them by hand**: build
+the program at the base revision and at the head, have each write `json.Marshal(reg.Describe())`, and give those two
+files to `bide check`. A description that was written for another version, or edited, makes the verdict wrong, and
+nothing in the file can say so.
+
 ```sh
+# in CI, after writing blocks-main.json from the base revision's program and blocks.json from the head's
 bide check flows/refund-v2.yaml -diff main -blocks blocks.json -old-blocks blocks-main.json -check -fail-on-weaken
+sha256sum blocks.json blocks-main.json   # the two lines the verdict names
 ```
 
 ### Risk map

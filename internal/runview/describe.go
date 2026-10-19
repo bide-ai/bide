@@ -1,6 +1,8 @@
 package runview
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -22,34 +24,43 @@ const MaxDescriptionFile = 1 << 20
 // and the description must be valid (RegistryDescription.Validate). A description is untrusted
 // data: this is the only way the viewer and the editor read one, and it is read once.
 func ReadDescription(path string) (*plan.RegistryDescription, error) {
+	d, _, err := ReadDescriptionFile(path)
+	return d, err
+}
+
+// ReadDescriptionFile is ReadDescription that also returns the SHA-256 of the file's bytes, in hex, which
+// sha256sum on the same file prints: a result that rests on the file says which file it was.
+func ReadDescriptionFile(path string) (*plan.RegistryDescription, string, error) {
 	// A named pipe or a device would block the open (or the read) for ever, so the type is asked
 	// before the file is opened, and again of what was opened (the path may have changed between the
 	// two); the open itself does not wait for a writer where the system can say so.
 	if fi, err := os.Stat(path); err != nil {
-		return nil, err
+		return nil, "", err
 	} else if !fi.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s: not a regular file", path)
+		return nil, "", fmt.Errorf("%s: not a regular file", path)
 	}
 	f, err := openNoWait(path)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer f.Close()
 	fi, err := f.Stat()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if !fi.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s: not a regular file", path)
+		return nil, "", fmt.Errorf("%s: not a regular file", path)
 	}
 	b, err := io.ReadAll(io.LimitReader(f, MaxDescriptionFile+1))
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if len(b) > MaxDescriptionFile {
-		return nil, fmt.Errorf("%s: larger than %d bytes", path, MaxDescriptionFile)
+		return nil, "", fmt.Errorf("%s: larger than %d bytes", path, MaxDescriptionFile)
 	}
-	return DecodeDescription(b, path)
+	d, err := DecodeDescription(b, path)
+	sum := sha256.Sum256(b)
+	return d, hex.EncodeToString(sum[:]), err
 }
 
 // DecodeDescription is ReadDescription for bytes already read; name is used in errors.

@@ -3,6 +3,8 @@ package runview
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -676,5 +678,40 @@ func TestMainAGoSideGateRemovalIsNotHiddenByOneDescription(t *testing.T) {
 	code, out := run(append(base, "-blocks", put("new2.json", string(ungated)), "-old-blocks", put("old2.json", string(gated)))...)
 	if code != 1 || !strings.Contains(out, "approval 2 of 2: ops, fin -> none") {
 		t.Errorf("both descriptions: %d %q", code, out)
+	}
+}
+
+// A result that rests on description files says which files: their SHA-256, the one sha256sum prints,
+// and for a diff that both sides rest on files, not on the programs.
+func TestResultsNameTheDescriptionFilesTheyRestOn(t *testing.T) {
+	dir := t.TempDir()
+	put := func(name string, data []byte) (string, string) {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(data)
+		return p, hex.EncodeToString(sum[:])
+	}
+	co, _ := json.MarshalIndent(only(t, "charge").Describe(), "", " ")
+	po, _ := json.Marshal(only(t, "post").Describe()) // different bytes, whitespace included
+	oldP, oldSum := put("old-blocks.json", co)
+	newP, newSum := put("new-blocks.json", po)
+	cfgOld, _ := put("old.json", []byte(swapCfg("charge")))
+	cfgNew, _ := put("new.json", []byte(swapCfg("post")))
+	var out, errb bytes.Buffer
+	code := Main([]string{"-config", cfgNew, "-diff", cfgOld, "-check", "-fail-on-weaken", "-blocks", newP, "-old-blocks", oldP}, &out, &errb, Stores{})
+	text := out.String()
+	if code != 1 || !strings.Contains(text, "per description files, not checked against the programs") ||
+		!strings.Contains(text, "earlier file sha256 "+oldSum) || !strings.Contains(text, "this file sha256 "+newSum) {
+		t.Errorf("both described: %d %q", code, text)
+	}
+	out.Reset()
+	code = Main([]string{"-config", cfgNew, "-check", "-blocks", newP}, &out, &errb, Stores{})
+	if code != 0 || !strings.Contains(out.String(), "description file sha256 "+newSum) {
+		t.Errorf("one config: %d %q", code, out.String())
+	}
+	if _, sum, err := ReadDescriptionFile(newP); err != nil || sum != newSum {
+		t.Errorf("ReadDescriptionFile: %q %v", sum, err)
 	}
 }

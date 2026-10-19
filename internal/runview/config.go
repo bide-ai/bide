@@ -24,6 +24,9 @@ type Config struct {
 	// Description is what the program registered, read from a file (bide check -blocks). It is only
 	// as good as the file: the page and the text say so wherever they report a typed result.
 	Description *plan.RegistryDescription
+	// DescriptionSHA256 is the SHA-256 of the description file's bytes (ReadDescriptionFile), shown
+	// where a result rests on the file, so a reviewer can tell which file was used.
+	DescriptionSHA256 string
 	// AllowUnusedBlocks makes a registered block the config does not use no problem
 	// (plan.AllowUnusedBlocks). bide check -blocks sets it: a description is of the whole program, and
 	// a flow config uses some of its blocks.
@@ -44,6 +47,14 @@ const (
 // something the program was asked about. The check made with the program's Registry
 // (plan/planview) is the control.
 const DescriptionNote = "checked per description file, not checked against the program: the gates, safety and types are as the file says; the check against the program's plan.Registry is the control."
+
+// fileSum is sum in the words around it, or "" when there is none.
+func fileSum(sum, before, after string) string {
+	if sum == "" {
+		return ""
+	}
+	return before + sum + after
+}
 
 // source is the basis of c's check.
 func (c Config) source() string {
@@ -394,7 +405,7 @@ func CheckStyled(w io.Writer, c Config, st term.Style) bool {
 			count(hold, "hold", st.OK), count(violated, "violated", st.Fail), count(other, "undecided or invalid", st.Warn))
 	}
 	if r.Typed && c.source() == SourceDescription {
-		fmt.Fprintf(w, "%s: %s\n", name, st.Dim(DescriptionNote))
+		fmt.Fprintf(w, "%s: %s\n", name, st.Dim(DescriptionNote+fileSum(c.DescriptionSHA256, " (description file sha256 ", ")")))
 	}
 	return r.Errors() || c.Strict && len(r.Problems) > 0
 }

@@ -244,15 +244,16 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 			return 1
 		}
 		var desc, oldDesc *plan.RegistryDescription
+		var descSum, oldSum string
 		if f.blocks != "" {
-			if desc, err = ReadDescription(f.blocks); err != nil {
+			if desc, descSum, err = ReadDescriptionFile(f.blocks); err != nil {
 				fmt.Fprintf(stderr, "%s%v\n", es.ErrorPrefix(), err)
 				return 1
 			}
-			c.Description, c.AllowUnusedBlocks = desc, true
+			c.Description, c.AllowUnusedBlocks, c.DescriptionSHA256 = desc, true, descSum
 		}
 		if f.oldBlocks != "" {
-			if oldDesc, err = ReadDescription(f.oldBlocks); err != nil {
+			if oldDesc, oldSum, err = ReadDescriptionFile(f.oldBlocks); err != nil {
 				fmt.Fprintf(stderr, "%s%v\n", es.ErrorPrefix(), err)
 				return 1
 			}
@@ -263,7 +264,7 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 				fmt.Fprintln(stderr, es.ErrorPrefix()+"bide view:", err)
 				return 1
 			}
-			old.Description, old.AllowUnusedBlocks = oldDesc, oldDesc != nil
+			old.Description, old.AllowUnusedBlocks, old.DescriptionSHA256 = oldDesc, oldDesc != nil, oldSum
 			d := Diff{Old: old, New: c}
 			if _, err := BuildDiff(d); err != nil {
 				fmt.Fprintln(stderr, es.ErrorPrefix()+"bide view:", err)
