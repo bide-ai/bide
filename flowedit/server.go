@@ -396,6 +396,8 @@ func (s *Server) report(w http.ResponseWriter, r *http.Request) {
 type Edited struct {
 	View
 	Changed bool `json:"changed"`
+	// Cascade is what a remove_node also removes (Applied.Cascade); a dry run answers with it alone.
+	Cascade []string `json:"cascade,omitempty"`
 }
 
 // apply answers /api/apply: the operation applied to the text in the request. A refusal is not an
@@ -422,7 +424,7 @@ func (s *Server) apply(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		fail(w, http.StatusInternalServerError, err.Error())
 	default:
-		reply(w, Edited{View: *s.view(res.Text), Changed: res.Changed})
+		reply(w, Edited{View: *s.view(res.Text), Changed: res.Changed, Cascade: res.Cascade})
 	}
 }
 

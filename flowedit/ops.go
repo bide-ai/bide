@@ -26,6 +26,12 @@ type Operation struct {
 	// removes the line at Index. They name no node: Node is ignored.
 	Assertion *Assertion `json:"assertion,omitempty"`
 	Index     int        `json:"index,omitempty"`
+	// DryRun asks what remove_node would also remove: the answer is the list in Applied.Cascade and
+	// the text is unchanged. Confirm is that list, sent back with the real remove_node; a remove
+	// whose list is not empty is refused unless Confirm equals it, so what is removed is what was
+	// shown.
+	DryRun  bool     `json:"dry_run,omitempty"`
+	Confirm []string `json:"confirm,omitempty"`
 }
 
 // Approval is a node's approval gate as the config writes it: Need decisions from the Approvers,
@@ -50,6 +56,9 @@ const maxApprovers = 100
 type Applied struct {
 	Text    []byte
 	Changed bool
+	// Cascade is what a remove_node also removes or leaves dangling, in the order it appears in the
+	// file (see Operation.DryRun).
+	Cascade []string
 }
 
 // nodeDoc is a node as the config text holds it, for finding what to edit.
@@ -73,6 +82,9 @@ func ApplyOperation(name string, src []byte, op Operation) (*Applied, error) {
 	}
 	if isAssertionOp(op.Op) {
 		return applyAssertion(src, data, op)
+	}
+	if isStructureOp(op.Op) {
+		return applyStructure(name, src, data, op)
 	}
 	var cfg struct {
 		Nodes []json.RawMessage `json:"nodes"`
