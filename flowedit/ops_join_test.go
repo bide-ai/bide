@@ -300,3 +300,13 @@ func TestRenamingOrMovingAJoinSaysItIsAJoin(t *testing.T) {
 		}
 	}
 }
+
+// A value written in a form the engine cannot place safely is refused in plain words, not in the words
+// of the scanner.
+func TestUnplaceableValueIsRefusedInPlainWords(t *testing.T) {
+	src := "version: 1\nflow: f\nentry: a\nnodes:\n  - {name: a, block: a}\n  - {name: b, block: b}\nwiring:\n  - edge: [a, b]\n  - switch: b\n    when:\n      - {pred: p, to: a, loop_max: ~}\n    else: a\n"
+	why := refusalOf(t, "f.yaml", src, Operation{Op: "set_loop_max", Node: "b", Index: 0, Max: 3})
+	if !strings.Contains(why, "cannot edit safely") || strings.Contains(why, "extent") {
+		t.Errorf("%q", why)
+	}
+}

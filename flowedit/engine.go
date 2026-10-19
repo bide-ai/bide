@@ -458,7 +458,7 @@ func (d *doc) confirmScalar(n *yaml.Node, s, e int) (int, error) {
 		// A key or value that is not a string (an int, a bool) decodes to another Go type; compare text.
 		var a any
 		if yaml.Unmarshal(d.src[s:e], &a) != nil || fmt.Sprint(a) != n.Value {
-			return 0, refuse("scalar extent not confirmed")
+			return 0, refuse("a value in the file is written in a form the editor cannot edit safely (for example ~); edit it in the source")
 		}
 	}
 	return e, nil
