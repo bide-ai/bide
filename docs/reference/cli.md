@@ -26,6 +26,7 @@ and `help`, and its import graph is the standard library and the core module (se
 | [`bide demo`](#bide-demo) | kill an agent mid-payment and watch it not charge twice (no API key) |
 | [`bide doctor`](#bide-doctor) | check that a first run can work: Go, SQLite, the module cache, model keys, your project |
 | [`bide sample`](#bide-sample) | write a sample journal of varied runs, with evidence and flow configs, and open bide view on it |
+| [`bide theme`](#bide-theme) | check a theme file for the run viewer and the editor against the contrast and distinctness rules |
 | [`bide view`](#bide-view) | a read-only local page for one run of a journal, or a flow config's graph |
 | [`bide edit`](#bide-edit) | a local page for a flow config: the graph, the approval gates, the assertions, and what an edit weakens; edit the source and save |
 | [`bide notify`](#bide-notify) | set up and test the webhook notifier: test a receiver, run a local one, relay to Slack and PagerDuty |
@@ -169,6 +170,21 @@ Exit status:
   0  success
   1  failure: an input cannot be read or the command failed; for check, an error was found
      (with -strict, any problem)
+  2  usage error: a bad flag or argument; nothing was read
+```
+
+## bide theme
+
+Check a theme file for the run viewer and the editor against the contrast and distinctness rules.
+
+```text
+usage: bide theme check [-v] <theme.json>...
+  check parses theme files and measures them against the rules in docs/design/themes.md
+  -v    print every measure, not only the failures and warnings
+
+Exit status:
+  0  every file passes its checks
+  1  a file is refused (it fails a check or is not a valid theme) or cannot be read
   2  usage error: a bad flag or argument; nothing was read
 ```
 

@@ -22,6 +22,7 @@ import (
 	"github.com/bide-ai/bide/cmd/bide/internal/stopcmd"
 	"github.com/bide-ai/bide/internal/runview"
 	"github.com/bide-ai/bide/internal/term"
+	"github.com/bide-ai/bide/internal/theme"
 )
 
 // fullCommands are the commands that need a store driver or the YAML decoder. A bide_audit_only
@@ -57,6 +58,14 @@ func fullCommands() []command {
 			summary: "write a sample journal of varied runs, with evidence and flow configs, and open bide view on it",
 			run:     samplecmd.Main,
 			exits:   commonExits,
+		},
+		{
+			name:    "theme",
+			summary: "check a theme file for the run viewer and the editor against the contrast and distinctness rules",
+			run:     theme.Main,
+			exits: `0  every file passes its checks
+1  a file is refused (it fails a check or is not a valid theme) or cannot be read
+2  usage error: a bad flag or argument; nothing was read`,
 		},
 		{
 			name:    "view",
