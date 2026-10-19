@@ -35,6 +35,8 @@ func TestNewRefusesWhatIsNotAnAnchorBucket(t *testing.T) {
 		{name: "short owner", cfg: func(c *awss3.Config) { c.ExpectedBucketOwner = "1234" }, want: "ExpectedBucketOwner"},
 		{name: "retention too short", cfg: func(c *awss3.Config) { c.Retention = time.Hour }, want: "below the minimum"},
 		{name: "no KMS key", cfg: func(c *awss3.Config) { c.KMSKeyID = "" }, want: "KMSKeyID is empty"},
+		{name: "KMS alias name", cfg: func(c *awss3.Config) { c.KMSKeyID = "alias/bide-anchor" }, want: "pass the ARN of the key the alias points to"},
+		{name: "KMS alias ARN", cfg: func(c *awss3.Config) { c.KMSKeyID = "arn:aws:kms:eu-west-1:111122223333:alias/bide-anchor" }, want: "pass the ARN of the key the alias points to"},
 		{name: "KMS and none", cfg: func(c *awss3.Config) { c.EncryptionNone = true }, want: "both set"},
 		{name: "governance without opt-in", cfg: func(c *awss3.Config) { c.Mode = types.ObjectLockModeGovernance }, want: "AllowGovernance"},
 		{name: "unknown mode", cfg: func(c *awss3.Config) { c.Mode = "WORM" }, want: "not COMPLIANCE or GOVERNANCE"},

@@ -77,7 +77,7 @@ if err != nil {
 store, err := audit.NewAuditedStore(inner, signer, a)
 ```
 
-Credentials come from the AWS SDK's default chain (a role, not keys in configuration). `ExpectedBucketOwner`
+Credentials come from the AWS SDK's default chain (a role, not keys in configuration). `KMSKeyID` is a key ID or a key ARN, **not an alias**: S3 reports the ARN of the key an alias resolves to, so the read-back could not tell which key it was and `New` refuses an alias (pass the ARN of the key the alias points to). `ExpectedBucketOwner`
 is sent with every request, so a bucket of that name in another account is refused, not written to.
 `audit.NewAuditedEventStore` takes the same anchor for notification and event trails.
 

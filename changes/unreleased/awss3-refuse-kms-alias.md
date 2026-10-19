@@ -1,0 +1,3 @@
+Section: Changed
+
+awss3.New now refuses an alias (alias/name or an alias ARN) as Config.KMSKeyID, with an error wrapping agent.ErrConfig that says to pass the ARN of the key the alias points to, because S3 reports the ARN of the key an alias resolves to and the read-back that checks each head's key could not tell which key it was: an alias used to match any key. Upgrading: a deployment configured with an alias must switch Config.KMSKeyID to the key ARN, or New refuses to start; a key ID or key ARN works as before. The reader side already refused aliases for the expected key (bide-anchor -kms-key).
