@@ -31,7 +31,7 @@ var (
 	// assignRE finds a value a script gives a style: element.style.X = "v", style["x"] = "v",
 	// style.setProperty("x", "v"), setAttribute("fill", "v"), and a colour property such as
 	// fillStyle or backgroundColor assigned a string.
-	assignRE = regexp.MustCompile(`(?i)(?:\.style(?:\.[a-z]+|\[["'][a-z-]+["']\])\s*=\s*|setProperty\(\s*["'][a-z-]+["']\s*,\s*|setAttribute\(\s*["'](?:fill|stroke|style|color|stop-color|flood-color)["']\s*,\s*|\b(?:fillStyle|strokeStyle|\w*Color)\s*=\s*)["']([^"']*)["']`)
+	assignRE = regexp.MustCompile(`(?i)(?:\.style(?:\.[a-z]+|\[["'][a-z-]+["']\])\s*=\s*|setProperty\(\s*["'][a-z-]+["']\s*,\s*|setAttribute\(\s*["'](?:fill|stroke|style|color|stop-color|flood-color)["']\s*,\s*|\b(?:fillStyle|strokeStyle|\w*Color)\s*=\s*)["'`]([^"'`]*)["'`]`)
 	idleRE   = regexp.MustCompile(`(?i)var\(\s*--idle\s*[,)]`)
 	importRE = regexp.MustCompile(`(?i)@import\b|\burl\((?:\s*["']?)(?:[^#"'\s)]|\s*$)`)
 	stringRE = regexp.MustCompile(`"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'`)
@@ -315,6 +315,7 @@ func TestScanMarkup(t *testing.T) {
 		{"a style assignment with a name", `el.style.background = "red"`, 1},
 		{"a style assignment with hsl", `x.style.background = "hsl(1 2% 3%)"`, 1},
 		{"a style assignment with a short hex", `x.style.color = "#abc"`, 1},
+		{"a template literal", "x.style.background = `red`; y.style.color = `#abc`", 1},
 		{"a bracket style assignment", `x.style["background-color"] = "tomato"`, 1},
 		{"a setProperty", `x.style.setProperty("color", "crimson")`, 1},
 		{"a setAttribute", `x.setAttribute("fill", "#abc"); y.setAttribute("stroke", "red")`, 2},
