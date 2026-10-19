@@ -93,16 +93,25 @@ try {
     const client = await page.createCDPSession();
     await client.send('Emulation.setEmulatedVisionDeficiency', { type: 'achromatopsia' });
     const shot = async (clip) => (await page.screenshot({ clip, encoding: 'base64' }));
-    return async (handle) => {
+    // pseudo: hide the element's ::before (visibility, so the layout stays) instead of the element,
+    // through a rule added with CSSOM, which the page's policy allows.
+    return async (handle, pseudo = false) => {
       await handle.evaluate((el) => el.scrollIntoView({ block: 'center', inline: 'center' }));
+      if (pseudo) {
+        await page.evaluate(() => {
+          if (!window.__probeRule) { document.styleSheets[0].insertRule('[data-probe-hide]::before { visibility: hidden !important; }', 0); window.__probeRule = true; }
+        });
+      }
       const clip = await handle.evaluate((el) => {
         const r = el.getBoundingClientRect(), p = 6;
         return { x: Math.max(0, r.left + window.scrollX - p), y: Math.max(0, r.top + window.scrollY - p), width: Math.min(900, Math.max(8, r.width + 2 * p)), height: Math.min(500, Math.max(8, r.height + 2 * p)) };
       });
       const a = await shot(clip);
-      await handle.evaluate((el) => { el.dataset.was = el.style.visibility; el.style.visibility = 'hidden'; });
+      if (pseudo) await handle.evaluate((el) => el.setAttribute('data-probe-hide', ''));
+      else await handle.evaluate((el) => { el.dataset.was = el.style.visibility; el.style.visibility = 'hidden'; });
       const b = await shot(clip);
-      await handle.evaluate((el) => { el.style.visibility = el.dataset.was; delete el.dataset.was; });
+      if (pseudo) await handle.evaluate((el) => el.removeAttribute('data-probe-hide'));
+      else await handle.evaluate((el) => { el.style.visibility = el.dataset.was; delete el.dataset.was; });
       return page.evaluate(async (x, y) => {
         const load = (b64) => new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = 'data:image/png;base64,' + b64; });
         const [ia, ib] = await Promise.all([load(x), load(y)]);
@@ -126,7 +135,7 @@ try {
     for (const h of await page.$$('svg.graph path.edge')) {
       const d = await h.evaluate((e) => {
         const s = getComputedStyle(e);
-        return { classes: [...e.classList].filter((c) => c !== 'back'), dash: s.strokeDasharray, width: parseFloat(s.strokeWidth), cap: s.strokeLinecap, vis: window.__h.shapeVis(e) };
+        return { classes: [...e.classList].filter((c) => c !== 'back'), dash: s.strokeDasharray, width: parseFloat(s.strokeWidth), cap: s.strokeLinecap, len: e.getTotalLength(), vis: window.__h.shapeVis(e) };
       });
       const key = d.classes.join(' ');
       if (!seen.has(key)) { seen.add(key); d.paints = await paints(h); }
@@ -147,18 +156,28 @@ try {
         seenNode.add(key);
         d.boxPaints = await paints(await h.$('.box'));
         const m = await h.$('.nmark');
-        if (m) d.markPaints = await paints(m);
+        if (m) {
+          d.markPaints = await paints(m);
+          // The "!" and the shape apart: a glyph in the shape's own colour paints nothing alone.
+          d.markTextPaints = await paints(await m.$('text'));
+        }
       }
       nodes.push(d);
     }
     return { edges, nodes };
   };
 
-  // The stats a page draws, with the glyph each label gets.
-  const stats = (page) => page.evaluate(() => [...document.querySelectorAll('.stat')].map((li) => ({
-    classes: [...li.classList], label: li.querySelector('.lbl') ? li.querySelector('.lbl').textContent : '',
-    glyph: li.querySelector('.lbl') ? window.__h.textVis(li.querySelector('.lbl'), '::before') : null,
-  })));
+  // The stats a page draws, with the glyph each label gets and what it paints.
+  const stats = async (page) => {
+    const paints = await painter(page);
+    const out = [];
+    for (const lbl of await page.$$('.stat .lbl')) {
+      const d = await lbl.evaluate((l) => ({ classes: [...l.parentElement.classList], label: l.textContent, glyph: window.__h.textVis(l, '::before') }));
+      if (d.classes.some((c) => /^s-(good|bad|warn)$/.test(c))) d.paints = await paints(lbl, true);
+      out.push(d);
+    }
+    return out;
+  };
 
   for (const th of ['light', 'dark', 'high-contrast']) {
     theme = th;
@@ -190,12 +209,16 @@ try {
     {
       const page = await open('runs');
       await page.keyboard.press('j');
+      const paintsRuns = await painter(page);
+      const td = await page.$('table.runlist tbody tr.cur td:first-child');
+      const markerPaints = td ? await paintsRuns(td, true) : 0;
       P.runs = await page.evaluate(() => {
         const r = document.querySelector('table.runlist tbody tr.cur');
         if (!r) return { cur: false };
         const td = r.querySelector('td:first-child');
         return { cur: true, ariaCurrent: r.getAttribute('aria-current'), glyph: window.__h.textVis(td, '::before'), others: document.querySelectorAll('table.runlist tbody tr[aria-current]').length };
       });
+      P.runs.paints = markerPaints;
       await page.close();
     }
 

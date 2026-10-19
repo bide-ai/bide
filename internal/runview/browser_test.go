@@ -130,17 +130,19 @@ type edgeOut struct {
 	Width   float64  `json:"width"`
 	Cap     string   `json:"cap"`
 	Vis     shapeVis `json:"vis"`
+	Len     float64  `json:"len"`
 	Paints  *int     `json:"paints"` // measured for the first edge of each kind
 }
 
 type nodeOut struct {
-	Classes    []string `json:"classes"`
-	Dash       string   `json:"dash"`
-	Width      float64  `json:"width"`
-	BoxVis     shapeVis `json:"boxVis"`
-	BoxPaints  *int     `json:"boxPaints"`
-	MarkPaints *int     `json:"markPaints"`
-	Mark       *struct {
+	Classes        []string `json:"classes"`
+	Dash           string   `json:"dash"`
+	Width          float64  `json:"width"`
+	BoxVis         shapeVis `json:"boxVis"`
+	BoxPaints      *int     `json:"boxPaints"`
+	MarkPaints     *int     `json:"markPaints"`
+	MarkTextPaints *int     `json:"markTextPaints"`
+	Mark           *struct {
 		Shape    string   `json:"shape"`
 		Text     string   `json:"text"`
 		ShapeVis shapeVis `json:"shapeVis"`
@@ -152,6 +154,7 @@ type statOut struct {
 	Classes []string `json:"classes"`
 	Label   string   `json:"label"`
 	Glyph   *textVis `json:"glyph"`
+	Paints  *int     `json:"paints"` // pixels the label's ::before paints, for a judged stat
 }
 
 type pageOut struct {
@@ -170,6 +173,7 @@ type pageOut struct {
 	Cur         bool    `json:"cur"`
 	AriaCurrent string  `json:"ariaCurrent"`
 	Glyph       textVis `json:"glyph"`
+	Paints      int     `json:"paints"`
 	Others      int     `json:"others"`
 }
 
@@ -281,6 +285,9 @@ func checkColourOnly(t *testing.T, pages map[string]pageOut) {
 			if e.Paints != nil && *e.Paints < inkMin {
 				t.Errorf("%s page: the %q edge changes %d greyscale pixels when hidden, want at least %d", page, kindOf(e.Classes), *e.Paints, inkMin)
 			}
+			if !dashDrawn(e.Dash) {
+				t.Errorf("%s page: the %q edge's dash %q draws almost nothing: a dash needs 1px or more and a tenth of the line", page, kindOf(e.Classes), e.Dash)
+			}
 		}
 	}
 	for page, want := range map[string][]string{
@@ -355,6 +362,12 @@ func checkColourOnly(t *testing.T, pages map[string]pageOut) {
 		if n.BoxPaints != nil && *n.BoxPaints < inkMin {
 			t.Errorf("a %v node's box changes %d greyscale pixels when hidden, want at least %d", n.Classes, *n.BoxPaints, inkMin)
 		}
+		if !dashDrawn(n.Dash) {
+			t.Errorf("a %v node's box dash %q draws almost nothing", n.Classes, n.Dash)
+		}
+		if n.MarkTextPaints != nil && *n.MarkTextPaints < 3 {
+			t.Errorf("a %v node's mark \"!\" changes %d greyscale pixels when hidden: it is the shape's own colour or gone", n.Classes, *n.MarkTextPaints)
+		}
 		if n.MarkPaints != nil && *n.MarkPaints < inkMin {
 			t.Errorf("a %v node's mark changes %d greyscale pixels when hidden, want at least %d", n.Classes, *n.MarkPaints, inkMin)
 		}
@@ -378,6 +391,9 @@ func checkColourOnly(t *testing.T, pages map[string]pageOut) {
 					continue
 				}
 				judged++
+				if st.Paints == nil || *st.Paints < 3 {
+					t.Errorf("A9: a %s stat's glyph paints %v greyscale pixels when its ::before is hidden: it is blank or off screen", c, st.Paints)
+				}
 				if st.Label == "" || st.Glyph == nil || !st.Glyph.glyphShown() {
 					t.Errorf("A9: a %s stat (%q) has no drawn glyph on its label (%+v)", c, st.Label, st.Glyph)
 					continue
@@ -414,7 +430,7 @@ func checkColourOnly(t *testing.T, pages map[string]pageOut) {
 
 	// A8: the run list's keyboard row.
 	runs := pages["runs"]
-	if !runs.Cur || runs.AriaCurrent != "true" || !strings.Contains(runs.Glyph.Content, "\u25b6") || !runs.Glyph.glyphShown() || runs.Others != 1 {
+	if !runs.Cur || runs.AriaCurrent != "true" || !strings.Contains(runs.Glyph.Content, "\u25b6") || !runs.Glyph.glyphShown() || runs.Others != 1 || runs.Paints < 3 {
 		t.Errorf("A8: after j the run list's row is %+v: want one row, aria-current true, with the glyph drawn", runs)
 	}
 }
@@ -434,4 +450,24 @@ func mapKeys[V any](m map[string]V) []string {
 	}
 	slices.Sort(ks)
 	return ks
+}
+
+// dashDrawn: a dash pattern draws something the eye sees: each dash at least a pixel long and the
+// dashes a tenth of the line. A solid line is drawn.
+func dashDrawn(v string) bool {
+	p := dashPattern(v)
+	if p == nil {
+		return true
+	}
+	var period, on float64
+	for i, x := range p {
+		period += x
+		if i%2 == 0 {
+			on += x
+			if x < 1 {
+				return false
+			}
+		}
+	}
+	return on/period >= 0.1
 }
