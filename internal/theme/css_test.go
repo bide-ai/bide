@@ -221,3 +221,41 @@ func TestContrastAndForcedBlocks(t *testing.T) {
 		}
 	}
 }
+
+// TestSystemCSS: a page with no theme input gets the shipped themes by the system's settings and
+// nothing selectable: no data-theme, no list of themes, no default; each later block over the earlier.
+func TestSystemCSS(t *testing.T) {
+	css := SystemCSS(Shipped())
+	checkGrammar(t, css)
+	if strings.Contains(css, "data-theme") || strings.Contains(css, "--bide-") {
+		t.Error("SystemCSS lets an attribute or a script choose a theme")
+	}
+	order := []string{
+		":root {\n  --bg: #f6f6f2;", "@media (prefers-color-scheme: dark) {\n:root {\n  --bg: #121214;",
+		"@media (prefers-contrast: more) {\n:root {\n  --bg: #ffffff;", "@media (forced-colors: active) {\n:root {\n  --bg: Canvas;",
+	}
+	at := -1
+	for _, want := range order {
+		i := strings.Index(css, want)
+		if i < 0 || i < at {
+			t.Fatalf("%q is missing or out of order (dark after light, contrast after dark, forced last)", want)
+		}
+		at = i
+	}
+	if strings.Count(css, "}\n}\n") != 3 {
+		t.Errorf("SystemCSS has %d media blocks, want 3", strings.Count(css, "}\n}\n"))
+	}
+	if SystemCSS(Shipped()) != css {
+		t.Error("SystemCSS is not deterministic")
+	}
+	custom, _, err := Parse(custom("dark", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if recover() == nil {
+			t.Error("SystemCSS without the shipped themes did not panic")
+		}
+	}()
+	SystemCSS([]*Theme{custom})
+}
