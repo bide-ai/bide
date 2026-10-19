@@ -16,6 +16,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
+	safetext "github.com/bide-ai/bide/internal/printable"
 	"github.com/bide-ai/bide/plan"
 )
 
@@ -218,9 +219,67 @@ func guard(h http.Handler) http.Handler {
 		}
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self'; img-src 'self' data:")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		h.ServeHTTP(w, r)
+		// Every page is written with each character that does not print written out (\u{XXXX}), so a
+		// name from a journal (a topology, a step or tool name: any string) cannot be drawn as another
+		// name. The pages carry no script data, so nothing parses the escape; the JSON endpoints are
+		// for programs and are left as they are.
+		ew := &escapingWriter{ResponseWriter: w}
+		defer ew.close()
+		h.ServeHTTP(ew, r)
 	})
 }
+
+// escapingWriter writes an HTML response through safetext.Writer, decided at the first write by the
+// content type the handler set (text/html pages, and the text/plain bodies of an error).
+type escapingWriter struct {
+	http.ResponseWriter
+	out     *safetext.EscapingWriter
+	decided bool
+}
+
+func isText(ct string) bool {
+	return strings.HasPrefix(ct, "text/html") || strings.HasPrefix(ct, "text/plain")
+}
+
+func (e *escapingWriter) decide() {
+	if e.decided {
+		return
+	}
+	e.decided = true
+	if isText(e.Header().Get("Content-Type")) {
+		e.out = safetext.Writer(e.ResponseWriter)
+	}
+}
+
+// close writes what the escaping writer still holds.
+func (e *escapingWriter) close() {
+	if e.out != nil {
+		_ = e.out.Close()
+	}
+}
+
+func (e *escapingWriter) WriteHeader(code int) {
+	e.decide()
+	e.ResponseWriter.WriteHeader(code)
+}
+
+func (e *escapingWriter) Write(p []byte) (int, error) {
+	e.decide()
+	if e.out != nil {
+		return e.out.Write(p)
+	}
+	return e.ResponseWriter.Write(p)
+}
+
+// Flush passes a flush on, so a streaming response still streams.
+func (e *escapingWriter) Flush() {
+	if f, ok := e.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Unwrap lets http.ResponseController reach the real writer.
+func (e *escapingWriter) Unwrap() http.ResponseWriter { return e.ResponseWriter }
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")

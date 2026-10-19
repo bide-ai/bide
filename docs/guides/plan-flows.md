@@ -685,7 +685,30 @@ the value are parse errors, so a typo cannot silently drop a gate or an entry. A
 its version. A key whose snake_case spelling is a key at that place (the pre-v1 `loopMax`, or
 `Safety`) is refused with an error naming the key to write and where it is, for example
 `$.wiring[2].when[0]: "loopMax" is not a config key; version 1 keys are snake_case, write "loop_max"`.
-Every parse error wraps `ErrConfig`. `Load` then runs, by
+A name that is not printable is refused too: every identifier a reviewer reads (the flow, `entry`, `in`
+and `out`, node names and blocks, the references in edges, switches, arms and `else`, join names,
+inputs and merges, and the `assert` lines) must print. It holds no control character, no
+invisible or direction-changing character (a zero-width space, a zero-width joiner or non-joiner, a
+left-to-right or right-to-left mark, U+202E), no space other than a plain one, no private-use or
+unassigned code point, no character that a renderer may draw as nothing (every character with the Unicode property
+Default_Ignorable_Code_Point, which includes the Hangul and Khmer fillers, the grapheme joiner, the
+Mongolian selectors and every variation selector, and the Braille blank), no combining mark with no
+character before it to combine with, and no space at either end (the words of an `assert` line may be separated
+by any whitespace, as the grammar reads them). Such a name can read as another in a diff or a review;
+the error names the field and writes the character out, for example `nodes[2].name "ch\u{202E}gra"
+holds a character that does not print (U+202E)`. **This also refuses some legitimate text, on purpose:** a Persian
+or Urdu word spelled with a zero-width non-joiner, an Indic conjunct spelled with a zero-width joiner,
+an emoji sequence joined by one (a family, a rainbow flag), an emoji with a variation selector (a
+red heart as `U+2764 U+FE0F`, a check mark, a keycap such as 1 with `U+FE0F U+20E3`; the bare symbol is a valid name), and a left-to-right or right-to-left mark in a name that mixes scripts
+and digits. The reason is that two names differing only by an invisible character read the same and
+one can impersonate the other. The way out is to transliterate the name, or spell it without the
+joiner, selector or mark. The Default_Ignorable set is taken from the Unicode tables of the Go
+toolchain that built the program (Unicode 17.0.0 for Go 1.27); a rule that allows a joiner only where
+a script needs it, as IDNA does, may come later. Approver ids are held to
+printable ASCII by the gate itself. `bide check`, `bide check -diff`, `bide view` and every page and
+error message the viewer serves write any such character that reaches their output (a file name, a
+journal's topology, a step or predicate name) as `\u{XXXX}`; the JSON endpoints and the other commands
+(`bide edit`'s own messages, `bide init`) are not filtered. Every parse error wraps `ErrConfig`. `Load` then runs, by
 `reflect.Type` identity:
 
 - **Predicate typing:** every switch arm's registered predicate `M` equals the switched node's output

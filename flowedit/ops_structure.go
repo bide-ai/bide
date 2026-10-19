@@ -6,8 +6,9 @@ import (
 	"reflect"
 	"slices"
 	"strings"
-	"unicode"
 	"unicode/utf8"
+
+	"github.com/bide-ai/bide/internal/printable"
 )
 
 // The structure operations of docs/design/visual-editor.md ("Operations", phase 2): add, remove and
@@ -41,12 +42,13 @@ func checkName(name string) error {
 		return refuse("a name of more than %d bytes", maxNameLen)
 	case !utf8.ValidString(name):
 		return refuse("the name is not valid UTF-8")
-	case strings.IndexFunc(name, func(r rune) bool { return !unicode.IsPrint(r) }) >= 0:
-		// IsPrint is letters, marks, numbers, punctuation, symbols and the plain space: it refuses
-		// control characters, the invisible and bidirectional format characters (zero-width space,
-		// joiners, direction overrides, soft hyphen), other spaces (no-break, line separator),
-		// private-use and unassigned code points, so a name cannot read as another name in a diff.
-		return refuse("the name %q has a control, invisible or direction-changing character, or a space other than a plain one", name)
+	}
+	if r, bad := printable.Bad(name); bad {
+		// The rule plan applies at load (internal/printable): control, invisible and direction-changing
+		// characters, other spaces, private-use and unassigned code points, everything Unicode marks
+		// Default_Ignorable (the fillers, the variation selectors, the joiners), the Braille blank, a
+		// leading mark. A name cannot read as another in a diff, and the file the editor writes loads.
+		return refuse("the name %q has a character that does not print or draws as nothing (%s), or a space other than a plain one: control, invisible, direction-changing, joiner, variation selector, filler", printable.EscapeName(name), printable.Describe(r))
 	}
 	return nil
 }

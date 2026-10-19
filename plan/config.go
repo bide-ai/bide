@@ -13,6 +13,7 @@ import (
 	"unicode"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/printable"
 	"github.com/bide-ai/bide/internal/strictjson"
 )
 
@@ -334,7 +335,60 @@ func parseConfig(data []byte, cfg *config) error {
 	if err := checkVersion(data); err != nil {
 		return fmt.Errorf("%w: %w", err, agent.ErrConfig)
 	}
+	if err := checkPrintable(cfg); err != nil {
+		return fmt.Errorf("%w: %w", err, agent.ErrConfig)
+	}
 	return nil
+}
+
+// checkPrintable refuses a config whose identifiers hold a character that does not print (a control
+// character, a zero-width or direction-changing character such as U+202E, a space other than the
+// plain one, a private-use or unassigned code point) or that start or end with a space: such a name
+// can read as another in a diff or a review. It names the field and writes the character out. An
+// empty name is not its concern (the structural check reports it). Approver ids are refused by the
+// gate's own rule (printable ASCII).
+func checkPrintable(cfg *config) error {
+	var bad error
+	check := func(field, v string) {
+		if bad != nil || v == "" {
+			return
+		}
+		if r, ok := printable.Bad(v); ok {
+			bad = fmt.Errorf("%s \"%s\" holds a character that does not print (%s); a name must not hold a control, invisible or direction-changing character, a space other than a plain one, or a space at either end: rename it", field, printable.EscapeName(v), printable.Describe(r))
+		}
+	}
+	check("flow", cfg.Flow)
+	check("in", cfg.In)
+	check("out", cfg.Out)
+	check("entry", cfg.Entry)
+	for i, n := range cfg.Nodes {
+		check(fmt.Sprintf("nodes[%d].name", i), n.Name)
+		check(fmt.Sprintf("nodes[%d].block", i), n.Block)
+	}
+	for i, w := range cfg.Wiring {
+		at := func(k string) string { return fmt.Sprintf("wiring[%d].%s", i, k) }
+		for j, e := range w.Edge {
+			check(fmt.Sprintf("%s[%d]", at("edge"), j), e)
+		}
+		check(at("switch"), w.Switch)
+		for j, a := range w.When {
+			check(fmt.Sprintf("%s[%d].pred", at("when"), j), a.Pred)
+			check(fmt.Sprintf("%s[%d].to", at("when"), j), a.To)
+		}
+		check(at("else"), w.Else)
+		check(at("join"), w.Join)
+		for j, in := range w.Inputs {
+			check(fmt.Sprintf("%s[%d]", at("inputs"), j), in)
+		}
+		check(at("merge"), w.Merge)
+	}
+	for i, a := range cfg.Assert {
+		if bad == nil && whitespaceInQuotes(a) {
+			bad = fmt.Errorf("assert[%d] \"%s\" has a tab or line break inside a quoted name; the grammar reads whitespace as a single space, so the name would change: rename it", i, printable.EscapeName(a))
+		}
+		check(fmt.Sprintf("assert[%d]", i), strings.Join(strings.Fields(a), " ")) // the grammar collapses whitespace between words; what the words say must print
+	}
+	return bad
 }
 
 // checkVersion reports whether the top-level object in data states "version": 1, spelled as
@@ -941,4 +995,20 @@ func levenshtein(a, b string) int {
 		prev, curr = curr, prev
 	}
 	return prev[len(b)]
+}
+
+// whitespaceInQuotes reports whether an assert line has whitespace other than a plain space between
+// double quotes: a quoted name is read as written, but the grammar first collapses whitespace in the
+// line, so a tab in the name would become a space and the assertion would name another node.
+func whitespaceInQuotes(line string) bool {
+	in := false
+	for _, c := range line {
+		switch {
+		case c == '"':
+			in = !in
+		case in && c != ' ' && unicode.IsSpace(c):
+			return true
+		}
+	}
+	return false
 }

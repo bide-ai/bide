@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	safetext "github.com/bide-ai/bide/internal/printable"
 	"github.com/bide-ai/bide/internal/term"
 	"github.com/bide-ai/bide/plan"
 )
@@ -289,6 +290,9 @@ func Check(w io.Writer, c Config) bool { return CheckStyled(w, c, term.Style{}) 
 // colored as the risk map colors them, and the verdict counts in green, red and amber. With color
 // off it writes what Check writes.
 func CheckStyled(w io.Writer, c Config, st term.Style) bool {
+	ew := safetext.Writer(w) // a name that reached the output unrefused is written out, never drawn
+	defer ew.Close()
+	w = ew
 	r := plan.InspectConfig(c.Data, c.Registry)
 	name := st.Dim(c.Name)
 	for _, p := range r.Problems {

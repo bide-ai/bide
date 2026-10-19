@@ -101,7 +101,15 @@ not verified. The node controls are in the outline (**Add a node**) and the insp
 - **Add a node**: a name and a block. The node goes at the end of the node list in the style of the
   last one, and is wired to nothing yet. The name must be new, not a join's name, and have no padding
   or control character, and no invisible, direction-changing or non-plain space character (so a name cannot read as another in a diff; an emoji sequence that needs a zero-width joiner is refused too).
-- **A name already in the file** that has characters that do not print (a direction override, a zero-width space; the loader accepts any string) is shown with each written as `\u{code}` in the outline, the inspector, the drawing and the dialogs, with a note to rename it, so it cannot read as another name. The rename field keeps the raw text.
+- **Names must print.** plan refuses an identifier with a character that does not print or that draws as
+  nothing (see [Load-time validation](plan-flows.md#load-time-validation)): the editor refuses it in a new name,
+  by the same rule, so a file it writes loads. That includes the zero-width joiner and non-joiner, every
+  variation selector (so an emoji written with one, such as a red heart as U+2764 U+FE0F, or a keycap, is not
+  a valid name; the bare symbol is) and a left-to-right or right-to-left mark. A file that already has such a
+  name (typed in the source) does not load, and the page says which field and writes the character out. The
+  page also writes any such character as `\u{code}` wherever it draws a name, a title or a message, with a
+  note to rename it, because a name can reach it by another road (a block name a program registers in Go,
+  in typed mode). The rename field keeps the raw text.
 - **Rename** rewrites the name everywhere the file uses it: the node, the `entry`, edges, a switch and
   its arms and `else`, a join's inputs, and `assert` lines. An assertion is rewritten through the
   assertion grammar and never by text search, so an assertion line that mentions the node but is not
