@@ -730,6 +730,16 @@ A YAML config is one document. `bide check`, `bide view -config` and a `bide ini
 second one (a `---` followed by more), as the JSON loader refuses data after the value; a leading `---` and a closing `...`
 are one document. Before this was checked, the second document was read by nothing and went unnoticed.
 
+### Describing a Registry
+
+`Registry.Describe` returns a `plan.RegistryDescription`: what the program registered, as plain data. It lists each
+block with its kind (`step`, `tool` or `model`), input and output type names, the safety it declares and the approval
+gate it declares in Go; each predicate with the type it tests; each merge block with its ordered input types; and any
+registration errors `Load` would report. Type names are spelled as the topology digest spells them, with the package
+path. It holds no functions, prompts or schemas, it is sorted by name, and the same registrations give the same JSON,
+so a program can write it to a file for a tool to read. It is experimental: it may change in any 0.x release. The
+flow editor's typed mode is built on it.
+
 ## Limits
 
 - Fan-in is fixed-arity (`Join2`/`Join3`); unbounded or ragged fan-in is not supported.

@@ -13,6 +13,7 @@ Package plan is rung-1 of the expression-surfaces stack: a handle-based flow bui
 **Constants**
 
 - `const ConfigVersion = 1`: ConfigVersion is the one config format version this release reads.
+- `const DescriptionVersion = 1`: DescriptionVersion is the Version of a RegistryDescription this release writes and reads.
 - `const TopologyStep = "flow:topology"`: TopologyStep is the reserved journal name under which a flow run's first drive records the flow's declared Topology, as JSON (the encoding Flow.Topology's json tags define), as a StepValue just before flow:digest.
 
 **Variables**
@@ -72,6 +73,25 @@ AssertionResult is the verdict on one line of a flow config's assert list.
 **Methods**
 
 - `func (a AssertionResult) Violated() bool`: Violated reports the assertion was decided and does not hold.
+
+## type BlockDescription
+
+```go
+type BlockDescription struct {
+	Name string `json:"name"`
+
+	Kind string `json:"kind"`
+
+	In  string `json:"in"`
+	Out string `json:"out"`
+
+	Safety string `json:"safety"`
+
+	Gate *GateDescription `json:"gate,omitempty"`
+}
+```
+
+BlockDescription is one registered Step, Tool or Model block.
 
 ## type Builder
 
@@ -185,6 +205,22 @@ Flow\[In, Out\] is a built, frozen flow: the reified topology validated by Build
 - `func (f *Flow[In, Out]) Run(ctx context.Context, store *agent.Journal, runID string, in In, opts ...agent.RunOption) (Out, error)`: Run executes the lowered flow durably for runID against store, resuming from the journal if steps already exist.
 - `func (f *Flow[In, Out]) Topology() Topology`: Topology returns the stable, renderer-agnostic snapshot of this frozen flow's DECLARED topology as pure, JSON-serializable data.
 
+## type GateDescription
+
+```go
+type GateDescription struct {
+	Single bool `json:"single,omitempty"`
+
+	Need             int      `json:"need"`
+	Approvers        []string `json:"approvers,omitempty"`
+	ExcludePrincipal bool     `json:"exclude_principal,omitempty"`
+
+	Timeout string `json:"timeout,omitempty"`
+}
+```
+
+GateDescription is an approval gate declared in Go.
+
 ## type Handle
 
 ```go
@@ -213,6 +249,23 @@ LoadOption configures a flow at Load time (before Build).
 - `func WithLoadedModel(m agent.Model) LoadOption`: WithLoadedModel binds an agent.Model to a flow produced by Load or LoadReader, so a config that declares a Model node (a RegisterModel block) can render its prompt, call the model, and decode the structured result at run time.
 - `func WithLoadedNotifier(n agent.Notifier, trail agent.NotifyTrail, opts ...agent.NotifyOption) LoadOption`: WithLoadedNotifier binds a notifier to a loaded flow: the loader's equivalent of Builder.WithNotifier.
 - `func WithLoadedStopSwitch(sw *agent.StopSwitch) LoadOption`: WithLoadedStopSwitch binds a kill switch to a loaded flow: the loader's equivalent of Builder.WithStopSwitch.
+
+## type MergeDescription
+
+```go
+type MergeDescription struct {
+	Name string `json:"name"`
+
+	Inputs []string `json:"inputs"`
+
+	Out string `json:"out"`
+
+	Safety string           `json:"safety"`
+	Gate   *GateDescription `json:"gate,omitempty"`
+}
+```
+
+MergeDescription is one registered fan-in merge block.
 
 ## type NodeOption
 
@@ -248,6 +301,18 @@ NodeSafety is how a node behaves when a crash cuts it off mid-run, as a risk map
 
 - `func (s NodeSafety) RerunsOnCrash() bool`: RerunsOnCrash reports whether a resume re-runs a node of this class that a crash cut off (read-only and idempotent); a side effect halts and asks for the outcome instead, and an unknown class is not known to do either.
 
+## type PredicateDescription
+
+```go
+type PredicateDescription struct {
+	Name string `json:"name"`
+
+	Switched string `json:"switched"`
+}
+```
+
+PredicateDescription is one registered Switch predicate.
+
 ## type Producer
 
 ```go
@@ -274,12 +339,31 @@ Registry maps config names to typed Go behavior, so a rung-2 config can referenc
 
 **Methods**
 
+- `func (r *Registry) Describe() RegistryDescription`: Describe returns what r has registered (see RegistryDescription).
 - `func (r *Registry) RegisterJoin2[A, B, O any](name string, fn func(context.Context, A, B) (O, error), opts ...NodeOption) error`: RegisterJoin2 registers a fixed-arity fan-in merge func(ctx, A, B) (O, error) as a merge block named name, inferring A, B, and O from fn (the config never restates types; they flow from the registered merge).
 - `func (r *Registry) RegisterJoin3[A, B, C, O any](name string, fn func(context.Context, A, B, C) (O, error), opts ...NodeOption) error`: RegisterJoin3 is RegisterJoin2 for arity three: it registers a fan-in merge func(ctx, A, B, C) (O, error) as a merge block named name, inferring A, B, C, and O from fn.
 - `func (r *Registry) RegisterModel[I, O any](name, prompt string, opts ...NodeOption) error`: RegisterModel registers a model call built from prompt as a Model block named name.
 - `func (r *Registry) RegisterPredicate[M any](name string, pred func(M) bool) error`: RegisterPredicate registers a Switch predicate func(M)bool named name, capturing M via reflect.TypeFor`M` so Load can verify M equals the switched node's output type.
 - `func (r *Registry) RegisterStep[I, O any](name string, fn func(context.Context, I) (O, error), opts ...NodeOption) error`: RegisterStep registers an arbitrary func(ctx, I) (O, error) as a Step block named name, inferring I and O from fn (the config never restates types; they flow from the registered block).
 - `func (r *Registry) RegisterTool[I, O any](name string, t agent.Tool, opts ...NodeOption) error`: RegisterTool registers an agent.Tool as a Tool block named name.
+
+## type RegistryDescription
+
+```go
+type RegistryDescription struct {
+	Version int `json:"version"`
+
+	Blocks []BlockDescription `json:"blocks"`
+
+	Predicates []PredicateDescription `json:"predicates"`
+
+	Merges []MergeDescription `json:"merges"`
+
+	Errors []string `json:"errors,omitempty"`
+}
+```
+
+RegistryDescription is what a Registry has registered, as data: names, kinds, type names, the safety and the approval gate each block declares in Go.
 
 ## type Topology
 
