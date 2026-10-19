@@ -32,25 +32,77 @@ type pageText struct {
 	Disabled bool    `json:"disabled"`
 }
 
+// pageDrawn is how an element is drawn: visible in the page, and what its label is made of.
+type pageDrawn struct {
+	W         float64 `json:"w"`
+	H         float64 `json:"h"`
+	Left      float64 `json:"left"`
+	Right     float64 `json:"right"`
+	VW        float64 `json:"vw"`
+	Opacity   float64 `json:"opacity"`
+	FontSize  float64 `json:"fontSize"`
+	Shown     bool    `json:"shown"`
+	Text      string  `json:"text"`
+	Before    string  `json:"before"`
+	After     string  `json:"after"`
+	Transform string  `json:"transform"`
+	Clip      string  `json:"clip"`
+}
+
+// seen: the element is there to be read: shown, opaque, big enough, on screen, not moved, scaled or clipped.
+func (d pageDrawn) seen(minW, minH, minFont float64) bool {
+	return d.Shown && d.Opacity >= 0.99 && d.W >= minW && d.H >= minH && d.FontSize >= minFont &&
+		d.Left >= -1 && d.Right <= d.VW+1 && (d.Transform == "none" || d.Transform == "") && (d.Clip == "none" || d.Clip == "")
+}
+
+type pageButton struct {
+	BorderWidth float64   `json:"borderWidth"`
+	BorderStyle string    `json:"borderStyle"`
+	Border      pcolour   `json:"border"`
+	Fill        pcolour   `json:"fill"`
+	FillAlpha   float64   `json:"fillAlpha"`
+	Text        pcolour   `json:"text"`
+	ParentBG    pcolour   `json:"parentBG"`
+	Drawn       pageDrawn `json:"drawn"`
+	FillCSS     string    `json:"fillCSS"`
+	BorderCSS   string    `json:"borderCSS"`
+}
+
+type pageResult struct {
+	Color  pcolour   `json:"color"`
+	Alpha  float64   `json:"alpha"`
+	BG     pcolour   `json:"bg"`
+	Drawn  pageDrawn `json:"drawn"`
+	Weight string    `json:"weight"`
+}
+
 type pageControl struct {
-	Tag         string  `json:"tag"`
-	ID          string  `json:"id"`
-	Class       string  `json:"cls"`
-	Disabled    bool    `json:"disabled"`
-	BorderWidth float64 `json:"borderWidth"`
-	BorderStyle string  `json:"borderStyle"`
-	Border      pcolour `json:"border"`
-	BorderAlpha float64 `json:"borderAlpha"`
-	Fill        pcolour `json:"fill"`
-	FillAlpha   float64 `json:"fillAlpha"`
-	ParentBG    pcolour `json:"parentBG"`
+	Drawn       pageDrawn `json:"drawn"`
+	Tag         string    `json:"tag"`
+	ID          string    `json:"id"`
+	Class       string    `json:"cls"`
+	Disabled    bool      `json:"disabled"`
+	BorderWidth float64   `json:"borderWidth"`
+	BorderStyle string    `json:"borderStyle"`
+	Border      pcolour   `json:"border"`
+	BorderAlpha float64   `json:"borderAlpha"`
+	Fill        pcolour   `json:"fill"`
+	FillAlpha   float64   `json:"fillAlpha"`
+	ParentBG    pcolour   `json:"parentBG"`
 }
 
 type pageMode struct {
-	Token   string        `json:"token"`
-	FGToken string        `json:"fgToken"`
-	Texts   []pageText    `json:"texts"`
-	Control []pageControl `json:"controls"`
+	Must  map[string]*pageDrawn `json:"must"`
+	Roles struct {
+		Good string `json:"good"`
+		Bad  string `json:"bad"`
+	} `json:"roles"`
+	Enabled map[string]pageButton `json:"enabled"`
+	Results map[string]pageResult `json:"results"`
+	Token   string                `json:"token"`
+	FGToken string                `json:"fgToken"`
+	Texts   []pageText            `json:"texts"`
+	Control []pageControl         `json:"controls"`
 	Focus   struct {
 		Style string  `json:"style"`
 		Width float64 `json:"width"`
@@ -175,8 +227,55 @@ func TestPage_LookInChrome(t *testing.T) {
 					t.Errorf("control #%s was not measured", id)
 				}
 			}
-			if a, rj := byID["approve"], byID["reject"]; a.Disabled && (a.BorderStyle != "dashed" || rj.BorderStyle != "dashed") {
-				t.Errorf("disabled Approve and REJECT are %s and %s, want dashed", a.BorderStyle, rj.BorderStyle)
+			// Disabled, Approve is dashed and REJECT keeps its double edge: they still differ, and a disabled
+			// one is not an enabled one.
+			if a, rj := byID["approve"], byID["reject"]; a.Disabled && (a.BorderStyle != "dashed" || rj.BorderStyle != "double") {
+				t.Errorf("disabled Approve and REJECT are %s and %s, want dashed and double", a.BorderStyle, rj.BorderStyle)
+			}
+			// The two buttons, as drawn once enabled: different in shape (not only in colour, which forced
+			// colours take away) in every mode, labelled by their DOM text and nothing CSS adds, drawn, and
+			// each with an edge or a fill 3:1 against its surroundings and text 4.5:1 on its fill.
+			ap, rj := m.Enabled["approve"], m.Enabled["reject"]
+			if ap.BorderStyle == rj.BorderStyle && math.Abs(ap.BorderWidth-rj.BorderWidth) < 2 {
+				t.Errorf("Approve and REJECT have the same shape (%s %vpx and %s %vpx): they differ by colour or words only", ap.BorderStyle, ap.BorderWidth, rj.BorderStyle, rj.BorderWidth)
+			}
+			for id, want := range map[string]string{"approve": "Approve", "reject": "REJECT"} {
+				for _, d := range []pageDrawn{m.Enabled[id].Drawn, byID[id].Drawn} {
+					if d.Text != want || (d.Before != "none" && d.Before != "normal") || (d.After != "none" && d.After != "normal") {
+						t.Errorf("#%s is labelled %q (::before %s, ::after %s), want %q from the DOM and nothing from CSS", id, d.Text, d.Before, d.After, want)
+					}
+					if !d.seen(60, 24, 12) {
+						t.Errorf("#%s is not drawn to be read: %+v", id, d)
+					}
+				}
+				b := m.Enabled[id]
+				if edge := b.BorderWidth >= 1 && pageContrast(b.Border, b.ParentBG) >= 3; !edge && !(b.FillAlpha >= 0.5 && pageContrast(b.Fill, b.ParentBG) >= 3) {
+					t.Errorf("enabled #%s has no 3:1 edge or fill", id)
+				}
+				if b.FillAlpha >= 0.5 && pageContrast(b.Text, b.Fill) < 4.5 {
+					t.Errorf("enabled #%s: text on its fill is %.2f:1", id, pageContrast(b.Text, b.Fill))
+				}
+			}
+			// Approve is the ok color and REJECT the alert one (a swap would be a lie), as the browser
+			// resolves the theme's properties; forced colors replace both with the system's.
+			if mode != "forced-colors" && (m.Enabled["approve"].FillCSS != m.Roles.Good || m.Enabled["reject"].FillCSS != m.Roles.Bad) {
+				t.Errorf("Approve is %s and REJECT %s, want the ok color %s and the alert color %s", m.Enabled["approve"].FillCSS, m.Enabled["reject"].FillCSS, m.Roles.Good, m.Roles.Bad)
+			}
+			// What an approver must see is there to be seen, as large as it should be.
+			for id, min := range map[string]float64{"origin": 14, "call-run": 14, "call-tool": 14, "call-state": 14, "gate-need": 14, "call-args": 12, "call-digest": 12, "approver": 14} {
+				d := m.Must[id]
+				if d == nil || !d.seen(20, 10, min) {
+					t.Errorf("#%s is not drawn to be read: %+v", id, d)
+				}
+			}
+			// The result, drawn ok and bad as the page would: 4.5:1, opaque, and its text there.
+			for k, r := range m.Results {
+				if c := pageContrast(r.Color, r.BG); c < 4.5 || r.Alpha < 0.99 || !r.Drawn.seen(100, 10, 14) {
+					t.Errorf("the %s result is %.2f:1, alpha %v, drawn %+v", k, c, r.Alpha, r.Drawn)
+				}
+			}
+			if len(m.Results) != 2 {
+				t.Errorf("%d results measured, want ok and bad", len(m.Results))
 			}
 			// The focus ring is drawn and 3:1.
 			if f := m.Focus; f.Style == "none" || f.Width < 2 || pageContrast(f.Color, f.BG) < 3 {

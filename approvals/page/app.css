@@ -16,9 +16,14 @@ pre { background: var(--card); border: 1px solid var(--line-strong); padding: .7
 code { font: 14px var(--mono); overflow-wrap: anywhere; }
 input { font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--line-strong); border-radius: var(--r-sm); padding: .4rem .5rem; width: 16rem; max-width: 100%; }
 button { font: inherit; padding: .5rem 1rem; border: 1px solid var(--good); background: var(--good); color: var(--on-sem); border-radius: var(--r-sm); cursor: pointer; }
-button.reject { border-color: var(--bad); background: var(--bad); }
-/* A disabled button is told by its dashed edge and its quiet text as well as its color. */
+/* REJECT is a different shape from Approve, in every mode and in forced colors, where the two share
+   one color: a heavy double edge, drawn in the glyph color so the two lines show against the fill, against a thin solid one. The words say which is which; the shape says
+   it again, so a look that blurs the colors cannot make one pass for the other. */
+button.reject { border: 4px double var(--on-sem); background: var(--bad); }
+/* A disabled button is told by its quiet text, its empty fill and a dashed edge (REJECT's stays double, so
+   the two still differ) as well as by its color. */
 button:disabled { background: transparent; color: var(--muted); border: 2px dashed var(--idle); cursor: not-allowed; }
+button.reject:disabled { border: 4px double var(--idle); }
 a:focus-visible, button:focus-visible, input:focus-visible, pre:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .warn { color: var(--warn); border-left: 4px solid var(--warn); padding-left: .5rem; }
 .note { color: var(--muted); font-size: .9rem; }

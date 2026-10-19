@@ -22,10 +22,49 @@ const measure = () => {
     const s = getComputedStyle(e), c = rgb(s.color);
     texts.push({ tag: e.tagName.toLowerCase(), id: e.id, cls: e.className, text: n.textContent.trim().slice(0, 24), color: c.slice(0, 3), alpha: c[3], bg: bgOf(e), disabled: !!e.closest(':disabled'), size: parseFloat(s.fontSize) });
   }
+  const chainOpacity = (el) => { let o = 1; for (let e = el; e && e.nodeType === 1; e = e.parentElement) o *= parseFloat(getComputedStyle(e).opacity); return o; };
+  const probe = (css) => { const d = document.createElement('span'); d.style.backgroundColor = css; document.body.appendChild(d); const c = getComputedStyle(d).backgroundColor; d.remove(); return c; };
+  // How an element is drawn: visible in the page (size, place, opacity up the tree, font size), and what
+  // its label is made of: the DOM text, and the text its ::before and ::after add (CSS content).
+  const drawn = (e) => {
+    const s = getComputedStyle(e), r = e.getBoundingClientRect(), pb = getComputedStyle(e, '::before').content, pa = getComputedStyle(e, '::after').content;
+    return { w: r.width, h: r.height, left: r.left, top: r.top + window.scrollY, right: r.right, vw: document.documentElement.clientWidth, opacity: chainOpacity(e), fontSize: parseFloat(s.fontSize), shown: shown(e), text: e.textContent.trim().slice(0, 40), before: pb, after: pa, transform: s.transform, clip: s.clipPath, overflow: s.overflow };
+  };
   const controls = [...document.querySelectorAll('input, button')].filter(shown).map((e) => {
     const s = getComputedStyle(e), bc = rgb(s.borderTopColor) || [0, 0, 0, 0], fc = rgb(s.backgroundColor) || [0, 0, 0, 0];
-    return { tag: e.tagName.toLowerCase(), id: e.id, cls: e.className, disabled: e.disabled, borderWidth: parseFloat(s.borderTopWidth), borderStyle: s.borderTopStyle, border: bc.slice(0, 3), borderAlpha: bc[3], fill: fc.slice(0, 3), fillAlpha: fc[3], parentBG: bgOf(e.parentElement) };
+    return { tag: e.tagName.toLowerCase(), id: e.id, cls: e.className, disabled: e.disabled, borderWidth: parseFloat(s.borderTopWidth), borderStyle: s.borderTopStyle, border: bc.slice(0, 3), borderAlpha: bc[3], fill: fc.slice(0, 3), fillAlpha: fc[3], parentBG: bgOf(e.parentElement), drawn: drawn(e) };
   });
+  // The things an approver must see, by id: the origin line, the call's fields, the digest.
+  const must = {};
+  for (const id of ['origin', 'call-run', 'call-tool', 'call-state', 'gate-need', 'call-args', 'call-digest', 'approve', 'reject', 'approver']) {
+    const e = document.getElementById(id);
+    must[id] = e ? drawn(e) : null;
+  }
+  // The buttons' colors by role: Approve is the ok color and REJECT the alert one (a swap is a lie), read
+  // as the browser resolves the theme's custom properties.
+  const roles = { good: probe('var(--good)'), bad: probe('var(--bad)') };
+  // The two buttons as the page draws them once a key is enrolled and an approver typed: enabled. They
+  // are disabled until then, so the measurement enables them for a moment and puts them back.
+  const enabled = {};
+  for (const id of ['approve', 'reject']) {
+    const b = document.getElementById(id), was = b.disabled;
+    b.disabled = false;
+    const s = getComputedStyle(b), bc = rgb(s.borderTopColor), fc = rgb(s.backgroundColor), tc = rgb(s.color);
+    enabled[id] = { borderWidth: parseFloat(s.borderTopWidth), borderStyle: s.borderTopStyle, border: bc.slice(0, 3), fill: fc.slice(0, 3), fillAlpha: fc[3], text: tc.slice(0, 3), parentBG: bgOf(b.parentElement), drawn: drawn(b), fillCSS: s.backgroundColor, borderCSS: s.borderTopColor };
+    b.disabled = was;
+  }
+  // The result panel is drawn only after a signature; draw it as the page would, ok and bad, to see
+  // its text. The panel is put back as it was.
+  const panel = document.getElementById('result-panel'), result = document.getElementById('result'), wasHidden = panel.hidden, wasClass = result.className, wasText = result.textContent;
+  const results = {};
+  panel.hidden = false;
+  for (const [cls, text] of [['ok', 'Counted: your approval is recorded.'], ['bad', 'Refused: the endpoint did not accept the decision.']]) {
+    result.className = cls === 'ok' ? 'ok' : 'bad';
+    result.textContent = text;
+    const s = getComputedStyle(result), c = rgb(s.color);
+    results[cls] = { color: c.slice(0, 3), alpha: c[3], bg: bgOf(result), drawn: drawn(result), weight: s.fontWeight };
+  }
+  panel.hidden = wasHidden; result.className = wasClass; result.textContent = wasText;
   // The focus ring: put the focus on the approver field and read the outline.
   const input = document.getElementById('approver');
   input.focus();
@@ -33,7 +72,7 @@ const measure = () => {
   const focus = { style: fs.outlineStyle, width: parseFloat(fs.outlineWidth), color: (rgb(fs.outlineColor) || [0, 0, 0]).slice(0, 3), bg: bgOf(input.parentElement) };
   input.blur();
   const root = getComputedStyle(document.documentElement);
-  return { token: root.getPropertyValue('--bg').trim(), fgToken: root.getPropertyValue('--fg').trim(), texts, controls, focus, bodyBG: getComputedStyle(document.body).backgroundColor };
+  return { token: root.getPropertyValue('--bg').trim(), fgToken: root.getPropertyValue('--fg').trim(), texts, controls, focus, must, roles, enabled, results, bodyBG: getComputedStyle(document.body).backgroundColor };
 };
 
 try {
