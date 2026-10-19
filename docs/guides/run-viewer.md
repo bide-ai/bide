@@ -689,7 +689,7 @@ description is of the whole program, and a flow uses some of it; `Load` would re
 registers only one flow). A description whose program's Registry refused a registration (a duplicate, a gate
 `Validate` refuses) is refused, with the registry's error. The file is read once, must be a regular file of at most
 1 MiB (a named pipe or a device is refused without waiting on it) with no unknown field, and is validated before it
-is used; an error about its contents is cut to 200 bytes.
+is used; it may nest at most 32 levels (a description nests five), and an error about its contents is cut to 200 bytes.
 
 With `-diff`, `-blocks` describes the config and `-old-blocks` the earlier version, as the program's blocks were
 then (a block the old config uses must be in the old description). A description is never applied to the other side, and a described side is never compared with one that has none (the described side knows each node's safety and the gates its blocks declare, the other states only what its config states, and that difference would read as a lowering): with one description the comparison is the structural one, labelled with which side was described. Give both to compare what the program declared at each version. A block swapped for one that

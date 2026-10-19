@@ -65,6 +65,9 @@ func ReadDescriptionFile(path string) (*plan.RegistryDescription, string, error)
 
 // DecodeDescription is ReadDescription for bytes already read; name is used in errors.
 func DecodeDescription(b []byte, name string) (*plan.RegistryDescription, error) {
+	if err := checkDepth(b); err != nil {
+		return nil, fmt.Errorf("%s: %w", name, err)
+	}
 	var d plan.RegistryDescription
 	if err := strictjson.Unmarshal(b, &d, nil); err != nil {
 		if errors.Is(err, strictjson.ErrTrailingData) {
@@ -93,4 +96,36 @@ func clipFileError(s string) string {
 		cut--
 	}
 	return s[:cut] + "..."
+}
+
+// maxDescriptionDepth bounds how deeply a description file may nest. A description nests five levels at
+// most; a decoder that recurses with the input (encoding/json without its v2 experiment, and the
+// strict check before it) would otherwise spend memory in proportion to a hostile file's brackets.
+const maxDescriptionDepth = 32
+
+// checkDepth refuses b if its JSON nests deeper than maxDescriptionDepth, without parsing it: it
+// counts brackets outside strings.
+func checkDepth(b []byte) error {
+	depth, inString, escaped := 0, false, false
+	for _, c := range b {
+		switch {
+		case escaped:
+			escaped = false
+		case inString:
+			if c == '\\' {
+				escaped = true
+			} else if c == '"' {
+				inString = false
+			}
+		case c == '"':
+			inString = true
+		case c == '[' || c == '{':
+			if depth++; depth > maxDescriptionDepth {
+				return fmt.Errorf("nested more than %d levels deep", maxDescriptionDepth)
+			}
+		case c == ']' || c == '}':
+			depth--
+		}
+	}
+	return nil
 }

@@ -504,7 +504,7 @@ func TestReadDescriptionHostileFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := ReadDescription(deep)
-	if err == nil || len(err.Error()) > 400 {
+	if err == nil || len(err.Error()) > 400 || !strings.Contains(err.Error(), "nested more than") {
 		t.Errorf("a nested file: %d bytes of error", len(fmt.Sprint(err)))
 	}
 	long := filepath.Join(dir, "long.json")
@@ -720,5 +720,26 @@ func TestResultsNameTheDescriptionFilesTheyRestOn(t *testing.T) {
 	}
 	if _, sum, err := ReadDescriptionFile(newP); err != nil || sum != newSum {
 		t.Errorf("ReadDescriptionFile: %q %v", sum, err)
+	}
+}
+
+// Brackets inside strings do not count towards the depth, an escaped quote does not end a string, and
+// exactly the maximum depth is allowed.
+func TestCheckDepth(t *testing.T) {
+	deep := func(n int) []byte { return []byte(strings.Repeat("[", n) + strings.Repeat("]", n)) }
+	for name, c := range map[string]struct {
+		in string
+		ok bool
+	}{
+		"exactly the maximum":  {string(deep(maxDescriptionDepth)), true},
+		"one over":             {string(deep(maxDescriptionDepth + 1)), false},
+		"brackets in a string": {`{"a":"` + strings.Repeat("[", 500) + `"}`, true},
+		"escaped quote":        {`{"a":"x\"` + strings.Repeat("[", 500) + `"}`, true},
+		"escaped backslash, then the string ends": {`{"a":"\\"` + string(deep(maxDescriptionDepth+1)), false},
+		"object nesting": {strings.Repeat(`{"a":`, maxDescriptionDepth+1) + "1" + strings.Repeat("}", maxDescriptionDepth+1), false},
+	} {
+		if err := checkDepth([]byte(c.in)); (err == nil) != c.ok {
+			t.Errorf("%s: %v, want ok=%v", name, err, c.ok)
+		}
 	}
 }
