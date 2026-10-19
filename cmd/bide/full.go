@@ -167,7 +167,8 @@ merge names, the types along every edge, safety, the approval gates the blocks d
 digest. The result is labelled as per the file and not checked against the program: a description can
 be stale or wrong, and the check made with the program's own plan.Registry (package plan/planview) is
 the control. A block the description holds and the config does not use is not reported. With -diff,
--blocks describes both versions, or the new one when -old-blocks describes the earlier one. Adding a
+-blocks describes the config; with -diff, -old-blocks describes the earlier version, which without it is checked
+structurally (a description is never applied to the other side). Adding a
 description never makes -diff less strict: if a side has errors against it, the diff is made structurally,
 as without it, and is labelled not certified (-fail-on-weaken fails on it).
 
@@ -205,7 +206,7 @@ NO_COLOR set to any value, turns color off; -color=always keeps it on.
 	}
 	strict := fs.Bool("strict", false, "exit 1 on a warning too")
 	blocks := fs.String("blocks", "", "a description of the program's registered blocks (json.Marshal of plan.Registry.Describe): check blocks, types, safety and gates by name; labelled as per the file, not checked against the program")
-	oldBlocks := fs.String("old-blocks", "", "with -diff: the description for the earlier version (default: the -blocks file)")
+	oldBlocks := fs.String("old-blocks", "", "with -diff: the description for the earlier version; without it the earlier version is checked structurally (-blocks is never applied to it)")
 	diff := fs.String("diff", "", "compare the one config given with this earlier version: a file, or else a git revision (<rev>:<path>, or <rev> for the config's path at rev)")
 	check := fs.Bool("check", false, "with -diff: serve nothing and print each change, then a summary line")
 	failOnWeaken := fs.Bool("fail-on-weaken", false, "with -diff -check: exit 1 if an approval gate was removed or weakened (its need lowered, an approver added without raising the need, exclude_principal dropped, its timeout removed or lengthened, a node newly reachable without a gate or a lowered safety, a Switch condition changed beside an ungated effect, or an assert line removed, loosened, or kept and no longer holding)")

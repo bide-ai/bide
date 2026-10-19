@@ -149,7 +149,7 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 	fs.StringVar(&f.diff, "diff", "", "with -config: compare it with this earlier version, a file or else a git revision (<rev>:<path>, or <rev> for the -config path at rev); -check prints the changes instead of serving the page")
 	fs.BoolVar(&f.failOnWeaken, "fail-on-weaken", false, "with -diff -check: exit 1 if an approval gate was removed or weakened")
 	fs.StringVar(&f.blocks, "blocks", "", "with -config: a description of the program's registered blocks (json.Marshal of plan.Registry.Describe), to check blocks, types, safety and gates by name without the program; the result is labelled as per the file, not checked against the program")
-	fs.StringVar(&f.oldBlocks, "old-blocks", "", "with -diff: the description for the earlier version (default: the -blocks file)")
+	fs.StringVar(&f.oldBlocks, "old-blocks", "", "with -diff: the description for the earlier version; without it the earlier version is checked structurally (-blocks is never applied to it)")
 	run := fs.String("run", "", "run to open (default: the run list)")
 	fs.StringVar(&f.topo, "topology", "", "declared flow topology, JSON of flow.Topology(), to draw a flow run against instead of the topology the run journaled (flow:topology); for a run journaled before that record existed, or to check a run against another flow")
 	fs.StringVar(&f.digest, "digest", "", "flow.Digest() of the -topology flow, compared with the digest the run journaled (default: computed from -topology when it carries the digest's inputs)")
@@ -249,7 +249,7 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 				fmt.Fprintf(stderr, "%s%v\n", es.ErrorPrefix(), err)
 				return 1
 			}
-			c.Description, c.AllowUnusedBlocks, oldDesc = desc, true, desc
+			c.Description, c.AllowUnusedBlocks = desc, true
 		}
 		if f.oldBlocks != "" {
 			if oldDesc, err = ReadDescription(f.oldBlocks); err != nil {

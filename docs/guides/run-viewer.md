@@ -691,11 +691,14 @@ registers only one flow). A description whose program's Registry refused a regis
 1 MiB (a named pipe or a device is refused without waiting on it) with no unknown field, and is validated before it
 is used; an error about its contents is cut to 200 bytes.
 
-With `-diff`, `-blocks` describes both versions; give `-old-blocks` for the earlier one when the program's
-blocks changed (a block the old config uses must be in the old description). A block swapped for one that
+With `-diff`, `-blocks` describes the config and `-old-blocks` the earlier version, as the program's blocks were
+then (a block the old config uses must be in the old description). A description is never applied to the other side:
+without `-old-blocks` the earlier version is checked structurally, so a gate removed in Go with the config unchanged
+is not read as no change by giving both sides the new description. Give both to compare what the program declared. A block swapped for one that
 declares no gate is then reported as a weakening, which from the command line alone is only a possible one.
 
-Adding a description never makes `-diff` less strict than leaving it out. If a side has errors against the
+Adding a description never makes `-diff` less strict than leaving it out, unless the description is wrong or stale
+(it is only as good as the file). If a side has errors against the
 description (a block the description lacks, a type that does not fit), the typed comparison has nothing sound to read,
 so the diff is made structurally, as without the description, and is labelled **not certified**: the verdict is never
 good and `-fail-on-weaken` fails, whether or not a weakening was found. Every result says how each side was checked

@@ -284,7 +284,7 @@ Flags:
   -need int
     	the expected policy's k: verify approvals against -need of -approvers instead of the recorded policy; needs -approvers and -approver-keys
   -old-blocks string
-    	with -diff: the description for the earlier version (default: the -blocks file)
+    	with -diff: the description for the earlier version; without it the earlier version is checked structurally (-blocks is never applied to it)
   -postgres string
     	Postgres journal to read, a pgx DSN such as postgres://user:pass@host:5432/db, read in sessions the server holds read-only (postgres.OpenReadOnly)
   -postgres-env string
@@ -1245,7 +1245,8 @@ merge names, the types along every edge, safety, the approval gates the blocks d
 digest. The result is labelled as per the file and not checked against the program: a description can
 be stale or wrong, and the check made with the program's own plan.Registry (package plan/planview) is
 the control. A block the description holds and the config does not use is not reported. With -diff,
--blocks describes both versions, or the new one when -old-blocks describes the earlier one. Adding a
+-blocks describes the config; with -diff, -old-blocks describes the earlier version, which without it is checked
+structurally (a description is never applied to the other side). Adding a
 description never makes -diff less strict: if a side has errors against it, the diff is made structurally,
 as without it, and is labelled not certified (-fail-on-weaken fails on it).
 
@@ -1291,7 +1292,7 @@ NO_COLOR set to any value, turns color off; -color=always keeps it on.
   -fail-on-weaken
     	with -diff -check: exit 1 if an approval gate was removed or weakened (its need lowered, an approver added without raising the need, exclude_principal dropped, its timeout removed or lengthened, a node newly reachable without a gate or a lowered safety, a Switch condition changed beside an ungated effect, or an assert line removed, loosened, or kept and no longer holding)
   -old-blocks string
-    	with -diff: the description for the earlier version (default: the -blocks file)
+    	with -diff: the description for the earlier version; without it the earlier version is checked structurally (-blocks is never applied to it)
   -strict
     	exit 1 on a warning too
 

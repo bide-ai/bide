@@ -300,8 +300,10 @@ func TestMainBlocksFlags(t *testing.T) {
 	}
 	// One description for both versions: the old version then uses "charge", which it does not
 	// describe, and is an error; -old-blocks gives it the description of its own program.
-	if code, out, _ := run("-config", newCfg, "-diff", oldCfg, "-check", "-blocks", blocksNew); code != 0 || !strings.Contains(out, "error") {
-		t.Errorf("one description: %d %q", code, out)
+	// -blocks alone describes the new version only: it is never applied to the old one, which is
+	// then checked structurally and labelled so.
+	if code, out, _ := run("-config", newCfg, "-diff", oldCfg, "-check", "-blocks", blocksNew); code != 0 || !strings.Contains(out, "old config structural, new config per description file") {
+		t.Errorf("-blocks alone: %d %q", code, out)
 	}
 	code, out, errs := run("-config", newCfg, "-diff", oldCfg, "-check", "-fail-on-weaken", "-blocks", blocksNew, "-old-blocks", blocksOld)
 	if code != 1 || !strings.Contains(out, "approval 2 of 2: ops, fin -> none") || !strings.Contains(out, "per description file") {
@@ -609,15 +611,62 @@ func TestMainWholeProgramDescription(t *testing.T) {
 		code := Main(args, &out, &errb, Stores{})
 		return code, out.String() + errb.String()
 	}
-	code, out := run("-config", put("new.json", swapCfg("post")), "-diff", put("old.json", swapCfg("single")), "-check", "-fail-on-weaken", "-blocks", desc)
+	code, out := run("-config", put("new.json", swapCfg("post")), "-diff", put("old.json", swapCfg("single")), "-check", "-fail-on-weaken", "-blocks", desc, "-old-blocks", desc)
 	if code != 1 || !strings.Contains(out, "approval one decision -> none") || strings.Contains(out, "not certified") || strings.Contains(out, "error") {
 		t.Errorf("single -> post: %d %q", code, out)
 	}
-	code, out = run("-config", put("n2.json", swapCfg("single")), "-diff", put("o2.json", swapCfg("post")), "-check", "-fail-on-weaken", "-blocks", desc)
+	code, out = run("-config", put("n2.json", swapCfg("single")), "-diff", put("o2.json", swapCfg("post")), "-check", "-fail-on-weaken", "-blocks", desc, "-old-blocks", desc)
 	if code != 0 || !strings.Contains(out, "strengthened") && !strings.Contains(out, "1 change") {
 		t.Errorf("post -> single: %d %q", code, out)
 	}
 	if code, out = run("-config", put("c.json", swapCfg("post")), "-check", "-blocks", desc); code != 0 || strings.Contains(out, "registered but never used") {
 		t.Errorf("one config: %d %q", code, out)
+	}
+}
+
+// A gate removed in Go with the config unchanged: the old description says the block is gated, the new
+// one says it is not. With both descriptions the diff says so and fails; with -blocks alone the old
+// side is never read with the new description (that would make the two sides agree on a gate-less
+// block and hide it), so the result is no quieter than the same diff without any flag.
+func TestMainAGoSideGateRemovalIsNotHiddenByOneDescription(t *testing.T) {
+	dir := t.TempDir()
+	put := func(name, data string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	gated, _ := json.Marshal(only(t, "charge").Describe())
+	// The same program after its gate was removed in Go: the block is still called "charge".
+	reg := plan.NewRegistry()
+	pass := func(_ context.Context, o order) (order, error) { return o, nil }
+	for _, err := range []error{reg.RegisterStep("intake", pass, plan.ReadOnly()), reg.RegisterStep("charge", pass)} {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	ungated, _ := json.Marshal(reg.Describe())
+	cfg := put("flow.json", swapCfg("charge"))
+	same := put("same.json", swapCfg("charge"))
+	run := func(args ...string) (int, string) {
+		var out, errb bytes.Buffer
+		code := Main(args, &out, &errb, Stores{})
+		return code, out.String() + errb.String()
+	}
+	base := []string{"-config", cfg, "-diff", same, "-check", "-fail-on-weaken"}
+	exitPlain, _ := run(base...)
+	exitNew, out := run(append(base, "-blocks", put("new.json", string(ungated)))...)
+	if exitNew < exitPlain || !strings.Contains(out, "old config structural") {
+		t.Errorf("-blocks alone: exit %d (plain %d) %q", exitNew, exitPlain, out)
+	}
+	exitOld, out := run(append(base, "-old-blocks", put("old.json", string(gated)))...)
+	if exitOld < exitPlain || !strings.Contains(out, "new config structural") {
+		t.Errorf("-old-blocks alone: exit %d (plain %d) %q", exitOld, exitPlain, out)
+	}
+	// Both: the Go-side removal is a weakening and fails the gate.
+	code, out := run(append(base, "-blocks", put("new2.json", string(ungated)), "-old-blocks", put("old2.json", string(gated)))...)
+	if code != 1 || !strings.Contains(out, "approval 2 of 2: ops, fin -> none") {
+		t.Errorf("both descriptions: %d %q", code, out)
 	}
 }
