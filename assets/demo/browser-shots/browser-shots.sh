@@ -50,10 +50,14 @@ fi
 
 # 2. bide view's Needs attention list, from bide sample.
 if want needs-attention; then
-(cd "$work" && ./bide sample -out sample -no-browser -addr 127.0.0.1:8631 > /dev/null) &
+# exec, so the PID is the server itself, and the server is stopped by that PID: "kill %%" named whichever job
+# was current, and left this one running on its port for the next script to find.
+(cd "$work" && exec ./bide sample -out sample -no-browser -addr 127.0.0.1:8631 > /dev/null) &
+sample_pid=$!
 wait_for http://127.0.0.1:8631/
 (cd "$here" && node shot.mjs http://127.0.0.1:8631/attention run-viewer-needs-attention 1200)
-kill %% 2>/dev/null || true
+kill "$sample_pid" 2>/dev/null || true
+wait "$sample_pid" 2>/dev/null || true
 fi
 
 if want relay; then
