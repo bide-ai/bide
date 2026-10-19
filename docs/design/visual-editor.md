@@ -688,6 +688,26 @@ Each phase is one or more pull requests, each with its docs, changelog fragment 
   most error-prone by hand and most important to review, without structure editing.
 - **Phase 2, structure.** Add, remove, rename and reorder nodes; edges, switches, arms, `else`,
   `loop_max`, joins; drag to connect as an extra; undo and redo.
+
+  *Built in steps; decisions made at build time (2026-10-19):*
+  1. **A rename reads as weakened.** The classifier follows names, so renaming a gated node is a
+     removed gate and a new ungated node. The editor takes the over-report and says why next to the
+     verdict; the editor passes no hint to the classifier, ever, and classifier-side rename detection
+     is out of scope for phase 2.
+  2. **The implicit entry is never changed in silence.** An operation that would change the entry a
+     config leaves implicit (the first node) is refused, with a reason that offers `set_entry`.
+  3. **Removal cascades, and the verdict is the classifier's.** Removing a node also removes the
+     edges and arms that name it; the dry-run list of what goes is shown and must be confirmed, and is
+     separate from the weakening confirmation. A switch left with no arm is removed whole; `assert`
+     lines that name the node stay (removing one is a weakening) and are listed.
+  4. **The last arm of a switch is not removed one arm at a time.** `remove_arm` on the last arm is
+     refused; `remove_switch` is the explicit operation.
+  5. **Joins are wiring-element paths** (phase 2, joins step): a join has no entry in `nodes`, so its
+     gate and safety are edited at the wiring element.
+  6. **Undo and redo** keep their stack across a save, and the server recomputes the check, the
+     banner and the diff for every step. Undo and redo themselves shipped in phase 1; the phase 2
+     work on them is only that they cover the new operations.
+  7. **The page budget** is reported per pull request, and raised only by the maintainer.
 - **Phase 3, typed mode.** A read-only `Registry` description (below), `-blocks`, embedding in a Go
   program, a palette, type-compatible connections, the digest, Go-declared gates and safety visible
   (which ends G4's "unknown").

@@ -11,10 +11,16 @@ import (
 // stay. An operation the text cannot take, or that Verify refuses, changes nothing.
 type Operation struct {
 	// Op names the operation: "set_safety", "set_block", "set_approval", "clear_approval",
-	// "add_assertion", "set_assertion" or "remove_assertion".
+	// "add_assertion", "set_assertion", "remove_assertion", "add_node", "remove_node",
+	// "rename_node" or "set_entry".
 	Op string `json:"op"`
 	// Node is the node the operation is on, by its name in the config.
 	Node string `json:"node"`
+	// For the structure operations (ops_structure.go): add_node adds Node with block Value at the end
+	// of the node list; rename_node renames Node to Value everywhere the config names it; remove_node
+	// removes Node and what names it (see DryRun and Confirm); set_entry makes Value the entry node
+	// ("" clears the key, allowed only when the first node is the entry already).
+	//
 	// Value is the new safety ("readonly", "idempotent" or "side_effect"; "" removes the key, which
 	// leaves the safety to the registered block) for set_safety, and the new block name for
 	// set_block.
@@ -26,6 +32,12 @@ type Operation struct {
 	// removes the line at Index. They name no node: Node is ignored.
 	Assertion *Assertion `json:"assertion,omitempty"`
 	Index     int        `json:"index,omitempty"`
+	// DryRun asks what remove_node would also remove: the answer is the list in Applied.Cascade and
+	// the text is unchanged. Confirm is that list, sent back with the real remove_node; a remove
+	// whose list is not empty is refused unless Confirm equals it, so what is removed is what was
+	// shown.
+	DryRun  bool     `json:"dry_run,omitempty"`
+	Confirm []string `json:"confirm,omitempty"`
 }
 
 // Approval is a node's approval gate as the config writes it: Need decisions from the Approvers,
@@ -50,6 +62,9 @@ const maxApprovers = 100
 type Applied struct {
 	Text    []byte
 	Changed bool
+	// Cascade is what a remove_node also removes or leaves dangling, in the order it appears in the
+	// file (see Operation.DryRun).
+	Cascade []string
 }
 
 // nodeDoc is a node as the config text holds it, for finding what to edit.
@@ -73,6 +88,9 @@ func ApplyOperation(name string, src []byte, op Operation) (*Applied, error) {
 	}
 	if isAssertionOp(op.Op) {
 		return applyAssertion(src, data, op)
+	}
+	if isStructureOp(op.Op) {
+		return applyStructure(name, src, data, op)
 	}
 	var cfg struct {
 		Nodes []json.RawMessage `json:"nodes"`

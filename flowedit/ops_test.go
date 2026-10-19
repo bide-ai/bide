@@ -129,7 +129,7 @@ func TestOperationRefusals(t *testing.T) {
 		op  Operation
 		why string
 	}{
-		"an unknown operation":      {opsFlow, Operation{Op: "rename_node", Node: "charge", Value: "x"}, "not one the editor offers"},
+		"an unknown operation":      {opsFlow, Operation{Op: "move_node", Node: "charge", Value: "x"}, "not one the editor offers"},
 		"an unknown node":           {opsFlow, Operation{Op: "set_safety", Node: "nope", Value: "readonly"}, "no node is named"},
 		"an empty node name":        {opsFlow, Operation{Op: "set_safety", Value: "readonly"}, ""},
 		"a safety not in the set":   {opsFlow, Operation{Op: "set_safety", Node: "charge", Value: "side effect"}, "is not one of"},

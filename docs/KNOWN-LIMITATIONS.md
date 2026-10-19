@@ -420,6 +420,16 @@ control that stops a weakened policy merging is the pull request, with `bide che
 -fail-on-weaken` as a required status and a policy owner's approval. See the [flow editor
 guide](guides/flow-editor.md).
 
+**Renaming a gated node in the editor reads as weakened, and removing a node leaves its assertions.** The
+gate comparison follows names, so a rename is a removed node and a new one, and the weakened banner (and
+`bide check -diff -fail-on-weaken` on the saved file) reports it; a policy owner reviews it and accepts it.
+The classifier does not detect renames, and the editor does not tell it which names are the same node.
+Removing a node leaves any `assert` line that names it (the check reports it as naming a missing node),
+because removing an assertion is itself a weakening. A node that is an input of a join cannot be removed
+in the editor yet; edit the source.
+
+**`plan` and `bide check` accept node names with characters that do not print.** A name with a direction override or a zero-width space loads and checks clean, and `bide check`, `bide view` and the diff draw it raw. The editor refuses such names in new ones and shows an existing one escaped, but it does not change what the loader accepts.
+
 **The editor's accessibility has automated and keyboard tests and no manual screen-reader pass yet.** The
 keyboard-only run and axe-core in Chrome (light and dark, five states) pass in CI; they are not a screen
 reader. To check by hand with VoiceOver, NVDA or Orca: the outline reads as a list of buttons named by

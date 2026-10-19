@@ -17,16 +17,27 @@ const SVGNS = 'http://www.w3.org/2000/svg';
 
 const token = (/(?:^#|&)t=([0-9a-f]+)/.exec(location.hash) || [])[1] || '';
 
+// shown is text with every character that does not print written as \u{XXXX} (a line break and a tab
+// stay): a name in a hand-written file can hold a direction override or a zero-width character (the
+// loader accepts any string), and the page must not draw one as another name. It is applied at the
+// choke points, so no surface can forget it: h() (every text child, and the attributes a reader or a
+// screen reader reads: aria-label, title, placeholder, alt), replace(), announce(), and the drawing's
+// text, titles and labels. The inputs a name is edited in, the source and option values keep the raw
+// text.
+const NONPRINT = /[^\p{L}\p{M}\p{N}\p{P}\p{S} \t\n\r]/gu;
+export const shown = (s) => String(s).replace(NONPRINT, (c) => '\\u{' + c.codePointAt(0).toString(16).toUpperCase() + '}');
+
 // h builds an element: h('p', {class: 'x'}, 'text', child).
+const READ_ATTRS = new Set(['aria-label', 'title', 'placeholder', 'alt', 'aria-description']);
 export function h(tag, attrs = {}, ...kids) {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
     if (v === false || v == null) continue;
-    e.setAttribute(k, v === true ? '' : String(v));
+    e.setAttribute(k, v === true ? '' : READ_ATTRS.has(k) ? shown(v) : String(v));
   }
   for (const k of kids.flat()) {
     if (k == null || k === false) continue;
-    e.append(typeof k === 'string' ? document.createTextNode(k) : k);
+    e.append(typeof k === 'string' ? document.createTextNode(shown(k)) : k);
   }
   return e;
 }
@@ -63,7 +74,7 @@ async function api(path, body = {}) {
 }
 
 const $ = (id) => document.getElementById(id);
-const replace = (id, ...kids) => $(id).replaceChildren(...kids.flat().filter(Boolean));
+const replace = (id, ...kids) => $(id).replaceChildren(...kids.flat().filter(Boolean).map((k) => (typeof k === 'string' ? shown(k) : k)));
 // announce speaks through the live region. The same words twice in a row (Undone, Undone) must be
 // heard twice, and a region whose text does not change is not announced, so a no-break space is
 // alternated on the end.
@@ -72,7 +83,7 @@ let flip = false;
 const announce = (msg) => {
   flip = msg === lastSpoken ? !flip : false;
   lastSpoken = msg;
-  $('live').textContent = msg + (flip ? '\u00a0' : '');
+  $('live').textContent = shown(msg) + (flip ? '\u00a0' : '');
 };
 // A verdict is announced when it changes, not on every keystroke that leaves it as it was.
 let lastVerdict = '';
@@ -143,13 +154,14 @@ export function renderOutline(v) {
   const stop = Math.max(0, nodes.findIndex((n) => n.name === selected));
   replace('outline', nodes.map((n, i) => {
     const b = h('button', { type: 'button', 'data-node': n.name, 'aria-current': n.name === selected ? 'true' : 'false', tabindex: i === stop ? '0' : '-1' },
-      h('span', { class: 'nm' }, n.name),
+      h('span', { class: 'nm' }, shown(n.name)),
       h('span', { class: 'meta' }, [n.kind, n.block, n.risk, n.gate ? 'gate ' + n.gate : ''].filter(Boolean).join(' · ')),
       (n.problems || []).map((p) => h('span', { class: 'prob' }, p)));
     b.addEventListener('click', () => select(n.name));
     return h('li', {}, b);
   }));
-  replace('wiring', (v.wiring || []).map((w) => h('li', {}, w)));
+  replace('wiring', (v.wiring || []).map((w) => h('li', {}, shown(w))));
+  replace('an-blocks', [...new Set(nodes.map((x) => x.block).filter(Boolean))].filter((b) => shown(b) === b).map((b) => h('option', { value: b })));
 }
 
 function outlineKeys(e) {
@@ -187,7 +199,8 @@ export function renderInspector(v) {
     return;
   }
   const row = (k, val) => val ? [h('dt', {}, k), h('dd', {}, val)] : [];
-  const blocks = [...new Set((v.nodes || []).map((x) => x.block).filter(Boolean))];
+  // A suggestion is offered only when it prints: a datalist cannot show an escaped value and insert the raw one.
+  const blocks = [...new Set((v.nodes || []).map((x) => x.block).filter(Boolean))].filter((b) => shown(b) === b);
   const safety = h('select', { id: 'f-safety' }, SAFETIES.map(([val, label]) => h('option', { value: val, selected: val === (n.safety || '') }, label)));
   safety.addEventListener('change', () => operate({ op: 'set_safety', node: n.name, value: safety.value }, 'f-safety'));
   const block = h('input', { id: 'f-block', type: 'text', value: n.block || '', list: 'f-blocks', autocomplete: 'off', spellcheck: 'false' });
@@ -195,7 +208,8 @@ export function renderInspector(v) {
   setBlock.addEventListener('click', () => operate({ op: 'set_block', node: n.name, value: block.value.trim() }, 'f-block'));
   block.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); setBlock.click(); } });
   replace('inspector',
-    h('h3', {}, n.name),
+    h('h3', {}, shown(n.name)),
+    shown(n.name) !== n.name ? h('p', { class: 'warn small', id: 'f-name-escaped' }, 'This name has characters that do not print, written out here as \\u{code}. Rename it.') : null,
     h('dl', {}, row('kind', n.kind), row('crash behavior', n.risk), row('approval gate', n.gate || 'none'), row('problems', (n.problems || []).join('; '))),
     h('p', { id: 'op-error', class: 'bad small', role: 'alert' }),
     h('div', { class: 'form' },
@@ -203,7 +217,73 @@ export function renderInspector(v) {
       h('div', { class: 'field' }, h('label', { for: 'f-block' }, 'Block'), h('div', { class: 'inline' }, block, setBlock),
         h('datalist', { id: 'f-blocks' }, blocks.map((b) => h('option', { value: b }))),
         h('p', { class: 'muted small' }, 'A block name is chosen, not written: its Go code is registered in your program.')),
-      gateForm(n)));
+      gateForm(n),
+      structureForm(n, v)));
+}
+
+// structureForm is the node's name, its place as the entry, and its removal. A rename rewrites every
+// place the name is used (the server refuses one it cannot reach everywhere); a removal lists first
+// what else it removes and waits for that list to be confirmed.
+function structureForm(n, v) {
+  const name = h('input', { id: 'f-name', type: 'text', value: n.name, autocomplete: 'off', spellcheck: 'false', 'aria-describedby': 'f-name-help' });
+  const rename = h('button', { type: 'button', class: 'btn', id: 'f-name-set' }, 'Rename');
+  const doRename = () => {
+    const to = name.value.trim();
+    if (to === n.name) { announce('No change: that is the name already.'); return; }
+    operate({ op: 'rename_node', node: n.name, value: to }, 'f-name', to);
+  };
+  rename.addEventListener('click', doRename);
+  name.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doRename(); } });
+  const isEntry = v.entry === n.name;
+  const entry = h('button', { type: 'button', class: 'btn', id: 'f-entry' }, isEntry ? 'Write the entry into the file' : 'Make this the entry node');
+  entry.addEventListener('click', () => operate({ op: 'set_entry', value: n.name }, 'f-entry'));
+  const remove = h('button', { type: 'button', class: 'btn', id: 'f-remove' }, 'Remove node');
+  remove.addEventListener('click', () => removeNode(n, remove));
+  return h('fieldset', { class: 'structure' },
+    h('legend', {}, 'Node'),
+    h('div', { class: 'field' }, h('label', { for: 'f-name' }, 'Name'), h('div', { class: 'inline' }, name, rename),
+      h('p', { class: 'muted small', id: 'f-name-help' }, 'Renames the node everywhere the file uses the name, in wiring and assertions. The gate check follows names, so a renamed gated node reads as removed and added: the weakened banner may appear for a rename.')),
+    h('div', { class: 'field' }, h('p', { class: 'small' }, isEntry ? 'This is the entry node.' : 'The entry node is ' + (v.entry || 'not set') + '.'),
+      h('p', { class: 'muted small' }, 'A config with no entry key starts at its first node. Adding, moving or removing nodes never changes that silently: write the entry here first.'),
+      entry),
+    h('div', { class: 'field' }, remove,
+      h('p', { class: 'muted small' }, 'Lists what else goes with it (edges, arms, comments) before anything is removed.')));
+}
+
+async function removeNode(n, opener) {
+  const box = $('op-error');
+  let dry;
+  try {
+    dry = await applyOp(state.text, { op: 'remove_node', node: n.name, dry_run: true });
+  } catch (err) {
+    if (box) box.textContent = shown('Not applied: ' + err.message);
+    announce('Not applied: ' + err.message);
+    return;
+  }
+  const list = dry.cascade || [];
+  const op = { op: 'remove_node', node: n.name, confirm: list };
+  if (!list.length) { operate({ op: 'remove_node', node: n.name }, 'an-name', ''); return; }
+  const go = h('button', { type: 'button', class: 'btn primary', id: 'do-remove' }, 'Remove ' + shown(n.name));
+  const cancel = h('button', { type: 'button', class: 'btn' }, 'Cancel');
+  cancel.addEventListener('click', () => closeDialog(opener));
+  go.addEventListener('click', () => { closeDialog(); operate(op, 'an-name', ''); });
+  openDialog('Remove ' + shown(n.name) + '?', [
+    h('p', {}, 'Removing it also changes:'),
+    h('ul', { id: 'remove-list' }, list.map((x) => h('li', {}, shown(x)))),
+    h('p', { class: 'muted small' }, 'Nothing is written to the file until you save, and Undo brings it back.'),
+  ], [go, cancel], cancel, opener);
+}
+
+// The add-node controls are in the page: this wires them.
+function wireAddNode() {
+  const name = $('an-name');
+  const block = $('an-block');
+  const add = async () => {
+    const to = name.value.trim();
+    if (await operate({ op: 'add_node', node: to, value: block.value.trim() }, 'f-name', to)) { name.value = ''; block.value = ''; }
+  };
+  $('an-add').addEventListener('click', add);
+  for (const el of [name, block]) el.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
 }
 
 // gateForm is the approval section: a draft of need, approvers, separation of duties and deadline.
@@ -253,7 +333,7 @@ function gateForm(n) {
       setFeedback('bad', ['Decisions needed must be a whole number such as 2.']);
       return;
     }
-    kofn.textContent = draft.approvers.length ? draft.need + ' of ' + draft.approvers.length + ' approver' + (draft.approvers.length === 1 ? '' : 's') + ' must sign' + (draft.exclude_principal ? ', never counting the person who started the run' : '') + (draft.timeout ? '; the gate expires after ' + draft.timeout : '') + '.' : 'No approvers yet.';
+    kofn.textContent = draft.approvers.length ? draft.need + ' of ' + draft.approvers.length + ' approver' + (draft.approvers.length === 1 ? '' : 's') + ' must sign' + (draft.exclude_principal ? ', never counting the person who started the run' : '') + (draft.timeout ? '; the gate expires after ' + shown(draft.timeout) : '') + '.' : 'No approvers yet.';
     clearTimeout(timer);
     const mine = ++seq;
     timer = setTimeout(async () => {
@@ -308,32 +388,38 @@ function gateForm(n) {
 
 // operate applies an operation to the text, as a step the author can undo, and puts the focus back
 // on the control that made it.
-async function operate(op, focusId) {
+async function operate(op, focusId, selectAfter) {
   const sent = state.text;
+  let applied = false;
+  const errBox = () => $(op.op === 'add_node' ? 'an-error' : 'op-error');
   try {
     const e = await applyOp(sent, op);
     // The author may have typed while the answer was on its way: their text is not overwritten.
     if (state.text !== sent) {
       const msg = 'Not applied: the text changed while the edit was being applied. Apply it again.';
-      const box = $('op-error');
-      if (box) box.textContent = msg;
+      const box = errBox();
+      if (box) box.textContent = shown(msg);
       announce(msg);
       return;
     }
+    if (errBox()) errBox().textContent = '';
     if (e.changed) {
       checkpoint();
+      if (selectAfter !== undefined) selected = selectAfter;
       setText(e.text, e);
       announce(opWords(op));
+      applied = true;
     } else {
       announce('No change: the text already says that.');
     }
     const target = $(focusId);
     if (target) target.focus();
   } catch (err) {
-    const box = $('op-error');
-    if (box) box.textContent = 'Not applied: ' + err.message;
+    const box = errBox();
+    if (box) box.textContent = shown('Not applied: ' + err.message);
     announce('Not applied: ' + err.message);
   }
+  return applied;
 }
 
 function opWords(op) {
@@ -341,6 +427,10 @@ function opWords(op) {
     case 'set_safety': return op.node + ': safety ' + (op.value || 'left to the block');
     case 'set_block': return op.node + ': block ' + op.value;
     case 'clear_approval': return op.node + ': gate removed';
+    case 'add_node': return 'Node ' + op.node + ' added';
+    case 'remove_node': return 'Node ' + op.node + ' removed';
+    case 'rename_node': return op.node + ' renamed to ' + op.value;
+    case 'set_entry': return 'Entry node: ' + op.value;
     case 'add_assertion': return 'Assertion added';
     case 'set_assertion': return 'Assertion changed';
     case 'remove_assertion': return 'Assertion removed';
@@ -443,7 +533,7 @@ export function renderAssertions(v) {
 }
 
 function nodeSelect(id, label, v, value, onChange) {
-  const sel = h('select', { id }, (v.nodes || []).map((n) => h('option', { value: n.name, selected: n.name === value }, n.name)));
+  const sel = h('select', { id }, (v.nodes || []).map((n) => h('option', { value: n.name, selected: n.name === value }, shown(n.name))));
   sel.addEventListener('change', onChange);
   return field(id, label, sel);
 }
@@ -518,8 +608,8 @@ export function renderProblems(v) {
   if (list.length === 0) { replace('problems', h('p', { class: 'good' }, 'None found.')); return; }
   replace('problems', h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Where'), h('th', {}, 'Problem'))),
     h('tbody', {}, list.map((p) => h('tr', {},
-      h('td', {}, h('code', {}, p.node || (p.from || p.to ? (p.from || '') + ' → ' + (p.to || '') : 'config'))),
-      h('td', { class: p.severity === 'error' ? 'bad' : 'warn' }, p.severity + ': ' + p.message))))));
+      h('td', {}, h('code', {}, shown(p.node || (p.from || p.to ? (p.from || '') + ' → ' + (p.to || '') : 'config')))),
+      h('td', { class: p.severity === 'error' ? 'bad' : 'warn' }, p.severity + ': ' + shown(p.message)))))));
 }
 
 export function renderCanvas(v) {
@@ -529,6 +619,8 @@ export function renderCanvas(v) {
   const svg = doc.documentElement;
   if (svg.localName !== 'svg' || doc.querySelector('parsererror')) { wrap.replaceChildren(h('p', { class: 'bad' }, 'The graph could not be drawn.')); return; }
   wrap.replaceChildren(document.adoptNode(svg));
+  for (const t of wrap.querySelectorAll('text, title')) if (t.children.length === 0) t.textContent = shown(t.textContent);
+  for (const e of wrap.querySelectorAll('[aria-label], [title]')) for (const a of ['aria-label', 'title']) if (e.hasAttribute(a)) e.setAttribute(a, shown(e.getAttribute(a)));
   for (const g of wrap.querySelectorAll('g.node')) {
     const name = g.getAttribute('data-id');
     g.setAttribute('role', 'button'); // the drawing marks a node as an image; here it can be pressed
@@ -568,7 +660,7 @@ const dirty = () => state.text !== state.disk;
 export function render(v, { keepSource = false } = {}) {
   view = v;
   if (selected && !(v.nodes || []).some((n) => n.name === selected)) selected = '';
-  $('file').textContent = v.name + ' (' + v.format + ')';
+  $('file').textContent = shown(v.name + ' (' + v.format + ')');
   $('modeline').textContent = v.mode;
   if (!keepSource) $('source').value = v.text;
   renderWeakening(v);
@@ -645,7 +737,7 @@ function diffBlock(diff) {
 let dialogOpener = null;
 function openDialog(title, body, actions, labelFor, opener) {
   if (opener) dialogOpener = opener;
-  $('dialog-title').textContent = title;
+  $('dialog-title').textContent = shown(title);
   replace('dialog-body', body);
   replace('dialog-actions', actions);
   if (!dlg().open) dlg().showModal();
@@ -699,7 +791,7 @@ async function commit(pv, opener, status) {
   } catch (e) {
     if (e.status === 409) { conflictDialog(e.data.hash, e.data.diff, opener); return; }
     if (e.status === 422) { closeDialog(); save(); return; } // the text changed under the confirmation: ask again
-    status.textContent = 'Not saved: ' + e.message;
+    status.textContent = shown('Not saved: ' + e.message);
   }
 }
 
@@ -744,6 +836,7 @@ async function main() {
   }
   $('source').addEventListener('input', onInput);
   $('outline').addEventListener('keydown', outlineKeys);
+  wireAddNode();
   dlg().addEventListener('close', () => {
     if (dlg().open) return; // closed to be opened again (a save that must be asked again)
     const o = dialogOpener;
