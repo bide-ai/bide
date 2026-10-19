@@ -133,7 +133,7 @@ cannot change an icon, a label, a dash pattern or a border style.
 | `canvas_bg`, `node_fill` | `--card` (twice) | The graph's ground; the fill of a node with no state. Default `surface` |
 | `shadow` | `--shadow` | Enum `none`, `soft`, `strong`; the theme cannot write a shadow value |
 | `scrim` | a literal in `editor.css`, `extras.css` | The alpha (0.40 to 0.80) of the black behind a dialog or the help overlay |
-| `font_ui`, `font_mono` | `--font`, `--mono` | Enum of generic families (below) |
+| `font_ui`, `font_mono` | `--font`, `--mono` | Enum of generic families (below); `font_mono` accepts monospace stacks only |
 | `type_scale` | `--t-xs` ... `--t-hero` | A multiplier, 0.90 to 1.25 |
 | `density` | `--s1` ... `--s7` | `compact` (0.85), `normal`, `roomy` (1.2) |
 | `radius` | `--r-sm`, `--r-md`, `--r-lg` | Three integers, 0 to 16 px, `sm <= md <= lg` |
@@ -144,7 +144,7 @@ A per-kind colour would collide with them (a purple "gate kind" next to the purp
 note adds only `canvas_bg` and `node_fill` and no more (decision 5).
 
 Fonts are an enum, not a family name: `system-sans` (the current stack), `system-serif`,
-`system-mono`, `humanist`, `rounded`. A named family from the machine would let a theme pick a face
+`system-mono`, `humanist`, `rounded` (the last three for `font_ui` only; `font_mono` is `system-mono` or a second monospace stack, so ids and principal names stay unambiguous). A named family from the machine would let a theme pick a face
 that renders `0` and `O`, or `1` and `l`, alike, on a page that shows digests and ids. Web fonts are
 excluded by the CSP and the "no request off this server" rule.
 
@@ -185,8 +185,14 @@ Rules of the format:
   `#rrggbb` lower case on parse.
 - A length is an integer in the key's range. An enum is one of its listed words. A number is in its
   range. Anything else is an error that names the key.
-- `color_scheme` (`light` or `dark`) comes from the base unless set; it is what `color-scheme` is, so
-  the browser's own controls (scrollbars, date fields) match.
+- There is no `color_scheme` key. `color-scheme` is derived from the luminance of `bg` (dark below
+  0.18 relative luminance), so the browser's own controls (scrollbars, popups, date fields) always
+  agree with the colours.
+- Parsing is exact: a token-level decode with exact-case key matching (`"BG"` next to `"bg"` is an
+  error, as is any duplicate; `encoding/json` alone does neither), a hex-digit pattern for colours
+  (not `strconv`, which takes a sign), and every key and value quoted with `%q` in errors and in the
+  `bide theme check` report, so a hostile file cannot print terminal escapes. Numbers are written
+  in fixed decimals.
 
 ### What becomes CSS
 
@@ -210,10 +216,11 @@ accessibility policy name.
 
 | # | Check | Pairs | Threshold |
 |---|---|---|---|
-| C1 | Text contrast | `text` and `muted` on `bg`, `surface`, `surface2`; every semantic `fg` on `bg`, `surface` and its own `bg` tint; `accent` on `bg`, `surface`, `accent` tint; `on_accent` on `accent`; `on` on every semantic `fg`; each `syntax` colour on `surface2` and `surface`; `text` on `node_fill` | 4.5:1 (4.5 even for large text: one rule) |
+| C1 | Text contrast | `text` and `muted` on `bg`, `surface`, `surface2`; every semantic `fg` on `bg`, `surface` and its own `bg` tint; `accent` on `bg`, `surface`, `accent` tint; `on_accent` on `accent`; `on` on every semantic `fg`; each `syntax` colour on `surface2` and `surface`; `text` on `node_fill`; `text` and `muted` on every semantic and accent `bg` tint and on `canvas_bg`; `idle` and `accent` on `surface2` | 4.5:1 (4.5 even for large text: one rule) |
 | C2 | Non-text contrast | `focus` on `bg` and `surface`; `border_strong` on `surface` and `bg`; `idle` on `bg` and `surface`; every semantic `fg` on `bg` and `surface` (strokes and icons; already implied by C1); `info` and `idle` (edges) on `canvas_bg` | 3:1 |
 | C3 | Status colours are distinct | `ok`, `warning`, `alert`, `info` (`fg`), pairwise, CIEDE2000 in CIELAB (D65) | at least 20 |
-| C4 | Domain colours are distinct | each of `gated`, `effect`, `idem` against every other semantic `fg` (and each other), CIEDE2000 | at least 10 |
+| C4 | Domain colours are distinct | each of `gated`, `effect`, `idem`, `idle` against every other semantic `fg` (and each other), CIEDE2000; `idle` is included so "not reached" cannot look like "completed" | at least 10 |
+| C8 | Polarity | `alert` is warm (CIELAB hue 340 to 100 degrees) and `ok` is not; `ok`, `warning`, `alert` have chroma of at least 20, so the hue means something | as stated |
 | C5 | Distinct from the ground | each semantic `fg` against `bg`, `surface`: this is C2 (3:1); and each semantic `bg` tint against its `fg`: C1 | as C1, C2 |
 | C6 | Colour-blind separation (advisory) | the C3 pairs after simulating protanopia, deuteranopia and tritanopia (Machado et al. 2009, severity 1.0) | at least 8; reported as a warning, not a refusal in v0.22.0 |
 | C7 | Ranges | the format rules above, `radius` ordering, `type_scale`, `density`, `scrim` | as listed |
@@ -257,7 +264,15 @@ only ever sees the generated `theme.css`.
 Choosing among themes in the browser is `data-theme` on `<html>`, remembered in
 `localStorage["bide-theme"]` as now. The remembered value is used only if it names a theme the page
 loaded (`theme.js` checks the list the stylesheet declares); an unknown value falls back to the
-system. With `prefers-contrast: more` and no remembered choice, the high-contrast theme applies.
+system. With `prefers-contrast: more`, the high-contrast theme applies unless the reader has made
+a choice in the toggle. **A host's default or lock never beats the reader's system request:**
+the host's choice is applied through a marker that means "the host chose", and the
+`prefers-contrast: more` and `forced-colors` rules are written to win over it (a test locks a custom
+theme and emulates both). Custom blocks are `:root[data-theme="x"]` (specificity 0,2,0), so the
+forced-colors mapping is written at the same or higher specificity and after them; a test pins that
+with a custom theme loaded. `theme.js` learns the list of loaded themes from a custom property the
+generated stylesheet sets (`--bide-themes`), and an unknown remembered name falls back to the system
+choice (tested).
 
 For a host: the Go API takes a value that already passed the checks. A host can set which themes
 exist, the default, and whether the user may switch. It cannot change what is below.
@@ -302,7 +317,7 @@ Chrome test below is what confirms them.
 Today no page has a `forced-colors` or `prefers-contrast` rule. Two behaviours:
 
 - **`prefers-contrast: more`**: the `high-contrast` shipped theme applies (unless the reader chose a
-  theme). It meets 7:1 for text and 4.5:1 for status colours, 3:1 for control borders at 2 px, and its
+  theme). The shipped-theme test enforces 7:1 for text and 4.5:1 for status colours on it, with 3:1 for control borders at 2 px, and its
   borders and strokes are thicker (a token-driven `border_width`, not a free key).
 - **`forced-colors: active`**: the system wins. The theme file and the shipped themes are ignored
   (the browser overrides author colours anyway); `forced-color-adjust: none` is never used. The
@@ -351,8 +366,9 @@ the safe default.
 **Recommendation: B for v0.22.0.** It gives the approve page the same checked palette, the high-contrast
 and forced-colors support it lacks, and a single source of colour, and it adds no input an attacker
 could use: the host cannot choose a theme, a name, a colour or a length. The security property is a
-sentence that stays true: "the pixels depend on the pinned bundle and the system's settings, and
-nothing else". C is deferred until a deployment asks. If it is added, it is name only (no logo) first,
+sentence that stays true: "no host-supplied style or theme input reaches the page; its colours
+come from the pinned bundle and the system's settings" (viewport, zoom and the reader's fonts still
+vary, as for any page). C is deferred until a deployment asks. If it is added, it is name only (no logo) first,
 rendered by `textContent`, only when `hosted`, in a region that cannot overlap the call panel, and the
 origin line stays beside it. The page also keeps its existing note that these checks are for
 mistakes, not for a hostile page.
@@ -368,7 +384,7 @@ hex digits, a length an integer in a range, an enum one word of a list); `theme.
 canonical form into a fixed template. Nothing a user types is copied to the output except the theme
 name, whose charset (`[a-z0-9-]`) cannot close a string or a block. There is no `url()`, `@import`,
 `content`, `expression` or selector to write, so there is nothing for the stylesheet to fetch (a
-second wall: `default-src 'self'` and `img-src 'self' data:` would stop it). A fuzz test feeds
+second wall: `default-src 'self'` and the viewer's and editor's `img-src` would not allow a remote image). A fuzz test feeds
 arbitrary JSON to `Parse` and requires that whatever passes yields CSS matching a strict grammar
 (a regular expression over the whole file); a mutation check removes the normalisation and the test
 must fail.
@@ -380,8 +396,8 @@ with another (C3, C4), a font size or spacing that pushes content off screen (th
 `density` ranges), a scrim that is nearly transparent or opaque (the `scrim` range), a font that
 makes characters alike (an enum of generic families). The limits: the checks are numeric, not
 perceptual proof (a theme can pass and still be ugly), and a custom theme can swap hues (ok red,
-alert green) and pass; the words and glyphs still say what a state is, and decision 2 is whether to
-add a polarity rule.
+alert green) is closed by the polarity check C8; the words and glyphs still say what a state is.
+A third-party theme file the operator never read is the case C8 is for.
 
 **A theme as an attack on the approval UI.** Three routes, and the answer to each. (1) A theme as the
 input that changes the approve page: there is none; the page takes no theme input (option B). (2) A
@@ -395,9 +411,9 @@ serve any script; a theme feature adds no power there, and the page still says s
 
 **Embedding.** A host passes only values that passed `Parse`. It cannot pass CSS, cannot add a
 selector, and the generated stylesheet is served from the page's own origin under the unchanged CSP.
-The host chooses the set, the default and the lock. It cannot hide the toggle's replacement for the
-reader if the reader's system asks for forced colours or more contrast: those rules are not in the
-theme.
+The host chooses the set, the default and the lock. It cannot override a reader whose system asks for
+forced colours or more contrast: those rules are not in the theme and win over a default or a lock
+(see above).
 
 Review: the "Security" and "The approve page" sections are to be read by an independent break-it
 reviewer before the decisions are taken (see the pull request).
@@ -406,7 +422,7 @@ reviewer before the decisions are taken (see the pull request).
 
 - **Validator unit tests.** Table tests for every check, on both sides of each threshold. The
   contrast function against the published WCAG examples (`#767676` on white is 4.54 and passes,
-  `#777777` is 4.48 and fails); CIEDE2000 against Sharma, Wu and Dalal's published 34 test pairs;
+  `#777777` is 4.48 and fails); a pair test for C8 (blue ok with orange alert passes, the swap fails); CIEDE2000 against Sharma, Wu and Dalal's published 34 test pairs;
   the colour-blindness matrices against published reference values. Parser tests: unknown keys,
   duplicate keys, every forbidden colour form, an over-size file, an out-of-range length, a shipped
   name. A mutation check after the first commit: move a threshold by one step and a test must fail.
@@ -415,7 +431,7 @@ reviewer before the decisions are taken (see the pull request).
 - **Generator.** A golden CSS per shipped theme, and the grammar fuzz above.
 - **No literal colours in page CSS.** A repository test (new, see decision 12) scans
   `internal/runview/assets/*.css`, `flowedit/page/*.css`, `approvals/page/app.css` for a hex or
-  `rgb(` outside the shipped theme data, with a short allow-list (the tab icon, the Mermaid export).
+  `rgb(` outside the shipped theme data, with a short allow-list (the tab icon, the Mermaid export, and in `app.css` only the generated theme block).
   This is what keeps a later page from adding a colour that no theme checks.
 - **Per-theme tests in Chrome**, in the existing browser jobs (puppeteer-core, pinned by lockfile):
   every page and state (the viewer's run, config, diff, attention and run list; the editor's five
@@ -466,7 +482,7 @@ decorative borders.
 | 2 | The viewer on generated tokens: `theme.css` served and the three palette blocks removed from `style.css`; `theme.js` and the toggle learn three themes and the remembered-name check; `-theme` and `-theme-default` on `bide view`; the Chrome matrix over the viewer's pages (screenshots must match the previous output for light and dark); the guide `docs/guides/themes.md` | No (`style.css` is shared but is the viewer's) |
 | 3 | The colour-only fixes A1 to A5, A7 to A9 in `graph.css`, `diff.css`, `extras.css`, `svg.go`, `live.js`; the retuned `idem`; the audit test | No |
 | 4 | `forced-colors` and `prefers-contrast`: the mapping, the shape ladder completed, `border_strong` on every control in the viewer's CSS, the `info` token adopted where the pages use `accent` for a state; the high-contrast theme goes live | No |
-| 5 | The approve page: option B, the same tests, the bundle hash test, a release-notes line saying the page's hash changes | No |
+| 5 | The approve page: option B (its palette is the generated block, with a golden test that `app.css` equals the generator output, and `page.js` imports nothing from the shared `theme.js`), the `border_strong` control edges and the disabled-button edge (A6, A12), the same tests, the bundle hash test, a release-notes line saying the page's hash changes. Any edit to a shipped theme is also an approve-bundle change and is noted as one in the changelog | No |
 | 6 | The editor adopts it: `editor.css` and `editor.js` (the toggle function, `.btn.primary` to `on_accent`, the control borders to `border_strong`, the `.node.sel` ring to `focus`), `-theme` on `bide edit`, the per-theme Chrome states | **Yes**, about 30 changed lines; the PR waits for a quiet moment in phase 2 and rebases on it (rebase, force-push with lease, no update-branch) |
 | 7 | The Go embedding option on the public handlers, with its test and its documentation | The editor's handler option only, in Go, not in the page |
 | 8 | Docs: KNOWN-LIMITATIONS (the manual forced-colors pass), the editor design note's accessibility paragraph, the viewer and editor guides, the i18n copies of what changed | No |
@@ -486,11 +502,11 @@ does not have today.
    recommends against it. The theme file uses friendly keys that map to the existing names, so
    `editor.css` and the other pages are untouched until they adopt the new tokens. A rename can
    follow later as a mechanical PR if wanted. Recommend: no rename.
-2. **Semantic colours are themable, with no hue rule.** A custom theme may pick any hues that pass
-   C1 to C5; there is no rule that alert must be red. A hue rule blocks colour-blind-safe palettes
-   (blue and orange); the words, glyphs and shapes are fixed and carry the meaning. The approve page
-   takes no custom theme, so its REJECT and Approve are never reachable by this. Recommend: no hue
-   rule (the alternative is a polarity check that alert is warm and ok is not).
+2. **Semantic colours are themable under a polarity rule.** A custom theme may pick any hues that
+   pass C1 to C5 and C8: alert warm, ok not, so blue and orange palettes pass and a red-ok,
+   green-alert swap (for example in a third-party theme file the operator never read) is refused.
+   Words, glyphs and shapes are fixed. The approve page takes no custom theme. Recommend: the
+   polarity rule (the alternative is no hue rule at all).
 3. **Named meanings (path taken, refused, weakened) are aliases of the eight colour tokens, not extra
    colours.** Recommend: aliases.
 4. **Add an `info` token separate from `accent`** (defaults equal), so "waiting" and "path taken" are
