@@ -1,5 +1,5 @@
-[31m✗[0m [2m../../examples/plan/flows/refund-policy-bypass.yaml[0m:[1mcharge[0m: assert[0] [31mviolated[0m: "every path to charge passes approval >= 2 of 3"
-    [2ma path reaches "charge" without passing an approval gate of at least 2 of 3[0m
-    [31mcounterexample:[0m [31mvalidate[0m[31m -> [0m[31mlookup[0m[31m -> [0m[1;31mcharge[0m
-[31m✗[0m [2m../../examples/plan/flows/refund-policy-bypass.yaml[0m: 4 assertions: [32m3 hold[0m, [31m1 violated[0m, [2m0 undecided or invalid[0m
+[31m✗[0m [2m../../examples/plan/flows/refund-policy-bypass.yaml[0m:[1mcharge_vip[0m: assert[0] [31mviolated[0m: "every path to charge_vip passes approval >= 2 of 3"
+    [2ma path reaches "charge_vip" without passing an approval gate of at least 2 of 3[0m
+    [31mcounterexample:[0m [31mvalidate[0m[31m -> [0m[31mlookup[0m[31m -> [0m[1;31mcharge_vip[0m
+[31m✗[0m [2m../../examples/plan/flows/refund-policy-bypass.yaml[0m: 5 assertions: [32m4 hold[0m, [31m1 violated[0m, [2m0 undecided or invalid[0m
 [32m✓[0m [2m../../examples/plan/flows/refund-policy.yaml[0m: 4 assertions: [32m4 hold[0m, [2m0 violated[0m, [2m0 undecided or invalid[0m

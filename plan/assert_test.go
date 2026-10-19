@@ -80,8 +80,12 @@ func TestAssert_EachKind(t *testing.T) {
 			continue
 		}
 		if c.path == nil {
-			if r.Errors() {
-				t.Errorf("%q holds but problems %+v", c.line, r.Problems)
+			// payConfig declares an orphan node on purpose (to exercise "orphan unreachable"), and the
+			// structural check says it is not reached from the entry; nothing else may be wrong.
+			for _, p := range r.Problems {
+				if p.Severity == "error" && p.Node != "orphan" {
+					t.Errorf("%q holds but problems %+v", c.line, r.Problems)
+				}
 			}
 			continue
 		}
@@ -99,7 +103,13 @@ func TestAssert_EachKind(t *testing.T) {
 // error on X.
 func TestAssert_OrphanReachable(t *testing.T) {
 	res, r := verdict(t, withAsserts(t, payConfig, "orphan reachable"), nil)
-	if !res.Violated() || res.Path != nil || len(problemAt(r, "orphan", "", "")) != 1 {
+	violations := 0
+	for _, p := range problemAt(r, "orphan", "", "") {
+		if strings.Contains(p.Message, "is violated") {
+			violations++
+		}
+	}
+	if !res.Violated() || res.Path != nil || violations != 1 {
 		t.Fatalf("%+v; problems %+v", res, r.Problems)
 	}
 }

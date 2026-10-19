@@ -6,6 +6,7 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"slices"
 	"sort"
+	"strings"
 )
 
 // Build validates the accumulated spec for whole-graph coherence and freezes it
@@ -271,9 +272,63 @@ func (c *builderCore) topoOrder() ([]string, error) {
 		}
 	}
 	if len(order) != len(c.nodes) {
-		return nil, fmt.Errorf("topology has a cycle (rung-1 flows must be acyclic)")
+		emitted := make(map[string]bool, len(order))
+		for _, name := range order {
+			emitted[name] = true
+		}
+		return nil, fmt.Errorf("topology has a cycle %s (rung-1 flows must be acyclic: a way back is an arm with loop_max)", cyclePath(c.nodes, adj, emitted))
 	}
 	return order, nil
+}
+
+// cyclePath names one cycle among the nodes Kahn's algorithm could not emit, as "a -> b -> a": a
+// depth-first walk from the first such node in declared order, following the directed edges between them,
+// until it meets a node already on its path. The nodes left over include those downstream of a cycle, so
+// the walk can pass through some that are not on it; only the closed loop is returned.
+func cyclePath(nodes []*node, adj map[string][]string, emitted map[string]bool) string {
+	const (
+		unseen = iota
+		onPath
+		done
+	)
+	state := map[string]int{}
+	var path []string
+	var found []string
+	var walk func(name string) bool
+	walk = func(name string) bool {
+		state[name] = onPath
+		path = append(path, name)
+		for _, next := range adj[name] {
+			if emitted[next] {
+				continue
+			}
+			switch state[next] {
+			case onPath:
+				i := len(path) - 1
+				for path[i] != next {
+					i--
+				}
+				found = append(append([]string(nil), path[i:]...), next)
+				return true
+			case unseen:
+				if walk(next) {
+					return true
+				}
+			}
+		}
+		path = path[:len(path)-1]
+		state[name] = done
+		return false
+	}
+	for _, n := range nodes {
+		if !emitted[n.name] && state[n.name] == unseen && walk(n.name) {
+			break
+		}
+	}
+	for i, name := range found {
+		found[i] = fmt.Sprintf("%q", name)
+	}
+	return strings.Join(found, " -> ")
 }
 
 // checkJoins validates every kindJoin node: its input ports type-match the merge

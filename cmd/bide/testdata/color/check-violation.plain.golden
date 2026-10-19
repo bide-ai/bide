@@ -1,3 +1,3 @@
-../../examples/plan/flows/refund-policy-bypass.yaml:charge: assert[0] "every path to charge passes approval >= 2 of 3" is violated: a path reaches "charge" without passing an approval gate of at least 2 of 3 (counterexample: validate -> lookup -> charge)
-../../examples/plan/flows/refund-policy-bypass.yaml: 4 assertions: 3 hold, 1 violated, 0 undecided or invalid
+../../examples/plan/flows/refund-policy-bypass.yaml:charge_vip: assert[0] "every path to charge_vip passes approval >= 2 of 3" is violated: a path reaches "charge_vip" without passing an approval gate of at least 2 of 3 (counterexample: validate -> lookup -> charge_vip)
+../../examples/plan/flows/refund-policy-bypass.yaml: 5 assertions: 4 hold, 1 violated, 0 undecided or invalid
 ../../examples/plan/flows/refund-policy.yaml: 4 assertions: 4 hold, 0 violated, 0 undecided or invalid

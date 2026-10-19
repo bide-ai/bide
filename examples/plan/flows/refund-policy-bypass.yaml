@@ -7,16 +7,18 @@ nodes:
   - {name: lookup, block: lookup}
   - {name: review, block: review, safety: readonly, approval: {need: 2, approvers: [ops, finance, risk]}}
   - {name: charge, block: charge, safety: side_effect}
+  - {name: charge_vip, block: charge, safety: side_effect}
   - {name: credit, block: credit, safety: idempotent}
   - {name: receipt, block: receipt, safety: idempotent}
 wiring:
   - edge: [validate, lookup]
   - switch: lookup
-    when: [{pred: large, to: review}, {pred: vip, to: charge}]
+    when: [{pred: large, to: review}, {pred: vip, to: charge_vip}]
     else: credit
   - edge: [review, charge]
   - edge: [charge, receipt]
 assert:
+  - every path to charge_vip passes approval >= 2 of 3
   - every path to charge passes approval >= 2 of 3
   - no side effect after charge
   - every path to a terminal passes validate

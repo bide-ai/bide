@@ -83,8 +83,12 @@ func TestInspectConfig_ProblemsWhereTheyBelong(t *testing.T) {
 // found only with the Registry; the structural check passes them.
 func TestInspectConfig_RegistryFindsWhatStructureCannot(t *testing.T) {
 	data := []byte(strings.Replace(triageConfig, `{"edge": ["reserve", "finalize"]}`, `{"edge": ["reserve", "decline"]}`, 1))
-	if r := InspectConfig(data, nil); r.Errors() {
-		t.Fatalf("the structural check found %+v; it cannot see types", r.Problems)
+	// The edit leaves finalize with no edge in, which the structural check reports (it is not reached from
+	// the entry); what it cannot see is the type mismatch.
+	for _, p := range InspectConfig(data, nil).Problems {
+		if p.Severity == "error" && !strings.Contains(p.Message, "not reached from the entry") {
+			t.Fatalf("the structural check found %+v; it cannot see types", p)
+		}
 	}
 	if r := InspectConfig(data, triageRegistry(t)); !r.Errors() {
 		t.Fatal("the Registry check missed the type mismatch")

@@ -695,17 +695,19 @@ gate, to `charge`, and all four of its assertions hold:
 
 <img src="./img/run-viewer-config-risk-dark.png" alt="bide view -config on a refund flow: nodes colored by crash behavior, a 2-of-3 gate on review, and four holding assertions">
 
-`refund-policy-bypass.yaml` adds a `vip` arm from `lookup` straight to `charge`. The assertion
-`every path to charge passes approval >= 2 of 3` is violated, and its counterexample,
-`validate -> lookup -> charge`, is drawn in red:
+`refund-policy-bypass.yaml` adds a `vip` arm from `lookup` straight to `charge_vip`, a second charge step
+with no gate. (A route around a gate to the *same* step would feed it from two producers, which
+`plan.Load` refuses: a step with several producers needs a join. So a bypass is a second step that does the
+same work.) The assertion `every path to charge_vip passes approval >= 2 of 3` is violated, and its
+counterexample, `validate -> lookup -> charge_vip`, is drawn in red:
 
-<img src="./img/run-viewer-config-assert-dark.png" alt="bide view -config on the same flow with a vip arm that bypasses the gate: the violated assertion and its counterexample path drawn in red">
+<img src="./img/run-viewer-config-assert-dark.png" alt="bide view -config on the same flow with a vip arm that bypasses the gate by way of a second, ungated charge step: the violated assertion and its counterexample path drawn in red">
 
 `bide check` fails on it and prints it as a line, then counts the verdicts:
 
 ```text
-flows/refund-policy-bypass.yaml:charge: assert[0] "every path to charge passes approval >= 2 of 3" is violated: a path reaches "charge" without passing an approval gate of at least 2 of 3 (counterexample: validate -> lookup -> charge)
-flows/refund-policy-bypass.yaml: 4 assertions: 3 hold, 1 violated, 0 undecided or invalid
+flows/refund-policy-bypass.yaml:charge_vip: assert[0] "every path to charge_vip passes approval >= 2 of 3" is violated: a path reaches "charge_vip" without passing an approval gate of at least 2 of 3 (counterexample: validate -> lookup -> charge_vip)
+flows/refund-policy-bypass.yaml: 5 assertions: 4 hold, 1 violated, 0 undecided or invalid
 ```
 
 On a terminal the violation is split over lines that fit the terminal: a red ✗ and the assertion,
@@ -713,7 +715,7 @@ then the reason, dimmed, then the counterexample path in red with the node it re
 file whose assertions all hold gets a green ✓ (see [Color](#color)). Piped or redirected, it is the
 one line above:
 
-<img src="./img/cli-check-violation-dark.png" alt="bide check on a terminal: the violated assertion marked with a red cross, its counterexample validate -> lookup -> charge in red with charge in bold, and the holding file marked with a green check">
+<img src="./img/cli-check-violation-dark.png" alt="bide check on a terminal: the violated assertion marked with a red cross, its counterexample validate -> lookup -> charge_vip in red with charge_vip in bold, and the holding file marked with a green check">
 
 An undecided assertion (a node of unknown safety after X, in `no side effect after X`), an
 assertion outside the grammar, and one naming an undeclared node are errors as well.

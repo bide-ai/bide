@@ -85,11 +85,11 @@ func TestCheckColorGolden(t *testing.T) {
 		"\x1b[31m✗\x1b[0m ",         // a cross on the error
 		"\x1b[31mviolated\x1b[0m: ", // the verdict in red
 		// the assertion in one color, then the reason and the path on lines of their own
-		`: "every path to charge passes approval >= 2 of 3"` + "\n    ",
+		`: "every path to charge_vip passes approval >= 2 of 3"` + "\n    ",
 		"    \x1b[31mcounterexample:\x1b[0m \x1b[31mvalidate\x1b[0m", // the path in red
-		"\x1b[1;31mcharge\x1b[0m\n",                                  // the node it reaches, in bold red
+		"\x1b[1;31mcharge_vip\x1b[0m\n",                              // the node it reaches, in bold red
 		"\x1b[31m1 violated\x1b[0m",
-		"\x1b[32m3 hold\x1b[0m",
+		"\x1b[32m4 hold\x1b[0m",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("colored check output lacks %q:\n%q", want, out)

@@ -287,7 +287,7 @@ FILES
   approver-keys.json           the approvers' (ops, finance, risk) public keys
   flows/refund-v1.yaml         the refund flow: review needs 2 of 3 approvers; 4 assertions hold
   flows/refund-v2.yaml         the same flow with review lowered to 1 of 3: a weakened gate
-  flows/refund-bypass.yaml     a vip arm skips review: a violated assertion
+  flows/refund-bypass.yaml     a vip arm skips review for an ungated charge step: a violated assertion
 
 TRY (from this directory)
 
