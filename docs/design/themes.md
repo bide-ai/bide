@@ -1,7 +1,6 @@
 # Design: themes for bide's visual pages
 
-Status: proposed. Nothing in it is built. The decisions it needs from the maintainer are at the end;
-no implementation starts until they are made. Written against `main` at c0224a63. The target is
+Status: accepted (the maintainer decided all 14 decisions as recommended on 2026-10-19, with two changes: the colour-blindness check is enforced for shipped themes, and the theme package is internal until the Go embedding PR). Nothing in it is built yet. Written against `main` at c0224a63. The target is
 v0.22.0.
 
 The visual pages are the run viewer (`bide view`, `internal/runview/assets`), the flow editor
@@ -19,7 +18,7 @@ server-drawn flow graph) is shared by the viewer, the diff and the editor.
   turned into one generated stylesheet of custom properties. There is no way to write a selector, a
   property, a URL or a function.
 - **Validation is numeric and stated:** WCAG 2.x contrast (4.5:1 text, 3:1 non-text), CIEDE2000
-  distance between the status colours, and an advisory colour-blindness check. Shipped themes are
+  distance between the status colours, and a colour-blindness check (enforced for shipped themes, advisory for custom ones). Shipped themes are
   checked in CI; a custom theme is refused at load with each failing check named.
 - **State is never colour alone.** Today a few places are (list below); they are fixed before themes
   ship, because a theme with close hues makes them worse.
@@ -151,8 +150,7 @@ excluded by the CSP and the "no request off this server" rule.
 ## The theme file
 
 JSON, strict (unknown keys are errors, duplicate keys are errors, at most 16 KiB), parsed by a new
-root-module package (working name `theme`; stdlib only; public, so a Go host can build and check a
-theme; 0.x API). A theme names a shipped base and overrides from it, so a custom theme can be five
+root-module package (`internal/theme` at first; stdlib only; it becomes public, with a 0.x API, in the PR that adds the Go embedding option, so a Go host can then build and check a theme). A theme names a shipped base and overrides from it, so a custom theme can be five
 lines:
 
 ```json
@@ -222,7 +220,7 @@ accessibility policy name.
 | C4 | Domain colours are distinct | each of `gated`, `effect`, `idem`, `idle` against every other semantic `fg` (and each other), CIEDE2000; `idle` is included so "not reached" cannot look like "completed" | at least 10 |
 | C8 | Polarity | `alert` is warm (CIELAB hue 340 to 100 degrees) and `ok` is not; `ok`, `warning`, `alert` have chroma of at least 20, so the hue means something | as stated |
 | C5 | Distinct from the ground | each semantic `fg` against `bg`, `surface`: this is C2 (3:1); and each semantic `bg` tint against its `fg`: C1 | as C1, C2 |
-| C6 | Colour-blind separation (advisory) | the C3 pairs after simulating protanopia, deuteranopia and tritanopia (Machado et al. 2009, severity 1.0) | at least 8; reported as a warning, not a refusal in v0.22.0 |
+| C6 | Colour-blind separation (enforced for shipped themes, advisory for custom) | the C3 pairs after simulating protanopia, deuteranopia and tritanopia (Machado et al. 2009, severity 1.0) | at least 8; a failure fails the build for a shipped theme and is a warning, not a refusal, for a custom theme |
 | C7 | Ranges | the format rules above, `radius` ordering, `type_scale`, `density`, `scrim` | as listed |
 
 Why these numbers, from the current palette (measured with a throwaway script, not committed):
@@ -240,9 +238,10 @@ Why these numbers, from the current palette (measured with a throwaway script, n
   implementation retunes `idem` (a teal) so it passes; this is a visible change to existing pages.
 - **C6 fails today**, by design of the current hues: ok, warning and alert are close in lightness
   (L* 39, 40 and 39 in light), so under deuteranopia warning versus alert is 1.8 and under
-  protanopia ok versus alert is 8.5. That is why C6 is advisory: the state is carried by words and
-  glyphs, and forcing a lightness ladder changes every verdict banner. The check reports it for every
-  theme, shipped ones included, and the result is recorded in the guide (decision 6).
+  protanopia ok versus alert is 8.5. The maintainer decided C6 is enforced for the shipped themes, so
+  `light`, `dark` and `high-contrast` are retuned (a lightness ladder across ok, warning and alert, and
+  a separate `idem`) and the change is a visible one, called out in the changelog. It stays advisory
+  for a custom theme, which is reported with the result.
 
 The validator is also a command, `bide theme check file.json`, printing the table above for the
 theme with each measured value. A custom theme that fails C1 to C5, C7 or C8 is refused: `bide view` and
@@ -427,7 +426,7 @@ reviewer before the decisions are taken (see the pull request).
   duplicate keys, every forbidden colour form, an over-size file, an out-of-range length, a shipped
   name. A mutation check after the first commit: move a threshold by one step and a test must fail.
 - **Shipped themes in CI.** A Go test loads every embedded theme, runs C1 to C8, and fails the build
-  on C1 to C5, C7 and C8 (C6 is printed). Adding a shipped theme adds a row.
+  on C1 to C8. Adding a shipped theme adds a row.
 - **Generator.** A golden CSS per shipped theme, and the grammar fuzz above.
 - **No literal colours in page CSS.** A repository test (new, see decision 12) scans
   `internal/runview/assets/*.css`, `flowedit/page/*.css`, `approvals/page/app.css` for a hex or
@@ -478,13 +477,13 @@ decorative borders.
 
 | PR | What | Touches `flowedit/page`? |
 |---|---|---|
-| 1 | The `theme` package: parser, normaliser, checks C1 to C8, `CSS`, the shipped `light`, `dark` (today's values, so no visible change) and `high-contrast` as embedded JSON, the CI test, `bide theme check`. No page changes | No |
-| 2 | The viewer on generated tokens: `theme.css` served and the three palette blocks removed from `style.css`; `theme.js` and the toggle learn three themes and the remembered-name check; `-theme` and `-theme-default` on `bide view`; the Chrome matrix over the viewer's pages (screenshots must match the previous output for light and dark); the guide `docs/guides/themes.md` | No (`style.css` is shared but is the viewer's) |
+| 1 | The `theme` package: parser, normaliser, checks C1 to C8, `CSS`, the shipped `light` and `dark` (today's values retuned so they pass C6 and C4: a visible change) and `high-contrast` as embedded JSON, the CI test, `bide theme check`. No page changes | No |
+| 2 | The viewer on generated tokens: `theme.css` served and the three palette blocks removed from `style.css`; `theme.js` and the toggle learn three themes and the remembered-name check; `-theme` and `-theme-default` on `bide view`; the Chrome matrix over the viewer's pages (screenshots match the previous output except for the retuned colours); the guide `docs/guides/themes.md` | No (`style.css` is shared but is the viewer's) |
 | 3 | The colour-only fixes A1 to A5, A7 to A9 in `graph.css`, `diff.css`, `extras.css`, `svg.go`, `live.js`; the retuned `idem`; the audit test | No |
 | 4 | `forced-colors` and `prefers-contrast`: the mapping, the shape ladder completed, `border_strong` on every control in the viewer's CSS, the `info` token adopted where the pages use `accent` for a state; the high-contrast theme goes live | No |
 | 5 | The approve page: option B (its palette is the generated block, with a golden test that `app.css` equals the generator output, and `page.js` imports nothing from the shared `theme.js`), the `border_strong` control edges and the disabled-button edge (A6, A12), the same tests, the bundle hash test, a release-notes line saying the page's hash changes. Any edit to a shipped theme is also an approve-bundle change and is noted as one in the changelog | No |
 | 6 | The editor adopts it: `editor.css` and `editor.js` (the toggle function, `.btn.primary` to `on_accent`, the control borders to `border_strong`, the `.node.sel` ring to `focus`), `-theme` on `bide edit`, the per-theme Chrome states | **Yes**, about 30 changed lines; the PR waits for a quiet moment in phase 2 and rebases on it (rebase, force-push with lease, no update-branch) |
-| 7 | The Go embedding option on the public handlers, with its test and its documentation | The editor's handler option only, in Go, not in the page |
+| 7 | The Go embedding option on the public handlers, and `internal/theme` becomes the public `theme` package, with its test and its documentation | The editor's handler option only, in Go, not in the page |
 | 8 | Docs: KNOWN-LIMITATIONS (the manual forced-colors pass), the editor design note's accessibility paragraph, the viewer and editor guides, the i18n copies of what changed | No |
 
 Each PR carries the docs and changelog fragment for what it changes, as the repository requires; PR
@@ -515,11 +514,11 @@ does not have today.
    icon and label and colour belongs to state and risk. Recommend: yes.
 6. **The thresholds:** text 4.5:1, non-text 3:1, status colours at least 20 apart (CIEDE2000), domain
    colours at least 10, WCAG 2.x as the metric; the colour-blindness check (at least 8 under the three
-   simulations) advisory in v0.22.0, since the current light and dark themes fail it. Also: retune
-   `idem` so it is not the same blue as `info`. Recommend: as stated; revisit C6 as a hard check when
-   the palette is next changed on purpose.
-7. **The format and the package.** JSON, parsed by a new public root-module package, 0.x API; fonts an
-   enum of generic families (no named families, no web fonts). **New** public package. Recommend: yes.
+   simulations) ENFORCED for shipped themes, which are retuned to pass it (the current light and dark
+   themes fail), and advisory for custom themes. Also: retune `idem` so it is not the same blue as
+   `info`. Accepted as amended.
+7. **The format and the package.** JSON, parsed by a new root-module package that is `internal/theme` until the Go embedding PR makes it public (0.x API); fonts an
+   enum of generic families (no named families, no web fonts). **New** public package, later. Accepted as amended.
 8. **Custom themes by file for the viewer and the editor:** `-theme` and `-theme-default`, one custom
    theme per process, `bide theme check` as a command. **New** subcommand. Recommend: yes.
 9. **The approve page takes option B** (shipped themes inside the signed bundle, system-selected, no
