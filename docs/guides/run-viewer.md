@@ -269,6 +269,8 @@ has an item. An aborted or cancelled run is listed too, since a halt outlives ei
 | `-strict` | With `-check`: exit 1 on a warning too (`bide check -strict`). |
 | `-diff <old>` | With `-config`: compare it with an earlier version, a file or a git revision; see [Compare two versions of a flow](#compare-two-versions-of-a-flow). With `-check`, print the changes instead of serving the page. |
 | `-fail-on-weaken` | With `-diff -check`: exit 1 if an approval gate was removed or weakened (its need lowered, an approver added without raising the need, `exclude_principal` dropped, or its timeout removed or lengthened), a node became reachable without a gate that every path reached through one before (whatever its safety), a new effect has no gate, a node's `safety` was lowered, a Switch condition changed beside an ungated effect, or an `assert` line was removed, loosened, or kept and no longer holds. |
+| `-blocks <file>` | With `-config`: a description of the program's registered blocks (a program writes one with `json.Marshal` of `plan.Registry.Describe()`), so the check covers block, predicate and merge names, types, safety, the approval gates blocks declare in Go, and the digest without the program. See [Check against a description](#check-against-a-description-of-the-registered-blocks). |
+| `-old-blocks <file>` | With `-diff`: the description for the earlier version (default: the `-blocks` file). |
 | `-stop-policy <file>`, `-stop-root <digest>` | The kill switch's stop policy (the JSON `bide stop -stop-policy` reads), so the [stop banner](kill-switch.md#what-bide-view-shows) and the held-by-stop states check the control run's signatures as an audited deployment does; `-stop-root` names the root policy when the file is a later one. Without them the control run is read as a basic one and the banner says signatures are not verified. Store inputs only. |
 | `-addr <host:port>` | Where to listen: a loopback IP or `localhost`, with a port. Default `127.0.0.1:8484`. Any other host is refused. |
 | `-color <when>` | `auto` (the default), `always` or `never`: whether the text output (the address to open, and `-check`'s lines) is colored. `auto` colors a terminal only, unless `NO_COLOR` is set to any value or `TERM` is `dumb`; see [Color](#color). |
@@ -663,6 +665,36 @@ bide check flows/refund-typo.yaml                   # for CI: no server, one lin
 The screenshot below is `examples/plan/flows/refund-typo.yaml`, whose last edge names `reciept`.
 
 <img src="./img/run-viewer-config-problem-dark.png" alt="bide view -config on a refund flow whose edge names an undeclared node, marked on the edge">
+
+### Check against a description of the registered blocks
+
+Without the program, `bide check` knows block names only from the config, so it cannot check types and
+cannot see a gate a block declares in Go. `bide check -blocks blocks.json flow.yaml` (and `bide view -config
+... -blocks`) takes a description of the program's `plan.Registry` and runs the same checks `Load` makes, by
+type name: unknown blocks, predicates and merges, the type along every edge, join arity, safety, the gates the
+blocks declare, and the digest a run would journal. A program writes the file once:
+
+```go
+b, _ := json.MarshalIndent(reg.Describe(), "", "  ")
+os.WriteFile("blocks.json", b, 0o600)
+```
+
+The result is labelled **checked per description file, not checked against the program** in the text, the page and
+the diff, because a description is a file: it can be stale, or wrong. The check made with the program's own
+Registry (`plan/planview`) is the control; this one makes the same answer available in a pipeline that does not
+build the program. Two limits: types are told apart by name, so two distinct types spelled the same are one type
+([known limitations](../KNOWN-LIMITATIONS.md)), and a block registered and never used is an error here as it is in
+`Load`. A description whose program's Registry refused a registration (a duplicate, a gate `Validate` refuses) is
+refused, with the registry's error. The file is read once, must be a regular file of at most 1 MiB with no unknown
+field, and is validated before it is used.
+
+With `-diff`, `-blocks` describes both versions; give `-old-blocks` for the earlier one when the program's
+blocks changed (a block the old config uses must be in the old description). A block swapped for one that
+declares no gate is then reported as a weakening, which from the command line alone is only a possible one:
+
+```sh
+bide check flows/refund-v2.yaml -diff main -blocks blocks.json -old-blocks blocks-main.json -check -fail-on-weaken
+```
 
 ### Risk map
 

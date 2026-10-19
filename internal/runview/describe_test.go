@@ -113,6 +113,65 @@ func TestDiffBlockSwapWithADescription(t *testing.T) {
 	}
 }
 
+// A Single (one-decision) gate is described with Need 0, as the topology carries it: swapping a block
+// that declares one for an ungated block is a weakening, whichever source knows the gate.
+func TestDiffBlockSwapFromASingleGate(t *testing.T) {
+	mk := func(gated bool) *plan.Registry {
+		reg := plan.NewRegistry()
+		pass := func(_ context.Context, o order) (order, error) { return o, nil }
+		if err := reg.RegisterStep("intake", pass, plan.ReadOnly()); err != nil {
+			t.Fatal(err)
+		}
+		var err error
+		if gated {
+			err = reg.RegisterStep("charge", pass, plan.Approval(agent.SingleApproval()))
+		} else {
+			err = reg.RegisterStep("post", pass)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return reg
+	}
+	for name, mkSide := range map[string]func(*plan.Registry) (*plan.Registry, *plan.RegistryDescription){
+		"registry":    func(r *plan.Registry) (*plan.Registry, *plan.RegistryDescription) { return r, nil },
+		"description": func(r *plan.Registry) (*plan.Registry, *plan.RegistryDescription) { return nil, described(r) },
+	} {
+		oR, oD := mkSide(mk(true))
+		nR, nD := mkSide(mk(false))
+		v := swapDiff(t, "charge", "post", oR, nR, oD, nD)
+		if len(v.Weakened) != 1 || !strings.Contains(v.Weakened[0], "pay") || v.Verdict.Word != "APPROVAL GATE WEAKENED" {
+			t.Errorf("%s: weakened %q, verdict %q", name, v.Weakened, v.Verdict.Word)
+		}
+		v = swapDiff(t, "post", "charge", nR, oR, nD, oD)
+		if len(v.Weakened) != 0 || len(v.Strengthened) != 1 {
+			t.Errorf("%s, reverse: weakened %q, strengthened %q", name, v.Weakened, v.Strengthened)
+		}
+	}
+}
+
+// One side checked against a description and the other against a Registry is a description-based
+// result: the page and the text say so, and a Registry-only diff says nothing of the kind.
+func TestDiffBasisWhenSidesDiffer(t *testing.T) {
+	oR, nR := only(t, "charge"), only(t, "post")
+	for name, v := range map[string]*DiffView{
+		"old described": swapDiff(t, "charge", "post", nil, nR, described(oR), nil),
+		"new described": swapDiff(t, "charge", "post", oR, nil, nil, described(nR)),
+	} {
+		if v.Basis != SourceDescription || v.BasisLine() != DescriptionNote {
+			t.Errorf("%s: basis %q, line %q", name, v.Basis, v.BasisLine())
+		}
+	}
+	v := swapDiff(t, "charge", "post", oR, nR, nil, nil)
+	if v.Basis != SourceRegistry || v.BasisLine() != "" {
+		t.Errorf("registry both: basis %q, line %q", v.Basis, v.BasisLine())
+	}
+	var out bytes.Buffer
+	if _, err := CheckDiff(&out, Diff{Old: Config{Name: "o.json", Data: []byte(swapCfg("charge")), Registry: oR}, New: Config{Name: "n.json", Data: []byte(swapCfg("post")), Registry: nR}}); err != nil || strings.Contains(out.String(), "description file") {
+		t.Errorf("registry diff text: %v %q", err, out.String())
+	}
+}
+
 // The description's answer is the Registry's: the same changes, weakened and strengthened lists, and
 // digests, for a set of edits, with only the basis differing.
 func TestDiffDescriptionAgreesWithRegistry(t *testing.T) {
@@ -244,6 +303,9 @@ func TestMainBlocksFlags(t *testing.T) {
 	code, out, errs := run("-config", newCfg, "-diff", oldCfg, "-check", "-fail-on-weaken", "-blocks", blocksNew, "-old-blocks", blocksOld)
 	if code != 1 || !strings.Contains(out, "approval 2 of 2: ops, fin -> none") || !strings.Contains(out, "per description file") {
 		t.Errorf("-old-blocks: %d %q %q", code, out, errs)
+	}
+	if code, _, errs := run("-blocks", blocksNew, "-journal", "x.json"); code != 2 || !strings.Contains(errs, "-blocks needs -config") {
+		t.Errorf("-blocks without -config: %d %q", code, errs)
 	}
 	for name, args := range map[string][]string{
 		"-blocks needs -config":      {"-blocks", blocksNew},
