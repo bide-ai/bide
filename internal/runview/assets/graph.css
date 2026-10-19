@@ -16,11 +16,11 @@ svg.graph { display: block; margin: 0 auto; max-width: 100%; height: auto; font-
 /* edges: dotted when not taken; the path taken (or a counterexample) is a thick dash flowing along it */
 .edge { fill: none; stroke: var(--idle); stroke-width: 1.6; stroke-dasharray: 1 5; stroke-linecap: round; }
 .edge.taken { stroke: var(--accent); stroke-width: 3; stroke-dasharray: 10 6; stroke-linecap: butt; animation: flow 1s linear infinite; }
-.edge.cex { stroke: var(--bad); stroke-width: 3.5; stroke-dasharray: 10 6; stroke-linecap: butt; animation: flow 1s linear infinite; }
-.edge.problem { stroke: var(--bad); stroke-width: 2.5; stroke-dasharray: 6 4; stroke-linecap: butt; }
+.edge.cex { stroke: var(--bad); stroke-width: 4.5; stroke-dasharray: 1 7; stroke-linecap: round; animation: flow 1s linear infinite; }
+.edge.problem { stroke: var(--bad); stroke-width: 2.5; stroke-dasharray: 3 4; stroke-linecap: butt; }
 .edge.added { stroke: var(--good); stroke-width: 2.8; stroke-dasharray: none; }
-.edge.removed { stroke: var(--bad); stroke-width: 2.2; stroke-dasharray: 6 5; stroke-linecap: butt; }
-.edge.changed { stroke: var(--warn); stroke-width: 2.8; stroke-dasharray: none; }
+.edge.removed { stroke: var(--bad); stroke-width: 2.2; stroke-dasharray: 9 5; stroke-linecap: butt; }
+.edge.changed { stroke: var(--warn); stroke-width: 2.8; stroke-dasharray: 13 3 2 3; stroke-linecap: butt; }
 @keyframes flow { to { stroke-dashoffset: -16; } }
 @media (prefers-reduced-motion: reduce) { .edge.taken, .edge.cex { animation: none; } }
 .arrowhead { fill: var(--idle); } .arrowhead.taken { fill: var(--accent); } .arrowhead.problem { fill: var(--bad); }
@@ -53,7 +53,7 @@ svg.graph { display: block; margin: 0 auto; max-width: 100%; height: auto; font-
 .node.last { filter: drop-shadow(0 0 5px var(--accent)); }
 .node.declared .box { stroke: var(--muted); stroke-dasharray: none; stroke-width: 1.4; }
 .node.problem .box { fill: var(--bad-bg); stroke: var(--bad); stroke-dasharray: none; stroke-width: 2.8; }
-.node.warning .box { fill: var(--warn-bg); stroke: var(--warn); stroke-dasharray: none; stroke-width: 2.2; }
+.node.warning .box { fill: var(--warn-bg); stroke: var(--warn); stroke-dasharray: 6 3; stroke-width: 2.2; }
 .node.undeclared .box { fill: none; stroke: var(--bad); stroke-dasharray: 3 3; }
 .node.declared.risk-side .box { fill: var(--side-bg); stroke: var(--side); stroke-width: 2.2; }
 .node.declared.risk-side .disc { fill: var(--side); } .node.declared.risk-side .nicon { color: var(--card); }
@@ -81,7 +81,7 @@ svg.graph { display: block; margin: 0 auto; max-width: 100%; height: auto; font-
 .lg.cex::before { height: 4px; border: 0; border-radius: 2px; background: var(--bad); vertical-align: 3px; }
 .lg.declared::before { border-color: var(--fg); }
 .lg.problem::before { background: var(--bad-bg); border-color: var(--bad); }
-.lg.warning::before { background: var(--warn-bg); border-color: var(--warn); }
+.lg.warning::before { background: var(--warn-bg); border-color: var(--warn); border-style: dashed; }
 .lg.undeclared::before { border-color: var(--bad); border-style: dashed; }
 
 /* interaction (graph.js) */
@@ -96,6 +96,6 @@ svg.graph { display: block; margin: 0 auto; max-width: 100%; height: auto; font-
 .gdetail { margin-top: var(--s2); padding: var(--s3) var(--s4); background: var(--card); border: 1px solid var(--accent); border-radius: var(--r-md); }
 .gdetail p { margin: 0; white-space: pre-line; }
 .gdetail .gname { font: 700 var(--t-md) var(--mono); margin-bottom: var(--s1); }
-.nmark circle { fill: var(--bad); stroke: var(--card); stroke-width: 2; }
-.nmark.warning circle { fill: var(--warn); }
+.nmark circle, .nmark path { fill: var(--bad); stroke: var(--card); stroke-width: 2; }
+.nmark.warning path { fill: var(--warn); }
 .nmark text { fill: var(--card); font-size: 13px; font-weight: 800; text-anchor: middle; }

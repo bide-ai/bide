@@ -200,8 +200,14 @@ func svg(g *Graph) string {
 			}
 		}
 		if n.Status == "problem" || n.Status == "warning" {
-			// The border says it in color; the mark and the tooltip say it in words.
-			fmt.Fprintf(&b, `<g class="nmark %s"><circle cx="%d" cy="%d" r="10"/><text x="%d" y="%d">!</text></g>`, n.Status, n.x+4, n.y+2, n.x+4, n.y+7)
+			// The mark says it by shape and the tooltip in words: a circle for a problem, a diamond for a
+			// warning, so the two differ without color.
+			cx, cy := n.x+4, n.y+2
+			shape := fmt.Sprintf(`<circle cx="%d" cy="%d" r="10"/>`, cx, cy)
+			if n.Status == "warning" {
+				shape = fmt.Sprintf(`<path d="M%d %dl12 12l-12 12l-12 -12z"/>`, cx, cy-12)
+			}
+			fmt.Fprintf(&b, `<g class="nmark %s">%s<text x="%d" y="%d">!</text></g>`, n.Status, shape, cx, cy+5)
 		}
 		if n.Gate != "" {
 			bx, by := n.x+nodeW-8, n.y

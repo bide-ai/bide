@@ -49,6 +49,8 @@ svg.merkle .edge.taken { animation: none; }
 .empty p { margin: var(--s1) 0; }
 .etitle { font-size: var(--t-lg); color: var(--fg); font-weight: 650; }
 table.runlist tbody tr.cur { background: var(--accent-bg); }
+/* The row the keyboard is on is marked by a glyph as well as the tint. */
+table.runlist tbody tr.cur td:first-child::before { content: "\25B6\00a0" / ""; color: var(--accent); }
 
 .helpback { position: fixed; inset: 0; background: var(--scrim); display: grid; place-items: center; z-index: 50; }
 .help { background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: var(--r-lg); padding: var(--s5); max-width: 440px; width: calc(100% - 32px); box-shadow: var(--shadow); }

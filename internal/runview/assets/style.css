@@ -49,6 +49,8 @@ pre { white-space: pre-wrap; word-break: break-word; margin: var(--s1) 0; }
 .stat .lbl { font-size: var(--t-sm); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
 .stat .sub { font-size: var(--t-sm); color: var(--muted); margin-top: 2px; }
 .s-good .num { color: var(--good); } .s-bad .num { color: var(--bad); } .s-warn .num { color: var(--warn); }
+/* The color is a judgement the label does not state, so a glyph says it too (decorative to a screen reader: the label is the name). */
+.s-good .lbl::before { content: "\2713\00a0" / ""; } .s-bad .lbl::before { content: "\2715\00a0" / ""; } .s-warn .lbl::before { content: "!\00a0" / ""; }
 
 .pill { font-size: var(--t-xs); font-weight: 600; padding: 2px var(--s2); border-radius: 10px; background: var(--card-2); color: var(--muted); border: 1px solid var(--line); vertical-align: middle; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
 .state-completed, .state-resolved, .state-done { background: var(--good-bg); color: var(--good); border-color: transparent; }

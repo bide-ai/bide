@@ -372,7 +372,9 @@ that embeds the viewer with the `*plan.Flow` gets that check instead.
 **Flow** (plan flows). The declared topology, drawn on the server as a layered SVG (the layout is
 the viewer's own, with no library): each node a rounded box with a glyph for its state (ran, halted,
 attempted, waiting for approval, not reached), the last node outlined, and the path the run took
-drawn as a flowing dash, which stops under `prefers-reduced-motion`. A gated node wears a badge on its
+drawn as a flowing dash, which stops under `prefers-reduced-motion`. A counterexample path is a heavy
+dotted line instead, so the two differ without color; a node's problem mark is a circle and a warning's a
+diamond, and a warning's box is dashed. A gated node wears a badge on its
 corner (`2/3`) and shows its gate in its box: `waiting, 1 of 2 approvals` and who is pending, or
 `approved 2 of 3` and `signatures verified` (or `signatures NOT verified`), and its tooltip the full
 status. The graph is complete without JavaScript. With it, hovering or focusing a node highlights
@@ -750,8 +752,8 @@ log.Fatal(http.Serve(ln, planview.Handler("refund.json", config, reg)))
 
 `bide check <file> -diff <old>` compares a flow config with an earlier version of it, for review
 before a change ships. It serves a read-only page (as `bide view` does, on `-addr`) that draws the
-new flow with added nodes and edges in green, removed ones as dashed red ghosts where they were,
-and changed nodes in amber with what changed: the block, the `safety`, or the approval gate
+new flow with added nodes and edges in green (a solid edge), removed ones as dashed red ghosts where they
+were, and changed nodes in amber with what changed (a changed edge is dash-dot): the block, the `safety`, or the approval gate
 (`approval 1 of 3 -> 2 of 3`, strengthened or weakened; its approvers, `exclude_principal` and
 `timeout` are compared too). A summary card counts the changes and
 gives the digest before and after, and a weakened approval policy is the verdict, `APPROVAL GATE
