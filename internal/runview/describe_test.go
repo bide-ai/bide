@@ -319,3 +319,24 @@ func TestMainBlocksFlags(t *testing.T) {
 		}
 	}
 }
+
+// A description InspectConfigDescribed cannot use (invalid, or past the process's type-name budget:
+// both come back as one error problem and an untyped result) is never a clean pass: the verdict is
+// not good, the check fails, and nothing says "checked per description" as if it had been.
+func TestAnUnusableDescriptionIsNotACleanPass(t *testing.T) {
+	d := described(only(t, "post"))
+	d.Errors = []string{`duplicate block registration "post"`}
+	c := Config{Name: "pay.json", Data: []byte(swapCfg("post")), Description: d}
+	v := BuildConfig(c)
+	if v.Typed || v.Errors == 0 || v.Verdict.Class == "good" || v.Verdict.Class == "" {
+		t.Errorf("typed %v, errors %d, verdict %+v", v.Typed, v.Errors, v.Verdict)
+	}
+	var out bytes.Buffer
+	if !Check(&out, c) || !strings.Contains(out.String(), "blocks description:") || strings.Contains(out.String(), "per description file") {
+		t.Errorf("check output %q", out.String())
+	}
+	diff, err := BuildDiff(Diff{Old: c, New: Config{Name: "new.json", Data: []byte(swapCfg("post")), Description: described(only(t, "post"))}})
+	if err != nil || diff.Typed || diff.Basis != "" || diff.OldErrors == 0 {
+		t.Errorf("diff: typed %v basis %q old errors %d (%v)", diff.Typed, diff.Basis, diff.OldErrors, err)
+	}
+}
