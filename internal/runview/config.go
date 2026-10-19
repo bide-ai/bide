@@ -14,27 +14,89 @@ import (
 // Config is a flow definition to show instead of a run: its file name (for messages), its JSON
 // bytes (a YAML file converted to JSON), and, when the program embeds the viewer, the
 // plan.Registry its blocks, predicates and merges are registered in. With no Registry the check is
-// structural (see plan.InspectConfig).
+// structural (see plan.InspectConfig), unless a Description of the registrations is given, which
+// checks the same things by name (see plan.InspectConfigDescribed). A Registry wins over a
+// Description.
 type Config struct {
 	Name     string
 	Data     []byte
 	Registry *plan.Registry
+	// Description is what the program registered, read from a file (bide check -blocks). It is only
+	// as good as the file: the page and the text say so wherever they report a typed result.
+	Description *plan.RegistryDescription
+	// DescriptionSHA256 is the SHA-256 of the description file's bytes (ReadDescriptionFile), shown
+	// where a result rests on the file, so a reviewer can tell which file was used.
+	DescriptionSHA256 string
+	// AllowUnusedBlocks makes a registered block the config does not use no problem
+	// (plan.AllowUnusedBlocks). bide check -blocks sets it: a description is of the whole program, and
+	// a flow config uses some of its blocks.
+	AllowUnusedBlocks bool
 	// Strict makes Check fail on a warning as well as on an error (bide view -check -strict).
 	Strict bool
 }
 
+// Source says what a typed result rests on: "registry" (the program's plan.Registry), "description"
+// (a description file, not checked against the program), or "" (structural).
+const (
+	SourceRegistry    = "registry"
+	SourceDescription = "description"
+)
+
+// DescriptionNote is what a typed result from a description file is labelled with. A description is
+// data a person or a build wrote: it can be stale or wrong, so a gate or a type it states is not
+// something the program was asked about. The check made with the program's Registry
+// (plan/planview) is the control.
+const DescriptionNote = "checked per description file, not checked against the program: the gates, safety and types are as the file says; the check against the program's plan.Registry is the control."
+
+// fileSum is sum in the words around it, or "" when there is none.
+func fileSum(sum, before, after string) string {
+	if sum == "" {
+		return ""
+	}
+	return before + sum + after
+}
+
+// source is the basis of c's check.
+func (c Config) source() string {
+	switch {
+	case c.Registry != nil:
+		return SourceRegistry
+	case c.Description != nil:
+		return SourceDescription
+	}
+	return ""
+}
+
+// inspect is plan.InspectConfig for c, against its Registry or else its Description.
+func (c Config) inspect() plan.ConfigReport {
+	var opts []plan.InspectOption
+	if c.AllowUnusedBlocks {
+		opts = append(opts, plan.AllowUnusedBlocks())
+	}
+	if c.Registry == nil && c.Description != nil {
+		return plan.InspectConfigDescribed(c.Data, *c.Description, opts...)
+	}
+	return plan.InspectConfig(c.Data, c.Registry, opts...)
+}
+
 // ConfigView is what the config page shows.
 type ConfigView struct {
-	Name       string               `json:"name"`
-	Flow       string               `json:"flow"`
-	Typed      bool                 `json:"typed"`
-	Digest     string               `json:"digest,omitempty"`
-	Errors     int                  `json:"errors"`
-	Warnings   int                  `json:"warnings"`
-	Problems   []plan.ConfigProblem `json:"problems,omitempty"`
-	Graph      *Graph               `json:"graph,omitempty"`
-	Approvals  []string             `json:"approvals,omitempty"`
-	CheckLabel string               `json:"check"`
+	Name  string `json:"name"`
+	Flow  string `json:"flow"`
+	Typed bool   `json:"typed"`
+	// Source is what the typed result rests on (SourceRegistry, SourceDescription), empty when
+	// structural.
+	Source string `json:"source,omitempty"`
+	// DescriptionSHA256 is the SHA-256 of the description file the typed result rests on, when it
+	// rests on one read from a file.
+	DescriptionSHA256 string               `json:"description_sha256,omitempty"`
+	Digest            string               `json:"digest,omitempty"`
+	Errors            int                  `json:"errors"`
+	Warnings          int                  `json:"warnings"`
+	Problems          []plan.ConfigProblem `json:"problems,omitempty"`
+	Graph             *Graph               `json:"graph,omitempty"`
+	Approvals         []string             `json:"approvals,omitempty"`
+	CheckLabel        string               `json:"check"`
 	// Risk counts the nodes by crash behavior and gate, for the summary card.
 	Risk RiskSummary `json:"risk"`
 	// Assertions are the verdicts on the config's assert lines, in order.
@@ -63,11 +125,20 @@ type RiskSummary struct {
 // BuildConfig checks c with plan.InspectConfig and lays out its declared graph, each problem
 // marked on the node, edge or arm it belongs to.
 func BuildConfig(c Config) *ConfigView {
-	r := plan.InspectConfig(c.Data, c.Registry)
+	r := c.inspect()
 	v := &ConfigView{Name: c.Name, Flow: r.Topology.Flow, Typed: r.Typed, Digest: r.Digest, Problems: r.Problems}
+	if r.Typed {
+		v.Source = c.source()
+		if v.Source == SourceDescription {
+			v.DescriptionSHA256 = c.DescriptionSHA256
+		}
+	}
 	v.CheckLabel = "structural check: types and registered blocks are checked when you embed the viewer with your plan.Registry"
 	if r.Typed {
 		v.CheckLabel = "full check against your plan.Registry (Load's checks, with In and Out taken from the entry and terminal nodes)"
+		if v.Source == SourceDescription {
+			v.CheckLabel = DescriptionNote + " Load's checks, by type name, with In and Out taken from the entry and terminal nodes."
+		}
 	}
 	for _, p := range r.Problems {
 		if p.Severity == "error" {
@@ -293,7 +364,7 @@ func CheckStyled(w io.Writer, c Config, st term.Style) bool {
 	ew := safetext.Writer(w) // a name that reached the output unrefused is written out, never drawn
 	defer ew.Close()
 	w = ew
-	r := plan.InspectConfig(c.Data, c.Registry)
+	r := c.inspect()
 	name := st.Dim(c.Name)
 	for _, p := range r.Problems {
 		where := p.Node
@@ -338,6 +409,9 @@ func CheckStyled(w io.Writer, c Config, st term.Style) bool {
 		}
 		fmt.Fprintf(w, "%s%s: %d assertion%s: %s, %s, %s\n", mark, name, len(r.Assertions), plural(len(r.Assertions)),
 			count(hold, "hold", st.OK), count(violated, "violated", st.Fail), count(other, "undecided or invalid", st.Warn))
+	}
+	if r.Typed && c.source() == SourceDescription {
+		fmt.Fprintf(w, "%s: %s\n", name, st.Dim(DescriptionNote+fileSum(c.DescriptionSHA256, " (description file sha256 ", ")")))
 	}
 	return r.Errors() || c.Strict && len(r.Problems) > 0
 }

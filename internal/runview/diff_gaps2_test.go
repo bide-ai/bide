@@ -139,15 +139,27 @@ func TestDiffBlockChangeStructural(t *testing.T) {
 	if got := weakenedOf(t, cfg("b", `, "safety": "readonly"`), cfg("c", `, "safety": "readonly"`)); len(got) != 0 {
 		t.Errorf("read-only node: %q", got)
 	}
-	reg := plan.NewRegistry()
-	pass := func(_ context.Context, o order) (order, error) { return o, nil }
-	for _, err := range []error{reg.RegisterStep("a", pass), reg.RegisterStep("b", pass), reg.RegisterStep("c", pass)} {
-		if err != nil {
-			t.Fatal(err)
+	// With a Registry per version (each holding what its config uses, as Load needs) the gate is seen
+	// and the change is judged by what it shows.
+	mk := func(names ...string) *plan.Registry {
+		reg := plan.NewRegistry()
+		pass := func(_ context.Context, o order) (order, error) { return o, nil }
+		for _, n := range names {
+			if err := reg.RegisterStep(n, pass); err != nil {
+				t.Fatal(err)
+			}
 		}
+		return reg
 	}
-	if v := diffOf(t, cfg("b", ""), cfg("c", ""), reg, reg); !v.Typed || len(v.Weakened) != 0 {
-		t.Errorf("with a Registry: typed %v, weakened %q", v.Typed, v.Weakened)
+	if v := diffOf(t, cfg("b", ""), cfg("c", ""), mk("a", "b"), mk("a", "c")); !v.Typed || len(v.Weakened) != 0 || v.Fallback != "" {
+		t.Errorf("with a Registry per version: typed %v, weakened %q, fallback %q", v.Typed, v.Weakened, v.Fallback)
+	}
+	// One Registry for both holds a block each config does not use, which is an error on each side: a
+	// Registry must never make the comparison less strict than none, so the diff is made structurally
+	// and is not certified.
+	all := mk("a", "b", "c")
+	if v := diffOf(t, cfg("b", ""), cfg("c", ""), all, all); v.Typed || v.Fallback == "" || len(v.Weakened) != 1 {
+		t.Errorf("one Registry for both: typed %v, fallback %q, weakened %q", v.Typed, v.Fallback, v.Weakened)
 	}
 }
 

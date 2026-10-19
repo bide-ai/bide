@@ -269,6 +269,8 @@ has an item. An aborted or cancelled run is listed too, since a halt outlives ei
 | `-strict` | With `-check`: exit 1 on a warning too (`bide check -strict`). |
 | `-diff <old>` | With `-config`: compare it with an earlier version, a file or a git revision; see [Compare two versions of a flow](#compare-two-versions-of-a-flow). With `-check`, print the changes instead of serving the page. |
 | `-fail-on-weaken` | With `-diff -check`: exit 1 if an approval gate was removed or weakened (its need lowered, an approver added without raising the need, `exclude_principal` dropped, or its timeout removed or lengthened), a node became reachable without a gate that every path reached through one before (whatever its safety), a new effect has no gate, a node's `safety` was lowered, a Switch condition changed beside an ungated effect, or an `assert` line was removed, loosened, or kept and no longer holds. |
+| `-blocks <file>` | With `-config`: a description of the program's registered blocks (a program writes one with `json.Marshal` of `plan.Registry.Describe()`), so the check covers block, predicate and merge names, types, safety, the approval gates blocks declare in Go, and the digest without the program. See [Check against a description](#check-against-a-description-of-the-registered-blocks). |
+| `-old-blocks <file>` | With `-diff`: the description for the earlier version (default: the `-blocks` file). |
 | `-stop-policy <file>`, `-stop-root <digest>` | The kill switch's stop policy (the JSON `bide stop -stop-policy` reads), so the [stop banner](kill-switch.md#what-bide-view-shows) and the held-by-stop states check the control run's signatures as an audited deployment does; `-stop-root` names the root policy when the file is a later one. Without them the control run is read as a basic one and the banner says signatures are not verified. Store inputs only. |
 | `-addr <host:port>` | Where to listen: a loopback IP or `localhost`, with a port. Default `127.0.0.1:8484`. Any other host is refused. |
 | `-color <when>` | `auto` (the default), `always` or `never`: whether the text output (the address to open, and `-check`'s lines) is colored. `auto` colors a terminal only, unless `NO_COLOR` is set to any value or `TERM` is `dumb`; see [Color](#color). |
@@ -664,6 +666,55 @@ The screenshot below is `examples/plan/flows/refund-typo.yaml`, whose last edge 
 
 <img src="./img/run-viewer-config-problem-dark.png" alt="bide view -config on a refund flow whose edge names an undeclared node, marked on the edge">
 
+### Check against a description of the registered blocks
+
+Without the program, `bide check` knows block names only from the config, so it cannot check types and
+cannot see a gate a block declares in Go. `bide check -blocks blocks.json flow.yaml` (and `bide view -config
+... -blocks`) takes a description of the program's `plan.Registry` and runs the same checks `Load` makes, by
+type name: unknown blocks, predicates and merges, the type along every edge, join arity, safety, the gates the
+blocks declare, and the digest a run would journal. A program writes the file once:
+
+<!-- docsnip: setup reg *plan.Registry -->
+```go
+b, _ := json.MarshalIndent(reg.Describe(), "", "  ")
+os.WriteFile("blocks.json", b, 0o600)
+```
+
+The result is labelled **checked per description file, not checked against the program** in the text, the page and
+the diff, because a description is a file: it can be stale, or wrong. The check made with the program's own
+Registry (`plan/planview`) is the control; this one makes the same answer available in a pipeline that does not
+build the program. Types are told apart by name, so two distinct types spelled the same are one type
+([known limitations](../KNOWN-LIMITATIONS.md)). A block the description holds and the config does not use is not reported (a
+description is of the whole program, and a flow uses some of it; `Load` would refuse such a block in a program that
+registers only one flow). A description whose program's Registry refused a registration (a duplicate, a gate
+`Validate` refuses) is refused, with the registry's error. The file is read once, must be a regular file of at most
+1 MiB (a named pipe or a device is refused without waiting on it) with no unknown field, and is validated before it
+is used; it may nest at most 32 levels (a description nests five), and an error about its contents is cut to 200 bytes.
+
+With `-diff`, `-blocks` describes the config and `-old-blocks` the earlier version, as the program's blocks were
+then (a block the old config uses must be in the old description). A description is never applied to the other side, and a described side is never compared with one that has none (the described side knows each node's safety and the gates its blocks declare, the other states only what its config states, and that difference would read as a lowering): with one description the comparison is the structural one, labelled with which side was described. Give both to compare what the program declared at each version. A block swapped for one that
+declares no gate is then reported as a weakening, which from the command line alone is only a possible one.
+
+Adding a description never makes `-diff` less strict than leaving it out, unless the description is wrong or stale
+(it is only as good as the file). If a side has errors against the
+description (a block the description lacks, a type that does not fit), the typed comparison has nothing sound to read,
+so the diff is made structurally, as without the description, and is labelled **not certified**: the verdict is never
+good and `-fail-on-weaken` fails, whether or not a weakening was found. Every result says how each side was checked
+(`old config per description file, new config structural`), including when only `-old-blocks` is given.
+
+A verdict that rests on description files says so, and names the files by their SHA-256 (what `sha256sum` prints), the
+earlier one and this one, so a reviewer can tell which files were used. Because the result is only as good as the
+files, **generate both in the same CI job from the two versions of the program, never edit them by hand**: build
+the program at the base revision and at the head, have each write `json.Marshal(reg.Describe())`, and give those two
+files to `bide check`. A description that was written for another version, or edited, makes the verdict wrong, and
+nothing in the file can say so.
+
+```sh
+# in CI, after writing blocks-main.json from the base revision's program and blocks.json from the head's
+bide check flows/refund-v2.yaml -diff main -blocks blocks.json -old-blocks blocks-main.json -check -fail-on-weaken
+sha256sum blocks.json blocks-main.json   # the two lines the verdict names
+```
+
 ### Risk map
 
 Each node is colored by what a crash does to it, the property that decides whether a resume is
@@ -900,7 +951,9 @@ shows no digest. Package `plan/planview` serves the same page (`DiffHandler`) an
 (`CheckDiff`) with a `plan.Registry` for each version, and then shows the digest each version's
 runs journal: a changed digest means a run paused under the old flow will not resume under the new
 one. `plan.Load` refuses a block registered and never used, so each version takes the Registry the
-program had at that version.
+program had at that version. A side that has errors against its Registry (a block it lacks or does not use) has no
+gates the comparison can read, so the diff is then made structurally, as without a Registry, and is reported as not
+certified: `CheckDiff` reports it like a weakening, so `-fail-on-weaken` fails on it.
 
 <!-- docsnip: skip illustrative: old, cfg, oldReg and reg are the program's two config versions and Registries -->
 ```go

@@ -259,6 +259,8 @@ Flags:
     	approver public keys, a JSON object of approver id to key text, e.g. {"ops":"ed25519:ab12..."}, to verify each m-of-n gate's signatures (audit.VerifyApprovals); needs -sth or -evidence
   -approvers string
     	the expected policy's approver ids, comma-separated, in policy order; needs -need
+  -blocks string
+    	with -config: a description of the program's registered blocks (json.Marshal of plan.Registry.Describe), to check blocks, types, safety and gates by name without the program; the result is labelled as per the file, not checked against the program
   -check
     	with -config: serve nothing, print each problem as file:node: message, and exit 1 if any is an error; with -diff, print each change instead
   -color when
@@ -281,6 +283,8 @@ Flags:
     	exported journal (audit.ExportJournal as JSON) to read; repeatable
   -need int
     	the expected policy's k: verify approvals against -need of -approvers instead of the recorded policy; needs -approvers and -approver-keys
+  -old-blocks string
+    	with -diff: the description for the earlier version; without it the earlier version is checked structurally (-blocks is never applied to it)
   -postgres string
     	Postgres journal to read, a pgx DSN such as postgres://user:pass@host:5432/db, read in sessions the server holds read-only (postgres.OpenReadOnly)
   -postgres-env string
@@ -1227,13 +1231,24 @@ Exit status:
 Check plan flow configs, for CI: one file:node: message line per problem.
 
 ```text
-usage: bide check [-strict] <flow.yaml|flow.json>...
-       bide check <flow.yaml|flow.json> -diff <old config|git revision> [-check [-fail-on-weaken]]
+usage: bide check [-strict] [-blocks <description.json>] <flow.yaml|flow.json>...
+       bide check <flow.yaml|flow.json> -diff <old config|git revision> [-blocks <description.json> [-old-blocks <description.json>]] [-check [-fail-on-weaken]]
 
 Checks each plan flow config without running it, and prints one "file:node: message" line per
 problem ("file:from->to: message" for an edge or arm). The check is structural: types and
 registered blocks are checked when a program serves the page with its plan.Registry (package
 plan/planview). It is the check bide view -config shows on the graph.
+
+With -blocks it also checks them, by name, against a description of the program's registered
+blocks (a program writes one with json.Marshal of plan.Registry.Describe): block, predicate and
+merge names, the types along every edge, safety, the approval gates the blocks declare in Go, and the
+digest. The result is labelled as per the file and not checked against the program: a description can
+be stale or wrong, and the check made with the program's own plan.Registry (package plan/planview) is
+the control. A block the description holds and the config does not use is not reported. With -diff,
+-blocks describes the config; with -diff, -old-blocks describes the earlier version, which without it is checked
+structurally (a description is never applied to the other side). Adding a
+description never makes -diff less strict: if a side has errors against it, the diff is made structurally,
+as without it, and is labelled not certified (-fail-on-weaken fails on it).
 
 A config's assert lines are checked too, by reachability on the declared graph:
 
@@ -1266,6 +1281,8 @@ NO_COLOR set to any value, turns color off; -color=always keeps it on.
 
   -addr string
     	with -diff: address to serve the page on, a loopback IP (127.0.0.1 or ::1) or localhost, with a port (default "127.0.0.1:8484")
+  -blocks string
+    	a description of the program's registered blocks (json.Marshal of plan.Registry.Describe): check blocks, types, safety and gates by name; labelled as per the file, not checked against the program
   -check
     	with -diff: serve nothing and print each change, then a summary line
   -color when
@@ -1274,6 +1291,8 @@ NO_COLOR set to any value, turns color off; -color=always keeps it on.
     	compare the one config given with this earlier version: a file, or else a git revision (<rev>:<path>, or <rev> for the config's path at rev)
   -fail-on-weaken
     	with -diff -check: exit 1 if an approval gate was removed or weakened (its need lowered, an approver added without raising the need, exclude_principal dropped, its timeout removed or lengthened, a node newly reachable without a gate or a lowered safety, a Switch condition changed beside an ungated effect, or an assert line removed, loosened, or kept and no longer holding)
+  -old-blocks string
+    	with -diff: the description for the earlier version; without it the earlier version is checked structurally (-blocks is never applied to it)
   -strict
     	exit 1 on a warning too
 

@@ -117,6 +117,7 @@ type flags struct {
 	strict                bool
 	diff                  string
 	failOnWeaken          bool
+	blocks, oldBlocks     string
 	journals              multi
 	topo, digest          string
 	sth, evidence, pubkey string
@@ -147,6 +148,8 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 	fs.BoolVar(&f.strict, "strict", false, "with -check: exit 1 on a warning too")
 	fs.StringVar(&f.diff, "diff", "", "with -config: compare it with this earlier version, a file or else a git revision (<rev>:<path>, or <rev> for the -config path at rev); -check prints the changes instead of serving the page")
 	fs.BoolVar(&f.failOnWeaken, "fail-on-weaken", false, "with -diff -check: exit 1 if an approval gate was removed or weakened")
+	fs.StringVar(&f.blocks, "blocks", "", "with -config: a description of the program's registered blocks (json.Marshal of plan.Registry.Describe), to check blocks, types, safety and gates by name without the program; the result is labelled as per the file, not checked against the program")
+	fs.StringVar(&f.oldBlocks, "old-blocks", "", "with -diff: the description for the earlier version; without it the earlier version is checked structurally (-blocks is never applied to it)")
 	run := fs.String("run", "", "run to open (default: the run list)")
 	fs.StringVar(&f.topo, "topology", "", "declared flow topology, JSON of flow.Topology(), to draw a flow run against instead of the topology the run journaled (flow:topology); for a run journaled before that record existed, or to check a run against another flow")
 	fs.StringVar(&f.digest, "digest", "", "flow.Digest() of the -topology flow, compared with the digest the run journaled (default: computed from -topology when it carries the digest's inputs)")
@@ -215,6 +218,12 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 	if f.diff != "" && f.config == "" {
 		return usage("-diff needs -config")
 	}
+	if f.blocks != "" && f.config == "" {
+		return usage("-blocks needs -config")
+	}
+	if f.oldBlocks != "" && f.diff == "" {
+		return usage("-old-blocks needs -diff")
+	}
 	if f.failOnWeaken && (f.diff == "" || !f.check) {
 		return usage("-fail-on-weaken needs -diff and -check")
 	}
@@ -234,12 +243,28 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 			fmt.Fprintf(stderr, "%s%s: %v\n", es.ErrorPrefix(), f.config, err)
 			return 1
 		}
+		var desc, oldDesc *plan.RegistryDescription
+		var descSum, oldSum string
+		if f.blocks != "" {
+			if desc, descSum, err = ReadDescriptionFile(f.blocks); err != nil {
+				fmt.Fprintf(stderr, "%s%v\n", es.ErrorPrefix(), err)
+				return 1
+			}
+			c.Description, c.AllowUnusedBlocks, c.DescriptionSHA256 = desc, true, descSum
+		}
+		if f.oldBlocks != "" {
+			if oldDesc, oldSum, err = ReadDescriptionFile(f.oldBlocks); err != nil {
+				fmt.Fprintf(stderr, "%s%v\n", es.ErrorPrefix(), err)
+				return 1
+			}
+		}
 		if f.diff != "" {
 			old, err := readOld(f.diff, f.config, stores.YAML)
 			if err != nil {
 				fmt.Fprintln(stderr, es.ErrorPrefix()+"bide view:", err)
 				return 1
 			}
+			old.Description, old.AllowUnusedBlocks, old.DescriptionSHA256 = oldDesc, oldDesc != nil, oldSum
 			d := Diff{Old: old, New: c}
 			if _, err := BuildDiff(d); err != nil {
 				fmt.Fprintln(stderr, es.ErrorPrefix()+"bide view:", err)

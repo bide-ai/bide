@@ -97,11 +97,28 @@ func (r ConfigReport) Errors() bool {
 // "approval >= 1"); without a Registry only the gates the config declares count. A violated,
 // undecided or ill-formed assertion is an error, a violated one with a shortest counterexample
 // path.
-func InspectConfig(data []byte, reg *Registry) (r ConfigReport) { return inspectConfig(data, reg) }
+func InspectConfig(data []byte, reg *Registry, opts ...InspectOption) (r ConfigReport) {
+	return inspectConfig(data, reg, opts)
+}
+
+// InspectOption changes what InspectConfig and InspectConfigDescribed check.
+type InspectOption func(*inspectOptions)
+
+type inspectOptions struct{ allowUnused bool }
+
+// AllowUnusedBlocks makes a registered block the config does not use no problem. Load and Validate
+// refuse it (a registration nothing uses is drift), and so does a check without this option; a tool
+// that lists the blocks a config could use, as the flow editor's palette does, passes it so that the
+// blocks it has not placed yet do not stop the check from reading the ones it has.
+func AllowUnusedBlocks() InspectOption { return func(o *inspectOptions) { o.allowUnused = true } }
 
 // inspectConfig is InspectConfig, and what InspectConfigDescribed runs on a Registry built from a
 // description: one implementation of the typed checks, whichever side the Registry came from.
-func inspectConfig(data []byte, reg *Registry) (r ConfigReport) {
+func inspectConfig(data []byte, reg *Registry, opts []InspectOption) (r ConfigReport) {
+	var o inspectOptions
+	for _, f := range opts {
+		f(&o)
+	}
 	r = ConfigReport{Typed: reg != nil, Approvals: map[string]agent.ApprovalPolicy{}}
 	var cfg config
 	if err := parseConfig(data, &cfg); err != nil {
@@ -126,7 +143,7 @@ func inspectConfig(data []byte, reg *Registry) (r ConfigReport) {
 	if reg == nil || r.Errors() {
 		return r
 	}
-	core, err := assemble(&cfg, reg)
+	core, err := assemble(&cfg, reg, o.allowUnused)
 	if err != nil {
 		r.attribute(&cfg, err)
 		return r

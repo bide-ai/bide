@@ -2,6 +2,7 @@
 <div class="crumb"><h1 class="rid">{{.Flow}}</h1> <span class="pill kind">flow diff</span></div>
 <p class="input"><code>{{.OldName}}</code> → <code>{{.Name}}</code></p>
 {{template "verdict" .Verdict}}
+{{with .BasisLine}}<p class="small warn">{{.}}</p>{{end}}
 {{if .Weakened}}<details class="why"><summary>what weakened means</summary><p class="small">A set of approvals the new gate accepts would not have passed the old one (a removed gate, a lower need, or an approver added without raising the need).</p></details>{{end}}
 
 <section class="cards">
