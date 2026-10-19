@@ -461,6 +461,8 @@ than ten minutes.
 
 ## Audit and proofs
 
+**JSON documents nest at most 128 levels, and some readers have no size cap.** The strict JSON reader behind tool-call arguments, plan configs, theme files and audit exports (`audit.UnmarshalStrict`) refuses a document nested more than 128 levels, with an error naming the offset. Nothing bide writes nests more than a handful of levels, so this only matters if you feed bide documents of your own that deep. The reader's time and memory otherwise grow linearly with the document, and `plan.LoadReader`, the audit export readers and tool-call arguments do not cap its size: put a size limit on the reader you pass in (for example `io.LimitReader`) if the source is not trusted.
+
 **Tamper evidence needs an anchor outside your database.** Hash chains, Merkle roots and signed tree
 heads always detect accidental corruption. They detect deliberate tampering only when the root is
 also committed somewhere an attacker cannot rewrite: signed with a key the application cannot use
