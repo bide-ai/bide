@@ -3,6 +3,7 @@ package runview
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"net/http/httptest"
 	"os"
@@ -12,7 +13,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/plan"
 )
 
 // The viewer's pages in real Chrome. Run only where BIDE_VIEW_BROWSER=1 (the Viewer (Chrome) job
@@ -158,7 +161,39 @@ type statOut struct {
 	Paints  *int     `json:"paints"` // pixels the label's ::before paints, for a judged stat
 }
 
+type controlOut struct {
+	Tag         string     `json:"tag"`
+	ID          string     `json:"id"`
+	Class       string     `json:"cls"`
+	BorderWidth float64    `json:"borderWidth"`
+	BorderStyle string     `json:"borderStyle"`
+	Border      [3]float64 `json:"border"`
+	BorderAlpha float64    `json:"borderAlpha"`
+	Fill        [3]float64 `json:"fill"`
+	FillAlpha   float64    `json:"fillAlpha"`
+	ParentBG    [3]float64 `json:"parentBG"`
+	ParentClass string     `json:"parentClass"`
+}
+
+// edgeShown: a control can be told from what it sits on: its border (a line of a pixel or more, in
+// a style that draws, opaque enough) or its fill reaches 3:1 against the surface under it
+// (WCAG 1.4.11).
+func (c controlOut) edgeShown() bool {
+	return c.BorderWidth >= 1 && c.BorderStyle != "none" && c.BorderStyle != "hidden" && c.BorderAlpha >= 0.5 && contrastOf(c.Border, c.ParentBG) >= 3 ||
+		c.FillAlpha >= 0.5 && contrastOf(c.Fill, c.ParentBG) >= 3
+}
+
 type pageOut struct {
+	AttemptedBox *struct {
+		Dash  string  `json:"dash"`
+		Width float64 `json:"width"`
+	} `json:"attemptedBox"`
+	Controls []controlOut `json:"controls"`
+	Body     struct {
+		BG      string `json:"bg"`
+		FG      string `json:"fg"`
+		BGToken string `json:"bgToken"`
+	} `json:"body"`
 	Edges []edgeOut `json:"edges"`
 	Nodes []nodeOut `json:"nodes"`
 	Stats []statOut `json:"stats"`
@@ -179,10 +214,16 @@ type pageOut struct {
 }
 
 type chromeOut struct {
-	OK      bool                          `json:"ok"`
-	Error   string                        `json:"error"`
-	Themes  map[string]map[string]pageOut `json:"themes"`
-	Console []string                      `json:"console"`
+	OK     bool                          `json:"ok"`
+	Error  string                        `json:"error"`
+	Themes map[string]map[string]pageOut `json:"themes"`
+	Combos map[string]struct {
+		BG      string `json:"bg"`
+		FG      string `json:"fg"`
+		BGToken string `json:"bgToken"`
+		Current string `json:"current"`
+	} `json:"combos"`
+	Console []string `json:"console"`
 }
 
 // everyStateFixtures serves a page for each state the audit names: a config with a counterexample,
@@ -212,6 +253,31 @@ func everyStateFixtures(t *testing.T) map[string]string {
 	src := Options{Source: JournalSource{J: j}}
 	serve("run", "/run?id=f1", src)
 	serve("runs", "/", src)
+	// A run paused at an approval gate (waiting) and one that crashed mid-step (halted).
+	policy := agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "finance", "risk"}}
+	gb := plan.New[int, string]("refunds").WithApproverVerifiers(approverKeys(nil))
+	check := gb.Step("check", func(_ context.Context, n int) (int, error) { return n, nil }, plan.ReadOnly())
+	pay := gb.Step("refund", func(_ context.Context, n int) (string, error) { return "refunded", nil }, plan.Approval(&policy))
+	gb.Edge(check, pay)
+	gf, err := gb.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gj := agenttest.MemJournal()
+	if _, err := gf.Run(context.Background(), gj, "g1", 120); err == nil {
+		t.Fatal("the gated run did not pause")
+	}
+	serve("runWaiting", "/run?id=g1", Options{Source: JournalSource{J: gj}})
+	serve("runDefault", "/run?id=f1", Options{Source: JournalSource{J: j}, DefaultTheme: "dark"})
+	cs := &crashStore{Store: agent.NewMemStore(), lose: "node:charge", armed: true}
+	hf := refundFlow(t, &charges)
+	if _, err := hf.Run(context.Background(), agenttest.MustJournal(cs), "h1", order{ID: "o-1", Amount: 250}); !errors.Is(err, errCrash) {
+		t.Fatalf("the crashing run = %v", err)
+	}
+	cs.armed = false
+	hj := agenttest.MustJournal(cs)
+	_, _ = hf.Run(context.Background(), hj, "h1", order{ID: "o-1", Amount: 250})
+	serve("runHalted", "/run?id=h1", Options{Source: JournalSource{J: hj}, Flows: map[string]*Flow{"refund": {Topology: hf.Topology(), Digest: hf.Digest(), Conform: hf.Conform}}})
 	return urls
 }
 
@@ -255,13 +321,17 @@ func TestColourOnlyInChrome(t *testing.T) {
 	for _, c := range out.Console {
 		t.Errorf("console: %s", c)
 	}
-	for _, theme := range []string{"light", "dark", "high-contrast"} {
+	checkCombos(t, out)
+	for _, theme := range []string{"light", "dark", "high-contrast", "prefers-contrast", "forced-colors"} {
 		pages, ok := out.Themes[theme]
 		if !ok {
 			t.Errorf("no measurements under the %s theme", theme)
 			continue
 		}
-		t.Run(theme, func(t *testing.T) { checkColourOnly(t, pages) })
+		t.Run(theme, func(t *testing.T) {
+			checkColourOnly(t, pages)
+			checkMode(t, theme, pages)
+		})
 	}
 }
 
@@ -474,4 +544,126 @@ func dashDrawn(v string) bool {
 		}
 	}
 	return on/period >= 0.1
+}
+
+// checkMode judges what is particular to one mode: that a reader's request for more contrast gets the
+// high-contrast theme's colours with no theme chosen in the page, that the system's forced colors
+// replace the page's, and that the run states, one color under forced colors, differ in shape.
+func checkMode(t *testing.T, mode string, pages map[string]pageOut) {
+	t.Helper()
+	// A6: every control's edge is 3:1 against what it sits on, on the pages that have controls (the
+	// run list's filters, the run page's header buttons and copy buttons, the graph's tools).
+	measured := 0
+	for _, page := range []string{"runs", "run", "config", "diff"} {
+		for _, c := range pages[page].Controls {
+			measured++
+			if !c.edgeShown() {
+				t.Errorf("A6: the %s page's %s#%s.%s has no 3:1 edge (border %vpx %s %v on %v, fill %v alpha %v)", page, c.Tag, c.ID, c.Class, c.BorderWidth, c.BorderStyle, c.Border, c.ParentBG, c.Fill, c.FillAlpha)
+			}
+		}
+	}
+	// The controls the fix is about are among those measured, so a rule that moves one back to the
+	// quiet border cannot hide in an unmeasured corner.
+	seen := map[string]bool{}
+	for _, page := range []string{"runs", "run", "config", "diff"} {
+		for _, c := range pages[page].Controls {
+			for _, k := range []string{"hbtn", "chip", "copy"} {
+				if strings.Contains(c.Class, k) {
+					seen[k] = true
+				}
+			}
+			if c.Tag == "input" || c.Tag == "select" {
+				seen["field"] = true
+			}
+			if c.Tag == "button" && c.ParentClass == "gtools" {
+				seen["gtools"] = true
+			}
+		}
+	}
+	for _, k := range []string{"hbtn", "chip", "copy", "field", "gtools"} {
+		if !seen[k] {
+			t.Errorf("A6: no %s control was measured", k)
+		}
+	}
+	if measured < 6 {
+		t.Errorf("A6: only %d controls were measured; the pages' controls moved or are hidden", measured)
+	}
+	body := pages["run"].Body
+	// The root's --bg custom property: a value Chrome does not force, so it shows which block won.
+	wantToken := map[string]string{"light": "#f6f6f2", "dark": "#121214", "high-contrast": "#ffffff", "prefers-contrast": "#ffffff", "forced-colors": "Canvas"}[mode]
+	if body.BGToken != wantToken {
+		t.Errorf("%s: the root's --bg is %q, want %q (the wrong theme block won)", mode, body.BGToken, wantToken)
+	}
+	switch mode {
+	case "light", "dark", "high-contrast", "prefers-contrast":
+		// light and high-contrast both have a white ground; their text differs: #1a1a17 and black.
+		wantFG := map[string]string{"light": "rgb(26, 26, 23)", "dark": "rgb(236, 236, 231)", "high-contrast": "rgb(0, 0, 0)", "prefers-contrast": "rgb(0, 0, 0)"}[mode]
+		if body.FG != wantFG {
+			t.Errorf("%s: the page's text is %s, want %s", mode, body.FG, wantFG)
+		}
+	case "forced-colors":
+		// The theme chosen in the page was dark; forced colors win: the ground is the system's Canvas
+		// (white in the emulation), not dark's #121214.
+		if body.BG == "rgb(18, 18, 20)" || body.FG == "rgb(236, 236, 231)" {
+			t.Errorf("forced colors: the page is still drawn in the dark theme (%s on %s)", body.FG, body.BG)
+		}
+	}
+	// The run states, by the shape of the node's box: one page each has a done node and a node not
+	// reached (the completed run), a waiting one (the gated run) and a halted one (the crashed run).
+	if mode != "forced-colors" {
+		return
+	}
+	states := map[string]line{}
+	for _, page := range []string{"run", "runWaiting", "runHalted"} {
+		for _, n := range pages[page].Nodes {
+			for _, k := range []string{"done", "attempted", "waiting", "halted", "not-reached"} {
+				if slices.Contains(n.Classes, k) {
+					states[k] = line{n.Dash, n.Width}
+				}
+			}
+		}
+	}
+	// An attempted step needs a journal with a retried attempt in progress, which no fixture here
+	// builds; the script draws one on the run page by giving a node the state's class, and the
+	// browser computes it with the same stylesheet.
+	if a := pages["run"].AttemptedBox; a != nil {
+		states["attempted"] = line{a.Dash, a.Width}
+	}
+	for _, k := range []string{"done", "attempted", "waiting", "halted", "not-reached"} {
+		if _, ok := states[k]; !ok {
+			t.Errorf("forced colors: no %s node drawn on the run pages", k)
+		}
+	}
+	var kinds []string
+	for k := range states {
+		kinds = append(kinds, k)
+	}
+	slices.Sort(kinds)
+	for i, a := range kinds {
+		for _, b := range kinds[i+1:] {
+			if !distinct(states[a], states[b]) {
+				t.Errorf("forced colors: the %s and %s boxes are one line to the eye (computed %v and %v)", a, b, states[a], states[b])
+			}
+		}
+	}
+}
+
+// checkCombos: a request beside a choice. The reader's own theme beats a request for more contrast;
+// a request beats a host's default; the default alone is in force.
+func checkCombos(t *testing.T, out chromeOut) {
+	t.Helper()
+	for key, want := range map[string]struct{ token, fg, current string }{
+		"prefers-contrast+stored":  {"#121214", "rgb(236, 236, 231)", "dark"},
+		"prefers-contrast+default": {"#ffffff", "rgb(0, 0, 0)", "high-contrast"},
+		"default":                  {"#121214", "rgb(236, 236, 231)", "dark"},
+	} {
+		got, ok := out.Combos[key]
+		if !ok {
+			t.Errorf("no measurement for %s", key)
+			continue
+		}
+		if got.BGToken != want.token || got.FG != want.fg || got.Current != want.current {
+			t.Errorf("%s: --bg %q, text %s, current theme %q; want %q, %s, %q", key, got.BGToken, got.FG, got.Current, want.token, want.fg, want.current)
+		}
+	}
 }

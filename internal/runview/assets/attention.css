@@ -3,7 +3,7 @@
 .attn-halt, .attn-aborted, .attn-recovery { border-left-color: var(--bad); }
 .attn-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; }
 .attn-kind { white-space: nowrap; }
-.kind-approval { background: transparent; color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.kind-approval { background: transparent; color: var(--info); box-shadow: inset 0 0 0 1px var(--info); }
 .kind-halt, .kind-aborted, .kind-recovery { background: var(--bad-bg); color: var(--bad); border-color: transparent; }
 .attn-run { font: 14px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
 .attn-tool { color: var(--muted); font-size: 13.5px; }

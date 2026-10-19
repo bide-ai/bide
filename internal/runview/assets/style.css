@@ -16,7 +16,7 @@ main { max-width: 1120px; margin: 0 auto; padding: var(--s4) var(--s5) var(--s7)
 .brand { font-weight: 700; color: var(--fg); text-decoration: none; letter-spacing: .01em; }
 .ro { font-size: var(--t-xs); color: var(--muted); border: 1px solid var(--line); border-radius: 10px; padding: 0 var(--s2); }
 a { color: var(--accent); }
-a:focus-visible, button:focus-visible, summary:focus-visible, .node:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+a:focus-visible, button:focus-visible, summary:focus-visible, .node:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 h1 { font-size: var(--t-xl); margin: 0; line-height: 1.2; overflow-wrap: anywhere; }
 h2 { font-size: var(--t-lg); margin: var(--s6) 0 var(--s3); }
 h2 .count { font-size: var(--t-sm); font-weight: 400; color: var(--muted); margin-left: var(--s2); }
@@ -35,7 +35,7 @@ pre { white-space: pre-wrap; word-break: break-word; margin: var(--s1) 0; }
 .v-good { --vc: var(--good); --vbg: var(--good-bg); }
 .v-bad { --vc: var(--bad); --vbg: var(--bad-bg); }
 .v-warn { --vc: var(--warn); --vbg: var(--warn-bg); }
-.v-wait { --vc: var(--accent); --vbg: var(--accent-bg); }
+.v-wait { --vc: var(--info); --vbg: var(--info-bg); }
 .v-info { --vc: var(--muted); --vbg: var(--card-2); }
 .vicon { color: var(--vc); font-size: 48px; line-height: 0; flex: none; }
 .vicon .ic { stroke-width: 1.4; }

@@ -72,11 +72,18 @@ const helpers = () => {
       color: (rgb(s.color) || [0, 0, 0]).slice(0, 3), bg: bgOf(el),
     };
   };
-  window.__h = { alpha, chainOpacity, chainShown, shapeVis, textVis };
+  // The controls a page draws: what marks each one's edge, against what it sits on.
+  const controls = () => [...document.querySelectorAll('input:not([type=hidden]), select, textarea, button, a.chip')]
+    .filter((e) => chainShown(e) && e.getClientRects().length > 0 && e.getBoundingClientRect().width > 0)
+    .map((e) => {
+      const s = getComputedStyle(e), bc = rgb(s.borderTopColor) || [0, 0, 0, 0], fc = rgb(s.backgroundColor) || [0, 0, 0, 0];
+      return { tag: e.tagName.toLowerCase(), id: e.id, cls: e.className, borderWidth: parseFloat(s.borderTopWidth), borderStyle: s.borderTopStyle, border: bc.slice(0, 3), borderAlpha: bc[3], fill: fc.slice(0, 3), fillAlpha: fc[3], parentBG: bgOf(e.parentElement), parentClass: e.parentElement ? e.parentElement.className : '' };
+    });
+  window.__h = { alpha, chainOpacity, chainShown, shapeVis, textVis, controls };
 };
 
 try {
-  let theme = 'light';
+  let mode = { theme: 'light' };
   const open = async (name) => {
     const page = await browser.newPage();
     page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') out.console.push(name + ': ' + m.text()); });
@@ -84,7 +91,9 @@ try {
     await page.setViewport({ width: 1400, height: 1000 });
     await page.goto(pages[name], { waitUntil: 'networkidle0', timeout: 30000 });
     await page.evaluate(helpers);
-    await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme);
+    if (mode.features) await page.emulateMediaFeatures(mode.features);
+    await page.evaluate((t) => { if (t) document.documentElement.setAttribute('data-theme', t); else document.documentElement.removeAttribute('data-theme'); }, mode.theme);
+    await page.evaluate(() => { window.__bg = getComputedStyle(document.body).backgroundColor; window.__fg = getComputedStyle(document.body).color; window.__bgToken = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim(); });
     return page;
   };
 
@@ -179,12 +188,33 @@ try {
     return out;
   };
 
-  for (const th of ['light', 'dark', 'high-contrast']) {
-    theme = th;
+  // The three shipped themes, then the system asking for more contrast (no theme chosen in the page)
+  // and the system forcing colors (a theme chosen in the page, which the system overrides).
+  const modes = {
+    'light': { theme: 'light' }, 'dark': { theme: 'dark' }, 'high-contrast': { theme: 'high-contrast' },
+    'prefers-contrast': { theme: null, features: [{ name: 'prefers-contrast', value: 'more' }] },
+    'forced-colors': { theme: 'dark', features: [{ name: 'forced-colors', value: 'active' }] },
+  };
+  for (const th of Object.keys(modes)) {
+    mode = modes[th];
     const P = (out.themes[th] = {});
-    for (const name of ['config', 'configHeld', 'diff', 'run']) {
+    for (const name of ['config', 'configHeld', 'diff', 'run', 'runWaiting', 'runHalted']) {
       const page = await open(name);
       P[name] = name === 'configHeld' ? {} : await graph(page);
+      if (name === 'run') {
+        // A node in the state class no fixture draws (attempted), computed by the same stylesheet.
+        P[name].attemptedBox = await page.evaluate(() => {
+          const n = document.querySelector('svg.graph g.node').cloneNode(true);
+          n.setAttribute('class', 'node attempted');
+          document.querySelector('svg.graph').appendChild(n);
+          const s = getComputedStyle(n.querySelector('.box'));
+          const r = { dash: s.strokeDasharray, width: parseFloat(s.strokeWidth) };
+          n.remove();
+          return r;
+        });
+      }
+      P[name].body = await page.evaluate(() => ({ bg: window.__bg, fg: window.__fg, bgToken: window.__bgToken }));
+      P[name].controls = await page.evaluate(() => { document.querySelectorAll('details').forEach((d) => { d.open = true; }); return window.__h.controls(); });
       P[name].stats = await stats(page);
       if (name === 'run') {
         // New timeline rows: the live script's marking, run on this page's own rows.
@@ -212,6 +242,7 @@ try {
       const paintsRuns = await painter(page);
       const td = await page.$('table.runlist tbody tr.cur td:first-child');
       const markerPaints = td ? await paintsRuns(td, true) : 0;
+      const controlsOfRuns = await page.evaluate(() => window.__h.controls());
       P.runs = await page.evaluate(() => {
         const r = document.querySelector('table.runlist tbody tr.cur');
         if (!r) return { cur: false };
@@ -219,9 +250,24 @@ try {
         return { cur: true, ariaCurrent: r.getAttribute('aria-current'), glyph: window.__h.textVis(td, '::before'), others: document.querySelectorAll('table.runlist tbody tr[aria-current]').length };
       });
       P.runs.paints = markerPaints;
+      P.runs.controls = controlsOfRuns;
       await page.close();
     }
 
+  }
+  // A request and a choice: more contrast beside a theme stored by the reader (their choice wins) and
+  // beside a host's default (the request wins), and the host's default alone.
+  const combos = {
+    'prefers-contrast+stored': { page: 'run', theme: 'dark', features: [{ name: 'prefers-contrast', value: 'more' }] },
+    'prefers-contrast+default': { page: 'runDefault', theme: null, features: [{ name: 'prefers-contrast', value: 'more' }] },
+    'default': { page: 'runDefault', theme: null },
+  };
+  out.combos = {};
+  for (const [key, c] of Object.entries(combos)) {
+    mode = c;
+    const page = await open(c.page);
+    out.combos[key] = await page.evaluate(() => ({ bg: window.__bg, fg: window.__fg, bgToken: window.__bgToken, current: window.bideTheme.current() }));
+    await page.close();
   }
   out.ok = true;
 } catch (e) {

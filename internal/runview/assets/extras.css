@@ -1,7 +1,7 @@
 /* the header's tools, the approver cards, the proof path, the timeline filter, the shortcut help,
    empty and loading states, and the share button */
 .grow { flex: 1; }
-.hbtn { display: none; align-items: center; justify-content: center; min-width: 32px; height: 32px; padding: 0 var(--s2); border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--card); color: var(--fg); cursor: pointer; font: 600 var(--t-md) var(--font); }
+.hbtn { display: none; align-items: center; justify-content: center; min-width: 32px; height: 32px; padding: 0 var(--s2); border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--card); color: var(--fg); cursor: pointer; font: 600 var(--t-md) var(--font); }
 .has-js .hbtn { display: inline-flex; }
 .hbtn:hover { border-color: var(--accent); }
 .hbtn .ic { font-size: 17px; }
@@ -41,7 +41,7 @@ svg.merkle .edge.taken { animation: none; }
 
 .tfilter { display: none; align-items: center; gap: var(--s2); margin: 0 0 var(--s3); font-size: var(--t-sm); color: var(--muted); }
 .has-js .tfilter { display: flex; }
-.tfilter input { font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 5px var(--s2); width: 280px; max-width: 60vw; }
+.tfilter input { font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--line-strong); border-radius: var(--r-sm); padding: 5px var(--s2); width: 280px; max-width: 60vw; }
 .ev[hidden] { display: none; }
 .ev.cur { box-shadow: inset 0 0 0 2px var(--accent); }
 .empty { text-align: center; padding: var(--s6) var(--s4); border: 1px dashed var(--line); border-radius: var(--r-md); color: var(--muted); }

@@ -23,7 +23,7 @@
 .pwrap { position: relative; margin-top: var(--s1); }
 pre.json { background: var(--card-2); border: 1px solid var(--line); border-radius: var(--r-sm); padding: var(--s3); margin: 0; max-height: 26em; overflow: auto; color: var(--fg); tab-size: 2; }
 .jk { color: var(--j-key); } .jv { color: var(--j-str); } .jn { color: var(--j-num); } .jb { color: var(--j-bool); font-weight: 600; } .jz { color: var(--j-null); font-style: italic; } .jp { color: var(--j-punct); }
-.copy { display: none; position: absolute; top: var(--s2); right: var(--s2); align-items: center; gap: 4px; font: 600 var(--t-xs) var(--font); padding: 3px var(--s2); border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; }
+.copy { display: none; position: absolute; top: var(--s2); right: var(--s2); align-items: center; gap: 4px; font: 600 var(--t-xs) var(--font); padding: 3px var(--s2); border-radius: var(--r-sm); border: 1px solid var(--line-strong); background: var(--card); color: var(--fg); cursor: pointer; }
 .has-js .copy { display: inline-flex; }
 .copy:hover { border-color: var(--accent); }
 .copy.done { border-color: var(--good); color: var(--good); }

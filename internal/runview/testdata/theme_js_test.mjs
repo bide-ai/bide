@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 
 const src = readFileSync(new URL("../assets/theme.js", import.meta.url), "utf8");
 
-function page({ themes, def, stored, system = "light", blockedStorage = false, attr = null, noStatus = false }) {
+function page({ themes, def, stored, system = "light", blockedStorage = false, attr = null, noStatus = false, contrast = false, forced = false }) {
   const attrs = new Map(attr ? [["data-theme", attr]] : []);
   const store = new Map(stored ? [["bide-theme", stored]] : []);
   const status = { textContent: "" };
@@ -16,7 +16,7 @@ function page({ themes, def, stored, system = "light", blockedStorage = false, a
   };
   const props = { "--bide-themes": themes === undefined ? "" : `"${themes}"`, "--bide-default": def ? `"${def}"` : "" };
   const win = {
-    matchMedia: (q) => ({ matches: q.includes("dark") && system === "dark" }),
+    matchMedia: (q) => ({ matches: (q.includes("color-scheme: dark") && system === "dark") || (q.includes("prefers-contrast: more") && contrast) || (q.includes("forced-colors: active") && forced) }),
   };
   const ctx = {
     document: { documentElement: root, getElementById: (id) => (id === "theme-status" && !noStatus ? status : null) },
@@ -80,5 +80,18 @@ assert.equal(p.status.textContent, "Theme: dark");
 p.bide.toggle();
 assert.equal(p.status.textContent, "Theme: high-contrast");
 assert.equal(page({ themes: all, noStatus: true }).bide.toggle(), "dark");
+
+// A reader's request for more contrast is the high-contrast theme, over the system's dark and over
+// a host's default, but not over a choice made in the page, and only where the page has the theme.
+assert.equal(page({ themes: all, contrast: true }).bide.current(), "high-contrast");
+assert.equal(page({ themes: all, contrast: true, system: "dark" }).bide.current(), "high-contrast");
+assert.equal(page({ themes: all, contrast: true, def: "dark" }).bide.current(), "high-contrast");
+assert.equal(page({ themes: all, contrast: true, attr: "dark" }).bide.current(), "dark");
+assert.equal(page({ themes: "light dark", contrast: true }).bide.current(), "light");
+assert.equal(page({ themes: all, contrast: true }).bide.next(), "acme-night");
+
+// Forced colors: the page says so, and the toggle's label can tell the reader.
+assert.equal(page({ themes: all, forced: true }).bide.forced(), true);
+assert.equal(page({ themes: all }).bide.forced(), false);
 
 console.log("theme.js ok");

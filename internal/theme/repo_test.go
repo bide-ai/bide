@@ -34,6 +34,7 @@ var (
 	assignRE = regexp.MustCompile(`(?i)(?:\.style(?:\.[a-z]+|\[["'][a-z-]+["']\])\s*=\s*|setProperty\(\s*["'][a-z-]+["']\s*,\s*|setAttribute\(\s*["'](?:fill|stroke|style|color|stop-color|flood-color)["']\s*,\s*|\b(?:fillStyle|strokeStyle|\w*Color)\s*=\s*)["'` + "`" + `]([^"'` + "`" + `]*)["'` + "`" + `]`)
 	idleRE   = regexp.MustCompile(`(?i)var\(\s*--idle\s*[,)]`)
 	importRE = regexp.MustCompile(`(?i)@import\b|\burl\((?:\s*["']?)(?:[^#"'\s)]|\s*$)`)
+	mixRE    = regexp.MustCompile(`(?i)\bcolor-mix\(`)
 	stringRE = regexp.MustCompile(`"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'`)
 )
 
@@ -137,6 +138,11 @@ func scanCSSForms(css string) []string {
 	if m := importRE.FindString(css); m != "" {
 		found = append(found, m)
 	}
+	// A mix of two tokens is a colour no theme checks (the contrast of text on it, say): a page
+	// uses a declared tint instead.
+	if m := mixRE.FindString(css); m != "" {
+		found = append(found, m+" (a mix of colors no theme checks; use a declared token)")
+	}
 	var stack []bool // true: an at-rule block; false: a style rule
 	start := 0
 	for i, c := range css {
@@ -215,7 +221,7 @@ func TestPagesUseTokens(t *testing.T) {
 					}
 				}
 				for _, f := range scanCSSForms(string(src)) {
-					t.Errorf("%s: %s: a page's CSS has no nested rules, @import or url()", rel, f)
+					t.Errorf("%s: %s: a page's CSS has no nested rules, @import, url() or color-mix()", rel, f)
 				}
 				for _, f := range scanIdleCSS(string(src)) {
 					t.Errorf("%s: %s: --idle is for strokes, borders and glyphs, not text or aliases", rel, f)
@@ -352,6 +358,7 @@ func TestScanCSSForms(t *testing.T) {
 		{"a nested rule first", `.d { .e { margin: 0 } color: var(--fg); }`, 1},
 		{"a media rule", `@media (max-width: 1px) { .a { margin: 0 } .b { margin: 1px } }`, 0},
 		{"keyframes", `@keyframes f { from { opacity: 0 } to { opacity: 1 } }`, 0},
+		{"a color-mix", `.a { background: color-mix(in srgb, var(--accent) 18%, var(--card)); }`, 1},
 		{"a plain sheet", `.a { margin: 0 } .b::before { content: "}"; }`, 0},
 		{"in a comment", `/* @import "x"; .a { .b { } } */ .c { margin: 0 }`, 0},
 	} {

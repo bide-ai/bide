@@ -436,6 +436,8 @@ Removing a node leaves any `assert` line that names it (the check reports it as 
 because removing an assertion is itself a weakening. A node that is an input of a join cannot be removed
 in the editor yet; edit the source.
 
+**Forced colours and more contrast are tested in Chrome's emulation, not on a real contrast theme.** The viewer's colour-only and contrast checks run in real Chrome under light, dark, high-contrast, `prefers-contrast: more` and `forced-colors: active`; they are not Windows High Contrast on Windows, macOS Increase contrast, or a screen reader. A manual pass with those is still owed (the editor and the approve page are not yet themed; see the [themes guide](guides/themes.md)).
+
 **The editor's accessibility has automated and keyboard tests and no manual screen-reader pass yet.** The
 keyboard-only run and axe-core in Chrome (light and dark, five states) pass in CI; they are not a screen
 reader. To check by hand with VoiceOver, NVDA or Orca: the outline reads as a list of buttons named by

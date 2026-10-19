@@ -1,14 +1,14 @@
 /* The flow diff page (bide check -diff): added green, removed a dashed red ghost, changed amber. The
    edge and arrowhead styles are graph.css's. */
 .node.added .box { fill: var(--good-bg); stroke: var(--good); stroke-dasharray: none; stroke-width: 2.8; }
-.node.added .disc { fill: var(--good); } .node.added .nicon { color: var(--card); }
+.node.added .disc { fill: var(--good); } .node.added .nicon { color: var(--on-sem); }
 .node.removed .box { fill: none; stroke: var(--bad); stroke-dasharray: 7 5; stroke-width: 2.2; }
 .node.removed .nlabel { fill: var(--bad); text-decoration: line-through; }
 .node.removed .nkind { fill: var(--bad); }
-.node.removed .disc { fill: var(--bad); } .node.removed .nicon { color: var(--card); }
+.node.removed .disc { fill: var(--bad); } .node.removed .nicon { color: var(--on-sem); }
 .node.changed .box { fill: var(--warn-bg); stroke: var(--warn); stroke-dasharray: none; stroke-width: 2.8; }
-.node.changed .disc { fill: var(--warn); } .node.changed .nicon { color: var(--card); }
-.node.unchanged .box { fill: var(--card); stroke: var(--muted); stroke-dasharray: none; stroke-width: 1.4; }
+.node.changed .disc { fill: var(--warn); } .node.changed .nicon { color: var(--on-sem); }
+.node.unchanged .box { fill: var(--node-fill); stroke: var(--muted); stroke-dasharray: none; stroke-width: 1.4; }
 .nnote { fill: var(--warn); font-size: 12.5px; font-weight: 600; }
 .dadd { color: var(--good); font-weight: 650; } .drem { color: var(--bad); font-weight: 650; } .dchg { color: var(--warn); font-weight: 650; }
 .c-added { color: var(--good); } .c-removed { color: var(--bad); } .c-changed { color: var(--warn); }
