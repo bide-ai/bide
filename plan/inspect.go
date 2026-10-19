@@ -111,6 +111,17 @@ func inspectConfig(data []byte, reg *Registry) (r ConfigReport) {
 	r.Topology = configTopology(&cfg)
 	r.Safety = configSafety(&cfg)
 	structural(&cfg, &r)
+	if reg == nil && !r.Errors() {
+		// Without a Registry nothing runs Build, so its checks on the wiring alone are made here: a cycle,
+		// a loop's shape, reachability, a join's inputs, what feeds a node. With a Registry Build makes
+		// them itself, after the type checks, so a type error is not hidden behind a wiring one. They
+		// run over a spec with no types.
+		if err := graphChecks(&cfg); err != nil {
+			// One refusal, as one problem: attribute splits an error at "; " (it joins several), and Build's
+			// own wording has one inside it.
+			r.attribute(&cfg, errors.New(strings.ReplaceAll(err.Error(), "; ", ", ")))
+		}
+	}
 	defer func() { r.gated(); r.assertions(cfg.Assert) }()
 	if reg == nil || r.Errors() {
 		return r
@@ -538,4 +549,68 @@ func (r *ConfigReport) attribute(cfg *config, err error) {
 		}
 		r.Problems = append(r.Problems, p)
 	}
+}
+
+// graphChecks runs the checks Build makes on the wiring alone, in Build's order, over a spec built from
+// the config with no types: acyclicity, the loops' shape, reachability from the entry, a join's inputs
+// and what feeds each node. It returns the first refusal, worded as Build words it, except that a node
+// not reached from the entry says so as "not reached from the entry": a node not wired in yet is a config
+// that will not load, and the words read as work in progress. It assumes the structural check found no
+// error (every name resolves, every wiring element has one kind).
+func graphChecks(cfg *config) error {
+	core := &builderCore{flowName: cfg.Flow, byName: map[string]*node{}}
+	add := func(n *node) {
+		core.nodes = append(core.nodes, n)
+		core.byName[n.name] = n
+	}
+	for _, n := range cfg.Nodes {
+		add(&node{name: n.Name, block: n.Block})
+	}
+	core.entry = cfg.Entry
+	if core.entry == "" && len(cfg.Nodes) > 0 {
+		core.entry = cfg.Nodes[0].Name
+	}
+	for _, w := range cfg.Wiring {
+		switch {
+		case w.isEdge():
+			core.edges = append(core.edges, edge{from: w.Edge[0], to: w.Edge[1]})
+		case w.isJoin():
+			add(&node{name: w.Join, block: w.Merge, kind: kindJoin, joinInputs: append([]string(nil), w.Inputs...)})
+			for _, src := range w.Inputs {
+				core.edges = append(core.edges, edge{from: src, to: w.Join})
+			}
+		case w.isSwitch():
+			var arms []arm
+			for _, a := range w.When {
+				if a.LoopMax > 0 {
+					arms = append(arms, arm{predName: a.Pred, target: a.To, loopBack: true, loopMax: a.LoopMax})
+				} else {
+					arms = append(arms, arm{predName: a.Pred, target: a.To})
+				}
+			}
+			if w.Else != "" {
+				arms = append(arms, arm{isElse: true, target: w.Else})
+			}
+			core.branches = append(core.branches, branch{over: w.Switch, arms: arms})
+		}
+	}
+	if core.entry == "" || core.byName[core.entry] == nil {
+		return nil // no entry or an unknown one is reported by the structural check
+	}
+	if _, err := core.topoOrder(); err != nil {
+		return fmt.Errorf("plan: build %q: %w", core.flowName, err)
+	}
+	if err := core.deriveLoops(); err != nil {
+		return err
+	}
+	reached := core.reachableFrom(core.entry)
+	for _, n := range core.nodes {
+		if !reached[n.name] {
+			return fmt.Errorf("plan: build %q: step %q is not reached from the entry %q: wire it in from the entry with an edge or an arm, or remove it", core.flowName, n.name, core.entry)
+		}
+	}
+	if err := core.checkJoins(); err != nil {
+		return err
+	}
+	return core.checkShapes()
 }

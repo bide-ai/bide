@@ -46,7 +46,8 @@ func TestCheckYAML(t *testing.T) {
 	}
 	good := filepath.Join(dir, "ok.yaml")
 	// A valid approval gate is no problem: plan flows enforce it.
-	clean := strings.Replace(flowYAML, "[charge, receipt]", "[charge, done]", 1)
+	// (a clean config loads: each node has one producer, so charge and done are two terminals)
+	clean := strings.Replace(flowYAML, "  - edge: [charge, receipt]\n", "", 1)
 	if err := os.WriteFile(good, []byte(clean), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +57,7 @@ func TestCheckYAML(t *testing.T) {
 	}
 	// A switch with no else is a warning: lenient -check passes it, -strict fails it.
 	warn := filepath.Join(dir, "warn.yaml")
-	if err := os.WriteFile(warn, []byte(strings.Replace(clean, "    else: done\n", "", 1)), 0o644); err != nil {
+	if err := os.WriteFile(warn, []byte(strings.Replace(clean, "    when: [{pred: large, to: charge}]\n    else: done\n", "    when: [{pred: large, to: charge}, {pred: small, to: done}]\n", 1)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	out.Reset()
