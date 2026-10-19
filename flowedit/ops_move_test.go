@@ -217,3 +217,41 @@ func TestMoveOverCorpus(t *testing.T) {
 		t.Errorf("the corpus exercised too little: %d applied, %d restored", applied, restored)
 	}
 }
+
+// Each of Verify's checks of an exchange has a hostile output only it refuses.
+func TestVerifySwapEachCheck(t *testing.T) {
+	old := "nodes:\n  - name: a\n    k: 1\n    z: 9\n  - name: b\n    k: 2\n    z: 8\n"
+	op := Op{Kind: Swap, Path: []any{"nodes"}, Index: 0}
+	if err := Verify([]byte(old), []byte("nodes:\n  - name: b\n    k: 2\n    z: 8\n  - name: a\n    k: 1\n    z: 9\n"), op); err != nil {
+		t.Fatalf("the right result: %v", err)
+	}
+	for name, bad := range map[string]string{
+		// lines, first and last lines, comments and the lines around all as a swap leaves them; the data is not
+		"the data: a value moved between the items": "nodes:\n  - name: b\n    k: 1\n    z: 8\n  - name: a\n    k: 2\n    z: 9\n",
+		// the data and the first and last lines are right; a line inside an item is not a line of the old text
+		"the lines: a middle line rewritten": "nodes:\n  - name: b\n    k:  2\n    z: 8\n  - name: a\n    k: 1\n    z: 9\n",
+	} {
+		if err := Verify([]byte(old), []byte(bad), op); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+// Comment lines elsewhere that trade places are a permutation of the old lines, with the data and the
+// two items as they should be: only the check of the lines before and after the pair refuses them.
+func TestVerifySwapLinesAroundThePair(t *testing.T) {
+	old := "# one\n# two\n\nnodes:\n  - name: a\n    k: 1\n  - name: b\n    k: 2\n\n# three\n\n# four\n"
+	op := Op{Kind: Swap, Path: []any{"nodes"}, Index: 0}
+	good := "# one\n# two\n\nnodes:\n  - name: b\n    k: 2\n  - name: a\n    k: 1\n\n# three\n\n# four\n"
+	if err := Verify([]byte(old), []byte(good), op); err != nil {
+		t.Fatalf("the right result: %v", err)
+	}
+	for name, bad := range map[string]string{
+		"comments before the pair traded": "# two\n# one\n\nnodes:\n  - name: b\n    k: 2\n  - name: a\n    k: 1\n\n# three\n\n# four\n",
+		"comments after the pair traded":  "# one\n# two\n\nnodes:\n  - name: b\n    k: 2\n  - name: a\n    k: 1\n\n# four\n\n# three\n",
+	} {
+		if err := Verify([]byte(old), []byte(bad), op); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

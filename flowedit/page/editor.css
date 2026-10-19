@@ -55,3 +55,7 @@ dialog h2 { margin-top: 0; }
 
 .addnode { margin-top: var(--s4); border-top: 1px solid var(--line); padding-top: var(--s3); }
 .addnode h3 { margin-top: 0; }
+.wirelist button { display: block; width: 100%; text-align: left; font: inherit; font-family: var(--mono); font-size: var(--t-xs); color: var(--fg); background: var(--card); border: 1px solid var(--line); border-radius: var(--r-sm); padding: var(--s1) var(--s2); cursor: pointer; overflow-wrap: anywhere; }
+.wirelist button[aria-current="true"] { border-color: var(--accent); background: var(--accent-bg); border-left-width: 6px; }
+#flow-settings { margin: var(--s3) 0; }
+#flow-settings summary { cursor: pointer; font-weight: 600; }

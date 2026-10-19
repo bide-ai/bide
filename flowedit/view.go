@@ -35,6 +35,9 @@ type View struct {
 	// Flow is the flow's name, Entry its entry node.
 	Flow  string `json:"flow,omitempty"`
 	Entry string `json:"entry,omitempty"`
+	// In and Out are the config's documentation type names, "" when it has none.
+	In  string `json:"in,omitempty"`
+	Out string `json:"out,omitempty"`
 	// Verdict is the answer `bide view -config` opens with.
 	Verdict    Verdict                `json:"verdict"`
 	Errors     int                    `json:"errors"`
@@ -128,7 +131,7 @@ func BuildView(name string, text []byte) *View {
 	}
 	cv := runview.BuildConfig(runview.Config{Name: name, Data: data})
 	r := plan.InspectConfig(data, nil)
-	v.Flow, v.Entry = r.Topology.Flow, r.Topology.Entry
+	v.Flow, v.Entry, v.In, v.Out = r.Topology.Flow, r.Topology.Entry, r.Topology.In, r.Topology.Out
 	v.Errors, v.Warnings, v.Problems, v.Assertions = cv.Errors, cv.Warnings, cv.Problems, cv.Assertions
 	v.Verdict = Verdict{Class: cv.Verdict.Class, Word: cv.Verdict.Word, Icon: cv.Verdict.Icon, Line: cv.Verdict.Line, Details: cv.Verdict.Details}
 	for _, s := range cv.Verdict.Stats {

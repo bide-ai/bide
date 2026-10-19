@@ -12,7 +12,7 @@ import (
 type Operation struct {
 	// Op names the operation: "set_safety", "set_block", "set_approval", "clear_approval",
 	// "add_assertion", "set_assertion", "remove_assertion", "add_node", "remove_node",
-	// "rename_node" or "set_entry".
+	// "rename_node", "set_entry", "move_node", "move_wiring", "set_flow", "set_in" or "set_out".
 	Op string `json:"op"`
 	// Node is the node the operation is on, by its name in the config.
 	Node string `json:"node"`
@@ -20,6 +20,10 @@ type Operation struct {
 	// of the node list; rename_node renames Node to Value everywhere the config names it; remove_node
 	// removes Node and what names it (see DryRun and Confirm); set_entry makes Value the entry node
 	// ("" clears the key, allowed only when the first node is the entry already).
+	//
+	// move_node moves Node one place up or down (Value "up" or "down"), and move_wiring the wiring
+	// element at Index; each exchanges two neighbouring list items and keeps their text. set_flow,
+	// set_in and set_out set the flow's name and its documentation type names ("" removes in or out).
 	//
 	// Value is the new safety ("readonly", "idempotent" or "side_effect"; "" removes the key, which
 	// leaves the safety to the registered block) for set_safety, and the new block name for

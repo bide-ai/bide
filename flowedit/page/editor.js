@@ -160,12 +160,70 @@ export function renderOutline(v) {
     b.addEventListener('click', () => select(n.name));
     return h('li', {}, b);
   }));
-  replace('wiring', (v.wiring || []).map((w) => h('li', {}, shown(w))));
+  const wiring = v.wiring || [];
+  if (selectedWire >= wiring.length) selectedWire = -1;
+  const wstop = Math.max(0, selectedWire);
+  replace('wiring', wiring.map((w, i) => {
+    const b = h('button', { type: 'button', 'data-wire': String(i), 'aria-current': i === selectedWire ? 'true' : 'false', tabindex: i === wstop ? '0' : '-1' }, w);
+    b.addEventListener('click', () => selectWire(i));
+    return h('li', {}, b);
+  }));
+  renderWireMoves(wiring);
+  renderFlowSettings(v);
   replace('an-blocks', [...new Set(nodes.map((x) => x.block).filter(Boolean))].filter((b) => shown(b) === b).map((b) => h('option', { value: b })));
 }
 
+// The flow's name and its documentation type names, as one small form under the outline.
+function renderFlowSettings(v) {
+  const box = $('flow-settings');
+  if (!box || box.dataset.flow === (v.flow || '') + '\u0000' + (v.in || '') + '\u0000' + (v.out || '') && box.dataset.drawn) return;
+  box.dataset.flow = (v.flow || '') + '\u0000' + (v.in || '') + '\u0000' + (v.out || '');
+  box.dataset.drawn = '1';
+  const row = (id, label, value, op, help) => {
+    const input = h('input', { id, type: 'text', value: value || '', autocomplete: 'off', spellcheck: 'false', 'aria-describedby': id + '-help' });
+    const set = h('button', { type: 'button', class: 'btn', id: id + '-set' }, 'Set');
+    const go = () => operate({ op, value: input.value.trim() }, id);
+    set.addEventListener('click', go);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
+    return h('div', { class: 'field' }, h('label', { for: id }, label), h('div', { class: 'inline' }, input, set), h('p', { class: 'muted small', id: id + '-help' }, help));
+  };
+  box.replaceChildren(
+    h('summary', {}, 'Flow name and types'),
+    row('fs-flow', 'Name', v.flow, 'set_flow', 'The flow\'s label: it is in the topology digest, so renaming it changes the digest.'),
+    row('fs-in', 'Input type (documentation)', v.in, 'set_in', 'Optional. A type name that must match the Go input type when a program loads the flow; empty removes it.'),
+    row('fs-out', 'Output type (documentation)', v.out, 'set_out', 'Optional, like the input type.'));
+}
+
+// The wiring elements are a list like the outline: one Tab stop, arrow keys between them, Enter
+// selects. The one pair of Move buttons below it acts on the selected element, so the list costs three
+// Tab stops however long it is.
+let selectedWire = -1;
+function selectWire(i) {
+  selectedWire = i;
+  for (const b of $('wiring').querySelectorAll('button')) b.setAttribute('aria-current', b.getAttribute('data-wire') === String(i) ? 'true' : 'false');
+  renderWireMoves(view.wiring || []);
+  announce('Selected wiring element ' + (i + 1));
+}
+
+function renderWireMoves(wiring) {
+  const i = selectedWire;
+  const mv = (dir) => {
+    const b = h('button', { type: 'button', class: 'btn', id: 'w-' + dir, disabled: i < 0 || (dir === 'up' ? i === 0 : i === wiring.length - 1), 'aria-label': i < 0 ? 'Move ' + dir + ': no wiring element selected' : 'Move ' + dir + ': wiring element ' + (i + 1) }, 'Move ' + dir);
+    b.addEventListener('click', () => {
+      const to = dir === 'up' ? i - 1 : i + 1;
+      const edge = dir === 'up' ? to === 0 : to === wiring.length - 1;
+      selectedWire = to;
+      operate({ op: 'move_wiring', index: i, value: dir }, edge ? (dir === 'up' ? 'w-down' : 'w-up') : 'w-' + dir);
+    });
+    return b;
+  };
+  replace('wire-moves',
+    h('p', { class: 'small', id: 'w-pos' }, i < 0 ? 'Select a wiring element to move it.' : 'Wiring element ' + (i + 1) + ' of ' + wiring.length + ' is selected.'),
+    h('div', { class: 'inline' }, mv('up'), mv('down')));
+}
+
 function outlineKeys(e) {
-  const items = [...$('outline').querySelectorAll('button')];
+  const items = [...e.currentTarget.querySelectorAll('button')];
   const at = items.indexOf(document.activeElement);
   if (at < 0) return;
   const to = { ArrowDown: Math.min(at + 1, items.length - 1), ArrowUp: Math.max(at - 1, 0), Home: 0, End: items.length - 1 }[e.key];
@@ -234,6 +292,17 @@ function structureForm(n, v) {
   };
   rename.addEventListener('click', doRename);
   name.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doRename(); } });
+  const order = (v.nodes || []).map((x) => x.name);
+  const at = order.indexOf(n.name);
+  const mvNode = (dir) => {
+    const b = h('button', { type: 'button', class: 'btn', id: 'f-' + dir, 'aria-label': 'Move ' + dir + ': ' + n.name, disabled: dir === 'up' ? at <= 0 : at < 0 || at >= order.length - 1 }, dir === 'up' ? 'Move up' : 'Move down');
+    b.addEventListener('click', () => {
+      const to = dir === 'up' ? at - 1 : at + 1;
+      const edge = dir === 'up' ? to === 0 : to === order.length - 1;
+      operate({ op: 'move_node', node: n.name, value: dir }, edge ? (dir === 'up' ? 'f-down' : 'f-up') : 'f-' + dir);
+    });
+    return b;
+  };
   const isEntry = v.entry === n.name;
   const entry = h('button', { type: 'button', class: 'btn', id: 'f-entry' }, isEntry ? 'Write the entry into the file' : 'Make this the entry node');
   entry.addEventListener('click', () => operate({ op: 'set_entry', value: n.name }, 'f-entry'));
@@ -243,6 +312,9 @@ function structureForm(n, v) {
     h('legend', {}, 'Node'),
     h('div', { class: 'field' }, h('label', { for: 'f-name' }, 'Name'), h('div', { class: 'inline' }, name, rename),
       h('p', { class: 'muted small', id: 'f-name-help' }, 'Renames the node everywhere the file uses the name, in wiring and assertions. The gate check follows names, so a renamed gated node reads as removed and added: the weakened banner may appear for a rename.')),
+    h('div', { class: 'field' }, h('p', { class: 'small', id: 'f-pos' }, 'Position ' + (at + 1) + ' of ' + order.length + '.'),
+      h('div', { class: 'inline' }, mvNode('up'), mvNode('down')),
+      h('p', { class: 'muted small' }, 'Order is part of the flow (the topology digest commits to it). With no entry key the first node is the entry, so a move into or out of the first place is refused until the entry is written below.')),
     h('div', { class: 'field' }, h('p', { class: 'small' }, isEntry ? 'This is the entry node.' : 'The entry node is ' + (v.entry || 'not set') + '.'),
       h('p', { class: 'muted small' }, 'A config with no entry key starts at its first node. Adding, moving or removing nodes never changes that silently: write the entry here first.'),
       entry),
@@ -431,6 +503,11 @@ function opWords(op) {
     case 'remove_node': return 'Node ' + op.node + ' removed';
     case 'rename_node': return op.node + ' renamed to ' + op.value;
     case 'set_entry': return 'Entry node: ' + op.value;
+    case 'move_node': return op.node + ' moved ' + op.value;
+    case 'move_wiring': return 'Wiring element ' + (op.index + 1) + ' moved ' + op.value;
+    case 'set_flow': return 'Flow name set';
+    case 'set_in': return op.value ? 'Input type set' : 'Input type removed';
+    case 'set_out': return op.value ? 'Output type set' : 'Output type removed';
     case 'add_assertion': return 'Assertion added';
     case 'set_assertion': return 'Assertion changed';
     case 'remove_assertion': return 'Assertion removed';
@@ -836,6 +913,7 @@ async function main() {
   }
   $('source').addEventListener('input', onInput);
   $('outline').addEventListener('keydown', outlineKeys);
+  $('wiring').addEventListener('keydown', outlineKeys);
   wireAddNode();
   dlg().addEventListener('close', () => {
     if (dlg().open) return; // closed to be opened again (a save that must be asked again)

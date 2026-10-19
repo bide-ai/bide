@@ -30,8 +30,10 @@ The first phase of the editor (the accountability editor) is complete as designe
 read-only views, the baseline and the weakened banner, the source pane with a diff and an atomic save,
 the forms for a node's safety, block and approval gate, the assertions panel, and the accessibility
 work below. The second phase (structure) is being added in steps; so far you can add, remove and
-rename a node and write the entry (see [Nodes](#nodes-add-remove-rename-and-the-entry)). It does **not**
-yet: reorder nodes, or wire edges, switches and joins (edit the source for those); know your `plan.Registry` (it checks structure only, so no block palette,
+rename a node, write the entry (see [Nodes](#nodes-add-remove-rename-and-the-entry)), reorder nodes and
+wiring elements, and set the flow's name and types (see [Order, wiring order and the flow's
+settings](#order-wiring-order-and-the-flows-settings)). It does **not**
+yet: wire edges, switches and joins (edit the source for those); know your `plan.Registry` (it checks structure only, so no block palette,
 type-compatible connections or digest); compare with a journaled run; or let you place nodes on the canvas
 (the layout is derived from the topology, on purpose). A config with an anchor or alias anywhere,
 a repeated key, a key that is not a string, NaN or infinity, or mixed line ends is refused by the editor
@@ -130,6 +132,30 @@ not verified. The node controls are in the outline (**Add a node**) and the insp
   but removing the entry node, or the first node of a config with no `entry`, is refused, and the
   refusal points at **Make this the entry node**, which writes `entry:` into the file. Clearing the
   entry is allowed only when the first node is the entry already.
+
+## Order, wiring order and the flow's settings
+
+Order is data: the topology digest commits to the order of the nodes, of the edges and arms, and the
+flow's name. These controls change it and nothing else.
+
+- **Move up / Move down** in the inspector exchange the selected node with its neighbour, and the
+  inspector says the node's position ("Position 2 of 4"). The two nodes keep their own text exactly: the
+  comments directly above each, the trailing comment on it, its style and its keys. A blank line or a
+  comment that is the file's, between them, stays where it was. A config with no `entry` key starts at
+  its first node, so a move into or out of the first place is refused until the entry is written
+  (**Make this the entry node**).
+- **Wiring** is a list under the outline, one Tab stop with the arrow keys between its elements and
+  Enter to select, and one **Move up** / **Move down** pair for the selected element, however long the
+  list is. A comment above an element moves with it.
+- **Flow name and types** (a disclosure under the outline) set the flow's `flow` label and the optional
+  `in` and `out` type names, which a program checks against its Go types when it loads the flow; an
+  empty `in` or `out` removes the key. The flow's name is in the digest, so changing it changes the
+  digest.
+
+Each is an exchange of two neighbouring list items, or a change of one value, applied as a splice and
+verified: the result must be the old text with those two items exchanged and nothing else (the same
+lines in another order, every line outside the pair where it was, each item with the comments it had
+above it), checked independently of the code that made the splice.
 
 ## The assertions panel
 
@@ -267,7 +293,8 @@ The editor is built to be used without a pointer and without dragging.
   its gate, adding an assertion, undoing and redoing, and saving with the confirmation a weakening
   needs, by keyboard alone (the other controls are not each driven by a test). The outline is one Tab
   stop and the arrow keys, Home and End move between its nodes; Enter or Space selects. The nodes in the
-  drawing are buttons too (Tab to them, Enter). Forms are real forms: every field has a label, an error
+  drawing are buttons too (Tab to them, Enter). The wiring list works the same way, with one Move pair for the selected element, and
+  the flow's settings are a closed disclosure, so neither costs a Tab stop per element or field. Forms are real forms: every field has a label, an error
   is tied to its field, and the draft of a gate or an assertion says what the check thinks in a live
   region, rewritten only when its words change. There is no drag in this phase and none will be
   required.
