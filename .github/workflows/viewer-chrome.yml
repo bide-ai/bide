@@ -3,14 +3,12 @@ name: Viewer (Chrome)
 # bide view's pages in real Chrome: the states the colour-only audit names (docs/design/themes.md)
 # drawn from the real config, diff, run and run-list pages, and what the browser computed compared
 # (TestColourOnlyInChrome, internal/runview/browser_test.go). This workflow installs Chrome's driver
-# (puppeteer-core, from the lockfile) around it. Runs on pull requests that touch the viewer, and in
-# the merge queue (which does not filter by path).
+# (puppeteer-core, from the lockfile, installed with npm ci: integrity hashes, no install scripts) around
+# it. Runs on every pull request and in the merge queue, with no path filter, so it can be a required
+# check without a pull request that touches no viewer file waiting on it forever. The job takes about
+# two minutes. It adds a dependency for tests only: nothing in a build or a release uses it.
 on:
   pull_request:
-    paths:
-      - 'internal/runview/**'
-      - 'internal/theme/**'
-      - '.github/workflows/viewer-chrome.yml'
   merge_group:
   workflow_dispatch:
 
