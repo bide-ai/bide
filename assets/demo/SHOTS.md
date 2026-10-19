@@ -25,6 +25,11 @@ Regenerate before each release, as part of the final docs pass: the viewer, the 
 change between releases, and a picture that was right a month ago is not a promise. Run
 `scripts/shots.sh`, look at each image, and commit the ones that changed with the release's docs.
 
+## One at a time
+
+The deadline and identity demos share the fixed work directory `/tmp/bide-demo` (and each empties it), so run them
+one at a time, as `scripts/shots.sh` does, and not two runs on one machine at once.
+
 ## Checks
 
 `scripts/shots.sh` ends by comparing each image it wrote with the committed one and fails if the
@@ -38,8 +43,10 @@ One program, `browser-shots/capture.mjs`, takes the viewer's and the flow pictur
 their own because they do something more: the editor pictures drive the page (`edit-shots.mjs`), the share
 card is the file the page's own button saves (`share.mjs`), the GIF's frames wait while a run lands
 (`live-capture.mjs`), and the Needs attention list is taken at 2x with the approve page and the relay
-(`shot.mjs`, `browser-shots.sh`). Every one fails on a page that is not the one meant: a response that is not
-2xx, a page with no `<main>`, a run page that does not name its run. The
+(`shot.mjs`, `browser-shots.sh`). The viewer and flow pictures (`capture.mjs`, `shot.mjs`) fail on a page that is not the one meant: a
+response that is not 2xx, a page with no `<main>`, a run page that does not name its run. The others fail
+when the element they drive is missing (the share button, the editor's forms, a run that never reaches
+"started"). The
 page is shown in the named color scheme (`prefers-color-scheme`) with `prefers-reduced-motion:
 reduce`, so the graph's flowing dashes and the live pulse stand still; the window is 1200 pixels
 wide (900 for the live GIF, 1280 for the editor) at 1x, scrollbars are hidden, and the program waits for
