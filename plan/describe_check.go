@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -18,6 +19,8 @@ const (
 	maxDescribedEntries = 20000
 	maxDescribedName    = 512
 	maxDescribedType    = 1024
+	maxGateApprovers    = 256
+	maxApproverID       = 256
 	maxDescribedError   = 4096
 )
 
@@ -25,8 +28,9 @@ const (
 // errors (a program whose Registry refused something does not load), every name and
 // type name present, printable and within bounds, every kind and safety one of the known words,
 // every gate a policy agent.ApprovalPolicy.Validate accepts, no name twice in a namespace, and a
-// merge of arity two or three (the arities Registry registers). A Describe result is always
-// valid; a description read from a file need not be.
+// merge of arity two or three (the arities Registry registers). A Describe result is valid when its
+// Errors is empty (Describe reports what Validate would refuse); a description read from a file need
+// not be.
 func (d RegistryDescription) Validate() error {
 	if d.Version != DescriptionVersion {
 		return fmt.Errorf("description version %d is not one this release reads (it reads %d)", d.Version, DescriptionVersion)
@@ -164,6 +168,14 @@ func describedGate(g *GateDescription) (*agent.ApprovalPolicy, error) {
 		}
 		return p, nil
 	}
+	if len(g.Approvers) > maxGateApprovers {
+		return nil, fmt.Errorf("a gate has %d approvers, more than the %d this release reads", len(g.Approvers), maxGateApprovers)
+	}
+	for _, a := range g.Approvers {
+		if len(a) > maxApproverID {
+			return nil, fmt.Errorf("a gate approver id is longer than %d bytes", maxApproverID)
+		}
+	}
 	p := &agent.ApprovalPolicy{Need: g.Need, Approvers: append([]string(nil), g.Approvers...), ExcludePrincipal: g.ExcludePrincipal, Timeout: timeout}
 	if err := p.Validate(); err != nil {
 		return nil, fmt.Errorf("gate: %w", err)
@@ -196,11 +208,70 @@ func InspectConfigDescribed(data []byte, d RegistryDescription) ConfigReport {
 	return inspectConfig(data, reg)
 }
 
+// reflect.StructOf keeps every type it makes for the life of the process, so the names a process
+// turns into stand-ins are bounded as a whole, not per description: a long-lived program that
+// checks many descriptions stops, with an error, instead of growing.
+var (
+	maxStandInNames = 100000
+	maxStandInBytes = 16 << 20
+)
+
+var standIns struct {
+	sync.Mutex
+	names map[string]bool
+	bytes int
+}
+
+// reserveStandIns admits the type names of d to the process-wide set, or refuses the description
+// when they would not fit. Names already admitted cost nothing.
+func reserveStandIns(d RegistryDescription) error {
+	var names []string
+	add := func(n string) { names = append(names, n) }
+	for _, b := range d.Blocks {
+		add(b.In)
+		add(b.Out)
+	}
+	for _, p := range d.Predicates {
+		add(p.Switched)
+	}
+	for _, m := range d.Merges {
+		for _, in := range m.Inputs {
+			add(in)
+		}
+		add(m.Out)
+	}
+	standIns.Lock()
+	defer standIns.Unlock()
+	if standIns.names == nil {
+		standIns.names = map[string]bool{}
+	}
+	n, size := 0, 0
+	seen := map[string]bool{}
+	for _, name := range names {
+		if !standIns.names[name] && !seen[name] {
+			seen[name] = true
+			n++
+			size += len(name)
+		}
+	}
+	if len(standIns.names)+n > maxStandInNames || standIns.bytes+size > maxStandInBytes {
+		return errors.New("this process has checked too many distinct type names (see InspectConfigDescribed); restart it to check more")
+	}
+	for name := range seen {
+		standIns.names[name] = true
+	}
+	standIns.bytes += size
+	return nil
+}
+
 // registryFromDescription builds a Registry that checks like the one d describes and cannot run:
 // its blocks have no behavior. Each distinct type name is one type (describedType), so reflect
 // identity is name equality.
 func registryFromDescription(d RegistryDescription) (*Registry, error) {
 	if err := d.Validate(); err != nil {
+		return nil, err
+	}
+	if err := reserveStandIns(d); err != nil {
 		return nil, err
 	}
 	reg := NewRegistry()
@@ -242,10 +313,14 @@ const describedField = "BideDescribedType"
 func describedType(name string) reflect.Type {
 	return reflect.StructOf([]reflect.StructField{{
 		Name: describedField,
-		Type: reflect.TypeFor[struct{}](),
+		Type: reflect.TypeFor[describedMarker](),
 		Tag:  reflect.StructTag("name:" + strconv.Quote(name)),
 	}})
 }
+
+// describedMarker is the type of the stand-in's one field. It is unexported, so no other package can
+// write a type that passes for a stand-in.
+type describedMarker struct{}
 
 // describedTypeName reports the name of a type made by describedType.
 func describedTypeName(t reflect.Type) (string, bool) {
@@ -253,7 +328,7 @@ func describedTypeName(t reflect.Type) (string, bool) {
 		return "", false
 	}
 	f := t.Field(0)
-	if f.Name != describedField || f.PkgPath != "" {
+	if f.Name != describedField || f.PkgPath != "" || f.Type != reflect.TypeFor[describedMarker]() {
 		return "", false
 	}
 	name, ok := f.Tag.Lookup("name")

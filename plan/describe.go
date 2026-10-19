@@ -138,6 +138,13 @@ func (r *Registry) Describe() RegistryDescription {
 	}
 	sort.Strings(gateErrs)
 	d.Errors = append(d.Errors, gateErrs...)
+	if len(d.Errors) == 0 {
+		// A registration the Registry accepts can still be one a reader refuses (a name or a type
+		// name over the bounds): say so here, so a description without Errors is always valid.
+		if err := d.Validate(); err != nil {
+			d.Errors = append(d.Errors, "description: "+err.Error())
+		}
+	}
 	return d
 }
 

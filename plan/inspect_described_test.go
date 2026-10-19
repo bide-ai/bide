@@ -338,6 +338,12 @@ func TestRegistryDescriptionValidate(t *testing.T) {
 				d.Predicates = append(d.Predicates, PredicateDescription{Name: fmt.Sprint(len(d.Predicates)), Switched: "x"})
 			}
 		}, "entries"},
+		{"too many approvers", func(d *RegistryDescription) {
+			for i := 0; i <= maxGateApprovers; i++ {
+				d.Blocks[2].Gate.Approvers = append(d.Blocks[2].Gate.Approvers, fmt.Sprint("a", i))
+			}
+		}, "approvers"},
+		{"long approver id", func(d *RegistryDescription) { d.Blocks[2].Gate.Approvers[0] = long[:300] }, "approver id"},
 		{"errors", func(d *RegistryDescription) { d.Errors = []string{`duplicate block registration "x"`} }, "reported 1 error"},
 		{"errors, hostile text", func(d *RegistryDescription) { d.Errors = []string{"a\xff"} }, "(not shown)"},
 	}
@@ -447,4 +453,80 @@ func FuzzDescribedType(f *testing.F) {
 			t.Fatalf("%q written as %q / %q", name, canonicalType(ty), typeName(ty))
 		}
 	})
+}
+
+// A real program can register a name or a type the description's bounds refuse. Describe then says
+// so in Errors, so a description without Errors is always one Validate accepts.
+func TestDescribeReportsWhatValidateWouldRefuse(t *testing.T) {
+	good := describedRegistry(t, false).Describe()
+	if len(good.Errors) != 0 || good.Validate() != nil {
+		t.Fatalf("a plain registry: %q %v", good.Errors, good.Validate())
+	}
+	reg := NewRegistry()
+	if err := reg.RegisterStep(strings.Repeat("n", maxDescribedName+1), dsStep); err != nil {
+		t.Fatal(err)
+	}
+	d := reg.Describe()
+	if len(d.Errors) != 1 || !strings.Contains(d.Errors[0], "name is longer") || d.Validate() == nil {
+		t.Errorf("long name: errors %q", d.Errors)
+	}
+	reg = NewRegistry()
+	long := strings.Repeat("x", 1100)
+	if err := reg.RegisterPredicate(long, func(dsMid) bool { return true }); err != nil {
+		t.Fatal(err)
+	}
+	if d := reg.Describe(); len(d.Errors) != 1 || d.Validate() == nil {
+		t.Errorf("long predicate name: errors %q", d.Errors)
+	}
+}
+
+// reflect.StructOf keeps what it makes, so the names a process turns into stand-ins are bounded as a
+// whole: past the bound a description is refused with an error, and one whose names were all admitted
+// before still checks.
+func TestStandInNamesAreBoundedForTheProcess(t *testing.T) {
+	standIns.Lock()
+	names, bytes, mn, mb := standIns.names, standIns.bytes, maxStandInNames, maxStandInBytes
+	standIns.names, standIns.bytes = map[string]bool{}, 0
+	standIns.Unlock()
+	defer func() {
+		standIns.Lock()
+		standIns.names, standIns.bytes, maxStandInNames, maxStandInBytes = names, bytes, mn, mb
+		standIns.Unlock()
+	}()
+	maxStandInNames, maxStandInBytes = 8, 1<<20
+	d := describedRegistry(t, false).Describe() // a handful of distinct type names
+	if r := InspectConfigDescribed([]byte(describedFlowConfig), d); !r.Typed || r.Errors() {
+		t.Fatalf("within the bound: %+v", r.Problems)
+	}
+	if r := InspectConfigDescribed([]byte(describedFlowConfig), d); !r.Typed || r.Errors() {
+		t.Fatalf("the same names again cost nothing: %+v", r.Problems)
+	}
+	big := RegistryDescription{Version: 1, Blocks: []BlockDescription{}, Predicates: []PredicateDescription{}, Merges: []MergeDescription{}}
+	for i := 0; i < 20; i++ {
+		big.Blocks = append(big.Blocks, BlockDescription{Name: fmt.Sprint("b", i), Kind: "step", In: fmt.Sprint("t", i), Out: fmt.Sprint("u", i), Safety: "readonly"})
+	}
+	r := InspectConfigDescribed([]byte(triageConfig), big)
+	if r.Typed || !strings.Contains(r.Problems[0].Message, "too many distinct type names") {
+		t.Errorf("past the bound: typed %v, %+v", r.Typed, r.Problems)
+	}
+	maxStandInNames, maxStandInBytes = 1000, 20
+	r = InspectConfigDescribed([]byte(triageConfig), big)
+	if r.Typed || !strings.Contains(r.Problems[0].Message, "too many distinct type names") {
+		t.Errorf("past the byte bound: typed %v, %+v", r.Typed, r.Problems)
+	}
+}
+
+// Only the stand-in's own marker type makes a stand-in: a real type with the same shape written in
+// another package is a real type, and is spelled as one.
+func TestARealTypeWithTheStandInShapeIsNotAStandIn(t *testing.T) {
+	type lookalike = struct {
+		BideDescribedType struct{} `name:"payments.Refund"`
+	}
+	ty := reflect.TypeFor[lookalike]()
+	if _, ok := describedTypeName(ty); ok {
+		t.Fatal("a lookalike passes for a stand-in")
+	}
+	if canonicalType(ty) == "payments.Refund" || typeName(ty) == "payments.Refund" {
+		t.Errorf("a real type is spelled %q / %q", canonicalType(ty), typeName(ty))
+	}
 }
