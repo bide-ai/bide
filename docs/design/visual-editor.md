@@ -1,6 +1,6 @@
 # Design: a visual editor for flow configs
 
-Status: accepted (the maintainer decided all 12 decisions as recommended on 2026-10-15). Phase 1 is built (`bide edit`, v0.19.0 and v0.20.0; see the [flow editor guide](../guides/flow-editor.md) and the phased plan below); phase 2 is being built in steps (unreleased: add, remove, rename and move nodes, the entry, the flow's name and types, edges, switches, arms and `else`, joins and loop bounds, and undo and redo tested over every one of them; drag to connect is next), and of phase 3 the read-only Registry description (`Registry.Describe`) and `plan.InspectConfigDescribed` are in; phase 4 is not built, and the names in the unbuilt parts are a
+Status: accepted (the maintainer decided all 12 decisions as recommended on 2026-10-15). Phase 1 is built (`bide edit`, v0.19.0 and v0.20.0; see the [flow editor guide](../guides/flow-editor.md) and the phased plan below); phase 2 is being built in steps (unreleased: add, remove, rename and move nodes, the entry, the flow's name and types, edges, switches, arms and `else`, joins and loop bounds, and undo and redo tested over every one of them; drag to connect is next), and of phase 3 the read-only Registry description (`Registry.Describe`), `plan.InspectConfigDescribed`, `plan.AllowUnusedBlocks`, the `-blocks` flag of `bide check` and `bide view -config`, and (unreleased) the typed editor's server side are in (`bide edit -blocks`, `flowedit.WithRegistry` and `WithBlocks`: typed checks, type-refusing operations, the digest and the palette as data, the typed-plus-structural weakened verdict; as built, see "Phase 3 as built" below), and the page's palette and digest display are next; phase 4 is not built, and the names in the unbuilt parts are a
 sketch. Written against `main` at 759cf547 and, where it says so, against the open pull request
 #312 (approval deadlines).
 
@@ -728,6 +728,15 @@ the safety it declares and the gate it declares; each predicate with its switche
 block with its arity and input types. It is a published API addition to the `plan` package, so it
 needs the maintainer's approval as such (decision 7), with godoc, an example, and a test that it
 matches what `Load` resolves.
+
+**Phase 3 as built (differences from the plan above).**
+
+- *Registry description.* `Registry.Describe()` returns `plan.RegistryDescription` (blocks, predicates, merges, and `Errors`, the registrations a Registry refused). Merges are a list of their own, with no `join` kind (a merge name and a block name are separate namespaces). A single-decision gate is described with `need` 0, as the topology carries it, and a gate `Validate` refuses is described as declared and named in `Errors`.
+- *`-blocks` and the checker.* A description cannot rebuild a Registry (it holds type names, not types), so `plan.InspectConfigDescribed` builds an inert stand-in Registry whose types are `reflect.StructOf` stand-ins carrying the name, and runs the same code `InspectConfig` runs: one implementation. Types are told apart by name only, so two distinct types spelled alike are one (the digest already cannot tell them apart; see the known limitations), and the process keeps at most 20000 type names (about 25 MB). `RegistryDescription.Validate` refuses a description with registration errors, so a description of a program that does not load is not used.
+- *Unused blocks.* A palette lists blocks the config has not placed, and `Load` refuses a registered block nothing uses, which would stop the check before it builds anything. `plan.AllowUnusedBlocks()` (the maintainer approved it) is an option of `InspectConfig` and `InspectConfigDescribed`; `Load` and `Validate` still refuse.
+- *A description is only a file.* Every typed result that rests on one says so and, for `check`, names the file by its SHA-256. A diff is never less strict than without a Registry or description: a side with errors against its blocks makes the diff structural and not certified; a description for one side only is never compared with the side that has none; both sides described are compared typed against typed, from two files the CI job generated from the two program versions.
+- *The editor's verdict.* The program the baseline was written for is not the one the editor knows, so the weakened verdict is the typed comparison together with the structural one, never less than the structural editor says, and a comparison that is not certified needs the same confirmation as a weakening.
+- *Type-refusing operations.* The server refuses an operation that introduces a type problem the text did not have (an edge, a predicate, a join input, a terminal), with `plan`'s reason; the page's hints never decide.
 
 ## Risks
 
