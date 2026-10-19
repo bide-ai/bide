@@ -28,7 +28,7 @@ svg.graph { display: block; margin: 0 auto; max-width: 100%; height: auto; font-
 .elabel-g rect { fill: var(--card); stroke: var(--line); }
 .elabel { font-size: 12.5px; fill: var(--muted); text-anchor: middle; }
 .edge-mark circle { fill: var(--bad); }
-.edge-mark text { fill: #fff; font-size: 12px; font-weight: 700; text-anchor: middle; }
+.edge-mark text { fill: var(--on-sem); font-size: 12px; font-weight: 700; text-anchor: middle; }
 
 /* nodes */
 .node { cursor: default; outline: none; }

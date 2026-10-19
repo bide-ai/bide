@@ -1,47 +1,9 @@
-/* bide view: the design tokens, then the page. Every color, space and size below comes from a token;
-   the dark set follows prefers-color-scheme and can be forced with data-theme on <html>. The system
-   font stacks only: a page makes no request off this server. */
-:root {
-  /* color */
-  --bg: #f6f6f2; --card: #ffffff; --card-2: #efefea; --fg: #1a1a17; --muted: #55554e; --line: #d9d9d0;
-  --good: #1b6a32; --good-bg: #e0f1e5; --bad: #b0241c; --bad-bg: #fbe3e0;
-  --warn: #835400; --warn-bg: #fff0c4; --accent: #1b52b0; --accent-bg: #e2ebfa;
-  --gate: #6a3cae; --gate-bg: #ece3f8; --idle: #8a8a80;
-  --side: #9a4408; --side-bg: #fde5d0; --idem: #1d5a9c; --idem-bg: #deeaf8;
-  --j-key: #1b52b0; --j-str: #1b6a32; --j-num: #835400; --j-bool: #6a3cae; --j-null: #55554e; --j-punct: #55554e;
-  --shadow: 0 1px 2px rgb(0 0 0 / .06), 0 4px 14px rgb(0 0 0 / .05);
-  /* space (4px grid) */
-  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px; --s7: 48px;
-  /* type scale */
-  --t-xs: 12px; --t-sm: 13.5px; --t-md: 15.5px; --t-lg: 18px; --t-xl: 24px; --t-2xl: 36px; --t-hero: 36px;
-  --r-sm: 6px; --r-md: 10px; --r-lg: 16px;
-  --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  color-scheme: light;
-  font: var(--t-md)/1.5 var(--font);
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #121214; --card: #1c1c20; --card-2: #25252a; --fg: #ecece7; --muted: #a8a8a0; --line: #36363c;
-    --good: #7fd194; --good-bg: #16301f; --bad: #f5978d; --bad-bg: #3b201e;
-    --warn: #ecc45f; --warn-bg: #382f17; --accent: #92b8f6; --accent-bg: #19294a;
-    --gate: #c9acf5; --gate-bg: #2d2145; --idle: #8c8c94;
-    --side: #f5aa76; --side-bg: #3b2716; --idem: #95bff1; --idem-bg: #182a41;
-    --j-key: #92b8f6; --j-str: #7fd194; --j-num: #ecc45f; --j-bool: #c9acf5; --j-null: #a8a8a0; --j-punct: #a8a8a0;
-    --shadow: 0 1px 2px rgb(0 0 0 / .4), 0 4px 14px rgb(0 0 0 / .3);
-    color-scheme: dark;
-  }
-}
-:root[data-theme="dark"] {
-  --bg: #121214; --card: #1c1c20; --card-2: #25252a; --fg: #ecece7; --muted: #a8a8a0; --line: #36363c;
-  --good: #7fd194; --good-bg: #16301f; --bad: #f5978d; --bad-bg: #3b201e;
-  --warn: #ecc45f; --warn-bg: #382f17; --accent: #92b8f6; --accent-bg: #19294a;
-  --gate: #c9acf5; --gate-bg: #2d2145; --idle: #8c8c94;
-  --side: #f5aa76; --side-bg: #3b2716; --idem: #95bff1; --idem-bg: #182a41;
-  --j-key: #92b8f6; --j-str: #7fd194; --j-num: #ecc45f; --j-bool: #c9acf5; --j-null: #a8a8a0; --j-punct: #a8a8a0;
-  --shadow: 0 1px 2px rgb(0 0 0 / .4), 0 4px 14px rgb(0 0 0 / .3);
-  color-scheme: dark;
-}
+/* bide view: the page. Every color, space and size below comes from a custom property, and the
+   properties are not defined here: the server writes them in front of this file (see
+   internal/theme and docs/design/themes.md) from the checked themes: light, dark and high-contrast,
+   and a theme file given with -theme. The system font stacks only: a page makes no request off this
+   server. */
+:root { font: var(--t-md)/1.5 var(--font); }
 
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--fg); font-variant-numeric: tabular-nums; }

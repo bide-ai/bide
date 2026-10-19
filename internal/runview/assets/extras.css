@@ -50,7 +50,7 @@ svg.merkle .edge.taken { animation: none; }
 .etitle { font-size: var(--t-lg); color: var(--fg); font-weight: 650; }
 table.runlist tbody tr.cur { background: var(--accent-bg); }
 
-.helpback { position: fixed; inset: 0; background: rgb(0 0 0 / .55); display: grid; place-items: center; z-index: 50; }
+.helpback { position: fixed; inset: 0; background: var(--scrim); display: grid; place-items: center; z-index: 50; }
 .help { background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: var(--r-lg); padding: var(--s5); max-width: 440px; width: calc(100% - 32px); box-shadow: var(--shadow); }
 .help h2 { margin: 0 0 var(--s3); }
 .help dl { display: grid; grid-template-columns: auto 1fr; gap: var(--s2) var(--s4); margin: 0; font-size: var(--t-md); }

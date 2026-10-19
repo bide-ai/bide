@@ -521,9 +521,13 @@ approval-pending record and tally, plan nodes and Switch choices, and the end ma
 
 ## Theme, keyboard and sharing
 
-- **Light or dark.** The pages follow `prefers-color-scheme`. The sun button in the header (or `t`)
-  switches, and the choice is remembered in the browser's local storage; where storage is blocked it
-  applies to the page only.
+- **Themes.** The pages offer `light`, `dark` and `high-contrast`, and start in the one your system
+  asks for (`prefers-color-scheme`). The sun button in the header (or `t`) steps to the next theme and
+  names it, and the choice is remembered in the browser's local storage; where storage is blocked it
+  applies to the page only. `-theme file.json` adds a theme of your own to the list (it must pass
+  the checks in the [themes guide](themes.md), and is refused before anything is served if it does
+  not), and `-theme-default name` sets the theme a reader starts in; a reader's own choice still wins.
+  A theme changes colours, fonts, spacing and corner radius, never a word, an icon or a shape.
 - **Keyboard.** `j` and `k` move to the next and previous record (or run, on the list), `Enter`
   opens the highlighted run, `/` goes to the filter (the timeline's, which narrows the rows as you
   type, or the list's run ID), `t` switches the theme, `s` shares, `?` shows this list and `Esc`

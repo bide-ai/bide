@@ -4,8 +4,11 @@ A theme sets the colours, fonts, spacing and corner radius of bide's visual page
 (`bide view`), the flow editor (`bide edit`) and, in a later release, the approve page. The design,
 including what a theme can never change, is in [Themes](../design/themes.md).
 
-**Status.** This release adds the theme file format and the checker, `bide theme check`. The pages
-do not load a theme file yet; the checker lets you write and test one now.
+**Status.** The run viewer (`bide view`, and the diff and config pages it serves) draws from the
+checked themes: `light`, `dark` and `high-contrast`, plus a theme file of your own with `-theme`. The
+flow editor shares the viewer's stylesheet and so takes the same tokens, but its own toggle still
+switches between light and dark only; the editor's `-theme` flag, the approve page and forced-colors
+support come in later releases.
 
 A theme is data: a JSON file of typed values, never CSS. It cannot add a selector, a property, a URL
 or a function, so it cannot hide, move or restyle a control. It also cannot change a word, an icon,
@@ -74,5 +77,16 @@ cannot be read, and 2 for a usage error. `-v` prints every measure.
 Ranges and enums (C7) are checked while the file is read. A theme that fails any check but C6 is
 refused. Every key and value in an error is quoted, so a file cannot print a terminal escape.
 
-What the pages do with a theme, how the toggle and the `-theme` flag work, and what happens under
-forced colours and `prefers-contrast` come with the releases that wire the pages to it.
+## Using a theme
+
+- `bide view -theme theme.json ...` adds the theme to the pages' list, after the shipped ones. A
+  theme that fails a check is refused before anything is served, with each failed check on stderr; a
+  warning (the colour-blindness check) is printed and the theme is served.
+- `-theme-default name` starts the pages in `light`, `dark`, `high-contrast` or your theme, instead of
+  following the system's light or dark setting. A reader who has switched themes keeps their own
+  choice, which the browser remembers.
+- The sun button in the header, or `t`, steps through the list and names the theme it shows.
+
+What a theme can never change is in the [design note](../design/themes.md): no selector, no property, no
+word, icon or shape. What happens under forced colours and `prefers-contrast` comes with a later
+release.

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/bide-ai/bide/internal/approveline"
 	safetext "github.com/bide-ai/bide/internal/printable"
 	"github.com/bide-ai/bide/internal/term"
+	"github.com/bide-ai/bide/internal/theme"
 	"github.com/bide-ai/bide/plan"
 )
 
@@ -123,6 +125,7 @@ type flags struct {
 	approvers             string
 	excludePrincipal      bool
 	stopPolicy, stopRoot  string
+	theme, themeDefault   string
 }
 
 // Main is the bide view command: it parses args, opens the input, and serves until interrupted.
@@ -157,6 +160,8 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 	fs.StringVar(&f.stopPolicy, "stop-policy", "", "the kill switch's stop policy (the JSON document bide stop -stop-policy reads), so the banner and the held-by-stop states judge the control run as an audited deployment does and check its signatures; without it the control run is read as a basic one and the banner says signatures are not verified")
 	fs.StringVar(&f.stopRoot, "stop-root", "", "with -stop-policy: the digest of the deployment's root policy, when the file is a later policy the chain reaches")
 	addr := fs.String("addr", "127.0.0.1:8484", "address to serve on: a loopback IP (127.0.0.1 or ::1) or localhost, with a port")
+	fs.StringVar(&f.theme, "theme", "", "a theme file (JSON, see docs/guides/themes.md; check it with bide theme check) the pages offer beside light, dark and high-contrast; refused, with the failed checks, if it fails them")
+	fs.StringVar(&f.themeDefault, "theme-default", "", "the theme a reader starts in (light, dark, high-contrast, or the -theme file's name), instead of following the system setting; a reader's own choice still wins")
 	color := term.Flag(fs)
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -176,6 +181,27 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 		fmt.Fprintln(stderr, es.ErrorPrefix()+"bide view:", msg)
 		fs.Usage()
 		return 2
+	}
+	var themed func(Options) Options
+	if !f.check {
+		var extra []*theme.Theme
+		if f.theme != "" {
+			th, rep, err := theme.Load(f.theme)
+			if err != nil {
+				fmt.Fprintf(stderr, "%s%s: %v\n", es.ErrorPrefix(), f.theme, err)
+				return 1
+			}
+			for _, m := range rep.Failures(theme.Warning) {
+				fmt.Fprintf(stderr, "%s: warning %s %s\n", f.theme, m.Check, m.Subject)
+			}
+			extra = append(extra, th)
+		}
+		if f.themeDefault != "" && !themeNamed(f.themeDefault, extra) {
+			return usage("-theme-default " + strconv.Quote(f.themeDefault) + " names no theme: light, dark, high-contrast or the -theme file's name")
+		}
+		themed = func(o Options) Options { o.Themes, o.DefaultTheme = extra, f.themeDefault; return o }
+	} else if f.theme != "" || f.themeDefault != "" {
+		return usage("-theme and -theme-default need a page to serve; -check serves none")
 	}
 	if f.check && f.config == "" {
 		return usage("-check needs -config")
@@ -213,7 +239,7 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 				return 1
 			}
 			if !f.check {
-				return serve(*addr, "", Options{Diff: &d}, nil, st, es, stdout, stderr)
+				return serve(*addr, "", themed(Options{Diff: &d}), nil, st, es, stdout, stderr)
 			}
 			weakened, _ := CheckDiffStyled(stdout, d, st)
 			if weakened && f.failOnWeaken {
@@ -228,7 +254,7 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 			}
 			return 0
 		}
-		return serve(*addr, "", Options{Config: &c}, nil, st, es, stdout, stderr)
+		return serve(*addr, "", themed(Options{Config: &c}), nil, st, es, stdout, stderr)
 	}
 	inputs := 0
 	for _, set := range []bool{f.db != "", f.postgres != "" || f.postgresEnv != "", len(f.journals) > 0} {
@@ -279,7 +305,7 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 		fmt.Fprintln(stderr, es.ErrorPrefix()+"bide view:", err)
 		return 1
 	}
-	return serve(*addr, *run, o, closer, st, es, stdout, stderr)
+	return serve(*addr, *run, themed(o), closer, st, es, stdout, stderr)
 }
 
 // serve listens on addr (a loopback address) and serves o until interrupted. It prints the page's
@@ -575,4 +601,17 @@ func stopFeed(j *agent.Journal, f flags) (*StopFeed, error) {
 		return nil, err
 	}
 	return &StopFeed{Control: ctl, Plain: plain, Verified: true}, nil
+}
+
+// themeNamed reports whether name is a shipped theme or one of extra.
+func themeNamed(name string, extra []*theme.Theme) bool {
+	if _, ok := theme.Lookup(name); ok {
+		return true
+	}
+	for _, t := range extra {
+		if t.Name() == name {
+			return true
+		}
+	}
+	return false
 }

@@ -36,6 +36,7 @@ var grammar = func() *regexp.Regexp {
 		`|:root \{|:root:not\(\[data-theme\]\) \{|@media \(prefers-color-scheme: dark\) \{|:root\[data-theme="[a-z][a-z0-9-]{1,31}"\] \{|\}` +
 		`|  --[a-z0-9-]+: (?:` + value + `);` +
 		`|  --bide-themes: "[a-z0-9 -]+";` +
+		`|  --bide-default: "[a-z][a-z0-9-]{1,31}";` +
 		`|  color-scheme: (?:light|dark);` +
 		`)$`)
 }()
@@ -147,4 +148,22 @@ func FuzzParseCSS(f *testing.F) {
 		}
 		checkGrammar(t, CSS(append(Shipped(), th)))
 	})
+}
+
+func TestCSSDefault(t *testing.T) {
+	css := CSSDefault(Shipped(), "dark")
+	checkGrammar(t, css)
+	root := css[:strings.Index(css, `:root[data-theme=`)]
+	if !strings.Contains(root, "--bg: #121214;") || !strings.Contains(root, `--bide-default: "dark";`) || strings.Contains(css, "@media") {
+		t.Errorf("a default of dark: the root block is not dark, has no --bide-default, or keeps the media block:\n%s", root)
+	}
+	if CSSDefault(Shipped(), "") != CSS(Shipped()) {
+		t.Error("an empty default is not CSS")
+	}
+	defer func() {
+		if recover() == nil {
+			t.Error("a default that names no theme did not panic")
+		}
+	}()
+	CSSDefault(Shipped(), "nope")
 }

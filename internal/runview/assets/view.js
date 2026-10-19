@@ -210,17 +210,18 @@
     tl.after(empty);
   };
 
-  // --- the theme toggle: light or dark, remembered (storage may be blocked, so every access is guarded)
-  const root = document.documentElement;
-  const dark = () => {
-    const t = root.getAttribute("data-theme");
-    return t ? t === "dark" : window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  // --- the theme toggle: the next theme in the stylesheet's list (theme.js), remembered (storage may be
+  // blocked, so every access is guarded). The button names the theme it shows and the one it switches to.
+  const labelTheme = () => {
+    const b = document.getElementById("theme");
+    if (b && window.bideTheme) b.setAttribute("aria-label", "Theme: " + window.bideTheme.current() + ". Switch to " + window.bideTheme.next());
   };
   const toggleTheme = () => {
-    const next = dark() ? "light" : "dark";
-    root.setAttribute("data-theme", next);
-    try { localStorage.setItem("bide-theme", next); } catch (e) { /* not remembered; this page still switched */ }
+    if (!window.bideTheme) return;
+    window.bideTheme.toggle();
+    labelTheme();
   };
+  labelTheme();
   document.addEventListener("click", (ev) => { if (ev.target.closest && ev.target.closest("#theme")) toggleTheme(); });
 
   // --- keyboard: j and k step through the records (or the runs of the list), / filters, ? helps

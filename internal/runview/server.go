@@ -17,6 +17,7 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
 	safetext "github.com/bide-ai/bide/internal/printable"
+	"github.com/bide-ai/bide/internal/theme"
 	"github.com/bide-ai/bide/plan"
 )
 
@@ -153,6 +154,10 @@ type Options struct {
 	// while a stop is in force (or the control run cannot be judged, or holds rejected records), a run's page
 	// and the run list say which runs a stop holds, and /stops.json serves the same state.
 	Stops *StopFeed
+	// Themes are custom themes (see internal/theme) the pages offer beside the shipped light, dark
+	// and high-contrast; DefaultTheme, when not empty, names the one a reader starts in.
+	Themes       []*theme.Theme
+	DefaultTheme string
 	// Now is the clock the Needs attention list measures waits by; nil is time.Now.
 	Now func() time.Time
 
@@ -170,7 +175,7 @@ type Options struct {
 func Handler(o Options) http.Handler {
 	o.cache = &ttlCache{}
 	mux := http.NewServeMux()
-	mux.Handle("GET /assets/", http.FileServerFS(assets))
+	mux.Handle("GET /assets/", http.StripPrefix("/assets/", http.FileServerFS(AssetsWith(o.DefaultTheme, o.Themes...))))
 	if o.Config != nil {
 		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { render(w, "config.html", BuildConfig(*o.Config)) })
 		mux.HandleFunc("GET /config.json", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, BuildConfig(*o.Config)) })
