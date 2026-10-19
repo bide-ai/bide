@@ -223,7 +223,7 @@ another node to add an edge from the first to the second. It sends the same `add
 form does, so it has the same refusals (an edge into a join, out of a switched node, a duplicate: the
 reason is shown and announced), the same verification, and shows the same weakened banner when the new
 edge reaches a gated node by another way. Dropping on the same node, on nothing, or pressing Escape
-cancels with no change; so does losing the pointer or the flow being redrawn mid-drag. It works with a mouse (and a pen where the browser allows it); on a touch screen the browser takes the gesture for a scroll, so use the inspector's Connections form there. The circle is a pointer shortcut: it is hidden from assistive technology and is
+cancels with no change; so does losing the pointer or the flow being redrawn mid-drag. It works with a mouse, a pen or a finger: the circle is drawn small but its touch target is at least 44 px, and a touch that starts anywhere else on the flow still scrolls the page. The circle is a pointer shortcut: it is hidden from assistive technology and is
 not in the Tab order, because every connection can be made, and removed, from the inspector by
 keyboard. The layout stays derived: nothing about where a node is drawn is stored.
 

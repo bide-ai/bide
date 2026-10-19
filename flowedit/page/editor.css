@@ -70,6 +70,8 @@ dialog h2 { margin-top: 0; }
 #add-join { margin: var(--s3) 0; }
 #add-join summary { cursor: pointer; font-weight: 600; }
 #add-join .inputs { border: 0; padding: 0; margin: var(--s2) 0; }
-.node .port { fill: var(--card); stroke: var(--accent); stroke-width: 2; cursor: crosshair; }
-.node .port:hover { stroke-width: 3; }
+.node .port { fill: var(--card); stroke: var(--accent); stroke-width: 2; pointer-events: none; }
+.node:has(.port-hit-box:hover) .port { stroke-width: 3; }
+.port-hit { overflow: visible; }
+.port-hit-box { width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
 .drag { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 5 4; pointer-events: none; }

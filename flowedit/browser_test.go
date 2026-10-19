@@ -1119,35 +1119,43 @@ func TestUndoCoversStructureEditsInChrome(t *testing.T) {
 func TestDragToConnectInChrome(t *testing.T) {
 	s, _ := newTestServer(t, "refund.yaml", weakFlow)
 	var r struct {
-		OK                bool     `json:"ok"`
-		Error             string   `json:"error"`
-		WithAudit         string   `json:"withAudit"`
-		Ports             int      `json:"ports"`
-		PortHidden        bool     `json:"portHidden"`
-		TabStops          int      `json:"tabStops"`
-		LineWhileDragging int      `json:"lineWhileDragging"`
-		AfterDrag         string   `json:"afterDrag"`
-		LineAfter         int      `json:"lineAfter"`
-		Live              string   `json:"live"`
-		Selected          string   `json:"selected"`
-		SameNodeUnchanged bool     `json:"sameNodeUnchanged"`
-		SameNodeLive      string   `json:"sameNodeLive"`
-		NothingUnchanged  bool     `json:"nothingUnchanged"`
-		LineBeforeEscape  int      `json:"lineBeforeEscape"`
-		LineAfterEscape   int      `json:"lineAfterEscape"`
-		EscapeUnchanged   bool     `json:"escapeUnchanged"`
-		EscapeLive        string   `json:"escapeLive"`
-		Refusal           string   `json:"refusal"`
-		RefusedUnchanged  bool     `json:"refusedUnchanged"`
-		LineBeforeLost    int      `json:"lineBeforeLostCapture"`
-		LineAfterLost     int      `json:"lineAfterLostCapture"`
-		LostUnchanged     bool     `json:"lostCaptureUnchanged"`
-		LineBeforeRedraw  int      `json:"lineBeforeRedraw"`
-		EscapePrevented   *bool    `json:"escapePrevented"`
-		PortsAfterRedraw  int      `json:"portsAfterRedraw"`
-		Console           []string `json:"console"`
-		Failed            []string `json:"failed"`
-		OffOrigin         []string `json:"offOrigin"`
+		OK                  bool     `json:"ok"`
+		Error               string   `json:"error"`
+		WithAudit           string   `json:"withAudit"`
+		Ports               int      `json:"ports"`
+		PortHidden          bool     `json:"portHidden"`
+		TabStops            int      `json:"tabStops"`
+		LineWhileDragging   int      `json:"lineWhileDragging"`
+		AfterDrag           string   `json:"afterDrag"`
+		LineAfter           int      `json:"lineAfter"`
+		Live                string   `json:"live"`
+		Selected            string   `json:"selected"`
+		SameNodeUnchanged   bool     `json:"sameNodeUnchanged"`
+		SameNodeLive        string   `json:"sameNodeLive"`
+		NothingUnchanged    bool     `json:"nothingUnchanged"`
+		LineBeforeEscape    int      `json:"lineBeforeEscape"`
+		LineAfterEscape     int      `json:"lineAfterEscape"`
+		EscapeUnchanged     bool     `json:"escapeUnchanged"`
+		EscapeLive          string   `json:"escapeLive"`
+		Refusal             string   `json:"refusal"`
+		RefusedUnchanged    bool     `json:"refusedUnchanged"`
+		LineBeforeLost      int      `json:"lineBeforeLostCapture"`
+		LineAfterLost       int      `json:"lineAfterLostCapture"`
+		LostUnchanged       bool     `json:"lostCaptureUnchanged"`
+		LineBeforeRedraw    int      `json:"lineBeforeRedraw"`
+		EscapePrevented     *bool    `json:"escapePrevented"`
+		PortsAfterRedraw    int      `json:"portsAfterRedraw"`
+		EscapeAnnounced     bool     `json:"escapeAnnounced"`
+		HitSize             float64  `json:"hitSize"`
+		PageScrollable      bool     `json:"pageScrollable"`
+		CornerIsSvg         bool     `json:"cornerIsSvg"`
+		TouchScrolled       float64  `json:"touchScrolled"`
+		DragStartedByScroll bool     `json:"dragStartedByScroll"`
+		BelowFirstViewport  bool     `json:"belowFirstViewport"`
+		ScrolledTo          float64  `json:"scrolledTo"`
+		Console             []string `json:"console"`
+		Failed              []string `json:"failed"`
+		OffOrigin           []string `json:"offOrigin"`
 	}
 	runScript(t, "drag.mjs", s, &r)
 	if !r.OK {
@@ -1174,7 +1182,16 @@ func TestDragToConnectInChrome(t *testing.T) {
 	if r.LineBeforeLost != 1 || r.LineAfterLost != 0 || !r.LostUnchanged {
 		t.Errorf("lost pointer capture: line before %d after %d, unchanged %v", r.LineBeforeLost, r.LineAfterLost, r.LostUnchanged)
 	}
-	if r.LineBeforeRedraw != 1 || r.EscapePrevented == nil || *r.EscapePrevented || r.PortsAfterRedraw != 4 {
+	if r.LineBeforeRedraw != 1 || r.EscapePrevented == nil || *r.EscapePrevented || r.EscapeAnnounced || r.PortsAfterRedraw != 4 {
 		t.Errorf("a redraw in a drag: line before %d, a later Escape prevented %v, ports %d", r.LineBeforeRedraw, r.EscapePrevented, r.PortsAfterRedraw)
+	}
+	if r.HitSize < 44 {
+		t.Errorf("the circle's touch target is %v px, want at least 44", r.HitSize)
+	}
+	if !r.PageScrollable || !r.CornerIsSvg || r.TouchScrolled <= 0 || r.DragStartedByScroll {
+		t.Errorf("a touch away from the circle must scroll the page: scrollable %v, corner is bare svg %v, scrolled to %v, started a drag %v", r.PageScrollable, r.CornerIsSvg, r.TouchScrolled, r.DragStartedByScroll)
+	}
+	if r.ScrolledTo <= 0 || !r.BelowFirstViewport {
+		t.Errorf("the scrolled drag was not made with the page scrolled (scrollY %v, nodes below the first viewport %v)", r.ScrolledTo, r.BelowFirstViewport)
 	}
 }
