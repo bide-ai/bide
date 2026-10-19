@@ -3,8 +3,8 @@ module github.com/bide-ai/bide/govern/redislog
 go 1.27.0
 
 require (
-	github.com/bide-ai/bide v0.0.0
-	github.com/bide-ai/bide/govern v0.0.0
+	github.com/bide-ai/bide v0.21.0
+	github.com/bide-ai/bide/govern v0.21.0
 	github.com/blackwell-systems/gsm v0.14.0
 	github.com/redis/go-redis/v9 v9.22.0
 )
@@ -15,7 +15,3 @@ require (
 	go.uber.org/atomic v1.11.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 )
-
-replace github.com/bide-ai/bide => ../../
-
-replace github.com/bide-ai/bide/govern => ../

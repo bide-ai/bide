@@ -1,3 +1,11 @@
+github.com/bide-ai/bide v0.21.0 h1:iM6M1rc6PTniCwW4HF+yOFZTrlXp4/b5hb8Q4RIxTkE=
+github.com/bide-ai/bide v0.21.0/go.mod h1:/9TldvSgiSK7hwUc7FpvD2y3jGS5a6EgWhqaBUv+Diw=
+github.com/bide-ai/bide/flowedit v0.21.0 h1:RW6FOPaflo6P3zmNpv6xkb3ONe1RkiogysbBF97vPbc=
+github.com/bide-ai/bide/flowedit v0.21.0/go.mod h1:0vCcQZFRYB0zIfTA87SvDmIkX09aaL+Jnqh7S4Glvpw=
+github.com/bide-ai/bide/store/postgres v0.21.0 h1:CtmcBnI/WDSNY3IZhxknQ0Ts657w/hZa+frxSWhQd3s=
+github.com/bide-ai/bide/store/postgres v0.21.0/go.mod h1:TPRMmoOItrDAPpYH8x4OGPiPhK44KzHNAaYZEfecEDg=
+github.com/bide-ai/bide/store/sqlite v0.21.0 h1:8PSWP1Te/HY1Hxcar0zC+PUloUFlCAGQZkZ2EoMPaQQ=
+github.com/bide-ai/bide/store/sqlite v0.21.0/go.mod h1:MKS9KaAh4Q2kk+IymYd/Xri4XrZ4oH/l43sKrbtSdr0=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=
 github.com/dustin/go-humanize v1.0.1/go.mod h1:Mu1zIs6XwVuF/gI1OepvI0qD18qycQx+mFykh5fBlto=
