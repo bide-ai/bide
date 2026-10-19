@@ -1,7 +1,7 @@
 # Design: themes for bide's visual pages
 
-Status: accepted (the maintainer decided all 14 decisions as recommended on 2026-10-19, with two changes: the colour-blindness check is enforced for shipped themes, and the theme package is internal until the Go embedding PR). Nothing in it is built yet. Written against `main` at c0224a63. The target is
-v0.22.0.
+Status: accepted (the maintainer decided all 14 decisions as recommended on 2026-10-19, with two changes: the colour-blindness check is enforced for shipped themes, and the theme package is internal until the Go embedding PR). Built so far (unreleased, target v0.22.0): PR 1 (the theme file, its checks, `bide theme check`), PR 2 (`bide view` and the pages
+it serves draw from the checked themes, with `-theme` and `-theme-default`) and PR 3 (the colour-only fixes and their tests). The editor, the approve page, `forced-colors` and `prefers-contrast`, and the Go embedding option (PRs 4 to 7) are not built. Written against `main` at c0224a63.
 
 The visual pages are the run viewer (`bide view`, `internal/runview/assets`), the flow editor
 (`bide edit`, `flowedit/page`), the diff and config pages (the viewer's, also served by
