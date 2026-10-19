@@ -1049,26 +1049,32 @@ func TestJoinsInChrome(t *testing.T) {
 func TestUndoCoversStructureEditsInChrome(t *testing.T) {
 	s, _ := newTestServer(t, "refund.yaml", weakFlow)
 	var r struct {
-		OK                     bool     `json:"ok"`
-		Error                  string   `json:"error"`
-		Steps                  int      `json:"steps"`
-		BannerWhenWeakened     string   `json:"bannerWhenWeakened"`
-		UndoMatches            []bool   `json:"undoMatches"`
-		BannerAfterFirstUndo   string   `json:"bannerAfterFirstUndo"`
-		UndoDisabledAtStart    bool     `json:"undoDisabledAtStart"`
-		StateAtStart           string   `json:"stateAtStart"`
-		Original               string   `json:"original"`
-		RedoMatches            []bool   `json:"redoMatches"`
-		RedoDisabledAtEnd      bool     `json:"redoDisabledAtEnd"`
-		Disk                   string   `json:"disk"`
-		Last                   string   `json:"last"`
-		UndoEnabledAfterSave   bool     `json:"undoEnabledAfterSave"`
-		StateAfterUndoPastSave string   `json:"stateAfterUndoPastSave"`
-		DiskStill              bool     `json:"diskStill"`
-		StateAfterRedoToSaved  string   `json:"stateAfterRedoToSaved"`
-		Console                []string `json:"console"`
-		Failed                 []string `json:"failed"`
-		OffOrigin              []string `json:"offOrigin"`
+		OK                               bool     `json:"ok"`
+		Error                            string   `json:"error"`
+		Steps                            int      `json:"steps"`
+		BannerWhenWeakened               string   `json:"bannerWhenWeakened"`
+		UndoMatches                      []bool   `json:"undoMatches"`
+		BannerAfterFirstUndo             string   `json:"bannerAfterFirstUndo"`
+		UndoDisabledAtStart              bool     `json:"undoDisabledAtStart"`
+		StateAtStart                     string   `json:"stateAtStart"`
+		Original                         string   `json:"original"`
+		RedoMatches                      []bool   `json:"redoMatches"`
+		RedoDisabledAtEnd                bool     `json:"redoDisabledAtEnd"`
+		Disk                             string   `json:"disk"`
+		Last                             string   `json:"last"`
+		UndoEnabledAfterSave             bool     `json:"undoEnabledAfterSave"`
+		StateAfterUndoPastSave           string   `json:"stateAfterUndoPastSave"`
+		DiskStill                        bool     `json:"diskStill"`
+		StateAfterRedoToSaved            string   `json:"stateAfterRedoToSaved"`
+		BackThree                        bool     `json:"backThree"`
+		RedoDisabledAfterNewEdit         bool     `json:"redoDisabledAfterNewEdit"`
+		NewEditText                      bool     `json:"newEditText"`
+		UndoGivesTheTextBeforeTheNewEdit bool     `json:"undoGivesTheTextBeforeTheNewEdit"`
+		RedoEnabledAfterUndo             bool     `json:"redoEnabledAfterUndo"`
+		RedoDisabledAfterTyping          bool     `json:"redoDisabledAfterTyping"`
+		Console                          []string `json:"console"`
+		Failed                           []string `json:"failed"`
+		OffOrigin                        []string `json:"offOrigin"`
 	}
 	runScript(t, "undo.mjs", s, &r)
 	if !r.OK {
@@ -1098,5 +1104,11 @@ func TestUndoCoversStructureEditsInChrome(t *testing.T) {
 	}
 	if r.Disk != r.Last || !r.UndoEnabledAfterSave || r.StateAfterUndoPastSave != "unsaved changes" || !r.DiskStill || r.StateAfterRedoToSaved != "saved" {
 		t.Errorf("around a save: undo enabled %v, state after undo %q, file untouched %v, state after redo %q", r.UndoEnabledAfterSave, r.StateAfterUndoPastSave, r.DiskStill, r.StateAfterRedoToSaved)
+	}
+	if !r.BackThree || !r.NewEditText || !r.RedoDisabledAfterNewEdit || !r.UndoGivesTheTextBeforeTheNewEdit {
+		t.Errorf("a new edit after Undo: back three %v, new text %v, redo disabled %v, undo gives the earlier text %v", r.BackThree, r.NewEditText, r.RedoDisabledAfterNewEdit, r.UndoGivesTheTextBeforeTheNewEdit)
+	}
+	if !r.RedoEnabledAfterUndo || !r.RedoDisabledAfterTyping {
+		t.Errorf("typing after Undo: redo enabled before %v, redo disabled after typing %v", r.RedoEnabledAfterUndo, r.RedoDisabledAfterTyping)
 	}
 }

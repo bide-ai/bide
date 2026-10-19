@@ -102,6 +102,27 @@ try {
   await atRest();
   r.stateAfterRedoToSaved = await text('#state-tag');
   r.last = texts.at(-1);
+
+  // A new edit after an Undo discards the redo history: Redo must not bring back a text from the branch the
+  // author left. First by an operation, then by typing in the source.
+  for (let i = 0; i < 3; i++) { await page.click('#undo'); await atRest(); }
+  const beforeNew = await source();
+  r.backThree = beforeNew === texts.at(-4);
+  await page.focus('#an-name'); await page.keyboard.type('late'); await page.keyboard.press('Tab'); await page.keyboard.type('late_log'); await page.keyboard.press('Enter');
+  await until(() => document.getElementById('source').value.includes('name: late,'), null, 'the new edit after undo');
+  await atRest();
+  r.redoDisabledAfterNewEdit = await page.$eval('#redo', (b) => b.disabled);
+  r.newEditText = (await source()).includes('name: late,');
+  await page.click('#undo');
+  await until((want) => document.getElementById('source').value === want, beforeNew, 'undo of the new edit');
+  await atRest();
+  r.undoGivesTheTextBeforeTheNewEdit = (await source()) === beforeNew;
+  await page.click('#undo');
+  await atRest();
+  r.redoEnabledAfterUndo = await page.$eval('#redo', (b) => !b.disabled);
+  await page.$eval('#source', (e) => { e.value = e.value + '# typed after an undo\n'; e.dispatchEvent(new Event('input', { bubbles: true })); });
+  await atRest();
+  r.redoDisabledAfterTyping = await page.$eval('#redo', (b) => b.disabled);
   out = { ok: true, ...r, console: console_, failed, offOrigin };
 } catch (e) {
   const live = await page?.$eval('#live', (x) => x.textContent).catch(() => '?');
