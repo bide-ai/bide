@@ -112,7 +112,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 		fs.StringVar(&ownerID, "owner", "", "-backend s3: the 12-digit AWS account ID that owns the bucket (with -bucket)")
 		fs.StringVar(&project, "project", "", "-backend gcs: the number of the Google Cloud project that owns the bucket (with -bucket)")
 		fs.StringVar(&prefix, "prefix", "", "the key prefix the anchor was configured with (default bide-anchor/)")
-		fs.StringVar(&kmsKey, "kms-key", "", "the KMS key the heads must be encrypted with (gcs: projects/P/locations/L/keyRings/R/cryptoKeys/K; s3: a key ID or key ARN, not an alias): a bucket default or an object with another key is a finding")
+		fs.StringVar(&kmsKey, "kms-key", "", "the KMS key the heads must be encrypted with (gcs: projects/P/locations/L/keyRings/R/cryptoKeys/K; s3: an AWS KMS key ID (UUID), an mrk- key ID or a key ARN, nothing else, not an alias; leave it out on an S3-compatible server with named keys): a bucket default or an object with another key is a finding")
 		fs.DurationVar(&retention, "retention", 0, "the retention the anchor was configured with: a bucket retention shorter than this (and, for s3, an object retained for less from its own write) is a finding; without it only the 24 h minimum is checked. A default retention in years counts as 365 days a year (7 years: 2555 days, 61320h), so pass at most that")
 		fs.StringVar(&lockMode, "lock-mode", "", "-backend s3: the object lock mode the anchor was configured with, COMPLIANCE or GOVERNANCE: a bucket default that is weaker is a finding, and with GOVERNANCE a governance-locked object is not")
 		fs.BoolVar(&pathStyle, "path-style", false, "use path-style addressing (a non-AWS server)")

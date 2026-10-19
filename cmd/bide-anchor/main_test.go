@@ -35,7 +35,7 @@ func setup(t *testing.T) *env {
 	h := sha256.Sum256([]byte("k"))
 	s := audit.Ed25519Signer{Priv: ed25519.NewKeyFromSeed(h[:])}
 	f := awss3test.New("b")
-	a, err := awss3.New(context.Background(), awss3.Config{Client: f, Bucket: "b", ExpectedBucketOwner: owner, Retention: 48 * time.Hour, KMSKeyID: "arn:aws:kms:eu-west-1:111122223333:key/k", OnWarn: func(error) {}})
+	a, err := awss3.New(context.Background(), awss3.Config{Client: f, Bucket: "b", ExpectedBucketOwner: owner, Retention: 48 * time.Hour, KMSKeyID: "arn:aws:kms:eu-west-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab", OnWarn: func(error) {}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +369,7 @@ func TestUnreadableDirIsNotAFinding(t *testing.T) {
 	}
 }
 
-const s3Key = "arn:aws:kms:eu-west-1:111122223333:key/k"
+const s3Key = "arn:aws:kms:eu-west-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
 
 // For -backend s3, -kms-key, -retention and -lock-mode turn the bucket's own configuration into expectations:
 // a swapped default key, a shorter default retention or a weaker lock mode is a finding (1), a malformed
@@ -385,7 +385,7 @@ func TestS3BackendBucketExpectations(t *testing.T) {
 		t.Fatalf("every expectation met = %d\n%s%s", code, out, errs)
 	}
 	for name, extra := range map[string][]string{
-		"another key":      {"-kms-key", "arn:aws:kms:eu-west-1:111122223333:key/other"},
+		"another key":      {"-kms-key", "arn:aws:kms:eu-west-1:111122223333:key/aaaabbbb-cc00-4dd1-8ee2-ffff00001111"},
 		"longer retention": {"-retention", "100000h"},
 	} {
 		for _, cmd := range []string{"check", "export"} {
@@ -395,8 +395,8 @@ func TestS3BackendBucketExpectations(t *testing.T) {
 		}
 	}
 	// An alias cannot be checked against the key ARN S3 reports: refused (2), naming the fix.
-	for _, alias := range []string{"alias/bide-anchor", "arn:aws:kms:eu-west-1:111122223333:alias/bide-anchor"} {
-		if code, _, errs := e.do(append([]string{"check"}, with("-kms-key", alias)...)...); code != exitUsage || !strings.Contains(errs, "pass the ARN of the key the alias points to") {
+	for _, alias := range []string{"alias/bide-anchor", "arn:aws:kms:eu-west-1:111122223333:alias/bide-anchor", "ALIAS/x", " alias/x", "key", "arn:aws:kms:eu-west-1:111122223333:key/k"} {
+		if code, _, errs := e.do(append([]string{"check"}, with("-kms-key", alias)...)...); code != exitUsage || !strings.Contains(errs, "for an alias, pass the ARN of the key it points to") {
 			t.Errorf("-kms-key %s = exit %d (%s), want %d naming the fix", alias, code, errs, exitUsage)
 		}
 	}

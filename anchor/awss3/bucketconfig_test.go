@@ -2,6 +2,8 @@ package awss3_test
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,7 +15,7 @@ import (
 	"github.com/bide-ai/bide/audit"
 )
 
-const bucketKey = "arn:aws:kms:eu-west-1:111122223333:key/abcd-1234"
+const bucketKey = "arn:aws:kms:eu-west-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
 
 // expecting is a Reader that expects the key, retention and mode the fake bucket is configured with.
 func expecting(t testing.TB, f *awss3test.Fake, v audit.Verifier, mod func(*awss3.ReaderConfig)) *awss3.Reader {
@@ -60,7 +62,9 @@ func TestBucketConfigurationFindings(t *testing.T) {
 		{name: "default retention shorter than expected", weak: func(f *awss3test.Fake) { f.DefaultDays = 10 }, want: "shorter than the expected"},
 		{name: "governance default where compliance is expected", weak: func(f *awss3test.Fake) { f.DefaultMode = types.ObjectLockRetentionModeGovernance }, want: "weaker than the expected COMPLIANCE"},
 		{name: "default encryption is not KMS", weak: func(f *awss3test.Fake) { f.DefaultKMS = false }, want: "default encryption is not SSE-KMS"},
-		{name: "default KMS key swapped", weak: func(f *awss3test.Fake) { f.DefaultKMSKeyID = "arn:aws:kms:eu-west-1:111122223333:key/other" }, want: "default KMS key is"},
+		{name: "default KMS key swapped", weak: func(f *awss3test.Fake) {
+			f.DefaultKMSKeyID = "arn:aws:kms:eu-west-1:111122223333:key/aaaabbbb-cc00-4dd1-8ee2-ffff00001111"
+		}, want: "default KMS key is"},
 		{name: "default key is the AWS-managed one", weak: func(f *awss3test.Fake) { f.DefaultKMSKeyID = "" }, want: "default KMS key is"},
 		// A governance default is not weaker than a governance expectation, and nothing is judged
 		// about an expectation the reader was not given.
@@ -107,7 +111,9 @@ func TestObjectFindingsAgainstExpectations(t *testing.T) {
 	}
 	// An object encrypted with another key, and one that is not KMS-encrypted at all.
 	for name, tamper := range map[string]func(*awss3test.Version){
-		"another key":   func(v *awss3test.Version) { v.KMSKey = "arn:aws:kms:eu-west-1:111122223333:key/other" },
+		"another key": func(v *awss3test.Version) {
+			v.KMSKey = "arn:aws:kms:eu-west-1:111122223333:key/aaaabbbb-cc00-4dd1-8ee2-ffff00001111"
+		},
 		"no encryption": func(v *awss3test.Version) { v.SSE = "" },
 		"retention cut": func(v *awss3test.Version) { v.RetainUntil = v.Created.Add(24 * time.Hour) },
 	} {
@@ -203,12 +209,12 @@ func TestReaderRefusesAKMSAlias(t *testing.T) {
 	k := newKeys(t, 1)
 	for _, key := range []string{"alias/bide-anchor", "arn:aws:kms:eu-west-1:111122223333:alias/bide-anchor"} {
 		_, err := awss3.NewReader(awss3.ReaderConfig{Client: f, Bucket: bucket, ExpectedBucketOwner: owner, Verifier: k.v, KMSKeyID: key})
-		if !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "pass the ARN of the key the alias points to") {
+		if !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "for an alias, pass the ARN of the key it points to") {
 			t.Errorf("KMSKeyID %q: NewReader = %v, want agent.ErrConfig naming the fix", key, err)
 		}
 	}
 	// A key ID and a key ARN are accepted.
-	for _, key := range []string{"abcd-1234", bucketKey} {
+	for _, key := range []string{"1234abcd-12ab-34cd-56ef-1234567890ab", bucketKey} {
 		if _, err := awss3.NewReader(awss3.ReaderConfig{Client: f, Bucket: bucket, ExpectedBucketOwner: owner, Verifier: k.v, KMSKeyID: key}); err != nil {
 			t.Errorf("KMSKeyID %q refused: %v", key, err)
 		}
@@ -220,11 +226,11 @@ func TestBareKeyIDDoesNotMatchAnAliasARN(t *testing.T) {
 	k := newKeys(t, 1)
 	f := awss3test.New(bucket)
 	publish(t, f, k, "r", 1)
-	r := expecting(t, f, k.v, func(c *awss3.ReaderConfig) { c.KMSKeyID = "abcd-1234" })
+	r := expecting(t, f, k.v, func(c *awss3.ReaderConfig) { c.KMSKeyID = "1234abcd-12ab-34cd-56ef-1234567890ab" })
 	if got := findingsOf(t, r); len(got) != 0 {
 		t.Fatalf("a bare ID against its key ARN: %v", got)
 	}
-	f.DefaultKMSKeyID = "arn:aws:kms:eu-west-1:111122223333:alias/abcd-1234"
+	f.DefaultKMSKeyID = "arn:aws:kms:eu-west-1:111122223333:alias/1234abcd-12ab-34cd-56ef-1234567890ab"
 	got := findingsOf(t, r)
 	if len(got) != 1 || !strings.Contains(got[0], "default KMS key is") {
 		t.Fatalf("a bare ID against an alias ARN of the same name: %v; want a finding", got)
@@ -258,4 +264,81 @@ func bucketOnly(all []string) []string {
 		}
 	}
 	return out
+}
+
+// Where a key is configured only a key ID, a multi-Region key ID or a key ARN is accepted: an allow-check,
+// so an odd string that is no alias to KMS (and no key either) is refused too, by the writer and the Reader.
+func TestOnlyAKeyIDOrARNIsAcceptedAsTheKMSKey(t *testing.T) {
+	const id = "1234abcd-12ab-34cd-56ef-1234567890ab"
+	const mrk = "mrk-1234abcd12ab34cd56ef1234567890ab"
+	good := []string{
+		id, mrk,
+		"arn:aws:kms:eu-west-1:111122223333:key/" + id,
+		"arn:aws-cn:kms:cn-north-1:111122223333:key/" + id,
+		"arn:aws-us-gov:kms:us-gov-west-1:111122223333:key/" + mrk,
+	}
+	bad := []string{
+		"alias/bide-anchor", "arn:aws:kms:eu-west-1:111122223333:alias/bide-anchor", "alias/bide-anchor\n",
+		" alias/x", "\talias/x", "ALIAS/x", "Alias/x", "my-alias/x", "alias", "key", "k", " " + id, id + " ", id + "\n",
+		"1234ABCD-12ab-34cd-56ef-1234567890ab", "1234abcd-12AB-34cd-56ef-1234567890ab", "1234abcd-12ab-34CD-56ef-1234567890ab", "1234abcd-12ab-34cd-56EF-1234567890ab", "1234abcd-12ab-34cd-56ef-1234567890AB", "mrk-1234ABCD12ab34cd56ef1234567890ab",
+		"1234ABCD-12AB-34CD-56EF-1234567890AB",        // a key ID is lower case
+		"1234abcd-12ab-34cd-56ef-1234567890a",         // too short
+		"mrk-1234abcd12ab34cd56ef1234567890a",         // too short
+		"MRK-1234abcd12ab34cd56ef1234567890ab",        // the prefix is lower case
+		"arn:aws:kms:eu-west-1:111122223333:key/k",    // not an ID
+		"arn:aws:kms:eu-west-1:1111:key/" + id,        // not an account
+		"arn:aws:kms::111122223333:key/" + id,         // no region
+		"arn:aws:s3:eu-west-1:111122223333:key/" + id, // not KMS
+		"arn:aws:kms:eu-west-1:111122223333:key/" + id + "/extra",
+		"arn:aws:kms:eu-west-1:111122223333:key/" + id + "\n",
+		"projects/p/locations/l/keyRings/r/cryptoKeys/k", // a Google Cloud name
+	}
+	k := newKeys(t, 1)
+	for _, key := range good {
+		f := awss3test.New(bucket)
+		if _, err := awss3.NewReader(awss3.ReaderConfig{Client: f, Bucket: bucket, ExpectedBucketOwner: owner, Verifier: k.v, KMSKeyID: key}); err != nil {
+			t.Errorf("the Reader refused %q: %v", key, err)
+		}
+		if _, err := awss3.New(ctx, awss3.Config{Client: f, Bucket: bucket, ExpectedBucketOwner: owner, Retention: 30 * 24 * time.Hour, KMSKeyID: key, OnWarn: func(error) {}}); err != nil {
+			t.Errorf("New refused %q: %v", key, err)
+		}
+	}
+	for _, key := range bad {
+		f := awss3test.New(bucket)
+		_, err := awss3.NewReader(awss3.ReaderConfig{Client: f, Bucket: bucket, ExpectedBucketOwner: owner, Verifier: k.v, KMSKeyID: key})
+		if !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "for an alias, pass the ARN of the key it points to") {
+			t.Errorf("the Reader accepted or mis-reported %q: %v", key, err)
+		}
+		_, err = awss3.New(ctx, awss3.Config{Client: f, Bucket: bucket, ExpectedBucketOwner: owner, Retention: 30 * 24 * time.Hour, KMSKeyID: key, OnWarn: func(error) {}})
+		if !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "for an alias, pass the ARN of the key it points to") {
+			t.Errorf("New accepted or mis-reported %q: %v", key, err)
+		}
+		if n := f.Calls("PutObject") + f.Calls("HeadBucket"); n != 0 {
+			t.Errorf("%q: %d requests were made before the refusal", key, n)
+		}
+	}
+}
+
+// The Upgrading note quotes the refusal's text so that an operator can search a log for it: the real
+// message contains every piece the note quotes.
+func TestUpgradingNoteQuotesTheRefusalText(t *testing.T) {
+	frag, err := os.ReadFile(filepath.Join("..", "..", "changes", "unreleased", "awss3-refuse-kms-alias.md"))
+	if err != nil {
+		t.Skip("the changelog fragment is assembled at release: " + err.Error())
+	}
+	_, got := awss3.New(ctx, awss3.Config{Client: awss3test.New(bucket), Bucket: bucket, ExpectedBucketOwner: owner, Retention: 30 * 24 * time.Hour, KMSKeyID: "alias/x"})
+	if got == nil {
+		t.Fatal("New accepted an alias")
+	}
+	for _, piece := range []string{"awss3: Config.KMSKeyID: KMS key must be a key ID or key ARN (got ", "a lower-case UUID, mrk- and 32 lower-case hex digits, or arn:<partition>:kms:<region>:<account>:key/<one of those>", "for an alias, pass the ARN of the key it points to"} {
+		if !strings.Contains(got.Error(), piece) {
+			t.Errorf("the error does not contain %q", piece)
+		}
+		if !strings.Contains(string(frag), piece) {
+			t.Errorf("the Upgrading note does not quote %q", piece)
+		}
+	}
+	if !strings.Contains(string(frag), "upper-case key ID") {
+		t.Error("the Upgrading note does not say upper-case key IDs are refused")
+	}
 }

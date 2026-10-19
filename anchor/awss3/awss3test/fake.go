@@ -78,7 +78,7 @@ type Fake struct {
 // with Object Lock and a 365-day compliance default retention, and SSE-KMS default encryption.
 func New(bucket string) *Fake {
 	return &Fake{Bucket: bucket, Owner: "111122223333", Versioning: types.BucketVersioningStatusEnabled,
-		LockEnabled: true, DefaultMode: types.ObjectLockRetentionModeCompliance, DefaultDays: 365, DefaultKMS: true, DefaultKMSKeyID: "arn:aws:kms:eu-west-1:111122223333:key/abcd-1234",
+		LockEnabled: true, DefaultMode: types.ObjectLockRetentionModeCompliance, DefaultDays: 365, DefaultKMS: true, DefaultKMSKeyID: "arn:aws:kms:eu-west-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab",
 		keys: map[string][]*Version{}, calls: map[string]int{}, Seen: map[string][]string{}}
 }
 

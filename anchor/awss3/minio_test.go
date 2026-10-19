@@ -203,7 +203,9 @@ func TestObjectLockServerBucketConfigurationFindings(t *testing.T) {
 	if got := audit1(reader(good, func(c *awss3.ReaderConfig) { c.Retention = 30 * 24 * time.Hour })); !has(got, "shorter than the expected") {
 		t.Errorf("a longer expected retention: %v", got)
 	}
-	if got := audit1(reader(good, func(c *awss3.ReaderConfig) { c.KMSKeyID = "arn:aws:kms:us-east-1:111122223333:key/abcd" })); !has(got, "encryption") {
+	if got := audit1(reader(good, func(c *awss3.ReaderConfig) {
+		c.KMSKeyID = "arn:aws:kms:us-east-1:111122223333:key/aaaabbbb-cc00-4dd1-8ee2-ffff00001111"
+	})); !has(got, "encryption") {
 		t.Errorf("an expected KMS key on a bucket without one: %v", got)
 	}
 	gov := newBucket(t, c, true, types.ObjectLockRetentionModeGovernance, 2)

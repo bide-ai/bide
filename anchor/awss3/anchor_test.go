@@ -35,6 +35,8 @@ func TestNewRefusesWhatIsNotAnAnchorBucket(t *testing.T) {
 		{name: "short owner", cfg: func(c *awss3.Config) { c.ExpectedBucketOwner = "1234" }, want: "ExpectedBucketOwner"},
 		{name: "retention too short", cfg: func(c *awss3.Config) { c.Retention = time.Hour }, want: "below the minimum"},
 		{name: "no KMS key", cfg: func(c *awss3.Config) { c.KMSKeyID = "" }, want: "KMSKeyID is empty"},
+		{name: "KMS alias name", cfg: func(c *awss3.Config) { c.KMSKeyID = "alias/bide-anchor" }, want: "for an alias, pass the ARN of the key it points to"},
+		{name: "KMS alias ARN", cfg: func(c *awss3.Config) { c.KMSKeyID = "arn:aws:kms:eu-west-1:111122223333:alias/bide-anchor" }, want: "for an alias, pass the ARN of the key it points to"},
 		{name: "KMS and none", cfg: func(c *awss3.Config) { c.EncryptionNone = true }, want: "both set"},
 		{name: "governance without opt-in", cfg: func(c *awss3.Config) { c.Mode = types.ObjectLockModeGovernance }, want: "AllowGovernance"},
 		{name: "unknown mode", cfg: func(c *awss3.Config) { c.Mode = "WORM" }, want: "not COMPLIANCE or GOVERNANCE"},
@@ -281,7 +283,9 @@ func TestPublishRefusesAnObjectThatReadsBackWeaker(t *testing.T) {
 		{"no lock", func(v *awss3test.Version) { v.LockMode = "" }, awss3.ErrWeak},
 		{"short retention", func(v *awss3test.Version) { v.RetainUntil = v.RetainUntil.Add(-24 * time.Hour) }, awss3.ErrWeak},
 		{"no encryption", func(v *awss3test.Version) { v.SSE = "" }, awss3.ErrWeak},
-		{"another KMS key", func(v *awss3test.Version) { v.KMSKey = "arn:aws:kms:eu-west-1:111122223333:key/other" }, awss3.ErrWeak},
+		{"another KMS key", func(v *awss3test.Version) {
+			v.KMSKey = "arn:aws:kms:eu-west-1:111122223333:key/aaaabbbb-cc00-4dd1-8ee2-ffff00001111"
+		}, awss3.ErrWeak},
 		{"no version ID", func(v *awss3test.Version) { v.ID = "null" }, awss3.ErrWeak},
 		{"different bytes", func(v *awss3test.Version) { v.Body = append([]byte(nil), v.Body[:len(v.Body)-2]...) }, awss3.ErrConflict},
 	} {

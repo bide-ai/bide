@@ -105,7 +105,7 @@ func TestWriterPolicyCoversEveryCall(t *testing.T) {
 // The filled bucket policy denies a writer a weaker lock, a shorter retention, another KMS key, and
 // changing the policy itself; and every placeholder is filled.
 func TestBucketPolicyPinsLockRetentionAndKey(t *testing.T) {
-	filled := awss3.PolicyFor(awss3.BucketPolicy, awss3.PolicyParams{Bucket: "b", KMSKeyARN: "arn:aws:kms:eu-west-1:111122223333:key/k",
+	filled := awss3.PolicyFor(awss3.BucketPolicy, awss3.PolicyParams{Bucket: "b", KMSKeyARN: "arn:aws:kms:eu-west-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab",
 		MinRetentionDays: 2555, AdminRoleARN: "arn:aws:iam::444455556666:role/anchor-admin"})
 	for _, ph := range []string{"BUCKET", "PREFIX", "KMS_KEY_ARN", "LOCK_MODE", "MIN_RETENTION_DAYS", "ADMIN_ROLE_ARN"} {
 		if strings.Contains(filled, ph) {
@@ -124,7 +124,7 @@ func TestBucketPolicyPinsLockRetentionAndKey(t *testing.T) {
 	want := map[string][3]string{ // sid: operator, key, value
 		"OnlyLockedHeads":                       {"StringNotEquals", "s3:object-lock-mode", "COMPLIANCE"},
 		"OnlyLongRetention":                     {"NumericLessThan", "s3:object-lock-remaining-retention-days", "2555"},
-		"OnlyTheConfiguredKmsKey":               {"StringNotEquals", "s3:x-amz-server-side-encryption-aws-kms-key-id", "arn:aws:kms:eu-west-1:111122223333:key/k"},
+		"OnlyTheConfiguredKmsKey":               {"StringNotEquals", "s3:x-amz-server-side-encryption-aws-kms-key-id", "arn:aws:kms:eu-west-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"},
 		"OnlyTheAdministratorChangesThisPolicy": {"StringNotEquals", "aws:PrincipalArn", "arn:aws:iam::444455556666:role/anchor-admin"},
 	}
 	for _, st := range p.Statement {

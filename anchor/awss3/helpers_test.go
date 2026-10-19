@@ -15,7 +15,7 @@ import (
 const (
 	bucket = "bank-anchor"
 	owner  = "111122223333"
-	kmsARN = "arn:aws:kms:eu-west-1:111122223333:key/abcd-1234"
+	kmsARN = "arn:aws:kms:eu-west-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
 )
 
 var ctx = context.Background()
