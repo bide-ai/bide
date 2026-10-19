@@ -12,7 +12,7 @@ import (
 type Operation struct {
 	// Op names the operation: "set_safety", "set_block", "set_approval", "clear_approval",
 	// "add_assertion", "set_assertion", "remove_assertion", "add_node", "remove_node",
-	// "rename_node", "set_entry", "move_node", "move_wiring", "set_flow", "set_in", "set_out", "add_edge", "remove_edge", "add_switch", "remove_switch", "add_arm", "remove_arm", "set_arm", "move_arm" or "set_else".
+	// "rename_node", "set_entry", "move_node", "move_wiring", "set_flow", "set_in", "set_out", "add_edge", "remove_edge", "add_switch", "remove_switch", "add_arm", "remove_arm", "set_arm", "move_arm", "set_else", "add_join", "remove_join", "set_join_inputs", "set_join_merge" or "set_loop_max". set_safety, set_approval and clear_approval also take a join's name.
 	Op string `json:"op"`
 	// Node is the node the operation is on, by its name in the config.
 	Node string `json:"node"`
@@ -40,6 +40,10 @@ type Operation struct {
 	// edge, an arm or an else goes to.
 	Pred string `json:"pred,omitempty"`
 	To   string `json:"to,omitempty"`
+	// Inputs and Max are for the join and loop operations (ops_join.go): the producers a join fans in,
+	// in order, and an arm's loop_max (0 removes it).
+	Inputs []string `json:"inputs,omitempty"`
+	Max    int      `json:"max,omitempty"`
 	// DryRun asks what remove_node would also remove: the answer is the list in Applied.Cascade and
 	// the text is unchanged. Confirm is that list, sent back with the real remove_node; a remove
 	// whose list is not empty is refused unless Confirm equals it, so what is removed is what was
@@ -127,10 +131,40 @@ func ApplyOperation(name string, src []byte, op Operation) (*Applied, error) {
 			node.has[k] = true
 		}
 	}
+	base := []any{"nodes", idx}
+	isJoin := false
+	if idx < 0 {
+		// A join is not a declared node: its gate and safety are keys of its wiring element.
+		var w struct {
+			Wiring []json.RawMessage `json:"wiring"`
+		}
+		_ = json.Unmarshal(data, &w)
+		for i, raw := range w.Wiring {
+			var j nodeDoc
+			var jn struct {
+				Join string `json:"join"`
+			}
+			if json.Unmarshal(raw, &jn) != nil || jn.Join != op.Node || jn.Join == "" {
+				continue
+			}
+			if idx >= 0 {
+				return nil, refuse("more than one join is named %q", op.Node)
+			}
+			_ = json.Unmarshal(raw, &j)
+			j.Name = jn.Join
+			var keys map[string]json.RawMessage
+			_ = json.Unmarshal(raw, &keys)
+			j.has = map[string]bool{}
+			for k := range keys {
+				j.has[k] = true
+			}
+			idx, node, base, isJoin = i, j, []any{"wiring", i}, true
+		}
+	}
 	if idx < 0 {
 		return nil, refuse("no node is named %q", op.Node)
 	}
-	steps, err := planSteps(op, idx, node)
+	steps, err := planSteps(op, base, node, isJoin)
 	if err != nil {
 		return nil, err
 	}
@@ -147,8 +181,9 @@ func ApplyOperation(name string, src []byte, op Operation) (*Applied, error) {
 
 // planSteps turns op on the node at idx into engine operations, in order. Each is applied to the text
 // the one before left.
-func planSteps(op Operation, idx int, n nodeDoc) ([]Op, error) {
-	at := func(rest ...any) []any { return append([]any{"nodes", idx}, rest...) }
+func planSteps(op Operation, base []any, n nodeDoc, isJoin bool) ([]Op, error) {
+	idx := 0 // planApproval takes the position only to name it; the paths are built from base
+	at := func(rest ...any) []any { return append(slices.Clone(base), rest...) }
 	// put sets key of the map at path to v: a Set when the key is there, an Insert when it is not.
 	put := func(path []any, has bool, key string, v any) Op {
 		if has {
@@ -169,6 +204,9 @@ func planSteps(op Operation, idx int, n nodeDoc) ([]Op, error) {
 		}
 		return []Op{put(at(), n.has["safety"], "safety", op.Value)}, nil
 	case "set_block":
+		if isJoin {
+			return nil, refuse("%q is a join: its merge block is set with set_join_merge", n.Name)
+		}
 		if op.Value == "" {
 			return nil, refuse("a node's block cannot be empty")
 		}

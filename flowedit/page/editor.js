@@ -207,7 +207,43 @@ export function renderOutline(v) {
   }));
   renderWireMoves(wiring);
   renderFlowSettings(v);
+  renderAddJoin(v);
   replace('an-blocks', [...new Set(nodes.map((x) => x.block).filter(Boolean))].filter((b) => shown(b) === b).map((b) => h('option', { value: b })));
+}
+
+// A join is added from a disclosure: a name, a merge block and the inputs, chosen from the nodes in
+// the order they are ticked. The checkboxes are drawn again only when the nodes change, so what is
+// typed or ticked is not lost to an unrelated redraw.
+function renderAddJoin(v) {
+  const box = $('add-join');
+  if (!box) return;
+  const names = (v.nodes || []).map((n) => n.name);
+  const key = names.join('\u0000');
+  if (box.dataset.names === key && box.dataset.drawn) return;
+  box.dataset.names = key;
+  box.dataset.drawn = '1';
+  const name = h('input', { id: 'aj-name', type: 'text', autocomplete: 'off', spellcheck: 'false' });
+  const merge = h('input', { id: 'aj-merge', type: 'text', autocomplete: 'off', spellcheck: 'false', 'aria-describedby': 'aj-help' });
+  const boxes = names.map((x, i) => {
+    const cb = h('input', { id: 'aj-in-' + i, type: 'checkbox', value: x });
+    return h('div', { class: 'field check' }, cb, h('label', { for: 'aj-in-' + i }, x));
+  });
+  const add = h('button', { type: 'button', class: 'btn', id: 'aj-add' }, 'Add join');
+  add.addEventListener('click', async () => {
+    const inputs = [...box.querySelectorAll('input[type=checkbox]:checked')].map((c) => c.value);
+    const to = name.value.trim();
+    if (await operate({ op: 'add_join', node: to, value: merge.value.trim(), inputs }, 'j-merge', to)) {
+      name.value = '';
+      merge.value = '';
+      for (const c of box.querySelectorAll('input[type=checkbox]')) c.checked = false;
+    }
+  });
+  box.replaceChildren(h('summary', {}, 'Add a join'),
+    h('div', { class: 'field' }, h('label', { for: 'aj-name' }, 'Name'), name),
+    h('div', { class: 'field' }, h('label', { for: 'aj-merge' }, 'Merge block'), merge),
+    h('fieldset', { class: 'inputs' }, h('legend', {}, 'Inputs'), boxes),
+    h('p', { class: 'muted small', id: 'aj-help' }, 'A join merges the results of its inputs. The ticked nodes become its inputs in the order the nodes are listed; the order can be changed on the join afterwards. Its merge block is a name a program registers.'),
+    h('p', { id: 'aj-error', class: 'bad small', role: 'alert' }), add);
 }
 
 // The flow's name and its documentation type names, as one small form under the outline.
@@ -317,6 +353,7 @@ export function renderInspector(v) {
     replace('inspector', h('p', { class: 'muted' }, 'Select a node in the flow or the outline.'));
     return;
   }
+  const isJoin = n.kind === 'join';
   const row = (k, val) => val ? [h('dt', {}, k), h('dd', {}, val)] : [];
   // A suggestion is offered only when it prints: a datalist cannot show an escaped value and insert the raw one.
   const blocks = [...new Set((v.nodes || []).map((x) => x.block).filter(Boolean))].filter((b) => shown(b) === b);
@@ -333,12 +370,53 @@ export function renderInspector(v) {
     h('p', { id: 'op-error', class: 'bad small', role: 'alert' }),
     h('div', { class: 'form' },
       field('f-safety', 'Safety', safety, 'Only lowers what the block declares in Go; the check cannot see that here, so a value above it fails when a program loads the flow.'),
-      h('div', { class: 'field' }, h('label', { for: 'f-block' }, 'Block'), h('div', { class: 'inline' }, block, setBlock),
+      isJoin ? null : h('div', { class: 'field' }, h('label', { for: 'f-block' }, 'Block'), h('div', { class: 'inline' }, block, setBlock),
         h('datalist', { id: 'f-blocks' }, blocks.map((b) => h('option', { value: b }))),
         h('p', { class: 'muted small' }, 'A block name is chosen, not written: its Go code is registered in your program.')),
+      isJoin ? joinForm(n, v) : null,
       gateForm(n),
-      structureForm(n, v),
+      isJoin ? null : structureForm(n, v),
       connectionsForm(n, v)));
+}
+
+// ---- joins: a fan-in with its inputs, in order, and its merge block ----
+//
+// A join is a wiring element, not a declared node. Its inputs are the nodes whose results it
+// merges, in the order its merge block takes them; the merge block is a name a program registers. The
+// editor checks what the config says (an input is a declared node or join, named once); the arity and
+// the types are checked when a program loads the flow.
+
+function joinForm(n, v) {
+  const w = (v.wires || []).find((x) => x.kind === 'join' && x.join === n.name) || { inputs: [], merge: '' };
+  const inputs = w.inputs || [];
+  const all = (v.nodes || []).map((x) => x.name).filter((x) => x !== n.name && !inputs.includes(x));
+  const send = (list, focus) => operate({ op: 'set_join_inputs', node: n.name, inputs: list }, focus);
+  const merge = h('input', { id: 'j-merge', type: 'text', value: w.merge || '', autocomplete: 'off', spellcheck: 'false', 'aria-describedby': 'j-merge-help' });
+  const setMerge = h('button', { type: 'button', class: 'btn', id: 'j-merge-set' }, 'Set merge');
+  const doMerge = () => operate({ op: 'set_join_merge', node: n.name, value: merge.value.trim() }, 'j-merge');
+  setMerge.addEventListener('click', doMerge);
+  merge.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doMerge(); } });
+  const btn = (id, text, label, onClick, disabled) => {
+    const b = h('button', { type: 'button', class: 'btn', id, 'aria-label': label, disabled: !!disabled }, text);
+    b.addEventListener('click', onClick);
+    return b;
+  };
+  const rows = inputs.map((x, i) => {
+    const swap = (to) => { const l = [...inputs]; [l[i], l[to]] = [l[to], l[i]]; return l; };
+    const up = btn('j-in-up-' + i, 'Up', 'Move up: input ' + (i + 1) + ', ' + x, () => send(swap(i - 1), i - 1 === 0 ? 'j-in-down-0' : 'j-in-up-' + (i - 1)), i === 0);
+    const down = btn('j-in-down-' + i, 'Down', 'Move down: input ' + (i + 1) + ', ' + x, () => send(swap(i + 1), i + 1 === inputs.length - 1 ? 'j-in-up-' + (i + 1) : 'j-in-down-' + (i + 1)), i === inputs.length - 1);
+    const rm = btn('j-in-rm-' + i, 'Remove', 'Remove input ' + (i + 1) + ', ' + x, () => send(inputs.filter((_, k) => k !== i), 'j-merge'), inputs.length === 1);
+    return h('li', {}, h('span', {}, (i + 1) + '. ' + x), ' ', up, down, rm);
+  });
+  const addSel = h('select', { id: 'j-in-new' }, all.map((x) => h('option', { value: x }, x)));
+  const remove = btn('j-remove', 'Remove join', 'Remove the join ' + n.name, () => removeNode(n, remove, 'remove_join'));
+  return h('fieldset', { class: 'structure', id: 'join-form' },
+    h('legend', {}, 'Join'),
+    h('div', { class: 'field' }, h('label', { for: 'j-merge' }, 'Merge block'), h('div', { class: 'inline' }, merge, setMerge),
+      h('p', { class: 'muted small', id: 'j-merge-help' }, 'A name a program registers (RegisterJoin2 or RegisterJoin3). The editor cannot check that it is registered or that its arity and types fit the inputs; loading the flow does.')),
+    h('ol', { class: 'conns', id: 'j-inputs', 'aria-label': 'Inputs of ' + n.name }, rows),
+    h('div', { class: 'field' }, h('label', { for: 'j-in-new' }, 'Add an input'), addSel),
+    h('div', { class: 'inline' }, btn('j-in-add', 'Add input', 'Add an input to ' + n.name, () => send([...inputs, $('j-in-new').value], 'j-in-new'), !all.length), remove));
 }
 
 // ---- connections: the edges out of a node, its switch, arms and else ----
@@ -361,7 +439,8 @@ function connectionsForm(n, v) {
   const targets = others.filter((x) => !joins.has(x));
   const outs = wires.filter((w) => w.kind === 'edge' && w.from === n.name);
   const ins = wires.filter((w) => w.kind === 'edge' && w.to === n.name);
-  const sw = wires.find((w) => w.kind === 'switch' && w.over === n.name);
+  const isJoin = n.kind === 'join';
+  const sw = isJoin ? null : wires.find((w) => w.kind === 'switch' && w.over === n.name);
   const val = (id) => $(id).value;
   const btn = (id, text, label, onClick, disabled) => {
     const b = h('button', { type: 'button', class: 'btn', id, 'aria-label': label, disabled: !!disabled }, text);
@@ -369,7 +448,7 @@ function connectionsForm(n, v) {
     return b;
   };
   const kids = [h('legend', {}, 'Connections')];
-  kids.push(h('p', { class: 'small', id: 'c-in' }, ins.length ? 'Edges in: ' + ins.map((w) => w.from).join(', ') + '.' : 'No edge leads here.'));
+  if (!isJoin) kids.push(h('p', { class: 'small', id: 'c-in' }, ins.length ? 'Edges in: ' + ins.map((w) => w.from).join(', ') + '.' : 'No edge leads here.'));
   if (!sw) {
     kids.push(h('ul', { class: 'conns', id: 'c-outs', 'aria-label': 'Edges out of ' + n.name },
       outs.map((w, i) => h('li', {}, h('span', {}, n.name + ' \u2192 ' + w.to), ' ',
@@ -389,7 +468,10 @@ function connectionsForm(n, v) {
         operate({ op: 'move_arm', node: n.name, index: i, value: dir }, 'c-arm-' + (edge ? (dir === 'up' ? 'down' : 'up') : dir) + '-' + to);
       }, dir === 'up' ? i === 0 : i === arms.length - 1);
       const down = move('down'); down.setAttribute('aria-label', 'Move down: arm ' + (i + 1));
-      return h('li', { class: 'arm' }, h('span', { class: 'sr-only' }, 'Arm ' + (i + 1) + (a.loop_max ? ', loop-back' : '') + ': '), pred, ' \u2192 ', to, ' ',
+      const max = h('input', { id: 'c-arm-max-' + i, type: 'number', min: '0', step: '1', value: String(a.loop_max || 0), 'aria-label': 'Loop back at most, arm ' + (i + 1) + ' (0: an ordinary arm)' });
+      const setMax = () => { const raw = max.value.trim(); if (!/^\d+$/.test(raw)) { announce('Loop bound must be a whole number such as 3, or 0.'); return; } operate({ op: 'set_loop_max', node: n.name, index: i, max: Number(raw) }, 'c-arm-max-' + i); };
+      max.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); setMax(); } });
+      return h('li', { class: 'arm' }, h('span', { class: 'sr-only' }, 'Arm ' + (i + 1) + (a.loop_max ? ', loop-back' : '') + ': '), pred, ' \u2192 ', to, ' ', h('label', { for: 'c-arm-max-' + i, class: 'small' }, 'loops at most'), max, btn('c-arm-maxset-' + i, 'Set loop', 'Set the loop bound of arm ' + (i + 1), setMax), ' ',
         btn('c-arm-set-' + i, 'Set', 'Set arm ' + (i + 1), () => operate({ op: 'set_arm', node: n.name, index: i, pred: val('c-arm-pred-' + i).trim(), to: val('c-arm-to-' + i) }, 'c-arm-set-' + i)),
         move('up'), down,
         btn('c-arm-rm-' + i, 'Remove', 'Remove arm ' + (i + 1), () => operate({ op: 'remove_arm', node: n.name, index: i }, 'c-arm-pred-' + Math.max(0, i - 1)), arms.length === 1));
@@ -403,7 +485,7 @@ function connectionsForm(n, v) {
     kids.push(h('div', { class: 'inline' }, btn('c-else-set', 'Set else', 'Set the else of the switch on ' + n.name, () => operate({ op: 'set_else', node: n.name, to: val('c-else') }, 'c-else'))));
     kids.push(h('div', { class: 'inline' }, btn('c-sw-rm', 'Remove switch', 'Remove the switch on ' + n.name, () => operate({ op: 'remove_switch', node: n.name }, 'c-edge-to'))));
     if (arms.length === 1) kids.push(h('p', { class: 'muted small' }, 'The only arm cannot be removed; remove the switch instead.'));
-  } else if (!outs.length) {
+  } else if (!outs.length && !isJoin) {
     kids.push(h('div', { class: 'field' }, h('label', { for: 'c-sw-pred' }, 'Make this a switch: first predicate'), h('input', { id: 'c-sw-pred', type: 'text', autocomplete: 'off', spellcheck: 'false' })));
     kids.push(pick('c-sw-to', 'Make this a switch: first target', targets, targets[0]));
     kids.push(h('div', { class: 'inline' }, btn('c-sw-add', 'Make a switch', 'Make ' + n.name + ' a switch', () => operate({ op: 'add_switch', node: n.name, pred: val('c-sw-pred').trim(), to: val('c-sw-to') }, 'c-sw-pred'), !targets.length)));
@@ -455,19 +537,19 @@ function structureForm(n, v) {
       h('p', { class: 'muted small' }, 'Lists what else goes with it (edges, arms, comments) before anything is removed.')));
 }
 
-async function removeNode(n, opener) {
+async function removeNode(n, opener, opName = 'remove_node') {
   const box = $('op-error');
   let dry;
   try {
-    dry = await applyOp(state.text, { op: 'remove_node', node: n.name, dry_run: true });
+    dry = await applyOp(state.text, { op: opName, node: n.name, dry_run: true });
   } catch (err) {
     if (box) box.textContent = shown('Not applied: ' + err.message);
     announce('Not applied: ' + err.message);
     return;
   }
   const list = dry.cascade || [];
-  const op = { op: 'remove_node', node: n.name, confirm: list };
-  if (!list.length) { operate({ op: 'remove_node', node: n.name }, 'an-name', ''); return; }
+  const op = { op: opName, node: n.name, confirm: list };
+  if (!list.length) { operate({ op: opName, node: n.name }, 'an-name', ''); return; }
   const go = h('button', { type: 'button', class: 'btn primary', id: 'do-remove' }, 'Remove ' + shown(n.name));
   const cancel = h('button', { type: 'button', class: 'btn' }, 'Cancel');
   cancel.addEventListener('click', () => closeDialog(opener));
@@ -596,7 +678,7 @@ function gateForm(n) {
 async function operate(op, focusId, selectAfter) {
   const sent = state.text;
   let applied = false;
-  const errBox = () => $(op.op === 'add_node' ? 'an-error' : 'op-error');
+  const errBox = () => $(op.op === 'add_node' ? 'an-error' : op.op === 'add_join' ? 'aj-error' : 'op-error');
   try {
     const e = await applyOp(sent, op);
     // The author may have typed while the answer was on its way: their text is not overwritten.
@@ -645,6 +727,11 @@ function opWords(op) {
     case 'remove_arm': return 'Arm ' + (op.index + 1) + ' removed from the switch on ' + op.node;
     case 'set_arm': return 'Arm ' + (op.index + 1) + ' of the switch on ' + op.node + ' set';
     case 'move_arm': return 'Arm ' + (op.index + 1) + ' of the switch on ' + op.node + ' moved ' + op.value;
+    case 'add_join': return 'Join ' + op.node + ' added';
+    case 'remove_join': return 'Join ' + op.node + ' removed';
+    case 'set_join_inputs': return 'Inputs of ' + op.node + ' set';
+    case 'set_join_merge': return 'Merge of ' + op.node + ' set';
+    case 'set_loop_max': return op.max ? 'Arm ' + (op.index + 1) + ' loops at most ' + op.max : 'Arm ' + (op.index + 1) + ' is an ordinary arm';
     case 'set_else': return op.to ? 'Else of the switch on ' + op.node + ' set' : 'Else of the switch on ' + op.node + ' removed';
     case 'move_wiring': return 'Wiring element ' + (op.index + 1) + ' moved ' + op.value;
     case 'set_flow': return 'Flow name set';

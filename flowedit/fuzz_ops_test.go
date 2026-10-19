@@ -78,6 +78,12 @@ func FuzzApplyOperation(f *testing.F) {
 			{Op: "move_arm", Node: node, Index: int(pick) % 3, Value: "down"},
 			{Op: "set_else", Node: node, To: other},
 			{Op: "set_else", Node: node},
+			{Op: "add_join", Node: "zz_join", Inputs: []string{node, other}, Value: "zz_merge"},
+			{Op: "set_join_inputs", Node: node, Inputs: []string{other}},
+			{Op: "set_join_merge", Node: node, Value: "zz"},
+			{Op: "remove_join", Node: node},
+			{Op: "set_loop_max", Node: node, Index: int(pick) % 3, Max: 4},
+			{Op: "set_loop_max", Node: node, Index: int(pick) % 3},
 		}
 		op := ops[int(pick)%len(ops)]
 		r, err := ApplyOperation(name, text, op)

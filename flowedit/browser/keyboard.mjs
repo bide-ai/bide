@@ -90,7 +90,11 @@ try {
   presses++;
   tabs['Skip to Save'] = presses;
   r.focusAfterSkip = await active();
-  await tabTo('the assertion template again', '#a-template', { max: 120 });
+  // And back to the assertions by the skip link at the top of the page (one Shift+Tab from Save), Enter,
+  // then Tab to the form: no walk over the whole page.
+  await tabTo('the skip link to assertions', 'a[data-skip="assertions"]', { back: true, max: 4 });
+  await page.keyboard.press('Enter');
+  await tabTo('the assertion template again', '#a-template', { max: 12 });
   await page.keyboard.type('u'); // typeahead: "Unreachable: ..."
   await until(() => document.getElementById('a-node'), null, 'the node field');
   await tabTo('the assertion node', '#a-node', { max: 3 });
