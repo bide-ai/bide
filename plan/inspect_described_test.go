@@ -567,6 +567,13 @@ func TestValidateBoundsTheDistinctTypeNames(t *testing.T) {
 	if err := mk(rep).Validate(); err != nil {
 		t.Errorf("repeated names: %v", err)
 	}
+	big := distinct(2, maxDescribedType)
+	for len(big) < 2*(maxDescribedTypeLen/maxDescribedType+2) {
+		big = append(big, big[len(big)%2])
+	}
+	if err := mk(big).Validate(); err != nil {
+		t.Errorf("a long name repeated is counted once: %v", err)
+	}
 	if err := mk(distinct(maxDescribedTypeLen/maxDescribedType, maxDescribedType)).Validate(); err != nil {
 		t.Errorf("exactly the byte limit: %v", err)
 	}
