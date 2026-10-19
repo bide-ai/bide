@@ -476,7 +476,7 @@ function connectionsForm(n, v) {
         move('up'), down,
         btn('c-arm-rm-' + i, 'Remove', 'Remove arm ' + (i + 1), () => operate({ op: 'remove_arm', node: n.name, index: i }, 'c-arm-pred-' + Math.max(0, i - 1)), arms.length === 1));
     });
-    kids.push(h('p', { class: 'small' }, n.name + ' is switched over: the first arm whose predicate holds routes the value. It has arms instead of edges. A loop bound belongs on an arm that goes back to an earlier node of the loop; the editor does not check that, and loading the flow refuses one that does not.'));
+    kids.push(h('p', { class: 'small' }, n.name + ' is switched over: the first arm whose predicate holds routes the value. It has arms instead of edges. A loop bound belongs on an arm that goes back to an earlier node of the loop, and the loop needs an exit (another arm or an else); the editor refuses a bound that loading the flow would refuse.'));
     kids.push(h('ol', { class: 'conns', id: 'c-arms', 'aria-label': 'Arms of the switch on ' + n.name }, rows));
     kids.push(h('div', { class: 'field' }, h('label', { for: 'c-arm-pred' }, 'Add an arm: predicate'), h('input', { id: 'c-arm-pred', type: 'text', autocomplete: 'off', spellcheck: 'false' })));
     kids.push(pick('c-arm-to', 'Add an arm: target', targets, targets[0]));

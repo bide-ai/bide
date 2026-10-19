@@ -191,9 +191,10 @@ saving needs the confirmation.
 - **A loop bound.** Each arm of a switch has **loops at most**: a number above 0 makes the arm a bounded
   loop-back (`loop_max`: when its predicate holds, the value goes back to an earlier node and that part
   runs again, at most that many times before the run declares a runaway loop); 0 removes the key and
-  the arm is an ordinary forward arm. The editor does not check that the target is an earlier node of
-  the loop (an ancestor of the switch): neither does the page's check, and `plan.Load` refuses a loop-back arm to a
-  node that is not one, so a bound on a forward arm is caught when a program loads the flow.
+  the arm is an ordinary forward arm. The editor refuses a bound that `plan.Load` would refuse and says why in the check's words: an arm that does
+  not go back to an ancestor of its switch (a loop head must reach its loop switch), a second loop-back arm on
+  a switch, or a loop with no exit arm (another arm or an `else`). What it does not check: the shape of the
+  loop body (no inner switch, nothing leaving it), which is made when a program loads the flow.
 - **A join** fans the results of several nodes into one. It is not a declared node but a wiring
   element (`join`, `inputs`, `merge`), and is listed in the outline with the nodes. **Add a join** is a
   disclosure under the outline: a name, a merge block and the inputs, chosen from the nodes. On a
