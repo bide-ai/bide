@@ -136,3 +136,50 @@ func TestColourOnlyWords(t *testing.T) {
 		glyphs[c] = s
 	}
 }
+
+// auditStatus says where each row of the colour-only audit in docs/design/themes.md is handled.
+// Every row must be here, and every entry must be a row: a new colour-only use is added to the
+// audit table first, and the table's row then has to be given a status, so one cannot be added
+// silently.
+var auditStatus = map[string]string{
+	"A1":  "tested: TestColourOnlyPairs (added and changed edges)",
+	"A2":  "tested: TestColourOnlyPairs (the path taken and a counterexample)",
+	"A3":  "tested: TestColourOnlyPairs (a problem and a removed edge)",
+	"A4":  "tested: TestNodeMarkShapes (problem circle, warning diamond)",
+	"A5":  "tested: TestColourOnlyPairs (problem and warning node boxes)",
+	"A6":  "contrast, not state: the border_strong token and its use on every control (PR 4 for the viewer's CSS, PR 5 for the approve page), with a contrast test there",
+	"A7":  "tested: TestColourOnlyWords (the new badge)",
+	"A8":  "tested: TestColourOnlyWords (the run list's marker and aria-current)",
+	"A9":  "tested: TestColourOnlyWords (stat glyphs)",
+	"A10": "allowed: redundant colour, the badge text carries it",
+	"A11": "allowed: redundant colour, the result sentence has words",
+	"A12": "PR 5: the approve page's disabled button",
+	"A13": "allowed: syntax colour is decoration, the text is the content",
+	"A14": "allowed: the tab icon holds the verdict's glyph",
+}
+
+// TestAuditIsComplete: the audit table in the design note and auditStatus name the same rows.
+func TestAuditIsComplete(t *testing.T) {
+	b, err := os.ReadFile("../../docs/design/themes.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := regexp.MustCompile(`(?m)^\| (A\d+) \|`)
+	inDoc := map[string]bool{}
+	for _, m := range row.FindAllStringSubmatch(string(b), -1) {
+		inDoc[m[1]] = true
+	}
+	if len(inDoc) == 0 {
+		t.Fatal("no audit rows found in docs/design/themes.md")
+	}
+	for id := range inDoc {
+		if auditStatus[id] == "" {
+			t.Errorf("audit row %s has no status in auditStatus: say where it is tested or why it is allowed", id)
+		}
+	}
+	for id := range auditStatus {
+		if !inDoc[id] {
+			t.Errorf("auditStatus has %s, which is not a row of the audit table", id)
+		}
+	}
+}
