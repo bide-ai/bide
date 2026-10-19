@@ -19,23 +19,26 @@ import (
 
 // Bad returns the first character of s that does not print, and whether there is one. Besides the
 // characters unicode.IsPrint refuses (control, format, non-plain spaces, private-use, unassigned), it
-// refuses the ones that print as nothing: the Default_Ignorable fillers and joiners (U+034F, U+115F,
-// U+1160, U+17B4, U+17B5, U+180B to U+180F, U+2800, U+3164, U+FFA0), a variation selector that does
-// not follow a base character, and a combining mark with nothing to combine with at the start. A
-// space at either end counts, as the first or last character.
+// refuses every character with the Unicode property Default_Ignorable_Code_Point, which is what a
+// renderer is allowed to draw as nothing (the Hangul and Khmer fillers, the grapheme joiner, the
+// variation selectors, the Mongolian selectors, the format characters), U+2800 (the Braille blank),
+// and a combining mark at the start with nothing to combine with. A space at either end counts, as
+// the first or last character.
+//
+// Default_Ignorable_Code_Point is derived as the Unicode standard derives it (PropList.txt):
+// Other_Default_Ignorable_Code_Point, plus the format characters (general category Cf), plus the
+// variation selectors, minus white space, the interlinear annotation characters U+FFF9 to U+FFFB,
+// the Egyptian hieroglyph format controls U+13430 to U+13440 and the prepended concatenation marks;
+// the Cf characters are refused by IsPrint already, so the set added here is the other two. It comes
+// from the tables of the Go toolchain that built this program (Unicode UnicodeVersion).
 func Bad(s string) (r rune, ok bool) {
-	prevBase := false
 	for i, c := range s {
-		if !unicode.IsPrint(c) || blank(c) {
+		if !unicode.IsPrint(c) || ignorable(c) {
 			return c, true
 		}
 		if i == 0 && unicode.IsMark(c) {
-			return c, true // a mark with nothing to combine with, or a variation selector with no base
+			return c, true // a mark with nothing to combine with
 		}
-		if isVariationSelector(c) && !prevBase {
-			return c, true
-		}
-		prevBase = unicode.In(c, unicode.L, unicode.N, unicode.P, unicode.S)
 	}
 	if s != "" {
 		if c := s[0]; c == ' ' {
@@ -48,18 +51,13 @@ func Bad(s string) (r rune, ok bool) {
 	return 0, false
 }
 
-// blank is a character that is assigned, is not a space or a format character, and still draws as
-// nothing (or as a blank): it can stand in for a space or an empty name.
-func blank(c rune) bool {
-	switch c {
-	case 0x034F, 0x115F, 0x1160, 0x17B4, 0x17B5, 0x2800, 0x3164, 0xFFA0:
-		return true
-	}
-	return c >= 0x180B && c <= 0x180F
-}
+// UnicodeVersion is the version of the Unicode tables the check uses.
+const UnicodeVersion = unicode.Version
 
-func isVariationSelector(c rune) bool {
-	return c >= 0xFE00 && c <= 0xFE0F || c >= 0xE0100 && c <= 0xE01EF
+// ignorable is a character that is not drawn: Default_Ignorable_Code_Point outside general category
+// Cf (see Bad), or U+2800.
+func ignorable(c rune) bool {
+	return c == 0x2800 || unicode.Is(unicode.Other_Default_Ignorable_Code_Point, c) || unicode.Is(unicode.Variation_Selector, c)
 }
 
 // Describe is r as a reader should see it: U+202E.
@@ -97,7 +95,7 @@ func EscapeName(s string) string {
 		switch {
 		case c == utf8.RuneError && size == 1:
 			fmt.Fprintf(&b, `\x{%02X}`, s[i])
-		case !unicode.IsPrint(c) || blank(c):
+		case !unicode.IsPrint(c) || ignorable(c):
 			fmt.Fprintf(&b, `\u{%X}`, c)
 		default:
 			b.WriteRune(c)
@@ -112,7 +110,7 @@ func needsEscape(c rune) bool {
 	case '\n', '\r', '\t':
 		return false
 	}
-	return !unicode.IsPrint(c) || blank(c)
+	return !unicode.IsPrint(c) || ignorable(c)
 }
 
 // ansi is a terminal color sequence, which Writer passes through.
@@ -125,19 +123,22 @@ var partialANSI = regexp.MustCompile(`^\x1b(\[[0-9;]*)?$`)
 // the command's own styling writes (ESC [ ... m). It is the second line of defence: a name that
 // reached the output by a path that did not refuse it is still shown in a form that cannot spoof.
 //
-// Each write should hold whole characters and whole color sequences, or the rest of one in the next
-// write: the writer holds back the tail of a character or of a color sequence a write ends in the
-// middle of, and writes it with the next. A write that ends the stream in the middle of one loses it.
-func Writer(w io.Writer) io.Writer { return &escWriter{w: w} }
+// The writer holds back the tail of a character or of a color sequence a write ends in the middle
+// of, and writes it with the next write; Close writes what is still held (escaped, as the invalid text
+// it is), so nothing is dropped.
+func Writer(w io.Writer) *EscapingWriter { return &EscapingWriter{w: w} }
 
 // escWriter keeps the start of a character a Write ended in the middle of, and escapes it with the
 // rest on the next Write, so a character split across two writes is not taken for two bad ones.
-type escWriter struct {
+// EscapingWriter is the writer Writer returns. Close writes what is still held back (the start of a
+// character or color sequence the last write ended in) with each unfinished byte written out, and does
+// not close the writer underneath.
+type EscapingWriter struct {
 	w    io.Writer
 	rest []byte
 }
 
-func (e *escWriter) Write(p []byte) (int, error) {
+func (e *EscapingWriter) Write(p []byte) (int, error) {
 	buf := append(e.rest, p...)
 	e.rest = nil
 	cut := len(buf)
@@ -167,4 +168,23 @@ func (e *escWriter) Write(p []byte) (int, error) {
 		return 0, err
 	}
 	return len(p), nil
+}
+
+// Close writes what is held back, escaped as invalid text.
+func (e *EscapingWriter) Close() error {
+	if len(e.rest) == 0 {
+		return nil
+	}
+	rest := e.rest
+	e.rest = nil
+	var b strings.Builder
+	for _, c := range rest {
+		if c == 0x1b {
+			b.WriteString(`\u{1B}`)
+			continue
+		}
+		fmt.Fprintf(&b, `\x{%02X}`, c)
+	}
+	_, err := io.WriteString(e.w, b.String())
+	return err
 }

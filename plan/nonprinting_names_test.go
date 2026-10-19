@@ -140,7 +140,7 @@ func TestConfigRefusesBlankRenderingNames(t *testing.T) {
 			t.Errorf("%s: %q was accepted", what, v)
 		}
 	}
-	for _, v := range []string{"e\u0301", "\u2764\ufe0f", "\u05e9\u05dc\u05d5\u05dd", "\u0645\u0631\u062d\u0628\u0627", "\ud55c\uae00"} {
+	for _, v := range []string{"e\u0301", "\u05e9\u05dc\u05d5\u05dd", "\u0645\u0631\u062d\u0628\u0627", "\ud55c\uae00"} {
 		var cfg config
 		if err := parseConfig([]byte(nameCfg("nodes[0].name", v)), &cfg); err != nil {
 			t.Errorf("%q: %v", v, err)
@@ -154,5 +154,28 @@ func TestAssertLineWhitespaceIsAccepted(t *testing.T) {
 	data := `{"version":1,"flow":"f","nodes":[{"name":"a","block":"a"}],"wiring":[],"assert":["a\treachable","  a   reachable  "]}`
 	if err := parseConfig([]byte(data), &cfg); err != nil {
 		t.Errorf("%v", err)
+	}
+}
+
+// A tab between the words of an assert line is syntax and loads; a tab inside a quoted name is not
+// part of any name the grammar can read, and is refused.
+func TestAssertTabsInQuotedNames(t *testing.T) {
+	var cfg config
+	ok := `{"version":1,"flow":"f","nodes":[{"name":"manual review","block":"a"}],"wiring":[],"assert":["\"manual review\"\treachable"]}`
+	if err := parseConfig([]byte(ok), &cfg); err != nil {
+		t.Errorf("a tab between words: %v", err)
+	}
+	bad := `{"version":1,"flow":"f","nodes":[{"name":"a","block":"a"}],"wiring":[],"assert":["\"manual\treview\" reachable"]}`
+	if err := parseConfig([]byte(bad), &cfg); err == nil || !strings.Contains(err.Error(), "assert[0]") {
+		t.Errorf("a tab inside a quoted name: %v", err)
+	}
+}
+
+// A variation selector is refused after a base character too: it is Default_Ignorable, so a name
+// that differs by one reads the same.
+func TestConfigRefusesVariationSelectorsAfterABase(t *testing.T) {
+	var cfg config
+	if err := parseConfig([]byte(nameCfg("nodes[0].name", "a️")), &cfg); err == nil {
+		t.Error("a name with a variation selector was accepted")
 	}
 }

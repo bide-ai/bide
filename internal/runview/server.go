@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
-	"io"
 	"iter"
 	"net"
 	"net/http"
@@ -224,7 +223,9 @@ func guard(h http.Handler) http.Handler {
 		// name from a journal (a topology, a step or tool name: any string) cannot be drawn as another
 		// name. The pages carry no script data, so nothing parses the escape; the JSON endpoints are
 		// for programs and are left as they are.
-		h.ServeHTTP(&escapingWriter{ResponseWriter: w}, r)
+		ew := &escapingWriter{ResponseWriter: w}
+		defer ew.close()
+		h.ServeHTTP(ew, r)
 	})
 }
 
@@ -232,7 +233,7 @@ func guard(h http.Handler) http.Handler {
 // content type the handler set (text/html pages, and the text/plain bodies of an error).
 type escapingWriter struct {
 	http.ResponseWriter
-	out     io.Writer
+	out     *safetext.EscapingWriter
 	decided bool
 }
 
@@ -247,6 +248,13 @@ func (e *escapingWriter) decide() {
 	e.decided = true
 	if isText(e.Header().Get("Content-Type")) {
 		e.out = safetext.Writer(e.ResponseWriter)
+	}
+}
+
+// close writes what the escaping writer still holds.
+func (e *escapingWriter) close() {
+	if e.out != nil {
+		_ = e.out.Close()
 	}
 }
 

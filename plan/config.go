@@ -383,6 +383,9 @@ func checkPrintable(cfg *config) error {
 		check(at("merge"), w.Merge)
 	}
 	for i, a := range cfg.Assert {
+		if bad == nil && whitespaceInQuotes(a) {
+			bad = fmt.Errorf("assert[%d] \"%s\" has a tab or line break inside a quoted name; the grammar reads whitespace as a single space, so the name would change: rename it", i, printable.EscapeName(a))
+		}
 		check(fmt.Sprintf("assert[%d]", i), strings.Join(strings.Fields(a), " ")) // the grammar collapses whitespace between words; what the words say must print
 	}
 	return bad
@@ -992,4 +995,20 @@ func levenshtein(a, b string) int {
 		prev, curr = curr, prev
 	}
 	return prev[len(b)]
+}
+
+// whitespaceInQuotes reports whether an assert line has whitespace other than a plain space between
+// double quotes: a quoted name is read as written, but the grammar first collapses whitespace in the
+// line, so a tab in the name would become a space and the assertion would name another node.
+func whitespaceInQuotes(line string) bool {
+	in := false
+	for _, c := range line {
+		switch {
+		case c == '"':
+			in = !in
+		case in && c != ' ' && unicode.IsSpace(c):
+			return true
+		}
+	}
+	return false
 }

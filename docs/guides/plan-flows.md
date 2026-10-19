@@ -690,16 +690,21 @@ and `out`, node names and blocks, the references in edges, switches, arms and `e
 inputs and merges, and the `assert` lines) must print. It holds no control character, no
 invisible or direction-changing character (a zero-width space, a zero-width joiner or non-joiner, a
 left-to-right or right-to-left mark, U+202E), no space other than a plain one, no private-use or
-unassigned code point, no character that draws as a blank (the Hangul fillers, the Braille blank, the
-grapheme joiner, the Mongolian selectors), no combining mark or variation selector with no character
-before it to combine with, and no space at either end (the words of an `assert` line may be separated
+unassigned code point, no character that a renderer may draw as nothing (every character with the Unicode property
+Default_Ignorable_Code_Point, which includes the Hangul and Khmer fillers, the grapheme joiner, the
+Mongolian selectors and every variation selector, and the Braille blank), no combining mark with no
+character before it to combine with, and no space at either end (the words of an `assert` line may be separated
 by any whitespace, as the grammar reads them). Such a name can read as another in a diff or a review;
 the error names the field and writes the character out, for example `nodes[2].name "ch\u{202E}gra"
-holds a character that does not print (U+202E)`. **This also refuses some legitimate text:** a Persian
+holds a character that does not print (U+202E)`. **This also refuses some legitimate text, on purpose:** a Persian
 or Urdu word spelled with a zero-width non-joiner, an Indic conjunct spelled with a zero-width joiner,
-an emoji sequence joined by one (a family, a rainbow flag), and a left-to-right or right-to-left mark
-in a name that mixes scripts and digits. The way out is to spell the name without the joiner or mark
-(a name needs to be the same text everywhere, not typographically right). Approver ids are held to
+an emoji sequence joined by one (a family, a rainbow flag), an emoji with a variation selector (a
+red heart as `U+2764 U+FE0F`), and a left-to-right or right-to-left mark in a name that mixes scripts
+and digits. The reason is that two names differing only by an invisible character read the same and
+one can impersonate the other. The way out is to transliterate the name, or spell it without the
+joiner, selector or mark. The Default_Ignorable set is taken from the Unicode tables of the Go
+toolchain that built the program (Unicode 15.0.0 for Go 1.27); a rule that allows a joiner only where
+a script needs it, as IDNA does, may come later. Approver ids are held to
 printable ASCII by the gate itself. `bide check`, `bide check -diff`, `bide view` and every page and
 error message the viewer serves write any such character that reaches their output (a file name, a
 journal's topology, a step or predicate name) as `\u{XXXX}`; the JSON endpoints and the other commands

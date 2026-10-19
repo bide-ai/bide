@@ -168,7 +168,10 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 	es := term.For(stderr, *color) // error lines on stderr
 	// Every line the command prints, a file name or a message with a name in it, is written with each
 	// character that does not print written out; the styles above were chosen from the real streams.
-	stdout, stderr = safetext.Writer(stdout), safetext.Writer(stderr)
+	outW, errW := safetext.Writer(stdout), safetext.Writer(stderr)
+	defer outW.Close()
+	defer errW.Close()
+	stdout, stderr = outW, errW
 	usage := func(msg string) int {
 		fmt.Fprintln(stderr, es.ErrorPrefix()+"bide view:", msg)
 		fs.Usage()

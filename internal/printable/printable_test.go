@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"unicode"
 )
 
 func TestBad(t *testing.T) {
@@ -76,6 +77,50 @@ func TestWriterJoinsASplitCharacter(t *testing.T) {
 	}
 }
 
+func TestBadRefusesEveryDefaultIgnorable(t *testing.T) {
+	n := 0
+	for _, tab := range []*unicode.RangeTable{unicode.Other_Default_Ignorable_Code_Point, unicode.Variation_Selector} {
+		for r := rune(0); r <= unicode.MaxRune; r++ {
+			if unicode.Is(tab, r) {
+				n++
+				if _, bad := Bad("a" + string(r) + "b"); !bad {
+					t.Errorf("U+%04X passed", r)
+				}
+			}
+		}
+	}
+	for _, r := range []rune{0x034f, 0x115f, 0x1160, 0x17b4, 0x17b5, 0x180b, 0x180f, 0x200c, 0x200d, 0x2800, 0x3164, 0xfe00, 0xfe0f, 0xffa0, 0xe0100} {
+		if _, bad := Bad("a" + string(r) + "b"); !bad {
+			t.Errorf("U+%04X passed", r)
+		}
+	}
+	if n < 100 {
+		t.Errorf("only %d ignorable code points came out of the tables of Unicode %s", n, UnicodeVersion)
+	}
+	if _, bad := Bad("\u3000\u3164"); !bad {
+		t.Error("a name of only blanks passed")
+	}
+}
+
+func TestWriterCloseWritesWhatIsHeld(t *testing.T) {
+	var b bytes.Buffer
+	w := Writer(&b)
+	w.Write([]byte("a\xe2\x80")) // the start of a three-byte character
+	if b.String() != "a" {
+		t.Fatalf("%q", b.String())
+	}
+	if err := w.Close(); err != nil || b.String() != "a\\x{E2}\\x{80}" {
+		t.Errorf("%q %v", b.String(), err)
+	}
+	b.Reset()
+	w = Writer(&b)
+	w.Write([]byte("x\x1b[1;"))
+	w.Close()
+	if b.String() != "x\\u{1B}\\x{5B}\\x{31}\\x{3B}" {
+		t.Errorf("%q", b.String())
+	}
+}
+
 func TestBadRefusesBlankCharacters(t *testing.T) {
 	for name, s := range map[string]string{
 		"hangul filler": "\u3164", "halfwidth hangul filler": "ab\uffa0", "choseong filler": "\u115f", "jungseong filler": "a\u1160",
@@ -88,7 +133,7 @@ func TestBadRefusesBlankCharacters(t *testing.T) {
 			t.Errorf("%s: %q passed", name, s)
 		}
 	}
-	for _, s := range []string{"e\u0301", "\u2764\ufe0f", "\u0661\u0662", "\u05e9\u05dc\u05d5\u05dd", "\u0645\u0631\u062d\u0628\u0627", "\ud55c\uae00", "\u4e2d\u6587", "1\ufe0f\u20e3", "\U0001F44D\U0001F3FD"} {
+	for _, s := range []string{"e\u0301", "\u0661\u0662", "\u05e9\u05dc\u05d5\u05dd", "\u0645\u0631\u062d\u0628\u0627", "\ud55c\uae00", "\u4e2d\u6587", "\U0001F44D\U0001F3FD"} {
 		if r, bad := Bad(s); bad {
 			t.Errorf("%q refused for %U", s, r)
 		}

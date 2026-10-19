@@ -184,7 +184,9 @@ func CheckDiff(w io.Writer, d Diff) (weakened bool, err error) {
 // green, removed red, changed amber, and each weakened approval gate in bold red, called out
 // before the changes rather than after them. With color off it writes what CheckDiff writes.
 func CheckDiffStyled(w io.Writer, d Diff, st term.Style) (weakened bool, err error) {
-	w = safetext.Writer(w) // a name that reached the output unrefused is written out, never drawn
+	ew := safetext.Writer(w) // a name that reached the output unrefused is written out, never drawn
+	defer ew.Close()
+	w = ew
 	v, err := BuildDiff(d)
 	if err != nil {
 		return false, err
