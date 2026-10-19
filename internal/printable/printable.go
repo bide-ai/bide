@@ -128,16 +128,18 @@ var partialANSI = regexp.MustCompile(`^\x1b(\[[0-9;]*)?$`)
 // it is), so nothing is dropped.
 func Writer(w io.Writer) *EscapingWriter { return &EscapingWriter{w: w} }
 
-// escWriter keeps the start of a character a Write ended in the middle of, and escapes it with the
-// rest on the next Write, so a character split across two writes is not taken for two bad ones.
-// EscapingWriter is the writer Writer returns. Close writes what is still held back (the start of a
-// character or color sequence the last write ended in) with each unfinished byte written out, and does
-// not close the writer underneath.
+// EscapingWriter is the writer Writer returns. It keeps the start of a character or color sequence a
+// Write ended in the middle of, and escapes it with the rest on the next Write, so a character split
+// across two writes is not taken for two bad ones. Close writes what is still held back with each
+// unfinished byte written out, and does not close the writer underneath.
 type EscapingWriter struct {
 	w    io.Writer
 	rest []byte
 }
 
+// Write writes p with every character that does not print written out, except terminal color
+// sequences. It reports len(p) written; the start of an unfinished character or color sequence at
+// the end of p is held for the next write or Close.
 func (e *EscapingWriter) Write(p []byte) (int, error) {
 	buf := append(e.rest, p...)
 	e.rest = nil
