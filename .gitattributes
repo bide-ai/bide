@@ -12,8 +12,9 @@ signer/gcpkms/testdata/attestation/*.gz binary
 
 # The approve page's sources and the canonical-arguments vectors are byte-exact: the page bundle is
 # built from the embedded bytes and published with their hashes, and the vectors are compared with
-# what Go writes (LF). No line-ending conversion on any platform.
+# what Go writes (LF), as is the golden list of the bundle's hashes. No line-ending conversion on any platform.
 approvals/page/** text eol=lf
+approvals/testdata/approve-page.SHA256SUMS text eol=lf
 agent/testdata/canonical_args_vectors.json text eol=lf
 
 # RFC 3161 vectors are signed DER and PEM, and the fuzz corpus holds exact bytes: byte-exact on every platform.
