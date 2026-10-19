@@ -1,6 +1,6 @@
 # Design: a visual editor for flow configs
 
-Status: accepted (the maintainer decided all 12 decisions as recommended on 2026-10-15). Phase 1 is built (`bide edit`, v0.19.0 and v0.20.0; see the [flow editor guide](../guides/flow-editor.md) and the phased plan below); phase 2 is being built in steps (unreleased: add, remove, rename and move nodes, the entry, the flow's name and types, edges, switches, arms and `else`, joins and loop bounds; drag to connect and the undo and redo test over the new operations are next), and of phase 3 the read-only Registry description (`Registry.Describe`) and `plan.InspectConfigDescribed` are in; phase 4 is not built, and the names in the unbuilt parts are a
+Status: accepted (the maintainer decided all 12 decisions as recommended on 2026-10-15). Phase 1 is built (`bide edit`, v0.19.0 and v0.20.0; see the [flow editor guide](../guides/flow-editor.md) and the phased plan below); phase 2 is being built in steps (unreleased: add, remove, rename and move nodes, the entry, the flow's name and types, edges, switches, arms and `else`, joins and loop bounds, and undo and redo tested over every one of them; drag to connect is next), and of phase 3 the read-only Registry description (`Registry.Describe`) and `plan.InspectConfigDescribed` are in; phase 4 is not built, and the names in the unbuilt parts are a
 sketch. Written against `main` at 759cf547 and, where it says so, against the open pull request
 #312 (approval deadlines).
 

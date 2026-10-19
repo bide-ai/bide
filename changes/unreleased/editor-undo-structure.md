@@ -1,0 +1,3 @@
+Section: Changed
+
+bide edit's Undo and Redo are now tested over every kind of structure edit (the last step of the editor's structure phase before drag to connect): a node added, renamed and moved, an edge, a switch, a loop bound, a join, the flow's name and a gate removed. A Chrome test walks the history back to the file's exact text one step at a time, checks that the weakened banner follows each text (the server computes it again for every step), walks it forward again, and checks that the history survives a save (Undo past a save says `unsaved changes`, and Redo back to the saved text says `saved`). The behaviour is unchanged from phase 1; the guide says what it covers.
