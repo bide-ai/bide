@@ -670,3 +670,82 @@ func TestKeyboardOnlyInChrome(t *testing.T) {
 		}
 	}
 }
+
+// TestStructureInChrome: the structure controls by the keyboard: add a node, rename it, remove it, remove
+// a wired node through the dialog that lists what else goes, write the entry, and see a rename of a
+// gated node read as weakened (the gate check follows names).
+func TestStructureInChrome(t *testing.T) {
+	s, _ := newTestServer(t, "refund.yaml", weakFlow)
+	var r struct {
+		OK                     bool     `json:"ok"`
+		Error                  string   `json:"error"`
+		Original               string   `json:"original"`
+		AfterAdd               string   `json:"afterAdd"`
+		FocusAfterAdd          string   `json:"focusAfterAdd"`
+		InspectorAfterAdd      string   `json:"inspectorAfterAdd"`
+		OutlineAfterAdd        []string `json:"outlineAfterAdd"`
+		DupError               string   `json:"dupError"`
+		DupTextSame            bool     `json:"dupTextSame"`
+		AfterRename            string   `json:"afterRename"`
+		FocusAfterRename       string   `json:"focusAfterRename"`
+		InspectorAfterRename   string   `json:"inspectorAfterRename"`
+		AfterRemoveLone        string   `json:"afterRemoveLone"`
+		FocusAfterRemove       string   `json:"focusAfterRemove"`
+		DialogOpenAfterLone    bool     `json:"dialogOpenAfterLone"`
+		RemoveList             []string `json:"removeList"`
+		DialogTitle            string   `json:"dialogTitle"`
+		AfterCancel            string   `json:"afterCancel"`
+		FocusAfterCancel       string   `json:"focusAfterCancel"`
+		AfterRemoveWired       string   `json:"afterRemoveWired"`
+		StateAfterRemove       string   `json:"stateAfterRemove"`
+		AfterUndo              string   `json:"afterUndo"`
+		EntryButton            string   `json:"entryButton"`
+		AfterEntry             string   `json:"afterEntry"`
+		EntryRefusal           string   `json:"entryRefusal"`
+		DialogOpenAfterRefusal bool     `json:"dialogOpenAfterRefusal"`
+		AfterGatedRename       string   `json:"afterGatedRename"`
+		BannerAfterGatedRename string   `json:"bannerAfterGatedRename"`
+		Console                []string `json:"console"`
+		Failed                 []string `json:"failed"`
+		OffOrigin              []string `json:"offOrigin"`
+	}
+	runScript(t, "structure.mjs", s, &r)
+	if !r.OK {
+		t.Fatalf("the script failed: %s\nconsole: %q\nfailed requests: %q", r.Error, r.Console, r.Failed)
+	}
+	if len(r.Console) > 0 || len(r.Failed) > 0 || len(r.OffOrigin) > 0 {
+		t.Errorf("the browser reported console %q, failed requests %q, requests off the origin %q", r.Console, r.Failed, r.OffOrigin)
+	}
+	added := strings.Replace(weakFlow, "  - {name: receipt, block: receipt, safety: idempotent}\n", "  - {name: receipt, block: receipt, safety: idempotent}\n  - {name: audit, block: audit_log}\n", 1)
+	if r.AfterAdd != added || r.FocusAfterAdd != "f-name" || r.InspectorAfterAdd != "audit" || !slices.Equal(r.OutlineAfterAdd, []string{"validate", "charge", "receipt", "audit"}) {
+		t.Errorf("after adding: focus %q, inspector %q, outline %q\n%s", r.FocusAfterAdd, r.InspectorAfterAdd, r.OutlineAfterAdd, r.AfterAdd)
+	}
+	if !strings.Contains(r.DupError, "already there") || !r.DupTextSame {
+		t.Errorf("a duplicate name: %q, text unchanged %v", r.DupError, r.DupTextSame)
+	}
+	if r.AfterRename != strings.Replace(added, "name: audit,", "name: audit2,", 1) || r.FocusAfterRename != "f-name" || r.InspectorAfterRename != "audit2" {
+		t.Errorf("after renaming: focus %q, inspector %q\n%s", r.FocusAfterRename, r.InspectorAfterRename, r.AfterRename)
+	}
+	if r.AfterRemoveLone != weakFlow || r.FocusAfterRemove != "an-name" || r.DialogOpenAfterLone {
+		t.Errorf("removing a node nothing is wired to: focus %q, dialog open %v\n%s", r.FocusAfterRemove, r.DialogOpenAfterLone, r.AfterRemoveLone)
+	}
+	if r.DialogTitle != "Remove receipt?" || !slices.Equal(r.RemoveList, []string{"wiring 2: edge charge -> receipt"}) {
+		t.Errorf("the removal dialog: %q, %q", r.DialogTitle, r.RemoveList)
+	}
+	if r.AfterCancel != weakFlow || r.FocusAfterCancel != "f-remove" {
+		t.Errorf("after Cancel: focus %q, text unchanged %v", r.FocusAfterCancel, r.AfterCancel == weakFlow)
+	}
+	wired := strings.NewReplacer("  - {name: receipt, block: receipt, safety: idempotent}\n", "", "  - edge: [charge, receipt]\n", "").Replace(weakFlow)
+	if r.AfterRemoveWired != wired || r.StateAfterRemove != "unsaved changes" || r.AfterUndo != weakFlow {
+		t.Errorf("after removing a wired node (undo restores %v):\n%s", r.AfterUndo == weakFlow, r.AfterRemoveWired)
+	}
+	if r.EntryButton != "Make this the entry node" || r.AfterEntry != strings.Replace(weakFlow, "entry: validate", "entry: charge", 1) {
+		t.Errorf("the entry: button %q\n%s", r.EntryButton, r.AfterEntry)
+	}
+	if !strings.Contains(r.EntryRefusal, "is the entry node") || r.DialogOpenAfterRefusal {
+		t.Errorf("removing the entry node: %q, dialog open %v", r.EntryRefusal, r.DialogOpenAfterRefusal)
+	}
+	if !strings.Contains(r.AfterGatedRename, "name: charge2") || !strings.Contains(r.BannerAfterGatedRename, "WEAKENED") {
+		t.Errorf("renaming a gated node: banner %q\n%s", r.BannerAfterGatedRename, r.AfterGatedRename)
+	}
+}

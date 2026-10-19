@@ -17,7 +17,7 @@
 <p class="muted small" id="baseline"></p>
 <div class="editor">
   <section aria-labelledby="h-canvas" class="pane canvas"><h2 id="h-canvas">Flow</h2><div class="graphwrap" id="canvas"></div></section>
-  <section aria-labelledby="h-outline" class="pane outline"><h2 id="h-outline">Outline</h2><ol id="outline" class="outlist"></ol><h3>Wiring</h3><ul id="wiring" class="wirelist"></ul></section>
+  <section aria-labelledby="h-outline" class="pane outline"><h2 id="h-outline">Outline</h2><ol id="outline" class="outlist"></ol><div class="form addnode" role="group" aria-labelledby="h-add"><h3 id="h-add">Add a node</h3><div class="field"><label for="an-name">Name</label><input id="an-name" type="text" autocomplete="off" spellcheck="false" aria-describedby="an-help an-error"></div><div class="field"><label for="an-block">Block</label><input id="an-block" type="text" list="an-blocks" autocomplete="off" spellcheck="false" aria-describedby="an-help"><datalist id="an-blocks"></datalist></div><p class="muted small" id="an-help">The node goes at the end of the node list and is not wired to anything yet. A block is chosen by name: its Go code is registered in your program.</p><p id="an-error" class="bad small" role="alert"></p><button type="button" class="btn" id="an-add">Add node</button></div><h3>Wiring</h3><ul id="wiring" class="wirelist"></ul></section>
   <section aria-labelledby="h-inspector" class="pane inspector"><h2 id="h-inspector">Inspector</h2><div id="inspector"></div></section>
 </div>
 <section aria-labelledby="h-assert"><h2 id="h-assert">Assertions</h2><p class="muted small">Checked by <code>bide check</code> and in CI, not at run time.</p><div id="assertions"></div></section>

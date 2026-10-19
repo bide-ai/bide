@@ -420,7 +420,7 @@ func TestPageContract(t *testing.T) {
 		}
 	}
 	js, _ := fs.ReadFile(pageFS, "page/editor.js")
-	for _, k := range []string{"d.icon", "d.word", "d.line", "v.nodes", "v.wiring", "v.assertions", "v.problems", "v.graph", "v.parse_error", "v.verdict", "a.holds", "a.invalid", "a.undecided", "a.path", "a.message", "p.severity", "p.message", "n.gate", "n.risk", "w.weakened", "w.word", "w.line", "w.baseline", "w.changes", "w.strengthened", "w.compare_error", "v.assertion_forms", "e.refused", "n.approval", "cur.need", "cur.approvers", "cur.exclude_principal", "cur.timeout", "n.safety", "n.block", "e.changed", "e.text"} {
+	for _, k := range []string{"d.icon", "d.word", "d.line", "v.nodes", "v.wiring", "v.assertions", "v.problems", "v.graph", "v.parse_error", "v.verdict", "a.holds", "a.invalid", "a.undecided", "a.path", "a.message", "p.severity", "p.message", "n.gate", "n.risk", "w.weakened", "w.word", "w.line", "w.baseline", "w.changes", "w.strengthened", "w.compare_error", "v.assertion_forms", "e.refused", "n.approval", "cur.need", "cur.approvers", "cur.exclude_principal", "cur.timeout", "n.safety", "n.block", "e.changed", "e.text", "dry.cascade", "v.entry"} {
 		if !strings.Contains(string(js), k) {
 			t.Errorf("the script no longer reads %s: update this list with it", k)
 		}
@@ -578,6 +578,35 @@ func TestApplyEndpoint(t *testing.T) {
 		t.Errorf("an unknown field: %d", w.Code)
 	}
 	// Nothing was written: the file is what it was.
+	if d, err := s.Doc(); err != nil || d.Text != testFlow {
+		t.Errorf("the file changed: %v", err)
+	}
+}
+
+// remove_node over the endpoint: a dry run answers with the list and changes nothing; the real call
+// needs that list back, and what it removes is what was listed.
+func TestRemoveNodeEndpoint(t *testing.T) {
+	s, _ := newTestServer(t, "refund.yaml", testFlow)
+	h := s.Handler()
+	post := func(op Operation) (Edited, string) {
+		w := call(h, s, "/api/apply", applyReq(testFlow, op), nil)
+		var e Edited
+		if err := json.Unmarshal(w.Body.Bytes(), &e); err != nil || w.Code != 200 {
+			t.Fatalf("apply: %d %v %s", w.Code, err, w.Body)
+		}
+		return e, w.Body.String()
+	}
+	dry, _ := post(Operation{Op: "remove_node", Node: "receipt", DryRun: true})
+	if dry.Changed || dry.Text != testFlow || len(dry.Cascade) == 0 {
+		t.Fatalf("dry run: changed %v, list %q", dry.Changed, dry.Cascade)
+	}
+	if _, body := post(Operation{Op: "remove_node", Node: "receipt"}); !strings.Contains(body, `"refused"`) || !strings.Contains(body, "confirm") {
+		t.Errorf("an unconfirmed remove: %s", body)
+	}
+	done, _ := post(Operation{Op: "remove_node", Node: "receipt", Confirm: dry.Cascade})
+	if !done.Changed || strings.Contains(done.Text, "name: receipt") || !slices.Equal(done.Cascade, dry.Cascade) {
+		t.Errorf("confirmed remove: changed %v list %q\n%s", done.Changed, done.Cascade, done.Text)
+	}
 	if d, err := s.Doc(); err != nil || d.Text != testFlow {
 		t.Errorf("the file changed: %v", err)
 	}

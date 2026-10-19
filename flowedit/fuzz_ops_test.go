@@ -51,6 +51,14 @@ func FuzzApplyOperation(f *testing.F) {
 			{Op: "set_assertion", Index: 0, Assertion: &Assertion{Form: "no_side_effect", Node: node}},
 			{Op: "remove_assertion", Index: 0},
 			{Op: "remove_assertion", Index: 1},
+			{Op: "add_node", Node: "zz new", Value: "zz"},
+			{Op: "add_node", Node: other, Value: "dup"},
+			{Op: "rename_node", Node: node, Value: "zz renamed"},
+			{Op: "rename_node", Node: node, Value: other},
+			{Op: "remove_node", Node: node, DryRun: true},
+			{Op: "remove_node", Node: node},
+			{Op: "set_entry", Value: node},
+			{Op: "set_entry"},
 		}
 		op := ops[int(pick)%len(ops)]
 		r, err := ApplyOperation(name, text, op)

@@ -150,6 +150,7 @@ export function renderOutline(v) {
     return h('li', {}, b);
   }));
   replace('wiring', (v.wiring || []).map((w) => h('li', {}, w)));
+  replace('an-blocks', [...new Set(nodes.map((x) => x.block).filter(Boolean))].map((b) => h('option', { value: b })));
 }
 
 function outlineKeys(e) {
@@ -203,7 +204,73 @@ export function renderInspector(v) {
       h('div', { class: 'field' }, h('label', { for: 'f-block' }, 'Block'), h('div', { class: 'inline' }, block, setBlock),
         h('datalist', { id: 'f-blocks' }, blocks.map((b) => h('option', { value: b }))),
         h('p', { class: 'muted small' }, 'A block name is chosen, not written: its Go code is registered in your program.')),
-      gateForm(n)));
+      gateForm(n),
+      structureForm(n, v)));
+}
+
+// structureForm is the node's name, its place as the entry, and its removal. A rename rewrites every
+// place the name is used (the server refuses one it cannot reach everywhere); a removal lists first
+// what else it removes and waits for that list to be confirmed.
+function structureForm(n, v) {
+  const name = h('input', { id: 'f-name', type: 'text', value: n.name, autocomplete: 'off', spellcheck: 'false', 'aria-describedby': 'f-name-help' });
+  const rename = h('button', { type: 'button', class: 'btn', id: 'f-name-set' }, 'Rename');
+  const doRename = () => {
+    const to = name.value.trim();
+    if (to === n.name) { announce('No change: that is the name already.'); return; }
+    operate({ op: 'rename_node', node: n.name, value: to }, 'f-name', to);
+  };
+  rename.addEventListener('click', doRename);
+  name.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doRename(); } });
+  const isEntry = v.entry === n.name;
+  const entry = h('button', { type: 'button', class: 'btn', id: 'f-entry' }, isEntry ? 'Write the entry into the file' : 'Make this the entry node');
+  entry.addEventListener('click', () => operate({ op: 'set_entry', value: n.name }, 'f-entry'));
+  const remove = h('button', { type: 'button', class: 'btn', id: 'f-remove' }, 'Remove node');
+  remove.addEventListener('click', () => removeNode(n, remove));
+  return h('fieldset', { class: 'structure' },
+    h('legend', {}, 'Node'),
+    h('div', { class: 'field' }, h('label', { for: 'f-name' }, 'Name'), h('div', { class: 'inline' }, name, rename),
+      h('p', { class: 'muted small', id: 'f-name-help' }, 'Renames the node everywhere the file uses the name, in wiring and assertions. The gate check follows names, so a renamed gated node reads as removed and added: the weakened banner may appear for a rename.')),
+    h('div', { class: 'field' }, h('p', { class: 'small' }, isEntry ? 'This is the entry node.' : 'The entry node is ' + (v.entry || 'not set') + '.'),
+      h('p', { class: 'muted small' }, 'A config with no entry key starts at its first node. Adding, moving or removing nodes never changes that silently: write the entry here first.'),
+      entry),
+    h('div', { class: 'field' }, remove,
+      h('p', { class: 'muted small' }, 'Lists what else goes with it (edges, arms, comments) before anything is removed.')));
+}
+
+async function removeNode(n, opener) {
+  const box = $('op-error');
+  let dry;
+  try {
+    dry = await applyOp(state.text, { op: 'remove_node', node: n.name, dry_run: true });
+  } catch (err) {
+    if (box) box.textContent = 'Not applied: ' + err.message;
+    announce('Not applied: ' + err.message);
+    return;
+  }
+  const list = dry.cascade || [];
+  const op = { op: 'remove_node', node: n.name, confirm: list };
+  if (!list.length) { operate({ op: 'remove_node', node: n.name }, 'an-name', ''); return; }
+  const go = h('button', { type: 'button', class: 'btn primary', id: 'do-remove' }, 'Remove ' + n.name);
+  const cancel = h('button', { type: 'button', class: 'btn' }, 'Cancel');
+  cancel.addEventListener('click', () => closeDialog(opener));
+  go.addEventListener('click', () => { closeDialog(); operate(op, 'an-name', ''); });
+  openDialog('Remove ' + n.name + '?', [
+    h('p', {}, 'Removing it also changes:'),
+    h('ul', { id: 'remove-list' }, list.map((x) => h('li', {}, x))),
+    h('p', { class: 'muted small' }, 'Nothing is written to the file until you save, and Undo brings it back.'),
+  ], [go, cancel], cancel, opener);
+}
+
+// The add-node controls are in the page: this wires them.
+function wireAddNode() {
+  const name = $('an-name');
+  const block = $('an-block');
+  const add = async () => {
+    const to = name.value.trim();
+    if (await operate({ op: 'add_node', node: to, value: block.value.trim() }, 'f-name', to)) { name.value = ''; block.value = ''; }
+  };
+  $('an-add').addEventListener('click', add);
+  for (const el of [name, block]) el.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
 }
 
 // gateForm is the approval section: a draft of need, approvers, separation of duties and deadline.
@@ -308,32 +375,38 @@ function gateForm(n) {
 
 // operate applies an operation to the text, as a step the author can undo, and puts the focus back
 // on the control that made it.
-async function operate(op, focusId) {
+async function operate(op, focusId, selectAfter) {
   const sent = state.text;
+  let applied = false;
+  const errBox = () => $(op.op === 'add_node' ? 'an-error' : 'op-error');
   try {
     const e = await applyOp(sent, op);
     // The author may have typed while the answer was on its way: their text is not overwritten.
     if (state.text !== sent) {
       const msg = 'Not applied: the text changed while the edit was being applied. Apply it again.';
-      const box = $('op-error');
+      const box = errBox();
       if (box) box.textContent = msg;
       announce(msg);
       return;
     }
+    if (errBox()) errBox().textContent = '';
     if (e.changed) {
       checkpoint();
+      if (selectAfter !== undefined) selected = selectAfter;
       setText(e.text, e);
       announce(opWords(op));
+      applied = true;
     } else {
       announce('No change: the text already says that.');
     }
     const target = $(focusId);
     if (target) target.focus();
   } catch (err) {
-    const box = $('op-error');
+    const box = errBox();
     if (box) box.textContent = 'Not applied: ' + err.message;
     announce('Not applied: ' + err.message);
   }
+  return applied;
 }
 
 function opWords(op) {
@@ -341,6 +414,10 @@ function opWords(op) {
     case 'set_safety': return op.node + ': safety ' + (op.value || 'left to the block');
     case 'set_block': return op.node + ': block ' + op.value;
     case 'clear_approval': return op.node + ': gate removed';
+    case 'add_node': return 'Node ' + op.node + ' added';
+    case 'remove_node': return 'Node ' + op.node + ' removed';
+    case 'rename_node': return op.node + ' renamed to ' + op.value;
+    case 'set_entry': return 'Entry node: ' + op.value;
     case 'add_assertion': return 'Assertion added';
     case 'set_assertion': return 'Assertion changed';
     case 'remove_assertion': return 'Assertion removed';
@@ -744,6 +821,7 @@ async function main() {
   }
   $('source').addEventListener('input', onInput);
   $('outline').addEventListener('keydown', outlineKeys);
+  wireAddNode();
   dlg().addEventListener('close', () => {
     if (dlg().open) return; // closed to be opened again (a save that must be asked again)
     const o = dialogOpener;
