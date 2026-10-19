@@ -171,7 +171,7 @@ func TestListStepsAreMinimal(t *testing.T) {
 		{[]string{"a", "b", "c"}, []string{"a", "c"}, []Op{del(1)}},
 		{[]string{"a", "b", "c"}, []string{"a", "b", "c", "d"}, []Op{ins(3, "d")}},
 		{[]string{"a", "b", "c"}, []string{"z", "a", "b", "c"}, []Op{ins(0, "z")}},
-		{[]string{"a", "b", "c"}, []string{"a", "x", "c"}, []Op{del(1), ins(1, "x")}},
+		{[]string{"a", "b", "c"}, []string{"a", "x", "c"}, []Op{ins(2, "x"), del(1)}},
 		{[]string{"a", "b", "c", "d"}, []string{"a", "d"}, []Op{del(2), del(1)}},
 		{[]string{"a"}, nil, []Op{del(0)}},
 		{nil, []string{"a", "b"}, []Op{ins(0, "a"), ins(1, "b")}},

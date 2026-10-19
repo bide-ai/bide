@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bide-ai/bide/internal/printable"
+	"github.com/bide-ai/bide/plan"
 )
 
 // The structure operations of docs/design/visual-editor.md ("Operations", phase 2): add, remove and
@@ -20,7 +21,7 @@ import (
 // still caught.
 
 func isStructureOp(op string) bool {
-	if isWiringOp(op) {
+	if isWiringOp(op) || isJoinOp(op) {
 		return true
 	}
 	switch op {
@@ -69,6 +70,7 @@ type wireDoc struct {
 	Else   string   `json:"else"`
 	Join   string   `json:"join"`
 	Inputs []string `json:"inputs"`
+	Merge  string   `json:"merge"`
 }
 
 // explainUnreadable is the refusal for a config whose shape the operations cannot read: one sentence
@@ -153,6 +155,9 @@ func (c *structDoc) nodeIndex(name string) (int, error) {
 		idx = i
 	}
 	if idx < 0 {
+		if c.isJoin(name) {
+			return 0, refuse("%q is a join, not a node: its inputs, merge and removal have their own controls, and a join is renamed or moved in the source", name)
+		}
 		return 0, refuse("no node is named %q", name)
 	}
 	return idx, nil
@@ -208,9 +213,14 @@ func applyStructure(name string, src, data []byte, op Operation) (*Applied, erro
 		steps, err = planMoveWiring(&cfg, op)
 	case "set_flow", "set_in", "set_out":
 		steps, err = planSetScalar(&cfg, top, op)
+	case "remove_join":
+		steps, cascade, err = planRemoveJoin(&cfg, op)
 	default:
-		if isWiringOp(op.Op) {
+		switch {
+		case isWiringOp(op.Op):
 			steps, err = planWiring(&cfg, top, op)
+		case isJoinOp(op.Op):
+			steps, err = planJoin(&cfg, top, op)
 		}
 	}
 	if err != nil {
@@ -245,7 +255,15 @@ func applyStructure(name string, src, data []byte, op Operation) (*Applied, erro
 	if !reflect.DeepEqual(canonical(got), canonical(want)) {
 		return nil, refuse("the result of %s does not match what the operation should produce; nothing was changed (edit this in the source)", op.Op)
 	}
-	if op.Op == "remove_node" {
+	if op.Op == "set_loop_max" && op.Max > 0 {
+		// A loop bound that Build would refuse (the target is not an ancestor of the switch, a second loop
+		// arm, no exit arm) is refused with the structural check's reason; the editor holds half-built
+		// flows, but it does not write a loop that is a wiring mistake by its own edit.
+		if why := newLoopShapeError(data, outData); why != "" {
+			return nil, refuse("%s; plan.Load refuses this", why)
+		}
+	}
+	if op.Op == "remove_node" || op.Op == "remove_join" {
 		for _, c := range RemovedComments(src, out) {
 			cascade = append(cascade, "comment: "+c)
 		}
@@ -336,6 +354,11 @@ func planMoveWiring(cfg *structDoc, op Operation) ([]Op, error) {
 	}
 	if j < 0 || j+1 >= len(cfg.Wiring) {
 		return nil, refuse("wiring element %d is already the %s", op.Index+1, map[int]string{-1: "first", 1: "last"}[delta])
+	}
+	order := slices.Clone(cfg.Wiring)
+	order[j], order[j+1] = order[j+1], order[j]
+	if err := joinsInOrder(order); err != nil {
+		return nil, err
 	}
 	return []Op{{Kind: Swap, Path: []any{"wiring"}, Index: j}}, nil
 }
@@ -437,6 +460,21 @@ func planRemoveNode(cfg *structDoc, op Operation) ([]Op, []string, error) {
 	case cfg.Entry == "" && idx == 0 && len(cfg.Nodes) > 1:
 		return nil, nil, implicitEntryRefusal("removing "+fmt.Sprintf("%q", op.Node), op.Node)
 	}
+	steps, cascade, err := cascadeWiring(cfg, op.Node, false)
+	if err != nil {
+		return nil, nil, err
+	}
+	steps = append(steps, Op{Kind: Delete, Path: []any{"nodes", idx}})
+	return steps, cascade, nil
+}
+
+// cascadeWiring plans the removal of everything in the wiring that names name, a node or (join true)
+// a join, and lists it: the edges that name it, the arms and else that route to it (a switch left with
+// no arm goes whole), the switch on it, and for a join its own element. A node that is an input of a
+// join is not removed. The assert lines that name it are left in place and listed: removing one would
+// weaken the policy, and the check reports a line that names a missing node.
+func cascadeWiring(cfg *structDoc, name string, join bool) ([]Op, []string, error) {
+	op := Operation{Node: name}
 	var steps []Op
 	var cascade []string
 	// Wiring from the end, so the indexes of the elements still to come stay valid; within an element
@@ -479,14 +517,13 @@ func planRemoveNode(cfg *structDoc, op Operation) ([]Op, []string, error) {
 				cascade = append(cascade, fmt.Sprintf("wiring %d: arm %s -> %s of the switch on %s", i+1, w.When[hit[k]].Pred, op.Node, w.Switch))
 			}
 		case w.Join != "":
-			if slices.Contains(w.Inputs, op.Node) {
+			if join && w.Join == name {
+				steps = append(steps, Op{Kind: Delete, Path: []any{"wiring", i}})
+			} else if slices.Contains(w.Inputs, op.Node) {
 				return nil, nil, refuse("%q is an input of the join %q; remove or change the join first", op.Node, w.Join)
 			}
 		}
 	}
-	steps = append(steps, Op{Kind: Delete, Path: []any{"nodes", idx}})
-	// Assertions are left in place: removing one would weaken the policy, and the check reports a
-	// line that names a node that is gone.
 	for k, line := range cfg.Assert {
 		if slices.Contains(assertionNames(line), op.Node) {
 			cascade = append(cascade, fmt.Sprintf("assert %d: %q stays and is reported as naming a missing node", k+1, line))
@@ -623,6 +660,12 @@ func expectStructure(old any, op Operation) (any, error) {
 		}
 		return doc, nil
 	}
+	if isJoinOp(op.Op) && op.Op != "remove_join" { // remove_join is modelled with remove_node, below
+		if err := expectJoin(doc, op); err != nil {
+			return nil, err
+		}
+		return doc, nil
+	}
 	switch op.Op {
 	case "add_node":
 		doc["nodes"] = append(nodes, map[string]any{"name": op.Node, "block": op.Value})
@@ -706,17 +749,22 @@ func expectStructure(old any, op Operation) (any, error) {
 		} else {
 			doc[key] = op.Value
 		}
-	case "remove_node":
-		var keptNodes []any
-		for _, n := range nodes {
-			if asMap(n)["name"] != op.Node {
-				keptNodes = append(keptNodes, n)
+	case "remove_node", "remove_join":
+		if op.Op == "remove_node" {
+			var keptNodes []any
+			for _, n := range nodes {
+				if asMap(n)["name"] != op.Node {
+					keptNodes = append(keptNodes, n)
+				}
 			}
+			doc["nodes"] = keptNodes
 		}
-		doc["nodes"] = keptNodes
 		kept := []any{}
 		for _, w := range wiring {
 			m := asMap(w)
+			if op.Op == "remove_join" && m["join"] == op.Node {
+				continue
+			}
 			if l, ok := m["edge"].([]any); ok && slices.Contains(l, any(op.Node)) {
 				continue
 			}
@@ -746,4 +794,30 @@ func expectStructure(old any, op Operation) (any, error) {
 		doc["wiring"] = kept
 	}
 	return doc, nil
+}
+
+// newLoopShapeError is the first loop-shape error the structural check finds in after that it did not
+// find in before, or "".
+func newLoopShapeError(before, after []byte) string {
+	shape := func(data []byte) []string {
+		var out []string
+		for _, p := range plan.InspectConfig(data, nil).Problems {
+			if p.Severity != "error" {
+				continue
+			}
+			for _, m := range []string{"loops back to", "loop-back arm", "no exit arm"} {
+				if strings.Contains(p.Message, m) {
+					out = append(out, p.Message)
+				}
+			}
+		}
+		return out
+	}
+	old := shape(before)
+	for _, m := range shape(after) {
+		if !slices.Contains(old, m) {
+			return m
+		}
+	}
+	return ""
 }

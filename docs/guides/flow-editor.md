@@ -33,8 +33,9 @@ work below. The second phase (structure) is being added in steps; so far you can
 rename a node, write the entry (see [Nodes](#nodes-add-remove-rename-and-the-entry)), reorder nodes and
 wiring elements, and set the flow's name and types (see [Order, wiring order and the flow's
 settings](#order-wiring-order-and-the-flows-settings)), and wire edges, switches, arms and `else` (see
-[Connections](#connections-edges-switches-arms-and-else)). It does **not**
-yet: set a loop bound, or add or change joins (edit the source for those); know your `plan.Registry` (it checks structure only, so no block palette,
+[Connections](#connections-edges-switches-arms-and-else)), set an arm's loop bound, and add, change and
+remove joins (see [Joins and loops](#joins-and-loops)). It does **not**
+yet: know your `plan.Registry` (it checks structure only, so no block palette,
 type-compatible connections or digest); compare with a journaled run; or let you place nodes on the canvas
 (the layout is derived from the topology, on purpose). A config with an anchor or alias anywhere,
 a repeated key, a key that is not a string, NaN or infinity, or mixed line ends is refused by the editor
@@ -184,6 +185,30 @@ edge out, an edge from a node to itself, a duplicate edge or arm, or a switch wi
 still shows each if it arrives through the source. **A new edge or arm that reaches a gated node by
 another way is a weakening the gate check sees:** the banner appears with the same words as in CI, and
 saving needs the confirmation.
+
+## Joins and loops
+
+- **A loop bound.** Each arm of a switch has **loops at most**: a number above 0 makes the arm a bounded
+  loop-back (`loop_max`: when its predicate holds, the value goes back to an earlier node and that part
+  runs again, at most that many times before the run declares a runaway loop); 0 removes the key and
+  the arm is an ordinary forward arm. The editor refuses a bound that `plan.Load` would refuse and says why in the check's words: an arm that does
+  not go back to an ancestor of its switch (a loop head must reach its loop switch), a second loop-back arm on
+  a switch, or a loop with no exit arm (another arm or an `else`). What it does not check: the shape of the
+  loop body (no inner switch, nothing leaving it), which is made when a program loads the flow.
+- **A join** fans the results of several nodes into one. It is not a declared node but a wiring
+  element (`join`, `inputs`, `merge`), and is listed in the outline with the nodes. **Add a join** is a
+  disclosure under the outline: a name, a merge block and the inputs, chosen from the nodes. On a
+  selected join, the inspector shows its **merge block**, its inputs in order (the order the merge
+  block takes them: **Up**, **Down**, **Remove**, **Add input**) and **Remove join**; a join has the same
+  safety and approval gate forms a node has, written on its wiring element, and edges out
+  (**Connections**). A join has no block, name, position or entry of its own to edit. The editor checks
+  what the config says (an input is a declared node or join, named once, not the join itself, and a join
+  input is defined earlier in the wiring, which `plan.Load` requires and which rules out a cycle of joins; a join
+  needs at least one input and a merge block). **It cannot check that the merge block is registered
+  or that its arity and types fit the inputs:** `plan.Load` does, with the program's registry.
+- **Removing a join** lists first what goes with it (the edges out of it, a switch on it, its comments)
+  and waits for that list to be confirmed, as removing a node does; an `assert` line that names it
+  stays and the check reports it.
 
 ## The assertions panel
 

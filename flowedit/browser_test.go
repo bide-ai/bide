@@ -969,3 +969,77 @@ func TestWiringInChrome(t *testing.T) {
 		t.Errorf("removing the switch did not restore the text:\n%s", r.AfterRemoveSwitch)
 	}
 }
+
+// TestJoinsInChrome: a join and a loop bound by the keyboard.
+func TestJoinsInChrome(t *testing.T) {
+	s, _ := newTestServer(t, "refund.yaml", weakFlow)
+	var r struct {
+		OK                       bool     `json:"ok"`
+		Error                    string   `json:"error"`
+		AddJoinOpenAtStart       bool     `json:"addJoinOpenAtStart"`
+		AfterAdd                 string   `json:"afterAdd"`
+		FocusAfterAdd            string   `json:"focusAfterAdd"`
+		InspectorTitle           string   `json:"inspectorTitle"`
+		BlockFieldOnJoin         bool     `json:"blockFieldOnJoin"`
+		RenameOnJoin             bool     `json:"renameOnJoin"`
+		Inputs                   []string `json:"inputs"`
+		RemoveInputDisabledAtTwo bool     `json:"removeInputDisabledAtTwo"`
+		AfterAddInput            string   `json:"afterAddInput"`
+		AfterMoveInput           string   `json:"afterMoveInput"`
+		FocusAfterMoveInput      string   `json:"focusAfterMoveInput"`
+		AfterRemoveInput         string   `json:"afterRemoveInput"`
+		AfterMerge               string   `json:"afterMerge"`
+		AfterGate                string   `json:"afterGate"`
+		AfterJoinEdge            string   `json:"afterJoinEdge"`
+		JoinOffersSwitch         bool     `json:"joinOffersSwitch"`
+		LoopBefore               string   `json:"loopBefore"`
+		NoExit                   string   `json:"noExit"`
+		AfterLoop                string   `json:"afterLoop"`
+		FocusAfterLoop           string   `json:"focusAfterLoop"`
+		AfterLoopCleared         string   `json:"afterLoopCleared"`
+		FractionLive             string   `json:"fractionLive"`
+		DialogTitle              string   `json:"dialogTitle"`
+		RemoveList               []string `json:"removeList"`
+		AfterRemove              string   `json:"afterRemove"`
+		Console                  []string `json:"console"`
+		Failed                   []string `json:"failed"`
+		OffOrigin                []string `json:"offOrigin"`
+	}
+	runScript(t, "joins.mjs", s, &r)
+	if !r.OK {
+		t.Fatalf("the script failed: %s\nconsole: %q\nfailed requests: %q", r.Error, r.Console, r.Failed)
+	}
+	if len(r.Console) > 0 || len(r.Failed) > 0 || len(r.OffOrigin) > 0 {
+		t.Errorf("the browser reported console %q, failed requests %q, requests off the origin %q", r.Console, r.Failed, r.OffOrigin)
+	}
+	if r.AddJoinOpenAtStart || !strings.Contains(r.AfterAdd, "  - join: both\n    inputs: [charge, receipt]\n    merge: merge_two\n") || r.FocusAfterAdd != "j-merge" || r.InspectorTitle != "both" {
+		t.Errorf("after adding a join: open at start %v, focus %q, title %q\n%s", r.AddJoinOpenAtStart, r.FocusAfterAdd, r.InspectorTitle, r.AfterAdd)
+	}
+	if r.BlockFieldOnJoin || r.RenameOnJoin || !slices.Equal(r.Inputs, []string{"1. charge", "2. receipt"}) || r.RemoveInputDisabledAtTwo {
+		t.Errorf("the join's inspector: block field %v, rename %v, inputs %q, remove disabled at two %v", r.BlockFieldOnJoin, r.RenameOnJoin, r.Inputs, r.RemoveInputDisabledAtTwo)
+	}
+	if !strings.Contains(r.AfterAddInput, "inputs: [charge, receipt, validate]") || !strings.Contains(r.AfterMoveInput, "inputs: [charge, validate, receipt]") || !strings.Contains(r.AfterRemoveInput, "inputs: [charge, receipt]") || r.FocusAfterMoveInput != "j-in-up-1" {
+		t.Errorf("inputs: focus %q\n%s\n%s\n%s", r.FocusAfterMoveInput, r.AfterAddInput, r.AfterMoveInput, r.AfterRemoveInput)
+	}
+	if !strings.Contains(r.AfterMerge, "merge: merge_v2\n") {
+		t.Errorf("the merge:\n%s", r.AfterMerge)
+	}
+	if !strings.Contains(r.AfterGate, "    merge: merge_v2\n    approval:\n      need: 1\n      approvers: [ops]\n") {
+		t.Errorf("a gate on the join:\n%s", r.AfterGate)
+	}
+	if !strings.Contains(r.AfterJoinEdge, "  - edge: [both, validate]\n") || r.JoinOffersSwitch {
+		t.Errorf("an edge out of the join (a switch offered: %v):\n%s", r.JoinOffersSwitch, r.AfterJoinEdge)
+	}
+	if !strings.Contains(r.NoExit, "no exit arm") {
+		t.Errorf("a loop bound with no exit arm: %q", r.NoExit)
+	}
+	if r.LoopBefore != "0" || !strings.Contains(r.AfterLoop, "{pred: again, to: charge, loop_max: 3}") || r.FocusAfterLoop != "c-arm-max-0" || strings.Contains(r.AfterLoopCleared, "loop_max") {
+		t.Errorf("a loop bound: before %q, focus %q\n%s\n%s", r.LoopBefore, r.FocusAfterLoop, r.AfterLoop, r.AfterLoopCleared)
+	}
+	if !strings.Contains(r.FractionLive, "whole number") {
+		t.Errorf("a fractional bound: %q", r.FractionLive)
+	}
+	if r.DialogTitle != "Remove both?" || len(r.RemoveList) != 1 || !strings.Contains(r.RemoveList[0], "edge both -> validate") || strings.Contains(r.AfterRemove, "join: both") {
+		t.Errorf("removing the join: title %q, list %q\n%s", r.DialogTitle, r.RemoveList, r.AfterRemove)
+	}
+}

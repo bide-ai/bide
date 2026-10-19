@@ -232,6 +232,9 @@ type Operation struct {
 	Pred string `json:"pred,omitempty"`
 	To   string `json:"to,omitempty"`
 
+	Inputs []string `json:"inputs,omitempty"`
+	Max    int      `json:"max,omitempty"`
+
 	DryRun  bool     `json:"dry_run,omitempty"`
 	Confirm []string `json:"confirm,omitempty"`
 }

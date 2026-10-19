@@ -164,7 +164,7 @@ func (d *doc) blockEntry(pad, key string, v any, flow bool) (string, error) {
 
 // flowByDefault are the config keys whose lists the repository writes as flow lists (edge: [a, b],
 // when: [{pred: p, to: t}]), used when the document has no such list to copy the style from.
-var flowByDefault = map[string]bool{"edge": true, "when": true}
+var flowByDefault = map[string]bool{"edge": true, "when": true, "inputs": true}
 
 // itemFlowHint reports whether the items of the first list under key in the document are flow
 // collections (a list of {pred: p, to: t} mappings), so a new list under that key is written alike.

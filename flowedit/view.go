@@ -173,7 +173,8 @@ func parseFailure(v *View, msg string) *View {
 // reads as; r its report.
 func outline(data []byte, r plan.ConfigReport) []Node {
 	var cfg struct {
-		Nodes []json.RawMessage `json:"nodes"`
+		Nodes  []json.RawMessage `json:"nodes"`
+		Wiring []json.RawMessage `json:"wiring"`
 	}
 	_ = json.Unmarshal(data, &cfg) // InspectConfig has read it strictly; a config it could not read has no nodes
 	safety := map[string]string{}
@@ -193,6 +194,18 @@ func outline(data []byte, r plan.ConfigReport) []Node {
 		if json.Unmarshal(raw, &a) == nil { // an approval that is not a mapping is left to the check to report
 			approval[n.Name] = a.Approval
 		}
+	}
+	// A join is not a declared node; its safety and gate are keys of its wiring element.
+	for _, raw := range cfg.Wiring {
+		var j struct {
+			Join     string    `json:"join"`
+			Safety   string    `json:"safety"`
+			Approval *Approval `json:"approval"`
+		}
+		if json.Unmarshal(raw, &j) != nil || j.Join == "" {
+			continue
+		}
+		safety[j.Join], approval[j.Join] = j.Safety, j.Approval
 	}
 	problems := map[string][]string{}
 	for _, p := range r.Problems {
