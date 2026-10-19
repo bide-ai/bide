@@ -711,6 +711,13 @@ func TestResultsNameTheDescriptionFilesTheyRestOn(t *testing.T) {
 	if code != 0 || !strings.Contains(out.String(), "description file sha256 "+newSum) {
 		t.Errorf("one config: %d %q", code, out.String())
 	}
+	h := Handler(Options{Config: &Config{Name: "n.json", Data: []byte(swapCfg("post")), Description: described(only(t, "post")), DescriptionSHA256: newSum}})
+	if _, body := get(t, h, "/"); !strings.Contains(body, newSum) {
+		t.Error("the config page does not name the description file")
+	}
+	if _, body := get(t, h, "/config.json"); !strings.Contains(body, `"description_sha256": "`+newSum+`"`) {
+		t.Errorf("config.json: %s", body)
+	}
 	if _, sum, err := ReadDescriptionFile(newP); err != nil || sum != newSum {
 		t.Errorf("ReadDescriptionFile: %q %v", sum, err)
 	}

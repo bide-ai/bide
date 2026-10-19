@@ -86,14 +86,17 @@ type ConfigView struct {
 	Typed bool   `json:"typed"`
 	// Source is what the typed result rests on (SourceRegistry, SourceDescription), empty when
 	// structural.
-	Source     string               `json:"source,omitempty"`
-	Digest     string               `json:"digest,omitempty"`
-	Errors     int                  `json:"errors"`
-	Warnings   int                  `json:"warnings"`
-	Problems   []plan.ConfigProblem `json:"problems,omitempty"`
-	Graph      *Graph               `json:"graph,omitempty"`
-	Approvals  []string             `json:"approvals,omitempty"`
-	CheckLabel string               `json:"check"`
+	Source string `json:"source,omitempty"`
+	// DescriptionSHA256 is the SHA-256 of the description file the typed result rests on, when it
+	// rests on one read from a file.
+	DescriptionSHA256 string               `json:"description_sha256,omitempty"`
+	Digest            string               `json:"digest,omitempty"`
+	Errors            int                  `json:"errors"`
+	Warnings          int                  `json:"warnings"`
+	Problems          []plan.ConfigProblem `json:"problems,omitempty"`
+	Graph             *Graph               `json:"graph,omitempty"`
+	Approvals         []string             `json:"approvals,omitempty"`
+	CheckLabel        string               `json:"check"`
 	// Risk counts the nodes by crash behavior and gate, for the summary card.
 	Risk RiskSummary `json:"risk"`
 	// Assertions are the verdicts on the config's assert lines, in order.
@@ -126,6 +129,9 @@ func BuildConfig(c Config) *ConfigView {
 	v := &ConfigView{Name: c.Name, Flow: r.Topology.Flow, Typed: r.Typed, Digest: r.Digest, Problems: r.Problems}
 	if r.Typed {
 		v.Source = c.source()
+		if v.Source == SourceDescription {
+			v.DescriptionSHA256 = c.DescriptionSHA256
+		}
 	}
 	v.CheckLabel = "structural check: types and registered blocks are checked when you embed the viewer with your plan.Registry"
 	if r.Typed {
