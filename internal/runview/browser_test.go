@@ -143,6 +143,7 @@ type nodeOut struct {
 	MarkPaints     *int     `json:"markPaints"`
 	MarkTextPaints *int     `json:"markTextPaints"`
 	Mark           *struct {
+		Inside   bool     `json:"inside"` // the mark's centre lies on the node it describes
 		Shape    string   `json:"shape"`
 		Text     string   `json:"text"`
 		ShapeVis shapeVis `json:"shapeVis"`
@@ -370,6 +371,9 @@ func checkColourOnly(t *testing.T, pages map[string]pageOut) {
 		}
 		if n.MarkPaints != nil && *n.MarkPaints < inkMin {
 			t.Errorf("a %v node's mark changes %d greyscale pixels when hidden, want at least %d", n.Classes, *n.MarkPaints, inkMin)
+		}
+		if m := n.Mark; m != nil && !m.Inside {
+			t.Errorf("a %v node's mark is not on the node it describes", n.Classes)
 		}
 		if m := n.Mark; m != nil && (!m.ShapeVis.shapeShown() || !m.TextVis.textShown()) {
 			t.Errorf("a %v node's mark is not drawn (shape %+v, text %+v)", n.Classes, m.ShapeVis, m.TextVis)
