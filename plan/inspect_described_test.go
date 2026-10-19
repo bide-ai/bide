@@ -506,8 +506,8 @@ func TestStandInNamesAreBoundedForTheProcess(t *testing.T) {
 		big.Blocks = append(big.Blocks, BlockDescription{Name: fmt.Sprint("b", i), Kind: "step", In: fmt.Sprint("t", i), Out: fmt.Sprint("u", i), Safety: "readonly"})
 	}
 	r := InspectConfigDescribed([]byte(triageConfig), big)
-	if r.Typed || !strings.Contains(r.Problems[0].Message, "too many distinct type names") {
-		t.Errorf("past the bound: typed %v, %+v", r.Typed, r.Problems)
+	if r.Typed || !r.Errors() || !strings.Contains(r.Problems[0].Message, "restart the process to check new type names") || r.Problems[0].Severity != "error" {
+		t.Errorf("past the bound: typed %v, errors %v, %+v", r.Typed, r.Errors(), r.Problems)
 	}
 	maxStandInNames, maxStandInBytes = 1000, 20
 	r = InspectConfigDescribed([]byte(triageConfig), big)

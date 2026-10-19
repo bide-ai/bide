@@ -197,6 +197,10 @@ func describedGate(g *GateDescription) (*agent.ApprovalPolicy, error) {
 //     is not valid (RegistryDescription.Validate) is reported as an error problem and the config
 //     is checked structurally.
 //
+// A process keeps one stand-in type for each distinct type name it has been given (reflect keeps
+// them), so it admits at most 20000 names and 4 MiB of names in all, about 25 MB; past that the
+// result is an error problem and the config is checked structurally, until the process restarts.
+//
 // Experimental: may change in any 0.x release.
 func InspectConfigDescribed(data []byte, d RegistryDescription) ConfigReport {
 	reg, err := registryFromDescription(d)
@@ -210,10 +214,12 @@ func InspectConfigDescribed(data []byte, d RegistryDescription) ConfigReport {
 
 // reflect.StructOf keeps every type it makes for the life of the process, so the names a process
 // turns into stand-ins are bounded as a whole, not per description: a long-lived program that
-// checks many descriptions stops, with an error, instead of growing.
+// checks many descriptions stops, with an error, instead of growing. Measured, a stand-in costs
+// about 550 bytes plus about 2.7 times its name, so the bounds hold the worst case to about 25 MB.
+// Past them no description with a new type name can be checked until the process restarts.
 var (
-	maxStandInNames = 100000
-	maxStandInBytes = 16 << 20
+	maxStandInNames = 20000
+	maxStandInBytes = 4 << 20
 )
 
 var standIns struct {
@@ -255,7 +261,7 @@ func reserveStandIns(d RegistryDescription) error {
 		}
 	}
 	if len(standIns.names)+n > maxStandInNames || standIns.bytes+size > maxStandInBytes {
-		return errors.New("this process has checked too many distinct type names (see InspectConfigDescribed); restart it to check more")
+		return errors.New("this process has checked too many distinct type names to check more: restart the process to check new type names (InspectConfigDescribed keeps a type for each name for the life of the process)")
 	}
 	for name := range seen {
 		standIns.names[name] = true
