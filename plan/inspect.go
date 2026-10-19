@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"regexp"
@@ -96,7 +97,11 @@ func (r ConfigReport) Errors() bool {
 // "approval >= 1"); without a Registry only the gates the config declares count. A violated,
 // undecided or ill-formed assertion is an error, a violated one with a shortest counterexample
 // path.
-func InspectConfig(data []byte, reg *Registry) (r ConfigReport) {
+func InspectConfig(data []byte, reg *Registry) (r ConfigReport) { return inspectConfig(data, reg) }
+
+// inspectConfig is InspectConfig, and what InspectConfigDescribed runs on a Registry built from a
+// description: one implementation of the typed checks, whichever side the Registry came from.
+func inspectConfig(data []byte, reg *Registry) (r ConfigReport) {
 	r = ConfigReport{Typed: reg != nil, Approvals: map[string]agent.ApprovalPolicy{}}
 	var cfg config
 	if err := parseConfig(data, &cfg); err != nil {
@@ -137,6 +142,11 @@ func InspectConfig(data []byte, reg *Registry) (r ConfigReport) {
 	if core.approverVerifiers == nil {
 		core.approverVerifiers = func(string) (agent.ApproverVerifier, bool) { return nil, false }
 	}
+	// A Model node calls the flow's bound model at run time, which a check never does; bind one
+	// that fails if it is ever called, so a Model block is not reported as a missing binding.
+	if core.model == nil {
+		core.model = unboundModel{}
+	}
 	f, err := (&Builder[struct{}, struct{}]{core: core}).Build()
 	if err != nil {
 		r.attribute(&cfg, err)
@@ -145,6 +155,14 @@ func InspectConfig(data []byte, reg *Registry) (r ConfigReport) {
 	r.Topology = f.Topology()
 	r.Digest = f.Digest()
 	return r
+}
+
+// unboundModel stands in for the model a program binds at Load, so Build accepts a Model node. A
+// check never runs a flow, so Stream is never called.
+type unboundModel struct{}
+
+func (unboundModel) Stream(context.Context, agent.Request) (*agent.Stream, error) {
+	return nil, errors.New("plan: a config check binds no model")
 }
 
 // configSafety is each node's safety as the config alone states it. A config "safety" sets the

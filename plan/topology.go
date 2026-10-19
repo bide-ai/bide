@@ -17,6 +17,9 @@ func typeStringOrEmpty(t reflect.Type) string {
 	if t == nil {
 		return ""
 	}
+	if name, ok := describedTypeName(t); ok {
+		return name
+	}
 	return t.String()
 }
 

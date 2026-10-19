@@ -31,6 +31,10 @@ type Registry struct {
 	// config's other drift, rather than being lost at a Register call the caller may
 	// not check. Register also returns the error for callers that check inline.
 	errs []error
+	// inert marks a Registry built from a RegistryDescription, whose blocks have no behavior and
+	// whose types are stand-ins. It only checks a config (InspectConfigDescribed); Load and Validate
+	// refuse it, and no exported function returns one.
+	inert bool
 }
 
 // regBlock is a registered Step/Tool/Model. It mirrors the fields of node that a

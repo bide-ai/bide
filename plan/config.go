@@ -212,6 +212,9 @@ func (w configWire) isJoin() bool {
 // edge, and a wiring element must set exactly one of edge/switch. On success it
 // hands the assembled spec to the existing Build (whole-graph validation) and seal.
 func Load[In, Out any](data []byte, reg *Registry, opts ...LoadOption) (*Flow[In, Out], error) {
+	if reg != nil && reg.inert {
+		return nil, errInert
+	}
 	var cfg config
 	if err := parseConfig(data, &cfg); err != nil {
 		return nil, fmt.Errorf("plan: load: parse config: %w", err)
@@ -304,6 +307,9 @@ func LoadReader[In, Out any](r io.Reader, reg *Registry, opts ...LoadOption) (*F
 // therefore the drift guard (the stringly-typed footgun re-created at rung 2);
 // Load is the full typed check.
 func Validate(data []byte, reg *Registry) error {
+	if reg != nil && reg.inert {
+		return errInert
+	}
 	var cfg config
 	if err := parseConfig(data, &cfg); err != nil {
 		return fmt.Errorf("plan: validate: parse config: %w", err)
@@ -311,6 +317,10 @@ func Validate(data []byte, reg *Registry) error {
 	_, err := assemble(&cfg, reg)
 	return err
 }
+
+// errInert is what Load and Validate return for a Registry built from a description, which can check
+// a config and cannot run one.
+var errInert = fmt.Errorf("plan: a Registry built from a description has no behavior to load: %w", agent.ErrConfig)
 
 // parseConfig decodes a config strictly, so the topology loaded is the one the text shows: a name
 // that is not a field (a misspelling such as "aproval", or a case variant such as "Safety"), a

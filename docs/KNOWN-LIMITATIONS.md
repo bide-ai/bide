@@ -403,6 +403,14 @@ in where no gate and no earlier node of that block stood, looks like any new rea
 reported. Check with the Registry (`plan/planview`) where the blocks are registered. See [Compare two
 versions of a flow](guides/run-viewer.md#compare-two-versions-of-a-flow).
 
+**Two distinct types spelled the same are one type to the digest and to a description.** The topology digest
+writes a named type as its package path and its name, so two types of one name declared in different functions
+of one package (function-local types) spell alike and give the same digest, though `Load` compares Go types
+and would refuse an edge between them. Anything that pins a digest to mean "this exact flow" (a stored digest,
+a ticket, a paused run resumed under a flow) therefore cannot tell flows apart that differ only in such types.
+`plan.InspectConfigDescribed` has the same limit, because a description holds the spelling and not the type;
+the check with the program's own Registry does not. The digest is unchanged.
+
 ## The flow editor
 
 **The editor's check is structural.** `bide edit` checks a config as `bide check` does: block, predicate and

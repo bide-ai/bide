@@ -236,6 +236,9 @@ func canonicalType(t reflect.Type) string {
 	if t == nil {
 		return "?"
 	}
+	if name, ok := describedTypeName(t); ok {
+		return name
+	}
 	if t.Name() != "" {
 		if t.PkgPath() == "" {
 			return t.Name()
