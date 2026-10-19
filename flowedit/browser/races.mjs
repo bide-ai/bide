@@ -35,6 +35,10 @@ try {
   const source = () => page.$eval('#source', (e) => e.value);
   const until = (fn, arg, what) => page.waitForFunction(fn, { timeout: 10000 }, arg).catch(() => { throw new Error('timed out waiting for ' + what); });
   const type = (v) => page.$eval('#source', (e, x) => { e.value = x; e.dispatchEvent(new Event('input', { bubbles: true })); }, v);
+  // The page says when it has nothing under way (data-busy), so a step that must see only its own
+  // requests waits for that and not for a guess: the check of typed text is sent 250 ms after the
+  // last key, and would otherwise land in a later step.
+  const atRest = () => page.waitForFunction(() => document.documentElement.dataset.busy === '0', { timeout: 10000 });
   const r = {};
   r.original = await source();
   await page.click('#outline button[data-node="charge"]');
@@ -51,6 +55,7 @@ try {
   r.lateLive = await text('#live');
   mode.delayApply = 0;
   await type(r.original); // back to the original text
+  await atRest();
 
   // 2. A failed undo loses no history: two operations, an aborted report, then a good undo goes back one step.
   await page.click('#outline button[data-node="validate"]');
@@ -61,6 +66,7 @@ try {
   await page.select('#f-safety', 'side_effect');
   await until(() => document.getElementById('source').value.includes('safety: side_effect}'), null, 'second operation');
   const afterSecond = await source();
+  await atRest(); // nothing of an earlier step is still to be sent when /api/report starts to be aborted
   mode.abortReport = true;
   await page.click('#undo');
   await until(() => document.getElementById('live')?.textContent.startsWith('Not undone'), null, 'the failure to be announced');
