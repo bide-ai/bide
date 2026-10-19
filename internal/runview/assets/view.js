@@ -233,15 +233,16 @@
     const list = items();
     if (!list.length) return;
     let i = list.findIndex((r) => r.classList.contains("cur"));
-    list.forEach((r) => r.classList.remove("cur"));
+    list.forEach((r) => { r.classList.remove("cur"); r.removeAttribute("aria-current"); });
     i = i < 0 ? (dir > 0 ? 0 : list.length - 1) : Math.min(Math.max(i + dir, 0), list.length - 1);
     const r = list[i];
     r.classList.add("cur");
+    r.setAttribute("aria-current", "true");
     const calm = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     r.scrollIntoView({ block: "center", behavior: calm ? "auto" : "smooth" });
     if (r.id) { try { history.replaceState(null, "", "#" + r.id); } catch (e) { /* the address stays */ } }
   };
-  const helpRows = [["j / k", "next / previous record (or run)"], ["Enter", "open the highlighted run"], ["/", "filter"], ["t", "light or dark"], ["s", "share this run as an image"], ["?", "this help"], ["Esc", "close"]];
+  const helpRows = [["j / k", "next / previous record (or run)"], ["Enter", "open the highlighted run"], ["/", "filter"], ["t", "next theme"], ["s", "share this run as an image"], ["?", "this help"], ["Esc", "close"]];
   const help = (on) => {
     let back = document.querySelector(".helpback");
     if (on === false || (on === undefined && back)) { if (back) back.remove(); return; }
