@@ -674,6 +674,7 @@ cannot see a gate a block declares in Go. `bide check -blocks blocks.json flow.y
 type name: unknown blocks, predicates and merges, the type along every edge, join arity, safety, the gates the
 blocks declare, and the digest a run would journal. A program writes the file once:
 
+<!-- docsnip: setup reg *plan.Registry -->
 ```go
 b, _ := json.MarshalIndent(reg.Describe(), "", "  ")
 os.WriteFile("blocks.json", b, 0o600)
