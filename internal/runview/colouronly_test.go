@@ -1,6 +1,8 @@
 package runview
 
 import (
+	"fmt"
+	"math"
 	"os"
 	"regexp"
 	"strings"
@@ -38,49 +40,143 @@ func cssProps(t *testing.T, sel string) map[string]string {
 	return props
 }
 
-// TestColourOnlyPairs is the audit of docs/design/themes.md (A1 to A5, A7 to A9) as a test: states
-// that were told apart by colour alone differ in a shape property as well, so they still differ in
-// greyscale, in forced colours and for a reader who cannot tell the hues apart.
-func TestColourOnlyPairs(t *testing.T) {
-	for _, tc := range []struct {
-		id, a, b string
-		props    []string
-	}{
-		{"A1 added and changed edges", ".edge.added", ".edge.changed", []string{"stroke-dasharray"}},
-		{"A2 the path taken and a counterexample", ".edge.taken", ".edge.cex", []string{"stroke-dasharray", "stroke-width", "stroke-linecap"}},
-		{"A3 a problem and a removed edge", ".edge.problem", ".edge.removed", []string{"stroke-dasharray"}},
-		{"A1 and A3 changed and removed edges", ".edge.changed", ".edge.removed", []string{"stroke-dasharray"}},
-		{"A5 a problem node and a warning node", ".node.problem .box", ".node.warning .box", []string{"stroke-dasharray"}},
-	} {
-		a, b := cssProps(t, tc.a), cssProps(t, tc.b)
-		differ := false
-		for _, p := range tc.props {
-			if a[p] != b[p] {
-				differ = true
+// line is how a stroke is drawn apart from its colour: its dash pattern, width and cap.
+type line struct {
+	dash  string // a CSS stroke-dasharray, computed ("13px, 3px, 2px, 3px") or written ("13 3 2 3"), or "none"
+	width float64
+}
+
+// dashPattern reads a stroke-dasharray into its lengths, repeated once if odd as CSS does. A solid
+// line is nil.
+func dashPattern(v string) []float64 {
+	v = strings.TrimSpace(strings.ToLower(v))
+	if v == "" || v == "none" {
+		return nil
+	}
+	var out []float64
+	for _, f := range strings.FieldsFunc(v, func(r rune) bool { return r == ' ' || r == ',' }) {
+		var x float64
+		if _, err := fmt.Sscanf(strings.TrimSuffix(f, "px"), "%g", &x); err != nil {
+			return nil
+		}
+		out = append(out, x)
+	}
+	if len(out)%2 == 1 {
+		out = append(out, out...)
+	}
+	return out
+}
+
+// distinct reports whether two strokes differ in a way the eye sees without color: one solid and
+// the other dashed, a different number of segments, a period or a share of dash that differs by 30%
+// or by 0.2, or a width ratio of 1.5 or more. A dash of 6 4 and one of 6 5, or a width of 3 and 3.5,
+// are the same line to the eye.
+func distinct(a, b line) bool {
+	pa, pb := dashPattern(a.dash), dashPattern(b.dash)
+	if (pa == nil) != (pb == nil) {
+		return true
+	}
+	if a.width > 0 && b.width > 0 && max(a.width, b.width)/min(a.width, b.width) >= 1.5 {
+		return true
+	}
+	if pa == nil {
+		return false
+	}
+	if len(pa) != len(pb) {
+		return true
+	}
+	stats := func(p []float64) (period, duty float64) {
+		var on float64
+		for i, x := range p {
+			period += x
+			if i%2 == 0 {
+				on += x
 			}
 		}
-		if !differ {
-			t.Errorf("%s: %s and %s have the same %v (%v and %v): they differ by colour alone", tc.id, tc.a, tc.b, tc.props, pick(a, tc.props), pick(b, tc.props))
-		}
+		return period, on / period
 	}
-	// The pairs on one page differ from each other, not only in pairs: the diff page's three edge
-	// states and the config page's two path states.
-	seen := map[string]string{}
-	for _, sel := range []string{".edge.added", ".edge.changed", ".edge.removed"} {
-		d := cssProps(t, sel)["stroke-dasharray"]
-		if other, dup := seen[d]; dup {
-			t.Errorf("%s and %s share the dash %q", sel, other, d)
+	ta, da := stats(pa)
+	tb, db := stats(pb)
+	return math.Abs(ta-tb)/max(ta, tb) >= 0.3 || math.Abs(da-db) >= 0.2
+}
+
+func TestDistinct(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		a, b line
+		want bool
+	}{
+		{"the old taken and counterexample edges", line{"10 6", 3}, line{"10 6", 3.5}, false},
+		{"the old problem and removed edges", line{"6 4", 2.5}, line{"6 5", 2.2}, false},
+		{"the old added and changed edges", line{"none", 2.8}, line{"none", 2.8}, false},
+		{"the old problem and warning boxes", line{"none", 2.8}, line{"none", 2.2}, false},
+		{"whitespace and units do not make a difference", line{"10  6", 3}, line{"10px, 6px", 3}, false},
+		{"an odd pattern repeats", line{"5", 2}, line{"5 5", 2}, false},
+		{"solid and dashed", line{"none", 2.8}, line{"13 3 2 3", 2.8}, true},
+		{"two and four segments", line{"13 3 2 3", 2.8}, line{"9 5", 2.2}, true},
+		{"a short dash and a long one", line{"3 4", 2.5}, line{"9 5", 2.2}, true},
+		{"the same period, another duty", line{"2 8", 2}, line{"8 2", 2}, true},
+		{"a heavy line and a thin one of one pattern", line{"1 5", 1.6}, line{"1 7", 4.5}, true},
+		{"two solid lines of one width", line{"none", 2}, line{"", 2.2}, false},
+		{"solid lines of 2x width", line{"none", 1.4}, line{"none", 2.8}, true},
+	} {
+		if got := distinct(tc.a, tc.b); got != tc.want {
+			t.Errorf("%s: distinct(%v, %v) = %v, want %v", tc.name, tc.a, tc.b, got, tc.want)
 		}
-		seen[d] = sel
 	}
 }
 
-func pick(m map[string]string, keys []string) []string {
-	var out []string
-	for _, k := range keys {
-		out = append(out, k+"="+m[k])
+// edgeLine is what the stylesheets say about an edge state's stroke: the base .edge rule with the
+// state's own rule over it. The browser test is the authority; this is a fast guard that cannot see
+// the cascade (a later, more specific rule) the way Chrome does.
+func edgeLine(t *testing.T, state string) line {
+	t.Helper()
+	p := cssProps(t, ".edge")
+	if state != "" {
+		for k, v := range cssProps(t, ".edge."+state) {
+			p[k] = v
+		}
 	}
-	return out
+	var w float64
+	fmt.Sscanf(p["stroke-width"], "%g", &w)
+	return line{p["stroke-dasharray"], w}
+}
+
+// TestColourOnlyPairs is the audit of docs/design/themes.md (A1 to A5) as a fast test: the edge
+// states that appear together on a page are pairwise distinct strokes (distinct above), so they
+// still differ in greyscale, in forced colors and for a reader who cannot tell the hues apart.
+func TestColourOnlyPairs(t *testing.T) {
+	for page, states := range map[string][]string{
+		"the config page":   {"", "cex", "problem"},
+		"the diff page":     {"", "added", "changed", "removed"},
+		"the run page":      {"", "taken"},
+		"the editor's page": {"", "cex", "problem"},
+	} {
+		for i, a := range states {
+			for _, b := range states[i+1:] {
+				if distinct(edgeLine(t, a), edgeLine(t, b)) {
+					continue
+				}
+				t.Errorf("%s: the %q and %q edges are one line to the eye: %v and %v", page, a, b, edgeLine(t, a), edgeLine(t, b))
+			}
+		}
+	}
+	// The audit's pairs, whichever page each is drawn on.
+	for _, p := range [][2]string{{"added", "changed"}, {"taken", "cex"}, {"problem", "removed"}, {"changed", "removed"}} {
+		if a, b := edgeLine(t, p[0]), edgeLine(t, p[1]); !distinct(a, b) {
+			t.Errorf("the %q and %q edges are one line to the eye: %v and %v", p[0], p[1], a, b)
+		}
+	}
+	// A5: a problem node's box and a warning node's.
+	box := func(sel string) line {
+		p := cssProps(t, sel)
+		var w float64
+		fmt.Sscanf(p["stroke-width"], "%g", &w)
+		return line{p["stroke-dasharray"], w}
+	}
+	if a, b := box(".node.problem .box"), box(".node.warning .box"); !distinct(a, b) {
+		t.Errorf("A5: the problem and warning boxes are one line to the eye: %v and %v", a, b)
+	}
 }
 
 // TestNodeMarkShapes (A4): a problem is a circle and a warning a diamond, so the marks differ

@@ -1,0 +1,9 @@
+{
+  "name": "bide-view-chrome",
+  "private": true,
+  "type": "module",
+  "description": "Drives bide view's pages in real Chrome (internal/runview/browser_test.go); installed only by the Viewer (Chrome) job.",
+  "dependencies": {
+    "puppeteer-core": "25.14.0"
+  }
+}

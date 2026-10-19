@@ -1,0 +1,49 @@
+name: Viewer (Chrome)
+
+# bide view's pages in real Chrome: the states the colour-only audit names (docs/design/themes.md)
+# drawn from the real config, diff, run and run-list pages, and what the browser computed compared
+# (TestColourOnlyInChrome, internal/runview/browser_test.go). This workflow installs Chrome's driver
+# (puppeteer-core, from the lockfile) around it. Runs on pull requests that touch the viewer, and in
+# the merge queue (which does not filter by path).
+on:
+  pull_request:
+    paths:
+      - 'internal/runview/**'
+      - 'internal/theme/**'
+      - '.github/workflows/viewer-chrome.yml'
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: viewer-chrome-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  chrome:
+    name: Viewer (Chrome)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27'
+          cache-dependency-path: '**/go.sum'
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - name: Install puppeteer-core (from the lockfile)
+        working-directory: internal/runview/browser
+        run: |
+          google-chrome-stable --version
+          npm ci --ignore-scripts
+      - name: Drive the viewer's pages in Chrome
+        working-directory: internal/runview
+        env:
+          GOWORK: 'off'
+          BIDE_VIEW_BROWSER: '1' # with CI set, a missing Chrome or tool fails the test instead of skipping it
+          CHROME_BIN: /usr/bin/google-chrome-stable
+        run: go test . -run 'InChrome' -count=1 -v

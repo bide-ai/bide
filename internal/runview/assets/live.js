@@ -4,6 +4,21 @@
 // marker (the new page has no live indicator). Reads only; the page is complete without this script.
 (() => {
   "use strict";
+  // markFresh marks the timeline rows from index `from` on as new to the eye (a tint) and to
+  // everyone (the word "new"). It is on window so a test can drive it on any page.
+  const markFresh = (rows, from) => {
+    for (let i = from; i < rows.length; i++) {
+      rows[i].classList.add("fresh");
+      const head = rows[i].querySelector(".ev-head");
+      if (head && !head.querySelector(".newbadge")) {
+        const b = document.createElement("span");
+        b.className = "badge newbadge";
+        b.textContent = "new";
+        head.append(b);
+      }
+    }
+  };
+  window.bideMarkFresh = markFresh;
   const every = 1000, retry = 5000;
   let pill = document.getElementById("live");
   if (!pill || !window.fetch || !window.DOMParser) return;
@@ -35,17 +50,7 @@
     });
     if (window.bideEnhance) window.bideEnhance();
     const rows = main.querySelectorAll(".timeline > li");
-    for (let i = seen; i < rows.length; i++) {
-      rows[i].classList.add("fresh");
-      // The tint says a row is new to the eye; the word says it to everyone.
-      const head = rows[i].querySelector(".ev-head");
-      if (head && !head.querySelector(".newbadge")) {
-        const b = document.createElement("span");
-        b.className = "badge newbadge";
-        b.textContent = "new";
-        head.append(b);
-      }
-    }
+    markFresh(rows, seen);
     seen = rows.length;
     document.title = doc.title;
     const icon = doc.querySelector('link[rel="icon"]'), here = document.querySelector('link[rel="icon"]');
