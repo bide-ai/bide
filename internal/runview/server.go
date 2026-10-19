@@ -155,7 +155,9 @@ type Options struct {
 	// and the run list say which runs a stop holds, and /stops.json serves the same state.
 	Stops *StopFeed
 	// Themes are custom themes (see internal/theme) the pages offer beside the shipped light, dark
-	// and high-contrast; DefaultTheme, when not empty, names the one a reader starts in.
+	// and high-contrast; DefaultTheme, when not empty, names the one a reader starts in. Handler
+	// panics on a DefaultTheme that names no theme and on two themes with one name: they are a host
+	// program's mistake, and bide view checks both before it calls Handler.
 	Themes       []*theme.Theme
 	DefaultTheme string
 	// Now is the clock the Needs attention list measures waits by; nil is time.Now.

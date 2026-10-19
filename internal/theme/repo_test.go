@@ -18,12 +18,19 @@ import (
 //     never as text, is used only for those, and never aliased, read from script or named in a
 //     template, since a 4.5:1 text colour is a different token.
 
+const colourNames = "aliceblue|antiquewhite|aqua|aquamarine|azure|beige|bisque|black|blanchedalmond|blue|blueviolet|brown|burlywood|cadetblue|chartreuse|chocolate|coral|cornflowerblue|cornsilk|crimson|cyan|darkblue|darkcyan|darkgoldenrod|darkgray|darkgreen|darkgrey|darkkhaki|darkmagenta|darkolivegreen|darkorange|darkorchid|darkred|darksalmon|darkseagreen|darkslateblue|darkslategray|darkslategrey|darkturquoise|darkviolet|deeppink|deepskyblue|dimgray|dimgrey|dodgerblue|firebrick|floralwhite|forestgreen|fuchsia|gainsboro|ghostwhite|gold|goldenrod|gray|green|greenyellow|grey|honeydew|hotpink|indianred|indigo|ivory|khaki|lavender|lavenderblush|lawngreen|lemonchiffon|lightblue|lightcoral|lightcyan|lightgoldenrodyellow|lightgray|lightgreen|lightgrey|lightpink|lightsalmon|lightseagreen|lightskyblue|lightslategray|lightslategrey|lightsteelblue|lightyellow|lime|limegreen|linen|magenta|maroon|mediumaquamarine|mediumblue|mediumorchid|mediumpurple|mediumseagreen|mediumslateblue|mediumspringgreen|mediumturquoise|mediumvioletred|midnightblue|mintcream|mistyrose|moccasin|navajowhite|navy|oldlace|olive|olivedrab|orange|orangered|orchid|palegoldenrod|palegreen|paleturquoise|palevioletred|papayawhip|peachpuff|peru|pink|plum|powderblue|purple|rebeccapurple|red|rosybrown|royalblue|saddlebrown|salmon|sandybrown|seagreen|seashell|sienna|silver|skyblue|slateblue|slategray|slategrey|snow|springgreen|steelblue|tan|teal|thistle|tomato|turquoise|violet|wheat|white|whitesmoke|yellow|yellowgreen"
+
 var (
 	commentRE = regexp.MustCompile(`(?s)/\*.*?\*/`)
 	ruleRE    = regexp.MustCompile(`([^{}]+)\{([^{}]*)\}`)
 	hexRE     = regexp.MustCompile(`#[0-9a-fA-F]{3,8}\b`)
-	funcRE    = regexp.MustCompile(`\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(`)
-	nameRE2   = regexp.MustCompile(`(?i)(?:^|[\s,(])(?:white|black|red|green|blue|gray|grey|yellow|orange|purple|pink|brown|silver|gold|navy|teal|maroon|cyan|magenta|lime|aqua|olive|fuchsia)(?:$|[\s,;)])`)
+	funcRE    = regexp.MustCompile(`(?i)\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color|light-dark|device-cmyk)\(`)
+	nameRE2   = regexp.MustCompile(`(?i)(?:^|[\s,(:=])(?:` + colourNames + `)(?:$|[\s,;)!])`)
+	hex6RE    = regexp.MustCompile(`#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?\b`)
+	attrRE    = regexp.MustCompile(`(?i)(?:style|fill|stroke|stop-color|flood-color|color)\s*[=:]\s*\\?["']?([^"';>}]*)`)
+	idleRE    = regexp.MustCompile(`(?i)var\(\s*--idle\s*[,)]`)
+	importRE  = regexp.MustCompile(`(?i)@import\b|\burl\((?:\s*["']?)(?:[^#"'\s)]|\s*$)`)
+	stringRE  = regexp.MustCompile(`"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'`)
 )
 
 type decl struct{ selector, prop, value string }
@@ -48,9 +55,6 @@ func declarations(css string) []decl {
 func scanLiterals(css string) []string {
 	var found []string
 	for _, d := range declarations(css) {
-		if strings.HasPrefix(d.prop, "--") {
-			continue // a custom property's value is checked where it is used
-		}
 		for _, re := range []*regexp.Regexp{hexRE, funcRE, nameRE2} {
 			if m := re.FindString(d.value); m != "" {
 				found = append(found, d.selector+" { "+d.prop+": "+d.value+" }")
@@ -74,7 +78,7 @@ var (
 func scanIdleCSS(css string) []string {
 	var found []string
 	for _, d := range declarations(css) {
-		if !strings.Contains(d.value, "var(--idle)") {
+		if !idleRE.MatchString(d.value) {
 			continue
 		}
 		ok := false
@@ -97,11 +101,64 @@ func scanIdleCSS(css string) []string {
 // scanIdleOther returns whether any file that is not a stylesheet names --idle at all.
 func scanIdleOther(src string) bool { return strings.Contains(src, "--idle") }
 
+// scanMarkup returns each colour literal in a file that is not a stylesheet: a 6 or 8 digit hex
+// colour anywhere, and a colour in a style, fill, stroke or colour attribute or assignment.
+func scanMarkup(src string) []string {
+	var found []string
+	found = append(found, hex6RE.FindAllString(src, -1)...)
+	for _, m := range attrRE.FindAllStringSubmatch(src, -1) {
+		v := m[1]
+		if hexRE.MatchString(v) || funcRE.MatchString(v) || nameRE2.MatchString(" "+v+" ") {
+			found = append(found, m[0])
+		}
+	}
+	return found
+}
+
+// scanCSSForms returns the CSS a page must not carry beyond literals: nested style rules (which the
+// declaration scan cannot read), @import, and url() that is not a fragment reference.
+func scanCSSForms(css string) []string {
+	var found []string
+	css = stringRE.ReplaceAllString(commentRE.ReplaceAllString(css, ""), `"S"`)
+	if m := importRE.FindString(css); m != "" {
+		found = append(found, m)
+	}
+	var stack []bool // true: an at-rule block; false: a style rule
+	start := 0
+	for i, c := range css {
+		switch c {
+		case '{':
+			prelude := strings.TrimSpace(css[start:i])
+			if k := strings.LastIndexAny(prelude, ";}"); k >= 0 {
+				prelude = strings.TrimSpace(prelude[k+1:])
+			}
+			at := strings.HasPrefix(prelude, "@")
+			if !at && len(stack) > 0 && !stack[len(stack)-1] {
+				found = append(found, "nested rule "+prelude)
+			}
+			stack = append(stack, at)
+			start = i + 1
+		case '}':
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+			start = i + 1
+		case ';':
+			start = i + 1
+		}
+	}
+	return found
+}
+
 // pageDirs are the directories holding the pages; legacyLiterals are files still on literal colours
 // until the PR that moves them (the approve page: PR 5; the editor's dialog backdrop: PR 6). The
 // list only shrinks.
 var (
 	pageDirs       = []string{"internal/runview", "flowedit", "approvals/page", "approvals"}
+	markupLiterals = map[string]string{
+		"internal/runview/head.go":  "the tab icon: a white glyph on the verdict class's mid-tone, drawn in a data: URL no theme reaches",
+		"internal/runview/graph.go": "the Mermaid export: text pasted into a document, not a page",
+	}
 	legacyLiterals = map[string]string{
 		"approvals/page/app.css":   "the approve page moves to the themes in PR 5",
 		"flowedit/page/editor.css": "dialog::backdrop's scrim moves to --scrim in PR 6",
@@ -129,7 +186,7 @@ func TestPagesUseTokens(t *testing.T) {
 			}
 			seen[rel] = true
 			ext := filepath.Ext(p)
-			if ext != ".css" && ext != ".js" && ext != ".html" && ext != ".go" && ext != ".mjs" {
+			if ext != ".css" && ext != ".js" && ext != ".html" && ext != ".go" {
 				return nil
 			}
 			src, err := os.ReadFile(p)
@@ -143,10 +200,18 @@ func TestPagesUseTokens(t *testing.T) {
 						t.Errorf("%s: colour literal %s; use a theme token", rel, f)
 					}
 				}
+				for _, f := range scanCSSForms(string(src)) {
+					t.Errorf("%s: %s: a page's CSS has no nested rules, @import or url()", rel, f)
+				}
 				for _, f := range scanIdleCSS(string(src)) {
 					t.Errorf("%s: %s: --idle is for strokes, borders and glyphs, not text or aliases", rel, f)
 				}
 				return nil
+			}
+			if _, ok := markupLiterals[rel]; !ok {
+				for _, f := range scanMarkup(string(src)) {
+					t.Errorf("%s: colour literal %q; use a theme token", rel, f)
+				}
 			}
 			if scanIdleOther(string(src)) {
 				t.Errorf("%s names --idle; only a stylesheet may use it, as a stroke, border or glyph", rel)
@@ -159,6 +224,16 @@ func TestPagesUseTokens(t *testing.T) {
 	}
 	if css < 10 {
 		t.Errorf("the scan found %d stylesheets; the page directories moved, so update the test", css)
+	}
+	for rel, why := range markupLiterals {
+		src, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			t.Errorf("markup entry %s (%s): %v", rel, why, err)
+			continue
+		}
+		if len(scanMarkup(string(src))) == 0 {
+			t.Errorf("%s has no colour literal left: remove it from markupLiterals (%s)", rel, why)
+		}
 	}
 	// A legacy entry whose file is clean should be removed from the list.
 	for rel, why := range legacyLiterals {
@@ -195,10 +270,65 @@ func TestScanLiterals(t *testing.T) {
 		{"a keyword", `.a { color: inherit; border-color: transparent; fill: none; stroke: currentColor; }`, 0},
 		{"an id selector", `#add { color: var(--fg); } #fade { margin: 0; }`, 0},
 		{"a comment", `/* white: #fff, rgb(1,2,3) */ .a { margin: 0; }`, 0},
-		{"a custom property", `.a { --x: #fff; }`, 0},
+		{"a custom property holds a literal", `:root { --brand: #ff0000; } .a { color: var(--brand); }`, 1},
+		{"a custom property holds a name", `:root { --brand: tomato; }`, 1},
+		{"a custom property holds a token", `:root { --x: var(--fg); }`, 0},
+		{"a rarer name", `.a { background: tomato; border: 1px solid rebeccapurple; }`, 2},
+		{"light-dark", `.a { color: light-dark(var(--fg), var(--bg)); }`, 1},
+		{"color()", `.a { color: color(display-p3 1 0 0); }`, 1},
+		{"device-cmyk", `.a { color: device-cmyk(0 1 1 0); }`, 1},
+		{"upper case", `.a { color: WHITE; background: RGB(0 0 0); }`, 2},
+		{"a name with !important", `.a { color: red!important; }`, 1},
 		{"a word that holds a name", `.a { font-family: whitespace-font; }`, 0},
 	} {
 		if got := scanLiterals(tc.css); len(got) != tc.want {
+			t.Errorf("%s: %d findings %v, want %d", tc.name, len(got), got, tc.want)
+		}
+	}
+}
+
+func TestScanMarkup(t *testing.T) {
+	for _, tc := range []struct {
+		name, src string
+		want      int
+	}{
+		{"a style attribute", `<div style="color:#f00">`, 1},
+		{"a style attribute with a name", `<div style="background: tomato">`, 1},
+		{"an svg fill", `<rect fill="#00f"/>`, 1},
+		{"an svg stroke name", `<path stroke="red"/>`, 1},
+		{"a Go string", "`<svg fill=\"#0f0\" style=\"stroke:red\">`", 2},
+		{"a js assignment", `el.setAttribute("fill", "#fff"); x.style = "color: rgb(1,2,3)"`, 1},
+		{"a long hex anywhere", `const c = "#1b52b0";`, 1},
+		{"a token in style", `<div style="color:var(--fg)">`, 0},
+		{"a template value", "`<svg style=\"color:${color}\">`", 0},
+		{"fill none", `<rect fill="none" stroke="currentColor"/>`, 0},
+		{"an id and a fragment", `<a href="#ic-gate"><use href="#node"/></a> $('#theme')`, 0},
+		{"a hex-looking id", `document.getElementById("#add")`, 0},
+	} {
+		if got := scanMarkup(tc.src); len(got) != tc.want {
+			t.Errorf("%s: %d findings %v, want %d", tc.name, len(got), got, tc.want)
+		}
+	}
+}
+
+func TestScanCSSForms(t *testing.T) {
+	for _, tc := range []struct {
+		name, css string
+		want      int
+	}{
+		{"@import", `@import url("https://example.com/x.css");`, 1},
+		{"@import bare", `@import "x.css";`, 1},
+		{"a url", `.a { background: url(x.png); }`, 1},
+		{"a quoted url", `.a { background: url("x.png"); }`, 1},
+		{"a fragment url", `.a { marker-end: url(#arrow); }`, 0},
+		{"a nested rule after a declaration", `.d { color: var(--fg); .e { margin: 0 } }`, 1},
+		{"a nested rule first", `.d { .e { margin: 0 } color: var(--fg); }`, 1},
+		{"a media rule", `@media (max-width: 1px) { .a { margin: 0 } .b { margin: 1px } }`, 0},
+		{"keyframes", `@keyframes f { from { opacity: 0 } to { opacity: 1 } }`, 0},
+		{"a plain sheet", `.a { margin: 0 } .b::before { content: "}"; }`, 0},
+		{"in a comment", `/* @import "x"; .a { .b { } } */ .c { margin: 0 }`, 0},
+	} {
+		if got := scanCSSForms(tc.css); len(got) != tc.want {
 			t.Errorf("%s: %d findings %v, want %d", tc.name, len(got), got, tc.want)
 		}
 	}
@@ -226,6 +356,11 @@ func TestScanIdle(t *testing.T) {
 		{"fill elsewhere", `.box { fill: var(--idle); }`, 1},
 		{"after a comment", `/* .empty .ic */ .b { color: var(--idle); }`, 1},
 		{"another token", `.a { color: var(--muted); }`, 0},
+		{"a fallback", `.a { color: var(--idle, var(--fg)); }`, 1},
+		{"a currentColor fallback", `.a { color: var(--idle, currentColor); }`, 1},
+		{"upper case", `.a { color: VAR(--idle); }`, 1},
+		{"spaced", `.a { color: var( --idle ); }`, 1},
+		{"a longer name", `.a { color: var(--idle-text); }`, 0},
 	} {
 		if got := scanIdleCSS(tc.css); len(got) != tc.want {
 			t.Errorf("%s: %d findings %v, want %d", tc.name, len(got), got, tc.want)

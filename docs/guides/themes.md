@@ -87,7 +87,7 @@ refused. Every key and value in an error is quoted, so a file cannot print a ter
 - `-theme-default name` starts the pages in `light`, `dark`, `high-contrast` or your theme, instead of
   following the system's light or dark setting. A reader who has switched themes keeps their own
   choice, which the browser remembers.
-- The sun button in the header, or `t`, steps through the list and names the theme it shows.
+- The sun button in the header, or `t`, steps through the list, names the theme it shows and announces the change to a screen reader.
 
 What a theme can never change is in the [design note](../design/themes.md): no selector, no property, no
 word, icon or shape. What happens under forced colours and `prefers-contrast` comes with a later

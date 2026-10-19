@@ -182,14 +182,19 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 		fs.Usage()
 		return 2
 	}
-	var themed func(Options) Options
-	if !f.check {
+	if f.check && (f.theme != "" || f.themeDefault != "") {
+		return usage("-theme and -theme-default need a page to serve; -check serves none")
+	}
+	// loadThemes reads the -theme file and checks -theme-default, after the other flags have been
+	// validated (a flag error is a usage error whatever the theme file holds) and before anything is
+	// opened or served. It returns what puts the themes into the Options, or an exit status.
+	loadThemes := func() (func(Options) Options, int) {
 		var extra []*theme.Theme
 		if f.theme != "" {
 			th, rep, err := theme.Load(f.theme)
 			if err != nil {
 				fmt.Fprintf(stderr, "%s%s: %v\n", es.ErrorPrefix(), f.theme, err)
-				return 1
+				return nil, 1
 			}
 			for _, m := range rep.Failures(theme.Warning) {
 				fmt.Fprintf(stderr, "%s: warning %s %s: a reader with a colour-vision deficiency may not tell these apart; see bide theme check -v\n", f.theme, m.Check, m.Subject)
@@ -197,11 +202,9 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 			extra = append(extra, th)
 		}
 		if f.themeDefault != "" && !themeNamed(f.themeDefault, extra) {
-			return usage("-theme-default " + strconv.Quote(f.themeDefault) + " names no theme: light, dark, high-contrast or the -theme file's name")
+			return nil, usage("-theme-default " + strconv.Quote(f.themeDefault) + " names no theme: light, dark, high-contrast or the -theme file's name")
 		}
-		themed = func(o Options) Options { o.Themes, o.DefaultTheme = extra, f.themeDefault; return o }
-	} else if f.theme != "" || f.themeDefault != "" {
-		return usage("-theme and -theme-default need a page to serve; -check serves none")
+		return func(o Options) Options { o.Themes, o.DefaultTheme = extra, f.themeDefault; return o }, 0
 	}
 	if f.check && f.config == "" {
 		return usage("-check needs -config")
@@ -221,6 +224,10 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 	if f.config != "" {
 		if f.db != "" || f.postgres != "" || f.postgresEnv != "" || len(f.journals) > 0 || *run != "" || f.sth != "" || f.evidence != "" || f.topo != "" {
 			return usage("-config shows a flow definition; it takes none of the run flags")
+		}
+		themed, code := loadThemes()
+		if code != 0 {
+			return code
 		}
 		c, err := readConfig(f.config, stores.YAML)
 		if err != nil {
@@ -299,6 +306,10 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 	}
 	if f.stopRoot != "" && f.stopPolicy == "" {
 		return usage("-stop-root needs -stop-policy")
+	}
+	themed, code := loadThemes()
+	if code != 0 {
+		return code
 	}
 	o, closer, err := options(f, stores)
 	if err != nil {

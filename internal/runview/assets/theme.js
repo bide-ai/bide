@@ -22,6 +22,10 @@
     const n = next();
     root.setAttribute("data-theme", n);
     try { localStorage.setItem("bide-theme", n); } catch (e) { /* not remembered; this page still switched */ }
+    // Say it: the button's label changes, which a screen reader does not announce, and the key t
+    // may be pressed with the focus elsewhere.
+    const say = document.getElementById && document.getElementById("theme-status");
+    if (say) say.textContent = "Theme: " + n;
     return n;
   };
   window.bideTheme = { names, current, next, toggle };

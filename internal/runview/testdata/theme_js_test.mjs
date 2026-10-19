@@ -6,9 +6,10 @@ import assert from "node:assert/strict";
 
 const src = readFileSync(new URL("../assets/theme.js", import.meta.url), "utf8");
 
-function page({ themes, def, stored, system = "light", blockedStorage = false, attr = null }) {
+function page({ themes, def, stored, system = "light", blockedStorage = false, attr = null, noStatus = false }) {
   const attrs = new Map(attr ? [["data-theme", attr]] : []);
   const store = new Map(stored ? [["bide-theme", stored]] : []);
+  const status = { textContent: "" };
   const root = {
     getAttribute: (k) => (attrs.has(k) ? attrs.get(k) : null),
     setAttribute: (k, v) => attrs.set(k, v),
@@ -18,7 +19,7 @@ function page({ themes, def, stored, system = "light", blockedStorage = false, a
     matchMedia: (q) => ({ matches: q.includes("dark") && system === "dark" }),
   };
   const ctx = {
-    document: { documentElement: root },
+    document: { documentElement: root, getElementById: (id) => (id === "theme-status" && !noStatus ? status : null) },
     getComputedStyle: () => ({ getPropertyValue: (n) => props[n] || "" }),
     localStorage: blockedStorage
       ? { getItem() { throw new Error("blocked"); }, setItem() { throw new Error("blocked"); } }
@@ -30,7 +31,7 @@ function page({ themes, def, stored, system = "light", blockedStorage = false, a
   // theme.js reads matchMedia through window; give the sandbox the same surface.
   ctx.matchMedia = win.matchMedia;
   vm.runInContext(src, ctx);
-  return { attrs, store, bide: win.bideTheme };
+  return { attrs, store, status, bide: win.bideTheme };
 }
 
 const all = "light dark high-contrast acme-night";
@@ -71,5 +72,13 @@ assert.equal(p.attrs.get("data-theme"), "dark");
 assert.equal(page({ themes: all, system: "dark" }).bide.toggle(), "high-contrast");
 // An unknown current theme starts the cycle at the first.
 assert.equal(page({ themes: all, attr: "gone" }).bide.next(), "light");
+
+// The toggle announces the theme it switched to, and does not fail on a page without the element.
+p = page({ themes: all });
+p.bide.toggle();
+assert.equal(p.status.textContent, "Theme: dark");
+p.bide.toggle();
+assert.equal(p.status.textContent, "Theme: high-contrast");
+assert.equal(page({ themes: all, noStatus: true }).bide.toggle(), "dark");
 
 console.log("theme.js ok");

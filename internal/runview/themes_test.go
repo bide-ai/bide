@@ -121,6 +121,9 @@ func TestHeadLoadsStylesFirst(t *testing.T) {
 	if css < 0 || js < 0 || css > js {
 		t.Errorf("style.css at %d, theme.js at %d: the stylesheet must come first", css, js)
 	}
+	if !strings.Contains(page, `id="theme-status" class="sr-only" role="status" aria-live="polite"`) {
+		t.Error("the page has no live region for the theme change")
+	}
 	if !strings.Contains(page, `aria-label="Switch theme"`) {
 		t.Error("the theme button is not labelled")
 	}
@@ -157,6 +160,10 @@ func TestMainThemeFlags(t *testing.T) {
 	}
 	if code, errs := run("-config", cfg, "-theme", filepath.Join(t.TempDir(), "missing.json")); code != 1 || errs == "" {
 		t.Errorf("a missing theme file: exit %d, stderr %q", code, errs)
+	}
+	// A flag error is a usage error whatever the theme file holds.
+	if code, _ := run("-theme", bad); code != 2 {
+		t.Errorf("a bad -theme with no input: exit %d, want the usage error 2", code)
 	}
 	good := writeThemeFile(t, nil)
 	if code, errs := run("-config", cfg, "-theme", good, "-theme-default", "neon"); code != 2 || !strings.Contains(errs, "names no theme") {
