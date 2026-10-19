@@ -242,3 +242,66 @@ func TestToggleUsesThemeScript(t *testing.T) {
 		t.Error("view.js does not toggle through theme.js, or still tests for dark itself")
 	}
 }
+
+// hostileName is a file name with an escape sequence, a newline and a bidi override; wantName is how
+// it must be written.
+const (
+	hostileName = "bad\x1b[31m\nname\u202e.json"
+	wantName    = `bad\x1b[31m\nname\u202e.json`
+)
+
+func printOnly(t *testing.T, what, s string) {
+	t.Helper()
+	// Line breaks the command writes between its own lines are fine; a raw one inside a line is
+	// checked by the caller's count of lines.
+	for _, c := range strings.ReplaceAll(s, "\n", "") {
+		if c < 0x20 || c == 0x7f || (c >= 0x80 && c < 0xa0) || c == 0x2028 || c == 0x2029 || (c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069) {
+			t.Errorf("%s holds the raw character %U: %q", what, c, s)
+			return
+		}
+	}
+}
+
+// TestMainThemeEscapesHostileFile: bide view -theme with a file whose name and content hold escape
+// sequences, newlines and bidi controls never writes them raw: the error line and the warning line
+// show the path and the file's own text in escaped form.
+func TestMainThemeEscapesHostileFile(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "flow.json")
+	if err := os.WriteFile(cfg, []byte(`{"version":1,"name":"f","nodes":[],"edges":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	write := func(content string) string {
+		p := filepath.Join(t.TempDir(), hostileName)
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Skipf("this file system cannot hold the name: %v", err)
+		}
+		return p
+	}
+	// An error: an unknown key, a bad colour and a bad name, all hostile.
+	bad := write("{\"bide_theme\":1,\"name\":\"zz\\u202e\",\"base\":\"dark\",\"surface\":{\"\\u001b[2J\\n\":\"\\u001b[31m\"}}")
+	var out, errb bytes.Buffer
+	if code := Main([]string{"-config", cfg, "-theme", bad}, &out, &errb, Stores{}); code != 1 {
+		t.Fatalf("exit %d, stderr %q", code, errb.String())
+	}
+	e := errb.String()
+	printOnly(t, "stderr", e)
+	if strings.Count(e, "\n") != 1 {
+		t.Errorf("the error took %d lines: %q", strings.Count(e, "\n"), e)
+	}
+	for _, want := range []string{wantName, `surface.\x1b[2J\n`, `\x1b[31m`} {
+		if !strings.Contains(e, want) {
+			t.Errorf("stderr lacks %q: %q", want, e)
+		}
+	}
+	// A warning: a theme that fails only the colour-blindness check is served; its warning line
+	// names the path escaped.
+	warn := write("{\"bide_theme\":1,\"name\":\"acme-day\",\"base\":\"light\",\"semantic\":{\"ok\":{\"fg\":\"#1b6a32\"},\"warning\":{\"fg\":\"#835400\"},\"alert\":{\"fg\":\"#b0241c\"}}}")
+	code, _, errs := serveMain(t, []string{"-config", cfg, "-theme", warn}, func(string) {})
+	if code != 0 {
+		t.Fatalf("serving: exit %d, stderr %q", code, errs)
+	}
+	printOnly(t, "the warning", errs)
+	if !strings.Contains(errs, wantName+": warning C6") {
+		t.Errorf("the warning does not name the path escaped: %q", errs)
+	}
+}

@@ -107,6 +107,11 @@ func scanIdleOther(src string) bool { return strings.Contains(src, "--idle") }
 
 // scanMarkup returns each colour literal in a file that is not a stylesheet: a 6 or 8 digit hex
 // colour anywhere, and a colour in a style, fill, stroke or colour attribute or assignment.
+//
+// Known limit: this reads text, not programs. A colour built or held elsewhere passes: a ternary
+// (x.style.color = ok ? "red" : "var(--fg)"), a variable (const c = "red"; x.style.color = c) or
+// a concatenation ("re" + "d"). Review catches those; the scan catches the literal written where it
+// is used, which is how a colour gets into a page by accident.
 func scanMarkup(src string) []string {
 	var found []string
 	found = append(found, hex6RE.FindAllString(src, -1)...)
