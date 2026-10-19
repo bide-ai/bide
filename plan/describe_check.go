@@ -199,7 +199,8 @@ func describedGate(g *GateDescription) (*agent.ApprovalPolicy, error) {
 //
 // A process keeps one stand-in type for each distinct type name it has been given (reflect keeps
 // them), so it admits at most 20000 names and 4 MiB of names in all, about 25 MB; past that the
-// result is an error problem and the config is checked structurally, until the process restarts.
+// result is an error problem and the config is checked structurally, until the process restarts. One
+// description counts against that budget with every distinct type name it holds.
 //
 // Experimental: may change in any 0.x release.
 func InspectConfigDescribed(data []byte, d RegistryDescription) ConfigReport {
