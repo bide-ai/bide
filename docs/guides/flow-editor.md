@@ -193,8 +193,7 @@ saving needs the confirmation.
   runs again, at most that many times before the run declares a runaway loop); 0 removes the key and
   the arm is an ordinary forward arm. The editor refuses a bound that `plan.Load` would refuse and says why in the check's words: an arm that does
   not go back to an ancestor of its switch (a loop head must reach its loop switch), a second loop-back arm on
-  a switch, or a loop with no exit arm (another arm or an `else`). What it does not check: the shape of the
-  loop body (no inner switch, nothing leaving it), which is made when a program loads the flow.
+  a switch, or a loop with no exit arm (another arm or an `else`). The same check refuses a bound that would give the loop a body `plan.Load` refuses (an inner switch or nested loop, an edge that leaves or enters it past its head, a node between the head and the switch that is not on the loop path). Only setting a bound refuses: other edits can leave a half-built loop (removing its exit arm, clearing its `else`), which the page then shows as a structural error. The editor holds half-built flows by design.
 - **A join** fans the results of several nodes into one. It is not a declared node but a wiring
   element (`join`, `inputs`, `merge`), and is listed in the outline with the nodes. **Add a join** is a
   disclosure under the outline: a name, a merge block and the inputs, chosen from the nodes. On a

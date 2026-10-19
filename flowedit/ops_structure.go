@@ -805,7 +805,7 @@ func newLoopShapeError(before, after []byte) string {
 			if p.Severity != "error" {
 				continue
 			}
-			for _, m := range []string{"loops back to", "loop-back arm", "no exit arm"} {
+			for _, m := range []string{"loops back to", "loop-back arm", "no exit arm", "has its own Switch", "leaves the loop", "enters the loop", "non-contiguous body"} {
 				if strings.Contains(p.Message, m) {
 					out = append(out, p.Message)
 				}

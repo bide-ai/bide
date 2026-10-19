@@ -330,3 +330,12 @@ func TestLoopBoundOnAForwardArmIsRefused(t *testing.T) {
 	// an unrelated bound change.
 	mustApply(t, "f.yaml", got, Operation{Op: "set_loop_max", Node: "b", Index: 0, Max: 0})
 }
+
+// A loop bound that would give the loop a body Load refuses (here an inner switch) is refused too.
+func TestLoopBoundThatMakesAnInnerSwitchIsRefused(t *testing.T) {
+	src := "version: 1\nflow: f\nentry: a\nnodes:\n  - {name: a, block: a}\n  - {name: b, block: b}\n  - {name: c, block: c}\n  - {name: d, block: d}\nwiring:\n  - edge: [a, b]\n  - switch: b\n    when:\n      - {pred: x, to: c}\n    else: c\n  - switch: c\n    when:\n      - {pred: y, to: a}\n    else: d\n"
+	why := refusalOf(t, "f.yaml", src, Operation{Op: "set_loop_max", Node: "c", Index: 0, Max: 3})
+	if !strings.Contains(why, "has its own Switch") || !strings.Contains(why, "plan.Load refuses this") {
+		t.Errorf("%q", why)
+	}
+}
