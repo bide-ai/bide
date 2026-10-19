@@ -6,10 +6,10 @@ import (
 	"reflect"
 	"strconv"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/printable"
 )
 
 // Bounds on a RegistryDescription, which may come from a file: Validate refuses more. Each
@@ -101,23 +101,18 @@ func (d RegistryDescription) Validate() error {
 	return nil
 }
 
-func printable(s string) bool {
-	if !utf8.ValidString(s) {
-		return false
-	}
-	for _, r := range s {
-		if unicode.IsControl(r) || r == unicode.ReplacementChar || unicode.Is(unicode.Cf, r) {
-			return false
-		}
-	}
-	return true
+// printableText reports whether s is valid UTF-8 without a character that does not print (the rule
+// a config's names are held to, internal/printable).
+func printableText(s string) bool {
+	_, bad := printable.Bad(s)
+	return utf8.ValidString(s) && !bad
 }
 
 func checkDescribedName(what, name string, seen map[string]bool) error {
 	switch {
 	case name == "":
 		return fmt.Errorf("a %s has no name", what)
-	case len(name) > maxDescribedName || !printable(name):
+	case len(name) > maxDescribedName || !printableText(name):
 		return fmt.Errorf("a %s name is longer than %d bytes, or has a control or format character", what, maxDescribedName)
 	case seen[name]:
 		return fmt.Errorf("%s %q is described twice", what, name)
@@ -127,7 +122,7 @@ func checkDescribedName(what, name string, seen map[string]bool) error {
 }
 
 func checkDescribedType(t, format string, a ...any) error {
-	if t == "" || len(t) > maxDescribedType || !printable(t) {
+	if t == "" || len(t) > maxDescribedType || !printableText(t) {
 		return fmt.Errorf(format+" is empty, longer than %d bytes, or has a control or format character", append(a, maxDescribedType)...)
 	}
 	return nil
