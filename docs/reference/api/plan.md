@@ -368,7 +368,7 @@ RegistryDescription is what a Registry has registered, as data: names, kinds, ty
 
 **Methods**
 
-- `func (d RegistryDescription) Validate() error`: Validate reports whether d is a description this release reads: its version, every name and type name present, printable and within bounds, every kind and safety one of the known words, every gate a policy agent.ApprovalPolicy.Validate accepts, no name twice in a namespace, and a merge of arity two or three (the arities Registry registers).
+- `func (d RegistryDescription) Validate() error`: Validate reports whether d is a description this release reads: its version, no registration errors (a program whose Registry refused something does not load), every name and type name present, printable and within bounds, every kind and safety one of the known words, every gate a policy agent.ApprovalPolicy.Validate accepts, no name twice in a namespace, and a merge of arity two or three (the arities Registry registers).
 
 ## type Topology
 
