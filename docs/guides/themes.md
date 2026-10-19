@@ -67,7 +67,7 @@ cannot be read, and 2 for a usage error. `-v` prints every measure.
 | C3 | The status colours `ok`, `warning`, `alert`, `info` are distinct (CIEDE2000) | at least 20 |
 | C4 | `gated`, `effect`, `idem` and `idle` are distinct from every other state colour | at least 10 |
 | C6 | C3 again after simulating protanopia, deuteranopia and tritanopia | at least 8; a warning for your theme, an error for a shipped one |
-| C8 | `alert` is warm (hue 340 to 100 degrees) and `ok` is not; `ok`, `warning` and `alert` have chroma of at least 20 | as stated |
+| C8 | `alert` is warm (hue 340 to 100 degrees) and `ok` is not; `alert` is nearer red (hue 30) than `warning` is; `ok`, `warning` and `alert` have chroma of at least 20 | as stated |
 
 Ranges and enums (C7) are checked while the file is read. A theme that fails any check but C6 is
 refused. Every key and value in an error is quoted, so a file cannot print a terminal escape.

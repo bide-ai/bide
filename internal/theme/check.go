@@ -2,6 +2,7 @@ package theme
 
 import (
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 )
@@ -79,6 +80,9 @@ func (m Measure) describe() string {
 	case "C8":
 		if strings.HasSuffix(m.Subject, "chroma") {
 			return fmt.Sprintf("chroma %.1f, needs at least %.0f", m.Value, m.Threshold)
+		}
+		if strings.Contains(m.Subject, "warmer") {
+			return fmt.Sprintf("alert is %.0f degrees from red but warning is %.0f: alert must be nearer red", m.Value, m.Threshold)
 		}
 		return fmt.Sprintf("hue %.0f degrees; alert must be warm (340 to 100) and ok must not", m.Value)
 	}
@@ -187,6 +191,9 @@ func Check(t *Theme) Report {
 	}
 	_, hAlert := fg("alert").lch()
 	_, hOK := fg("ok").lch()
+	_, hWarning := fg("warning").lch()
+	dAlert, dWarning := hueDistance(hAlert, redHue), hueDistance(hWarning, redHue)
+	r.Measures = append(r.Measures, Measure{Check: "C8", Subject: "alert is warmer than warning", Value: dAlert, Threshold: dWarning, Pass: dAlert <= dWarning})
 	r.Measures = append(r.Measures,
 		Measure{Check: "C8", Subject: "alert is warm", Value: hAlert, Threshold: 340, Pass: warm(hAlert)},
 		Measure{Check: "C8", Subject: "ok is not warm", Value: hOK, Threshold: 340, Pass: !warm(hOK)})
@@ -198,6 +205,18 @@ func fgOrIdle(t *Theme, n string) rgb {
 		return t.c["semantic.idle.fg"]
 	}
 	return t.c["semantic."+n+".fg"]
+}
+
+// redHue is the CIELAB hue, in degrees, that alert is measured against: red.
+const redHue = 30.0
+
+// hueDistance is the angle between two hues on the circle, 0 to 180 degrees.
+func hueDistance(a, b float64) float64 {
+	d := math.Abs(a - b)
+	if d > 180 {
+		d = 360 - d
+	}
+	return d
 }
 
 func warm(hue float64) bool { return hue >= 340 || hue <= 100 }

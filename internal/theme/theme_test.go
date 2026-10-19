@@ -372,3 +372,26 @@ func TestWarmLowerBoundary(t *testing.T) {
 		}
 	}
 }
+
+// TestAlertWarmerThanWarning: alert and warning cannot swap warmth, even when both are warm.
+func TestAlertWarmerThanWarning(t *testing.T) {
+	sem := func(alert, warning string) []byte {
+		return custom("light", map[string]any{"semantic": map[string]any{"alert": map[string]any{"fg": alert}, "warning": map[string]any{"fg": warning}}})
+	}
+	// Alert at hue 94.8 (yellow) with a warning near orange (hue 40): swapped.
+	if m, ok := measure(reportOf(t, sem("#8a7a1f", "#8a4a3a")), "C8", "alert is warmer than warning"); !ok || m.Pass {
+		t.Errorf("a yellow alert beside an orange warning: %+v, %v; want a failure", m, ok)
+	}
+	// Red alert beside an amber warning, the shipped order, passes.
+	if m, ok := measure(reportOf(t, sem("#7a3030", "#8c5900")), "C8", "alert is warmer than warning"); !ok || !m.Pass {
+		t.Errorf("a red alert beside an amber warning: %+v, %v; want a pass", m, ok)
+	}
+}
+
+func TestHueDistance(t *testing.T) {
+	for _, tc := range [][3]float64{{10, 350, 20}, {350, 10, 20}, {30, 30, 0}, {0, 180, 180}, {90, 270, 180}, {100, 30, 70}} {
+		if got := hueDistance(tc[0], tc[1]); got != tc[2] {
+			t.Errorf("hueDistance(%v, %v) = %v, want %v", tc[0], tc[1], got, tc[2])
+		}
+	}
+}
