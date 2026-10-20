@@ -39,7 +39,7 @@ try {
   r.digestFull = await text('#digest code');
   r.palette = await page.$$eval('#palette button', (b) => b.map((x) => x.getAttribute('data-block')));
   r.count = await text('#pal-count');
-  r.firstLabel = await page.$eval('#palette button', (b) => b.getAttribute('aria-label'));
+  r.firstLabel = await page.$eval('#palette button', (b) => b.innerText.replace(/\s+/g, ' ').trim());
   r.skipLinkShown = await page.$eval('a[data-skip="blocks"]', (a) => !a.hidden);
 
   // One Tab stop in the list, and the two actions after it.

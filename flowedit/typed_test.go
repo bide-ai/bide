@@ -29,8 +29,8 @@ func typedRegistry(t *testing.T) *plan.Registry {
 		reg.RegisterStep("charge", order),
 		reg.RegisterStep("receipt", func(_ context.Context, o tOrder) (string, error) { return o.ID, nil }, plan.Idempotent()),
 		reg.RegisterStep("gated", order, plan.Approval(&agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "fin"}})),
-		reg.RegisterStep("plain", order),
-		reg.RegisterStep("shout", func(_ context.Context, s string) (string, error) { return strings.ToUpper(s), nil }),
+		reg.RegisterStep("plain", order, plan.Idempotent()),
+		reg.RegisterStep("shout", func(_ context.Context, s string) (string, error) { return strings.ToUpper(s), nil }, plan.Idempotent()),
 		reg.RegisterStep("count", func(_ context.Context, n int) (int, error) { return n + 1, nil }),
 		reg.RegisterPredicate("large", func(o tOrder) bool { return len(o.ID) > 3 }),
 	} {
@@ -180,8 +180,8 @@ func TestTypedEditorIsNotQuieterWhenTheProgramChangedSinceTheBaseline(t *testing
 	for _, err := range []error{
 		reg.RegisterStep("validate", order, plan.ReadOnly()),
 		reg.RegisterStep("gated", order),
-		reg.RegisterStep("plain", order),
-		reg.RegisterStep("receipt", func(_ context.Context, o tOrder) (string, error) { return o.ID, nil }),
+		reg.RegisterStep("plain", order, plan.Idempotent()),
+		reg.RegisterStep("receipt", func(_ context.Context, o tOrder) (string, error) { return o.ID, nil }, plan.Idempotent()),
 	} {
 		if err != nil {
 			t.Fatal(err)

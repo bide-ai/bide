@@ -78,7 +78,7 @@ func TestTypedModeInChrome(t *testing.T) {
 			if got := strings.Join(r.Palette, ","); got != "charge,count,gated,plain,receipt,shout,validate" || r.Count != "7 of 7 blocks" || !r.SkipLinkShown {
 				t.Errorf("palette %q, count %q, skip link shown %v", got, r.Count, r.SkipLinkShown)
 			}
-			if !strings.HasPrefix(r.FirstLabel, "charge, step, takes ") || !strings.Contains(r.FirstLabel, ", gives ") || !strings.Contains(r.FirstLabel, "safety side effect, no approval gate, used") {
+			if !strings.HasPrefix(r.FirstLabel, "charge step \u00b7 takes ") || !strings.Contains(r.FirstLabel, " \u00b7 gives ") || !strings.HasSuffix(r.FirstLabel, " \u00b7 safety side effect \u00b7 no approval gate \u00b7 used") {
 				t.Errorf("first row's name for a screen reader: %q", r.FirstLabel)
 			}
 			if r.TabStops != 1 || len(r.TabOrder) < 3 || r.TabOrder[0] != "pal-fit" || r.TabOrder[1] != "charge" || r.TabOrder[2] != "pal-add" {
@@ -197,5 +197,42 @@ func TestDenseGraphPortInChrome(t *testing.T) {
 	}
 	if len(r.Console) > 0 {
 		t.Errorf("console %q", r.Console)
+	}
+}
+
+// The typed editor's states under axe-core, in light and dark: opened with its palette, a node selected with
+// the palette filtered, a search with no match, and the NOT CERTIFIED banner.
+func TestTypedAccessibilityInChrome(t *testing.T) {
+	for _, kind := range []string{"registry", "description"} {
+		s := typedServers(t, "refund.yaml", testFlow)[kind]
+		var r struct {
+			OK      bool   `json:"ok"`
+			Error   string `json:"error"`
+			Results map[string]struct {
+				Violations []struct {
+					ID     string   `json:"id"`
+					Impact string   `json:"impact"`
+					Help   string   `json:"help"`
+					Nodes  []string `json:"nodes"`
+				} `json:"violations"`
+				Passes int `json:"passes"`
+			} `json:"results"`
+		}
+		runScript(t, "typed-a11y.mjs", s, &r)
+		if !r.OK {
+			t.Fatalf("%s: the script failed: %s", kind, r.Error)
+		}
+		if len(r.Results) != 8 {
+			t.Errorf("%s: %d states were checked, want 8 (4 states in 2 themes)", kind, len(r.Results))
+		}
+		for state, res := range r.Results {
+			if res.Passes < 20 {
+				t.Errorf("%s %s: only %d rules passed: the page was not checked", kind, state, res.Passes)
+			}
+			for _, v := range res.Violations {
+				t.Errorf("%s %s: %s (%s): %s at %q", kind, state, v.ID, v.Impact, v.Help, v.Nodes)
+			}
+		}
+		break // one source is enough: the page is the same
 	}
 }

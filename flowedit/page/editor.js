@@ -1113,9 +1113,11 @@ function renderTyped(v) {
 const SAFETY_WORDS = { readonly: 'read-only', idempotent: 'idempotent', side_effect: 'side effect' };
 let paletteSel = '';
 
-function paletteWords(b) {
-  return [b.name, b.kind, b.kind === 'merge' ? 'takes ' + (b.inputs || []).join(' and ') : 'takes ' + b.in, 'gives ' + b.out,
-    'safety ' + (SAFETY_WORDS[b.safety] || b.safety), b.gate ? 'approval ' + b.gate : 'no approval gate', b.used ? 'used' : 'unused'].join(', ');
+// A row is named by what it shows: its name, then each fact in words, so a screen reader hears the same
+// as a reader sees ("takes" and "gives", not an arrow) and the name contains the visible text.
+function paletteFacts(b) {
+  return [b.kind, b.kind === 'merge' ? 'takes ' + (b.inputs || []).join(' and ') : 'takes ' + b.in, 'gives ' + b.out,
+    'safety ' + (SAFETY_WORDS[b.safety] || b.safety), b.gate ? 'approval ' + b.gate : 'no approval gate', b.used ? 'used' : 'unused'].join(' \u00b7 ');
 }
 
 // fitsNode is whether block b could stand at node n: it takes what n gives (so it can follow n), or it
@@ -1135,9 +1137,9 @@ function renderPalette(v) {
   if (!rows.some((b) => b.name === paletteSel)) paletteSel = rows.length ? rows[0].name : '';
   const stop = paletteSel;
   replace('palette', rows.map((b) => {
-    const btn = h('button', { type: 'button', 'data-block': b.name, 'data-kind': b.kind, tabindex: b.name === stop ? '0' : '-1', 'aria-current': b.name === stop ? 'true' : 'false', 'aria-label': paletteWords(b) },
+    const btn = h('button', { type: 'button', 'data-block': b.name, 'data-kind': b.kind, tabindex: b.name === stop ? '0' : '-1', 'aria-current': b.name === stop ? 'true' : 'false' },
       h('span', { class: 'nm' }, shown(b.name)),
-      h('span', { class: 'meta' }, [b.kind, (b.kind === 'merge' ? (b.inputs || []).join(', ') : b.in) + ' \u2192 ' + b.out, SAFETY_WORDS[b.safety] || b.safety, b.gate ? 'gate ' + b.gate : '', b.used ? 'used' : 'unused'].filter(Boolean).join(' \u00b7 ')));
+      h('span', { class: 'meta' }, paletteFacts(b)));
     btn.addEventListener('focus', () => { paletteSel = b.name; paletteButtons(v); });
     btn.addEventListener('click', () => { paletteSel = b.name; paletteButtons(v); });
     return h('li', {}, btn);
