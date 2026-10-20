@@ -260,7 +260,7 @@ func (s *decoder) value(t reflect.Type, at *path, verbatim bool) error {
 		}
 		if t != nil && t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8 {
 			if b, err := base64.StdEncoding.DecodeString(str); err == nil && base64.StdEncoding.EncodeToString(b) != str {
-				return fmt.Errorf("%s: base64 %q is not the standard encoding of its bytes", at, str)
+				return fmt.Errorf("%s: base64 %s is not the standard encoding of its bytes", at, quoted(str))
 			}
 		}
 		return nil
@@ -305,7 +305,7 @@ func (s *decoder) value(t reflect.Type, at *path, verbatim bool) error {
 			}
 			key := kt.(string)
 			if seen[key] {
-				return fmt.Errorf("%s: duplicate name %q", at, key)
+				return fmt.Errorf("%s: duplicate name %s", at, quoted(key))
 			}
 			seen[key] = true
 			if !verbatim {
@@ -322,11 +322,11 @@ func (s *decoder) value(t reflect.Type, at *path, verbatim bool) error {
 				case ok:
 					next, nullOK = f.Type, f.NullOK
 				case !s.opts.AllowUnknown:
-					return fmt.Errorf("%s: %q is not a field of %s (names must match exactly)", at, key, t)
+					return fmt.Errorf("%s: %s is not a field of %s (names must match exactly)", at, quoted(key), t)
 				default:
 					for name := range fields {
 						if strings.EqualFold(name, key) {
-							return fmt.Errorf("%s: %q is a case variant of field %q of %s (names must match exactly)", at, key, name, t)
+							return fmt.Errorf("%s: %s is a case variant of field %s of %s (names must match exactly)", at, quoted(key), quoted(name), t)
 						}
 					}
 				}
@@ -338,7 +338,7 @@ func (s *decoder) value(t reflect.Type, at *path, verbatim bool) error {
 				return err
 			}
 			if !nullOK && bytes.Equal(trimSeparators(s.data[start:s.dec.InputOffset()]), []byte("null")) {
-				return fmt.Errorf("%s: null for required field %q", at, key)
+				return fmt.Errorf("%s: null for required field %s", at, quoted(key))
 			}
 		}
 		if _, err := s.dec.Token(); err != nil { // }
@@ -352,7 +352,7 @@ func (s *decoder) value(t reflect.Type, at *path, verbatim bool) error {
 		}
 		if len(missing) > 0 {
 			slices.Sort(missing)
-			return fmt.Errorf("%s: missing required field %q", at, missing[0])
+			return fmt.Errorf("%s: missing required field %s", at, quoted(missing[0]))
 		}
 		return nil
 	}
@@ -504,4 +504,24 @@ func ExactFields(t reflect.Type) map[string]Field {
 		}
 	}
 	return out
+}
+
+// maxQuoted is the most of a document's text an error repeats: enough to name a field, too little to
+// carry a secret, a log line or a screenful of someone's data into a message.
+const maxQuoted = 64
+
+// quoted is s as Go quotes it (so a control character or an escape sequence is written out, not sent
+// to a terminal), cut to maxQuoted characters with "..." when longer. Errors name text from the
+// document through it, never raw.
+func quoted(s string) string {
+	if utf8.RuneCountInString(s) > maxQuoted {
+		cut := 0
+		for i := range s {
+			if cut == maxQuoted {
+				return strconv.Quote(s[:i]) + "..."
+			}
+			cut++
+		}
+	}
+	return strconv.Quote(s)
 }

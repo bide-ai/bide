@@ -3,6 +3,7 @@ package strictjson
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -93,5 +94,38 @@ func TestAllowUnknown(t *testing.T) {
 	}
 	if err := Check([]byte(`{"kind":"a","extra":1}`), reflect.TypeFor[rec](), nil); err == nil {
 		t.Error("without AllowUnknown an unknown field was accepted")
+	}
+}
+
+// An error names the text it complains about, but only a short, escaped piece of it: a key that is
+// a secret, a long line or an escape sequence does not reach the message whole or raw.
+func TestErrorsQuoteDocumentTextCappedAndEscaped(t *testing.T) {
+	type rec struct {
+		Known string `json:"known"`
+	}
+	secret := "HOSTSECRET-" + strings.Repeat("k", 500)
+	for name, doc := range map[string]string{
+		"unknown name":   `{"` + secret + `":1}`,
+		"duplicate name": `{"` + secret + `":1,"` + secret + `":2}`,
+		"escape name":    `{"\u001b[31mred":1}`,
+	} {
+		err := Check([]byte(doc), reflect.TypeFor[rec](), nil)
+		if err == nil {
+			t.Errorf("%s: accepted", name)
+			continue
+		}
+		msg := err.Error()
+		if len(msg) > 400 || strings.Contains(msg, strings.Repeat("k", 100)) || strings.Contains(msg, "\x1b") {
+			t.Errorf("%s: error repeats the text raw or whole (%d bytes): %.200q", name, len(msg), msg)
+		}
+		if name != "escape name" && !strings.Contains(msg, "HOSTSECRET-") {
+			t.Errorf("%s: error does not name the field at all: %q", name, msg)
+		}
+	}
+	if got := quoted("short"); got != `"short"` {
+		t.Errorf("quoted(short) = %s", got)
+	}
+	if got := quoted(strings.Repeat("é", 65)); !strings.HasSuffix(got, `"...`) || strings.Count(got, "é") != 64 {
+		t.Errorf("quoted of 65 runes = %s", got)
 	}
 }
