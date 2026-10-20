@@ -472,7 +472,7 @@ function connectionsForm(n, v) {
   if (!isJoin) kids.push(h('p', { class: 'small', id: 'c-in' }, ins.length ? 'Edges in: ' + ins.map((w) => w.from).join(', ') + '.' : 'No edge leads here.'));
   if (!sw) {
     kids.push(h('ul', { class: 'conns', id: 'c-outs', 'aria-label': 'Edges out of ' + n.name },
-      outs.map((w, i) => h('li', {}, h('span', {}, n.name + ' \u2192 ' + w.to), ' ',
+      outs.map((w, i) => h('li', {}, h('span', {}, n.name + ' \u2192 ' + w.to + differs(n, w.to, v)), ' ',
         btn('c-rm-edge-' + i, 'Remove', 'Remove edge: ' + n.name + ' to ' + w.to, () => operate({ op: 'remove_edge', node: n.name, to: w.to }, 'c-edge-to'))))));
     if (!outs.length) kids.push(h('p', { class: 'muted small' }, 'No edge leaves this node.'));
     kids.push(pick('c-edge-to', 'Add an edge to', targets, targets[0], { text: (x) => x + differs(n, x, v) }));
@@ -987,24 +987,33 @@ function fitHit(svg, fo) {
   let t = y - side / 2;
   let b = y + side / 2;
   // In a dense flow, or an svg scaled far down, 44 CSS px reaches over a neighbour's body. The box
-  // stops at the neighbour's edge instead (so a press on the neighbour selects it, and a drop onto it
-  // lands on it): the hit area is then smaller than 44 px on that side, never over another node.
+  // is cut back at each such neighbour, on the axis along which it reaches into it least (so a
+  // neighbour beside it cuts it sideways and one above or below cuts it vertically), and it never
+  // stops containing the circle: the circle is what the author sees and presses.
   for (const rc of svg.querySelectorAll('g.node rect.box')) {
     if (rc.parentNode === fo.parentNode) continue;
     const bx = Number(rc.getAttribute('x'));
     const by = Number(rc.getAttribute('y'));
     const bw = Number(rc.getAttribute('width'));
     const bh = Number(rc.getAttribute('height'));
-    if (bx >= r || bx + bw <= l || by >= b || by + bh <= t) continue;
-    if (bx >= x) r = Math.min(r, bx - 1);
-    else if (bx + bw <= x) l = Math.max(l, bx + bw + 1);
-    else if (by >= y) b = Math.min(b, by - 1);
+    const ox = Math.min(r, bx + bw) - Math.max(l, bx);
+    const oy = Math.min(b, by + bh) - Math.max(t, by);
+    if (ox <= 0 || oy <= 0) continue;
+    if (ox <= oy) {
+      if (bx + bw / 2 > x) r = Math.min(r, bx - 1);
+      else l = Math.max(l, bx + bw + 1);
+    } else if (by + bh / 2 > y) b = Math.min(b, by - 1);
     else t = Math.max(t, by + bh + 1);
   }
+  const R = 8; // the circle's radius in drawing units
+  l = Math.min(l, x - R);
+  r = Math.max(r, x + R);
+  t = Math.min(t, y - R);
+  b = Math.max(b, y + R);
   fo.setAttribute('x', String(l));
   fo.setAttribute('y', String(t));
-  fo.setAttribute('width', String(Math.max(1, r - l)));
-  fo.setAttribute('height', String(Math.max(1, b - t)));
+  fo.setAttribute('width', String(r - l));
+  fo.setAttribute('height', String(b - t));
 }
 
 // The drag in progress, if any: its cleanup, so a redraw or a second pointer can end it.
@@ -1311,16 +1320,26 @@ async function save() {
   confirmBox.addEventListener('change', () => { go.disabled = !confirmBox.checked; });
   const status = h('p', { class: 'bad', role: 'alert', id: 'save-error' });
   go.addEventListener('click', () => commit(pv, opener, status));
+  // What the author is asked to confirm is named for what it is: a weakening, a text that could not be
+  // certified against the program's blocks, a text that could not be compared, or more than one.
+  const w = view.weakening || {};
+  const kinds = [];
+  if ((w.weakened || []).length) kinds.push(['weakens the policy', 'weakening this policy']);
+  if (w.not_certified) kinds.push(['cannot be certified', 'saving without the full check']);
+  if (w.compare_error) kinds.push(['could not be compared', 'saving without the comparison']);
+  if (!kinds.length) kinds.push(['weakens the policy', 'weakening this policy']); // the server asked for a confirmation: say the safe thing
+  const confirmTitle = kinds.map((k) => k[0]).join(' and ').toUpperCase().replace(/^/, 'THIS ');
+  const confirmWords = ' I confirm that I am ' + kinds.map((k) => k[1]).join(' and ') + '.';
   const body = [
     !pv.changed ? h('p', {}, 'The text is the same as the file: nothing to write.') : null,
     pv.errors > 0 ? h('p', { class: 'warn' }, 'The text has ' + pv.errors + ' error' + (pv.errors === 1 ? '' : 's') + ' (bide check lists them). It can be saved, and it will fail bide check and plan.Load until they are fixed.') : null,
     (pv.removed_comments || []).length ? h('div', {}, h('p', { class: 'warn' }, 'This save removes ' + pv.removed_comments.length + ' comment' + (pv.removed_comments.length === 1 ? '' : 's') + ':'),
       h('ul', {}, pv.removed_comments.map((c) => h('li', {}, h('code', {}, c))))) : null,
     pv.needs_confirmation.length ? h('div', { class: 'verdict v-bad' }, h('div', { class: 'vicon' }, icon('halt')), h('div', { class: 'vtext' },
-      h('p', { class: 'vword' }, 'THIS WEAKENS THE POLICY'),
+      h('p', { class: 'vword' }, confirmTitle),
       h('p', { class: 'vline' }, 'Compared with ' + (view.weakening ? view.weakening.baseline : 'the baseline') + ', saving this:'),
       pv.needs_confirmation.map((x) => h('p', { class: 'vdetail' }, x)),
-      h('p', { class: 'vdetail' }, h('label', {}, confirmBox, ' I confirm that I am weakening this policy.')))) : null,
+      h('p', { class: 'vdetail' }, h('label', {}, confirmBox, confirmWords)))) : null,
     pv.changed ? diffBlock(pv.diff) : null,
     status,
   ];

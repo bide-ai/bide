@@ -1,6 +1,7 @@
 package flowedit
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -244,5 +245,79 @@ func TestTypedAccessibilityInChrome(t *testing.T) {
 			}
 		}
 		break // one source is enough: the page is the same
+	}
+}
+
+// Nodes of equal width stacked in a column, at a small scale (a fan-out of nine, a 420 px window): each port's
+// hit box still contains its circle, the circle is what a press at its centre reaches, and a drag from it starts.
+func TestStackedPortsInChrome(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("version: 1\nflow: fan\nentry: a\nnodes:\n  - {name: a, block: a, safety: readonly}\n")
+	for i := 0; i < 9; i++ {
+		b.WriteString("  - {name: n" + string(rune('0'+i)) + ", block: n, safety: readonly}\n")
+	}
+	b.WriteString("  - {name: z, block: z, safety: readonly}\nwiring:\n")
+	for i := 0; i < 9; i++ {
+		b.WriteString("  - edge: [a, n" + string(rune('0'+i)) + "]\n  - edge: [n" + string(rune('0'+i)) + ", z]\n")
+	}
+	s, _ := newTestServer(t, "fan.yaml", b.String())
+	var r struct {
+		OK    bool    `json:"ok"`
+		Error string  `json:"error"`
+		Scale float64 `json:"scale"`
+		Ports []struct {
+			Name      string `json:"name"`
+			Inside    bool   `json:"inside"`
+			TopNode   string `json:"topNode"`
+			TopIsHit  bool   `json:"topIsHit"`
+			DragLines int    `json:"dragLines"`
+		} `json:"ports"`
+		Console []string `json:"console"`
+	}
+	runScript(t, "dense-stack.mjs", s, &r)
+	if !r.OK {
+		t.Fatalf("the script failed: %s", r.Error)
+	}
+	if r.Scale > 0.22 || len(r.Ports) != 11 {
+		t.Fatalf("the test is not dense: scale %.2f, %d ports", r.Scale, len(r.Ports))
+	}
+	for _, p := range r.Ports {
+		if !p.Inside || p.TopNode != p.Name || !p.TopIsHit || p.DragLines != 1 {
+			t.Errorf("port of %s: circle inside its hit box %v, a press at its centre reaches %q (hit box %v), drag lines %d", p.Name, p.Inside, p.TopNode, p.TopIsHit, p.DragLines)
+		}
+	}
+	if len(r.Console) > 0 {
+		t.Errorf("console %q", r.Console)
+	}
+}
+
+// A text that cannot be certified against the program's blocks (an error elsewhere plus a connection that does not
+// fit) is saved only after a confirmation, and the dialog says what it is asking for: that the text cannot be
+// certified, not that it weakens the policy. An existing edge whose types differ is marked in the inspector.
+func TestUncertifiedSaveDialogInChrome(t *testing.T) {
+	text := strings.Replace(strings.Replace(testFlow, "block: receipt", "block: nowhere", 1), "wiring:\n", "  - {name: loose, block: count}\nwiring:\n  - edge: [validate, loose]\n", 1)
+	s := typedServers(t, "refund.yaml", text)["registry"]
+	var r struct {
+		OK            bool     `json:"ok"`
+		Error         string   `json:"error"`
+		ExistingEdges []string `json:"existingEdges"`
+		Title         string   `json:"title"`
+		Label         string   `json:"label"`
+		SaveDisabled  bool     `json:"saveDisabled"`
+		SaveEnabled   bool     `json:"saveEnabled"`
+		Console       []string `json:"console"`
+	}
+	runScript(t, "typed-save.mjs", s, &r)
+	if !r.OK {
+		t.Fatalf("the script failed: %s", r.Error)
+	}
+	if !slices.Contains(r.ExistingEdges, "validate → loose (types differ)") {
+		t.Errorf("existing edges %q", r.ExistingEdges)
+	}
+	if r.Title != "THIS CANNOT BE CERTIFIED" || !strings.Contains(r.Label, "saving without the full check") || strings.Contains(r.Label, "weakening") || !r.SaveDisabled || !r.SaveEnabled {
+		t.Errorf("dialog title %q, label %q, save disabled until confirmed %v, enabled after %v", r.Title, r.Label, r.SaveDisabled, r.SaveEnabled)
+	}
+	if len(r.Console) > 0 {
+		t.Errorf("console %q", r.Console)
 	}
 }
