@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/approvals"
+	"github.com/bide-ai/bide/internal/browsertest"
 )
 
 // The approve page's look, in real Chrome: the shipped themes inside its pinned bundle, picked by the
@@ -164,10 +165,11 @@ func TestPage_LookInChrome(t *testing.T) {
 	// The page served by an intake (approvals.WithPage), a call pending, every request allowed.
 	r := newRig(t, approvals.WithPage(), approvals.WithRateLimit(0, 0), approvals.WithGlobalRateLimit(0, 0),
 		approvals.WithAuth(func(*http.Request, approvals.Access) error { return nil }))
-	cmd := exec.Command(node, "colours.mjs")
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "CHROME_BIN="+chrome, "PAGE_URL="+r.srv.URL+"/page/#run="+runID+"&call=c1")
-	raw, runErr := cmd.Output()
+	// A stalled Chrome or script is killed, with the Chrome it started, at the deadline (internal/browsertest).
+	raw, runErr := browsertest.Run(node, dir, append(os.Environ(), "CHROME_BIN="+chrome, "PAGE_URL="+r.srv.URL+"/page/#run="+runID+"&call=c1"), "colours.mjs")
+	if browsertest.TimedOut(runErr) {
+		t.Fatal(runErr) // the deadline first: a script cut off has printed no result
+	}
 	var out struct {
 		OK      bool                `json:"ok"`
 		Error   string              `json:"error"`

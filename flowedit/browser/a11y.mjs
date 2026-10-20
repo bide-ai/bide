@@ -11,7 +11,7 @@ import puppeteer from 'puppeteer-core';
 const env = process.env;
 const require = createRequire(import.meta.url);
 const axeSource = fs.readFileSync(require.resolve('axe-core/axe.min.js'), 'utf8');
-const browser = await puppeteer.launch({ executablePath: env.CHROME_BIN, headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'], timeout: 60000 });
+const browser = await puppeteer.launch({ executablePath: env.CHROME_BIN, userDataDir: env.BIDE_CHROME_PROFILE, headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'], timeout: 60000 });
 let out;
 let page;
 const results = {};

@@ -14,7 +14,7 @@ import puppeteer from 'puppeteer-core';
 
 const env = process.env;
 const pages = JSON.parse(env.PAGES);
-const browser = await puppeteer.launch({ executablePath: env.CHROME_BIN, headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'], timeout: 60000 });
+const browser = await puppeteer.launch({ executablePath: env.CHROME_BIN, userDataDir: env.BIDE_CHROME_PROFILE, headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'], timeout: 60000 });
 const out = { ok: false, themes: {}, console: [] };
 
 // Helpers that run in the page.

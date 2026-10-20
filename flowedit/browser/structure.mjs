@@ -9,7 +9,7 @@ const origin = new URL(env.PAGE_URL).origin;
 const console_ = [];
 const offOrigin = [];
 const failed = [];
-const browser = await puppeteer.launch({ executablePath: env.CHROME_BIN, headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'], timeout: 60000 });
+const browser = await puppeteer.launch({ executablePath: env.CHROME_BIN, userDataDir: env.BIDE_CHROME_PROFILE, headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'], timeout: 60000 });
 let out;
 let page;
 let stage = "";
@@ -23,12 +23,18 @@ try {
   await page.goto(env.PAGE_URL, { waitUntil: 'networkidle0', timeout: 30000 });
   const text = (sel) => page.$eval(sel, (e) => e.textContent);
   const source = () => page.$eval('#source', (e) => e.value);
-  const until = (fn, arg, what) => page.waitForFunction(fn, { timeout: 10000 }, arg).catch(() => { throw new Error('timed out waiting for ' + what); });
+  const until = (fn, arg, what) => page.waitForFunction(fn, { timeout: 30000 }, arg).catch(() => { throw new Error('timed out waiting for ' + what); });
+  // The page says when it is at rest (data-busy on <html> counts its requests in flight and the pauses it
+  // waits out before it asks the server). A read made before that sees a half-drawn state: the source
+  // text changes before the outline, the inspector and the focus follow it, and a click made then can
+  // land on an element the next redraw replaces. Every read and every click below waits for rest first.
+  const rest = (what) => page.waitForFunction(() => document.documentElement.dataset.busy === '0', { timeout: 30000 }).catch(() => { throw new Error('timed out waiting for the page to be at rest ' + what); });
   const focused = () => page.evaluate(() => document.activeElement?.id);
   const bannerText = () => page.$eval('#weakened', (e) => e.textContent);
   const replaceValue = async (sel, value) => { await page.$eval(sel, (e) => { e.value = ''; }); await page.focus(sel); await page.keyboard.type(value); };
   const r = {};
 
+  await rest('after the page opened');
   r.original = await source();
 
   // Add a node with the keyboard: name, Tab, block, Enter.
@@ -38,6 +44,7 @@ try {
   await page.keyboard.type('audit_log');
   await page.keyboard.press('Enter');
   await until(() => document.getElementById('source').value.includes('name: audit,'), null, 'the node to be added');
+  await rest('after the node to be added');
   r.afterAdd = await source();
   r.focusAfterAdd = await focused();
   r.inspectorAfterAdd = await text('#inspector h3');
@@ -52,6 +59,7 @@ try {
   await page.keyboard.type('x');
   await page.keyboard.press('Enter');
   await until(() => document.getElementById('an-error')?.textContent.includes('already there'), null, 'the duplicate to be refused');
+  await rest('after the duplicate to be refused');
   r.dupError = await text('#an-error');
   r.dupTextSame = (await source()) === beforeDup;
   await replaceValue('#an-name', '');
@@ -61,6 +69,7 @@ try {
   await replaceValue('#f-name', 'audit2');
   await page.keyboard.press('Enter');
   await until(() => document.getElementById('source').value.includes('name: audit2,'), null, 'the rename');
+  await rest('after the rename');
   r.afterRename = await source();
   r.focusAfterRename = await focused();
   r.inspectorAfterRename = await text('#inspector h3');
@@ -69,6 +78,7 @@ try {
   stage = "await page.click('#f-remove');";
   await page.click('#f-remove');
   await until(() => !document.getElementById('source').value.includes('audit2'), null, 'the removal');
+  await rest('after the removal');
   r.afterRemoveLone = await source();
   r.focusAfterRemove = await focused();
   r.dialogOpenAfterLone = await page.$eval('#dialog', (d) => d.open);
@@ -77,40 +87,49 @@ try {
   stage = 'await page.click(\'#outline button[data-node="receipt"]\');';
   await page.click('#outline button[data-node="receipt"]');
   await until(() => document.getElementById('f-remove'), null, 'the structure form');
+  await rest('after the structure form');
   stage = "await page.click('#f-remove');";
   await page.click('#f-remove');
   await until(() => document.getElementById('dialog').open && document.getElementById('remove-list'), null, 'the dialog');
+  await rest('after the dialog');
   r.removeList = await page.$$eval('#remove-list li', (l) => l.map((x) => x.textContent));
   r.dialogTitle = await text('#dialog-title');
   stage = "await page.click('#dialog .dialog-actions button:not(.primary)');";
   await page.click('#dialog .dialog-actions button:not(.primary)');
+  await rest('after Cancel');
   r.afterCancel = await source();
   r.focusAfterCancel = await focused();
   stage = "await page.click('#f-remove');";
   await page.click('#f-remove');
   await until(() => document.getElementById('dialog').open && document.getElementById('do-remove'), null, 'the dialog again');
+  await rest('after the dialog again');
   stage = "await page.click('#do-remove');";
   await page.click('#do-remove');
   await until(() => !document.getElementById('source').value.includes('name: receipt'), null, 'the removal of receipt');
+  await rest('after the removal of receipt');
   r.afterRemoveWired = await source();
   r.stateAfterRemove = await text('#state-tag');
   stage = "await page.click('#undo');";
   await page.click('#undo');
   await until(() => document.getElementById('source').value.includes('name: receipt'), null, 'undo');
+  await rest('after undo');
   r.afterUndo = await source();
 
   // The entry: make charge the entry; the entry node cannot then be removed.
   stage = 'await page.click(\'#outline button[data-node="charge"]\');';
   await page.click('#outline button[data-node="charge"]');
   await until(() => document.getElementById('f-entry'), null, 'the entry button');
+  await rest('after the entry button');
   r.entryButton = await text('#f-entry');
   stage = "await page.click('#f-entry');";
   await page.click('#f-entry');
   await until(() => document.getElementById('source').value.includes('entry: charge'), null, 'the entry to change');
+  await rest('after the entry to change');
   r.afterEntry = await source();
   stage = "await page.click('#f-remove');";
   await page.click('#f-remove');
   await until(() => document.getElementById('op-error')?.textContent.includes('is the entry node'), null, 'the refusal');
+  await rest('after the refusal');
   r.entryRefusal = await text('#op-error');
   r.dialogOpenAfterRefusal = await page.$eval('#dialog', (d) => d.open);
 
@@ -118,8 +137,10 @@ try {
   await replaceValue('#f-name', 'charge2');
   await page.keyboard.press('Enter');
   await until(() => document.getElementById('source').value.includes('name: charge2'), null, 'the gated rename');
+  await rest('after the gated rename');
   r.afterGatedRename = await source();
   await until(() => document.getElementById('weakened')?.textContent.includes('WEAKENED'), null, 'the banner');
+  await rest('after the banner');
   r.bannerAfterGatedRename = await bannerText();
   out = { ok: true, ...r, console: console_, failed, offOrigin };
 } catch (e) {

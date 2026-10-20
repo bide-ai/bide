@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/approvals"
+	"github.com/bide-ai/bide/internal/browsertest"
 )
 
 // The approve page, in real Chrome, authenticated by a TLS client certificate. Cookie
@@ -302,45 +303,51 @@ func chromeMTLS(t *testing.T, node, chrome, driverDir string, mode mtlsMode) {
 	if v, err := exec.Command(chrome, "--version").Output(); err == nil {
 		t.Logf("browser: %s", strings.TrimSpace(string(v)))
 	}
-	cmd := exec.Command(node, "mtls.mjs")
-	cmd.Dir = driverDir
-	cmd.Env = append(os.Environ(), "HOME="+home, "CHROME_BIN="+chrome, "PAGE_URL="+pageURL, "ENROL_DIR="+enrolDir, "APPROVER="+mtlsApprover,
+	env := append(os.Environ(), "HOME="+home, "CHROME_BIN="+chrome, "PAGE_URL="+pageURL, "ENROL_DIR="+enrolDir, "APPROVER="+mtlsApprover,
 		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"), "XDG_CACHE_HOME="+filepath.Join(home, ".cache"))
-	var stdout strings.Builder
-	cmd.Stdout = &stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	waited := make(chan error, 1)
-	go func() { waited <- cmd.Wait() }()
-	enrolled := false
-	deadline := time.After(3 * time.Minute)
-	var werr error
-loop:
-	for {
-		select {
-		case werr = <-waited:
-			break loop
-		case <-deadline:
-			_ = cmd.Process.Kill()
-			<-waited
-			t.Fatalf("the Chrome driver did not finish in 3 minutes; output so far: %s", stdout.String())
-		case <-time.After(100 * time.Millisecond):
-			if b, err := os.ReadFile(filepath.Join(enrolDir, "pub")); err == nil && !enrolled {
-				pub, ok := strings.CutPrefix(strings.TrimSpace(string(b)), "ed25519:")
-				raw, err := hex.DecodeString(pub)
-				if !ok || err != nil || len(raw) != 32 {
-					t.Fatalf("the page offered a public key that is not ed25519:<hex>: %q", b)
-				}
-				r.enrol(mtlsApprover, raw)
-				if err := os.WriteFile(filepath.Join(enrolDir, "enrolled"), nil, 0o600); err != nil {
-					t.Fatal(err)
-				}
-				enrolled = true
+	// The driver waits for the page's key to be enrolled: this goroutine watches for it and enrols it
+	// while the driver runs. A stalled driver is killed at the deadline with the Chrome it started
+	// (internal/browsertest), and the error shows its output so far.
+	stop := make(chan struct{})
+	watched := make(chan struct{})
+	go func() {
+		defer close(watched)
+		enrolled := false
+		for !enrolled {
+			select {
+			case <-stop:
+				return
+			case <-time.After(100 * time.Millisecond):
 			}
+			b, err := os.ReadFile(filepath.Join(enrolDir, "pub"))
+			if err != nil {
+				continue
+			}
+			pub, ok := strings.CutPrefix(strings.TrimSpace(string(b)), "ed25519:")
+			raw, err := hex.DecodeString(pub)
+			if !ok || err != nil || len(raw) != 32 {
+				t.Errorf("the page offered a public key that is not ed25519:<hex>: %q", b)
+				return
+			}
+			r.enrol(mtlsApprover, raw)
+			if err := os.WriteFile(filepath.Join(enrolDir, "enrolled"), nil, 0o600); err != nil {
+				t.Errorf("enrolled: %v", err)
+				return
+			}
+			enrolled = true
 		}
+	}()
+	stdoutBytes, werr := browsertest.RunTo(3*time.Minute, os.Stderr, node, driverDir, env, "mtls.mjs")
+	close(stop)
+	<-watched
+	if browsertest.TimedOut(werr) {
+		t.Fatal(werr) // the deadline first: a script cut off has printed no result
 	}
+	if werr != nil && len(stdoutBytes) == 0 {
+		t.Fatalf("the Chrome driver: %v", werr)
+	}
+	var stdout strings.Builder
+	stdout.Write(stdoutBytes)
 	line := strings.TrimSpace(stdout.String())
 	var out mtlsDriverOut
 	if jerr := json.Unmarshal([]byte(line[strings.LastIndex(line, "\n")+1:]), &out); jerr != nil {

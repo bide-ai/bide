@@ -2,13 +2,18 @@ package flowedit
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/bide-ai/bide/internal/browsertest"
 )
 
 // browserFail fails the test in CI (where BIDE_EDIT_BROWSER=1 means the job installed everything),
@@ -83,19 +88,76 @@ func browserTools(t *testing.T) (node, dir, chrome string) {
 	return node, dir, chrome
 }
 
-// runScript serves s on a loopback port, runs browser/script in Node against its page in Chrome and
-// decodes the one JSON line it prints into out. The script sees FILE, the path of the config.
-func runScript(t *testing.T, script string, s *Server, out any) {
+// scriptOutput serves s on a loopback port and runs browser/script in Node against its page in Chrome,
+// returning what the script printed. The script sees FILE, the path of the config. A stalled Chrome or
+// script is killed, with the Chrome it started, at the deadline (internal/browsertest): the test fails
+// fast and says where the script had got to, instead of holding the run until the binary times out.
+func scriptOutput(t *testing.T, script string, s *Server) ([]byte, error) {
 	t.Helper()
 	node, dir, chrome := browserTools(t)
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
-	cmd := exec.Command(node, script)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "CHROME_BIN="+chrome, "PAGE_URL="+ts.URL+"/#t="+s.Token(), "FILE="+s.path)
-	raw, err := cmd.Output()
+	return browsertest.Run(node, dir, append(os.Environ(), "CHROME_BIN="+chrome, "PAGE_URL="+ts.URL+"/#t="+s.Token(), "FILE="+s.path), script)
+}
+
+// runScript runs browser/script (see scriptOutput) and decodes the one JSON line it prints into out.
+func runScript(t *testing.T, script string, s *Server, out any) {
+	t.Helper()
+	raw, err := scriptOutput(t, script, s)
+	if browsertest.TimedOut(err) {
+		t.Fatal(err) // the deadline first: a script cut off has printed no result
+	}
 	if jerr := json.Unmarshal(raw, out); jerr != nil {
 		t.Fatalf("the script printed no result (%v): %q", err, raw)
+	}
+}
+
+// TestScriptsHaveADeadline: a script that stalls fails the test at the deadline with what it had
+// printed, instead of holding the run, and the Chrome it started is gone afterwards. browser/stall.mjs
+// prints a line and waits for ever; browser/stall-chrome.mjs launches real Chrome first, and with
+// STALL=busy then spins, which keeps puppeteer's SIGTERM handler from running: only the harness
+// killing the Chrome by its profile directory can remove it then.
+func TestScriptsHaveADeadline(t *testing.T) {
+	s, _ := newTestServer(t, "refund.yaml", testFlow)
+	old := browsertest.Deadline
+	defer func() { browsertest.Deadline = old }()
+	for _, tc := range []struct {
+		name, script, stall string
+		deadline            time.Duration
+		chrome              bool
+	}{
+		{"no Chrome", "stall.mjs", "", 2 * time.Second, false},
+		{"Chrome and a waiting script", "stall-chrome.mjs", "", 12 * time.Second, true},
+		{"Chrome and a stuck event loop", "stall-chrome.mjs", "busy", 12 * time.Second, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			browsertest.Deadline = tc.deadline
+			t.Setenv("STALL", tc.stall)
+			start := time.Now()
+			_, err := scriptOutput(t, tc.script, s)
+			var de *browsertest.DeadlineError
+			if !errors.As(err, &de) {
+				t.Fatalf("err = %v, want a deadline error", err)
+			}
+			want := "stalled on purpose"
+			if tc.chrome {
+				want = "launched " + de.Profile // Chrome was up, in the run's profile, when the deadline came
+			}
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("err = %v, want one quoting %q", err, want)
+			}
+			if took := time.Since(start); took > tc.deadline+30*time.Second {
+				t.Errorf("the stalled script held the test for %v", took)
+			}
+			if _, serr := os.Stat(de.Profile); serr == nil {
+				t.Errorf("the Chrome profile %s was not removed", de.Profile)
+			}
+			if runtime.GOOS != "windows" {
+				if out, _ := exec.Command("pgrep", "-f", de.Profile).Output(); len(out) > 0 {
+					t.Errorf("processes for the profile %s are still running after the deadline: %s", de.Profile, strings.TrimSpace(string(out)))
+				}
+			}
+		})
 	}
 }
 

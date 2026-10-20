@@ -12,7 +12,7 @@ const origin = new URL(env.PAGE_URL).origin;
 const console_ = [];
 const offOrigin = [];
 const failed = [];
-const browser = await puppeteer.launch({ executablePath: env.CHROME_BIN, headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'], timeout: 60000 });
+const browser = await puppeteer.launch({ executablePath: env.CHROME_BIN, userDataDir: env.BIDE_CHROME_PROFILE, headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'], timeout: 60000 });
 let out;
 let page;
 const tabs = {};

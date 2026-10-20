@@ -28,6 +28,7 @@ govern
 govern/postgreslog
 integration/bideaudit
 internal/auditcli
+internal/browsertest
 internal/runview
 internal/tools/changelog
 internal/tools/docsnip
