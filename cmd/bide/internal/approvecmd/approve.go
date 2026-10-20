@@ -336,9 +336,11 @@ func (f *flags) readItem(stdin io.Reader) error {
 		data, err = safefile.Read(f.item, maxItem, nil)
 		var refused *safefile.RefusedError
 		if errors.As(err, &refused) && refused.Kind == safefile.TooLarge {
-			return fmt.Errorf("-item %s: more than %d bytes: it is one call of -list -json, not the whole list", f.item, maxItem)
+			return fmt.Errorf("-item %s: more than %d bytes (the limit for -item): it is one call of -list -json, not the whole list", f.item, maxItem)
 		}
-		if err != nil && !errors.As(err, &refused) {
+		if errors.As(err, &refused) {
+			err = safefile.Explain("-item", err, true)
+		} else if err != nil {
 			err = unwrapPath(err)
 		}
 	}
@@ -728,9 +730,9 @@ func approverKeys(path string) (map[string]audit.Verifier, error) {
 	if err != nil {
 		var refused *safefile.RefusedError
 		if errors.As(err, &refused) && refused.Kind == safefile.TooLarge {
-			return nil, fmt.Errorf("-approver-keys %s is larger than 1 MiB", path)
+			return nil, fmt.Errorf("-approver-keys %s is larger than 1 MiB (the limit for -approver-keys)", path)
 		}
-		return nil, fmt.Errorf("-approver-keys: %w", err)
+		return nil, fmt.Errorf("-approver-keys: %w", safefile.Explain("-approver-keys", err, true))
 	}
 	var raw map[string]string
 	if err := audit.UnmarshalStrict(b, &raw); err != nil {
@@ -1512,9 +1514,9 @@ func (c *cmd) writeReceipt(ctx context.Context, j *agent.Journal, s agent.Approv
 // verifyReceiptFile is bide approve -verify-receipt: the receipt's signature over the exact call it
 // states, by the key -approver-keys enrols for its approver. It reads no journal.
 func (c *cmd) verifyReceiptFile() error {
-	b, err := safefile.Read(c.f.verifyReceipt, maxItem, nil)
+	b, err := safefile.Read(c.f.verifyReceipt, safefile.MaxDocument, nil)
 	if err != nil {
-		return fmt.Errorf("receipt %s: %w", c.f.verifyReceipt, unwrapPath(err))
+		return fmt.Errorf("receipt %s: %w", c.f.verifyReceipt, unwrapPath(safefile.Explain("-verify-receipt", err, false)))
 	}
 	var r audit.DecisionReceipt
 	if err := audit.UnmarshalStrict(b, &r); err != nil {
@@ -1583,9 +1585,9 @@ func readLogKey(s string) (audit.Verifier, error) {
 	if v, err := audit.ParsePublicKey(s); err == nil {
 		return v, nil
 	}
-	b, err := safefile.ReadOrStdin("-log-key", s, 1<<20)
+	b, err := safefile.ReadOrStdin("-log-key", s, safefile.MaxKey)
 	if err != nil {
-		return nil, refuse("-log-key is neither a public key (ed25519:<hex>) nor a readable file: %s", safe(unwrapPath(err).Error()))
+		return nil, refuse("-log-key is neither a public key (ed25519:<hex>) nor a readable file: %s", safe(unwrapPath(safefile.Explain("-log-key", err, true)).Error()))
 	}
 	v, err := audit.ParsePublicKey(strings.TrimSpace(string(b)))
 	if err != nil {

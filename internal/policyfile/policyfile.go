@@ -21,14 +21,14 @@ func configErr(path string, err error) error {
 func Read(path string) (*audit.CertIdentity, error) {
 	b, err := safefile.Read(path, maxFile, nil)
 	if err != nil {
-		return nil, configErr(path, err)
+		return nil, configErr(path, safefile.Explain("the policy file", err, false))
 	}
 	dir := filepath.Dir(path)
 	return audit.ParseIdentityPolicy(path, b, func(rel string) ([]byte, error) { return safefile.Read(filepath.Join(dir, rel), maxFile, nil) })
 }
 
 // maxFile caps the policy file and each file it names: policy files and certificates are small.
-const maxFile = 1 << 20
+const maxFile = safefile.MaxDocument
 
 // ReadSources reads the refresher members of the policy file at path: where each issuing CA's CRLs are
 // fetched from, and the certificates of the pinned intermediates (audit.ParseCRLSources).

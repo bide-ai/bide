@@ -111,7 +111,7 @@ not another leaf later at that position. It cannot be undone: the trail is appen
 	if err != nil {
 		return fail("the signing key: %v", err)
 	}
-	prior, err := readHeads(*headOut)
+	prior, err := readHeads("-head-out", *headOut)
 	if err != nil {
 		return fail("%v", err)
 	}

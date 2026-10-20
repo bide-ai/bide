@@ -239,9 +239,9 @@ func build(c *common, lw *lineWriter) (*crlrefresh.Refresher, error) {
 	if err != nil {
 		return nil, err
 	}
-	pb, err := safefile.Read(c.params, 1<<20, nil)
+	pb, err := safefile.Read(c.params, safefile.MaxDocument, nil)
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", c.params, err)
+		return nil, fmt.Errorf("reading %s: %w", c.params, safefile.Explain("-params", err, false))
 	}
 	decl, err := audit.ParseStatusDecl(c.params, pb)
 	if err != nil {

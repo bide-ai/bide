@@ -13,23 +13,23 @@ func TestReaders_NamedPipeAndDirectory(t *testing.T) {
 	d := t.TempDir()
 	var v map[string]any
 	safefiletest.Deadline(t, "readers", func() {
-		if err := readJSON(p, &v); err == nil {
+		if err := readJSON("-sth", p, &v); err == nil {
 			t.Error("readJSON read a named pipe")
 		}
 		if _, err := readPubKey(p); err == nil {
 			t.Error("readPubKey read a named pipe")
 		}
-		if _, err := readHeads(p); err == nil {
+		if _, err := readHeads("-head-out", p); err == nil {
 			t.Error("readHeads read a named pipe")
 		}
 	})
-	if err := readJSON(d, &v); err == nil {
+	if err := readJSON("-sth", d, &v); err == nil {
 		t.Error("readJSON read a directory")
 	}
 	if _, err := readPubKey(d); err == nil {
 		t.Error("readPubKey read a directory")
 	}
-	if _, err := readHeads(d); err == nil {
+	if _, err := readHeads("-head-out", d); err == nil {
 		t.Error("readHeads read a directory")
 	}
 }

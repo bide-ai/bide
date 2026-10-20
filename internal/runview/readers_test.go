@@ -55,3 +55,19 @@ func TestReaders_Stdin(t *testing.T) {
 		t.Fatal("a positional journal named - read standard input")
 	}
 }
+
+// A refusal names the flag, and the "-" to use instead of a pipe, and the limit it hit.
+func TestReaders_RefusalsNameTheFlag(t *testing.T) {
+	var v map[string]any
+	err := readStrict("-sth", t.TempDir(), &v)
+	if err == nil || !strings.Contains(err.Error(), "pass - to read -sth from standard input") {
+		t.Errorf("readStrict(-sth, dir) = %v", err)
+	}
+	p := filepath.Join(t.TempDir(), "k")
+	if err := os.WriteFile(p, []byte(strings.Repeat(" ", maxKeyFile+1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readKey(p); err == nil || !strings.Contains(err.Error(), "larger than 1048576 bytes (the limit for -pubkey)") {
+		t.Errorf("readKey(oversize) = %v", err)
+	}
+}

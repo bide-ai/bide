@@ -49,9 +49,9 @@ func readChain(path string) (*certChain, error) {
 	if err != nil {
 		var refused *safefile.RefusedError
 		if errors.As(err, &refused) && refused.Kind == safefile.TooLarge {
-			return nil, refuse("-cert is larger than %d bytes: it is not a certificate chain", maxChainFile)
+			return nil, refuse("-cert is larger than %d bytes (the limit for -cert): it is not a certificate chain", maxChainFile)
 		}
-		return nil, refuse("-cert: %s", safe(unwrapPath(err).Error()))
+		return nil, refuse("-cert: %s", safe(unwrapPath(safefile.Explain("-cert", err, false)).Error()))
 	}
 	var cc certChain
 	rest := b

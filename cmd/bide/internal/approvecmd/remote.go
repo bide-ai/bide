@@ -76,9 +76,9 @@ func loopback(host string) bool {
 func (c *cmd) httpClient() (*http.Client, error) {
 	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
 	if c.f.tlsCA != "" {
-		pem, err := safefile.Read(c.f.tlsCA, 1<<20, nil)
+		pem, err := safefile.Read(c.f.tlsCA, safefile.MaxDocument, nil)
 		if err != nil {
-			return nil, fmt.Errorf("-tls-ca: %w", unwrapPath(err))
+			return nil, fmt.Errorf("-tls-ca: %w", unwrapPath(safefile.Explain("-tls-ca", err, false)))
 		}
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(pem) {

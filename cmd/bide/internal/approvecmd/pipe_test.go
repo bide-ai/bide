@@ -68,3 +68,18 @@ func TestReaders_Stdin(t *testing.T) {
 		t.Fatalf("approverKeys(-) after readLogKey(-) = %v, want the stdin conflict", err)
 	}
 }
+
+// A refusal names the flag and the "-" to use instead of a pipe, and the limit it hit.
+func TestReaders_RefusalsNameTheFlag(t *testing.T) {
+	d := t.TempDir()
+	if _, err := approverKeys(d); err == nil || !strings.Contains(err.Error(), "pass - to read -approver-keys from standard input") {
+		t.Errorf("approverKeys(dir) = %v", err)
+	}
+	if _, err := readLogKey(d); err == nil || !strings.Contains(err.Error(), "pass - to read -log-key from standard input") {
+		t.Errorf("readLogKey(dir) = %v", err)
+	}
+	// -cert takes no "-", so its refusal does not suggest it.
+	if _, err := readChain(d); err == nil || strings.Contains(err.Error(), "pass -") {
+		t.Errorf("readChain(dir) = %v", err)
+	}
+}

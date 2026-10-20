@@ -267,7 +267,7 @@ erases and an "end" record after; if it stops partway, run the same plan again.
 	}
 	for _, p := range sths {
 		var h audit.SignedTreeHead
-		if err := readJSON(p, &h); err != nil {
+		if err := readJSON("-sth", p, &h); err != nil {
 			return fail("%v", err)
 		}
 		heads = append(heads, h)
@@ -284,7 +284,7 @@ erases and an "end" record after; if it stops partway, run the same plan again.
 	// The heads the trail has had so far: the -head-out file the earlier passes wrote. The trail is
 	// checked against them before anything is erased, and a head is signed only over a trail they
 	// cover; a trail that already holds records and has no earlier head is not attested by anything.
-	prior, err := readHeads(*headOut)
+	prior, err := readHeads("-head-out", *headOut)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -545,10 +545,12 @@ func appendLine(path string, v any) error {
 // as bide audit's default input limit.
 const maxJournalFile = 256 << 20
 
-func readJSON(path string, v any) error {
-	b, err := safefile.Read(path, maxJournalFile, nil)
+// readJSON reads the JSON document in the file path, which the flag names: a signed head or an
+// authorization, a few KiB.
+func readJSON(flag, path string, v any) error {
+	b, err := safefile.Read(path, safefile.MaxDocument, nil)
 	if err != nil {
-		return fmt.Errorf("read %s: %w", path, err)
+		return fmt.Errorf("read %s: %w", path, safefile.Explain(flag, err, false))
 	}
 	if err := json.Unmarshal(b, v); err != nil {
 		return fmt.Errorf("%s is not the JSON expected: %w", path, err)
@@ -560,9 +562,9 @@ func readPubKey(s string) (audit.Verifier, error) {
 	if v, err := audit.ParsePublicKey(s); err == nil {
 		return v, nil
 	}
-	b, err := safefile.ReadOrStdin("-pubkey", s, 1<<20)
+	b, err := safefile.ReadOrStdin("-pubkey", s, safefile.MaxKey)
 	if err != nil {
-		return nil, fmt.Errorf("-pubkey: not a public key (ed25519:<hex> or 64 hex digits) and not a readable file: %w", err)
+		return nil, fmt.Errorf("-pubkey: not a public key (ed25519:<hex> or 64 hex digits) and not a readable file: %w", safefile.Explain("-pubkey", err, true))
 	}
 	v, err := audit.ParsePublicKey(strings.TrimSpace(string(b)))
 	if err != nil {
@@ -697,13 +699,13 @@ func subRuns(ctx context.Context, j *agent.Journal, run string) ([]string, error
 
 // readHeads reads the signed heads in path, one JSON head per line; a file that does not exist holds
 // none.
-func readHeads(path string) ([]audit.SignedTreeHead, error) {
+func readHeads(flag, path string) ([]audit.SignedTreeHead, error) {
 	b, err := safefile.Read(path, maxJournalFile, nil)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", path, err)
+		return nil, fmt.Errorf("read %s: %w", path, safefile.Explain(flag, err, false))
 	}
 	var out []audit.SignedTreeHead
 	for i, line := range strings.Split(string(b), "\n") {

@@ -25,9 +25,9 @@ func readChain(path, flag string) (der [][]byte, problem string, err error) {
 	if err != nil {
 		var refused *safefile.RefusedError
 		if errors.As(err, &refused) && refused.Kind == safefile.TooLarge {
-			return nil, fmt.Sprintf("%s is larger than %d bytes: it is not a certificate chain", flag, maxChainFile), nil
+			return nil, fmt.Sprintf("%s is larger than %d bytes (the limit for %s): it is not a certificate chain", flag, maxChainFile, flag), nil
 		}
-		return nil, "", &IOError{Err: fmt.Errorf("%s: %w", flag, err)}
+		return nil, "", &IOError{Err: fmt.Errorf("%s: %w", flag, safefile.Explain(flag, err, false))}
 	}
 	rest := b
 	for {

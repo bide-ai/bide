@@ -133,8 +133,8 @@ func ioErr(flag string, err error) error { return &IOError{Err: fmt.Errorf("%s: 
 
 // policy loads the policy file (a) and checks the pinned CAs and intermediates (b).
 func (s *run) policy() error {
-	if _, err := safefile.Read(s.o.Policy, 1<<20, nil); err != nil {
-		return ioErr("-policy", err)
+	if _, err := safefile.Read(s.o.Policy, safefile.MaxDocument, nil); err != nil {
+		return ioErr("-policy", safefile.Explain("-policy", err, false))
 	}
 	r := s.r
 	pol, err := policyfile.Read(s.o.Policy)
@@ -209,9 +209,9 @@ func (s *run) certDates(id, what string, c *x509.Certificate, now time.Time) {
 // compares it with the gate's record (d).
 func (s *run) declared() error {
 	r := s.r
-	pb, err := safefile.Read(s.o.Params, 1<<20, nil)
+	pb, err := safefile.Read(s.o.Params, safefile.MaxDocument, nil)
 	if err != nil {
-		return ioErr("-params", err)
+		return ioErr("-params", safefile.Explain("-params", err, false))
 	}
 	decl, err := audit.ParseStatusDecl(s.o.Params, pb)
 	if err != nil {

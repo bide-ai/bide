@@ -558,7 +558,15 @@ const maxInput = 256 << 20
 const maxConfig = 16 << 20
 
 // maxKeyFile caps a public key file named by -pubkey: a key is a few dozen bytes.
-const maxKeyFile = 1 << 20
+const maxKeyFile = safefile.MaxKey
+
+// cmpFlag names the flag for a message: a positional journal has none.
+func cmpFlag(flag string) string {
+	if flag == "" {
+		return "a journal"
+	}
+	return flag
+}
 
 // readStrict reads the file path (standard input for "-" when flag, the flag that names it, is not
 // empty) and decodes it strictly into v.
@@ -573,9 +581,9 @@ func readStrict(flag, path string, v any) error {
 	if err != nil {
 		var refused *safefile.RefusedError
 		if errors.As(err, &refused) && refused.Kind == safefile.TooLarge {
-			return fmt.Errorf("%s is larger than %d bytes", path, maxInput)
+			return fmt.Errorf("%s is larger than %d bytes (the limit for %s)", path, maxInput, cmpFlag(flag))
 		}
-		return err
+		return safefile.Explain(flag, err, flag != "")
 	}
 	if err := audit.UnmarshalStrict(b, v); err != nil {
 		return fmt.Errorf("parse %s: %w", path, err)
@@ -594,7 +602,7 @@ func readKey(s string) (audit.Verifier, error) {
 	if err != nil {
 		var refused *safefile.RefusedError
 		if errors.As(err, &refused) {
-			return nil, fmt.Errorf("public key: %q is neither a key nor a readable file: %w", s, err)
+			return nil, fmt.Errorf("public key: %q is neither a key nor a readable file: %w", s, safefile.Explain("-pubkey", err, true))
 		}
 		return nil, fmt.Errorf("public key: %q is neither a key nor a readable file", s)
 	}

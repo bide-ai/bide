@@ -367,9 +367,9 @@ func (c *cmd) loadPolicy() (agent.StopPolicy, agent.StopPolicyDoc, error) {
 	if err != nil {
 		var refused *safefile.RefusedError
 		if errors.As(err, &refused) && refused.Kind == safefile.TooLarge {
-			return agent.StopPolicy{}, agent.StopPolicyDoc{}, fmt.Errorf("-stop-policy %s: larger than %d bytes: not a stop policy", c.f.stopPolicy, maxPolicyFile)
+			return agent.StopPolicy{}, agent.StopPolicyDoc{}, fmt.Errorf("-stop-policy %s: larger than %d bytes (the limit for -stop-policy): not a stop policy", c.f.stopPolicy, maxPolicyFile)
 		}
-		return agent.StopPolicy{}, agent.StopPolicyDoc{}, fmt.Errorf("-stop-policy %s: %w", c.f.stopPolicy, unwrapPath(err))
+		return agent.StopPolicy{}, agent.StopPolicyDoc{}, fmt.Errorf("-stop-policy %s: %w", c.f.stopPolicy, unwrapPath(safefile.Explain("-stop-policy", err, true)))
 	}
 	var doc agent.StopPolicyDoc
 	if err := strictjson.Unmarshal(b, &doc, nil); err != nil {

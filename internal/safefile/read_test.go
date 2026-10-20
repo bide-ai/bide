@@ -145,3 +145,28 @@ func TestReadOrStdin(t *testing.T) {
 		t.Errorf("exactly the limit = %q, %v", b, err)
 	}
 }
+
+func TestExplain(t *testing.T) {
+	if Explain("-k", nil, true) != nil {
+		t.Error("nil became an error")
+	}
+	plain := errors.New("x")
+	if Explain("-k", plain, true) != plain {
+		t.Error("a plain error was wrapped")
+	}
+	big := Explain("-pubkey", &RefusedError{Path: "k", Kind: TooLarge, Max: 7}, true)
+	if got := big.Error(); got != "k: larger than 7 bytes (the limit for -pubkey)" {
+		t.Errorf("too large = %q", got)
+	}
+	pipe := Explain("-pubkey", &RefusedError{Path: "p", Kind: NotRegular}, true)
+	if got := pipe.Error(); !strings.Contains(got, "p is not a regular file") || !strings.Contains(got, "pass - to read -pubkey from standard input") {
+		t.Errorf("not regular = %q", got)
+	}
+	if got := Explain("-cert", &RefusedError{Path: "p", Kind: NotRegular}, false).Error(); strings.Contains(got, "pass -") {
+		t.Errorf("a flag without stdin suggests it: %q", got)
+	}
+	var re *RefusedError
+	if !errors.As(pipe, &re) || re.Kind != NotRegular {
+		t.Error("the refusal is not reachable through the wrapper")
+	}
+}
