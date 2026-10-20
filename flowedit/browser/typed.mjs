@@ -66,6 +66,9 @@ try {
   await page.click('#pal-fit');
   r.fitRows = await page.$$eval('#palette button', (b) => b.map((x) => x.getAttribute('data-block')));
   r.fitCount = await text('#pal-count');
+  // The filter follows the selection: receipt takes an order and gives a string.
+  await select('receipt');
+  r.fitRowsReceipt = await page.$$eval('#palette button', (b) => b.map((x) => x.getAttribute('data-block')));
   await page.click('#pal-fit');
 
   // Add a node with a block that fits nothing: the form is filled, the name is made unique, nothing is written.
@@ -80,6 +83,12 @@ try {
   await until(() => document.getElementById('source').value.includes('name: count,'), null, 'the node');
   await atRest();
   r.withCount = await source();
+  // A second node with the same block gets an unused name.
+  await page.click('#palette button[data-block="count"]');
+  await page.click('#pal-add');
+  r.secondName = await page.$eval('#an-name', (e) => e.value);
+  await page.$eval('#an-name', (e) => { e.value = ''; });
+  await page.$eval('#an-block', (e) => { e.value = ''; });
 
   // The hint on the form's targets, by string equality of type names; the target stays selectable.
   await select('validate');

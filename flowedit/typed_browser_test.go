@@ -30,6 +30,8 @@ type typedPage struct {
 	AllRows        int      `json:"allRows"`
 	FitRows        []string `json:"fitRows"`
 	FitCount       string   `json:"fitCount"`
+	FitRowsReceipt []string `json:"fitRowsReceipt"`
+	SecondName     string   `json:"secondName"`
 	AddFormBlock   string   `json:"addFormBlock"`
 	AddFormName    string   `json:"addFormName"`
 	AddFocus       string   `json:"addFocus"`
@@ -92,6 +94,9 @@ func TestTypedModeInChrome(t *testing.T) {
 			}
 			if !r.FitOffDefault || r.AllRows != 7 || strings.Join(r.FitRows, ",") != "charge,gated,plain,receipt,validate" || r.FitCount != "5 of 7 blocks that fit validate" {
 				t.Errorf("fit filter: off by default %v, all %d, fitting %q, %q", r.FitOffDefault, r.AllRows, r.FitRows, r.FitCount)
+			}
+			if strings.Join(r.FitRowsReceipt, ",") != "receipt,shout" || r.SecondName != "count_2" {
+				t.Errorf("the filter does not follow the selection, or a second name is not unique: %q, %q", r.FitRowsReceipt, r.SecondName)
 			}
 			if len(r.InspectorTypes) != 2 || !strings.HasSuffix(r.InspectorTypes[0], "tOrder") || !strings.HasSuffix(r.InspectorTypes[1], "tOrder") {
 				t.Errorf("inspector types %q", r.InspectorTypes)
