@@ -110,3 +110,45 @@ func TestRunKillsADetachedChromeOfAScriptThatIgnoresSIGTERM(t *testing.T) {
 		}
 	}
 }
+
+// spinner is a process that runs until killed; done closes when it has exited and been reaped.
+type spinner struct{ done chan struct{} }
+
+func (s spinner) exited(wait time.Duration) bool {
+	select {
+	case <-s.done:
+		return true
+	case <-time.After(wait):
+		return false
+	}
+}
+
+func spin(t *testing.T, arg string) spinner {
+	t.Helper()
+	c := exec.Command("sh", "-c", "while :; do sleep 1; done", arg)
+	if err := c.Start(); err != nil {
+		t.Fatal(err)
+	}
+	s := spinner{done: make(chan struct{})}
+	go func() { c.Wait(); close(s.done) }()
+	t.Cleanup(func() { c.Process.Kill() })
+	return s
+}
+
+// killProfile matches the directory as a whole word of a command line: cleaning up after the run whose
+// directory is a prefix of another's must not take the other run's Chrome with it.
+func TestKillProfileLeavesALongerPathAlone(t *testing.T) {
+	short := t.TempDir() + "/bide-chrome-123"
+	mine := spin(t, "--user-data-dir="+short)
+	inside := spin(t, short+"/Default/Cache") // a path inside the directory is the run's own
+	other := spin(t, "--user-data-dir="+short+"456789")
+	killProfile(short)
+	for name, s := range map[string]spinner{"the run's own process": mine, "one of its files": inside} {
+		if !s.exited(5 * time.Second) {
+			t.Errorf("%s was not killed", name)
+		}
+	}
+	if other.exited(500 * time.Millisecond) {
+		t.Errorf("the process of the run whose directory begins with the other's was killed")
+	}
+}

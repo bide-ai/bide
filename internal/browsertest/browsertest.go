@@ -13,11 +13,15 @@ package browsertest
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -69,7 +73,7 @@ func RunFor(d time.Duration, node, dir string, env []string, args ...string) ([]
 // the usual way to stall, so the second layer does not depend on it: whatever the script did, every
 // process whose command line holds the run's profile directory is killed, and the directory removed.
 func RunTo(d time.Duration, w io.Writer, node, dir string, env []string, args ...string) ([]byte, error) {
-	profile, err := os.MkdirTemp("", "bide-chrome-")
+	profile, err := newProfile()
 	if err != nil {
 		return nil, err
 	}
@@ -102,6 +106,31 @@ func RunTo(d time.Duration, w io.Writer, node, dir string, env []string, args ..
 		return stdout.Bytes(), fmt.Errorf("%w\nstderr: %s", err, tail(stderr.Bytes()))
 	}
 	return stdout.Bytes(), nil
+}
+
+// randRead is the source of the names; a test replaces it to make two runs draw the same one.
+var randRead = rand.Read
+
+// newProfile makes the run's Chrome profile directory under the temporary directory. Its name has a
+// fixed length (16 random hex digits), and os.Mkdir fails if it exists, so no run's directory is a prefix
+// of another's: killing the processes of one run, which matches the directory in their command lines,
+// can never take another run's Chrome with it.
+func newProfile() (string, error) {
+	for i := 0; i < 10; i++ {
+		var r [8]byte
+		if _, err := randRead(r[:]); err != nil {
+			return "", err
+		}
+		dir := filepath.Join(os.TempDir(), "bide-chrome-"+hex.EncodeToString(r[:]))
+		err := os.Mkdir(dir, 0o700)
+		if err == nil {
+			return dir, nil
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return "", err
+		}
+	}
+	return "", errors.New("browsertest: no unused profile directory name after 10 tries")
 }
 
 // tail is the last 2 KiB of b, so a long log does not bury the line that matters.

@@ -4,6 +4,7 @@ package browsertest
 
 import (
 	"os/exec"
+	"regexp"
 	"syscall"
 	"time"
 )
@@ -21,14 +22,17 @@ func group(cmd *exec.Cmd) {
 func killGroup(pid int) { _ = syscall.Kill(-pid, syscall.SIGKILL) }
 
 // killProfile kills every process whose command line names the profile directory: the Chrome puppeteer
-// started detached, and its helpers, which are in no process group of ours. It looks again until none
-// is left (a killed browser process can be followed by a helper it had just started), up to two seconds.
+// started detached, and its helpers, which are in no process group of ours. The directory must be a
+// whole word of the command line (followed by a space, a slash or the end), so that the directory of
+// one run does not match a longer path that merely begins with it. It looks again until none is left (a
+// killed browser process can be followed by a helper it had just started), up to two seconds.
 func killProfile(dir string) {
+	pattern := regexp.QuoteMeta(dir) + "([ /]|$)"
 	for i := 0; i < 20; i++ {
-		if exec.Command("pgrep", "-f", dir).Run() != nil { // none found
+		if exec.Command("pgrep", "-f", pattern).Run() != nil { // none found
 			return
 		}
-		_ = exec.Command("pkill", "-KILL", "-f", dir).Run()
+		_ = exec.Command("pkill", "-KILL", "-f", pattern).Run()
 		time.Sleep(100 * time.Millisecond)
 	}
 }

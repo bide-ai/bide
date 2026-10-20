@@ -2,6 +2,7 @@ package browsertest
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -76,5 +77,58 @@ func TestRunAsksTheScriptToStopFirst(t *testing.T) {
 	}
 	if took > 10*time.Second {
 		t.Errorf("held the test for %v", took)
+	}
+}
+
+// Profile directory names have one length and are never reused, so one run's cannot be a prefix of
+// another's.
+func TestProfilesAreFixedLengthAndDistinct(t *testing.T) {
+	seen := map[string]bool{}
+	for i := 0; i < 50; i++ {
+		d, err := newProfile()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer os.RemoveAll(d)
+		if seen[d] {
+			t.Fatalf("%s was made twice", d)
+		}
+		seen[d] = true
+		if len(filepath.Base(d)) != len("bide-chrome-")+16 {
+			t.Errorf("%s: not a fixed-length name", d)
+		}
+	}
+}
+
+// A name that is already taken is not reused: the second run draws again.
+func TestProfileNamesAreNeverReused(t *testing.T) {
+	old := randRead
+	defer func() { randRead = old }()
+	calls := 0
+	randRead = func(b []byte) (int, error) {
+		calls++
+		for i := range b {
+			b[i] = 0xab
+			if calls > 2 { // the third draw is different
+				b[i] = 0xcd
+			}
+		}
+		return len(b), nil
+	}
+	first, err := newProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(first)
+	second, err := newProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(second)
+	if first == second {
+		t.Errorf("the name %s was handed out twice", first)
+	}
+	if calls != 3 {
+		t.Errorf("%d draws, want 3: the taken name should have been drawn and refused", calls)
 	}
 }
