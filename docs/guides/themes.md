@@ -67,7 +67,7 @@ cannot be read, and 2 for a usage error. `-v` prints every measure.
 | Check | What | Threshold |
 |---|---|---|
 | C1 | Text contrast (WCAG 2.x ratio): text and muted on every ground and tint, each state colour on the grounds and its tint, glyph on state colour, accent, syntax colours | 4.5:1 |
-| C2 | Non-text contrast: focus ring, control edge, idle | 3:1 |
+| C2 | Non-text contrast: focus ring and control edge on the page, a panel, a nested panel and the graph canvas (the focus ring also on a node's fill and the selected item's tint), idle | 3:1 |
 | C3 | The status colours `ok`, `warning`, `alert`, `info` are distinct (CIEDE2000) | at least 20 |
 | C4 | `gated`, `effect`, `idem` and `idle` are distinct from every other state colour | at least 10 |
 | C6 | C3 again after simulating protanopia, deuteranopia and tritanopia | at least 8; a warning for your theme, an error for a shipped one |
