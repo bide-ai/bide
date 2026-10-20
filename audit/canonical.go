@@ -57,7 +57,7 @@ func UnmarshalStrict(data []byte, v any) error {
 	d := json.NewDecoder(bytes.NewReader(data))
 	d.DisallowUnknownFields()
 	if err := d.Decode(v); err != nil {
-		return malformed(err)
+		return malformed(strictjson.BoundedError(err))
 	}
 	return nil
 }

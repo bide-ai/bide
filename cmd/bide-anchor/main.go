@@ -43,6 +43,7 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/anchor/awss3"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/safefile"
 )
 
 func main() {
@@ -94,7 +95,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 	)
 	// Each command takes only the flags that mean something to it, so its help lists only those.
 	fs.StringVar(&backendName, "backend", "s3", "the object store the anchor wrote to: "+backendNames)
-	fs.StringVar(&pubkey, "pubkey", "", "the log operator's public key (ed25519:<hex>, or a file holding it)")
+	fs.StringVar(&pubkey, "pubkey", "", "the log operator's public key (ed25519:<hex>, or a file holding it, or - for standard input, or a <(...) process substitution)")
 	fs.StringVar(&kind, "kind", audit.TreeJournal, "the tree kind: journal, or events for a notification or event trail")
 	switch cmd {
 	case "verify":
@@ -392,8 +393,11 @@ func readKey(s string) (audit.Verifier, error) {
 	if v, err := audit.ParsePublicKey(s); err == nil {
 		return v, nil
 	}
-	b, err := os.ReadFile(s)
+	b, err := safefile.ReadOrStdin("-pubkey", s, safefile.MaxKey)
 	if err != nil {
+		if err = safefile.Explain("-pubkey", err, true); s == "-" || errors.As(err, new(*safefile.FlagError)) {
+			return nil, fmt.Errorf("-pubkey %q: %w", s, err)
+		}
 		return nil, fmt.Errorf("-pubkey takes ed25519:<hex> or a file holding it: %q is neither", s)
 	}
 	v, err := audit.ParsePublicKey(strings.TrimSpace(string(b)))

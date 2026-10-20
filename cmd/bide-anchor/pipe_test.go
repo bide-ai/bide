@@ -1,0 +1,36 @@
+package main
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/bide-ai/bide/internal/safefile/safefiletest"
+)
+
+// -pubkey naming a file is read without waiting on a named pipe, and a directory is refused.
+func TestReadKey_NamedPipeAndDirectory(t *testing.T) {
+	p := safefiletest.FIFO(t)
+	safefiletest.Deadline(t, "readKey", func() {
+		if _, err := readKey(p); err == nil {
+			t.Error("readKey read a named pipe")
+		}
+	})
+	if _, err := readKey(t.TempDir()); err == nil {
+		t.Error("readKey read a directory")
+	}
+}
+
+// "-" takes the key from standard input, as a secrets tool writes it.
+func TestReadKey_Stdin(t *testing.T) {
+	safefiletest.Stdin(t, safefiletest.KeyText(t)+"\n")
+	if _, err := readKey("-"); err != nil {
+		t.Fatalf("readKey(-) = %v", err)
+	}
+}
+
+func TestReadKey_StdinReason(t *testing.T) {
+	safefiletest.Stdin(t, "")
+	if _, err := readKey("-"); err == nil || !strings.Contains(err.Error(), "standard input is empty") {
+		t.Errorf("empty stdin = %v", err)
+	}
+}

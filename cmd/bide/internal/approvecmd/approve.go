@@ -27,6 +27,7 @@ import (
 	"github.com/bide-ai/bide/internal/approveline"
 	"github.com/bide-ai/bide/internal/policyfile"
 	"github.com/bide-ai/bide/internal/runview"
+	"github.com/bide-ai/bide/internal/safefile"
 	"github.com/bide-ai/bide/internal/strictjson"
 	"github.com/bide-ai/bide/internal/term"
 )
@@ -205,17 +206,17 @@ func MainWith(args []string, in io.Reader, stdout, stderr io.Writer, stores Stor
 	fs.StringVar(&f.postgresEnv, "postgres-env", "", "name of the environment variable that holds the Postgres DSN")
 	fs.StringVar(&f.run, "run", "", "the run whose journal holds the call: the pause's run ID")
 	fs.StringVar(&f.call, "call", "", "the call's tool-use ID (for a plan flow node, its key, such as node:review)")
-	fs.StringVar(&f.item, "item", "", "take -run and -call exactly from one call of bide approve -list -json output instead: a file, or - for standard input (which then also needs -yes, since the confirmation would read the same input). The input is one call's object, or an array of exactly one. For ids that cannot be pasted on a command line (a line break or an invisible or bidirectional character in them)")
+	fs.StringVar(&f.item, "item", "", "take -run and -call exactly from one call of bide approve -list -json output instead: a file, or - for standard input, or a <(...) process substitution (which then also needs -yes, since the confirmation would read the same input). The input is one call's object, or an array of exactly one. For ids that cannot be pasted on a command line (a line break or an invisible or bidirectional character in them)")
 	fs.StringVar(&f.as, "as", "", "your approver id, exactly as the gate's policy lists it (not for a single-approver gate)")
 	fs.StringVar(&f.key, "key", "", src.KeyHelp)
-	fs.StringVar(&f.approverKeys, "approver-keys", "", `approver public keys, a JSON object of approver id to key text, e.g. {"ops":"ed25519:ab12..."}, the file bide view -approver-keys reads (`+src.EnrolHelp+`): refuse a -key that is not the one enrolled for -as, and verify the tally. Required for an m-of-n gate unless -unverified`)
+	fs.StringVar(&f.approverKeys, "approver-keys", "", `approver public keys, a JSON object of approver id to key text, e.g. {"ops":"ed25519:ab12..."}, the file bide view -approver-keys reads, or - for standard input, or a <(...) process substitution (which then also needs -yes) (`+src.EnrolHelp+`): refuse a -key that is not the one enrolled for -as, and verify the tally. Required for an m-of-n gate unless -unverified`)
 	fs.BoolVar(&f.unverified, "unverified", false, "decide an m-of-n gate without -approver-keys: the key is not checked against the one enrolled for you, and the tally is not verified")
 	fs.StringVar(&f.receipt, "receipt", "", src.ReceiptHelp)
 	fs.StringVar(&f.verifyReceipt, "verify-receipt", "", "verify a decision receipt on its own, against -approver-keys, instead of deciding anything: its signature over the exact call it states")
 	fs.StringVar(&f.identityPolicy, "identity-policy", "", "the certificate policy file (trust anchors, pinned intermediates, the approver-to-identity map; see docs/guides/certificate-approvers.md). With -cert: your chain must be accepted for -as by it at this moment, before anything is signed. With -verify-receipt, for a certificate-bound receipt: the chain and identity are checked against it at the time the receipt's anchoring head was signed; revocation status is not checked")
 	fs.StringVar(&f.cert, "cert", "", "sign a certificate-bound decision (bide.approval.v4) with your certificate chain: a PEM file, leaf first, the leaf being the certificate of -key. The key must be the leaf's key (checked before anything is signed), and with -identity-policy the chain must be accepted for -as at this moment. Never falls back to a bare-key decision")
 	fs.DurationVar(&f.certMinLeft, "cert-min-left", defaultCertMinLeft, "with -cert: the least validity the leaf must have left, so the decision is provable before the certificate expires")
-	fs.StringVar(&f.logKey, "log-key", "", "with -verify-receipt, for a certificate-bound receipt: the audit log's public key (ed25519:<hex>, or a file holding it), which vouches for the receipt's anchoring proof")
+	fs.StringVar(&f.logKey, "log-key", "", "with -verify-receipt, for a certificate-bound receipt: the audit log's public key (ed25519:<hex>, or a file holding it, or - for standard input, or a <(...) process substitution, which then also needs -yes), which vouches for the receipt's anchoring proof")
 	fs.BoolVar(&f.reject, "reject", false, "record a rejection instead of an approval")
 	fs.BoolVar(&f.yes, "yes", false, "do not ask for confirmation (for scripts); what is signed is still shown")
 	fs.BoolVar(&f.full, "full", false, "show all of the call's arguments, not the first lines")
@@ -247,6 +248,9 @@ func MainWith(args []string, in io.Reader, stdout, stderr io.Writer, stores Stor
 			return usage("unexpected argument (the command takes flags only; the key goes after -key)")
 		}
 		return usage(fmt.Sprintf("unexpected argument %q", fs.Arg(0)))
+	}
+	if msg := f.checkStdin(); msg != "" {
+		return usage(msg)
 	}
 	if f.item != "" {
 		if msg := f.checkItem(); msg != "" {
@@ -301,21 +305,45 @@ func (f flags) checkItem() string {
 	return ""
 }
 
+// checkStdin reports a usage error in how flags that take "-" (standard input) are combined, or "".
+// Only one can read it, and the confirmation would read it too, so -yes is needed.
+func (f flags) checkStdin() string {
+	n := 0
+	for _, v := range []string{f.item, f.approverKeys, f.logKey} {
+		if v == "-" {
+			n++
+		}
+	}
+	switch {
+	case n > 1:
+		return "only one of -item, -approver-keys and -log-key can be - (standard input)"
+	case n == 1 && !f.yes:
+		return "- reads standard input, which the confirmation would read too: give -yes (what is signed is still shown), or put the file on disk"
+	}
+	return ""
+}
+
 // readItem sets run and call from the one call of -list -json output that -item names: a file, or
 // standard input for "-". The input is the call's object or an array of exactly one object, decoded
 // strictly (no repeated name, no invalid UTF-8) so what the text shows is what is used; the ids are
 // taken as the JSON decodes them, so a line break or an invisible character in one is kept.
 func (f *flags) readItem(stdin io.Reader) error {
-	r := stdin
-	if f.item != "-" {
-		file, err := os.Open(f.item)
-		if err != nil {
-			return fmt.Errorf("-item %s: %w", f.item, unwrapPath(err))
+	var data []byte
+	var err error
+	if f.item == "-" {
+		data, err = io.ReadAll(io.LimitReader(stdin, maxItem+1))
+	} else {
+		data, err = safefile.ReadFlag("-item", f.item, maxItem, nil)
+		var refused *safefile.RefusedError
+		if errors.As(err, &refused) && refused.Kind == safefile.TooLarge {
+			return fmt.Errorf("-item %s: more than %d bytes (the limit for -item): it is one call of -list -json, not the whole list", f.item, maxItem)
 		}
-		defer file.Close()
-		r = file
+		if errors.As(err, &refused) {
+			err = safefile.Explain("-item", err, true)
+		} else if err != nil {
+			err = unwrapPath(err)
+		}
 	}
-	data, err := io.ReadAll(io.LimitReader(r, maxItem+1))
 	if err != nil {
 		return fmt.Errorf("-item %s: %w", f.item, err)
 	}
@@ -698,17 +726,13 @@ func (g *gateOf) preflight(run, as string, reject bool, verifierFor agent.Approv
 // approverKeys reads -approver-keys: id -> verifier. It fails closed: an entry that is not a key
 // is an error, not a skipped approver.
 func approverKeys(path string) (map[string]audit.Verifier, error) {
-	f, err := os.Open(path)
+	b, err := safefile.ReadOrStdin("-approver-keys", path, 1<<20)
 	if err != nil {
-		return nil, fmt.Errorf("-approver-keys: %w", err)
-	}
-	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, 1<<20+1))
-	if err != nil {
-		return nil, fmt.Errorf("-approver-keys %s: %w", path, err)
-	}
-	if len(b) > 1<<20 {
-		return nil, fmt.Errorf("-approver-keys %s is larger than 1 MiB", path)
+		var refused *safefile.RefusedError
+		if errors.As(err, &refused) && refused.Kind == safefile.TooLarge {
+			return nil, fmt.Errorf("-approver-keys %s is larger than 1 MiB (the limit for -approver-keys)", path)
+		}
+		return nil, fmt.Errorf("-approver-keys: %w", safefile.Explain("-approver-keys", err, true))
 	}
 	var raw map[string]string
 	if err := audit.UnmarshalStrict(b, &raw); err != nil {
@@ -1490,9 +1514,9 @@ func (c *cmd) writeReceipt(ctx context.Context, j *agent.Journal, s agent.Approv
 // verifyReceiptFile is bide approve -verify-receipt: the receipt's signature over the exact call it
 // states, by the key -approver-keys enrols for its approver. It reads no journal.
 func (c *cmd) verifyReceiptFile() error {
-	b, err := os.ReadFile(c.f.verifyReceipt)
+	b, err := safefile.ReadFlag("-verify-receipt", c.f.verifyReceipt, safefile.MaxDocument, nil)
 	if err != nil {
-		return fmt.Errorf("receipt %s: %w", c.f.verifyReceipt, unwrapPath(err))
+		return fmt.Errorf("receipt %s: %w", c.f.verifyReceipt, unwrapPath(safefile.Explain("-verify-receipt", err, false)))
 	}
 	var r audit.DecisionReceipt
 	if err := audit.UnmarshalStrict(b, &r); err != nil {
@@ -1561,9 +1585,9 @@ func readLogKey(s string) (audit.Verifier, error) {
 	if v, err := audit.ParsePublicKey(s); err == nil {
 		return v, nil
 	}
-	b, err := os.ReadFile(s)
+	b, err := safefile.ReadOrStdin("-log-key", s, safefile.MaxKey)
 	if err != nil {
-		return nil, refuse("-log-key is neither a public key (ed25519:<hex>) nor a readable file: %s", safe(unwrapPath(err).Error()))
+		return nil, refuse("-log-key is neither a public key (ed25519:<hex>) nor a readable file: %s", safe(unwrapPath(safefile.Explain("-log-key", err, true)).Error()))
 	}
 	v, err := audit.ParsePublicKey(strings.TrimSpace(string(b)))
 	if err != nil {

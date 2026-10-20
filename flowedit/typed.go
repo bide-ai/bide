@@ -221,7 +221,7 @@ func (s *Server) typedRefusal(before, after []byte, op Operation) string {
 			// A rename does not make a problem the text already had a new one: compare under the rename.
 			m := p.Message
 			if op.Op == "rename_node" {
-				m = strings.ReplaceAll(m, strconv.Quote(op.Node), strconv.Quote(op.Value))
+				m = strings.ReplaceAll(m, messageQuote(op.Node), messageQuote(op.Value))
 			}
 			had[m] = true
 		}
@@ -232,4 +232,15 @@ func (s *Server) typedRefusal(before, after []byte, op Operation) string {
 		}
 	}
 	return ""
+}
+
+// messageQuote is name as plan writes it into a problem message: Go-quoted, and cut to 64 characters
+// (with "..." inside the quotes) when longer, as plan's boundMessage does.
+func messageQuote(name string) string {
+	q := strconv.Quote(name)
+	rs := []rune(q[1 : len(q)-1])
+	if len(rs) > 64 {
+		return `"` + string(rs[:64]) + `..."`
+	}
+	return q
 }

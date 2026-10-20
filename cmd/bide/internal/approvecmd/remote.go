@@ -23,6 +23,7 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/approvals"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/safefile"
 )
 
 // -to <url> decides through an application's approval intake (package approvals)
@@ -75,9 +76,9 @@ func loopback(host string) bool {
 func (c *cmd) httpClient() (*http.Client, error) {
 	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
 	if c.f.tlsCA != "" {
-		pem, err := os.ReadFile(c.f.tlsCA)
+		pem, err := safefile.ReadFlag("-tls-ca", c.f.tlsCA, safefile.MaxDocument, nil)
 		if err != nil {
-			return nil, fmt.Errorf("-tls-ca: %w", unwrapPath(err))
+			return nil, fmt.Errorf("-tls-ca: %w", unwrapPath(safefile.Explain("-tls-ca", err, false)))
 		}
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(pem) {
@@ -86,7 +87,7 @@ func (c *cmd) httpClient() (*http.Client, error) {
 		cfg.RootCAs = pool
 	}
 	if c.f.clientCert != "" {
-		cert, err := tls.LoadX509KeyPair(c.f.clientCert, c.f.clientKey)
+		cert, err := safefile.LoadX509KeyPairFlags("-client-cert", c.f.clientCert, "-client-key", c.f.clientKey)
 		if err != nil {
 			return nil, fmt.Errorf("-client-cert and -client-key: %w", unwrapPath(err))
 		}

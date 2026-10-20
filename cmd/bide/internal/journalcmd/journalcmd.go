@@ -11,6 +11,7 @@ package journalcmd
 
 import (
 	"bufio"
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/sha256"
@@ -29,6 +30,7 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/cmd/bide/internal/approvecmd"
+	"github.com/bide-ai/bide/internal/safefile"
 	"github.com/bide-ai/bide/internal/term"
 	"github.com/bide-ai/bide/store/postgres"
 	"github.com/bide-ai/bide/store/sqlite"
@@ -136,7 +138,7 @@ func redact(args []string, stdout, stderr io.Writer, k Keys) int {
 	headOut := fs.String("head-out", "", "with -execute: append the trail's new signed head, as one JSON line, to this file, for your anchor")
 	trailDB := fs.String("trail-db", "", "keep the redaction trail in this SQLite file instead of the journal's (recommended: a store the erasing role cannot rewrite)")
 	trailEnv := fs.String("trail-postgres-env", "", "keep the redaction trail in the Postgres database whose DSN is in this variable, instead of the journal's")
-	pubkey := fs.String("pubkey", "", "with -execute: the log's public key (ed25519:<hex>, or a file) that verifies the -sth heads")
+	pubkey := fs.String("pubkey", "", "with -execute: the log's public key (ed25519:<hex>, a file, or - for standard input, or a <(...) process substitution) that verifies the -sth heads")
 	var sths stringList
 	fs.Var(&sths, "sth", "with -execute: a signed journal head of the run; one that verifies, matches the journal and covers all of it is required; repeat")
 	allowUncovered := fs.Bool("allow-uncovered", false, "with -execute: erase although no signed head covers the run (recorded in the trail as UNCOVERED, and reported by bide audit redactions)")
@@ -266,7 +268,7 @@ erases and an "end" record after; if it stops partway, run the same plan again.
 	}
 	for _, p := range sths {
 		var h audit.SignedTreeHead
-		if err := readJSON(p, &h); err != nil {
+		if err := readJSON("-sth", p, &h); err != nil {
 			return fail("%v", err)
 		}
 		heads = append(heads, h)
@@ -283,7 +285,7 @@ erases and an "end" record after; if it stops partway, run the same plan again.
 	// The heads the trail has had so far: the -head-out file the earlier passes wrote. The trail is
 	// checked against them before anything is erased, and a head is signed only over a trail they
 	// cover; a trail that already holds records and has no earlier head is not attested by anything.
-	prior, err := readHeads(*headOut)
+	prior, err := readHeads("-head-out", *headOut)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -540,10 +542,12 @@ func appendLine(path string, v any) error {
 	return f.Close()
 }
 
-func readJSON(path string, v any) error {
-	b, err := os.ReadFile(path)
+// readJSON reads the JSON document in the file path, which the flag names: a signed head or an
+// authorization, a few KiB.
+func readJSON(flag, path string, v any) error {
+	b, err := safefile.ReadFlag(flag, path, safefile.MaxDocument, nil)
 	if err != nil {
-		return fmt.Errorf("read %s: %w", path, err)
+		return fmt.Errorf("read %s: %w", path, safefile.Explain(flag, err, false))
 	}
 	if err := json.Unmarshal(b, v); err != nil {
 		return fmt.Errorf("%s is not the JSON expected: %w", path, err)
@@ -555,9 +559,9 @@ func readPubKey(s string) (audit.Verifier, error) {
 	if v, err := audit.ParsePublicKey(s); err == nil {
 		return v, nil
 	}
-	b, err := os.ReadFile(s)
+	b, err := safefile.ReadOrStdin("-pubkey", s, safefile.MaxKey)
 	if err != nil {
-		return nil, fmt.Errorf("-pubkey: not a public key (ed25519:<hex> or 64 hex digits) and not a readable file: %w", err)
+		return nil, fmt.Errorf("-pubkey: not a public key (ed25519:<hex> or 64 hex digits) and not a readable file: %w", safefile.Explain("-pubkey", err, true))
 	}
 	v, err := audit.ParsePublicKey(strings.TrimSpace(string(b)))
 	if err != nil {
@@ -692,26 +696,65 @@ func subRuns(ctx context.Context, j *agent.Journal, run string) ([]string, error
 
 // readHeads reads the signed heads in path, one JSON head per line; a file that does not exist holds
 // none.
-func readHeads(path string) ([]audit.SignedTreeHead, error) {
-	b, err := os.ReadFile(path)
+func readHeads(flag, path string) ([]audit.SignedTreeHead, error) {
+	f, err := safefile.OpenRegular(path, nil)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", path, err)
+		return nil, fmt.Errorf("read %s: %w", path, safefile.Explain(flag, err, false))
 	}
+	defer f.Close()
+	// The log only grows, so it has no total size limit: it is read one head per line, and each line
+	// is limited instead.
 	var out []audit.SignedTreeHead
-	for i, line := range strings.Split(string(b), "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
+	r := bufio.NewReaderSize(f, 64<<10)
+	for i := 1; ; i++ {
+		line, err := readLine(r, maxHeadRecord)
+		if err != nil && err != io.EOF {
+			if errors.Is(err, errRecordTooLong) {
+				return nil, fmt.Errorf("%s line %d is longer than %d bytes (the limit for a head in %s): not a signed head", path, i, maxHeadRecord, flag)
+			}
+			return nil, fmt.Errorf("read %s: %w", path, err)
 		}
-		var h audit.SignedTreeHead
-		if err := json.Unmarshal([]byte(line), &h); err != nil {
-			return nil, fmt.Errorf("%s line %d is not a signed head: %w", path, i+1, err)
+		if strings.TrimSpace(string(line)) != "" {
+			var h audit.SignedTreeHead
+			if jerr := json.Unmarshal(line, &h); jerr != nil {
+				return nil, fmt.Errorf("%s line %d is not a signed head: %w", path, i, jerr)
+			}
+			out = append(out, h)
 		}
-		out = append(out, h)
+		if err == io.EOF {
+			return out, nil
+		}
 	}
-	return out, nil
+}
+
+// maxHeadRecord is the most one line of the signed-heads log may have: a head is about 400 bytes.
+const maxHeadRecord = 64 << 10
+
+var errRecordTooLong = errors.New("record too long")
+
+// readLine reads one line (without its newline) of at most max bytes from r, and io.EOF with the
+// last line if the input ends without a newline. A longer line is errRecordTooLong, found after
+// reading max+1 bytes of it, not the rest of the line.
+func readLine(r *bufio.Reader, max int) ([]byte, error) {
+	var line []byte
+	for {
+		frag, err := r.ReadSlice('\n')
+		line = append(line, frag...)
+		if len(line) > max+1 {
+			return nil, errRecordTooLong
+		}
+		switch {
+		case err == nil:
+			return bytes.TrimSuffix(line, []byte("\n")), nil
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		default:
+			return line, err
+		}
+	}
 }
 
 // leased reports whether another holder has a live lease on runID, found by trying to take it and

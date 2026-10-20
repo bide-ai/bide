@@ -187,7 +187,7 @@ func holdVerb(verb string, args []string, stdout, stderr io.Writer, k Keys) int 
 	if err != nil {
 		return fail("the signing key: %v", err)
 	}
-	prior, err := readHeads(*headOut)
+	prior, err := readHeads("-head-out", *headOut)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -207,7 +207,7 @@ func holdVerb(verb string, args []string, stdout, stderr io.Writer, k Keys) int 
 		var opts []audit.LiftOption
 		if *authFile != "" {
 			var a audit.LiftAuthorization
-			if rerr := readJSON(*authFile, &a); rerr != nil {
+			if rerr := readJSON("-authorization", *authFile, &a); rerr != nil {
 				return fail("%v", rerr)
 			}
 			opts = append(opts, audit.WithLiftAuthorization(a))

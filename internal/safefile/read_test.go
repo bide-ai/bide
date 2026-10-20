@@ -2,6 +2,7 @@ package safefile
 
 import (
 	"errors"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -78,4 +79,165 @@ func TestReadMaxInt(t *testing.T) {
 	if b, err := Read(p, math.MaxInt, nil); err != nil || string(b) != "abc" {
 		t.Errorf("Read with max = MaxInt = %q, %v", b, err)
 	}
+}
+
+// OpenIn opens a name inside a root and a swapped-in directory shows in the opened file's Stat.
+func TestOpenIn(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "f"), []byte("abc"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	f, err := OpenIn(root, "f")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := make([]byte, 3)
+	if n, err := f.Read(b); err != nil || string(b[:n]) != "abc" {
+		t.Errorf("read through OpenIn = %q, %v", b[:n], err)
+	}
+	f.Close()
+	if _, err := OpenIn(root, "../x"); err == nil {
+		t.Error("OpenIn left the root")
+	}
+}
+
+func TestReadOrStdinRefusesATerminal(t *testing.T) {
+	orig := stdinIsTerminal
+	defer func() { stdinIsTerminal = orig; Stdin = os.Stdin; ResetStdin() }()
+	ResetStdin()
+	Stdin = strings.NewReader("never read")
+	stdinIsTerminal = func(io.Reader) bool { return true }
+	_, err := ReadOrStdin("-pubkey", "-", 64)
+	if err == nil || err.Error() != "-pubkey -: standard input is a terminal; pipe the file in" {
+		t.Fatalf("a terminal = %v", err)
+	}
+	if Stdin.(*strings.Reader).Len() != len("never read") {
+		t.Error("standard input was read before the terminal was refused")
+	}
+}
+
+// The real check: the null device reads as empty and is not a terminal; a pipe is not one either.
+func TestStdinIsTerminal(t *testing.T) {
+	null, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Skip(err)
+	}
+	defer null.Close()
+	if stdinIsTerminal(null) {
+		t.Error("the null device counted as a terminal")
+	}
+	r, w, _ := os.Pipe()
+	defer r.Close()
+	defer w.Close()
+	if stdinIsTerminal(r) || stdinIsTerminal(strings.NewReader("")) {
+		t.Error("a pipe or a reader counted as a terminal")
+	}
+}
+
+func TestReadOrStdin(t *testing.T) {
+	defer func() { Stdin = os.Stdin; ResetStdin() }()
+	ResetStdin()
+	Stdin = strings.NewReader("key-bytes")
+	b, err := ReadOrStdin("-pubkey", "-", 64)
+	if err != nil || string(b) != "key-bytes" {
+		t.Fatalf("stdin = %q, %v", b, err)
+	}
+	// The same flag read again gets the same bytes; another flag is told stdin is taken.
+	if b, err := ReadOrStdin("-pubkey", "-", 64); err != nil || string(b) != "key-bytes" {
+		t.Errorf("second read by the same flag = %q, %v", b, err)
+	}
+	if _, err := ReadOrStdin("-stop-policy", "-", 64); err == nil || !strings.Contains(err.Error(), "both read standard input") {
+		t.Errorf("a second flag = %v, want a refusal naming both", err)
+	}
+	// A path that is not "-" is Read.
+	p := filepath.Join(t.TempDir(), "f")
+	if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := ReadOrStdin("-pubkey", p, 64); err != nil || string(b) != "x" {
+		t.Errorf("a file = %q, %v", b, err)
+	}
+	// Over the limit, and empty.
+	ResetStdin()
+	Stdin = strings.NewReader("123456")
+	_, err = ReadOrStdin("-k", "-", 5)
+	refusal(t, err, TooLarge)
+	ResetStdin()
+	Stdin = strings.NewReader("")
+	if _, err := ReadOrStdin("-k", "-", 5); err == nil || !strings.Contains(err.Error(), "empty") {
+		t.Errorf("empty stdin = %v", err)
+	}
+	// The limit is not passed: exactly max is read.
+	ResetStdin()
+	Stdin = strings.NewReader("12345")
+	if b, err := ReadOrStdin("-k", "-", 5); err != nil || string(b) != "12345" {
+		t.Errorf("exactly the limit = %q, %v", b, err)
+	}
+}
+
+func TestExplain(t *testing.T) {
+	if Explain("-k", nil, true) != nil {
+		t.Error("nil became an error")
+	}
+	plain := errors.New("x")
+	if Explain("-k", plain, true) != plain {
+		t.Error("a plain error was wrapped")
+	}
+	big := Explain("-pubkey", &RefusedError{Path: "k", Kind: TooLarge, Max: 7}, true)
+	if got := big.Error(); got != "k: larger than 7 bytes (the limit for -pubkey)" {
+		t.Errorf("too large = %q", got)
+	}
+	pipe := Explain("-pubkey", &RefusedError{Path: "p", Kind: NotRegular}, true)
+	if got := pipe.Error(); !strings.Contains(got, "p is not a regular file") || !strings.Contains(got, "pass - to read -pubkey from standard input") {
+		t.Errorf("not regular = %q", got)
+	}
+	if got := Explain("-cert", &RefusedError{Path: "p", Kind: NotRegular}, false).Error(); strings.Contains(got, "pass -") {
+		t.Errorf("a flag without stdin suggests it: %q", got)
+	}
+	var re *RefusedError
+	if !errors.As(pipe, &re) || re.Kind != NotRegular {
+		t.Error("the refusal is not reachable through the wrapper")
+	}
+}
+
+func TestLoadX509KeyPair(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := LoadX509KeyPair(dir, dir); err == nil {
+		t.Error("a directory was read as a certificate")
+	} else {
+		refusal(t, err, NotRegular)
+	}
+	empty := filepath.Join(dir, "empty")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadX509KeyPair(empty, empty); err == nil || strings.Contains(err.Error(), "regular file") {
+		t.Errorf("an empty pair = %v, want tls's complaint about the PEM", err)
+	}
+}
+
+func TestReadFileAndOpenRegular(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "f")
+	if err := os.WriteFile(p, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := ReadFile(p); err != nil || string(b) != "hello" {
+		t.Errorf("ReadFile = %q, %v", b, err)
+	}
+	_, err := ReadFile(dir)
+	refusal(t, err, NotRegular)
+	if _, err := ReadFile(filepath.Join(dir, "none")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a missing file = %v, want ErrNotExist", err)
+	}
+	_, err = OpenRegular(p, func() {
+		os.Remove(p)
+		os.Mkdir(p, 0o700)
+	})
+	refusal(t, err, Changed)
 }

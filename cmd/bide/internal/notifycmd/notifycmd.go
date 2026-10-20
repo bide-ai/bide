@@ -20,6 +20,7 @@ import (
 	"os/signal"
 	"strings"
 
+	"github.com/bide-ai/bide/internal/safefile"
 	"github.com/bide-ai/bide/internal/term"
 )
 
@@ -120,7 +121,7 @@ type secretSource struct {
 
 func (s *secretSource) register(fs *flag.FlagSet) {
 	fs.StringVar(&s.env, "secret-env", defaultSecretEnv, "the environment variable that holds the signing secret")
-	fs.StringVar(&s.file, "secret-file", "", "read the signing secret from this file (leading and trailing white space is dropped); used instead of -secret-env")
+	fs.StringVar(&s.file, "secret-file", "", "read the signing secret from this file, or - for standard input, or a <(...) process substitution (leading and trailing white space is dropped); used instead of -secret-env")
 	fs.StringVar(&s.prevEnv, "previous-secret-env", defaultPreviousEnv, "the environment variable that holds the previous secret, during a rotation (optional)")
 	fs.StringVar(&s.prevFile, "previous-secret-file", "", "read the previous secret from this file; used instead of -previous-secret-env")
 }
@@ -138,7 +139,7 @@ func (s secrets) list() []string {
 
 // load reads the secrets. An error names the variable or file, never a value.
 func (s *secretSource) load(getenv func(string) string, readFile func(string) ([]byte, error)) (secrets, error) {
-	cur, err := readOne(getenv, readFile, s.env, s.file)
+	cur, err := readOne(getenv, readFile, s.env, s.file, "-secret-file")
 	if err != nil {
 		return secrets{}, err
 	}
@@ -149,17 +150,26 @@ func (s *secretSource) load(getenv func(string) string, readFile func(string) ([
 		}
 		return secrets{}, fmt.Errorf("no signing secret: %s is empty or unset; set it (for a new one: export %s=$(openssl rand -hex 32)) or pass -secret-file", src, defaultSecretEnv)
 	}
-	prev, err := readOne(getenv, readFile, s.prevEnv, s.prevFile)
+	prev, err := readOne(getenv, readFile, s.prevEnv, s.prevFile, "-previous-secret-file")
 	if err != nil {
 		return secrets{}, err
 	}
 	return secrets{current: cur, previous: prev}, nil
 }
 
-func readOne(getenv func(string) string, readFile func(string) ([]byte, error), envName, file string) (string, error) {
+// readOne reads a secret from the file, which flag names ("-" there is standard input), or else from
+// the environment variable envName.
+func readOne(getenv func(string) string, readFile func(string) ([]byte, error), envName, file, flag string) (string, error) {
 	if file != "" {
-		b, err := readFile(file)
+		var b []byte
+		var err error
+		if file == "-" {
+			b, err = safefile.ReadOrStdin(flag, file, safefile.MaxKey)
+		} else {
+			b, err = readFile(file)
+		}
 		if err != nil {
+			err = safefile.Explain(flag, err, true)
 			var pe *os.PathError
 			if errors.As(err, &pe) {
 				err = pe.Err

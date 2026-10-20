@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"os"
 	"reflect"
 	"slices"
 	"sort"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/safefile"
 )
 
 // undeclarable are the members of the gate's policy record that a -params file may state (or leave out).
@@ -25,9 +25,9 @@ var undeclarable = []string{"effective_from", "w", "min_w", "routine_grace", "cl
 // record from another bide version is not silently compared on the members this one knows.
 func readRecord(path string) (agent.IdentityPolicyRecord, error) {
 	var rec agent.IdentityPolicyRecord
-	b, err := os.ReadFile(path)
+	b, err := safefile.ReadFlag("-expect", path, safefile.MaxDocument, nil)
 	if err != nil {
-		return rec, &IOError{Err: fmt.Errorf("-expect: %w", err)}
+		return rec, &IOError{Err: fmt.Errorf("-expect: %w", safefile.Explain("-expect", err, false))}
 	}
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(b, &top); err != nil {

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/bide-ai/bide/internal/safefile"
 	"github.com/bide-ai/bide/internal/term"
 	"github.com/bide-ai/bide/notify"
 	"github.com/bide-ai/bide/notify/relay"
@@ -70,7 +71,7 @@ Stop it with Ctrl-C. Exit status: 0 after a clean stop; 1 failure; 2 usage error
 	var cert tls.Certificate
 	var intro []string
 	if *certFile != "" {
-		if cert, err = tls.LoadX509KeyPair(*certFile, *keyFile); err != nil {
+		if cert, err = safefile.LoadX509KeyPairFlags("-cert", *certFile, "-key", *keyFile); err != nil {
 			return failure("listen", stderr, "loading the certificate: %v", err)
 		}
 		intro = append(intro, "certificate: "+*certFile)

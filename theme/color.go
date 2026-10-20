@@ -5,6 +5,8 @@ import (
 	"math"
 	"regexp"
 	"strings"
+
+	"github.com/bide-ai/bide/internal/strictjson"
 )
 
 // rgb is an sRGB colour with 8 bits a channel, the only colour form a theme holds.
@@ -17,7 +19,7 @@ var colorRE = regexp.MustCompile(`^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$`)
 // parseColor reads #rgb or #rrggbb.
 func parseColor(s string) (rgb, error) {
 	if !colorRE.MatchString(s) {
-		return rgb{}, fmt.Errorf("%q is not a colour: want #rgb or #rrggbb", s)
+		return rgb{}, fmt.Errorf("%s is not a colour: want #rgb or #rrggbb", strictjson.Quote(s))
 	}
 	h := strings.ToLower(s[1:])
 	if len(h) == 3 {

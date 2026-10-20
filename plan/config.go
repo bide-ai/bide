@@ -212,6 +212,15 @@ func (w configWire) isJoin() bool {
 // edge, and a wiring element must set exactly one of edge/switch. On success it
 // hands the assembled spec to the existing Build (whole-graph validation) and seal.
 func Load[In, Out any](data []byte, reg *Registry, opts ...LoadOption) (*Flow[In, Out], error) {
+	f, err := load[In, Out](data, reg, opts...)
+	return f, strictjson.BoundedErrorN(err, maxLoadError)
+}
+
+// maxLoadError is the longest Load's error is let be: it lists every problem found (each cut to 512
+// characters) and quotes names from the config, which can be as long as the file.
+const maxLoadError = 8 << 10
+
+func load[In, Out any](data []byte, reg *Registry, opts ...LoadOption) (*Flow[In, Out], error) {
 	if reg != nil && reg.inert {
 		return nil, errInert
 	}
@@ -465,7 +474,7 @@ func hintWalk(v any, t reflect.Type, path string) error {
 			if !ok {
 				if s := snakeCase(k); s != k {
 					if _, ok := fields[s]; ok {
-						return fmt.Errorf("%s: %q is not a config key; version %d keys are snake_case, write %q", path, k, ConfigVersion, s)
+						return fmt.Errorf("%s: %s is not a config key; version %d keys are snake_case, write %q", path, strictjson.Quote(k), ConfigVersion, s)
 					}
 				}
 				continue
@@ -642,7 +651,10 @@ func assemble(cfg *config, reg *Registry, allowUnused bool) (*builderCore, error
 	}
 
 	if len(problems) > 0 {
-		return nil, fmt.Errorf("plan: load %q: %s: %w", cfg.Flow, strings.Join(problems, "; "), agent.ErrConfig)
+		for i := range problems {
+			problems[i] = boundMessage(problems[i])
+		}
+		return nil, fmt.Errorf("plan: load %s: %s: %w", strictjson.Quote(cfg.Flow), strings.Join(problems, "; "), agent.ErrConfig)
 	}
 
 	// 5. Assemble the builderCore in config-array order via the existing register, so

@@ -13,6 +13,7 @@ import (
 
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/audit/crlrefresh"
+	"github.com/bide-ai/bide/internal/safefile"
 )
 
 // readOnlyArchive reads a crlrefresh archive directory and writes nothing: a pre-flight must not change
@@ -51,6 +52,10 @@ const maxFlatFiles = 4096
 // loadFlat adds the CRLs in the regular files of dir (*.crl, *.der, *.pem; DER or PEM "X509 CRL") to the
 // snapshot, which verifies each against its pinned issuer: a file that does not verify is reported, never
 // trusted. It returns the number loaded and a message per rejected file.
+// afterListing is a test hook run between a CRL file's type check and its open, so a test can swap
+// the file there. It is nil outside tests.
+var afterListing func()
+
 func loadFlat(dir string, snap *audit.StatusSnapshot) (loaded int, rejected []string, err error) {
 	ents, err := os.ReadDir(dir)
 	if err != nil {
@@ -72,7 +77,7 @@ func loadFlat(dir string, snap *audit.StatusSnapshot) (loaded int, rejected []st
 			rejected = append(rejected, fmt.Sprintf("more than %d CRL files: the rest are not read", maxFlatFiles))
 			break
 		}
-		f, err := os.Open(filepath.Join(dir, n))
+		f, err := safefile.OpenRegular(filepath.Join(dir, n), afterListing)
 		if err != nil {
 			return loaded, rejected, &IOError{Err: fmt.Errorf("-crl-dir: %w", err)}
 		}

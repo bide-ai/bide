@@ -11,11 +11,16 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/safefile"
 )
 
 // MaxObjectBytes bounds what is read for one object: a head is a few hundred bytes plus the run ID, and
 // no object an anchor writes is near this size.
 const MaxObjectBytes = 1 << 20
+
+// afterTypeCheck is a test hook run between the directory entry's type check and the open of the
+// file, so a test can swap the file there. It is nil outside tests.
+var afterTypeCheck func()
 
 // LoadDir reads a downloaded set of anchored objects (for example the output of "aws s3 sync" or
 // "gcloud storage cp -r" of the anchor prefix) and verifies each against v. The set is every regular file
@@ -60,7 +65,7 @@ func (l Layout) LoadDir(dir string, v audit.Verifier, errNotFound, errEquivocati
 			return fmt.Errorf("%w: %s is not a regular file", l.ErrObject, path)
 		}
 		partition, name := filepath.Base(filepath.Dir(path)), d.Name()
-		f, err := os.Open(path)
+		f, err := safefile.OpenRegular(path, afterTypeCheck)
 		if err != nil {
 			return err
 		}

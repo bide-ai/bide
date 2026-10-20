@@ -600,3 +600,46 @@ func TestPreviewNamesTheKindOfEachConfirmation(t *testing.T) {
 		t.Errorf("an uncomparable baseline: %q %q", items, kinds)
 	}
 }
+
+// Names as long as the file do not hide a type misfit: plan shortens the quoted names in its messages
+// and keeps the words around them, which the typed editor matches (typeProblem), so a flow with long
+// node names is still refused for connecting what does not fit, in both modes.
+func TestTypedEditorRefusesAMisfitBetweenLongNames(t *testing.T) {
+	for _, n := range []int{230, 300, 1000} {
+		long := func(c string) string { return strings.Repeat(c, n) }
+		// Only the node names are long: the blocks are the registered ones, and the edges and the
+		// assertion name the nodes, so those are rewritten too.
+		text := strings.NewReplacer("{name: validate,", "{name: "+long("v")+",", "entry: validate", "entry: "+long("v"),
+			"name: charge", "name: "+long("c"), "edge: [validate, charge]", "edge: ["+long("v")+", "+long("c")+"]",
+			"edge: [charge, receipt]", "edge: ["+long("c")+", receipt]").Replace(testFlow)
+		text = strings.Replace(text, "every path to charge", "every path to "+long("c"), 1)
+		servers := typedServers(t, "refund.yaml", text)
+		misfit := Operation{Op: "set_block", Node: long("c"), Value: "count"}
+		for _, kind := range []string{"registry", "description"} {
+			s := servers[kind]
+			w := call(s.Handler(), s, "/api/apply", applyReq(text, misfit), nil)
+			if w.Code != 200 || !strings.Contains(w.Body.String(), `"refused":"the types do not fit: `) || strings.Contains(w.Body.String(), `"text"`) {
+				t.Errorf("%s, names of %d: %d %.300s", kind, n, w.Code, w.Body)
+			}
+		}
+	}
+}
+
+// The same, with a node name over the 64 characters plan keeps of a quoted name: the rename of a node
+// in an existing misfit is not refused for the misfit it already had.
+func TestTypedRefusalComparesProblemsUnderARenameOfALongName(t *testing.T) {
+	for _, n := range []int{64, 65, 300, 1000} {
+		long := strings.Repeat("c", n)
+		bad := strings.NewReplacer("name: charge", "name: "+long, "[validate, charge]", "[validate, "+long+"]", "[charge, receipt]", "["+long+", receipt]", "path to charge", "path to "+long).Replace(strings.Replace(testFlow, "block: charge", "block: count", 1))
+		for kind, s := range typedServers(t, "refund.yaml", bad) {
+			if kind == "structural" {
+				continue
+			}
+			w := call(s.Handler(), s, "/api/apply", applyReq(bad, Operation{Op: "rename_node", Node: long, Value: "bill"}), nil)
+			var e Edited
+			if err := json.Unmarshal(w.Body.Bytes(), &e); err != nil || w.Code != 200 || !e.Changed || strings.Contains(w.Body.String(), `"refused"`) {
+				t.Errorf("%s, name of %d: a rename of a node in an existing misfit: %d %.300s", kind, n, w.Code, w.Body)
+			}
+		}
+	}
+}

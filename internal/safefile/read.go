@@ -47,7 +47,43 @@ func (e *RefusedError) Error() string {
 // swapped, because a FileInfo from os.Stat reads its file ID from the path when SameFile first asks,
 // which is after any swap. At most one byte past max is read, so a huge file is refused without being
 // read.
+//
+// Read is strict: a regular file and nothing else, whatever the path says, so a library may hand it a
+// path its caller supplied. Command-line flags that also take a process substitution or standard
+// input use ReadFlag and ReadOrStdin.
 func Read(path string, max int, afterStat func()) ([]byte, error) {
+	f, err := OpenRegular(path, afterStat)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return readLimited(f, path, max)
+}
+
+// ReadFlag is Read for the file a command-line flag names, which may also be a stream the user chose:
+// on unix a path in the exact form of an open descriptor (/dev/fd/N, /proc/self/fd/N on Linux), which
+// is what a process substitution (<(...)) expands to, is read as the stream it is, up to max bytes and
+// without the regular-file check. A named pipe someone else placed at a path cannot take that form.
+// /dev/stdin and descriptor 0 are standard input, owned by flag as "-" is for ReadOrStdin. The form is
+// matched on the path as written, never after resolving links, so a symbolic link to /dev/fd/3 is
+// refused as the pipe it points to. Only command-line code may call it (a test enforces that): it
+// reads whatever descriptor it is handed, and owns standard input for the process.
+func ReadFlag(flag, path string, max int, afterStat func()) ([]byte, error) {
+	switch {
+	case isStdinPath(path):
+		return ReadOrStdin(flag, "-", max)
+	case isDescriptorPath(path):
+		return readStream(path, max)
+	}
+	return Read(path, max, afterStat)
+}
+
+// OpenRegular opens the regular file at path for reading and returns it: Stat first, which refuses
+// a directory, a named pipe or a device without opening it; afterStat, when not nil, runs between
+// that check and the open; the open does not wait for a writer, and the decision is made again on
+// the opened file's own Stat. The caller closes the file and reads it as far as it needs to (a log
+// read record by record has no total size to bound).
+func OpenRegular(path string, afterStat func()) (*os.File, error) {
 	before, err := os.Stat(path)
 	if err != nil {
 		return nil, err
@@ -62,10 +98,25 @@ func Read(path string, max int, afterStat func()) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
 	if after, err := f.Stat(); err != nil || !after.Mode().IsRegular() {
+		f.Close()
 		return nil, &RefusedError{Path: path, Kind: Changed}
 	}
+	return f, nil
+}
+
+// readStream opens the descriptor path and reads at most max bytes of it.
+func readStream(path string, max int) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return readLimited(f, path, max)
+}
+
+// readLimited reads at most max bytes of f, refusing a longer one after reading one byte past max.
+func readLimited(f *os.File, path string, max int) ([]byte, error) {
 	// One byte past max proves the file is over it; a max at the top of the range cannot be passed.
 	limit := int64(max)
 	if limit < math.MaxInt64 {
@@ -79,4 +130,16 @@ func Read(path string, max int, afterStat func()) ([]byte, error) {
 		return nil, &RefusedError{Path: path, Kind: TooLarge, Max: max}
 	}
 	return b, nil
+}
+
+// ReadFile is os.ReadFile for a regular file with no size limit: for files bide manages itself,
+// found by listing a directory, where only a swap for a named pipe between the listing and the open
+// is to be refused. Anything but a regular file is a RefusedError.
+func ReadFile(path string) ([]byte, error) {
+	f, err := OpenRegular(path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(f)
 }

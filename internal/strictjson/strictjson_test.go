@@ -1,8 +1,10 @@
 package strictjson
 
 import (
+	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -93,5 +95,60 @@ func TestAllowUnknown(t *testing.T) {
 	}
 	if err := Check([]byte(`{"kind":"a","extra":1}`), reflect.TypeFor[rec](), nil); err == nil {
 		t.Error("without AllowUnknown an unknown field was accepted")
+	}
+}
+
+// An error names the text it complains about, but only a short, escaped piece of it: a very long
+// name or an escape sequence does not reach the message whole or raw (a short name is quoted whole).
+func TestErrorsQuoteDocumentTextCappedAndEscaped(t *testing.T) {
+	type rec struct {
+		Known string `json:"known"`
+	}
+	secret := "HOSTSECRET-" + strings.Repeat("k", 500)
+	for name, doc := range map[string]string{
+		"unknown name":   `{"` + secret + `":1}`,
+		"duplicate name": `{"` + secret + `":1,"` + secret + `":2}`,
+		"escape name":    `{"\u001b[31mred":1}`,
+	} {
+		err := Check([]byte(doc), reflect.TypeFor[rec](), nil)
+		if err == nil {
+			t.Errorf("%s: accepted", name)
+			continue
+		}
+		msg := err.Error()
+		if len(msg) > 400 || strings.Contains(msg, strings.Repeat("k", 100)) || strings.Contains(msg, "\x1b") {
+			t.Errorf("%s: error repeats the text raw or whole (%d bytes): %.200q", name, len(msg), msg)
+		}
+		if name != "escape name" && !strings.Contains(msg, "HOSTSECRET-") {
+			t.Errorf("%s: error does not name the field at all: %q", name, msg)
+		}
+	}
+	if got := Quote("short"); got != `"short"` {
+		t.Errorf("Quote(short) = %s", got)
+	}
+	if got := Quote(strings.Repeat("é", 65)); !strings.HasSuffix(got, `"...`) || strings.Count(got, "é") != 64 {
+		t.Errorf("quoted of 65 runes = %s", got)
+	}
+}
+
+// Unmarshal's own decode errors are bounded as well, and still unwrap to encoding/json's.
+func TestUnmarshal_DecodeErrorIsBounded(t *testing.T) {
+	var v struct {
+		A int `json:"a"`
+	}
+	err := Unmarshal([]byte(`{"a":"`+strings.Repeat("v", 5000)+`"}`), &v, nil)
+	if err == nil || len(err.Error()) > 400 {
+		t.Fatalf("Unmarshal = %v", err)
+	}
+	var ute *json.UnmarshalTypeError
+	if !errors.As(err, &ute) {
+		t.Errorf("the type error is not reachable: %T", err)
+	}
+	if BoundedError(nil) != nil {
+		t.Error("BoundedError(nil) != nil")
+	}
+	short := errors.New("short")
+	if BoundedError(short) != short {
+		t.Error("a short error was rewrapped")
 	}
 }

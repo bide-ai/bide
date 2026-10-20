@@ -33,7 +33,7 @@ Usage of bide-anchor verify:
   -kind string
     	the tree kind: journal, or events for a notification or event trail (default "journal")
   -pubkey string
-    	the log operator's public key (ed25519:<hex>, or a file holding it)
+    	the log operator's public key (ed25519:<hex>, or a file holding it, or - for standard input, or a <(...) process substitution)
   -run string
     	only this run or trail ID (default: every one)
 ```
@@ -67,7 +67,7 @@ Usage of bide-anchor export:
   -project string
     	-backend gcs: the number of the Google Cloud project that owns the bucket (with -bucket)
   -pubkey string
-    	the log operator's public key (ed25519:<hex>, or a file holding it)
+    	the log operator's public key (ed25519:<hex>, or a file holding it, or - for standard input, or a <(...) process substitution)
   -retention duration
     	the retention the anchor was configured with: a bucket retention shorter than this (and, for s3, an object retained for less from its own write) is a finding; without it only the 24 h minimum is checked. A default retention in years counts as 365 days a year (7 years: 2555 days, 61320h), so pass at most that
   -run string
@@ -99,7 +99,7 @@ Usage of bide-anchor check:
   -project string
     	-backend gcs: the number of the Google Cloud project that owns the bucket (with -bucket)
   -pubkey string
-    	the log operator's public key (ed25519:<hex>, or a file holding it)
+    	the log operator's public key (ed25519:<hex>, or a file holding it, or - for standard input, or a <(...) process substitution)
   -retention duration
     	the retention the anchor was configured with: a bucket retention shorter than this (and, for s3, an object retained for less from its own write) is a finding; without it only the 24 h minimum is checked. A default retention in years counts as 365 days a year (7 years: 2555 days, 61320h), so pass at most that
   -run string

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/internal/runview"
+	"github.com/bide-ai/bide/internal/safefile"
 	"github.com/bide-ai/bide/plan"
 	"github.com/bide-ai/bide/theme"
 )
@@ -204,6 +205,10 @@ func (s *Server) Close() error { return s.root.Close() }
 // fragment (#t=...), which a browser does not send to the server or in a Referer.
 func (s *Server) Token() string { return s.token }
 
+// afterLstat is a test hook run between readConfig's check of the name and its open, so a test can
+// swap the file there. It is nil outside tests.
+var afterLstat func()
+
 // readConfig reads the file, which must be a regular file of at most MaxFileSize bytes.
 func readConfig(root *os.Root, base, path string) ([]byte, error) {
 	// Not a symbolic link or anything but a regular file at the name: a link put there since startup
@@ -214,7 +219,10 @@ func readConfig(root *os.Root, base, path string) ([]byte, error) {
 	} else if lfi.Mode()&os.ModeSymlink != 0 || !lfi.Mode().IsRegular() {
 		return nil, fmt.Errorf("flowedit: %s is not a regular file (a link or another kind of file is not read)", path)
 	}
-	f, err := root.Open(base)
+	if afterLstat != nil {
+		afterLstat()
+	}
+	f, err := safefile.OpenIn(root, base) // not waiting for a writer, were the name swapped for a named pipe
 	if err != nil {
 		return nil, fmt.Errorf("flowedit: %w", err)
 	}

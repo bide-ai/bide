@@ -155,14 +155,14 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 	run := fs.String("run", "", "run to open (default: the run list)")
 	fs.StringVar(&f.topo, "topology", "", "declared flow topology, JSON of flow.Topology(), to draw a flow run against instead of the topology the run journaled (flow:topology); for a run journaled before that record existed, or to check a run against another flow")
 	fs.StringVar(&f.digest, "digest", "", "flow.Digest() of the -topology flow, compared with the digest the run journaled (default: computed from -topology when it carries the digest's inputs)")
-	fs.StringVar(&f.sth, "sth", "", "signed tree head (audit.SignedTreeHead JSON) to verify the journal against; needs -pubkey")
-	fs.StringVar(&f.evidence, "evidence", "", "evidence package (audit.EvidencePackage JSON) to verify; needs -pubkey")
-	fs.StringVar(&f.pubkey, "pubkey", "", "log public key as <scheme>:<hex>, or bare ed25519 hex, or a file holding it")
-	fs.StringVar(&f.approverKeys, "approver-keys", "", `approver public keys, a JSON object of approver id to key text, e.g. {"ops":"ed25519:ab12..."}, to verify each m-of-n gate's signatures (audit.VerifyApprovals); needs -sth or -evidence`)
+	fs.StringVar(&f.sth, "sth", "", "signed tree head (audit.SignedTreeHead JSON; - for standard input, or a <(...) process substitution) to verify the journal against; needs -pubkey")
+	fs.StringVar(&f.evidence, "evidence", "", "evidence package (audit.EvidencePackage JSON; - for standard input, or a <(...) process substitution) to verify; needs -pubkey")
+	fs.StringVar(&f.pubkey, "pubkey", "", "log public key as <scheme>:<hex>, or bare ed25519 hex, or a file holding it, or - for standard input, or a <(...) process substitution")
+	fs.StringVar(&f.approverKeys, "approver-keys", "", `approver public keys, a JSON object of approver id to key text, e.g. {"ops":"ed25519:ab12..."}, to verify each m-of-n gate's signatures (audit.VerifyApprovals), or - for standard input, or a <(...) process substitution; needs -sth or -evidence`)
 	fs.IntVar(&f.need, "need", 0, "the expected policy's k: verify approvals against -need of -approvers instead of the recorded policy; needs -approvers and -approver-keys")
 	fs.StringVar(&f.approvers, "approvers", "", "the expected policy's approver ids, comma-separated, in policy order; needs -need")
 	fs.BoolVar(&f.excludePrincipal, "exclude-principal", false, "the expected policy excludes the run's requesters (its principal and those of the runs above it) from approving (separation of duties); needs -need")
-	fs.StringVar(&f.stopPolicy, "stop-policy", "", "the kill switch's stop policy (the JSON document bide stop -stop-policy reads), so the banner and the held-by-stop states judge the control run as an audited deployment does and check its signatures; without it the control run is read as a basic one and the banner says signatures are not verified")
+	fs.StringVar(&f.stopPolicy, "stop-policy", "", "the kill switch's stop policy (the JSON document bide stop -stop-policy reads; - for standard input, or a <(...) process substitution), so the banner and the held-by-stop states judge the control run as an audited deployment does and check its signatures; without it the control run is read as a basic one and the banner says signatures are not verified")
 	fs.StringVar(&f.stopRoot, "stop-root", "", "with -stop-policy: the digest of the deployment's root policy, when the file is a later policy the chain reaches")
 	addr := fs.String("addr", "127.0.0.1:8484", "address to serve on: a loopback IP (127.0.0.1 or ::1) or localhost, with a port")
 	fs.StringVar(&f.theme, "theme", "", "a theme file (JSON, see docs/guides/themes.md; check it first with bide theme check) the pages offer beside light, dark and high-contrast; refused, with the failed checks, and nothing served, if it is not valid or fails a contrast, distinctness or polarity check (C1 to C4, C8); the colour-blindness check (C6) only prints a warning")
@@ -425,7 +425,7 @@ func options(f flags, stores Stores) (Options, io.Closer, error) {
 		x := Exports{}
 		for _, path := range f.journals {
 			var exp audit.JournalExport
-			if err := readStrict(path, &exp); err != nil {
+			if err := readStrict("", path, &exp); err != nil {
 				return o, nil, err
 			}
 			recs, err := exp.Journal()
@@ -438,7 +438,7 @@ func options(f flags, stores Stores) (Options, io.Closer, error) {
 	}
 	if f.topo != "" {
 		var t plan.Topology
-		if err := readStrict(f.topo, &t); err != nil {
+		if err := readStrict("", f.topo, &t); err != nil {
 			return o, closer, err
 		}
 		fl := &Flow{Topology: t, Digest: f.digest, Source: "from -topology"}
@@ -466,14 +466,14 @@ func options(f flags, stores Stores) (Options, io.Closer, error) {
 		}
 		if f.sth != "" {
 			var h audit.SignedTreeHead
-			if err := readStrict(f.sth, &h); err != nil {
+			if err := readStrict("-sth", f.sth, &h); err != nil {
 				return o, closer, err
 			}
 			o.Provers = append(o.Provers, HeadProver(h, v, ap))
 		}
 		if f.evidence != "" {
 			var pkg audit.EvidencePackage
-			if err := readStrict(f.evidence, &pkg); err != nil {
+			if err := readStrict("-evidence", f.evidence, &pkg); err != nil {
 				return o, closer, err
 			}
 			o.Provers = append(o.Provers, EvidenceProver(pkg, v, ap))
@@ -486,7 +486,7 @@ func options(f flags, stores Stores) (Options, io.Closer, error) {
 func readConfig(path string, toJSON func([]byte) ([]byte, error)) (Config, error) {
 	// A named pipe or device would block the open or never end, and a directory cannot be read as a
 	// config: safefile refuses anything but a regular file, before opening it and again once opened.
-	b, err := safefile.Read(path, maxConfig, betweenStatAndOpen)
+	b, err := safefile.ReadFlag("-config", path, maxConfig, betweenStatAndOpen)
 	if err != nil {
 		var refused *safefile.RefusedError
 		if errors.As(err, &refused) {
@@ -534,7 +534,7 @@ func configFrom(name, path string, b []byte, toJSON func([]byte) ([]byte, error)
 // (agent.ApprovalPolicy.ValidateKeys: no two approvers on one key).
 func readApproverKeys(path string) (agent.ApproverVerifierFor, error) {
 	var text map[string]string
-	if err := readStrict(path, &text); err != nil {
+	if err := readStrict("-approver-keys", path, &text); err != nil {
 		return nil, err
 	}
 	keys := make(map[string]audit.Verifier, len(text))
@@ -557,18 +557,33 @@ const maxInput = 256 << 20
 // maxConfig caps a flow config file, as plan.LoadReader does: far past any topology.
 const maxConfig = 16 << 20
 
-func readStrict(path string, v any) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
+// maxKeyFile caps a public key file named by -pubkey: a key is a few dozen bytes.
+const maxKeyFile = safefile.MaxKey
+
+// cmpFlag names the flag for a message: a positional journal has none.
+func cmpFlag(flag string) string {
+	if flag == "" {
+		return "a journal"
 	}
-	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, maxInput+1))
-	if err != nil {
-		return err
+	return flag
+}
+
+// readStrict reads the file path (standard input for "-" when flag, the flag that names it, is not
+// empty) and decodes it strictly into v.
+func readStrict(flag, path string, v any) error {
+	var b []byte
+	var err error
+	if flag == "" {
+		b, err = safefile.ReadFlag("a journal", path, maxInput, nil)
+	} else {
+		b, err = safefile.ReadOrStdin(flag, path, maxInput)
 	}
-	if len(b) > maxInput {
-		return fmt.Errorf("%s is larger than %d bytes", path, maxInput)
+	if err != nil {
+		var refused *safefile.RefusedError
+		if errors.As(err, &refused) && refused.Kind == safefile.TooLarge {
+			return fmt.Errorf("%s is larger than %d bytes (the limit for %s)", path, maxInput, cmpFlag(flag))
+		}
+		return safefile.Explain(flag, err, flag != "")
 	}
 	if err := audit.UnmarshalStrict(b, v); err != nil {
 		return fmt.Errorf("parse %s: %w", path, err)
@@ -583,8 +598,12 @@ func readKey(s string) (audit.Verifier, error) {
 	} else if errors.Is(err, audit.ErrWeakKey) {
 		return nil, err
 	}
-	b, err := os.ReadFile(s)
+	b, err := safefile.ReadOrStdin("-pubkey", s, maxKeyFile)
 	if err != nil {
+		var refused *safefile.RefusedError
+		if s == "-" || errors.As(err, &refused) {
+			return nil, fmt.Errorf("public key: %q is neither a key nor a readable file: %w", s, safefile.Explain("-pubkey", err, true))
+		}
 		return nil, fmt.Errorf("public key: %q is neither a key nor a readable file", s)
 	}
 	return audit.ParsePublicKey(strings.TrimSpace(string(b)))
@@ -637,7 +656,7 @@ func stopFeed(j *agent.Journal, f flags) (*StopFeed, error) {
 		return &StopFeed{Control: ctl}, err
 	}
 	var doc agent.StopPolicyDoc
-	if err := readStrict(f.stopPolicy, &doc); err != nil {
+	if err := readStrict("-stop-policy", f.stopPolicy, &doc); err != nil {
 		return nil, err
 	}
 	pol, err := audit.StopPolicyFromDoc(doc)

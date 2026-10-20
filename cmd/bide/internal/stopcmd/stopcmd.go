@@ -33,6 +33,7 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/cmd/bide/internal/approvecmd"
+	"github.com/bide-ai/bide/internal/safefile"
 	"github.com/bide-ai/bide/internal/strictjson"
 	"github.com/bide-ai/bide/internal/term"
 )
@@ -217,7 +218,7 @@ func MainWith(args []string, in io.Reader, stdout, stderr io.Writer, stores Stor
 	fs.BoolVar(&f.applyPending, "apply-pending", false, "audited: make effective the signed records on the trail that never took effect, after showing each one's signer and age (signed, so it is evidence)")
 	fs.BoolVar(&f.upgrade, "upgrade", false, "move the deployment to audited mode: adopt the active stops as signed ones and record the change (needs -stop-policy, -as, -key)")
 	fs.BoolVar(&f.downgrade, "downgrade", false, "record a move back to basic mode (refused while any stop is active)")
-	fs.StringVar(&f.stopPolicy, "stop-policy", "", "audited mode: the stop policy file (JSON: approvers' public keys, setters, lifters, lift quorum, deployment ID) the deployment pins; without it this is basic mode")
+	fs.StringVar(&f.stopPolicy, "stop-policy", "", "audited mode: the stop policy file, or - for standard input, or a <(...) process substitution (JSON: approvers' public keys, setters, lifters, lift quorum, deployment ID) the deployment pins; without it this is basic mode")
 	fs.StringVar(&f.stopRoot, "stop-root", "", "audited mode: the digest of the deployment's root policy, when -stop-policy is a later policy the chain reaches")
 	fs.StringVar(&f.as, "as", "", "audited mode: your approver id, as the stop policy lists it; basic mode: the name recorded (default your OS user; asserted, not authenticated)")
 	fs.StringVar(&f.key, "key", "", src.KeyHelp)
@@ -362,17 +363,13 @@ func (c *cmd) open(readOnly bool) (Opened, error) {
 
 // loadPolicy reads the stop policy file named by -stop-policy.
 func (c *cmd) loadPolicy() (agent.StopPolicy, agent.StopPolicyDoc, error) {
-	f, err := os.Open(c.f.stopPolicy)
+	b, err := safefile.ReadOrStdin("-stop-policy", c.f.stopPolicy, maxPolicyFile)
 	if err != nil {
-		return agent.StopPolicy{}, agent.StopPolicyDoc{}, fmt.Errorf("-stop-policy %s: %w", c.f.stopPolicy, unwrapPath(err))
-	}
-	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, maxPolicyFile+1))
-	if err != nil {
-		return agent.StopPolicy{}, agent.StopPolicyDoc{}, fmt.Errorf("-stop-policy %s: %w", c.f.stopPolicy, unwrapPath(err))
-	}
-	if len(b) > maxPolicyFile {
-		return agent.StopPolicy{}, agent.StopPolicyDoc{}, fmt.Errorf("-stop-policy %s: larger than %d bytes: not a stop policy", c.f.stopPolicy, maxPolicyFile)
+		var refused *safefile.RefusedError
+		if errors.As(err, &refused) && refused.Kind == safefile.TooLarge {
+			return agent.StopPolicy{}, agent.StopPolicyDoc{}, fmt.Errorf("-stop-policy %s: larger than %d bytes (the limit for -stop-policy): not a stop policy", c.f.stopPolicy, maxPolicyFile)
+		}
+		return agent.StopPolicy{}, agent.StopPolicyDoc{}, fmt.Errorf("-stop-policy %s: %w", c.f.stopPolicy, unwrapPath(safefile.Explain("-stop-policy", err, true)))
 	}
 	var doc agent.StopPolicyDoc
 	if err := strictjson.Unmarshal(b, &doc, nil); err != nil {

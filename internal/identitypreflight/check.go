@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -16,6 +15,7 @@ import (
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/audit/crlrefresh"
 	"github.com/bide-ai/bide/internal/policyfile"
+	"github.com/bide-ai/bide/internal/safefile"
 )
 
 // Options says what to check. Policy and Params are required, and so is a stance on CRL status
@@ -133,8 +133,8 @@ func ioErr(flag string, err error) error { return &IOError{Err: fmt.Errorf("%s: 
 
 // policy loads the policy file (a) and checks the pinned CAs and intermediates (b).
 func (s *run) policy() error {
-	if _, err := os.ReadFile(s.o.Policy); err != nil {
-		return ioErr("-policy", err)
+	if _, err := safefile.ReadFlag("-policy", s.o.Policy, safefile.MaxDocument, nil); err != nil {
+		return ioErr("-policy", safefile.Explain("-policy", err, false))
 	}
 	r := s.r
 	pol, err := policyfile.Read(s.o.Policy)
@@ -209,9 +209,9 @@ func (s *run) certDates(id, what string, c *x509.Certificate, now time.Time) {
 // compares it with the gate's record (d).
 func (s *run) declared() error {
 	r := s.r
-	pb, err := os.ReadFile(s.o.Params)
+	pb, err := safefile.ReadFlag("-params", s.o.Params, safefile.MaxDocument, nil)
 	if err != nil {
-		return ioErr("-params", err)
+		return ioErr("-params", safefile.Explain("-params", err, false))
 	}
 	decl, err := audit.ParseStatusDecl(s.o.Params, pb)
 	if err != nil {
