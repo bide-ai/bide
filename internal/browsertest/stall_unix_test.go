@@ -152,3 +152,14 @@ func TestKillProfileLeavesALongerPathAlone(t *testing.T) {
 		t.Errorf("the process of the run whose directory begins with the other's was killed")
 	}
 }
+
+// The directory is matched as text, not as a pattern: a temporary directory with a regexp
+// metacharacter in its name (a plus, a bracket) is still found and its process killed.
+func TestKillProfileMeta(t *testing.T) {
+	dir := t.TempDir() + "/bide-chrome-a+b[c]"
+	p := spin(t, "--user-data-dir="+dir)
+	killProfile(dir)
+	if !p.exited(5 * time.Second) {
+		t.Errorf("the process of a directory with regexp metacharacters in its name was not killed")
+	}
+}
