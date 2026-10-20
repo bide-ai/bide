@@ -356,3 +356,88 @@ func TestMainThemeEscapesHostileFile(t *testing.T) {
 		t.Errorf("the warning does not name the path escaped: %q", errs)
 	}
 }
+
+func TestThemeSetValidate(t *testing.T) {
+	th := customTheme(t)
+	cases := []struct {
+		name string
+		set  ThemeSet
+		want string // "" valid, else a part of the error
+	}{
+		{"empty", ThemeSet{}, ""},
+		{"custom", ThemeSet{Extra: []*theme.Theme{th}}, ""},
+		{"default shipped", ThemeSet{Default: "dark"}, ""},
+		{"default custom", ThemeSet{Extra: []*theme.Theme{th}, Default: "acme-night"}, ""},
+		{"lock custom", ThemeSet{Extra: []*theme.Theme{th}, Lock: "acme-night"}, ""},
+		{"lock and equal default", ThemeSet{Lock: "dark", Default: "dark"}, ""},
+		{"nil theme", ThemeSet{Extra: []*theme.Theme{nil}}, "nil"},
+		{"zero theme", ThemeSet{Extra: []*theme.Theme{{}}}, "did not come from"},
+		{"same name twice", ThemeSet{Extra: []*theme.Theme{th, th}}, `two themes are named "acme-night"`},
+		{"shipped name", ThemeSet{Extra: theme.Shipped()[:1]}, "two themes are named"},
+		{"unknown default", ThemeSet{Default: "nope"}, "names no theme"},
+		{"unknown lock", ThemeSet{Lock: "nope"}, "names no theme"},
+		{"lock and other default", ThemeSet{Lock: "dark", Default: "light"}, "differ"},
+	}
+	for _, tc := range cases {
+		err := tc.set.Validate()
+		switch {
+		case tc.want == "" && err != nil:
+			t.Errorf("%s: %v", tc.name, err)
+		case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+			t.Errorf("%s: error %v, want one with %q", tc.name, err, tc.want)
+		}
+	}
+}
+
+// TestHandlerPanicsOnBadThemes: a set that cannot be served is a host's mistake and stops at
+// Handler, not on the first request.
+func TestHandlerPanicsOnBadThemes(t *testing.T) {
+	th := customTheme(t)
+	for name, o := range map[string]Options{
+		"unknown default":  {Config: &Config{}, DefaultTheme: "nope"},
+		"unknown lock":     {Config: &Config{}, ThemeLock: "nope"},
+		"lock and default": {Config: &Config{}, ThemeLock: "dark", DefaultTheme: "light"},
+		"twice":            {Config: &Config{}, Themes: []*theme.Theme{th, th}},
+		"zero theme":       {Config: &Config{}, Themes: []*theme.Theme{{}}},
+	} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("%s: Handler did not panic", name)
+				}
+			}()
+			Handler(o)
+		}()
+	}
+}
+
+// TestHandlerThemeLock: a locked viewer has the one theme in its stylesheet and nothing a reader can
+// switch to; the shipped high-contrast block stays for a reader whose system asks for more contrast.
+func TestHandlerThemeLock(t *testing.T) {
+	th := customTheme(t)
+	css := styleOf(t, Handler(Options{Config: &Config{}, Themes: []*theme.Theme{th}, ThemeLock: "acme-night"}))
+	for _, want := range []string{`--bide-lock: "acme-night";`, `--bide-themes: "acme-night";`, "--bg: #0e1116;", "@media (prefers-contrast: more) {\n:root {\n", "@media (forced-colors: active)"} {
+		if !strings.Contains(css, want) {
+			t.Errorf("locked style.css lacks %q", want)
+		}
+	}
+	for _, bad := range []string{`:root[data-theme="`, "prefers-color-scheme"} {
+		if strings.Contains(css, bad) {
+			t.Errorf("locked style.css has %q", bad)
+		}
+	}
+	// A page's script hides the switch of a page with one theme.
+	js := mustAsset(t, "view.js")
+	if !strings.Contains(js, "names().length < 2") {
+		t.Error("view.js does not hide the theme switch of a one-theme page")
+	}
+}
+
+func mustAsset(t *testing.T, name string) string {
+	t.Helper()
+	b, err := fs.ReadFile(Assets(), name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}

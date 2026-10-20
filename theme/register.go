@@ -15,7 +15,7 @@ func init() {
 	}
 	themeaccess.Register(
 		func(themes []any) string { return renderCSS(conv(themes)) },
-		func(themes []any, def string) string { return cssDefault(conv(themes), def) },
+		func(themes []any, def, lock string) string { return cssWith(conv(themes), def, lock) },
 		func(themes []any) string { return systemCSS(conv(themes)) },
 	)
 }

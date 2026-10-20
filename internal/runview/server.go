@@ -161,6 +161,10 @@ type Options struct {
 	// program's mistake, and bide view checks both before it calls Handler.
 	Themes       []*theme.Theme
 	DefaultTheme string
+	// ThemeLock, when not empty, names the one theme the pages have: no switch, no remembered
+	// choice (the system's request for more contrast or forced colors still wins). Handler panics
+	// on a ThemeLock that names no theme or that differs from a DefaultTheme.
+	ThemeLock string
 	// Now is the clock the Needs attention list measures waits by; nil is time.Now.
 	Now func() time.Time
 
@@ -178,7 +182,7 @@ type Options struct {
 func Handler(o Options) http.Handler {
 	o.cache = &ttlCache{}
 	mux := http.NewServeMux()
-	mux.Handle("GET /assets/", http.StripPrefix("/assets/", typed(http.FileServerFS(AssetsWith(o.DefaultTheme, o.Themes...)))))
+	mux.Handle("GET /assets/", http.StripPrefix("/assets/", typed(http.FileServerFS(AssetsWith(o.themeSet())))))
 	if o.Config != nil {
 		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { render(w, "config.html", BuildConfig(*o.Config)) })
 		mux.HandleFunc("GET /config.json", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, BuildConfig(*o.Config)) })
@@ -485,4 +489,9 @@ func typed(h http.Handler) http.Handler {
 		w.Header().Set("Content-Type", t)
 		h.ServeHTTP(w, r)
 	})
+}
+
+// themeSet is the themes the options name.
+func (o Options) themeSet() ThemeSet {
+	return ThemeSet{Extra: o.Themes, Default: o.DefaultTheme, Lock: o.ThemeLock}
 }

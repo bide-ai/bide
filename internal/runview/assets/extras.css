@@ -3,6 +3,7 @@
 .grow { flex: 1; }
 .hbtn { display: none; align-items: center; justify-content: center; min-width: 32px; height: 32px; padding: 0 var(--s2); border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--card); color: var(--fg); cursor: pointer; font: 600 var(--t-md) var(--font); }
 .has-js .hbtn { display: inline-flex; }
+.hbtn[hidden] { display: none !important; }
 .hbtn:hover { border-color: var(--accent); }
 .hbtn .ic { font-size: 17px; }
 

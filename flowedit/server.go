@@ -23,6 +23,7 @@ import (
 
 	"github.com/bide-ai/bide/internal/runview"
 	"github.com/bide-ai/bide/plan"
+	"github.com/bide-ai/bide/theme"
 )
 
 // MaxFileSize is the largest config the editor reads, and the largest request body it accepts.
@@ -75,6 +76,7 @@ type Server struct {
 	baselineNote   string     // why git HEAD was not the baseline, when that is not just "not in git"
 	fs             fileSystem // what a save writes with; a test replaces it
 	typing         *typing    // nil: the structural editor
+	assets         fs.FS      // the viewer's files the editor serves, with the host's themes in style.css; nil: the shipped themes
 }
 
 // Option configures New.
@@ -85,11 +87,34 @@ type options struct {
 	reg      *plan.Registry
 	regGiven bool // WithRegistry was given, even with nil
 	blocks   *plan.RegistryDescription
+	themes   runview.ThemeSet
 }
 
 // WithBase compares edits with the file at the git revision rev (a branch, tag or commit, as `git
 // show rev:./file` takes it) instead of at HEAD. New fails if the file is not there.
 func WithBase(rev string) Option { return func(o *options) { o.base = rev } }
+
+// WithThemes adds custom themes, each from theme.Parse or theme.Load (so each passed the checks in
+// docs/design/themes.md), beside the shipped light, dark and high-contrast. A host passes values,
+// never CSS: the stylesheet is generated from the checked values alone. New fails when a theme is
+// nil or not from Parse or Load, or when two themes (a shipped one included) have one name. The
+// editor's own page does not offer the themes in its switch yet (it adopts them in a later release),
+// so until then WithThemes only makes them available to WithDefaultTheme and WithThemeLock.
+func WithThemes(themes ...*theme.Theme) Option {
+	return func(o *options) { o.themes.Extra = append(o.themes.Extra, themes...) }
+}
+
+// WithDefaultTheme sets the theme the page starts in, by name: a shipped theme or one added with
+// WithThemes. A reader who asks their system for more contrast or forced colors gets those, over
+// the default. New fails when the name is not a theme in the set or differs from WithThemeLock's.
+func WithDefaultTheme(name string) Option { return func(o *options) { o.themes.Default = name } }
+
+// WithThemeLock makes the named theme the only one the page has. The stylesheet has no other theme,
+// so the editor's own light/dark switch changes nothing on screen, and the reader's system setting
+// no longer picks light or dark; a reader who asks their system for more contrast or forced colors
+// still gets those, over the lock. New fails when the name is not a theme in the set or differs from
+// WithDefaultTheme's.
+func WithThemeLock(name string) Option { return func(o *options) { o.themes.Lock = name } }
 
 // New returns the editor for the file at path. The file must be an existing regular file of at
 // most MaxFileSize bytes whose name ends in .yaml, .yml or .json; it is the only file the editor
@@ -102,6 +127,9 @@ func New(path string, opts ...Option) (*Server, error) {
 	ty, err := newTyping(o)
 	if err != nil {
 		return nil, err
+	}
+	if err := o.themes.Validate(); err != nil {
+		return nil, fmt.Errorf("flowedit: themes: %w", err)
 	}
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".yaml", ".yml", ".json":
@@ -162,7 +190,7 @@ func New(path string, opts ...Option) (*Server, error) {
 	if _, err := rand.Read(tok[:]); err != nil {
 		return fail(fmt.Errorf("flowedit: no randomness for the session token: %w", err))
 	}
-	return &Server{path: real, root: root, base: base, name: path, token: hex.EncodeToString(tok[:]), baseline: baseline, baselineSource: source, baselineNote: note, fs: osFS, typing: ty}, nil
+	return &Server{path: real, root: root, base: base, name: path, token: hex.EncodeToString(tok[:]), baseline: baseline, baselineSource: source, baselineNote: note, fs: osFS, typing: ty, assets: runview.AssetsWith(o.themes)}, nil
 }
 
 // BaselineNote is "" when the baseline is what it should be, and otherwise says why git HEAD was not
@@ -293,7 +321,7 @@ func (s *Server) asset(w http.ResponseWriter, r *http.Request) {
 	var err error
 	switch {
 	case contains(sharedAssets, name):
-		b, err = fs.ReadFile(runview.Assets(), name)
+		b, err = fs.ReadFile(s.sharedFS(), name)
 	case contains(ownAssets, name):
 		b, err = fs.ReadFile(pageFS, "page/"+name)
 	default:
@@ -308,6 +336,14 @@ func (s *Server) asset(w http.ResponseWriter, r *http.Request) {
 	// text/plain would block the script and leave a dead page.
 	w.Header().Set("Content-Type", assetTypes[filepath.Ext(name)])
 	_, _ = w.Write(b)
+}
+
+// sharedFS is the viewer's files with the themes the host chose.
+func (s *Server) sharedFS() fs.FS {
+	if s.assets == nil {
+		return runview.Assets()
+	}
+	return s.assets
 }
 
 func contains(list []string, s string) bool {

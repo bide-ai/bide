@@ -37,6 +37,7 @@ var grammar = func() *regexp.Regexp {
 		`|  --[a-z0-9-]+: (?:` + value + `);` +
 		`|  --bide-themes: "[a-z0-9 -]+";` +
 		`|  --bide-default: "[a-z][a-z0-9-]{1,31}";` +
+		`|  --bide-lock: "[a-z][a-z0-9-]{1,31}";` +
 		`|  color-scheme: (?:light|dark);` +
 		`)$`)
 }()
@@ -166,6 +167,60 @@ func TestCSSDefault(t *testing.T) {
 		}
 	}()
 	cssDefault(Shipped(), "nope")
+}
+
+// TestCSSLocked: a locked page has the one theme as :root, no theme blocks for a script or a
+// reader to pick, and the contrast and forced-colors requests still win over it, by the stylesheet
+// alone: the contrast block does not wait for data-theme to be absent.
+func TestCSSLocked(t *testing.T) {
+	th, _, err := Parse(custom("dark", surface("accent", "#79b8ff")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := append(Shipped(), th)
+	css := cssWith(all, "", "acme-test")
+	checkGrammar(t, css)
+	if cssWith(all, "", "acme-test") != css || cssWith(all, "acme-test", "acme-test") != css {
+		t.Error("a lock is not deterministic, or a default equal to the lock changes it")
+	}
+	root := css[:strings.Index(css, "@media")]
+	for _, want := range []string{`--bide-lock: "acme-test";`, `--bide-themes: "acme-test";`, `--bide-default: "acme-test";`, "--accent: #79b8ff;"} {
+		if !strings.Contains(root, want) {
+			t.Errorf("the root block lacks %q:\n%s", want, root)
+		}
+	}
+	if strings.Contains(css, "prefers-color-scheme") {
+		t.Error("the system's light or dark still picks the start of a locked page")
+	}
+	if strings.Contains(css, `:root[data-theme="`) {
+		t.Error("a locked page has a theme block that data-theme can select")
+	}
+	hc := strings.Index(css, "@media (prefers-contrast: more) {\n:root {\n")
+	if hc < 0 || !strings.Contains(css[hc:], "--bg: #ffffff;") {
+		t.Fatalf("the locked page's contrast block is missing or waits for data-theme:\n%s", css)
+	}
+	if !strings.Contains(css, "@media (forced-colors: active) {\n:root:root, :root[data-theme] {\n") {
+		t.Error("no forced-colors block on a locked page")
+	}
+	if strings.Contains(cssDefault(all, "dark"), `--bide-lock`) {
+		t.Error("a default writes --bide-lock")
+	}
+}
+
+func TestCSSLockMistakes(t *testing.T) {
+	for name, f := range map[string]func(){
+		"a lock that names no theme": func() { cssWith(Shipped(), "", "nope") },
+		"a lock and another default": func() { cssWith(Shipped(), "light", "dark") },
+	} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("%s did not panic", name)
+				}
+			}()
+			f()
+		}()
+	}
 }
 
 // TestForcedColorsMapsEverySlot: every colour slot has a system colour in the forced-colors block,

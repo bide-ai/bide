@@ -32,13 +32,13 @@ func Escape(s string) string {
 
 var (
 	css       func([]any) string
-	cssDef    func([]any, string) string
+	cssDef    func([]any, string, string) string
 	systemCSS func([]any) string
 )
 
 // Register is called once by the theme package's init with its generators, which take the themes as
 // any because this package cannot import theme (theme imports it).
-func Register(c func([]any) string, d func([]any, string) string, s func([]any) string) {
+func Register(c func([]any) string, d func([]any, string, string) string, s func([]any) string) {
 	css, cssDef, systemCSS = c, d, s
 }
 
@@ -56,7 +56,12 @@ func CSS[T any](themes []T) string { return css(widen(themes)) }
 
 // CSSDefault is CSS with def, the theme a reader starts in, as the :root block. A def that names no
 // theme in themes panics.
-func CSSDefault[T any](themes []T, def string) string { return cssDef(widen(themes), def) }
+func CSSDefault[T any](themes []T, def string) string { return cssDef(widen(themes), def, "") }
+
+// CSSLocked is CSS for a page locked to the theme named lock: it has that theme only, no switch, and
+// the system's contrast and forced-colors requests still win. A lock that names no theme in themes
+// panics.
+func CSSLocked[T any](themes []T, lock string) string { return cssDef(widen(themes), "", lock) }
 
 // SystemCSS is the stylesheet of a page that takes no theme input: the shipped themes picked by the
 // reader's system settings alone.

@@ -215,6 +215,7 @@
   const labelTheme = () => {
     const b = document.getElementById("theme");
     if (b && window.bideTheme) {
+      b.hidden = window.bideTheme.names().length < 2; // a locked page has one theme: no switch
       b.setAttribute("aria-label", window.bideTheme.forced() ? "Theme: your system's colors are in force" : "Theme: " + window.bideTheme.current() + ". Switch to " + window.bideTheme.next());
     }
   };
