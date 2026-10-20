@@ -207,12 +207,14 @@ func gateWords(g *plan.GateDescription) string {
 	return runview.GateText(tg)
 }
 
-// changesWhatIsChecked reports whether an operation adds or removes a node, changes a block, or changes
-// a connection, an arm, a join or a safety: what the type and safety checks are about. Moving an
-// element, renaming (names only), approvals, assertions and the flow's own keys do not.
+// changesWhatIsChecked reports whether an operation can change the graph or what the checks see: it
+// adds, removes or renames a node (a rename rewrites the references across the graph), changes a
+// block, or changes a connection, an arm, a join or a safety. Only moving an element, the flow's own
+// keys, approvals and assertions cannot (and a weakening by an approval is caught by the save, which
+// asks for the statement that the text could not be compared).
 func changesWhatIsChecked(op string) bool {
 	switch op {
-	case "add_node", "remove_node", "set_block", "set_safety", "set_entry",
+	case "add_node", "remove_node", "rename_node", "set_block", "set_safety", "set_entry",
 		"add_edge", "remove_edge", "add_switch", "remove_switch", "add_arm", "remove_arm", "set_arm", "set_else",
 		"add_join", "remove_join", "set_join_inputs", "set_join_merge", "set_loop_max":
 		return true

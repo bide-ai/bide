@@ -972,7 +972,8 @@ func TestLoopBoundThatMakesANonContiguousBodyIsRefused(t *testing.T) {
 // A text plan cannot parse has no records: its problems are unknown, not absent. An edit that can change
 // what the types or safeties check is refused while the text before or after does not parse (a
 // misspelt field, another version, a control character in a name), rather than let through unchecked;
-// edits that cannot (moving an element, the flow's name, assertions, a rename) are not.
+// edits that cannot (moving an element, the flow's name, assertions) are not; a rename is refused too,
+// since it rewrites references across a graph nothing can check.
 func TestTypedEditorRefusesTypeAffectingEditsWhileTheTextDoesNotParse(t *testing.T) {
 	ctrl := strconv.Quote("fi\x01rst")
 	broken := map[string]string{
@@ -990,6 +991,10 @@ func TestTypedEditorRefusesTypeAffectingEditsWhileTheTextDoesNotParse(t *testing
 				t.Errorf("%s, %s: an edit while the text does not parse was not refused for it: %.300s", name, kind, w.Body)
 			}
 			// Edits that cannot change what is checked are not refused for the parse error.
+			w = call(s.Handler(), s, "/api/apply", applyReq(text, Operation{Op: "rename_node", Node: "second", Value: "renamed"}), nil)
+			if !strings.Contains(w.Body.String(), `"refused":"the config does not parse: `) {
+				t.Errorf("%s, %s: a rename while the text does not parse was allowed: %.300s", name, kind, w.Body)
+			}
 			for _, op := range []Operation{
 				{Op: "set_flow", Value: "renamed"},
 				{Op: "move_wiring", Index: 0, Value: "down"},
@@ -1006,5 +1011,23 @@ func TestTypedEditorRefusesTypeAffectingEditsWhileTheTextDoesNotParse(t *testing
 	w := call(s.Handler(), s, "/api/apply", applyReq(chainFlow, Operation{Op: "set_block", Node: "second", Value: "count"}), nil)
 	if !strings.Contains(w.Body.String(), `"refused":"the types do not fit: `) {
 		t.Errorf("a parsing text: %.300s", w.Body)
+	}
+}
+
+// An approval change on a text that does not parse is not refused (it cannot change the graph), and the
+// save still cannot be clean: the text could not be compared with the baseline, so the dialog asks for
+// that statement, and a weakening cannot slip through while the checks are blind.
+func TestSaveOfAnUnparsingTextAsksTheCouldNotBeComparedStatement(t *testing.T) {
+	typo := strings.Replace(testFlow, "{name: validate, block: validate, safety: readonly}", "{name: validate, block: validate, safety: readonly, safty: x}", 1)
+	weaker := strings.Replace(typo, "need: 2", "need: 1", 1)
+	for _, kind := range []string{"registry", "description"} {
+		s := typedServers(t, "r.yaml", testFlow)[kind]
+		w := call(s.Handler(), s, "/api/apply", applyReq(typo, Operation{Op: "set_approval", Node: "charge", Approval: &Approval{Need: 1, Approvers: []string{"ops", "finance", "risk"}}}), nil)
+		if strings.Contains(w.Body.String(), "does not parse") {
+			t.Errorf("%s: an approval change was refused for the parse error: %.200s", kind, w.Body)
+		}
+		if _, kinds := s.confirmationKinds([]byte(weaker)); !slices.Contains(kinds, ConfirmUncompared) {
+			t.Errorf("%s: the save of a weakened, unparsing text does not ask the could-not-be-compared statement: %v", kind, kinds)
+		}
 	}
 }
