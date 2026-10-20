@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/planaccess"
 )
 
 // typedChainRegistry registers blocks of plain types: s2i takes a string and gives an int, i2s the
@@ -406,5 +407,40 @@ func TestInspectConfig_TenThousandTypeProblemsAreListedAHundredAtATime(t *testin
 	}
 	if types != 10000 {
 		t.Errorf("the editor's records hold %d type problems, want all 10000", types)
+	}
+}
+
+// The records of the loop and wiring shapes carry their kind and the full names: Build's (a body that is
+// not simple, an inner switch, an edge that leaves a loop) as well as the structural check's.
+func TestInspectRecords_LoopShapesCarryTheirNames(t *testing.T) {
+	has := func(recs []planaccess.Record, kind string, names ...string) bool {
+		for _, r := range recs {
+			if r.Class == "loop" && r.Kind == kind && strings.Join(r.Names, "|") == strings.Join(names, "|") {
+				return true
+			}
+		}
+		return false
+	}
+	// A body that is not simple: x lies between the head a and the switch b but is not on the loop path.
+	body := `{"version":1,"flow":"f","entry":"e","nodes":[{"name":"e","block":"s2s"},{"name":"a","block":"s2s"},{"name":"x","block":"s2s"},{"name":"b","block":"s2s"},{"name":"c","block":"s2s"}],
+	  "wiring":[{"edge":["e","a"]},{"edge":["e","x"]},{"edge":["a","b"]},{"switch":"b","when":[{"pred":"nonEmpty","to":"a","loop_max":3}],"else":"c"}]}`
+	if recs := inspectRecords([]byte(body), nil, nil); !has(recs, "non-contiguous-body", "b", "x") {
+		t.Errorf("non-contiguous body records: %+v", recs)
+	}
+	// Edges that leave the loop, and an inner switch.
+	leave := `{"version":1,"flow":"f","entry":"a","nodes":[{"name":"a","block":"s2s"},{"name":"b","block":"s2s"},{"name":"c","block":"s2s"},{"name":"x","block":"s2s"}],
+	  "wiring":[{"edge":["a","b"]},{"switch":"b","when":[{"pred":"nonEmpty","to":"a","loop_max":3}],"else":"c"},{"edge":["a","x"]}]}`
+	if recs := inspectRecords([]byte(leave), nil, nil); !has(recs, "leaves-the-loop", "a", "x", "b") {
+		t.Errorf("leaves-the-loop records: %+v", recs)
+	}
+	inner := `{"version":1,"flow":"f","entry":"a","nodes":[{"name":"a","block":"s2s"},{"name":"b","block":"s2s"},{"name":"c","block":"s2s"},{"name":"d","block":"s2s"}],
+	  "wiring":[{"edge":["a","b"]},{"switch":"b","when":[{"pred":"nonEmpty","to":"c"}],"else":"c"},{"switch":"c","when":[{"pred":"nonEmpty","to":"a","loop_max":3}],"else":"d"}]}`
+	if recs := inspectRecords([]byte(inner), nil, nil); !has(recs, "inner-switch", "b", "c") {
+		t.Errorf("inner-switch records: %+v", recs)
+	}
+	// The structural check's: a loop with no exit arm.
+	noExit := `{"version":1,"flow":"f","entry":"a","nodes":[{"name":"a","block":"s2s"},{"name":"b","block":"s2s"}],"wiring":[{"edge":["a","b"]},{"switch":"b","when":[{"pred":"nonEmpty","to":"a","loop_max":3}]}]}`
+	if recs := inspectRecords([]byte(noExit), nil, nil); !has(recs, "structural-no-exit-arm", "b") {
+		t.Errorf("no-exit-arm records: %+v", recs)
 	}
 }

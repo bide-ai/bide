@@ -902,3 +902,69 @@ func TestTypedEditorIdentifiesProblemsByNamesWhateverTheyContain(t *testing.T) {
 		}
 	}
 }
+
+// recordKey tells apart records that would read alike if their parts were joined as plain text: names
+// that hold the separator, the same words split differently, a class or kind that is a prefix of another,
+// and the same names with other types.
+func TestRecordKeyKeepsEveryPartApart(t *testing.T) {
+	same := func(n string) string { return n }
+	rec := func(class, kind, detail string, names ...string) planaccess.Record {
+		return planaccess.Record{Class: class, Kind: kind, Names: names, Detail: detail}
+	}
+	keys := map[string]planaccess.Record{}
+	for _, r := range []planaccess.Record{
+		rec("type", "edge", "a > b", "x y", "z"),
+		rec("type", "edge", "a > b", "x", "y z"),
+		rec("type", "edge", "a > b", "x", "y", "z"),
+		rec("type", "edge", "a > b", `x" "y`, "z"),
+		rec("type", "edge", "a > b", "x | y", "z"),
+		rec("type", "edge", "a > c", "x y", "z"), // the same names, other types
+		rec("type", "edge", "", "x y", "z"),
+		rec("type", "edge ", "a > b", "x y", "z"),
+		rec("type ", "edge", "a > b", "x y", "z"),
+		rec("safety", "edge", "a > b", "x y", "z"),
+	} {
+		k := recordKey(r, same)
+		if other, dup := keys[k]; dup {
+			t.Errorf("%+v and %+v have the same key %q", r, other, k)
+		}
+		keys[k] = r
+	}
+	// A rename changes a name field, and only a name that is the renamed node.
+	r := rec("type", "edge", "a > b", "n", "n2")
+	got := recordKey(r, func(n string) string {
+		if n == "n" {
+			return "m"
+		}
+		return n
+	})
+	if got != recordKey(rec("type", "edge", "a > b", "m", "n2"), same) {
+		t.Errorf("a rename of one name: %q", got)
+	}
+}
+
+// The same names with other types are another problem: an edit that changes the type a node takes
+// or gives, and leaves the connection a misfit, is refused (the editor would otherwise hide a change in
+// what is wrong behind a problem the text already had).
+func TestTypedEditorRefusesAMisfitWhoseTypesChange(t *testing.T) {
+	// validate gives an order; count takes an int. shout takes a string: the edge is a misfit either way.
+	text := strings.Replace(testFlow, "name: charge\n    block: charge", "name: charge\n    block: count", 1)
+	for _, kind := range []string{"registry", "description"} {
+		s := typedServers(t, "r.yaml", text)[kind]
+		w := call(s.Handler(), s, "/api/apply", applyReq(text, Operation{Op: "set_block", Node: "charge", Value: "shout"}), nil)
+		if !strings.Contains(w.Body.String(), `"refused":"the types do not fit: `) {
+			t.Errorf("%s: a misfit that changed its types was allowed: %.300s", kind, w.Body)
+		}
+	}
+}
+
+// A loop that Build refuses for the shape of its body (not the structural check) is refused when an
+// operation makes the loop: a node between the head and the switch that is not on the loop path.
+func TestLoopBoundThatMakesANonContiguousBodyIsRefused(t *testing.T) {
+	src := "version: 1\nflow: f\nentry: e\nnodes:\n  - {name: e, block: e}\n  - {name: a, block: a}\n  - {name: x, block: x}\n  - {name: b, block: b}\n  - {name: c, block: c}\nwiring:\n" +
+		"  - edge: [e, a]\n  - edge: [e, x]\n  - edge: [a, b]\n  - switch: b\n    when:\n      - {pred: p, to: a}\n    else: c\n"
+	why := refusalOf(t, "f.yaml", src, Operation{Op: "set_loop_max", Node: "b", Index: 0, Max: 3})
+	if !strings.Contains(why, "non-contiguous body") {
+		t.Errorf("%q", why)
+	}
+}
