@@ -1,0 +1,3 @@
+Section: Changed
+
+The docs now describe the finished theme work: the themes guide, the design note's status, the roadmap and the docs index say that bide view, bide edit and the approve page draw from the checked themes and that a Go program can pass themes to planview and flowedit; KNOWN-LIMITATIONS says the colour and contrast checks cover the editor too and that the manual pass with a real contrast theme, macOS Increase contrast and a screen reader is still owed, and that forced colours do not dim the editor's save dialog; the editor design note's accessibility section describes the themes, the switch, the selection ring and the dialog.

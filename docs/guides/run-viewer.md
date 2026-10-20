@@ -530,7 +530,7 @@ approval-pending record and tally, plan nodes and Switch choices, and the end ma
   names it, and the choice is remembered in the browser's local storage; where storage is blocked it
   applies to the page only. `-theme file.json` adds a theme of your own to the list (it must pass
   the checks in the [themes guide](themes.md), and is refused before anything is served if it does
-  not), and `-theme-default name` sets the theme a reader starts in; a reader's own choice still wins.
+  not), and `-theme-default name` sets the theme a reader starts in; a reader's own choice still wins. `bide edit` takes the same two flags.
   A theme changes colours, fonts, spacing and corner radius, never a word, an icon or a shape.
 - **Keyboard.** `j` and `k` move to the next and previous record (or run, on the list), `Enter`
   opens the highlighted run, `/` goes to the filter (the timeline's, which narrows the rows as you

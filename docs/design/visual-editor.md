@@ -560,8 +560,15 @@ A graph editor is the kind of tool that is easy to build only for a mouse. Requi
 - **State is never carried by color alone.** The viewer already pairs each verdict and risk class
   with a glyph and words; the editor keeps that, including for the weakened banner.
 - **Reduced motion and contrast.** The flowing-dash animation stops under `prefers-reduced-motion`
-  as it does in the viewer; light and dark themes use the viewer's tokens, including its theme
-  toggle that works with no script.
+  as it does in the viewer. The page draws from the checked themes of [Themes](themes.md) (`light`,
+  `dark`, `high-contrast`, `-theme` for your own): text is 4.5:1 against the backgrounds it is drawn on; control
+  edges and the focus ring (which is the selection ring's colour) are checked at 3:1 against the page and
+  panel backgrounds (`bg`, `surface`), and the shipped themes also meet 3:1 on `surface2` and on the
+  graph canvas (the lowest measured is 3.60:1, a control edge on `surface2` in `light`);
+  `prefers-contrast: more` gets `high-contrast`, and forced colors get the system's. The header button steps through the themes, names the next one and announces
+  it; a host that locks the editor to one theme hides it. The selected node's ring is 7 px, heavier
+  than any state stroke, so selection is not carried by colour; the save dialog dims the page with a
+  shadow of the theme's scrim (not under forced colours, where it keeps its border).
 - **Focus is managed.** After an operation the focus returns to the thing the user changed;
   dialogs trap focus and return it; the weakened confirmation lists each item as text.
 - **Forms are real forms**: labels bound to inputs, errors tied to their fields by
