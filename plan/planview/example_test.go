@@ -3,10 +3,13 @@ package planview_test
 import (
 	"context"
 	"fmt"
+	"net/http/httptest"
 	"os"
+	"strings"
 
 	"github.com/bide-ai/bide/plan"
 	"github.com/bide-ai/bide/plan/planview"
+	"github.com/bide-ai/bide/theme"
 )
 
 type Order struct{ Amount int }
@@ -53,4 +56,25 @@ func ExampleCheckDiff() {
 	// orders.json: approval policy weakened: pay: approval 2 of 2 -> 1 of 2
 	// orders.json: 1 change from main:orders.json (nodes: 0 added, 0 removed, 1 changed; edges: 0 added, 0 removed, 0 changed); digest not computed: the check is structural (the digest commits to the blocks' Go types; see plan/planview)
 	// fail the build
+}
+
+// A program that serves the config page in its own look passes a theme that passed the checks, and
+// may make it the only theme the page has. The page's stylesheet is generated from the checked
+// values; the host cannot pass CSS.
+func ExampleWithThemeLock() {
+	th, _, err := theme.Parse([]byte(`{"bide_theme": 1, "name": "acme-night", "base": "dark",
+	  "surface": {"bg": "#0e1116", "accent": "#79b8ff"}}`))
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	config := []byte(`{"version": 1, "flow": "orders", "nodes": [{"name": "a", "block": "a"}], "wiring": []}`)
+	h := planview.Handler("orders.json", config, nil, planview.WithThemes(th), planview.WithThemeLock("acme-night"))
+
+	r := httptest.NewRequest("GET", "http://127.0.0.1/assets/style.css", nil)
+	r.Host = "127.0.0.1"
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	fmt.Println(strings.Contains(w.Body.String(), `--bide-lock: "acme-night";`))
+	// Output: true
 }

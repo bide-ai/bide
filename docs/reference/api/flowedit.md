@@ -257,7 +257,10 @@ Option configures New.
 
 - `func WithBase(rev string) Option`: WithBase compares edits with the file at the git revision rev (a branch, tag or commit, as `git show rev:./file` takes it) instead of at HEAD.
 - `func WithBlocks(d plan.RegistryDescription) Option`: WithBlocks makes the editor typed against a description of the program's registrations (plan.Registry.Describe, read from a file by bide edit -blocks).
+- `func WithDefaultTheme(name string) Option`: WithDefaultTheme sets the theme the page starts in, by name: a shipped theme or one added with WithThemes.
 - `func WithRegistry(reg *plan.Registry) Option`: WithRegistry makes the editor typed against the program's Registry: it checks the config as Load does (block, predicate and merge names, the types along every edge, safety, the gates the blocks declare in Go, the digest), lists the blocks in a palette, and refuses an operation that connects what does not fit.
+- `func WithThemeLock(name string) Option`: WithThemeLock makes the named theme the only one the page has.
+- `func WithThemes(themes ...*theme.Theme) Option`: WithThemes adds custom themes, each from theme.Parse or theme.Load (so each passed the checks in docs/design/themes.md), beside the shipped light, dark and high-contrast.
 
 ### type PaletteBlock
 

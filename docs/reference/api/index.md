@@ -27,7 +27,7 @@ Each package carries one label, declared in one place and checked against
 
 | Module | Packages | Pages |
 |---|---|---|
-| `github.com/bide-ai/bide` | 23 | one page per package, listed below |
+| `github.com/bide-ai/bide` | 24 | one page per package, listed below |
 | `github.com/bide-ai/bide/anchor/awss3` | 2 | [anchor-awss3](anchor-awss3.md) |
 | `github.com/bide-ai/bide/anchor/gcs` | 2 | [anchor-gcs](anchor-gcs.md) |
 | `github.com/bide-ai/bide/codec/gcf` | 1 | [codec-gcf](codec-gcf.md) |
@@ -72,6 +72,7 @@ Each package carries one label, declared in one place and checked against
 | [`plan`](plan.md) | experimental | Package plan is rung-1 of the expression-surfaces stack: a handle-based flow builder that lowers to the journal-backed runtime and adds no new executor. |
 | [`plan/planview`](plan-planview.md) | experimental | Package planview embeds bide view's flow-config page in a program, with the program's plan.Registry, so the page checks a config the way plan.Load does: blocks, predicates, merges and types, as well as structure, and shows the digest a run of the flow would journal. |
 | [`schema`](schema.md) | core | Package schema derives JSON Schema from Go types and emits provider-specific dialects. |
+| [`theme`](theme.md) | experimental | Package theme is the theme layer of bide's visual pages: a theme is a small JSON file of typed values (colours, enums, numbers in ranges), never CSS. |
 | [`anchor/awss3`](anchor-awss3.md) | experimental | Package awss3 is an audit.Anchor that writes every signed tree head as an object in an S3 bucket under Object Lock (a WORM store), and a Reader that reads the heads back and verifies them. |
 | [`anchor/awss3/awss3test`](anchor-awss3.md) | experimental | Package awss3test is an in-memory S3 bucket with versioning and Object Lock, for testing code that uses the awss3 package without a network. |
 | [`anchor/gcs`](anchor-gcs.md) | experimental | Package gcs is an audit.Anchor that writes every signed tree head as an object in a Google Cloud Storage bucket whose retention policy is locked (a WORM store), and a Reader that reads the heads back and verifies them. |

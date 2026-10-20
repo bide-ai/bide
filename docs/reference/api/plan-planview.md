@@ -14,9 +14,23 @@ Package planview embeds bide view's flow-config page in a program, with the prog
 
 - `func Check(w io.Writer, name string, data []byte, reg *plan.Registry) bool`: Check writes the config's problems to w as "name:node: message" lines ("name:from-&gt;to: message" for an edge or arm, "name: message" for the config as a whole), warnings marked "warning:", then a line counting the verdicts on the config's assert lines when it has any, and reports whether any problem is an error (a violated, undecided or invalid assertion is one): the bide view -check output, with reg's checks added.
 - `func CheckDiff(w io.Writer, old, newer Version) (weakened bool, err error)`: CheckDiff writes the diff of newer from old to w as bide check -diff -check prints it: one line per change, a line per weakened approval gate, and a summary line with the counts and the digest change.
-- `func DiffHandler(old, newer Version) http.Handler`: DiffHandler serves the diff page bide check -diff shows, with each version's checks: newer compared with old.
-- `func Handler(name string, data []byte, reg *plan.Registry) http.Handler`: Handler serves the config page for the flow config data (JSON), named name in messages, checked against reg (nil: structural only, as the bide view command checks it): the page at / and its view as JSON at /config.json.
+- `func DiffHandler(old, newer Version, opts ...Option) http.Handler`: DiffHandler serves the diff page bide check -diff shows, with each version's checks: newer compared with old.
+- `func Handler(name string, data []byte, reg *plan.Registry, opts ...Option) http.Handler`: Handler serves the config page for the flow config data (JSON), named name in messages, checked against reg (nil: structural only, as the bide view command checks it): the page at / and its view as JSON at /config.json.
 - `func Listen(addr string) (net.Listener, error)`: Listen listens on addr, which must name a loopback IP or localhost (any other host is refused), for serving Handler: http.Serve(ln, planview.Handler(...)).
+
+## type Option
+
+```go
+type Option func(*options)
+```
+
+Option configures Handler and DiffHandler.
+
+**Constructors and functions**
+
+- `func WithDefaultTheme(name string) Option`: WithDefaultTheme sets the theme a reader starts in, by name: a shipped theme or one added with WithThemes.
+- `func WithThemeLock(name string) Option`: WithThemeLock makes the named theme the only one the page has: no switch, no remembered choice, and the reader's system setting no longer picks light or dark.
+- `func WithThemes(themes ...*theme.Theme) Option`: WithThemes adds custom themes, each from theme.Parse or theme.Load (so each passed the checks in docs/design/themes.md), beside the shipped light, dark and high-contrast that the page's switch cycles through.
 
 ## type Version
 

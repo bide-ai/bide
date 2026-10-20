@@ -1,7 +1,11 @@
 // Package theme is the theme layer of bide's visual pages: a theme is a small JSON file of typed
 // values (colours, enums, numbers in ranges), never CSS. Parse reads and checks one, Check measures
-// it against the contrast and distinctness rules, and CSS turns checked themes into the one
-// generated stylesheet of custom properties the pages load. See docs/design/themes.md.
+// it against the contrast and distinctness rules, and Load does the same for a file. A Go program
+// that serves bide's pages passes the checked themes to planview.WithThemes or flowedit.WithThemes
+// (and to the matching WithDefaultTheme and WithThemeLock); the handler turns them into the one
+// generated stylesheet of custom properties its pages load. The package exports no way to get that
+// stylesheet, to build a Theme from fields, or to pass CSS: a *Theme exists only if it passed the
+// checks. See docs/design/themes.md and docs/guides/themes.md.
 //
 // A theme holds two layers of tokens. The semantic tokens (ok, info, warning, alert, gated, effect,
 // idem, idle, on) have a meaning bide fixes; a theme supplies their values and is refused if the

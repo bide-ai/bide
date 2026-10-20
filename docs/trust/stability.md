@@ -72,6 +72,7 @@ The certificate verification core in `audit` and the certificate-bound approver 
 | `signer/pkcs11/pkcs11test` | core |
 | `store/postgres` | core |
 | `store/sqlite` | core |
+| `theme` | experimental |
 | `trace` | core |
 
 ## Journal and proof formats

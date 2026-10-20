@@ -73,6 +73,8 @@ func (r Report) Err() error {
 	return &CheckError{r}
 }
 
+// String is the measure as a line says it: the value and the threshold it needs, as `bide theme
+// check` prints it after the check and the subject.
 func (m Measure) String() string {
 	switch m.Check {
 	case "C3", "C4", "C6":

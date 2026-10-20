@@ -56,6 +56,7 @@ var Labels = map[string]string{
 	"signer/pkcs11/pkcs11test": Core,
 	"store/postgres":           Core,
 	"store/sqlite":             Core,
+	"theme":                    Experimental,
 	"trace":                    Core,
 }
 

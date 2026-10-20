@@ -89,6 +89,49 @@ refused. Every key and value in an error is quoted, so a file cannot print a ter
   choice, which the browser remembers.
 - The sun button in the header, or `t`, steps through the list, names the theme it shows and announces the change to a screen reader.
 
+## Embedding in a Go program
+
+A program that serves the viewer's pages or the editor itself chooses their themes in Go. The
+`github.com/bide-ai/bide/theme` package (0.x, no third-party dependency) reads and checks a theme
+exactly as `bide theme check` does; the handlers take the checked values:
+
+<!-- docsnip: setup import "github.com/bide-ai/bide/plan/planview"; data []byte; reg *plan.Registry -->
+```go
+th, report, err := theme.Load("acme.json") // or theme.Parse(data); err is a *theme.CheckError on a failed check
+if err != nil {
+	log.Fatal(err)
+}
+for _, m := range report.Failures(theme.Warning) {
+	log.Print(m) // the colour-blindness warning
+}
+h := planview.Handler("orders.json", data, reg,
+	planview.WithThemes(th),
+	planview.WithDefaultTheme("acme-night"))
+```
+
+`planview.Handler` and `planview.DiffHandler` take the options after their arguments;
+`flowedit.New` takes the same three, `flowedit.WithThemes`, `WithDefaultTheme` and `WithThemeLock`.
+
+- `WithThemes(themes...)` adds themes to the shipped `light`, `dark` and `high-contrast`.
+- `WithDefaultTheme(name)` is the theme a reader starts in, as `-theme-default` is.
+- `WithThemeLock(name)` makes one theme the only one: no switch in the header, no remembered choice,
+  and the system's light or dark no longer picks the start. It is for a host whose pages must look
+  like its own product.
+
+A host passes only what `Parse` or `Load` returned. It cannot pass CSS or a selector, there is no
+way to build a `*theme.Theme` from fields, and the stylesheet is generated from the checked values
+alone, so a host cannot skip the checks C1 to C8 or draw the pages in a way the checks have not
+measured. The same holds for a lock: a reader whose system asks for more contrast gets
+`high-contrast`, and a reader whose system forces colours gets the system's colours, over a default
+and over a lock (a test in Chrome holds both).
+
+A theme that is `nil`, did not come from `Parse` or `Load`, or has the name of another theme (a
+shipped one included), a default or a lock that names no theme, and a default that differs from a
+lock are mistakes of the host program: `planview.Handler` and `planview.DiffHandler` panic when
+they are built, as `http.ServeMux.Handle` does on a bad pattern, and `flowedit.New` returns an
+error. The editor's own page has its light and dark button until it adopts themes in a later
+release; on a locked editor that button changes nothing.
+
 ## Contrast and forced colours
 
 - **More contrast.** A reader whose system asks for more contrast (`prefers-contrast: more`) gets the
