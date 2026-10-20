@@ -384,3 +384,27 @@ func TestInspectConfig_BuildOnlyLoopProblemsBesideAStructuralError(t *testing.T)
 		}
 	}
 }
+
+// A config with ten thousand type problems does not print ten thousand lines: a report lists the first
+// hundred and one line counting the rest (what bide check and the viewer show), while the editor
+// compares the complete records.
+func TestInspectConfig_TenThousandTypeProblemsAreListedAHundredAtATime(t *testing.T) {
+	data := []byte(chainConfig(10001)) // 10,000 edges, each a misfit
+	r := InspectConfig(data, typedChainRegistry(t), AllowUnusedBlocks())
+	got := typeProblemMessages(r)
+	if len(got) != maxTypeProblems+1 || got[len(got)-1] != "and 9900 more type problems (types must match exactly)" {
+		t.Fatalf("%d type problems listed, last %q", len(got), got[len(got)-1])
+	}
+	if len(r.Problems) > maxTypeProblems+5 {
+		t.Errorf("the report lists %d problems", len(r.Problems))
+	}
+	var types int
+	for _, rec := range inspectRecords(data, typedChainRegistry(t), nil) {
+		if rec.Class == "type" {
+			types++
+		}
+	}
+	if types != 10000 {
+		t.Errorf("the editor's records hold %d type problems, want all 10000", types)
+	}
+}
