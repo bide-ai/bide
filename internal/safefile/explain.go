@@ -20,6 +20,7 @@ type FlagError struct {
 	Err     error
 }
 
+// Error is the refusal's text with the flag and, where it helps, the limit or the "-" to use.
 func (e *FlagError) Error() string {
 	var re *RefusedError
 	if !errors.As(e.Err, &re) {
@@ -34,6 +35,7 @@ func (e *FlagError) Error() string {
 	return e.Err.Error()
 }
 
+// Unwrap returns the refusal, so errors.As finds the RefusedError.
 func (e *FlagError) Unwrap() error { return e.Err }
 
 // Explain wraps a refusal of the file named by flag in a FlagError. Any other error, and nil, come
