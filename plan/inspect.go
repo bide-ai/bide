@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/planaccess"
 )
 
 // ConfigReport is what InspectConfig finds in a flow config: the graph it declares, the digest a
@@ -112,11 +113,13 @@ type inspectOptions struct{ allowUnused, allTypeProblems bool }
 // blocks it has not placed yet do not stop the check from reading the ones it has.
 func AllowUnusedBlocks() InspectOption { return func(o *inspectOptions) { o.allowUnused = true } }
 
-// AllTypeProblems lists every type problem of the config. Without it a report lists the first 100 and
+// allTypeProblems lists every type problem of the config. Without it a report lists the first 100 and
 // then one line counting the rest, which keeps a report short; a caller that compares two reports
 // to find what an edit added (the flow editor's typed mode) passes it, since a problem past the cap
-// would hide in the count.
-func AllTypeProblems() InspectOption { return func(o *inspectOptions) { o.allTypeProblems = true } }
+// would hide in the count. It is not exported: the module's own tools get it from internal/planaccess.
+func allTypeProblems() InspectOption { return func(o *inspectOptions) { o.allTypeProblems = true } }
+
+func init() { planaccess.Register(allTypeProblems()) }
 
 // inspectConfig is InspectConfig, and what InspectConfigDescribed runs on a Registry built from a
 // description: one implementation of the typed checks, whichever side the Registry came from.

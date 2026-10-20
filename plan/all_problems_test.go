@@ -2,9 +2,12 @@ package plan
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/bide-ai/bide/agent"
 )
 
 // typedChainRegistry registers blocks of plain types: s2i takes a string and gives an int, i2s the
@@ -171,7 +174,7 @@ func TestTypeProblems_OrderAndTheOption(t *testing.T) {
 	if err == nil || !strings.HasPrefix(err.Error(), `plan: load "chain": edge "n0" -> "n1" connects`) {
 		t.Errorf("Load's error leads with the first problem: %v", err)
 	}
-	all := typeProblemMessages(InspectConfig([]byte(chainConfig(123)), reg, AllowUnusedBlocks(), AllTypeProblems()))
+	all := typeProblemMessages(InspectConfig([]byte(chainConfig(123)), reg, AllowUnusedBlocks(), allTypeProblems()))
 	if len(all) != 122 {
 		t.Errorf("AllTypeProblems: %d problems, want 122", len(all))
 	}
@@ -190,5 +193,61 @@ func TestInspectConfig_TypedReportsEveryLoopProblem(t *testing.T) {
 	}
 	if len(found) != 2 {
 		t.Errorf("loops without an exit arm reported: %q", found)
+	}
+}
+
+// A node still to be wired in (the editor adds one unwired) is reported as not reached, and its
+// types are not reported as a terminal that gives another type than the flow's output.
+func TestInspectConfig_AnUnwiredNodeIsNotATerminalMisfit(t *testing.T) {
+	cfg := `{"version":1,"flow":"f","entry":"a","nodes":[{"name":"a","block":"s2s"},{"name":"b","block":"s2s"},{"name":"extra","block":"s2i"}],"wiring":[{"edge":["a","b"]}]}`
+	r := InspectConfig([]byte(cfg), typedChainRegistry(t), AllowUnusedBlocks())
+	if got := typeProblemMessages(r); len(got) != 0 {
+		t.Errorf("type problems for an unwired node: %q", got)
+	}
+	var unreached bool
+	for _, p := range r.Problems {
+		unreached = unreached || strings.Contains(p.Message, `step "extra" is not reached from the entry`)
+	}
+	if !unreached {
+		t.Errorf("the unwired node is not reported as not reached: %+v", r.Problems)
+	}
+}
+
+// The refusals only Build makes (not the structural check) are all reported too, with and without a
+// Registry: two edges that leave a loop's body are two problems, not one.
+func TestInspectConfig_ReportsEveryBuildOnlyLoopProblem(t *testing.T) {
+	cfg := `{"version":1,"flow":"f","entry":"a","nodes":[{"name":"a","block":"s2s"},{"name":"b","block":"s2s"},{"name":"c","block":"s2s"},{"name":"x","block":"s2s"},{"name":"y","block":"s2s"}],
+	  "wiring":[{"edge":["a","b"]},{"switch":"b","when":[{"pred":"nonEmpty","to":"a","loop_max":3}],"else":"c"},{"edge":["a","x"]},{"edge":["a","y"]}]}`
+	for name, reg := range map[string]*Registry{"structural": nil, "typed": typedChainRegistry(t)} {
+		var found []string
+		for _, p := range InspectConfig([]byte(cfg), reg, AllowUnusedBlocks()).Problems {
+			if strings.Contains(p.Message, "leaves the loop") {
+				found = append(found, p.Message)
+			}
+		}
+		if len(found) != 2 {
+			t.Errorf("%s: edges that leave the loop reported: %q", name, found)
+		}
+	}
+}
+
+// Load's and Validate's refusals are agent.ErrConfig, as the other config errors are, whatever
+// their text.
+func TestLoadAndValidateRefusalsWrapErrConfig(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.RegisterStep("s2i", func(_ context.Context, s string) (int, error) { return len(s), nil }); err != nil {
+		t.Fatal(err)
+	}
+	misfit := []byte(chainConfig(3)) // a type misfit on each edge
+	_, err := Load[string, int](misfit, reg)
+	if !errors.Is(err, agent.ErrConfig) || !strings.HasPrefix(err.Error(), `plan: load "chain": edge "n0" -> "n1" connects`) {
+		t.Errorf("Load: %v", err)
+	}
+	if err := Validate(misfit, reg); !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), `edge "n0" -> "n1" connects`) {
+		t.Errorf("Validate: %v", err)
+	}
+	var already error = fmt.Errorf("x: %w", agent.ErrConfig)
+	if asConfigError(already) != already || asConfigError(nil) != nil {
+		t.Error("asConfigError changed an error that needed no change")
 	}
 }

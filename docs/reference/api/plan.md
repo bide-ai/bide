@@ -246,7 +246,6 @@ InspectOption changes what InspectConfig and InspectConfigDescribed check.
 
 **Constructors and functions**
 
-- `func AllTypeProblems() InspectOption`: AllTypeProblems lists every type problem of the config.
 - `func AllowUnusedBlocks() InspectOption`: AllowUnusedBlocks makes a registered block the config does not use no problem.
 
 ## type LoadOption

@@ -208,8 +208,11 @@ func (b *Builder[In, Out]) Build() (*Flow[In, Out], error) {
 // them all (InspectConfig, so the typed editor sees a second misfit) asks for them here.
 func (c *builderCore) buildTypeProblems() []string {
 	var msgs []string
+	// Build reaches these checks only when every node is reached from the entry, so a node still to be
+	// wired in (the editor adds one unwired) is reported as not reached, and its types say nothing yet.
+	reached := c.reachableFrom(c.entry)
 	for _, n := range c.nodes {
-		if n.kind != kindJoin {
+		if n.kind != kindJoin || !reached[n.name] {
 			continue
 		}
 		for i, src := range n.joinInputs {
@@ -232,7 +235,7 @@ func (c *builderCore) buildTypeProblems() []string {
 		switchedOver[br.over] = true
 	}
 	for _, n := range c.nodes {
-		if hasOutEdge[n.name] || switchedOver[n.name] {
+		if hasOutEdge[n.name] || switchedOver[n.name] || !reached[n.name] {
 			continue
 		}
 		if c.outType != nil && n.outType != nil && n.outType != c.outType {

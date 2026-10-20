@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bide-ai/bide/internal/planaccess"
 	"github.com/bide-ai/bide/internal/runview"
 	"github.com/bide-ai/bide/plan"
 )
@@ -83,7 +84,7 @@ func (t *typing) config(name string, data []byte) runview.Config {
 }
 
 func (t *typing) inspect(data []byte) plan.ConfigReport {
-	opts := []plan.InspectOption{plan.AllowUnusedBlocks(), plan.AllTypeProblems()}
+	opts := []plan.InspectOption{plan.AllowUnusedBlocks(), planaccess.AllTypeProblems().(plan.InspectOption)}
 	if t.reg != nil {
 		return plan.InspectConfig(data, t.reg, opts...)
 	}

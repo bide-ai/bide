@@ -2,6 +2,7 @@ package plan
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"reflect"
@@ -213,7 +214,23 @@ func (w configWire) isJoin() bool {
 // hands the assembled spec to the existing Build (whole-graph validation) and seal.
 func Load[In, Out any](data []byte, reg *Registry, opts ...LoadOption) (*Flow[In, Out], error) {
 	f, err := load[In, Out](data, reg, opts...)
-	return f, strictjson.BoundedErrorN(err, maxLoadError)
+	return f, strictjson.BoundedErrorN(asConfigError(err), maxLoadError)
+}
+
+// configError is a refusal of a config that is also an agent.ErrConfig: its text is the refusal's own,
+// and errors.Is finds both the refusal it wraps and agent.ErrConfig, as it does for the other
+// config errors.
+type configError struct{ err error }
+
+func (e *configError) Error() string   { return e.err.Error() }
+func (e *configError) Unwrap() []error { return []error{e.err, agent.ErrConfig} }
+
+// asConfigError returns err as a configError unless it already is an agent.ErrConfig (or nil).
+func asConfigError(err error) error {
+	if err == nil || errors.Is(err, agent.ErrConfig) {
+		return err
+	}
+	return &configError{err}
 }
 
 // maxLoadError is the longest Load's error is let be: it lists every problem found (each cut to 512
@@ -332,7 +349,7 @@ func Validate(data []byte, reg *Registry) error {
 		return fmt.Errorf("plan: validate: parse config: %w", err)
 	}
 	_, err := assemble(&cfg, reg, false)
-	return err
+	return asConfigError(err)
 }
 
 // errInert is what Load and Validate return for a Registry built from a description, which can check
