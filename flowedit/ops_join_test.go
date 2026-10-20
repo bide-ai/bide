@@ -355,3 +355,27 @@ func TestLoopShapeRefusalHoldsWithLongNames(t *testing.T) {
 		}
 	}
 }
+
+// Loop-shape problems are compared by identity (the full names, without the position of the wiring
+// element), as type problems are: moving an element does not make a problem the text already had new,
+// and two problems whose shown names look alike are two.
+func TestLoopShapeProblemsAreComparedByIdentity(t *testing.T) {
+	// A loop with no exit arm, written before another wiring element; moving the elements changes the
+	// position in the message ("wiring[1]") but not the problem.
+	src := "version: 1\nflow: f\nentry: a\nnodes:\n  - {name: a, block: a}\n  - {name: b, block: b}\nwiring:\n  - edge: [a, b]\n  - switch: b\n    when:\n      - {pred: p, to: a, loop_max: 3}\n"
+	got := mustApply(t, "f.yaml", src, Operation{Op: "move_wiring", Index: 0, Value: "down"})
+	if !strings.Contains(got, "- switch: b") {
+		t.Errorf("moving a wiring element in a text with a loop that has no exit arm:\n%s", got)
+	}
+
+	// Two switches whose names differ after the 64th character: the first has a loop with no exit arm; an
+	// operation that gives the second the same problem is refused, though both read alike once shortened.
+	n1, n2 := strings.Repeat("n", 70)+"1", strings.Repeat("n", 70)+"2"
+	two := "version: 1\nflow: f\nentry: a\nnodes:\n  - {name: a, block: a}\n  - {name: " + n1 + ", block: b}\n  - {name: " + n2 + ", block: c}\nwiring:\n" +
+		"  - edge: [a, " + n1 + "]\n  - switch: " + n1 + "\n    when:\n      - {pred: p, to: a, loop_max: 3}\n" +
+		"  - edge: [a, " + n2 + "]\n  - switch: " + n2 + "\n    when:\n      - {pred: p, to: a}\n"
+	why := refusalOf(t, "f.yaml", two, Operation{Op: "set_loop_max", Node: n2, Index: 0, Max: 3})
+	if !strings.Contains(why, "has no exit arm") {
+		t.Errorf("a second loop with no exit arm, named alike: %q", why)
+	}
+}
