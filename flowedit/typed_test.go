@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -435,5 +436,43 @@ func TestTypedOptionsRefuseNilAndZero(t *testing.T) {
 	var nilReg *plan.Registry
 	if _, err := New(p, WithRegistry(nilReg), WithBlocks(typedRegistry(t).Describe())); err == nil {
 		t.Error("a nil Registry beside a description made an editor")
+	}
+}
+
+// A node not wired in yet makes the whole flow fail to build (it is unreachable), and a report that
+// does not build has no types; the palette is used exactly then, so each node's types come from the
+// program's description of its block, whatever the rest of the config says.
+func TestTypedNodesKeepTheirTypesWhileAnotherNodeIsUnwired(t *testing.T) {
+	unwired := strings.Replace(testFlow, "wiring:\n", "  - {name: loose, block: count}\nwiring:\n", 1)
+	for kind, s := range typedServers(t, "refund.yaml", unwired) {
+		if kind == "structural" {
+			continue
+		}
+		d, err := s.Doc()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.Errors == 0 {
+			t.Fatalf("%s: the flow with an unwired node builds", kind)
+		}
+		got := map[string][2]string{}
+		for _, n := range d.Nodes {
+			got[n.Name] = [2]string{n.In, n.Out}
+		}
+		order, count := reflect.TypeFor[tOrder]().PkgPath()+".tOrder", "int"
+		if got["validate"] != [2]string{order, order} || got["receipt"] != [2]string{order, "string"} || got["loose"] != [2]string{count, count} {
+			t.Errorf("%s: node types %v", kind, got)
+		}
+	}
+	// A block the program does not describe has no types, and says so on the page ("types unknown").
+	ghost := strings.Replace(testFlow, "block: charge", "block: nowhere", 1)
+	for kind, s := range typedServers(t, "refund.yaml", ghost) {
+		if kind == "structural" {
+			continue
+		}
+		d, _ := s.Doc()
+		if d.Nodes[1].In != "" || d.Nodes[1].Out != "" || d.Nodes[0].Out == "" {
+			t.Errorf("%s: %+v", kind, d.Nodes)
+		}
 	}
 }
