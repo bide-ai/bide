@@ -1,13 +1,12 @@
 # Themes
 
 A theme sets the colours, fonts, spacing and corner radius of bide's visual pages: the run viewer
-(`bide view`), the flow editor (`bide edit`) and, in a later release, the approve page. The design,
+(`bide view`), the flow editor (`bide edit`) and, with the system's settings only, the approve page. The design,
 including what a theme can never change, is in [Themes](../design/themes.md).
 
 **Status.** The run viewer (`bide view`, and the diff and config pages it serves) draws from the
-checked themes: `light`, `dark` and `high-contrast`, plus a theme file of your own with `-theme`. The
-flow editor shares the viewer's stylesheet and so takes the same tokens, but its own toggle still
-switches between light and dark only; the editor's `-theme` flag comes in a later release. The approve
+checked themes: `light`, `dark` and `high-contrast`, plus a theme file of your own with `-theme`, and
+the flow editor (`bide edit`) takes the same two flags and draws the same way. The approve
 page uses the shipped themes inside its pinned bundle, chosen by the system's settings alone (below).
 
 A theme is data: a JSON file of typed values, never CSS. It cannot add a selector, a property, a URL
@@ -79,7 +78,7 @@ refused. Every key and value in an error is quoted, so a file cannot print a ter
 
 ## Using a theme
 
-- `bide view -theme theme.json ...` adds the theme to the pages' list, after the shipped ones. A
+- `bide view -theme theme.json ...` and `bide edit -theme theme.json ...` add the theme to the pages' list, after the shipped ones. A
   file that is not a valid theme (a parse error, an unknown or repeated key, an out-of-range value) or
   that fails a contrast, distinctness or polarity check (C1 to C4, C8) is refused before anything is
   served, with each failure on stderr and exit status 1. The colour-blindness check (C6) only warns:
@@ -87,7 +86,7 @@ refused. Every key and value in an error is quoted, so a file cannot print a ter
 - `-theme-default name` starts the pages in `light`, `dark`, `high-contrast` or your theme, instead of
   following the system's light or dark setting. A reader who has switched themes keeps their own
   choice, which the browser remembers.
-- The sun button in the header, or `t`, steps through the list, names the theme it shows and announces the change to a screen reader.
+- The sun button in the viewer's header (and the editor's Theme button), or `t` in the viewer, steps through the list, names the theme it shows and announces the change to a screen reader.
 
 ## Embedding in a Go program
 
@@ -129,8 +128,7 @@ A theme that is `nil`, did not come from `Parse` or `Load`, or has the name of a
 shipped one included), a default or a lock that names no theme, and a default that differs from a
 lock are mistakes of the host program: `planview.Handler` and `planview.DiffHandler` panic when
 they are built, as `http.ServeMux.Handle` does on a bad pattern, and `flowedit.New` returns an
-error. The editor's own page has its light and dark button until it adopts themes in a later
-release; on a locked editor that button changes nothing.
+error.
 
 ## Contrast and forced colours
 

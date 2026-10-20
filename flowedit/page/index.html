@@ -1,13 +1,12 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>bide edit</title><link rel="icon" href="data:,">
-<script src="/assets/theme.js"></script>
-<link rel="stylesheet" href="/assets/style.css"><link rel="stylesheet" href="/assets/graph.css"><link rel="stylesheet" href="/assets/extras.css"><link rel="stylesheet" href="/assets/editor.css">
+<link rel="stylesheet" href="/assets/style.css"><script src="/assets/theme.js"></script><link rel="stylesheet" href="/assets/graph.css"><link rel="stylesheet" href="/assets/extras.css"><link rel="stylesheet" href="/assets/editor.css">
 <script type="module" src="/assets/editor.js"></script>
 </head>
 <body>{{.Sprite}}
 <nav class="skip" aria-label="Skip links"><a href="#toolbar" data-skip="toolbar">Skip to toolbar</a><a href="#h-outline" data-skip="outline">Skip to outline</a><a href="#h-inspector" data-skip="inspector">Skip to inspector</a><a href="#h-blocks" data-skip="blocks" hidden>Skip to blocks</a><a href="#h-assert" data-skip="assertions">Skip to assertions</a></nav>
-<header class="top"><span class="brand">bide edit</span><span class="ro" id="state-tag">saved</span><span class="ro" id="typed-tag" hidden></span><span class="grow"></span><span class="muted small" id="file"></span><div class="toolbar" id="toolbar" role="group" aria-label="Editor actions"><button type="button" class="btn primary" id="save" disabled>Save&hellip;</button><button type="button" class="btn" id="undo" disabled>Undo</button><button type="button" class="btn" id="redo" disabled>Redo</button><button type="button" class="btn" id="revert" disabled>Revert</button><button type="button" class="btn" id="theme" aria-label="Theme: switch between light and dark">Theme</button></div></header>
+<header class="top"><span class="brand">bide edit</span><span class="ro" id="state-tag">saved</span><span class="ro" id="typed-tag" hidden></span><span class="grow"></span><span class="muted small" id="file"></span><div class="toolbar" id="toolbar" role="group" aria-label="Editor actions"><button type="button" class="btn primary" id="save" disabled>Save&hellip;</button><button type="button" class="btn" id="undo" disabled>Undo</button><button type="button" class="btn" id="redo" disabled>Redo</button><button type="button" class="btn" id="revert" disabled>Revert</button><button type="button" class="btn" id="theme" aria-label="Switch theme">Theme</button><span id="theme-status" class="sr-only" role="status" aria-live="polite"></span></div></header>
 <main>
 <h1 class="sr-only" id="page-title">Flow editor</h1>
 <div id="live" class="sr-only" role="status" aria-live="polite"></div>

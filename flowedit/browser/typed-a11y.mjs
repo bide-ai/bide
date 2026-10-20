@@ -31,7 +31,7 @@ try {
     // pauses it waits out before it asks the server), so axe never reads a half-drawn state and no
     // guess of how long a redraw takes is involved.
     await page.waitForFunction(() => document.documentElement.dataset.busy === '0', { timeout: 10000 }).catch(() => { throw new Error('timed out waiting for the page to be at rest in: ' + state); });
-    for (const theme of ['light', 'dark']) {
+    for (const theme of ['light', 'dark', 'high-contrast']) {
       await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme);
       const r = await page.evaluate(() => window.axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa', 'best-practice'] } }));
       results[`${state} (${theme})`] = {

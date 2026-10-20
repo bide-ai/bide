@@ -198,3 +198,84 @@ func TestBlocksFlag(t *testing.T) {
 		t.Fatal("did not stop")
 	}
 }
+
+const acmeTheme = `{"bide_theme":1,"name":"acme-night","base":"dark","surface":{"bg":"#0e1116","accent":"#79b8ff"}}`
+
+// serveStyle runs bide edit with args and returns its style.css.
+func serveStyle(t *testing.T, args ...string) string {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var out syncBuffer
+	done := make(chan int, 1)
+	go func() {
+		done <- run(ctx, append([]string{"-addr", "127.0.0.1:0", "-color", "never"}, args...), &out, io.Discard)
+	}()
+	re := regexp.MustCompile(`serving (http://127\.0\.0\.1:\d+)/#t=`)
+	var m []string
+	for i := 0; i < 400 && m == nil; i++ {
+		m = re.FindStringSubmatch(out.String())
+		time.Sleep(10 * time.Millisecond)
+	}
+	if m == nil {
+		t.Fatalf("no address in %q", out.String())
+	}
+	res, err := http.Get(m[1] + "/assets/style.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("did not stop")
+	}
+	return string(b)
+}
+
+// -theme adds a theme file to the editor's list, and -theme-default starts the page in a theme.
+func TestThemeFlags(t *testing.T) {
+	p := write(t, "f.yaml", flow)
+	th := write(t, "acme.json", acmeTheme)
+	css := serveStyle(t, "-theme", th, p)
+	if !strings.Contains(css, `"light dark high-contrast acme-night"`) || !strings.Contains(css, `:root[data-theme="acme-night"]`) {
+		t.Error("-theme: the theme is not in the editor's stylesheet")
+	}
+	css = serveStyle(t, "-theme", th, "-theme-default", "acme-night", p)
+	if !strings.Contains(css, `--bide-default: "acme-night";`) {
+		t.Error("-theme-default: the page does not start in the theme")
+	}
+	css = serveStyle(t, "-theme-default", "high-contrast", p)
+	if !strings.Contains(css, `--bide-default: "high-contrast";`) {
+		t.Error("-theme-default names a shipped theme: not the start")
+	}
+}
+
+// A theme file that is not valid, or fails a check, is refused before anything is served; a default
+// that names no theme is a usage error.
+func TestThemeFlagErrors(t *testing.T) {
+	p := write(t, "f.yaml", flow)
+	faint := write(t, "faint.json", `{"bide_theme":1,"name":"faint","base":"light","surface":{"text":"#f6f6f2"}}`)
+	for name, c := range map[string]struct {
+		args []string
+		code int
+		want string
+	}{
+		"a missing theme file":     {[]string{"-theme", filepath.Join(t.TempDir(), "none.json"), p}, 1, "none.json"},
+		"a theme that fails C1":    {[]string{"-theme", faint, p}, 1, "C1"},
+		"a default naming nothing": {[]string{"-theme-default", "nope", p}, 2, `"nope" names no theme`},
+	} {
+		var out, errb bytes.Buffer
+		if got := run(context.Background(), append([]string{"-color", "never"}, c.args...), &out, &errb); got != c.code {
+			t.Errorf("%s: exit %d, want %d\n%s%s", name, got, c.code, out.String(), errb.String())
+		}
+		if !strings.Contains(errb.String(), c.want) {
+			t.Errorf("%s: stderr %q lacks %q", name, errb.String(), c.want)
+		}
+		if strings.Contains(out.String(), "serving") {
+			t.Errorf("%s: served anyway: %q", name, out.String())
+		}
+	}
+}

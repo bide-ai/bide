@@ -384,14 +384,20 @@ The editor is built to be used without a pointer and without dragging.
   goes back to where it was.
 - **State is not carried by color alone.** Verdicts, assertion states, gate badges and the weakened
   banner each have a glyph and words, the selected node in the outline a heavier edge, a bold name and a
-  marker (a test checks the computed styles); the diff marks lines with `+` and `-`. The two themes
-  (light and dark) follow the system and can be switched; the drawing's flowing dash stops under
-  `prefers-reduced-motion`.
+  marker (a test checks the computed styles); the diff marks lines with `+` and `-`. The page draws from
+  the checked themes ([Themes](themes.md)): `light`, `dark` and `high-contrast`, which the header
+  button steps through, a theme file of your own with `-theme`, and `-theme-default` for the start. A
+  reader whose system asks for more contrast gets `high-contrast`, and one whose system forces colors
+  gets the system's colors. A program that embeds the editor can lock it to one theme, which hides the
+  button. The selected node in the graph has a ring in the theme's focus color that is 7 px wide
+  (the heaviest state stroke is 4.5 px), and the outline list marks it too, so the selection does not
+  rest on color. A dialog dims the page with a shadow of the theme's scrim color; forced colors drop
+  shadows, so there it does not dim, and keeps its own border in the system's color. The drawing's flowing dash stops under `prefers-reduced-motion`.
 - **Tested.** `go test ./flowedit` drives the page in real Chrome (the `Editor (Chrome)` job):
   the whole path by keyboard alone (the script never uses the pointer and bounds the Tab presses it
-  needs), and axe-core over the page in light and dark in five states (as opened, a node selected
+  needs), and axe-core over the page in light, dark and high-contrast in five states (as opened, a node selected
   with its forms, a weakened banner, an assertion form with a violation, the save dialog), failing
-  on any violation. Typed mode has its own run: the palette, a filtered list, a search with no match and the NOT CERTIFIED banner under axe-core in light and dark, the palette as one Tab stop with the arrow keys, and a drag refused by type with the same words as the form.
+  on any violation. Typed mode has its own run: the palette, a filtered list, a search with no match and the NOT CERTIFIED banner under axe-core in light, dark and high-contrast, the palette as one Tab stop with the arrow keys, and a drag refused by type with the same words as the form.
 
 An automated check finds a fraction of the problems a person meets. **A manual screen-reader pass
 has not been done:** the checks above are not a substitute for one, and the checklist for it is in
