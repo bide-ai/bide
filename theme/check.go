@@ -151,9 +151,16 @@ func Check(t *Theme) Report {
 	}
 
 	// C2: non-text contrast.
-	for _, bg := range []string{"bg", "surface"} {
+	// The focus ring and the control edge are drawn on every ground a page has: the page (bg), a panel
+	// (surface), a nested panel (surface2: the Cancel button, a code block) and the graph's canvas
+	// (canvas_bg, where the selection ring is). A focus ring is also drawn on a node's fill and on the
+	// selected item's tint (accent_bg).
+	for _, bg := range []string{"bg", "surface", "surface2", "canvas_bg"} {
 		ratio("C2", nonTextContrast, "focus", c("surface.focus"), bg, c("surface."+bg))
 		ratio("C2", nonTextContrast, "border_strong", c("surface.border_strong"), bg, c("surface."+bg))
+	}
+	for _, bg := range []string{"node_fill", "accent_bg"} {
+		ratio("C2", nonTextContrast, "focus", c("surface.focus"), bg, c("surface."+bg))
 	}
 	for _, bg := range []string{"bg", "surface", "surface2", "canvas_bg"} {
 		ratio("C2", nonTextContrast, "idle", c("semantic.idle.fg"), bg, c("surface."+bg))
