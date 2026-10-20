@@ -32,7 +32,7 @@ func TestReaders_RefuseANamedPipe(t *testing.T) {
 		t.Skip("mkfifo:", err)
 	}
 	var v map[string]any
-	if err := withDeadline(t, "readStrict", func() error { return readStrict(fifo, &v) }); err == nil {
+	if err := withDeadline(t, "readStrict", func() error { return readStrict("-sth", fifo, &v) }); err == nil {
 		t.Error("readStrict read a named pipe")
 	}
 	if err := withDeadline(t, "readKey", func() error { _, err := readKey(fifo); return err }); err == nil {

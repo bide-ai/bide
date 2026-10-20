@@ -18,3 +18,11 @@ func TestReadKey_NamedPipeAndDirectory(t *testing.T) {
 		t.Error("readKey read a directory")
 	}
 }
+
+// "-" takes the key from standard input, as a secrets tool writes it.
+func TestReadKey_Stdin(t *testing.T) {
+	safefiletest.Stdin(t, safefiletest.KeyText(t)+"\n")
+	if _, err := readKey("-"); err != nil {
+		t.Fatalf("readKey(-) = %v", err)
+	}
+}

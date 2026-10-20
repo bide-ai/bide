@@ -249,6 +249,9 @@ func MainWith(args []string, in io.Reader, stdout, stderr io.Writer, stores Stor
 		}
 		return usage(fmt.Sprintf("unexpected argument %q", fs.Arg(0)))
 	}
+	if msg := f.checkStdin(); msg != "" {
+		return usage(msg)
+	}
 	if f.item != "" {
 		if msg := f.checkItem(); msg != "" {
 			return usage(msg)
@@ -298,6 +301,24 @@ func (f flags) checkItem() string {
 		return "-item does not go with -verify-receipt, which reads no journal"
 	case f.item == "-" && !f.yes:
 		return "-item - reads standard input, which the confirmation would read too: give -yes (what is signed is still shown), or put the item in a file"
+	}
+	return ""
+}
+
+// checkStdin reports a usage error in how flags that take "-" (standard input) are combined, or "".
+// Only one can read it, and the confirmation would read it too, so -yes is needed.
+func (f flags) checkStdin() string {
+	n := 0
+	for _, v := range []string{f.item, f.approverKeys, f.logKey} {
+		if v == "-" {
+			n++
+		}
+	}
+	switch {
+	case n > 1:
+		return "only one of -item, -approver-keys and -log-key can be - (standard input)"
+	case n == 1 && !f.yes:
+		return "- reads standard input, which the confirmation would read too: give -yes (what is signed is still shown), or put the file on disk"
 	}
 	return ""
 }
@@ -703,7 +724,7 @@ func (g *gateOf) preflight(run, as string, reject bool, verifierFor agent.Approv
 // approverKeys reads -approver-keys: id -> verifier. It fails closed: an entry that is not a key
 // is an error, not a skipped approver.
 func approverKeys(path string) (map[string]audit.Verifier, error) {
-	b, err := safefile.Read(path, 1<<20, nil)
+	b, err := safefile.ReadOrStdin("-approver-keys", path, 1<<20)
 	if err != nil {
 		var refused *safefile.RefusedError
 		if errors.As(err, &refused) && refused.Kind == safefile.TooLarge {
@@ -1562,7 +1583,7 @@ func readLogKey(s string) (audit.Verifier, error) {
 	if v, err := audit.ParsePublicKey(s); err == nil {
 		return v, nil
 	}
-	b, err := safefile.Read(s, 1<<20, nil)
+	b, err := safefile.ReadOrStdin("-log-key", s, 1<<20)
 	if err != nil {
 		return nil, refuse("-log-key is neither a public key (ed25519:<hex>) nor a readable file: %s", safe(unwrapPath(err).Error()))
 	}

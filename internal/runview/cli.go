@@ -425,7 +425,7 @@ func options(f flags, stores Stores) (Options, io.Closer, error) {
 		x := Exports{}
 		for _, path := range f.journals {
 			var exp audit.JournalExport
-			if err := readStrict(path, &exp); err != nil {
+			if err := readStrict("", path, &exp); err != nil {
 				return o, nil, err
 			}
 			recs, err := exp.Journal()
@@ -438,7 +438,7 @@ func options(f flags, stores Stores) (Options, io.Closer, error) {
 	}
 	if f.topo != "" {
 		var t plan.Topology
-		if err := readStrict(f.topo, &t); err != nil {
+		if err := readStrict("", f.topo, &t); err != nil {
 			return o, closer, err
 		}
 		fl := &Flow{Topology: t, Digest: f.digest, Source: "from -topology"}
@@ -466,14 +466,14 @@ func options(f flags, stores Stores) (Options, io.Closer, error) {
 		}
 		if f.sth != "" {
 			var h audit.SignedTreeHead
-			if err := readStrict(f.sth, &h); err != nil {
+			if err := readStrict("-sth", f.sth, &h); err != nil {
 				return o, closer, err
 			}
 			o.Provers = append(o.Provers, HeadProver(h, v, ap))
 		}
 		if f.evidence != "" {
 			var pkg audit.EvidencePackage
-			if err := readStrict(f.evidence, &pkg); err != nil {
+			if err := readStrict("-evidence", f.evidence, &pkg); err != nil {
 				return o, closer, err
 			}
 			o.Provers = append(o.Provers, EvidenceProver(pkg, v, ap))
@@ -534,7 +534,7 @@ func configFrom(name, path string, b []byte, toJSON func([]byte) ([]byte, error)
 // (agent.ApprovalPolicy.ValidateKeys: no two approvers on one key).
 func readApproverKeys(path string) (agent.ApproverVerifierFor, error) {
 	var text map[string]string
-	if err := readStrict(path, &text); err != nil {
+	if err := readStrict("-approver-keys", path, &text); err != nil {
 		return nil, err
 	}
 	keys := make(map[string]audit.Verifier, len(text))
@@ -560,8 +560,16 @@ const maxConfig = 16 << 20
 // maxKeyFile caps a public key file named by -pubkey: a key is a few dozen bytes.
 const maxKeyFile = 1 << 20
 
-func readStrict(path string, v any) error {
-	b, err := safefile.Read(path, maxInput, nil)
+// readStrict reads the file path (standard input for "-" when flag, the flag that names it, is not
+// empty) and decodes it strictly into v.
+func readStrict(flag, path string, v any) error {
+	var b []byte
+	var err error
+	if flag == "" {
+		b, err = safefile.Read(path, maxInput, nil)
+	} else {
+		b, err = safefile.ReadOrStdin(flag, path, maxInput)
+	}
 	if err != nil {
 		var refused *safefile.RefusedError
 		if errors.As(err, &refused) && refused.Kind == safefile.TooLarge {
@@ -582,7 +590,7 @@ func readKey(s string) (audit.Verifier, error) {
 	} else if errors.Is(err, audit.ErrWeakKey) {
 		return nil, err
 	}
-	b, err := safefile.Read(s, maxKeyFile, nil)
+	b, err := safefile.ReadOrStdin("-pubkey", s, maxKeyFile)
 	if err != nil {
 		var refused *safefile.RefusedError
 		if errors.As(err, &refused) {
@@ -640,7 +648,7 @@ func stopFeed(j *agent.Journal, f flags) (*StopFeed, error) {
 		return &StopFeed{Control: ctl}, err
 	}
 	var doc agent.StopPolicyDoc
-	if err := readStrict(f.stopPolicy, &doc); err != nil {
+	if err := readStrict("-stop-policy", f.stopPolicy, &doc); err != nil {
 		return nil, err
 	}
 	pol, err := audit.StopPolicyFromDoc(doc)

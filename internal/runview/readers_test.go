@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/internal/safefile"
+	"github.com/bide-ai/bide/internal/safefile/safefiletest"
 )
 
 // A directory named as one of those files is refused, on every platform, with the reason.
@@ -15,7 +16,7 @@ func TestReaders_RefuseADirectory(t *testing.T) {
 	dir := t.TempDir()
 	var v map[string]any
 	var refused *safefile.RefusedError
-	if err := readStrict(dir, &v); !errors.As(err, &refused) || !strings.Contains(err.Error(), "is not a regular file") {
+	if err := readStrict("-sth", dir, &v); !errors.As(err, &refused) || !strings.Contains(err.Error(), "is not a regular file") {
 		t.Errorf("readStrict(dir) = %v, want a refusal", err)
 	}
 	if _, err := readKey(dir); !errors.As(err, &refused) || !strings.Contains(err.Error(), "is not a regular file") {
@@ -32,5 +33,25 @@ func TestReaders_SizeLimits(t *testing.T) {
 	}
 	if _, err := readKey(p); err == nil || !strings.Contains(err.Error(), "larger than") {
 		t.Errorf("readKey of an oversize file = %v", err)
+	}
+}
+
+// "-" takes the key and the signed documents from standard input, one flag only.
+func TestReaders_Stdin(t *testing.T) {
+	safefiletest.Stdin(t, safefiletest.KeyText(t))
+	if _, err := readKey("-"); err != nil {
+		t.Fatalf("readKey(-) = %v", err)
+	}
+	var v map[string]any
+	if err := readStrict("-sth", "-", &v); err == nil || !strings.Contains(err.Error(), "both read standard input") {
+		t.Fatalf("readStrict(-sth, -) after readKey(-) = %v, want the stdin conflict", err)
+	}
+	safefiletest.Stdin(t, `{"a":1}`)
+	if err := readStrict("-sth", "-", &v); err != nil || v["a"] == nil {
+		t.Fatalf("readStrict(-sth, -) = %v, %v", v, err)
+	}
+	// The journals are positional files, and a file named "-" is a file there.
+	if err := readStrict("", "-", &v); err == nil {
+		t.Fatal("a positional journal named - read standard input")
 	}
 }

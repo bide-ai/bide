@@ -33,3 +33,11 @@ func TestReaders_NamedPipeAndDirectory(t *testing.T) {
 		t.Error("readHeads read a directory")
 	}
 }
+
+// "-" takes the key from standard input.
+func TestReadPubKey_Stdin(t *testing.T) {
+	safefiletest.Stdin(t, safefiletest.KeyText(t)+"\n")
+	if _, err := readPubKey("-"); err != nil {
+		t.Fatalf("readPubKey(-) = %v", err)
+	}
+}

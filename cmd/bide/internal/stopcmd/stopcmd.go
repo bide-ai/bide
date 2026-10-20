@@ -363,7 +363,7 @@ func (c *cmd) open(readOnly bool) (Opened, error) {
 
 // loadPolicy reads the stop policy file named by -stop-policy.
 func (c *cmd) loadPolicy() (agent.StopPolicy, agent.StopPolicyDoc, error) {
-	b, err := safefile.Read(c.f.stopPolicy, maxPolicyFile, nil)
+	b, err := safefile.ReadOrStdin("-stop-policy", c.f.stopPolicy, maxPolicyFile)
 	if err != nil {
 		var refused *safefile.RefusedError
 		if errors.As(err, &refused) && refused.Kind == safefile.TooLarge {

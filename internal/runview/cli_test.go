@@ -234,7 +234,7 @@ func TestReadKey(t *testing.T) {
 func TestReadStrictAndConfig(t *testing.T) {
 	dir := t.TempDir()
 	var v map[string]any
-	if err := readStrict(dir, &v); err == nil {
+	if err := readStrict("-sth", dir, &v); err == nil {
 		t.Error("readStrict of a directory succeeded")
 	}
 	if _, err := readConfig(dir, nil); err == nil {

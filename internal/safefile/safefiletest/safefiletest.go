@@ -3,8 +3,14 @@
 package safefiletest
 
 import (
+	"crypto/ed25519"
+	"encoding/hex"
+	"os"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/bide-ai/bide/internal/safefile"
 )
 
 // Deadline runs f and fails the test if it has not returned in 5 s, which is how a read of a named
@@ -18,4 +24,22 @@ func Deadline(t *testing.T, what string, f func()) {
 	case <-time.After(5 * time.Second):
 		t.Fatalf("%s blocked on a named pipe", what)
 	}
+}
+
+// KeyText returns a valid public key in the text form bide flags take, "ed25519:<hex>".
+func KeyText(t *testing.T) string {
+	t.Helper()
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return "ed25519:" + hex.EncodeToString(pub)
+}
+
+// Stdin makes s the standard input safefile.ReadOrStdin reads, for the rest of the test.
+func Stdin(t *testing.T, s string) {
+	t.Helper()
+	safefile.ResetStdin()
+	safefile.Stdin = strings.NewReader(s)
+	t.Cleanup(func() { safefile.Stdin = os.Stdin; safefile.ResetStdin() })
 }

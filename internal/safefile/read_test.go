@@ -104,3 +104,44 @@ func TestOpenIn(t *testing.T) {
 		t.Error("OpenIn left the root")
 	}
 }
+
+func TestReadOrStdin(t *testing.T) {
+	defer func() { Stdin = os.Stdin; ResetStdin() }()
+	ResetStdin()
+	Stdin = strings.NewReader("key-bytes")
+	b, err := ReadOrStdin("-pubkey", "-", 64)
+	if err != nil || string(b) != "key-bytes" {
+		t.Fatalf("stdin = %q, %v", b, err)
+	}
+	// The same flag read again gets the same bytes; another flag is told stdin is taken.
+	if b, err := ReadOrStdin("-pubkey", "-", 64); err != nil || string(b) != "key-bytes" {
+		t.Errorf("second read by the same flag = %q, %v", b, err)
+	}
+	if _, err := ReadOrStdin("-stop-policy", "-", 64); err == nil || !strings.Contains(err.Error(), "both read standard input") {
+		t.Errorf("a second flag = %v, want a refusal naming both", err)
+	}
+	// A path that is not "-" is Read.
+	p := filepath.Join(t.TempDir(), "f")
+	if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := ReadOrStdin("-pubkey", p, 64); err != nil || string(b) != "x" {
+		t.Errorf("a file = %q, %v", b, err)
+	}
+	// Over the limit, and empty.
+	ResetStdin()
+	Stdin = strings.NewReader("123456")
+	_, err = ReadOrStdin("-k", "-", 5)
+	refusal(t, err, TooLarge)
+	ResetStdin()
+	Stdin = strings.NewReader("")
+	if _, err := ReadOrStdin("-k", "-", 5); err == nil || !strings.Contains(err.Error(), "empty") {
+		t.Errorf("empty stdin = %v", err)
+	}
+	// The limit is not passed: exactly max is read.
+	ResetStdin()
+	Stdin = strings.NewReader("12345")
+	if b, err := ReadOrStdin("-k", "-", 5); err != nil || string(b) != "12345" {
+		t.Errorf("exactly the limit = %q, %v", b, err)
+	}
+}

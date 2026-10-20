@@ -41,3 +41,30 @@ func TestReaders_NamedPipeAndDirectory(t *testing.T) {
 		t.Error("readItem read a directory")
 	}
 }
+
+// Only one flag can read standard input, and the confirmation would read it too, so -yes is needed.
+func TestCheckStdin(t *testing.T) {
+	if msg := (flags{approverKeys: "-", yes: true}).checkStdin(); msg != "" {
+		t.Errorf("one - with -yes: %q", msg)
+	}
+	if msg := (flags{approverKeys: "-"}).checkStdin(); !strings.Contains(msg, "-yes") {
+		t.Errorf("- without -yes: %q", msg)
+	}
+	if msg := (flags{approverKeys: "-", logKey: "-", yes: true}).checkStdin(); !strings.Contains(msg, "only one") {
+		t.Errorf("two -: %q", msg)
+	}
+	if msg := (flags{item: "-", approverKeys: "-", yes: true}).checkStdin(); !strings.Contains(msg, "only one") {
+		t.Errorf("-item and another: %q", msg)
+	}
+}
+
+// "-" takes the log key and the approver keys from standard input; one stdin, one flag.
+func TestReaders_Stdin(t *testing.T) {
+	safefiletest.Stdin(t, safefiletest.KeyText(t))
+	if _, err := readLogKey("-"); err != nil {
+		t.Fatalf("readLogKey(-) = %v", err)
+	}
+	if _, err := approverKeys("-"); err == nil || !strings.Contains(err.Error(), "both read standard input") {
+		t.Fatalf("approverKeys(-) after readLogKey(-) = %v, want the stdin conflict", err)
+	}
+}
