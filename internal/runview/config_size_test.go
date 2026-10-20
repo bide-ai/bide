@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -51,5 +52,23 @@ func TestReadOld_GitRevisionSizeLimit(t *testing.T) {
 	t.Chdir(repo)
 	if _, err := readOld("HEAD:big.json", "", nil); err == nil || !strings.Contains(err.Error(), "larger than 16777216 bytes") {
 		t.Fatalf("readOld of a revision of 16 MiB + 1 = %v, want a size error", err)
+	}
+	// A revision far over the limit is refused without being held in memory: git show is stopped
+	// at the limit, not buffered whole first.
+	if err := os.WriteFile(filepath.Join(repo, "huge.json"), []byte(strings.Repeat(" ", 96<<20)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", ".")
+	git("commit", "-q", "-m", "huge")
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	_, err := readOld("HEAD:huge.json", "", nil)
+	runtime.ReadMemStats(&after)
+	if err == nil || !strings.Contains(err.Error(), "larger than 16777216 bytes") {
+		t.Fatalf("readOld of a 96 MiB revision = %v, want a size error", err)
+	}
+	if got := after.TotalAlloc - before.TotalAlloc; got > 48<<20 {
+		t.Fatalf("readOld of a 96 MiB revision allocated %d bytes: the blob was buffered whole", got)
 	}
 }

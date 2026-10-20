@@ -1098,14 +1098,48 @@ func readOld(arg, newPath string, toJSON func([]byte) ([]byte, error)) (Config, 
 	}
 	cmd := exec.Command("git", "show", spec)
 	cmd.Dir = dir
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
+	stderr := &limitedBuffer{max: 4 << 10}
+	cmd.Stderr = stderr
+	pipe, err := cmd.StdoutPipe()
 	if err != nil {
-		return Config{}, fmt.Errorf("-diff %q: no such file, and git show %s failed: %s", arg, spec, cmp.Or(strings.TrimSpace(stderr.String()), err.Error()))
+		return Config{}, fmt.Errorf("-diff %q: git show %s: %w", arg, spec, err)
 	}
+	if err := cmd.Start(); err != nil {
+		return Config{}, fmt.Errorf("-diff %q: no such file, and git show %s failed: %w", arg, spec, err)
+	}
+	// Read at most the limit: a larger blob is not held in memory, git is stopped instead.
+	out, rerr := io.ReadAll(io.LimitReader(pipe, maxConfig+1))
 	if len(out) > maxConfig {
+		_ = cmd.Process.Kill()
+		_, _ = io.Copy(io.Discard, pipe)
+		_ = cmd.Wait()
 		return Config{}, fmt.Errorf("-diff %q: larger than %d bytes", arg, maxConfig)
 	}
+	if err := cmd.Wait(); err != nil || rerr != nil {
+		return Config{}, fmt.Errorf("-diff %q: no such file, and git show %s failed: %s", arg, spec, cmp.Or(strings.TrimSpace(stderr.String()), errString(cmp.Or(err, rerr))))
+	}
 	return configFrom(spec, path, out, toJSON)
+}
+
+// limitedBuffer keeps the first max bytes written to it and drops the rest, so a command's stderr
+// cannot grow without bound.
+type limitedBuffer struct {
+	max int
+	b   strings.Builder
+}
+
+func (l *limitedBuffer) Write(p []byte) (int, error) {
+	if room := l.max - l.b.Len(); room > 0 {
+		l.b.Write(p[:min(len(p), room)])
+	}
+	return len(p), nil
+}
+
+func (l *limitedBuffer) String() string { return l.b.String() }
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }

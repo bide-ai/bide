@@ -482,6 +482,9 @@ func options(f flags, stores Stores) (Options, io.Closer, error) {
 
 // readConfig reads a flow config file, converting a .yaml or .yml file to JSON with toJSON.
 func readConfig(path string, toJSON func([]byte) ([]byte, error)) (Config, error) {
+	if fi, err := os.Stat(path); err == nil && !fi.Mode().IsRegular() && !fi.IsDir() {
+		return Config{}, fmt.Errorf("%s is not a regular file", path) // a named pipe would block the open
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return Config{}, err
