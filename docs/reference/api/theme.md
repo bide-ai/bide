@@ -17,7 +17,7 @@ Package theme is the theme layer of bide's visual pages: a theme is a small JSON
 
 **Functions**
 
-- `func Load(path string) (*Theme, Report, error)`: Load reads and checks a custom theme file: Parse on the file's bytes, read with the size limit.
+- `func Load(path string) (*Theme, Report, error)`: Load reads and checks a custom theme file: Parse on the file's bytes.
 - `func Parse(data []byte) (*Theme, Report, error)`: Parse reads a custom theme: strict JSON of at most MaxSize bytes that names a shipped base and overrides some of its values.
 
 ## type CheckError
@@ -107,5 +107,5 @@ Theme is a parsed, resolved and checked theme: every token has a value.
 
 - `func (t *Theme) Dark() bool`: Dark reports whether the theme's ground is dark: the relative luminance of its background is below 0.18.
 - `func (t *Theme) Name() string`: Name is the theme's name, the value of data-theme that selects it.
-- `func (t *Theme) Report() Report`: Report returns the theme's check report, which for a theme that parsed holds only warnings.
+- `func (t *Theme) Report() Report`: Report returns a copy of the theme's check report, which for a theme that parsed holds only warnings.
 - `func (t *Theme) Shipped() bool`: Shipped reports whether the theme is one of bide's own.
