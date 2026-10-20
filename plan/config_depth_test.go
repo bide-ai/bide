@@ -52,3 +52,20 @@ func TestConfigErrors_LongNamesAreBounded(t *testing.T) {
 		}
 	}
 }
+
+func TestBoundMessage(t *testing.T) {
+	long := strings.Repeat("n", 300)
+	for in, want := range map[string]string{
+		`node "a" has a problem`: `node "a" has a problem`,
+		`node "` + long + `" connects "b" (types must match exactly)`: `node "` + long[:64] + `..." connects "b" (types must match exactly)`,
+		`key "a\"` + long + `" end`:                                   `key "a\"` + long[:61] + `..." end`,
+		`unclosed "` + long:                                           `unclosed "` + long,
+	} {
+		if got := boundMessage(in); got != want {
+			t.Errorf("boundMessage(%.40q...) = %.80q, want %.80q", in, got, want)
+		}
+	}
+	if got := boundMessage(strings.Repeat("x", 5000)); len(got) > 2100 || !strings.Contains(got, " ... ") {
+		t.Errorf("a long message with no names keeps its head and tail: %d bytes", len(got))
+	}
+}
