@@ -2,6 +2,7 @@ package flowedit
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,10 +41,18 @@ type themeState struct {
 		Seen int      `json:"seen"`
 		Bad  []string `json:"bad"`
 	} `json:"audit"`
-	SelStroke string `json:"selStroke"`
-	Focus     string `json:"focus"`
-	Backdrop  string `json:"backdrop"`
-	Scrim     string `json:"scrim"`
+	SelStroke  string `json:"selStroke"`
+	Focus      string `json:"focus"`
+	Scrim      string `json:"scrim"`
+	LineStrong string `json:"lineStrong"`
+	Dim        struct {
+		Before []int `json:"before"`
+		After  []int `json:"after"`
+		Edge   struct {
+			Width float64 `json:"width"`
+			Color string  `json:"color"`
+		} `json:"edge"`
+	} `json:"dim"`
 }
 
 // themesRun is what browser/themes.mjs prints: a measurement per mode, and the switch's cycle.
@@ -117,14 +126,38 @@ func checkPainted(t *testing.T, key string, m themeState) {
 	if m.SelStroke == "" || m.SelStroke != m.Focus {
 		t.Errorf("%s: the selected node's ring is %q, want the focus token %q", key, m.SelStroke, m.Focus)
 	}
-	if m.SelWidth < m.OtherWidth+2 {
-		t.Errorf("%s: the selected node's ring is %gpx against %gpx for the heaviest other node: selection needs a shape cue beside the colour", key, m.SelWidth, m.OtherWidth)
+	// The heaviest state stroke in graph.css is 3.8 px (a counterexample path); a selected node, whatever
+	// its state, is at least 2 px heavier, so selection has a shape cue beside the colour.
+	const heaviestState = 3.8
+	if m.SelWidth < heaviestState+2 || m.SelWidth < m.OtherWidth+2 {
+		t.Errorf("%s: the selected node's ring is %gpx (the heaviest other node %gpx, the heaviest state stroke %gpx): selection needs a shape cue beside the colour", key, m.SelWidth, m.OtherWidth, heaviestState)
 	}
 	if m.Audit.Seen < 12 || len(m.Audit.Bad) > 0 {
 		t.Errorf("%s: %d controls audited; the theme does not reach: %q", key, m.Audit.Seen, m.Audit.Bad)
 	}
-	if m.Backdrop != m.Scrim || m.Backdrop == "rgba(0, 0, 0, 0)" {
-		t.Errorf("%s: the dialog backdrop is %q, want the scrim token %q", key, m.Backdrop, m.Scrim)
+	// The dialog dims the page by the scrim's alpha (a pixel far from it is the page's pixel times
+	// 1 - alpha), in every engine that paints a shadow, and keeps its own edge.
+	var alpha float64
+	if _, err := fmt.Sscanf(m.Scrim, "rgba(0, 0, 0, %g)", &alpha); err != nil || alpha < 0.2 {
+		t.Errorf("%s: the scrim token is %q, want a black with an alpha of at least 0.2", key, m.Scrim)
+	}
+	for i := 0; i < 3 && len(m.Dim.Before) == 3 && len(m.Dim.After) == 3; i++ {
+		want := float64(m.Dim.Before[i]) * (1 - alpha)
+		if got := float64(m.Dim.After[i]); got < want-3 || got > want+3 || (m.Dim.Before[i] > 40 && m.Dim.After[i] >= m.Dim.Before[i]) {
+			t.Errorf("%s: channel %d of a pixel beside the dialog is %d before it opens and %d after, want about %.0f (the scrim dims the page)", key, i, m.Dim.Before[i], m.Dim.After[i], want)
+		}
+	}
+	if len(m.Dim.Before) != 3 || m.Dim.Edge.Width < 1 || m.Dim.Edge.Color != m.LineStrong {
+		t.Errorf("%s: the dialog's edge is %gpx %s, want 1px or more in the border_strong token %s", key, m.Dim.Edge.Width, m.Dim.Edge.Color, m.LineStrong)
+	}
+}
+
+// checkForcedDialog: forced colors drop shadows, so the dialog does not dim the page there; it is still
+// modal and keeps a visible edge in the system's border color.
+func checkForcedDialog(t *testing.T, key string, m themeState) {
+	t.Helper()
+	if m.Dim.Edge.Width < 1 || m.Dim.Edge.Color != m.LineStrong || m.Dim.Edge.Color == "rgba(0, 0, 0, 0)" {
+		t.Errorf("%s: the dialog's edge is %gpx %s, want a visible edge in the system's border color %s", key, m.Dim.Edge.Width, m.Dim.Edge.Color, m.LineStrong)
 	}
 }
 
@@ -144,6 +177,7 @@ func TestThemesInChrome(t *testing.T) {
 			if !m.Forced || !strings.Contains(m.SwitchLabel, "system's colors are in force") {
 				t.Errorf("forced colors: forced %v, switch label %q", m.Forced, m.SwitchLabel)
 			}
+			checkForcedDialog(t, key, m)
 			continue
 		}
 		checkPainted(t, key, m)
@@ -201,7 +235,9 @@ func TestLockedThemeInChrome(t *testing.T) {
 		if !m.SwitchHidden || m.SwitchDisplay != "none" || strings.Join(m.Names, " ") != "dark" {
 			t.Errorf("%s: the page offers %q with the switch hidden=%v displayed as %q; want dark only and no switch", key, m.Names, m.SwitchHidden, m.SwitchDisplay)
 		}
-		if key != "locked+forced-colors" {
+		if key == "locked+forced-colors" {
+			checkForcedDialog(t, key, m)
+		} else {
 			checkPainted(t, key, m)
 		}
 	}

@@ -24,13 +24,14 @@ main { max-width: 1480px; }
 .inspector dd { margin: 0; overflow-wrap: anywhere; }
 .source { width: 100%; min-height: 20em; background: var(--card); color: var(--fg); border: 1px solid var(--line-strong); border-radius: var(--r-md); padding: var(--s3); font: var(--t-sm)/1.5 var(--mono); white-space: pre; overflow: auto; resize: vertical; tab-size: 2; }
 /* The selection ring is the focus token over the state's stroke (the fill and the dashes still tell the state). A declared node's state rule has four classes, so the ring names it too. */
-.node.sel .box, .node.declared.sel .box { stroke-width: 6; stroke: var(--focus); }
+.node.sel .box, .node.declared.sel .box { stroke-width: 7; stroke: var(--focus); }
 .assert { margin: var(--s1) 0; }
 .weakened { margin-top: var(--s3); }
 .btn.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 600; }
 .btn:disabled { opacity: .5; cursor: default; }
-dialog { max-width: min(900px, 94vw); width: 100%; background: var(--card); color: var(--fg); border: 1px solid var(--line-strong); border-radius: var(--r-lg); padding: var(--s5); box-shadow: var(--shadow); }
-dialog::backdrop { background: var(--scrim); }
+dialog { max-width: min(900px, 94vw); width: 100%; background: var(--card); color: var(--fg); border: 1px solid var(--line-strong); border-radius: var(--r-lg); padding: var(--s5); box-shadow: 0 0 0 100vmax var(--scrim); }
+/* The page is dimmed by a shadow of the scrim around the dialog, not by ::backdrop: an engine that does not pass custom properties to ::backdrop (before 2024) would show no dimming. Forced colors drop shadows; the dialog keeps its edge. */
+dialog::backdrop { background: none; }
 dialog h2 { margin-top: 0; }
 .dialog-actions { display: flex; gap: var(--s3); justify-content: flex-end; margin-top: var(--s4); }
 .diff { max-height: 22em; overflow: auto; background: var(--card-2); border: 1px solid var(--line); border-radius: var(--r-sm); padding: var(--s2) var(--s3); white-space: pre; }

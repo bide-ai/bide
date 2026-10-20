@@ -389,7 +389,10 @@ The editor is built to be used without a pointer and without dragging.
   button steps through, a theme file of your own with `-theme`, and `-theme-default` for the start. A
   reader whose system asks for more contrast gets `high-contrast`, and one whose system forces colors
   gets the system's colors. A program that embeds the editor can lock it to one theme, which hides the
-  button. The drawing's flowing dash stops under `prefers-reduced-motion`.
+  button. The selected node in the graph has a ring in the theme's focus color that is 7 px wide
+  (the heaviest state stroke is 4.5 px), and the outline list marks it too, so the selection does not
+  rest on color. A dialog dims the page with a shadow of the theme's scrim color; forced colors drop
+  shadows, so there it does not dim, and keeps its own border in the system's color. The drawing's flowing dash stops under `prefers-reduced-motion`.
 - **Tested.** `go test ./flowedit` drives the page in real Chrome (the `Editor (Chrome)` job):
   the whole path by keyboard alone (the script never uses the pointer and bounds the Tab presses it
   needs), and axe-core over the page in light, dark and high-contrast in five states (as opened, a node selected

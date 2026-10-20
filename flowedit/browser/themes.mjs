@@ -44,10 +44,6 @@ try {
     const primary = { text: rgb(cs(sample, 'color')), fill: rgb(cs(sample, 'backgroundColor')) };
     sample.remove();
     const control = (sel) => { const e = document.querySelector(sel); const bc = rgb(cs(e, 'borderTopColor')); return { sel, width: parseFloat(cs(e, 'borderTopWidth')), color: cs(e, 'borderTopColor'), strong: probe(token('--line-strong')), ratio: ratio(bc, under(e.parentElement)) }; };
-    const dlg = document.getElementById('dialog');
-    dlg.showModal();
-    const backdrop = cs(dlg, 'backgroundColor', '::backdrop');
-    dlg.close();
     const sel = document.querySelector('#canvas .node.sel .box');
     const b = document.getElementById('theme');
     const t = window.bideTheme;
@@ -59,7 +55,7 @@ try {
       selStroke: sel ? cs(sel, 'stroke') : '', focus: probe(token('--focus')),
       selWidth: sel ? parseFloat(cs(sel, 'strokeWidth')) : 0,
       otherWidth: Math.max(...[...document.querySelectorAll('#canvas .node:not(.sel) .box')].map((e) => parseFloat(cs(e, 'strokeWidth')))),
-      backdrop, scrim: probe(token('--scrim')),
+      scrim: probe(token('--scrim')), lineStrong: probe(token('--line-strong')),
     };
   });
 
@@ -85,6 +81,25 @@ try {
     return { seen, bad };
   });
 
+  // The dialog dims the page and keeps its own edge: the colour of one pixel far from the dialog,
+  // before and after it opens, and the dialog's border.
+  const dim = async () => {
+    const px = async () => {
+      const b64 = await page.screenshot({ clip: { x: 2, y: 2, width: 1, height: 1 }, encoding: 'base64' });
+      return page.evaluate(async (b) => {
+        const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = 'data:image/png;base64,' + b; });
+        const c = document.createElement('canvas'); c.width = img.width; c.height = img.height;
+        const g = c.getContext('2d'); g.drawImage(img, 0, 0);
+        return [...g.getImageData(0, 0, 1, 1).data].slice(0, 3);
+      }, b64);
+    };
+    const before = await px();
+    await page.evaluate(() => document.getElementById('dialog').showModal());
+    const after = await px();
+    const edge = await page.evaluate(() => { const d = document.getElementById('dialog'); const s = getComputedStyle(d); const r = { width: parseFloat(s.borderTopWidth), color: s.borderTopColor }; d.close(); return r; });
+    return { before, after, edge };
+  };
+
   const mode = async (key, features, theme) => {
     await page.emulateMediaFeatures(features);
     await page.evaluate((t) => { if (t) document.documentElement.setAttribute('data-theme', t); else document.documentElement.removeAttribute('data-theme'); }, theme);
@@ -92,6 +107,7 @@ try {
     await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
     const v = await measure();
     v.audit = await audit();
+    v.dim = await dim();
     return [key, v];
   };
 
