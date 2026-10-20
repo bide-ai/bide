@@ -524,21 +524,20 @@ func TestPageContractForTypedMode(t *testing.T) {
 	}
 }
 
-// The refusal of a misfit needs the rest of the config to resolve, because plan checks types after it
-// resolves every block and safety. A text that has such a problem is not refused for a misfit it also has,
-// and the problem is in the verdict; this pins the limit the guide states.
-func TestTypedRefusalNeedsTheRestOfTheConfigToResolve(t *testing.T) {
+// The refusal of a misfit does not need the rest of the config to resolve: plan finds the type problems
+// from the config and the registered types alone, so an unknown block elsewhere does not hide a misfit
+// an edit adds (it once did, and the edit went through).
+func TestTypedRefusalDoesNotNeedTheRestOfTheConfigToResolve(t *testing.T) {
 	s := typedServers(t, "refund.yaml", testFlow)["registry"]
 	broken := strings.Replace(testFlow, "block: receipt", "block: nowhere", 1) // an unknown block elsewhere
 	w := call(s.Handler(), s, "/api/apply", applyReq(broken, Operation{Op: "set_block", Node: "charge", Value: "count"}), nil)
-	var e Edited
-	if err := json.Unmarshal(w.Body.Bytes(), &e); err != nil || !e.Changed || e.Errors == 0 {
-		t.Errorf("a misfit beside an unknown block: %d %s", w.Code, w.Body)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"refused":"the types do not fit: `) {
+		t.Errorf("a misfit beside an unknown block was not refused: %d %s", w.Code, w.Body)
 	}
 }
 
-// A config with an error elsewhere and a connection that does not fit: the misfit is not listed (plan
-// checks types after it resolves every block), so the view must not read as checked. Its verdict is not
+// A config with an error elsewhere and a connection that does not fit: the view must not read as
+// checked, whatever is listed. Its verdict is not
 // good, it has errors, each node still carries the types the program gave its block (so the page marks
 // the target), the weakening is not certified, and a save needs confirming.
 func TestAMisfitBesideAnotherErrorNeverReadsAsChecked(t *testing.T) {
@@ -808,7 +807,7 @@ func TestTypedEditorIgnoresWiringPositionsWhenComparingProblems(t *testing.T) {
 	for _, kind := range []string{"registry", "description"} {
 		s := servers[kind]
 		h := s.Handler()
-		w := call(h, s, "/api/apply", applyReq(text, Operation{Op: "set_safety", Node: "y", Value: "readonly"}), nil)
+		w := call(h, s, "/api/apply", applyReq(text, Operation{Op: "set_safety", Node: "y", Value: "side_effect"}), nil)
 		if strings.Contains(w.Body.String(), `"refused"`) {
 			t.Fatalf("%s: the text with its one existing misfit refuses an unrelated edit: %.300s", kind, w.Body)
 		}
@@ -837,8 +836,14 @@ func TestTypedEditorSeesTypeProblemsBesideOtherErrors(t *testing.T) {
 		// receipt states safety idempotent, which the int step (side effect) does not allow: an error of
 		// another kind comes with the misfit.
 		w := call(s.Handler(), s, "/api/apply", applyReq(chainFlow, Operation{Op: "set_block", Node: "receipt", Value: "count"}), nil)
-		if !strings.Contains(w.Body.String(), `"refused":"the types do not fit: `) {
+		if !strings.Contains(w.Body.String(), `"refused":"`) {
 			t.Errorf("%s: a misfit beside a safety error was not refused: %.300s", kind, w.Body)
+		}
+		// With the safety stated low enough, only the misfit is left, and it is refused as one.
+		low := strings.Replace(chainFlow, "{name: receipt, block: receipt, safety: idempotent}", "{name: receipt, block: receipt}", 1)
+		w = call(s.Handler(), s, "/api/apply", applyReq(low, Operation{Op: "set_block", Node: "receipt", Value: "count"}), nil)
+		if !strings.Contains(w.Body.String(), `"refused":"the types do not fit: `) {
+			t.Errorf("%s: a misfit without a safety error was not refused: %.300s", kind, w.Body)
 		}
 	}
 }

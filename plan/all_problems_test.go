@@ -358,3 +358,24 @@ func TestInspectConfig_SafetyAboveTheRegistrationIsAlwaysReported(t *testing.T) 
 		}
 	}
 }
+
+// The refusals only Build makes are found beside a structural error too (an edge to a name the config
+// does not have), with and without a Registry: the wiring is checked among the parts that resolve.
+func TestInspectConfig_BuildOnlyLoopProblemsBesideAStructuralError(t *testing.T) {
+	cfg := `{"version":1,"flow":"f","entry":"a","nodes":[{"name":"a","block":"s2s"},{"name":"b","block":"s2s"},{"name":"c","block":"s2s"},{"name":"x","block":"s2s"},{"name":"y","block":"s2s"}],
+	  "wiring":[{"edge":["a","b"]},{"switch":"b","when":[{"pred":"nonEmpty","to":"a","loop_max":3}],"else":"c"},{"edge":["a","x"]},{"edge":["a","y"]},{"edge":["c","ghost"]}]}`
+	for name, reg := range map[string]*Registry{"structural": nil, "typed": typedChainRegistry(t)} {
+		var leaves, ghost int
+		for _, p := range InspectConfig([]byte(cfg), reg, AllowUnusedBlocks()).Problems {
+			if strings.Contains(p.Message, "leaves the loop") {
+				leaves++
+			}
+			if strings.Contains(p.Message, `"ghost"`) {
+				ghost++
+			}
+		}
+		if leaves != 2 || ghost == 0 {
+			t.Errorf("%s: %d edges that leave the loop and %d problems about the unknown name; want 2 and at least 1", name, leaves, ghost)
+		}
+	}
+}
