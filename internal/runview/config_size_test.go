@@ -1,6 +1,9 @@
 package runview
 
 import (
+	"errors"
+
+	"github.com/bide-ai/bide/agent"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -70,5 +73,41 @@ func TestReadOld_GitRevisionSizeLimit(t *testing.T) {
 	}
 	if got := after.TotalAlloc - before.TotalAlloc; got > 48<<20 {
 		t.Fatalf("readOld of a 96 MiB revision allocated %d bytes: the blob was buffered whole", got)
+	}
+}
+
+// endless yields spaces for ever and counts how many it handed over.
+type endless struct{ n int }
+
+func (e *endless) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = ' '
+	}
+	e.n += len(p)
+	return len(p), nil
+}
+
+// A config input is read for at most one byte past the limit, and a longer one is refused with
+// agent.ErrConfig: nothing is read to the end of an input that has none.
+func TestReadConfigBytes_StopsAtTheLimit(t *testing.T) {
+	r := &endless{}
+	_, err := readConfigBytes(r)
+	if !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "larger than 16777216 bytes") {
+		t.Fatalf("readConfigBytes(endless) = %v, want ErrConfig naming the limit", err)
+	}
+	// io.LimitReader hands over at most cap+1 bytes; the wrapper may have been asked for a buffer
+	// more than that, but never for a second read after the limit.
+	if r.n > 16<<20+1+64<<10 {
+		t.Fatalf("read %d bytes of an endless input, want about %d", r.n, 16<<20+1)
+	}
+	if b, err := readConfigBytes(strings.NewReader("{}")); err != nil || string(b) != "{}" {
+		t.Fatalf("readConfigBytes of a small input = %q, %v", b, err)
+	}
+}
+
+// readConfig refuses a directory as it does a pipe, with agent.ErrConfig.
+func TestReadConfig_RefusesADirectory(t *testing.T) {
+	if _, err := readConfig(t.TempDir(), nil); !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("readConfig(dir) = %v, want ErrConfig", err)
 	}
 }

@@ -3,6 +3,9 @@
 package runview
 
 import (
+	"errors"
+
+	"github.com/bide-ai/bide/agent"
 	"path/filepath"
 	"syscall"
 	"testing"
@@ -19,8 +22,8 @@ func TestReadConfig_RefusesANonRegularFile(t *testing.T) {
 	go func() { _, err := readConfig(fifo, nil); done <- err }()
 	select {
 	case err := <-done:
-		if err == nil {
-			t.Fatal("a named pipe was read as a config")
+		if !errors.Is(err, agent.ErrConfig) {
+			t.Fatalf("readConfig(named pipe) = %v, want ErrConfig", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("readConfig blocked on a named pipe")

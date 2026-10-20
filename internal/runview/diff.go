@@ -3,6 +3,7 @@ package runview
 import (
 	"cmp"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/bide-ai/bide/agent"
 	safetext "github.com/bide-ai/bide/internal/printable"
 	"github.com/bide-ai/bide/internal/term"
 	"github.com/bide-ai/bide/plan"
@@ -1108,12 +1110,12 @@ func readOld(arg, newPath string, toJSON func([]byte) ([]byte, error)) (Config, 
 		return Config{}, fmt.Errorf("-diff %q: no such file, and git show %s failed: %w", arg, spec, err)
 	}
 	// Read at most the limit: a larger blob is not held in memory, git is stopped instead.
-	out, rerr := io.ReadAll(io.LimitReader(pipe, maxConfig+1))
-	if len(out) > maxConfig {
+	out, rerr := readConfigBytes(pipe)
+	if errors.Is(rerr, agent.ErrConfig) {
 		_ = cmd.Process.Kill()
 		_, _ = io.Copy(io.Discard, pipe)
 		_ = cmd.Wait()
-		return Config{}, fmt.Errorf("-diff %q: larger than %d bytes", arg, maxConfig)
+		return Config{}, fmt.Errorf("-diff %q: %w", arg, rerr)
 	}
 	if err := cmd.Wait(); err != nil || rerr != nil {
 		return Config{}, fmt.Errorf("-diff %q: no such file, and git show %s failed: %s", arg, spec, cmp.Or(strings.TrimSpace(stderr.String()), errString(cmp.Or(err, rerr))))
