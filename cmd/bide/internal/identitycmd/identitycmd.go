@@ -33,6 +33,7 @@ import (
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/audit/crlrefresh"
 	"github.com/bide-ai/bide/internal/policyfile"
+	"github.com/bide-ai/bide/internal/safefile"
 	"github.com/bide-ai/bide/internal/term"
 )
 
@@ -238,7 +239,7 @@ func build(c *common, lw *lineWriter) (*crlrefresh.Refresher, error) {
 	if err != nil {
 		return nil, err
 	}
-	pb, err := os.ReadFile(c.params)
+	pb, err := safefile.Read(c.params, 1<<20, nil)
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", c.params, err)
 	}

@@ -29,6 +29,7 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/cmd/bide/internal/approvecmd"
+	"github.com/bide-ai/bide/internal/safefile"
 	"github.com/bide-ai/bide/internal/term"
 	"github.com/bide-ai/bide/store/postgres"
 	"github.com/bide-ai/bide/store/sqlite"
@@ -540,8 +541,12 @@ func appendLine(path string, v any) error {
 	return f.Close()
 }
 
+// maxJournalFile caps a file the journal verbs read (a JSON document, the signed heads): as large
+// as bide audit's default input limit.
+const maxJournalFile = 256 << 20
+
 func readJSON(path string, v any) error {
-	b, err := os.ReadFile(path)
+	b, err := safefile.Read(path, maxJournalFile, nil)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", path, err)
 	}
@@ -555,7 +560,7 @@ func readPubKey(s string) (audit.Verifier, error) {
 	if v, err := audit.ParsePublicKey(s); err == nil {
 		return v, nil
 	}
-	b, err := os.ReadFile(s)
+	b, err := safefile.Read(s, 1<<20, nil)
 	if err != nil {
 		return nil, fmt.Errorf("-pubkey: not a public key (ed25519:<hex> or 64 hex digits) and not a readable file: %w", err)
 	}
@@ -693,7 +698,7 @@ func subRuns(ctx context.Context, j *agent.Journal, run string) ([]string, error
 // readHeads reads the signed heads in path, one JSON head per line; a file that does not exist holds
 // none.
 func readHeads(path string) ([]audit.SignedTreeHead, error) {
-	b, err := os.ReadFile(path)
+	b, err := safefile.Read(path, maxJournalFile, nil)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}

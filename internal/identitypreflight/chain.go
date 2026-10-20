@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
-	"io"
-	"os"
 	"strings"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/safefile"
 )
 
 // maxChainFile bounds what is read from a certificate file: the longest chain a decision may carry in PEM,
@@ -21,17 +21,13 @@ const maxChainFile = agent.MaxDecisionCertChain * agent.MaxDecisionCertDER * 2
 // flag names the option for messages. A file that cannot be read is an IOError; one that is not a chain is
 // a finding, returned as the error text.
 func readChain(path, flag string) (der [][]byte, problem string, err error) {
-	f, err := os.Open(path)
+	b, err := safefile.Read(path, maxChainFile, nil)
 	if err != nil {
+		var refused *safefile.RefusedError
+		if errors.As(err, &refused) && refused.Kind == safefile.TooLarge {
+			return nil, fmt.Sprintf("%s is larger than %d bytes: it is not a certificate chain", flag, maxChainFile), nil
+		}
 		return nil, "", &IOError{Err: fmt.Errorf("%s: %w", flag, err)}
-	}
-	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, maxChainFile+1))
-	if err != nil {
-		return nil, "", &IOError{Err: fmt.Errorf("%s: %w", flag, err)}
-	}
-	if len(b) > maxChainFile {
-		return nil, fmt.Sprintf("%s is larger than %d bytes: it is not a certificate chain", flag, maxChainFile), nil
 	}
 	rest := b
 	for {

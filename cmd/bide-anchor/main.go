@@ -43,6 +43,7 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/anchor/awss3"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/safefile"
 )
 
 func main() {
@@ -392,7 +393,7 @@ func readKey(s string) (audit.Verifier, error) {
 	if v, err := audit.ParsePublicKey(s); err == nil {
 		return v, nil
 	}
-	b, err := os.ReadFile(s)
+	b, err := safefile.Read(s, 1<<20, nil)
 	if err != nil {
 		return nil, fmt.Errorf("-pubkey takes ed25519:<hex> or a file holding it: %q is neither", s)
 	}

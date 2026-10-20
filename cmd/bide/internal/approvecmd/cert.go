@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"github.com/bide-ai/bide/internal/safefile"
 	"github.com/bide-ai/bide/internal/term"
 	"io"
 	"os"
@@ -46,17 +47,13 @@ type certChain struct {
 // has no data outside the blocks, and holds at most agent.MaxDecisionCertChain certificates, each no
 // larger than agent.MaxDecisionCertDER. Every certificate must parse.
 func readChain(path string) (*certChain, error) {
-	f, err := os.Open(path)
+	b, err := safefile.Read(path, maxChainFile, nil)
 	if err != nil {
+		var refused *safefile.RefusedError
+		if errors.As(err, &refused) && refused.Kind == safefile.TooLarge {
+			return nil, refuse("-cert is larger than %d bytes: it is not a certificate chain", maxChainFile)
+		}
 		return nil, refuse("-cert: %s", safe(unwrapPath(err).Error()))
-	}
-	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, maxChainFile+1))
-	if err != nil {
-		return nil, refuse("-cert: %s", safe(unwrapPath(err).Error()))
-	}
-	if len(b) > maxChainFile {
-		return nil, refuse("-cert is larger than %d bytes: it is not a certificate chain", maxChainFile)
 	}
 	var cc certChain
 	rest := b

@@ -23,6 +23,7 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/approvals"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/safefile"
 )
 
 // -to <url> decides through an application's approval intake (package approvals)
@@ -75,7 +76,7 @@ func loopback(host string) bool {
 func (c *cmd) httpClient() (*http.Client, error) {
 	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
 	if c.f.tlsCA != "" {
-		pem, err := os.ReadFile(c.f.tlsCA)
+		pem, err := safefile.Read(c.f.tlsCA, 1<<20, nil)
 		if err != nil {
 			return nil, fmt.Errorf("-tls-ca: %w", unwrapPath(err))
 		}

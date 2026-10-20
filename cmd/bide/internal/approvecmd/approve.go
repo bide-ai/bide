@@ -27,6 +27,7 @@ import (
 	"github.com/bide-ai/bide/internal/approveline"
 	"github.com/bide-ai/bide/internal/policyfile"
 	"github.com/bide-ai/bide/internal/runview"
+	"github.com/bide-ai/bide/internal/safefile"
 	"github.com/bide-ai/bide/internal/strictjson"
 	"github.com/bide-ai/bide/internal/term"
 )
@@ -306,16 +307,20 @@ func (f flags) checkItem() string {
 // strictly (no repeated name, no invalid UTF-8) so what the text shows is what is used; the ids are
 // taken as the JSON decodes them, so a line break or an invisible character in one is kept.
 func (f *flags) readItem(stdin io.Reader) error {
-	r := stdin
-	if f.item != "-" {
-		file, err := os.Open(f.item)
-		if err != nil {
-			return fmt.Errorf("-item %s: %w", f.item, unwrapPath(err))
+	var data []byte
+	var err error
+	if f.item == "-" {
+		data, err = io.ReadAll(io.LimitReader(stdin, maxItem+1))
+	} else {
+		data, err = safefile.Read(f.item, maxItem, nil)
+		var refused *safefile.RefusedError
+		if errors.As(err, &refused) && refused.Kind == safefile.TooLarge {
+			return fmt.Errorf("-item %s: more than %d bytes: it is one call of -list -json, not the whole list", f.item, maxItem)
 		}
-		defer file.Close()
-		r = file
+		if err != nil && !errors.As(err, &refused) {
+			err = unwrapPath(err)
+		}
 	}
-	data, err := io.ReadAll(io.LimitReader(r, maxItem+1))
 	if err != nil {
 		return fmt.Errorf("-item %s: %w", f.item, err)
 	}
@@ -698,17 +703,13 @@ func (g *gateOf) preflight(run, as string, reject bool, verifierFor agent.Approv
 // approverKeys reads -approver-keys: id -> verifier. It fails closed: an entry that is not a key
 // is an error, not a skipped approver.
 func approverKeys(path string) (map[string]audit.Verifier, error) {
-	f, err := os.Open(path)
+	b, err := safefile.Read(path, 1<<20, nil)
 	if err != nil {
+		var refused *safefile.RefusedError
+		if errors.As(err, &refused) && refused.Kind == safefile.TooLarge {
+			return nil, fmt.Errorf("-approver-keys %s is larger than 1 MiB", path)
+		}
 		return nil, fmt.Errorf("-approver-keys: %w", err)
-	}
-	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, 1<<20+1))
-	if err != nil {
-		return nil, fmt.Errorf("-approver-keys %s: %w", path, err)
-	}
-	if len(b) > 1<<20 {
-		return nil, fmt.Errorf("-approver-keys %s is larger than 1 MiB", path)
 	}
 	var raw map[string]string
 	if err := audit.UnmarshalStrict(b, &raw); err != nil {
@@ -1490,7 +1491,7 @@ func (c *cmd) writeReceipt(ctx context.Context, j *agent.Journal, s agent.Approv
 // verifyReceiptFile is bide approve -verify-receipt: the receipt's signature over the exact call it
 // states, by the key -approver-keys enrols for its approver. It reads no journal.
 func (c *cmd) verifyReceiptFile() error {
-	b, err := os.ReadFile(c.f.verifyReceipt)
+	b, err := safefile.Read(c.f.verifyReceipt, maxItem, nil)
 	if err != nil {
 		return fmt.Errorf("receipt %s: %w", c.f.verifyReceipt, unwrapPath(err))
 	}
@@ -1561,7 +1562,7 @@ func readLogKey(s string) (audit.Verifier, error) {
 	if v, err := audit.ParsePublicKey(s); err == nil {
 		return v, nil
 	}
-	b, err := os.ReadFile(s)
+	b, err := safefile.Read(s, 1<<20, nil)
 	if err != nil {
 		return nil, refuse("-log-key is neither a public key (ed25519:<hex>) nor a readable file: %s", safe(unwrapPath(err).Error()))
 	}

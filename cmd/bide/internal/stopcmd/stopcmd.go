@@ -33,6 +33,7 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/cmd/bide/internal/approvecmd"
+	"github.com/bide-ai/bide/internal/safefile"
 	"github.com/bide-ai/bide/internal/strictjson"
 	"github.com/bide-ai/bide/internal/term"
 )
@@ -362,17 +363,13 @@ func (c *cmd) open(readOnly bool) (Opened, error) {
 
 // loadPolicy reads the stop policy file named by -stop-policy.
 func (c *cmd) loadPolicy() (agent.StopPolicy, agent.StopPolicyDoc, error) {
-	f, err := os.Open(c.f.stopPolicy)
+	b, err := safefile.Read(c.f.stopPolicy, maxPolicyFile, nil)
 	if err != nil {
+		var refused *safefile.RefusedError
+		if errors.As(err, &refused) && refused.Kind == safefile.TooLarge {
+			return agent.StopPolicy{}, agent.StopPolicyDoc{}, fmt.Errorf("-stop-policy %s: larger than %d bytes: not a stop policy", c.f.stopPolicy, maxPolicyFile)
+		}
 		return agent.StopPolicy{}, agent.StopPolicyDoc{}, fmt.Errorf("-stop-policy %s: %w", c.f.stopPolicy, unwrapPath(err))
-	}
-	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, maxPolicyFile+1))
-	if err != nil {
-		return agent.StopPolicy{}, agent.StopPolicyDoc{}, fmt.Errorf("-stop-policy %s: %w", c.f.stopPolicy, unwrapPath(err))
-	}
-	if len(b) > maxPolicyFile {
-		return agent.StopPolicy{}, agent.StopPolicyDoc{}, fmt.Errorf("-stop-policy %s: larger than %d bytes: not a stop policy", c.f.stopPolicy, maxPolicyFile)
 	}
 	var doc agent.StopPolicyDoc
 	if err := strictjson.Unmarshal(b, &doc, nil); err != nil {
