@@ -159,7 +159,8 @@ func configGate(base *agent.ApprovalPolicy, ca *configApproval) (*agent.Approval
 		why = append(why, "approval: "+strings.TrimSuffix(err.Error(), ": "+agent.ErrConfig.Error()))
 	}
 	if base != nil && !sameGate(base, p) {
-		why = append(why, fmt.Sprintf("approval sets a gate on a block that declares another (%s); a node carries one gate", gateText(base)))
+		// One problem, with its fix, and no "; " in it (a problem list is joined and split on that).
+		why = append(why, fmt.Sprintf("sets an approval gate, but its block already declares one (%s): keep one, by removing approval from the config or the gate from the block", gateText(base)))
 	}
 	return p, why
 }

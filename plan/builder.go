@@ -92,7 +92,7 @@ func Approval(p *agent.ApprovalPolicy) NodeOption {
 		case p == nil:
 			n.optErr = fmt.Errorf("plan: step %q: Approval(nil): pass a policy", n.name)
 		case n.approval != nil && !sameGate(n.approval, p):
-			n.optErr = fmt.Errorf("plan: step %q: Approval sets a gate on a node whose tool declares another (%s); a node carries one gate", n.name, gateText(n.approval))
+			n.optErr = fmt.Errorf("plan: step %q: sets an approval gate, but its tool already declares one (%s): keep one, by removing the Approval option or the gate from the tool", n.name, gateText(n.approval))
 		default:
 			n.approval = p.Clone()
 		}
