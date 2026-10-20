@@ -339,3 +339,19 @@ func TestLoopBoundThatMakesAnInnerSwitchIsRefused(t *testing.T) {
 		t.Errorf("%q", why)
 	}
 }
+
+// Loop-shape reasons are found by the words plan writes around the quoted names (newLoopShapeError),
+// so names as long as the file do not hide them: the inner-switch refusal holds with long names.
+func TestLoopShapeRefusalHoldsWithLongNames(t *testing.T) {
+	for _, n := range []int{230, 300, 1000} {
+		name := func(c string) string { return strings.Repeat(c, n) }
+		src := "version: 1\nflow: f\nentry: a\nnodes:\n  - {name: a, block: a}\n  - {name: b, block: b}\n  - {name: c, block: c}\n  - {name: d, block: d}\nwiring:\n  - edge: [a, b]\n  - switch: b\n    when:\n      - {pred: x, to: c}\n    else: c\n  - switch: c\n    when:\n      - {pred: y, to: a}\n    else: d\n"
+		for _, r := range [][2]string{{"a", name("a")}, {"b", name("b")}, {"c", name("c")}, {"d", name("d")}} {
+			src = strings.NewReplacer("name: "+r[0]+",", "name: "+r[1]+",", "entry: "+r[0]+"\n", "entry: "+r[1]+"\n", "["+r[0]+",", "["+r[1]+",", ", "+r[0]+"]", ", "+r[1]+"]", "switch: "+r[0]+"\n", "switch: "+r[1]+"\n", "to: "+r[0]+",", "to: "+r[1]+",", "to: "+r[0]+"}", "to: "+r[1]+"}", "else: "+r[0]+"\n", "else: "+r[1]+"\n").Replace(src)
+		}
+		why := refusalOf(t, "f.yaml", src, Operation{Op: "set_loop_max", Node: name("c"), Index: 0, Max: 3})
+		if !strings.Contains(why, "has its own Switch") || !strings.Contains(why, "plan.Load refuses this") {
+			t.Errorf("names of %d: %.300q", n, why)
+		}
+	}
+}
