@@ -14,6 +14,9 @@ Package flowedit is the edit engine of the flow editor (docs/design/visual-edito
 
 **Constants**
 
+- `const ConfirmWeakens = "weakens"`: ConfirmWeakens: the text is weaker than the baseline.
+- `const ConfirmUncertified = "uncertified"`: ConfirmUncertified: the text has errors against the program's blocks, so the comparison was made without what they declare in Go (typed mode).
+- `const ConfirmUncompared = "uncompared"`: ConfirmUncompared: the text could not be compared with the baseline.
 - `const MaxBodySize = 6*MaxFileSize + 4096`: MaxBodySize is the largest request body: a config of MaxFileSize bytes is a JSON string in it, where every newline, quote and tab takes two bytes and a control character six, so the body of a maximal valid config is up to six times the file.
 - `const MaxFileSize = 1 << 20`: MaxFileSize is the largest config the editor reads, and the largest request body it accepts.
 - `const ModeLine`: ModeLine is what the editor says wherever it shows a verdict: the check is the structural one `bide check` makes.
@@ -293,6 +296,8 @@ type Preview struct {
 	Conflict bool   `json:"conflict,omitempty"`
 
 	NeedsConfirmation []string `json:"needs_confirmation,omitempty"`
+
+	NeedsKinds []string `json:"needs_kinds,omitempty"`
 
 	Errors   int `json:"errors"`
 	Warnings int `json:"warnings"`

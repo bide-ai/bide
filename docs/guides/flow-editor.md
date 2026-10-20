@@ -458,7 +458,7 @@ node gains `in` and `out`, the type names the digest writes (from its block's de
   whose gate was removed in Go since the baseline is therefore still a possible weakening. A typed editor is never less
   strict than a structural one. When the text, or the baseline, has errors against the blocks (a block the program
   lacks, a type that does not fit), the comparison is the structural one, named **not certified**, and a save of it
-  needs the same confirmation, even for a text that changes nothing: a file that does not check against the program should not look clean on a save. A gate removed in Go with the config unchanged is a change to the program, not to the
+  needs the same confirmation (the save dialog asks one statement at a time, each with its own box, worded from what the server says each item is and never from the page's own, possibly one edit old, view),  even for a text that changes nothing: a file that does not check against the program should not look clean on a save. A gate removed in Go with the config unchanged is a change to the program, not to the
   config, and is not shown here (the structural editor does not show it either); review it in the Go diff, or compare
   the two programs' descriptions with `bide check -diff -blocks ... -old-blocks ...`. Supplying the baseline's blocks to
   the editor is a possible later option.

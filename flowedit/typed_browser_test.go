@@ -2,6 +2,7 @@ package flowedit
 
 import (
 	"encoding/json"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -377,4 +378,58 @@ func TestSaveDialogConfirmationsInChrome(t *testing.T) {
 	if !r.OK || !slices.Contains(r.ExistingEdges, "validate \u2192 loose (types differ)") {
 		t.Errorf("existing edges %q (%s)", r.ExistingEdges, r.Error)
 	}
+}
+
+// The save dialog is worded from the server's answer to Save (each item's kind), never from the page's own view,
+// which can be one edit old, and never from the text of an item. CASE=race: the check of the edit is held back
+// and Save is clicked before it returns; the edit makes the text uncertifiable, the page's view still says it is
+// certified, and the dialog must still say it cannot be certified and nothing about a weakening. CASE=kinds: the
+// answer is replaced by items whose text says nothing and whose kinds are given; each lands under its kind.
+// CASE=nokind: a kind the page does not know is a weakening.
+func TestSaveDialogIsWordedFromTheServersAnswerInChrome(t *testing.T) {
+	noAssert := testFlow[:strings.Index(testFlow, "assert:")]
+	type group struct {
+		Title string   `json:"title"`
+		Items []string `json:"items"`
+	}
+	run := func(t *testing.T, mode string, edits [][2]string) (groups []group, held int, viewVerdict string) {
+		s := typedServers(t, "refund.yaml", noAssert)["registry"]
+		raw, _ := json.Marshal(edits)
+		t.Setenv("EDITS", string(raw))
+		t.Setenv("CASE", mode)
+		var r struct {
+			OK          bool    `json:"ok"`
+			Error       string  `json:"error"`
+			Groups      []group `json:"groups"`
+			HeldReports int     `json:"heldReports"`
+			ViewVerdict string  `json:"viewVerdict"`
+		}
+		runScript(t, "typed-race.mjs", s, &r)
+		if !r.OK {
+			t.Fatalf("the script failed: %s", r.Error)
+		}
+		return r.Groups, r.HeldReports, r.ViewVerdict
+	}
+	t.Run("race", func(t *testing.T) {
+		g, _, verdict := run(t, "race", [][2]string{{"block: receipt", "block: nowhere"}})
+		if strings.Contains(verdict, "ERROR") {
+			t.Fatalf("the page's own view was current (%q): the race was not made", verdict)
+		}
+		if len(g) != 1 || g[0].Title != "THIS CANNOT BE CERTIFIED" {
+			t.Errorf("the dialog, with the page's own view one edit old (%q): %+v", verdict, g)
+		}
+	})
+	t.Run("kinds", func(t *testing.T) {
+		g, _, _ := run(t, "kinds", [][2]string{{"need: 2", "need: 1"}})
+		want := []group{{"THIS WEAKENS THE POLICY", []string{"beta"}}, {"THIS CANNOT BE CERTIFIED", []string{"alpha"}}, {"THIS COULD NOT BE COMPARED", []string{"gamma"}}}
+		if !reflect.DeepEqual(g, want) {
+			t.Errorf("grouped %+v, want %+v", g, want)
+		}
+	})
+	t.Run("a kind the page does not know", func(t *testing.T) {
+		g, _, _ := run(t, "nokind", [][2]string{{"need: 2", "need: 1"}})
+		if len(g) != 1 || g[0].Title != "THIS WEAKENS THE POLICY" || len(g[0].Items) != 3 {
+			t.Errorf("grouped %+v", g)
+		}
+	})
 }

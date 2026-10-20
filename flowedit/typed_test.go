@@ -562,3 +562,41 @@ func TestAMisfitBesideAnotherErrorNeverReadsAsChecked(t *testing.T) {
 		}
 	}
 }
+
+// Each item a save asks to confirm says what it is, by position, so the page words the statement from the kind
+// and never from the item's text.
+func TestPreviewNamesTheKindOfEachConfirmation(t *testing.T) {
+	noAssert := testFlow[:strings.Index(testFlow, "assert:")]
+	unknown := strings.Replace(noAssert, "block: receipt", "block: nowhere", 1)
+	cases := []struct {
+		name     string
+		baseline string
+		text     string
+		kinds    []string
+	}{
+		{"nothing", noAssert, noAssert + "# note\n", nil},
+		{"weakened", noAssert, strings.Replace(noAssert, "need: 2", "need: 1", 1), []string{ConfirmWeakens}},
+		{"uncertified", unknown, unknown + "# note\n", []string{ConfirmUncertified}},
+		{"both", unknown, strings.Replace(unknown, "need: 2", "need: 1", 1), []string{ConfirmWeakens, ConfirmUncertified}},
+	}
+	for _, c := range cases {
+		s := typedServers(t, "refund.yaml", c.baseline)["registry"]
+		pv, err := s.Preview([]byte(c.text), hashOf([]byte(c.baseline)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(pv.NeedsKinds, c.kinds) || len(pv.NeedsKinds) != len(pv.NeedsConfirmation) {
+			t.Errorf("%s: kinds %q for items %q, want %q", c.name, pv.NeedsKinds, pv.NeedsConfirmation, c.kinds)
+		}
+		items, kinds := s.confirmationKinds([]byte(c.text))
+		if !slices.Equal(items, pv.NeedsConfirmation) || !slices.Equal(kinds, pv.NeedsKinds) {
+			t.Errorf("%s: confirmationKinds %q %q differs from the preview", c.name, items, kinds)
+		}
+	}
+	// A baseline that cannot be compared is its own kind.
+	s := typedServers(t, "refund.yaml", testFlow)["structural"]
+	s.baseline = []byte("nodes: [")
+	if items, kinds := s.confirmationKinds([]byte(testFlow)); len(items) != 1 || !slices.Equal(kinds, []string{ConfirmUncompared}) {
+		t.Errorf("an uncomparable baseline: %q %q", items, kinds)
+	}
+}

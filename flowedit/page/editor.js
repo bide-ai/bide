@@ -1319,17 +1319,16 @@ async function save() {
   // weakening of the policy, a text that could not be certified against the program's blocks, a text
   // that could not be compared with the baseline. Ticking one does not sign another, and Save waits for
   // every box. An item the page cannot place is a weakening: the server asked, say the careful thing.
-  const w = view.weakening || {};
   const groups = [
     { id: 'confirm-weaken', word: 'THIS WEAKENS THE POLICY', say: ' I confirm that I am weakening this policy.', items: [] },
     { id: 'confirm-uncertified', word: 'THIS CANNOT BE CERTIFIED', say: ' I confirm that I am saving it without a certified type check.', items: [] },
     { id: 'confirm-uncompared', word: 'THIS COULD NOT BE COMPARED', say: ' I confirm that I am saving it without the comparison.', items: [] },
   ];
-  for (const x of pv.needs_confirmation) {
-    if (w.not_certified && x === w.not_certified) groups[1].items.push(x);
-    else if (x.startsWith('not compared with ')) groups[2].items.push(x);
-    else groups[0].items.push(x);
-  }
+  // The server says what each item is (needs_kinds, by position); the page never reads the item's text for it.
+  // An item with no kind, or a kind the page does not know, is a weakening: the careful thing to say.
+  const kinds = pv.needs_kinds || [];
+  const slot = { weakens: 0, uncertified: 1, uncompared: 2 };
+  pv.needs_confirmation.forEach((x, i) => groups[slot[kinds[i]] ?? 0].items.push(x));
   const asked = groups.filter((g) => g.items.length);
   const boxes = asked.map((g) => h('input', { type: 'checkbox', id: g.id }));
   const go = h('button', { type: 'button', class: 'btn primary', id: 'do-save', disabled: asked.length > 0 }, 'Save');
