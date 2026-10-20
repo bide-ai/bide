@@ -643,3 +643,49 @@ func TestTypedRefusalComparesProblemsUnderARenameOfALongName(t *testing.T) {
 		}
 	}
 }
+
+// chainFlow is a chain of blocks that all take and give an order, ending in the receipt. Setting a
+// middle block to "count" (an int to an int) makes two misfits, on its two edges.
+const chainFlow = `version: 1
+flow: chain
+entry: validate
+nodes:
+  - {name: validate, block: validate, safety: readonly}
+  - {name: first, block: plain}
+  - {name: second, block: plain}
+  - {name: third, block: plain}
+  - {name: receipt, block: receipt, safety: idempotent}
+wiring:
+  - edge: [validate, first]
+  - edge: [first, second]
+  - edge: [second, third]
+  - edge: [third, receipt]
+`
+
+// When the text already has a type misfit, an operation that adds another is refused, not only one
+// that adds the first: plan reports every type problem, so the editor sees the new one beside the old
+// one (it once saw only the first, and let the second through).
+func TestTypedEditorRefusesASecondMisfit(t *testing.T) {
+	text := strings.Replace(chainFlow, "{name: first, block: plain}", "{name: first, block: count}", 1) // one misfit, on two edges
+	servers := typedServers(t, "chain.yaml", text)
+	for _, kind := range []string{"registry", "description"} {
+		s := servers[kind]
+		h := s.Handler()
+		// An operation that adds a misfit elsewhere in the text.
+		w := call(h, s, "/api/apply", applyReq(text, Operation{Op: "set_block", Node: "third", Value: "count"}), nil)
+		if w.Code != 200 || !strings.Contains(w.Body.String(), `"refused":"the types do not fit: `) || strings.Contains(w.Body.String(), `"text"`) {
+			t.Errorf("%s: a second misfit was not refused: %d %.300s", kind, w.Code, w.Body)
+		}
+		// An operation that fixes the misfit, and one that is unrelated, are not refused.
+		w = call(h, s, "/api/apply", applyReq(text, Operation{Op: "set_block", Node: "first", Value: "plain"}), nil)
+		var e Edited
+		if err := json.Unmarshal(w.Body.Bytes(), &e); err != nil || !strings.Contains(e.Text, "{name: first, block: plain}") || strings.Contains(w.Body.String(), `"refused"`) {
+			t.Errorf("%s: the fix was refused: err=%v %d %.100s", kind, err, w.Code, w.Body)
+		}
+		w = call(h, s, "/api/apply", applyReq(text, Operation{Op: "set_safety", Node: "validate", Value: "side_effect"}), nil)
+		e = Edited{}
+		if err := json.Unmarshal(w.Body.Bytes(), &e); err != nil || !e.Changed || strings.Contains(w.Body.String(), `"refused"`) {
+			t.Errorf("%s: an unrelated operation was refused: %d %.300s", kind, w.Code, w.Body)
+		}
+	}
+}

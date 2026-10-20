@@ -200,7 +200,10 @@ func inspectConfigUnbounded(data []byte, reg *Registry, opts []InspectOption) (r
 		return r
 	}
 	core, err := assemble(&cfg, reg, o.allowUnused)
-	if err != nil {
+	// Type problems of the wiring come with the assembled core: the checks that follow run over it
+	// as well, so a report lists every type problem, not the first.
+	var typeErr *typeProblemsError
+	if err != nil && !(errors.As(err, &typeErr) && core != nil) {
 		r.attribute(&cfg, err)
 		return r
 	}
@@ -220,6 +223,17 @@ func inspectConfigUnbounded(data []byte, reg *Registry, opts []InspectOption) (r
 		if !hasOut[n.name] && core.outType == nil {
 			core.outType = n.outType
 		}
+	}
+	// Every type problem, before Build (which stops at the first problem of any kind, so a second
+	// misfit, or one behind a wiring error, would not show).
+	var typeMsgs []string
+	if typeErr != nil {
+		typeMsgs = typeErr.msgs
+	}
+	typeMsgs = append(typeMsgs, core.buildTypeProblems()...)
+	if len(typeMsgs) > 0 {
+		r.attribute(&cfg, fmt.Errorf("plan: load %q: %s", cfg.Flow, strings.Join(capTypeProblems(typeMsgs), "; ")))
+		return r
 	}
 	// The check is of the policy, not of approvers' keys, which a config does not carry: a
 	// resolver that knows no approver lets Build check an m-of-n gate as Load would with keys.

@@ -806,6 +806,50 @@ func assemble(cfg *config, reg *Registry, allowUnused bool) (*builderCore, error
 	// fans in several producers), so its per-port types are checked by Build.checkJoins
 	// against joinInTypes by reflect identity, not by this from.outType == to.inType
 	// rule. Comparing against the join's nil inType would spuriously reject every join.
+	if msgs := edgeTypeProblems(cfg, reg, core); len(msgs) > 0 {
+		return core, &typeProblemsError{flow: cfg.Flow, msgs: msgs}
+	}
+
+	return core, nil
+}
+
+// maxTypeProblems is the most type problems a report lists; a flow with more says how many it left
+// out (see capTypeProblems), so none is dropped silently.
+const maxTypeProblems = 100
+
+// typeProblemsError is the error assemble returns when the wiring has type problems: every one of
+// them, not the first, so a caller that compares reports (the typed editor) sees a second misfit as
+// well as the first. It carries the assembled core, which assemble returns beside it.
+type typeProblemsError struct {
+	flow string
+	msgs []string
+}
+
+func (e *typeProblemsError) Error() string {
+	return fmt.Sprintf("plan: load %q: %s", e.flow, strings.Join(capTypeProblems(e.msgs), "; "))
+}
+
+// capTypeProblems keeps the first maxTypeProblems messages and, for the rest, one line saying how
+// many there are. The line carries the words type problems are recognised by, so a caller that
+// looks for them counts it as one (see TypeProblemsMore).
+func capTypeProblems(msgs []string) []string {
+	if len(msgs) <= maxTypeProblems {
+		return msgs
+	}
+	out := append([]string(nil), msgs[:maxTypeProblems]...)
+	return append(out, fmt.Sprintf("and %d more type problems (types must match exactly)", len(msgs)-maxTypeProblems))
+}
+
+// edgeTypeProblems returns every type problem of the assembled wiring: an edge whose producer and
+// consumer types differ, and a switch arm whose predicate tests another type than the switched
+// node produces.
+//
+// A join's INPUT edges are skipped here: a kindJoin node has no single inType (it fans in several
+// producers), so its per-port types are checked against joinInTypes by buildTypeProblems (and by
+// Build.checkJoins), by reflect identity, not by this from.outType == to.inType rule. Comparing
+// against the join's nil inType would spuriously reject every join.
+func edgeTypeProblems(cfg *config, reg *Registry, core *builderCore) []string {
+	var msgs []string
 	for _, e := range core.edges {
 		from := core.byName[e.from]
 		to := core.byName[e.to]
@@ -813,8 +857,8 @@ func assemble(cfg *config, reg *Registry, allowUnused bool) (*builderCore, error
 			continue // join port types are validated by Build.checkJoins
 		}
 		if from.outType != to.inType {
-			return nil, fmt.Errorf("plan: load %q: edge %q -> %q connects %s to %s (types must match exactly)",
-				cfg.Flow, e.from, e.to, typeName(from.outType), typeName(to.inType))
+			msgs = append(msgs, fmt.Sprintf("edge %q -> %q connects %s to %s (types must match exactly)",
+				e.from, e.to, typeName(from.outType), typeName(to.inType)))
 		}
 	}
 	for i, w := range cfg.Wiring {
@@ -825,13 +869,12 @@ func assemble(cfg *config, reg *Registry, allowUnused bool) (*builderCore, error
 		for j, a := range w.When {
 			p := reg.preds[a.Pred]
 			if p.mType != over.outType {
-				return nil, fmt.Errorf("plan: load %q: wiring[%d].when[%d] predicate %q tests %s but switched node %q produces %s",
-					cfg.Flow, i, j, a.Pred, typeName(p.mType), w.Switch, typeName(over.outType))
+				msgs = append(msgs, fmt.Sprintf("wiring[%d].when[%d] predicate %q tests %s but switched node %q produces %s",
+					i, j, a.Pred, typeName(p.mType), w.Switch, typeName(over.outType)))
 			}
 		}
 	}
-
-	return core, nil
+	return msgs
 }
 
 // checkBoundary runs the load-time type checks that need the flow's In/Out type
