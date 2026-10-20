@@ -1,6 +1,7 @@
 package flowedit
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bide-ai/bide/internal/planaccess"
 	"github.com/bide-ai/bide/internal/runview"
 	"github.com/bide-ai/bide/plan"
 )
@@ -88,6 +90,28 @@ func (t *typing) inspect(data []byte) plan.ConfigReport {
 		return plan.InspectConfig(data, t.reg, opts...)
 	}
 	return plan.InspectConfigDescribed(data, t.desc, opts...)
+}
+
+// records are the problems the editor compares before and after an edit (see planaccess.Record), found
+// from the config alone, beside whatever else is wrong with it.
+func (t *typing) records(data []byte) []planaccess.Record {
+	if t.reg != nil {
+		return planaccess.Inspect(data, t.reg, nil)
+	}
+	return planaccess.Inspect(data, nil, &t.desc)
+}
+
+// recordKey is a problem's identity: its class and kind, the full names it is about and the types or
+// levels, each Go-quoted so that a name with quotes, brackets or separators cannot read as two.
+// rename maps the name of a renamed node to its new one.
+func recordKey(r planaccess.Record, rename func(string) string) string {
+	var b strings.Builder
+	b.WriteString(r.Class + "/" + r.Kind)
+	for _, n := range r.Names {
+		b.WriteString(" " + strconv.Quote(rename(n)))
+	}
+	b.WriteString(" | " + strconv.Quote(r.Detail))
+	return b.String()
 }
 
 // label is what the page says the typed check rests on, wherever it shows a verdict.
@@ -183,16 +207,20 @@ func gateWords(g *plan.GateDescription) string {
 	return runview.GateText(tg)
 }
 
-// typeProblem reports whether p says two things that do not fit were connected: an edge whose
-// types differ, a predicate that tests another type than the switched node produces, a join input of
-// another type than its merge takes, or a terminal of another type than the flow's output. The
-// wording is plan's; a test pins it against the messages plan writes.
-func typeProblem(p plan.ConfigProblem) bool {
-	m := p.Message
-	return p.Severity == "error" && (strings.Contains(m, "(types must match exactly)") ||
-		strings.Contains(m, " but switched node ") ||
-		strings.Contains(m, " but the merge expects ") ||
-		strings.Contains(m, " but the flow output is "))
+// allowedWhileUnparsed are the only operations the typed editor lets through while the text before or
+// after an edit does not parse: those that cannot change the graph, the blocks, the order of nodes or
+// wiring (which decides the implicit entry and which terminal sets the flow's output), the safeties or
+// the type names the flow declares. An approval change is caught by the save, which asks the statement
+// that the text could not be compared; an assertion is not checked here; set_flow changes the flow's
+// name and nothing else (set_in and set_out are not on the list). Any operation not named here, added
+// to the editor later too, is refused while the text does not parse.
+var allowedWhileUnparsed = map[string]bool{
+	"set_approval":     true,
+	"clear_approval":   true,
+	"add_assertion":    true,
+	"set_assertion":    true,
+	"remove_assertion": true,
+	"set_flow":         true,
 }
 
 // typedRefusal is the reason to refuse an operation that took before to after, or "": after has a
@@ -215,32 +243,48 @@ func (s *Server) typedRefusal(before, after []byte, op Operation) string {
 	if !ok1 || !ok2 {
 		return ""
 	}
-	had := map[string]bool{}
-	for _, p := range s.typing.inspect(bd).Problems {
-		if typeProblem(p) {
-			// A rename does not make a problem the text already had a new one: compare under the rename.
-			m := p.Message
-			if op.Op == "rename_node" {
-				m = strings.ReplaceAll(m, messageQuote(op.Node), messageQuote(op.Value))
-			}
-			had[m] = true
+	// A text that does not parse has no records: its problems are unknown, not absent, and decoding it
+	// leniently would check a config other than the one written (a misspelt field is silently ignored). So
+	// while the text before or after does not parse, an edit that can change what is wrong with the types
+	// or the safeties is refused, rather than let through unchecked.
+	if !allowedWhileUnparsed[op.Op] {
+		if err := cmp.Or(planaccess.ParseError(bd), planaccess.ParseError(ad)); err != nil {
+			return "the config does not parse: " + err.Error() + "; fix it first"
 		}
 	}
-	for _, p := range s.typing.inspect(ad).Problems {
-		if typeProblem(p) && !had[p.Message] {
-			return "the types do not fit: " + p.Message
+	// The problems the text had, counted by identity (class, kind, full names, types), so that two
+	// problems whose displayed names look alike are two, and moving an element does not make an old
+	// problem new. A rename does not make a problem the text already had a new one: its names are
+	// compared under the rename.
+	same := func(n string) string { return n }
+	renamed := same
+	if op.Op == "rename_node" {
+		renamed = func(n string) string {
+			if n == op.Node {
+				return op.Value
+			}
+			return n
 		}
+	}
+	had := map[string]int{}
+	for _, r := range s.typing.records(bd) {
+		if r.Class == "type" || r.Class == "safety" {
+			had[recordKey(r, renamed)]++
+		}
+	}
+	for _, r := range s.typing.records(ad) {
+		if r.Class != "type" && r.Class != "safety" {
+			continue
+		}
+		k := recordKey(r, same)
+		if had[k] > 0 {
+			had[k]--
+			continue
+		}
+		if r.Class == "safety" {
+			return "the safety is above what the program registers: " + r.Message
+		}
+		return "the types do not fit: " + r.Message
 	}
 	return ""
-}
-
-// messageQuote is name as plan writes it into a problem message: Go-quoted, and cut to 64 characters
-// (with "..." inside the quotes) when longer, as plan's boundMessage does.
-func messageQuote(name string) string {
-	q := strconv.Quote(name)
-	rs := []rune(q[1 : len(q)-1])
-	if len(rs) > 64 {
-		return `"` + string(rs[:64]) + `..."`
-	}
-	return q
 }

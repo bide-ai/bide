@@ -86,7 +86,8 @@ func TestInspectConfig_RegistryFindsWhatStructureCannot(t *testing.T) {
 	// The edit leaves finalize with no edge in, which the structural check reports (it is not reached from
 	// the entry); what it cannot see is the type mismatch.
 	for _, p := range InspectConfig(data, nil).Problems {
-		if p.Severity == "error" && !strings.Contains(p.Message, "not reached from the entry") {
+		// The edit also gives decline two producers, which the structural check says needs a join.
+		if p.Severity == "error" && !strings.Contains(p.Message, "not reached from the entry") && !strings.Contains(p.Message, `step "decline" is fed by`) {
 			t.Fatalf("the structural check found %+v; it cannot see types", p)
 		}
 	}

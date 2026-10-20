@@ -2,6 +2,7 @@ package plan
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"reflect"
@@ -213,7 +214,23 @@ func (w configWire) isJoin() bool {
 // hands the assembled spec to the existing Build (whole-graph validation) and seal.
 func Load[In, Out any](data []byte, reg *Registry, opts ...LoadOption) (*Flow[In, Out], error) {
 	f, err := load[In, Out](data, reg, opts...)
-	return f, strictjson.BoundedErrorN(err, maxLoadError)
+	return f, strictjson.BoundedErrorN(asConfigError(err), maxLoadError)
+}
+
+// configError is a refusal of a config that is also an agent.ErrConfig: its text is the refusal's own,
+// and errors.Is finds both the refusal it wraps and agent.ErrConfig, as it does for the other
+// config errors.
+type configError struct{ err error }
+
+func (e *configError) Error() string   { return e.err.Error() }
+func (e *configError) Unwrap() []error { return []error{e.err, agent.ErrConfig} }
+
+// asConfigError returns err as a configError unless it already is an agent.ErrConfig (or nil).
+func asConfigError(err error) error {
+	if err == nil || errors.Is(err, agent.ErrConfig) {
+		return err
+	}
+	return &configError{err}
 }
 
 // maxLoadError is the longest Load's error is let be: it lists every problem found (each cut to 512
@@ -332,7 +349,7 @@ func Validate(data []byte, reg *Registry) error {
 		return fmt.Errorf("plan: validate: parse config: %w", err)
 	}
 	_, err := assemble(&cfg, reg, false)
-	return err
+	return asConfigError(err)
 }
 
 // errInert is what Load and Validate return for a Registry built from a description, which can check
@@ -806,32 +823,48 @@ func assemble(cfg *config, reg *Registry, allowUnused bool) (*builderCore, error
 	// fans in several producers), so its per-port types are checked by Build.checkJoins
 	// against joinInTypes by reflect identity, not by this from.outType == to.inType
 	// rule. Comparing against the join's nil inType would spuriously reject every join.
-	for _, e := range core.edges {
-		from := core.byName[e.from]
-		to := core.byName[e.to]
-		if to.kind == kindJoin {
-			continue // join port types are validated by Build.checkJoins
-		}
-		if from.outType != to.inType {
-			return nil, fmt.Errorf("plan: load %q: edge %q -> %q connects %s to %s (types must match exactly)",
-				cfg.Flow, e.from, e.to, typeName(from.outType), typeName(to.inType))
-		}
-	}
-	for i, w := range cfg.Wiring {
-		if !w.isSwitch() {
-			continue
-		}
-		over := core.byName[w.Switch]
-		for j, a := range w.When {
-			p := reg.preds[a.Pred]
-			if p.mType != over.outType {
-				return nil, fmt.Errorf("plan: load %q: wiring[%d].when[%d] predicate %q tests %s but switched node %q produces %s",
-					cfg.Flow, i, j, a.Pred, typeName(p.mType), w.Switch, typeName(over.outType))
-			}
-		}
+	if msgs := edgeTypeProblems(cfg, reg); len(msgs) > 0 {
+		return core, &typeProblemsError{flow: cfg.Flow, msgs: msgs}
 	}
 
 	return core, nil
+}
+
+// maxTypeProblems is the most type problems a report lists; a flow with more says how many it left
+// out (see capTypeProblems), so none is dropped silently.
+const maxTypeProblems = 100
+
+// typeProblemsError is the error assemble returns when the wiring has type problems: every one of
+// them, not the first, so a caller that compares reports (the typed editor) sees a second misfit as
+// well as the first. It carries the assembled core, which assemble returns beside it.
+type typeProblemsError struct {
+	flow string
+	msgs []string
+}
+
+func (e *typeProblemsError) Error() string {
+	return fmt.Sprintf("plan: load %q: %s", e.flow, strings.Join(capTypeProblems(e.msgs), "; "))
+}
+
+// capTypeProblems keeps the first maxTypeProblems messages and, for the rest, one line saying how
+// many there are. The line carries the words type problems are recognised by, so a caller that
+// looks for them counts it as one (see TypeProblemsMore).
+func capTypeProblems(msgs []string) []string {
+	if len(msgs) <= maxTypeProblems {
+		return msgs
+	}
+	out := append([]string(nil), msgs[:maxTypeProblems]...)
+	return append(out, fmt.Sprintf("and %d more type problems (types must match exactly)", len(msgs)-maxTypeProblems))
+}
+
+// edgeTypeProblems returns every type problem of the wiring that Load reports from assemble: an edge
+// whose producer and consumer types differ, and a switch arm whose predicate tests another type than
+// the switched node produces (see checkTypes, which finds them from the config alone). A join's INPUT
+// edges are skipped: a join has no single input type, its port types are checked against the merge's
+// (checkTypes' joins, and Build.checkJoins), by reflect identity.
+func edgeTypeProblems(cfg *config, reg *Registry) []string {
+	p := checkTypes(cfg, reg)
+	return append(append([]string(nil), p.edges...), p.arms...)
 }
 
 // checkBoundary runs the load-time type checks that need the flow's In/Out type

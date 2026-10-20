@@ -3,11 +3,17 @@ package flowedit
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"github.com/bide-ai/bide/internal/planaccess"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -269,23 +275,17 @@ func TestTypeProblemMatchesWhatPlanSays(t *testing.T) {
 		 "wiring":[{"edge":["a","b"]},{"edge":["a","c"]}]}`,
 	}
 	for name, cfg := range cases {
-		r := plan.InspectConfig([]byte(cfg), reg, plan.AllowUnusedBlocks())
 		found := false
-		for _, p := range r.Problems {
-			found = found || typeProblem(p)
+		for _, r := range planaccess.Inspect([]byte(cfg), reg, nil) {
+			found = found || r.Class == "type" && r.Message != ""
 		}
 		if !found {
-			t.Errorf("%s: no problem matched: %+v", name, r.Problems)
+			t.Errorf("%s: plan reports no type record", name)
 		}
 	}
 	// Not every error is a misfit.
-	for _, p := range []plan.ConfigProblem{
-		{Severity: "error", Message: `node "a" references unknown block "x"`},
-		{Severity: "warning", Message: "edge connects a to b (types must match exactly)"},
-	} {
-		if typeProblem(p) {
-			t.Errorf("%+v matched", p)
-		}
+	if recs := planaccess.Inspect([]byte(`{"version":1,"flow":"f","entry":"a","nodes":[{"name":"a","block":"x"}],"wiring":[]}`), reg, nil); len(recs) != 0 {
+		t.Errorf("an unknown block is no type record: %+v", recs)
 	}
 }
 
@@ -523,21 +523,20 @@ func TestPageContractForTypedMode(t *testing.T) {
 	}
 }
 
-// The refusal of a misfit needs the rest of the config to resolve, because plan checks types after it
-// resolves every block and safety. A text that has such a problem is not refused for a misfit it also has,
-// and the problem is in the verdict; this pins the limit the guide states.
-func TestTypedRefusalNeedsTheRestOfTheConfigToResolve(t *testing.T) {
+// The refusal of a misfit does not need the rest of the config to resolve: plan finds the type problems
+// from the config and the registered types alone, so an unknown block elsewhere does not hide a misfit
+// an edit adds (it once did, and the edit went through).
+func TestTypedRefusalDoesNotNeedTheRestOfTheConfigToResolve(t *testing.T) {
 	s := typedServers(t, "refund.yaml", testFlow)["registry"]
 	broken := strings.Replace(testFlow, "block: receipt", "block: nowhere", 1) // an unknown block elsewhere
 	w := call(s.Handler(), s, "/api/apply", applyReq(broken, Operation{Op: "set_block", Node: "charge", Value: "count"}), nil)
-	var e Edited
-	if err := json.Unmarshal(w.Body.Bytes(), &e); err != nil || !e.Changed || e.Errors == 0 {
-		t.Errorf("a misfit beside an unknown block: %d %s", w.Code, w.Body)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"refused":"the types do not fit: `) {
+		t.Errorf("a misfit beside an unknown block was not refused: %d %s", w.Code, w.Body)
 	}
 }
 
-// A config with an error elsewhere and a connection that does not fit: the misfit is not listed (plan
-// checks types after it resolves every block), so the view must not read as checked. Its verdict is not
+// A config with an error elsewhere and a connection that does not fit: the view must not read as
+// checked, whatever is listed. Its verdict is not
 // good, it has errors, each node still carries the types the program gave its block (so the page marks
 // the target), the weakening is not certified, and a save needs confirming.
 func TestAMisfitBesideAnotherErrorNeverReadsAsChecked(t *testing.T) {
@@ -642,4 +641,550 @@ func TestTypedRefusalComparesProblemsUnderARenameOfALongName(t *testing.T) {
 			}
 		}
 	}
+}
+
+// chainFlow is a chain of blocks that all take and give an order, ending in the receipt. Setting a
+// middle block to "count" (an int to an int) makes two misfits, on its two edges.
+const chainFlow = `version: 1
+flow: chain
+entry: validate
+nodes:
+  - {name: validate, block: validate, safety: readonly}
+  - {name: first, block: plain}
+  - {name: second, block: plain}
+  - {name: third, block: plain}
+  - {name: receipt, block: receipt, safety: idempotent}
+wiring:
+  - edge: [validate, first]
+  - edge: [first, second]
+  - edge: [second, third]
+  - edge: [third, receipt]
+`
+
+// When the text already has a type misfit, an operation that adds another is refused, not only one
+// that adds the first: plan reports every type problem, so the editor sees the new one beside the old
+// one (it once saw only the first, and let the second through).
+func TestTypedEditorRefusesASecondMisfit(t *testing.T) {
+	text := strings.Replace(chainFlow, "{name: first, block: plain}", "{name: first, block: count}", 1) // one misfit, on two edges
+	servers := typedServers(t, "chain.yaml", text)
+	for _, kind := range []string{"registry", "description"} {
+		s := servers[kind]
+		h := s.Handler()
+		// An operation that adds a misfit elsewhere in the text.
+		w := call(h, s, "/api/apply", applyReq(text, Operation{Op: "set_block", Node: "third", Value: "count"}), nil)
+		if w.Code != 200 || !strings.Contains(w.Body.String(), `"refused":"the types do not fit: `) || strings.Contains(w.Body.String(), `"text"`) {
+			t.Errorf("%s: a second misfit was not refused: %d %.300s", kind, w.Code, w.Body)
+		}
+		// An operation that fixes the misfit, and one that is unrelated, are not refused.
+		w = call(h, s, "/api/apply", applyReq(text, Operation{Op: "set_block", Node: "first", Value: "plain"}), nil)
+		var e Edited
+		if err := json.Unmarshal(w.Body.Bytes(), &e); err != nil || !strings.Contains(e.Text, "{name: first, block: plain}") || strings.Contains(w.Body.String(), `"refused"`) {
+			t.Errorf("%s: the fix was refused: err=%v %d %.100s", kind, err, w.Code, w.Body)
+		}
+		w = call(h, s, "/api/apply", applyReq(text, Operation{Op: "set_safety", Node: "validate", Value: "side_effect"}), nil)
+		e = Edited{}
+		if err := json.Unmarshal(w.Body.Bytes(), &e); err != nil || !e.Changed || strings.Contains(w.Body.String(), `"refused"`) {
+			t.Errorf("%s: an unrelated operation was refused: %d %.300s", kind, w.Code, w.Body)
+		}
+	}
+}
+
+// The editor compares the full lists of type problems, not the 100 a report lists by default: with
+// more than 100 misfits in the text, an edit that adds one more (past the cap, where a count would hide
+// it) is refused, and an edit that fixes one is not.
+func TestTypedEditorRefusesAMisfitPastTheReportCap(t *testing.T) {
+	var nodes, wiring []string
+	nodes = append(nodes, `  - {name: a0, block: validate, safety: readonly}`)
+	for i := 1; i <= 130; i++ {
+		block := "plain"
+		if i%2 == 1 {
+			block = "count" // an int step between order steps: a misfit on each of its edges
+		}
+		nodes = append(nodes, fmt.Sprintf("  - {name: a%d, block: %s}", i, block))
+		wiring = append(wiring, fmt.Sprintf("  - edge: [a%d, a%d]", i-1, i))
+	}
+	nodes = append(nodes, "  - {name: t1, block: plain}", "  - {name: t2, block: plain}", "  - {name: end, block: receipt, safety: idempotent}")
+	wiring = append(wiring, "  - edge: [a130, t1]", "  - edge: [t1, t2]", "  - edge: [t2, end]")
+	text := "version: 1\nflow: long\nentry: a0\nnodes:\n" + strings.Join(nodes, "\n") + "\nwiring:\n" + strings.Join(wiring, "\n") + "\n"
+	servers := typedServers(t, "long.yaml", text)
+	for _, kind := range []string{"registry", "description"} {
+		s := servers[kind]
+		h := s.Handler()
+		var got int
+		for _, r := range s.typing.records([]byte(mustJSON(t, text))) {
+			if r.Class == "type" {
+				got++
+			}
+		}
+		if got != 130 {
+			t.Fatalf("%s: the text has %d type records, want 130 (past the 100 a report lists)", kind, got)
+		}
+		w := call(h, s, "/api/apply", applyReq(text, Operation{Op: "set_block", Node: "t2", Value: "count"}), nil)
+		if w.Code != 200 || !strings.Contains(w.Body.String(), `"refused":"the types do not fit: `) || strings.Contains(w.Body.String(), `"text"`) {
+			t.Errorf("%s: a misfit past the cap was not refused: %d %.300s", kind, w.Code, w.Body)
+		}
+		// A swap: a130 takes an int step, which fixes its in-edge misfit and adds a misfit on its out-edge,
+		// at the end of the list. The number of misfits is the same (130) and the new one is past the
+		// default cap: only a comparison of the full lists sees it.
+		w = call(h, s, "/api/apply", applyReq(text, Operation{Op: "set_block", Node: "a130", Value: "count"}), nil)
+		if w.Code != 200 || !strings.Contains(w.Body.String(), `"refused":"the types do not fit: `) || !strings.Contains(w.Body.String(), `a130`) {
+			t.Errorf("%s: a swap past the cap (one misfit fixed, one added) was not refused: %d %.300s", kind, w.Code, w.Body)
+		}
+		w = call(h, s, "/api/apply", applyReq(text, Operation{Op: "set_safety", Node: "a0", Value: "side_effect"}), nil)
+		if strings.Contains(w.Body.String(), `"refused"`) {
+			t.Errorf("%s: an unrelated operation on a text with 130 misfits was refused: %.300s", kind, w.Body)
+		}
+	}
+}
+
+func mustJSON(t *testing.T, yamlText string) string {
+	t.Helper()
+	j, err := ToJSON([]byte(yamlText))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(j)
+}
+
+// Two different problems are two problems, whatever their names look like once shortened: two nodes
+// whose names differ only after the 70th character each have a misfit, and the second is as new as the
+// first would be.
+func TestTypedEditorTellsApartProblemsWithLongNamesThatShortenAlike(t *testing.T) {
+	l1, l2 := strings.Repeat("a", 70)+"1", strings.Repeat("a", 70)+"2"
+	text := "version: 1\nflow: long\nentry: validate\nnodes:\n  - {name: validate, block: validate, safety: readonly}\n" +
+		"  - {name: " + l1 + ", block: count}\n  - {name: " + l2 + ", block: plain}\nwiring:\n  - edge: [validate, " + l1 + "]\n  - edge: [validate, " + l2 + "]\n"
+	servers := typedServers(t, "long.yaml", text)
+	for _, kind := range []string{"registry", "description"} {
+		s := servers[kind]
+		w := call(s.Handler(), s, "/api/apply", applyReq(text, Operation{Op: "set_block", Node: l2, Value: "count"}), nil)
+		if w.Code != 200 || !strings.Contains(w.Body.String(), `"refused":"the types do not fit: `) || strings.Contains(w.Body.String(), `"text"`) {
+			t.Errorf("%s: a second misfit whose message looks like the first was not refused: %d %.300s", kind, w.Code, w.Body)
+		}
+	}
+}
+
+// An edit that only moves wiring elements does not make a problem the text already had new, though
+// the message of a switch arm names its wiring element by position.
+func TestTypedEditorIgnoresWiringPositionsWhenComparingProblems(t *testing.T) {
+	text := "version: 1\nflow: arm\nentry: first\nnodes:\n  - {name: first, block: count}\n  - {name: cnt, block: count}\n  - {name: y, block: plain}\n  - {name: z, block: plain}\nwiring:\n" +
+		"  - edge: [first, cnt]\n  - switch: cnt\n    when:\n      - {pred: large, to: y}\n    else: z\n" // an arm whose predicate tests an order, over an int
+	servers := typedServers(t, "arm.yaml", text)
+	for _, kind := range []string{"registry", "description"} {
+		s := servers[kind]
+		h := s.Handler()
+		w := call(h, s, "/api/apply", applyReq(text, Operation{Op: "set_safety", Node: "y", Value: "side_effect"}), nil)
+		if strings.Contains(w.Body.String(), `"refused"`) {
+			t.Fatalf("%s: the text with its one existing misfit refuses an unrelated edit: %.300s", kind, w.Body)
+		}
+		w = call(h, s, "/api/apply", applyReq(text, Operation{Op: "move_wiring", Index: 0, Value: "down"}), nil)
+		if w.Code != 200 || strings.Contains(w.Body.String(), `"refused"`) {
+			t.Errorf("%s: moving the wiring element refused for a misfit it already had: %d %.300s", kind, w.Code, w.Body)
+		}
+	}
+}
+
+// A problem of another check does not hide the type problems: with a node that is wired to a name the
+// config does not have, or a safety above the registered one, an edit that adds a misfit is refused.
+func TestTypedEditorSeesTypeProblemsBesideOtherErrors(t *testing.T) {
+	ghost := chainFlow + "  - edge: [third, ghost]\n"
+	servers := typedServers(t, "ghost.yaml", ghost)
+	for _, kind := range []string{"registry", "description"} {
+		s := servers[kind]
+		w := call(s.Handler(), s, "/api/apply", applyReq(ghost, Operation{Op: "set_block", Node: "second", Value: "count"}), nil)
+		if !strings.Contains(w.Body.String(), `"refused":"the types do not fit: `) {
+			t.Errorf("%s: a misfit beside an unknown name was not refused: %.300s", kind, w.Body)
+		}
+	}
+	servers = typedServers(t, "chain.yaml", chainFlow)
+	for _, kind := range []string{"registry", "description"} {
+		s := servers[kind]
+		// receipt states safety idempotent, which the int step (side effect) does not allow: an error of
+		// another kind comes with the misfit.
+		w := call(s.Handler(), s, "/api/apply", applyReq(chainFlow, Operation{Op: "set_block", Node: "receipt", Value: "count"}), nil)
+		if !strings.Contains(w.Body.String(), `"refused":"`) {
+			t.Errorf("%s: a misfit beside a safety error was not refused: %.300s", kind, w.Body)
+		}
+		// With the safety stated low enough, only the misfit is left, and it is refused as one.
+		low := strings.Replace(chainFlow, "{name: receipt, block: receipt, safety: idempotent}", "{name: receipt, block: receipt}", 1)
+		w = call(s.Handler(), s, "/api/apply", applyReq(low, Operation{Op: "set_block", Node: "receipt", Value: "count"}), nil)
+		if !strings.Contains(w.Body.String(), `"refused":"the types do not fit: `) {
+			t.Errorf("%s: a misfit without a safety error was not refused: %.300s", kind, w.Body)
+		}
+	}
+}
+
+// The same for a loop: the inner-switch refusal holds when the text has an unrelated error.
+func TestLoopShapeRefusalHoldsBesideOtherErrors(t *testing.T) {
+	src := "version: 1\nflow: f\nentry: a\nnodes:\n  - {name: a, block: a}\n  - {name: b, block: b}\n  - {name: c, block: c}\n  - {name: d, block: d}\nwiring:\n  - edge: [a, b]\n  - switch: b\n    when:\n      - {pred: x, to: c}\n    else: c\n  - switch: c\n    when:\n      - {pred: y, to: a}\n    else: d\n  - edge: [d, ghost]\n"
+	why := refusalOf(t, "f.yaml", src, Operation{Op: "set_loop_max", Node: "c", Index: 0, Max: 3})
+	if !strings.Contains(why, "has its own Switch") {
+		t.Errorf("%q", why)
+	}
+}
+
+// A node that states a retry safety above what its block registers is a false claim (crash recovery
+// would act on it): an edit that adds one is refused, whether or not the text has another error.
+func TestTypedEditorRefusesASafetyAboveTheRegistration(t *testing.T) {
+	ghost := strings.Replace(testFlow, "  - edge: [charge, receipt]\n", "  - edge: [charge, receipt]\n  - edge: [receipt, ghost]\n", 1)
+	for name, text := range map[string]string{"clean text": testFlow, "text with another error": ghost} {
+		servers := typedServers(t, "r.yaml", text)
+		for _, kind := range []string{"registry", "description"} {
+			s := servers[kind]
+			// charge is registered with no options (a side effect): "idempotent" claims it safe to run twice.
+			w := call(s.Handler(), s, "/api/apply", applyReq(text, Operation{Op: "set_safety", Node: "charge", Value: "idempotent"}), nil)
+			if !strings.Contains(w.Body.String(), `"refused":"the safety is above what the program registers: `) {
+				t.Errorf("%s, %s: a safety above the registration was not refused: %.300s", name, kind, w.Body)
+			}
+			// Lowering it, or leaving it as the program has it, is not refused.
+			w = call(s.Handler(), s, "/api/apply", applyReq(text, Operation{Op: "set_safety", Node: "validate", Value: "side_effect"}), nil)
+			if strings.Contains(w.Body.String(), `"refused"`) {
+				t.Errorf("%s, %s: a lowered safety was refused: %.300s", name, kind, w.Body)
+			}
+		}
+	}
+	// A text that already states one is not refused for it by an unrelated edit.
+	bad := strings.Replace(testFlow, "safety: side_effect", "safety: idempotent", 1)
+	for _, kind := range []string{"registry", "description"} {
+		s := typedServers(t, "r.yaml", bad)[kind]
+		w := call(s.Handler(), s, "/api/apply", applyReq(bad, Operation{Op: "set_safety", Node: "validate", Value: "side_effect"}), nil)
+		if strings.Contains(w.Body.String(), `"refused"`) {
+			t.Errorf("%s: an unrelated edit was refused for a claim the text already had: %.300s", kind, w.Body)
+		}
+	}
+}
+
+// What the editor lets through as work in progress (a node not wired in, an unknown block, a node not
+// reached) cannot be saved as clean: the verdict is not green and the save asks for the statement
+// that the check could not certify the text.
+func TestWorkInProgressErrorsAreNeverSavedAsClean(t *testing.T) {
+	for name, text := range map[string]string{
+		"a node not wired in": strings.Replace(testFlow, "wiring:\n", "  - {name: extra, block: count}\nwiring:\n", 1),
+		"an unknown block":    strings.Replace(testFlow, "block: receipt", "block: nowhere", 1),
+		"an unreached node":   strings.Replace(testFlow, "  - {name: receipt, block: receipt, safety: idempotent}\n", "  - {name: receipt, block: receipt, safety: idempotent}\n  - {name: stray, block: plain}\n", 1),
+	} {
+		for _, kind := range []string{"registry", "description"} {
+			s := typedServers(t, "r.yaml", testFlow)[kind]
+			if v := s.view([]byte(text)); v.Verdict.Class == "good" || v.Errors == 0 {
+				t.Errorf("%s, %s: the verdict is %q with %d errors", name, kind, v.Verdict.Class, v.Errors)
+			}
+			if _, kinds := s.confirmationKinds([]byte(text)); !slices.Contains(kinds, ConfirmUncertified) {
+				t.Errorf("%s, %s: the save does not ask the 'cannot be certified' statement: %v", name, kind, kinds)
+			}
+		}
+	}
+}
+
+// A problem is identified by the names it is about, whatever characters they hold: with names that
+// differ only in a bracketed number, an edit that fixes one misfit and adds another (same shape, other
+// nodes) is an edit that adds a problem, and is refused; names with quotes, brackets and "[#]" do not
+// confuse the comparison; a rename of such a node does not make its old problem new.
+func TestTypedEditorIdentifiesProblemsByNamesWhateverTheyContain(t *testing.T) {
+	for name, names := range map[string][3]string{
+		"bracketed numbers": {"n[1]", "n[2]", "n[3]"},
+		"quotes":            {`a"1`, `a"2`, `a"3`},
+		"hash marks":        {"n[#]", "n[#]x", "n[#][#]"},
+		"separators":        {"n 1 | x", "n 2 | x", "n 3 | x"},
+	} {
+		y := func(n string) string { return strconv.Quote(n) }
+		text := "version: 1\nflow: f\nentry: validate\nnodes:\n  - {name: validate, block: validate, safety: readonly}\n" +
+			"  - {name: " + y(names[0]) + ", block: plain}\n  - {name: " + y(names[1]) + ", block: count}\n  - {name: " + y(names[2]) + ", block: count}\n" +
+			"wiring:\n  - edge: [validate, " + y(names[0]) + "]\n  - edge: [" + y(names[0]) + ", " + y(names[1]) + "]\n  - edge: [" + y(names[1]) + ", " + y(names[2]) + "]\n"
+		for _, kind := range []string{"registry", "description"} {
+			s := typedServers(t, "r.yaml", text)[kind]
+			// The text has one misfit (names[0] -> names[1]). Setting names[1] to an order step fixes that and
+			// makes names[1] -> names[2] one: the same kind of problem on other nodes.
+			w := call(s.Handler(), s, "/api/apply", applyReq(text, Operation{Op: "set_block", Node: names[1], Value: "plain"}), nil)
+			if !strings.Contains(w.Body.String(), `"refused":"the types do not fit: `) {
+				t.Errorf("%s, %s: an edit that swaps one misfit for another was allowed: %.300s", name, kind, w.Body)
+			}
+			// An edit that only renames a node in the misfit is not refused for the misfit it already had.
+			w = call(s.Handler(), s, "/api/apply", applyReq(text, Operation{Op: "rename_node", Node: names[1], Value: "renamed"}), nil)
+			if strings.Contains(w.Body.String(), `"refused"`) {
+				t.Errorf("%s, %s: a rename was refused for a problem the text already had: %.300s", name, kind, w.Body)
+			}
+		}
+	}
+}
+
+// recordKey tells apart records that would read alike if their parts were joined as plain text: names
+// that hold the separator, the same words split differently, a class or kind that is a prefix of another,
+// and the same names with other types.
+func TestRecordKeyKeepsEveryPartApart(t *testing.T) {
+	same := func(n string) string { return n }
+	rec := func(class, kind, detail string, names ...string) planaccess.Record {
+		return planaccess.Record{Class: class, Kind: kind, Names: names, Detail: detail}
+	}
+	keys := map[string]planaccess.Record{}
+	for _, r := range []planaccess.Record{
+		rec("type", "edge", "a > b", "x y", "z"),
+		rec("type", "edge", "a > b", "x", "y z"),
+		rec("type", "edge", "a > b", "x", "y", "z"),
+		rec("type", "edge", "a > b", `x" "y`, "z"),
+		rec("type", "edge", "a > b", "x | y", "z"),
+		rec("type", "edge", "a > c", "x y", "z"), // the same names, other types
+		rec("type", "edge", "", "x y", "z"),
+		rec("type", "edge ", "a > b", "x y", "z"),
+		rec("type ", "edge", "a > b", "x y", "z"),
+		rec("safety", "edge", "a > b", "x y", "z"),
+	} {
+		k := recordKey(r, same)
+		if other, dup := keys[k]; dup {
+			t.Errorf("%+v and %+v have the same key %q", r, other, k)
+		}
+		keys[k] = r
+	}
+	// A rename changes a name field, and only a name that is the renamed node.
+	r := rec("type", "edge", "a > b", "n", "n2")
+	got := recordKey(r, func(n string) string {
+		if n == "n" {
+			return "m"
+		}
+		return n
+	})
+	if got != recordKey(rec("type", "edge", "a > b", "m", "n2"), same) {
+		t.Errorf("a rename of one name: %q", got)
+	}
+}
+
+// The same names with other types are another problem: an edit that changes the type a node takes
+// or gives, and leaves the connection a misfit, is refused (the editor would otherwise hide a change in
+// what is wrong behind a problem the text already had).
+func TestTypedEditorRefusesAMisfitWhoseTypesChange(t *testing.T) {
+	// validate gives an order; count takes an int. shout takes a string: the edge is a misfit either way.
+	text := strings.Replace(testFlow, "name: charge\n    block: charge", "name: charge\n    block: count", 1)
+	for _, kind := range []string{"registry", "description"} {
+		s := typedServers(t, "r.yaml", text)[kind]
+		w := call(s.Handler(), s, "/api/apply", applyReq(text, Operation{Op: "set_block", Node: "charge", Value: "shout"}), nil)
+		if !strings.Contains(w.Body.String(), `"refused":"the types do not fit: `) {
+			t.Errorf("%s: a misfit that changed its types was allowed: %.300s", kind, w.Body)
+		}
+	}
+}
+
+// A loop that Build refuses for the shape of its body (not the structural check) is refused when an
+// operation makes the loop: a node between the head and the switch that is not on the loop path.
+func TestLoopBoundThatMakesANonContiguousBodyIsRefused(t *testing.T) {
+	src := "version: 1\nflow: f\nentry: e\nnodes:\n  - {name: e, block: e}\n  - {name: a, block: a}\n  - {name: x, block: x}\n  - {name: b, block: b}\n  - {name: c, block: c}\nwiring:\n" +
+		"  - edge: [e, a]\n  - edge: [e, x]\n  - edge: [a, b]\n  - switch: b\n    when:\n      - {pred: p, to: a}\n    else: c\n"
+	why := refusalOf(t, "f.yaml", src, Operation{Op: "set_loop_max", Node: "b", Index: 0, Max: 3})
+	if !strings.Contains(why, "non-contiguous body") {
+		t.Errorf("%q", why)
+	}
+}
+
+// A text plan cannot parse has no records: its problems are unknown, not absent. An edit that can change
+// what the types or safeties check is refused while the text before or after does not parse (a
+// misspelt field, another version, a control character in a name), rather than let through unchecked;
+// only edits on an allow list (the flow's name, approvals, assertions) are not; a rename and a move
+// are refused too, since they change a graph nothing can check (a move changes the implicit entry and
+// the terminal that sets the flow's output).
+func TestTypedEditorRefusesTypeAffectingEditsWhileTheTextDoesNotParse(t *testing.T) {
+	ctrl := strconv.Quote("fi\x01rst")
+	broken := map[string]string{
+		"a misspelt field":    strings.Replace(chainFlow, "{name: first, block: plain}", "{name: first, block: plain, safty: idempotent}", 1),
+		"another version":     strings.Replace(chainFlow, "version: 1", "version: 2", 1),
+		"a control character": strings.NewReplacer("name: first", "name: "+ctrl, "[validate, first]", "[validate, "+ctrl+"]", "[first, second]", "["+ctrl+", second]").Replace(chainFlow),
+	}
+	servers := typedServers(t, "chain.yaml", chainFlow)
+	for name, text := range broken {
+		for _, kind := range []string{"registry", "description"} {
+			s := servers[kind]
+			// An edit that adds a misfit: refused, with the reason.
+			w := call(s.Handler(), s, "/api/apply", applyReq(text, Operation{Op: "set_block", Node: "second", Value: "count"}), nil)
+			if !strings.Contains(w.Body.String(), `"refused":"the config does not parse: `) || !strings.Contains(w.Body.String(), "fix it first") {
+				t.Errorf("%s, %s: an edit while the text does not parse was not refused for it: %.300s", name, kind, w.Body)
+			}
+			// Edits that cannot change what is checked are not refused for the parse error.
+			w = call(s.Handler(), s, "/api/apply", applyReq(text, Operation{Op: "rename_node", Node: "second", Value: "renamed"}), nil)
+			if !strings.Contains(w.Body.String(), `"refused":"the config does not parse: `) {
+				t.Errorf("%s, %s: a rename while the text does not parse was allowed: %.300s", name, kind, w.Body)
+			}
+			for _, op := range []Operation{
+				{Op: "set_flow", Value: "renamed"},
+				{Op: "add_assertion", Assertion: &Assertion{Form: "reachable", Node: "receipt"}},
+			} {
+				w = call(s.Handler(), s, "/api/apply", applyReq(text, op), nil)
+				if strings.Contains(w.Body.String(), "does not parse") {
+					t.Errorf("%s, %s: %s was refused for the parse error: %.200s", name, kind, op.Op, w.Body)
+				}
+			}
+		}
+	}
+	// With the text parsing again the same edit is judged by the types.
+	s := servers["registry"]
+	w := call(s.Handler(), s, "/api/apply", applyReq(chainFlow, Operation{Op: "set_block", Node: "second", Value: "count"}), nil)
+	if !strings.Contains(w.Body.String(), `"refused":"the types do not fit: `) {
+		t.Errorf("a parsing text: %.300s", w.Body)
+	}
+}
+
+// An approval change on a text that does not parse is not refused (it cannot change the graph), and the
+// save still cannot be clean: the text could not be compared with the baseline, so the dialog asks for
+// that statement, and a weakening cannot slip through while the checks are blind.
+func TestSaveOfAnUnparsingTextAsksTheCouldNotBeComparedStatement(t *testing.T) {
+	typo := strings.Replace(testFlow, "{name: validate, block: validate, safety: readonly}", "{name: validate, block: validate, safety: readonly, safty: x}", 1)
+	weaker := strings.Replace(typo, "need: 2", "need: 1", 1)
+	for _, kind := range []string{"registry", "description"} {
+		s := typedServers(t, "r.yaml", testFlow)[kind]
+		w := call(s.Handler(), s, "/api/apply", applyReq(typo, Operation{Op: "set_approval", Node: "charge", Approval: &Approval{Need: 1, Approvers: []string{"ops", "finance", "risk"}}}), nil)
+		if strings.Contains(w.Body.String(), "does not parse") {
+			t.Errorf("%s: an approval change was refused for the parse error: %.200s", kind, w.Body)
+		}
+		if _, kinds := s.confirmationKinds([]byte(weaker)); !slices.Contains(kinds, ConfirmUncompared) {
+			t.Errorf("%s: the save of a weakened, unparsing text does not ask the could-not-be-compared statement: %v", kind, kinds)
+		}
+	}
+}
+
+// Either side not parsing is enough. The operations themselves refuse to write what plan cannot parse
+// (a control character in a name), so the two sides are given to the refusal directly: a text with a
+// misspelt field that becomes one that parses, and one that parses that becomes one with the misspelt
+// field.
+func TestTypedRefusalNeedsBothSidesToParse(t *testing.T) {
+	typo := strings.Replace(chainFlow, "{name: third, block: plain}", "{name: third, block: plain, safty: idempotent}", 1)
+	op := Operation{Op: "set_block", Node: "second", Value: "plain"}
+	for _, kind := range []string{"registry", "description"} {
+		s := typedServers(t, "chain.yaml", chainFlow)[kind]
+		for name, pair := range map[string][2]string{"before does not parse": {typo, chainFlow}, "after does not parse": {chainFlow, typo}} {
+			why := s.typedRefusal([]byte(pair[0]), []byte(pair[1]), op)
+			if !strings.HasPrefix(why, "the config does not parse: ") {
+				t.Errorf("%s, %s: %q", kind, name, why)
+			}
+		}
+		if why := s.typedRefusal([]byte(chainFlow), []byte(chainFlow), op); why != "" {
+			t.Errorf("%s: two texts that parse and have no misfit were refused: %q", kind, why)
+		}
+	}
+}
+
+// The reviewer's repro: with a misspelt field on one node, moving a node up changes which terminal sets
+// the flow's output, so after the typo is fixed there are more misfits than before: refused while the
+// text does not parse, in both modes. On the clean text the same move is judged by the types.
+func TestTypedEditorRefusesMovesWhileTheTextDoesNotParse(t *testing.T) {
+	clean := "version: 1\nflow: f\nentry: validate\nnodes:\n  - {name: validate, block: validate, safety: readonly}\n  - {name: t1, block: plain}\n  - {name: t2, block: plain}\n  - {name: t3, block: receipt, safety: idempotent}\nwiring:\n  - edge: [validate, t1]\n  - edge: [validate, t2]\n  - edge: [validate, t3]\n"
+	typo := strings.Replace(clean, "{name: t1, block: plain}", "{name: t1, block: plain, safty: readonly}", 1)
+	for _, kind := range []string{"registry", "description"} {
+		s := typedServers(t, "m.yaml", clean)[kind]
+		for _, op := range []Operation{{Op: "move_node", Node: "t3", Value: "up"}, {Op: "move_wiring", Index: 2, Value: "up"}} {
+			w := call(s.Handler(), s, "/api/apply", applyReq(typo, op), nil)
+			if !strings.Contains(w.Body.String(), `"refused":"the config does not parse: `) {
+				t.Errorf("%s: %s while the text does not parse was allowed: %.300s", kind, op.Op, w.Body)
+			}
+		}
+	}
+}
+
+// A join's wiring moves are refused too, and set_in and set_out (which decide the terminal misfits)
+// with them, while set_flow, which only names the flow, is not.
+func TestTypedEditorUnparsedAllowListIsNarrow(t *testing.T) {
+	join := "version: 1\nflow: f\nentry: validate\nnodes:\n  - {name: validate, block: validate, safety: readonly}\n  - {name: a, block: plain}\n  - {name: b, block: plain}\nwiring:\n  - edge: [validate, a]\n  - edge: [validate, b]\n  - join: j\n    inputs: [a, b]\n    merge: both\n"
+	typo := strings.Replace(join, "{name: a, block: plain}", "{name: a, block: plain, safty: x}", 1)
+	for _, kind := range []string{"registry", "description"} {
+		s := typedServers(t, "j.yaml", chainFlow)[kind]
+		for _, op := range []Operation{{Op: "move_wiring", Index: 0, Value: "down"}, {Op: "set_out", Value: "string"}, {Op: "set_in", Value: "int"}} {
+			w := call(s.Handler(), s, "/api/apply", applyReq(typo, op), nil)
+			if !strings.Contains(w.Body.String(), `"refused":"the config does not parse: `) {
+				t.Errorf("%s: %s while the text does not parse was allowed: %.300s", kind, op.Op, w.Body)
+			}
+		}
+		w := call(s.Handler(), s, "/api/apply", applyReq(typo, Operation{Op: "set_flow", Value: "renamed"}), nil)
+		if strings.Contains(w.Body.String(), "does not parse") {
+			t.Errorf("%s: set_flow was refused for the parse error: %.200s", kind, w.Body)
+		}
+	}
+}
+
+// A confirmed removal of a node, from a text that does not parse to one that does (the node with the
+// misspelt field is the one removed), is refused: the text before could not be checked.
+func TestTypedEditorRefusesAConfirmedRemovalFromAnUnparsingText(t *testing.T) {
+	typo := strings.Replace(chainFlow, "{name: third, block: plain}", "{name: third, block: plain, safty: idempotent}", 1)
+	for _, kind := range []string{"registry", "description"} {
+		s := typedServers(t, "chain.yaml", chainFlow)[kind]
+		dry := call(s.Handler(), s, "/api/apply", applyReq(typo, Operation{Op: "remove_node", Node: "third", DryRun: true}), nil)
+		var e Edited
+		if err := json.Unmarshal(dry.Body.Bytes(), &e); err != nil || len(e.Cascade) == 0 {
+			t.Fatalf("%s: the dry run does not list what removal cascades to: %.300s", kind, dry.Body)
+		}
+		w := call(s.Handler(), s, "/api/apply", applyReq(typo, Operation{Op: "remove_node", Node: "third", Confirm: e.Cascade}), nil)
+		if !strings.Contains(w.Body.String(), `"refused":"the config does not parse: `) {
+			t.Errorf("%s: a confirmed removal from a text that does not parse was allowed: %.300s", kind, w.Body)
+		}
+	}
+}
+
+// Every operation the editor knows is refused while the text does not parse unless it is on the allow
+// list, so one added later is refused by default. The vocabulary is read from the code that dispatches
+// the operations (the predicates and the node-operation switch), so a new case there is found here.
+func TestEveryOperationIsRefusedWhileUnparsedUnlessAllowed(t *testing.T) {
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, ".", func(fi fs.FileInfo) bool { return !strings.HasSuffix(fi.Name(), "_test.go") }, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ops := map[string]bool{}
+	for _, pkg := range pkgs {
+		for _, f := range pkg.Files {
+			for _, d := range f.Decls {
+				fd, ok := d.(*ast.FuncDecl)
+				if !ok || fd.Body == nil {
+					continue
+				}
+				switch fd.Name.Name {
+				case "isWiringOp", "isJoinOp", "isStructureOp", "isAssertionOp", "planSteps":
+					ast.Inspect(fd.Body, func(n ast.Node) bool {
+						lit, ok := n.(*ast.BasicLit)
+						if !ok || lit.Kind != token.STRING {
+							return true
+						}
+						// planSteps has other strings (error text, keys); only its case labels are operations.
+						if fd.Name.Name == "planSteps" && !inCase(fd.Body, lit) {
+							return true
+						}
+						v, _ := strconv.Unquote(lit.Value)
+						ops[v] = true
+						return true
+					})
+				}
+			}
+		}
+	}
+	// planSteps also switches on safeties; the operation names are the ones the dispatchers accept.
+	for _, notOp := range []string{"readonly", "idempotent", "side_effect"} {
+		delete(ops, notOp)
+	}
+	if len(ops) < 25 {
+		t.Fatalf("found only %d operations in the code: %v", len(ops), ops)
+	}
+	for op := range allowedWhileUnparsed {
+		if !ops[op] {
+			t.Errorf("%s is on the allow list but is not an operation the editor dispatches", op)
+		}
+	}
+	typo := strings.Replace(chainFlow, "{name: third, block: plain}", "{name: third, block: plain, safty: idempotent}", 1)
+	for _, kind := range []string{"registry", "description"} {
+		s := typedServers(t, "chain.yaml", chainFlow)[kind]
+		for op := range ops {
+			why := s.typedRefusal([]byte(typo), []byte(typo), Operation{Op: op})
+			refused := strings.HasPrefix(why, "the config does not parse: ")
+			if allowedWhileUnparsed[op] == refused {
+				t.Errorf("%s: %s: allowed %v but typedRefusal says %q", kind, op, allowedWhileUnparsed[op], why)
+			}
+		}
+	}
+}
+
+// inCase reports whether lit is a label of a case clause in body.
+func inCase(body *ast.BlockStmt, lit *ast.BasicLit) bool {
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		if cc, ok := n.(*ast.CaseClause); ok {
+			for _, e := range cc.List {
+				if e == ast.Expr(lit) {
+					found = true
+				}
+			}
+		}
+		return !found
+	})
+	return found
 }

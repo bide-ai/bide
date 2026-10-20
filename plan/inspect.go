@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/planaccess"
 )
 
 // ConfigReport is what InspectConfig finds in a flow config: the graph it declares, the digest a
@@ -112,6 +113,14 @@ type inspectOptions struct{ allowUnused bool }
 // blocks it has not placed yet do not stop the check from reading the ones it has.
 func AllowUnusedBlocks() InspectOption { return func(o *inspectOptions) { o.allowUnused = true } }
 
+func init() {
+	planaccess.RegisterInspect(inspectRecords)
+	planaccess.RegisterParse(func(data []byte) error {
+		var cfg config
+		return parseConfig(data, &cfg)
+	})
+}
+
 // inspectConfig is InspectConfig, and what InspectConfigDescribed runs on a Registry built from a
 // description: one implementation of the typed checks, whichever side the Registry came from.
 func inspectConfig(data []byte, reg *Registry, opts []InspectOption) ConfigReport {
@@ -183,7 +192,7 @@ func inspectConfigUnbounded(data []byte, reg *Registry, opts []InspectOption) (r
 	}
 	r.Topology = configTopology(&cfg)
 	r.Safety = configSafety(&cfg)
-	structural(&cfg, &r)
+	structural(&cfg, &r, nil)
 	if reg == nil && !r.Errors() {
 		// Without a Registry nothing runs Build, so its checks on the wiring alone are made here: a cycle,
 		// a loop's shape, reachability, a join's inputs, what feeds a node. With a Registry Build makes
@@ -192,20 +201,67 @@ func inspectConfigUnbounded(data []byte, reg *Registry, opts []InspectOption) (r
 		if err := graphChecks(&cfg); err != nil {
 			// One refusal, as one problem: attribute splits an error at "; " (it joins several), and Build's
 			// own wording has one inside it.
-			r.attribute(&cfg, errors.New(strings.ReplaceAll(err.Error(), "; ", ", ")))
+			r.attribute(&cfg, err)
+		}
+	} else if reg == nil {
+		// Other errors stop the full checks; the loops' shape and the wiring's shapes are still checked
+		// among the parts that resolve (see resolvable).
+		if err := graphChecksOf(resolvable(&cfg), true); err != nil {
+			r.attribute(&cfg, err)
 		}
 	}
 	defer func() { r.gated(); r.assertions(cfg.Assert) }()
-	if reg == nil || r.Errors() {
+	if reg == nil {
+		return r
+	}
+	// The type problems come from the config and the registered types alone, whatever else is wrong
+	// with the config, so that another error never hides one: the editor compares reports to find what
+	// an edit added. They are listed up to a cap unless the caller asks for all.
+	typeMsgs := capTypeProblems(checkTypes(&cfg, reg).all())
+	addTypes := func() {
+		if len(typeMsgs) > 0 {
+			r.attribute(&cfg, fmt.Errorf("plan: load %q: %s", cfg.Flow, strings.Join(typeMsgs, "; ")))
+		}
+	}
+	// With errors that stop the config being assembled, the loops' shape and the wiring's shapes are
+	// still checked among the parts that resolve.
+	partialWiring := func() {
+		if err := graphChecksOf(resolvable(&cfg), true); err != nil {
+			r.attribute(&cfg, err)
+		}
+	}
+	if r.Errors() {
+		addTypes()
+		// assemble, which reports a safety above the registration, does not run: say it here.
+		if msgs, _ := safetyAboveRegistration(&cfg, reg); len(msgs) > 0 {
+			r.attribute(&cfg, fmt.Errorf("plan: load %q: %s", cfg.Flow, strings.Join(msgs, "; ")))
+		}
+		partialWiring()
 		return r
 	}
 	core, err := assemble(&cfg, reg, o.allowUnused)
-	if err != nil {
+	var typeErr *typeProblemsError
+	if err != nil && !(errors.As(err, &typeErr) && core != nil) {
 		r.attribute(&cfg, err)
+		addTypes()
+		partialWiring()
 		return r
 	}
 	for _, n := range core.nodes {
 		r.Safety[n.name] = safetyClass(n.safety.ReadOnly, n.safety.Idempotent)
+	}
+	// Every type problem, then the wiring's own checks (a cycle, a loop's shape, reachability, a join's
+	// inputs), all of them, before Build, which stops at the first problem of any kind.
+	if len(typeMsgs) > 0 {
+		addTypes()
+		if err := graphChecks(&cfg); err != nil {
+			r.attribute(&cfg, err)
+		}
+		return r
+	}
+	if err := graphChecks(&cfg); err != nil {
+		r.attribute(&cfg, err)
+		return r
 	}
 	// Load's boundary types: the entry's input, and the output every terminal must share.
 	core.inType = core.byName[core.entry].inType
@@ -338,7 +394,7 @@ func configTopology(cfg *config) Topology {
 }
 
 // structural runs the checks that need no Registry, attaching each problem where it belongs.
-func structural(cfg *config, r *ConfigReport) {
+func structural(cfg *config, r *ConfigReport, recs *[]planaccess.Record) {
 	errAt := func(p ConfigProblem) { p.Severity = "error"; r.Problems = append(r.Problems, p) }
 	declared := map[string]bool{}
 	if len(cfg.Nodes) == 0 {
@@ -436,7 +492,7 @@ func structural(cfg *config, r *ConfigReport) {
 	}
 	joinOrder(cfg, errAt)
 	joinsAndSwitches(cfg, errAt)
-	loopShape(cfg, declared, errAt)
+	loopShape(cfg, declared, errAt, recs)
 }
 
 // joinsAndSwitches reports what Load and Build refuse about how edges and switches meet joins and
@@ -517,7 +573,12 @@ func joinOrder(cfg *config, errAt func(ConfigProblem)) {
 // structural check can see from the wiring alone: more than one loop-back arm on a switch, no arm or
 // else that does not loop back, and a loop head that does not reach the switch in the forward graph
 // (the edges, a join's inputs and the arms that do not loop back).
-func loopShape(cfg *config, declared map[string]bool, errAt func(ConfigProblem)) {
+func loopShape(cfg *config, declared map[string]bool, errAt func(ConfigProblem), recs *[]planaccess.Record) {
+	rec := func(kind string, names []string, message string) {
+		if recs != nil {
+			*recs = append(*recs, planaccess.Record{Class: "loop", Kind: kind, Names: names, Message: message})
+		}
+	}
 	fwd := map[string][]string{}
 	for _, w := range cfg.Wiring {
 		switch {
@@ -558,13 +619,16 @@ func loopShape(cfg *config, declared map[string]bool, errAt func(ConfigProblem))
 		}
 		if loops > 1 {
 			errAt(ConfigProblem{Node: w.Switch, Message: fmt.Sprintf("wiring[%d] the switch over %q has more than one loop-back arm; a switch expresses a single loop back-edge", i, w.Switch)})
+			rec("structural-more-than-one-loop-back", []string{w.Switch}, fmt.Sprintf("the switch over %q has more than one loop-back arm; a switch expresses a single loop back-edge", w.Switch))
 		}
 		if exits == 0 {
 			errAt(ConfigProblem{Node: w.Switch, Message: fmt.Sprintf("wiring[%d] the loop over %q has no exit arm; add an arm or an else that does not loop back so the loop can terminate", i, w.Switch)})
+			rec("structural-no-exit-arm", []string{w.Switch}, fmt.Sprintf("the loop over %q has no exit arm; add an arm or an else that does not loop back so the loop can terminate", w.Switch))
 		}
 		for j, a := range w.When {
 			if a.LoopMax > 0 && declared[a.To] && declared[w.Switch] && !forwardReaches(fwd, a.To, w.Switch) {
 				errAt(ConfigProblem{From: w.Switch, To: a.To, Message: fmt.Sprintf("wiring[%d].when[%d] loops back to %q, which is not an ancestor of the switch over %q (a loop head must reach its loop switch in the forward graph)", i, j, a.To, w.Switch)})
+				rec("structural-not-an-ancestor", []string{w.Switch, a.To}, fmt.Sprintf("an arm loops back to %q, which is not an ancestor of the switch over %q (a loop head must reach its loop switch in the forward graph)", a.To, w.Switch))
 			}
 		}
 	}
@@ -624,13 +688,75 @@ func (r *ConfigReport) attribute(cfg *config, err error) {
 	}
 }
 
+// resolvable is cfg with only the parts whose names all resolve: the first declaration of each node,
+// and the wiring elements that name declared nodes (a join's own name counts as declared after it).
+// The checks of the wiring's shape run over it when the config has other errors, so a loop that is
+// not simple is found beside an unknown name elsewhere.
+func resolvable(cfg *config) *config {
+	out := *cfg
+	out.Nodes = nil
+	known := map[string]bool{}
+	for _, n := range cfg.Nodes {
+		if !known[n.Name] {
+			known[n.Name] = true
+			out.Nodes = append(out.Nodes, n)
+		}
+	}
+	out.Wiring = nil
+	for _, w := range cfg.Wiring {
+		ok := true
+		switch {
+		case w.isEdge() && !w.isSwitch() && !w.isJoin():
+			ok = len(w.Edge) == 2 && known[w.Edge[0]] && known[w.Edge[1]]
+		case w.isJoin() && !w.isEdge() && !w.isSwitch():
+			ok = w.Join != "" && !known[w.Join]
+			for _, in := range w.Inputs {
+				ok = ok && known[in]
+			}
+			if ok {
+				known[w.Join] = true
+			}
+		case w.isSwitch() && !w.isEdge() && !w.isJoin():
+			ok = known[w.Switch] && (w.Else == "" || known[w.Else])
+			for _, a := range w.When {
+				ok = ok && known[a.To]
+			}
+		default:
+			ok = false
+		}
+		if ok {
+			out.Wiring = append(out.Wiring, w)
+		}
+	}
+	return &out
+}
+
 // graphChecks runs the checks Build makes on the wiring alone, in Build's order, over a spec built from
 // the config with no types: acyclicity, the loops' shape, reachability from the entry, a join's inputs
 // and what feeds each node. It returns the first refusal, worded as Build words it, except that a node
 // not reached from the entry says so as "not reached from the entry": a node not wired in yet is a config
 // that will not load, and the words read as work in progress. It assumes the structural check found no
 // error (every name resolves, every wiring element has one kind).
-func graphChecks(cfg *config) error {
+func graphChecks(cfg *config) error { return graphChecksOf(cfg, false) }
+
+// graphChecksOf is graphChecks; wiringOnly is for a config that has other errors, which the structural
+// check has reported (see resolvable): it leaves out reachability, a join's inputs and the loop
+// refusals the structural check makes too, and keeps what only Build finds, which stands without the
+// rest of the config being right: a loop's body and the wiring's shapes.
+func graphChecksOf(cfg *config, wiringOnly bool) error {
+	core := graphCore(cfg)
+	if core == nil {
+		return nil // no entry or an unknown one is reported by the structural check
+	}
+	if _, err := core.topoOrder(); err != nil {
+		return fmt.Errorf("plan: build %q: %w", core.flowName, err)
+	}
+	return graphChecksOver(core, wiringOnly)
+}
+
+// graphCore is the spec of cfg's wiring with no types, for the checks Build makes on the wiring alone,
+// or nil if the config has no entry or an unknown one. It assumes every name resolves (see resolvable).
+func graphCore(cfg *config) *builderCore {
 	core := &builderCore{flowName: cfg.Flow, byName: map[string]*node{}}
 	add := func(n *node) {
 		core.nodes = append(core.nodes, n)
@@ -668,22 +794,42 @@ func graphChecks(cfg *config) error {
 		}
 	}
 	if core.entry == "" || core.byName[core.entry] == nil {
-		return nil // no entry or an unknown one is reported by the structural check
+		return nil
 	}
-	if _, err := core.topoOrder(); err != nil {
-		return fmt.Errorf("plan: build %q: %w", core.flowName, err)
-	}
-	if err := core.deriveLoops(); err != nil {
-		return err
-	}
-	reached := core.reachableFrom(core.entry)
-	for _, n := range core.nodes {
-		if !reached[n.name] {
-			return fmt.Errorf("plan: build %q: step %q is not reached from the entry %q: wire it in from the entry with an edge or an arm, or remove it", core.flowName, n.name, core.entry)
+	return core
+}
+
+// graphChecksOver runs the checks of graphChecksOf over a spec from graphCore whose graph is acyclic.
+func graphChecksOver(core *builderCore, wiringOnly bool) error {
+	// Every refusal of these checks, not the first, so a second problem of the same kind (a second
+	// loop that is not simple, a second node not reached) shows beside the first: a caller that
+	// compares reports (the editor) must see it. "; " inside one message is written ", ", since
+	// attribute splits a joined error at "; ".
+	var msgs []string
+	note := func(m string) { msgs = append(msgs, strings.ReplaceAll(m, "; ", ", ")) }
+	for _, m := range core.loopProblems() {
+		// The structural check already reports the other loop refusals (more than one loop-back arm, no
+		// exit arm, a head that is not an ancestor); with it having run, only the body's shape is new.
+		if !wiringOnly || strings.Contains(m, "non-contiguous body") {
+			note(m)
 		}
 	}
-	if err := core.checkJoins(); err != nil {
-		return err
+	if !wiringOnly {
+		reached := core.reachableFrom(core.entry)
+		for _, n := range core.nodes {
+			if !reached[n.name] {
+				note(fmt.Sprintf("step %q is not reached from the entry %q: wire it in from the entry with an edge or an arm, or remove it", n.name, core.entry))
+			}
+		}
+		if err := core.checkJoins(); err != nil {
+			note(core.unprefixed(err))
+		}
 	}
-	return core.checkShapes()
+	for _, m := range core.shapeProblems() {
+		note(m)
+	}
+	if len(msgs) == 0 {
+		return nil
+	}
+	return fmt.Errorf("plan: build %q: %s", core.flowName, strings.Join(msgs, "; "))
 }

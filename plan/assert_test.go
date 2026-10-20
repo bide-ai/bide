@@ -81,9 +81,11 @@ func TestAssert_EachKind(t *testing.T) {
 		}
 		if c.path == nil {
 			// payConfig declares an orphan node on purpose (to exercise "orphan unreachable"), and the
-			// structural check says it is not reached from the entry; nothing else may be wrong.
+			// structural check says it is not reached from the entry; and charge is entered by a
+			// switch arm and an edge, which the check says needs a join (it used to stop at the first
+			// of these two); nothing else may be wrong.
 			for _, p := range r.Problems {
-				if p.Severity == "error" && p.Node != "orphan" {
+				if p.Severity == "error" && p.Node != "orphan" && !strings.Contains(p.Message, `step "charge" is fed by`) {
 					t.Errorf("%q holds but problems %+v", c.line, r.Problems)
 				}
 			}
@@ -92,7 +94,12 @@ func TestAssert_EachKind(t *testing.T) {
 		if !res.Violated() {
 			t.Errorf("%q: Violated() = false for %+v", c.line, res)
 		}
-		ps := problemAt(r, c.path[len(c.path)-1], "", "")
+		var ps []ConfigProblem
+		for _, p := range problemAt(r, c.path[len(c.path)-1], "", "") {
+			if !strings.Contains(p.Message, "is fed by") { // the fixture's other defect, see above
+				ps = append(ps, p)
+			}
+		}
 		if len(ps) != 1 || ps[0].Severity != "error" || !strings.Contains(ps[0].Message, "is violated") || !strings.Contains(ps[0].Message, strings.Join(c.path, " -> ")) {
 			t.Errorf("%q: problems at %q = %+v", c.line, c.path[len(c.path)-1], ps)
 		}

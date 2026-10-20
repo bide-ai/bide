@@ -4,13 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/bide-ai/bide/internal/planaccess"
 	"reflect"
 	"slices"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/bide-ai/bide/internal/printable"
-	"github.com/bide-ai/bide/plan"
 )
 
 // The structure operations of docs/design/visual-editor.md ("Operations", phase 2): add, remove and
@@ -799,25 +799,24 @@ func expectStructure(old any, op Operation) (any, error) {
 // newLoopShapeError is the first loop-shape error the structural check finds in after that it did not
 // find in before, or "".
 func newLoopShapeError(before, after []byte) string {
-	shape := func(data []byte) []string {
-		var out []string
-		for _, p := range plan.InspectConfig(data, nil).Problems {
-			if p.Severity != "error" {
-				continue
-			}
-			for _, m := range []string{"loops back to", "loop-back arm", "no exit arm", "has its own Switch", "leaves the loop", "enters the loop", "non-contiguous body"} {
-				if strings.Contains(p.Message, m) {
-					out = append(out, p.Message)
-				}
-			}
+	// The loop shapes Load refuses, compared by identity (class, kind, full names), counting repeats: a
+	// problem the text had is not new, and two that look alike are two.
+	key := func(r planaccess.Record) string { return recordKey(r, func(n string) string { return n }) }
+	had := map[string]int{}
+	for _, r := range planaccess.Inspect(before, nil, nil) {
+		if r.Class == "loop" {
+			had[key(r)]++
 		}
-		return out
 	}
-	old := shape(before)
-	for _, m := range shape(after) {
-		if !slices.Contains(old, m) {
-			return m
+	for _, r := range planaccess.Inspect(after, nil, nil) {
+		if r.Class != "loop" {
+			continue
 		}
+		if k := key(r); had[k] > 0 {
+			had[k]--
+			continue
+		}
+		return r.Message
 	}
 	return ""
 }
