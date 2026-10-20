@@ -3,8 +3,10 @@ package flowedit
 import (
 	"context"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -28,8 +30,8 @@ func typedRegistry(t *testing.T) *plan.Registry {
 		reg.RegisterStep("charge", order),
 		reg.RegisterStep("receipt", func(_ context.Context, o tOrder) (string, error) { return o.ID, nil }, plan.Idempotent()),
 		reg.RegisterStep("gated", order, plan.Approval(&agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "fin"}})),
-		reg.RegisterStep("plain", order),
-		reg.RegisterStep("shout", func(_ context.Context, s string) (string, error) { return strings.ToUpper(s), nil }),
+		reg.RegisterStep("plain", order, plan.Idempotent()),
+		reg.RegisterStep("shout", func(_ context.Context, s string) (string, error) { return strings.ToUpper(s), nil }, plan.Idempotent()),
 		reg.RegisterStep("count", func(_ context.Context, n int) (int, error) { return n + 1, nil }),
 		reg.RegisterPredicate("large", func(o tOrder) bool { return len(o.ID) > 3 }),
 	} {
@@ -179,8 +181,8 @@ func TestTypedEditorIsNotQuieterWhenTheProgramChangedSinceTheBaseline(t *testing
 	for _, err := range []error{
 		reg.RegisterStep("validate", order, plan.ReadOnly()),
 		reg.RegisterStep("gated", order),
-		reg.RegisterStep("plain", order),
-		reg.RegisterStep("receipt", func(_ context.Context, o tOrder) (string, error) { return o.ID, nil }),
+		reg.RegisterStep("plain", order, plan.Idempotent()),
+		reg.RegisterStep("receipt", func(_ context.Context, o tOrder) (string, error) { return o.ID, nil }, plan.Idempotent()),
 	} {
 		if err != nil {
 			t.Fatal(err)
@@ -435,5 +437,166 @@ func TestTypedOptionsRefuseNilAndZero(t *testing.T) {
 	var nilReg *plan.Registry
 	if _, err := New(p, WithRegistry(nilReg), WithBlocks(typedRegistry(t).Describe())); err == nil {
 		t.Error("a nil Registry beside a description made an editor")
+	}
+}
+
+// A node not wired in yet makes the whole flow fail to build (it is unreachable), and a report that
+// does not build has no types; the palette is used exactly then, so each node's types come from the
+// program's description of its block, whatever the rest of the config says.
+func TestTypedNodesKeepTheirTypesWhileAnotherNodeIsUnwired(t *testing.T) {
+	unwired := strings.Replace(testFlow, "wiring:\n", "  - {name: loose, block: count}\nwiring:\n", 1)
+	for kind, s := range typedServers(t, "refund.yaml", unwired) {
+		if kind == "structural" {
+			continue
+		}
+		d, err := s.Doc()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.Errors == 0 {
+			t.Fatalf("%s: the flow with an unwired node builds", kind)
+		}
+		got := map[string][2]string{}
+		for _, n := range d.Nodes {
+			got[n.Name] = [2]string{n.In, n.Out}
+		}
+		order, count := reflect.TypeFor[tOrder]().PkgPath()+".tOrder", "int"
+		if got["validate"] != [2]string{order, order} || got["receipt"] != [2]string{order, "string"} || got["loose"] != [2]string{count, count} {
+			t.Errorf("%s: node types %v", kind, got)
+		}
+	}
+	// A block the program does not describe has no types, and says so on the page ("types unknown").
+	ghost := strings.Replace(testFlow, "block: charge", "block: nowhere", 1)
+	for kind, s := range typedServers(t, "refund.yaml", ghost) {
+		if kind == "structural" {
+			continue
+		}
+		d, _ := s.Doc()
+		if d.Nodes[1].In != "" || d.Nodes[1].Out != "" || d.Nodes[0].Out == "" {
+			t.Errorf("%s: %+v", kind, d.Nodes)
+		}
+	}
+}
+
+// The page reads these keys of the typed view; a Go test decodes the shapes from the structs, so a rename
+// on either side fails here and not in a browser.
+func TestPageContractForTypedMode(t *testing.T) {
+	s := typedServers(t, "refund.yaml", strings.Replace(testFlow, "block: charge", "block: nowhere", 1))["registry"]
+	b, _ := json.Marshal(s.view([]byte(strings.Replace(testFlow, "block: charge", "block: nowhere", 1))))
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	ty, ok := m["typed"].(map[string]any)
+	if !ok {
+		t.Fatalf("no typed view: %s", b)
+	}
+	for _, k := range []string{"source", "label", "palette"} {
+		if _, ok := ty[k]; !ok {
+			t.Errorf("typed has no %q", k)
+		}
+	}
+	row := ty["palette"].([]any)[0].(map[string]any)
+	for _, k := range []string{"name", "kind", "in", "out", "safety", "used"} {
+		if _, ok := row[k]; !ok {
+			t.Errorf("a palette row has no %q", k)
+		}
+	}
+	if wk, ok := m["weakening"].(map[string]any); !ok || wk["not_certified"] == nil {
+		t.Errorf("a text with errors against the blocks has no not_certified: %v", m["weakening"])
+	}
+	good, _ := json.Marshal(s.view([]byte(testFlow)))
+	var g map[string]any
+	_ = json.Unmarshal(good, &g)
+	if gt := g["typed"].(map[string]any); gt["digest"] == nil {
+		t.Errorf("a config without errors has no digest: %v", gt)
+	}
+	n := g["nodes"].([]any)[0].(map[string]any)
+	if n["in"] == nil || n["out"] == nil {
+		t.Errorf("a typed node has no in and out: %v", n)
+	}
+	js, _ := fs.ReadFile(pageFS, "page/editor.js")
+	for _, k := range []string{"v.typed", "t.palette", "t.digest", "t.source", "b.name", "b.kind", "b.in", "b.out", "b.inputs", "b.safety", "b.gate", "b.used", "w.not_certified", "n.in", "n.out"} {
+		if !strings.Contains(string(js), k) {
+			t.Errorf("the script no longer reads %s: update this list with it", k)
+		}
+	}
+}
+
+// The refusal of a misfit needs the rest of the config to resolve, because plan checks types after it
+// resolves every block and safety. A text that has such a problem is not refused for a misfit it also has,
+// and the problem is in the verdict; this pins the limit the guide states.
+func TestTypedRefusalNeedsTheRestOfTheConfigToResolve(t *testing.T) {
+	s := typedServers(t, "refund.yaml", testFlow)["registry"]
+	broken := strings.Replace(testFlow, "block: receipt", "block: nowhere", 1) // an unknown block elsewhere
+	w := call(s.Handler(), s, "/api/apply", applyReq(broken, Operation{Op: "set_block", Node: "charge", Value: "count"}), nil)
+	var e Edited
+	if err := json.Unmarshal(w.Body.Bytes(), &e); err != nil || !e.Changed || e.Errors == 0 {
+		t.Errorf("a misfit beside an unknown block: %d %s", w.Code, w.Body)
+	}
+}
+
+// A config with an error elsewhere and a connection that does not fit: the misfit is not listed (plan
+// checks types after it resolves every block), so the view must not read as checked. Its verdict is not
+// good, it has errors, each node still carries the types the program gave its block (so the page marks
+// the target), the weakening is not certified, and a save needs confirming.
+func TestAMisfitBesideAnotherErrorNeverReadsAsChecked(t *testing.T) {
+	text := strings.Replace(strings.Replace(testFlow, "block: receipt", "block: nowhere", 1), "wiring:\n", "  - {name: loose, block: count}\nwiring:\n  - edge: [validate, loose]\n", 1)
+	for kind, s := range typedServers(t, "refund.yaml", testFlow) {
+		if kind == "structural" {
+			continue
+		}
+		v := s.view([]byte(text))
+		if v.Errors == 0 || v.Verdict.Class == "good" || v.Weakening == nil || v.Weakening.NotCertified == "" {
+			t.Errorf("%s: errors %d verdict %q not certified %v", kind, v.Errors, v.Verdict.Class, v.Weakening)
+		}
+		types := map[string][2]string{}
+		for _, n := range v.Nodes {
+			types[n.Name] = [2]string{n.In, n.Out}
+		}
+		if types["validate"][1] == "" || types["loose"][0] == "" || types["validate"][1] == types["loose"][0] {
+			t.Errorf("%s: the page cannot mark the misfit: %v", kind, types)
+		}
+		if len(s.confirmations([]byte(text))) == 0 {
+			t.Errorf("%s: a save of an uncertified text needs no confirmation", kind)
+		}
+	}
+}
+
+// Each item a save asks to confirm says what it is, by position, so the page words the statement from the kind
+// and never from the item's text.
+func TestPreviewNamesTheKindOfEachConfirmation(t *testing.T) {
+	noAssert := testFlow[:strings.Index(testFlow, "assert:")]
+	unknown := strings.Replace(noAssert, "block: receipt", "block: nowhere", 1)
+	cases := []struct {
+		name     string
+		baseline string
+		text     string
+		kinds    []string
+	}{
+		{"nothing", noAssert, noAssert + "# note\n", nil},
+		{"weakened", noAssert, strings.Replace(noAssert, "need: 2", "need: 1", 1), []string{ConfirmWeakens}},
+		{"uncertified", unknown, unknown + "# note\n", []string{ConfirmUncertified}},
+		{"both", unknown, strings.Replace(unknown, "need: 2", "need: 1", 1), []string{ConfirmWeakens, ConfirmUncertified}},
+	}
+	for _, c := range cases {
+		s := typedServers(t, "refund.yaml", c.baseline)["registry"]
+		pv, err := s.Preview([]byte(c.text), hashOf([]byte(c.baseline)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(pv.NeedsKinds, c.kinds) || len(pv.NeedsKinds) != len(pv.NeedsConfirmation) {
+			t.Errorf("%s: kinds %q for items %q, want %q", c.name, pv.NeedsKinds, pv.NeedsConfirmation, c.kinds)
+		}
+		items, kinds := s.confirmationKinds([]byte(c.text))
+		if !slices.Equal(items, pv.NeedsConfirmation) || !slices.Equal(kinds, pv.NeedsKinds) {
+			t.Errorf("%s: confirmationKinds %q %q differs from the preview", c.name, items, kinds)
+		}
+	}
+	// A baseline that cannot be compared is its own kind.
+	s := typedServers(t, "refund.yaml", testFlow)["structural"]
+	s.baseline = []byte("nodes: [")
+	if items, kinds := s.confirmationKinds([]byte(testFlow)); len(items) != 1 || !slices.Equal(kinds, []string{ConfirmUncompared}) {
+		t.Errorf("an uncomparable baseline: %q %q", items, kinds)
 	}
 }

@@ -143,6 +143,32 @@ func (t *typing) view(r plan.ConfigReport) *TypedView {
 	return tv
 }
 
+// typeNodes sets each node's In and Out from the program's description of its block (a join's Out from its
+// merge). The report's own topology has types only when the whole flow builds, and a flow with a node
+// not wired in yet does not, which is exactly when the palette is used; the block's own types are known
+// whatever the rest of the config says. A node whose block the program does not describe has none.
+func (t *typing) typeNodes(nodes []Node) {
+	blocks := map[string]plan.BlockDescription{}
+	for _, b := range t.desc.Blocks {
+		blocks[b.Name] = b
+	}
+	merges := map[string]plan.MergeDescription{}
+	for _, m := range t.desc.Merges {
+		merges[m.Name] = m
+	}
+	for i := range nodes {
+		if nodes[i].Kind == "join" {
+			if m, ok := merges[nodes[i].Block]; ok {
+				nodes[i].Out = m.Out
+			}
+			continue
+		}
+		if b, ok := blocks[nodes[i].Block]; ok {
+			nodes[i].In, nodes[i].Out = b.In, b.Out
+		}
+	}
+}
+
 // gateWords writes a described gate as the viewer writes a topology gate.
 func gateWords(g *plan.GateDescription) string {
 	if g == nil {

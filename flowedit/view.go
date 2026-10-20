@@ -179,11 +179,7 @@ func buildView(name string, text []byte, ty *typing) *View {
 	v.Wiring = wiring(v.Wires)
 	if ty != nil {
 		v.Typed = ty.view(r)
-		for i, n := range r.Topology.Nodes {
-			if i < len(v.Nodes) && v.Nodes[i].Name == n.Name {
-				v.Nodes[i].In, v.Nodes[i].Out = n.InCanonical, n.OutCanonical
-			}
-		}
+		ty.typeNodes(v.Nodes)
 	}
 	return v
 }

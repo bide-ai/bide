@@ -8,7 +8,8 @@
 //   POST /api/report {text}         -> View { name, format, text, mode, parse_error, flow, entry,
 //                                             verdict{class,word,icon,line,details,stats[]}, errors, warnings,
 //                                             problems[], assertions[], nodes[], wiring[], graph,
-//                                             weakening{baseline, weakened[], word, line, strengthened[], changes[], compare_error} }
+//                                             weakening{baseline, weakened[], word, line, strengthened[], changes[], compare_error, not_certified},
+//                                             typed{source, label, digest, palette[{name, kind, in, inputs[], out, safety, gate, used}]} (typed mode only) }
 //   POST /api/preview {text, hash}  -> { diff, removed_comments[], changed, hash, conflict, needs_confirmation[], errors, warnings }
 //   POST /api/save {text, hash, confirmed[]} -> Doc, or 409 { conflict, hash, diff }, or 422 { needs_confirmation[] }
 // Every call is a POST with the session token (from the URL fragment, #t=...) in X-Bide-Token.
@@ -151,33 +152,42 @@ export function renderWeakening(v) {
   if (!w) { replace('weakened'); replace('baseline'); lastBanner = ''; return; }
   // An alert is spoken when it appears. Drawing the same banner again on every keystroke would speak
   // it again each time, so a banner that has not changed is left as it is.
-  const key = JSON.stringify([w.weakened, w.word, w.line, w.compare_error, w.baseline]);
+  const key = JSON.stringify([w.weakened, w.word, w.line, w.compare_error, w.baseline, w.not_certified]);
   if (key === lastBanner) {
     renderBaselineLine(w);
     return;
   }
   lastBanner = key;
+  const parts = [];
   if (w.weakened && w.weakened.length) {
-    replace('weakened', h('section', { class: 'verdict v-bad weakened', role: 'alert', 'aria-labelledby': 'wword' },
+    parts.push(h('section', { class: 'verdict v-bad weakened', role: 'alert', 'aria-labelledby': 'wword' },
       h('div', { class: 'vicon' }, icon('halt')),
       h('div', { class: 'vtext' },
         h('p', { class: 'vword', id: 'wword' }, w.word || 'WEAKENED'),
         h('p', { class: 'vline' }, (w.line || 'This is weaker than the baseline') + ', compared with ' + w.baseline + '.'),
         w.weakened.map((x) => h('p', { class: 'vdetail' }, x)))));
   } else if (w.compare_error) {
-    replace('weakened', h('section', { class: 'verdict v-warn weakened', role: 'alert', 'aria-labelledby': 'wword' },
+    parts.push(h('section', { class: 'verdict v-warn weakened', role: 'alert', 'aria-labelledby': 'wword' },
       h('div', { class: 'vicon' }, icon('unknown')),
       h('div', { class: 'vtext' },
         h('p', { class: 'vword', id: 'wword' }, 'NOT COMPARED'),
         h('p', { class: 'vline' }, 'Whether this is weaker than ' + w.baseline + ' cannot be said: ' + w.compare_error))));
-  } else {
-    replace('weakened');
   }
+  // Typed mode: the text has errors against the program's blocks, so the comparison was made without
+  // what the blocks declare in Go. It sits beside a weakened banner, never in place of it.
+  if (w.not_certified) {
+    parts.push(h('section', { class: 'verdict v-warn weakened', role: 'alert', 'aria-labelledby': 'ncword' },
+      h('div', { class: 'vicon' }, icon('unknown')),
+      h('div', { class: 'vtext' },
+        h('p', { class: 'vword', id: 'ncword' }, 'NOT CERTIFIED'),
+        h('p', { class: 'vline' }, w.not_certified))));
+  }
+  replace('weakened', ...parts);
   renderBaselineLine(w);
 }
 
 function renderBaselineLine(w) {
-  const word = !(w.weakened && w.weakened.length) && !w.compare_error ? 'not weaker than' : 'compared with';
+  const word = !(w.weakened && w.weakened.length) && !w.compare_error && !w.not_certified ? 'not weaker than' : 'compared with';
   const ch = (w.changes || []).length;
   replace('baseline', 'Baseline: ' + word + ' ' + w.baseline + (ch ? ' (' + ch + ' change' + (ch === 1 ? '' : 's') + ')' : ' (no changes)') +
     ((w.strengthened || []).length ? '; stronger in ' + w.strengthened.length + ' way' + (w.strengthened.length === 1 ? '' : 's') : '') + '.');
@@ -308,6 +318,7 @@ function skipTo(target) {
     outline: () => first('#outline button[tabindex="0"]') || $('h-outline'),
     inspector: () => first('#inspector select, #inspector input, #inspector button:not(:disabled)') || $('h-inspector'),
     assertions: () => $('h-assert'),
+    blocks: () => first('#palette button[tabindex="0"]') || $('h-blocks'),
   }[target];
   const to = el && el();
   if (to) to.focus();
@@ -366,7 +377,8 @@ export function renderInspector(v) {
   replace('inspector',
     h('h3', {}, shown(n.name)),
     shown(n.name) !== n.name ? h('p', { class: 'warn small', id: 'f-name-escaped' }, 'This name has characters that do not print, written out here as \\u{code}. Rename it.') : null,
-    h('dl', {}, row('kind', n.kind), row('crash behavior', n.risk), row('approval gate', n.gate || 'none'), row('problems', (n.problems || []).join('; '))),
+    h('dl', {}, row('kind', n.kind), row('takes', n.in), row('gives', n.out), row('crash behavior', n.risk), row('approval gate', n.gate || 'none'), row('problems', (n.problems || []).join('; '))),
+    v.typed && !n.out ? h('p', { class: 'muted small', id: 'types-unknown' }, 'Types unknown: the program does not describe this node\'s block, so nothing here is checked against it.') : null,
     h('p', { id: 'op-error', class: 'bad small', role: 'alert' }),
     h('div', { class: 'form' },
       field('f-safety', 'Safety', safety, 'Only lowers what the block declares in Go; the check cannot see that here, so a value above it fails when a program loads the flow.'),
@@ -425,10 +437,19 @@ function joinForm(n, v) {
 // the other. Targets are chosen from the declared nodes, never typed, so an edge to a node that is not
 // there cannot be written; a predicate is a name a program registers, typed.
 
-function pick(id, label, names, value, { none } = {}) {
+function pick(id, label, names, value, { none, text } = {}) {
   const sel = h('select', { id }, none ? h('option', { value: '' }, none) : null,
-    names.map((x) => h('option', { value: x, selected: x === value }, x)));
+    names.map((x) => h('option', { value: x, selected: x === value }, text ? text(x) : x)));
   return field(id, label, sel);
+}
+
+// differs marks a target whose input type is not what node n gives, by comparing the type names the
+// server wrote. It is a hint: the target stays selectable, and the server refuses a connection that does
+// not fit, with plan's reason, whether it came from this form or from a drag. With no type known on
+// either side nothing is said.
+function differs(n, name, v) {
+  const to = (v.nodes || []).find((x) => x.name === name);
+  return n.out && to && to.in && to.in !== n.out ? ' (types differ)' : '';
 }
 
 function connectionsForm(n, v) {
@@ -451,17 +472,17 @@ function connectionsForm(n, v) {
   if (!isJoin) kids.push(h('p', { class: 'small', id: 'c-in' }, ins.length ? 'Edges in: ' + ins.map((w) => w.from).join(', ') + '.' : 'No edge leads here.'));
   if (!sw) {
     kids.push(h('ul', { class: 'conns', id: 'c-outs', 'aria-label': 'Edges out of ' + n.name },
-      outs.map((w, i) => h('li', {}, h('span', {}, n.name + ' \u2192 ' + w.to), ' ',
+      outs.map((w, i) => h('li', {}, h('span', {}, n.name + ' \u2192 ' + w.to + differs(n, w.to, v)), ' ',
         btn('c-rm-edge-' + i, 'Remove', 'Remove edge: ' + n.name + ' to ' + w.to, () => operate({ op: 'remove_edge', node: n.name, to: w.to }, 'c-edge-to'))))));
     if (!outs.length) kids.push(h('p', { class: 'muted small' }, 'No edge leaves this node.'));
-    kids.push(pick('c-edge-to', 'Add an edge to', targets, targets[0]));
+    kids.push(pick('c-edge-to', 'Add an edge to', targets, targets[0], { text: (x) => x + differs(n, x, v) }));
     kids.push(h('div', { class: 'inline' }, btn('c-edge-add', 'Add edge', 'Add edge from ' + n.name, () => operate({ op: 'add_edge', node: n.name, to: val('c-edge-to') }, 'c-edge-to'), !targets.length)));
   }
   if (sw) {
     const arms = sw.arms || [];
     const rows = arms.map((a, i) => {
       const pred = h('input', { id: 'c-arm-pred-' + i, type: 'text', value: a.pred, autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Predicate of arm ' + (i + 1) });
-      const to = h('select', { id: 'c-arm-to-' + i, 'aria-label': 'Target of arm ' + (i + 1) }, targets.map((x) => h('option', { value: x, selected: x === a.to }, x)));
+      const to = h('select', { id: 'c-arm-to-' + i, 'aria-label': 'Target of arm ' + (i + 1) }, targets.map((x) => h('option', { value: x, selected: x === a.to }, x + differs(n, x, v))));
       const move = (dir) => btn('c-arm-' + dir + '-' + i, dir === 'up' ? 'Up' : 'Down', 'Move up: arm ' + (i + 1), () => {
         const to = dir === 'up' ? i - 1 : i + 1;
         const edge = dir === 'up' ? to === 0 : to === arms.length - 1;
@@ -479,15 +500,15 @@ function connectionsForm(n, v) {
     kids.push(h('p', { class: 'small' }, n.name + ' is switched over: the first arm whose predicate holds routes the value. It has arms instead of edges. A loop bound belongs on an arm that goes back to an earlier node of the loop, and the loop needs an exit (another arm or an else); the editor refuses a bound that loading the flow would refuse.'));
     kids.push(h('ol', { class: 'conns', id: 'c-arms', 'aria-label': 'Arms of the switch on ' + n.name }, rows));
     kids.push(h('div', { class: 'field' }, h('label', { for: 'c-arm-pred' }, 'Add an arm: predicate'), h('input', { id: 'c-arm-pred', type: 'text', autocomplete: 'off', spellcheck: 'false' })));
-    kids.push(pick('c-arm-to', 'Add an arm: target', targets, targets[0]));
+    kids.push(pick('c-arm-to', 'Add an arm: target', targets, targets[0], { text: (x) => x + differs(n, x, v) }));
     kids.push(h('div', { class: 'inline' }, btn('c-arm-add', 'Add arm', 'Add arm to the switch on ' + n.name, () => operate({ op: 'add_arm', node: n.name, pred: val('c-arm-pred').trim(), to: val('c-arm-to') }, 'c-arm-pred'), !targets.length)));
-    kids.push(pick('c-else', 'Else (when no arm holds)', targets, sw.else || '', { none: 'no else' }));
+    kids.push(pick('c-else', 'Else (when no arm holds)', targets, sw.else || '', { none: 'no else', text: (x) => x + differs(n, x, v) }));
     kids.push(h('div', { class: 'inline' }, btn('c-else-set', 'Set else', 'Set the else of the switch on ' + n.name, () => operate({ op: 'set_else', node: n.name, to: val('c-else') }, 'c-else'))));
     kids.push(h('div', { class: 'inline' }, btn('c-sw-rm', 'Remove switch', 'Remove the switch on ' + n.name, () => operate({ op: 'remove_switch', node: n.name }, 'c-edge-to'))));
     if (arms.length === 1) kids.push(h('p', { class: 'muted small' }, 'The only arm cannot be removed; remove the switch instead.'));
   } else if (!outs.length && !isJoin) {
     kids.push(h('div', { class: 'field' }, h('label', { for: 'c-sw-pred' }, 'Make this a switch: first predicate'), h('input', { id: 'c-sw-pred', type: 'text', autocomplete: 'off', spellcheck: 'false' })));
-    kids.push(pick('c-sw-to', 'Make this a switch: first target', targets, targets[0]));
+    kids.push(pick('c-sw-to', 'Make this a switch: first target', targets, targets[0], { text: (x) => x + differs(n, x, v) }));
     kids.push(h('div', { class: 'inline' }, btn('c-sw-add', 'Make a switch', 'Make ' + n.name + ' a switch', () => operate({ op: 'add_switch', node: n.name, pred: val('c-sw-pred').trim(), to: val('c-sw-to') }, 'c-sw-pred'), !targets.length)));
   }
   kids.push(h('p', { class: 'muted small' }, 'You can also drag from the small circle at a node\'s right edge in the flow onto another node to add an edge. The gate check follows paths: a new edge or arm that reaches a gated node by another way shows the weakened banner.'));
@@ -941,6 +962,7 @@ export function renderCanvas(v) {
     g.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(name); } });
     addPort(svg, g, name);
   }
+  for (const fo of svg.querySelectorAll('foreignObject.port-hit')) fitHit(svg, fo); // every node is drawn now, so a neighbour's box is known
   if (typeof ResizeObserver === 'function') new ResizeObserver(() => { for (const fo of svg.querySelectorAll('foreignObject.port-hit')) fitHit(svg, fo); }).observe(svg);
   markSelected();
 }
@@ -960,10 +982,38 @@ function fitHit(svg, fo) {
   const side = Math.max(16, 44 / scale);
   const x = Number(fo.getAttribute('data-cx'));
   const y = Number(fo.getAttribute('data-cy'));
-  fo.setAttribute('x', String(x - side / 2));
-  fo.setAttribute('y', String(y - side / 2));
-  fo.setAttribute('width', String(side));
-  fo.setAttribute('height', String(side));
+  let l = x - side / 2;
+  let r = x + side / 2;
+  let t = y - side / 2;
+  let b = y + side / 2;
+  // In a dense flow, or an svg scaled far down, 44 CSS px reaches over a neighbour's body. The box
+  // is cut back at each such neighbour, on the axis along which it reaches into it least (so a
+  // neighbour beside it cuts it sideways and one above or below cuts it vertically), and it never
+  // stops containing the circle: the circle is what the author sees and presses.
+  for (const rc of svg.querySelectorAll('g.node rect.box')) {
+    if (rc.parentNode === fo.parentNode) continue;
+    const bx = Number(rc.getAttribute('x'));
+    const by = Number(rc.getAttribute('y'));
+    const bw = Number(rc.getAttribute('width'));
+    const bh = Number(rc.getAttribute('height'));
+    const ox = Math.min(r, bx + bw) - Math.max(l, bx);
+    const oy = Math.min(b, by + bh) - Math.max(t, by);
+    if (ox <= 0 || oy <= 0) continue;
+    if (ox <= oy) {
+      if (bx + bw / 2 > x) r = Math.min(r, bx - 1);
+      else l = Math.max(l, bx + bw + 1);
+    } else if (by + bh / 2 > y) b = Math.min(b, by - 1);
+    else t = Math.max(t, by + bh + 1);
+  }
+  const R = 8; // the circle's radius in drawing units
+  l = Math.min(l, x - R);
+  r = Math.max(r, x + R);
+  t = Math.min(t, y - R);
+  b = Math.max(b, y + R);
+  fo.setAttribute('x', String(l));
+  fo.setAttribute('y', String(t));
+  fo.setAttribute('width', String(r - l));
+  fo.setAttribute('height', String(b - t));
 }
 
 // The drag in progress, if any: its cleanup, so a redraw or a second pointer can end it.
@@ -1049,6 +1099,99 @@ function addPort(svg, g, from) {
   });
 }
 
+// ---- typed mode: the program's blocks ----
+//
+// With the program's blocks known (v.typed: a Registry the editor is embedded beside, or a description
+// file) the page shows what the server computed from them: which the check rests on, the digest a run
+// would journal, and a palette of every block. The page compares type names as strings, to mark and
+// filter; it computes no types, and what does not fit is refused by the server.
+
+function renderTyped(v) {
+  const t = v.typed;
+  $('typed-tag').hidden = !t;
+  $('blocks').hidden = !t;
+  document.querySelector('a[data-skip="blocks"]').hidden = !t;
+  if (!t) { replace('typed-info'); return; }
+  $('typed-tag').textContent = shown('typed: ' + (t.source === 'description' ? 'per description file' : 'program\'s Registry'));
+  // Plan checks types after it has resolved every block and safety, so while another error stands a
+  // misfit may not be listed yet: say so, so that a list of problems is never read as "the types fit".
+  replace('typed-info',
+    v.errors > 0 ? h('p', { class: 'warn small', id: 'types-pending' }, 'Types are checked in full once the errors below are fixed: a connection that does not fit may not be among them yet.') : null,
+    t.digest ? h('details', { id: 'digest' }, h('summary', {}, 'Digest ' + t.digest.slice(0, 12) + ': the flow:digest a run of this config journals'), h('p', {}, h('code', { class: 'wrap' }, t.digest)))
+      : h('p', { class: 'muted small', id: 'digest-none' }, 'Digest: not computed while the config has errors.'));
+  renderPalette(v);
+}
+
+const SAFETY_WORDS = { readonly: 'read-only', idempotent: 'idempotent', side_effect: 'side effect' };
+let paletteSel = '';
+
+// A row is named by what it shows: its name, then each fact in words, so a screen reader hears the same
+// as a reader sees ("takes" and "gives", not an arrow) and the name contains the visible text.
+function paletteFacts(b) {
+  return [b.kind, b.kind === 'merge' ? 'takes ' + (b.inputs || []).join(' and ') : 'takes ' + b.in, 'gives ' + b.out,
+    'safety ' + (SAFETY_WORDS[b.safety] || b.safety), b.gate ? 'approval ' + b.gate : 'no approval gate', b.used ? 'used' : 'unused'].join(' \u00b7 ');
+}
+
+// fitsNode is whether block b could stand at node n: it takes what n gives (so it can follow n), or it
+// takes what n takes and gives what n gives (so it can replace n's block). Names are compared as text.
+function fitsNode(b, n) {
+  if (!n || !n.in && !n.out || b.kind === 'merge') return false;
+  return b.in === n.out || b.in === n.in && b.out === n.out;
+}
+
+function renderPalette(v) {
+  const t = v && v.typed;
+  if (!t) return;
+  const q = $('pal-q').value.trim().toLowerCase();
+  const n = (v.nodes || []).find((x) => x.name === selected);
+  const only = $('pal-fit').checked;
+  const rows = (t.palette || []).filter((b) => (!q || shown(b.name).toLowerCase().includes(q)) && (!only || fitsNode(b, n)));
+  if (!rows.some((b) => b.name === paletteSel)) paletteSel = rows.length ? rows[0].name : '';
+  const stop = paletteSel;
+  replace('palette', rows.map((b) => {
+    const btn = h('button', { type: 'button', 'data-block': b.name, 'data-kind': b.kind, tabindex: b.name === stop ? '0' : '-1', 'aria-current': b.name === stop ? 'true' : 'false' },
+      h('span', { class: 'nm' }, shown(b.name)),
+      h('span', { class: 'meta' }, paletteFacts(b)));
+    btn.addEventListener('focus', () => { paletteSel = b.name; paletteButtons(v); });
+    btn.addEventListener('click', () => { paletteSel = b.name; paletteButtons(v); });
+    return h('li', {}, btn);
+  }));
+  $('pal-count').textContent = shown(rows.length + ' of ' + (t.palette || []).length + ' blocks' + (only && n ? ' that fit ' + n.name : ''));
+  paletteButtons(v);
+}
+
+// The two actions work on the row the roving Tab stop is on, so the list is one Tab stop and the
+// actions two more, wherever the list is long.
+function paletteButtons(v) {
+  const b = ((v.typed && v.typed.palette) || []).find((x) => x.name === paletteSel);
+  const n = (v.nodes || []).find((x) => x.name === selected);
+  const use = $('pal-use');
+  const join = n && n.kind === 'join';
+  use.disabled = !b || !n || (join ? b.kind !== 'merge' : b.kind === 'merge');
+  use.textContent = join ? 'Use as the merge of ' + (n ? n.name : 'the join') : 'Use as the block of ' + (n ? n.name : 'the selected node');
+  $('pal-add').disabled = !b || b.kind === 'merge';
+  for (const r of $('palette').querySelectorAll('button')) r.setAttribute('aria-current', r.getAttribute('data-block') === paletteSel ? 'true' : 'false');
+}
+
+function wirePalette() {
+  $('pal-q').addEventListener('input', () => view && renderPalette(view));
+  $('pal-fit').addEventListener('change', () => view && renderPalette(view));
+  $('palette').addEventListener('keydown', outlineKeys);
+  $('pal-use').addEventListener('click', () => {
+    const n = (view.nodes || []).find((x) => x.name === selected);
+    if (n && paletteSel) operate({ op: n.kind === 'join' ? 'set_join_merge' : 'set_block', node: n.name, value: paletteSel }, 'pal-use');
+  });
+  $('pal-add').addEventListener('click', () => {
+    const taken = new Set((view.nodes || []).map((x) => x.name));
+    let name = paletteSel;
+    for (let i = 2; taken.has(name); i++) name = paletteSel + '_' + i;
+    $('an-block').value = paletteSel;
+    $('an-name').value = name;
+    $('an-name').focus();
+    announce('The Add a node form has block ' + paletteSel + ' and the name ' + name + '. Change the name, then press Add node.');
+  });
+}
+
 function markSelected() {
   for (const g of $('canvas').querySelectorAll('g.node')) {
     g.classList.toggle('sel', g.getAttribute('data-id') === selected);
@@ -1061,6 +1204,7 @@ function select(name) {
   selected = name;
   markSelected();
   renderInspector(view);
+  renderPalette(view);
   announce('Selected ' + name);
 }
 
@@ -1081,6 +1225,7 @@ export function render(v, { keepSource = false } = {}) {
   renderCanvas(v);
   renderOutline(v);
   renderInspector(v);
+  renderTyped(v);
   renderAssertions(v);
   renderProblems(v);
   renderState();
@@ -1170,9 +1315,26 @@ async function save() {
   pv.needs_confirmation = pv.needs_confirmation || [];
   const cancel = h('button', { type: 'button', class: 'btn' }, 'Cancel');
   cancel.addEventListener('click', () => closeDialog(opener));
-  const confirmBox = h('input', { type: 'checkbox', id: 'confirm-weaken' });
-  const go = h('button', { type: 'button', class: 'btn primary', id: 'do-save', disabled: pv.needs_confirmation.length > 0 }, 'Save');
-  confirmBox.addEventListener('change', () => { go.disabled = !confirmBox.checked; });
+  // What the author is asked to confirm is named for what it is, and each statement has its own box: a
+  // weakening of the policy, a text that could not be certified against the program's blocks, a text
+  // that could not be compared with the baseline. Ticking one does not sign another, and Save waits for
+  // every box. An item the page cannot place is a weakening: the server asked, say the careful thing.
+  const groups = [
+    { id: 'confirm-weaken', word: 'THIS WEAKENS THE POLICY', say: ' I confirm that I am weakening this policy.', items: [] },
+    { id: 'confirm-uncertified', word: 'THIS CANNOT BE CERTIFIED', say: ' I confirm that I am saving it without a certified type check.', items: [] },
+    { id: 'confirm-uncompared', word: 'THIS COULD NOT BE COMPARED', say: ' I confirm that I am saving it without the comparison.', items: [] },
+  ];
+  // The server says what each item is (needs_kinds, by position); the page never reads the item's text for it.
+  // An item with no kind, or a kind the page does not know, is a weakening: the careful thing to say.
+  const kinds = pv.needs_kinds || [];
+  const slot = { weakens: 0, uncertified: 1, uncompared: 2 };
+  pv.needs_confirmation.forEach((x, i) => groups[slot[kinds[i]] ?? 0].items.push(x));
+  const asked = groups.filter((g) => g.items.length);
+  const boxes = asked.map((g) => h('input', { type: 'checkbox', id: g.id }));
+  const go = h('button', { type: 'button', class: 'btn primary', id: 'do-save', disabled: asked.length > 0 }, 'Save');
+  const ticked = () => { go.disabled = boxes.some((c) => !c.checked); };
+  for (const c of boxes) c.addEventListener('change', ticked);
+  const confirmBox = boxes[0];
   const status = h('p', { class: 'bad', role: 'alert', id: 'save-error' });
   go.addEventListener('click', () => commit(pv, opener, status));
   const body = [
@@ -1180,15 +1342,16 @@ async function save() {
     pv.errors > 0 ? h('p', { class: 'warn' }, 'The text has ' + pv.errors + ' error' + (pv.errors === 1 ? '' : 's') + ' (bide check lists them). It can be saved, and it will fail bide check and plan.Load until they are fixed.') : null,
     (pv.removed_comments || []).length ? h('div', {}, h('p', { class: 'warn' }, 'This save removes ' + pv.removed_comments.length + ' comment' + (pv.removed_comments.length === 1 ? '' : 's') + ':'),
       h('ul', {}, pv.removed_comments.map((c) => h('li', {}, h('code', {}, c))))) : null,
-    pv.needs_confirmation.length ? h('div', { class: 'verdict v-bad' }, h('div', { class: 'vicon' }, icon('halt')), h('div', { class: 'vtext' },
-      h('p', { class: 'vword' }, 'THIS WEAKENS THE POLICY'),
+    asked.length ? h('div', { class: 'verdict v-bad' }, h('div', { class: 'vicon' }, icon('halt')), h('div', { class: 'vtext' },
       h('p', { class: 'vline' }, 'Compared with ' + (view.weakening ? view.weakening.baseline : 'the baseline') + ', saving this:'),
-      pv.needs_confirmation.map((x) => h('p', { class: 'vdetail' }, x)),
-      h('p', { class: 'vdetail' }, h('label', {}, confirmBox, ' I confirm that I am weakening this policy.')))) : null,
+      asked.map((g, i) => h('div', { class: 'confirm-group', role: 'group', 'aria-label': g.word.toLowerCase() },
+        h('p', { class: 'vword' }, g.word),
+        g.items.map((x) => h('p', { class: 'vdetail' }, x)),
+        h('p', { class: 'vdetail' }, h('label', {}, boxes[i], g.say)))))) : null,
     pv.changed ? diffBlock(pv.diff) : null,
     status,
   ];
-  openDialog('Save ' + baseName(view.name) + '?', body, [go, cancel], pv.needs_confirmation.length ? confirmBox : go, opener);
+  openDialog('Save ' + baseName(view.name) + '?', body, [go, cancel], asked.length ? confirmBox : go, opener);
 }
 
 async function commit(pv, opener, status) {
@@ -1252,6 +1415,7 @@ async function main() {
   $('wiring').addEventListener('keydown', outlineKeys);
   wireAddNode();
   wireSkipLinks();
+  wirePalette();
   dlg().addEventListener('close', () => {
     if (dlg().open) return; // closed to be opened again (a save that must be asked again)
     const o = dialogOpener;

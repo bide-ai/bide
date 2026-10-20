@@ -75,3 +75,9 @@ dialog h2 { margin-top: 0; }
 .port-hit { overflow: visible; }
 .port-hit-box { width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
 .drag { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 5 4; pointer-events: none; }
+
+/* typed mode: the digest, and the palette of the program's blocks */
+#typed-info details { margin: var(--s1) 0 var(--s3); font-size: var(--t-sm); }
+#typed-info summary { cursor: pointer; font-family: var(--mono); }
+#blocks #palette { max-height: 20rem; overflow: auto; margin: var(--s2) 0; }
+#blocks .inline { display: flex; flex-wrap: wrap; gap: var(--s2); }

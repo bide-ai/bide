@@ -34,6 +34,10 @@ type Preview struct {
 	// compared, that. Empty for a save that needs none. A save carries this list back as it was, so
 	// a confirmation of an older text does not cover a newer one.
 	NeedsConfirmation []string `json:"needs_confirmation,omitempty"`
+	// NeedsKinds says what each item of NeedsConfirmation is, by position: ConfirmWeakens,
+	// ConfirmUncertified or ConfirmUncompared. The page words each statement by this, never by
+	// reading the item's text.
+	NeedsKinds []string `json:"needs_kinds,omitempty"`
 	// Errors and Warnings count the problems `bide check` finds in the text. A file with errors can
 	// be saved (a half-built flow must be holdable) and the page says so each time.
 	Errors   int `json:"errors"`
@@ -63,18 +67,38 @@ func (n *NeedsConfirmation) Error() string {
 	return "flowedit: this save weakens the policy and was not confirmed: " + strings.Join(n.Items, "; ")
 }
 
-// confirmations is what a save of text must confirm: the ways it is weaker than the baseline, and a
-// failure to compare.
+// The kinds of thing a save can ask the author to confirm.
+const (
+	// ConfirmWeakens: the text is weaker than the baseline.
+	ConfirmWeakens = "weakens"
+	// ConfirmUncertified: the text has errors against the program's blocks, so the comparison was made
+	// without what they declare in Go (typed mode).
+	ConfirmUncertified = "uncertified"
+	// ConfirmUncompared: the text could not be compared with the baseline.
+	ConfirmUncompared = "uncompared"
+)
+
+// confirmations is what a save of text must confirm: the ways it is weaker than the baseline, a
+// failure to compare, and a comparison that could not be certified.
 func (s *Server) confirmations(text []byte) []string {
+	items, _ := s.confirmationKinds(text)
+	return items
+}
+
+// confirmationKinds is confirmations with the kind of each item, by position.
+func (s *Server) confirmationKinds(text []byte) (items, kinds []string) {
 	w := s.compare(text)
-	items := slices.Clone(w.Weakened)
+	add := func(kind, item string) { items, kinds = append(items, item), append(kinds, kind) }
+	for _, x := range w.Weakened {
+		add(ConfirmWeakens, x)
+	}
 	if w.CompareError != "" {
-		items = append(items, "not compared with "+w.Baseline+": "+w.CompareError)
+		add(ConfirmUncompared, "not compared with "+w.Baseline+": "+w.CompareError)
 	}
 	if w.NotCertified != "" {
-		items = append(items, w.NotCertified)
+		add(ConfirmUncertified, w.NotCertified)
 	}
-	return items
+	return items, kinds
 }
 
 // Preview describes saving text over the file whose bytes the page read as hash.
@@ -86,12 +110,14 @@ func (s *Server) Preview(text []byte, hash string) (*Preview, error) {
 		return nil, err
 	}
 	v := BuildView(s.name, text)
+	items, kinds := s.confirmationKinds(text)
 	p := &Preview{
 		Diff:              UnifiedDiff(filepath.Base(s.name), disk, text),
 		RemovedComments:   RemovedComments(disk, text),
 		Changed:           !bytes.Equal(disk, text),
 		Hash:              hashOf(disk),
-		NeedsConfirmation: s.confirmations(text),
+		NeedsConfirmation: items,
+		NeedsKinds:        kinds,
 		Errors:            v.Errors,
 		Warnings:          v.Warnings,
 	}

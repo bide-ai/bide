@@ -683,7 +683,7 @@ func TestPageContractForSave(t *testing.T) {
 		}
 	}
 	js, _ := fs.ReadFile(pageFS, "page/editor.js")
-	for _, k := range []string{"pv.diff", "pv.removed_comments", "pv.changed", "pv.hash", "pv.conflict", "pv.needs_confirmation", "pv.errors", "e.data.hash", "e.data.diff", "d.text", "d.hash", "d.name"} {
+	for _, k := range []string{"pv.diff", "pv.removed_comments", "pv.changed", "pv.hash", "pv.conflict", "pv.needs_confirmation", "pv.needs_kinds", "pv.errors", "e.data.hash", "e.data.diff", "d.text", "d.hash", "d.name"} {
 		if !strings.Contains(string(js), k) {
 			t.Errorf("the script no longer reads %s: update this list with it", k)
 		}
