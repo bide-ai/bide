@@ -107,6 +107,10 @@ func TestPublicAPI(t *testing.T) {
 	}
 }
 
+// surfaceTypes are the exported types reachable lists. TestSurfaceCoversEveryExportedType fails when
+// the package has an exported type that is not here.
+var surfaceTypes = []any{&Theme{}, Report{}, Measure{}, &CheckError{}, Severity(0)}
+
 // reachable lists, for the exported types a host holds, every exported field (promoted ones included)
 // and every method in the method set (promoted ones included) with its type. The AST list above
 // sees only top-level names and the methods declared on exported types; this one sees what a
@@ -114,7 +118,7 @@ func TestPublicAPI(t *testing.T) {
 // type, is a failure here.
 func reachable() []string {
 	var out []string
-	for _, v := range []any{&Theme{}, Report{}, Measure{}, &CheckError{}, Severity(0)} {
+	for _, v := range surfaceTypes {
 		rt := reflect.TypeOf(v)
 		base := rt
 		if base.Kind() == reflect.Pointer {
@@ -163,5 +167,42 @@ func TestPublicSurface(t *testing.T) {
 	got := reachable()
 	if !slices.Equal(got, publicSurface) {
 		t.Errorf("what a host can reach on a theme changed.\n got: %q\nwant: %q\nA new field or method is a public commitment and a possible route to CSS: a reviewer adds it to publicSurface.", got, publicSurface)
+	}
+}
+
+// TestSurfaceCoversEveryExportedType: the walk above names its types by hand, so a new exported
+// type (with a CSS method, say) must not escape it.
+func TestSurfaceCoversEveryExportedType(t *testing.T) {
+	covered := map[string]bool{}
+	for _, v := range surfaceTypes {
+		rt := reflect.TypeOf(v)
+		if rt.Kind() == reflect.Pointer {
+			rt = rt.Elem()
+		}
+		covered[rt.Name()] = true
+	}
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		af, err := parser.ParseFile(token.NewFileSet(), f, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range af.Decls {
+			gd, ok := d.(*ast.GenDecl)
+			if !ok {
+				continue
+			}
+			for _, sp := range gd.Specs {
+				if ts, ok := sp.(*ast.TypeSpec); ok && ts.Name.IsExported() && !covered[ts.Name.Name] {
+					t.Errorf("exported type %s is not in surfaceTypes: add it, so its fields and methods are reviewed in publicSurface", ts.Name.Name)
+				}
+			}
+		}
 	}
 }
