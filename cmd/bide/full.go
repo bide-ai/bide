@@ -22,7 +22,7 @@ import (
 	"github.com/bide-ai/bide/cmd/bide/internal/stopcmd"
 	"github.com/bide-ai/bide/internal/runview"
 	"github.com/bide-ai/bide/internal/term"
-	"github.com/bide-ai/bide/internal/theme"
+	"github.com/bide-ai/bide/theme"
 )
 
 // fullCommands are the commands that need a store driver or the YAML decoder. A bide_audit_only

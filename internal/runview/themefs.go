@@ -6,7 +6,7 @@ import (
 	"io/fs"
 	"time"
 
-	"github.com/bide-ai/bide/internal/theme"
+	"github.com/bide-ai/bide/theme"
 )
 
 // themedAssets is the assets directory with style.css replaced by the generated theme stylesheet

@@ -14,7 +14,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/bide-ai/bide/internal/theme"
+	"github.com/bide-ai/bide/theme"
 )
 
 // The approve page is a static bundle: an entry document, one script and one stylesheet, with no

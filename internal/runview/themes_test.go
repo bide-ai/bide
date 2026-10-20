@@ -15,7 +15,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bide-ai/bide/internal/theme"
+	"github.com/bide-ai/bide/theme"
 )
 
 func styleOf(t *testing.T, h http.Handler) string {

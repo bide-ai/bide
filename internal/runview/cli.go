@@ -21,7 +21,7 @@ import (
 	"github.com/bide-ai/bide/internal/approveline"
 	safetext "github.com/bide-ai/bide/internal/printable"
 	"github.com/bide-ai/bide/internal/term"
-	"github.com/bide-ai/bide/internal/theme"
+	"github.com/bide-ai/bide/theme"
 	"github.com/bide-ai/bide/plan"
 )
 
