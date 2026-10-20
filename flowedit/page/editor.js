@@ -1396,16 +1396,27 @@ function conflictDialog(hash, diff, opener) {
   ], [keep, reload], keep, opener);
 }
 
+// The theme switch steps through the stylesheet's list of themes (theme.js, shared with the viewer),
+// remembers the choice, and names the theme it shows and the one it switches to. A page with one theme
+// (a host locked it) has no switch, and under forced colors no theme is in force.
+function labelTheme() {
+  const b = $('theme'), t = window.bideTheme;
+  if (!b || !t) return;
+  b.hidden = t.names().length < 2;
+  b.setAttribute('aria-label', t.forced() ? "Theme: your system's colors are in force" : 'Theme: ' + t.current() + '. Switch to ' + t.next());
+}
+
 function theme() {
-  const root = document.documentElement;
-  const now = root.getAttribute('data-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-  const next = now === 'dark' ? 'light' : 'dark';
-  root.setAttribute('data-theme', next);
-  try { localStorage.setItem('bide-theme', next); } catch (e) { /* storage is blocked: the choice lasts for this page */ }
+  if (!window.bideTheme) return;
+  window.bideTheme.toggle();
+  labelTheme();
 }
 
 async function main() {
   $('theme').addEventListener('click', theme);
+  labelTheme();
+  // The system can start or stop forcing colors while the page is open.
+  if (window.matchMedia) matchMedia('(forced-colors: active)').addEventListener('change', labelTheme);
   if (!token) {
     replace('verdict', h('p', { class: 'bad' }, 'No session token in the address. Open the address bide edit printed, including the part after #.'));
     return;

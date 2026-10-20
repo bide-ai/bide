@@ -235,8 +235,8 @@ func TestTypedAccessibilityInChrome(t *testing.T) {
 		if !r.OK {
 			t.Fatalf("%s: the script failed: %s", kind, r.Error)
 		}
-		if len(r.Results) != 8 {
-			t.Errorf("%s: %d states were checked, want 8 (4 states in 2 themes)", kind, len(r.Results))
+		if len(r.Results) != 12 {
+			t.Errorf("%s: %d states were checked, want 12 (4 states in 3 themes)", kind, len(r.Results))
 		}
 		for state, res := range r.Results {
 			if res.Passes < 20 {

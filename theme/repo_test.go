@@ -171,17 +171,14 @@ func scanCSSForms(css string) []string {
 }
 
 // pageDirs are the directories holding the pages; legacyLiterals are files still on literal colours
-// until the PR that moves them (the editor's dialog backdrop: PR 6). The
-// list only shrinks.
+// until the PR that moves them. It is empty now and only shrinks.
 var (
 	pageDirs       = []string{"internal/runview", "flowedit", "approvals/page", "approvals"}
 	markupLiterals = map[string]string{
 		"internal/runview/head.go":  "the tab icon: a white glyph on the verdict class's mid-tone, drawn in a data: URL no theme reaches",
 		"internal/runview/graph.go": "the Mermaid export: text pasted into a document, not a page",
 	}
-	legacyLiterals = map[string]string{
-		"flowedit/page/editor.css": "dialog::backdrop's scrim moves to --scrim in PR 6",
-	}
+	legacyLiterals = map[string]string{}
 )
 
 func TestPagesUseTokens(t *testing.T) {
