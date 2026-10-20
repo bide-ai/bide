@@ -18,6 +18,10 @@ import (
 // no object an anchor writes is near this size.
 const MaxObjectBytes = 1 << 20
 
+// afterTypeCheck is a test hook run between the directory entry's type check and the open of the
+// file, so a test can swap the file there. It is nil outside tests.
+var afterTypeCheck func()
+
 // LoadDir reads a downloaded set of anchored objects (for example the output of "aws s3 sync" or
 // "gcloud storage cp -r" of the anchor prefix) and verifies each against v. The set is every regular file
 // under dir (a directory) whose path ends in <partition>/<object name>; any other file, a symbolic link, a file larger
@@ -30,10 +34,6 @@ const MaxObjectBytes = 1 << 20
 // error wrapping errEquivocation (CheckEquivocation, per partition, since a partition is one tree).
 // LoadDir cannot show the objects' lock state (the files carry none), and cannot show that the directory
 // is complete: it shows only what was exported, so compare its newest head with the live store.
-// afterTypeCheck is a test hook run between the directory entry's type check and the open of the
-// file, so a test can swap the file there. It is nil outside tests.
-var afterTypeCheck func()
-
 func (l Layout) LoadDir(dir string, v audit.Verifier, errNotFound, errEquivocation error) ([]audit.SignedTreeHead, error) {
 	if err := l.Validate(); err != nil {
 		return nil, err
