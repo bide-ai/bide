@@ -6,18 +6,20 @@ part the guide talks about).
 
 | Group | Script | Images (docs/guides/img) |
 |---|---|---|
-| `viewer` | `shots.sh` | `run-viewer-run-list`, `run-viewer-attention`, `run-viewer-flow-halted`, `run-viewer-config-risk`, `run-viewer-config-assert` (dark) |
+| `viewer` | `shots.sh` | `run-viewer-run-list`, `run-viewer-flow-halted`, `run-viewer-config-risk`, `run-viewer-config-assert` (dark) |
 | `approval` | `shots-approval.sh` | `run-viewer-agent-halted`, `run-viewer-agent-verified`, `run-viewer-timeline`, `run-viewer-share` (dark) |
 | `deadline` | `shots-deadline.sh` | `run-viewer-deadline-attention`, `run-viewer-gate-expired` (dark and light) |
 | `identity` | `shots-identity.sh` | `run-viewer-identity-attention`, `run-viewer-identity-run` (dark and light) |
 | `flows` | `shots-flows.sh` | `flow-gate-waiting`, `flow-gate-approved`, `flow-diff-strengthened`, `flow-diff-weakened`, `run-viewer-config-problem` (dark) |
 | `editor` | `shots-edit.sh` | `flow-edit-weakened`, `flow-edit-save` (light, 1280 x 900) |
+| `editor-typed` | `shots-edit-typed.sh` | `flow-edit-typed`, `flow-edit-typed-blocks`, `flow-edit-typed-uncertified`, `flow-edit-typed-save` (light, 1280 wide: bide edit -blocks) |
+| `themes` | `shots-themes.sh` | `themes-light`, `themes-dark`, `themes-high-contrast`, `themes-acme-teal` (one page in each theme, 1200 x 900; the last is the custom theme `browser-shots/acme-teal.json`) |
+| `approve-page` | `browser-shots/browser-shots.sh` (`ONLY=approve`) | `approve-page-waiting`, `approve-page-signed` (dark and light, 2x) |
 | `needs-attention` | `browser-shots/browser-shots.sh` | `run-viewer-needs-attention` (dark and light, 2x) |
 | `live` | `live.sh` | `run-viewer-live-dark.gif` |
 
-`browser-shots/browser-shots.sh` also makes the approve page and the Slack relay images
-(`ONLY="approve relay"`), which `scripts/shots.sh` leaves alone: the approve page changes with its own pull
-request. `cli-*.png` and `refund-*.png` are terminal images, made by `cli.sh` and `record.sh`.
+`browser-shots/browser-shots.sh` also makes the Slack relay images (`ONLY=relay`), which `scripts/shots.sh`
+leaves alone. `cli-*.png` and `refund-*.png` are terminal images, made by `cli.sh` and `record.sh`.
 
 ## When
 

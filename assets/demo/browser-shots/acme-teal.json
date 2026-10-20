@@ -1,0 +1,10 @@
+{
+  "bide_theme": 1,
+  "name": "acme-teal",
+  "base": "light",
+  "surface": { "bg": "#f1f6f5", "accent": "#0b6b5d", "accent_bg": "#d9efea", "focus": "#7a1fa2" },
+  "semantic": { "info": { "fg": "#1b4fa0", "bg": "#e1eaf8" } },
+  "font_ui": "humanist",
+  "radius": { "sm": 2, "md": 4, "lg": 6 },
+  "density": "roomy"
+}

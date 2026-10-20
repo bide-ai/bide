@@ -7,7 +7,7 @@
 #
 #   scripts/shots.sh                         # every image, into docs/guides/img
 #   scripts/shots.sh viewer editor           # some groups: viewer, approval, deadline, identity, flows, editor,
-#                                            #   needs-attention, live (the GIF)
+#                                            #   editor-typed, themes, approve-page, needs-attention, live (the GIF)
 #   OUT=/tmp/shots scripts/shots.sh viewer   # elsewhere
 #
 # Needs Go, Node 20 or later, Chrome (CHROME_BIN, or a Chrome for Testing in ~/.cache/puppeteer), ffmpeg
@@ -17,7 +17,7 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 demo=$(cd "$here/../assets/demo" && pwd)
 groups=("$@")
-[ ${#groups[@]} -gt 0 ] || groups=(viewer approval deadline identity flows editor needs-attention live)
+[ ${#groups[@]} -gt 0 ] || groups=(viewer approval deadline identity flows editor editor-typed themes approve-page needs-attention live)
 
 run() { echo "== $*" >&2; "$@"; }
 for g in "${groups[@]}"; do
@@ -28,6 +28,9 @@ for g in "${groups[@]}"; do
     identity)        THEME=dark run "$demo/shots-identity.sh"; THEME=light run "$demo/shots-identity.sh" ;;
     flows)           THEME=dark run "$demo/shots-flows.sh" ;;
     editor)          run "$demo/shots-edit.sh" ;;
+    editor-typed)    run "$demo/shots-edit-typed.sh" ;;
+    themes)          run "$demo/shots-themes.sh" ;;
+    approve-page)    ONLY=approve run "$demo/browser-shots/browser-shots.sh" ;;
     needs-attention) ONLY=needs-attention run "$demo/browser-shots/browser-shots.sh" ;;
     live)            THEME=dark run "$demo/live.sh" ;;
     *) echo "scripts/shots.sh: unknown group $g" >&2; exit 2 ;;
