@@ -624,3 +624,22 @@ func TestTypedEditorRefusesAMisfitBetweenLongNames(t *testing.T) {
 		}
 	}
 }
+
+// The same, with a node name over the 64 characters plan keeps of a quoted name: the rename of a node
+// in an existing misfit is not refused for the misfit it already had.
+func TestTypedRefusalComparesProblemsUnderARenameOfALongName(t *testing.T) {
+	for _, n := range []int{64, 65, 300, 1000} {
+		long := strings.Repeat("c", n)
+		bad := strings.NewReplacer("name: charge", "name: "+long, "[validate, charge]", "[validate, "+long+"]", "[charge, receipt]", "["+long+", receipt]", "path to charge", "path to "+long).Replace(strings.Replace(testFlow, "block: charge", "block: count", 1))
+		for kind, s := range typedServers(t, "refund.yaml", bad) {
+			if kind == "structural" {
+				continue
+			}
+			w := call(s.Handler(), s, "/api/apply", applyReq(bad, Operation{Op: "rename_node", Node: long, Value: "bill"}), nil)
+			var e Edited
+			if err := json.Unmarshal(w.Body.Bytes(), &e); err != nil || w.Code != 200 || !e.Changed || strings.Contains(w.Body.String(), `"refused"`) {
+				t.Errorf("%s, name of %d: a rename of a node in an existing misfit: %d %.300s", kind, n, w.Code, w.Body)
+			}
+		}
+	}
+}
