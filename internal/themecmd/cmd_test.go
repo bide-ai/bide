@@ -114,7 +114,7 @@ func TestMainCheck(t *testing.T) {
 	}
 
 	big := writeTheme(t, append(custom("dark", nil), []byte(strings.Repeat(" ", theme.MaxSize))...))
-	if code, _, errs = run("check", big); code != 1 || !strings.Contains(errs, "byte limit") {
+	if code, _, errs = run("check", big); code != 1 || !strings.Contains(errs, "larger than") {
 		t.Errorf("oversize file: code %d, err %q", code, errs)
 	}
 	if code, _, errs = run("check", filepath.Join(t.TempDir(), "missing.json")); code != 1 || errs == "" {

@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/bide-ai/bide/internal/safefile"
-	"io"
-	"os"
 	"unicode/utf8"
 
 	safetext "github.com/bide-ai/bide/internal/printable"
@@ -32,32 +30,11 @@ func ReadDescription(path string) (*plan.RegistryDescription, error) {
 // ReadDescriptionFile is ReadDescription that also returns the SHA-256 of the file's bytes, in hex, which
 // sha256sum on the same file prints: a result that rests on the file says which file it was.
 func ReadDescriptionFile(path string) (*plan.RegistryDescription, string, error) {
-	// A named pipe or a device would block the open (or the read) for ever, so the type is asked
-	// before the file is opened, and again of what was opened (the path may have changed between the
-	// two); the open itself does not wait for a writer where the system can say so.
-	if fi, err := os.Stat(path); err != nil {
-		return nil, "", err
-	} else if !fi.Mode().IsRegular() {
-		return nil, "", fmt.Errorf("%s: not a regular file", path)
-	}
-	f, err := safefile.Open(path)
+	// A named pipe or a device would block the open (or the read) for ever: safefile asks the type
+	// before the file is opened and again of what was opened, and the open does not wait for a writer.
+	b, err := safefile.Read(path, MaxDescriptionFile, nil)
 	if err != nil {
 		return nil, "", err
-	}
-	defer f.Close()
-	fi, err := f.Stat()
-	if err != nil {
-		return nil, "", err
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, "", fmt.Errorf("%s: not a regular file", path)
-	}
-	b, err := io.ReadAll(io.LimitReader(f, MaxDescriptionFile+1))
-	if err != nil {
-		return nil, "", err
-	}
-	if len(b) > MaxDescriptionFile {
-		return nil, "", fmt.Errorf("%s: larger than %d bytes", path, MaxDescriptionFile)
 	}
 	d, err := DecodeDescription(b, path)
 	sum := sha256.Sum256(b)

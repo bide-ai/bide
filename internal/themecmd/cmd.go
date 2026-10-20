@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/bide-ai/bide/internal/safefile"
 	"github.com/bide-ai/bide/internal/themeaccess"
 	"github.com/bide-ai/bide/theme"
 )
@@ -41,7 +42,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	}
 	status := 0
 	for _, path := range fs.Args() {
-		data, err := themeaccess.ReadLimited(path, theme.MaxSize)
+		data, err := safefile.Read(path, theme.MaxSize, nil)
 		if err != nil {
 			fmt.Fprintf(stderr, "bide theme check: %s\n", themeaccess.Escape(err.Error()))
 			status = 1

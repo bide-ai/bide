@@ -485,30 +485,13 @@ func options(f flags, stores Stores) (Options, io.Closer, error) {
 // readConfig reads a flow config file, converting a .yaml or .yml file to JSON with toJSON.
 func readConfig(path string, toJSON func([]byte) ([]byte, error)) (Config, error) {
 	// A named pipe or device would block the open or never end, and a directory cannot be read as a
-	// config: refuse anything but a regular file, before opening it and again once opened.
-	before, err := os.Stat(path)
+	// config: safefile refuses anything but a regular file, before opening it and again once opened.
+	b, err := safefile.Read(path, maxConfig, betweenStatAndOpen)
 	if err != nil {
-		return Config{}, err
-	}
-	if !before.Mode().IsRegular() {
-		return Config{}, fmt.Errorf("%s is not a regular file: %w", path, agent.ErrConfig)
-	}
-	if betweenStatAndOpen != nil {
-		betweenStatAndOpen()
-	}
-	f, err := safefile.Open(path)
-	if err != nil {
-		return Config{}, err
-	}
-	defer f.Close()
-	// Decide on the file actually opened, not on the path: the path may have been swapped since the
-	// first check. (os.SameFile against that check does not hold on Windows, where a FileInfo from
-	// os.Stat loads its file ID from the path when SameFile first asks, which is after any swap.)
-	if after, err := f.Stat(); err != nil || !after.Mode().IsRegular() {
-		return Config{}, fmt.Errorf("%s is not a regular file (it changed while it was opened): %w", path, agent.ErrConfig)
-	}
-	b, err := readConfigBytes(f)
-	if err != nil {
+		var refused *safefile.RefusedError
+		if errors.As(err, &refused) {
+			return Config{}, fmt.Errorf("%w: %w", err, agent.ErrConfig)
+		}
 		return Config{}, err
 	}
 	return configFrom(path, path, b, toJSON)

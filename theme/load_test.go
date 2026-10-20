@@ -17,7 +17,7 @@ func TestLoadRefusals(t *testing.T) {
 	}
 	for name, tc := range map[string]struct{ path, want string }{
 		"a directory": {dir, "not a regular file"},
-		"too large":   {big, "byte limit"},
+		"too large":   {big, "larger than"},
 		"missing":     {filepath.Join(dir, "nope.json"), ""},
 	} {
 		_, _, err := Load(tc.path)
