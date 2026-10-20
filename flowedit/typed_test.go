@@ -968,3 +968,43 @@ func TestLoopBoundThatMakesANonContiguousBodyIsRefused(t *testing.T) {
 		t.Errorf("%q", why)
 	}
 }
+
+// A text plan cannot parse has no records: its problems are unknown, not absent. An edit that can change
+// what the types or safeties check is refused while the text before or after does not parse (a
+// misspelt field, another version, a control character in a name), rather than let through unchecked;
+// edits that cannot (moving an element, the flow's name, assertions, a rename) are not.
+func TestTypedEditorRefusesTypeAffectingEditsWhileTheTextDoesNotParse(t *testing.T) {
+	ctrl := strconv.Quote("fi\x01rst")
+	broken := map[string]string{
+		"a misspelt field":    strings.Replace(chainFlow, "{name: first, block: plain}", "{name: first, block: plain, safty: idempotent}", 1),
+		"another version":     strings.Replace(chainFlow, "version: 1", "version: 2", 1),
+		"a control character": strings.NewReplacer("name: first", "name: "+ctrl, "[validate, first]", "[validate, "+ctrl+"]", "[first, second]", "["+ctrl+", second]").Replace(chainFlow),
+	}
+	servers := typedServers(t, "chain.yaml", chainFlow)
+	for name, text := range broken {
+		for _, kind := range []string{"registry", "description"} {
+			s := servers[kind]
+			// An edit that adds a misfit: refused, with the reason.
+			w := call(s.Handler(), s, "/api/apply", applyReq(text, Operation{Op: "set_block", Node: "second", Value: "count"}), nil)
+			if !strings.Contains(w.Body.String(), `"refused":"the config does not parse: `) || !strings.Contains(w.Body.String(), "fix it first") {
+				t.Errorf("%s, %s: an edit while the text does not parse was not refused for it: %.300s", name, kind, w.Body)
+			}
+			// Edits that cannot change what is checked are not refused for the parse error.
+			for _, op := range []Operation{
+				{Op: "set_flow", Value: "renamed"},
+				{Op: "move_wiring", Index: 0, Value: "down"},
+			} {
+				w = call(s.Handler(), s, "/api/apply", applyReq(text, op), nil)
+				if strings.Contains(w.Body.String(), "does not parse") {
+					t.Errorf("%s, %s: %s was refused for the parse error: %.200s", name, kind, op.Op, w.Body)
+				}
+			}
+		}
+	}
+	// With the text parsing again the same edit is judged by the types.
+	s := servers["registry"]
+	w := call(s.Handler(), s, "/api/apply", applyReq(chainFlow, Operation{Op: "set_block", Node: "second", Value: "count"}), nil)
+	if !strings.Contains(w.Body.String(), `"refused":"the types do not fit: `) {
+		t.Errorf("a parsing text: %.300s", w.Body)
+	}
+}

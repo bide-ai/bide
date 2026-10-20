@@ -1,6 +1,7 @@
 package flowedit
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -206,6 +207,19 @@ func gateWords(g *plan.GateDescription) string {
 	return runview.GateText(tg)
 }
 
+// changesWhatIsChecked reports whether an operation adds or removes a node, changes a block, or changes
+// a connection, an arm, a join or a safety: what the type and safety checks are about. Moving an
+// element, renaming (names only), approvals, assertions and the flow's own keys do not.
+func changesWhatIsChecked(op string) bool {
+	switch op {
+	case "add_node", "remove_node", "set_block", "set_safety", "set_entry",
+		"add_edge", "remove_edge", "add_switch", "remove_switch", "add_arm", "remove_arm", "set_arm", "set_else",
+		"add_join", "remove_join", "set_join_inputs", "set_join_merge", "set_loop_max":
+		return true
+	}
+	return false
+}
+
 // typedRefusal is the reason to refuse an operation that took before to after, or "": after has a
 // type problem that before did not, so the operation connected what does not fit. A problem the
 // text already had is not the operation's, and is not refused. The decision is the server's, from
@@ -225,6 +239,15 @@ func (s *Server) typedRefusal(before, after []byte, op Operation) string {
 	ad, ok2 := data(after)
 	if !ok1 || !ok2 {
 		return ""
+	}
+	// A text that does not parse has no records: its problems are unknown, not absent, and decoding it
+	// leniently would check a config other than the one written (a misspelt field is silently ignored). So
+	// while the text before or after does not parse, an edit that can change what is wrong with the types
+	// or the safeties is refused, rather than let through unchecked.
+	if changesWhatIsChecked(op.Op) {
+		if err := cmp.Or(planaccess.ParseError(bd), planaccess.ParseError(ad)); err != nil {
+			return "the config does not parse: " + err.Error() + "; fix it first"
+		}
 	}
 	// The problems the text had, counted by identity (class, kind, full names, types), so that two
 	// problems whose displayed names look alike are two, and moving an element does not make an old

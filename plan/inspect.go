@@ -115,6 +115,10 @@ func AllowUnusedBlocks() InspectOption { return func(o *inspectOptions) { o.allo
 
 func init() {
 	planaccess.RegisterInspect(inspectRecords)
+	planaccess.RegisterParse(func(data []byte) error {
+		var cfg config
+		return parseConfig(data, &cfg)
+	})
 }
 
 // inspectConfig is InspectConfig, and what InspectConfigDescribed runs on a Registry built from a
