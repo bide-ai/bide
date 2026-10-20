@@ -20,7 +20,7 @@ import (
 	"github.com/bide-ai/bide/internal/term"
 )
 
-const usageText = `usage: bide edit [-addr <host:port>] [-base <git revision>] [-blocks <description.json>] [-color auto|always|never] <flow.yaml|flow.json>
+const usageText = `usage: bide edit [-addr <host:port>] [-base <git revision>] [-blocks <description.json>] [-theme <theme.json>] [-theme-default <name>] [-color auto|always|never] <flow.yaml|flow.json>
 
 Opens a local page for one flow config: the declared graph, an outline of its nodes and wiring,
 each node's approval gate and safety, the assertions and their verdicts, the problems bide check
@@ -35,6 +35,13 @@ connects what does not fit, and knows the gate a block declares in Go when a blo
 typed result is labelled as resting on the file, not checked against the program: the check made
 with the program's own plan.Registry is the control. A program can embed the editor beside its
 Registry instead (package flowedit, WithRegistry).
+
+The page draws from checked themes: light, dark and high-contrast, which its header button steps
+through, and the system's request for more contrast or forced colors is answered as bide view answers
+it. -theme adds a theme file (see docs/guides/themes.md and bide theme check), which is refused, with
+the failed checks, and nothing is served, if it is not valid or fails a check; -theme-default starts
+the page in a theme. A program that embeds the editor can also lock it to one theme (package
+flowedit, WithThemeLock).
 
 You can edit the file's source in the page and see the check as you type; nothing is written until
 you save, and a save shows the diff of the bytes it will write and the comments it removes. The page
@@ -69,6 +76,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	addr := fs.String("addr", "127.0.0.1:8585", "address to serve on: a loopback IP (127.0.0.1 or ::1) or localhost, with a port")
 	base := fs.String("base", "", "compare with the file at this git revision (a branch, tag or commit) instead of at HEAD; the file must be in it")
 	blocks := fs.String("blocks", "", "a description of the program's registered blocks (json.Marshal of plan.Registry.Describe): typed mode, labelled as per the file, not checked against the program")
+	themeFile := fs.String("theme", "", runview.ThemeFlagHelp)
+	themeDefault := fs.String("theme-default", "", runview.ThemeDefaultFlagHelp)
 	color := term.Flag(fs)
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -82,7 +91,19 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fs.Usage()
 		return 2
 	}
+	// The theme file is read after the other flags have been validated (a flag error is a usage error
+	// whatever the file holds) and before anything is opened or served.
+	themes, usageMsg, code := runview.ThemeFlags(*themeFile, *themeDefault, stderr, es.ErrorPrefix())
+	if usageMsg != "" {
+		fmt.Fprintln(stderr, es.ErrorPrefix()+"bide edit:", usageMsg)
+		fs.Usage()
+		return 2
+	}
+	if code != 0 {
+		return code
+	}
 	var opts []flowedit.Option
+	opts = append(opts, flowedit.WithThemes(themes.Extra...), flowedit.WithDefaultTheme(themes.Default))
 	if *base != "" {
 		opts = append(opts, flowedit.WithBase(*base))
 	}

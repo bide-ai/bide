@@ -2,20 +2,23 @@ package flowedit
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
 // themeState is what browser/themes.mjs measured in one mode.
 type themeState struct {
-	BGToken      string   `json:"bgToken"`
-	Attr         string   `json:"attr"`
-	Current      string   `json:"current"`
-	Names        []string `json:"names"`
-	Forced       bool     `json:"forced"`
-	SwitchHidden bool     `json:"switchHidden"`
-	SwitchLabel  string   `json:"switchLabel"`
-	Primary      struct {
+	BGToken       string   `json:"bgToken"`
+	Attr          string   `json:"attr"`
+	Current       string   `json:"current"`
+	Names         []string `json:"names"`
+	Forced        bool     `json:"forced"`
+	SwitchHidden  bool     `json:"switchHidden"`
+	SwitchDisplay string   `json:"switchDisplay"`
+	SwitchLabel   string   `json:"switchLabel"`
+	Primary       struct {
 		Ratio    float64 `json:"ratio"`
 		Text     string  `json:"text"`
 		OnAccent string  `json:"onAccent"`
@@ -152,5 +155,42 @@ func TestThemesInChrome(t *testing.T) {
 	}
 	if rem.Chosen == "" || rem.Chosen != rem.After {
 		t.Errorf("the choice %q was not remembered across a reload (%q)", rem.Chosen, rem.After)
+	}
+}
+
+// TestLockedThemeInChrome: a host that locks the editor to one theme (WithThemeLock) gets that theme
+// whatever the system prefers or a script sets, no switch (it is hidden, and a click does nothing),
+// and the reader's request for more contrast or forced colors still wins.
+func TestLockedThemeInChrome(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "refund.yaml")
+	if err := os.WriteFile(p, []byte(testFlow), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := newServer(t, p, WithThemeLock("dark"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := runThemes(t, "locked", s)
+	for key, want := range map[string]string{
+		"locked": "#121214", "locked+system-dark": "#121214", "locked+set-in-page": "#121214",
+		"locked+prefers-contrast": "#ffffff", "locked+prefers-contrast+set-in-page": "#ffffff", "locked+forced-colors": "Canvas",
+	} {
+		m := r.mode(t, key)
+		if m.BGToken != want {
+			t.Errorf("%s: --bg is %q, want %q", key, m.BGToken, want)
+		}
+		if !m.SwitchHidden || m.SwitchDisplay != "none" || strings.Join(m.Names, " ") != "dark" {
+			t.Errorf("%s: the page offers %q with the switch hidden=%v displayed as %q; want dark only and no switch", key, m.Names, m.SwitchHidden, m.SwitchDisplay)
+		}
+		if key != "locked+forced-colors" {
+			checkPainted(t, key, m)
+		}
+	}
+	var after struct{ Attr, Token string }
+	if err := json.Unmarshal(r.Results["afterClick"], &after); err != nil {
+		t.Fatal(err)
+	}
+	if after.Attr != "" || after.Token != "#121214" {
+		t.Errorf("a click on the hidden switch changed the page: data-theme %q, --bg %q", after.Attr, after.Token)
 	}
 }

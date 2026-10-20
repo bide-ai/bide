@@ -26,7 +26,7 @@ and `help`, and its import graph is the standard library and the core module (se
 | [`bide demo`](#bide-demo) | kill an agent mid-payment and watch it not charge twice (no API key) |
 | [`bide doctor`](#bide-doctor) | check that a first run can work: Go, SQLite, the module cache, model keys, your project |
 | [`bide sample`](#bide-sample) | write a sample journal of varied runs, with evidence and flow configs, and open bide view on it |
-| [`bide theme`](#bide-theme) | check a theme file for the run viewer (the editor follows in a later release) against the contrast and distinctness rules |
+| [`bide theme`](#bide-theme) | check a theme file for the run viewer and the editor against the contrast and distinctness rules |
 | [`bide view`](#bide-view) | a read-only local page for one run of a journal, or a flow config's graph |
 | [`bide edit`](#bide-edit) | a local page for a flow config: the graph, the approval gates, the assertions, and what an edit weakens; edit the source and save |
 | [`bide notify`](#bide-notify) | set up and test the webhook notifier: test a receiver, run a local one, relay to Slack and PagerDuty |
@@ -175,7 +175,7 @@ Exit status:
 
 ## bide theme
 
-Check a theme file for the run viewer (the editor follows in a later release) against the contrast and distinctness rules.
+Check a theme file for the run viewer and the editor against the contrast and distinctness rules.
 
 ```text
 usage: bide theme check [-v] <theme.json>...
@@ -320,7 +320,7 @@ Exit status:
 A local page for a flow config: the graph, the approval gates, the assertions, and what an edit weakens; edit the source and save.
 
 ```text
-usage: bide edit [-addr <host:port>] [-base <git revision>] [-blocks <description.json>] [-color auto|always|never] <flow.yaml|flow.json>
+usage: bide edit [-addr <host:port>] [-base <git revision>] [-blocks <description.json>] [-theme <theme.json>] [-theme-default <name>] [-color auto|always|never] <flow.yaml|flow.json>
 
 Opens a local page for one flow config: the declared graph, an outline of its nodes and wiring,
 each node's approval gate and safety, the assertions and their verdicts, the problems bide check
@@ -335,6 +335,13 @@ connects what does not fit, and knows the gate a block declares in Go when a blo
 typed result is labelled as resting on the file, not checked against the program: the check made
 with the program's own plan.Registry is the control. A program can embed the editor beside its
 Registry instead (package flowedit, WithRegistry).
+
+The page draws from checked themes: light, dark and high-contrast, which its header button steps
+through, and the system's request for more contrast or forced colors is answered as bide view answers
+it. -theme adds a theme file (see docs/guides/themes.md and bide theme check), which is refused, with
+the failed checks, and nothing is served, if it is not valid or fails a check; -theme-default starts
+the page in a theme. A program that embeds the editor can also lock it to one theme (package
+flowedit, WithThemeLock).
 
 You can edit the file's source in the page and see the check as you type; nothing is written until
 you save, and a save shows the diff of the bytes it will write and the comments it removes. The page
@@ -358,6 +365,10 @@ A save is refused, and writes nothing, if the file changed on disk since the pag
     	a description of the program's registered blocks (json.Marshal of plan.Registry.Describe): typed mode, labelled as per the file, not checked against the program
   -color when
     	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
+  -theme string
+    	a theme file (JSON, see docs/guides/themes.md; check it first with bide theme check) the pages offer beside light, dark and high-contrast; refused, with the failed checks, and nothing served, if it is not valid or fails a contrast, distinctness or polarity check (C1 to C4, C8); the colour-blindness check (C6) only prints a warning
+  -theme-default string
+    	the theme a reader starts in (light, dark, high-contrast, or the -theme file's name), instead of following the system setting; a reader's own choice still wins
 
 Exit status:
   0  success

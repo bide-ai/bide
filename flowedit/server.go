@@ -98,8 +98,7 @@ func WithBase(rev string) Option { return func(o *options) { o.base = rev } }
 // docs/design/themes.md), beside the shipped light, dark and high-contrast. A host passes values,
 // never CSS: the stylesheet is generated from the checked values alone. New fails when a theme is
 // nil or not from Parse or Load, or when two themes (a shipped one included) have one name. The
-// editor's own page does not offer the themes in its switch yet (it adopts them in a later release),
-// so until then WithThemes only makes them available to WithDefaultTheme and WithThemeLock.
+// page's switch steps through the shipped themes and these.
 func WithThemes(themes ...*theme.Theme) Option {
 	return func(o *options) { o.themes.Extra = append(o.themes.Extra, themes...) }
 }
@@ -109,10 +108,9 @@ func WithThemes(themes ...*theme.Theme) Option {
 // the default. New fails when the name is not a theme in the set or differs from WithThemeLock's.
 func WithDefaultTheme(name string) Option { return func(o *options) { o.themes.Default = name } }
 
-// WithThemeLock makes the named theme the only one the page has. The stylesheet has no other theme,
-// so the editor's own light/dark switch changes nothing on screen, and the reader's system setting
-// no longer picks light or dark; a reader who asks their system for more contrast or forced colors
-// still gets those, over the lock. New fails when the name is not a theme in the set or differs from
+// WithThemeLock makes the named theme the only one the page has: the page's switch is hidden, a
+// remembered choice is ignored, and the reader's system setting no longer picks light or dark; a
+// reader who asks their system for more contrast or forced colors still gets those, over the lock. New fails when the name is not a theme in the set or differs from
 // WithDefaultTheme's.
 func WithThemeLock(name string) Option { return func(o *options) { o.themes.Lock = name } }
 

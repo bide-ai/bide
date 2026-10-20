@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -22,9 +21,7 @@ import (
 	safetext "github.com/bide-ai/bide/internal/printable"
 	"github.com/bide-ai/bide/internal/safefile"
 	"github.com/bide-ai/bide/internal/term"
-	"github.com/bide-ai/bide/internal/themeaccess"
 	"github.com/bide-ai/bide/plan"
-	"github.com/bide-ai/bide/theme"
 )
 
 // Stores opens the stores bide view reads, read-only. It is how the command plugs in store backends
@@ -165,8 +162,8 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 	fs.StringVar(&f.stopPolicy, "stop-policy", "", "the kill switch's stop policy (the JSON document bide stop -stop-policy reads), so the banner and the held-by-stop states judge the control run as an audited deployment does and check its signatures; without it the control run is read as a basic one and the banner says signatures are not verified")
 	fs.StringVar(&f.stopRoot, "stop-root", "", "with -stop-policy: the digest of the deployment's root policy, when the file is a later policy the chain reaches")
 	addr := fs.String("addr", "127.0.0.1:8484", "address to serve on: a loopback IP (127.0.0.1 or ::1) or localhost, with a port")
-	fs.StringVar(&f.theme, "theme", "", "a theme file (JSON, see docs/guides/themes.md; check it first with bide theme check) the pages offer beside light, dark and high-contrast; refused, with the failed checks, and nothing served, if it is not valid or fails a contrast, distinctness or polarity check (C1 to C4, C8); the colour-blindness check (C6) only prints a warning")
-	fs.StringVar(&f.themeDefault, "theme-default", "", "the theme a reader starts in (light, dark, high-contrast, or the -theme file's name), instead of following the system setting; a reader's own choice still wins")
+	fs.StringVar(&f.theme, "theme", "", ThemeFlagHelp)
+	fs.StringVar(&f.themeDefault, "theme-default", "", ThemeDefaultFlagHelp)
 	color := term.Flag(fs)
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -194,22 +191,14 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 	// validated (a flag error is a usage error whatever the theme file holds) and before anything is
 	// opened or served. It returns what puts the themes into the Options, or an exit status.
 	loadThemes := func() (func(Options) Options, int) {
-		var extra []*theme.Theme
-		if f.theme != "" {
-			th, rep, err := theme.Load(f.theme)
-			if err != nil {
-				fmt.Fprintf(stderr, "%s%s: %v\n", es.ErrorPrefix(), themeaccess.Escape(f.theme), err) // err is built from quoted or escaped text
-				return nil, 1
-			}
-			for _, m := range rep.Failures(theme.Warning) {
-				fmt.Fprintf(stderr, "%s: warning %s %s: a reader with a colour-vision deficiency may not tell these apart; see bide theme check -v\n", themeaccess.Escape(f.theme), m.Check, m.Subject)
-			}
-			extra = append(extra, th)
+		set, msg, code := ThemeFlags(f.theme, f.themeDefault, stderr, es.ErrorPrefix())
+		if msg != "" {
+			return nil, usage(msg)
 		}
-		if f.themeDefault != "" && !themeNamed(f.themeDefault, extra) {
-			return nil, usage("-theme-default " + strconv.Quote(f.themeDefault) + " names no theme: light, dark, high-contrast or the -theme file's name")
+		if code != 0 {
+			return nil, code
 		}
-		return func(o Options) Options { o.Themes, o.DefaultTheme = extra, f.themeDefault; return o }, 0
+		return func(o Options) Options { o.Themes, o.DefaultTheme = set.Extra, set.Default; return o }, 0
 	}
 	if f.check && f.config == "" {
 		return usage("-check needs -config")
@@ -657,17 +646,4 @@ func stopFeed(j *agent.Journal, f flags) (*StopFeed, error) {
 		return nil, err
 	}
 	return &StopFeed{Control: ctl, Plain: plain, Verified: true}, nil
-}
-
-// themeNamed reports whether name is a shipped theme or one of extra.
-func themeNamed(name string, extra []*theme.Theme) bool {
-	if _, ok := theme.Lookup(name); ok {
-		return true
-	}
-	for _, t := range extra {
-		if t.Name() == name {
-			return true
-		}
-	}
-	return false
 }
