@@ -97,8 +97,8 @@ func TestAllowUnknown(t *testing.T) {
 	}
 }
 
-// An error names the text it complains about, but only a short, escaped piece of it: a key that is
-// a secret, a long line or an escape sequence does not reach the message whole or raw.
+// An error names the text it complains about, but only a short, escaped piece of it: a very long
+// name or an escape sequence does not reach the message whole or raw (a short name is quoted whole).
 func TestErrorsQuoteDocumentTextCappedAndEscaped(t *testing.T) {
 	type rec struct {
 		Known string `json:"known"`

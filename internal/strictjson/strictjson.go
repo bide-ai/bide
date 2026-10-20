@@ -506,8 +506,9 @@ func ExactFields(t reflect.Type) map[string]Field {
 	return out
 }
 
-// maxQuoted is the most of a document's text an error repeats: enough to name a field, too little to
-// carry a secret, a log line or a screenful of someone's data into a message.
+// maxQuoted is the most of a document's text an error repeats: enough to name a field, and no more
+// than a line. It bounds the size of a message; a short name is still quoted whole, which is what
+// helps to find the mistake.
 const maxQuoted = 64
 
 // quoted is s as Go quotes it (so a control character or an escape sequence is written out, not sent

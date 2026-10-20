@@ -7,12 +7,12 @@ import (
 	"testing"
 )
 
-// Load's error names the file and the problem but does not repeat a long or secret-looking name from
+// Load's error names the file and the problem but does not repeat a very long name from
 // the file whole, nor write an escape sequence from it raw.
-func TestLoad_ErrorDoesNotEchoTheFile(t *testing.T) {
+func TestLoad_ErrorDoesNotEchoALongNameOrEscape(t *testing.T) {
 	dir := t.TempDir()
 	for name, key := range map[string]string{
-		"long secret": "HOSTSECRET-" + strings.Repeat("k", 500),
+		"long name": "HOSTSECRET-" + strings.Repeat("k", 500),
 		"escape":      `\u001b[31mred`,
 	} {
 		p := filepath.Join(dir, "t.json")
