@@ -85,8 +85,8 @@ try {
   // The dialog dims the page and keeps its own edge: the colour of one pixel far from the dialog,
   // before and after it opens, and the dialog's border.
   const dim = async () => {
-    const px = async () => {
-      const b64 = await page.screenshot({ clip: { x: 2, y: 2, width: 1, height: 1 }, encoding: 'base64' });
+    const px = async (x = 2, y = 2) => {
+      const b64 = await page.screenshot({ clip: { x, y, width: 1, height: 1 }, encoding: 'base64' });
       return page.evaluate(async (b) => {
         const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = 'data:image/png;base64,' + b; });
         const c = document.createElement('canvas'); c.width = img.width; c.height = img.height;
@@ -94,9 +94,15 @@ try {
         return [...g.getImageData(0, 0, 1, 1).data].slice(0, 3);
       }, b64);
     };
+    // The corner of the box, outside its rounded edge: it is page, and must be dimmed with the rest.
+    await page.evaluate(() => document.getElementById('dialog').showModal());
+    const box = await page.evaluate(() => { const f = document.getElementById('dialog-form'), r = f.getBoundingClientRect(); return { x: Math.floor(r.left) + 1, y: Math.floor(r.top) + 1, radius: parseFloat(getComputedStyle(f).borderTopLeftRadius) }; });
+    await page.evaluate(() => document.getElementById('dialog').close());
     const before = await px();
+    const cornerBefore = await px(box.x, box.y);
     await page.evaluate(() => document.getElementById('dialog').showModal());
     const after = await px();
+    const cornerAfter = await px(box.x, box.y);
     const edge = await page.evaluate(() => {
       const d = document.getElementById('dialog-form'), s = getComputedStyle(d);
       // The elevation is the theme's shadow token, on the box that is drawn (not on the dim carrier).
@@ -123,7 +129,7 @@ try {
     await page.keyboard.press('Escape');
     const closed = await page.evaluate(() => !document.getElementById('dialog').open);
     edge.tall = tall; edge.escapeCloses = closed;
-    return { before, after, edge };
+    return { before, after, edge, corner: { before: cornerBefore, after: cornerAfter, radius: box.radius } };
   };
 
   const mode = async (key, features, theme) => {

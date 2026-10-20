@@ -49,7 +49,12 @@ type themeState struct {
 	Dim         struct {
 		Before []int `json:"before"`
 		After  []int `json:"after"`
-		Edge   struct {
+		Corner struct {
+			Before []int   `json:"before"`
+			After  []int   `json:"after"`
+			Radius float64 `json:"radius"`
+		} `json:"corner"`
+		Edge struct {
 			Width       float64 `json:"width"`
 			Color       string  `json:"color"`
 			Shadow      string  `json:"shadow"`
@@ -170,6 +175,17 @@ func checkPainted(t *testing.T, key string, m themeState, scheme string) {
 		if got := float64(m.Dim.After[i]); got < want-3 || got > want+3 || (m.Dim.Before[i] > 40 && m.Dim.After[i] >= m.Dim.Before[i]) {
 			t.Errorf("%s: channel %d of a pixel beside the dialog is %d before it opens and %d after, want about %.0f (the scrim dims the page)", key, i, m.Dim.Before[i], m.Dim.After[i], want)
 		}
+	}
+	// The corner of the box, one pixel in and outside its rounded edge (for a radius of 12 px or more; a
+	// smaller one leaves under a pixel there, which the browser antialiases), is dimmed with the rest of the page.
+	if c := m.Dim.Corner; c.Radius >= 12 && len(c.Before) == 3 && len(c.After) == 3 {
+		for i := 0; i < 3; i++ {
+			if want := float64(c.Before[i]) * (1 - alpha); float64(c.After[i]) < want-3 || float64(c.After[i]) > want+3 {
+				t.Errorf("%s: channel %d outside the dialog's rounded corner is %d, was %d, want about %.0f: the dim does not follow the corner", key, i, c.After[i], c.Before[i], want)
+			}
+		}
+	} else if c.Radius >= 12 {
+		t.Errorf("%s: the corner pixel was not read", key)
 	}
 	if len(m.Dim.Before) != 3 || m.Dim.Edge.Width < 1 || m.Dim.Edge.Color != m.LineStrong {
 		t.Errorf("%s: the dialog's edge is %gpx %s, want 1px or more in the border_strong token %s", key, m.Dim.Edge.Width, m.Dim.Edge.Color, m.LineStrong)
