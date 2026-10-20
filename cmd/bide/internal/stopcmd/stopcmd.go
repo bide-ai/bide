@@ -218,7 +218,7 @@ func MainWith(args []string, in io.Reader, stdout, stderr io.Writer, stores Stor
 	fs.BoolVar(&f.applyPending, "apply-pending", false, "audited: make effective the signed records on the trail that never took effect, after showing each one's signer and age (signed, so it is evidence)")
 	fs.BoolVar(&f.upgrade, "upgrade", false, "move the deployment to audited mode: adopt the active stops as signed ones and record the change (needs -stop-policy, -as, -key)")
 	fs.BoolVar(&f.downgrade, "downgrade", false, "record a move back to basic mode (refused while any stop is active)")
-	fs.StringVar(&f.stopPolicy, "stop-policy", "", "audited mode: the stop policy file (JSON: approvers' public keys, setters, lifters, lift quorum, deployment ID) the deployment pins; without it this is basic mode")
+	fs.StringVar(&f.stopPolicy, "stop-policy", "", "audited mode: the stop policy file, or - for standard input (JSON: approvers' public keys, setters, lifters, lift quorum, deployment ID) the deployment pins; without it this is basic mode")
 	fs.StringVar(&f.stopRoot, "stop-root", "", "audited mode: the digest of the deployment's root policy, when -stop-policy is a later policy the chain reaches")
 	fs.StringVar(&f.as, "as", "", "audited mode: your approver id, as the stop policy lists it; basic mode: the name recorded (default your OS user; asserted, not authenticated)")
 	fs.StringVar(&f.key, "key", "", src.KeyHelp)

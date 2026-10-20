@@ -256,7 +256,7 @@ Flags:
   -addr string
     	address to serve on: a loopback IP (127.0.0.1 or ::1) or localhost, with a port (default "127.0.0.1:8484")
   -approver-keys string
-    	approver public keys, a JSON object of approver id to key text, e.g. {"ops":"ed25519:ab12..."}, to verify each m-of-n gate's signatures (audit.VerifyApprovals); needs -sth or -evidence
+    	approver public keys, a JSON object of approver id to key text, e.g. {"ops":"ed25519:ab12..."}, to verify each m-of-n gate's signatures (audit.VerifyApprovals), or - for standard input; needs -sth or -evidence
   -approvers string
     	the expected policy's approver ids, comma-separated, in policy order; needs -need
   -blocks string
@@ -274,7 +274,7 @@ Flags:
   -digest string
     	flow.Digest() of the -topology flow, compared with the digest the run journaled (default: computed from -topology when it carries the digest's inputs)
   -evidence string
-    	evidence package (audit.EvidencePackage JSON) to verify; needs -pubkey
+    	evidence package (audit.EvidencePackage JSON; - for standard input) to verify; needs -pubkey
   -exclude-principal
     	the expected policy excludes the run's requesters (its principal and those of the runs above it) from approving (separation of duties); needs -need
   -fail-on-weaken
@@ -290,13 +290,13 @@ Flags:
   -postgres-env string
     	name of the environment variable that holds the Postgres DSN, instead of -postgres: keeps the password out of the argument list, and is the name the Needs attention list's bide approve commands use
   -pubkey string
-    	log public key as <scheme>:<hex>, or bare ed25519 hex, or a file holding it
+    	log public key as <scheme>:<hex>, or bare ed25519 hex, or a file holding it, or - for standard input
   -run string
     	run to open (default: the run list)
   -sth string
-    	signed tree head (audit.SignedTreeHead JSON) to verify the journal against; needs -pubkey
+    	signed tree head (audit.SignedTreeHead JSON; - for standard input) to verify the journal against; needs -pubkey
   -stop-policy string
-    	the kill switch's stop policy (the JSON document bide stop -stop-policy reads), so the banner and the held-by-stop states judge the control run as an audited deployment does and check its signatures; without it the control run is read as a basic one and the banner says signatures are not verified
+    	the kill switch's stop policy (the JSON document bide stop -stop-policy reads; - for standard input), so the banner and the held-by-stop states judge the control run as an audited deployment does and check its signatures; without it the control run is read as a basic one and the banner says signatures are not verified
   -stop-root string
     	with -stop-policy: the digest of the deployment's root policy, when the file is a later policy the chain reaches
   -strict
@@ -637,7 +637,7 @@ erases and an "end" record after; if it stops partway, run the same plan again.
   -prefix value
     	erase the records whose key starts with this; repeat
   -pubkey string
-    	with -execute: the log's public key (ed25519:<hex>, or a file) that verifies the -sth heads
+    	with -execute: the log's public key (ed25519:<hex>, a file, or - for standard input) that verifies the -sth heads
   -reason string
     	with -execute: why (recorded in the trail)
   -redact-postgres-env string
@@ -844,7 +844,7 @@ failed, 2 for a usage error.
 
 Flags:
   -approver-keys string
-    	approver public keys, a JSON object of approver id to key text, e.g. {"ops":"ed25519:ab12..."}, the file bide view -approver-keys reads (bide keygen -as prints an entry): refuse a -key that is not the one enrolled for -as, and verify the tally. Required for an m-of-n gate unless -unverified
+    	approver public keys, a JSON object of approver id to key text, e.g. {"ops":"ed25519:ab12..."}, the file bide view -approver-keys reads, or - for standard input (which then also needs -yes) (bide keygen -as prints an entry): refuse a -key that is not the one enrolled for -as, and verify the tally. Required for an m-of-n gate unless -unverified
   -as string
     	your approver id, exactly as the gate's policy lists it (not for a single-approver gate)
   -call string
@@ -874,7 +874,7 @@ Flags:
   -list
     	list the calls that wait for a decision, each with its bide approve command; nothing is recorded
   -log-key string
-    	with -verify-receipt, for a certificate-bound receipt: the audit log's public key (ed25519:<hex>, or a file holding it), which vouches for the receipt's anchoring proof
+    	with -verify-receipt, for a certificate-bound receipt: the audit log's public key (ed25519:<hex>, or a file holding it, or - for standard input, which then also needs -yes), which vouches for the receipt's anchoring proof
   -postgres string
     	Postgres journal, a pgx DSN such as postgres://user:pass@host:5432/db; prefer -postgres-env, which keeps the password out of the argument list
   -postgres-env string
@@ -980,7 +980,7 @@ Flags:
   -show string
     	show one stop, by its ID or an unambiguous prefix of at least 8 characters, with its lift records
   -stop-policy string
-    	audited mode: the stop policy file (JSON: approvers' public keys, setters, lifters, lift quorum, deployment ID) the deployment pins; without it this is basic mode
+    	audited mode: the stop policy file, or - for standard input (JSON: approvers' public keys, setters, lifters, lift quorum, deployment ID) the deployment pins; without it this is basic mode
   -stop-root string
     	audited mode: the digest of the deployment's root policy, when -stop-policy is a later policy the chain reaches
   -tool value

@@ -137,7 +137,7 @@ func redact(args []string, stdout, stderr io.Writer, k Keys) int {
 	headOut := fs.String("head-out", "", "with -execute: append the trail's new signed head, as one JSON line, to this file, for your anchor")
 	trailDB := fs.String("trail-db", "", "keep the redaction trail in this SQLite file instead of the journal's (recommended: a store the erasing role cannot rewrite)")
 	trailEnv := fs.String("trail-postgres-env", "", "keep the redaction trail in the Postgres database whose DSN is in this variable, instead of the journal's")
-	pubkey := fs.String("pubkey", "", "with -execute: the log's public key (ed25519:<hex>, or a file) that verifies the -sth heads")
+	pubkey := fs.String("pubkey", "", "with -execute: the log's public key (ed25519:<hex>, a file, or - for standard input) that verifies the -sth heads")
 	var sths stringList
 	fs.Var(&sths, "sth", "with -execute: a signed journal head of the run; one that verifies, matches the journal and covers all of it is required; repeat")
 	allowUncovered := fs.Bool("allow-uncovered", false, "with -execute: erase although no signed head covers the run (recorded in the trail as UNCOVERED, and reported by bide audit redactions)")
