@@ -251,3 +251,40 @@ func TestLoadAndValidateRefusalsWrapErrConfig(t *testing.T) {
 		t.Error("asConfigError changed an error that needed no change")
 	}
 }
+
+// Two loops that each have a body Build refuses (a node between the head and the switch that is not on
+// the loop path) are two problems, with and without a Registry.
+func TestInspectConfig_ReportsEveryNonContiguousLoop(t *testing.T) {
+	cfg := `{"version":1,"flow":"f","entry":"e","nodes":[{"name":"e","block":"s2s"},{"name":"a1","block":"s2s"},{"name":"x1","block":"s2s"},{"name":"b1","block":"s2s"},{"name":"c1","block":"s2s"},{"name":"a2","block":"s2s"},{"name":"x2","block":"s2s"},{"name":"b2","block":"s2s"},{"name":"c2","block":"s2s"}],
+	  "wiring":[{"edge":["e","a1"]},{"edge":["e","x1"]},{"edge":["a1","b1"]},{"switch":"b1","when":[{"pred":"nonEmpty","to":"a1","loop_max":3}],"else":"c1"},{"edge":["c1","a2"]},{"edge":["c1","x2"]},{"edge":["a2","b2"]},{"switch":"b2","when":[{"pred":"nonEmpty","to":"a2","loop_max":3}],"else":"c2"}]}`
+	for name, reg := range map[string]*Registry{"structural": nil, "typed": typedChainRegistry(t)} {
+		var found []string
+		for _, p := range InspectConfig([]byte(cfg), reg, AllowUnusedBlocks()).Problems {
+			if strings.Contains(p.Message, "has a non-contiguous body") {
+				found = append(found, p.Message)
+			}
+		}
+		if len(found) != 2 {
+			t.Errorf("%s: non-contiguous loops reported: %q", name, found)
+		}
+	}
+}
+
+// Problems of different checks come together: with a Registry, a loop Build refuses and a node not
+// reached from the entry are both reported (Build alone stops at the first step that fails).
+func TestInspectConfig_TypedReportsProblemsOfDifferentWiringChecks(t *testing.T) {
+	cfg := `{"version":1,"flow":"f","entry":"e","nodes":[{"name":"e","block":"s2s"},{"name":"a1","block":"s2s"},{"name":"x1","block":"s2s"},{"name":"b1","block":"s2s"},{"name":"c1","block":"s2s"},{"name":"orphan","block":"s2s"}],
+	  "wiring":[{"edge":["e","a1"]},{"edge":["e","x1"]},{"edge":["a1","b1"]},{"switch":"b1","when":[{"pred":"nonEmpty","to":"a1","loop_max":3}],"else":"c1"}]}`
+	var loop, orphan int
+	for _, p := range InspectConfig([]byte(cfg), typedChainRegistry(t), AllowUnusedBlocks()).Problems {
+		if strings.Contains(p.Message, "has a non-contiguous body") {
+			loop++
+		}
+		if strings.Contains(p.Message, `step "orphan" is not reached from the entry`) {
+			orphan++
+		}
+	}
+	if loop != 1 || orphan != 1 {
+		t.Errorf("non-contiguous loop problems %d, unreached orphan problems %d; want one each", loop, orphan)
+	}
+}
