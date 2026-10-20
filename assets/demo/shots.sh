@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # shots.sh: regenerate the run viewer guide's screenshots whose content comes from bide sample
-# (docs/guides/img/run-viewer-*): the run list, the Needs attention list, the halted plan flow, and the flow config's risk
+# (docs/guides/img/run-viewer-*): the run list, the halted plan flow, and the flow config's risk
 # map and violated assertion. It builds bide, runs bide sample, and captures each page with a
 # headless Chromium-based browser, at 1200 pixels wide, so the screenshots are what any user gets by
 # running bide sample.
@@ -31,7 +31,6 @@ cd "$work"
 ./bide sample -out sample -no-browser -addr "127.0.0.1:$port" > /dev/null &
 wait_for "http://127.0.0.1:$port/"
 shot run-viewer-run-list "http://127.0.0.1:$port/" 1250
-shot run-viewer-attention "http://127.0.0.1:$port/attention" 1680
 shot run-viewer-flow-halted "http://127.0.0.1:$port/run?id=triage-3003" 1400
 
 # The flow configs, opened by their relative paths, as a user runs them from the sample directory.

@@ -88,6 +88,18 @@ refused. Every key and value in an error is quoted, so a file cannot print a ter
   choice, which the browser remembers.
 - The sun button in the viewer's header (and the editor's Theme button), or `t` in the viewer, steps through the list, names the theme it shows and announces the change to a screen reader.
 
+The same page, a flow config's risk map from `bide view -config`, in each shipped theme and in a custom one
+(the theme file is `assets/demo/browser-shots/acme-teal.json`: a `light` base with a grey-green ground, a teal
+accent, its own focus colour, a humanist font, small corners and roomy spacing; `bide theme check` accepts it):
+
+![The bide view page for the refund flow config in the light theme: a green ALL ASSERTIONS HOLD verdict, four counts, the four assertions that hold, the colour legend and the start of the flow graph](img/themes-light.png)
+
+![The same page in the dark theme: a dark ground with the same verdict, counts, assertions, legend and graph, each state drawn with the same icon and dash pattern and a lighter colour](img/themes-dark.png)
+
+![The same page in the high-contrast theme: a white ground, black text, darker edges on every card and control, and the same states, icons and dash patterns](img/themes-high-contrast.png)
+
+![The same page in the custom acme-teal theme: a pale grey-green ground, a humanist font, small corner radii and roomier spacing, with every state still told by its icon and dash pattern](img/themes-acme-teal.png)
+
 ## Embedding in a Go program
 
 A program that serves the viewer's pages or the editor itself chooses their themes in Go. The

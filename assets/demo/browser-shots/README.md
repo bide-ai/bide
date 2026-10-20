@@ -1,6 +1,6 @@
 # Browser images
 
-See [../SHOTS.md](../SHOTS.md) for every screenshot script and `scripts/shots.sh`, which runs them all. This directory has the programs they share (`capture.mjs`, `share.mjs`, `live-capture.mjs`, `edit-shots.mjs`) and the approve page and Slack relay images.
+See [../SHOTS.md](../SHOTS.md) for every screenshot script and `scripts/shots.sh`, which runs them all. This directory has the programs they share (`capture.mjs`, `share.mjs`, `live-capture.mjs`, `edit-shots.mjs`, `edit-typed-shots.mjs`, `themes-shots.mjs`, and the custom theme `acme-teal.json` the themes pictures use) and the approve page and Slack relay images.
 
 `browser-shots.sh` regenerates five of the docs' images, each as `-dark.png` and `-light.png` at 2x,
 from real runs in a real Chrome. Nothing is mocked or edited.
