@@ -799,25 +799,34 @@ func expectStructure(old any, op Operation) (any, error) {
 // newLoopShapeError is the first loop-shape error the structural check finds in after that it did not
 // find in before, or "".
 func newLoopShapeError(before, after []byte) string {
-	shape := func(data []byte) []string {
-		var out []string
+	type found struct{ key, message string }
+	shape := func(data []byte) []found {
+		var out []found
 		for _, p := range plan.InspectConfig(data, nil).Problems {
 			if p.Severity != "error" {
 				continue
 			}
 			for _, m := range []string{"loops back to", "loop-back arm", "no exit arm", "has its own Switch", "leaves the loop", "enters the loop", "non-contiguous body"} {
 				if strings.Contains(p.Message, m) {
-					out = append(out, p.Message)
+					out = append(out, found{problemKey(p), p.Message})
+					break
 				}
 			}
 		}
 		return out
 	}
-	old := shape(before)
-	for _, m := range shape(after) {
-		if !slices.Contains(old, m) {
-			return m
+	// Compared by identity (the full names, without the positions of wiring elements), counting
+	// repeats: a problem the text had is not new, and two that look alike are two.
+	had := map[string]int{}
+	for _, f := range shape(before) {
+		had[f.key]++
+	}
+	for _, f := range shape(after) {
+		if had[f.key] > 0 {
+			had[f.key]--
+			continue
 		}
+		return f.message
 	}
 	return ""
 }

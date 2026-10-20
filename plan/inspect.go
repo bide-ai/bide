@@ -51,6 +51,10 @@ type ConfigProblem struct {
 	To       string `json:"to,omitempty"`
 	Message  string `json:"message"`
 	Severity string `json:"severity"` // "error" (Load refuses the config) or "warning"
+	// key identifies the problem for a caller that compares two reports: the message before its names
+	// were shortened for display, with the positions of wiring elements and arms left out (see
+	// problemKey). The module's own tools read it through internal/planaccess.
+	key string
 }
 
 // Errors reports whether any problem is an error.
@@ -119,13 +123,30 @@ func AllowUnusedBlocks() InspectOption { return func(o *inspectOptions) { o.allo
 // would hide in the count. It is not exported: the module's own tools get it from internal/planaccess.
 func allTypeProblems() InspectOption { return func(o *inspectOptions) { o.allTypeProblems = true } }
 
-func init() { planaccess.Register(allTypeProblems()) }
+func init() {
+	planaccess.Register(allTypeProblems())
+	planaccess.RegisterProblemKey(func(p any) string {
+		if cp, ok := p.(ConfigProblem); ok {
+			return cp.key
+		}
+		return ""
+	})
+}
+
+// positionRE matches the index of a wiring element, arm or assertion in a message.
+var positionRE = regexp.MustCompile(`\[\d+\]`)
+
+// problemKey is a problem's message as its identity: the full text (the names are as the config has
+// them, not shortened for display) with the positions of wiring elements left out, so that moving a
+// wiring element does not make a problem the config already had a new one.
+func problemKey(message string) string { return positionRE.ReplaceAllString(message, "[#]") }
 
 // inspectConfig is InspectConfig, and what InspectConfigDescribed runs on a Registry built from a
 // description: one implementation of the typed checks, whichever side the Registry came from.
 func inspectConfig(data []byte, reg *Registry, opts []InspectOption) ConfigReport {
 	r := inspectConfigUnbounded(data, reg, opts)
 	for i := range r.Problems {
+		r.Problems[i].key = problemKey(r.Problems[i].Message)
 		r.Problems[i].Message = boundMessage(r.Problems[i].Message)
 	}
 	return r
@@ -203,21 +224,64 @@ func inspectConfigUnbounded(data []byte, reg *Registry, opts []InspectOption) (r
 			// own wording has one inside it.
 			r.attribute(&cfg, err)
 		}
+	} else if reg == nil {
+		// Other errors stop the full checks; the loops' shape and the wiring's shapes are still checked
+		// among the parts that resolve (see resolvable).
+		if err := graphChecksOf(resolvable(&cfg), true); err != nil {
+			r.attribute(&cfg, err)
+		}
 	}
 	defer func() { r.gated(); r.assertions(cfg.Assert) }()
-	if reg == nil || r.Errors() {
+	if reg == nil {
+		return r
+	}
+	// The type problems come from the config and the registered types alone, whatever else is wrong
+	// with the config, so that another error never hides one: the editor compares reports to find what
+	// an edit added. They are listed up to a cap unless the caller asks for all.
+	typeMsgs := checkTypes(&cfg, reg).all()
+	if !o.allTypeProblems {
+		typeMsgs = capTypeProblems(typeMsgs)
+	}
+	addTypes := func() {
+		if len(typeMsgs) > 0 {
+			r.attribute(&cfg, fmt.Errorf("plan: load %q: %s", cfg.Flow, strings.Join(typeMsgs, "; ")))
+		}
+	}
+	// With errors that stop the config being assembled, the loops' shape and the wiring's shapes are
+	// still checked among the parts that resolve.
+	partialWiring := func() {
+		if err := graphChecksOf(resolvable(&cfg), true); err != nil {
+			r.attribute(&cfg, err)
+		}
+	}
+	if r.Errors() {
+		addTypes()
+		partialWiring()
 		return r
 	}
 	core, err := assemble(&cfg, reg, o.allowUnused)
-	// Type problems of the wiring come with the assembled core: the checks that follow run over it
-	// as well, so a report lists every type problem, not the first.
 	var typeErr *typeProblemsError
 	if err != nil && !(errors.As(err, &typeErr) && core != nil) {
 		r.attribute(&cfg, err)
+		addTypes()
+		partialWiring()
 		return r
 	}
 	for _, n := range core.nodes {
 		r.Safety[n.name] = safetyClass(n.safety.ReadOnly, n.safety.Idempotent)
+	}
+	// Every type problem, then the wiring's own checks (a cycle, a loop's shape, reachability, a join's
+	// inputs), all of them, before Build, which stops at the first problem of any kind.
+	if len(typeMsgs) > 0 {
+		addTypes()
+		if err := graphChecks(&cfg); err != nil {
+			r.attribute(&cfg, err)
+		}
+		return r
+	}
+	if err := graphChecks(&cfg); err != nil {
+		r.attribute(&cfg, err)
+		return r
 	}
 	// Load's boundary types: the entry's input, and the output every terminal must share.
 	core.inType = core.byName[core.entry].inType
@@ -232,26 +296,6 @@ func inspectConfigUnbounded(data []byte, reg *Registry, opts []InspectOption) (r
 		if !hasOut[n.name] && core.outType == nil {
 			core.outType = n.outType
 		}
-	}
-	// Every type problem, before Build (which stops at the first problem of any kind, so a second
-	// misfit, or one behind a wiring error, would not show).
-	var typeMsgs []string
-	if typeErr != nil {
-		typeMsgs = typeErr.msgs
-	}
-	typeMsgs = append(typeMsgs, core.buildTypeProblems()...)
-	if len(typeMsgs) > 0 {
-		if !o.allTypeProblems {
-			typeMsgs = capTypeProblems(typeMsgs)
-		}
-		r.attribute(&cfg, fmt.Errorf("plan: load %q: %s", cfg.Flow, strings.Join(typeMsgs, "; ")))
-		return r
-	}
-	// The wiring's own checks (a cycle, a loop's shape, reachability, a join's inputs), all of them,
-	// before Build, which stops at the first.
-	if err := graphChecks(&cfg); err != nil {
-		r.attribute(&cfg, err)
-		return r
 	}
 	// The check is of the policy, not of approvers' keys, which a config does not carry: a
 	// resolver that knows no approver lets Build check an m-of-n gate as Load would with keys.
@@ -656,13 +700,62 @@ func (r *ConfigReport) attribute(cfg *config, err error) {
 	}
 }
 
+// resolvable is cfg with only the parts whose names all resolve: the first declaration of each node,
+// and the wiring elements that name declared nodes (a join's own name counts as declared after it).
+// The checks of the wiring's shape run over it when the config has other errors, so a loop that is
+// not simple is found beside an unknown name elsewhere.
+func resolvable(cfg *config) *config {
+	out := *cfg
+	out.Nodes = nil
+	known := map[string]bool{}
+	for _, n := range cfg.Nodes {
+		if !known[n.Name] {
+			known[n.Name] = true
+			out.Nodes = append(out.Nodes, n)
+		}
+	}
+	out.Wiring = nil
+	for _, w := range cfg.Wiring {
+		ok := true
+		switch {
+		case w.isEdge() && !w.isSwitch() && !w.isJoin():
+			ok = len(w.Edge) == 2 && known[w.Edge[0]] && known[w.Edge[1]]
+		case w.isJoin() && !w.isEdge() && !w.isSwitch():
+			ok = w.Join != "" && !known[w.Join]
+			for _, in := range w.Inputs {
+				ok = ok && known[in]
+			}
+			if ok {
+				known[w.Join] = true
+			}
+		case w.isSwitch() && !w.isEdge() && !w.isJoin():
+			ok = known[w.Switch] && (w.Else == "" || known[w.Else])
+			for _, a := range w.When {
+				ok = ok && known[a.To]
+			}
+		default:
+			ok = false
+		}
+		if ok {
+			out.Wiring = append(out.Wiring, w)
+		}
+	}
+	return &out
+}
+
 // graphChecks runs the checks Build makes on the wiring alone, in Build's order, over a spec built from
 // the config with no types: acyclicity, the loops' shape, reachability from the entry, a join's inputs
 // and what feeds each node. It returns the first refusal, worded as Build words it, except that a node
 // not reached from the entry says so as "not reached from the entry": a node not wired in yet is a config
 // that will not load, and the words read as work in progress. It assumes the structural check found no
 // error (every name resolves, every wiring element has one kind).
-func graphChecks(cfg *config) error {
+func graphChecks(cfg *config) error { return graphChecksOf(cfg, false) }
+
+// graphChecksOf is graphChecks; wiringOnly is for a config that has other errors, which the structural
+// check has reported (see resolvable): it leaves out reachability, a join's inputs and the loop
+// refusals the structural check makes too, and keeps what only Build finds, which stands without the
+// rest of the config being right: a loop's body and the wiring's shapes.
+func graphChecksOf(cfg *config, wiringOnly bool) error {
 	core := &builderCore{flowName: cfg.Flow, byName: map[string]*node{}}
 	add := func(n *node) {
 		core.nodes = append(core.nodes, n)
@@ -712,16 +805,22 @@ func graphChecks(cfg *config) error {
 	var msgs []string
 	note := func(m string) { msgs = append(msgs, strings.ReplaceAll(m, "; ", ", ")) }
 	for _, m := range core.loopProblems() {
-		note(m)
-	}
-	reached := core.reachableFrom(core.entry)
-	for _, n := range core.nodes {
-		if !reached[n.name] {
-			note(fmt.Sprintf("step %q is not reached from the entry %q: wire it in from the entry with an edge or an arm, or remove it", n.name, core.entry))
+		// The structural check already reports the other loop refusals (more than one loop-back arm, no
+		// exit arm, a head that is not an ancestor); with it having run, only the body's shape is new.
+		if !wiringOnly || strings.Contains(m, "non-contiguous body") {
+			note(m)
 		}
 	}
-	if err := core.checkJoins(); err != nil {
-		note(core.unprefixed(err))
+	if !wiringOnly {
+		reached := core.reachableFrom(core.entry)
+		for _, n := range core.nodes {
+			if !reached[n.name] {
+				note(fmt.Sprintf("step %q is not reached from the entry %q: wire it in from the entry with an edge or an arm, or remove it", n.name, core.entry))
+			}
+		}
+		if err := core.checkJoins(); err != nil {
+			note(core.unprefixed(err))
+		}
 	}
 	for _, m := range core.shapeProblems() {
 		note(m)

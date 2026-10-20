@@ -781,3 +781,73 @@ func TestTypedEditorRefusesWhenTheReportIsCutShort(t *testing.T) {
 		}
 	}
 }
+
+// Two different problems are two problems, whatever their names look like once shortened: two nodes
+// whose names differ only after the 70th character each have a misfit, and the second is as new as the
+// first would be.
+func TestTypedEditorTellsApartProblemsWithLongNamesThatShortenAlike(t *testing.T) {
+	l1, l2 := strings.Repeat("a", 70)+"1", strings.Repeat("a", 70)+"2"
+	text := "version: 1\nflow: long\nentry: validate\nnodes:\n  - {name: validate, block: validate, safety: readonly}\n" +
+		"  - {name: " + l1 + ", block: count}\n  - {name: " + l2 + ", block: plain}\nwiring:\n  - edge: [validate, " + l1 + "]\n  - edge: [validate, " + l2 + "]\n"
+	servers := typedServers(t, "long.yaml", text)
+	for _, kind := range []string{"registry", "description"} {
+		s := servers[kind]
+		w := call(s.Handler(), s, "/api/apply", applyReq(text, Operation{Op: "set_block", Node: l2, Value: "count"}), nil)
+		if w.Code != 200 || !strings.Contains(w.Body.String(), `"refused":"the types do not fit: `) || strings.Contains(w.Body.String(), `"text"`) {
+			t.Errorf("%s: a second misfit whose message looks like the first was not refused: %d %.300s", kind, w.Code, w.Body)
+		}
+	}
+}
+
+// An edit that only moves wiring elements does not make a problem the text already had new, though
+// the message of a switch arm names its wiring element by position.
+func TestTypedEditorIgnoresWiringPositionsWhenComparingProblems(t *testing.T) {
+	text := "version: 1\nflow: arm\nentry: first\nnodes:\n  - {name: first, block: count}\n  - {name: cnt, block: count}\n  - {name: y, block: plain}\n  - {name: z, block: plain}\nwiring:\n" +
+		"  - edge: [first, cnt]\n  - switch: cnt\n    when:\n      - {pred: large, to: y}\n    else: z\n" // an arm whose predicate tests an order, over an int
+	servers := typedServers(t, "arm.yaml", text)
+	for _, kind := range []string{"registry", "description"} {
+		s := servers[kind]
+		h := s.Handler()
+		w := call(h, s, "/api/apply", applyReq(text, Operation{Op: "set_safety", Node: "y", Value: "readonly"}), nil)
+		if strings.Contains(w.Body.String(), `"refused"`) {
+			t.Fatalf("%s: the text with its one existing misfit refuses an unrelated edit: %.300s", kind, w.Body)
+		}
+		w = call(h, s, "/api/apply", applyReq(text, Operation{Op: "move_wiring", Index: 0, Value: "down"}), nil)
+		if w.Code != 200 || strings.Contains(w.Body.String(), `"refused"`) {
+			t.Errorf("%s: moving the wiring element refused for a misfit it already had: %d %.300s", kind, w.Code, w.Body)
+		}
+	}
+}
+
+// A problem of another check does not hide the type problems: with a node that is wired to a name the
+// config does not have, or a safety above the registered one, an edit that adds a misfit is refused.
+func TestTypedEditorSeesTypeProblemsBesideOtherErrors(t *testing.T) {
+	ghost := chainFlow + "  - edge: [third, ghost]\n"
+	servers := typedServers(t, "ghost.yaml", ghost)
+	for _, kind := range []string{"registry", "description"} {
+		s := servers[kind]
+		w := call(s.Handler(), s, "/api/apply", applyReq(ghost, Operation{Op: "set_block", Node: "second", Value: "count"}), nil)
+		if !strings.Contains(w.Body.String(), `"refused":"the types do not fit: `) {
+			t.Errorf("%s: a misfit beside an unknown name was not refused: %.300s", kind, w.Body)
+		}
+	}
+	servers = typedServers(t, "chain.yaml", chainFlow)
+	for _, kind := range []string{"registry", "description"} {
+		s := servers[kind]
+		// receipt states safety idempotent, which the int step (side effect) does not allow: an error of
+		// another kind comes with the misfit.
+		w := call(s.Handler(), s, "/api/apply", applyReq(chainFlow, Operation{Op: "set_block", Node: "receipt", Value: "count"}), nil)
+		if !strings.Contains(w.Body.String(), `"refused":"the types do not fit: `) {
+			t.Errorf("%s: a misfit beside a safety error was not refused: %.300s", kind, w.Body)
+		}
+	}
+}
+
+// The same for a loop: the inner-switch refusal holds when the text has an unrelated error.
+func TestLoopShapeRefusalHoldsBesideOtherErrors(t *testing.T) {
+	src := "version: 1\nflow: f\nentry: a\nnodes:\n  - {name: a, block: a}\n  - {name: b, block: b}\n  - {name: c, block: c}\n  - {name: d, block: d}\nwiring:\n  - edge: [a, b]\n  - switch: b\n    when:\n      - {pred: x, to: c}\n    else: c\n  - switch: c\n    when:\n      - {pred: y, to: a}\n    else: d\n  - edge: [d, ghost]\n"
+	why := refusalOf(t, "f.yaml", src, Operation{Op: "set_loop_max", Node: "c", Index: 0, Max: 3})
+	if !strings.Contains(why, "has its own Switch") {
+		t.Errorf("%q", why)
+	}
+}

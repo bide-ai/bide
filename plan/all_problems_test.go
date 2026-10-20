@@ -288,3 +288,53 @@ func TestInspectConfig_TypedReportsProblemsOfDifferentWiringChecks(t *testing.T)
 		t.Errorf("non-contiguous loop problems %d, unreached orphan problems %d; want one each", loop, orphan)
 	}
 }
+
+// A type problem is reported beside any other error: an edge to a name the config does not have, or a
+// node whose stated safety the registered block does not allow, does not hide it.
+func TestInspectConfig_TypeProblemsBesideOtherErrors(t *testing.T) {
+	reg := typedChainRegistry(t)
+	for name, cfg := range map[string]string{
+		"unknown name":    `{"version":1,"flow":"f","entry":"a","nodes":[{"name":"a","block":"s2s"},{"name":"b","block":"s2i"},{"name":"c","block":"s2s"}],"wiring":[{"edge":["a","b"]},{"edge":["b","c"]},{"edge":["c","ghost"]}]}`,
+		"unknown block":   `{"version":1,"flow":"f","entry":"a","nodes":[{"name":"a","block":"s2s"},{"name":"b","block":"s2i"},{"name":"c","block":"s2s"},{"name":"d","block":"nowhere"}],"wiring":[{"edge":["a","b"]},{"edge":["b","c"]}]}`,
+		"safety above":    `{"version":1,"flow":"f","entry":"a","nodes":[{"name":"a","block":"s2s"},{"name":"b","block":"s2i","safety":"readonly"},{"name":"c","block":"s2s"}],"wiring":[{"edge":["a","b"]},{"edge":["b","c"]}]}`,
+		"unknown pred":    `{"version":1,"flow":"f","entry":"a","nodes":[{"name":"a","block":"s2i"},{"name":"b","block":"s2s"},{"name":"c","block":"i2s"}],"wiring":[{"switch":"a","when":[{"pred":"nope","to":"b"}],"else":"c"},{"edge":["b","c"]}]}`,
+		"structural only": `{"version":1,"flow":"f","entry":"a","nodes":[{"name":"a","block":"s2s"},{"name":"b","block":"s2i"},{"name":"c","block":"s2s"}],"wiring":[{"edge":["a","b"]},{"edge":["b","c"]},{"edge":["a"]}]}`,
+	} {
+		r := InspectConfig([]byte(cfg), reg, AllowUnusedBlocks())
+		other := false
+		for _, p := range r.Problems {
+			other = other || (p.Severity == "error" && !strings.Contains(p.Message, "(types must match exactly)") && !strings.Contains(p.Message, " but switched node "))
+		}
+		got := typeProblemMessages(r)
+		if !other || len(got) == 0 {
+			t.Errorf("%s: another error %v and %d type problems %q; want both (problems %+v)", name, other, len(got), got, r.Problems)
+		}
+	}
+}
+
+// A problem's identity keeps the full names (its message shortens them) and leaves out the position
+// of a wiring element, and the report carries it.
+func TestConfigProblem_KeyKeepsNamesAndDropsPositions(t *testing.T) {
+	if got := problemKey(`wiring[3].when[0] predicate "p" tests int but switched node "a" produces string`); got != `wiring[#].when[#] predicate "p" tests int but switched node "a" produces string` {
+		t.Errorf("problemKey = %q", got)
+	}
+	l1, l2 := strings.Repeat("a", 70)+"1", strings.Repeat("a", 70)+"2"
+	cfg := `{"version":1,"flow":"f","entry":"v","nodes":[{"name":"v","block":"s2i"},{"name":"` + l1 + `","block":"s2i"},{"name":"` + l2 + `","block":"s2i"}],
+	  "wiring":[{"edge":["v","` + l1 + `"]},{"edge":["v","` + l2 + `"]}]}`
+	var msgs, keys []string
+	for _, p := range InspectConfig([]byte(cfg), typedChainRegistry(t), AllowUnusedBlocks()).Problems {
+		if strings.Contains(p.Message, "(types must match exactly)") {
+			msgs = append(msgs, p.Message)
+			keys = append(keys, p.key)
+		}
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("type problems: %q", msgs)
+	}
+	if msgs[0] == msgs[1] {
+		t.Log("the displayed messages happen to differ here") // they do not when the names shorten alike
+	}
+	if keys[0] == keys[1] || !strings.Contains(keys[0], l1) || !strings.Contains(keys[1], l2) {
+		t.Errorf("keys do not keep the full names: %q", keys)
+	}
+}

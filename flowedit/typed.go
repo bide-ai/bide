@@ -221,7 +221,10 @@ func (s *Server) typedRefusal(before, after []byte, op Operation) string {
 	if !ok1 || !ok2 {
 		return ""
 	}
-	had := map[string]bool{}
+	// The problems the text had, counted by identity (plan's key: the message with the full names and
+	// without the positions of wiring elements), so that two problems whose displayed names look alike
+	// are two, and moving an element does not make an old problem new.
+	had := map[string]int{}
 	for _, p := range s.typing.inspect(bd).Problems {
 		if !typeProblem(p) {
 			continue
@@ -229,12 +232,12 @@ func (s *Server) typedRefusal(before, after []byte, op Operation) string {
 		if _, ok := moreTypeProblems(p.Message); ok {
 			continue // not asked for (see inspect); a count says nothing about which problems there are
 		}
+		k := problemKey(p)
 		// A rename does not make a problem the text already had a new one: compare under the rename.
-		m := p.Message
 		if op.Op == "rename_node" {
-			m = strings.ReplaceAll(m, messageQuote(op.Node), messageQuote(op.Value))
+			k = strings.ReplaceAll(k, strconv.Quote(op.Node), strconv.Quote(op.Value))
 		}
-		had[m] = true
+		had[k]++
 	}
 	for _, p := range s.typing.inspect(ad).Problems {
 		if !typeProblem(p) {
@@ -244,22 +247,22 @@ func (s *Server) typedRefusal(before, after []byte, op Operation) string {
 			// The report was cut short, so what it hides cannot be compared: refuse rather than guess.
 			return "the types do not fit: too many type problems to compare (" + p.Message + ")"
 		}
-		if !had[p.Message] {
-			return "the types do not fit: " + p.Message
+		k := problemKey(p)
+		if had[k] > 0 {
+			had[k]--
+			continue
 		}
+		return "the types do not fit: " + p.Message
 	}
 	return ""
 }
 
-// messageQuote is name as plan writes it into a problem message: Go-quoted, and cut to 64 characters
-// (with "..." inside the quotes) when longer, as plan's boundMessage does.
-func messageQuote(name string) string {
-	q := strconv.Quote(name)
-	rs := []rune(q[1 : len(q)-1])
-	if len(rs) > 64 {
-		return `"` + string(rs[:64]) + `..."`
+// problemKey is the identity plan gives a problem for comparing two reports.
+func problemKey(p plan.ConfigProblem) string {
+	if k := planaccess.ProblemKey(p); k != "" {
+		return k
 	}
-	return q
+	return p.Message
 }
 
 // moreTypeProblems reports whether m is plan's "and N more type problems" line, the count of the type

@@ -202,50 +202,6 @@ func (b *Builder[In, Out]) Build() (*Flow[In, Out], error) {
 	return &Flow[In, Out]{core: c.seal()}, nil
 }
 
-// buildTypeProblems returns every type problem Build checks beyond the edges and arms: a join input
-// whose producer is of another type than the merge takes, and a terminal that produces another type
-// than the flow's output (c.outType, when set). Build itself stops at the first; a check that wants
-// them all (InspectConfig, so the typed editor sees a second misfit) asks for them here.
-func (c *builderCore) buildTypeProblems() []string {
-	var msgs []string
-	// Build reaches these checks only when every node is reached from the entry, so a node still to be
-	// wired in (the editor adds one unwired) is reported as not reached, and its types say nothing yet.
-	reached := c.reachableFrom(c.entry)
-	for _, n := range c.nodes {
-		if n.kind != kindJoin || !reached[n.name] {
-			continue
-		}
-		for i, src := range n.joinInputs {
-			in := c.byName[src]
-			if in == nil {
-				continue
-			}
-			if i < len(n.joinInTypes) && n.joinInTypes[i] != nil && in.outType != nil && in.outType != n.joinInTypes[i] {
-				msgs = append(msgs, fmt.Sprintf("join %q input %q produces %s but the merge expects %s",
-					n.name, src, typeName(in.outType), typeName(n.joinInTypes[i])))
-			}
-		}
-	}
-	hasOutEdge := make(map[string]bool, len(c.edges))
-	for _, e := range c.edges {
-		hasOutEdge[e.from] = true
-	}
-	switchedOver := make(map[string]bool, len(c.branches))
-	for _, br := range c.branches {
-		switchedOver[br.over] = true
-	}
-	for _, n := range c.nodes {
-		if hasOutEdge[n.name] || switchedOver[n.name] || !reached[n.name] {
-			continue
-		}
-		if c.outType != nil && n.outType != nil && n.outType != c.outType {
-			msgs = append(msgs, fmt.Sprintf("terminal step %q produces %s but the flow output is %s",
-				n.name, typeName(n.outType), typeName(c.outType)))
-		}
-	}
-	return msgs
-}
-
 // buildProblems collects the refusals of a Build check that reports every one it finds (the
 // checks of a loop's shape and of the wiring's shapes), so a caller that compares reports sees a
 // second problem beside the first. err is nil with none, the one refusal as Build always worded it

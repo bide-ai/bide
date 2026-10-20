@@ -823,7 +823,7 @@ func assemble(cfg *config, reg *Registry, allowUnused bool) (*builderCore, error
 	// fans in several producers), so its per-port types are checked by Build.checkJoins
 	// against joinInTypes by reflect identity, not by this from.outType == to.inType
 	// rule. Comparing against the join's nil inType would spuriously reject every join.
-	if msgs := edgeTypeProblems(cfg, reg, core); len(msgs) > 0 {
+	if msgs := edgeTypeProblems(cfg, reg); len(msgs) > 0 {
 		return core, &typeProblemsError{flow: cfg.Flow, msgs: msgs}
 	}
 
@@ -857,41 +857,14 @@ func capTypeProblems(msgs []string) []string {
 	return append(out, fmt.Sprintf("and %d more type problems (types must match exactly)", len(msgs)-maxTypeProblems))
 }
 
-// edgeTypeProblems returns every type problem of the assembled wiring: an edge whose producer and
-// consumer types differ, and a switch arm whose predicate tests another type than the switched
-// node produces.
-//
-// A join's INPUT edges are skipped here: a kindJoin node has no single inType (it fans in several
-// producers), so its per-port types are checked against joinInTypes by buildTypeProblems (and by
-// Build.checkJoins), by reflect identity, not by this from.outType == to.inType rule. Comparing
-// against the join's nil inType would spuriously reject every join.
-func edgeTypeProblems(cfg *config, reg *Registry, core *builderCore) []string {
-	var msgs []string
-	for _, e := range core.edges {
-		from := core.byName[e.from]
-		to := core.byName[e.to]
-		if to.kind == kindJoin {
-			continue // join port types are validated by Build.checkJoins
-		}
-		if from.outType != to.inType {
-			msgs = append(msgs, fmt.Sprintf("edge %q -> %q connects %s to %s (types must match exactly)",
-				e.from, e.to, typeName(from.outType), typeName(to.inType)))
-		}
-	}
-	for i, w := range cfg.Wiring {
-		if !w.isSwitch() {
-			continue
-		}
-		over := core.byName[w.Switch]
-		for j, a := range w.When {
-			p := reg.preds[a.Pred]
-			if p.mType != over.outType {
-				msgs = append(msgs, fmt.Sprintf("wiring[%d].when[%d] predicate %q tests %s but switched node %q produces %s",
-					i, j, a.Pred, typeName(p.mType), w.Switch, typeName(over.outType)))
-			}
-		}
-	}
-	return msgs
+// edgeTypeProblems returns every type problem of the wiring that Load reports from assemble: an edge
+// whose producer and consumer types differ, and a switch arm whose predicate tests another type than
+// the switched node produces (see checkTypes, which finds them from the config alone). A join's INPUT
+// edges are skipped: a join has no single input type, its port types are checked against the merge's
+// (checkTypes' joins, and Build.checkJoins), by reflect identity.
+func edgeTypeProblems(cfg *config, reg *Registry) []string {
+	p := checkTypes(cfg, reg)
+	return append(append([]string(nil), p.edges...), p.arms...)
 }
 
 // checkBoundary runs the load-time type checks that need the flow's In/Out type
