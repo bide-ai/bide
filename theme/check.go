@@ -60,7 +60,7 @@ func (e *CheckError) Error() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "theme %q fails %d check(s):", e.Report.Theme, len(e.Report.Failures(Error)))
 	for _, m := range e.Report.Failures(Error) {
-		fmt.Fprintf(&b, "\n  %s %s: %s", m.Check, m.Subject, m.describe())
+		fmt.Fprintf(&b, "\n  %s %s: %s", m.Check, m.Subject, m.String())
 	}
 	return b.String()
 }
@@ -73,7 +73,7 @@ func (r Report) Err() error {
 	return &CheckError{r}
 }
 
-func (m Measure) describe() string {
+func (m Measure) String() string {
 	switch m.Check {
 	case "C3", "C4", "C6":
 		return fmt.Sprintf("distance %.1f, needs at least %.0f", m.Value, m.Threshold)

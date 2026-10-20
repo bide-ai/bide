@@ -21,8 +21,9 @@ import (
 	"github.com/bide-ai/bide/internal/approveline"
 	safetext "github.com/bide-ai/bide/internal/printable"
 	"github.com/bide-ai/bide/internal/term"
-	"github.com/bide-ai/bide/theme"
+	"github.com/bide-ai/bide/internal/themeaccess"
 	"github.com/bide-ai/bide/plan"
+	"github.com/bide-ai/bide/theme"
 )
 
 // Stores opens the stores bide view reads, read-only. It is how the command plugs in store backends
@@ -196,11 +197,11 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 		if f.theme != "" {
 			th, rep, err := theme.Load(f.theme)
 			if err != nil {
-				fmt.Fprintf(stderr, "%s%s: %v\n", es.ErrorPrefix(), theme.Escape(f.theme), err) // err is built from quoted or escaped text
+				fmt.Fprintf(stderr, "%s%s: %v\n", es.ErrorPrefix(), themeaccess.Escape(f.theme), err) // err is built from quoted or escaped text
 				return nil, 1
 			}
 			for _, m := range rep.Failures(theme.Warning) {
-				fmt.Fprintf(stderr, "%s: warning %s %s: a reader with a colour-vision deficiency may not tell these apart; see bide theme check -v\n", theme.Escape(f.theme), m.Check, m.Subject)
+				fmt.Fprintf(stderr, "%s: warning %s %s: a reader with a colour-vision deficiency may not tell these apart; see bide theme check -v\n", themeaccess.Escape(f.theme), m.Check, m.Subject)
 			}
 			extra = append(extra, th)
 		}

@@ -18,8 +18,8 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
 	safetext "github.com/bide-ai/bide/internal/printable"
-	"github.com/bide-ai/bide/theme"
 	"github.com/bide-ai/bide/plan"
+	"github.com/bide-ai/bide/theme"
 )
 
 //go:embed assets
@@ -155,7 +155,7 @@ type Options struct {
 	// while a stop is in force (or the control run cannot be judged, or holds rejected records), a run's page
 	// and the run list say which runs a stop holds, and /stops.json serves the same state.
 	Stops *StopFeed
-	// Themes are custom themes (see internal/theme) the pages offer beside the shipped light, dark
+	// Themes are custom themes (see the theme package) the pages offer beside the shipped light, dark
 	// and high-contrast; DefaultTheme, when not empty, names the one a reader starts in. Handler
 	// panics on a DefaultTheme that names no theme and on two themes with one name: they are a host
 	// program's mistake, and bide view checks both before it calls Handler.

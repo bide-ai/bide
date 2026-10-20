@@ -54,7 +54,7 @@ func checkGrammar(t testing.TB, css string) {
 }
 
 func TestShippedCSS(t *testing.T) {
-	css := CSS(Shipped())
+	css := renderCSS(Shipped())
 	checkGrammar(t, css)
 	const golden = "testdata/themes.css.golden"
 	if *update {
@@ -67,21 +67,21 @@ func TestShippedCSS(t *testing.T) {
 	}
 	want, err := os.ReadFile(golden)
 	if err != nil {
-		t.Fatalf("%v (go test ./internal/theme -run TestShippedCSS -update)", err)
+		t.Fatalf("%v (go test ./theme -run TestShippedCSS -update)", err)
 	}
 	if string(want) != css {
-		t.Errorf("generated CSS differs from %s; if the change is intended, go test ./internal/theme -run TestShippedCSS -update", golden)
+		t.Errorf("generated CSS differs from %s; if the change is intended, go test ./theme -run TestShippedCSS -update", golden)
 	}
-	if CSS(Shipped()) != css {
+	if renderCSS(Shipped()) != css {
 		t.Error("CSS is not deterministic")
 	}
-	if CSS(nil) != "" {
+	if renderCSS(nil) != "" {
 		t.Error("CSS of no themes is not empty")
 	}
 }
 
 func TestCSSShape(t *testing.T) {
-	css := CSS(Shipped())
+	css := renderCSS(Shipped())
 	for _, want := range []string{
 		":root {\n", `--bide-themes: "light dark high-contrast";`,
 		"@media (prefers-color-scheme: dark) {\n:root:not([data-theme]) {\n",
@@ -111,7 +111,7 @@ func TestCSSDensityAndScale(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	css := CSS([]*Theme{th})
+	css := renderCSS([]*Theme{th})
 	for _, want := range []string{"--s1: 3.4px;", "--s7: 40.8px;", "--t-md: 19.38px;", "--t-xs: 15px;"} {
 		if !strings.Contains(css, want) {
 			t.Errorf("CSS lacks %q", want)
@@ -125,7 +125,7 @@ func TestCSSCustomTheme(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	css := CSS(append(Shipped(), th))
+	css := renderCSS(append(Shipped(), th))
 	checkGrammar(t, css)
 	if !strings.Contains(css, `:root[data-theme="acme-test"] {`) || !strings.Contains(css, `"light dark high-contrast acme-test"`) {
 		t.Error("custom theme is not in the stylesheet")
@@ -146,18 +146,18 @@ func FuzzParseCSS(f *testing.F) {
 		if err != nil {
 			return
 		}
-		checkGrammar(t, CSS(append(Shipped(), th)))
+		checkGrammar(t, renderCSS(append(Shipped(), th)))
 	})
 }
 
 func TestCSSDefault(t *testing.T) {
-	css := CSSDefault(Shipped(), "dark")
+	css := cssDefault(Shipped(), "dark")
 	checkGrammar(t, css)
 	root := css[:strings.Index(css, `:root[data-theme=`)]
 	if !strings.Contains(root, "--bg: #121214;") || !strings.Contains(root, `--bide-default: "dark";`) || strings.Contains(css, "@media (prefers-color-scheme") {
 		t.Errorf("a default of dark: the root block is not dark, has no --bide-default, or keeps the media block:\n%s", root)
 	}
-	if CSSDefault(Shipped(), "") != CSS(Shipped()) {
+	if cssDefault(Shipped(), "") != renderCSS(Shipped()) {
 		t.Error("an empty default is not CSS")
 	}
 	defer func() {
@@ -165,7 +165,7 @@ func TestCSSDefault(t *testing.T) {
 			t.Error("a default that names no theme did not panic")
 		}
 	}()
-	CSSDefault(Shipped(), "nope")
+	cssDefault(Shipped(), "nope")
 }
 
 // TestForcedColorsMapsEverySlot: every colour slot has a system colour in the forced-colors block,
@@ -196,7 +196,7 @@ func TestForcedColorsMapsEverySlot(t *testing.T) {
 // block is last, as specific as the theme blocks, and carries only system colours.
 func TestContrastAndForcedBlocks(t *testing.T) {
 	for _, def := range []string{"", "dark"} {
-		css := CSSDefault(Shipped(), def)
+		css := cssDefault(Shipped(), def)
 		checkGrammar(t, css)
 		hc := strings.Index(css, "@media (prefers-contrast: more) {\n:root:not([data-theme]) {\n")
 		if hc < 0 {
@@ -225,7 +225,7 @@ func TestContrastAndForcedBlocks(t *testing.T) {
 // TestSystemCSS: a page with no theme input gets the shipped themes by the system's settings and
 // nothing selectable: no data-theme, no list of themes, no default; each later block over the earlier.
 func TestSystemCSS(t *testing.T) {
-	css := SystemCSS(Shipped())
+	css := systemCSS(Shipped())
 	checkGrammar(t, css)
 	if strings.Contains(css, "data-theme") || strings.Contains(css, "--bide-") {
 		t.Error("SystemCSS lets an attribute or a script choose a theme")
@@ -245,7 +245,7 @@ func TestSystemCSS(t *testing.T) {
 	if strings.Count(css, "}\n}\n") != 3 {
 		t.Errorf("SystemCSS has %d media blocks, want 3", strings.Count(css, "}\n}\n"))
 	}
-	if SystemCSS(Shipped()) != css {
+	if systemCSS(Shipped()) != css {
 		t.Error("SystemCSS is not deterministic")
 	}
 	custom, _, err := Parse(custom("dark", nil))
@@ -257,5 +257,5 @@ func TestSystemCSS(t *testing.T) {
 			t.Error("SystemCSS without the shipped themes did not panic")
 		}
 	}()
-	SystemCSS([]*Theme{custom})
+	systemCSS([]*Theme{custom})
 }

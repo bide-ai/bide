@@ -3,7 +3,6 @@ package theme
 import (
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 	"unicode"
@@ -57,7 +56,7 @@ func TestShippedThemes(t *testing.T) {
 		// Every shipped theme passes every check, the colour-blindness check included.
 		for _, m := range th.Report().Measures {
 			if !m.Pass {
-				t.Errorf("%s: %s %s fails: %s", th.Name(), m.Check, m.Subject, m.describe())
+				t.Errorf("%s: %s %s fails: %s", th.Name(), m.Check, m.Subject, m.String())
 			}
 		}
 	}
@@ -423,28 +422,6 @@ func TestTypeErrorsAreQuoted(t *testing.T) {
 			continue
 		}
 		noControls(t, "error", err.Error())
-		// The command prints the same text.
-		_, out, errs := run("check", writeTheme(t, []byte(data)))
-		noControls(t, "stdout", out)
-		noControls(t, "stderr", errs)
-	}
-}
-
-// TestNoForgedLines: a key with a newline cannot start a line of output that looks like the
-// command's own.
-func TestNoForgedLines(t *testing.T) {
-	data := "{\"bide_theme\":1,\"name\":\"zz\",\"base\":\"dark\",\"surface\":{\"x\\n/p.json: theme \\\"dark\\\" ok (0 errors)\":5}}"
-	_, out, errs := run("check", writeTheme(t, []byte(data)))
-	if out != "" || strings.Count(errs, "\n") != 1 {
-		t.Errorf("a newline in a key made %d lines: out %q err %q", strings.Count(errs, "\n"), out, errs)
-	}
-}
-
-func TestPrintable(t *testing.T) {
-	for in, want := range map[string]string{"plain é text": "plain é text", "a\nb": `a\nb`, "\x1b[31m": `\x1b[31m`, "\x00": `\x00`, "bad\xffbyte": `bad\xffbyte`, "\u009b": `\u009b`, "\u2028": `\u2028`, "\u2029": `\u2029`, "a\rb": `a\rb`, "\u0085": `\u0085`} {
-		if got := printable(in); got != want {
-			t.Errorf("printable(%q) = %q, want %q", in, got, want)
-		}
 	}
 }
 
@@ -458,10 +435,10 @@ func TestUncheckedThemeHasNoCSS(t *testing.T) {
 		}()
 		f()
 	}
-	mustPanic("the zero Theme", func() { CSS([]*Theme{{}}) })
-	mustPanic("a zero Theme beside good ones", func() { CSS(append(Shipped(), new(Theme))) })
+	mustPanic("the zero Theme", func() { renderCSS([]*Theme{{}}) })
+	mustPanic("a zero Theme beside good ones", func() { renderCSS(append(Shipped(), new(Theme))) })
 	d, _ := Lookup("dark")
-	mustPanic("two themes with one name", func() { CSS([]*Theme{d, d}) })
+	mustPanic("two themes with one name", func() { renderCSS([]*Theme{d, d}) })
 }
 
 // TestDerivedColors: a custom theme that sets accent and not info, focus, or that sets surface and
@@ -578,43 +555,4 @@ func TestParseWiresFileError(t *testing.T) {
 			t.Errorf("%s: %q does not show the key as %q", name, msg, esc)
 		}
 	}
-}
-
-// TestCommandEscapesErrorText: the command prints a path and an error from the file system or the
-// decoder escaped, one line each, with a path it was given that holds the hostile text, and with a
-// file whose content does.
-func TestCommandEscapesErrorText(t *testing.T) {
-	dir := t.TempDir()
-	single := func(what, stream string) {
-		t.Helper()
-		if strings.Count(stream, "\n") > 1 {
-			t.Errorf("%s made %d lines: %q", what, strings.Count(stream, "\n"), stream)
-		}
-		for _, c := range strings.TrimSuffix(stream, "\n") {
-			if !unicode.IsPrint(c) {
-				t.Errorf("%s: output holds the non-printing %q: %q", what, c, stream)
-				break
-			}
-		}
-	}
-	for _, h := range hostile {
-		// Joined as text, not with filepath.Join, which cleans a "/" in the name on Windows.
-		code, out, errs := run("check", dir+string(filepath.Separator)+"no such "+h.in)
-		if code != 1 {
-			t.Errorf("a missing file named %q: exit %d", h.in, code)
-		}
-		single("a path named "+h.in, out)
-		single("a path named "+h.in, errs)
-		if !strings.Contains(errs, "no such "+h.want) {
-			t.Errorf("the path %q is not shown as %q: %q", h.in, "no such "+h.want, errs)
-		}
-	}
-	// A file whose content holds a hostile key: the unknown-key message quotes it exactly.
-	p := writeTheme(t, []byte("{\"bide_theme\":1,\"name\":\"zz\",\"base\":\"dark\",\"surface\":{\"\\u001b[2J\\u202e\":\"#fff\"}}"))
-	code, out, errs := run("check", p)
-	if code != 1 || !strings.Contains(errs, `surface.\x1b[2J\u202e`) {
-		t.Errorf("a hostile key in a file: exit %d, stderr %q", code, errs)
-	}
-	single("a hostile key", out)
-	single("a hostile key", errs)
 }

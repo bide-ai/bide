@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"time"
 
+	"github.com/bide-ai/bide/internal/themeaccess"
 	"github.com/bide-ai/bide/theme"
 )
 
@@ -27,7 +28,7 @@ func AssetsWith(def string, extra ...*theme.Theme) fs.FS {
 	if err != nil {
 		panic(err) // style.css is in the embedded directory
 	}
-	css := theme.CSSDefault(append(theme.Shipped(), extra...), def)
+	css := themeaccess.CSSDefault(append(theme.Shipped(), extra...), def)
 	return themedAssets{FS: base, style: append([]byte(css), raw...)}
 }
 

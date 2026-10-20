@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/bide-ai/bide/internal/themeaccess"
 	"github.com/bide-ai/bide/theme"
 )
 
@@ -100,7 +101,7 @@ func buildPage() {
 	// The page's colors come from the shipped themes, written in front of its own rules and picked by
 	// the reader's system settings alone (theme.SystemCSS): the theme is part of the file the
 	// release pins, and nothing a host or a reader's script supplies can change it.
-	css = append([]byte(theme.SystemCSS(theme.Shipped())), css...)
+	css = append([]byte(themeaccess.SystemCSS(theme.Shipped())), css...)
 	tmpl, err := pageSource.ReadFile("page/index.template.html")
 	if err != nil {
 		pageErr = err

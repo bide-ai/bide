@@ -59,26 +59,26 @@ func writeBlock(b *strings.Builder, selector string, decls []string, extra ...st
 	b.WriteString("}\n")
 }
 
-// CSS is the stylesheet for a set of checked themes: the theme called light (or, if none is, the
+// renderCSS is the stylesheet for a set of checked themes: the theme called light (or, if none is, the
 // first) as the :root default, the theme called dark under prefers-color-scheme when the page set
 // no data-theme, and one :root[data-theme="name"] block per theme. --bide-themes lists the names for
 // the page's script. The whole output is a fixed template filled with values the package built, so
 // a theme can add no selector, property, URL or function to it.
-func CSS(themes []*Theme) string { return CSSDefault(themes, "") }
+func renderCSS(themes []*Theme) string { return cssDefault(themes, "") }
 
-// CSSDefault is CSS with a default theme: the one named def (a name in themes) is the :root block
+// cssDefault is css with a default theme: the one named def (a name in themes) is the :root block
 // and the page's start, and the prefers-color-scheme block is left out, so the reader's system
 // setting no longer picks the start; --bide-default carries the name to the page's script. An
 // empty def is CSS. A def that names no theme in themes panics, as an unchecked theme does: it is a
 // host error.
-func CSSDefault(themes []*Theme, def string) string {
+func cssDefault(themes []*Theme, def string) string {
 	if len(themes) == 0 {
 		return ""
 	}
 	seen := map[string]bool{}
 	for _, t := range themes {
 		if !t.checked {
-			panic("theme: CSS of a theme that did not come from Parse or Shipped")
+			panic("theme: css of a theme that did not come from Parse or Shipped")
 		}
 		if seen[t.name] {
 			panic("theme: CSS given two themes named " + t.name)
@@ -176,14 +176,14 @@ func forcedDeclarations() []string {
 	return append(d, "--shadow: none;")
 }
 
-// SystemCSS is the stylesheet of a page that takes no theme input from anyone: its colours are the
+// systemCSS is the stylesheet of a page that takes no theme input from anyone: its colours are the
 // shipped themes picked by the reader's system and nothing else. The theme called light is :root, the
 // theme called dark applies under prefers-color-scheme: dark, high-contrast under prefers-contrast:
 // more, and the system's colors under forced-colors: active, each later block over the earlier. There
 // is no data-theme block, no list of themes and no default, so no attribute, script, URL or file can
 // choose among them. The approve page's bundle is pinned by hash, and this is what keeps its look
 // inside the pin. It needs the themes named light, dark and high-contrast, and panics without them.
-func SystemCSS(themes []*Theme) string {
+func systemCSS(themes []*Theme) string {
 	by := map[string]*Theme{}
 	for _, t := range themes {
 		if !t.checked {

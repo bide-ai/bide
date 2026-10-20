@@ -17,13 +17,11 @@ import (
 	"regexp"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/bide-ai/bide/internal/strictjson"
+	"github.com/bide-ai/bide/internal/themeaccess"
 )
 
 // MaxSize is the largest theme file Parse reads.
@@ -387,27 +385,4 @@ func round2(v float64) float64 { return math.Round(v*100) / 100 }
 
 // fileError is the error of a theme file that did not decode. The text comes from the decoder and
 // may hold a key or value of the file (which of them depends on the Go version), so it is escaped.
-func fileError(err error) error { return errors.New("theme file: " + printable(err.Error())) }
-
-// Escape returns s with every character that does not print written as a Go escape (\x1b, \n,
-// \u202e), so text from a file or a file name is safe to write to a terminal or a log. A caller that
-// prints a path or a value of a theme file uses it.
-func Escape(s string) string { return printable(s) }
-
-// printable returns s with every rune that is not printable (a control character, an escape, a
-// newline, a byte that is not UTF-8) written as a Go escape, so text from a hostile file is safe to
-// print and cannot start a line of its own.
-func printable(s string) string {
-	var b strings.Builder
-	for i, r := range s {
-		switch {
-		case r == utf8.RuneError && s[i] != 0xEF: // an invalid byte, not a written U+FFFD
-			fmt.Fprintf(&b, "\\x%02x", s[i])
-		case unicode.IsPrint(r):
-			b.WriteRune(r)
-		default:
-			b.WriteString(strings.Trim(strconv.QuoteRune(r), "'"))
-		}
-	}
-	return b.String()
-}
+func fileError(err error) error { return errors.New("theme file: " + themeaccess.Escape(err.Error())) }
