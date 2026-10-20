@@ -395,7 +395,7 @@ func readKey(s string) (audit.Verifier, error) {
 	}
 	b, err := safefile.ReadOrStdin("-pubkey", s, safefile.MaxKey)
 	if err != nil {
-		if err = safefile.Explain("-pubkey", err, true); errors.As(err, new(*safefile.FlagError)) {
+		if err = safefile.Explain("-pubkey", err, true); s == "-" || errors.As(err, new(*safefile.FlagError)) {
 			return nil, fmt.Errorf("-pubkey %q: %w", s, err)
 		}
 		return nil, fmt.Errorf("-pubkey takes ed25519:<hex> or a file holding it: %q is neither", s)

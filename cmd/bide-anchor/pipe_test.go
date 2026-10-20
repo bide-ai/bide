@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/bide-ai/bide/internal/safefile/safefiletest"
@@ -24,5 +25,12 @@ func TestReadKey_Stdin(t *testing.T) {
 	safefiletest.Stdin(t, safefiletest.KeyText(t)+"\n")
 	if _, err := readKey("-"); err != nil {
 		t.Fatalf("readKey(-) = %v", err)
+	}
+}
+
+func TestReadKey_StdinReason(t *testing.T) {
+	safefiletest.Stdin(t, "")
+	if _, err := readKey("-"); err == nil || !strings.Contains(err.Error(), "standard input is empty") {
+		t.Errorf("empty stdin = %v", err)
 	}
 }

@@ -2,6 +2,7 @@ package safefile
 
 import (
 	"errors"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -102,6 +103,39 @@ func TestOpenIn(t *testing.T) {
 	f.Close()
 	if _, err := OpenIn(root, "../x"); err == nil {
 		t.Error("OpenIn left the root")
+	}
+}
+
+func TestReadOrStdinRefusesATerminal(t *testing.T) {
+	orig := stdinIsTerminal
+	defer func() { stdinIsTerminal = orig; Stdin = os.Stdin; ResetStdin() }()
+	ResetStdin()
+	Stdin = strings.NewReader("never read")
+	stdinIsTerminal = func(io.Reader) bool { return true }
+	_, err := ReadOrStdin("-pubkey", "-", 64)
+	if err == nil || err.Error() != "-pubkey -: standard input is a terminal; pipe the file in" {
+		t.Fatalf("a terminal = %v", err)
+	}
+	if Stdin.(*strings.Reader).Len() != len("never read") {
+		t.Error("standard input was read before the terminal was refused")
+	}
+}
+
+// The real check: the null device reads as empty and is not a terminal; a pipe is not one either.
+func TestStdinIsTerminal(t *testing.T) {
+	null, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Skip(err)
+	}
+	defer null.Close()
+	if stdinIsTerminal(null) {
+		t.Error("the null device counted as a terminal")
+	}
+	r, w, _ := os.Pipe()
+	defer r.Close()
+	defer w.Close()
+	if stdinIsTerminal(r) || stdinIsTerminal(strings.NewReader("")) {
+		t.Error("a pipe or a reader counted as a terminal")
 	}
 }
 

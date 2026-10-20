@@ -30,6 +30,10 @@ const MaxObjectBytes = 1 << 20
 // error wrapping errEquivocation (CheckEquivocation, per partition, since a partition is one tree).
 // LoadDir cannot show the objects' lock state (the files carry none), and cannot show that the directory
 // is complete: it shows only what was exported, so compare its newest head with the live store.
+// afterTypeCheck is a test hook run between the directory entry's type check and the open of the
+// file, so a test can swap the file there. It is nil outside tests.
+var afterTypeCheck func()
+
 func (l Layout) LoadDir(dir string, v audit.Verifier, errNotFound, errEquivocation error) ([]audit.SignedTreeHead, error) {
 	if err := l.Validate(); err != nil {
 		return nil, err
@@ -61,7 +65,7 @@ func (l Layout) LoadDir(dir string, v audit.Verifier, errNotFound, errEquivocati
 			return fmt.Errorf("%w: %s is not a regular file", l.ErrObject, path)
 		}
 		partition, name := filepath.Base(filepath.Dir(path)), d.Name()
-		f, err := safefile.OpenRegular(path, nil)
+		f, err := safefile.OpenRegular(path, afterTypeCheck)
 		if err != nil {
 			return err
 		}

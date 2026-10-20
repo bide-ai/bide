@@ -20,6 +20,23 @@ var stdin struct {
 	taken bool
 }
 
+// stdinIsTerminal reports whether r is a terminal: an *os.File that is a character device other than
+// the null device (which reads as empty at once). Tests replace it.
+var stdinIsTerminal = func(r io.Reader) bool {
+	f, ok := r.(*os.File)
+	if !ok {
+		return false
+	}
+	fi, err := f.Stat()
+	if err != nil || fi.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	if null, err := os.Stat(os.DevNull); err == nil && os.SameFile(fi, null) {
+		return false
+	}
+	return true
+}
+
 // ResetStdin forgets that standard input was read, for tests that run a command more than once in
 // one process.
 func ResetStdin() {
@@ -52,6 +69,11 @@ func ReadOrStdin(flag, path string, max int) ([]byte, error) {
 		return stdin.data, stdin.err
 	}
 	stdin.taken, stdin.flag = true, flag
+	if stdinIsTerminal(Stdin) {
+		// Waiting on a terminal for input and EOF would look like a hang.
+		stdin.err = fmt.Errorf("%s -: standard input is a terminal; pipe the file in", flag)
+		return nil, stdin.err
+	}
 	limit := int64(max)
 	if limit < math.MaxInt64 {
 		limit++

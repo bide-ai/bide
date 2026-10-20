@@ -601,7 +601,7 @@ func readKey(s string) (audit.Verifier, error) {
 	b, err := safefile.ReadOrStdin("-pubkey", s, maxKeyFile)
 	if err != nil {
 		var refused *safefile.RefusedError
-		if errors.As(err, &refused) {
+		if s == "-" || errors.As(err, &refused) {
 			return nil, fmt.Errorf("public key: %q is neither a key nor a readable file: %w", s, safefile.Explain("-pubkey", err, true))
 		}
 		return nil, fmt.Errorf("public key: %q is neither a key nor a readable file", s)

@@ -71,3 +71,19 @@ func TestReaders_RefusalsNameTheFlag(t *testing.T) {
 		t.Errorf("readKey(oversize) = %v", err)
 	}
 }
+
+// "-pubkey -" with nothing on standard input, or too much, says which; a terminal is not waited on.
+func TestReadKey_StdinReasons(t *testing.T) {
+	safefiletest.Stdin(t, "")
+	if _, err := readKey("-"); err == nil || !strings.Contains(err.Error(), "standard input is empty") {
+		t.Errorf("empty stdin = %v", err)
+	}
+	safefiletest.Stdin(t, strings.Repeat("a", maxKeyFile+1))
+	if _, err := readKey("-"); err == nil || !strings.Contains(err.Error(), "larger than 1048576 bytes (the limit for -pubkey)") {
+		t.Errorf("oversize stdin = %v", err)
+	}
+	safefiletest.Stdin(t, "not a key")
+	if _, err := readKey("-"); err == nil || strings.Contains(err.Error(), "neither a key nor a readable file") {
+		t.Errorf("a bad key = %v, want the parser's reason", err)
+	}
+}
