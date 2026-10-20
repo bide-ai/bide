@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bide-ai/bide/agent"
 )
@@ -114,7 +115,34 @@ func AllowUnusedBlocks() InspectOption { return func(o *inspectOptions) { o.allo
 
 // inspectConfig is InspectConfig, and what InspectConfigDescribed runs on a Registry built from a
 // description: one implementation of the typed checks, whichever side the Registry came from.
-func inspectConfig(data []byte, reg *Registry, opts []InspectOption) (r ConfigReport) {
+func inspectConfig(data []byte, reg *Registry, opts []InspectOption) ConfigReport {
+	r := inspectConfigUnbounded(data, reg, opts)
+	for i := range r.Problems {
+		r.Problems[i].Message = boundMessage(r.Problems[i].Message)
+	}
+	return r
+}
+
+// maxProblemMessage is the longest a problem message is let be: they quote names from the config
+// (a node, a block, a key), which can be as long as the file.
+const maxProblemMessage = 512
+
+// boundMessage cuts s to maxProblemMessage characters, marking the cut.
+func boundMessage(s string) string {
+	if utf8.RuneCountInString(s) <= maxProblemMessage {
+		return s
+	}
+	n := 0
+	for i := range s {
+		if n == maxProblemMessage {
+			return s[:i] + "..."
+		}
+		n++
+	}
+	return s
+}
+
+func inspectConfigUnbounded(data []byte, reg *Registry, opts []InspectOption) (r ConfigReport) {
 	var o inspectOptions
 	for _, f := range opts {
 		f(&o)

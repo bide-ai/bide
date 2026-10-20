@@ -1,6 +1,7 @@
 package strictjson
 
 import (
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -122,10 +123,32 @@ func TestErrorsQuoteDocumentTextCappedAndEscaped(t *testing.T) {
 			t.Errorf("%s: error does not name the field at all: %q", name, msg)
 		}
 	}
-	if got := quoted("short"); got != `"short"` {
-		t.Errorf("quoted(short) = %s", got)
+	if got := Quote("short"); got != `"short"` {
+		t.Errorf("Quote(short) = %s", got)
 	}
-	if got := quoted(strings.Repeat("é", 65)); !strings.HasSuffix(got, `"...`) || strings.Count(got, "é") != 64 {
+	if got := Quote(strings.Repeat("é", 65)); !strings.HasSuffix(got, `"...`) || strings.Count(got, "é") != 64 {
 		t.Errorf("quoted of 65 runes = %s", got)
+	}
+}
+
+// Unmarshal's own decode errors are bounded as well, and still unwrap to encoding/json's.
+func TestUnmarshal_DecodeErrorIsBounded(t *testing.T) {
+	var v struct {
+		A int `json:"a"`
+	}
+	err := Unmarshal([]byte(`{"a":"`+strings.Repeat("v", 5000)+`"}`), &v, nil)
+	if err == nil || len(err.Error()) > 400 {
+		t.Fatalf("Unmarshal = %v", err)
+	}
+	var ute *json.UnmarshalTypeError
+	if !errors.As(err, &ute) {
+		t.Errorf("the type error is not reachable: %T", err)
+	}
+	if BoundedError(nil) != nil {
+		t.Error("BoundedError(nil) != nil")
+	}
+	short := errors.New("short")
+	if BoundedError(short) != short {
+		t.Error("a short error was rewrapped")
 	}
 }

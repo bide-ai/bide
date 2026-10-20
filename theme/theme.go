@@ -226,16 +226,16 @@ func parse(data []byte, bases map[string]*Theme) (*Theme, error) {
 		bad("bide_theme must be %d", Version)
 	}
 	if !nameRE.MatchString(w.Name) {
-		bad("name %q must match %s", w.Name, nameRE)
+		bad("name %s must match %s", strictjson.Quote(w.Name), nameRE)
 	}
 	t := &Theme{name: w.Name, shipped: !custom, c: map[string]rgb{}}
 	if custom {
 		if slices.Contains(shippedNames, w.Name) {
-			bad("name %q is a shipped theme's", w.Name)
+			bad("name %s is a shipped theme's", strictjson.Quote(w.Name))
 		}
 		base, ok := bases[w.Base]
 		if !ok {
-			bad("base %q is not a shipped theme (%s)", w.Base, strings.Join(shippedNames, ", "))
+			bad("base %s is not a shipped theme (%s)", strictjson.Quote(w.Base), strings.Join(shippedNames, ", "))
 		} else {
 			for k, v := range base.c {
 				t.c[k] = v
@@ -250,7 +250,7 @@ func parse(data []byte, bases map[string]*Theme) (*Theme, error) {
 	set := map[string]bool{}
 	setColor := func(path, val string) {
 		if !slotSet[path] {
-			bad("unknown key %q", path)
+			bad("unknown key %s", strictjson.Quote(path))
 			return
 		}
 		c, err := parseColor(val)
@@ -278,7 +278,7 @@ func parse(data []byte, bases map[string]*Theme) (*Theme, error) {
 			return
 		}
 		if !slices.Contains(allowed, *p) {
-			bad("%s %q must be one of %s", key, *p, strings.Join(allowed, ", "))
+			bad("%s %s must be one of %s", key, strictjson.Quote(*p), strings.Join(allowed, ", "))
 			return
 		}
 		*dst = *p
@@ -305,7 +305,7 @@ func parse(data []byte, bases map[string]*Theme) (*Theme, error) {
 		for _, k := range sortedKeys(w.Radius) {
 			i := slices.Index([]string{"sm", "md", "lg"}, k)
 			if i < 0 {
-				bad("unknown key %q", "radius."+k)
+				bad("unknown key %s", strictjson.Quote("radius."+k))
 				continue
 			}
 			if v := w.Radius[k]; v < 0 || v > 16 {
@@ -391,4 +391,6 @@ func round2(v float64) float64 { return math.Round(v*100) / 100 }
 
 // fileError is the error of a theme file that did not decode. The text comes from the decoder and
 // may hold a key or value of the file (which of them depends on the Go version), so it is escaped.
-func fileError(err error) error { return errors.New("theme file: " + themeaccess.Escape(err.Error())) }
+func fileError(err error) error {
+	return errors.New("theme file: " + themeaccess.Escape(strictjson.BoundedError(err).Error()))
+}

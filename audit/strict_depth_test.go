@@ -80,3 +80,18 @@ func TestJournalExport_ReadsWhatTheWriterAccepts(t *testing.T) {
 		t.Errorf("a record nested 100000 deep: %v, want ErrMalformed", err)
 	}
 }
+
+// A type error from the strict reader's final decode names the field, but not 5,000 characters of
+// the document.
+func TestUnmarshalStrict_TypeErrorIsBounded(t *testing.T) {
+	var v struct {
+		A int `json:"a"`
+	}
+	err := UnmarshalStrict([]byte(`{"a":"`+strings.Repeat("v", 5000)+`"}`), &v)
+	if err == nil || len(err.Error()) > 600 || strings.Contains(err.Error(), strings.Repeat("v", 300)) {
+		t.Fatalf("UnmarshalStrict = %d bytes: %.200v", len(err.Error()), err)
+	}
+	if !errors.Is(err, ErrMalformed) {
+		t.Errorf("not ErrMalformed: %v", err)
+	}
+}
