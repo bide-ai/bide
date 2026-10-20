@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/bide-ai/bide/agent"
 )
@@ -123,23 +122,52 @@ func inspectConfig(data []byte, reg *Registry, opts []InspectOption) ConfigRepor
 	return r
 }
 
-// maxProblemMessage is the longest a problem message is let be: they quote names from the config
-// (a node, a block, a key), which can be as long as the file.
-const maxProblemMessage = 512
+// maxQuotedName is the most of a quoted name (a node, a block, a key from the config) a problem
+// message repeats, and maxProblemMessage the most of a message when it still is long.
+const (
+	maxQuotedName     = 64
+	maxProblemMessage = 2048
+)
 
-// boundMessage cuts s to maxProblemMessage characters, marking the cut.
+// boundMessage shortens the double-quoted names in s to maxQuotedName characters each, marking the
+// cut inside the quotes, so that a name as long as the file does not make a message as long as the
+// file and the words around the names (which callers match, such as "(types must match exactly)")
+// are kept. A message that is still longer than maxProblemMessage keeps its head and its tail.
 func boundMessage(s string) string {
-	if utf8.RuneCountInString(s) <= maxProblemMessage {
-		return s
-	}
-	n := 0
-	for i := range s {
-		if n == maxProblemMessage {
-			return s[:i] + "..."
+	var b strings.Builder
+	rs := []rune(s)
+	for i := 0; i < len(rs); i++ {
+		if rs[i] != '"' {
+			b.WriteRune(rs[i])
+			continue
 		}
-		n++
+		j := i + 1
+		for j < len(rs) && rs[j] != '"' {
+			if rs[j] == '\\' {
+				j++
+			}
+			j++
+		}
+		if j >= len(rs) { // an unclosed quote: leave the rest as it is
+			b.WriteString(string(rs[i:]))
+			break
+		}
+		name := rs[i+1 : j]
+		b.WriteRune('"')
+		if len(name) > maxQuotedName {
+			b.WriteString(string(name[:maxQuotedName]))
+			b.WriteString("...")
+		} else {
+			b.WriteString(string(name))
+		}
+		b.WriteRune('"')
+		i = j
 	}
-	return s
+	out := []rune(b.String())
+	if len(out) > maxProblemMessage {
+		return string(out[:maxProblemMessage/2]) + " ... " + string(out[len(out)-maxProblemMessage/2:])
+	}
+	return b.String()
 }
 
 func inspectConfigUnbounded(data []byte, reg *Registry, opts []InspectOption) (r ConfigReport) {
