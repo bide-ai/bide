@@ -193,7 +193,7 @@ Flow\[In, Out\] is a built, frozen flow: the reified topology validated by Build
 **Constructors and functions**
 
 - `func Load[In, Out any](data []byte, reg *Registry, opts ...LoadOption) (*Flow[In, Out], error)`: Load parses a rung-2 JSON config, resolves every block and predicate against reg, validates the whole topology at load time, and returns the built \*Flow\[In, Out\].
-- `func LoadReader[In, Out any](r io.Reader, reg *Registry, opts ...LoadOption) (*Flow[In, Out], error)`: LoadReader is Load reading the config from r (for example an \*os.File or an HTTP body). A config larger than 16 MiB is refused with an error wrapping agent.ErrConfig, and r is not read past the byte that shows it is.
+- `func LoadReader[In, Out any](r io.Reader, reg *Registry, opts ...LoadOption) (*Flow[In, Out], error)`: LoadReader is Load reading the config from r (for example an \*os.File or an HTTP body).
 
 **Methods**
 

@@ -491,6 +491,9 @@ func readConfig(path string, toJSON func([]byte) ([]byte, error)) (Config, error
 	if !before.Mode().IsRegular() {
 		return Config{}, fmt.Errorf("%s is not a regular file: %w", path, agent.ErrConfig)
 	}
+	if betweenStatAndOpen != nil {
+		betweenStatAndOpen()
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return Config{}, err
@@ -505,6 +508,10 @@ func readConfig(path string, toJSON func([]byte) ([]byte, error)) (Config, error
 	}
 	return configFrom(path, path, b, toJSON)
 }
+
+// betweenStatAndOpen is a test hook run after readConfig checks the file and before it opens it, so
+// a test can swap the path there. It is nil outside tests.
+var betweenStatAndOpen func()
 
 // readConfigBytes reads r up to maxConfig bytes, and reads no more than one byte past it: a longer
 // input is refused with an error wrapping agent.ErrConfig.

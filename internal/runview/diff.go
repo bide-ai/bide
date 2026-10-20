@@ -1110,7 +1110,11 @@ func readOld(arg, newPath string, toJSON func([]byte) ([]byte, error)) (Config, 
 		return Config{}, fmt.Errorf("-diff %q: no such file, and git show %s failed: %w", arg, spec, err)
 	}
 	// Read at most the limit: a larger blob is not held in memory, git is stopped instead.
-	out, rerr := readConfigBytes(pipe)
+	var src io.Reader = pipe
+	if wrapGitPipe != nil {
+		src = wrapGitPipe(pipe)
+	}
+	out, rerr := readConfigBytes(src)
 	if errors.Is(rerr, agent.ErrConfig) {
 		_ = cmd.Process.Kill()
 		_, _ = io.Copy(io.Discard, pipe)
@@ -1145,3 +1149,7 @@ func errString(err error) string {
 	}
 	return err.Error()
 }
+
+// wrapGitPipe is a test hook that wraps the stream readOld reads git show's output through, to
+// count the bytes read. It is nil outside tests.
+var wrapGitPipe func(io.Reader) io.Reader

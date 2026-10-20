@@ -2,14 +2,14 @@ package runview
 
 import (
 	"errors"
-
-	"github.com/bide-ai/bide/agent"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/bide-ai/bide/agent"
 )
 
 // A flow config is read up to the size plan.LoadReader reads (16 MiB), not the 256 MiB an audit
@@ -56,23 +56,24 @@ func TestReadOld_GitRevisionSizeLimit(t *testing.T) {
 	if _, err := readOld("HEAD:big.json", "", nil); err == nil || !strings.Contains(err.Error(), "larger than 16777216 bytes") {
 		t.Fatalf("readOld of a revision of 16 MiB + 1 = %v, want a size error", err)
 	}
-	// A revision far over the limit is refused without being held in memory: git show is stopped
-	// at the limit, not buffered whole first.
+	// its output stay at the limit plus one buffer, however large the blob is.
+	var read countingReader
+	wrapGitPipe = func(r io.Reader) io.Reader { read.r = r; return &read }
+	defer func() { wrapGitPipe = nil }()
 	if err := os.WriteFile(filepath.Join(repo, "huge.json"), []byte(strings.Repeat(" ", 96<<20)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	git("add", ".")
 	git("commit", "-q", "-m", "huge")
-	var before, after runtime.MemStats
-	runtime.GC()
-	runtime.ReadMemStats(&before)
 	_, err := readOld("HEAD:huge.json", "", nil)
-	runtime.ReadMemStats(&after)
-	if err == nil || !strings.Contains(err.Error(), "larger than 16777216 bytes") {
-		t.Fatalf("readOld of a 96 MiB revision = %v, want a size error", err)
+	if !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "larger than 16777216 bytes") {
+		t.Fatalf("readOld of a 96 MiB revision = %v, want ErrConfig naming the limit", err)
 	}
-	if got := after.TotalAlloc - before.TotalAlloc; got > 48<<20 {
-		t.Fatalf("readOld of a 96 MiB revision allocated %d bytes: the blob was buffered whole", got)
+	if read.n > 16<<20+1 {
+		t.Fatalf("read %d bytes of git's output, want at most %d", read.n, 16<<20+1)
+	}
+	if read.n < 16<<20 {
+		t.Fatalf("read only %d bytes: the test did not reach the limit", read.n)
 	}
 }
 
@@ -109,5 +110,39 @@ func TestReadConfigBytes_StopsAtTheLimit(t *testing.T) {
 func TestReadConfig_RefusesADirectory(t *testing.T) {
 	if _, err := readConfig(t.TempDir(), nil); !errors.Is(err, agent.ErrConfig) {
 		t.Fatalf("readConfig(dir) = %v, want ErrConfig", err)
+	}
+}
+
+// countingReader counts the bytes read through it.
+type countingReader struct {
+	r io.Reader
+	n int
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += n
+	return n, err
+}
+
+// The file readConfig opens must be the one it checked: a path swapped for another file (or a
+// named pipe) between the check and the open is refused.
+func TestReadConfig_RefusesAFileSwappedBeforeTheOpen(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cfg.json")
+	other := filepath.Join(dir, "other.json")
+	for _, p := range []string{path, other} {
+		if err := os.WriteFile(p, []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	betweenStatAndOpen = func() {
+		if err := os.Rename(other, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer func() { betweenStatAndOpen = nil }()
+	if _, err := readConfig(path, nil); !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("readConfig of a swapped file = %v, want ErrConfig", err)
 	}
 }
