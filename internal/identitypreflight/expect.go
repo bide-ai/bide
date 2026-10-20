@@ -25,7 +25,7 @@ var undeclarable = []string{"effective_from", "w", "min_w", "routine_grace", "cl
 // record from another bide version is not silently compared on the members this one knows.
 func readRecord(path string) (agent.IdentityPolicyRecord, error) {
 	var rec agent.IdentityPolicyRecord
-	b, err := safefile.Read(path, safefile.MaxDocument, nil)
+	b, err := safefile.ReadFlag("-expect", path, safefile.MaxDocument, nil)
 	if err != nil {
 		return rec, &IOError{Err: fmt.Errorf("-expect: %w", safefile.Explain("-expect", err, false))}
 	}

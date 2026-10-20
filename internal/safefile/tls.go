@@ -16,3 +16,17 @@ func LoadX509KeyPair(certFile, keyFile string) (tls.Certificate, error) {
 	}
 	return tls.X509KeyPair(certPEM, keyPEM)
 }
+
+// LoadX509KeyPairFlags is LoadX509KeyPair for the two files command-line flags name, read as
+// ReadFlag reads (so each may be a process substitution).
+func LoadX509KeyPairFlags(certFlag, certFile, keyFlag, keyFile string) (tls.Certificate, error) {
+	certPEM, err := ReadFlag(certFlag, certFile, MaxDocument, nil)
+	if err != nil {
+		return tls.Certificate{}, Explain(certFlag, err, false)
+	}
+	keyPEM, err := ReadFlag(keyFlag, keyFile, MaxDocument, nil)
+	if err != nil {
+		return tls.Certificate{}, Explain(keyFlag, err, false)
+	}
+	return tls.X509KeyPair(certPEM, keyPEM)
+}

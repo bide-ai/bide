@@ -33,3 +33,17 @@ func TestLoadFlat_FileSwappedForANamedPipe(t *testing.T) {
 		}
 	})
 }
+
+// A named pipe among the CRL files is reported as not a regular file and never opened.
+func TestLoadFlat_NamedPipe(t *testing.T) {
+	dir := t.TempDir()
+	if err := syscall.Mkfifo(filepath.Join(dir, "a.crl"), 0o600); err != nil {
+		t.Skip("mkfifo:", err)
+	}
+	safefiletest.Deadline(t, "loadFlat", func() {
+		loaded, rejected, err := loadFlat(dir, audit.NewStatusSnapshot())
+		if err != nil || loaded != 0 || len(rejected) != 1 {
+			t.Errorf("loadFlat = %d loaded, %v rejected, %v", loaded, rejected, err)
+		}
+	})
+}

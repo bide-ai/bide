@@ -42,14 +42,14 @@ func TestReadDescriptorPaths(t *testing.T) {
 		t.Errorf("second = %q, %v", got, err)
 	}
 	// The size limit applies to a stream too.
-	_, err := Read(pipeWith(t, "123456"), 5, nil)
+	_, err := ReadFlag("-x", pipeWith(t, "123456"), 5, nil)
 	refusal(t, err, TooLarge)
 	if runtime.GOOS == "linux" {
 		r, w, _ := os.Pipe()
 		w.WriteString("proc")
 		w.Close()
 		defer r.Close()
-		if got, err := Read("/proc/self/fd/"+strconv.Itoa(int(r.Fd())), 64, nil); err != nil || string(got) != "proc" {
+		if got, err := ReadFlag("-x", "/proc/self/fd/"+strconv.Itoa(int(r.Fd())), 64, nil); err != nil || string(got) != "proc" {
 			t.Errorf("/proc/self/fd = %q, %v", got, err)
 		}
 	}
@@ -63,14 +63,28 @@ func TestReadDescriptorFormIsExact(t *testing.T) {
 	if err := os.Symlink(p, link); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Read(link, 64, nil)
+	_, err := ReadFlag("-x", link, 64, nil)
 	refusal(t, err, NotRegular)
 	for _, bad := range []string{p + "/", "/dev/fd/../fd/" + strings.TrimPrefix(p, "/dev/fd/"), "/dev//fd/" + strings.TrimPrefix(p, "/dev/fd/"), "/dev/fd/x"} {
-		if _, err := Read(bad, 64, nil); err == nil {
+		if _, err := ReadFlag("-x", bad, 64, nil); err == nil {
 			t.Errorf("Read(%q) succeeded", bad)
 		} else if isDescriptorPath(bad) {
 			t.Errorf("%q matched the descriptor form", bad)
 		}
+	}
+}
+
+// The library entry point is strict: Read refuses a descriptor path, /dev/stdin and a pipe, so a host
+// that hands Read a path from its own caller (theme.Load) cannot be made to read a descriptor.
+func TestReadIsStrict(t *testing.T) {
+	defer func() { Stdin = os.Stdin; ResetStdin() }()
+	Stdin = strings.NewReader("must not be read")
+	for _, p := range []string{pipeWith(t, "secret"), "/dev/stdin", "/dev/fd/0"} {
+		_, err := Read(p, 64, nil)
+		refusal(t, err, NotRegular)
+	}
+	if Stdin.(*strings.Reader).Len() != len("must not be read") {
+		t.Error("Read consumed standard input")
 	}
 }
 
@@ -89,8 +103,12 @@ func TestStdinPathsOwnStdin(t *testing.T) {
 		// Read, which has no flag, takes the path as the owner's name.
 		ResetStdin()
 		Stdin = strings.NewReader("key")
-		if got, err := Read(path, 64, nil); err != nil || string(got) != "key" {
-			t.Errorf("Read(%s) = %q, %v", path, got, err)
+		if got, err := ReadFlag("-policy", path, 64, nil); err != nil || string(got) != "key" {
+			t.Errorf("ReadFlag(%s) = %q, %v", path, got, err)
+		}
+		// Two flags that both name standard input by path are refused too.
+		if _, err := ReadFlag("-params", path, 64, nil); err == nil || !strings.Contains(err.Error(), "both read standard input") {
+			t.Errorf("a second flag with %s = %v, want the conflict", path, err)
 		}
 	}
 }

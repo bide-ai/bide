@@ -333,7 +333,7 @@ func (f *flags) readItem(stdin io.Reader) error {
 	if f.item == "-" {
 		data, err = io.ReadAll(io.LimitReader(stdin, maxItem+1))
 	} else {
-		data, err = safefile.Read(f.item, maxItem, nil)
+		data, err = safefile.ReadFlag("-item", f.item, maxItem, nil)
 		var refused *safefile.RefusedError
 		if errors.As(err, &refused) && refused.Kind == safefile.TooLarge {
 			return fmt.Errorf("-item %s: more than %d bytes (the limit for -item): it is one call of -list -json, not the whole list", f.item, maxItem)
@@ -1514,7 +1514,7 @@ func (c *cmd) writeReceipt(ctx context.Context, j *agent.Journal, s agent.Approv
 // verifyReceiptFile is bide approve -verify-receipt: the receipt's signature over the exact call it
 // states, by the key -approver-keys enrols for its approver. It reads no journal.
 func (c *cmd) verifyReceiptFile() error {
-	b, err := safefile.Read(c.f.verifyReceipt, safefile.MaxDocument, nil)
+	b, err := safefile.ReadFlag("-verify-receipt", c.f.verifyReceipt, safefile.MaxDocument, nil)
 	if err != nil {
 		return fmt.Errorf("receipt %s: %w", c.f.verifyReceipt, unwrapPath(safefile.Explain("-verify-receipt", err, false)))
 	}

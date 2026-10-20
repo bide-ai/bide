@@ -19,7 +19,7 @@ func configErr(path string, err error) error {
 // Read reads the policy file at path and compiles it; the anchor files it names are read from the
 // policy file's directory. Every failure wraps agent.ErrConfig.
 func Read(path string) (*audit.CertIdentity, error) {
-	b, err := safefile.Read(path, maxFile, nil)
+	b, err := safefile.ReadFlag("the policy file", path, maxFile, nil)
 	if err != nil {
 		return nil, configErr(path, safefile.Explain("the policy file", err, false))
 	}
@@ -33,7 +33,7 @@ const maxFile = safefile.MaxDocument
 // ReadSources reads the refresher members of the policy file at path: where each issuing CA's CRLs are
 // fetched from, and the certificates of the pinned intermediates (audit.ParseCRLSources).
 func ReadSources(path string) (audit.CRLSources, []*x509.Certificate, error) {
-	b, err := safefile.Read(path, maxFile, nil)
+	b, err := safefile.ReadFlag("the policy file", path, maxFile, nil)
 	if err != nil {
 		return nil, nil, configErr(path, err)
 	}

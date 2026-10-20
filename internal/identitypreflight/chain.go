@@ -21,7 +21,7 @@ const maxChainFile = agent.MaxDecisionCertChain * agent.MaxDecisionCertDER * 2
 // flag names the option for messages. A file that cannot be read is an IOError; one that is not a chain is
 // a finding, returned as the error text.
 func readChain(path, flag string) (der [][]byte, problem string, err error) {
-	b, err := safefile.Read(path, maxChainFile, nil)
+	b, err := safefile.ReadFlag(flag, path, maxChainFile, nil)
 	if err != nil {
 		var refused *safefile.RefusedError
 		if errors.As(err, &refused) && refused.Kind == safefile.TooLarge {

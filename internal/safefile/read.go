@@ -48,25 +48,34 @@ func (e *RefusedError) Error() string {
 // which is after any swap. At most one byte past max is read, so a huge file is refused without being
 // read.
 //
-// On unix a path in the exact form of an open descriptor (/dev/fd/N, /proc/self/fd/N on Linux), which
-// is what a process substitution (<(...)) expands to, is read as the stream it is, without the
-// regular-file check: the user chose that descriptor, and a named pipe someone else placed at a path
-// cannot take that form. /dev/stdin and descriptor 0 are standard input, owned as "-" is (see
-// ReadOrStdin). The form is matched on the path as written, never after resolving links, so a
-// symbolic link to /dev/fd/3 is a link to a pipe and is refused.
+// Read is strict: a regular file and nothing else, whatever the path says, so a library may hand it a
+// path its caller supplied. Command-line flags that also take a process substitution or standard
+// input use ReadFlag and ReadOrStdin.
 func Read(path string, max int, afterStat func()) ([]byte, error) {
-	if isStdinPath(path) {
-		return ReadOrStdin(path, "-", max)
-	}
-	if isDescriptorPath(path) {
-		return readStream(path, max)
-	}
 	f, err := OpenRegular(path, afterStat)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 	return readLimited(f, path, max)
+}
+
+// ReadFlag is Read for the file a command-line flag names, which may also be a stream the user chose:
+// on unix a path in the exact form of an open descriptor (/dev/fd/N, /proc/self/fd/N on Linux), which
+// is what a process substitution (<(...)) expands to, is read as the stream it is, up to max bytes and
+// without the regular-file check. A named pipe someone else placed at a path cannot take that form.
+// /dev/stdin and descriptor 0 are standard input, owned by flag as "-" is for ReadOrStdin. The form is
+// matched on the path as written, never after resolving links, so a symbolic link to /dev/fd/3 is
+// refused as the pipe it points to. Only command-line code may call it (a test enforces that): it
+// reads whatever descriptor it is handed, and owns standard input for the process.
+func ReadFlag(flag, path string, max int, afterStat func()) ([]byte, error) {
+	switch {
+	case isStdinPath(path):
+		return ReadOrStdin(flag, "-", max)
+	case isDescriptorPath(path):
+		return readStream(path, max)
+	}
+	return Read(path, max, afterStat)
 }
 
 // OpenRegular opens the regular file at path for reading and returns it: Stat first, which refuses

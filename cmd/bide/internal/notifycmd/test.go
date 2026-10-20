@@ -118,7 +118,7 @@ func sampleNotification(kind agent.NotificationKind, now time.Time, run string) 
 // testOpts are what runTest reads from the environment, replaced by tests.
 var (
 	getenv   = os.Getenv
-	readFile = func(path string) ([]byte, error) { return safefile.Read(path, safefile.MaxDocument, nil) }
+	readFile = func(path string) ([]byte, error) { return safefile.ReadFlag(path, path, safefile.MaxDocument, nil) }
 	timeNow  = time.Now
 )
 
@@ -179,13 +179,25 @@ Exit status: 0 the receiver acknowledged; 1 it did not; 2 usage error.
 	}
 	opts := []notify.Option{notify.WithSecrets(secrets.current, secrets.previous), notify.WithTimeout(*timeout)}
 	if *ca != "" {
-		opts = append(opts, notify.WithServerCA(*ca))
+		pem, err := readFile(*ca)
+		if err != nil {
+			return failure("test", stderr, "-ca: %v", unwrap(err))
+		}
+		opts = append(opts, notify.WithServerCAPEM(pem))
 	}
 	if *pin != "" {
 		opts = append(opts, notify.WithServerPin(strings.Split(*pin, ",")...))
 	}
 	if *cert != "" {
-		opts = append(opts, notify.WithClientCert(*cert, *key))
+		certPEM, err := readFile(*cert)
+		if err != nil {
+			return failure("test", stderr, "-cert: %v", unwrap(err))
+		}
+		keyPEM, err := readFile(*key)
+		if err != nil {
+			return failure("test", stderr, "-key: %v", unwrap(err))
+		}
+		opts = append(opts, notify.WithClientCertPEM(certPEM, keyPEM))
 	}
 	if *viewURL != "" {
 		opts = append(opts, notify.WithViewURL(*viewURL))
@@ -389,4 +401,13 @@ func isNoSuchHost(err error) bool {
 func isTimeout(err error) bool {
 	var ne net.Error
 	return err != nil && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) || (errors.As(err, &ne) && ne.Timeout()))
+}
+
+// unwrap drops the path from an *os.PathError, which the message names itself.
+func unwrap(err error) error {
+	var pe *os.PathError
+	if errors.As(err, &pe) {
+		return pe.Err
+	}
+	return err
 }

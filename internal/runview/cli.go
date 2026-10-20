@@ -486,7 +486,7 @@ func options(f flags, stores Stores) (Options, io.Closer, error) {
 func readConfig(path string, toJSON func([]byte) ([]byte, error)) (Config, error) {
 	// A named pipe or device would block the open or never end, and a directory cannot be read as a
 	// config: safefile refuses anything but a regular file, before opening it and again once opened.
-	b, err := safefile.Read(path, maxConfig, betweenStatAndOpen)
+	b, err := safefile.ReadFlag("-config", path, maxConfig, betweenStatAndOpen)
 	if err != nil {
 		var refused *safefile.RefusedError
 		if errors.As(err, &refused) {
@@ -574,7 +574,7 @@ func readStrict(flag, path string, v any) error {
 	var b []byte
 	var err error
 	if flag == "" {
-		b, err = safefile.Read(path, maxInput, nil)
+		b, err = safefile.ReadFlag("a journal", path, maxInput, nil)
 	} else {
 		b, err = safefile.ReadOrStdin(flag, path, maxInput)
 	}

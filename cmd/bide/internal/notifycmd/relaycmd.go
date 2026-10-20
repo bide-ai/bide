@@ -133,7 +133,7 @@ proxy that terminates TLS on the same host. Forwarding has a budget (-forward-ti
 	var cfg *tls.Config
 	scheme := "http"
 	if *certFile != "" {
-		cert, err := safefile.LoadX509KeyPair(*certFile, *keyFile)
+		cert, err := safefile.LoadX509KeyPairFlags("-cert", *certFile, "-key", *keyFile)
 		if err != nil {
 			return failure("relay", stderr, "loading the certificate: %v", err)
 		}

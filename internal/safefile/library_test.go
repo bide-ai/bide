@@ -7,13 +7,16 @@ import (
 	"testing"
 )
 
-// ReadOrStdin owns standard input for the whole process, so only the command-line packages may call
-// it: never a library (theme, plan, the agent and audit packages) nor a server handler (flowedit).
-func TestReadOrStdinIsCalledFromCommandLinePackagesOnly(t *testing.T) {
+// ReadFlag and ReadOrStdin read any descriptor they are handed and own standard input for the whole
+// process, so only command-line code may call them: never a library (theme, notify, plan, the agent
+// and audit packages) nor a server handler (flowedit, the viewer's description reader).
+func TestFlagReadersAreCalledFromCommandLineCodeOnly(t *testing.T) {
 	root := filepath.Join("..", "..")
 	allowed := []string{
 		filepath.Join("cmd") + string(filepath.Separator),
 		filepath.Join("internal", "runview", "cli.go"),
+		filepath.Join("internal", "policyfile") + string(filepath.Separator),
+		filepath.Join("internal", "identitypreflight") + string(filepath.Separator),
 		filepath.Join("internal", "safefile") + string(filepath.Separator),
 	}
 	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
@@ -21,8 +24,12 @@ func TestReadOrStdinIsCalledFromCommandLinePackagesOnly(t *testing.T) {
 			return err
 		}
 		b, err := os.ReadFile(p)
-		if err != nil || !strings.Contains(string(b), "safefile.ReadOrStdin(") {
+		if err != nil {
 			return err
+		}
+		src := string(b)
+		if !strings.Contains(src, "safefile.ReadOrStdin(") && !strings.Contains(src, "safefile.ReadFlag(") && !strings.Contains(src, "safefile.LoadX509KeyPairFlags(") {
+			return nil
 		}
 		rel, _ := filepath.Rel(root, p)
 		for _, ok := range allowed {
@@ -30,7 +37,7 @@ func TestReadOrStdinIsCalledFromCommandLinePackagesOnly(t *testing.T) {
 				return nil
 			}
 		}
-		t.Errorf("%s calls safefile.ReadOrStdin, which only command-line code may", rel)
+		t.Errorf("%s calls a flag reader of safefile, which only command-line code may", rel)
 		return nil
 	})
 	if err != nil {

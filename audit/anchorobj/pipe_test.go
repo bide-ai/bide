@@ -32,3 +32,21 @@ func TestLoadDirRefusesAFileSwappedForANamedPipe(t *testing.T) {
 		}
 	})
 }
+
+// A named pipe among the exported objects is refused by LoadDir, without being opened.
+func TestLoadDirRefusesANamedPipe(t *testing.T) {
+	k := newKeys(t, 1)
+	dir := t.TempDir()
+	p := write(t, dir, k.head(t, "r", 5, 1, "a"))
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(p, 0o600); err != nil {
+		t.Skip("mkfifo:", err)
+	}
+	safefiletest.Deadline(t, "LoadDir", func() {
+		if _, err := load(dir, k.v); err == nil {
+			t.Error("LoadDir read a named pipe")
+		}
+	})
+}

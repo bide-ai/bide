@@ -58,7 +58,7 @@ func ReadOrStdin(flag, path string, max int) ([]byte, error) {
 		path = "-"
 	}
 	if path != "-" {
-		return Read(path, max, nil)
+		return ReadFlag(flag, path, max, nil)
 	}
 	stdin.mu.Lock()
 	defer stdin.mu.Unlock()

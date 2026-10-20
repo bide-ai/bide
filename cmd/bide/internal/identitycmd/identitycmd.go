@@ -239,7 +239,7 @@ func build(c *common, lw *lineWriter) (*crlrefresh.Refresher, error) {
 	if err != nil {
 		return nil, err
 	}
-	pb, err := safefile.Read(c.params, safefile.MaxDocument, nil)
+	pb, err := safefile.ReadFlag("-params", c.params, safefile.MaxDocument, nil)
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", c.params, safefile.Explain("-params", err, false))
 	}

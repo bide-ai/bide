@@ -545,7 +545,7 @@ func appendLine(path string, v any) error {
 // readJSON reads the JSON document in the file path, which the flag names: a signed head or an
 // authorization, a few KiB.
 func readJSON(flag, path string, v any) error {
-	b, err := safefile.Read(path, safefile.MaxDocument, nil)
+	b, err := safefile.ReadFlag(flag, path, safefile.MaxDocument, nil)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", path, safefile.Explain(flag, err, false))
 	}
