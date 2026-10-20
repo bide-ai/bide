@@ -9,8 +9,6 @@ import (
 	"fmt"
 	"github.com/bide-ai/bide/internal/safefile"
 	"github.com/bide-ai/bide/internal/term"
-	"io"
-	"os"
 	"slices"
 	"strings"
 	"time"

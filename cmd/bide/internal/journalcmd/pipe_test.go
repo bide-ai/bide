@@ -1,0 +1,35 @@
+package journalcmd
+
+import (
+	"testing"
+
+	"github.com/bide-ai/bide/internal/safefile/safefiletest"
+)
+
+// The files the journal verbs name are read without waiting on a named pipe, and a directory in
+// their place is refused.
+func TestReaders_NamedPipeAndDirectory(t *testing.T) {
+	p := safefiletest.FIFO(t)
+	d := t.TempDir()
+	var v map[string]any
+	safefiletest.Deadline(t, "readers", func() {
+		if err := readJSON(p, &v); err == nil {
+			t.Error("readJSON read a named pipe")
+		}
+		if _, err := readPubKey(p); err == nil {
+			t.Error("readPubKey read a named pipe")
+		}
+		if _, err := readHeads(p); err == nil {
+			t.Error("readHeads read a named pipe")
+		}
+	})
+	if err := readJSON(d, &v); err == nil {
+		t.Error("readJSON read a directory")
+	}
+	if _, err := readPubKey(d); err == nil {
+		t.Error("readPubKey read a directory")
+	}
+	if _, err := readHeads(d); err == nil {
+		t.Error("readHeads read a directory")
+	}
+}
