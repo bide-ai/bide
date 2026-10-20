@@ -54,3 +54,21 @@ func TestGateConflictIsOneProblemWithAFix(t *testing.T) {
 		t.Errorf("Build = %v; want the same wording with the fix", err)
 	}
 }
+
+// A problem whose text holds "; " (a node may be named "a; b") stays one problem, attached to its
+// node: the problems travel as a list from assemble to InspectConfig and are never split from text.
+func TestInspectConfigKeepsAProblemWithSemicolonOnePiece(t *testing.T) {
+	cfg := `{"version": 1, "flow": "f", "in": "int", "out": "int", "entry": "a; b",
+  "nodes": [{"name": "a; b", "block": "missing"}],
+  "wiring": []}`
+	rep := InspectConfig([]byte(cfg), NewRegistry())
+	var got []ConfigProblem
+	for _, p := range rep.Problems {
+		if strings.Contains(p.Message, "missing") {
+			got = append(got, p)
+		}
+	}
+	if len(got) != 1 || got[0].Node != "a; b" || !strings.Contains(got[0].Message, `node "a; b" references unknown block "missing"`) {
+		t.Fatalf("problems naming the unknown block = %+v; want one, on node %q", got, "a; b")
+	}
+}
