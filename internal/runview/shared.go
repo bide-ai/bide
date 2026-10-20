@@ -10,7 +10,7 @@ import (
 // theme.js and the rest of its assets directory), so another page in the module, the flow editor
 // (package flowedit), draws with the same tokens and serves them from its own binary. It is
 // read-only.
-func Assets() fs.FS { return AssetsWith("") }
+func Assets() fs.FS { return AssetsWith(ThemeSet{}) }
 
 // rawAssets is the embedded directory as it is in the repository, without the generated theme.
 func rawAssets() fs.FS {

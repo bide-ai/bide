@@ -20,9 +20,11 @@ import (
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/internal/approveline"
 	safetext "github.com/bide-ai/bide/internal/printable"
+	"github.com/bide-ai/bide/internal/safefile"
 	"github.com/bide-ai/bide/internal/term"
-	"github.com/bide-ai/bide/internal/theme"
+	"github.com/bide-ai/bide/internal/themeaccess"
 	"github.com/bide-ai/bide/plan"
+	"github.com/bide-ai/bide/theme"
 )
 
 // Stores opens the stores bide view reads, read-only. It is how the command plugs in store backends
@@ -196,11 +198,11 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 		if f.theme != "" {
 			th, rep, err := theme.Load(f.theme)
 			if err != nil {
-				fmt.Fprintf(stderr, "%s%s: %v\n", es.ErrorPrefix(), theme.Escape(f.theme), err) // err is built from quoted or escaped text
+				fmt.Fprintf(stderr, "%s%s: %v\n", es.ErrorPrefix(), themeaccess.Escape(f.theme), err) // err is built from quoted or escaped text
 				return nil, 1
 			}
 			for _, m := range rep.Failures(theme.Warning) {
-				fmt.Fprintf(stderr, "%s: warning %s %s: a reader with a colour-vision deficiency may not tell these apart; see bide theme check -v\n", theme.Escape(f.theme), m.Check, m.Subject)
+				fmt.Fprintf(stderr, "%s: warning %s %s: a reader with a colour-vision deficiency may not tell these apart; see bide theme check -v\n", themeaccess.Escape(f.theme), m.Check, m.Subject)
 			}
 			extra = append(extra, th)
 		}
@@ -483,30 +485,13 @@ func options(f flags, stores Stores) (Options, io.Closer, error) {
 // readConfig reads a flow config file, converting a .yaml or .yml file to JSON with toJSON.
 func readConfig(path string, toJSON func([]byte) ([]byte, error)) (Config, error) {
 	// A named pipe or device would block the open or never end, and a directory cannot be read as a
-	// config: refuse anything but a regular file, before opening it and again once opened.
-	before, err := os.Stat(path)
+	// config: safefile refuses anything but a regular file, before opening it and again once opened.
+	b, err := safefile.Read(path, maxConfig, betweenStatAndOpen)
 	if err != nil {
-		return Config{}, err
-	}
-	if !before.Mode().IsRegular() {
-		return Config{}, fmt.Errorf("%s is not a regular file: %w", path, agent.ErrConfig)
-	}
-	if betweenStatAndOpen != nil {
-		betweenStatAndOpen()
-	}
-	f, err := openConfig(path)
-	if err != nil {
-		return Config{}, err
-	}
-	defer f.Close()
-	// Decide on the file actually opened, not on the path: the path may have been swapped since the
-	// first check. (os.SameFile against that check does not hold on Windows, where a FileInfo from
-	// os.Stat loads its file ID from the path when SameFile first asks, which is after any swap.)
-	if after, err := f.Stat(); err != nil || !after.Mode().IsRegular() {
-		return Config{}, fmt.Errorf("%s is not a regular file (it changed while it was opened): %w", path, agent.ErrConfig)
-	}
-	b, err := readConfigBytes(f)
-	if err != nil {
+		var refused *safefile.RefusedError
+		if errors.As(err, &refused) {
+			return Config{}, fmt.Errorf("%w: %w", err, agent.ErrConfig)
+		}
 		return Config{}, err
 	}
 	return configFrom(path, path, b, toJSON)

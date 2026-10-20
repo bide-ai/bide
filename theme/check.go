@@ -41,6 +41,12 @@ type Report struct {
 	Measures []Measure
 }
 
+// clone is r with its own Measures, so a caller that changes it changes nothing shared.
+func (r Report) clone() Report {
+	r.Measures = slices.Clone(r.Measures)
+	return r
+}
+
 // Failures returns the failed measures of the given severity.
 func (r Report) Failures(s Severity) []Measure {
 	var out []Measure
@@ -60,7 +66,7 @@ func (e *CheckError) Error() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "theme %q fails %d check(s):", e.Report.Theme, len(e.Report.Failures(Error)))
 	for _, m := range e.Report.Failures(Error) {
-		fmt.Fprintf(&b, "\n  %s %s: %s", m.Check, m.Subject, m.describe())
+		fmt.Fprintf(&b, "\n  %s %s: %s", m.Check, m.Subject, m.String())
 	}
 	return b.String()
 }
@@ -73,7 +79,9 @@ func (r Report) Err() error {
 	return &CheckError{r}
 }
 
-func (m Measure) describe() string {
+// String is the measure as a line says it: the value and the threshold it needs, as `bide theme
+// check` prints it after the check and the subject.
+func (m Measure) String() string {
 	switch m.Check {
 	case "C3", "C4", "C6":
 		return fmt.Sprintf("distance %.1f, needs at least %.0f", m.Value, m.Threshold)

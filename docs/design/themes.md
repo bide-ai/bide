@@ -150,7 +150,7 @@ excluded by the CSP and the "no request off this server" rule.
 ## The theme file
 
 JSON, strict (unknown keys are errors, duplicate keys are errors, at most 16 KiB), parsed by a new
-root-module package (`internal/theme` at first; stdlib only; the nested modules `flowedit` and `cmd/bide` can import it only because their paths sit under the root module's, and an architecture test pins the allowed importers: `internal/runview`, `internal/tools`, `flowedit`, `cmd/bide` and, for the approve page's build, `approvals`; it becomes public, with a 0.x API, in the PR that adds the Go embedding option, so a Go host can then build and check a theme). A theme names a shipped base and overrides from it, so a custom theme can be five
+root-module package, `theme` (public with a 0.x API since the Go embedding PR, so a Go host can build and check a theme; no third-party dependency; a test pins its exported names and that none returns CSS). The stylesheet generators and the `bide theme` command are not part of it: the generators are registered at load into `internal/themeaccess`, which only the module's own servers import, and the command is `internal/themecmd`. A theme names a shipped base and overrides from it, so a custom theme can be five
 lines:
 
 ```json
@@ -518,7 +518,7 @@ does not have today.
    simulations) ENFORCED for shipped themes, which are retuned to pass it (the current light and dark
    themes fail), and advisory for custom themes. Also: retune `idem` so it is not the same blue as
    `info`. Accepted as amended.
-7. **The format and the package.** JSON, parsed by a new root-module package that is `internal/theme` until the Go embedding PR makes it public (0.x API); fonts an
+7. **The format and the package.** JSON, parsed by a new root-module package, `theme`, public (0.x API) since the Go embedding PR; fonts an
    enum of generic families (no named families, no web fonts). **New** public package, later. Accepted as amended.
 8. **Custom themes by file for the viewer and the editor:** `-theme` and `-theme-default`, one custom
    theme per process, `bide theme check` as a command. **New** subcommand. Recommend: yes.

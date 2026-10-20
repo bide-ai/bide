@@ -26,9 +26,11 @@ func (v Version) config() runview.Config {
 // compared with old. The page draws the newer flow with added nodes and edges in green, removed
 // ones as dashed red ghosts and changed nodes in amber, calls out an approval gate whose policy was
 // weakened, and, with both Registries, shows the digest each version's runs journal. Its view is
-// JSON at /diff.json. It answers only GET and HEAD requests addressed to a loopback host.
-func DiffHandler(old, newer Version) http.Handler {
-	return runview.Handler(runview.Options{Diff: &runview.Diff{Old: old.config(), New: newer.config()}})
+// JSON at /diff.json. It answers only GET and HEAD requests addressed to a loopback host. The options
+// are Handler's, and DiffHandler panics on a set of themes that cannot be served as Handler does.
+func DiffHandler(old, newer Version, opts ...Option) http.Handler {
+	t := themeOptions("DiffHandler", opts)
+	return runview.Handler(runview.Options{Diff: &runview.Diff{Old: old.config(), New: newer.config()}, Themes: t.Extra, DefaultTheme: t.Default, ThemeLock: t.Lock})
 }
 
 // CheckDiff writes the diff of newer from old to w as bide check -diff -check prints it: one line

@@ -1,11 +1,15 @@
-package theme
+// Package themecmd is `bide theme`: the command that checks theme files.
+package themecmd
 
 import (
 	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"os"
+
+	"github.com/bide-ai/bide/internal/safefile"
+	"github.com/bide-ai/bide/internal/themeaccess"
+	"github.com/bide-ai/bide/theme"
 )
 
 // Main runs `bide theme`: today the one verb, check. It returns the exit status: 0 when every file
@@ -38,15 +42,15 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	}
 	status := 0
 	for _, path := range fs.Args() {
-		data, err := readLimited(path)
+		data, err := safefile.Read(path, theme.MaxSize, nil)
 		if err != nil {
-			fmt.Fprintf(stderr, "bide theme check: %s\n", printable(err.Error()))
+			fmt.Fprintf(stderr, "bide theme check: %s\n", themeaccess.Escape(err.Error()))
 			status = 1
 			continue
 		}
-		th, report, err := Parse(data)
+		th, report, err := theme.Parse(data)
 		if err != nil && report.Theme == "" {
-			fmt.Fprintf(stderr, "%s: %s\n", printable(path), printable(err.Error()))
+			fmt.Fprintf(stderr, "%s: %s\n", themeaccess.Escape(path), themeaccess.Escape(err.Error()))
 			status = 1
 			continue
 		}
@@ -54,40 +58,12 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		if th != nil {
 			name = th.Name()
 		}
-		printReport(stdout, printable(path), printable(name), report, *verbose)
+		printReport(stdout, themeaccess.Escape(path), themeaccess.Escape(name), report, *verbose)
 		if err != nil {
 			status = 1
 		}
 	}
 	return status
-}
-
-// Load reads and checks a custom theme file: Parse on the file's bytes, read with the size limit.
-// The report is returned with an error from a failed check as well as with success.
-func Load(path string) (*Theme, Report, error) {
-	data, err := readLimited(path)
-	if err != nil {
-		return nil, Report{}, errors.New(printable(err.Error()))
-	}
-	return Parse(data)
-}
-
-// readLimited reads a theme file, refusing one over MaxSize without reading the rest of it, so a
-// device or a huge file named by mistake cannot exhaust memory.
-func readLimited(path string) ([]byte, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, MaxSize+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(data) > MaxSize {
-		return nil, fmt.Errorf("%s: theme file is over the %d byte limit", path, MaxSize)
-	}
-	return data, nil
 }
 
 func usage(w io.Writer) {
@@ -98,16 +74,16 @@ func usage(w io.Writer) {
 
 // printReport writes the failed measures (errors, then warnings) and a summary; with verbose it
 // writes every measure.
-func printReport(w io.Writer, path, name string, r Report, verbose bool) {
-	errs, warns := r.Failures(Error), r.Failures(Warning)
+func printReport(w io.Writer, path, name string, r theme.Report, verbose bool) {
+	errs, warns := r.Failures(theme.Error), r.Failures(theme.Warning)
 	for _, m := range r.Measures {
 		switch {
-		case !m.Pass && m.Severity == Error:
-			fmt.Fprintf(w, "%s: error   %s %s: %s\n", path, m.Check, m.Subject, m.describe())
+		case !m.Pass && m.Severity == theme.Error:
+			fmt.Fprintf(w, "%s: error   %s %s: %s\n", path, m.Check, m.Subject, m.String())
 		case !m.Pass:
-			fmt.Fprintf(w, "%s: warning %s %s: %s\n", path, m.Check, m.Subject, m.describe())
+			fmt.Fprintf(w, "%s: warning %s %s: %s\n", path, m.Check, m.Subject, m.String())
 		case verbose:
-			fmt.Fprintf(w, "%s: ok      %s %s: %s\n", path, m.Check, m.Subject, m.describe())
+			fmt.Fprintf(w, "%s: ok      %s %s: %s\n", path, m.Check, m.Subject, m.String())
 		}
 	}
 	verdict := "ok"

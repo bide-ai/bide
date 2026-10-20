@@ -185,7 +185,7 @@ var (
 )
 
 func TestPagesUseTokens(t *testing.T) {
-	root, err := filepath.Abs("../..")
+	root, err := filepath.Abs("..")
 	if err != nil {
 		t.Fatal(err)
 	}

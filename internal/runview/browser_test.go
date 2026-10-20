@@ -222,6 +222,9 @@ type chromeOut struct {
 		FG      string `json:"fg"`
 		BGToken string `json:"bgToken"`
 		Current string `json:"current"`
+		// SwitchDisplay is the theme switch's computed display; Names the themes the page offers.
+		SwitchDisplay string `json:"switchDisplay"`
+		Names         string `json:"names"`
 	} `json:"combos"`
 	Console []string `json:"console"`
 }
@@ -269,6 +272,8 @@ func everyStateFixtures(t *testing.T) map[string]string {
 	}
 	serve("runWaiting", "/run?id=g1", Options{Source: JournalSource{J: gj}})
 	serve("runDefault", "/run?id=f1", Options{Source: JournalSource{J: j}, DefaultTheme: "dark"})
+	serve("runLocked", "/run?id=f1", Options{Source: JournalSource{J: j}, ThemeLock: "dark"})
+	serve("runLockedLight", "/run?id=f1", Options{Source: JournalSource{J: j}, ThemeLock: "light"})
 	cs := &crashStore{Store: agent.NewMemStore(), lose: "node:charge", armed: true}
 	hf := refundFlow(t, &charges)
 	if _, err := hf.Run(context.Background(), agenttest.MustJournal(cs), "h1", order{ID: "o-1", Amount: 250}); !errors.Is(err, errCrash) {
@@ -656,10 +661,37 @@ func checkCombos(t *testing.T, out chromeOut) {
 		"prefers-contrast+stored":  {"#121214", "rgb(236, 236, 231)", "dark"},
 		"prefers-contrast+default": {"#ffffff", "rgb(0, 0, 0)", "high-contrast"},
 		"default":                  {"#121214", "rgb(236, 236, 231)", "dark"},
+		// A locked page: the lock whatever the system or the page sets; the system's requests win.
+		"locked":                              {"#121214", "rgb(236, 236, 231)", "dark"},
+		"locked+system-light":                 {"#121214", "rgb(236, 236, 231)", "dark"},
+		"locked-light+system-dark":            {"#f6f6f2", "rgb(26, 26, 23)", "light"},
+		"locked+set-in-page":                  {"#121214", "rgb(236, 236, 231)", "dark"},
+		"locked+prefers-contrast":             {"#ffffff", "rgb(0, 0, 0)", "high-contrast"},
+		"locked+prefers-contrast+set-in-page": {"#ffffff", "rgb(0, 0, 0)", "high-contrast"},
+		"locked+forced-colors":                {"Canvas", "", ""},
+		"locked+forced-colors+set-in-page":    {"Canvas", "", ""},
 	} {
 		got, ok := out.Combos[key]
 		if !ok {
 			t.Errorf("no measurement for %s", key)
+			continue
+		}
+		if strings.HasPrefix(key, "locked") {
+			// One theme and no switch, whatever else the page or the system does.
+			wantNames := "dark"
+			if strings.HasPrefix(key, "locked-light") {
+				wantNames = "light"
+			}
+			if got.Names != wantNames || got.SwitchDisplay != "none" {
+				t.Errorf("%s: the page offers %q with the switch displayed as %q; want %q and none", key, got.Names, got.SwitchDisplay, wantNames)
+			}
+		} else if got.SwitchDisplay == "none" {
+			t.Errorf("%s: the theme switch is hidden on a page that is not locked", key)
+		}
+		if want.fg == "" { // forced colors: the system's colors; only the ground is a token
+			if got.BGToken != want.token || got.BG == "rgb(18, 18, 20)" {
+				t.Errorf("%s: --bg %q, page ground %s; want %q and not the dark theme's", key, got.BGToken, got.BG, want.token)
+			}
 			continue
 		}
 		if got.BGToken != want.token || got.FG != want.fg || got.Current != want.current {

@@ -1,7 +1,11 @@
 // Package theme is the theme layer of bide's visual pages: a theme is a small JSON file of typed
 // values (colours, enums, numbers in ranges), never CSS. Parse reads and checks one, Check measures
-// it against the contrast and distinctness rules, and CSS turns checked themes into the one
-// generated stylesheet of custom properties the pages load. See docs/design/themes.md.
+// it against the contrast and distinctness rules, and Load does the same for a file. A Go program
+// that serves bide's pages passes the checked themes to planview.WithThemes or flowedit.WithThemes
+// (and to the matching WithDefaultTheme and WithThemeLock); the handler turns them into the one
+// generated stylesheet of custom properties its pages load. The package exports no way to get that
+// stylesheet, to build a Theme from fields, or to pass CSS: a *Theme exists only if it passed the
+// checks. See docs/design/themes.md and docs/guides/themes.md.
 //
 // A theme holds two layers of tokens. The semantic tokens (ok, info, warning, alert, gated, effect,
 // idem, idle, on) have a meaning bide fixes; a theme supplies their values and is refused if the
@@ -17,13 +21,11 @@ import (
 	"regexp"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/bide-ai/bide/internal/strictjson"
+	"github.com/bide-ai/bide/internal/themeaccess"
 )
 
 // MaxSize is the largest theme file Parse reads.
@@ -193,7 +195,7 @@ func Parse(data []byte) (*Theme, Report, error) {
 		}
 		return nil, Report{}, err
 	}
-	return t, t.report, nil
+	return t, t.report.clone(), nil
 }
 
 func shippedBases() map[string]*Theme {
@@ -375,8 +377,10 @@ func (t *Theme) Name() string { return t.name }
 // Shipped reports whether the theme is one of bide's own.
 func (t *Theme) Shipped() bool { return t.shipped }
 
-// Report returns the theme's check report, which for a theme that parsed holds only warnings.
-func (t *Theme) Report() Report { return t.report }
+// Report returns a copy of the theme's check report, which for a theme that parsed holds only
+// warnings. Changing the copy does not change the theme, which may be a shipped one shared by every
+// reader in the program.
+func (t *Theme) Report() Report { return t.report.clone() }
 
 // Dark reports whether the theme's ground is dark: the relative luminance of its background is
 // below 0.18. It sets color-scheme, so the browser's own controls agree with the colours.
@@ -387,27 +391,4 @@ func round2(v float64) float64 { return math.Round(v*100) / 100 }
 
 // fileError is the error of a theme file that did not decode. The text comes from the decoder and
 // may hold a key or value of the file (which of them depends on the Go version), so it is escaped.
-func fileError(err error) error { return errors.New("theme file: " + printable(err.Error())) }
-
-// Escape returns s with every character that does not print written as a Go escape (\x1b, \n,
-// \u202e), so text from a file or a file name is safe to write to a terminal or a log. A caller that
-// prints a path or a value of a theme file uses it.
-func Escape(s string) string { return printable(s) }
-
-// printable returns s with every rune that is not printable (a control character, an escape, a
-// newline, a byte that is not UTF-8) written as a Go escape, so text from a hostile file is safe to
-// print and cannot start a line of its own.
-func printable(s string) string {
-	var b strings.Builder
-	for i, r := range s {
-		switch {
-		case r == utf8.RuneError && s[i] != 0xEF: // an invalid byte, not a written U+FFFD
-			fmt.Fprintf(&b, "\\x%02x", s[i])
-		case unicode.IsPrint(r):
-			b.WriteRune(r)
-		default:
-			b.WriteString(strings.Trim(strconv.QuoteRune(r), "'"))
-		}
-	}
-	return b.String()
-}
+func fileError(err error) error { return errors.New("theme file: " + themeaccess.Escape(err.Error())) }
