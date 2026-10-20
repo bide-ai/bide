@@ -22,6 +22,8 @@ try {
   await atRest();
   await page.click('#outline button[data-node="charge"]');
   await atRest();
+  // Open every disclosure: the controls inside are part of what the themes must reach.
+  await page.evaluate(() => document.querySelectorAll('details').forEach((d) => { d.open = true; }));
 
   // What the page painted in the current state. Colours are resolved by the browser; the contrast
   // ratios are WCAG 2.x.
@@ -55,8 +57,32 @@ try {
       primary: { ratio: ratio(primary.text, primary.fill), text: 'rgb(' + primary.text.slice(0, 3).join(', ') + ')', onAccent: probe(token('--on-accent')), fill: 'rgb(' + primary.fill.slice(0, 3).join(', ') + ')', accent: probe(token('--accent')) },
       controls: ['#undo', '#source', '#outline button'].map(control),
       selStroke: sel ? cs(sel, 'stroke') : '', focus: probe(token('--focus')),
+      selWidth: sel ? parseFloat(cs(sel, 'strokeWidth')) : 0,
+      otherWidth: Math.max(...[...document.querySelectorAll('#canvas .node:not(.sel) .box')].map((e) => parseFloat(cs(e, 'strokeWidth')))),
       backdrop, scrim: probe(token('--scrim')),
     };
+  });
+
+  // Every visible control, with every disclosure open and a node selected: its edge is the border_strong
+  // token (a selected or primary control marks its state with the accent instead) and a text control
+  // sits on the card token. A control the theme does not reach is listed.
+  const audit = () => page.evaluate(() => {
+    const probe = (value) => { const e = document.createElement('i'); e.style.color = value; document.body.append(e); const c = getComputedStyle(e).color; e.remove(); return c; };
+    const root = document.documentElement;
+    const token = (n) => getComputedStyle(root).getPropertyValue(n).trim();
+    const strong = probe(token('--line-strong')), card = probe(token('--card'));
+    const bad = [];
+    let seen = 0;
+    for (const e of document.querySelectorAll('input, select, textarea, button, summary')) {
+      if (e.getClientRects().length === 0 || e.type === 'checkbox' || e.type === 'radio' || e.type === 'hidden' || e.tagName === 'SUMMARY') continue;
+      if (e.classList.contains('primary') || e.getAttribute('aria-current') === 'true') continue;
+      const s = getComputedStyle(e);
+      seen++;
+      const id = e.id || e.className || e.tagName;
+      if (parseFloat(s.borderTopWidth) > 0 && s.borderTopColor !== strong) bad.push(id + ' edge ' + s.borderTopColor + ' want ' + strong);
+      if (e.tagName !== 'BUTTON' && s.backgroundColor !== card) bad.push(id + ' fill ' + s.backgroundColor + ' want ' + card);
+    }
+    return { seen, bad };
   });
 
   const mode = async (key, features, theme) => {
@@ -64,7 +90,9 @@ try {
     await page.evaluate((t) => { if (t) document.documentElement.setAttribute('data-theme', t); else document.documentElement.removeAttribute('data-theme'); }, theme);
     // A media change reaches the page's listeners with the next frame: wait for two.
     await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
-    return [key, await measure()];
+    const v = await measure();
+    v.audit = await audit();
+    return [key, v];
   };
 
   const results = {};

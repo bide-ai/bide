@@ -34,6 +34,12 @@ type themeState struct {
 		Color  string  `json:"color"`
 		Strong string  `json:"strong"`
 	} `json:"controls"`
+	SelWidth   float64 `json:"selWidth"`
+	OtherWidth float64 `json:"otherWidth"`
+	Audit      struct {
+		Seen int      `json:"seen"`
+		Bad  []string `json:"bad"`
+	} `json:"audit"`
 	SelStroke string `json:"selStroke"`
 	Focus     string `json:"focus"`
 	Backdrop  string `json:"backdrop"`
@@ -110,6 +116,12 @@ func checkPainted(t *testing.T, key string, m themeState) {
 	}
 	if m.SelStroke == "" || m.SelStroke != m.Focus {
 		t.Errorf("%s: the selected node's ring is %q, want the focus token %q", key, m.SelStroke, m.Focus)
+	}
+	if m.SelWidth < m.OtherWidth+2 {
+		t.Errorf("%s: the selected node's ring is %gpx against %gpx for the heaviest other node: selection needs a shape cue beside the colour", key, m.SelWidth, m.OtherWidth)
+	}
+	if m.Audit.Seen < 12 || len(m.Audit.Bad) > 0 {
+		t.Errorf("%s: %d controls audited; the theme does not reach: %q", key, m.Audit.Seen, m.Audit.Bad)
 	}
 	if m.Backdrop != m.Scrim || m.Backdrop == "rgba(0, 0, 0, 0)" {
 		t.Errorf("%s: the dialog backdrop is %q, want the scrim token %q", key, m.Backdrop, m.Scrim)

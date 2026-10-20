@@ -2,6 +2,8 @@
 .grow { flex: 1; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .btn { font: inherit; color: var(--fg); background: var(--card-2); border: 1px solid var(--line-strong); border-radius: var(--r-sm); padding: var(--s1) var(--s3); cursor: pointer; }
+/* Every text-like control, wherever a form puts it: the theme's surface and the control edge (border_strong). */
+input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]), select, textarea { font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--line-strong); border-radius: var(--r-sm); padding: var(--s1) var(--s2); }
 main { max-width: 1480px; }
 .editor { display: grid; grid-template-columns: minmax(0, 2fr) minmax(220px, 1fr) minmax(240px, 1fr); gap: var(--s4); align-items: start; }
 @media (max-width: 1100px) { .editor { grid-template-columns: 1fr; } }
@@ -22,12 +24,12 @@ main { max-width: 1480px; }
 .inspector dd { margin: 0; overflow-wrap: anywhere; }
 .source { width: 100%; min-height: 20em; background: var(--card); color: var(--fg); border: 1px solid var(--line-strong); border-radius: var(--r-md); padding: var(--s3); font: var(--t-sm)/1.5 var(--mono); white-space: pre; overflow: auto; resize: vertical; tab-size: 2; }
 /* The selection ring is the focus token over the state's stroke (the fill and the dashes still tell the state). A declared node's state rule has four classes, so the ring names it too. */
-.node.sel .box, .node.declared.sel .box { stroke-width: 4.5; stroke: var(--focus); }
+.node.sel .box, .node.declared.sel .box { stroke-width: 6; stroke: var(--focus); }
 .assert { margin: var(--s1) 0; }
 .weakened { margin-top: var(--s3); }
 .btn.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 600; }
 .btn:disabled { opacity: .5; cursor: default; }
-dialog { max-width: min(900px, 94vw); width: 100%; background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: var(--r-lg); padding: var(--s5); box-shadow: var(--shadow); }
+dialog { max-width: min(900px, 94vw); width: 100%; background: var(--card); color: var(--fg); border: 1px solid var(--line-strong); border-radius: var(--r-lg); padding: var(--s5); box-shadow: var(--shadow); }
 dialog::backdrop { background: var(--scrim); }
 dialog h2 { margin-top: 0; }
 .dialog-actions { display: flex; gap: var(--s3); justify-content: flex-end; margin-top: var(--s4); }
