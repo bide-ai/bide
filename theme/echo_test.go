@@ -13,7 +13,7 @@ func TestLoad_ErrorDoesNotEchoALongNameOrEscape(t *testing.T) {
 	dir := t.TempDir()
 	for name, key := range map[string]string{
 		"long name": "HOSTSECRET-" + strings.Repeat("k", 500),
-		"escape":      `\u001b[31mred`,
+		"escape":    `\u001b[31mred`,
 	} {
 		p := filepath.Join(dir, "t.json")
 		if err := os.WriteFile(p, []byte(`{"`+key+`":1}`), 0o600); err != nil {
