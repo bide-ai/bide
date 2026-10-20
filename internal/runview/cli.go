@@ -20,6 +20,7 @@ import (
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/internal/approveline"
 	safetext "github.com/bide-ai/bide/internal/printable"
+	"github.com/bide-ai/bide/internal/safefile"
 	"github.com/bide-ai/bide/internal/term"
 	"github.com/bide-ai/bide/internal/themeaccess"
 	"github.com/bide-ai/bide/plan"
@@ -495,7 +496,7 @@ func readConfig(path string, toJSON func([]byte) ([]byte, error)) (Config, error
 	if betweenStatAndOpen != nil {
 		betweenStatAndOpen()
 	}
-	f, err := openConfig(path)
+	f, err := safefile.Open(path)
 	if err != nil {
 		return Config{}, err
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/bide-ai/bide/internal/safefile"
 	"io"
 	"os"
 	"unicode/utf8"
@@ -39,7 +40,7 @@ func ReadDescriptionFile(path string) (*plan.RegistryDescription, string, error)
 	} else if !fi.Mode().IsRegular() {
 		return nil, "", fmt.Errorf("%s: not a regular file", path)
 	}
-	f, err := openNoWait(path)
+	f, err := safefile.Open(path)
 	if err != nil {
 		return nil, "", err
 	}

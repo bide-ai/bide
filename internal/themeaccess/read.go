@@ -3,6 +3,8 @@ package themeaccess
 import (
 	"fmt"
 	"io"
+
+	"github.com/bide-ai/bide/internal/safefile"
 )
 
 // ReadLimited reads the theme file at path: a regular file of at most max bytes. A named pipe or a
@@ -10,7 +12,7 @@ import (
 // max is refused without reading the rest of it, so a path named by mistake, or swapped after it
 // was checked, cannot hang the caller or exhaust its memory.
 func ReadLimited(path string, max int) ([]byte, error) {
-	f, err := openNoWait(path)
+	f, err := safefile.Open(path)
 	if err != nil {
 		return nil, err
 	}
