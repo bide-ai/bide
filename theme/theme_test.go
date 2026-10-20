@@ -622,7 +622,7 @@ func TestC2OnEveryGround(t *testing.T) {
 			}
 		})
 	}
-	// The shipped themes meet 3:1 on every one of those grounds (the lowest is 3.46).
+	// The shipped themes meet 3:1 on every one of those grounds (the lowest for focus and control edges is 3.60, border_strong on surface2 in light).
 	for _, th := range Shipped() {
 		for _, m := range th.Report().Measures {
 			if m.Check == "C2" && !m.Pass {
