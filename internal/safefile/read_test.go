@@ -79,3 +79,28 @@ func TestReadMaxInt(t *testing.T) {
 		t.Errorf("Read with max = MaxInt = %q, %v", b, err)
 	}
 }
+
+// OpenIn opens a name inside a root and a swapped-in directory shows in the opened file's Stat.
+func TestOpenIn(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "f"), []byte("abc"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	f, err := OpenIn(root, "f")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := make([]byte, 3)
+	if n, err := f.Read(b); err != nil || string(b[:n]) != "abc" {
+		t.Errorf("read through OpenIn = %q, %v", b[:n], err)
+	}
+	f.Close()
+	if _, err := OpenIn(root, "../x"); err == nil {
+		t.Error("OpenIn left the root")
+	}
+}

@@ -557,18 +557,17 @@ const maxInput = 256 << 20
 // maxConfig caps a flow config file, as plan.LoadReader does: far past any topology.
 const maxConfig = 16 << 20
 
+// maxKeyFile caps a public key file named by -pubkey: a key is a few dozen bytes.
+const maxKeyFile = 1 << 20
+
 func readStrict(path string, v any) error {
-	f, err := os.Open(path)
+	b, err := safefile.Read(path, maxInput, nil)
 	if err != nil {
+		var refused *safefile.RefusedError
+		if errors.As(err, &refused) && refused.Kind == safefile.TooLarge {
+			return fmt.Errorf("%s is larger than %d bytes", path, maxInput)
+		}
 		return err
-	}
-	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, maxInput+1))
-	if err != nil {
-		return err
-	}
-	if len(b) > maxInput {
-		return fmt.Errorf("%s is larger than %d bytes", path, maxInput)
 	}
 	if err := audit.UnmarshalStrict(b, v); err != nil {
 		return fmt.Errorf("parse %s: %w", path, err)
@@ -583,8 +582,12 @@ func readKey(s string) (audit.Verifier, error) {
 	} else if errors.Is(err, audit.ErrWeakKey) {
 		return nil, err
 	}
-	b, err := os.ReadFile(s)
+	b, err := safefile.Read(s, maxKeyFile, nil)
 	if err != nil {
+		var refused *safefile.RefusedError
+		if errors.As(err, &refused) {
+			return nil, fmt.Errorf("public key: %q is neither a key nor a readable file: %w", s, err)
+		}
 		return nil, fmt.Errorf("public key: %q is neither a key nor a readable file", s)
 	}
 	return audit.ParsePublicKey(strings.TrimSpace(string(b)))
