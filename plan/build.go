@@ -275,6 +275,10 @@ func (c *builderCore) topoOrder() ([]string, error) {
 	}
 
 	// Seed the queue in declared node order so ties break deterministically.
+	declared := make(map[string]int, len(c.nodes))
+	for i, n := range c.nodes {
+		declared[n.name] = i
+	}
 	var queue []string
 	for _, n := range c.nodes {
 		if indeg[n.name] == 0 {
@@ -295,17 +299,11 @@ func (c *builderCore) topoOrder() ([]string, error) {
 				freed = append(freed, next)
 			}
 		}
-		if len(freed) > 0 {
-			freedSet := make(map[string]bool, len(freed))
-			for _, f := range freed {
-				freedSet[f] = true
-			}
-			for _, n := range c.nodes {
-				if freedSet[n.name] {
-					queue = append(queue, n.name)
-				}
-			}
+		// (A node is freed once, when its in-degree reaches zero, so the list holds each name once.)
+		if len(freed) > 1 {
+			sort.Slice(freed, func(i, j int) bool { return declared[freed[i]] < declared[freed[j]] })
 		}
+		queue = append(queue, freed...)
 	}
 	if len(order) != len(c.nodes) {
 		emitted := make(map[string]bool, len(order))

@@ -131,7 +131,6 @@ type ConfigProblem struct {
 	To       string `json:"to,omitempty"`
 	Message  string `json:"message"`
 	Severity string `json:"severity"`
-	// contains filtered or unexported fields
 }
 ```
 
