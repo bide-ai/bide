@@ -535,3 +535,30 @@ func TestTypedRefusalNeedsTheRestOfTheConfigToResolve(t *testing.T) {
 		t.Errorf("a misfit beside an unknown block: %d %s", w.Code, w.Body)
 	}
 }
+
+// A config with an error elsewhere and a connection that does not fit: the misfit is not listed (plan
+// checks types after it resolves every block), so the view must not read as checked. Its verdict is not
+// good, it has errors, each node still carries the types the program gave its block (so the page marks
+// the target), the weakening is not certified, and a save needs confirming.
+func TestAMisfitBesideAnotherErrorNeverReadsAsChecked(t *testing.T) {
+	text := strings.Replace(strings.Replace(testFlow, "block: receipt", "block: nowhere", 1), "wiring:\n", "  - {name: loose, block: count}\nwiring:\n  - edge: [validate, loose]\n", 1)
+	for kind, s := range typedServers(t, "refund.yaml", testFlow) {
+		if kind == "structural" {
+			continue
+		}
+		v := s.view([]byte(text))
+		if v.Errors == 0 || v.Verdict.Class == "good" || v.Weakening == nil || v.Weakening.NotCertified == "" {
+			t.Errorf("%s: errors %d verdict %q not certified %v", kind, v.Errors, v.Verdict.Class, v.Weakening)
+		}
+		types := map[string][2]string{}
+		for _, n := range v.Nodes {
+			types[n.Name] = [2]string{n.In, n.Out}
+		}
+		if types["validate"][1] == "" || types["loose"][0] == "" || types["validate"][1] == types["loose"][0] {
+			t.Errorf("%s: the page cannot mark the misfit: %v", kind, types)
+		}
+		if len(s.confirmations([]byte(text))) == 0 {
+			t.Errorf("%s: a save of an uncertified text needs no confirmation", kind)
+		}
+	}
+}

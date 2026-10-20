@@ -1104,7 +1104,10 @@ function renderTyped(v) {
   document.querySelector('a[data-skip="blocks"]').hidden = !t;
   if (!t) { replace('typed-info'); return; }
   $('typed-tag').textContent = shown('typed: ' + (t.source === 'description' ? 'per description file' : 'program\'s Registry'));
+  // Plan checks types after it has resolved every block and safety, so while another error stands a
+  // misfit may not be listed yet: say so, so that a list of problems is never read as "the types fit".
   replace('typed-info',
+    v.errors > 0 ? h('p', { class: 'warn small', id: 'types-pending' }, 'Types are checked in full once the errors below are fixed: a connection that does not fit may not be among them yet.') : null,
     t.digest ? h('details', { id: 'digest' }, h('summary', {}, 'Digest ' + t.digest.slice(0, 12) + ': the flow:digest a run of this config journals'), h('p', {}, h('code', { class: 'wrap' }, t.digest)))
       : h('p', { class: 'muted small', id: 'digest-none' }, 'Digest: not computed while the config has errors.'));
   renderPalette(v);

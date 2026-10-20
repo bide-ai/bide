@@ -126,14 +126,16 @@ func TestTypedModeInChrome(t *testing.T) {
 // with" and not "not weaker than".
 func TestTypedBannersInChrome(t *testing.T) {
 	var r struct {
-		OK           bool   `json:"ok"`
-		Error        string `json:"error"`
-		TypedTagHide bool   `json:"typedTagHidden"`
-		BlocksHidden bool   `json:"blocksHidden"`
-		SkipHidden   bool   `json:"skipHidden"`
-		TypedInfo    int    `json:"typedInfo"`
-		Baseline     string `json:"baseline"`
-		Banners      []struct {
+		OK            bool   `json:"ok"`
+		Error         string `json:"error"`
+		TypedTagHide  bool   `json:"typedTagHidden"`
+		BlocksHidden  bool   `json:"blocksHidden"`
+		SkipHidden    bool   `json:"skipHidden"`
+		TypedInfo     int    `json:"typedInfo"`
+		Baseline      string `json:"baseline"`
+		TypedInfoText string `json:"typedInfoText"`
+		VerdictClass  string `json:"verdictClass"`
+		Banners       []struct {
 			Role string `json:"role"`
 			Word string `json:"word"`
 			Line string `json:"line"`
@@ -149,6 +151,9 @@ func TestTypedBannersInChrome(t *testing.T) {
 		runScript(t, "typed-structural.mjs", servers[kind], &r)
 		if !r.OK || r.TypedTagHide || r.BlocksHidden || len(r.Banners) != 1 || r.Banners[0].Word != "NOT CERTIFIED" || r.Banners[0].Role != "alert" || !strings.Contains(r.Banners[0].Line, "not certified") {
 			t.Errorf("%s: %+v", kind, r)
+		}
+		if !strings.Contains(r.TypedInfoText, "Types are checked in full once the errors below are fixed") || strings.Contains(r.VerdictClass, "v-good") {
+			t.Errorf("%s: an unresolved config reads as checked: %q, verdict %q", kind, r.TypedInfoText, r.VerdictClass)
 		}
 		if !strings.Contains(r.Baseline, "compared with") || strings.Contains(r.Baseline, "not weaker than") {
 			t.Errorf("%s: baseline line %q", kind, r.Baseline)

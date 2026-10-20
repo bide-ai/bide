@@ -27,6 +27,9 @@ try {
   r.typedInfo = await page.$eval('#typed-info', (e) => e.children.length);
   r.banners = await page.$$eval('#weakened section', (s) => s.map((x) => ({ role: x.getAttribute('role'), word: x.querySelector('.vword').textContent, line: x.querySelector('.vline').textContent, cls: x.className })));
   r.baseline = await text('#baseline');
+  r.typedInfoText = await text('#typed-info');
+  r.verdictClass = await page.$eval('#verdict section', (e) => e.className);
+  r.verdictWord = await text('#vword');
   out = { ok: true, ...r, console: console_, failed, offOrigin };
 } catch (e) {
   out = { ok: false, error: String(e && e.message || e), console: console_, failed, offOrigin };
