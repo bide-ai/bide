@@ -33,7 +33,7 @@ proofs. Each entry notes who it is for.
 ## Guides: inspect
 
 - **[Flow editor](guides/flow-editor.md)**: `bide edit`, a local page for a flow config: the graph, an outline, each node's approval gate and safety, the assertions and the check, with the source editable, a banner when an edit weakens the flow, and a save that shows the diff first.
-- **[Themes](guides/themes.md)**: the file format of a theme for the run viewer (the editor takes themes in a later release), the checks a theme must pass, and `bide theme check`. `bide view` draws from the checked themes (`light`, `dark`, `high-contrast`), answers `prefers-contrast` and forced colours, and takes a theme file of your own with `-theme`.
+- **[Themes](guides/themes.md)**: the file format of a theme for the run viewer and the editor, the checks a theme must pass, and `bide theme check`. `bide view` and `bide edit` draw from the checked themes (`light`, `dark`, `high-contrast`), answer `prefers-contrast` and forced colours, and take a theme file of your own with `-theme`; a Go program can pass checked themes, a default or a lock to `planview` and `flowedit`.
 - **[Run viewer](guides/run-viewer.md)**: `bide view`, a read-only local page for a journal's runs (a run list filtered by state, kind and run ID) and for one run: timeline, flow path, halts, approval gates, and the audit verdict; it follows a run in progress.
 - **[Debugging and recovery](guides/debugging.md)**: replay, event reconstruction, Mermaid diagrams, and crash recovery.
 
