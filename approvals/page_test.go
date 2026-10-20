@@ -28,6 +28,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/approvals"
+	"github.com/bide-ai/bide/internal/browsertest"
 )
 
 func allowAll(*http.Request, approvals.Access) error { return nil }
@@ -285,10 +286,10 @@ type e2eOut struct {
 func (r *rig) runPage(t *testing.T, node, base, approver string, approved bool) e2eOut {
 	t.Helper()
 	priv := r.privs[approver]
-	cmd := exec.Command(node, filepath.Join("page", "test", "e2e.mjs"))
-	cmd.Env = append(os.Environ(), "BASE="+base, "RUN="+runID, "CALL=c1", "APPROVER="+approver, "APPROVED="+map[bool]string{true: "true", false: "false"}[approved],
+	env := append(os.Environ(), "BASE="+base, "RUN="+runID, "CALL=c1", "APPROVER="+approver, "APPROVED="+map[bool]string{true: "true", false: "false"}[approved],
 		"SEED_HEX="+hex.EncodeToString(priv.Seed()), "PUB_HEX="+hex.EncodeToString(r.enrolled[approver]), "NOW="+r.clock().Add(time.Second).Format(time.RFC3339Nano))
-	out, err := cmd.CombinedOutput()
+	// A stalled script is killed at the deadline instead of holding the run (internal/browsertest).
+	out, err := browsertest.Run(node, "", env, filepath.Join("page", "test", "e2e.mjs"))
 	if err != nil {
 		t.Fatalf("node e2e: %v\n%s", err, out)
 	}

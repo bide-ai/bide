@@ -9,6 +9,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/bide-ai/bide/internal/browsertest"
 )
 
 // browserFail fails the test in CI (where BIDE_EDIT_BROWSER=1 means the job installed everything),
@@ -83,19 +86,41 @@ func browserTools(t *testing.T) (node, dir, chrome string) {
 	return node, dir, chrome
 }
 
-// runScript serves s on a loopback port, runs browser/script in Node against its page in Chrome and
-// decodes the one JSON line it prints into out. The script sees FILE, the path of the config.
-func runScript(t *testing.T, script string, s *Server, out any) {
+// scriptOutput serves s on a loopback port and runs browser/script in Node against its page in Chrome,
+// returning what the script printed. The script sees FILE, the path of the config. A stalled Chrome or
+// script is killed, with the Chrome it started, at the deadline (internal/browsertest): the test fails
+// fast and says where the script had got to, instead of holding the run until the binary times out.
+func scriptOutput(t *testing.T, script string, s *Server) ([]byte, error) {
 	t.Helper()
 	node, dir, chrome := browserTools(t)
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
-	cmd := exec.Command(node, script)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "CHROME_BIN="+chrome, "PAGE_URL="+ts.URL+"/#t="+s.Token(), "FILE="+s.path)
-	raw, err := cmd.Output()
+	return browsertest.Run(node, dir, append(os.Environ(), "CHROME_BIN="+chrome, "PAGE_URL="+ts.URL+"/#t="+s.Token(), "FILE="+s.path), script)
+}
+
+// runScript runs browser/script (see scriptOutput) and decodes the one JSON line it prints into out.
+func runScript(t *testing.T, script string, s *Server, out any) {
+	t.Helper()
+	raw, err := scriptOutput(t, script, s)
 	if jerr := json.Unmarshal(raw, out); jerr != nil {
 		t.Fatalf("the script printed no result (%v): %q", err, raw)
+	}
+}
+
+// TestScriptsHaveADeadline: a script that stalls fails the test at the deadline with what it had
+// printed, instead of holding the run. browser/stall.mjs prints a line and waits for ever.
+func TestScriptsHaveADeadline(t *testing.T) {
+	s, _ := newTestServer(t, "refund.yaml", testFlow)
+	old := browsertest.Deadline
+	browsertest.Deadline = 2 * time.Second
+	defer func() { browsertest.Deadline = old }()
+	start := time.Now()
+	_, err := scriptOutput(t, "stall.mjs", s)
+	if err == nil || !strings.Contains(err.Error(), "was still running after 2s") || !strings.Contains(err.Error(), "stalled on purpose") {
+		t.Errorf("err = %v, want a deadline error quoting the script's output", err)
+	}
+	if took := time.Since(start); took > 20*time.Second {
+		t.Errorf("the stalled script held the test for %v", took)
 	}
 }
 

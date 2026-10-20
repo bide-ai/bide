@@ -15,6 +15,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/browsertest"
 	"github.com/bide-ai/bide/plan"
 )
 
@@ -290,10 +291,8 @@ func runColourScript(t *testing.T, urls map[string]string) chromeOut {
 	t.Helper()
 	node, dir, chrome := viewTools(t)
 	pages, _ := json.Marshal(urls)
-	cmd := exec.Command(node, "colouronly.mjs")
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "CHROME_BIN="+chrome, "PAGES="+string(pages))
-	raw, err := cmd.Output()
+	// A stalled Chrome or script is killed, with the Chrome it started, at the deadline (internal/browsertest).
+	raw, err := browsertest.Run(node, dir, append(os.Environ(), "CHROME_BIN="+chrome, "PAGES="+string(pages)), "colouronly.mjs")
 	var out chromeOut
 	if jerr := json.Unmarshal(raw, &out); jerr != nil {
 		t.Fatalf("the script printed no result (%v): %q", err, raw)
