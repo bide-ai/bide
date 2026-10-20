@@ -2,6 +2,7 @@ package safefile
 
 import (
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -65,5 +66,16 @@ func TestReadPathSwapped(t *testing.T) {
 	refusal(t, err, Changed)
 	if !strings.Contains(err.Error(), "changed while it was opened") {
 		t.Errorf("error = %q", err)
+	}
+}
+
+// A limit at the top of the range reads the whole file; it does not wrap around to read nothing.
+func TestReadMaxInt(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "f")
+	if err := os.WriteFile(p, []byte("abc"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := Read(p, math.MaxInt, nil); err != nil || string(b) != "abc" {
+		t.Errorf("Read with max = MaxInt = %q, %v", b, err)
 	}
 }

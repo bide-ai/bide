@@ -3,6 +3,7 @@ package safefile
 import (
 	"fmt"
 	"io"
+	"math"
 	"os"
 )
 
@@ -27,6 +28,7 @@ type RefusedError struct {
 	Max  int
 }
 
+// Error says which file was refused and why, in one line.
 func (e *RefusedError) Error() string {
 	switch e.Kind {
 	case Changed:
@@ -64,7 +66,12 @@ func Read(path string, max int, afterStat func()) ([]byte, error) {
 	if after, err := f.Stat(); err != nil || !after.Mode().IsRegular() {
 		return nil, &RefusedError{Path: path, Kind: Changed}
 	}
-	b, err := io.ReadAll(io.LimitReader(f, int64(max)+1))
+	// One byte past max proves the file is over it; a max at the top of the range cannot be passed.
+	limit := int64(max)
+	if limit < math.MaxInt64 {
+		limit++
+	}
+	b, err := io.ReadAll(io.LimitReader(f, limit))
 	if err != nil {
 		return nil, err
 	}
