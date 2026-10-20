@@ -163,3 +163,17 @@ func TestKillProfileMeta(t *testing.T) {
 		t.Errorf("the process of a directory with regexp metacharacters in its name was not killed")
 	}
 }
+
+// A script that handles SIGTERM, as puppeteer's handler does, gets to run it before it is killed.
+func TestRunAsksTheScriptToStopFirst(t *testing.T) {
+	out, err, took := run(t, "sigterm", 700*time.Millisecond)
+	if !TimedOut(err) {
+		t.Fatalf("err = %v, want a deadline error", err)
+	}
+	if !strings.Contains(string(out), "closing chrome on SIGTERM") || !strings.Contains(err.Error(), "closing chrome on SIGTERM") {
+		t.Errorf("the script was not sent SIGTERM before it was killed: stdout %q", out)
+	}
+	if took > 10*time.Second {
+		t.Errorf("held the test for %v", took)
+	}
+}
