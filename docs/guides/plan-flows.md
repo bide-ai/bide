@@ -573,7 +573,7 @@ The gate is enforced as in Go (see [Approval gates on nodes](#approval-gates-on-
 with `plan.WithLoadedApproverVerifiers(approvers)`, or `Load` refuses an m-of-n block (`ErrConfig`,
 naming the node). A join wiring element takes the same `approval` block. A block may restate the gate
 its registered block declares (a tool's own `ToolSpec.Approval`, or `plan.Approval` given at
-registration) but not replace it: a config cannot loosen a tool's gate.
+registration) but not replace it: a config cannot loosen a tool's gate. A block that declares a gate and a config that sets another is one problem, worded with its fix (keep one, by removing `approval` from the config or the gate from the block).
 
 <a id="policy-assertions"></a>
 #### Policy assertions: the `assert` list
@@ -744,7 +744,7 @@ journal's topology, a step or predicate name) as `\u{XXXX}`; the JSON endpoints 
 
 `Load` **reports all failures at once** (collect-all drift): it names every unresolved block or
 predicate with a near-miss suggestion where one exists, and flags registered blocks the config never
-uses. For CI, **`Validate(data, reg) error`** runs every check that does not need `In`/`Out`, so
+uses. It lists every type problem (every edge, arm, join input and terminal whose types do not fit), not the first, and `InspectConfig` reports up to 100 of them with a last line saying how many more there are; the errors of `Load` and `Validate` for these, and for the checks `Build` makes, wrap `agent.ErrConfig`. For CI, **`Validate(data, reg) error`** runs every check that does not need `In`/`Out`, so
 config-vs-registry drift is catchable in a unit test rather than only at process start.
 
 ### Inherited for free, and conformable to its config
