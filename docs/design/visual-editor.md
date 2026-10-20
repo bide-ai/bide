@@ -562,9 +562,9 @@ A graph editor is the kind of tool that is easy to build only for a mouse. Requi
 - **Reduced motion and contrast.** The flowing-dash animation stops under `prefers-reduced-motion`
   as it does in the viewer. The page draws from the checked themes of [Themes](themes.md) (`light`,
   `dark`, `high-contrast`, `-theme` for your own): text is 4.5:1 against the backgrounds it is drawn on; control
-  edges and the focus ring (which is the selection ring's colour) are checked at 3:1 on every ground
-  the page draws them on in every theme, a custom one included: the page, a panel, a nested panel and
-  the graph canvas, and the focus ring also on a node's fill and the selected item's tint (check C2;
+  edges and the focus ring (which is the selection ring's colour) are checked at 3:1 in every theme, a custom one included, against
+  the page, a panel, a nested panel and the graph canvas (the save dialog's edge is checked against the
+  page, not the dimmed page behind an open dialog), and the focus ring also on a node's fill and the selected item's tint (check C2;
   the lowest in the shipped themes is 3.60:1, a control edge on `surface2` in `light`);
   `prefers-contrast: more` gets `high-contrast`, and forced colors get the system's. The header button steps through the themes, names the next one and announces
   it; a host that locks the editor to one theme hides it. The selected node's ring is 7 px, heavier
