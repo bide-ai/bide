@@ -104,13 +104,19 @@ func InspectConfig(data []byte, reg *Registry, opts ...InspectOption) (r ConfigR
 // InspectOption changes what InspectConfig and InspectConfigDescribed check.
 type InspectOption func(*inspectOptions)
 
-type inspectOptions struct{ allowUnused bool }
+type inspectOptions struct{ allowUnused, allTypeProblems bool }
 
 // AllowUnusedBlocks makes a registered block the config does not use no problem. Load and Validate
 // refuse it (a registration nothing uses is drift), and so does a check without this option; a tool
 // that lists the blocks a config could use, as the flow editor's palette does, passes it so that the
 // blocks it has not placed yet do not stop the check from reading the ones it has.
 func AllowUnusedBlocks() InspectOption { return func(o *inspectOptions) { o.allowUnused = true } }
+
+// AllTypeProblems lists every type problem of the config. Without it a report lists the first 100 and
+// then one line counting the rest, which keeps a report short; a caller that compares two reports
+// to find what an edit added (the flow editor's typed mode) passes it, since a problem past the cap
+// would hide in the count.
+func AllTypeProblems() InspectOption { return func(o *inspectOptions) { o.allTypeProblems = true } }
 
 // inspectConfig is InspectConfig, and what InspectConfigDescribed runs on a Registry built from a
 // description: one implementation of the typed checks, whichever side the Registry came from.
@@ -232,7 +238,10 @@ func inspectConfigUnbounded(data []byte, reg *Registry, opts []InspectOption) (r
 	}
 	typeMsgs = append(typeMsgs, core.buildTypeProblems()...)
 	if len(typeMsgs) > 0 {
-		r.attribute(&cfg, fmt.Errorf("plan: load %q: %s", cfg.Flow, strings.Join(capTypeProblems(typeMsgs), "; ")))
+		if !o.allTypeProblems {
+			typeMsgs = capTypeProblems(typeMsgs)
+		}
+		r.attribute(&cfg, fmt.Errorf("plan: load %q: %s", cfg.Flow, strings.Join(typeMsgs, "; ")))
 		return r
 	}
 	// The wiring's own checks (a cycle, a loop's shape, reachability, a join's inputs), all of them,

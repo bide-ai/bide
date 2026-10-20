@@ -3,6 +3,7 @@ package flowedit
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -688,4 +689,58 @@ func TestTypedEditorRefusesASecondMisfit(t *testing.T) {
 			t.Errorf("%s: an unrelated operation was refused: %d %.300s", kind, w.Code, w.Body)
 		}
 	}
+}
+
+// The editor compares the full lists of type problems, not the 100 a report lists by default: with
+// more than 100 misfits in the text, an edit that adds one more (past the cap, where a count would hide
+// it) is refused, and an edit that fixes one is not.
+func TestTypedEditorRefusesAMisfitPastTheReportCap(t *testing.T) {
+	var nodes, wiring []string
+	nodes = append(nodes, `  - {name: a0, block: validate, safety: readonly}`)
+	for i := 1; i <= 130; i++ {
+		block := "plain"
+		if i%2 == 1 {
+			block = "count" // an int step between order steps: a misfit on each of its edges
+		}
+		nodes = append(nodes, fmt.Sprintf("  - {name: a%d, block: %s}", i, block))
+		wiring = append(wiring, fmt.Sprintf("  - edge: [a%d, a%d]", i-1, i))
+	}
+	nodes = append(nodes, "  - {name: t1, block: plain}", "  - {name: t2, block: plain}", "  - {name: end, block: receipt, safety: idempotent}")
+	wiring = append(wiring, "  - edge: [a130, t1]", "  - edge: [t1, t2]", "  - edge: [t2, end]")
+	text := "version: 1\nflow: long\nentry: a0\nnodes:\n" + strings.Join(nodes, "\n") + "\nwiring:\n" + strings.Join(wiring, "\n") + "\n"
+	servers := typedServers(t, "long.yaml", text)
+	for _, kind := range []string{"registry", "description"} {
+		s := servers[kind]
+		h := s.Handler()
+		if got := len(typeProblemsOf(s.typing.inspect([]byte(mustJSON(t, text))))); got != 130 {
+			t.Fatalf("%s: the text has %d type problems, want 130 (past the 100 a default report lists)", kind, got)
+		}
+		w := call(h, s, "/api/apply", applyReq(text, Operation{Op: "set_block", Node: "t2", Value: "count"}), nil)
+		if w.Code != 200 || !strings.Contains(w.Body.String(), `"refused":"the types do not fit: `) || strings.Contains(w.Body.String(), `"text"`) {
+			t.Errorf("%s: a misfit past the cap was not refused: %d %.300s", kind, w.Code, w.Body)
+		}
+		w = call(h, s, "/api/apply", applyReq(text, Operation{Op: "set_safety", Node: "a0", Value: "side_effect"}), nil)
+		if strings.Contains(w.Body.String(), `"refused"`) {
+			t.Errorf("%s: an unrelated operation on a text with 130 misfits was refused: %.300s", kind, w.Body)
+		}
+	}
+}
+
+func typeProblemsOf(r plan.ConfigReport) []plan.ConfigProblem {
+	var out []plan.ConfigProblem
+	for _, p := range r.Problems {
+		if typeProblem(p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func mustJSON(t *testing.T, yamlText string) string {
+	t.Helper()
+	j, err := ToJSON([]byte(yamlText))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(j)
 }

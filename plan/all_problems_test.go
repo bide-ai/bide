@@ -151,3 +151,28 @@ func TestInspectConfig_ReportsEveryWiringProblem(t *testing.T) {
 		t.Errorf("loops without an exit arm reported: %q", found)
 	}
 }
+
+// A config's problems come with the first one first, as they did when only the first was reported,
+// and AllTypeProblems lifts the cap of 100.
+func TestTypeProblems_OrderAndTheOption(t *testing.T) {
+	reg := typedChainRegistry(t)
+	r := InspectConfig([]byte(chainConfig(4)), reg, AllowUnusedBlocks())
+	got := typeProblemMessages(r)
+	if len(got) == 0 || !strings.Contains(got[0], `edge "n0" -> "n1"`) {
+		t.Errorf("the first problem leads: %q", got)
+	}
+	_, err := Load[string, int]([]byte(chainConfig(4)), func() *Registry {
+		reg := NewRegistry()
+		if err := reg.RegisterStep("s2i", func(_ context.Context, s string) (int, error) { return len(s), nil }); err != nil {
+			t.Fatal(err)
+		}
+		return reg
+	}())
+	if err == nil || !strings.HasPrefix(err.Error(), `plan: load "chain": edge "n0" -> "n1" connects`) {
+		t.Errorf("Load's error leads with the first problem: %v", err)
+	}
+	all := typeProblemMessages(InspectConfig([]byte(chainConfig(123)), reg, AllowUnusedBlocks(), AllTypeProblems()))
+	if len(all) != 122 {
+		t.Errorf("AllTypeProblems: %d problems, want 122", len(all))
+	}
+}

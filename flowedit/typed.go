@@ -83,7 +83,7 @@ func (t *typing) config(name string, data []byte) runview.Config {
 }
 
 func (t *typing) inspect(data []byte) plan.ConfigReport {
-	opts := []plan.InspectOption{plan.AllowUnusedBlocks()}
+	opts := []plan.InspectOption{plan.AllowUnusedBlocks(), plan.AllTypeProblems()}
 	if t.reg != nil {
 		return plan.InspectConfig(data, t.reg, opts...)
 	}
@@ -216,14 +216,12 @@ func (s *Server) typedRefusal(before, after []byte, op Operation) string {
 		return ""
 	}
 	had := map[string]bool{}
-	beforeMore := 0
 	for _, p := range s.typing.inspect(bd).Problems {
 		if !typeProblem(p) {
 			continue
 		}
-		if n, ok := moreTypeProblems(p.Message); ok {
-			beforeMore = n // plan lists the first 100 type problems and counts the rest
-			continue
+		if _, ok := moreTypeProblems(p.Message); ok {
+			continue // not asked for (see inspect); a count says nothing about which problems there are
 		}
 		// A rename does not make a problem the text already had a new one: compare under the rename.
 		m := p.Message
@@ -236,11 +234,9 @@ func (s *Server) typedRefusal(before, after []byte, op Operation) string {
 		if !typeProblem(p) {
 			continue
 		}
-		if n, ok := moreTypeProblems(p.Message); ok {
-			if n > beforeMore {
-				return "the types do not fit: " + p.Message
-			}
-			continue
+		if _, ok := moreTypeProblems(p.Message); ok {
+			// The report was cut short, so what it hides cannot be compared: refuse rather than guess.
+			return "the types do not fit: too many type problems to compare (" + p.Message + ")"
 		}
 		if !had[p.Message] {
 			return "the types do not fit: " + p.Message
