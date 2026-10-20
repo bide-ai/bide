@@ -1315,35 +1315,44 @@ async function save() {
   pv.needs_confirmation = pv.needs_confirmation || [];
   const cancel = h('button', { type: 'button', class: 'btn' }, 'Cancel');
   cancel.addEventListener('click', () => closeDialog(opener));
-  const confirmBox = h('input', { type: 'checkbox', id: 'confirm-weaken' });
-  const go = h('button', { type: 'button', class: 'btn primary', id: 'do-save', disabled: pv.needs_confirmation.length > 0 }, 'Save');
-  confirmBox.addEventListener('change', () => { go.disabled = !confirmBox.checked; });
+  // What the author is asked to confirm is named for what it is, and each statement has its own box: a
+  // weakening of the policy, a text that could not be certified against the program's blocks, a text
+  // that could not be compared with the baseline. Ticking one does not sign another, and Save waits for
+  // every box. An item the page cannot place is a weakening: the server asked, say the careful thing.
+  const w = view.weakening || {};
+  const groups = [
+    { id: 'confirm-weaken', word: 'THIS WEAKENS THE POLICY', say: ' I confirm that I am weakening this policy.', items: [] },
+    { id: 'confirm-uncertified', word: 'THIS CANNOT BE CERTIFIED', say: ' I confirm that I am saving it without a certified type check.', items: [] },
+    { id: 'confirm-uncompared', word: 'THIS COULD NOT BE COMPARED', say: ' I confirm that I am saving it without the comparison.', items: [] },
+  ];
+  for (const x of pv.needs_confirmation) {
+    if (w.not_certified && x === w.not_certified) groups[1].items.push(x);
+    else if (x.startsWith('not compared with ')) groups[2].items.push(x);
+    else groups[0].items.push(x);
+  }
+  const asked = groups.filter((g) => g.items.length);
+  const boxes = asked.map((g) => h('input', { type: 'checkbox', id: g.id }));
+  const go = h('button', { type: 'button', class: 'btn primary', id: 'do-save', disabled: asked.length > 0 }, 'Save');
+  const ticked = () => { go.disabled = boxes.some((c) => !c.checked); };
+  for (const c of boxes) c.addEventListener('change', ticked);
+  const confirmBox = boxes[0];
   const status = h('p', { class: 'bad', role: 'alert', id: 'save-error' });
   go.addEventListener('click', () => commit(pv, opener, status));
-  // What the author is asked to confirm is named for what it is: a weakening, a text that could not be
-  // certified against the program's blocks, a text that could not be compared, or more than one.
-  const w = view.weakening || {};
-  const kinds = [];
-  if ((w.weakened || []).length) kinds.push(['weakens the policy', 'weakening this policy']);
-  if (w.not_certified) kinds.push(['cannot be certified', 'saving without the full check']);
-  if (w.compare_error) kinds.push(['could not be compared', 'saving without the comparison']);
-  if (!kinds.length) kinds.push(['weakens the policy', 'weakening this policy']); // the server asked for a confirmation: say the safe thing
-  const confirmTitle = kinds.map((k) => k[0]).join(' and ').toUpperCase().replace(/^/, 'THIS ');
-  const confirmWords = ' I confirm that I am ' + kinds.map((k) => k[1]).join(' and ') + '.';
   const body = [
     !pv.changed ? h('p', {}, 'The text is the same as the file: nothing to write.') : null,
     pv.errors > 0 ? h('p', { class: 'warn' }, 'The text has ' + pv.errors + ' error' + (pv.errors === 1 ? '' : 's') + ' (bide check lists them). It can be saved, and it will fail bide check and plan.Load until they are fixed.') : null,
     (pv.removed_comments || []).length ? h('div', {}, h('p', { class: 'warn' }, 'This save removes ' + pv.removed_comments.length + ' comment' + (pv.removed_comments.length === 1 ? '' : 's') + ':'),
       h('ul', {}, pv.removed_comments.map((c) => h('li', {}, h('code', {}, c))))) : null,
-    pv.needs_confirmation.length ? h('div', { class: 'verdict v-bad' }, h('div', { class: 'vicon' }, icon('halt')), h('div', { class: 'vtext' },
-      h('p', { class: 'vword' }, confirmTitle),
+    asked.length ? h('div', { class: 'verdict v-bad' }, h('div', { class: 'vicon' }, icon('halt')), h('div', { class: 'vtext' },
       h('p', { class: 'vline' }, 'Compared with ' + (view.weakening ? view.weakening.baseline : 'the baseline') + ', saving this:'),
-      pv.needs_confirmation.map((x) => h('p', { class: 'vdetail' }, x)),
-      h('p', { class: 'vdetail' }, h('label', {}, confirmBox, confirmWords)))) : null,
+      asked.map((g, i) => h('div', { class: 'confirm-group', role: 'group', 'aria-label': g.word.toLowerCase() },
+        h('p', { class: 'vword' }, g.word),
+        g.items.map((x) => h('p', { class: 'vdetail' }, x)),
+        h('p', { class: 'vdetail' }, h('label', {}, boxes[i], g.say)))))) : null,
     pv.changed ? diffBlock(pv.diff) : null,
     status,
   ];
-  openDialog('Save ' + baseName(view.name) + '?', body, [go, cancel], pv.needs_confirmation.length ? confirmBox : go, opener);
+  openDialog('Save ' + baseName(view.name) + '?', body, [go, cancel], asked.length ? confirmBox : go, opener);
 }
 
 async function commit(pv, opener, status) {

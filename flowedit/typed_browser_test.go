@@ -1,6 +1,7 @@
 package flowedit
 
 import (
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -291,33 +292,89 @@ func TestStackedPortsInChrome(t *testing.T) {
 	}
 }
 
-// A text that cannot be certified against the program's blocks (an error elsewhere plus a connection that does not
-// fit) is saved only after a confirmation, and the dialog says what it is asking for: that the text cannot be
-// certified, not that it weakens the policy. An existing edge whose types differ is marked in the inspector.
-func TestUncertifiedSaveDialogInChrome(t *testing.T) {
+// What a save asks the author to confirm is exactly what is true of it, each statement with its own box, and
+// Save waits for all of them: nothing asked, a weakening only, a text that cannot be certified only, and
+// both. An existing edge whose types differ is marked in the inspector, with the words and not only a color.
+func TestSaveDialogConfirmationsInChrome(t *testing.T) {
+	noAssert := testFlow[:strings.Index(testFlow, "assert:")]
+	unknown := func(s string) string { return strings.Replace(s, "block: receipt", "block: nowhere", 1) }
+	cases := []struct {
+		name     string
+		baseline string
+		edits    [][2]string
+		titles   []string
+		says     []string
+	}{
+		{"nothing to confirm", noAssert, nil, nil, nil},
+		{"a weakening", noAssert, [][2]string{{"need: 2", "need: 1"}}, []string{"THIS WEAKENS THE POLICY"}, []string{"weakening this policy"}},
+		{"cannot be certified", unknown(noAssert), nil, []string{"THIS CANNOT BE CERTIFIED"}, []string{"without a certified type check"}},
+		{"both", unknown(noAssert), [][2]string{{"need: 2", "need: 1"}}, []string{"THIS WEAKENS THE POLICY", "THIS CANNOT BE CERTIFIED"}, []string{"weakening this policy", "without a certified type check"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := typedServers(t, "refund.yaml", c.baseline)["registry"]
+			raw, _ := json.Marshal(c.edits)
+			t.Setenv("EDITS", string(raw))
+			var r struct {
+				OK     bool   `json:"ok"`
+				Error  string `json:"error"`
+				Groups []struct {
+					Title string `json:"title"`
+					Label string `json:"label"`
+					ID    string `json:"id"`
+				} `json:"groups"`
+				DialogText          string   `json:"dialogText"`
+				SaveDisabledAtStart bool     `json:"saveDisabledAtStart"`
+				AfterEach           []bool   `json:"afterEach"`
+				Console             []string `json:"console"`
+			}
+			runScript(t, "typed-save.mjs", s, &r)
+			if !r.OK {
+				t.Fatalf("the script failed: %s", r.Error)
+			}
+			var titles, says []string
+			for _, g := range r.Groups {
+				titles = append(titles, g.Title)
+				says = append(says, g.Label)
+			}
+			if strings.Join(titles, "|") != strings.Join(c.titles, "|") || len(says) != len(c.says) {
+				t.Fatalf("statements %q, want %q", titles, c.titles)
+			}
+			for i, want := range c.says {
+				if !strings.Contains(says[i], want) {
+					t.Errorf("statement %d says %q, want it to say %q", i, says[i], want)
+				}
+			}
+			// Only true statements: no word of a statement that is not being asked.
+			for _, wrong := range []string{"THIS WEAKENS THE POLICY", "THIS CANNOT BE CERTIFIED", "THIS COULD NOT BE COMPARED"} {
+				if strings.Contains(r.DialogText, wrong) != slices.Contains(c.titles, wrong) {
+					t.Errorf("the dialog says %q: %v, asked: %v\n%s", wrong, strings.Contains(r.DialogText, wrong), slices.Contains(c.titles, wrong), r.DialogText)
+				}
+			}
+			// Save waits for every box: disabled until the last is ticked.
+			if len(c.titles) > 0 {
+				want := make([]bool, len(c.titles))
+				for i := range want {
+					want[i] = i < len(want)-1
+				}
+				if !r.SaveDisabledAtStart || !slices.Equal(r.AfterEach, want) {
+					t.Errorf("save disabled at start %v, after each box %v, want %v", r.SaveDisabledAtStart, r.AfterEach, want)
+				}
+			} else if r.SaveDisabledAtStart {
+				t.Errorf("save is disabled although nothing needs confirming")
+			}
+		})
+	}
+	// The existing edge whose types differ.
 	text := strings.Replace(strings.Replace(testFlow, "block: receipt", "block: nowhere", 1), "wiring:\n", "  - {name: loose, block: count}\nwiring:\n  - edge: [validate, loose]\n", 1)
-	s := typedServers(t, "refund.yaml", text)["registry"]
+	t.Setenv("EDITS", "[]")
 	var r struct {
 		OK            bool     `json:"ok"`
 		Error         string   `json:"error"`
 		ExistingEdges []string `json:"existingEdges"`
-		Title         string   `json:"title"`
-		Label         string   `json:"label"`
-		SaveDisabled  bool     `json:"saveDisabled"`
-		SaveEnabled   bool     `json:"saveEnabled"`
-		Console       []string `json:"console"`
 	}
-	runScript(t, "typed-save.mjs", s, &r)
-	if !r.OK {
-		t.Fatalf("the script failed: %s", r.Error)
-	}
-	if !slices.Contains(r.ExistingEdges, "validate → loose (types differ)") {
-		t.Errorf("existing edges %q", r.ExistingEdges)
-	}
-	if r.Title != "THIS CANNOT BE CERTIFIED" || !strings.Contains(r.Label, "saving without the full check") || strings.Contains(r.Label, "weakening") || !r.SaveDisabled || !r.SaveEnabled {
-		t.Errorf("dialog title %q, label %q, save disabled until confirmed %v, enabled after %v", r.Title, r.Label, r.SaveDisabled, r.SaveEnabled)
-	}
-	if len(r.Console) > 0 {
-		t.Errorf("console %q", r.Console)
+	runScript(t, "typed-save.mjs", typedServers(t, "refund.yaml", text)["registry"], &r)
+	if !r.OK || !slices.Contains(r.ExistingEdges, "validate \u2192 loose (types differ)") {
+		t.Errorf("existing edges %q (%s)", r.ExistingEdges, r.Error)
 	}
 }

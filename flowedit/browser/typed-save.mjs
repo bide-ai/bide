@@ -27,16 +27,25 @@ try {
   await until(() => document.getElementById('connections'), null, 'the connections form');
   await atRest();
   r.existingEdges = await page.$$eval('#c-outs li span', (s) => s.map((x) => x.textContent));
-  // A comment-only edit: nothing is weakened, the text cannot be certified.
-  await page.$eval('#source', (e) => { e.value = e.value + '\n# a note\n'; e.dispatchEvent(new Event('input', { bubbles: true })); });
+  // The edits the case makes (EDITS: [[from, to], ...], a comment when empty), then Save.
+  const edits = JSON.parse(env.EDITS || '[]') || [];
+  await page.$eval('#source', (e, edits) => {
+    let v = e.value;
+    for (const [from, to] of edits) v = v.replace(from, to);
+    e.value = edits.length ? v : v + '\n# a note\n';
+    e.dispatchEvent(new Event('input', { bubbles: true }));
+  }, edits);
   await atRest();
   await page.click('#save');
   await until(() => document.getElementById('dialog').open, null, 'the save dialog');
-  r.title = await text('#dialog .vword');
-  r.label = await text('#dialog label');
-  r.saveDisabled = await page.$eval('#do-save', (b) => b.disabled);
-  await page.click('#confirm-weaken');
-  r.saveEnabled = await page.$eval('#do-save', (b) => !b.disabled);
+  r.groups = await page.$$eval('#dialog .confirm-group', (g) => g.map((x) => ({ title: x.querySelector('.vword').textContent, label: x.querySelector('label').textContent, id: x.querySelector('input').id, labelled: x.getAttribute('aria-label') })));
+  r.dialogText = await text('#dialog');
+  r.saveDisabledAtStart = await page.$eval('#do-save', (b) => b.disabled);
+  r.afterEach = [];
+  for (const g of r.groups) {
+    await page.click('#' + g.id);
+    r.afterEach.push(await page.$eval('#do-save', (b) => b.disabled));
+  }
   out = { ok: true, ...r, console: console_, failed, offOrigin };
 } catch (e) {
   out = { ok: false, ...r, error: String(e && e.message || e), console: console_, failed, offOrigin };
