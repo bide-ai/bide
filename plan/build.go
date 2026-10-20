@@ -234,7 +234,7 @@ func (p *buildProblems) err() error {
 	if len(p.msgs) == 0 {
 		return nil
 	}
-	return fmt.Errorf("plan: build %q: %s", p.flow, strings.Join(p.msgs, "; "))
+	return &problemList{prefix: fmt.Sprintf("plan: build %q: ", p.flow), msgs: p.msgs}
 }
 
 // topoOrder returns the node names in a deterministic topological order over the

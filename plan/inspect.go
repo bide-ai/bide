@@ -199,8 +199,6 @@ func inspectConfigUnbounded(data []byte, reg *Registry, opts []InspectOption) (r
 		// them itself, after the type checks, so a type error is not hidden behind a wiring one. They
 		// run over a spec with no types.
 		if err := graphChecks(&cfg); err != nil {
-			// One refusal, as one problem: attribute splits an error at "; " (it joins several), and Build's
-			// own wording has one inside it.
 			r.attribute(&cfg, err)
 		}
 	} else if reg == nil {
@@ -220,7 +218,7 @@ func inspectConfigUnbounded(data []byte, reg *Registry, opts []InspectOption) (r
 	typeMsgs := capTypeProblems(checkTypes(&cfg, reg).all())
 	addTypes := func() {
 		if len(typeMsgs) > 0 {
-			r.attribute(&cfg, fmt.Errorf("plan: load %q: %s", cfg.Flow, strings.Join(typeMsgs, "; ")))
+			r.attribute(&cfg, &problemList{prefix: fmt.Sprintf("plan: load %q: ", cfg.Flow), msgs: typeMsgs})
 		}
 	}
 	// With errors that stop the config being assembled, the loops' shape and the wiring's shapes are
@@ -234,7 +232,7 @@ func inspectConfigUnbounded(data []byte, reg *Registry, opts []InspectOption) (r
 		addTypes()
 		// assemble, which reports a safety above the registration, does not run: say it here.
 		if msgs, _ := safetyAboveRegistration(&cfg, reg); len(msgs) > 0 {
-			r.attribute(&cfg, fmt.Errorf("plan: load %q: %s", cfg.Flow, strings.Join(msgs, "; ")))
+			r.attribute(&cfg, &problemList{prefix: fmt.Sprintf("plan: load %q: ", cfg.Flow), msgs: msgs})
 		}
 		partialWiring()
 		return r
@@ -641,20 +639,25 @@ var (
 )
 
 // attribute adds the problems of an error from assemble or Build, each attached to the wiring
-// element, edge or node its message names. assemble joins the problems it collects with "; ".
+// element, edge or node its message names. An error that carries its problems as a list (see
+// problemList) is read part by part; any other is one problem, whatever its text holds.
 func (r *ConfigReport) attribute(cfg *config, err error) {
-	msg := strings.TrimSuffix(err.Error(), ": "+agent.ErrConfig.Error())
-	if errors.Is(err, agent.ErrConfig) {
-		msg = strings.ReplaceAll(msg, ": "+agent.ErrConfig.Error(), "")
-	}
-	for _, prefix := range []string{"plan: load " + strconv.Quote(cfg.Flow) + ": ", "plan: build " + strconv.Quote(cfg.Flow) + ": "} {
-		msg = strings.TrimPrefix(msg, prefix)
+	parts, ok := problemParts(err)
+	if !ok {
+		msg := strings.TrimSuffix(err.Error(), ": "+agent.ErrConfig.Error())
+		if errors.Is(err, agent.ErrConfig) {
+			msg = strings.ReplaceAll(msg, ": "+agent.ErrConfig.Error(), "")
+		}
+		for _, prefix := range []string{"plan: load " + strconv.Quote(cfg.Flow) + ": ", "plan: build " + strconv.Quote(cfg.Flow) + ": "} {
+			msg = strings.TrimPrefix(msg, prefix)
+		}
+		parts = []string{msg}
 	}
 	declared := map[string]bool{}
 	for _, n := range r.Topology.Nodes {
 		declared[n.Name] = true
 	}
-	for _, part := range strings.Split(msg, "; ") {
+	for _, part := range parts {
 		p := ConfigProblem{Message: part, Severity: "error"}
 		if m := edgeRef.FindStringSubmatch(part); m != nil {
 			p.From, p.To = m[1], m[2]
@@ -803,10 +806,9 @@ func graphCore(cfg *config) *builderCore {
 func graphChecksOver(core *builderCore, wiringOnly bool) error {
 	// Every refusal of these checks, not the first, so a second problem of the same kind (a second
 	// loop that is not simple, a second node not reached) shows beside the first: a caller that
-	// compares reports (the editor) must see it. "; " inside one message is written ", ", since
-	// attribute splits a joined error at "; ".
+	// compares reports (the editor) must see it.
 	var msgs []string
-	note := func(m string) { msgs = append(msgs, strings.ReplaceAll(m, "; ", ", ")) }
+	note := func(m string) { msgs = append(msgs, m) }
 	for _, m := range core.loopProblems() {
 		// The structural check already reports the other loop refusals (more than one loop-back arm, no
 		// exit arm, a head that is not an ancestor); with it having run, only the body's shape is new.
@@ -831,5 +833,5 @@ func graphChecksOver(core *builderCore, wiringOnly bool) error {
 	if len(msgs) == 0 {
 		return nil
 	}
-	return fmt.Errorf("plan: build %q: %s", core.flowName, strings.Join(msgs, "; "))
+	return &problemList{prefix: fmt.Sprintf("plan: build %q: ", core.flowName), msgs: msgs}
 }

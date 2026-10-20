@@ -159,7 +159,7 @@ func configGate(base *agent.ApprovalPolicy, ca *configApproval) (*agent.Approval
 		why = append(why, "approval: "+strings.TrimSuffix(err.Error(), ": "+agent.ErrConfig.Error()))
 	}
 	if base != nil && !sameGate(base, p) {
-		why = append(why, fmt.Sprintf("approval sets a gate on a block that declares another (%s); a node carries one gate", gateText(base)))
+		why = append(why, fmt.Sprintf("sets an approval gate, but its block already declares one (%s): keep one, by removing approval from the config or the gate from the block", gateText(base)))
 	}
 	return p, why
 }
@@ -671,7 +671,7 @@ func assemble(cfg *config, reg *Registry, allowUnused bool) (*builderCore, error
 		for i := range problems {
 			problems[i] = boundMessage(problems[i])
 		}
-		return nil, fmt.Errorf("plan: load %s: %s: %w", strictjson.Quote(cfg.Flow), strings.Join(problems, "; "), agent.ErrConfig)
+		return nil, &problemList{prefix: fmt.Sprintf("plan: load %s: ", strictjson.Quote(cfg.Flow)), msgs: problems, sentinel: agent.ErrConfig}
 	}
 
 	// 5. Assemble the builderCore in config-array order via the existing register, so
@@ -755,7 +755,7 @@ func assemble(cfg *config, reg *Registry, allowUnused bool) (*builderCore, error
 			if w.Approval != nil {
 				p, why := configGate(jgate, w.Approval)
 				if len(why) > 0 {
-					return nil, fmt.Errorf("plan: load %q: wiring[%d] join %q %s: %w", cfg.Flow, i, w.Join, strings.Join(why, "; "), agent.ErrConfig)
+					return nil, &problemList{prefix: fmt.Sprintf("plan: load %q: ", cfg.Flow), lead: fmt.Sprintf("wiring[%d] join %q ", i, w.Join), msgs: why, sentinel: agent.ErrConfig}
 				}
 				jgate = p
 			}
@@ -843,8 +843,10 @@ type typeProblemsError struct {
 }
 
 func (e *typeProblemsError) Error() string {
-	return fmt.Sprintf("plan: load %q: %s", e.flow, strings.Join(capTypeProblems(e.msgs), "; "))
+	return (&problemList{prefix: fmt.Sprintf("plan: load %q: ", e.flow), msgs: capTypeProblems(e.msgs)}).Error()
 }
+
+func (e *typeProblemsError) problemParts() []string { return capTypeProblems(e.msgs) }
 
 // capTypeProblems keeps the first maxTypeProblems messages and, for the rest, one line saying how
 // many there are. The line carries the words type problems are recognised by, so a caller that
