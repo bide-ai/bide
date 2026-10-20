@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/bide-ai/bide/theme"
 )
 
 // themeState is what browser/themes.mjs measured in one mode.
@@ -26,9 +28,11 @@ type themeState struct {
 		Accent   string  `json:"accent"`
 	} `json:"primary"`
 	Controls []struct {
-		Sel   string  `json:"sel"`
-		Width float64 `json:"width"`
-		Ratio float64 `json:"ratio"`
+		Sel    string  `json:"sel"`
+		Width  float64 `json:"width"`
+		Ratio  float64 `json:"ratio"`
+		Color  string  `json:"color"`
+		Strong string  `json:"strong"`
 	} `json:"controls"`
 	SelStroke string `json:"selStroke"`
 	Focus     string `json:"focus"`
@@ -97,6 +101,9 @@ func checkPainted(t *testing.T, key string, m themeState) {
 		t.Errorf("%s: %d controls measured, want 3", key, len(m.Controls))
 	}
 	for _, c := range m.Controls {
+		if c.Color != c.Strong {
+			t.Errorf("%s: the edge of %s is %s, want the border_strong token %s", key, c.Sel, c.Color, c.Strong)
+		}
 		if c.Width < 1 || c.Ratio < 3 {
 			t.Errorf("%s: the edge of %s is %.2f:1 (%gpx), want 3:1", key, c.Sel, c.Ratio, c.Width)
 		}
@@ -192,5 +199,37 @@ func TestLockedThemeInChrome(t *testing.T) {
 	}
 	if after.Attr != "" || after.Token != "#121214" {
 		t.Errorf("a click on the hidden switch changed the page: data-theme %q, --bg %q", after.Attr, after.Token)
+	}
+}
+
+// TestCustomThemeInChrome: a theme file's own values reach the page. The theme's focus differs from
+// its accent, so the selection ring and the focus outline can be told from the accent, and its
+// border_strong from the hairline.
+func TestCustomThemeInChrome(t *testing.T) {
+	th, _, err := theme.Parse([]byte(`{"bide_theme":1,"name":"acme-focus","base":"light","surface":{"accent":"#1b52b0","focus":"#7a1fa2","border_strong":"#5a5a52"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(t.TempDir(), "refund.yaml")
+	if err := os.WriteFile(p, []byte(testFlow), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := newServer(t, p, WithThemes(th))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CUSTOM", "acme-focus")
+	r := runThemes(t, "default", s)
+	m := r.mode(t, "acme-focus")
+	checkPainted(t, "acme-focus", m)
+	if m.Focus == m.Primary.Accent || m.SelStroke != "rgb(122, 31, 162)" {
+		t.Errorf("the selected node's ring is %q (focus token %q, accent %q), want the theme's focus rgb(122, 31, 162)", m.SelStroke, m.Focus, m.Primary.Accent)
+	}
+	var c cycle
+	if err := json.Unmarshal(r.Results["cycle"], &c); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(c.Names, " ") != "light dark high-contrast acme-focus" {
+		t.Errorf("the page's themes are %q", c.Names)
 	}
 }

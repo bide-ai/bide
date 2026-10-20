@@ -41,7 +41,7 @@ try {
     document.querySelector('.toolbar').append(sample);
     const primary = { text: rgb(cs(sample, 'color')), fill: rgb(cs(sample, 'backgroundColor')) };
     sample.remove();
-    const control = (sel) => { const e = document.querySelector(sel); const bc = rgb(cs(e, 'borderTopColor')); return { sel, width: parseFloat(cs(e, 'borderTopWidth')), color: cs(e, 'borderTopColor'), ratio: ratio(bc, under(e.parentElement)) }; };
+    const control = (sel) => { const e = document.querySelector(sel); const bc = rgb(cs(e, 'borderTopColor')); return { sel, width: parseFloat(cs(e, 'borderTopWidth')), color: cs(e, 'borderTopColor'), strong: probe(token('--line-strong')), ratio: ratio(bc, under(e.parentElement)) }; };
     const dlg = document.getElementById('dialog');
     dlg.showModal();
     const backdrop = cs(dlg, 'backgroundColor', '::backdrop');
@@ -53,7 +53,7 @@ try {
       bgToken: token('--bg'), attr: root.getAttribute('data-theme'), current: t.current(), names: t.names(), forced: t.forced(),
       switchHidden: b.hidden, switchDisplay: cs(b, 'display'), switchLabel: b.getAttribute('aria-label'),
       primary: { ratio: ratio(primary.text, primary.fill), text: 'rgb(' + primary.text.slice(0, 3).join(', ') + ')', onAccent: probe(token('--on-accent')), fill: 'rgb(' + primary.fill.slice(0, 3).join(', ') + ')', accent: probe(token('--accent')) },
-      controls: ['.btn', '#source', '#outline button'].map(control),
+      controls: ['#undo', '#source', '#outline button'].map(control),
       selStroke: sel ? cs(sel, 'stroke') : '', focus: probe(token('--focus')),
       backdrop, scrim: probe(token('--scrim')),
     };
@@ -89,6 +89,7 @@ try {
       ['high-contrast', [], 'high-contrast'],
       ['prefers-contrast', [{ name: 'prefers-contrast', value: 'more' }], null],
       ['forced-colors', [{ name: 'forced-colors', value: 'active' }], 'dark'],
+      ...(env.CUSTOM ? [[env.CUSTOM, [], env.CUSTOM]] : []),
     ]) { const [key, v] = await mode(k, f, t); results[key] = v; }
     // The switch: from a clean page, it steps through the stylesheet's list, naming the next theme,
     // and returns to the start.
