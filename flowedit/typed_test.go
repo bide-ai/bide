@@ -1031,3 +1031,24 @@ func TestSaveOfAnUnparsingTextAsksTheCouldNotBeComparedStatement(t *testing.T) {
 		}
 	}
 }
+
+// Either side not parsing is enough. The operations themselves refuse to write what plan cannot parse
+// (a control character in a name), so the two sides are given to the refusal directly: a text with a
+// misspelt field that becomes one that parses, and one that parses that becomes one with the misspelt
+// field.
+func TestTypedRefusalNeedsBothSidesToParse(t *testing.T) {
+	typo := strings.Replace(chainFlow, "{name: third, block: plain}", "{name: third, block: plain, safty: idempotent}", 1)
+	op := Operation{Op: "set_block", Node: "second", Value: "plain"}
+	for _, kind := range []string{"registry", "description"} {
+		s := typedServers(t, "chain.yaml", chainFlow)[kind]
+		for name, pair := range map[string][2]string{"before does not parse": {typo, chainFlow}, "after does not parse": {chainFlow, typo}} {
+			why := s.typedRefusal([]byte(pair[0]), []byte(pair[1]), op)
+			if !strings.HasPrefix(why, "the config does not parse: ") {
+				t.Errorf("%s, %s: %q", kind, name, why)
+			}
+		}
+		if why := s.typedRefusal([]byte(chainFlow), []byte(chainFlow), op); why != "" {
+			t.Errorf("%s: two texts that parse and have no misfit were refused: %q", kind, why)
+		}
+	}
+}
