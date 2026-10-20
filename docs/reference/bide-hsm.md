@@ -100,7 +100,7 @@ Flags:
   -allow-software-key
     	use a software-protected key: a Google Cloud KMS key version at protection level SOFTWARE, or an Azure Key Vault key that is not HSM-protected; by default only an HSM-backed key is used, and Cloud KMS has no HSM-backed Ed25519 key
   -approver-keys string
-    	approver public keys, a JSON object of approver id to key text, e.g. {"ops":"ed25519:ab12..."}, the file bide view -approver-keys reads (bide-hsm pubkey -as prints an entry): refuse a -key that is not the one enrolled for -as, and verify the tally. Required for an m-of-n gate unless -unverified
+    	approver public keys, a JSON object of approver id to key text, e.g. {"ops":"ed25519:ab12..."}, the file bide view -approver-keys reads, or - for standard input, or a <(...) process substitution (which then also needs -yes) (bide-hsm pubkey -as prints an entry): refuse a -key that is not the one enrolled for -as, and verify the tally. Required for an m-of-n gate unless -unverified
   -as string
     	your approver id, exactly as the gate's policy lists it (not for a single-approver gate)
   -call string
@@ -122,7 +122,7 @@ Flags:
   -identity-policy string
     	the certificate policy file (trust anchors, pinned intermediates, the approver-to-identity map; see docs/guides/certificate-approvers.md). With -cert: your chain must be accepted for -as by it at this moment, before anything is signed. With -verify-receipt, for a certificate-bound receipt: the chain and identity are checked against it at the time the receipt's anchoring head was signed; revocation status is not checked
   -item string
-    	take -run and -call exactly from one call of bide approve -list -json output instead: a file, or - for standard input (which then also needs -yes, since the confirmation would read the same input). The input is one call's object, or an array of exactly one. For ids that cannot be pasted on a command line (a line break or an invisible or bidirectional character in them)
+    	take -run and -call exactly from one call of bide approve -list -json output instead: a file, or - for standard input, or a <(...) process substitution (which then also needs -yes, since the confirmation would read the same input). The input is one call's object, or an array of exactly one. For ids that cannot be pasted on a command line (a line break or an invisible or bidirectional character in them)
   -json
     	with -list: print the waiting calls as JSON
   -key string
@@ -130,7 +130,7 @@ Flags:
   -list
     	list the calls that wait for a decision, each with its bide-hsm approve command; nothing is recorded
   -log-key string
-    	with -verify-receipt, for a certificate-bound receipt: the audit log's public key (ed25519:<hex>, or a file holding it), which vouches for the receipt's anchoring proof
+    	with -verify-receipt, for a certificate-bound receipt: the audit log's public key (ed25519:<hex>, or a file holding it, or - for standard input, or a <(...) process substitution, which then also needs -yes), which vouches for the receipt's anchoring proof
   -postgres string
     	Postgres journal, a pgx DSN such as postgres://user:pass@host:5432/db; prefer -postgres-env, which keeps the password out of the argument list
   -postgres-env string
