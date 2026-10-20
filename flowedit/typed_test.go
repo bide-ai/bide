@@ -3,6 +3,7 @@ package flowedit
 import (
 	"context"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -474,5 +475,63 @@ func TestTypedNodesKeepTheirTypesWhileAnotherNodeIsUnwired(t *testing.T) {
 		if d.Nodes[1].In != "" || d.Nodes[1].Out != "" || d.Nodes[0].Out == "" {
 			t.Errorf("%s: %+v", kind, d.Nodes)
 		}
+	}
+}
+
+// The page reads these keys of the typed view; a Go test decodes the shapes from the structs, so a rename
+// on either side fails here and not in a browser.
+func TestPageContractForTypedMode(t *testing.T) {
+	s := typedServers(t, "refund.yaml", strings.Replace(testFlow, "block: charge", "block: nowhere", 1))["registry"]
+	b, _ := json.Marshal(s.view([]byte(strings.Replace(testFlow, "block: charge", "block: nowhere", 1))))
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	ty, ok := m["typed"].(map[string]any)
+	if !ok {
+		t.Fatalf("no typed view: %s", b)
+	}
+	for _, k := range []string{"source", "label", "palette"} {
+		if _, ok := ty[k]; !ok {
+			t.Errorf("typed has no %q", k)
+		}
+	}
+	row := ty["palette"].([]any)[0].(map[string]any)
+	for _, k := range []string{"name", "kind", "in", "out", "safety", "used"} {
+		if _, ok := row[k]; !ok {
+			t.Errorf("a palette row has no %q", k)
+		}
+	}
+	if wk, ok := m["weakening"].(map[string]any); !ok || wk["not_certified"] == nil {
+		t.Errorf("a text with errors against the blocks has no not_certified: %v", m["weakening"])
+	}
+	good, _ := json.Marshal(s.view([]byte(testFlow)))
+	var g map[string]any
+	_ = json.Unmarshal(good, &g)
+	if gt := g["typed"].(map[string]any); gt["digest"] == nil {
+		t.Errorf("a config without errors has no digest: %v", gt)
+	}
+	n := g["nodes"].([]any)[0].(map[string]any)
+	if n["in"] == nil || n["out"] == nil {
+		t.Errorf("a typed node has no in and out: %v", n)
+	}
+	js, _ := fs.ReadFile(pageFS, "page/editor.js")
+	for _, k := range []string{"v.typed", "t.palette", "t.digest", "t.source", "b.name", "b.kind", "b.in", "b.out", "b.inputs", "b.safety", "b.gate", "b.used", "w.not_certified", "n.in", "n.out"} {
+		if !strings.Contains(string(js), k) {
+			t.Errorf("the script no longer reads %s: update this list with it", k)
+		}
+	}
+}
+
+// The refusal of a misfit needs the rest of the config to resolve, because plan checks types after it
+// resolves every block and safety. A text that has such a problem is not refused for a misfit it also has,
+// and the problem is in the verdict; this pins the limit the guide states.
+func TestTypedRefusalNeedsTheRestOfTheConfigToResolve(t *testing.T) {
+	s := typedServers(t, "refund.yaml", testFlow)["registry"]
+	broken := strings.Replace(testFlow, "block: receipt", "block: nowhere", 1) // an unknown block elsewhere
+	w := call(s.Handler(), s, "/api/apply", applyReq(broken, Operation{Op: "set_block", Node: "charge", Value: "count"}), nil)
+	var e Edited
+	if err := json.Unmarshal(w.Body.Bytes(), &e); err != nil || !e.Changed || e.Errors == 0 {
+		t.Errorf("a misfit beside an unknown block: %d %s", w.Code, w.Body)
 	}
 }

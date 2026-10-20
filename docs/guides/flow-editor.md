@@ -34,8 +34,8 @@ rename a node, write the entry (see [Nodes](#nodes-add-remove-rename-and-the-ent
 wiring elements, and set the flow's name and types (see [Order, wiring order and the flow's
 settings](#order-wiring-order-and-the-flows-settings)), and wire edges, switches, arms and `else` (see
 [Connections](#connections-edges-switches-arms-and-else)), set an arm's loop bound, and add, change and
-remove joins (see [Joins and loops](#joins-and-loops)). It does **not**
-yet: show a block palette or the digest in the page (the server already has them: see [Typed mode](#typed-mode-the-programs-blocks)); compare with a journaled run; or let you place nodes on the canvas
+remove joins (see [Joins and loops](#joins-and-loops)), and, when it knows your program's blocks, list them with their types, check connections against them and show the digest (see [Typed mode](#typed-mode-the-programs-blocks)). It does **not**
+yet: compare with a journaled run; or let you place nodes on the canvas
 (the layout is derived from the topology, on purpose). A config with an anchor or alias anywhere,
 a repeated key, a key that is not a string, NaN or infinity, or mixed line ends is refused by the editor
 with the reason (edit it in a text editor); `plan` itself accepts an anchor or alias, and refuses the others too. The design note
@@ -225,7 +225,7 @@ reason is shown and announced), the same verification, and shows the same weaken
 edge reaches a gated node by another way. Dropping on the same node, on nothing, or pressing Escape
 cancels with no change; so does losing the pointer or the flow being redrawn mid-drag. It works with a mouse, a pen or a finger: the circle is drawn small but its touch target is at least 44 px, and a touch that starts anywhere else on the flow still scrolls the page. The circle is a pointer shortcut: it is hidden from assistive technology and is
 not in the Tab order, because every connection can be made, and removed, from the inspector by
-keyboard. The layout stays derived: nothing about where a node is drawn is stored.
+keyboard. In typed mode a drag between types that do not fit is refused with the same words as the form. In a dense flow, or with the drawing scaled down, the circle's touch target stops at a neighbour's edge instead of reaching over it (a press on the neighbour selects it, a drop onto it lands on it), so it is smaller than 44 px on that side. The layout stays derived: nothing about where a node is drawn is stored.
 
 ## The assertions panel
 
@@ -369,7 +369,7 @@ The editor is built to be used without a pointer and without dragging.
   region, rewritten only when its words change. There is no drag in this phase and none will be
   required.
 - **Skip links and landmarks** (WCAG 2.4.1, bypass blocks). The first controls on the page are the
-  links Skip to toolbar, outline, inspector and assertions; the inspector and the assertions each begin
+  links Skip to toolbar, outline, inspector, blocks (in typed mode) and assertions; the inspector and the assertions each begin
   with Skip to toolbar. A link is hidden until it has the focus, then drawn; Enter moves the focus to the
   region (to Save, the toolbar's first control, when there is something to save). From the assertion
   form, the toolbar is four key presses away this way (Shift+Tab to the region's link, Enter; the test
@@ -391,7 +391,7 @@ The editor is built to be used without a pointer and without dragging.
   the whole path by keyboard alone (the script never uses the pointer and bounds the Tab presses it
   needs), and axe-core over the page in light and dark in five states (as opened, a node selected
   with its forms, a weakened banner, an assertion form with a violation, the save dialog), failing
-  on any violation.
+  on any violation. Typed mode has its own run: the palette, a filtered list, a search with no match and the NOT CERTIFIED banner under axe-core in light and dark, the palette as one Tab stop with the arrow keys, and a drag refused by type with the same words as the form.
 
 An automated check finds a fraction of the problems a person meets. **A manual screen-reader pass
 has not been done:** the checks above are not a substitute for one, and the checklist for it is in
@@ -439,7 +439,11 @@ With either, the server checks every text with `plan.InspectConfig` (or `Inspect
 blocks that are not placed yet), though `Load` refuses it. The document the page reads gains `typed`: the source and
 the label, the digest a run would journal (while there are no errors), and the palette: each block and merge with its
 kind, input and output type names, declared safety and declared gate in words, and whether the config uses it; each
-node gains `in` and `out`, the type names the digest writes. The page computes no types.
+node gains `in` and `out`, the type names the digest writes (from its block's description, so they are known while another node is not wired in yet). The page computes no types.
+
+**What the page shows.** A `typed: ...` tag beside the saved state and the label under the verdict say what the check rests on (the program's Registry, or a description file, which is never shown as the program). Under it a disclosure holds the digest (the first 12 characters, the full value as text you can select; there is no copy button, which would need a clipboard permission some hosts do not give), or says it is not computed while the config has errors. A **Blocks** region (a skip link leads to it) lists the registered blocks and merges, each as a row spelled in words: `charge step · takes plan.Order · gives plan.Receipt · safety side effect · approval 2 of 3: ops, finance, risk · used`. A search narrows it by name; the checkbox **Only blocks that fit the selected node** (off by default: a hidden block is harder to explain than a long list) keeps the blocks that take what the node gives or that take and give what it does, by comparing the type names the server wrote as text. The list is one Tab stop, the arrow keys move through it, and two buttons act on the row you are on: **Use as the block of the selected node** (the merge of a join, for a join) and **Add a node with this block**, which fills the Add a node form with the block and an unused name and puts the focus on the name, writing nothing. In the connection forms a target whose type differs from what the node gives is marked `(types differ)` and stays selectable, so the reason is the server's. In a structural editor, or for a node whose block the program does not describe, nothing is marked and the inspector says the types are unknown.
+- **A connection that does not fit is refused by the server**, by the form, by a drag and by the palette, with `plan`'s own words ("the types do not fit: edge a to b connects X to Y"), shown where the form shows any refusal and announced. The page's marks never decide. The refusal needs the rest of the config to resolve (every block known, every safety within what its block declares), because the check of types runs after that; a text that has such a problem shows it in the verdict and the misfit appears once it is fixed.
+- A text that has errors against the blocks shows a **NOT CERTIFIED** banner (its own alert, beside the weakened banner and never in place of it) saying the comparison was made without what the blocks declare in Go.
 
 - **Types are checked on every edit.** An operation that connects what does not fit (a block whose input is not
   what the node before it produces, a predicate that tests another type than the switched node, a join input of
