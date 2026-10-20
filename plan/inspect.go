@@ -256,6 +256,10 @@ func inspectConfigUnbounded(data []byte, reg *Registry, opts []InspectOption) (r
 	}
 	if r.Errors() {
 		addTypes()
+		// assemble, which reports a safety above the registration, does not run: say it here.
+		if msgs := safetyAboveRegistration(&cfg, reg); len(msgs) > 0 {
+			r.attribute(&cfg, fmt.Errorf("plan: load %q: %s", cfg.Flow, strings.Join(msgs, "; ")))
+		}
 		partialWiring()
 		return r
 	}

@@ -201,6 +201,18 @@ func typeProblem(p plan.ConfigProblem) bool {
 		strings.Contains(m, " but the flow output is "))
 }
 
+// safetyProblem reports whether p says a node states a retry safety above what its block registers in
+// Go, a claim the config may not make: a step marked safe to run twice that the program did not mark
+// so is acted on by crash recovery. The wording is plan's.
+func safetyProblem(p plan.ConfigProblem) bool {
+	return p.Severity == "error" && strings.Contains(p.Message, "its Go registration declares")
+}
+
+// refusedProblem is a problem whose appearance makes the typed editor refuse an edit: a type problem,
+// or a safety above the registration. (A node not yet wired in, or one with an unknown block, is work
+// in progress and is allowed; the save then asks to confirm the check could not certify the text.)
+func refusedProblem(p plan.ConfigProblem) bool { return typeProblem(p) || safetyProblem(p) }
+
 // typedRefusal is the reason to refuse an operation that took before to after, or "": after has a
 // type problem that before did not, so the operation connected what does not fit. A problem the
 // text already had is not the operation's, and is not refused. The decision is the server's, from
@@ -226,7 +238,7 @@ func (s *Server) typedRefusal(before, after []byte, op Operation) string {
 	// are two, and moving an element does not make an old problem new.
 	had := map[string]int{}
 	for _, p := range s.typing.inspect(bd).Problems {
-		if !typeProblem(p) {
+		if !refusedProblem(p) {
 			continue
 		}
 		if _, ok := moreTypeProblems(p.Message); ok {
@@ -240,7 +252,7 @@ func (s *Server) typedRefusal(before, after []byte, op Operation) string {
 		had[k]++
 	}
 	for _, p := range s.typing.inspect(ad).Problems {
-		if !typeProblem(p) {
+		if !refusedProblem(p) {
 			continue
 		}
 		if _, ok := moreTypeProblems(p.Message); ok {
@@ -251,6 +263,9 @@ func (s *Server) typedRefusal(before, after []byte, op Operation) string {
 		if had[k] > 0 {
 			had[k]--
 			continue
+		}
+		if safetyProblem(p) {
+			return "the safety is above what the program registers: " + p.Message
 		}
 		return "the types do not fit: " + p.Message
 	}

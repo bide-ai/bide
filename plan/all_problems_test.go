@@ -338,3 +338,23 @@ func TestConfigProblem_KeyKeepsNamesAndDropsPositions(t *testing.T) {
 		t.Errorf("keys do not keep the full names: %q", keys)
 	}
 }
+
+// A safety above what the block registers is reported beside a structural error too (assemble, which
+// reports it otherwise, does not run then), and once when assemble does run.
+func TestInspectConfig_SafetyAboveTheRegistrationIsAlwaysReported(t *testing.T) {
+	reg := typedChainRegistry(t) // s2i and the others register no options: a side effect
+	for name, cfg := range map[string]string{
+		"with a structural error": `{"version":1,"flow":"f","entry":"a","nodes":[{"name":"a","block":"s2s"},{"name":"b","block":"s2s","safety":"idempotent"}],"wiring":[{"edge":["a","b"]},{"edge":["b","ghost"]}]}`,
+		"alone":                   `{"version":1,"flow":"f","entry":"a","nodes":[{"name":"a","block":"s2s"},{"name":"b","block":"s2s","safety":"idempotent"}],"wiring":[{"edge":["a","b"]}]}`,
+	} {
+		n := 0
+		for _, p := range InspectConfig([]byte(cfg), reg, AllowUnusedBlocks()).Problems {
+			if strings.Contains(p.Message, `node "b" has safety "idempotent", above the "side_effect" its Go registration declares`) {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("%s: the safety problem is reported %d times, want once", name, n)
+		}
+	}
+}

@@ -3,6 +3,7 @@ package plan
 import (
 	"fmt"
 	"reflect"
+	"strings"
 )
 
 // typeProblems are the type problems of a config against a Registry, by kind. They are found from the
@@ -136,4 +137,24 @@ func checkTypes(cfg *config, reg *Registry) typeProblems {
 		}
 	}
 	return p
+}
+
+// safetyAboveRegistration returns a problem for each node whose stated safety is above what its
+// block registers in Go (a config may only lower retry safety: a step marked safe to run twice that
+// the program did not mark so is a false claim, which crash recovery would act on). It is found from
+// the config and the registered blocks alone, so another error does not hide it.
+func safetyAboveRegistration(cfg *config, reg *Registry) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, n := range cfg.Nodes {
+		b, ok := reg.blocks[n.Block]
+		if !ok || n.Safety == "" || seen[n.Name] {
+			continue
+		}
+		seen[n.Name] = true
+		if _, err := safetyFromConfig(b.safety, n.Safety); err != nil && strings.Contains(err.Error(), "its Go registration declares") {
+			out = append(out, fmt.Sprintf("node %q %v", n.Name, err))
+		}
+	}
+	return out
 }

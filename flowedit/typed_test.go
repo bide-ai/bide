@@ -851,3 +851,55 @@ func TestLoopShapeRefusalHoldsBesideOtherErrors(t *testing.T) {
 		t.Errorf("%q", why)
 	}
 }
+
+// A node that states a retry safety above what its block registers is a false claim (crash recovery
+// would act on it): an edit that adds one is refused, whether or not the text has another error.
+func TestTypedEditorRefusesASafetyAboveTheRegistration(t *testing.T) {
+	ghost := strings.Replace(testFlow, "  - edge: [charge, receipt]\n", "  - edge: [charge, receipt]\n  - edge: [receipt, ghost]\n", 1)
+	for name, text := range map[string]string{"clean text": testFlow, "text with another error": ghost} {
+		servers := typedServers(t, "r.yaml", text)
+		for _, kind := range []string{"registry", "description"} {
+			s := servers[kind]
+			// charge is registered with no options (a side effect): "idempotent" claims it safe to run twice.
+			w := call(s.Handler(), s, "/api/apply", applyReq(text, Operation{Op: "set_safety", Node: "charge", Value: "idempotent"}), nil)
+			if !strings.Contains(w.Body.String(), `"refused":"the safety is above what the program registers: `) {
+				t.Errorf("%s, %s: a safety above the registration was not refused: %.300s", name, kind, w.Body)
+			}
+			// Lowering it, or leaving it as the program has it, is not refused.
+			w = call(s.Handler(), s, "/api/apply", applyReq(text, Operation{Op: "set_safety", Node: "validate", Value: "side_effect"}), nil)
+			if strings.Contains(w.Body.String(), `"refused"`) {
+				t.Errorf("%s, %s: a lowered safety was refused: %.300s", name, kind, w.Body)
+			}
+		}
+	}
+	// A text that already states one is not refused for it by an unrelated edit.
+	bad := strings.Replace(testFlow, "safety: side_effect", "safety: idempotent", 1)
+	for _, kind := range []string{"registry", "description"} {
+		s := typedServers(t, "r.yaml", bad)[kind]
+		w := call(s.Handler(), s, "/api/apply", applyReq(bad, Operation{Op: "set_safety", Node: "validate", Value: "side_effect"}), nil)
+		if strings.Contains(w.Body.String(), `"refused"`) {
+			t.Errorf("%s: an unrelated edit was refused for a claim the text already had: %.300s", kind, w.Body)
+		}
+	}
+}
+
+// What the editor lets through as work in progress (a node not wired in, an unknown block, a node not
+// reached) cannot be saved as clean: the verdict is not green and the save asks for the statement
+// that the check could not certify the text.
+func TestWorkInProgressErrorsAreNeverSavedAsClean(t *testing.T) {
+	for name, text := range map[string]string{
+		"a node not wired in": strings.Replace(testFlow, "wiring:\n", "  - {name: extra, block: count}\nwiring:\n", 1),
+		"an unknown block":    strings.Replace(testFlow, "block: receipt", "block: nowhere", 1),
+		"an unreached node":   strings.Replace(testFlow, "  - {name: receipt, block: receipt, safety: idempotent}\n", "  - {name: receipt, block: receipt, safety: idempotent}\n  - {name: stray, block: plain}\n", 1),
+	} {
+		for _, kind := range []string{"registry", "description"} {
+			s := typedServers(t, "r.yaml", testFlow)[kind]
+			if v := s.view([]byte(text)); v.Verdict.Class == "good" || v.Errors == 0 {
+				t.Errorf("%s, %s: the verdict is %q with %d errors", name, kind, v.Verdict.Class, v.Errors)
+			}
+			if _, kinds := s.confirmationKinds([]byte(text)); !slices.Contains(kinds, ConfirmUncertified) {
+				t.Errorf("%s, %s: the save does not ask the 'cannot be certified' statement: %v", name, kind, kinds)
+			}
+		}
+	}
+}
