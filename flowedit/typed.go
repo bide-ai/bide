@@ -207,19 +207,20 @@ func gateWords(g *plan.GateDescription) string {
 	return runview.GateText(tg)
 }
 
-// changesWhatIsChecked reports whether an operation can change the graph or what the checks see: it
-// adds, removes or renames a node (a rename rewrites the references across the graph), changes a
-// block, or changes a connection, an arm, a join or a safety. Only moving an element, the flow's own
-// keys, approvals and assertions cannot (and a weakening by an approval is caught by the save, which
-// asks for the statement that the text could not be compared).
-func changesWhatIsChecked(op string) bool {
-	switch op {
-	case "add_node", "remove_node", "rename_node", "set_block", "set_safety", "set_entry",
-		"add_edge", "remove_edge", "add_switch", "remove_switch", "add_arm", "remove_arm", "set_arm", "set_else",
-		"add_join", "remove_join", "set_join_inputs", "set_join_merge", "set_loop_max":
-		return true
-	}
-	return false
+// allowedWhileUnparsed are the only operations the typed editor lets through while the text before or
+// after an edit does not parse: those that cannot change the graph, the blocks, the order of nodes or
+// wiring (which decides the implicit entry and which terminal sets the flow's output), the safeties or
+// the type names the flow declares. An approval change is caught by the save, which asks the statement
+// that the text could not be compared; an assertion is not checked here; set_flow changes the flow's
+// name and nothing else (set_in and set_out are not on the list). Any operation not named here, added
+// to the editor later too, is refused while the text does not parse.
+var allowedWhileUnparsed = map[string]bool{
+	"set_approval":     true,
+	"clear_approval":   true,
+	"add_assertion":    true,
+	"set_assertion":    true,
+	"remove_assertion": true,
+	"set_flow":         true,
 }
 
 // typedRefusal is the reason to refuse an operation that took before to after, or "": after has a
@@ -246,7 +247,7 @@ func (s *Server) typedRefusal(before, after []byte, op Operation) string {
 	// leniently would check a config other than the one written (a misspelt field is silently ignored). So
 	// while the text before or after does not parse, an edit that can change what is wrong with the types
 	// or the safeties is refused, rather than let through unchecked.
-	if changesWhatIsChecked(op.Op) {
+	if !allowedWhileUnparsed[op.Op] {
 		if err := cmp.Or(planaccess.ParseError(bd), planaccess.ParseError(ad)); err != nil {
 			return "the config does not parse: " + err.Error() + "; fix it first"
 		}

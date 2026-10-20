@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/bide-ai/bide/internal/planaccess"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -972,8 +975,9 @@ func TestLoopBoundThatMakesANonContiguousBodyIsRefused(t *testing.T) {
 // A text plan cannot parse has no records: its problems are unknown, not absent. An edit that can change
 // what the types or safeties check is refused while the text before or after does not parse (a
 // misspelt field, another version, a control character in a name), rather than let through unchecked;
-// edits that cannot (moving an element, the flow's name, assertions) are not; a rename is refused too,
-// since it rewrites references across a graph nothing can check.
+// only edits on an allow list (the flow's name, approvals, assertions) are not; a rename and a move
+// are refused too, since they change a graph nothing can check (a move changes the implicit entry and
+// the terminal that sets the flow's output).
 func TestTypedEditorRefusesTypeAffectingEditsWhileTheTextDoesNotParse(t *testing.T) {
 	ctrl := strconv.Quote("fi\x01rst")
 	broken := map[string]string{
@@ -997,7 +1001,7 @@ func TestTypedEditorRefusesTypeAffectingEditsWhileTheTextDoesNotParse(t *testing
 			}
 			for _, op := range []Operation{
 				{Op: "set_flow", Value: "renamed"},
-				{Op: "move_wiring", Index: 0, Value: "down"},
+				{Op: "add_assertion", Assertion: &Assertion{Form: "reachable", Node: "receipt"}},
 			} {
 				w = call(s.Handler(), s, "/api/apply", applyReq(text, op), nil)
 				if strings.Contains(w.Body.String(), "does not parse") {
@@ -1051,4 +1055,136 @@ func TestTypedRefusalNeedsBothSidesToParse(t *testing.T) {
 			t.Errorf("%s: two texts that parse and have no misfit were refused: %q", kind, why)
 		}
 	}
+}
+
+// The reviewer's repro: with a misspelt field on one node, moving a node up changes which terminal sets
+// the flow's output, so after the typo is fixed there are more misfits than before: refused while the
+// text does not parse, in both modes. On the clean text the same move is judged by the types.
+func TestTypedEditorRefusesMovesWhileTheTextDoesNotParse(t *testing.T) {
+	clean := "version: 1\nflow: f\nentry: validate\nnodes:\n  - {name: validate, block: validate, safety: readonly}\n  - {name: t1, block: plain}\n  - {name: t2, block: plain}\n  - {name: t3, block: receipt, safety: idempotent}\nwiring:\n  - edge: [validate, t1]\n  - edge: [validate, t2]\n  - edge: [validate, t3]\n"
+	typo := strings.Replace(clean, "{name: t1, block: plain}", "{name: t1, block: plain, safty: readonly}", 1)
+	for _, kind := range []string{"registry", "description"} {
+		s := typedServers(t, "m.yaml", clean)[kind]
+		for _, op := range []Operation{{Op: "move_node", Node: "t3", Value: "up"}, {Op: "move_wiring", Index: 2, Value: "up"}} {
+			w := call(s.Handler(), s, "/api/apply", applyReq(typo, op), nil)
+			if !strings.Contains(w.Body.String(), `"refused":"the config does not parse: `) {
+				t.Errorf("%s: %s while the text does not parse was allowed: %.300s", kind, op.Op, w.Body)
+			}
+		}
+	}
+}
+
+// A join's wiring moves are refused too, and set_in and set_out (which decide the terminal misfits)
+// with them, while set_flow, which only names the flow, is not.
+func TestTypedEditorUnparsedAllowListIsNarrow(t *testing.T) {
+	join := "version: 1\nflow: f\nentry: validate\nnodes:\n  - {name: validate, block: validate, safety: readonly}\n  - {name: a, block: plain}\n  - {name: b, block: plain}\nwiring:\n  - edge: [validate, a]\n  - edge: [validate, b]\n  - join: j\n    inputs: [a, b]\n    merge: both\n"
+	typo := strings.Replace(join, "{name: a, block: plain}", "{name: a, block: plain, safty: x}", 1)
+	for _, kind := range []string{"registry", "description"} {
+		s := typedServers(t, "j.yaml", chainFlow)[kind]
+		for _, op := range []Operation{{Op: "move_wiring", Index: 0, Value: "down"}, {Op: "set_out", Value: "string"}, {Op: "set_in", Value: "int"}} {
+			w := call(s.Handler(), s, "/api/apply", applyReq(typo, op), nil)
+			if !strings.Contains(w.Body.String(), `"refused":"the config does not parse: `) {
+				t.Errorf("%s: %s while the text does not parse was allowed: %.300s", kind, op.Op, w.Body)
+			}
+		}
+		w := call(s.Handler(), s, "/api/apply", applyReq(typo, Operation{Op: "set_flow", Value: "renamed"}), nil)
+		if strings.Contains(w.Body.String(), "does not parse") {
+			t.Errorf("%s: set_flow was refused for the parse error: %.200s", kind, w.Body)
+		}
+	}
+}
+
+// A confirmed removal of a node, from a text that does not parse to one that does (the node with the
+// misspelt field is the one removed), is refused: the text before could not be checked.
+func TestTypedEditorRefusesAConfirmedRemovalFromAnUnparsingText(t *testing.T) {
+	typo := strings.Replace(chainFlow, "{name: third, block: plain}", "{name: third, block: plain, safty: idempotent}", 1)
+	for _, kind := range []string{"registry", "description"} {
+		s := typedServers(t, "chain.yaml", chainFlow)[kind]
+		dry := call(s.Handler(), s, "/api/apply", applyReq(typo, Operation{Op: "remove_node", Node: "third", DryRun: true}), nil)
+		var e Edited
+		if err := json.Unmarshal(dry.Body.Bytes(), &e); err != nil || len(e.Cascade) == 0 {
+			t.Fatalf("%s: the dry run does not list what removal cascades to: %.300s", kind, dry.Body)
+		}
+		w := call(s.Handler(), s, "/api/apply", applyReq(typo, Operation{Op: "remove_node", Node: "third", Confirm: e.Cascade}), nil)
+		if !strings.Contains(w.Body.String(), `"refused":"the config does not parse: `) {
+			t.Errorf("%s: a confirmed removal from a text that does not parse was allowed: %.300s", kind, w.Body)
+		}
+	}
+}
+
+// Every operation the editor knows is refused while the text does not parse unless it is on the allow
+// list, so one added later is refused by default. The vocabulary is read from the code that dispatches
+// the operations (the predicates and the node-operation switch), so a new case there is found here.
+func TestEveryOperationIsRefusedWhileUnparsedUnlessAllowed(t *testing.T) {
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, ".", func(fi fs.FileInfo) bool { return !strings.HasSuffix(fi.Name(), "_test.go") }, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ops := map[string]bool{}
+	for _, pkg := range pkgs {
+		for _, f := range pkg.Files {
+			for _, d := range f.Decls {
+				fd, ok := d.(*ast.FuncDecl)
+				if !ok || fd.Body == nil {
+					continue
+				}
+				switch fd.Name.Name {
+				case "isWiringOp", "isJoinOp", "isStructureOp", "isAssertionOp", "planSteps":
+					ast.Inspect(fd.Body, func(n ast.Node) bool {
+						lit, ok := n.(*ast.BasicLit)
+						if !ok || lit.Kind != token.STRING {
+							return true
+						}
+						// planSteps has other strings (error text, keys); only its case labels are operations.
+						if fd.Name.Name == "planSteps" && !inCase(fd.Body, lit) {
+							return true
+						}
+						v, _ := strconv.Unquote(lit.Value)
+						ops[v] = true
+						return true
+					})
+				}
+			}
+		}
+	}
+	// planSteps also switches on safeties; the operation names are the ones the dispatchers accept.
+	for _, notOp := range []string{"readonly", "idempotent", "side_effect"} {
+		delete(ops, notOp)
+	}
+	if len(ops) < 25 {
+		t.Fatalf("found only %d operations in the code: %v", len(ops), ops)
+	}
+	for op := range allowedWhileUnparsed {
+		if !ops[op] {
+			t.Errorf("%s is on the allow list but is not an operation the editor dispatches", op)
+		}
+	}
+	typo := strings.Replace(chainFlow, "{name: third, block: plain}", "{name: third, block: plain, safty: idempotent}", 1)
+	for _, kind := range []string{"registry", "description"} {
+		s := typedServers(t, "chain.yaml", chainFlow)[kind]
+		for op := range ops {
+			why := s.typedRefusal([]byte(typo), []byte(typo), Operation{Op: op})
+			refused := strings.HasPrefix(why, "the config does not parse: ")
+			if allowedWhileUnparsed[op] == refused {
+				t.Errorf("%s: %s: allowed %v but typedRefusal says %q", kind, op, allowedWhileUnparsed[op], why)
+			}
+		}
+	}
+}
+
+// inCase reports whether lit is a label of a case clause in body.
+func inCase(body *ast.BlockStmt, lit *ast.BasicLit) bool {
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		if cc, ok := n.(*ast.CaseClause); ok {
+			for _, e := range cc.List {
+				if e == ast.Expr(lit) {
+					found = true
+				}
+			}
+		}
+		return !found
+	})
+	return found
 }
