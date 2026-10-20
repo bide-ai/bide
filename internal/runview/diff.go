@@ -1117,7 +1117,7 @@ func readOld(arg, newPath string, toJSON func([]byte) ([]byte, error)) (Config, 
 	out, rerr := readConfigBytes(src)
 	if errors.Is(rerr, agent.ErrConfig) {
 		_ = cmd.Process.Kill()
-		_, _ = io.Copy(io.Discard, pipe)
+		_, _ = io.Copy(io.Discard, src)
 		_ = cmd.Wait()
 		return Config{}, fmt.Errorf("-diff %q: %w", arg, rerr)
 	}

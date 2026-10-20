@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
 )
@@ -65,12 +66,21 @@ func TestReadOld_GitRevisionSizeLimit(t *testing.T) {
 	}
 	git("add", ".")
 	git("commit", "-q", "-m", "huge")
-	_, err := readOld("HEAD:huge.json", "", nil)
+	done := make(chan error, 1)
+	go func() { _, err := readOld("HEAD:huge.json", "", nil); done <- err }()
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("readOld of a 96 MiB revision did not return in 20 s: git was not stopped at the limit")
+	}
 	if !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "larger than 16777216 bytes") {
 		t.Fatalf("readOld of a 96 MiB revision = %v, want ErrConfig naming the limit", err)
 	}
-	if read.n > 16<<20+1 {
-		t.Fatalf("read %d bytes of git's output, want at most %d", read.n, 16<<20+1)
+	// Every byte read from git counts, the drain after the kill included: git is stopped at the
+	// limit, not read to the end of the blob.
+	if read.n > 16<<20+1<<20 {
+		t.Fatalf("read %d bytes of git's output, want at most %d: git was not stopped", read.n, 16<<20+1<<20)
 	}
 	if read.n < 16<<20 {
 		t.Fatalf("read only %d bytes: the test did not reach the limit", read.n)
