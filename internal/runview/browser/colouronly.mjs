@@ -261,12 +261,22 @@ try {
     'prefers-contrast+stored': { page: 'run', theme: 'dark', features: [{ name: 'prefers-contrast', value: 'more' }] },
     'prefers-contrast+default': { page: 'runDefault', theme: null, features: [{ name: 'prefers-contrast', value: 'more' }] },
     'default': { page: 'runDefault', theme: null },
+    // A locked page: the one theme whatever the system prefers or a script sets in the page, the
+    // switch hidden, and the system's requests for more contrast and forced colors still win.
+    'locked': { page: 'runLocked', theme: null },
+    'locked+system-light': { page: 'runLocked', theme: null, features: [{ name: 'prefers-color-scheme', value: 'light' }] },
+    'locked-light+system-dark': { page: 'runLockedLight', theme: null, features: [{ name: 'prefers-color-scheme', value: 'dark' }] },
+    'locked+set-in-page': { page: 'runLocked', theme: 'light' },
+    'locked+prefers-contrast': { page: 'runLocked', theme: null, features: [{ name: 'prefers-contrast', value: 'more' }] },
+    'locked+prefers-contrast+set-in-page': { page: 'runLocked', theme: 'light', features: [{ name: 'prefers-contrast', value: 'more' }] },
+    'locked+forced-colors': { page: 'runLocked', theme: null, features: [{ name: 'forced-colors', value: 'active' }] },
+    'locked+forced-colors+set-in-page': { page: 'runLocked', theme: 'light', features: [{ name: 'forced-colors', value: 'active' }] },
   };
   out.combos = {};
   for (const [key, c] of Object.entries(combos)) {
     mode = c;
     const page = await open(c.page);
-    out.combos[key] = await page.evaluate(() => ({ bg: window.__bg, fg: window.__fg, bgToken: window.__bgToken, current: window.bideTheme.current() }));
+    out.combos[key] = await page.evaluate(() => ({ bg: window.__bg, fg: window.__fg, bgToken: window.__bgToken, current: window.bideTheme.current(), switchDisplay: getComputedStyle(document.getElementById('theme')).display, names: window.bideTheme.names().join(' ') }));
     await page.close();
   }
   out.ok = true;

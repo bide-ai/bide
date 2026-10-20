@@ -19,7 +19,7 @@
   // the system's light or dark.
   const media = (q) => !!(window.matchMedia && window.matchMedia(q).matches);
   const locked = () => read("--bide-lock") !== "";
-  const current = () => root.getAttribute("data-theme") ||
+  const current = () => (locked() ? "" : root.getAttribute("data-theme")) ||
     (media("(prefers-contrast: more)") && (names().includes("high-contrast") || locked()) ? "high-contrast" : "") ||
     read("--bide-default") || (media("(prefers-color-scheme: dark)") ? "dark" : "light");
   const next = () => {
