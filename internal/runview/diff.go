@@ -1081,7 +1081,9 @@ func diffGraph(ot, nt plan.Topology, cs []Change) *Graph {
 // repository, or from the working directory when it starts with ./), and a bare "<rev>" means
 // newPath as it was at that revision. The YAML or JSON format follows the path's extension.
 func readOld(arg, newPath string, toJSON func([]byte) ([]byte, error)) (Config, error) {
-	if _, err := os.Stat(arg); err == nil {
+	// A file of that name is read as the file (a named pipe or device is refused by readConfig); a
+	// directory of that name, like a missing file, leaves the argument to be a git revision.
+	if fi, err := os.Stat(arg); err == nil && !fi.IsDir() {
 		return readConfig(arg, toJSON)
 	}
 	if arg == "" || strings.HasPrefix(arg, "-") {
