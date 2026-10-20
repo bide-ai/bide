@@ -719,6 +719,13 @@ func TestTypedEditorRefusesAMisfitPastTheReportCap(t *testing.T) {
 		if w.Code != 200 || !strings.Contains(w.Body.String(), `"refused":"the types do not fit: `) || strings.Contains(w.Body.String(), `"text"`) {
 			t.Errorf("%s: a misfit past the cap was not refused: %d %.300s", kind, w.Code, w.Body)
 		}
+		// A swap: a130 takes an int step, which fixes its in-edge misfit and adds a misfit on its out-edge,
+		// at the end of the list. The number of misfits is the same (130) and the new one is past the
+		// default cap: only a comparison of the full lists sees it.
+		w = call(h, s, "/api/apply", applyReq(text, Operation{Op: "set_block", Node: "a130", Value: "count"}), nil)
+		if w.Code != 200 || !strings.Contains(w.Body.String(), `"refused":"the types do not fit: `) || !strings.Contains(w.Body.String(), `a130`) {
+			t.Errorf("%s: a swap past the cap (one misfit fixed, one added) was not refused: %d %.300s", kind, w.Code, w.Body)
+		}
 		w = call(h, s, "/api/apply", applyReq(text, Operation{Op: "set_safety", Node: "a0", Value: "side_effect"}), nil)
 		if strings.Contains(w.Body.String(), `"refused"`) {
 			t.Errorf("%s: an unrelated operation on a text with 130 misfits was refused: %.300s", kind, w.Body)
