@@ -483,7 +483,7 @@ func options(f flags, stores Stores) (Options, io.Closer, error) {
 // readConfig reads a flow config file, converting a .yaml or .yml file to JSON with toJSON.
 func readConfig(path string, toJSON func([]byte) ([]byte, error)) (Config, error) {
 	// A named pipe or device would block the open or never end, and a directory cannot be read as a
-	// config: refuse anything but a regular file, and check that the file opened is the one checked.
+	// config: refuse anything but a regular file, before opening it and again once opened.
 	before, err := os.Stat(path)
 	if err != nil {
 		return Config{}, err
@@ -494,13 +494,16 @@ func readConfig(path string, toJSON func([]byte) ([]byte, error)) (Config, error
 	if betweenStatAndOpen != nil {
 		betweenStatAndOpen()
 	}
-	f, err := os.Open(path)
+	f, err := openConfig(path)
 	if err != nil {
 		return Config{}, err
 	}
 	defer f.Close()
-	if after, err := f.Stat(); err != nil || !after.Mode().IsRegular() || !os.SameFile(before, after) {
-		return Config{}, fmt.Errorf("%s changed while it was opened: %w", path, agent.ErrConfig)
+	// Decide on the file actually opened, not on the path: the path may have been swapped since the
+	// first check. (os.SameFile against that check does not hold on Windows, where a FileInfo from
+	// os.Stat loads its file ID from the path when SameFile first asks, which is after any swap.)
+	if after, err := f.Stat(); err != nil || !after.Mode().IsRegular() {
+		return Config{}, fmt.Errorf("%s is not a regular file (it changed while it was opened): %w", path, agent.ErrConfig)
 	}
 	b, err := readConfigBytes(f)
 	if err != nil {

@@ -135,24 +135,24 @@ func (c *countingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// The file readConfig opens must be the one it checked: a path swapped for another file (or a
-// named pipe) between the check and the open is refused.
-func TestReadConfig_RefusesAFileSwappedBeforeTheOpen(t *testing.T) {
+// readConfig decides on the file it opened, not on the path it checked: a path swapped for a
+// directory between the check and the open is refused, on every platform.
+func TestReadConfig_RefusesAPathSwappedForADirectory(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cfg.json")
-	other := filepath.Join(dir, "other.json")
-	for _, p := range []string{path, other} {
-		if err := os.WriteFile(p, []byte("{}"), 0o644); err != nil {
-			t.Fatal(err)
-		}
+	if err := os.WriteFile(path, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 	betweenStatAndOpen = func() {
-		if err := os.Rename(other, path); err != nil {
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(path, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 	defer func() { betweenStatAndOpen = nil }()
 	if _, err := readConfig(path, nil); !errors.Is(err, agent.ErrConfig) {
-		t.Fatalf("readConfig of a swapped file = %v, want ErrConfig", err)
+		t.Fatalf("readConfig of a path swapped for a directory = %v, want ErrConfig", err)
 	}
 }
