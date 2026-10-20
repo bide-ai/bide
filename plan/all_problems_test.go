@@ -176,3 +176,19 @@ func TestTypeProblems_OrderAndTheOption(t *testing.T) {
 		t.Errorf("AllTypeProblems: %d problems, want 122", len(all))
 	}
 }
+
+// With a Registry the wiring checks report every problem as well (they run before Build, which
+// stops at the first): two loops that have no exit arm.
+func TestInspectConfig_TypedReportsEveryLoopProblem(t *testing.T) {
+	loops := `{"version":1,"flow":"f","entry":"a","nodes":[{"name":"a","block":"s2s"},{"name":"b","block":"s2s"},{"name":"c","block":"s2s"}],
+	  "wiring":[{"edge":["a","b"]},{"switch":"b","when":[{"pred":"nonEmpty","to":"a","loop_max":3}]},{"edge":["a","c"]},{"switch":"c","when":[{"pred":"nonEmpty","to":"a","loop_max":3}]}]}`
+	var found []string
+	for _, p := range InspectConfig([]byte(loops), typedChainRegistry(t), AllowUnusedBlocks()).Problems {
+		if strings.Contains(p.Message, "has no exit arm") {
+			found = append(found, p.Message)
+		}
+	}
+	if len(found) != 2 {
+		t.Errorf("loops without an exit arm reported: %q", found)
+	}
+}
