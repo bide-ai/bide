@@ -56,6 +56,7 @@ try {
       selWidth: sel ? parseFloat(cs(sel, 'strokeWidth')) : 0,
       otherWidth: Math.max(...[...document.querySelectorAll('#canvas .node:not(.sel) .box')].map((e) => parseFloat(cs(e, 'strokeWidth')))),
       scrim: probe(token('--scrim')), lineStrong: probe(token('--line-strong')),
+      colorScheme: Object.fromEntries(['html', '#source', '#pal-q', '#palette', 'input[type=checkbox]'].map((sel) => { const e = document.querySelector(sel); return [sel, e ? cs(e, 'colorScheme') : null]; })),
     };
   });
 
@@ -96,7 +97,32 @@ try {
     const before = await px();
     await page.evaluate(() => document.getElementById('dialog').showModal());
     const after = await px();
-    const edge = await page.evaluate(() => { const d = document.getElementById('dialog'); const s = getComputedStyle(d); const r = { width: parseFloat(s.borderTopWidth), color: s.borderTopColor }; d.close(); return r; });
+    const edge = await page.evaluate(() => {
+      const d = document.getElementById('dialog-form'), s = getComputedStyle(d);
+      // The elevation is the theme's shadow token, on the box that is drawn (not on the dim carrier).
+      const t = document.createElement('i'); t.style.boxShadow = 'var(--shadow)'; document.body.append(t);
+      const want = getComputedStyle(t).boxShadow; t.remove();
+      return { width: parseFloat(s.borderTopWidth), color: s.borderTopColor, shadow: s.boxShadow, wantShadow: want, overflowY: s.overflowY };
+    });
+    // Content taller than the viewport scrolls inside the box, which stays on screen.
+    const tall = await page.evaluate(() => {
+      const body = document.getElementById('dialog-body');
+      const filler = document.createElement('div');
+      for (let i = 0; i < 120; i++) { const p = document.createElement('p'); p.textContent = 'line ' + i; filler.append(p); }
+      body.append(filler);
+      const f = document.getElementById('dialog-form');
+      const r = f.getBoundingClientRect();
+      const scrollable = f.scrollHeight > f.clientHeight;
+      f.scrollTop = 200;
+      const moved = f.scrollTop > 0;
+      const out = { onScreen: r.top >= 0 && r.bottom <= window.innerHeight, scrollable, moved };
+      filler.remove();
+      return out;
+    });
+    // Escape closes it, as before.
+    await page.keyboard.press('Escape');
+    const closed = await page.evaluate(() => !document.getElementById('dialog').open);
+    edge.tall = tall; edge.escapeCloses = closed;
     return { before, after, edge };
   };
 

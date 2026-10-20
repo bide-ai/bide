@@ -29,8 +29,9 @@ main { max-width: 1480px; }
 .weakened { margin-top: var(--s3); }
 .btn.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 600; }
 .btn:disabled { opacity: .5; cursor: default; }
-dialog { max-width: min(900px, 94vw); width: 100%; background: var(--card); color: var(--fg); border: 1px solid var(--line-strong); border-radius: var(--r-lg); padding: var(--s5); box-shadow: 0 0 0 100vmax var(--scrim); }
-/* The page is dimmed by a shadow of the scrim around the dialog, not by ::backdrop: an engine that does not pass custom properties to ::backdrop (before 2024) would show no dimming. Forced colors drop shadows; the dialog keeps its edge. */
+/* The dialog element only carries the dim: a shadow of the scrim around it (not ::backdrop, which an engine from before 2024 does not pass custom properties to). The box that is drawn, with the theme's elevation, is #dialog-form: a shadow of its own would be clipped by the dialog's overflow, and a list of shadows with the scrim would be invalid when the theme's shadow is none. Forced colors drop shadows: there the page is not dimmed and the box keeps its border. */
+dialog { max-width: min(900px, 94vw); width: 100%; padding: 0; border: 0; border-radius: var(--r-lg); background: transparent; color: var(--fg); overflow: visible; box-shadow: 0 0 0 100vmax var(--scrim); }
+#dialog-form { background: var(--card); border: 1px solid var(--line-strong); border-radius: var(--r-lg); padding: var(--s5); box-shadow: var(--shadow); max-height: calc(100vh - 6em); overflow: auto; }
 dialog::backdrop { background: none; }
 dialog h2 { margin-top: 0; }
 .dialog-actions { display: flex; gap: var(--s3); justify-content: flex-end; margin-top: var(--s4); }

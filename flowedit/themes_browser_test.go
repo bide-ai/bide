@@ -41,16 +41,26 @@ type themeState struct {
 		Seen int      `json:"seen"`
 		Bad  []string `json:"bad"`
 	} `json:"audit"`
-	SelStroke  string `json:"selStroke"`
-	Focus      string `json:"focus"`
-	Scrim      string `json:"scrim"`
-	LineStrong string `json:"lineStrong"`
-	Dim        struct {
+	SelStroke   string            `json:"selStroke"`
+	Focus       string            `json:"focus"`
+	Scrim       string            `json:"scrim"`
+	LineStrong  string            `json:"lineStrong"`
+	ColorScheme map[string]string `json:"colorScheme"`
+	Dim         struct {
 		Before []int `json:"before"`
 		After  []int `json:"after"`
 		Edge   struct {
-			Width float64 `json:"width"`
-			Color string  `json:"color"`
+			Width       float64 `json:"width"`
+			Color       string  `json:"color"`
+			Shadow      string  `json:"shadow"`
+			WantShadow  string  `json:"wantShadow"`
+			OverflowY   string  `json:"overflowY"`
+			EscapeClose bool    `json:"escapeCloses"`
+			Tall        struct {
+				OnScreen   bool `json:"onScreen"`
+				Scrollable bool `json:"scrollable"`
+				Moved      bool `json:"moved"`
+			} `json:"tall"`
 		} `json:"edge"`
 	} `json:"dim"`
 }
@@ -104,7 +114,7 @@ func (r themesRun) mode(t *testing.T, key string) themeState {
 // checkPainted holds in every mode but forced colors: the primary button's text is the on_accent
 // token at 4.5:1 on its fill, a control's edge reaches 3:1 against what it sits on (border_strong),
 // the selected node's ring is the focus token, and the dialog's backdrop is the scrim token.
-func checkPainted(t *testing.T, key string, m themeState) {
+func checkPainted(t *testing.T, key string, m themeState, scheme string) {
 	t.Helper()
 	if m.Primary.Text != m.Primary.OnAccent || m.Primary.Fill != m.Primary.Accent {
 		t.Errorf("%s: the primary button is %s on %s, want on_accent %s on accent %s", key, m.Primary.Text, m.Primary.Fill, m.Primary.OnAccent, m.Primary.Accent)
@@ -135,6 +145,20 @@ func checkPainted(t *testing.T, key string, m themeState) {
 	if m.Audit.Seen < 12 || len(m.Audit.Bad) > 0 {
 		t.Errorf("%s: %d controls audited; the theme does not reach: %q", key, m.Audit.Seen, m.Audit.Bad)
 	}
+	// The page tells the browser which scheme its ground is, so the native widgets (the search clear
+	// button, scrollbars, checkboxes) are drawn for it.
+	for sel, got := range m.ColorScheme {
+		if got != scheme {
+			t.Errorf("%s: color-scheme of %s is %q, want %q", key, sel, got, scheme)
+		}
+	}
+	if len(m.ColorScheme) != 5 {
+		t.Errorf("%s: color-scheme was read from %d elements, want 5", key, len(m.ColorScheme))
+	}
+	if m.Dim.Edge.Shadow != m.Dim.Edge.WantShadow {
+		t.Errorf("%s: the dialog's elevation is %q, want the shadow token %q", key, m.Dim.Edge.Shadow, m.Dim.Edge.WantShadow)
+	}
+	checkDialogBehaviour(t, key, m)
 	// The dialog dims the page by the scrim's alpha (a pixel far from it is the page's pixel times
 	// 1 - alpha), in every engine that paints a shadow, and keeps its own edge.
 	var alpha float64
@@ -152,10 +176,24 @@ func checkPainted(t *testing.T, key string, m themeState) {
 	}
 }
 
+// checkDialogBehaviour: content taller than the viewport scrolls inside a box that stays on screen,
+// and Escape closes the dialog.
+func checkDialogBehaviour(t *testing.T, key string, m themeState) {
+	t.Helper()
+	tl := m.Dim.Edge.Tall
+	if !tl.OnScreen || !tl.Scrollable || !tl.Moved || m.Dim.Edge.OverflowY != "auto" {
+		t.Errorf("%s: a tall dialog: on screen %v, scrollable %v, scrolled %v, overflow %q", key, tl.OnScreen, tl.Scrollable, tl.Moved, m.Dim.Edge.OverflowY)
+	}
+	if !m.Dim.Edge.EscapeClose {
+		t.Errorf("%s: Escape did not close the dialog", key)
+	}
+}
+
 // checkForcedDialog: forced colors drop shadows, so the dialog does not dim the page there; it is still
 // modal and keeps a visible edge in the system's border color.
 func checkForcedDialog(t *testing.T, key string, m themeState) {
 	t.Helper()
+	checkDialogBehaviour(t, key, m)
 	if m.Dim.Edge.Width < 1 || m.Dim.Edge.Color != m.LineStrong || m.Dim.Edge.Color == "rgba(0, 0, 0, 0)" {
 		t.Errorf("%s: the dialog's edge is %gpx %s, want a visible edge in the system's border color %s", key, m.Dim.Edge.Width, m.Dim.Edge.Color, m.LineStrong)
 	}
@@ -180,7 +218,7 @@ func TestThemesInChrome(t *testing.T) {
 			checkForcedDialog(t, key, m)
 			continue
 		}
-		checkPainted(t, key, m)
+		checkPainted(t, key, m, map[string]string{"light": "light", "dark": "dark", "high-contrast": "light", "prefers-contrast": "light"}[key])
 		if m.SwitchHidden {
 			t.Errorf("%s: the switch is hidden on a page with three themes", key)
 		}
@@ -238,7 +276,7 @@ func TestLockedThemeInChrome(t *testing.T) {
 		if key == "locked+forced-colors" {
 			checkForcedDialog(t, key, m)
 		} else {
-			checkPainted(t, key, m)
+			checkPainted(t, key, m, map[string]string{"locked": "dark", "locked+system-dark": "dark", "locked+set-in-page": "dark", "locked+prefers-contrast": "light", "locked+prefers-contrast+set-in-page": "light"}[key])
 		}
 	}
 	var after struct{ Attr, Token string }
@@ -269,7 +307,7 @@ func TestCustomThemeInChrome(t *testing.T) {
 	t.Setenv("CUSTOM", "acme-focus")
 	r := runThemes(t, "default", s)
 	m := r.mode(t, "acme-focus")
-	checkPainted(t, "acme-focus", m)
+	checkPainted(t, "acme-focus", m, "light")
 	if m.Focus == m.Primary.Accent || m.SelStroke != "rgb(122, 31, 162)" {
 		t.Errorf("the selected node's ring is %q (focus token %q, accent %q), want the theme's focus rgb(122, 31, 162)", m.SelStroke, m.Focus, m.Primary.Accent)
 	}
