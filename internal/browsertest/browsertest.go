@@ -42,6 +42,7 @@ type DeadlineError struct {
 	Profile  string // the Chrome profile directory the run owned
 }
 
+// Error says which script was stopped, after how long, in which Chrome profile, and what it had written.
 func (e *DeadlineError) Error() string {
 	return fmt.Sprintf("%s was still running after %v and was stopped with the processes it started (Chrome profile %s)\nstderr: %s\nstdout: %s", e.Script, e.Deadline, e.Profile, e.Stderr, e.Stdout)
 }
