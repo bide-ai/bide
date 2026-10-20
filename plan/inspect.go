@@ -192,7 +192,7 @@ func inspectConfigUnbounded(data []byte, reg *Registry, opts []InspectOption) (r
 		if err := graphChecks(&cfg); err != nil {
 			// One refusal, as one problem: attribute splits an error at "; " (it joins several), and Build's
 			// own wording has one inside it.
-			r.attribute(&cfg, errors.New(strings.ReplaceAll(err.Error(), "; ", ", ")))
+			r.attribute(&cfg, err)
 		}
 	}
 	defer func() { r.gated(); r.assertions(cfg.Assert) }()
@@ -233,6 +233,12 @@ func inspectConfigUnbounded(data []byte, reg *Registry, opts []InspectOption) (r
 	typeMsgs = append(typeMsgs, core.buildTypeProblems()...)
 	if len(typeMsgs) > 0 {
 		r.attribute(&cfg, fmt.Errorf("plan: load %q: %s", cfg.Flow, strings.Join(capTypeProblems(typeMsgs), "; ")))
+		return r
+	}
+	// The wiring's own checks (a cycle, a loop's shape, reachability, a join's inputs), all of them,
+	// before Build, which stops at the first.
+	if err := graphChecks(&cfg); err != nil {
+		r.attribute(&cfg, err)
 		return r
 	}
 	// The check is of the policy, not of approvers' keys, which a config does not carry: a
@@ -687,17 +693,29 @@ func graphChecks(cfg *config) error {
 	if _, err := core.topoOrder(); err != nil {
 		return fmt.Errorf("plan: build %q: %w", core.flowName, err)
 	}
-	if err := core.deriveLoops(); err != nil {
-		return err
+	// Every refusal of these checks, not the first, so a second problem of the same kind (a second
+	// loop that is not simple, a second node not reached) shows beside the first: a caller that
+	// compares reports (the editor) must see it. "; " inside one message is written ", ", since
+	// attribute splits a joined error at "; ".
+	var msgs []string
+	note := func(m string) { msgs = append(msgs, strings.ReplaceAll(m, "; ", ", ")) }
+	for _, m := range core.loopProblems() {
+		note(m)
 	}
 	reached := core.reachableFrom(core.entry)
 	for _, n := range core.nodes {
 		if !reached[n.name] {
-			return fmt.Errorf("plan: build %q: step %q is not reached from the entry %q: wire it in from the entry with an edge or an arm, or remove it", core.flowName, n.name, core.entry)
+			note(fmt.Sprintf("step %q is not reached from the entry %q: wire it in from the entry with an edge or an arm, or remove it", n.name, core.entry))
 		}
 	}
 	if err := core.checkJoins(); err != nil {
-		return err
+		note(core.unprefixed(err))
 	}
-	return core.checkShapes()
+	for _, m := range core.shapeProblems() {
+		note(m)
+	}
+	if len(msgs) == 0 {
+		return nil
+	}
+	return fmt.Errorf("plan: build %q: %s", core.flowName, strings.Join(msgs, "; "))
 }

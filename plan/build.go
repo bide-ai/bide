@@ -6,6 +6,7 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -242,6 +243,26 @@ func (c *builderCore) buildTypeProblems() []string {
 	return msgs
 }
 
+// buildProblems collects the refusals of a Build check that reports every one it finds (the
+// checks of a loop's shape and of the wiring's shapes), so a caller that compares reports sees a
+// second problem beside the first. err is nil with none, the one refusal as Build always worded it
+// with one, and with several the same prefix once and the messages joined by "; ".
+type buildProblems struct {
+	flow string
+	msgs []string
+}
+
+func (p *buildProblems) addf(format string, a ...any) {
+	p.msgs = append(p.msgs, fmt.Sprintf(format, a...))
+}
+
+func (p *buildProblems) err() error {
+	if len(p.msgs) == 0 {
+		return nil
+	}
+	return fmt.Errorf("plan: build %q: %s", p.flow, strings.Join(p.msgs, "; "))
+}
+
 // topoOrder returns the node names in a deterministic topological order over the
 // declared directed graph: an ordinary edge (producer -> consumer, which includes a
 // Join's input edges) and a Switch arm (switched node -> each arm target) are the
@@ -451,9 +472,14 @@ func (c *builderCore) checkJoins() error {
 // point; two back-edges from one Switch would target two heads, which rung-1 does
 // not express); a second is rejected.
 func (c *builderCore) deriveLoops() error {
+	return (&buildProblems{flow: c.flowName, msgs: c.loopProblems()}).err()
+}
+
+// loopProblems is deriveLoops reporting every refusal, as messages without Build's prefix.
+func (c *builderCore) loopProblems() []string {
 	order, err := c.topoOrder()
 	if err != nil {
-		return err // already reported by the caller's acyclicity check; defensive here
+		return []string{c.unprefixed(err)} // already reported by the caller's acyclicity check; defensive here
 	}
 	indexOf := make(map[string]int, len(order))
 	for i, name := range order {
@@ -475,6 +501,8 @@ func (c *builderCore) deriveLoops() error {
 	}
 
 	var loops []loopSpec
+	pr := &buildProblems{flow: c.flowName}
+branches:
 	for _, br := range c.branches {
 		var back *arm
 		exits := 0
@@ -482,7 +510,8 @@ func (c *builderCore) deriveLoops() error {
 			a := &br.arms[i]
 			if a.loopBack {
 				if back != nil {
-					return fmt.Errorf("plan: build %q: Switch over %q has more than one LoopBack arm; a Switch expresses a single loop back-edge", c.flowName, br.over)
+					pr.addf("Switch over %q has more than one LoopBack arm; a Switch expresses a single loop back-edge", br.over)
+					continue branches
 				}
 				back = a
 			} else {
@@ -493,26 +522,31 @@ func (c *builderCore) deriveLoops() error {
 			continue // an ordinary forward Switch
 		}
 		if back.loopMax <= 0 {
-			return fmt.Errorf("plan: build %q: loop over %q has max %d, want a positive iteration bound", c.flowName, br.over, back.loopMax)
+			pr.addf("loop over %q has max %d, want a positive iteration bound", br.over, back.loopMax)
+			continue
 		}
 		if exits == 0 {
-			return fmt.Errorf("plan: build %q: loop over %q has no exit arm; add a When or Else that does not loop back so the loop can terminate", c.flowName, br.over)
+			pr.addf("loop over %q has no exit arm; add a When or Else that does not loop back so the loop can terminate", br.over)
+			continue
 		}
 		head := back.target
 		if c.byName[head] == nil {
-			return fmt.Errorf("plan: build %q: loop over %q routes back to unknown head %q", c.flowName, br.over, head)
+			pr.addf("loop over %q routes back to unknown head %q", br.over, head)
+			continue
 		}
 		// The back-edge must be a real cycle: the switch must be forward-reachable from
 		// the head (the head is an ancestor of the switch). Otherwise the "loop" routes
 		// back to a node that never reaches the switch, which is a wiring mistake.
 		if !forwardReaches(fwd, head, br.over) {
-			return fmt.Errorf("plan: build %q: LoopBack over %q targets %q, which is not an ancestor of the Switch (a loop head must reach its loop Switch in the forward graph)", c.flowName, br.over, head)
+			pr.addf("LoopBack over %q targets %q, which is not an ancestor of the Switch (a loop head must reach its loop Switch in the forward graph)", br.over, head)
+			continue
 		}
 		headIdx, overIdx := indexOf[head], indexOf[br.over]
 		if headIdx > overIdx {
 			// Guaranteed not to happen given the ancestor check, but assert it so the
 			// contiguous-interval slice below is well-formed.
-			return fmt.Errorf("plan: build %q: loop over %q has head %q ordered after its Switch; the loop region is malformed", c.flowName, br.over, head)
+			pr.addf("loop over %q has head %q ordered after its Switch; the loop region is malformed", br.over, head)
+			continue
 		}
 		// The loop region is the forward interval head..switch inclusive. Require it to be
 		// contiguous: every node in that index range must lie on a forward path from the
@@ -525,7 +559,8 @@ func (c *builderCore) deriveLoops() error {
 				// A node between head and switch must both descend from the head and reach the
 				// switch, else it is unrelated to the loop and the region is not a clean interval.
 				if !forwardReaches(fwd, head, name) || !forwardReaches(fwd, name, br.over) {
-					return fmt.Errorf("plan: build %q: loop over %q has a non-contiguous body (node %q lies between the head and Switch but is not on the loop path); rung-1 loops must form a simple region", c.flowName, br.over, name)
+					pr.addf("loop over %q has a non-contiguous body (node %q lies between the head and Switch but is not on the loop path); rung-1 loops must form a simple region", br.over, name)
+					continue branches
 				}
 			}
 			body = append(body, name)
@@ -540,7 +575,7 @@ func (c *builderCore) deriveLoops() error {
 		})
 	}
 	c.loops = loops
-	return nil
+	return pr.msgs
 }
 
 // forwardReaches reports whether dst is reachable from start over the forward
@@ -777,6 +812,17 @@ func (c *builderCore) seal() *builderCore {
 //     (Run drives only the body region each iteration);
 //   - a Join entered other than by exactly one Edge from each declared input (see checkJoinRoutes).
 func (c *builderCore) checkShapes() error {
+	return (&buildProblems{flow: c.flowName, msgs: c.shapeProblems()}).err()
+}
+
+// unprefixed is err's text without Build's "plan: build <flow>: " prefix.
+func (c *builderCore) unprefixed(err error) string {
+	return strings.TrimPrefix(err.Error(), "plan: build "+strconv.Quote(c.flowName)+": ")
+}
+
+// shapeProblems is checkShapes reporting every refusal, as messages without Build's prefix.
+func (c *builderCore) shapeProblems() []string {
+	pr := &buildProblems{flow: c.flowName}
 	switched := make(map[string]bool, len(c.branches))
 	for _, br := range c.branches {
 		switched[br.over] = true
@@ -790,7 +836,7 @@ func (c *builderCore) checkShapes() error {
 	}
 	for _, e := range c.edges {
 		if switched[e.from] {
-			return fmt.Errorf("plan: build %q: step %q has both a Switch and an Edge to %q; a switched step continues only through its arms", c.flowName, e.from, e.to)
+			pr.addf("step %q has both a Switch and an Edge to %q; a switched step continues only through its arms", e.from, e.to)
 		}
 		addSource(e.to, e.from)
 	}
@@ -804,7 +850,7 @@ func (c *builderCore) checkShapes() error {
 	for _, n := range c.nodes {
 		if n.kind == kindJoin {
 			if err := c.checkJoinRoutes(n); err != nil {
-				return err
+				pr.msgs = append(pr.msgs, c.unprefixed(err))
 			}
 		}
 	}
@@ -817,7 +863,7 @@ func (c *builderCore) checkShapes() error {
 			from = append(from, src)
 		}
 		sort.Strings(from)
-		return fmt.Errorf("plan: build %q: step %q is fed by %v; combine several producers with a Join", c.flowName, n.name, from)
+		pr.addf("step %q is fed by %v; combine several producers with a Join", n.name, from)
 	}
 	for _, lp := range c.loops {
 		inBody := make(map[string]bool, len(lp.body))
@@ -826,19 +872,19 @@ func (c *builderCore) checkShapes() error {
 		}
 		for _, name := range lp.body {
 			if switched[name] && name != lp.over {
-				return fmt.Errorf("plan: build %q: step %q inside the loop over %q has its own Switch; a loop body may branch only at its loop Switch (no inner Switch or nested loop)", c.flowName, name, lp.over)
+				pr.addf("step %q inside the loop over %q has its own Switch; a loop body may branch only at its loop Switch (no inner Switch or nested loop)", name, lp.over)
 			}
 		}
 		for _, e := range c.edges {
 			if inBody[e.from] && !inBody[e.to] {
-				return fmt.Errorf("plan: build %q: Edge %q -> %q leaves the loop over %q; leave a loop only through its Switch's exit arms", c.flowName, e.from, e.to, lp.over)
+				pr.addf("Edge %q -> %q leaves the loop over %q; leave a loop only through its Switch's exit arms", e.from, e.to, lp.over)
 			}
 			if !inBody[e.from] && inBody[e.to] && e.to != lp.head {
-				return fmt.Errorf("plan: build %q: Edge %q -> %q enters the loop over %q past its head %q", c.flowName, e.from, e.to, lp.over, lp.head)
+				pr.addf("Edge %q -> %q enters the loop over %q past its head %q", e.from, e.to, lp.over, lp.head)
 			}
 		}
 	}
-	return nil
+	return pr.msgs
 }
 
 // checkJoinRoutes requires that the only routes into join n are its input edges: one Edge from

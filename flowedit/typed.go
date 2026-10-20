@@ -216,18 +216,33 @@ func (s *Server) typedRefusal(before, after []byte, op Operation) string {
 		return ""
 	}
 	had := map[string]bool{}
+	beforeMore := 0
 	for _, p := range s.typing.inspect(bd).Problems {
-		if typeProblem(p) {
-			// A rename does not make a problem the text already had a new one: compare under the rename.
-			m := p.Message
-			if op.Op == "rename_node" {
-				m = strings.ReplaceAll(m, messageQuote(op.Node), messageQuote(op.Value))
-			}
-			had[m] = true
+		if !typeProblem(p) {
+			continue
 		}
+		if n, ok := moreTypeProblems(p.Message); ok {
+			beforeMore = n // plan lists the first 100 type problems and counts the rest
+			continue
+		}
+		// A rename does not make a problem the text already had a new one: compare under the rename.
+		m := p.Message
+		if op.Op == "rename_node" {
+			m = strings.ReplaceAll(m, messageQuote(op.Node), messageQuote(op.Value))
+		}
+		had[m] = true
 	}
 	for _, p := range s.typing.inspect(ad).Problems {
-		if typeProblem(p) && !had[p.Message] {
+		if !typeProblem(p) {
+			continue
+		}
+		if n, ok := moreTypeProblems(p.Message); ok {
+			if n > beforeMore {
+				return "the types do not fit: " + p.Message
+			}
+			continue
+		}
+		if !had[p.Message] {
 			return "the types do not fit: " + p.Message
 		}
 	}
@@ -243,4 +258,19 @@ func messageQuote(name string) string {
 		return `"` + string(rs[:64]) + `..."`
 	}
 	return q
+}
+
+// moreTypeProblems reports whether m is plan's "and N more type problems" line, the count of the type
+// problems it lists no further than its first hundred, and N.
+func moreTypeProblems(m string) (int, bool) {
+	rest, ok := strings.CutPrefix(m, "and ")
+	if !ok {
+		return 0, false
+	}
+	num, tail, ok := strings.Cut(rest, " more type problems")
+	if !ok || !strings.HasPrefix(tail, " (") {
+		return 0, false
+	}
+	n, err := strconv.Atoi(num)
+	return n, err == nil
 }
