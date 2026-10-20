@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
 
 	"github.com/bide-ai/bide/internal/themeaccess"
 	"github.com/bide-ai/bide/theme"
@@ -42,7 +41,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	}
 	status := 0
 	for _, path := range fs.Args() {
-		data, err := readLimited(path)
+		data, err := themeaccess.ReadLimited(path, theme.MaxSize)
 		if err != nil {
 			fmt.Fprintf(stderr, "bide theme check: %s\n", themeaccess.Escape(err.Error()))
 			status = 1
@@ -91,22 +90,4 @@ func printReport(w io.Writer, path, name string, r theme.Report, verbose bool) {
 		verdict = "refused"
 	}
 	fmt.Fprintf(w, "%s: theme %q %s (%d measures, %d errors, %d warnings)\n", path, name, verdict, len(r.Measures), len(errs), len(warns))
-}
-
-// readLimited reads a theme file, refusing one over theme.MaxSize without reading the rest of it, so
-// a device or a huge file named by mistake cannot exhaust memory.
-func readLimited(path string) ([]byte, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, theme.MaxSize+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(data) > theme.MaxSize {
-		return nil, fmt.Errorf("%s: theme file is over the %d byte limit", path, theme.MaxSize)
-	}
-	return data, nil
 }

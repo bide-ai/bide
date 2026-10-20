@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -103,5 +104,64 @@ func TestPublicAPI(t *testing.T) {
 	sort.Strings(wantStr)
 	if !slices.Equal(strs, wantStr) {
 		t.Errorf("the exported functions returning a string are %v, want %v: a host must not be able to get CSS out of the package", strs, wantStr)
+	}
+}
+
+// reachable lists, for the exported types a host holds, every exported field (promoted ones included)
+// and every method in the method set (promoted ones included) with its type. The AST list above
+// sees only top-level names and the methods declared on exported types; this one sees what a
+// value can do, so a field such as `CSS string`, or a method promoted from an embedded unexported
+// type, is a failure here.
+func reachable() []string {
+	var out []string
+	for _, v := range []any{&Theme{}, Report{}, Measure{}, &CheckError{}, Severity(0)} {
+		rt := reflect.TypeOf(v)
+		base := rt
+		if base.Kind() == reflect.Pointer {
+			base = base.Elem()
+		}
+		if base.Kind() == reflect.Struct {
+			for _, f := range reflect.VisibleFields(base) {
+				if f.IsExported() {
+					out = append(out, base.Name()+"."+f.Name+" "+f.Type.String())
+				}
+			}
+		}
+		for i := 0; i < rt.NumMethod(); i++ {
+			m := rt.Method(i)
+			out = append(out, base.Name()+"."+m.Name+" "+m.Type.String())
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// publicSurface is the reviewed result of reachable. A host holds a *Theme, and none of what it can
+// reach returns anything but a name, a message, a flag or a report.
+var publicSurface = []string{
+	"CheckError.Error func(*theme.CheckError) string",
+	"CheckError.Report theme.Report",
+	"Measure.Check string",
+	"Measure.Pass bool",
+	"Measure.Severity theme.Severity",
+	"Measure.String func(theme.Measure) string",
+	"Measure.Subject string",
+	"Measure.Threshold float64",
+	"Measure.Value float64",
+	"Report.Err func(theme.Report) error",
+	"Report.Failures func(theme.Report, theme.Severity) []theme.Measure",
+	"Report.Measures []theme.Measure",
+	"Report.Theme string",
+	"Severity.String func(theme.Severity) string",
+	"Theme.Dark func(*theme.Theme) bool",
+	"Theme.Name func(*theme.Theme) string",
+	"Theme.Report func(*theme.Theme) theme.Report",
+	"Theme.Shipped func(*theme.Theme) bool",
+}
+
+func TestPublicSurface(t *testing.T) {
+	got := reachable()
+	if !slices.Equal(got, publicSurface) {
+		t.Errorf("what a host can reach on a theme changed.\n got: %q\nwant: %q\nA new field or method is a public commitment and a possible route to CSS: a reviewer adds it to publicSurface.", got, publicSurface)
 	}
 }

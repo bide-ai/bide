@@ -41,6 +41,12 @@ type Report struct {
 	Measures []Measure
 }
 
+// clone is r with its own Measures, so a caller that changes it changes nothing shared.
+func (r Report) clone() Report {
+	r.Measures = slices.Clone(r.Measures)
+	return r
+}
+
 // Failures returns the failed measures of the given severity.
 func (r Report) Failures(s Severity) []Measure {
 	var out []Measure

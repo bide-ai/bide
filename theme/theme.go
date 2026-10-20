@@ -195,7 +195,7 @@ func Parse(data []byte) (*Theme, Report, error) {
 		}
 		return nil, Report{}, err
 	}
-	return t, t.report, nil
+	return t, t.report.clone(), nil
 }
 
 func shippedBases() map[string]*Theme {
@@ -377,8 +377,10 @@ func (t *Theme) Name() string { return t.name }
 // Shipped reports whether the theme is one of bide's own.
 func (t *Theme) Shipped() bool { return t.shipped }
 
-// Report returns the theme's check report, which for a theme that parsed holds only warnings.
-func (t *Theme) Report() Report { return t.report }
+// Report returns a copy of the theme's check report, which for a theme that parsed holds only
+// warnings. Changing the copy does not change the theme, which may be a shipped one shared by every
+// reader in the program.
+func (t *Theme) Report() Report { return t.report.clone() }
 
 // Dark reports whether the theme's ground is dark: the relative luminance of its background is
 // below 0.18. It sets color-scheme, so the browser's own controls agree with the colours.

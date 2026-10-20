@@ -556,3 +556,28 @@ func TestParseWiresFileError(t *testing.T) {
 		}
 	}
 }
+
+// TestReportIsACopy: a host that changes a report it was given changes nothing shared. A shipped
+// theme is global to the program.
+func TestReportIsACopy(t *testing.T) {
+	th, ok := Lookup("dark")
+	if !ok {
+		t.Fatal("no dark theme")
+	}
+	before := th.Report().Measures[0].Pass
+	th.Report().Measures[0].Pass = !before
+	if th.Report().Measures[0].Pass != before {
+		t.Error("Report() returns the theme's own measures")
+	}
+	c, rep, err := Parse(custom("dark", surface("accent", "#79b8ff")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Measures) == 0 {
+		t.Fatal("no measures")
+	}
+	rep.Measures[0].Value = -1
+	if c.Report().Measures[0].Value == -1 {
+		t.Error("the report Parse returned shares its measures with the theme")
+	}
+}
