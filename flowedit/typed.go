@@ -83,8 +83,13 @@ func (t *typing) config(name string, data []byte) runview.Config {
 	return c
 }
 
+// allTypeProblems is the option that makes plan list every type problem, so the editor compares the
+// complete lists before and after an edit. A test replaces it to see what the editor does when a report
+// is cut short.
+var allTypeProblems = func() plan.InspectOption { return planaccess.AllTypeProblems().(plan.InspectOption) }
+
 func (t *typing) inspect(data []byte) plan.ConfigReport {
-	opts := []plan.InspectOption{plan.AllowUnusedBlocks(), planaccess.AllTypeProblems().(plan.InspectOption)}
+	opts := []plan.InspectOption{plan.AllowUnusedBlocks(), allTypeProblems()}
 	if t.reg != nil {
 		return plan.InspectConfig(data, t.reg, opts...)
 	}

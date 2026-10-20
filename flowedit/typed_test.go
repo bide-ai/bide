@@ -751,3 +751,33 @@ func mustJSON(t *testing.T, yamlText string) string {
 	}
 	return string(j)
 }
+
+// If plan lists only the first 100 type problems (the option that lifts the cap missing), the editor
+// cannot tell what an edit added past them and refuses rather than guess: the defence behind the
+// complete lists.
+func TestTypedEditorRefusesWhenTheReportIsCutShort(t *testing.T) {
+	var nodes, wiring []string
+	nodes = append(nodes, `  - {name: a0, block: validate, safety: readonly}`)
+	for i := 1; i <= 130; i++ {
+		block := "plain"
+		if i%2 == 1 {
+			block = "count"
+		}
+		nodes = append(nodes, fmt.Sprintf("  - {name: a%d, block: %s}", i, block))
+		wiring = append(wiring, fmt.Sprintf("  - edge: [a%d, a%d]", i-1, i))
+	}
+	nodes = append(nodes, "  - {name: end, block: receipt, safety: idempotent}")
+	wiring = append(wiring, "  - edge: [a130, end]")
+	text := "version: 1\nflow: long\nentry: a0\nnodes:\n" + strings.Join(nodes, "\n") + "\nwiring:\n" + strings.Join(wiring, "\n") + "\n"
+	servers := typedServers(t, "long.yaml", text)
+	old := allTypeProblems
+	allTypeProblems = func() plan.InspectOption { return plan.AllowUnusedBlocks() } // an option that does not lift the cap
+	defer func() { allTypeProblems = old }()
+	for _, kind := range []string{"registry", "description"} {
+		s := servers[kind]
+		w := call(s.Handler(), s, "/api/apply", applyReq(text, Operation{Op: "set_safety", Node: "a0", Value: "side_effect"}), nil)
+		if w.Code != 200 || !strings.Contains(w.Body.String(), `"refused":"the types do not fit: too many type problems to compare`) || strings.Contains(w.Body.String(), `"text"`) {
+			t.Errorf("%s: a cut-short report was not refused: %d %.300s", kind, w.Code, w.Body)
+		}
+	}
+}
