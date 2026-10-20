@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/bide-ai/bide/internal/planaccess"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -270,23 +272,17 @@ func TestTypeProblemMatchesWhatPlanSays(t *testing.T) {
 		 "wiring":[{"edge":["a","b"]},{"edge":["a","c"]}]}`,
 	}
 	for name, cfg := range cases {
-		r := plan.InspectConfig([]byte(cfg), reg, plan.AllowUnusedBlocks())
 		found := false
-		for _, p := range r.Problems {
-			found = found || typeProblem(p)
+		for _, r := range planaccess.Inspect([]byte(cfg), reg, nil) {
+			found = found || r.Class == "type" && r.Message != ""
 		}
 		if !found {
-			t.Errorf("%s: no problem matched: %+v", name, r.Problems)
+			t.Errorf("%s: plan reports no type record", name)
 		}
 	}
 	// Not every error is a misfit.
-	for _, p := range []plan.ConfigProblem{
-		{Severity: "error", Message: `node "a" references unknown block "x"`},
-		{Severity: "warning", Message: "edge connects a to b (types must match exactly)"},
-	} {
-		if typeProblem(p) {
-			t.Errorf("%+v matched", p)
-		}
+	if recs := planaccess.Inspect([]byte(`{"version":1,"flow":"f","entry":"a","nodes":[{"name":"a","block":"x"}],"wiring":[]}`), reg, nil); len(recs) != 0 {
+		t.Errorf("an unknown block is no type record: %+v", recs)
 	}
 }
 
@@ -711,8 +707,14 @@ func TestTypedEditorRefusesAMisfitPastTheReportCap(t *testing.T) {
 	for _, kind := range []string{"registry", "description"} {
 		s := servers[kind]
 		h := s.Handler()
-		if got := len(typeProblemsOf(s.typing.inspect([]byte(mustJSON(t, text))))); got != 130 {
-			t.Fatalf("%s: the text has %d type problems, want 130 (past the 100 a default report lists)", kind, got)
+		var got int
+		for _, r := range s.typing.records([]byte(mustJSON(t, text))) {
+			if r.Class == "type" {
+				got++
+			}
+		}
+		if got != 130 {
+			t.Fatalf("%s: the text has %d type records, want 130 (past the 100 a report lists)", kind, got)
 		}
 		w := call(h, s, "/api/apply", applyReq(text, Operation{Op: "set_block", Node: "t2", Value: "count"}), nil)
 		if w.Code != 200 || !strings.Contains(w.Body.String(), `"refused":"the types do not fit: `) || strings.Contains(w.Body.String(), `"text"`) {
@@ -732,16 +734,6 @@ func TestTypedEditorRefusesAMisfitPastTheReportCap(t *testing.T) {
 	}
 }
 
-func typeProblemsOf(r plan.ConfigReport) []plan.ConfigProblem {
-	var out []plan.ConfigProblem
-	for _, p := range r.Problems {
-		if typeProblem(p) {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
 func mustJSON(t *testing.T, yamlText string) string {
 	t.Helper()
 	j, err := ToJSON([]byte(yamlText))
@@ -749,36 +741,6 @@ func mustJSON(t *testing.T, yamlText string) string {
 		t.Fatal(err)
 	}
 	return string(j)
-}
-
-// If plan lists only the first 100 type problems (the option that lifts the cap missing), the editor
-// cannot tell what an edit added past them and refuses rather than guess: the defence behind the
-// complete lists.
-func TestTypedEditorRefusesWhenTheReportIsCutShort(t *testing.T) {
-	var nodes, wiring []string
-	nodes = append(nodes, `  - {name: a0, block: validate, safety: readonly}`)
-	for i := 1; i <= 130; i++ {
-		block := "plain"
-		if i%2 == 1 {
-			block = "count"
-		}
-		nodes = append(nodes, fmt.Sprintf("  - {name: a%d, block: %s}", i, block))
-		wiring = append(wiring, fmt.Sprintf("  - edge: [a%d, a%d]", i-1, i))
-	}
-	nodes = append(nodes, "  - {name: end, block: receipt, safety: idempotent}")
-	wiring = append(wiring, "  - edge: [a130, end]")
-	text := "version: 1\nflow: long\nentry: a0\nnodes:\n" + strings.Join(nodes, "\n") + "\nwiring:\n" + strings.Join(wiring, "\n") + "\n"
-	servers := typedServers(t, "long.yaml", text)
-	old := allTypeProblems
-	allTypeProblems = func() plan.InspectOption { return plan.AllowUnusedBlocks() } // an option that does not lift the cap
-	defer func() { allTypeProblems = old }()
-	for _, kind := range []string{"registry", "description"} {
-		s := servers[kind]
-		w := call(s.Handler(), s, "/api/apply", applyReq(text, Operation{Op: "set_safety", Node: "a0", Value: "side_effect"}), nil)
-		if w.Code != 200 || !strings.Contains(w.Body.String(), `"refused":"the types do not fit: too many type problems to compare`) || strings.Contains(w.Body.String(), `"text"`) {
-			t.Errorf("%s: a cut-short report was not refused: %d %.300s", kind, w.Code, w.Body)
-		}
-	}
 }
 
 // Two different problems are two problems, whatever their names look like once shortened: two nodes
@@ -904,6 +866,38 @@ func TestWorkInProgressErrorsAreNeverSavedAsClean(t *testing.T) {
 			}
 			if _, kinds := s.confirmationKinds([]byte(text)); !slices.Contains(kinds, ConfirmUncertified) {
 				t.Errorf("%s, %s: the save does not ask the 'cannot be certified' statement: %v", name, kind, kinds)
+			}
+		}
+	}
+}
+
+// A problem is identified by the names it is about, whatever characters they hold: with names that
+// differ only in a bracketed number, an edit that fixes one misfit and adds another (same shape, other
+// nodes) is an edit that adds a problem, and is refused; names with quotes, brackets and "[#]" do not
+// confuse the comparison; a rename of such a node does not make its old problem new.
+func TestTypedEditorIdentifiesProblemsByNamesWhateverTheyContain(t *testing.T) {
+	for name, names := range map[string][3]string{
+		"bracketed numbers": {"n[1]", "n[2]", "n[3]"},
+		"quotes":            {`a"1`, `a"2`, `a"3`},
+		"hash marks":        {"n[#]", "n[#]x", "n[#][#]"},
+		"separators":        {"n 1 | x", "n 2 | x", "n 3 | x"},
+	} {
+		y := func(n string) string { return strconv.Quote(n) }
+		text := "version: 1\nflow: f\nentry: validate\nnodes:\n  - {name: validate, block: validate, safety: readonly}\n" +
+			"  - {name: " + y(names[0]) + ", block: plain}\n  - {name: " + y(names[1]) + ", block: count}\n  - {name: " + y(names[2]) + ", block: count}\n" +
+			"wiring:\n  - edge: [validate, " + y(names[0]) + "]\n  - edge: [" + y(names[0]) + ", " + y(names[1]) + "]\n  - edge: [" + y(names[1]) + ", " + y(names[2]) + "]\n"
+		for _, kind := range []string{"registry", "description"} {
+			s := typedServers(t, "r.yaml", text)[kind]
+			// The text has one misfit (names[0] -> names[1]). Setting names[1] to an order step fixes that and
+			// makes names[1] -> names[2] one: the same kind of problem on other nodes.
+			w := call(s.Handler(), s, "/api/apply", applyReq(text, Operation{Op: "set_block", Node: names[1], Value: "plain"}), nil)
+			if !strings.Contains(w.Body.String(), `"refused":"the types do not fit: `) {
+				t.Errorf("%s, %s: an edit that swaps one misfit for another was allowed: %.300s", name, kind, w.Body)
+			}
+			// An edit that only renames a node in the misfit is not refused for the misfit it already had.
+			w = call(s.Handler(), s, "/api/apply", applyReq(text, Operation{Op: "rename_node", Node: names[1], Value: "renamed"}), nil)
+			if strings.Contains(w.Body.String(), `"refused"`) {
+				t.Errorf("%s, %s: a rename was refused for a problem the text already had: %.300s", name, kind, w.Body)
 			}
 		}
 	}

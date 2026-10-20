@@ -51,10 +51,6 @@ type ConfigProblem struct {
 	To       string `json:"to,omitempty"`
 	Message  string `json:"message"`
 	Severity string `json:"severity"` // "error" (Load refuses the config) or "warning"
-	// key identifies the problem for a caller that compares two reports: the message before its names
-	// were shortened for display, with the positions of wiring elements and arms left out (see
-	// problemKey). The module's own tools read it through internal/planaccess.
-	key string
 }
 
 // Errors reports whether any problem is an error.
@@ -109,7 +105,7 @@ func InspectConfig(data []byte, reg *Registry, opts ...InspectOption) (r ConfigR
 // InspectOption changes what InspectConfig and InspectConfigDescribed check.
 type InspectOption func(*inspectOptions)
 
-type inspectOptions struct{ allowUnused, allTypeProblems bool }
+type inspectOptions struct{ allowUnused bool }
 
 // AllowUnusedBlocks makes a registered block the config does not use no problem. Load and Validate
 // refuse it (a registration nothing uses is drift), and so does a check without this option; a tool
@@ -117,36 +113,15 @@ type inspectOptions struct{ allowUnused, allTypeProblems bool }
 // blocks it has not placed yet do not stop the check from reading the ones it has.
 func AllowUnusedBlocks() InspectOption { return func(o *inspectOptions) { o.allowUnused = true } }
 
-// allTypeProblems lists every type problem of the config. Without it a report lists the first 100 and
-// then one line counting the rest, which keeps a report short; a caller that compares two reports
-// to find what an edit added (the flow editor's typed mode) passes it, since a problem past the cap
-// would hide in the count. It is not exported: the module's own tools get it from internal/planaccess.
-func allTypeProblems() InspectOption { return func(o *inspectOptions) { o.allTypeProblems = true } }
-
 func init() {
-	planaccess.Register(allTypeProblems())
-	planaccess.RegisterProblemKey(func(p any) string {
-		if cp, ok := p.(ConfigProblem); ok {
-			return cp.key
-		}
-		return ""
-	})
+	planaccess.RegisterInspect(inspectRecords)
 }
-
-// positionRE matches the index of a wiring element, arm or assertion in a message.
-var positionRE = regexp.MustCompile(`\[\d+\]`)
-
-// problemKey is a problem's message as its identity: the full text (the names are as the config has
-// them, not shortened for display) with the positions of wiring elements left out, so that moving a
-// wiring element does not make a problem the config already had a new one.
-func problemKey(message string) string { return positionRE.ReplaceAllString(message, "[#]") }
 
 // inspectConfig is InspectConfig, and what InspectConfigDescribed runs on a Registry built from a
 // description: one implementation of the typed checks, whichever side the Registry came from.
 func inspectConfig(data []byte, reg *Registry, opts []InspectOption) ConfigReport {
 	r := inspectConfigUnbounded(data, reg, opts)
 	for i := range r.Problems {
-		r.Problems[i].key = problemKey(r.Problems[i].Message)
 		r.Problems[i].Message = boundMessage(r.Problems[i].Message)
 	}
 	return r
@@ -213,7 +188,7 @@ func inspectConfigUnbounded(data []byte, reg *Registry, opts []InspectOption) (r
 	}
 	r.Topology = configTopology(&cfg)
 	r.Safety = configSafety(&cfg)
-	structural(&cfg, &r)
+	structural(&cfg, &r, nil)
 	if reg == nil && !r.Errors() {
 		// Without a Registry nothing runs Build, so its checks on the wiring alone are made here: a cycle,
 		// a loop's shape, reachability, a join's inputs, what feeds a node. With a Registry Build makes
@@ -238,10 +213,7 @@ func inspectConfigUnbounded(data []byte, reg *Registry, opts []InspectOption) (r
 	// The type problems come from the config and the registered types alone, whatever else is wrong
 	// with the config, so that another error never hides one: the editor compares reports to find what
 	// an edit added. They are listed up to a cap unless the caller asks for all.
-	typeMsgs := checkTypes(&cfg, reg).all()
-	if !o.allTypeProblems {
-		typeMsgs = capTypeProblems(typeMsgs)
-	}
+	typeMsgs := capTypeProblems(checkTypes(&cfg, reg).all())
 	addTypes := func() {
 		if len(typeMsgs) > 0 {
 			r.attribute(&cfg, fmt.Errorf("plan: load %q: %s", cfg.Flow, strings.Join(typeMsgs, "; ")))
@@ -257,7 +229,7 @@ func inspectConfigUnbounded(data []byte, reg *Registry, opts []InspectOption) (r
 	if r.Errors() {
 		addTypes()
 		// assemble, which reports a safety above the registration, does not run: say it here.
-		if msgs := safetyAboveRegistration(&cfg, reg); len(msgs) > 0 {
+		if msgs, _ := safetyAboveRegistration(&cfg, reg); len(msgs) > 0 {
 			r.attribute(&cfg, fmt.Errorf("plan: load %q: %s", cfg.Flow, strings.Join(msgs, "; ")))
 		}
 		partialWiring()
@@ -418,7 +390,7 @@ func configTopology(cfg *config) Topology {
 }
 
 // structural runs the checks that need no Registry, attaching each problem where it belongs.
-func structural(cfg *config, r *ConfigReport) {
+func structural(cfg *config, r *ConfigReport, recs *[]planaccess.Record) {
 	errAt := func(p ConfigProblem) { p.Severity = "error"; r.Problems = append(r.Problems, p) }
 	declared := map[string]bool{}
 	if len(cfg.Nodes) == 0 {
@@ -516,7 +488,7 @@ func structural(cfg *config, r *ConfigReport) {
 	}
 	joinOrder(cfg, errAt)
 	joinsAndSwitches(cfg, errAt)
-	loopShape(cfg, declared, errAt)
+	loopShape(cfg, declared, errAt, recs)
 }
 
 // joinsAndSwitches reports what Load and Build refuse about how edges and switches meet joins and
@@ -597,7 +569,12 @@ func joinOrder(cfg *config, errAt func(ConfigProblem)) {
 // structural check can see from the wiring alone: more than one loop-back arm on a switch, no arm or
 // else that does not loop back, and a loop head that does not reach the switch in the forward graph
 // (the edges, a join's inputs and the arms that do not loop back).
-func loopShape(cfg *config, declared map[string]bool, errAt func(ConfigProblem)) {
+func loopShape(cfg *config, declared map[string]bool, errAt func(ConfigProblem), recs *[]planaccess.Record) {
+	rec := func(kind string, names []string, message string) {
+		if recs != nil {
+			*recs = append(*recs, planaccess.Record{Class: "loop", Kind: kind, Names: names, Message: message})
+		}
+	}
 	fwd := map[string][]string{}
 	for _, w := range cfg.Wiring {
 		switch {
@@ -638,13 +615,16 @@ func loopShape(cfg *config, declared map[string]bool, errAt func(ConfigProblem))
 		}
 		if loops > 1 {
 			errAt(ConfigProblem{Node: w.Switch, Message: fmt.Sprintf("wiring[%d] the switch over %q has more than one loop-back arm; a switch expresses a single loop back-edge", i, w.Switch)})
+			rec("structural-more-than-one-loop-back", []string{w.Switch}, fmt.Sprintf("the switch over %q has more than one loop-back arm; a switch expresses a single loop back-edge", w.Switch))
 		}
 		if exits == 0 {
 			errAt(ConfigProblem{Node: w.Switch, Message: fmt.Sprintf("wiring[%d] the loop over %q has no exit arm; add an arm or an else that does not loop back so the loop can terminate", i, w.Switch)})
+			rec("structural-no-exit-arm", []string{w.Switch}, fmt.Sprintf("the loop over %q has no exit arm; add an arm or an else that does not loop back so the loop can terminate", w.Switch))
 		}
 		for j, a := range w.When {
 			if a.LoopMax > 0 && declared[a.To] && declared[w.Switch] && !forwardReaches(fwd, a.To, w.Switch) {
 				errAt(ConfigProblem{From: w.Switch, To: a.To, Message: fmt.Sprintf("wiring[%d].when[%d] loops back to %q, which is not an ancestor of the switch over %q (a loop head must reach its loop switch in the forward graph)", i, j, a.To, w.Switch)})
+				rec("structural-not-an-ancestor", []string{w.Switch, a.To}, fmt.Sprintf("an arm loops back to %q, which is not an ancestor of the switch over %q (a loop head must reach its loop switch in the forward graph)", a.To, w.Switch))
 			}
 		}
 	}
@@ -760,6 +740,19 @@ func graphChecks(cfg *config) error { return graphChecksOf(cfg, false) }
 // refusals the structural check makes too, and keeps what only Build finds, which stands without the
 // rest of the config being right: a loop's body and the wiring's shapes.
 func graphChecksOf(cfg *config, wiringOnly bool) error {
+	core := graphCore(cfg)
+	if core == nil {
+		return nil // no entry or an unknown one is reported by the structural check
+	}
+	if _, err := core.topoOrder(); err != nil {
+		return fmt.Errorf("plan: build %q: %w", core.flowName, err)
+	}
+	return graphChecksOver(core, wiringOnly)
+}
+
+// graphCore is the spec of cfg's wiring with no types, for the checks Build makes on the wiring alone,
+// or nil if the config has no entry or an unknown one. It assumes every name resolves (see resolvable).
+func graphCore(cfg *config) *builderCore {
 	core := &builderCore{flowName: cfg.Flow, byName: map[string]*node{}}
 	add := func(n *node) {
 		core.nodes = append(core.nodes, n)
@@ -797,11 +790,13 @@ func graphChecksOf(cfg *config, wiringOnly bool) error {
 		}
 	}
 	if core.entry == "" || core.byName[core.entry] == nil {
-		return nil // no entry or an unknown one is reported by the structural check
+		return nil
 	}
-	if _, err := core.topoOrder(); err != nil {
-		return fmt.Errorf("plan: build %q: %w", core.flowName, err)
-	}
+	return core
+}
+
+// graphChecksOver runs the checks of graphChecksOf over a spec from graphCore whose graph is acyclic.
+func graphChecksOver(core *builderCore, wiringOnly bool) error {
 	// Every refusal of these checks, not the first, so a second problem of the same kind (a second
 	// loop that is not simple, a second node not reached) shows beside the first: a caller that
 	// compares reports (the editor) must see it. "; " inside one message is written ", ", since

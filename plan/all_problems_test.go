@@ -174,10 +174,6 @@ func TestTypeProblems_OrderAndTheOption(t *testing.T) {
 	if err == nil || !strings.HasPrefix(err.Error(), `plan: load "chain": edge "n0" -> "n1" connects`) {
 		t.Errorf("Load's error leads with the first problem: %v", err)
 	}
-	all := typeProblemMessages(InspectConfig([]byte(chainConfig(123)), reg, AllowUnusedBlocks(), allTypeProblems()))
-	if len(all) != 122 {
-		t.Errorf("AllTypeProblems: %d problems, want 122", len(all))
-	}
 }
 
 // With a Registry the wiring checks report every problem as well (they run before Build, which
@@ -312,30 +308,39 @@ func TestInspectConfig_TypeProblemsBesideOtherErrors(t *testing.T) {
 	}
 }
 
-// A problem's identity keeps the full names (its message shortens them) and leaves out the position
-// of a wiring element, and the report carries it.
-func TestConfigProblem_KeyKeepsNamesAndDropsPositions(t *testing.T) {
-	if got := problemKey(`wiring[3].when[0] predicate "p" tests int but switched node "a" produces string`); got != `wiring[#].when[#] predicate "p" tests int but switched node "a" produces string` {
-		t.Errorf("problemKey = %q", got)
+// The records the typed editor compares carry the full names as the config has them (the message
+// shortens them), whatever they contain, and no position: names with brackets, quotes and "[#]" stay
+// as they are, and two problems about names that differ only past the 64th character are two.
+func TestInspectRecords_CarryFullNamesWhateverTheyContain(t *testing.T) {
+	reg := typedChainRegistry(t)
+	cfg := func(second string) string {
+		return `{"version":1,"flow":"f","entry":"v","nodes":[{"name":"v","block":"s2s"},{"name":"n[1]","block":"s2s"},{"name":"n[2]","block":"` + second + `"},{"name":"n[3]","block":"s2i"}],
+		  "wiring":[{"edge":["v","n[1]"]},{"edge":["n[1]","n[2]"]},{"edge":["n[2]","n[3]"]}]}`
+	}
+	// s2i takes a string: n[1]->n[2] fits; n[2] gives an int into n[3], which takes a string: a misfit.
+	recs := inspectRecords([]byte(cfg("s2i")), reg, nil)
+	if len(recs) != 1 || recs[0].Class != "type" || recs[0].Kind != "edge" || strings.Join(recs[0].Names, "|") != "n[2]|n[3]" {
+		t.Fatalf("records = %+v", recs)
+	}
+	// Setting n[2] to s2s moves the misfit away: no record, not a record with an equal key.
+	if recs := inspectRecords([]byte(cfg("s2s")), reg, nil); len(recs) != 0 {
+		t.Errorf("records = %+v", recs)
 	}
 	l1, l2 := strings.Repeat("a", 70)+"1", strings.Repeat("a", 70)+"2"
-	cfg := `{"version":1,"flow":"f","entry":"v","nodes":[{"name":"v","block":"s2i"},{"name":"` + l1 + `","block":"s2i"},{"name":"` + l2 + `","block":"s2i"}],
+	long := `{"version":1,"flow":"f","entry":"v","nodes":[{"name":"v","block":"s2i"},{"name":"` + l1 + `","block":"s2i"},{"name":"` + l2 + `","block":"s2i"}],
 	  "wiring":[{"edge":["v","` + l1 + `"]},{"edge":["v","` + l2 + `"]}]}`
-	var msgs, keys []string
-	for _, p := range InspectConfig([]byte(cfg), typedChainRegistry(t), AllowUnusedBlocks()).Problems {
-		if strings.Contains(p.Message, "(types must match exactly)") {
-			msgs = append(msgs, p.Message)
-			keys = append(keys, p.key)
-		}
+	recs = inspectRecords([]byte(long), reg, nil)
+	if len(recs) < 2 || recs[0].Names[1] != l1 || recs[1].Names[1] != l2 {
+		t.Fatalf("records do not keep the full names: %+v", recs)
 	}
-	if len(msgs) != 2 {
-		t.Fatalf("type problems: %q", msgs)
+	if strings.Contains(recs[0].Message, l1) {
+		t.Errorf("the message should be the shortened display text: %q", recs[0].Message)
 	}
-	if msgs[0] == msgs[1] {
-		t.Log("the displayed messages happen to differ here") // they do not when the names shorten alike
-	}
-	if keys[0] == keys[1] || !strings.Contains(keys[0], l1) || !strings.Contains(keys[1], l2) {
-		t.Errorf("keys do not keep the full names: %q", keys)
+	// An arm names its switched node, predicate and target, and no position.
+	arm := `{"version":1,"flow":"f","entry":"a","nodes":[{"name":"a","block":"s2s"},{"name":"b","block":"s2s"},{"name":"c","block":"s2s"}],"wiring":[{"edge":["b","c"]},{"switch":"a","when":[{"pred":"isInt","to":"b"}],"else":"c"}]}`
+	recs = inspectRecords([]byte(arm), reg, nil)
+	if len(recs) != 1 || recs[0].Kind != "arm" || strings.Join(recs[0].Names, "|") != "a|isInt|b" {
+		t.Errorf("arm records = %+v", recs)
 	}
 }
 

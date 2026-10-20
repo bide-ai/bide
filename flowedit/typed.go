@@ -83,17 +83,34 @@ func (t *typing) config(name string, data []byte) runview.Config {
 	return c
 }
 
-// allTypeProblems is the option that makes plan list every type problem, so the editor compares the
-// complete lists before and after an edit. A test replaces it to see what the editor does when a report
-// is cut short.
-var allTypeProblems = func() plan.InspectOption { return planaccess.AllTypeProblems().(plan.InspectOption) }
-
 func (t *typing) inspect(data []byte) plan.ConfigReport {
-	opts := []plan.InspectOption{plan.AllowUnusedBlocks(), allTypeProblems()}
+	opts := []plan.InspectOption{plan.AllowUnusedBlocks()}
 	if t.reg != nil {
 		return plan.InspectConfig(data, t.reg, opts...)
 	}
 	return plan.InspectConfigDescribed(data, t.desc, opts...)
+}
+
+// records are the problems the editor compares before and after an edit (see planaccess.Record), found
+// from the config alone, beside whatever else is wrong with it.
+func (t *typing) records(data []byte) []planaccess.Record {
+	if t.reg != nil {
+		return planaccess.Inspect(data, t.reg, nil)
+	}
+	return planaccess.Inspect(data, nil, &t.desc)
+}
+
+// recordKey is a problem's identity: its class and kind, the full names it is about and the types or
+// levels, each Go-quoted so that a name with quotes, brackets or separators cannot read as two.
+// rename maps the name of a renamed node to its new one.
+func recordKey(r planaccess.Record, rename func(string) string) string {
+	var b strings.Builder
+	b.WriteString(r.Class + "/" + r.Kind)
+	for _, n := range r.Names {
+		b.WriteString(" " + strconv.Quote(rename(n)))
+	}
+	b.WriteString(" | " + strconv.Quote(r.Detail))
+	return b.String()
 }
 
 // label is what the page says the typed check rests on, wherever it shows a verdict.
@@ -189,30 +206,6 @@ func gateWords(g *plan.GateDescription) string {
 	return runview.GateText(tg)
 }
 
-// typeProblem reports whether p says two things that do not fit were connected: an edge whose
-// types differ, a predicate that tests another type than the switched node produces, a join input of
-// another type than its merge takes, or a terminal of another type than the flow's output. The
-// wording is plan's; a test pins it against the messages plan writes.
-func typeProblem(p plan.ConfigProblem) bool {
-	m := p.Message
-	return p.Severity == "error" && (strings.Contains(m, "(types must match exactly)") ||
-		strings.Contains(m, " but switched node ") ||
-		strings.Contains(m, " but the merge expects ") ||
-		strings.Contains(m, " but the flow output is "))
-}
-
-// safetyProblem reports whether p says a node states a retry safety above what its block registers in
-// Go, a claim the config may not make: a step marked safe to run twice that the program did not mark
-// so is acted on by crash recovery. The wording is plan's.
-func safetyProblem(p plan.ConfigProblem) bool {
-	return p.Severity == "error" && strings.Contains(p.Message, "its Go registration declares")
-}
-
-// refusedProblem is a problem whose appearance makes the typed editor refuse an edit: a type problem,
-// or a safety above the registration. (A node not yet wired in, or one with an unknown block, is work
-// in progress and is allowed; the save then asks to confirm the check could not certify the text.)
-func refusedProblem(p plan.ConfigProblem) bool { return typeProblem(p) || safetyProblem(p) }
-
 // typedRefusal is the reason to refuse an operation that took before to after, or "": after has a
 // type problem that before did not, so the operation connected what does not fit. A problem the
 // text already had is not the operation's, and is not refused. The decision is the server's, from
@@ -233,64 +226,39 @@ func (s *Server) typedRefusal(before, after []byte, op Operation) string {
 	if !ok1 || !ok2 {
 		return ""
 	}
-	// The problems the text had, counted by identity (plan's key: the message with the full names and
-	// without the positions of wiring elements), so that two problems whose displayed names look alike
-	// are two, and moving an element does not make an old problem new.
-	had := map[string]int{}
-	for _, p := range s.typing.inspect(bd).Problems {
-		if !refusedProblem(p) {
-			continue
+	// The problems the text had, counted by identity (class, kind, full names, types), so that two
+	// problems whose displayed names look alike are two, and moving an element does not make an old
+	// problem new. A rename does not make a problem the text already had a new one: its names are
+	// compared under the rename.
+	same := func(n string) string { return n }
+	renamed := same
+	if op.Op == "rename_node" {
+		renamed = func(n string) string {
+			if n == op.Node {
+				return op.Value
+			}
+			return n
 		}
-		if _, ok := moreTypeProblems(p.Message); ok {
-			continue // not asked for (see inspect); a count says nothing about which problems there are
-		}
-		k := problemKey(p)
-		// A rename does not make a problem the text already had a new one: compare under the rename.
-		if op.Op == "rename_node" {
-			k = strings.ReplaceAll(k, strconv.Quote(op.Node), strconv.Quote(op.Value))
-		}
-		had[k]++
 	}
-	for _, p := range s.typing.inspect(ad).Problems {
-		if !refusedProblem(p) {
+	had := map[string]int{}
+	for _, r := range s.typing.records(bd) {
+		if r.Class == "type" || r.Class == "safety" {
+			had[recordKey(r, renamed)]++
+		}
+	}
+	for _, r := range s.typing.records(ad) {
+		if r.Class != "type" && r.Class != "safety" {
 			continue
 		}
-		if _, ok := moreTypeProblems(p.Message); ok {
-			// The report was cut short, so what it hides cannot be compared: refuse rather than guess.
-			return "the types do not fit: too many type problems to compare (" + p.Message + ")"
-		}
-		k := problemKey(p)
+		k := recordKey(r, same)
 		if had[k] > 0 {
 			had[k]--
 			continue
 		}
-		if safetyProblem(p) {
-			return "the safety is above what the program registers: " + p.Message
+		if r.Class == "safety" {
+			return "the safety is above what the program registers: " + r.Message
 		}
-		return "the types do not fit: " + p.Message
+		return "the types do not fit: " + r.Message
 	}
 	return ""
-}
-
-// problemKey is the identity plan gives a problem for comparing two reports.
-func problemKey(p plan.ConfigProblem) string {
-	if k := planaccess.ProblemKey(p); k != "" {
-		return k
-	}
-	return p.Message
-}
-
-// moreTypeProblems reports whether m is plan's "and N more type problems" line, the count of the type
-// problems it lists no further than its first hundred, and N.
-func moreTypeProblems(m string) (int, bool) {
-	rest, ok := strings.CutPrefix(m, "and ")
-	if !ok {
-		return 0, false
-	}
-	num, tail, ok := strings.Cut(rest, " more type problems")
-	if !ok || !strings.HasPrefix(tail, " (") {
-		return 0, false
-	}
-	n, err := strconv.Atoi(num)
-	return n, err == nil
 }
