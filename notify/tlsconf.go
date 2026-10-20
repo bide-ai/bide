@@ -13,6 +13,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/bide-ai/bide/internal/safefile"
 )
 
 // reloadEvery is the most often the client certificate's files are stat'ed.
@@ -123,7 +125,7 @@ func (c *clientCert) stampNow() (fileStamp, error) {
 		if err != nil {
 			return s, err
 		}
-		b, err := os.ReadFile(f)
+		b, err := safefile.Read(f, safefile.MaxDocument, nil)
 		if err != nil {
 			return s, err
 		}
@@ -146,7 +148,7 @@ func (c *clientCert) load() error {
 	if err != nil {
 		return fmt.Errorf("notify: client certificate: %w", unwrapPath(err))
 	}
-	cert, err := tls.LoadX509KeyPair(c.certFile, c.keyFile)
+	cert, err := safefile.LoadX509KeyPair(c.certFile, c.keyFile)
 	if err != nil {
 		return fmt.Errorf("notify: client certificate: %w", unwrapPath(err))
 	}

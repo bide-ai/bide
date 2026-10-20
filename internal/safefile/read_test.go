@@ -170,3 +170,19 @@ func TestExplain(t *testing.T) {
 		t.Error("the refusal is not reachable through the wrapper")
 	}
 }
+
+func TestLoadX509KeyPair(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := LoadX509KeyPair(dir, dir); err == nil {
+		t.Error("a directory was read as a certificate")
+	} else {
+		refusal(t, err, NotRegular)
+	}
+	empty := filepath.Join(dir, "empty")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadX509KeyPair(empty, empty); err == nil || strings.Contains(err.Error(), "regular file") {
+		t.Errorf("an empty pair = %v, want tls's complaint about the PEM", err)
+	}
+}

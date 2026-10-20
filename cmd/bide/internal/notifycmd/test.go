@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/safefile"
 	"github.com/bide-ai/bide/internal/term"
 	"github.com/bide-ai/bide/notify"
 )
@@ -117,7 +118,7 @@ func sampleNotification(kind agent.NotificationKind, now time.Time, run string) 
 // testOpts are what runTest reads from the environment, replaced by tests.
 var (
 	getenv   = os.Getenv
-	readFile = os.ReadFile
+	readFile = func(path string) ([]byte, error) { return safefile.Read(path, safefile.MaxDocument, nil) }
 	timeNow  = time.Now
 )
 

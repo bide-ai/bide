@@ -26,12 +26,12 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/safefile"
 )
 
 // Defaults of a Webhook.
@@ -150,7 +150,7 @@ func WithClientCertPEM(certPEM, keyPEM []byte) Option {
 // impersonated by a certificate from a public CA.
 func WithServerCA(file string) Option {
 	return func(w *Webhook) error {
-		pem, err := os.ReadFile(file)
+		pem, err := safefile.Read(file, safefile.MaxDocument, nil)
 		if err != nil {
 			return configErr("server CA: %v", unwrapPath(err))
 		}

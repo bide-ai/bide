@@ -87,7 +87,7 @@ func (c *cmd) httpClient() (*http.Client, error) {
 		cfg.RootCAs = pool
 	}
 	if c.f.clientCert != "" {
-		cert, err := tls.LoadX509KeyPair(c.f.clientCert, c.f.clientKey)
+		cert, err := safefile.LoadX509KeyPair(c.f.clientCert, c.f.clientKey)
 		if err != nil {
 			return nil, fmt.Errorf("-client-cert and -client-key: %w", unwrapPath(err))
 		}
