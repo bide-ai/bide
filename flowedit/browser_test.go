@@ -2,10 +2,12 @@ package flowedit
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -102,25 +104,60 @@ func scriptOutput(t *testing.T, script string, s *Server) ([]byte, error) {
 func runScript(t *testing.T, script string, s *Server, out any) {
 	t.Helper()
 	raw, err := scriptOutput(t, script, s)
+	if browsertest.TimedOut(err) {
+		t.Fatal(err) // the deadline first: a script cut off has printed no result
+	}
 	if jerr := json.Unmarshal(raw, out); jerr != nil {
 		t.Fatalf("the script printed no result (%v): %q", err, raw)
 	}
 }
 
 // TestScriptsHaveADeadline: a script that stalls fails the test at the deadline with what it had
-// printed, instead of holding the run. browser/stall.mjs prints a line and waits for ever.
+// printed, instead of holding the run, and the Chrome it started is gone afterwards. browser/stall.mjs
+// prints a line and waits for ever; browser/stall-chrome.mjs launches real Chrome first, and with
+// STALL=busy then spins, which keeps puppeteer's SIGTERM handler from running: only the harness
+// killing the Chrome by its profile directory can remove it then.
 func TestScriptsHaveADeadline(t *testing.T) {
 	s, _ := newTestServer(t, "refund.yaml", testFlow)
 	old := browsertest.Deadline
-	browsertest.Deadline = 2 * time.Second
 	defer func() { browsertest.Deadline = old }()
-	start := time.Now()
-	_, err := scriptOutput(t, "stall.mjs", s)
-	if err == nil || !strings.Contains(err.Error(), "was still running after 2s") || !strings.Contains(err.Error(), "stalled on purpose") {
-		t.Errorf("err = %v, want a deadline error quoting the script's output", err)
-	}
-	if took := time.Since(start); took > 20*time.Second {
-		t.Errorf("the stalled script held the test for %v", took)
+	for _, tc := range []struct {
+		name, script, stall string
+		deadline            time.Duration
+		chrome              bool
+	}{
+		{"no Chrome", "stall.mjs", "", 2 * time.Second, false},
+		{"Chrome and a waiting script", "stall-chrome.mjs", "", 12 * time.Second, true},
+		{"Chrome and a stuck event loop", "stall-chrome.mjs", "busy", 12 * time.Second, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			browsertest.Deadline = tc.deadline
+			t.Setenv("STALL", tc.stall)
+			start := time.Now()
+			_, err := scriptOutput(t, tc.script, s)
+			var de *browsertest.DeadlineError
+			if !errors.As(err, &de) {
+				t.Fatalf("err = %v, want a deadline error", err)
+			}
+			want := "stalled on purpose"
+			if tc.chrome {
+				want = "launched " + de.Profile // Chrome was up, in the run's profile, when the deadline came
+			}
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("err = %v, want one quoting %q", err, want)
+			}
+			if took := time.Since(start); took > tc.deadline+30*time.Second {
+				t.Errorf("the stalled script held the test for %v", took)
+			}
+			if _, serr := os.Stat(de.Profile); serr == nil {
+				t.Errorf("the Chrome profile %s was not removed", de.Profile)
+			}
+			if runtime.GOOS != "windows" {
+				if out, _ := exec.Command("pgrep", "-f", de.Profile).Output(); len(out) > 0 {
+					t.Errorf("processes for the profile %s are still running after the deadline: %s", de.Profile, strings.TrimSpace(string(out)))
+				}
+			}
+		})
 	}
 }
 

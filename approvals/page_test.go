@@ -290,7 +290,7 @@ func (r *rig) runPage(t *testing.T, node, base, approver string, approved bool) 
 		"SEED_HEX="+hex.EncodeToString(priv.Seed()), "PUB_HEX="+hex.EncodeToString(r.enrolled[approver]), "NOW="+r.clock().Add(time.Second).Format(time.RFC3339Nano))
 	// A stalled script is killed at the deadline instead of holding the run (internal/browsertest).
 	out, err := browsertest.Run(node, "", env, filepath.Join("page", "test", "e2e.mjs"))
-	if err != nil {
+	if err != nil { // a script stopped at its deadline arrives here with the deadline error first
 		t.Fatalf("node e2e: %v\n%s", err, out)
 	}
 	var o e2eOut

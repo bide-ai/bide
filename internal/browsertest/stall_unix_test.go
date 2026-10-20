@@ -3,8 +3,10 @@
 package browsertest
 
 import (
+	"errors"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
 	"strings"
 	"syscall"
@@ -15,7 +17,8 @@ import (
 // stall starts a grandchild (as Node starts Chrome), writes its pid where the test can read it, and
 // then waits for ever.
 func stall() {
-	child := exec.Command("sleep", "600")
+	// A child in the script's group that ignores SIGTERM: only killing the group removes it.
+	child := exec.Command("sh", "-c", "trap '' TERM; while :; do sleep 1; done")
 	if err := child.Start(); err != nil {
 		os.Exit(4)
 	}
@@ -47,5 +50,63 @@ func TestRunKillsTheScriptsChildren(t *testing.T) {
 	if !gone {
 		syscall.Kill(pid, syscall.SIGKILL)
 		t.Errorf("the child %d of the stalled script is still running", pid)
+	}
+}
+
+// detached is what puppeteer does with Chrome: a process in a session of its own (so no signal to the
+// script's group reaches it) whose command line names the profile directory, started by a script that
+// then ignores SIGTERM and spins, as a Node with a stuck event loop does.
+func detached() {
+	profile := os.Getenv(ProfileEnv)
+	child := exec.Command("sh", "-c", "while :; do sleep 1; done", profile)
+	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := child.Start(); err != nil {
+		os.Exit(4)
+	}
+	os.WriteFile(os.Getenv("BROWSERTEST_PIDFILE"), []byte(strconv.Itoa(child.Process.Pid)), 0o600)
+	signal.Ignore(syscall.SIGTERM)
+	for {
+	}
+}
+
+// terminable closes "chrome" on SIGTERM and exits, as a puppeteer script does.
+func terminable() {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, syscall.SIGTERM)
+	os.Stdout.WriteString("running\n")
+	<-c
+	os.Stdout.WriteString("closing chrome on SIGTERM\n")
+	os.Exit(0)
+}
+
+func alive(pid int) bool { return syscall.Kill(pid, 0) == nil }
+
+// A script that ignores SIGTERM and has started a Chrome-like process outside its group is stopped
+// anyway, the process is killed by its profile directory, and the directory is removed.
+func TestRunKillsADetachedChromeOfAScriptThatIgnoresSIGTERM(t *testing.T) {
+	pidfile := t.TempDir() + "/pid"
+	t.Setenv("BROWSERTEST_PIDFILE", pidfile)
+	start := time.Now()
+	_, err, _ := run(t, "detached", 1500*time.Millisecond)
+	if !TimedOut(err) {
+		t.Fatalf("err = %v, want a deadline error", err)
+	}
+	if took := time.Since(start); took > 15*time.Second {
+		t.Errorf("held the test for %v", took)
+	}
+	b, rerr := os.ReadFile(pidfile)
+	if rerr != nil {
+		t.Fatalf("the script did not start its child: %v", rerr)
+	}
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	if alive(pid) {
+		syscall.Kill(pid, syscall.SIGKILL)
+		t.Errorf("the detached child %d outlived the run", pid)
+	}
+	var de *DeadlineError
+	if errors.As(err, &de) {
+		if _, serr := os.Stat(de.Profile); serr == nil {
+			t.Errorf("the profile directory %s was not removed", de.Profile)
+		}
 	}
 }

@@ -340,6 +340,9 @@ func chromeMTLS(t *testing.T, node, chrome, driverDir string, mode mtlsMode) {
 	stdoutBytes, werr := browsertest.RunTo(3*time.Minute, os.Stderr, node, driverDir, env, "mtls.mjs")
 	close(stop)
 	<-watched
+	if browsertest.TimedOut(werr) {
+		t.Fatal(werr) // the deadline first: a script cut off has printed no result
+	}
 	if werr != nil && len(stdoutBytes) == 0 {
 		t.Fatalf("the Chrome driver: %v", werr)
 	}

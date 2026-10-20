@@ -167,6 +167,9 @@ func TestPage_LookInChrome(t *testing.T) {
 		approvals.WithAuth(func(*http.Request, approvals.Access) error { return nil }))
 	// A stalled Chrome or script is killed, with the Chrome it started, at the deadline (internal/browsertest).
 	raw, runErr := browsertest.Run(node, dir, append(os.Environ(), "CHROME_BIN="+chrome, "PAGE_URL="+r.srv.URL+"/page/#run="+runID+"&call=c1"), "colours.mjs")
+	if browsertest.TimedOut(runErr) {
+		t.Fatal(runErr) // the deadline first: a script cut off has printed no result
+	}
 	var out struct {
 		OK      bool                `json:"ok"`
 		Error   string              `json:"error"`

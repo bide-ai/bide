@@ -13,6 +13,7 @@ const failed = [];
 
 const browser = await puppeteer.launch({
   executablePath: env.CHROME_BIN,
+  userDataDir: env.BIDE_CHROME_PROFILE,
   headless: true,
   args: ['--no-sandbox', '--disable-dev-shm-usage'],
   timeout: 60000,

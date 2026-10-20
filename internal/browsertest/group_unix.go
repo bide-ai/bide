@@ -8,11 +8,27 @@ import (
 	"time"
 )
 
-// group puts the command in its own process group and, when its context ends, kills the whole group:
-// Node starts Chrome, and a Chrome left behind holds a port and the machine's memory. WaitDelay bounds
-// the wait for the output pipes, which a grandchild that survived would hold open.
+// group puts the command in its own process group. When the deadline comes the group gets SIGTERM (a
+// puppeteer script closes its Chrome on it) and, if the script has not exited two seconds later, the
+// leader is killed by the standard library (WaitDelay); killGroup then kills what is left of the group.
 func group(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
-	cmd.WaitDelay = 5 * time.Second
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
+	cmd.WaitDelay = 2 * time.Second
+}
+
+// killGroup kills every process left in the script's process group.
+func killGroup(pid int) { _ = syscall.Kill(-pid, syscall.SIGKILL) }
+
+// killProfile kills every process whose command line names the profile directory: the Chrome puppeteer
+// started detached, and its helpers, which are in no process group of ours. It looks again until none
+// is left (a killed browser process can be followed by a helper it had just started), up to two seconds.
+func killProfile(dir string) {
+	for i := 0; i < 20; i++ {
+		if exec.Command("pgrep", "-f", dir).Run() != nil { // none found
+			return
+		}
+		_ = exec.Command("pkill", "-KILL", "-f", dir).Run()
+		time.Sleep(100 * time.Millisecond)
+	}
 }

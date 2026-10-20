@@ -293,6 +293,9 @@ func runColourScript(t *testing.T, urls map[string]string) chromeOut {
 	pages, _ := json.Marshal(urls)
 	// A stalled Chrome or script is killed, with the Chrome it started, at the deadline (internal/browsertest).
 	raw, err := browsertest.Run(node, dir, append(os.Environ(), "CHROME_BIN="+chrome, "PAGES="+string(pages)), "colouronly.mjs")
+	if browsertest.TimedOut(err) {
+		t.Fatal(err) // the deadline first: a script cut off has printed no result
+	}
 	var out chromeOut
 	if jerr := json.Unmarshal(raw, &out); jerr != nil {
 		t.Fatalf("the script printed no result (%v): %q", err, raw)
