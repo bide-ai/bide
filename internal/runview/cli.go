@@ -482,19 +482,51 @@ func options(f flags, stores Stores) (Options, io.Closer, error) {
 
 // readConfig reads a flow config file, converting a .yaml or .yml file to JSON with toJSON.
 func readConfig(path string, toJSON func([]byte) ([]byte, error)) (Config, error) {
-	f, err := os.Open(path)
+	// A named pipe or device would block the open or never end, and a directory cannot be read as a
+	// config: refuse anything but a regular file, before opening it and again once opened.
+	before, err := os.Stat(path)
+	if err != nil {
+		return Config{}, err
+	}
+	if !before.Mode().IsRegular() {
+		return Config{}, fmt.Errorf("%s is not a regular file: %w", path, agent.ErrConfig)
+	}
+	if betweenStatAndOpen != nil {
+		betweenStatAndOpen()
+	}
+	f, err := openConfig(path)
 	if err != nil {
 		return Config{}, err
 	}
 	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, maxInput+1))
+	// Decide on the file actually opened, not on the path: the path may have been swapped since the
+	// first check. (os.SameFile against that check does not hold on Windows, where a FileInfo from
+	// os.Stat loads its file ID from the path when SameFile first asks, which is after any swap.)
+	if after, err := f.Stat(); err != nil || !after.Mode().IsRegular() {
+		return Config{}, fmt.Errorf("%s is not a regular file (it changed while it was opened): %w", path, agent.ErrConfig)
+	}
+	b, err := readConfigBytes(f)
 	if err != nil {
 		return Config{}, err
 	}
-	if len(b) > maxInput {
-		return Config{}, fmt.Errorf("larger than %d bytes", maxInput)
-	}
 	return configFrom(path, path, b, toJSON)
+}
+
+// betweenStatAndOpen is a test hook run after readConfig checks the file and before it opens it, so
+// a test can swap the path there. It is nil outside tests.
+var betweenStatAndOpen func()
+
+// readConfigBytes reads r up to maxConfig bytes, and reads no more than one byte past it: a longer
+// input is refused with an error wrapping agent.ErrConfig.
+func readConfigBytes(r io.Reader) ([]byte, error) {
+	b, err := io.ReadAll(io.LimitReader(r, maxConfig+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > maxConfig {
+		return nil, fmt.Errorf("larger than %d bytes: %w", maxConfig, agent.ErrConfig)
+	}
+	return b, nil
 }
 
 // configFrom is the config named name, read from path's bytes b: a .yaml or .yml path's are
@@ -536,6 +568,9 @@ func readApproverKeys(path string) (agent.ApproverVerifierFor, error) {
 
 // maxInput caps an input file, as bide audit's default -max-input-bytes does.
 const maxInput = 256 << 20
+
+// maxConfig caps a flow config file, as plan.LoadReader does: far past any topology.
+const maxConfig = 16 << 20
 
 func readStrict(path string, v any) error {
 	f, err := os.Open(path)

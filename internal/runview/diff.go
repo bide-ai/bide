@@ -3,6 +3,7 @@ package runview
 import (
 	"cmp"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/bide-ai/bide/agent"
 	safetext "github.com/bide-ai/bide/internal/printable"
 	"github.com/bide-ai/bide/internal/term"
 	"github.com/bide-ai/bide/plan"
@@ -1079,7 +1081,9 @@ func diffGraph(ot, nt plan.Topology, cs []Change) *Graph {
 // repository, or from the working directory when it starts with ./), and a bare "<rev>" means
 // newPath as it was at that revision. The YAML or JSON format follows the path's extension.
 func readOld(arg, newPath string, toJSON func([]byte) ([]byte, error)) (Config, error) {
-	if _, err := os.Stat(arg); err == nil {
+	// A file of that name is read as the file (a named pipe or device is refused by readConfig); a
+	// directory of that name, like a missing file, leaves the argument to be a git revision.
+	if fi, err := os.Stat(arg); err == nil && !fi.IsDir() {
 		return readConfig(arg, toJSON)
 	}
 	if arg == "" || strings.HasPrefix(arg, "-") {
@@ -1098,14 +1102,56 @@ func readOld(arg, newPath string, toJSON func([]byte) ([]byte, error)) (Config, 
 	}
 	cmd := exec.Command("git", "show", spec)
 	cmd.Dir = dir
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
+	stderr := &limitedBuffer{max: 4 << 10}
+	cmd.Stderr = stderr
+	pipe, err := cmd.StdoutPipe()
 	if err != nil {
-		return Config{}, fmt.Errorf("-diff %q: no such file, and git show %s failed: %s", arg, spec, cmp.Or(strings.TrimSpace(stderr.String()), err.Error()))
+		return Config{}, fmt.Errorf("-diff %q: git show %s: %w", arg, spec, err)
 	}
-	if len(out) > maxInput {
-		return Config{}, fmt.Errorf("-diff %q: larger than %d bytes", arg, maxInput)
+	if err := cmd.Start(); err != nil {
+		return Config{}, fmt.Errorf("-diff %q: no such file, and git show %s failed: %w", arg, spec, err)
+	}
+	// Read at most the limit: a larger blob is not held in memory, git is stopped instead.
+	var src io.Reader = pipe
+	if wrapGitPipe != nil {
+		src = wrapGitPipe(pipe)
+	}
+	out, rerr := readConfigBytes(src)
+	if errors.Is(rerr, agent.ErrConfig) {
+		_ = cmd.Process.Kill()
+		_, _ = io.Copy(io.Discard, src)
+		_ = cmd.Wait()
+		return Config{}, fmt.Errorf("-diff %q: %w", arg, rerr)
+	}
+	if err := cmd.Wait(); err != nil || rerr != nil {
+		return Config{}, fmt.Errorf("-diff %q: no such file, and git show %s failed: %s", arg, spec, cmp.Or(strings.TrimSpace(stderr.String()), errString(cmp.Or(err, rerr))))
 	}
 	return configFrom(spec, path, out, toJSON)
 }
+
+// limitedBuffer keeps the first max bytes written to it and drops the rest, so a command's stderr
+// cannot grow without bound.
+type limitedBuffer struct {
+	max int
+	b   strings.Builder
+}
+
+func (l *limitedBuffer) Write(p []byte) (int, error) {
+	if room := l.max - l.b.Len(); room > 0 {
+		l.b.Write(p[:min(len(p), room)])
+	}
+	return len(p), nil
+}
+
+func (l *limitedBuffer) String() string { return l.b.String() }
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+// wrapGitPipe is a test hook that wraps the stream readOld reads git show's output through, to
+// count the bytes read. It is nil outside tests.
+var wrapGitPipe func(io.Reader) io.Reader

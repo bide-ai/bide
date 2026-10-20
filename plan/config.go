@@ -282,12 +282,20 @@ func WithLoadedStopSwitch(sw *agent.StopSwitch) LoadOption {
 	return func(c *builderCore) { c.stop, c.stopSet = sw, true }
 }
 
+// maxConfigSize is the most LoadReader reads: far past any topology, so a reader that never ends
+// (or a hostile one) cannot fill memory.
+const maxConfigSize = 16 << 20
+
 // LoadReader is Load reading the config from r (for example an *os.File or an HTTP
-// body). It reads r to EOF, then behaves exactly like Load.
+// body). It reads r to EOF, then behaves exactly like Load. A config larger than 16 MiB is refused
+// with an error wrapping agent.ErrConfig, and r is not read past the byte that shows it is.
 func LoadReader[In, Out any](r io.Reader, reg *Registry, opts ...LoadOption) (*Flow[In, Out], error) {
-	data, err := io.ReadAll(r)
+	data, err := io.ReadAll(io.LimitReader(r, maxConfigSize+1))
 	if err != nil {
 		return nil, fmt.Errorf("plan: load: read config: %w", err)
+	}
+	if len(data) > maxConfigSize {
+		return nil, fmt.Errorf("plan: load: config is larger than %d bytes: %w", maxConfigSize, agent.ErrConfig)
 	}
 	return Load[In, Out](data, reg, opts...)
 }

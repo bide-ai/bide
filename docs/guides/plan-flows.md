@@ -409,7 +409,7 @@ middle from data:
 flow, err := plan.Load[Order, Receipt](configBytes, reg)   // *Flow[Order, Receipt], or a load error
 ```
 
-`LoadReader[In, Out]` is the same reading from an `io.Reader` (an `*os.File` or an HTTP body).
+`LoadReader[In, Out]` is the same reading from an `io.Reader` (an `*os.File` or an HTTP body). It reads at most 16 MiB and refuses a larger config with `agent.ErrConfig`.
 
 ### The config schema
 

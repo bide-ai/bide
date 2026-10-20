@@ -350,3 +350,45 @@ func TestDiffGitRevision(t *testing.T) {
 		t.Errorf("a file named HEAD: exit %d\n%s", code, out.String())
 	}
 }
+
+// TestDiffDirectoryNamedLikeARevision: a directory that shares a revision's name does not hide the
+// revision, as a missing file does not; a directory given as the main config is still refused.
+func TestDiffDirectoryNamedLikeARevision(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	repo := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-c", "user.name=test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false"}, args...)...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %q: %v\n%s", args, err, out)
+		}
+	}
+	git("init", "-q")
+	cfg := filepath.Join(repo, "refund.json")
+	if err := os.WriteFile(cfg, []byte(diffV2), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", ".")
+	git("commit", "-q", "-m", "v2")
+	git("branch", "rel")
+	if err := os.WriteFile(cfg, []byte(diffV1), 0o644); err != nil { // the working copy weakens the gate
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(repo, "rel"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(repo)
+	var out, errb bytes.Buffer
+	code := Main([]string{"-config", cfg, "-diff", "rel", "-check", "-fail-on-weaken"}, &out, &errb, Stores{})
+	if code != 1 || !strings.Contains(out.String(), "approval policy weakened") {
+		t.Errorf("-diff rel with a directory rel: exit %d, want 1 and the weakened gate\n%s%s", code, out.String(), errb.String())
+	}
+	out.Reset()
+	errb.Reset()
+	if code := Main([]string{"-config", filepath.Join(repo, "rel"), "-check"}, &out, &errb, Stores{}); code == 0 || !strings.Contains(errb.String(), "not a regular file") {
+		t.Errorf("a directory as -config: exit %d, want a refusal\n%s%s", code, out.String(), errb.String())
+	}
+}

@@ -64,7 +64,8 @@ type Options struct {
 const MaxDepth = 128
 
 // MaxVerbatimDepth is the deepest nesting any document may have, structure and verbatim JSON
-// together. It is encoding/json's own limit. Check refuses a deeper document before any decoder
+// together: about 10000, encoding/json's own limit (a verbatim value inside a journal record counts
+// the record's own wrapper, so 9991 levels of one are read and 10000 are not). Check refuses a deeper document before any decoder
 // runs, so no reader spends time or memory on it.
 const MaxVerbatimDepth = 10000
 
