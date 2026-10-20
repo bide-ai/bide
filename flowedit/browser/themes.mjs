@@ -102,7 +102,11 @@ try {
       await page.click('#theme');
     }
     results.cycle = { names, steps };
-    // A choice is remembered across a reload.
+    // A choice (the last of the list, which the page's script cannot know before the stylesheet has
+    // loaded) is remembered across a reload.
+    await page.evaluate(() => { try { localStorage.clear(); } catch (e) { /* none */ } });
+    await page.reload({ waitUntil: 'networkidle0' });
+    for (let i = 0; i < names.length - 1; i++) await page.click('#theme');
     const chosen = await page.evaluate(() => document.documentElement.getAttribute('data-theme'));
     await page.reload({ waitUntil: 'networkidle0' });
     results.remembered = { chosen, after: await page.evaluate(() => document.documentElement.getAttribute('data-theme')) };

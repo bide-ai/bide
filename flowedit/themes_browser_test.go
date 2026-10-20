@@ -153,7 +153,7 @@ func TestThemesInChrome(t *testing.T) {
 	if err := json.Unmarshal(r.Results["remembered"], &rem); err != nil {
 		t.Fatal(err)
 	}
-	if rem.Chosen == "" || rem.Chosen != rem.After {
+	if rem.Chosen != "high-contrast" || rem.Chosen != rem.After {
 		t.Errorf("the choice %q was not remembered across a reload (%q)", rem.Chosen, rem.After)
 	}
 }
