@@ -368,14 +368,42 @@ func TestLoopShapeProblemsAreComparedByIdentity(t *testing.T) {
 		t.Errorf("moving a wiring element in a text with a loop that has no exit arm:\n%s", got)
 	}
 
-	// Two switches whose names differ after the 64th character: the first has a loop with no exit arm; an
-	// operation that gives the second the same problem is refused, though both read alike once shortened.
-	n1, n2 := strings.Repeat("n", 70)+"1", strings.Repeat("n", 70)+"2"
-	two := "version: 1\nflow: f\nentry: a\nnodes:\n  - {name: a, block: a}\n  - {name: " + n1 + ", block: b}\n  - {name: " + n2 + ", block: c}\nwiring:\n" +
-		"  - edge: [a, " + n1 + "]\n  - switch: " + n1 + "\n    when:\n      - {pred: p, to: a, loop_max: 3}\n" +
-		"  - edge: [a, " + n2 + "]\n  - switch: " + n2 + "\n    when:\n      - {pred: p, to: a}\n"
-	why := refusalOf(t, "f.yaml", two, Operation{Op: "set_loop_max", Node: n2, Index: 0, Max: 3})
-	if !strings.Contains(why, "has no exit arm") {
-		t.Errorf("a second loop with no exit arm, named alike: %q", why)
+	// Two loops whose inner-switch problem reads the same once the names are shortened (they differ only
+	// after the 64th character): the text had the first; one that also has the second has a new problem.
+	b1, c1 := strings.Repeat("b", 70)+"1", strings.Repeat("c", 70)+"1"
+	b2, c2 := strings.Repeat("b", 70)+"2", strings.Repeat("c", 70)+"2"
+	loops := func(inner1, inner2 bool) []byte {
+		second := "  - edge: [a2, " + b2 + "]\n  - edge: [" + b2 + ", " + c2 + "]\n"
+		if inner2 {
+			second = "  - edge: [a2, " + b2 + "]\n  - switch: " + b2 + "\n    when:\n      - {pred: x, to: " + c2 + "}\n    else: " + c2 + "\n"
+		}
+		first := "  - edge: [a1, " + b1 + "]\n  - edge: [" + b1 + ", " + c1 + "]\n"
+		if inner1 {
+			first = "  - edge: [a1, " + b1 + "]\n  - switch: " + b1 + "\n    when:\n      - {pred: x, to: " + c1 + "}\n    else: " + c1 + "\n"
+		}
+		return []byte("version: 1\nflow: f\nentry: a1\nnodes:\n  - {name: a1, block: a}\n  - {name: " + b1 + ", block: b}\n  - {name: " + c1 + ", block: c}\n  - {name: d1, block: d}\n" +
+			"  - {name: a2, block: a}\n  - {name: " + b2 + ", block: b}\n  - {name: " + c2 + ", block: c}\n  - {name: d2, block: d}\nwiring:\n" +
+			first +
+			"  - switch: " + c1 + "\n    when:\n      - {pred: y, to: a1, loop_max: 3}\n    else: d1\n" +
+			"  - edge: [d1, a2]\n" + second +
+			"  - switch: " + c2 + "\n    when:\n      - {pred: y, to: a2, loop_max: 3}\n    else: d2\n")
+	}
+	toJSON := func(b []byte) []byte {
+		j, err := ToJSON(b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return j
+	}
+	if why := newLoopShapeError(toJSON(loops(true, false)), toJSON(loops(true, true))); !strings.Contains(why, "has its own Switch") {
+		t.Errorf("a second inner-switch problem, named alike: %q", why)
+	}
+	if why := newLoopShapeError(toJSON(loops(true, true)), toJSON(loops(true, true))); why != "" {
+		t.Errorf("the same problems are not new: %q", why)
+	}
+	// The first problem fixed and the second made in one edit: the count is the same and the shown text
+	// is the same, and the problem is new.
+	if why := newLoopShapeError(toJSON(loops(true, false)), toJSON(loops(false, true))); !strings.Contains(why, "has its own Switch") {
+		t.Errorf("a swap between two problems named alike: %q", why)
 	}
 }
