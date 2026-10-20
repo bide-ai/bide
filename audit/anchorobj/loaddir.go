@@ -11,6 +11,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/safefile"
 )
 
 // MaxObjectBytes bounds what is read for one object: a head is a few hundred bytes plus the run ID, and
@@ -60,7 +61,7 @@ func (l Layout) LoadDir(dir string, v audit.Verifier, errNotFound, errEquivocati
 			return fmt.Errorf("%w: %s is not a regular file", l.ErrObject, path)
 		}
 		partition, name := filepath.Base(filepath.Dir(path)), d.Name()
-		f, err := os.Open(path)
+		f, err := safefile.OpenRegular(path, nil)
 		if err != nil {
 			return err
 		}

@@ -95,7 +95,7 @@ proxy that terminates TLS on the same host. Forwarding has a budget (-forward-ti
 		return failure("relay", stderr, "%v", err)
 	}
 	var sinks []relay.Sink
-	slackURL, err := readOne(getenv, readFile, *slackEnv, *slackFile)
+	slackURL, err := readOne(getenv, readFile, *slackEnv, *slackFile, "-slack-url-file")
 	if err != nil {
 		return failure("relay", stderr, "%v", err)
 	}
@@ -106,7 +106,7 @@ proxy that terminates TLS on the same host. Forwarding has a budget (-forward-ti
 		}
 		sinks = append(sinks, s)
 	}
-	pdKey, err := readOne(getenv, readFile, *pdEnv, *pdFile)
+	pdKey, err := readOne(getenv, readFile, *pdEnv, *pdFile, "-pagerduty-key-file")
 	if err != nil {
 		return failure("relay", stderr, "%v", err)
 	}

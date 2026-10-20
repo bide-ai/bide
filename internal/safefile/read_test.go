@@ -186,3 +186,24 @@ func TestLoadX509KeyPair(t *testing.T) {
 		t.Errorf("an empty pair = %v, want tls's complaint about the PEM", err)
 	}
 }
+
+func TestReadFileAndOpenRegular(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "f")
+	if err := os.WriteFile(p, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := ReadFile(p); err != nil || string(b) != "hello" {
+		t.Errorf("ReadFile = %q, %v", b, err)
+	}
+	_, err := ReadFile(dir)
+	refusal(t, err, NotRegular)
+	if _, err := ReadFile(filepath.Join(dir, "none")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a missing file = %v, want ErrNotExist", err)
+	}
+	_, err = OpenRegular(p, func() {
+		os.Remove(p)
+		os.Mkdir(p, 0o700)
+	})
+	refusal(t, err, Changed)
+}

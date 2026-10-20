@@ -10,3 +10,10 @@ func FIFO(t *testing.T) string {
 	t.Skip("no named pipe can sit at a file path on this system")
 	return ""
 }
+
+// Descriptor skips the test: there is no /dev/fd here.
+func Descriptor(t *testing.T, content string) string {
+	t.Helper()
+	t.Skip("no /dev/fd on this system")
+	return ""
+}

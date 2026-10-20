@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/safefile"
 )
 
 // Markers on a CRL archived but not added to the snapshot: a rollback (its number is below the
@@ -121,7 +122,7 @@ func (d DirArchive) PutCRL(_ context.Context, issuer audit.SPKIHash, a ArchivedC
 	if a.Marker == "" {
 		// Two different CRLs under one series name would be a conflict; the caller marks those. A
 		// file that is already there must hold these bytes.
-		if old, err := os.ReadFile(filepath.Join(dir, name)); err == nil {
+		if old, err := safefile.ReadFile(filepath.Join(dir, name)); err == nil {
 			// The same CRL re-signed (same TBSCertList, other signature bytes) is already archived.
 			have, ok1 := audit.CRLTBSHash(old)
 			want, ok2 := audit.CRLTBSHash(der)
@@ -161,7 +162,7 @@ func (d DirArchive) List(_ context.Context, issuer audit.SPKIHash) ([]ArchivedCR
 		if !ok {
 			continue
 		}
-		if b, err := os.ReadFile(filepath.Join(d.issuerDir(issuer), n+".meta.json")); err == nil {
+		if b, err := safefile.ReadFile(filepath.Join(d.issuerDir(issuer), n+".meta.json")); err == nil {
 			var m struct {
 				Source  string    `json:"source"`
 				Fetched time.Time `json:"fetched"`
@@ -214,7 +215,7 @@ func (d DirArchive) Read(_ context.Context, issuer audit.SPKIHash, a ArchivedCRL
 	if a.Name != filepath.Base(a.Name) {
 		return nil, fmt.Errorf("audit: CRL archive: bad file name %q", a.Name)
 	}
-	return os.ReadFile(filepath.Join(d.issuerDir(issuer), a.Name))
+	return safefile.ReadFile(filepath.Join(d.issuerDir(issuer), a.Name))
 }
 
 // PutReset implements Archive.
@@ -250,7 +251,7 @@ func (d DirArchive) Resets(_ context.Context, issuer audit.SPKIHash) ([]ResetRec
 		if !strings.HasPrefix(n, "RESET-") || !strings.HasSuffix(n, ".json") {
 			continue
 		}
-		b, err := os.ReadFile(filepath.Join(dir, n))
+		b, err := safefile.ReadFile(filepath.Join(dir, n))
 		if err != nil {
 			return nil, err
 		}

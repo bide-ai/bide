@@ -13,6 +13,7 @@ import (
 
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/audit/crlrefresh"
+	"github.com/bide-ai/bide/internal/safefile"
 )
 
 // readOnlyArchive reads a crlrefresh archive directory and writes nothing: a pre-flight must not change
@@ -72,7 +73,7 @@ func loadFlat(dir string, snap *audit.StatusSnapshot) (loaded int, rejected []st
 			rejected = append(rejected, fmt.Sprintf("more than %d CRL files: the rest are not read", maxFlatFiles))
 			break
 		}
-		f, err := os.Open(filepath.Join(dir, n))
+		f, err := safefile.OpenRegular(filepath.Join(dir, n), nil)
 		if err != nil {
 			return loaded, rejected, &IOError{Err: fmt.Errorf("-crl-dir: %w", err)}
 		}

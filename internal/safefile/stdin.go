@@ -34,9 +34,12 @@ func ResetStdin() {
 // the flag takes "-" instead. Standard input can be read by one flag only: flag names the flag
 // reading it, a second read by the same flag returns the same bytes (a flag read at two places), and
 // a read by another flag is an error naming both, never an empty or partial document. To read a file
-// named "-", write "./-". It is for command-line programs, which have one standard input and one
+// named "-", write "./-". /dev/stdin and descriptor 0 (/dev/fd/0) are "-". It is for command-line programs, which have one standard input and one
 // run: its owner is process-wide state, so a library or a server handler must not call it.
 func ReadOrStdin(flag, path string, max int) ([]byte, error) {
+	if isStdinPath(path) {
+		path = "-"
+	}
 	if path != "-" {
 		return Read(path, max, nil)
 	}

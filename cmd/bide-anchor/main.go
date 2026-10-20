@@ -95,7 +95,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, mk client
 	)
 	// Each command takes only the flags that mean something to it, so its help lists only those.
 	fs.StringVar(&backendName, "backend", "s3", "the object store the anchor wrote to: "+backendNames)
-	fs.StringVar(&pubkey, "pubkey", "", "the log operator's public key (ed25519:<hex>, or a file holding it, or - for standard input)")
+	fs.StringVar(&pubkey, "pubkey", "", "the log operator's public key (ed25519:<hex>, or a file holding it, or - for standard input, or a <(...) process substitution)")
 	fs.StringVar(&kind, "kind", audit.TreeJournal, "the tree kind: journal, or events for a notification or event trail")
 	switch cmd {
 	case "verify":
