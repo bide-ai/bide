@@ -413,10 +413,14 @@ the check with the program's own Registry does not. The digest is unchanged.
 
 ## The flow editor
 
-**The editor's check is structural.** `bide edit` checks a config as `bide check` does: block, predicate and
-merge names and the types are checked when a program loads the flow with its `plan.Registry`, and a gate
-or a safety a block declares in Go is not visible. A clean page is not `plan.Load` accepting the flow, and a
-changed `block` on an ungated effect node is reported as weakened because the new block may carry no gate.
+**The editor's check is structural unless it is typed.** `bide edit` checks a config as `bide check` does: block,
+predicate and merge names and the types are checked when a program loads the flow with its `plan.Registry`, and a
+gate or a safety a block declares in Go is not visible. With `-blocks <file>` (or `flowedit.WithRegistry` or
+`WithBlocks` in a program that embeds the editor) the editor is typed and checks the config as `Load` does, but a
+description file is only what the program wrote when the file was made: the page says it is not checked against the
+program, tells types apart by name only, and shows NOT CERTIFIED while the text has errors against the blocks. A
+clean page is not `plan.Load` accepting the flow. Without `-blocks`, a changed `block` on an ungated effect node is
+reported as weakened because the new block may carry no gate.
 
 **A file with any YAML anchor or alias is refused by the editor.** `plan` reads such a file (the YAML converter resolves anchors, aliases and merge keys), but the editor's splice cannot place an edit inside an alias, and a walk that follows aliases can overflow the stack or expand exponentially, so it refuses the whole document and says why; edit that file in your text editor. It likewise refuses a repeated key, a key that is not a string, NaN and infinity, which the loader refuses too.
 
@@ -433,15 +437,15 @@ gate comparison follows names, so a rename is a removed node and a new one, and 
 `bide check -diff -fail-on-weaken` on the saved file) reports it; a policy owner reviews it and accepts it.
 The classifier does not detect renames, and the editor does not tell it which names are the same node.
 Removing a node leaves any `assert` line that names it (the check reports it as naming a missing node),
-because removing an assertion is itself a weakening. A node that is an input of a join cannot be removed
-in the editor yet; edit the source.
+because removing an assertion is itself a weakening. A node that is an input of a join is not removed until
+the join is changed or removed first (both are done in the editor).
 
 **The approve page's look is tested in Chrome only.** `TestPage_LookInChrome` and the no-input test run in Chrome and Go; Firefox and Safari are not run. In particular, Firefox processes a `Link: <...>; rel=stylesheet` response header, which Chrome ignores for this page, and a CSP of the host can change what loads: the pin covers the bundle's bytes, not the headers or proxy of whoever serves them (an organisation hosting the bundle should serve it with the CSP `approvals.PageCSP` returns, which allows no other stylesheet).
 
 **Forced colours and more contrast are tested in Chrome's emulation, not on a real contrast theme.** The viewer's and the editor's colour-only and contrast checks run in real Chrome under light, dark, high-contrast, `prefers-contrast: more` and `forced-colors: active` (the editor's also measure the colours the browser paints for its controls, selection ring and dialog); they are not Windows High Contrast on Windows, macOS Increase contrast, or a screen reader. A manual pass with those is still owed, on the viewer, the editor and the approve page (which takes the shipped themes by the system's settings alone; see the [themes guide](guides/themes.md)). Under forced colours the system drops shadows, so the editor's save dialog does not dim the page there; it is still modal and keeps its border in the system's colour.
 
 **The editor's accessibility has automated and keyboard tests and no manual screen-reader pass yet.** The
-keyboard-only run and axe-core in Chrome (light and dark, five states) pass in CI; they are not a screen
+keyboard-only run and axe-core in Chrome (light, dark and high-contrast, five states) pass in CI; they are not a screen
 reader. To check by hand with VoiceOver, NVDA or Orca: the outline reads as a list of buttons named by
 node, kind, safety and gate; selecting a node announces it; a form field reads its label and its help;
 the draft's verdict is announced as you change it; the weakened banner is announced when it appears; the
