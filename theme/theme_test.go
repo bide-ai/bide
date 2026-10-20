@@ -3,6 +3,7 @@ package theme
 import (
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"unicode"
@@ -579,5 +580,54 @@ func TestReportIsACopy(t *testing.T) {
 	rep.Measures[0].Value = -1
 	if c.Report().Measures[0].Value == -1 {
 		t.Error("the report Parse returned shares its measures with the theme")
+	}
+}
+
+// TestC2OnEveryGround: the focus ring and the control edge are held to 3:1 on every ground the pages
+// draw them on, not only the page and a panel. Each theme below passed when C2 looked at bg and surface
+// only, and fails now on exactly the named grounds.
+func TestC2OnEveryGround(t *testing.T) {
+	both := func(f map[string]string) map[string]any {
+		m := map[string]any{}
+		for k, v := range f {
+			m[k] = v
+		}
+		return map[string]any{"surface": m}
+	}
+	for _, tc := range []struct {
+		name string
+		data []byte
+		want []string
+	}{
+		{"control edge on a nested panel", custom("light", surface("border_strong", "#8a8a8a")), []string{"border_strong on surface2"}},
+		{"focus ring on a nested panel", custom("dark", surface("focus", "#6a6a74")), []string{"focus on accent_bg", "focus on surface2"}},
+		{"focus ring on the selected item's tint", custom("dark", surface("focus", "#4070b8")), []string{"focus on accent_bg"}},
+		{"focus ring on the graph canvas", custom("dark", both(map[string]string{"focus": "#74747e", "canvas_bg": "#34343a"})), []string{"focus on canvas_bg"}},
+		{"focus ring on a node's fill", custom("dark", both(map[string]string{"focus": "#74747e", "node_fill": "#34343a"})), []string{"focus on node_fill"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []string
+			for _, m := range reportOf(t, tc.data).Failures(Error) {
+				got = append(got, m.Subject)
+				if m.Check != "C2" || strings.HasSuffix(m.Subject, " on bg") || strings.HasSuffix(m.Subject, " on surface") {
+					t.Errorf("%s %s fails: this theme must fail only on a ground C2 did not look at before", m.Check, m.Subject)
+				}
+			}
+			slices.Sort(got)
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("failed measures %q, want %q", got, tc.want)
+			}
+			if _, _, err := Parse(tc.data); err == nil {
+				t.Error("Parse accepted the theme")
+			}
+		})
+	}
+	// The shipped themes meet 3:1 on every one of those grounds (the lowest is 3.46).
+	for _, th := range Shipped() {
+		for _, m := range th.Report().Measures {
+			if m.Check == "C2" && !m.Pass {
+				t.Errorf("%s: %s %s fails", th.Name(), m.Check, m.Subject)
+			}
+		}
 	}
 }
