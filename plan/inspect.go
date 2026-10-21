@@ -28,6 +28,9 @@ type ConfigReport struct {
 	Approvals map[string]agent.ApprovalPolicy
 	// Problems are every error and warning found, in config order.
 	Problems []ConfigProblem
+	// Findings are the structure behind the errors in Problems (see Finding), one for each, and every
+	// type problem even past the hundred Problems lists.
+	Findings []Finding
 	// Typed reports a Registry was given, so blocks, predicates, merges and types were checked as
 	// Load checks them. Without one, the check is structural.
 	Typed bool
@@ -114,7 +117,6 @@ type inspectOptions struct{ allowUnused bool }
 func AllowUnusedBlocks() InspectOption { return func(o *inspectOptions) { o.allowUnused = true } }
 
 func init() {
-	planaccess.RegisterInspect(inspectRecords)
 	planaccess.RegisterParse(func(data []byte) error {
 		var cfg config
 		return parseConfig(data, &cfg)
@@ -125,8 +127,18 @@ func init() {
 // description: one implementation of the typed checks, whichever side the Registry came from.
 func inspectConfig(data []byte, reg *Registry, opts []InspectOption) ConfigReport {
 	r := inspectConfigUnbounded(data, reg, opts)
+	// The findings are made from the problems as they were written, before their names are shortened.
+	var candidates []Finding
+	var cfg config
+	if parseConfig(data, &cfg) == nil {
+		candidates = candidateFindings(&cfg, reg)
+	}
+	attachFindings(&r, candidates)
 	for i := range r.Problems {
 		r.Problems[i].Message = boundMessage(r.Problems[i].Message)
+	}
+	for i := range r.Findings {
+		r.Findings[i].Message = boundMessage(r.Findings[i].Message)
 	}
 	return r
 }
@@ -392,7 +404,7 @@ func configTopology(cfg *config) Topology {
 }
 
 // structural runs the checks that need no Registry, attaching each problem where it belongs.
-func structural(cfg *config, r *ConfigReport, recs *[]planaccess.Record) {
+func structural(cfg *config, r *ConfigReport, recs *[]Finding) {
 	errAt := func(p ConfigProblem) { p.Severity = "error"; r.Problems = append(r.Problems, p) }
 	declared := map[string]bool{}
 	if len(cfg.Nodes) == 0 {
@@ -571,10 +583,12 @@ func joinOrder(cfg *config, errAt func(ConfigProblem)) {
 // structural check can see from the wiring alone: more than one loop-back arm on a switch, no arm or
 // else that does not loop back, and a loop head that does not reach the switch in the forward graph
 // (the edges, a join's inputs and the arms that do not loop back).
-func loopShape(cfg *config, declared map[string]bool, errAt func(ConfigProblem), recs *[]planaccess.Record) {
-	rec := func(kind string, names []string, message string) {
+func loopShape(cfg *config, declared map[string]bool, errAt func(ConfigProblem), recs *[]Finding) {
+	// find reports a problem and, when the caller wants them, its finding (the same message).
+	find := func(p ConfigProblem, kind ProblemKind, names ...string) {
+		errAt(p)
 		if recs != nil {
-			*recs = append(*recs, planaccess.Record{Class: "loop", Kind: kind, Names: names, Message: message})
+			*recs = append(*recs, Finding{Kind: kind, Names: names, Message: p.Message})
 		}
 	}
 	fwd := map[string][]string{}
@@ -616,17 +630,14 @@ func loopShape(cfg *config, declared map[string]bool, errAt func(ConfigProblem),
 			continue
 		}
 		if loops > 1 {
-			errAt(ConfigProblem{Node: w.Switch, Message: fmt.Sprintf("wiring[%d] the switch over %q has more than one loop-back arm; a switch expresses a single loop back-edge", i, w.Switch)})
-			rec("structural-more-than-one-loop-back", []string{w.Switch}, fmt.Sprintf("the switch over %q has more than one loop-back arm; a switch expresses a single loop back-edge", w.Switch))
+			find(ConfigProblem{Node: w.Switch, Message: fmt.Sprintf("wiring[%d] the switch over %q has more than one loop-back arm; a switch expresses a single loop back-edge", i, w.Switch)}, ProblemLoopMoreThanOneBackArm, w.Switch)
 		}
 		if exits == 0 {
-			errAt(ConfigProblem{Node: w.Switch, Message: fmt.Sprintf("wiring[%d] the loop over %q has no exit arm; add an arm or an else that does not loop back so the loop can terminate", i, w.Switch)})
-			rec("structural-no-exit-arm", []string{w.Switch}, fmt.Sprintf("the loop over %q has no exit arm; add an arm or an else that does not loop back so the loop can terminate", w.Switch))
+			find(ConfigProblem{Node: w.Switch, Message: fmt.Sprintf("wiring[%d] the loop over %q has no exit arm; add an arm or an else that does not loop back so the loop can terminate", i, w.Switch)}, ProblemLoopNoExitArm, w.Switch)
 		}
 		for j, a := range w.When {
 			if a.LoopMax > 0 && declared[a.To] && declared[w.Switch] && !forwardReaches(fwd, a.To, w.Switch) {
-				errAt(ConfigProblem{From: w.Switch, To: a.To, Message: fmt.Sprintf("wiring[%d].when[%d] loops back to %q, which is not an ancestor of the switch over %q (a loop head must reach its loop switch in the forward graph)", i, j, a.To, w.Switch)})
-				rec("structural-not-an-ancestor", []string{w.Switch, a.To}, fmt.Sprintf("an arm loops back to %q, which is not an ancestor of the switch over %q (a loop head must reach its loop switch in the forward graph)", a.To, w.Switch))
+				find(ConfigProblem{From: w.Switch, To: a.To, Message: fmt.Sprintf("wiring[%d].when[%d] loops back to %q, which is not an ancestor of the switch over %q (a loop head must reach its loop switch in the forward graph)", i, j, a.To, w.Switch)}, ProblemLoopHeadNotAncestor, w.Switch, a.To)
 			}
 		}
 	}

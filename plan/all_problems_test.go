@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
-	"github.com/bide-ai/bide/internal/planaccess"
 )
 
 // typedChainRegistry registers blocks of plain types: s2i takes a string and gives an int, i2s the
@@ -312,25 +311,25 @@ func TestInspectConfig_TypeProblemsBesideOtherErrors(t *testing.T) {
 // The records the typed editor compares carry the full names as the config has them (the message
 // shortens them), whatever they contain, and no position: names with brackets, quotes and "[#]" stay
 // as they are, and two problems about names that differ only past the 64th character are two.
-func TestInspectRecords_CarryFullNamesWhateverTheyContain(t *testing.T) {
+func TestFindings_CarryFullNamesWhateverTheyContain(t *testing.T) {
 	reg := typedChainRegistry(t)
 	cfg := func(second string) string {
 		return `{"version":1,"flow":"f","entry":"v","nodes":[{"name":"v","block":"s2s"},{"name":"n[1]","block":"s2s"},{"name":"n[2]","block":"` + second + `"},{"name":"n[3]","block":"s2i"}],
 		  "wiring":[{"edge":["v","n[1]"]},{"edge":["n[1]","n[2]"]},{"edge":["n[2]","n[3]"]}]}`
 	}
 	// s2i takes a string: n[1]->n[2] fits; n[2] gives an int into n[3], which takes a string: a misfit.
-	recs := inspectRecords([]byte(cfg("s2i")), reg, nil)
-	if len(recs) != 1 || recs[0].Class != "type" || recs[0].Kind != "edge" || strings.Join(recs[0].Names, "|") != "n[2]|n[3]" {
+	recs := findingsOf(t, []byte(cfg("s2i")), reg)
+	if len(recs) != 1 || recs[0].Kind != ProblemEdgeTypes || strings.Join(recs[0].Names, "|") != "n[2]|n[3]" {
 		t.Fatalf("records = %+v", recs)
 	}
 	// Setting n[2] to s2s moves the misfit away: no record, not a record with an equal key.
-	if recs := inspectRecords([]byte(cfg("s2s")), reg, nil); len(recs) != 0 {
+	if recs := findingsOf(t, []byte(cfg("s2s")), reg); len(recs) != 0 {
 		t.Errorf("records = %+v", recs)
 	}
 	l1, l2 := strings.Repeat("a", 70)+"1", strings.Repeat("a", 70)+"2"
 	long := `{"version":1,"flow":"f","entry":"v","nodes":[{"name":"v","block":"s2i"},{"name":"` + l1 + `","block":"s2i"},{"name":"` + l2 + `","block":"s2i"}],
 	  "wiring":[{"edge":["v","` + l1 + `"]},{"edge":["v","` + l2 + `"]}]}`
-	recs = inspectRecords([]byte(long), reg, nil)
+	recs = findingsOf(t, []byte(long), reg)
 	if len(recs) < 2 || recs[0].Names[1] != l1 || recs[1].Names[1] != l2 {
 		t.Fatalf("records do not keep the full names: %+v", recs)
 	}
@@ -339,8 +338,8 @@ func TestInspectRecords_CarryFullNamesWhateverTheyContain(t *testing.T) {
 	}
 	// An arm names its switched node, predicate and target, and no position.
 	arm := `{"version":1,"flow":"f","entry":"a","nodes":[{"name":"a","block":"s2s"},{"name":"b","block":"s2s"},{"name":"c","block":"s2s"}],"wiring":[{"edge":["b","c"]},{"switch":"a","when":[{"pred":"isInt","to":"b"}],"else":"c"}]}`
-	recs = inspectRecords([]byte(arm), reg, nil)
-	if len(recs) != 1 || recs[0].Kind != "arm" || strings.Join(recs[0].Names, "|") != "a|isInt|b" {
+	recs = findingsOf(t, []byte(arm), reg)
+	if len(recs) != 1 || recs[0].Kind != ProblemArmTypes || strings.Join(recs[0].Names, "|") != "a|isInt|b" {
 		t.Errorf("arm records = %+v", recs)
 	}
 }
@@ -400,8 +399,8 @@ func TestInspectConfig_TenThousandTypeProblemsAreListedAHundredAtATime(t *testin
 		t.Errorf("the report lists %d problems", len(r.Problems))
 	}
 	var types int
-	for _, rec := range inspectRecords(data, typedChainRegistry(t), nil) {
-		if rec.Class == "type" {
+	for _, rec := range findingsOf(t, data, typedChainRegistry(t)) {
+		if isTypeKind(rec.Kind) {
 			types++
 		}
 	}
@@ -412,10 +411,10 @@ func TestInspectConfig_TenThousandTypeProblemsAreListedAHundredAtATime(t *testin
 
 // The records of the loop and wiring shapes carry their kind and the full names: Build's (a body that is
 // not simple, an inner switch, an edge that leaves a loop) as well as the structural check's.
-func TestInspectRecords_LoopShapesCarryTheirNames(t *testing.T) {
-	has := func(recs []planaccess.Record, kind string, names ...string) bool {
+func TestFindings_LoopShapesCarryTheirNames(t *testing.T) {
+	has := func(recs []Finding, kind ProblemKind, names ...string) bool {
 		for _, r := range recs {
-			if r.Class == "loop" && r.Kind == kind && strings.Join(r.Names, "|") == strings.Join(names, "|") {
+			if r.Kind == kind && strings.Join(r.Names, "|") == strings.Join(names, "|") {
 				return true
 			}
 		}
@@ -424,23 +423,23 @@ func TestInspectRecords_LoopShapesCarryTheirNames(t *testing.T) {
 	// A body that is not simple: x lies between the head a and the switch b but is not on the loop path.
 	body := `{"version":1,"flow":"f","entry":"e","nodes":[{"name":"e","block":"s2s"},{"name":"a","block":"s2s"},{"name":"x","block":"s2s"},{"name":"b","block":"s2s"},{"name":"c","block":"s2s"}],
 	  "wiring":[{"edge":["e","a"]},{"edge":["e","x"]},{"edge":["a","b"]},{"switch":"b","when":[{"pred":"nonEmpty","to":"a","loop_max":3}],"else":"c"}]}`
-	if recs := inspectRecords([]byte(body), nil, nil); !has(recs, "non-contiguous-body", "b", "x") {
+	if recs := findingsOf(t, []byte(body), nil); !has(recs, ProblemLoopBodyNotSimple, "b", "x") {
 		t.Errorf("non-contiguous body records: %+v", recs)
 	}
 	// Edges that leave the loop, and an inner switch.
 	leave := `{"version":1,"flow":"f","entry":"a","nodes":[{"name":"a","block":"s2s"},{"name":"b","block":"s2s"},{"name":"c","block":"s2s"},{"name":"x","block":"s2s"}],
 	  "wiring":[{"edge":["a","b"]},{"switch":"b","when":[{"pred":"nonEmpty","to":"a","loop_max":3}],"else":"c"},{"edge":["a","x"]}]}`
-	if recs := inspectRecords([]byte(leave), nil, nil); !has(recs, "leaves-the-loop", "a", "x", "b") {
+	if recs := findingsOf(t, []byte(leave), nil); !has(recs, ProblemLoopEdgeLeaves, "a", "x", "b") {
 		t.Errorf("leaves-the-loop records: %+v", recs)
 	}
 	inner := `{"version":1,"flow":"f","entry":"a","nodes":[{"name":"a","block":"s2s"},{"name":"b","block":"s2s"},{"name":"c","block":"s2s"},{"name":"d","block":"s2s"}],
 	  "wiring":[{"edge":["a","b"]},{"switch":"b","when":[{"pred":"nonEmpty","to":"c"}],"else":"c"},{"switch":"c","when":[{"pred":"nonEmpty","to":"a","loop_max":3}],"else":"d"}]}`
-	if recs := inspectRecords([]byte(inner), nil, nil); !has(recs, "inner-switch", "b", "c") {
+	if recs := findingsOf(t, []byte(inner), nil); !has(recs, ProblemLoopInnerSwitch, "b", "c") {
 		t.Errorf("inner-switch records: %+v", recs)
 	}
 	// The structural check's: a loop with no exit arm.
 	noExit := `{"version":1,"flow":"f","entry":"a","nodes":[{"name":"a","block":"s2s"},{"name":"b","block":"s2s"}],"wiring":[{"edge":["a","b"]},{"switch":"b","when":[{"pred":"nonEmpty","to":"a","loop_max":3}]}]}`
-	if recs := inspectRecords([]byte(noExit), nil, nil); !has(recs, "structural-no-exit-arm", "b") {
+	if recs := findingsOf(t, []byte(noExit), nil); !has(recs, ProblemLoopNoExitArm, "b") {
 		t.Errorf("no-exit-arm records: %+v", recs)
 	}
 }

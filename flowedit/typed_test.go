@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/bide-ai/bide/internal/planaccess"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -276,16 +275,18 @@ func TestTypeProblemMatchesWhatPlanSays(t *testing.T) {
 	}
 	for name, cfg := range cases {
 		found := false
-		for _, r := range planaccess.Inspect([]byte(cfg), reg, nil) {
-			found = found || r.Class == "type" && r.Message != ""
+		for _, f := range plan.InspectConfig([]byte(cfg), reg, plan.AllowUnusedBlocks()).Findings {
+			found = found || refusedKind(f.Kind)
 		}
 		if !found {
 			t.Errorf("%s: plan reports no type record", name)
 		}
 	}
 	// Not every error is a misfit.
-	if recs := planaccess.Inspect([]byte(`{"version":1,"flow":"f","entry":"a","nodes":[{"name":"a","block":"x"}],"wiring":[]}`), reg, nil); len(recs) != 0 {
-		t.Errorf("an unknown block is no type record: %+v", recs)
+	for _, f := range plan.InspectConfig([]byte(`{"version":1,"flow":"f","entry":"a","nodes":[{"name":"a","block":"x"}],"wiring":[]}`), reg, plan.AllowUnusedBlocks()).Findings {
+		if refusedKind(f.Kind) {
+			t.Errorf("an unknown block is no type finding: %+v", f)
+		}
 	}
 }
 
@@ -711,8 +712,8 @@ func TestTypedEditorRefusesAMisfitPastTheReportCap(t *testing.T) {
 		s := servers[kind]
 		h := s.Handler()
 		var got int
-		for _, r := range s.typing.records([]byte(mustJSON(t, text))) {
-			if r.Class == "type" {
+		for _, f := range s.typing.findings([]byte(mustJSON(t, text))) {
+			if refusedKind(f.Kind) {
 				got++
 			}
 		}
@@ -906,26 +907,27 @@ func TestTypedEditorIdentifiesProblemsByNamesWhateverTheyContain(t *testing.T) {
 	}
 }
 
-// recordKey tells apart records that would read alike if their parts were joined as plain text: names
-// that hold the separator, the same words split differently, a class or kind that is a prefix of another,
-// and the same names with other types.
+// recordKey tells apart findings that would read alike if their parts were joined as plain text: names
+// that hold the separator, the same words split differently, a kind that is a prefix of another, and the
+// same names with other types.
 func TestRecordKeyKeepsEveryPartApart(t *testing.T) {
 	same := func(n string) string { return n }
-	rec := func(class, kind, detail string, names ...string) planaccess.Record {
-		return planaccess.Record{Class: class, Kind: kind, Names: names, Detail: detail}
+	rec := func(kind plan.ProblemKind, got, want string, names ...string) plan.Finding {
+		return plan.Finding{Kind: kind, Names: names, Got: got, Want: want}
 	}
-	keys := map[string]planaccess.Record{}
-	for _, r := range []planaccess.Record{
-		rec("type", "edge", "a > b", "x y", "z"),
-		rec("type", "edge", "a > b", "x", "y z"),
-		rec("type", "edge", "a > b", "x", "y", "z"),
-		rec("type", "edge", "a > b", `x" "y`, "z"),
-		rec("type", "edge", "a > b", "x | y", "z"),
-		rec("type", "edge", "a > c", "x y", "z"), // the same names, other types
-		rec("type", "edge", "", "x y", "z"),
-		rec("type", "edge ", "a > b", "x y", "z"),
-		rec("type ", "edge", "a > b", "x y", "z"),
-		rec("safety", "edge", "a > b", "x y", "z"),
+	keys := map[string]plan.Finding{}
+	for _, r := range []plan.Finding{
+		rec("edge_types", "a", "b", "x y", "z"),
+		rec("edge_types", "a", "b", "x", "y z"),
+		rec("edge_types", "a", "b", "x", "y", "z"),
+		rec("edge_types", "a", "b", `x" "y`, "z"),
+		rec("edge_types", "a", "b", "x | y", "z"),
+		rec("edge_types", "a", "c", "x y", "z"), // the same names, other types
+		rec("edge_types", "b", "a", "x y", "z"), // the types the other way round
+		rec("edge_types", "", "", "x y", "z"),
+		rec("edge_types", "a | b", "", "x y", "z"),
+		rec("edge_types ", "a", "b", "x y", "z"),
+		rec("arm_types", "a", "b", "x y", "z"),
 	} {
 		k := recordKey(r, same)
 		if other, dup := keys[k]; dup {
@@ -934,14 +936,14 @@ func TestRecordKeyKeepsEveryPartApart(t *testing.T) {
 		keys[k] = r
 	}
 	// A rename changes a name field, and only a name that is the renamed node.
-	r := rec("type", "edge", "a > b", "n", "n2")
+	r := rec("edge_types", "a", "b", "n", "n2")
 	got := recordKey(r, func(n string) string {
 		if n == "n" {
 			return "m"
 		}
 		return n
 	})
-	if got != recordKey(rec("type", "edge", "a > b", "m", "n2"), same) {
+	if got != recordKey(rec("edge_types", "a", "b", "m", "n2"), same) {
 		t.Errorf("a rename of one name: %q", got)
 	}
 }

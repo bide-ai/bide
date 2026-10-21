@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
-
-	"github.com/bide-ai/bide/internal/planaccess"
 )
 
 // typeProblems are the type problems of a config against a Registry, by kind. They are found from the
@@ -13,17 +11,17 @@ import (
 // config (an unknown name, a safety above the registered one, a drifted block) does not hide them: a
 // caller that compares reports (the typed editor) must see a type problem beside any other error.
 type typeProblems struct {
-	edges     []string            // an edge between steps of other types
-	arms      []string            // a switch arm whose predicate tests another type than the switched node gives
-	joins     []string            // a join input that does not fit its merge
-	terminals []string            // a reached terminal that gives another type than the flow's output
-	recs      []planaccess.Record // one per message, in the order edges, arms, joins, terminals found
+	edges     []string  // an edge between steps of other types
+	arms      []string  // a switch arm whose predicate tests another type than the switched node gives
+	joins     []string  // a join input that does not fit its merge
+	terminals []string  // a reached terminal that gives another type than the flow's output
+	recs      []Finding // one per message, in the order the problems were found
 }
 
 // add records a problem: its message and the structured record of what it is about.
-func (p *typeProblems) add(list *[]string, kind string, names []string, detail, message string) {
+func (p *typeProblems) add(list *[]string, kind ProblemKind, names []string, got, want, message string) {
 	*list = append(*list, message)
-	p.recs = append(p.recs, planaccess.Record{Class: "type", Kind: kind, Names: names, Detail: detail, Message: message})
+	p.recs = append(p.recs, Finding{Kind: kind, Names: names, Got: got, Want: want, Message: message})
 }
 
 // all returns every message, in the order edges, arms, joins, terminals.
@@ -77,7 +75,7 @@ func checkTypes(cfg *config, reg *Registry) typeProblems {
 			f, fok := nodes[from]
 			t, tok := nodes[to]
 			if fok && tok && !t.join && f.out != t.in {
-				p.add(&p.edges, "edge", []string{from, to}, typeName(f.out)+" > "+typeName(t.in), fmt.Sprintf("edge %q -> %q connects %s to %s (types must match exactly)",
+				p.add(&p.edges, ProblemEdgeTypes, []string{from, to}, typeName(f.out), typeName(t.in), fmt.Sprintf("edge %q -> %q connects %s to %s (types must match exactly)",
 					from, to, typeName(f.out), typeName(t.in)))
 			}
 		case w.isJoin():
@@ -87,7 +85,7 @@ func checkTypes(cfg *config, reg *Registry) typeProblems {
 				hasOut[src] = true
 				in, iok := nodes[src]
 				if ok && iok && j < len(m.inTypes) && m.inTypes[j] != nil && in.out != nil && in.out != m.inTypes[j] {
-					p.add(&p.joins, "join-input", []string{w.Join, src}, typeName(in.out)+" > "+typeName(m.inTypes[j]), fmt.Sprintf("join %q input %q produces %s but the merge expects %s",
+					p.add(&p.joins, ProblemJoinInputTypes, []string{w.Join, src}, typeName(in.out), typeName(m.inTypes[j]), fmt.Sprintf("join %q input %q produces %s but the merge expects %s",
 						w.Join, src, typeName(in.out), typeName(m.inTypes[j])))
 				}
 			}
@@ -97,7 +95,7 @@ func checkTypes(cfg *config, reg *Registry) typeProblems {
 			for j, a := range w.When {
 				next[w.Switch] = append(next[w.Switch], a.To)
 				if pr, pok := reg.preds[a.Pred]; ok && pok && pr.mType != over.out {
-					p.add(&p.arms, "arm", []string{w.Switch, a.Pred, a.To}, typeName(pr.mType)+" > "+typeName(over.out), fmt.Sprintf("wiring[%d].when[%d] predicate %q tests %s but switched node %q produces %s",
+					p.add(&p.arms, ProblemArmTypes, []string{w.Switch, a.Pred, a.To}, typeName(pr.mType), typeName(over.out), fmt.Sprintf("wiring[%d].when[%d] predicate %q tests %s but switched node %q produces %s",
 						i, j, a.Pred, typeName(pr.mType), w.Switch, typeName(over.out)))
 				}
 			}
@@ -141,7 +139,7 @@ func checkTypes(cfg *config, reg *Registry) typeProblems {
 			continue
 		}
 		if outType != nil && n.out != nil && n.out != outType {
-			p.add(&p.terminals, "terminal", []string{name}, typeName(n.out)+" > "+typeName(outType), fmt.Sprintf("terminal step %q produces %s but the flow output is %s",
+			p.add(&p.terminals, ProblemTerminalTypes, []string{name}, typeName(n.out), typeName(outType), fmt.Sprintf("terminal step %q produces %s but the flow output is %s",
 				name, typeName(n.out), typeName(outType)))
 		}
 	}
@@ -152,7 +150,7 @@ func checkTypes(cfg *config, reg *Registry) typeProblems {
 // block registers in Go (a config may only lower retry safety: a step marked safe to run twice that
 // the program did not mark so is a false claim, which crash recovery would act on). It is found from
 // the config and the registered blocks alone, so another error does not hide it.
-func safetyAboveRegistration(cfg *config, reg *Registry) (out []string, recs []planaccess.Record) {
+func safetyAboveRegistration(cfg *config, reg *Registry) (out []string, recs []Finding) {
 	seen := map[string]bool{}
 	for _, n := range cfg.Nodes {
 		b, ok := reg.blocks[n.Block]
@@ -163,8 +161,8 @@ func safetyAboveRegistration(cfg *config, reg *Registry) (out []string, recs []p
 		if _, err := safetyFromConfig(b.safety, n.Safety); err != nil && strings.Contains(err.Error(), "its Go registration declares") {
 			msg := fmt.Sprintf("node %q %v", n.Name, err)
 			out = append(out, msg)
-			recs = append(recs, planaccess.Record{Class: "safety", Kind: "above-registration", Names: []string{n.Name},
-				Detail: n.Safety + " > " + levelNames[retryLevel(b.safety)], Message: msg})
+			recs = append(recs, Finding{Kind: ProblemSafetyAboveRegistration, Names: []string{n.Name},
+				Got: n.Safety, Want: levelNames[retryLevel(b.safety)], Message: msg})
 		}
 	}
 	return out, recs
