@@ -2,8 +2,6 @@ package awss3_test
 
 import (
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -322,10 +320,7 @@ func TestOnlyAKeyIDOrARNIsAcceptedAsTheKMSKey(t *testing.T) {
 // The Upgrading note quotes the refusal's text so that an operator can search a log for it: the real
 // message contains every piece the note quotes.
 func TestUpgradingNoteQuotesTheRefusalText(t *testing.T) {
-	frag, err := os.ReadFile(filepath.Join("..", "..", "changes", "unreleased", "awss3-refuse-kms-alias.md"))
-	if err != nil {
-		t.Skip("the changelog fragment is assembled at release: " + err.Error())
-	}
+	frag := changelogEntry(t, "awss3-refuse-kms-alias.md")
 	_, got := awss3.New(ctx, awss3.Config{Client: awss3test.New(bucket), Bucket: bucket, ExpectedBucketOwner: owner, Retention: 30 * 24 * time.Hour, KMSKeyID: "alias/x"})
 	if got == nil {
 		t.Fatal("New accepted an alias")
@@ -334,11 +329,11 @@ func TestUpgradingNoteQuotesTheRefusalText(t *testing.T) {
 		if !strings.Contains(got.Error(), piece) {
 			t.Errorf("the error does not contain %q", piece)
 		}
-		if !strings.Contains(string(frag), piece) {
+		if !strings.Contains(frag, piece) {
 			t.Errorf("the Upgrading note does not quote %q", piece)
 		}
 	}
-	if !strings.Contains(string(frag), "upper-case key ID") {
+	if !strings.Contains(frag, "upper-case key ID") {
 		t.Error("the Upgrading note does not say upper-case key IDs are refused")
 	}
 }
