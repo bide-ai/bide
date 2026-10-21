@@ -16,6 +16,10 @@ import (
 // viewer's rendering and fails on any code that matches, searches or compares a Message: a strings,
 // bytes, slices or regexp call, a map lookup, ==, != or a switch, on the field directly or on a local
 // that was assigned from it. A lookup by text cannot be added without changing this test on purpose.
+//
+// The limit: the guard works on names, one function at a time. A function that returns a concatenation
+// made with a Message ("" + p.Message), where its caller then matches on the result, is not seen: a
+// concatenation may be returned as text made for display. No such code exists today.
 func TestNoCodeMatchesOnAMessage(t *testing.T) {
 	for _, dir := range []string{".", "../flowedit", "../internal/runview"} {
 		for _, msg := range messageMatches(t, dir, nil) {
@@ -182,7 +186,7 @@ func messageMatches(t *testing.T, dir string, src map[string]string) []string {
 					}
 				case *ast.CallExpr:
 					c := callee(y)
-					if c == "(conversion)" || messageFormatters[c] {
+					if c == "(conversion)" || c == "(builtin).append" || messageFormatters[c] {
 						for _, a := range y.Args {
 							if holds(a) {
 								return true
@@ -279,6 +283,10 @@ func messageMatches(t *testing.T, dir string, src map[string]string) []string {
 							break
 						}
 					}
+				case *ast.SendStmt:
+					if holds(x.Value) {
+						report(x, "a Message sent on a channel, where a receiver can match on it")
+					}
 				case *ast.IndexExpr:
 					if mentions(x.Index) {
 						report(x, "a lookup by Message")
@@ -330,6 +338,10 @@ func TestMessageGuardCatchesEveryForm(t *testing.T) {
 		"returned bare from a local":     "func f(p F) string { m := p.Message; return m }",
 		"a method":                       "func f(p F, r *regexp.Regexp) bool { return r.MatchString(p.Message) }",
 		"formatted, then matched":        "func f(p F) bool { s := fmt.Sprintf(\"%s\", p.Message); return strings.Contains(s, \"x\") }",
+		"appended, then indexed":         "func f(p F) bool { var xs []string; xs = append(xs, p.Message); return strings.Contains(xs[0], \"x\") }",
+		"appended, then ranged":          "func f(p F) bool { xs := append([]string{}, p.Message); for _, x := range xs { if x == \"a\" { return true } }; return false }",
+		"a channel send":                 "func f(p F, ch chan string) { ch <- p.Message }",
+		"a channel send of a local":      "func f(p F, ch chan string) { m := p.Message; ch <- m }",
 		"concatenated local":             "func f(p F) bool { m := \"a\" + p.Message; return strings.Contains(m, \"x\") }",
 	}
 	for name, body := range bad {
@@ -346,6 +358,8 @@ func TestMessageGuardCatchesEveryForm(t *testing.T) {
 		"into a builder":                     "func f(p F) string { var b strings.Builder; b.WriteString(p.Message); return b.String() }",
 		"appended":                           "func f(p F, out []string) []string { return append(out, p.Message) }",
 		"assigned to a Message":              "func f(p F, q *F) { q.Message = p.Message }",
+		"appended and not read":              "func f(p F) []string { var xs []string; xs = append(xs, p.Message); return xs }",
+		"a channel send of other text":       "func f(ch chan string) { ch <- \"x\" }",
 		"concatenate":                        "func f(p F) string { return \"x: \" + p.Message }",
 		"a local that is not from a message": "func f(p F) bool { m := \"loop\"; return strings.Contains(m, \"l\") }",
 	}
