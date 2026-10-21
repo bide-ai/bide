@@ -202,36 +202,22 @@ func (b *Builder[In, Out]) Build() (*Flow[In, Out], error) {
 	return &Flow[In, Out]{core: c.seal()}, nil
 }
 
-// buildProblems collects the refusals of a Build check that reports every one it finds (the
-// checks of a loop's shape and of the wiring's shapes), so a caller that compares reports sees a
-// second problem beside the first. err is nil with none, the one refusal as Build always worded it
-// with one, and with several the same prefix once and the messages joined by "; ".
+// buildProblems collects the refusals of a Build check that reports every one it finds (the checks of a
+// loop's shape and of the wiring's shapes), so a caller that compares reports sees a second problem
+// beside the first. Each carries its Finding. err is nil with none, and otherwise a problemList.
 type buildProblems struct {
 	flow  string
-	msgs  []string
-	finds []Finding // the structured finding of each message that has one
+	finds []Finding
 }
 
-func (p *buildProblems) addf(format string, a ...any) {
-	p.msgs = append(p.msgs, fmt.Sprintf(format, a...))
-}
-
-// addr is addf with the structured record of the refusal: its kind, and the full names it is about.
-// editor says whether the typed editor refuses an edit that adds it (a loop's shape, as plan.Load
-// refuses it); the other records are not compared.
-func (p *buildProblems) addr(kind ProblemKind, names []string, format string, a ...any) {
-	msg := fmt.Sprintf(format, a...)
-	p.msgs = append(p.msgs, msg)
-	if kind != "" {
-		p.finds = append(p.finds, Finding{Kind: kind, Names: names, Message: msg})
-	}
-}
+// add records a problem with its finding (see found and otherf).
+func (p *buildProblems) add(f Finding) { p.finds = append(p.finds, f) }
 
 func (p *buildProblems) err() error {
-	if len(p.msgs) == 0 {
+	if len(p.finds) == 0 {
 		return nil
 	}
-	return &problemList{prefix: fmt.Sprintf("plan: build %q: ", p.flow), msgs: p.msgs}
+	return &problemList{prefix: fmt.Sprintf("plan: build %q: ", p.flow), finds: p.finds}
 }
 
 // topoOrder returns the node names in a deterministic topological order over the
@@ -445,14 +431,14 @@ func (c *builderCore) deriveLoops() error {
 }
 
 // loopProblems is deriveLoops reporting every refusal, as messages without Build's prefix.
-func (c *builderCore) loopProblems() []string { return c.loopProblemsPR().msgs }
+func (c *builderCore) loopProblems() []Finding { return c.loopProblemsPR().finds }
 
 // loopProblemsPR is loopProblems with the structured record of each refusal.
 func (c *builderCore) loopProblemsPR() *buildProblems {
 	order, err := c.topoOrder()
 	if err != nil {
 		// already reported by the caller's acyclicity check; defensive here
-		return &buildProblems{flow: c.flowName, msgs: []string{c.unprefixed(err)}}
+		return &buildProblems{flow: c.flowName, finds: []Finding{otherf("%s", c.unprefixed(err))}}
 	}
 	indexOf := make(map[string]int, len(order))
 	for i, name := range order {
@@ -483,7 +469,7 @@ branches:
 			a := &br.arms[i]
 			if a.loopBack {
 				if back != nil {
-					pr.addr(ProblemLoopMoreThanOneBackArm, []string{br.over}, "Switch over %q has more than one LoopBack arm; a Switch expresses a single loop back-edge", br.over)
+					pr.add(found(ProblemLoopMoreThanOneBackArm, []string{br.over}, "", "", "Switch over %q has more than one LoopBack arm; a Switch expresses a single loop back-edge", br.over))
 					continue branches
 				}
 				back = a
@@ -495,30 +481,30 @@ branches:
 			continue // an ordinary forward Switch
 		}
 		if back.loopMax <= 0 {
-			pr.addr("", []string{br.over, strconv.Itoa(back.loopMax)}, "loop over %q has max %d, want a positive iteration bound", br.over, back.loopMax)
+			pr.add(otherf("loop over %q has max %d, want a positive iteration bound", br.over, back.loopMax))
 			continue
 		}
 		if exits == 0 {
-			pr.addr(ProblemLoopNoExitArm, []string{br.over}, "loop over %q has no exit arm; add a When or Else that does not loop back so the loop can terminate", br.over)
+			pr.add(found(ProblemLoopNoExitArm, []string{br.over}, "", "", "loop over %q has no exit arm; add a When or Else that does not loop back so the loop can terminate", br.over))
 			continue
 		}
 		head := back.target
 		if c.byName[head] == nil {
-			pr.addr("", []string{br.over, head}, "loop over %q routes back to unknown head %q", br.over, head)
+			pr.add(otherf("loop over %q routes back to unknown head %q", br.over, head))
 			continue
 		}
 		// The back-edge must be a real cycle: the switch must be forward-reachable from
 		// the head (the head is an ancestor of the switch). Otherwise the "loop" routes
 		// back to a node that never reaches the switch, which is a wiring mistake.
 		if !forwardReaches(fwd, head, br.over) {
-			pr.addr(ProblemLoopHeadNotAncestor, []string{br.over, head}, "LoopBack over %q targets %q, which is not an ancestor of the Switch (a loop head must reach its loop Switch in the forward graph)", br.over, head)
+			pr.add(found(ProblemLoopHeadNotAncestor, []string{br.over, head}, "", "", "LoopBack over %q targets %q, which is not an ancestor of the Switch (a loop head must reach its loop Switch in the forward graph)", br.over, head))
 			continue
 		}
 		headIdx, overIdx := indexOf[head], indexOf[br.over]
 		if headIdx > overIdx {
 			// Guaranteed not to happen given the ancestor check, but assert it so the
 			// contiguous-interval slice below is well-formed.
-			pr.addr("", []string{br.over, head}, "loop over %q has head %q ordered after its Switch; the loop region is malformed", br.over, head)
+			pr.add(otherf("loop over %q has head %q ordered after its Switch; the loop region is malformed", br.over, head))
 			continue
 		}
 		// The loop region is the forward interval head..switch inclusive. Require it to be
@@ -532,7 +518,7 @@ branches:
 				// A node between head and switch must both descend from the head and reach the
 				// switch, else it is unrelated to the loop and the region is not a clean interval.
 				if !forwardReaches(fwd, head, name) || !forwardReaches(fwd, name, br.over) {
-					pr.addr(ProblemLoopBodyNotSimple, []string{br.over, name}, "loop over %q has a non-contiguous body (node %q lies between the head and Switch but is not on the loop path); rung-1 loops must form a simple region", br.over, name)
+					pr.add(found(ProblemLoopBodyNotSimple, []string{br.over, name}, "", "", "loop over %q has a non-contiguous body (node %q lies between the head and Switch but is not on the loop path); rung-1 loops must form a simple region", br.over, name))
 					continue branches
 				}
 			}
@@ -794,7 +780,7 @@ func (c *builderCore) unprefixed(err error) string {
 }
 
 // shapeProblems is checkShapes reporting every refusal, as messages without Build's prefix.
-func (c *builderCore) shapeProblems() []string { return c.shapeProblemsPR().msgs }
+func (c *builderCore) shapeProblems() []Finding { return c.shapeProblemsPR().finds }
 
 // shapeProblemsPR is shapeProblems with the structured record of each refusal.
 func (c *builderCore) shapeProblemsPR() *buildProblems {
@@ -812,7 +798,7 @@ func (c *builderCore) shapeProblemsPR() *buildProblems {
 	}
 	for _, e := range c.edges {
 		if switched[e.from] {
-			pr.addr("", []string{e.from, e.to}, "step %q has both a Switch and an Edge to %q; a switched step continues only through its arms", e.from, e.to)
+			pr.add(otherf("step %q has both a Switch and an Edge to %q; a switched step continues only through its arms", e.from, e.to))
 		}
 		addSource(e.to, e.from)
 	}
@@ -826,7 +812,7 @@ func (c *builderCore) shapeProblemsPR() *buildProblems {
 	for _, n := range c.nodes {
 		if n.kind == kindJoin {
 			if err := c.checkJoinRoutes(n); err != nil {
-				pr.addr("", []string{c.unprefixed(err)}, "%s", c.unprefixed(err))
+				pr.add(otherf("%s", c.unprefixed(err)))
 			}
 		}
 	}
@@ -839,7 +825,7 @@ func (c *builderCore) shapeProblemsPR() *buildProblems {
 			from = append(from, src)
 		}
 		sort.Strings(from)
-		pr.addr("", append([]string{n.name}, from...), "step %q is fed by %v; combine several producers with a Join", n.name, from)
+		pr.add(otherf("step %q is fed by %v; combine several producers with a Join", n.name, from))
 	}
 	for _, lp := range c.loops {
 		inBody := make(map[string]bool, len(lp.body))
@@ -848,15 +834,15 @@ func (c *builderCore) shapeProblemsPR() *buildProblems {
 		}
 		for _, name := range lp.body {
 			if switched[name] && name != lp.over {
-				pr.addr(ProblemLoopInnerSwitch, []string{name, lp.over}, "step %q inside the loop over %q has its own Switch; a loop body may branch only at its loop Switch (no inner Switch or nested loop)", name, lp.over)
+				pr.add(found(ProblemLoopInnerSwitch, []string{name, lp.over}, "", "", "step %q inside the loop over %q has its own Switch; a loop body may branch only at its loop Switch (no inner Switch or nested loop)", name, lp.over))
 			}
 		}
 		for _, e := range c.edges {
 			if inBody[e.from] && !inBody[e.to] {
-				pr.addr(ProblemLoopEdgeLeaves, []string{e.from, e.to, lp.over}, "Edge %q -> %q leaves the loop over %q; leave a loop only through its Switch's exit arms", e.from, e.to, lp.over)
+				pr.add(found(ProblemLoopEdgeLeaves, []string{e.from, e.to, lp.over}, "", "", "Edge %q -> %q leaves the loop over %q; leave a loop only through its Switch's exit arms", e.from, e.to, lp.over))
 			}
 			if !inBody[e.from] && inBody[e.to] && e.to != lp.head {
-				pr.addr(ProblemLoopEdgeEnters, []string{e.from, e.to, lp.over, lp.head}, "Edge %q -> %q enters the loop over %q past its head %q", e.from, e.to, lp.over, lp.head)
+				pr.add(found(ProblemLoopEdgeEnters, []string{e.from, e.to, lp.over, lp.head}, "", "", "Edge %q -> %q enters the loop over %q past its head %q", e.from, e.to, lp.over, lp.head))
 			}
 		}
 	}

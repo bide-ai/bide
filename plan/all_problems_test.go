@@ -105,8 +105,8 @@ func TestInspectConfig_CapsTypeProblemsWithACount(t *testing.T) {
 	if last := got[len(got)-1]; last != "and 22 more type problems (types must match exactly)" {
 		t.Errorf("the count line = %q", last)
 	}
-	if n := capTypeProblems([]string{"a", "b"}); len(n) != 2 {
-		t.Errorf("a short list was changed: %q", n)
+	if shown, rest := capTypeFindings([]Finding{{Message: "a"}, {Message: "b"}}); len(shown) != 2 || len(rest) != 0 {
+		t.Errorf("a short list was changed: %q %q", shown, rest)
 	}
 }
 
@@ -400,7 +400,7 @@ func TestInspectConfig_TenThousandTypeProblemsAreListedAHundredAtATime(t *testin
 	}
 	var types int
 	for _, rec := range findingsOf(t, data, typedChainRegistry(t)) {
-		if isTypeKind(rec.Kind) {
+		if isTypeFinding(rec.Kind) {
 			types++
 		}
 	}
@@ -442,4 +442,13 @@ func TestFindings_LoopShapesCarryTheirNames(t *testing.T) {
 	if recs := findingsOf(t, []byte(noExit), nil); !has(recs, ProblemLoopNoExitArm, "b") {
 		t.Errorf("no-exit-arm records: %+v", recs)
 	}
+}
+
+// isTypeFinding reports whether k is one of the type kinds.
+func isTypeFinding(k ProblemKind) bool {
+	switch k {
+	case ProblemEdgeTypes, ProblemArmTypes, ProblemJoinInputTypes, ProblemTerminalTypes:
+		return true
+	}
+	return false
 }

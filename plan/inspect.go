@@ -56,6 +56,15 @@ type ConfigProblem struct {
 	Severity string `json:"severity"` // "error" (Load refuses the config) or "warning"
 }
 
+// report adds an error and its Finding: the one place a problem gets its finding, so that Problems and
+// Findings come from the same value. The finding's message is the problem's.
+func (r *ConfigReport) report(p ConfigProblem, f Finding) {
+	p.Severity = "error"
+	f.Message = p.Message
+	r.Problems = append(r.Problems, p)
+	r.Findings = append(r.Findings, f)
+}
+
 // Errors reports whether any problem is an error.
 func (r ConfigReport) Errors() bool {
 	for _, p := range r.Problems {
@@ -127,13 +136,6 @@ func init() {
 // description: one implementation of the typed checks, whichever side the Registry came from.
 func inspectConfig(data []byte, reg *Registry, opts []InspectOption) ConfigReport {
 	r := inspectConfigUnbounded(data, reg, opts)
-	// The findings are made from the problems as they were written, before their names are shortened.
-	var candidates []Finding
-	var cfg config
-	if parseConfig(data, &cfg) == nil {
-		candidates = candidateFindings(&cfg, reg)
-	}
-	attachFindings(&r, candidates)
 	for i := range r.Problems {
 		r.Problems[i].Message = boundMessage(r.Problems[i].Message)
 	}
@@ -199,12 +201,12 @@ func inspectConfigUnbounded(data []byte, reg *Registry, opts []InspectOption) (r
 	r = ConfigReport{Typed: reg != nil, Approvals: map[string]agent.ApprovalPolicy{}}
 	var cfg config
 	if err := parseConfig(data, &cfg); err != nil {
-		r.Problems = append(r.Problems, ConfigProblem{Message: strings.TrimSuffix(err.Error(), ": "+agent.ErrConfig.Error()), Severity: "error"})
+		r.report(ConfigProblem{Message: strings.TrimSuffix(err.Error(), ": "+agent.ErrConfig.Error())}, Finding{Kind: ProblemOther})
 		return r
 	}
 	r.Topology = configTopology(&cfg)
 	r.Safety = configSafety(&cfg)
-	structural(&cfg, &r, nil)
+	structural(&cfg, &r)
 	if reg == nil && !r.Errors() {
 		// Without a Registry nothing runs Build, so its checks on the wiring alone are made here: a cycle,
 		// a loop's shape, reachability, a join's inputs, what feeds a node. With a Registry Build makes
@@ -227,10 +229,10 @@ func inspectConfigUnbounded(data []byte, reg *Registry, opts []InspectOption) (r
 	// The type problems come from the config and the registered types alone, whatever else is wrong
 	// with the config, so that another error never hides one: the editor compares reports to find what
 	// an edit added. They are listed up to a cap unless the caller asks for all.
-	typeMsgs := capTypeProblems(checkTypes(&cfg, reg).all())
+	typeFinds := checkTypes(&cfg, reg).all()
 	addTypes := func() {
-		if len(typeMsgs) > 0 {
-			r.attribute(&cfg, &problemList{prefix: fmt.Sprintf("plan: load %q: ", cfg.Flow), msgs: typeMsgs})
+		if len(typeFinds) > 0 {
+			r.attribute(&cfg, (&typeProblemsError{flow: cfg.Flow, finds: typeFinds}).list())
 		}
 	}
 	// With errors that stop the config being assembled, the loops' shape and the wiring's shapes are
@@ -243,8 +245,8 @@ func inspectConfigUnbounded(data []byte, reg *Registry, opts []InspectOption) (r
 	if r.Errors() {
 		addTypes()
 		// assemble, which reports a safety above the registration, does not run: say it here.
-		if msgs, _ := safetyAboveRegistration(&cfg, reg); len(msgs) > 0 {
-			r.attribute(&cfg, &problemList{prefix: fmt.Sprintf("plan: load %q: ", cfg.Flow), msgs: msgs})
+		if finds := safetyAboveRegistration(&cfg, reg); len(finds) > 0 {
+			r.attribute(&cfg, &problemList{prefix: fmt.Sprintf("plan: load %q: ", cfg.Flow), finds: finds})
 		}
 		partialWiring()
 		return r
@@ -262,7 +264,7 @@ func inspectConfigUnbounded(data []byte, reg *Registry, opts []InspectOption) (r
 	}
 	// Every type problem, then the wiring's own checks (a cycle, a loop's shape, reachability, a join's
 	// inputs), all of them, before Build, which stops at the first problem of any kind.
-	if len(typeMsgs) > 0 {
+	if len(typeFinds) > 0 {
 		addTypes()
 		if err := graphChecks(&cfg); err != nil {
 			r.attribute(&cfg, err)
@@ -404,46 +406,50 @@ func configTopology(cfg *config) Topology {
 }
 
 // structural runs the checks that need no Registry, attaching each problem where it belongs.
-func structural(cfg *config, r *ConfigReport, recs *[]Finding) {
-	errAt := func(p ConfigProblem) { p.Severity = "error"; r.Problems = append(r.Problems, p) }
+func structural(cfg *config, r *ConfigReport) {
+	// other reports an error that has no kind of its own (yet); loopErr one that has.
+	other := func(p ConfigProblem) { r.report(p, Finding{Kind: ProblemOther}) }
+	loopErr := func(p ConfigProblem, kind ProblemKind, names ...string) {
+		r.report(p, Finding{Kind: kind, Names: names})
+	}
 	declared := map[string]bool{}
 	if len(cfg.Nodes) == 0 {
-		errAt(ConfigProblem{Message: "flow has no nodes"})
+		other(ConfigProblem{Message: "flow has no nodes"})
 	}
 	for _, n := range cfg.Nodes {
 		switch {
 		case n.Name == "":
-			errAt(ConfigProblem{Message: fmt.Sprintf("a node (block %q) has no name", n.Block)})
+			other(ConfigProblem{Message: fmt.Sprintf("a node (block %q) has no name", n.Block)})
 		case declared[n.Name]:
-			errAt(ConfigProblem{Node: n.Name, Message: fmt.Sprintf("node %q is declared more than once", n.Name)})
+			other(ConfigProblem{Node: n.Name, Message: fmt.Sprintf("node %q is declared more than once", n.Name)})
 		}
 		declared[n.Name] = true
 		if n.Block == "" {
-			errAt(ConfigProblem{Node: n.Name, Message: fmt.Sprintf("node %q names no block", n.Name)})
+			other(ConfigProblem{Node: n.Name, Message: fmt.Sprintf("node %q names no block", n.Name)})
 		}
 		switch n.Safety {
 		case "", "readonly", "idempotent", "side_effect":
 		default:
-			errAt(ConfigProblem{Node: n.Name, Message: fmt.Sprintf("node %q has unknown safety %q (want readonly, idempotent or side_effect)", n.Name, n.Safety)})
+			other(ConfigProblem{Node: n.Name, Message: fmt.Sprintf("node %q has unknown safety %q (want readonly, idempotent or side_effect)", n.Name, n.Safety)})
 		}
 		if n.Approval != nil {
 			p, why := configGate(nil, n.Approval)
 			r.Approvals[n.Name] = *p
 			for _, w := range why {
-				errAt(ConfigProblem{Node: n.Name, Message: fmt.Sprintf("node %q %s", n.Name, w)})
+				other(ConfigProblem{Node: n.Name, Message: fmt.Sprintf("node %q %s", n.Name, w)})
 			}
 		}
 	}
 	for _, w := range cfg.Wiring {
 		if w.isJoin() && w.Join != "" && !w.isEdge() && !w.isSwitch() {
 			if declared[w.Join] {
-				errAt(ConfigProblem{Node: w.Join, Message: fmt.Sprintf("join %q is already a declared node; a join creates its own node", w.Join)})
+				other(ConfigProblem{Node: w.Join, Message: fmt.Sprintf("join %q is already a declared node; a join creates its own node", w.Join)})
 			}
 			declared[w.Join] = true
 		}
 	}
 	if cfg.Entry != "" && !declared[cfg.Entry] {
-		errAt(ConfigProblem{Message: fmt.Sprintf("entry %q names no declared node", cfg.Entry)})
+		other(ConfigProblem{Message: fmt.Sprintf("entry %q names no declared node", cfg.Entry)})
 	}
 	for i, w := range cfg.Wiring {
 		n := 0
@@ -453,34 +459,34 @@ func structural(cfg *config, r *ConfigReport, recs *[]Finding) {
 			}
 		}
 		if n != 1 {
-			errAt(ConfigProblem{Message: fmt.Sprintf("wiring[%d] sets %d of edge/switch/join; set exactly one", i, n)})
+			other(ConfigProblem{Message: fmt.Sprintf("wiring[%d] sets %d of edge/switch/join; set exactly one", i, n)})
 			continue
 		}
 		switch {
 		case w.isEdge():
 			if len(w.Edge) != 2 {
-				errAt(ConfigProblem{Message: fmt.Sprintf("wiring[%d] edge must be [from, to], got %d element(s)", i, len(w.Edge))})
+				other(ConfigProblem{Message: fmt.Sprintf("wiring[%d] edge must be [from, to], got %d element(s)", i, len(w.Edge))})
 				continue
 			}
 			for _, end := range w.Edge {
 				if !declared[end] {
-					errAt(ConfigProblem{From: w.Edge[0], To: w.Edge[1], Message: fmt.Sprintf("wiring[%d] edge %q -> %q: %q is not a declared node", i, w.Edge[0], w.Edge[1], end)})
+					other(ConfigProblem{From: w.Edge[0], To: w.Edge[1], Message: fmt.Sprintf("wiring[%d] edge %q -> %q: %q is not a declared node", i, w.Edge[0], w.Edge[1], end)})
 				}
 			}
 		case w.isSwitch():
 			if !declared[w.Switch] {
-				errAt(ConfigProblem{Node: w.Switch, Message: fmt.Sprintf("wiring[%d] switch over unknown node %q", i, w.Switch)})
+				other(ConfigProblem{Node: w.Switch, Message: fmt.Sprintf("wiring[%d] switch over unknown node %q", i, w.Switch)})
 			}
 			for j, a := range w.When {
 				if a.Pred == "" {
-					errAt(ConfigProblem{From: w.Switch, To: a.To, Message: fmt.Sprintf("wiring[%d].when[%d] names no predicate", i, j)})
+					other(ConfigProblem{From: w.Switch, To: a.To, Message: fmt.Sprintf("wiring[%d].when[%d] names no predicate", i, j)})
 				}
 				if !declared[a.To] {
-					errAt(ConfigProblem{From: w.Switch, To: a.To, Message: fmt.Sprintf("wiring[%d].when[%d] routes to unknown node %q", i, j, a.To)})
+					other(ConfigProblem{From: w.Switch, To: a.To, Message: fmt.Sprintf("wiring[%d].when[%d] routes to unknown node %q", i, j, a.To)})
 				}
 			}
 			if w.Else != "" && !declared[w.Else] {
-				errAt(ConfigProblem{From: w.Switch, To: w.Else, Message: fmt.Sprintf("wiring[%d] else routes to unknown node %q", i, w.Else)})
+				other(ConfigProblem{From: w.Switch, To: w.Else, Message: fmt.Sprintf("wiring[%d] else routes to unknown node %q", i, w.Else)})
 			}
 			if w.Else == "" {
 				r.Problems = append(r.Problems, ConfigProblem{Node: w.Switch, Severity: "warning",
@@ -488,28 +494,28 @@ func structural(cfg *config, r *ConfigReport, recs *[]Finding) {
 			}
 		case w.isJoin():
 			if w.Join == "" {
-				errAt(ConfigProblem{Message: fmt.Sprintf("wiring[%d] join has no name", i)})
+				other(ConfigProblem{Message: fmt.Sprintf("wiring[%d] join has no name", i)})
 			}
 			if w.Merge == "" {
-				errAt(ConfigProblem{Node: w.Join, Message: fmt.Sprintf("wiring[%d] join %q names no merge block", i, w.Join)})
+				other(ConfigProblem{Node: w.Join, Message: fmt.Sprintf("wiring[%d] join %q names no merge block", i, w.Join)})
 			}
 			for _, in := range w.Inputs {
 				if !declared[in] {
-					errAt(ConfigProblem{From: in, To: w.Join, Message: fmt.Sprintf("wiring[%d] join %q reads unknown input %q", i, w.Join, in)})
+					other(ConfigProblem{From: in, To: w.Join, Message: fmt.Sprintf("wiring[%d] join %q reads unknown input %q", i, w.Join, in)})
 				}
 			}
 		}
 	}
-	joinOrder(cfg, errAt)
-	joinsAndSwitches(cfg, errAt)
-	loopShape(cfg, declared, errAt, recs)
+	joinOrder(cfg, other)
+	joinsAndSwitches(cfg, other)
+	loopShape(cfg, declared, loopErr)
 }
 
 // joinsAndSwitches reports what Load and Build refuse about how edges and switches meet joins and
 // switches, which the wiring alone shows: a join referenced (as the source of an edge or the node a
 // switch is over) before its wiring element, an edge, arm or else into a join (a join is entered only
 // by its inputs), a node that is switched over and has an edge out, and two switches over one node.
-func joinsAndSwitches(cfg *config, errAt func(ConfigProblem)) {
+func joinsAndSwitches(cfg *config, other func(ConfigProblem)) {
 	joinAt := map[string]int{}
 	for i, w := range cfg.Wiring {
 		if w.isJoin() && w.Join != "" && !w.isEdge() && !w.isSwitch() {
@@ -522,7 +528,7 @@ func joinsAndSwitches(cfg *config, errAt func(ConfigProblem)) {
 	for i, w := range cfg.Wiring {
 		if w.isSwitch() && !w.isEdge() {
 			if first, ok := switched[w.Switch]; ok {
-				errAt(ConfigProblem{Node: w.Switch, Message: fmt.Sprintf("wiring[%d] more than one switch is over %q (the first is wiring[%d])", i, w.Switch, first)})
+				other(ConfigProblem{Node: w.Switch, Message: fmt.Sprintf("wiring[%d] more than one switch is over %q (the first is wiring[%d])", i, w.Switch, first)})
 			} else {
 				switched[w.Switch] = i
 			}
@@ -533,25 +539,25 @@ func joinsAndSwitches(cfg *config, errAt func(ConfigProblem)) {
 		case w.isEdge() && len(w.Edge) == 2:
 			from, to := w.Edge[0], w.Edge[1]
 			if later(i, from) {
-				errAt(ConfigProblem{From: from, To: to, Message: fmt.Sprintf("wiring[%d] edge %q -> %q leaves the join %q, which is defined after it in the wiring (a join is registered when its element is reached)", i, from, to, from)})
+				other(ConfigProblem{From: from, To: to, Message: fmt.Sprintf("wiring[%d] edge %q -> %q leaves the join %q, which is defined after it in the wiring (a join is registered when its element is reached)", i, from, to, from)})
 			}
 			if isJoin(to) {
-				errAt(ConfigProblem{From: from, To: to, Message: fmt.Sprintf("wiring[%d] edge %q -> %q is an edge into the join %q; a join is entered only by its inputs", i, from, to, to)})
+				other(ConfigProblem{From: from, To: to, Message: fmt.Sprintf("wiring[%d] edge %q -> %q is an edge into the join %q; a join is entered only by its inputs", i, from, to, to)})
 			}
 			if _, ok := switched[from]; ok {
-				errAt(ConfigProblem{From: from, To: to, Message: fmt.Sprintf("wiring[%d] node %q is switched over and has an edge out (a node has a switch or an edge out, not both)", i, from)})
+				other(ConfigProblem{From: from, To: to, Message: fmt.Sprintf("wiring[%d] node %q is switched over and has an edge out (a node has a switch or an edge out, not both)", i, from)})
 			}
 		case w.isSwitch() && !w.isEdge():
 			if later(i, w.Switch) {
-				errAt(ConfigProblem{Node: w.Switch, Message: fmt.Sprintf("wiring[%d] the switch is over the join %q, which is defined after it in the wiring (a join is registered when its element is reached)", i, w.Switch)})
+				other(ConfigProblem{Node: w.Switch, Message: fmt.Sprintf("wiring[%d] the switch is over the join %q, which is defined after it in the wiring (a join is registered when its element is reached)", i, w.Switch)})
 			}
 			for j, a := range w.When {
 				if isJoin(a.To) {
-					errAt(ConfigProblem{From: w.Switch, To: a.To, Message: fmt.Sprintf("wiring[%d].when[%d] routes to the join %q; a join is entered only by its inputs", i, j, a.To)})
+					other(ConfigProblem{From: w.Switch, To: a.To, Message: fmt.Sprintf("wiring[%d].when[%d] routes to the join %q; a join is entered only by its inputs", i, j, a.To)})
 				}
 			}
 			if isJoin(w.Else) {
-				errAt(ConfigProblem{From: w.Switch, To: w.Else, Message: fmt.Sprintf("wiring[%d] else routes to the join %q; a join is entered only by its inputs", i, w.Else)})
+				other(ConfigProblem{From: w.Switch, To: w.Else, Message: fmt.Sprintf("wiring[%d] else routes to the join %q; a join is entered only by its inputs", i, w.Else)})
 			}
 		}
 	}
@@ -560,7 +566,7 @@ func joinsAndSwitches(cfg *config, errAt func(ConfigProblem)) {
 // joinOrder reports a join that reads a join defined after it in the wiring. plan.Load registers a join
 // when it reaches its wiring element, so an input that is a join must come earlier; this also rules
 // out a cycle of joins.
-func joinOrder(cfg *config, errAt func(ConfigProblem)) {
+func joinOrder(cfg *config, other func(ConfigProblem)) {
 	at := map[string]int{}
 	for i, w := range cfg.Wiring {
 		if w.isJoin() && w.Join != "" && !w.isEdge() && !w.isSwitch() {
@@ -573,7 +579,7 @@ func joinOrder(cfg *config, errAt func(ConfigProblem)) {
 		}
 		for _, in := range w.Inputs {
 			if p, ok := at[in]; ok && p >= i {
-				errAt(ConfigProblem{From: in, To: w.Join, Message: fmt.Sprintf("wiring[%d] join %q reads the join %q, which is defined after it in the wiring; a join's inputs must be defined before it (a join is registered when its wiring element is reached)", i, w.Join, in)})
+				other(ConfigProblem{From: in, To: w.Join, Message: fmt.Sprintf("wiring[%d] join %q reads the join %q, which is defined after it in the wiring; a join's inputs must be defined before it (a join is registered when its wiring element is reached)", i, w.Join, in)})
 			}
 		}
 	}
@@ -583,14 +589,7 @@ func joinOrder(cfg *config, errAt func(ConfigProblem)) {
 // structural check can see from the wiring alone: more than one loop-back arm on a switch, no arm or
 // else that does not loop back, and a loop head that does not reach the switch in the forward graph
 // (the edges, a join's inputs and the arms that do not loop back).
-func loopShape(cfg *config, declared map[string]bool, errAt func(ConfigProblem), recs *[]Finding) {
-	// find reports a problem and, when the caller wants them, its finding (the same message).
-	find := func(p ConfigProblem, kind ProblemKind, names ...string) {
-		errAt(p)
-		if recs != nil {
-			*recs = append(*recs, Finding{Kind: kind, Names: names, Message: p.Message})
-		}
-	}
+func loopShape(cfg *config, declared map[string]bool, find func(ConfigProblem, ProblemKind, ...string)) {
 	fwd := map[string][]string{}
 	for _, w := range cfg.Wiring {
 		switch {
@@ -653,7 +652,7 @@ var (
 // element, edge or node its message names. An error that carries its problems as a list (see
 // problemList) is read part by part; any other is one problem, whatever its text holds.
 func (r *ConfigReport) attribute(cfg *config, err error) {
-	parts, ok := problemParts(err)
+	parts, extra, ok := problemParts(err)
 	if !ok {
 		msg := strings.TrimSuffix(err.Error(), ": "+agent.ErrConfig.Error())
 		if errors.Is(err, agent.ErrConfig) {
@@ -662,13 +661,14 @@ func (r *ConfigReport) attribute(cfg *config, err error) {
 		for _, prefix := range []string{"plan: load " + strconv.Quote(cfg.Flow) + ": ", "plan: build " + strconv.Quote(cfg.Flow) + ": "} {
 			msg = strings.TrimPrefix(msg, prefix)
 		}
-		parts = []string{msg}
+		parts = []Finding{otherf("%s", msg)} // an error that carries its text only has no kind of its own
 	}
 	declared := map[string]bool{}
 	for _, n := range r.Topology.Nodes {
 		declared[n.Name] = true
 	}
-	for _, part := range parts {
+	for _, f := range parts {
+		part := f.Message
 		p := ConfigProblem{Message: part, Severity: "error"}
 		if m := edgeRef.FindStringSubmatch(part); m != nil {
 			p.From, p.To = m[1], m[2]
@@ -699,7 +699,11 @@ func (r *ConfigReport) attribute(cfg *config, err error) {
 			}
 		}
 		r.Problems = append(r.Problems, p)
+		if f.Kind != "" {
+			r.Findings = append(r.Findings, f)
+		}
 	}
+	r.Findings = append(r.Findings, extra...)
 }
 
 // resolvable is cfg with only the parts whose names all resolve: the first declaration of each node,
@@ -818,31 +822,28 @@ func graphChecksOver(core *builderCore, wiringOnly bool) error {
 	// Every refusal of these checks, not the first, so a second problem of the same kind (a second
 	// loop that is not simple, a second node not reached) shows beside the first: a caller that
 	// compares reports (the editor) must see it.
-	var msgs []string
-	note := func(m string) { msgs = append(msgs, m) }
-	for _, m := range core.loopProblems() {
+	var finds []Finding
+	for _, f := range core.loopProblems() {
 		// The structural check already reports the other loop refusals (more than one loop-back arm, no
 		// exit arm, a head that is not an ancestor); with it having run, only the body's shape is new.
-		if !wiringOnly || strings.Contains(m, "non-contiguous body") {
-			note(m)
+		if !wiringOnly || f.Kind == ProblemLoopBodyNotSimple {
+			finds = append(finds, f)
 		}
 	}
 	if !wiringOnly {
 		reached := core.reachableFrom(core.entry)
 		for _, n := range core.nodes {
 			if !reached[n.name] {
-				note(fmt.Sprintf("step %q is not reached from the entry %q: wire it in from the entry with an edge or an arm, or remove it", n.name, core.entry))
+				finds = append(finds, otherf("step %q is not reached from the entry %q: wire it in from the entry with an edge or an arm, or remove it", n.name, core.entry))
 			}
 		}
 		if err := core.checkJoins(); err != nil {
-			note(core.unprefixed(err))
+			finds = append(finds, otherf("%s", core.unprefixed(err)))
 		}
 	}
-	for _, m := range core.shapeProblems() {
-		note(m)
-	}
-	if len(msgs) == 0 {
+	finds = append(finds, core.shapeProblems()...)
+	if len(finds) == 0 {
 		return nil
 	}
-	return &problemList{prefix: fmt.Sprintf("plan: build %q: ", core.flowName), msgs: msgs}
+	return &problemList{prefix: fmt.Sprintf("plan: build %q: ", core.flowName), finds: finds}
 }

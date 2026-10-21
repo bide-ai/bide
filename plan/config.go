@@ -541,9 +541,9 @@ func snakeCase(k string) string {
 func assemble(cfg *config, reg *Registry, allowUnused bool) (*builderCore, error) {
 	// 0. Surface any duplicate registrations collected on the Registry: a drifted
 	// registry is itself a load failure.
-	var problems []string
+	var problems []Finding
 	for _, e := range reg.errs {
-		problems = append(problems, e.Error())
+		problems = append(problems, otherf("%s", e.Error()))
 	}
 
 	// 1. Structural union check on every wiring element: EXACTLY ONE of edge/switch/join.
@@ -562,11 +562,11 @@ func assemble(cfg *config, reg *Registry, allowUnused bool) (*builderCore, error
 		}
 		switch {
 		case set > 1:
-			problems = append(problems, fmt.Sprintf("wiring[%d] sets more than one of edge/switch/join; set exactly one", i))
+			problems = append(problems, otherf("wiring[%d] sets more than one of edge/switch/join; set exactly one", i))
 		case set == 0:
-			problems = append(problems, fmt.Sprintf("wiring[%d] sets none of edge/switch/join; set exactly one", i))
+			problems = append(problems, otherf("wiring[%d] sets none of edge/switch/join; set exactly one", i))
 		case w.isEdge() && len(w.Edge) != 2:
-			problems = append(problems, fmt.Sprintf("wiring[%d] edge must be [from, to], got %d element(s)", i, len(w.Edge)))
+			problems = append(problems, otherf("wiring[%d] edge must be [from, to], got %d element(s)", i, len(w.Edge)))
 		}
 	}
 
@@ -577,16 +577,16 @@ func assemble(cfg *config, reg *Registry, allowUnused bool) (*builderCore, error
 	seenNodeName := make(map[string]bool, len(cfg.Nodes))
 	for _, cn := range cfg.Nodes {
 		if seenNodeName[cn.Name] {
-			problems = append(problems, fmt.Sprintf("node %q is declared more than once, so give each node a unique name", cn.Name))
+			problems = append(problems, otherf("node %q is declared more than once, so give each node a unique name", cn.Name))
 		}
 		seenNodeName[cn.Name] = true
 		if err := checkStepName(cn.Name); err != nil {
-			problems = append(problems, err.Error())
+			problems = append(problems, otherf("%s", err.Error()))
 		}
 
 		b, ok := reg.blocks[cn.Block]
 		if !ok {
-			problems = append(problems, fmt.Sprintf("node %q references unknown block %q%s, register it before Load (Registry.RegisterStep, RegisterModel or RegisterTool) or fix the block name in the config%s", cn.Name, cn.Block, suggest(cn.Block, blockNames(reg)), registeredList(blockNames(reg))))
+			problems = append(problems, otherf("node %q references unknown block %q%s, register it before Load (Registry.RegisterStep, RegisterModel or RegisterTool) or fix the block name in the config%s", cn.Name, cn.Block, suggest(cn.Block, blockNames(reg)), registeredList(blockNames(reg))))
 			continue
 		}
 		usedBlocks[cn.Block] = true
@@ -596,8 +596,10 @@ func assemble(cfg *config, reg *Registry, allowUnused bool) (*builderCore, error
 		safety, approval := b.safety, b.approval
 		if cn.Safety != "" {
 			s, err := safetyFromConfig(b.safety, cn.Safety)
-			if err != nil {
-				problems = append(problems, fmt.Sprintf("node %q %v", cn.Name, err))
+			if above, ok := errors.AsType[*safetyAboveError](err); ok {
+				problems = append(problems, found(ProblemSafetyAboveRegistration, []string{cn.Name}, above.stated, above.registered, "node %q %v", cn.Name, err))
+			} else if err != nil {
+				problems = append(problems, otherf("node %q %v", cn.Name, err))
 			} else {
 				safety = s
 			}
@@ -608,7 +610,7 @@ func assemble(cfg *config, reg *Registry, allowUnused bool) (*builderCore, error
 		if cn.Approval != nil {
 			p, why := configGate(b.approval, cn.Approval)
 			for _, w := range why {
-				problems = append(problems, fmt.Sprintf("node %q %s", cn.Name, w))
+				problems = append(problems, otherf("node %q %s", cn.Name, w))
 			}
 			approval = p
 		}
@@ -641,12 +643,12 @@ func assemble(cfg *config, reg *Registry, allowUnused bool) (*builderCore, error
 		case w.isSwitch():
 			for j, a := range w.When {
 				if _, ok := reg.preds[a.Pred]; !ok {
-					problems = append(problems, fmt.Sprintf("wiring[%d].when[%d] references unknown predicate %q%s", i, j, a.Pred, suggest(a.Pred, predNames(reg))))
+					problems = append(problems, otherf("wiring[%d].when[%d] references unknown predicate %q%s", i, j, a.Pred, suggest(a.Pred, predNames(reg))))
 				}
 			}
 		case w.isJoin():
 			if _, ok := reg.merges[w.Merge]; !ok {
-				problems = append(problems, fmt.Sprintf("wiring[%d] join %q references unknown merge %q%s", i, w.Join, w.Merge, suggest(w.Merge, mergeNames(reg))))
+				problems = append(problems, otherf("wiring[%d] join %q references unknown merge %q%s", i, w.Join, w.Merge, suggest(w.Merge, mergeNames(reg))))
 			}
 		}
 	}
@@ -664,14 +666,14 @@ func assemble(cfg *config, reg *Registry, allowUnused bool) (*builderCore, error
 		if allowUnused {
 			break
 		}
-		problems = append(problems, fmt.Sprintf("block %q is registered but never used by the config, so add a node that uses it or remove the registration", name))
+		problems = append(problems, otherf("block %q is registered but never used by the config, so add a node that uses it or remove the registration", name))
 	}
 
 	if len(problems) > 0 {
 		for i := range problems {
-			problems[i] = boundMessage(problems[i])
+			problems[i].Message = boundMessage(problems[i].Message)
 		}
-		return nil, &problemList{prefix: fmt.Sprintf("plan: load %s: ", strictjson.Quote(cfg.Flow)), msgs: problems, sentinel: agent.ErrConfig}
+		return nil, &problemList{prefix: fmt.Sprintf("plan: load %s: ", strictjson.Quote(cfg.Flow)), finds: problems, sentinel: agent.ErrConfig}
 	}
 
 	// 5. Assemble the builderCore in config-array order via the existing register, so
@@ -755,7 +757,7 @@ func assemble(cfg *config, reg *Registry, allowUnused bool) (*builderCore, error
 			if w.Approval != nil {
 				p, why := configGate(jgate, w.Approval)
 				if len(why) > 0 {
-					return nil, &problemList{prefix: fmt.Sprintf("plan: load %q: ", cfg.Flow), lead: fmt.Sprintf("wiring[%d] join %q ", i, w.Join), msgs: why, sentinel: agent.ErrConfig}
+					return nil, &problemList{prefix: fmt.Sprintf("plan: load %q: ", cfg.Flow), lead: fmt.Sprintf("wiring[%d] join %q ", i, w.Join), finds: otherAll(why), sentinel: agent.ErrConfig}
 				}
 				jgate = p
 			}
@@ -823,50 +825,62 @@ func assemble(cfg *config, reg *Registry, allowUnused bool) (*builderCore, error
 	// fans in several producers), so its per-port types are checked by Build.checkJoins
 	// against joinInTypes by reflect identity, not by this from.outType == to.inType
 	// rule. Comparing against the join's nil inType would spuriously reject every join.
-	if msgs := edgeTypeProblems(cfg, reg); len(msgs) > 0 {
-		return core, &typeProblemsError{flow: cfg.Flow, msgs: msgs}
+	if finds := edgeTypeFindings(cfg, reg); len(finds) > 0 {
+		return core, &typeProblemsError{flow: cfg.Flow, finds: finds}
 	}
 
 	return core, nil
 }
 
 // maxTypeProblems is the most type problems a report lists; a flow with more says how many it left
-// out (see capTypeProblems), so none is dropped silently.
+// out (see capTypeFindings), so none is dropped silently from the text. Findings has them all.
 const maxTypeProblems = 100
 
 // typeProblemsError is the error assemble returns when the wiring has type problems: every one of
 // them, not the first, so a caller that compares reports (the typed editor) sees a second misfit as
 // well as the first. It carries the assembled core, which assemble returns beside it.
 type typeProblemsError struct {
-	flow string
-	msgs []string
+	flow  string
+	finds []Finding // every type problem
 }
 
-func (e *typeProblemsError) Error() string {
-	return (&problemList{prefix: fmt.Sprintf("plan: load %q: ", e.flow), msgs: capTypeProblems(e.msgs)}).Error()
+func (e *typeProblemsError) list() *problemList {
+	shown, rest := capTypeFindings(e.finds)
+	return &problemList{prefix: fmt.Sprintf("plan: load %q: ", e.flow), finds: shown, extra: rest}
 }
 
-func (e *typeProblemsError) problemParts() []string { return capTypeProblems(e.msgs) }
+func (e *typeProblemsError) Error() string { return e.list().Error() }
 
-// capTypeProblems keeps the first maxTypeProblems messages and, for the rest, one line saying how
-// many there are. The line carries the words type problems are recognised by, so a caller that
-// looks for them counts it as one (see TypeProblemsMore).
-func capTypeProblems(msgs []string) []string {
-	if len(msgs) <= maxTypeProblems {
-		return msgs
+func (e *typeProblemsError) problemParts() (parts, extra []Finding) { return e.list().problemParts() }
+
+// capTypeFindings keeps the first maxTypeProblems findings and, for the rest, one line saying how many
+// there are (a Finding with no Kind: not a problem of its own); rest are the findings the line stands for.
+func capTypeFindings(finds []Finding) (shown, rest []Finding) {
+	if len(finds) <= maxTypeProblems {
+		return finds, nil
 	}
-	out := append([]string(nil), msgs[:maxTypeProblems]...)
-	return append(out, fmt.Sprintf("and %d more type problems (types must match exactly)", len(msgs)-maxTypeProblems))
+	shown = append([]Finding(nil), finds[:maxTypeProblems]...)
+	rest = finds[maxTypeProblems:]
+	return append(shown, Finding{Message: fmt.Sprintf("and %d more type problems (types must match exactly)", len(rest))}), rest
 }
 
-// edgeTypeProblems returns every type problem of the wiring that Load reports from assemble: an edge
+// edgeTypeFindings returns every type problem of the wiring that Load reports from assemble: an edge
 // whose producer and consumer types differ, and a switch arm whose predicate tests another type than
 // the switched node produces (see checkTypes, which finds them from the config alone). A join's INPUT
 // edges are skipped: a join has no single input type, its port types are checked against the merge's
 // (checkTypes' joins, and Build.checkJoins), by reflect identity.
-func edgeTypeProblems(cfg *config, reg *Registry) []string {
+func edgeTypeFindings(cfg *config, reg *Registry) []Finding {
 	p := checkTypes(cfg, reg)
-	return append(append([]string(nil), p.edges...), p.arms...)
+	return append(append([]Finding(nil), p.edges...), p.arms...)
+}
+
+// otherAll is each message as a problem with no kind of its own.
+func otherAll(msgs []string) []Finding {
+	out := make([]Finding, len(msgs))
+	for i, m := range msgs {
+		out[i] = otherf("%s", m)
+	}
+	return out
 }
 
 // checkBoundary runs the load-time type checks that need the flow's In/Out type
@@ -973,6 +987,14 @@ var levelNames = [...]string{levelSideEffect: "side_effect", levelIdempotent: "i
 // safe to run twice. It sets only the retry classification: the node's approval gate is not part
 // of Safety, so a config file cannot switch off a gate the wrapped tool declares. The error, also returned for an
 // unknown string, reads after the node's name and wraps nothing; the caller adds ErrConfig.
+// safetyAboveError is a stated safety above what the block registers in Go: a config may only lower it.
+// It carries both levels, so a caller names the problem without reading the text.
+type safetyAboveError struct{ stated, registered string }
+
+func (e *safetyAboveError) Error() string {
+	return fmt.Sprintf("has safety %q, above the %q its Go registration declares; a config may only lower retry safety, and only Go code can mark a step safe to run twice", e.stated, e.registered)
+}
+
 func safetyFromConfig(base agent.Safety, s string) (agent.Safety, error) {
 	var level int
 	var opt NodeOption
@@ -992,7 +1014,7 @@ func safetyFromConfig(base agent.Safety, s string) (agent.Safety, error) {
 		return agent.Safety{}, fmt.Errorf("has unknown safety %q; want one of \"readonly\", \"idempotent\", \"side_effect\"", s)
 	}
 	if have := retryLevel(base); level > have {
-		return agent.Safety{}, fmt.Errorf("has safety %q, above the %q its Go registration declares; a config may only lower retry safety, and only Go code can mark a step safe to run twice", s, levelNames[have])
+		return agent.Safety{}, &safetyAboveError{stated: s, registered: levelNames[have]}
 	}
 	return safetyFromOptions(base, []NodeOption{opt}), nil
 }

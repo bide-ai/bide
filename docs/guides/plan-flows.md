@@ -786,6 +786,9 @@ an element or rename a node.
 | `loop_edge_enters` | from, to, loop switch, head | |
 | `other` | | |
 
+Findings are in the Go API only: `bide check` prints messages and the pages `bide view -config` and
+`bide edit` serve do not carry findings in their JSON; a Go host that marshals a `ConfigReport` gets them.
+
 Findings are found from the config and the registered types alone, so they are there beside any other
 error (a misspelt block does not hide a type misfit), and they are complete: where `Problems` lists the
 first hundred type problems and then "and N more", `Findings` has them all. Warnings have none. A

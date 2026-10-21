@@ -175,7 +175,7 @@ func (r *ConfigReport) assertions(lines []string) {
 		invalid := func(format string, args ...any) {
 			res.Invalid, res.Message = true, fmt.Sprintf(format, args...)
 			r.Assertions = append(r.Assertions, res)
-			r.Problems = append(r.Problems, ConfigProblem{Severity: "error", Message: fmt.Sprintf("assert[%d] %q: %s", i, text, res.Message)})
+			r.report(ConfigProblem{Message: fmt.Sprintf("assert[%d] %q: %s", i, text, res.Message)}, Finding{Kind: ProblemOther})
 		}
 		var nodes []string
 		var decide func() AssertionResult
@@ -288,14 +288,14 @@ func (r *ConfigReport) assertions(lines []string) {
 		r.Assertions = append(r.Assertions, res)
 		switch {
 		case res.Undecided:
-			r.Problems = append(r.Problems, ConfigProblem{Node: nodes[0], Severity: "error", Message: fmt.Sprintf("assert[%d] %q cannot be decided: %s", i, text, res.Message)})
+			r.report(ConfigProblem{Node: nodes[0], Message: fmt.Sprintf("assert[%d] %q cannot be decided: %s", i, text, res.Message)}, Finding{Kind: ProblemOther})
 		case !res.Holds:
-			p := ConfigProblem{Node: nodes[0], Severity: "error", Message: fmt.Sprintf("assert[%d] %q is violated: %s", i, text, res.Message)}
+			p := ConfigProblem{Node: nodes[0], Message: fmt.Sprintf("assert[%d] %q is violated: %s", i, text, res.Message)}
 			if len(res.Path) > 0 {
 				p.Message += " (counterexample: " + strings.Join(res.Path, " -> ") + ")"
 				p.Node = res.Path[len(res.Path)-1]
 			}
-			r.Problems = append(r.Problems, p)
+			r.report(p, Finding{Kind: ProblemOther})
 		}
 	}
 }
