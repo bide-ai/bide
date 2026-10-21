@@ -1,3 +1,0 @@
-Section: Changed
-
-bide view draws from checked themes: its colours, fonts, spacing and radii come from one generated stylesheet (light, dark and a new high-contrast theme) instead of palettes written in the page's CSS, the header button and the t key step through the themes and name the current one, and bide view takes -theme file.json (a custom theme, which must pass bide theme check and is refused before anything is served if it does not) and -theme-default name. The shipped light and dark colours are retuned slightly so the status colours stay apart for a colour-blind reader and the idempotent step is no longer the same blue as a waiting gate (idempotent steps are now teal); the flow editor, which shares the viewer's stylesheet, takes the same colours.
