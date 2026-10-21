@@ -6,13 +6,13 @@ require (
 	cloud.google.com/go/kms v1.35.0
 	github.com/aws/aws-sdk-go-v2/config v1.33.9
 	github.com/aws/aws-sdk-go-v2/service/kms v1.61.4
-	github.com/bide-ai/bide v0.0.0
-	github.com/bide-ai/bide/cmd/bide v0.0.0
-	github.com/bide-ai/bide/signer/awskms v0.0.0
-	github.com/bide-ai/bide/signer/azurekv v0.0.0
-	github.com/bide-ai/bide/signer/gcpkms v0.0.0
-	github.com/bide-ai/bide/signer/pkcs11 v0.0.0
-	github.com/bide-ai/bide/store/sqlite v0.0.0
+	github.com/bide-ai/bide v0.22.0
+	github.com/bide-ai/bide/cmd/bide v0.22.0
+	github.com/bide-ai/bide/signer/awskms v0.22.0
+	github.com/bide-ai/bide/signer/azurekv v0.22.0
+	github.com/bide-ai/bide/signer/gcpkms v0.22.0
+	github.com/bide-ai/bide/signer/pkcs11 v0.22.0
+	github.com/bide-ai/bide/store/sqlite v0.22.0
 	github.com/googleapis/gax-go/v2 v2.26.2
 	golang.org/x/term v0.47.0
 	google.golang.org/protobuf v1.36.12
@@ -44,7 +44,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.43.4 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.51.4 // indirect
 	github.com/aws/smithy-go v1.28.5 // indirect
-	github.com/bide-ai/bide/store/postgres v0.0.0 // indirect
+	github.com/bide-ai/bide/store/postgres v0.22.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
@@ -87,19 +87,3 @@ require (
 	modernc.org/memory v1.12.1 // indirect
 	modernc.org/sqlite v1.59.0 // indirect
 )
-
-replace github.com/bide-ai/bide => ../../../
-
-replace github.com/bide-ai/bide/cmd/bide => ../
-
-replace github.com/bide-ai/bide/signer/awskms => ../../../signer/awskms
-
-replace github.com/bide-ai/bide/signer/gcpkms => ../../../signer/gcpkms
-
-replace github.com/bide-ai/bide/signer/pkcs11 => ../../../signer/pkcs11
-
-replace github.com/bide-ai/bide/store/postgres => ../../../store/postgres
-
-replace github.com/bide-ai/bide/store/sqlite => ../../../store/sqlite
-
-replace github.com/bide-ai/bide/signer/azurekv => ../../../signer/azurekv
