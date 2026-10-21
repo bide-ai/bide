@@ -218,6 +218,8 @@ saving needs the confirmation.
 
 ## Drag to connect
 
+![The editor in the middle of a drag to connect, light: a green ALL ASSERTIONS HOLD banner above four counts; in the flow, validate, charge (selected, with a heavy blue edge and a 2/3 gate badge), receipt and notify run top to bottom, and a dashed blue line runs from the small circle at the right edge of charge, across receipt, down to notify, whose edge is dashed because its safety is not known; the outline lists the four nodes with charge selected, and the inspector shows the charge node's crash behaviour, approval gate, safety, block and approval gate form](img/flow-edit-structure.png)
+
 An extra, never the only way. Each node in the flow has a small circle at its right edge; drag it onto
 another node to add an edge from the first to the second. It sends the same `add_edge` the Connections
 form does, so it has the same refusals (an edge into a join, out of a switched node, a duplicate: the
