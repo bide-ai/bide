@@ -753,6 +753,7 @@ config-vs-registry drift is catchable in a unit test rather than only at process
 needs to tell problems apart (an editor deciding whether an edit added one, a CI step that counts
 type misfits) reads `ConfigReport.Findings`, one `plan.Finding` for each error in `Problems`:
 
+<!-- docsnip: setup data []byte; reg *plan.Registry -->
 ```go
 r := plan.InspectConfig(data, reg)
 for _, f := range r.Findings {
