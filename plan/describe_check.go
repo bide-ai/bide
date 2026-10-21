@@ -245,7 +245,10 @@ func InspectConfigDescribed(data []byte, d RegistryDescription, opts ...InspectO
 	reg, err := registryFromDescription(d)
 	if err != nil {
 		r := inspectConfig(data, nil, nil)
-		r.Problems = append([]ConfigProblem{{Message: "blocks description: " + err.Error(), Severity: "error"}}, r.Problems...)
+		var first ConfigReport
+		first.report(ConfigProblem{Message: "blocks description: " + err.Error()}, Finding{Kind: ProblemOther})
+		r.Problems = append(first.Problems, r.Problems...)
+		r.Findings = append(first.Findings, r.Findings...)
 		return r
 	}
 	return inspectConfig(data, reg, opts)

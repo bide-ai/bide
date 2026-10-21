@@ -1,12 +1,20 @@
 package planaccess
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
-func TestRegister(t *testing.T) {
-	oldInspect := inspect
-	defer func() { inspect = oldInspect }()
-	RegisterInspect(func([]byte, any, any) []Record { return []Record{{Class: "type", Message: "m"}} })
-	if got := Inspect(nil, nil, nil); len(got) != 1 || got[0].Message != "m" {
-		t.Errorf("Inspect() = %v", got)
+func TestRegisterParse(t *testing.T) {
+	old := parse
+	defer func() { parse = old }()
+	parse = nil
+	if ParseError(nil) != nil {
+		t.Error("ParseError without plan loaded")
+	}
+	want := errors.New("bad")
+	RegisterParse(func([]byte) error { return want })
+	if ParseError(nil) != want {
+		t.Error("ParseError does not return the registered function's error")
 	}
 }

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/bide-ai/bide/internal/planaccess"
+	"github.com/bide-ai/bide/plan"
 	"reflect"
 	"slices"
 	"strings"
@@ -799,24 +799,24 @@ func expectStructure(old any, op Operation) (any, error) {
 // newLoopShapeError is the first loop-shape error the structural check finds in after that it did not
 // find in before, or "".
 func newLoopShapeError(before, after []byte) string {
-	// The loop shapes Load refuses, compared by identity (class, kind, full names), counting repeats: a
-	// problem the text had is not new, and two that look alike are two.
-	key := func(r planaccess.Record) string { return recordKey(r, func(n string) string { return n }) }
+	// The loop shapes Load refuses, compared by identity (kind, full names), counting repeats: a problem
+	// the text had is not new, and two that look alike are two.
+	key := func(f plan.Finding) string { return recordKey(f, func(n string) string { return n }) }
 	had := map[string]int{}
-	for _, r := range planaccess.Inspect(before, nil, nil) {
-		if r.Class == "loop" {
-			had[key(r)]++
+	for _, f := range plan.InspectConfig(before, nil).Findings {
+		if loopKind(f.Kind) {
+			had[key(f)]++
 		}
 	}
-	for _, r := range planaccess.Inspect(after, nil, nil) {
-		if r.Class != "loop" {
+	for _, f := range plan.InspectConfig(after, nil).Findings {
+		if !loopKind(f.Kind) {
 			continue
 		}
-		if k := key(r); had[k] > 0 {
+		if k := key(f); had[k] > 0 {
 			had[k]--
 			continue
 		}
-		return r.Message
+		return f.Message
 	}
 	return ""
 }

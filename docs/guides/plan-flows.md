@@ -747,6 +747,64 @@ predicate with a near-miss suggestion where one exists, and flags registered blo
 uses. It lists every type problem (every edge, arm, join input and terminal whose types do not fit), not the first, and `InspectConfig` reports up to 100 of them with a last line saying how many more there are; the errors of `Load` and `Validate` for these, and for the checks `Build` makes, wrap `agent.ErrConfig`. For CI, **`Validate(data, reg) error`** runs every check that does not need `In`/`Out`, so
 config-vs-registry drift is catchable in a unit test rather than only at process start.
 
+### Findings: the structure behind a problem
+
+`ConfigReport.Problems` is for people: a message, and the node, edge or arm it belongs to. A tool that
+needs to tell problems apart (an editor deciding whether an edit added one, a CI step that counts
+type misfits) reads `ConfigReport.Findings`, one `plan.Finding` for each error in `Problems`:
+
+<!-- docsnip: setup data []byte; reg *plan.Registry -->
+```go
+r := plan.InspectConfig(data, reg)
+for _, f := range r.Findings {
+    switch f.Kind {
+    case plan.ProblemEdgeTypes:
+        // f.Names = [from, to]; f.Got is the type the producer gives, f.Want the one the consumer takes
+    case plan.ProblemOther:
+        // an error with no kind of its own: f.Message only
+    }
+}
+```
+
+A finding has a `Kind`, the `Names` it is about (in full, in the order the kind documents, with no
+position), `Got` and `Want` where the kind has them, and the `Message` of its problem. Two problems are
+the same problem when their kind, names, `Got` and `Want` are the same, not when their messages are: a
+message shortens a long name and names a wiring element by its position, so it changes when you move
+an element or rename a node.
+
+| Kind | Names | Got, Want |
+|---|---|---|
+| `edge_types` | from, to | type the producer gives, type the consumer takes |
+| `arm_types` | switched node, predicate, target | type the predicate tests, type the node gives |
+| `join_input_types` | join, input | type the input gives, type the merge takes there |
+| `terminal_types` | step | the step's type, the flow's output type |
+| `safety_above_registration` | node | safety the config states, safety the block registers |
+| `loop_no_exit_arm`, `loop_more_than_one_back_arm` | switch | |
+| `loop_head_not_ancestor` | switch, head | |
+| `loop_body_not_simple` | switch, node on the body that is not on the loop path | |
+| `loop_inner_switch` | node with its own switch, loop switch | |
+| `loop_edge_leaves` | from, to, loop switch | |
+| `loop_edge_enters` | from, to, loop switch, head | |
+| `other` | | |
+
+The errors of `Load` and `Validate` carry no kinds, only messages (and `agent.ErrConfig`); a tool that
+wants kinds calls `InspectConfig` or `InspectConfigDescribed`. A problem's node, edge or arm (`Node`,
+`From`, `To` in `Problems`) is set where the problem is made, from its names, not read from its message.
+
+Findings are in the Go API only: `bide check` prints messages and the pages `bide view -config` and
+`bide edit` serve do not carry findings in their JSON; a Go host that marshals a `ConfigReport` gets them.
+
+Findings are found from the config and the registered types alone, so they are there beside any other
+error (a misspelt block does not hide a type misfit), and they are complete: where `Problems` lists the
+first hundred type problems and then "and N more", `Findings` has them all. Warnings have none. A
+config that does not parse has one `other` finding, its parse error.
+
+Stability, while plan is 0.x: a kind's name, the order of its names and the format of `Got` and `Want`
+do not change; kinds are added (so ignore a kind you do not know); and `other` is a promise only that
+the problem is an error: any `other` may become a specific kind in any release, so treat `other` and an
+unknown kind alike. The messages behind `other` are listed in `plan/testdata/other_findings.txt`, which
+a test keeps current. `Message` is for people and may change.
+
 ### Inherited for free, and conformable to its config
 
 A config-loaded `*Flow` is an ordinary flow, so it inherits `Run` (sequential, at-most-once,

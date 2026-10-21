@@ -92,25 +92,41 @@ func (t *typing) inspect(data []byte) plan.ConfigReport {
 	return plan.InspectConfigDescribed(data, t.desc, opts...)
 }
 
-// records are the problems the editor compares before and after an edit (see planaccess.Record), found
-// from the config alone, beside whatever else is wrong with it.
-func (t *typing) records(data []byte) []planaccess.Record {
-	if t.reg != nil {
-		return planaccess.Inspect(data, t.reg, nil)
+// findings are the problems the editor compares before and after an edit: plan's findings for the text,
+// which are made from the config and the registered types alone, beside whatever else is wrong with it.
+func (t *typing) findings(data []byte) []plan.Finding { return t.inspect(data).Findings }
+
+// refusedKind reports whether a finding of this kind makes the editor refuse an edit that adds one: a
+// connection that does not fit, or a safety above what the block registers.
+func refusedKind(k plan.ProblemKind) bool {
+	switch k {
+	case plan.ProblemEdgeTypes, plan.ProblemArmTypes, plan.ProblemJoinInputTypes, plan.ProblemTerminalTypes,
+		plan.ProblemSafetyAboveRegistration:
+		return true
 	}
-	return planaccess.Inspect(data, nil, &t.desc)
+	return false
+}
+
+// loopKind reports whether a finding of this kind is a loop shape plan.Load refuses.
+func loopKind(k plan.ProblemKind) bool {
+	switch k {
+	case plan.ProblemLoopNoExitArm, plan.ProblemLoopMoreThanOneBackArm, plan.ProblemLoopHeadNotAncestor,
+		plan.ProblemLoopBodyNotSimple, plan.ProblemLoopInnerSwitch, plan.ProblemLoopEdgeLeaves, plan.ProblemLoopEdgeEnters:
+		return true
+	}
+	return false
 }
 
 // recordKey is a problem's identity: its class and kind, the full names it is about and the types or
 // levels, each Go-quoted so that a name with quotes, brackets or separators cannot read as two.
 // rename maps the name of a renamed node to its new one.
-func recordKey(r planaccess.Record, rename func(string) string) string {
+func recordKey(r plan.Finding, rename func(string) string) string {
 	var b strings.Builder
-	b.WriteString(r.Class + "/" + r.Kind)
+	b.WriteString(string(r.Kind))
 	for _, n := range r.Names {
 		b.WriteString(" " + strconv.Quote(rename(n)))
 	}
-	b.WriteString(" | " + strconv.Quote(r.Detail))
+	b.WriteString(" | " + strconv.Quote(r.Got) + " | " + strconv.Quote(r.Want))
 	return b.String()
 }
 
@@ -267,13 +283,13 @@ func (s *Server) typedRefusal(before, after []byte, op Operation) string {
 		}
 	}
 	had := map[string]int{}
-	for _, r := range s.typing.records(bd) {
-		if r.Class == "type" || r.Class == "safety" {
+	for _, r := range s.typing.findings(bd) {
+		if refusedKind(r.Kind) {
 			had[recordKey(r, renamed)]++
 		}
 	}
-	for _, r := range s.typing.records(ad) {
-		if r.Class != "type" && r.Class != "safety" {
+	for _, r := range s.typing.findings(ad) {
+		if !refusedKind(r.Kind) {
 			continue
 		}
 		k := recordKey(r, same)
@@ -281,7 +297,7 @@ func (s *Server) typedRefusal(before, after []byte, op Operation) string {
 			had[k]--
 			continue
 		}
-		if r.Class == "safety" {
+		if r.Kind == plan.ProblemSafetyAboveRegistration {
 			return "the safety is above what the program registers: " + r.Message
 		}
 		return "the types do not fit: " + r.Message

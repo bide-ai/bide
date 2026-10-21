@@ -148,6 +148,8 @@ type ConfigReport struct {
 
 	Problems []ConfigProblem
 
+	Findings []Finding
+
 	Typed bool
 
 	Safety map[string]NodeSafety
@@ -179,6 +181,20 @@ type Consumer[M any] interface {
 ```
 
 Consumer`M` is the input side of a wired step: it accepts a value of type M.
+
+## type Finding
+
+```go
+type Finding struct {
+	Kind    ProblemKind `json:"kind"`
+	Names   []string    `json:"names,omitempty"`
+	Got     string      `json:"got,omitempty"`
+	Want    string      `json:"want,omitempty"`
+	Message string      `json:"message"`
+}
+```
+
+Finding is the structure behind one error in a ConfigReport: what kind of problem it is and the names it is about, so that a tool need not read the Message to tell problems apart.
 
 ## type Flow
 
@@ -325,6 +341,30 @@ type PredicateDescription struct {
 ```
 
 PredicateDescription is one registered Switch predicate.
+
+## type ProblemKind
+
+```go
+type ProblemKind string
+```
+
+ProblemKind names the kind of a Finding.
+
+**Constants**
+
+- `const ProblemEdgeTypes ProblemKind = "edge_types"`: ProblemEdgeTypes: an edge joins steps of other types.
+- `const ProblemArmTypes ProblemKind = "arm_types"`: ProblemArmTypes: a switch arm's predicate tests another type than the switched node gives.
+- `const ProblemJoinInputTypes ProblemKind = "join_input_types"`: ProblemJoinInputTypes: a join input does not fit its merge.
+- `const ProblemTerminalTypes ProblemKind = "terminal_types"`: ProblemTerminalTypes: a terminal step reached from the entry gives another type than the flow's output.
+- `const ProblemSafetyAboveRegistration ProblemKind = "safety_above_registration"`: ProblemSafetyAboveRegistration: a node states a retry safety above what its block registers in Go, which a config may not claim.
+- `const ProblemLoopNoExitArm ProblemKind = "loop_no_exit_arm"`: ProblemLoopNoExitArm: a loop's switch has no arm or else that leaves it.
+- `const ProblemLoopMoreThanOneBackArm ProblemKind = "loop_more_than_one_back_arm"`: ProblemLoopMoreThanOneBackArm: a switch has more than one loop-back arm.
+- `const ProblemLoopHeadNotAncestor ProblemKind = "loop_head_not_ancestor"`: ProblemLoopHeadNotAncestor: a loop-back arm targets a node that does not reach its switch.
+- `const ProblemLoopBodyNotSimple ProblemKind = "loop_body_not_simple"`: ProblemLoopBodyNotSimple: a node lies between a loop's head and switch but is not on the loop path.
+- `const ProblemLoopInnerSwitch ProblemKind = "loop_inner_switch"`: ProblemLoopInnerSwitch: a step inside a loop has a switch of its own.
+- `const ProblemLoopEdgeLeaves ProblemKind = "loop_edge_leaves"`: ProblemLoopEdgeLeaves: an edge leaves a loop's body other than through its switch's exit arms.
+- `const ProblemLoopEdgeEnters ProblemKind = "loop_edge_enters"`: ProblemLoopEdgeEnters: an edge enters a loop's body past its head.
+- `const ProblemOther ProblemKind = "other"`: ProblemOther: every other problem.
 
 ## type Producer
 
