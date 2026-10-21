@@ -355,3 +355,32 @@ func TestMessageGuardCatchesEveryForm(t *testing.T) {
 		}
 	}
 }
+
+// Every reviewed exception is still needed: with one removed, the guard fails on the code it excused. An
+// entry that no longer excuses anything is deleted, so the lists only shrink.
+func TestMessageGuardExceptionsAreStillNeeded(t *testing.T) {
+	all := func() int {
+		n := 0
+		for _, dir := range []string{".", "../flowedit", "../internal/runview"} {
+			n += len(messageMatches(t, dir, nil))
+		}
+		return n
+	}
+	if n := all(); n != 0 {
+		t.Fatalf("the guard fails before any exception is removed (%d)", n)
+	}
+	for k, reason := range allowedMessageUse {
+		delete(allowedMessageUse, k)
+		if all() == 0 {
+			t.Errorf("allowedMessageUse[%q] excuses nothing: delete it", k)
+		}
+		allowedMessageUse[k] = reason
+	}
+	for _, k := range []string{"plan.boundMessage", "runview.colorRisk"} {
+		delete(messageSinks, k)
+		if all() == 0 {
+			t.Errorf("messageSinks[%q] excuses nothing: delete it", k)
+		}
+		messageSinks[k] = true
+	}
+}
