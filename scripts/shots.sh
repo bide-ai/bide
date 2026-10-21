@@ -17,7 +17,7 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 demo=$(cd "$here/../assets/demo" && pwd)
 groups=("$@")
-[ ${#groups[@]} -gt 0 ] || groups=(viewer approval deadline identity flows editor editor-typed themes approve-page needs-attention live)
+[ ${#groups[@]} -gt 0 ] || groups=(viewer approval deadline identity flows editor editor-structure editor-typed themes approve-page needs-attention live)
 
 run() { echo "== $*" >&2; "$@"; }
 for g in "${groups[@]}"; do
@@ -28,6 +28,7 @@ for g in "${groups[@]}"; do
     identity)        THEME=dark run "$demo/shots-identity.sh"; THEME=light run "$demo/shots-identity.sh" ;;
     flows)           THEME=dark run "$demo/shots-flows.sh" ;;
     editor)          run "$demo/shots-edit.sh" ;;
+    editor-structure) run "$demo/shots-edit-structure.sh" ;;
     editor-typed)    run "$demo/shots-edit-typed.sh" ;;
     themes)          run "$demo/shots-themes.sh" ;;
     approve-page)    ONLY=approve run "$demo/browser-shots/browser-shots.sh" ;;

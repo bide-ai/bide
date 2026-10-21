@@ -12,6 +12,7 @@ part the guide talks about).
 | `identity` | `shots-identity.sh` | `run-viewer-identity-attention`, `run-viewer-identity-run` (dark and light) |
 | `flows` | `shots-flows.sh` | `flow-gate-waiting`, `flow-gate-approved`, `flow-diff-strengthened`, `flow-diff-weakened`, `run-viewer-config-problem` (dark) |
 | `editor` | `shots-edit.sh` | `flow-edit-weakened`, `flow-edit-save` (light, 1280 x 900) |
+| `editor-structure` | `shots-edit-structure.sh` | `flow-edit-structure` (light, 1280 x 900: a node added, a drag from the charge node's port toward it, photographed with the button down) |
 | `editor-typed` | `shots-edit-typed.sh` | `flow-edit-typed`, `flow-edit-typed-blocks`, `flow-edit-typed-uncertified`, `flow-edit-typed-save` (light, 1280 wide: bide edit -blocks) |
 | `themes` | `shots-themes.sh` | `themes-light`, `themes-dark`, `themes-high-contrast`, `themes-acme-teal` (one page in each theme, 1200 x 900; the last is the custom theme `browser-shots/acme-teal.json`) |
 | `approve-page` | `browser-shots/browser-shots.sh` (`ONLY=approve`) | `approve-page-waiting`, `approve-page-signed` (dark and light, 2x) |
