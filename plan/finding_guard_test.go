@@ -358,7 +358,7 @@ func TestMessageGuardCatchesEveryForm(t *testing.T) {
 		"into a builder":                     "func f(p F) string { var b strings.Builder; b.WriteString(p.Message); return b.String() }",
 		"appended":                           "func f(p F, out []string) []string { return append(out, p.Message) }",
 		"assigned to a Message":              "func f(p F, q *F) { q.Message = p.Message }",
-		"appended and not read":              "func f(p F) []string { var xs []string; xs = append(xs, p.Message); return xs }",
+		"appended and not read":              "func f(p F) { var xs []string; xs = append(xs, p.Message); _ = xs }",
 		"a channel send of other text":       "func f(ch chan string) { ch <- \"x\" }",
 		"concatenate":                        "func f(p F) string { return \"x: \" + p.Message }",
 		"a local that is not from a message": "func f(p F) bool { m := \"loop\"; return strings.Contains(m, \"l\") }",
