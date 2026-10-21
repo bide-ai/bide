@@ -24,11 +24,15 @@ func TestNoCodeMatchesOnAMessage(t *testing.T) {
 	}
 }
 
-// allowedMessageUse lists the files that read a Message only to display it, never to decide a kind or a
-// place. Each entry is the file's path from the module root and the reason; the guard skips the file.
+// allowedMessageUse lists the functions that read a Message only to display it, never to decide a kind or
+// a place. Each key is the file's path from the module root and the function's name; the value is the
+// reason. The guard skips exactly those functions, so matching code anywhere else in the same file is
+// still caught.
 var allowedMessageUse = map[string]string{
-	"internal/runview/style.go": "colors a violated assertion's verdict and counterexample path on a terminal; the problem's place is already set by plan, and the text is only split to paint it",
-	"internal/runview/diff.go":  "reads an AssertionResult's own verdict text (not a ConfigProblem) to word a weakened assertion's summary",
+	"internal/runview/style.go:assertionLines":      "colors a violated assertion's verdict and counterexample path on a terminal; the problem's place is already set by plan, and the text is only split to paint it",
+	"internal/runview/style.go:problemText":         "the same colouring, for the one-line form",
+	"internal/runview/diff.go:assertionRegressions": "reads an AssertionResult's own verdict text (not a ConfigProblem) to word a weakened assertion's summary",
+	"internal/runview/diff.go:messageOf":            "words an AssertionResult's verdict message as a suffix, or nothing when it is empty",
 }
 
 // messageMatches returns the places in the non-test Go files of dir (or in src, a map of file name to
@@ -51,7 +55,7 @@ func messageMatches(t *testing.T, dir string, src map[string]string) []string {
 			t.Fatal(err)
 		}
 		for _, name := range names {
-			if strings.HasSuffix(name, "_test.go") || allowedMessageUse[strings.TrimPrefix(filepath.ToSlash(filepath.Clean(name)), "../")] != "" {
+			if strings.HasSuffix(name, "_test.go") {
 				continue
 			}
 			text, err := os.ReadFile(name)
@@ -68,9 +72,10 @@ func messageMatches(t *testing.T, dir string, src map[string]string) []string {
 	var out []string
 	report := func(n ast.Node, what string) { out = append(out, fset.Position(n.Pos()).String()+": "+what) }
 	for _, file := range files {
+		path := strings.TrimPrefix(filepath.ToSlash(filepath.Clean(fset.Position(file.Pos()).Filename)), "../")
 		for _, decl := range file.Decls {
 			fd, ok := decl.(*ast.FuncDecl)
-			if !ok || fd.Body == nil {
+			if !ok || fd.Body == nil || allowedMessageUse[path+":"+fd.Name.Name] != "" {
 				continue
 			}
 			// The locals that hold a Message: assigned from one, or from another such local.
