@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # shots-edit-structure.sh: regenerate the flow editor guide's picture of a structure edit in progress,
-# docs/guides/img/flow-edit-structure (light, 1280 x 900): bide edit over a refund flow committed in a throwaway git
+# docs/guides/img/flow-edit-structure (light, 1280 x 1150): bide edit over a refund flow committed in a throwaway git
 # repository, a node added with the Add a node form, and a drag from the charge node's port toward it,
 # photographed with the button down. The page
 # is real and nothing is mocked; browser-shots/edit-structure-shots.mjs drives it. Like the guide's pictures

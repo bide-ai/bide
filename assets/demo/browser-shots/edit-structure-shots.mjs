@@ -1,6 +1,6 @@
 // edit-structure-shots.mjs URL OUTDIR: the editor guide's picture of a structure edit in progress,
-// docs/guides/img/flow-edit-structure.png (light, 1280 x 900), from the real page. A node is added with the
-// Add a node form (it is not wired in yet), and then the port at the right edge of the charge node is
+// docs/guides/img/flow-edit-structure.png (light, 1280 x 1150), from the real page. A node is added with the
+// Add a node form and wired in after receipt with the Connections form (so the page is green), and then the port at the right edge of the charge node is
 // pressed and dragged toward it: the picture is taken with the button still down, the drag line drawn from the
 // port to the pointer, the charge node selected in the outline and the inspector showing its Connections form.
 // The drag is then cancelled with Escape, so nothing is written.
@@ -15,7 +15,7 @@ const browser = await puppeteer.launch({ executablePath: process.env.CHROME_BIN,
 try {
   const page = await browser.newPage();
   await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'light' }, { name: 'prefers-reduced-motion', value: 'reduce' }]);
-  await page.setViewport({ width: 1280, height: 900, deviceScaleFactor: 1 });
+  await page.setViewport({ width: 1280, height: 1150, deviceScaleFactor: 1 });
   await page.goto(url, { waitUntil: 'networkidle0', timeout: 60000 });
   await page.evaluate(() => document.fonts.ready);
   const until = (fn, what) => page.waitForFunction(fn, { timeout: 15000 }).catch(() => { throw new Error('timed out waiting for ' + what); });
@@ -25,6 +25,12 @@ try {
   await page.type('#an-block', 'notify');
   await page.click('#an-add');
   await until(() => document.querySelector('#canvas g.node[data-id="notify"]'), 'the new node in the drawing');
+  // Wire it in after receipt with the Connections form, so the flow loads and the page is green.
+  await page.$eval('#outline button[data-node="receipt"]', (b) => b.click());
+  await until(() => document.getElementById('c-edge-add'), 'the Connections form of receipt');
+  await page.select('#c-edge-to', 'notify');
+  await page.click('#c-edge-add');
+  await until(() => document.querySelector('#verdict .verdict') && !document.querySelector('#verdict .v-bad'), 'a clean verdict');
   await page.$eval('#outline button[data-node="charge"]', (b) => b.click());
   await until(() => document.getElementById('c-edge-add'), 'the Connections form');
   await page.evaluate(() => { document.activeElement && document.activeElement.blur(); window.scrollTo(0, 0); });
@@ -33,7 +39,7 @@ try {
   const target = await centre('#canvas g.node[data-id="notify"] .box');
   await page.mouse.move(port.x, port.y);
   await page.mouse.down();
-  for (let i = 1; i <= 10; i++) await page.mouse.move(port.x + ((target.x - 40 - port.x) * i) / 10, port.y + ((target.y - port.y) * i) / 10);
+  for (let i = 1; i <= 10; i++) await page.mouse.move(port.x + ((target.x - port.x) * i) / 10, port.y + ((target.y - port.y) * i) / 10);
   await until(() => document.querySelector('#canvas line.drag'), 'the drag line');
   await new Promise((r) => setTimeout(r, 300));
   await page.screenshot({ path: `${outDir}/flow-edit-structure.png` });

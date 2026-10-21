@@ -218,7 +218,7 @@ saving needs the confirmation.
 
 ## Drag to connect
 
-![The editor in the middle of a drag to connect, light: a red 1 CONFIG ERROR banner above four counts; in the flow, the charge node is selected with a heavy blue edge and a dashed blue line runs from the small circle at its right edge up and to the right toward a new node, notify, drawn in red with an error mark; validate and receipt sit above and below charge; the outline lists validate, charge (selected), receipt and notify, whose entry says the step is not reached from the entry validate; the inspector shows the charge node's crash behaviour, approval gate, safety and block](img/flow-edit-structure.png)
+![The editor in the middle of a drag to connect, light: a green ALL ASSERTIONS HOLD banner above four counts; in the flow, validate, charge (selected, with a heavy blue edge and a 2/3 gate badge), receipt and notify run top to bottom, and a dashed blue line runs from the small circle at the right edge of charge, across receipt, down to notify, whose edge is dashed because its safety is not known; the outline lists the four nodes with charge selected, and the inspector shows the charge node's crash behaviour, approval gate, safety, block and approval gate form](img/flow-edit-structure.png)
 
 An extra, never the only way. Each node in the flow has a small circle at its right edge; drag it onto
 another node to add an edge from the first to the second. It sends the same `add_edge` the Connections
