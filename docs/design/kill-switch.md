@@ -1,6 +1,6 @@
 # Design: the kill switch (a signed, audited emergency stop)
 
-Status: accepted. The control run, the fold and Model 16 (#393) and the engine's holds, recovery, `StopSwitch` and the audit trail with `bide audit stops` have shipped (unreleased); `bide stop` and the signed-head job `bide audit stops -sign-head` have shipped (unreleased); the viewer banner and the notifications follow. Decisions are in section 14.
+Status: accepted. The control run, the fold and Model 16 (#393) and the engine's holds, recovery, `StopSwitch` and the audit trail with `bide audit stops` have shipped (v0.21.0); `bide stop` and the signed-head job `bide audit stops -sign-head` have shipped (v0.21.0); the viewer banner and the notifications follow. Decisions are in section 14.
 
 ## 1. Problem
 

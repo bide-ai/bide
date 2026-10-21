@@ -1,3 +1,0 @@
-Section: Added
-
-`plan.AllowUnusedBlocks()`, an option for `plan.InspectConfig` and `plan.InspectConfigDescribed` (both now take `...InspectOption`): a registered block the config does not use is no problem. Without it such a block is an error and the report has no kinds, types, safety or digest for the flow, because the check stops before it builds anything. `Load` and `Validate` still refuse an unused block. It is for tools that list the blocks a config could use, such as the flow editor's palette. Source-compatible, except for code that stores `InspectConfig` or `InspectConfigDescribed` in a variable of func type. Experimental for `InspectConfigDescribed`.
