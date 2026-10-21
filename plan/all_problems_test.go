@@ -105,7 +105,7 @@ func TestInspectConfig_CapsTypeProblemsWithACount(t *testing.T) {
 	if last := got[len(got)-1]; last != "and 22 more type problems (types must match exactly)" {
 		t.Errorf("the count line = %q", last)
 	}
-	if shown, rest := capTypeFindings([]Finding{{Message: "a"}, {Message: "b"}}); len(shown) != 2 || len(rest) != 0 {
+	if shown, rest := capTypeFindings([]issue{otherf("a"), otherf("b")}); len(shown) != 2 || len(rest) != 0 {
 		t.Errorf("a short list was changed: %q %q", shown, rest)
 	}
 }

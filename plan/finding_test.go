@@ -165,3 +165,60 @@ func marshalPlain(v any) ([]byte, error) {
 	}
 	return bytes.TrimSuffix(b.Bytes(), []byte("\n")), nil
 }
+
+// A problem's node, edge or arm is where its creator put it, never read from its message: names that
+// look like the message's own punctuation (a quote, " -> ", a bracketed index) are attributed exactly.
+func TestProblemPlaceComesFromTheCreatorNotTheMessage(t *testing.T) {
+	odd := `x" -> "y`
+	reg := typedChainRegistry(t)
+	type place struct{ node, from, to string }
+	for name, c := range map[string]struct {
+		cfg  string
+		want place
+		kind ProblemKind
+	}{
+		"edge types": {`{"version":1,"flow":"f","entry":"a","nodes":[{"name":"a","block":"s2s"},{"name":"x\" -> \"y","block":"s2i"},{"name":"b","block":"s2s"}],"wiring":[{"edge":["a","x\" -> \"y"]},{"edge":["x\" -> \"y","b"]}]}`,
+			place{"", odd, "b"}, ProblemEdgeTypes},
+		"arm types": {`{"version":1,"flow":"f","entry":"x\" -> \"y","nodes":[{"name":"x\" -> \"y","block":"s2s"},{"name":"b[1]","block":"s2s"},{"name":"c","block":"s2s"}],"wiring":[{"switch":"x\" -> \"y","when":[{"pred":"isInt","to":"b[1]"}],"else":"c"}]}`,
+			place{"", odd, "b[1]"}, ProblemArmTypes},
+		"join input": {`{"version":1,"flow":"f","entry":"a","nodes":[{"name":"a","block":"s2s"},{"name":"x","block":"s2i"},{"name":"y","block":"s2s"}],"wiring":[{"edge":["a","x"]},{"edge":["a","y"]},{"join":"j\" -> \"k","inputs":["x","y"],"merge":"both"}]}`,
+			place{`j" -> "k`, "", ""}, ProblemJoinInputTypes},
+		"terminal": {`{"version":1,"flow":"f","entry":"a","nodes":[{"name":"a","block":"s2s"},{"name":"t1","block":"s2s"},{"name":"x\" -> \"y","block":"s2i"}],"wiring":[{"switch":"a","when":[{"pred":"nonEmpty","to":"t1"}],"else":"x\" -> \"y"}]}`,
+			place{odd, "", ""}, ProblemTerminalTypes},
+		"loop": {`{"version":1,"flow":"f","entry":"a","nodes":[{"name":"a","block":"x"},{"name":"x\" -> \"y","block":"x"},{"name":"c","block":"x"},{"name":"z","block":"x"}],"wiring":[{"edge":["a","x\" -> \"y"]},{"switch":"x\" -> \"y","when":[{"pred":"p","to":"a","loop_max":3}],"else":"c"},{"edge":["a","z"]}]}`,
+			place{"a", "", ""}, ProblemLoopEdgeLeaves},
+	} {
+		var rg *Registry
+		if strings.HasPrefix(name, "loop") == false {
+			rg = reg
+		}
+		r := InspectConfig([]byte(c.cfg), rg, AllowUnusedBlocks())
+		ok := false
+		for i, f := range r.Findings {
+			if f.Kind != c.kind {
+				continue
+			}
+			var p *ConfigProblem
+			for j := range r.Problems {
+				if r.Problems[j].Severity == "error" && r.Problems[j].Message == f.Message {
+					p = &r.Problems[j]
+				}
+			}
+			_ = i
+			if p == nil || (place{p.Node, p.From, p.To}) != c.want {
+				t.Errorf("%s: problem place %+v, want %+v", name, p, c.want)
+			}
+			ok = true
+		}
+		if !ok {
+			t.Errorf("%s: no finding of kind %s (%+v)", name, c.kind, r.Findings)
+		}
+	}
+	// A problem with no place of its own (a text-only error) has none, whatever its message quotes.
+	r := InspectConfig([]byte(`{"version":1,"flow":"f","entry":"x\" -> \"y","nodes":[{"name":"x\" -> \"y","block":"nowhere"}],"wiring":[]}`), reg)
+	for _, p := range r.Problems {
+		if strings.Contains(p.Message, "unknown block") && p.Node != odd {
+			t.Errorf("an unknown block is at node %q, want %q", p.Node, odd)
+		}
+	}
+}
