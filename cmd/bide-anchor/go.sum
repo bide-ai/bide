@@ -64,6 +64,12 @@ github.com/aws/aws-sdk-go-v2/service/sts v1.51.4 h1:OKEfbf2tcfsF2pBk/S9QqNpo6ala
 github.com/aws/aws-sdk-go-v2/service/sts v1.51.4/go.mod h1:mCd6qGo9b8hTtfjgsmNkFlzwjyce4owd7HDVFnCLXhM=
 github.com/aws/smithy-go v1.28.5 h1:OqbqKtzY9NUnr2yAe9+hiTdFb20tNaK/lI0PMOGXX9k=
 github.com/aws/smithy-go v1.28.5/go.mod h1:YE2RhdIuDbA5E5bTdciG9KrW3+TiEONeUWCqxX9i1Fc=
+github.com/bide-ai/bide v0.22.0 h1:GvQex5XypKc39kzIXgOE2y6kOC1oo8/6Fm+cBzXukuU=
+github.com/bide-ai/bide v0.22.0/go.mod h1:/9TldvSgiSK7hwUc7FpvD2y3jGS5a6EgWhqaBUv+Diw=
+github.com/bide-ai/bide/anchor/awss3 v0.22.0 h1:ypraw1tm+bifQfysG7xHExlK0QQhgpDkHyucetbAdLA=
+github.com/bide-ai/bide/anchor/awss3 v0.22.0/go.mod h1:XD2EQP7Fr5e9gS1FeSsxEuXNy/+1PCnQyHBwcC72HpM=
+github.com/bide-ai/bide/anchor/gcs v0.22.0 h1:JJrkZINwLFweixO8z+iPcuxBzkqLc3BgBsRKITjXrtE=
+github.com/bide-ai/bide/anchor/gcs v0.22.0/go.mod h1:8V0cLcAkaV1sFxVyL+7QBRQFhnTGeHxhwyrsNTmzhUI=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
 github.com/cespare/xxhash/v2 v2.3.0/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XLFGgcrjCOs=
 github.com/cncf/xds/go v0.0.0-20260202195803-dba9d589def2 h1:aBangftG7EVZoUb69Os8IaYg++6uMOdKK83QtkkvJik=
