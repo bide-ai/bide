@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -642,15 +641,9 @@ func loopShape(cfg *config, declared map[string]bool, find func(ConfigProblem, P
 	}
 }
 
-var (
-	wiringRef = regexp.MustCompile(`wiring\[(\d+)\](?:\.when\[(\d+)\])?`)
-	edgeRef   = regexp.MustCompile(`edge "((?:[^"\\]|\\.)*)" -> "((?:[^"\\]|\\.)*)"`)
-	quoted    = regexp.MustCompile(`"((?:[^"\\]|\\.)*)"`)
-)
-
-// attribute adds the problems of an error from assemble or Build, each attached to the wiring
-// element, edge or node its message names. An error that carries its problems as a list (see
-// problemList) is read part by part; any other is one problem, whatever its text holds.
+// attribute adds the problems of an error from assemble or Build, each with the node, edge or arm and
+// the finding its creator gave it. An error that carries its problems as a list (see problemList) is read
+// part by part; any other is one problem of kind other with no place, whatever its text holds.
 func (r *ConfigReport) attribute(cfg *config, err error) {
 	parts, extra, ok := problemParts(err)
 	if !ok {
@@ -661,49 +654,17 @@ func (r *ConfigReport) attribute(cfg *config, err error) {
 		for _, prefix := range []string{"plan: load " + strconv.Quote(cfg.Flow) + ": ", "plan: build " + strconv.Quote(cfg.Flow) + ": "} {
 			msg = strings.TrimPrefix(msg, prefix)
 		}
-		parts = []Finding{otherf("%s", msg)} // an error that carries its text only has no kind of its own
+		parts = []issue{otherf("%s", msg)} // an error that carries its text only has no kind and no place
 	}
-	declared := map[string]bool{}
-	for _, n := range r.Topology.Nodes {
-		declared[n.Name] = true
-	}
-	for _, f := range parts {
-		part := f.Message
-		p := ConfigProblem{Message: part, Severity: "error"}
-		if m := edgeRef.FindStringSubmatch(part); m != nil {
-			p.From, p.To = m[1], m[2]
-		} else if m := wiringRef.FindStringSubmatch(part); m != nil {
-			i, _ := strconv.Atoi(m[1])
-			if i < len(cfg.Wiring) {
-				w := cfg.Wiring[i]
-				switch {
-				case m[2] != "" && w.isSwitch():
-					j, _ := strconv.Atoi(m[2])
-					if j < len(w.When) {
-						p.From, p.To = w.Switch, w.When[j].To
-					}
-				case w.isSwitch():
-					p.Node = w.Switch
-				case w.isJoin():
-					p.Node = w.Join
-				case len(w.Edge) == 2:
-					p.From, p.To = w.Edge[0], w.Edge[1]
-				}
-			}
-		} else {
-			for _, q := range quoted.FindAllStringSubmatch(part, -1) {
-				if name, err := strconv.Unquote(`"` + q[1] + `"`); err == nil && declared[name] {
-					p.Node = name
-					break
-				}
-			}
-		}
-		r.Problems = append(r.Problems, p)
-		if f.Kind != "" {
-			r.Findings = append(r.Findings, f)
+	for _, i := range parts {
+		r.Problems = append(r.Problems, ConfigProblem{Node: i.node, From: i.from, To: i.to, Message: i.Message, Severity: "error"})
+		if i.Kind != "" {
+			r.Findings = append(r.Findings, i.Finding)
 		}
 	}
-	r.Findings = append(r.Findings, extra...)
+	for _, i := range extra {
+		r.Findings = append(r.Findings, i.Finding)
+	}
 }
 
 // resolvable is cfg with only the parts whose names all resolve: the first declaration of each node,
@@ -822,7 +783,7 @@ func graphChecksOver(core *builderCore, wiringOnly bool) error {
 	// Every refusal of these checks, not the first, so a second problem of the same kind (a second
 	// loop that is not simple, a second node not reached) shows beside the first: a caller that
 	// compares reports (the editor) must see it.
-	var finds []Finding
+	var finds []issue
 	for _, f := range core.loopProblems() {
 		// The structural check already reports the other loop refusals (more than one loop-back arm, no
 		// exit arm, a head that is not an ancestor); with it having run, only the body's shape is new.
@@ -834,11 +795,15 @@ func graphChecksOver(core *builderCore, wiringOnly bool) error {
 		reached := core.reachableFrom(core.entry)
 		for _, n := range core.nodes {
 			if !reached[n.name] {
-				finds = append(finds, otherf("step %q is not reached from the entry %q: wire it in from the entry with an edge or an arm, or remove it", n.name, core.entry))
+				finds = append(finds, otherf("step %q is not reached from the entry %q: wire it in from the entry with an edge or an arm, or remove it", n.name, core.entry).at(n.name))
 			}
 		}
 		if err := core.checkJoins(); err != nil {
-			finds = append(finds, otherf("%s", core.unprefixed(err)))
+			i := otherf("%s", core.unprefixed(err))
+			if jp, ok := errors.AsType[*joinProblem](err); ok {
+				i = i.at(jp.join)
+			}
+			finds = append(finds, i)
 		}
 	}
 	finds = append(finds, core.shapeProblems()...)

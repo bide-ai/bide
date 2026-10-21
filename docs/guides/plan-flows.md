@@ -786,6 +786,10 @@ an element or rename a node.
 | `loop_edge_enters` | from, to, loop switch, head | |
 | `other` | | |
 
+The errors of `Load` and `Validate` carry no kinds, only messages (and `agent.ErrConfig`); a tool that
+wants kinds calls `InspectConfig` or `InspectConfigDescribed`. A problem's node, edge or arm (`Node`,
+`From`, `To` in `Problems`) is set where the problem is made, from its names, not read from its message.
+
 Findings are in the Go API only: `bide check` prints messages and the pages `bide view -config` and
 `bide edit` serve do not carry findings in their JSON; a Go host that marshals a `ConfigReport` gets them.
 

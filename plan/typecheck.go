@@ -10,15 +10,15 @@ import (
 // error in the config (an unknown name, a safety above the registered one, a drifted block) does not hide
 // them: a caller that compares reports (the typed editor) must see a type problem beside any other error.
 type typeProblems struct {
-	edges     []Finding // an edge between steps of other types
-	arms      []Finding // a switch arm whose predicate tests another type than the switched node gives
-	joins     []Finding // a join input that does not fit its merge
-	terminals []Finding // a reached terminal that gives another type than the flow's output
+	edges     []issue // an edge between steps of other types
+	arms      []issue // a switch arm whose predicate tests another type than the switched node gives
+	joins     []issue // a join input that does not fit its merge
+	terminals []issue // a reached terminal that gives another type than the flow's output
 }
 
 // all returns every finding, in the order edges, arms, joins, terminals.
-func (p typeProblems) all() []Finding {
-	out := append([]Finding(nil), p.edges...)
+func (p typeProblems) all() []issue {
+	out := append([]issue(nil), p.edges...)
 	out = append(out, p.arms...)
 	out = append(out, p.joins...)
 	return append(out, p.terminals...)
@@ -68,7 +68,7 @@ func checkTypes(cfg *config, reg *Registry) typeProblems {
 			t, tok := nodes[to]
 			if fok && tok && !t.join && f.out != t.in {
 				p.edges = append(p.edges, found(ProblemEdgeTypes, []string{from, to}, typeName(f.out), typeName(t.in), "edge %q -> %q connects %s to %s (types must match exactly)",
-					from, to, typeName(f.out), typeName(t.in)))
+					from, to, typeName(f.out), typeName(t.in)).onEdge(from, to))
 			}
 		case w.isJoin():
 			m, ok := reg.merges[w.Merge]
@@ -78,7 +78,7 @@ func checkTypes(cfg *config, reg *Registry) typeProblems {
 				in, iok := nodes[src]
 				if ok && iok && j < len(m.inTypes) && m.inTypes[j] != nil && in.out != nil && in.out != m.inTypes[j] {
 					p.joins = append(p.joins, found(ProblemJoinInputTypes, []string{w.Join, src}, typeName(in.out), typeName(m.inTypes[j]), "join %q input %q produces %s but the merge expects %s",
-						w.Join, src, typeName(in.out), typeName(m.inTypes[j])))
+						w.Join, src, typeName(in.out), typeName(m.inTypes[j])).at(w.Join))
 				}
 			}
 		case w.isSwitch():
@@ -88,7 +88,7 @@ func checkTypes(cfg *config, reg *Registry) typeProblems {
 				next[w.Switch] = append(next[w.Switch], a.To)
 				if pr, pok := reg.preds[a.Pred]; ok && pok && pr.mType != over.out {
 					p.arms = append(p.arms, found(ProblemArmTypes, []string{w.Switch, a.Pred, a.To}, typeName(pr.mType), typeName(over.out), "wiring[%d].when[%d] predicate %q tests %s but switched node %q produces %s",
-						i, j, a.Pred, typeName(pr.mType), w.Switch, typeName(over.out)))
+						i, j, a.Pred, typeName(pr.mType), w.Switch, typeName(over.out)).onEdge(w.Switch, a.To))
 				}
 			}
 			if w.Else != "" {
@@ -132,7 +132,7 @@ func checkTypes(cfg *config, reg *Registry) typeProblems {
 		}
 		if outType != nil && n.out != nil && n.out != outType {
 			p.terminals = append(p.terminals, found(ProblemTerminalTypes, []string{name}, typeName(n.out), typeName(outType), "terminal step %q produces %s but the flow output is %s",
-				name, typeName(n.out), typeName(outType)))
+				name, typeName(n.out), typeName(outType)).at(name))
 		}
 	}
 	return p
@@ -142,8 +142,8 @@ func checkTypes(cfg *config, reg *Registry) typeProblems {
 // block registers in Go (a config may only lower retry safety: a step marked safe to run twice that
 // the program did not mark so is a false claim, which crash recovery would act on). It is found from
 // the config and the registered blocks alone, so another error does not hide it.
-func safetyAboveRegistration(cfg *config, reg *Registry) []Finding {
-	var out []Finding
+func safetyAboveRegistration(cfg *config, reg *Registry) []issue {
+	var out []issue
 	seen := map[string]bool{}
 	for _, n := range cfg.Nodes {
 		b, ok := reg.blocks[n.Block]
@@ -153,7 +153,7 @@ func safetyAboveRegistration(cfg *config, reg *Registry) []Finding {
 		seen[n.Name] = true
 		_, err := safetyFromConfig(b.safety, n.Safety)
 		if above, ok := errors.AsType[*safetyAboveError](err); ok {
-			out = append(out, found(ProblemSafetyAboveRegistration, []string{n.Name}, above.stated, above.registered, "node %q %v", n.Name, err))
+			out = append(out, found(ProblemSafetyAboveRegistration, []string{n.Name}, above.stated, above.registered, "node %q %v", n.Name, err).at(n.Name))
 		}
 	}
 	return out

@@ -56,6 +56,9 @@ const (
 // list of type problems: Problems lists the first 100, and Findings has all of them. Warnings have no
 // Finding.
 //
+// The errors of Load and Validate carry no kinds, only messages; a tool that wants kinds calls
+// InspectConfig or InspectConfigDescribed.
+//
 // A problem is identified by its Kind, Names, Got and Want, never by its Message, which shortens long
 // names and names a wiring element by its position. Names hold the names as the config has them, in
 // full; they hold no position. Got and Want are empty for a kind that does not say them.
