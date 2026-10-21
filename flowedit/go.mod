@@ -5,8 +5,6 @@ module github.com/bide-ai/bide/flowedit
 go 1.27.0
 
 require (
-	github.com/bide-ai/bide v0.0.0
+	github.com/bide-ai/bide v0.22.0
 	go.yaml.in/yaml/v3 v3.0.5
 )
-
-replace github.com/bide-ai/bide => ../
