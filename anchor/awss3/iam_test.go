@@ -175,10 +175,7 @@ func TestGuideAndChangelogNameTheReaderActions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	frag, err := os.ReadFile(filepath.Join("..", "..", "changes", "unreleased", "awss3-bucket-configuration.md"))
-	if err != nil {
-		t.Skip("the changelog fragment is assembled at release: " + err.Error())
-	}
+	frag := changelogEntry(t, "awss3-bucket-configuration.md")
 	policy := actions(t, awss3.ReaderPolicy, "Allow")
 	for _, a := range []string{"s3:GetBucketVersioning", "s3:GetBucketObjectLockConfiguration", "s3:GetEncryptionConfiguration"} {
 		if !slices.Contains(policy, a) {
@@ -187,7 +184,7 @@ func TestGuideAndChangelogNameTheReaderActions(t *testing.T) {
 		if !strings.Contains(string(guide), a) {
 			t.Errorf("the guide does not name %s", a)
 		}
-		if !strings.Contains(string(frag), a) {
+		if !strings.Contains(frag, a) {
 			t.Errorf("the changelog fragment does not name %s", a)
 		}
 	}
