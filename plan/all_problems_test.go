@@ -407,6 +407,16 @@ func TestInspectConfig_TenThousandTypeProblemsAreListedAHundredAtATime(t *testin
 	if types != 10000 {
 		t.Errorf("the editor's records hold %d type problems, want all 10000", types)
 	}
+	// The line "and N more type problems" is in Problems and is no finding: every finding has a kind.
+	all := InspectConfig(data, typedChainRegistry(t), AllowUnusedBlocks()).Findings
+	for _, f := range all {
+		if f.Kind == "" {
+			t.Fatalf("a finding with no kind: %+v", f)
+		}
+	}
+	if len(all) != 10000 {
+		t.Errorf("%d findings, want the 10000 type problems and no other", len(all))
+	}
 }
 
 // The records of the loop and wiring shapes carry their kind and the full names: Build's (a body that is
