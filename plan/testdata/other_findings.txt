@@ -1,0 +1,38 @@
+$.nodes[%d]: %q is not a config key; version %d keys are snake_case, write %q
+$.nodes[%d]: %q is not a field of plan.configNode (names must match exactly)
+a node (block %q) has no name
+assert[%d] %q is violated: a path reaches %q without passing an approval gate of at least %d approval (counterexample: a -> b)
+assert[%d] %q: %q names no declared node
+assert[%d] %q: not an assertion this version reads (see the plan flows guide for the grammar)
+config states %q: %d, which this release does not read; it reads version %d
+entry %q names no declared node
+flow has no nodes
+join %q is already a declared node; a join creates its own node
+join %q is fed by edges from [b c a] but its inputs are [b c]; a join is entered only by one edge from each input
+node %q approval.approvers must be non-empty
+node %q has unknown safety %q (want readonly, idempotent or side_effect)
+node %q is declared more than once
+node %q names no block
+node %q references unknown block %q, register it before Load (Registry.RegisterStep, RegisterModel or RegisterTool) or fix the block name in the config (registered: i%ds, s%di, s%ds)
+nodes[%d].name %q holds a character that does not print (U+%dE); a name must not hold a control, invisible or direction-changing character, a space other than a plain one, or a space at either end: rename it
+step %q has both a Switch and an Edge to %q; a switched step continues only through its arms
+step %q is fed by [a b]; combine several producers with a Join
+step %q is not reached from the entry %q: wire it in from the entry with an edge or an arm, or remove it
+topology has a cycle %q -> %q -> %q (rung-%d flows must be acyclic: a way back is an arm with loop_max)
+wiring[%d] edge %q -> %q is an edge into the join %q; a join is entered only by its inputs
+wiring[%d] edge %q -> %q leaves the join %q, which is defined after it in the wiring (a join is registered when its element is reached)
+wiring[%d] edge %q -> %q: %q is not a declared node
+wiring[%d] edge must be [from, to], got %d element(s)
+wiring[%d] else routes to unknown node %q
+wiring[%d] join %q names no merge block
+wiring[%d] join %q reads the join %q, which is defined after it in the wiring; a join's inputs must be defined before it (a join is registered when its wiring element is reached)
+wiring[%d] join %q reads unknown input %q
+wiring[%d] join %q references unknown merge %q
+wiring[%d] join has no name
+wiring[%d] more than one switch is over %q (the first is wiring[%d])
+wiring[%d] node %q is switched over and has an edge out (a node has a switch or an edge out, not both)
+wiring[%d] sets %d of edge/switch/join; set exactly one
+wiring[%d] switch over unknown node %q
+wiring[%d].when[%d] names no predicate
+wiring[%d].when[%d] references unknown predicate %q
+wiring[%d].when[%d] routes to unknown node %q
