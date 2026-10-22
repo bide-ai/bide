@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"github.com/bide-ai/bide/plan"
 	"reflect"
-	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/bide-ai/bide/internal/printable"
@@ -531,7 +531,7 @@ func cascadeWiring(cfg *structDoc, name string, join bool) ([]Op, []string, erro
 	var hit []int
 	var lines []string
 	for k, line := range cfg.Assert {
-		if slices.Contains(assertionNames(line), op.Node) {
+		if assertionMentions(line, op.Node) {
 			if _, readable := ParseAssertion(line); !readable {
 				// The same rule as a rename: a line the grammar cannot read is neither kept nor removed on a
 				// guess about whether it means the node.
@@ -554,36 +554,41 @@ func cascadeWiring(cfg *structDoc, name string, join bool) ([]Op, []string, erro
 	return steps, append(cascade, lines...), nil
 }
 
-// assertionNames is the node names an assert line mentions: the form's nodes when the line parses,
-// and its tokens (quotes stripped) when it does not, so a line the grammar cannot read is not
-// silently treated as unrelated.
-func assertionNames(line string) []string {
+// assertionMentions reports whether an assert line mentions the node name: a line the grammar reads
+// mentions the nodes of its form; a line it cannot read mentions the node when the name stands in it as
+// a whole span (lineMentions), so a line the grammar cannot read is not silently treated as unrelated.
+func assertionMentions(line, name string) bool {
 	if a, ok := ParseAssertion(line); ok {
-		var out []string
-		for _, n := range []string{a.Node, a.Via} {
-			if n != "" {
-				out = append(out, n)
-			}
-		}
-		return out
+		return name != "" && (a.Node == name || a.Via == name)
 	}
-	var out []string
-	for _, f := range strings.Fields(line) {
-		out = append(out, strings.Trim(f, tokenPunct))
-	}
-	// A quoted name may hold spaces, which the fields above split: the quoted spans are names too.
-	for _, m := range quotedSpan.FindAllStringSubmatch(line, -1) {
-		out = append(out, m[1])
-	}
-	return out
+	return lineMentions(line, name)
 }
 
-// tokenPunct is what is trimmed from the ends of a word of an assert line the grammar cannot read, so
-// "audit," and "(audit)" are the node audit.
-const tokenPunct = "\"'`,.;:!?()[]{}<>"
-
-// quotedSpan is a double-quoted span of an assert line, where the grammar writes a name with a space.
-var quotedSpan = regexp.MustCompile(`"([^"]*)"`)
+// lineMentions reports whether name occurs in line as a whole span: the rune before it and the rune
+// after it, if any, is not a letter, a digit or a combining mark, so punctuation, symbols and spaces of
+// any kind end a word ("audit," "(audit)" "audit-" "*audit*" "_audit_") and a longer word does not
+// ("audits", "unaudited", "audit2"). The name is matched whole, so a name with spaces or punctuation
+// of its own is found as it is written.
+func lineMentions(line, name string) bool {
+	if name == "" {
+		return false
+	}
+	inWord := func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsMark(r) }
+	for from := 0; ; {
+		i := strings.Index(line[from:], name)
+		if i < 0 {
+			return false
+		}
+		i += from
+		end := i + len(name)
+		before, _ := utf8.DecodeLastRuneInString(line[:i])
+		after, _ := utf8.DecodeRuneInString(line[end:])
+		if (i == 0 || !inWord(before)) && (end == len(line) || !inWord(after)) {
+			return true
+		}
+		from = i + 1
+	}
+}
 
 // renameAssertion is line with the node old named new, written through the grammar; ok is false when
 // the line does not name old. A line that names it but cannot be written back (the grammar cannot
@@ -591,7 +596,7 @@ var quotedSpan = regexp.MustCompile(`"([^"]*)"`)
 func renameAssertion(line, old, new string) (out string, ok bool, err error) {
 	a, parsed := ParseAssertion(line)
 	if !parsed {
-		if slices.Contains(assertionNames(line), old) {
+		if assertionMentions(line, old) {
 			return "", false, refuse("an assertion that is not one of the six forms names %q: %q; edit it in the source", old, line)
 		}
 		return line, false, nil
@@ -827,7 +832,7 @@ func expectStructure(old any, op Operation) (any, error) {
 		if lines, ok := doc["assert"].([]any); ok {
 			var keptLines []any
 			for _, l := range lines {
-				if s, _ := l.(string); !slices.Contains(assertionNames(s), op.Node) {
+				if s, _ := l.(string); !assertionMentions(s, op.Node) {
 					keptLines = append(keptLines, l)
 				}
 			}
