@@ -8,7 +8,8 @@
 # Windows when any changed code file (changed-code.sh: not documentation) is
 #   - not a Go file (testdata, goldens, .gitattributes, go.mod, scripts, workflows, ...),
 #   - a _test.go file,
-#   - a Go file that is gone or that imports os, path, path/filepath, io/fs, syscall, mime,
+#   - a Go file named *_windows.go, or with a //go:build line that mentions windows,
+#   - a Go file that is gone or that imports runtime (GOOS checks), os, path, path/filepath, io/fs, syscall, mime,
 #     encoding/..., golang.org/x/sys/... (matched as a quoted import path anywhere in the file,
 #     which can only over-match),
 # and in any case of doubt (no input, an unreadable file). Documentation-only changes need no Go
@@ -18,7 +19,7 @@
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-imports='"(os|os/[a-z0-9/]+|path|path/filepath|io/fs|syscall|mime|mime/[a-z0-9/]+|encoding|encoding/[a-z0-9/]+|golang\.org/x/sys[^"]*)"'
+imports='"(runtime|os|os/[a-z0-9/]+|path|path/filepath|io/fs|syscall|mime|mime/[a-z0-9/]+|encoding|encoding/[a-z0-9/]+|golang\.org/x/sys[^"]*)"'
 
 if [ "${1:-}" = --self-test ]; then
   tmp=$(mktemp -d)
@@ -30,6 +31,11 @@ if [ "${1:-}" = --self-test ]; then
   printf 'package uses\n\nimport (\n\t"fmt"\n\tf "os/exec"\n)\n' > uses/exec.go
   printf 'package uses\n\nimport "encoding/json"\n' > uses/enc.go
   printf 'package pure\n\nimport "testing"\n' > pure/pure_test.go
+  printf '//go:build windows\n\npackage pure\n' > pure/tagged.go
+  printf '//go:build !linux && !darwin\n\npackage pure\n' > pure/tagged2.go
+  printf 'package pure\n' > pure/x_windows.go
+  printf 'package pure\n\nimport "runtime"\n' > pure/rt.go
+  printf 'package pure\n\n// uses windows in a comment only\n' > pure/comment.go
   : > testdata/a.golden
   : > docs/a.md
   t() { # t WANT FILES...: the exit status for the files (one per argument)
@@ -46,6 +52,10 @@ if [ "${1:-}" = --self-test ]; then
   t 0 uses/enc.go
   t 0 pure/pure.go uses/uses.go
   t 0 pure/pure_test.go
+  t 0 pure/tagged.go
+  t 0 pure/x_windows.go
+  t 0 pure/rt.go
+  t 1 pure/comment.go
   t 0 testdata/a.golden
   t 0 agent/testdata/b.json
   t 0 .gitattributes
@@ -66,7 +76,9 @@ while IFS= read -r f; do
   [ -n "$f" ] || continue
   case "$f" in
     *_test.go) exit 0 ;;
+    *_windows.go) exit 0 ;;
     *.go) [ -f "$f" ] || exit 0
+          if grep -qE '^//(go:build|[ ]*\+build).*windows' "$f"; then exit 0; fi
           if grep -qE "$imports" "$f"; then exit 0; fi ;;
     *) exit 0 ;;
   esac
