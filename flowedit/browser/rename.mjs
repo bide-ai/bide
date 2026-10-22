@@ -80,6 +80,18 @@ try {
   await until(() => !document.getElementById('dialog').open && document.getElementById('state-tag').textContent === 'saved', null, 'the save');
   r.afterSave = await seen();
   r.disk = fs.readFileSync(env.FILE, 'utf8');
+
+  // Walk all the way back, then type in the source: the page asks about the typed text under the list the
+  // text it stands on had (none), not the list of the text it left.
+  stage = 'undo to the start, then type';
+  while (await page.$eval('#undo', (b) => !b.disabled)) {
+    await page.click('#undo');
+    await atRest();
+  }
+  r.backAtStart = (await source()) === r.original;
+  await page.$eval('#source', (e) => { e.value = e.value + '# typed\n'; e.dispatchEvent(new Event('input', { bubbles: true })); });
+  await until(() => document.getElementById('baseline').textContent.includes('(no changes)') || document.getElementById('baseline').textContent.includes('change'), null, 'the check of the typed text');
+  r.typedAtStart = await seen();
   out = { ok: true, ...r, console: console_, failed, offOrigin };
 } catch (e) {
   const live = await page?.$eval('#live', (x) => x.textContent).catch(() => '?');

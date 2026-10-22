@@ -26,6 +26,8 @@ func TestRenameInChromeIsNotWeakened(t *testing.T) {
 		UndoneAgain  seen     `json:"undoneAgain"`
 		ConfirmBoxes int      `json:"confirmBoxes"`
 		AfterSave    seen     `json:"afterSave"`
+		BackAtStart  bool     `json:"backAtStart"`
+		TypedAtStart seen     `json:"typedAtStart"`
 		Disk         string   `json:"disk"`
 		Console      []string `json:"console"`
 		Failed       []string `json:"failed"`
@@ -77,6 +79,10 @@ func TestRenameInChromeIsNotWeakened(t *testing.T) {
 		t.Errorf("a save of a renamed gated node asks for %d confirmations", r.ConfirmBoxes)
 	}
 	quiet("after the save", r.AfterSave, true)
+	if !r.BackAtStart {
+		t.Errorf("undo to the start did not give the opening text")
+	}
+	quiet("typing at the start, after undoing every rename", r.TypedAtStart, false)
 	if r.Disk != r.UndoneAgain.Source {
 		t.Errorf("the file written:\n%s", r.Disk)
 	}
