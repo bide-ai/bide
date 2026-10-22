@@ -8,7 +8,8 @@
 # Windows when any changed code file (changed-code.sh: not documentation) is
 #   - not a Go file (testdata, goldens, .gitattributes, go.mod, scripts, workflows, ...),
 #   - a _test.go file,
-#   - a Go file named *_windows.go, or with a //go:build line that mentions windows,
+#   - a Go file named *_windows.go, or with a //go:build line that mentions windows or negates anything (!linux,
+#     !unix: such a file also builds on Windows; over-matching is safe),
 #   - a Go file that is gone or that imports runtime (GOOS checks), os, path, path/filepath, io/fs, syscall, mime,
 #     encoding/..., golang.org/x/sys/... (matched as a quoted import path anywhere in the file,
 #     which can only over-match),
@@ -33,6 +34,8 @@ if [ "${1:-}" = --self-test ]; then
   printf 'package pure\n\nimport "testing"\n' > pure/pure_test.go
   printf '//go:build windows\n\npackage pure\n' > pure/tagged.go
   printf '//go:build !linux && !darwin\n\npackage pure\n' > pure/tagged2.go
+  printf '//go:build !unix\n\npackage pure\n' > pure/tagged3.go
+  printf '//go:build linux && amd64\n\npackage pure\n' > pure/linuxonly.go
   printf 'package pure\n' > pure/x_windows.go
   printf 'package pure\n\nimport "runtime"\n' > pure/rt.go
   printf 'package pure\n\n// uses windows in a comment only\n' > pure/comment.go
@@ -53,9 +56,12 @@ if [ "${1:-}" = --self-test ]; then
   t 0 pure/pure.go uses/uses.go
   t 0 pure/pure_test.go
   t 0 pure/tagged.go
+  t 0 pure/tagged2.go
+  t 0 pure/tagged3.go
   t 0 pure/x_windows.go
   t 0 pure/rt.go
   t 1 pure/comment.go
+  t 1 pure/linuxonly.go
   t 0 testdata/a.golden
   t 0 agent/testdata/b.json
   t 0 .gitattributes
@@ -78,7 +84,7 @@ while IFS= read -r f; do
     *_test.go) exit 0 ;;
     *_windows.go) exit 0 ;;
     *.go) [ -f "$f" ] || exit 0
-          if grep -qE '^//(go:build|[ ]*\+build).*windows' "$f"; then exit 0; fi
+          if grep -qE '^//(go:build|[ ]*\+build).*(windows|!)' "$f"; then exit 0; fi
           if grep -qE "$imports" "$f"; then exit 0; fi ;;
     *) exit 0 ;;
   esac
