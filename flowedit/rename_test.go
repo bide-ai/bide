@@ -141,6 +141,9 @@ func TestRenameOfAGatedNodeIsNotWeakened(t *testing.T) {
 		if !slices.Equal(w.Renamed, []string{"charge -> charge_card"}) {
 			t.Errorf("the verdict does not say which rename it honoured: %q", w.Renamed)
 		}
+		// The text that follows is one the classifier alone reads as weakened (it cannot pair the renamed
+		// node once it has another edge), so each answer below depends on the list.
+		notWeakened(t, "a rename and a new edge", e.do(Operation{Op: "add_edge", Node: "charge_card", To: "receipt"}))
 		// The saved file is not changed by any of this: the confirmation, the save and the verdict of
 		// the saved file agree.
 		var pv Preview
@@ -247,15 +250,21 @@ func TestRenameUndone(t *testing.T) {
 		// Rename, lower the need, undo twice, redo-by-hand is not needed: the stack restores each list.
 		f := newSession(t, s, renameFlow)
 		f.do(rn("charge", "charge_card"))
+		f.do(Operation{Op: "add_edge", Node: "charge_card", To: "receipt"})
 		f.do(Operation{Op: "set_approval", Node: "charge_card", Approval: gate(1, []string{"ops", "finance", "risk"}, true, "24h")})
-		f.back()
+		w = f.back()
+		notWeakened(t, "undo to a text only the rename explains", w)
 		if !slices.Equal(f.renames, []Rename{{"charge", "charge_card"}}) {
 			t.Errorf("one undo should keep the rename: %v", f.renames)
 		}
 		notWeakened(t, "rename kept, need restored", f.verdict())
 		f.back()
+		if len(f.renames) != 1 {
+			t.Errorf("the rename is still made after two undos: %v", f.renames)
+		}
+		f.back()
 		if len(f.renames) != 0 {
-			t.Errorf("two undos should drop the rename: %v", f.renames)
+			t.Errorf("three undos should drop the rename: %v", f.renames)
 		}
 	})
 }
