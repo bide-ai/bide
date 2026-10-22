@@ -125,10 +125,22 @@ not verified. The node controls are in the outline (**Add a node**) and the insp
   its arms and `else`, a join's inputs, and `assert` lines. An assertion is rewritten through the
   assertion grammar and never by text search, so an assertion line that mentions the node but is not
   one of the six forms (or a name the grammar cannot hold, such as one with a double quote) makes the
-  rename refuse with the line, and nothing changes. **A rename of a gated node reads as weakened.** The
-  gate comparison follows names, so it sees the old node removed and a new, ungated one added; the
-  banner says so, and so does `bide check -diff`. This is on purpose: the check over-reports rather
-  than trust the editor to say which names are the same node.
+  rename refuse with the line, and nothing changes. **A rename is not a weakening.** The
+  editor knows which node you renamed, because it made the change, so it keeps the renames of this
+  editing session (old name to new name, in order) and reads the baseline as if they had been made in
+  it. Renaming `charge` to `charge_card` is then the same gated node, not a gate removed and a new
+  ungated one, and a node renamed twice is matched under its last name. Undo takes a rename back with
+  the step that made it. Only names are matched: a rename together with a lowered `need`, a lowered
+  `safety`, a removed gate or a removed `assert` line is still reported, and a rename onto a name the
+  baseline holds for a different node is not honoured (the editor refuses to rename onto a name in
+  use, and the comparison replays each rename in the baseline the same way, so a rename that cannot be
+  made there is dropped and the nodes are matched by name). The line under the verdict names the
+  renames it honoured. The saved file is unchanged by any of this, and so is `bide check -diff` in CI:
+  it sees two files and cannot know a rename, so it pairs a node renamed with the same block, kind and
+  edges and reports a rename beside another change to that node (its block, its edges) as a removed
+  gate and a new node, for a policy owner to review. The renames belong to the page: reloading it, or
+  restarting `bide edit`, forgets them, and the saved file is then compared with the baseline by name,
+  as CI compares it, until it is committed.
 - **Remove node** first asks the server what else goes with the node and shows that list: the edges
   that name it, the arms and `else` that route to it (a switch left with no arm goes whole), and the
   comments attached to it. Nothing is removed until you confirm that list, and the server refuses a
@@ -279,8 +291,9 @@ at the top: a glyph, `APPROVAL GATE WEAKENED` (or `SAFETY CHECK WEAKENED` when n
 changed), and each item (`charge: approval 2 of 3 -> 1 of 3`). **The banner has no close control**:
 a banner that can be closed is a warning that can be missed. It stays until the text no longer
 weakens, and it is announced to a screen reader as an alert. Below the verdict a line says what the
-file is compared with and how many changes there are. If the text cannot be read as a config, the
-page says it cannot say whether it is weaker, which is not the same as not weaker.
+file is compared with and how many changes there are, and which renames of this session it matched to
+their baseline nodes (see [Nodes](#nodes-add-remove-rename-and-the-entry)). If the text cannot be read as
+a config, the page says it cannot say whether it is weaker, which is not the same as not weaker.
 
 What the classifier does not see applies here as it does in CI: from the command line a gate a
 block declares in Go is invisible on both sides, and a change of block on an ungated effect node

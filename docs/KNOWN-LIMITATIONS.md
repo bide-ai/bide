@@ -432,13 +432,17 @@ control that stops a weakened policy merging is the pull request, with `bide che
 -fail-on-weaken` as a required status and a policy owner's approval. See the [flow editor
 guide](guides/flow-editor.md).
 
-**Renaming a gated node in the editor reads as weakened, and removing a node leaves its assertions.** The
-gate comparison follows names, so a rename is a removed node and a new one, and the weakened banner (and
-`bide check -diff -fail-on-weaken` on the saved file) reports it; a policy owner reviews it and accepts it.
-The classifier does not detect renames, and the editor does not tell it which names are the same node.
-Removing a node leaves any `assert` line that names it (the check reports it as naming a missing node),
-because removing an assertion is itself a weakening. A node that is an input of a join is not removed until
-the join is changed or removed first (both are done in the editor).
+**A rename is matched to its node only inside the editing session, and only in the editor.** The editor
+keeps the renames made since the page opened and reads the baseline as if they had been made in it, so
+renaming a gated node is not reported as weakened; any real weakening made with it still is. The list
+belongs to the page: reloading it or restarting `bide edit` forgets it, and the saved file is then
+compared with the baseline by name. `bide check -diff -fail-on-weaken` in CI sees two files and cannot
+know a rename: it pairs a node renamed with the same block, kind and edges (a pure rename passes), and
+reports a rename beside another change to that node, its block or its edges, as a removed gate and a
+new node, which a policy owner reviews and accepts. **Removing a node leaves its assertions.** Removing a
+node leaves any `assert` line that names it (the check reports it as naming a missing node), because
+removing an assertion is itself a weakening. A node that is an input of a join is not removed until the
+join is changed or removed first (both are done in the editor).
 
 **The approve page's look is tested in Chrome only.** `TestPage_LookInChrome` and the no-input test run in Chrome and Go; Firefox and Safari are not run. In particular, Firefox processes a `Link: <...>; rel=stylesheet` response header, which Chrome ignores for this page, and a CSP of the host can change what loads: the pin covers the bundle's bytes, not the headers or proxy of whoever serves them (an organisation hosting the bundle should serve it with the CSP `approvals.PageCSP` returns, which allows no other stylesheet).
 
