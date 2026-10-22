@@ -145,9 +145,12 @@ not verified. The node controls are in the outline (**Add a node**) and the insp
   that name it, the arms and `else` that route to it (a switch left with no arm goes whole), and the
   comments attached to it. Nothing is removed until you confirm that list, and the server refuses a
   removal whose list is not the one it computes, so what is removed is what you were shown. A node
-  that is an input of a join is not removed (change the join first). `assert` lines that name the
-  node are listed and **left in place**: removing an assertion would weaken the policy, and the
-  check reports the line as naming a node that is gone. The list covers what names the node, not every effect: removing a node can leave an assertion that does not name it violated or vacuous (`b reachable` after the only path to `b` is gone), and that is caught by the weakened banner and the save confirmation, not by the dialog. **Undo** brings a removal back.
+  that is an input of a join is not removed (change the join first). The `assert` lines that name
+  the node are listed too, and **a confirmed removal removes them**: a line left naming a node that is
+  gone would report as broken. Removing an assertion is itself a weakening of the policy, so the
+  weakened banner names each removed line (`assertion removed: ...`) and the save dialog asks for the
+  weakening confirmation and lists it, like any other removed assertion. The list covers what names the
+  node, not every effect: removing a node can also leave an assertion that does not name it violated or vacuous (`b reachable` after the only path to `b` is gone), and that is caught by the weakened banner and the save confirmation, not by the dialog. **Undo** brings the node, its wiring and its assertions back.
 - **The entry node.** A config with no `entry` key starts at its first node, and the topology digest
   commits to the entry. The editor never changes the entry without you: adding a node never does,
   but removing the entry node, or the first node of a config with no `entry`, is refused, and the

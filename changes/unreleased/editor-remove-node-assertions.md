@@ -1,0 +1,3 @@
+Section: Fixed
+
+`bide edit`: removing a node no longer leaves `assert` lines that name it behind to report as broken. The removal dialog (the `remove_node` dry run) now lists the assertions that name the node, and the confirmed removal takes them with the edges and arms, so the confirmation covers exactly what goes. Removing an assertion is a weakening, so the weakened banner names each removed line and the save dialog asks for the weakening confirmation as for any removed assertion; Undo restores the node, its wiring and its assertions. An assert line the grammar cannot read is matched by its tokens and quoted spans, so one that names a node with a space in its name goes too.
