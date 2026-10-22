@@ -149,7 +149,7 @@ func TestRemoveNodeListsWhatGoes(t *testing.T) {
 		"wiring 2: arm ok -> receipt of the switch on charge",
 		"wiring 2: else -> receipt of the switch on charge",
 		"wiring 3: edge receipt -> manual review",
-		`assert 2: "receipt reachable" stays and is reported as naming a missing node`,
+		`assert 2: "receipt reachable" is removed (removing an assertion weakens the policy)`,
 	}
 	for _, w := range want {
 		if !slices.Contains(r.Cascade, w) {
@@ -171,7 +171,7 @@ func TestRemoveNodeListsWhatGoes(t *testing.T) {
 			t.Errorf("%q is still in\n%s", gone, got)
 		}
 	}
-	if !strings.Contains(got, "  - receipt reachable\n") || !strings.Contains(got, "{pred: odd, to: manual review}") {
+	if strings.Contains(got, "receipt reachable") || !strings.Contains(got, "every path to charge passes approval") || !strings.Contains(got, "{pred: odd, to: manual review}") {
 		t.Errorf("the remove took more or less than it listed:\n%s", got)
 	}
 }
@@ -516,35 +516,6 @@ func TestRemoveListsTheCommentsItTakes(t *testing.T) {
 	if strings.Contains(got, "lone") || strings.Contains(got, "extra") {
 		t.Errorf("\n%s", got)
 	}
-}
-
-// An assertion left naming a removed node is loud: the check reports an error for it, the view's
-// verdict counts it, and the weakening classifier sees nothing silently pass.
-func TestRemoveLeavesALoudAssertionError(t *testing.T) {
-	op := Operation{Op: "remove_node", Node: "receipt", Confirm: removeList(t, structFlow, "receipt")}
-	got := mustApply(t, "f.yaml", structFlow, op)
-	v := BuildView("f.yaml", []byte(got))
-	if v.Errors == 0 {
-		t.Fatalf("no error after removing a node an assertion names: %+v", v.Verdict)
-	}
-	found := false
-	for _, p := range v.Problems {
-		if strings.Contains(p.Message, "receipt") {
-			found = true
-		}
-	}
-	for _, a := range v.Assertions {
-		if strings.Contains(a.Text, "receipt") && !a.Holds {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("nothing names the missing node: problems %+v assertions %+v", v.Problems, v.Assertions)
-	}
-	if v.Verdict.Class == "good" {
-		t.Errorf("the verdict is %q", v.Verdict.Word)
-	}
-	t.Logf("%s | %s", v.Verdict.Word, v.Verdict.Line)
 }
 
 // A name cannot be made to read as another: invisible, bidirectional and other non-printing
