@@ -756,37 +756,38 @@ func TestKeyboardOnlyInChrome(t *testing.T) {
 func TestStructureInChrome(t *testing.T) {
 	s, _ := newTestServer(t, "refund.yaml", weakFlow)
 	var r struct {
-		OK                     bool     `json:"ok"`
-		Error                  string   `json:"error"`
-		Original               string   `json:"original"`
-		AfterAdd               string   `json:"afterAdd"`
-		FocusAfterAdd          string   `json:"focusAfterAdd"`
-		InspectorAfterAdd      string   `json:"inspectorAfterAdd"`
-		OutlineAfterAdd        []string `json:"outlineAfterAdd"`
-		DupError               string   `json:"dupError"`
-		DupTextSame            bool     `json:"dupTextSame"`
-		AfterRename            string   `json:"afterRename"`
-		FocusAfterRename       string   `json:"focusAfterRename"`
-		InspectorAfterRename   string   `json:"inspectorAfterRename"`
-		AfterRemoveLone        string   `json:"afterRemoveLone"`
-		FocusAfterRemove       string   `json:"focusAfterRemove"`
-		DialogOpenAfterLone    bool     `json:"dialogOpenAfterLone"`
-		RemoveList             []string `json:"removeList"`
-		DialogTitle            string   `json:"dialogTitle"`
-		AfterCancel            string   `json:"afterCancel"`
-		FocusAfterCancel       string   `json:"focusAfterCancel"`
-		AfterRemoveWired       string   `json:"afterRemoveWired"`
-		StateAfterRemove       string   `json:"stateAfterRemove"`
-		AfterUndo              string   `json:"afterUndo"`
-		EntryButton            string   `json:"entryButton"`
-		AfterEntry             string   `json:"afterEntry"`
-		EntryRefusal           string   `json:"entryRefusal"`
-		DialogOpenAfterRefusal bool     `json:"dialogOpenAfterRefusal"`
-		AfterGatedRename       string   `json:"afterGatedRename"`
-		BannerAfterGatedRename string   `json:"bannerAfterGatedRename"`
-		Console                []string `json:"console"`
-		Failed                 []string `json:"failed"`
-		OffOrigin              []string `json:"offOrigin"`
+		OK                       bool     `json:"ok"`
+		Error                    string   `json:"error"`
+		Original                 string   `json:"original"`
+		AfterAdd                 string   `json:"afterAdd"`
+		FocusAfterAdd            string   `json:"focusAfterAdd"`
+		InspectorAfterAdd        string   `json:"inspectorAfterAdd"`
+		OutlineAfterAdd          []string `json:"outlineAfterAdd"`
+		DupError                 string   `json:"dupError"`
+		DupTextSame              bool     `json:"dupTextSame"`
+		AfterRename              string   `json:"afterRename"`
+		FocusAfterRename         string   `json:"focusAfterRename"`
+		InspectorAfterRename     string   `json:"inspectorAfterRename"`
+		AfterRemoveLone          string   `json:"afterRemoveLone"`
+		FocusAfterRemove         string   `json:"focusAfterRemove"`
+		DialogOpenAfterLone      bool     `json:"dialogOpenAfterLone"`
+		RemoveList               []string `json:"removeList"`
+		DialogTitle              string   `json:"dialogTitle"`
+		AfterCancel              string   `json:"afterCancel"`
+		FocusAfterCancel         string   `json:"focusAfterCancel"`
+		AfterRemoveWired         string   `json:"afterRemoveWired"`
+		StateAfterRemove         string   `json:"stateAfterRemove"`
+		AfterUndo                string   `json:"afterUndo"`
+		EntryButton              string   `json:"entryButton"`
+		AfterEntry               string   `json:"afterEntry"`
+		EntryRefusal             string   `json:"entryRefusal"`
+		DialogOpenAfterRefusal   bool     `json:"dialogOpenAfterRefusal"`
+		AfterGatedRename         string   `json:"afterGatedRename"`
+		BannerAfterGatedRename   string   `json:"bannerAfterGatedRename"`
+		BaselineAfterGatedRename string   `json:"baselineAfterGatedRename"`
+		Console                  []string `json:"console"`
+		Failed                   []string `json:"failed"`
+		OffOrigin                []string `json:"offOrigin"`
 	}
 	runScript(t, "structure.mjs", s, &r)
 	if !r.OK {
@@ -824,8 +825,8 @@ func TestStructureInChrome(t *testing.T) {
 	if !strings.Contains(r.EntryRefusal, "is the entry node") || r.DialogOpenAfterRefusal {
 		t.Errorf("removing the entry node: %q, dialog open %v", r.EntryRefusal, r.DialogOpenAfterRefusal)
 	}
-	if !strings.Contains(r.AfterGatedRename, "name: charge2") || !strings.Contains(r.BannerAfterGatedRename, "WEAKENED") {
-		t.Errorf("renaming a gated node: banner %q\n%s", r.BannerAfterGatedRename, r.AfterGatedRename)
+	if !strings.Contains(r.AfterGatedRename, "name: charge2") || strings.TrimSpace(r.BannerAfterGatedRename) != "" || !strings.Contains(r.BaselineAfterGatedRename, "not weaker than") {
+		t.Errorf("renaming a gated node: banner %q, baseline line %q\n%s", r.BannerAfterGatedRename, r.BaselineAfterGatedRename, r.AfterGatedRename)
 	}
 }
 

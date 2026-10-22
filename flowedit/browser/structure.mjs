@@ -1,6 +1,6 @@
 // structure.mjs: drives the structure controls in real Chrome (flowedit/browser_test.go starts the
 // server and runs this): add a node, rename it, remove it, remove a wired node through the dialog that
-// lists what else goes, make a node the entry, and a rename of a gated node reading as weakened, all by
+// lists what else goes, make a node the entry, and a rename of a gated node that does not read as weakened, all by
 // controls a keyboard reaches. It prints one JSON line with what it saw.
 import puppeteer from 'puppeteer-core';
 
@@ -133,15 +133,17 @@ try {
   r.entryRefusal = await text('#op-error');
   r.dialogOpenAfterRefusal = await page.$eval('#dialog', (d) => d.open);
 
-  // Renaming a gated node reads as removed and added: the banner says so.
+  // Renaming a gated node is not a weakening: the page carries the rename, so the banner stays quiet and
+  // the baseline line says which rename it matched.
   await replaceValue('#f-name', 'charge2');
   await page.keyboard.press('Enter');
   await until(() => document.getElementById('source').value.includes('name: charge2'), null, 'the gated rename');
   await rest('after the gated rename');
   r.afterGatedRename = await source();
-  await until(() => document.getElementById('weakened')?.textContent.includes('WEAKENED'), null, 'the banner');
-  await rest('after the banner');
+  await until(() => document.getElementById('baseline')?.textContent.includes('charge -> charge2'), null, 'the baseline line to name the rename');
+  await rest('after the baseline line');
   r.bannerAfterGatedRename = await bannerText();
+  r.baselineAfterGatedRename = await text('#baseline');
   out = { ok: true, ...r, console: console_, failed, offOrigin };
 } catch (e) {
   const live = await page?.$eval('#live', (x) => x.textContent).catch(() => '?');
