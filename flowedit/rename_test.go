@@ -1,11 +1,15 @@
 package flowedit
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // renameFlow is testFlow with an ungated step between charge and receipt, so a rename can land on the
@@ -371,4 +375,127 @@ func TestRenamesAreOnlyAHint(t *testing.T) {
 			t.Errorf("a list past the cap was honoured: %q", w.Renamed)
 		}
 	})
+}
+
+// replayByOperations is the baseline renamed one rename_node operation at a time, each a parse and a
+// splice of the text: the slow path the document replay replaced, kept as the oracle of what is refused
+// and what is rewritten.
+func replayByOperations(t *testing.T, name, baseline string, renames []Rename) (string, []Rename) {
+	t.Helper()
+	text := []byte(baseline)
+	var made []Rename
+	for _, r := range renames {
+		res, err := ApplyOperation(name, text, Operation{Op: "rename_node", Node: r.From, Value: r.To})
+		if err != nil || !res.Changed {
+			continue
+		}
+		text = res.Text
+		made = append(made, r)
+	}
+	return string(text), made
+}
+
+func normalJSON(t *testing.T, name string, data []byte, isJSON bool) any {
+	t.Helper()
+	if formatOf(name) == "yaml" && !isJSON {
+		var err error
+		if data, err = ToJSON(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+// The document replay refuses what the operations refuse and rewrites what they rewrite: on flows with
+// a switch, a join, a quoted name with a space and assertions, over renames that are valid, chained,
+// swapped, onto a node's or a join's name, of a join, of nothing, to a name that does not print, and to
+// a name an assertion cannot hold, the renamed baseline is the one the operations make.
+func TestRenameReplayAgreesWithTheOperations(t *testing.T) {
+	lists := map[string][]Rename{
+		"valid":             {{"a", "a2"}, {"e", "e2"}},
+		"chained":           {{"a", "x"}, {"x", "y"}, {"y", "z"}},
+		"swapped":           {{"a", "tmp"}, {"e", "a"}, {"tmp", "e"}},
+		"onto a node":       {{"a", "b"}, {"c", "d"}},
+		"onto a join":       {{"a", "j"}},
+		"of a join":         {{"j", "k"}},
+		"of nothing":        {{"zz", "yy"}, {"", "q"}},
+		"identity":          {{"a", "a"}},
+		"unprintable":       {{"a", "a‮b"}, {"b", " b"}, {"c", ""}},
+		"a name with quote": {{"e", `e"x`}},
+		"spaced":            {{"e", "e e"}, {"e e", "e3"}},
+		"a loop target":     {{"b", "b2"}, {"d", "d2"}},
+	}
+	flows := map[string]string{"join.yaml": joinFlow, "struct.yaml": structFlow}
+	for file, flow := range flows {
+		for name, rs := range lists {
+			t.Run(file+"/"+name, func(t *testing.T) {
+				if file == "struct.yaml" {
+					rs = rs[:0:0]
+					for _, r := range lists[name] {
+						rs = append(rs, Rename{strings.NewReplacer("a", "validate", "b", "charge", "c", "receipt", "d", "manual review", "e", "charge").Replace(r.From), r.To})
+					}
+				}
+				want, wantMade := replayByOperations(t, file, flow, rs)
+				got, isJSON, gotMade := renameBaseline([]byte(flow), rs, true)
+				if !slices.Equal(gotMade, wantMade) {
+					t.Errorf("made %v, the operations made %v", gotMade, wantMade)
+				}
+				if !reflect.DeepEqual(normalJSON(t, file, got, isJSON), normalJSON(t, file, []byte(want), false)) {
+					t.Errorf("the renamed baseline differs from the operations' result (made %v):\n%s\nwant\n%s", gotMade, got, want)
+				}
+			})
+		}
+	}
+}
+
+// A long chain of steps renamed many times is not slow: the baseline is decoded once and the renames are
+// applied to that document. (Replaying each rename as an operation took about 0.3 s a rename on a file of
+// this size, a minute for the cap.)
+func TestRenameReplayIsFast(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("version: 1\nflow: chain\nentry: n0\nnodes:\n")
+	const nodes = 1500
+	for i := 0; i < nodes; i++ {
+		fmt.Fprintf(&b, "  - {name: n%04d, block: step, safety: idempotent}\n", i)
+	}
+	b.WriteString("  - name: gate\n    block: step\n    safety: side_effect\n    approval: {need: 2, approvers: [ops, finance, risk]}\nwiring:\n")
+	for i := 0; i+1 < nodes; i++ {
+		fmt.Fprintf(&b, "  - edge: [n%04d, n%04d]\n", i, i+1)
+	}
+	fmt.Fprintf(&b, "  - edge: [n%04d, gate]\nassert:\n  - every path to gate passes approval >= 2 of 3\n", nodes-1)
+	baseline := b.String()
+	if len(baseline) < 90_000 {
+		t.Fatalf("the flow is %d bytes, wanted about 100 KB", len(baseline))
+	}
+	renames := make([]Rename, maxRenames)
+	text := baseline
+	for i := range renames {
+		renames[i] = Rename{fmt.Sprintf("n%04d", i), fmt.Sprintf("m%04d", i)}
+		text = strings.NewReplacer(renames[i].From+",", renames[i].To+",", renames[i].From+"]", renames[i].To+"]", renames[i].From+" ", renames[i].To+" ").Replace(text)
+	}
+	renames[0] = Rename{"gate", "payment_gate"}
+	text = strings.NewReplacer("gate", "payment_gate", "to payment_gate", "to payment_gate").Replace(text)
+	start := time.Now()
+	_, _, made := renameBaseline([]byte(baseline), renames, true)
+	if took := time.Since(start); took > time.Second {
+		t.Errorf("%d renames of a %d byte flow took %s", len(renames), len(baseline), took)
+	}
+	if len(made) != len(renames) {
+		t.Errorf("%d of %d renames were made", len(made), len(renames))
+	}
+	// And a whole comparison with them is fast too, and finds nothing weaker.
+	start = time.Now()
+	w := compare("chain.yaml", "test", []byte(baseline), []byte(text), nil, renames)
+	if took := time.Since(start); took > 5*time.Second {
+		t.Errorf("the comparison took %s", took)
+	}
+	if len(w.Renamed) != len(renames) {
+		t.Errorf("the verdict honoured %d renames: %v", len(w.Renamed), w.CompareError)
+	}
 }

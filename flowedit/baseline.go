@@ -3,6 +3,7 @@ package flowedit
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -58,7 +59,7 @@ type Rename struct {
 
 // maxRenames bounds the renames one comparison replays; past it the list is ignored, which can only
 // over-report (the comparison then follows names, as `bide check -diff` does).
-const maxRenames = 500
+const maxRenames = 200
 
 // Compare classifies text against baseline, both the contents of a config file called name.
 func Compare(name, source string, baseline, text []byte) *Weakening {
@@ -75,25 +76,125 @@ func CompareRenamed(name, source string, baseline, text []byte, renames []Rename
 	return compare(name, source, baseline, text, nil, renames)
 }
 
-// renameBaseline replays renames, in order, on the baseline with the editor's own rename_node
-// operation, which refuses a rename onto a name the config already has and rewrites every place that
-// names the node, the assert lines included. It returns the renamed baseline and the renames it
-// made. A rename that is refused is skipped: the baseline keeps the name it has, so a node that is
-// not provably the renamed one is matched by name alone.
-func renameBaseline(name string, baseline []byte, renames []Rename) ([]byte, []Rename) {
+// renameBaseline replays renames, in order, on the baseline, with the rules of the editor's own
+// rename_node operation: the node must be there once and not be a join, the new name must pass
+// checkName and be neither a node's nor a join's, every place that names the node is rewritten (the
+// entry, edges, a switch, its arms and `else`, a join's inputs), and so is every assert line, through
+// the assertion grammar, which refuses a line it cannot write back. A rename that is refused is
+// skipped whole, so a node that is not provably the renamed one is matched by name alone. The baseline
+// is decoded once and the renames are applied to that one document, so the cost is the file's size
+// plus the renames times the places that name a node, not a parse and a splice of the text per rename.
+// It returns the renamed baseline as JSON and the renames it made; with none made it returns the
+// baseline as it was (not JSON, so the caller reads it as it always did).
+func renameBaseline(baseline []byte, renames []Rename, yaml bool) (out []byte, isJSON bool, made []Rename) {
 	if len(renames) == 0 || len(renames) > maxRenames {
-		return baseline, nil
+		return baseline, false, nil
 	}
-	var made []Rename
+	data := baseline
+	if yaml {
+		var err error
+		if data, err = ToJSON(baseline); err != nil {
+			return baseline, false, nil
+		}
+	}
+	var cfg structDoc
+	if json.Unmarshal(data, &cfg) != nil {
+		return baseline, false, nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	var doc map[string]any
+	if dec.Decode(&doc) != nil {
+		return baseline, false, nil
+	}
+	nodes, _ := doc["nodes"].([]any)
+	wiring, _ := doc["wiring"].([]any)
+	names := map[string]int{} // node name -> how many nodes have it
+	for _, n := range nodes {
+		if s, ok := asMap(n)["name"].(string); ok {
+			names[s]++
+		}
+	}
+	joins := map[string]bool{}
+	for _, w := range cfg.Wiring {
+		if w.Join != "" {
+			joins[w.Join] = true
+		}
+	}
 	for _, r := range renames {
-		res, err := ApplyOperation(name, baseline, Operation{Op: "rename_node", Node: r.From, Value: r.To})
-		if err != nil || !res.Changed {
+		if names[r.From] != 1 || joins[r.From] || r.From == r.To || checkName(r.To) != nil || names[r.To] > 0 || joins[r.To] {
 			continue
 		}
-		baseline = res.Text
+		// The assert lines first: one the grammar cannot write back refuses the rename, before anything changes.
+		lines, _ := doc["assert"].([]any)
+		rewritten := make([]string, len(lines))
+		refused := false
+		for i, l := range lines {
+			line, _ := l.(string)
+			text, hit, err := renameAssertion(line, r.From, r.To)
+			if err != nil {
+				refused = true
+				break
+			}
+			if hit {
+				rewritten[i] = text
+			}
+		}
+		if refused {
+			continue
+		}
+		for i, t := range rewritten {
+			if t != "" {
+				lines[i] = t
+			}
+		}
+		for _, n := range nodes {
+			if m := asMap(n); m["name"] == r.From {
+				m["name"] = r.To
+			}
+		}
+		if doc["entry"] == r.From {
+			doc["entry"] = r.To
+		}
+		sub := func(v any) any {
+			if v == r.From {
+				return r.To
+			}
+			return v
+		}
+		for _, w := range wiring {
+			m := asMap(w)
+			for _, key := range []string{"switch", "else"} {
+				if v, ok := m[key]; ok {
+					m[key] = sub(v)
+				}
+			}
+			for _, key := range []string{"edge", "inputs"} {
+				if l, ok := m[key].([]any); ok {
+					for i := range l {
+						l[i] = sub(l[i])
+					}
+				}
+			}
+			if l, ok := m["when"].([]any); ok {
+				for _, a := range l {
+					am := asMap(a)
+					am["to"] = sub(am["to"])
+				}
+			}
+		}
+		names[r.From]--
+		names[r.To]++
 		made = append(made, r)
 	}
-	return baseline, made
+	if len(made) == 0 {
+		return baseline, false, nil
+	}
+	renamed, err := json.Marshal(doc)
+	if err != nil {
+		return baseline, false, nil
+	}
+	return renamed, true, made
 }
 
 // compare is Compare for an editor that may know the program's blocks (ty not nil). The program the
@@ -106,15 +207,15 @@ func renameBaseline(name string, baseline []byte, renames []Rename) ([]byte, []R
 // structural baseline reads every safety the baseline left to its block as lowered; the union keeps
 // the strictness of the one and the precision of the other.
 func compare(name, source string, baseline, text []byte, ty *typing, renames []Rename) *Weakening {
-	baseline, made := renameBaseline(name, baseline, renames)
-	w := compareWith(name, source, baseline, text, ty)
+	baseline, baseJSON, made := renameBaseline(baseline, renames, formatOf(name) == "yaml")
+	w := compareWith(name, source, baseline, text, ty, baseJSON)
 	for _, r := range made {
 		w.Renamed = append(w.Renamed, r.From+" -> "+r.To)
 	}
 	if ty == nil {
 		return w
 	}
-	s := compareWith(name, source, baseline, text, nil)
+	s := compareWith(name, source, baseline, text, nil, baseJSON)
 	if w.CompareError != "" || s.CompareError != "" {
 		return w
 	}
@@ -129,11 +230,11 @@ func compare(name, source string, baseline, text []byte, ty *typing, renames []R
 	return w
 }
 
-func compareWith(name, source string, baseline, text []byte, ty *typing) *Weakening {
+func compareWith(name, source string, baseline, text []byte, ty *typing, baselineJSON bool) *Weakening {
 	w := &Weakening{Baseline: source}
-	cfg := func(b []byte) (runview.Config, error) {
+	cfg := func(b []byte, isJSON bool) (runview.Config, error) {
 		data := b
-		if formatOf(name) == "yaml" {
+		if formatOf(name) == "yaml" && !isJSON {
 			var err error
 			if data, err = ToJSON(b); err != nil {
 				return runview.Config{}, err
@@ -144,12 +245,12 @@ func compareWith(name, source string, baseline, text []byte, ty *typing) *Weaken
 		}
 		return runview.Config{Name: name, Data: data}, nil
 	}
-	old, err := cfg(baseline)
+	old, err := cfg(baseline, baselineJSON)
 	if err != nil {
 		w.CompareError = "the baseline does not parse: " + err.Error()
 		return w
 	}
-	cur, err := cfg(text)
+	cur, err := cfg(text, false)
 	if err != nil {
 		w.CompareError = "the text does not parse: " + err.Error()
 		return w
