@@ -3271,7 +3271,7 @@ before the ledger code (PR4 of the build plan), so it is the specification the c
   the marker and halts, so after a crash its slot stays counted. An attempt of a retry-safe tool (an
   `Idempotent` write, not `Marked`) has no claim: its attempt is the tool-use ID, and any number of
   drivers and re-runs reserve it, find the live slot by the lookup and begin.
-- **Release, void and reconcile** (`Cancel`, `Void`, `StrayVoid`, `Reconcile`). A driver that is
+- **Release, void and reconcile** (a retry-safe attempt is never released: `ReleaseUnmarked` is FALSE in every passing configuration, and the note's section 6.5 says so after finding F1) (`Cancel`, `Void`, `StrayVoid`, `Reconcile`). A driver that is
   reserved, has not begun and finds the call cancelled releases the slot (a release slot, inserted by
   the same protocol, after a dedupe scan: the release looks for a live slot of the attempt, so a slot
   already released is done) and then voids the attempt (`recordNotStarted`); release before void.
