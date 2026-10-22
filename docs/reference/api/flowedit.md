@@ -131,6 +131,8 @@ type Edited struct {
 	Changed bool `json:"changed"`
 
 	Cascade []string `json:"cascade,omitempty"`
+
+	Renames []Rename `json:"renames,omitempty"`
 }
 ```
 
@@ -321,6 +323,17 @@ Refusal is why the engine would not apply an operation.
 
 - `func (r *Refusal) Error() string`: Error describes the refusal, starting with "flowedit: refused:".
 
+### type Rename
+
+```go
+type Rename struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+```
+
+Rename is one rename the author made in this editing session: the node From became To.
+
 ### type Result
 
 ```go
@@ -465,6 +478,8 @@ type Weakening struct {
 
 	Changes []string `json:"changes,omitempty"`
 
+	Renamed []string `json:"renamed,omitempty"`
+
 	CompareError string `json:"compare_error,omitempty"`
 
 	NotCertified string `json:"not_certified,omitempty"`
@@ -476,6 +491,7 @@ Weakening is the answer to "is this text a weaker flow than the one we started f
 **Constructors and functions**
 
 - `func Compare(name, source string, baseline, text []byte) *Weakening`: Compare classifies text against baseline, both the contents of a config file called name.
+- `func CompareRenamed(name, source string, baseline, text []byte, renames []Rename) *Weakening`: CompareRenamed is Compare for a text reached by the renames given, in order: the baseline is read as it would be had those renames been made in it, so a renamed node is matched to its baseline self instead of reading as a removed node and a new one.
 
 ### type Wire
 
