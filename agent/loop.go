@@ -644,7 +644,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 				}
 				denied, expired = !tally.Passed(), tally.Expired
 			}
-			if pol := spec.Approval; !denied && pol != nil {
+			if pol := effectiveGates(spec, gateInputs{}).Own(); !denied && pol != nil {
 				var approved bool
 				expAt, hasDeadline, err := openDeadline(ctx, a.store, runID, tu.ID, pol, recs)
 				if err != nil {
@@ -698,7 +698,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 				if expired {
 					deniedResult = ExpiredResult
 				}
-				if _, err := a.store.put(ctx, runID, ToolResultStep(tu.ID), Record{Kind: StepToolResult, ToolUseID: tu.ID, IsError: true, Result: json.RawMessage(deniedResult), Safety: recordedSafety(*spec), Approval: spec.Approval.Clone()}); err != nil {
+				if _, err := a.store.put(ctx, runID, ToolResultStep(tu.ID), Record{Kind: StepToolResult, ToolUseID: tu.ID, IsError: true, Result: json.RawMessage(deniedResult), Safety: recordedSafety(*spec), Approval: effectiveGates(spec, gateInputs{}).Snapshot()}); err != nil {
 					return leave(err)
 				}
 				done[tu.ID] = true
@@ -886,7 +886,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 						callErr = fmt.Errorf("tool %q: the tool middleware returned an error without calling next, and not ErrToolNotCalled, so the tool may have run: %w (%w)", c.tu.Name, callErr, ErrToolOutcomeUnknown)
 					}
 					// The safety and approval gate the call ran under, for a saga rollback and an audit.
-					r := Record{Kind: StepToolResult, ToolUseID: c.tu.ID, Safety: recordedSafety(*c.spec), Approval: c.spec.Approval.Clone()}
+					r := Record{Kind: StepToolResult, ToolUseID: c.tu.ID, Safety: recordedSafety(*c.spec), Approval: effectiveGates(c.spec, gateInputs{}).Snapshot()}
 					if callErr != nil && ctxDone(sctx) {
 						// (A call known not to have reached the tool records nothing here either,
 						// and called is false for it, so its claim is recorded as never started
