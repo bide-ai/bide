@@ -7,9 +7,11 @@ package redislog
 
 import (
 	"context"
+	"crypto/fips140"
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/redis/go-redis/v9"
@@ -71,7 +73,18 @@ func (l *Log) checkNames(entity string) error {
 // it. Redis runs a script atomically, so concurrent appends from any number of processes get
 // distinct, dense positions, and a script run twice for one append (a client retry after a lost
 // reply) records its event once.
-var appendScript = redis.NewScript(`
+//
+// The script is built on first use, not in package init: go-redis hashes its source with SHA-1
+// (the key EVALSHA caches a script under), and importing a package must never panic under
+// GODEBUG=fips140=only, where SHA-1 is refused. That hash is a cache key the Redis protocol
+// defines, not a security use, so it is computed with enforcement off (fips140.WithoutEnforcement).
+var appendScript = sync.OnceValue(func() *redis.Script {
+	var s *redis.Script
+	fips140.WithoutEnforcement(func() { s = redis.NewScript(appendScriptSource) })
+	return s
+})
+
+const appendScriptSource = `
 local recorded = redis.call('HGET', KEYS[2], ARGV[2])
 if recorded then
 	local id = (tonumber(recorded) + 1) .. '-0'
@@ -88,7 +101,7 @@ local n = redis.call('XLEN', KEYS[1])
 redis.call('XADD', KEYS[1], (n + 1) .. '-0', 'event', ARGV[1])
 redis.call('HSET', KEYS[2], ARGV[2], n)
 return {n, ARGV[1]}
-`)
+`
 
 // Append durably appends an event to the entity's stream under id and returns its position, or
 // returns the position already recorded for id. The stream must be written only through this
@@ -106,7 +119,7 @@ func (l *Log) Append(ctx context.Context, entity, id, event string) (int64, erro
 	if err := l.checkNames(entity); err != nil {
 		return 0, err
 	}
-	res, err := appendScript.Run(ctx, l.rc, []string{l.key(entity), l.idsKey(entity)}, event, id).Slice()
+	res, err := appendScript().Run(ctx, l.rc, []string{l.key(entity), l.idsKey(entity)}, event, id).Slice()
 	if err != nil {
 		return 0, err
 	}
