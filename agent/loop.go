@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1145,8 +1146,11 @@ func toolUseIDs(msgs []Message) map[string]bool {
 // appears twice in the turn, or an ID that is not valid UTF-8 (the journal's JSON cannot hold
 // it, so the replayed ID would differ from the live one). The loop records each call's result
 // and journal step under its ID, so a reused ID would pass a new call off as one already done.
-// Any other ID is safe: the keys and sub-run ID derived from it encode it (see encodeID). Only
-// live turns are checked; a turn replayed from the journal is taken as recorded.
+// An ID with a '#' is refused as well (ErrToolUseIDInvalid): the engine derives a second
+// approval subject from a call's ID by appending "#<suffix>", and no model-chosen ID may spell
+// one. Any other ID is safe: the keys and sub-run ID derived from it encode it (see encodeID).
+// Only live turns are checked; a turn replayed from the journal is taken as recorded, so a
+// journal that holds a '#' ID from before the check replays.
 func checkToolUseIDs(m Message, used map[string]bool) error {
 	seen := map[string]bool{}
 	for _, tu := range m.toolUses() {
@@ -1155,6 +1159,8 @@ func checkToolUseIDs(m Message, used map[string]bool) error {
 			return fmt.Errorf("model called tool %q with no tool-use id: %w", tu.Name, ErrToolUseIDReused)
 		case !utf8.ValidString(tu.ID):
 			return fmt.Errorf("model called tool %q with tool-use id %q, which is not valid UTF-8: %w", tu.Name, tu.ID, ErrToolUseIDReused)
+		case strings.Contains(tu.ID, "#"):
+			return fmt.Errorf("model called tool %q with tool-use id %q, which holds '#': %w", tu.Name, tu.ID, ErrToolUseIDInvalid)
 		case used[tu.ID]:
 			return fmt.Errorf("model called tool %q with tool-use id %q from an earlier turn: %w", tu.Name, tu.ID, ErrToolUseIDReused)
 		case seen[tu.ID]:

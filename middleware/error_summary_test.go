@@ -33,6 +33,7 @@ func TestErrorSummary(t *testing.T) {
 		{wrap(agent.ErrToolArgs), "invalid tool arguments: tool"},
 		{wrap(agent.ErrMaxTurns), "max turns exceeded: budget"},
 		{wrap(agent.ErrToolUseIDReused), "tool-use id missing, reused, or malformed: protocol (model)"},
+		{wrap(agent.ErrToolUseIDInvalid), "tool-use id holds a reserved character: protocol (model)"},
 		{wrap(context.Canceled), "context canceled"},
 		{wrap(context.DeadlineExceeded), "context deadline exceeded"},
 		{wrap(&agent.APIError{StatusCode: 401, Body: secret, Message: secret, Code: "invalid_api_key", Err: agent.ErrModel}),

@@ -1217,6 +1217,9 @@ func (c *cmd) list(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("list runs: %w", err)
 		}
+		if agent.IsCapRun(id) {
+			continue // a cap ledger holds slots, no run and no gate
+		}
 		runs = append(runs, id)
 	}
 	slices.Sort(runs)

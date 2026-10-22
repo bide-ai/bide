@@ -46,8 +46,26 @@ var reservedPrefixes = []string{
 	"node:",               // a plan flow's nodes, run as Steps: node:<name>, node:iter:<n>:<name> (see planNodeStep)
 	"switch:",             // a plan flow's branch choices: switch:<over>, switch:iter:<n>:<over>
 	"flow:",               // a plan flow's topology digest and topology: flow:digest, flow:topology
+	"slot:",               // a cap ledger's slots: slot:<n>, in a run under @cap/ (see capRunPrefix)
+	"cap-intent:",         // a cap reservation's intent: its window and amount, written before the slot
+	"cap-reserve:",        // the slot a call reserved, in the run that made the call
 	"gate-reason:",        // why a call was gated: gate-reason:<call>
 }
+
+// capRunPrefix starts the ID of every cap ledger run, which holds a cap's reservations in the same
+// store as the runs (see IsCapRun). A caller can never name such a run (checkRunID, Session).
+const capRunPrefix = "@cap/"
+
+// IsCapRun reports whether runID is a cap ledger run: it starts with "@cap/", which checkRunID
+// and Session refuse in a caller's ID. A ledger run holds slot records and never ends, so no
+// run:start or end marker is in it, and a recovery pass, a notification scan or a run listing has
+// nothing to do with it.
+func IsCapRun(runID string) bool { return strings.HasPrefix(runID, capRunPrefix) }
+
+// IsReservedRun reports whether runID is a run the engine reserves for its own records, which is
+// not a run of an agent: the stop control run (StopControlRun) or a cap ledger run (IsCapRun).
+// A pass over a store's runs that drives or lists runs (recovery, the run viewer) skips them.
+func IsReservedRun(runID string) bool { return runID == StopControlRun || IsCapRun(runID) }
 
 // planNodePrefix starts the key of every plan flow node, which package plan runs as a Step through
 // the engine step hook (internal/journalhook.Step).
@@ -226,8 +244,8 @@ func withSessionRun(ctx context.Context, runID string) context.Context {
 
 // protocol:delegation begin SStart
 
-// checkRunID refuses a run ID that is empty or contains subRunSep, which only derived run IDs
-// carry: a tool call may start the sub-agent run of its own call (SubRunID) or a programmatic
+// checkRunID refuses a run ID that is empty, is the stop control run, starts with capRunPrefix, or
+// contains subRunSep, which only derived run IDs carry: a tool call may start the sub-agent run of its own call (SubRunID) or a programmatic
 // sub-run it names (RunInfo.SubRunFor), from the context the loop gave it, and a session drives
 // its turn's run with that run's ID in the context.
 func checkRunID(ctx context.Context, runID string) error {
@@ -238,6 +256,10 @@ func checkRunID(ctx context.Context, runID string) error {
 	}
 	if runID == StopControlRun {
 		return fmt.Errorf("run: run ID %q is reserved by the engine (the stop control run): %w", runID, ErrConfig)
+	}
+	if IsCapRun(runID) {
+		// Before the derived-ID allowance below: no run, root or derived, is named under @cap/.
+		return fmt.Errorf("run: run ID %q starts with %q, which the engine reserves for the cap ledger runs: %w", runID, capRunPrefix, ErrConfig)
 	}
 	if !strings.Contains(runID, subRunSep) || derivedRunID(ctx, runID) {
 		return nil

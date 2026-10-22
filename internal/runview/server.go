@@ -59,7 +59,7 @@ func (s JournalSource) Runs(ctx context.Context) ([]string, error) {
 		if err != nil {
 			return ids, err
 		}
-		if id != agent.StopControlRun { // the kill switch's control run is not a run
+		if !agent.IsReservedRun(id) { // the kill switch's control run and a cap ledger are not runs
 			ids = append(ids, id)
 		}
 	}
@@ -92,7 +92,7 @@ func (s JournalSource) UnfinishedLimit(ctx context.Context, limit int) ([]string
 		if err != nil {
 			return ids, err
 		}
-		if id != agent.StopControlRun {
+		if !agent.IsReservedRun(id) {
 			ids = append(ids, id)
 			if limit > 0 && len(ids) >= limit {
 				break

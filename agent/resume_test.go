@@ -10,9 +10,9 @@ import (
 	"testing"
 )
 
-// ValidateRunID refuses an empty ID and one that contains the sub-run separator.
+// ValidateRunID refuses an empty ID, one that contains the sub-run separator, and one under @cap/.
 func TestValidateRunID(t *testing.T) {
-	for id, bad := range map[string]bool{"": true, "a>b": true, ">": true, "plain": false, "with space/and:colon": false} {
+	for id, bad := range map[string]bool{"": true, "a>b": true, ">": true, "@cap/x": true, "plain": false, "with space/and:colon": false, "@capx": false, "x@cap/y": false} {
 		if err := ValidateRunID(id); errors.Is(err, ErrConfig) != bad || (err != nil) != bad {
 			t.Errorf("ValidateRunID(%q) = %v; refused should be %v", id, err, bad)
 		}

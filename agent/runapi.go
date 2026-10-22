@@ -10,8 +10,9 @@ import (
 )
 
 // ValidateRunID reports whether id may name a root run (Run, Resume, Stream,
-// RunTyped): it is not empty and holds no '>', which the engine reserves for the run IDs of
-// sub-agents and session turns. Any other string is a valid run ID: the journal's keys encode
+// RunTyped): it is not empty, holds no '>', which the engine reserves for the run IDs of
+// sub-agents and session turns, and does not start with "@cap/", which it reserves for cap
+// ledger runs (IsCapRun). Any other string is a valid run ID: the journal's keys encode
 // whatever they are given. A run ID that fails is ErrConfig, and the run entry points return it
 // with a nil Result. (From a tool call's own context they also accept the programmatic sub-run IDs
 // RunInfo.SubRunFor derives.)
@@ -21,6 +22,9 @@ func ValidateRunID(id string) error {
 	}
 	if strings.Contains(id, subRunSep) {
 		return fmt.Errorf("run: run ID %q contains %q, which the engine reserves for the run IDs of sub-agents and session turns: %w", id, subRunSep, ErrConfig)
+	}
+	if IsCapRun(id) {
+		return fmt.Errorf("run: run ID %q starts with %q, which the engine reserves for the cap ledger runs: %w", id, capRunPrefix, ErrConfig)
 	}
 	return nil
 }

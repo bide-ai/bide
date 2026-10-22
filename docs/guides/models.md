@@ -244,8 +244,12 @@ The agent checks every live model turn whatever the adapter: a tool call with no
 used earlier in the conversation, one repeated within the turn, or one that is not valid UTF-8 fails
 the turn with
 `agent.ErrToolUseIDReused` (wrapping `ErrProtocol` and `ErrModel`) instead of passing the call off
-as already done. The check runs below middleware, so `middleware.Retry` retries it, and the rejected
-turn is never journaled. Turns replayed from an existing journal are not re-checked.
+as already done. An ID that holds a `#` fails the turn with `agent.ErrToolUseIDInvalid` (also
+wrapping `ErrProtocol` and `ErrModel`): the engine reserves `#` in an ID, to derive a second
+approval subject from a call's ID. The shipped adapters pass the provider's ID through and none of
+their IDs holds one. The check runs below middleware, so `middleware.Retry` retries either, and the
+rejected turn is never journaled. Turns replayed from an existing journal are not re-checked, so a
+journal that holds a `#` ID from before the check still replays.
 
 Any other ID is safe, whatever characters it has or however long it is. The journal keys derived
 from an ID (`agent.ToolResultStep`, the call's attempt marker, approvals, compensation) and a
