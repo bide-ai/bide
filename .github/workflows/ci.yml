@@ -125,7 +125,8 @@ jobs:
         # Test (windows-latest) runs wherever heavy does, and also on a pull request that changes
         # code where Windows-only failures have been found (windows-needed.sh: tests, testdata and
         # goldens, .gitattributes, Go files using os, path, io/fs, syscall, mime or encoding).
-        # Any doubt (a failed diff, this step failing) leaves it unset, and the job runs.
+        # A run that changes no code, on any event, skips it. Any doubt (a failed diff, this step
+        # failing) leaves it unset or true, and the job runs (windows-decide.sh).
         shell: bash
         env:
           EVENT: ${{ github.event_name }}
@@ -133,16 +134,7 @@ jobs:
           HEAD: ${{ github.event.pull_request.head.sha }}
           CODE: ${{ steps.diff.outputs.code }}
           HEAVY: ${{ steps.diff.outputs.heavy }}
-        run: |
-          windows=true
-          if [ "$HEAVY" != true ] && [ "$EVENT" = pull_request ]; then
-            if [ "$CODE" = false ]; then
-              windows=false
-            elif files=$(git diff --name-only "$BASE" "$HEAD"); then
-              .github/scripts/windows-needed.sh <<< "$files" || windows=false
-            fi
-          fi
-          echo "windows=$windows" | tee -a "$GITHUB_OUTPUT"
+        run: .github/scripts/windows-decide.sh | tee -a "$GITHUB_OUTPUT"
       - id: shards
         name: Every module is in exactly one Linux test shard
         env:
@@ -236,6 +228,9 @@ jobs:
           SHARDS="$TEST_SHARDS" .github/scripts/shards.sh check-packages
           # Which pull requests run Test (windows-latest); the self-test covers both directions.
           .github/scripts/windows-needed.sh --self-test
+          # Which runs skip it: any event with no code change, and a pull request with no
+          # Windows-sensitive file; the self-test covers every event and a failed diff.
+          .github/scripts/windows-decide.sh --self-test
           # Every test file that starts a process is in a package of the list of tests that always
           # run, or in the list of those whose result depends only on the test binary.
           .github/scripts/check-uncached.sh --self-test
