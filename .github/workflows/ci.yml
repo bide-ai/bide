@@ -48,6 +48,8 @@ jobs:
   #   code    false when the change touches only documentation (and the like, changed-code.sh):
   #           the Go jobs' steps are skipped, but every job still reports under its usual name
   #   full    true on a push, in the merge queue, with the full-ci label, and on any doubt
+  #           (a push is diffed against its before SHA when it is one commit, push-files.sh; any
+  #           other push counts as code, so a docs-only commit on main skips the Go jobs as on a PR)
   #   heavy   code and full: the macOS, Windows and Integration jobs, the json/v2 job and Lint's
   #           reproducible-build check run
   #   shards  the Linux test shards: all, or only "rest" for a pull request that changes the
@@ -78,6 +80,9 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          BEFORE: ${{ github.event.before }}
+          FORCED: ${{ github.event.forced }}
+          SHA: ${{ github.sha }}
         run: |
           code=true
           full=true
@@ -88,8 +93,18 @@ jobs:
               case ",$labels," in *,full-ci,*) ;; *) full=false ;; esac
             fi
           fi
-          # A pull request and a merge queue batch are diffed against their base; a push to main is not.
-          if [ "$EVENT" != push ] && files=$(git diff --name-only "$BASE" "$HEAD"); then
+          # A pull request and a merge queue batch are diffed against their base. A push to main is
+          # diffed against the push's before SHA, but only when the push is one ordinary commit
+          # (push-files.sh); a multi-commit push, a force push or a first push is all code.
+          if [ "$EVENT" = push ]; then
+            files=$(.github/scripts/push-files.sh "$BEFORE" "$SHA" "$FORCED") || files=
+            [ -n "$files" ] || echo "Push not classifiable (or no changed files): treating it as code"
+          elif files=$(git diff --name-only "$BASE" "$HEAD"); then
+            :
+          else
+            files=
+          fi
+          if [ -n "$files" ]; then
             echo "Changed files:"; echo "$files"
             # Paths no Go build or test reads are listed in changed-code.sh (shared with the
             # gsm machine gate); everything else is code.
@@ -203,6 +218,9 @@ jobs:
           # The docs-only test (changed-code.sh) is what lets a pull request or a queue batch skip
           # the Go jobs: its cases include the documents the Go tests read.
           .github/scripts/changed-code.sh --self-test
+          # A push to main is classified only when it is one commit on top of its before SHA; the
+          # self-test proves a multi-commit, forced, first or unreachable-before push is not.
+          .github/scripts/push-files.sh --self-test
       - name: Every module is published or repo-only
         if: needs.changes.outputs.code != 'false'
         run: |
