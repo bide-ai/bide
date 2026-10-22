@@ -106,6 +106,17 @@ func (e *session) verdict() *Weakening {
 	return v.Weakening
 }
 
+// insertBefore adds an ungated step between validate and node, which the classifier alone cannot pair
+// a renamed node across (its edges are not the ones it had) and which weakens nothing.
+func (e *session) insertBefore(node string) *Weakening {
+	e.t.Helper()
+	e.do(Operation{Op: "add_node", Node: "prep", Value: "validate"})
+	e.do(Operation{Op: "set_safety", Node: "prep", Value: "readonly"})
+	e.do(Operation{Op: "add_edge", Node: "prep", To: node})
+	e.do(Operation{Op: "remove_edge", Node: "validate", To: node})
+	return e.do(Operation{Op: "add_edge", Node: "validate", To: "prep"})
+}
+
 func rn(from, to string) Operation { return Operation{Op: "rename_node", Node: from, Value: to} }
 
 // eachMode runs f on the editor over the Registry, over its description and over neither, each opened
@@ -142,8 +153,8 @@ func TestRenameOfAGatedNodeIsNotWeakened(t *testing.T) {
 			t.Errorf("the verdict does not say which rename it honoured: %q", w.Renamed)
 		}
 		// The text that follows is one the classifier alone reads as weakened (it cannot pair the renamed
-		// node once it has another edge), so each answer below depends on the list.
-		notWeakened(t, "a rename and a new edge", e.do(Operation{Op: "add_edge", Node: "charge_card", To: "receipt"}))
+		// node once its edges differ), so each answer below depends on the list.
+		notWeakened(t, "a rename and a step before the gate", e.insertBefore("charge_card"))
 		// The saved file is not changed by any of this: the confirmation, the save and the verdict of
 		// the saved file agree.
 		var pv Preview
@@ -170,11 +181,11 @@ func TestRenameBesideAnotherEditMatchesTheNode(t *testing.T) {
 	eachMode(t, renameFlow, func(t *testing.T, kind string, s *Server) {
 		e := newSession(t, s, renameFlow)
 		e.do(rn("charge", "charge_card"))
-		w := e.do(Operation{Op: "add_edge", Node: "charge_card", To: "receipt"})
-		notWeakened(t, "a rename and a new edge from the gated node", w)
+		w := e.insertBefore("charge_card")
+		notWeakened(t, "a rename and a step before the gated node", w)
 		// Rename the node beside it too.
 		w = e.do(rn("audit", "ledger"))
-		notWeakened(t, "two renames and a new edge", w)
+		notWeakened(t, "two renames and a step before the gate", w)
 	})
 }
 
@@ -250,7 +261,7 @@ func TestRenameUndone(t *testing.T) {
 		// Rename, lower the need, undo twice, redo-by-hand is not needed: the stack restores each list.
 		f := newSession(t, s, renameFlow)
 		f.do(rn("charge", "charge_card"))
-		f.do(Operation{Op: "add_edge", Node: "charge_card", To: "receipt"})
+		f.insertBefore("charge_card")
 		f.do(Operation{Op: "set_approval", Node: "charge_card", Approval: gate(1, []string{"ops", "finance", "risk"}, true, "24h")})
 		w = f.back()
 		notWeakened(t, "undo to a text only the rename explains", w)
@@ -258,13 +269,15 @@ func TestRenameUndone(t *testing.T) {
 			t.Errorf("one undo should keep the rename: %v", f.renames)
 		}
 		notWeakened(t, "rename kept, need restored", f.verdict())
-		f.back()
-		if len(f.renames) != 1 {
-			t.Errorf("the rename is still made after two undos: %v", f.renames)
+		for len(f.undo) > 1 {
+			f.back()
+			if len(f.renames) != 1 {
+				t.Errorf("the rename is made until the text before it comes back: %v at %d steps", f.renames, len(f.undo))
+			}
 		}
 		f.back()
-		if len(f.renames) != 0 {
-			t.Errorf("three undos should drop the rename: %v", f.renames)
+		if len(f.renames) != 0 || f.text != renameFlow {
+			t.Errorf("the last undo should drop the rename: %v", f.renames)
 		}
 	})
 }
