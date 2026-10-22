@@ -67,7 +67,7 @@ Every required check reports on every pull request. A check that does not run on
 | `Lint` | modelsync, docs snippets and removed names always; gofmt, vet, doccheck and govulncheck when code changed | also the reproducible-build check (all skipped but the first three for a documentation-only batch) |
 | `Test (ubuntu-latest)` | `agent`, `core` and `rest` shards under `-race`, when code changed (only `rest` for a change to `examples/` alone) | also the run without `encoding/json/v2` |
 | `Test (macos-latest)` | skipped | one job, every module, without `-race` |
-| `Test (windows-latest)` | skipped | one job, every module, without `-race` |
+| `Test (windows-latest)` | skipped, except on a pull request that changes Windows-sensitive files (tests, testdata, goldens, `.gitattributes`, non-Go files, Go files using `os`, `path`, `io/fs`, `syscall`, `mime`, `encoding`); also skipped on any documentation-only run, push or queue batch | one job, every module, without `-race` |
 | `Integration (Postgres, Redis)` | skipped | the Postgres and Redis suites against service containers, twice each |
 | `Models` | the TLA+ shards holding a model whose directory under `spec/tla` the change touches (the batch's changes in the queue) | the same in the queue; every model on main and nightly |
 | `gsm machine gate` | when the change can alter what a bide program makes (code, less CI scripts, other workflows and tool configuration) | always |
