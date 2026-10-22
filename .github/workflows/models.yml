@@ -51,6 +51,7 @@ env:
     notify-regress: notify/regress notify/limits
     identity: identity identity/limits
     identity-regress: identity/regress
+    caps: caps caps/regress caps/findings
 
 jobs:
   plan:

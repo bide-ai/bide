@@ -3,7 +3,7 @@
 TLA+ models of bide's coordination protocols, written in PlusCal and checked with the TLC model
 checker. The plan and the reasoning behind it are in the design note
 [formal models of the coordination protocols](../../docs/design/formal-models.md);
-this directory holds models 1 (the claim protocol), 1b (the approval gate), 2 (the bide protocol's claim rules), 7 (flow semantics), 8 (spend accounting), 9 (the tool-call state machine), 10 (the run lifecycle and recovery), 11 (delegation, sub-run authority and saga trees) and 12 (sessions) of that plan, two design models: 13 (probes for unknown outcomes) and 14 (notifications), model 15 (approver identity: the counting, status, time and gate rules of the certificate-bound approver design) and model 16 (the kill switch: the stop, the lift and the change of mode, and a call's read of them).
+this directory holds models 1 (the claim protocol), 1b (the approval gate), 2 (the bide protocol's claim rules), 7 (flow semantics), 8 (spend accounting), 9 (the tool-call state machine), 10 (the run lifecycle and recovery), 11 (delegation, sub-run authority and saga trees) and 12 (sessions) of that plan, two design models: 13 (probes for unknown outcomes) and 14 (notifications), model 15 (approver identity: the counting, status, time and gate rules of the certificate-bound approver design) model 16 (the kill switch: the stop, the lift and the change of mode, and a call's read of them) and model 17 (the cap ledger: dense insert-once slots, the intent and the window, release and reconcile).
 
 What a model check establishes, stated narrowly: within the bounds a configuration states (drivers,
 processes, faults, attempt numbers), TLC explores every interleaving of the modelled rules and every
@@ -250,8 +250,8 @@ spec/tla/
     regress/         historical rules, each of which must still produce its counterexample
     findings/        open findings, which fail until they are fixed (none open at present)
     limits/          accepted behavior, stated as an expected violation
-  flows/, protocol/, spend/, toolcall/, lifecycle/, delegation/, sessions/, probes/, notify/, identity/, stop/
-                     models 7, 2, 8, 9, 10, 11, 12, 13, 14, 15 and 16, laid out the same way (toolcall/ also
+  flows/, protocol/, spend/, toolcall/, lifecycle/, delegation/, sessions/, probes/, notify/, identity/, stop/, caps/
+                     models 7, 2, 8, 9, 10, 11, 12, 13, 14, 15, 16 and 17, laid out the same way (toolcall/ also
                      holds ToolCallApalache.tla, model 9's typed wrapper, not yet checked; notify/
                      also holds NotifyLifecycle.tla, model 14 composed with model 10)
 ```
@@ -3234,3 +3234,159 @@ Each is in `stop/regress/` and must fail with its named property:
 - `no-comp-in-key` (`StricterNeverRefused`): a key that leaves the compensation out refuses a stop that holds compensation because a weaker one is in force, which weakens the operator's intent mid-incident (asked for in the review of the generation rule). It shows the property is not vacuous (two states, not a deep interleaving).
 - `no-backstop` (`SetNeverBlocked`): without the content-derived fallback a squatter who takes the generations leaves a stop with no name to be written under, and a keyless writer can stop the kill switch from being set (found in the review of the generation rule).
 - `lift-refires` (`AtMostOnce`): a lift starts a halted call again, and it fires twice.
+
+## Model 17: the cap ledger
+
+`caps/Caps.tla` checks the cap ledger of the design note
+[untrusted content and amount caps](../../docs/design/untrusted-content-and-amount-caps.md) (section
+6.5), in plain TLA+. A ledger is a reserved journal run of dense, insert-once slots `slot:0`,
+`slot:1`, ..., one per window; a slot is a reserve or a release and carries `cum_after`, the
+window's total after it. A driver that reserves reads the ledger, takes the last slot's `cum_after`,
+and inserts `slot:n+1`; the store has one winner per name, so two drivers that read the same last
+slot race for the same name, exactly one wins, and the loser reads again. The model is written
+before the ledger code (PR4 of the build plan), so it is the specification the code is held to.
+
+### What is modelled
+
+- **The store, as two requirements.** A1: an insert of a taken name fails (one winner per name).
+  A2: a reader sees a prefix of the ledger, so its last slot is well defined. The model assumes both,
+  as the `agent/storetest` suite checks them for MemStore, SQLite, Postgres and `AuditedStore`; two
+  regressions break one each (`store-no-a1`, `store-no-a2`) and show what each is for. A read is a
+  prefix read at one instant and the insert is a separate step, so every interleaving of the read,
+  the insert and another driver's insert is explored.
+- **Reserve** (`Read`, `Insert`): read the ledger; if a live slot carries this attempt it is the
+  reservation (the lookup); else `cum_after' = cum_after + amount`, refused when it exceeds the
+  limit and the attempt has no waiver (`WaiverOf`); else insert at `n+1`, and on a lost insert read
+  again. A slot over the limit is written only for a waived attempt and is marked `over`.
+- **The intent and the window** (`Start`, `Check`, `IdxInsert`, `Intent`). Before the first slot the
+  driver writes `cap-intent` (insert-once, in the run's own journal) holding the window, derived
+  once from its clock (`now`, which `Tick` moves to the next window). A driver that finds an intent
+  at `Start` (a re-run, a resume, a second driver) reads the window from it and never derives it
+  again. The clock bound is checked only when the intent is first written: the driver's window must
+  not be earlier than the newest window in the index run, nor more than `Bound` later, else the
+  reserve is refused; the window is inserted into the index before the intent is written. The
+  ledgers of several windows (`MaxWin`) are modelled, so a slot in the wrong window is visible.
+- **Attempt identity.** An attempt of a tool that is not retry-safe (`Marked`) has an exclusive claim
+  before the reserve (`Start`): only the driver that won it reserves and begins, and a re-run finds
+  the marker and halts, so after a crash its slot stays counted. An attempt of a retry-safe tool (an
+  `Idempotent` write, not `Marked`) has no claim: its attempt is the tool-use ID, and any number of
+  drivers and re-runs reserve it, find the live slot by the lookup and begin.
+- **Release, void and reconcile** (`Cancel`, `Void`, `StrayVoid`, `Reconcile`). A driver that is
+  reserved, has not begun and finds the call cancelled releases the slot (a release slot, inserted by
+  the same protocol, after a dedupe scan: the release looks for a live slot of the attempt, so a slot
+  already released is done) and then voids the attempt (`recordNotStarted`); release before void.
+  `StrayVoid` is the loop's other paths, which void without a release; the slot stays counted until
+  `Reconcile`, run by any finished driver (`Recover`, `bide audit caps`), releases it in the window
+  the attempt's intent names. Two reconcile passes over one slot race, and the slot is released once.
+- **Faults.** `Crash` is a crash or a re-run of the call (a retry, a resume, a middleware's second
+  `next`) at any step: the driver's local state is lost and it starts again. Crashes, cancels, stray
+  voids, reconcile passes and clock ticks have finite budgets (`MaxCrash`, `MaxCancel`, `MaxStray`,
+  `MaxRecon`, `MaxTick`), and there is no fairness: the properties are safety properties.
+- **Not modelled**: amount parsing, the key digest and the segment encoding (tested and fuzzed in
+  Go), the `cap-reserve` record (the audit record; recovery does not depend on it), the store's own
+  implementation (A1 and A2 are assumed), where a waiver comes from, and the rewriting of arguments
+  after the decision point (C7, tested in Go).
+
+| Property | Kind | Statement |
+|---|---|---|
+| `NoOvershoot` | invariant | the sum of the live reservations of a window never exceeds the limit but by a waived slot: the slots without a waiver stay within the limit, and a total over it holds a live waived slot |
+| `Dense` | invariant | a ledger has no gap: its slot names are 0..k-1, so no slot at `n+2` exists before `n+1` |
+| `CumExact` | invariant | each slot's `cum_after` is the slot before it plus (a reserve) or minus (a release) its amount |
+| `ExactlyOnce` | invariant | an attempt has at most one live slot, in every window |
+| `ReleaseOnce` | invariant | a slot is released at most once |
+| `NeverUndercount` | invariant | an attempt whose tool began holds a live slot: no release, rollback or other, takes it back |
+| `IntentStable` | invariant | an attempt's window never changes after its intent: every slot of an attempt with an intent is in the intent's window, and so is every read and write of a driver past the intent |
+| `IndexCoversIntents` | invariant | the window of every intent is in the index: the index is written first |
+| `IntentChecked` | invariant | the clock bound held when an intent was written: its window is not earlier than the newest recorded window, and not more than `Bound` later |
+| `ResumedNeverClockRefused` | invariant | a call that resumes with an intent is never refused by the clock check, which runs at the first intent only |
+| `ReleaseBeforeVoid` | invariant | an attempt cancelled by its driver is voided only after its release (a stray void is the reconcile pass's) |
+| `SlotBoundNotHit` | invariant | the ledger's name bound (`MaxSlots`) is never hit, so a bound that is too small is a configuration error and not a result |
+
+`TypeOK` is the type check. The vacuity check is `EffectNotReachable` (a call began), and each
+configuration names the further effects it reaches (`ContendedNotReachable`: an insert lost its race
+and the driver read again; `FoundNotReachable`: a lookup found a live slot;
+`LimitedNotReachable`, `WaivedNotReachable`, `ClockNotReachable`, `ResumedNotReachable`,
+`ReleasedNotReachable`, `VoidedNotReachable`, `ReconciledNotReachable`,
+`TwoWindowsNotReachable`) in `VACUITY-ALSO` lines, which `check.sh` runs as invariants TLC must
+report violated.
+
+### Model-code map
+
+The ledger code (`agent/capledger.go`) is PR4 of the build plan and has not landed, so every action
+is in the no-code list below. PR4 adds a `protocol:caps` region around each Go region a row names
+and removes the row from the list.
+
+<!-- modelsync: no-code caps Start Check IdxInsert Intent Read Insert Begin Cancel StrayVoid Void Finish RollbackCredit Reconcile Crash Tick -->
+<!-- modelsync: map caps -->
+| Model action | Go code (planned, `agent/capledger.go` and `agent/toolexec.go`) |
+|---|---|
+| `Start`, `Check`, `IdxInsert`, `Intent` | the window derivation: read the `cap-intent`, else check the clock bound against the index run, insert `win:<id>`, then write the intent |
+| `Read`, `Insert` | `reserve` and `release`: the ledger read, the lookup, the `cum_after` check and the insert at `n+1` |
+| `Begin` | `beginCall` (`agent/toolexec.go`): the reserve is before it, after the attempt claim |
+| `Cancel`, `Void`, `StrayVoid` | the not-started paths (`recordNotStarted`, `callRefusedClosed`): release, then void |
+| `Reconcile` | the reconcile pass in `Recover` and `bide audit caps` |
+| `Finish`, `RollbackCredit`, `Crash`, `Tick` | no Go region (a call's end, a counterexample rule, a crash or re-run, the clock) |
+
+### Configurations
+
+On every pull request and in the merge queue (`ci`, `regress`, `finding`). States are distinct
+states; times are TLC's own with one worker on a loaded development machine (Apple Silicon), so they
+are an upper bound for the runner.
+
+| Config | Group | What |
+|---|---|---|
+| `caps-clock-far` | ci | A driver whose clock is two windows ahead of the newest recorded one, with a bound of one, is refused at its first intent. (93 states, 4 s) |
+| `caps-clock-resume` | ci | A call that is re-run after another driver recorded a later window resumes with the window of its intent: the clock bound is not applied to a resume, so it is not refused and keeps its (earlier) window. (964 states, 6 s) |
+| `caps-clock` | ci | A driver whose clock is a window behind the newest recorded one is refused at its first intent (and the window it did not take is not in the index); the other is not. (129 states, 4 s) |
+| `caps-limit` | ci | Two drivers, amounts of 2 against a limit of 3: the second is over the limit, takes no slot, and the action applies. (192 states, 4 s) |
+| `caps-marked` | ci | Marked attempts (an exclusive claim): a driver that releases a call that did not begin, then voids it; a crash leaves the slot counted, and a re-run halts on the marker. (3542 states, 4 s) |
+| `caps-race` | ci | Two drivers reserve different attempts against one window and race for the same slot name: one wins, the other reads again and takes the next; the total never exceeds the limit. (300 states, 1 s) |
+| `caps-reconcile` | ci | A void written without a release leaves the slot counted; two finished drivers run the reconcile pass over it at once: the slot is released once (the dedupe scan). (1460 states, 3 s) |
+| `caps-release-retry` | ci | A retry-safe attempt is never released (a release after a cancel is the finding release-unmarked): two drivers and two crashes or re-runs, so the lookup finds the slot and every call that began stays counted. (4962 states, 2 s) |
+| `caps-same-attempt` | ci | Two drivers, one of them re-run once, work on one retry-safe attempt (an Idempotent tool: no claim): whichever slot wins, the other finds it by its lookup, so the attempt has one live slot. (2315 states, 3 s) |
+| `caps-waiver` | ci | The second attempt carries a waiver: its slot is written over the limit (over), the total is above the limit only by that slot, and the first attempt's slot stays within it. (246 states, 1 s) |
+| `caps-window-two` | ci | Two windows, two drivers of one retry-safe attempt, one tick and one re-run: both read the window from the one intent, so the attempt has one live slot in one ledger. (11855 states, 5 s) |
+| `caps-window` | ci | Two windows and a clock that ticks: a crash after the intent and a resume after the tick read the window from the intent, so the slot is in the intent's window and the attempt is counted once. (129 states, 2 s) |
+| `deep-limit-three` | nightly | Three drivers and amounts of 1, 2 and 2 against a limit of 3: the order of the slots decides which two fit, and a waiver on the third lets it over. (14292 states, 7 s) |
+| `deep-marked-cancel-three` | nightly | Three marked attempts, up to two of them cancelled before they begin (release, then void), no crash. (206148 states, 2 min) |
+| `deep-marked-crash-three` | nightly | Three marked attempts with one crash, one cancel and one stray void. (1471791 states, 8 min) |
+| `deep-marked-reconcile-three` | nightly | Three marked attempts, one voided without a release and reconciled by up to two passes while the others reserve, begin and cancel. (734247 states, 5 min) |
+| `deep-race-three` | nightly | Three drivers, three attempts, no faults: every interleaving of the race for the next slot name, with the limit allowing two of three. (14760 states, 7 s) |
+| `deep-same-crash1-three` | nightly | Three drivers, two of them on one retry-safe attempt, and one crash or re-run anywhere. (187719 states, 1 min) |
+| `deep-same-crash2-three` | nightly | Three drivers on one retry-safe attempt and two crashes or re-runs. (203108 states, 1 min) |
+| `deep-window-crash2` | nightly | Two drivers of one retry-safe attempt, two windows, two ticks and two crashes or re-runs: the window is the intent's in every step. (55297 states, 10 s) |
+| `deep-window-marked` | nightly | Two marked attempts, two windows, a tick, a crash, a cancel and a stray void with the reconcile pass: a release goes to the ledger of the attempt's own window. (35006 states, 12 s) |
+| `deep-window-three` | nightly | Three drivers on two attempts, two windows, skewed clocks, one tick and one crash: the index, the intents and the ledgers of both windows. (706618 states, 2 min) |
+
+Shards and bounds. The `ci` configurations are one shard of the Models workflow (`caps`): the 12
+`ci` configurations with their vacuity runs, 12 regressions and the finding took 45 s in one
+`check.sh` run at `TLC_JOBS=4`. The nightly configurations are split by driver count and by where
+the faults are placed (no fault, crashes or re-runs, release and reconcile, windows and clocks), one
+file each, so no run is long and any can run in its own process: all ten took 8 min 8 s of wall
+time at `TLC_JOBS=5` (one worker each, the machine shared with other jobs), the longest being
+`deep-marked-crash-three` (1,471,791 states, 8 min). Every configuration also checks
+`SlotBoundNotHit`, so `MaxSlots` is never the reason a run ends.
+
+### Counterexample configurations
+
+Each is in `caps/regress/` and must fail with its named property:
+
+- `clock-check-on-resume` (`ResumedNeverClockRefused`): The clock bound is checked again when a call resumes with an intent: a call resumed after another driver recorded a later window is refused, though it only reads the window its intent fixed.
+- `index-after-intent` (`IndexCoversIntents`): The window is inserted into the index after the intent is written: a crash between the two leaves an intent whose window the index does not hold, so the clock check does not see it.
+- `insert-at-n2` (`Dense`): A driver inserts at n+2 instead of n+1: the ledger has a gap (a slot at n+2 before n+1), so the single-winner insert no longer orders the slots.
+- `no-clock-check` (`IntentChecked`): The clock bound is not checked at the first intent: a driver a window behind the newest recorded one writes its intent, and its window can reset the cap.
+- `release-no-dedupe` (`ReleaseOnce`): A release without the scan for an existing release of the slot: two reconcile passes (or a reconcile and a driver) release one slot twice, and the window under-counts.
+- `reserve-no-lookup` (`ExactlyOnce`): A reserve without the lookup for a live slot of the attempt: a second driver, a retry or a middleware's second next reserves it again and the attempt is counted twice.
+- `rollback-credit` (`NeverUndercount`): A saga's rollback releases the slot of a call that began: the window no longer counts a call that ran.
+- `stale-cum-after` (`NoOvershoot`): A driver that lost the insert race checks its reservation against the cum_after it read first, not the last slot's it read again: two reservations that fit alone together exceed the limit.
+- `store-no-a1` (`NeverUndercount`): A store whose insert overwrites a taken name (A1 broken): two drivers that read the same last slot both write slot n+1, the second erases the first's reservation, and the first's call begins uncounted.
+- `store-no-a2` (`ExactlyOnce`): A store whose reads can show a slot without the ones below it (A2 broken): a re-run's lookup misses its own earlier slot and reserves the attempt a second time.
+- `void-before-release` (`ReleaseBeforeVoid`): An attempt is voided before its release is written: a crash between the two leaves a voided attempt whose slot stays counted until the reconcile pass.
+- `window-rederived` (`IntentStable`): A driver derives the window from its clock again after the intent (a retry after the window rolled over, a resume after a crash): it looks in a different ledger than the intent's, and can reserve twice.
+
+### Findings
+
+Each is in `caps/findings/` and fails with its named property until the design or the code is
+fixed:
+
+- `release-unmarked` (`NeverUndercount`): F1, open: a driver that cancels a retry-safe (Idempotent, no claim) attempt before its own begin releases the slot, though a second driver of the same tool-use ID has begun, or is about to begin, on that slot: its proof that it did not begin says nothing about the attempt, and the call ran with the window not counting it. PR4 must not release an unmarked attempt, or must fence the release.
