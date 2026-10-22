@@ -26,7 +26,7 @@ func TestNewWebhookHTTPSOnly(t *testing.T) {
 		"http://[::1]:9/hook",
 	}
 	for _, u := range ok {
-		if _, err := NewWebhook(u, WithSecrets("s", "")); err != nil {
+		if _, err := NewWebhook(u, WithSecrets("s-fips-padded-secret", "")); err != nil {
 			t.Errorf("%s refused: %v", u, err)
 		}
 	}
@@ -45,7 +45,7 @@ func TestNewWebhookHTTPSOnly(t *testing.T) {
 		"",
 	}
 	for _, u := range bad {
-		_, err := NewWebhook(u, WithSecrets("s", ""))
+		_, err := NewWebhook(u, WithSecrets("s-fips-padded-secret", ""))
 		if !errors.Is(err, agent.ErrConfig) {
 			t.Errorf("%q: got %v, want ErrConfig", u, err)
 		}
@@ -59,27 +59,27 @@ func TestNewWebhookConfigErrors(t *testing.T) {
 	if _, err := NewWebhook("https://example.com/", WithSecrets("", "old")); !errors.Is(err, agent.ErrConfig) {
 		t.Errorf("empty current: %v", err)
 	}
-	if _, err := NewWebhook("https://example.com/", WithSecrets("s", ""), WithTimeout(0)); !errors.Is(err, agent.ErrConfig) {
+	if _, err := NewWebhook("https://example.com/", WithSecrets("s-fips-padded-secret", ""), WithTimeout(0)); !errors.Is(err, agent.ErrConfig) {
 		t.Errorf("zero timeout: %v", err)
 	}
-	if _, err := NewWebhook("https://example.com/", WithSecrets("s", ""), WithServerCA("/nonexistent/ca.pem")); !errors.Is(err, agent.ErrConfig) {
+	if _, err := NewWebhook("https://example.com/", WithSecrets("s-fips-padded-secret", ""), WithServerCA("/nonexistent/ca.pem")); !errors.Is(err, agent.ErrConfig) {
 		t.Errorf("missing CA file: %v", err)
 	}
-	if _, err := NewWebhook("https://example.com/", WithSecrets("s", ""), WithServerCAPEM([]byte("not pem"))); !errors.Is(err, agent.ErrConfig) {
+	if _, err := NewWebhook("https://example.com/", WithSecrets("s-fips-padded-secret", ""), WithServerCAPEM([]byte("not pem"))); !errors.Is(err, agent.ErrConfig) {
 		t.Errorf("bad CA pem: %v", err)
 	}
-	if _, err := NewWebhook("https://example.com/", WithSecrets("s", ""), WithClientCert("/nonexistent/c", "/nonexistent/k")); !errors.Is(err, agent.ErrConfig) {
+	if _, err := NewWebhook("https://example.com/", WithSecrets("s-fips-padded-secret", ""), WithClientCert("/nonexistent/c", "/nonexistent/k")); !errors.Is(err, agent.ErrConfig) {
 		t.Errorf("missing client cert: %v", err)
 	}
 	for _, pins := range [][]string{nil, {"zz"}, {strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("c", 64)}} {
-		if _, err := NewWebhook("https://example.com/", WithSecrets("s", ""), WithServerPin(pins...)); !errors.Is(err, agent.ErrConfig) {
+		if _, err := NewWebhook("https://example.com/", WithSecrets("s-fips-padded-secret", ""), WithServerPin(pins...)); !errors.Is(err, agent.ErrConfig) {
 			t.Errorf("pins %v: %v", pins, err)
 		}
 	}
-	if _, err := NewWebhook("http://localhost/", WithSecrets("s", ""), WithServerPin(strings.Repeat("a", 64))); !errors.Is(err, agent.ErrConfig) {
+	if _, err := NewWebhook("http://localhost/", WithSecrets("s-fips-padded-secret", ""), WithServerPin(strings.Repeat("a", 64))); !errors.Is(err, agent.ErrConfig) {
 		t.Errorf("pin on http: %v", err)
 	}
-	if _, err := NewWebhook("https://example.com/", WithSecrets("s", ""), WithViewURL("javascript:alert(1)")); !errors.Is(err, agent.ErrConfig) {
+	if _, err := NewWebhook("https://example.com/", WithSecrets("s-fips-padded-secret", ""), WithViewURL("javascript:alert(1)")); !errors.Is(err, agent.ErrConfig) {
 		t.Errorf("view url: %v", err)
 	}
 }
@@ -149,7 +149,7 @@ func TestSignsWithBothSecretsDuringRotation(t *testing.T) {
 		n, _ := r.Body.Read(b)
 		body = b[:n]
 	})
-	w, err := NewWebhook(srv.URL, WithSecrets("new-secret", "old-secret"))
+	w, err := NewWebhook(srv.URL, WithSecrets("new-secret-fips-padded-secret", "old-secret-fips-padded-secret"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ func TestSignsWithBothSecretsDuringRotation(t *testing.T) {
 	if n := len(strings.Fields(hdr.Get(HeaderSignature))); n != 2 {
 		t.Fatalf("want two signatures, header %q", hdr.Get(HeaderSignature))
 	}
-	for _, rx := range [][]string{{"new-secret"}, {"old-secret"}} {
+	for _, rx := range [][]string{{"new-secret-fips-padded-secret"}, {"old-secret-fips-padded-secret"}} {
 		r := httptest.NewRequest("POST", "/", strings.NewReader(string(body)))
 		r.Header = hdr
 		if err := Verify(r, rx, 0); err != nil {
@@ -673,10 +673,10 @@ func TestPayloadHasViewPointerNeverAnActionLink(t *testing.T) {
 func TestProxyDefaults(t *testing.T) {
 	proxyOf := func(w *Webhook) bool { return w.client.Transport.(*http.Transport).Proxy != nil }
 	ca := newCA(t, "p")
-	plain, _ := NewWebhook("https://example.com/", WithSecrets("s", ""))
-	pinned, _ := NewWebhook("https://example.com/", WithSecrets("s", ""), WithServerPin(strings.Repeat("a", 64)))
-	rooted, _ := NewWebhook("https://example.com/", WithSecrets("s", ""), WithServerCAPEM(ca.pem))
-	explicit, _ := NewWebhook("https://example.com/", WithSecrets("s", ""), WithServerPin(strings.Repeat("a", 64)),
+	plain, _ := NewWebhook("https://example.com/", WithSecrets("s-fips-padded-secret", ""))
+	pinned, _ := NewWebhook("https://example.com/", WithSecrets("s-fips-padded-secret", ""), WithServerPin(strings.Repeat("a", 64)))
+	rooted, _ := NewWebhook("https://example.com/", WithSecrets("s-fips-padded-secret", ""), WithServerCAPEM(ca.pem))
+	explicit, _ := NewWebhook("https://example.com/", WithSecrets("s-fips-padded-secret", ""), WithServerPin(strings.Repeat("a", 64)),
 		WithProxy(func(*http.Request) (*url.URL, error) { return nil, nil }))
 	if !proxyOf(plain) || proxyOf(pinned) || proxyOf(rooted) || !proxyOf(explicit) {
 		t.Fatalf("proxy: plain %v pinned %v rooted %v explicit %v", proxyOf(plain), proxyOf(pinned), proxyOf(rooted), proxyOf(explicit))

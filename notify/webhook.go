@@ -15,6 +15,7 @@ package notify
 import (
 	"bytes"
 	"context"
+	"crypto/fips140"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -76,10 +77,19 @@ func configErr(format string, a ...any) error {
 // a receiver that has not yet been given the new secret (or has not yet dropped the old one)
 // verifies either way: rotate by deploying previous=old, current=new, updating the receiver, then
 // dropping previous. Secrets are never logged, journaled, put in a payload or put in an error.
+//
+// Use at least 32 bytes of random data. Under GODEBUG=fips140=only crypto/hmac refuses a key
+// shorter than 14 bytes (112 bits) by panicking, so there a shorter secret is an error here
+// (agent.ErrConfig wrapping ErrShortSecret); without that mode any length is accepted, as before.
 func WithSecrets(current, previous string) Option {
 	return func(w *Webhook) error {
 		if current == "" {
 			return configErr("WithSecrets needs a non-empty current secret")
+		}
+		for _, s := range []string{current, previous} {
+			if err := checkSecret(s, fips140.Enforced()); err != nil {
+				return fmt.Errorf("notify: %w: WithSecrets: %w (use at least 32 bytes)", agent.ErrConfig, err)
+			}
 		}
 		w.secrets = []string{current}
 		if previous != "" {

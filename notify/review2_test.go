@@ -16,9 +16,9 @@ import (
 func TestReview_VerifyRequiresTheDeliveryHeader(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	body := []byte(`{"schema":"bide.notification.v1","id":"aaaa"}`)
-	r := reviewRequest(t, []string{"s3cret"}, now.Unix(), body, "aaaa")
+	r := reviewRequest(t, []string{"s3cret-fips-padded-secret"}, now.Unix(), body, "aaaa")
 	r.Header.Del(HeaderDelivery)
-	if err := verifyAt(r, []string{"s3cret"}, 0, now); !errors.Is(err, ErrDeliveryID) && !errors.Is(err, ErrNoSignature) {
+	if err := verifyAt(r, []string{"s3cret-fips-padded-secret"}, 0, now); !errors.Is(err, ErrDeliveryID) && !errors.Is(err, ErrNoSignature) {
 		t.Fatalf("Verify = %v for a request whose Bide-Delivery (the guide's dedupe key) was stripped", err)
 	}
 }
@@ -28,9 +28,9 @@ func TestReview_VerifyRequiresTheDeliveryHeader(t *testing.T) {
 func TestReviewHeld_ConfirmationFixes(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	body := []byte(`{"id":"aaaa"}`)
-	r := reviewRequest(t, []string{"k"}, now.Unix(), body, "aaaa")
+	r := reviewRequest(t, []string{"k-fips-padded-secret"}, now.Unix(), body, "aaaa")
 	for i := range 2 {
-		if err := verifyAt(r, []string{"k"}, 0, now); err != nil {
+		if err := verifyAt(r, []string{"k-fips-padded-secret"}, 0, now); err != nil {
 			t.Fatalf("verify %d: %v", i, err)
 		}
 	}
@@ -38,16 +38,16 @@ func TestReviewHeld_ConfirmationFixes(t *testing.T) {
 		t.Fatalf("body after two verifies = %q", got)
 	}
 	big := make([]byte, maxVerifyBody+10)
-	rb := reviewRequest(t, []string{"k"}, now.Unix(), big, "x")
-	if err := verifyAt(rb, []string{"k"}, 0, now); !errors.Is(err, ErrBodyTooLarge) {
+	rb := reviewRequest(t, []string{"k-fips-padded-secret"}, now.Unix(), big, "x")
+	if err := verifyAt(rb, []string{"k-fips-padded-secret"}, 0, now); !errors.Is(err, ErrBodyTooLarge) {
 		t.Fatalf("big: %v", err)
 	}
 	if got, _ := io.ReadAll(rb.Body); len(got) != len(big) {
 		t.Fatalf("big body after verify: %d bytes, want %d", len(got), len(big))
 	}
 	ts := now.Unix()
-	sig := "v1=00 v1=00 v1=00 v1=00 v1=00 v1=00 v1=00 v1=00 " + Sign([]string{"k"}, ts, body)
-	if err := VerifyBody("1800000000", sig, body, []string{"k"}, 0, now); !errors.Is(err, ErrBadSignature) {
+	sig := "v1=00 v1=00 v1=00 v1=00 v1=00 v1=00 v1=00 v1=00 " + Sign([]string{"k-fips-padded-secret"}, ts, body)
+	if err := VerifyBody("1800000000", sig, body, []string{"k-fips-padded-secret"}, 0, now); !errors.Is(err, ErrBadSignature) {
 		t.Fatalf("a valid entry in 9th place: %v (the cap should ignore it)", err)
 	}
 	// Tolerance edges by the second, and a huge tolerance for evidence checks.
@@ -55,12 +55,12 @@ func TestReviewHeld_ConfirmationFixes(t *testing.T) {
 		ts    int64
 		stale bool
 	}{{ts - 300, false}, {ts + 300, false}, {ts - 301, true}, {ts + 301, true}} {
-		err := VerifyBody(itoa(c.ts), Sign([]string{"k"}, c.ts, body), body, []string{"k"}, 0, now)
+		err := VerifyBody(itoa(c.ts), Sign([]string{"k-fips-padded-secret"}, c.ts, body), body, []string{"k-fips-padded-secret"}, 0, now)
 		if errors.Is(err, ErrStale) != c.stale {
 			t.Errorf("ts %+d: %v", c.ts-ts, err)
 		}
 	}
-	if err := VerifyBody("1", Sign([]string{"k"}, 1, body), body, []string{"k"}, time.Duration(1<<62), now); err != nil {
+	if err := VerifyBody("1", Sign([]string{"k-fips-padded-secret"}, 1, body), body, []string{"k-fips-padded-secret"}, time.Duration(1<<62), now); err != nil {
 		t.Errorf("huge tolerance: %v", err)
 	}
 }

@@ -35,8 +35,8 @@ func reviewRequest(t *testing.T, secrets []string, ts int64, body []byte, delive
 func TestReview_VerifyBindsTheDeliveryHeaderToTheSignedBody(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	body := []byte(`{"schema":"bide.notification.v1","id":"aaaa","key":"approval:r:c1:0"}`)
-	r := reviewRequest(t, []string{"s3cret"}, now.Unix(), body, "bbbb") // header differs from the signed id
-	if err := verifyAt(r, []string{"s3cret"}, 0, now); err == nil {
+	r := reviewRequest(t, []string{"s3cret-fips-padded-secret"}, now.Unix(), body, "bbbb") // header differs from the signed id
+	if err := verifyAt(r, []string{"s3cret-fips-padded-secret"}, 0, now); err == nil {
 		t.Fatal("Verify accepted a request whose Bide-Delivery (the documented dedupe key) is not the id the signature covers: a replay with a fresh header passes dedupe")
 	}
 }
@@ -48,7 +48,7 @@ func TestReview_VerifyBindsTheDeliveryHeaderToTheSignedBody(t *testing.T) {
 func TestReview_VerifyCostDoesNotGrowWithSignatureEntries(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	body := bytes.Repeat([]byte("x"), maxVerifyBody)
-	secrets := []string{"current", "previous"}
+	secrets := []string{"current-fips-padded", "previous-fips-padded"}
 	fake := "v1=" + strings.Repeat("ab", 32)
 	header := strings.TrimSpace(strings.Repeat(fake+" ", 2000)) // about 134 KB, well under 1 MiB
 	start := time.Now()
@@ -70,7 +70,7 @@ func TestReview_AFarFutureTimestampIsStale(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	body := []byte(`{}`)
 	ts := int64(math.MaxInt64 / 2)
-	err := VerifyBody(strconv.FormatInt(ts, 10), Sign([]string{"k"}, ts, body), body, []string{"k"}, 0, now)
+	err := VerifyBody(strconv.FormatInt(ts, 10), Sign([]string{"k-fips-padded-secret"}, ts, body), body, []string{"k-fips-padded-secret"}, 0, now)
 	if !errors.Is(err, ErrStale) {
 		t.Fatalf("a timestamp ~1.5e11 years ahead verified as fresh: err = %v", err)
 	}
@@ -83,12 +83,12 @@ func TestReviewHeld_HTTPSOnlyBypasses(t *testing.T) {
 		"http://evil.example#@localhost/h", "http://127.1/h", "http://[::ffff:127.0.0.1]/h", "http://0.0.0.0/h",
 		"HTTP://evil.example/h", "ftp://localhost/h", "//localhost/h", "http:localhost/h",
 	} {
-		if _, err := NewWebhook(u, WithSecrets("k", "")); !errors.Is(err, agent.ErrConfig) {
+		if _, err := NewWebhook(u, WithSecrets("k-fips-padded-secret", "")); !errors.Is(err, agent.ErrConfig) {
 			t.Errorf("%s: NewWebhook = %v, want ErrConfig", u, err)
 		}
 	}
 	for _, u := range []string{"http://localhost:8080/h", "http://127.0.0.1/h", "http://[::1]:9/h", "HTTPS://example.com/h"} {
-		if _, err := NewWebhook(u, WithSecrets("k", "")); err != nil {
+		if _, err := NewWebhook(u, WithSecrets("k-fips-padded-secret", "")); err != nil {
 			t.Errorf("%s: %v", u, err)
 		}
 	}
@@ -100,20 +100,20 @@ func TestReviewHeld_RotationAndParsing(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	body := []byte(`{"id":"x"}`)
 	ts := strconv.FormatInt(now.Unix(), 10)
-	both := Sign([]string{"new", "old"}, now.Unix(), body)
-	for _, sec := range [][]string{{"new"}, {"old"}, {"old", "new"}} {
+	both := Sign([]string{"new-fips-padded-secret", "old-fips-padded-secret"}, now.Unix(), body)
+	for _, sec := range [][]string{{"new-fips-padded-secret"}, {"old-fips-padded-secret"}, {"old-fips-padded-secret", "new-fips-padded-secret"}} {
 		if err := VerifyBody(ts, both, body, sec, 0, now); err != nil {
 			t.Errorf("secrets %v: %v", sec, err)
 		}
 	}
-	mixed := "v2=zz v1=nothex " + Sign([]string{"new"}, now.Unix(), body) + " v1="
-	if err := VerifyBody(ts, mixed, body, []string{"new"}, 0, now); err != nil {
+	mixed := "v2=zz v1=nothex " + Sign([]string{"new-fips-padded-secret"}, now.Unix(), body) + " v1="
+	if err := VerifyBody(ts, mixed, body, []string{"new-fips-padded-secret"}, 0, now); err != nil {
 		t.Errorf("mixed header: %v", err)
 	}
-	if err := VerifyBody(ts, both, body, []string{"other"}, 0, now); !errors.Is(err, ErrBadSignature) {
+	if err := VerifyBody(ts, both, body, []string{"other-fips-padded-secret"}, 0, now); !errors.Is(err, ErrBadSignature) {
 		t.Errorf("wrong secret: %v", err)
 	}
-	if err := VerifyBody(ts, both, []byte(`{"id":"y"}`), []string{"new"}, 0, now); !errors.Is(err, ErrBadSignature) {
+	if err := VerifyBody(ts, both, []byte(`{"id":"y"}`), []string{"new-fips-padded-secret"}, 0, now); !errors.Is(err, ErrBadSignature) {
 		t.Errorf("changed body: %v", err)
 	}
 }

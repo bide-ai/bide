@@ -260,7 +260,7 @@ func TestBadSignatureIsRefusedAndNothingIsForwarded(t *testing.T) {
 }
 
 func TestPreviousSecretVerifiesDuringRotation(t *testing.T) {
-	r := newRig(t, func(c *Config) { c.Secrets = []string{"new-secret", secret} })
+	r := newRig(t, func(c *Config) { c.Secrets = []string{"new-secret-fips-padded", secret} })
 	if err := r.send(t, approval("r1")); err != nil { // signs with the old secret only
 		t.Fatal(err)
 	}
@@ -510,9 +510,9 @@ func TestNewRejectsUnusableConfig(t *testing.T) {
 	cases := map[string]Config{
 		"no secret":      {Sinks: []Sink{ok}},
 		"empty secret":   {Secrets: []string{""}, Sinks: []Sink{ok}},
-		"no sinks":       {Secrets: []string{"s"}},
-		"duplicate name": {Secrets: []string{"s"}, Sinks: []Sink{ok, &funcSink{name: "a"}}},
-		"unnamed sink":   {Secrets: []string{"s"}, Sinks: []Sink{&funcSink{}}},
+		"no sinks":       {Secrets: []string{"s-fips-padded-secret"}},
+		"duplicate name": {Secrets: []string{"s-fips-padded-secret"}, Sinks: []Sink{ok, &funcSink{name: "a"}}},
+		"unnamed sink":   {Secrets: []string{"s-fips-padded-secret"}, Sinks: []Sink{&funcSink{}}},
 	}
 	for name, c := range cases {
 		if _, err := New(c); err == nil {
