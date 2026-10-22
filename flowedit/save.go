@@ -87,7 +87,12 @@ func (s *Server) confirmations(text []byte) []string {
 
 // confirmationKinds is confirmations with the kind of each item, by position.
 func (s *Server) confirmationKinds(text []byte) (items, kinds []string) {
-	w := s.compare(text)
+	return s.confirmationKindsRenamed(text, nil)
+}
+
+// confirmationKindsRenamed is confirmationKinds for a text reached by the session's renames.
+func (s *Server) confirmationKindsRenamed(text []byte, renames []Rename) (items, kinds []string) {
+	w := s.compareRenamed(text, renames)
 	add := func(kind, item string) { items, kinds = append(items, item), append(kinds, kind) }
 	for _, x := range w.Weakened {
 		add(ConfirmWeakens, x)
@@ -103,6 +108,12 @@ func (s *Server) confirmationKinds(text []byte) (items, kinds []string) {
 
 // Preview describes saving text over the file whose bytes the page read as hash.
 func (s *Server) Preview(text []byte, hash string) (*Preview, error) {
+	return s.previewRenamed(text, hash, nil)
+}
+
+// previewRenamed is Preview for a text reached by the session's renames, which the baseline
+// comparison honours (see CompareRenamed).
+func (s *Server) previewRenamed(text []byte, hash string, renames []Rename) (*Preview, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	disk, err := readConfig(s.root, s.base, s.path)
@@ -110,7 +121,7 @@ func (s *Server) Preview(text []byte, hash string) (*Preview, error) {
 		return nil, err
 	}
 	v := BuildView(s.name, text)
-	items, kinds := s.confirmationKinds(text)
+	items, kinds := s.confirmationKindsRenamed(text, renames)
 	p := &Preview{
 		Diff:              UnifiedDiff(filepath.Base(s.name), disk, text),
 		RemovedComments:   RemovedComments(disk, text),
@@ -139,6 +150,12 @@ func (s *Server) Preview(text []byte, hash string) (*Preview, error) {
 // file; the rename then replaces that write. The check is compare-and-swap for a person editing in
 // two places, not a lock.
 func (s *Server) Save(text []byte, hash string, confirmed []string) (*Doc, error) {
+	return s.saveRenamed(text, hash, confirmed, nil)
+}
+
+// saveRenamed is Save for a text reached by the session's renames: the confirmation it needs is the
+// one Preview named under the same renames.
+func (s *Server) saveRenamed(text []byte, hash string, confirmed []string, renames []Rename) (*Doc, error) {
 	if len(text) > MaxFileSize {
 		return nil, fmt.Errorf("flowedit: the text is larger than %d bytes", MaxFileSize)
 	}
@@ -157,7 +174,7 @@ func (s *Server) Save(text []byte, hash string, confirmed []string) (*Doc, error
 	if hashOf(disk) != hash {
 		return nil, &Conflict{Hash: hashOf(disk), Diff: UnifiedDiff(filepath.Base(s.name), disk, text)}
 	}
-	if items := s.confirmations(text); len(items) > 0 && !slices.Equal(confirmed, items) {
+	if items, _ := s.confirmationKindsRenamed(text, renames); len(items) > 0 && !slices.Equal(confirmed, items) {
 		return nil, &NeedsConfirmation{Items: items}
 	}
 	if !bytes.Equal(disk, text) {
@@ -165,7 +182,7 @@ func (s *Server) Save(text []byte, hash string, confirmed []string) (*Doc, error
 			return nil, err
 		}
 	}
-	return s.docLocked()
+	return s.docRenamed(renames)
 }
 
 // fileSystem is the part of the file system a save uses, as a value so that a test can make the

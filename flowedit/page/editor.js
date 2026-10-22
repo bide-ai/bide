@@ -5,13 +5,16 @@
 //
 // Request and response shapes (the Go side: flowedit.Doc and flowedit.View):
 //   POST /api/doc    {}             -> Doc  { ...View, hash }
-//   POST /api/report {text}         -> View { name, format, text, mode, parse_error, flow, entry,
+//   POST /api/report {text, renames[]} -> View { name, format, text, mode, parse_error, flow, entry,
 //                                             verdict{class,word,icon,line,details,stats[]}, errors, warnings,
 //                                             problems[], assertions[], nodes[], wiring[], graph,
-//                                             weakening{baseline, weakened[], word, line, strengthened[], changes[], compare_error, not_certified},
+//                                             weakening{baseline, weakened[], word, line, strengthened[], changes[], renamed[], compare_error, not_certified},
 //                                             typed{source, label, digest, palette[{name, kind, in, inputs[], out, safety, gate, used}]} (typed mode only) }
-//   POST /api/preview {text, hash}  -> { diff, removed_comments[], changed, hash, conflict, needs_confirmation[], errors, warnings }
-//   POST /api/save {text, hash, confirmed[]} -> Doc, or 409 { conflict, hash, diff }, or 422 { needs_confirmation[] }
+//   POST /api/preview {text, hash, renames[]}  -> { diff, removed_comments[], changed, hash, conflict, needs_confirmation[], errors, warnings }
+//   POST /api/save {text, hash, confirmed[], renames[]} -> Doc, or 409 { conflict, hash, diff }, or 422 { needs_confirmation[] }
+// renames is the list of renames made in this editing session, [{from, to}] in order: the weakened
+// verdict matches a renamed node to its baseline self by it (the saved file does not carry it). Every
+// call that returns a verdict sends it, and /api/apply answers with the list after the operation.
 // Every call is a POST with the session token (from the URL fragment, #t=...) in X-Bide-Token.
 
 const SVGNS = 'http://www.w3.org/2000/svg';
@@ -63,7 +66,10 @@ async function applyOp(text, operation) {
   return e;
 }
 
+const SESSION_PATHS = ['/api/report', '/api/apply', '/api/preview', '/api/save'];
+
 async function api(path, body = {}) {
+  if (SESSION_PATHS.includes(path) && body.renames === undefined) body = { ...body, renames: state.renames };
   busy(1);
   try {
     const res = await fetch(path, {
@@ -187,10 +193,11 @@ export function renderWeakening(v) {
 }
 
 function renderBaselineLine(w) {
+  const renamed = (w.renamed || []).length ? ' Renames made in this session are matched to their baseline nodes: ' + w.renamed.join(', ') + '.' : '';
   const word = !(w.weakened && w.weakened.length) && !w.compare_error && !w.not_certified ? 'not weaker than' : 'compared with';
   const ch = (w.changes || []).length;
   replace('baseline', 'Baseline: ' + word + ' ' + w.baseline + (ch ? ' (' + ch + ' change' + (ch === 1 ? '' : 's') + ')' : ' (no changes)') +
-    ((w.strengthened || []).length ? '; stronger in ' + w.strengthened.length + ' way' + (w.strengthened.length === 1 ? '' : 's') : '') + '.');
+    ((w.strengthened || []).length ? '; stronger in ' + w.strengthened.length + ' way' + (w.strengthened.length === 1 ? '' : 's') : '') + '.' + renamed);
 }
 
 // The outline is the primary accessible view: a list in config order whose items are buttons. One
@@ -714,6 +721,7 @@ async function operate(op, focusId, selectAfter) {
     if (e.changed) {
       checkpoint();
       if (selectAfter !== undefined) selected = selectAfter;
+      state.renames = e.renames || [];
       setText(e.text, e);
       announce(opWords(op));
       applied = true;
@@ -765,34 +773,38 @@ function opWords(op) {
   }
 }
 
-// ---- undo and redo: a stack of earlier texts ----
+// ---- undo and redo: a stack of earlier texts, each with the renames that led to it ----
 
 const undoStack = [];
 const redoStack = [];
+const snapshot = () => ({ text: state.text, renames: state.renames });
 function checkpoint() {
-  if (undoStack.at(-1) !== state.text) pushCapped(undoStack, state.text);
+  const top = undoStack.at(-1);
+  if (!top || top.text !== state.text || JSON.stringify(top.renames) !== JSON.stringify(state.renames)) pushCapped(undoStack, snapshot());
   redoStack.length = 0;
   renderState();
 }
 // The undo and redo stacks hold whole texts (at most a megabyte each), so they are capped: the oldest
 // step is dropped past this many.
 const MAX_HISTORY = 100;
-const pushCapped = (stack, text) => { stack.push(text); if (stack.length > MAX_HISTORY) stack.shift(); };
+const pushCapped = (stack, snap) => { stack.push(snap); if (stack.length > MAX_HISTORY) stack.shift(); };
 let stepping = false;
 async function step(from, to, words) {
   if (!from.length || stepping) return;
   stepping = true;
   const sent = state.text;
-  const text = from.at(-1);
+  const target = from.at(-1);
+  const { text, renames } = target;
   try {
     // Ask for the check first: the stacks move only when the step is going to happen.
-    const v = await api('/api/report', { text });
+    const v = await api('/api/report', { text, renames });
     if (state.text !== sent) {
       announce('Not ' + words.toLowerCase() + ': the text changed while the step was being made.');
       return;
     }
     from.pop();
-    pushCapped(to, sent);
+    pushCapped(to, snapshot());
+    state.renames = renames;
     setText(text, v);
     announce(words);
   } catch (err) {
@@ -1211,7 +1223,9 @@ function select(name) {
 // What the page holds of the file: text is what the author has now, disk is the text the file had
 // when it was last read or saved and hash that file's hash. text differs from disk exactly when there
 // are unsaved changes.
-const state = { text: '', disk: '', hash: '' };
+// renames are the session's renames that led to text (see the calls above); an undo restores the list
+// the earlier text had.
+const state = { text: '', disk: '', hash: '', renames: [] };
 const dirty = () => state.text !== state.disk;
 
 export function render(v, { keepSource = false } = {}) {
@@ -1250,7 +1264,7 @@ const timer = pause();
 let lastTyped = 0;
 function onInput() {
   const now = Date.now();
-  if (now - lastTyped > 1000) { pushCapped(undoStack, state.text); redoStack.length = 0; } // a burst of typing is one undo step
+  if (now - lastTyped > 1000) { pushCapped(undoStack, snapshot()); redoStack.length = 0; } // a burst of typing is one undo step
   lastTyped = now;
   state.text = $('source').value;
   renderState();
@@ -1383,6 +1397,7 @@ function conflictDialog(hash, diff, opener) {
       const d = await api('/api/doc');
       state.text = state.disk = d.text;
       state.hash = d.hash;
+      state.renames = []; // the file is not the one the renames were made in
       closeDialog(opener);
       render(d);
       announce('Reloaded from disk');

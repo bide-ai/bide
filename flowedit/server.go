@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -243,9 +244,12 @@ func readConfig(root *os.Root, base, path string) ([]byte, error) {
 }
 
 // view is BuildView with the text compared against the baseline.
-func (s *Server) view(text []byte) *View {
+func (s *Server) view(text []byte) *View { return s.viewRenamed(text, nil) }
+
+// viewRenamed is view for a text reached by the session's renames.
+func (s *Server) viewRenamed(text []byte, renames []Rename) *View {
 	v := buildView(s.name, text, s.typing)
-	v.Weakening = s.compare(text)
+	v.Weakening = s.compareRenamed(text, renames)
 	return v
 }
 
@@ -256,12 +260,16 @@ func (s *Server) Doc() (*Doc, error) {
 	return s.docLocked()
 }
 
-func (s *Server) docLocked() (*Doc, error) {
+func (s *Server) docLocked() (*Doc, error) { return s.docRenamed(nil) }
+
+// docRenamed is docLocked with the verdict read under the session's renames, so a save of a renamed
+// node does not come back reading as weakened.
+func (s *Server) docRenamed(renames []Rename) (*Doc, error) {
 	b, err := readConfig(s.root, s.base, s.path)
 	if err != nil {
 		return nil, err
 	}
-	return &Doc{View: *s.view(b), Hash: hashOf(b)}, nil
+	return &Doc{View: *s.viewRenamed(b, renames), Hash: hashOf(b)}, nil
 }
 
 // Handler serves the editor: the page at /, its files under /assets/, and the API under /api/. It
@@ -432,7 +440,8 @@ func (s *Server) doc(w http.ResponseWriter, r *http.Request) {
 // report answers /api/report: the View of the text in the request.
 func (s *Server) report(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Text string `json:"text"`
+		Text    string   `json:"text"`
+		Renames []Rename `json:"renames"`
 	}
 	if !readBody(w, r, &req) {
 		return
@@ -441,7 +450,7 @@ func (s *Server) report(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("the text is larger than %d bytes", MaxFileSize))
 		return
 	}
-	reply(w, s.view([]byte(req.Text)))
+	reply(w, s.viewRenamed([]byte(req.Text), req.Renames))
 }
 
 // Edited is the answer to an operation: the View of the new text, and whether the operation changed
@@ -451,6 +460,10 @@ type Edited struct {
 	Changed bool `json:"changed"`
 	// Cascade is what a remove_node also removes (Applied.Cascade); a dry run answers with it alone.
 	Cascade []string `json:"cascade,omitempty"`
+	// Renames is the session's renames after this operation: the ones the request carried, and this
+	// operation's when it was a rename that changed the text. The page keeps the list with the text
+	// (an undo restores the list it had) and sends it back with every request.
+	Renames []Rename `json:"renames,omitempty"`
 }
 
 // apply answers /api/apply: the operation applied to the text in the request. A refusal is not an
@@ -461,6 +474,7 @@ func (s *Server) apply(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Text      string    `json:"text"`
 		Operation Operation `json:"operation"`
+		Renames   []Rename  `json:"renames"`
 	}
 	if !readBody(w, r, &req) {
 		return
@@ -482,15 +496,20 @@ func (s *Server) apply(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		fail(w, http.StatusInternalServerError, err.Error())
 	default:
-		reply(w, Edited{View: *s.view(res.Text), Changed: res.Changed, Cascade: res.Cascade})
+		renames := req.Renames
+		if res.Changed && req.Operation.Op == "rename_node" {
+			renames = append(slices.Clone(renames), Rename{From: req.Operation.Node, To: req.Operation.Value})
+		}
+		reply(w, Edited{View: *s.viewRenamed([]byte(res.Text), renames), Changed: res.Changed, Cascade: res.Cascade, Renames: renames})
 	}
 }
 
 // preview answers /api/preview: what saving the text would do (see Preview).
 func (s *Server) preview(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Text string `json:"text"`
-		Hash string `json:"hash"`
+		Text    string   `json:"text"`
+		Hash    string   `json:"hash"`
+		Renames []Rename `json:"renames"`
 	}
 	if !readBody(w, r, &req) {
 		return
@@ -499,7 +518,7 @@ func (s *Server) preview(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("the text is larger than %d bytes", MaxFileSize))
 		return
 	}
-	p, err := s.Preview([]byte(req.Text), req.Hash)
+	p, err := s.previewRenamed([]byte(req.Text), req.Hash, req.Renames)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
@@ -515,6 +534,7 @@ func (s *Server) save(w http.ResponseWriter, r *http.Request) {
 		Text      string   `json:"text"`
 		Hash      string   `json:"hash"`
 		Confirmed []string `json:"confirmed"`
+		Renames   []Rename `json:"renames"`
 	}
 	if !readBody(w, r, &req) {
 		return
@@ -523,7 +543,7 @@ func (s *Server) save(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("the text is larger than %d bytes", MaxFileSize))
 		return
 	}
-	d, err := s.Save([]byte(req.Text), req.Hash, req.Confirmed)
+	d, err := s.saveRenamed([]byte(req.Text), req.Hash, req.Confirmed, req.Renames)
 	var conflict *Conflict
 	var needs *NeedsConfirmation
 	switch {

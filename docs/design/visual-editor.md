@@ -395,7 +395,7 @@ The baseline is the config the author starts from, and the editor always has one
   policy, not the session, so weakening in two saves is still weakening against `HEAD`.
 - Without git, the file as it was when the editor opened it.
 
-After each operation the editor runs `runview.BuildDiff(baseline, text)` and shows the result. A
+After each operation the editor runs `runview.BuildDiff(baseline, text)` and shows the result (with the baseline read as if the session's renames had been made in it: see the build-time decision 1 of phase 2). A
 weakened gate is a banner at the top of the page in the viewer's verdict style: the glyph, the
 words `APPROVAL GATE WEAKENED`, and each item (`charge: approval 2 of 3 -> 1 of 3`). It stays until
 the edit is undone or the text no longer weakens. It is not dismissible, because a banner that can
@@ -698,10 +698,18 @@ Each phase is one or more pull requests, each with its docs, changelog fragment 
   `loop_max`, joins; drag to connect as an extra; undo and redo.
 
   *Built in steps; decisions made at build time (2026-10-19):*
-  1. **A rename reads as weakened.** The classifier follows names, so renaming a gated node is a
-     removed gate and a new ungated node. The editor takes the over-report and says why next to the
-     verdict; the editor passes no hint to the classifier, ever, and classifier-side rename detection
-     is out of scope for phase 2.
+  1. **A rename reads as weakened.** *(Superseded 2026-10-21: see the next paragraph.)* The classifier
+     follows names, so renaming a gated node is a removed gate and a new ungated node. The editor takes
+     the over-report and says why next to the verdict; the editor passes no hint to the classifier,
+     ever, and classifier-side rename detection is out of scope for phase 2.
+
+     *Superseded.* The classifier pairs a node renamed with the same block, kind and edges (so a pure
+     rename was never reported), and gives up on a rename beside another change to that node. The editor
+     knows a rename happened because it made it, so it keeps the session's renames (old to new, in order;
+     an undo restores the list its text had) and replays them, with its own `rename_node`, on the baseline
+     text before the comparison. The classifier is unchanged and gets no hint: it compares two texts
+     whose names agree. A rename the baseline cannot take (no such node, or the new name is in use) is
+     dropped and the nodes are matched by name. The saved file and `bide check -diff` are unchanged.
   2. **The implicit entry is never changed in silence.** An operation that would change the entry a
      config leaves implicit (the first node) is refused, with a reason that offers `set_entry`.
   3. **Removal cascades, and the verdict is the classifier's.** Removing a node also removes the
