@@ -292,11 +292,39 @@ ci_wait() {
   echo none
 }
 
-# push_ci_state REPO SHA: the state of main's ci.yml push runs of SHA: "failure" when a completed one
+# ci_code_sha SHA: the commit whose push run decides whether SHA may be released. CI skips the Go
+# jobs for a push of one documentation-only commit (ci.yml, Changes), so a documentation-only SHA
+# on top of a red code commit has a green push run of its own. This walks back over first parents
+# while the commit changes only documentation (changed-code.sh, the classification CI uses) and
+# prints the first commit that does not: the last one that ran the Go jobs, whose own push run
+# must have passed. A commit that cannot be read counts as code (it is printed); a walk of more
+# than 200 commits, or a root, fails (the caller treats that as "unknown"). It reads the
+# repository in $REPO and notes the walk on stderr.
+ci_code_sha() {
+  local sha=$1 start=$1 n=0 files classify git=(git -C "${REPO:-.}")
+  classify="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../.github/scripts/changed-code.sh"
+  while :; do
+    # changed-code.sh exits 0 when the files include code (and for no files at all), 1 for
+    # documentation only. A commit that cannot be diffed (unreadable, a root) counts as code.
+    if files=$("${git[@]}" diff --name-only "$sha^" "$sha" 2>/dev/null) && ! echo "$files" | "$classify" >/dev/null; then
+      sha=$("${git[@]}" rev-parse "$sha^") || return 1
+      n=$((n + 1))
+      [ "$n" -le 200 ] || { echo "release: 200 documentation-only commits below $start; cannot find the commit whose CI ran the Go jobs" >&2; return 1; }
+      continue
+    fi
+    [ "$sha" = "$start" ] || echo "release: $start is documentation only down to $sha's child, whose CI runs skipped the Go jobs; checking the push run of $sha" >&2
+    echo "$sha"; return 0
+  done
+}
+
+# push_ci_state REPO SHA: the state of main's ci.yml push runs of SHA (of the nearest commit at or
+# below SHA that changes code, ci_code_sha, when SHA is documentation only): "failure" when a completed one
 # failed or was cancelled, "running" when one has not completed, "success" when all completed and
 # passed, "none" when there is none yet, "unknown" when GitHub could not be queried.
 push_ci_state() {
-  gh run list -R "$1" --workflow ci.yml --commit "$2" --event push --json status,conclusion \
+  local sha
+  sha=$(ci_code_sha "$2") || { echo unknown; return; }
+  gh run list -R "$1" --workflow ci.yml --commit "$sha" --event push --json status,conclusion \
     --jq 'if length == 0 then "none" elif any(.[]; .status == "completed" and .conclusion != "success") then "failure" elif any(.[]; .status != "completed") then "running" else "success" end' 2>/dev/null || echo unknown
 }
 
@@ -358,16 +386,19 @@ self_test_ci() {
 # A fake gh: "run list" serves $FX/push.json or $FX/mg.json (filtered by --status like gh), "api
 # repos/R/git/commits/SHA" serves $FX/tree-SHA; $FX/down makes every call fail.
 [ ! -e "$FX/down" ] || exit 1
-expr= prev= status=
+expr= prev= status= commit=
 for a in "$@"; do
   [ "$prev" = --jq ] && expr=$a
+  [ "$prev" = --commit ] && commit=$a
   [ "$prev" = --status ] && status=$a
   prev=$a
 done
 case "$*" in
   *"--event push"*)
     f=$FX/push.json
-    if [ -e "$FX/push.1.json" ]; then # a sequence: one file per call, the last repeats
+    if [ -n "$commit" ] && [ -e "$FX/run-$commit.json" ]; then # a per-commit run (the documentation-only cases)
+      f=$FX/run-$commit.json
+    elif [ -e "$FX/push.1.json" ]; then # a sequence: one file per call, the last repeats
       n=$(( $(cat "$FX/n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FX/n"
       f=$FX/push.$n.json; [ -e "$f" ] || { n=$(ls "$FX"/push.[0-9]*.json | wc -l | tr -d ' '); f=$FX/push.$n.json; }
     fi ;;
@@ -447,6 +478,39 @@ GH
   [ "$calls" -eq 1 ] || { echo "self-test: a dry run asked $calls times, want 1"; ok=false; }
   wait_case success true "green at once: no wait" "$pass"
   [ "$calls" -eq 1 ] || { echo "self-test: a green run asked $calls times, want 1"; ok=false; }
+  # Documentation-only release commits: CI skips the Go jobs for a push of one such commit, so its
+  # own push run is green whatever the code below it did. The commit whose run counts is the first
+  # one, walking back, that changes code. Real commits in a scratch repository (docs/ and README.md
+  # are documentation, agent/ is code); every commit has a push run, the red code commits a failed one.
+  local gr="$tmp/docs-repo" g=(-c user.name=t -c user.email=t@example.com -c commit.gpgsign=false) green_code red_code d_green d_red1 d_red2 d_none code_none
+  git init --quiet "$gr"
+  mk() { # mk FILE: commit a change to FILE and print the commit
+    mkdir -p "$gr/$(dirname "$1")"; echo "$RANDOM" > "$gr/$1"
+    git -C "$gr" add -A; git -C "$gr" "${g[@]}" commit --quiet -m "$1"; git -C "$gr" rev-parse HEAD
+  }
+  mk README.md >/dev/null
+  green_code=$(mk agent/a.go); d_green=$(mk docs/a.md)
+  red_code=$(mk agent/b.go);   d_red1=$(mk docs/b.md); d_red2=$(mk CHANGELOG.md)
+  code_none=$(mk agent/c.go);  d_none=$(mk docs/c.md)
+  rm -f "$tmp/fx/n" "$tmp/fx"/push.[0-9]*.json "$tmp/fx"/run-*.json "$tmp/fx/down"
+  for c in "$green_code" "$d_green" "$d_red1" "$d_red2" "$d_none"; do printf '%s' "$pass" > "$tmp/fx/run-$c.json"; done
+  printf '%s' "$fail" > "$tmp/fx/run-$red_code.json"; printf '[]' > "$tmp/fx/run-$code_none.json"
+  printf '[]' > "$tmp/fx/mg.json"
+  docs_case() { # docs_case WANT SHA DESCRIPTION
+    got=$(REPO=$gr FX="$tmp/fx" PATH="$tmp/bin:$PATH" push_ci_state example/r "$2" 2>/dev/null)
+    [ "$got" = "$1" ] || { echo "self-test: $3: push_ci_state said $got, want $1"; ok=false; }
+  }
+  docs_case success "$green_code" "a code commit with a green run (unchanged)"
+  docs_case failure "$red_code" "a code commit with a failed run (unchanged)"
+  docs_case success "$d_green" "a documentation commit on a green code commit"
+  docs_case failure "$d_red1" "a documentation commit on a red code commit (its own run is green)"
+  docs_case failure "$d_red2" "two documentation commits on a red code commit"
+  docs_case none "$d_none" "a documentation commit on a code commit with no push run"
+  docs_case none "$code_none" "a code commit with no push run"
+  got=$(REPO=$gr FX="$tmp/fx" PATH="$tmp/bin:$PATH" BIDE_CI_POLL_SECS=0.1 BIDE_CI_WAIT_SECS=1 root_tag_gate example/r "$d_red2" success >/dev/null 2>&1 && echo go || echo stop)
+  [ "$got" = stop ] || { echo "self-test: root_tag_gate let a documentation commit on a red code commit through"; ok=false; }
+  got=$(REPO=$gr FX="$tmp/fx" PATH="$tmp/bin:$PATH" BIDE_CI_POLL_SECS=0.1 BIDE_CI_WAIT_SECS=1 root_tag_gate example/r "$d_green" success >/dev/null 2>&1 && echo go || echo stop)
+  [ "$got" = go ] || { echo "self-test: root_tag_gate stopped a documentation commit on a green code commit"; ok=false; }
   # The gate comes before the root tag is created and pushed (the self-test cannot run a release).
   local gate_line tag_line
   gate_line=$(grep -n 'root_tag_gate "\$GITHUB_REPO"' "${BASH_SOURCE[0]}" | head -1 | cut -d: -f1)
