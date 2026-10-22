@@ -1,6 +1,7 @@
 package flowedit
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -71,14 +72,13 @@ func TestRemoveNodeTakesTheAssertionsThatNameIt(t *testing.T) {
 }
 
 // shapesYAML and shapesJSON hold every shape of an assertion that names "manual review": the six forms
-// by either node, a quoted name with a space, and a line the grammar cannot read; two lines name nothing
-// removed.
+// by either node, a quoted name with a space; two lines name nothing removed.
 const shapesHead = `{"version":1,"flow":"f","nodes":[{"name":"a","block":"a"},{"name":"manual review","block":"m"},{"name":"c","block":"c"}],"wiring":[{"edge":["a","manual review"]},{"edge":["manual review","c"]}],`
 
 var shapes = map[string][2]string{
 	"f.json": {
-		shapesHead + `"assert":["c reachable","every path to c passes \"manual review\"","no side effect after \"manual review\"","\"manual review\" reachable","something odd about \"manual review\"","a reachable"]}`,
-		shapesHead + `"assert":["\"manual review\" reachable","something odd about \"manual review\"","every path to c passes \"manual review\"","no side effect after \"manual review\""]}`,
+		shapesHead + `"assert":["c reachable","every path to c passes \"manual review\"","no side effect after \"manual review\"","\"manual review\" reachable","a reachable"]}`,
+		shapesHead + `"assert":["\"manual review\" reachable","every path to c passes \"manual review\"","no side effect after \"manual review\""]}`,
 	},
 	"f.yaml": {
 		`version: 1
@@ -95,7 +95,6 @@ assert:
   - every path to c passes "manual review"
   - no side effect after "manual review"
   - '"manual review" reachable'
-  - something odd about "manual review"
   - a reachable
 `, `version: 1
 flow: f
@@ -108,7 +107,6 @@ wiring:
   - edge: [manual review, c]
 assert:
   - '"manual review" reachable'
-  - something odd about "manual review"
   - every path to c passes "manual review"
   - no side effect after "manual review"
 `,
@@ -124,8 +122,8 @@ func TestRemoveNodeTakesEveryAssertionShape(t *testing.T) {
 				n++
 			}
 		}
-		if n != 4 {
-			t.Errorf("%s: %d assertions listed, want 4: %q", file, n, list)
+		if n != 3 {
+			t.Errorf("%s: %d assertions listed, want 3: %q", file, n, list)
 		}
 		got := mustApply(t, file, srcs[0], Operation{Op: "remove_node", Node: "manual review", Confirm: list})
 		if strings.Contains(got, "manual review") || !strings.Contains(got, "c reachable") || !strings.Contains(got, "a reachable") {
@@ -179,4 +177,113 @@ func TestRemoveNodeWeakensByTheRemovedAssertion(t *testing.T) {
 		}
 		notWeakened(t, "after undo", v)
 	})
+}
+
+// An assert line the grammar cannot read is neither kept nor removed on a guess: if a word of it is the node's
+// name (punctuation trimmed), the removal is refused and says which line to fix, whatever readable
+// assertions are beside it; a line with no such word is left alone.
+func TestRemoveNodeRefusesAnUnreadableAssertionThatNamesIt(t *testing.T) {
+	for name, line := range map[string]string{
+		"trailing comma":    "something odd: audit, really",
+		"the word in prose": "this is about the audit trail",
+		"parenthesised":     "(audit) must be checked",
+		"colon":             "audit: needs a look",
+		"quoted":            `see "audit" for the detail`,
+	} {
+		src := strings.Replace(removeFlow, "  - receipt reachable\n", "  - receipt reachable\n  - "+line+"\n", 1)
+		if strings.Contains(line, ": ") || strings.HasPrefix(line, "(") || strings.Contains(line, `"`) {
+			src = strings.Replace(removeFlow, "  - receipt reachable\n", "  - receipt reachable\n  - '"+strings.ReplaceAll(line, "'", "''")+"'\n", 1)
+		}
+		for _, op := range []Operation{{Op: "remove_node", Node: "audit"}, {Op: "remove_node", Node: "audit", DryRun: true}} {
+			_, err := ApplyOperation("f.yaml", []byte(src), op)
+			var rf *Refusal
+			if !errors.As(err, &rf) || !strings.Contains(rf.Reason, "assert 4 is not one of the six forms") || !strings.Contains(rf.Reason, "fix it or remove that line first") {
+				t.Errorf("%s (dry run %v): %v", name, op.DryRun, err)
+			}
+		}
+	}
+	// A line with no word that is the name is left alone, and the removal goes on.
+	src := strings.Replace(removeFlow, "  - receipt reachable\n", "  - receipt reachable\n  - something odd about the audits\n", 1)
+	list := dryRun(t, "f.yaml", src, Operation{Op: "remove_node", Node: "audit"})
+	got := mustApply(t, "f.yaml", src, Operation{Op: "remove_node", Node: "audit", Confirm: list})
+	if !strings.Contains(got, "something odd about the audits") || strings.Contains(got, "audit reachable") {
+		t.Errorf("an unrelated unreadable line, or the readable one, was mishandled:\n%s", got)
+	}
+	// Once the line is fixed the removal goes through.
+	fixed := strings.Replace(removeFlow, "  - receipt reachable\n", "  - receipt reachable\n  - something odd\n", 1)
+	list = dryRun(t, "f.yaml", fixed, Operation{Op: "remove_node", Node: "audit"})
+	mustApply(t, "f.yaml", fixed, Operation{Op: "remove_node", Node: "audit", Confirm: list})
+}
+
+// Removing a node with its assertions, and undoing it, is byte for byte: the text after Undo is the text
+// before, and the removal made again (Redo) gives the text the removal gave, over comments, flow-style
+// and block-style lists, and the last assertion going with the list.
+func TestRemoveNodeUndoAndRedoAreByteExact(t *testing.T) {
+	const commented = `# the refund flow
+version: 1
+flow: refund
+entry: validate
+nodes:
+  # reads the request
+  - {name: validate, block: validate}
+
+  # the gated one
+  - name: charge       # gated
+    block: charge
+    approval:
+      need: 2
+      approvers: [ops, finance, risk]
+  # the receipt, last
+  - {name: receipt, block: receipt}   # trailing
+wiring:
+  - edge: [validate, charge]
+  # then the receipt
+  - edge: [charge, receipt]
+# what must hold
+assert:
+  # about the gate
+  - every path to charge passes approval >= 2 of 3
+  - receipt reachable    # the receipt is the end
+  - "no side effect after receipt"
+`
+	const onlyOne = `version: 1
+flow: f
+nodes:
+  - {name: a, block: a}
+  - {name: b, block: b}
+wiring:
+  - edge: [a, b]
+# the only assertion
+assert:
+  - b reachable   # about b
+`
+	for name, flow := range map[string]string{"commented": commented, "flow-style": removeFlow, "only assertion": onlyOne} {
+		node := map[string]string{"commented": "receipt", "flow-style": "audit", "only assertion": "b"}[name]
+		t.Run(name, func(t *testing.T) {
+			s, _ := newTestServer(t, "f.yaml", flow)
+			e := newSession(t, s, flow)
+			var dry struct {
+				Edited
+				Refused string `json:"refused"`
+			}
+			e.post("/api/apply", map[string]any{"text": e.text, "operation": Operation{Op: "remove_node", Node: node, DryRun: true}}, &dry)
+			if !slices.ContainsFunc(dry.Cascade, func(x string) bool { return strings.HasPrefix(x, "assert ") }) {
+				t.Fatalf("the dry run lists no assertion: %q", dry.Cascade)
+			}
+			remove := Operation{Op: "remove_node", Node: node, Confirm: dry.Cascade}
+			e.do(remove)
+			removed := e.text
+			if removed == flow || strings.Contains(removed, "name: "+node) {
+				t.Fatalf("the removal did nothing:\n%s", removed)
+			}
+			e.back()
+			if e.text != flow {
+				t.Errorf("undo is not byte for byte:\n%s\nwant\n%s", e.text, flow)
+			}
+			e.do(remove)
+			if e.text != removed {
+				t.Errorf("redo is not the text the removal gave:\n%s\nwant\n%s", e.text, removed)
+			}
+		})
+	}
 }

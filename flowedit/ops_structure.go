@@ -532,6 +532,11 @@ func cascadeWiring(cfg *structDoc, name string, join bool) ([]Op, []string, erro
 	var lines []string
 	for k, line := range cfg.Assert {
 		if slices.Contains(assertionNames(line), op.Node) {
+			if _, readable := ParseAssertion(line); !readable {
+				// The same rule as a rename: a line the grammar cannot read is neither kept nor removed on a
+				// guess about whether it means the node.
+				return nil, nil, refuse("assert %d is not one of the six forms and has the word %q in it: %q; fix it or remove that line first, then remove the node", k+1, op.Node, line)
+			}
 			hit = append(hit, k)
 			lines = append(lines, fmt.Sprintf("assert %d: %q is removed (removing an assertion weakens the policy)", k+1, line))
 		}
@@ -564,7 +569,7 @@ func assertionNames(line string) []string {
 	}
 	var out []string
 	for _, f := range strings.Fields(line) {
-		out = append(out, strings.Trim(f, `"`))
+		out = append(out, strings.Trim(f, tokenPunct))
 	}
 	// A quoted name may hold spaces, which the fields above split: the quoted spans are names too.
 	for _, m := range quotedSpan.FindAllStringSubmatch(line, -1) {
@@ -572,6 +577,10 @@ func assertionNames(line string) []string {
 	}
 	return out
 }
+
+// tokenPunct is what is trimmed from the ends of a word of an assert line the grammar cannot read, so
+// "audit," and "(audit)" are the node audit.
+const tokenPunct = "\"'`,.;:!?()[]{}<>"
 
 // quotedSpan is a double-quoted span of an assert line, where the grammar writes a name with a space.
 var quotedSpan = regexp.MustCompile(`"([^"]*)"`)
