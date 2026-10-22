@@ -42,7 +42,9 @@ jobs:
   # about 20. A pull request runs the fast subset: this job, Lint, the Linux race tests, dco, the
   # changelog check, and Models and the gsm machine gate when their inputs changed. The other
   # required checks (Test (macos-latest), Test (windows-latest), Integration (Postgres, Redis))
-  # are skipped on a pull request, which satisfies them, and run in the merge queue and on main.
+  # are skipped on a pull request, which satisfies them, and run in the merge queue and on main;
+  # Test (windows-latest) also runs on a pull request that changes code where Windows-only
+  # failures have been found (the windows step, windows-needed.sh).
   # The "full-ci" label on a pull request (then re-run the workflow, or push) runs everything on
   # the pull request too. Outputs:
   #   code    false when the change touches only documentation (and the like, changed-code.sh):
@@ -67,6 +69,7 @@ jobs:
       code: ${{ steps.diff.outputs.code }}
       full: ${{ steps.diff.outputs.full }}
       heavy: ${{ steps.diff.outputs.heavy }}
+      windows: ${{ steps.windows.outputs.windows }}
       shards: ${{ steps.shards.outputs.shards }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -118,6 +121,28 @@ jobs:
           echo "full=$full" | tee -a "$GITHUB_OUTPUT"
           echo "heavy=$heavy" | tee -a "$GITHUB_OUTPUT"
           echo "examples=$examples" | tee -a "$GITHUB_OUTPUT"
+      - id: windows
+        # Test (windows-latest) runs wherever heavy does, and also on a pull request that changes
+        # code where Windows-only failures have been found (windows-needed.sh: tests, testdata and
+        # goldens, .gitattributes, Go files using os, path, io/fs, syscall, mime or encoding).
+        # Any doubt (a failed diff, this step failing) leaves it unset, and the job runs.
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          CODE: ${{ steps.diff.outputs.code }}
+          HEAVY: ${{ steps.diff.outputs.heavy }}
+        run: |
+          windows=true
+          if [ "$HEAVY" != true ] && [ "$EVENT" = pull_request ]; then
+            if [ "$CODE" = false ]; then
+              windows=false
+            elif files=$(git diff --name-only "$BASE" "$HEAD"); then
+              .github/scripts/windows-needed.sh <<< "$files" || windows=false
+            fi
+          fi
+          echo "windows=$windows" | tee -a "$GITHUB_OUTPUT"
       - id: shards
         name: Every module is in exactly one Linux test shard
         env:
@@ -209,6 +234,8 @@ jobs:
           # test shard; the self-test proves a missing, doubled or unknown entry fails.
           .github/scripts/shards.sh --self-test
           SHARDS="$TEST_SHARDS" .github/scripts/shards.sh check-packages
+          # Which pull requests run Test (windows-latest); the self-test covers both directions.
+          .github/scripts/windows-needed.sh --self-test
           # Every test file that starts a process is in a package of the list of tests that always
           # run, or in the list of those whose result depends only on the test binary.
           .github/scripts/check-uncached.sh --self-test
@@ -458,7 +485,7 @@ jobs:
 
   # macOS and Windows: every module in one job each, without -race, which also runs the scale
   # tests at full size (they run smaller under -race). About 3 to 4 minutes on macOS and 6 to 9 on
-  # Windows (store/sqlite alone is 4). Skipped on a pull request (see Changes), run in the merge
+  # Windows (store/sqlite alone is 4). Skipped on a pull request (see Changes; Windows excepted), run in the merge
   # queue and on main; a skipped job satisfies its required check, as Integration's does. One job
   # each, not sharded: each extra job costs a runner start and about 70 s of setup.
   test-macos:
@@ -491,10 +518,12 @@ jobs:
           path: ${{ steps.gocache.outputs.paths }}
           key: go-${{ runner.os }}-macos-${{ github.sha }}
 
+  # Also on a pull request that changes code where Windows-only failures have been found (see the
+  # Changes job's windows step); any other pull request skips it, which satisfies the required check.
   test-windows:
     name: Test (windows-latest)
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.heavy != 'false' }}
+    if: ${{ !cancelled() && needs.changes.outputs.windows != 'false' }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
