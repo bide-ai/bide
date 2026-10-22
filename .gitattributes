@@ -25,3 +25,6 @@ audit/rfc3161/testdata/** -text
 # Conformance captures from real CAs: LF on every platform (the AD CS tools write CRLF).
 audit/testdata/ejbca/** text eol=lf
 audit/testdata/adcs/** text eol=lf
+
+# The ISO 4217 list is kept exactly as SIX publishes it (CRLF), so its SHA-256 in internal/amount/iso4217.go is the file's.
+internal/amount/testdata/iso4217-list-one.xml -text
