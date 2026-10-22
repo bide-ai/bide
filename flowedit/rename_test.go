@@ -431,7 +431,9 @@ func TestRenameReplayAgreesWithTheOperations(t *testing.T) {
 		"spaced":            {{"e", "e e"}, {"e e", "e3"}},
 		"a loop target":     {{"b", "b2"}, {"d", "d2"}},
 	}
-	flows := map[string]string{"join.yaml": joinFlow, "struct.yaml": structFlow}
+	// dupFlow names two nodes alike (a text in progress can): the operations refuse to rename either.
+	dupFlow := strings.Replace(joinFlow, "{name: e, block: e}", "{name: a, block: e}", 1)
+	flows := map[string]string{"join.yaml": joinFlow, "struct.yaml": structFlow, "dup.yaml": dupFlow}
 	for file, flow := range flows {
 		for name, rs := range lists {
 			t.Run(file+"/"+name, func(t *testing.T) {
