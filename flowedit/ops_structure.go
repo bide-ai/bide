@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/bide-ai/bide/plan"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -470,9 +471,8 @@ func planRemoveNode(cfg *structDoc, op Operation) ([]Op, []string, error) {
 
 // cascadeWiring plans the removal of everything in the wiring that names name, a node or (join true)
 // a join, and lists it: the edges that name it, the arms and else that route to it (a switch left with
-// no arm goes whole), the switch on it, and for a join its own element. A node that is an input of a
-// join is not removed. The assert lines that name it are left in place and listed: removing one would
-// weaken the policy, and the check reports a line that names a missing node.
+// no arm goes whole), the switch on it, for a join its own element, and the assert lines that name it. A
+// node that is an input of a join is not removed.
 func cascadeWiring(cfg *structDoc, name string, join bool) ([]Op, []string, error) {
 	op := Operation{Node: name}
 	var steps []Op
@@ -524,13 +524,34 @@ func cascadeWiring(cfg *structDoc, name string, join bool) ([]Op, []string, erro
 			}
 		}
 	}
+	// The assert lines that name it go too: a line left naming a node that is gone reports as broken, and
+	// the author is shown each before it is removed. Removing an assertion is a weakening of the policy,
+	// which the weakened banner and the save confirmation say like any other (the classifier reads the
+	// text, not the operation); the list says so as well.
+	var hit []int
+	var lines []string
 	for k, line := range cfg.Assert {
 		if slices.Contains(assertionNames(line), op.Node) {
-			cascade = append(cascade, fmt.Sprintf("assert %d: %q stays and is reported as naming a missing node", k+1, line))
+			if _, readable := ParseAssertion(line); !readable {
+				// The same rule as a rename: a line the grammar cannot read is neither kept nor removed on a
+				// guess about whether it means the node.
+				return nil, nil, refuse("assert %d is not one of the six forms and has the word %q in it: %q; fix it or remove that line first, then remove the node", k+1, op.Node, line)
+			}
+			hit = append(hit, k)
+			lines = append(lines, fmt.Sprintf("assert %d: %q is removed (removing an assertion weakens the policy)", k+1, line))
+		}
+	}
+	switch {
+	case len(hit) == 0:
+	case len(hit) == len(cfg.Assert): // the last lines: the list goes too, rather than "assert:" with nothing under it
+		steps = append(steps, Op{Kind: Delete, Path: []any{"assert"}})
+	default:
+		for i := len(hit) - 1; i >= 0; i-- {
+			steps = append(steps, Op{Kind: Delete, Path: []any{"assert", hit[i]}})
 		}
 	}
 	slices.Reverse(cascade) // wiring order, not the order the splices run in
-	return steps, cascade, nil
+	return steps, append(cascade, lines...), nil
 }
 
 // assertionNames is the node names an assert line mentions: the form's nodes when the line parses,
@@ -548,10 +569,21 @@ func assertionNames(line string) []string {
 	}
 	var out []string
 	for _, f := range strings.Fields(line) {
-		out = append(out, strings.Trim(f, `"`))
+		out = append(out, strings.Trim(f, tokenPunct))
+	}
+	// A quoted name may hold spaces, which the fields above split: the quoted spans are names too.
+	for _, m := range quotedSpan.FindAllStringSubmatch(line, -1) {
+		out = append(out, m[1])
 	}
 	return out
 }
+
+// tokenPunct is what is trimmed from the ends of a word of an assert line the grammar cannot read, so
+// "audit," and "(audit)" are the node audit.
+const tokenPunct = "\"'`,.;:!?()[]{}<>"
+
+// quotedSpan is a double-quoted span of an assert line, where the grammar writes a name with a space.
+var quotedSpan = regexp.MustCompile(`"([^"]*)"`)
 
 // renameAssertion is line with the node old named new, written through the grammar; ok is false when
 // the line does not name old. A line that names it but cannot be written back (the grammar cannot
@@ -792,6 +824,19 @@ func expectStructure(old any, op Operation) (any, error) {
 			kept = append(kept, w)
 		}
 		doc["wiring"] = kept
+		if lines, ok := doc["assert"].([]any); ok {
+			var keptLines []any
+			for _, l := range lines {
+				if s, _ := l.(string); !slices.Contains(assertionNames(s), op.Node) {
+					keptLines = append(keptLines, l)
+				}
+			}
+			if len(keptLines) == 0 {
+				delete(doc, "assert")
+			} else {
+				doc["assert"] = keptLines
+			}
+		}
 	}
 	return doc, nil
 }

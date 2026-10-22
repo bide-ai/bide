@@ -439,10 +439,9 @@ belongs to the page: reloading it or restarting `bide edit` forgets it, and the 
 compared with the baseline by name. `bide check -diff -fail-on-weaken` in CI sees two files and cannot
 know a rename: it pairs a node renamed with the same block, kind and edges (a pure rename passes), and
 reports a rename beside another change to that node, its block or its edges, as a removed gate and a
-new node, which a policy owner reviews and accepts. **Removing a node leaves its assertions.** Removing a
-node leaves any `assert` line that names it (the check reports it as naming a missing node), because
-removing an assertion is itself a weakening. A node that is an input of a join is not removed until the
-join is changed or removed first (both are done in the editor).
+new node, which a policy owner reviews and accepts.
+
+**Removing a node in the editor removes the assertions that name it, and not those that only depend on it; a join input is not removed.** Removing a node also removes the `assert` lines that name it, which is a weakening and is reported as one; an `assert` line the grammar cannot read that has the node's name as a word refuses the removal (fix or remove the line first) rather than guess; an assertion that does not name the node but depends on it (`b reachable` after the only path to `b` is gone) is not removed and is caught by the weakened banner and the save confirmation. A node that is an input of a join is not removed until the join is changed or removed first (both are done in the editor).
 
 **The approve page's look is tested in Chrome only.** `TestPage_LookInChrome` and the no-input test run in Chrome and Go; Firefox and Safari are not run. In particular, Firefox processes a `Link: <...>; rel=stylesheet` response header, which Chrome ignores for this page, and a CSP of the host can change what loads: the pin covers the bundle's bytes, not the headers or proxy of whoever serves them (an organisation hosting the bundle should serve it with the CSP `approvals.PageCSP` returns, which allows no other stylesheet).
 

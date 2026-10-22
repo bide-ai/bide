@@ -277,7 +277,7 @@ Rename rewrites the node's name in every wiring element and the entry, and in as
 only through the assertion grammar `plan` parses (the editor does not regex over free text). A
 rename that cannot be applied everywhere is refused with the places it could not reach. Remove
 reports what it will also remove (the edges and arms that name the node, the comments attached to
-it) before it applies.
+it, and the `assert` lines that name it) before it applies.
 
 **What the editor does not offer, because `Load` would refuse it:** raising a node's `safety`
 above what Go declares (typed mode knows the ceiling; structural mode shows the lowering rule and
@@ -714,8 +714,11 @@ Each phase is one or more pull requests, each with its docs, changelog fragment 
      config leaves implicit (the first node) is refused, with a reason that offers `set_entry`.
   3. **Removal cascades, and the verdict is the classifier's.** Removing a node also removes the
      edges and arms that name it; the dry-run list of what goes is shown and must be confirmed, and is
-     separate from the weakening confirmation. A switch left with no arm is removed whole; `assert`
-     lines that name the node stay (removing one is a weakening) and are listed.
+     separate from the weakening confirmation. A switch left with no arm is removed whole. *(Changed
+     2026-10-21: the `assert` lines that name the node are removed with it, and listed in the same
+     dry run; before, they stayed and the check reported them as naming a missing node. Removing an
+     assertion is a weakening, which the verdict, the banner and the save confirmation show as they
+     show any removed assertion.)*
   4. **The last arm of a switch is not removed one arm at a time.** `remove_arm` on the last arm is
      refused; `remove_switch` is the explicit operation.
   5. **Joins are wiring-element paths** (phase 2, joins step): a join has no entry in `nodes`, so its
