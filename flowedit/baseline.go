@@ -86,9 +86,6 @@ func renameBaseline(name string, baseline []byte, renames []Rename) ([]byte, []R
 	}
 	var made []Rename
 	for _, r := range renames {
-		if r.From == r.To {
-			continue
-		}
 		res, err := ApplyOperation(name, baseline, Operation{Op: "rename_node", Node: r.From, Value: r.To})
 		if err != nil || !res.Changed {
 			continue
