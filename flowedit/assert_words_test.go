@@ -33,6 +33,8 @@ func TestUnreadableAssertionMentions(t *testing.T) {
 		{"about audit", "audit", true},
 		// words that only contain the name are other words
 		{"the audits", "audit", false},
+		{"the audits and the audit", "audit", true}, // a later occurrence counts
+		{"audits audit2 unaudit", "audit", false},
 		{"unaudited", "audit", false},
 		{"audit2", "audit", false},
 		{"éaudit", "audit", false},
