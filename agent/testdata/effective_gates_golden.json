@@ -1,0 +1,518 @@
+{
+ "mofn-pending": [
+  {
+   "name": "@journal",
+   "kind": "header",
+   "format": "bide.journal.v1-dev",
+   "salt": "-"
+  },
+  {
+   "name": "run:start",
+   "kind": "value",
+   "result": {
+    "input": "go",
+    "kind": "agent",
+    "started_at": "2026-10-22T09:00:00.000Z"
+   },
+   "salt": "-"
+  },
+  {
+   "name": "@llm/0",
+   "kind": "model",
+   "message": {
+    "role": "assistant",
+    "parts": [
+     {
+      "args": {},
+      "id": "c1",
+      "name": "wire",
+      "type": "tool_use"
+     }
+    ]
+   },
+   "usage": {},
+   "finish": "tool_use",
+   "tools_digest": "b1c635969bb75902615d9176c96b27ab10b1f56b0fc483300908d6bacf8d4421",
+   "salt": "-"
+  },
+  {
+   "name": "approval-deadline:c1",
+   "kind": "value",
+   "result": {
+    "tool_use_id": "c1",
+    "requested_at": "2026-10-22T09:00:00.000Z",
+    "expires_at": "2026-10-22T10:00:00.000Z",
+    "timeout_ms": 3600000
+   },
+   "salt": "-"
+  },
+  {
+   "name": "approval-pending:c1",
+   "kind": "value",
+   "result": {
+    "tool_use_id": "c1",
+    "tool_name": "wire",
+    "need": 1,
+    "approvers": [
+     "ops"
+    ],
+    "recorded_at": "2026-10-22T09:00:00.000Z"
+   },
+   "salt": "-"
+  }
+ ],
+ "saga-fail": [
+  {
+   "name": "@journal",
+   "kind": "header",
+   "format": "bide.journal.v1-dev",
+   "salt": "-"
+  },
+  {
+   "name": "run:start",
+   "kind": "value",
+   "result": {
+    "input": "go",
+    "saga": true,
+    "kind": "agent",
+    "started_at": "2026-10-22T09:00:00.000Z"
+   },
+   "salt": "-"
+  },
+  {
+   "name": "@llm/0",
+   "kind": "model",
+   "message": {
+    "role": "assistant",
+    "parts": [
+     {
+      "args": {},
+      "id": "b1",
+      "name": "book",
+      "type": "tool_use"
+     }
+    ]
+   },
+   "usage": {},
+   "finish": "tool_use",
+   "tools_digest": "d8568b24f070d8aac7015f75b2e518fe1eb4f1d92492a8739f9da4e3269f5b62",
+   "salt": "-"
+  },
+  {
+   "name": "approval-pending:b1",
+   "kind": "value",
+   "result": {
+    "tool_use_id": "b1",
+    "tool_name": "book",
+    "single": true,
+    "recorded_at": "2026-10-22T09:00:00.000Z"
+   },
+   "salt": "-"
+  },
+  {
+   "name": "approval:b1",
+   "kind": "approval",
+   "tool_use_id": "b1",
+   "approved": true,
+   "recorded_at": "2026-10-22T09:00:00.000Z",
+   "salt": "-"
+  },
+  {
+   "name": "attempt:tool:b1",
+   "kind": "attempt",
+   "tool_use_id": "b1",
+   "attempted_at": 0,
+   "claim": "-",
+   "salt": "-"
+  },
+  {
+   "name": "tool:b1",
+   "kind": "saga_fail",
+   "tool_use_id": "b1",
+   "result": "no seats",
+   "safety": {},
+   "approval": {
+    "single": true
+   },
+   "salt": "-"
+  },
+  {
+   "name": "run:aborted",
+   "kind": "value",
+   "result": {
+    "reason": "no seats",
+    "aborted_at": "2026-10-22T09:00:00.000Z"
+   },
+   "recorded_at": "2026-10-22T09:00:00.000Z",
+   "salt": "-"
+  }
+ ],
+ "saga-rollback": [
+  {
+   "name": "@journal",
+   "kind": "header",
+   "format": "bide.journal.v1-dev",
+   "salt": "-"
+  },
+  {
+   "name": "run:start",
+   "kind": "value",
+   "result": {
+    "input": "go",
+    "saga": true,
+    "kind": "agent",
+    "started_at": "2026-10-22T09:00:00.000Z"
+   },
+   "salt": "-"
+  },
+  {
+   "name": "@llm/0",
+   "kind": "model",
+   "message": {
+    "role": "assistant",
+    "parts": [
+     {
+      "args": {},
+      "id": "c1",
+      "name": "charge",
+      "type": "tool_use"
+     }
+    ]
+   },
+   "usage": {},
+   "finish": "tool_use",
+   "tools_digest": "bdb05d1c648dbf27e6ec45eb2e2035bf7657484725664fcf6ae88d8e8244eb4b",
+   "salt": "-"
+  },
+  {
+   "name": "@saga/args/c1",
+   "kind": "value",
+   "result": {},
+   "salt": "-"
+  },
+  {
+   "name": "tool:c1",
+   "kind": "tool_result",
+   "tool_use_id": "c1",
+   "result": "ok",
+   "safety": {
+    "idempotent": true
+   },
+   "salt": "-"
+  },
+  {
+   "name": "@llm/1",
+   "kind": "model",
+   "message": {
+    "role": "assistant",
+    "parts": [
+     {
+      "args": {},
+      "id": "b1",
+      "name": "book",
+      "type": "tool_use"
+     }
+    ]
+   },
+   "usage": {},
+   "finish": "tool_use",
+   "tools_digest": "bdb05d1c648dbf27e6ec45eb2e2035bf7657484725664fcf6ae88d8e8244eb4b",
+   "salt": "-"
+  },
+  {
+   "name": "attempt:tool:b1",
+   "kind": "attempt",
+   "tool_use_id": "b1",
+   "attempted_at": 0,
+   "claim": "-",
+   "salt": "-"
+  },
+  {
+   "name": "tool:b1",
+   "kind": "saga_fail",
+   "tool_use_id": "b1",
+   "result": "no seats",
+   "safety": {},
+   "salt": "-"
+  },
+  {
+   "name": "@saga/compensate/c1",
+   "kind": "value",
+   "salt": "-"
+  },
+  {
+   "name": "run:aborted",
+   "kind": "value",
+   "result": {
+    "reason": "no seats",
+    "aborted_at": "2026-10-22T09:00:00.000Z"
+   },
+   "recorded_at": "2026-10-22T09:00:00.000Z",
+   "salt": "-"
+  }
+ ],
+ "single-approved": [
+  {
+   "name": "@journal",
+   "kind": "header",
+   "format": "bide.journal.v1-dev",
+   "salt": "-"
+  },
+  {
+   "name": "run:start",
+   "kind": "value",
+   "result": {
+    "input": "go",
+    "kind": "agent",
+    "started_at": "2026-10-22T09:00:00.000Z"
+   },
+   "salt": "-"
+  },
+  {
+   "name": "@llm/0",
+   "kind": "model",
+   "message": {
+    "role": "assistant",
+    "parts": [
+     {
+      "args": {},
+      "id": "c1",
+      "name": "refund",
+      "type": "tool_use"
+     }
+    ]
+   },
+   "usage": {},
+   "finish": "tool_use",
+   "tools_digest": "3086561965b46faca1b99728b27bb4e1328e95cd6737f072a30678c5ad085f2d",
+   "salt": "-"
+  },
+  {
+   "name": "approval-pending:c1",
+   "kind": "value",
+   "result": {
+    "tool_use_id": "c1",
+    "tool_name": "refund",
+    "single": true,
+    "recorded_at": "2026-10-22T09:00:00.000Z"
+   },
+   "salt": "-"
+  },
+  {
+   "name": "approval:c1",
+   "kind": "approval",
+   "tool_use_id": "c1",
+   "approved": true,
+   "recorded_at": "2026-10-22T09:00:00.000Z",
+   "salt": "-"
+  },
+  {
+   "name": "attempt:tool:c1",
+   "kind": "attempt",
+   "tool_use_id": "c1",
+   "attempted_at": 0,
+   "claim": "-",
+   "salt": "-"
+  },
+  {
+   "name": "tool:c1",
+   "kind": "tool_result",
+   "tool_use_id": "c1",
+   "result": "ok",
+   "safety": {},
+   "approval": {
+    "single": true
+   },
+   "salt": "-"
+  },
+  {
+   "name": "@llm/1",
+   "kind": "model",
+   "message": {
+    "role": "assistant",
+    "parts": [
+     {
+      "text": "done",
+      "type": "text"
+     }
+    ]
+   },
+   "usage": {},
+   "finish": "stop",
+   "tools_digest": "3086561965b46faca1b99728b27bb4e1328e95cd6737f072a30678c5ad085f2d",
+   "salt": "-"
+  },
+  {
+   "name": "run:complete",
+   "kind": "value",
+   "recorded_at": "2026-10-22T09:00:00.000Z",
+   "salt": "-"
+  }
+ ],
+ "single-denied": [
+  {
+   "name": "@journal",
+   "kind": "header",
+   "format": "bide.journal.v1-dev",
+   "salt": "-"
+  },
+  {
+   "name": "run:start",
+   "kind": "value",
+   "result": {
+    "input": "go",
+    "kind": "agent",
+    "started_at": "2026-10-22T09:00:00.000Z"
+   },
+   "salt": "-"
+  },
+  {
+   "name": "@llm/0",
+   "kind": "model",
+   "message": {
+    "role": "assistant",
+    "parts": [
+     {
+      "args": {},
+      "id": "c1",
+      "name": "refund",
+      "type": "tool_use"
+     }
+    ]
+   },
+   "usage": {},
+   "finish": "tool_use",
+   "tools_digest": "3086561965b46faca1b99728b27bb4e1328e95cd6737f072a30678c5ad085f2d",
+   "salt": "-"
+  },
+  {
+   "name": "approval-pending:c1",
+   "kind": "value",
+   "result": {
+    "tool_use_id": "c1",
+    "tool_name": "refund",
+    "single": true,
+    "recorded_at": "2026-10-22T09:00:00.000Z"
+   },
+   "salt": "-"
+  },
+  {
+   "name": "approval:c1",
+   "kind": "approval",
+   "tool_use_id": "c1",
+   "recorded_at": "2026-10-22T09:00:00.000Z",
+   "salt": "-"
+  },
+  {
+   "name": "tool:c1",
+   "kind": "tool_result",
+   "tool_use_id": "c1",
+   "result": "tool call denied by human",
+   "is_error": true,
+   "safety": {},
+   "approval": {
+    "single": true
+   },
+   "salt": "-"
+  },
+  {
+   "name": "@llm/1",
+   "kind": "model",
+   "message": {
+    "role": "assistant",
+    "parts": [
+     {
+      "text": "done",
+      "type": "text"
+     }
+    ]
+   },
+   "usage": {},
+   "finish": "stop",
+   "tools_digest": "3086561965b46faca1b99728b27bb4e1328e95cd6737f072a30678c5ad085f2d",
+   "salt": "-"
+  },
+  {
+   "name": "run:complete",
+   "kind": "value",
+   "recorded_at": "2026-10-22T09:00:00.000Z",
+   "salt": "-"
+  }
+ ],
+ "ungated": [
+  {
+   "name": "@journal",
+   "kind": "header",
+   "format": "bide.journal.v1-dev",
+   "salt": "-"
+  },
+  {
+   "name": "run:start",
+   "kind": "value",
+   "result": {
+    "input": "go",
+    "kind": "agent",
+    "started_at": "2026-10-22T09:00:00.000Z"
+   },
+   "salt": "-"
+  },
+  {
+   "name": "@llm/0",
+   "kind": "model",
+   "message": {
+    "role": "assistant",
+    "parts": [
+     {
+      "args": {},
+      "id": "c1",
+      "name": "refund",
+      "type": "tool_use"
+     }
+    ]
+   },
+   "usage": {},
+   "finish": "tool_use",
+   "tools_digest": "3086561965b46faca1b99728b27bb4e1328e95cd6737f072a30678c5ad085f2d",
+   "salt": "-"
+  },
+  {
+   "name": "attempt:tool:c1",
+   "kind": "attempt",
+   "tool_use_id": "c1",
+   "attempted_at": 0,
+   "claim": "-",
+   "salt": "-"
+  },
+  {
+   "name": "tool:c1",
+   "kind": "tool_result",
+   "tool_use_id": "c1",
+   "result": "ok",
+   "safety": {},
+   "salt": "-"
+  },
+  {
+   "name": "@llm/1",
+   "kind": "model",
+   "message": {
+    "role": "assistant",
+    "parts": [
+     {
+      "text": "done",
+      "type": "text"
+     }
+    ]
+   },
+   "usage": {},
+   "finish": "stop",
+   "tools_digest": "3086561965b46faca1b99728b27bb4e1328e95cd6737f072a30678c5ad085f2d",
+   "salt": "-"
+  },
+  {
+   "name": "run:complete",
+   "kind": "value",
+   "recorded_at": "2026-10-22T09:00:00.000Z",
+   "salt": "-"
+  }
+ ]
+}
