@@ -12,7 +12,9 @@ stand for parallel shard jobs (`Test (ubuntu-latest, <shard>)`, `Test (windows-l
 and fails unless each succeeded, or nothing needed checking (`.github/scripts/shards.sh verdict`).
 The shard jobs are not required checks themselves, so the shard layout can change without changing
 branch protection. On a pull request, Test (macos-latest), Test (windows-latest) and Integration
-(Postgres, Redis) are skipped jobs, which satisfy the requirement; they run in the merge queue and on main
+(Postgres, Redis) are skipped jobs, which satisfy the requirement (Windows runs on a pull request that
+changes Windows-sensitive files); they run in the merge queue and on main, except that a documentation-only
+push or queue batch skips them too
 (see CONTRIBUTING.md, "What CI runs, and when").
 
 `gsm machine gate` (the job of `.github/workflows/gsm-gate.yml`, see `.github/gsm-gate/README.md`)

@@ -47,6 +47,8 @@ if [ "${1:-}" = --self-test ]; then
   t true  "pull request, failed diff"       pull_request true  false "nosuchsha" "$pure"
   t true  "pull request, code unset"        pull_request ""    false "$base" "$pure"
   t true  "push, code unset"                push         ""    ""    "" ""
+  t true  "push, code, heavy unset"         push         true  ""    "$base" "$pure"
+  t true  "merge group, code, heavy unset"  merge_group  true  ""    "$base" "$pure"
   t true  "pull request, full-ci label"     pull_request true  true  "$base" "$pure"
   [ "$fail" = 0 ] || { echo "self-test: failed"; exit 1; }
   echo "self-test: ok"; exit 0
