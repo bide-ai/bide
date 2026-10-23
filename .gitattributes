@@ -31,3 +31,4 @@ internal/amount/testdata/iso4217-list-one.xml -text
 
 # The journal golden of the effective-gate refactor is compared byte for byte.
 agent/testdata/effective_gates_golden.json text eol=lf
+agent/testdata/untrusted_marks_golden.jsonl text eol=lf

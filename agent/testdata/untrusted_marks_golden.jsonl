@@ -1,0 +1,4 @@
+{"name":"run:start","kind":"value","result":{"input":"go","saga":true,"kind":"agent","settings":{"untrusted_input":"inbound-email"},"started_at":"-"},"salt":"-"}
+{"name":"@retrieval/0","kind":"value","result":{"query":"go","docs":[{"id":"d1","text":"doc"}],"untrusted":"kb"},"salt":"-"}
+{"name":"tool:c1","kind":"tool_result","tool_use_id":"c1","result":"ok","safety":{"untrusted":"crm-notes"},"salt":"-"}
+{"name":"tool:c2","kind":"saga_fail","tool_use_id":"c2","result":"file does not exist","safety":{"untrusted":"crm-notes"},"salt":"-"}

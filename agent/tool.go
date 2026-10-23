@@ -55,6 +55,13 @@ type ToolSpec struct {
 	// Caps are the amount-cap rule lines of the tool (see WithCaps): checked against Input when the
 	// tool is registered, and decided for every call. The model is never sent them.
 	Caps []string
+	// Untrusted, when not empty, is the source of untrusted content the tool's results carry (see
+	// Untrusted). The engine records it with each result. A source in Safety.Untrusted is the same
+	// declaration (see Safety.Untrusted); the agent registers the tool with both folded into this field.
+	Untrusted string
+	// TaintExempt, when not empty, is the reason the tool's calls need no escalation gate in a run that
+	// read untrusted content (see TaintExempt).
+	TaintExempt string
 	// Timeout, when positive, bounds each call: the call runs under a context with this
 	// deadline. A result the tool returns is recorded even if the deadline has passed; an error
 	// it returns after the deadline has an unknown outcome (see WithTimeout).
@@ -173,6 +180,12 @@ type Safety struct {
 	// is a new call with new keys. A tool whose repeats the model may make (after a recorded
 	// error or timeout) derives a business key from its arguments for the downstream to dedupe.
 	Idempotent bool `json:"idempotent,omitempty"`
+	// Untrusted is the source name of untrusted content the tool's results carry (see Untrusted), and
+	// what a result record's Safety records of it. It is also a declaration: a tool whose Safety, given
+	// through WithSafety, names a source is declared untrusted from that source, exactly as the
+	// Untrusted option would. When both are given and the sources differ, registration is ErrConfig.
+	// The name rules of Untrusted apply. The engine records the declared source on every result.
+	Untrusted string `json:"untrusted,omitempty"`
 }
 
 // ApprovalPolicy declares a human approval gate. The policy SingleApproval returns is one
@@ -343,6 +356,9 @@ func (s safetyOption) applyTool(c *toolConfig) error {
 }
 
 func (s safetyOption) applyStep(c *stepConfig) error {
+	if s.Untrusted != "" {
+		return fmt.Errorf("WithSafety: Safety.Untrusted declares a tool's untrusted results, and a Step is not a tool; a Step's result is recorded under the Step's name with no mark: %w", ErrConfig)
+	}
 	c.safety = Safety(s)
 	return nil
 }

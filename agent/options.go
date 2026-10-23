@@ -148,6 +148,7 @@ type runConfig struct {
 	saga                           bool       // WithSaga
 	tools                          []string   // WithToolFilter: sorted, unique; nil: none given
 	outputMode                     OutputMode // WithOutputMode; "": none given
+	untrustedInput, trustedInput   *string    // WithUntrustedInput, WithTrustedInput
 }
 
 // runOption is a RunOption that only applies to a run.

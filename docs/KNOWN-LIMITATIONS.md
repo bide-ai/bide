@@ -17,6 +17,7 @@ Each section says what the limit is, whether it affects you, and what to do abou
 - [Anchoring](#anchoring)
 - [Governed state (gsm)](#governed-state-gsm)
 - [Notifications](#notifications)
+- [Untrusted-content marks](#untrusted-content-marks)
 - [Stores](#stores)
 - [Anchoring: Google Cloud Storage](#anchoring-google-cloud-storage)
 
@@ -790,6 +791,31 @@ acknowledged. A chain is at most four steps and is not repeated.
 - An agent-scope stop matches `Identity.Actor`: a run with no identity is never covered by one.
 - A session turn and a `Step` are not held by a stop of a tool; a global or agent stop holds the run
   at its next drive or turn start.
+
+## Untrusted-content marks
+
+The provenance declarations (`agent.Untrusted`, `agent.WithUntrustedInput`, `agent.WithTrustedInput`,
+`agent.RetrievalUntrusted`, `agent.TaintExempt`) record what a run read; they do not gate a call. They are the
+first part of the [design](design/untrusted-content-and-amount-caps.md) of untrusted-content tainting and amount
+caps, and a taint policy that acts on marks is not built yet ([guide](guides/untrusted-content.md)). Until it is:
+
+- **A mark is evidence, not a control.** A run that read an untrusted tool's result still calls any tool its
+  gates allow. Nothing in bide judges whether a text is an attack, and it will not.
+- **A mark is only as good as the declaration.** A tool that returns outside text and declares nothing leaves no
+  mark. Only a decorator that embeds the inner `Tool`
+  is checked: one that embeds it and hides the declaration (`Untrusted`, a source in `Safety`) is refused at
+  registration, as one that hides a gate or timeout is. A wrapper that holds the inner tool in a named field,
+  or implements `Spec` without embedding, is not seen, whether it hides the declaration, the approval gate or
+  the timeout: carrying the declaration through such a wrapper is the wrapper author's duty. (A fix that compares
+  the wrapper's spec with the spec read through its `Unwrap` chain is a separate change.)
+- **`ResolveHalt` records no mark.** It has the journal, not the registered tools, so the result it injects
+  carries no `Safety` and so no mark. A taint policy will derive it from the tool's declaration by name.
+- **Plan flow nodes are not covered.** A tool that declares `Untrusted` or `TaintExempt` is refused with
+  `ErrConfig` as a plan node (`plan.Registry.RegisterTool`, `Builder.Tool`), because a flow has no taint rule yet.
+- **The experimental label.** The declarations and the new `Safety.Untrusted`, `ToolSpec.Untrusted`,
+  `ToolSpec.TaintExempt` and `RunSettings` members may change in a minor release.
+- **Downgrade.** A binary older than this change ignores the new record members (checked by decoding the golden
+  with the binary built before it), so it neither records nor reads marks.
 
 ## Stores
 

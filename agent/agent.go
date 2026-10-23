@@ -131,6 +131,9 @@ func (a *Agent) addTool(t Tool) error {
 		return fmt.Errorf("agent: nil tool: %w", ErrConfig)
 	}
 	s := specOf(t)
+	if err := normalizeUntrusted(&s); err != nil {
+		return err
+	}
 	if err := checkWrapper(t, s); err != nil {
 		return err
 	}

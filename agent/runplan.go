@@ -286,12 +286,15 @@ func (a *Agent) newStart(d *driveSpec, idn Identity) (RunStart, error) {
 	if d.input == nil {
 		return RunStart{}, fmt.Errorf("agent: a run's first drive needs its input: %w", ErrConfig)
 	}
+	if d.cfg.untrustedInput != nil && d.cfg.trustedInput != nil {
+		return RunStart{}, fmt.Errorf("WithUntrustedInput and WithTrustedInput both state the run's input provenance; pass one: %w", ErrConfig)
+	}
 	if d.typed == nil && d.cfg.outputMode != "" { // as holdDrive refuses it on a later drive
 		return RunStart{}, fmt.Errorf("WithOutputMode applies to a typed run (RunTyped), and this run is not one: %w", ErrConfig)
 	}
 	s := RunStart{Input: *d.input, Saga: d.cfg.saga, Session: d.session, Typed: d.typed, Tools: d.cfg.tools,
 		Settings: RunSettings{MaxTurns: d.cfg.maxTurns, TokenBudget: d.cfg.tokenBudget, SystemPrompt: d.cfg.systemPrompt,
-			Sampling: d.cfg.sampling, ToolChoice: d.cfg.toolChoice}}
+			Sampling: d.cfg.sampling, ToolChoice: d.cfg.toolChoice, UntrustedInput: d.cfg.untrustedInput, TrustedInput: d.cfg.trustedInput}}
 	s.Kind = d.runKind() // always written: a run:start with no kind is a legacy one (see RunStart.legacy)
 	if idn.OnBehalfOf != "" || idn.AuthorityRef != "" {
 		s.Principal = &Principal{OnBehalfOf: idn.OnBehalfOf, AuthorityRef: idn.AuthorityRef}
@@ -357,6 +360,9 @@ func (a *Agent) holdDrive(runID string, d *driveSpec, start RunStart, idn Identi
 		return mismatch("sampling")
 	case d.cfg.toolChoice != nil && !sameSetting(d.cfg.toolChoice, start.Settings.ToolChoice):
 		return mismatch("tool choice")
+	case d.cfg.untrustedInput != nil && !sameSetting(d.cfg.untrustedInput, start.Settings.UntrustedInput),
+		d.cfg.trustedInput != nil && !sameSetting(d.cfg.trustedInput, start.Settings.TrustedInput):
+		return mismatch("input provenance")
 	case explicitID && (idn.OnBehalfOf != "" || idn.AuthorityRef != "") &&
 		(start.Principal == nil || *start.Principal != (Principal{OnBehalfOf: idn.OnBehalfOf, AuthorityRef: idn.AuthorityRef})):
 		return mismatch("principal (OnBehalfOf, AuthorityRef)")

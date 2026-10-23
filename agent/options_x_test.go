@@ -146,7 +146,7 @@ func TestOptionScopes_TypeChecked(t *testing.T) {
 		"WithSampling": "AgentRunOption", "WithToolChoice": "AgentRunOption", "WithWaker": "AgentRunOption",
 		"WithIdentity":       "AgentRunOption",
 		"WithMaxConcurrency": "ConcurrencyOption",
-		"WithSaga":           "RunOption", "WithToolFilter": "RunOption", "WithOutputMode": "RunOption",
+		"WithSaga":           "RunOption", "WithToolFilter": "RunOption", "WithOutputMode": "RunOption", "WithUntrustedInput": "RunOption", "WithTrustedInput": "RunOption",
 		"WithClock":       "ClockOption",
 		"WithNotifier":    "NotifierOption",
 		"WithSafety":      "SafetyOption",
@@ -155,8 +155,8 @@ func TestOptionScopes_TypeChecked(t *testing.T) {
 		"WithToolErrorRedactor": "Option", "WithCapNamespace": "Option", "WithRetrieval": "Option", "WithSystemPromptFunc": "Option", "WithOptions": "Option",
 		"WithRecoverInterval": "RecoverLoopOption", "WithRecoverConcurrency": "RecoverLoopOption", "WithRecoverLapsedConcurrency": "RecoverLoopOption", "WithRecoverErrors": "RecoverLoopOption", "WithReanchor": "ReanchorOption", "WithReanchorTimeout": "ReanchorOption",
 		"WithMinHaltAge": "ResolveOption", "WithoutLiveDriverCheck": "ResolveOption", "WithEvidence": "ResolveOption",
-		"WithRetrievalRetry": "RetrievalOption",
-		"WithApproval":       "ToolOption", "WithTimeout": "ToolOption", "WithTitle": "ToolOption", "WithOutputSchema": "ToolOption", "WithSubRuns": "ToolOption",
+		"WithRetrievalRetry": "RetrievalOption", "RetrievalUntrusted": "RetrievalOption",
+		"WithApproval": "ToolOption", "Untrusted": "ToolOption", "TaintExempt": "ToolOption", "WithTimeout": "ToolOption", "WithTitle": "ToolOption", "WithOutputSchema": "ToolOption", "WithSubRuns": "ToolOption",
 		"WithCaps": "ToolOption",
 	}
 	optionTypes := append(slices.Clone(scopes), "AgentRunOption", "ConcurrencyOption", "ClockOption", "SafetyOption", "LeaseControl", "NotifierOption", "ReanchorOption")
