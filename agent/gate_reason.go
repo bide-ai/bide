@@ -103,8 +103,10 @@ func putGateReason(ctx context.Context, j *Journal, runID string, rec gateReason
 }
 
 // getGateReason reads toolUseID's gate-reason record: ok is false when there is none. A record that
-// does not read strictly (a duplicate or case-variant name, another format, another call's ID) is an
-// ErrStorage refusal, as an unreadable tally is: the caller does not run the call on it, and the
+// does not read strictly, as decodeTally reads a tally (a duplicate, case-variant or unknown name at
+// any depth, another format, another call's ID), is an ErrStorage refusal. Unknown names are refused
+// rather than ignored because a binary that ignored a field a later version adds could drop a reason
+// kind it cannot recompute, which would weaken the gate; the record evolves through its format name: the caller does not run the call on it, and the
 // reasons it would have held are not lost to a repair, since the engine recomputes them.
 func getGateReason(ctx context.Context, j *Journal, runID, toolUseID string) (gateReasonRecord, bool, error) {
 	got, ok, err := j.Get(ctx, runID, gateReasonStep(toolUseID))
@@ -120,7 +122,7 @@ func getGateReason(ctx context.Context, j *Journal, runID, toolUseID string) (ga
 
 func decodeGateReason(runID, toolUseID string, r Record) (gateReasonRecord, error) {
 	var rec gateReasonRecord
-	if err := strictjson.Unmarshal(r.Result, &rec, &strictjson.Options{AllowUnknown: true}); err != nil || rec.Format != gateReasonFormat || rec.ToolUseID != toolUseID {
+	if err := strictjson.Unmarshal(r.Result, &rec, nil); err != nil || rec.Format != gateReasonFormat || rec.ToolUseID != toolUseID {
 		return gateReasonRecord{}, fmt.Errorf("run %s: the record %s does not read as a %s record for call %q: %w", runID, gateReasonStep(toolUseID), gateReasonFormat, toolUseID, ErrStorage)
 	}
 	return rec, nil

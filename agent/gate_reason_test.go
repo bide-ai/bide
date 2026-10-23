@@ -20,12 +20,12 @@ func capReason(rule string) gateReason { return gateReason{Kind: gateReasonCap, 
 func TestUnionReasons_OnlyAdds(t *testing.T) {
 	recomputed := []gateReason{taintReason("crm", 4), capReason("per_day")}
 	cases := map[string][]gateReason{
-		"empty record":      nil,
-		"same":              slices.Clone(recomputed),
-		"extra":             {capReason("total")},
+		"empty record":                nil,
+		"same":                        slices.Clone(recomputed),
+		"extra":                       {capReason("total")},
 		"same source, other position": {taintReason("crm", 5)},
-		"junk kind":         {{Kind: "waive", Rule: "per_day"}},
-		"duplicate of both": {taintReason("crm", 4), capReason("per_day"), capReason("per_day")},
+		"junk kind":                   {{Kind: "waive", Rule: "per_day"}},
+		"duplicate of both":           {taintReason("crm", 4), capReason("per_day"), capReason("per_day")},
 	}
 	for name, recorded := range cases {
 		got := unionReasons(recomputed, recorded)
@@ -82,11 +82,13 @@ func TestGateReason_RoundTripAndStrictRead(t *testing.T) {
 		t.Fatalf("gateReasonStep = %q, want the call ID encoded", gateReasonStep("c/1#x"))
 	}
 	for name, raw := range map[string]string{
-		"not json":          `"x"`,
-		"wrong format":      `{"format":"other","tool_use_id":"c9"}`,
-		"another call":      `{"format":"` + gateReasonFormat + `","tool_use_id":"zzz"}`,
-		"duplicate name":    `{"format":"` + gateReasonFormat + `","tool_use_id":"c9","tool_use_id":"c9"}`,
-		"case variant name": `{"format":"` + gateReasonFormat + `","tool_use_id":"c9","Reasons":[]}`,
+		"not json":                  `"x"`,
+		"wrong format":              `{"format":"other","tool_use_id":"c9"}`,
+		"another call":              `{"format":"` + gateReasonFormat + `","tool_use_id":"zzz"}`,
+		"duplicate name":            `{"format":"` + gateReasonFormat + `","tool_use_id":"c9","tool_use_id":"c9"}`,
+		"unknown top-level field":   `{"format":"` + gateReasonFormat + `","tool_use_id":"c9","extra":1}`,
+		"unknown field in a reason": `{"format":"` + gateReasonFormat + `","tool_use_id":"c9","reasons":[{"kind":"taint","scope":"x"}]}`,
+		"case variant name":         `{"format":"` + gateReasonFormat + `","tool_use_id":"c9","Reasons":[]}`,
 	} {
 		if _, err := j.put(ctx, "r", gateReasonStep("c9"), Record{Kind: StepValue, Result: json.RawMessage(raw)}); err != nil {
 			t.Fatal(err)
@@ -131,5 +133,27 @@ func TestPutGateReason_InsertOnceWinner(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("%d drivers inserted the record, want 1", n)
+	}
+}
+
+// key is injective over the fields' boundaries: moving a character across any two adjacent fields
+// gives another key, so union never drops a reason for looking like another.
+func TestGateReasonKey_BoundariesDoNotCollide(t *testing.T) {
+	pairs := [][2]gateReason{
+		{{Kind: "a", Source: "bc"}, {Kind: "ab", Source: "c"}},
+		{{Kind: "k", Source: "a", Ref: "bc"}, {Kind: "k", Source: "ab", Ref: "c"}},
+		{{Kind: "k", Ref: "a", Rule: "bc"}, {Kind: "k", Ref: "ab", Rule: "c"}},
+		{{Kind: "k", Ref: "a1", Pos: 2}, {Kind: "k", Ref: "a", Pos: 12}},
+		{{Kind: "k", Pos: 1, Rule: "2x"}, {Kind: "k", Pos: 12, Rule: "x"}},
+		{{Kind: "k", Source: "a:b"}, {Kind: "k", Source: "a", Ref: "b"}},
+		{{Kind: "k", Source: "1:a"}, {Kind: "k", Ref: "1:a"}},
+	}
+	for _, p := range pairs {
+		if p[0].key() == p[1].key() {
+			t.Errorf("%+v and %+v share the key %q", p[0], p[1], p[0].key())
+		}
+		if got := unionReasons([]gateReason{p[0]}, []gateReason{p[1]}); len(got) != 2 {
+			t.Errorf("union of %+v and %+v kept %d reasons, want 2", p[0], p[1], len(got))
+		}
 	}
 }
