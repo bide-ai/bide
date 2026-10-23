@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"math"
 	"strings"
 	"sync"
@@ -302,22 +303,28 @@ func TestIntentMismatchFailsClosed(t *testing.T) {
 	}
 }
 
-// C6: a store that fails means the capped call does not run: Reserve returns the error and no slot is
-// written, at every round trip.
+// C6: a store that fails means the capped call does not run: Reserve returns the error whichever round
+// trip fails, and no slot is written by a reservation that failed before its slot insert.
 func TestReserve_FailsClosedOnStoreErrors(t *testing.T) {
 	if _, err := New(Config{Store: failStore{}, Encode: testEncode, Clock: time.Now}).Reserve(context.Background(), req("a1", 1, 10)); !errors.Is(err, errCrash) {
 		t.Fatalf("a store that is down: err = %v", err)
 	}
-	for at := 1; at <= 3; at++ { // reads and the first writes fail: no slot appears
+	clean := &faultStore{inner: newMemStore()}
+	mustReserve(t, newTestLedger(clean, &testClock{t: day1}), req("a1", 1, 10))
+	for at := 1; at <= len(clean.log); at++ {
 		st, clk := newMemStore(), &testClock{t: day1}
 		fs := &faultStore{inner: st, failAt: at}
-		if _, err := newTestLedger(fs, clk).Reserve(context.Background(), req("a1", 1, 10)); err == nil {
-			t.Fatalf("round trip %d failing: Reserve succeeded", at)
+		if _, err := newTestLedger(fs, clk).Reserve(context.Background(), req("a1", 1, 10)); !errors.Is(err, errCrash) {
+			t.Fatalf("round trip %d (%s) failing: Reserve returned %v, want the store's error", at, clean.log[at-1], err)
+		}
+		wroteSlot := false
+		for _, op := range clean.log[:at-1] {
+			wroteSlot = wroteSlot || strings.HasPrefix(op, "insert "+slotPrefix)
 		}
 		for run := range st.runs {
 			for _, n := range st.names(run) {
-				if strings.HasPrefix(n, slotPrefix) {
-					t.Fatalf("round trip %d failing left %s in %s", at, n, run)
+				if strings.HasPrefix(n, slotPrefix) && !wroteSlot {
+					t.Fatalf("round trip %d (%s) failing left %s in %s", at, clean.log[at-1], n, run)
 				}
 			}
 		}
@@ -351,4 +358,30 @@ func (a *alwaysLoses) Insert(ctx context.Context, run, name string, data []byte)
 		return data, false, nil
 	}
 	return a.memStore.Insert(ctx, run, name, data)
+}
+
+// scanFails is a store whose reads of the ledger runs fail while its writes work: a reservation that
+// cannot read the ledger must not guess the total and insert.
+type scanFails struct{ *memStore }
+
+func (s scanFails) Scan(ctx context.Context, run string, after int64) iter.Seq2[Item, error] {
+	if strings.Count(run, "/") == 5 {
+		return func(yield func(Item, error) bool) { yield(Item{}, errCrash) }
+	}
+	return s.memStore.Scan(ctx, run, after)
+}
+
+func TestReserve_UnreadableLedgerFailsClosedWithoutWriting(t *testing.T) {
+	st, clk := newMemStore(), &testClock{t: day1}
+	l := New(Config{Store: scanFails{st}, Encode: testEncode, Clock: clk.Now})
+	if _, err := l.Reserve(context.Background(), req("a1", 1, 10)); !errors.Is(err, errCrash) {
+		t.Fatalf("an unreadable ledger: err = %v, want the store's error", err)
+	}
+	for run := range st.runs {
+		for _, n := range st.names(run) {
+			if strings.HasPrefix(n, slotPrefix) {
+				t.Fatalf("an unreadable ledger still got %s in %s", n, run)
+			}
+		}
+	}
 }

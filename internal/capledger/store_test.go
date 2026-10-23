@@ -93,18 +93,20 @@ type faultStore struct {
 	inner  Store
 	mu     sync.Mutex
 	n      int
+	log    []string // the round trips, as "insert slot:3", "get", "scan"
 	failAt int
 	after  bool
 	dead   bool
 }
 
-func (f *faultStore) step(isInsert bool) (failBefore, failAfter bool) {
+func (f *faultStore) step(isInsert bool, what string) (failBefore, failAfter bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.dead {
 		return true, false
 	}
 	f.n++
+	f.log = append(f.log, what)
 	if f.failAt > 0 && f.n == f.failAt {
 		f.dead = true
 		if f.after && isInsert {
@@ -116,7 +118,7 @@ func (f *faultStore) step(isInsert bool) (failBefore, failAfter bool) {
 }
 
 func (f *faultStore) Insert(ctx context.Context, run, name string, data []byte) ([]byte, bool, error) {
-	before, after := f.step(true)
+	before, after := f.step(true, "insert "+name)
 	if before {
 		return nil, false, errCrash
 	}
@@ -128,14 +130,14 @@ func (f *faultStore) Insert(ctx context.Context, run, name string, data []byte) 
 }
 
 func (f *faultStore) Get(ctx context.Context, run, name string) ([]byte, bool, error) {
-	if before, _ := f.step(false); before {
+	if before, _ := f.step(false, "get "+name); before {
 		return nil, false, errCrash
 	}
 	return f.inner.Get(ctx, run, name)
 }
 
 func (f *faultStore) Scan(ctx context.Context, run string, after int64) iter.Seq2[Item, error] {
-	if before, _ := f.step(false); before {
+	if before, _ := f.step(false, "scan "+run); before {
 		return func(yield func(Item, error) bool) { yield(Item{}, errCrash) }
 	}
 	return f.inner.Scan(ctx, run, after)
@@ -147,7 +149,9 @@ type failStore struct{}
 func (failStore) Insert(context.Context, string, string, []byte) ([]byte, bool, error) {
 	return nil, false, errCrash
 }
-func (failStore) Get(context.Context, string, string) ([]byte, bool, error) { return nil, false, errCrash }
+func (failStore) Get(context.Context, string, string) ([]byte, bool, error) {
+	return nil, false, errCrash
+}
 func (failStore) Scan(context.Context, string, int64) iter.Seq2[Item, error] {
 	return func(yield func(Item, error) bool) { yield(Item{}, errCrash) }
 }
@@ -160,7 +164,7 @@ type testClock struct {
 	t  time.Time
 }
 
-func (c *testClock) Now() time.Time { c.mu.Lock(); defer c.mu.Unlock(); return c.t }
+func (c *testClock) Now() time.Time  { c.mu.Lock(); defer c.mu.Unlock(); return c.t }
 func (c *testClock) Set(t time.Time) { c.mu.Lock(); c.t = t; c.mu.Unlock() }
 
 func newTestLedger(st Store, c *testClock) *Ledger {
