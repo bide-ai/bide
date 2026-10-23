@@ -199,7 +199,8 @@ v0.23.0 does not taint or cap plan flow nodes. A flow node has no model turn to 
 
 - a flow node that wraps an agent run (a model call inside the flow) gets taint and caps for that agent's own tool calls, as any agent run does;
 - a flow node that is itself a side-effecting tool call is not taint-gated and not capped, whatever its inputs came from. The flow's own approval gates (`approval:` on a node) are the control, as today;
-- the flow YAML has no `caps:` or taint keys in v0.23.0.
+- the flow YAML has no `caps:` or taint keys in v0.23.0;
+- a tool that carries caps cannot be a flow block: `plan.Registry.RegisterTool` and `Builder.Tool` refuse it with `ErrConfig` (a node's gate path is separate from `effectiveGates`, so the cap would otherwise be lost silently), and the flows guide says so.
 
 Decision 18 asks whether to specify flows for a later release; the recommendation is a separate note.
 

@@ -401,7 +401,9 @@ func recordedSafety(spec ToolSpec) *Safety {
 func (a *Agent) sortSpecs() {
 	a.specList = make([]ToolSpec, 0, len(a.specs))
 	for _, s := range a.specs {
-		a.specList = append(a.specList, *s)
+		l := *s
+		l.Caps = nil // what the model's requests carry never holds a limit
+		a.specList = append(a.specList, l)
 	}
 	slices.SortFunc(a.specList, func(x, y ToolSpec) int { return strings.Compare(x.Name, y.Name) })
 }
@@ -769,6 +771,16 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 			return nil, st
 		}
 		// protocol:stop end
+		// The enforcement point of the tool's cap rules, on the arguments the tool will receive (a tool
+		// middleware may have rewritten them since the decision point): it is before the call is begun,
+		// so the tool was not called and the refusal is recorded as the call's result, a known failure
+		// the model reads (like a refusal by a call guard, and final for the call: a resume does not halt
+		// on it). A compensation, or a rollback's re-run of a call that already ran, is not cap-checked.
+		if !isCompensating(ctx) {
+			if err := a.enforceCaps(tu); err != nil {
+				return nil, err
+			}
+		}
 		// A tool that is not ReadOnly is counted in flight (see inflight): counted in, then the
 		// chain checked not to have returned, so either the chain sees the count when it returns
 		// (and a result it returns has an unknown outcome), or this invocation sees the call closed

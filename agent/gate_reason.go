@@ -44,13 +44,27 @@ type gateReason struct {
 	Ref    string         `json:"ref,omitempty"`
 	Pos    int            `json:"pos,omitempty"`
 	Rule   string         `json:"rule,omitempty"`
+	// A cap reason also says what the rule decided (Action: "gate" or "refuse"), why it fired (Why:
+	// "over", "not_assessable" or "currency"), and the figures in minor units: the call's amount (nil
+	// when it could not be assessed) and the rule's limit, in Currency. They are evidence for the
+	// approver and the audit, and part of the reason's identity, so a gate approved on one amount does
+	// not clear another.
+	Action   string `json:"action,omitempty"`
+	Why      string `json:"why,omitempty"`
+	Currency string `json:"currency,omitempty"`
+	Amount   *int64 `json:"amount,omitempty"`
+	Limit    int64  `json:"limit,omitempty"`
 }
 
 // key is a total, unambiguous identity of the reason, for the union (length-prefixed, so no two
 // distinct reasons share a key).
 func (r gateReason) key() string {
 	var b strings.Builder
-	for _, s := range []string{string(r.Kind), r.Source, r.Ref, strconv.Itoa(r.Pos), r.Rule} {
+	amt := "-"
+	if r.Amount != nil {
+		amt = strconv.FormatInt(*r.Amount, 10)
+	}
+	for _, s := range []string{string(r.Kind), r.Source, r.Ref, strconv.Itoa(r.Pos), r.Rule, r.Action, r.Why, r.Currency, amt, strconv.FormatInt(r.Limit, 10)} {
 		b.WriteString(strconv.Itoa(len(s)))
 		b.WriteByte(':')
 		b.WriteString(s)

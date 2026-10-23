@@ -188,6 +188,12 @@ func init() {
 		if err := checkWrapper(tool, s); err != nil {
 			return err
 		}
+		// A plan flow's node gate path is separate from the agent's (effectiveGates), and flows are
+		// not specified for caps (design note 5.9): a node that took the tool would run it with no cap.
+		// So a tool that carries caps is refused here rather than lose them silently.
+		if len(s.Caps) > 0 {
+			return fmt.Errorf("agent: tool %q carries amount caps (WithCaps), which plan flows do not support: a flow node would run it without them: %w", s.Name, ErrConfig)
+		}
 		return checkOldMethods(tool, s)
 	}
 	toolhook.WithIdentity = func(ctx context.Context, actor, onBehalfOf, authorityRef string) context.Context {

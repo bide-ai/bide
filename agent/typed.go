@@ -176,6 +176,7 @@ func (a *Agent) clone() *Agent {
 	c := *a // copies every value field and pointer, so a newly added option field can't be forgotten
 	c.tools = maps.Clone(a.tools)
 	c.specs = maps.Clone(a.specs)
+	c.caps = maps.Clone(a.caps)
 	c.mw = slices.Clone(a.mw)
 	c.toolMW = slices.Clone(a.toolMW)
 	c.retrievals = slices.Clone(a.retrievals)

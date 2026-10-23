@@ -398,6 +398,36 @@ together. A tie is never agreement. See [Quorum](guides/quorum.md#what-a-quorum-
 
 **Certificate status is conformance-tested against EJBCA and a standalone Microsoft AD CS, not an enterprise AD CS CA.** The certificate-bound approver checks (`audit.IdentityPolicy`, the CRL status rule) are tested under `audit/testdata` against captures from EJBCA Community and from an AD CS standalone root and subordinate. An enterprise AD CS CA with certificate templates needs an Active Directory domain and has not been captured. A bank must capture its own CA with the `crl-fixtures.yml` workflow before go-live.
 
+## Amount caps
+
+**A cap reads an object member, not an array.** A rule (`agent.WithCaps`) names one argument by a path
+of object members, and registration refuses a member that is an array or object. A bulk tool that
+takes `payments: [{amount: ...}, ...]` cannot be capped by a line, and the input schema cannot say
+whether a tool carries amounts elsewhere in its arguments, so such a tool is not detected: it has no
+cap at all. Use one call per payment, or cap a total member the tool also takes.
+
+**Caps are per call and per currency, with no conversion and no totals.** A model that splits a payment
+into many calls under the limit is not stopped by a per-call rule; the cumulative form (`sum ... per
+day`) needs the cap ledger and is refused at registration until it ships. bide does not convert
+currencies (an exchange rate is data an attacker may influence), so a call in a currency no rule of the
+argument covers gets the strictest action among the rules, and the currency is compared byte for byte
+(`usd` is not `USD`).
+
+**A cap does not read what a tool decodes differently.** The arguments are checked strictly (a repeated
+member, or two members that differ only in case, anywhere in the document, is not assessable and gets
+the rule's action), but a tool that reads a number as a double cannot represent an amount past 2^53
+minor units exactly, so registration refuses a limit above it; an amount the tool reads from a member
+the rule does not name is not capped.
+
+**Caps refuse; they do not yet hold a call for approval.** A rule with `-> gate` (or `-> gate(name)`)
+is refused at registration, because the gate a cap holds a call for is the escalation gate of the
+taint work, which has not shipped, and a cap gate on a tool that has its own approval gate needs two
+gate instances on one call. Until then a rule is `-> refuse`, which works on a tool with its own gate.
+
+**Compensation and plan flows are not capped.** A saga's rollback is not cap-checked, and neither is the
+rollback's re-run of a call that already ran. A tool that carries caps cannot be a plan flow block (the
+plan registry refuses it), so a flow cannot run it uncapped by accident.
+
 ## Flows
 
 **Fan-in has fixed arity.** `Join2` and `Join3` combine two or three branches; there is no join over

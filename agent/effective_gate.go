@@ -1,10 +1,13 @@
 package agent
 
-// gateInputs is what, besides a tool's own spec, can add a gate to one call. It is empty today and has
-// no field a caller can set: untrusted-content taint and amount caps will add theirs (see
-// docs/design/untrusted-content-and-amount-caps.md, sections 5.3 and 6). It exists so that every site
-// that decides a call's gates passes the same arguments to the same function from the start.
-type gateInputs struct{}
+// gateInputs is what, besides a tool's own spec, can add a gate to one call: today the gate a cap rule
+// holds the call for, and later the escalation gate of untrusted-content taint (see
+// docs/design/untrusted-content-and-amount-caps.md, sections 5.3 and 6). Every site that decides a
+// call's gates passes the same arguments to the same function.
+type gateInputs struct {
+	// capGate is the gate the call's cap rules hold it for (a rule with "-> gate" fired), nil for none.
+	capGate *ApprovalPolicy
+}
 
 // gateSet is the gates one call needs, as effectiveGates decides them.
 type gateSet struct {
@@ -15,8 +18,13 @@ type gateSet struct {
 // pre-pass of the loop (the gate and a denial's record), preExecute, the snapshot a result record
 // carries, and the saga's re-run all ask it, so none can disagree with another or skip a gate the
 // function adds. With no input it is the tool's own gate, exactly what those sites read directly
-// before; TestNoDirectApprovalReads_InTheEngine keeps it so.
-func effectiveGates(spec *ToolSpec, _ gateInputs) gateSet {
+// before; TestNoDirectApprovalReads_InTheEngine keeps it so. A cap gate stands in for a tool with no
+// gate of its own; registration refuses a tool that has both (compileCaps), since two gates on one call
+// need the second gate instance of the taint work.
+func effectiveGates(spec *ToolSpec, in gateInputs) gateSet {
+	if spec.Approval == nil && in.capGate != nil {
+		return gateSet{own: in.capGate} // registration refuses a tool with both, so the cap gate stands alone
+	}
 	return gateSet{own: spec.Approval}
 }
 

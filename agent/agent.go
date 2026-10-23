@@ -48,7 +48,8 @@ type Agent struct {
 	model        Model
 	tools        map[string]Tool
 	specs        map[string]*ToolSpec // each tool's spec, read once when it was registered; never changed
-	specList     []ToolSpec           // specs sorted by name, as model requests are sent them
+	specList     []ToolSpec           // specs sorted by name, as model requests are sent them (without caps)
+	caps         map[string]*toolCaps // each tool's compiled cap rules, by tool name; a tool with none is absent
 	store        *Journal
 	mw           []Middleware
 	toolMW       []ToolMiddleware
@@ -153,7 +154,17 @@ func (a *Agent) addTool(t Tool) error {
 	if err := checkInputSchema(s); err != nil {
 		return err
 	}
+	tc, err := compileCaps(s)
+	if err != nil {
+		return err
+	}
 	a.tools[s.Name], a.specs[s.Name] = t, &s
+	if tc != nil {
+		if a.caps == nil {
+			a.caps = map[string]*toolCaps{}
+		}
+		a.caps[s.Name] = tc
+	}
 	return nil
 }
 
