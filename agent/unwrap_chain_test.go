@@ -226,3 +226,23 @@ func TestUnwrapChain_CapRules(t *testing.T) {
 		})
 	}
 }
+
+// A wrapper with another name cannot carry the wrapped tool's line as it stands (the line names the
+// wrapped tool, and a rule must name the tool that carries it). One line naming both tools, carried
+// by both, is the same line on each, and a renamed wrapper that carries it is accepted.
+func TestUnwrapChain_CapRulesAcrossARename(t *testing.T) {
+	both := `big: refund|outer.amount[minor, currency=currency] > 5 USD -> refuse`
+	rename := func(s *agent.ToolSpec) { s.Name = "outer" }
+	if err := register(namedWrap{in: capTool{caps: []string{both}}, mutate: rename}); err != nil {
+		t.Fatalf("a renamed wrapper that carries the both-names line: %v", err)
+	}
+	// without the shared line the renamed wrapper cannot satisfy the check, and the message says what to do
+	err := register(namedWrap{in: capTool{caps: []string{capBig}}, mutate: func(s *agent.ToolSpec) { rename(s); s.Caps = []string{capBig} }})
+	if !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("a renamed wrapper carrying a line that names only the wrapped tool: %v", err)
+	}
+	err = register(namedWrap{in: capTool{caps: []string{capBig}}, mutate: func(s *agent.ToolSpec) { rename(s); s.Caps = nil }})
+	if !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "naming both tools") {
+		t.Fatalf("err = %v, want the rename remedy in the message", err)
+	}
+}

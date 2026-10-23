@@ -352,7 +352,7 @@ included): when the wrapper's own spec is weaker than a wrapped tool's, `New` an
 refuse it with `ErrConfig`, naming the field and both tools. Weaker means, for the approval gate: none;
 fewer decisions needed (`Need`; a `SingleApproval` needs one); a `SingleApproval` over an m-of-n gate;
 an approver the wrapped gate does not name; no `ExcludePrincipal` where the wrapped gate has it; no
-gate deadline, or a longer one, where the wrapped gate has one. For `Timeout`: none, or a longer one. For `Caps`: a rule line of the wrapped tool that the wrapper's `Caps` does not carry, word for word (a changed rule is a missing one; the wrapper may add rules).
+gate deadline, or a longer one, where the wrapped gate has one. For `Timeout`: none, or a longer one. For `Caps`: a rule line of the wrapped tool that the wrapper's `Caps` does not carry, word for word (a changed rule is a missing one; the wrapper may add rules). If the wrapper has another name, write one rule line naming both tools (`refund|refund_logged.amount[...]`, the grammar of the amount-caps guide) and carry it on the wrapped tool and the wrapper: a line that names only the wrapped tool is refused on a differently named wrapper.
 Declare the same on the wrapper, or build its spec from the wrapped tool's. A wrapper with neither
 embedding nor `Unwrap` cannot be seen through.
 `Safety` is not checked through the chain: a wrapper may legitimately raise it (a retry wrapper that

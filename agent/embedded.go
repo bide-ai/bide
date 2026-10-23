@@ -146,7 +146,7 @@ func weakerSpec(outer, inner ToolSpec) (field, why string) {
 	}
 	for _, l := range inner.Caps {
 		if !slices.Contains(outer.Caps, l) {
-			return "cap rules", fmt.Sprintf("the wrapper lacks the rule %q (a rule line is compared as written, so a changed line counts as missing)", l)
+			return "cap rules", fmt.Sprintf("the wrapper lacks the rule %q (a rule line is compared as written, so a changed line counts as missing; if the wrapper has another name, write one rule line naming both tools, such as inner|outer.amount[...], and carry it on the wrapped tool and the wrapper)", l)
 		}
 	}
 	if inner.Timeout > 0 && (outer.Timeout <= 0 || outer.Timeout > inner.Timeout) {
