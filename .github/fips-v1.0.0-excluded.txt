@@ -1,0 +1,124 @@
+# Tests the FIPS job does not run under Go's FIPS 140-3 module v1.0.0 (GOFIPS140=v1.0.0).
+#
+# Go's module v1.0.0 has no ML-DSA: crypto/mldsa.GenerateKey and NewPublicKey return "mldsa:
+# unavailable in FIPS 140-3 Go Cryptographic Module v1.0.0". Every test below needs an ML-DSA or
+# hybrid (ed25519+ml-dsa-65) key, usually through a shared fixture, and fails for that reason alone.
+# They run in the other FIPS configurations (GOFIPS140=v1.26.0 and off, where ML-DSA works) and in
+# the ordinary test jobs. Nothing else is excluded: a new test that needs ML-DSA fails the v1.0.0
+# run until it is added here, in review.
+#
+# One entry per line: MODULE PACKAGE TEST[/SUBTEST]. MODULE is the module directory ("." for the
+# root module), PACKAGE is relative to it. An entry without a slash skips the whole top-level test.
+# An entry with a subtest skips only that subtest (for a test whose other subtests, such as the
+# ed25519 ones, still run). .github/scripts/fips.sh check-excluded runs every entry under v1.0.0 and
+# fails unless it fails with the ML-DSA error, so an entry that no longer applies cannot linger.
+. ./audit TestAcknowledgeRecord_AcknowledgesExactlyTheNamedLeaf
+. ./audit TestAcknowledgeRecord_MustComeAfterTheLeaf
+. ./audit TestAcknowledgeRecord_RefusalsAndForgeries
+. ./audit TestAppendRedactionRecord_ResignsAfterALostRace
+. ./audit TestCAAlgorithmProfile
+. ./audit TestCertDecisionKey
+. ./audit TestEvidence_SealedOverDigestWithSizeLimitedSigner
+. ./audit TestHybridComponentSharedWithStandaloneRefused
+. ./audit TestLegalHold_ABeginUnderAHoldWithNoEndIsFound
+. ./audit TestLegalHold_AnErasureUnderAHoldTheTrailShowsIsFound
+. ./audit TestLegalHold_FileModeSaysHoldsWereNotCompared
+. ./audit TestLegalHold_ForgedHoldRecordsChangeNothing
+. ./audit TestLegalHold_LiftRecordsAHoldTheStoreLacks
+. ./audit TestLegalHold_PassSpanningAHoldPlacementIsNoted
+. ./audit TestLegalHold_PlacedAndLiftedAreRecordedAndAgreeWithTheStore
+. ./audit TestLegalHold_RefusalsAndOrder
+. ./audit TestLegalHold_ResumeRefusesWhatItCannotMatch
+. ./audit TestLegalHold_ResumedLiftLeavesNoUnmatchedRecord
+. ./audit TestLegalHold_StoreAndTrailDisagreements
+. ./audit TestLegalHold_UnrecordedPlacementIsRecordedByPlacingAgain
+. ./audit TestLiftAuthorization_AuthorizedLiftVerifiesOffline
+. ./audit TestLiftAuthorization_AuthorizerIsAHalfOfTheTrailsHybridKey
+. ./audit TestLiftAuthorization_MLDSAHalfOfTheTrailsHybridKeyIsNotASecondPerson
+. ./audit TestLiftAuthorization_NotReusableAfterAReplacement
+. ./audit TestLiftAuthorization_RefusedWhenItDoesNotCover
+. ./audit TestLiftAuthorization_RequiredAndMissingIsRefused
+. ./audit TestLiftAuthorization_RequiringNeedsKeys
+. ./audit TestLiftAuthorization_SharedComponentIsNotASecondPerson
+. ./audit TestLiftAuthorization_VerifierFindsWhatTheLiftWouldRefuse
+. ./audit TestMLDSAKeyIDLabelsParameterSet
+. ./audit TestMLDSASigner_RequiresMLDSA65
+. ./audit TestNewLiftAuthorization_Refusals
+. ./audit TestP11_ApprovalsUnderPostQuantumKeys
+. ./audit TestP11_EverySchemeEndToEnd
+. ./audit TestP11_EvidenceChecksItsCertificateFormat
+. ./audit TestP11_EvidenceRefusesAVerifierWhoseKeyDiffers
+. ./audit TestP11_JournalExportProvesTheStoredBytes
+. ./audit TestP11_RecordBytesMustReadOneWay
+. ./audit TestP11_RecordWithUnknownFieldVerifiesByRecordBytes
+. ./audit TestP11_RedactionTombstoneKeepsTheTree
+. ./audit TestP11_StrippedHybridHalfFails
+. ./audit TestP11_VerifiersReturnTheSentinels
+. ./audit TestRebase109_ConstructorsRefuseWeakEd25519Keys
+. ./audit TestRedactJournal_AccountableAndVerifies
+. ./audit TestRedactJournal_EventCopiesKeptIsRecordedAndReported
+. ./audit TestRedactJournal_ProceedsPastAPlantedRecord
+. ./audit TestRedactJournal_Refusals
+. ./audit TestRedactJournal_RefusesATrailTheEarlierHeadsDoNotMatch
+. ./audit TestRedactJournal_UsesTheGivenRedactor
+. ./audit TestRedactionCorrupt_EveryReaderFailsClosed
+. ./audit TestRedactionEndMarker_TheTrailSaysHowTheRunEnded
+. ./audit TestRedactionName_IsNotAttestedInAnExport
+. ./audit TestRedactionTrail_CopyFromAnotherDeploymentIsFound
+. ./audit TestRedactionTrail_NoPanicOnOddInputs
+. ./audit TestRedactionTrail_PlantedRecordsAreReportedAndNeverAccount
+. ./audit TestRedactionTrail_ReplayedSignedRecordIsFound
+. ./audit TestRedactionWriter_ExportKeepsTheRedactedRecordsName
+. ./audit TestRedactionWriter_ProofsAndHeadsSurviveARealRedaction
+. ./audit TestRedaction_DeploymentIsRequired
+. ./audit TestReview2_AuthorizerIsTheTrailKeysEd25519Half
+. ./audit TestReview2_ConcurrentSameLiftLeavesNoFinding
+. ./audit TestReview2_ConcurrentSamePlacementLeavesNoFinding
+. ./audit TestReview2_ExpiredAuthorizationAcceptedWithABackdatedNow
+. ./audit TestReview2_ForgedHoldRecordsChangeNothing
+. ./audit TestReview2_HoldDiffersCases
+. ./audit TestReview2_HybridAndItsHalfAreOneSeat
+. ./audit TestReview2_PassSpanningAHoldPlacementIsNotClean
+. ./audit TestReview2_ResumedLiftLeavesNoUnmatchedRecord
+. ./audit TestReview2_SpanNoteAndFileModeNote
+. ./audit TestReview2_UnrecordedPlacementCanBeRecordedByPlacingAgain
+. ./audit TestSchemeIsDerivedFromTheCertificateKey
+. ./audit TestSignRedactionTrail_AnErrorFromTheCheckDisablesNothing
+. ./audit TestSignRedactionTrail_ChecksEarlierHeads
+. ./audit TestSignRedactionTrail_SignsWhatItChecked
+. ./audit TestSignersDoNotDiscloseKeys
+. ./audit TestSigningSchemes
+. ./audit TestVerifierKeyIDs
+. ./audit TestVerifyDelegationChain_Refusals
+. ./audit TestVerifyRedactions_AFinishedRetryClearsAnEarlierFailure
+. ./audit TestVerifyRedactions_Findings
+. ./audit TestVerifyRedactions_HandTombstoneIsNotLaunderedByALaterPlan
+. ./audit TestVerifyRedactions_NoJournalIsNotAPass
+. ./audit TestVerifyRedactions_RecordSignaturesAreChecked
+. ./audit TestVerifyRedactions_TombstoneTimeIsChecked
+. ./audit Test_R105_AnchorEntryNestedFormatIsChecked
+. ./audit Test_R105_EveryProjectionRefusesARedactedJournal
+. ./audit Test_R105_ProofMutationsNeverVerify
+. ./audit Test_R105_RecordBytesWithCaseVariantOrDuplicateNamesAreRefused
+. ./audit Test_R105_RedactedGovernedActionDropsOutOfRunCertificate
+. ./audit Test_R105_RedactedToolCallIsNotProvablyAbsent
+. ./audit Test_R105_VerifyApprovalsRefusesASharedApproverKey
+. ./audit Test_R105b_AbsenceOverRecordBytesThatReadTwoWays
+. ./audit Test_R105b_EvidenceRunCertNestedHeadFormat
+. ./audit Test_R105b_ProjectionsRefuseRecordBytesThatReadTwoWays
+. ./audit Test_R105b_StartedRetrySafeCallIsNotProvablyAbsent
+. ./audit Test_R105b_VerifyApprovalsRefusesAKeylessApprover
+. ./audit Test_R105c_CheckFormatsZeroAndNilValues
+. ./audit Test_R105c_ProjectionReadsFieldsTheJournalRootDoesNotBind
+. ./audit/verify TestVerify_RecordWithUnknownFieldVerifiesByItsBytes
+. ./audit/verify TestVerify_StrippedHybridHalfFails
+. ./audit/verify TestVerify_TreeHeadMatchesAudit
+cmd/bide ./internal/approvecmd TestKeygenAlg
+cmd/bide ./internal/approvecmd TestRetryIsIdempotent/ed25519+ml-dsa-65
+cmd/bide ./internal/approvecmd TestRetryIsIdempotent/ml-dsa-65
+cmd/bide ./internal/approvecmd TestSchemeMismatch
+cmd/bide ./internal/approvecmd TestSchemes/ed25519+ml-dsa-65
+cmd/bide ./internal/approvecmd TestSchemes/ml-dsa-65
+. ./internal/auditcli TestCLI_MLDSAAndHybridEndToEnd/hybrid
+. ./internal/auditcli TestCLI_MLDSAAndHybridEndToEnd/ml-dsa-65
+. ./internal/auditcli TestCLI_StrippedHybridHalfIsNotVerified

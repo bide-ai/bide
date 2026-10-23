@@ -545,6 +545,75 @@ jobs:
           path: ${{ steps.gocache.outputs.paths }}
           key: go-${{ runner.os }}-windows-${{ github.sha }}
 
+  # Go's FIPS 140-3 mode: the modules' Go tests with GODEBUG=fips140=only, built against Go's in-tree
+  # cryptographic module (GOFIPS140=off) and its frozen modules v1.26.0 (ML-DSA works) and v1.0.0 (no
+  # ML-DSA: the tests in .github/fips-v1.0.0-excluded.txt need it, are skipped and nothing else is). It
+  # does not run -race or use the test cache (-count=1). About 7 to 10 minutes per configuration
+  # (run 39936259247: off 6m50s, v1.26.0 8m49s, v1.0.0 9m37s, in parallel). off and v1.26.0 run where
+  # macOS and Integration run (the merge queue, main, a pull request with the full-ci label); v1.0.0
+  # runs on main only, since its tests are the same but for the excluded ones; the v1.26.0 job also
+  # runs fips.sh check-excluded (go test under v1.0.0 of the listed tests alone), so a stale entry fails
+  # in the queue. Postgres and Redis are service containers, as in Integration, and the live redislog
+  # round trip must pass (fips.sh REQUIRED). Still skipped: the SoftHSM2 and PKCS#11 suites, the MinIO
+  # Object Lock suite (anchor/awss3), the cloud KMS and GCS emulators, the step-ca containers, the
+  # browser-driven suites (they have their own Chrome jobs) and the exhaustive or corpus-rewriting tests.
+  # Not a required check: making it one is a branch protection change for the repository owner. Gated
+  # like macOS and Integration, a skipped run satisfies a required check the same way. It claims nothing
+  # about validation (docs/trust/control-mapping.md).
+  test-fips:
+    name: Test (FIPS 140-3, GOFIPS140=${{ matrix.version }})
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.heavy != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(github.event_name == 'push' && '["off","v1.26.0","v1.0.0"]' || '["off","v1.26.0"]') }}
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: bide
+          POSTGRES_PASSWORD: bide
+          POSTGRES_DB: bide_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U bide" --health-interval 5s --health-timeout 5s --health-retries 12
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      PG_DSN: postgres://bide:bide@localhost:5432/bide_test?sslmode=disable
+      REDIS_ADDR: localhost:6379
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27'
+          cache: false # the go-cache action below restores the build cache
+      - uses: ./.github/actions/go-cache
+        id: gocache
+        with:
+          name: fips-${{ matrix.version }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22' # the approve page's script tests (approvals/page) run under Node
+      - name: Excluded tests still fail under v1.0.0 (no stale entry)
+        if: matrix.version == 'v1.26.0'
+        run: .github/scripts/fips.sh check-excluded
+      - name: Test (GODEBUG=fips140=only, GOFIPS140=${{ matrix.version }})
+        shell: bash
+        run: .github/scripts/fips.sh run "${{ matrix.version }}"
+      # Only a push to main saves the cache (see the Linux shards).
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: github.event_name == 'push'
+        with:
+          path: ${{ steps.gocache.outputs.paths }}
+          key: go-${{ runner.os }}-fips-${{ matrix.version }}-${{ github.sha }}
+
   integration:
     # Also runs the PKCS#11 signer's SoftHSM2 tests (signer/pkcs11, examples/hsm-signing) and
     # bide-hsm's (cmd/bide/bide-hsm: approvals signed through SoftHSM2, and the real binary); the
