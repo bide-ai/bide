@@ -35,6 +35,9 @@ func TestLookup(t *testing.T) {
 
 func TestLookup_NotAssessable(t *testing.T) {
 	deep := strings.Repeat(`{"a":`, 200) + `1` + strings.Repeat(`}`, 200)
+	// Deeper than Lookup walks (maxArgsDepth) but within strictjson's own limit, so only
+	// Lookup's bound refuses it.
+	mid := strings.Repeat(`{"a":`, maxArgsDepth+8) + `1` + strings.Repeat(`}`, maxArgsDepth+8)
 	for _, tc := range []struct {
 		name string
 		args string
@@ -69,6 +72,7 @@ func TestLookup_NotAssessable(t *testing.T) {
 		{"array", `[{"amount":1}]`, []string{"amount"}, ErrArgs},
 		{"scalar", `5`, []string{"amount"}, ErrArgs},
 		{"too deep", deep, []string{"a"}, ErrArgs},
+		{"deeper than a tool's arguments go", mid, []string{"a"}, ErrArgs},
 		// Absent.
 		{"empty arguments are the empty object", ``, []string{"amount"}, ErrAbsent},
 		{"blank arguments", " \n", []string{"amount"}, ErrAbsent},
