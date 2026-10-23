@@ -315,6 +315,14 @@ func (c *agentConfig) finish() error {
 	if err := a.checkCapRules(); err != nil {
 		return err
 	}
+	if a.taint != nil && a.taint.Gate != nil && !a.taint.Gate.single() {
+		if a.approverVerifiers == nil {
+			return fmt.Errorf("agent: the taint policy has an m-of-n Gate but the agent has no WithApproverVerifiers: %w", ErrConfig)
+		}
+		if err := a.taint.Gate.ValidateKeys(a.approverVerifiers); err != nil {
+			return fmt.Errorf("agent: the taint policy's Gate: %w", err)
+		}
+	}
 	a.sortSpecs()
 	return nil
 }

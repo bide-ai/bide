@@ -187,6 +187,8 @@ var redactionClasses = []struct {
 	{"turn/", classProtected, "a session record"},
 	{"start/", classProtected, "a session record"},
 	{"from/", classProtected, "a session record"},
+	{"taint/", classProtected, "a session record: whether the session is under taint"},
+	{"taint/", classProtected, "a session record: whether the session is under taint"},
 	{"audit:", classProtected, "an audit leaf a verifier relies on"},
 	{"node:", classPayload, ""},
 	{"switch:", classBookkeeping, ""},

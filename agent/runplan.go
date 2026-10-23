@@ -96,6 +96,7 @@ func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs [
 		// The run's principal, and those of the runs above it, are recorded first, in a record of
 		// their own (run:principal), so evidence can prove them without the run's input.
 		want.Ancestors = startAncestors(ctx, want.Principal)
+		want = want.withTaintDigest(a.startTaintDigest(ctx)) // under taint if the agent has a policy or the parent or session is
 		wrotePrincipal, err := putPrincipal(ctx, a.store, runID, want)
 		if err != nil {
 			return ctx, nil, nil, err
@@ -202,6 +203,7 @@ func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs [
 	}
 	// The principal chain the runs this drive starts record as their ancestors.
 	ctx = contextWithChain(ctx, runChain(start))
+	ctx = withUnderTaint(ctx, start.taintDigest()) // the journaled start decides, not this process
 	if d.cfg.waker != nil {
 		ctx = contextWithWaker(ctx, d.cfg.waker)
 	}

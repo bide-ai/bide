@@ -42,6 +42,8 @@ var reservedPrefixes = []string{
 	"turn/",               // a session's completed turns
 	"start/",              // a session's started turns
 	"from/",               // a session turn's starting transcript
+	"taint/",              // a session's taint status: taint/session
+	"taint/",              // a session's taint status: taint/session
 	"audit:",              // the audit package's leaves
 	"node:",               // a plan flow's nodes, run as Steps: node:<name>, node:iter:<n>:<name> (see planNodeStep)
 	"switch:",             // a plan flow's branch choices: switch:<over>, switch:iter:<n>:<over>

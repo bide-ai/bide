@@ -76,6 +76,7 @@ var keyConstructors = map[string]func(string) string{
 	"sessionTurnStep":        func(s string) string { return sessionTurnStep(len(s)) },
 	"sessionStartStep":       func(s string) string { return sessionStartStep(len(s)) },
 	"sessionFromStep":        sessionFromStep,
+	"sessionTaintStep":       func(string) string { return sessionTaintStep },
 	"retrievalStep":          func(s string) string { return retrievalStep(len(s)) },
 	"planScopedStep": func(s string) string {
 		return planScopedStep(context.WithValue(context.Background(), planScopeKey{}, planScope{runID: "r", node: "node:n"}), "r", s)
@@ -109,7 +110,7 @@ func TestEngineKeys_AreDistinct(t *testing.T) {
 	for name, build := range keyConstructors {
 		for _, s := range adversarialToolUseIDs() {
 			from := name + "(" + s + ")"
-			if name == "runCompleteStep" || name == "runAbortedStep" || name == "runStartStep" || name == "runPrincipalStep" || name == "runCancelledStep" || name == "runCancelRequestedStep" || name == "headerStep" {
+			if name == "runCompleteStep" || name == "runAbortedStep" || name == "runStartStep" || name == "runPrincipalStep" || name == "runCancelledStep" || name == "runCancelRequestedStep" || name == "headerStep" || name == "sessionTaintStep" {
 				from = name // a constant
 			}
 			if name == "sessionTurnStep" || name == "sessionStartStep" || name == "modelStep" || name == "retrievalStep" || name == "runLimitsStep" {
