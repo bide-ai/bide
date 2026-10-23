@@ -12,12 +12,12 @@ const ARGS = '{"amount":120,"to":"acme"}';
 async function fakeEndpoint(over = {}) {
   const argsSha = toHex(await sha256(canonicalArgs(te.encode(ARGS))));
   const log = [];
-  const pending = (state = 'waiting') => ({ run: 'r1', call: 'c1', tool: 'charge', args: '@@', args_sha256: argsSha, decision_format: 'bide.approval.v3', state,
+  const pending = (state = 'waiting') => ({ run: 'r1', call: over.call ?? 'c1', tool: 'charge', args: '@@', args_sha256: argsSha, decision_format: 'bide.approval.v3', state,
     gate: { need: 2, approvers: ['alice', 'bob'], approved: 0, denied: 0, passed: false, failed: false, decisions: [] } });
   let state = over.state ?? 'waiting';
   const fetchFn = async (url, opts) => {
     const u = new URL(url);
-    log.push({ method: opts.method, path: u.pathname, body: opts.body });
+    log.push({ method: opts.method, path: u.pathname, search: u.search, body: opts.body });
     if (opts.method === 'GET') {
       const body = JSON.stringify(pending(state)).replace('"@@"', ARGS);
       return new Response(body, { status: 200 });
@@ -122,4 +122,21 @@ test('requests carry the page origin\'s credentials by default, as configured ot
       assert.equal(o.cache, 'no-store');
     }
   }
+});
+
+test('the escalation instance of a call (c2#taint) is asked for, shown and signed under its own subject', async () => {
+  const k = await keys();
+  let posted;
+  const ep = await fakeEndpoint({ call: 'c2#taint', post: (b) => { posted = b; return new Response(JSON.stringify(receiptFor(b, shown)), { status: 200 }); } });
+  const shown = await loadCall(ep.fetchFn, base, 'r1', 'c2#taint');
+  // The # is percent-encoded in the query: left bare it would start a fragment and ask for the call c2.
+  assert.equal(ep.log[0].search, '?run=r1&call=c2%23taint');
+  assert.equal(shown.subject.call, 'c2#taint');
+  await decide({ fetchFn: ep.fetchFn, base, shown, approver: 'alice', approved: true, now: NOW, ...k });
+  assert.equal(posted.call, 'c2#taint');
+  const forInstance = decisionBytes({ ...shown.subject, approver: 'alice', approved: true, decidedAt: posted.decided_at });
+  assert.ok(await k.publicKey.verify(forInstance, fromBase64(posted.signature)));
+  // A signature over the call itself does not verify for the instance.
+  const forCall = decisionBytes({ ...shown.subject, call: 'c2', approver: 'alice', approved: true, decidedAt: posted.decided_at });
+  assert.equal(await k.publicKey.verify(forCall, fromBase64(posted.signature)), false);
 });

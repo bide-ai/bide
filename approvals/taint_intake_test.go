@@ -9,8 +9,10 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -20,6 +22,7 @@ import (
 	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/approvals"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/plan"
 )
 
 // The escalation gate of a tainted call is a second gate instance on the call, under the subject
@@ -365,4 +368,39 @@ func redigest(t *testing.T, m map[string]any) {
 	b, _ := json.Marshal(&p)
 	sum := sha256.Sum256(b)
 	m["policy_digest"] = hex.EncodeToString(sum[:])
+}
+
+// A plan node named foo#taint is a node, not the escalation instance of a node foo: the intake serves its
+// gate as it serves a node named foo, and does not read it as an instance (which would resolve to a node
+// that is not there).
+func TestTaintIntake_APlanNodeNamedLikeAnInstanceIsANode(t *testing.T) {
+	ctx := context.Background()
+	servedAs := func(name string) int {
+		t.Helper()
+		j := agenttest.MemJournal()
+		pol := agent.ApprovalPolicy{Need: 2, Approvers: []string{"a", "b"}}
+		b := plan.New[int, string]("pay").WithApproverVerifiers(func(string) (agent.ApproverVerifier, bool) { return nil, false })
+		pay := b.Step(name, func(_ context.Context, n int) (string, error) { return "ok", nil }, plan.Approval(&pol))
+		_ = pay
+		f, err := b.Build()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var pend *agent.ApprovalPending
+		if _, err := f.Run(ctx, j, "f1", 1); !errors.As(err, &pend) {
+			t.Fatalf("flow with node %q: Run = %v, want a pause", name, err)
+		}
+		h, err := approvals.New(j, func(string) (agent.ApproverVerifier, bool) { return nil, false },
+			approvals.WithGatePolicy(func(string) (*agent.ApprovalPolicy, bool) { return nil, false }))
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/pending?run=f1&call="+url.QueryEscape(pend.ToolUseID), nil))
+		return rec.Code
+	}
+	plain, named := servedAs("foo"), servedAs("foo#taint")
+	if named != plain {
+		t.Errorf("a node named foo#taint is answered %d, a node named foo %d: the name must not change how the gate is read", named, plain)
+	}
 }
