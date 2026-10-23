@@ -769,6 +769,13 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 			// failure of the tool the model would read as durable), fail the run, and a re-drive calls it.
 			return nil, &argsJournalError{err}
 		}
+		// The escalation gate of taint, as a second instance on the call, gets the same re-check.
+		if err := a.preExecuteEscalation(ctx, runID, tu.ID, spec); err != nil {
+			if IsPause(err) {
+				return nil, err
+			}
+			return nil, &argsJournalError{err}
+		}
 		// The kill switch, immediately before the call begins: every path to the tool (the first
 		// execution, a resume, RecoverLoop, a middleware's retry, a saga's re-run) passes here, so a
 		// covering stop holds it. The control run is read now for a call that can have a side effect.
