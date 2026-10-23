@@ -763,11 +763,15 @@ resolution all run around it.
   (`TaintRefuse`) the call is not run and not asked (the denial path). The escalation decision never
   replaces the own gate (no "weaker of the two"): `NoUnapprovedFire` still demands the own gate's
   approval. The ghost `badEsc` is set when a tainted call fires without a recorded approval on its
-  escalation instance (or under Refuse). Not modelled: the escalation instance as an m-of-n tally
-  (its counting rule is model 1b's own, run on another subject), the taint fold (a pure function,
+  escalation instance (or under Refuse). Not modelled: the escalation instance's own deadline and expiry, its m-of-n
+  tally and its identity re-asks (the model gives it a single yes or no; the code runs the whole gate machinery,
+  `evalGate`, on the second subject, so those rules are model 1b's own, checked on the tool's gate), the taint fold (a pure function,
   Go tests), and the gate-reason record (it only adds). `Tainted` is the set of calls that need the
   escalation instance: a call of a tool registered `TaintExempt` (a property of the registered spec, never
   read from a record), of a `ReadOnly` tool, or whose turn read no marked source is not in it. The
+  Code-only fact: a recorded decision or tally on the escalation instance keeps being evaluated when taint no
+  longer applies to the call (a recorded escalation denial is final), whereas the model fixes `Tainted`
+  statically. The
   derived-subject decision goes through the existing `Approve`/`SubmitDecision` path (the code resolves
   `<call>#taint` to the call), so `ApproveEsc` has no region of its own. Every configuration but the `taint-*` ones
   has `Tainted = {}`, so their state spaces are unchanged.
@@ -1177,7 +1181,8 @@ succeeds or its process crashes.
   note (`enforceCaps`, `reserveCaps`), a taint policy's Refuse. A refused invocation returns a
   known failure, the call stays `reached` (it does not use `refuse()`), the loop seals the began
   word and counts it as not called, and the failure is recorded; the tool is never begun by that
-  invocation (`RefusedNeverBegan`), and the at-most-once rules hold with it (`NoDoubleFire`, the
+  invocation (`RefusedNeverBegan` is per invocation: a later invocation of the same call may begin it,
+  and `NoDoubleFire` bounds that), and the at-most-once rules hold with it (`NoDoubleFire`, the
   other configurations' invariants, in the `refuse-*` configurations beside a retry, a crash and a
   deadline). `Bugs = {"RefuseAfterBegin"}` puts the check after `beginCall`.
 - **Three kinds of call** (`Kinds`): a side effect (claimed with an attempt marker, not
@@ -1251,7 +1256,7 @@ pauses inside a tool, and an unregistered tool in the rollback (`tool == nil`).
 
 | Property | Kind | Statement |
 |---|---|---|
-| `RefusedNeverBegan` | invariant | an invocation the handler refused before `beginCall` never began the tool |
+| `RefusedNeverBegan` | invariant | an invocation the handler refused before `beginCall` never began the tool (per invocation: a later invocation of the same call may legitimately begin it) |
 | `NoDoubleFire` | invariant | a side effect fires at most once per call across drives; a call recorded as a known failure (or a saga failure) never fired, nor did an attempt recorded as not started; no call's effect (a retry-safe one included) fires after the rollback recorded its compensation |
 | `TruthfulRecord` | invariant | a not-started record, or a failure recorded because the call was not called, means the tool never began; a failure whose text says the tool already ran means it began |
 | `NoLostSibling` | invariant | a drive that returns only an Unrecorded refusal has recorded every side effect whose tool began |
