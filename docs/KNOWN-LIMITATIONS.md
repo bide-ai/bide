@@ -409,9 +409,9 @@ takes `payments: [{amount: ...}, ...]` cannot be capped by a line, and the input
 whether a tool carries amounts elsewhere in its arguments, so such a tool is not detected: it has no
 cap at all. Use one call per payment, or cap a total member the tool also takes.
 
-**Caps are per call and per currency, with no conversion and no totals.** A model that splits a payment
+**Caps are per currency, with no conversion and no total across rules.** A model that splits a payment
 into many calls under the limit is not stopped by a per-call rule; the cumulative form (`sum ... per
-day`) needs the cap ledger and is refused at registration until it ships. bide does not convert
+day`) counts one rule's amounts across calls (see "Cumulative caps keep a reservation they do not release") and is not a total across rules or tools. bide does not convert
 currencies (an exchange rate is data an attacker may influence), so a call in a currency no rule of the
 argument covers gets the strictest action among the rules, and the currency is compared byte for byte
 (`usd` is not `USD`).
@@ -427,7 +427,7 @@ is refused at registration, because the gate a cap holds a call for is the escal
 taint work, which has not shipped, and a cap gate on a tool that has its own approval gate needs two
 gate instances on one call. Until then a rule is `-> refuse`, which works on a tool with its own gate.
 
-**A decorator must carry the tool's caps.** A tool that embeds a capped tool but declares its own `Spec` without the same rule lines is refused at registration (`ErrConfig`), as one that hides an approval gate or timeout is; a decorator keeps the rules by returning them in its `Spec` or by implementing `Unwrap`.
+**A decorator must carry the tool's caps.** A tool that embeds a capped tool but declares its own `Spec` without the same rule lines is refused at registration (`ErrConfig`), as one that hides an approval gate or timeout is; a decorator keeps the rules by returning them in its `Spec`. Implementing `Unwrap` does not exempt it: a wrapper whose `Spec` lacks a rule line of a tool on its `Unwrap` chain is refused too, word for word.
 
 **Compensation and plan flows are not capped.** A saga's rollback is not cap-checked, and neither is the
 rollback's re-run of a call that already ran. A tool that carries caps cannot be a plan flow block (the
