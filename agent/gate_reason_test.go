@@ -147,6 +147,9 @@ func TestGateReasonKey_BoundariesDoNotCollide(t *testing.T) {
 		{{Kind: "k", Pos: 1, Rule: "2x"}, {Kind: "k", Pos: 12, Rule: "x"}},
 		{{Kind: "k", Source: "a:b"}, {Kind: "k", Source: "a", Ref: "b"}},
 		{{Kind: "k", Source: "1:a"}, {Kind: "k", Ref: "1:a"}},
+		// Without a separator a decimal length prefix is ambiguous once a length has two digits: both are
+		// "0109abcdefghi10109abcdefghi" if the separators are dropped.
+		{{Source: "0", Ref: "abcdefghi", Rule: "9abcdefghi"}, {Source: "9abcdefghi", Ref: "0", Rule: "abcdefghi"}},
 	}
 	for _, p := range pairs {
 		if p[0].key() == p[1].key() {
