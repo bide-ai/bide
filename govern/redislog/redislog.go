@@ -7,11 +7,9 @@ package redislog
 
 import (
 	"context"
-	"crypto/fips140"
 	"fmt"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/redis/go-redis/v9"
@@ -74,15 +72,13 @@ func (l *Log) checkNames(entity string) error {
 // distinct, dense positions, and a script run twice for one append (a client retry after a lost
 // reply) records its event once.
 //
-// The script is built on first use, not in package init: go-redis hashes its source with SHA-1
-// (the key EVALSHA caches a script under), and importing a package must never panic under
-// GODEBUG=fips140=only, where SHA-1 is refused. That hash is a cache key the Redis protocol
-// defines, not a security use, so it is computed with enforcement off (fips140.WithoutEnforcement).
-var appendScript = sync.OnceValue(func() *redis.Script {
-	var s *redis.Script
-	fips140.WithoutEnforcement(func() { s = redis.NewScript(appendScriptSource) })
-	return s
-})
+// The script is made with redis.NewScriptServerSHA, which computes no hash in Go: the digest EVALSHA
+// caches a script under is SHA-1, which crypto/sha1 refuses under GODEBUG=fips140=only, and
+// redis.NewScript would hash in package init (importing a package must never panic). Redis computes
+// the digest (SCRIPT LOAD) on first use; a NOSCRIPT reply (a restart, a failover, a node that never
+// loaded it) is answered by running the script with EVAL, and so is a Redis that refuses SCRIPT, so
+// an append works either way. The script is idempotent per append id, so running it twice is safe.
+var appendScript = redis.NewScriptServerSHA(appendScriptSource)
 
 const appendScriptSource = `
 local recorded = redis.call('HGET', KEYS[2], ARGV[2])
@@ -119,7 +115,7 @@ func (l *Log) Append(ctx context.Context, entity, id, event string) (int64, erro
 	if err := l.checkNames(entity); err != nil {
 		return 0, err
 	}
-	res, err := appendScript().Run(ctx, l.rc, []string{l.key(entity), l.idsKey(entity)}, event, id).Slice()
+	res, err := appendScript.Run(ctx, l.rc, []string{l.key(entity), l.idsKey(entity)}, event, id).Slice()
 	if err != nil {
 		return 0, err
 	}
