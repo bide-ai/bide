@@ -658,6 +658,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 			if pause != nil {
 				return leave(pause)
 			}
+			// protocol:claims begin EscGate
 			if !denied {
 				if !marksRead && a.taintApplies(ctx, spec) {
 					if turnMarks, err = a.turnMarks(ctx, runID, uses[0].ID); err != nil {
@@ -689,6 +690,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 					}
 				}
 			}
+			// protocol:claims end
 			// protocol:claims begin Deny
 			if denied { // record a denial and let the model react
 				deniedResult := `"tool call denied by human"`
