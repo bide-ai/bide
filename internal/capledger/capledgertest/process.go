@@ -95,10 +95,10 @@ func WorkerMain(open func(ctx context.Context) (*agent.Journal, func(), error)) 
 	l := New(j, func() time.Time { return day }, 0)
 	var attempts []string
 	for i := range p.Own {
-		attempts = append(attempts, fmt.Sprintf("%s-%d", name, i))
+		attempts = append(attempts, fmt.Sprintf("%s-%s-%d", p.Namespace, name, i))
 	}
 	for i := range p.Shared {
-		attempts = append(attempts, fmt.Sprintf("shared-%d", i))
+		attempts = append(attempts, fmt.Sprintf("%s-shared-%d", p.Namespace, i))
 	}
 	for _, a := range attempts {
 		_, err := l.Reserve(ctx, p.request("run-"+a, a))
