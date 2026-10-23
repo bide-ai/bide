@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -164,9 +165,69 @@ func TestFailedSaveIsRetriedWithoutAnotherEvent(t *testing.T) {
 	h.Close()
 }
 
-// A save that is refused for a passing reason does not hold up the event path: persist returns at once, the
-// retries run on a timer within milliseconds, and the state is written when the refusal passes, with no event and
-// no log line for the passing refusals.
+// fakeTimers stands in for the Handler's timer: after records each wait and holds the callback, and fire runs the
+// newest pending one, as the clock reaching it would. Nothing here depends on elapsed time, so a coarse timer
+// or a slow runner cannot change the outcome.
+type fakeTimers struct {
+	mu    sync.Mutex
+	waits []time.Duration
+	live  []*fakeTimer
+}
+
+type fakeTimer struct {
+	f       func()
+	stopped bool
+	fired   bool
+	t       *fakeTimers
+}
+
+func (f *fakeTimer) Stop() bool {
+	f.t.mu.Lock()
+	defer f.t.mu.Unlock()
+	was := !f.stopped && !f.fired
+	f.stopped = true
+	return was
+}
+
+func (ft *fakeTimers) after(d time.Duration, f func()) stopper {
+	ft.mu.Lock()
+	defer ft.mu.Unlock()
+	ft.waits = append(ft.waits, d)
+	x := &fakeTimer{f: f, t: ft}
+	ft.live = append(ft.live, x)
+	return x
+}
+
+// fire runs the pending timer's callback and reports whether there was one.
+func (ft *fakeTimers) fire() bool {
+	ft.mu.Lock()
+	var run *fakeTimer
+	for _, x := range ft.live {
+		if !x.stopped && !x.fired {
+			run = x
+		}
+	}
+	if run != nil {
+		run.fired = true
+	}
+	ft.mu.Unlock()
+	if run == nil {
+		return false
+	}
+	run.f()
+	return true
+}
+
+func (ft *fakeTimers) recorded() []time.Duration {
+	ft.mu.Lock()
+	defer ft.mu.Unlock()
+	return append([]time.Duration(nil), ft.waits...)
+}
+
+// A save that is refused for a passing reason does not hold up the event path: persist makes one attempt and
+// returns without sleeping, the retries are scheduled on a timer at 5 ms doubling, and the state is written when
+// the refusal passes, with no log line for the passing refusals. The timer is a fake: the test asserts on the
+// recorded waits and the sleep hook, not on elapsed time.
 func TestTransientRefusalIsRetriedOnATimerNotInLine(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "relay.state")
 	var logged atomic.Int32
@@ -181,22 +242,33 @@ func TestTransientRefusalIsRetriedOnATimerNotInLine(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { h.Close() })
+	ft := &fakeTimers{}
+	h.afterFunc = ft.after
 	var fails atomic.Int32
 	fails.Store(3)
-	var slept atomic.Int32
+	var slept, attempts atomic.Int32
 	h.state.quick = busyQuick
 	h.state.sleep = func(time.Duration) { slept.Add(1) }
 	h.state.renameFile = func(from, to string) error {
+		attempts.Add(1)
 		if fails.Add(-1) >= 0 {
 			return errBusy
 		}
 		return os.Rename(from, to)
 	}
 	h.seen.restore(agent.NotifyID("e1"), []string{"s"})
-	start := time.Now()
 	h.persist(true)
-	if d := time.Since(start); d > 100*time.Millisecond || slept.Load() != 0 {
-		t.Fatalf("persist took %v and slept %d times: the retry is in line", d, slept.Load())
+	if n, w := attempts.Load(), ft.recorded(); slept.Load() != 0 || n != 1 || len(w) != 1 {
+		t.Fatalf("persist made %d attempts, slept %d times and scheduled %v: want one attempt, no sleep, one timer (the retry is in line)", n, slept.Load(), w)
+	}
+	for ft.fire() {
+	}
+	want := []time.Duration{5 * time.Millisecond, 10 * time.Millisecond, 20 * time.Millisecond}
+	if got := ft.recorded(); !slices.Equal(got, want) {
+		t.Fatalf("retry waits %v, want %v", got, want)
+	}
+	if slept.Load() != 0 {
+		t.Fatalf("the retries slept %d times: they run in line", slept.Load())
 	}
 	waitForSeen(t, path, 1)
 	if logged.Load() != 0 {
@@ -205,7 +277,8 @@ func TestTransientRefusalIsRetriedOnATimerNotInLine(t *testing.T) {
 }
 
 // A save that keeps failing for a reason that does not pass is retried with a growing wait, logged once for the
-// streak, and its recovery is logged, so a permanent fault is neither a busy loop nor a flood.
+// streak, and its recovery is logged, so a permanent fault is neither a busy loop nor a flood. The timer is a
+// fake, so the test asserts on the recorded waits (doubling from the retry delay), not on elapsed time.
 func TestPermanentFailureBacksOffAndLogsOncePerStreak(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "relay.state")
 	var failedLines, recoveredLines atomic.Int32
@@ -223,12 +296,12 @@ func TestPermanentFailureBacksOffAndLogsOncePerStreak(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { h.Close() })
+	ft := &fakeTimers{}
+	h.afterFunc = ft.after
 	h.retryDelay = 10 * time.Millisecond
-	var attempts atomic.Int32
 	var fail atomic.Bool
 	fail.Store(true)
 	h.state.renameFile = func(from, to string) error {
-		attempts.Add(1)
 		if fail.Load() {
 			return errors.New("refused")
 		}
@@ -236,17 +309,29 @@ func TestPermanentFailureBacksOffAndLogsOncePerStreak(t *testing.T) {
 	}
 	h.seen.restore(agent.NotifyID("e1"), []string{"s"})
 	h.persist(true)
-	time.Sleep(350 * time.Millisecond)
-	// Attempts at 0, 10, 30, 70, 150, 310 ms: about six, not the thirty-five a fixed 10 ms gives.
-	if n := attempts.Load(); n < 4 || n > 8 {
-		t.Fatalf("%d attempts in 350 ms; want a doubling wait (about 6)", n)
+	for range 5 {
+		if !ft.fire() {
+			t.Fatal("no retry was scheduled while the save kept failing")
+		}
+	}
+	want := []time.Duration{10, 20, 40, 80, 160, 320}
+	for i := range want {
+		want[i] *= time.Millisecond
+	}
+	if got := ft.recorded(); !slices.Equal(got, want) {
+		t.Fatalf("retry waits %v, want a doubling wait %v", got, want)
 	}
 	if n := failedLines.Load(); n != 1 {
 		t.Fatalf("%d failure lines for one streak, want 1", n)
 	}
 	fail.Store(false)
+	if !ft.fire() {
+		t.Fatal("no retry was scheduled")
+	}
 	waitForSeen(t, path, 1)
-	waitFor2(t, "the recovery line", func() bool { return recoveredLines.Load() == 1 })
+	if n := recoveredLines.Load(); n != 1 {
+		t.Fatalf("%d recovery lines, want 1", n)
+	}
 }
 
 // While a save is refused for a passing reason, nothing sleeps with the state mutex held: a save makes one attempt

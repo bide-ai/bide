@@ -116,10 +116,12 @@ type Handler struct {
 	retryDelay time.Duration
 	// failures counts the saves that failed in a row, and slowFailures those past the quick retries.
 	failures, slowFailures int
-	timer                  *time.Timer
-	closed                 bool
-	delay                  time.Duration
-	clears                 func(notify.Payload) string
+	timer                  stopper
+	// afterFunc stands in for time.AfterFunc, so a test records the waits and fires them itself.
+	afterFunc func(time.Duration, func()) stopper
+	closed    bool
+	delay     time.Duration
+	clears    func(notify.Payload) string
 }
 
 // New returns a Handler, or an error for a configuration that cannot work.
@@ -341,8 +343,19 @@ func (h *Handler) persist(urgent bool) {
 	}
 	h.dirty = true
 	if h.timer == nil {
-		h.timer = time.AfterFunc(h.delay, h.flush)
+		h.timer = h.after(h.delay)
 	}
+}
+
+// stopper is what a pending write's timer offers: *time.Timer, or a test's.
+type stopper interface{ Stop() bool }
+
+// after schedules flush in d, on the clock the Handler has.
+func (h *Handler) after(d time.Duration) stopper {
+	if h.afterFunc != nil {
+		return h.afterFunc(d, h.flush)
+	}
+	return time.AfterFunc(d, h.flush)
 }
 
 func (h *Handler) flush() {
@@ -413,7 +426,7 @@ func (h *Handler) saveLocked() {
 	if h.timer != nil {
 		h.timer.Stop()
 	}
-	h.timer = time.AfterFunc(after, h.flush)
+	h.timer = h.after(after)
 }
 
 // safeSend turns a panicking sink into an error, so one bad sink cannot leave a delivery marked
