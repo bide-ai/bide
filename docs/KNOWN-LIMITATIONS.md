@@ -802,12 +802,10 @@ caps, and a taint policy that acts on marks is not built yet ([guide](guides/unt
 - **A mark is evidence, not a control.** A run that read an untrusted tool's result still calls any tool its
   gates allow. Nothing in bide judges whether a text is an attack, and it will not.
 - **A mark is only as good as the declaration.** A tool that returns outside text and declares nothing leaves no
-  mark. Only a decorator that embeds the inner `Tool`
-  is checked: one that embeds it and hides the declaration (`Untrusted`, a source in `Safety`) is refused at
-  registration, as one that hides a gate or timeout is. A wrapper that holds the inner tool in a named field,
-  or implements `Spec` without embedding, is not seen, whether it hides the declaration, the approval gate or
-  the timeout: carrying the declaration through such a wrapper is the wrapper author's duty. (A fix that compares
-  the wrapper's spec with the spec read through its `Unwrap` chain is a separate change.)
+  mark. A decorator that embeds the inner `Tool`, or
+  implements `Unwrap`, and does not carry the declaration (`Untrusted`, a source in `Safety`) is refused at
+  registration, as one that weakens a gate, a timeout or a cap is. A wrapper that neither embeds the inner tool
+  nor implements `Unwrap` is not seen: carrying the declaration through it is the wrapper author's duty.
 - **`ResolveHalt` records no mark.** It has the journal, not the registered tools, so the result it injects
   carries no `Safety` and so no mark. A taint policy will derive it from the tool's declaration by name.
 - **Plan flow nodes are not covered.** A tool that declares `Untrusted` or `TaintExempt` is refused with

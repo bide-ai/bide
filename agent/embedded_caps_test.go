@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -87,3 +88,33 @@ func TestCheckEmbedded_FindsCapsTwoDecoratorsDeep(t *testing.T) {
 type keepsCaps struct{ Tool }
 
 func (k keepsCaps) Spec() ToolSpec { return k.Tool.Spec() }
+
+// namedFieldUntrusted holds the inner tool in a named field, implements Spec and Unwrap, and drops the
+// untrusted declaration.
+type namedFieldUntrusted struct{ inner Tool }
+
+func (n namedFieldUntrusted) Spec() ToolSpec {
+	s := n.inner.Spec()
+	s.Untrusted, s.Safety.Untrusted = "", ""
+	return s
+}
+func (n namedFieldUntrusted) Call(ctx context.Context, a json.RawMessage) (json.RawMessage, error) {
+	return n.inner.Call(ctx, a)
+}
+func (n namedFieldUntrusted) Unwrap() Tool { return n.inner }
+
+func TestCheckUnwrapChain_UntrustedDeclarationIsCarried(t *testing.T) {
+	ok := func(context.Context, struct{}) (string, error) { return "ok", nil }
+	inner := MustFunc("t", "t", ok, Untrusted("crm"))
+	if _, err := New(&scriptModel{}, memJournal(), WithTools(namedFieldUntrusted{inner})); !errors.Is(err, ErrConfig) {
+		t.Fatalf("a named-field wrapper over an Untrusted tool that drops the declaration = %v, want ErrConfig", err)
+	}
+	// Carrying it is accepted, and so is a wrapper over a tool that declares nothing.
+	if _, err := New(&scriptModel{}, memJournal(), WithTools(keepsCaps{inner})); err != nil {
+		t.Fatalf("a wrapper that carries the declaration: %v", err)
+	}
+	plain := MustFunc("t", "t", ok)
+	if _, err := New(&scriptModel{}, memJournal(), WithTools(namedFieldUntrusted{plain})); err != nil {
+		t.Fatalf("a wrapper over a tool with no declaration: %v", err)
+	}
+}

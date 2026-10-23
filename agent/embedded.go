@@ -108,6 +108,7 @@ func embeddedTool(f reflect.Value) (Tool, bool) {
 //     admits an approver the inner gate does not name (a wider pool); or the inner gate has
 //     ExcludePrincipal and s does not; or the inner gate has a deadline (Approval.Timeout) and s has
 //     none or a longer one.
+//   - Untrusted: the inner tool declares a source (Untrusted, or Safety.Untrusted) and s declares none.
 //   - Timeout: the inner tool has one and s has none or a longer one.
 //   - Caps: a rule line (ToolSpec.Caps) of the inner tool that s does not carry, word for word. s may add
 //     rules; a rule it changes is a missing one.
@@ -151,6 +152,9 @@ func weakerSpec(outer, inner ToolSpec) (field, why string) {
 		if !slices.Contains(outer.Caps, l) {
 			return "cap rules", fmt.Sprintf("the wrapper lacks the rule %q (a rule line is compared as written, so a changed line counts as missing; if the wrapper has another name, write one rule line naming both tools, such as inner|outer.amount[...], and carry it on the wrapped tool and the wrapper)", l)
 		}
+	}
+	if src := inner.untrustedSource(); src != "" && outer.untrustedSource() == "" {
+		return "untrusted-content declaration", fmt.Sprintf("the wrapped tool declares its results untrusted (source %q) and the wrapper does not; declare Untrusted(%q) on the wrapper", src, src)
 	}
 	if inner.Timeout > 0 && (outer.Timeout <= 0 || outer.Timeout > inner.Timeout) {
 		return "timeout", fmt.Sprintf("the wrapped tool's is %v, the wrapper's %v (0 is none)", inner.Timeout, outer.Timeout)
