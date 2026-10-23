@@ -219,6 +219,7 @@ One line per rule, in the same style as the flow config's `assert` lines (`plan/
 refund_per_call:  refund|refund_large.amount[minor, currency=currency] > 500 USD -> gate
 refund_per_day:   refund|refund_large.amount[minor, currency=currency] sum 5000 USD per day by customer_id -> refuse
 refund_total:     refund|refund_large.amount[minor, currency=currency] sum 50000 USD per day -> refuse
+mcp_refund:       "stripe.refund"|refund."amount.v2"[minor, currency=currency] > 500 USD -> gate
 ```
 
 - `refund_per_call` is the rule's *name*, required and stable: the cap ledger is keyed by it (6.5), so it is not a digest of the rule's text. Names are namespaced by a deployment namespace the host sets (`WithCapNamespace`), so two deployments sharing a store and using the same rule name do not share a ledger.
@@ -226,6 +227,7 @@ refund_total:     refund|refund_large.amount[minor, currency=currency] sum 50000
 - `[minor, currency=currency]` says the argument is in minor units and which argument holds the currency. `[major, ...]` takes a decimal in major units. A fixed currency with no `currency=` is allowed only if the tool's schema has no currency member, so a model cannot choose a different one.
 - `> 500 USD` is the per-call form; `sum 5000 USD per day by customer_id` is the cumulative form. The threshold is written in major units with at most the currency's exponent of fractional digits.
 - `-> gate` or `-> refuse` is the action (6.4).
+- A tool or member whose name has a `.` (an MCP tool `stripe.refund`, a member `amount.v2`) is written in double quotes, as in `mcp_refund` above; a plain name means the same quoted or not. A quoted tool name is the MCP alphabet (letters, digits, `_`, `-`, `.`, 1 to 128 bytes) and a quoted member is a JSON string with its escapes (`\u00e9` writes a non-ASCII name in an ASCII line).
 
 **Where it lives:** Go only in v0.23.0, a `ToolOption` taking the lines (sketch: `agent.WithCaps(lines...)`) that returns `ErrConfig` at registration for a line it cannot parse or check. Plan flow YAML has no `caps:` key (5.9).
 
@@ -236,7 +238,7 @@ refund_total:     refund|refund_large.amount[minor, currency=currency] sum 50000
 ### 6.3 Amounts and currencies: no float
 
 - The amount is parsed from the argument's JSON number or string *text*. The canonical argument bytes keep number literals verbatim, so the parse sees `12.50`, not a float64. It accepts an optional minus sign, digits and one decimal point; it refuses an exponent (`1e3`), a leading `+`, hex, `NaN`, and more fractional digits than the currency's exponent.
-- **The arguments are parsed strictly before the amount is read:** duplicate keys and case variants of a member name (`Amount` beside `amount`) make the call not assessable. Non-`Func` tools (a custom `Tool`, `mcptools`) decode arguments themselves, and a server may take the last duplicate or a case-insensitive match, so the cap must not read a value the tool might read differently. The strict options are the ones `agent/tool.go` uses for `Func` arguments.
+- **The arguments are parsed strictly before the amount is read:** duplicate keys and case variants of a member name (`Amount` beside `amount`) make the call not assessable. Non-`Func` tools (a custom `Tool`, `mcptools`) decode arguments themselves, and a server may take the last duplicate or a case-insensitive match, so the cap must not read a value the tool might read differently. The strict options are the ones `agent/tool.go` uses for `Func` arguments. The refusal covers the whole argument document, at any depth, including free-form nested maps unrelated to the amount (a `metadata` object holding `Env` and `env`), not only the path to the amount: the tool may read any of them in a way the cap did not.
 - The result is an `int64` count of minor units, with checked arithmetic. An overflow in a sum is a refusal, never a wrap.
 - **A negative, unparseable, absent or non-finite amount is not assessable.** It gets the rule's action: gated if the rule gates, refused if it refuses. It never silently passes.
 - **Currency exponents** come from a table of the ISO 4217 codes bide ships as data, with a test against the published list. An unknown code is a load error, and a rule may state `exponent=` for a code outside the table. (Decision 9.)
