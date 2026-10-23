@@ -780,6 +780,11 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 			if err := a.enforceCaps(tu); err != nil {
 				return nil, err
 			}
+			// The cumulative rules reserve here, after the attempt claim and before the call begins
+			// (protocol:caps Begin): a call that may have run stays counted, and one this refuses was not begun.
+			if err := a.reserveCaps(ctx, runID, tu, spec); err != nil {
+				return nil, err
+			}
 		}
 		// A tool that is not ReadOnly is counted in flight (see inflight): counted in, then the
 		// chain checked not to have returned, so either the chain sees the count when it returns

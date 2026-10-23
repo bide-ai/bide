@@ -40,6 +40,7 @@ type capGroup struct {
 	arg      []string
 	currency []string // the currency member; nil when the limits are in a fixed currency
 	rules    []int    // indexes into toolCaps.rules
+	sum      bool     // the group's rules are cumulative (sum ... per window); a group holds one kind
 }
 
 // capWhy says why a rule fired.
@@ -80,8 +81,9 @@ const (
 // compiled rules, or nil for a tool with none. Every failure wraps ErrConfig. The checks, each of which
 // fails closed:
 //
-//   - every line parses (internal/amount); a cumulative rule ("sum ...") and a rule that gates
-//     ("-> gate", or "-> gate(name)") are "not yet supported";
+//   - every line parses (internal/amount); a rule that gates ("-> gate", or "-> gate(name)") is "not
+//     yet supported". A cumulative rule ("sum ... per window [by key]") is checked like a per-call one,
+//     and its key member, if any, is a string or integer member of the schema;
 //   - the rule names the tool;
 //   - the amount member exists in the input schema, through object members only, and is an integer,
 //     number or string (an array or object is not supported: a cap cannot see a bulk tool's amounts);
@@ -109,9 +111,6 @@ func compileCaps(spec ToolSpec) (*toolCaps, error) {
 	}
 	tc := &toolCaps{rules: rules}
 	for i, r := range rules {
-		if r.Kind != amount.PerCall {
-			return nil, fail("rule %q is cumulative (sum ... per %s), which is not yet supported", r.Name, r.Window)
-		}
 		if r.Action.Kind == amount.Gate {
 			return nil, fail("rule %q gates (-> gate), which is not yet supported: it arrives with the escalation gate (write -> refuse)", r.Name)
 		}
@@ -131,17 +130,23 @@ func compileCaps(spec ToolSpec) (*toolCaps, error) {
 		} else if name, ok := currencyMember(schema); ok {
 			return nil, fail("rule %q has a fixed currency, and the tool's schema has the member %q, so the model could choose another currency (write currency=%s)", r.Name, name, name)
 		}
+		sum := r.Kind == amount.Sum
+		if sum && r.Key != nil && !r.Key.Principal {
+			if err := checkMember(spec.Input, r.Key.Path, "a key", "string", "integer"); err != nil {
+				return nil, fail("rule %q: key argument %s: %v", r.Name, strings.Join(r.Key.Path, "."), err)
+			}
+		}
 		placed := false
 		for gi := range tc.groups {
 			g := &tc.groups[gi]
-			if slices.Equal(g.arg, r.Arg) && slices.Equal(g.currency, r.CurrencyArg) {
+			if g.sum == sum && slices.Equal(g.arg, r.Arg) && slices.Equal(g.currency, r.CurrencyArg) {
 				g.rules = append(g.rules, i)
 				placed = true
 				break
 			}
 		}
 		if !placed {
-			tc.groups = append(tc.groups, capGroup{arg: r.Arg, currency: r.CurrencyArg, rules: []int{i}})
+			tc.groups = append(tc.groups, capGroup{arg: r.Arg, currency: r.CurrencyArg, rules: []int{i}, sum: sum})
 		}
 	}
 	return tc, nil
@@ -238,6 +243,9 @@ func checkMember(schema json.RawMessage, path []string, what string, types ...st
 func (tc *toolCaps) evaluate(args []byte) []capHit {
 	var hits []capHit
 	for _, g := range tc.groups {
+		if g.sum {
+			continue // a cumulative rule reserves at the enforcement point (reserveCaps)
+		}
 		matched := g.rules
 		if g.currency != nil {
 			cur, err := callCurrency(args, g.currency)

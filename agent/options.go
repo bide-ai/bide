@@ -279,7 +279,7 @@ func (a *Agent) Journal() *Journal { return a.store }
 
 // newAgent returns an agent over model and store with no tools and no options.
 func newAgent(model Model, store *Journal) *Agent {
-	return &Agent{model: model, store: store, tools: map[string]Tool{}, specs: map[string]*ToolSpec{}}
+	return &Agent{model: model, store: store, tools: map[string]Tool{}, specs: map[string]*ToolSpec{}, capLedger: newCapLedger(store, time.Now, 0)}
 }
 
 // configure applies opts to a and runs the checks that span options. a is either new (New) or

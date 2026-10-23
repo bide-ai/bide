@@ -32,6 +32,9 @@ type Request struct {
 	Amount int64
 	// Limit is the rule's limit, not negative.
 	Limit int64
+	// Clock, if set, reads now for this request's first intent in place of the ledger's own clock: the
+	// clock of the run being driven (WithClock). It is read at a first intent only.
+	Clock func() time.Time
 	// Waiver says the call carries an approved waiver for the rule: a reservation over the limit is
 	// written, marked over.
 	Waiver bool
@@ -148,7 +151,11 @@ func (l *Ledger) window(ctx context.Context, r Request) (intent, error) {
 	} else if ok {
 		return l.adopt(r, data)
 	}
-	w, err := WindowID(r.Rule.Kind, l.cfg.Clock(), r.RootRunID)
+	now := l.cfg.Clock
+	if r.Clock != nil {
+		now = r.Clock
+	}
+	w, err := WindowID(r.Rule.Kind, now(), r.RootRunID)
 	if err != nil {
 		return intent{}, err
 	}
