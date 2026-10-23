@@ -145,6 +145,8 @@ as it was). A run already named under `@cap/` keeps its journal, but `Recover`, 
 waiting in it is not listed: rename such a run (start it again under a new ID) before upgrading. A
 `Step` named with one of the four prefixes in a run that resumes now fails with `ErrConfig`.
 
+**A writer of the store can undercount a cap window.** The cap ledger (`internal/capledger`, not yet reachable from a deployment) keeps its slots as ordinary journal entries, and they are unsigned: anyone who can write the store can append a fully valid release of a live marked reserve, which lowers the window's total and lets more through than the limit. The ledger refuses every slot that is not well formed (a wrong total, a release of nothing, a foreign currency), so a forged slot has to be one a correct writer could have written; it cannot refuse that one. What detects it is the `AuditedStore`: with the store anchored, a slot appended outside the engine changes the run's head, and `bide audit caps` (planned) recomputes each window from its slots. The same writer can also plant a cap-intent for an attempt before it first reserves, with a stale or a future window: that bypasses the clock bound (which runs only when an intent is first written) and moves the attempt's reservation into another ledger, so a window can be spent twice. It is the same trust boundary and the same detection. Without anchoring the window's total is only as trustworthy as the store's write access.
+
 ## Sagas
 
 **Each forward step must be all-or-nothing.** When a step fails, the steps before it are
