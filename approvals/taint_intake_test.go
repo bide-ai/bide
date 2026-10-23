@@ -5,7 +5,9 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -329,8 +331,14 @@ func TestTaintIntake_AnEscalationSubjectIsServedOnlyWhenItsReasonRecordAgreesWit
 		t.Fatalf("an unchanged record: %d, want 200 (the harness itself is wrong)", got)
 	}
 	cases := map[string]func(m map[string]any){
-		"a snapshot with other approvers": func(m map[string]any) { m["gate"].(map[string]any)["approvers"] = []any{"own1", "other"} },
-		"a snapshot with another need":    func(m map[string]any) { m["gate"].(map[string]any)["need"] = float64(1) },
+		"a snapshot with other approvers": func(m map[string]any) {
+			m["gate"].(map[string]any)["approvers"] = []any{"own1", "other"}
+			redigest(t, m)
+		},
+		"a snapshot with another need": func(m map[string]any) {
+			m["gate"].(map[string]any)["need"] = float64(1)
+			redigest(t, m)
+		},
 		"a digest that is not the snapshot's": func(m map[string]any) {
 			m["policy_digest"] = strings.Repeat("0", 64)
 		},
@@ -344,4 +352,17 @@ func TestTaintIntake_AnEscalationSubjectIsServedOnlyWhenItsReasonRecordAgreesWit
 	if got := edit(nil); got != http.StatusNotFound {
 		t.Errorf("no reason record: %d, want 404 (not served)", got)
 	}
+}
+
+// redigest makes the record's digest the digest of its (edited) snapshot, as a writer who knows the rule would.
+func redigest(t *testing.T, m map[string]any) {
+	t.Helper()
+	raw, _ := json.Marshal(m["gate"])
+	var p agent.ApprovalPolicy
+	if err := json.Unmarshal(raw, &p); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(&p)
+	sum := sha256.Sum256(b)
+	m["policy_digest"] = hex.EncodeToString(sum[:])
 }
