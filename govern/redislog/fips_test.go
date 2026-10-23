@@ -17,11 +17,14 @@ import (
 // with SHA-1, which that mode refuses; the script is made with NewScriptServerSHA instead). Before
 // that, the test binary itself panicked in package init, and this test could not run.
 func TestAppendScriptNeedsNoClientSideSHA1(t *testing.T) {
+	// A script made the way appendScript is, not the shared one: an earlier test that appended has
+	// already given appendScript the digest Redis computed.
+	s := newAppendScript()
+	if h := s.Hash(); h != "" {
+		t.Fatalf("a new append script has Hash() = %q before any Redis round trip: the digest was computed in Go", h)
+	}
 	if appendScript == nil {
 		t.Fatal("appendScript is nil")
-	}
-	if h := appendScript.Hash(); h != "" {
-		t.Fatalf("appendScript.Hash() = %q before any Redis round trip: the digest was computed in Go", h)
 	}
 	t.Logf("fips140 enabled=%v enforced=%v", fips140.Enabled(), fips140.Enforced())
 }
@@ -102,7 +105,7 @@ func (refuseScript) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 func TestAppendWhenScriptCommandsAreRefused(t *testing.T) {
 	ctx := context.Background()
 	old := appendScript
-	appendScript = redis.NewScriptServerSHA(appendScriptSource) // no digest cached by an earlier test
+	appendScript = newAppendScript() // no digest cached by an earlier test
 	t.Cleanup(func() { appendScript = old })
 	l := redisForTest(t, refuseScript{})
 	for i, want := range []int64{0, 1} {

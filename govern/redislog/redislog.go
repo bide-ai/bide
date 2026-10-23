@@ -81,7 +81,10 @@ func (l *Log) checkNames(entity string) error {
 // Two costs follow from go-redis: its script lock is held across the SCRIPT LOAD round trip, so a
 // stalled Redis blocks concurrent appends on that lock past their own context deadlines, and a Redis
 // that refuses SCRIPT costs one failed SCRIPT LOAD per append before the EVAL fallback.
-var appendScript = redis.NewScriptServerSHA(appendScriptSource)
+var appendScript = newAppendScript()
+
+// newAppendScript makes the append script, with no digest until its first Redis round trip.
+func newAppendScript() *redis.Script { return redis.NewScriptServerSHA(appendScriptSource) }
 
 const appendScriptSource = `
 local recorded = redis.call('HGET', KEYS[2], ARGV[2])
