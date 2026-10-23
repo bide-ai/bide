@@ -3,20 +3,22 @@ package agent
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"unsafe"
 )
 
 var toolType = reflect.TypeFor[Tool]()
 
-// checkEmbedded refuses a tool that hides the approval gate or timeout of a tool it embeds. A
+// checkEmbedded refuses a tool that hides the approval gate, timeout or amount caps of a tool it embeds. A
 // decorator that embeds a Tool inherits its Spec, gate and timeout included; one that declares its
 // own Spec and builds the ToolSpec afresh (to rename the tool, say) drops them, and the gated tool
 // inside would run ungated. The agent cannot know whether a decorator meant to drop them, so it fails closed: when any tool
-// embedded in t (an anonymous field, at any depth) has an Approval or a Timeout that t's own spec
-// s lacks, the tool is ErrConfig. A decorator keeps them by implementing Spec, or by
+// embedded in t (an anonymous field, at any depth) has an Approval, a Timeout or a cap rule that t's own spec
+// s lacks (for caps: any rule line the inner tool has and s does not), the tool is ErrConfig. A decorator keeps them by implementing Spec, or by
 // implementing Unwrap() Tool, whose spec New reads through Unwrap.
 func checkEmbedded(t Tool, s ToolSpec) error {
 	var approval, timeout bool
+	var caps []string // the cap rule lines of the embedded tools
 	seen := map[uintptr]bool{}
 	var walk func(v reflect.Value, depth int)
 	walk = func(v reflect.Value, depth int) {
@@ -55,6 +57,7 @@ func checkEmbedded(t Tool, s ToolSpec) error {
 				is := specOf(inner)
 				approval = approval || is.Approval != nil
 				timeout = timeout || is.Timeout > 0
+				caps = append(caps, is.Caps...)
 			}
 			walk(f, depth+1)
 		}
@@ -63,6 +66,8 @@ func checkEmbedded(t Tool, s ToolSpec) error {
 	switch {
 	case approval && s.Approval == nil:
 		return fmt.Errorf("agent: tool %q embeds a tool with an approval gate, and its own spec has none: the decorator hides the approval gate; implement Spec or Unwrap: %w", s.Name, ErrConfig)
+	case slices.ContainsFunc(caps, func(l string) bool { return !slices.Contains(s.Caps, l) }):
+		return fmt.Errorf("agent: tool %q embeds a tool with amount caps, and its own spec lacks or changes a rule: the decorator hides the cap; implement Spec (carrying the same rules) or Unwrap: %w", s.Name, ErrConfig)
 	case timeout && s.Timeout <= 0:
 		return fmt.Errorf("agent: tool %q embeds a tool with a Timeout, and its own spec has none: the decorator hides the timeout; implement Spec or Unwrap: %w", s.Name, ErrConfig)
 	}

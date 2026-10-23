@@ -544,3 +544,39 @@ func TestCaps_RefOnTheWayToAMemberIsRefused(t *testing.T) {
 		t.Fatalf("err = %v, want ErrConfig naming $ref", err)
 	}
 }
+
+// capDeco embeds a capped tool and declares its own Spec, as a decorator that renames the tool does:
+// built afresh, the spec drops the inner tool's caps, and the 9999 USD call below would run through a
+// 5 USD refuse rule. Registration refuses it, as it refuses a decorator that hides an approval gate.
+type capDeco struct {
+	*moneyTool
+	keep []string
+}
+
+func (d capDeco) Spec() ToolSpec {
+	s := d.moneyTool.spec
+	s.Caps = d.keep
+	return s
+}
+
+func TestCaps_EmbeddingDecoratorCannotDropCaps(t *testing.T) {
+	line := `big_refund: refund.amount[minor, currency=currency] > 5 USD -> refuse`
+	inner := func() *moneyTool { return newCapTool(line) }
+	for name, keep := range map[string][]string{
+		"none":      nil,
+		"different": {`big_refund: refund.amount[minor, currency=currency] > 99999 USD -> refuse`},
+	} {
+		if _, err := New(&scriptModel{}, memJournal(), WithTools(capDeco{inner(), keep})); !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "amount caps") {
+			t.Errorf("%s: err = %v, want ErrConfig naming the caps", name, err)
+		}
+	}
+	// A decorator that keeps the rules is accepted, and its call is capped.
+	d := capDeco{inner(), []string{line}}
+	a, err := New(&scriptModel{turns: [][]Emit{toolTurn("c1", "refund", capArgs("9999", "USD")), textTurn("done")}}, memJournal(), WithTools(d))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(context.Background(), "r", UserText("go")); err != nil || d.calls() != 0 {
+		t.Fatalf("err = %v, tool ran %d times", err, d.calls())
+	}
+}
