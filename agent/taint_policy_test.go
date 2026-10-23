@@ -56,6 +56,11 @@ func TestTaintPolicy_Validation(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
+	// Two approvers on one key fill one seat: the policy's Gate is refused as a tool's would be.
+	shared := WithApproverVerifiers(func(string) (ApproverVerifier, bool) { return sharedKeyVerifier{}, true })
+	if err := mk(gatePolicy(), shared); !errors.Is(err, ErrConfig) {
+		t.Errorf("a Gate whose approvers share a key = %v, want ErrConfig", err)
+	}
 	if err := mk(gatePolicy(), noKeys()); err != nil {
 		t.Errorf("an m-of-n gate with verifiers: %v", err)
 	}
