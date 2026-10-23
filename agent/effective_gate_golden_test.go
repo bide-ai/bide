@@ -16,8 +16,7 @@ import (
 )
 
 // TestEffectiveGates_JournalBytesGolden pins what the engine journals for runs over ungated, single-gate
-// and m-of-n gated tools, a denial, a saga whose gated step fails, and a saga rollback. (The rollback
-// re-run path of saga.go that snapshots the gate is cut-off-call only and is covered by the existing saga tests, not here.) The golden was generated before the effective-gate function was introduced (PR5 of the taint
+// and m-of-n gated tools, a denial, a saga whose gated step fails, and a saga rollback. (The rollback re-run path of saga.go that snapshots the gate is cut-off-call only; TestSaga_RollbackRerunRecordCarriesTheGate pins it.) The golden was generated before the effective-gate function was introduced (PR5 of the taint
 // and caps build, docs/design/untrusted-content-and-amount-caps.md, section 5.3), so a refactor that
 // changes a journaled byte fails here. Salts and claim ids are random and attempted_at is wall-clock, so the golden replaces them with fixed values; the
 // clock is fixed.
