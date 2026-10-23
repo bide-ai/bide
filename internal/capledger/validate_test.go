@@ -216,3 +216,34 @@ func TestViewCacheIsBounded(t *testing.T) {
 		t.Fatalf("a retry on an evicted ledger reserved again: %+v", o)
 	}
 }
+
+// A release of an unmarked reserve is refused, even when both slots say unmarked and every total is right:
+// a retry-safe attempt is never released, so no such slot is one this package wrote.
+func TestRead_RefusesAReleaseOfAnUnmarkedReserve(t *testing.T) {
+	ctx := context.Background()
+	st, clk := newMemStore(), &testClock{t: day1}
+	l := newTestLedger(st, clk)
+	r := req("a1", 40, 100)
+	r.Marked = false
+	o := mustReserve(t, l, r)
+	rel, _ := encodeSlot(Slot{N: 1, Kind: kindRelease, Attempt: o.Slot.Attempt, Amount: 40, Currency: "USD", Ref: 0, CumAfter: 0, Limit: 100, Marked: false})
+	st.Insert(ctx, o.Ledger, "slot:1", rel)
+	if _, err := newTestLedger(st, clk).Reserve(ctx, req("a2", 1, 100)); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("err = %v, want ErrCorrupt", err)
+	}
+}
+
+// Only a ledger run is read as one: a run ID that does not have the ledger's six segments (an index run,
+// a run of an agent, a truncated ID) is ErrCorrupt, not an empty ledger.
+func TestRead_RefusesARunThatIsNotALedger(t *testing.T) {
+	st, clk := newMemStore(), &testClock{t: day1}
+	l := newTestLedger(st, clk)
+	for _, run := range []string{"@cap/prod/refund_total/USD/index", "@cap/a/b/USD/2026-10-22", "@cap/a/b/USD/2026-10-22/d/e", "agent-run", "", "xcap/a/b/USD/2026-10-22/d"} {
+		if _, err := l.Slots(context.Background(), run); !errors.Is(err, ErrCorrupt) {
+			t.Errorf("Slots(%q): err = %v, want ErrCorrupt", run, err)
+		}
+		if _, err := l.Live(context.Background(), run); !errors.Is(err, ErrCorrupt) {
+			t.Errorf("Live(%q): err = %v, want ErrCorrupt", run, err)
+		}
+	}
+}
