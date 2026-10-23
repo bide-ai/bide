@@ -8,6 +8,9 @@ package journalhook
 import (
 	"context"
 	"encoding/json"
+	"time"
+
+	"github.com/bide-ai/bide/internal/capledger"
 )
 
 // Do runs fn as the memoized step name of runID in j, an *agent.Journal, and returns the
@@ -95,3 +98,9 @@ var WithRaw func(rec any, raw json.RawMessage) any
 // *agent.StopSwitch), which the flow's nodes (Step) are checked against: a node is held, as a pause
 // (*agent.Stopped), where a stop covers the flow, before it begins.
 var WithStop func(ctx context.Context, flow string, sw any) context.Context
+
+// CapLedger returns a cap ledger (internal/capledger) over a *agent.Journal, reading now from clock;
+// bound is how many windows later than the newest recorded one a first intent may be (0 for one). It
+// is agent's newCapLedger, for the tests of the store modules (internal/capledger/capledgertest), which
+// run the ledger across real processes on real stores; the engine does not call it.
+var CapLedger func(j any, clock func() time.Time, bound int) *capledger.Ledger

@@ -278,6 +278,7 @@ func TestEngineKeys_WritesUseConstructors(t *testing.T) {
 		"Do:name":                true, // MemStore.Do forwards its caller's name to its Journal
 		"init:name":              true, // journalhook.Do forwards audit's and plan's names
 		"recordSpend:name":       true, // its callers pass spendStep and lateSpendStep
+		"Insert:name":            true, // capJournal.Insert forwards the names internal/capledger builds (slot:, win:, cap-intent:, cap-reserve:)
 	}
 	var writes int
 	for file, f := range parseAgentPackage(t) {

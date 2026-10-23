@@ -28,6 +28,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/capledger/capledgertest"
 	"github.com/bide-ai/bide/internal/journaltest"
 )
 
@@ -74,6 +75,15 @@ const (
 func TestMain(m *testing.M) {
 	if name := os.Getenv(haChildEnv); name != "" {
 		os.Exit(haWorker(name))
+	}
+	if capledgertest.IsWorker() {
+		os.Exit(capledgertest.WorkerMain(func(ctx context.Context) (*agent.Journal, func(), error) {
+			s, err := Open(ctx, os.Getenv("PG_DSN"))
+			if err != nil {
+				return nil, nil, err
+			}
+			return agenttest.MustJournal(s), func() { _ = s.Close() }, nil
+		}))
 	}
 	os.Exit(m.Run())
 }
