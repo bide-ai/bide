@@ -28,7 +28,7 @@ func TestEscalationSubject_IsNotServedUnderTheToolsOwnGate(t *testing.T) {
 		t.Fatalf("the call itself: %d %v", status, out)
 	}
 	if !escalation.IsSubject("c1#taint") || escalation.IsSubject("c1") {
-		t.Fatal("IsEscalationSubject")
+		t.Fatal("escalation.IsSubject disagrees with the subject names")
 	}
 	if status, out := r.get("/pending?run=" + runID + "&call=c1%23taint"); status != http.StatusNotFound {
 		t.Fatalf("the escalation subject was served: %d %v", status, out)
