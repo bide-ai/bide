@@ -1361,6 +1361,9 @@ func submitDecision(ctx context.Context, store *Journal, op string, d Decision, 
 	if d.RunID == "" {
 		return fmt.Errorf("%s: empty runID: %w", op, ErrConfig)
 	}
+	if err := checkCallerRun(op, d.RunID); err != nil {
+		return err
+	}
 	if d.ToolUseID == "" {
 		return fmt.Errorf("%s: empty toolUseID: %w", op, ErrConfig)
 	}

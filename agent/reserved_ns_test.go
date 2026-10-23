@@ -372,3 +372,51 @@ func TestRun_ReplaysJournalWithHashToolUseID(t *testing.T) {
 		t.Fatalf("a live turn with a historic '#' ID: %v, want ErrToolUseIDInvalid", err)
 	}
 }
+
+// Every exported call that writes records to a run a caller names refuses a run under @cap/ with
+// ErrConfig and writes nothing: a caller cannot create, extend or pre-claim a ledger run. (Reads
+// are not refused, and @stop keeps its existing behaviour in these calls.)
+func TestReservedNamespace_ExportedWritesRefuseCapRuns(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemStore()
+	j := mustJournal(store)
+	run := capRunID
+	calls := map[string]func() error{
+		"Approve": func() error { return Approve(ctx, j, run, "c1", true) },
+		"SubmitDecision": func() error {
+			return SubmitDecision(ctx, j, Decision{RunID: run, ToolUseID: "c1", ApproverID: "a", Approved: true})
+		},
+		"Cancel": func() error { return Cancel(ctx, j, run, "why") },
+		"ResolveHalt": func() error {
+			return ResolveHalt(ctx, j, HaltRef{RunID: run, Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}, Outcome{Result: 1})
+		},
+		"AnswerInterrupt": func() error { return j.AnswerInterrupt(ctx, run, "n", 1) },
+		"Signal":          func() error { return j.Signal(ctx, run, "n", 1) },
+		"Enqueue":         func() error { return j.Enqueue(ctx, run, "ch", "k", 1) },
+		"Ack":             func() error { return Ack(ctx, j, run, "ch", "k") },
+		"ClaimAttempt": func() error {
+			_, _, err := ClaimAttempt(ctx, j, run, "n", Record{Kind: StepAttempt})
+			return err
+		},
+		"Step": func() error {
+			_, err := j.Step(ctx, run, "n", func(context.Context) (int, error) { return 1, nil })
+			return err
+		},
+		"Parallel": func() error {
+			_, err := j.Parallel(ctx, run, []Task[int]{{Name: "t", Fn: func(context.Context) (int, error) { return 1, nil }}})
+			return err
+		},
+	}
+	for name, call := range calls {
+		if err := call(); !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), capRunPrefix) {
+			t.Errorf("%s on %q = %v, want ErrConfig naming %q", name, run, err, capRunPrefix)
+		}
+	}
+	for id, err := range store.Runs(ctx, RunFilter{}) {
+		t.Errorf("the store holds run %q (%v) after refused writes", id, err)
+	}
+	// The same calls on an ordinary run are not refused for its name.
+	if err := j.Signal(ctx, "r", "n", 1); err != nil {
+		t.Errorf("Signal on an ordinary run: %v", err)
+	}
+}

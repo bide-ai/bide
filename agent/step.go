@@ -28,6 +28,9 @@ import (
 // earlier claim may have left: a caller that claims one name only (rather than numbered
 // re-attempts, as Step and tool calls do) halts on it, which is safe.
 func ClaimAttempt(ctx context.Context, j *Journal, runID, name string, rec Record) (won bool, got Record, err error) {
+	if err := checkCallerRun("ClaimAttempt", runID); err != nil {
+		return false, Record{}, err
+	}
 	return j.claim(ctx, runID, name, rec)
 }
 
@@ -70,6 +73,10 @@ func ClaimAttempt(ctx context.Context, j *Journal, runID, name string, rec Recor
 // name is ErrConfig.
 func (j *Journal) Step[T any](ctx context.Context, runID, name string, fn func(context.Context) (T, error), opts ...StepOption) (T, error) {
 	if err := checkStepName("Step", name); err != nil {
+		var zero T
+		return zero, err
+	}
+	if err := checkCallerRun("Step", runID); err != nil {
 		var zero T
 		return zero, err
 	}

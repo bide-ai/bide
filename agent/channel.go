@@ -29,6 +29,9 @@ func (j *Journal) Enqueue[T any](ctx context.Context, runID, channel, key string
 	if runID == "" {
 		return fmt.Errorf("Enqueue: empty runID: %w", ErrConfig)
 	}
+	if err := checkCallerRun("Enqueue", runID); err != nil {
+		return err
+	}
 	b, err := marshalJournal(payload)
 	if err != nil {
 		return fmt.Errorf("agent: encode channel message %q/%q: %w (%w)", channel, key, err, ErrConfig)
@@ -98,6 +101,9 @@ func Receive[T any](ctx context.Context, channel string) (Received[T], error) {
 func Ack(ctx context.Context, d *Journal, runID, channel, key string) error {
 	if runID == "" {
 		return fmt.Errorf("Ack: empty runID: %w", ErrConfig)
+	}
+	if err := checkCallerRun("Ack", runID); err != nil {
+		return err
 	}
 	_, err := d.do(ctx, runID, chanAckStep(channel, key), func(context.Context) (Record, error) {
 		return Record{Kind: StepValue}, nil

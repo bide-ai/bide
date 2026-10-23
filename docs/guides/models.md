@@ -248,8 +248,11 @@ as already done. An ID that holds a `#` fails the turn with `agent.ErrToolUseIDI
 wrapping `ErrProtocol` and `ErrModel`): the engine reserves `#` in an ID, to derive a second
 approval subject from a call's ID. The shipped adapters pass the provider's ID through and none of
 their IDs holds one. The check runs below middleware, so `middleware.Retry` retries either, and the
-rejected turn is never journaled. Turns replayed from an existing journal are not re-checked, so a
-journal that holds a `#` ID from before the check still replays.
+rejected turn is never journaled. Resuming a run from an existing journal does not re-check its
+recorded turns, so a journal that holds a `#` ID from before the check still resumes. `agent.Replay`
+used as the model of a new run is different: it hands the recorded turns back as that run's live
+model turns, so a recorded `#` ID fails the new run with `ErrToolUseIDInvalid` (the same check,
+fail closed).
 
 Any other ID is safe, whatever characters it has or however long it is. The journal keys derived
 from an ID (`agent.ToolResultStep`, the call's attempt marker, approvals, compensation) and a

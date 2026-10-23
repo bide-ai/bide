@@ -53,11 +53,11 @@ var reservedPrefixes = []string{
 }
 
 // capRunPrefix starts the ID of every cap ledger run, which holds a cap's reservations in the same
-// store as the runs (see IsCapRun). A caller can never name such a run (checkRunID, Session).
+// store as the runs (see IsCapRun). A caller can never write to such a run through the exported API (checkRunID, Session, checkCallerRun); reads of one (History, Status) are not refused.
 const capRunPrefix = "@cap/"
 
 // IsCapRun reports whether runID is a cap ledger run: it starts with "@cap/", which checkRunID
-// and Session refuse in a caller's ID. A ledger run holds slot records and never ends, so no
+// and Session refuse in a caller's ID, as do the exported calls that write to a run a caller names (checkCallerRun). A ledger run holds slot records and never ends, so no
 // run:start or end marker is in it, and a recovery pass, a notification scan or a run listing has
 // nothing to do with it.
 func IsCapRun(runID string) bool { return strings.HasPrefix(runID, capRunPrefix) }
@@ -66,6 +66,15 @@ func IsCapRun(runID string) bool { return strings.HasPrefix(runID, capRunPrefix)
 // not a run of an agent: the stop control run (StopControlRun) or a cap ledger run (IsCapRun).
 // A pass over a store's runs that drives or lists runs (recovery, the run viewer) skips them.
 func IsReservedRun(runID string) bool { return runID == StopControlRun || IsCapRun(runID) }
+
+// checkCallerRun refuses a run ID under capRunPrefix in an exported call that writes records to a
+// run a caller names (Approve, Cancel, Signal and the rest): only the engine writes a cap ledger.
+func checkCallerRun(op, runID string) error {
+	if IsCapRun(runID) {
+		return fmt.Errorf("%s: run ID %q starts with %q, which the engine reserves for the cap ledger runs: %w", op, runID, capRunPrefix, ErrConfig)
+	}
+	return nil
+}
 
 // planNodePrefix starts the key of every plan flow node, which package plan runs as a Step through
 // the engine step hook (internal/journalhook.Step).
