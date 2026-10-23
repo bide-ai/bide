@@ -45,7 +45,7 @@ type gateEnv struct {
 func (a *Agent) evalGate(ctx context.Context, runID string, env *gateEnv, tu ToolUse, id string, pol *ApprovalPolicy) (denied, expired bool, pause error, err error) {
 	tu.ID = id
 	recs, decided, approvals, singles, values := env.recs, env.decided, env.approvals, env.singles, env.values
-	// protocol:claims begin ApGate Deny ApExpire
+	// protocol:claims begin ApGate ApExpire
 	// A recorded denial is final, whatever the tool's gate is now: a human's Approve(false)
 	// or an m-of-n gate's terminal tally that did not pass. The gate may have been removed
 	// or loosened since (a redeploy), and the call must still not run. A recorded approval

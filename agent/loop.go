@@ -689,6 +689,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 					}
 				}
 			}
+			// protocol:claims begin Deny
 			if denied { // record a denial and let the model react
 				deniedResult := `"tool call denied by human"`
 				if expired {
@@ -702,6 +703,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 				fire(ToolCompleted{ToolUseID: tu.ID, Name: tu.Name, Result: json.RawMessage(deniedResult), IsError: true})
 				continue
 			}
+			// protocol:claims end
 			// protocol:lifecycle end
 			toRun = append(toRun, call{idx: i, tu: tu, spec: spec})
 		}
