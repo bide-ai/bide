@@ -52,7 +52,8 @@ var (
 // Sign returns the Bide-Signature header value for body sent at ts: one "v1=<hex>" entry per
 // secret, space separated, where each is HMAC-SHA256(secret, ts + "." + body). Empty secrets are
 // skipped, and so is a secret shorter than 14 bytes under GODEBUG=fips140=only (see ErrShortSecret;
-// crypto/hmac panics on one there). With two secrets (current first, previous second) a receiver holding either verifies the
+// crypto/hmac panics on one there). A caller must check that the header has one entry per secret it
+// passed (strings.Fields of the result); Webhook does, and sends nothing otherwise. With two secrets (current first, previous second) a receiver holding either verifies the
 // request, which is how a secret is rotated without dropping deliveries.
 func Sign(secrets []string, ts int64, body []byte) string {
 	var parts []string

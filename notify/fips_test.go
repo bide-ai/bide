@@ -2,11 +2,13 @@ package notify
 
 import (
 	"bytes"
+	"context"
 	"crypto/fips140"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -91,5 +93,36 @@ func TestCheckSecretRule(t *testing.T) {
 		if got := checkSecret(tc.secret, tc.enforced) == nil; got != tc.ok {
 			t.Errorf("checkSecret(len %d, enforced=%v) ok=%v, want %v", len(tc.secret), tc.enforced, got, tc.ok)
 		}
+	}
+}
+
+// Fail closed at the send: a webhook built while enforcement is off (here by hand, as a caller that
+// changed the mode could) holds a 5-byte secret; sending under enforcement must refuse, with no
+// request reaching the receiver, instead of sending an unsigned or under-signed delivery.
+// Without enforcement the same webhook sends as before.
+func TestSendRefusesAShortSecretUnderEnforcement(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	var w *Webhook
+	var err error
+	fips140.WithoutEnforcement(func() { w, err = NewWebhook(srv.URL, WithSecrets("short", ""), WithRequestsPerCall(3)) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = w.Notify(context.Background(), sampleApproval())
+	if fips140.Enforced() {
+		if !errors.Is(err, agent.ErrConfig) || !errors.Is(err, ErrShortSecret) {
+			t.Fatalf("Notify = %v, want an ErrConfig wrapping ErrShortSecret", err)
+		}
+		if n := hits.Load(); n != 0 {
+			t.Fatalf("%d requests reached the receiver, want 0", n)
+		}
+	} else if err != nil || hits.Load() != 1 {
+		t.Fatalf("without enforcement: Notify = %v, %d requests, want nil and 1", err, hits.Load())
 	}
 }

@@ -412,6 +412,9 @@ func (w *Webhook) deliver(ctx context.Context, id string, body []byte) (delivery
 		switch {
 		case err != nil:
 			lastErr = err
+			if errors.Is(err, agent.ErrConfig) {
+				return res, lastErr // a retry cannot fix configuration
+			}
 			if ctx.Err() != nil {
 				return res, lastErr
 			}
@@ -461,7 +464,14 @@ func (w *Webhook) once(ctx context.Context, id string, body []byte, sent time.Ti
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(HeaderDelivery, id)
 	req.Header.Set(HeaderTimestamp, strconv.FormatInt(ts, 10))
-	req.Header.Set(HeaderSignature, Sign(w.secrets, ts, body))
+	// Fail closed: Sign leaves out a secret it cannot use (see ErrShortSecret), and a delivery
+	// signed with fewer entries than the operator configured is not sent. NewWebhook refuses such
+	// a secret under strict FIPS enforcement; this is the check where the bytes leave.
+	sig := Sign(w.secrets, ts, body)
+	if len(strings.Fields(sig)) != len(w.secrets) {
+		return 0, 0, nil, fmt.Errorf("notify: %w: a webhook secret could not sign the delivery, nothing was sent: %w", agent.ErrConfig, ErrShortSecret)
+	}
+	req.Header.Set(HeaderSignature, sig)
 	resp, err := w.client.Do(req)
 	if err != nil {
 		if w.cert != nil && ctx.Err() == nil {
