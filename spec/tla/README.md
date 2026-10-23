@@ -752,6 +752,25 @@ resolution all run around it.
   grew by 1 to 9 percent (behavior unchanged; the counts in the table are the new ones).
   Every configuration without `CertKeys` is unchanged (the new variables stay at their initial
   values and the new constants are `CertKeys = {}`, `DecTimes = {0}`, `Chains = {}`).
+- **Taint, the escalation gate (`Tainted`, `TaintRefuse`, `MaxApproveEsc`; section 5.3 of the
+  [untrusted content and amount caps](../../docs/design/untrusted-content-and-amount-caps.md) note).**
+  A call of `Tainted` is requested by a turn that read untrusted content, in a run under a taint
+  policy. Besides its tool's own gate (whatever it is, none included) it needs the escalation gate,
+  a second instance with its own decision on the derived subject `<call>#taint` (`esc[c]`, the first
+  decision recorded wins like `Approve`; `ApproveEsc`). Both are evaluated before the claim
+  (`EscGate`, after the own gate has passed and before `Claim`): a call whose escalation instance
+  has no decision pauses for approval, one denied is denied, and under the Refuse policy
+  (`TaintRefuse`) the call is not run and not asked (the denial path). The escalation decision never
+  replaces the own gate (no "weaker of the two"): `NoUnapprovedFire` still demands the own gate's
+  approval. The ghost `badEsc` is set when a tainted call fires without a recorded approval on its
+  escalation instance (or under Refuse). Not modelled: the escalation instance as an m-of-n tally
+  (its counting rule is model 1b's own, run on another subject), the taint fold (a pure function,
+  Go tests), and the gate-reason record (it only adds). `Tainted` is the set of calls that need the
+  escalation instance: a call of a tool registered `TaintExempt` (a property of the registered spec, never
+  read from a record), of a `ReadOnly` tool, or whose turn read no marked source is not in it. The
+  derived-subject decision goes through the existing `Approve`/`SubmitDecision` path (the code resolves
+  `<call>#taint` to the call), so `ApproveEsc` has no region of its own. Every configuration but the `taint-*` ones
+  has `Tainted = {}`, so their state spaces are unchanged.
 - **A recorded denial is final.** The pre-pass denies a call whose Load read an `Approve(false)`
   or a failing recorded tally, whatever the gate is now (#70), and records the denial as the
   call's result.
@@ -772,7 +791,7 @@ resolution all run around it.
   function of the parent's journaled values, which the Go tests drive through a real delegation and
   its resume.
 
-<!-- modelsync: no-code claims Redeploy ResolverChange SubmitCert RevokeLeaf -->
+<!-- modelsync: no-code claims Redeploy ResolverChange SubmitCert RevokeLeaf EscGate ApproveEsc -->
 <!-- modelsync: map claims -->
 | Label | Go |
 |---|---|
@@ -789,6 +808,8 @@ resolution all run around it.
 | `Redeploy` | a new deployment of a process's tools |
 | `ResolverChange` | the verifier resolver answering differently (a rotation, a new key file) |
 | `ApExec` | `preExecute` (agent/exec_gate.go): the gate's pre-execution status check (`ExecStatusAge`, and `ExecStatusAgeFor` per CA tier), the one function every path that can run the tool goes through, called by the base tool handler before the call is begun (the first execution, a drive restarted by crash recovery or `RecoverLoop`, a retry) and by a plan flow node before its body runs. It writes the exec hold (`ApprovalExecHoldStep`) for a revoked or no-longer-verifying counted decision and counts the next generation (`ApprovalIdentTallyStep`); stale or unknown status only pauses (`PendingIdentityStatus`, no record) |
+| `EscGate` | the escalation gate before the claim (taint, PR9b): not marked until the taint gate's code lands, which then removes `EscGate` and `ApproveEsc` from the no-code list above and names them in a `protocol:claims` region |
+| `ApproveEsc` | the decision on the derived subject `<call>#taint` (`Approve` or `SubmitDecision` for the escalation instance), likewise |
 | `SubmitCert`, `RevokeLeaf` | identity step 1, not built yet: a decision carrying a leaf certificate and chain, named by (approver, verdict, decision time, leaf), and the CA revoking the leaf; marked when that pull request lands |
 
 ### Properties
@@ -796,6 +817,7 @@ resolution all run around it.
 | Property | Kind | Statement |
 |---|---|---|
 | `NoUnapprovedFire` | invariant | an effect fires under a gate only with a recorded sufficient approval for the firing drive's gate (an `Approve(true)`, a passing recorded tally or re-tally, and under an excluding policy an outcome that held separation of duties) |
+| `TaintedNeedsEscalation` | invariant | a call of a tainted turn fires only with a recorded approval on its escalation instance, and never under the Refuse policy (with `NoUnapprovedFire`, which still demands the tool's own gate: both are enforced) |
 | `DenialFinal` | invariant | a drive whose Load read a recorded denial never fires the effect, whatever the gate is now |
 | `TallySound` | invariant | a passing recorded tally rests on `need` valid approvals, signed over this exact call, by distinct people (the holders of the signing keys) |
 | `DenialSound` | invariant | a failing recorded tally rests on valid denials and seats the count excluded: an invalid record cannot force a denial |
@@ -843,6 +865,10 @@ every drive that read the denial.
 | `ap-cert-name` | ci | the decision relation: 1 of 3, decisions under two leaves, two decision times and two chains, and a junk record from an actor with no key; a genuine decision is never kept out and no decision is written twice | 518,540 | 25 s |
 | `ap-cert-two-leaves`, `ap-cert-later-leaf`, `ap-cert-held` | ci | reachability, each expected to violate its probe: one approver has records under two leaves (`TwoLeavesNotReachable`); an approver's record under the second leaf counts while the first leaf's does not (`LaterLeafNotReachable`); the pre-execution check holds a call on a revoked leaf (`HeldOnRevokedNotReachable`) | 420 to 10,093 | 1 s |
 | `ap-cert-replaced` | ci | reachability: after a counted decision's leaf is revoked and the call held, the approver decides again under a new leaf, the gate re-asks (the identity re-ask records the next generation) and the call runs on it (`ReplacementFiresNotReachable` violated) | 20,837 | 2 s |
+| `taint-gate` | ci | taint: a 1-of-1 own gate and the escalation instance, two drivers in two processes, a redeploy may loosen the own gate, 2 + 2 decisions, 1 error reply, 1 crash; vacuity `TaintedFireNotReachable` | 466,783 | 1 min |
+| `taint-gate-nogate` | ci | a tool with no gate of its own is still held for the escalation instance | 25,405 | 11 s |
+| `taint-refuse` | ci | the Refuse policy: a tainted call is denied, never run (vacuity skipped: nothing fires; `taint-refuse-reach` shows the refusal) | 123,255 | 39 s |
+| `taint-fire-reach`, `taint-refuse-reach` | ci | reachability: a tainted call fires once approved (`TaintedFireNotReachable` violated); under Refuse its denial is recorded (`TaintRefusedNotReachable` violated) | 22,253 / 893 | 18 s / 2 s |
 | `deep-ap-m-same` | nightly | m-of-n, two drivers in one process, three decisions, a redeploy; 1 error reply | 5,252,508 | 6 min |
 
 Regressions (a regression's state count is the states TLC explored until the violation, with one TLC worker, and varies with the worker count): `regress/ap-denial-not-final` (#70: a recorded denial honoured only while the tool
@@ -864,7 +890,7 @@ so the old deployment's tally, counting the requester, lets a drive under the ex
 fire; `SeparationOfDuties`, 5,382 states), `regress/ap-late-counts` (approval deadlines: a
 decision recorded after the deadline counted; `LateNeverCounts`, about 36,000 states). Accepted: `limits/ap-resolver-change-denies`
 (a change that makes two approvers share a key excludes both seats, and the gate can deny with
-no denial recorded; `NoDenyWithoutDenials`, 8 states).
+no denial recorded; `NoDenyWithoutDenials`, 8 states). Taint (each must fail with its property): `regress/no-esc-gate` (the escalation guard is missing: a tainted call runs on its own gate alone; `TaintedNeedsEscalation`), `regress/esc-replaces-own` (the "weaker of the two" rule: the escalation approval replaces the tool's own gate; `NoUnapprovedFire`), `regress/esc-subject-unbound` (an approval of the tool's own gate counts as the escalation decision, the two subjects not told apart; `TaintedNeedsEscalation`).
 
 ### Findings
 
@@ -1145,6 +1171,15 @@ succeeds or its process crashes.
   answers a second invocation of a side effect "already ran", and refuses once the chain has
   returned, T5), and the tool, which fires its effect or not and returns a result, its own error, an unknown
   outcome, a context error, or `toolhook.Unrecorded` (a delegation under the wrong authority).
+- **A refusal before `beginCall`** (`MaxRefuse`, `IRefuse`). Between the saga-arguments write and
+  `beginCall` the handler has enforcement points that may refuse the call: the amount caps of
+  section 6 of the [untrusted content and amount caps](../../docs/design/untrusted-content-and-amount-caps.md)
+  note (`enforceCaps`, `reserveCaps`), a taint policy's Refuse. A refused invocation returns a
+  known failure, the call stays `reached` (it does not use `refuse()`), the loop seals the began
+  word and counts it as not called, and the failure is recorded; the tool is never begun by that
+  invocation (`RefusedNeverBegan`), and the at-most-once rules hold with it (`NoDoubleFire`, the
+  other configurations' invariants, in the `refuse-*` configurations beside a retry, a crash and a
+  deadline). `Bugs = {"RefuseAfterBegin"}` puts the check after `beginCall`.
 - **Three kinds of call** (`Kinds`): a side effect (claimed with an attempt marker, not
   retry-safe); a retry-safe tool that changes state (Idempotent, not ReadOnly, a Compensator;
   no attempt marker, and it may fire again on every re-run); and a delegation (retry-safe, no
@@ -1192,6 +1227,7 @@ region in the Go code, which modelsync checks.
 |---|---|
 | `IEnter` | T `Agent.toolHandler`'s base handler `h`: the `origID` check (`ErrConfig`, `ErrToolNotCalled`), `ctxDone`, `toolhook.CallGuard` (H), `enterTool` (from `callOpen`, `callRefused` or `callReached`; never from a closed state); the old `ran` mark under `RanEarly` and `RanBeforeArgs` |
 | `IArgs`, `IIdem` | T `journalAcceptedArgs`: the saga's accepted arguments, written always for a compensable retry-safe write (`Safety.retrySafeWrite`), so the record is also its "may have begun" mark (T3); a failure returns `argsJournalError` before the tool |
+| `IRefuse` | T the enforcement points of `Agent.toolHandler`'s base handler between the saga-arguments write and `beginCall`: `enforceCaps` and `reserveCaps` (the amount caps), and the taint policy's Refuse; the refusal is a plain error from the handler with the call still reached |
 | `IEnter2` | `RanEarly` only: the checks and `enterTool` after the arguments, as before round 4 |
 | `IBegin` | T `countIn` (calls that are not ReadOnly, `tracked`), then `callIsClosed` (T5: no begin once the chain returned), then `beginCall` (`sealed`; `ErrToolReinvoked` for a side effect already begun); the `earlier` flag (T3) |
 | `ICall` | T `t.Call` and the tool's own outcome (`toolRunning`, `toolSucceeded`, `toolFailed`, `toolUnknown` in `call.out`), through `callCounted`, whose `countOut` runs on return |
@@ -1215,6 +1251,7 @@ pauses inside a tool, and an unregistered tool in the rollback (`tool == nil`).
 
 | Property | Kind | Statement |
 |---|---|---|
+| `RefusedNeverBegan` | invariant | an invocation the handler refused before `beginCall` never began the tool |
 | `NoDoubleFire` | invariant | a side effect fires at most once per call across drives; a call recorded as a known failure (or a saga failure) never fired, nor did an attempt recorded as not started; no call's effect (a retry-safe one included) fires after the rollback recorded its compensation |
 | `TruthfulRecord` | invariant | a not-started record, or a failure recorded because the call was not called, means the tool never began; a failure whose text says the tool already ran means it began |
 | `NoLostSibling` | invariant | a drive that returns only an Unrecorded refusal has recorded every side effect whose tool began |
@@ -1238,6 +1275,8 @@ findings (below).
 
 | Config | Group | What | States | Time |
 |---|---|---|---|---|
+| `refuse-one`, `refuse-saga` | ci | `contract-one` (and the same in a saga) with a refusal before `beginCall`: a recorded known failure, never begun, at-most-once intact (vacuity `RefusedNotReachable`) | 53,237 / 60,707 | 4 s |
+| `refuse-reach` | ci | reachability: the handler refuses a call (`RefusedNotReachable` violated) | 666 | 2 s |
 | `contract-one` | ci | one side effect, middleware within the contract (a result check included), every fault | 34,618 | <1 s |
 | `adv-one` | nightly | one side effect, any middleware but a direct call (retries, `next` left running, errors without the sentinel), every fault | 1,004,140 | 5 s |
 | `saga-adv` | nightly | a saga Compensator with rewritten arguments (the accepted-arguments write), any middleware but a direct call, four attempts | 1,305,093 | 10 s |
@@ -1267,6 +1306,7 @@ Regressions (each must fail with its property, and passes with its `Bugs` flag r
 
 | Config | The historical rule | Expected | Trace |
 |---|---|---|---|
+| `regress/refuse-after-begin` | the refusal check sits after `beginCall` (a cap reserved once the tool was begun): the call is refused and recorded as a known failure for a tool that may have run (`RefuseAfterBegin`) | `RefusedNeverBegan` | 1,490 states |
 | `regress/abandoned-next` | R117-6 (round 1): "not called" was the flag the base handler sets before `t.Call`; a middleware left `next` running and returned first (`FlagRule`) | `NoDoubleFire` | 22 states |
 | `regress/direct-call` | round 2, item 2: under the flag rule, a middleware calling the tool itself left the flag unset (`FlagRule`) | `NoDoubleFire` | 11 states |
 | `regress/refused-leak` | round 4, finding 1: `refused` was not terminal, so a leaked `next` moved it to `reached` after the call was recorded (`RefusedNotTerminal`; with T5's rule, no begin after the chain returned, as `NoClosedBegin`, it is stopped there too) | `NoDoubleFire` | 26 states |

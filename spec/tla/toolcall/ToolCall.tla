@@ -37,6 +37,8 @@ CONSTANTS
   MaxUnk,        \* tool calls that return ErrToolOutcomeUnknown
   MaxToolErr,    \* tool calls that fail with an error of their own, having done nothing
   MaxWrongAuth,  \* times the delegation's authority becomes wrong (an Unrecorded refusal)
+  MaxRefuse,     \* refusals by an enforcement point of the handler before beginCall (an amount cap,
+                 \* a taint policy's Refuse): a recorded known failure, the tool never begun
   MaxAtt,        \* attempt bound per call
   Bugs           \* reverted rules, see regress/
 
@@ -54,7 +56,7 @@ ASSUME Bugs \subseteq {"FlagRule", "RefusedNotTerminal", "RanEarly", "NoBeganWor
                        "NoToolOutcome", "RanBeforeArgs", "IdemSagaSkip",
                        "NoIdemBegan", "NoRunningCheck",
                        "NoRbUnknown", "RunningReachedOnly",
-                       "NoClosedBegin", "RbGuardStops"}
+                       "NoClosedBegin", "RbGuardStops", "RefuseAfterBegin"}
 ASSUME NCalls \in 1..2 /\ MaxAtt >= 1
 
 (* --algorithm toolcall
@@ -117,8 +119,11 @@ variables
   \* Ghost: the call's effect is in place (fired, and not compensated since).
   fx       = [c \in Calls |-> FALSE],
   boundHit = FALSE,
+  \* Ghosts: invocations the handler refused before beginCall, and invocations that began the tool.
+  rfd      = [i \in Invs |-> FALSE],
+  bgn      = [i \in Invs |-> FALSE],
   extras = 0, errs = 0, crashes = 0, cancels = 0, deadlines = 0, guards = 0, unks = 0,
-  toolErrs = 0, wrongs = 0;
+  toolErrs = 0, wrongs = 0, refusals = 0;
 
 define
   Side(c) == Kinds[c] = "side"
@@ -238,7 +243,7 @@ macro Reply(r) begin
 end macro;
 
 macro Spawn(k, a) begin
-  ion[k] := TRUE; iarg[k] := a; iret[k] := ""; iatt[k] := att[self]; iold[k] := FALSE;
+  ion[k] := TRUE; iarg[k] := a; iret[k] := ""; iatt[k] := att[self]; iold[k] := FALSE; rfd[k] := FALSE; bgn[k] := FALSE;
 end macro;
 
 \* The base handler (toolHandler's h), one invocation of it.
@@ -365,6 +370,22 @@ IIdem:
       goto IWait;
     end if;
   end if;
+IRefuse:
+  \* The handler's enforcement points between the checks and beginCall (the amount caps of section 6, a
+  \* taint policy's Refuse; the kill switch is model 16's): the call is refused, a known failure the model
+  \* reads, and the tool is not begun. The refusal is not refuse(): the call stays reached, so the loop
+  \* seals the began word and counts the call as not called. Bug "RefuseAfterBegin": the check sits after
+  \* beginCall (the reservation of a cap made after the tool was begun).
+  if ~Bug("RefuseAfterBegin") then
+    either
+      await refusals < MaxRefuse;
+      refusals := refusals + 1;
+      iret[self] := "refused"; rfd[self] := TRUE; ion[self] := FALSE;
+      goto IWait;
+    or
+      skip;
+    end either;
+  end if;
 IBegin:
   \* beginCall: CAS none -> yes immediately before t.Call; a sealed word refuses
   if ~(Bug("FlagRule") \/ Bug("NoBeganWord")) /\ IBg(self) = "sealed" then
@@ -386,7 +407,20 @@ IBegin:
     iear := IF iold[self] \/ tout[CallOf(self)] \in {"none", "err"} THEN iear
             ELSE [iear EXCEPT ![CallOf(self)] = TRUE];
     began[CallOf(self)][iatt[self]] := TRUE;
+    bgn[self] := TRUE;
     tout := IF iold[self] THEN tout ELSE [tout EXCEPT ![CallOf(self)] = "running"];
+  end if;
+IRefuse2:
+  \* RefuseAfterBegin only: the refusal after beginCall
+  if Bug("RefuseAfterBegin") then
+    either
+      await refusals < MaxRefuse;
+      refusals := refusals + 1;
+      iret[self] := "refused"; rfd[self] := TRUE; ion[self] := FALSE;
+      goto IWait;
+    or
+      skip;
+    end either;
   end if;
 ICall:
   \* t.Call: the tool fires its effect or not, and returns
@@ -718,8 +752,8 @@ VARIABLES marker, att, res, argsRec, ibeg, ibs, iear, complete, pend,
           cancelled, gcancel, auth, go, werr, held, runRet, st, bg, ranc, 
           tout, closedc, dl, ion, iarg, iret, iatt, iold, ost, obg, oran, 
           fired, firedAt, began, everReached, lostAtt, rolled, rbm, rbOut, 
-          compd, rbHalt, rbUnk, fx, boundHit, extras, errs, crashes, cancels, 
-          deadlines, guards, unks, toolErrs, wrongs, pc
+          compd, rbHalt, rbUnk, fx, boundHit, rfd, bgn, extras, errs, crashes, 
+          cancels, deadlines, guards, unks, toolErrs, wrongs, refusals, pc
 
 (* define statement *)
 Side(c) == Kinds[c] = "side"
@@ -836,9 +870,10 @@ vars == << marker, att, res, argsRec, ibeg, ibs, iear, complete, pend,
            cancelled, gcancel, auth, go, werr, held, runRet, st, bg, ranc, 
            tout, closedc, dl, ion, iarg, iret, iatt, iold, ost, obg, oran, 
            fired, firedAt, began, everReached, lostAtt, rolled, rbm, rbOut, 
-           compd, rbHalt, rbUnk, fx, boundHit, extras, errs, crashes, cancels, 
-           deadlines, guards, unks, toolErrs, wrongs, pc, r, slot, last, cerr, 
-           rec, called, made, gret, r2, gc, r3, rc >>
+           compd, rbHalt, rbUnk, fx, boundHit, rfd, bgn, extras, errs, 
+           crashes, cancels, deadlines, guards, unks, toolErrs, wrongs, 
+           refusals, pc, r, slot, last, cerr, rec, called, made, gret, r2, gc, 
+           r3, rc >>
 
 ProcSet == (Invs) \cup (Calls) \cup {0}
 
@@ -886,6 +921,8 @@ Init == (* Global variables *)
         /\ rbUnk = {}
         /\ fx = [c \in Calls |-> FALSE]
         /\ boundHit = FALSE
+        /\ rfd = [i \in Invs |-> FALSE]
+        /\ bgn = [i \in Invs |-> FALSE]
         /\ extras = 0
         /\ errs = 0
         /\ crashes = 0
@@ -895,6 +932,7 @@ Init == (* Global variables *)
         /\ unks = 0
         /\ toolErrs = 0
         /\ wrongs = 0
+        /\ refusals = 0
         (* Process inv *)
         /\ r = [self \in Invs |-> ""]
         (* Process loop *)
@@ -924,10 +962,10 @@ IWait(self) == /\ pc[self] = "IWait"
                                dl, ion, iarg, iret, iatt, iold, ost, obg, oran, 
                                fired, firedAt, began, everReached, lostAtt, 
                                rolled, rbm, rbOut, compd, rbHalt, rbUnk, fx, 
-                               boundHit, extras, errs, crashes, cancels, 
-                               deadlines, guards, unks, toolErrs, wrongs, slot, 
-                               last, cerr, rec, called, made, gret, r2, gc, r3, 
-                               rc >>
+                               boundHit, rfd, bgn, extras, errs, crashes, 
+                               cancels, deadlines, guards, unks, toolErrs, 
+                               wrongs, refusals, slot, last, cerr, rec, called, 
+                               made, gret, r2, gc, r3, rc >>
 
 IEnter(self) == /\ pc[self] = "IEnter"
                 /\ IF iarg[self] = "renamed"
@@ -986,10 +1024,11 @@ IEnter(self) == /\ pc[self] = "IEnter"
                                 werr, held, runRet, bg, tout, closedc, dl, 
                                 iarg, iatt, iold, ost, obg, oran, fired, 
                                 firedAt, began, lostAtt, rolled, rbm, rbOut, 
-                                compd, rbHalt, rbUnk, fx, boundHit, extras, 
-                                errs, crashes, cancels, deadlines, unks, 
-                                toolErrs, wrongs, r, slot, last, cerr, rec, 
-                                called, made, gret, r2, gc, r3, rc >>
+                                compd, rbHalt, rbUnk, fx, boundHit, rfd, bgn, 
+                                extras, errs, crashes, cancels, deadlines, 
+                                unks, toolErrs, wrongs, refusals, r, slot, 
+                                last, cerr, rec, called, made, gret, r2, gc, 
+                                r3, rc >>
 
 IArgs(self) == /\ pc[self] = "IArgs"
                /\ IF Saga /\ Rewrite /\ CallOf(self) = 1
@@ -1023,10 +1062,10 @@ IArgs(self) == /\ pc[self] = "IArgs"
                                runRet, bg, ranc, tout, closedc, dl, iarg, iatt, 
                                iold, ost, obg, oran, fired, firedAt, began, 
                                everReached, lostAtt, rolled, rbm, rbOut, compd, 
-                               rbHalt, rbUnk, fx, boundHit, extras, crashes, 
-                               cancels, deadlines, guards, unks, toolErrs, 
-                               wrongs, slot, last, cerr, rec, called, made, 
-                               gret, r2, gc, r3, rc >>
+                               rbHalt, rbUnk, fx, boundHit, rfd, bgn, extras, 
+                               crashes, cancels, deadlines, guards, unks, 
+                               toolErrs, wrongs, refusals, slot, last, cerr, 
+                               rec, called, made, gret, r2, gc, r3, rc >>
 
 IEnter2(self) == /\ pc[self] = "IEnter2"
                  /\ IF Bug("RanEarly")
@@ -1062,10 +1101,11 @@ IEnter2(self) == /\ pc[self] = "IEnter2"
                                  werr, held, runRet, bg, ranc, tout, closedc, 
                                  dl, iarg, iatt, iold, ost, obg, oran, fired, 
                                  firedAt, began, lostAtt, rolled, rbm, rbOut, 
-                                 compd, rbHalt, rbUnk, fx, boundHit, extras, 
-                                 errs, crashes, cancels, deadlines, unks, 
-                                 toolErrs, wrongs, r, slot, last, cerr, rec, 
-                                 called, made, gret, r2, gc, r3, rc >>
+                                 compd, rbHalt, rbUnk, fx, boundHit, rfd, bgn, 
+                                 extras, errs, crashes, cancels, deadlines, 
+                                 unks, toolErrs, wrongs, refusals, r, slot, 
+                                 last, cerr, rec, called, made, gret, r2, gc, 
+                                 r3, rc >>
 
 IIdem(self) == /\ pc[self] = "IIdem"
                /\ IF IdemMark(CallOf(self)) /\ ~(Rewrite /\ CallOf(self) = 1)
@@ -1083,53 +1123,105 @@ IIdem(self) == /\ pc[self] = "IIdem"
                                 THEN /\ iret' = [iret EXCEPT ![self] = "argserr"]
                                      /\ ion' = [ion EXCEPT ![self] = FALSE]
                                      /\ pc' = [pc EXCEPT ![self] = "IWait"]
-                                ELSE /\ pc' = [pc EXCEPT ![self] = "IBegin"]
+                                ELSE /\ pc' = [pc EXCEPT ![self] = "IRefuse"]
                                      /\ UNCHANGED << ion, iret >>
-                     ELSE /\ pc' = [pc EXCEPT ![self] = "IBegin"]
+                     ELSE /\ pc' = [pc EXCEPT ![self] = "IRefuse"]
                           /\ UNCHANGED << ibeg, ion, iret, errs, r >>
                /\ UNCHANGED << marker, att, res, argsRec, ibs, iear, complete, 
                                pend, cancelled, gcancel, auth, go, werr, held, 
                                runRet, st, bg, ranc, tout, closedc, dl, iarg, 
                                iatt, iold, ost, obg, oran, fired, firedAt, 
                                began, everReached, lostAtt, rolled, rbm, rbOut, 
-                               compd, rbHalt, rbUnk, fx, boundHit, extras, 
-                               crashes, cancels, deadlines, guards, unks, 
-                               toolErrs, wrongs, slot, last, cerr, rec, called, 
-                               made, gret, r2, gc, r3, rc >>
+                               compd, rbHalt, rbUnk, fx, boundHit, rfd, bgn, 
+                               extras, crashes, cancels, deadlines, guards, 
+                               unks, toolErrs, wrongs, refusals, slot, last, 
+                               cerr, rec, called, made, gret, r2, gc, r3, rc >>
+
+IRefuse(self) == /\ pc[self] = "IRefuse"
+                 /\ IF ~Bug("RefuseAfterBegin")
+                       THEN /\ \/ /\ refusals < MaxRefuse
+                                  /\ refusals' = refusals + 1
+                                  /\ iret' = [iret EXCEPT ![self] = "refused"]
+                                  /\ rfd' = [rfd EXCEPT ![self] = TRUE]
+                                  /\ ion' = [ion EXCEPT ![self] = FALSE]
+                                  /\ pc' = [pc EXCEPT ![self] = "IWait"]
+                               \/ /\ TRUE
+                                  /\ pc' = [pc EXCEPT ![self] = "IBegin"]
+                                  /\ UNCHANGED <<ion, iret, rfd, refusals>>
+                       ELSE /\ pc' = [pc EXCEPT ![self] = "IBegin"]
+                            /\ UNCHANGED << ion, iret, rfd, refusals >>
+                 /\ UNCHANGED << marker, att, res, argsRec, ibeg, ibs, iear, 
+                                 complete, pend, cancelled, gcancel, auth, go, 
+                                 werr, held, runRet, st, bg, ranc, tout, 
+                                 closedc, dl, iarg, iatt, iold, ost, obg, oran, 
+                                 fired, firedAt, began, everReached, lostAtt, 
+                                 rolled, rbm, rbOut, compd, rbHalt, rbUnk, fx, 
+                                 boundHit, bgn, extras, errs, crashes, cancels, 
+                                 deadlines, guards, unks, toolErrs, wrongs, r, 
+                                 slot, last, cerr, rec, called, made, gret, r2, 
+                                 gc, r3, rc >>
 
 IBegin(self) == /\ pc[self] = "IBegin"
                 /\ IF ~(Bug("FlagRule") \/ Bug("NoBeganWord")) /\ IBg(self) = "sealed"
                       THEN /\ iret' = [iret EXCEPT ![self] = "nc"]
                            /\ ion' = [ion EXCEPT ![self] = FALSE]
                            /\ pc' = [pc EXCEPT ![self] = "IWait"]
-                           /\ UNCHANGED << iear, bg, tout, began >>
+                           /\ UNCHANGED << iear, bg, tout, began, bgn >>
                       ELSE /\ IF ~Bug("FlagRule") /\ ~Bug("NoClosedBegin") /\ (iold[self] \/ closedc[CallOf(self)])
                                  THEN /\ iret' = [iret EXCEPT ![self] = "nc"]
                                       /\ ion' = [ion EXCEPT ![self] = FALSE]
                                       /\ pc' = [pc EXCEPT ![self] = "IWait"]
-                                      /\ UNCHANGED << iear, bg, tout, began >>
+                                      /\ UNCHANGED << iear, bg, tout, began, 
+                                                      bgn >>
                                  ELSE /\ IF ~Bug("RanBeforeArgs") /\ ~Bug("RanEarly") /\ Side(CallOf(self)) /\ IBg(self) = "yes"
                                             THEN /\ iret' = [iret EXCEPT ![self] = "reinv"]
                                                  /\ ion' = [ion EXCEPT ![self] = FALSE]
                                                  /\ pc' = [pc EXCEPT ![self] = "IWait"]
                                                  /\ UNCHANGED << iear, bg, 
-                                                                 tout, began >>
+                                                                 tout, began, 
+                                                                 bgn >>
                                             ELSE /\ bg' = IF iold[self] THEN bg ELSE [bg EXCEPT ![CallOf(self)] = "yes"]
                                                  /\ iear' = (IF iold[self] \/ tout[CallOf(self)] \in {"none", "err"} THEN iear
                                                              ELSE [iear EXCEPT ![CallOf(self)] = TRUE])
                                                  /\ began' = [began EXCEPT ![CallOf(self)][iatt[self]] = TRUE]
+                                                 /\ bgn' = [bgn EXCEPT ![self] = TRUE]
                                                  /\ tout' = IF iold[self] THEN tout ELSE [tout EXCEPT ![CallOf(self)] = "running"]
-                                                 /\ pc' = [pc EXCEPT ![self] = "ICall"]
+                                                 /\ pc' = [pc EXCEPT ![self] = "IRefuse2"]
                                                  /\ UNCHANGED << ion, iret >>
                 /\ UNCHANGED << marker, att, res, argsRec, ibeg, ibs, complete, 
                                 pend, cancelled, gcancel, auth, go, werr, held, 
                                 runRet, st, ranc, closedc, dl, iarg, iatt, 
                                 iold, ost, obg, oran, fired, firedAt, 
                                 everReached, lostAtt, rolled, rbm, rbOut, 
-                                compd, rbHalt, rbUnk, fx, boundHit, extras, 
-                                errs, crashes, cancels, deadlines, guards, 
-                                unks, toolErrs, wrongs, r, slot, last, cerr, 
-                                rec, called, made, gret, r2, gc, r3, rc >>
+                                compd, rbHalt, rbUnk, fx, boundHit, rfd, 
+                                extras, errs, crashes, cancels, deadlines, 
+                                guards, unks, toolErrs, wrongs, refusals, r, 
+                                slot, last, cerr, rec, called, made, gret, r2, 
+                                gc, r3, rc >>
+
+IRefuse2(self) == /\ pc[self] = "IRefuse2"
+                  /\ IF Bug("RefuseAfterBegin")
+                        THEN /\ \/ /\ refusals < MaxRefuse
+                                   /\ refusals' = refusals + 1
+                                   /\ iret' = [iret EXCEPT ![self] = "refused"]
+                                   /\ rfd' = [rfd EXCEPT ![self] = TRUE]
+                                   /\ ion' = [ion EXCEPT ![self] = FALSE]
+                                   /\ pc' = [pc EXCEPT ![self] = "IWait"]
+                                \/ /\ TRUE
+                                   /\ pc' = [pc EXCEPT ![self] = "ICall"]
+                                   /\ UNCHANGED <<ion, iret, rfd, refusals>>
+                        ELSE /\ pc' = [pc EXCEPT ![self] = "ICall"]
+                             /\ UNCHANGED << ion, iret, rfd, refusals >>
+                  /\ UNCHANGED << marker, att, res, argsRec, ibeg, ibs, iear, 
+                                  complete, pend, cancelled, gcancel, auth, go, 
+                                  werr, held, runRet, st, bg, ranc, tout, 
+                                  closedc, dl, iarg, iatt, iold, ost, obg, 
+                                  oran, fired, firedAt, began, everReached, 
+                                  lostAtt, rolled, rbm, rbOut, compd, rbHalt, 
+                                  rbUnk, fx, boundHit, bgn, extras, errs, 
+                                  crashes, cancels, deadlines, guards, unks, 
+                                  toolErrs, wrongs, r, slot, last, cerr, rec, 
+                                  called, made, gret, r2, gc, r3, rc >>
 
 ICall(self) == /\ pc[self] = "ICall"
                /\ IF Kinds[CallOf(self)] = "deleg"
@@ -1174,12 +1266,14 @@ ICall(self) == /\ pc[self] = "ICall"
                                werr, held, runRet, st, bg, ranc, closedc, dl, 
                                iarg, iatt, iold, ost, obg, oran, began, 
                                everReached, lostAtt, rolled, rbm, rbOut, compd, 
-                               rbHalt, rbUnk, boundHit, extras, errs, crashes, 
-                               cancels, deadlines, guards, wrongs, slot, last, 
-                               cerr, rec, called, made, gret, r2, gc, r3, rc >>
+                               rbHalt, rbUnk, boundHit, rfd, bgn, extras, errs, 
+                               crashes, cancels, deadlines, guards, wrongs, 
+                               refusals, slot, last, cerr, rec, called, made, 
+                               gret, r2, gc, r3, rc >>
 
 inv(self) == IWait(self) \/ IEnter(self) \/ IArgs(self) \/ IEnter2(self)
-                \/ IIdem(self) \/ IBegin(self) \/ ICall(self)
+                \/ IIdem(self) \/ IRefuse(self) \/ IBegin(self)
+                \/ IRefuse2(self) \/ ICall(self)
 
 LIdle(self) == /\ pc[self] = "LIdle"
                /\ go[self]
@@ -1196,9 +1290,9 @@ LIdle(self) == /\ pc[self] = "LIdle"
                                dl, ion, iarg, iret, iatt, iold, ost, obg, oran, 
                                fired, firedAt, began, everReached, lostAtt, 
                                rolled, rbm, rbOut, compd, rbHalt, rbUnk, fx, 
-                               boundHit, extras, errs, crashes, cancels, 
-                               deadlines, guards, unks, toolErrs, wrongs, r, 
-                               slot, r2, gc, r3, rc >>
+                               boundHit, rfd, bgn, extras, errs, crashes, 
+                               cancels, deadlines, guards, unks, toolErrs, 
+                               wrongs, refusals, r, slot, r2, gc, r3, rc >>
 
 LStart(self) == /\ pc[self] = "LStart"
                 /\ IF SDone
@@ -1224,10 +1318,11 @@ LStart(self) == /\ pc[self] = "LStart"
                                 runRet, st, bg, ranc, tout, closedc, dl, ion, 
                                 iarg, iret, iatt, iold, ost, obg, oran, fired, 
                                 firedAt, began, everReached, lostAtt, rolled, 
-                                rbm, rbOut, compd, rbHalt, rbUnk, fx, extras, 
-                                errs, crashes, cancels, deadlines, guards, 
-                                unks, toolErrs, wrongs, r, slot, last, cerr, 
-                                rec, called, made, r2, gc, r3, rc >>
+                                rbm, rbOut, compd, rbHalt, rbUnk, fx, rfd, bgn, 
+                                extras, errs, crashes, cancels, deadlines, 
+                                guards, unks, toolErrs, wrongs, refusals, r, 
+                                slot, last, cerr, rec, called, made, r2, gc, 
+                                r3, rc >>
 
 LPre(self) == /\ pc[self] = "LPre"
               /\ IF Side(self) /\ SDone
@@ -1249,10 +1344,10 @@ LPre(self) == /\ pc[self] = "LPre"
                               runRet, ion, iarg, iret, iatt, iold, ost, obg, 
                               oran, fired, firedAt, began, everReached, 
                               lostAtt, rolled, rbm, rbOut, compd, rbHalt, 
-                              rbUnk, fx, boundHit, extras, errs, crashes, 
-                              cancels, deadlines, guards, unks, toolErrs, 
-                              wrongs, r, slot, last, cerr, rec, made, r2, gc, 
-                              r3, rc >>
+                              rbUnk, fx, boundHit, rfd, bgn, extras, errs, 
+                              crashes, cancels, deadlines, guards, unks, 
+                              toolErrs, wrongs, refusals, r, slot, last, cerr, 
+                              rec, made, r2, gc, r3, rc >>
 
 LMw(self) == /\ pc[self] = "LMw"
              /\ \/ /\ "next" \in MW[self] /\ ~made[self] /\ FreeSlots(self) # {}
@@ -1262,6 +1357,8 @@ LMw(self) == /\ pc[self] = "LMw"
                    /\ iret' = [iret EXCEPT ![(FreeSlot(self))] = ""]
                    /\ iatt' = [iatt EXCEPT ![(FreeSlot(self))] = att[self]]
                    /\ iold' = [iold EXCEPT ![(FreeSlot(self))] = FALSE]
+                   /\ rfd' = [rfd EXCEPT ![(FreeSlot(self))] = FALSE]
+                   /\ bgn' = [bgn EXCEPT ![(FreeSlot(self))] = FALSE]
                    /\ made' = [made EXCEPT ![self] = TRUE]
                    /\ pc' = [pc EXCEPT ![self] = "LWait"]
                    /\ UNCHANGED <<fired, firedAt, began, fx, extras, cerr>>
@@ -1272,6 +1369,8 @@ LMw(self) == /\ pc[self] = "LMw"
                    /\ iret' = [iret EXCEPT ![(FreeSlot(self))] = ""]
                    /\ iatt' = [iatt EXCEPT ![(FreeSlot(self))] = att[self]]
                    /\ iold' = [iold EXCEPT ![(FreeSlot(self))] = FALSE]
+                   /\ rfd' = [rfd EXCEPT ![(FreeSlot(self))] = FALSE]
+                   /\ bgn' = [bgn EXCEPT ![(FreeSlot(self))] = FALSE]
                    /\ extras' = extras + 1
                    /\ pc' = [pc EXCEPT ![self] = "LWait"]
                    /\ UNCHANGED <<fired, firedAt, began, fx, cerr, made>>
@@ -1283,6 +1382,8 @@ LMw(self) == /\ pc[self] = "LMw"
                    /\ iret' = [iret EXCEPT ![(FreeSlot(self))] = ""]
                    /\ iatt' = [iatt EXCEPT ![(FreeSlot(self))] = att[self]]
                    /\ iold' = [iold EXCEPT ![(FreeSlot(self))] = FALSE]
+                   /\ rfd' = [rfd EXCEPT ![(FreeSlot(self))] = FALSE]
+                   /\ bgn' = [bgn EXCEPT ![(FreeSlot(self))] = FALSE]
                    /\ extras' = IF made[self] THEN extras + 1 ELSE extras
                    /\ made' = [made EXCEPT ![self] = TRUE]
                    /\ pc' = [pc EXCEPT ![self] = "LWait"]
@@ -1293,6 +1394,8 @@ LMw(self) == /\ pc[self] = "LMw"
                    /\ iret' = [iret EXCEPT ![(FreeSlot(self))] = ""]
                    /\ iatt' = [iatt EXCEPT ![(FreeSlot(self))] = att[self]]
                    /\ iold' = [iold EXCEPT ![(FreeSlot(self))] = FALSE]
+                   /\ rfd' = [rfd EXCEPT ![(FreeSlot(self))] = FALSE]
+                   /\ bgn' = [bgn EXCEPT ![(FreeSlot(self))] = FALSE]
                    /\ extras' = extras + 1
                    /\ made' = [made EXCEPT ![self] = TRUE]
                    /\ pc' = [pc EXCEPT ![self] = "LMwAgain"]
@@ -1300,27 +1403,27 @@ LMw(self) == /\ pc[self] = "LMw"
                 \/ /\ "ret" \in MW[self] /\ last[self] # ""
                    /\ cerr' = [cerr EXCEPT ![self] = last[self]]
                    /\ pc' = [pc EXCEPT ![self] = "LClose"]
-                   /\ UNCHANGED <<ion, iarg, iret, iatt, iold, fired, firedAt, began, fx, extras, slot, made>>
+                   /\ UNCHANGED <<ion, iarg, iret, iatt, iold, fired, firedAt, began, fx, rfd, bgn, extras, slot, made>>
                 \/ /\ "deny" \in MW[self] /\ ~made[self]
                    /\ cerr' = [cerr EXCEPT ![self] = "nc"]
                    /\ pc' = [pc EXCEPT ![self] = "LClose"]
-                   /\ UNCHANGED <<ion, iarg, iret, iatt, iold, fired, firedAt, began, fx, extras, slot, made>>
+                   /\ UNCHANGED <<ion, iarg, iret, iatt, iold, fired, firedAt, began, fx, rfd, bgn, extras, slot, made>>
                 \/ /\ "bare" \in MW[self]
                    /\ cerr' = [cerr EXCEPT ![self] = "err"]
                    /\ pc' = [pc EXCEPT ![self] = "LClose"]
-                   /\ UNCHANGED <<ion, iarg, iret, iatt, iold, fired, firedAt, began, fx, extras, slot, made>>
+                   /\ UNCHANGED <<ion, iarg, iret, iatt, iold, fired, firedAt, began, fx, rfd, bgn, extras, slot, made>>
                 \/ /\ "maperr" \in MW[self] /\ last[self] = "ok"
                    /\ cerr' = [cerr EXCEPT ![self] = "err"]
                    /\ pc' = [pc EXCEPT ![self] = "LClose"]
-                   /\ UNCHANGED <<ion, iarg, iret, iatt, iold, fired, firedAt, began, fx, extras, slot, made>>
+                   /\ UNCHANGED <<ion, iarg, iret, iatt, iold, fired, firedAt, began, fx, rfd, bgn, extras, slot, made>>
                 \/ /\ "ctxerr" \in MW[self] /\ TDone(self)
                    /\ cerr' = [cerr EXCEPT ![self] = "ctxerr"]
                    /\ pc' = [pc EXCEPT ![self] = "LClose"]
-                   /\ UNCHANGED <<ion, iarg, iret, iatt, iold, fired, firedAt, began, fx, extras, slot, made>>
+                   /\ UNCHANGED <<ion, iarg, iret, iatt, iold, fired, firedAt, began, fx, rfd, bgn, extras, slot, made>>
                 \/ /\ "cache" \in MW[self]
                    /\ cerr' = [cerr EXCEPT ![self] = "ok"]
                    /\ pc' = [pc EXCEPT ![self] = "LClose"]
-                   /\ UNCHANGED <<ion, iarg, iret, iatt, iold, fired, firedAt, began, fx, extras, slot, made>>
+                   /\ UNCHANGED <<ion, iarg, iret, iatt, iold, fired, firedAt, began, fx, rfd, bgn, extras, slot, made>>
                 \/ /\ "direct" \in MW[self] /\ Side(self) /\ extras < MaxExtra
                    /\ extras' = extras + 1
                    /\ began' = [began EXCEPT ![self][att[self]] = TRUE]
@@ -1332,15 +1435,15 @@ LMw(self) == /\ pc[self] = "LMw"
                       \/ /\ cerr' = [cerr EXCEPT ![self] = "err"]
                          /\ UNCHANGED <<fired, firedAt, fx>>
                    /\ pc' = [pc EXCEPT ![self] = "LClose"]
-                   /\ UNCHANGED <<ion, iarg, iret, iatt, iold, slot, made>>
+                   /\ UNCHANGED <<ion, iarg, iret, iatt, iold, rfd, bgn, slot, made>>
              /\ UNCHANGED << marker, att, res, argsRec, ibeg, ibs, iear, 
                              complete, pend, cancelled, gcancel, auth, go, 
                              werr, held, runRet, st, bg, ranc, tout, closedc, 
                              dl, ost, obg, oran, everReached, lostAtt, rolled, 
                              rbm, rbOut, compd, rbHalt, rbUnk, boundHit, errs, 
                              crashes, cancels, deadlines, guards, unks, 
-                             toolErrs, wrongs, r, last, rec, called, gret, r2, 
-                             gc, r3, rc >>
+                             toolErrs, wrongs, refusals, r, last, rec, called, 
+                             gret, r2, gc, r3, rc >>
 
 LMwAgain(self) == /\ pc[self] = "LMwAgain"
                   /\ pc' = [pc EXCEPT ![self] = "LMw"]
@@ -1350,10 +1453,11 @@ LMwAgain(self) == /\ pc[self] = "LMwAgain"
                                   closedc, dl, ion, iarg, iret, iatt, iold, 
                                   ost, obg, oran, fired, firedAt, began, 
                                   everReached, lostAtt, rolled, rbm, rbOut, 
-                                  compd, rbHalt, rbUnk, fx, boundHit, extras, 
-                                  errs, crashes, cancels, deadlines, guards, 
-                                  unks, toolErrs, wrongs, r, slot, last, cerr, 
-                                  rec, called, made, gret, r2, gc, r3, rc >>
+                                  compd, rbHalt, rbUnk, fx, boundHit, rfd, bgn, 
+                                  extras, errs, crashes, cancels, deadlines, 
+                                  guards, unks, toolErrs, wrongs, refusals, r, 
+                                  slot, last, cerr, rec, called, made, gret, 
+                                  r2, gc, r3, rc >>
 
 LWait(self) == /\ pc[self] = "LWait"
                /\ ~ion[slot[self]]
@@ -1365,10 +1469,10 @@ LWait(self) == /\ pc[self] = "LWait"
                                dl, ion, iarg, iret, iatt, iold, ost, obg, oran, 
                                fired, firedAt, began, everReached, lostAtt, 
                                rolled, rbm, rbOut, compd, rbHalt, rbUnk, fx, 
-                               boundHit, extras, errs, crashes, cancels, 
-                               deadlines, guards, unks, toolErrs, wrongs, r, 
-                               slot, cerr, rec, called, made, gret, r2, gc, r3, 
-                               rc >>
+                               boundHit, rfd, bgn, extras, errs, crashes, 
+                               cancels, deadlines, guards, unks, toolErrs, 
+                               wrongs, refusals, r, slot, cerr, rec, called, 
+                               made, gret, r2, gc, r3, rc >>
 
 LClose(self) == /\ pc[self] = "LClose"
                 /\ st' = [st EXCEPT ![self] = FinalSt(self)]
@@ -1391,10 +1495,10 @@ LClose(self) == /\ pc[self] = "LClose"
                                 werr, held, runRet, ranc, tout, dl, ion, iarg, 
                                 iret, iatt, iold, ost, obg, oran, fired, 
                                 firedAt, began, everReached, lostAtt, rolled, 
-                                rbm, compd, rbHalt, rbUnk, fx, boundHit, 
-                                extras, errs, crashes, cancels, deadlines, 
-                                guards, unks, toolErrs, wrongs, r, slot, last, 
-                                cerr, made, r2, gc, r3, rc >>
+                                rbm, compd, rbHalt, rbUnk, fx, boundHit, rfd, 
+                                bgn, extras, errs, crashes, cancels, deadlines, 
+                                guards, unks, toolErrs, wrongs, refusals, r, 
+                                slot, last, cerr, made, r2, gc, r3, rc >>
 
 LRec(self) == /\ pc[self] = "LRec"
               /\ IF rec[self] # "none"
@@ -1435,10 +1539,10 @@ LRec(self) == /\ pc[self] = "LRec"
                               runRet, st, bg, ranc, tout, closedc, dl, ion, 
                               iarg, iret, iatt, iold, ost, obg, oran, fired, 
                               firedAt, began, everReached, lostAtt, rolled, 
-                              rbm, compd, rbHalt, rbUnk, fx, boundHit, extras, 
-                              crashes, cancels, deadlines, guards, unks, 
-                              toolErrs, wrongs, r, slot, last, cerr, rec, 
-                              called, made, gc, r3, rc >>
+                              rbm, compd, rbHalt, rbUnk, fx, boundHit, rfd, 
+                              bgn, extras, crashes, cancels, deadlines, guards, 
+                              unks, toolErrs, wrongs, refusals, r, slot, last, 
+                              cerr, rec, called, made, gc, r3, rc >>
 
 LNS(self) == /\ pc[self] = "LNS"
              /\ IF Side(self) /\ ~called[self]
@@ -1466,10 +1570,10 @@ LNS(self) == /\ pc[self] = "LNS"
                              st, bg, ranc, tout, closedc, dl, ion, iarg, iret, 
                              iatt, iold, ost, obg, oran, fired, firedAt, began, 
                              everReached, lostAtt, rolled, rbm, rbOut, compd, 
-                             rbHalt, rbUnk, fx, boundHit, extras, crashes, 
-                             cancels, deadlines, guards, unks, toolErrs, 
-                             wrongs, r, slot, last, cerr, rec, called, made, 
-                             gret, gc, r3, rc >>
+                             rbHalt, rbUnk, fx, boundHit, rfd, bgn, extras, 
+                             crashes, cancels, deadlines, guards, unks, 
+                             toolErrs, wrongs, refusals, r, slot, last, cerr, 
+                             rec, called, made, gret, gc, r3, rc >>
 
 LRet(self) == /\ pc[self] = "LRet"
               /\ IF rbm[self]
@@ -1491,10 +1595,10 @@ LRet(self) == /\ pc[self] = "LRet"
                               ranc, tout, closedc, dl, ion, iarg, iret, iatt, 
                               iold, ost, obg, oran, fired, firedAt, began, 
                               everReached, lostAtt, rolled, rbm, rbOut, compd, 
-                              rbHalt, rbUnk, fx, boundHit, extras, errs, 
-                              crashes, cancels, deadlines, guards, unks, 
-                              toolErrs, wrongs, r, slot, last, cerr, rec, 
-                              called, made, gret, r2, gc, r3, rc >>
+                              rbHalt, rbUnk, fx, boundHit, rfd, bgn, extras, 
+                              errs, crashes, cancels, deadlines, guards, unks, 
+                              toolErrs, wrongs, refusals, r, slot, last, cerr, 
+                              rec, called, made, gret, r2, gc, r3, rc >>
 
 loop(self) == LIdle(self) \/ LStart(self) \/ LPre(self) \/ LMw(self)
                  \/ LMwAgain(self) \/ LWait(self) \/ LClose(self)
@@ -1539,9 +1643,10 @@ DOpen == /\ pc[0] = "DOpen"
                          bg, ranc, tout, closedc, dl, ion, iarg, iret, iatt, 
                          iold, ost, obg, oran, fired, firedAt, began, 
                          everReached, lostAtt, rolled, rbm, rbOut, compd, 
-                         rbHalt, rbUnk, fx, boundHit, extras, errs, crashes, 
-                         cancels, deadlines, guards, unks, toolErrs, wrongs, r, 
-                         slot, last, cerr, rec, called, made, gret, r2, r3, rc >>
+                         rbHalt, rbUnk, fx, boundHit, rfd, bgn, extras, errs, 
+                         crashes, cancels, deadlines, guards, unks, toolErrs, 
+                         wrongs, refusals, r, slot, last, cerr, rec, called, 
+                         made, gret, r2, r3, rc >>
 
 DWait == /\ pc[0] = "DWait"
          /\ \A c \in Calls : ~go[c]
@@ -1558,10 +1663,10 @@ DWait == /\ pc[0] = "DWait"
                          pend, cancelled, gcancel, auth, go, werr, held, st, 
                          bg, ranc, tout, closedc, dl, ion, iarg, iret, iatt, 
                          fired, firedAt, began, everReached, lostAtt, rolled, 
-                         rbm, rbOut, compd, rbHalt, rbUnk, fx, boundHit, 
-                         extras, errs, crashes, cancels, deadlines, guards, 
-                         unks, toolErrs, wrongs, r, slot, last, cerr, rec, 
-                         called, made, gret, r2, gc, r3, rc >>
+                         rbm, rbOut, compd, rbHalt, rbUnk, fx, boundHit, rfd, 
+                         bgn, extras, errs, crashes, cancels, deadlines, 
+                         guards, unks, toolErrs, wrongs, refusals, r, slot, 
+                         last, cerr, rec, called, made, gret, r2, gc, r3, rc >>
 
 DGate == /\ pc[0] = "DGate"
          /\ IF pend[gc] = att[gc]
@@ -1589,9 +1694,10 @@ DGate == /\ pc[0] = "DGate"
                          bg, ranc, tout, closedc, dl, ion, iarg, iret, iatt, 
                          iold, ost, obg, oran, fired, firedAt, began, 
                          everReached, lostAtt, rolled, rbm, rbOut, compd, 
-                         rbHalt, rbUnk, fx, boundHit, extras, crashes, cancels, 
-                         deadlines, guards, unks, toolErrs, wrongs, r, slot, 
-                         last, cerr, rec, called, made, gret, r2, gc, rc >>
+                         rbHalt, rbUnk, fx, boundHit, rfd, bgn, extras, 
+                         crashes, cancels, deadlines, guards, unks, toolErrs, 
+                         wrongs, refusals, r, slot, last, cerr, rec, called, 
+                         made, gret, r2, gc, rc >>
 
 DRollback == /\ pc[0] = "DRollback"
              /\ cancelled' = FALSE
@@ -1604,10 +1710,10 @@ DRollback == /\ pc[0] = "DRollback"
                              bg, ranc, tout, closedc, dl, ion, iarg, iret, 
                              iatt, iold, ost, obg, oran, fired, firedAt, began, 
                              everReached, lostAtt, rolled, rbm, rbOut, compd, 
-                             rbHalt, fx, boundHit, extras, errs, crashes, 
-                             cancels, deadlines, guards, unks, toolErrs, 
-                             wrongs, r, slot, last, cerr, rec, called, made, 
-                             gret, r2, gc, r3 >>
+                             rbHalt, fx, boundHit, rfd, bgn, extras, errs, 
+                             crashes, cancels, deadlines, guards, unks, 
+                             toolErrs, wrongs, refusals, r, slot, last, cerr, 
+                             rec, called, made, gret, r2, gc, r3 >>
 
 DRbStep == /\ pc[0] = "DRbStep"
            /\ IF rc = 0
@@ -1652,9 +1758,10 @@ DRbStep == /\ pc[0] = "DRbStep"
                            held, runRet, st, bg, ranc, tout, closedc, dl, ion, 
                            iarg, iret, iatt, iold, ost, obg, oran, fired, 
                            firedAt, began, everReached, lostAtt, compd, fx, 
-                           boundHit, extras, errs, crashes, cancels, deadlines, 
-                           guards, unks, toolErrs, wrongs, r, slot, last, cerr, 
-                           rec, called, made, gret, r2, gc, r3 >>
+                           boundHit, rfd, bgn, extras, errs, crashes, cancels, 
+                           deadlines, guards, unks, toolErrs, wrongs, refusals, 
+                           r, slot, last, cerr, rec, called, made, gret, r2, 
+                           gc, r3 >>
 
 DRbWait == /\ pc[0] = "DRbWait"
            /\ ~go[rc]
@@ -1671,10 +1778,10 @@ DRbWait == /\ pc[0] = "DRbWait"
                            held, runRet, st, bg, ranc, tout, closedc, dl, ion, 
                            iarg, iret, iatt, iold, ost, obg, oran, fired, 
                            firedAt, began, everReached, lostAtt, rolled, rbOut, 
-                           compd, rbHalt, fx, boundHit, extras, errs, crashes, 
-                           cancels, deadlines, guards, unks, toolErrs, wrongs, 
-                           r, slot, last, cerr, rec, called, made, gret, r2, 
-                           gc, r3, rc >>
+                           compd, rbHalt, fx, boundHit, rfd, bgn, extras, errs, 
+                           crashes, cancels, deadlines, guards, unks, toolErrs, 
+                           wrongs, refusals, r, slot, last, cerr, rec, called, 
+                           made, gret, r2, gc, r3, rc >>
 
 DRbComp == /\ pc[0] = "DRbComp"
            /\ IF ~compd[rc]
@@ -1701,10 +1808,10 @@ DRbComp == /\ pc[0] = "DRbComp"
                            held, runRet, st, bg, ranc, tout, closedc, dl, ion, 
                            iarg, iret, iatt, iold, ost, obg, oran, fired, 
                            firedAt, began, everReached, lostAtt, rolled, rbm, 
-                           rbOut, rbHalt, rbUnk, boundHit, extras, crashes, 
-                           cancels, deadlines, guards, unks, toolErrs, wrongs, 
-                           r, slot, last, cerr, rec, called, made, gret, r2, 
-                           gc, rc >>
+                           rbOut, rbHalt, rbUnk, boundHit, rfd, bgn, extras, 
+                           crashes, cancels, deadlines, guards, unks, toolErrs, 
+                           wrongs, refusals, r, slot, last, cerr, rec, called, 
+                           made, gret, r2, gc, rc >>
 
 DRbNext == /\ pc[0] = "DRbNext"
            /\ rc' = rc - 1
@@ -1714,10 +1821,10 @@ DRbNext == /\ pc[0] = "DRbNext"
                            held, runRet, st, bg, ranc, tout, closedc, dl, ion, 
                            iarg, iret, iatt, iold, ost, obg, oran, fired, 
                            firedAt, began, everReached, lostAtt, rolled, rbm, 
-                           rbOut, compd, rbHalt, rbUnk, fx, boundHit, extras, 
-                           errs, crashes, cancels, deadlines, guards, unks, 
-                           toolErrs, wrongs, r, slot, last, cerr, rec, called, 
-                           made, gret, r2, gc, r3 >>
+                           rbOut, compd, rbHalt, rbUnk, fx, boundHit, rfd, bgn, 
+                           extras, errs, crashes, cancels, deadlines, guards, 
+                           unks, toolErrs, wrongs, refusals, r, slot, last, 
+                           cerr, rec, called, made, gret, r2, gc, r3 >>
 
 driver == DOpen \/ DWait \/ DGate \/ DRollback \/ DRbStep \/ DRbWait
              \/ DRbComp \/ DRbNext
@@ -1758,7 +1865,7 @@ Crash ==
                  runRet, st, bg, ranc, tout, closedc, dl, iarg, iret, iatt, ost, obg, oran,
                  fired, firedAt, began, everReached, rolled, boundHit, extras, errs, cancels,
                  deadlines, guards, unks, toolErrs, wrongs, r, slot, last, cerr, rec, called,
-                 made, gret, r2, gc, r3, rbOut, compd, rbHalt, fx, rc, ibeg, rbUnk, ibs, iear>>
+                 made, gret, r2, gc, r3, rbOut, compd, rbHalt, fx, rc, ibeg, rbUnk, ibs, iear, refusals, rfd, bgn>>
 
 \* The run is cancelled while its calls run.
 Cancel ==
@@ -1768,7 +1875,7 @@ Cancel ==
                  st, bg, ranc, tout, closedc, dl, ion, iarg, iret, iatt, iold, ost, obg, oran,
                  fired, firedAt, began, everReached, lostAtt, rolled, boundHit, extras, errs,
                  crashes, deadlines, guards, unks, toolErrs, wrongs, pc, r, slot, last, cerr,
-                 rec, called, made, gret, r2, gc, r3, rbm, rbOut, compd, rbHalt, fx, rc, ibeg, rbUnk, ibs, iear>>
+                 rec, called, made, gret, r2, gc, r3, rbm, rbOut, compd, rbHalt, fx, rc, ibeg, rbUnk, ibs, iear, refusals, rfd, bgn>>
 
 \* A call's ToolSpec.Timeout expires while its chain runs.
 Deadline(c) ==
@@ -1778,7 +1885,7 @@ Deadline(c) ==
                  held, runRet, st, bg, ranc, tout, closedc, ion, iarg, iret, iatt, iold, ost,
                  obg, oran, fired, firedAt, began, everReached, lostAtt, rolled, boundHit, extras,
                  errs, crashes, cancels, guards, unks, toolErrs, wrongs, pc, r, slot, last, cerr,
-                 rec, called, made, gret, r2, gc, r3, rbm, rbOut, compd, rbHalt, fx, rc, ibeg, rbUnk, ibs, iear>>
+                 rec, called, made, gret, r2, gc, r3, rbm, rbOut, compd, rbHalt, fx, rc, ibeg, rbUnk, ibs, iear, refusals, rfd, bgn>>
 
 \* The delegation is resumed under other authority (an Unrecorded refusal), and an operator binds
 \* the right one again (fair: a re-drive with the correct authority comes).
@@ -1789,14 +1896,14 @@ WrongAuth ==
                  runRet, st, bg, ranc, tout, closedc, dl, ion, iarg, iret, iatt, iold, ost, obg,
                  oran, fired, firedAt, began, everReached, lostAtt, rolled, boundHit, extras, errs,
                  crashes, cancels, deadlines, guards, unks, toolErrs, pc, r, slot, last, cerr, rec,
-                 called, made, gret, r2, gc, r3, rbm, rbOut, compd, rbHalt, fx, rc, ibeg, rbUnk, ibs, iear>>
+                 called, made, gret, r2, gc, r3, rbm, rbOut, compd, rbHalt, fx, rc, ibeg, rbUnk, ibs, iear, refusals, rfd, bgn>>
 FixAuth ==
   /\ auth = "wrong" /\ auth' = "right"
   /\ UNCHANGED <<marker, att, res, argsRec, complete, pend, cancelled, gcancel, go, werr, held,
                  runRet, st, bg, ranc, tout, closedc, dl, ion, iarg, iret, iatt, iold, ost, obg,
                  oran, fired, firedAt, began, everReached, lostAtt, rolled, boundHit, extras, errs,
                  crashes, cancels, deadlines, guards, unks, toolErrs, wrongs, pc, r, slot, last,
-                 cerr, rec, called, made, gret, r2, gc, r3, rbm, rbOut, compd, rbHalt, fx, rc, ibeg, rbUnk, ibs, iear>>
+                 cerr, rec, called, made, gret, r2, gc, r3, rbm, rbOut, compd, rbHalt, fx, rc, ibeg, rbUnk, ibs, iear, refusals, rfd, bgn>>
 
 FullNext == Next \/ Crash \/ Cancel \/ (\E c \in Calls : Deadline(c)) \/ WrongAuth \/ FixAuth
 \* Every goroutine's step is weakly fair (a drive that can re-drive does); faults have budgets and
@@ -1861,4 +1968,9 @@ UnrecordedContinues == <>complete
 
 \* Vacuity, expected violated in every passing configuration.
 EffectNotReachable == \A c \in Calls : fired[c] = 0
+
+\* A refusal before beginCall (the amount caps, a taint policy's Refuse) leaves the tool never begun by the
+\* refused invocation, so the at-most-once rules (NoDoubleFire) are unchanged by it.
+RefusedNeverBegan == \A i \in Invs : rfd[i] => ~bgn[i]
+RefusedNotReachable == \A i \in Invs : ~rfd[i]
 =============================================================================
