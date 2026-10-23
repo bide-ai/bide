@@ -4,6 +4,7 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/fips140"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -16,6 +17,18 @@ import (
 
 // caWith builds a self-signed CA from key with the given signature algorithm and returns a P-256
 // leaf signed by it, so the tests below can exercise the CA algorithm allowlist of the design.
+// createCertUnenforced and createCRLUnenforced make material the product must refuse (SHA-1
+// signatures) with GODEBUG=fips140=only enforcement off; the code under test runs with it on.
+func createCertUnenforced(tpl, parent *x509.Certificate, pub, priv any) (der []byte, err error) {
+	fips140.WithoutEnforcement(func() { der, err = x509.CreateCertificate(rand.Reader, tpl, parent, pub, priv) })
+	return der, err
+}
+
+func createCRLUnenforced(tpl *x509.RevocationList, issuer *x509.Certificate, priv crypto.Signer) (der []byte, err error) {
+	fips140.WithoutEnforcement(func() { der, err = x509.CreateRevocationList(rand.Reader, tpl, issuer, priv) })
+	return der, err
+}
+
 func caWith(t *testing.T, key crypto.Signer, alg x509.SignatureAlgorithm) (*x509.Certificate, *x509.Certificate) {
 	t.Helper()
 	tpl := &x509.Certificate{
@@ -24,7 +37,7 @@ func caWith(t *testing.T, key crypto.Signer, alg x509.SignatureAlgorithm) (*x509
 		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
 		SignatureAlgorithm: alg,
 	}
-	der, err := x509.CreateCertificate(rand.Reader, tpl, tpl, key.Public(), key)
+	der, err := createCertUnenforced(tpl, tpl, key.Public(), key)
 	if err != nil {
 		t.Fatalf("create CA with %v: %v", alg, err)
 	}
@@ -38,7 +51,7 @@ func caWith(t *testing.T, key crypto.Signer, alg x509.SignatureAlgorithm) (*x509
 		KeyUsage: x509.KeyUsageDigitalSignature, UnknownExtKeyUsage: nil,
 		SignatureAlgorithm: alg,
 	}
-	ld, err := x509.CreateCertificate(rand.Reader, ltpl, root, leafKey(t), key)
+	ld, err := createCertUnenforced(ltpl, root, leafKey(t), key)
 	if err != nil {
 		t.Fatalf("create leaf with %v: %v", alg, err)
 	}
@@ -170,7 +183,7 @@ func TestSHA1CRLSignatureHandling(t *testing.T) {
 		Number: big.NewInt(1), ThisUpdate: t0, NextUpdate: t0.Add(time.Hour),
 		SignatureAlgorithm: x509.ECDSAWithSHA1,
 	}
-	der, err := x509.CreateRevocationList(rand.Reader, tpl, root, k)
+	der, err := createCRLUnenforced(tpl, root, k)
 	if err != nil {
 		t.Logf("Go refuses to create a SHA-1 CRL: %v", err)
 		return
@@ -180,7 +193,12 @@ func TestSHA1CRLSignatureHandling(t *testing.T) {
 		t.Logf("Go refuses to parse a SHA-1 CRL: %v", err)
 		return
 	}
-	if err := rl.CheckSignatureFrom(root); err != nil {
+	// This tests Go's own x509 behaviour with SHA-1, which crypto/sha1 refuses under
+	// GODEBUG=fips140=only, so the call runs with enforcement off (bide's check does not call it
+	// for a SHA-1 CRL: TestAddCRLRefusals in audit covers that with enforcement on).
+	var cerr error
+	fips140.WithoutEnforcement(func() { cerr = rl.CheckSignatureFrom(root) })
+	if err := cerr; err != nil {
 		t.Fatalf("Go now refuses SHA-1 CRL signatures (%v): update the design note, bide's own check stays", err)
 	}
 	if rl.SignatureAlgorithm != x509.ECDSAWithSHA1 {

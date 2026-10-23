@@ -11,6 +11,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/fips140"
 	"crypto/mldsa"
 	"crypto/rand"
 	"crypto/rsa"
@@ -128,7 +129,12 @@ func serial(tb testing.TB) *big.Int {
 }
 
 func tryCreate(tpl, parent *x509.Certificate, pub crypto.PublicKey, signer crypto.Signer) ([]byte, *x509.Certificate, error) {
-	der, err := x509.CreateCertificate(rand.Reader, tpl, parent, pub, signer)
+	// Tests build certificates the product must refuse (a SHA-1 signature): that material is made
+	// with enforcement off, so GODEBUG=fips140=only does not panic in the fixture. The code under
+	// test runs with it on.
+	var der []byte
+	var err error
+	fips140.WithoutEnforcement(func() { der, err = x509.CreateCertificate(rand.Reader, tpl, parent, pub, signer) })
 	if err != nil {
 		return nil, nil, fmt.Errorf("testca: create certificate %q: %w", tpl.Subject.CommonName, err)
 	}
@@ -276,7 +282,9 @@ func (c *CA) TryCRL(o CRLOpts) ([]byte, error) {
 		Number: big.NewInt(o.Number), ThisUpdate: o.ThisUpdate, NextUpdate: o.NextUpdate,
 		RevokedCertificateEntries: o.Entries, ExtraExtensions: o.Extra, SignatureAlgorithm: o.SigAlg,
 	}
-	der, err := x509.CreateRevocationList(rand.Reader, tpl, c.Cert, c.Key)
+	var der []byte
+	var err error
+	fips140.WithoutEnforcement(func() { der, err = x509.CreateRevocationList(rand.Reader, tpl, c.Cert, c.Key) })
 	if err != nil {
 		return nil, fmt.Errorf("testca: create CRL: %w", err)
 	}

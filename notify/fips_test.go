@@ -35,7 +35,7 @@ func TestShortSecretUnderFIPSEnforcement(t *testing.T) {
 			if !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "14 bytes") {
 				t.Errorf("%s: NewWebhook error = %v, want an ErrConfig naming the 14 byte minimum", tc.name, err)
 			}
-			if strings.Contains(err.Error(), shortSecret) {
+			if err != nil && strings.Contains(err.Error(), shortSecret) {
 				t.Errorf("%s: the error holds the secret: %v", tc.name, err)
 			}
 		} else if err != nil {

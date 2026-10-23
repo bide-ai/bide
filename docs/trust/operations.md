@@ -31,7 +31,7 @@ Recommendations:
 5. **Rotate on a schedule and on suspicion, and never delete old public keys.** Evidence signed under a retired key still needs that public key to verify. Keep a dated key register: key id (fingerprint), algorithm, first and last use, who held it, why it was retired.
 6. **Approver keys: one per person**, issued by your identity provider's process, and for approvers of consequential calls in an HSM or KMS (`bide-hsm approve`) rather than a key file. Keep the PIN off the approver's disk where you can (an environment variable from the approver's secret store, not a file in a repository or a synced folder). bide refuses two approvers on one key but cannot see one person holding two ([hitl-approval](../guides/hitl-approval.md#scope)).
 7. **Webhook secrets** rotate without downtime with `WithSecrets(current, previous)` ([notifications](../guides/notifications.md#rotating-the-secret)). Prefer mutual TLS and a pin where the receiver supports them.
-8. **Post-quantum.** Anchors are long-lived. If your retention is many years, consider the hybrid scheme; ML-DSA cannot be used under the FIPS 140-3 module ([security model](../guides/security-model.md#post-quantum-and-hybrid-signatures)).
+8. **Post-quantum.** Anchors are long-lived. If your retention is many years, consider the hybrid scheme; ML-DSA cannot be used under Go's FIPS 140-3 module v1.0.0 (it can under v1.26.0 and later) ([security model](../guides/security-model.md#post-quantum-and-hybrid-signatures)).
 
 ## Retention and archiving
 
