@@ -63,7 +63,7 @@ func withTaintPolicy(p taintPolicy) Option {
 }
 
 // taintDeclarations is what the declarations digest commits to: the policy and every registered tool's
-// provenance and exemption, so a change to any of them is a different digest in the runs that follow.
+// provenance, exemption and cap rules, so a change to any of them is a different digest in the runs that follow.
 type taintDeclarations struct {
 	Format            string                   `json:"format"`
 	Gate              *ApprovalPolicy          `json:"gate,omitempty"`
@@ -73,8 +73,9 @@ type taintDeclarations struct {
 }
 
 type toolTaintDecl struct {
-	Untrusted string `json:"untrusted,omitempty"`
-	Exempt    string `json:"exempt,omitempty"`
+	Untrusted string   `json:"untrusted,omitempty"`
+	Exempt    string   `json:"exempt,omitempty"`
+	Caps      []string `json:"caps,omitempty"`
 }
 
 const taintDeclarationsFormat = "bide.taint-declarations.v1"
@@ -89,11 +90,11 @@ func (a *Agent) taintDigest() string {
 	d := taintDeclarations{Format: taintDeclarationsFormat, Gate: a.taint.Gate, Refuse: a.taint.Refuse, RequireProvenance: a.taint.RequireProvenance}
 	for _, name := range slices.Sorted(maps.Keys(a.specs)) {
 		s := a.specs[name]
-		if src := s.untrustedSource(); src != "" || s.TaintExempt != "" {
+		if src := s.untrustedSource(); src != "" || s.TaintExempt != "" || len(s.Caps) > 0 {
 			if d.Tools == nil {
 				d.Tools = map[string]toolTaintDecl{}
 			}
-			d.Tools[name] = toolTaintDecl{Untrusted: src, Exempt: s.TaintExempt}
+			d.Tools[name] = toolTaintDecl{Untrusted: src, Exempt: s.TaintExempt, Caps: s.Caps}
 		}
 	}
 	b, err := json.Marshal(d)

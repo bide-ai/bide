@@ -34,6 +34,15 @@ func startOf(t *testing.T, j *Journal, run string) RunStart {
 	return s
 }
 
+// refundTool is a money tool named "refund" carrying the cap rule line.
+func refundTool(line string) Tool {
+	type in struct {
+		Amount   int64  `json:"amount"`
+		Currency string `json:"currency"`
+	}
+	return MustFunc("refund", "refund", func(context.Context, in) (string, error) { return "ok", nil }, WithCaps(line))
+}
+
 func TestTaintPolicy_Validation(t *testing.T) {
 	mk := func(p taintPolicy, extra ...Option) error {
 		_, err := New(NewScriptedModel(TextTurn("x")), memJournal(), append([]Option{withTaintPolicy(p)}, extra...)...)
@@ -92,6 +101,13 @@ func TestTaintDigest_StableAndSensitive(t *testing.T) {
 		if a.taintDigest() == base.taintDigest() {
 			t.Errorf("%s: the digest did not change", name)
 		}
+	}
+	// two different cap rules are two digests (not only "a cap rule or none")
+	capped := func(limit string) string {
+		return build(gatePolicy(), refundTool(strings.Replace(refuseUSD, "> 5 USD", "> "+limit+" USD", 1))).taintDigest()
+	}
+	if capped("500") == capped("501") {
+		t.Error("two cap rules with different limits share a digest")
 	}
 	if d := mustNew(NewScriptedModel(TextTurn("x")), memJournal()).taintDigest(); d != "" {
 		t.Errorf("an agent with no policy has digest %q", d)
