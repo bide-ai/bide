@@ -13,8 +13,16 @@ const Suffix = "#taint"
 // ID is the subject of the escalation gate instance of the call.
 func ID(call string) string { return call + Suffix }
 
-// Base is the call a gate subject belongs to, and whether the subject is an escalation instance.
-func Base(subject string) (string, bool) { return strings.CutSuffix(subject, Suffix) }
+// Base is the call a gate subject belongs to, and whether the subject is an escalation instance. Only the
+// subject of a tool call is one: a plan flow node's key ("node:..." in agent.planNodePrefix) may carry
+// any characters, '#' included (the plan builder does not refuse it), so a node named foo#taint is a
+// node, not the escalation instance of a node foo. Flows have no taint rule yet.
+func Base(subject string) (string, bool) {
+	if strings.HasPrefix(subject, "node:") {
+		return "", false
+	}
+	return strings.CutSuffix(subject, Suffix)
+}
 
 // IsSubject reports whether subject is an escalation instance, not a call.
 func IsSubject(subject string) bool {

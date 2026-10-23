@@ -286,6 +286,11 @@ func TestFindToolCall_ResolvesTheEscalationSubject(t *testing.T) {
 	if _, _, ok := FindToolCall(recs, "c2#taint"); ok {
 		t.Error("an escalation subject of an unknown call resolved")
 	}
+	// A plan node named foo#taint is a node: its subject is not mapped to a node foo.
+	nodeRecs := []Record{{Kind: StepValue, Name: "node:foo", Result: []byte(`1`)}}
+	if _, _, ok := FindToolCall(nodeRecs, "node:foo#taint"); ok {
+		t.Error("a plan node named foo#taint resolved as the escalation instance of a node foo")
+	}
 	if _, call, ok := FindToolCall(recs, "c1"); !ok || call.ID != "c1" {
 		t.Errorf("the call itself = %+v %v", call, ok)
 	}
@@ -493,5 +498,67 @@ func TestTaintGate_TheJournalIsReadOncePerTurn(t *testing.T) {
 	one, three := loads(1), loads(3)
 	if three > one {
 		t.Fatalf("a turn of three tainted writes loaded the journal %d times, a turn of one %d: the fold must be shared by the turn's calls", three, one)
+	}
+}
+
+// A recorded denial of the escalation instance is final even after the policy is gone: a redeploy with no
+// taint policy does not run the call that the escalation gate denied.
+func TestTaintGate_ADenialOfTheInstanceSurvivesARedeployWithNoPolicy(t *testing.T) {
+	ctx := context.Background()
+	t.Run("a one-decision gate", func(t *testing.T) {
+		e := newTG(t)
+		pendingOn(t, e.drive(true, readThenWrite()...), "c2#taint")
+		if err := Approve(ctx, e.j, "r", "c2#taint", false); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.drive(false, textTurn("done")); err != nil { // redeployed: no policy
+			t.Fatalf("re-drive with no policy: %v", err)
+		}
+		r, _, _ := e.j.Get(ctx, "r", ToolResultStep("c2"))
+		if !r.IsError || !strings.Contains(string(r.Result), "denied") || e.writes.n.Load() != 0 {
+			t.Fatalf("result %s (error %v), writes %d; want the denial to stand", r.Result, r.IsError, e.writes.n.Load())
+		}
+	})
+	t.Run("an m-of-n gate whose terminal tally denied", func(t *testing.T) {
+		e := newTG(t)
+		pol := &ApprovalPolicy{Need: 1, Approvers: []string{"ops"}}
+		e.policy = taintPolicy{Gate: pol}
+		e.opts = []Option{WithApproverVerifiers(fakeVerifiers("ops"))}
+		pendingOn(t, e.drive(true, readThenWrite()...), "c2#taint")
+		// The gate's terminal tally of the instance, denied, as a counting drive would have recorded it.
+		tally := ApprovalTally{Need: 1, Approvers: []string{"ops"}, Denied: 1, DeniedBy: []string{"ops"}}
+		writeRaw(t, e.j, "r", ApprovalTallyStep("c2#taint"), valueRec(t, ApprovalTallyStep("c2#taint"), tally))
+		e.opts = nil
+		if err := e.drive(false, textTurn("done")); err != nil {
+			t.Fatalf("re-drive with no policy: %v", err)
+		}
+		r, _, _ := e.j.Get(ctx, "r", ToolResultStep("c2"))
+		if !r.IsError || e.writes.n.Load() != 0 {
+			t.Fatalf("result %s (error %v), writes %d; want the denial to stand", r.Result, r.IsError, e.writes.n.Load())
+		}
+	})
+}
+
+// A denial of the tool's own gate ends the call: the escalation instance is never asked, so it has no
+// pause note and no reason record.
+func TestTaintGate_AnOwnGateDenialEndsTheCallBeforeTheInstanceIsAsked(t *testing.T) {
+	ctx := context.Background()
+	e := newTG(t)
+	e.writeOp = []ToolOption{WithApproval(SingleApproval())}
+	pendingOn(t, e.drive(true, readThenWrite()...), "c2")
+	if err := Approve(ctx, e.j, "r", "c2", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.drive(true, textTurn("done")); err != nil {
+		t.Fatalf("after the own-gate denial: %v", err)
+	}
+	if e.writes.n.Load() != 0 {
+		t.Fatal("the write ran")
+	}
+	if _, ok := hasStep(t, e.j, "r", ApprovalPendingStep("c2#taint")); ok {
+		t.Error("the escalation instance was asked after the own gate denied the call")
+	}
+	if _, ok := e.reasonOf("c2"); ok {
+		t.Error("a gate-reason was written for a call the own gate denied")
 	}
 }
