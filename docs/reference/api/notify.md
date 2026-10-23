@@ -19,7 +19,7 @@ Package notify ships bide's webhook notifier: a signed HTTPS POST of a structure
 
 **Variables**
 
-- `var ErrNoSignature`, `var ErrBadTimestamp`, `var ErrStale`, `var ErrBadSignature`, `var ErrNoSecrets`, `var ErrBodyTooLarge`, `var ErrDeliveryID`: Verification errors.
+- `var ErrNoSignature`, `var ErrBadTimestamp`, `var ErrStale`, `var ErrBadSignature`, `var ErrNoSecrets`, `var ErrShortSecret`, `var ErrBodyTooLarge`, `var ErrDeliveryID`: Verification errors.
 - `var ErrorText`: ErrorText allows the typed error's text ("error") in the payload.
 
 **Functions**
