@@ -26,6 +26,7 @@ examples/stripe-refund
 flowedit
 govern
 govern/postgreslog
+govern/redislog
 integration/bideaudit
 internal/auditcli
 internal/browsertest

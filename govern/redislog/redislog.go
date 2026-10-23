@@ -78,6 +78,9 @@ func (l *Log) checkNames(entity string) error {
 // the digest (SCRIPT LOAD) on first use; a NOSCRIPT reply (a restart, a failover, a node that never
 // loaded it) is answered by running the script with EVAL, and so is a Redis that refuses SCRIPT, so
 // an append works either way. The script is idempotent per append id, so running it twice is safe.
+// Two costs follow from go-redis: its script lock is held across the SCRIPT LOAD round trip, so a
+// stalled Redis blocks concurrent appends on that lock past their own context deadlines, and a Redis
+// that refuses SCRIPT costs one failed SCRIPT LOAD per append before the EVAL fallback.
 var appendScript = redis.NewScriptServerSHA(appendScriptSource)
 
 const appendScriptSource = `
