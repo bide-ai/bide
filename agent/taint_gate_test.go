@@ -287,7 +287,11 @@ func TestFindToolCall_ResolvesTheEscalationSubject(t *testing.T) {
 		t.Error("an escalation subject of an unknown call resolved")
 	}
 	// A plan node named foo#taint is a node: its subject is not mapped to a node foo.
-	nodeRecs := []Record{{Kind: StepValue, Name: "node:foo", Result: []byte(`1`)}}
+	req := valueRec(t, ApprovalRequestStep("node:foo"), ApprovalRequest{ToolUseID: "node:foo", ToolName: "foo", Args: []byte(`{}`)})
+	nodeRecs := []Record{req}
+	if _, _, ok := FindToolCall(nodeRecs, "node:foo"); !ok {
+		t.Fatal("the node itself does not resolve")
+	}
 	if _, _, ok := FindToolCall(nodeRecs, "node:foo#taint"); ok {
 		t.Error("a plan node named foo#taint resolved as the escalation instance of a node foo")
 	}
