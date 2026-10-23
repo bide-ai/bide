@@ -795,19 +795,39 @@ acknowledged. A chain is at most four steps and is not repeated.
 ## Untrusted-content marks
 
 The provenance declarations (`agent.Untrusted`, `agent.WithUntrustedInput`, `agent.WithTrustedInput`,
-`agent.RetrievalUntrusted`, `agent.TaintExempt`) record what a run read; they do not gate a call. They are the
+`agent.RetrievalUntrusted`, `agent.TaintExempt`) record what a run read. They are the
 first part of the [design](design/untrusted-content-and-amount-caps.md) of untrusted-content tainting and amount
-caps, and a taint policy that acts on marks is not built yet ([guide](guides/untrusted-content.md)). Until it is:
+caps; `agent.WithTaintPolicy` ([guide](guides/untrusted-content.md)) acts on them. A taint policy bounds
+consequences and does not prevent prompt injection. Its limits:
 
-- **A mark is evidence, not a control.** A run that read an untrusted tool's result still calls any tool its
-  gates allow. Nothing in bide judges whether a text is an attack, and it will not.
+- **A mark is evidence, not a control, without a policy.** A run that read an untrusted tool's result still calls
+  any tool its gates allow. With a policy, the side-effecting calls of a later turn need the escalation gate.
+  Nothing in bide judges whether a text is an attack, and it will not.
+- **Anything a human approves.** An approver who reads a convincing injected justification and approves is a
+  successful attack. The policy does not clear taint on approval; each call is asked again.
+- **`ReadOnly` tools are not gated.** A "read-only" fetch whose URL carries stolen data is an exfiltration
+  channel; a wrongly declared `ReadOnly` is out of scope, as before.
+- **Output the user reads, and laundering.** The final answer of a tainted run is not gated, and a tainted run
+  that writes to a memory or index the next run trusts launders the content.
+- **Text the host injects outside the journal** (a system prompt, a model middleware) is invisible to the marks;
+  an input is trusted unless the entry point passes `WithUntrustedInput`.
+- **Children and sessions do not inherit taint yet.** A sub-agent run or a session turn is not gated for what its
+  parent read.
+- **A run is gated by the policy it started under.** A run that started with no policy is never gated for its
+  marks; a no-policy process refuses the side effects of a policy-started run, and a changed policy digest holds
+  a call asked under the old one. Roll the whole fleet before enabling a policy; an older binary ignores the
+  policy and runs a tainted run's calls ungated.
+- **Approval volume.** A deployment whose agents read outside text and write will be asked more. `TaintExempt` is
+  the relief valve and is visible in the declarations digest.
+- **`RequireProvenance` and the `bide init` scaffold are not built yet.** Today an input is trusted unless the
+  host says otherwise.
 - **A mark is only as good as the declaration.** A tool that returns outside text and declares nothing leaves no
   mark. A decorator that embeds the inner `Tool`, or
   implements `Unwrap`, and does not carry the declaration (`Untrusted`, a source in `Safety`) is refused at
   registration, as one that weakens a gate, a timeout or a cap is. A wrapper that neither embeds the inner tool
   nor implements `Unwrap` is not seen: carrying the declaration through it is the wrapper author's duty.
 - **`ResolveHalt` records no mark.** It has the journal, not the registered tools, so the result it injects
-  carries no `Safety` and so no mark. A taint policy will derive it from the tool's declaration by name.
+  carries no `Safety` and so no mark. A taint policy does not yet derive it from the tool's declaration by name.
 - **Plan flow nodes are not covered.** A tool that declares `Untrusted` or `TaintExempt` is refused with
   `ErrConfig` as a plan node (`plan.Registry.RegisterTool`, `Builder.Tool`), because a flow has no taint rule yet.
 - **The experimental label.** The declarations and the new `Safety.Untrusted`, `ToolSpec.Untrusted`,

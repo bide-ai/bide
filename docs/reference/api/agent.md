@@ -2231,6 +2231,7 @@ Option configures an Agent: New applies options to a new agent, and With to a co
 - `func WithRetrieval(r Retriever, k int, opts ...RetrievalOption) Option`: WithRetrieval adds classic retrieval-augmented generation: for each run, the agent retrieves the top-k documents for the run's user message, as a journaled engine step, and adds them to every model request of the run as a user message placed just before that user message (after the system prompt and any earlier turns).
 - `func WithStopSwitch(sw *StopSwitch) Option`: WithStopSwitch gives the agent a kill switch (see StopSwitch, and docs/design/kill-switch.md): its runs are held, as a pause (\*Stopped), where a stop covers them, before any side effect that has not begun. *(experimental)*
 - `func WithSystemPromptFunc(fn func(ctx context.Context, run RunInfo) (string, error)) Option`: WithSystemPromptFunc sets a system message computed for each drive of a run (each Run, Stream or resume), from the run's context and its RunInfo, so it can carry dynamic context (the date, the tenant, state read from elsewhere).
+- `func WithTaintPolicy(p TaintPolicy) Option`: WithTaintPolicy makes the agent enforce p on the runs it starts (experimental).
 - `func WithToolErrorRedactor(fn func(tool string, err error) string) Option`: WithToolErrorRedactor sets the text recorded for a tool call that fails (see Agent.WithToolErrorRedactor for what it covers).
 - `func WithToolMiddleware(mw ...ToolMiddleware) Option`: WithToolMiddleware appends tool-call middleware, after any the agent has; the first one added is the outermost (see ToolMiddleware).
 - `func WithTools(tools ...Tool) Option`: WithTools registers tools with the agent.
@@ -3665,6 +3666,18 @@ Stream is a live model response.
 - `func (s *Stream) Close()`: Close tells the producer the consumer will read no further events, so it can stop and release its resources.
 - `func (s *Stream) Events() iter.Seq2[Event, error]`: Events returns a range-over-func iterator (Go 1.23+) over streamed events.
 - `func (s *Stream) Message() (Message, Usage, error)`: Message drains the stream and returns the assembled assistant Message + usage.
+
+## type TaintPolicy
+
+```go
+type TaintPolicy struct {
+	Gate *ApprovalPolicy
+
+	Refuse bool
+}
+```
+
+TaintPolicy is what an agent that enforces taint carries (WithTaintPolicy).
 
 ## type Task
 

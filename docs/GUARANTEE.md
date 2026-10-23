@@ -190,6 +190,11 @@ says happened. A drive uses the configuration it is given for:
   you use the in-memory store and the process dies, there is nothing to resume from: that is a
   dev/test store, not a durability claim. SQLite / Postgres / etc. is where the guarantee
   actually lives, and only as far as that storage's own durability (fsync, replication) holds.
+- **A taint policy adds a check point, not a guarantee against injection.** With `agent.WithTaintPolicy`, a
+  side-effecting call of a tainted turn is held at the same place as the tool's own gate, before the attempt
+  claim, until the escalation gate (the instance `<call>#taint`) has passed or the call is refused; a call that
+  waits has no marker, and at-most-once is unchanged. What it does not give is in the
+  [untrusted content guide](guides/untrusted-content.md#what-this-does-not-do).
 - **The write to the store must itself be atomic/durable.** The guarantee reduces to "the
   journal did or did not record this step"; it relies on the store committing atomically. It
   does not defend against the storage layer lying about a commit.

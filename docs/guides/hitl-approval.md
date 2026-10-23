@@ -604,6 +604,14 @@ refund := agent.MustFunc("refund", "refund an order", doRefund,
 - **Clocks.** The deadline is read with the run's clock (`WithClock`) and a decision's time is the
   deciding process's; skew between them moves the edge by the skew.
 
+### The escalation gate of a tainted call
+
+With a [taint policy](untrusted-content.md#the-taint-policy), a call of a tainted turn has a second gate
+instance under the subject `<call>#taint`, in addition to the tool's own gate. It is shown, counted and decided
+as a gate of its own: `bide approve -list` lists it with the escalation gate's approvers, `bide approve -call
+'c2#taint'` decides it, the intake serves it by the gate its pause note records, and a decision signed for the call does
+not count on the instance, nor the reverse.
+
 ### On a plan flow node
 
 A [plan flow](plan-flows.md#approval-gates-on-nodes) node takes the same gate: `plan.Approval(policy)` in
