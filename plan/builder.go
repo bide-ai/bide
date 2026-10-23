@@ -519,6 +519,16 @@ func callTool(ctx context.Context, t agent.Tool, timeout time.Duration, args jso
 // Unwrap chain, a timeout over a sub-agent) or for an old Tool method that disagrees with its spec
 // (the agent's own checks, shared through toolhook).
 func checkTool(t agent.Tool) error {
+	// A tool that declares untrusted content, or an exemption from the taint gate, cannot be a plan node
+	// until flows have a taint rule (docs/design/untrusted-content-and-amount-caps.md, section 5.9): the
+	// node would run it with no taint handling, and silently lose what the declaration asks for.
+	if spec := t.Spec(); spec.Untrusted != "" || spec.TaintExempt != "" {
+		what := "Untrusted"
+		if spec.Untrusted == "" {
+			what = "TaintExempt"
+		}
+		return fmt.Errorf("tool %q declares %s, which a plan flow node does not support yet (flows have no taint rule): %w", spec.Name, what, agent.ErrConfig)
+	}
 	if toolhook.CheckTool == nil { // set by the agent package's init, which plan imports
 		return nil
 	}

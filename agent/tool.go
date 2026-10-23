@@ -55,6 +55,12 @@ type ToolSpec struct {
 	// Caps are the amount-cap rule lines of the tool (see WithCaps): checked against Input when the
 	// tool is registered, and decided for every call. The model is never sent them.
 	Caps []string
+	// Untrusted, when not empty, is the source of untrusted content the tool's results carry (see
+	// Untrusted). The engine records it with each result.
+	Untrusted string
+	// TaintExempt, when not empty, is the reason the tool's calls need no escalation gate in a run that
+	// read untrusted content (see TaintExempt).
+	TaintExempt string
 	// Timeout, when positive, bounds each call: the call runs under a context with this
 	// deadline. A result the tool returns is recorded even if the deadline has passed; an error
 	// it returns after the deadline has an unknown outcome (see WithTimeout).
@@ -173,6 +179,10 @@ type Safety struct {
 	// is a new call with new keys. A tool whose repeats the model may make (after a recorded
 	// error or timeout) derives a business key from its arguments for the downstream to dedupe.
 	Idempotent bool `json:"idempotent,omitempty"`
+	// Untrusted is the source name of the untrusted content a result record's tool declared (see
+	// Untrusted), set by the engine on the Safety a result records. It is not a declaration: a
+	// value in a ToolSpec's Safety is ignored, and the tool's declaration is ToolSpec.Untrusted.
+	Untrusted string `json:"untrusted,omitempty"`
 }
 
 // ApprovalPolicy declares a human approval gate. The policy SingleApproval returns is one

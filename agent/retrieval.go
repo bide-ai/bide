@@ -84,11 +84,12 @@ func MustRetrievalTool(name, description string, r Retriever, k int, opts ...Too
 // retrievalLayer is one WithRetrieval: its Retriever, how many documents it returns, and how a
 // failed Retrieve is retried (see WithRetrievalRetry).
 type retrievalLayer struct {
-	r       Retriever
-	k       int
-	retries int           // how many more times a failed Retrieve is called
-	base    time.Duration // the first backoff, doubled after each retry
-	max     time.Duration // the cap on a backoff
+	r         Retriever
+	k         int
+	retries   int           // how many more times a failed Retrieve is called
+	base      time.Duration // the first backoff, doubled after each retry
+	max       time.Duration // the cap on a backoff
+	untrusted string        // RetrievalUntrusted: the source of the layer's documents, "" for none
 }
 
 // RetrievalOption configures one WithRetrieval: WithRetrievalRetry.
@@ -150,6 +151,8 @@ func (l retrievalLayer) retrieve(ctx context.Context, query string) ([]Doc, erro
 type retrieval struct {
 	Query string `json:"query"`
 	Docs  []Doc  `json:"docs"`
+	// Untrusted is the source the layer declared its documents come from (RetrievalUntrusted).
+	Untrusted string `json:"untrusted,omitempty"`
 }
 
 // retrieved holds a drive's WithRetrieval context blocks, built at its first model call.
@@ -204,7 +207,7 @@ func retrieveOnce(ctx context.Context, d *Journal, runID string, l retrievalLaye
 		if err != nil {
 			return retrieval{}, err
 		}
-		return retrieval{Query: query, Docs: topK(docs, l.k)}, nil
+		return retrieval{Query: query, Docs: topK(docs, l.k), Untrusted: l.untrusted}, nil
 	}, WithSafety(Safety{ReadOnly: true}))
 	return rec.Docs, err
 }

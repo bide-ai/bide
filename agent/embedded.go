@@ -19,12 +19,12 @@ var toolType = reflect.TypeFor[Tool]()
 // Implementing Unwrap() Tool does not exempt it: New does not read the spec through Unwrap, the
 // outer Spec wins, and checkUnwrapChain holds that spec to every tool on the chain.
 func checkEmbedded(t Tool, s ToolSpec) error {
-	var approval, timeout bool
+	var approval, timeout, untrusted bool
 	var caps []string // the cap rule lines of the embedded tools
 	seen := map[uintptr]bool{}
 	var walk func(v reflect.Value, depth int)
 	walk = func(v reflect.Value, depth int) {
-		if depth > 16 || approval && timeout {
+		if depth > 16 {
 			return
 		}
 		for v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface {
@@ -60,6 +60,7 @@ func checkEmbedded(t Tool, s ToolSpec) error {
 				approval = approval || is.Approval != nil
 				timeout = timeout || is.Timeout > 0
 				caps = append(caps, is.Caps...)
+				untrusted = untrusted || is.Untrusted != ""
 			}
 			walk(f, depth+1)
 		}
@@ -70,6 +71,8 @@ func checkEmbedded(t Tool, s ToolSpec) error {
 		return fmt.Errorf("agent: tool %q embeds a tool with an approval gate, and its own spec has none: the decorator hides the approval gate; implement Spec or Unwrap: %w", s.Name, ErrConfig)
 	case slices.ContainsFunc(caps, func(l string) bool { return !slices.Contains(s.Caps, l) }):
 		return fmt.Errorf("agent: tool %q embeds a tool with amount caps, and its own spec lacks or changes a rule: the decorator hides the cap; implement Spec (carrying the same rules) or Unwrap: %w", s.Name, ErrConfig)
+	case untrusted && s.Untrusted == "":
+		return fmt.Errorf("agent: tool %q embeds a tool that declares Untrusted, and its own spec does not: the decorator hides the provenance declaration; implement Spec or Unwrap: %w", s.Name, ErrConfig)
 	case timeout && s.Timeout <= 0:
 		return fmt.Errorf("agent: tool %q embeds a tool with a Timeout, and its own spec has none: the decorator hides the timeout; implement Spec or Unwrap: %w", s.Name, ErrConfig)
 	}

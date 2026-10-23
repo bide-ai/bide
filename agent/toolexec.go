@@ -388,9 +388,12 @@ func doneCause(ctx context.Context) error {
 	return context.DeadlineExceeded
 }
 
-// recordedSafety is the Safety a call's result records: the one it ran under.
+// recordedSafety is the Safety a call's result records: the one it ran under, with the source of the
+// untrusted content the tool declared (Untrusted), so every result path that records the tool's safety
+// records the mark.
 func recordedSafety(spec ToolSpec) *Safety {
 	s := spec.Safety
+	s.Untrusted = spec.Untrusted // the tool's declaration, never a value set through its Safety
 	return &s
 }
 
