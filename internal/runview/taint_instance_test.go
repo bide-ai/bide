@@ -58,3 +58,31 @@ func TestBuild_EscalationInstanceIsAGateOfItsOwn(t *testing.T) {
 		}
 	}
 }
+
+// Probe: once the call has run, neither of its gates is waiting: the instance's result is its call's.
+func TestBuild_EscalationInstanceIsDoneWhenItsCallHasRun(t *testing.T) {
+	ctx := context.Background()
+	f := taintfixture.New(t, &agent.ApprovalPolicy{Need: 1, Approvers: []string{"own1"}})
+	_ = f.Drive()
+	if err := f.Submit("c2", "c2", "own1", true); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Drive()
+	for _, id := range []string{"esc1", "esc2"} {
+		if err := f.Submit("c2#taint", "c2#taint", id, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.Drive(); err != nil || f.Wrote != 1 {
+		t.Fatalf("drive = %v, writes %d", err, f.Wrote)
+	}
+	recs, err := f.Journal.History(ctx, taintfixture.Run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range Build(ctx, taintfixture.Run, recs, nil).Gates {
+		if g.Waiting {
+			t.Errorf("gate %s is still waiting after its call ran", g.ToolUseID)
+		}
+	}
+}
