@@ -84,6 +84,24 @@ func (l *Ledger) Release(ctx context.Context, t Target, s Seal) (bool, error) {
 	return l.release(ctx, l.LedgerRun(t.Rule, in.Window, t.KeyDigest), attempt)
 }
 
+// WindowOf is the kind and id of the window a live slot's attempt reserved in, as its cap-intent (in the run
+// the slot names) fixed it: the structured record, not anything parsed out of the ledger run's name. ok is
+// false when the run holds no such intent.
+func (l *Ledger) WindowOf(ctx context.Context, s Slot) (kind Kind, window string, ok bool, err error) {
+	data, found, err := l.cfg.Store.Get(ctx, s.Run, intentPrefix+l.cfg.Encode(s.Attempt))
+	if err != nil {
+		return "", "", false, fmt.Errorf("capledger: read the cap-intent of %s: %w", s.Attempt, err)
+	}
+	if !found {
+		return "", "", false, nil
+	}
+	in, err := decodeIntent(data)
+	if err != nil {
+		return "", "", false, fmt.Errorf("%w: the cap-intent of %s does not decode: %v", ErrCorrupt, s.Attempt, err)
+	}
+	return in.Kind, in.Window, true, nil
+}
+
 // intentOf reads the cap-intent of an attempt in the run that made the call, and checks it names the
 // rule, currency and key the caller says.
 func (l *Ledger) intentOf(ctx context.Context, t Target, attempt string) (intent, bool, error) {

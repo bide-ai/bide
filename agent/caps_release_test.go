@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"container/list"
 	"context"
 	"encoding/json"
 	"errors"
@@ -325,12 +326,17 @@ func TestCapMarkerKey(t *testing.T) {
 // leakOne leaves one marked slot counted in the ledger of the window now falls in: the second rule's slot and
 // every release fail, so the call fails before the tool began, its release fails, and the void follows.
 func leakOne(t *testing.T, os *orderStore, j *Journal, runID string, now time.Time, opts ...Option) {
+	leakRules(t, os, j, runID, now, []string{capRuleDay, capRuleHour}, opts...)
+}
+
+// leakRules is leakOne for the given rules (the last one is the one whose slot cannot be written).
+func leakRules(t *testing.T, os *orderStore, j *Journal, runID string, now time.Time, lines []string, opts ...Option) {
 	t.Helper()
 	os.failOn = func(name string, data []byte) bool {
 		return strings.HasPrefix(name, "slot:") && (strings.Contains(string(data), `"kind":"release"`) || strings.Contains(string(data), "refund_hour"))
 	}
 	defer func() { os.failOn = nil }()
-	tool := sumTool(Safety{}, capRuleDay, capRuleHour)
+	tool := sumTool(Safety{}, lines...)
 	a := mustNew(capModel{sumArgs(60, "")}, j, append([]Option{WithTools(tool), WithClock(func() time.Time { return now })}, opts...)...)
 	if _, err := a.Run(context.Background(), runID, UserText("go")); err == nil {
 		t.Fatal("want a failed run")
@@ -362,34 +368,172 @@ func TestCapsRelease_ReconcileSkipsClosedWindows(t *testing.T) {
 }
 
 func TestCapWindowOpen(t *testing.T) {
-	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
-	store := memJournal()
-	l := newCapLedger(store, time.Now, 0)
-	ledger := func(window string, kind capledger.Kind) string {
-		return l.LedgerRun(capledger.Rule{Namespace: "n", Name: "r", Currency: "USD", Kind: kind}, window, capledger.KeyDigest(""))
+	ctx := context.Background()
+	at := func(s string) time.Time {
+		tm, err := time.Parse(time.RFC3339Nano, s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tm
 	}
+	store := memJournal()
+	if _, err := store.put(ctx, "ended-root", runCompleteStep, Record{Kind: StepValue, Result: json.RawMessage(`1`)}); err != nil {
+		t.Fatal(err)
+	}
+	long := strings.Repeat("r", 200) // its encoded form is a digest
 	for _, tc := range []struct {
-		name, run string
-		want      bool
+		name   string
+		kind   capledger.Kind
+		window string
+		now    string
+		want   bool
 	}{
-		{"today", ledger("2026-10-22", capledger.Day), true},
-		{"yesterday", ledger("2026-10-21", capledger.Day), true},
-		{"two days ago", ledger("2026-10-20", capledger.Day), false},
-		{"this hour", ledger("2026-10-22T12", capledger.Hour), true},
-		{"last hour", ledger("2026-10-22T11", capledger.Hour), true},
-		{"three hours ago", ledger("2026-10-22T09", capledger.Hour), false},
-		{"run window, root still running", ledger("run-1", capledger.Run), true},
+		{"day, 47h59m after its start+24h... open", capledger.Day, "2026-10-20", "2026-10-21T23:59:59Z", true},
+		{"day, closed 48h after its start", capledger.Day, "2026-10-20", "2026-10-22T00:00:00Z", false},
+		{"hour, just inside two hours", capledger.Hour, "2026-10-22T10", "2026-10-22T11:59:59Z", true},
+		{"hour, just outside two hours", capledger.Hour, "2026-10-22T10", "2026-10-22T12:00:00Z", false},
+		{"hour, one hour in", capledger.Hour, "2026-10-22T10", "2026-10-22T11:30:00Z", true},
+		{"run window, root still running", capledger.Run, "run-1", "2026-10-22T12:00:00Z", true},
+		{"run window, root ended", capledger.Run, "ended-root", "2026-10-22T12:00:00Z", false},
+		{"run window named like a date, still running, long after", capledger.Run, "2026-07-15", "2026-10-22T12:00:00Z", true},
+		{"run window with a root whose encoded id is a digest", capledger.Run, long, "2026-10-22T12:00:00Z", true},
+		{"unknown kind", capledger.Kind("week"), "x", "2026-10-22T12:00:00Z", true},
+		{"unparseable day", capledger.Day, "not-a-day", "2026-10-22T12:00:00Z", true},
 	} {
-		if got, err := capWindowOpen(context.Background(), store, tc.run, now); err != nil || got != tc.want {
+		if got, err := capWindowOpen(ctx, store, tc.kind, tc.window, at(tc.now)); err != nil || got != tc.want {
 			t.Errorf("%s: open = %v, %v; want %v", tc.name, got, err, tc.want)
 		}
 	}
-	// A run window whose root run ended is closed.
-	if _, err := store.put(context.Background(), "run-2", runCompleteStep, Record{Kind: StepValue, Result: json.RawMessage(`1`)}); err != nil {
+}
+
+// getFailStore fails the reads of the names it selects.
+type getFailStore struct {
+	Store
+	fail func(run, name string) bool
+	gets map[string]int
+	mu   sync.Mutex
+}
+
+func (g *getFailStore) Get(ctx context.Context, run, name string) (Entry, bool, error) {
+	g.mu.Lock()
+	if g.gets == nil {
+		g.gets = map[string]int{}
+	}
+	g.gets[run+"|"+name]++
+	g.mu.Unlock()
+	if g.fail != nil && g.fail(run, name) {
+		return Entry{}, false, errors.New("store down")
+	}
+	return g.Store.Get(ctx, run, name)
+}
+
+func (g *getFailStore) Unwrap() Store { return g.Store }
+
+func (g *getFailStore) count(run string) int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	n := 0
+	for k, v := range g.gets {
+		if strings.HasPrefix(k, run+"|") {
+			n += v
+		}
+	}
+	return n
+}
+
+// A store error while reading whether a root run ended surfaces from the reconcile pass; it is not read as
+// "closed" and skipped.
+func TestCapWindowOpen_StoreErrorSurfaces(t *testing.T) {
+	gs := &getFailStore{Store: NewMemStore()}
+	gs.fail = func(run, name string) bool { return run == "boom" && name == runCompleteStep }
+	open, err := capWindowOpen(context.Background(), newJournal(gs), capledger.Run, "boom", time.Now())
+	if err == nil || open {
+		t.Fatalf("open = %v, err = %v, want the error", open, err)
+	}
+}
+
+// runLeakRules are the rules of the run-window leak tests: a per-run total and an hour rule whose slot cannot be written.
+var runLeakRules = []string{`refund_run: refund.amount[minor, currency=currency] sum 10 USD per run -> refuse`, capRuleHour}
+
+func runLedger(l *capledger.Ledger, root string) string {
+	return l.LedgerRun(capledger.Rule{Namespace: defaultCapNamespace, Name: "refund_run", Currency: "USD", Kind: capledger.Run}, root, capledger.KeyDigest(""))
+}
+
+// Reconcile of a run window: a root run still running (even one named like a date, and one whose id is long
+// enough to be digested in the ledger's name) has its voided slot released; one whose root completed is left.
+func TestCapsRelease_ReconcilesRunWindowsOfRunningRoots(t *testing.T) {
+	long := strings.Repeat("x", 120)
+	for name, root := range map[string]string{"plain": "run-plain", "date-named": "2026-07-15", "long": long} {
+		t.Run(name, func(t *testing.T) {
+			os := &orderStore{Store: NewMemStore()}
+			j := newJournal(os)
+			leakRules(t, os, j, root, time.Now().UTC(), runLeakRules)
+			l := newCapLedger(j, time.Now, 0)
+			ledger := runLedger(l, root)
+			if live, err := l.Live(context.Background(), ledger); err != nil || len(live) != 1 {
+				t.Fatalf("live = %+v, %v; want the leak", live, err)
+			}
+			released, err := reconcileCaps(context.Background(), j)
+			if err != nil || len(released) != 1 {
+				t.Fatalf("reconcileCaps = %v, %v, want the run window's slot", released, err)
+			}
+			if live, _ := l.Live(context.Background(), ledger); len(live) != 0 {
+				t.Fatalf("live = %+v after reconcile", live)
+			}
+		})
+	}
+}
+
+func TestCapsRelease_ReconcileSkipsARunWindowWhoseRootEnded(t *testing.T) {
+	os := &orderStore{Store: NewMemStore()}
+	j := newJournal(os)
+	leakRules(t, os, j, "done-root", time.Now().UTC(), runLeakRules)
+	if _, err := j.put(context.Background(), "done-root", runCompleteStep, Record{Kind: StepValue, Result: json.RawMessage(`1`)}); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := capWindowOpen(context.Background(), store, ledger("run-2", capledger.Run), now); err != nil || got {
-		t.Errorf("run window of an ended root: open = %v, %v; want false", got, err)
+	released, err := reconcileCaps(context.Background(), j)
+	l := newCapLedger(j, time.Now, 0)
+	if live, _ := l.Live(context.Background(), runLedger(l, "done-root")); err != nil || len(released) != 0 || len(live) != 1 {
+		t.Fatalf("released %v, err %v, live %+v: want the ended run's window left alone", released, err, live)
+	}
+}
+
+// A store error reading the root's markers surfaces from reconcileCaps and releases nothing.
+func TestCapsRelease_ReconcileSurfacesAStoreErrorOnARunWindow(t *testing.T) {
+	os := &orderStore{Store: NewMemStore()}
+	j := newJournal(os)
+	leakRules(t, os, j, "root-e", time.Now().UTC(), runLeakRules)
+	gs := &getFailStore{Store: os, fail: func(run, name string) bool { return run == "root-e" && name == runCompleteStep }}
+	jf := newJournal(gs)
+	released, err := reconcileCaps(context.Background(), jf)
+	l := newCapLedger(j, time.Now, 0)
+	if live, _ := l.Live(context.Background(), runLedger(l, "root-e")); err == nil || len(released) != 0 || len(live) != 1 {
+		t.Fatalf("released %v, err %v, live %+v: want the error surfaced and the slot untouched", released, err, live)
+	}
+}
+
+// An ended root is remembered: later passes do not read its markers again, and the memory is bounded.
+func TestCapsRelease_EndedRootsAreRememberedAndBounded(t *testing.T) {
+	gs := &getFailStore{Store: NewMemStore()}
+	j := newJournal(gs)
+	if _, err := j.put(context.Background(), "ended-once", runCompleteStep, Record{Kind: StepValue, Result: json.RawMessage(`1`)}); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if got, err := capWindowOpen(context.Background(), j, capledger.Run, "ended-once", time.Now()); err != nil || got {
+			t.Fatalf("open = %v, %v", got, err)
+		}
+	}
+	if n := gs.count("ended-once"); n > 1 {
+		t.Fatalf("%d reads of the ended root's markers over three passes, want at most the first pass's 1", n)
+	}
+	c := &endedCache{max: 2, set: map[string]*list.Element{}, order: list.New()}
+	c.add("a")
+	c.add("b")
+	c.has("a") // a is now the most recent
+	c.add("c") // drops b
+	if !c.has("a") || c.has("b") || !c.has("c") || c.order.Len() != 2 {
+		t.Fatalf("cache holds a=%v b=%v c=%v (len %d), want the least recently used (b) dropped", c.has("a"), c.has("b"), c.has("c"), c.order.Len())
 	}
 }
 

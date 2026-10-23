@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"container/list"
 	"context"
 	"encoding/json"
 	"errors"
@@ -336,35 +337,94 @@ func reconcileCaps(ctx context.Context, store *Journal) ([]string, error) {
 	return reconcileCapRuns(ctx, store, runs)
 }
 
-// capWindowOpen reports whether the ledger run's window is worth reconciling: a day or hour window whose end
-// is less than one window length in the past, or a run window whose root run has not ended. A slot left
-// counted in a closed window costs capacity only to an attempt that resumes in it (a resumed attempt keeps its
-// window) or to a node with a lagging clock; skipping it is the over-count direction, and it refines the
-// model's nondeterministic Reconcile action (every property holds under any subset of reconcile runs). The
-// cost of a pass follows the open windows, not every ledger ever written. A window it cannot read is open.
-func capWindowOpen(ctx context.Context, store *Journal, run string, now time.Time) (bool, error) {
-	seg := strings.Split(run, "/")
-	if len(seg) != 6 {
-		return true, nil
-	}
-	if t, err := time.Parse("2006-01-02", seg[4]); err == nil {
+// capWindowOpen reports whether a window is worth reconciling, from the kind and id its attempts' cap-intent
+// fixed (never parsed out of a run's name: a root run may be named like a date): a day or hour window whose
+// end is less than one window length in the past, or a run window whose root run (window is its id) has not
+// ended. A slot left counted in a closed window costs capacity only to an attempt that resumes in it (a
+// resumed attempt keeps its window) or to a node with a lagging clock; skipping it is the over-count
+// direction, and it refines the model's nondeterministic Reconcile action (every property holds under any
+// subset of reconcile runs). The cost of a pass follows the open windows, not every ledger ever written. A
+// store error is returned, never read as "closed"; an unknown kind is open.
+func capWindowOpen(ctx context.Context, store *Journal, kind capledger.Kind, window string, now time.Time) (bool, error) {
+	switch kind {
+	case capledger.Day:
+		t, err := time.Parse("2006-01-02", window)
+		if err != nil {
+			return true, nil
+		}
 		return now.Before(t.Add(48 * time.Hour)), nil
-	}
-	if t, err := time.Parse("2006-01-02T15", seg[4]); err == nil {
+	case capledger.Hour:
+		t, err := time.Parse("2006-01-02T15", window)
+		if err != nil {
+			return true, nil
+		}
 		return now.Before(t.Add(2 * time.Hour)), nil
+	case capledger.Run:
+		ended, err := capRootEnded(ctx, store, window)
+		if err != nil {
+			return false, err
+		}
+		return !ended, nil
 	}
-	root, ok := decodeID(seg[4])
-	if !ok {
-		return true, nil // a hashed root id: cannot be read back
+	return true, nil
+}
+
+// endedRoots remembers the root runs known to have ended, so a pass does not read their markers again: an
+// ended run stays ended. It is bounded; the least recently used is dropped and read again if needed.
+var endedRoots = &endedCache{max: 4096, set: map[string]*list.Element{}, order: list.New()}
+
+type endedCache struct {
+	mu    sync.Mutex
+	max   int
+	set   map[string]*list.Element
+	order *list.List
+}
+
+func (c *endedCache) has(id string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.set[id]; ok {
+		c.order.MoveToFront(e)
+		return true
+	}
+	return false
+}
+
+func (c *endedCache) add(id string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.set[id]; ok {
+		c.order.MoveToFront(e)
+		return
+	}
+	c.set[id] = c.order.PushFront(id)
+	for c.order.Len() > c.max {
+		last := c.order.Back()
+		c.order.Remove(last)
+		delete(c.set, last.Value.(string))
+	}
+}
+
+// capRootEnded reports whether root holds a terminal marker (it completed, aborted or was cancelled).
+func capRootEnded(ctx context.Context, store *Journal, root string) (bool, error) {
+	if endedRoots.has(storeKey(store, root)) {
+		return true, nil
 	}
 	for _, marker := range endOfRunMarkers {
 		if _, found, err := store.Get(ctx, root, marker); err != nil {
-			return true, fmt.Errorf("read whether run %s ended: %w", root, err)
+			return false, fmt.Errorf("read whether run %s ended: %w", root, err)
 		} else if found {
-			return false, nil
+			endedRoots.add(storeKey(store, root))
+			return true, nil
 		}
 	}
-	return true, nil
+	return false, nil
+}
+
+// storeKey names a run within a store, for the process-wide cache.
+func storeKey(store *Journal, run string) string {
+	id, _ := store.identity()
+	return fmt.Sprintf("%v/%s", id, run)
 }
 
 // reconcileCapRuns is reconcileCaps over the cap runs a caller already listed (Recover finds them in its own
@@ -377,11 +437,25 @@ func reconcileCapRuns(ctx context.Context, store *Journal, runs []string) ([]str
 		if strings.Count(run, "/") != 5 {
 			continue // an index run, not a ledger
 		}
-		if open, err := capWindowOpen(ctx, store, run, time.Now()); err != nil {
+		live, err := l.Live(ctx, run)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("read cap ledger %s: %w", run, err))
+			continue
+		}
+		if len(live) == 0 {
+			continue // nothing counted that a release could free
+		}
+		// The ledger's window, as its attempts' cap-intent fixed it (all slots of a ledger share one).
+		if kind, window, ok, err := l.WindowOf(ctx, live[0]); err != nil {
 			errs = append(errs, err)
 			continue
-		} else if !open {
-			continue
+		} else if ok {
+			if open, err := capWindowOpen(ctx, store, kind, window, time.Now()); err != nil {
+				errs = append(errs, err)
+				continue
+			} else if !open {
+				continue
+			}
 		}
 		got, err := l.Reconcile(ctx, run, func(ctx context.Context, s capledger.Slot) (bool, error) {
 			key, found := capMarkerKey(s.Att)
