@@ -29,6 +29,27 @@ func NewSeal(attempt string, word *atomic.Int32, none, sealed int32) (Seal, bool
 	return Seal{attempt: attempt, sealed: true}, true
 }
 
+// NewSeals is NewSeal for a call that holds several attempts on one began word (one per cumulative rule
+// it reserved under): one compare and swap of the word, and a Seal bound to each attempt if it won.
+func NewSeals(attempts []string, word *atomic.Int32, none, sealed int32) ([]Seal, bool) {
+	if len(attempts) == 0 || word == nil || none == sealed {
+		return nil, false
+	}
+	for _, a := range attempts {
+		if a == "" {
+			return nil, false
+		}
+	}
+	if !word.CompareAndSwap(none, sealed) {
+		return nil, false
+	}
+	out := make([]Seal, len(attempts))
+	for i, a := range attempts {
+		out[i] = Seal{attempt: a, sealed: true}
+	}
+	return out, true
+}
+
 // Target names an attempt whose slot is released: the rule, the key, the run that made the call and the
 // attempt's three parts, as in the Request that reserved it. The ledger is not named: the window is read
 // from the attempt's cap-intent, as Reserve reads it, so a release cannot land in another ledger.

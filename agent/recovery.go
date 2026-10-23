@@ -284,6 +284,12 @@ func Recover(ctx context.Context, store *Journal, resume Resumer, opts ...Recove
 			errs = append(errs, err)
 		}
 	}
+	// The reconcile pass over the cap ledgers: release the slots of attempts recorded as not started.
+	// protocol:caps begin Reconcile
+	if _, err := reconcileCaps(ctx, store); err != nil {
+		errs = append(errs, err)
+	}
+	// protocol:caps end
 	if cfg.notify != nil {
 		cfg.notify.queueScanOpen() // the all-clear of a run that is no longer unfinished
 	}

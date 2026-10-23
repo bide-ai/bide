@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/bide-ai/bide/internal/amount"
 	"github.com/bide-ai/bide/internal/capledger"
@@ -145,7 +148,8 @@ func capKey(args []byte, k *amount.Key, principal string) (string, bool) {
 // its window's ledger. An amount over a limit refuses the call (errCapRefused); a call that is not
 // assessable is refused too; a store error is an argsJournalError, so the tool is not begun. A tool with
 // no cumulative rule is not asked.
-func (a *Agent) reserveCaps(ctx context.Context, runID string, tu ToolUse, spec *ToolSpec) error {
+func (a *Agent) reserveCaps(ctx context.Context, runID string, call ToolCall, spec *ToolSpec) error {
+	tu := call.Use
 	tc := a.caps[tu.Name]
 	if tc == nil || !tc.hasSum() {
 		return nil
@@ -177,7 +181,12 @@ func (a *Agent) reserveCaps(ctx context.Context, runID string, tu ToolUse, spec 
 			Marked: at.marked, Amount: d.amount, Limit: d.rule.Limit,
 			Clock: clockFrom(ctx),
 		}
-		if _, err := a.capLedger.Reserve(ctx, req); err != nil {
+		_, err = a.capLedger.Reserve(ctx, req)
+		if err == nil && call.capHeld != nil {
+			call.capHeld.add(capledger.Target{Rule: req.Rule, KeyDigest: req.KeyDigest, RunID: req.RunID, RootRunID: req.RootRunID,
+				ToolUseID: req.ToolUseID, AttemptID: req.AttemptID}, req.Marked)
+		}
+		if err != nil {
 			if errors.Is(err, capledger.ErrOverLimit) {
 				return &errCapRefused{rule: d.rule.Name}
 			}
@@ -216,4 +225,110 @@ func principalOf(ctx context.Context) string {
 		return ""
 	}
 	return chain[len(chain)-1].OnBehalfOf
+}
+
+// capHeld is the reservations one call made, by the handlers of one chain: the targets the loop releases
+// when it proves the tool never began. A handler that reserves after the loop took the list leaves its
+// slot to the reconcile pass.
+type capHeld struct {
+	mu      sync.Mutex
+	targets []capledger.Target
+	marked  []bool
+	taken   bool
+}
+
+func (h *capHeld) add(t capledger.Target, marked bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.taken {
+		return // the loop has released what it knew; this slot is a leak for reconcile
+	}
+	for _, x := range h.targets {
+		if x == t {
+			return
+		}
+	}
+	h.targets = append(h.targets, t)
+	h.marked = append(h.marked, marked)
+}
+
+// take returns the targets of marked reservations and stops the list from growing.
+func (h *capHeld) take() []capledger.Target {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.taken = true
+	var out []capledger.Target
+	for i, t := range h.targets {
+		if h.marked[i] {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// releaseCaps is the loop's release, called once the chain has returned and the call reached its tool
+// handler: it seals the call's began word (one compare and swap; a tool that began gives no seal, so
+// nothing is released) and releases each marked reservation of the call, before the attempt is voided.
+// A release that fails leaves the slot counted, and the void then lets the reconcile pass release it.
+// It reports whether it sealed the word. It is the only releaser: no handler writes a release.
+// protocol:caps begin LoopSeal
+func (a *Agent) releaseCaps(ctx context.Context, held *capHeld, began *atomic.Int32) (sealed bool) {
+	targets := held.take()
+	if len(targets) == 0 {
+		return false
+	}
+	attempts := make([]string, len(targets))
+	for i, t := range targets {
+		attempts[i] = a.capLedger.AttemptKey(t.RunID, t.RootRunID, t.ToolUseID, t.AttemptID)
+	}
+	seals, ok := capledger.NewSeals(attempts, began, beganNone, beganSealed)
+	if !ok {
+		return false
+	}
+	for i, t := range targets {
+		_, _ = a.capLedger.Release(context.WithoutCancel(ctx), t, seals[i])
+	}
+	return true
+}
+
+// protocol:caps end
+
+// reconcileCaps is the reconcile pass over every cap ledger of the store (Recover runs it): it releases the
+// live slots of marked attempts whose attempt marker the run's journal records as not started, which a
+// void without a release left counted (a release that failed, a handler that reserved after the call was
+// sealed). It acts on voided attempts only: a call that began, or that ResolveHalt resolved, or whose
+// marker still stands, keeps its slot, and so does every unmarked attempt. It returns what it released.
+func reconcileCaps(ctx context.Context, store *Journal) ([]string, error) {
+	lister, ok := Capability[Lister](store.store)
+	if !ok {
+		return nil, nil
+	}
+	l := newCapLedger(store, time.Now, 0)
+	var released []string
+	var errs []error
+	for run, err := range lister.Runs(ctx, RunFilter{Prefix: capRunPrefix}) {
+		if err != nil {
+			errs = append(errs, fmt.Errorf("list the cap ledgers: %w (%w)", err, ErrStorage))
+			break
+		}
+		if strings.Count(run, "/") != 5 {
+			continue // an index run, not a ledger
+		}
+		got, err := l.Reconcile(ctx, run, func(ctx context.Context, s capledger.Slot) (bool, error) {
+			key, _, found := strings.Cut(s.Att, "#")
+			if !found || key == "" {
+				return false, nil // an unmarked attempt carries no marker key; it is never released
+			}
+			marker, ok, err := store.Get(ctx, s.Run, key)
+			if err != nil || !ok || marker.Kind != StepAttempt {
+				return false, err
+			}
+			return store.voided(ctx, s.Run, key, marker)
+		})
+		released = append(released, got...)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("reconcile cap ledger %s: %w", run, err))
+		}
+	}
+	return released, errors.Join(errs...)
 }

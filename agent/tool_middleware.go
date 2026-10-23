@@ -38,6 +38,9 @@ type ToolCall struct {
 	// itself fail (it succeeded, is still running, or its outcome is unknown): the earlier one may
 	// have taken effect, whatever the later one reports.
 	earlier *atomic.Bool
+	// capHeld lists the cumulative-cap reservations the call's handlers made (see capHeld), for the loop
+	// to release once it has sealed the began word.
+	capHeld *capHeld
 }
 
 // ErrorText returns the text the agent journals, and sends to the model, for this call failing
