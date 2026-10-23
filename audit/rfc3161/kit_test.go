@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/fips140"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -104,7 +105,7 @@ func genKey(t testing.TB, k keyKind) crypto.Signer {
 	case kEC521:
 		s, err = ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
 	case kRSA1024:
-		s, err = rsa.GenerateKey(rand.Reader, 1024)
+		fips140.WithoutEnforcement(func() { s, err = rsa.GenerateKey(rand.Reader, 1024) })
 	case kRSA2048:
 		s, err = rsa.GenerateKey(rand.Reader, 2048)
 	case kRSA3072:
@@ -141,7 +142,16 @@ type kit struct {
 	pool            *x509.CertPool
 }
 
-func newKit(t testing.TB, o kitOpts) *kit {
+// newKit builds a TSA kit. Some negative tests need material that GODEBUG=fips140=only refuses to
+// make (a 1024-bit RSA key, a SHA-1 signed certificate), so the kit is built with enforcement off;
+// the code under test still runs with it on.
+func newKit(t testing.TB, o kitOpts) (k *kit) {
+	t.Helper()
+	fips140.WithoutEnforcement(func() { k = newKitUnenforced(t, o) })
+	return k
+}
+
+func newKitUnenforced(t testing.TB, o kitOpts) *kit {
 	t.Helper()
 	if o.rootKey == "" {
 		o.rootKey = kEC256
@@ -404,7 +414,15 @@ func (s *tokSpec) sid() []byte {
 }
 
 // build returns the token DER.
-func (s *tokSpec) build(t testing.TB) []byte {
+// build signs the token. It runs with enforcement off for the same reason as newKit: a negative
+// test may sign with a 1024-bit RSA key. Verification is not wrapped.
+func (s *tokSpec) build(t testing.TB) (tok []byte) {
+	t.Helper()
+	fips140.WithoutEnforcement(func() { tok = s.buildUnenforced(t) })
+	return tok
+}
+
+func (s *tokSpec) buildUnenforced(t testing.TB) []byte {
 	t.Helper()
 	s.defaults()
 	tst := s.tstInfo()
@@ -541,10 +559,15 @@ func (s *tokSpec) sign(t testing.TB, data []byte) []byte {
 	return nil
 }
 
-func hashBytes(h crypto.Hash, data []byte) []byte {
-	w := h.New()
-	w.Write(data)
-	return w.Sum(nil)
+// hashBytes hashes data. The negative tests build tokens that name SHA-1 on purpose, so the digest
+// is computed with enforcement off: under GODEBUG=fips140=only crypto/sha1 panics otherwise.
+func hashBytes(h crypto.Hash, data []byte) (sum []byte) {
+	fips140.WithoutEnforcement(func() {
+		w := h.New()
+		w.Write(data)
+		sum = w.Sum(nil)
+	})
+	return sum
 }
 
 func sha1sum(b []byte) []byte { return hashBytes(crypto.SHA1, b) }

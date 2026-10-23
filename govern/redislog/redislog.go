@@ -71,7 +71,22 @@ func (l *Log) checkNames(entity string) error {
 // it. Redis runs a script atomically, so concurrent appends from any number of processes get
 // distinct, dense positions, and a script run twice for one append (a client retry after a lost
 // reply) records its event once.
-var appendScript = redis.NewScript(`
+//
+// The script is made with redis.NewScriptServerSHA, which computes no hash in Go: the digest EVALSHA
+// caches a script under is SHA-1, which crypto/sha1 refuses under GODEBUG=fips140=only, and
+// redis.NewScript would hash in package init (importing a package must never panic). Redis computes
+// the digest (SCRIPT LOAD) on first use; a NOSCRIPT reply (a restart, a failover, a node that never
+// loaded it) is answered by running the script with EVAL, and so is a Redis that refuses SCRIPT, so
+// an append works either way. The script is idempotent per append id, so running it twice is safe.
+// Two costs follow from go-redis: its script lock is held across the SCRIPT LOAD round trip, so a
+// stalled Redis blocks concurrent appends on that lock past their own context deadlines, and a Redis
+// that refuses SCRIPT costs one failed SCRIPT LOAD per append before the EVAL fallback.
+var appendScript = newAppendScript()
+
+// newAppendScript makes the append script, with no digest until its first Redis round trip.
+func newAppendScript() *redis.Script { return redis.NewScriptServerSHA(appendScriptSource) }
+
+const appendScriptSource = `
 local recorded = redis.call('HGET', KEYS[2], ARGV[2])
 if recorded then
 	local id = (tonumber(recorded) + 1) .. '-0'
@@ -88,7 +103,7 @@ local n = redis.call('XLEN', KEYS[1])
 redis.call('XADD', KEYS[1], (n + 1) .. '-0', 'event', ARGV[1])
 redis.call('HSET', KEYS[2], ARGV[2], n)
 return {n, ARGV[1]}
-`)
+`
 
 // Append durably appends an event to the entity's stream under id and returns its position, or
 // returns the position already recorded for id. The stream must be written only through this

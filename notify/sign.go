@@ -2,6 +2,7 @@ package notify
 
 import (
 	"bytes"
+	"crypto/fips140"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -42,6 +43,7 @@ var (
 	ErrStale         = errors.New("notify: timestamp outside the tolerance")
 	ErrBadSignature  = errors.New("notify: no signature matches")
 	ErrNoSecrets     = errors.New("notify: no secrets to verify with")
+	ErrShortSecret   = errors.New("notify: secret is shorter than the 14 bytes FIPS 140-3 mode allows for an HMAC key")
 	ErrBodyTooLarge  = errors.New("notify: request body too large to verify")
 	ErrDeliveryID    = errors.New("notify: Bide-Delivery is missing or does not match the signed id")
 	errSignatureRead = errors.New("notify: reading the request body")
@@ -49,18 +51,40 @@ var (
 
 // Sign returns the Bide-Signature header value for body sent at ts: one "v1=<hex>" entry per
 // secret, space separated, where each is HMAC-SHA256(secret, ts + "." + body). Empty secrets are
-// skipped. With two secrets (current first, previous second) a receiver holding either verifies the
+// skipped, and so is a secret shorter than 14 bytes under GODEBUG=fips140=only (see ErrShortSecret;
+// crypto/hmac panics on one there). A caller must check that the header has one entry per secret it
+// passed (strings.Fields of the result); Webhook does, and sends nothing otherwise. With two secrets (current first, previous second) a receiver holding either verifies the
 // request, which is how a secret is rotated without dropping deliveries.
 func Sign(secrets []string, ts int64, body []byte) string {
 	var parts []string
 	for _, s := range secrets {
-		if s == "" {
+		if s == "" || checkSecret(s, fips140.Enforced()) != nil {
 			continue
 		}
 		parts = append(parts, "v1="+hex.EncodeToString(mac(s, ts, body)))
 	}
 	return strings.Join(parts, " ")
 }
+
+// minFIPSSecret is the shortest HMAC key (112 bits) crypto/hmac accepts under GODEBUG=fips140=only.
+// bide recommends at least 32 bytes of random data for every deployment; this is only the floor that
+// keeps FIPS enforcement from panicking.
+const minFIPSSecret = 14
+
+// checkSecret refuses a non-empty secret shorter than minFIPSSecret when enforced (fips140.Enforced()).
+// Outside strict FIPS enforcement every secret is accepted, as before.
+func checkSecret(secret string, enforced bool) error {
+	if enforced && secret != "" && len(secret) < minFIPSSecret {
+		return ErrShortSecret
+	}
+	return nil
+}
+
+// CheckSecret reports whether this process can use secret as a webhook signing secret: it returns
+// ErrShortSecret for a non-empty secret shorter than 14 bytes under strict FIPS enforcement
+// (GODEBUG=fips140=only), and nil otherwise. NewWebhook applies it; a receiver (a relay, a listener)
+// calls it when it loads its secrets, so a mis-set secret is a startup error and not a rejected request.
+func CheckSecret(secret string) error { return checkSecret(secret, fips140.Enforced()) }
 
 func mac(secret string, ts int64, body []byte) []byte {
 	h := hmac.New(sha256.New, []byte(secret))
@@ -123,6 +147,9 @@ func VerifyBody(timestamp, signature string, body []byte, secrets []string, tole
 	}
 	var live []string
 	for _, s := range secrets {
+		if err := checkSecret(s, fips140.Enforced()); err != nil {
+			return err
+		}
 		if s != "" {
 			live = append(live, s)
 		}

@@ -1237,9 +1237,10 @@ Why it matters here specifically: audit anchors are long-lived, so they face a h
 forge-later exposure. The signature is the quantum-vulnerable part; the SHA-256 Merkle hashing is
 not affected and is unchanged. Choosing ML-DSA or hybrid for the anchor signature addresses the
 signature exposure without touching the tree. One toolchain constraint: `crypto/mldsa` is
-unavailable under the FIPS 140-3 module, so FIPS mode and ML-DSA are mutually exclusive in this
-toolchain (ed25519 keeps working in FIPS mode). Pick per buyer: a FIPS-required buyer takes
-ed25519 or ECDSA P-256, a post-quantum-focused buyer takes ML-DSA or hybrid.
+unavailable under Go's FIPS 140-3 module v1.0.0 (ed25519 and ECDSA P-256 keep working there), and
+available under v1.26.0 and later (see the [security model](security-model.md#post-quantum-and-hybrid-signatures)).
+Pick per buyer: a buyer pinned to module v1.0.0 takes ed25519 or ECDSA P-256, a post-quantum-focused
+buyer takes ML-DSA or hybrid.
 
 ### ECDSA P-256
 
@@ -1270,7 +1271,7 @@ the message into the nonce), so signing the same tree head twice gives two diffe
 where Ed25519 and ML-DSA give the same bytes; a decision's journal record is named by the
 decision (call, approver, verdict, scheme, decided_at), not by its signature, so re-signing and
 resubmitting one decision, even concurrently, is one record (`agent.DecisionStep`). And the
-scheme works inside the FIPS 140-3 module (`crypto/ecdsa`), unlike ML-DSA.
+scheme works inside every version of the FIPS 140-3 module (`crypto/ecdsa`), unlike ML-DSA under v1.0.0.
 
 **P-256 is not a hybrid half.** The hybrid scheme stays `ed25519+ml-dsa-65`. A hybrid exists for its
 post-quantum half, and no HSM or cloud KMS signs ML-DSA yet, so a `P-256 + ML-DSA` hybrid would not

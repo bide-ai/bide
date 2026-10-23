@@ -15,6 +15,7 @@ package notify
 import (
 	"bytes"
 	"context"
+	"crypto/fips140"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -76,10 +77,19 @@ func configErr(format string, a ...any) error {
 // a receiver that has not yet been given the new secret (or has not yet dropped the old one)
 // verifies either way: rotate by deploying previous=old, current=new, updating the receiver, then
 // dropping previous. Secrets are never logged, journaled, put in a payload or put in an error.
+//
+// Use at least 32 bytes of random data. Under GODEBUG=fips140=only crypto/hmac refuses a key
+// shorter than 14 bytes (112 bits) by panicking, so there a shorter secret is an error here
+// (agent.ErrConfig wrapping ErrShortSecret); without that mode any length is accepted, as before.
 func WithSecrets(current, previous string) Option {
 	return func(w *Webhook) error {
 		if current == "" {
 			return configErr("WithSecrets needs a non-empty current secret")
+		}
+		for _, s := range []string{current, previous} {
+			if err := checkSecret(s, fips140.Enforced()); err != nil {
+				return fmt.Errorf("notify: %w: WithSecrets: %w (use at least 32 bytes)", agent.ErrConfig, err)
+			}
 		}
 		w.secrets = []string{current}
 		if previous != "" {
@@ -402,6 +412,9 @@ func (w *Webhook) deliver(ctx context.Context, id string, body []byte) (delivery
 		switch {
 		case err != nil:
 			lastErr = err
+			if errors.Is(err, agent.ErrConfig) {
+				return res, lastErr // a retry cannot fix configuration
+			}
 			if ctx.Err() != nil {
 				return res, lastErr
 			}
@@ -451,7 +464,14 @@ func (w *Webhook) once(ctx context.Context, id string, body []byte, sent time.Ti
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(HeaderDelivery, id)
 	req.Header.Set(HeaderTimestamp, strconv.FormatInt(ts, 10))
-	req.Header.Set(HeaderSignature, Sign(w.secrets, ts, body))
+	// Fail closed: Sign leaves out a secret it cannot use (see ErrShortSecret), and a delivery
+	// signed with fewer entries than the operator configured is not sent. NewWebhook refuses such
+	// a secret under strict FIPS enforcement; this is the check where the bytes leave.
+	sig := Sign(w.secrets, ts, body)
+	if len(strings.Fields(sig)) != len(w.secrets) {
+		return 0, 0, nil, fmt.Errorf("notify: %w: a webhook secret could not sign the delivery, nothing was sent: %w", agent.ErrConfig, ErrShortSecret)
+	}
+	req.Header.Set(HeaderSignature, sig)
 	resp, err := w.client.Do(req)
 	if err != nil {
 		if w.cert != nil && ctx.Err() == nil {

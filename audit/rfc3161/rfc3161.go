@@ -211,6 +211,9 @@ type Policy struct {
 	// refused regardless. The signature and the path to the auditor's anchors still decide who
 	// signed; the SHA-1 only ties the signature to one certificate among those the token carries.
 	// A result that relies on it has Result.ESSV1 set so the weaker binding stays visible.
+	// Under GODEBUG=fips140=only, listing a TSA re-admits SHA-1 into the process: that comparison
+	// runs with fips140.WithoutEnforcement, as does the consistency check against a
+	// signingCertificate attribute in a token that also carries signingCertificateV2.
 	AllowESSV1 []*x509.Certificate
 	// AcceptedPolicies lists the TSA policy OIDs the caller accepts; empty accepts any, and the
 	// caller then must check Result.PolicyOID itself.

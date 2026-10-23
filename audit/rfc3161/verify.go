@@ -721,9 +721,7 @@ func selectSigner(certs []*x509.Certificate, si *signerInfo, e *essID) (*x509.Ce
 	}
 	var signer *x509.Certificate
 	for _, c := range matched {
-		h := e.hash.New()
-		h.Write(c.Raw)
-		if bytes.Equal(h.Sum(nil), e.certHash) {
+		if bytes.Equal(essDigest(e.hash, c.Raw), e.certHash) {
 			signer = c
 			break
 		}
@@ -1159,4 +1157,18 @@ func parseIssuerSerial(is node) ([]byte, *big.Int, *Refusal) {
 		return nil, nil, r
 	}
 	return name.FullBytes, serial, nil
+}
+
+// essDigest is the hash of a certificate under the ESS hash algorithm. The SHA-256, SHA-384 and
+// SHA-512 cases are plain crypto.Hash digests. A signingCertificate (v1) attribute names SHA-1, which
+// crypto/sha1 refuses under GODEBUG=fips140=only, so that digest comes from sha1Sum, which is a
+// consistency comparison and never a trust decision: such a token is refused (ReasonESSV1Only)
+// unless the policy lists the signer's key (Policy.AllowESSV1).
+func essDigest(h crypto.Hash, raw []byte) []byte {
+	if h == crypto.SHA1 {
+		return sha1Sum(raw)
+	}
+	d := h.New()
+	d.Write(raw)
+	return d.Sum(nil)
 }

@@ -22,6 +22,7 @@ import (
 
 	"github.com/bide-ai/bide/internal/safefile"
 	"github.com/bide-ai/bide/internal/term"
+	"github.com/bide-ai/bide/notify"
 )
 
 // Verbs are the verbs of bide notify, in the order help shows them.
@@ -153,6 +154,11 @@ func (s *secretSource) load(getenv func(string) string, readFile func(string) ([
 	prev, err := readOne(getenv, readFile, s.prevEnv, s.prevFile, "-previous-secret-file")
 	if err != nil {
 		return secrets{}, err
+	}
+	for _, c := range []struct{ name, val string }{{"the signing secret", cur}, {"the previous secret", prev}} {
+		if err := notify.CheckSecret(c.val); err != nil {
+			return secrets{}, fmt.Errorf("%s is shorter than 14 bytes, which GODEBUG=fips140=only does not allow for an HMAC key; use at least 32 bytes (for example openssl rand -hex 32)", c.name)
+		}
 	}
 	return secrets{current: cur, previous: prev}, nil
 }

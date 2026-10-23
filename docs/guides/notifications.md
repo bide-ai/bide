@@ -35,6 +35,12 @@ a, err := agent.New(model, journal, agent.WithNotifier(hook, audit.NewNotifyTrai
 arguments, read from your configuration or environment. They are never written to the journal, the
 trail or a payload, and never appear in an error.
 
+Use at least 32 bytes of random data for a secret. Under `GODEBUG=fips140=only`, `crypto/hmac` refuses a
+key shorter than 14 bytes (112 bits) by panicking, so in that mode `NewWebhook` returns
+`agent.ErrConfig` (wrapping `notify.ErrShortSecret`) for a shorter secret, `notify.Verify` returns
+`ErrShortSecret`, and `notify.Sign` leaves such a secret out; without that mode any length is accepted,
+as before.
+
 The same option goes to `agent.RecoverLoop`, which is what catches an event whose process died before
 the first record of it.
 

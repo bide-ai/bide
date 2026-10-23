@@ -2,6 +2,7 @@ package rfc3161
 
 import (
 	"bytes"
+	"crypto/fips140"
 	"crypto/sha1" //nolint:gosec // only to detect a signingCertificate attribute that disagrees; SHA-1 is never trusted
 	"crypto/x509"
 	"encoding/asn1"
@@ -168,7 +169,16 @@ func allowedESSV1(signer *x509.Certificate, allow []*x509.Certificate) bool {
 	return false
 }
 
-func sha1Sum(b []byte) []byte { s := sha1.Sum(b); return s[:] }
+// sha1Sum is the SHA-1 of b, for the consistency comparison against a signingCertificate (v1)
+// attribute: the binding to the signer is the signingCertificateV2 SHA-256 hash, which is checked
+// first, and SHA-1 is never trusted. Under GODEBUG=fips140=only crypto/sha1 panics, so a real token
+// that carries both attributes (DigiCert's does) would crash verification; the comparison runs
+// with enforcement off (fips140.WithoutEnforcement), which keeps the cross-check in place.
+func sha1Sum(b []byte) []byte {
+	var s [sha1.Size]byte
+	fips140.WithoutEnforcement(func() { s = sha1.Sum(b) })
+	return s[:]
+}
 
 // distrusted reports whether a certificate of the path shares a public key with a Distrust entry
 // that has taken effect by genTime.

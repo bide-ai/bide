@@ -380,7 +380,7 @@ func TestUnsignedRequestsAreNeverOffered(t *testing.T) {
 
 func TestAuthSecretSlot(t *testing.T) {
 	srv := newPlainServer(t, func(w http.ResponseWriter, r *http.Request) {})
-	w, err := NewWebhook(srv.URL, WithSecrets("new", "old"))
+	w, err := NewWebhook(srv.URL, WithSecrets("new-fips-padded-secret", "old-fips-padded-secret"))
 	if err != nil {
 		t.Fatal(err)
 	}

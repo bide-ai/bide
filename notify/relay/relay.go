@@ -133,6 +133,11 @@ func New(c Config) (*Handler, error) {
 	if live == 0 {
 		return nil, errors.New("relay: Secrets needs at least one non-empty secret")
 	}
+	for _, s := range c.Secrets {
+		if err := notify.CheckSecret(s); err != nil {
+			return nil, fmt.Errorf("relay: Secrets: %w (use at least 32 bytes)", err)
+		}
+	}
 	if len(c.Sinks) == 0 {
 		return nil, errors.New("relay: Sinks needs at least one sink")
 	}
@@ -438,6 +443,8 @@ func RejectionClass(err error) string {
 		return "delivery ID missing or not the signed id"
 	case errors.Is(err, notify.ErrBodyTooLarge):
 		return "body too large"
+	case errors.Is(err, notify.ErrShortSecret):
+		return "a configured secret is too short for FIPS mode"
 	default:
 		return "unreadable request"
 	}

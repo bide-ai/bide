@@ -75,7 +75,7 @@ func deliveredViewCommand(t *testing.T, opts ...notify.Option) string {
 		body, _ = io.ReadAll(r.Body)
 	}))
 	t.Cleanup(srv.Close)
-	hook, err := notify.NewWebhook(srv.URL, append([]notify.Option{notify.WithSecrets("test-secret", "")}, opts...)...)
+	hook, err := notify.NewWebhook(srv.URL, append([]notify.Option{notify.WithSecrets("test-secret-fips-padded", "")}, opts...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
