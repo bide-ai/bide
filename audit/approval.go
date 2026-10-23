@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/escalation"
 )
 
 // EvidenceKind names what one item of an EvidencePackage proves.
@@ -105,12 +106,18 @@ func ApprovalEvidence(ctx context.Context, store *agent.Journal, runID, toolUseI
 	// A gated plan flow node's request is its ApprovalRequest, and its result is the node's own
 	// record (a step named by the node's key); an agent tool call's result is its tool result.
 	flowNode := recs[callIdx].Name == agent.ApprovalRequestStep(toolUseID)
-	result := EvidenceAction{Label: toolUseID, Kind: KindTool, Ref: toolUseID}
+	// The escalation instance of a call (the taint policy's gate, subject "<call>#taint") has no result of
+	// its own: its result is the call's.
+	resultID := toolUseID
+	if base, ok := escalation.Base(toolUseID); ok {
+		resultID = base
+	}
+	result := EvidenceAction{Label: resultID, Kind: KindTool, Ref: resultID}
 	if flowNode {
 		result.Kind = KindStep
 		result.Bundle, err = ProveStep(ctx, store, runID, toolUseID, sth)
 	} else {
-		result.Bundle, err = ProveToolCall(ctx, store, runID, toolUseID, sth)
+		result.Bundle, err = ProveToolCall(ctx, store, runID, resultID, sth)
 	}
 	if err != nil {
 		return nil, err
@@ -389,7 +396,11 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 		if flowNode {
 			return a.Kind == KindStep && r.Kind == agent.StepValue && r.Name == toolUseID
 		}
-		return a.Kind == KindTool && r.Kind == agent.StepToolResult && r.ToolUseID == toolUseID
+		resultID := toolUseID
+		if base, ok := escalation.Base(toolUseID); ok {
+			resultID = base // an escalation instance's result is its call's
+		}
+		return a.Kind == KindTool && r.Kind == agent.StepToolResult && r.ToolUseID == resultID
 	}, "result")
 	if err != nil {
 		return v, err

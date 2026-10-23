@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"iter"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -569,5 +570,61 @@ func TestTaintGate_AnOwnGateDenialEndsTheCallBeforeTheInstanceIsAsked(t *testing
 	}
 	if _, ok := e.reasonOf("c2"); ok {
 		t.Error("a gate-reason was written for a call the own gate denied")
+	}
+}
+
+// Probe: the notifier announces the escalation instance with the escalation gate (from its pause note),
+// and the tool's own gate with its own; neither carries the other's approvers.
+func TestTaintGate_TheNotifierNamesEachInstanceWithItsOwnGate(t *testing.T) {
+	ctx := context.Background()
+	e := newTG(t)
+	e.policy = taintPolicy2()
+	e.opts = []Option{WithApproverVerifiers(fakeVerifiers("ops", "risk", "own"))}
+	e.writeOp = []ToolOption{WithApproval(&ApprovalPolicy{Need: 1, Approvers: []string{"own"}})}
+	clk, sink, trail := sweepClock(), &fakeSink{}, NewMemNotifyTrail()
+	pendingOn(t, e.drive(true, readThenWrite()...), "c2")
+	if err := sweep(t, e.j, sink, trail, clk); err != nil {
+		t.Fatal(err)
+	}
+	approveAs(t, e.j, "r", "c2", "own", true)
+	pendingOn2(t, e.drive(true, textTurn("done")), "c2#taint")
+	if err := sweep(t, e.j, sink, trail, clk); err != nil {
+		t.Fatal(err)
+	}
+	var own, esc *Notification
+	for i := range sink.calls {
+		n := &sink.calls[i]
+		if n.Kind != NotificationApprovalPending || n.Approval == nil {
+			continue
+		}
+		switch n.Approval.ToolUseID {
+		case "c2":
+			own = n
+		case "c2#taint":
+			esc = n
+		}
+	}
+	if own == nil || esc == nil {
+		t.Fatalf("notifications: own %v, escalation %v; want both", own != nil, esc != nil)
+	}
+	if own.Approval.ToolName != "write" || own.Approval.Need != 1 || !slices.Equal(own.Approval.Approvers, []string{"own"}) {
+		t.Errorf("own gate notification = %+v", own.Approval)
+	}
+	if esc.Approval.ToolName != "write" || esc.Approval.Need != 2 || !slices.Equal(esc.Approval.Approvers, []string{"ops", "risk"}) {
+		t.Errorf("escalation notification = %+v, want write needing 2 of [ops risk]", esc.Approval)
+	}
+	_ = ctx
+}
+
+func taintPolicy2() TaintPolicy {
+	return TaintPolicy{Gate: &ApprovalPolicy{Need: 2, Approvers: []string{"ops", "risk"}}}
+}
+
+// pendingOn2 is pendingOn for a gate whose pending value carries a quorum.
+func pendingOn2(t *testing.T, err error, id string) {
+	t.Helper()
+	var pend *ApprovalPending
+	if !errors.As(err, &pend) || pend.ToolUseID != id {
+		t.Fatalf("err = %v, want *ApprovalPending on %s", err, id)
 	}
 }

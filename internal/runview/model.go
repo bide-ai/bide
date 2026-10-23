@@ -11,12 +11,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/escalation"
 	"github.com/bide-ai/bide/plan"
 )
 
@@ -581,6 +583,34 @@ func flowRequest(r agent.Record) (agent.ToolUse, bool) {
 	return call, ok
 }
 
+// withEscalationInstances adds, after each call, its escalation instance (the taint policy's gate, subject
+// "<call>#taint") when the journal holds a pause note or a decision for it, as a call of the same tool.
+func withEscalationInstances(recs []agent.Record, byName map[string]agent.Record, calls map[string]agent.ToolUse, order []string) ([]string, map[string]agent.ToolUse) {
+	var out []string
+	var extra map[string]agent.ToolUse
+	for _, id := range order {
+		out = append(out, id)
+		eid := escalation.ID(id)
+		if _, ok := agent.LatestPauseNote(byName, eid); !ok && !slices.ContainsFunc(recs, func(r agent.Record) bool { return r.Kind == agent.StepApproval && r.ToolUseID == eid }) {
+			continue
+		}
+		if extra == nil {
+			extra = map[string]agent.ToolUse{}
+		}
+		tu := calls[id]
+		tu.ID = eid
+		extra[eid] = tu
+		out = append(out, eid)
+	}
+	if extra == nil {
+		return order, calls
+	}
+	merged := make(map[string]agent.ToolUse, len(calls)+len(extra))
+	maps.Copy(merged, calls)
+	maps.Copy(merged, extra)
+	return out, merged
+}
+
 // gates reads each gated call's approval decisions and tally: a tool call's, or a plan flow
 // node's (its ID the node's key, and its result the node's record).
 func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) []Gate {
@@ -588,6 +618,7 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 	for _, r := range recs {
 		byName[r.Name] = r
 	}
+	order, calls = withEscalationInstances(recs, byName, calls, order)
 	var out []Gate
 	for _, id := range order {
 		g := Gate{ToolUseID: id, ToolName: calls[id].Name}
@@ -608,8 +639,12 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 			}
 		}
 		resulted := false
+		resultID := id // the escalation instance of a call has no result of its own: the call's is its result
+		if base, ok := escalation.Base(id); ok {
+			resultID = base
+		}
 		for _, r := range recs {
-			if (r.Kind == agent.StepToolResult || r.Kind == agent.StepSagaFail) && r.ToolUseID == id || r.Kind == agent.StepValue && r.Name == id && strings.HasPrefix(id, "node:") {
+			if (r.Kind == agent.StepToolResult || r.Kind == agent.StepSagaFail) && r.ToolUseID == resultID || r.Kind == agent.StepValue && r.Name == id && strings.HasPrefix(id, "node:") {
 				resulted = true
 			}
 			if r.Kind == agent.StepApproval && r.ToolUseID == id {
