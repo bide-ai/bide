@@ -80,6 +80,12 @@ func checkSecret(secret string, enforced bool) error {
 	return nil
 }
 
+// CheckSecret reports whether this process can use secret as a webhook signing secret: it returns
+// ErrShortSecret for a non-empty secret shorter than 14 bytes under strict FIPS enforcement
+// (GODEBUG=fips140=only), and nil otherwise. NewWebhook applies it; a receiver (a relay, a listener)
+// calls it when it loads its secrets, so a mis-set secret is a startup error and not a rejected request.
+func CheckSecret(secret string) error { return checkSecret(secret, fips140.Enforced()) }
+
 func mac(secret string, ts int64, body []byte) []byte {
 	h := hmac.New(sha256.New, []byte(secret))
 	h.Write([]byte(strconv.FormatInt(ts, 10)))
