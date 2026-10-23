@@ -39,7 +39,7 @@ func BenchmarkRunsListingWithLedgerRuns(b *testing.B) {
 			for i := range ledgers {
 				a := fmt.Sprintf("a%d", i)
 				if _, err := l.Reserve(ctx, capledger.Request{Rule: rule, KeyDigest: capledger.KeyDigest(fmt.Sprintf("customer-%d", i)),
-					RunID: "run-000", RootRunID: "run-000", Attempt: a, Marked: true, Amount: 1, Limit: 100}); err != nil {
+					RunID: "run-000", RootRunID: "run-000", ToolUseID: a, AttemptID: "1", Marked: true, Amount: 1, Limit: 100}); err != nil {
 					b.Fatal(err)
 				}
 			}

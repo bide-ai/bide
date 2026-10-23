@@ -1,6 +1,7 @@
 package capledger
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 )
@@ -33,9 +34,23 @@ func encodeIntent(in intent) ([]byte, error)        { return json.Marshal(in) }
 func encodeReserve(r reserveRecord) ([]byte, error) { return json.Marshal(r) }
 func encodeWindow(w string) ([]byte, error)         { return json.Marshal(windowRecord{Window: w}) }
 
+// strict decodes b into v, refusing a member v does not have and anything after the value: a record
+// this package did not write does not decode.
+func strict(b []byte, v any) error {
+	d := json.NewDecoder(bytes.NewReader(b))
+	d.DisallowUnknownFields()
+	if err := d.Decode(v); err != nil {
+		return err
+	}
+	if d.More() {
+		return fmt.Errorf("data after the record")
+	}
+	return nil
+}
+
 func decodeSlot(b []byte) (Slot, error) {
 	var s Slot
-	if err := json.Unmarshal(b, &s); err != nil {
+	if err := strict(b, &s); err != nil {
 		return Slot{}, fmt.Errorf("slot: %w", err)
 	}
 	return s, nil
@@ -43,7 +58,7 @@ func decodeSlot(b []byte) (Slot, error) {
 
 func decodeIntent(b []byte) (intent, error) {
 	var in intent
-	if err := json.Unmarshal(b, &in); err != nil {
+	if err := strict(b, &in); err != nil {
 		return intent{}, fmt.Errorf("cap-intent: %w", err)
 	}
 	if in.Format != intentFormat {

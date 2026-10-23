@@ -62,9 +62,12 @@ func (l *Ledger) release(ctx context.Context, run, attempt string) (bool, error)
 				return fmt.Errorf("%w: %s", ErrUnmarked, attempt)
 			}
 			cum, n := v.last()
+			if cum < s.Amount {
+				return fmt.Errorf("%w: releasing %d from a window holding %d", ErrCorrupt, s.Amount, cum)
+			}
 			insertAt = n
 			next = Slot{N: n, Kind: kindRelease, Attempt: attempt, Amount: s.Amount, Currency: s.Currency, Ref: s.N,
-				CumAfter: cum - s.Amount, Limit: s.Limit, Marked: true}
+				CumAfter: cum - s.Amount, Limit: s.Limit, Marked: true, Run: s.Run, Tool: s.Tool, Att: s.Att}
 			return nil
 		})
 		if err != nil {
@@ -90,12 +93,12 @@ func (l *Ledger) release(ctx context.Context, run, attempt string) (bool, error)
 
 // protocol:caps begin Reconcile
 
-// Reconcile releases the live slots of marked attempts that voided reports as recorded not started: the
+// Reconcile releases the live slots of marked attempts that voided reports as recorded not started (it is given the slot: its Run, Tool and Att find the attempt marker): the
 // slots a void left counted (a void written without a release, a handler that reserved after the
 // call was sealed). voided reads the run journals, which the ledger does not know. An attempt that is
 // not voided is left alone, as is every unmarked attempt and a call resolved by ResolveHalt: a window
 // only over-counts. It returns the attempts it released.
-func (l *Ledger) Reconcile(ctx context.Context, run string, voided func(ctx context.Context, attempt string) (bool, error)) ([]string, error) {
+func (l *Ledger) Reconcile(ctx context.Context, run string, voided func(ctx context.Context, s Slot) (bool, error)) ([]string, error) {
 	live, err := l.Live(ctx, run)
 	if err != nil {
 		return nil, err
@@ -105,7 +108,7 @@ func (l *Ledger) Reconcile(ctx context.Context, run string, voided func(ctx cont
 		if !s.Marked {
 			continue
 		}
-		v, err := voided(ctx, s.Attempt)
+		v, err := voided(ctx, s)
 		if err != nil {
 			return released, fmt.Errorf("capledger: read whether %s was voided: %w", s.Attempt, err)
 		}

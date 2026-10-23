@@ -42,3 +42,30 @@ func TestCapLedger_AcrossProcessesOnSQLite(t *testing.T) {
 	p := capledgertest.Params{Procs: 4, Own: 12, Shared: 6, Limit: 30, Namespace: fmt.Sprintf("mp-%d", time.Now().UnixNano())}
 	capledgertest.Run(t, agenttest.MustJournal(s), p, []string{capDBEnv + "=" + path})
 }
+
+// A real crash: one worker is SIGKILLed in the middle of its reservations and a replacement of the same
+// name resumes them. The ledger keeps its shape, no attempt holds two slots, the window is exactly full,
+// and a reconcile pass releases nothing.
+func TestCapLedger_SIGKILLMidReservationSQLite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "caps.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	p := capledgertest.Params{Procs: 3, Own: 10, Shared: 4, Limit: 20, Namespace: fmt.Sprintf("mpk-%d", time.Now().UnixNano()), Kill: true}
+	capledgertest.Run(t, agenttest.MustJournal(s), p, []string{capDBEnv + "=" + path})
+}
+
+// Releases across processes: every worker releases its first own attempt and races the others through a
+// reconcile pass over one shared slot, which is released exactly once.
+func TestCapLedger_ReleaseAcrossProcessesOnSQLite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "caps.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	p := capledgertest.Params{Procs: 4, Own: 8, Shared: 4, Limit: 20, Namespace: fmt.Sprintf("mpr-%d", time.Now().UnixNano()), Release: true}
+	capledgertest.Run(t, agenttest.MustJournal(s), p, []string{capDBEnv + "=" + path})
+}

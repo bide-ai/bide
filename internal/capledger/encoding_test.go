@@ -28,6 +28,10 @@ func TestEncoding_Golden(t *testing.T) {
 	add("slot-reserve-waived", d, err)
 	d, err = encodeSlot(release)
 	add("slot-release", d, err)
+	ident := reserve
+	ident.Run, ident.Tool, ident.Att = "run-7", "toolu_01", "1"
+	d, err = encodeSlot(ident)
+	add("slot-reserve-identified", d, err)
 	d, err = encodeIntent(in)
 	add("cap-intent", d, err)
 	d, err = encodeReserve(reserveRecord{Format: reserveFormat, Ledger: "@cap/prod/refund_total/USD/2026-10-22/x", Slot: 3, Cum: 4100})
@@ -55,7 +59,7 @@ func TestEncoding_Golden(t *testing.T) {
 	if err != nil || s != release {
 		t.Fatalf("decoded release = %+v, %v", s, err)
 	}
-	got, err := decodeIntent([]byte(strings.SplitN(strings.Split(string(want), "\n")[3], " ", 2)[1]))
+	got, err := decodeIntent([]byte(strings.SplitN(strings.Split(string(want), "\n")[4], " ", 2)[1]))
 	if err != nil || got != in {
 		t.Fatalf("decoded intent = %+v, %v", got, err)
 	}

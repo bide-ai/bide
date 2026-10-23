@@ -1,6 +1,7 @@
 slot-reserve {"n":3,"kind":"reserve","attempt":"root/toolu_01/a1","amount":1250,"currency":"USD","cum_after":4100,"limit":5000,"marked":true}
 slot-reserve-waived {"n":4,"kind":"reserve","attempt":"root/toolu_02/a1","amount":2000,"currency":"USD","cum_after":6100,"limit":5000,"over":true}
 slot-release {"n":5,"kind":"release","attempt":"root/toolu_01/a1","amount":1250,"currency":"USD","ref":3,"cum_after":4850,"limit":5000,"marked":true}
+slot-reserve-identified {"n":3,"kind":"reserve","attempt":"root/toolu_01/a1","amount":1250,"currency":"USD","cum_after":4100,"limit":5000,"marked":true,"run":"run-7","tool":"toolu_01","att":"1"}
 cap-intent {"format":"bide.cap-intent.v1","attempt":"root/toolu_01/a1","namespace":"prod","rule":"refund_total","currency":"USD","window_kind":"day","key":"ddb065b709e4fec810723d0b598ce6380ae84c4904381c3ff06327052d763e06","amount":1250,"marked":true,"window":"2026-10-22","floor":"2026-10-21"}
 cap-reserve {"format":"bide.cap-reserve.v1","ledger":"@cap/prod/refund_total/USD/2026-10-22/x","slot":3,"cum_after":4100}
 win {"window":"2026-10-22"}

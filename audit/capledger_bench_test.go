@@ -20,6 +20,9 @@ import (
 // and on an AuditedStore with and without WithMinInterval. The audited store anchors a run's head on
 // every growth unless WithMinInterval holds growth back, so the ledger's cost there is the anchoring
 // of a run that grows with every reservation.
+// measured is the number of reservations one iteration makes.
+const measured = 100
+
 func BenchmarkCapLedgerReserve(b *testing.B) {
 	for _, store := range []struct {
 		name string
@@ -38,19 +41,24 @@ func BenchmarkCapLedgerReserve(b *testing.B) {
 				reserve := func(i int) {
 					a := fmt.Sprintf("a%d", i)
 					if _, err := l.Reserve(ctx, capledger.Request{Rule: rule, KeyDigest: capledger.KeyDigest(""), RunID: "run-" + a,
-						RootRunID: "run", Attempt: a, Marked: true, Amount: 1, Limit: 1 << 40}); err != nil {
+						RootRunID: "run", ToolUseID: a, AttemptID: "1", Marked: true, Amount: 1, Limit: 1 << 40}); err != nil {
 						b.Fatal(err)
 					}
 				}
 				for i := range preload {
 					reserve(i)
 				}
+				// A fixed batch, so the ledger's size is known while it is measured: it grows from preload to
+				// preload+measured slots (at most 10% for preload 1000), whatever b.N is. Run it with
+				// -benchtime=1x: one batch per sub-benchmark; ns/reserve and B/reserve are per reservation.
 				b.ReportAllocs()
-				i := preload
-				for b.Loop() {
-					i++
+				b.ResetTimer()
+				for i := preload; i < preload+measured; i++ {
 					reserve(i)
 				}
+				b.StopTimer()
+				b.ReportMetric(float64(b.Elapsed().Nanoseconds())/measured, "ns/reserve")
+				b.ReportMetric(float64(preload+measured), "slots-at-end")
 			})
 		}
 	}

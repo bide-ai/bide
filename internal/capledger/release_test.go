@@ -24,7 +24,7 @@ func TestRelease_NeedsASeal(t *testing.T) {
 	st, clk := newMemStore(), &testClock{t: day1}
 	l := newTestLedger(st, clk)
 	o := mustReserve(t, l, req("a1", 10, 100))
-	if _, err := l.Release(context.Background(), o.Ledger, "a1", Seal{}); !errors.Is(err, ErrNotSealed) {
+	if _, err := l.Release(context.Background(), o.Ledger, ak("a1"), Seal{}); !errors.Is(err, ErrNotSealed) {
 		t.Fatalf("a release without a seal: err = %v, want ErrNotSealed", err)
 	}
 	if _, ok := NewSeal(nil); ok {
@@ -59,12 +59,12 @@ func TestRelease_OnceAndTheCapacityReturns(t *testing.T) {
 	if !ok {
 		t.Fatal("no seal for a call that did not begin")
 	}
-	released, err := l.Release(ctx, o.Ledger, "a1", seal)
+	released, err := l.Release(ctx, o.Ledger, ak("a1"), seal)
 	if err != nil || !released {
 		t.Fatalf("Release = %v, %v", released, err)
 	}
 	// The dedupe scan: a second release, from the same loop or another, writes nothing.
-	again, err := newTestLedger(st, clk).Release(ctx, o.Ledger, "a1", seal)
+	again, err := newTestLedger(st, clk).Release(ctx, o.Ledger, ak("a1"), seal)
 	if err != nil || again {
 		t.Fatalf("second Release = %v, %v, want false, nil", again, err)
 	}
@@ -85,11 +85,11 @@ func TestRelease_NeverAnUnmarkedAttempt(t *testing.T) {
 	o := mustReserve(t, l, r)
 	var w atomic.Int32
 	seal, _ := NewSeal(sealOf(&w))
-	if _, err := l.Release(ctx, o.Ledger, "a1", seal); !errors.Is(err, ErrUnmarked) {
+	if _, err := l.Release(ctx, o.Ledger, ak("a1"), seal); !errors.Is(err, ErrUnmarked) {
 		t.Fatalf("Release of an unmarked attempt: err = %v, want ErrUnmarked", err)
 	}
 	// Reconcile does not touch it either, voided or not.
-	got, err := l.Reconcile(ctx, o.Ledger, func(context.Context, string) (bool, error) { return true, nil })
+	got, err := l.Reconcile(ctx, o.Ledger, func(context.Context, Slot) (bool, error) { return true, nil })
 	if err != nil || len(got) != 0 {
 		t.Fatalf("Reconcile = %v, %v, want nothing released", got, err)
 	}
@@ -107,21 +107,21 @@ func TestReconcile_ReleasesVoidedMarkedAttemptsOnly(t *testing.T) {
 		run = mustReserve(t, l, req(fmt.Sprintf("a%d", i), 10, 100)).Ledger
 	}
 	voided := map[string]bool{"a1": true, "a3": true}
-	got, err := l.Reconcile(ctx, run, func(_ context.Context, a string) (bool, error) { return voided[a], nil })
-	if err != nil || len(got) != 2 || got[0] != "a1" || got[1] != "a3" {
+	got, err := l.Reconcile(ctx, run, func(_ context.Context, s Slot) (bool, error) { return voided[s.Tool], nil })
+	if err != nil || len(got) != 2 || got[0] != ak("a1") || got[1] != ak("a3") {
 		t.Fatalf("Reconcile = %v, %v, want a1 and a3", got, err)
 	}
 	checkShape(t, slotsOf(t, st, run), 100)
 	live, _ := l.Live(ctx, run)
-	if len(live) != 2 || live[0].Attempt != "a0" || live[1].Attempt != "a2" {
+	if len(live) != 2 || live[0].Tool != "a0" || live[1].Tool != "a2" {
 		t.Fatalf("live = %+v, want a0 and a2", live)
 	}
 	// Run again: nothing left to release.
-	if got, err := l.Reconcile(ctx, run, func(_ context.Context, a string) (bool, error) { return voided[a], nil }); err != nil || len(got) != 0 {
+	if got, err := l.Reconcile(ctx, run, func(_ context.Context, s Slot) (bool, error) { return voided[s.Tool], nil }); err != nil || len(got) != 0 {
 		t.Fatalf("second Reconcile = %v, %v", got, err)
 	}
 	// A reader that fails fails the pass: nothing is guessed.
-	if _, err := l.Reconcile(ctx, run, func(context.Context, string) (bool, error) { return false, errCrash }); !errors.Is(err, errCrash) {
+	if _, err := l.Reconcile(ctx, run, func(context.Context, Slot) (bool, error) { return false, errCrash }); !errors.Is(err, errCrash) {
 		t.Fatalf("a failing voided: err = %v", err)
 	}
 }
@@ -137,7 +137,7 @@ func TestReconcile_ConcurrentPassesReleaseOnce(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			got, err := newTestLedger(st, clk).Reconcile(ctx, run, func(context.Context, string) (bool, error) { return true, nil })
+			got, err := newTestLedger(st, clk).Reconcile(ctx, run, func(context.Context, Slot) (bool, error) { return true, nil })
 			if err != nil {
 				t.Error(err)
 			}
@@ -161,11 +161,11 @@ func TestReconcile_ReleasesALateReserve(t *testing.T) {
 	var w atomic.Int32
 	seal, _ := NewSeal(sealOf(&w))
 	run := l.LedgerRun(dayRule(), "2026-10-22", KeyDigest(""))
-	if released, err := l.Release(ctx, run, "a1", seal); err != nil || released {
+	if released, err := l.Release(ctx, run, ak("a1"), seal); err != nil || released {
 		t.Fatalf("Release with nothing reserved = %v, %v", released, err)
 	}
 	o := mustReserve(t, l, req("a1", 10, 100)) // the late reserve
-	got, err := l.Reconcile(ctx, o.Ledger, func(context.Context, string) (bool, error) { return true, nil })
+	got, err := l.Reconcile(ctx, o.Ledger, func(context.Context, Slot) (bool, error) { return true, nil })
 	if err != nil || len(got) != 1 {
 		t.Fatalf("Reconcile = %v, %v, want the late slot released", got, err)
 	}

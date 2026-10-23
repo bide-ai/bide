@@ -176,15 +176,18 @@ var day1 = time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
 func dayRule() Rule { return Rule{Namespace: "prod", Name: "refund_total", Currency: "USD", Kind: Day} }
 
 func req(attempt string, amount, limit int64) Request {
-	return Request{Rule: dayRule(), KeyDigest: KeyDigest(""), RunID: "run-" + attempt, RootRunID: "root", Attempt: attempt,
+	return Request{Rule: dayRule(), KeyDigest: KeyDigest(""), RunID: "run-" + attempt, RootRunID: "root", ToolUseID: attempt, AttemptID: "1",
 		Marked: true, Amount: amount, Limit: limit}
 }
+
+// ak is the key the ledger records for req(attempt, ...): root "root", tool-use ID attempt, attempt ID "1".
+func ak(attempt string) string { return testEncode("root") + "/" + testEncode(attempt) + "/1" }
 
 func mustReserve(t *testing.T, l *Ledger, r Request) Outcome {
 	t.Helper()
 	o, err := l.Reserve(context.Background(), r)
 	if err != nil {
-		t.Fatalf("Reserve(%s): %v", r.Attempt, err)
+		t.Fatalf("Reserve(%s): %v", r.ToolUseID, err)
 	}
 	return o
 }

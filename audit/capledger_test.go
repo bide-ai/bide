@@ -33,7 +33,7 @@ func TestCapLedger_OnAnAuditedStore(t *testing.T) {
 					defer wg.Done()
 					a := fmt.Sprintf("a%d", i)
 					_, err := capledgertest.New(j, now, 0).Reserve(ctx, capledger.Request{Rule: rule, KeyDigest: capledger.KeyDigest(""),
-						RunID: "run-" + a, RootRunID: "run", Attempt: a, Marked: true, Amount: 1, Limit: limit})
+						RunID: "run-" + a, RootRunID: "run", ToolUseID: a, AttemptID: "1", Marked: true, Amount: 1, Limit: limit})
 					switch {
 					case err == nil:
 						ok.Add(1)

@@ -29,6 +29,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/bide-ai/bide/internal/amount"
 )
 
 // RunPrefix starts the ID of every ledger and index run (agent's capRunPrefix is the same string).
@@ -104,6 +106,11 @@ var (
 	ErrUnmarked = errors.New("capledger: only a marked attempt is released")
 	// ErrContention is a reservation that lost the insert race more often than MaxRetries.
 	ErrContention = errors.New("capledger: too many lost slot inserts")
+	// ErrInvalid is a request the ledger refuses before it reads or writes anything: a non-positive
+	// amount, a negative limit, a currency that is not three upper-case ASCII letters, a name left empty.
+	// The caller treats an amount it could not parse, or parsed as negative, as not assessable (the
+	// rule's strictest action applies), and never reserves zero.
+	ErrInvalid = errors.New("capledger: invalid request")
 )
 
 // OverLimitError is the detail of ErrOverLimit.
@@ -133,6 +140,9 @@ type Config struct {
 	// MaxRetries bounds the lost slot inserts of one reservation or release (default 1000): a loser
 	// reads again, so contention costs a retry, and past the bound the call fails closed.
 	MaxRetries int
+	// MaxViews bounds the ledger runs whose reads are cached (default 256): the least recently used is
+	// dropped, and read again from the store when next needed. The cache is a hint, so dropping one costs a read.
+	MaxViews int
 }
 
 // Ledger reserves and releases against cap ledgers in one store. A Ledger is safe for concurrent use;
@@ -142,6 +152,7 @@ type Ledger struct {
 	cfg   Config
 	mu    sync.Mutex
 	views map[string]*view
+	lru   []string // run IDs in use order, least recently used first
 }
 
 // New returns a Ledger over cfg.
@@ -151,6 +162,9 @@ func New(cfg Config) *Ledger {
 	}
 	if cfg.MaxRetries <= 0 {
 		cfg.MaxRetries = 1000
+	}
+	if cfg.MaxViews <= 0 {
+		cfg.MaxViews = 256
 	}
 	return &Ledger{cfg: cfg, views: map[string]*view{}}
 }
@@ -219,6 +233,11 @@ type Slot struct {
 	Limit    int64  `json:"limit"`
 	Over     bool   `json:"over,omitempty"` // cum_after exceeds the limit, and a waiver covered it
 	Marked   bool   `json:"marked,omitempty"`
+	// Run, Tool and Att are the identity the Attempt joins, unencoded: the run whose journal holds the
+	// call's attempt marker, the tool-use ID and the attempt ID, so a reconcile pass can find the marker.
+	Run  string `json:"run,omitempty"`
+	Tool string `json:"tool,omitempty"`
+	Att  string `json:"att,omitempty"`
 }
 
 const (
@@ -240,15 +259,13 @@ type view struct {
 // entry it saw, and fails closed on a ledger that breaks its shape: a slot whose number is not the
 // next one is a gap, which no writer of this package leaves (Dense).
 func (l *Ledger) read(ctx context.Context, run string, f func(v *view) error) error {
-	l.mu.Lock()
-	v, ok := l.views[run]
-	if !ok {
-		v = &view{seq: -1, released: map[int]bool{}}
-		l.views[run] = v
-	}
-	l.mu.Unlock()
+	v := l.viewOf(run)
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	seg := strings.Split(run, "/")
+	if len(seg) != 6 || seg[0]+"/" != RunPrefix {
+		return fmt.Errorf("%w: %q is not a ledger run", ErrCorrupt, run)
+	}
 	for it, err := range l.cfg.Store.Scan(ctx, run, v.seq) {
 		if err != nil {
 			return fmt.Errorf("capledger: read the ledger %s: %w", run, err)
@@ -261,8 +278,8 @@ func (l *Ledger) read(ctx context.Context, run string, f func(v *view) error) er
 		if err != nil {
 			return fmt.Errorf("%w: %s in %s: %v", ErrCorrupt, it.Name, run, err)
 		}
-		if it.Name != slotName(s.N) || s.N != len(v.slots) {
-			return fmt.Errorf("%w: %s in %s is slot %d after %d slots", ErrCorrupt, it.Name, run, s.N, len(v.slots))
+		if err := l.accept(v, run, seg[3], it.Name, s); err != nil {
+			return err
 		}
 		if s.Kind == kindRelease {
 			v.released[s.Ref] = true
@@ -271,6 +288,88 @@ func (l *Ledger) read(ctx context.Context, run string, f func(v *view) error) er
 		v.seq = it.Seq
 	}
 	return f(v)
+}
+
+// viewOf is the cached view of run, created if there is none; the cache holds at most MaxViews, the
+// least recently used dropped.
+func (l *Ledger) viewOf(run string) *view {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	v, ok := l.views[run]
+	if ok {
+		for i, r := range l.lru {
+			if r == run {
+				l.lru = append(append(l.lru[:i:i], l.lru[i+1:]...), run)
+				break
+			}
+		}
+		return v
+	}
+	v = &view{seq: -1, released: map[int]bool{}}
+	l.views[run] = v
+	l.lru = append(l.lru, run)
+	for len(l.lru) > l.cfg.MaxViews {
+		delete(l.views, l.lru[0])
+		l.lru = l.lru[1:]
+	}
+	return v
+}
+
+// accept checks a slot the store holds against everything a writer of this package guarantees, so a
+// slot planted by anything else cannot move the window's total: a known kind, the next number, a
+// positive amount, the ledger's currency (its run ID's fourth segment), a total that follows from the
+// one before, the over flag the limit implies, and for a release an earlier live reserve of the same
+// attempt, amount and marking. Any violation is ErrCorrupt, which refuses the call.
+func (l *Ledger) accept(v *view, run, currencySeg, name string, s Slot) error {
+	bad := func(why string) error { return fmt.Errorf("%w: %s in %s: %s", ErrCorrupt, name, run, why) }
+	if name != slotName(s.N) || s.N != len(v.slots) {
+		return bad(fmt.Sprintf("slot %d after %d slots", s.N, len(v.slots)))
+	}
+	if s.Kind != kindReserve && s.Kind != kindRelease {
+		return bad(fmt.Sprintf("unknown kind %q", s.Kind))
+	}
+	if s.Attempt == "" || s.Amount <= 0 || s.Limit < 0 {
+		return bad("an empty attempt, a non-positive amount or a negative limit")
+	}
+	if l.cfg.Encode(s.Currency) != currencySeg || !validCurrency(s.Currency) {
+		return bad(fmt.Sprintf("currency %q is not the ledger's", s.Currency))
+	}
+	prev, _ := v.last()
+	var want int64
+	if s.Kind == kindReserve {
+		sum, err := amount.Add(prev, s.Amount)
+		if err != nil {
+			return bad("the total overflows")
+		}
+		want = sum
+		if s.Over != (s.CumAfter > s.Limit) || s.Ref != 0 {
+			return bad("the over flag or a reference that the slot's total does not allow")
+		}
+	} else {
+		r := s.Ref
+		if r < 0 || r >= len(v.slots) || v.slots[r].Kind != kindReserve || v.released[r] ||
+			v.slots[r].Attempt != s.Attempt || v.slots[r].Amount != s.Amount || v.slots[r].Marked != s.Marked || !s.Marked || s.Over {
+			return bad("a release that does not void an earlier live reserve of the same attempt and amount")
+		}
+		want = prev - s.Amount
+	}
+	if s.CumAfter != want {
+		return bad(fmt.Sprintf("cum_after %d, want %d", s.CumAfter, want))
+	}
+	return nil
+}
+
+// validCurrency is three upper-case ASCII letters, byte for byte: nothing is normalised.
+func validCurrency(c string) bool {
+	if len(c) != 3 {
+		return false
+	}
+	for i := 0; i < 3; i++ {
+		if c[i] < 'A' || c[i] > 'Z' {
+			return false
+		}
+	}
+	return true
 }
 
 // last is the total after the last slot, and the number of slots.
@@ -289,6 +388,16 @@ func (v *view) live(attempt string) (Slot, bool) {
 		}
 	}
 	return Slot{}, false
+}
+
+// Slots returns every slot of a ledger run, in order: for an audit and for tests.
+func (l *Ledger) Slots(ctx context.Context, run string) ([]Slot, error) {
+	var out []Slot
+	err := l.read(ctx, run, func(v *view) error {
+		out = append([]Slot(nil), v.slots...)
+		return nil
+	})
+	return out, err
 }
 
 // Live returns the live reserve slots of a ledger run (those no release voids), in slot order: for an

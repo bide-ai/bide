@@ -22,7 +22,7 @@ func capRule() capledger.Rule {
 
 func capReq(attempt string, amount, limit int64) capledger.Request {
 	return capledger.Request{Rule: capRule(), KeyDigest: capledger.KeyDigest(""), RunID: "r-" + attempt, RootRunID: "r",
-		Attempt: attempt, Marked: true, Amount: amount, Limit: limit}
+		ToolUseID: attempt, AttemptID: "1", Marked: true, Amount: amount, Limit: limit}
 }
 
 func capClock() func() time.Time { return func() time.Time { return capDay } }
@@ -58,7 +58,7 @@ func TestCapLedger_LedgerIsAReservedJournalRun(t *testing.T) {
 	if len(names) != 2 || names[1] != "slot:0" {
 		t.Fatalf("ledger run entries = %v, want the header and slot:0", names)
 	}
-	for _, name := range []string{"cap-intent:a1", "cap-reserve:a1"} {
+	for _, name := range []string{"cap-intent:r%2Fa1%2F1", "cap-reserve:r%2Fa1%2F1"} {
 		if _, ok, err := j.Get(ctx, "r-a1", name); err != nil || !ok {
 			t.Fatalf("run r-a1 holds no %s (%v)", name, err)
 		}
@@ -129,7 +129,7 @@ func TestCapLedger_CrashAtEveryWrite(t *testing.T) {
 				t.Fatal(err)
 			}
 			live, err := l.Live(ctx, o.Ledger)
-			if err != nil || len(live) != 1 || live[0].Attempt != "a1" || live[0].CumAfter != 10 {
+			if err != nil || len(live) != 1 || live[0].Tool != "a1" || live[0].CumAfter != 10 {
 				t.Fatalf("live = %+v, %v; want a1's one slot", live, err)
 			}
 		})

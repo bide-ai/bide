@@ -203,7 +203,7 @@ func TestReserve_CrashAtEveryStep(t *testing.T) {
 				checkShape(t, slots, 100)
 				live := 0
 				for _, s := range slots {
-					if s.Kind == kindReserve && s.Attempt == "a1" {
+					if s.Kind == kindReserve && s.Tool == "a1" {
 						live++
 					}
 				}

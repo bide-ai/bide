@@ -10,21 +10,28 @@ import (
 
 // Request is one reservation: an attempt of a call asks for amount against rule's window.
 type Request struct {
-	Rule Rule
+	attempt string // AttemptKey of the three parts, set by Reserve
+	Rule    Rule
 	// KeyDigest is KeyDigest of the normalized key the rule is by ("" digests as the unkeyed total).
 	KeyDigest string
 	// RunID is the run whose journal holds the attempt's cap-intent and cap-reserve: the run that made the call.
 	RunID string
 	// RootRunID is the root of the run's tree: the window id of a Run window.
 	RootRunID string
-	// Attempt identifies the attempt: "<root run id>/<tool-use id>/<attempt id>". A retry of the same
-	// attempt, a resume, a second driver and a middleware's second next carry the same Attempt.
-	Attempt string
+	// ToolUseID and AttemptID identify the attempt with RootRunID. The ledger encodes and joins them
+	// itself (AttemptKey), so no choice of the three can make one attempt's key another's. A retry of
+	// the same attempt, a resume, a second driver and a middleware's second next carry the same three.
+	ToolUseID string
+	AttemptID string
 	// Marked says the attempt has an exclusive claim (a tool that is not retry-safe). Only a marked
 	// attempt is ever released.
 	Marked bool
+	// Amount is what the attempt reserves, in minor units: positive. Reserving zero counts nothing and
+	// a negative amount would give room back, so both are refused (ErrInvalid); the call site treats an
+	// amount it cannot assess as the rule's strictest action and never calls Reserve for zero.
 	Amount int64
-	Limit  int64
+	// Limit is the rule's limit, not negative.
+	Limit int64
 	// Waiver says the call carries an approved waiver for the rule: a reservation over the limit is
 	// written, marked over.
 	Waiver bool
@@ -58,17 +65,43 @@ type intent struct {
 
 const intentFormat = "bide.cap-intent.v1"
 
-func (r Request) intentName(l *Ledger) string { return intentPrefix + l.cfg.Encode(r.Attempt) }
+func (r Request) intentName(l *Ledger) string { return intentPrefix + l.cfg.Encode(r.attempt) }
 
 // matches reports whether in is the intent of r: the rule, currency, key and amount an attempt reserved
 // under are fixed by its first intent.
 func (in intent) matches(r Request) bool {
-	return in.Attempt == r.Attempt && in.Namespace == r.Rule.Namespace && in.Rule == r.Rule.Name &&
+	return in.Attempt == r.attempt && in.Namespace == r.Rule.Namespace && in.Rule == r.Rule.Name &&
 		in.Currency == r.Rule.Currency && in.Kind == r.Rule.Kind && in.Key == r.KeyDigest &&
 		in.Amount == r.Amount && in.Marked == r.Marked
 }
 
-// Reserve reserves r.Amount for r.Attempt and returns the slot that holds it. It is idempotent: an
+// AttemptKey is the attempt's identity as the ledger records it: the three parts, each encoded, joined
+// by "/". The encoding carries no "/", so two attempts share a key only if all three parts are equal.
+func (l *Ledger) AttemptKey(root, toolUse, attempt string) string {
+	return l.cfg.Encode(root) + "/" + l.cfg.Encode(toolUse) + "/" + l.cfg.Encode(attempt)
+}
+
+// validate refuses a request the ledger will not act on.
+func (l *Ledger) validate(r Request) error {
+	bad := func(why string) error { return fmt.Errorf("%w: %s", ErrInvalid, why) }
+	switch {
+	case r.ToolUseID == "" || r.AttemptID == "" || r.RootRunID == "" || r.RunID == "":
+		return bad("the run, the root run, the tool-use ID and the attempt ID are all needed")
+	case r.Rule.Namespace == "" || r.Rule.Name == "":
+		return bad("a rule needs a namespace and a name")
+	case !validCurrency(r.Rule.Currency):
+		return bad(fmt.Sprintf("currency %q is not three upper-case ASCII letters", r.Rule.Currency))
+	case r.Rule.Kind != Run && r.Rule.Kind != Hour && r.Rule.Kind != Day:
+		return bad(fmt.Sprintf("unknown window kind %q", r.Rule.Kind))
+	case r.Amount <= 0:
+		return bad(fmt.Sprintf("amount %d is not positive", r.Amount))
+	case r.Limit < 0:
+		return bad(fmt.Sprintf("limit %d is negative", r.Limit))
+	}
+	return nil
+}
+
+// Reserve reserves r.Amount for the attempt and returns the slot that holds it. It is idempotent: an
 // attempt that already holds a live slot gets that slot, whoever asks and however often. When the
 // reservation would take the window over its limit and the call has no waiver it returns an error
 // that is ErrOverLimit and writes nothing.
@@ -76,9 +109,10 @@ func (in intent) matches(r Request) bool {
 // A crash at any point leaves the window counting the attempt (a slot is inserted) or not (nothing
 // was), and a later Reserve of the same attempt finds the same ledger through the intent.
 func (l *Ledger) Reserve(ctx context.Context, r Request) (Outcome, error) {
-	if r.Attempt == "" || r.RunID == "" || r.Rule.Currency == "" {
-		return Outcome{}, fmt.Errorf("capledger: a reservation needs an attempt, a run and a currency")
+	if err := l.validate(r); err != nil {
+		return Outcome{}, err
 	}
+	r.attempt = l.AttemptKey(r.RootRunID, r.ToolUseID, r.AttemptID)
 	in, err := l.window(ctx, r)
 	if err != nil {
 		return Outcome{}, err
@@ -93,8 +127,8 @@ func (l *Ledger) Reserve(ctx context.Context, r Request) (Outcome, error) {
 	if err != nil {
 		return Outcome{}, err
 	}
-	if _, _, err := l.cfg.Store.Insert(ctx, r.RunID, reservePrefix+l.cfg.Encode(r.Attempt), rec); err != nil {
-		return Outcome{}, fmt.Errorf("capledger: record the reservation of %s: %w", r.Attempt, err)
+	if _, _, err := l.cfg.Store.Insert(ctx, r.RunID, reservePrefix+l.cfg.Encode(r.attempt), rec); err != nil {
+		return Outcome{}, fmt.Errorf("capledger: record the reservation of %s: %w", r.attempt, err)
 	}
 	return Outcome{Ledger: run, Window: in.Window, Slot: slot, Resumed: resumed}, nil
 }
@@ -110,7 +144,7 @@ func (l *Ledger) Reserve(ctx context.Context, r Request) (Outcome, error) {
 func (l *Ledger) window(ctx context.Context, r Request) (intent, error) {
 	name := r.intentName(l)
 	if data, ok, err := l.cfg.Store.Get(ctx, r.RunID, name); err != nil {
-		return intent{}, fmt.Errorf("capledger: read the cap-intent of %s: %w", r.Attempt, err)
+		return intent{}, fmt.Errorf("capledger: read the cap-intent of %s: %w", r.attempt, err)
 	} else if ok {
 		return l.adopt(r, data)
 	}
@@ -131,7 +165,7 @@ func (l *Ledger) window(ctx context.Context, r Request) (intent, error) {
 			return intent{}, fmt.Errorf("capledger: record the window %s: %w", w, err)
 		}
 	}
-	in := intent{Format: intentFormat, Attempt: r.Attempt, Namespace: r.Rule.Namespace, Rule: r.Rule.Name,
+	in := intent{Format: intentFormat, Attempt: r.attempt, Namespace: r.Rule.Namespace, Rule: r.Rule.Name,
 		Currency: r.Rule.Currency, Kind: r.Rule.Kind, Key: r.KeyDigest, Amount: r.Amount, Marked: r.Marked,
 		Window: w, Floor: floor}
 	b, err := encodeIntent(in)
@@ -140,7 +174,7 @@ func (l *Ledger) window(ctx context.Context, r Request) (intent, error) {
 	}
 	stored, _, err := l.cfg.Store.Insert(ctx, r.RunID, name, b)
 	if err != nil {
-		return intent{}, fmt.Errorf("capledger: write the cap-intent of %s: %w", r.Attempt, err)
+		return intent{}, fmt.Errorf("capledger: write the cap-intent of %s: %w", r.attempt, err)
 	}
 	return l.adopt(r, stored)
 }
@@ -149,10 +183,10 @@ func (l *Ledger) window(ctx context.Context, r Request) (intent, error) {
 func (l *Ledger) adopt(r Request, data []byte) (intent, error) {
 	in, err := decodeIntent(data)
 	if err != nil {
-		return intent{}, fmt.Errorf("%w: the cap-intent of %s does not decode: %v", ErrCorrupt, r.Attempt, err)
+		return intent{}, fmt.Errorf("%w: the cap-intent of %s does not decode: %v", ErrCorrupt, r.attempt, err)
 	}
 	if !in.matches(r) {
-		return intent{}, fmt.Errorf("%w: %s", ErrIntentMismatch, r.Attempt)
+		return intent{}, fmt.Errorf("%w: %s", ErrIntentMismatch, r.attempt)
 	}
 	return in, nil
 }
@@ -213,7 +247,7 @@ func (l *Ledger) insertSlot(ctx context.Context, run string, r Request) (Slot, b
 			insertAt int
 		)
 		err := l.read(ctx, run, func(v *view) error {
-			if s, ok := v.live(r.Attempt); ok {
+			if s, ok := v.live(r.attempt); ok {
 				found, resumed = s, true
 				return nil
 			}
@@ -226,7 +260,7 @@ func (l *Ledger) insertSlot(ctx context.Context, run string, r Request) (Slot, b
 				return &OverLimitError{Cum: cum, Amount: r.Amount, Limit: r.Limit}
 			}
 			insertAt = n
-			next = Slot{N: n, Kind: kindReserve, Attempt: r.Attempt, Amount: r.Amount, Currency: r.Rule.Currency,
+			next = Slot{N: n, Kind: kindReserve, Attempt: r.attempt, Run: r.RunID, Tool: r.ToolUseID, Att: r.AttemptID, Amount: r.Amount, Currency: r.Rule.Currency,
 				CumAfter: after, Limit: r.Limit, Over: after > r.Limit, Marked: r.Marked}
 			return nil
 		})

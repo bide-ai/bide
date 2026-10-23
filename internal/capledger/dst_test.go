@@ -234,7 +234,7 @@ func simulate(t *testing.T, seed uint64) {
 					voided[a.att.id] = true
 					mu.Unlock()
 					run := l.LedgerRun(dayRule(), "2026-10-22", KeyDigest(""))
-					if _, err := l.Release(context.Background(), run, a.att.id, seal); err != nil {
+					if _, err := l.Release(context.Background(), run, ak(a.att.id), seal); err != nil {
 						if errors.Is(err, errCrash) {
 							continue
 						}
@@ -251,7 +251,7 @@ func simulate(t *testing.T, seed uint64) {
 	run := New(Config{Store: st, Encode: testEncode}).LedgerRun(dayRule(), "2026-10-22", KeyDigest(""))
 	// The reconcile pass releases the slots of sealed (voided) marked attempts that were left.
 	l := newTestLedger(st, clk)
-	if _, err := l.Reconcile(context.Background(), run, func(_ context.Context, a string) (bool, error) { return voided[a], nil }); err != nil {
+	if _, err := l.Reconcile(context.Background(), run, func(_ context.Context, s Slot) (bool, error) { return voided[s.Tool], nil }); err != nil {
 		t.Errorf("seed %d: reconcile: %v", seed, err)
 	}
 	slots := slotsOf(t, st, run)
@@ -259,7 +259,7 @@ func simulate(t *testing.T, seed uint64) {
 	live, _ := l.Live(context.Background(), run)
 	liveBy := map[string]bool{}
 	for _, s := range live {
-		liveBy[s.Attempt] = true
+		liveBy[s.Tool] = true
 	}
 	for _, a := range attempts {
 		if a.word.Load() == wordBegun && !liveBy[a.id] {
