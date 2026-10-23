@@ -2748,6 +2748,7 @@ RetrievalOption configures one WithRetrieval: WithRetrievalRetry.
 
 **Constructors and functions**
 
+- `func RetrievalUntrusted(source string) RetrievalOption`: RetrievalUntrusted declares that the documents the layer retrieves are untrusted content from the named source. *(experimental)*
 - `func WithRetrievalRetry(n int, base, max time.Duration) RetrievalOption`: WithRetrievalRetry retries a failed Retrieve up to n more times within the drive's retrieval step, sleeping between attempts with exponential backoff and full jitter: a random duration up to base, then up to twice that, and so on, capped at max.
 
 ## type Retriever
@@ -2891,6 +2892,8 @@ RunOption configures one run (Run, Resume, Stream, RunTyped, Session.Send).
 - `func WithOutputMode(m OutputMode) RunOption`: WithOutputMode sets how a typed run (RunTyped) collects its answer: OutputTool (the default) or OutputNative (see OutputMode).
 - `func WithSaga() RunOption`: WithSaga runs the run as a saga: a step that fails after earlier writes succeeded rolls the run back, compensating the completed writes in reverse order (recursing into sub-agent trees), and the run returns \*SagaAborted.
 - `func WithToolFilter(names ...string) RunOption`: WithToolFilter restricts a run to the named tools of its agent: the model is offered only those, and a call naming any other tool (a model naming a tool it was not offered, or a turn replayed from the journal) is refused at dispatch, with an error result recorded that the model reads, and the tool never runs.
+- `func WithTrustedInput(reason string) RunOption`: WithTrustedInput declares that the run's input is the host's own, and why. *(experimental)*
+- `func WithUntrustedInput(source string) RunOption`: WithUntrustedInput declares that the run's input is untrusted content from the named source: an agent started by an inbound email or a customer's message. *(experimental)*
 
 ## type RunPrincipal
 
@@ -2936,6 +2939,9 @@ type RunSettings struct {
 	SystemPrompt *string     `json:"system_prompt,omitempty"`
 	Sampling     *Sampling   `json:"sampling,omitempty"`
 	ToolChoice   *ToolChoice `json:"tool_choice,omitempty"`
+
+	UntrustedInput *string `json:"untrusted_input,omitempty"`
+	TrustedInput   *string `json:"trusted_input,omitempty"`
 }
 ```
 
@@ -3034,6 +3040,8 @@ type Safety struct {
 	ReadOnly bool `json:"read_only,omitempty"`
 
 	Idempotent bool `json:"idempotent,omitempty"`
+
+	Untrusted string `json:"untrusted,omitempty"`
 }
 ```
 
@@ -3813,6 +3821,8 @@ ToolOption configures a tool built by Func, CompensatedFunc or SubAgent.
 
 **Constructors and functions**
 
+- `func TaintExempt(reason string) ToolOption`: TaintExempt declares that the tool's calls need no escalation gate even in a run that read untrusted content, and why (the reason is required, and is kept for the audit). *(experimental)*
+- `func Untrusted(source string) ToolOption`: Untrusted declares that the results of the tool are untrusted content, from the named source (for example "crm-notes" or "inbound-email"): text the host did not write and an attacker may have. *(experimental)*
 - `func WithApproval(p *ApprovalPolicy) ToolOption`: WithApproval gates every call to the tool on human approval before it runs: p is SingleApproval() for one decision (Approve), or an m-of-n policy (SubmitDecision, and the agent's WithApproverVerifiers).
 - `func WithCaps(lines ...string) ToolOption`: WithCaps declares amount-cap rules on a tool: one line per rule, in the grammar of the design note (docs/guides/amount-caps.md):
 - `func WithOutputSchema(schema json.RawMessage) ToolOption`: WithOutputSchema declares the JSON Schema of the tool's result (ToolSpec.Output).
@@ -3863,6 +3873,10 @@ type ToolSpec struct {
 	Approval *ApprovalPolicy
 
 	Caps []string
+
+	Untrusted string
+
+	TaintExempt string
 
 	Timeout time.Duration
 }
