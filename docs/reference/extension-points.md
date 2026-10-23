@@ -359,8 +359,8 @@ embedding nor `Unwrap` cannot be seen through.
 adds an idempotency key), so the rule needs a design decision, and until it is made it is the wrapper
 author's duty not to declare a weaker `Safety` than the tool it wraps. A wrapper that claims
 `ReadOnly` over a side-effecting tool loses at-most-once protection (no attempt marker, a re-run on
-resume, not held by a stop). Untrusted and per-call caps are not checked through the chain either,
-yet; those and `Safety` are follow-ups.
+resume, not held by a stop). `Untrusted` is not checked through the chain yet; it and `Safety` are
+follow-ups.
 
 ## `Compensator`: how a tool undoes its side effect
 
