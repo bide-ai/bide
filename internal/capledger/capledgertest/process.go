@@ -137,26 +137,26 @@ func WorkerMain(open func(ctx context.Context) (*agent.Journal, func(), error)) 
 	}
 	if os.Getenv(releaseEnv) != "" {
 		run := l.LedgerRun(p.rule(), "2026-10-22", capledger.KeyDigest(""))
-		first := p.request(fmt.Sprintf("%s-%s-0", p.Namespace, name))
-		var w atomic.Int32
-		if seal, ok := capledger.NewSeal(func() bool { return w.CompareAndSwap(0, 2) }); ok {
-			if released, err := l.Release(ctx, run, l.AttemptKey(first.RootRunID, first.ToolUseID, first.AttemptID), seal); err != nil {
-				fmt.Fprintln(os.Stderr, "worker: release:", err)
-				return 3
-			} else if released {
-				fmt.Println("released", first.ToolUseID)
+		release := func(tool string) error {
+			r := p.request(tool)
+			var w atomic.Int32 // this worker's began word for the attempt: none, then sealed
+			seal, ok := capledger.NewSeal(l.AttemptKey(r.RootRunID, r.ToolUseID, r.AttemptID), &w, 0, 2)
+			if !ok {
+				return nil
 			}
+			released, err := l.Release(ctx, capledger.Target{Rule: r.Rule, KeyDigest: r.KeyDigest, RunID: r.RunID, RootRunID: r.RootRunID,
+				ToolUseID: r.ToolUseID, AttemptID: r.AttemptID}, seal)
+			if err == nil && released {
+				fmt.Println("released", tool)
+			}
+			return err
 		}
-		// Every worker releases the same shared slot at once through Release (each with a seal of its own
-		// word: the point is the dedupe scan, not who may release) ...
-		sh0 := p.request(fmt.Sprintf("%s-shared-0", p.Namespace))
-		var w0 atomic.Int32
-		if seal, ok := capledger.NewSeal(func() bool { return w0.CompareAndSwap(0, 2) }); ok {
-			if released, err := l.Release(ctx, run, l.AttemptKey(sh0.RootRunID, sh0.ToolUseID, sh0.AttemptID), seal); err != nil {
+		// Every worker releases its first own attempt, and all release the same shared slot at once through
+		// Release (each with a seal of its own word: the point is the dedupe scan, not who may release) ...
+		for _, tool := range []string{fmt.Sprintf("%s-%s-0", p.Namespace, name), fmt.Sprintf("%s-shared-0", p.Namespace)} {
+			if err := release(tool); err != nil {
 				fmt.Fprintln(os.Stderr, "worker: release:", err)
 				return 3
-			} else if released {
-				fmt.Println("released", sh0.ToolUseID)
 			}
 		}
 		// ... and race a reconcile pass over another.

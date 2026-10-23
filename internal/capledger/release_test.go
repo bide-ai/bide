@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // A call's began word, as the engine has it: none, begun or sealed.
@@ -16,19 +17,35 @@ const (
 	wordSealed
 )
 
-func sealOf(w *atomic.Int32) func() bool {
-	return func() bool { return w.CompareAndSwap(wordNone, wordSealed) }
+// tgt is the Target of req(attempt, ...).
+func tgt(attempt string) Target {
+	return Target{Rule: dayRule(), KeyDigest: KeyDigest(""), RunID: "run-" + attempt, RootRunID: "root", ToolUseID: attempt, AttemptID: "1"}
+}
+
+// sealOf seals attempt's began word, as the loop does once the chain returned.
+func sealOf(attempt string, w *atomic.Int32) (Seal, bool) {
+	return NewSeal(ak(attempt), w, wordNone, wordSealed)
 }
 
 func TestRelease_NeedsASeal(t *testing.T) {
 	st, clk := newMemStore(), &testClock{t: day1}
 	l := newTestLedger(st, clk)
 	o := mustReserve(t, l, req("a1", 10, 100))
-	if _, err := l.Release(context.Background(), o.Ledger, ak("a1"), Seal{}); !errors.Is(err, ErrNotSealed) {
+	if _, err := l.Release(context.Background(), tgt("a1"), Seal{}); !errors.Is(err, ErrNotSealed) {
 		t.Fatalf("a release without a seal: err = %v, want ErrNotSealed", err)
 	}
-	if _, ok := NewSeal(nil); ok {
-		t.Fatal("NewSeal(nil) made a seal")
+	var w atomic.Int32
+	for name, f := range map[string]func() (Seal, bool){
+		"no attempt":     func() (Seal, bool) { return NewSeal("", &w, wordNone, wordSealed) },
+		"no word":        func() (Seal, bool) { return NewSeal(ak("a1"), nil, wordNone, wordSealed) },
+		"none == sealed": func() (Seal, bool) { return NewSeal(ak("a1"), &w, wordNone, wordNone) },
+	} {
+		if _, ok := f(); ok {
+			t.Fatalf("NewSeal with %s made a seal", name)
+		}
+	}
+	if w.Load() != wordNone {
+		t.Fatalf("a refused NewSeal moved the word to %d", w.Load())
 	}
 	checkShape(t, slotsOf(t, st, o.Ledger), 100)
 	if live, _ := l.Live(context.Background(), o.Ledger); len(live) != 1 {
@@ -41,7 +58,7 @@ func TestRelease_NeedsASeal(t *testing.T) {
 func TestRelease_NoSealForACallThatBegan(t *testing.T) {
 	var w atomic.Int32
 	w.Store(wordBegun)
-	if _, ok := NewSeal(sealOf(&w)); ok {
+	if _, ok := sealOf("a1", &w); ok {
 		t.Fatal("a seal was made for a call that began")
 	}
 }
@@ -55,16 +72,16 @@ func TestRelease_OnceAndTheCapacityReturns(t *testing.T) {
 		t.Fatalf("a2 before the release: %v", err)
 	}
 	var w atomic.Int32
-	seal, ok := NewSeal(sealOf(&w))
+	seal, ok := sealOf("a1", &w)
 	if !ok {
 		t.Fatal("no seal for a call that did not begin")
 	}
-	released, err := l.Release(ctx, o.Ledger, ak("a1"), seal)
+	released, err := l.Release(ctx, tgt("a1"), seal)
 	if err != nil || !released {
 		t.Fatalf("Release = %v, %v", released, err)
 	}
 	// The dedupe scan: a second release, from the same loop or another, writes nothing.
-	again, err := newTestLedger(st, clk).Release(ctx, o.Ledger, ak("a1"), seal)
+	again, err := newTestLedger(st, clk).Release(ctx, tgt("a1"), seal)
 	if err != nil || again {
 		t.Fatalf("second Release = %v, %v, want false, nil", again, err)
 	}
@@ -84,8 +101,8 @@ func TestRelease_NeverAnUnmarkedAttempt(t *testing.T) {
 	r.Marked = false
 	o := mustReserve(t, l, r)
 	var w atomic.Int32
-	seal, _ := NewSeal(sealOf(&w))
-	if _, err := l.Release(ctx, o.Ledger, ak("a1"), seal); !errors.Is(err, ErrUnmarked) {
+	seal, _ := sealOf("a1", &w)
+	if _, err := l.Release(ctx, tgt("a1"), seal); !errors.Is(err, ErrUnmarked) {
 		t.Fatalf("Release of an unmarked attempt: err = %v, want ErrUnmarked", err)
 	}
 	// Reconcile does not touch it either, voided or not.
@@ -159,9 +176,8 @@ func TestReconcile_ReleasesALateReserve(t *testing.T) {
 	l := newTestLedger(st, clk)
 	// The loop sealed the word and found nothing to release: the handler had not reserved yet.
 	var w atomic.Int32
-	seal, _ := NewSeal(sealOf(&w))
-	run := l.LedgerRun(dayRule(), "2026-10-22", KeyDigest(""))
-	if released, err := l.Release(ctx, run, ak("a1"), seal); err != nil || released {
+	seal, _ := sealOf("a1", &w)
+	if released, err := l.Release(ctx, tgt("a1"), seal); err != nil || released {
 		t.Fatalf("Release with nothing reserved = %v, %v", released, err)
 	}
 	o := mustReserve(t, l, req("a1", 10, 100)) // the late reserve
@@ -171,5 +187,143 @@ func TestReconcile_ReleasesALateReserve(t *testing.T) {
 	}
 	if live, _ := l.Live(ctx, o.Ledger); len(live) != 0 {
 		t.Fatalf("live = %+v after reconcile", live)
+	}
+}
+
+// A Seal is bound to its attempt: a copy of a1's seal releases nothing of a2's, and a seal that was never
+// made (the zero Seal) releases nothing.
+func TestRelease_SealIsBoundToItsAttempt(t *testing.T) {
+	ctx := context.Background()
+	st, clk := newMemStore(), &testClock{t: day1}
+	l := newTestLedger(st, clk)
+	o1 := mustReserve(t, l, req("a1", 10, 100))
+	mustReserve(t, l, req("a2", 10, 100))
+	var w1 atomic.Int32
+	seal1, ok := sealOf("a1", &w1)
+	if !ok {
+		t.Fatal("no seal")
+	}
+	copied := seal1 // a copy is the same proof for the same attempt, and for no other
+	if _, err := l.Release(ctx, tgt("a2"), copied); !errors.Is(err, ErrNotSealed) {
+		t.Fatalf("a1's seal released a2: err = %v, want ErrNotSealed", err)
+	}
+	if _, err := l.Release(ctx, tgt("a2"), Seal{}); !errors.Is(err, ErrNotSealed) {
+		t.Fatalf("the zero Seal: err = %v, want ErrNotSealed", err)
+	}
+	live, _ := l.Live(ctx, o1.Ledger)
+	if len(live) != 2 {
+		t.Fatalf("%d live slots after the refused releases, want 2", len(live))
+	}
+	if ok, err := l.Release(ctx, tgt("a1"), copied); err != nil || !ok {
+		t.Fatalf("the seal's own attempt: %v, %v", ok, err)
+	}
+	// A word that says the tool began yields no seal, however it is asked for: no forging from the call site's word.
+	var begun atomic.Int32
+	begun.Store(wordBegun)
+	if _, ok := sealOf("a2", &begun); ok || begun.Load() != wordBegun {
+		t.Fatalf("a seal was made from a word that says the tool began (word now %d)", begun.Load())
+	}
+}
+
+// Release reads the window from the attempt's cap-intent: with the clock days later, and for a target that
+// names no intent, it releases in the right ledger, or nothing.
+func TestRelease_ReadsTheWindowFromTheIntent(t *testing.T) {
+	ctx := context.Background()
+	st, clk := newMemStore(), &testClock{t: day1}
+	l := newTestLedger(st, clk)
+	o := mustReserve(t, l, req("a1", 10, 100))
+	clk.Set(day1.Add(72 * time.Hour))
+	var w atomic.Int32
+	seal, _ := sealOf("a1", &w)
+	if ok, err := newTestLedger(st, clk).Release(ctx, tgt("a1"), seal); err != nil || !ok {
+		t.Fatalf("Release three days later = %v, %v", ok, err)
+	}
+	if live, _ := l.Live(ctx, o.Ledger); len(live) != 0 {
+		t.Fatalf("the slot is still live in %s", o.Ledger)
+	}
+	// A target whose run holds no intent for the attempt releases nothing.
+	other := tgt("a1")
+	other.RunID = "some-other-run"
+	if ok, err := l.Release(ctx, other, seal); err != nil || ok {
+		t.Fatalf("Release naming a run with no intent = %v, %v, want false, nil", ok, err)
+	}
+	// A target that names another rule than the intent's is refused.
+	for name, mutate := range map[string]func(*Target){
+		"rule":     func(x *Target) { x.Rule.Name = "other_rule" },
+		"kind":     func(x *Target) { x.Rule.Kind = Hour },
+		"currency": func(x *Target) { x.Rule.Currency = "EUR" },
+		"key":      func(x *Target) { x.KeyDigest = KeyDigest("another key") },
+	} {
+		wrong := tgt("a1")
+		mutate(&wrong)
+		if _, err := l.Release(ctx, wrong, seal); !errors.Is(err, ErrIntentMismatch) {
+			t.Fatalf("Release naming another %s: err = %v, want ErrIntentMismatch", name, err)
+		}
+	}
+}
+
+// Reconcile refuses a live slot that sits in a ledger its cap-intent does not name: it is not released.
+func TestReconcile_RefusesASlotOutsideItsIntentsLedger(t *testing.T) {
+	ctx := context.Background()
+	st, clk := newMemStore(), &testClock{t: day1}
+	l := newTestLedger(st, clk)
+	o := mustReserve(t, l, req("a1", 10, 100))
+	// The same slot, copied into another ledger of the rule (another key's) by a writer that is not this package.
+	data, _, _ := st.Get(ctx, o.Ledger, "slot:0")
+	other := l.LedgerRun(dayRule(), "2026-10-22", KeyDigest("another key"))
+	st.Insert(ctx, other, "slot:0", data)
+	_, err := l.Reconcile(ctx, other, func(context.Context, Slot) (bool, error) { return true, nil })
+	if !errors.Is(err, ErrIntentMismatch) {
+		t.Fatalf("Reconcile of a slot in another ledger: err = %v, want ErrIntentMismatch", err)
+	}
+	if live, _ := l.Live(ctx, other); len(live) != 1 {
+		t.Fatalf("%d live slots in the other ledger, want the copy untouched", len(live))
+	}
+	// A live slot with no intent at all is corrupt.
+	st2 := newMemStore()
+	st2.Insert(ctx, other, "slot:0", data)
+	if _, err := newTestLedger(st2, clk).Reconcile(ctx, other, func(context.Context, Slot) (bool, error) { return true, nil }); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("Reconcile of a slot with no intent: err = %v, want ErrCorrupt", err)
+	}
+}
+
+// raceStore lets a test act between a writer's read and its insert: before the first slot insert whose
+// name is at, it runs hook (once), as another writer would have.
+type raceStore struct {
+	*memStore
+	at   string
+	hook func()
+	once sync.Once
+}
+
+func (r *raceStore) Insert(ctx context.Context, run, name string, data []byte) ([]byte, bool, error) {
+	if name == r.at {
+		r.once.Do(r.hook)
+	}
+	return r.memStore.Insert(ctx, run, name, data)
+}
+
+// A release whose insert loses (a concurrent reserve took slot n+1 between its read and its insert) does
+// not report success: it reads again and writes its release at the next name.
+func TestRelease_LostInsertReadsAgainAndRetries(t *testing.T) {
+	ctx := context.Background()
+	st, clk := newMemStore(), &testClock{t: day1}
+	rs := &raceStore{memStore: st, at: "slot:1"}
+	l := New(Config{Store: rs, Encode: testEncode, Clock: clk.Now})
+	o := mustReserve(t, l, req("a1", 10, 100))
+	rs.hook = func() { mustReserve(t, newTestLedger(st, clk), req("a2", 5, 100)) } // takes slot 1 first
+	var w atomic.Int32
+	seal, _ := sealOf("a1", &w)
+	released, err := l.Release(ctx, tgt("a1"), seal)
+	if err != nil || !released {
+		t.Fatalf("Release = %v, %v", released, err)
+	}
+	slots := slotsOf(t, st, o.Ledger)
+	checkShape(t, slots, 100)
+	if len(slots) != 3 || slots[1].Kind != kindReserve || slots[1].Tool != "a2" || slots[2].Kind != kindRelease || slots[2].Ref != 0 || slots[2].CumAfter != 5 {
+		t.Fatalf("slots = %+v, want a1, a2 (the concurrent reserve), then the release of a1 with cum_after 5", slots)
+	}
+	if live, _ := l.Live(ctx, o.Ledger); len(live) != 1 || live[0].Tool != "a2" {
+		t.Fatalf("live = %+v, want only a2", live)
 	}
 }

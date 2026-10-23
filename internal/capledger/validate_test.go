@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -177,9 +178,9 @@ func TestRead_RefusesADuplicateRelease(t *testing.T) {
 	st, clk := newMemStore(), &testClock{t: day1}
 	l := newTestLedger(st, clk)
 	o := mustReserve(t, l, req("a1", 40, 100))
-	var w = sealOnce()
-	seal, _ := NewSeal(w)
-	if _, err := l.Release(ctx, o.Ledger, ak("a1"), seal); err != nil {
+	var w atomic.Int32
+	seal, _ := sealOf("a1", &w)
+	if _, err := l.Release(ctx, tgt("a1"), seal); err != nil {
 		t.Fatal(err)
 	}
 	dup, _ := encodeSlot(Slot{N: 2, Kind: kindRelease, Attempt: ak("a1"), Amount: 40, Currency: "USD", Ref: 0, CumAfter: -40, Limit: 100, Marked: true})
@@ -188,8 +189,6 @@ func TestRead_RefusesADuplicateRelease(t *testing.T) {
 		t.Fatalf("err = %v, want ErrCorrupt", err)
 	}
 }
-
-func sealOnce() func() bool { done := false; return func() bool { r := !done; done = true; return r } }
 
 // The view cache is bounded: reading many ledgers keeps at most MaxViews, and a dropped view is read again.
 func TestViewCacheIsBounded(t *testing.T) {

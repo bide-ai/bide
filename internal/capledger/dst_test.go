@@ -226,15 +226,14 @@ func simulate(t *testing.T, seed uint64) {
 					_ = o
 					return
 				case "loop":
-					seal, ok := NewSeal(sealOf(&a.att.word))
+					seal, ok := sealOf(a.att.id, &a.att.word)
 					if !ok {
 						return // the tool began: nothing is released
 					}
 					mu.Lock()
 					voided[a.att.id] = true
 					mu.Unlock()
-					run := l.LedgerRun(dayRule(), "2026-10-22", KeyDigest(""))
-					if _, err := l.Release(context.Background(), run, ak(a.att.id), seal); err != nil {
+					if _, err := l.Release(context.Background(), tgt(a.att.id), seal); err != nil {
 						if errors.Is(err, errCrash) {
 							continue
 						}
