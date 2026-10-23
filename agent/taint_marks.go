@@ -40,7 +40,9 @@ func checkProvenanceName(what, s string) error {
 // result the tool returns is recorded with the source name (Safety.Untrusted of the result record),
 // whether or not the agent has a taint policy. The model never declares this, and nothing in a result
 // can. A tool whose result is sometimes trusted and sometimes not is split into two tools. A tool that
-// wraps another must declare it too, or registration refuses it (see checkEmbedded). A plan flow node
+// embeds or unwraps another must declare it too, or registration refuses it (see checkEmbedded and
+// checkUnwrapChain); a wrapper that does neither is not seen, and carrying the declaration is its author's
+// duty. A plan flow node
 // cannot yet be built from a tool that declares it: the plan registry refuses it with ErrConfig, since
 // flows have no taint rule yet.
 func Untrusted(source string) ToolOption {
