@@ -336,12 +336,12 @@ func reconcileCaps(ctx context.Context, store *Journal) ([]string, error) {
 	return reconcileCapRuns(ctx, store, runs)
 }
 
-// capWindowOpen reports whether the ledger run's window can still matter: a day or hour window whose end is
-// less than one window length in the past, or a run window whose root run has not ended. A window that ended
-// longer ago than its own length no longer limits any reservation a correct clock makes (a first intent in it
-// would be earlier than the newest recorded window and is refused by the clock bound), so a slot left counted
-// in it costs nothing and reconciling it is skipped: the cost of a pass follows the open windows, not every
-// ledger ever written. A window it cannot read is open.
+// capWindowOpen reports whether the ledger run's window is worth reconciling: a day or hour window whose end
+// is less than one window length in the past, or a run window whose root run has not ended. A slot left
+// counted in a closed window costs capacity only to an attempt that resumes in it (a resumed attempt keeps its
+// window) or to a node with a lagging clock; skipping it is the over-count direction, and it refines the
+// model's nondeterministic Reconcile action (every property holds under any subset of reconcile runs). The
+// cost of a pass follows the open windows, not every ledger ever written. A window it cannot read is open.
 func capWindowOpen(ctx context.Context, store *Journal, run string, now time.Time) (bool, error) {
 	seg := strings.Split(run, "/")
 	if len(seg) != 6 {
