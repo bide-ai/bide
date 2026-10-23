@@ -545,6 +545,51 @@ jobs:
           path: ${{ steps.gocache.outputs.paths }}
           key: go-${{ runner.os }}-windows-${{ github.sha }}
 
+  # Go's FIPS 140-3 mode: every module's tests with GODEBUG=fips140=only, built against three
+  # versions of Go's cryptographic module: the in-tree one (GOFIPS140=off), v1.26.0 (ML-DSA works) and
+  # v1.0.0 (no ML-DSA: the tests in .github/fips-v1.0.0-excluded.txt need it, are skipped and nothing
+  # else is; fips.sh check-excluded proves each still fails). It does not run -race and does not use
+  # the test cache (-count=1): three configurations would triple a cached run's work for a regression
+  # class that is rare (a new SHA-1, MD5 or short-key use). So it runs where macOS and Integration run:
+  # the merge queue, main, and a pull request with the full-ci label (add the label to a change that
+  # touches cryptography). Not a required check: making it one is a branch protection change for the
+  # repository owner; gated like macOS and Integration, a skipped run satisfies a required check the
+  # same way. It claims nothing about validation (docs/trust/control-mapping.md).
+  test-fips:
+    name: Test (FIPS 140-3, GOFIPS140=${{ matrix.version }})
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.heavy != 'false' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: [off, v1.26.0, v1.0.0]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27'
+          cache: false # the go-cache action below restores the build cache
+      - uses: ./.github/actions/go-cache
+        id: gocache
+        with:
+          name: fips-${{ matrix.version }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22' # the approve page's script tests (approvals/page) run under Node
+      - name: Excluded tests still fail under v1.0.0 (no stale entry)
+        if: matrix.version == 'v1.0.0'
+        run: .github/scripts/fips.sh check-excluded
+      - name: Test (GODEBUG=fips140=only, GOFIPS140=${{ matrix.version }})
+        shell: bash
+        run: .github/scripts/fips.sh run "${{ matrix.version }}"
+      # Only a push to main saves the cache (see the Linux shards).
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: github.event_name == 'push'
+        with:
+          path: ${{ steps.gocache.outputs.paths }}
+          key: go-${{ runner.os }}-fips-${{ matrix.version }}-${{ github.sha }}
+
   integration:
     # Also runs the PKCS#11 signer's SoftHSM2 tests (signer/pkcs11, examples/hsm-signing) and
     # bide-hsm's (cmd/bide/bide-hsm: approvals signed through SoftHSM2, and the real binary); the

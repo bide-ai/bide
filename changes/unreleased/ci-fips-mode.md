@@ -1,0 +1,3 @@
+Section: Added
+
+CI: a "Test (FIPS 140-3)" job runs every module's tests with `GODEBUG=fips140=only` against Go's in-tree FIPS module, module v1.26.0 and module v1.0.0, in the merge queue, on main and on a pull request labelled `full-ci`. Under v1.0.0, which has no ML-DSA, it skips the tests listed in `.github/fips-v1.0.0-excluded.txt` and nothing else, and a check fails when a listed test no longer fails. It is not a required check. New tests in `internal/fipsmode` and `cmd/bide/internal/approvecmd` pin that the approved schemes (Ed25519, ECDSA P-256) work under the mode and that ML-DSA or hybrid under v1.0.0 is an error, not a panic. The documentation states what is tested; bide still makes no claim of FIPS validation.

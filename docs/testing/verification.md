@@ -149,6 +149,11 @@ Every pull request must pass, before it can merge:
   (ubuntu-latest)** check fails unless each of them succeeded. Every module, and every package of
   the split core, is in exactly one of the `agent`, `core` and `rest` shards, or CI fails; the
   `nojsonv2` job runs the core, `govern` and `integration` again, as before.
+- **FIPS 140-3 mode** (not a required check): every module's tests with `GODEBUG=fips140=only`, built
+  against Go's in-tree module, module v1.26.0 and module v1.0.0, in the merge queue, on main and on a
+  pull request labelled `full-ci`. Under v1.0.0, which has no ML-DSA, the tests in
+  `.github/fips-v1.0.0-excluded.txt` are skipped, and a check fails if a listed test stops failing there.
+  It tests behaviour in Go's FIPS mode; it is not a validation.
 - **Integration** against real Postgres 16 and Redis 7. Each suite runs twice against the same
   services, so a test that passes only on a fresh database fails, and a skipped test fails the job,
   since a skip would mean nothing was tested.
