@@ -860,6 +860,10 @@ and a long-lived host must restart to check new type names.
 - `Model` decodes the response as JSON into `O`, so `O` must be JSON-shaped. Only a model that
   honours a response format is sent `O`'s schema (structured output); for any other model the
   prompt should instruct JSON output, naming each field's type.
+- A tool that carries [amount caps](amount-caps.md) (`agent.WithCaps`) cannot be a flow block:
+  `Registry.RegisterTool` and `Builder.Tool` refuse it with `ErrConfig` naming the tool, because a
+  node's gate path is separate from the agent's and would run the tool without the cap. A flow node
+  that wraps an agent run keeps the agent's caps for that agent's own tool calls.
 - Requires Go 1.27.
 
 ## A runnable example

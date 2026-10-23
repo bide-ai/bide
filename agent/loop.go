@@ -624,6 +624,22 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 			}
 			// protocol:lifecycle end
 			spec := a.specs[tu.Name]
+			// The decision point of the tool's cap rules, on the arguments the model sent and before any
+			// gate or claim: a refused call is answered here and never asked or claimed.
+			refusedBy, err := a.capDecide(ctx, runID, tu)
+			if err != nil {
+				return leave(err)
+			}
+			if refusedBy != "" {
+				m, err := a.refuseCapped(ctx, runID, tu, spec, refusedBy)
+				if err != nil {
+					return leave(err)
+				}
+				done[tu.ID] = true
+				results[i] = m
+				fire(ToolCompleted{ToolUseID: tu.ID, Name: tu.Name, Result: m.Parts[0].(ToolResult).Result, IsError: true})
+				continue
+			}
 			// protocol:lifecycle begin DOpen
 			// protocol:claims begin ApGate Deny ApExpire
 			// A recorded denial is final, whatever the tool's gate is now: a human's Approve(false)

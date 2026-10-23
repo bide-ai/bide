@@ -3813,6 +3813,7 @@ ToolOption configures a tool built by Func, CompensatedFunc or SubAgent.
 **Constructors and functions**
 
 - `func WithApproval(p *ApprovalPolicy) ToolOption`: WithApproval gates every call to the tool on human approval before it runs: p is SingleApproval() for one decision (Approve), or an m-of-n policy (SubmitDecision, and the agent's WithApproverVerifiers).
+- `func WithCaps(lines ...string) ToolOption`: WithCaps declares amount-cap rules on a tool: one line per rule, in the grammar of the design note (docs/guides/amount-caps.md):
 - `func WithOutputSchema(schema json.RawMessage) ToolOption`: WithOutputSchema declares the JSON Schema of the tool's result (ToolSpec.Output).
 - `func WithSubRuns(agentFor func(name string) *Agent) ToolOption`: WithSubRuns declares the agents that run the tool's programmatic sub-runs: agentFor(name) is the agent the tool runs RunInfo.SubRunFor(name) with.
 - `func WithTimeout(d time.Duration) ToolOption`: WithTimeout bounds each call to the tool by d: the call runs under a context with that deadline, on top of the run's.
@@ -3859,6 +3860,8 @@ type ToolSpec struct {
 	Safety Safety
 
 	Approval *ApprovalPolicy
+
+	Caps []string
 
 	Timeout time.Duration
 }

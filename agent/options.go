@@ -311,6 +311,9 @@ func (c *agentConfig) finish() error {
 			return fmt.Errorf("agent: tool %q: %w", name, err)
 		}
 	}
+	if err := a.checkCapRules(); err != nil {
+		return err
+	}
 	a.sortSpecs()
 	return nil
 }

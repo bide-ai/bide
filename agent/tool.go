@@ -52,6 +52,9 @@ type ToolSpec struct {
 	// decision (SingleApproval) or an m-of-n gate over named approvers. It is journaled with
 	// each result.
 	Approval *ApprovalPolicy
+	// Caps are the amount-cap rule lines of the tool (see WithCaps): checked against Input when the
+	// tool is registered, and decided for every call. The model is never sent them.
+	Caps []string
 	// Timeout, when positive, bounds each call: the call runs under a context with this
 	// deadline. A result the tool returns is recorded even if the deadline has passed; an error
 	// it returns after the deadline has an unknown outcome (see WithTimeout).
@@ -63,6 +66,7 @@ type ToolSpec struct {
 func specOf(t Tool) ToolSpec {
 	s := t.Spec()
 	s.Approval = s.Approval.Clone()
+	s.Caps = slices.Clone(s.Caps)
 	return s
 }
 
