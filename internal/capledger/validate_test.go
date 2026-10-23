@@ -79,14 +79,14 @@ func TestAttemptKey_NoTwoDistinctTriplesCollide(t *testing.T) {
 		{"a:b", "c", "d"}, {"a", "b:c", "d"}, {"a%2Fb", "c", "d"}, {"a", "b", "c%2Fd"},
 	}
 	keys := map[string]bool{}
-	for i, tr := range triples {
-		k := l.AttemptKey(tr[0], tr[1], tr[2])
+	for _, tr := range triples {
+		k := l.AttemptKey("run-x", tr[0], tr[1], tr[2])
 		if keys[k] {
 			t.Fatalf("triple %v shares the key %q", tr, k)
 		}
 		keys[k] = true
 		r := req("x", 1, 100)
-		r.RootRunID, r.ToolUseID, r.AttemptID, r.RunID = tr[0], tr[1], tr[2], fmt.Sprintf("run-%d", i)
+		r.RootRunID, r.ToolUseID, r.AttemptID, r.RunID = tr[0], tr[1], tr[2], "run-x"
 		if o := mustReserve(t, l, r); o.Resumed {
 			t.Fatalf("triple %v resumed another attempt's slot", tr)
 		}
@@ -272,5 +272,25 @@ func TestViewCacheEvictsTheLeastRecentlyUsed(t *testing.T) {
 	}
 	if got := l.lru; len(got) != 3 || got[0] != ledger(2) || got[1] != ledger(0) || got[2] != ledger(3) {
 		t.Fatalf("lru order = %v, want least recent first: k2, k0, k3", got)
+	}
+}
+
+// Tool-use IDs are unique only within a run: the same tool-use ID and attempt ID in two runs of one tree (a
+// sub-agent reusing its parent's "call_0") are two attempts, each with a slot of its own.
+func TestAttemptKey_TheRunIsPartOfIt(t *testing.T) {
+	st, clk := newMemStore(), &testClock{t: day1}
+	l := newTestLedger(st, clk)
+	mk := func(run string) Request {
+		r := req("call_0", 600, 2000)
+		r.RunID, r.RootRunID = run, "root"
+		return r
+	}
+	a := mustReserve(t, l, mk("root"))
+	b := mustReserve(t, l, mk("root>call_9"))
+	if b.Resumed || a.Slot.N == b.Slot.N || b.Slot.CumAfter != 1200 {
+		t.Fatalf("slots %+v and %+v: the second run's call resumed the first's slot", a.Slot, b.Slot)
+	}
+	if live, _ := l.Live(context.Background(), a.Ledger); len(live) != 2 {
+		t.Fatalf("live = %+v, want a slot for each run", live)
 	}
 }

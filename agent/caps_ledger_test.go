@@ -660,3 +660,91 @@ func liveOf(t *testing.T, j *Journal, rule string, kind capledger.Kind, window s
 	}
 	return live
 }
+
+// Tool-use IDs are unique only within a run: a sub-agent in a run of its own (same tree) that reuses its
+// parent's tool-use id for a call of the same tool is a different attempt with its own reservation. Both
+// calls ran, so both are counted; the window is full for a third.
+func TestCapsSum_SubAgentReusingTheParentsToolUseIDIsAnotherAttempt(t *testing.T) {
+	for name, safety := range map[string]Safety{"marked": {}, "idempotent": {Idempotent: true}} {
+		t.Run(name, func(t *testing.T) {
+			j := memJournal()
+			tool := sumTool(safety, sumPerDay)
+			sub := mustNew(&scriptModel{turns: [][]Emit{toolTurn("c1", "refund", sumArgs(600, "")), textTurn("sub done")}}, j, WithTools(tool), capClockOpt())
+			researcher := MustSubAgent("researcher", "does a refund", sub)
+			parent := mustNew(&scriptModel{turns: [][]Emit{
+				toolTurn("c1", "refund", sumArgs(300, "")),
+				toolTurn("c2", "researcher", `{"task":"refund 600"}`),
+				textTurn("done"),
+			}}, j, WithTools(tool, researcher), capClockOpt())
+			if _, err := parent.Run(context.Background(), "root", UserText("go")); err != nil {
+				t.Fatal(err)
+			}
+			// 300 (the parent's c1) + 600 (the sub-agent's c1) are both reserved: two slots, 900.
+			live := ledgerSlots(t, j, "refund_total", "")
+			if tool.calls() != 2 || len(live) != 2 {
+				t.Fatalf("calls = %d, live = %+v, want both calls run and both counted", tool.calls(), live)
+			}
+			var sum int64
+			for _, s := range live {
+				sum += s.Amount
+			}
+			if sum != 900 {
+				t.Fatalf("reserved %d, want 900 (a sub-agent call that reused the parent's tool-use id was counted as the parent's)", sum)
+			}
+		})
+	}
+}
+
+// The probe of the review: with a limit of 1000, a parent call of 600 and a sub-agent call of 600 reusing
+// its tool-use id: the second is over the limit and refused, not resumed onto the first's slot.
+func TestCapsSum_SubAgentCallOverTheLimitIsRefusedNotResumed(t *testing.T) {
+	for name, safety := range map[string]Safety{"marked": {}, "idempotent": {Idempotent: true}} {
+		t.Run(name, func(t *testing.T) {
+			j := memJournal()
+			tool := sumTool(safety, sumPerDay)
+			sub := mustNew(&scriptModel{turns: [][]Emit{toolTurn("c1", "refund", sumArgs(600, "")), textTurn("sub done")}}, j, WithTools(tool), capClockOpt())
+			researcher := MustSubAgent("researcher", "does a refund", sub)
+			parent := mustNew(&scriptModel{turns: [][]Emit{
+				toolTurn("c1", "refund", sumArgs(600, "")),
+				toolTurn("c2", "researcher", `{"task":"refund 600"}`),
+				textTurn("done"),
+			}}, j, WithTools(tool, researcher), capClockOpt())
+			if _, err := parent.Run(context.Background(), "root", UserText("go")); err != nil {
+				t.Fatal(err)
+			}
+			if tool.calls() != 1 {
+				t.Fatalf("the tool ran %d times: 1200 was spent against a limit of 1000", tool.calls())
+			}
+			if live := ledgerSlots(t, j, "refund_total", ""); len(live) != 1 || live[0].Amount != 600 {
+				t.Fatalf("live = %+v, want only the parent's 600", live)
+			}
+		})
+	}
+}
+
+// Two turns of one session that reuse a tool-use id are two attempts too.
+func TestCapsSum_SessionTurnsReusingAToolUseIDAreSeparate(t *testing.T) {
+	for name, safety := range map[string]Safety{"marked": {}, "idempotent": {Idempotent: true}} {
+		t.Run(name, func(t *testing.T) {
+			j := memJournal()
+			tool := sumTool(safety, sumPerDay)
+			a := mustNew(&scriptModel{turns: [][]Emit{
+				toolTurn("c1", "refund", sumArgs(300, "")), textTurn("one"),
+				toolTurn("c1", "refund", sumArgs(300, "")), textTurn("two"),
+			}}, j, WithTools(tool), capClockOpt())
+			s, err := a.Session(context.Background(), "sess")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, in := range []string{"first", "second"} {
+				if _, err := s.Send(context.Background(), UserText(in)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			live := ledgerSlots(t, j, "refund_total", "")
+			if tool.calls() != 2 || len(live) != 2 {
+				t.Fatalf("calls = %d, live = %+v, want a slot for each turn's call", tool.calls(), live)
+			}
+		})
+	}
+}

@@ -49,7 +49,7 @@ type Target struct {
 // tool-use ID, so one driver's proof says nothing about the others; its slot stays counted, which is
 // the safe direction (model 17, findings/release-unmarked).
 func (l *Ledger) Release(ctx context.Context, t Target, s Seal) (bool, error) {
-	attempt := l.AttemptKey(t.RootRunID, t.ToolUseID, t.AttemptID)
+	attempt := l.AttemptKey(t.RunID, t.RootRunID, t.ToolUseID, t.AttemptID)
 	if !s.sealed || s.attempt != attempt {
 		return false, ErrNotSealed
 	}

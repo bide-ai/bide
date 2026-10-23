@@ -180,8 +180,11 @@ func req(attempt string, amount, limit int64) Request {
 		Marked: true, Amount: amount, Limit: limit}
 }
 
-// ak is the key the ledger records for req(attempt, ...): root "root", tool-use ID attempt, attempt ID "1".
-func ak(attempt string) string { return testEncode("root") + "/" + testEncode(attempt) + "/1" }
+// ak is the key the ledger records for req(attempt, ...): run "run-<attempt>", root "root", tool-use ID attempt,
+// attempt ID "1".
+func ak(attempt string) string {
+	return testEncode("run-"+attempt) + "/" + testEncode("root") + "/" + testEncode(attempt) + "/1"
+}
 
 func mustReserve(t *testing.T, l *Ledger, r Request) Outcome {
 	t.Helper()

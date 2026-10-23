@@ -78,10 +78,14 @@ func (in intent) matches(r Request) bool {
 		in.Amount == r.Amount && in.Marked == r.Marked
 }
 
-// AttemptKey is the attempt's identity as the ledger records it: the three parts, each encoded, joined
-// by "/". The encoding carries no "/", so two attempts share a key only if all three parts are equal.
-func (l *Ledger) AttemptKey(root, toolUse, attempt string) string {
-	return l.cfg.Encode(root) + "/" + l.cfg.Encode(toolUse) + "/" + l.cfg.Encode(attempt)
+// AttemptKey is the attempt's identity as the ledger records it: the run that holds the call's journal
+// (and so its cap-intent), the root of its run tree, the tool-use ID and the attempt ID, each encoded and
+// joined by "/". The encoding carries no "/", so two attempts share a key only if all four parts are
+// equal. The run is part of it because tool-use IDs are unique only within a run: a sub-agent, a
+// programmatic sub-run or a session turn of one tree can reuse the parent's ("call_0"), and without the
+// run the second call would find the first's slot and count nothing.
+func (l *Ledger) AttemptKey(run, root, toolUse, attempt string) string {
+	return l.cfg.Encode(run) + "/" + l.cfg.Encode(root) + "/" + l.cfg.Encode(toolUse) + "/" + l.cfg.Encode(attempt)
 }
 
 // validate refuses a request the ledger will not act on.
@@ -115,7 +119,7 @@ func (l *Ledger) Reserve(ctx context.Context, r Request) (Outcome, error) {
 	if err := l.validate(r); err != nil {
 		return Outcome{}, err
 	}
-	r.attempt = l.AttemptKey(r.RootRunID, r.ToolUseID, r.AttemptID)
+	r.attempt = l.AttemptKey(r.RunID, r.RootRunID, r.ToolUseID, r.AttemptID)
 	in, err := l.window(ctx, r)
 	if err != nil {
 		return Outcome{}, err

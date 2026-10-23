@@ -3266,7 +3266,7 @@ before the ledger code (PR4 of the build plan), so it is the specification the c
   not be earlier than the newest window in the index run, nor more than `Bound` later, else the
   reserve is refused; the window is inserted into the index before the intent is written. The
   ledgers of several windows (`MaxWin`) are modelled, so a slot in the wrong window is visible.
-- **Attempt identity.** An attempt of a tool that is not retry-safe (`Marked`) has an exclusive claim
+- **Attempt identity.** Attempts are given identities; the code builds one from the run holding the call's journal, the root of its tree, the tool-use ID and the attempt ID (a tool-use ID is unique only within a run, so a sub-agent that reuses its parent's is a different attempt), and the model assumes only that distinct calls have distinct ones. An attempt of a tool that is not retry-safe (`Marked`) has an exclusive claim
   before the reserve (`Start`): only the driver that won it reserves and begins, and a re-run finds
   the marker and halts, so after a crash its slot stays counted. An attempt of a retry-safe tool (an
   `Idempotent` write, not `Marked`) has no claim: its attempt is the tool-use ID, and any number of

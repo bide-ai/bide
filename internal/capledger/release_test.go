@@ -241,10 +241,16 @@ func TestRelease_ReadsTheWindowFromTheIntent(t *testing.T) {
 	if live, _ := l.Live(ctx, o.Ledger); len(live) != 0 {
 		t.Fatalf("the slot is still live in %s", o.Ledger)
 	}
-	// A target whose run holds no intent for the attempt releases nothing.
+	// A target in another run is another attempt: a1's seal does not release it, and with a seal of its own
+	// (no intent was written there) there is nothing to release.
 	other := tgt("a1")
 	other.RunID = "some-other-run"
-	if ok, err := l.Release(ctx, other, seal); err != nil || ok {
+	if _, err := l.Release(ctx, other, seal); !errors.Is(err, ErrNotSealed) {
+		t.Fatalf("Release naming another run with a1's seal: err = %v, want ErrNotSealed", err)
+	}
+	var w2 atomic.Int32
+	seal2, _ := NewSeal(l.AttemptKey(other.RunID, other.RootRunID, other.ToolUseID, other.AttemptID), &w2, wordNone, wordSealed)
+	if ok, err := l.Release(ctx, other, seal2); err != nil || ok {
 		t.Fatalf("Release naming a run with no intent = %v, %v, want false, nil", ok, err)
 	}
 	// A target that names another rule than the intent's is refused.

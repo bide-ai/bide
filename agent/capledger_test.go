@@ -60,7 +60,7 @@ func TestCapLedger_LedgerIsAReservedJournalRun(t *testing.T) {
 	if len(names) != 2 || names[1] != "slot:0" {
 		t.Fatalf("ledger run entries = %v, want the header and slot:0", names)
 	}
-	for _, name := range []string{"cap-intent:r%2Fa1%2F1", "cap-reserve:r%2Fa1%2F1"} {
+	for _, name := range []string{"cap-intent:r-a1%2Fr%2Fa1%2F1", "cap-reserve:r-a1%2Fr%2Fa1%2F1"} {
 		if _, ok, err := j.Get(ctx, "r-a1", name); err != nil || !ok {
 			t.Fatalf("run r-a1 holds no %s (%v)", name, err)
 		}
