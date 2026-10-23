@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"iter"
 	"strings"
 	"testing"
 )
@@ -453,5 +454,44 @@ func TestTaintGate_CrashAtEveryWrite(t *testing.T) {
 	}
 	if faulted < 10 {
 		t.Fatalf("only %d of 40 injected faults surfaced; the test is not reaching the run's writes", faulted)
+	}
+}
+
+// tgLoadCounter counts the Loads of a store.
+type tgLoadCounter struct {
+	Store
+	n *int
+}
+
+func (l tgLoadCounter) Unwrap() Store { return l.Store }
+func (l tgLoadCounter) Load(ctx context.Context, runID string, after int64) iter.Seq2[Entry, error] {
+	*l.n++
+	return l.Store.Load(ctx, runID, after)
+}
+
+// F3: the fold is computed once per model turn, not once per call: a turn of three exempt writes (each
+// evaluated, none paused) reads the journal no more often than a turn of one.
+func TestTaintGate_TheJournalIsReadOncePerTurn(t *testing.T) {
+	loads := func(calls int) int {
+		n := 0
+		e := newTG(t)
+		e.j = mustJournal(tgLoadCounter{Store: NewMemStore(), n: &n})
+		e.writeOp = []ToolOption{TaintExempt("reviewed")}
+		var parts []Emit
+		for i := 0; i < calls; i++ {
+			parts = append(parts, Emit{Event: ToolCallDelta{Index: i, ID: "w" + string(rune('a'+i)), Name: "write", ArgsFragment: []byte(`{}`)}})
+		}
+		parts = append(parts, Emit{Event: Finish{Reason: "tool_use"}})
+		if err := e.drive(true, toolTurn("c1", "read", `{}`), parts, textTurn("done")); err != nil {
+			t.Fatal(err)
+		}
+		if e.writes.n.Load() != int32(calls) {
+			t.Fatalf("writes = %d, want %d", e.writes.n.Load(), calls)
+		}
+		return n
+	}
+	one, three := loads(1), loads(3)
+	if three > one {
+		t.Fatalf("a turn of three tainted writes loaded the journal %d times, a turn of one %d: the fold must be shared by the turn's calls", three, one)
 	}
 }
