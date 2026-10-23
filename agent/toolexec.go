@@ -691,7 +691,7 @@ func closeCall(st *atomic.Int32) int32 {
 
 // protocol:toolcall end
 
-// protocol:toolcall begin IEnter IArgs IIdem IBegin ICall LClose
+// protocol:toolcall begin IEnter IArgs IIdem IRefuse IBegin ICall LClose
 
 // toolHandler builds the wrapped tool-execution chain once per run: a base handler that
 // dispatches by name to the registered tool, wrapped by the middleware in order. It returns the
