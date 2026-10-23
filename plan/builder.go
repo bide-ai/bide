@@ -522,9 +522,9 @@ func checkTool(t agent.Tool) error {
 	// A tool that declares untrusted content, or an exemption from the taint gate, cannot be a plan node
 	// until flows have a taint rule (docs/design/untrusted-content-and-amount-caps.md, section 5.9): the
 	// node would run it with no taint handling, and silently lose what the declaration asks for.
-	if spec := t.Spec(); spec.Untrusted != "" || spec.TaintExempt != "" {
+	if spec := t.Spec(); spec.Untrusted != "" || spec.Safety.Untrusted != "" || spec.TaintExempt != "" {
 		what := "Untrusted"
-		if spec.Untrusted == "" {
+		if spec.Untrusted == "" && spec.Safety.Untrusted == "" {
 			what = "TaintExempt"
 		}
 		return fmt.Errorf("tool %q declares %s, which a plan flow node does not support yet (flows have no taint rule): %w", spec.Name, what, agent.ErrConfig)

@@ -393,7 +393,7 @@ func doneCause(ctx context.Context) error {
 // records the mark.
 func recordedSafety(spec ToolSpec) *Safety {
 	s := spec.Safety
-	s.Untrusted = spec.Untrusted // the tool's declaration, never a value set through its Safety
+	s.Untrusted = spec.Untrusted // the tool's declaration (registration folded Safety.Untrusted into it)
 	return &s
 }
 

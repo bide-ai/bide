@@ -60,7 +60,7 @@ func checkEmbedded(t Tool, s ToolSpec) error {
 				approval = approval || is.Approval != nil
 				timeout = timeout || is.Timeout > 0
 				caps = append(caps, is.Caps...)
-				untrusted = untrusted || is.Untrusted != ""
+				untrusted = untrusted || is.untrustedSource() != ""
 			}
 			walk(f, depth+1)
 		}
@@ -71,7 +71,7 @@ func checkEmbedded(t Tool, s ToolSpec) error {
 		return fmt.Errorf("agent: tool %q embeds a tool with an approval gate, and its own spec has none: the decorator hides the approval gate; implement Spec or Unwrap: %w", s.Name, ErrConfig)
 	case slices.ContainsFunc(caps, func(l string) bool { return !slices.Contains(s.Caps, l) }):
 		return fmt.Errorf("agent: tool %q embeds a tool with amount caps, and its own spec lacks or changes a rule: the decorator hides the cap; implement Spec (carrying the same rules) or Unwrap: %w", s.Name, ErrConfig)
-	case untrusted && s.Untrusted == "":
+		case untrusted && s.untrustedSource() == "":
 		return fmt.Errorf("agent: tool %q embeds a tool that declares Untrusted, and its own spec does not: the decorator hides the provenance declaration; implement Spec or Unwrap: %w", s.Name, ErrConfig)
 	case timeout && s.Timeout <= 0:
 		return fmt.Errorf("agent: tool %q embeds a tool with a Timeout, and its own spec has none: the decorator hides the timeout; implement Spec or Unwrap: %w", s.Name, ErrConfig)

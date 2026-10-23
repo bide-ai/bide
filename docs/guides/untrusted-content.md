@@ -38,6 +38,8 @@ _, err = a.Run(ctx, "run-1", agent.UserText("refund order 4417"), agent.WithUntr
 - `agent.TaintExempt(reason)` declares a tool whose calls will need no escalation gate in a tainted run. It does
   nothing yet and requires a reason.
 
+A source given through `agent.WithSafety(agent.Safety{Untrusted: "..."})` is the same declaration, never ignored; giving two different sources (this and the option) is `ErrConfig` at registration.
+
 A source name is a short printable string (at most 128 bytes). A tool that wraps an `Untrusted` tool must declare
 it too, or registration is refused, as for a gate the wrapper would hide.
 

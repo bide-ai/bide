@@ -107,3 +107,28 @@ func RetrievalUntrusted(source string) RetrievalOption {
 		return nil
 	})
 }
+
+// untrustedSource is the source a spec declares for its tool's results: ToolSpec.Untrusted, else
+// Safety.Untrusted. The two agree after normalizeUntrusted.
+func (s ToolSpec) untrustedSource() string {
+	if s.Untrusted != "" {
+		return s.Untrusted
+	}
+	return s.Safety.Untrusted
+}
+
+// normalizeUntrusted folds Safety.Untrusted into ToolSpec.Untrusted, so that a source given through
+// WithSafety is a declaration like the option's and is never ignored. Both given and different, or an
+// invalid name, is ErrConfig.
+func normalizeUntrusted(s *ToolSpec) error {
+	if s.Safety.Untrusted != "" {
+		if err := checkProvenanceName("Safety.Untrusted of tool "+s.Name, s.Safety.Untrusted); err != nil {
+			return err
+		}
+		if s.Untrusted != "" && s.Untrusted != s.Safety.Untrusted {
+			return fmt.Errorf("agent: tool %q declares untrusted source %q (Untrusted) and %q (Safety.Untrusted): declare it once: %w", s.Name, s.Untrusted, s.Safety.Untrusted, ErrConfig)
+		}
+	}
+	s.Untrusted = s.untrustedSource()
+	return nil
+}

@@ -141,7 +141,7 @@ func TestFoldTaint_DeclaredIsOnlyEverAdded(t *testing.T) {
 
 // T6, the fold's half: the same records give the same result, and the fold does not modify them.
 func TestFoldTaint_IsPure(t *testing.T) {
-	recs := []Record{startRec("in"), modelRec("a", "read"), resRec("a", "crm"), modelRec()}
+	recs := []Record{modelRec("a", "read"), resRec("a", "crm"), startRec("in"), modelRec()}
 	before, _ := json.Marshal(recs)
 	a := foldTaint(recs, []taintMark{{Source: "p"}}, nil)
 	b := foldTaint(recs, []taintMark{{Source: "p"}}, nil)
@@ -152,9 +152,11 @@ func TestFoldTaint_IsPure(t *testing.T) {
 	if string(before) != string(after) {
 		t.Error("the fold modified its records")
 	}
-	// the marks of an earlier turn are not shared with a later one's slice
-	a[0].Marks = append(a[0].Marks, taintMark{Source: "scribble"})
-	if got := marksBefore(t, foldTaint(recs, nil, nil), 3); slices.Contains(got, "scribble") {
-		t.Error("a caller's change leaked into a later fold")
+	// a caller that appends to an earlier turn's marks does not change a later turn's
+	first, last := a[0], a[len(a)-1]
+	want := slices.Clone(sources(last.Marks))
+	first.Marks = append(first.Marks, taintMark{Source: "scribble"})
+	if got := sources(last.Marks); !slices.Equal(got, want) {
+		t.Errorf("a change to an earlier turn's marks reached a later turn's: %v, was %v", got, want)
 	}
 }

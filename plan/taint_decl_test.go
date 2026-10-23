@@ -16,8 +16,9 @@ import (
 func TestTaintDeclarations_AreRefusedAsPlanNodes(t *testing.T) {
 	fn := func(context.Context, int) (int, error) { return 1, nil }
 	declared := map[string]agent.Tool{
-		"Untrusted":   agent.MustFunc("lookup", "", fn, agent.Untrusted("crm-notes")),
-		"TaintExempt": agent.MustFunc("lookup", "", fn, agent.TaintExempt("reviewed")),
+		"Untrusted":       agent.MustFunc("lookup", "", fn, agent.Untrusted("crm-notes")),
+		"TaintExempt":     agent.MustFunc("lookup", "", fn, agent.TaintExempt("reviewed")),
+		"a Safety source": agent.MustFunc("lookup", "", fn, agent.WithSafety(agent.Safety{Untrusted: "inbox"})),
 	}
 	for what, tool := range declared {
 		reg := NewRegistry()

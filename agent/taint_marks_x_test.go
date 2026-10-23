@@ -154,17 +154,45 @@ func TestUntrusted_MarksEveryResultPath(t *testing.T) {
 	}
 }
 
-// A mark set through a tool's Safety is not a declaration: the engine records the tool's own.
-func TestUntrusted_SafetyFieldIsNotADeclaration(t *testing.T) {
+// A source given through WithSafety is a declaration, never ignored: it is recorded as the Untrusted
+// option's is; the same source twice is one declaration; two sources are ErrConfig.
+func TestUntrusted_SafetyFieldIsADeclaration(t *testing.T) {
+	ctx := context.Background()
 	ok := func(context.Context, struct{}) (string, error) { return "ok", nil }
-	j := agenttest.MemJournal()
-	m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "t", `{}`), agenttest.TextTurn("done"))
-	a := agenttest.MustNew(m, j, agent.WithTools(agent.MustFunc("t", "t", ok, agent.WithSafety(agent.Safety{Idempotent: true, Untrusted: "forged"}))))
-	if _, err := a.Run(context.Background(), "r", agent.UserText("go")); err != nil {
+	run := func(opts ...agent.ToolOption) (*agent.Journal, error) {
+		j := agenttest.MemJournal()
+		m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "t", `{}`), agenttest.TextTurn("done"))
+		a, err := agent.New(m, j, agent.WithTools(agent.MustFunc("t", "t", ok, opts...)))
+		if err != nil {
+			return nil, err
+		}
+		_, err = a.Run(ctx, "r", agent.UserText("go"))
+		return j, err
+	}
+	j, err := run(agent.WithSafety(agent.Safety{Idempotent: true, Untrusted: "inbox"}))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if got := untrustedOf(resultRecord(t, j, "r", "c1")); got != "" {
-		t.Fatalf("a Safety.Untrusted set through WithSafety was recorded as %q", got)
+	if got := untrustedOf(resultRecord(t, j, "r", "c1")); got != "inbox" {
+		t.Fatalf("a source given through WithSafety was recorded as %q, want inbox", got)
+	}
+	for name, opts := range map[string][]agent.ToolOption{
+		"the option then WithSafety, same source": {agent.Untrusted("inbox"), agent.WithSafety(agent.Safety{Untrusted: "inbox"})},
+		"WithSafety then the option, same source": {agent.WithSafety(agent.Safety{Untrusted: "inbox"}), agent.Untrusted("inbox")},
+	} {
+		j, err := run(opts...)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got := untrustedOf(resultRecord(t, j, "r", "c1")); got != "inbox" {
+			t.Errorf("%s: recorded %q, want inbox", name, got)
+		}
+	}
+	if _, err := run(agent.Untrusted("inbox"), agent.WithSafety(agent.Safety{Untrusted: "web"})); !errors.Is(err, agent.ErrConfig) {
+		t.Errorf("two different sources = %v, want ErrConfig", err)
+	}
+	if _, err := run(agent.WithSafety(agent.Safety{Untrusted: "bad\nname"})); !errors.Is(err, agent.ErrConfig) {
+		t.Errorf("an invalid name through Safety = %v, want ErrConfig", err)
 	}
 }
 
