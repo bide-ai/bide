@@ -24,6 +24,7 @@ Package notify ships bide's webhook notifier: a signed HTTPS POST of a structure
 
 **Functions**
 
+- `func CheckSecret(secret string) error`: CheckSecret reports whether this process can use secret as a webhook signing secret: it returns ErrShortSecret for a non-empty secret shorter than 14 bytes under strict FIPS enforcement (GODEBUG=fips140=only), and nil otherwise.
 - `func SPKIHash(c *x509.Certificate) string`: SPKIHash returns the hex SHA-256 of a certificate's SubjectPublicKeyInfo: the value WithServerPin takes, and the value recorded as the client certificate in a delivery's audit record.
 - `func Sign(secrets []string, ts int64, body []byte) string`: Sign returns the Bide-Signature header value for body sent at ts: one "v1=&lt;hex&gt;" entry per secret, space separated, where each is HMAC-SHA256(secret, ts + "." + body).
 - `func Verify(r *http.Request, secrets []string, tolerance time.Duration) error`: Verify checks a request from a bide webhook in one call, for use in a receiver.

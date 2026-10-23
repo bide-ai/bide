@@ -519,7 +519,9 @@ attributes `contentType`, `messageDigest` and `signingCertificateV2`. It is a co
 gate calls it yet. A token that binds its signer only through the SHA-1 `signingCertificate` attribute
 is refused with `signing-certificate-v1-only` unless the policy opts in for that TSA's key
 (`Policy.AllowESSV1`, off by default, per TSA); a result that relied on the opt-in has
-`Result.ESSV1` set and a verdict should show it. A token that uses SHA-1 as its CMS digest algorithm
+`Result.ESSV1` set and a verdict should show it. Under `GODEBUG=fips140=only` the opt-in re-admits
+SHA-1 into the process (that one comparison runs with enforcement off, as does the consistency check
+for a token that carries both signing-certificate attributes). A token that uses SHA-1 as its CMS digest algorithm
 is refused with `weak-hash` whatever the policy says. **Of ten public TSA endpoints tried on
 2026-10-15, six produce tokens that verify by default (DigiCert, GlobalSign, QuoVadis, SSL.com,
 Microsoft, SwissSign), three verify only with the opt-in (Sectigo, Entrust, whose endpoint returned
