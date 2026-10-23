@@ -414,3 +414,23 @@ func TestDemoScript(t *testing.T) {
 		t.Fatal("the API key was printed")
 	}
 }
+
+// TestRefundCeilingRefusesOnEitherTool: one cap rule covers refund and refund_large, so a refund over
+// -max-refund is refused whichever tool the model picks, before any approver is asked, and Stripe is
+// never called. A refund under the ceiling runs as before.
+func TestRefundCeilingRefusesOnEitherTool(t *testing.T) {
+	for name, threshold := range map[string]string{"refund (under the approval threshold)": "10000", "refund_large (over it)": "1000"} {
+		f, db := setup(t)
+		out := mustProc(t, f, "run", "-db", db, "-payment-intent", "pi_test_1", "-approval-threshold", threshold, "-max-refund", "4000")
+		want(t, out, "Refund failed", "refund_ceiling")
+		if strings.Contains(out, "paused") || f.refundCount() != 0 || len(f.posts()) != 0 {
+			t.Fatalf("%s: %d refunds, %d posts, out:\n%s", name, f.refundCount(), len(f.posts()), out)
+		}
+	}
+	f, db := setup(t)
+	out := mustProc(t, f, "run", "-db", db, "-payment-intent", "pi_test_1", "-amount", "3000", "-max-refund", "4000")
+	want(t, out, "status: done")
+	if f.refundCount() != 1 {
+		t.Fatalf("%d refunds under the ceiling, want 1", f.refundCount())
+	}
+}

@@ -50,6 +50,7 @@ type config struct {
 	paymentIntent  string
 	amount         int64 // minor units; 0 refunds what is left
 	threshold      int64 // a refund over this many minor units needs 2-of-3 approval
+	maxRefund      int64 // a refund over this many minor units (USD) is refused outright, whichever tool; 0 for no ceiling
 	crashAfterSend bool
 	reconcile      bool
 	minHaltAge     time.Duration
@@ -170,11 +171,18 @@ func newAgent(j *agent.Journal, api *stripe, cfg config) (*agent.Agent, error) {
 		return nil, err
 	}
 	do := func(ctx context.Context, in refundArgs) (refundResult, error) { return doRefund(ctx, api, cfg, in) }
-	small, err := agent.Func("refund", "refund a payment (at or under the approval threshold)", do)
+	// One cap rule over both tools: a refund over the ceiling is refused whichever tool the model picks,
+	// before any approver is asked, and the two tools share the one rule. The approval gate stays on
+	// refund_large: a cap that holds a call for approval has not shipped (docs/guides/amount-caps.md).
+	var caps []agent.ToolOption
+	if cfg.maxRefund > 0 {
+		caps = append(caps, agent.WithCaps(fmt.Sprintf("refund_ceiling: refund|refund_large.amount[minor] > %d.%02d USD -> refuse", cfg.maxRefund/100, cfg.maxRefund%100)))
+	}
+	small, err := agent.Func("refund", "refund a payment (at or under the approval threshold)", do, caps...)
 	if err != nil {
 		return nil, err
 	}
-	large, err := agent.Func("refund_large", "refund a payment over the threshold: needs 2 of 3 approvers", do, agent.WithApproval(&policy))
+	large, err := agent.Func("refund_large", "refund a payment over the threshold: needs 2 of 3 approvers", do, append([]agent.ToolOption{agent.WithApproval(&policy)}, caps...)...)
 	if err != nil {
 		return nil, err
 	}
