@@ -53,7 +53,7 @@ var reservedPrefixes = []string{
 }
 
 // capRunPrefix starts the ID of every cap ledger run, which holds a cap's reservations in the same
-// store as the runs (see IsCapRun). A caller can never write to such a run through the exported API (checkRunID, Session, checkCallerRun); reads of one (History, Status) are not refused.
+// store as the runs (see IsCapRun). A caller can never write to such a run's journal through the exported agent API (checkRunID, Session, checkCallerRun) or the audit package's journal writers; reads of one (History, Status) are not refused, and the audit EventStore writers (PersistEvent and the like) write a separate store and are out of scope.
 const capRunPrefix = "@cap/"
 
 // IsCapRun reports whether runID is a cap ledger run: it starts with "@cap/", which checkRunID

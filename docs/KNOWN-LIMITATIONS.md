@@ -138,7 +138,7 @@ and [the formal models](../spec/tla/README.md).
 refuse a run ID that starts with `@cap/` (`ErrConfig`), as they refuse `@stop`, and `Step`,
 `Parallel` and `ResolveHalt` refuse a step name that starts with `slot:`, `cap-intent:`,
 `cap-reserve:` or `gate-reason:`. The engine will keep cap ledgers and gate reasons under them in
-later releases. `Approve`, `Cancel`, `Signal`, `Step` and the other exported calls that write to a run you name refuse a
+later releases. `Approve`, `Cancel`, `Signal`, `Step`, `Lease` and the other exported calls that write to a run you name refuse a
 `@cap/` run too (`@stop` keeps its old behaviour in them: they still write to it, a known gap left
 as it was). A run already named under `@cap/` keeps its journal, but `Recover`, the run viewer,
 `bide approve -list`, `bide audit notifications` and `bide audit redactions` skip it from this version on, so it is not resumed and a gate

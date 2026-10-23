@@ -402,6 +402,10 @@ func TestReservedNamespace_ExportedWritesRefuseCapRuns(t *testing.T) {
 			_, err := j.Step(ctx, run, "n", func(context.Context) (int, error) { return 1, nil })
 			return err
 		},
+		"Lease": func() error {
+			_, err := Lease(ctx, j, run, func(context.Context) error { return nil })
+			return err
+		},
 		"Parallel": func() error {
 			_, err := j.Parallel(ctx, run, []Task[int]{{Name: "t", Fn: func(context.Context) (int, error) { return 1, nil }}})
 			return err
