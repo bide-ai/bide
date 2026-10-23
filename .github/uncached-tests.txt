@@ -39,3 +39,4 @@ internal/tools/oldnames
 model/provider
 signer/pkcs11
 store/postgres
+store/sqlite

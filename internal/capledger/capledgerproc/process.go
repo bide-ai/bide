@@ -1,4 +1,7 @@
-package capledgertest
+// Package capledgerproc runs the cap ledger across real worker processes (re-executions of a store's
+// test binary) for the tests of bide's stores. It is internal and starts a process, so only the store
+// modules' tests import it (audit uses capledgertest, which starts none).
+package capledgerproc
 
 import (
 	"bufio"
@@ -17,6 +20,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/internal/capledger"
+	"github.com/bide-ai/bide/internal/capledger/capledgertest"
 )
 
 // The multi-process check (C2 across processes, and C4 with a real crash): K worker processes, each a
@@ -55,6 +59,7 @@ type Params struct {
 	Kill bool
 }
 
+// String encodes the parameters for a worker's environment.
 func (p Params) String() string {
 	return fmt.Sprintf("%d,%d,%d,%d,%s", p.Procs, p.Own, p.Shared, p.Limit, p.Namespace)
 }
@@ -107,7 +112,7 @@ func WorkerMain(open func(ctx context.Context) (*agent.Journal, func(), error)) 
 		return 2
 	}
 	defer closeFn()
-	l := New(j, func() time.Time { return day }, 0)
+	l := capledgertest.New(j, func() time.Time { return day }, 0)
 	var tools []string
 	for i := range p.Shared {
 		tools = append(tools, fmt.Sprintf("%s-shared-%d", p.Namespace, i))
@@ -303,7 +308,7 @@ func Run(t *testing.T, j *agent.Journal, p Params, env []string) {
 			}
 		}
 	}
-	l := New(j, func() time.Time { return day }, 0)
+	l := capledgertest.New(j, func() time.Time { return day }, 0)
 	runID := l.LedgerRun(p.rule(), "2026-10-22", capledger.KeyDigest(""))
 	slots, err := l.Slots(context.Background(), runID) // validates the whole ledger
 	if err != nil {

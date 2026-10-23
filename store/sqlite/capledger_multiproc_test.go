@@ -10,7 +10,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/agent/agenttest"
-	"github.com/bide-ai/bide/internal/capledger/capledgertest"
+	"github.com/bide-ai/bide/internal/capledger/capledgerproc"
 )
 
 // The cap ledger across real processes on one SQLite file (C2, C10): worker processes are
@@ -20,8 +20,8 @@ import (
 const capDBEnv = "BIDE_CAPLEDGER_SQLITE"
 
 func TestMain(m *testing.M) {
-	if capledgertest.IsWorker() {
-		os.Exit(capledgertest.WorkerMain(func(context.Context) (*agent.Journal, func(), error) {
+	if capledgerproc.IsWorker() {
+		os.Exit(capledgerproc.WorkerMain(func(context.Context) (*agent.Journal, func(), error) {
 			s, err := Open(os.Getenv(capDBEnv))
 			if err != nil {
 				return nil, nil, err
@@ -39,8 +39,8 @@ func TestCapLedger_AcrossProcessesOnSQLite(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	p := capledgertest.Params{Procs: 4, Own: 12, Shared: 6, Limit: 30, Namespace: fmt.Sprintf("mp-%d", time.Now().UnixNano())}
-	capledgertest.Run(t, agenttest.MustJournal(s), p, []string{capDBEnv + "=" + path})
+	p := capledgerproc.Params{Procs: 4, Own: 12, Shared: 6, Limit: 30, Namespace: fmt.Sprintf("mp-%d", time.Now().UnixNano())}
+	capledgerproc.Run(t, agenttest.MustJournal(s), p, []string{capDBEnv + "=" + path})
 }
 
 // A real crash: one worker is SIGKILLed in the middle of its reservations and a replacement of the same
@@ -53,8 +53,8 @@ func TestCapLedger_SIGKILLMidReservationSQLite(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	p := capledgertest.Params{Procs: 3, Own: 10, Shared: 4, Limit: 20, Namespace: fmt.Sprintf("mpk-%d", time.Now().UnixNano()), Kill: true}
-	capledgertest.Run(t, agenttest.MustJournal(s), p, []string{capDBEnv + "=" + path})
+	p := capledgerproc.Params{Procs: 3, Own: 10, Shared: 4, Limit: 20, Namespace: fmt.Sprintf("mpk-%d", time.Now().UnixNano()), Kill: true}
+	capledgerproc.Run(t, agenttest.MustJournal(s), p, []string{capDBEnv + "=" + path})
 }
 
 // Releases across processes: every worker releases its first own attempt and races the others through a
@@ -66,6 +66,6 @@ func TestCapLedger_ReleaseAcrossProcessesOnSQLite(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	p := capledgertest.Params{Procs: 4, Own: 8, Shared: 4, Limit: 20, Namespace: fmt.Sprintf("mpr-%d", time.Now().UnixNano()), Release: true}
-	capledgertest.Run(t, agenttest.MustJournal(s), p, []string{capDBEnv + "=" + path})
+	p := capledgerproc.Params{Procs: 4, Own: 8, Shared: 4, Limit: 20, Namespace: fmt.Sprintf("mpr-%d", time.Now().UnixNano()), Release: true}
+	capledgerproc.Run(t, agenttest.MustJournal(s), p, []string{capDBEnv + "=" + path})
 }

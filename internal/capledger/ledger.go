@@ -118,6 +118,7 @@ type OverLimitError struct {
 	Cum, Amount, Limit int64
 }
 
+// Error describes the reservation and the window it would overflow.
 func (e *OverLimitError) Error() string {
 	return fmt.Sprintf("capledger: the window holds %d, the reservation adds %d, the limit is %d", e.Cum, e.Amount, e.Limit)
 }
