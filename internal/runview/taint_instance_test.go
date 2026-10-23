@@ -3,7 +3,11 @@ package runview
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/plan"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
@@ -156,4 +160,58 @@ func editedJournal(t *testing.T, ctx context.Context, f *taintfixture.F, name st
 		t.Fatal(err)
 	}
 	return recs
+}
+
+// Probe: a plan flow node named foo#taint is a gated node of its own: the viewer lists that one gate, waiting
+// on its own policy, and no escalation instance of a node foo.
+func TestBuild_AFlowNodeNamedLikeAnInstanceIsANode(t *testing.T) {
+	ctx := context.Background()
+	j := agenttest.MemJournal()
+	policy := agent.ApprovalPolicy{Need: 2, Approvers: []string{"ops", "risk"}}
+	b := plan.New[int, string]("pay").WithApproverVerifiers(approverKeys(nil))
+	b.Step("foo#taint", func(_ context.Context, n int) (string, error) { return "ok", nil }, plan.Approval(&policy))
+	f, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pend *agent.ApprovalPending
+	if _, err := f.Run(ctx, j, "f1", 1); !errors.As(err, &pend) {
+		t.Fatalf("Run = %v, want a pause", err)
+	}
+	recs, err := j.History(ctx, "f1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gs := Build(ctx, "f1", recs, nil).Gates
+	if len(gs) != 1 || gs[0].ToolUseID != "node:foo#taint" || !gs[0].Waiting || gs[0].Need != 2 || !slices.Equal(gs[0].Approvers, []string{"ops", "risk"}) {
+		t.Fatalf("gates = %+v, want the one waiting node gate node:foo#taint, 2 of [ops risk]", gs)
+	}
+}
+
+// Probe: bide view (the handler) serves the escalation instance as a gate of its own, in the JSON view and
+// on the page, with the escalation gate's approvers.
+func TestHandler_ServesTheEscalationInstance(t *testing.T) {
+	f := taintfixture.New(t, &agent.ApprovalPolicy{Need: 1, Approvers: []string{"own1"}})
+	_ = f.Drive()
+	if err := f.Submit("c2", "c2", "own1", true); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Drive()
+	h := Handler(Options{Source: JournalSource{J: f.Journal}})
+	v := viewOf(t, h, taintfixture.Run)
+	var esc *Gate
+	for i := range v.Gates {
+		if v.Gates[i].ToolUseID == "c2#taint" {
+			esc = &v.Gates[i]
+		}
+	}
+	if esc == nil || !esc.Waiting || esc.Need != 2 || !slices.Equal(esc.Approvers, []string{"esc1", "esc2"}) {
+		t.Fatalf("gates = %+v, want c2#taint waiting on 2 of [esc1 esc2]", v.Gates)
+	}
+	_, page := get(t, h, "/run?id="+taintfixture.Run)
+	for _, want := range []string{"c2#taint", "esc1", "esc2"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the run page does not show %q", want)
+		}
+	}
 }
