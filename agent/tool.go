@@ -356,6 +356,9 @@ func (s safetyOption) applyTool(c *toolConfig) error {
 }
 
 func (s safetyOption) applyStep(c *stepConfig) error {
+	if s.Untrusted != "" {
+		return fmt.Errorf("WithSafety: Safety.Untrusted declares a tool's untrusted results, and a Step is not a tool; a Step's result is recorded under the Step's name with no mark: %w", ErrConfig)
+	}
 	c.safety = Safety(s)
 	return nil
 }

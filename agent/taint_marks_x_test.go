@@ -294,3 +294,16 @@ func TestRetrievalUntrusted_MarkIsRecordedWithTheStep(t *testing.T) {
 		t.Errorf("RetrievalUntrusted(\"\") = %v, want ErrConfig", err)
 	}
 }
+
+// A Step is not a tool: a Safety that names an untrusted source would have no effect, so Step refuses it.
+func TestStep_RefusesASafetyThatNamesAnUntrustedSource(t *testing.T) {
+	ctx := context.Background()
+	j := agenttest.MemJournal()
+	_, err := j.Step[string](ctx, "r", "s", func(context.Context) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{Idempotent: true, Untrusted: "inbox"}))
+	if !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("Step with Safety.Untrusted = %v, want ErrConfig", err)
+	}
+	if _, err := j.Step[string](ctx, "r", "s2", func(context.Context) (string, error) { return "ok", nil }, agent.WithSafety(agent.Safety{Idempotent: true})); err != nil {
+		t.Fatalf("Step with a plain Safety: %v", err)
+	}
+}

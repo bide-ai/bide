@@ -41,7 +41,9 @@ _, err = a.Run(ctx, "run-1", agent.UserText("refund order 4417"), agent.WithUntr
 A source given through `agent.WithSafety(agent.Safety{Untrusted: "..."})` is the same declaration, never ignored; giving two different sources (this and the option) is `ErrConfig` at registration.
 
 A source name is a short printable string (at most 128 bytes). A tool that wraps an `Untrusted` tool must declare
-it too, or registration is refused, as for a gate the wrapper would hide.
+it too. Registration refuses a wrapper that embeds the inner tool and hides the declaration; it does not see a
+wrapper that holds the inner tool in a named field or implements `Spec` without embedding (the same holds for
+an approval gate or a timeout), so the declaration is the wrapper author's duty there.
 
 ## What is recorded, and what is not
 
