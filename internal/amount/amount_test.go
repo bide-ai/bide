@@ -251,3 +251,28 @@ func TestAdd(t *testing.T) {
 		})
 	}
 }
+
+// TestParse_TextBound pins maxText: the longest text Parse reads is 256 bytes. A text at the bound
+// is read (and overflows, being digits); one byte over is refused as syntax without being read;
+// a megabyte is refused without allocating.
+func TestParse_TextBound(t *testing.T) {
+	if _, err := Parse(strings.Repeat("1", maxText), Major, 2); !errors.Is(err, ErrOverflow) {
+		t.Fatalf("a text of %d digits: %v, want ErrOverflow (read, and too large)", maxText, err)
+	}
+	if _, err := Parse(strings.Repeat("1", maxText+1), Major, 2); !errors.Is(err, ErrSyntax) {
+		t.Fatalf("a text of %d digits: %v, want ErrSyntax (over the bound)", maxText+1, err)
+	}
+	big := strings.Repeat("1", 1<<20)
+	if _, err := Parse(big, Major, 2); !errors.Is(err, ErrSyntax) {
+		t.Fatalf("a 1 MB text: %v, want ErrSyntax", err)
+	}
+	if n := testing.AllocsPerRun(10, func() { _, _ = Parse(big, Major, 2) }); n != 0 {
+		t.Fatalf("a 1 MB text allocated %v times; it should be refused unread", n)
+	}
+	if _, err := Assess([]byte(`"`+big+`"`), Major, 2); !errors.Is(err, ErrSyntax) {
+		t.Fatalf("a 1 MB JSON string: %v, want ErrSyntax", err)
+	}
+	if _, err := Assess([]byte(big), Major, 2); !errors.Is(err, ErrSyntax) {
+		t.Fatalf("a 1 MB JSON number: %v, want ErrSyntax", err)
+	}
+}

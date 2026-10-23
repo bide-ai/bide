@@ -151,6 +151,71 @@ func TestParseRule_Accepts(t *testing.T) {
 			},
 		},
 		{
+			"quoted tool and member names with dots",
+			`q: "stripe.refund"|refund."amount.v2"[minor] > 5 USD -> gate`,
+			Rule{
+				Name: "q", Tools: []string{"stripe.refund", "refund"}, Arg: []string{"amount.v2"}, Unit: Minor,
+				Currency: "USD", Exponent: 2, Limit: 500, Kind: PerCall, Action: Action{Kind: Gate},
+			},
+		},
+		{
+			"a quoted plain name is the plain name",
+			`q: "pay".order."total"[minor] > 5 USD -> gate`,
+			Rule{
+				Name: "q", Tools: []string{"pay"}, Arg: []string{"order", "total"}, Unit: Minor,
+				Currency: "USD", Exponent: 2, Limit: 500, Kind: PerCall, Action: Action{Kind: Gate},
+			},
+		},
+		{
+			"quoted segments in a nested path, the currency path and the key",
+			`q: "mcp.pay".o."x.y".z[minor, currency="cur.code"] sum 5 USD per day by "customer.id".k lower -> refuse`,
+			Rule{
+				Name: "q", Tools: []string{"mcp.pay"}, Arg: []string{"o", "x.y", "z"}, Unit: Minor,
+				CurrencyArg: []string{"cur.code"}, Currency: "USD", Exponent: 2, Limit: 500, Kind: Sum, Window: Day,
+				Key: &Key{Path: []string{"customer.id", "k"}, Lower: true}, Action: Action{Kind: Refuse},
+			},
+		},
+		{
+			"escapes in a member name",
+			`q: pay."a\"b\\c\u00e9"[minor] > 5 USD -> gate`,
+			Rule{
+				Name: "q", Tools: []string{"pay"}, Arg: []string{"a\"b\\c\u00e9"}, Unit: Minor,
+				Currency: "USD", Exponent: 2, Limit: 500, Kind: PerCall, Action: Action{Kind: Gate},
+			},
+		},
+		{
+			"a quoted principal is a member, not the run's principal",
+			`q: pay.amount[minor] sum 5 USD per day by "principal" -> refuse`,
+			Rule{
+				Name: "q", Tools: []string{"pay"}, Arg: []string{"amount"}, Unit: Minor, Currency: "USD", Exponent: 2,
+				Limit: 500, Kind: Sum, Window: Day, Key: &Key{Path: []string{"principal"}}, Action: Action{Kind: Refuse},
+			},
+		},
+		{
+			"a plain principal is still the principal",
+			`q: pay.amount[minor] sum 5 USD per day by principal -> refuse`,
+			Rule{
+				Name: "q", Tools: []string{"pay"}, Arg: []string{"amount"}, Unit: Minor, Currency: "USD", Exponent: 2,
+				Limit: 500, Kind: Sum, Window: Day, Key: &Key{Principal: true}, Action: Action{Kind: Refuse},
+			},
+		},
+		{
+			"a 128 byte tool name",
+			`q: ` + strings.Repeat("t", 128) + `.amount[minor] > 5 USD -> gate`,
+			Rule{
+				Name: "q", Tools: []string{strings.Repeat("t", 128)}, Arg: []string{"amount"}, Unit: Minor,
+				Currency: "USD", Exponent: 2, Limit: 500, Kind: PerCall, Action: Action{Kind: Gate},
+			},
+		},
+		{
+			"a 128 byte quoted tool name",
+			`q: "` + strings.Repeat("u.", 64) + `".amount[minor] > 5 USD -> gate`,
+			Rule{
+				Name: "q", Tools: []string{strings.Repeat("u.", 64)}, Arg: []string{"amount"}, Unit: Minor,
+				Currency: "USD", Exponent: 2, Limit: 500, Kind: PerCall, Action: Action{Kind: Gate},
+			},
+		},
+		{
 			"longest name",
 			strings.Repeat("a", 64) + `: pay.amount[minor] > 1 USD -> gate`,
 			Rule{
@@ -266,6 +331,25 @@ func TestParseRule_Refuses(t *testing.T) {
 		{"non-ASCII space", "r: pay.amount[minor] > 5 USD -> gate", "ASCII"},
 		{"invalid utf-8", "r: pay.amount[minor] > 5 USD -> gate\xff", "ASCII"},
 		{"line too long", `r: pay.amount[minor] > 5 USD -> gate(` + strings.Repeat("g", 1100) + `)`, "long"},
+		{"unterminated quote", `q: "a.amount[minor] > 5 USD -> gate`, "unterminated"},
+		{"unterminated quote ending in a backslash", `q: pay."a\`, "unterminated"},
+		{"empty quoted tool", `q: "".amount[minor] > 5 USD -> gate`, "quoted tool"},
+		{"empty quoted member", `q: pay.""[minor] > 5 USD -> gate`, "quoted member"},
+		{"empty quoted key member", `q: pay.amount[minor] sum 5 USD per day by "" -> gate`, "quoted member"},
+		{"space in a quoted tool", `q: "a b".amount[minor] > 5 USD -> gate`, "quoted tool"},
+		{"escape in a quoted tool", `q: "a\u002eb".amount[minor] > 5 USD -> gate`, "quoted tool"},
+		{"slash in a quoted tool", `q: "a/b".amount[minor] > 5 USD -> gate`, "quoted tool"},
+		{"quoted tool too long", `q: "` + strings.Repeat("a", 129) + `".amount[minor] > 5 USD -> gate`, "quoted tool"},
+		{"plain tool too long", `q: ` + strings.Repeat("a", 129) + `.amount[minor] > 5 USD -> gate`, "at most"},
+		{"bad escape in a member", `q: pay."a\x"[minor] > 5 USD -> gate`, "quoted member"},
+		{"lone surrogate in a member", `q: pay."\ud800"[minor] > 5 USD -> gate`, "quoted member"},
+		{"raw tab in a member", "q: pay.\"a\tb\"[minor] > 5 USD -> gate", "quoted member"},
+		{"raw non-ASCII in a member", "q: pay.\"\u00e9\"[minor] > 5 USD -> gate", "ASCII"},
+		{"text after a quoted tool", `q: "a"b.amount[minor] > 5 USD -> gate`, "'|' or '.'"},
+		{"quoted and plain tool are the same tool", `q: "a"|a.amount[minor] > 5 USD -> gate`, "twice"},
+		{"two quoted tools the same", `q: "a.b"|"a.b".amount[minor] > 5 USD -> gate`, "twice"},
+		{"quoted rule name", `"q": pay.amount[minor] > 5 USD -> gate`, "name"},
+		{"quoted gate name", `q: pay.amount[minor] > 5 USD -> gate("g")`, "gate name"},
 		{"comment", `# r: pay.amount[minor] > 5 USD -> gate`, "name"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -323,7 +407,7 @@ func TestDocGrammar(t *testing.T) {
 		min  int  // the rules the file must hold, so a rewrite that drops them is noticed
 		need bool // a file that must exist
 	}{
-		{"../../docs/design/untrusted-content-and-amount-caps.md", 3, true},
+		{"../../docs/design/untrusted-content-and-amount-caps.md", 4, true},
 		// The guide arrives with the engine wiring (PR 6); its examples are checked from then on.
 		{"../../docs/guides/untrusted-content.md", 0, false},
 		{"../../docs/guides/amount-caps.md", 0, false},

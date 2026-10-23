@@ -8,6 +8,8 @@ package amount
 //
 //	rule    = name ":" target ( "> " amount | "sum " amount " per " window [ " by " key ] ) "->" action
 //	target  = tool { "|" tool } "." member { "." member } "[" unit { "," option } "]"
+//	tool    = name | '"' mcpname '"'                    (mcpname: A-Za-z0-9_-. and 1 to 128 bytes)
+//	member  = name | '"' JSON string body '"'           (a quoted member may hold '.' or any name)
 //	unit    = "minor" | "major"
 //	option  = "currency=" member { "." member } | "exponent=" digits
 //	amount  = digits [ "." digits ] " " currency        (in major units, whatever the unit)
@@ -15,15 +17,20 @@ package amount
 //	key     = "principal" | member { "." member } { "lower" | "trim" }
 //	action  = "gate" [ "(" gatename ")" ] | "refuse"
 //
-// name, tool, member and gatename are ASCII letters, digits, '_' and '-' (a name starts with a
-// letter and is at most 64 bytes). Spaces and tabs separate tokens and may be dropped where
+// name, tool, member and gatename are, unquoted, ASCII letters, digits, '_' and '-' (a rule name
+// starts with a letter and is at most 64 bytes; a tool name at most 128). A tool or member whose
+// name has a '.' (an MCP tool "stripe.refund", a member "amount.v2") is written in double quotes:
+// the quoted form is additive, and a plain name means the same quoted or not. A quoted "principal"
+// is a member named principal, not the run's principal. Spaces and tabs separate tokens and may be dropped where
 // nothing runs together. The line is printable ASCII, one line, at most 1024 bytes.
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // ErrRule is wrapped by every error ParseRule and ParseRules return. The engine wraps it in
@@ -108,6 +115,7 @@ type Rule struct {
 const (
 	maxLine = 1024
 	maxName = 64
+	maxTool = 128 // MCP tool names are 1 to 128 characters
 )
 
 // ParseRules parses lines, one rule each, and refuses a name used twice. A name is the ledger's
@@ -222,17 +230,82 @@ func (p *parser) word() string {
 	return p.s[start:p.i]
 }
 
-// path scans member { "." member }, stopping before anything else. what names it for errors.
-func (p *parser) path(what string) ([]string, error) {
+// quoted scans a double-quoted segment at the cursor and returns its text. A member segment is a
+// JSON string literal (the escapes \" \\ \/ \b \f \n \r \t and \uXXXX, the way to write a
+// non-ASCII name in an ASCII line), and must decode to a non-empty name with no U+FFFD (an
+// escaped lone surrogate would not match any member). A tool segment is literal, with no
+// escapes, in the MCP name alphabet.
+func (p *parser) quoted(tool bool) (string, error) {
+	start := p.i
+	p.i++ // the opening quote
+	for p.i < len(p.s) && p.s[p.i] != '"' {
+		if p.s[p.i] == '\\' {
+			p.i++
+		}
+		p.i++
+	}
+	if p.i >= len(p.s) {
+		p.i = start
+		return "", p.fail("unterminated quoted name")
+	}
+	p.i++ // the closing quote
+	lit := p.s[start:p.i]
+	if tool {
+		name := lit[1 : len(lit)-1]
+		if !validToolName(name) {
+			p.i = start
+			return "", p.fail("a quoted tool name is 1 to %d letters, digits, '_', '-' or '.', with no escapes", maxTool)
+		}
+		return name, nil
+	}
+	var name string
+	if json.Unmarshal([]byte(lit), &name) != nil || name == "" || strings.ContainsRune(name, utf8.RuneError) {
+		p.i = start
+		return "", p.fail("a quoted member name is a non-empty JSON string with valid escapes")
+	}
+	return name, nil
+}
+
+// validToolName reports whether s is a tool name in the MCP alphabet, A-Za-z0-9_-. and 1 to
+// maxTool bytes.
+func validToolName(s string) bool {
+	if s == "" || len(s) > maxTool {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; !isLetter(c) && !isDigit(c) && c != '_' && c != '-' && c != '.' {
+			return false
+		}
+	}
+	return true
+}
+
+// segment scans one member name: plain, or quoted for a name with a '.' or other characters.
+func (p *parser) segment() (name string, quoted bool, err error) {
+	if p.peek() == '"' {
+		name, err = p.quoted(false)
+		return name, true, err
+	}
+	return p.ident(), false, nil
+}
+
+// path scans member { "." member }, stopping before anything else. what names it for errors. The
+// second result is true when the path is the single plain (unquoted) segment "principal".
+func (p *parser) path(what string) ([]string, bool, error) {
 	var out []string
+	plainPrincipal := false
 	for {
-		m := p.ident()
+		m, q, err := p.segment()
+		if err != nil {
+			return nil, false, err
+		}
 		if m == "" {
-			return nil, p.fail("expected %s", what)
+			return nil, false, p.fail("expected %s", what)
 		}
 		out = append(out, m)
+		plainPrincipal = !q && m == "principal"
 		if !p.accept('.') {
-			return out, nil
+			return out, plainPrincipal && len(out) == 1, nil
 		}
 	}
 }
@@ -293,7 +366,18 @@ func (p *parser) rule() (Rule, error) {
 // override, if any, for limit to resolve once it has read the currency.
 func (p *parser) target(r *Rule) (*int, error) {
 	for {
-		t := p.ident()
+		var t string
+		if p.peek() == '"' {
+			var err error
+			if t, err = p.quoted(true); err != nil {
+				return nil, err
+			}
+		} else {
+			t = p.ident()
+			if len(t) > maxTool {
+				return nil, p.fail("a tool name is at most %d bytes", maxTool)
+			}
+		}
 		if t == "" {
 			return nil, p.fail("expected a tool name")
 		}
@@ -312,7 +396,7 @@ func (p *parser) target(r *Rule) (*int, error) {
 		break
 	}
 	var err error
-	if r.Arg, err = p.path("the argument's member name"); err != nil {
+	if r.Arg, _, err = p.path("the argument's member name"); err != nil {
 		return nil, err
 	}
 	if !p.accept('[') {
@@ -346,7 +430,7 @@ func (p *parser) target(r *Rule) (*int, error) {
 			if !p.accept('=') {
 				return nil, p.fail("expected '=' after currency")
 			}
-			if r.CurrencyArg, err = p.path("a member path after currency="); err != nil {
+			if r.CurrencyArg, _, err = p.path("a member path after currency="); err != nil {
 				return nil, err
 			}
 			haveCurrency = true
@@ -429,12 +513,12 @@ func (p *parser) window(r *Rule) error {
 		return nil
 	}
 	p.ws()
-	path, err := p.path("a key: principal, or an argument member path")
+	path, principal, err := p.path("a key: principal, or an argument member path")
 	if err != nil {
 		return err
 	}
 	r.Key = &Key{Path: path}
-	if len(path) == 1 && path[0] == "principal" {
+	if principal {
 		r.Key = &Key{Principal: true}
 	}
 	for {

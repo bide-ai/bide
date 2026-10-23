@@ -55,6 +55,8 @@ func TestLookup_NotAssessable(t *testing.T) {
 		// Case variants: a server that matches names case-insensitively reads the other one.
 		{"case variant", `{"amount":1,"Amount":2}`, []string{"amount"}, ErrArgs},
 		{"case variant listed first", `{"AMOUNT":2,"amount":1}`, []string{"amount"}, ErrArgs},
+		{"free-form nested map unrelated to the amount, case variants", `{"amount":1,"metadata":{"labels":{"Env":"a","env":"b"}}}`, []string{"amount"}, ErrArgs},
+		{"free-form nested map unrelated to the amount, duplicates", `{"amount":1,"metadata":{"labels":{"env":"a","env":"b"}}}`, []string{"amount"}, ErrArgs},
 		{"case variants of an unrelated member", `{"amount":1,"note":"a","Note":"b"}`, []string{"amount"}, ErrArgs},
 		{"case variant nested on the path", `{"o":{"total":1,"Total":2}}`, []string{"o", "total"}, ErrArgs},
 		{"case variant of the object on the path", `{"o":{"total":1},"O":{"total":2}}`, []string{"o", "total"}, ErrArgs},
