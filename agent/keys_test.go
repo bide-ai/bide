@@ -80,8 +80,9 @@ var keyConstructors = map[string]func(string) string{
 	"planScopedStep": func(s string) string {
 		return planScopedStep(context.WithValue(context.Background(), planScopeKey{}, planScope{runID: "r", node: "node:n"}), "r", s)
 	},
-	"spendStep":     spendStep,
-	"lateSpendStep": lateSpendStep,
+	"gateReasonStep": gateReasonStep,
+	"spendStep":      spendStep,
+	"lateSpendStep":  lateSpendStep,
 }
 
 // Every key the engine builds starts with a prefix a developer-chosen step name may not use.

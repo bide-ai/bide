@@ -46,6 +46,7 @@ var reservedPrefixes = []string{
 	"node:",               // a plan flow's nodes, run as Steps: node:<name>, node:iter:<n>:<name> (see planNodeStep)
 	"switch:",             // a plan flow's branch choices: switch:<over>, switch:iter:<n>:<over>
 	"flow:",               // a plan flow's topology digest and topology: flow:digest, flow:topology
+	"gate-reason:",        // why a call was gated: gate-reason:<call>
 }
 
 // planNodePrefix starts the key of every plan flow node, which package plan runs as a Step through
