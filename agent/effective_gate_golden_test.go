@@ -130,6 +130,7 @@ func TestEffectiveGates_JournalBytesGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	want = bytes.ReplaceAll(want, []byte("\r\n"), []byte("\n")) // a Windows checkout may convert the golden's line endings
 	if !bytes.Equal(got, want) {
 		t.Fatalf("the journal the engine writes changed (golden %s); a behaviour-neutral refactor must not change it:\n%s", path, firstDiff(want, got))
 	}
