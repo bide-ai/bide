@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/escalation"
 	"github.com/bide-ai/bide/internal/journaltest"
 )
 
@@ -26,7 +27,7 @@ func TestEscalationSubject_IsNotServedUnderTheToolsOwnGate(t *testing.T) {
 	if status, out := r.get("/pending?run=" + runID + "&call=c1"); status != http.StatusOK || out["state"] != "waiting" {
 		t.Fatalf("the call itself: %d %v", status, out)
 	}
-	if !agent.IsEscalationSubject("c1#taint") || agent.IsEscalationSubject("c1") {
+	if !escalation.IsSubject("c1#taint") || escalation.IsSubject("c1") {
 		t.Fatal("IsEscalationSubject")
 	}
 	if status, out := r.get("/pending?run=" + runID + "&call=c1%23taint"); status != http.StatusNotFound {

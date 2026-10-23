@@ -88,7 +88,7 @@ var SymbolRules = []SymbolRule{
 		// redact.go is the tool-error URL redactor (core) and redaction.go also holds the tombstone
 		// format (LeafHash, NewTombstone, Tombstone*), which is part of the store contract and stays
 		// core, so redaction.go is labelled by name.
-		Files: []string{"hold.go", "notify_stop.go", "redact_run.go", "taint_marks.go", "taint_gate.go",
+		Files: []string{"hold.go", "notify_stop.go", "redact_run.go", "taint_marks.go",
 			"stop_control.go", "stop_hold.go", "stop_policy.go", "stop_record.go", "stop_switch.go", "stop_trail.go"},
 		Names: []string{"WithRecoverStop", "RunEnded", "Redactor", "Compactor", "CompactionReport", "RedactState",
 			"ErrRedactNotTerminal", "ErrRedactLeased", "ErrRedactProtected", "ErrRedactMismatch", "ErrRedactSession",

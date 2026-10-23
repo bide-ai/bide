@@ -6,37 +6,24 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"strings"
+
+	escsubject "github.com/bide-ai/bide/internal/escalation"
 )
 
 // The escalation gate of a tainted call (docs/design/untrusted-content-and-amount-caps.md, sections 5.3
 // and 5.6): PR 9b of the taint build. A call of a tool that can have a side effect, requested by a turn
 // that had read untrusted content, in a run under taint, needs the policy's escalation gate in addition
 // to the tool's own gate, as a second gate instance on the call. The instance is keyed by a derived
-// subject, the call's ID with escalationSuffix: the signature of a decision binds the subject's tool-use
+// subject, the call's ID with the suffix of package escalation: the signature of a decision binds the subject's tool-use
 // ID, so a decision for one instance can never count for the other, and every record, tally, deadline and
 // pause keyed by a call ID works for it unchanged. A real tool-use ID never carries the suffix (a model
 // turn with a '#' in an ID is refused, ErrToolUseIDInvalid).
 
-// escalationSuffix turns a call's ID into the subject of its escalation gate instance.
-const escalationSuffix = "#taint"
-
-// escalationID is the subject of the escalation gate instance of the call toolUseID.
-func escalationID(toolUseID string) string { return toolUseID + escalationSuffix }
-
-// IsEscalationSubject reports whether a gate subject is the escalation instance of a call (the call's ID
-// and a suffix no real tool-use ID can carry), not the call itself. A client that decides gates must not
-// take it for a tool's own gate: the approvals intake refuses it until it can decide it by the gate the
-// journal records for it. Experimental, with the untrusted-content declarations.
-func IsEscalationSubject(subject string) bool {
-	_, ok := baseCallID(subject)
-	return ok
-}
+// escalationID is the subject of the escalation gate instance of the call toolUseID (package escalation).
+func escalationID(toolUseID string) string { return escsubject.ID(toolUseID) }
 
 // baseCallID is the call a gate subject belongs to, and whether it is an escalation subject.
-func baseCallID(subject string) (string, bool) {
-	return strings.CutSuffix(subject, escalationSuffix)
-}
+func baseCallID(subject string) (string, bool) { return escsubject.Base(subject) }
 
 // gateEnv is the loop's view of the journal that a gate instance is decided from: the records loaded at
 // the drive's start (and so the decisions recorded by then), indexed by call ID.
