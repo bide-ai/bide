@@ -149,6 +149,8 @@ func TestGateReasonKey_BoundariesDoNotCollide(t *testing.T) {
 		{{Kind: "k", Source: "1:a"}, {Kind: "k", Ref: "1:a"}},
 		// Without a separator a decimal length prefix is ambiguous once a length has two digits: both are
 		// "0109abcdefghi10109abcdefghi" if the separators are dropped.
+		// The reviewer's pair: with the separators dropped both begin "1014746b605b5ba284".
+		{{Kind: "0", Source: "746b605b5ba284", Ref: "7273a", Pos: 4, Rule: "8099329674"}, {Kind: "14746b605b", Source: "ba284", Ref: "7273a", Pos: 4, Rule: "8099329674"}},
 		{{Source: "0", Ref: "abcdefghi", Rule: "9abcdefghi"}, {Source: "9abcdefghi", Ref: "0", Rule: "abcdefghi"}},
 	}
 	for _, p := range pairs {
