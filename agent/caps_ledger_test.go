@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -514,27 +515,148 @@ func (f *failSlotStore) Insert(ctx context.Context, run, name string, data []byt
 	return f.Store.Insert(ctx, run, name, data)
 }
 
-// Crash at every write of a run with a cumulative rule: the tool fires at most once, the attempt holds at
-// most one live slot, and whenever the tool fired the window counts it.
+// Crash at every write of a run with a cumulative rule, for a marked tool, a marked tool under two rules and
+// an Idempotent tool, the sweep as long as the run's writes (counted, not assumed): the tool fires at most
+// once (an Idempotent one may re-run), no attempt holds two live slots in a ledger, and whenever the tool
+// fired every ledger counts it.
 func TestCapsSum_CrashAtEveryWrite(t *testing.T) {
-	for crashAt := 1; crashAt <= 14; crashAt++ {
-		t.Run(fmt.Sprintf("crash-%d", crashAt), func(t *testing.T) {
-			mem := newJournal(NewMemStore())
-			tool := sumTool(Safety{}, sumPerDay)
-			a := mustNew(capModel{sumArgs(300, "")}, crashJournal(mem, crashAt), WithTools(tool), capClockOpt())
-			_, _ = a.Run(context.Background(), "r0", UserText("go"))
-			a2 := mustNew(capModel{sumArgs(300, "")}, mem, WithTools(tool), capClockOpt())
-			_, _ = a2.Run(context.Background(), "r0", UserText("go")) // the resumed run: may halt for the unknown outcome
-			live := ledgerSlots(t, mem, "refund_total", "")
-			if len(live) > 1 {
-				t.Fatalf("live slots %+v", live)
-			}
-			if tool.calls() > 1 {
-				t.Fatalf("the tool fired %d times", tool.calls())
-			}
-			if tool.calls() == 1 && len(live) != 1 {
-				t.Fatalf("the tool fired and the window does not count it: %+v", live)
-			}
-		})
+	const hourRule = `refund_hour: refund.amount[minor, currency=currency] sum 10 USD per hour -> refuse`
+	for _, v := range []struct {
+		name   string
+		safety Safety
+		lines  []string
+	}{
+		{"marked", Safety{}, []string{sumPerDay}},
+		{"marked, two rules", Safety{}, []string{sumPerDay, hourRule}},
+		{"idempotent", Safety{Idempotent: true}, []string{sumPerDay}},
+	} {
+		// How many writes a clean run makes.
+		clean := newJournal(NewMemStore())
+		cj := crashJournal(clean, 0)
+		ca := mustNew(capModel{sumArgs(300, "")}, cj, WithTools(sumTool(v.safety, v.lines...)), capClockOpt())
+		if _, err := ca.Run(context.Background(), "r0", UserText("go")); err != nil {
+			t.Fatalf("%s: clean run: %v", v.name, err)
+		}
+		writes := cj.store.(*crashStore).writes
+		if writes < 8 {
+			t.Fatalf("%s: a clean run made only %d writes", v.name, writes)
+		}
+		for crashAt := 1; crashAt <= writes+1; crashAt++ {
+			t.Run(fmt.Sprintf("%s/crash-%d", v.name, crashAt), func(t *testing.T) {
+				mem := newJournal(NewMemStore())
+				tool := sumTool(v.safety, v.lines...)
+				a := mustNew(capModel{sumArgs(300, "")}, crashJournal(mem, crashAt), WithTools(tool), capClockOpt())
+				_, _ = a.Run(context.Background(), "r0", UserText("go"))
+				a2 := mustNew(capModel{sumArgs(300, "")}, mem, WithTools(tool), capClockOpt())
+				_, _ = a2.Run(context.Background(), "r0", UserText("go")) // the resumed run: may halt for the unknown outcome
+				ledgers := [][]capledger.Slot{ledgerSlots(t, mem, "refund_total", "")}
+				if len(v.lines) == 2 {
+					ledgers = append(ledgers, liveOf(t, mem, "refund_hour", capledger.Hour, "2026-10-22T12"))
+				}
+				for _, live := range ledgers {
+					if len(live) > 1 {
+						t.Fatalf("live slots %+v", live)
+					}
+				}
+				if !v.safety.Idempotent && tool.calls() > 1 {
+					t.Fatalf("the tool fired %d times", tool.calls())
+				}
+				if tool.calls() >= 1 {
+					for i, live := range ledgers {
+						if len(live) != 1 {
+							t.Fatalf("the tool fired and ledger %d does not count it: %+v", i, live)
+						}
+					}
+				}
+			})
+		}
 	}
+}
+
+// failMatchStore fails the inserts the predicate selects, and only while it is set.
+type failMatchStore struct {
+	Store
+	mu   sync.Mutex
+	fail func(name string, data []byte) bool
+}
+
+func (f *failMatchStore) set(p func(string, []byte) bool) { f.mu.Lock(); f.fail = p; f.mu.Unlock() }
+
+func (f *failMatchStore) Insert(ctx context.Context, run, name string, data []byte) (Entry, bool, error) {
+	f.mu.Lock()
+	p := f.fail
+	f.mu.Unlock()
+	if p != nil && p(name, data) {
+		return Entry{}, false, errors.New("store down")
+	}
+	return f.Store.Insert(ctx, run, name, data)
+}
+
+func (f *failMatchStore) Unwrap() Store { return f.Store }
+
+// A re-attempt after an attempt recorded as not started reserves anew, under the new attempt marker's key:
+// it holds a slot of its own, and two attempts of one call are two attempts of the ledger.
+func TestCapsSum_ReAttemptAfterNotStartedReservesAnew(t *testing.T) {
+	fs := &failMatchStore{Store: NewMemStore()}
+	j := newJournal(fs)
+	tool := sumTool(Safety{}, sumPerDay, `refund_hour: refund.amount[minor, currency=currency] sum 10 USD per hour -> refuse`)
+	// The second rule's slot cannot be written: the first attempt fails after its first reservation, before the tool began.
+	fs.set(func(name string, data []byte) bool {
+		return strings.HasPrefix(name, "slot:") && strings.Contains(string(data), "refund_hour")
+	})
+	if _, err := runSum(t, j, "r0", sumArgs(60, ""), tool); err == nil || tool.calls() != 0 {
+		t.Fatalf("err = %v, calls = %d, want a failed run", err, tool.calls())
+	}
+	fs.set(nil)
+	if _, err := runSum(t, j, "r0", sumArgs(60, ""), tool); err != nil || tool.calls() != 1 {
+		t.Fatalf("re-drive: err = %v, calls = %d", err, tool.calls())
+	}
+	slots, err := newCapLedger(j, func() time.Time { return capNow }, 0).Slots(context.Background(), newCapLedger(j, func() time.Time { return capNow }, 0).
+		LedgerRun(capledger.Rule{Namespace: defaultCapNamespace, Name: "refund_total", Currency: "USD", Kind: capledger.Day}, "2026-10-22", capledger.KeyDigest("")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reserves []capledger.Slot
+	for _, s := range slots {
+		if s.Kind == "reserve" {
+			reserves = append(reserves, s)
+		}
+	}
+	if len(reserves) != 2 || reserves[0].Att == reserves[1].Att || reserves[0].Attempt == reserves[1].Attempt {
+		t.Fatalf("reserves = %+v, want two slots under two different attempt markers", reserves)
+	}
+	if !strings.Contains(reserves[0].Att, "attempt:") || !strings.Contains(reserves[1].Att, "attempt:") {
+		t.Fatalf("attempt ids %q and %q are not marker keys", reserves[0].Att, reserves[1].Att)
+	}
+}
+
+// The window comes from the run's WithClock: a clock in another year puts the reservation in that year's
+// ledger, and the day and hour windows follow it.
+func TestCapsSum_WindowComesFromTheRunsClock(t *testing.T) {
+	j := memJournal()
+	tool := sumTool(Safety{}, sumPerDay, `refund_hour: refund.amount[minor, currency=currency] sum 10 USD per hour -> refuse`)
+	far := time.Date(2031, 3, 4, 17, 30, 0, 0, time.UTC)
+	if _, err := runSum(t, j, "r0", sumArgs(60, ""), tool, WithClock(func() time.Time { return far })); err != nil {
+		t.Fatal(err)
+	}
+	if live := liveOf(t, j, "refund_total", capledger.Day, "2031-03-04"); len(live) != 1 {
+		t.Fatalf("day ledger of the run's clock: %+v", live)
+	}
+	if live := liveOf(t, j, "refund_hour", capledger.Hour, "2031-03-04T17"); len(live) != 1 {
+		t.Fatalf("hour ledger of the run's clock: %+v", live)
+	}
+	if live := liveOf(t, j, "refund_total", capledger.Day, time.Now().UTC().Format("2006-01-02")); len(live) != 0 {
+		t.Fatalf("the reservation landed in today's ledger: %+v", live)
+	}
+}
+
+// liveOf is the live slots of a rule's ledger in a window.
+func liveOf(t *testing.T, j *Journal, rule string, kind capledger.Kind, window string) []capledger.Slot {
+	t.Helper()
+	l := newCapLedger(j, func() time.Time { return capNow }, 0)
+	live, err := l.Live(context.Background(), l.LedgerRun(capledger.Rule{Namespace: defaultCapNamespace, Name: rule, Currency: "USD", Kind: kind}, window, capledger.KeyDigest("")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return live
 }
