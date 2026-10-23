@@ -18,7 +18,8 @@ import (
 // Approval itself would skip any gate the function adds later: the pre-execution re-check, the
 // snapshot a result record carries. This test type-checks every non-test file of agent, plan and
 // internal/journalhook and fails on a read of ToolSpec.Approval (also through an alias, an embedding
-// or a package-level function literal) outside the functions listed here. A read of a Record's
+// or a package-level function literal) outside the functions listed here. It never skips under
+// -short: it is the guard that keeps a gate added to effectiveGates from being bypassed. A read of a Record's
 // Approval (a recorded result) is always allowed.
 
 // specApprovalReaders are the functions allowed to read ToolSpec.Approval, by package and name. The
@@ -118,9 +119,6 @@ func typeCheck(t *testing.T, fset *token.FileSet, imp types.Importer, pkg string
 }
 
 func TestNoDirectApprovalReads_InTheEngine(t *testing.T) {
-	if testing.Short() {
-		t.Skip("type-checks from source")
-	}
 	imp := importer.ForCompiler(token.NewFileSet(), "source", nil)
 	for pkg, dir := range map[string]string{"agent": ".", "plan": "../plan", "journalhook": "../internal/journalhook"} {
 		fset := token.NewFileSet()
@@ -148,9 +146,6 @@ func TestNoDirectApprovalReads_InTheEngine(t *testing.T) {
 // The three ways the first version of this test was evaded, and two more, are each a violation; a read
 // of a recorded result is not.
 func TestNoDirectApprovalReads_Fixtures(t *testing.T) {
-	if testing.Short() {
-		t.Skip("type-checks from source")
-	}
 	imp := importer.ForCompiler(token.NewFileSet(), "source", nil)
 	const head = "package fixture\nimport \"github.com/bide-ai/bide/agent\"\n"
 	bad := map[string]string{
