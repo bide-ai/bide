@@ -700,12 +700,6 @@ func (h *Handler) load(ctx context.Context, run, call string) (*gateRecords, err
 	if err != nil {
 		return nil, err
 	}
-	// The escalation instance of a call (escalation.IsSubject) is gated by the taint policy's gate, which
-	// h.policyFor, a tool's own, does not name: taking it for the tool's gate would decide it by the wrong
-	// one, or by none. Until the intake decides it by the gate its pause note records, it is not served.
-	if escalation.IsSubject(call) {
-		return nil, errNoGate
-	}
 	_, tu, found := agent.FindToolCall(recs, call)
 	if !found {
 		return nil, errNoGate
@@ -731,7 +725,10 @@ func (h *Handler) load(ctx context.Context, run, call string) (*gateRecords, err
 	// The policy the gate enforces now: the application's live one for a tool it knows, else the
 	// newest pause note's.
 	g.pol = policyOfNote(g.wait)
-	if p, ok := h.policyFor(tu.Name); ok {
+	// The escalation instance of a call (escalation.IsSubject) is gated by the taint policy's gate, which
+	// h.policyFor, a tool's own, does not name: it is decided by the gate its pause note records, never by
+	// the tool's live gate (which would give it the wrong gate, or none).
+	if p, ok := h.policyFor(tu.Name); ok && !escalation.IsSubject(call) {
 		g.pol = p // nil: the tool has no gate now
 	}
 	since := ""

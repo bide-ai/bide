@@ -86,7 +86,7 @@ type Agent struct {
 	// stop, if set, is the agent's kill switch (see WithStopSwitch).
 	stop *StopSwitch
 	// taint, if set, is the agent's taint policy (see taint_policy.go).
-	taint *taintPolicy
+	taint *TaintPolicy
 }
 
 // systemMessage returns the system prompt for this drive of run: the dynamic function's if one

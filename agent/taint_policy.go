@@ -17,25 +17,19 @@ import (
 // down the tree and along a session: a child run or session turn is under taint when its parent or its
 // session is, even when it is first driven by a process with no policy, and such a process refuses its
 // side-effecting calls rather than run them ungated.
-//
-// This file is PR 9a of the build: the policy value, the digest, the run:start record, the inheritance and
-// the no-policy refusal. The policy gates nothing yet (the gates are PR 9b), and it has no exported
-// option, so no host can reach a half-built control.
 
-// taintPolicy is what an agent configured to enforce taint carries.
-type taintPolicy struct {
+// TaintPolicy is what an agent that enforces taint carries (WithTaintPolicy). It is experimental.
+// Opt-in: an agent with no policy gates nothing for taint, and a run it starts is never retro-gated.
+type TaintPolicy struct {
 	// Gate is the escalation gate a side-effecting call of a tainted turn needs, an ordinary approval
 	// policy. nil only when Refuse is set.
 	Gate *ApprovalPolicy
 	// Refuse says a tainted turn's side-effecting calls are not run and not asked.
 	Refuse bool
-	// RequireProvenance makes a tool without a declared provenance a registration error and a run
-	// without a stated input provenance an error at its first drive.
-	RequireProvenance bool
 }
 
 // check refuses a policy that gates nothing, or gates with an invalid policy.
-func (p taintPolicy) check() error {
+func (p TaintPolicy) check() error {
 	switch {
 	case p.Gate == nil && !p.Refuse:
 		return fmt.Errorf("agent: a taint policy needs an escalation Gate or Refuse: %w", ErrConfig)
@@ -49,9 +43,19 @@ func (p taintPolicy) check() error {
 	return nil
 }
 
-// withTaintPolicy configures the agent to enforce p on the runs it starts. It is unexported until the
-// gates exist (PR 9b), then exported as WithTaintPolicy.
-func withTaintPolicy(p taintPolicy) Option {
+// WithTaintPolicy makes the agent enforce p on the runs it starts (experimental). From then on, a run
+// the agent starts is under taint: after a model turn has been shown content marked untrusted (a tool
+// that declares Untrusted, an input from WithUntrustedInput, a retrieval layer from RetrievalUntrusted),
+// every call of a tool that can have a side effect, requested by a later turn, needs p.Gate in addition to
+// the tool's own gate (or, with p.Refuse, is refused and not run). The escalation gate is a second gate
+// instance on the call, keyed by the derived subject "<call>#taint", decided by its own approvers; an
+// approval is for that one call and clears nothing. A tool declared TaintExempt is not gated, nor is a
+// ReadOnly tool, a call requested in the same turn as the read, or a saga's rollback. A run that started
+// with no policy is never gated, and an agent with no policy refuses the side effects of a run that
+// started under one (ErrConfig) rather than run them ungated. The policy's Gate is checked as a tool's
+// is: invalid policies, approvers on one key, and an m-of-n Gate with no WithApproverVerifiers are
+// ErrConfig.
+func WithTaintPolicy(p TaintPolicy) Option {
 	return agentOption(func(c *agentConfig) error {
 		if err := p.check(); err != nil {
 			return err
@@ -65,11 +69,10 @@ func withTaintPolicy(p taintPolicy) Option {
 // taintDeclarations is what the declarations digest commits to: the policy and every registered tool's
 // provenance, exemption and cap rules, so a change to any of them is a different digest in the runs that follow.
 type taintDeclarations struct {
-	Format            string                   `json:"format"`
-	Gate              *ApprovalPolicy          `json:"gate,omitempty"`
-	Refuse            bool                     `json:"refuse,omitempty"`
-	RequireProvenance bool                     `json:"require_provenance,omitempty"`
-	Tools             map[string]toolTaintDecl `json:"tools,omitempty"`
+	Format string                   `json:"format"`
+	Gate   *ApprovalPolicy          `json:"gate,omitempty"`
+	Refuse bool                     `json:"refuse,omitempty"`
+	Tools  map[string]toolTaintDecl `json:"tools,omitempty"`
 }
 
 type toolTaintDecl struct {
@@ -92,7 +95,7 @@ func (a *Agent) taintDigest() string {
 	if a.taint == nil {
 		return ""
 	}
-	d := taintDeclarations{Format: taintDeclarationsFormat, Gate: a.taint.Gate, Refuse: a.taint.Refuse, RequireProvenance: a.taint.RequireProvenance}
+	d := taintDeclarations{Format: taintDeclarationsFormat, Gate: a.taint.Gate, Refuse: a.taint.Refuse}
 	for _, name := range slices.Sorted(maps.Keys(a.specs)) {
 		s := a.specs[name]
 		if src := s.untrustedSource(); src != "" || s.TaintExempt != "" || len(s.Caps) > 0 {
