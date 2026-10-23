@@ -6,8 +6,6 @@ module github.com/bide-ai/bide/govern
 go 1.27.0
 
 require (
-	github.com/bide-ai/bide v0.0.0
+	github.com/bide-ai/bide v0.23.0
 	github.com/blackwell-systems/gsm v0.14.0
 )
-
-replace github.com/bide-ai/bide => ../

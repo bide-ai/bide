@@ -4,7 +4,7 @@ go 1.27.0
 
 require (
 	cloud.google.com/go/kms v1.32.0
-	github.com/bide-ai/bide v0.0.0
+	github.com/bide-ai/bide v0.23.0
 	github.com/googleapis/gax-go/v2 v2.26.2
 	google.golang.org/grpc v1.84.0
 	google.golang.org/protobuf v1.36.12
@@ -41,5 +41,3 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20260715232425-e75dac1f907d // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260715232425-e75dac1f907d // indirect
 )
-
-replace github.com/bide-ai/bide => ../../
