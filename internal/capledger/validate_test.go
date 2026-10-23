@@ -247,3 +247,30 @@ func TestRead_RefusesARunThatIsNotALedger(t *testing.T) {
 		}
 	}
 }
+
+// The cache drops the least recently used view, not the most recent: with a bound of 3, a ledger read
+// again after its neighbours stays, and the one untouched longest is the one that goes.
+func TestViewCacheEvictsTheLeastRecentlyUsed(t *testing.T) {
+	ctx := context.Background()
+	st, clk := newMemStore(), &testClock{t: day1}
+	l := New(Config{Store: st, Encode: testEncode, Clock: clk.Now, MaxViews: 3})
+	ledger := func(i int) string { return l.LedgerRun(dayRule(), "2026-10-22", KeyDigest(fmt.Sprintf("k%d", i))) }
+	for i := range 3 { // k0, k1, k2 read in this order: k0 is the least recently used
+		r := req(fmt.Sprintf("a%d", i), 1, 100)
+		r.KeyDigest = KeyDigest(fmt.Sprintf("k%d", i))
+		mustReserve(t, l, r)
+	}
+	if _, err := l.Live(ctx, ledger(0)); err != nil { // k0 is now the most recent; k1 the least
+		t.Fatal(err)
+	}
+	r := req("a3", 1, 100)
+	r.KeyDigest = KeyDigest("k3")
+	mustReserve(t, l, r) // a fourth ledger: one goes
+	has := func(i int) bool { _, ok := l.views[ledger(i)]; return ok }
+	if !has(0) || has(1) || !has(2) || !has(3) {
+		t.Fatalf("after a fourth ledger the cache holds k0=%v k1=%v k2=%v k3=%v, want k1 (least recently used) dropped and the rest kept", has(0), has(1), has(2), has(3))
+	}
+	if got := l.lru; len(got) != 3 || got[0] != ledger(2) || got[1] != ledger(0) || got[2] != ledger(3) {
+		t.Fatalf("lru order = %v, want least recent first: k2, k0, k3", got)
+	}
+}

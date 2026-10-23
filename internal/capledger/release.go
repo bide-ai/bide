@@ -29,8 +29,6 @@ func NewSeal(attempt string, word *atomic.Int32, none, sealed int32) (Seal, bool
 	return Seal{attempt: attempt, sealed: true}, true
 }
 
-// protocol:caps end
-
 // Target names an attempt whose slot is released: the rule, the key, the run that made the call and the
 // attempt's three parts, as in the Request that reserved it. The ledger is not named: the window is read
 // from the attempt's cap-intent, as Reserve reads it, so a release cannot land in another ledger.
@@ -85,6 +83,8 @@ func (l *Ledger) intentOf(ctx context.Context, t Target, attempt string) (intent
 	}
 	return in, true, nil
 }
+
+// protocol:caps end
 
 // protocol:caps begin Read Insert
 
