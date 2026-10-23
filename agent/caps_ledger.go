@@ -371,16 +371,23 @@ func capWindowOpen(ctx context.Context, store *Journal, kind capledger.Kind, win
 
 // endedRoots remembers the root runs known to have ended, so a pass does not read their markers again: an
 // ended run stays ended. It is bounded; the least recently used is dropped and read again if needed.
-var endedRoots = &endedCache{max: 4096, set: map[string]*list.Element{}, order: list.New()}
+var endedRoots = &endedCache{max: 4096, set: map[endedKey]*list.Element{}, order: list.New()}
+
+// endedKey names a root run within a store: comparable, with the store's identity as the Journal reports it
+// (see storeIdentity), so two stores never share an entry and nothing is formatted.
+type endedKey struct {
+	store any
+	root  string
+}
 
 type endedCache struct {
 	mu    sync.Mutex
 	max   int
-	set   map[string]*list.Element
+	set   map[endedKey]*list.Element
 	order *list.List
 }
 
-func (c *endedCache) has(id string) bool {
+func (c *endedCache) has(id endedKey) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if e, ok := c.set[id]; ok {
@@ -390,7 +397,7 @@ func (c *endedCache) has(id string) bool {
 	return false
 }
 
-func (c *endedCache) add(id string) {
+func (c *endedCache) add(id endedKey) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if e, ok := c.set[id]; ok {
@@ -401,30 +408,31 @@ func (c *endedCache) add(id string) {
 	for c.order.Len() > c.max {
 		last := c.order.Back()
 		c.order.Remove(last)
-		delete(c.set, last.Value.(string))
+		delete(c.set, last.Value.(endedKey))
 	}
 }
 
 // capRootEnded reports whether root holds a terminal marker (it completed, aborted or was cancelled).
 func capRootEnded(ctx context.Context, store *Journal, root string) (bool, error) {
-	if endedRoots.has(storeKey(store, root)) {
+	key := endedKey{store: storeID(store), root: root}
+	if endedRoots.has(key) {
 		return true, nil
 	}
 	for _, marker := range endOfRunMarkers {
 		if _, found, err := store.Get(ctx, root, marker); err != nil {
 			return false, fmt.Errorf("read whether run %s ended: %w", root, err)
 		} else if found {
-			endedRoots.add(storeKey(store, root))
+			endedRoots.add(key)
 			return true, nil
 		}
 	}
 	return false, nil
 }
 
-// storeKey names a run within a store, for the process-wide cache.
-func storeKey(store *Journal, run string) string {
+// storeID is the identity under which the process keeps what it knows of the journal's store.
+func storeID(store *Journal) any {
 	id, _ := store.identity()
-	return fmt.Sprintf("%v/%s", id, run)
+	return id
 }
 
 // reconcileCapRuns is reconcileCaps over the cap runs a caller already listed (Recover finds them in its own

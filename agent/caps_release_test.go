@@ -527,13 +527,14 @@ func TestCapsRelease_EndedRootsAreRememberedAndBounded(t *testing.T) {
 	if n := gs.count("ended-once"); n > 1 {
 		t.Fatalf("%d reads of the ended root's markers over three passes, want at most the first pass's 1", n)
 	}
-	c := &endedCache{max: 2, set: map[string]*list.Element{}, order: list.New()}
-	c.add("a")
-	c.add("b")
-	c.has("a") // a is now the most recent
-	c.add("c") // drops b
-	if !c.has("a") || c.has("b") || !c.has("c") || c.order.Len() != 2 {
-		t.Fatalf("cache holds a=%v b=%v c=%v (len %d), want the least recently used (b) dropped", c.has("a"), c.has("b"), c.has("c"), c.order.Len())
+	c := &endedCache{max: 2, set: map[endedKey]*list.Element{}, order: list.New()}
+	k := func(r string) endedKey { return endedKey{store: gs, root: r} }
+	c.add(k("a"))
+	c.add(k("b"))
+	c.has(k("a")) // a is now the most recent
+	c.add(k("c")) // drops b
+	if !c.has(k("a")) || c.has(k("b")) || !c.has(k("c")) || c.order.Len() != 2 {
+		t.Fatalf("cache holds a=%v b=%v c=%v (len %d), want the least recently used (b) dropped", c.has(k("a")), c.has(k("b")), c.has(k("c")), c.order.Len())
 	}
 }
 
@@ -576,5 +577,56 @@ func TestCapHeld_TakeReturnsOnlyMarkedInOrder(t *testing.T) {
 	got := h.take()
 	if len(got) != 2 || got[0] != ts[0] || got[1] != ts[2] {
 		t.Fatalf("take = %v, want a then c", got)
+	}
+}
+
+// Two stores that each hold a root run of the same name do not share a cache entry: one ended, the other running.
+func TestCapsRelease_EndedCacheIsPerStore(t *testing.T) {
+	a, b := memJournal(), memJournal()
+	if _, err := a.put(context.Background(), "same-root", runCompleteStep, Record{Kind: StepValue, Result: json.RawMessage(`1`)}); err != nil {
+		t.Fatal(err)
+	}
+	if open, err := capWindowOpen(context.Background(), a, capledger.Run, "same-root", time.Now()); err != nil || open {
+		t.Fatalf("store a: open = %v, %v, want ended", open, err)
+	}
+	if open, err := capWindowOpen(context.Background(), b, capledger.Run, "same-root", time.Now()); err != nil || !open {
+		t.Fatalf("store b: open = %v, %v, want running (a's entry must not apply)", open, err)
+	}
+}
+
+// The cache hits on a store that keeps changing (the key is the store's identity, not its contents), and a
+// concurrent writer and the reconcile pass do not race (run with -race).
+func TestCapsRelease_EndedCacheHitsOnAChangingStoreWithoutRacing(t *testing.T) {
+	gs := &getFailStore{Store: NewMemStore()}
+	j := newJournal(gs)
+	if _, err := j.put(context.Background(), "ended-live", runCompleteStep, Record{Kind: StepValue, Result: json.RawMessage(`1`)}); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_, _ = j.put(context.Background(), "writer", fmt.Sprintf("step-%d", i), Record{Kind: StepValue, Result: json.RawMessage(`1`)})
+		}
+	}()
+	for range 50 {
+		if open, err := capWindowOpen(context.Background(), j, capledger.Run, "ended-live", time.Now()); err != nil || open {
+			t.Fatalf("open = %v, %v, want ended", open, err)
+		}
+		if _, err := reconcileCaps(context.Background(), j); err != nil {
+			t.Fatal(err)
+		}
+	}
+	close(stop)
+	wg.Wait()
+	if n := gs.count("ended-live"); n > 1 {
+		t.Fatalf("%d reads of the ended root's markers while the store changed, want 1 (the cache must hit)", n)
 	}
 }
