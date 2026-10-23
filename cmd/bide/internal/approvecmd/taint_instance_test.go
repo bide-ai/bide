@@ -1,7 +1,10 @@
 package approvecmd
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"io"
 	"slices"
 	"strings"
 	"testing"
@@ -50,5 +53,36 @@ func TestApprove_DecidesTheEscalationInstanceByItsOwnGate(t *testing.T) {
 	}
 	if err := own.preflight(taintfixture.Run, "esc1", false, f.Verifiers); err == nil {
 		t.Error("an escalation approver was accepted on the call's own gate")
+	}
+}
+
+// Probe: bide approve -list shows the escalation instance as a gate of its own, with its own approvers,
+// and the commands it prints name the instance and its approvers, not the call's.
+func TestList_ShowsTheEscalationInstanceWithItsOwnGate(t *testing.T) {
+	f := taintfixture.New(t, &agent.ApprovalPolicy{Need: 1, Approvers: []string{"own1"}})
+	_ = f.Drive()
+	if err := f.Submit("c2", "c2", "own1", true); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Drive()
+	stub := Stores{Postgres: func(string, bool) (agent.Store, io.Closer, error) { return f.Journal.Store(), io.NopCloser(nil), nil }}
+	var out, errb bytes.Buffer
+	if code := Main([]string{"-postgres", "postgres://u@h/db", "-list", "-json"}, strings.NewReader(""), &out, &errb, stub); code != 0 {
+		t.Fatalf("code %d: %s", code, errb.String())
+	}
+	var got []waiting
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("%v: %s", err, out.String())
+	}
+	if len(got) != 1 || got[0].Call != "c2#taint" || got[0].Tool != "write" || got[0].Need != 2 || !slices.Equal(got[0].Approvers, []string{"esc1", "esc2"}) {
+		t.Fatalf("list = %+v, want the one waiting gate c2#taint of write, 2 of [esc1 esc2]", got)
+	}
+	for _, c := range got[0].Commands {
+		if !strings.Contains(c, "c2#taint") || strings.Contains(c, "own1") {
+			t.Errorf("command %q does not name the instance and its own approvers", c)
+		}
+	}
+	if len(got[0].Commands) == 0 {
+		t.Error("no commands printed for the instance")
 	}
 }
