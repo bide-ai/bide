@@ -68,6 +68,7 @@ const (
 	Major
 )
 
+// String is the unit as a rule writes it: minor or major.
 func (u Unit) String() string {
 	switch u {
 	case Minor:

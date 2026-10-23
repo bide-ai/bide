@@ -52,11 +52,15 @@ const (
 type Window uint8
 
 const (
+	// Run sums over the run.
 	Run Window = iota + 1
+	// Hour sums over a UTC clock hour.
 	Hour
+	// Day sums over a UTC calendar day.
 	Day
 )
 
+// String is the window's name in a rule: run, hour or day.
 func (w Window) String() string {
 	switch w {
 	case Run:
