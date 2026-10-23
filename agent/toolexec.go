@@ -752,7 +752,7 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 		// passes this point, so none runs a call whose counted approvals no longer hold. It is before
 		// the call is begun, so a call it holds is not marked as run. A gate without such an approver
 		// costs nothing here.
-		if err := preExecute(ctx, a.store, runID, rootRunID(ctx, runID), tu.ID, spec.Approval, a.approverVerifiers, ""); err != nil {
+		if err := preExecute(ctx, a.store, runID, rootRunID(ctx, runID), tu.ID, effectiveGates(spec, gateInputs{}).Own(), a.approverVerifiers, ""); err != nil {
 			if IsPause(err) {
 				return nil, err // the gate holds the call: a pause, not a result
 			}

@@ -28,3 +28,6 @@ audit/testdata/adcs/** text eol=lf
 
 # The ISO 4217 list is kept exactly as SIX publishes it (CRLF), so its SHA-256 in internal/amount/iso4217.go is the file's.
 internal/amount/testdata/iso4217-list-one.xml -text
+
+# The journal golden of the effective-gate refactor is compared byte for byte.
+agent/testdata/effective_gates_golden.json text eol=lf

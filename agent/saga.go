@@ -458,7 +458,7 @@ func (a *Agent) rollbackRun(ctx context.Context, runID, root string) (compensate
 						// that is not the step's result, and nothing was learned about it.
 						return Record{}, fmt.Errorf("tool %q (call %s): the rollback's re-run was answered without reaching the tool: %w", tu.Name, tu.ID, ErrToolOutcomeUnknown)
 					}
-					return Record{Kind: StepToolResult, ToolUseID: tu.ID, Result: out, Safety: recordedSafety(*spec), Approval: spec.Approval.Clone()}, nil
+					return Record{Kind: StepToolResult, ToolUseID: tu.ID, Result: out, Safety: recordedSafety(*spec), Approval: effectiveGates(spec, gateInputs{}).Snapshot()}, nil
 				})
 				// The re-run may have journaled the arguments it accepted, and started programmatic
 				// sub-runs, whatever its outcome: read them back, so the sub-runs are walked after it
