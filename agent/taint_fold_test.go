@@ -152,10 +152,17 @@ func TestFoldTaint_IsPure(t *testing.T) {
 	if string(before) != string(after) {
 		t.Error("the fold modified its records")
 	}
-	// a caller that appends to an earlier turn's marks does not change a later turn's
-	first, last := a[0], a[len(a)-1]
+	// a caller that appends to an earlier turn's marks does not change a later turn's: with an
+	// inherited mark and two results before the second turn, its marks have spare capacity that a
+	// shared slice would let the append write into the fourth mark of the third turn
+	grow := []Record{modelRec("a", "t", "b", "t", "c", "t"), resRec("a", "x"), resRec("b", "y"), modelRec(), resRec("c", "z"), modelRec()}
+	a = foldTaint(grow, []taintMark{{Source: "p"}}, nil)
+	first, last := a[1], a[2]
 	want := slices.Clone(sources(last.Marks))
 	first.Marks = append(first.Marks, taintMark{Source: "scribble"})
+	if len(last.Marks) != 4 {
+		t.Fatalf("the third turn has %d marks, want 4", len(last.Marks))
+	}
 	if got := sources(last.Marks); !slices.Equal(got, want) {
 		t.Errorf("a change to an earlier turn's marks reached a later turn's: %v, was %v", got, want)
 	}

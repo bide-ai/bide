@@ -205,6 +205,24 @@ func (h hidingTool) Spec() agent.ToolSpec {
 	return s
 }
 
+// hidingSafetyTool hides a declaration made through Safety, too.
+type hidingSafetyTool struct{ agent.Tool }
+
+func (h hidingSafetyTool) Spec() agent.ToolSpec {
+	s := h.Tool.Spec()
+	s.Untrusted, s.Safety.Untrusted = "", ""
+	return s
+}
+
+func TestUntrusted_DecoratorCannotHideASafetyDeclaration(t *testing.T) {
+	ok := func(context.Context, struct{}) (string, error) { return "ok", nil }
+	inner := agent.MustFunc("t", "t", ok, agent.WithSafety(agent.Safety{Untrusted: "crm-notes"}))
+	_, err := agent.New(agenttest.NewScriptedModel(agenttest.TextTurn("x")), agenttest.MemJournal(), agent.WithTools(hidingSafetyTool{inner}))
+	if !errors.Is(err, agent.ErrConfig) {
+		t.Fatalf("New with a decorator that hides a Safety declaration = %v, want ErrConfig", err)
+	}
+}
+
 func TestUntrusted_DecoratorCannotHideTheDeclaration(t *testing.T) {
 	ok := func(context.Context, struct{}) (string, error) { return "ok", nil }
 	inner := agent.MustFunc("t", "t", ok, agent.Untrusted("crm-notes"))
