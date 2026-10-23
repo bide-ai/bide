@@ -60,3 +60,27 @@ gocache-*/
 flowedit/browser/node_modules/
 internal/runview/browser/node_modules/
 approvals/page/test/chrome/node_modules/
+
+# go build in an example directory writes a binary named after it
+/examples/approval/approval
+/examples/chaosbench/chaosbench
+/examples/eval/eval
+/examples/hedge/hedge
+/examples/hsm-signing/hsm-signing
+/examples/intake/intake
+/examples/interrupt/interrupt
+/examples/mcp/mcp
+/examples/notify-routing/notify-routing
+/examples/observability/observability
+/examples/parallel/parallel
+/examples/plan/plan
+/examples/rag/rag
+/examples/recover/recover
+/examples/session/session
+/examples/signals/signals
+/examples/smoke/smoke
+/examples/streaming/streaming
+/examples/stripe-refund/stripe-refund
+/examples/subagent/subagent
+/examples/typed/typed
+/examples/webhook/webhook

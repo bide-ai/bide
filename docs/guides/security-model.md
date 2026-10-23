@@ -258,16 +258,19 @@ their keys in process, and no KMS signs ML-DSA). An evidence package's seal sign
 of the package, not the package, so a KMS with a message size limit (AWS KMS: 4096 bytes) can seal any
 package.
 
-**What is tested under FIPS mode.** The CI job "Test (FIPS 140-3, GOFIPS140=...)" runs the test suite
-of every module with `GODEBUG=fips140=only`, built against Go's in-tree module (`GOFIPS140=off`),
-module v1.26.0 and module v1.0.0. It runs in the merge queue, on main and on a pull request labelled
-`full-ci`, and is not a required check. Under v1.0.0 it skips the 110 tests listed in
-`.github/fips-v1.0.0-excluded.txt`, each of which needs an ML-DSA or hybrid key that module lacks, and
-nothing else; a check fails if a listed test no longer fails there. Ed25519 and ECDSA P-256 signing and
-verification, the anchored store and approvals under P-256 run in every configuration, and selecting
-ML-DSA or hybrid under v1.0.0 is an error (`mldsa: unavailable in FIPS 140-3 Go Cryptographic Module
-v1.0.0`), not a panic. This is a test of bide's behaviour in Go's FIPS mode, not a validation: bide
-makes no claim that it, or any module it runs on, is FIPS validated.
+**What is tested under FIPS mode.** The CI job "Test (FIPS 140-3, GOFIPS140=...)" runs the Go tests of
+the repository's modules with `GODEBUG=fips140=only`, built against Go's in-tree module
+(`GOFIPS140=off`) and module v1.26.0, in the merge queue, on main and on a pull request labelled
+`full-ci`, and against module v1.0.0 on main. It is not a required check. Postgres and Redis run as
+service containers, and a live Redis round trip and a live Postgres test must pass. Not run under the
+mode: the SoftHSM2 and PKCS#11 suites, the MinIO Object Lock suite (`anchor/awss3`), the cloud KMS and GCS emulator suites, the `step-ca` container recipe, the browser-driven suites (they have their own Chrome jobs) and the exhaustive or corpus-rewriting tests. Under v1.0.0 it skips the tests listed in `.github/fips-v1.0.0-excluded.txt`, each of which
+needs an ML-DSA or hybrid key that module lacks, and nothing else; a check fails if a listed test no
+longer fails there with that error (a parent test that fails in its setup never reaches its ed25519
+and ecdsa-p256 subtests under v1.0.0; those run in the other two configurations). Ed25519 and ECDSA
+P-256 signing and verification, the anchored store and approvals under P-256 run in every
+configuration, and selecting ML-DSA or hybrid under v1.0.0 is an error (`mldsa: unavailable in FIPS
+140-3 Go Cryptographic Module v1.0.0`), not a panic. This is a test of bide's behaviour in Go's FIPS
+mode, not a validation: bide makes no claim that it, or any module it runs on, is FIPS validated.
 
 ## Offline verification
 

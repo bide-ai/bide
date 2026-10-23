@@ -9,9 +9,12 @@
 #                               have passed (a PASS line), so a run that did not exercise them fails.
 #                               BIDE_EXPECT_FIPS=VERSION is set, so internal/fipsmode proves the
 #                               binary runs in the mode that was asked for.
-#   fips.sh check-excluded      under GOFIPS140=v1.0.0, run exactly the excluded tests and fail unless
-#                               each one fails, and the ML-DSA "unavailable" error appears (a listed test
-#                               that passes, or no longer exists, is a stale entry).
+#   fips.sh check-excluded      under GOFIPS140=v1.0.0, run exactly the excluded tests (go test -json,
+#                               needs jq) and fail unless each entry fails and its own output carries the
+#                               ML-DSA "unavailable" error, and nothing panics (a listed test that passes,
+#                               or no longer exists, is a stale entry). A parent test that fails in its
+#                               setup never reaches its ed25519 and ecdsa-p256 subtests under v1.0.0;
+#                               those run in the off and v1.26.0 configurations.
 #
 # The mode is not a validation claim: bide makes none.
 set -euo pipefail
@@ -21,8 +24,10 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 list=${FIPS_EXCLUDED:-$root/.github/fips-v1.0.0-excluded.txt}
 
 # Tests that must pass in every configuration: Ed25519 and ECDSA P-256 signing and verification, the
-# anchored store and approvals under P-256, and the mode check itself.
-REQUIRED=${REQUIRED:-"TestRunsInTheModeTheJobNames TestApprovedSchemesSignAndVerifyUnderFIPSOnly TestMLDSAAndHybridUnderTheModuleVersion TestKeygenSchemesUnderTheFIPSModuleVersion TestP256_AuditedStoreAnchorsSTH TestP256_ApprovalsAndEvidenceEndToEnd TestSign_Roundtrip"}
+# anchored store and approvals under P-256, the mode check itself, and one live round trip each against
+# Redis (the script digest, after SCRIPT FLUSH) and Postgres (REDIS_ADDR and PG_DSN set), so a run
+# without those services fails instead of skipping.
+REQUIRED=${REQUIRED:-"TestRunsInTheModeTheJobNames TestApprovedSchemesSignAndVerifyUnderFIPSOnly TestMLDSAAndHybridUnderTheModuleVersion TestKeygenSchemesUnderTheFIPSModuleVersion TestAppendAfterScriptFlush TestWithoutMigration_OpensWhatOpenMigrated TestP256_AuditedStoreAnchorsSTH TestP256_ApprovalsAndEvidenceEndToEnd TestSign_Roundtrip"}
 
 err() { echo "::error::$*"; }
 
@@ -100,23 +105,32 @@ rel_of() {
 }
 
 check_excluded() {
-  local m p names flags out fail=0 n names_re
+  command -v jq >/dev/null || { err "check-excluded needs jq"; return 1; }
+  local m p names names_re json n outs fails fail=0 count
   export GODEBUG=fips140=only GOFIPS140=v1.0.0
   cd "$root"
   for m in $(entries | awk '{ print $1 }' | LC_ALL=C sort -u); do
     for p in $(entries | awk -v m="$m" '$1 == m { print $2 }' | LC_ALL=C sort -u); do
       names=$(pkg_entries "$m" "$p")
       names_re=$(awk -F/ '{ print $1 }' <<< "$names" | LC_ALL=C sort -u | while read -r t; do quote "$t"; done | join_alt)
-      out=$(cd "$m" && go test -count=1 -v -run "^$names_re\$" "$p" 2>&1 || true)
+      json=$(cd "$m" && go test -count=1 -json -run "^$names_re\$" "$p" 2>&1 || true)
+      # No test of the package may have panicked: an ML-DSA refusal is an error, never a panic.
+      if jq -r 'select(.Action=="output") | .Output' <<< "$json" 2>/dev/null | grep -q '^panic: '; then
+        err "$m $p: a panic under GOFIPS140=v1.0.0 (a refusal must be an error)"; fail=1
+      fi
       for n in $names; do
-        # a whole test must show its own FAIL line; a subtest entry its own FAIL line or one of its
-        # subtests (a subtest name with a slash in it is listed by its first elements)
-        if ! grep -qE -- "^\s*--- FAIL: $(quote "$n")( |/|\$)" <<< "$out"; then
-          err "$m $p $n: listed as excluded but does not fail under GOFIPS140=v1.0.0 (stale entry, or a different failure)"; fail=1
+        # Each entry on its own: it must fail (itself or through a subtest) and its own output must
+        # carry the ML-DSA "unavailable" error, so another cause of failure cannot hide behind a stale entry.
+        fails=$(jq -r --arg n "$n" 'select(.Action=="fail" and .Test != null and (.Test==$n or (.Test|startswith($n+"/")))) | .Test' <<< "$json" || true)
+        outs=$(jq -r --arg n "$n" 'select(.Action=="output" and .Test != null and (.Test==$n or (.Test|startswith($n+"/")))) | .Output' <<< "$json" || true)
+        if [ -z "$fails" ]; then
+          err "$m $p $n: listed as excluded but does not fail under GOFIPS140=v1.0.0 (stale entry)"; fail=1
+        elif ! grep -q "unavailable in FIPS 140-3 Go Cryptographic Module" <<< "$outs"; then
+          err "$m $p $n: fails under GOFIPS140=v1.0.0, but not with the ML-DSA unavailable error"; fail=1
         fi
       done
-      grep -q "unavailable in FIPS 140-3 Go Cryptographic Module" <<< "$out" || { err "$m $p: its excluded tests fail, but not with the ML-DSA unavailable error"; fail=1; }
-      echo "$m $p: $(grep -cE '^\s*--- FAIL' <<< "$out" || true) failing tests checked against $(wc -l <<< "$names" | tr -d ' ') entries"
+      count=$(wc -l <<< "$names" | tr -d ' ')
+      echo "$m $p: $count entries checked one by one"
     done
   done
   return $fail
