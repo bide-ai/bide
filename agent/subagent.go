@@ -144,9 +144,13 @@ func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.Raw
 // which SubAgent itself refuses. No wrapper on the Unwrap chain may be a Compensator: it would
 // never be asked to compensate, since a rollback that finds a sub-agent through it recurses into
 // the sub-run, and one that does not takes it for the tool it wraps. Nor may a tool hide the
-// approval gate or timeout of a tool it embeds (see checkEmbedded).
+// approval gate or timeout of a tool it embeds (see checkEmbedded), nor weaken that of a tool it
+// unwraps (see checkUnwrapChain).
 func checkWrapper(t Tool, s ToolSpec) error {
 	if err := checkEmbedded(t, s); err != nil {
+		return err
+	}
+	if err := checkUnwrapChain(t, s); err != nil {
 		return err
 	}
 	if sub, ok := asSubAgent(t); ok {
@@ -168,7 +172,7 @@ func checkWrapper(t Tool, s ToolSpec) error {
 		if _, comp := t.(Compensator); comp {
 			return fmt.Errorf("agent: tool %q wraps another tool (Unwrap), and a wrapper on its Unwrap chain (%T) is a Compensator; a wrapper must not have side effects or a compensation of its own: %w", s.Name, t, ErrConfig)
 		}
-		if t = u.Unwrap(); t == nil {
+		if t = u.Unwrap(); isNil(t) { // a typed nil ends the chain too
 			return nil
 		}
 	}
@@ -220,7 +224,7 @@ func asSubAgent(t Tool) (*subAgentTool, bool) {
 		if !ok {
 			return nil, false
 		}
-		if t = u.Unwrap(); t == nil {
+		if t = u.Unwrap(); isNil(t) { // a typed nil ends the chain too
 			return nil, false
 		}
 	}
@@ -242,7 +246,7 @@ func subRunAgentFor(t Tool, name string) *Agent {
 		if !ok {
 			return nil
 		}
-		if t = u.Unwrap(); t == nil {
+		if t = u.Unwrap(); isNil(t) { // a typed nil ends the chain too
 			return nil
 		}
 	}
@@ -266,7 +270,7 @@ func bindRollback(ctx context.Context, t Tool, subRunID string) (context.Context
 		if !ok {
 			return ctx, nil
 		}
-		if t = u.Unwrap(); t == nil {
+		if t = u.Unwrap(); isNil(t) { // a typed nil ends the chain too
 			return ctx, nil
 		}
 	}

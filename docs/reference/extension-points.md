@@ -347,6 +347,20 @@ rollback through a wrapper runs the wrapped sub-agent's compensations, never the
 decorator that embeds a tool (`struct{ agent.Tool }`) inherits its `Spec`, approval gate and
 timeout included; one that declares a `Spec` of its own that drops an embedded tool's approval gate
 or timeout would let the gated tool run ungated, and `New` refuses it with `ErrConfig`.
+The same holds for a tool on a wrapper's `Unwrap` chain, however the wrapper holds it (a named field
+included): when the wrapper's own spec is weaker than a wrapped tool's, `New` and the plan registry
+refuse it with `ErrConfig`, naming the field and both tools. Weaker means, for the approval gate: none;
+fewer decisions needed (`Need`; a `SingleApproval` needs one); a `SingleApproval` over an m-of-n gate;
+an approver the wrapped gate does not name; no `ExcludePrincipal` where the wrapped gate has it; no
+gate deadline, or a longer one, where the wrapped gate has one. For `Timeout`: none, or a longer one. For `Caps`: a rule line of the wrapped tool that the wrapper's `Caps` does not carry, word for word (a changed rule is a missing one; the wrapper may add rules). If the wrapper has another name, write one rule line naming both tools (`refund|refund_logged.amount[...]`, the grammar of the amount-caps guide) and carry it on the wrapped tool and the wrapper: a line that names only the wrapped tool is refused on a differently named wrapper.
+Declare the same on the wrapper, or build its spec from the wrapped tool's. A wrapper with neither
+embedding nor `Unwrap` cannot be seen through.
+`Safety` is not checked through the chain: a wrapper may legitimately raise it (a retry wrapper that
+adds an idempotency key), so the rule needs a design decision, and until it is made it is the wrapper
+author's duty not to declare a weaker `Safety` than the tool it wraps. A wrapper that claims
+`ReadOnly` over a side-effecting tool loses at-most-once protection (no attempt marker, a re-run on
+resume, not held by a stop). `Untrusted` is not checked through the chain yet; it and `Safety` are
+follow-ups.
 
 ## `Compensator`: how a tool undoes its side effect
 
