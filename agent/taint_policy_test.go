@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync/atomic"
@@ -331,5 +332,84 @@ func TestTaintRefusal_Scope(t *testing.T) {
 	}
 	if !errors.Is(none.taintRefusal(under, write), ErrConfig) {
 		t.Error("the refusal is not ErrConfig")
+	}
+}
+
+// F1: the journaled start decides, including "no digest". A session turn that began before the session
+// was under taint, resumed after the session's marker was written, stays not under taint: a policy is not
+// retro-fitted onto a run that started without one.
+func TestTaintSession_AnOpenTurnIsNotRetroGated(t *testing.T) {
+	ctx := context.Background()
+	var c counter
+	j := memJournal()
+	// Turn 1 starts on an agent with no policy and stops at its first model call (the run:start is written).
+	stop := mustNew(NewScriptedModel(ErrorTurn(errors.New("model down"))), j, WithTools(c.tool("write")))
+	s1, err := stop.Session(ctx, "conv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s1.Send(ctx, UserText("one")); err == nil {
+		t.Fatal("seeding turn did not stop")
+	}
+	if d := startOf(t, j, sessionTurnRunID("conv", 0)).taintDigest(); d != "" {
+		t.Fatalf("the turn's start recorded %q", d)
+	}
+	// The session is now recorded as under taint (what a policy agent's turn would write).
+	b, _ := json.Marshal("a-digest")
+	if _, _, err := j.putNew(ctx, sessionJournalID("conv"), sessionTaintStep, Record{Kind: StepValue, Result: b}); err != nil {
+		t.Fatal(err)
+	}
+	// The same turn, resumed by an agent with no policy: not under taint, the write runs.
+	s2, err := mustNew(writeThenAnswer{}, j, WithTools(c.tool("write"))).Session(ctx, "conv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s2.Send(ctx, UserText("one")); err != nil {
+		t.Fatalf("the open turn, resumed after the session became tainted: %v (a run started without a policy is never retro-gated)", err)
+	}
+	if c.n.Load() != 1 {
+		t.Fatalf("writes = %d, want 1", c.n.Load())
+	}
+}
+
+// F4: a non-retry-safe write refused for want of a policy is recorded as not started: a resume does not
+// halt for an unknown outcome, and an agent with the policy runs it exactly once.
+func TestTaintRefusal_IsRecordedAsNotStarted(t *testing.T) {
+	ctx := context.Background()
+	var c counter
+	tools := func() []Tool { return []Tool{c.tool("write")} } // a side effect: not retry-safe
+	pol := withTaintPolicy(taintPolicy{Refuse: true})
+	j := memJournal()
+	// Start the run under a policy and stop before the write.
+	if _, err := mustNew(NewScriptedModel(ErrorTurn(errors.New("down"))), j, WithTools(tools()...), pol).Run(ctx, "r", UserText("go")); err == nil {
+		t.Fatal("seeding drive did not stop")
+	}
+	// An agent with no policy is refused at the write, ErrConfig, the tool never called.
+	_, err := mustNew(NewScriptedModel(ToolTurn("w1", "write", `{}`), TextTurn("done")), j, WithTools(tools()...)).Run(ctx, "r", UserText("go"))
+	if !errors.Is(err, ErrConfig) {
+		t.Fatalf("no-policy drive = %v, want ErrConfig", err)
+	}
+	if c.n.Load() != 0 {
+		t.Fatal("the write ran")
+	}
+	recs, _ := j.History(ctx, "r")
+	voided := 0
+	for _, r := range recs {
+		if r.Kind == StepNotStarted {
+			voided++
+		}
+	}
+	if voided != 1 {
+		t.Fatalf("not-started records = %d, want 1 (the refused attempt is voided, so a resume does not halt)", voided)
+	}
+	// An agent with a policy re-drives it: no halt, the write runs once (Refuse mode would refuse it only
+	// for a tainted turn; this turn read nothing marked).
+	for range 2 {
+		if _, err := mustNew(NewScriptedModel(TextTurn("done")), j, WithTools(tools()...), pol).Run(ctx, "r", UserText("go")); err != nil {
+			t.Fatalf("re-drive by an agent with a policy: %v", err)
+		}
+	}
+	if c.n.Load() != 1 {
+		t.Fatalf("writes = %d, want exactly 1", c.n.Load())
 	}
 }

@@ -83,6 +83,11 @@ const taintDeclarationsFormat = "bide.taint-declarations.v1"
 // taintDigest is the SHA-256, in hex, of the declarations in force: the agent's policy and its tools'
 // provenance and exemptions. "" for an agent with no policy. Equal declarations give equal digests;
 // maps are encoded with sorted keys, so the digest is stable.
+//
+// The digest names the policy, not the approvers' keys: those come from WithApproverVerifiers, and a key
+// rotation must not hold the calls in flight. A run's start records the digest of the declarations it
+// started under, or the digest it inherited: a child run records its root's (its parent's, passed down),
+// not its own agent's, and a session turn the session's.
 func (a *Agent) taintDigest() string {
 	if a.taint == nil {
 		return ""
@@ -147,6 +152,13 @@ func withUnderTaint(ctx context.Context, d string) context.Context {
 	if d == "" {
 		return ctx
 	}
+	return context.WithValue(ctx, underTaintKey{}, d)
+}
+
+// setUnderTaint binds the status of the run a drive drives to ctx, replacing any the context carried:
+// the journaled start decides, and a start with no digest clears a status an outer context held (a
+// session turn that began before the session was under taint, resumed after, is not retro-gated).
+func setUnderTaint(ctx context.Context, d string) context.Context {
 	return context.WithValue(ctx, underTaintKey{}, d)
 }
 

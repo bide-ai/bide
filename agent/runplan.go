@@ -203,7 +203,7 @@ func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs [
 	}
 	// The principal chain the runs this drive starts record as their ancestors.
 	ctx = contextWithChain(ctx, runChain(start))
-	ctx = withUnderTaint(ctx, start.taintDigest()) // the journaled start decides, not this process
+	ctx = setUnderTaint(ctx, start.taintDigest()) // the journaled start decides, not this process or the context
 	if d.cfg.waker != nil {
 		ctx = contextWithWaker(ctx, d.cfg.waker)
 	}
