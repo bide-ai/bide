@@ -6,7 +6,7 @@ name: Models
 # under spec/tla the pull request (or the batch) changes, and the models whose configurations name a changed one in a
 # LIBRARY line (all of them when it changes check.sh, tools.lock, shards.sh or this file).
 # Nightly (and on demand): the "nightly" configurations, with larger bounds and the liveness checks
-# at the larger fault budget; and, in a job of its own beside it, the Apalache checks (symbolic and
+# at the larger fault budget (the caps model's in parallel jobs, models-nightly-caps); and, in a job of its own beside it, the Apalache checks (symbolic and
 # inductive, spec/tla/README.md "Apalache"), which no pull request runs.
 on:
   push:
@@ -52,6 +52,17 @@ env:
     identity: identity identity/limits
     identity-regress: identity/regress
     caps: caps caps/regress caps/findings
+
+# The caps (model 17) nightly configurations, one per shard line "name: config config ...", each shard
+# its own job of models-nightly-caps (the largest takes about an hour at one TLC worker, so they run
+# in parallel instead of one after another in models-nightly, which skips the caps model). Every
+# nightly configuration of caps must be in exactly one shard: the job fails first otherwise.
+  CAPS_NIGHTLY: |
+    mixed: caps/deep-mixed-three.cfg
+    crash: caps/deep-marked-crash-three.cfg
+    cancel: caps/deep-marked-cancel-three.cfg
+    reconcile: caps/deep-marked-reconcile-three.cfg caps/deep-marked-reinvoke-three.cfg
+    rest: caps/deep-limit-three.cfg caps/deep-race-three.cfg caps/deep-race-stale-three.cfg caps/deep-same-crash1-three.cfg caps/deep-same-crash2-three.cfg caps/deep-window-crash2.cfg caps/deep-window-marked.cfg caps/deep-window-three.cfg
 
 jobs:
   plan:
@@ -209,8 +220,49 @@ jobs:
         with:
           path: ~/.cache/bide-tla
           key: tla-tools-${{ hashFiles('spec/tla/tools.lock') }}
+      # Every model but caps, whose nightly configurations run in models-nightly-caps.
       - name: Nightly configurations
-        run: spec/tla/check.sh nightly
+        run: |
+          models=$(for d in spec/tla/*/; do m=$(basename "$d"); if [ "$m" != caps ] && ls "$d"*MC.tla >/dev/null 2>&1; then echo "$m"; fi; done | tr '\n' ' ')
+          TLC_MODELS="$models" spec/tla/check.sh nightly
+
+  models-nightly-caps:
+    name: Models (nightly, caps ${{ matrix.shard }})
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.only != 'apalache')
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [mixed, crash, cancel, reconcile, rest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/bide-tla
+          key: tla-tools-${{ hashFiles('spec/tla/tools.lock') }}
+      - name: Every caps nightly configuration is in exactly one shard
+        run: |
+          want=$(TLC_MODELS=caps spec/tla/check.sh list nightly | sort)
+          have=$(echo "$CAPS_NIGHTLY" | sed -n 's/^ *[A-Za-z0-9_-]*: *//p' | tr ' ' '\n' | grep . | sort)
+          if [ "$want" != "$have" ]; then
+            echo "::error::CAPS_NIGHTLY (models.yml) does not list each caps nightly configuration exactly once"
+            diff <(echo "$want") <(echo "$have") || true
+            exit 1
+          fi
+      - name: Nightly configurations of the shard
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          cfgs=$(echo "$CAPS_NIGHTLY" | sed -n "s/^ *$SHARD: *//p")
+          [ -n "$cfgs" ] || { echo "::error::no shard $SHARD"; exit 1; }
+          paths=()
+          for c in $cfgs; do paths+=("spec/tla/$c"); done
+          spec/tla/check.sh run "${paths[@]}"
 
   # One job per Apalache configuration (spec/tla/*/apalache/*.cfg, and the TLC cross-checks in
   # spec/tla/*/apalache/tlc/), in parallel: the largest

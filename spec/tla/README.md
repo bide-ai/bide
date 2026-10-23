@@ -86,7 +86,7 @@ own directory, the directories its `LIBRARY` lines name, the pinned tools and `c
 main, and a change to the Go code a model describes must change the model or carry a
 `Protocol-Impact` override (the path rule below, in the Lint job). The merge queue and main always
 run every model, and so does any doubt (a failed diff, an unexpected event). **Models (nightly)**
-runs the `nightly` configurations on a schedule and on demand (`workflow_dispatch`). The Go
+runs the `nightly` configurations of every model but the caps model (17) on a schedule and on demand (`workflow_dispatch`); the caps model's nightly configurations run in five parallel jobs, **Models (nightly, caps SHARD)**, by the `CAPS_NIGHTLY` list in `models.yml` (the job fails unless it lists each caps nightly configuration exactly once), because the largest takes about an hour at one TLC worker The Go
 counterpart, the full-bound fault-schedule explorations of the claim protocol and of flow lowering
 (`BIDE_EXPLORE=1`), runs nightly in `.github/workflows/explore.yml`; see
 [verification](../../docs/testing/verification.md).
