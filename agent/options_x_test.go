@@ -152,7 +152,7 @@ func TestOptionScopes_TypeChecked(t *testing.T) {
 		"WithSafety":      "SafetyOption",
 		"WithLeaseHolder": "LeaseControl", "WithLeaseTTL": "LeaseControl",
 		"WithTools": "Option", "WithMiddleware": "Option", "WithToolMiddleware": "Option", "WithApproverVerifiers": "Option", "WithStopSwitch": "Option",
-		"WithToolErrorRedactor": "Option", "WithCapNamespace": "Option", "WithRetrieval": "Option", "WithSystemPromptFunc": "Option", "WithOptions": "Option",
+		"WithToolErrorRedactor": "Option", "WithCapNamespace": "Option", "WithTaintPolicy": "Option", "WithRetrieval": "Option", "WithSystemPromptFunc": "Option", "WithOptions": "Option",
 		"WithRecoverInterval": "RecoverLoopOption", "WithRecoverConcurrency": "RecoverLoopOption", "WithRecoverLapsedConcurrency": "RecoverLoopOption", "WithRecoverErrors": "RecoverLoopOption", "WithReanchor": "ReanchorOption", "WithReanchorTimeout": "ReanchorOption",
 		"WithMinHaltAge": "ResolveOption", "WithoutLiveDriverCheck": "ResolveOption", "WithEvidence": "ResolveOption",
 		"WithRetrievalRetry": "RetrievalOption", "RetrievalUntrusted": "RetrievalOption",
