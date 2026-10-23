@@ -89,3 +89,69 @@ func embeddedTool(f reflect.Value) (Tool, bool) {
 	}
 	return nil, false
 }
+
+// checkUnwrapChain refuses a wrapper whose own spec s weakens the approval gate or the timeout of a
+// tool on its Unwrap chain. checkEmbedded sees only anonymous fields; a decorator that holds the
+// inner tool in a named field, implements Spec itself and implements Unwrap() Tool passes it, and
+// the outer Spec wins, so a gate the inner tool declared would silently not apply. Every tool the
+// chain reaches is compared with s, and the first weaker field is ErrConfig, naming the field and
+// the tool. The remedy is to declare the same on the wrapper (or take the spec from the wrapped tool).
+//
+// Weaker, per field:
+//   - Approval: s has none; or s needs fewer decisions than the inner gate (a SingleApproval needs
+//     one); or the inner gate is m-of-n and s is a SingleApproval (no named approvers); or s
+//     admits an approver the inner gate does not name (a wider pool); or the inner gate has
+//     ExcludePrincipal and s does not; or the inner gate has a deadline (Approval.Timeout) and s has
+//     none or a longer one.
+//   - Timeout: the inner tool has one and s has none or a longer one.
+func checkUnwrapChain(t Tool, s ToolSpec) error {
+	for range 64 { // the same bound as asSubAgent
+		u, wraps := t.(interface{ Unwrap() Tool })
+		if !wraps {
+			return nil
+		}
+		if t = u.Unwrap(); isNil(t) {
+			return nil
+		}
+		is := specOf(t)
+		if field, why := weakerSpec(s, is); field != "" {
+			return fmt.Errorf("agent: tool %q wraps %q (Unwrap) and weakens its %s: %s; declare the same %s on the wrapper: %w", s.Name, is.Name, field, why, field, ErrConfig)
+		}
+	}
+	return nil // a chain longer than 64 is refused by checkWrapper
+}
+
+// weakerSpec reports the first field of outer that is weaker than the same field of inner, and why.
+func weakerSpec(outer, inner ToolSpec) (field, why string) {
+	if ia := inner.Approval; ia != nil {
+		oa := outer.Approval
+		switch {
+		case oa == nil:
+			return "approval gate", "the wrapper has none"
+		case oa.Need < ia.Need:
+			return "approval gate", fmt.Sprintf("the wrapper needs %d decisions, the wrapped tool %d", oa.Need, ia.Need)
+		case !ia.one && oa.one:
+			return "approval gate", "the wrapper is a SingleApproval, the wrapped tool's gate is m-of-n over named approvers"
+		case !ia.one && !oa.one && !subset(oa.Approvers, ia.Approvers):
+			return "approval gate", "the wrapper admits approvers the wrapped tool's gate does not name"
+		case ia.ExcludePrincipal && !oa.ExcludePrincipal:
+			return "approval gate", "the wrapped tool's gate has ExcludePrincipal and the wrapper's does not"
+		case ia.Timeout > 0 && (oa.Timeout <= 0 || oa.Timeout > ia.Timeout):
+			return "approval gate", fmt.Sprintf("the wrapped tool's gate expires after %v, the wrapper's after %v (0 is never)", ia.Timeout, oa.Timeout)
+		}
+	}
+	if inner.Timeout > 0 && (outer.Timeout <= 0 || outer.Timeout > inner.Timeout) {
+		return "timeout", fmt.Sprintf("the wrapped tool's is %v, the wrapper's %v (0 is none)", inner.Timeout, outer.Timeout)
+	}
+	return "", ""
+}
+
+// subset reports whether every element of a is in b.
+func subset(a, b []string) bool {
+	for _, x := range a {
+		if !slices.Contains(b, x) {
+			return false
+		}
+	}
+	return true
+}

@@ -42,6 +42,7 @@ var specApprovalReaders = map[string]bool{
 	"agent.WithApproval":            true, // sets the spec's gate
 	"agent.(*Agent).addTool":        true, // registration validation
 	"agent.checkEmbedded":           true, // registration validation
+	"agent.weakerSpec":              true, // registration validation (a wrapper may not weaken the gate of a tool it unwraps)
 	"agent.(*agentConfig).finish":   true, // registration validation (m-of-n needs verifiers)
 	"agent.effectiveGates":          true, // the one function
 	"plan.(*Builder).Tool":          true, // plan, out of scope until section 5.9: copies the tool's gate into the node
