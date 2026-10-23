@@ -2,7 +2,6 @@ package capledger
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -90,12 +89,10 @@ func (l *Ledger) Reserve(ctx context.Context, r Request) (Outcome, error) {
 		return Outcome{}, err
 	}
 	// cap-reserve is the audit's record of the slot, written after it; recovery does not read it.
-	rec, _ := json.Marshal(struct {
-		Format string `json:"format"`
-		Ledger string `json:"ledger"`
-		Slot   int    `json:"slot"`
-		Cum    int64  `json:"cum_after"`
-	}{"bide.cap-reserve.v1", run, slot.N, slot.CumAfter})
+	rec, err := encodeReserve(reserveRecord{Format: reserveFormat, Ledger: run, Slot: slot.N, Cum: slot.CumAfter})
+	if err != nil {
+		return Outcome{}, err
+	}
 	if _, _, err := l.cfg.Store.Insert(ctx, r.RunID, reservePrefix+l.cfg.Encode(r.Attempt), rec); err != nil {
 		return Outcome{}, fmt.Errorf("capledger: record the reservation of %s: %w", r.Attempt, err)
 	}
@@ -126,9 +123,10 @@ func (l *Ledger) window(ctx context.Context, r Request) (intent, error) {
 		if floor, err = l.checkClock(ctx, r.Rule, w); err != nil {
 			return intent{}, err
 		}
-		b, _ := json.Marshal(struct {
-			Window string `json:"window"`
-		}{w})
+		b, err := encodeWindow(w)
+		if err != nil {
+			return intent{}, err
+		}
 		if _, _, err := l.cfg.Store.Insert(ctx, l.IndexRun(r.Rule), windowPrefix+w, b); err != nil {
 			return intent{}, fmt.Errorf("capledger: record the window %s: %w", w, err)
 		}
@@ -136,7 +134,7 @@ func (l *Ledger) window(ctx context.Context, r Request) (intent, error) {
 	in := intent{Format: intentFormat, Attempt: r.Attempt, Namespace: r.Rule.Namespace, Rule: r.Rule.Name,
 		Currency: r.Rule.Currency, Kind: r.Rule.Kind, Key: r.KeyDigest, Amount: r.Amount, Marked: r.Marked,
 		Window: w, Floor: floor}
-	b, err := json.Marshal(in)
+	b, err := encodeIntent(in)
 	if err != nil {
 		return intent{}, err
 	}
@@ -149,9 +147,9 @@ func (l *Ledger) window(ctx context.Context, r Request) (intent, error) {
 
 // adopt decodes an intent the store holds and checks it is r's.
 func (l *Ledger) adopt(r Request, data []byte) (intent, error) {
-	var in intent
-	if err := json.Unmarshal(data, &in); err != nil || in.Format != intentFormat {
-		return intent{}, fmt.Errorf("%w: the cap-intent of %s does not decode", ErrCorrupt, r.Attempt)
+	in, err := decodeIntent(data)
+	if err != nil {
+		return intent{}, fmt.Errorf("%w: the cap-intent of %s does not decode: %v", ErrCorrupt, r.Attempt, err)
 	}
 	if !in.matches(r) {
 		return intent{}, fmt.Errorf("%w: %s", ErrIntentMismatch, r.Attempt)
@@ -238,7 +236,7 @@ func (l *Ledger) insertSlot(ctx context.Context, run string, r Request) (Slot, b
 		if resumed {
 			return found, true, nil
 		}
-		b, err := json.Marshal(next)
+		b, err := encodeSlot(next)
 		if err != nil {
 			return Slot{}, false, err
 		}

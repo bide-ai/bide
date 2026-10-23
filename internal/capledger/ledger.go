@@ -22,7 +22,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"iter"
@@ -258,8 +257,8 @@ func (l *Ledger) read(ctx context.Context, run string, f func(v *view) error) er
 			v.seq = it.Seq // the journal header, or an entry that is not a slot
 			continue
 		}
-		var s Slot
-		if err := json.Unmarshal(it.Data, &s); err != nil {
+		s, err := decodeSlot(it.Data)
+		if err != nil {
 			return fmt.Errorf("%w: %s in %s: %v", ErrCorrupt, it.Name, run, err)
 		}
 		if it.Name != slotName(s.N) || s.N != len(v.slots) {

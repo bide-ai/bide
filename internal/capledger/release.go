@@ -2,7 +2,6 @@ package capledger
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 )
 
@@ -74,7 +73,7 @@ func (l *Ledger) release(ctx context.Context, run, attempt string) (bool, error)
 		if none {
 			return false, nil
 		}
-		b, err := json.Marshal(next)
+		b, err := encodeSlot(next)
 		if err != nil {
 			return false, err
 		}

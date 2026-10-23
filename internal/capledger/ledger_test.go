@@ -87,38 +87,70 @@ func TestReserve_SameAttemptReservesOnce(t *testing.T) {
 	}
 }
 
-// C2: N goroutines reserve against one window: the total never exceeds the limit, and exactly the
-// reservations that fit succeed.
-func TestReserve_ConcurrentGoroutinesNeverOvershoot(t *testing.T) {
-	st, clk := newMemStore(), &testClock{t: day1}
-	const n, limit = 64, 20
+// c2 runs N goroutines, each with a cache of its own, against one window of st and returns what is
+// wrong with the result: the reservations that fit succeed and no more, and the ledger keeps its shape.
+func c2(st Store, n, limit int) (problems []string) {
+	clk := &testClock{t: day1}
 	var wg sync.WaitGroup
-	var ok, refused atomic.Int32
+	var ok, refused, failed atomic.Int32
 	for i := range n {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			l := newTestLedger(st, clk) // each its own process: no shared cache
-			_, err := l.Reserve(context.Background(), req(fmt.Sprintf("a%d", i), 1, limit))
+			_, err := newTestLedger(st, clk).Reserve(context.Background(), req(fmt.Sprintf("a%d", i), 1, int64(limit)))
 			switch {
 			case err == nil:
 				ok.Add(1)
 			case errors.Is(err, ErrOverLimit):
 				refused.Add(1)
 			default:
-				t.Errorf("a%d: %v", i, err)
+				failed.Add(1)
 			}
 		}()
 	}
 	wg.Wait()
-	if ok.Load() != limit || refused.Load() != n-limit {
-		t.Fatalf("%d reserved and %d refused, want %d and %d", ok.Load(), refused.Load(), limit, n-limit)
+	if failed.Load() != 0 || ok.Load() != int32(limit) || refused.Load() != int32(n-limit) {
+		problems = append(problems, fmt.Sprintf("%d reserved, %d refused, %d failed; want %d and %d", ok.Load(), refused.Load(), failed.Load(), limit, n-limit))
+	}
+	run := New(Config{Store: st, Encode: testEncode}).LedgerRun(dayRule(), "2026-10-22", KeyDigest(""))
+	live := 0
+	err := New(Config{Store: st, Encode: testEncode, Clock: clk.Now}).read(context.Background(), run, func(v *view) error {
+		for _, s := range v.slots {
+			if s.Kind == kindReserve && !v.released[s.N] {
+				live++
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		problems = append(problems, err.Error())
+	} else if live != limit {
+		problems = append(problems, fmt.Sprintf("%d live slots, want %d", live, limit))
+	}
+	return problems
+}
+
+// C2: N goroutines reserve against one window: the total never exceeds the limit, and exactly the
+// reservations that fit succeed.
+func TestReserve_ConcurrentGoroutinesNeverOvershoot(t *testing.T) {
+	st := newMemStore()
+	if p := c2(st, 64, 20); len(p) != 0 {
+		t.Fatal(p)
 	}
 	run := New(Config{Store: st, Encode: testEncode}).LedgerRun(dayRule(), "2026-10-22", KeyDigest(""))
 	slots := slotsOf(t, st, run)
-	checkShape(t, slots, limit)
-	if len(slots) != limit {
-		t.Fatalf("%d slots, want %d", len(slots), limit)
+	checkShape(t, slots, 20)
+	if len(slots) != 20 {
+		t.Fatalf("%d slots, want 20", len(slots))
+	}
+}
+
+// The mutant of A1: with an Insert that is not one atomic step (the adapter's put-new made a read and a
+// write), C2 fails. The ledger's guarantee is the store's single winner per name, and this is the test
+// that would notice a store, or an adapter, that does not give it.
+func TestReserve_C2FailsWithANonAtomicInsert(t *testing.T) {
+	if p := c2(racyStore{newMemStore()}, 16, 6); len(p) == 0 {
+		t.Fatal("C2 passed on a store whose Insert is a read then a write: the test cannot see the loss of A1")
 	}
 }
 

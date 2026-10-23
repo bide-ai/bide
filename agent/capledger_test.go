@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"go/ast"
 	"errors"
 	"fmt"
 	"strings"
@@ -136,3 +137,33 @@ func TestCapLedger_CrashAtEveryWrite(t *testing.T) {
 }
 
 func capClockLedger(j *Journal) *capledger.Ledger { return newCapLedger(j, capClock(), 0) }
+
+// The adapter's put-new is the store's single-winner insert and nothing else: capJournal.Insert makes
+// exactly one call, to the journal's putNew (one store Insert after the header check), and reads nothing
+// first. A read followed by a write would be a check-then-act the store's A1 does not cover, and model
+// 17's guarantee (and TestReserve_C2FailsWithANonAtomicInsert in internal/capledger) rests on A1.
+func TestCapLedger_AdapterInsertIsOneAtomicPutNew(t *testing.T) {
+	var calls []string
+	for file, f := range parseAgentPackage(t) {
+		if file != "capledger.go" {
+			continue
+		}
+		for _, d := range f.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || fn.Recv == nil || fn.Name.Name != "Insert" {
+				continue
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				if c, ok := n.(*ast.CallExpr); ok {
+					if sel, ok := c.Fun.(*ast.SelectorExpr); ok {
+						calls = append(calls, sel.Sel.Name)
+					}
+				}
+				return true
+			})
+		}
+	}
+	if len(calls) != 1 || calls[0] != "putNew" {
+		t.Fatalf("capJournal.Insert calls %v, want exactly putNew", calls)
+	}
+}

@@ -246,3 +246,20 @@ func checkShape(t *testing.T, slots []Slot, limit int64) {
 		t.Fatalf("live slots hold %d of which %d waived, limit %d", sum, over, limit)
 	}
 }
+
+// racyStore is the mutant of A1: its Insert reads, then writes unconditionally (a check-then-act with a
+// gap in it), so two writers of one name can both win. The ledger relies on a store whose Insert is one
+// atomic step; this store shows that its tests notice when it is not.
+type racyStore struct{ *memStore }
+
+func (r racyStore) Insert(ctx context.Context, run, name string, data []byte) ([]byte, bool, error) {
+	if d, ok, _ := r.memStore.Get(ctx, run, name); ok {
+		return d, false, nil
+	}
+	time.Sleep(2 * time.Millisecond) // the gap between the read and the write
+	r.memStore.mu.Lock()
+	defer r.memStore.mu.Unlock()
+	r.memStore.seq++
+	r.memStore.runs[run] = append(r.memStore.runs[run], Item{Seq: r.memStore.seq, Name: name, Data: append([]byte(nil), data...)})
+	return data, true, nil
+}
