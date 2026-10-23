@@ -191,6 +191,7 @@ var redactionClasses = []struct {
 	{"node:", classPayload, ""},
 	{"switch:", classBookkeeping, ""},
 	{"flow:", classProtected, "a flow's topology record"},
+	{"gate-reason:", classProtected, "why a call was gated: evidence for the approvers' decision"},
 }
 
 // classOf returns the class of the record key name, and whether a line above names its family.
