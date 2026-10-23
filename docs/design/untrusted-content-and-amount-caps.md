@@ -274,14 +274,14 @@ The ledger's entries are dense, insert-once *slots*, named `slot:<n>` for n = 0,
 
 ```text
 { "n": 7, "kind": "reserve" | "release",
-  "attempt": "<root run id>/<tool-use id>/<attempt id>",
+  "attempt": "<run id>/<root run id>/<tool-use id>/<attempt id>",
   "amount": <minor units, int64>, "currency": "USD",
   "ref": <for a release, the slot it voids>,
   "cum_after": <window total after this slot>,
   "limit": <the rule's limit when written>, "over": <true if cum_after > limit and a waiver covered it> }
 ```
 
-**Attempt identity.** The attempt marker exists only for tools that are not retry-safe (`agent/loop.go`, the claim is made for `!retriableOnResume`). An `Idempotent` write, such as a refund with an idempotency key (the main money case), has no marker. For it the attempt id is the tool-use ID, and a middleware that calls `next` twice, or a resume that re-runs it, is the same attempt and reuses its slot. For a tool with markers the attempt id is the marker key (`retryAttemptStep(base, gen)`), so a re-attempt after a not-started record reserves anew. A model that calls the tool again is a new tool-use ID and a new reservation, in both cases.
+**Attempt identity.** The attempt marker exists only for tools that are not retry-safe (`agent/loop.go`, the claim is made for `!retriableOnResume`). An `Idempotent` write, such as a refund with an idempotency key (the main money case), has no marker. For it the attempt id is the tool-use ID, and a middleware that calls `next` twice, or a resume that re-runs it, is the same attempt and reuses its slot. For a tool with markers the attempt id is the marker key (`retryAttemptStep(base, gen)`), so a re-attempt after a not-started record reserves anew. A model that calls the tool again is a new tool-use ID and a new reservation, in both cases. **The run is part of the attempt:** a tool-use ID is unique only within a run, and a sub-agent, a programmatic sub-run or a session turn of one run tree can reuse its parent's (some servers number calls `call_0`, `call_1` in every run), so an identity of root, tool-use ID and attempt ID alone would let the second call find the first's slot, count nothing, and spend twice. The run that holds the call's journal (and its `cap-intent`) is therefore the first component, and each component is encoded. Model 17 takes attempts as given identities; its assumption is that distinct calls have distinct attempt identities, resting on the four-part encoded key (run, root, tool-use id, attempt id). It needs no change.
 
 **Intent before the slot.** Before the first slot insert for an attempt, the driver writes `cap-intent:<attempt id>` in the *run's own* journal, insert-once, holding the rule, the currency, the amount, the key digest and the **window id**, derived once from the driver's clock. Every later step (the slot lookup, the insert, a retry after midnight, a resume after a crash) reads the window from that record and never re-derives it. This closes the case where a crash between the slot insert and a later record, or a retry after the window rolled over, would look in a different ledger and reserve twice. `cap-reserve:<attempt id>` is written after the slot, with the slot and the totals, for the audit and the page; recovery does not depend on it.
 

@@ -870,6 +870,9 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 						return err
 					}
 				}
+				// The attempt a cumulative cap reserves for: the marker's key for a tool with markers, the
+				// tool-use ID alone for a retry-safe one (see capAttempt).
+				sctx = withCapAttempt(sctx, capAttempt{marked: claimed, id: markerKey})
 				var toolCallErr error
 				// Journal the tool's OUTCOME under a non-cancellable context: the tool itself still
 				// runs under sctx (a saga sibling's failure cancels it, as intended), but once it has

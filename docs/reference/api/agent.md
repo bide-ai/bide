@@ -2225,6 +2225,7 @@ Option configures an Agent: New applies options to a new agent, and With to a co
 **Constructors and functions**
 
 - `func WithApproverVerifiers(fn ApproverVerifierFor) Option`: WithApproverVerifiers sets how the m-of-n approval gate resolves an approver id to the verifier of its decision signatures.
+- `func WithCapNamespace(name string) Option`: WithCapNamespace names the deployment's cap ledgers: the cumulative caps of two agents on one store that give the same namespace and the same rule name count in the same windows, and two that give different namespaces do not.
 - `func WithMiddleware(mw ...Middleware) Option`: WithMiddleware appends model-call middleware, after any the agent has; the first one added is the outermost.
 - `func WithOptions(opts ...Option) Option`: WithOptions groups options into one, applied in order where it appears.
 - `func WithRetrieval(r Retriever, k int, opts ...RetrievalOption) Option`: WithRetrieval adds classic retrieval-augmented generation: for each run, the agent retrieves the top-k documents for the run's user message, as a journaled engine step, and adds them to every model request of the run as a user message placed just before that user message (after the system prompt and any earlier turns).

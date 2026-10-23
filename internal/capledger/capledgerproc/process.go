@@ -145,7 +145,7 @@ func WorkerMain(open func(ctx context.Context) (*agent.Journal, func(), error)) 
 		release := func(tool string) error {
 			r := p.request(tool)
 			var w atomic.Int32 // this worker's began word for the attempt: none, then sealed
-			seal, ok := capledger.NewSeal(l.AttemptKey(r.RootRunID, r.ToolUseID, r.AttemptID), &w, 0, 2)
+			seal, ok := capledger.NewSeal(l.AttemptKey(r.RunID, r.RootRunID, r.ToolUseID, r.AttemptID), &w, 0, 2)
 			if !ok {
 				return nil
 			}

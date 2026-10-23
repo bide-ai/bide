@@ -29,6 +29,8 @@ import (
 	"fmt"
 	"regexp"
 	"time"
+
+	"github.com/bide-ai/bide/internal/capledger"
 )
 
 // addUsage accumulates src into dst field-by-field.
@@ -50,6 +52,8 @@ type Agent struct {
 	specs        map[string]*ToolSpec // each tool's spec, read once when it was registered; never changed
 	specList     []ToolSpec           // specs sorted by name, as model requests are sent them (without caps)
 	caps         map[string]*toolCaps // each tool's compiled cap rules, by tool name; a tool with none is absent
+	capNamespace string               // WithCapNamespace: the deployment namespace of the cap ledgers; "" is defaultCapNamespace
+	capLedger    *capledger.Ledger    // the cap ledger over the store, shared by every copy of the agent
 	store        *Journal
 	mw           []Middleware
 	toolMW       []ToolMiddleware
