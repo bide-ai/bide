@@ -154,3 +154,28 @@ func TestUnwrapChain_WithoutUnwrapIsNotSeen(t *testing.T) {
 		t.Fatalf("a wrapper with neither embedding nor Unwrap is invisible to registration, got %v", err)
 	}
 }
+
+// ptrWrap unwraps to a typed nil pointer: a nil *ptrWrap held in the Tool interface is not == nil.
+type ptrWrap struct{ in agent.Tool }
+
+func (w *ptrWrap) Spec() agent.ToolSpec {
+	return agent.ToolSpec{Name: "outer", Input: json.RawMessage(`{"type":"object"}`), Safety: agent.Safety{ReadOnly: true}}
+}
+func (w *ptrWrap) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
+	return json.RawMessage(`"x"`), nil
+}
+func (w *ptrWrap) Unwrap() agent.Tool { return w.in }
+
+// An Unwrap that returns a typed nil is the end of the chain, as a nil one is: registration neither
+// panics nor treats the nil as a wrapped tool.
+func TestUnwrapChain_TypedNilUnwrapEndsTheChain(t *testing.T) {
+	var nilWrap *ptrWrap
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("registration panicked on a typed-nil Unwrap: %v", r)
+		}
+	}()
+	if err := register(&ptrWrap{in: nilWrap}); err != nil {
+		t.Fatalf("a wrapper whose Unwrap is a typed nil: %v", err)
+	}
+}

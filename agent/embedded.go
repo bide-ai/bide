@@ -12,10 +12,12 @@ var toolType = reflect.TypeFor[Tool]()
 // checkEmbedded refuses a tool that hides the approval gate, timeout or amount caps of a tool it embeds. A
 // decorator that embeds a Tool inherits its Spec, gate and timeout included; one that declares its
 // own Spec and builds the ToolSpec afresh (to rename the tool, say) drops them, and the gated tool
-// inside would run ungated. The agent cannot know whether a decorator meant to drop them, so it fails closed: when any tool
-// embedded in t (an anonymous field, at any depth) has an Approval, a Timeout or a cap rule that t's own spec
-// s lacks (for caps: any rule line the inner tool has and s does not), the tool is ErrConfig. A decorator keeps them by implementing Spec, or by
-// implementing Unwrap() Tool, whose spec New reads through Unwrap.
+// inside would run ungated. The agent cannot know whether a decorator meant to drop them, so it
+// fails closed: when any tool embedded in t (an anonymous field, at any depth) has an Approval, a
+// Timeout or a cap rule that t's own spec s lacks (for caps: any rule line the inner tool has and s
+// does not), the tool is ErrConfig. A decorator keeps them by declaring them in its Spec.
+// Implementing Unwrap() Tool does not exempt it: New does not read the spec through Unwrap, the
+// outer Spec wins, and checkUnwrapChain holds that spec to every tool on the chain.
 func checkEmbedded(t Tool, s ToolSpec) error {
 	var approval, timeout bool
 	var caps []string // the cap rule lines of the embedded tools
