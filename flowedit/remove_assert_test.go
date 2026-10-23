@@ -188,12 +188,21 @@ func TestRemoveNodeRefusesAnUnreadableAssertionThatNamesIt(t *testing.T) {
 		"the word in prose": "this is about the audit trail",
 		"parenthesised":     "(audit) must be checked",
 		"colon":             "audit: needs a look",
+		"square brackets":   "[audit] must hold",
+		"no-break space":    "audit\u00a0then",
+		"trailing dash":     "audit- and more",
+		"slash":             "audit/x",
+		"curly apostrophe":  "audit\u2019s limit",
+		"asterisks":         "*audit* matters",
+		"underscores":       "_audit_",
+		"pipe":              "audit|",
+		"ellipsis":          "audit\u2026",
+		"guillemets":        "\u00abaudit\u00bb",
+		"backslash":         "audit\\",
 		"quoted":            `see "audit" for the detail`,
 	} {
-		src := strings.Replace(removeFlow, "  - receipt reachable\n", "  - receipt reachable\n  - "+line+"\n", 1)
-		if strings.Contains(line, ": ") || strings.HasPrefix(line, "(") || strings.Contains(line, `"`) {
-			src = strings.Replace(removeFlow, "  - receipt reachable\n", "  - receipt reachable\n  - '"+strings.ReplaceAll(line, "'", "''")+"'\n", 1)
-		}
+		// Single-quoted, so no line is read as YAML syntax of its own.
+		src := strings.Replace(removeFlow, "  - receipt reachable\n", "  - receipt reachable\n  - '"+strings.ReplaceAll(line, "'", "''")+"'\n", 1)
 		for _, op := range []Operation{{Op: "remove_node", Node: "audit"}, {Op: "remove_node", Node: "audit", DryRun: true}} {
 			_, err := ApplyOperation("f.yaml", []byte(src), op)
 			var rf *Refusal
