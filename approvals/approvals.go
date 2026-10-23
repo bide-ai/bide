@@ -57,6 +57,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/escalation"
 )
 
 // Request is the body of POST /decisions: one approver's signed decision. Signature is the
@@ -698,6 +699,12 @@ func (h *Handler) load(ctx context.Context, run, call string) (*gateRecords, err
 	recs, err := h.j.History(ctx, run)
 	if err != nil {
 		return nil, err
+	}
+	// The escalation instance of a call (escalation.IsSubject) is gated by the taint policy's gate, which
+	// h.policyFor, a tool's own, does not name: taking it for the tool's gate would decide it by the wrong
+	// one, or by none. Until the intake decides it by the gate its pause note records, it is not served.
+	if escalation.IsSubject(call) {
+		return nil, errNoGate
 	}
 	_, tu, found := agent.FindToolCall(recs, call)
 	if !found {

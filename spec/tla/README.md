@@ -795,7 +795,7 @@ resolution all run around it.
   function of the parent's journaled values, which the Go tests drive through a real delegation and
   its resume.
 
-<!-- modelsync: no-code claims Redeploy ResolverChange SubmitCert RevokeLeaf EscGate ApproveEsc -->
+<!-- modelsync: no-code claims Redeploy ResolverChange SubmitCert RevokeLeaf ApproveEsc -->
 <!-- modelsync: map claims -->
 | Label | Go |
 |---|---|
@@ -812,8 +812,8 @@ resolution all run around it.
 | `Redeploy` | a new deployment of a process's tools |
 | `ResolverChange` | the verifier resolver answering differently (a rotation, a new key file) |
 | `ApExec` | `preExecute` (agent/exec_gate.go): the gate's pre-execution status check (`ExecStatusAge`, and `ExecStatusAgeFor` per CA tier), the one function every path that can run the tool goes through, called by the base tool handler before the call is begun (the first execution, a drive restarted by crash recovery or `RecoverLoop`, a retry) and by a plan flow node before its body runs. It writes the exec hold (`ApprovalExecHoldStep`) for a revoked or no-longer-verifying counted decision and counts the next generation (`ApprovalIdentTallyStep`); stale or unknown status only pauses (`PendingIdentityStatus`, no record) |
-| `EscGate` | the escalation gate before the claim (taint, PR9b): not marked until the taint gate's code lands, which then removes `EscGate` and `ApproveEsc` from the no-code list above and names them in a `protocol:claims` region |
-| `ApproveEsc` | the decision on the derived subject `<call>#taint` (`Approve` or `SubmitDecision` for the escalation instance), likewise |
+| `EscGate` | the pre-pass's escalation gate (taint, PR9b): `escalate` (agent/taint_gate.go) decides what taint requires of the call, and the second `evalGate` on the derived subject `<call>#taint` or the Refuse result, after the own gate has passed and before the claim |
+| `ApproveEsc` | the decision on the derived subject `<call>#taint` (`Approve` or `SubmitDecision` for the escalation instance): no code of its own, the decision goes through the existing `Approve`/`SubmitDecision` path and `FindToolCall` resolves the subject, so it stays in the no-code list above |
 | `SubmitCert`, `RevokeLeaf` | identity step 1, not built yet: a decision carrying a leaf certificate and chain, named by (approver, verdict, decision time, leaf), and the CA revoking the leaf; marked when that pull request lands |
 
 ### Properties

@@ -1083,6 +1083,15 @@ func noteReask(ctx context.Context, j *Journal, runID, toolUseID, toolName strin
 // toolUseID is the node's key) is its ApprovalRequest, and the call's name and arguments are the
 // node's name and input. The first request in journal order is returned.
 func FindToolCall(recs []Record, toolUseID string) (idx int, call ToolUse, ok bool) {
+	// The escalation instance of a call (taint_gate.go) is the same call under a derived subject: its
+	// name and arguments are the call's, its ID the subject, which the decisions on it sign.
+	if base, derived := baseCallID(toolUseID); derived {
+		idx, call, ok = FindToolCall(recs, base)
+		if ok {
+			call.ID = toolUseID
+		}
+		return idx, call, ok
+	}
 	for i, r := range recs {
 		if q, ok := decodeApprovalRequest(r, toolUseID); ok {
 			return i, ToolUse{ID: q.ToolUseID, Name: q.ToolName, Args: q.Args}, true

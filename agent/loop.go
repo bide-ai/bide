@@ -215,6 +215,8 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 		}
 	}
 
+	env := &gateEnv{recs: recs, decided: decided, approvals: approvals, singles: singles, values: values, fire: fire}
+
 	// Report the run's usage to the tool call that started it, if any, however the run returns,
 	// so that call's record carries it (see callUsage).
 	defer func() { reportUsage(ctx, runID, tot) }()
@@ -599,6 +601,10 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 			spec *ToolSpec // the tool's registered spec (shared, never changed): every decision about the call reads it
 		}
 		var toRun []call
+		var (
+			turnMarks []taintMark // the marks this turn was shown, read once for the turn (taint_gate.go)
+			marksRead bool
+		)
 		results := make([]*Message, len(uses))
 		for i, tu := range uses {
 			if done[tu.ID] {
@@ -641,75 +647,51 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 				continue
 			}
 			// protocol:lifecycle begin DOpen
-			// protocol:claims begin ApGate Deny ApExpire
-			// A recorded denial is final, whatever the tool's gate is now: a human's Approve(false)
-			// or an m-of-n gate's terminal tally that did not pass. The gate may have been removed
-			// or loosened since (a redeploy), and the call must still not run. A recorded approval
-			// is not carried over the same way: a gate that is still configured decides by its
-			// current policy, so a tightened policy applies to a call not yet run.
-			//
-			// A deadline (ApprovalPolicy.Timeout) is recorded once, when the gate first waits, and an
-			// expiry is recorded as the gate's outcome: a one-decision gate's decision record, or the
-			// tally. Either is final, like any recorded denial, and the model reads ExpiredResult.
-			_, expAt, hasDeadline := RecordedDeadline(recs, tu.ID)
-			expired := decided[tu.ID] && singleExpired(singles[tu.ID], expAt, hasDeadline)
-			denied := expired || decided[tu.ID] && !approvals[tu.ID]
-			if r, ok := RecordedTally(values, tu.ID); ok && !denied {
-				tally, err := decodeTally(runID, r)
-				if err != nil {
-					return leave(err)
-				}
-				denied, expired = !tally.Passed(), tally.Expired
+			// The call's own gate, then the escalation gate of taint as a second instance on the call
+			// (taint_gate.go): each is decided by evalGate, a recorded denial of either is final, and
+			// the call runs only when every instance has passed.
+			env.live = live
+			denied, expired, pause, err := a.evalGate(ctx, runID, env, tu, tu.ID, effectiveGates(spec, gateInputs{}).Own())
+			if err != nil {
+				return leave(err)
 			}
-			if pol := effectiveGates(spec, gateInputs{}).Own(); !denied && pol != nil {
-				var approved bool
-				expAt, hasDeadline, err := openDeadline(ctx, a.store, runID, tu.ID, pol, recs)
+			if pause != nil {
+				return leave(pause)
+			}
+			// protocol:claims begin EscGate
+			if !denied {
+				if !marksRead && a.taintApplies(ctx, spec) {
+					if turnMarks, err = a.turnMarks(ctx, runID, uses[0].ID); err != nil {
+						return leave(err)
+					}
+					marksRead = true
+				}
+				esc, err := a.escalate(ctx, runID, tu, spec, turnMarks)
 				if err != nil {
 					return leave(err)
 				}
-				if !pol.single() {
-					// m-of-n: the decision is the tally over the journaled per-approver records.
-					tally, final, err := a.quorumTally(ctx, runID, tu, pol)
+				if esc.refuse {
+					m, err := a.refuseTainted(ctx, runID, tu, spec)
 					if err != nil {
 						return leave(err)
 					}
-					if !final {
-						if live {
-							a.notePending(ctx, runID, tu, pol)
-						}
-						evTally := tally // the event gets its own copy; ApprovalPending keeps tally
-						evTally.Pending = append([]string(nil), tally.Pending...)
-						fire(ApprovalRequired{ToolUseID: tu.ID, Name: tu.Name, Args: tu.Args, Quorum: &evTally})
-						pend := &ApprovalPending{RunRef: RunRef{RunID: runID, RootRunID: rootRunID(ctx, runID)}, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args, Quorum: &tally}
-						pend.Reason = tally.reapproval
-						noteReask(ctx, a.store, runID, tu.ID, tu.Name, pol, tally)
-						return leave(pend)
-					}
-					approved, expired = tally.Passed(), tally.Expired
-				} else {
-					if !decided[tu.ID] && hasDeadline && pastDeadline(clockFrom(ctx)(), expAt) {
-						// The deadline passed with no decision: the expiry is the decision, insert-once,
-						// so an Approve that landed first is the decision instead.
-						r, err := a.store.do(ctx, runID, approvalStep(tu.ID), func(context.Context) (Record, error) {
-							return Record{Kind: StepApproval, ToolUseID: tu.ID, Approved: false, Result: json.RawMessage(expiredDecision), ApproverSignature: recordedStamp(clockFrom(ctx))}, nil
-						})
-						if err != nil {
-							return leave(err)
-						}
-						decided[tu.ID], approvals[tu.ID], singles[tu.ID] = true, r.Approved, r
-						expired = singleExpired(r, expAt, true)
-					}
-					if !decided[tu.ID] {
-						if live {
-							a.notePending(ctx, runID, tu, pol)
-						}
-						fire(ApprovalRequired{ToolUseID: tu.ID, Name: tu.Name, Args: tu.Args})
-						return leave(&ApprovalPending{RunRef: RunRef{RunID: runID, RootRunID: rootRunID(ctx, runID)}, ToolUseID: tu.ID, ToolName: tu.Name, Args: tu.Args})
-					}
-					approved = approvals[tu.ID] && !expired
+					done[tu.ID] = true
+					results[i] = m
+					fire(ToolCompleted{ToolUseID: tu.ID, Name: tu.Name, Result: m.Parts[0].(ToolResult).Result, IsError: true})
+					continue
 				}
-				denied = !approved
+				if eid := escalationID(tu.ID); esc.gate != nil || decided[eid] || hasTally(env.values, eid) {
+					denied, expired, pause, err = a.evalGate(ctx, runID, env, tu, eid, esc.gate)
+					if err != nil {
+						return leave(err)
+					}
+					if pause != nil {
+						return leave(pause)
+					}
+				}
 			}
+			// protocol:claims end
+			// protocol:claims begin Deny
 			if denied { // record a denial and let the model react
 				deniedResult := `"tool call denied by human"`
 				if expired {

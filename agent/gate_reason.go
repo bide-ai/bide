@@ -80,8 +80,10 @@ type gateReasonRecord struct {
 	ToolUseID    string       `json:"tool_use_id"`
 	Reasons      []gateReason `json:"reasons,omitempty"`
 	PolicyDigest string       `json:"policy_digest,omitempty"`
-	Exempt       string       `json:"exempt,omitempty"`
-	RecordedAt   string       `json:"recorded_at,omitempty"`
+	// Gate is the escalation gate the call was held under, a snapshot for the audit.
+	Gate       *ApprovalPolicy `json:"gate,omitempty"`
+	Exempt     string          `json:"exempt,omitempty"`
+	RecordedAt string          `json:"recorded_at,omitempty"`
 }
 
 // unionReasons is the reasons a call is gated for: those the engine recomputed now and those a record
