@@ -116,11 +116,16 @@ the window's total.
   the tool never began: after the tool chain returned, it seals the call's began word (a tool that began cannot be
   sealed), releases each of the call's reservations, and only then records the attempt as not started. A call
   refused by a second rule after the first reserved, or failed by the store before the tool began, therefore
-  gives its room back. `Recover` also runs a reconcile pass over every ledger, releasing the slot of an attempt
-  whose marker the journal records as not started (a release that failed, a handler that reserved after the
-  chain returned). **Never released:** a call that began or may have (a crash after the claim leaves the marker
+  gives its room back. `Recover` and every pass of `RecoverLoop` also run a reconcile pass over the ledgers of open
+  windows (a day or hour window until a window length after it ended, a run window until its root run ends),
+  releasing the slot of an attempt whose marker the journal records as not started (a release that failed, a
+  handler that reserved after the chain returned). A deployment that never calls either keeps those slots
+  counted until the window ends. **Never released:** a call that began or may have (a crash after the claim leaves the marker
   standing and the slot counted), an `Idempotent` call (any number of drivers share its tool-use ID, so one
-  driver's proof says nothing about the others: its slot stays counted until the window ends), a call
+  driver's proof says nothing about the others: its slot stays counted until the window ends, **even when a
+  later rule of the same call refuses it, so an Idempotent tool under two rules can lose room in the first
+  window to calls that never ran**; give a money-moving tool that is Idempotent one rule, or the rules it needs
+  and no more), a call
   `ResolveHalt` resolved, and a saga's rollback (a compensation reserves nothing and credits nothing). A window
   only over-counts.
 

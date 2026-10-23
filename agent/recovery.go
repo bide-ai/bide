@@ -926,6 +926,19 @@ func RecoverLoop(ctx context.Context, store *Journal, resume Resumer, opts ...Re
 				return // everything is stopped: list nothing; the next pass looks again
 			}
 		}
+		// The reconcile pass over the cap ledgers this listing found (see Recover): a ledger never ends, so
+		// every pass of the main filter lists them.
+		var capRuns []string
+		defer func() {
+			if ctx.Err() != nil || len(capRuns) == 0 {
+				return
+			}
+			// protocol:caps begin Reconcile
+			if _, err := reconcileCapRuns(ctx, store, capRuns); err != nil {
+				report(err)
+			}
+			// protocol:caps end
+		}()
 		for runID, err := range lister.Runs(ctx, f) {
 			if err != nil {
 				report(fmt.Errorf("list runs for recovery: %w (%w)", err, ErrStorage))
@@ -935,6 +948,9 @@ func RecoverLoop(ctx context.Context, store *Journal, resume Resumer, opts ...Re
 				return
 			}
 			if !recoverable(runID) {
+				if IsCapRun(runID) {
+					capRuns = append(capRuns, runID)
+				}
 				continue
 			}
 			mu.Lock()

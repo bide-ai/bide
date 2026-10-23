@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/bide-ai/bide/internal/capledger"
 )
@@ -318,5 +319,118 @@ func TestCapMarkerKey(t *testing.T) {
 		if key, ok := capMarkerKey(tc.att); key != tc.key || ok != tc.ok {
 			t.Errorf("capMarkerKey(%q) = %q, %v; want %q, %v", tc.att, key, ok, tc.key, tc.ok)
 		}
+	}
+}
+
+// leakOne leaves one marked slot counted in the ledger of the window now falls in: the second rule's slot and
+// every release fail, so the call fails before the tool began, its release fails, and the void follows.
+func leakOne(t *testing.T, os *orderStore, j *Journal, runID string, now time.Time, opts ...Option) {
+	t.Helper()
+	os.failOn = func(name string, data []byte) bool {
+		return strings.HasPrefix(name, "slot:") && (strings.Contains(string(data), `"kind":"release"`) || strings.Contains(string(data), "refund_hour"))
+	}
+	defer func() { os.failOn = nil }()
+	tool := sumTool(Safety{}, capRuleDay, capRuleHour)
+	a := mustNew(capModel{sumArgs(60, "")}, j, append([]Option{WithTools(tool), WithClock(func() time.Time { return now })}, opts...)...)
+	if _, err := a.Run(context.Background(), runID, UserText("go")); err == nil {
+		t.Fatal("want a failed run")
+	}
+}
+
+// Reconcile follows the open windows: a day window that ended more than a day ago is not read, and one that
+// is open is. (A leaked slot in a closed window no longer limits any reservation a correct clock makes.)
+func TestCapsRelease_ReconcileSkipsClosedWindows(t *testing.T) {
+	os := &orderStore{Store: NewMemStore()}
+	j := newJournal(os)
+	closed := time.Date(2020, 1, 1, 12, 0, 0, 0, time.UTC)
+	open := time.Now().UTC()
+	leakOne(t, os, j, "old", closed, WithCapNamespace("old")) // its own namespace: the clock bound refuses a window years earlier
+	leakOne(t, os, j, "new", open)
+	released, err := reconcileCaps(context.Background(), j)
+	if err != nil || len(released) != 1 {
+		t.Fatalf("reconcileCaps = %v, %v, want only the open window's slot", released, err)
+	}
+	l := newCapLedger(j, time.Now, 0)
+	rule := capledger.Rule{Namespace: defaultCapNamespace, Name: "refund_total", Currency: "USD", Kind: capledger.Day}
+	oldRule := rule
+	oldRule.Namespace = "old"
+	oldLive, _ := l.Live(context.Background(), l.LedgerRun(oldRule, "2020-01-01", capledger.KeyDigest("")))
+	newLive, _ := l.Live(context.Background(), l.LedgerRun(rule, open.Format("2006-01-02"), capledger.KeyDigest("")))
+	if len(oldLive) != 1 || len(newLive) != 0 {
+		t.Fatalf("closed window live = %d, open window live = %d, want 1 and 0", len(oldLive), len(newLive))
+	}
+}
+
+func TestCapWindowOpen(t *testing.T) {
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	store := memJournal()
+	l := newCapLedger(store, time.Now, 0)
+	ledger := func(window string, kind capledger.Kind) string {
+		return l.LedgerRun(capledger.Rule{Namespace: "n", Name: "r", Currency: "USD", Kind: kind}, window, capledger.KeyDigest(""))
+	}
+	for _, tc := range []struct {
+		name, run string
+		want      bool
+	}{
+		{"today", ledger("2026-10-22", capledger.Day), true},
+		{"yesterday", ledger("2026-10-21", capledger.Day), true},
+		{"two days ago", ledger("2026-10-20", capledger.Day), false},
+		{"this hour", ledger("2026-10-22T12", capledger.Hour), true},
+		{"last hour", ledger("2026-10-22T11", capledger.Hour), true},
+		{"three hours ago", ledger("2026-10-22T09", capledger.Hour), false},
+		{"run window, root still running", ledger("run-1", capledger.Run), true},
+	} {
+		if got, err := capWindowOpen(context.Background(), store, tc.run, now); err != nil || got != tc.want {
+			t.Errorf("%s: open = %v, %v; want %v", tc.name, got, err, tc.want)
+		}
+	}
+	// A run window whose root run ended is closed.
+	if _, err := store.put(context.Background(), "run-2", runCompleteStep, Record{Kind: StepValue, Result: json.RawMessage(`1`)}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := capWindowOpen(context.Background(), store, ledger("run-2", capledger.Run), now); err != nil || got {
+		t.Errorf("run window of an ended root: open = %v, %v; want false", got, err)
+	}
+}
+
+// RecoverLoop reconciles too (its passes list the cap runs as Recover does).
+func TestCapsRelease_RecoverLoopReconciles(t *testing.T) {
+	os := &orderStore{Store: NewMemStore()}
+	j := newJournal(os)
+	leakOne(t, os, j, "r0", time.Now().UTC())
+	l := newCapLedger(j, time.Now, 0)
+	live := func() int {
+		got, _ := l.Live(context.Background(), l.LedgerRun(capledger.Rule{Namespace: defaultCapNamespace, Name: "refund_total", Currency: "USD", Kind: capledger.Day}, time.Now().UTC().Format("2006-01-02"), capledger.KeyDigest("")))
+		return len(got)
+	}
+	if live() != 1 {
+		t.Fatalf("live = %d before the loop, want the leak", live())
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- RecoverLoop(ctx, j, func(context.Context, string, RunStart) error { return nil }, WithRecoverInterval(10*time.Millisecond))
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for live() != 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	if live() != 0 {
+		t.Fatalf("live = %d after RecoverLoop passes, want the leak released", live())
+	}
+}
+
+// take returns the marked targets only, in the order they were added, and never an unmarked one.
+func TestCapHeld_TakeReturnsOnlyMarkedInOrder(t *testing.T) {
+	h := &capHeld{}
+	ts := []capledger.Target{{ToolUseID: "a"}, {ToolUseID: "b"}, {ToolUseID: "c"}, {ToolUseID: "d"}}
+	for i, tg := range ts {
+		h.add(tg, i%2 == 0)
+	}
+	got := h.take()
+	if len(got) != 2 || got[0] != ts[0] || got[1] != ts[2] {
+		t.Fatalf("take = %v, want a then c", got)
 	}
 }

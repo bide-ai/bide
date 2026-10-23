@@ -336,6 +336,37 @@ func reconcileCaps(ctx context.Context, store *Journal) ([]string, error) {
 	return reconcileCapRuns(ctx, store, runs)
 }
 
+// capWindowOpen reports whether the ledger run's window can still matter: a day or hour window whose end is
+// less than one window length in the past, or a run window whose root run has not ended. A window that ended
+// longer ago than its own length no longer limits any reservation a correct clock makes (a first intent in it
+// would be earlier than the newest recorded window and is refused by the clock bound), so a slot left counted
+// in it costs nothing and reconciling it is skipped: the cost of a pass follows the open windows, not every
+// ledger ever written. A window it cannot read is open.
+func capWindowOpen(ctx context.Context, store *Journal, run string, now time.Time) (bool, error) {
+	seg := strings.Split(run, "/")
+	if len(seg) != 6 {
+		return true, nil
+	}
+	if t, err := time.Parse("2006-01-02", seg[4]); err == nil {
+		return now.Before(t.Add(48 * time.Hour)), nil
+	}
+	if t, err := time.Parse("2006-01-02T15", seg[4]); err == nil {
+		return now.Before(t.Add(2 * time.Hour)), nil
+	}
+	root, ok := decodeID(seg[4])
+	if !ok {
+		return true, nil // a hashed root id: cannot be read back
+	}
+	for _, marker := range endOfRunMarkers {
+		if _, found, err := store.Get(ctx, root, marker); err != nil {
+			return true, fmt.Errorf("read whether run %s ended: %w", root, err)
+		} else if found {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 // reconcileCapRuns is reconcileCaps over the cap runs a caller already listed (Recover finds them in its own
 // listing of runs, which includes them: a ledger never ends). Index runs among them are skipped.
 func reconcileCapRuns(ctx context.Context, store *Journal, runs []string) ([]string, error) {
@@ -345,6 +376,12 @@ func reconcileCapRuns(ctx context.Context, store *Journal, runs []string) ([]str
 	for _, run := range runs {
 		if strings.Count(run, "/") != 5 {
 			continue // an index run, not a ledger
+		}
+		if open, err := capWindowOpen(ctx, store, run, time.Now()); err != nil {
+			errs = append(errs, err)
+			continue
+		} else if !open {
+			continue
 		}
 		got, err := l.Reconcile(ctx, run, func(ctx context.Context, s capledger.Slot) (bool, error) {
 			key, found := capMarkerKey(s.Att)
