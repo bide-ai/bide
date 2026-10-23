@@ -408,8 +408,8 @@ func TestReservedNamespace_ExportedWritesRefuseCapRuns(t *testing.T) {
 		},
 	}
 	for name, call := range calls {
-		if err := call(); !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), capRunPrefix) {
-			t.Errorf("%s on %q = %v, want ErrConfig naming %q", name, run, err, capRunPrefix)
+		if err := call(); !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), name+": run ID") {
+			t.Errorf("%s on %q = %v, want ErrConfig from %s's own run ID check", name, run, err, name)
 		}
 	}
 	for id, err := range store.Runs(ctx, RunFilter{}) {
