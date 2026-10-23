@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -158,11 +160,23 @@ func TestCapsRelease_ReconcileReleasesWhatAVoidLeftCounted(t *testing.T) {
 	os.failOn = func(name string, data []byte) bool {
 		return strings.HasPrefix(name, "slot:") && (strings.Contains(string(data), `"kind":"release"`) || strings.Contains(string(data), "refund_hour"))
 	}
+	var logs strings.Builder
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(old)
+	failures := capReleaseFailures.Load()
 	if _, err := runSum(t, j, "r0", sumArgs(60, ""), tool); err == nil {
 		t.Fatal("want a failed run")
 	}
 	if live := liveDay(t, j); len(live) != 1 {
 		t.Fatalf("live = %+v, want the slot left counted by the failed release", live)
+	}
+	// The failed release is not silent: counted, and logged with the run, call and rule but no amount.
+	if capReleaseFailures.Load() != failures+1 {
+		t.Fatalf("release failures = %d, want one more than %d", capReleaseFailures.Load(), failures)
+	}
+	if out := logs.String(); !strings.Contains(out, "could not be released") || !strings.Contains(out, "refund_total") || !strings.Contains(out, "c1") || strings.Contains(out, "amount") || regexp.MustCompile(`\b60\b`).MatchString(out) {
+		t.Fatalf("log = %q, want the rule and call without the amount", out)
 	}
 	os.failOn = nil
 	released, err := reconcileCaps(context.Background(), j)
@@ -270,4 +284,39 @@ func TestCapsRelease_RollbackGivesNoCredit(t *testing.T) {
 		t.Fatalf("live = %+v after a compensating call, want the original 300 and nothing more", live)
 	}
 	_ = fmt.Sprint
+}
+
+// capHeld keeps one entry per target and the flag it was first added with: marked is a function of the
+// attempt, so a second add of the same target cannot flip it.
+func TestCapHeld_DedupeKeepsTheFirstMarkedFlag(t *testing.T) {
+	h := &capHeld{}
+	m := capledger.Target{ToolUseID: "m"}
+	u := capledger.Target{ToolUseID: "u"}
+	h.add(m, true)
+	h.add(m, false) // ignored: the target is held already, marked
+	h.add(u, false)
+	h.add(u, true) // ignored: held already, unmarked
+	got := h.take()
+	if len(got) != 1 || got[0] != m {
+		t.Fatalf("take = %v, want only the marked m", got)
+	}
+}
+
+// The marker key of a slot's attempt id is everything before the last '#', so a key that holds '#' is read
+// whole, and an unmarked attempt (no marker key) gives none.
+func TestCapMarkerKey(t *testing.T) {
+	for _, tc := range []struct {
+		att, key string
+		ok       bool
+	}{
+		{"attempt:tool:abc#refund_total", "attempt:tool:abc", true},
+		{"attempt:tool:a#b#c#refund_total", "attempt:tool:a#b#c", true},
+		{"#refund_total", "", false},
+		{"refund_total", "", false},
+		{"", "", false},
+	} {
+		if key, ok := capMarkerKey(tc.att); key != tc.key || ok != tc.ok {
+			t.Errorf("capMarkerKey(%q) = %q, %v; want %q, %v", tc.att, key, ok, tc.key, tc.ok)
+		}
+	}
 }

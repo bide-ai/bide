@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -227,6 +228,22 @@ func principalOf(ctx context.Context) string {
 	return chain[len(chain)-1].OnBehalfOf
 }
 
+// capReleaseFailures counts the releases the loop could not write in this process (each left its slot counted
+// for the reconcile pass); there is no metrics hook in the engine, so tests read it and the log line carries it.
+var capReleaseFailures atomic.Int64
+
+// capMarkerKey is the attempt marker key inside a slot's Att, which the reservation wrote as
+// "<marker key>#<rule name>": everything before the last '#' (a rule name is letters, digits, '_' and '-',
+// so the last '#' is always the separator, whatever a marker key holds). An unmarked attempt has no marker
+// key: ok is false.
+func capMarkerKey(att string) (string, bool) {
+	i := strings.LastIndexByte(att, '#')
+	if i <= 0 {
+		return "", false
+	}
+	return att[:i], true
+}
+
 // capHeld is the reservations one call made, by the handlers of one chain: the targets the loop releases
 // when it proves the tool never began. A handler that reserves after the loop took the list leaves its
 // slot to the reconcile pass.
@@ -286,7 +303,13 @@ func (a *Agent) releaseCaps(ctx context.Context, held *capHeld, began *atomic.In
 		return false
 	}
 	for i, t := range targets {
-		_, _ = a.capLedger.Release(context.WithoutCancel(ctx), t, seals[i])
+		if _, err := a.capLedger.Release(context.WithoutCancel(ctx), t, seals[i]); err != nil {
+			// The slot stays counted (the safe direction) and the void that follows lets the reconcile pass
+			// release it; say so, without any amount.
+			capReleaseFailures.Add(1)
+			slog.Default().Warn("bide: a cap reservation could not be released; it stays counted until the reconcile pass",
+				"run", t.RunID, "tool_use_id", t.ToolUseID, "rule", t.Rule.Name, "error", err.Error())
+		}
 	}
 	return true
 }
@@ -324,8 +347,8 @@ func reconcileCapRuns(ctx context.Context, store *Journal, runs []string) ([]str
 			continue // an index run, not a ledger
 		}
 		got, err := l.Reconcile(ctx, run, func(ctx context.Context, s capledger.Slot) (bool, error) {
-			key, _, found := strings.Cut(s.Att, "#")
-			if !found || key == "" {
+			key, found := capMarkerKey(s.Att)
+			if !found {
 				return false, nil // an unmarked attempt carries no marker key; it is never released
 			}
 			marker, ok, err := store.Get(ctx, s.Run, key)
