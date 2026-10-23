@@ -24,6 +24,15 @@ const escalationSuffix = "#taint"
 // escalationID is the subject of the escalation gate instance of the call toolUseID.
 func escalationID(toolUseID string) string { return toolUseID + escalationSuffix }
 
+// IsEscalationSubject reports whether a gate subject is the escalation instance of a call (the call's ID
+// and a suffix no real tool-use ID can carry), not the call itself. A client that decides gates must not
+// take it for a tool's own gate: the approvals intake refuses it until it can decide it by the gate the
+// journal records for it. Experimental, with the untrusted-content declarations.
+func IsEscalationSubject(subject string) bool {
+	_, ok := baseCallID(subject)
+	return ok
+}
+
 // baseCallID is the call a gate subject belongs to, and whether it is an escalation subject.
 func baseCallID(subject string) (string, bool) {
 	return strings.CutSuffix(subject, escalationSuffix)
