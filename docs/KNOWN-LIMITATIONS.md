@@ -411,7 +411,7 @@ cap at all. Use one call per payment, or cap a total member the tool also takes.
 
 **Caps are per currency, with no conversion and no total across rules.** A model that splits a payment
 into many calls under the limit is not stopped by a per-call rule; the cumulative form (`sum ... per
-day`) counts one rule's amounts across calls (see "Cumulative caps keep a reservation they do not release") and is not a total across rules or tools. bide does not convert
+day`) counts one rule's amounts across calls (see "Cumulative caps keep a reservation they cannot prove unused") and is not a total across rules or tools. bide does not convert
 currencies (an exchange rate is data an attacker may influence), so a call in a currency no rule of the
 argument covers gets the strictest action among the rules, and the currency is compared byte for byte
 (`usd` is not `USD`).
