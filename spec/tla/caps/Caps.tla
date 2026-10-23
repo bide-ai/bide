@@ -310,12 +310,15 @@ Cancel(d) ==
 (* The loop of a marked attempt: after the chain returned, it seals the call's began word (none to
    sealed: from now on no invocation can begin the tool, so it provably did not), then releases the
    slot of the attempt and voids it (recordNotStarted). A handler still running may reserve after
-   this: its slot is a leak, which reconcile releases. Bug "void-first" voids at the seal. *)
+   this: its slot is a leak, which reconcile releases. Bug "void-first" voids at the seal; Bug
+   "seal-after-begin" seals a word that already says yes (a loop that does not check what the
+   handler did), and releases the slot of a call that began. *)
 LoopSeal(y) ==
   LET l == L[y]
       a == LoopAtt[y]
   IN /\ l.pc = "lidle"
-     /\ a \in Marked /\ claim[a] /= None /\ bw[a] = "none"
+     /\ a \in Marked /\ claim[a] /= None
+     /\ (bw[a] = "none" \/ (Bug = "seal-after-begin" /\ bw[a] = "yes"))
      /\ B.cancel < MaxCancel
      /\ B' = [B EXCEPT !.cancel = @ + 1]
      /\ bw' = [bw EXCEPT ![a] = "sealed"]
@@ -405,7 +408,13 @@ Crash(d) ==
   /\ B' = [B EXCEPT !.crash = @ + 1]
   /\ UNCHANGED <<slots, index, intent, claim, began, bw, voided, stray, now, seen>>
 
-\* The claim winner's handler is invoked a second time (a middleware calls next twice) in the same process.
+(* The claim winner's handler is invoked a second time (a middleware calls next twice) in the same
+   process. The model replaces the driver's local state with a fresh one, so the first invocation's
+   continuation is dropped, not run alongside. That is safe here because no invocation releases or
+   voids (only the loop does, on the shared began word): what the first invocation would still do is
+   a Begin, which the second invocation can do as well (or be refused by errReinvoked), and a late
+   reserve, which StaleReads and caps-late-reserve cover. Nothing the dropped continuation could do
+   changes the ledger in a way another path of the model does not. *)
 Reinvoke(d) ==
   LET a == AttOf[d] IN
   /\ a \in Marked /\ claim[a] = d

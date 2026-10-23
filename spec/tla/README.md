@@ -3367,7 +3367,7 @@ are an upper bound for the runner.
 | `caps-reconcile` | ci | A void written without a release leaves the slot counted; two finished drivers run the reconcile pass over it at once: the slot is released once (the dedupe scan). (1091 states, 8 s) |
 | `caps-reinvoke` | ci | The claim winner's handler is invoked a second time (a middleware's second next): it finds the slot, and after the first invocation began it is refused (errReinvoked); the loop, finding the began word set, can seal nothing and releases nothing. (261 states, 4 s) |
 | `caps-release-retry` | ci | A retry-safe attempt is never released (a release after a cancel is the finding release-unmarked): two drivers and two crashes or re-runs, so the lookup finds the slot and every call that began stays counted. (4962 states, 11 s) |
-| `caps-resolve` | ci | ResolveHalt records a halted marked attempt as not happened (decision 10, as amended) at any point of the winner's run, even after a crash: it records a result and releases nothing, so the slot stays counted and no call that began is ever uncounted. (37 states, 7 s) |
+| `caps-resolve` | ci | ResolveHalt records a halted marked attempt as not happened (decision 10, as amended) at any point of the winner's run, even after a crash: it records a result and releases nothing. It passes by construction (the action changes no state of the ledger); the check that releasing would be unsafe is the finding resolve-live-winner. (37 states, 7 s) |
 | `caps-same-attempt` | ci | Two drivers, one of them re-run once, work on one retry-safe attempt (an Idempotent tool: no claim): whichever slot wins, the other finds it by its lookup, so the attempt has one live slot. (2315 states, 8 s) |
 | `caps-stale-read` | ci | Two drivers whose reads may be any prefix of the ledger (A2 allows a stale read): a stale last slot only costs a lost insert and a re-read. (210 states, 6 s) |
 | `caps-stale-same` | ci | Two drivers of one retry-safe attempt, one re-run, stale reads: the lookup in a stale prefix misses the other's slot, and the insert at its length then loses, so the attempt keeps one live slot. (3190 states, 9 s) |
@@ -3389,7 +3389,7 @@ are an upper bound for the runner.
 | `deep-window-three` | nightly | Three drivers on two attempts, two windows, skewed clocks, one tick and one crash: the index, the intents and the ledgers of both windows. (706618 states, 1 min) |
 
 Shards and bounds. The `ci` configurations are one shard of the Models workflow (`caps`): the 18 `ci`
-configurations with their vacuity runs, the 13 regressions and the 2 findings took under 2 minutes
+configurations with their vacuity runs, the 14 regressions and the 2 findings took under 2 minutes
 in one `check.sh` run at `TLC_JOBS=4`. The nightly configurations are split by driver count and by
 where the faults are placed (no fault, crashes or re-runs, second invocations, release and
 reconcile, windows and clocks, stale reads), one file each, so any can run in its own process. Times
@@ -3412,6 +3412,7 @@ Each is in `caps/regress/` and must fail with its named property:
 - `release-no-dedupe` (`ReleaseOnce`): A release without the scan for an existing release of the slot: two reconcile passes (or a reconcile and a driver) release one slot twice, and the window under-counts.
 - `reserve-no-lookup` (`ExactlyOnce`): A reserve without the lookup for a live slot of the attempt: a second driver, a retry or a middleware's second next reserves it again and the attempt is counted twice.
 - `rollback-credit` (`NeverUndercount`): A saga's rollback releases the slot of a call that began: the window no longer counts a call that ran.
+- `seal-after-begin` (`NeverUndercount`): The loop seals the began word without checking it: a call that began is sealed, released and voided, and the window no longer counts a call that ran (the loop must seal only a word that says none).
 - `stale-cum-after` (`NoOvershoot`): A driver that lost the insert race checks its reservation against the cum_after it read first, not the last slot's it read again: two reservations that fit alone together exceed the limit.
 - `store-no-a1` (`NeverUndercount`): A store whose insert overwrites a taken name (A1 broken): two drivers that read the same last slot both write slot n+1, the second erases the first's reservation, and the first's call begins uncounted.
 - `store-no-a2` (`ExactlyOnce`): A store whose reads can show a slot without the ones below it (A2 broken): a re-run's lookup misses its own earlier slot and reserves the attempt a second time.
