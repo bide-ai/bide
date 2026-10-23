@@ -179,3 +179,50 @@ func TestUnwrapChain_TypedNilUnwrapEndsTheChain(t *testing.T) {
 		t.Fatalf("a wrapper whose Unwrap is a typed nil: %v", err)
 	}
 }
+
+// capTool is a money tool whose spec carries cap rules, named like the rules say.
+type capTool struct{ caps []string }
+
+func (c capTool) Spec() agent.ToolSpec {
+	return agent.ToolSpec{Name: "refund", Input: json.RawMessage(`{"type":"object","properties":{"amount":{"type":"integer"},"currency":{"type":"string"}},"required":["amount","currency"]}`),
+		Safety: agent.Safety{ReadOnly: true}, Caps: c.caps}
+}
+func (capTool) Call(context.Context, json.RawMessage) (json.RawMessage, error) {
+	return json.RawMessage(`"ok"`), nil
+}
+
+const (
+	capBig   = `big: refund.amount[minor, currency=currency] > 5 USD -> refuse`
+	capOther = `other: refund.amount[minor, currency=currency] > 50 USD -> refuse`
+)
+
+// A wrapper must carry every cap rule line of the tool it unwraps, word for word: a missing rule and
+// a changed one are refused, a kept one and an added one are accepted.
+func TestUnwrapChain_CapRules(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		inner   []string
+		outer   []string
+		wantErr bool
+	}{
+		{"dropped", []string{capBig}, nil, true},
+		{"changed", []string{capBig}, []string{`big: refund.amount[minor, currency=currency] > 500 USD -> refuse`}, true},
+		{"one of two dropped", []string{capBig, capOther}, []string{capBig}, true},
+		{"kept", []string{capBig}, []string{capBig}, false},
+		{"kept in another order, one added", []string{capBig, capOther}, []string{capOther, capBig, `third: refund.amount[minor, currency=currency] > 500 USD -> refuse`}, false},
+		{"added over an inner with none", nil, []string{capBig}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			err := register(namedWrap{in: capTool{caps: c.inner}, mutate: func(s *agent.ToolSpec) { s.Caps = c.outer }})
+			if !c.wantErr {
+				if err != nil {
+					t.Fatalf("refused: %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "cap rules") {
+				t.Fatalf("err = %v, want ErrConfig naming the cap rules", err)
+			}
+		})
+	}
+}

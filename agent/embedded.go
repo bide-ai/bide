@@ -106,6 +106,8 @@ func embeddedTool(f reflect.Value) (Tool, bool) {
 //     ExcludePrincipal and s does not; or the inner gate has a deadline (Approval.Timeout) and s has
 //     none or a longer one.
 //   - Timeout: the inner tool has one and s has none or a longer one.
+//   - Caps: a rule line (ToolSpec.Caps) of the inner tool that s does not carry, word for word. s may add
+//     rules; a rule it changes is a missing one.
 func checkUnwrapChain(t Tool, s ToolSpec) error {
 	for range 64 { // the same bound as asSubAgent
 		u, wraps := t.(interface{ Unwrap() Tool })
@@ -140,6 +142,11 @@ func weakerSpec(outer, inner ToolSpec) (field, why string) {
 			return "approval gate", "the wrapped tool's gate has ExcludePrincipal and the wrapper's does not"
 		case ia.Timeout > 0 && (oa.Timeout <= 0 || oa.Timeout > ia.Timeout):
 			return "approval gate", fmt.Sprintf("the wrapped tool's gate expires after %v, the wrapper's after %v (0 is never)", ia.Timeout, oa.Timeout)
+		}
+	}
+	for _, l := range inner.Caps {
+		if !slices.Contains(outer.Caps, l) {
+			return "cap rules", fmt.Sprintf("the wrapper lacks the rule %q (a rule line is compared as written, so a changed line counts as missing)", l)
 		}
 	}
 	if inner.Timeout > 0 && (outer.Timeout <= 0 || outer.Timeout > inner.Timeout) {
