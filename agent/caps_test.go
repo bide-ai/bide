@@ -522,3 +522,25 @@ func TestEffectiveGates_CapGateSeam(t *testing.T) {
 		t.Fatalf("no input, no gate: %v", got)
 	}
 }
+
+// With copies the compiled caps: adding a capped tool to the copy leaves the original's alone.
+func TestCaps_WithDoesNotShareTheCapTable(t *testing.T) {
+	a := mustNew(&scriptModel{}, memJournal(), WithTools(newCapTool(refuseUSD)))
+	other := &moneyTool{spec: ToolSpec{Name: "pay", Input: json.RawMessage(refundSchema), Caps: []string{`p: pay.amount[minor, currency=currency] > 5 USD -> refuse`}}}
+	b, err := a.With(WithTools(other))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, leaked := a.caps["pay"]; leaked || b.caps["pay"] == nil || b.caps["refund"] == nil {
+		t.Fatalf("original caps %v, copy caps %v", a.caps, b.caps)
+	}
+}
+
+// A schema reached through $ref on the way to a nested member cannot be checked and is refused.
+func TestCaps_RefOnTheWayToAMemberIsRefused(t *testing.T) {
+	in := `{"type":"object","properties":{"p":{"$ref":"#/$defs/p"}}}`
+	spec := ToolSpec{Name: "refund", Input: json.RawMessage(in), Caps: []string{`r: refund.p.amount[minor, currency=p.cur] > 5 USD -> refuse`}}
+	if _, err := compileCaps(spec); !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "$ref") {
+		t.Fatalf("err = %v, want ErrConfig naming $ref", err)
+	}
+}
