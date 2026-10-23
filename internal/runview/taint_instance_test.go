@@ -2,6 +2,7 @@ package runview
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 	"testing"
 
@@ -85,4 +86,74 @@ func TestBuild_EscalationInstanceIsDoneWhenItsCallHasRun(t *testing.T) {
 			t.Errorf("gate %s is still waiting after its call ran", g.ToolUseID)
 		}
 	}
+}
+
+// Probe: a tally on the instance that predates the signed decision format would make its gate ask again,
+// unless the call has run: the instance's result is its call's, so a call that ran leaves no re-ask. The
+// journal is edited to carry such a tally, as one written by an older binary would.
+func TestBuild_EscalationInstanceOfACallThatRanAsksNothingAgain(t *testing.T) {
+	ctx := context.Background()
+	f := taintfixture.New(t, nil)
+	_ = f.Drive()
+	for _, id := range []string{"esc1", "esc2"} {
+		if err := f.Submit("c2#taint", "c2#taint", id, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.Drive(); err != nil || f.Wrote != 1 {
+		t.Fatalf("drive = %v, writes %d", err, f.Wrote)
+	}
+	ran := editedJournal(t, ctx, f, agent.ApprovalTallyStep("c2#taint"))
+	for _, g := range Build(ctx, taintfixture.Run, ran, nil).Gates {
+		if g.Reapproval {
+			t.Errorf("gate %s asks again although its call ran", g.ToolUseID)
+		}
+	}
+	// Without the call's result the same tally does make the instance ask again: the edit is effective.
+	var before []agent.Record
+	for _, r := range ran {
+		if r.Kind == agent.StepToolResult && r.ToolUseID == "c2" {
+			break
+		}
+		before = append(before, r)
+	}
+	asks := false
+	for _, g := range Build(ctx, taintfixture.Run, before, nil).Gates {
+		asks = asks || g.ToolUseID == "c2#taint" && g.Reapproval
+	}
+	if !asks {
+		t.Error("the edited tally does not make the instance ask again before its call ran: the fixture proves nothing")
+	}
+}
+
+// editedJournal is the fixture's history with the record named name stripped of its decision format.
+func editedJournal(t *testing.T, ctx context.Context, f *taintfixture.F, name string) []agent.Record {
+	t.Helper()
+	ms := agent.NewMemStore()
+	for e, err := range f.Journal.Store().Load(ctx, taintfixture.Run, -1) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		data := e.Data
+		if e.Name == name {
+			var rec map[string]any
+			if err := json.Unmarshal(data, &rec); err != nil {
+				t.Fatal(err)
+			}
+			delete(rec["result"].(map[string]any), "decision_format")
+			data, _ = json.Marshal(rec)
+		}
+		if _, _, err := ms.Insert(ctx, taintfixture.Run, e.Name, data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	j, err := agent.NewJournal(ms)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recs, err := j.History(ctx, taintfixture.Run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return recs
 }
