@@ -46,3 +46,44 @@ func TestCheckEmbedded_FindsCapsBelowAGateAndATimeout(t *testing.T) {
 		t.Fatalf("New with a decorator that hides the caps of a tool below a gate and a timeout = %v, want ErrConfig", err)
 	}
 }
+
+// zzD1 and zzD2 are two embedding decorators, each declaring its own approval gate and timeout and
+// dropping the caps of the tool below: D1 embeds D2, which embeds the capped tool.
+type zzD1 struct{ Tool }
+
+func (d zzD1) Spec() ToolSpec { return dropCapsKeepGate(d.Tool.Spec()) }
+
+type zzD2 struct{ Tool }
+
+func (d zzD2) Spec() ToolSpec { return dropCapsKeepGate(d.Tool.Spec()) }
+
+func dropCapsKeepGate(s ToolSpec) ToolSpec {
+	s.Caps = nil
+	s.Approval = SingleApproval()
+	s.Timeout = time.Second
+	return s
+}
+
+// The same hole at depth two with each decorator carrying its own gate and timeout (gates-reviewer's
+// probe): the capped tool sits below both.
+func TestCheckEmbedded_FindsCapsTwoDecoratorsDeep(t *testing.T) {
+	type in struct {
+		Amount   int64  `json:"amount"`
+		Currency string `json:"currency"`
+	}
+	capped := MustFunc("refund", "refund", func(context.Context, in) (string, error) { return "ok", nil }, WithCaps(refuseUSD))
+	_, err := New(&scriptModel{}, memJournal(), WithTools(zzD1{zzD2{capped}}))
+	if !errors.Is(err, ErrConfig) {
+		t.Fatalf("New with D1 embedding D2 embedding a capped tool, both dropping the caps = %v, want ErrConfig", err)
+	}
+	// A decorator that carries the caps is accepted.
+	keeps := func(d Tool) Tool { return keepsCaps{d} }
+	if _, err := New(&scriptModel{}, memJournal(), WithTools(keeps(capped))); err != nil {
+		t.Fatalf("a decorator that carries the caps: %v", err)
+	}
+}
+
+// keepsCaps embeds a tool and reports its spec unchanged.
+type keepsCaps struct{ Tool }
+
+func (k keepsCaps) Spec() ToolSpec { return k.Tool.Spec() }
