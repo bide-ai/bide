@@ -90,6 +90,7 @@ func main() {
 	cfg := config{}
 	fs.Int64Var(&cfg.amount, "amount", 0, "amount to refund in minor units (cents); 0 refunds what is left (run)")
 	fs.Int64Var(&cfg.threshold, "approval-threshold", 10000, "a refund over this many minor units needs 2-of-3 approval (run)")
+	fs.Int64Var(&cfg.maxRefund, "max-refund", 0, "refuse a refund over this many minor units (USD), on either refund tool, before any approver is asked; 0 for no ceiling (run)")
 	fs.BoolVar(&cfg.crashAfterSend, "crash-after-send", false, "exit right after the refund request is sent, before its result is journaled (run)")
 	fs.BoolVar(&cfg.reconcile, "reconcile", true, "on a halted refund, ask Stripe for the refund and resolve the halt (run)")
 	fs.DurationVar(&cfg.minHaltAge, "min-halt-age", 2*time.Second, "do not resolve a halt younger than this, so Stripe's record can settle (run)")

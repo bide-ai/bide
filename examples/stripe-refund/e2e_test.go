@@ -414,3 +414,50 @@ func TestDemoScript(t *testing.T) {
 		t.Fatal("the API key was printed")
 	}
 }
+
+// TestRefundCeilingRefusesOnEitherTool: one cap rule covers refund and refund_large, so a refund over
+// -max-refund is refused whichever tool the model picks, before any approver is asked, and Stripe is
+// never called. A refund under the ceiling runs as before.
+func TestRefundCeilingRefusesOnEitherTool(t *testing.T) {
+	for name, threshold := range map[string]string{"refund (under the approval threshold)": "10000", "refund_large (over it)": "1000"} {
+		f, db := setup(t)
+		out := mustProc(t, f, "run", "-db", db, "-payment-intent", "pi_test_1", "-approval-threshold", threshold, "-max-refund", "4000")
+		want(t, out, "Refund failed", "refund_ceiling")
+		if strings.Contains(out, "paused") || f.refundCount() != 0 || len(f.posts()) != 0 {
+			t.Fatalf("%s: %d refunds, %d posts, out:\n%s", name, f.refundCount(), len(f.posts()), out)
+		}
+	}
+	f, db := setup(t)
+	out := mustProc(t, f, "run", "-db", db, "-payment-intent", "pi_test_1", "-amount", "3000", "-max-refund", "4000")
+	want(t, out, "status: done")
+	if f.refundCount() != 1 {
+		t.Fatalf("%d refunds under the ceiling, want 1", f.refundCount())
+	}
+}
+
+// TestRefundCeilingIsInUSD: the cap rule reads the amount alone, so with -max-refund set the tool
+// refuses a payment in another currency before any refund request, even for an amount under the
+// ceiling (4000 would otherwise mean 40 EUR, 4000 yen or 4.000 KWD). A USD payment is unchanged, and
+// without -max-refund any currency refunds as before.
+func TestRefundCeilingIsInUSD(t *testing.T) {
+	for _, cur := range []string{"eur", "jpy", "kwd"} {
+		f, db := setup(t, fakePI{ID: "pi_test_1", Status: "succeeded", Received: 5000, Currency: cur})
+		out := mustProc(t, f, "run", "-db", db, "-payment-intent", "pi_test_1", "-amount", "3000", "-max-refund", "4000")
+		want(t, out, "Refund failed", "-max-refund is a ceiling in USD")
+		if f.refundCount() != 0 || len(f.posts()) != 0 {
+			t.Fatalf("%s: %d refunds, %d posts under a USD ceiling", cur, f.refundCount(), len(f.posts()))
+		}
+		f, db = setup(t, fakePI{ID: "pi_test_1", Status: "succeeded", Received: 5000, Currency: cur})
+		out = mustProc(t, f, "run", "-db", db, "-payment-intent", "pi_test_1", "-amount", "3000")
+		want(t, out, "status: done")
+		if f.refundCount() != 1 {
+			t.Fatalf("%s without a ceiling: %d refunds, want 1", cur, f.refundCount())
+		}
+	}
+	f, db := setup(t)
+	out := mustProc(t, f, "run", "-db", db, "-payment-intent", "pi_test_1", "-amount", "3000", "-max-refund", "4000")
+	want(t, out, "status: done")
+	if f.refundCount() != 1 {
+		t.Fatalf("usd: %d refunds, want 1", f.refundCount())
+	}
+}

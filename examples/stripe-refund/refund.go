@@ -50,6 +50,7 @@ type config struct {
 	paymentIntent  string
 	amount         int64 // minor units; 0 refunds what is left
 	threshold      int64 // a refund over this many minor units needs 2-of-3 approval
+	maxRefund      int64 // a refund over this many minor units (USD) is refused outright, whichever tool; 0 for no ceiling
 	crashAfterSend bool
 	reconcile      bool
 	minHaltAge     time.Duration
@@ -170,15 +171,40 @@ func newAgent(j *agent.Journal, api *stripe, cfg config) (*agent.Agent, error) {
 		return nil, err
 	}
 	do := func(ctx context.Context, in refundArgs) (refundResult, error) { return doRefund(ctx, api, cfg, in) }
-	small, err := agent.Func("refund", "refund a payment (at or under the approval threshold)", do)
+	// One cap rule over both tools: a refund over the ceiling is refused whichever tool the model picks,
+	// before any approver is asked, and the two tools share the one rule. The approval gate stays on
+	// refund_large: a cap that holds a call for approval has not shipped (docs/guides/amount-caps.md).
+	var caps []agent.ToolOption
+	if cfg.maxRefund > 0 {
+		caps = append(caps, agent.WithCaps(fmt.Sprintf("refund_ceiling: refund|refund_large.amount[minor] > %d.%02d USD -> refuse", cfg.maxRefund/100, cfg.maxRefund%100)))
+	}
+	small, err := agent.Func("refund", "refund a payment (at or under the approval threshold)", do, caps...)
 	if err != nil {
 		return nil, err
 	}
-	large, err := agent.Func("refund_large", "refund a payment over the threshold: needs 2 of 3 approvers", do, agent.WithApproval(&policy))
+	large, err := agent.Func("refund_large", "refund a payment over the threshold: needs 2 of 3 approvers", do, append([]agent.ToolOption{agent.WithApproval(&policy)}, caps...)...)
 	if err != nil {
 		return nil, err
 	}
 	return agent.New(model{cfg}, j, agent.WithTools(lookup, small, large), agent.WithApproverVerifiers(approverVerifiers()))
+}
+
+// checkCeilingCurrency makes -max-refund mean what it says. The cap rule is written in USD and reads
+// the amount alone (the tool's arguments have no currency member for the rule to check), so with a
+// ceiling set the tool itself refuses a payment in any other currency: 4000 would otherwise be
+// 40 EUR, 4000 yen or 4.000 KWD. It is a plain error before any request to Stripe's refund API.
+func checkCeilingCurrency(ctx context.Context, api *stripe, cfg config, pi string) error {
+	if cfg.maxRefund == 0 {
+		return nil
+	}
+	p, err := api.paymentIntent(ctx, pi)
+	if err != nil {
+		return err
+	}
+	if p.Currency != "usd" {
+		return fmt.Errorf("%s is in %q: -max-refund is a ceiling in USD, so a refund in another currency is refused", p.ID, p.Currency)
+	}
+	return nil
 }
 
 func doLookup(ctx context.Context, api *stripe, in lookupArgs) (lookupResult, error) {
@@ -204,6 +230,9 @@ func doLookup(ctx context.Context, api *stripe, in lookupArgs) (lookupResult, er
 // dies right after the request went out and before the answer can be journaled: the unknown
 // outcome this example exists to resolve.
 func doRefund(ctx context.Context, api *stripe, cfg config, in refundArgs) (refundResult, error) {
+	if err := checkCeilingCurrency(ctx, api, cfg, in.PaymentIntent); err != nil {
+		return refundResult{}, err // a known failure: nothing was sent to Stripe
+	}
 	meta := map[string]string{"bide_run": cfg.runID, "bide_call": refundID, "bide_key": in.IdempotencyKey}
 	say("step 3  refund   POST /v1/refunds %s amount %d, Idempotency-Key %s", in.PaymentIntent, in.Amount, in.IdempotencyKey)
 	r, err := api.createRefund(ctx, in.PaymentIntent, in.Amount, in.IdempotencyKey, meta)
