@@ -256,11 +256,11 @@ func TestAdd(t *testing.T) {
 // is read (and overflows, being digits); one byte over is refused as syntax without being read;
 // a megabyte is refused without allocating.
 func TestParse_TextBound(t *testing.T) {
-	if _, err := Parse(strings.Repeat("1", maxText), Major, 2); !errors.Is(err, ErrOverflow) {
-		t.Fatalf("a text of %d digits: %v, want ErrOverflow (read, and too large)", maxText, err)
+	if _, err := Parse(strings.Repeat("1", 256), Major, 2); !errors.Is(err, ErrOverflow) {
+		t.Fatalf("a text of %d digits: %v, want ErrOverflow (read, and too large)", 256, err)
 	}
-	if _, err := Parse(strings.Repeat("1", maxText+1), Major, 2); !errors.Is(err, ErrSyntax) {
-		t.Fatalf("a text of %d digits: %v, want ErrSyntax (over the bound)", maxText+1, err)
+	if _, err := Parse(strings.Repeat("1", 257), Major, 2); !errors.Is(err, ErrSyntax) {
+		t.Fatalf("a text of %d digits: %v, want ErrSyntax (over the bound)", 257, err)
 	}
 	big := strings.Repeat("1", 1<<20)
 	if _, err := Parse(big, Major, 2); !errors.Is(err, ErrSyntax) {
