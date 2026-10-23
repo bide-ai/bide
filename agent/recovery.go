@@ -268,12 +268,16 @@ func Recover(ctx context.Context, store *Journal, resume Resumer, opts ...Recove
 	}
 	var recovered int
 	var errs []error
+	var capRuns []string
 	for runID, err := range lister.Runs(ctx, recoverFilter) {
 		if err != nil {
 			errs = append(errs, fmt.Errorf("list runs for recovery: %w (%w)", err, ErrStorage))
 			break
 		}
 		if !recoverable(runID) {
+			if IsCapRun(runID) {
+				capRuns = append(capRuns, runID) // a cap ledger or index run: reconciled below
+			}
 			continue
 		}
 		driven, err := recoverRun(ctx, store, runID, resume, cfg)
@@ -286,7 +290,7 @@ func Recover(ctx context.Context, store *Journal, resume Resumer, opts ...Recove
 	}
 	// The reconcile pass over the cap ledgers: release the slots of attempts recorded as not started.
 	// protocol:caps begin Reconcile
-	if _, err := reconcileCaps(ctx, store); err != nil {
+	if _, err := reconcileCapRuns(ctx, store, capRuns); err != nil {
 		errs = append(errs, err)
 	}
 	// protocol:caps end

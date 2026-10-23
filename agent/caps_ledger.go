@@ -303,14 +303,23 @@ func reconcileCaps(ctx context.Context, store *Journal) ([]string, error) {
 	if !ok {
 		return nil, nil
 	}
+	var runs []string
+	for run, err := range lister.Runs(ctx, RunFilter{Prefix: capRunPrefix}) {
+		if err != nil {
+			return nil, fmt.Errorf("list the cap ledgers: %w (%w)", err, ErrStorage)
+		}
+		runs = append(runs, run)
+	}
+	return reconcileCapRuns(ctx, store, runs)
+}
+
+// reconcileCapRuns is reconcileCaps over the cap runs a caller already listed (Recover finds them in its own
+// listing of runs, which includes them: a ledger never ends). Index runs among them are skipped.
+func reconcileCapRuns(ctx context.Context, store *Journal, runs []string) ([]string, error) {
 	l := newCapLedger(store, time.Now, 0)
 	var released []string
 	var errs []error
-	for run, err := range lister.Runs(ctx, RunFilter{Prefix: capRunPrefix}) {
-		if err != nil {
-			errs = append(errs, fmt.Errorf("list the cap ledgers: %w (%w)", err, ErrStorage))
-			break
-		}
+	for _, run := range runs {
 		if strings.Count(run, "/") != 5 {
 			continue // an index run, not a ledger
 		}
