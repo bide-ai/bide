@@ -613,7 +613,7 @@ func (e *notifyEngine) backfillOpen(ctx context.Context) error {
 		if lerr != nil {
 			return lerr
 		}
-		if IsSubRun(runID) || IsSessionRun(runID) {
+		if IsSubRun(runID) || IsSessionRun(runID) || IsCapRun(runID) {
 			continue
 		}
 		trail, terr := e.trail.Load(ctx, NotifyTrailName(runID))

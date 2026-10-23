@@ -40,6 +40,9 @@ type Task[T any] struct {
 // As with Step, each task result is journaled as JSON, so T must be JSON-serializable;
 // a struct's unexported fields silently round-trip to their zero values.
 func (j *Journal) Parallel[T any](ctx context.Context, runID string, tasks []Task[T], opts ...ParallelOption) ([]T, error) {
+	if err := checkCallerRun("Parallel", runID); err != nil {
+		return nil, err
+	}
 	var cfg parallelConfig
 	if err := applyOptions("Parallel", &cfg, opts, ParallelOption.applyParallel); err != nil {
 		return nil, err

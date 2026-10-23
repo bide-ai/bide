@@ -62,7 +62,7 @@ func WithRetryIf(pred func(error) bool) RetryOption {
 // agent.ErrResponseTooLarge, and agent.ErrTruncatedToolArgs (a tool call cut off by the
 // response's output token limit, which the same request hits again). It does retry
 // agent.ErrStreamProtocol (a stream that broke its provider's event protocol, a fault of that
-// one response) and agent.ErrToolUseIDReused (a fresh generation can issue new ids). Errors it
+// one response) and agent.ErrToolUseIDReused and agent.ErrToolUseIDInvalid (a fresh generation can issue new ids). Errors it
 // cannot classify (e.g. raw network errors, a provider's mid-stream server error) are retried,
 // since those are usually transient.
 //

@@ -136,6 +136,9 @@ func (j *Journal) AnswerInterrupt[T any](ctx context.Context, runID, name string
 	if runID == "" {
 		return fmt.Errorf("AnswerInterrupt: empty runID: %w", ErrConfig)
 	}
+	if err := checkCallerRun("AnswerInterrupt", runID); err != nil {
+		return err
+	}
 	cfg := answerConfig{now: clockFrom(ctx)}
 	if err := applyOptions("AnswerInterrupt", &cfg, opts, AnswerOption.applyAnswer); err != nil {
 		return err
@@ -524,6 +527,9 @@ func Await[T any](ctx context.Context, name string) (T, error) {
 func (j *Journal) Signal[T any](ctx context.Context, runID, name string, payload T, opts ...AnswerOption) error {
 	if runID == "" {
 		return fmt.Errorf("Signal: empty runID: %w", ErrConfig)
+	}
+	if err := checkCallerRun("Signal", runID); err != nil {
+		return err
 	}
 	cfg := answerConfig{now: clockFrom(ctx)}
 	if err := applyOptions("Signal", &cfg, opts, AnswerOption.applyAnswer); err != nil {

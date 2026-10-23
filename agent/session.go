@@ -174,6 +174,9 @@ func (a *Agent) Session(ctx context.Context, id string, opts ...LeaseOption) (*S
 		// name another session's run, or a sub-agent's (see SubRunID).
 		return nil, fmt.Errorf("Session: id %q contains %q, which the engine reserves for the run IDs of sub-agents and session turns: %w", id, subRunSep, ErrConfig)
 	}
+	if IsCapRun(id) {
+		return nil, fmt.Errorf("Session: id %q starts with %q, which the engine reserves for the cap ledger runs: %w", id, capRunPrefix, ErrConfig)
+	}
 	cfg, err := leaseConfig("Session", opts, LeaseOption.applyLease)
 	if err != nil {
 		return nil, err

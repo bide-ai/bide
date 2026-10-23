@@ -156,6 +156,9 @@ func (m *MemStore) ReleaseLease(_ context.Context, runID, holder string) error {
 //	    return err
 //	}, agent.WithLeaseHolder("worker-1"))
 func Lease(ctx context.Context, store *Journal, runID string, drive func(context.Context) error, opts ...LeaseOption) (bool, error) {
+	if err := checkCallerRun("Lease", runID); err != nil {
+		return false, err
+	}
 	cfg, err := leaseConfig("Lease", opts, LeaseOption.applyLease)
 	if err != nil {
 		return false, err

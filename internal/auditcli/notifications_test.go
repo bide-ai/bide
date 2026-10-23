@@ -592,3 +592,61 @@ func TestNotificationsVerb_AnOpenTrailWrittenByClocksDaysApartVerifies(t *testin
 		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
 	}
 }
+
+// seedRunAndLedger writes the finished run "a" and a cap ledger run holding records that are not
+// journal records (nothing writes a ledger yet, and a store may hold anything): reading the ledger
+// as a journal fails.
+func seedRunAndLedger(t *testing.T, mem *agent.MemStore) {
+	t.Helper()
+	ctx := context.Background()
+	j, _ := agent.NewJournal(mem)
+	a, _ := agent.New(agenttest.NewScriptedModel(agenttest.TextTurn("done")), j)
+	if _, err := a.Run(ctx, "a", agent.UserText("go")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := mem.Insert(ctx, "@cap/ns/refunds/usd/d2026-10-22/0123abcd", "slot:0", []byte("not a journal record")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// An audit of every run does not read a cap ledger run: the ledger holds slots, no run, and the
+// notifier writes no trail for it.
+func TestNotificationsVerb_SkipsCapLedgerRuns(t *testing.T) {
+	mem, es := agent.NewMemStore(), audit.NewMemEventStore()
+	seedRunAndLedger(t, mem)
+	closed := false
+	fakeStores(t, memNotifyStore{mem, es, &closed})
+	c := &cli{}
+	var in audit.NotifyVerifyInput
+	if err := c.readStore(&in, "x.db", "", "", stopSettings{}); err != nil {
+		t.Fatal(err)
+	}
+	var runs []string
+	for _, x := range in.Journals {
+		runs = append(runs, x.RunID)
+	}
+	if !slices.Equal(runs, []string{"a"}) {
+		t.Fatalf("the audit read the journals of %v, want only a", runs)
+	}
+}
+
+// The same for the redaction audit: the journals it reads are the ordinary runs'.
+func TestRedactionsVerb_SkipsCapLedgerRuns(t *testing.T) {
+	mem, es := agent.NewMemStore(), audit.NewMemEventStore()
+	seedRunAndLedger(t, mem)
+	closed := false
+	fakeStores(t, memNotifyStore{mem, es, &closed})
+	c := &cli{}
+	in := audit.RedactionVerifyInput{Journals: map[string][]agent.Record{}}
+	if err := c.readRedactionStore(&in, "x.db", "", "", "", "", true); err != nil {
+		t.Fatal(err)
+	}
+	var runs []string
+	for id := range in.Journals {
+		runs = append(runs, id)
+	}
+	slices.Sort(runs)
+	if !slices.Equal(runs, []string{"a"}) {
+		t.Fatalf("the audit read the journals of %v, want only a", runs)
+	}
+}

@@ -134,6 +134,17 @@ and [the formal models](../spec/tla/README.md).
 **`run:complete` appears in diagrams.** A finished run records a `run:complete` step, so
 `RenderMermaid` shows it just before `done`. This is expected.
 
+**Run IDs under `@cap/` and four step-name prefixes are reserved.** `Run`, `Stream` and `Session`
+refuse a run ID that starts with `@cap/` (`ErrConfig`), as they refuse `@stop`, and `Step`,
+`Parallel` and `ResolveHalt` refuse a step name that starts with `slot:`, `cap-intent:`,
+`cap-reserve:` or `gate-reason:`. The engine will keep cap ledgers and gate reasons under them in
+later releases. `Approve`, `Cancel`, `Signal`, `Step`, `Lease` and the other exported calls that write to a run you name refuse a
+`@cap/` run too (`@stop` keeps its old behaviour in them: they still write to it, a known gap left
+as it was). A run already named under `@cap/` keeps its journal, but `Recover`, the run viewer,
+`bide approve -list`, `bide audit notifications` and `bide audit redactions` skip it from this version on, so it is not resumed and a gate
+waiting in it is not listed: rename such a run (start it again under a new ID) before upgrading. A
+`Step` named with one of the four prefixes in a run that resumes now fails with `ErrConfig`.
+
 ## Sagas
 
 **Each forward step must be all-or-nothing.** When a step fails, the steps before it are
@@ -201,6 +212,18 @@ instead of being silently changed.
 
 **Gemini does not receive earlier reasoning text.** Gemini does not accept thought text as input, so
 the adapter sends back only the thought signatures Gemini needs to continue a thinking turn.
+
+**A tool-use ID that holds `#` fails the turn.** The engine reserves `#` in a tool-use ID, to derive
+a second approval subject from a call's ID, so a live model turn whose call has one fails with
+`ErrToolUseIDInvalid` (wrapping `ErrModel` and `ErrProtocol`; `middleware.Retry` asks the model
+again, and the rejected turn is never journaled). The shipped adapters pass the provider's ID
+through, and none of their tests or generated IDs holds a `#`; whether a provider, or a model
+server you point the OpenAI-compatible adapter at, never sends one is not something bide can know,
+and a server that always does fails every turn that calls a tool. Only live turns are checked: a
+journal written before this check, with a `#` in an ID, resumes, and is outside the guarantees
+that rest on the reservation. `agent.Replay` used as the model of a new run is the exception: it
+returns the recorded turns as live ones, so a recorded `#` ID fails that new run with
+`ErrToolUseIDInvalid`.
 
 **Replay simplifies a reply's layout.** A replayed model turn has the same content as the original,
 but it is laid out as reasoning blocks, then the text, then the tool calls. Text that appeared

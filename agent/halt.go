@@ -32,6 +32,9 @@ func Approve(ctx context.Context, d *Journal, runID, toolUseID string, approved 
 	if runID == "" {
 		return fmt.Errorf("Approve: empty runID: %w", ErrConfig)
 	}
+	if err := checkCallerRun("Approve", runID); err != nil {
+		return err
+	}
 	o := approveOptions{now: clockFrom(ctx)}
 	if err := applyOptions("Approve", &o, opts, ApproveOption.applyApprove); err != nil {
 		return err
@@ -214,6 +217,9 @@ type haltKeys struct {
 func resolveHalt(ctx context.Context, store *Journal, op string, ref HaltRef, out Outcome, opts []ResolveOption) error {
 	if ref.RunID == "" {
 		return fmt.Errorf("%s: empty runID: %w", op, ErrConfig)
+	}
+	if err := checkCallerRun(op, ref.RunID); err != nil {
+		return err
 	}
 	if ref.Cause != HaltCrashed && ref.Cause != HaltContended {
 		return fmt.Errorf("%s: halt cause %q is not %q or %q: %w", op, ref.Cause, HaltCrashed, HaltContended, ErrConfig)

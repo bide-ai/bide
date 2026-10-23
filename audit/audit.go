@@ -88,6 +88,9 @@ func VerifySignature(head, sig []byte, v Verifier) error {
 // hook (the journal's raw write is not exported), and returns the record the journal holds. The
 // audit leaves (policy, grant, confluence, run certificate) are written this way.
 func doRecord(ctx context.Context, j *agent.Journal, runID, name string, fn func(context.Context) (agent.Record, error)) (agent.Record, error) {
+	if agent.IsCapRun(runID) {
+		return agent.Record{}, fmt.Errorf("audit: run ID %q starts with \"@cap/\", which the engine reserves for the cap ledger runs: %w", runID, agent.ErrConfig)
+	}
 	v, err := journalhook.Do(ctx, j, runID, name, func(ctx context.Context) (any, error) { return fn(ctx) })
 	rec, _ := v.(agent.Record)
 	return rec, err

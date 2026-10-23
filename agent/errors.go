@@ -86,6 +86,13 @@ var (
 	// journaled, and a fresh attempt can issue a valid turn, so a retry middleware treats it as
 	// retryable.
 	ErrToolUseIDReused = fmt.Errorf("tool-use id missing, reused, or malformed: %w (%w)", ErrProtocol, ErrModel)
+	// ErrToolUseIDInvalid is a model turn whose tool call has an ID that holds '#', which the
+	// engine reserves: it derives a second approval subject from a call's ID by appending "#"
+	// and a suffix, so no ID a model chooses may spell one. Only a live turn is checked; a
+	// journal that holds such an ID from before the check replays. It wraps ErrModel as well as
+	// ErrProtocol: the fault is in the model's output, the turn is not journaled, and a fresh
+	// attempt can issue a valid ID, so a retry middleware treats it as retryable.
+	ErrToolUseIDInvalid = fmt.Errorf("tool-use id holds a reserved character: %w (%w)", ErrProtocol, ErrModel)
 	// ErrNegativeUsage is token usage with a negative count, reported by a model or returned by
 	// a middleware. The usage is rejected rather than lowering a run's totals and budget. It
 	// wraps ErrModel as well as ErrProtocol.

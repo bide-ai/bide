@@ -229,8 +229,8 @@ func (c *cli) readStore(in *audit.NotifyVerifyInput, db, pgEnv, run string, stop
 		if err != nil {
 			return unusable(fmt.Errorf("list runs: %w", err))
 		}
-		if agent.IsSessionRun(id) {
-			continue // the session drives it, and the notifier skips it
+		if agent.IsSessionRun(id) || agent.IsCapRun(id) {
+			continue // the session drives it, and the notifier skips it; a cap ledger holds slots, no run
 		}
 		if run == "" || id == run || strings.HasPrefix(id, run+">") && agent.IsSubRun(id) {
 			ids = append(ids, id)

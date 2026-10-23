@@ -134,6 +134,9 @@ func Cancel(ctx context.Context, j *Journal, runID, reason string, opts ...Cance
 	if runID == "" {
 		return fmt.Errorf("Cancel: empty runID: %w", ErrConfig)
 	}
+	if err := checkCallerRun("Cancel", runID); err != nil {
+		return err
+	}
 	cfg := cancelConfig{now: clockFrom(ctx)}
 	if err := applyOptions("Cancel", &cfg, opts, CancelOption.applyCancel); err != nil {
 		return err

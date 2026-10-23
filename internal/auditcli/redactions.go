@@ -224,6 +224,9 @@ func (c *cli) readRedactionStore(in *audit.RedactionVerifyInput, db, pgEnv, run,
 		if err != nil {
 			return unusable(fmt.Errorf("list runs: %w", err))
 		}
+		if agent.IsCapRun(id) {
+			continue // a cap ledger holds slots, no run, and nothing in it is redacted
+		}
 		if run == "" || id == run || len(id) > len(run) && id[:len(run)] == run && id[len(run)] == '>' {
 			ids = append(ids, id)
 		}

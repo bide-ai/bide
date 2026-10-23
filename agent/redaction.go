@@ -191,6 +191,9 @@ var redactionClasses = []struct {
 	{"node:", classPayload, ""},
 	{"switch:", classBookkeeping, ""},
 	{"flow:", classProtected, "a flow's topology record"},
+	{"slot:", classProtected, "a cap ledger slot: a window's total is counted from it"},
+	{"cap-intent:", classProtected, "a cap reservation's intent: a re-drive reads its window and amount"},
+	{"cap-reserve:", classProtected, "the slot a call reserved: an audit recomputes a window's total against it"},
 	{"gate-reason:", classProtected, "why a call was gated: evidence for the approvers' decision"},
 }
 

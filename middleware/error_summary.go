@@ -67,7 +67,7 @@ func ErrorSummary(err error) string {
 // the condition, and ends with the category it wraps.
 var conditions = []error{
 	agent.ErrUnknownTool, agent.ErrToolArgs, agent.ErrToolReinvoked, agent.ErrNoRecordedOutput,
-	agent.ErrIncompleteResponse, agent.ErrTruncatedToolArgs, agent.ErrToolUseIDReused,
+	agent.ErrIncompleteResponse, agent.ErrTruncatedToolArgs, agent.ErrToolUseIDReused, agent.ErrToolUseIDInvalid,
 	agent.ErrQuotaExhausted, agent.ErrResponseTooLarge, agent.ErrBudgetExceeded, agent.ErrMaxTurns,
 	agent.ErrInvalidApproval, agent.ErrAlreadyDecided,
 }

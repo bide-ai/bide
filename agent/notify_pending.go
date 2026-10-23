@@ -67,6 +67,9 @@ func NotifyPending(ctx context.Context, j *Journal, n Notifier, trail NotifyTrai
 		if IsSessionRun(runID) {
 			continue // the session drives it
 		}
+		if IsCapRun(runID) {
+			continue // a cap ledger holds slots, no run and no gate
+		}
 		e.queueScan(runID) // an event delivered earlier may have stopped being current
 		if name := NotifyTrailName(treeRootID(runID)); !seen[name] {
 			seen[name] = true
