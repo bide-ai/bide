@@ -757,6 +757,10 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 		// passes this point, so none runs a call whose counted approvals no longer hold. It is before
 		// the call is begun, so a call it holds is not marked as run. A gate without such an approver
 		// costs nothing here.
+		// A run under taint that this agent has no policy to enforce does not run a side effect.
+		if err := a.taintRefusal(ctx, spec); err != nil {
+			return nil, &argsJournalError{err}
+		}
 		if err := preExecute(ctx, a.store, runID, rootRunID(ctx, runID), tu.ID, effectiveGates(spec, gateInputs{}).Own(), a.approverVerifiers, ""); err != nil {
 			if IsPause(err) {
 				return nil, err // the gate holds the call: a pause, not a result

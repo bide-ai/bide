@@ -132,6 +132,10 @@ func sessionTurnStep(n int) string        { return "turn/" + strconv.Itoa(n) }
 func sessionStartStep(n int) string       { return "start/" + strconv.Itoa(n) }
 func sessionFromStep(runID string) string { return "from/" + runID }
 
+// sessionTaintStep is the session journal's record that the session is under taint: written, insert-once,
+// by the first turn driven by an agent with a taint policy, and read by every later turn on any handle.
+const sessionTaintStep = "taint/session"
+
 // chainTurn extends the digest of the turns before tr with tr. It hashes the run ID and claim,
 // which identify the exact record written, rather than its encoding, which a store may change.
 func chainTurn(prev string, tr turnRecord) string {
@@ -500,6 +504,10 @@ func (s *Session) runTurn(ctx context.Context, runID string, ref *SessionRef, in
 	if err != nil {
 		return Message{}, usageTotals{}, 0, err
 	}
+	ctx, err = s.withSessionTaint(ctx)
+	if err != nil {
+		return Message{}, usageTotals{}, 0, err
+	}
 	d := &driveSpec{input: &input, seed: seed, kind: RunKindSessionTurn, session: ref, cfg: cfg, strictSaga: !cfg.saga}
 	answer, tot, turns, err := s.driveRun(ctx, runID, d)
 	if err != nil {
@@ -656,4 +664,38 @@ func (s *Session) Turns() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.turns
+}
+
+// withSessionTaint makes the status of the session the one its turn starts under (see taint_policy.go).
+// A session whose journal records taint puts every later turn under it, whichever agent drives the turn;
+// an agent with a taint policy records the session as under taint, once, before it drives a turn, so a
+// session that began with no policy is under taint from the first turn a policy drives. The turns before
+// that are not retro-gated.
+func (s *Session) withSessionTaint(ctx context.Context) (context.Context, error) {
+	j := sessionJournalID(s.id)
+	rec, ok, err := s.agent.store.Get(ctx, j, sessionTaintStep)
+	if err != nil {
+		return ctx, fmt.Errorf("session %s: read %s: %w (%w)", s.id, sessionTaintStep, err, ErrStorage)
+	}
+	if ok {
+		var d string
+		if json.Unmarshal(rec.Result, &d) != nil || d == "" {
+			return ctx, fmt.Errorf("session %s: %s does not hold a declarations digest: %w", s.id, sessionTaintStep, ErrStorage)
+		}
+		return withUnderTaint(ctx, d), nil
+	}
+	d := s.agent.taintDigest()
+	if d == "" {
+		return ctx, nil
+	}
+	b, _ := json.Marshal(d)
+	got, _, err := s.agent.store.putNew(ctx, j, sessionTaintStep, Record{Kind: StepValue, Result: b})
+	if err != nil {
+		return ctx, fmt.Errorf("session %s: record %s: %w", s.id, sessionTaintStep, err)
+	}
+	var have string
+	if json.Unmarshal(got.Result, &have) != nil || have == "" {
+		return ctx, fmt.Errorf("session %s: %s does not hold a declarations digest: %w", s.id, sessionTaintStep, ErrStorage)
+	}
+	return withUnderTaint(ctx, have), nil
 }
