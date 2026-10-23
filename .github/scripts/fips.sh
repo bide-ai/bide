@@ -106,14 +106,22 @@ rel_of() {
 
 check_excluded() {
   command -v jq >/dev/null || { err "check-excluded needs jq"; return 1; }
-  local m p names names_re json n outs fails fail=0 count
+  local m p names names_re json errf n outs fails fail=0 count
   export GODEBUG=fips140=only GOFIPS140=v1.0.0
   cd "$root"
   for m in $(entries | awk '{ print $1 }' | LC_ALL=C sort -u); do
     for p in $(entries | awk -v m="$m" '$1 == m { print $2 }' | LC_ALL=C sort -u); do
       names=$(pkg_entries "$m" "$p")
       names_re=$(awk -F/ '{ print $1 }' <<< "$names" | LC_ALL=C sort -u | while read -r t; do quote "$t"; done | join_alt)
-      json=$(cd "$m" && go test -count=1 -json -run "^$names_re\$" "$p" 2>&1 || true)
+      # stdout only: go test -json writes the JSON stream there, while "go: downloading ..." and other
+      # messages go to stderr (kept for the error message), so a cold module cache cannot corrupt it.
+      errf=$(mktemp)
+      json=$(cd "$m" && go test -count=1 -json -run "^$names_re\$" "$p" 2> "$errf" | grep '^{' || true)
+      if ! jq -e -s 'length > 0' <<< "$json" > /dev/null 2>&1; then
+        err "$m $p: go test -json under GOFIPS140=v1.0.0 produced no readable JSON (not a stale entry; the check could not run): $(head -c 400 "$errf")"
+        fail=1; rm -f "$errf"; continue
+      fi
+      rm -f "$errf"
       # No test of the package may have panicked: an ML-DSA refusal is an error, never a panic.
       if jq -r 'select(.Action=="output") | .Output' <<< "$json" 2>/dev/null | grep -q '^panic: '; then
         err "$m $p: a panic under GOFIPS140=v1.0.0 (a refusal must be an error)"; fail=1
@@ -121,8 +129,8 @@ check_excluded() {
       for n in $names; do
         # Each entry on its own: it must fail (itself or through a subtest) and its own output must
         # carry the ML-DSA "unavailable" error, so another cause of failure cannot hide behind a stale entry.
-        fails=$(jq -r --arg n "$n" 'select(.Action=="fail" and .Test != null and (.Test==$n or (.Test|startswith($n+"/")))) | .Test' <<< "$json" || true)
-        outs=$(jq -r --arg n "$n" 'select(.Action=="output" and .Test != null and (.Test==$n or (.Test|startswith($n+"/")))) | .Output' <<< "$json" || true)
+        fails=$(jq -r --arg n "$n" 'select(.Action=="fail" and .Test != null and (.Test==$n or (.Test|startswith($n+"/")))) | .Test' <<< "$json")
+        outs=$(jq -r --arg n "$n" 'select(.Action=="output" and .Test != null and (.Test==$n or (.Test|startswith($n+"/")))) | .Output' <<< "$json")
         if [ -z "$fails" ]; then
           err "$m $p $n: listed as excluded but does not fail under GOFIPS140=v1.0.0 (stale entry)"; fail=1
         elif ! grep -q "unavailable in FIPS 140-3 Go Cryptographic Module" <<< "$outs"; then
