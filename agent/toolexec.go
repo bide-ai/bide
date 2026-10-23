@@ -781,10 +781,12 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 				return nil, err
 			}
 			// The cumulative rules reserve here, after the attempt claim and before the call begins
-			// (protocol:caps Begin): a call that may have run stays counted, and one this refuses was not begun.
+			// a call that may have run stays counted, and one this refuses was not begun.
+			// protocol:caps begin Begin
 			if err := a.reserveCaps(ctx, runID, tu, spec); err != nil {
 				return nil, err
 			}
+			// protocol:caps end
 		}
 		// A tool that is not ReadOnly is counted in flight (see inflight): counted in, then the
 		// chain checked not to have returned, so either the chain sees the count when it returns
@@ -810,8 +812,10 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 			switch first, sealed := beginCall(call.began); {
 			case sealed:
 				refused = errChainReturned(tu.Name, tu.ID)
+			// protocol:caps begin Reinvoke
 			case !first && !spec.Safety.RetrySafe():
 				refused = errReinvoked(tu.Name, tu.ID)
+				// protocol:caps end
 			}
 			if refused != nil {
 				if counted {

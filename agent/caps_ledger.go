@@ -168,10 +168,7 @@ func (a *Agent) reserveCaps(ctx context.Context, runID string, tu ToolUse, spec 
 		// The attempt is the marker's key for a tool with markers, so a re-attempt after a not-started
 		// reserves anew, and the tool-use ID alone for a retry-safe one; the rule's name is part of it,
 		// so a call under two rules holds a slot (and an intent) in each ledger.
-		attemptID := at.id
-		if !at.marked {
-			attemptID = "idem"
-		}
+		attemptID := at.id // empty for a tool with no marker: the tool-use ID and the rule name are the attempt
 		req := capledger.Request{
 			Rule:      capledger.Rule{Namespace: ns, Name: d.rule.Name, Currency: d.rule.Currency, Kind: kind},
 			KeyDigest: capledger.KeyDigest(d.key),

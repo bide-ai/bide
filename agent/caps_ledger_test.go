@@ -164,12 +164,35 @@ func TestCapsSum_RefusesTheCallThatOverflowsTheWindow(t *testing.T) {
 			t.Fatalf("the refusal text %q gives %q", text, leak)
 		}
 	}
+	// The refusal is at the enforcement point, after the attempt was claimed, and writes no gate-reason (a
+	// per-call decision does); a per-call refusal would have been before the claim.
+	recs, _ := j.History(context.Background(), "r2")
+	claimed := false
+	for _, r := range recs {
+		claimed = claimed || r.Kind == StepAttempt
+	}
+	if _, has, _ := getGateReason(context.Background(), j, "r2", "c1"); !claimed || has {
+		t.Fatalf("claimed = %v, gate-reason = %v: want the refusal after the claim and no gate-reason", claimed, has)
+	}
 	// A refused call holds no slot; the window still has 200.
 	if live := ledgerSlots(t, j, "refund_total", ""); len(live) != 2 {
 		t.Fatalf("%d live slots, want 2", len(live))
 	}
 	if _, err := runSum(t, j, "r3", sumArgs(200, ""), tool); err != nil || tool.calls() != 3 {
 		t.Fatalf("exactly the limit: err = %v, calls = %d, want it run", err, tool.calls())
+	}
+	// An amount over the whole limit is refused the same way (at the handler, after the claim, no gate-reason),
+	// not as a per-call rule at the decision point.
+	if _, err := runSum(t, j, "r5", sumArgs(1500, ""), tool); err != nil || tool.calls() != 3 {
+		t.Fatalf("an amount over the limit: err = %v, calls = %d", err, tool.calls())
+	}
+	recs5, _ := j.History(context.Background(), "r5")
+	claimed5 := false
+	for _, r := range recs5 {
+		claimed5 = claimed5 || r.Kind == StepAttempt
+	}
+	if _, has, _ := getGateReason(context.Background(), j, "r5", "c1"); !claimed5 || has {
+		t.Fatalf("over the whole limit: claimed = %v, gate-reason = %v", claimed5, has)
 	}
 	if _, err := runSum(t, j, "r4", sumArgs(1, ""), tool); err != nil || tool.calls() != 3 {
 		t.Fatalf("one over the limit: err = %v, calls = %d, want it refused", err, tool.calls())

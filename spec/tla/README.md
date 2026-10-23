@@ -3333,18 +3333,18 @@ report violated.
 
 The ledger is `internal/capledger` (PR4 of the build plan); the call-site actions (the began word, the void, a second invocation) land with the wiring of PR6 and PR7 and stay in the no-code list until then, when each gets a `protocol:caps` region.
 
-<!-- modelsync: no-code caps Begin Cancel LoopStray LoopResolve Void Finish RollbackCredit Crash Reinvoke Tick -->
+<!-- modelsync: no-code caps Cancel LoopStray LoopResolve Void Finish RollbackCredit Crash Tick -->
 <!-- modelsync: map caps -->
 | Model action | Go code |
 |---|---|
 | `Start`, `Check`, `IdxInsert`, `Intent` | `Ledger.window` (`internal/capledger/reserve.go`): read the `cap-intent`, else check the clock bound against the index run, insert `win:<id>`, then write the intent |
 | `Read`, `Insert` | `Ledger.insertSlot` (`reserve.go`) and `Ledger.release` (`release.go`): the ledger read, the lookup, the `cum_after` check and the insert at `n+1` |
-| `Begin` | `beginCall` (`agent/toolexec.go`): the reserve is before it, after the attempt claim |
 | `LoopSeal` | `NewSeal` and `Ledger.Release` (`internal/capledger/release.go`): a release takes a `Seal`, made only by a successful compare and swap of the began word |
 | `LoopStray`, `Void`, `Cancel` | the loop after the chain returned (`closeCall`, the began word `beganSealed`, `agent/toolexec.go`) and the not-started paths (`recordNotStarted`, `callRefusedClosed`): seal, release, then void; `Cancel` is the unsafe driver-side release (no Go region) |
 | `LoopResolve` | `ResolveHalt` (`agent/halt.go`): a halted attempt recorded as not happened; no release |
 | `Reconcile` | `Ledger.Reconcile` (`internal/capledger/release.go`), run by `Recover` and `bide audit caps` once they are wired |
-| `Reinvoke` | a second invocation of the handler (`errReinvoked`, `agent/toolexec.go`) |
+| `Begin` | `reserveCaps` (`agent/caps_ledger.go`), called in the tool handler (`agent/toolexec.go`) after the attempt claim and before `beginCall`: the reserve precedes the begin |
+| `Reinvoke` | a second invocation of the handler is refused (`errReinvoked`, `agent/toolexec.go`) and reserves nothing more |
 | `Finish`, `RollbackCredit`, `Crash`, `Tick` | no Go region (a call's end, a counterexample rule, a crash or re-run, the clock) |
 
 ### Configurations
