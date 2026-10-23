@@ -334,6 +334,63 @@ func TestPermanentFailureBacksOffAndLogsOncePerStreak(t *testing.T) {
 	}
 }
 
+// newFailingRelay returns a Handler whose saves always fail with a refusal that does not pass, on fake timers.
+func newFailingRelay(t *testing.T) (*Handler, *fakeTimers) {
+	t.Helper()
+	h, err := New(Config{Secrets: []string{secret}, Sinks: []Sink{&funcSink{name: "s"}}, StatePath: filepath.Join(t.TempDir(), "relay.state"), StateFlushDelay: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { h.Close() })
+	ft := &fakeTimers{}
+	h.afterFunc = ft.after
+	h.retryDelay = 10 * time.Millisecond
+	h.state.renameFile = func(string, string) error { return errors.New("refused") }
+	h.seen.restore(agent.NotifyID("e1"), []string{"s"})
+	return h, ft
+}
+
+// The growing wait stops at stateRetryMax: a long streak never schedules a retry later than 30 seconds out, and
+// settles at 30 seconds.
+func TestBackoffIsCappedAtThirtySeconds(t *testing.T) {
+	h, ft := newFailingRelay(t)
+	h.persist(true)
+	for range 25 {
+		if !ft.fire() {
+			t.Fatal("no retry was scheduled while the save kept failing")
+		}
+	}
+	waits := ft.recorded()
+	for i, w := range waits {
+		if w > stateRetryMax {
+			t.Fatalf("wait %d is %v, past the %v cap (all: %v)", i, w, stateRetryMax, waits)
+		}
+	}
+	if last := waits[len(waits)-1]; last != stateRetryMax {
+		t.Fatalf("the streak settles at %v, want %v", last, stateRetryMax)
+	}
+}
+
+// A save that reschedules the retry stops the timer it replaces, so a failing relay holds one pending write, not
+// one per save.
+func TestRescheduleStopsThePreviousTimer(t *testing.T) {
+	h, ft := newFailingRelay(t)
+	h.persist(true)
+	h.persist(true)
+	ft.mu.Lock()
+	timers := append([]*fakeTimer(nil), ft.live...)
+	ft.mu.Unlock()
+	if len(timers) != 2 {
+		t.Fatalf("%d timers scheduled by two failing saves, want 2", len(timers))
+	}
+	if !timers[0].stopped {
+		t.Fatal("the first retry timer was not stopped when the second save rescheduled it")
+	}
+	if timers[1].stopped {
+		t.Fatal("the newest retry timer was stopped")
+	}
+}
+
 // While a save is refused for a passing reason, nothing sleeps with the state mutex held: a save makes one attempt
 // and the retries run on a timer. This asserts the structure, not a duration: the sleep hook (which the in-line
 // retry of startup and Close uses, and a save under h.pmu must not) is never called, and the event path (persist)
