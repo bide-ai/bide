@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -280,5 +281,67 @@ func TestTaintIntake_AToolWithNoGateStillHasItsEscalationInstanceServed(t *testi
 	}
 	if err := r.drive(); err != nil || r.wrote.Load() != 1 {
 		t.Fatalf("after the escalation approvals: %v, writes %d", err, r.wrote.Load())
+	}
+}
+
+// The gate-reason record says which gate the call was held under. An escalation subject is served only
+// when that record agrees with the pause note (the snapshot is the note's policy, and the digest is the
+// snapshot's); a record that disagrees, or none, means the journal was not written by the engine.
+func TestTaintIntake_AnEscalationSubjectIsServedOnlyWhenItsReasonRecordAgreesWithTheNote(t *testing.T) {
+	ctx := context.Background()
+	base := newTaintRig(t, nil)
+	if err := base.drive(); !agent.IsPause(err) {
+		t.Fatalf("drive = %v, want a pause on the escalation instance", err)
+	}
+	// edit copies the journal into a plain store, changing the gate-reason record by fn (nil drops it).
+	edit := func(fn func(m map[string]any)) int {
+		t.Helper()
+		ms := agent.NewMemStore()
+		for e, err := range base.app.Store().Load(ctx, base.runID, -1) {
+			if err != nil {
+				t.Fatal(err)
+			}
+			data := e.Data
+			if strings.HasPrefix(e.Name, "gate-reason:") {
+				if fn == nil {
+					continue
+				}
+				var rec map[string]any
+				if err := json.Unmarshal(data, &rec); err != nil {
+					t.Fatal(err)
+				}
+				fn(rec["result"].(map[string]any))
+				data, _ = json.Marshal(rec)
+			}
+			if _, _, err := ms.Insert(ctx, base.runID, e.Name, data); err != nil {
+				t.Fatal(err)
+			}
+		}
+		h, err := approvals.New(agenttest.MustJournal(ms), base.verify, approvals.WithGatePolicy(base.live))
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/pending?run="+base.runID+"&call=c2%23taint", nil))
+		return rec.Code
+	}
+	if got := edit(func(map[string]any) {}); got != http.StatusOK {
+		t.Fatalf("an unchanged record: %d, want 200 (the harness itself is wrong)", got)
+	}
+	cases := map[string]func(m map[string]any){
+		"a snapshot with other approvers": func(m map[string]any) { m["gate"].(map[string]any)["approvers"] = []any{"own1", "other"} },
+		"a snapshot with another need":    func(m map[string]any) { m["gate"].(map[string]any)["need"] = float64(1) },
+		"a digest that is not the snapshot's": func(m map[string]any) {
+			m["policy_digest"] = strings.Repeat("0", 64)
+		},
+		"no snapshot": func(m map[string]any) { delete(m, "gate") },
+	}
+	for name, fn := range cases {
+		if got := edit(fn); got != http.StatusNotFound {
+			t.Errorf("%s: %d, want 404 (not served)", name, got)
+		}
+	}
+	if got := edit(nil); got != http.StatusNotFound {
+		t.Errorf("no reason record: %d, want 404 (not served)", got)
 	}
 }
