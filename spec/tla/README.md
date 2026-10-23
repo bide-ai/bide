@@ -3271,13 +3271,32 @@ before the ledger code (PR4 of the build plan), so it is the specification the c
   the marker and halts, so after a crash its slot stays counted. An attempt of a retry-safe tool (an
   `Idempotent` write, not `Marked`) has no claim: its attempt is the tool-use ID, and any number of
   drivers and re-runs reserve it, find the live slot by the lookup and begin.
-- **Release, void and reconcile** (a retry-safe attempt is never released: `ReleaseUnmarked` is FALSE in every passing configuration, and the note's section 6.5 says so after finding F1) (`Cancel`, `Void`, `StrayVoid`, `Reconcile`). A driver that is
-  reserved, has not begun and finds the call cancelled releases the slot (a release slot, inserted by
-  the same protocol, after a dedupe scan: the release looks for a live slot of the attempt, so a slot
-  already released is done) and then voids the attempt (`recordNotStarted`); release before void.
-  `StrayVoid` is the loop's other paths, which void without a release; the slot stays counted until
-  `Reconcile`, run by any finished driver (`Recover`, `bide audit caps`), releases it in the window
-  the attempt's intent names. Two reconcile passes over one slot race, and the slot is released once.
+- **The call's began word, the loop and the release** (`Begin`, `LoopSeal`, `Void`). Every invocation
+  of a marked call's handler shares one began word (`bw`: none, yes or sealed). The first
+  invocation's `Begin` moves it to yes; a second invocation (`Reinvoke`: a middleware's second
+  `next`) finds the slot by its lookup, then finds yes and is refused (`errReinvoked`), which
+  releases nothing, because the tool began. The loop (one per marked attempt, `Loops`) acts after the
+  chain returned: `LoopSeal` moves the word from none to sealed, which is the proof that the tool
+  never began and never will, then reads the ledger, releases the live slot of the attempt (a release
+  slot, inserted by the same protocol, after a dedupe scan) and voids the attempt
+  (`recordNotStarted`): release before void. A release never comes from a handler's own proof that
+  it did not begin (`release-by-invocation`).
+- **A handler that reserves late.** A handler still running when the loop sealed can reserve
+  afterwards; its begin is refused (the word is sealed), and its slot is a leak. `LoopStray` is the
+  loop's other paths, which seal and void without a release. A leak stays counted until `Reconcile`,
+  run by any finished driver (`Recover`, `bide audit caps`), releases it in the window the attempt's
+  intent names; two reconcile passes over one slot race, and the slot is released once.
+- **ResolveHalt** (`LoopResolve`, decision 10 as amended). A resolution "did not happen" of a halted
+  marked attempt records a result and releases nothing: the slot stays counted and reconcile does not
+  touch it, so a window only over-counts. The release the first draft of decision 10 had rests on the
+  resolver's premise that no driver can still run the attempt; with a stalled winner that begins
+  afterwards it is an undercount, the finding `resolve-live-winner` (Bug `resolve-live`).
+- **A retry-safe attempt is never released.** `ReleaseUnmarked` is FALSE in every passing
+  configuration. A driver's own cancel of a retry-safe attempt (`Cancel`, `ReleaseUnmarked` TRUE) is
+  the finding `release-unmarked`: another driver of the same tool-use ID may have begun. The note's
+  section 6.5 says so.
+- **Stale reads** (`StaleReads`). A read is a prefix of any length, not only all of the ledger; a lookup
+  in a stale prefix misses a later slot, and the insert at the prefix's length then loses (A1).
 - **Faults.** `Crash` is a crash or a re-run of the call (a retry, a resume, a middleware's second
   `next`) at any step: the driver's local state is lost and it starts again. Crashes, cancels, stray
   voids, reconcile passes and clock ticks have finite budgets (`MaxCrash`, `MaxCancel`, `MaxStray`,
@@ -3299,7 +3318,7 @@ before the ledger code (PR4 of the build plan), so it is the specification the c
 | `IndexCoversIntents` | invariant | the window of every intent is in the index: the index is written first |
 | `IntentChecked` | invariant | the clock bound held when an intent was written: its window is not earlier than the newest recorded window, and not more than `Bound` later |
 | `ResumedNeverClockRefused` | invariant | a call that resumes with an intent is never refused by the clock check, which runs at the first intent only |
-| `ReleaseBeforeVoid` | invariant | an attempt cancelled by its driver is voided only after its release (a stray void is the reconcile pass's) |
+| `ReleaseBeforeVoid` | invariant | a marked attempt is voided only after its release, unless the void was written with nothing to release, by another path, or after a reserve that came after the seal (stray): the reconcile pass releases those |
 | `SlotBoundNotHit` | invariant | the ledger's name bound (`MaxSlots`) is never hit, so a bound that is too small is a configuration error and not a result |
 
 `TypeOK` is the type check. The vacuity check is `EffectNotReachable` (a call began), and each
@@ -3307,7 +3326,7 @@ configuration names the further effects it reaches (`ContendedNotReachable`: an 
 and the driver read again; `FoundNotReachable`: a lookup found a live slot;
 `LimitedNotReachable`, `WaivedNotReachable`, `ClockNotReachable`, `ResumedNotReachable`,
 `ReleasedNotReachable`, `VoidedNotReachable`, `ReconciledNotReachable`,
-`TwoWindowsNotReachable`) in `VACUITY-ALSO` lines, which `check.sh` runs as invariants TLC must
+`TwoWindowsNotReachable`, `ReinvokedNotReachable`, `SealedNotReachable`, `ResolvedNotReachable`) in `VACUITY-ALSO` lines, which `check.sh` runs as invariants TLC must
 report violated.
 
 ### Model-code map
@@ -3316,15 +3335,17 @@ The ledger code (`agent/capledger.go`) is PR4 of the build plan and has not land
 is in the no-code list below. PR4 adds a `protocol:caps` region around each Go region a row names
 and removes the row from the list.
 
-<!-- modelsync: no-code caps Start Check IdxInsert Intent Read Insert Begin Cancel StrayVoid Void Finish RollbackCredit Reconcile Crash Tick -->
+<!-- modelsync: no-code caps Start Check IdxInsert Intent Read Insert Begin Cancel LoopSeal LoopStray LoopResolve Void Finish RollbackCredit Reconcile Crash Reinvoke Tick -->
 <!-- modelsync: map caps -->
 | Model action | Go code (planned, `agent/capledger.go` and `agent/toolexec.go`) |
 |---|---|
 | `Start`, `Check`, `IdxInsert`, `Intent` | the window derivation: read the `cap-intent`, else check the clock bound against the index run, insert `win:<id>`, then write the intent |
 | `Read`, `Insert` | `reserve` and `release`: the ledger read, the lookup, the `cum_after` check and the insert at `n+1` |
 | `Begin` | `beginCall` (`agent/toolexec.go`): the reserve is before it, after the attempt claim |
-| `Cancel`, `Void`, `StrayVoid` | the not-started paths (`recordNotStarted`, `callRefusedClosed`): release, then void |
+| `LoopSeal`, `LoopStray`, `Void`, `Cancel` | the loop after the chain returned (`closeCall`, the began word `beganSealed`, `agent/toolexec.go`) and the not-started paths (`recordNotStarted`, `callRefusedClosed`): seal, release, then void; `Cancel` is the unsafe driver-side release (no Go region) |
+| `LoopResolve` | `ResolveHalt` (`agent/halt.go`): a halted attempt recorded as not happened; no release |
 | `Reconcile` | the reconcile pass in `Recover` and `bide audit caps` |
+| `Reinvoke` | a second invocation of the handler (`errReinvoked`, `agent/toolexec.go`) |
 | `Finish`, `RollbackCredit`, `Crash`, `Tick` | no Go region (a call's end, a counterexample rule, a crash or re-run, the clock) |
 
 ### Configurations
@@ -3335,37 +3356,49 @@ are an upper bound for the runner.
 
 | Config | Group | What |
 |---|---|---|
-| `caps-clock-far` | ci | A driver whose clock is two windows ahead of the newest recorded one, with a bound of one, is refused at its first intent. (93 states, 4 s) |
-| `caps-clock-resume` | ci | A call that is re-run after another driver recorded a later window resumes with the window of its intent: the clock bound is not applied to a resume, so it is not refused and keeps its (earlier) window. (964 states, 6 s) |
-| `caps-clock` | ci | A driver whose clock is a window behind the newest recorded one is refused at its first intent (and the window it did not take is not in the index); the other is not. (129 states, 4 s) |
-| `caps-limit` | ci | Two drivers, amounts of 2 against a limit of 3: the second is over the limit, takes no slot, and the action applies. (192 states, 4 s) |
-| `caps-marked` | ci | Marked attempts (an exclusive claim): a driver that releases a call that did not begin, then voids it; a crash leaves the slot counted, and a re-run halts on the marker. (3542 states, 4 s) |
-| `caps-race` | ci | Two drivers reserve different attempts against one window and race for the same slot name: one wins, the other reads again and takes the next; the total never exceeds the limit. (300 states, 1 s) |
-| `caps-reconcile` | ci | A void written without a release leaves the slot counted; two finished drivers run the reconcile pass over it at once: the slot is released once (the dedupe scan). (1460 states, 3 s) |
-| `caps-release-retry` | ci | A retry-safe attempt is never released (a release after a cancel is the finding release-unmarked): two drivers and two crashes or re-runs, so the lookup finds the slot and every call that began stays counted. (4962 states, 2 s) |
-| `caps-same-attempt` | ci | Two drivers, one of them re-run once, work on one retry-safe attempt (an Idempotent tool: no claim): whichever slot wins, the other finds it by its lookup, so the attempt has one live slot. (2315 states, 3 s) |
-| `caps-waiver` | ci | The second attempt carries a waiver: its slot is written over the limit (over), the total is above the limit only by that slot, and the first attempt's slot stays within it. (246 states, 1 s) |
-| `caps-window-two` | ci | Two windows, two drivers of one retry-safe attempt, one tick and one re-run: both read the window from the one intent, so the attempt has one live slot in one ledger. (11855 states, 5 s) |
-| `caps-window` | ci | Two windows and a clock that ticks: a crash after the intent and a resume after the tick read the window from the intent, so the slot is in the intent's window and the attempt is counted once. (129 states, 2 s) |
-| `deep-limit-three` | nightly | Three drivers and amounts of 1, 2 and 2 against a limit of 3: the order of the slots decides which two fit, and a waiver on the third lets it over. (14292 states, 7 s) |
-| `deep-marked-cancel-three` | nightly | Three marked attempts, up to two of them cancelled before they begin (release, then void), no crash. (206148 states, 2 min) |
-| `deep-marked-crash-three` | nightly | Three marked attempts with one crash, one cancel and one stray void. (1471791 states, 8 min) |
-| `deep-marked-reconcile-three` | nightly | Three marked attempts, one voided without a release and reconciled by up to two passes while the others reserve, begin and cancel. (734247 states, 5 min) |
-| `deep-race-three` | nightly | Three drivers, three attempts, no faults: every interleaving of the race for the next slot name, with the limit allowing two of three. (14760 states, 7 s) |
-| `deep-same-crash1-three` | nightly | Three drivers, two of them on one retry-safe attempt, and one crash or re-run anywhere. (187719 states, 1 min) |
-| `deep-same-crash2-three` | nightly | Three drivers on one retry-safe attempt and two crashes or re-runs. (203108 states, 1 min) |
-| `deep-window-crash2` | nightly | Two drivers of one retry-safe attempt, two windows, two ticks and two crashes or re-runs: the window is the intent's in every step. (55297 states, 10 s) |
-| `deep-window-marked` | nightly | Two marked attempts, two windows, a tick, a crash, a cancel and a stray void with the reconcile pass: a release goes to the ledger of the attempt's own window. (35006 states, 12 s) |
-| `deep-window-three` | nightly | Three drivers on two attempts, two windows, skewed clocks, one tick and one crash: the index, the intents and the ledgers of both windows. (706618 states, 2 min) |
+| `caps-clock-far` | ci | A driver whose clock is two windows ahead of the newest recorded one, with a bound of one, is refused at its first intent. (93 states, 3 s) |
+| `caps-clock-resume` | ci | A call that is re-run after another driver recorded a later window resumes with the window of its intent: the clock bound is not applied to a resume, so it is not refused and keeps its (earlier) window. (964 states, 5 s) |
+| `caps-clock` | ci | A driver whose clock is a window behind the newest recorded one is refused at its first intent (and the window it did not take is not in the index); the other is not. (129 states, 3 s) |
+| `caps-late-reserve` | ci | A handler still running reserves after the loop sealed and voided the attempt: the slot is a leak, refused its begin, and the reconcile pass releases it. (55 states, 3 s) |
+| `caps-limit` | ci | Two drivers, amounts of 2 against a limit of 3: the second is over the limit, takes no slot, and the action applies. (192 states, 5 s) |
+| `caps-marked-mixed` | ci | A marked attempt (released by its loop) beside a retry-safe one (never released), two drivers: the release of one attempt races the reserve of the other, and both keep the total within the limit. (2727 states, 9 s) |
+| `caps-marked` | ci | Marked attempts (an exclusive claim): the loop seals the call's began word, releases the slot of a call that did not begin and voids it; a call that began is never sealed, so never released; a crash leaves the slot counted, and a re-run halts on the marker. (15294 states, 23 s) |
+| `caps-race` | ci | Two drivers reserve different attempts against one window and race for the same slot name: one wins, the other reads again and takes the next; the total never exceeds the limit. (300 states, 5 s) |
+| `caps-reconcile` | ci | A void written without a release leaves the slot counted; two finished drivers run the reconcile pass over it at once: the slot is released once (the dedupe scan). (1091 states, 8 s) |
+| `caps-reinvoke` | ci | The claim winner's handler is invoked a second time (a middleware's second next): it finds the slot, and after the first invocation began it is refused (errReinvoked); the loop, finding the began word set, can seal nothing and releases nothing. (261 states, 4 s) |
+| `caps-release-retry` | ci | A retry-safe attempt is never released (a release after a cancel is the finding release-unmarked): two drivers and two crashes or re-runs, so the lookup finds the slot and every call that began stays counted. (4962 states, 11 s) |
+| `caps-resolve` | ci | ResolveHalt records a halted marked attempt as not happened (decision 10, as amended) at any point of the winner's run, even after a crash: it records a result and releases nothing, so the slot stays counted and no call that began is ever uncounted. (37 states, 7 s) |
+| `caps-same-attempt` | ci | Two drivers, one of them re-run once, work on one retry-safe attempt (an Idempotent tool: no claim): whichever slot wins, the other finds it by its lookup, so the attempt has one live slot. (2315 states, 8 s) |
+| `caps-stale-read` | ci | Two drivers whose reads may be any prefix of the ledger (A2 allows a stale read): a stale last slot only costs a lost insert and a re-read. (210 states, 6 s) |
+| `caps-stale-same` | ci | Two drivers of one retry-safe attempt, one re-run, stale reads: the lookup in a stale prefix misses the other's slot, and the insert at its length then loses, so the attempt keeps one live slot. (3190 states, 9 s) |
+| `caps-waiver` | ci | The second attempt carries a waiver: its slot is written over the limit (over), the total is above the limit only by that slot, and the first attempt's slot stays within it. (246 states, 8 s) |
+| `caps-window-two` | ci | Two windows, two drivers of one retry-safe attempt, one tick and one re-run: both read the window from the one intent, so the attempt has one live slot in one ledger. (11855 states, 19 s) |
+| `caps-window` | ci | Two windows and a clock that ticks: a crash after the intent and a resume after the tick read the window from the intent, so the slot is in the intent's window and the attempt is counted once. (129 states, 6 s) |
+| `deep-limit-three` | nightly | Three drivers and amounts of 1, 2 and 2 against a limit of 3: the order of the slots decides which two fit, and a waiver on the third lets it over. (14292 states, 3 s) |
+| `deep-marked-cancel-three` | nightly | Three marked attempts, up to two of them cancelled before they begin (release, then void), no crash. (4770009 states, 24 min) |
+| `deep-marked-crash-three` | nightly | Two marked attempts with their loops, three drivers, one crash, one cancel, one stray void and one reconcile pass. (7760111 states, 22 min) |
+| `deep-marked-reconcile-three` | nightly | Three marked attempts, one voided without a release and reconciled by up to two passes while the others reserve, begin and cancel. (2548771 states, 12 min) |
+| `deep-marked-reinvoke-three` | nightly | Three drivers, two marked attempts with their loops: second invocations of the claim winner's handler (a middleware's second next), seals and releases, with no crash: a release is written only by the loop, and never for a call that began. (2720022 states, 8 min) |
+| `deep-mixed-three` | nightly | Three drivers: a marked attempt (with its loop, a second invocation, a crash and a release) beside a retry-safe attempt shared by two drivers, stale reads allowed: the release of one attempt races the reserves of the other. (17983292 states, 56 min) |
+| `deep-race-stale-three` | nightly | Three drivers, no faults, stale reads: every interleaving of the race for the next slot name with reads of any prefix. (18441 states, 2 s) |
+| `deep-race-three` | nightly | Three drivers, three attempts, no faults: every interleaving of the race for the next slot name, with the limit allowing two of three. (14760 states, 2 s) |
+| `deep-same-crash1-three` | nightly | Three drivers, two of them on one retry-safe attempt, and one crash or re-run anywhere. (187719 states, 28 s) |
+| `deep-same-crash2-three` | nightly | Three drivers on one retry-safe attempt and two crashes or re-runs. (203108 states, 27 s) |
+| `deep-window-crash2` | nightly | Two drivers of one retry-safe attempt, two windows, two ticks and two crashes or re-runs: the window is the intent's in every step. (55297 states, 5 s) |
+| `deep-window-marked` | nightly | Two marked attempts, two windows, a tick, a crash, a cancel and a stray void with the reconcile pass: a release goes to the ledger of the attempt's own window. (210053 states, 44 s) |
+| `deep-window-three` | nightly | Three drivers on two attempts, two windows, skewed clocks, one tick and one crash: the index, the intents and the ledgers of both windows. (706618 states, 1 min) |
 
-Shards and bounds. The `ci` configurations are one shard of the Models workflow (`caps`): the 12
-`ci` configurations with their vacuity runs, 12 regressions and the finding took 45 s in one
-`check.sh` run at `TLC_JOBS=4`. The nightly configurations are split by driver count and by where
-the faults are placed (no fault, crashes or re-runs, release and reconcile, windows and clocks), one
-file each, so no run is long and any can run in its own process: all ten took 8 min 8 s of wall
-time at `TLC_JOBS=5` (one worker each, the machine shared with other jobs), the longest being
-`deep-marked-crash-three` (1,471,791 states, 8 min). Every configuration also checks
-`SlotBoundNotHit`, so `MaxSlots` is never the reason a run ends.
+Shards and bounds. The `ci` configurations are one shard of the Models workflow (`caps`): the 18 `ci`
+configurations with their vacuity runs, the 13 regressions and the 2 findings took under 2 minutes
+in one `check.sh` run at `TLC_JOBS=4`. The nightly configurations are split by driver count and by
+where the faults are placed (no fault, crashes or re-runs, second invocations, release and
+reconcile, windows and clocks, stale reads), one file each, so any can run in its own process. Times
+below are TLC's own at one worker on a shared machine: the largest are `deep-mixed-three`
+(17,983,292 states, 56 min), `deep-marked-crash-three` (7,760,111 states, 22 min),
+`deep-marked-cancel-three` (4,770,009 states, 24 min) and `deep-marked-reconcile-three` (2,548,771
+states, 12 min); the others take under 10 minutes. The nightly job runs them one after another with
+TLC's own workers (within its 240-minute cap). Every configuration also checks `SlotBoundNotHit`, so
+`MaxSlots` is never the reason a run ends.
 
 ### Counterexample configurations
 
@@ -3375,6 +3408,7 @@ Each is in `caps/regress/` and must fail with its named property:
 - `index-after-intent` (`IndexCoversIntents`): The window is inserted into the index after the intent is written: a crash between the two leaves an intent whose window the index does not hold, so the clock check does not see it.
 - `insert-at-n2` (`Dense`): A driver inserts at n+2 instead of n+1: the ledger has a gap (a slot at n+2 before n+1), so the single-winner insert no longer orders the slots.
 - `no-clock-check` (`IntentChecked`): The clock bound is not checked at the first intent: a driver a window behind the newest recorded one writes its intent, and its window can reset the cap.
+- `release-by-invocation` (`NeverUndercount`): A second invocation of a marked call (a middleware's second next) releases the slot on its own proof that it did not begin, after the first invocation began (the tla-reviewer's trace): the release must come from the loop, after it sealed the began word.
 - `release-no-dedupe` (`ReleaseOnce`): A release without the scan for an existing release of the slot: two reconcile passes (or a reconcile and a driver) release one slot twice, and the window under-counts.
 - `reserve-no-lookup` (`ExactlyOnce`): A reserve without the lookup for a live slot of the attempt: a second driver, a retry or a middleware's second next reserves it again and the attempt is counted twice.
 - `rollback-credit` (`NeverUndercount`): A saga's rollback releases the slot of a call that began: the window no longer counts a call that ran.
@@ -3390,3 +3424,5 @@ Each is in `caps/findings/` and fails with its named property until the design o
 fixed:
 
 - `release-unmarked` (`NeverUndercount`): F1, open: a driver that cancels a retry-safe (Idempotent, no claim) attempt before its own begin releases the slot, though a second driver of the same tool-use ID has begun, or is about to begin, on that slot: its proof that it did not begin says nothing about the attempt, and the call ran with the window not counting it. PR4 must not release an unmarked attempt, or must fence the release.
+- `resolve-live-winner` (`NeverUndercount`): F2, closed by decision 10 as amended: a ResolveHalt that releases the slot (the first draft of decision 10) while the claim winner is stalled, not crashed, and then begins: the call ran and the window does not count it. It rests on the premise of every halt resolution (no live driver), which is false for a stalled winner. ResolveHalt therefore releases nothing; this configuration shows why.
+

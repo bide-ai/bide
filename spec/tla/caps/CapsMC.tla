@@ -5,11 +5,17 @@
    minor units; the limit of a configuration is chosen against them. *)
 EXTENDS Caps, TLC
 
-CONSTANTS d1, d2, d3, a1, a2, a3
+CONSTANTS d1, d2, d3, a1, a2, a3, l1, l2, l3
+
+NoLoop == [x \in {} |-> a1]
+LoopA1 == (l1 :> a1)
+LoopA1A2 == (l1 :> a1) @@ (l2 :> a2)
+LoopA1A2A3 == (l1 :> a1) @@ (l2 :> a2) @@ (l3 :> a3)
 
 DiffAtt == (d1 :> a1) @@ (d2 :> a2) @@ (d3 :> a3)
 SameAtt == (d1 :> a1) @@ (d2 :> a1) @@ (d3 :> a1)
 MixedAtt == (d1 :> a1) @@ (d2 :> a1) @@ (d3 :> a2)
+MixedAtt2 == (d1 :> a1) @@ (d2 :> a2) @@ (d3 :> a2)
 
 AmtOne == (a1 :> 1) @@ (a2 :> 1) @@ (a3 :> 1)
 AmtTwo == (a1 :> 2) @@ (a2 :> 2) @@ (a3 :> 2)
