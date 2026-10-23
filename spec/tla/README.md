@@ -3331,20 +3331,19 @@ report violated.
 
 ### Model-code map
 
-The ledger code (`agent/capledger.go`) is PR4 of the build plan and has not landed, so every action
-is in the no-code list below. PR4 adds a `protocol:caps` region around each Go region a row names
-and removes the row from the list.
+The ledger is `internal/capledger` (PR4 of the build plan); the call-site actions (the began word, the void, a second invocation) land with the wiring of PR6 and PR7 and stay in the no-code list until then, when each gets a `protocol:caps` region.
 
-<!-- modelsync: no-code caps Start Check IdxInsert Intent Read Insert Begin Cancel LoopSeal LoopStray LoopResolve Void Finish RollbackCredit Reconcile Crash Reinvoke Tick -->
+<!-- modelsync: no-code caps Begin Cancel LoopStray LoopResolve Void Finish RollbackCredit Crash Reinvoke Tick -->
 <!-- modelsync: map caps -->
-| Model action | Go code (planned, `agent/capledger.go` and `agent/toolexec.go`) |
+| Model action | Go code |
 |---|---|
-| `Start`, `Check`, `IdxInsert`, `Intent` | the window derivation: read the `cap-intent`, else check the clock bound against the index run, insert `win:<id>`, then write the intent |
-| `Read`, `Insert` | `reserve` and `release`: the ledger read, the lookup, the `cum_after` check and the insert at `n+1` |
+| `Start`, `Check`, `IdxInsert`, `Intent` | `Ledger.window` (`internal/capledger/reserve.go`): read the `cap-intent`, else check the clock bound against the index run, insert `win:<id>`, then write the intent |
+| `Read`, `Insert` | `Ledger.insertSlot` (`reserve.go`) and `Ledger.release` (`release.go`): the ledger read, the lookup, the `cum_after` check and the insert at `n+1` |
 | `Begin` | `beginCall` (`agent/toolexec.go`): the reserve is before it, after the attempt claim |
-| `LoopSeal`, `LoopStray`, `Void`, `Cancel` | the loop after the chain returned (`closeCall`, the began word `beganSealed`, `agent/toolexec.go`) and the not-started paths (`recordNotStarted`, `callRefusedClosed`): seal, release, then void; `Cancel` is the unsafe driver-side release (no Go region) |
+| `LoopSeal` | `NewSeal` and `Ledger.Release` (`internal/capledger/release.go`): a release takes a `Seal`, made only by a successful compare and swap of the began word |
+| `LoopStray`, `Void`, `Cancel` | the loop after the chain returned (`closeCall`, the began word `beganSealed`, `agent/toolexec.go`) and the not-started paths (`recordNotStarted`, `callRefusedClosed`): seal, release, then void; `Cancel` is the unsafe driver-side release (no Go region) |
 | `LoopResolve` | `ResolveHalt` (`agent/halt.go`): a halted attempt recorded as not happened; no release |
-| `Reconcile` | the reconcile pass in `Recover` and `bide audit caps` |
+| `Reconcile` | `Ledger.Reconcile` (`internal/capledger/release.go`), run by `Recover` and `bide audit caps` once they are wired |
 | `Reinvoke` | a second invocation of the handler (`errReinvoked`, `agent/toolexec.go`) |
 | `Finish`, `RollbackCredit`, `Crash`, `Tick` | no Go region (a call's end, a counterexample rule, a crash or re-run, the clock) |
 
