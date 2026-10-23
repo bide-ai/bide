@@ -333,3 +333,26 @@ func TestRelease_LostInsertReadsAgainAndRetries(t *testing.T) {
 		t.Fatalf("live = %+v, want only a2", live)
 	}
 }
+
+// WindowOf reads the window from the structured cap-intent of the slot's attempt, not from any name.
+func TestWindowOf_ReadsTheIntent(t *testing.T) {
+	ctx := context.Background()
+	st, clk := newMemStore(), &testClock{t: day1}
+	l := newTestLedger(st, clk)
+	o := mustReserve(t, l, req("a1", 10, 100))
+	kind, window, ok, err := l.WindowOf(ctx, o.Slot)
+	if err != nil || !ok || kind != Day || window != "2026-10-22" {
+		t.Fatalf("WindowOf = %v %q %v %v, want day 2026-10-22", kind, window, ok, err)
+	}
+	r := req("a2", 10, 100)
+	r.Rule.Kind, r.RootRunID = Run, "2026-07-15" // a root run named like a date
+	o2 := mustReserve(t, l, r)
+	if kind, window, ok, err = l.WindowOf(ctx, o2.Slot); err != nil || !ok || kind != Run || window != "2026-07-15" {
+		t.Fatalf("WindowOf = %v %q %v %v, want run 2026-07-15", kind, window, ok, err)
+	}
+	other := o.Slot
+	other.Run = "nowhere"
+	if _, _, ok, err := l.WindowOf(ctx, other); ok || err != nil {
+		t.Fatalf("WindowOf of a slot whose run holds no intent = %v, %v, want not found", ok, err)
+	}
+}

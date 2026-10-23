@@ -100,7 +100,8 @@ the window's total.
   assessable and is refused. `by customer_id` reads the key from the arguments (strictly: a repeated or
   case-variant member is not assessable), `lower` and `trim` normalise it, and `by principal` uses the run's
   bound principal (`OnBehalfOf`); a missing or empty key, or one with a byte outside ASCII or a control byte,
-  is refused (without Unicode normalisation two spellings of one customer would be two windows). A key the model
+  is refused (without Unicode normalisation two spellings of one customer would be two windows; normalise the key
+  in your tool, or make it ASCII, before it reaches the rule). A key the model
   chooses is only as strong as its canonical form: pair every per-key rule with an unkeyed total.
 - **Windows.** A tumbling window allows up to twice the limit across a boundary (spend the limit at 23:59 and
   again at 00:00); processes with skewed clocks put a reservation in either window. A call that crashed and
@@ -111,9 +112,22 @@ the window's total.
   costs more as the ledger grows (the store anchors the run's head on growth): set `WithMinInterval` on a store
   that holds ledgers, prefer per-key rules (many small ledgers) to one global total with thousands of
   reservations a window, and see [KNOWN-LIMITATIONS](../KNOWN-LIMITATIONS.md).
-- **Not yet.** Nothing releases a reservation in this version: a call that is refused or cancelled after it
-  reserved keeps its amount counted until the window ends (the release for a call proven not to have begun is the
-  next change), and compensation, `ResolveHalt` and a saga's rollback give no credit.
+- **Release.** Only the loop releases, and only a *marked* (not retry-safe) attempt, and only once it has proved
+  the tool never began: after the tool chain returned, it seals the call's began word (a tool that began cannot be
+  sealed), releases each of the call's reservations, and only then records the attempt as not started. A call
+  refused by a second rule after the first reserved, or failed by the store before the tool began, therefore
+  gives its room back. `Recover` and every pass of `RecoverLoop` also run a reconcile pass over the ledgers of open
+  windows (a day or hour window until a window length after it ended, a run window until its root run ends),
+  releasing the slot of an attempt whose marker the journal records as not started (a release that failed, a
+  handler that reserved after the chain returned). A deployment that never calls either keeps those slots
+  counted until the window ends. **Never released:** a call that began or may have (a crash after the claim leaves the marker
+  standing and the slot counted), an `Idempotent` call (any number of drivers share its tool-use ID, so one
+  driver's proof says nothing about the others: its slot stays counted until the window ends, **even when a
+  later rule of the same call refuses it, so an Idempotent tool under two rules can lose room in the first
+  window to calls that never ran**; give a money-moving tool that is Idempotent one rule, or the rules it needs
+  and no more), a call
+  `ResolveHalt` resolved, and a saga's rollback (a compensation reserves nothing and credits nothing). A window
+  only over-counts.
 
 ## What a cap does not do
 

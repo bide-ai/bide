@@ -29,6 +29,27 @@ func NewSeal(attempt string, word *atomic.Int32, none, sealed int32) (Seal, bool
 	return Seal{attempt: attempt, sealed: true}, true
 }
 
+// NewSeals is NewSeal for a call that holds several attempts on one began word (one per cumulative rule
+// it reserved under): one compare and swap of the word, and a Seal bound to each attempt if it won.
+func NewSeals(attempts []string, word *atomic.Int32, none, sealed int32) ([]Seal, bool) {
+	if len(attempts) == 0 || word == nil || none == sealed {
+		return nil, false
+	}
+	for _, a := range attempts {
+		if a == "" {
+			return nil, false
+		}
+	}
+	if !word.CompareAndSwap(none, sealed) {
+		return nil, false
+	}
+	out := make([]Seal, len(attempts))
+	for i, a := range attempts {
+		out[i] = Seal{attempt: a, sealed: true}
+	}
+	return out, true
+}
+
 // Target names an attempt whose slot is released: the rule, the key, the run that made the call and the
 // attempt's three parts, as in the Request that reserved it. The ledger is not named: the window is read
 // from the attempt's cap-intent, as Reserve reads it, so a release cannot land in another ledger.
@@ -61,6 +82,24 @@ func (l *Ledger) Release(ctx context.Context, t Target, s Seal) (bool, error) {
 		return false, fmt.Errorf("%w: %s", ErrUnmarked, attempt)
 	}
 	return l.release(ctx, l.LedgerRun(t.Rule, in.Window, t.KeyDigest), attempt)
+}
+
+// WindowOf is the kind and id of the window a live slot's attempt reserved in, as its cap-intent (in the run
+// the slot names) fixed it: the structured record, not anything parsed out of the ledger run's name. ok is
+// false when the run holds no such intent.
+func (l *Ledger) WindowOf(ctx context.Context, s Slot) (kind Kind, window string, ok bool, err error) {
+	data, found, err := l.cfg.Store.Get(ctx, s.Run, intentPrefix+l.cfg.Encode(s.Attempt))
+	if err != nil {
+		return "", "", false, fmt.Errorf("capledger: read the cap-intent of %s: %w", s.Attempt, err)
+	}
+	if !found {
+		return "", "", false, nil
+	}
+	in, err := decodeIntent(data)
+	if err != nil {
+		return "", "", false, fmt.Errorf("%w: the cap-intent of %s does not decode: %v", ErrCorrupt, s.Attempt, err)
+	}
+	return in.Kind, in.Window, true, nil
 }
 
 // intentOf reads the cap-intent of an attempt in the run that made the call, and checks it names the

@@ -786,7 +786,7 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 			// The cumulative rules reserve here, after the attempt claim and before the call begins
 			// a call that may have run stays counted, and one this refuses was not begun.
 			// protocol:caps begin Begin
-			if err := a.reserveCaps(ctx, runID, tu, spec); err != nil {
+			if err := a.reserveCaps(ctx, runID, call, spec); err != nil {
 				return nil, err
 			}
 			// protocol:caps end
@@ -863,9 +863,15 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 		var st, began, out atomic.Int32 // callOpen, beganNone, toolNotRun
 		var earlier atomic.Bool
 		call.state, call.began, call.out, call.earlier = &st, &began, &out, &earlier
+		call.capHeld = &capHeld{}
 		res, err := h(ctx, call)
 		state := closeCall(&st)
-		if state == callReached && began.CompareAndSwap(beganNone, beganSealed) {
+		// The chain returned and the tool's handler was reached: if the tool has not begun, the loop seals the
+		// began word, and a cumulative cap's reservation of a call proven not to have begun is released at
+		// the seal, before any void (the loop is the only releaser). releaseCaps seals the word itself when
+		// the call holds reservations.
+		sealedByCaps := state == callReached && a.releaseCaps(ctx, call.capHeld, &began)
+		if state == callReached && (sealedByCaps || began.CompareAndSwap(beganNone, beganSealed)) {
 			// Reached, but no invocation began the tool's Call, and now none can: not called.
 			state = callRefusedClosed
 		}
