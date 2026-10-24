@@ -178,13 +178,64 @@ func checkStepName(op, name string) error {
 	if name == "" {
 		return fmt.Errorf("%s: empty step name: %w", op, ErrConfig)
 	}
+	if p, ok := reservedPrefixOf(name); ok {
+		return fmt.Errorf("%s: step name %q starts with %q, which the engine reserves for its own journal keys: %w", op, name, p, ErrConfig)
+	}
+	return nil
+}
+
+// reservedPrefixOf returns the reserved prefix name starts with, if it starts with one.
+func reservedPrefixOf(name string) (string, bool) {
 	for _, p := range reservedPrefixes {
 		if strings.HasPrefix(name, p) {
-			return fmt.Errorf("%s: step name %q starts with %q, which the engine reserves for its own journal keys: %w", op, name, p, ErrConfig)
+			return p, true
+		}
+	}
+	return "", false
+}
+
+// checkClaimName refuses, in the exported ClaimAttempt, an empty name and a name under a reserved prefix
+// (the check Step makes) except the attempt marker family "attempt:", which is what ClaimAttempt exists to
+// write. Every other key the engine writes (cap-intent:, cap-reserve:, gate-reason:, approval-pending: and
+// the rest) comes only from the engine's own paths, which claim through Journal.claim and never meet this
+// check: a caller with journal access could otherwise plant such a record before the engine writes it.
+func checkClaimName(op, name string) error {
+	if name == "" {
+		return fmt.Errorf("%s: empty name: %w", op, ErrConfig)
+	}
+	if p, ok := reservedPrefixOf(name); ok && !strings.HasPrefix(name, attemptPrefix) {
+		return fmt.Errorf("%s: name %q starts with %q, which the engine reserves for its own journal keys (only attempt markers, under %q, may be claimed): %w", op, name, p, attemptPrefix, ErrConfig)
+	}
+	// Within attempt:, the records only the engine derives from a marker: the not-started record that
+	// voids an attempt, and a numbered re-attempt.
+	for _, p := range []string{notStartedPrefix, retryAttemptPrefix} {
+		if strings.HasPrefix(name, p) {
+			return fmt.Errorf("%s: name %q starts with %q, which the engine writes itself: %w", op, name, p, ErrConfig)
 		}
 	}
 	return nil
 }
+
+// checkClaimRecord refuses, in the exported ClaimAttempt, a record that is not a bare attempt marker: a
+// Kind other than StepAttempt, or a field only another kind of record carries (a result, an approval, a
+// model turn, a reconciliation). The journal stores whatever record it is given, so without this a caller
+// could plant a tool result or a single-approver approval under a name of its own that the engine reads.
+func checkClaimRecord(op string, rec Record) error {
+	if rec.Kind != StepAttempt {
+		return fmt.Errorf("%s: record kind %q is not %q; only attempt markers may be claimed: %w", op, rec.Kind, StepAttempt, ErrConfig)
+	}
+	if rec.Message != nil || rec.Usage != nil || rec.DiscardedUsage != nil || rec.ModelTurn != nil || rec.Result != nil ||
+		rec.IsError || rec.Approved || rec.ApproverSignature != nil || rec.Reconciled || rec.OutcomeUnknown || rec.Evidence != nil {
+		return fmt.Errorf("%s: an attempt marker carries no result, approval, model turn or reconciliation: %w", op, ErrConfig)
+	}
+	if rec.AttemptedAt != 0 {
+		return fmt.Errorf("%s: AttemptedAt is set by the claim, from the context's clock, not by the caller: %w", op, ErrConfig)
+	}
+	return nil
+}
+
+// attemptPrefix starts the key of every attempt marker.
+const attemptPrefix = "attempt:"
 
 // subRunSep separates a derived run ID from the root it hangs off. A sub-agent's run is
 // "<parent run>><encoded call>" (SubRunID), and a session's journal and turn runs are

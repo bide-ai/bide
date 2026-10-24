@@ -10,9 +10,9 @@ name: Models
 # inductive, spec/tla/README.md "Apalache"), which no pull request runs.
 on:
   push:
-    branches: [ main ]
+    branches: [ main, 'release/**' ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, 'release/**' ]
   merge_group:
   schedule:
     - cron: '17 3 * * *'

@@ -70,7 +70,7 @@ func TestStepPauseGuard_JoinedWithAHaltPropagatesTheHalt(t *testing.T) {
 		_, guard := d.Step(ctx, runID, "confirm", func(ctx context.Context) (int, error) {
 			return Interrupt[int](ctx, "q", nil)
 		})
-		_, _, _ = ClaimAttempt(ctx, d, runID, stepAttemptStep("inner"), Record{Kind: StepAttempt, ToolUseID: "inner", AttemptedAt: 1})
+		_, _, _ = d.claim(ctx, runID, stepAttemptStep("inner"), Record{Kind: StepAttempt, ToolUseID: "inner", AttemptedAt: 1})
 		_, halt := d.Step(ctx, runID, "inner", func(context.Context) (int, error) { return 1, nil })
 		return "", errors.Join(guard, halt)
 	}, WithSafety(Safety{Idempotent: true}))

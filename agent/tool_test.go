@@ -1071,7 +1071,7 @@ func (c *crashOnKind) Insert(ctx context.Context, runID, name string, data []byt
 func seedStepAttempt(t *testing.T, d *Journal, runID, name string, at time.Time) {
 	t.Helper()
 	rec := Record{Kind: StepAttempt, ToolUseID: name, AttemptedAt: at.UnixMilli()}
-	if _, _, err := ClaimAttempt(context.Background(), d, runID, "attempt:step:"+name, rec); err != nil {
+	if _, _, err := d.claim(context.Background(), runID, "attempt:step:"+name, rec); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1302,7 +1302,7 @@ func TestResolveHalt_FindsTheLeaserThroughAJournal(t *testing.T) {
 	ctx := context.Background()
 	mem := NewMemStore()
 	j := newJournal(unwrapStore{unwrapStore{mem}})
-	if won, _, err := ClaimAttempt(ctx, j, "r1", toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: 1}); err != nil || !won {
+	if won, _, err := j.claim(ctx, "r1", toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: 1}); err != nil || !won {
 		t.Fatal(won, err)
 	}
 	if ok, err := mem.AcquireLease(ctx, "r1", "worker-1", time.Minute); err != nil || !ok {
@@ -1321,7 +1321,7 @@ func TestResolveHalt_FindsTheLeaserThroughAJournal(t *testing.T) {
 	}
 
 	hidden := newJournal(plainStore{NewMemStore()}) // no Unwrap: its Leaser is not exposed
-	if won, _, err := ClaimAttempt(ctx, hidden, "r1", toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: 1}); err != nil || !won {
+	if won, _, err := hidden.claim(ctx, "r1", toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: 1}); err != nil || !won {
 		t.Fatal(won, err)
 	}
 	if err := ResolveHalt(ctx, hidden, ref, Outcome{Result: "x"}); !errors.Is(err, ErrConfig) {
@@ -1348,7 +1348,7 @@ func TestResolveHalt_ClaimsTheNextAttemptUnlessOptedOut(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			d := tc.store()
-			if won, _, err := ClaimAttempt(ctx, d, "r1", toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: 1}); err != nil || !won {
+			if won, _, err := d.claim(ctx, "r1", toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: 1}); err != nil || !won {
 				t.Fatal(won, err)
 			}
 			ref := HaltRef{RunID: "r1", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}

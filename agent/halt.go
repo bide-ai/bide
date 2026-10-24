@@ -315,7 +315,7 @@ func resolveHalt(ctx context.Context, store *Journal, op string, ref HaltRef, ou
 	var heldKey string
 	if !cfg.noLiveCheck && attempt != nil {
 		heldKey = nextAttemptStep(attempt.Name)
-		won, _, err := ClaimAttempt(ctx, store, ref.RunID, heldKey, Record{Kind: StepAttempt, ToolUseID: id, AttemptedAt: cfg.now().UnixMilli()})
+		won, _, err := store.claim(ctx, ref.RunID, heldKey, Record{Kind: StepAttempt, ToolUseID: id, AttemptedAt: cfg.now().UnixMilli()})
 		if err != nil {
 			return fmt.Errorf("%s: claim %s: %w", op, heldKey, err)
 		}
