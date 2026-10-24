@@ -71,16 +71,27 @@ func Diff(old, new Document) ([]Change, error) {
 	for _, n := range names {
 		out = append(out, diffTool(n, oldTools[n], newTools[n])...)
 	}
-	if old.Digest != "" || new.Digest != "" {
-		covered := slices.ContainsFunc(out, func(c Change) bool { return c.Covered })
-		switch differ := old.Digest != new.Digest; {
-		case differ && !covered:
-			return nil, fmt.Errorf("the digests differ (%.12s, %.12s) and the declarations show no difference: the digest covers something the declarations do not carry", old.Digest, new.Digest)
-		case !differ && covered:
-			return nil, fmt.Errorf("the digests are equal (%.12s) and the declarations differ in what the digest covers: the declarations carry something the digest does not cover", old.Digest)
-		}
+	if err := checkDigests(old.Digest, new.Digest, out); err != nil {
+		return nil, err
 	}
 	return out, nil
+}
+
+// checkDigests holds the digests and the covered changes to each other: a difference in one and not the
+// other means the digest and the declarations do not describe the same thing.
+func checkDigests(oldDigest, newDigest string, changes []Change) error {
+	if oldDigest == "" && newDigest == "" {
+		return nil // no policy on either side: nothing is digested
+	}
+	covered := slices.ContainsFunc(changes, func(c Change) bool { return c.Covered })
+	differ := oldDigest != newDigest
+	switch {
+	case differ && !covered:
+		return fmt.Errorf("the digests differ (%.12s, %.12s) and the declarations show no difference: the digest covers something the declarations do not carry", oldDigest, newDigest)
+	case !differ && covered:
+		return fmt.Errorf("the digests are equal (%.12s) and the declarations differ in what the digest covers: the declarations carry something the digest does not cover", oldDigest)
+	}
+	return nil
 }
 
 func toolsByName(d Document) map[string]*Tool {

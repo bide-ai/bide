@@ -122,7 +122,7 @@ func TestDiff_Classifies(t *testing.T) {
 		{"Untrusted removed", doc(pol(twoOfTwo), Tool{Name: "r", Untrusted: "crm"}), doc(pol(twoOfTwo), Tool{Name: "r"}), []want{{Weakened, "tool r", "Untrusted"}}},
 		{"Untrusted added", doc(pol(twoOfTwo), Tool{Name: "r"}), doc(pol(twoOfTwo), Tool{Name: "r", Untrusted: "crm"}), []want{{Strengthened, "tool r", "Untrusted"}}},
 		{"another untrusted source", doc(pol(twoOfTwo), Tool{Name: "r", Untrusted: "crm"}), doc(pol(twoOfTwo), Tool{Name: "r", Untrusted: "email"}), []want{{Changed, "tool r", "untrusted source"}}},
-		{"TaintExempt added", doc(pol(twoOfTwo), Tool{Name: "w"}), doc(pol(twoOfTwo), Tool{Name: "w", Exempt: "reviewed"}), []want{{Weakened, "tool w", "TaintExempt"}}},
+		{"TaintExempt added", doc(pol(twoOfTwo), Tool{Name: "w"}), doc(pol(twoOfTwo), Tool{Name: "w", Exempt: "reviewed"}), []want{{Weakened, "tool w", "TaintExempt(\"reviewed\") added"}}},
 		{"TaintExempt removed", doc(pol(twoOfTwo), Tool{Name: "w", Exempt: "reviewed"}), doc(pol(twoOfTwo), Tool{Name: "w"}), []want{{Strengthened, "tool w", "TaintExempt removed"}}},
 		{"TaintExempt reworded", doc(pol(twoOfTwo), Tool{Name: "w", Exempt: "reviewed"}), doc(pol(twoOfTwo), Tool{Name: "w", Exempt: "approved by risk"}), []want{{Weakened, "tool w", "reason changed"}}},
 		{"a new exempt tool", doc(pol(twoOfTwo)), doc(pol(twoOfTwo), Tool{Name: "w", Exempt: "x"}), []want{{Weakened, "tool w", "added with TaintExempt"}}},
@@ -254,5 +254,33 @@ func TestFindings(t *testing.T) {
 	}
 	if fs := doc(&Policy{Refuse: true}, Tool{Name: "pay", Effect: true}).Findings(); len(fs) != 0 {
 		t.Errorf("a refusing policy has findings: %+v", fs)
+	}
+}
+
+// The two checks that hold the digests to the covered changes, each way (Diff's own output cannot reach
+// them while the diff and the digest agree, so they are tested on their own).
+func TestCheckDigests(t *testing.T) {
+	covered := []Change{{Class: Weakened, Covered: true}}
+	uncovered := []Change{{Class: Changed}}
+	for _, tc := range []struct {
+		name         string
+		a, b         string
+		changes      []Change
+		wantErr      bool
+		wantContains string
+	}{
+		{"different digests, nothing covered differs", "aaa", "bbb", nil, true, "covers something the declarations do not carry"},
+		{"different digests, only uncovered differences", "aaa", "bbb", uncovered, true, "covers something the declarations do not carry"},
+		{"equal digests, a covered difference", "aaa", "aaa", covered, true, "does not cover"},
+		{"different digests, a covered difference", "aaa", "bbb", covered, false, ""},
+		{"equal digests, only an uncovered difference", "aaa", "aaa", uncovered, false, ""},
+		{"equal digests, no difference", "aaa", "aaa", nil, false, ""},
+		{"no policy on either side", "", "", covered, false, ""},
+		{"a policy on one side", "", "bbb", covered, false, ""},
+	} {
+		err := checkDigests(tc.a, tc.b, tc.changes)
+		if (err != nil) != tc.wantErr || err != nil && !strings.Contains(err.Error(), tc.wantContains) {
+			t.Errorf("%s: err = %v, want error %v containing %q", tc.name, err, tc.wantErr, tc.wantContains)
+		}
 	}
 }
