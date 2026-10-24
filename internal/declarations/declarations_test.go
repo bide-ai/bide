@@ -3,6 +3,7 @@ package declarations
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 )
@@ -282,5 +283,41 @@ func TestCheckDigests(t *testing.T) {
 		if (err != nil) != tc.wantErr || err != nil && !strings.Contains(err.Error(), tc.wantContains) {
 			t.Errorf("%s: err = %v, want error %v containing %q", tc.name, err, tc.wantErr, tc.wantContains)
 		}
+	}
+}
+
+// Encode and Decode are inverse, and the encoding keeps a cap line readable.
+func TestEncode_RoundTripsAndKeepsCapLinesReadable(t *testing.T) {
+	d := doc(&Policy{Gate: twoOfTwo}, Tool{Name: "w", Effect: true, Caps: []string{perCall}})
+	var buf bytes.Buffer
+	if err := Encode(&buf, d); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "> 500 USD -> refuse") || strings.Contains(buf.String(), `\u003e`) {
+		t.Fatalf("the cap line is escaped: %s", buf.String())
+	}
+	back, err := Decode(&buf)
+	if err != nil || back.Digest != d.Digest || len(back.Tools) != 1 {
+		t.Fatalf("round trip: %v %+v", err, back)
+	}
+	var empty bytes.Buffer
+	if err := Encode(&empty, doc(nil)); err != nil || !strings.Contains(empty.String(), `"tools": []`) {
+		t.Fatalf("a document with no tool encodes %q (%v), want an empty list", empty.String(), err)
+	}
+}
+
+// The document the agent dumps (the golden is written by the agent's test) reads back strictly.
+func TestDecode_ReadsTheAgentsGolden(t *testing.T) {
+	f, err := os.Open("testdata/agent.golden.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	d, err := Decode(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Policy == nil || len(d.Tools) != 2 || d.Digest == "" {
+		t.Fatalf("golden = %+v", d)
 	}
 }

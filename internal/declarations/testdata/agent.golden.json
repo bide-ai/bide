@@ -1,0 +1,27 @@
+{
+  "format": "bide.declarations.v1",
+  "digest": "58a05719d2f8f0ae2b641aac295e3220920fd97b7877a6b3cebe096bbd0f2c1d",
+  "policy": {
+    "gate": {
+      "need": 2,
+      "approvers": [
+        "ops",
+        "risk"
+      ],
+      "exclude_principal": true
+    }
+  },
+  "tools": [
+    {
+      "name": "read_email",
+      "untrusted": "inbound-email"
+    },
+    {
+      "name": "refund",
+      "effect": true,
+      "caps": [
+        "refund_one: refund.amount[minor, currency=currency] > 500 USD -> refuse"
+      ]
+    }
+  ]
+}

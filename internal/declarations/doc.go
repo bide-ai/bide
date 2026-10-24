@@ -161,3 +161,15 @@ func (d Document) Recompute() string {
 	sum := sha256.Sum256(mustJSON(covered))
 	return hex.EncodeToString(sum[:])
 }
+
+// Encode writes d as indented JSON with the characters of a cap line (">", "->") as written, and a final
+// newline: the form a host commits and a reviewer reads.
+func Encode(w io.Writer, d Document) error {
+	if d.Tools == nil {
+		d.Tools = []Tool{}
+	}
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	return enc.Encode(d)
+}
