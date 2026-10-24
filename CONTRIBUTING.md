@@ -308,10 +308,13 @@ patch (v0.23.1) is released from the branch `release/v0.23`, not from main. The 
 release-branch mode for it; everything else (the root tag, the nested modules in stages, the
 checks, the Release workflow) is the same as above.
 
-The branch is `release/vX.Y`, one per line, created from the line's `vX.Y.0` tag and protected like
-main (pull requests only, the CI checks, `Models`, `dco` and `Changelog fragment` required, no force pushes, no deletion; a ruleset
-or classic protection with required pull request reviews: the script reads GitHub and refuses a
-branch that has neither). `ci.yml` and `models.yml` run on pushes to and pull requests against `release/**`
+The branch is `release/vX.Y`, one per line, created from the line's `vX.Y.0` tag and closed to direct
+pushes from the start (a ruleset on `release/**`: pull requests and the CI checks, `Models`, `dco` and
+`Changelog fragment` required, no force pushes, no deletion, no bypass actor; or classic protection that
+also binds administrators). The script reads GitHub and refuses a branch that is not closed that way.
+It checks "changes arrive by pull request with the required checks", not a count of approvals, and
+it also requires every commit from the tag to the tip to be the merge of a pull request into the
+branch, so a commit pushed directly before the rule existed blocks the release. `ci.yml` and `models.yml` run on pushes to and pull requests against `release/**`
 (`gsm-gate.yml` is for main only and not required there); a branch made from a tag older than those
 triggers needs them backported in its first pull request, or its pushes and pull requests run no CI.
 A pull request into a release branch runs the fast subset of CI; add the
@@ -338,8 +341,9 @@ A pull request into a release branch runs the fast subset of CI; add the
    The mode applies only when REF is not main. It refuses unless all of these hold: VERSION is a plain
    patch (`Z` above 0, no pre-release) and the next one after the newest `vX.Y.Z` tag on the remote;
    REF is the tip of `origin/release/vX.Y` as the remote reports it now (not a tracking ref, an
-   ancestor of the tip, or another branch); REF descends from that newest tag; the branch requires
-   pull requests; and a `ci.yml` push run of REF on that branch passed and none failed or is still
+   ancestor of the tip, or another branch); REF descends from that newest tag as the remote has it (not
+   a local tag of the same name); the branch is closed to direct pushes and every commit since the tag
+   is a merged pull request into it (above); and a `ci.yml` push run of REF on that branch passed and none failed or is still
    going. The merge queue's run is not an alternative there. The release notes and changelog checks are
    the same. A release of a new line (`Z` of 0), a candidate, or any other commit is still main only.
 5. After the tag, open a pull request on main that adds the `[X.Y.Z]` section to its `CHANGELOG.md`
