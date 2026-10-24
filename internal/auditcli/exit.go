@@ -304,6 +304,7 @@ var verbs = map[string]func(*cli, []string){
 	"notifications":            (*cli).notifications,
 	"redactions":               (*cli).redactions,
 	"stops":                    (*cli).stops,
+	"caps":                     (*cli).caps,
 	"prove-absent":             (*cli).proveAbsent,
 	"verify-absent":            (*cli).verifyAbsent,
 	"verify-receipts":          (*cli).verifyReceipts,

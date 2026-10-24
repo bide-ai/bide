@@ -214,6 +214,24 @@ const usageText = `bide audit: produce and verify audit proof bundles
          never_notified (and, with -strict, on the warnings unobserved_resolved and all_clear_untimed). A verdict that rests on records after the newest signed head is unattested and fails unless every tail record it rests on is within -max-unattested (default 0: strict; records within a nonzero bound are accepted without a signature); with -routing (the notifier's routing, agent.RoutingOf as JSON), an event with no delivery to a receiver it routes to, or a due escalation step with none, is no_delivery and fails. -db and -postgres-env (a variable holding the DSN) read every run, or -run,
          from a store, in the full bide command; the audit-only build reads exported files
 
+  caps (-db <file> | -postgres-env <var>) (-sth <file>... -pubkey <hex|file> | -unanchored)
+       [-namespace <ns>] [-rule <name>] [-window <id>] [-run <id>]
+         audit the amount-cap ledgers of a store (read-only; the full bide command only). Each ledger run
+         (@cap/...) must read under the ledger's own rules (dense slots, the cum_after chain, release
+         references, the over flag, one currency), and its window total, the sum of its live reserves,
+         must be its last cum_after; the over-limit slots counted under a waiver are listed. Each slot
+         is compared with the cap-reserve record the run that made the call holds: a record whose slot
+         is missing is DELETED, one whose cum_after or attempt differs is CHANGED, a reserve slot with no
+         record is UNRECORDED (a slot inserted from outside, or a reservation interrupted before its
+         record). With signed heads (-sth, each verified, from the anchor log of the AuditedStore that
+         anchors the store) a ledger run must be the one the newest head signs, and entries after it are
+         NOT ATTESTED and fail; with -unanchored the report says first that whoever can write the store
+         can delete a slot or append a release undetected, and that the audit only finds
+         inconsistencies it can see. It also reports, without failing, the reconcile exposure: the
+         slots still counted for attempts the journal records as never started. The filters narrow the
+         audit, and the report lists what they left unchecked; a filter that matches no ledger is
+         exit 4, not a pass
+
   redactions (-trail <file> | -trail-db <file> | -trail-postgres-env <var> | -db <file> | -postgres-env <var>)
              [-journal <file>...] [-run <id>] -deployment <name> -pubkey <hex|file> [-sth <file>... | -unanchored]
          verify the redaction trail (the signed, append-only record of each erasure of journal

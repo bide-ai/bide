@@ -22,6 +22,7 @@ bide does not decide any of these. Answer them before you build the archive.
 |---|---|---|---|
 | Journal | The run's append-only records, each with a random salt (store: SQLite or Postgres; or an export, `bide.audit.journal-export.v1`) | the runtime | prove any record, `prove-absent`, `verify-receipts`, `verify-decision-coverage`, the journal cross-check of `notifications` |
 | Evidence package | One signed tree head plus an inclusion proof per named action, optionally a run certificate, grants and a consistency proof, sealed (`bide.audit.evidence.v6`; v5 packages still verify) | `audit.Evidence` | prove the named actions with no journal and no database |
+| Cap ledgers | Per window, the cumulative [amount cap](amount-caps.md) totals: reserved journal runs `@cap/...`, one per rule, window and key, and the `cap-reserve` records in the runs that made the calls | the runtime | `bide audit caps` (recompute a window, compare the slots with the runs, and with the heads find a deleted slot or an appended release) |
 | Signed tree heads | The log key's signature over a journal's size and Merkle root (`bide.audit.sth.v5`); one per growth when anchored | `audit.AuditedStore` and your `Anchor`, or `audit.SignTreeHead` | everything that checks a journal against a commitment |
 | Anchor entries and receipts | A head as your anchor log recorded it (`bide.audit.anchor-entry.v1`: run, head, position), and whatever receipt or inclusion proof your anchor gives you | your `audit.Anchor` | show the head existed in a trust domain the operator does not control |
 | Decision receipts | An approver's signed decision, the call's arguments and the journal position, no key material (`bide.audit.decision-receipt.v1`); `verify-receipts -update` adds the anchoring proof | `bide approve` | show a decision the approver made was not deleted |
@@ -48,6 +49,17 @@ Make the package after the run ends, and make it again if you later need to prov
 ### Signed heads and anchor entries
 
 A head commits to the first N records of a journal. It is the only thing that lets a verifier notice that a journal it is shown differs from the one that was signed. bide ships the `Anchor` port, `audit.MemAnchorLog` (an in-memory reference, for tests) and `anchor/awss3`, which writes each head to an S3 bucket under Object Lock ([anchoring](anchoring.md)); the retention of the anchored heads is whatever your anchor provides (for S3 Object Lock, the retention date you set; for `anchor/gcs`, the locked bucket retention policy, see [anchoring in Google Cloud Storage](anchoring-gcs.md)), so it is part of your design. Keep the heads at least as long as the journals and evidence they cover. If the anchor service ages out entries earlier than your retention period, copy the heads into your archive: `verify-receipts` and `verify-decision-coverage` take them from a file, as one head or one per line.
+
+### Cap ledgers
+
+A cap ledger is a run like any other: keep it with the journal it is in, and its signed heads with the rest
+of the heads (one run per window and key, so they add up: a `by customer_id` rule makes one ledger per
+customer a day). `bide audit caps` needs the ledgers and the runs together and the heads for the ledger runs;
+a run deleted from the store takes its `cap-reserve` records with it, and the audit then reports the slots of
+that run as `UNRECORDED`, so audit before you delete, and delete or archive the ledgers of a closed window
+only with the runs of that window. Ledgers are also where the cost of an audited store shows: a reservation
+on an `AuditedStore` costs more as its ledger grows, so set `WithMinInterval` on a store that holds ledgers
+and prefer per-key rules to one global total ([the cost](amount-caps.md#cumulative-rules)).
 
 ### Decision receipts
 

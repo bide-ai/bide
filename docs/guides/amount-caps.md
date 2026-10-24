@@ -143,6 +143,61 @@ the window's total.
   `ResolveHalt` resolved, and a saga's rollback (a compensation reserves nothing and credits nothing). A window
   only over-counts.
 
+## Auditing the ledgers: `bide audit caps`
+
+A window's total is the sum of the live reservations in its ledger, and the ledger is rows in your store.
+`bide audit caps` reads them and tells you whether they hold together. It never writes.
+
+```
+bide audit caps -db journal.db -sth heads.jsonl -pubkey log.pub
+bide audit caps -db journal.db -unanchored
+bide audit caps -postgres-env BIDE_DSN -sth heads.jsonl -pubkey log.pub -rule refund_total -window 2026-10-22
+```
+
+For each ledger run (`@cap/...`) it checks:
+
+1. **The ledger's own rules.** The slots are dense (0, 1, 2, ...), each `cum_after` follows from the one
+   before it, a release voids an earlier live reserve of the same attempt and amount, the over flag is
+   what the limit implies, and the currency is the ledger's. Anything else is `CORRUPT`.
+2. **The window total.** The sum of the live reserves is recomputed and must equal the last `cum_after`
+   (`TOTAL`), and no attempt may hold two live reserves (`DOUBLE`). The slots counted over the limit under a
+   waiver are listed as `OVER LIMIT`.
+3. **The runs.** A reservation leaves a `cap-reserve:` record in the run that made the call, naming the
+   ledger, the slot and its `cum_after`. A record whose slot is missing is a `DELETED` slot; one whose
+   slot differs (its `cum_after`, its attempt, or it is a release) is `CHANGED`; a reserve slot whose run
+   holds no record is `UNRECORDED`. That last finding is also what a reservation interrupted between its
+   slot and its record looks like, and a re-drive of the run writes the record; a ledger run the store no
+   longer holds but a record or a signed head names is `LEDGER_MISSING`.
+4. **The signed heads** (`-sth`, with `-pubkey`). An `AuditedStore` anchors a head for every ledger run it
+   writes; pass the heads from your anchor log (one JSON head per line, any number, for any runs). Each
+   must verify, and the ledger must be the one the newest head signs: a slot changed or deleted since is a
+   `DIVERGENT_HEAD`. Entries **after** the newest head are `NOT_ATTESTED` and fail: whoever can write the
+   store could have deleted a slot or appended a release there unseen. Run the audit after the store has
+   anchored (with `WithMinInterval`, after the interval or a `Flush`).
+
+It also reports, without failing, the **reconcile exposure**: per window, the slots still counted for
+attempts the journal records as never started, and their amount. Those are the slots the next `Recover`
+releases; a figure that does not go down after a recovery pass means recovery is not running.
+
+**Anchored or not.** With `-unanchored` the first line of the report says that whoever can write the store
+can delete a slot or append a release undetected, and that the audit only finds inconsistencies it can see.
+That is the limit, not a modesty: an attacker who edits a slot and the run's `cap-reserve` record to match, or
+appends a valid release of a live reserve, leaves a ledger every check above accepts. Only a signed head, held
+outside the store, shows it. See [KNOWN-LIMITATIONS](../KNOWN-LIMITATIONS.md).
+
+**Filters.** `-namespace`, `-rule` and `-window` narrow the ledgers read, and `-run` narrows the audit to
+one run's calls and its sub-runs' (their slots and records, and the ledgers that hold them). A filtered
+report lists what it did not check and ends `PASS (filtered)`, never a bare `PASS`; a filter that matches no
+ledger exits 4. Amounts are in minor units, as the ledger holds them.
+
+**Exit status** is `bide audit`'s: 0 when every ledger checked reads and agrees (with `-sth`, and is
+attested), 1 for any finding, 2 for a usage error (neither `-sth` nor `-unanchored`, or both), 4 when the
+store cannot be opened or read. The `-json` report carries the findings and the per-ledger figures.
+
+This does not check the `cap-intent` records or the index runs (a planted intent with a stale window is
+the same trust boundary, and the same detection: the signed heads). `bide sample` writes a small ledger to
+try it on: `bide audit caps -db sample.db -unanchored`.
+
 ## A worked configuration
 
 One tool, three rules, and a namespace for the deployment: a ceiling on one call, a total for the day, and a

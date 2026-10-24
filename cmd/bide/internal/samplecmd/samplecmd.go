@@ -302,6 +302,10 @@ TRY (from this directory)
     bide audit verify-evidence -evidence refund-1041.evidence.json -pubkey log.pub
     bide audit verify-evidence -evidence refund-1049.evidence.json -pubkey log.pub
 
+  The cap ledger the two refunds above are counted in (500 USD a day, 240 USD used), audited with
+  no signed head to compare against:
+    bide audit caps -db sample.db -unanchored
+
   A flow config: its graph, its crash-behavior colors and its assertions:
     bide view -config flows/refund-v1.yaml
 

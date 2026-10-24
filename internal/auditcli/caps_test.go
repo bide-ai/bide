@@ -24,9 +24,6 @@ import (
 	"github.com/bide-ai/bide/internal/journalhook"
 )
 
-// bide audit caps is wired into the verb table by its own commit; these tests call it directly.
-func init() { verbs["caps"] = (*cli).caps }
-
 const (
 	capsRule   = `refund_total: refund.amount[minor, currency=currency] sum 100 USD per day -> refuse`
 	capsRuleHr = `refund_hour: refund.amount[minor, currency=currency] sum 1 USD per hour -> refuse`

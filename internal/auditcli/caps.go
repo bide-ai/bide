@@ -506,7 +506,7 @@ func (c *cli) capsReport(rep capsReport) {
 	for _, l := range rep.Ledgers {
 		line := fmt.Sprintf("INFO  ledger %s: %d slot(s), %d live, window total %d %s", cleanText(l.Ledger), l.Slots, l.Live, l.Total, cleanText(l.Currency))
 		if l.Slots > 0 {
-			line += fmt.Sprintf(" (limit %d)", l.Limit)
+			line += fmt.Sprintf(" (limit %d; amounts are in minor units)", l.Limit)
 		}
 		if rep.Anchored && l.Entries > 0 {
 			line += fmt.Sprintf("; signed head covers %d of %d entries", l.Attested, l.Entries)
@@ -516,7 +516,7 @@ func (c *cli) capsReport(rep capsReport) {
 			c.printf("WARN  OVER LIMIT slot %d (attempt %s): cum_after %d exceeds the limit %d, counted under a waiver\n", o.Slot, cleanText(o.Attempt), o.CumAfter, o.Limit)
 		}
 		if l.Exposed > 0 {
-			c.printf("INFO  reconcile exposure, window %s: %d slot(s) worth %d %s are counted for attempts the journal records as never started (the next recovery releases them)\n", cleanText(l.Window), l.Exposed, l.ExposedSum, cleanText(l.Currency))
+			c.printf("INFO  reconcile exposure, window %s: %d slot(s) worth %d %s (minor units) are counted for attempts the journal records as never started (the next recovery releases them)\n", cleanText(l.Window), l.Exposed, l.ExposedSum, cleanText(l.Currency))
 		}
 	}
 	for _, n := range rep.NotChecked {
