@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"slices"
+	"sync"
 	"testing"
 )
 
@@ -28,13 +29,16 @@ func (sessModel) Stream(_ context.Context, req Request) (*Stream, error) {
 	}
 	ch := make(chan Emit, 2)
 	switch {
-	case toolDone || (lastUser != "read" && lastUser != "write"):
+	case toolDone || (lastUser != "read" && lastUser != "readb" && lastUser != "write"):
 		ch <- Emit{Event: TextDelta{Text: "answer"}}
 		ch <- Emit{Event: Finish{Reason: "stop"}}
 	default:
 		name := "read_a"
-		if lastUser == "write" {
+		switch lastUser {
+		case "write":
 			name = "write"
+		case "readb":
+			name = "read_b"
 		}
 		ch <- Emit{Event: ToolCallDelta{Index: 0, ID: "t-" + name, Name: name, ArgsFragment: []byte(`{}`)}}
 		ch <- Emit{Event: Finish{Reason: "tool_use"}}
@@ -52,7 +56,8 @@ type sessRig struct {
 func (r *sessRig) session(opts ...Option) *Session {
 	r.t.Helper()
 	read := MustFunc("read_a", "read", func(context.Context, struct{}) (string, error) { return "text", nil }, WithSafety(Safety{ReadOnly: true}), Untrusted("a-src"))
-	s, err := mustNew(sessModel{}, r.j, append([]Option{WithTools(read, r.writes.tool("write"))}, opts...)...).Session(context.Background(), "conv")
+	readB := MustFunc("read_b", "read", func(context.Context, struct{}) (string, error) { return "text", nil }, WithSafety(Safety{ReadOnly: true}), Untrusted("b-src"))
+	s, err := mustNew(sessModel{}, r.j, append([]Option{WithTools(read, readB, r.writes.tool("write"))}, opts...)...).Session(context.Background(), "conv")
 	if err != nil {
 		r.t.Fatal(err)
 	}
@@ -222,5 +227,57 @@ func TestTaintSession_TurnsBeforeAPolicyAreNotRetroMarked(t *testing.T) {
 	}
 	if len(r.taintSources()) != 0 {
 		t.Fatalf("marks recorded for a turn that was not under taint: %v", r.taintSources())
+	}
+}
+
+// Two handles of one session answer different SendOnce keys at the same time, each after a different
+// untrusted source: neither turn is lost, and the session's taint is the union of both. Run with -race and
+// repeat (-count=50): the order of the two records must not matter.
+func TestTaintSession_TwoHandlesRacingOnSendOnceKeysKeepTheUnion(t *testing.T) {
+	ctx := context.Background()
+	r := &sessRig{t: t, j: memJournal()}
+	pol := WithTaintPolicy(TaintPolicy{Refuse: true})
+	h1, h2 := r.session(pol), r.session(pol)
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i, c := range []struct {
+		h    *Session
+		key  string
+		text string
+	}{{h1, "k1", "read"}, {h2, "k2", "readb"}} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, errs[i] = c.h.SendOnce(ctx, c.key, UserText(c.text))
+		}()
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("handle %d: %v", i+1, err)
+		}
+	}
+	if got := r.taintSources(); !slices.Equal(got, []string{"a-src", "b-src"}) {
+		t.Fatalf("the session's marks = %v, want [a-src b-src]: a racing turn's taint was lost", got)
+	}
+	// No turn is lost: both keyed turns are recorded, and a third turn on either handle starts with both marks.
+	for _, k := range []string{"k1", "k2"} {
+		if _, ok, err := h1.keyedTurn(ctx, k); err != nil || !ok {
+			t.Fatalf("turn %s is not recorded (%v, %v)", k, ok, err)
+		}
+	}
+	if _, err := h2.SendOnce(ctx, "k3", UserText("write")); err != nil {
+		t.Fatal(err)
+	}
+	if r.writes.n.Load() != 0 {
+		t.Fatalf("the write after two tainted turns ran %d times", r.writes.n.Load())
+	}
+	start := startOf(t, r.j, sessionEventRunID("conv", "k3"))
+	var got []string
+	for _, m := range start.inheritedMarks() {
+		got = append(got, m.Source)
+	}
+	if !slices.Equal(got, []string{"a-src", "b-src"}) {
+		t.Fatalf("the third turn started with %v, want both sources", got)
 	}
 }

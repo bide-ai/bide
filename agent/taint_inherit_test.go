@@ -463,3 +463,115 @@ func (l *loadsByRun) Load(ctx context.Context, runID string, after int64) iter.S
 	l.n[runID]++
 	return l.Store.Load(ctx, runID, after)
 }
+
+// A resume under changed declarations. The marks a run recorded stay; a declaration is read as the larger
+// of the recorded and the current one (never lower), and nothing rewrites what the journal holds.
+func TestTaintInherit_AResumeUnderChangedDeclarations(t *testing.T) {
+	ctx := context.Background()
+	drive := func(j *Journal, writes *counter, untrusted bool, turns ...[]Emit) error {
+		var ropts []ToolOption
+		ropts = append(ropts, WithSafety(Safety{ReadOnly: true}))
+		if untrusted {
+			ropts = append(ropts, Untrusted("a-src"))
+		}
+		read := MustFunc("read_a", "read", func(context.Context, struct{}) (string, error) { return "text", nil }, ropts...)
+		a := mustNew(&scriptModel{turns: turns}, j, WithTools(read, writes.tool("write", WithApproval(SingleApproval()))), WithTaintPolicy(TaintPolicy{Refuse: true}))
+		_, err := a.Run(ctx, "r", UserText("go"))
+		return err
+	}
+	readThenWrite := [][]Emit{toolTurn("c1", "read_a", `{}`), toolTurn("w1", "write", `{}`), textTurn("done")}
+	readMark := func(j *Journal) string {
+		recs, _ := j.History(ctx, "r")
+		for _, r := range recs {
+			if r.Kind == StepToolResult && r.ToolUseID == "c1" && r.Safety != nil {
+				return r.Safety.Untrusted
+			}
+		}
+		return "?"
+	}
+	for _, tc := range []struct {
+		name         string
+		first, again bool // read_a is declared Untrusted in the first drive, in the resume
+		wantWrites   int32
+		wantRecorded string
+	}{
+		{"lost: the recorded mark stays and gates the write", true, false, 0, "a-src"},
+		{"gained: the current declaration counts, the journal is not rewritten", false, true, 0, ""},
+		{"unchanged and undeclared: nothing gates the write", false, false, 1, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			j, writes := memJournal(), &counter{}
+			if err := drive(j, writes, tc.first, readThenWrite...); !IsPause(err) {
+				t.Fatalf("first drive = %v, want a pause at the write's own gate", err)
+			}
+			if err := Approve(ctx, j, "r", "w1", true); err != nil {
+				t.Fatal(err)
+			}
+			if err := drive(j, writes, tc.again, textTurn("done")); err != nil {
+				t.Fatalf("resume: %v", err)
+			}
+			if got := writes.n.Load(); got != tc.wantWrites {
+				t.Fatalf("writes = %d, want %d", got, tc.wantWrites)
+			}
+			if got := readMark(j); got != tc.wantRecorded {
+				t.Fatalf("the read's recorded mark = %q, want %q (declarations do not rewrite the journal)", got, tc.wantRecorded)
+			}
+		})
+	}
+}
+
+// A chain of programmatic sub-runs: the grandchild read an untrusted source, so the child's result for the
+// call that started it is marked, so the parent's result for the call that started the child is.
+func TestTaintInherit_AProgrammaticChainMarksEachLevel(t *testing.T) {
+	ctx := context.Background()
+	var writes counter
+	sub := func(name string, run func(ctx context.Context, info RunInfo) (string, error), agentFor func() *Agent) Tool {
+		return MustFunc(name, name, func(ctx context.Context, _ struct{}) (string, error) {
+			info, _ := RunInfoFrom(ctx)
+			return run(ctx, info)
+		}, WithSafety(Safety{ReadOnly: true}), WithSubRuns(func(string) *Agent { return agentFor() }))
+	}
+	grand := mustNew(&scriptModel{turns: [][]Emit{toolTurn("r1", "read_c", `{}`), textTurn("grand answer")}}, memJournal(), append([]Option{WithTools(
+		MustFunc("read_c", "read", func(context.Context, struct{}) (string, error) { return "text", nil }, WithSafety(Safety{ReadOnly: true}), Untrusted("c-src")))}, refuseTaint...)...)
+	childJ := memJournal()
+	via2 := sub("via2", func(ctx context.Context, info RunInfo) (string, error) {
+		res, err := grand.Run(ctx, info.SubRunFor("grand"), UserText("work"))
+		if err != nil {
+			return "", err
+		}
+		return res.Message.Text(), nil
+	}, func() *Agent { return grand })
+	child := mustNew(&scriptModel{turns: [][]Emit{toolTurn("g1", "via2", `{}`), textTurn("child answer")}}, childJ, append([]Option{WithTools(via2)}, refuseTaint...)...)
+	via1 := sub("via1", func(ctx context.Context, info RunInfo) (string, error) {
+		res, err := child.Run(ctx, info.SubRunFor("child"), UserText("work"))
+		if err != nil {
+			return "", err
+		}
+		return res.Message.Text(), nil
+	}, func() *Agent { return child })
+	parentJ := memJournal()
+	parent := mustNew(&scriptModel{turns: [][]Emit{toolTurn("p1", "via1", `{}`), toolTurn("p2", "write", `{}`), textTurn("done")}}, parentJ,
+		WithTools(via1, writes.tool("write")), WithTaintPolicy(TaintPolicy{Refuse: true}))
+	if _, err := parent.Run(ctx, "r", UserText("go")); err != nil {
+		t.Fatal(err)
+	}
+	markIn := func(j *Journal, run, call string) string {
+		recs, _ := j.History(ctx, run)
+		for _, r := range recs {
+			if r.Kind == StepToolResult && r.ToolUseID == call && r.Safety != nil {
+				return r.Safety.Untrusted
+			}
+		}
+		return "?"
+	}
+	childRun := RunInfo{RunID: "r", ToolUseID: "p1"}.SubRunFor("child")
+	if got := markIn(childJ, childRun, "g1"); got != "subagent:via2" {
+		t.Fatalf("the child's result for the call that started the grandchild = %q, want subagent:via2", got)
+	}
+	if got := markIn(parentJ, "r", "p1"); got != "subagent:via1" {
+		t.Fatalf("the parent's result for the call that started the child = %q, want subagent:via1", got)
+	}
+	if writes.n.Load() != 0 {
+		t.Fatalf("the write ran %d times: the grandchild's content was laundered through the chain", writes.n.Load())
+	}
+}
