@@ -664,3 +664,25 @@ func TestTaintGate_ACertBoundEscalationGateAskedByAReplayRefusesABareKeyDecision
 		t.Fatal("the drive returned no error for a certificate-bound gate decided by a bare key")
 	}
 }
+
+// The pause note of an escalation instance asked by a replaying drive names the requester of the run, read
+// from the journal, not from the replaying drive's own identity (which is empty here): the viewer and the
+// notifier show the requester as excluded.
+func TestTaintGate_ThePauseNoteOfAReplayAskedInstanceNamesTheRequester(t *testing.T) {
+	ctx := context.Background()
+	e := newTG(t)
+	e.policy = TaintPolicy{Gate: &ApprovalPolicy{Need: 2, Approvers: []string{"alice", "bob", "carol"}, ExcludePrincipal: true}}
+	e.writeOp = []ToolOption{WithApproval(SingleApproval())}
+	e.opts = []Option{WithApproverVerifiers(fakeVerifiers("alice", "bob", "carol")), WithIdentity(Identity{Actor: "agent@1", OnBehalfOf: "alice"})}
+	pendingOn(t, e.drive(true, readThenWrite()...), "c2")
+	if err := Approve(ctx, e.j, "r", "c2", true); err != nil {
+		t.Fatal(err)
+	}
+	e.opts = []Option{WithApproverVerifiers(fakeVerifiers("alice", "bob", "carol"))} // the replay carries no identity
+	pendingOn2(t, e.drive(true, textTurn("done")), "c2#taint")
+	note, ok := hasStep(t, e.j, "r", ApprovalPendingStep("c2#taint"))
+	var w ApprovalWait
+	if !ok || json.Unmarshal(note.Result, &w) != nil || !w.ExcludePrincipal || !slices.Equal(w.Requesters, []string{"alice"}) {
+		t.Fatalf("the instance's note = %+v (found %v), want the exclusion and requester alice", w, ok)
+	}
+}
