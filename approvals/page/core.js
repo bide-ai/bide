@@ -131,6 +131,7 @@ export function parseWhy(raw) {
   if (r.value.a.length > MAX_WHY) throw new Error(`the endpoint gives more than ${MAX_WHY} reasons`);
   return r.value.a.map((v) => {
     if (v === null || !v.o) throw new Error('a reason is not a JSON object');
+    if (v.dup) throw new Error('a reason repeats a member');
     const out = {};
     for (const [k, x] of v.o) {
       if (!WHY_KEYS.has(k)) throw new Error(`a reason has an unknown member ${safeText(JSON.stringify(k))}`);
@@ -278,7 +279,9 @@ export function receiptProblem(rc, d) {
 }
 
 // argsHaveText reports whether the arguments hold text the model wrote: a string value anywhere in them, or
-// arguments that are not JSON (shown as text). Numbers, booleans and null are not text.
+// arguments that are not JSON (shown as text). Numbers, booleans and null are not text. Member names are not
+// counted: in the usual call they are the tool's own, and a note on every object would stop being read; the
+// note says that a name the tool does not fix is the model's too, and the names are shown with the arguments.
 export function argsHaveText(raw) {
   const t = goTrimSpace(raw);
   if (t.length === 0) return false;

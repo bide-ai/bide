@@ -146,13 +146,13 @@ warning line, "conflicting reason records", and none of their reasons.
 
 - **Text only.** Each reason is one line set with `textContent` in a list item, with the characters that could hide
   content written as escapes (`safeText`); the page assigns no markup, and its policy (`default-src 'none'`, no
-  inline script or style) is unchanged. The reader of the list is strict: an unknown member, a non-integer,
+  inline script or style) is unchanged. The reader of the list is strict: an unknown member, a non-integer, a repeated member,
   a string over 512 characters or more than 64 reasons stop the page from showing the call at all, and nothing is signed.
 - **The application's claim.** The list says so: the reasons are the application's record of why the call was held,
   not part of what the approver signs, and the page cannot check them. The signed bytes are unchanged
   (`bide.approval.v3`); binding the reason into a decision is a new decision format and not built.
 - **No model-written prose.** The page shows no text the model wrote beyond the arguments. A string anywhere in the
-  arguments is something the model wrote, and the page says so under them: "model-written, unverified".
+  arguments is something the model wrote, and the page says so under them: "model-written, unverified". The note counts string values, not member names (in the usual call the names are the tool's own, and a note on every object would stop being read); it says that a name the tool does not fix is the model's too.
 
 ## What it looks like, and who can change that
 
