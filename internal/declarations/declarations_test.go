@@ -374,3 +374,28 @@ func TestDecode_RefusesWhatEncodingJSONWouldReadAsSomethingElse(t *testing.T) {
 		t.Fatalf("the control document is refused: %v", err)
 	}
 }
+
+// The golden is compared byte for byte with what the agent writes (LF), so a Windows checkout must not
+// turn its line endings into CRLF: .gitattributes pins them. A missing rule fails here, on any platform,
+// rather than only on a machine whose checkout converts.
+func TestGolden_IsPinnedToLF(t *testing.T) {
+	raw, err := os.ReadFile("../../.gitattributes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned := false
+	for _, line := range strings.Split(string(raw), "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 2 && !strings.HasPrefix(f[0], "#") && f[0] == "internal/declarations/testdata/*.json" {
+			for _, attr := range f[1:] {
+				pinned = pinned || attr == "eol=lf" || attr == "-text" || attr == "binary"
+			}
+		}
+	}
+	if !pinned {
+		t.Fatal("internal/declarations/testdata/*.json is not pinned to LF in .gitattributes: a Windows checkout would break the agent's golden comparison")
+	}
+	if b, err := os.ReadFile("testdata/agent.golden.json"); err != nil || bytes.Contains(b, []byte("\r")) {
+		t.Fatalf("the golden holds a carriage return (%v)", err)
+	}
+}
