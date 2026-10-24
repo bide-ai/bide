@@ -19,17 +19,23 @@ import (
 
 // Finding kinds of bide audit caps. Each is a reason the audit fails.
 const (
-	capCorrupt    = "CORRUPT"        // the ledger breaks its own accept rules
-	capUnreadable = "UNREADABLE"     // a ledger or a run that cannot be decoded
-	capTotal      = "TOTAL"          // the recomputed window total is not the last cum_after
-	capDouble     = "DOUBLE"         // one attempt holds two live reserves
-	capDeleted    = "DELETED"        // a cap-reserve record names a slot the ledger does not hold
-	capChanged    = "CHANGED"        // a slot differs from the cap-reserve record that names it
-	capUnrecorded = "UNRECORDED"     // a reserve slot with no cap-reserve record in its run
-	capBadHead    = "BAD_HEAD"       // a signed head that does not verify
-	capDivergent  = "DIVERGENT_HEAD" // a signed head the ledger run does not match
-	capNoHead     = "NOT_ATTESTED"   // entries no signed head covers
-	capHeadOnly   = "LEDGER_MISSING" // a signed head or a cap-reserve record for a ledger the store does not hold
+	capCorrupt    = "CORRUPT"           // the ledger breaks its own accept rules
+	capUnreadable = "UNREADABLE"        // a ledger or a run that cannot be decoded
+	capTotal      = "TOTAL"             // the recomputed window total is not the last cum_after
+	capDouble     = "DOUBLE"            // one attempt holds two live reserves
+	capDeleted    = "DELETED"           // a cap-reserve record names a slot the ledger does not hold
+	capChanged    = "CHANGED"           // a slot differs from the cap-reserve record that names it
+	capUnrecorded = "UNRECORDED"        // a reserve slot with no cap-reserve record in its run
+	capBadHead    = "BAD_HEAD"          // a signed head that does not verify
+	capDivergent  = "DIVERGENT_HEAD"    // a signed head the ledger run does not match
+	capNoHead     = "NOT_ATTESTED"      // entries no signed head covers
+	capHeadOnly   = "LEDGER_MISSING"    // a signed head or a cap-reserve record for a ledger the store does not hold
+	capIntentBad  = "INTENT_UNREADABLE" // a cap-intent record that does not decode, or sits under another attempt's name
+	capIntentNone = "INTENT_MISSING"    // a reserve slot whose attempt has no cap-intent
+	capIntentDup  = "INTENT_DUPLICATE"  // two cap-intents for one attempt
+	capIntentDiff = "INTENT_MISMATCH"   // an intent that differs from the slot it led to (rule, key, amount, currency, marking, window)
+	capIndexNone  = "INDEX_MISSING"     // an intent whose window the rule's index run does not hold
+	capIntentOld  = "INTENT_CLOCK"      // an intent whose window is earlier than the newest window the index held when it was written
 )
 
 // capsFinding is one problem bide audit caps found.
@@ -71,6 +77,8 @@ type capsReport struct {
 	Ledgers    []capsLedger  `json:"ledgers"`
 	Findings   []capsFinding `json:"findings"`
 	NotChecked []string      `json:"not_checked,omitempty"`
+	// OrphanIntents are the attempts with a cap-intent and no slot: interrupted before the slot (information).
+	OrphanIntents []string `json:"orphan_intents,omitempty"`
 }
 
 // capsFilter limits what bide audit caps reads. The segments are as encoded in a ledger run's ID.
@@ -260,6 +268,7 @@ func auditCaps(ctx context.Context, store agent.Store, j *agent.Journal, led *ca
 
 	// The cap-reserve records of the runs in scope, by the ledger they name.
 	claims := map[string][]capClaim{}
+	intents := map[string][]capIntent{} // by attempt
 	for _, id := range runs {
 		recs, err := j.History(ctx, id)
 		if err != nil {
@@ -270,6 +279,18 @@ func auditCaps(ctx context.Context, store agent.Store, j *agent.Journal, led *ca
 			continue
 		}
 		for _, r := range recs {
+			if r.Kind == agent.StepValue && capledger.IsIntentName(r.Name) {
+				in, err := capledger.DecodeIntent(r.Result)
+				switch {
+				case err != nil:
+					find(capIntentBad, "", -1, "run %s, %s: %v", id, r.Name, err)
+				case r.Name != led.IntentName(in.Attempt):
+					find(capIntentBad, "", -1, "run %s holds %s, which names the attempt %s: not the name of that attempt's intent", id, r.Name, cleanText(in.Attempt))
+				default:
+					intents[in.Attempt] = append(intents[in.Attempt], capIntent{run: id, in: in})
+				}
+				continue
+			}
 			if r.Kind != agent.StepValue || !capledger.IsReserveName(r.Name) {
 				continue
 			}
@@ -300,8 +321,9 @@ func auditCaps(ctx context.Context, store agent.Store, j *agent.Journal, led *ca
 		byRun[h.RunID] = append(byRun[h.RunID], h)
 	}
 
+	slotted := map[string]bool{} // the attempts that hold a reserve slot in the ledgers read
 	for _, run := range ledgers {
-		lr, err := auditLedger(ctx, j, led, voided, in, run, claims[run], byRun[run], find)
+		lr, err := auditLedger(ctx, j, led, voided, in, run, claims[run], byRun[run], intents, slotted, find)
 		if err != nil {
 			return rep, err
 		}
@@ -311,6 +333,7 @@ func auditCaps(ctx context.Context, store agent.Store, j *agent.Journal, led *ca
 	}
 
 	// Ledgers the store does not hold but a record or a signed head names.
+	rep.OrphanIntents = auditIntents(ctx, j, led, in, intents, slotted, find)
 	listed := map[string]bool{}
 	for _, l := range ledgers {
 		listed[l] = true
@@ -366,7 +389,7 @@ func sortedKeys[V any](m map[string]V) []string {
 // auditLedger checks one ledger run. It returns nil when a run filter leaves the ledger out because
 // none of the run's calls touch it.
 func auditLedger(ctx context.Context, j *agent.Journal, led *capledger.Ledger, voided capbridge.VoidedFunc, in capsInput, run string,
-	claims []capClaim, heads []audit.SignedTreeHead, find func(kind, ledger string, slot int, format string, args ...any)) (*capsLedger, error) {
+	claims []capClaim, heads []audit.SignedTreeHead, intents map[string][]capIntent, slotted map[string]bool, find func(kind, ledger string, slot int, format string, args ...any)) (*capsLedger, error) {
 	_, _, _, window, _, _ := capledger.LedgerSegments(run)
 	lr := &capsLedger{Ledger: run, Window: window}
 
@@ -472,6 +495,10 @@ func auditLedger(ctx context.Context, j *agent.Journal, led *capledger.Ledger, v
 			continue // a re-reserve after a release: the attempt's record names its first slot
 		}
 		firstOf[s.Attempt] = s.N
+		slotted[s.Attempt] = true
+		if in.filter.inRun(s.Run) {
+			checkIntentOfSlot(led, run, s, intents[s.Attempt], find)
+		}
 		if in.filter.inRun(s.Run) && len(claimed[s.N]) == 0 {
 			find(capUnrecorded, run, s.N, "slot %d (attempt %s) has no cap-reserve record in run %s: a slot inserted from outside, or a reservation interrupted before its record (a re-drive of the run writes it)", s.N, cleanText(s.Attempt), s.Run)
 		}
@@ -516,6 +543,9 @@ func (c *cli) capsReport(rep capsReport) {
 			c.printf("INFO  reconcile exposure, window %s: %d slot(s) worth %d %s (minor units) are counted for attempts the journal records as never started (the next recovery releases them)\n", cleanText(l.Window), l.Exposed, l.ExposedSum, cleanText(l.Currency))
 		}
 	}
+	if n := len(rep.OrphanIntents); n > 0 {
+		c.printf("INFO  %d cap-intent(s) have no slot: the attempt was interrupted before its slot, and counts nothing\n", n)
+	}
 	for _, n := range rep.NotChecked {
 		c.printf("INFO  NOT CHECKED: %s\n", n)
 	}
@@ -555,4 +585,110 @@ func recomputeWindow(slots []capledger.Slot) (live int, total int64, finds []cap
 		finds = append(finds, capsFinding{Kind: capTotal, Slot: slots[n-1].N, Detail: fmt.Sprintf("the live reserves sum to %d and the last cum_after is %d", total, slots[n-1].CumAfter)})
 	}
 	return live, total, finds
+}
+
+// capIntent is a cap-intent record and the run that holds it.
+type capIntent struct {
+	run string
+	in  capledger.Intent
+}
+
+// checkIntentOfSlot compares a reserve slot with the cap-intent of its attempt: there must be exactly one,
+// in the run that made the call, and it must send the attempt to this ledger with this amount, currency
+// and marking. A planted intent with another window is the window-pinning attack: the attempt's slot
+// would sit in a ledger of the writer's choosing.
+func checkIntentOfSlot(led *capledger.Ledger, ledger string, s capledger.Slot, ins []capIntent, find func(kind, ledger string, slot int, format string, args ...any)) {
+	switch len(ins) {
+	case 0:
+		find(capIntentNone, ledger, s.N, "slot %d (attempt %s) has no cap-intent in run %s: the window it was counted in was never fixed by an intent", s.N, cleanText(s.Attempt), cleanText(s.Run))
+		return
+	case 1:
+	default:
+		find(capIntentDup, ledger, s.N, "attempt %s has %d cap-intents (in runs %s): the window it belongs to is not fixed", cleanText(s.Attempt), len(ins), cleanText(runsOf(ins)))
+		return
+	}
+	ci := ins[0]
+	var diff []string
+	if ci.run != s.Run {
+		diff = append(diff, fmt.Sprintf("the intent is in run %s, the slot's call is in run %s", cleanText(ci.run), cleanText(s.Run)))
+	}
+	if want := led.IntentLedger(ci.in); want != ledger {
+		_, _, _, wantWindow, _, _ := capledger.LedgerSegments(want)
+		_, _, _, haveWindow, _, _ := capledger.LedgerSegments(ledger)
+		if wantWindow != haveWindow {
+			diff = append(diff, fmt.Sprintf("the intent fixes window %s, the slot is in window %s", cleanText(ci.in.Window), cleanText(haveWindow)))
+		} else {
+			diff = append(diff, fmt.Sprintf("the intent names rule %s, key %s, currency %s in namespace %s: its ledger is %s", cleanText(ci.in.Rule), cleanText(ci.in.Key), cleanText(ci.in.Currency), cleanText(ci.in.Namespace), cleanText(want)))
+		}
+	}
+	if ci.in.Amount != s.Amount {
+		diff = append(diff, fmt.Sprintf("the intent reserves %d, the slot holds %d", ci.in.Amount, s.Amount))
+	}
+	if ci.in.Currency != s.Currency {
+		diff = append(diff, fmt.Sprintf("the intent's currency is %s, the slot's is %s", cleanText(ci.in.Currency), cleanText(s.Currency)))
+	}
+	if ci.in.Marked != s.Marked {
+		diff = append(diff, fmt.Sprintf("the intent's marking is %t, the slot's is %t", ci.in.Marked, s.Marked))
+	}
+	for _, d := range diff {
+		find(capIntentDiff, ledger, s.N, "slot %d (attempt %s): %s", s.N, cleanText(s.Attempt), d)
+	}
+}
+
+func runsOf(ins []capIntent) string {
+	var rs []string
+	for _, ci := range ins {
+		rs = append(rs, ci.run)
+	}
+	slices.Sort(rs)
+	return strings.Join(rs, ", ")
+}
+
+// auditIntents checks what the slots do not: an attempt with two intents (even with no slot), an intent
+// whose window the rule's index run does not hold or is earlier than the newest window the index held when
+// it was written, and the intents with no slot, which it returns (an attempt interrupted before its slot
+// leaves one; information).
+func auditIntents(ctx context.Context, j *agent.Journal, led *capledger.Ledger, in capsInput, intents map[string][]capIntent, slotted map[string]bool,
+	find func(kind, ledger string, slot int, format string, args ...any)) []string {
+	var orphans []string
+	index := map[string]map[string]bool{} // index run -> window ids it holds
+	for _, att := range sortedKeys(intents) {
+		ins := intents[att]
+		if len(ins) > 1 && !slotted[att] {
+			find(capIntentDup, "", -1, "attempt %s has %d cap-intents (in runs %s) and no slot", cleanText(att), len(ins), cleanText(runsOf(ins)))
+		}
+		for _, ci := range ins {
+			ledger := led.IntentLedger(ci.in)
+			if !in.filter.matches(ledger) {
+				continue
+			}
+			if !slotted[att] && len(ins) == 1 {
+				orphans = append(orphans, att)
+			}
+			if ci.in.Kind == capledger.Run {
+				continue
+			}
+			idx := led.IndexRun(ci.in.IntentRule())
+			held, ok := index[idx]
+			if !ok {
+				held = map[string]bool{}
+				recs, err := j.History(ctx, idx)
+				if err == nil {
+					for _, r := range recs {
+						if w, found := strings.CutPrefix(r.Name, "win:"); found {
+							held[w] = true
+						}
+					}
+				}
+				index[idx] = held
+			}
+			if !held[ci.in.Window] {
+				find(capIndexNone, idx, -1, "the cap-intent of %s in run %s fixes window %s, and the index run holds no such window: the intent was planted, or the index entry was deleted", cleanText(att), cleanText(ci.run), cleanText(ci.in.Window))
+			}
+			if ci.in.Floor != "" && ci.in.Window < ci.in.Floor {
+				find(capIntentOld, ledger, -1, "the cap-intent of %s fixes window %s, earlier than the newest window %s the index held when it was written", cleanText(att), cleanText(ci.in.Window), cleanText(ci.in.Floor))
+			}
+		}
+	}
+	return orphans
 }

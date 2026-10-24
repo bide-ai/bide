@@ -38,7 +38,9 @@ type tamperStore struct {
 	*agent.MemStore
 	hide func(run, name string) bool
 	gone func(run string) bool // a run that is not in the store at all
-	edit func(run, name string, data []byte) []byte
+	// rename shows an entry under another name (Load only: a planted record in another run).
+	rename func(run, name string) string
+	edit   func(run, name string, data []byte) []byte
 }
 
 func (s *tamperStore) Load(ctx context.Context, run string, after int64) iter.Seq2[agent.Entry, error] {
@@ -49,6 +51,9 @@ func (s *tamperStore) Load(ctx context.Context, run string, after int64) iter.Se
 			}
 			if err == nil && s.edit != nil {
 				e.Data = s.edit(run, e.Name, e.Data)
+			}
+			if err == nil && s.rename != nil {
+				e.Name = s.rename(run, e.Name)
 			}
 			if !yield(e, err) {
 				return
@@ -661,4 +666,122 @@ func TestCapsAudit_NoReconcileBridgeIsAnError(t *testing.T) {
 	if _, err := auditCaps(context.Background(), e.mem, e.j, led, nil, capsInput{}); err == nil {
 		t.Fatal("an audit with no reconcile bridge must not report an exposure of zero")
 	}
+}
+
+// editIntent rewrites the cap-intent of run r.
+func (e *capsEnv) editIntent(r string, f func([]byte) []byte) {
+	e.tamper.edit = func(run, n string, d []byte) []byte {
+		if run == r && strings.HasPrefix(n, "cap-intent:") {
+			return f(d)
+		}
+		return d
+	}
+}
+
+func replaceIn(old, new string) func([]byte) []byte {
+	return func(d []byte) []byte { return bytes.Replace(d, []byte(old), []byte(new), 1) }
+}
+
+func TestCapsAudit_IntentMissing(t *testing.T) {
+	e := threeCalls(t)
+	e.tamper.hide = func(r, n string) bool { return r == "r2" && strings.HasPrefix(n, "cap-intent:") }
+	code, out, errOut := unanchoredCaps()
+	wantFail(t, code, out, errOut, "INTENT_MISSING")
+	if !strings.Contains(out, "slot 1 (attempt r2/") {
+		t.Fatalf("INTENT_MISSING must name slot 1:\n%s", out)
+	}
+}
+
+func TestCapsAudit_IntentWithAnotherWindow(t *testing.T) {
+	e := threeCalls(t)
+	// The window-pinning attack: the intent fixes another window than the one the slot was counted in.
+	e.editIntent("r2", replaceIn(`"window":"2026-10-22"`, `"window":"2026-10-23"`))
+	code, out, errOut := unanchoredCaps()
+	wantFail(t, code, out, errOut, "INTENT_MISMATCH", "INDEX_MISSING")
+	if !strings.Contains(out, "the intent fixes window 2026-10-23, the slot is in window 2026-10-22") {
+		t.Fatalf("the window must be named:\n%s", out)
+	}
+}
+
+func TestCapsAudit_IntentThatDiffersFromItsSlot(t *testing.T) {
+	for name, edit := range map[string]struct {
+		f    func([]byte) []byte
+		want string
+	}{
+		"amount":   {replaceIn(`"amount":50`, `"amount":51`), "the intent reserves 51, the slot holds 50"},
+		"marked":   {replaceIn(`"marked":true,`, ``), "the intent's marking is false, the slot's is true"},
+		"currency": {replaceIn(`"currency":"USD"`, `"currency":"EUR"`), "the intent's currency is EUR, the slot's is USD"},
+		"rule":     {replaceIn(`"rule":"refund_total"`, `"rule":"refund_other"`), "the intent names rule refund_other"},
+		"key":      {replaceIn(`"key":"cd72`, `"key":"ab72`), "the intent names rule refund_total, key ab72"},
+	} {
+		e := threeCalls(t)
+		e.editIntent("r2", edit.f)
+		code, out, errOut := unanchoredCaps()
+		if code != 1 || !strings.Contains(out, "FAIL  INTENT_MISMATCH") || !strings.Contains(out, edit.want) {
+			t.Fatalf("%s: exit %d, want %q\n%s\n%s", name, code, edit.want, out, errOut)
+		}
+	}
+}
+
+func TestCapsAudit_IntentPlantedInAnotherRun(t *testing.T) {
+	e := threeCalls(t)
+	// r3's intent is renamed to r2's attempt: r2's attempt has two intents, and r3's slot has none.
+	r2 := "r2%2Fr2%2Fc1%2Fattempt%253Atool%253Ac1%2523refund_total"
+	r3 := "r3%2Fr3%2Fc1%2Fattempt%253Atool%253Ac1%2523refund_total"
+	e.tamper.edit = func(run, n string, d []byte) []byte {
+		if run == "r3" && n == "cap-intent:"+r3 {
+			d = bytes.ReplaceAll(d, []byte(r3), []byte(r2))
+			d = bytes.Replace(d, []byte(`"attempt":"r3/r3/`), []byte(`"attempt":"r2/r2/`), 1)
+		}
+		return d
+	}
+	e.tamper.rename = func(run, n string) string {
+		if run == "r3" && n == "cap-intent:"+r3 {
+			return "cap-intent:" + r2
+		}
+		return n
+	}
+	code, out, errOut := unanchoredCaps()
+	wantFail(t, code, out, errOut, "INTENT_DUPLICATE", "INTENT_MISSING")
+}
+
+func TestCapsAudit_IntentUnreadable(t *testing.T) {
+	e := threeCalls(t)
+	e.editIntent("r1", replaceIn(`"amount":30`, `"amount":30,"extra":1`))
+	code, out, errOut := unanchoredCaps()
+	wantFail(t, code, out, errOut, "INTENT_UNREADABLE", "INTENT_MISSING")
+}
+
+func TestCapsAudit_IntentUnderAnotherAttemptsName(t *testing.T) {
+	e := threeCalls(t)
+	e.editIntent("r1", replaceIn(`"attempt":"r1/r1/`, `"attempt":"r1/r9/`))
+	code, out, errOut := unanchoredCaps()
+	wantFail(t, code, out, errOut, "INTENT_UNREADABLE")
+}
+
+func TestCapsAudit_IntentWithNoSlotIsInformation(t *testing.T) {
+	e := threeCalls(t)
+	// 99 USD more would take the day over 100 USD: refused, so an intent and no slot.
+	_ = e.call("r4", 9990)
+	code, out, errOut := unanchoredCaps()
+	if code != 0 || !strings.Contains(out, "INFO  1 cap-intent(s) have no slot") {
+		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
+	}
+}
+
+func TestCapsAudit_IndexEntryDeleted(t *testing.T) {
+	e := threeCalls(t)
+	e.tamper.hide = func(r, n string) bool { return strings.HasSuffix(r, "/index") && n == "win:"+capsDay }
+	code, out, errOut := unanchoredCaps()
+	wantFail(t, code, out, errOut, "INDEX_MISSING")
+	if !strings.Contains(out, "FAIL  INDEX_MISSING @cap/default/refund_total/USD/index") {
+		t.Fatalf("the index run must be named:\n%s", out)
+	}
+}
+
+func TestCapsAudit_IntentWindowEarlierThanItsFloor(t *testing.T) {
+	e := threeCalls(t)
+	e.editIntent("r2", replaceIn(`"floor":"2026-10-22"`, `"floor":"2026-10-23"`))
+	code, out, errOut := unanchoredCaps()
+	wantFail(t, code, out, errOut, "INTENT_CLOCK")
 }

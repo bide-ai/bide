@@ -50,3 +50,45 @@ func LedgerSegments(run string) (ns, rule, currency, window, key string, ok bool
 	}
 	return seg[1], seg[2], seg[3], seg[4], seg[5], true
 }
+
+// Intent is the decoded cap-intent record of an attempt: what it reserves, and the window fixed for it
+// once. Floor is the newest window the index held when the clock bound was checked ("" for a run window
+// or an empty index).
+type Intent struct {
+	Attempt   string
+	Namespace string
+	Rule      string
+	Currency  string
+	Kind      Kind
+	Key       string
+	Amount    int64
+	Marked    bool
+	Window    string
+	Floor     string
+}
+
+// IsIntentName reports whether an entry name is that of a cap-intent record.
+func IsIntentName(name string) bool { return strings.HasPrefix(name, intentPrefix) }
+
+// IntentName is the name of the cap-intent record of attempt (an AttemptKey) in its call's run.
+func (l *Ledger) IntentName(attempt string) string { return intentPrefix + l.cfg.Encode(attempt) }
+
+// DecodeIntent decodes the data of a cap-intent record, strictly.
+func DecodeIntent(b []byte) (Intent, error) {
+	in, err := decodeIntent(b)
+	if err != nil {
+		return Intent{}, err
+	}
+	return Intent{Attempt: in.Attempt, Namespace: in.Namespace, Rule: in.Rule, Currency: in.Currency, Kind: in.Kind,
+		Key: in.Key, Amount: in.Amount, Marked: in.Marked, Window: in.Window, Floor: in.Floor}, nil
+}
+
+// IntentRule is the rule an intent names.
+func (in Intent) IntentRule() Rule {
+	return Rule{Namespace: in.Namespace, Name: in.Rule, Currency: in.Currency, Kind: in.Kind}
+}
+
+// IntentLedger is the ledger run an intent sends its attempt's slot to.
+func (l *Ledger) IntentLedger(in Intent) string {
+	return l.LedgerRun(in.IntentRule(), in.Window, in.Key)
+}
