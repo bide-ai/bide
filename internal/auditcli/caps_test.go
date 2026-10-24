@@ -1236,3 +1236,28 @@ func TestCapsAudit_TheEngineStampsTheMarkerFromTheRunsClock(t *testing.T) {
 	}
 	t.Fatal("no attempt marker")
 }
+
+func TestCapsAudit_AnUnmarkedAttemptIsDatedByItsRunsStartAndSaysSo(t *testing.T) {
+	e := newCapsEnv(t)
+	type in struct {
+		Amount   int64  `json:"amount"`
+		Currency string `json:"currency"`
+	}
+	tool, err := agent.Func("refund", "refund", func(context.Context, in) (string, error) { return "ok", nil },
+		agent.WithSafety(agent.Safety{Idempotent: true}), agent.WithCaps(capsRule))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := agent.New(agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "refund", `{"amount":30,"currency":"USD"}`), agenttest.TextTurn("done")),
+		e.j, agent.WithTools(tool), agent.WithClock(func() time.Time { return capsNow }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(context.Background(), "r1", agent.UserText("go")); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errOut := unanchoredCaps()
+	if code != 0 || !strings.Contains(out, "1 cap-intent(s) belong to attempts with no marker") {
+		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
+	}
+}
