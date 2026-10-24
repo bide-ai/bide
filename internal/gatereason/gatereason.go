@@ -152,24 +152,51 @@ func sameReasons(a, b wireRecord) bool {
 }
 
 // clean makes a host-declared string safe to show, and bounds what is shown: a string that is not plain
-// printable text is quoted with its non-printing characters escaped, and the result is cut to MaxText bytes on
-// a character boundary, with an ellipsis where it was cut.
+// printable text is quoted with its non-printing characters escaped, and the result is cut to MaxText bytes
+// on a character boundary, or, in a quoted string, on an escape's boundary (an escape such as \u202e is never
+// split), with an ellipsis where it was cut.
 func clean(s string) string {
 	if s == "" {
 		return ""
 	}
+	quoted := false
 	if _, bad := printable.Bad(s); bad || !utf8.ValidString(s) {
-		s = strconv.Quote(s)
+		s, quoted = strconv.Quote(s), true
 	}
 	if len(s) <= MaxText {
 		return s
 	}
 	const mark = "…"
-	cut := MaxText - len(mark)
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
+	return cutUnits(s, MaxText-len(mark), quoted) + mark
+}
+
+// cutUnits is the longest prefix of s of at most n bytes that ends between units: a character, or, in a
+// quoted string, a whole escape (\n, \xNN, \uNNNN, \UNNNNNNNN).
+func cutUnits(s string, n int, quoted bool) string {
+	end := 0
+	for end < len(s) {
+		w := 1
+		switch {
+		case quoted && s[end] == '\\' && end+1 < len(s):
+			switch s[end+1] {
+			case 'x':
+				w = 4
+			case 'u':
+				w = 6
+			case 'U':
+				w = 10
+			default:
+				w = 2
+			}
+		default:
+			_, w = utf8.DecodeRuneInString(s[end:])
+		}
+		if end+w > len(s) || end+w > n {
+			break
+		}
+		end += w
 	}
-	return s[:cut] + mark
+	return s[:end]
 }
 
 // Line is a reason as one line of text for a terminal or a log: "untrusted content from inbound-email (read
