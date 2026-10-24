@@ -749,6 +749,7 @@ func (h *Handler) load(ctx context.Context, run, call string) (*gateRecords, err
 // record before it asks the instance; a journal where it is missing, or says another gate, was not written
 // by the engine, and the instance is not served.
 func escalationRecordAgrees(recs []agent.Record, call string, pol *agent.ApprovalPolicy) bool {
+	found := false
 	for _, r := range recs {
 		if r.Kind != agent.StepValue || !strings.HasPrefix(r.Name, "gate-reason:") {
 			continue
@@ -761,15 +762,19 @@ func escalationRecordAgrees(recs []agent.Record, call string, pol *agent.Approva
 		if json.Unmarshal(r.Result, &rec) != nil || rec.ToolUseID != call {
 			continue
 		}
+		// Every record that names the call must agree, so a decoy written ahead of the engine's cannot win.
 		if rec.Gate == nil || pol == nil {
 			return false
 		}
 		b, _ := json.Marshal(rec.Gate)
 		sum := sha256.Sum256(b)
-		return rec.PolicyDigest == hex.EncodeToString(sum[:]) && rec.Gate.Need == pol.Need &&
-			rec.Gate.ExcludePrincipal == pol.ExcludePrincipal && slices.Equal(rec.Gate.Approvers, pol.Approvers)
+		if rec.PolicyDigest != hex.EncodeToString(sum[:]) || rec.Gate.Need != pol.Need ||
+			rec.Gate.ExcludePrincipal != pol.ExcludePrincipal || !slices.Equal(rec.Gate.Approvers, pol.Approvers) {
+			return false
+		}
+		found = true
 	}
-	return false
+	return found
 }
 
 // policyOfNote is the policy a pause note records.

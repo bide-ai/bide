@@ -2,9 +2,11 @@ package runview
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/plan"
 	"slices"
 	"strings"
@@ -213,5 +215,46 @@ func TestHandler_ServesTheEscalationInstance(t *testing.T) {
 		if !strings.Contains(page, want) {
 			t.Errorf("the run page does not show %q", want)
 		}
+	}
+}
+
+// Probe: a flow with nodes foo and foo#taint, both gated, lists each gate once: the pause note of node
+// foo#taint is not the note of an escalation instance of node foo.
+func TestBuild_NodesFooAndFooTaintAreEachListedOnce(t *testing.T) {
+	ctx := context.Background()
+	j := agenttest.MemJournal()
+	policy := agent.ApprovalPolicy{Need: 1, Approvers: []string{"ops", "risk"}}
+	b := plan.New[int, int]("pay").WithApproverVerifiers(approverKeys(nil))
+	step := func(n int) func(context.Context, int) (int, error) {
+		return func(_ context.Context, v int) (int, error) { return v + n, nil }
+	}
+	foo := b.Step("foo", step(1), plan.Approval(&policy))
+	bar := b.Step("foo#taint", step(2), plan.Approval(&policy))
+	b.Edge(foo, bar)
+	f, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pend *agent.ApprovalPending
+	if _, err := f.Run(ctx, j, "f1", 1); !errors.As(err, &pend) || pend.ToolUseID != "node:foo" {
+		t.Fatalf("Run = %v, want a pause at node:foo", err)
+	}
+	sig := ed25519.Sign(key("ops"), agent.ApprovalDecisionBytes(pend.Subject(), "ops", true, testDecidedAt))
+	if err := agent.SubmitDecision(ctx, j, agent.Decision{RunID: "f1", ToolUseID: pend.ToolUseID, ApproverID: "ops", Approved: true, DecidedAt: testDecidedAt, Alg: audit.AlgEd25519, Signature: sig}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Run(ctx, j, "f1", 1); !errors.As(err, &pend) || pend.ToolUseID != "node:foo#taint" {
+		t.Fatalf("second Run = %v, want a pause at node:foo#taint", err)
+	}
+	recs, err := j.History(ctx, "f1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, g := range Build(ctx, "f1", recs, nil).Gates {
+		ids = append(ids, g.ToolUseID)
+	}
+	if !slices.Equal(ids, []string{"node:foo", "node:foo#taint"}) {
+		t.Fatalf("gates = %v, want node:foo and node:foo#taint once each", ids)
 	}
 }

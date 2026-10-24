@@ -299,6 +299,7 @@ func TestTaintIntake_AnEscalationSubjectIsServedOnlyWhenItsReasonRecordAgreesWit
 		t.Fatalf("drive = %v, want a pause on the escalation instance", err)
 	}
 	// edit copies the journal into a plain store, changing the gate-reason record by fn (nil drops it).
+	var decoy func(m map[string]any) // when set, a second gate-reason record, built from the engine's, written ahead of it
 	edit := func(fn func(m map[string]any)) int {
 		t.Helper()
 		ms := agent.NewMemStore()
@@ -315,6 +316,16 @@ func TestTaintIntake_AnEscalationSubjectIsServedOnlyWhenItsReasonRecordAgreesWit
 				if err := json.Unmarshal(data, &rec); err != nil {
 					t.Fatal(err)
 				}
+				if decoy != nil {
+					var d map[string]any
+					_ = json.Unmarshal(data, &d)
+					decoy(d["result"].(map[string]any))
+					d["name"] = "gate-reason:decoy"
+					dd, _ := json.Marshal(d)
+					if _, _, err := ms.Insert(ctx, base.runID, "gate-reason:decoy", dd); err != nil {
+						t.Fatal(err)
+					}
+				}
 				fn(rec["result"].(map[string]any))
 				data, _ = json.Marshal(rec)
 			}
@@ -322,7 +333,7 @@ func TestTaintIntake_AnEscalationSubjectIsServedOnlyWhenItsReasonRecordAgreesWit
 				t.Fatal(err)
 			}
 		}
-		h, err := approvals.New(agenttest.MustJournal(ms), base.verify, approvals.WithGatePolicy(base.live))
+		h, err := approvals.New(agenttest.MustJournal(ms), base.verify, approvals.WithGatePolicy(base.live), approvals.WithOnError(func(err error) { t.Log(err) }))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -346,12 +357,39 @@ func TestTaintIntake_AnEscalationSubjectIsServedOnlyWhenItsReasonRecordAgreesWit
 			m["policy_digest"] = strings.Repeat("0", 64)
 		},
 		"no snapshot": func(m map[string]any) { delete(m, "gate") },
+		"no snapshot and the digest of nothing": func(m map[string]any) {
+			delete(m, "gate")
+			sum := sha256.Sum256([]byte("null"))
+			m["policy_digest"] = hex.EncodeToString(sum[:])
+		},
+		"a snapshot that does not exclude the requester": func(m map[string]any) {
+			m["gate"].(map[string]any)["exclude_principal"] = true
+			redigest(t, m)
+		},
 	}
 	for name, fn := range cases {
 		if got := edit(fn); got != http.StatusNotFound {
 			t.Errorf("%s: %d, want 404 (not served)", name, got)
 		}
 	}
+	// A record that names another call is not this call's: it neither refuses nor serves it.
+	decoy = func(m map[string]any) {
+		m["tool_use_id"] = "c9"
+		m["gate"].(map[string]any)["need"] = float64(1)
+		redigest(t, m)
+	}
+	if got := edit(func(map[string]any) {}); got != http.StatusOK {
+		t.Errorf("a record for another call ahead of the engine's: %d, want 200", got)
+	}
+	// A second record that names this call and disagrees (a decoy ahead of the engine's) means not served.
+	decoy = func(m map[string]any) {
+		m["gate"].(map[string]any)["need"] = float64(1)
+		redigest(t, m)
+	}
+	if got := edit(func(map[string]any) {}); got != http.StatusNotFound {
+		t.Errorf("a disagreeing record for this call ahead of the engine's: %d, want 404", got)
+	}
+	decoy = nil
 	if got := edit(nil); got != http.StatusNotFound {
 		t.Errorf("no reason record: %d, want 404 (not served)", got)
 	}

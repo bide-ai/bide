@@ -590,6 +590,9 @@ func withEscalationInstances(recs []agent.Record, byName map[string]agent.Record
 	var extra map[string]agent.ToolUse
 	for _, id := range order {
 		out = append(out, id)
+		if strings.HasPrefix(id, "node:") {
+			continue // a plan node's key may end in #taint; it is a node, and a flow has no escalation instance
+		}
 		eid := escalation.ID(id)
 		if _, ok := agent.LatestPauseNote(byName, eid); !ok && !slices.ContainsFunc(recs, func(r agent.Record) bool { return r.Kind == agent.StepApproval && r.ToolUseID == eid }) {
 			continue
