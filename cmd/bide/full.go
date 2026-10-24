@@ -31,7 +31,7 @@ func fullCommands() []command {
 	return []command{
 		{
 			name:    "init",
-			summary: "scaffold a project: a gated plan flow on SQLite, with evidence for bide audit",
+			summary: "scaffold a project: a gated plan flow on SQLite (or, with -agent, an agent with a taint policy), with evidence for bide audit",
 			run: func(args []string, stdout, stderr io.Writer) int {
 				return initcmd.Main(releaseVersion(), args, stdout, stderr)
 			},

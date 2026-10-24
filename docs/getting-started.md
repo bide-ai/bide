@@ -55,6 +55,15 @@ with one refund. On a terminal the story is colored (paused at the gate in amber
 
 <img src="./guides/img/cli-init-run-dark.png" alt="go run . in the project bide init wrote, on a terminal: paused before the refund in amber, ops and finance approved in green, done in green, and the evidence written">
 
+`bide init -agent refund` writes the other shape, for an agent that reads text it does not control: a tool
+that returns an email and declares it untrusted (`agent.Untrusted`), a refund, and a taint policy, so the
+refund the model asks for after reading the email waits for an escalation gate of two of three signed
+decisions that do not count the requester (`ExcludePrincipal`). Add `-single-approver` for a team of one:
+the gate is then one unsigned decision, which is weaker, and the project's README says so. A plan flow is not
+covered by the taint policy; the agent project is where it applies. See the
+[untrusted content guide](guides/untrusted-content.md), whose limits apply: the policy bounds what a hostile
+email can make the agent do and does not detect or prevent the injection.
+
 The project's README is the place to read next: the next steps (`bide view`,
 `bide check`, `bide audit`), the crash demo, its "Start over" command, and the marked block in
 `model()` that swaps in a real model when `OPENROUTER_API_KEY` or `OPENAI_API_KEY` is set (start

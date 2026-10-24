@@ -22,7 +22,7 @@ and `help`, and its import graph is the standard library and the core module (se
 
 | Command | What it does |
 |---|---|
-| [`bide init`](#bide-init) | scaffold a project: a gated plan flow on SQLite, with evidence for bide audit |
+| [`bide init`](#bide-init) | scaffold a project: a gated plan flow on SQLite (or, with -agent, an agent with a taint policy), with evidence for bide audit |
 | [`bide demo`](#bide-demo) | kill an agent mid-payment and watch it not charge twice (no API key) |
 | [`bide doctor`](#bide-doctor) | check that a first run can work: Go, SQLite, the module cache, model keys, your project |
 | [`bide sample`](#bide-sample) | write a sample journal of varied runs, with evidence and flow configs, and open bide view on it |
@@ -42,20 +42,30 @@ and `help`, and its import graph is the standard library and the core module (se
 
 ## bide init
 
-Scaffold a project: a gated plan flow on SQLite, with evidence for bide audit.
+Scaffold a project: a gated plan flow on SQLite (or, with -agent, an agent with a taint policy), with evidence for bide audit.
 
 ```text
-usage: bide init [-module <path>] [-dev <bide checkout>] <dir>
+usage: bide init [-agent [-single-approver]] [-module <path>] [-dev <bide checkout>] <dir>
 
 Writes a new project into dir, which must not exist or must be empty: main.go, color.go, main_test.go,
 flow.yaml, README.md, .gitignore and go.mod. Then: cd <dir> && go mod tidy && go run .
 
+With -agent the project is an agent instead of a plan flow: a tool that reads untrusted text, a refund,
+and a taint policy, so a side effect asked for after the agent has read the text waits for an escalation
+gate of two of three signed decisions, not counting the requester. -single-approver makes that gate one
+unsigned decision, for a team of one; it is the weaker choice, and the README says so. A plan flow is not
+covered by the taint policy.
+
+  -agent
+    	write an agent with a taint policy (an escalation gate of two of three signed decisions) instead of a plan flow
   -color when
     	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
   -dev string
     	a bide checkout to build against (replace directives), for a bide built from source
   -module string
     	the module path (default: the directory's name)
+  -single-approver
+    	with -agent: an escalation gate of one unsigned decision, for a team of one (weaker)
 
 Exit status:
   0  success

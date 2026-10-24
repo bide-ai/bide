@@ -1,0 +1,3 @@
+Section: Added
+
+`bide init -agent` scaffolds an agent project instead of a plan flow: a tool that returns an email and declares it untrusted (`agent.Untrusted`), a refund, and an `agent.WithTaintPolicy` whose escalation gate is two of three signed decisions that do not count the requester (`ExcludePrincipal`), so a side effect the model asks for after reading the email waits for a human decision. `-single-approver` makes the gate one unsigned decision for a team of one (weaker, and the project's README says so). The project runs with no API key, checks its own story in `go test`, and writes `declarations.json` for `bide doctor -declarations`. The plan-flow scaffold is unchanged; the taint policy does not cover plan flows. New flags: experimental.
