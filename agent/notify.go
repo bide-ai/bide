@@ -71,6 +71,11 @@ type NotifyApproval struct {
 	// (PendingReapproval, PendingSoDReapproval, PendingIdentReapproval, PendingExecHoldReapproval), or "" for the gate's first ask. A re-ask is an event
 	// of its own (ApprovalReaskKey): approvers decide again.
 	Reask string
+	// Why says why the call needs this gate beyond its tool's own: for the escalation instance of a tainted
+	// call (the call ID with "#taint"), the untrusted content its turn had read; for a call a cap rule
+	// holds, the rule and this call's figures as of the ask. It is the engine's gate-reason record, the
+	// application's claim and evidence for the approver, never read by a gate. Empty for a plain gate.
+	Why []GateReason
 	// reaskGen is the generation of the count a certificate-bound gate asks for (ApprovalIdentReaskStep),
 	// with Reask PendingIdentReapproval (0) or PendingExecHoldReapproval (n >= 1).
 	reaskGen int

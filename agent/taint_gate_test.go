@@ -614,6 +614,14 @@ func TestTaintGate_TheNotifierNamesEachInstanceWithItsOwnGate(t *testing.T) {
 	if esc.Approval.ToolName != "write" || esc.Approval.Need != 2 || !slices.Equal(esc.Approval.Approvers, []string{"ops", "risk"}) {
 		t.Errorf("escalation notification = %+v, want write needing 2 of [ops risk]", esc.Approval)
 	}
+	// The escalation instance says why it asks (the untrusted content the turn read); the tool's own gate,
+	// which a cap or taint reason does not hold, says nothing.
+	if len(esc.Approval.Why) != 1 || esc.Approval.Why[0].Kind != "taint" || esc.Approval.Why[0].Source != "crm" || !strings.HasPrefix(esc.Approval.Why[0].Ref, "tool:read/c1") {
+		t.Errorf("escalation reasons = %+v, want the taint reason from crm read by tool read, call c1", esc.Approval.Why)
+	}
+	if len(own.Approval.Why) != 0 {
+		t.Errorf("the tool's own gate carries reasons %+v, want none", own.Approval.Why)
+	}
 	_ = ctx
 }
 

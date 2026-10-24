@@ -3,6 +3,8 @@ package approvecmd
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"io"
 	"slices"
@@ -10,7 +12,9 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/internal/taintfixture"
+	"github.com/bide-ai/bide/internal/term"
 )
 
 // Probe: bide approve finds the escalation instance of a call as a gate of its own, shows the gate its pause
@@ -77,6 +81,9 @@ func TestList_ShowsTheEscalationInstanceWithItsOwnGate(t *testing.T) {
 	if len(got) != 1 || got[0].Call != "c2#taint" || got[0].Tool != "write" || got[0].Need != 2 || !slices.Equal(got[0].Approvers, []string{"esc1", "esc2"}) {
 		t.Fatalf("list = %+v, want the one waiting gate c2#taint of write, 2 of [esc1 esc2]", got)
 	}
+	if len(got[0].Why) != 1 || got[0].Why[0].Kind != "taint" || got[0].Why[0].Source != "crm" || !strings.HasPrefix(got[0].Why[0].Ref, "tool:read/c1") {
+		t.Errorf("why = %+v, want the taint reason from crm read by tool read", got[0].Why)
+	}
 	for _, c := range got[0].Commands {
 		if !strings.Contains(c, "c2#taint") || strings.Contains(c, "own1") {
 			t.Errorf("command %q does not name the instance and its own approvers", c)
@@ -84,5 +91,86 @@ func TestList_ShowsTheEscalationInstanceWithItsOwnGate(t *testing.T) {
 	}
 	if len(got[0].Commands) == 0 {
 		t.Error("no commands printed for the instance")
+	}
+}
+
+// Probe: the text of -list and the decision screen say why the escalation instance asks, and mark the reason as
+// the application's record, not part of what is signed.
+func TestApprove_ShowsWhyTheInstanceAsks(t *testing.T) {
+	f := taintfixture.New(t, &agent.ApprovalPolicy{Need: 1, Approvers: []string{"own1"}})
+	_ = f.Drive()
+	if err := f.Submit("c2", "c2", "own1", true); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Drive()
+	stub := Stores{Postgres: func(string, bool) (agent.Store, io.Closer, error) { return f.Journal.Store(), io.NopCloser(nil), nil }}
+	var out, errb bytes.Buffer
+	if code := Main([]string{"-postgres", "postgres://u@h/db", "-list", "-color", "never"}, strings.NewReader(""), &out, &errb, stub); code != 0 {
+		t.Fatalf("code %d: %s", code, errb.String())
+	}
+	if !strings.Contains(out.String(), "why: untrusted content from crm (read by tool read, call c1, journal position") {
+		t.Errorf("the list does not say why:\n%s", out.String())
+	}
+	// The decision screen.
+	esc, err := load(context.Background(), f.Journal, taintfixture.Run, "c2#taint")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	var screen bytes.Buffer
+	c := &cmd{out: &screen, st: term.For(&screen, term.Never), f: flags{as: "esc1", approverKeys: "keys"}}
+	c.show(esc, f.Subject("c2#taint"), audit.Ed25519Signer{Priv: priv})
+	for _, want := range []string{"why", "untrusted content from crm", "not part of what you sign"} {
+		if !strings.Contains(screen.String(), want) {
+			t.Errorf("the decision screen lacks %q:\n%s", want, screen.String())
+		}
+	}
+	// The tool's own gate has no reason of its own to show.
+	own, err := load(context.Background(), f.Journal, taintfixture.Run, "c2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ownScreen bytes.Buffer
+	c = &cmd{out: &ownScreen, st: term.For(&ownScreen, term.Never), f: flags{as: "own1", approverKeys: "keys"}}
+	c.show(own, f.Subject("c2"), audit.Ed25519Signer{Priv: priv})
+	if strings.Contains(ownScreen.String(), "untrusted content") {
+		t.Errorf("the call's own gate shows the taint reason:\n%s", ownScreen.String())
+	}
+}
+
+// Probe: a cap reason in the record shows in -list, in its JSON and on the decision screen of the call's own
+// gate, with the figures and the label "as of the ask".
+func TestApprove_ShowsACapReason(t *testing.T) {
+	f := taintfixture.New(t, &agent.ApprovalPolicy{Need: 1, Approvers: []string{"own1"}})
+	_ = f.Drive()
+	j := f.WithCapReason() // the call's own gate (c2) still waits: its approval is not submitted
+	stub := Stores{Postgres: func(string, bool) (agent.Store, io.Closer, error) { return j.Store(), io.NopCloser(nil), nil }}
+	var out, errb bytes.Buffer
+	if code := Main([]string{"-postgres", "postgres://u@h/db", "-list", "-color", "never"}, strings.NewReader(""), &out, &errb, stub); code != 0 {
+		t.Fatalf("code %d: %s", code, errb.String())
+	}
+	if !strings.Contains(out.String(), "why: cap refund_one: this call 6000.00 USD, limit 5000.00 USD (over, gate)") {
+		t.Errorf("-list lacks the cap line:\n%s", out.String())
+	}
+	out.Reset()
+	if code := Main([]string{"-postgres", "postgres://u@h/db", "-list", "-json"}, strings.NewReader(""), &out, &errb, stub); code != 0 {
+		t.Fatalf("code %d: %s", code, errb.String())
+	}
+	var got []waiting
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil || len(got) != 1 || len(got[0].Why) != 1 || got[0].Why[0].Rule != "refund_one" || got[0].Why[0].Amount == nil || *got[0].Why[0].Amount != 600000 {
+		t.Fatalf("-list -json = %v / %s, want the cap reason with its figures", err, out.String())
+	}
+	own, err := load(context.Background(), j, taintfixture.Run, "c2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	var screen bytes.Buffer
+	c := &cmd{out: &screen, st: term.For(&screen, term.Never), f: flags{as: "own1", approverKeys: "keys"}}
+	c.show(own, f.Subject("c2"), audit.Ed25519Signer{Priv: priv})
+	for _, want := range []string{"cap refund_one: this call 6000.00 USD", "the application's record, as of the ask"} {
+		if !strings.Contains(screen.String(), want) {
+			t.Errorf("the decision screen lacks %q:\n%s", want, screen.String())
+		}
 	}
 }

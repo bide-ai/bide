@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/bide-ai/bide/internal/gatereason"
 )
 
 // NotifyPending runs one catch-up sweep for a notifier: it reads every unfinished run in j and
@@ -214,7 +216,7 @@ func (e *notifyEngine) pendingEvents(runID string, recs []Record) []notifyEvent 
 		if err := json.Unmarshal(r.Result, &w); err != nil || w.ToolUseID == "" {
 			continue
 		}
-		ap := &NotifyApproval{ToolUseID: w.ToolUseID, ToolName: w.ToolName}
+		ap := &NotifyApproval{ToolUseID: w.ToolUseID, ToolName: w.ToolName, Why: gateReasons(gatereason.Find(w.ToolUseID, valueRecords(recs)))}
 		// The first pause note, or a re-ask note (ApprovalReaskStep): each is its own ask, decided by
 		// its own outcome.
 		key, decided := ApprovalKey(runID, w.ToolUseID, 0), gateDecidedNamesIn(recs, w.ToolUseID)

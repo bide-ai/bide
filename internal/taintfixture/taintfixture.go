@@ -150,3 +150,46 @@ func (f *F) SubmitUnchecked(call, signedFor, id string, approved bool) error {
 	f.T.Helper()
 	return agent.SubmitDecision(context.Background(), f.Journal, f.Decision(call, signedFor, id, approved))
 }
+
+// WithCapReason returns a copy of the fixture's journal in which the gate-reason record of the write call (c2)
+// (written if the call has none yet) also holds a hand-written cap reason: rule "refund_one" gating a call of 6,000.00 USD over a limit of
+// 5,000.00 USD. A cap gate does not exist yet, so the engine writes no such record; the record format is
+// the one it will write, and this lets the readers of it be tested before the engine writes it.
+func (f *F) WithCapReason() *agent.Journal {
+	f.T.Helper()
+	ctx := context.Background()
+	ms := agent.NewMemStore()
+	cap := map[string]any{"kind": "cap", "rule": "refund_one", "action": "gate", "why": "over", "currency": "USD", "amount": 600000, "limit": 500000}
+	found := false
+	for e, err := range f.Journal.Store().Load(ctx, Run, -1) {
+		if err != nil {
+			f.T.Fatal(err)
+		}
+		data := e.Data
+		if e.Name == "gate-reason:c2" {
+			found = true
+			var rec map[string]any
+			if err := json.Unmarshal(data, &rec); err != nil {
+				f.T.Fatal(err)
+			}
+			body := rec["result"].(map[string]any)
+			body["reasons"] = append(body["reasons"].([]any), cap)
+			data, _ = json.Marshal(rec)
+		}
+		if _, _, err := ms.Insert(ctx, Run, e.Name, data); err != nil {
+			f.T.Fatal(err)
+		}
+	}
+	if !found { // the call's own gate still waits: the engine has not yet written a record for it
+		body, _ := json.Marshal(map[string]any{"format": "bide.gate-reason.v1", "tool_use_id": "c2", "reasons": []any{cap}, "recorded_at": "2026-10-24T10:43:00.000Z"})
+		data, _ := json.Marshal(agent.Record{Kind: agent.StepValue, Name: "gate-reason:c2", Result: body})
+		if _, _, err := ms.Insert(ctx, Run, "gate-reason:c2", data); err != nil {
+			f.T.Fatal(err)
+		}
+	}
+	j, err := agent.NewJournal(ms)
+	if err != nil {
+		f.T.Fatal(err)
+	}
+	return j
+}

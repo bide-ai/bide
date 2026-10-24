@@ -1,0 +1,3 @@
+Section: Added
+
+The reasons a call is gated are shown to the approver. `bide approve -list` and the decision screen print `why:` lines for the escalation gate of a tainted call (the untrusted content its turn read, where, and at which journal position), `bide view` shows them in the gate's card, `-list -json` carries `why`, and the notifier payload carries `approval.why` (a cap reason's figures only for a tool named in `Args(...)`). The reasons come from the `gate-reason` record the engine writes; they are the application's record, no gate reads them, and the signed decision does not bind them. `agent.GateReason` (the type of one reason, experimental) and the `Why` fields of `agent.NotifyApproval` and `notify.Approval` are new.

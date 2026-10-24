@@ -1027,6 +1027,40 @@ type FlowRef struct {
 
 FlowRef names the plan flow that drives a run of kind RunKindFlow.
 
+## type GateReason
+
+```go
+type GateReason struct {
+	Kind string `json:"kind"`
+
+	Source string `json:"source,omitempty"`
+
+	Ref string `json:"ref,omitempty"`
+
+	Pos int `json:"pos,omitempty"`
+
+	Rule string `json:"rule,omitempty"`
+
+	Action string `json:"action,omitempty"`
+
+	Why string `json:"why,omitempty"`
+
+	Currency string `json:"currency,omitempty"`
+
+	Amount *int64 `json:"amount,omitempty"`
+
+	Limit int64 `json:"limit,omitempty"`
+
+	At string `json:"at,omitempty"`
+}
+```
+
+GateReason is one reason a call needs a gate beyond its tool's own, as the gate-reason record the engine wrote holds it.
+
+**Methods**
+
+- `func (r GateReason) Line() string`: Line is the reason as one line of text, for a terminal or a log: "untrusted content from inbound-email (read by tool read\_email, call c3, journal position 4)", or "cap refund\_one: this call 6000.00 USD, limit 5000.00 USD (over, gate)".
+
 ## type GateStanding
 
 ```go
@@ -1878,6 +1912,8 @@ type NotifyApproval struct {
 	Excluded []string
 
 	Reask string
+
+	Why []GateReason
 	// contains filtered or unexported fields
 }
 ```

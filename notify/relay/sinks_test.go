@@ -356,3 +356,27 @@ func TestSinksAreSafeForConcurrentSends(t *testing.T) {
 		t.Fatalf("%d requests, want 32", n.Load())
 	}
 }
+
+// The relays do not render an approval's reasons (approval.why): they build their messages from named fields
+// of the payload, so a source or rule name a host declared (and an attacker may have influenced) never reaches a
+// Slack message, a mention, or a PagerDuty summary or custom detail. The reasons travel in the webhook's JSON
+// only. If a relay ever renders them, this test fails until the names are escaped for that target.
+func TestRelaysDoNotRenderTheReasons(t *testing.T) {
+	amt := int64(600000)
+	p := samplePayload("approval_pending")
+	p.Approval = &notify.Approval{ToolUseID: "c3", Tool: "write", Policy: notify.Policy{Need: 2, Of: 2}, Approvers: []string{"a", "b"},
+		Why: []agent.GateReason{
+			{Kind: "taint", Source: "<!channel> <@U123> <https://evil.example|click> *bold* `x`", Ref: "tool:read/c1", Pos: 1},
+			{Kind: "cap", Rule: "<!here> r", Action: "gate", Why: "over", Currency: "USD", Amount: &amt, Limit: 1},
+			{Kind: "conflict"},
+		}}
+	slack, _ := json.Marshal(SlackMessage(p, ""))
+	pd, _ := json.Marshal(PagerDutyTrigger("key", "bide", "warning", p))
+	for name, out := range map[string]string{"slack": string(slack), "pagerduty": string(pd)} {
+		for _, leaked := range []string{"!channel", "@U123", "evil.example", "!here", "*bold*", "conflict", "600000", "untrusted content"} {
+			if strings.Contains(out, leaked) {
+				t.Errorf("%s renders the reasons (%q is in the message): %s", name, leaked, out)
+			}
+		}
+	}
+}

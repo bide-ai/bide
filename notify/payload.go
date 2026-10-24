@@ -111,8 +111,13 @@ type Approval struct {
 	Excluded []string `json:"excluded,omitempty"`
 	// Reask says why the gate asks again over a recorded tally (agent.PendingReapproval,
 	// agent.PendingSoDReapproval); omitted on the gate's first ask.
-	Reask string          `json:"reask,omitempty"`
-	Args  json.RawMessage `json:"args,omitempty"` // only with WithFields(Args(tool))
+	Reask string `json:"reask,omitempty"`
+	// Why says why the call needs this gate beyond its tool's own (a gate-reason record of the run):
+	// the untrusted content its turn read, or the cap rule that holds it. It is the application's claim, for
+	// the approver, and no gate reads it. A cap reason carries its figures (amount, limit, currency) only
+	// with WithFields(Args(tool)), as they are the call's own numbers; omitted when there is no reason.
+	Why  []agent.GateReason `json:"why,omitempty"`
+	Args json.RawMessage    `json:"args,omitempty"` // only with WithFields(Args(tool))
 }
 
 // Policy is the gate's k of n.
@@ -236,6 +241,7 @@ func (w *Webhook) payload(n agent.Notification) Payload {
 			if ap.Approvers == nil {
 				ap.Approvers = []string{}
 			}
+			ap.Why = whyOf(a.Why, w.fields.args[a.ToolName])
 			if w.fields.args[a.ToolName] {
 				var pend *agent.ApprovalPending
 				if errors.As(n.Err, &pend) && len(pend.Args) > 0 && json.Valid(pend.Args) {
@@ -352,4 +358,20 @@ func (p *Payload) stopDetail(w *Webhook, n agent.Notification) {
 		u := strings.TrimRight(w.viewURL, "/") + "/"
 		p.View.URL = &u
 	}
+}
+
+// whyOf is the reasons for a payload: a copy, with a cap reason's figures left out unless figures says the
+// call's own numbers may be sent.
+func whyOf(why []agent.GateReason, figures bool) []agent.GateReason {
+	if len(why) == 0 {
+		return nil
+	}
+	out := make([]agent.GateReason, len(why))
+	copy(out, why)
+	if !figures {
+		for i := range out {
+			out[i].Amount, out[i].Limit, out[i].Currency = nil, 0, ""
+		}
+	}
+	return out
 }

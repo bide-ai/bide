@@ -210,7 +210,20 @@ func TestHandler_ServesTheEscalationInstance(t *testing.T) {
 	if esc == nil || !esc.Waiting || esc.Need != 2 || !slices.Equal(esc.Approvers, []string{"esc1", "esc2"}) {
 		t.Fatalf("gates = %+v, want c2#taint waiting on 2 of [esc1 esc2]", v.Gates)
 	}
+	if len(esc.Why) != 1 || esc.Why[0].Kind != "taint" || esc.Why[0].Source != "crm" {
+		t.Errorf("the instance's reasons = %+v, want the taint reason from crm", esc.Why)
+	}
+	for _, g := range v.Gates {
+		if g.ToolUseID == "c2" && len(g.Why) != 0 {
+			t.Errorf("the call's own gate carries reasons %+v", g.Why)
+		}
+	}
 	_, page := get(t, h, "/run?id="+taintfixture.Run)
+	for _, want := range []string{"why this gate", "untrusted content from crm", "not part of what an approver signs"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the run page does not show %q", want)
+		}
+	}
 	for _, want := range []string{"c2#taint", "esc1", "esc2"} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the run page does not show %q", want)
@@ -256,5 +269,38 @@ func TestBuild_NodesFooAndFooTaintAreEachListedOnce(t *testing.T) {
 	}
 	if !slices.Equal(ids, []string{"node:foo", "node:foo#taint"}) {
 		t.Fatalf("gates = %v, want node:foo and node:foo#taint once each", ids)
+	}
+}
+
+// Probe: a cap reason in the gate-reason record shows on the call's own gate (and the taint reason stays on
+// the instance), with this call's figures labelled as of the ask, on the JSON view and on the page.
+func TestHandler_ShowsACapReasonOnTheCallsOwnGate(t *testing.T) {
+	f := taintfixture.New(t, &agent.ApprovalPolicy{Need: 1, Approvers: []string{"own1"}})
+	_ = f.Drive()
+	if err := f.Submit("c2", "c2", "own1", true); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Drive()
+	j := f.WithCapReason()
+	h := Handler(Options{Source: JournalSource{J: j}})
+	v := viewOf(t, h, taintfixture.Run)
+	var own, esc Gate
+	for _, g := range v.Gates {
+		switch g.ToolUseID {
+		case "c2":
+			own = g
+		case "c2#taint":
+			esc = g
+		}
+	}
+	if len(own.Why) != 1 || own.Why[0].Kind != "cap" || own.Why[0].Rule != "refund_one" || own.Why[0].Amount == nil || *own.Why[0].Amount != 600000 || own.Why[0].Limit != 500000 {
+		t.Fatalf("the own gate's reasons = %+v, want the cap reason with its figures", own.Why)
+	}
+	if len(esc.Why) != 1 || esc.Why[0].Kind != "taint" {
+		t.Fatalf("the instance's reasons = %+v, want the taint reason alone", esc.Why)
+	}
+	_, page := get(t, h, "/run?id="+taintfixture.Run)
+	if !strings.Contains(page, "cap refund_one: this call 6000.00 USD, limit 5000.00 USD (over, gate)") {
+		t.Errorf("the page lacks the cap line:\n%s", page)
 	}
 }

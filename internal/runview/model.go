@@ -19,6 +19,8 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/internal/escalation"
+	"github.com/bide-ai/bide/internal/gatereason"
+	"github.com/bide-ai/bide/internal/gatereason/agentrecs"
 	"github.com/bide-ai/bide/plan"
 )
 
@@ -161,6 +163,10 @@ type Gate struct {
 	ReapprovalSoD bool `json:"reapproval_sod,omitempty"`
 	// Cards is each approver as the page shows them (see ApproverCard); not in the JSON view.
 	Cards []ApproverCard `json:"-"`
+	// Why says why the call needs this gate beyond its tool's own: for the escalation instance of a tainted
+	// call, the untrusted content its turn had read; for a gate a cap rule holds, the rule and this call's
+	// figures as of the ask. It is the engine's gate-reason record, the application's claim, and no gate reads it.
+	Why []gatereason.Reason `json:"why,omitempty"`
 	// ExcludePrincipal: the gate never counts the run's requester (agent.ApprovalPolicy.ExcludePrincipal);
 	// Requesters are the requesters (the run's principal and those of the runs above it), and Excluded
 	// the approvers who fill no seat (the tally's, or before
@@ -624,7 +630,7 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 	order, calls = withEscalationInstances(recs, byName, calls, order)
 	var out []Gate
 	for _, id := range order {
-		g := Gate{ToolUseID: id, ToolName: calls[id].Name}
+		g := Gate{ToolUseID: id, ToolName: calls[id].Name, Why: gatereason.Find(id, agentrecs.Of(recs))}
 		var wait agent.ApprovalWait
 		paused := false
 		// The newest pause note: a gate that asked again (agent.ApprovalReaskStep) records the policy it
@@ -992,4 +998,13 @@ func MarkDeadlines(gates []Gate, now time.Time) {
 			g.Due = "due in " + durText(at.Sub(now)) + " (" + when + ")"
 		}
 	}
+}
+
+// WhyLines is the gate's reasons as lines of text (gatereason.Reason.Line), for the page.
+func (g Gate) WhyLines() []string {
+	var out []string
+	for _, r := range g.Why {
+		out = append(out, r.Line())
+	}
+	return out
 }
