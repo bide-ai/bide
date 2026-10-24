@@ -95,3 +95,65 @@ test('every member the endpoint can send is accepted, a re-asked gate\'s reason 
   const b = te.encode('{"run":"r","call":"c","tool":"t","args":{},"args_sha256":"00","decision_format":"bide.approval.v3","state":"waiting","asked_at":"2026-10-14T09:30:15.123Z","reason":"approval re-required","gate":{"need":1,"approvers":["a"],"approved":0,"denied":0,"passed":false,"failed":false}}');
   assert.doesNotThrow(() => parsePending(b));
 });
+
+// --- the reasons a call is gated (approvals.Pending.Why) ---
+
+import fs from 'node:fs';
+import { parseFirst, serialize } from '../canon.js';
+import { parseWhy, reasonLine, money, argsHaveText, EXPONENTS } from '../core.js';
+
+const why = (s) => parseWhy(new TextEncoder().encode(s));
+
+test('the reasons are read strictly: arrays of known members, short strings, integers', () => {
+  const r = why('[{"kind":"taint","source":"crm","ref":"input","pos":3,"at":"t"},{"kind":"cap","rule":"r","amount":-5,"limit":9007199254740993}]');
+  assert.equal(r.length, 2);
+  assert.equal(r[0].pos, 3);
+  assert.equal(r[1].amount, '-5');
+  assert.equal(r[1].limit, '9007199254740993', 'a limit past 2^53 keeps its digits');
+  for (const bad of [
+    '{"kind":"taint"}', // not an array
+    '[1]', // not an object
+    '[{"kind":"taint","future":1}]', // an unknown member
+    '[{"source":"x"}]', // no kind
+    '[{"kind":7}]', // kind not a string
+    '[{"kind":"taint","pos":1.5}]', // not an integer
+    '[{"kind":"cap","amount":"5"}]', // an amount that is a string
+    '[{"kind":"cap","limit":1e3}]', // an exponent form
+    `[{"kind":"taint","source":"${'x'.repeat(513)}"}]`, // too long
+    `[${Array(65).fill('{"kind":"taint"}').join(',')}]`, // too many
+  ]) assert.throws(() => why(bad), Error, bad.slice(0, 50));
+  assert.equal(why('[]').length, 0);
+});
+
+test('a reason is written as Go writes it (agent.GateReason.Line): the golden file Go writes', () => {
+  const golden = fs.readFileSync(new URL('./why.golden.json', import.meta.url));
+  const cases = parseFirst(golden).value.a;
+  assert.ok(cases.length >= 10);
+  for (const c of cases) {
+    const reason = new TextDecoder().decode(serialize(c.o.get('reason')));
+    const got = reasonLine(why('[' + reason + ']')[0]);
+    assert.equal(got, c.o.get('line'), reason);
+  }
+});
+
+test('money writes minor units as decimals, exactly', () => {
+  assert.equal(money('500000', 'USD'), '5000.00 USD');
+  assert.equal(money('5', 'USD'), '0.05 USD');
+  assert.equal(money('-5', 'USD'), '-0.05 USD');
+  assert.equal(money('12', 'JPY'), '12 JPY');
+  assert.equal(money('1234', 'KWD'), '1.234 KWD');
+  assert.equal(money('9223372036854775807', 'USD'), '92233720368547758.07 USD');
+  assert.equal(money('7', 'ZZZ'), '7 minor units of "ZZZ"');
+  assert.equal(EXPONENTS.USD, 2);
+  assert.equal(Object.prototype.hasOwnProperty.call(EXPONENTS, 'constructor'), false, 'a currency named like a property is not a currency');
+  assert.equal(money('7', 'constructor'), '7 minor units of "constructor"');
+});
+
+test('text in the arguments is told from numbers, booleans and null', () => {
+  const t = (s) => argsHaveText(new TextEncoder().encode(s));
+  assert.equal(t('{"memo":"pay"}'), true);
+  assert.equal(t('{"a":{"b":["x"]}}'), true);
+  assert.equal(t('{"a":1,"b":true,"c":null,"d":[1,2]}'), false);
+  assert.equal(t(''), false);
+  assert.equal(t('free text, not JSON'), true);
+});

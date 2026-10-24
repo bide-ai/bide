@@ -133,6 +133,27 @@ Very long values are shown in full in a scroll box and are never clipped: a clip
 enabled would sign arguments the approver did not read, which the CLI refuses to do. Signing is also disabled
 until the approver has reached the end of the box, as an aid (see "Controls").
 
+## Why you are being asked (as built)
+
+When the application holds a call for a reason beyond its tool's own gate, the pending call carries it
+(`approvals.Pending.Why`, `agent.GateReason`: the gate-reason record the engine wrote), and the page shows a
+"Why you are being asked" list above the arguments: for the escalation gate of a tainted call, each source of
+untrusted content its turn read, with where (tool and call, the run's input, retrieved documents) and the journal
+position; for a gate a cap rule holds, the rule, this call's amount and the limit as decimals (the ISO 4217
+exponent table is carried in `core.js`, and a Go test holds it equal to the cap rules' table), what the rule decided
+and why, each labelled with the time of the ask. Two records of the run that name the call and disagree show one
+warning line, "conflicting reason records", and none of their reasons.
+
+- **Text only.** Each reason is one line set with `textContent` in a list item, with the characters that could hide
+  content written as escapes (`safeText`); the page assigns no markup, and its policy (`default-src 'none'`, no
+  inline script or style) is unchanged. The reader of the list is strict: an unknown member, a non-integer,
+  a string over 512 characters or more than 64 reasons stop the page from showing the call at all, and nothing is signed.
+- **The application's claim.** The list says so: the reasons are the application's record of why the call was held,
+  not part of what the approver signs, and the page cannot check them. The signed bytes are unchanged
+  (`bide.approval.v3`); binding the reason into a decision is a new decision format and not built.
+- **No model-written prose.** The page shows no text the model wrote beyond the arguments. A string anywhere in the
+  arguments is something the model wrote, and the page says so under them: "model-written, unverified".
+
 ## What it looks like, and who can change that
 
 The page's look is part of the pin. Its stylesheet, `app.css`, is the shipped themes (`light`, `dark`,

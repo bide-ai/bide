@@ -457,3 +457,35 @@ func TestTaintIntake_APlanNodeNamedLikeAnInstanceIsANode(t *testing.T) {
 		t.Errorf("a node named foo#taint is answered %d, a node named foo %d: the name must not change how the gate is read", named, plain)
 	}
 }
+
+// The intake says why the escalation instance asks: the taint reason from the gate-reason record, on the
+// instance and not on the tool's own gate; a decoy record that names the call and disagrees is shown as a
+// conflict in place of the reasons.
+func TestTaintIntake_SaysWhyTheInstanceAsks(t *testing.T) {
+	r := newTaintRig(t, &agent.ApprovalPolicy{Need: 1, Approvers: []string{"own1"}})
+	if err := r.drive(); !agent.IsPause(err) {
+		t.Fatalf("first drive = %v", err)
+	}
+	r.serve()
+	if status, out := r.pending("c2"); status != http.StatusOK || out["why"] != nil {
+		t.Fatalf("the own gate: %d why=%v, want no reason", status, out["why"])
+	}
+	if status, _ := r.decide("c2", "c2", "own1", true); status != http.StatusOK {
+		t.Fatalf("own gate decision: %d", status)
+	}
+	if err := r.drive(); !agent.IsPause(err) {
+		t.Fatalf("second drive = %v", err)
+	}
+	status, out := r.pending("c2%23taint")
+	why, _ := out["why"].([]any)
+	if status != http.StatusOK || len(why) != 1 {
+		t.Fatalf("instance: %d why=%v, want one reason", status, out["why"])
+	}
+	w := why[0].(map[string]any)
+	if w["kind"] != "taint" || w["source"] != "crm" || !strings.HasPrefix(w["ref"].(string), "tool:read/c1") {
+		t.Fatalf("reason = %v, want the taint reason from crm read by tool read, call c1", w)
+	}
+	if status, out := r.pending("c2"); status != http.StatusOK || out["why"] != nil {
+		t.Fatalf("the own gate after the instance asks: %d why=%v, want no reason", status, out["why"])
+	}
+}

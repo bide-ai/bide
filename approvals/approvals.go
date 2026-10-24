@@ -60,6 +60,8 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/internal/escalation"
+	"github.com/bide-ai/bide/internal/gatereason"
+	"github.com/bide-ai/bide/internal/gatereason/agentrecs"
 )
 
 // Request is the body of POST /decisions: one approver's signed decision. Signature is the
@@ -129,7 +131,13 @@ type Pending struct {
 	// Reason says why the call waits again after a tally: agent.PendingReapproval or
 	// agent.PendingSoDReapproval. Empty on a call's first ask.
 	Reason string `json:"reason,omitempty"`
-	Gate   Gate   `json:"gate"`
+	// Why says why the call needs this gate beyond its tool's own: for the escalation instance of a tainted
+	// call, the untrusted content its turn had read; for a gate a cap rule holds, the rule and this call's
+	// figures as of the ask. It is the gate-reason record the engine wrote: the application's claim, shown to
+	// help an approver decide, read by no gate and not bound by the signed decision. If two records of the run
+	// name the call and disagree, it is the one reason of kind "conflict". Omitted when there is none.
+	Why  []agent.GateReason `json:"why,omitempty"`
+	Gate Gate               `json:"gate"`
 }
 
 // The states of a gated call (Pending.State).
@@ -884,6 +892,9 @@ func (h *Handler) pending(w http.ResponseWriter, r *http.Request) {
 		DecisionFormat: agent.DecisionFormat, State: st, AskedAt: g.wait.RecordedAt, Gate: h.gate(g)}
 	if !g.st.Deadline.IsZero() {
 		p.ExpiresAt = agent.FormatTimestamp(g.st.Deadline)
+	}
+	for _, r := range gatereason.Find(call, agentrecs.Of(g.recs)) {
+		p.Why = append(p.Why, agent.GateReason(r))
 	}
 	switch st {
 	case StateWaiting:

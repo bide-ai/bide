@@ -27,5 +27,7 @@ button.reject:disabled { border: 4px double var(--idle); }
 a:focus-visible, button:focus-visible, input:focus-visible, pre:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .warn { color: var(--warn); border-left: 4px solid var(--warn); padding-left: .5rem; }
 .note { color: var(--muted); font-size: .9rem; }
+#why-list { padding-left: 1.25rem; }
+#why-list li { overflow-wrap: anywhere; }
 .ok { color: var(--good); font-weight: 600; }
 .bad { color: var(--bad); font-weight: 600; }

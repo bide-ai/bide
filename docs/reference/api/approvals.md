@@ -155,7 +155,9 @@ type Pending struct {
 	ExpiresAt string `json:"expires_at,omitempty"`
 
 	Reason string `json:"reason,omitempty"`
-	Gate   Gate   `json:"gate"`
+
+	Why  []agent.GateReason `json:"why,omitempty"`
+	Gate Gate               `json:"gate"`
 }
 ```
 
