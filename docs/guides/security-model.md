@@ -156,6 +156,14 @@ tool's own, unredacted. With content capture on, `trace` records a failed call's
 on its span, and redacts the URLs in the chat and run spans' error text the same way. A secret that is not in a URL, and not removed by your redactor, is
 journaled as written.
 
+## Untrusted content
+
+An agent that reads outside text can be steered by it. `agent.Untrusted` marks what the host knows to be outside
+text, and `agent.WithTaintPolicy` makes a run that read it need an escalation gate for each later side effect.
+That bounds the consequence of an injected request; it does not detect or stop one, and it misses text the host
+did not mark, a human who approves, and `ReadOnly` tools. See [untrusted content](untrusted-content.md) and its
+[limits](untrusted-content.md#what-this-does-not-do).
+
 ## Anchoring: the condition on tamper-evidence
 
 Integrity is unconditional: any edit changes the root. But a hash chain or Merkle tree stored in

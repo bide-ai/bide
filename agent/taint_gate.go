@@ -44,6 +44,10 @@ type gateEnv struct {
 // not run, and expired why.
 func (a *Agent) evalGate(ctx context.Context, runID string, env *gateEnv, tu ToolUse, id string, pol *ApprovalPolicy) (denied, expired bool, pause error, err error) {
 	tu.ID = id
+	// The pause note of a gate is written when the drive that asked the model for the turn first pauses at it.
+	// The escalation instance is asked after the tool's own gate has passed, usually by a later drive that
+	// replays the turn, so its note is written whenever it first pauses (the write is insert-once).
+	_, escalationInstance := baseCallID(id)
 	recs, decided, approvals, singles, values := env.recs, env.decided, env.approvals, env.singles, env.values
 	// protocol:claims begin ApGate ApExpire
 	// A recorded denial is final, whatever the tool's gate is now: a human's Approve(false)
@@ -78,7 +82,7 @@ func (a *Agent) evalGate(ctx context.Context, runID string, env *gateEnv, tu Too
 				return false, false, nil, err
 			}
 			if !final {
-				if env.live {
+				if env.live || escalationInstance {
 					a.notePending(ctx, runID, tu, pol)
 				}
 				evTally := tally // the event gets its own copy; ApprovalPending keeps tally
@@ -104,7 +108,7 @@ func (a *Agent) evalGate(ctx context.Context, runID string, env *gateEnv, tu Too
 				expired = singleExpired(r, expAt, true)
 			}
 			if !decided[tu.ID] {
-				if env.live {
+				if env.live || escalationInstance {
 					a.notePending(ctx, runID, tu, pol)
 				}
 				env.fire(ApprovalRequired{ToolUseID: tu.ID, Name: tu.Name, Args: tu.Args})

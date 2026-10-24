@@ -41,6 +41,8 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -700,12 +702,6 @@ func (h *Handler) load(ctx context.Context, run, call string) (*gateRecords, err
 	if err != nil {
 		return nil, err
 	}
-	// The escalation instance of a call (escalation.IsSubject) is gated by the taint policy's gate, which
-	// h.policyFor, a tool's own, does not name: taking it for the tool's gate would decide it by the wrong
-	// one, or by none. Until the intake decides it by the gate its pause note records, it is not served.
-	if escalation.IsSubject(call) {
-		return nil, errNoGate
-	}
 	_, tu, found := agent.FindToolCall(recs, call)
 	if !found {
 		return nil, errNoGate
@@ -731,7 +727,13 @@ func (h *Handler) load(ctx context.Context, run, call string) (*gateRecords, err
 	// The policy the gate enforces now: the application's live one for a tool it knows, else the
 	// newest pause note's.
 	g.pol = policyOfNote(g.wait)
-	if p, ok := h.policyFor(tu.Name); ok {
+	if base, esc := escalation.Base(call); esc && !escalationRecordAgrees(recs, base, g.pol) {
+		return nil, errNoGate
+	}
+	// The escalation instance of a call (escalation.IsSubject) is gated by the taint policy's gate, which
+	// h.policyFor, a tool's own, does not name: it is decided by the gate its pause note records, never by
+	// the tool's live gate (which would give it the wrong gate, or none).
+	if p, ok := h.policyFor(tu.Name); ok && !escalation.IsSubject(call) {
 		g.pol = p // nil: the tool has no gate now
 	}
 	since := ""
@@ -740,6 +742,39 @@ func (h *Handler) load(ctx context.Context, run, call string) (*gateRecords, err
 	}
 	g.st = agent.EvaluateGateAfter(recs, g.subject, g.pol, h.verifiers, since)
 	return g, nil
+}
+
+// escalationRecordAgrees reports whether the gate-reason record of the call an escalation instance belongs
+// to holds the gate the instance's pause note records, and a digest of that gate. The engine writes the
+// record before it asks the instance; a journal where it is missing, or says another gate, was not written
+// by the engine, and the instance is not served.
+func escalationRecordAgrees(recs []agent.Record, call string, pol *agent.ApprovalPolicy) bool {
+	found := false
+	for _, r := range recs {
+		if r.Kind != agent.StepValue || !strings.HasPrefix(r.Name, "gate-reason:") {
+			continue
+		}
+		var rec struct {
+			ToolUseID    string                `json:"tool_use_id"`
+			PolicyDigest string                `json:"policy_digest"`
+			Gate         *agent.ApprovalPolicy `json:"gate"`
+		}
+		if json.Unmarshal(r.Result, &rec) != nil || rec.ToolUseID != call {
+			continue
+		}
+		// Every record that names the call must agree, so a decoy written ahead of the engine's cannot win.
+		if rec.Gate == nil || pol == nil {
+			return false
+		}
+		b, _ := json.Marshal(rec.Gate)
+		sum := sha256.Sum256(b)
+		if rec.PolicyDigest != hex.EncodeToString(sum[:]) || rec.Gate.Need != pol.Need ||
+			rec.Gate.ExcludePrincipal != pol.ExcludePrincipal || !slices.Equal(rec.Gate.Approvers, pol.Approvers) {
+			return false
+		}
+		found = true
+	}
+	return found
 }
 
 // policyOfNote is the policy a pause note records.

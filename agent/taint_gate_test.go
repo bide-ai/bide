@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"iter"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -16,13 +18,13 @@ type tgEnv struct {
 	j       *Journal
 	reads   *counter
 	writes  *counter
-	policy  taintPolicy
+	policy  TaintPolicy
 	opts    []Option
 	writeOp []ToolOption
 }
 
 func newTG(t *testing.T) *tgEnv {
-	return &tgEnv{t: t, j: memJournal(), reads: &counter{}, writes: &counter{}, policy: taintPolicy{Gate: SingleApproval()}}
+	return &tgEnv{t: t, j: memJournal(), reads: &counter{}, writes: &counter{}, policy: TaintPolicy{Gate: SingleApproval()}}
 }
 
 // drive runs (or re-drives) run "r" with the remaining model turns, under the policy unless none is set.
@@ -32,7 +34,7 @@ func (e *tgEnv) drive(withPolicy bool, turns ...[]Emit) error {
 	write := e.writes.tool("write", e.writeOp...)
 	opts := append([]Option{WithTools(read, write)}, e.opts...)
 	if withPolicy {
-		opts = append(opts, withTaintPolicy(e.policy))
+		opts = append(opts, WithTaintPolicy(e.policy))
 	}
 	_, err := mustNew(&scriptModel{turns: turns}, e.j, opts...).Run(context.Background(), "r", UserText("go"))
 	return err
@@ -190,6 +192,11 @@ func TestTaintGate_BothGatesAreEnforced(t *testing.T) {
 		t.Fatal(err)
 	}
 	pendingOn(t, e.drive(true, textTurn("done")), "c2#taint")
+	// The instance is asked by a drive that replays the turn; its pause note is written all the same, for
+	// the intake, the notifier and bide approve read the gate from it.
+	if w, ok := hasStep(t, e.j, "r", ApprovalPendingStep("c2#taint")); !ok || !strings.Contains(string(w.Result), `"tool_use_id":"c2#taint"`) {
+		t.Fatalf("no pause note for the escalation instance asked by a replaying drive: %v %s", ok, w.Result)
+	}
 	if err := Approve(ctx, e.j, "r", "c2#taint", false); err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +224,7 @@ func TestTaintGate_AnApprovalDoesNotClearTaint(t *testing.T) {
 
 func TestTaintGate_RefuseMode(t *testing.T) {
 	e := newTG(t)
-	e.policy = taintPolicy{Refuse: true}
+	e.policy = TaintPolicy{Refuse: true}
 	if err := e.drive(true, readThenWrite()...); err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +271,7 @@ func TestTaintGate_TheReasonRecordOnlyAdds(t *testing.T) {
 	t.Run("another escalation gate holds the call", func(t *testing.T) {
 		e := newTG(t)
 		pendingOn(t, e.drive(true, readThenWrite()...), "c2#taint")
-		e.policy = taintPolicy{Gate: &ApprovalPolicy{Need: 1, Approvers: []string{"ops"}}}
+		e.policy = TaintPolicy{Gate: &ApprovalPolicy{Need: 1, Approvers: []string{"ops"}}}
 		e.opts = []Option{noKeys()}
 		err := e.drive(true, textTurn("done"))
 		if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "escalation gate") {
@@ -303,7 +310,7 @@ func TestFindToolCall_ResolvesTheEscalationSubject(t *testing.T) {
 // A compensation (a saga's rollback re-run) is never gated by taint.
 func TestTaintGate_CompensationIsNotGated(t *testing.T) {
 	e := newTG(t)
-	a := mustNew(&scriptModel{turns: [][]Emit{textTurn("x")}}, e.j, WithTools(e.writes.tool("write")), withTaintPolicy(e.policy))
+	a := mustNew(&scriptModel{turns: [][]Emit{textTurn("x")}}, e.j, WithTools(e.writes.tool("write")), WithTaintPolicy(e.policy))
 	spec := a.specs["write"]
 	ctx := withUnderTaint(context.Background(), "d")
 	marks := []taintMark{{Source: "crm", Ref: "tool:read/c1", Pos: 2}}
@@ -325,7 +332,7 @@ func TestTaintGate_ACertificateBoundEscalationGateIsReCheckedBeforeTheCallRuns(t
 	}
 	alice, bob := ok("alice", 1), ok("bob", 2)
 	e := newTG(t)
-	e.policy = taintPolicy{Gate: &ApprovalPolicy{Need: 1, Approvers: []string{"alice", "bob"}}}
+	e.policy = TaintPolicy{Gate: &ApprovalPolicy{Need: 1, Approvers: []string{"alice", "bob"}}}
 	e.opts = []Option{WithApproverVerifiers(certResolver(map[string]ApproverVerifier{"alice": alice, "bob": bob}))}
 	pendingOn(t, e.drive(true, readThenWrite()...), "c2#taint")
 	dec := certRec("approval:"+encodeID("c2#taint")+":alice:00", "alice")
@@ -349,7 +356,7 @@ func TestTaintGate_ACertificateBoundEscalationGateIsReCheckedBeforeTheCallRuns(t
 // does not count on the instance and the reverse.
 func TestTaintGate_SignedDecisionsAreForOneInstance(t *testing.T) {
 	e := newTG(t)
-	e.policy = taintPolicy{Gate: &ApprovalPolicy{Need: 2, Approvers: []string{"ops", "risk"}}}
+	e.policy = TaintPolicy{Gate: &ApprovalPolicy{Need: 2, Approvers: []string{"ops", "risk"}}}
 	e.opts = []Option{WithApproverVerifiers(fakeVerifiers("ops", "risk", "own"))}
 	e.writeOp = []ToolOption{WithApproval(&ApprovalPolicy{Need: 1, Approvers: []string{"own"}})}
 	pendingOn(t, e.drive(true, readThenWrite()...), "c2")
@@ -407,7 +414,7 @@ func TestTaintGate_CrashAtEveryWrite(t *testing.T) {
 		seen := 0
 		reads, writes := &counter{}, &counter{}
 		mk := func(st Store) *tgEnv {
-			return &tgEnv{t: t, j: mustJournal(st), reads: reads, writes: writes, policy: taintPolicy{Gate: SingleApproval()}, writeOp: []ToolOption{WithApproval(SingleApproval())}}
+			return &tgEnv{t: t, j: mustJournal(st), reads: reads, writes: writes, policy: TaintPolicy{Gate: SingleApproval()}, writeOp: []ToolOption{WithApproval(SingleApproval())}}
 		}
 		finished := false
 		for step := 0; step < 14 && !finished; step++ {
@@ -526,7 +533,7 @@ func TestTaintGate_ADenialOfTheInstanceSurvivesARedeployWithNoPolicy(t *testing.
 	t.Run("an m-of-n gate whose terminal tally denied", func(t *testing.T) {
 		e := newTG(t)
 		pol := &ApprovalPolicy{Need: 1, Approvers: []string{"ops"}}
-		e.policy = taintPolicy{Gate: pol}
+		e.policy = TaintPolicy{Gate: pol}
 		e.opts = []Option{WithApproverVerifiers(fakeVerifiers("ops"))}
 		pendingOn(t, e.drive(true, readThenWrite()...), "c2#taint")
 		// The gate's terminal tally of the instance, denied, as a counting drive would have recorded it.
@@ -564,5 +571,118 @@ func TestTaintGate_AnOwnGateDenialEndsTheCallBeforeTheInstanceIsAsked(t *testing
 	}
 	if _, ok := e.reasonOf("c2"); ok {
 		t.Error("a gate-reason was written for a call the own gate denied")
+	}
+}
+
+// Probe: the notifier announces the escalation instance with the escalation gate (from its pause note),
+// and the tool's own gate with its own; neither carries the other's approvers.
+func TestTaintGate_TheNotifierNamesEachInstanceWithItsOwnGate(t *testing.T) {
+	ctx := context.Background()
+	e := newTG(t)
+	e.policy = taintPolicy2()
+	e.opts = []Option{WithApproverVerifiers(fakeVerifiers("ops", "risk", "own"))}
+	e.writeOp = []ToolOption{WithApproval(&ApprovalPolicy{Need: 1, Approvers: []string{"own"}})}
+	clk, sink, trail := sweepClock(), &fakeSink{}, NewMemNotifyTrail()
+	pendingOn(t, e.drive(true, readThenWrite()...), "c2")
+	if err := sweep(t, e.j, sink, trail, clk); err != nil {
+		t.Fatal(err)
+	}
+	approveAs(t, e.j, "r", "c2", "own", true)
+	pendingOn2(t, e.drive(true, textTurn("done")), "c2#taint")
+	if err := sweep(t, e.j, sink, trail, clk); err != nil {
+		t.Fatal(err)
+	}
+	var own, esc *Notification
+	for i := range sink.calls {
+		n := &sink.calls[i]
+		if n.Kind != NotificationApprovalPending || n.Approval == nil {
+			continue
+		}
+		switch n.Approval.ToolUseID {
+		case "c2":
+			own = n
+		case "c2#taint":
+			esc = n
+		}
+	}
+	if own == nil || esc == nil {
+		t.Fatalf("notifications: own %v, escalation %v; want both", own != nil, esc != nil)
+	}
+	if own.Approval.ToolName != "write" || own.Approval.Need != 1 || !slices.Equal(own.Approval.Approvers, []string{"own"}) {
+		t.Errorf("own gate notification = %+v", own.Approval)
+	}
+	if esc.Approval.ToolName != "write" || esc.Approval.Need != 2 || !slices.Equal(esc.Approval.Approvers, []string{"ops", "risk"}) {
+		t.Errorf("escalation notification = %+v, want write needing 2 of [ops risk]", esc.Approval)
+	}
+	_ = ctx
+}
+
+func taintPolicy2() TaintPolicy {
+	return TaintPolicy{Gate: &ApprovalPolicy{Need: 2, Approvers: []string{"ops", "risk"}}}
+}
+
+// pendingOn2 is pendingOn for a gate whose pending value carries a quorum.
+func pendingOn2(t *testing.T, err error, id string) {
+	t.Helper()
+	var pend *ApprovalPending
+	if !errors.As(err, &pend) || pend.ToolUseID != id {
+		t.Fatalf("err = %v, want *ApprovalPending on %s", err, id)
+	}
+}
+
+// A certificate-bound escalation gate asked for the first time by a replaying drive (the tool's own gate
+// was asked first, so the drive that passes it is a replay) records that it is bound in its pause note.
+// The note can only add a requirement: a later drive whose resolver knows the approver as a bare key
+// does not run the call on a bare-key decision.
+func TestTaintGate_ACertBoundEscalationGateAskedByAReplayRefusesABareKeyDecision(t *testing.T) {
+	ctx := context.Background()
+	cert := &fakeCertVerifier{id: "alice", check: func(CertDecision) CertCheck {
+		return CertCheck{Identity: "alice", KeyHash: [32]byte{1}, Tier: "final", Basis: "b"}
+	}}
+	e := newTG(t)
+	e.policy = TaintPolicy{Gate: &ApprovalPolicy{Need: 1, Approvers: []string{"alice"}}}
+	e.writeOp = []ToolOption{WithApproval(SingleApproval())}
+	e.opts = []Option{WithApproverVerifiers(certResolver(map[string]ApproverVerifier{"alice": cert}))}
+	pendingOn(t, e.drive(true, readThenWrite()...), "c2")
+	if err := Approve(ctx, e.j, "r", "c2", true); err != nil {
+		t.Fatal(err)
+	}
+	pendingOn2(t, e.drive(true, textTurn("done")), "c2#taint") // a replay asks the instance
+	note, ok := hasStep(t, e.j, "r", ApprovalPendingStep("c2#taint"))
+	var w ApprovalWait
+	if !ok || json.Unmarshal(note.Result, &w) != nil || !w.IdentityBound {
+		t.Fatalf("the replay's note for the instance = %+v (found %v), want identity_bound", w, ok)
+	}
+	// A bare-key decision by alice, and a drive whose resolver knows alice as a bare key.
+	approveAs(t, e.j, "r", "c2#taint", "alice", true)
+	e.opts = []Option{WithApproverVerifiers(fakeVerifiers("alice"))}
+	err := e.drive(true, textTurn("done"))
+	if e.writes.n.Load() != 0 {
+		t.Fatalf("the write ran on a bare-key decision of a certificate-bound gate (err %v)", err)
+	}
+	if err == nil {
+		t.Fatal("the drive returned no error for a certificate-bound gate decided by a bare key")
+	}
+}
+
+// The pause note of an escalation instance asked by a replaying drive names the requester of the run, read
+// from the journal, not from the replaying drive's own identity (which is empty here): the viewer and the
+// notifier show the requester as excluded.
+func TestTaintGate_ThePauseNoteOfAReplayAskedInstanceNamesTheRequester(t *testing.T) {
+	ctx := context.Background()
+	e := newTG(t)
+	e.policy = TaintPolicy{Gate: &ApprovalPolicy{Need: 2, Approvers: []string{"alice", "bob", "carol"}, ExcludePrincipal: true}}
+	e.writeOp = []ToolOption{WithApproval(SingleApproval())}
+	e.opts = []Option{WithApproverVerifiers(fakeVerifiers("alice", "bob", "carol")), WithIdentity(Identity{Actor: "agent@1", OnBehalfOf: "alice"})}
+	pendingOn(t, e.drive(true, readThenWrite()...), "c2")
+	if err := Approve(ctx, e.j, "r", "c2", true); err != nil {
+		t.Fatal(err)
+	}
+	e.opts = []Option{WithApproverVerifiers(fakeVerifiers("alice", "bob", "carol"))} // the replay carries no identity
+	pendingOn2(t, e.drive(true, textTurn("done")), "c2#taint")
+	note, ok := hasStep(t, e.j, "r", ApprovalPendingStep("c2#taint"))
+	var w ApprovalWait
+	if !ok || json.Unmarshal(note.Result, &w) != nil || !w.ExcludePrincipal || !slices.Equal(w.Requesters, []string{"alice"}) {
+		t.Fatalf("the instance's note = %+v (found %v), want the exclusion and requester alice", w, ok)
 	}
 }

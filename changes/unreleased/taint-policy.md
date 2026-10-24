@@ -1,0 +1,3 @@
+Section: Added
+
+`agent.WithTaintPolicy` and `agent.TaintPolicy` (experimental): a run that read content marked untrusted needs an escalation gate for each later side-effecting call (or, with `Refuse`, is refused), in addition to the tool's own gate. The gate is a second instance on the call, under the subject `<call>#taint`, decided by its own approvers; an approval clears nothing. The approvals intake, `bide approve`, `bide approve -list`, `bide view` and the audit evidence decide and show the instance by the gate its pause note records, never by the tool's own gate. Children and sessions do not inherit taint yet. See the guide in docs/guides/untrusted-content.md.

@@ -860,6 +860,10 @@ and a long-lived host must restart to check new type names.
 - `Model` decodes the response as JSON into `O`, so `O` must be JSON-shaped. Only a model that
   honours a response format is sent `O`'s schema (structured output); for any other model the
   prompt should instruct JSON output, naming each field's type.
+- The [taint policy](untrusted-content.md#the-taint-policy) does not cover flow nodes. A flow node has no model
+  turn to taint, so a node that is a side-effecting tool call is not escalation-gated, and a tool declared
+  `Untrusted` or `TaintExempt` is refused as a node. A plan node may carry a `#` in its name; its subject is
+  `node:<name>`, never an escalation instance.
 - A tool that carries [amount caps](amount-caps.md) (`agent.WithCaps`) cannot be a flow block:
   `Registry.RegisterTool` and `Builder.Tool` refuse it with `ErrConfig` naming the tool, because a
   node's gate path is separate from the agent's and would run the tool without the cap. A flow node

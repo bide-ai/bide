@@ -40,7 +40,7 @@ The model may request a destructive call, request the same call twice, craft arg
 - **Does not address.**
   - A tool that is wrongly declared `ReadOnly` or `Idempotent` opts out of the at-most-once protection ([the guarantee](../GUARANTEE.md)). Review tool declarations as code.
   - Whether a permitted call is a good idea. bide enforces what the policy allows; it does not judge the model's reasoning. Quorum lowers the risk of one model's error but models can be wrong together ([known limitations, approval and quorum](../KNOWN-LIMITATIONS.md#approval-and-quorum)).
-  - Prompt injection as such. Content the model reads can steer its requests; the controls above bound what a steered request can do, they do not stop it being made.
+  - Prompt injection as such. Content the model reads can steer its requests; the controls above bound what a steered request can do, they do not stop it being made. With a taint policy (`agent.WithTaintPolicy`), a run that read content the host marked untrusted needs an escalation gate for each later side effect; that bounds the consequence and does not detect an attack, and it misses content the host did not mark, a human who approves, and `ReadOnly` tools ([guide](../guides/untrusted-content.md#what-this-does-not-do)).
   - Secrets the model or a tool puts into a result. Results are journaled as written; only URLs in tool errors are redacted by default ([security model](../guides/security-model.md#tool-errors-are-redacted-before-they-are-journaled)).
 
 ### An insider with database access

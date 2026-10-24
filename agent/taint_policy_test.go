@@ -12,8 +12,8 @@ import (
 // PR 9a of the taint build: the policy value, the digest, run:start's record, the sticky status down the
 // tree and along a session, and the refusal by an agent with no policy. Nothing is gated yet.
 
-func gatePolicy() taintPolicy {
-	return taintPolicy{Gate: &ApprovalPolicy{Need: 2, Approvers: []string{"ops", "risk"}, ExcludePrincipal: true}}
+func gatePolicy() TaintPolicy {
+	return TaintPolicy{Gate: &ApprovalPolicy{Need: 2, Approvers: []string{"ops", "risk"}, ExcludePrincipal: true}}
 }
 
 func noKeys() Option {
@@ -45,11 +45,11 @@ func refundTool(line string) Tool {
 }
 
 func TestTaintPolicy_Validation(t *testing.T) {
-	mk := func(p taintPolicy, extra ...Option) error {
-		_, err := New(NewScriptedModel(TextTurn("x")), memJournal(), append([]Option{withTaintPolicy(p)}, extra...)...)
+	mk := func(p TaintPolicy, extra ...Option) error {
+		_, err := New(NewScriptedModel(TextTurn("x")), memJournal(), append([]Option{WithTaintPolicy(p)}, extra...)...)
 		return err
 	}
-	for name, p := range map[string]taintPolicy{
+	for name, p := range map[string]TaintPolicy{
 		"neither gate nor refuse": {},
 		"both gate and refuse":    {Gate: SingleApproval(), Refuse: true},
 		"an invalid gate":         {Gate: &ApprovalPolicy{Need: 3, Approvers: []string{"a"}}},
@@ -61,7 +61,7 @@ func TestTaintPolicy_Validation(t *testing.T) {
 	if err := mk(gatePolicy()); !errors.Is(err, ErrConfig) {
 		t.Errorf("an m-of-n gate with no approver verifiers = %v, want ErrConfig", err)
 	}
-	for name, p := range map[string]taintPolicy{"refuse": {Refuse: true}, "single": {Gate: SingleApproval()}} {
+	for name, p := range map[string]TaintPolicy{"refuse": {Refuse: true}, "single": {Gate: SingleApproval()}} {
 		if err := mk(p); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
@@ -78,8 +78,8 @@ func TestTaintPolicy_Validation(t *testing.T) {
 
 func TestTaintDigest_StableAndSensitive(t *testing.T) {
 	var c counter
-	build := func(p taintPolicy, tools ...Tool) *Agent {
-		return mustNew(NewScriptedModel(TextTurn("x")), memJournal(), WithTools(tools...), withTaintPolicy(p), noKeys())
+	build := func(p TaintPolicy, tools ...Tool) *Agent {
+		return mustNew(NewScriptedModel(TextTurn("x")), memJournal(), WithTools(tools...), WithTaintPolicy(p), noKeys())
 	}
 	base := build(gatePolicy(), c.tool("a"), c.tool("b", Untrusted("crm")))
 	if d := base.taintDigest(); len(d) != 64 || d != build(gatePolicy(), c.tool("a"), c.tool("b", Untrusted("crm"))).taintDigest() {
@@ -87,13 +87,10 @@ func TestTaintDigest_StableAndSensitive(t *testing.T) {
 	}
 	other := gatePolicy()
 	other.Gate.Need = 1
-	refuse := taintPolicy{Refuse: true}
-	require := gatePolicy()
-	require.RequireProvenance = true
+	refuse := TaintPolicy{Refuse: true}
 	for name, a := range map[string]*Agent{
 		"another gate":             build(other, c.tool("a"), c.tool("b", Untrusted("crm"))),
 		"refuse instead of a gate": build(refuse, c.tool("a"), c.tool("b", Untrusted("crm"))),
-		"RequireProvenance":        build(require, c.tool("a"), c.tool("b", Untrusted("crm"))),
 		"another source":           build(gatePolicy(), c.tool("a"), c.tool("b", Untrusted("web"))),
 		"no declaration":           build(gatePolicy(), c.tool("a"), c.tool("b")),
 		"an exemption":             build(gatePolicy(), c.tool("a", TaintExempt("reviewed")), c.tool("b", Untrusted("crm"))),
@@ -122,7 +119,7 @@ func TestTaintRun_StartRecordsTheDigestOnlyUnderAPolicy(t *testing.T) {
 		j := memJournal()
 		opts := []Option{}
 		if withPolicy {
-			opts = append(opts, withTaintPolicy(taintPolicy{Refuse: true}))
+			opts = append(opts, WithTaintPolicy(TaintPolicy{Refuse: true}))
 		}
 		a := mustNew(NewScriptedModel(TextTurn("done")), j, opts...)
 		if _, err := a.Run(ctx, "r", UserText("go")); err != nil {
@@ -155,7 +152,7 @@ func TestTaintRun_NoPolicyRefusalIsScopedToRunsStartedUnderAPolicy(t *testing.T)
 	if _, err := mustNew(NewScriptedModel(ToolTurn("c1", "read", `{}`), ErrorTurn(errors.New("down"))), j, WithTools(tools()...)).Run(ctx, "plain", UserText("go")); err == nil {
 		t.Fatal("seeding drive did not stop")
 	}
-	policy := mustNew(script(), j, WithTools(tools()...), withTaintPolicy(taintPolicy{Refuse: true}))
+	policy := mustNew(script(), j, WithTools(tools()...), WithTaintPolicy(TaintPolicy{Refuse: true}))
 	if _, err := policy.Run(ctx, "plain", UserText("go")); err != nil {
 		t.Fatalf("a run started with no policy, driven under one: %v", err)
 	}
@@ -167,7 +164,7 @@ func TestTaintRun_NoPolicyRefusalIsScopedToRunsStartedUnderAPolicy(t *testing.T)
 	// with ErrConfig and its tool never called.
 	c.n.Store(0)
 	j = memJournal()
-	if _, err := mustNew(NewScriptedModel(ToolTurn("c1", "read", `{}`), ErrorTurn(errors.New("down"))), j, WithTools(tools()...), withTaintPolicy(taintPolicy{Refuse: true})).Run(ctx, "tainted", UserText("go")); err == nil {
+	if _, err := mustNew(NewScriptedModel(ToolTurn("c1", "read", `{}`), ErrorTurn(errors.New("down"))), j, WithTools(tools()...), WithTaintPolicy(TaintPolicy{Refuse: true})).Run(ctx, "tainted", UserText("go")); err == nil {
 		t.Fatal("seeding drive did not stop")
 	}
 	_, err := mustNew(script(), j, WithTools(tools()...)).Run(ctx, "tainted", UserText("go"))
@@ -178,7 +175,7 @@ func TestTaintRun_NoPolicyRefusalIsScopedToRunsStartedUnderAPolicy(t *testing.T)
 		t.Fatalf("tools ran %d times, want 1 (the read only)", got)
 	}
 	// A process with the policy drives it on.
-	if _, err := mustNew(script(), j, WithTools(tools()...), withTaintPolicy(taintPolicy{Refuse: true})).Run(ctx, "tainted", UserText("go")); err != nil {
+	if _, err := mustNew(script(), j, WithTools(tools()...), WithTaintPolicy(TaintPolicy{Refuse: true})).Run(ctx, "tainted", UserText("go")); err != nil {
 		t.Fatalf("the run, driven by an agent with a policy: %v", err)
 	}
 }
@@ -201,7 +198,7 @@ func TestTaintRun_StatusIsStickyDownTheTree(t *testing.T) {
 		_, _ = mustNew(m, j, append([]Option{WithTools(tool)}, parentOpts...)...).Run(ctx, "r", UserText("go"))
 		return j, cj
 	}
-	pol := []Option{withTaintPolicy(taintPolicy{Refuse: true})}
+	pol := []Option{WithTaintPolicy(TaintPolicy{Refuse: true})}
 	sub := SubRunID("r", "d1")
 
 	// Parent under a policy, child agent with none: the child's write is refused.
@@ -263,7 +260,7 @@ func TestTaintSession_StatusIsStickyAlongTheSession(t *testing.T) {
 		t.Fatalf("turn 1: %d writes, marker %q; want 1 write and no marker", c.n.Load(), taintStatus())
 	}
 	// Turn 2 on an agent with a policy: under taint from here; the marker is written.
-	if _, err := agentFor(withTaintPolicy(taintPolicy{Refuse: true})).Send(ctx, UserText("two")); err != nil {
+	if _, err := agentFor(WithTaintPolicy(TaintPolicy{Refuse: true})).Send(ctx, UserText("two")); err != nil {
 		t.Fatalf("turn 2: %v", err)
 	}
 	if taintStatus() == "" {
@@ -309,7 +306,7 @@ func TestTaintRefusal_Scope(t *testing.T) {
 	write, read := &ToolSpec{Name: "w"}, &ToolSpec{Name: "r", Safety: Safety{ReadOnly: true}}
 	idem := &ToolSpec{Name: "i", Safety: Safety{Idempotent: true}}
 	none := mustNew(NewScriptedModel(TextTurn("x")), memJournal())
-	pol := mustNew(NewScriptedModel(TextTurn("x")), memJournal(), withTaintPolicy(taintPolicy{Refuse: true}))
+	pol := mustNew(NewScriptedModel(TextTurn("x")), memJournal(), WithTaintPolicy(TaintPolicy{Refuse: true}))
 	under := withUnderTaint(context.Background(), "abc")
 	comp := withCompensating(under)
 	for _, c := range []struct {
@@ -378,7 +375,7 @@ func TestTaintRefusal_IsRecordedAsNotStarted(t *testing.T) {
 	ctx := context.Background()
 	var c counter
 	tools := func() []Tool { return []Tool{c.tool("write")} } // a side effect: not retry-safe
-	pol := withTaintPolicy(taintPolicy{Refuse: true})
+	pol := WithTaintPolicy(TaintPolicy{Refuse: true})
 	j := memJournal()
 	// Start the run under a policy and stop before the write.
 	if _, err := mustNew(NewScriptedModel(ErrorTurn(errors.New("down"))), j, WithTools(tools()...), pol).Run(ctx, "r", UserText("go")); err == nil {

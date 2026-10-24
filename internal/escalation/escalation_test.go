@@ -9,7 +9,7 @@ func TestSubject(t *testing.T) {
 	if b, ok := Base("c1#taint"); !ok || b != "c1" {
 		t.Fatalf("Base(c1#taint) = %q %v", b, ok)
 	}
-	for _, s := range []string{"c1", "", "taint", "c1#taint2", "c1#", "node:foo#taint", "node:iter:2:foo#taint"} {
+	for _, s := range []string{"c1", "", "taint", "c1#taint2", "c1#refund_total", "attempt:tool:c1#refund_total", "c1#", "node:foo#taint", "node:iter:2:foo#taint"} {
 		if IsSubject(s) {
 			t.Errorf("IsSubject(%q)", s)
 		}
