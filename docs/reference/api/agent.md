@@ -1029,10 +1029,36 @@ FlowRef names the plan flow that drives a run of kind RunKindFlow.
 ## type GateReason
 
 ```go
-type GateReason = gatereason.Reason
+type GateReason struct {
+	Kind string `json:"kind"`
+
+	Source string `json:"source,omitempty"`
+
+	Ref string `json:"ref,omitempty"`
+
+	Pos int `json:"pos,omitempty"`
+
+	Rule string `json:"rule,omitempty"`
+
+	Action string `json:"action,omitempty"`
+
+	Why string `json:"why,omitempty"`
+
+	Currency string `json:"currency,omitempty"`
+
+	Amount *int64 `json:"amount,omitempty"`
+
+	Limit int64 `json:"limit,omitempty"`
+
+	At string `json:"at,omitempty"`
+}
 ```
 
-GateReason is one reason a call needs a gate beyond its tool's own, as the gate-reason record the engine wrote holds it: for the escalation gate of a tainted call, a source of untrusted content its turn had read and where (Kind "taint": Source, Ref "tool:&lt;name&gt;/&lt;call&gt;", "input" or "retrieval", and Pos, the position of the mark in the run's journal); for a gate a cap rule holds, the rule, what it decided and why it fired, and this call's amount and the rule's limit in minor units of Currency (Kind "cap").
+GateReason is one reason a call needs a gate beyond its tool's own, as the gate-reason record the engine wrote holds it.
+
+**Methods**
+
+- `func (r GateReason) Line() string`: Line is the reason as one line of text, for a terminal or a log: "untrusted content from inbound-email (read by tool read\_email, call c3, journal position 4)", or "cap refund\_one: this call 6000.00 USD, limit 5000.00 USD (over, gate)".
 
 ## type GateStanding
 
