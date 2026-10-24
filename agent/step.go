@@ -32,12 +32,18 @@ import (
 // ("cap-intent:", "gate-reason:", "approval-pending:", "slot:" and the rest; see IsReservedStepName) is
 // ErrConfig, so a caller cannot plant an engine record with it; the engine writes those through its own
 // paths, as it writes the not-started records ("attempt:not-started:") and numbered re-attempts
-// ("attempt:retry:") that derive from a marker. An empty name is ErrConfig too.
+// ("attempt:retry:") that derive from a marker. An empty name is ErrConfig too, and so is a rec whose Kind is
+// not StepAttempt or that carries a result, an approval, a model turn or a reconciliation: only a bare attempt
+// marker (ToolUseID, AttemptedAt, Safety, Approval) can be claimed, so the call cannot plant a tool result or
+// an approval the engine would read.
 func ClaimAttempt(ctx context.Context, j *Journal, runID, name string, rec Record) (won bool, got Record, err error) {
 	if err := checkCallerRun("ClaimAttempt", runID); err != nil {
 		return false, Record{}, err
 	}
 	if err := checkClaimName("ClaimAttempt", name); err != nil {
+		return false, Record{}, err
+	}
+	if err := checkClaimRecord("ClaimAttempt", rec); err != nil {
 		return false, Record{}, err
 	}
 	return j.claim(ctx, runID, name, rec)

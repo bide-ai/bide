@@ -216,6 +216,21 @@ func checkClaimName(op, name string) error {
 	return nil
 }
 
+// checkClaimRecord refuses, in the exported ClaimAttempt, a record that is not a bare attempt marker: a
+// Kind other than StepAttempt, or a field only another kind of record carries (a result, an approval, a
+// model turn, a reconciliation). The journal stores whatever record it is given, so without this a caller
+// could plant a tool result or a single-approver approval under a name of its own that the engine reads.
+func checkClaimRecord(op string, rec Record) error {
+	if rec.Kind != StepAttempt {
+		return fmt.Errorf("%s: record kind %q is not %q; only attempt markers may be claimed: %w", op, rec.Kind, StepAttempt, ErrConfig)
+	}
+	if rec.Message != nil || rec.Usage != nil || rec.DiscardedUsage != nil || rec.ModelTurn != nil || rec.Result != nil ||
+		rec.IsError || rec.Approved || rec.ApproverSignature != nil || rec.Reconciled || rec.OutcomeUnknown || rec.Evidence != nil {
+		return fmt.Errorf("%s: an attempt marker carries no result, approval, model turn or reconciliation: %w", op, ErrConfig)
+	}
+	return nil
+}
+
 // attemptPrefix starts the key of every attempt marker.
 const attemptPrefix = "attempt:"
 
