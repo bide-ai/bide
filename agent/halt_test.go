@@ -507,7 +507,7 @@ func TestR90_JoinedInterruptThenHaltKeepsTheHalt(t *testing.T) {
 	mixed := MustFunc("mixed", "", func(ctx context.Context, _ struct{}) (string, error) {
 		d, runID, _ := runContext(ctx)
 		_, e1 := Interrupt[string](ctx, "q", nil)
-		_, _, _ = ClaimAttempt(ctx, d, runID, stepAttemptStep("inner"), Record{Kind: StepAttempt, ToolUseID: "inner", AttemptedAt: 1})
+		_, _, _ = d.claim(ctx, runID, stepAttemptStep("inner"), Record{Kind: StepAttempt, ToolUseID: "inner", AttemptedAt: 1})
 		_, e2 := d.Step(ctx, runID, "inner", func(context.Context) (int, error) { return 1, nil })
 		return "", errors.Join(e1, e2)
 	})
@@ -526,7 +526,7 @@ func TestR90_JoinedInterruptThenHaltKeepsTheHalt(t *testing.T) {
 func TestR90_SecondConflictingResolutionIsSilent(t *testing.T) {
 	ctx := context.Background()
 	store := memJournal()
-	if won, _, err := ClaimAttempt(ctx, store, "r1", toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: 1}); err != nil || !won {
+	if won, _, err := store.claim(ctx, "r1", toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: 1}); err != nil || !won {
 		t.Fatal(won, err)
 	}
 	ref := HaltRef{RunID: "r1", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}
@@ -558,7 +558,7 @@ func TestResolveHalt_RefusesWhileTheRunIsLeased(t *testing.T) {
 	store := NewMemStore()
 	j := mustJournal(store)
 	sub := SubRunID("r1", "c9")
-	if won, _, err := ClaimAttempt(ctx, j, sub, toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: 1}); err != nil || !won {
+	if won, _, err := j.claim(ctx, sub, toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: 1}); err != nil || !won {
 		t.Fatal(won, err)
 	}
 	if ok, err := store.AcquireLease(ctx, "r1", "worker-1", time.Minute); err != nil || !ok {
@@ -587,7 +587,7 @@ func TestResolveHalt_RefusesWhileTheRunIsLeased(t *testing.T) {
 func TestResolveHalt_WithoutALeaserNeedsAnAgeOrAnOptOut(t *testing.T) {
 	ctx := context.Background()
 	store := newXprocStore().proc()
-	if won, _, err := ClaimAttempt(ctx, store, "r1", toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: 1}); err != nil || !won {
+	if won, _, err := store.claim(ctx, "r1", toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: 1}); err != nil || !won {
 		t.Fatal(won, err)
 	}
 	ref := HaltRef{RunID: "r1", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}
@@ -601,7 +601,7 @@ func TestResolveHalt_WithoutALeaserNeedsAnAgeOrAnOptOut(t *testing.T) {
 		t.Fatalf("with an old enough attempt = %v", err)
 	}
 	store2 := newXprocStore().proc()
-	_, _, _ = ClaimAttempt(ctx, store2, "r1", toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: time.Now().UnixMilli()})
+	_, _, _ = store2.claim(ctx, "r1", toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: time.Now().UnixMilli()})
 	if err := ResolveHalt(ctx, store2, ref, Outcome{Result: "x"}, WithoutLiveDriverCheck()); err != nil {
 		t.Fatalf("with the explicit opt-out = %v", err)
 	}
@@ -629,7 +629,7 @@ func TestR90_ResolveWrappersSameRecords(t *testing.T) {
 	}
 	seed := func(key, id string) *Journal {
 		s := memJournal()
-		if won, _, err := ClaimAttempt(ctx, s, "r1", key, Record{Kind: StepAttempt, ToolUseID: id, AttemptedAt: 1}); err != nil || !won {
+		if won, _, err := s.claim(ctx, "r1", key, Record{Kind: StepAttempt, ToolUseID: id, AttemptedAt: 1}); err != nil || !won {
 			t.Fatal(won, err)
 		}
 		return s

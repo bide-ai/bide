@@ -228,6 +228,9 @@ func checkClaimRecord(op string, rec Record) error {
 		rec.IsError || rec.Approved || rec.ApproverSignature != nil || rec.Reconciled || rec.OutcomeUnknown || rec.Evidence != nil {
 		return fmt.Errorf("%s: an attempt marker carries no result, approval, model turn or reconciliation: %w", op, ErrConfig)
 	}
+	if rec.AttemptedAt != 0 {
+		return fmt.Errorf("%s: AttemptedAt is set by the claim, from the context's clock, not by the caller: %w", op, ErrConfig)
+	}
 	return nil
 }
 

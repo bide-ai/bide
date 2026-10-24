@@ -61,7 +61,7 @@ func TestClaimAttempt_EnginePathsStillWriteReservedNames(t *testing.T) {
 	}
 
 	h := mustJournal(NewMemStore())
-	if won, _, err := ClaimAttempt(ctx, h, "r1", toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: 1}); err != nil || !won {
+	if won, _, err := ClaimAttempt(ctx, h, "r1", toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1"}); err != nil || !won {
 		t.Fatalf("claim: won %v, err %v", won, err)
 	}
 	ref := HaltRef{RunID: "r1", Op: OpRef{Kind: OpTool, ID: "c1"}, Cause: HaltCrashed}
@@ -79,7 +79,7 @@ func TestClaimAttempt_EnginePathsStillWriteReservedNames(t *testing.T) {
 // written by the winning claim voids an attempt (and ClaimAttempt refuses to write one, above).
 func TestClaimAttempt_PreclaimedMarkerCannotChangeACapOutcome(t *testing.T) {
 	j := memJournal()
-	if won, _, err := ClaimAttempt(context.Background(), j, "r0", toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: 1}); err != nil || !won {
+	if won, _, err := ClaimAttempt(context.Background(), j, "r0", toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1"}); err != nil || !won {
 		t.Fatalf("pre-claim: won %v, err %v", won, err)
 	}
 	tool := sumTool(Safety{}, capRuleDay)

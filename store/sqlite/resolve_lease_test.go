@@ -28,7 +28,7 @@ func TestResolveHalt_UsesTheLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer b.Close()
-	if won, _, err := agent.ClaimAttempt(ctx, j, "r1", "attempt:tool:c1", agent.Record{Kind: agent.StepAttempt, ToolUseID: "c1", AttemptedAt: 1}); err != nil || !won {
+	if won, _, err := agent.ClaimAttempt(ctx, j, "r1", "attempt:tool:c1", agent.Record{Kind: agent.StepAttempt, ToolUseID: "c1"}); err != nil || !won {
 		t.Fatal(won, err)
 	}
 	if ok, err := b.AcquireLease(ctx, "r1", "worker-b", time.Minute); err != nil || !ok {
