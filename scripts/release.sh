@@ -233,6 +233,15 @@ assemble_changelog() {
   (cd "$(git rev-parse --show-toplevel)" && go run ./internal/tools/changelog assemble -version "${1#v}" -date "$2")
 }
 
+# scratch_clone repo clone sha: a clone of repo at clone, detached at sha. A clone copies only the
+# local branches and the tags, so a sha reachable only through a remote-tracking ref (a release of
+# origin/release/v0.23 from a checkout with no such local branch) is fetched by name.
+scratch_clone() {
+  git clone --quiet --no-local --no-checkout "$1" "$2"
+  git -C "$2" cat-file -e "$3^{commit}" 2>/dev/null || git -C "$2" fetch --quiet --no-tags "$1" "$3"
+  git -C "$2" checkout --quiet --detach "$3"
+}
+
 # remote_has_tag lsremote ref: the `git ls-remote --tags` output lists ref exactly.
 # awk reads all of its input and compares the ref literally.
 remote_has_tag() { awk -v t="$2" '$2 == t {found = 1} END {exit !found}' <<<"$1"; }
@@ -605,6 +614,17 @@ self_test_release_branch() {
   git -C "$cl" fetch --quiet origin; git -C "$cl" tag -f v0.23.0 "$other" >/dev/null
   gate_case no "a local tag moved onto the tip does not stand in for the remote's tag" v0.23.1 "$other"
   rm -f "$fx"/rules-*.json
+
+  # scratch_clone: a commit reachable only through a remote-tracking ref (a checkout whose only local
+  # branch is the default one) is in the clone.
+  local sc="$tmp/sc-checkout" sc_sha scc="$tmp/sc-clone"
+  git -C "$wc" push --quiet --force "$rr" "$fix:refs/heads/release/v0.23"
+  git clone --quiet "$rr" "$sc" 2>/dev/null
+  sc_sha=$(git -C "$sc" rev-parse refs/remotes/origin/release/v0.23)
+  [ "$sc_sha" = "$fix" ] || { echo "self-test: release branch: the scratch case is not the fix commit"; ok=false; }
+  git -C "$sc" rev-list --branches --tags | grep -q "$sc_sha" && { echo "self-test: release branch: the scratch case is not remote-tracking only"; ok=false; }
+  scratch_clone "$sc" "$scc" "$sc_sha" >/dev/null 2>&1 || { echo "self-test: release branch: scratch_clone failed for a commit reachable only through a remote-tracking ref"; ok=false; }
+  [ "$(git -C "$scc" rev-parse HEAD 2>/dev/null)" = "$sc_sha" ] || { echo "self-test: release branch: the scratch clone is not at the remote-tracking commit"; ok=false; }
   $ok
 }
 
@@ -1066,8 +1086,7 @@ done
 
 # ---- scratch clone and resolver --------------------------------------------------------------
 CLONE=$WORK/repo
-git clone --quiet --no-local --no-checkout "$REPO" "$CLONE"
-git -C "$CLONE" checkout --quiet --detach "$SHA"
+scratch_clone "$REPO" "$CLONE" "$SHA"
 mkdir -p "$WORK/modcache" "$WORK/directcache" "$WORK/empty"
 if $PUSH; then
   TARGET=$(git -C "$REPO" remote get-url "$REMOTE")
