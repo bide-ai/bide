@@ -222,8 +222,10 @@ const usageText = `bide audit: produce and verify audit proof bundles
          must be its last cum_after; the over-limit slots counted under a waiver are listed. Each slot
          is compared with the cap-reserve record the run that made the call holds: a record whose slot
          is missing is DELETED, one whose cum_after or attempt differs is CHANGED, a reserve slot with no
-         record is UNRECORDED (a slot inserted from outside, or a reservation interrupted before its
-         record). Every reserve slot's attempt must have exactly one cap-intent, which sends it to this
+         record is UNRECORDED (a failure when the run has ended; a warning when it has not, since a reservation
+         interrupted before its record looks the same). A release of a call whose run holds a result the tool
+         produced is RELEASE_OF_A_CALL_THAT_RAN, since only a call that never began is released; one
+         whose attempt is neither voided nor answered is a warning. Every reserve slot's attempt must have exactly one cap-intent, which sends it to this
          ledger with this amount, currency and marking (a planted intent with another window is
          INTENT_MISMATCH), and whose window the rule's index run holds; an intent with no slot is
          listed, not failed. With signed heads (-sth, each verified, from the anchor log of the AuditedStore that

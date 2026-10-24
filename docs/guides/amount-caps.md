@@ -165,9 +165,10 @@ For each ledger run (`@cap/...`) it checks:
 3. **The runs.** A reservation leaves a `cap-reserve:` record in the run that made the call, naming the
    ledger, the slot and its `cum_after`. A record whose slot is missing is a `DELETED` slot; one whose
    slot differs (its `cum_after`, its attempt, or it is a release) is `CHANGED`; a reserve slot whose run
-   holds no record is `UNRECORDED`. That last finding is also what a reservation interrupted between its
-   slot and its record looks like, and a re-drive of the run writes the record; a ledger run the store no
-   longer holds but a record or a signed head names is `LEDGER_MISSING`.
+   holds no record is `UNRECORDED`: a failure when that run has ended, a warning when it has not (a
+   reservation interrupted between its slot and its record looks the same, and a re-drive of the run
+   writes the record). A ledger run the store no longer holds but a record or a signed head names is
+   `LEDGER_MISSING`.
 4. **The intents.** Every reserve slot's attempt must have exactly one `cap-intent:` record, in the run
    that made the call, and the intent must send the attempt to this ledger with this amount, currency
    and marking (`INTENT_MISSING`, `INTENT_DUPLICATE`, `INTENT_MISMATCH`, `INTENT_UNREADABLE`). An intent whose
@@ -176,11 +177,19 @@ For each ledger run (`@cap/...`) it checks:
    and not earlier than the newest window the index held when the intent was written (`INTENT_CLOCK`). An
    intent with no slot is information: the attempt was interrupted before its slot, or the reservation was
    refused, and it counts nothing.
-5. **The signed heads** (`-sth`, with `-pubkey`). An `AuditedStore` anchors a head for every ledger run it
+5. **The releases.** Only the loop releases, and only a call it proved never began, so such a call never has
+   a result its tool produced. A release of a reservation whose run holds a successful tool result for the
+   call is `RELEASE_OF_A_CALL_THAT_RAN` and fails, whoever wrote the slot and whether or not a signed head
+   covers it. A release of an attempt that is neither recorded as not started nor answered by a result is a
+   warning (`RELEASE_UNCONFIRMED`): a crash between the release and the void looks the same, and a re-drive
+   voids it. A release of a call that ended in an error result (a refusal by a later rule, a failure before
+   the tool began) is what the loop writes and passes.
+6. **The signed heads** (`-sth`, with `-pubkey`). An `AuditedStore` anchors a head for every ledger run it
    writes; pass the heads from your anchor log (one JSON head per line, any number, for any runs). Each
    must verify, and the ledger must be the one the newest head signs: a slot changed or deleted since is a
    `DIVERGENT_HEAD`. Entries **after** the newest head are `NOT_ATTESTED` and fail: whoever can write the
-   store could have deleted a slot or appended a release there unseen. Run the audit after the store has
+   store could have deleted a slot or appended a release there unseen. A signature covers what the store was
+   given at signing, not that it was legitimate: a slot written through the signing store is signed. Run the audit after the store has
    anchored (with `WithMinInterval`, after the interval or a `Flush`).
 
 It also reports, without failing, the **reconcile exposure**: per window, the slots still counted for
@@ -189,9 +198,10 @@ releases; a figure that does not go down after a recovery pass means recovery is
 
 **Anchored or not.** With `-unanchored` the first line of the report says that whoever can write the store
 can delete a slot or append a release undetected, and that the audit only finds inconsistencies it can see.
-That is the limit, not a modesty: an attacker who edits a slot and the run's `cap-reserve` record to match, or
-appends a valid release of a live reserve, leaves a ledger every check above accepts. Only a signed head, held
-outside the store, shows it. See [KNOWN-LIMITATIONS](../KNOWN-LIMITATIONS.md).
+That is the limit, not a modesty: an attacker who edits a slot and the run's `cap-reserve` record to match,
+or who appends a valid release of a reserve whose call also has no result or ended in an error (and edits that
+run's journal to match), leaves a ledger every check above accepts. Only a signed head, held outside the store,
+shows a change made after the head. The audit does find the common forgery, a release of a call that ran. See [KNOWN-LIMITATIONS](../KNOWN-LIMITATIONS.md).
 
 **Filters.** `-namespace`, `-rule` and `-window` narrow the ledgers read, and `-run` narrows the audit to
 one run's calls and its sub-runs' (their slots and records, and the ledgers that hold them). A filtered
@@ -199,7 +209,7 @@ report lists what it did not check and ends `PASS (filtered)`, never a bare `PAS
 ledger exits 4. Amounts are in minor units, as the ledger holds them.
 
 **Exit status** is `bide audit`'s: 0 when every ledger checked reads and agrees (with `-sth`, and is
-attested), 1 for any finding, 2 for a usage error (neither `-sth` nor `-unanchored`, or both), 4 when the
+unchanged since its newest signed head); warnings do not change it, 1 for any finding, 2 for a usage error (neither `-sth` nor `-unanchored`, or both), 4 when the
 store cannot be opened or read. The `-json` report carries the findings and the per-ledger figures.
 
 It does not check the index runs for entries no intent uses (they cost nothing), and it does not re-apply
