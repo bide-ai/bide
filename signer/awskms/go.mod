@@ -4,7 +4,7 @@ go 1.27.0
 
 require (
 	github.com/aws/aws-sdk-go-v2/service/kms v1.61.4
-	github.com/bide-ai/bide v0.0.0
+	github.com/bide-ai/bide v0.23.1
 )
 
 require (
@@ -13,5 +13,3 @@ require (
 	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.8.6 // indirect
 	github.com/aws/smithy-go v1.28.5 // indirect
 )
-
-replace github.com/bide-ai/bide => ../../
