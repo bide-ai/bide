@@ -234,7 +234,7 @@ func (c *cli) caps(args []string) {
 	case in.filter.any():
 		c.printf("PASS (filtered): the %d ledger(s) checked hold together (%d slots, %d live); the checks that were NOT made are listed above\n", len(rep.Ledgers), slots, live)
 	case in.anchored:
-		c.printf("PASS: %d ledger(s), %d slot(s), %d live: each reads under the ledger's rules, agrees with the runs' cap-reserve records, and is unchanged since its newest signed head (a signature covers what the store was given at signing, not that it was legitimate)\n", len(rep.Ledgers), slots, live)
+		c.printf("PASS: %d ledger(s), %d slot(s), %d live: each reads under the ledger's rules, agrees with the runs' cap-reserve records, and is unchanged since its newest signed head, and so are the cap records of its runs (a signature covers what the store was given at signing, not that it was legitimate)\n", len(rep.Ledgers), slots, live)
 	default:
 		c.printf("PASS: %d ledger(s), %d slot(s), %d live: each reads under the ledger's rules and agrees with the runs' cap-reserve records; nothing attests that the store is complete (UNANCHORED)\n", len(rep.Ledgers), slots, live)
 	}

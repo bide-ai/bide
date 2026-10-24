@@ -227,8 +227,10 @@ const usageText = `bide audit: produce and verify audit proof bundles
          produced is RELEASE_OF_A_CALL_THAT_RAN, since only a call that never began is released; one
          whose attempt is neither voided nor answered is a warning. Every reserve slot's attempt must have exactly one cap-intent, which sends it to this
          ledger with this amount, currency and marking (a planted intent with another window is
-         INTENT_MISMATCH), and whose window the rule's index run holds; an intent with no slot is
-         listed, not failed. With signed heads (-sth, each verified, from the anchor log of the AuditedStore that
+         INTENT_MISMATCH), and whose window the rule's index run holds and fits its call's own time (not earlier than the window of
+         the run's start, not beyond the window after the attempt marker's: INTENT_WINDOW); an intent with
+         no slot is listed, not failed. With signed heads the cap-intent and cap-reserve records of each
+         run must also lie inside a signed head of that run (RUN_NOT_ATTESTED). With signed heads (-sth, each verified, from the anchor log of the AuditedStore that
          anchors the store) a ledger run must be the one the newest head signs, and entries after it are
          NOT ATTESTED and fail; with -unanchored the report says first that whoever can write the store
          can delete a slot or append a release undetected, and that the audit only finds

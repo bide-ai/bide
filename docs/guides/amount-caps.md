@@ -174,8 +174,13 @@ For each ledger run (`@cap/...`) it checks:
    and marking (`INTENT_MISSING`, `INTENT_DUPLICATE`, `INTENT_MISMATCH`, `INTENT_UNREADABLE`). An intent whose
    window differs from its slot's is the window-pinning attack: the writer chose the ledger the attempt is
    counted in. For a `day` or `hour` rule the window must also be in the rule's index run (`INDEX_MISSING`)
-   and not earlier than the newest window the index held when the intent was written (`INTENT_CLOCK`). An
-   intent with no slot is information: the attempt was interrupted before its slot, or the reservation was
+   and not earlier than the newest window the index held when the intent was written (`INTENT_CLOCK`). The
+   window must also fit the call's own time (`INTENT_WINDOW`, whatever ledger the intent names and whatever
+   `-window` says): not earlier than the window of the run's start (its `run:start`, on the run's clock), and
+   not later than the window after the one the attempt marker's time falls in (the store stamps the marker
+   when it claims the attempt). One window forward is allowed, for a boundary that falls between the claim
+   and the intent; one window back never is, because that is how a planted intent gains room. A `per run`
+   window must be the call's root run. An intent with no slot is information: the attempt was interrupted before its slot, or the reservation was
    refused, and it counts nothing.
 5. **The releases.** Only the loop releases, and only a call it proved never began, so such a call never has
    a result its tool produced. A release of a reservation whose run holds a successful tool result for the
@@ -187,7 +192,9 @@ For each ledger run (`@cap/...`) it checks:
 6. **The signed heads** (`-sth`, with `-pubkey`). An `AuditedStore` anchors a head for every ledger run it
    writes; pass the heads from your anchor log (one JSON head per line, any number, for any runs). Each
    must verify, and the ledger must be the one the newest head signs: a slot changed or deleted since is a
-   `DIVERGENT_HEAD`. Entries **after** the newest head are `NOT_ATTESTED` and fail: whoever can write the
+   `DIVERGENT_HEAD`. The runs' own records are held to the same: the `cap-intent` and `cap-reserve`
+   records of each run must lie inside a signed head of that run, or the run is `RUN_NOT_ATTESTED` (the heads
+   file should hold the heads of those runs too; an `AuditedStore` anchors every run it writes). Entries **after** the newest head are `NOT_ATTESTED` and fail: whoever can write the
    store could have deleted a slot or appended a release there unseen. A signature covers what the store was
    given at signing, not that it was legitimate: a slot written through the signing store is signed. Run the audit after the store has
    anchored (with `WithMinInterval`, after the interval or a `Flush`).
@@ -213,7 +220,10 @@ unchanged since its newest signed head); warnings do not change it, 1 for any fi
 store cannot be opened or read. The `-json` report carries the findings and the per-ledger figures.
 
 It does not check the index runs for entries no intent uses (they cost nothing), and it does not re-apply
-the clock bound: the bound is the writer's setting and is not recorded. `bide sample` writes a small ledger to
+the writer's clock bound (a setting that is not recorded); the time check above stands in for it.
+**What remains.** Someone who can write the store and sign heads (a process that writes through the signing
+store, or holds the log key) can write a history that is consistent with itself, and the audit finds only
+contradictions: it cannot tell that history from an honest one. `bide sample` writes a small ledger to
 try it on: `bide audit caps -db sample.db -unanchored`.
 
 ## A worked configuration

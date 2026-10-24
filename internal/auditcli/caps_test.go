@@ -232,7 +232,7 @@ func TestCapsAudit_CleanLedgers(t *testing.T) {
 		t.Fatalf("the PASS line of an unanchored audit must say so:\n%s", out)
 	}
 	code, out, errOut = e.anchored()
-	if code != 0 || !strings.Contains(out, "is unchanged since its newest signed head (a signature covers what the store was given at signing, not that it was legitimate)") || strings.Contains(out, "UNANCHORED") {
+	if code != 0 || !strings.Contains(out, "is unchanged since its newest signed head, and so are the cap records of its runs (a signature covers what the store was given at signing, not that it was legitimate)") || strings.Contains(out, "UNANCHORED") {
 		t.Fatalf("anchored: exit %d\n%s\n%s", code, out, errOut)
 	}
 }
@@ -1109,6 +1109,7 @@ func TestWindowOutOfTime(t *testing.T) {
 		{"an old window", capledger.Day, "2026-10-01", day("2026-10-22T10:00:00Z"), true, day("2026-10-22T10:00:00Z"), true},
 		{"two days ahead of the marker", capledger.Day, "2026-10-24", day("2026-10-22T10:00:00Z"), true, day("2026-10-22T10:00:00Z"), true},
 		{"the hour after", capledger.Hour, "2026-10-22T11", day("2026-10-22T10:59:59Z"), true, day("2026-10-22T10:59:59Z"), false},
+		{"two hours ahead of the marker", capledger.Hour, "2026-10-22T12", day("2026-10-22T10:00:00Z"), true, day("2026-10-22T10:00:00Z"), true},
 		{"the hour before", capledger.Hour, "2026-10-22T09", day("2026-10-22T10:00:00Z"), true, day("2026-10-22T10:00:00Z"), true},
 		{"no start: only the marker bounds it", capledger.Day, "2026-10-01", time.Time{}, false, day("2026-10-22T10:00:00Z"), false},
 		{"no start: ahead of the marker", capledger.Day, "2026-11-01", time.Time{}, false, day("2026-10-22T10:00:00Z"), true},
@@ -1182,4 +1183,18 @@ func TestCapsAudit_RunsWhoseCapRecordsNoHeadCovers(t *testing.T) {
 	e.editIntent("r2", replaceIn(`"amount":50`, `"amount":51`))
 	code, out, errOut = e.anchored()
 	wantFail(t, code, out, errOut, "DIVERGENT_HEAD")
+}
+
+func TestCapsAudit_AWindowPinnedIntoTheFuture(t *testing.T) {
+	e := newCapsEnv(t)
+	e.plantIntent("r1", "2026-12-01", 100)
+	if err := e.call("r1", 100); err != nil {
+		t.Fatal(err)
+	}
+	// The attempt marker was claimed now, and the intent fixes a window months ahead.
+	code, out, errOut := unanchoredCaps()
+	wantFail(t, code, out, errOut, "INTENT_WINDOW")
+	if !strings.Contains(out, "a call cannot be counted in a window that far ahead") {
+		t.Fatalf("the future window must be named:\n%s", out)
+	}
 }
