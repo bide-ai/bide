@@ -151,8 +151,9 @@ warning line, "conflicting reason records", and none of their reasons.
 - **The application's claim.** The list says so: the reasons are the application's record of why the call was held,
   not part of what the approver signs, and the page cannot check them. The signed bytes are unchanged
   (`bide.approval.v3`); binding the reason into a decision is a new decision format and not built.
-- **No model-written prose.** The page shows no text the model wrote beyond the arguments. A string anywhere in the
-  arguments is something the model wrote, and the page says so under them: "model-written, unverified". The note counts string values, not member names (in the usual call the names are the tool's own, and a note on every object would stop being read); it says that a name the tool does not fix is the model's too.
+- **No model-written prose.** The page shows no text the model wrote beyond the arguments. Everything in the arguments, the values and
+  the member names, is chosen by the model (a tool's schema only constrains the choice, and the page cannot see
+  the schema), so whenever there are arguments the page says so once under them: "model-written, unverified".
 
 ## What it looks like, and who can change that
 

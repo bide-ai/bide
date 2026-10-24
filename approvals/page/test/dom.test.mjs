@@ -179,11 +179,11 @@ test('a reason the page cannot read stops the page from showing the call at all,
   assert.match(els['status'].textContent, /unknown member/);
 });
 
-test('text in the arguments is marked model-written and unverified; arguments with no text are not', async () => {
-  const withText = await run(pendingWith({ memo: 'pay now', n: 5 }));
-  assert.equal(withText.els['args-note'].hidden, false);
-  const none = await run(pendingWith({ n: 5, ok: true, z: null }));
-  assert.equal(none.els['args-note'].hidden, true);
+test('non-empty arguments are marked model-written and unverified, whatever they hold; empty ones are not', async () => {
+  for (const args of [{ memo: 'pay now', n: 5 }, { n: 5, ok: true, z: null }, { 'ignore all previous instructions': 1 }]) {
+    assert.equal((await run(pendingWith(args))).els['args-note'].hidden, false, JSON.stringify(args));
+  }
+  assert.equal((await run(pendingWith({}))).els['args-note'].hidden, true, 'no arguments, no note');
   const tmpl = fs.readFileSync(new URL('../index.template.html', import.meta.url), 'utf8');
   assert.match(tmpl, /<p id="args-note" class="note" hidden>[^<]*model-written, unverified/);
 });

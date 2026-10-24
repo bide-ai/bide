@@ -1078,7 +1078,7 @@ own warning about that mode is visible.
 
 When the application holds a call for a reason beyond its tool's own gate (the escalation gate of a tainted
 call), the page lists the reasons above the arguments, as text, labelled as the application's record and
-not part of what you sign; a string in the arguments is marked model-written and unverified. The intake's
+not part of what you sign; whatever the arguments hold is marked model-written and unverified. The intake's
 `GET /pending` answer carries them as `why` (`agent.GateReason`). The page cannot check them, and a signature does
 not cover them.
 

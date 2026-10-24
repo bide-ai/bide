@@ -3,7 +3,7 @@
 // is set with textContent, never as markup. The logic that decides what is signed is in flow.js and
 // core.js, which the tests run against a real endpoint; this file is the glue to the document.
 
-import { argsHaveText, keyFingerprint, publicKeyText, prettyArgs, reasonLine, safeText } from './core.js';
+import { argsNonEmpty, keyFingerprint, publicKeyText, prettyArgs, reasonLine, safeText } from './core.js';
 import { Refused, decide, loadCall } from './flow.js';
 
 const $ = (id) => document.getElementById(id);

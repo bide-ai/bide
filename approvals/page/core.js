@@ -278,20 +278,18 @@ export function receiptProblem(rc, d) {
   return null;
 }
 
-// argsHaveText reports whether the arguments hold text the model wrote: a string value anywhere in them, or
-// arguments that are not JSON (shown as text). Numbers, booleans and null are not text. Member names are not
-// counted: in the usual call they are the tool's own, and a note on every object would stop being read; the
-// note says that a name the tool does not fix is the model's too, and the names are shown with the arguments.
-export function argsHaveText(raw) {
+// argsNonEmpty reports whether the call has arguments to be marked model-written: any arguments at all that are
+// not an empty object, an empty array or null. Every value and every member name in them is chosen by the model;
+// the tool's schema only constrains the choice, and the page cannot see the schema, so nothing in them is told
+// from the rest. Arguments that are not JSON (shown as text) are the model's too.
+export function argsNonEmpty(raw) {
   const t = goTrimSpace(raw);
   if (t.length === 0) return false;
   const r = parseFirst(t);
   if (r === null) return true;
-  const walk = (v) => {
-    if (typeof v === 'string') return true;
-    if (v === null || typeof v === 'boolean' || v.num !== undefined) return false;
-    if (v.a) return v.a.some(walk);
-    return [...v.o.values()].some(walk);
-  };
-  return walk(r.value);
+  const v = r.value;
+  if (v === null) return false;
+  if (v.o) return v.o.size > 0;
+  if (v.a) return v.a.length > 0;
+  return true;
 }
