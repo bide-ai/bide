@@ -427,30 +427,19 @@ func auditLedger(ctx context.Context, j *agent.Journal, led *capledger.Ledger, v
 	}
 
 	// The window total, recomputed from the live reserves.
+	live, total, sums := recomputeWindow(slots)
 	released := map[int]bool{}
 	for _, s := range slots {
 		if s.Kind == "release" {
 			released[s.Ref] = true
 		}
 	}
-	var total int64
-	liveAttempt := map[string]int{}
-	var last capledger.Slot
-	for _, s := range slots {
-		last = s
-		if s.Kind != "reserve" || released[s.N] {
-			continue
-		}
-		lr.Live++
-		total += s.Amount
-		if first, dup := liveAttempt[s.Attempt]; dup {
-			find(capDouble, run, s.N, "attempt %s holds a live reserve in slot %d and in slot %d: the window counts it twice", cleanText(s.Attempt), first, s.N)
-		}
-		liveAttempt[s.Attempt] = s.N
+	for _, f := range sums {
+		find(f.Kind, run, f.Slot, "%s", f.Detail)
 	}
-	lr.Slots, lr.Total, lr.Currency, lr.Limit = len(slots), total, last.Currency, last.Limit
-	if len(slots) > 0 && total != last.CumAfter {
-		find(capTotal, run, last.N, "the live reserves sum to %d and the last cum_after is %d", total, last.CumAfter)
+	lr.Slots, lr.Live, lr.Total = len(slots), live, total
+	if len(slots) > 0 {
+		lr.Currency, lr.Limit = slots[len(slots)-1].Currency, slots[len(slots)-1].Limit
 	}
 	for _, s := range slots {
 		if s.Kind == "reserve" && s.Over {
@@ -535,4 +524,33 @@ func (c *cli) capsReport(rep capsReport) {
 		}
 		c.printf("FAIL  %s %s: %s\n", f.Kind, where, cleanText(f.Detail))
 	}
+}
+
+// recomputeWindow sums the live reserves of a ledger's slots (those no release voids) and compares the
+// sum with the last cum_after. It finds an attempt that holds two live reserves, which the window counts
+// twice. The ledger's own rules make both impossible for a ledger it reads; the audit recomputes them
+// rather than trusting that.
+func recomputeWindow(slots []capledger.Slot) (live int, total int64, finds []capsFinding) {
+	released := map[int]bool{}
+	for _, s := range slots {
+		if s.Kind == "release" {
+			released[s.Ref] = true
+		}
+	}
+	liveAttempt := map[string]int{}
+	for _, s := range slots {
+		if s.Kind != "reserve" || released[s.N] {
+			continue
+		}
+		live++
+		total += s.Amount
+		if first, dup := liveAttempt[s.Attempt]; dup {
+			finds = append(finds, capsFinding{Kind: capDouble, Slot: s.N, Detail: fmt.Sprintf("attempt %s holds a live reserve in slot %d and in slot %d: the window counts it twice", cleanText(s.Attempt), first, s.N)})
+		}
+		liveAttempt[s.Attempt] = s.N
+	}
+	if n := len(slots); n > 0 && total != slots[n-1].CumAfter {
+		finds = append(finds, capsFinding{Kind: capTotal, Slot: slots[n-1].N, Detail: fmt.Sprintf("the live reserves sum to %d and the last cum_after is %d", total, slots[n-1].CumAfter)})
+	}
+	return live, total, finds
 }
