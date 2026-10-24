@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -161,5 +162,83 @@ func TestRequireProvenance_IsInTheDigestOnlyWhenSet(t *testing.T) {
 	doc := mk(true, provTool("a", Trusted("mine"))).declarationsDoc()
 	if !doc.Policy.RequireProvenance || doc.Tools[0].Trusted != "mine" || doc.Recompute() != doc.Digest {
 		t.Errorf("document = %+v, recompute %q", doc, doc.Recompute())
+	}
+}
+
+// reclassify embeds a tool and reports its spec with the provenance replaced.
+type reclassify struct {
+	Tool
+	untrusted, trusted string
+}
+
+func (r reclassify) Spec() ToolSpec {
+	s := r.Tool.Spec()
+	s.Untrusted, s.Safety.Untrusted, s.Trusted = r.untrusted, "", r.trusted
+	return s
+}
+
+// unwrapReclassify is reclassify with a named field and Unwrap, so the Unwrap chain check sees it.
+type unwrapReclassify struct {
+	inner              Tool
+	untrusted, trusted string
+}
+
+func (r unwrapReclassify) Spec() ToolSpec {
+	s := r.inner.Spec()
+	s.Untrusted, s.Safety.Untrusted, s.Trusted = r.untrusted, "", r.trusted
+	return s
+}
+func (r unwrapReclassify) Call(ctx context.Context, a json.RawMessage) (json.RawMessage, error) {
+	return r.inner.Call(ctx, a)
+}
+func (r unwrapReclassify) Unwrap() Tool { return r.inner }
+
+// A wrapper that declares Trusted over a tool that declares Untrusted drops the taint: ErrConfig at New, in
+// every wrapper shape, naming both declarations. The other direction only makes the wrapper unclassified,
+// which RequireProvenance refuses.
+func TestTrustedWrapperOverUntrustedToolIsRefused(t *testing.T) {
+	ok := func(context.Context, struct{}) (string, error) { return "ok", nil }
+	untrusted := MustFunc("t", "t", ok, Untrusted("crm"))
+	trusted := MustFunc("t", "t", ok, Trusted("mine"))
+	for name, w := range map[string]Tool{
+		"embedded":         reclassify{untrusted, "", "launder"},
+		"embedded depth 2": reclassify{reclassify{untrusted, "crm", ""}, "", "launder"},
+		"unwrap":           unwrapReclassify{untrusted, "", "launder"},
+		"unwrap depth 2":   unwrapReclassify{unwrapReclassify{untrusted, "crm", ""}, "", "launder"},
+	} {
+		_, err := New(&scriptModel{}, memJournal(), WithTools(w))
+		if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "crm") && !strings.Contains(err.Error(), "launder") {
+			t.Errorf("%s: Trusted wrapper over an Untrusted tool = %v, want ErrConfig naming the declarations", name, err)
+			continue
+		}
+		if !strings.Contains(err.Error(), "Trusted(") {
+			t.Errorf("%s: the error does not say the wrapper declares Trusted: %v", name, err)
+		}
+	}
+	// A wrapper that keeps Untrusted is accepted.
+	if _, err := New(&scriptModel{}, memJournal(), WithTools(reclassify{untrusted, "crm", ""})); err != nil {
+		t.Fatalf("a wrapper that keeps Untrusted: %v", err)
+	}
+	// The other direction: a wrapper that drops an inner Trusted is accepted without the requirement, and
+	// refused with it (it is unclassified).
+	w := unwrapReclassify{trusted, "", ""}
+	if _, err := New(&scriptModel{}, memJournal(), WithTools(w)); err != nil {
+		t.Fatalf("a wrapper that drops Trusted, no requirement: %v", err)
+	}
+	if _, err := New(&scriptModel{}, memJournal(), WithTools(w), WithTaintPolicy(TaintPolicy{Refuse: true, RequireProvenance: true})); !errors.Is(err, ErrConfig) {
+		t.Fatalf("a wrapper that drops Trusted under RequireProvenance = %v, want ErrConfig", err)
+	}
+	if _, err := New(&scriptModel{}, memJournal(), WithTools(keepsCaps{trusted}), WithTaintPolicy(TaintPolicy{Refuse: true, RequireProvenance: true})); err != nil {
+		t.Fatalf("an embedding decorator that keeps the inner spec: %v", err)
+	}
+}
+
+// A blank reason is not a declaration.
+func TestTrustedRefusesABlankReason(t *testing.T) {
+	ok := func(context.Context, struct{}) (string, error) { return "ok", nil }
+	for _, r := range []string{"", " ", " \t "} {
+		if _, err := Func("t", "t", ok, Trusted(r)); !errors.Is(err, ErrConfig) {
+			t.Errorf("Trusted(%q) = %v, want ErrConfig", r, err)
+		}
 	}
 }

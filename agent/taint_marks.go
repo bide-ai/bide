@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/bide-ai/bide/internal/printable"
@@ -78,6 +79,9 @@ func Trusted(reason string) ToolOption {
 	return toolOption(func(c *toolConfig) error {
 		if err := checkProvenanceName("trusted output", reason); err != nil {
 			return err
+		}
+		if strings.TrimSpace(reason) == "" {
+			return fmt.Errorf("Trusted: the reason is blank: say why the tool's results are the host's own: %w", ErrConfig)
 		}
 		c.spec.Trusted = reason
 		return nil
