@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/middleware"
@@ -24,16 +26,50 @@ func TestStreamSSE_MidStreamErrorIsReported(t *testing.T) {
 	}
 }
 
+// bodyClient is an http.Client whose server is a function: the reply body is built in memory, so a test
+// of a huge or a cut reply depends on no socket (a 40 MB write on a loaded host fails with ENOBUFS and
+// cuts the stream, which is how this test once failed).
+func bodyClient(body func() io.Reader) *http.Client {
+	return &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(body())}, nil
+	})}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+type aBytes struct{}
+
+func (aBytes) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 'A'
+	}
+	return len(p), nil
+}
+
 // A response line longer than the scanner allows fails the same way on every attempt: it must
 // be a model error that is not retried, not a bare bufio error.
 func TestStream_OverlongLineIsNotRetried(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"%s\"}]},\"finishReason\":\"STOP\"}]}\n\n", strings.Repeat("A", 40<<20))
-	}))
-	defer srv.Close()
-	_, _, err := agent.Generate(context.Background(), New("k", WithBaseURL(srv.URL)), agent.Request{})
+	c := bodyClient(func() io.Reader {
+		return io.MultiReader(strings.NewReader(`data: {"candidates":[{"content":{"parts":[{"text":"`),
+			io.LimitReader(aBytes{}, 40<<20), strings.NewReader("\"}]},\"finishReason\":\"STOP\"}]}\n\n"))
+	})
+	_, _, err := agent.Generate(context.Background(), New("k", WithHTTPClient(c)), agent.Request{})
 	if !errors.Is(err, agent.ErrModel) || middleware.Retryable(err) {
 		t.Fatalf("err = %v (retryable %v), want a non-retryable ErrModel", err, middleware.Retryable(err))
+	}
+}
+
+// A stream cut partway through an event is the read error that cut it, retried; it is not the half event
+// decoded ("unexpected end of JSON input").
+func TestStream_CutMidEventIsAReadError(t *testing.T) {
+	c := bodyClient(func() io.Reader {
+		return io.MultiReader(strings.NewReader(`data: {"candidates":[{"content":{"parts":[{"text":"hi`), iotest.ErrReader(io.ErrUnexpectedEOF))
+	})
+	_, _, err := agent.Generate(context.Background(), New("k", WithHTTPClient(c)), agent.Request{})
+	if !errors.Is(err, agent.ErrModel) || !errors.Is(err, io.ErrUnexpectedEOF) || strings.Contains(fmt.Sprint(err), "sse decode") || !middleware.Retryable(err) {
+		t.Fatalf("err = %v, want a retryable ErrModel wrapping the read error", err)
 	}
 }
 

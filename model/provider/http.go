@@ -245,16 +245,33 @@ const MaxSSELine = 32 << 20
 // to MaxSSELine. A single SSE line can carry a large tool-call arguments blob or inline image, and the
 // 64KB default would fail the stream on it (the openai-go #368 lesson). The buffer grows only as a
 // line needs it. Every adapter reads its event stream through this so the cap is fixed in exactly one
-// place; pass the scanner's Err to SSEReadError. Over a body from LimitResponse, a reply that
-// exceeds its cap ends the scan with that error before the cut-off last line is returned, so an
-// adapter never decodes a line the cap truncated.
+// place; pass the scanner's Err to SSEReadError. A read that fails partway through a line (a connection
+// cut, a reply over its LimitResponse cap) ends the scan with that error before the cut-off last line
+// is returned, so an adapter never decodes a line the failure truncated: only a clean end of the body
+// returns a last line that has no newline.
 func NewSSEScanner(body io.Reader) *bufio.Scanner {
-	sc := bufio.NewScanner(body)
+	tr := &trackedReader{r: body}
+	sc := bufio.NewScanner(tr)
 	sc.Buffer(make([]byte, 0, 64*1024), MaxSSELine)
-	if lb, ok := body.(*limitedBody); ok {
-		sc.Split(lb.split)
-	}
+	sc.Split(func(data []byte, atEOF bool) (int, []byte, error) {
+		// bufio reports atEOF for any read error; only io.EOF is the end of the body.
+		return bufio.ScanLines(data, atEOF && tr.err == nil)
+	})
 	return sc
+}
+
+// trackedReader remembers the first read error that is not io.EOF.
+type trackedReader struct {
+	r   io.Reader
+	err error
+}
+
+func (t *trackedReader) Read(p []byte) (int, error) {
+	n, err := t.r.Read(p)
+	if err != nil && err != io.EOF && t.err == nil {
+		t.err = err
+	}
+	return n, err
 }
 
 // DefaultMaxResponseBytes is the most bytes of one streamed model reply an adapter reads unless it
@@ -279,13 +296,6 @@ type limitedBody struct {
 	body      io.ReadCloser
 	max, left int64
 	err       error // set once the reply has run past max
-}
-
-// split is bufio.ScanLines, except that once the reply has run past its cap it does not return
-// the partial last line the cap cut off: the lines read in full are returned, and then the scan ends
-// with the cap's error, which the reader reported.
-func (l *limitedBody) split(data []byte, atEOF bool) (int, []byte, error) {
-	return bufio.ScanLines(data, atEOF && l.err == nil)
 }
 
 func (l *limitedBody) Read(p []byte) (int, error) {
