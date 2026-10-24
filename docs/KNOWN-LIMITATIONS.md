@@ -822,6 +822,11 @@ consequences and does not prevent prompt injection. Its limits:
   marks; a no-policy process refuses the side effects of a policy-started run, and a changed policy digest holds
   a call asked under the old one. Roll the whole fleet before enabling a policy; an older binary ignores the
   policy and runs a tainted run's calls ungated.
+- **The declarations report sees only what the host dumps.** `bide doctor -declarations` and `-diff` read a
+  document the host writes from its agent; a tool behind a wrapper that hides its spec, a tool that runs an
+  agent on a context of its own, and an agent the host does not dump are not in it. It makes no finding for a
+  tool whose provenance nobody stated: that needs the explicit trusted declaration that arrives with
+  `RequireProvenance`.
 - **Approval volume.** A deployment whose agents read outside text and write will be asked more. `TaintExempt` is
   the relief valve and is visible in the declarations digest.
 - **`RequireProvenance` and the `bide init` scaffold are not built yet.** Today an input is trusted unless the

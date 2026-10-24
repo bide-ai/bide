@@ -131,6 +131,57 @@ Taint follows the content, not the run that read it.
   not clear taint.
 - Not covered: a saga's rollback re-run of a sub-agent, and the answer a `ResolveHalt` injects.
 
+## Reviewing the declarations
+
+Taint and cap declarations are Go. Nothing at runtime changes them, so a change is a code change, and the
+review of it needs to see the declarations, not the diff of the Go around them. The agent dumps its declarations
+as a document, and `bide doctor` reports on one and diffs two.
+
+<!-- docsnip: setup agent *agent.Agent; w io.Writer; returns error -->
+```go
+doc, err := agent.Declarations()
+if err != nil {
+	return err
+}
+_, err = w.Write(doc)
+return err
+```
+
+Commit the document next to the code (a test that writes it, and fails when it differs, keeps it current), then:
+
+```text
+bide doctor -declarations declarations.json
+bide doctor -diff main/declarations.json declarations.json
+```
+
+- **The document** (`bide.declarations.v1`) holds the taint policy (the escalation gate, or refuse), and every
+  registered tool with whether it can have a side effect, its own gate, its `Untrusted` source, its `TaintExempt`
+  reason and its cap rules. Its `digest` is the `taint_policy_digest` the runs of that agent record in `run:start`,
+  and the reader recomputes it from the document: a document whose digest is not the digest of what it declares is
+  refused, and so is one with a member this version does not know (a document from a newer version).
+- **`-declarations`** prints what a reader should look at: a side-effecting tool in an agent with no taint
+  policy, an `Untrusted` tool in an agent with no policy (the marks are recorded and nothing is gated), each
+  `TaintExempt` tool with its reason, each cap-carrying tool, and an escalation gate that is one decision, needs
+  fewer than two, or does not exclude the requester. These are notes, not failures: the exit status is 0 for a
+  document that reads. A finding for a tool whose provenance nobody stated (an unclassified tool) is not made
+  yet: the library has no explicit trusted declaration to tell "trusted" from "forgotten", and it comes with
+  `RequireProvenance`.
+- **`-diff old new`** lists every change as `WEAKENED`, `changed` or `strengthened`, and exits 1 if anything is
+  weakened, so a pipeline can compare a branch against `main`. Weakened: a removed `Untrusted`; a new or reworded
+  `TaintExempt`; the policy removed, or `refuse` turned into a gate; a lower `need`; a requester no longer
+  excluded; an m-of-n gate turned into one decision; a raised cap limit; a removed cap rule; a *renamed*
+  cumulative rule (its name is its ledger, so the window starts again from zero); a refuse turned into a gate; a
+  window of a day where it was an hour; a rule that applies to fewer tools; a removed tool that carried
+  `Untrusted` or cap rules. Changed, neither stricter nor looser: a rotated approver set, a longer or shorter
+  gate timeout, another currency or amount member, a cap line that does not parse (it is compared by hand).
+  Cap lines are compared by their meaning, through the cap grammar, not as text.
+- **The digest and the diff must agree.** Different digests with no difference in the documents mean the digest
+  covers something the document does not carry; equal digests with a difference in what the digest covers mean
+  the reverse. Either is an error (exit 1), not a report.
+- **What it cannot see.** The report is only as good as the dump. A tool whose wrapper hides its spec, a tool
+  that runs an agent on a context of its own, and anything the host does not register with the agent are not
+  in it. A difference in a tool's side-effect flag or its own gate is listed as "not in the digest".
+
 ## What this does not do
 
 This bounds what an injected request can do. It does not detect or prevent one.

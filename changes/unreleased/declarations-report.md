@@ -1,0 +1,3 @@
+Section: Added
+
+`bide doctor -declarations <file>` reports on the taint and cap declarations a host dumps from its agent (side-effecting tools with no taint policy, exempt tools, cap-carrying tools, a weak escalation gate), and `bide doctor -diff <old> <new>` lists every change between two dumps as weakened, changed or strengthened (a raised cap limit, a removed or renamed cap rule, a removed `Untrusted`, a new `TaintExempt`, a lower `need`, a requester no longer excluded) and exits 1 if anything is weakened. A document with a member this version does not know, or whose digest is not the digest of what it declares, is refused. `(*Agent).Declarations` writes the document. The first-run checks are unchanged. See docs/guides/untrusted-content.md.

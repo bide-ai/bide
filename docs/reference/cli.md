@@ -24,7 +24,7 @@ and `help`, and its import graph is the standard library and the core module (se
 |---|---|
 | [`bide init`](#bide-init) | scaffold a project: a gated plan flow on SQLite, with evidence for bide audit |
 | [`bide demo`](#bide-demo) | kill an agent mid-payment and watch it not charge twice (no API key) |
-| [`bide doctor`](#bide-doctor) | check that a first run can work: Go, SQLite, the module cache, model keys, your project |
+| [`bide doctor`](#bide-doctor) | check that a first run can work: Go, SQLite, the module cache, model keys, your project; report on and diff the taint and cap declarations |
 | [`bide sample`](#bide-sample) | write a sample journal of varied runs, with evidence and flow configs, and open bide view on it |
 | [`bide theme`](#bide-theme) | check a theme file for the run viewer and the editor against the contrast and distinctness rules |
 | [`bide view`](#bide-view) | a read-only local page for one run of a journal, or a flow config's graph |
@@ -90,10 +90,12 @@ Exit status:
 
 ## bide doctor
 
-Check that a first run can work: Go, SQLite, the module cache, model keys, your project.
+Check that a first run can work: Go, SQLite, the module cache, model keys, your project; or report on the taint and cap declarations an agent dumps (`-declarations`, `-diff`).
 
 ```text
 usage: bide doctor [-dir <project>] [-offline] [-postgres-env <var>]
+       bide doctor -declarations <file>
+       bide doctor -diff <old.json> <new.json>
 
 Checks that a first run of bide can work, and prints one line per check with a hint to fix a
 failure:
@@ -108,11 +110,25 @@ failure:
   module cache  GOPATH and the module cache are writable, so go mod tidy can download bide
   project       in a bide init project (go.mod and flow.yaml in -dir), the project builds
 
+With -declarations, doctor reads the taint and cap declarations a host dumped from its agent (a
+document of format bide.declarations.v1) and prints what a reader should look at: side-effecting tools
+in an agent with no taint policy, exempt tools, cap-carrying tools, an escalation gate weaker than
+need >= 2 with the requester excluded. With -diff it compares two such documents (the one on your main
+branch and the one on your branch) and lists every change as WEAKENED, changed or strengthened: a
+raised cap limit, a removed or renamed cap rule, a removed Untrusted, a new TaintExempt, a lower need,
+a requester no longer excluded. It exits 1 if anything is weakened, so a pipeline can gate on it. A
+document written by a newer version, or one whose digest is not the digest of what it declares, is
+refused. Neither report runs the first-run checks.
+
 Exit status is 0 when nothing failed (a warning does not fail), and 1 when a check failed. On a
 terminal the output is colored; -color=never, or NO_COLOR set to any value, turns color off.
 
   -color when
     	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
+  -declarations file
+    	report on the taint and cap declarations in file (a document the host dumps) instead of the first-run checks
+  -diff old.json new.json
+    	compare two declarations documents, old.json new.json, and exit 1 if anything is weakened
   -dir string
     	the directory to look for a bide init project in (default ".")
   -offline
