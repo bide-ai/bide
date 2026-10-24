@@ -54,8 +54,8 @@ type Approval struct {
 
 	Reask string `json:"reask,omitempty"`
 
-	Why  []gatereason.Reason `json:"why,omitempty"`
-	Args json.RawMessage     `json:"args,omitempty"`
+	Why  []agent.GateReason `json:"why,omitempty"`
+	Args json.RawMessage    `json:"args,omitempty"`
 }
 ```
 

@@ -1026,6 +1026,14 @@ type FlowRef struct {
 
 FlowRef names the plan flow that drives a run of kind RunKindFlow.
 
+## type GateReason
+
+```go
+type GateReason = gatereason.Reason
+```
+
+GateReason is one reason a call needs a gate beyond its tool's own, as the gate-reason record the engine wrote holds it: for the escalation gate of a tainted call, a source of untrusted content its turn had read and where (Kind "taint": Source, Ref "tool:&lt;name&gt;/&lt;call&gt;", "input" or "retrieval", and Pos, the position of the mark in the run's journal); for a gate a cap rule holds, the rule, what it decided and why it fired, and this call's amount and the rule's limit in minor units of Currency (Kind "cap").
+
 ## type GateStanding
 
 ```go
@@ -1878,7 +1886,7 @@ type NotifyApproval struct {
 
 	Reask string
 
-	Why []gatereason.Reason
+	Why []GateReason
 	// contains filtered or unexported fields
 }
 ```
