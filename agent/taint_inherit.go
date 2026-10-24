@@ -3,9 +3,12 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
+	"sync"
+	"unicode/utf8"
 )
 
 // Marks that cross a run boundary (docs/design/untrusted-content-and-amount-caps.md, section 5.5). A
@@ -118,4 +121,82 @@ func startInherited(recs []Record) []taintMark {
 		return inheritedAsMarks(RunStart{Ext: s.Ext}.inheritedMarks())
 	}
 	return nil
+}
+
+// A sub-agent's answer carries the taint of the run that gave it: if the child ended with any mark, the
+// parent's tool_result for the call carries one, so the parent's next turn is tainted. Without it a
+// tainted child's answer would launder the content it read. The mark is dynamic (a tool's declaration is
+// static), so the call hands it back through the context.
+
+type resultMarkKey struct{}
+
+// resultMark is the mark a call's result carries beyond its tool's declaration; the tool sets it while
+// it runs, and the loop reads it when it records the result.
+type resultMark struct {
+	mu  sync.Mutex
+	src string
+}
+
+// withResultMark returns ctx carrying a fresh resultMark, and the mark.
+func withResultMark(ctx context.Context) (context.Context, *resultMark) {
+	m := &resultMark{}
+	return context.WithValue(ctx, resultMarkKey{}, m), m
+}
+
+func resultMarkFrom(ctx context.Context) *resultMark {
+	m, _ := ctx.Value(resultMarkKey{}).(*resultMark)
+	return m
+}
+
+func (m *resultMark) set(src string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.src == "" {
+		m.src = src
+	}
+}
+
+// applyTo gives the result's Safety the mark, unless its tool already declares a source.
+func (m *resultMark) applyTo(s *Safety) {
+	if m == nil || s == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.src != "" && s.Untrusted == "" {
+		s.Untrusted = m.src
+	}
+}
+
+// subAgentMarkSource is the source name of the mark a tainted sub-agent's answer carries: "subagent:" and
+// the tool's name, cut on a rune boundary to fit a source name (maxProvenanceName), the same for every
+// call of the name.
+func subAgentMarkSource(tool string) string {
+	s := "subagent:" + tool
+	if len(s) <= maxProvenanceName {
+		return s
+	}
+	cut := maxProvenanceName
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
+// endedTainted reports whether the run runID of this agent's store ended with a mark in its journal:
+// inherited from above, or read by the run. The journal is the child's own, read from its own store.
+func (a *Agent) endedTainted(ctx context.Context, runID string) (bool, error) {
+	recs, err := a.store.History(ctx, runID)
+	if err != nil {
+		return false, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
+	}
+	declared := func(tool string) string {
+		if s := a.specs[tool]; s != nil {
+			return s.untrustedSource()
+		}
+		return ""
+	}
+	// A model record at the end shows the marks the whole journal holds.
+	turns := foldTaint(append(slices.Clone(recs), Record{Kind: StepModel}), startInherited(recs), declared)
+	return len(turns) > 0 && len(turns[len(turns)-1].Marks) > 0, nil
 }

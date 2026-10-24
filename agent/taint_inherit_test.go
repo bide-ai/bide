@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // PR 10 of the taint build: marks that cross a run boundary (a sub-agent's run, a session's turns).
@@ -140,5 +141,116 @@ func TestTaintInherit_ADriveWithOtherMarksIsAConfigError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "inherited taint marks") {
 		t.Fatalf("ErrConfig for another reason: %v", err)
+	}
+}
+
+// upRig is a parent that delegates to a sub-agent and then asks for a write. The child reads an untrusted
+// source (or not) in its own journal.
+type upRig struct {
+	t         *testing.T
+	writes    counter
+	parentJ   *Journal
+	childJ    *Journal
+	sameStore bool
+}
+
+func (r *upRig) run(childReads bool, childPolicy bool, delegate string) error {
+	r.t.Helper()
+	r.childJ = memJournal()
+	if r.sameStore {
+		r.childJ = r.parentJ
+	}
+	var childTools []Tool
+	childTurns := [][]Emit{textTurn("child answer")}
+	if childReads {
+		childTools = append(childTools, MustFunc("read_a", "read", func(context.Context, struct{}) (string, error) { return "text", nil },
+			WithSafety(Safety{ReadOnly: true}), Untrusted("a-src")))
+		childTurns = [][]Emit{toolTurn("r1", "read_a", `{}`), textTurn("child answer")}
+	}
+	var copts []Option
+	if childPolicy {
+		copts = refuseTaint
+	}
+	child := mustNew(&scriptModel{turns: childTurns}, r.childJ, append([]Option{WithTools(childTools...)}, copts...)...)
+	parent := mustNew(&scriptModel{turns: [][]Emit{toolTurn("d1", delegate, `{"task":"go"}`), toolTurn("w1", "write", `{}`), textTurn("done")}}, r.parentJ,
+		WithTools(MustSubAgent(delegate, "delegate", child), r.writes.tool("write")), WithTaintPolicy(TaintPolicy{Refuse: true}))
+	_, err := parent.Run(context.Background(), "r", UserText("go"))
+	return err
+}
+
+func TestTaintInherit_ATaintedChildTaintsTheParentsNextTurn(t *testing.T) {
+	for _, same := range []bool{false, true} {
+		name := "child in another store"
+		if same {
+			name = "child in the parent's store"
+		}
+		t.Run(name, func(t *testing.T) {
+			r := &upRig{t: t, parentJ: memJournal(), sameStore: same}
+			if err := r.run(true, false, "delegate"); err != nil {
+				t.Fatal(err)
+			}
+			if got := r.writes.n.Load(); got != 0 {
+				t.Fatalf("the parent's write ran %d times after a tainted child's answer: the content was laundered", got)
+			}
+			recs, _ := r.parentJ.History(context.Background(), "r")
+			var found bool
+			for _, rec := range recs {
+				if rec.Kind == StepToolResult && rec.ToolUseID == "d1" {
+					found = rec.Safety != nil && rec.Safety.Untrusted == "subagent:delegate"
+				}
+			}
+			if !found {
+				t.Fatal("the parent's tool_result for the sub-agent call does not carry the mark subagent:delegate")
+			}
+		})
+	}
+}
+
+func TestTaintInherit_ACleanChildLeavesTheParentsNextTurnClean(t *testing.T) {
+	r := &upRig{t: t, parentJ: memJournal()}
+	if err := r.run(false, false, "delegate"); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.writes.n.Load(); got != 1 {
+		t.Fatalf("the parent's write ran %d times, want 1 (the child read nothing untrusted)", got)
+	}
+	recs, _ := r.parentJ.History(context.Background(), "r")
+	for _, rec := range recs {
+		if rec.Kind == StepToolResult && rec.ToolUseID == "d1" && rec.Safety != nil && rec.Safety.Untrusted != "" {
+			t.Fatalf("a clean child marked its parent's result: %q", rec.Safety.Untrusted)
+		}
+	}
+}
+
+func TestTaintInherit_TheMarkOfAChildCarriesThroughAGrandchild(t *testing.T) {
+	ctx := context.Background()
+	var writes counter
+	grand := mustNew(&scriptModel{turns: [][]Emit{toolTurn("r1", "read_a", `{}`), textTurn("grand answer")}}, memJournal(), WithTools(
+		MustFunc("read_a", "read", func(context.Context, struct{}) (string, error) { return "text", nil }, WithSafety(Safety{ReadOnly: true}), Untrusted("a-src"))), WithTaintPolicy(TaintPolicy{Refuse: true}))
+	child := mustNew(&scriptModel{turns: [][]Emit{toolTurn("g1", "grand", `{"task":"go"}`), textTurn("child answer")}}, memJournal(), WithTools(MustSubAgent("grand", "grand", grand, TaintExempt("test"))), WithTaintPolicy(TaintPolicy{Refuse: true}))
+	parent := mustNew(&scriptModel{turns: [][]Emit{toolTurn("d1", "child", `{"task":"go"}`), toolTurn("w1", "write", `{}`), textTurn("done")}}, memJournal(),
+		WithTools(MustSubAgent("child", "child", child, TaintExempt("test")), writes.tool("write")), WithTaintPolicy(TaintPolicy{Refuse: true}))
+	if _, err := parent.Run(ctx, "r", UserText("go")); err != nil {
+		t.Fatal(err)
+	}
+	if got := writes.n.Load(); got != 0 {
+		t.Fatalf("the parent's write ran %d times: a grandchild's content reached it unmarked", got)
+	}
+}
+
+func TestSubAgentMarkSource_IsCappedOnARuneBoundary(t *testing.T) {
+	long := strings.Repeat("é", 100) // 200 bytes
+	got := subAgentMarkSource(long)
+	if len(got) > maxProvenanceName || !strings.HasPrefix(got, "subagent:") || !utf8.ValidString(got) {
+		t.Fatalf("source = %q (%d bytes), want valid UTF-8 within %d bytes", got, len(got), maxProvenanceName)
+	}
+	if again := subAgentMarkSource(long); again != got {
+		t.Fatal("the cap is not deterministic")
+	}
+	if err := checkProvenanceName("test", got); err != nil {
+		t.Fatalf("the capped source is not a valid provenance name: %v", err)
+	}
+	if subAgentMarkSource("delegate") != "subagent:delegate" {
+		t.Fatal("a short name is changed")
 	}
 }

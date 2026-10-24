@@ -829,6 +829,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 				// protocol:delegation end
 				sctx := withOnceScope(gctx, SubRunID(runID, c.tu.ID))      // NextOnceKey's scope: the call's sub-run ID
 				sctx = withRunContext(sctx, a.store, runID, c.tu.ID, saga) // RunInfoFrom; lets the tool call Interrupt
+				sctx, resMark := withResultMark(sctx)
 				if c.under {
 					sctx = withCallMarks(sctx, c.marks)
 				}
@@ -905,6 +906,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 					}
 					// The safety and approval gate the call ran under, for a saga rollback and an audit.
 					r := Record{Kind: StepToolResult, ToolUseID: c.tu.ID, Safety: recordedSafety(*c.spec), Approval: effectiveGates(c.spec, gateInputs{}).Snapshot()}
+					resMark.applyTo(r.Safety) // a sub-agent that ended tainted marks its answer (taint_inherit.go)
 					if callErr != nil && ctxDone(sctx) {
 						// (A call known not to have reached the tool records nothing here either,
 						// and called is false for it, so its claim is recorded as never started
