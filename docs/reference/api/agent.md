@@ -254,6 +254,7 @@ Agent binds a model, a tool set, a durable store, and a middleware chain.
 
 **Methods**
 
+- `func (a *Agent) Declarations() ([]byte, error)`: Declarations returns the agent's taint and cap declarations as a document (format bide.declarations.v1, indented JSON): the taint policy, and every registered tool with whether it can have a side effect, its own gate, its Untrusted source, its TaintExempt reason and its cap rules.
 - `func (a *Agent) FlushNotifications(ctx context.Context) error`: FlushNotifications waits for the deliveries of a's notifier that are in flight to finish their round, and stops its worker; a later event starts it again.
 - `func (a *Agent) Journal() *Journal`: Journal returns the journal the agent writes through: the one New was given.
 - `func (a *Agent) Resume(ctx context.Context, runID string, opts ...RunOption) (*Result, error)`: Resume drives runID's run on from its journal: the input, saga flag and options its first drive journaled (see RunStart), and the last limit amendment.
