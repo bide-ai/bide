@@ -49,7 +49,7 @@ func TestPayloadWhy(t *testing.T) {
 		{Kind: "taint", Source: "inbound-email", Ref: "tool:read_email/c1", Pos: 4, At: "2026-10-24T10:43:00.000Z"},
 		{Kind: "cap", Rule: "refund_one", Action: "gate", Why: "over", Currency: "USD", Amount: &amt, Limit: 500000, At: "2026-10-24T10:43:00.000Z"},
 	}
-	m, raw := notifyJSON(t, plainWebhook(t), n)
+	_, raw := notifyJSON(t, plainWebhook(t), n)
 	if !strings.Contains(raw, `"source":"inbound-email"`) || !strings.Contains(raw, `"rule":"refund_one"`) || !strings.Contains(raw, `"why":"over"`) {
 		t.Fatalf("payload = %s, want both reasons", raw)
 	}
@@ -58,7 +58,6 @@ func TestPayloadWhy(t *testing.T) {
 			t.Errorf("the cap figure %s is in a payload that did not allow the arguments: %s", figure, raw)
 		}
 	}
-	_ = m
 	_, with := notifyJSON(t, plainWebhook(t, WithFields(Args(n.Approval.ToolName))), n)
 	for _, figure := range []string{`"amount":600000`, `"limit":500000`, `"currency":"USD"`} {
 		if !strings.Contains(with, figure) {
