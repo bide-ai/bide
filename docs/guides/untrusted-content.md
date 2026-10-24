@@ -123,6 +123,9 @@ Taint follows the content, not the run that read it.
   session's taint records, so a record can add marks and never remove any. A clean turn
   after a tainted one does not clear it: the later turn inherits the marks and ends with them. The turns of a
   session before a policy joined are not retro-marked.
+- A tool that runs an agent on a context of its own (a fresh `context.Background()`, a run ID that is not a
+  sub-run of the call) is an ordinary tool that returns content from elsewhere: bide cannot see the run, so the
+  answer is not marked. Declare `Untrusted` on such a tool.
 - A tool that calls a sub-agent is itself a call: unless it is `ReadOnly` or `TaintExempt`, a tainted turn needs
   the escalation gate to delegate. Attenuation (a narrower grant, [delegation](delegation.md)) is separate and does
   not clear taint.
