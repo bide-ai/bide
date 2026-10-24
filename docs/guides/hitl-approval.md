@@ -1076,6 +1076,12 @@ anchoring proof, a signature that verifies under its own key). The decision flow
 Both are screenshots of the page served by an application (`approvals.WithPage()`), so the page's
 own warning about that mode is visible.
 
+When the application holds a call for a reason beyond its tool's own gate (the escalation gate of a tainted
+call), the page lists the reasons above the arguments, as text, labelled as the application's record and
+not part of what you sign; whatever the arguments hold is marked model-written and unverified. The intake's
+`GET /pending` answer carries them as `why` (`agent.GateReason`). The page cannot check them, and a signature does
+not cover them.
+
 **Who serves the page matters more than anything else about it.** A signature is only as good as the
 code that asks for it. A page the application serves lets the application serve a script that shows one
 call and signs another, with the approver's real key, and the endpoint cannot tell. So there are two

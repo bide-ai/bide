@@ -3,7 +3,7 @@
 // is set with textContent, never as markup. The logic that decides what is signed is in flow.js and
 // core.js, which the tests run against a real endpoint; this file is the glue to the document.
 
-import { keyFingerprint, publicKeyText, prettyArgs, safeText } from './core.js';
+import { argsNonEmpty, keyFingerprint, publicKeyText, prettyArgs, reasonLine, safeText } from './core.js';
 import { Refused, decide, loadCall } from './flow.js';
 
 const $ = (id) => document.getElementById(id);
@@ -110,6 +110,18 @@ function renderCall() {
   // All of the arguments, always: the signature binds every one of them, so none is cut from what the
   // approver reads. A long value scrolls in its box.
   text('call-args', prettyArgs(shown.args));
+  // Everything in the arguments is chosen by the model: said so, once, below them, whenever there are any.
+  $('args-note').hidden = !argsNonEmpty(shown.args);
+  // The reasons, as text: each is a line set with textContent, never markup. They are the application's claim.
+  const list = $('why-list');
+  list.replaceChildren();
+  for (const r of f.why ?? []) {
+    const li = document.createElement('li');
+    li.textContent = safeText(reasonLine(r)) + (r.at ? ` (as of ${safeText(r.at)})` : '');
+    if (r.kind === 'conflict') li.className = 'warn';
+    list.append(li);
+  }
+  $('why-panel').hidden = (f.why ?? []).length === 0;
   text('call-digest', shown.subject.argsHex);
   text('call-reason', f.reason ? safeText(f.reason) : '');
   $('call-reason').hidden = $('call-reason-label').hidden = !f.reason;

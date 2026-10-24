@@ -178,3 +178,26 @@ func TestClean_BoundsWhatIsShown(t *testing.T) {
 		t.Errorf("plain text changed: %q", got)
 	}
 }
+
+// A cut inside a quoted string lands between escapes: no escape (\x01, \u202e, \U0001f600, \n) is split.
+func TestClean_NeverSplitsAnEscape(t *testing.T) {
+	for name, tc := range map[string]struct {
+		in   string
+		unit string
+	}{
+		"\\xNN":       {strings.Repeat("\x01", 200), `\x01`},
+		"\\uNNNN":     {strings.Repeat("\u202e", 100), `\u202e`},
+		"\\UNNNNNNNN": {strings.Repeat("\U000e0001", 60), `\U000e0001`},
+		"\\n":         {strings.Repeat("\n", 200), `\n`},
+	} {
+		got := clean(tc.in)
+		body := strings.TrimSuffix(strings.TrimPrefix(got, `"`), "…")
+		if len(got) > MaxText || strings.ReplaceAll(body, tc.unit, "") != "" || !strings.HasSuffix(got, "…") {
+			t.Errorf("%s: %q (%d bytes), want whole %s escapes and an ellipsis", name, got, len(got), tc.unit)
+		}
+	}
+	// Plain multibyte text is still cut on a character.
+	if got := clean(strings.Repeat("é", 200)); !utf8.ValidString(got) || len(got) > MaxText {
+		t.Errorf("multibyte: %q", got)
+	}
+}

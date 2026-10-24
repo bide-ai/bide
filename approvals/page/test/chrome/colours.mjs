@@ -5,10 +5,12 @@
 // told by its shape, and the focus ring. approvals/page_chrome_test.go judges the result. The page is
 // served by a real intake with a call pending (PAGE_URL), so the call panel and its controls are drawn.
 import puppeteer from 'puppeteer-core';
+import { EXPECTED, injectWhy } from './why-fixture.mjs';
 
 const env = process.env;
+
 const browser = await puppeteer.launch({ executablePath: env.CHROME_BIN, userDataDir: env.BIDE_CHROME_PROFILE, headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'], timeout: 60000 });
-const out = { ok: false, modes: {}, console: [] };
+const out = { ok: false, modes: {}, console: [], expectedWhy: EXPECTED };
 
 const measure = () => {
   const rgb = (c) => { const m = (c || '').match(/rgba?\(([^)]*)\)/); if (!m) return null; const p = m[1].split(/[,\s/]+/).filter(Boolean).map(parseFloat); return [p[0], p[1], p[2], p.length > 3 ? p[3] : 1]; };
@@ -36,7 +38,7 @@ const measure = () => {
   });
   // The things an approver must see, by id: the origin line, the call's fields, the digest.
   const must = {};
-  for (const id of ['origin', 'call-run', 'call-tool', 'call-state', 'gate-need', 'call-args', 'call-digest', 'approve', 'reject', 'approver']) {
+  for (const id of ['origin', 'call-run', 'call-tool', 'call-state', 'gate-need', 'call-args', 'call-digest', 'approve', 'reject', 'approver', 'why-list']) {
     const e = document.getElementById(id);
     must[id] = e ? drawn(e) : null;
   }
@@ -71,8 +73,12 @@ const measure = () => {
   const fs = getComputedStyle(input);
   const focus = { style: fs.outlineStyle, width: parseFloat(fs.outlineWidth), color: (rgb(fs.outlineColor) || [0, 0, 0]).slice(0, 3), bg: bgOf(input.parentElement) };
   input.blur();
+  // The reasons list: its items in order as text, anything in it that is not an item (markup the reasons
+  // would have made), and the warning lines.
+  const list = document.getElementById('why-list');
+  const whyList = { tag: list ? list.tagName : '', items: list ? [...list.children].map((e) => e.textContent) : [], foreign: list ? list.querySelectorAll('*:not(li)').length : -1, warn: list ? list.querySelectorAll('li.warn').length : -1, scripts: document.querySelectorAll('script:not([src]), img, svg').length };
   const root = getComputedStyle(document.documentElement);
-  return { token: root.getPropertyValue('--bg').trim(), fgToken: root.getPropertyValue('--fg').trim(), texts, controls, focus, must, roles, enabled, results, bodyBG: getComputedStyle(document.body).backgroundColor };
+  return { whyList, token: root.getPropertyValue('--bg').trim(), fgToken: root.getPropertyValue('--fg').trim(), texts, controls, focus, must, roles, enabled, results, bodyBG: getComputedStyle(document.body).backgroundColor };
 };
 
 try {
@@ -89,6 +95,17 @@ try {
     page.on('response', (r) => { if (r.status() >= 400 && !/\/(config\.json|favicon\.ico)$/.test(new URL(r.url()).pathname)) out.console.push(name + ': ' + r.status() + ' ' + r.url()); });
     page.on('console', (m) => { if ((m.type() === 'error' || m.type() === 'warning') && !/status of 404/.test(m.text())) out.console.push(name + ': ' + m.text()); });
     page.on('pageerror', (e) => out.console.push(name + ': ' + e.message));
+    await page.setRequestInterception(true);
+    page.on('request', async (req) => {
+      if (!/\/pending$/.test(new URL(req.url()).pathname)) return req.continue();
+      try {
+        const r = await fetch(req.url(), { headers: { accept: 'application/json' } });
+        await req.respond({ status: r.status, headers: { 'content-type': 'application/json' }, body: injectWhy(await r.text()) });
+      } catch (e) {
+        out.console.push(name + ': could not answer GET /pending with reasons: ' + e.message);
+        req.abort();
+      }
+    });
     await page.emulateMediaFeatures(features);
     await page.setViewport({ width: 900, height: 1400 });
     await page.goto(env.PAGE_URL, { waitUntil: 'load', timeout: 30000 });

@@ -179,6 +179,7 @@ export function parseFirst(b, top = false) {
     const top = stack[stack.length - 1];
     if (top.kind === 'a') top.v.push(v);
     else {
+      if (top.v.has(top.key)) top.dup = true; // a repeated member: the last wins here, as in Go; the object is marked so a strict reader can refuse it
       top.v.set(top.key, v);
       if (top.rec) members.push([top.key, start, i]);
     }
@@ -248,7 +249,7 @@ export function parseFirst(b, top = false) {
     } else if ((top2.kind === 'a' && c === 0x5d) || (top2.kind === 'o' && c === 0x7d)) {
       i++;
       stack.pop();
-      attach(top2.kind === 'a' ? { a: top2.v } : { o: top2.v }, top2.s);
+      attach(top2.kind === 'a' ? { a: top2.v } : top2.dup ? { o: top2.v, dup: true } : { o: top2.v }, top2.s);
     } else return null;
   }
   return { value: done, end: i, members };

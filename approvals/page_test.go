@@ -2,6 +2,7 @@ package approvals_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha512"
 	"encoding/base64"
@@ -10,6 +11,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +24,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -28,6 +32,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/approvals"
+	"github.com/bide-ai/bide/internal/amount"
 	"github.com/bide-ai/bide/internal/browsertest"
 )
 
@@ -676,5 +681,79 @@ func TestPage_BundleHashesAreReviewed(t *testing.T) {
 	}
 	if string(want) != b.String() {
 		t.Errorf("the approve page bundle changed: its SHA256SUMS are now\n%swas\n%s\nThis is a change to the signed bundle every release publishes and organisations pin: a page edit, or a change to a shipped theme. If it is intended, update the golden (go test ./approvals -run TestPage_BundleHashesAreReviewed -update) and say so in the pull request and the changelog.", b.String(), want)
+	}
+}
+
+var updateWhyGolden = flag.Bool("update-why", false, "rewrite page/test/why.golden.json")
+
+// whyCases are reasons whose line the page writes; Go's agent.GateReason.Line is the reference.
+func whyCases() []agent.GateReason {
+	amt := func(n int64) *int64 { return &n }
+	return []agent.GateReason{
+		{Kind: "taint", Source: "inbound-email", Ref: "tool:read_email/c1", Pos: 4},
+		{Kind: "taint", Source: "chat", Ref: "input", Pos: 1},
+		{Kind: "taint", Source: "kb", Ref: "retrieval", Pos: 2},
+		{Kind: "taint", Source: "odd", Ref: "elsewhere", Pos: 0},
+		{Kind: "taint", Source: "no-slash", Ref: "tool:read", Pos: 3},
+		{Kind: "cap", Rule: "refund_one", Action: "gate", Why: "over", Currency: "USD", Amount: amt(600000), Limit: 500000},
+		{Kind: "cap", Rule: "r", Action: "refuse", Why: "not_assessable", Currency: "USD", Limit: 100},
+		{Kind: "cap", Rule: "yen", Action: "gate", Why: "over", Currency: "JPY", Amount: amt(12), Limit: 10},
+		{Kind: "cap", Rule: "dinar", Action: "gate", Why: "over", Currency: "KWD", Amount: amt(1234), Limit: 1000},
+		{Kind: "cap", Rule: "small", Action: "gate", Why: "over", Currency: "USD", Amount: amt(5), Limit: 1},
+		{Kind: "cap", Rule: "negative", Action: "gate", Why: "over", Currency: "USD", Amount: amt(-5), Limit: 1},
+		{Kind: "cap", Rule: "big", Action: "gate", Why: "over", Currency: "USD", Amount: amt(math.MaxInt64), Limit: math.MaxInt64},
+		{Kind: "cap", Rule: "unknown", Action: "gate", Why: "currency", Currency: "ZZZ", Amount: amt(7), Limit: 9},
+		{Kind: "conflict"},
+	}
+}
+
+// The page writes a reason as Go does: the reasons and the lines Go gives them are in a golden file the
+// page's own tests read (page/test/why.golden.json); this test holds the file to Go.
+func TestPage_ReasonLinesMatchGo(t *testing.T) {
+	type entry struct {
+		Reason agent.GateReason `json:"reason"`
+		Line   string           `json:"line"`
+	}
+	var cases []entry
+	for _, r := range whyCases() {
+		cases = append(cases, entry{r, r.Line()})
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetIndent("", "  ")
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(cases); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join("page", "test", "why.golden.json")
+	if *updateWhyGolden {
+		if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(want, buf.Bytes()) {
+		t.Fatalf("page/test/why.golden.json differs from Go's reason lines (%v); rewrite it with go test ./approvals -run TestPage_ReasonLinesMatchGo -update-why", err)
+	}
+}
+
+// The page's exponent table is the one the cap rules use (internal/amount), so an amount is written with the
+// decimals the engine means.
+func TestPage_ExponentsMatchAmount(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("page", "core.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?s)export const EXPONENTS = \{(.*?)\n\};`).FindStringSubmatch(string(src))
+	if m == nil {
+		t.Fatal("core.js has no EXPONENTS")
+	}
+	got := map[string]int{}
+	for _, e := range regexp.MustCompile(`([A-Z]{3}): (\d+)`).FindAllStringSubmatch(m[1], -1) {
+		n, _ := strconv.Atoi(e[2])
+		got[e[1]] = n
+	}
+	if want := amount.Exponents(); !maps.Equal(got, want) {
+		t.Fatalf("core.js EXPONENTS has %d codes, internal/amount has %d; they differ", len(got), len(want))
 	}
 }

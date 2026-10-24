@@ -1,0 +1,147 @@
+[
+  {
+    "reason": {
+      "kind": "taint",
+      "source": "inbound-email",
+      "ref": "tool:read_email/c1",
+      "pos": 4
+    },
+    "line": "untrusted content from inbound-email (read by tool read_email, call c1, journal position 4)"
+  },
+  {
+    "reason": {
+      "kind": "taint",
+      "source": "chat",
+      "ref": "input",
+      "pos": 1
+    },
+    "line": "untrusted content from chat (the run's input, journal position 1)"
+  },
+  {
+    "reason": {
+      "kind": "taint",
+      "source": "kb",
+      "ref": "retrieval",
+      "pos": 2
+    },
+    "line": "untrusted content from kb (retrieved documents, journal position 2)"
+  },
+  {
+    "reason": {
+      "kind": "taint",
+      "source": "odd",
+      "ref": "elsewhere"
+    },
+    "line": "untrusted content from odd (elsewhere, journal position 0)"
+  },
+  {
+    "reason": {
+      "kind": "taint",
+      "source": "no-slash",
+      "ref": "tool:read",
+      "pos": 3
+    },
+    "line": "untrusted content from no-slash (read by tool read, call , journal position 3)"
+  },
+  {
+    "reason": {
+      "kind": "cap",
+      "rule": "refund_one",
+      "action": "gate",
+      "why": "over",
+      "currency": "USD",
+      "amount": 600000,
+      "limit": 500000
+    },
+    "line": "cap refund_one: this call 6000.00 USD, limit 5000.00 USD (over, gate)"
+  },
+  {
+    "reason": {
+      "kind": "cap",
+      "rule": "r",
+      "action": "refuse",
+      "why": "not_assessable",
+      "currency": "USD",
+      "limit": 100
+    },
+    "line": "cap r: an amount that could not be read, limit 1.00 USD (not_assessable, refuse)"
+  },
+  {
+    "reason": {
+      "kind": "cap",
+      "rule": "yen",
+      "action": "gate",
+      "why": "over",
+      "currency": "JPY",
+      "amount": 12,
+      "limit": 10
+    },
+    "line": "cap yen: this call 12 JPY, limit 10 JPY (over, gate)"
+  },
+  {
+    "reason": {
+      "kind": "cap",
+      "rule": "dinar",
+      "action": "gate",
+      "why": "over",
+      "currency": "KWD",
+      "amount": 1234,
+      "limit": 1000
+    },
+    "line": "cap dinar: this call 1.234 KWD, limit 1.000 KWD (over, gate)"
+  },
+  {
+    "reason": {
+      "kind": "cap",
+      "rule": "small",
+      "action": "gate",
+      "why": "over",
+      "currency": "USD",
+      "amount": 5,
+      "limit": 1
+    },
+    "line": "cap small: this call 0.05 USD, limit 0.01 USD (over, gate)"
+  },
+  {
+    "reason": {
+      "kind": "cap",
+      "rule": "negative",
+      "action": "gate",
+      "why": "over",
+      "currency": "USD",
+      "amount": -5,
+      "limit": 1
+    },
+    "line": "cap negative: this call -0.05 USD, limit 0.01 USD (over, gate)"
+  },
+  {
+    "reason": {
+      "kind": "cap",
+      "rule": "big",
+      "action": "gate",
+      "why": "over",
+      "currency": "USD",
+      "amount": 9223372036854775807,
+      "limit": 9223372036854775807
+    },
+    "line": "cap big: this call 92233720368547758.07 USD, limit 92233720368547758.07 USD (over, gate)"
+  },
+  {
+    "reason": {
+      "kind": "cap",
+      "rule": "unknown",
+      "action": "gate",
+      "why": "currency",
+      "currency": "ZZZ",
+      "amount": 7,
+      "limit": 9
+    },
+    "line": "cap unknown: this call 7 minor units of \"ZZZ\", limit 9 minor units of \"ZZZ\" (currency, gate)"
+  },
+  {
+    "reason": {
+      "kind": "conflict"
+    },
+    "line": "conflicting reason records for this call: none is shown, and the journal should be looked at"
+  }
+]

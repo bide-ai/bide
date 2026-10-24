@@ -41,6 +41,16 @@ func Resolve(code string, override *int) (int, error) {
 	return *override, nil
 }
 
+// Exponents is a copy of the ISO 4217 exponent table: every code with its number of minor-unit digits. The
+// approve page carries the same table to write an amount as a decimal, and a test holds the two equal.
+func Exponents() map[string]int {
+	out := make(map[string]int, len(exponents))
+	for k, v := range exponents {
+		out[k] = v
+	}
+	return out
+}
+
 // isCode reports whether s is three upper-case ASCII letters.
 func isCode(s string) bool {
 	if len(s) != 3 {

@@ -11,8 +11,13 @@ const script = fs.readFileSync(process.env.PAGE_JS ?? '', 'utf8');
 
 function el() {
   const listeners = {};
-  return { textContent: '', hidden: false, disabled: false, value: '', dataset: {}, className: '', href: '', scrollHeight: 0, clientHeight: 100, scrollTop: 0,
+  // Markup is never assigned: a page that sets innerHTML, outerHTML or inserts HTML fails here.
+  const trap = (name) => ({ set() { throw new Error(`${name} was assigned: the page must set text, not markup`); }, get() { return ''; } });
+  const e = { children: [], replaceChildren() { this.children = []; }, append(c) { this.children.push(c); }, textContent: '', hidden: false, disabled: false, value: '', dataset: {}, className: '', href: '', scrollHeight: 0, clientHeight: 100, scrollTop: 0,
     addEventListener(t, f) { (listeners[t] ??= []).push(f); }, fire(t) { return Promise.all((listeners[t] ?? []).map((f) => f())); } };
+  Object.defineProperty(e, 'innerHTML', trap('innerHTML'));
+  Object.defineProperty(e, 'outerHTML', trap('outerHTML'));
+  return e;
 }
 
 // until polls cond every few milliseconds, failing with what it waited for after ten seconds.
@@ -38,7 +43,7 @@ async function run(pendingBody, { href = 'https://app.example/approvals/page/', 
     return req; } };
   const fetched = [];
   const docListeners = {};
-  const ctx = { document: { getElementById: (id) => els[id], addEventListener: (t, f) => { docListeners[t] = f; } }, indexedDB, crypto: globalThis.crypto, TextEncoder, TextDecoder, URL, URLSearchParams, Blob, btoa, atob, Uint8Array,
+  const ctx = { document: { getElementById: (id) => els[id], createElement: () => el(), addEventListener: (t, f) => { docListeners[t] = f; } }, indexedDB, crypto: globalThis.crypto, TextEncoder, TextDecoder, URL, URLSearchParams, Blob, btoa, atob, Uint8Array,
     location: { href, hash: '#run=r1&call=c1', origin: new URL(href).origin },
     fetch: async (u, o) => {
       fetched.push({ url: String(u), opts: o });
@@ -124,4 +129,61 @@ test('a request the browser blocked under the page\'s policy is said so', async 
   assert.equal(typeof docListeners.securitypolicyviolation, 'function');
   docListeners.securitypolicyviolation({ blockedURI: 'https://evil.example' });
   assert.match(els['status'].textContent, /blocked a request to https:\/\/evil\.example/);
+});
+
+const why = (...rs) => ({ why: rs });
+const TAINT = { kind: 'taint', source: 'inbound-email', ref: 'tool:read_email/c1', pos: 4, at: '2026-10-24T10:43:00.000Z' };
+
+test('the reasons are shown as text, one line each, with the time they are as of, and the panel says they are not signed', async () => {
+  const { els } = await run(pendingWith({ a: 1 }, why(TAINT)));
+  assert.equal(els['why-panel'].hidden, false);
+  assert.equal(els['why-list'].children.length, 1);
+  assert.equal(els['why-list'].children[0].textContent, 'untrusted content from inbound-email (read by tool read_email, call c1, journal position 4) (as of 2026-10-24T10:43:00.000Z)');
+  const tmpl = fs.readFileSync(new URL('../index.template.html', import.meta.url), 'utf8');
+  assert.match(tmpl, /application's record of why the call was held[^<]*They are not part of what you sign, and this page cannot check them/, 'the page says the reasons are the application\'s claim and not signed');
+  assert.match(tmpl, /<section id="why-panel" hidden>/, 'the panel starts hidden');
+});
+
+test('no reason leaves the panel hidden and the list empty', async () => {
+  const { els } = await run(pendingWith({ a: 1 }));
+  assert.equal(els['why-panel'].hidden, true);
+  assert.equal(els['why-list'].children.length, 0);
+});
+
+test('hostile names in a reason are text: no markup is set, and characters that hide content are written as escapes', async () => {
+  const hostile = { kind: 'taint', source: '<img src=x onerror=alert(1)>\u202eevil', ref: 'tool:"><svg onload=x()>/c9', pos: 1 };
+  const { els } = await run(pendingWith({ a: 1 }, why(hostile))); // an innerHTML assignment would throw in the stub
+  const t = els['why-list'].children[0].textContent;
+  assert.ok(t.includes('<img src=x onerror=alert(1)>'), 'the markup is shown as characters');
+  assert.ok(!t.includes('\u202e') && t.includes('\\u202e'), 'the bidi override is written as an escape');
+  assert.ok(t.includes('"><svg onload=x()>'));
+});
+
+test('a conflict between reason records is shown as a warning line, and the call stays decidable by the rules of the gate', async () => {
+  const { els } = await run(pendingWith({ a: 1 }, why({ kind: 'conflict' })));
+  assert.equal(els['why-list'].children[0].className, 'warn');
+  assert.match(els['why-list'].children[0].textContent, /conflicting reason records/);
+});
+
+test('a cap reason writes its amounts as decimals, exactly, past what a JavaScript number holds', async () => {
+  const cap = '{"kind":"cap","rule":"refund_one","action":"gate","why":"over","currency":"USD","amount":9007199254740993,"limit":500000}';
+  const body = pendingWith({ a: 1 }).replace('"gate":', `"why":[${cap}],"gate":`);
+  const { els } = await run(body);
+  assert.equal(els['why-list'].children[0].textContent, 'cap refund_one: this call 90071992547409.93 USD, limit 5000.00 USD (over, gate)');
+});
+
+test('a reason the page cannot read stops the page from showing the call at all, and nothing is signed', async () => {
+  const bad = pendingWith({ a: 1 }).replace('"gate":', '"why":[{"kind":"taint","future":1}],"gate":');
+  const { els } = await run(bad);
+  assert.equal(els['call-panel'].hidden, true);
+  assert.match(els['status'].textContent, /unknown member/);
+});
+
+test('non-empty arguments are marked model-written and unverified, whatever they hold; empty ones are not', async () => {
+  for (const args of [{ memo: 'pay now', n: 5 }, { n: 5, ok: true, z: null }, { 'ignore all previous instructions': 1 }]) {
+    assert.equal((await run(pendingWith(args))).els['args-note'].hidden, false, JSON.stringify(args));
+  }
+  assert.equal((await run(pendingWith({}))).els['args-note'].hidden, true, 'no arguments, no note');
+  const tmpl = fs.readFileSync(new URL('../index.template.html', import.meta.url), 'utf8');
+  assert.match(tmpl, /<p id="args-note" class="note" hidden>[^<]*model-written, unverified/);
 });

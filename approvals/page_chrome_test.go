@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -93,6 +94,15 @@ type pageControl struct {
 }
 
 type pageMode struct {
+	// WhyList is the reasons list as drawn: the items' text in order, what in it is not an item, the warning
+	// lines, and the elements a hostile name could have made (an inline script, an image, an svg).
+	WhyList struct {
+		Tag     string   `json:"tag"`
+		Items   []string `json:"items"`
+		Foreign int      `json:"foreign"`
+		Warn    int      `json:"warn"`
+		Scripts int      `json:"scripts"`
+	} `json:"whyList"`
 	Must  map[string]*pageDrawn `json:"must"`
 	Roles struct {
 		Good string `json:"good"`
@@ -175,6 +185,9 @@ func TestPage_LookInChrome(t *testing.T) {
 		Error   string              `json:"error"`
 		Console []string            `json:"console"`
 		Modes   map[string]pageMode `json:"modes"`
+		// ExpectedWhy is the reasons the script had the page draw, as the page writes them (checked against the
+		// page's own code by why-fixture.test.mjs).
+		ExpectedWhy []string `json:"expectedWhy"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatalf("the script printed no result (%v): %q", runErr, raw)
@@ -263,8 +276,14 @@ func TestPage_LookInChrome(t *testing.T) {
 			if mode != "forced-colors" && (m.Enabled["approve"].FillCSS != m.Roles.Good || m.Enabled["reject"].FillCSS != m.Roles.Bad) {
 				t.Errorf("Approve is %s and REJECT %s, want the ok color %s and the alert color %s", m.Enabled["approve"].FillCSS, m.Enabled["reject"].FillCSS, m.Roles.Good, m.Roles.Bad)
 			}
+			// The reasons are drawn: one list item each, in order, as text (hostile names and all), with the conflict
+			// as the one warning line, and nothing in the list or the page that a name could have made.
+			w := m.WhyList
+			if w.Tag != "UL" || !slices.Equal(w.Items, out.ExpectedWhy) || len(out.ExpectedWhy) != 4 || w.Foreign != 0 || w.Warn != 1 || w.Scripts != 0 {
+				t.Errorf("the reasons list is %+v, want a UL of %q, no foreign element, one warning line, no script, image or svg", w, out.ExpectedWhy)
+			}
 			// What an approver must see is there to be seen, as large as it should be.
-			for id, min := range map[string]float64{"origin": 14, "call-run": 14, "call-tool": 14, "call-state": 14, "gate-need": 14, "call-args": 12, "call-digest": 12, "approver": 14} {
+			for id, min := range map[string]float64{"origin": 14, "call-run": 14, "call-tool": 14, "call-state": 14, "gate-need": 14, "call-args": 12, "call-digest": 12, "approver": 14, "why-list": 14} {
 				d := m.Must[id]
 				if d == nil || !d.seen(20, 10, min) {
 					t.Errorf("#%s is not drawn to be read: %+v", id, d)

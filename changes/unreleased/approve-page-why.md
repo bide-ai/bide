@@ -1,0 +1,3 @@
+Section: Added
+
+The approve page lists why a call is held (the untrusted content a tainted turn read, or the cap rule that holds it, with this call's figures as of the ask) above the arguments, as text, labelled as the application's record and not part of what the approver signs, and marks the arguments as model-written and unverified (everything in them is chosen by the model). The intake's `GET /pending` answer carries the reasons as `why` (`approvals.Pending.Why`, experimental). The page bundle changes: its `approve-page.SHA256SUMS` are new, so an organisation that pins the bundle reviews the update. The signed decision (`bide.approval.v3`) is unchanged.
