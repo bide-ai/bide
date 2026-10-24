@@ -391,10 +391,10 @@ ci_code_sha() {
 # failed or was cancelled, "running" when one has not completed, "success" when all completed and
 # passed, "none" when there is none yet, "unknown" when GitHub could not be queried.
 push_ci_state() {
-  local sha branch=()
-  [ -z "${3:-}" ] || branch=(--branch "$3")
+  local sha branch_arg=()
+  [ -z "${3:-}" ] || branch_arg=(--branch "$3")
   sha=$(ci_code_sha "$2") || { echo unknown; return; }
-  gh run list -R "$1" --workflow ci.yml --commit "$sha" --event push ${branch[@]+"${branch[@]}"} --json status,conclusion \
+  gh run list -R "$1" --workflow ci.yml --commit "$sha" --event push ${branch_arg[@]+"${branch_arg[@]}"} --json status,conclusion \
     --jq 'if length == 0 then "none" elif any(.[]; .status == "completed" and .conclusion != "success") then "failure" elif any(.[]; .status != "completed") then "running" else "success" end' 2>/dev/null || echo unknown
 }
 
@@ -703,6 +703,10 @@ GH
   gate_line=$(grep -n 'root_tag_gate "\$GITHUB_REPO"' "${BASH_SOURCE[0]}" | head -1 | cut -d: -f1)
   tag_line=$(grep -n 'git -C "\$CLONE" tag -a "\$VERSION"' "${BASH_SOURCE[0]}" | head -1 | cut -d: -f1)
   { [ -n "$gate_line" ] && [ -n "$tag_line" ] && [ "$gate_line" -lt "$tag_line" ]; } || { echo "self-test: the root tag gate does not come before the root tag"; ok=false; }
+  # The release branch reaches the CI checks and the gate, and the gate that decides it runs in the preflight.
+  grep -q 'ci_wait "\$GITHUB_REPO" "\$SHA" .* "\$REL_BRANCH")' "${BASH_SOURCE[0]}" || { echo "self-test: the preflight CI check does not pass the release branch"; ok=false; }
+  grep -q 'root_tag_gate "\$GITHUB_REPO" "\$SHA" "\$CI_BASIS" "\$REL_BRANCH"' "${BASH_SOURCE[0]}" || { echo "self-test: the root tag gate does not get the release branch"; ok=false; }
+  grep -q 'if release_branch_gate "\$VERSION" "\$SHA"; then' "${BASH_SOURCE[0]}" || { echo "self-test: the preflight does not run the release branch gate"; ok=false; }
   self_test_release_branch "$tmp" || ok=false
   rm -rf "$tmp"
   $ok
