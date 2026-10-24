@@ -102,6 +102,9 @@ func (a *Agent) runEntry(ctx context.Context, runID string, d *driveSpec, opts [
 // drive runs one drive of runID for d: a saga's (d.cfg.saga, or a run journaled as one) through
 // the saga path, any other through run.
 func (a *Agent) drive(ctx context.Context, runID string, d *driveSpec) (Message, usageTotals, int, error) {
+	if rm := resultMarkFrom(ctx); rm != nil {
+		rm.addRun(a, runID) // a run a call drives: its result carries what the run read (taint_inherit.go)
+	}
 	msg, tot, turns, err := a.driveRun(ctx, runID, d)
 	if a.notify != nil {
 		a.notify.driveEnd(runID, err)

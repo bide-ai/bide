@@ -906,7 +906,11 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 					}
 					// The safety and approval gate the call ran under, for a saga rollback and an audit.
 					r := Record{Kind: StepToolResult, ToolUseID: c.tu.ID, Safety: recordedSafety(*c.spec), Approval: effectiveGates(c.spec, gateInputs{}).Snapshot()}
-					resMark.applyTo(r.Safety) // a sub-agent that ended tainted marks its answer (taint_inherit.go)
+					// A run the call drove (a sub-agent's, a programmatic sub-run) that ended tainted marks the
+					// answer; a journal that cannot be read fails closed (taint_inherit.go).
+					if err := resMark.markResult(context.WithoutCancel(sctx), r.Safety, c.tu.Name, callErr); err != nil {
+						return Record{}, err
+					}
 					if callErr != nil && ctxDone(sctx) {
 						// (A call known not to have reached the tool records nothing here either,
 						// and called is false for it, so its claim is recorded as never started

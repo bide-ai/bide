@@ -162,6 +162,11 @@ func TestLatestSessionTaint_IsTheHighestNumber(t *testing.T) {
 			t.Fatalf("latest = %d %v %v, want 10 with two marks (a string order would pick 9)", n, marks, err)
 		}
 	}
+	// The marks are the union of every record: a record planted at a high number with no marks removes none.
+	n, marks, err := latestSessionTaint([]Record{rec("2", "a", "b"), rec("40")})
+	if err != nil || n != 40 || len(marks) != 2 {
+		t.Fatalf("latest = %d %v %v, want n=40 and both marks kept (an empty high record must not untaint the session)", n, marks, err)
+	}
 	for _, bad := range []string{"x", "-1", "007", "1.5", ""} {
 		if _, _, err := latestSessionTaint([]Record{rec(bad, "a")}); err == nil {
 			t.Errorf("taint/turn/%s was accepted", bad)

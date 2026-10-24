@@ -148,11 +148,17 @@ func startInherited(recs []Record) []taintMark {
 
 type resultMarkKey struct{}
 
-// resultMark is the mark a call's result carries beyond its tool's declaration; the tool sets it while
-// it runs, and the loop reads it when it records the result.
+// resultMark is what a call hands back about the runs it started: every run a call drives (a sub-agent's,
+// or a programmatic sub-run of a tool declared WithSubRuns) registers here, and when the call returns the
+// loop reads the marks those runs ended with, so the result carries them. A run registers once.
 type resultMark struct {
-	mu  sync.Mutex
-	src string
+	mu   sync.Mutex
+	runs []drivenRun
+}
+
+type drivenRun struct {
+	a  *Agent
+	id string
 }
 
 // withResultMark returns ctx carrying a fresh resultMark, and the mark.
@@ -166,27 +172,57 @@ func resultMarkFrom(ctx context.Context) *resultMark {
 	return m
 }
 
-func (m *resultMark) set(src string) {
+// addRun registers a run the call drives.
+func (m *resultMark) addRun(a *Agent, id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.src == "" {
-		m.src = src
+	if !slices.Contains(m.runs, drivenRun{a, id}) {
+		m.runs = append(m.runs, drivenRun{a, id})
 	}
 }
 
-// applyTo gives the result's Safety the mark, unless its tool already declares a source.
-func (m *resultMark) applyTo(s *Safety) {
+// endedTainted reports whether any run the call drove ended with a mark in its journal, each read from
+// its own agent's store. A run whose journal cannot be read is an error (the caller decides).
+func (m *resultMark) endedTainted(ctx context.Context) (bool, error) {
+	if m == nil {
+		return false, nil
+	}
+	m.mu.Lock()
+	runs := slices.Clone(m.runs)
+	m.mu.Unlock()
+	tainted := false
+	for _, r := range runs {
+		t, err := r.a.endedTainted(ctx, r.id)
+		if err != nil {
+			return false, err
+		}
+		tainted = tainted || t
+	}
+	return tainted, nil
+}
+
+// markResult gives a call's result its mark when a run the call drove ended tainted, unless its tool
+// already declares a source. A journal that cannot be read is fail-closed: a call that succeeded has no
+// outcome yet (subRunUnfinished: nothing is recorded and the resume reads again), and a call that failed
+// is marked, since what the error text carries is unknown.
+func (m *resultMark) markResult(ctx context.Context, s *Safety, tool string, callErr error) error {
 	if m == nil || s == nil {
-		return
+		return nil
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.src != "" && s.Untrusted == "" {
-		s.Untrusted = m.src
+	tainted, err := m.endedTainted(ctx)
+	switch {
+	case err != nil && callErr == nil:
+		return &subRunUnfinished{err: err}
+	case (err != nil || tainted) && s.Untrusted == "":
+		s.Untrusted = runMarkSource(tool)
 	}
+	return nil
 }
 
-// subAgentMarkSource is the source name of the mark a tainted sub-agent's answer carries: "subagent:" and
+// runMarkSource is the source name of the mark a call's result carries when a run it drove ended tainted.
+func runMarkSource(tool string) string { return subAgentMarkSource(tool) }
+
+// subAgentMarkSource is the source name of the mark a tainted sub-run's answer carries: "subagent:" and
 // the tool's name, cut on a rune boundary to fit a source name (maxProvenanceName), the same for every
 // call of the name.
 func subAgentMarkSource(tool string) string {

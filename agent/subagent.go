@@ -122,16 +122,6 @@ func (t *subAgentTool) Call(ctx context.Context, args json.RawMessage) (json.Raw
 	// child runs under the same ctx and stops as promptly as its own tools do, and returning
 	// before it had would leave the sub-run's work in flight after the parent's Run returned.
 	out := <-ch
-	// A child that ended with a mark in its journal marks its answer: the parent's next turn is tainted.
-	if rm := resultMarkFrom(ctx); rm != nil {
-		tainted, err := t.sub.endedTainted(context.WithoutCancel(ctx), subRunID)
-		switch {
-		case err != nil && out.err == nil:
-			return nil, &subRunUnfinished{err: err}
-		case err == nil && tainted:
-			rm.set(subAgentMarkSource(t.spec.Name))
-		}
-	}
 	if out.err != nil {
 		var sa *SagaAborted
 		if !errors.As(out.err, &sa) && (errors.Is(out.err, ErrStorage) || errors.Is(out.err, ErrToolOutcomeUnknown)) {

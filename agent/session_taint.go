@@ -25,12 +25,16 @@ type sessionTaintRecord struct {
 	Marks []inheritedMark `json:"marks"`
 }
 
-// latestSessionTaint is the highest-numbered taint/turn/<n> record of the session journal recs, its n and
-// its marks; n is -1 when there is none. The number is parsed: taint/turn/10 is above taint/turn/9
-// whatever order the records are listed in. A record whose name or content does not read is an error: the
-// session's taint cannot be known, and a turn is not started on a guess.
+// latestSessionTaint is the session journal recs' taint: the highest taint/turn/<n> number, and the marks
+// of all its taint records together, one per source. The number is parsed (taint/turn/10 is above
+// taint/turn/9 whatever order the records are listed in), and n is -1 when there is none. The marks are
+// the union of every record, not the highest one's: the engine writes each record as the union so far, so
+// the two are equal, and a record a store writer plants (empty, or at a high number) can add marks and
+// never remove any. A record whose name or content does not read is an error: the session's taint cannot
+// be known, and a turn is not started on a guess.
 func latestSessionTaint(recs []Record) (int, []inheritedMark, error) {
-	hi, marks := -1, []inheritedMark(nil)
+	hi := -1
+	var union []inheritedMark
 	for _, r := range recs {
 		if r.Kind != StepValue || !strings.HasPrefix(r.Name, sessionTaintTurnPrefix) {
 			continue
@@ -44,11 +48,15 @@ func latestSessionTaint(recs []Record) (int, []inheritedMark, error) {
 		if err := json.Unmarshal(r.Result, &rec); err != nil {
 			return 0, nil, fmt.Errorf("session record %q does not read: %w (%w)", r.Name, err, ErrProtocol)
 		}
-		if n > hi {
-			hi, marks = n, rec.Marks
+		hi = max(hi, n)
+		for _, m := range rec.Marks {
+			if !slices.ContainsFunc(union, func(o inheritedMark) bool { return o.Source == m.Source }) {
+				union = append(union, m)
+			}
 		}
 	}
-	return hi, marks, nil
+	slices.SortFunc(union, func(a, b inheritedMark) int { return strings.Compare(a.Source, b.Source) })
+	return hi, union, nil
 }
 
 // sessionMarks is the marks the session's turns start with: those of its highest taint record.

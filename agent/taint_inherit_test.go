@@ -289,7 +289,9 @@ func (f failLoadAt) Load(ctx context.Context, runID string, after int64) iter.Se
 	if runID == f.run {
 		*f.loads++
 		if *f.loads == f.failAt {
-			return func(yield func(Entry, error) bool) { yield(Entry{}, errors.New("injected: the child's journal cannot be read")) }
+			return func(yield func(Entry, error) bool) {
+				yield(Entry{}, errors.New("injected: the child's journal cannot be read"))
+			}
 		}
 	}
 	return f.Store.Load(ctx, runID, after)
@@ -345,4 +347,117 @@ func TestTaintInherit_AnUnreadableChildJournalFailsClosed(t *testing.T) {
 	if w.n.Load() != 0 {
 		t.Fatalf("after the retry the write ran %d times; the answer must taint the parent's next turn", w.n.Load())
 	}
+}
+
+// viaRig is a parent whose tool "via" starts a programmatic sub-run (WithSubRuns, RunInfo.SubRunFor) and
+// returns its answer, and then asks for a write.
+type viaRig struct {
+	t       *testing.T
+	writes  counter
+	parentJ *Journal
+}
+
+// run drives the parent; childReads makes the child read an untrusted source; childStore is the child's
+// store; failAfter makes via fail after its sub-run finished.
+func (r *viaRig) run(childReads bool, childStore Store, failAfter bool, turns ...[]Emit) error {
+	var tools []Tool
+	childTurns := [][]Emit{textTurn("child answer")}
+	if childReads {
+		tools = append(tools, MustFunc("read_c", "read", func(context.Context, struct{}) (string, error) { return "text", nil }, WithSafety(Safety{ReadOnly: true}), Untrusted("c-src")))
+		childTurns = [][]Emit{toolTurn("r1", "read_c", `{}`), textTurn("child answer")}
+	}
+	child := mustNew(&scriptModel{turns: childTurns}, mustJournal(childStore), append([]Option{WithTools(tools...)}, refuseTaint...)...)
+	via := MustFunc("via", "via", func(ctx context.Context, _ struct{}) (string, error) {
+		info, _ := RunInfoFrom(ctx)
+		res, err := child.Run(ctx, info.SubRunFor("child"), UserText("work"))
+		if err != nil {
+			return "", err
+		}
+		if failAfter {
+			return res.Message.Text(), errors.New("via failed after its sub-run")
+		}
+		return res.Message.Text(), nil
+	}, WithSafety(Safety{ReadOnly: true}), WithSubRuns(func(string) *Agent { return child }))
+	parent := mustNew(&scriptModel{turns: turns}, r.parentJ, WithTools(via, r.writes.tool("write")), WithTaintPolicy(TaintPolicy{Refuse: true}))
+	_, err := parent.Run(context.Background(), "r", UserText("go"))
+	return err
+}
+
+func (r *viaRig) markOf(call string) (string, bool) {
+	recs, _ := r.parentJ.History(context.Background(), "r")
+	for _, rec := range recs {
+		if rec.Kind == StepToolResult && rec.ToolUseID == call {
+			if rec.Safety == nil {
+				return "", true
+			}
+			return rec.Safety.Untrusted, true
+		}
+	}
+	return "", false
+}
+
+var viaTurns = [][]Emit{toolTurn("p1", "via", `{}`), toolTurn("p2", "write", `{}`), textTurn("done")}
+
+// A tool that starts a programmatic sub-run and returns its answer is a way for hostile content to reach
+// the next turn like a sub-agent's: the answer carries the mark of what the sub-run read.
+func TestTaintInherit_AProgrammaticSubRunMarksTheAnswerToo(t *testing.T) {
+	r := &viaRig{t: t, parentJ: memJournal()}
+	if err := r.run(true, NewMemStore(), false, viaTurns...); err != nil {
+		t.Fatal(err)
+	}
+	if src, ok := r.markOf("p1"); !ok || src != "subagent:via" {
+		t.Fatalf("via's result carries mark %q (found %v), want subagent:via", src, ok)
+	}
+	if r.writes.n.Load() != 0 {
+		t.Fatalf("the write ran %d times after a sub-run read untrusted content: laundered", r.writes.n.Load())
+	}
+	clean := &viaRig{t: t, parentJ: memJournal()}
+	if err := clean.run(false, NewMemStore(), false, viaTurns...); err != nil {
+		t.Fatal(err)
+	}
+	if src, _ := clean.markOf("p1"); src != "" || clean.writes.n.Load() != 1 {
+		t.Fatalf("a clean sub-run: mark %q, %d writes; want none and 1", src, clean.writes.n.Load())
+	}
+}
+
+// A call that failed after its sub-run, and whose sub-run's journal cannot be read for the mark, is marked
+// all the same: the error text the model reads may carry what the sub-run read.
+func TestTaintInherit_AFailedCallWithAnUnreadableSubRunJournalIsMarked(t *testing.T) {
+	// Learn which run id the sub-run has and how many times it is loaded: run once, counting every Load.
+	all := &loadsByRun{Store: NewMemStore(), n: map[string]int{}}
+	probe := &viaRig{t: t, parentJ: memJournal()}
+	if err := probe.run(true, all, true, viaTurns...); err != nil {
+		t.Fatal(err)
+	}
+	var childRun string
+	for id := range all.n {
+		childRun = id
+	}
+	if childRun == "" {
+		t.Fatal("the sub-run did not journal to the child's store")
+	}
+	seen := 0
+	r := &viaRig{t: t, parentJ: memJournal()}
+	err := r.run(true, failLoadAt{Store: NewMemStore(), run: childRun, failAt: all.n[childRun], loads: &seen}, true, viaTurns...)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if src, ok := r.markOf("p1"); !ok || src == "" {
+		t.Fatalf("a failed call with an unreadable sub-run journal is unmarked (mark %q, found %v)", src, ok)
+	}
+	if r.writes.n.Load() != 0 {
+		t.Fatalf("the write ran %d times after the unmarked failure", r.writes.n.Load())
+	}
+}
+
+// loadsByRun counts the Loads of each run.
+type loadsByRun struct {
+	Store
+	n map[string]int
+}
+
+func (l *loadsByRun) Unwrap() Store { return l.Store }
+func (l *loadsByRun) Load(ctx context.Context, runID string, after int64) iter.Seq2[Entry, error] {
+	l.n[runID]++
+	return l.Store.Load(ctx, runID, after)
 }
