@@ -561,3 +561,85 @@ func TestCapsAudit_AnAttemptReservedAgainAfterItsReleaseIsNotUnrecorded(t *testi
 		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
 	}
 }
+
+func TestCapsAudit_ARecordThatNamesAnotherAttemptsSlot(t *testing.T) {
+	e := threeCalls(t)
+	// r2's record is rewritten to name slot 0 with slot 0's total: the slot is r1's.
+	e.tamper.edit = func(r, n string, d []byte) []byte {
+		if r == "r2" && strings.HasPrefix(n, "cap-reserve:") {
+			d = bytes.Replace(d, []byte(`"slot":1`), []byte(`"slot":0`), 1)
+			d = bytes.Replace(d, []byte(`"cum_after":80`), []byte(`"cum_after":30`), 1)
+		}
+		return d
+	}
+	code, out, errOut := unanchoredCaps()
+	wantFail(t, code, out, errOut, "CHANGED", "UNRECORDED")
+	if !strings.Contains(out, "belongs to another attempt") {
+		t.Fatalf("CHANGED must say the slot is another attempt's:\n%s", out)
+	}
+}
+
+func TestCapsAudit_ARecordThatNamesAReleaseSlot(t *testing.T) {
+	e := newCapsEnv(t)
+	ctx := context.Background()
+	l := journalhook.CapLedger(e.j, func() time.Time { return capsNow }, 0)
+	rule := capledger.Rule{Namespace: "default", Name: "refund_total", Currency: "USD", Kind: capledger.Day}
+	req := capledger.Request{Rule: rule, KeyDigest: capledger.KeyDigest(""), RunID: "r1", RootRunID: "r1", ToolUseID: "c1", AttemptID: "a1", Marked: true, Amount: 40, Limit: 10000}
+	if _, err := l.Reserve(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	var word atomic.Int32
+	seal, _ := capledger.NewSeal(l.AttemptKey("r1", "r1", "c1", "a1"), &word, 0, 1)
+	if _, err := l.Release(ctx, capledger.Target{Rule: rule, KeyDigest: req.KeyDigest, RunID: "r1", RootRunID: "r1", ToolUseID: "c1", AttemptID: "a1"}, seal); err != nil {
+		t.Fatal(err)
+	}
+	// slot 1 is the release, with total 0.
+	e.tamper.edit = func(r, n string, d []byte) []byte {
+		if r == "r1" && strings.HasPrefix(n, "cap-reserve:") {
+			d = bytes.Replace(d, []byte(`"slot":0`), []byte(`"slot":1`), 1)
+			d = bytes.Replace(d, []byte(`"cum_after":40`), []byte(`"cum_after":0`), 1)
+		}
+		return d
+	}
+	code, out, errOut := unanchoredCaps()
+	wantFail(t, code, out, errOut, "CHANGED")
+	if !strings.Contains(out, "slot 1, which is a release") {
+		t.Fatalf("CHANGED must say the slot is a release:\n%s", out)
+	}
+}
+
+func TestCapsAudit_NoHeadForALedger(t *testing.T) {
+	e := threeCalls(t)
+	run := e.ledgerRun()
+	e.heads()
+	// A head file with the heads of every run but the ledger's.
+	var b bytes.Buffer
+	for _, en := range e.anchor.Entries() {
+		if en.RunID != run {
+			line, _ := json.Marshal(en.STH)
+			b.Write(append(line, '\n'))
+		}
+	}
+	p := filepath.Join(e.dir, "others.jsonl")
+	if err := os.WriteFile(p, b.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errOut := runCLI("caps", "-db", "x.db", "-sth", p, "-pubkey", e.pub)
+	wantFail(t, code, out, errOut, "NOT_ATTESTED")
+	if !strings.Contains(out, "no signed head covers this ledger") {
+		t.Fatalf("a ledger no head names is not attested at all:\n%s", out)
+	}
+}
+
+func TestCapsAudit_AForgedHeadOfADeletedLedgerIsNotCounted(t *testing.T) {
+	e := threeCalls(t)
+	run := e.ledgerRun()
+	heads := e.heads()
+	e.tamper.gone = func(r string) bool { return r == run }
+	other, _, _ := ed25519.GenerateKey(nil)
+	code, out, errOut := runCLI("caps", "-db", "x.db", "-sth", heads, "-pubkey", hex.EncodeToString(other))
+	wantFail(t, code, out, errOut, "BAD_HEAD")
+	if strings.Contains(out, "a signed head covers this ledger") {
+		t.Fatalf("a head that does not verify is evidence of nothing:\n%s", out)
+	}
+}

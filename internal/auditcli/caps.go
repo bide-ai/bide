@@ -476,9 +476,10 @@ func auditLedger(ctx context.Context, j *agent.Journal, led *capledger.Ledger, v
 		}
 	}
 
-	// Reconcile exposure: the live marked slots whose attempt the journal records as never started.
+	// Reconcile exposure: the live slots whose attempt the journal records as never started (an unmarked
+	// attempt has no marker, so it is never one).
 	for _, s := range slots {
-		if s.Kind != "reserve" || released[s.N] || !s.Marked || !in.filter.inRun(s.Run) {
+		if s.Kind != "reserve" || released[s.N] || !in.filter.inRun(s.Run) {
 			continue
 		}
 		v, err := voided(ctx, j, s)
