@@ -52,6 +52,7 @@ A source name is a short printable string (at most 128 bytes). A tool that wraps
 it too. Registration refuses a wrapper that embeds the inner tool or implements `Unwrap` and does not carry
 the declaration; it does not see a wrapper that does neither (the same holds for an approval gate, a timeout or
 caps), so the declaration is the wrapper author's duty there.
+A wrapper that declares `Trusted` over a tool that declares `Untrusted` would drop the taint, and is refused the same way (the error names both); one that drops an inner `Trusted` is only unclassified, which `RequireProvenance` refuses.
 
 ## What is recorded, and what is not
 
