@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 
 	"github.com/bide-ai/bide/internal/strictjson"
 )
@@ -89,6 +90,9 @@ func Decode(r io.Reader) (Document, error) {
 		if d.Tools[i].Name == d.Tools[i-1].Name {
 			return Document{}, fmt.Errorf("the declarations list tool %q twice", d.Tools[i].Name)
 		}
+	}
+	if err := d.validate(); err != nil {
+		return Document{}, err
 	}
 	if want := d.Recompute(); d.Digest != want {
 		return Document{}, fmt.Errorf("the declarations' digest %q is not the digest of what they declare (%q)", d.Digest, want)
@@ -175,4 +179,56 @@ func Encode(w io.Writer, d Document) error {
 	enc.SetEscapeHTML(false)
 	enc.SetIndent("", "  ")
 	return enc.Encode(d)
+}
+
+// validate holds a document to what a valid agent can produce: a gate agent.ApprovalPolicy.Validate would
+// accept (so an approver is listed once, in any case, and counts once toward need).
+func (d Document) validate() error {
+	if d.Policy != nil && d.Policy.Gate == nil && !d.Policy.Refuse {
+		return fmt.Errorf("the declarations' policy has neither a gate nor refuse")
+	}
+	if d.Policy != nil {
+		if err := d.Policy.Gate.validate("policy gate"); err != nil {
+			return err
+		}
+	}
+	for _, t := range d.Tools {
+		if err := t.OwnGate.validate("the own gate of tool " + t.Name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (g *Gate) validate(what string) error {
+	if g == nil {
+		return nil
+	}
+	if g.TimeoutMS < 0 {
+		return fmt.Errorf("%s: a negative timeout", what)
+	}
+	if g.Single {
+		if g.Need != 0 || len(g.Approvers) != 0 || g.ExcludePrincipal {
+			return fmt.Errorf("%s: a one-decision gate with a need, approvers or an excluded requester", what)
+		}
+		return nil
+	}
+	if len(g.Approvers) == 0 {
+		return fmt.Errorf("%s: no approvers", what)
+	}
+	seen := map[string]string{}
+	for _, a := range g.Approvers {
+		if a == "" || strings.ContainsFunc(a, func(r rune) bool { return r < 0x21 || r > 0x7e }) {
+			return fmt.Errorf("%s: approver %q is not printable ASCII", what, a)
+		}
+		key := strings.ToLower(a)
+		if first, dup := seen[key]; dup {
+			return fmt.Errorf("%s: approver %q is listed twice (as %q): it would count twice toward need", what, a, first)
+		}
+		seen[key] = a
+	}
+	if g.Need < 1 || g.Need > len(g.Approvers) {
+		return fmt.Errorf("%s: need %d is not between 1 and the %d approvers", what, g.Need, len(g.Approvers))
+	}
+	return nil
 }

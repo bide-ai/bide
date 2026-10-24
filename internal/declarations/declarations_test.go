@@ -122,6 +122,7 @@ func TestDiff_Classifies(t *testing.T) {
 		{"one decision becomes m-of-n", doc(pol(gate(Gate{Single: true}))), doc(pol(twoOfTwo)), []want{{Strengthened, "policy", "m-of-n"}}},
 		{"a rotated approver set is weakened: a person must approve it", doc(pol(twoOfTwo)), doc(pol(gate(Gate{Need: 2, Approvers: []string{"ops", "audit"}, ExcludePrincipal: true}))), []want{{Weakened, "policy", "removed or replaced"}}},
 		{"an approver removed while need is still met", doc(pol(gate(Gate{Need: 2, Approvers: []string{"a", "b", "c"}, ExcludePrincipal: true}))), doc(pol(gate(Gate{Need: 2, Approvers: []string{"a", "b"}, ExcludePrincipal: true}))), []want{{Weakened, "policy", "removed or replaced"}}},
+		{"the same approvers in another order", doc(pol(gate(Gate{Need: 2, Approvers: []string{"ops", "risk"}, ExcludePrincipal: true}))), doc(pol(gate(Gate{Need: 2, Approvers: []string{"risk", "ops"}, ExcludePrincipal: true}))), []want{{Changed, "policy", "approver order changed"}}},
 		{"an approver only added", doc(pol(twoOfTwo)), doc(pol(gate(Gate{Need: 2, Approvers: []string{"ops", "risk", "audit"}, ExcludePrincipal: true}))), []want{{Strengthened, "policy", "approvers were added"}}},
 		{"a longer timeout is a change", doc(pol(twoOfTwo)), doc(pol(gate(Gate{Need: 2, Approvers: []string{"ops", "risk"}, ExcludePrincipal: true, TimeoutMS: 60000}))), []want{{Changed, "policy", "timeout"}}},
 		{"Untrusted removed", doc(pol(twoOfTwo), Tool{Name: "r", Untrusted: "crm"}), doc(pol(twoOfTwo), Tool{Name: "r"}), []want{{Weakened, "tool r", "Untrusted"}}},
@@ -400,5 +401,40 @@ func TestGolden_IsPinnedToLF(t *testing.T) {
 	}
 	if b, err := os.ReadFile("testdata/agent.golden.json"); err != nil || bytes.Contains(b, []byte("\r")) {
 		t.Fatalf("the golden holds a carriage return (%v)", err)
+	}
+}
+
+// A document holds only what a valid agent can produce: the gate checks agent.ApprovalPolicy.Validate makes.
+// A duplicate approver would count twice toward need, so a document that lists one is refused, not reported.
+func TestDecode_RefusesAGateNoValidAgentHas(t *testing.T) {
+	for name, g := range map[string]*Gate{
+		"a duplicate approver":                      {Need: 2, Approvers: []string{"a", "a", "b"}},
+		"approvers that differ only by case":        {Need: 2, Approvers: []string{"Alice", "alice"}},
+		"need above the approvers":                  {Need: 3, Approvers: []string{"a", "b"}},
+		"need zero":                                 {Need: 0, Approvers: []string{"a"}},
+		"no approvers":                              {Need: 1},
+		"an empty approver":                         {Need: 1, Approvers: []string{""}},
+		"an approver with a space":                  {Need: 1, Approvers: []string{"a b"}},
+		"a negative timeout":                        {Need: 1, Approvers: []string{"a"}, TimeoutMS: -1},
+		"a one-decision gate with approvers":        {Single: true, Approvers: []string{"a"}},
+		"a one-decision gate excluding a requester": {Single: true, ExcludePrincipal: true},
+	} {
+		for where, d := range map[string]Document{
+			"the policy":   doc(&Policy{Gate: g}),
+			"a tool's own": doc(&Policy{Gate: twoOfTwo}, Tool{Name: "w", OwnGate: g}),
+		} {
+			var buf bytes.Buffer
+			if err := Encode(&buf, d); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Decode(&buf); err == nil {
+				t.Errorf("%s in %s was accepted", name, where)
+			}
+		}
+	}
+	var buf bytes.Buffer
+	_ = Encode(&buf, doc(&Policy{}))
+	if _, err := Decode(&buf); err == nil {
+		t.Error("a policy with neither a gate nor refuse was accepted")
 	}
 }

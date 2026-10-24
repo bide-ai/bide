@@ -190,6 +190,11 @@ func diffGate(subject string, old, new *Gate, covered bool) []Change {
 		case !old.ExcludePrincipal && new.ExcludePrincipal:
 			add(Strengthened, "the requester is now excluded")
 		}
+		if sameSet(old.Approvers, new.Approvers) && !slices.Equal(old.Approvers, new.Approvers) {
+			// The same approvers in another order: no weaker, but the digest hashes the list in order, so it
+			// differs.
+			add(Changed, "the approver order changed (the same approvers; the order is part of the digest)")
+		}
 		if !sameSet(old.Approvers, new.Approvers) {
 			removed := !isSubset(old.Approvers, new.Approvers)
 			note := ""
