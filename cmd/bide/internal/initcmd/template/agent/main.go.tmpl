@@ -1,0 +1,271 @@
+// Command __NAME__ is a bide agent, scaffolded by bide init -agent. It handles a customer's email:
+//
+//	read_email (outside text, marked untrusted) -> refund (a side effect)
+//
+// The agent has a taint policy: once it has read the email, which the program marks as untrusted
+// content, any side effect it asks for next needs a human decision on that call, whatever the
+// email said. go run . drives the run in run.db: it pauses at the refund until the escalation gate
+// is satisfied, records the decisions, resumes, refunds once, and writes declarations.json. Run it
+// again and nothing runs twice. See README.md.
+package main
+
+import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/audit"
+	// "github.com/bide-ai/bide/model/openai" // uncomment with the real model in model()
+	"github.com/bide-ai/bide/store/sqlite"
+)
+
+const (
+	runID = "ticket-7"
+	// singleApprover is bide init -single-approver: a one-decision escalation gate, for a team of one.
+	// It is the weaker choice (see README.md): the decision is unsigned, and the person whose input
+	// provoked the call is not kept from approving it. Delete the line and the branch that reads it
+	// to go back to the strict gate.
+	singleApprover = __SINGLE__
+)
+
+// approvers are the escalation gate's approvers. Real approvers each hold their own key.
+var approvers = []string{"ops", "finance", "risk"}
+
+// escalationGate is what a side effect needs after the agent has read untrusted content, in addition
+// to the tool's own gate (this agent's tools have none): two of three signed decisions, and the
+// person the run acts for (the customer here, its requester) never counts toward them.
+func escalationGate() *agent.ApprovalPolicy {
+	if singleApprover {
+		return agent.SingleApproval()
+	}
+	return &agent.ApprovalPolicy{Need: 2, Approvers: approvers, ExcludePrincipal: true}
+}
+
+// model is the model the agent calls. By default it is scripted, so the program runs with no API
+// key and no network: it reads the email, then asks for a refund. A real model works the same way.
+func model() agent.Model {
+	// ---- To use a real model -------------------------------------------------------------------
+	// Set OPENROUTER_API_KEY (or OPENAI_API_KEY) and uncomment these lines and the openai import
+	// above, then start over (see README.md: the journal holds the scripted model's answer).
+	//
+	// if key := os.Getenv("OPENROUTER_API_KEY"); key != "" {
+	// 	return openai.New(key, openai.WithBaseURL("https://openrouter.ai/api/v1"), openai.WithModel("openai/gpt-4o-mini"))
+	// }
+	return agenttest.NewScriptedModel(
+		agenttest.ToolTurn("c1", "read_email", `{}`),
+		// What a hostile email can get the model to ask for: the first refund is the customer's own
+		// order; the escalation gate sees both the same way, and a person decides each.
+		agenttest.ToolTurn("c2", "refund", `{"order":"order-42","amount":120}`),
+		agenttest.TextTurn("I refunded order-42."),
+	)
+}
+
+// provider stands for the payment provider: a refund appends a line to refunds.log.
+type provider struct{ dir string }
+
+func (p provider) refund(order string, amount int) error {
+	f, err := os.OpenFile(filepath.Join(p.dir, "refunds.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = fmt.Fprintf(f, "refunded %d on %s\n", amount, order)
+	return err
+}
+
+// refunds counts the refunds the provider holds.
+func (p provider) refunds() int {
+	b, err := os.ReadFile(filepath.Join(p.dir, "refunds.log"))
+	if err != nil {
+		return 0
+	}
+	return strings.Count(string(b), "\n")
+}
+
+// tools are the agent's tools. read_email returns text from outside the program, so it declares
+// that: every result it returns is recorded with the source name "inbound-email", and the agent's
+// taint policy gates the side effects the model asks for after reading it. refund is a side effect
+// (the default Safety): bide runs it at most once, and if the process dies after it starts and
+// before its result is journaled, the run halts instead of refunding again (agent.ResolveHalt).
+func tools(p provider) []agent.Tool {
+	type refundArgs struct {
+		Order  string `json:"order"`
+		Amount int    `json:"amount"`
+	}
+	return []agent.Tool{
+		agent.MustFunc("read_email", "read the customer's email", func(context.Context, struct{}) (string, error) {
+			return "Hi, my parcel for order-42 arrived damaged. Please refund me.", nil
+		}, agent.WithSafety(agent.Safety{ReadOnly: true}), agent.Untrusted("inbound-email")),
+		agent.MustFunc("refund", "refund an order", func(_ context.Context, a refundArgs) (string, error) {
+			return "refunded", p.refund(a.Order, a.Amount)
+		}),
+	}
+}
+
+func newAgent(p provider, k keys, j *agent.Journal, m agent.Model) (*agent.Agent, error) {
+	return agent.New(m, j,
+		agent.WithTools(tools(p)...),
+		agent.WithApproverVerifiers(k.verifiers()),
+		// The run acts for a customer: its requester. ExcludePrincipal keeps a requester from deciding
+		// a call their own input provoked.
+		agent.WithIdentity(agent.Identity{Actor: "support-agent@1", OnBehalfOf: "customer-7"}),
+		agent.WithTaintPolicy(agent.TaintPolicy{Gate: escalationGate()}),
+	)
+}
+
+func main() {
+	if err := story(context.Background(), ".", model()); err != nil {
+		fmt.Fprintln(os.Stderr, tag(colorErr, "1;31", "✗", "error:"), err)
+		os.Exit(1)
+	}
+}
+
+// story drives the run in dir from wherever it is, with model m: it pauses at the escalation gate,
+// the approvers decide, the run resumes and refunds once, and declarations.json is written. A run
+// that finished is read back from the journal, and nothing runs twice.
+func story(ctx context.Context, dir string, m agent.Model) error {
+	k, err := loadKeys(dir)
+	if err != nil {
+		return err
+	}
+	p := provider{dir: dir}
+	store, err := sqlite.Open(filepath.Join(dir, "run.db"))
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	j, err := agent.NewJournal(store)
+	if err != nil {
+		return err
+	}
+	a, err := newAgent(p, k, j, m)
+	if err != nil {
+		return err
+	}
+	for range 4 {
+		// The run's input is the operator's own instruction. The email is read by a tool, and the tool
+		// declares it untrusted: that is where the taint comes from.
+		res, err := a.Run(ctx, runID, agent.UserText("Handle the customer's email."), agent.WithTrustedInput("the operator's instruction"))
+		var pend *agent.ApprovalPending
+		switch {
+		case errors.As(err, &pend):
+			fmt.Printf("%s before %s, an escalation: the run read inbound-email, which is marked untrusted\n", tag(colorOut, "33", "!", "paused"), strings.TrimSuffix(pend.ToolUseID, "#taint"))
+			if err := decide(ctx, j, k, pend); err != nil {
+				return err
+			}
+			continue
+		case err != nil:
+			return err
+		}
+		fmt.Printf("%s %s\nrefunds the provider holds: %d\n", tag(colorOut, "32", "✓", "done:"), res.Message.Text(), p.refunds())
+		return writeDeclarations(a, dir)
+	}
+	return errors.New("the run did not finish")
+}
+
+// decide records the escalation decisions the gate waits for. A real deployment collects them from
+// people (bide approve, the approve page); the scaffold signs for the approvers it holds the keys of.
+func decide(ctx context.Context, j *agent.Journal, k keys, pend *agent.ApprovalPending) error {
+	if singleApprover {
+		if err := agent.Approve(ctx, j, runID, pend.ToolUseID, true); err != nil {
+			return err
+		}
+		fmt.Printf("%s %s\n", tag(colorOut, "32", "✓", "approved"), pend.ToolUseID)
+		return nil
+	}
+	subject := pend.Subject()
+	for _, id := range approvers[:pend.Quorum.Need] {
+		decidedAt := time.Now() // when the approver decided, by their clock: signed with the decision
+		sig := ed25519.Sign(k[id], agent.ApprovalDecisionBytes(subject, id, true, decidedAt))
+		d := agent.Decision{RunID: runID, ToolUseID: pend.ToolUseID, ApproverID: id, Approved: true, DecidedAt: decidedAt, Alg: audit.AlgEd25519, Signature: sig}
+		if err := agent.SubmitDecision(ctx, j, d, agent.WithDecisionCheck(k.verifiers())); err != nil {
+			return err
+		}
+		fmt.Printf("%s %s\n", tag(colorOut, "32", "✓", id+" approved"), subject.Args)
+	}
+	return nil
+}
+
+// writeDeclarations writes declarations.json: the agent's taint and cap declarations, which bide doctor
+// reports on (bide doctor -declarations declarations.json) and diffs between two versions of your code
+// (bide doctor -diff old.json new.json; it exits 1 when something is weakened).
+func writeDeclarations(a *agent.Agent, dir string) error {
+	b, err := a.Declarations()
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "declarations.json"), b, 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("%s declarations.json\n", tag(colorOut, "32", "✓", "wrote"))
+	return nil
+}
+
+// keys are the private keys of the approvers, generated on the first run into keys/keys.json. Real
+// approvers each hold their own key; one file is for the scaffold.
+type keys map[string]ed25519.PrivateKey
+
+func loadKeys(dir string) (keys, error) {
+	path := filepath.Join(dir, "keys", "keys.json")
+	seeds := map[string]string{}
+	b, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		for _, id := range approvers {
+			seed := make([]byte, ed25519.SeedSize)
+			if _, err := rand.Read(seed); err != nil {
+				return nil, err
+			}
+			seeds[id] = hex.EncodeToString(seed)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return nil, err
+		}
+		if err := writeJSON(path, seeds); err != nil {
+			return nil, err
+		}
+	case err != nil:
+		return nil, err
+	default:
+		if err := json.Unmarshal(b, &seeds); err != nil {
+			return nil, err
+		}
+	}
+	k := keys{}
+	for id, s := range seeds {
+		seed, err := hex.DecodeString(s)
+		if err != nil || len(seed) != ed25519.SeedSize {
+			return nil, fmt.Errorf("%s: key %q is not a hex ed25519 seed", path, id)
+		}
+		k[id] = ed25519.NewKeyFromSeed(seed)
+	}
+	return k, nil
+}
+
+// verifiers resolves an approver id to its public key, for the gate and the decision check.
+func (k keys) verifiers() agent.ApproverVerifierFor {
+	return func(id string) (agent.ApproverVerifier, bool) {
+		if k[id] == nil {
+			return nil, false
+		}
+		return audit.Ed25519Verifier{Pub: k[id].Public().(ed25519.PublicKey)}, true
+	}
+}
+
+func writeJSON(path string, v any) error {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(b, '\n'), 0o600)
+}

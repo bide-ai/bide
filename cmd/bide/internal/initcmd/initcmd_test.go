@@ -192,3 +192,80 @@ func TestNextStepsColor(t *testing.T) {
 		t.Errorf("-color=on: exit %d, want 2", code)
 	}
 }
+
+// TestAgentScaffoldBuildsRunsAndVerifies: the agent scaffold, in both gate shapes, built against this
+// checkout, passes go vet and its own tests (the story: the refund waits for the escalation gate, the
+// approvers decide, the refund runs once, a second run repeats nothing, and the declarations are written).
+func TestAgentScaffoldBuildsRunsAndVerifies(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skipf("go unavailable: %v", err)
+	}
+	for name, args := range map[string][]string{"strict": {"-agent"}, "single approver": {"-agent", "-single-approver"}} {
+		t.Run(name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "support")
+			if code, out := initCmd("", append(args, "-dev", checkout, dir)...); code != 0 {
+				t.Fatalf("bide init: exit %d\n%s", code, out)
+			}
+			for _, args := range [][]string{{"mod", "tidy"}, {"vet", "./..."}, {"test", "-count=1", "./..."}} {
+				cmd := exec.Command("go", args...)
+				cmd.Dir = dir
+				cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod")
+				if out, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("go %s in the scaffold: %v\n%s", strings.Join(args, " "), err, out)
+				}
+			}
+		})
+	}
+}
+
+// TestAgentScaffoldGateShape: the default escalation gate is two of three signed decisions that do not
+// count the requester; -single-approver is the one-decision opt-out, said so in the README and in the code;
+// the flow scaffold carries no policy.
+func TestAgentScaffoldGateShape(t *testing.T) {
+	read := func(dir, name string) string {
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	strict := filepath.Join(t.TempDir(), "a")
+	if code, out := initCmd("v0.14.0", "-agent", strict); code != 0 {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	main, readme := read(strict, "main.go"), read(strict, "README.md")
+	for _, want := range []string{"singleApprover = false", "Need: 2, Approvers: approvers, ExcludePrincipal: true", "agent.Untrusted(\"inbound-email\")", "agent.WithTaintPolicy"} {
+		if !strings.Contains(main, want) {
+			t.Errorf("the strict main.go lacks %q", want)
+		}
+	}
+	if !strings.Contains(readme, "two of three signed decisions") || strings.Contains(readme, "ONE unsigned decision") || strings.Contains(main+readme, "__") {
+		t.Errorf("the strict README:\n%s", readme)
+	}
+	single := filepath.Join(t.TempDir(), "b")
+	if code, out := initCmd("v0.14.0", "-agent", "-single-approver", single); code != 0 {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	main, readme = read(single, "main.go"), read(single, "README.md")
+	if !strings.Contains(main, "singleApprover = true") || !strings.Contains(readme, "ONE unsigned decision") || !strings.Contains(readme, "the weaker choice") || strings.Contains(main+readme, "__") {
+		t.Errorf("the single-approver scaffold:\n%s", readme)
+	}
+	flow := filepath.Join(t.TempDir(), "c")
+	if code, out := initCmd("v0.14.0", flow); code != 0 {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	if strings.Contains(read(flow, "main.go"), "WithTaintPolicy") {
+		t.Error("the flow scaffold carries a taint policy, which does not cover flows")
+	}
+}
+
+// TestSingleApproverNeedsAgent: -single-approver on its own is a usage error and writes nothing.
+func TestSingleApproverNeedsAgent(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "x")
+	if code, out := initCmd("v0.14.0", "-single-approver", dir); code != 2 || !strings.Contains(out, "-single-approver is for -agent") {
+		t.Errorf("exit %d, want 2 naming -agent\n%s", code, out)
+	}
+	if _, err := os.Stat(dir); err == nil {
+		t.Error("a usage error wrote the directory")
+	}
+}
