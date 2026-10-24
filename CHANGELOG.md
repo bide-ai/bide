@@ -11,6 +11,16 @@ journal format can change between pre-releases without a version bump. Curated h
 
 Unreleased changes are in `changes/unreleased/`.
 
+## [0.23.1] - 2026-10-24
+
+### Fixed
+
+- The cap reconcile pass (`Recover`, `RecoverLoop`) read the wall clock to decide whether a day or hour window was still open, while a run reserves by its own clock. It now reads the clock bound to its context, else the wall clock. No application could bind one to `Recover`, so a deployment saw no change in behavior; the wall-clock judgement and its over-count direction for `WithClock` agents are documented in `Recover`, `RecoverLoop` and the known limitations. (#512)
+
+### Security
+
+- `agent.ClaimAttempt` now claims bare attempt markers only; it returns `ErrConfig` and writes nothing for anything else. Before, v0.23.0 and earlier let a caller with journal access plant records through it: a tool result (the next drive completed the call with the forged result and never ran the tool), a single-approver approval (the next drive ran the gated tool), and a record under a name the engine reserves, such as a `cap-intent:` that pinned a cap reservation to an old window and so bypassed the cap, a `gate-reason:` or an `approval-pending:`. Now a name under a reserved prefix (`cap-intent:`, `cap-reserve:`, `gate-reason:`, `approval-pending:`, `slot:`, `taint/` and the rest that `Step` refuses, except `attempt:`), the engine-derived `attempt:not-started:` and `attempt:retry:` forms, an empty name, a record whose kind is not `attempt`, a caller-set `AttemptedAt` (the claim stamps it from the context's clock now; before, a caller could back-date a marker so a halt looked old enough for `ResolveHalt`'s `WithMinHaltAge`), and an attempt record that carries a result, an approval, a model turn or a reconciliation are all refused. The engine's own paths (the halt resolution's claim included) do not go through the exported call and are unchanged. An approval of an m-of-n gate was never affected, since only signed decisions count. A caller with journal access can still pre-claim an `attempt:tool:<call>` marker, which halts the call and cannot admit it or release a cap.
+
 ## [0.23.0] - 2026-10-23
 
 ### Added
@@ -1213,7 +1223,8 @@ First public release.
 - `bide-audit` standalone verifier, prebuilt for Linux, macOS and Windows on amd64 and arm64.
 - `eval` statistical evaluation harness, `chaos` crash-injection harness, and `cmd/bench`.
 
-[Unreleased]: https://github.com/bide-ai/bide/compare/v0.23.0...HEAD
+[Unreleased]: https://github.com/bide-ai/bide/compare/v0.23.1...HEAD
+[0.23.1]: https://github.com/bide-ai/bide/compare/v0.23.0...v0.23.1
 [0.23.0]: https://github.com/bide-ai/bide/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/bide-ai/bide/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/bide-ai/bide/compare/v0.20.0...v0.21.0
