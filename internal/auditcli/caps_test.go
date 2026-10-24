@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -1035,4 +1036,150 @@ func TestCapsAudit_AForgedReleaseOfAnotherRunIsOutsideRun(t *testing.T) {
 	}
 	code, out, errOut = unanchoredCaps("-run", "r1")
 	wantFail(t, code, out, errOut, "RELEASE_OF_A_CALL_THAT_RAN")
+}
+
+// plantIntent writes, with the raw store (not the signing one), a cap-intent into run's journal for the
+// refund call c1 of run, fixing window, and the matching win: entry in the rule's index run: the
+// window-pinning attack, for amount minor units.
+func (e *capsEnv) plantIntent(run, window string, amount int64) {
+	e.t.Helper()
+	ctx := context.Background()
+	salt := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
+	insert := func(r, name string, result any) {
+		body := map[string]any{"name": name, "kind": "value", "salt": salt}
+		if result != nil {
+			body["result"] = result
+		}
+		if name == "@journal" {
+			body["kind"], body["format"] = "header", "bide.journal.v1-dev"
+		}
+		b, _ := json.Marshal(body)
+		if _, _, err := e.mem.Insert(ctx, r, name, b); err != nil {
+			e.t.Fatal(err)
+		}
+	}
+	insert(run, "@journal", nil)
+	attempt := run + "/" + run + "/c1/attempt%3Atool%3Ac1%23refund_total"
+	name := "cap-intent:" + strings.NewReplacer("/", "%2F", "%", "%25").Replace(attempt)
+	insert(run, name, map[string]any{"format": "bide.cap-intent.v1", "attempt": attempt, "namespace": "default", "rule": "refund_total",
+		"currency": "USD", "window_kind": "day", "key": capledger.KeyDigest(""), "amount": amount, "marked": true, "window": window})
+	insert("@cap/default/refund_total/USD/index", "win:"+window, map[string]any{"window": window})
+}
+
+func TestCapsAudit_AWindowPinnedByAPlantedIntent(t *testing.T) {
+	e := newCapsEnv(t)
+	if err := e.call("r0", 8000); err != nil { // 80 of the day's 100 USD
+		t.Fatal(err)
+	}
+	e.plantIntent("r1", "2026-10-01", 9000)
+	if err := e.call("r1", 9000); err != nil {
+		t.Fatal(err)
+	}
+	// The engine adopted the intent: the 90 USD landed in the old day's ledger, and every ledger reads fine.
+	code, out, errOut := unanchoredCaps()
+	wantFail(t, code, out, errOut, "INTENT_WINDOW")
+	if !strings.Contains(out, "a call cannot be counted in an earlier window") || strings.Count(out, "INFO  ledger ") != 2 {
+		t.Fatalf("both ledgers are read and the pinned window is named:\n%s", out)
+	}
+	// -window does not hide it: the pinned ledger is outside the filter, and the report says so.
+	code, out, errOut = unanchoredCaps("-window", capsDay)
+	wantFail(t, code, out, errOut, "INTENT_WINDOW")
+	if !strings.Contains(out, "fix a window the filter left out") {
+		t.Fatalf("the ledger the filter left out must be listed:\n%s", out)
+	}
+	// Anchored too.
+	code, out, errOut = e.anchored()
+	wantFail(t, code, out, errOut, "INTENT_WINDOW")
+}
+
+func TestWindowOutOfTime(t *testing.T) {
+	day := func(s string) time.Time { tm, _ := time.Parse(time.RFC3339, s); return tm }
+	for _, c := range []struct {
+		name      string
+		kind      capledger.Kind
+		window    string
+		start     time.Time
+		haveStart bool
+		marked    time.Time
+		bad       bool
+	}{
+		{"same day", capledger.Day, "2026-10-22", day("2026-10-22T10:00:00Z"), true, day("2026-10-22T10:00:01Z"), false},
+		{"a call just before midnight reserving into the next day", capledger.Day, "2026-10-23", day("2026-10-22T23:59:59Z"), true, day("2026-10-22T23:59:59Z"), false},
+		{"a window one day earlier", capledger.Day, "2026-10-21", day("2026-10-22T00:00:01Z"), true, day("2026-10-22T00:00:01Z"), true},
+		{"an old window", capledger.Day, "2026-10-01", day("2026-10-22T10:00:00Z"), true, day("2026-10-22T10:00:00Z"), true},
+		{"two days ahead of the marker", capledger.Day, "2026-10-24", day("2026-10-22T10:00:00Z"), true, day("2026-10-22T10:00:00Z"), true},
+		{"the hour after", capledger.Hour, "2026-10-22T11", day("2026-10-22T10:59:59Z"), true, day("2026-10-22T10:59:59Z"), false},
+		{"the hour before", capledger.Hour, "2026-10-22T09", day("2026-10-22T10:00:00Z"), true, day("2026-10-22T10:00:00Z"), true},
+		{"no start: only the marker bounds it", capledger.Day, "2026-10-01", time.Time{}, false, day("2026-10-22T10:00:00Z"), false},
+		{"no start: ahead of the marker", capledger.Day, "2026-11-01", time.Time{}, false, day("2026-10-22T10:00:00Z"), true},
+		{"a run clock behind the store's", capledger.Day, "2026-10-22", day("2026-10-22T10:00:00Z"), true, day("2026-10-24T10:00:00Z"), false},
+	} {
+		if got := windowOutOfTime(c.kind, c.window, c.start, c.haveStart, c.marked); (got != "") != c.bad {
+			t.Errorf("%s: windowOutOfTime = %q, want bad=%v", c.name, got, c.bad)
+		}
+	}
+}
+
+func TestCapsAudit_ARunWindowThatIsNotTheCallsRoot(t *testing.T) {
+	e := newCapsEnv(t)
+	if err := e.call("r1", 30, `run_total: refund.amount[minor, currency=currency] sum 100 USD per run -> refuse`); err != nil {
+		t.Fatal(err)
+	}
+	e.editIntent("r1", replaceIn(`"window":"r1"`, `"window":"r9"`))
+	code, out, errOut := unanchoredCaps()
+	wantFail(t, code, out, errOut, "INTENT_WINDOW")
+}
+
+func TestCapsAudit_AnIntentThatNothingDates(t *testing.T) {
+	e := threeCalls(t)
+	e.tamper.hide = func(r, n string) bool { return r == "r2" && (n == "run:start" || strings.HasPrefix(n, "attempt:")) }
+	code, out, errOut := unanchoredCaps()
+	if code != 0 || !strings.Contains(out, "WARN  INTENT_UNDATED") {
+		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
+	}
+}
+
+func TestCapsAudit_RunsWhoseCapRecordsNoHeadCovers(t *testing.T) {
+	e := threeCalls(t)
+	e.heads()
+	write := func(keep func(en audit.AnchorEntry) bool) string {
+		var b bytes.Buffer
+		for _, en := range e.anchor.Entries() {
+			if keep(en) {
+				line, _ := json.Marshal(en.STH)
+				b.Write(append(line, '\n'))
+			}
+		}
+		p := filepath.Join(e.dir, "partial.jsonl")
+		if err := os.WriteFile(p, b.Bytes(), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	// Only the ledger's heads: no run is covered.
+	p := write(func(en audit.AnchorEntry) bool { return strings.HasPrefix(en.RunID, "@cap/") })
+	code, out, errOut := runCLI("caps", "-db", "x.db", "-sth", p, "-pubkey", e.pub)
+	wantFail(t, code, out, errOut, "RUN_NOT_ATTESTED")
+	if !strings.Contains(out, "no signed head covers run r1") {
+		t.Fatalf("each run must be named:\n%s", out)
+	}
+	// r2's oldest head only: its cap records run past it.
+	seen := false
+	p = write(func(en audit.AnchorEntry) bool {
+		if en.RunID != "r2" {
+			return true
+		}
+		first := !seen
+		seen = true
+		return first
+	})
+	code, out, errOut = runCLI("caps", "-db", "x.db", "-sth", p, "-pubkey", e.pub)
+	wantFail(t, code, out, errOut, "RUN_NOT_ATTESTED")
+	if !strings.Contains(out, "run r2: its cap records run to entry") {
+		t.Fatalf("r2's head stops short:\n%s", out)
+	}
+	// A cap-intent changed after its run's head was signed.
+	e.editIntent("r2", replaceIn(`"amount":50`, `"amount":51`))
+	code, out, errOut = e.anchored()
+	wantFail(t, code, out, errOut, "DIVERGENT_HEAD")
 }

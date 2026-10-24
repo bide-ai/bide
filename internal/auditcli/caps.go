@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -19,25 +20,28 @@ import (
 
 // Finding kinds of bide audit caps. Each is a reason the audit fails.
 const (
-	capCorrupt    = "CORRUPT"                    // the ledger breaks its own accept rules
-	capUnreadable = "UNREADABLE"                 // a ledger or a run that cannot be decoded
-	capTotal      = "TOTAL"                      // the recomputed window total is not the last cum_after
-	capDouble     = "DOUBLE"                     // one attempt holds two live reserves
-	capDeleted    = "DELETED"                    // a cap-reserve record names a slot the ledger does not hold
-	capChanged    = "CHANGED"                    // a slot differs from the cap-reserve record that names it
-	capUnrecorded = "UNRECORDED"                 // a reserve slot with no cap-reserve record in its run
-	capBadHead    = "BAD_HEAD"                   // a signed head that does not verify
-	capDivergent  = "DIVERGENT_HEAD"             // a signed head the ledger run does not match
-	capNoHead     = "NOT_ATTESTED"               // entries no signed head covers
-	capHeadOnly   = "LEDGER_MISSING"             // a signed head or a cap-reserve record for a ledger the store does not hold
-	capIntentBad  = "INTENT_UNREADABLE"          // a cap-intent record that does not decode, or sits under another attempt's name
-	capIntentNone = "INTENT_MISSING"             // a reserve slot whose attempt has no cap-intent
-	capIntentDup  = "INTENT_DUPLICATE"           // two cap-intents for one attempt
-	capIntentDiff = "INTENT_MISMATCH"            // an intent that differs from the slot it led to (rule, key, amount, currency, marking, window)
-	capIndexNone  = "INDEX_MISSING"              // an intent whose window the rule's index run does not hold
-	capIntentOld  = "INTENT_CLOCK"               // an intent whose window is earlier than the newest window the index held when it was written
-	capReleaseRan = "RELEASE_OF_A_CALL_THAT_RAN" // a release of a reservation whose call has a result the tool produced
-	capReleaseUnk = "RELEASE_UNCONFIRMED"        // warning: a release whose attempt is neither voided nor answered
+	capCorrupt       = "CORRUPT"                    // the ledger breaks its own accept rules
+	capUnreadable    = "UNREADABLE"                 // a ledger or a run that cannot be decoded
+	capTotal         = "TOTAL"                      // the recomputed window total is not the last cum_after
+	capDouble        = "DOUBLE"                     // one attempt holds two live reserves
+	capDeleted       = "DELETED"                    // a cap-reserve record names a slot the ledger does not hold
+	capChanged       = "CHANGED"                    // a slot differs from the cap-reserve record that names it
+	capUnrecorded    = "UNRECORDED"                 // a reserve slot with no cap-reserve record in its run
+	capBadHead       = "BAD_HEAD"                   // a signed head that does not verify
+	capDivergent     = "DIVERGENT_HEAD"             // a signed head the ledger run does not match
+	capNoHead        = "NOT_ATTESTED"               // entries no signed head covers
+	capHeadOnly      = "LEDGER_MISSING"             // a signed head or a cap-reserve record for a ledger the store does not hold
+	capIntentBad     = "INTENT_UNREADABLE"          // a cap-intent record that does not decode, or sits under another attempt's name
+	capIntentNone    = "INTENT_MISSING"             // a reserve slot whose attempt has no cap-intent
+	capIntentDup     = "INTENT_DUPLICATE"           // two cap-intents for one attempt
+	capIntentDiff    = "INTENT_MISMATCH"            // an intent that differs from the slot it led to (rule, key, amount, currency, marking, window)
+	capIndexNone     = "INDEX_MISSING"              // an intent whose window the rule's index run does not hold
+	capIntentOld     = "INTENT_CLOCK"               // an intent whose window is earlier than the newest window the index held when it was written
+	capIntentWin     = "INTENT_WINDOW"              // an intent whose window is not the window of the call's own time
+	capIntentUndated = "INTENT_UNDATED"             // warning: an intent whose call has no start time to date it by
+	capRunHead       = "RUN_NOT_ATTESTED"           // cap records of a run that no signed head of that run covers
+	capReleaseRan    = "RELEASE_OF_A_CALL_THAT_RAN" // a release of a reservation whose call has a result the tool produced
+	capReleaseUnk    = "RELEASE_UNCONFIRMED"        // warning: a release whose attempt is neither voided nor answered
 )
 
 // The markers that end a run (agent's runCompleteStep, runAbortedStep and runCancelledStep, which are not
@@ -94,6 +98,13 @@ type capsReport struct {
 type capsFilter struct {
 	ns, rule, window string // encoded segments, "" for any
 	run              string // a run: only its calls and its sub-runs' calls
+}
+
+// matchesRule is matches without the window filter.
+func (f capsFilter) matchesRule(ledger string) bool {
+	g := f
+	g.window = ""
+	return g.matches(ledger)
 }
 
 func (f capsFilter) any() bool { return f.ns != "" || f.rule != "" || f.window != "" || f.run != "" }
@@ -281,7 +292,8 @@ func auditCaps(ctx context.Context, store agent.Store, j *agent.Journal, led *ca
 	// The cap-reserve records of the runs in scope, by the ledger they name.
 	claims := map[string][]capClaim{}
 	intents := map[string][]capIntent{} // by attempt
-	rs := capRunFacts{results: map[string]map[string]bool{}, ended: map[string]bool{}}
+	rs := capRunFacts{results: map[string]map[string]bool{}, ended: map[string]bool{}, started: map[string]time.Time{},
+		attempted: map[string]map[string]int64{}, capRecs: map[string]int{}, records: map[string]int{}}
 	for _, id := range runs {
 		recs, err := j.History(ctx, id)
 		if err != nil {
@@ -291,7 +303,27 @@ func auditCaps(ctx context.Context, store agent.Store, j *agent.Journal, led *ca
 			find(capUnreadable, "", -1, "run %s cannot be read, so its cap-reserve records are not cross-checked: %v", id, err)
 			continue
 		}
-		for _, r := range recs {
+		rs.records[id] = len(recs)
+		for i, r := range recs {
+			if capledger.IsIntentName(r.Name) || capledger.IsReserveName(r.Name) {
+				rs.capRecs[id] = i + 1
+			}
+			if r.Name == "run:start" && r.Kind == agent.StepValue {
+				var st struct {
+					StartedAt string `json:"started_at"`
+				}
+				if json.Unmarshal(r.Result, &st) == nil {
+					if t, err := agent.ParseTimestamp(st.StartedAt); err == nil {
+						rs.started[id] = t
+					}
+				}
+			}
+			if r.Kind == agent.StepAttempt && r.AttemptedAt > 0 {
+				if rs.attempted[id] == nil {
+					rs.attempted[id] = map[string]int64{}
+				}
+				rs.attempted[id][r.Name] = r.AttemptedAt
+			}
 			if slices.Contains(capEndMarkers, r.Name) {
 				rs.ended[id] = true
 			}
@@ -329,6 +361,9 @@ func auditCaps(ctx context.Context, store agent.Store, j *agent.Journal, led *ca
 	byRun := map[string][]audit.SignedTreeHead{}
 	otherHeads := 0
 	for _, h := range in.heads {
+		if h.Kind == audit.TreeJournal && rs.capRecs[h.RunID] > 0 {
+			continue // a head of a run that holds cap records: read below, with the run
+		}
 		if !agent.IsCapRun(h.RunID) || h.Kind != audit.TreeJournal {
 			otherHeads++
 			continue
@@ -344,6 +379,44 @@ func auditCaps(ctx context.Context, store agent.Store, j *agent.Journal, led *ca
 	}
 
 	slotted := map[string]bool{} // the attempts that hold a reserve slot in the ledgers read
+	if in.anchored {
+		for _, id := range runs {
+			if rs.capRecs[id] == 0 {
+				continue
+			}
+			recs, err := j.History(ctx, id)
+			if err != nil {
+				if errors.Is(err, agent.ErrStorage) {
+					return rep, fmt.Errorf("read run %s: %w", id, err)
+				}
+				continue // already reported when it was read for its records
+			}
+			var runHeads []audit.SignedTreeHead
+			for _, h := range in.heads {
+				if h.Kind != audit.TreeJournal || h.RunID != id {
+					continue
+				}
+				if err := h.Verify(in.verifier); err != nil {
+					find(capBadHead, id, -1, "a signed head of size %d does not verify under -pubkey: %v", h.Size, err)
+					continue
+				}
+				runHeads = append(runHeads, h)
+			}
+			cov, err := audit.CheckDecisionCoverage(id, recs, runHeads, in.verifier, audit.CoverageBound{})
+			if err != nil {
+				return rep, err
+			}
+			for _, d := range cov.DivergentHeads {
+				find(capDivergent, id, -1, "run %s: the signed head of size %d does not match the run (a record was changed or deleted): %s", cleanText(id), d.Size, d.Reason)
+			}
+			switch {
+			case cov.Heads == 0:
+				find(capRunHead, id, -1, "no signed head covers run %s, whose cap-intent and cap-reserve records the audit relies on: NOT ATTESTED", cleanText(id))
+			case cov.LargestHead < rs.capRecs[id]:
+				find(capRunHead, id, -1, "run %s: its cap records run to entry %d and the newest signed head covers %d: NOT ATTESTED", cleanText(id), rs.capRecs[id], cov.LargestHead)
+			}
+		}
+	}
 	for _, run := range ledgers {
 		lr, err := auditLedger(ctx, j, led, voided, in, run, claims[run], byRun[run], intents, slotted, rs, find, warn)
 		if err != nil {
@@ -355,7 +428,7 @@ func auditCaps(ctx context.Context, store agent.Store, j *agent.Journal, led *ca
 	}
 
 	// Ledgers the store does not hold but a record or a signed head names.
-	rep.OrphanIntents = auditIntents(ctx, j, led, in, intents, slotted, find)
+	rep.OrphanIntents = auditIntents(ctx, j, led, in, intents, slotted, rs, find, warn, &rep)
 	listed := map[string]bool{}
 	for _, l := range ledgers {
 		listed[l] = true
@@ -706,9 +779,10 @@ func runsOf(ins []capIntent) string {
 // whose window the rule's index run does not hold or is earlier than the newest window the index held when
 // it was written, and the intents with no slot, which it returns (an attempt interrupted before its slot
 // leaves one; information).
-func auditIntents(ctx context.Context, j *agent.Journal, led *capledger.Ledger, in capsInput, intents map[string][]capIntent, slotted map[string]bool,
-	find func(kind, ledger string, slot int, format string, args ...any)) []string {
+func auditIntents(ctx context.Context, j *agent.Journal, led *capledger.Ledger, in capsInput, intents map[string][]capIntent, slotted map[string]bool, rs capRunFacts,
+	find, warn func(kind, ledger string, slot int, format string, args ...any), rep *capsReport) []string {
 	var orphans []string
+	outside := 0                          // intents whose ledger the window filter left unread
 	index := map[string]map[string]bool{} // index run -> window ids it holds
 	for _, att := range sortedKeys(intents) {
 		ins := intents[att]
@@ -717,7 +791,16 @@ func auditIntents(ctx context.Context, j *agent.Journal, led *capledger.Ledger, 
 		}
 		for _, ci := range ins {
 			ledger := led.IntentLedger(ci.in)
+			// The window an intent fixes must be the window of its call's own time, whatever ledger it
+			// names: an intent planted with an old window moves the attempt's slot into a ledger with room.
+			// Only the namespace and rule filters (not -window, which would hide the pinned window) skip it.
+			if in.filter.matchesRule(ledger) {
+				checkIntentTime(led, att, ci, rs, find, warn)
+			}
 			if !in.filter.matches(ledger) {
+				if in.filter.matchesRule(ledger) {
+					outside++
+				}
 				continue
 			}
 			if !slotted[att] && len(ins) == 1 {
@@ -748,14 +831,21 @@ func auditIntents(ctx context.Context, j *agent.Journal, led *capledger.Ledger, 
 			}
 		}
 	}
+	if outside > 0 {
+		rep.NotChecked = append(rep.NotChecked, fmt.Sprintf("%d cap-intent(s) fix a window the filter left out: their dates were checked, but their slots, and the ledgers they name, were not read", outside))
+	}
 	return orphans
 }
 
 // capRunFacts is what the audit read of the runs besides their cap records: which tool-use IDs of a run
 // have a result (and whether it is an error), and which runs have ended.
 type capRunFacts struct {
-	results map[string]map[string]bool // run -> tool-use ID -> the result is an error
-	ended   map[string]bool
+	results   map[string]map[string]bool // run -> tool-use ID -> the result is an error
+	ended     map[string]bool
+	started   map[string]time.Time        // run -> the start time its run:start records (the run's clock)
+	attempted map[string]map[string]int64 // run -> attempt marker name -> attempted_at, Unix millis
+	capRecs   map[string]int              // run -> entries up to and including its last cap-intent or cap-reserve
+	records   map[string]int              // run -> number of entries
 }
 
 // failures counts the findings that fail the audit (not the warnings).
@@ -767,4 +857,78 @@ func (r capsReport) failures() int {
 		}
 	}
 	return n
+}
+
+// checkIntentTime compares the window an intent fixes with the time of its call. The window of a day or hour
+// rule must not be earlier than the window of the run's start (the run's own clock, recorded by its
+// run:start), nor later than the window after the one the attempt marker's time falls in (the marker is
+// stamped by the store when the attempt is claimed, a moment before the first intent): a boundary may fall
+// between the claim and the intent, so one window forward is allowed, and never one back, which is how a
+// planted intent gains room. A run window must be the call's root run.
+func checkIntentTime(led *capledger.Ledger, att string, ci capIntent, rs capRunFacts, find, warn func(kind, ledger string, slot int, format string, args ...any)) {
+	in := ci.in
+	if in.Kind == capledger.Run {
+		parts := strings.Split(in.Attempt, "/")
+		if len(parts) < 2 || parts[1] != led.Segment(in.Window) {
+			find(capIntentWin, "", -1, "the cap-intent of %s in run %s fixes the run window %s, which is not the root run of the call", cleanText(att), cleanText(ci.run), cleanText(in.Window))
+		}
+		return
+	}
+	start, haveStart := rs.started[ci.run]
+	var marked time.Time
+	if ms, ok := rs.attempted[ci.run][markerOf(in.Attempt)]; ok {
+		marked = time.UnixMilli(ms).UTC()
+	}
+	if !haveStart && marked.IsZero() {
+		warn(capIntentUndated, "", -1, "the cap-intent of %s in run %s fixes window %s, and the run records neither a start time nor an attempt marker to date the call by", cleanText(att), cleanText(ci.run), cleanText(in.Window))
+		return
+	}
+	if why := windowOutOfTime(in.Kind, in.Window, start, haveStart, marked); why != "" {
+		find(capIntentWin, "", -1, "the cap-intent of %s in run %s fixes window %s: %s", cleanText(att), cleanText(ci.run), cleanText(in.Window), why)
+	}
+}
+
+// windowOutOfTime says why window (of kind) cannot hold a call that started at start (the run's clock;
+// absent if haveStart is false) and claimed its attempt at marked (the store's clock; zero if there is no
+// marker), or "" if it can: not earlier than the window of start, not later than the window after the
+// marker's.
+func windowOutOfTime(kind capledger.Kind, window string, start time.Time, haveStart bool, marked time.Time) string {
+	dur := 24 * time.Hour
+	if kind == capledger.Hour {
+		dur = time.Hour
+	}
+	if haveStart {
+		w, err := capledger.WindowID(kind, start, "")
+		if err != nil {
+			return err.Error()
+		}
+		if window < w {
+			return fmt.Sprintf("the run started in window %s: a call cannot be counted in an earlier window", w)
+		}
+	}
+	if !marked.IsZero() {
+		w, err := capledger.WindowID(kind, marked.Add(dur), "")
+		if err != nil {
+			return err.Error()
+		}
+		if window > w {
+			return fmt.Sprintf("the attempt was claimed in the window before %s: a call cannot be counted in a window that far ahead", w)
+		}
+	}
+	return ""
+}
+
+// markerOf is the attempt marker's name inside an attempt key: the encoded "<marker key>#<rule>" is its
+// last component, and the marker key is what precedes the last (encoded) '#'.
+func markerOf(attempt string) string {
+	parts := strings.Split(attempt, "/")
+	last := parts[len(parts)-1]
+	i := strings.LastIndex(last, "%23")
+	if i <= 0 {
+		return ""
+	}
+	if name, err := url.PathUnescape(last[:i]); err == nil {
+		return name
+	}
+	return ""
 }
