@@ -111,7 +111,8 @@ func TestRequireProvenance_SessionTurnsStateTheirInput(t *testing.T) {
 // asked to state a provenance of its own.
 func TestRequireProvenance_ASubAgentRunIsNotAskedToState(t *testing.T) {
 	ctx := context.Background()
-	child, err := New(&scriptModel{turns: [][]Emit{textTurn("child answer")}}, memJournal(), WithTools(provTool("a", trustedOutput("mine"))),
+	childJ := memJournal()
+	child, err := New(&scriptModel{turns: [][]Emit{textTurn("child answer")}}, childJ, WithTools(provTool("a", trustedOutput("mine"))),
 		WithTaintPolicy(TaintPolicy{Refuse: true, requireProvenance: true}))
 	if err != nil {
 		t.Fatal(err)
@@ -124,6 +125,10 @@ func TestRequireProvenance_ASubAgentRunIsNotAskedToState(t *testing.T) {
 	}
 	if _, err := parent.Run(ctx, "r", UserText("go"), WithTrustedInput("the operator")); err != nil {
 		t.Fatalf("a parent that states its input, with a sub-agent: %v", err)
+	}
+	// The child's run started (a refused start is a tool error the parent reads and goes on from).
+	if _, ok, err := RecordedStart(ctx, childJ, SubRunID("r", "d1")); err != nil || !ok {
+		t.Fatalf("the sub-agent's run did not start (%v, %v): it was asked to state a provenance", ok, err)
 	}
 }
 
