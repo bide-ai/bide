@@ -596,9 +596,11 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 		// conversation is assembled in deterministic uses-order regardless of which tool
 		// finishes first.
 		type call struct {
-			idx  int
-			tu   ToolUse
-			spec *ToolSpec // the tool's registered spec (shared, never changed): every decision about the call reads it
+			idx   int
+			tu    ToolUse
+			spec  *ToolSpec   // the tool's registered spec (shared, never changed): every decision about the call reads it
+			marks []taintMark // for a run under taint: the marks the call's turn was shown, passed to the runs the call starts
+			under bool        // the run is under taint (marks is the list to pass, possibly empty)
 		}
 		var toRun []call
 		var (
@@ -707,7 +709,18 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 			}
 			// protocol:claims end
 			// protocol:lifecycle end
-			toRun = append(toRun, call{idx: i, tu: tu, spec: spec})
+			c := call{idx: i, tu: tu, spec: spec}
+			if underTaintFrom(ctx) != "" {
+				// The runs this call starts inherit the marks its turn was shown (taint_inherit.go).
+				if !marksRead {
+					if turnMarks, err = a.turnMarks(ctx, runID, uses[0].ID); err != nil {
+						return leave(err)
+					}
+					marksRead = true
+				}
+				c.marks, c.under = turnMarks, true
+			}
+			toRun = append(toRun, c)
 		}
 
 		// Execute the ready tools CONCURRENTLY (Go's strength; single-flight-safe). First
@@ -816,7 +829,10 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 				// protocol:delegation end
 				sctx := withOnceScope(gctx, SubRunID(runID, c.tu.ID))      // NextOnceKey's scope: the call's sub-run ID
 				sctx = withRunContext(sctx, a.store, runID, c.tu.ID, saga) // RunInfoFrom; lets the tool call Interrupt
-				started := &callUsage{}                                    // usage of the runs this call starts
+				if c.under {
+					sctx = withCallMarks(sctx, c.marks)
+				}
+				started := &callUsage{} // usage of the runs this call starts
 				sctx = withCallUsage(withBudgetNode(sctx, node), started)
 				// protocol:lifecycle begin DClaim DPost DCall
 				// protocol:claims begin Claim Lost Win Call
