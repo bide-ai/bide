@@ -438,7 +438,11 @@ func storeID(store *Journal) any {
 // reconcileCapRuns is reconcileCaps over the cap runs a caller already listed (Recover finds them in its own
 // listing of runs, which includes them: a ledger never ends). Index runs among them are skipped.
 func reconcileCapRuns(ctx context.Context, store *Journal, runs []string) ([]string, error) {
-	l := newCapLedger(store, time.Now, 0)
+	// One clock for the pass: the context's, else the wall clock. The ledger's own clock is read only by a
+	// reservation's first intent, which Live and Reconcile never write, so it is passed for consistency;
+	// the clock that decides is the window test's.
+	now := clockFrom(ctx)
+	l := newCapLedger(store, now, 0)
 	var released []string
 	var errs []error
 	for _, run := range runs {
@@ -458,7 +462,7 @@ func reconcileCapRuns(ctx context.Context, store *Journal, runs []string) ([]str
 			errs = append(errs, err)
 			continue
 		} else if ok {
-			if open, err := capWindowOpen(ctx, store, kind, window, time.Now()); err != nil {
+			if open, err := capWindowOpen(ctx, store, kind, window, now()); err != nil {
 				errs = append(errs, err)
 				continue
 			} else if !open {

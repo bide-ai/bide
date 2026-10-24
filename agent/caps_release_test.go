@@ -26,6 +26,12 @@ const (
 	capRuleHour = `refund_hour: refund.amount[minor, currency=currency] sum 1 USD per hour -> refuse`
 )
 
+// capCtx is a context whose clock is the one the runs of these tests use (capNow), the clock the reconcile pass
+// reads: a fixed-day window is open or closed by the same clock that reserved in it, never by the wall clock.
+func capCtx() context.Context {
+	return contextWithClock(context.Background(), func() time.Time { return capNow })
+}
+
 func liveDay(t *testing.T, j *Journal) []capledger.Slot {
 	return liveOf(t, j, "refund_total", capledger.Day, "2026-10-22")
 }
@@ -181,7 +187,7 @@ func TestCapsRelease_ReconcileReleasesWhatAVoidLeftCounted(t *testing.T) {
 		t.Fatalf("log = %q, want the rule and call without the amount", out)
 	}
 	os.failOn = nil
-	released, err := reconcileCaps(context.Background(), j)
+	released, err := reconcileCaps(capCtx(), j)
 	if err != nil || len(released) != 1 {
 		t.Fatalf("reconcileCaps = %v, %v, want the one slot", released, err)
 	}
@@ -189,7 +195,7 @@ func TestCapsRelease_ReconcileReleasesWhatAVoidLeftCounted(t *testing.T) {
 		t.Fatalf("live = %+v after reconcile", live)
 	}
 	// Idempotent: a second pass finds nothing.
-	if released, err := reconcileCaps(context.Background(), j); err != nil || len(released) != 0 {
+	if released, err := reconcileCaps(capCtx(), j); err != nil || len(released) != 0 {
 		t.Fatalf("second reconcile = %v, %v", released, err)
 	}
 }
@@ -204,11 +210,27 @@ func TestCapsRelease_RecoverReconciles(t *testing.T) {
 	}
 	_, _ = runSum(t, j, "r0", sumArgs(60, ""), tool)
 	os.failOn = nil
-	if _, err := Recover(context.Background(), j, func(context.Context, string, RunStart) error { return nil }); err != nil {
+	if _, err := Recover(capCtx(), j, func(context.Context, string, RunStart) error { return nil }); err != nil {
 		t.Fatalf("Recover: %v", err)
 	}
 	if live := liveDay(t, j); len(live) != 0 {
 		t.Fatalf("live = %+v after Recover", live)
+	}
+}
+
+// The reconcile pass decides whether a window is open by the clock bound to its context (the wall clock when
+// none is bound), the clock a run reserves by: the same leaked slot is released under a clock inside the
+// window and left alone under one past its end, whatever the wall clock reads.
+func TestCapsRelease_ReconcileReadsTheContextClock(t *testing.T) {
+	os := &orderStore{Store: NewMemStore()}
+	j := newJournal(os)
+	leakOne(t, os, j, "r0", capNow)
+	late := contextWithClock(context.Background(), func() time.Time { return capNow.Add(72 * time.Hour) })
+	if released, err := reconcileCaps(late, j); err != nil || len(released) != 0 {
+		t.Fatalf("reconcileCaps past the window = %v, %v, want the closed window skipped", released, err)
+	}
+	if released, err := reconcileCaps(capCtx(), j); err != nil || len(released) != 1 {
+		t.Fatalf("reconcileCaps inside the window = %v, %v, want the one slot", released, err)
 	}
 }
 
@@ -223,7 +245,7 @@ func TestCapsRelease_ReconcileAndResolveHaltNeverCreditACallThatMayHaveRun(t *te
 		a := mustNew(capModel{sumArgs(300, "")}, crashJournal(mem, crashAt), WithTools(tool), capClockOpt())
 		_, _ = a.Run(context.Background(), "r0", UserText("go"))
 		before := len(liveDay(t, mem))
-		if released, err := reconcileCaps(context.Background(), mem); err != nil {
+		if released, err := reconcileCaps(capCtx(), mem); err != nil {
 			t.Fatalf("crash %d: %v", crashAt, err)
 		} else if len(released) != 0 && tool.calls() > 0 {
 			t.Fatalf("crash %d: reconcile released %v for a call that fired", crashAt, released)
@@ -239,7 +261,7 @@ func TestCapsRelease_ReconcileAndResolveHaltNeverCreditACallThatMayHaveRun(t *te
 			if after := len(liveDay(t, mem)); after != before {
 				t.Fatalf("crash %d: ResolveHalt changed the live slots from %d to %d", crashAt, before, after)
 			}
-			if released, _ := reconcileCaps(context.Background(), mem); len(released) != 0 {
+			if released, _ := reconcileCaps(capCtx(), mem); len(released) != 0 {
 				t.Fatalf("crash %d: reconcile released %v for a resolved halt", crashAt, released)
 			}
 		}
@@ -349,10 +371,10 @@ func TestCapsRelease_ReconcileSkipsClosedWindows(t *testing.T) {
 	os := &orderStore{Store: NewMemStore()}
 	j := newJournal(os)
 	closed := time.Date(2020, 1, 1, 12, 0, 0, 0, time.UTC)
-	open := time.Now().UTC()
+	open := capNow
 	leakOne(t, os, j, "old", closed, WithCapNamespace("old")) // its own namespace: the clock bound refuses a window years earlier
 	leakOne(t, os, j, "new", open)
-	released, err := reconcileCaps(context.Background(), j)
+	released, err := reconcileCaps(capCtx(), j)
 	if err != nil || len(released) != 1 {
 		t.Fatalf("reconcileCaps = %v, %v, want only the open window's slot", released, err)
 	}
@@ -467,13 +489,13 @@ func TestCapsRelease_ReconcilesRunWindowsOfRunningRoots(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			os := &orderStore{Store: NewMemStore()}
 			j := newJournal(os)
-			leakRules(t, os, j, root, time.Now().UTC(), runLeakRules)
+			leakRules(t, os, j, root, capNow, runLeakRules)
 			l := newCapLedger(j, time.Now, 0)
 			ledger := runLedger(l, root)
 			if live, err := l.Live(context.Background(), ledger); err != nil || len(live) != 1 {
 				t.Fatalf("live = %+v, %v; want the leak", live, err)
 			}
-			released, err := reconcileCaps(context.Background(), j)
+			released, err := reconcileCaps(capCtx(), j)
 			if err != nil || len(released) != 1 {
 				t.Fatalf("reconcileCaps = %v, %v, want the run window's slot", released, err)
 			}
@@ -487,11 +509,11 @@ func TestCapsRelease_ReconcilesRunWindowsOfRunningRoots(t *testing.T) {
 func TestCapsRelease_ReconcileSkipsARunWindowWhoseRootEnded(t *testing.T) {
 	os := &orderStore{Store: NewMemStore()}
 	j := newJournal(os)
-	leakRules(t, os, j, "done-root", time.Now().UTC(), runLeakRules)
+	leakRules(t, os, j, "done-root", capNow, runLeakRules)
 	if _, err := j.put(context.Background(), "done-root", runCompleteStep, Record{Kind: StepValue, Result: json.RawMessage(`1`)}); err != nil {
 		t.Fatal(err)
 	}
-	released, err := reconcileCaps(context.Background(), j)
+	released, err := reconcileCaps(capCtx(), j)
 	l := newCapLedger(j, time.Now, 0)
 	if live, _ := l.Live(context.Background(), runLedger(l, "done-root")); err != nil || len(released) != 0 || len(live) != 1 {
 		t.Fatalf("released %v, err %v, live %+v: want the ended run's window left alone", released, err, live)
@@ -502,10 +524,10 @@ func TestCapsRelease_ReconcileSkipsARunWindowWhoseRootEnded(t *testing.T) {
 func TestCapsRelease_ReconcileSurfacesAStoreErrorOnARunWindow(t *testing.T) {
 	os := &orderStore{Store: NewMemStore()}
 	j := newJournal(os)
-	leakRules(t, os, j, "root-e", time.Now().UTC(), runLeakRules)
+	leakRules(t, os, j, "root-e", capNow, runLeakRules)
 	gs := &getFailStore{Store: os, fail: func(run, name string) bool { return run == "root-e" && name == runCompleteStep }}
 	jf := newJournal(gs)
-	released, err := reconcileCaps(context.Background(), jf)
+	released, err := reconcileCaps(capCtx(), jf)
 	l := newCapLedger(j, time.Now, 0)
 	if live, _ := l.Live(context.Background(), runLedger(l, "root-e")); err == nil || len(released) != 0 || len(live) != 1 {
 		t.Fatalf("released %v, err %v, live %+v: want the error surfaced and the slot untouched", released, err, live)
@@ -542,16 +564,16 @@ func TestCapsRelease_EndedRootsAreRememberedAndBounded(t *testing.T) {
 func TestCapsRelease_RecoverLoopReconciles(t *testing.T) {
 	os := &orderStore{Store: NewMemStore()}
 	j := newJournal(os)
-	leakOne(t, os, j, "r0", time.Now().UTC())
+	leakOne(t, os, j, "r0", capNow)
 	l := newCapLedger(j, time.Now, 0)
 	live := func() int {
-		got, _ := l.Live(context.Background(), l.LedgerRun(capledger.Rule{Namespace: defaultCapNamespace, Name: "refund_total", Currency: "USD", Kind: capledger.Day}, time.Now().UTC().Format("2006-01-02"), capledger.KeyDigest("")))
+		got, _ := l.Live(context.Background(), l.LedgerRun(capledger.Rule{Namespace: defaultCapNamespace, Name: "refund_total", Currency: "USD", Kind: capledger.Day}, capNow.Format("2006-01-02"), capledger.KeyDigest("")))
 		return len(got)
 	}
 	if live() != 1 {
 		t.Fatalf("live = %d before the loop, want the leak", live())
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(capCtx())
 	done := make(chan error, 1)
 	go func() {
 		done <- RecoverLoop(ctx, j, func(context.Context, string, RunStart) error { return nil }, WithRecoverInterval(10*time.Millisecond))
@@ -620,7 +642,7 @@ func TestCapsRelease_EndedCacheHitsOnAChangingStoreWithoutRacing(t *testing.T) {
 		if open, err := capWindowOpen(context.Background(), j, capledger.Run, "ended-live", time.Now()); err != nil || open {
 			t.Fatalf("open = %v, %v, want ended", open, err)
 		}
-		if _, err := reconcileCaps(context.Background(), j); err != nil {
+		if _, err := reconcileCaps(capCtx(), j); err != nil {
 			t.Fatal(err)
 		}
 	}

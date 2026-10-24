@@ -229,6 +229,11 @@ func completedAnswer(recs []Record) (Message, bool) {
 // the process remembers is the report, not the skip: each pass reads run:start again, so a run that
 // starts after a pass skipped it is recovered by a later pass. Neither counts as re-driven.
 //
+// Recover's reconcile pass over the cap ledgers decides which day and hour windows are still open by the
+// wall clock (Recover takes no clock option). An agent built with WithClock reserves by its own clock; if that
+// differs much from the wall clock the pass may skip a window the agent still sees as open, leaving a slot
+// counted until the window ends: an over-count, never a release of a slot that may have run.
+//
 // Recover skips a sub-agent's run (IsSubRun): its root run drives it, and re-running the root
 // resumes it. It skips a session's journal and turn runs (IsSessionRun) too: a turn is seeded with
 // the transcript before its message, which only the session holds, and only the session records
@@ -851,6 +856,9 @@ func cancelledEnd(err error) bool {
 // the journal's store has a Reanchor method (audit.AuditedStore, found through Unwrap) or
 // WithReanchor names one: a decision another process wrote is then under a signed tree head within
 // one pass. It reads that run's journal and writes nothing to it.
+//
+// Its cap reconcile passes judge which day and hour windows are open by the wall clock, as Recover's does
+// (see Recover): an agent built with WithClock may have a window skipped, an over-count.
 //
 // Run it once per process, for the life of the process, with the same resume Recover takes:
 //
