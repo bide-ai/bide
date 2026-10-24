@@ -215,6 +215,15 @@ func TestTrustedWrapperOverUntrustedToolIsRefused(t *testing.T) {
 			t.Errorf("%s: the error does not say the wrapper declares Trusted: %v", name, err)
 		}
 	}
+	// An embedding decorator that declares nothing over an Untrusted tool drops the taint as well.
+	for name, w := range map[string]Tool{
+		"embedded, nothing":         reclassify{untrusted, "", ""},
+		"embedded depth 2, nothing": reclassify{reclassify{untrusted, "crm", ""}, "", ""},
+	} {
+		if _, err := New(&scriptModel{}, memJournal(), WithTools(w)); !errors.Is(err, ErrConfig) {
+			t.Errorf("%s: a decorator that drops Untrusted = %v, want ErrConfig", name, err)
+		}
+	}
 	// A wrapper that keeps Untrusted is accepted.
 	if _, err := New(&scriptModel{}, memJournal(), WithTools(reclassify{untrusted, "crm", ""})); err != nil {
 		t.Fatalf("a wrapper that keeps Untrusted: %v", err)
