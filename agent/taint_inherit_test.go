@@ -19,6 +19,7 @@ type inheritRig struct {
 	parentJ   *Journal
 	childJ    *Journal
 	sameStore bool
+	writeOpts []ToolOption // the child write tool's options
 }
 
 func (r *inheritRig) run(parentTurns [][]Emit, parentOpts []Option, childOpts []Option) error {
@@ -28,7 +29,7 @@ func (r *inheritRig) run(parentTurns [][]Emit, parentOpts []Option, childOpts []
 		r.childJ = r.parentJ
 	}
 	child := mustNew(&scriptModel{turns: [][]Emit{toolTurn("w1", "write", `{}`), textTurn("child done")}}, r.childJ,
-		append([]Option{WithTools(r.writes.tool("write"))}, childOpts...)...)
+		append([]Option{WithTools(r.writes.tool("write", r.writeOpts...))}, childOpts...)...)
 	read := func(name, src string) Tool {
 		return MustFunc(name, name, func(context.Context, struct{}) (string, error) { return "text", nil },
 			WithSafety(Safety{ReadOnly: true}), Untrusted(src))
@@ -126,13 +127,18 @@ func TestTaintInherit_TheListIsOneMarkPerSourceInAFixedOrder(t *testing.T) {
 
 func TestTaintInherit_ADriveWithOtherMarksIsAConfigError(t *testing.T) {
 	r := newInheritRig(t)
-	if err := r.run([][]Emit{toolTurn("c1", "read_a", `{}`), toolTurn("d1", "delegate", `{"task":"go"}`), textTurn("done")}, refuseTaint, refuseTaint); err != nil {
-		t.Fatal(err)
+	r.writeOpts = []ToolOption{WithApproval(SingleApproval())} // the child pauses at its write, so its run is still open
+	if err := r.run([][]Emit{toolTurn("c1", "read_a", `{}`), toolTurn("d1", "delegate", `{"task":"go"}`), textTurn("done")}, refuseTaint, refuseTaint); !IsPause(err) {
+		t.Fatalf("run = %v, want the child's pause", err)
 	}
 	child := mustNew(&scriptModel{turns: [][]Emit{textTurn("again")}}, r.childJ, WithTools(r.writes.tool("write")), WithTaintPolicy(TaintPolicy{Refuse: true}))
-	other := withCallMarks(context.Background(), []taintMark{{Source: "b-src", Ref: "tool:read_b/c9"}})
-	_, err := child.Run(other, SubRunID("r", "d1"), UserText("go"))
+	other := withCallMarks(withRunContext(context.Background(), r.parentJ, "r", "d1", false), []taintMark{{Source: "b-src", Ref: "tool:read_b/c9"}})
+	task := UserText("go")
+	_, _, _, err := child.drive(other, SubRunID("r", "d1"), &driveSpec{input: &task, strictSaga: true})
 	if !errors.Is(err, ErrConfig) {
 		t.Fatalf("a drive with other inherited marks = %v, want ErrConfig", err)
+	}
+	if !strings.Contains(err.Error(), "inherited taint marks") {
+		t.Fatalf("ErrConfig for another reason: %v", err)
 	}
 }
