@@ -1107,13 +1107,13 @@ func TestWindowOutOfTime(t *testing.T) {
 		{"a call just before midnight reserving into the next day", capledger.Day, "2026-10-23", day("2026-10-22T23:59:59Z"), true, day("2026-10-22T23:59:59Z"), false},
 		{"a window one day earlier", capledger.Day, "2026-10-21", day("2026-10-22T00:00:01Z"), true, day("2026-10-22T00:00:01Z"), true},
 		{"an old window", capledger.Day, "2026-10-01", day("2026-10-22T10:00:00Z"), true, day("2026-10-22T10:00:00Z"), true},
+		{"a long run started days earlier, pinned to a day between", capledger.Day, "2026-10-10", day("2026-10-01T10:00:00Z"), true, day("2026-10-22T10:00:00Z"), true},
 		{"two days ahead of the marker", capledger.Day, "2026-10-24", day("2026-10-22T10:00:00Z"), true, day("2026-10-22T10:00:00Z"), true},
 		{"the hour after", capledger.Hour, "2026-10-22T11", day("2026-10-22T10:59:59Z"), true, day("2026-10-22T10:59:59Z"), false},
 		{"two hours ahead of the marker", capledger.Hour, "2026-10-22T12", day("2026-10-22T10:00:00Z"), true, day("2026-10-22T10:00:00Z"), true},
 		{"the hour before", capledger.Hour, "2026-10-22T09", day("2026-10-22T10:00:00Z"), true, day("2026-10-22T10:00:00Z"), true},
-		{"no start: only the marker bounds it", capledger.Day, "2026-10-01", time.Time{}, false, day("2026-10-22T10:00:00Z"), false},
-		{"no start: ahead of the marker", capledger.Day, "2026-11-01", time.Time{}, false, day("2026-10-22T10:00:00Z"), true},
-		{"a run clock behind the store's", capledger.Day, "2026-10-22", day("2026-10-22T10:00:00Z"), true, day("2026-10-24T10:00:00Z"), false},
+		{"unmarked: a window earlier than the run's start", capledger.Day, "2026-10-01", day("2026-10-22T10:00:00Z"), true, time.Time{}, true},
+		{"unmarked: any window from the start on (the limit)", capledger.Day, "2026-11-01", day("2026-10-22T10:00:00Z"), true, time.Time{}, false},
 	} {
 		if got := windowOutOfTime(c.kind, c.window, c.start, c.haveStart, c.marked); (got != "") != c.bad {
 			t.Errorf("%s: windowOutOfTime = %q, want bad=%v", c.name, got, c.bad)
@@ -1194,7 +1194,45 @@ func TestCapsAudit_AWindowPinnedIntoTheFuture(t *testing.T) {
 	// The attempt marker was claimed now, and the intent fixes a window months ahead.
 	code, out, errOut := unanchoredCaps()
 	wantFail(t, code, out, errOut, "INTENT_WINDOW")
-	if !strings.Contains(out, "a call cannot be counted in a window that far ahead") {
+	if !strings.Contains(out, "a call cannot be counted in a window past the next one") {
 		t.Fatalf("the future window must be named:\n%s", out)
 	}
+}
+
+func TestCapsAudit_ALongRunPinsToAnEarlierDay(t *testing.T) {
+	e := newCapsEnv(t)
+	e.plantIntent("r1", "2026-10-10", 100)
+	if err := e.call("r1", 100); err != nil {
+		t.Fatal(err)
+	}
+	// The run claims to have started on Oct 1: only the attempt marker (stamped by the engine from the
+	// run's clock, Oct 22) dates the call, and the window between is not allowed.
+	e.tamper.edit = func(r, n string, d []byte) []byte {
+		if r == "r1" && n == "run:start" {
+			d = bytes.Replace(d, []byte(`"started_at":"2026-10-22T10:00:00.000Z"`), []byte(`"started_at":"2026-10-01T10:00:00.000Z"`), 1)
+		}
+		return d
+	}
+	code, out, errOut := unanchoredCaps()
+	wantFail(t, code, out, errOut, "INTENT_WINDOW")
+	if !strings.Contains(out, "the attempt was claimed in window 2026-10-22") {
+		t.Fatalf("the marker must date the call:\n%s", out)
+	}
+}
+
+func TestCapsAudit_TheEngineStampsTheMarkerFromTheRunsClock(t *testing.T) {
+	e := threeCalls(t)
+	recs, err := e.j.History(context.Background(), "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range recs {
+		if r.Kind == agent.StepAttempt {
+			if got := time.UnixMilli(r.AttemptedAt).UTC(); !got.Equal(capsNow) {
+				t.Fatalf("the marker is stamped %v, want the run's clock %v", got, capsNow)
+			}
+			return
+		}
+	}
+	t.Fatal("no attempt marker")
 }

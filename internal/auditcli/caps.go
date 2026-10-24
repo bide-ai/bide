@@ -293,7 +293,7 @@ func auditCaps(ctx context.Context, store agent.Store, j *agent.Journal, led *ca
 	claims := map[string][]capClaim{}
 	intents := map[string][]capIntent{} // by attempt
 	rs := capRunFacts{results: map[string]map[string]bool{}, ended: map[string]bool{}, started: map[string]time.Time{},
-		attempted: map[string]map[string]int64{}, capRecs: map[string]int{}, records: map[string]int{}}
+		attempted: map[string]map[string]int64{}, capRecs: map[string]int{}, records: map[string]int{}, unmarked: map[string]bool{}}
 	for _, id := range runs {
 		recs, err := j.History(ctx, id)
 		if err != nil {
@@ -831,6 +831,9 @@ func auditIntents(ctx context.Context, j *agent.Journal, led *capledger.Ledger, 
 			}
 		}
 	}
+	if n := len(rs.unmarked); n > 0 {
+		rep.NotChecked = append(rep.NotChecked, fmt.Sprintf("%d cap-intent(s) belong to attempts with no marker (retry-safe tools): their window was held only to the start of their run, so a long-lived run could pin one to any later window", n))
+	}
 	if outside > 0 {
 		rep.NotChecked = append(rep.NotChecked, fmt.Sprintf("%d cap-intent(s) fix a window the filter left out: their dates were checked, but their slots, and the ledgers they name, were not read", outside))
 	}
@@ -846,6 +849,7 @@ type capRunFacts struct {
 	attempted map[string]map[string]int64 // run -> attempt marker name -> attempted_at, Unix millis
 	capRecs   map[string]int              // run -> entries up to and including its last cap-intent or cap-reserve
 	records   map[string]int              // run -> number of entries
+	unmarked  map[string]bool             // the intents dated by their run's start only (no attempt marker)
 }
 
 // failures counts the findings that fail the audit (not the warnings).
@@ -879,6 +883,9 @@ func checkIntentTime(led *capledger.Ledger, att string, ci capIntent, rs capRunF
 	if ms, ok := rs.attempted[ci.run][markerOf(in.Attempt)]; ok {
 		marked = time.UnixMilli(ms).UTC()
 	}
+	if marked.IsZero() && haveStart {
+		rs.unmarked[ci.run+"\x00"+att] = true // dated by the run's start only
+	}
 	if !haveStart && marked.IsZero() {
 		warn(capIntentUndated, "", -1, "the cap-intent of %s in run %s fixes window %s, and the run records neither a start time nor an attempt marker to date the call by", cleanText(att), cleanText(ci.run), cleanText(in.Window))
 		return
@@ -888,14 +895,33 @@ func checkIntentTime(led *capledger.Ledger, att string, ci capIntent, rs capRunF
 	}
 }
 
-// windowOutOfTime says why window (of kind) cannot hold a call that started at start (the run's clock;
-// absent if haveStart is false) and claimed its attempt at marked (the store's clock; zero if there is no
-// marker), or "" if it can: not earlier than the window of start, not later than the window after the
-// marker's.
+// windowOutOfTime says why window (of kind) cannot hold a call, or "" if it can. A call with an attempt
+// marker is dated by it: the engine stamps AttemptedAt from the run's clock when it claims the attempt, a
+// moment before the first intent, so the window must be the one containing it or the one after (a boundary
+// may fall between the claim and the intent). A call with no marker (an unmarked attempt) is dated only by
+// the start of its run: the window must not be earlier than the window of the start, and a run that lives
+// long can pin to any later window; that is a limit, and the report counts such intents.
 func windowOutOfTime(kind capledger.Kind, window string, start time.Time, haveStart bool, marked time.Time) string {
 	dur := 24 * time.Hour
 	if kind == capledger.Hour {
 		dur = time.Hour
+	}
+	if !marked.IsZero() {
+		lo, err := capledger.WindowID(kind, marked, "")
+		if err != nil {
+			return err.Error()
+		}
+		hi, err := capledger.WindowID(kind, marked.Add(dur), "")
+		if err != nil {
+			return err.Error()
+		}
+		switch {
+		case window < lo:
+			return fmt.Sprintf("the attempt was claimed in window %s: a call cannot be counted in an earlier window", lo)
+		case window > hi:
+			return fmt.Sprintf("the attempt was claimed in window %s: a call cannot be counted in a window past the next one (%s)", lo, hi)
+		}
+		return ""
 	}
 	if haveStart {
 		w, err := capledger.WindowID(kind, start, "")
@@ -904,15 +930,6 @@ func windowOutOfTime(kind capledger.Kind, window string, start time.Time, haveSt
 		}
 		if window < w {
 			return fmt.Sprintf("the run started in window %s: a call cannot be counted in an earlier window", w)
-		}
-	}
-	if !marked.IsZero() {
-		w, err := capledger.WindowID(kind, marked.Add(dur), "")
-		if err != nil {
-			return err.Error()
-		}
-		if window > w {
-			return fmt.Sprintf("the attempt was claimed in the window before %s: a call cannot be counted in a window that far ahead", w)
 		}
 	}
 	return ""
