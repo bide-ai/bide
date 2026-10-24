@@ -171,14 +171,23 @@ bide doctor -diff main/declarations.json declarations.json
   `TaintExempt`; the policy removed, or `refuse` turned into a gate; a lower `need`; a requester no longer
   excluded; an m-of-n gate turned into one decision; a raised cap limit; a removed cap rule; a *renamed*
   cumulative rule (its name is its ledger, so the window starts again from zero); a refuse turned into a gate; a
-  window of a day where it was an hour; a rule that applies to fewer tools; a removed tool that carried
-  `Untrusted` or cap rules. Changed, neither stricter nor looser: a rotated approver set, a longer or shorter
-  gate timeout, another currency or amount member, a cap line that does not parse (it is compared by hand).
-  Cap lines are compared by their meaning, through the cap grammar, not as text.
+  window of a day where it was an hour; a rule that applies to fewer tools; a key added to a cumulative rule (one
+  shared total becomes one per key); a tool that becomes `ReadOnly` (taint stops gating its calls); and, because
+  they cannot be compared and a pipeline should stop, a cap rule that changes kind (per call and cumulative), a
+  cap rule that changes currency, and new cap lines that do not parse. Changed, neither stricter nor looser: a
+  rotated approver set (the message says when none of the old approvers remain), a longer or shorter gate
+  timeout, another amount member, a new key replacing another, old cap lines that do not parse. Cap lines are
+  compared by their meaning, through the cap grammar, not as text.
 - **The digest and the diff must agree.** Different digests with no difference in the documents mean the digest
   covers something the document does not carry; equal digests with a difference in what the digest covers mean
   the reverse. Either is an error (exit 1), not a report.
-- **What it cannot see.** The report is only as good as the dump. A tool whose wrapper hides its spec, a tool
+- **Strict reading.** The document is read so that what the text shows is what it holds: a duplicate member, a
+  member spelled in another case, an unknown member, data after the document and a document over 16 MiB are
+  refused.
+- **What it cannot see.** The report is only as good as the dump. It does not show what happens at run time: a
+  sub-agent tool, or a tool that starts a programmatic sub-run, marks its answer when a run it drove read untrusted
+  content (`subagent:<tool>`), and a child inherits its parent's marks, so a delegating tool taints its caller
+  whatever the dump says. A tool's side-effect flag and its own gate are in the document but not in its digest. A tool whose wrapper hides its spec, a tool
   that runs an agent on a context of its own, and anything the host does not register with the agent are not
   in it. A difference in a tool's side-effect flag or its own gate is listed as "not in the digest".
 
