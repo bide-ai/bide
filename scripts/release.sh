@@ -30,6 +30,12 @@
 #      bide command (go install cmd/bide@vX.Y.Z) runs bide init, and the project it writes builds
 #      and passes its test against the released modules.
 #
+# A patch release of an older line (v0.23.1 after v0.24.0 is on main) is released from the branch
+# release/v0.23 instead of main: see release_branch_gate and CONTRIBUTING.md (Releasing, Patch releases).
+# REF must then be the tip of $REMOTE/release/vX.Y, VERSION the next patch above the line's newest tag,
+# the branch PR-only with required status checks (approvals are not checked), and that branch's own ci.yml push run of
+# REF green. The steps below are the same; the queue fallback does not apply.
+#
 # The release commits are reachable from their tags only; main keeps its replace directives, so
 # development is unchanged. Repo-only modules (examples, integration, benchmarks) are never tagged.
 #
@@ -242,7 +248,93 @@ main_check() {
   fi
 }
 
-# ci_status REPO SHA TREE: whether CI passed for the release commit SHA, whose tree is TREE:
+# release_branch_check version sha tip latest: whether a release of sha, with tip the commit at the
+# remote's release/vX.Y (empty when the branch is missing) and latest the Z of the newest plain
+# vX.Y.Z root tag on that line (empty when none), is a release-branch release: "ok", or the reason
+# it is not. The version must be a plain patch (Z above 0) that is the next one after the newest
+# tag of its line, and sha must be the branch tip exactly: an ancestor of the tip, another branch,
+# a tag or an unmerged commit is not.
+release_branch_check() {
+  local v=$1 sha=$2 tip=$3 latest=$4 z line
+  [[ "$v" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "$v is not a plain release version"; return; }
+  line=${BASH_REMATCH[1]}.${BASH_REMATCH[2]} z=${BASH_REMATCH[3]}
+  [ "$z" -gt 0 ] || { echo "$v is not a patch release (a new line is released from main)"; return; }
+  [ -n "$tip" ] || { echo "the remote has no branch release/v$line"; return; }
+  [ "$tip" = "$sha" ] || { echo "$sha is not the tip of release/v$line ($tip)"; return; }
+  [ -n "$latest" ] || { echo "the line v$line has no release tag"; return; }
+  [[ "$latest" =~ ^(0|[1-9][0-9]*)$ ]] || { echo "the newest tag of v$line is not a plain number"; return; }
+  [ "$z" -eq $((latest + 1)) ] || { echo "$v is not the next patch of v$line.$latest"; return; }
+  echo ok
+}
+
+# line_latest tags X.Y: the Z of the newest plain vX.Y.Z root tag in the `git ls-remote --tags`
+# output (a pre-release, a nested module's tag and an annotated tag's peeled line do not count),
+# empty when there is none.
+line_latest() {
+  awk -v p="refs/tags/v$2." '
+    index($2, p) == 1 { z = substr($2, length(p) + 1); sub(/\^\{\}$/, "", z) }
+    index($2, p) == 1 && z ~ /^(0|[1-9][0-9]*)$/ && (best == "" || z + 0 > best + 0) { best = z }
+    END { print best }' <<<"$1"
+}
+
+# branch_pr_only REPO BRANCH: the branch is closed to direct pushes: it requires pull requests and
+# status checks through a ruleset with no bypass actor, or through classic protection that applies to
+# administrators too. This is "changes arrive by pull request with the required checks", not a count
+# of approvals (bide's rulesets ask for none). It cannot see how commits landed before the rule
+# existed; branch_commits_via_pr checks that. Anything else, or GitHub not answering, is no.
+branch_pr_only() {
+  local out id
+  out=$(gh api "repos/$1/rules/branches/$2" --jq '[.[] | .type] | if (index("pull_request") and index("required_status_checks")) then (map(select(. == "pull_request")) | length) else 0 end' 2>/dev/null) || out=0
+  if [ "${out:-0}" -gt 0 ]; then
+    # Every ruleset that applies must have no bypass actor: an administrator could push around it.
+    for id in $(gh api "repos/$1/rules/branches/$2" --jq '[.[].ruleset_id] | unique | .[]' 2>/dev/null || echo bad); do
+      [[ "$id" =~ ^[0-9]+$ ]] || return 1
+      out=$(gh api "repos/$1/rulesets/$id" --jq '.bypass_actors | length' 2>/dev/null) || return 1
+      [ "$out" = 0 ] || return 1
+    done
+    return 0
+  fi
+  out=$(gh api "repos/$1/branches/$2/protection" --jq 'if .required_pull_request_reviews and .required_status_checks and .enforce_admins.enabled then "yes" else "no" end' 2>/dev/null) || out=no
+  [ "$out" = yes ]
+}
+
+# branch_commits_via_pr REPO BRANCH FROM TO: every commit on the first-parent chain FROM..TO (in
+# $REPO) is the merge of a pull request merged into BRANCH, per GitHub, and there is at least one.
+# A branch that took direct pushes before it was protected fails here.
+branch_commits_via_pr() {
+  local c n=0
+  for c in $(git -C "$REPO" rev-list --first-parent "$3..$4"); do
+    n=$((n + 1))
+    [ "$(gh api "repos/$1/commits/$c/pulls" --jq '[.[] | select(.merged_at != null and .base.ref == "'"$2"'")] | length' 2>/dev/null || echo 0)" -gt 0 ] || { echo "commit $c on $2 is not the merge of a pull request into it" >&2; return 1; }
+  done
+  [ "$n" -gt 0 ]
+}
+
+# release_branch_gate version sha: the release-branch mode of the preflight. Prints why on stderr
+# and returns 1 unless release_branch_check passes, sha descends from the line's newest tag, the
+# branch is closed to direct pushes (branch_pr_only), every commit since the tag is the merge of a
+# pull request into it (branch_commits_via_pr), and (checked by the caller with the branch's own
+# push run) CI is green. Reads $REMOTE, $REPO, $remote_tags, $GITHUB_REPO; sets REL_BRANCH on success.
+release_branch_gate() {
+  local v=$1 sha=$2 line branch tip latest why tagsha
+  [[ "$v" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.[0-9]+$ ]] || return 1
+  line=${BASH_REMATCH[1]}.${BASH_REMATCH[2]} branch=release/v$line
+  tip=$(git -C "$REPO" ls-remote "$REMOTE" "refs/heads/$branch" 2>/dev/null | awk -v r="refs/heads/$branch" '$2 == r {print $1}')
+  latest=$(line_latest "$remote_tags" "$line")
+  why=$(release_branch_check "$v" "$sha" "$tip" "$latest")
+  [ "$why" = ok ] || { echo "$why" >&2; return 1; }
+  # The line's newest tag is the remote's (the peeled commit of an annotated tag), never a local tag of the same name.
+  tagsha=$(awk -v t="refs/tags/v$line.$latest" '$2 == t "^{}" {print $1; exit} $2 == t {plain = $1} END {if (plain != "") print plain}' <<<"$remote_tags" | head -1)
+  [ -n "$tagsha" ] || { echo "v$line.$latest is not on $REMOTE" >&2; return 1; }
+  git -C "$REPO" fetch --quiet "$REMOTE" "refs/heads/$branch" "refs/tags/v$line.$latest" 2>/dev/null || { echo "could not fetch $REMOTE $branch" >&2; return 1; }
+  git -C "$REPO" merge-base --is-ancestor "$tagsha" "$sha" 2>/dev/null || { echo "$sha does not descend from v$line.$latest ($tagsha)" >&2; return 1; }
+  command -v gh >/dev/null 2>&1 || { echo "gh is not installed, so $branch cannot be checked" >&2; return 1; }
+  branch_pr_only "$GITHUB_REPO" "$branch" || { echo "$branch is not closed to direct pushes (it needs pull requests and status checks, no bypass actor, enforced for administrators)" >&2; return 1; }
+  branch_commits_via_pr "$GITHUB_REPO" "$branch" "$tagsha" "$sha" || return 1
+  REL_BRANCH=$branch
+}
+
+# ci_status REPO SHA TREE [BRANCH]: whether CI passed for the release commit SHA, whose tree is TREE:
 #   "success" every ci.yml push run of SHA on main has completed and passed (a run still going, a
 #             manual re-run for one, is not a pass: see push_ci_state);
 #   "queue"   no push run has completed and passed yet, none failed, and a ci.yml run of the merge queue (event
@@ -256,12 +348,15 @@ main_check() {
 #             the same tree failed on main);
 #   "none"    no completed push run of SHA, and no successful queue run of this tree;
 #   "unknown" GitHub could not be queried.
+# With BRANCH (a release branch, which has no merge queue) only that branch's push runs count and
+# the queue is not consulted: "success", "failure", "none" or "unknown".
 # Trees are compared, not commit SHAs: the queue's commit is not the commit that lands on main.
 # A queue run that failed does not count, however many; a different tree does not count either.
 ci_status() {
-  local repo=$1 sha=$2 tree=$3 push heads head t
-  push=$(push_ci_state "$repo" "$sha")
+  local repo=$1 sha=$2 tree=$3 branch=${4:-} push heads head t
+  push=$(push_ci_state "$repo" "$sha" "$branch")
   case "$push" in success|failure) echo "$push"; return ;; unknown) echo unknown; return ;; esac
+  [ -z "$branch" ] || { echo none; return; }
   heads=$(gh run list -R "$repo" --workflow ci.yml --event merge_group --status success --limit 100 --json headSha --jq '.[].headSha' 2>/dev/null) || { echo unknown; return; }
   for head in $heads; do
     t=$(gh api "repos/$repo/git/commits/$head" --jq .tree.sha 2>/dev/null) || continue
@@ -270,25 +365,25 @@ ci_status() {
   echo none
 }
 
-# ci_wait REPO SHA TREE: ci_status, but for a --push release a "none" (no completed push run of SHA
+# ci_wait REPO SHA TREE [BRANCH]: ci_status, but for a --push release a "none" (no completed push run of SHA
 # yet, and no queue run of the tree) is waited out, because right after an admin merge main's push
 # CI has often not started or is still going. It polls every BIDE_CI_PREFLIGHT_POLL_SECS (30) for up
 # to BIDE_CI_PREFLIGHT_WAIT_SECS (2700) and prints the answer ci_status gives when the time is up.
 # Any other answer (success, queue, failure, unknown) is returned at once. A dry run (PUSH=false)
 # asks once. Progress goes to stderr.
 ci_wait() {
-  local repo=$1 sha=$2 tree=$3 poll=${BIDE_CI_PREFLIGHT_POLL_SECS:-30} wait=${BIDE_CI_PREFLIGHT_WAIT_SECS:-2700} n i st
+  local repo=$1 sha=$2 tree=$3 branch=${4:-} poll=${BIDE_CI_PREFLIGHT_POLL_SECS:-30} wait=${BIDE_CI_PREFLIGHT_WAIT_SECS:-2700} n i st
   n=$(awk -v w="$wait" -v p="$poll" 'BEGIN { n = int(w / p); if (n < 1) n = 1; print n }')
   $PUSH || n=1
   for ((i = 1; i <= n; i++)); do
-    st=$(ci_status "$repo" "$sha" "$tree")
+    st=$(ci_status "$repo" "$sha" "$tree" "$branch")
     [ "$st" = none ] || { echo "$st"; return; }
     if [ "$i" -lt "$n" ]; then
-      note "main's CI for $sha has not completed (poll $i of $n, every ${poll}s, up to $((wait / 60)) min); waiting" >&2
+      note "${branch:-main}'s CI for $sha has not completed (poll $i of $n, every ${poll}s, up to $((wait / 60)) min); waiting" >&2
       sleep "$poll"
     fi
   done
-  $PUSH && note "main's CI for $sha still has not completed after $((wait / 60)) min" >&2
+  $PUSH && note "${branch:-main}'s CI for $sha still has not completed after $((wait / 60)) min" >&2
   echo none
 }
 
@@ -317,39 +412,42 @@ ci_code_sha() {
   done
 }
 
-# push_ci_state REPO SHA: the state of main's ci.yml push runs of SHA (of the nearest commit at or
+# push_ci_state REPO SHA [BRANCH]: the state of main's ci.yml push runs of SHA (only those on BRANCH
+# when it is given, a release branch; any branch otherwise) (of the nearest commit at or
 # below SHA that changes code, ci_code_sha, when SHA is documentation only): "failure" when a completed one
 # failed or was cancelled, "running" when one has not completed, "success" when all completed and
 # passed, "none" when there is none yet, "unknown" when GitHub could not be queried.
 push_ci_state() {
-  local sha
+  local sha branch_arg=()
+  [ -z "${3:-}" ] || branch_arg=(--branch "$3")
   sha=$(ci_code_sha "$2") || { echo unknown; return; }
-  gh run list -R "$1" --workflow ci.yml --commit "$sha" --event push --json status,conclusion \
+  gh run list -R "$1" --workflow ci.yml --commit "$sha" --event push ${branch_arg[@]+"${branch_arg[@]}"} --json status,conclusion \
     --jq 'if length == 0 then "none" elif any(.[]; .status == "completed" and .conclusion != "success") then "failure" elif any(.[]; .status != "completed") then "running" else "success" end' 2>/dev/null || echo unknown
 }
 
-# root_tag_gate REPO SHA BASIS: run just before the root tag is pushed, which cannot be undone (the
+# root_tag_gate REPO SHA BASIS [BRANCH]: run just before the root tag is pushed, which cannot be undone (the
 # module proxy keeps it). BASIS is what the preflight found ("success" or "queue", see ci_status).
 # It does not trust the preflight alone: it polls (the first poll answers at once when the push run
 # has passed), so a push run started since, a manual re-run, is waited for, and one that then fails
 # stops the release even though an earlier run passed. It polls every
 # BIDE_CI_POLL_SECS (30) for up to BIDE_CI_WAIT_SECS (3600), for main's push run of SHA to complete,
 # and passes only if it succeeded; a failed run, or one still going or missing when the time is up,
-# stops the release before anything is tagged. Returns 0 to go on, 1 to stop.
+# stops the release before anything is tagged. With BRANCH only that branch's push runs count.
+# Returns 0 to go on, 1 to stop.
 root_tag_gate() {
-  local repo=$1 sha=$2 basis=$3 poll=${BIDE_CI_POLL_SECS:-30} wait=${BIDE_CI_WAIT_SECS:-3600} n i st
+  local repo=$1 sha=$2 basis=$3 branch=${4:-} poll=${BIDE_CI_POLL_SECS:-30} wait=${BIDE_CI_WAIT_SECS:-3600} n i st
   n=$(awk -v w="$wait" -v p="$poll" 'BEGIN { n = int(w / p); if (n < 1) n = 1; print n }')
   [ "$basis" != queue ] || note "the preflight rested on the merge queue's run of the same tree, which is weaker than main's push run" >&2
-  note "checking main's CI push run of $sha before tagging (waits up to $((wait / 60)) min for one that is still going)" >&2
+  note "checking ${branch:-main}'s CI push run of $sha before tagging (waits up to $((wait / 60)) min for one that is still going)" >&2
   for ((i = 1; i <= n; i++)); do
-    st=$(push_ci_state "$repo" "$sha")
+    st=$(push_ci_state "$repo" "$sha" "$branch")
     case "$st" in
-      success) note "main's CI push run of $sha passed" >&2; return 0 ;;
-      failure) echo "release: main's CI push run of $sha failed; the merge queue's run passed, but the release stops before tagging" >&2; return 1 ;;
+      success) note "${branch:-main}'s CI push run of $sha passed" >&2; return 0 ;;
+      failure) echo "release: ${branch:-main}'s CI push run of $sha failed; the merge queue's run passed, but the release stops before tagging" >&2; return 1 ;;
     esac
     [ "$i" -lt "$n" ] && sleep "$poll"
   done
-  echo "release: main's CI push run of $sha is $st after $((wait / 60)) min; nothing was tagged (re-run the release when it has passed)" >&2
+  echo "release: ${branch:-main}'s CI push run of $sha is $st after $((wait / 60)) min; nothing was tagged (re-run the release when it has passed)" >&2
   return 1
 }
 
@@ -373,6 +471,143 @@ push_tags() {
   done
 }
 
+# self_test_release_branch TMP: the release-branch mode (release_branch_check, line_latest,
+# branch_pr_only, release_branch_gate, and the branch filter of the CI status) against the fake gh
+# that self_test_ci installed in TMP/bin and a scratch repository that stands in for the remote.
+self_test_release_branch() {
+  local tmp=$1 ok=true got fx=$1/fx
+  rb_case() { # rb_case ok|no DESCRIPTION VERSION SHA TIP LATEST
+    got=$(release_branch_check "$3" "$4" "$5" "$6")
+    if [ "$1" = ok ]; then [ "$got" = ok ] || { echo "self-test: release branch: $2: refused ($got)"; ok=false; }
+    else [ "$got" != ok ] || { echo "self-test: release branch: $2: accepted"; ok=false; }; fi
+  }
+  local a b
+  a=$(printf '%040d' 1); b=$(printf '%040d' 2)
+  rb_case ok "the next patch at the branch tip" v0.23.1 "$a" "$a" 0
+  rb_case ok "the next patch after a patch" v0.23.3 "$a" "$a" 2
+  rb_case no "a commit that is not the tip" v0.23.1 "$a" "$b" 0
+  rb_case no "no branch" v0.23.1 "$a" "" 0
+  rb_case no "no tag on the line" v0.23.1 "$a" "$a" ""
+  rb_case no "a skipped patch" v0.23.2 "$a" "$a" 0
+  rb_case no "a patch already released" v0.23.1 "$a" "$a" 1
+  rb_case no "a new line (Z is 0)" v0.24.0 "$a" "$a" 0
+  rb_case no "a release candidate" v0.23.1-rc.1 "$a" "$a" 0
+  rb_case no "a leading zero in the newest patch" v0.23.1 "$a" "$a" 00
+  local tags
+  tags=$(printf '%s\trefs/tags/%s\n' "$a" v0.22.0 "$a" v0.23.0 "$b" 'v0.23.0^{}' "$a" v0.23.1-rc.1 "$a" v0.23.10 "$a" v0.23.2 "$a" govern/v0.23.9 "$a" v0.230.99 "$a" v0.23.x)
+  [ "$(line_latest "$tags" 0.23)" = 10 ] || { echo "self-test: release branch: line_latest said [$(line_latest "$tags" 0.23)], want 10 (numeric order; no candidate, nested tag or other line)"; ok=false; }
+  [ -z "$(line_latest "$tags" 0.24)" ] || { echo "self-test: release branch: line_latest found a tag on a line without one"; ok=false; }
+  [ "$(line_latest "$(printf '%s\trefs/tags/v0.23.0\n' "$a")" 0.23)" = 0 ] || { echo "self-test: release branch: line_latest missed v0.23.0"; ok=false; }
+
+  # branch_pr_only: a ruleset with pull_request and required_status_checks rules and no bypass actor,
+  # or classic protection with required reviews, status checks and enforcement for administrators.
+  rm -f "$fx/down" "$fx"/rules-*.json "$fx"/protection-*.json "$fx"/ruleset-*.json
+  rev_case() { # rev_case yes|no DESCRIPTION
+    local r=no; FX=$fx PATH="$tmp/bin:$PATH" branch_pr_only example/r release/v0.23 && r=yes
+    [ "$r" = "$1" ] || { echo "self-test: release branch: $2: branch_pr_only said $r, want $1"; ok=false; }
+  }
+  local rules_ok='[{"type":"deletion","ruleset_id":7},{"type":"pull_request","ruleset_id":7},{"type":"required_status_checks","ruleset_id":7}]'
+  rev_case no "no rule and no protection (GitHub answers 404)"
+  printf '[{"type":"deletion","ruleset_id":7},{"type":"non_fast_forward","ruleset_id":7}]' > "$fx/rules-release_v0.23.json"
+  rev_case no "a ruleset without a pull_request rule"
+  printf '[{"type":"pull_request","ruleset_id":7}]' > "$fx/rules-release_v0.23.json"; printf '{"bypass_actors":[]}' > "$fx/ruleset-7.json"
+  rev_case no "a ruleset with pull requests but no status checks"
+  printf '%s' "$rules_ok" > "$fx/rules-release_v0.23.json"
+  rev_case yes "a ruleset with pull requests and status checks, no bypass actor"
+  printf '{"bypass_actors":[{"actor_id":5,"actor_type":"RepositoryRole"}]}' > "$fx/ruleset-7.json"
+  rev_case no "the same ruleset with a bypass actor"
+  rm -f "$fx/ruleset-7.json"
+  rev_case no "a ruleset whose bypass list cannot be read"
+  printf '{"bypass_actors":[]}' > "$fx/ruleset-7.json"
+  : > "$fx/down"; rev_case no "GitHub unreachable"; rm -f "$fx/down"
+  rm -f "$fx/rules-release_v0.23.json"
+  printf '{"required_status_checks":{}}' > "$fx/protection-release_v0.23.json"
+  rev_case no "classic protection without required reviews"
+  printf '{"required_pull_request_reviews":{},"required_status_checks":{},"enforce_admins":{"enabled":false}}' > "$fx/protection-release_v0.23.json"
+  rev_case no "classic protection that administrators may skip"
+  printf '{"required_pull_request_reviews":{},"required_status_checks":{},"enforce_admins":{"enabled":true}}' > "$fx/protection-release_v0.23.json"
+  rev_case yes "classic protection with reviews, checks and enforcement for administrators"
+  rm -f "$fx/protection-release_v0.23.json"
+
+  # The CI status counts only the release branch's own push runs, and never the merge queue.
+  local pass='[{"status":"completed","conclusion":"success"}]' failed='[{"status":"completed","conclusion":"failure"}]' T=tree-of-release
+  rm -f "$fx"/branch.json "$fx"/tree-*; printf '[]' > "$fx/empty.json"
+  printf '%s\n' "$T" > "$fx/tree-q-same"
+  br_case() { # br_case WANT DESCRIPTION PUSH-JSON BRANCH-JSON MERGE-GROUP-JSON [BRANCH]
+    printf '%s' "$3" > "$fx/push.json"; printf '%s' "$5" > "$fx/mg.json"
+    if [ -n "$4" ]; then printf '%s' "$4" > "$fx/branch.json"; else rm -f "$fx/branch.json"; fi
+    got=$(FX=$fx PATH="$tmp/bin:$PATH" ci_status example/r release-sha "$T" "${6-release/v0.23}")
+    [ "$got" = "$1" ] || { echo "self-test: release branch: $2: ci_status said $got, want $1"; ok=false; }
+  }
+  local qsame='[{"conclusion":"success","headSha":"q-same"}]'
+  br_case success "a green run on the release branch" "$pass" "$pass" '[]'
+  br_case none "a green run on another branch of the same commit" "$pass" "" '[]'
+  br_case failure "a failed run on the release branch" "$pass" "$failed" '[]'
+  br_case none "a green queue run of the same tree is not enough" '[]' "" "$qsame"
+  br_case success "without a branch the runs of any branch count (main, unchanged)" "$pass" "" '[]' ""
+  br_case queue "without a branch the queue still counts (main, unchanged)" '[]' "" "$qsame" ""
+  gate_branch() { # gate_branch go|stop DESCRIPTION: root_tag_gate with the files br_case left
+    got=$(FX=$fx PATH="$tmp/bin:$PATH" BIDE_CI_POLL_SECS=0.1 BIDE_CI_WAIT_SECS=1 root_tag_gate example/r release-sha success release/v0.23 >/dev/null 2>&1 && echo go || echo stop)
+    [ "$got" = "$1" ] || { echo "self-test: release branch: $2: root_tag_gate said $got, want $1"; ok=false; }
+  }
+  printf '%s' "$pass" > "$fx/push.json"; rm -f "$fx/branch.json"
+  gate_branch stop "a green run on another branch only"
+  printf '%s' "$pass" > "$fx/branch.json"
+  gate_branch go "a green run on the release branch"
+  printf '%s' "$failed" > "$fx/branch.json"
+  gate_branch stop "a failed run on the release branch"
+
+  # release_branch_gate against real commits: main has the line's tag and a later commit; the release
+  # branch is the tag plus a fix; "other" is an unrelated root commit.
+  local rr="$tmp/rb-remote.git" wc="$tmp/rb-work" cl="$tmp/rb-clone" g=(-c user.name=t -c user.email=t@example.com -c commit.gpgsign=false) tag fix main2 other
+  git init --quiet --bare "$rr"; git init --quiet "$wc"
+  echo 0 > "$wc/f"; git -C "$wc" add f; git -C "$wc" "${g[@]}" commit --quiet -m base
+  tag=$(git -C "$wc" rev-parse HEAD); git -C "$wc" tag v0.23.0
+  echo 1 > "$wc/f"; git -C "$wc" "${g[@]}" commit --quiet -am "main work"; main2=$(git -C "$wc" rev-parse HEAD)
+  git -C "$wc" branch -f main
+  git -C "$wc" checkout --quiet -b release/v0.23 "$tag"; echo fix > "$wc/g"; git -C "$wc" add g; git -C "$wc" "${g[@]}" commit --quiet -m fix
+  fix=$(git -C "$wc" rev-parse HEAD)
+  git -C "$wc" checkout --quiet --orphan unrelated; git -C "$wc" "${g[@]}" commit --quiet --allow-empty -m orphan; other=$(git -C "$wc" rev-parse HEAD)
+  git -C "$wc" push --quiet "$rr" main release/v0.23 unrelated v0.23.0
+  git clone --quiet "$rr" "$cl" 2>/dev/null
+  rm -f "$fx"/rules-*.json "$fx"/protection-*.json
+  printf '%s' "$rules_ok" > "$fx/rules-release_v0.23.json"
+  local merged_pr='[{"merged_at":"2026-10-24T00:00:00Z","base":{"ref":"release/v0.23"}}]'
+  printf '%s' "$merged_pr" > "$fx/pulls-$fix.json"
+  gate_case() { # gate_case WANT DESCRIPTION VERSION SHA
+    got=$( (REPO=$cl REMOTE=origin GITHUB_REPO=example/r REL_BRANCH=; export FX=$fx PATH="$tmp/bin:$PATH"
+            remote_tags=$(git -C "$cl" ls-remote --tags origin)
+            if release_branch_gate "$3" "$4" 2>"$tmp/gate.err"; then echo "yes:$REL_BRANCH"; else echo no; fi) )
+    [ "$got" = "$1" ] || { echo "self-test: release branch: $2: the gate said $got, want $1 ($(tail -1 "$tmp/gate.err" 2>/dev/null))"; ok=false; }
+  }
+  gate_case yes:release/v0.23 "the tip of the PR-only release branch, the next patch" v0.23.1 "$fix"
+  gate_case no "main's own commit (not the branch tip)" v0.23.1 "$main2"
+  gate_case no "the commit the branch started from" v0.23.1 "$tag"
+  gate_case no "a commit that is not on the release branch" v0.23.1 "$other"
+  gate_case no "the tip, but not the next patch" v0.23.2 "$fix"
+  gate_case no "the tip, but a new line" v0.24.0 "$fix"
+  rm -f "$fx/rules-release_v0.23.json"
+  gate_case no "the tip of a branch that is not closed to direct pushes" v0.23.1 "$fix"
+  printf '%s' "$rules_ok" > "$fx/rules-release_v0.23.json"
+  printf '[]' > "$fx/pulls-$fix.json"
+  gate_case no "a tip that is no pull request's merge (a direct push)" v0.23.1 "$fix"
+  printf '[{"merged_at":null,"base":{"ref":"release/v0.23"}}]' > "$fx/pulls-$fix.json"
+  gate_case no "a tip whose pull request was never merged" v0.23.1 "$fix"
+  printf '[{"merged_at":"2026-10-24T00:00:00Z","base":{"ref":"main"}}]' > "$fx/pulls-$fix.json"
+  gate_case no "a tip merged into another branch" v0.23.1 "$fix"
+  printf '%s' "$merged_pr" > "$fx/pulls-$fix.json"
+  git -C "$wc" push --quiet --force "$rr" "$other:refs/heads/release/v0.23"
+  printf '%s' "$merged_pr" > "$fx/pulls-$other.json"
+  git -C "$wc" push --quiet --force "$rr" "$tag:refs/heads/release/v0.23"
+  printf '%s' "$merged_pr" > "$fx/pulls-$tag.json"
+  gate_case no "a branch with no commit since the tag (the tag's own commit as the next patch)" v0.23.1 "$tag"
+  gate_case no "a branch tip that does not descend from the line's tag" v0.23.1 "$other"
+  git -C "$cl" fetch --quiet origin; git -C "$cl" tag -f v0.23.0 "$other" >/dev/null
+  gate_case no "a local tag moved onto the tip does not stand in for the remote's tag" v0.23.1 "$other"
+  rm -f "$fx"/rules-*.json
+  $ok
+}
+
 # self_test_ci: ci_status against a fake gh that serves fixture runs (the real jq filters run on
 # them): a green push run; a failed push run beside a green queue run of the same tree; a green
 # queue run of the same tree and no push run; a green queue run of another tree; a failed queue run
@@ -386,8 +621,9 @@ self_test_ci() {
 # A fake gh: "run list" serves $FX/push.json or $FX/mg.json (filtered by --status like gh), "api
 # repos/R/git/commits/SHA" serves $FX/tree-SHA; $FX/down makes every call fail.
 [ ! -e "$FX/down" ] || exit 1
-expr= prev= status= commit=
+expr= prev= status= commit= branch=
 for a in "$@"; do
+  [ "$prev" = --branch ] && branch=$a
   [ "$prev" = --jq ] && expr=$a
   [ "$prev" = --commit ] && commit=$a
   [ "$prev" = --status ] && status=$a
@@ -396,13 +632,19 @@ done
 case "$*" in
   *"--event push"*)
     f=$FX/push.json
-    if [ -n "$commit" ] && [ -e "$FX/run-$commit.json" ]; then # a per-commit run (the documentation-only cases)
+    if [ -n "$branch" ]; then # runs on one branch: $FX/branch.json, none when the file is absent
+      f=$FX/branch.json; [ -e "$f" ] || f=$FX/empty.json
+    elif [ -n "$commit" ] && [ -e "$FX/run-$commit.json" ]; then # a per-commit run (the documentation-only cases)
       f=$FX/run-$commit.json
     elif [ -e "$FX/push.1.json" ]; then # a sequence: one file per call, the last repeats
       n=$(( $(cat "$FX/n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FX/n"
       f=$FX/push.$n.json; [ -e "$f" ] || { n=$(ls "$FX"/push.[0-9]*.json | wc -l | tr -d ' '); f=$FX/push.$n.json; }
     fi ;;
   *"--event merge_group"*) f=$FX/mg.json ;;
+  "api repos/"*"/rules/branches/"*) f=$FX/rules-$(tr / _ <<<"${2##*/rules/branches/}").json; [ -f "$f" ] || exit 1 ;;
+  "api repos/"*"/branches/"*"/protection"*) b=${2#*/branches/}; f=$FX/protection-$(tr / _ <<<"${b%/protection}").json; [ -f "$f" ] || exit 1 ;;
+  "api repos/"*"/rulesets/"*) f=$FX/ruleset-${2##*/}.json; [ -f "$f" ] || exit 1 ;;
+  "api repos/"*"/commits/"*"/pulls"*) c=${2#*/commits/}; f=$FX/pulls-${c%/pulls}.json; [ -f "$f" ] || exit 1 ;;
   "api repos/"*"/git/commits/"*) sha=${2##*/}; [ -f "$FX/tree-$sha" ] || exit 1; cat "$FX/tree-$sha"; exit 0 ;;
   *) exit 1 ;;
 esac
@@ -516,6 +758,11 @@ GH
   gate_line=$(grep -n 'root_tag_gate "\$GITHUB_REPO"' "${BASH_SOURCE[0]}" | head -1 | cut -d: -f1)
   tag_line=$(grep -n 'git -C "\$CLONE" tag -a "\$VERSION"' "${BASH_SOURCE[0]}" | head -1 | cut -d: -f1)
   { [ -n "$gate_line" ] && [ -n "$tag_line" ] && [ "$gate_line" -lt "$tag_line" ]; } || { echo "self-test: the root tag gate does not come before the root tag"; ok=false; }
+  # The release branch reaches the CI checks and the gate, and the gate that decides it runs in the preflight.
+  grep -q 'ci_wait "\$GITHUB_REPO" "\$SHA" .* "\$REL_BRANCH")' "${BASH_SOURCE[0]}" || { echo "self-test: the preflight CI check does not pass the release branch"; ok=false; }
+  grep -q 'root_tag_gate "\$GITHUB_REPO" "\$SHA" "\$CI_BASIS" "\$REL_BRANCH"' "${BASH_SOURCE[0]}" || { echo "self-test: the root tag gate does not get the release branch"; ok=false; }
+  grep -q 'if release_branch_gate "\$VERSION" "\$SHA"; then' "${BASH_SOURCE[0]}" || { echo "self-test: the preflight does not run the release branch gate"; ok=false; }
+  self_test_release_branch "$tmp" || ok=false
   rm -rf "$tmp"
   $ok
 }
@@ -747,6 +994,7 @@ while [ $# -gt 0 ]; do
 done
 
 REPO=$(git rev-parse --show-toplevel)
+REL_BRANCH=""   # set by release_branch_gate when SHA is released from a release branch
 SHA=$(git -C "$REPO" rev-parse --verify "$REF^{commit}")
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/bide-release.XXXXXX")
 if $KEEP || $PUSH; then
@@ -776,15 +1024,23 @@ root_remote=$(echo "$remote_tags" | awk -v t="refs/tags/$VERSION^{}" '$2 == t {p
 case "$(main_check "$SHA" "$(git -C "$REPO" rev-parse "$REMOTE/main" 2>/dev/null || true)" "$root_remote")" in
   main) note "$SHA is $REMOTE/main" ;;
   resuming) note "$SHA is not $REMOTE/main any more, but $VERSION is on $REMOTE at it; resuming" ;;
-  *) problem "$SHA is not $REMOTE/main" ;;
+  *)
+    if release_branch_gate "$VERSION" "$SHA"; then
+      note "$SHA is the tip of $REMOTE/$REL_BRANCH, a PR-only release branch with required status checks (approvals are not checked: this repository has one maintainer), and $VERSION is the next patch of its line; the branch's own CI decides"
+    else
+      problem "$SHA is not $REMOTE/main"
+    fi ;;
 esac
 CI_BASIS=none
+CI_WHERE=main
+[ -z "$REL_BRANCH" ] || CI_WHERE=$REL_BRANCH
 if command -v gh >/dev/null 2>&1; then
-  ci=$(ci_wait "$GITHUB_REPO" "$SHA" "$(git -C "$REPO" rev-parse "$SHA^{tree}" 2>/dev/null || true)")
+  ci=$(ci_wait "$GITHUB_REPO" "$SHA" "$(git -C "$REPO" rev-parse "$SHA^{tree}" 2>/dev/null || true)" "$REL_BRANCH")
   case "$ci" in
-    success) note "CI on main is green for $SHA" ;;
+    success) note "CI on $CI_WHERE is green for $SHA" ;;
     queue) note "no completed CI run on main for $SHA yet, but the merge queue's run of the same tree passed: the preflight and a dry run go on; a --push release waits for main's push run to pass before it tags the root module" ;;
-    *) problem "CI for $SHA on main is $ci, not green (and no merge queue run of the same tree passed)" ;;
+    *) if [ -n "$REL_BRANCH" ]; then problem "CI for $SHA on $REL_BRANCH is $ci, not green"
+       else problem "CI for $SHA on main is $ci, not green (and no merge queue run of the same tree passed)"; fi ;;
   esac
   CI_BASIS=$ci
 else
@@ -867,7 +1123,7 @@ wait_resolve() {
 say "root: $ROOT_MODULE $VERSION"
 if ! $ROOT_TAGGED; then
   # The one step that cannot be undone: on a queue-only basis, main's push run must pass first.
-  if $PUSH; then root_tag_gate "$GITHUB_REPO" "$SHA" "$CI_BASIS" || die "not tagging $VERSION"; fi
+  if $PUSH; then root_tag_gate "$GITHUB_REPO" "$SHA" "$CI_BASIS" "$REL_BRANCH" || die "not tagging $VERSION"; fi
   git -C "$CLONE" tag -a "$VERSION" -m "bide $VERSION" "$SHA"
   push_tags "$VERSION"
 fi
