@@ -6,13 +6,14 @@
 package declarations
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"slices"
+
+	"github.com/bide-ai/bide/internal/strictjson"
 )
 
 // Format tags a document. A document of another format is refused, never read as a version it is not.
@@ -63,18 +64,20 @@ type Tool struct {
 // version is refused, not read with the parts this version knows), the right format, tools sorted by name
 // without a repeat, and a digest that is the digest of what the document declares.
 func Decode(r io.Reader) (Document, error) {
-	raw, err := io.ReadAll(io.LimitReader(r, 16<<20))
+	const limit = 16 << 20
+	raw, err := io.ReadAll(io.LimitReader(r, limit+1))
 	if err != nil {
 		return Document{}, fmt.Errorf("read the declarations: %w", err)
 	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	var d Document
-	if err := dec.Decode(&d); err != nil {
-		return Document{}, fmt.Errorf("the declarations do not read: %w", err)
+	if len(raw) > limit {
+		return Document{}, fmt.Errorf("the declarations are over %d bytes", limit)
 	}
-	if _, err := dec.Token(); err != io.EOF {
-		return Document{}, fmt.Errorf("the declarations hold more than one JSON value")
+	// strictjson refuses what encoding/json reads as something other than it shows: a duplicate member
+	// (the last would win), a member spelled in another case ("FORMAT" for "format"), an unknown member,
+	// data after the value, and invalid UTF-8.
+	var d Document
+	if err := strictjson.Unmarshal(raw, &d, nil); err != nil {
+		return Document{}, fmt.Errorf("the declarations do not read: %w", err)
 	}
 	if d.Format != Format {
 		return Document{}, fmt.Errorf("the declarations are format %q, this version reads %q", d.Format, Format)

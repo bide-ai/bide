@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/bide-ai/bide/internal/amount"
 )
 
 const (
@@ -137,8 +139,16 @@ func TestDiff_Classifies(t *testing.T) {
 		{"a cap action goes from refuse to gate", doc(pol(twoOfTwo), Tool{Name: "w", Caps: []string{perCall}}), doc(pol(twoOfTwo), Tool{Name: "w", Caps: []string{perCallGate}}), []want{{Weakened, "tool w", "refuse becomes a gate"}}},
 		{"a cap window goes from an hour to a day", doc(pol(twoOfTwo), Tool{Name: "w", Caps: []string{hourTotal}}), doc(pol(twoOfTwo), Tool{Name: "w", Caps: []string{dayTotal}}), []want{{Weakened, "tool w", "a day, was an hour"}}},
 		{"a cumulative limit is raised", doc(pol(twoOfTwo), Tool{Name: "w", Caps: []string{dayTotal}}), doc(pol(twoOfTwo), Tool{Name: "w", Caps: []string{dayTotal20}}), []want{{Weakened, "tool w", "limit raised"}}},
-		{"a cap currency changes", doc(pol(twoOfTwo), Tool{Name: "w", Caps: []string{perCall}}), doc(pol(twoOfTwo), Tool{Name: "w", Caps: []string{perCallEUR}}), []want{{Changed, "tool w", "currency"}}},
-		{"a cap line that does not parse", doc(pol(twoOfTwo), Tool{Name: "w", Caps: []string{perCall}}), doc(pol(twoOfTwo), Tool{Name: "w", Caps: []string{"nonsense"}}), []want{{Changed, "tool w", "does not parse"}}},
+		{"a cap currency changes", doc(pol(twoOfTwo), Tool{Name: "w", Caps: []string{perCall}}), doc(pol(twoOfTwo), Tool{Name: "w", Caps: []string{perCallEUR}}), []want{{Weakened, "tool w", "currency"}}},
+		{"a cap line that does not parse", doc(pol(twoOfTwo), Tool{Name: "w", Caps: []string{perCall}}), doc(pol(twoOfTwo), Tool{Name: "w", Caps: []string{"nonsense"}}), []want{{Weakened, "tool w", "do not parse"}}},
+		{"the old cap lines do not parse", doc(pol(twoOfTwo), Tool{Name: "w", Caps: []string{"nonsense"}}), doc(pol(twoOfTwo), Tool{Name: "w", Caps: []string{perCall}}), []want{{Changed, "tool w", "old cap lines do not parse"}}},
+		{"a currency swap hides a raised limit", doc(pol(twoOfTwo), Tool{Name: "w", Caps: []string{perCall}}), doc(pol(twoOfTwo), Tool{Name: "w", Caps: []string{`refund_one: refund.amount[minor, currency=currency] > 5000000 EUR -> refuse`}}), []want{{Weakened, "tool w", "cannot be compared"}}},
+		{"a per-call cap replaced by a huge cumulative one", doc(pol(twoOfTwo), Tool{Name: "w", Caps: []string{`refund_total: refund.amount[minor, currency=currency] > 500 USD -> refuse`}}), doc(pol(twoOfTwo), Tool{Name: "w", Caps: []string{`refund_total: refund.amount[minor, currency=currency] sum 99999999 USD per day -> refuse`}}), []want{{Weakened, "tool w", "kind changed"}}},
+		{"a key is added to a cumulative rule", doc(pol(twoOfTwo), Tool{Name: "w", Caps: []string{dayTotal}}), doc(pol(twoOfTwo), Tool{Name: "w", Caps: []string{`refund_total: refund.amount[minor, currency=currency] sum 10 USD per day by customer -> refuse`}}), []want{{Weakened, "tool w", "key is added"}}},
+		{"a key is removed from a cumulative rule", doc(pol(twoOfTwo), Tool{Name: "w", Caps: []string{`refund_total: refund.amount[minor, currency=currency] sum 10 USD per day by customer -> refuse`}}), doc(pol(twoOfTwo), Tool{Name: "w", Caps: []string{dayTotal}}), []want{{Strengthened, "tool w", "key is removed"}}},
+		{"a tool becomes ReadOnly", doc(pol(twoOfTwo), Tool{Name: "w", Effect: true}), doc(pol(twoOfTwo), Tool{Name: "w"}), []want{{Weakened, "tool w", "no longer has side effects"}}},
+		{"a tool gains side effects", doc(pol(twoOfTwo), Tool{Name: "w"}), doc(pol(twoOfTwo), Tool{Name: "w", Effect: true}), []want{{Strengthened, "tool w", "now has side effects"}}},
+		{"an approver set replaced outright", doc(pol(twoOfTwo)), doc(pol(gate(Gate{Need: 2, Approvers: []string{"mallory", "x"}, ExcludePrincipal: true}))), []want{{Changed, "policy", "none in common"}}},
 		{"a tool's own gate is weakened (not covered by the digest)", doc(pol(twoOfTwo), Tool{Name: "w", OwnGate: twoOfTwo}), doc(pol(twoOfTwo), Tool{Name: "w", OwnGate: gate(Gate{Single: true})}), []want{{Weakened, "tool w own gate", "one decision"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -319,5 +329,48 @@ func TestDecode_ReadsTheAgentsGolden(t *testing.T) {
 	}
 	if d.Policy == nil || len(d.Tools) != 2 || d.Digest == "" {
 		t.Fatalf("golden = %+v", d)
+	}
+}
+
+// Two rules whose arguments print the same with a space are different rules.
+func TestRuleKey_DoesNotConflateArgumentsThatPrintAlike(t *testing.T) {
+	a := amount.Rule{Name: "r", Tools: []string{"refund"}, Arg: []string{"a b"}}
+	b := amount.Rule{Name: "r", Tools: []string{"refund"}, Arg: []string{"a", "b"}}
+	c := amount.Rule{Name: "r", Tools: []string{"refund x"}}
+	d := amount.Rule{Name: "r", Tools: []string{"refund", "x"}}
+	if ruleKey(a) == ruleKey(b) || ruleKey(c) == ruleKey(d) {
+		t.Fatal("rules that differ in how their members split print the same")
+	}
+}
+
+// What the reader sees in the text is what the document holds: a duplicate member, a member in another case,
+// and a document over the size limit are refused.
+func TestDecode_RefusesWhatEncodingJSONWouldReadAsSomethingElse(t *testing.T) {
+	good := doc(&Policy{Gate: twoOfTwo}, Tool{Name: "w", Caps: []string{perCall}})
+	var buf bytes.Buffer
+	if err := Encode(&buf, good); err != nil {
+		t.Fatal(err)
+	}
+	base := buf.String()
+	for name, in := range map[string]string{
+		"a duplicate tools member":        strings.Replace(base, `"tools": [`, `"tools": [], "tools": [`, 1),
+		"FORMAT for format":               strings.Replace(base, `"format"`, `"FORMAT"`, 1),
+		"Tools beside tools":              strings.Replace(base, `"tools": [`, `"Tools": [], "tools": [`, 1),
+		"a duplicate caps array":          strings.Replace(base, `"caps": [`, `"caps": [], "caps": [`, 1),
+		"a duplicate name in a tool":      strings.Replace(base, `"name": "w"`, `"name": "w", "name": "w"`, 1),
+		"a duplicate digest":              strings.Replace(base, `"digest": `, `"digest": "", "digest": `, 1),
+		"invalid UTF-8":                   strings.Replace(base, `"name": "w"`, "\"name\": \"w\xff\"", 1),
+		"a null where a tool list stands": strings.Replace(base, `"tools": [`, `"tools": null, "x": [`, 1),
+	} {
+		if _, err := Decode(strings.NewReader(in)); err == nil {
+			t.Errorf("%s was accepted", name)
+		}
+	}
+	big := strings.Repeat(" ", 16<<20+1)
+	if _, err := Decode(strings.NewReader(big)); err == nil || !strings.Contains(err.Error(), "over") {
+		t.Errorf("a document over the limit: %v, want a size error", err)
+	}
+	if _, err := Decode(strings.NewReader(base)); err != nil {
+		t.Fatalf("the control document is refused: %v", err)
 	}
 }

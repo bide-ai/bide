@@ -190,7 +190,11 @@ func diffGate(subject string, old, new *Gate, covered bool) []Change {
 			add(Strengthened, "the requester is now excluded")
 		}
 		if !sameSet(old.Approvers, new.Approvers) {
-			add(Changed, fmt.Sprintf("the approver set changed (%d approvers, was %d)", len(new.Approvers), len(old.Approvers)))
+			note := ""
+			if !slices.ContainsFunc(new.Approvers, func(a string) bool { return slices.Contains(old.Approvers, a) }) {
+				note = ", none in common with the old set"
+			}
+			add(Changed, fmt.Sprintf("the approver set changed (%d approvers, was %d%s)", len(new.Approvers), len(old.Approvers), note))
 		}
 	}
 	if old.TimeoutMS != new.TimeoutMS {
@@ -253,9 +257,9 @@ func diffTool(name string, old, new *Tool) []Change {
 	out = append(out, diffCaps(subject, old.Caps, new.Caps)...)
 	if old.Effect != new.Effect {
 		if new.Effect {
-			add(Changed, "now has side effects", false)
+			add(Strengthened, "now has side effects: taint gates its calls", false)
 		} else {
-			add(Changed, "no longer has side effects (ReadOnly)", false)
+			add(Weakened, "no longer has side effects (ReadOnly): taint no longer gates its calls", false)
 		}
 	}
 	out = append(out, diffGate(subject+" own gate", old.OwnGate, new.OwnGate, false)...)
@@ -270,8 +274,12 @@ func diffCaps(subject string, oldLines, newLines []string) []Change {
 	}
 	oldRules, errOld := amount.ParseRules(oldLines...)
 	newRules, errNew := amount.ParseRules(newLines...)
-	if errOld != nil || errNew != nil {
-		return []Change{{Changed, subject, "cap lines changed and at least one does not parse; compare them by hand", true}}
+	switch {
+	case errNew != nil:
+		// The new lines cannot be read, so nothing says they still limit anything: fail closed.
+		return []Change{{Weakened, subject, "the new cap lines do not parse, so they cannot be compared; treated as weakened", true}}
+	case errOld != nil:
+		return []Change{{Changed, subject, "the old cap lines do not parse; compare them by hand", true}}
 	}
 	var out []Change
 	add := func(c Class, what string) { out = append(out, Change{c, subject, what, true}) }
@@ -329,7 +337,7 @@ func sameRuleBesidesName(a, b amount.Rule) bool {
 }
 
 func ruleKey(r amount.Rule) string {
-	return fmt.Sprintf("%v|%v|%v|%v|%v|%v|%v|%d|%v|%v|%v|%v", r.Tools, r.Arg, r.Unit, r.CurrencyArg, r.Currency, r.Exponent, r.Kind, r.Limit, r.Window, keyString(r.Key), r.Action, r.Name)
+	return fmt.Sprintf("%q|%q|%v|%q|%q|%v|%v|%d|%v|%q|%+v|%q", r.Tools, r.Arg, r.Unit, r.CurrencyArg, r.Currency, r.Exponent, r.Kind, r.Limit, r.Window, keyString(r.Key), r.Action, r.Name)
 }
 
 // diffRule classifies the differences between two rules of one name.
@@ -339,7 +347,9 @@ func diffRule(subject string, o, n amount.Rule) []Change {
 		out = append(out, Change{c, subject, fmt.Sprintf("cap rule %q: %s", o.Name, what), true})
 	}
 	if o.Kind != n.Kind {
-		add(Changed, "the kind changed (per call and cumulative)")
+		// A limit on one call and a limit on a total are not comparable, and a total can be far larger than the
+		// call it replaces: reported as weakened, so a pipeline stops and a person reads it.
+		add(Weakened, "the kind changed (per call and cumulative): the limits cannot be compared, treated as weakened")
 		return out
 	}
 	switch {
@@ -351,7 +361,9 @@ func diffRule(subject string, o, n amount.Rule) []Change {
 			add(Strengthened, fmt.Sprintf("limit lowered from %d to %d minor units", o.Limit, n.Limit))
 		}
 	default:
-		add(Changed, fmt.Sprintf("currency %s, was %s", n.Currency, o.Currency))
+		// Minor units of two currencies (or two exponents) are not comparable, so a raised limit would hide
+		// behind the swap: treated as weakened.
+		add(Weakened, fmt.Sprintf("currency %s (exponent %d), was %s (exponent %d): the limits cannot be compared, treated as weakened", n.Currency, n.Exponent, o.Currency, o.Exponent))
 	}
 	if o.Action != n.Action {
 		switch {
@@ -387,7 +399,14 @@ func diffRule(subject string, o, n amount.Rule) []Change {
 		add(Changed, "the amount or currency member changed")
 	}
 	if keyString(o.Key) != keyString(n.Key) && o.Kind == amount.Sum {
-		add(Changed, "the key changed")
+		switch {
+		case o.Key == nil:
+			add(Weakened, "a key is added: one shared total becomes one total per key")
+		case n.Key == nil:
+			add(Strengthened, "the key is removed: one total per key becomes one shared total")
+		default:
+			add(Changed, "the key changed")
+		}
 	}
 	return out
 }
@@ -405,5 +424,5 @@ func keyString(k *amount.Key) string {
 	if k == nil {
 		return "none"
 	}
-	return fmt.Sprintf("%+v", *k)
+	return fmt.Sprintf("%+v/%q", *k, k.Path)
 }
