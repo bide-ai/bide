@@ -231,7 +231,7 @@ func TestCapsAudit_CleanLedgers(t *testing.T) {
 		t.Fatalf("the PASS line of an unanchored audit must say so:\n%s", out)
 	}
 	code, out, errOut = e.anchored()
-	if code != 0 || !strings.Contains(out, "and is attested by a signed head") || strings.Contains(out, "UNANCHORED") {
+	if code != 0 || !strings.Contains(out, "is unchanged since its newest signed head (a signature covers what the store was given at signing, not that it was legitimate)") || strings.Contains(out, "UNANCHORED") {
 		t.Fatalf("anchored: exit %d\n%s\n%s", code, out, errOut)
 	}
 }
@@ -474,10 +474,13 @@ func TestCapsAudit_ReconcileExposure(t *testing.T) {
 
 // failRelease refuses to store a release slot, and the slot of the hour rule: the second rule's
 // reservation fails, so the call never begins, and the release of the first rule's slot fails too.
-type failRelease struct{ agent.Store }
+type failRelease struct {
+	agent.Store
+	off bool // stop failing
+}
 
 func (f *failRelease) Insert(ctx context.Context, run, name string, data []byte) (agent.Entry, bool, error) {
-	if strings.HasPrefix(name, "slot:") && (strings.Contains(string(data), `"kind":"release"`) || strings.Contains(string(data), "refund_hour")) {
+	if !f.off && strings.HasPrefix(name, "slot:") && (strings.Contains(string(data), `"kind":"release"`) || strings.Contains(string(data), "refund_hour")) {
 		return agent.Entry{}, false, errors.New("store down")
 	}
 	return f.Store.Insert(ctx, run, name, data)
@@ -862,5 +865,163 @@ func TestCapsAudit_AFilterDoesNotCallAnotherLedgersIntentsOrphans(t *testing.T) 
 	code, out, errOut := unanchoredCaps("-rule", "refund_total")
 	if code != 0 || strings.Contains(out, "have no slot") {
 		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
+	}
+}
+
+// forgeRelease appends a valid release of the reservation of run's call c1 under rule, through the
+// store the runs were written to (an AuditedStore, so the head covers it): a release the loop never wrote.
+func (e *capsEnv) forgeRelease(run string) {
+	e.t.Helper()
+	l := journalhook.CapLedger(e.j, func() time.Time { return capsNow }, 0)
+	rule := capledger.Rule{Namespace: "default", Name: "refund_total", Currency: "USD", Kind: capledger.Day}
+	att := "attempt:tool:c1#refund_total"
+	var word atomic.Int32
+	seal, ok := capledger.NewSeal(l.AttemptKey(run, run, "c1", att), &word, 0, 1)
+	if !ok {
+		e.t.Fatal("no seal")
+	}
+	released, err := l.Release(context.Background(), capledger.Target{Rule: rule, KeyDigest: capledger.KeyDigest(""), RunID: run, RootRunID: run, ToolUseID: "c1", AttemptID: att}, seal)
+	if err != nil || !released {
+		e.t.Fatalf("release = %v, %v", released, err)
+	}
+}
+
+func TestCapsAudit_AReleaseOfACallThatRan(t *testing.T) {
+	e := threeCalls(t)
+	e.forgeRelease("r1") // r1's refund ran and answered "ok"
+	code, out, errOut := unanchoredCaps()
+	wantFail(t, code, out, errOut, "RELEASE_OF_A_CALL_THAT_RAN")
+	if !strings.Contains(out, "slot 3 releases slot 0") {
+		t.Fatalf("the release and its reserve must be named:\n%s", out)
+	}
+	// Written through the signing store, the head covers the forgery, and the audit still finds it.
+	code, out, errOut = e.anchored()
+	wantFail(t, code, out, errOut, "RELEASE_OF_A_CALL_THAT_RAN")
+}
+
+func TestCapsAudit_ALegitimateReleaseIsNotFlagged(t *testing.T) {
+	e := threeCalls(t)
+	_ = e.call("r4", 150, capsRule, capsRuleHr) // refused by the second rule: the first slot is released
+	for name, run := range map[string]func() (int, string, string){"unanchored": func() (int, string, string) { return unanchoredCaps() }, "anchored": func() (int, string, string) { return e.anchored() }} {
+		code, out, errOut := run()
+		if code != 0 || strings.Contains(out, "RELEASE_") {
+			t.Fatalf("%s: exit %d\n%s\n%s", name, code, out, errOut)
+		}
+	}
+}
+
+func TestCapsAudit_AReleaseWithNeitherAVoidNorAResultIsAWarning(t *testing.T) {
+	e := threeCalls(t)
+	e.forgeRelease("r1")
+	e.tamper.hide = func(r, n string) bool { return r == "r1" && n == "tool:c1" }
+	code, out, errOut := unanchoredCaps()
+	if code != 0 || !strings.Contains(out, "WARN  RELEASE_UNCONFIRMED") || strings.Contains(out, "FAIL") {
+		t.Fatalf("a crash between the release and the void looks the same: exit %d\n%s\n%s", code, out, errOut)
+	}
+}
+
+func TestCapsAudit_AReleaseOfAVoidedAttemptIsClean(t *testing.T) {
+	e := newCapsEnv(t)
+	failing := &failRelease{Store: e.as}
+	j, err := agent.NewJournal(failing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.j = j
+	_ = e.call("r1", 60, capsRule, capsRuleHr) // voided, its release failed
+	ctx := context.Background()
+	failing.off = true
+	l := journalhook.CapLedger(j, func() time.Time { return capsNow }, 0)
+	released, err := l.Reconcile(ctx, l.LedgerRun(capledger.Rule{Namespace: "default", Name: "refund_total", Currency: "USD", Kind: capledger.Day}, capsDay, capledger.KeyDigest("")), func(ctx context.Context, s capledger.Slot) (bool, error) { return capbridge.Voided()(ctx, j, s) })
+	if err != nil || len(released) != 1 {
+		t.Fatalf("reconcile = %v, %v", released, err)
+	}
+	code, out, errOut := unanchoredCaps()
+	if code != 0 || strings.Contains(out, "RELEASE_") || strings.Contains(out, "reconcile exposure") {
+		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
+	}
+}
+
+func TestCapsAudit_UnrecordedSlotOfARunThatHasNotEnded(t *testing.T) {
+	e := threeCalls(t)
+	e.tamper.hide = func(r, n string) bool {
+		return r == "r2" && (strings.HasPrefix(n, "cap-reserve:") || n == "run:complete")
+	}
+	code, out, errOut := unanchoredCaps()
+	if code != 0 || !strings.Contains(out, "WARN  UNRECORDED") || strings.Contains(out, "FAIL") {
+		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
+	}
+	// The same record gone from a run that ended is a failure (TestCapsAudit_CapReserveDeleted).
+}
+
+func TestCapsAudit_HeadFiles(t *testing.T) {
+	e := threeCalls(t)
+	heads := e.heads()
+	write := func(name, content string) string {
+		p := filepath.Join(e.dir, name)
+		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	for name, content := range map[string]string{"malformed": "{not json", "empty": "", "unknown member": `{"format":"x","bogus":1}`} {
+		if code, out, errOut := runCLI("caps", "-db", "x.db", "-sth", write(name, content), "-pubkey", e.pub); code != 4 || strings.Contains(out, "PASS") {
+			t.Fatalf("%s: exit %d, want 4\n%s\n%s", name, code, out, errOut)
+		}
+	}
+	// The same heads twice, or in two files, are the same evidence.
+	if code, out, errOut := runCLI("caps", "-db", "x.db", "-sth", heads, "-sth", heads, "-pubkey", e.pub); code != 0 {
+		t.Fatalf("duplicate head files: exit %d\n%s\n%s", code, out, errOut)
+	}
+	// A missing head file is an unusable input, not a pass.
+	if code, _, _ := runCLI("caps", "-db", "x.db", "-sth", filepath.Join(e.dir, "nope"), "-pubkey", e.pub); code != 4 {
+		t.Fatalf("missing head file: exit %d, want 4", code)
+	}
+}
+
+func TestCapsAudit_JSONSchemaAndStatesMatchTheTextAndTheExit(t *testing.T) {
+	e := threeCalls(t)
+	e.forgeRelease("r1")
+	for name, c := range map[string]struct {
+		hide func(r, n string) bool
+		want int
+	}{
+		"fail": {nil, 1},
+		"warn": {func(r, n string) bool { return r == "r1" && n == "tool:c1" }, 0},
+	} {
+		e.tamper.hide = c.hide
+		codeJ, outJ, _ := unanchoredCaps("-json")
+		codeT, outT, _ := unanchoredCaps()
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(outJ), &raw); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		for _, k := range []string{"tool", "version", "verb", "exit_code", "result", "verified", "output", "errors", "artifact"} {
+			if _, ok := raw[k]; !ok {
+				t.Fatalf("%s: the -json report has no %q member", name, k)
+			}
+		}
+		var rep struct {
+			ExitCode int      `json:"exit_code"`
+			Verified bool     `json:"verified"`
+			Result   string   `json:"result"`
+			Output   []string `json:"output"`
+			Artifact struct {
+				Findings []struct {
+					Kind string `json:"kind"`
+					Warn bool   `json:"warn"`
+				} `json:"findings"`
+			} `json:"artifact"`
+		}
+		_ = json.Unmarshal([]byte(outJ), &rep)
+		if codeJ != c.want || codeT != c.want || rep.ExitCode != c.want || rep.Verified != (c.want == 0) || (c.want == 0) != (rep.Result == "verified") {
+			t.Fatalf("%s: exits json %d text %d, report %+v", name, codeJ, codeT, rep)
+		}
+		if strings.Join(rep.Output, "\n") != strings.TrimRight(outT, "\n") {
+			t.Fatalf("%s: the -json output lines differ from the text report:\n%v\n%s", name, rep.Output, outT)
+		}
+		if len(rep.Artifact.Findings) != 1 || rep.Artifact.Findings[0].Warn != (c.want == 0) {
+			t.Fatalf("%s: findings %+v", name, rep.Artifact.Findings)
+		}
 	}
 }

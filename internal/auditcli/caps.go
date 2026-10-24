@@ -19,24 +19,31 @@ import (
 
 // Finding kinds of bide audit caps. Each is a reason the audit fails.
 const (
-	capCorrupt    = "CORRUPT"           // the ledger breaks its own accept rules
-	capUnreadable = "UNREADABLE"        // a ledger or a run that cannot be decoded
-	capTotal      = "TOTAL"             // the recomputed window total is not the last cum_after
-	capDouble     = "DOUBLE"            // one attempt holds two live reserves
-	capDeleted    = "DELETED"           // a cap-reserve record names a slot the ledger does not hold
-	capChanged    = "CHANGED"           // a slot differs from the cap-reserve record that names it
-	capUnrecorded = "UNRECORDED"        // a reserve slot with no cap-reserve record in its run
-	capBadHead    = "BAD_HEAD"          // a signed head that does not verify
-	capDivergent  = "DIVERGENT_HEAD"    // a signed head the ledger run does not match
-	capNoHead     = "NOT_ATTESTED"      // entries no signed head covers
-	capHeadOnly   = "LEDGER_MISSING"    // a signed head or a cap-reserve record for a ledger the store does not hold
-	capIntentBad  = "INTENT_UNREADABLE" // a cap-intent record that does not decode, or sits under another attempt's name
-	capIntentNone = "INTENT_MISSING"    // a reserve slot whose attempt has no cap-intent
-	capIntentDup  = "INTENT_DUPLICATE"  // two cap-intents for one attempt
-	capIntentDiff = "INTENT_MISMATCH"   // an intent that differs from the slot it led to (rule, key, amount, currency, marking, window)
-	capIndexNone  = "INDEX_MISSING"     // an intent whose window the rule's index run does not hold
-	capIntentOld  = "INTENT_CLOCK"      // an intent whose window is earlier than the newest window the index held when it was written
+	capCorrupt    = "CORRUPT"                    // the ledger breaks its own accept rules
+	capUnreadable = "UNREADABLE"                 // a ledger or a run that cannot be decoded
+	capTotal      = "TOTAL"                      // the recomputed window total is not the last cum_after
+	capDouble     = "DOUBLE"                     // one attempt holds two live reserves
+	capDeleted    = "DELETED"                    // a cap-reserve record names a slot the ledger does not hold
+	capChanged    = "CHANGED"                    // a slot differs from the cap-reserve record that names it
+	capUnrecorded = "UNRECORDED"                 // a reserve slot with no cap-reserve record in its run
+	capBadHead    = "BAD_HEAD"                   // a signed head that does not verify
+	capDivergent  = "DIVERGENT_HEAD"             // a signed head the ledger run does not match
+	capNoHead     = "NOT_ATTESTED"               // entries no signed head covers
+	capHeadOnly   = "LEDGER_MISSING"             // a signed head or a cap-reserve record for a ledger the store does not hold
+	capIntentBad  = "INTENT_UNREADABLE"          // a cap-intent record that does not decode, or sits under another attempt's name
+	capIntentNone = "INTENT_MISSING"             // a reserve slot whose attempt has no cap-intent
+	capIntentDup  = "INTENT_DUPLICATE"           // two cap-intents for one attempt
+	capIntentDiff = "INTENT_MISMATCH"            // an intent that differs from the slot it led to (rule, key, amount, currency, marking, window)
+	capIndexNone  = "INDEX_MISSING"              // an intent whose window the rule's index run does not hold
+	capIntentOld  = "INTENT_CLOCK"               // an intent whose window is earlier than the newest window the index held when it was written
+	capReleaseRan = "RELEASE_OF_A_CALL_THAT_RAN" // a release of a reservation whose call has a result the tool produced
+	capReleaseUnk = "RELEASE_UNCONFIRMED"        // warning: a release whose attempt is neither voided nor answered
 )
+
+// The markers that end a run (agent's runCompleteStep, runAbortedStep and runCancelledStep, which are not
+// exported): a run with none of them is still going, or died, and a record it has not yet written may be
+// merely late.
+var capEndMarkers = []string{"run:complete", "run:aborted", "run:cancelled"}
 
 // capsFinding is one problem bide audit caps found.
 type capsFinding struct {
@@ -44,6 +51,8 @@ type capsFinding struct {
 	Ledger string `json:"ledger"`
 	Slot   int    `json:"slot"` // -1 when the finding is not about one slot
 	Detail string `json:"detail"`
+	// Warn marks a finding that is reported and does not fail the audit.
+	Warn bool `json:"warn,omitempty"`
 }
 
 // capsOver is a reservation the ledger counted over the rule's limit under a waiver.
@@ -202,8 +211,8 @@ func (c *cli) caps(args []string) {
 		c.note(unusable(errors.New("no cap ledger matches -namespace, -rule, -window and -run: nothing was checked")))
 		return
 	}
-	if len(rep.Findings) > 0 {
-		c.fail("%d problem(s): the cap ledgers do not hold together", len(rep.Findings))
+	if n := rep.failures(); n > 0 {
+		c.fail("%d problem(s): the cap ledgers do not hold together", n)
 	}
 	slots, live := 0, 0
 	for _, l := range rep.Ledgers {
@@ -214,7 +223,7 @@ func (c *cli) caps(args []string) {
 	case in.filter.any():
 		c.printf("PASS (filtered): the %d ledger(s) checked hold together (%d slots, %d live); the checks that were NOT made are listed above\n", len(rep.Ledgers), slots, live)
 	case in.anchored:
-		c.printf("PASS: %d ledger(s), %d slot(s), %d live: each reads under the ledger's rules, agrees with the runs' cap-reserve records, and is attested by a signed head\n", len(rep.Ledgers), slots, live)
+		c.printf("PASS: %d ledger(s), %d slot(s), %d live: each reads under the ledger's rules, agrees with the runs' cap-reserve records, and is unchanged since its newest signed head (a signature covers what the store was given at signing, not that it was legitimate)\n", len(rep.Ledgers), slots, live)
 	default:
 		c.printf("PASS: %d ledger(s), %d slot(s), %d live: each reads under the ledger's rules and agrees with the runs' cap-reserve records; nothing attests that the store is complete (UNANCHORED)\n", len(rep.Ledgers), slots, live)
 	}
@@ -265,10 +274,14 @@ func auditCaps(ctx context.Context, store agent.Store, j *agent.Journal, led *ca
 	find := func(kind, ledger string, slot int, format string, args ...any) {
 		rep.Findings = append(rep.Findings, capsFinding{Kind: kind, Ledger: ledger, Slot: slot, Detail: fmt.Sprintf(format, args...)})
 	}
+	warn := func(kind, ledger string, slot int, format string, args ...any) {
+		rep.Findings = append(rep.Findings, capsFinding{Kind: kind, Ledger: ledger, Slot: slot, Detail: fmt.Sprintf(format, args...), Warn: true})
+	}
 
 	// The cap-reserve records of the runs in scope, by the ledger they name.
 	claims := map[string][]capClaim{}
 	intents := map[string][]capIntent{} // by attempt
+	rs := capRunFacts{results: map[string]map[string]bool{}, ended: map[string]bool{}}
 	for _, id := range runs {
 		recs, err := j.History(ctx, id)
 		if err != nil {
@@ -279,6 +292,15 @@ func auditCaps(ctx context.Context, store agent.Store, j *agent.Journal, led *ca
 			continue
 		}
 		for _, r := range recs {
+			if slices.Contains(capEndMarkers, r.Name) {
+				rs.ended[id] = true
+			}
+			if r.Kind == agent.StepToolResult {
+				if rs.results[id] == nil {
+					rs.results[id] = map[string]bool{}
+				}
+				rs.results[id][r.ToolUseID] = r.IsError
+			}
 			if r.Kind == agent.StepValue && capledger.IsIntentName(r.Name) {
 				in, err := capledger.DecodeIntent(r.Result)
 				switch {
@@ -323,7 +345,7 @@ func auditCaps(ctx context.Context, store agent.Store, j *agent.Journal, led *ca
 
 	slotted := map[string]bool{} // the attempts that hold a reserve slot in the ledgers read
 	for _, run := range ledgers {
-		lr, err := auditLedger(ctx, j, led, voided, in, run, claims[run], byRun[run], intents, slotted, find)
+		lr, err := auditLedger(ctx, j, led, voided, in, run, claims[run], byRun[run], intents, slotted, rs, find, warn)
 		if err != nil {
 			return rep, err
 		}
@@ -389,7 +411,8 @@ func sortedKeys[V any](m map[string]V) []string {
 // auditLedger checks one ledger run. It returns nil when a run filter leaves the ledger out because
 // none of the run's calls touch it.
 func auditLedger(ctx context.Context, j *agent.Journal, led *capledger.Ledger, voided capbridge.VoidedFunc, in capsInput, run string,
-	claims []capClaim, heads []audit.SignedTreeHead, intents map[string][]capIntent, slotted map[string]bool, find func(kind, ledger string, slot int, format string, args ...any)) (*capsLedger, error) {
+	claims []capClaim, heads []audit.SignedTreeHead, intents map[string][]capIntent, slotted map[string]bool, rs capRunFacts,
+	find, warn func(kind, ledger string, slot int, format string, args ...any)) (*capsLedger, error) {
 	_, _, _, window, _, _ := capledger.LedgerSegments(run)
 	lr := &capsLedger{Ledger: run, Window: window}
 
@@ -500,7 +523,38 @@ func auditLedger(ctx context.Context, j *agent.Journal, led *capledger.Ledger, v
 			checkIntentOfSlot(led, run, s, intents[s.Attempt], find)
 		}
 		if in.filter.inRun(s.Run) && len(claimed[s.N]) == 0 {
-			find(capUnrecorded, run, s.N, "slot %d (attempt %s) has no cap-reserve record in run %s: a slot inserted from outside, or a reservation interrupted before its record (a re-drive of the run writes it)", s.N, cleanText(s.Attempt), s.Run)
+			if rs.ended[s.Run] {
+				find(capUnrecorded, run, s.N, "slot %d (attempt %s) has no cap-reserve record in run %s, which has ended: a slot inserted from outside, or a record deleted", s.N, cleanText(s.Attempt), cleanText(s.Run))
+			} else {
+				warn(capUnrecorded, run, s.N, "slot %d (attempt %s) has no cap-reserve record in run %s, which has not ended: a reservation interrupted before its record (a re-drive of the run writes it), or a slot inserted from outside", s.N, cleanText(s.Attempt), cleanText(s.Run))
+			}
+		}
+	}
+
+	// A release is the loop's, written only for a call it proved never began. The call's journal shows
+	// that: either it was voided (not started), or its result is an error (a refusal or a failure before
+	// the tool began). A release of a call whose result the tool produced is no honest drive's.
+	for _, rel := range slots {
+		if rel.Kind != "release" || rel.Ref < 0 || rel.Ref >= len(slots) {
+			continue
+		}
+		r := slots[rel.Ref]
+		if !in.filter.inRun(r.Run) {
+			continue
+		}
+		isErr, answered := rs.results[r.Run][r.Tool]
+		switch {
+		case answered && !isErr:
+			find(capReleaseRan, run, rel.N, "slot %d releases slot %d (attempt %s), and run %s holds a result of call %s that the tool produced: the call ran, so it was never released by the loop", rel.N, r.N, cleanText(r.Attempt), cleanText(r.Run), cleanText(r.Tool))
+		case answered:
+		default:
+			v, err := voided(ctx, j, r)
+			if err != nil {
+				return nil, fmt.Errorf("read whether %s was voided: %w", r.Attempt, err)
+			}
+			if !v {
+				warn(capReleaseUnk, run, rel.N, "slot %d releases slot %d (attempt %s), and run %s shows the attempt neither recorded as not started nor answered: a crash between the release and the void looks the same, and a re-drive voids it", rel.N, r.N, cleanText(r.Attempt), cleanText(r.Run))
+			}
 		}
 	}
 
@@ -554,7 +608,11 @@ func (c *cli) capsReport(rep capsReport) {
 		if f.Slot >= 0 {
 			where += fmt.Sprintf(" slot %d", f.Slot)
 		}
-		c.printf("FAIL  %s %s: %s\n", f.Kind, where, cleanText(f.Detail))
+		label := "FAIL"
+		if f.Warn {
+			label = "WARN"
+		}
+		c.printf("%s  %s %s: %s\n", label, f.Kind, where, cleanText(f.Detail))
 	}
 }
 
@@ -691,4 +749,22 @@ func auditIntents(ctx context.Context, j *agent.Journal, led *capledger.Ledger, 
 		}
 	}
 	return orphans
+}
+
+// capRunFacts is what the audit read of the runs besides their cap records: which tool-use IDs of a run
+// have a result (and whether it is an error), and which runs have ended.
+type capRunFacts struct {
+	results map[string]map[string]bool // run -> tool-use ID -> the result is an error
+	ended   map[string]bool
+}
+
+// failures counts the findings that fail the audit (not the warnings).
+func (r capsReport) failures() int {
+	n := 0
+	for _, f := range r.Findings {
+		if !f.Warn {
+			n++
+		}
+	}
+	return n
 }
