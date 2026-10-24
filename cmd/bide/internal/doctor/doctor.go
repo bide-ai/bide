@@ -76,6 +76,8 @@ func Main(version string, args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), `usage: bide doctor [-dir <project>] [-offline] [-postgres-env <var>]
+       bide doctor -declarations <file>
+       bide doctor -diff <old.json> <new.json>
 
 Checks that a first run of bide can work, and prints one line per check with a hint to fix a
 failure:
@@ -90,6 +92,16 @@ failure:
   module cache  GOPATH and the module cache are writable, so go mod tidy can download bide
   project       in a bide init project (go.mod and flow.yaml in -dir), the project builds
 
+With -declarations, doctor reads the taint and cap declarations a host dumped from its agent (a
+document of format bide.declarations.v1) and prints what a reader should look at: side-effecting tools
+in an agent with no taint policy, exempt tools, cap-carrying tools, an escalation gate weaker than
+need >= 2 with the requester excluded. With -diff it compares two such documents (the one on your main
+branch and the one on your branch) and lists every change as WEAKENED, changed or strengthened: a
+raised cap limit, a removed or renamed cap rule, a removed Untrusted, a new TaintExempt, a lower need,
+a requester no longer excluded. It exits 1 if anything is weakened, so a pipeline can gate on it. A
+document written by a newer version, or one whose digest is not the digest of what it declares, is
+refused. Neither report runs the first-run checks.
+
 Exit status is 0 when nothing failed (a warning does not fail), and 1 when a check failed. On a
 terminal the output is colored; -color=never, or NO_COLOR set to any value, turns color off.
 
@@ -98,6 +110,8 @@ terminal the output is colored; -color=never, or NO_COLOR set to any value, turn
 	}
 	dir := fs.String("dir", ".", "the directory to look for a bide init project in")
 	offline := fs.Bool("offline", false, "skip the checks that need the network (the latest release)")
+	declsFile := fs.String("declarations", "", "report on the taint and cap declarations in `file` (a document the host dumps) instead of the first-run checks")
+	diff := fs.Bool("diff", false, "compare two declarations documents, `old.json new.json`, and exit 1 if anything is weakened")
 	pgEnv := fs.String("postgres-env", "BIDE_POSTGRES_DSN", "the environment variable holding a Postgres DSN to try; the check runs only if it is set")
 	color := term.Flag(fs)
 	if err := fs.Parse(args); err != nil {
@@ -106,10 +120,22 @@ terminal the output is colored; -color=never, or NO_COLOR set to any value, turn
 		}
 		return 2
 	}
-	if fs.NArg() > 0 {
+	switch {
+	case *diff && *declsFile != "":
+		fmt.Fprintf(stderr, "%sbide doctor: -diff and -declarations are separate reports\n", term.For(stderr, *color).ErrorPrefix())
+		return 2
+	case *diff:
+		if fs.NArg() != 2 {
+			fmt.Fprintf(stderr, "%sbide doctor: -diff takes two files: old.json new.json\n", term.For(stderr, *color).ErrorPrefix())
+			return 2
+		}
+		return reportDiff(stdout, stderr, term.For(stdout, *color), fs.Arg(0), fs.Arg(1))
+	case fs.NArg() > 0:
 		fmt.Fprintf(stderr, "%sbide doctor: unexpected argument %q\n", term.For(stderr, *color).ErrorPrefix(), fs.Arg(0))
 		fs.Usage()
 		return 2
+	case *declsFile != "":
+		return reportDeclarations(stdout, stderr, term.For(stdout, *color), *declsFile)
 	}
 	if *pgEnv != "" && !approveline.ValidEnvName(*pgEnv) {
 		fmt.Fprintf(stderr, "%sbide doctor: %s\n", term.For(stderr, *color).ErrorPrefix(), approveline.NotAnEnvName)
