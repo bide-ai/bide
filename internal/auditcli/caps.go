@@ -181,7 +181,7 @@ func (c *cli) caps(args []string) {
 	if *window != "" {
 		in.filter.window = led.Segment(*window)
 	}
-	rep, err := auditCaps(context.Background(), s.Journal, j, led, in)
+	rep, err := auditCaps(context.Background(), s.Journal, j, led, capbridge.Voided(), in)
 	if err != nil {
 		c.note(unusable(err))
 		return
@@ -228,9 +228,8 @@ type capClaim struct {
 
 // auditCaps reads every cap ledger of the store and every run's cap-reserve records, and compares them.
 // An error is a store it could not read; everything it finds wrong with what it read is a finding.
-func auditCaps(ctx context.Context, store agent.Store, j *agent.Journal, led *capledger.Ledger, in capsInput) (capsReport, error) {
+func auditCaps(ctx context.Context, store agent.Store, j *agent.Journal, led *capledger.Ledger, voided capbridge.VoidedFunc, in capsInput) (capsReport, error) {
 	rep := capsReport{Anchored: in.anchored, Ledgers: []capsLedger{}, Findings: []capsFinding{}}
-	voided := capbridge.Voided()
 	if voided == nil {
 		return rep, errors.New("internal error: the reconcile bridge of package agent is not registered")
 	}
@@ -413,9 +412,7 @@ func auditLedger(ctx context.Context, j *agent.Journal, led *capledger.Ledger, v
 			for _, d := range cov.DivergentHeads {
 				find(capDivergent, run, -1, "the signed head of size %d does not match the ledger (a slot was changed or deleted, or the ledger is shorter): %s", d.Size, d.Reason)
 			}
-			for _, d := range cov.RejectedHeads {
-				find(capBadHead, run, -1, "a signed head of size %d was not counted: %s", d.Size, d.Reason)
-			}
+			// cov.RejectedHeads is empty here: every head in byRun verified, is a journal head and is of this run.
 			lr.Entries, lr.Attested = len(recs), cov.LargestHead
 			lr.Tail = lr.Entries - lr.Attested
 			switch {

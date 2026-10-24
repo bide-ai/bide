@@ -654,3 +654,11 @@ func TestCapsAudit_AFilterThatMatchesNothingIsNotAPass(t *testing.T) {
 		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
 	}
 }
+
+func TestCapsAudit_NoReconcileBridgeIsAnError(t *testing.T) {
+	e := threeCalls(t)
+	led := journalhook.CapLedger(e.j, time.Now, 0)
+	if _, err := auditCaps(context.Background(), e.mem, e.j, led, nil, capsInput{}); err == nil {
+		t.Fatal("an audit with no reconcile bridge must not report an exposure of zero")
+	}
+}
