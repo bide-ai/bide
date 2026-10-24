@@ -204,3 +204,18 @@ func TestTaintSession_ConcurrentTurnsKeepTheUnion(t *testing.T) {
 		t.Fatalf("latest = %d %v, want taint/turn/1 holding [a-src b-src] (the second turn took the next number and kept the union)", n, got)
 	}
 }
+
+// The turns before a policy joined are not retro-marked: a turn that read an untrusted source under no
+// policy leaves no taint record, so the first turn a policy drives starts clean (the stated limit of 5.1).
+func TestTaintSession_TurnsBeforeAPolicyAreNotRetroMarked(t *testing.T) {
+	r := &sessRig{t: t, j: memJournal()}
+	r.send(r.session(), "read") // no policy: not under taint, not recorded
+	pol := r.session(WithTaintPolicy(TaintPolicy{Refuse: true}))
+	r.send(pol, "write")
+	if r.writes.n.Load() != 1 {
+		t.Fatalf("the write after a pre-policy read did not run (%d writes): earlier turns were retro-marked", r.writes.n.Load())
+	}
+	if len(r.taintSources()) != 0 {
+		t.Fatalf("marks recorded for a turn that was not under taint: %v", r.taintSources())
+	}
+}
