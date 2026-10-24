@@ -254,3 +254,23 @@ func TestSubAgentMarkSource_IsCappedOnARuneBoundary(t *testing.T) {
 		t.Fatal("a short name is changed")
 	}
 }
+
+// A child that read nothing itself but started tainted (it inherited its parent's marks) ended tainted:
+// its answer is marked, as it was shaped by what the parent's turn had been shown.
+func TestTaintInherit_AChildThatStartedTaintedEndsTainted(t *testing.T) {
+	r := newInheritRig(t)
+	r.writeOpts = nil
+	if err := r.run([][]Emit{toolTurn("c1", "read_a", `{}`), toolTurn("d1", "delegate", `{"task":"go"}`), textTurn("done")}, refuseTaint, refuseTaint); err != nil {
+		t.Fatal(err)
+	}
+	recs, _ := r.parentJ.History(context.Background(), "r")
+	for _, rec := range recs {
+		if rec.Kind == StepToolResult && rec.ToolUseID == "d1" {
+			if rec.Safety == nil || rec.Safety.Untrusted != "subagent:delegate" {
+				t.Fatalf("the answer of a child that inherited marks is not marked: %+v", rec.Safety)
+			}
+			return
+		}
+	}
+	t.Fatal("no tool_result for d1")
+}
