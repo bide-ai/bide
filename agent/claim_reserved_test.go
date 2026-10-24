@@ -15,6 +15,7 @@ func TestClaimAttempt_RefusesReservedNames(t *testing.T) {
 		gateReasonStep("c1"),
 		ApprovalPendingStep("c1"),
 		"cap-reserve:x", "slot:0", "taint/session", "run:start", "tool:c1", "@journal", "node:n", "audit:x",
+		notStartedStep(toolAttemptStep("c1"), "abc123"), retryAttemptStep(toolAttemptStep("c1"), 1),
 		"",
 	} {
 		store := NewMemStore()
@@ -68,5 +69,28 @@ func TestClaimAttempt_EnginePathsStillWriteReservedNames(t *testing.T) {
 	}
 	if _, ok, _ := h.Get(ctx, "r1", nextAttemptStep(toolAttemptStep("c1"))); !ok {
 		t.Fatal("the resolution did not claim the next attempt")
+	}
+}
+
+// Pre-claiming the attempt marker of a capped call (the one attempt: form a caller may still claim) cannot
+// change a cap outcome: the engine's own claim loses and the call halts without running, the reservation stays
+// counted, and the reconcile pass releases nothing, since only a not-started record the winning claim wrote
+// (and ClaimAttempt refuses to write one, above) voids an attempt.
+func TestClaimAttempt_PreclaimedMarkerCannotRelease(t *testing.T) {
+	j := memJournal()
+	if won, _, err := ClaimAttempt(context.Background(), j, "r0", toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: 1}); err != nil || !won {
+		t.Fatalf("pre-claim: won %v, err %v", won, err)
+	}
+	tool := sumTool(Safety{}, capRuleDay)
+	_, err := runSum(t, j, "r0", sumArgs(60, ""), tool)
+	if _, ok := errors.AsType[*OutcomeUnknown](err); !ok || tool.calls() != 0 {
+		t.Fatalf("run = %v, calls %d; want a halt (OutcomeUnknown) and the tool not run", err, tool.calls())
+	}
+	before := len(liveDay(t, j))
+	if released, err := reconcileCaps(capCtx(), j); err != nil || len(released) != 0 {
+		t.Fatalf("reconcileCaps = %v, %v; want nothing released for a pre-claimed marker", released, err)
+	}
+	if after := len(liveDay(t, j)); after != before {
+		t.Fatalf("live slots %d before reconcile, %d after", before, after)
 	}
 }

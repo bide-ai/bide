@@ -206,6 +206,13 @@ func checkClaimName(op, name string) error {
 	if p, ok := reservedPrefixOf(name); ok && !strings.HasPrefix(name, attemptPrefix) {
 		return fmt.Errorf("%s: name %q starts with %q, which the engine reserves for its own journal keys (only attempt markers, under %q, may be claimed): %w", op, name, p, attemptPrefix, ErrConfig)
 	}
+	// Within attempt:, the records only the engine derives from a marker: the not-started record that
+	// voids an attempt, and a numbered re-attempt.
+	for _, p := range []string{notStartedPrefix, retryAttemptPrefix} {
+		if strings.HasPrefix(name, p) {
+			return fmt.Errorf("%s: name %q starts with %q, which the engine writes itself: %w", op, name, p, ErrConfig)
+		}
+	}
 	return nil
 }
 

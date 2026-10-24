@@ -31,7 +31,8 @@ import (
 // name must be an attempt marker key (it starts with "attempt:"). Any other name the engine reserves
 // ("cap-intent:", "gate-reason:", "approval-pending:", "slot:" and the rest; see IsReservedStepName) is
 // ErrConfig, so a caller cannot plant an engine record with it; the engine writes those through its own
-// paths. An empty name is ErrConfig too.
+// paths, as it writes the not-started records ("attempt:not-started:") and numbered re-attempts
+// ("attempt:retry:") that derive from a marker. An empty name is ErrConfig too.
 func ClaimAttempt(ctx context.Context, j *Journal, runID, name string, rec Record) (won bool, got Record, err error) {
 	if err := checkCallerRun("ClaimAttempt", runID); err != nil {
 		return false, Record{}, err
