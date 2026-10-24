@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 )
@@ -91,5 +92,44 @@ func TestClaimAttempt_PreclaimedMarkerCannotChangeACapOutcome(t *testing.T) {
 	}
 	if released, err := reconcileCaps(capCtx(), j); err != nil || len(released) != 0 {
 		t.Fatalf("reconcileCaps = %v, %v; want nothing released", released, err)
+	}
+}
+
+// A not-started record planted for a live marker voids nothing, so the reconcile pass does not release the
+// call's slot: a void must carry the claim id of the marker it names, and a planted record has a claim of
+// its own. ClaimAttempt refuses the name; the unexported claim, which has no name check, is tried too.
+func TestClaimAttempt_PlantedNotStartedDoesNotVoid(t *testing.T) {
+	ctx := context.Background()
+	j := memJournal()
+	tool := sumTool(Safety{}, capRuleDay)
+	spoil := func(next ToolHandler) ToolHandler { // the tool runs, then the chain fails: the call may have run
+		return func(ctx context.Context, call ToolCall) (json.RawMessage, error) {
+			if _, err := next(ctx, call); err != nil {
+				return nil, err
+			}
+			return nil, errors.New("middleware failed after the tool ran")
+		}
+	}
+	_, _ = runSum(t, j, "r0", sumArgs(60, ""), tool, WithToolMiddleware(spoil))
+	if tool.calls() != 1 {
+		t.Fatalf("calls = %d", tool.calls())
+	}
+	key := toolAttemptStep("c1")
+	marker, ok, err := j.Get(ctx, "r0", key)
+	if err != nil || !ok || marker.claim == "" {
+		t.Fatalf("marker = %+v, %v, %v", marker, ok, err)
+	}
+	forged := notStartedStep(key, marker.claim)
+	if _, _, err := ClaimAttempt(ctx, j, "r0", forged, Record{Kind: StepNotStarted}); !errors.Is(err, ErrConfig) {
+		t.Fatalf("ClaimAttempt of a not-started name = %v, want ErrConfig", err)
+	}
+	if won, _, err := j.claim(ctx, "r0", forged, Record{Kind: StepNotStarted}); err != nil || !won {
+		t.Fatalf("plant: won %v, err %v", won, err)
+	}
+	if released, err := reconcileCaps(capCtx(), j); err != nil || len(released) != 0 {
+		t.Fatalf("reconcileCaps = %v, %v; want the planted record to void nothing", released, err)
+	}
+	if live := liveDay(t, j); len(live) != 1 {
+		t.Fatalf("live = %+v, want the slot still counted", live)
 	}
 }
