@@ -5,6 +5,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // recs adapts name/result pairs to Records.
@@ -51,12 +52,37 @@ func TestFind_NothingForAnotherCallOrAnUnreadableRecord(t *testing.T) {
 	}
 }
 
-// The engine's record is the first that reads; a record that names another call is skipped.
-func TestFind_TheFirstRecordThatReadsIsTheEngines(t *testing.T) {
-	other := strings.Replace(taintRecord, "inbound-email", "planted", 1)
-	got := Find("c3#taint", recs("gate-reason:x", "junk", "gate-reason:c3", taintRecord, "gate-reason:c3-b", other))
-	if len(got) != 1 || got[0].Source != "inbound-email" {
-		t.Fatalf("reasons = %+v, want the first record's", got)
+// Every record that names the call must agree. A decoy written ahead of the engine's, or behind it, replaces
+// nothing: no reason is shown, a conflict is, on the instance and on the call's own gate.
+func TestFind_ADecoyListedFirstOrLastShowsAConflictNotAReason(t *testing.T) {
+	decoy := strings.Replace(taintRecord, "inbound-email", "HARMLESS-newsletter", 1)
+	for name, r := range map[string]Records{
+		"the decoy first": recs("gate-reason:zzz", decoy, "gate-reason:c3", taintRecord),
+		"the decoy last":  recs("gate-reason:c3", taintRecord, "gate-reason:zzz", decoy),
+	} {
+		for _, subject := range []string{"c3#taint", "c3"} {
+			got := Find(subject, r)
+			if len(got) != 1 || got[0].Kind != KindConflict || got[0].Source != "" {
+				t.Errorf("%s, %s: %+v, want the one conflict reason and no source", name, subject, got)
+			}
+			if !strings.Contains(got[0].Line(), "conflicting reason records") {
+				t.Errorf("%s: the conflict line is %q", name, got[0].Line())
+			}
+		}
+	}
+	// A decoy that says the same, or one that names another call, is no conflict.
+	same := recs("gate-reason:c3", taintRecord, "gate-reason:copy", taintRecord)
+	if got := Find("c3#taint", same); len(got) != 1 || got[0].Source != "inbound-email" {
+		t.Errorf("an identical second record: %+v, want the one reason", got)
+	}
+	other := recs("gate-reason:x", strings.Replace(decoy, `"c3"`, `"c9"`, 1), "gate-reason:c3", taintRecord)
+	if got := Find("c3#taint", other); len(got) != 1 || got[0].Source != "inbound-email" {
+		t.Errorf("a record for another call: %+v, want the real reason", got)
+	}
+	// A record that does not read is not one: it cannot name the call.
+	junk := recs("gate-reason:x", "junk", "gate-reason:c3", taintRecord)
+	if got := Find("c3#taint", junk); len(got) != 1 || got[0].Source != "inbound-email" {
+		t.Errorf("an unreadable record: %+v, want the real reason", got)
 	}
 }
 
@@ -75,8 +101,8 @@ func TestFind_StringsAreBoundedAndEscaped(t *testing.T) {
 	if strings.ContainsAny(got[0].Source, "‮\x1b") || !strings.HasPrefix(got[0].Source, `"`) {
 		t.Errorf("source = %q, want the non-printing characters escaped", got[0].Source)
 	}
-	if len(got[0].Ref) > MaxText+2 {
-		t.Errorf("ref is %d bytes, want it cut near %d", len(got[0].Ref), MaxText)
+	if len(got[0].Ref) > MaxText || !utf8.ValidString(got[0].Ref) {
+		t.Errorf("ref is %d bytes (valid %v), want at most %d", len(got[0].Ref), utf8.ValidString(got[0].Ref), MaxText)
 	}
 	if got[1].Source != "ok" {
 		t.Errorf("a plain name was changed: %q", got[1].Source)
@@ -124,5 +150,31 @@ func TestMoney(t *testing.T) {
 		if got := Money(tc.minor, tc.cur); got != tc.want {
 			t.Errorf("Money(%d, %s) = %q, want %q", tc.minor, tc.cur, got, tc.want)
 		}
+	}
+}
+
+// What is displayed is what is bounded: 128 control characters quote to far more than 128 bytes, and are cut
+// after quoting; invalid UTF-8 is shown escaped, not dropped.
+func TestClean_BoundsWhatIsShown(t *testing.T) {
+	for name, in := range map[string]string{
+		"control characters": strings.Repeat("\x01", 128),
+		"bidi controls":      strings.Repeat("\u202e", 128),
+		"long plain text":    strings.Repeat("a", 500),
+		"long multibyte":     strings.Repeat("é", 200),
+		"invalid UTF-8":      strings.Repeat("\xff", 200),
+	} {
+		got := clean(in)
+		if len(got) > MaxText || !utf8.ValidString(got) {
+			t.Errorf("%s: %d bytes (valid %v), want at most %d and valid", name, len(got), utf8.ValidString(got), MaxText)
+		}
+		if strings.ContainsAny(got, "\x01\u202e\xff") && name != "long multibyte" {
+			t.Errorf("%s: a raw control character is shown: %q", name, got)
+		}
+	}
+	if got := clean("\xff\xfe"); got != `"\xff\xfe"` {
+		t.Errorf("invalid UTF-8 shown as %q, want it escaped and visible", got)
+	}
+	if got := clean("ok"); got != "ok" {
+		t.Errorf("plain text changed: %q", got)
 	}
 }

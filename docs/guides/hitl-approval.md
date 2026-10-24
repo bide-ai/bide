@@ -615,7 +615,7 @@ not count on the instance, nor the reverse.
 `bide approve -list`, the decision screen of `bide approve` and `bide view` say why such a gate asks (`why:` lines:
 "untrusted content from inbound-email (read by tool read_email, call c1, journal position 4)"), from the
 `gate-reason` record the engine wrote when it held the call; the JSON of `-list` carries `why`. The reason is the
-application's record as of the ask. It is not part of what an approver signs, and an approver can neither verify it
+application's record as of the ask. If two records of the run name the call and disagree (one written by someone else), no reason is shown and a "conflicting reason records" line stands in its place. It is not part of what an approver signs, and an approver can neither verify it
 from the signature nor rely on it to prove what they were shown (a decision format that binds it is future work).
 
 ### On a plan flow node

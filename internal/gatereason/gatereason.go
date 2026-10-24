@@ -8,6 +8,8 @@ package gatereason
 
 import (
 	"fmt"
+	"reflect"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -29,6 +31,8 @@ const (
 	KindTaint = "taint"
 	// KindCap: a cap rule applies.
 	KindCap = "cap"
+	// KindConflict: two records name the call and disagree, so none is shown (see Find).
+	KindConflict = "conflict"
 )
 
 // MaxText bounds every host-declared string of a reason, which is shown to people.
@@ -92,13 +96,18 @@ type Records func(yield func(name string, result []byte) bool)
 
 // Find is the reasons for the gate instance subject: for the escalation instance of a call
 // ("<call>#taint"), the taint reasons of the call's record; for the call's own gate, its cap reasons. It
-// returns none when the run has no record for the call, or one that does not read.
+// returns none when the run has no record for the call, or none that reads.
+//
+// Every record that names the call and reads must agree: a record under another name that names the call
+// (a decoy written ahead of the engine's, or behind it) is not told from the engine's by its position, so when
+// two disagree no reason is shown, and a single reason of Kind KindConflict stands in its place, so the
+// approver sees that something is wrong. Records that say the same are one.
 func Find(subject string, records Records) []Reason {
 	call, instance := escalation.Base(subject)
 	if !instance {
 		call = subject
 	}
-	var out []Reason
+	var recs []wireRecord
 	records(func(name string, result []byte) bool {
 		if !strings.HasPrefix(name, Prefix) {
 			return true
@@ -107,41 +116,60 @@ func Find(subject string, records Records) []Reason {
 		if strictjson.Unmarshal(result, &rec, nil) != nil || rec.Format != recordFormat || rec.ToolUseID != call {
 			return true
 		}
-		for _, r := range rec.Reasons {
-			if instance != (r.Kind == KindTaint) || r.Kind != KindTaint && r.Kind != KindCap {
-				continue // the escalation instance shows taint, the call's own gate shows caps
-			}
-			if len(out) == maxReasons {
-				break
-			}
-			out = append(out, Reason{
-				Kind: r.Kind, Source: clean(r.Source), Ref: clean(r.Ref), Pos: r.Pos,
-				Rule: clean(r.Rule), Action: clean(r.Action), Why: clean(r.Why), Currency: clean(r.Currency),
-				Amount: r.Amount, Limit: r.Limit, At: clean(rec.RecordedAt),
-			})
-		}
-		return false // the engine's record is the first that reads
+		recs = append(recs, rec)
+		return true
 	})
+	if len(recs) == 0 {
+		return nil
+	}
+	for _, r := range recs[1:] {
+		if !sameReasons(recs[0], r) {
+			return []Reason{{Kind: KindConflict}}
+		}
+	}
+	var out []Reason
+	rec := recs[0]
+	for _, r := range rec.Reasons {
+		if instance != (r.Kind == KindTaint) || r.Kind != KindTaint && r.Kind != KindCap {
+			continue // the escalation instance shows taint, the call's own gate shows caps
+		}
+		if len(out) == maxReasons {
+			break
+		}
+		out = append(out, Reason{
+			Kind: r.Kind, Source: clean(r.Source), Ref: clean(r.Ref), Pos: r.Pos,
+			Rule: clean(r.Rule), Action: clean(r.Action), Why: clean(r.Why), Currency: clean(r.Currency),
+			Amount: r.Amount, Limit: r.Limit, At: clean(rec.RecordedAt),
+		})
+	}
 	return out
 }
 
-// clean makes a host-declared string safe to show: within MaxText bytes, and, when it is not plain
-// printable text, quoted with its non-printing characters escaped.
+// sameReasons reports whether two records say the same thing to an approver: the same reasons, recorded at
+// the same time.
+func sameReasons(a, b wireRecord) bool {
+	return a.RecordedAt == b.RecordedAt && reflect.DeepEqual(a.Reasons, b.Reasons)
+}
+
+// clean makes a host-declared string safe to show, and bounds what is shown: a string that is not plain
+// printable text is quoted with its non-printing characters escaped, and the result is cut to MaxText bytes on
+// a character boundary, with an ellipsis where it was cut.
 func clean(s string) string {
 	if s == "" {
 		return ""
 	}
-	if len(s) > MaxText {
-		cut := MaxText
-		for cut > 0 && !utf8.RuneStart(s[cut]) {
-			cut--
-		}
-		s = s[:cut]
-	}
 	if _, bad := printable.Bad(s); bad || !utf8.ValidString(s) {
-		return fmt.Sprintf("%q", s)
+		s = strconv.Quote(s)
 	}
-	return s
+	if len(s) <= MaxText {
+		return s
+	}
+	const mark = "…"
+	cut := MaxText - len(mark)
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + mark
 }
 
 // Line is a reason as one line of text for a terminal or a log: "untrusted content from inbound-email (read
@@ -161,6 +189,8 @@ func (r Reason) Line() string {
 			where = "retrieved documents"
 		}
 		return fmt.Sprintf("untrusted content from %s (%s, journal position %d)", r.Source, where, r.Pos)
+	case KindConflict:
+		return "conflicting reason records for this call: none is shown, and the journal should be looked at"
 	case KindCap:
 		amt := "an amount that could not be read"
 		if r.Amount != nil {

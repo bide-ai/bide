@@ -21,7 +21,8 @@ func valueRecords(recs []Record) gatereason.Records {
 // decision does not bind it. Every string is a name the host declared, cut to 128 bytes and escaped when it is
 // not printable text. It is experimental.
 type GateReason struct {
-	// Kind is "taint" (the requesting turn had read untrusted content) or "cap" (a cap rule applies).
+	// Kind is "taint" (the requesting turn had read untrusted content), "cap" (a cap rule applies), or "conflict"
+	// (two records of the run name the call and disagree: no reason is shown, and the journal should be looked at).
 	Kind string `json:"kind"`
 	// Source, for a taint reason, is the declared source of the content the turn read.
 	Source string `json:"source,omitempty"`
