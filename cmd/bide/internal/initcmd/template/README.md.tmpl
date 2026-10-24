@@ -83,3 +83,11 @@ Then:
 
 Install `bide` with `brew install bide-ai/tap/bide` or
 `go install github.com/bide-ai/bide/cmd/bide@latest`.
+
+## What this project does not cover
+
+A plan flow has no taint policy: a node that is a side-effecting step is not held back because the
+flow read untrusted text earlier, and the flow's own gate (the refund's 2-of-3 approval here) is the
+control. If your agent reads text it does not control (an email, a web page, a ticket) and then acts,
+`bide init -agent` writes the other shape, an agent with a taint policy; see the
+[untrusted content guide](https://github.com/bide-ai/bide/blob/main/docs/guides/untrusted-content.md).
