@@ -21,7 +21,7 @@ func (a *Agent) declarationsDoc() declarations.Document {
 	for _, name := range slices.Sorted(maps.Keys(a.specs)) {
 		s := a.specs[name]
 		d.Tools = append(d.Tools, declarations.Tool{
-			Name: name, Effect: tracked(s.Safety), OwnGate: gateDoc(s.Approval),
+			Name: name, Effect: tracked(s.Safety), OwnGate: gateDoc(effectiveGates(s, gateInputs{}).Own()),
 			Untrusted: s.untrustedSource(), Exempt: s.TaintExempt, Caps: slices.Clone(s.Caps),
 		})
 	}

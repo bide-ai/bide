@@ -24,7 +24,7 @@ and `help`, and its import graph is the standard library and the core module (se
 |---|---|
 | [`bide init`](#bide-init) | scaffold a project: a gated plan flow on SQLite, with evidence for bide audit |
 | [`bide demo`](#bide-demo) | kill an agent mid-payment and watch it not charge twice (no API key) |
-| [`bide doctor`](#bide-doctor) | check that a first run can work: Go, SQLite, the module cache, model keys, your project; report on and diff the taint and cap declarations |
+| [`bide doctor`](#bide-doctor) | check that a first run can work: Go, SQLite, the module cache, model keys, your project |
 | [`bide sample`](#bide-sample) | write a sample journal of varied runs, with evidence and flow configs, and open bide view on it |
 | [`bide theme`](#bide-theme) | check a theme file for the run viewer and the editor against the contrast and distinctness rules |
 | [`bide view`](#bide-view) | a read-only local page for one run of a journal, or a flow config's graph |
@@ -90,7 +90,7 @@ Exit status:
 
 ## bide doctor
 
-Check that a first run can work: Go, SQLite, the module cache, model keys, your project; or report on the taint and cap declarations an agent dumps (`-declarations`, `-diff`).
+Check that a first run can work: Go, SQLite, the module cache, model keys, your project.
 
 ```text
 usage: bide doctor [-dir <project>] [-offline] [-postgres-env <var>]
