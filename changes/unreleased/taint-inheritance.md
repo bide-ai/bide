@@ -1,0 +1,3 @@
+Section: Added
+
+Taint now crosses run boundaries when a taint policy is in force (experimental). A sub-agent started by a call of a tainted turn records the marks that turn was shown in its `run:start` (`ext.taint_inherited`) and starts tainted; a sub-agent whose run ended with a mark marks the parent's `tool_result` for the call (`subagent:<tool name>`), so the parent's next turn is tainted; and a session turn that ended with marks records them in the session journal (`taint/turn/<n>`), so every later turn starts with them. Runs that are not under taint record and pass nothing, and their journals are as before. No exported name is added. See docs/guides/untrusted-content.md.

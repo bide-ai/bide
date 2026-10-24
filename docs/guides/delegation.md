@@ -193,6 +193,13 @@ autonomously; only its authority shrinks. The result is that capabilities monoto
 down a delegation tree by construction, and the whole chain stays provable via
 `VerifyDelegationChain`.
 
+## Attenuation does not clear taint
+
+A narrower grant bounds how much a child may do; the [taint policy](untrusted-content.md#children-sub-agents-and-sessions)
+decides whether a human is in the loop. A child started by a tainted turn starts tainted whatever its grant says,
+and a grant's `limit` scope is not enforced against a tool's arguments by the core, so amount caps do not get the
+attenuation chain for free.
+
 ## Earned authority: scope from track record
 
 `EarnedAuthority` is a control loop that drives a grant's scope from the agent's provable track
