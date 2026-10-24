@@ -93,7 +93,7 @@ func (s *Session) recordTurnTaint(ctx context.Context, runID string) error {
 			return fmt.Errorf("session %s: decode %s: %w (%w)", s.id, sessionFromStep(runID), err, ErrProtocol)
 		}
 	}
-	for {
+	for range maxSessionTaintTries {
 		recs, err := s.agent.store.History(ctx, j)
 		if err != nil {
 			return fmt.Errorf("session %s: load the session journal: %w (%w)", s.id, err, ErrStorage)
@@ -126,4 +126,9 @@ func (s *Session) recordTurnTaint(ctx context.Context, runID string) error {
 		}
 		_ = got // another turn took the number: read the journal again and try above it
 	}
+	return fmt.Errorf("session %s: no free taint record number after %d tries: %w", s.id, maxSessionTaintTries, ErrStorage)
 }
+
+// maxSessionTaintTries bounds the turns that race to record at once; each try finds the number a
+// concurrent turn took, so a handful is far more than needed.
+const maxSessionTaintTries = 64
