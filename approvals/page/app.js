@@ -110,8 +110,8 @@ function renderCall() {
   // All of the arguments, always: the signature binds every one of them, so none is cut from what the
   // approver reads. A long value scrolls in its box.
   text('call-args', prettyArgs(shown.args));
-  // A string in the arguments is something the model wrote: said so, once, below them.
-  $('args-note').hidden = !argsHaveText(shown.args);
+  // Everything in the arguments is chosen by the model: said so, once, below them, whenever there are any.
+  $('args-note').hidden = !argsNonEmpty(shown.args);
   // The reasons, as text: each is a line set with textContent, never markup. They are the application's claim.
   const list = $('why-list');
   list.replaceChildren();
