@@ -51,7 +51,7 @@ Writes a new project into dir, which must not exist or must be empty: main.go, c
 flow.yaml, README.md, .gitignore and go.mod. Then: cd <dir> && go mod tidy && go run .
 
 With -agent the project is an agent instead of a plan flow: a tool that reads untrusted text, a refund,
-and a taint policy, so a side effect asked for after the agent has read the text waits for an escalation
+and a taint policy that requires every tool and run to state its provenance, so a side effect asked for after the agent has read the text waits for an escalation
 gate of two of three signed decisions, not counting the requester. -single-approver makes that gate one
 unsigned decision, for a team of one; it is the weaker choice, and the README says so. A plan flow is not
 covered by the taint policy.
@@ -125,7 +125,7 @@ document of format bide.declarations.v1) and prints what a reader should look at
 in an agent with no taint policy, exempt tools, cap-carrying tools, an escalation gate weaker than
 need >= 2 with the requester excluded. With -diff it compares two such documents (the one on your main
 branch and the one on your branch) and lists every change as WEAKENED, changed or strengthened: a
-raised cap limit, a removed or renamed cap rule, a removed Untrusted, a new TaintExempt, a lower need,
+raised cap limit, a removed or renamed cap rule, a removed Untrusted, a new TaintExempt, require_provenance turned off, a lower need,
 a requester no longer excluded. It exits 1 if anything is weakened, so a pipeline can gate on it. A
 document written by a newer version, or one whose digest is not the digest of what it declares, is
 refused. Neither report runs the first-run checks.

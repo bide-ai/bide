@@ -40,6 +40,12 @@ _, err = a.Run(ctx, "run-1", agent.UserText("refund order 4417"), agent.WithUntr
   reason, is part of the declarations digest, and is recorded on the `gate-reason` record of every call it let
   through, so the audit shows each call that ran because of it. It does nothing without a taint policy.
 
+- `agent.Trusted(reason)` on a tool (experimental): the tool's results are the host's own (a table the host writes,
+  a service it runs), and why. The reason is required and printable, it is part of the declarations digest, and a
+  trusted tool writes no mark. It exists so that a policy can tell a tool someone classified from one nobody did
+  (see `RequireProvenance` below). A tool cannot be both `Untrusted` and `Trusted`; `ToolSpec.Trusted` is the same
+  declaration, and a wrapper that embeds the inner tool or implements `Unwrap` must carry it like `Untrusted`.
+
 A source given through `agent.WithSafety(agent.Safety{Untrusted: "..."})` is the same declaration, never ignored; giving two different sources (this and the option) is `ErrConfig` at registration.
 
 A source name is a short printable string (at most 128 bytes). A tool that wraps an `Untrusted` tool must declare
@@ -104,6 +110,14 @@ run and not asked; the model reads an error result.
 - **The `gate-reason` record** says why the call was held: the sources and positions of the marks and the
   escalation policy's digest. It is evidence for the approver and the auditor, and never authority: the engine
   recomputes the reasons and enforces the union, so a record can add a requirement and never remove one.
+- **`RequireProvenance` (experimental) leaves nothing unclassified by omission.** With
+  `agent.TaintPolicy{..., RequireProvenance: true}`, a tool that declares neither `Untrusted` nor `Trusted`
+  (`TaintExempt` does not count) is `ErrConfig` at `agent.New`, naming the tool, and so is a tool that declares
+  both. A new `Run`, `Send` or `SendOnce` that states neither `WithUntrustedInput` nor `WithTrustedInput` is
+  `ErrConfig` at its first drive and writes nothing; a sub-agent's run (its input is the parent's call) and a
+  resume (the input was stated when the run started) are not asked. The setting is part of the declarations
+  digest only when it is on, so an existing policy's digest does not change. It declares; it does not verify: a
+  `Trusted` reason is the host's word, and a tool that returns outside text under `Trusted` taints nothing.
 - The policy does not cover [plan flows](plan-flows.md) nodes. Children and sessions inherit taint, as follows.
 
 ## Children, sub-agents and sessions
@@ -161,18 +175,17 @@ bide doctor -diff main/declarations.json declarations.json
 
 - **The document** (`bide.declarations.v1`) holds the taint policy (the escalation gate, or refuse), and every
   registered tool with whether it can have a side effect, its own gate, its `Untrusted` source, its `TaintExempt`
-  reason and its cap rules. Its `digest` is the `taint_policy_digest` the runs of that agent record in `run:start`,
+  reason, its `Trusted` reason, its cap rules, and the policy's `require_provenance`. Its `digest` is the `taint_policy_digest` the runs of that agent record in `run:start`,
   and the reader recomputes it from the document: a document whose digest is not the digest of what it declares is
   refused, and so is one with a member this version does not know (a document from a newer version).
 - **`-declarations`** prints what a reader should look at: a side-effecting tool in an agent with no taint
   policy, an `Untrusted` tool in an agent with no policy (the marks are recorded and nothing is gated), each
   `TaintExempt` tool with its reason, each cap-carrying tool, and an escalation gate that is one decision, needs
   fewer than two, or does not exclude the requester. These are notes, not failures: the exit status is 0 for a
-  document that reads. A finding for a tool whose provenance nobody stated (an unclassified tool) is not made
-  yet: the library has no explicit trusted declaration to tell "trusted" from "forgotten", and it comes with
-  `RequireProvenance`.
+  document that reads. When the policy does not require provenance, each tool that declares neither `Untrusted` nor
+  `Trusted` is listed as unclassified: it may be trusted or forgotten, and the declaration tells them apart.
 - **`-diff old new`** lists every change as `WEAKENED`, `changed` or `strengthened`, and exits 1 if anything is
-  weakened, so a pipeline can compare a branch against `main`. Weakened: a removed `Untrusted`; a new or reworded
+  weakened, so a pipeline can compare a branch against `main`. Weakened: a removed `Untrusted` (also when a `Trusted` replaces it); `require_provenance` turned off (turned on is strengthened); a new or reworded
   `TaintExempt`; the policy removed, or `refuse` turned into a gate; a lower `need`; a requester no longer
   excluded; an m-of-n gate turned into one decision; a raised cap limit; a removed cap rule; a *renamed*
   cumulative rule (its name is its ledger, so the window starts again from zero); a refuse turned into a gate; a
@@ -182,7 +195,7 @@ bide doctor -diff main/declarations.json declarations.json
   approver only added is strengthened); and, because they cannot be compared and a pipeline should stop, a cap
   rule that changes kind (per call and cumulative), currency, exponent or key, and cap lines that do not parse on
   either side. Anything the report cannot judge as safe is `WEAKENED`. Changed, for a person to read and not
-  stopping the pipeline: a longer or shorter gate timeout, another untrusted source name, another amount member, the
+  stopping the pipeline: a longer or shorter gate timeout, another untrusted source name, a `Trusted` declared, removed or reworded, another amount member, the
   same approvers in another order (the order is part of the digest).
   Cap lines are compared by their meaning, through the cap grammar, not as text.
 - **The digest and the diff must agree.** Different digests with no difference in the documents mean the digest

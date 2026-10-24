@@ -796,7 +796,7 @@ acknowledged. A chain is at most four steps and is not repeated.
 ## Untrusted-content marks
 
 The provenance declarations (`agent.Untrusted`, `agent.WithUntrustedInput`, `agent.WithTrustedInput`,
-`agent.RetrievalUntrusted`, `agent.TaintExempt`) record what a run read. They are the
+`agent.RetrievalUntrusted`, `agent.TaintExempt`, `agent.Trusted`) record what a run read. They are the
 first part of the [design](design/untrusted-content-and-amount-caps.md) of untrusted-content tainting and amount
 caps; `agent.WithTaintPolicy` ([guide](guides/untrusted-content.md)) acts on them. A taint policy bounds
 consequences and does not prevent prompt injection. Its limits:
@@ -824,16 +824,17 @@ consequences and does not prevent prompt injection. Its limits:
   policy and runs a tainted run's calls ungated.
 - **The declarations report sees only what the host dumps.** `bide doctor -declarations` and `-diff` read a
   document the host writes from its agent; a tool behind a wrapper that hides its spec, a tool that runs an
-  agent on a context of its own, and an agent the host does not dump are not in it. It makes no finding for a
-  tool whose provenance nobody stated: that needs the explicit trusted declaration that arrives with
-  `RequireProvenance`.
+  agent on a context of its own, and an agent the host does not dump are not in it. It lists a tool
+  with no provenance declaration only when the policy does not require one.
 - **Approval volume.** A deployment whose agents read outside text and write will be asked more. `TaintExempt` is
   the relief valve and is visible in the declarations digest.
-- **`RequireProvenance` and the `bide init` scaffold are not built yet.** Today an input is trusted unless the
-  host says otherwise.
+- **`RequireProvenance` declares; it does not verify.** With it on, every tool says `Untrusted` or `Trusted` and
+  every new run states its input's provenance, but a `Trusted` reason is the host's word: a tool that returns outside
+  text under `Trusted` leaves no mark. Without the setting, an input is trusted unless the host says otherwise.
+  A sub-agent's run and a resume are not asked for an input provenance.
 - **A mark is only as good as the declaration.** A tool that returns outside text and declares nothing leaves no
   mark. A decorator that embeds the inner `Tool`, or
-  implements `Unwrap`, and does not carry the declaration (`Untrusted`, a source in `Safety`) is refused at
+  implements `Unwrap`, and does not carry the declaration (`Untrusted`, a source in `Safety`, `Trusted`) is refused at
   registration, as one that weakens a gate, a timeout or a cap is. A wrapper that neither embeds the inner tool
   nor implements `Unwrap` is not seen: carrying the declaration through it is the wrapper author's duty.
 - **`ResolveHalt` records no mark.** It has the journal, not the registered tools, so the result it injects
@@ -841,7 +842,7 @@ consequences and does not prevent prompt injection. Its limits:
 - **Plan flow nodes are not covered.** A tool that declares `Untrusted` or `TaintExempt` is refused with
   `ErrConfig` as a plan node (`plan.Registry.RegisterTool`, `Builder.Tool`), because a flow has no taint rule yet.
 - **The experimental label.** The declarations and the new `Safety.Untrusted`, `ToolSpec.Untrusted`,
-  `ToolSpec.TaintExempt` and `RunSettings` members may change in a minor release.
+  `ToolSpec.TaintExempt`, `ToolSpec.Trusted`, `TaintPolicy.RequireProvenance` and `RunSettings` members may change in a minor release.
 - **Downgrade.** A binary older than this change ignores the new record members (checked by decoding the golden
   with the binary built before it), so it neither records nor reads marks.
 

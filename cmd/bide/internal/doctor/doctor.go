@@ -97,7 +97,7 @@ document of format bide.declarations.v1) and prints what a reader should look at
 in an agent with no taint policy, exempt tools, cap-carrying tools, an escalation gate weaker than
 need >= 2 with the requester excluded. With -diff it compares two such documents (the one on your main
 branch and the one on your branch) and lists every change as WEAKENED, changed or strengthened: a
-raised cap limit, a removed or renamed cap rule, a removed Untrusted, a new TaintExempt, a lower need,
+raised cap limit, a removed or renamed cap rule, a removed Untrusted, a new TaintExempt, require_provenance turned off, a lower need,
 a requester no longer excluded. It exits 1 if anything is weakened, so a pipeline can gate on it. A
 document written by a newer version, or one whose digest is not the digest of what it declares, is
 refused. Neither report runs the first-run checks.
