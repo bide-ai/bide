@@ -138,7 +138,7 @@ approver, holds no key) and the Merkle trail anchors it once a signed head cover
 informational like `started_at`: no drive, gate, claim, replay, resume or recovery pass reads it,
 and a record written before it existed has none, which readers report as absent (`agent.Status`
 reports `EndedAt` empty), never filled in. A tool result a model-driven call produces carries no
-time: its attempt marker's `attempted_at` says when the effect was tried. The journal's other
+time: its attempt marker's `attempted_at` says when the effect was tried (wall clock), and the marker's `recorded_at` says it on the clock the run was driven with. The journal's other
 wall-clock times are each attempt marker's, the deadlines a run sets
 itself (a timer's wake time, an `AwaitFor` deadline), and an approval gate's display times: when
 the run paused at the gate (`ApprovalWait.RecordedAt`) or recorded a flow gate's request
