@@ -323,7 +323,24 @@ func (c *agentConfig) finish() error {
 			return fmt.Errorf("agent: the taint policy's Gate: %w", err)
 		}
 	}
+	if err := a.checkProvenance(); err != nil {
+		return err
+	}
 	a.sortSpecs()
+	return nil
+}
+
+// checkProvenance holds every tool to a provenance when the taint policy requires it: Untrusted, or a trusted
+// output. TaintExempt is about gating and does not stand in for it.
+func (a *Agent) checkProvenance() error {
+	if a.taint == nil || !a.taint.RequireProvenance {
+		return nil
+	}
+	for _, name := range slices.Sorted(maps.Keys(a.specs)) {
+		if s := a.specs[name]; s.untrustedSource() == "" && s.Trusted == "" {
+			return fmt.Errorf("agent: tool %q declares no provenance, and the taint policy requires one: declare Untrusted(source) if its results come from outside, or that its output is trusted, with a reason: %w", name, ErrConfig)
+		}
+	}
 	return nil
 }
 

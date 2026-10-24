@@ -13,7 +13,9 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
+	"github.com/bide-ai/bide/internal/printable"
 	"github.com/bide-ai/bide/internal/strictjson"
 )
 
@@ -39,6 +41,8 @@ type Document struct {
 type Policy struct {
 	Gate   *Gate `json:"gate,omitempty"`
 	Refuse bool  `json:"refuse,omitempty"`
+	// RequireProvenance: every tool declares a provenance and every run states its input's.
+	RequireProvenance bool `json:"require_provenance,omitempty"`
 }
 
 // Gate is an approval policy as the digest sees it. The approvers' keys are not part of it.
@@ -53,12 +57,14 @@ type Gate struct {
 // Tool is one registered tool. Untrusted, Exempt and Caps are what the digest covers; Effect (the tool can
 // have a side effect) and OwnGate (its own approval gate) are for the findings and the diff only.
 type Tool struct {
-	Name      string   `json:"name"`
-	Effect    bool     `json:"effect,omitempty"`
-	OwnGate   *Gate    `json:"own_gate,omitempty"`
-	Untrusted string   `json:"untrusted,omitempty"`
-	Exempt    string   `json:"exempt,omitempty"`
-	Caps      []string `json:"caps,omitempty"`
+	Name      string `json:"name"`
+	Effect    bool   `json:"effect,omitempty"`
+	OwnGate   *Gate  `json:"own_gate,omitempty"`
+	Untrusted string `json:"untrusted,omitempty"`
+	// Trusted is the reason the tool's results are the host's own (a positive provenance declaration).
+	Trusted string   `json:"trusted,omitempty"`
+	Exempt  string   `json:"exempt,omitempty"`
+	Caps    []string `json:"caps,omitempty"`
 }
 
 // Decode reads a document strictly: one JSON value, no unknown member (a document written by a newer
@@ -148,21 +154,23 @@ func (d Document) Recompute() string {
 	}
 	type toolDecl struct {
 		Untrusted string   `json:"untrusted,omitempty"`
+		Trusted   string   `json:"trusted,omitempty"`
 		Exempt    string   `json:"exempt,omitempty"`
 		Caps      []string `json:"caps,omitempty"`
 	}
 	covered := struct {
-		Format string              `json:"format"`
-		Gate   json.RawMessage     `json:"gate,omitempty"`
-		Refuse bool                `json:"refuse,omitempty"`
-		Tools  map[string]toolDecl `json:"tools,omitempty"`
-	}{Format: digestFormat, Gate: d.Policy.Gate.wire(), Refuse: d.Policy.Refuse}
+		Format            string              `json:"format"`
+		Gate              json.RawMessage     `json:"gate,omitempty"`
+		Refuse            bool                `json:"refuse,omitempty"`
+		RequireProvenance bool                `json:"require_provenance,omitempty"`
+		Tools             map[string]toolDecl `json:"tools,omitempty"`
+	}{Format: digestFormat, Gate: d.Policy.Gate.wire(), Refuse: d.Policy.Refuse, RequireProvenance: d.Policy.RequireProvenance}
 	for _, t := range d.Tools {
-		if t.Untrusted != "" || t.Exempt != "" || len(t.Caps) > 0 {
+		if t.Untrusted != "" || t.Trusted != "" || t.Exempt != "" || len(t.Caps) > 0 {
 			if covered.Tools == nil {
 				covered.Tools = map[string]toolDecl{}
 			}
-			covered.Tools[t.Name] = toolDecl{Untrusted: t.Untrusted, Exempt: t.Exempt, Caps: t.Caps}
+			covered.Tools[t.Name] = toolDecl{Untrusted: t.Untrusted, Trusted: t.Trusted, Exempt: t.Exempt, Caps: t.Caps}
 		}
 	}
 	sum := sha256.Sum256(mustJSON(covered))
@@ -183,6 +191,9 @@ func Encode(w io.Writer, d Document) error {
 
 // validate holds a document to what a valid agent can produce: a gate agent.ApprovalPolicy.Validate would
 // accept (so an approver is listed once, in any case, and counts once toward need).
+// maxTrustedReason is the longest reason agent.Trusted accepts (agent.maxProvenanceName).
+const maxTrustedReason = 128
+
 func (d Document) validate() error {
 	if d.Policy != nil && d.Policy.Gate == nil && !d.Policy.Refuse {
 		return fmt.Errorf("the declarations' policy has neither a gate nor refuse")
@@ -195,6 +206,19 @@ func (d Document) validate() error {
 	for _, t := range d.Tools {
 		if err := t.OwnGate.validate("the own gate of tool " + t.Name); err != nil {
 			return err
+		}
+		if t.Trusted != "" {
+			// The rules of agent.Trusted: a short printable reason. A document a person reads must not
+			// carry a declaration that says nothing.
+			if len(t.Trusted) > maxTrustedReason || !utf8.ValidString(t.Trusted) {
+				return fmt.Errorf("tool %q: the trusted reason is over %d bytes or not valid UTF-8", t.Name, maxTrustedReason)
+			}
+			if r, bad := printable.Bad(t.Trusted); bad {
+				return fmt.Errorf("tool %q: the trusted reason has the non-printing character %s", t.Name, printable.Describe(r))
+			}
+		}
+		if t.Untrusted != "" && t.Trusted != "" {
+			return fmt.Errorf("tool %q is both untrusted and trusted: a valid agent declares one", t.Name)
 		}
 	}
 	return nil

@@ -120,6 +120,11 @@ func TestDiff_Classifies(t *testing.T) {
 		{"the requester is no longer excluded", doc(pol(twoOfTwo)), doc(pol(gate(Gate{Need: 2, Approvers: []string{"ops", "risk"}}))), []want{{Weakened, "policy", "no longer excluded"}}},
 		{"m-of-n becomes one decision", doc(pol(twoOfTwo)), doc(pol(gate(Gate{Single: true}))), []want{{Weakened, "policy", "one decision"}}},
 		{"one decision becomes m-of-n", doc(pol(gate(Gate{Single: true}))), doc(pol(twoOfTwo)), []want{{Strengthened, "policy", "m-of-n"}}},
+		{"RequireProvenance is dropped", doc(&Policy{Refuse: true, RequireProvenance: true}), doc(&Policy{Refuse: true}), []want{{Weakened, "policy", "no longer required"}}},
+		{"RequireProvenance is turned on", doc(&Policy{Refuse: true}), doc(&Policy{Refuse: true, RequireProvenance: true}), []want{{Strengthened, "policy", "must now declare"}}},
+		{"a trusted output is declared", doc(pol(twoOfTwo), Tool{Name: "t"}), doc(pol(twoOfTwo), Tool{Name: "t", Trusted: "ours"}), []want{{Changed, "tool t", "trusted output is declared"}}},
+		{"a trusted output is removed", doc(pol(twoOfTwo), Tool{Name: "t", Trusted: "ours"}), doc(pol(twoOfTwo), Tool{Name: "t"}), []want{{Changed, "tool t", "declaration is removed"}}},
+		{"a trusted output replaces Untrusted", doc(pol(twoOfTwo), Tool{Name: "t", Untrusted: "crm"}), doc(pol(twoOfTwo), Tool{Name: "t", Trusted: "ours"}), []want{{Weakened, "tool t", "Untrusted"}, {Changed, "tool t", "trusted output is declared"}}},
 		{"a rotated approver set is weakened: a person must approve it", doc(pol(twoOfTwo)), doc(pol(gate(Gate{Need: 2, Approvers: []string{"ops", "audit"}, ExcludePrincipal: true}))), []want{{Weakened, "policy", "removed or replaced"}}},
 		{"an approver removed while need is still met", doc(pol(gate(Gate{Need: 2, Approvers: []string{"a", "b", "c"}, ExcludePrincipal: true}))), doc(pol(gate(Gate{Need: 2, Approvers: []string{"a", "b"}, ExcludePrincipal: true}))), []want{{Weakened, "policy", "removed or replaced"}}},
 		{"the same approvers in another order", doc(pol(gate(Gate{Need: 2, Approvers: []string{"ops", "risk"}, ExcludePrincipal: true}))), doc(pol(gate(Gate{Need: 2, Approvers: []string{"risk", "ops"}, ExcludePrincipal: true}))), []want{{Changed, "policy", "approver order changed"}}},
@@ -267,8 +272,17 @@ func TestFindings(t *testing.T) {
 	if fs := doc(&Policy{Gate: twoOfTwo}, Tool{Name: "w", Exempt: "reviewed", Caps: []string{perCall}}).Findings(); !has(fs, "tool w", "exempt") || !has(fs, "tool w", "cap rule") || has(fs, "policy", "") {
 		t.Errorf("a bank policy with an exempt capped tool: %+v", fs)
 	}
-	if fs := doc(&Policy{Refuse: true}, Tool{Name: "pay", Effect: true}).Findings(); len(fs) != 0 {
-		t.Errorf("a refusing policy has findings: %+v", fs)
+	// A tool whose provenance nobody stated is reported while the policy does not require one; a classified
+	// tool, and a policy that requires provenance, are not.
+	un := doc(&Policy{Refuse: true}, Tool{Name: "pay", Effect: true}, Tool{Name: "crm", Untrusted: "crm"}, Tool{Name: "ours", Trusted: "our table"})
+	if fs := un.Findings(); !has(fs, "tool pay", "declares no provenance") || has(fs, "tool crm", "") || has(fs, "tool ours", "") {
+		t.Errorf("unclassified tool findings: %+v", fs)
+	}
+	if fs := doc(&Policy{Refuse: true, RequireProvenance: true}, Tool{Name: "pay", Effect: true}).Findings(); len(fs) != 0 {
+		t.Errorf("a policy that requires provenance has findings: %+v", fs)
+	}
+	if fs := doc(nil, Tool{Name: "plain"}).Findings(); has(fs, "tool plain", "declares no provenance") {
+		t.Errorf("a document with no policy reports the provenance of a tool: %+v", fs)
 	}
 }
 
@@ -436,5 +450,51 @@ func TestDecode_RefusesAGateNoValidAgentHas(t *testing.T) {
 	_ = Encode(&buf, doc(&Policy{}))
 	if _, err := Decode(&buf); err == nil {
 		t.Error("a policy with neither a gate nor refuse was accepted")
+	}
+}
+
+// A tool that is both untrusted and trusted is not a document a valid agent writes.
+func TestDecode_RefusesAToolThatIsBothUntrustedAndTrusted(t *testing.T) {
+	d := doc(&Policy{Refuse: true}, Tool{Name: "t", Untrusted: "crm", Trusted: "ours"})
+	var buf bytes.Buffer
+	if err := Encode(&buf, d); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Decode(&buf); err == nil {
+		t.Error("a tool that is both untrusted and trusted was accepted")
+	}
+}
+
+// The digest covers the requirement and the trusted declaration, and only when they are set.
+func TestRecompute_CoversProvenance(t *testing.T) {
+	base := doc(&Policy{Refuse: true}, Tool{Name: "t"})
+	for name, d := range map[string]Document{
+		"the requirement": doc(&Policy{Refuse: true, RequireProvenance: true}, Tool{Name: "t"}),
+		"a trusted tool":  doc(&Policy{Refuse: true}, Tool{Name: "t", Trusted: "ours"}),
+	} {
+		if d.Digest == base.Digest {
+			t.Errorf("%s is not in the digest", name)
+		}
+	}
+	if doc(&Policy{Refuse: true}, Tool{Name: "t"}).Digest != base.Digest {
+		t.Error("the same declarations give another digest")
+	}
+}
+
+// A trusted reason that says nothing (blank, non-printing, oversized) is not a document a valid agent writes.
+func TestDecode_RefusesAnEmptyTrustedReason(t *testing.T) {
+	for _, r := range []string{" ", "\t", "​", " ", strings.Repeat("x", 129)} {
+		var buf bytes.Buffer
+		if err := Encode(&buf, doc(&Policy{Refuse: true}, Tool{Name: "t", Trusted: r})); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Decode(&buf); err == nil {
+			t.Errorf("a trusted reason %q was accepted", r)
+		}
+	}
+	var buf bytes.Buffer
+	_ = Encode(&buf, doc(&Policy{Refuse: true}, Tool{Name: "t", Trusted: "the host's table"}))
+	if _, err := Decode(&buf); err != nil {
+		t.Errorf("a real trusted reason: %v", err)
 	}
 }

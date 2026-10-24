@@ -19,8 +19,8 @@ pause before the refund, record the decisions of the escalation gate, refund onc
 
 - `read_email` returns text from outside the program. It declares `agent.Untrusted("inbound-email")`, so
   every result it returns is recorded with that source.
-- `refund` is a side effect. It has no gate of its own.
-- The agent has `agent.WithTaintPolicy(agent.TaintPolicy{Gate: ...})`. After a model turn has been shown
+- `refund` is a side effect. It has no gate of its own. It declares `agent.Trusted("the host's own refund provider")`: its results are the host's, not outside text, and the declaration says so.
+- The agent has `agent.WithTaintPolicy(agent.TaintPolicy{Gate: ..., RequireProvenance: true})`. `RequireProvenance` (experimental) makes a tool with neither `Untrusted` nor `Trusted`, and a run with neither `WithUntrustedInput` nor `WithTrustedInput`, an error, so nothing is unclassified by omission. After a model turn has been shown
   untrusted content, a side-effecting call requested by a *later* turn needs the escalation gate, whatever
   the email said. The gate is a second approval on the call, under the subject `<call>#taint`, decided by
   its own approvers; an approval clears nothing, so the next side effect is asked again.

@@ -16,13 +16,13 @@ import (
 func (a *Agent) declarationsDoc() declarations.Document {
 	d := declarations.Document{Format: declarations.Format, Digest: a.taintDigest(), Tools: []declarations.Tool{}}
 	if a.taint != nil {
-		d.Policy = &declarations.Policy{Gate: gateDoc(a.taint.Gate), Refuse: a.taint.Refuse}
+		d.Policy = &declarations.Policy{Gate: gateDoc(a.taint.Gate), Refuse: a.taint.Refuse, RequireProvenance: a.taint.RequireProvenance}
 	}
 	for _, name := range slices.Sorted(maps.Keys(a.specs)) {
 		s := a.specs[name]
 		d.Tools = append(d.Tools, declarations.Tool{
 			Name: name, Effect: tracked(s.Safety), OwnGate: gateDoc(effectiveGates(s, gateInputs{}).Own()),
-			Untrusted: s.untrustedSource(), Exempt: s.TaintExempt, Caps: slices.Clone(s.Caps),
+			Untrusted: s.untrustedSource(), Trusted: s.Trusted, Exempt: s.TaintExempt, Caps: slices.Clone(s.Caps),
 		})
 	}
 	return d

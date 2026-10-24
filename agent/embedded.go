@@ -71,6 +71,8 @@ func checkEmbedded(t Tool, s ToolSpec) error {
 		return fmt.Errorf("agent: tool %q embeds a tool with an approval gate, and its own spec has none: the decorator hides the approval gate; implement Spec or Unwrap: %w", s.Name, ErrConfig)
 	case slices.ContainsFunc(caps, func(l string) bool { return !slices.Contains(s.Caps, l) }):
 		return fmt.Errorf("agent: tool %q embeds a tool with amount caps, and its own spec lacks or changes a rule: the decorator hides the cap; implement Spec (carrying the same rules) or Unwrap: %w", s.Name, ErrConfig)
+	case untrusted && s.untrustedSource() == "" && s.Trusted != "":
+		return fmt.Errorf("agent: tool %q embeds a tool that declares Untrusted, and its own spec declares Trusted(%q): the decorator would drop the taint; declare Untrusted on it: %w", s.Name, s.Trusted, ErrConfig)
 	case untrusted && s.untrustedSource() == "":
 		return fmt.Errorf("agent: tool %q embeds a tool that declares Untrusted, and its own spec does not: the decorator hides the provenance declaration; implement Spec or Unwrap: %w", s.Name, ErrConfig)
 	case timeout && s.Timeout <= 0:
@@ -152,6 +154,9 @@ func weakerSpec(outer, inner ToolSpec) (field, why string) {
 		if !slices.Contains(outer.Caps, l) {
 			return "cap rules", fmt.Sprintf("the wrapper lacks the rule %q (a rule line is compared as written, so a changed line counts as missing; if the wrapper has another name, write one rule line naming both tools, such as inner|outer.amount[...], and carry it on the wrapped tool and the wrapper)", l)
 		}
+	}
+	if src := inner.untrustedSource(); src != "" && outer.untrustedSource() == "" && outer.Trusted != "" {
+		return "untrusted-content declaration", fmt.Sprintf("the wrapped tool declares its results untrusted (source %q) and the wrapper declares Trusted(%q): that would drop the taint; declare Untrusted(%q) on the wrapper", src, outer.Trusted, src)
 	}
 	if src := inner.untrustedSource(); src != "" && outer.untrustedSource() == "" {
 		return "untrusted-content declaration", fmt.Sprintf("the wrapped tool declares its results untrusted (source %q) and the wrapper does not; declare Untrusted(%q) on the wrapper", src, src)

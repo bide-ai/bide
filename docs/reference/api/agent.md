@@ -3711,6 +3711,8 @@ type TaintPolicy struct {
 	Gate *ApprovalPolicy
 
 	Refuse bool
+
+	RequireProvenance bool
 }
 ```
 
@@ -3872,6 +3874,7 @@ ToolOption configures a tool built by Func, CompensatedFunc or SubAgent.
 **Constructors and functions**
 
 - `func TaintExempt(reason string) ToolOption`: TaintExempt declares that the tool's calls need no escalation gate even in a run that read untrusted content, and why (the reason is required, and is kept for the audit). *(experimental)*
+- `func Trusted(reason string) ToolOption`: Trusted declares that the results of the tool are the host's own, and why (the reason is required and is kept in the declarations): the tool reads a table the host writes, calls a service it runs. *(experimental)*
 - `func Untrusted(source string) ToolOption`: Untrusted declares that the results of the tool are untrusted content, from the named source (for example "crm-notes" or "inbound-email"): text the host did not write and an attacker may have. *(experimental)*
 - `func WithApproval(p *ApprovalPolicy) ToolOption`: WithApproval gates every call to the tool on human approval before it runs: p is SingleApproval() for one decision (Approve), or an m-of-n policy (SubmitDecision, and the agent's WithApproverVerifiers).
 - `func WithCaps(lines ...string) ToolOption`: WithCaps declares amount-cap rules on a tool: one line per rule, in the grammar of the design note (docs/guides/amount-caps.md):
@@ -3927,6 +3930,8 @@ type ToolSpec struct {
 	Untrusted string
 
 	TaintExempt string
+
+	Trusted string
 
 	Timeout time.Duration
 }
