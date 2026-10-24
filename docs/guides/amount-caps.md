@@ -108,10 +108,24 @@ the window's total.
   resumes after midnight keeps the window it started in: the window is fixed once, in the call's `cap-intent`.
   The clock is checked at that first intent only: a driver whose window is earlier than the newest recorded one,
   or more than one window later, is refused.
-- **Cost.** One read of the ledger tail and one insert per reservation. On an `AuditedStore` a reservation
-  costs more as the ledger grows (the store anchors the run's head on growth): set `WithMinInterval` on a store
-  that holds ledgers, prefer per-key rules (many small ledgers) to one global total with thousands of
-  reservations a window, and see [KNOWN-LIMITATIONS](../KNOWN-LIMITATIONS.md).
+- **Cost.** One read of the ledger tail and one insert per reservation on a plain store. On an
+  `AuditedStore` a reservation costs more as its ledger grows, because the store anchors the run's head on
+  every growth and reads the whole run to do it: in the benchmarks (`audit/capledger_bench_test.go`, SQLite)
+  the bytes allocated per reservation grew from about 340 KB at 0 slots in the ledger to 2.5 MB at 1000,
+  about 7 times; a `MemStore` stays flat at 29 to 75 microseconds. Extrapolating the growth, a ledger of
+  10,000 slots costs about 25 MB allocated per reservation. So:
+  - set `WithMinInterval` on an `AuditedStore` that holds ledgers (`WithMinInterval(time.Minute)` lowered the
+    cost at 0 and 1000 slots from 340 KB and 2.5 MB to 240 KB and 1.78 MB: it lowers the constant, not the
+    growth);
+  - prefer per-key rules (`by customer_id`: many small ledgers) to one global total, and keep a global
+    window total below about 1000 reservations a window on an audited store;
+  - listing the reserved runs is cheap by comparison: 0.9 to 5 ms per `Runs` pass over 1000 ledger runs and
+    19 to 38 ms over 10,000.
+
+  There is no hard limit. If a deployment needs a large global total on an audited store, the remedy is a
+  ledger layout that rotates the run (a new ledger run every N slots, the last `cum_after` carried into the
+  next); that changes the protocol (model 17), has not been measured, and is not planned unless a user asks.
+  See [KNOWN-LIMITATIONS](../KNOWN-LIMITATIONS.md) and [Retention](retention.md).
 - **Release.** Only the loop releases, and only a *marked* (not retry-safe) attempt, and only once it has proved
   the tool never began: after the tool chain returned, it seals the call's began word (a tool that began cannot be
   sealed), journals why in a `cap-release:` record (a write that fails releases nothing), releases each of the call's reservations, and only then records the attempt as not started. A call
@@ -128,6 +142,34 @@ the window's total.
   and no more), a call
   `ResolveHalt` resolved, and a saga's rollback (a compensation reserves nothing and credits nothing). A window
   only over-counts.
+
+## A worked configuration
+
+One tool, three rules, and a namespace for the deployment: a ceiling on one call, a total for the day, and a
+total per customer for the day.
+
+<!-- docsnip: setup type RefundIn struct { Amount int64 `json:"amount"`; Currency string `json:"currency"`; CustomerID string `json:"customer_id"` }; refund func(context.Context, RefundIn) (string, error); model agent.Model; journal *agent.Journal -->
+```go
+tool, err := agent.Func("refund", "refund a payment", refund,
+	agent.WithCaps(
+		`big_refund: refund.amount[minor, currency=currency] > 500 USD -> refuse`,
+		`refund_total: refund.amount[minor, currency=currency] sum 5000 USD per day -> refuse`,
+		`refund_by_customer: refund.amount[minor, currency=currency] sum 1000 USD per day by customer_id -> refuse`,
+	),
+)
+if err != nil {
+	panic(err)
+}
+a, err := agent.New(model, journal, agent.WithTools(tool), agent.WithCapNamespace("payments-prod"))
+```
+
+A call is refused if it is over 500 USD, would take the UTC day over 5000 USD for all customers, or would
+take that customer over 1000 USD for the day. The per-customer rule is paired with the unkeyed total, as
+advised above: a key the model chooses is only as strong as its canonical form. The journal can be any store,
+an `AuditedStore` included; the ledgers are runs under `@cap/payments-prod/`.
+
+`bide sample` writes a small ledger like this one: its two evidence runs (`refund-1041` and `refund-1049`)
+refund 120 USD each under `sum 500 USD per day`, so the sample journal holds one cap ledger with two slots.
 
 ## What a cap does not do
 
