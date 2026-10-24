@@ -88,7 +88,7 @@ func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs [
 		if err != nil {
 			return ctx, nil, nil, err
 		}
-		if err := a.checkInputProvenance(ctx, want); err != nil {
+		if err := a.checkInputProvenance(ctx, runID, want); err != nil {
 			return ctx, nil, nil, err
 		}
 		now := clockFrom(ctx)
@@ -486,15 +486,35 @@ func (a *Agent) putStart(ctx context.Context, runID string, b json.RawMessage) (
 // checkInputProvenance holds a new run to stating where its input came from when the taint policy requires
 // it. The run of a sub-agent is not asked: its input is written by its parent's model, and it inherits the
 // parent's marks. A later drive of a run that started is not asked either (it is read back, not started).
-func (a *Agent) checkInputProvenance(ctx context.Context, start RunStart) error {
-	if a.taint == nil || !a.taint.RequireProvenance {
+func (a *Agent) checkInputProvenance(ctx context.Context, runID string, start RunStart) error {
+	if a.inputProvenanceOK(ctx, runID, start.Settings.UntrustedInput != nil || start.Settings.TrustedInput != nil) {
 		return nil
 	}
-	if c, ok := callMarksFrom(ctx); ok && c.strict {
-		return nil // started by a call of a run above it
-	}
-	if start.Settings.UntrustedInput != nil || start.Settings.TrustedInput != nil {
-		return nil
-	}
-	return fmt.Errorf("agent: the taint policy requires every run to state where its input came from: pass WithUntrustedInput(source) if it came from outside, or WithTrustedInput(reason) if it is the host's own: %w", ErrConfig)
+	return errInputProvenance
 }
+
+// inputProvenanceOK reports whether a new run of runID needs no (further) statement of its input's
+// provenance: the agent's policy does not require it, the run was stated, or the run is one the calling run
+// derived (a sub-agent's, or a programmatic sub-run: derivedRunID accepts no other ID with a '>').
+func (a *Agent) inputProvenanceOK(ctx context.Context, runID string, stated bool) bool {
+	return a.taint == nil || !a.taint.RequireProvenance || stated || derivedRunID(ctx, runID)
+}
+
+// preCheckInputProvenance refuses a drive that would be refused by checkInputProvenance before the run's
+// journal header is written, when the run is new (it holds no entry), so a refused first drive leaves
+// nothing behind. A run that already has entries is judged by openPlan, which reads its run:start.
+func (a *Agent) preCheckInputProvenance(ctx context.Context, runID string, d *driveSpec) error {
+	if d.resume || a.inputProvenanceOK(ctx, runID, d.cfg.untrustedInput != nil || d.cfg.trustedInput != nil) {
+		return nil
+	}
+	recs, err := a.store.History(ctx, runID)
+	if err != nil {
+		return err
+	}
+	if len(recs) > 0 {
+		return nil
+	}
+	return errInputProvenance
+}
+
+var errInputProvenance = fmt.Errorf("agent: the taint policy requires every run to state where its input came from: pass WithUntrustedInput(source) if it came from outside, or WithTrustedInput(reason) if it is the host's own: %w", ErrConfig)

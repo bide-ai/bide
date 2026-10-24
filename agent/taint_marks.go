@@ -146,6 +146,11 @@ func normalizeUntrusted(s *ToolSpec) error {
 			return fmt.Errorf("agent: tool %q declares untrusted source %q (Untrusted) and %q (Safety.Untrusted): declare it once: %w", s.Name, s.Untrusted, s.Safety.Untrusted, ErrConfig)
 		}
 	}
+	if s.Trusted != "" { // a spec built by hand carries no option's check
+		if err := checkProvenanceName("Trusted of tool "+s.Name, s.Trusted); err != nil {
+			return err
+		}
+	}
 	s.Untrusted = s.untrustedSource()
 	if s.Untrusted != "" && s.Trusted != "" {
 		return fmt.Errorf("agent: tool %q declares untrusted source %q and trusted output %q: it is one or the other: %w", s.Name, s.Untrusted, s.Trusted, ErrConfig)

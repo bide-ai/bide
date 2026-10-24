@@ -480,3 +480,21 @@ func TestRecompute_CoversProvenance(t *testing.T) {
 		t.Error("the same declarations give another digest")
 	}
 }
+
+// A trusted reason that says nothing (blank, non-printing, oversized) is not a document a valid agent writes.
+func TestDecode_RefusesAnEmptyTrustedReason(t *testing.T) {
+	for _, r := range []string{" ", "\t", "​", " ", strings.Repeat("x", 129)} {
+		var buf bytes.Buffer
+		if err := Encode(&buf, doc(&Policy{Refuse: true}, Tool{Name: "t", Trusted: r})); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Decode(&buf); err == nil {
+			t.Errorf("a trusted reason %q was accepted", r)
+		}
+	}
+	var buf bytes.Buffer
+	_ = Encode(&buf, doc(&Policy{Refuse: true}, Tool{Name: "t", Trusted: "the host's table"}))
+	if _, err := Decode(&buf); err != nil {
+		t.Errorf("a real trusted reason: %v", err)
+	}
+}

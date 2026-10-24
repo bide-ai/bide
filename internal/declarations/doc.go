@@ -13,7 +13,9 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
+	"github.com/bide-ai/bide/internal/printable"
 	"github.com/bide-ai/bide/internal/strictjson"
 )
 
@@ -189,6 +191,9 @@ func Encode(w io.Writer, d Document) error {
 
 // validate holds a document to what a valid agent can produce: a gate agent.ApprovalPolicy.Validate would
 // accept (so an approver is listed once, in any case, and counts once toward need).
+// maxTrustedReason is the longest reason agent.Trusted accepts (agent.maxProvenanceName).
+const maxTrustedReason = 128
+
 func (d Document) validate() error {
 	if d.Policy != nil && d.Policy.Gate == nil && !d.Policy.Refuse {
 		return fmt.Errorf("the declarations' policy has neither a gate nor refuse")
@@ -201,6 +206,16 @@ func (d Document) validate() error {
 	for _, t := range d.Tools {
 		if err := t.OwnGate.validate("the own gate of tool " + t.Name); err != nil {
 			return err
+		}
+		if t.Trusted != "" {
+			// The rules of agent.Trusted: a short printable reason. A document a person reads must not
+			// carry a declaration that says nothing.
+			if len(t.Trusted) > maxTrustedReason || !utf8.ValidString(t.Trusted) {
+				return fmt.Errorf("tool %q: the trusted reason is over %d bytes or not valid UTF-8", t.Name, maxTrustedReason)
+			}
+			if r, bad := printable.Bad(t.Trusted); bad {
+				return fmt.Errorf("tool %q: the trusted reason has the non-printing character %s", t.Name, printable.Describe(r))
+			}
 		}
 		if t.Untrusted != "" && t.Trusted != "" {
 			return fmt.Errorf("tool %q is both untrusted and trusted: a valid agent declares one", t.Name)

@@ -251,3 +251,60 @@ func TestTrustedRefusesABlankReason(t *testing.T) {
 		}
 	}
 }
+
+// A Trusted set on a hand-built spec is held to the rules of the option: a blank, non-printing or oversized
+// reason satisfies nothing.
+func TestTrustedOnARawSpecIsValidated(t *testing.T) {
+	for _, r := range []string{" ", "​", "\t", strings.Repeat("x", maxProvenanceName+1)} {
+		_, err := provAgent(t, true, reclassify{provTool("a"), "", r})
+		if !errors.Is(err, ErrConfig) {
+			t.Errorf("a spec with Trusted %q registered = %v, want ErrConfig", r, err)
+		}
+	}
+	if _, err := provAgent(t, true, reclassify{provTool("a"), "", "the host's table"}); err != nil {
+		t.Fatalf("a spec with a real Trusted reason: %v", err)
+	}
+}
+
+// A sub-agent whose agent requires provenance runs under a parent that has no taint policy: the run is
+// derived from the parent's call and cannot state an input, so it is not asked.
+func TestRequireProvenance_ASubAgentUnderAnUntaintedParentIsNotAsked(t *testing.T) {
+	ctx := context.Background()
+	childJ := memJournal()
+	child, err := New(&scriptModel{turns: [][]Emit{textTurn("child answer")}}, childJ, WithTools(provTool("a", Trusted("mine"))),
+		WithTaintPolicy(TaintPolicy{Refuse: true, RequireProvenance: true}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, err := New(&scriptModel{turns: [][]Emit{toolTurn("d1", "delegate", `{"task":"go"}`), textTurn("done")}}, memJournal(),
+		WithTools(MustSubAgent("delegate", "delegate", child)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parent.Run(ctx, "r", UserText("go")); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := RecordedStart(ctx, childJ, SubRunID("r", "d1")); err != nil || !ok {
+		t.Fatalf("the sub-agent's run did not start (%v, %v): it was asked to state a provenance", ok, err)
+	}
+	// A root run whose ID merely contains '>' is not a derived run: it is asked.
+	if _, err := child.Run(ctx, "r>x", UserText("go")); err == nil {
+		t.Fatal("a root run named with '>' skipped the provenance check")
+	}
+}
+
+// A first drive refused for want of an input provenance leaves nothing in the journal: no header either.
+func TestRequireProvenance_ARefusedFirstDriveWritesNothing(t *testing.T) {
+	ctx := context.Background()
+	a, err := provAgent(t, true, provTool("a", Trusted("mine")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(ctx, "r9", UserText("go")); !errors.Is(err, ErrConfig) {
+		t.Fatalf("Run = %v, want ErrConfig", err)
+	}
+	recs, err := a.store.History(ctx, "r9")
+	if err != nil || len(recs) != 0 {
+		t.Fatalf("the refused run holds %d records (%v), want none", len(recs), err)
+	}
+}

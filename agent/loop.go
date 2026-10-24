@@ -98,6 +98,9 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 		p    *runPlan
 		recs []Record
 	)
+	if err := a.preCheckInputProvenance(ctx, runID, d); err != nil {
+		return Message{}, usageTotals{}, 0, err // before the run's header is written: a refused first drive leaves nothing
+	}
 	for open, loaded := ctx, false; ; {
 		if !loaded {
 			// protocol:claims begin Open
