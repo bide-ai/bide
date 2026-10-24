@@ -1,0 +1,108 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/store/sqlite"
+)
+
+// TestStory: the agent reads the email, the refund it asks for next waits at the escalation gate, the
+// approvers decide, the refund runs once, a second run repeats nothing, and the declarations are written.
+func TestStory(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	for range 2 {
+		if err := story(ctx, dir, model()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := (provider{dir: dir}).refunds(); n != 1 {
+		t.Fatalf("the provider holds %d refunds, want exactly 1", n)
+	}
+	store, err := sqlite.Open(filepath.Join(dir, "run.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	j, err := agent.NewJournal(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recs, err := j.History(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The refund was held by the escalation gate (the instance "c2#taint"), and by no other.
+	var escalation, own int
+	for _, r := range recs {
+		if agent.IsApprovalDecision(r, "c2#taint") {
+			escalation++
+		}
+		if agent.IsApprovalDecision(r, "c2") {
+			own++
+		}
+	}
+	want := 1
+	if !singleApprover {
+		want = 2
+	}
+	if own != 0 || (!singleApprover && escalation != want) {
+		t.Fatalf("decisions: %d on the escalation gate (want %d for this gate), %d on the call itself (want 0)", escalation, want, own)
+	}
+}
+
+// TestDeclarations: the agent dumps its declarations, and they say what the README says: the email
+// tool is untrusted, and a taint policy gates side effects.
+func TestDeclarations(t *testing.T) {
+	dir := t.TempDir()
+	if err := story(context.Background(), dir, model()); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "declarations.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"name": "read_email"`, `"untrusted": "inbound-email"`, `"policy"`} {
+		if !bytes.Contains(b, []byte(want)) {
+			t.Errorf("declarations.json lacks %s:\n%s", want, b)
+		}
+	}
+	if !singleApprover && !strings.Contains(string(b), `"exclude_principal": true`) {
+		t.Errorf("the strict gate does not exclude the requester:\n%s", b)
+	}
+}
+
+// TestTheEscalationGateIsNotOptional: if no decision is made, the refund does not run.
+func TestTheEscalationGateIsNotOptional(t *testing.T) {
+	dir := t.TempDir()
+	k, err := loadKeys(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := sqlite.Open(filepath.Join(dir, "run.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	j, err := agent.NewJournal(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := newAgent(provider{dir: dir}, k, j, model())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = a.Run(context.Background(), runID, agent.UserText("Handle the customer's email."), agent.WithTrustedInput("the operator's instruction"))
+	if !agent.IsPause(err) {
+		t.Fatalf("the run = %v, want a pause at the escalation gate", err)
+	}
+	if n := (provider{dir: dir}).refunds(); n != 0 {
+		t.Fatalf("the refund ran %d time(s) before any decision", n)
+	}
+}

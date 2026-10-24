@@ -32,6 +32,49 @@ var files = map[string]string{
 	"gitignore.tmpl":    ".gitignore",
 }
 
+// agentFiles is files for bide init -agent: an agent with a taint policy instead of a plan flow.
+var agentFiles = map[string]string{
+	"agent/main.go.tmpl":      "main.go",
+	"agent/main_test.go.tmpl": "main_test.go",
+	"color.go.tmpl":           "color.go",
+	"agent/README.md.tmpl":    "README.md",
+	"gitignore.tmpl":          ".gitignore",
+}
+
+// gateText is the README's paragraph on the escalation gate, strict or single.
+const (
+	strictGateText = "  The escalation gate here is two of three signed decisions (`ops`, `finance`, `risk`), and the person the\n  run acts for (the customer, its requester) never counts toward them (`ExcludePrincipal`)."
+	singleGateText = "  The escalation gate here is ONE unsigned decision (`bide init -single-approver`, for a team of one). That is\n  the weaker choice: nothing is signed, and the person whose input provoked the call is not kept from\n  approving it. Use `agent.ApprovalPolicy{Need: 2, Approvers: ..., ExcludePrincipal: true}` as soon as you\n  have a second person."
+)
+
+// placeholders replaces the template's markers in a single pass.
+func placeholders(name, single, gateText string) *strings.Replacer {
+	return strings.NewReplacer("__NAME__", name, "__SINGLE__", single, "__GATE_TEXT__", gateText)
+}
+
+// placeholderNames are the markers a template holds; a project name that spells one is refused, so what the
+// project says about itself is never a marker's replacement by accident.
+var placeholderNames = []string{"__NAME__", "__SINGLE__", "__GATE_TEXT__"}
+
+// checkName refuses a name that is not a module path (see modName) whose elements Go would take: none empty,
+// none starting or ending with a dot, none with "..", and none spelling a template marker.
+func checkName(name string) error {
+	for _, p := range placeholderNames {
+		if strings.Contains(name, p) {
+			return fmt.Errorf("%q spells %s, a marker of the project template; name the project another way with -module", name, p)
+		}
+	}
+	if !modName.MatchString(name) {
+		return fmt.Errorf("%q is not a module path; name one with -module", name)
+	}
+	for _, e := range strings.Split(name, "/") {
+		if e == "" || strings.HasPrefix(e, ".") || strings.HasSuffix(e, ".") || strings.Contains(e, "..") {
+			return fmt.Errorf("%q is not a module path (the element %q is empty or begins or ends with a dot); name one with -module", name, e)
+		}
+	}
+	return nil
+}
+
 // modName is what a module path may hold, for the name bide init derives from the directory.
 var modName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._~/-]*$`)
 
@@ -42,15 +85,23 @@ func Main(version string, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("bide init", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), `usage: bide init [-module <path>] [-dev <bide checkout>] <dir>
+		fmt.Fprint(fs.Output(), `usage: bide init [-agent [-single-approver]] [-module <path>] [-dev <bide checkout>] <dir>
 
 Writes a new project into dir, which must not exist or must be empty: main.go, color.go, main_test.go,
 flow.yaml, README.md, .gitignore and go.mod. Then: cd <dir> && go mod tidy && go run .
+
+With -agent the project is an agent instead of a plan flow: a tool that reads untrusted text, a refund,
+and a taint policy, so a side effect asked for after the agent has read the text waits for an escalation
+gate of two of three signed decisions, not counting the requester. -single-approver makes that gate one
+unsigned decision, for a team of one; it is the weaker choice, and the README says so. A plan flow is not
+covered by the taint policy.
 
 `)
 		fs.PrintDefaults()
 	}
 	module := fs.String("module", "", "the module path (default: the directory's name)")
+	agentProject := fs.Bool("agent", false, "write an agent with a taint policy (an escalation gate of two of three signed decisions) instead of a plan flow")
+	single := fs.Bool("single-approver", false, "with -agent: an escalation gate of one unsigned decision, for a team of one (weaker)")
 	dev := fs.String("dev", "", "a bide checkout to build against (replace directives), for a bide built from source")
 	color := term.Flag(fs)
 	if err := fs.Parse(args); err != nil {
@@ -60,6 +111,10 @@ flow.yaml, README.md, .gitignore and go.mod. Then: cd <dir> && go mod tidy && go
 		return 2
 	}
 	es := term.For(stderr, *color) // error lines on stderr
+	if *single && !*agentProject {
+		fmt.Fprintln(stderr, es.ErrorPrefix()+"bide init: -single-approver is for -agent")
+		return 2
+	}
 	if fs.NArg() != 1 {
 		fmt.Fprintln(stderr, es.ErrorPrefix()+"bide init: give exactly one directory")
 		fs.Usage()
@@ -75,8 +130,8 @@ flow.yaml, README.md, .gitignore and go.mod. Then: cd <dir> && go mod tidy && go
 		}
 		name = filepath.Base(abs)
 	}
-	if !modName.MatchString(name) {
-		fmt.Fprintf(stderr, "%sbide init: %s\n", es.ErrorPrefix(), es.Hint(fmt.Sprintf("%q is not a module path; name one with -module", name), "; "))
+	if err := checkName(name); err != nil {
+		fmt.Fprintf(stderr, "%sbide init: %s\n", es.ErrorPrefix(), es.Hint(err.Error(), "; "))
 		return 2
 	}
 	gomod, err := goMod(name, version, *dev)
@@ -84,7 +139,7 @@ flow.yaml, README.md, .gitignore and go.mod. Then: cd <dir> && go mod tidy && go
 		fmt.Fprintln(stderr, es.ErrorPrefix()+"bide init:", es.Hint(err.Error(), "; "))
 		return 2
 	}
-	if err := write(dir, name, gomod); err != nil {
+	if err := write(dir, name, gomod, *agentProject, *single); err != nil {
 		fmt.Fprintln(stderr, es.ErrorPrefix()+"bide init:", err)
 		return 1
 	}
@@ -121,7 +176,7 @@ func goMod(name, version, dev string) (string, error) {
 }
 
 // write writes the project into dir, which must not exist or must be empty.
-func write(dir, name, gomod string) error {
+func write(dir, name, gomod string, agentProject, single bool) error {
 	entries, err := os.ReadDir(dir)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
@@ -133,14 +188,24 @@ func write(dir, name, gomod string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	for src, dst := range files {
+	set := files
+	if agentProject {
+		set = agentFiles
+	}
+	for src, dst := range set {
 		b, err := tmpl.ReadFile("template/" + src)
 		if err != nil {
 			return err
 		}
 		// The template is written with LF line endings on every OS: a Windows checkout of bide may
 		// hold the embedded files with CRLF (core.autocrlf).
-		out := strings.ReplaceAll(strings.ReplaceAll(string(b), "\r\n", "\n"), "__NAME__", name)
+		gate, gateText := "false", strictGateText
+		if single {
+			gate, gateText = "true", singleGateText
+		}
+		// One pass over the template, so no replacement is scanned again: a name or a paragraph that holds
+		// text spelled like another placeholder is written as it is.
+		out := placeholders(name, gate, gateText).Replace(strings.ReplaceAll(string(b), "\r\n", "\n"))
 		if err := os.WriteFile(filepath.Join(dir, dst), []byte(out), 0o644); err != nil {
 			return err
 		}
