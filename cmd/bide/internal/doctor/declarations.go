@@ -47,7 +47,6 @@ func reportDeclarations(stdout, stderr io.Writer, st term.Style, path string) in
 	if len(findings) == 0 {
 		fmt.Fprintf(stdout, "%s  nothing to look at\n", st.OK("ok  "))
 	}
-	fmt.Fprintf(stdout, "\n%s\n", st.Dim("The unclassified-tool finding (a tool whose provenance nobody stated) is not reported: it needs an explicit trusted declaration, which does not exist yet."))
 	return 0
 }
 

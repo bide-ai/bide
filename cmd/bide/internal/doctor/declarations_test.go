@@ -45,7 +45,7 @@ func TestDeclarations_ReportOnTheAgentsDocument(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code %d: %s", code, errs)
 	}
-	for _, want := range []string{"taint policy: an escalation gate", "2 tool(s)", "tool refund", "1 cap rule(s)", "unclassified-tool finding"} {
+	for _, want := range []string{"taint policy: an escalation gate", "2 tool(s)", "tool refund", "1 cap rule(s)", "declares no provenance"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the report lacks %q:\n%s", want, out)
 		}

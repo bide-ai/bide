@@ -59,6 +59,13 @@ func Diff(old, new Document) ([]Change, error) {
 	}
 	var out []Change
 	out = append(out, diffPolicy(old.Policy, new.Policy)...)
+	if old.Policy != nil && new.Policy != nil && old.Policy.RequireProvenance != new.Policy.RequireProvenance {
+		if new.Policy.RequireProvenance {
+			out = append(out, Change{Strengthened, "policy", "every tool must now declare a provenance and every run state its input's", true})
+		} else {
+			out = append(out, Change{Weakened, "policy", "tools and runs are no longer required to declare a provenance", true})
+		}
+	}
 	oldTools, newTools := toolsByName(old), toolsByName(new)
 	names := slices.Sorted(maps.Keys(func() map[string]bool {
 		m := map[string]bool{}
@@ -257,6 +264,14 @@ func diffTool(name string, old, new *Tool) []Change {
 		add(Strengthened, fmt.Sprintf("Untrusted(%q) added", new.Untrusted), true)
 	case old.Untrusted != new.Untrusted:
 		add(Changed, fmt.Sprintf("untrusted source %q, was %q", new.Untrusted, old.Untrusted), true)
+	}
+	switch {
+	case old.Trusted == "" && new.Trusted != "":
+		add(Changed, fmt.Sprintf("a trusted output is declared (%q)", new.Trusted), true)
+	case old.Trusted != "" && new.Trusted == "":
+		add(Changed, "the trusted output declaration is removed", true)
+	case old.Trusted != new.Trusted:
+		add(Changed, fmt.Sprintf("the trusted output reason is %q, was %q", new.Trusted, old.Trusted), true)
 	}
 	switch {
 	case old.Exempt == "" && new.Exempt != "":
