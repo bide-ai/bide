@@ -245,7 +245,7 @@ func TestTrustedWrapperOverUntrustedToolIsRefused(t *testing.T) {
 // A blank reason is not a declaration.
 func TestTrustedRefusesABlankReason(t *testing.T) {
 	ok := func(context.Context, struct{}) (string, error) { return "ok", nil }
-	for _, r := range []string{"", " ", " \t "} {
+	for _, r := range []string{"", " ", "   ", "\t", " \t ", "\n", "\u00a0", "\u2003", "\u200b", "\u3000"} {
 		if _, err := Func("t", "t", ok, Trusted(r)); !errors.Is(err, ErrConfig) {
 			t.Errorf("Trusted(%q) = %v, want ErrConfig", r, err)
 		}
