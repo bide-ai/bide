@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"bytes"
+	"fmt"
 	"maps"
 	"slices"
 
@@ -38,4 +40,19 @@ func gateDoc(p *ApprovalPolicy) *declarations.Gate {
 	}
 	g.Need, g.Approvers, g.ExcludePrincipal = p.Need, slices.Clone(p.Approvers), p.ExcludePrincipal
 	return g
+}
+
+// Declarations returns the agent's taint and cap declarations as a document (format
+// bide.declarations.v1, indented JSON): the taint policy, and every registered tool with whether it can have
+// a side effect, its own gate, its Untrusted source, its TaintExempt reason and its cap rules. Its digest
+// member is the taint_policy_digest that the runs of this agent record in run:start ("" for an agent with no
+// policy). Commit the document next to the code and read it with bide doctor -declarations, or compare two
+// with bide doctor -diff: a raised limit, a removed or renamed cap rule, a removed Untrusted or a new
+// TaintExempt is reported as weakened. It is experimental.
+func (a *Agent) Declarations() ([]byte, error) {
+	var buf bytes.Buffer
+	if err := declarations.Encode(&buf, a.declarationsDoc()); err != nil {
+		return nil, fmt.Errorf("agent: encode the declarations: %w", err)
+	}
+	return buf.Bytes(), nil
 }

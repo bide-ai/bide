@@ -102,3 +102,22 @@ func TestDeclarations_Golden(t *testing.T) {
 		t.Fatalf("the declarations document changed; rewrite the golden with -update-declarations\n got: %s\nwant: %s", b, want)
 	}
 }
+
+// Declarations writes the document, and it is the one the golden holds.
+func TestDeclarations_TheExportedMethodWritesTheDocument(t *testing.T) {
+	read := MustFunc("read_email", "read", func(context.Context, struct{}) (string, error) { return "", nil }, WithSafety(Safety{ReadOnly: true}), Untrusted("inbound-email"))
+	pay := refundTool(`refund_one: refund.amount[minor, currency=currency] > 500 USD -> refuse`)
+	a := declAgent(t, &TaintPolicy{Gate: &ApprovalPolicy{Need: 2, Approvers: []string{"ops", "risk"}, ExcludePrincipal: true}}, read, pay)
+	got, err := a.Declarations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.ReadFile(filepath.Join("..", "internal", "declarations", "testdata", "agent.golden.json"))
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("Declarations differs from the golden (%v)\n got: %s\nwant: %s", err, got, want)
+	}
+	d, err := declarations.Decode(bytes.NewReader(got))
+	if err != nil || d.Digest != a.taintDigest() {
+		t.Fatalf("the document does not read back with the agent's digest: %v", err)
+	}
+}
