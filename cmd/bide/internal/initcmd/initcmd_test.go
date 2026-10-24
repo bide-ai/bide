@@ -257,6 +257,9 @@ func TestAgentScaffoldGateShape(t *testing.T) {
 	if strings.Contains(read(flow, "main.go"), "WithTaintPolicy") {
 		t.Error("the flow scaffold carries a taint policy, which does not cover flows")
 	}
+	if r := read(flow, "README.md"); !strings.Contains(r, "A plan flow has no taint policy") || !strings.Contains(r, "bide init -agent") {
+		t.Errorf("the flow scaffold's README does not say that a taint policy does not cover flows:\n%s", r)
+	}
 }
 
 // TestSingleApproverNeedsAgent: -single-approver on its own is a usage error and writes nothing.
