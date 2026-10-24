@@ -110,13 +110,17 @@ Taint follows the content, not the run that read it.
   parent's would have been. The marks pass exactly when the parent run is under taint; a child of a run that is
   not under taint inherits nothing. A later drive of the child that finds another list is `ErrConfig`.
   The child need not share the parent's store.
-- **Up.** If a sub-agent's run ended with any mark, whether it read one itself or started tainted, the parent's
+- **Up.** If a run the call drove ended with any mark, whether it read one itself or started tainted, the parent's
   `tool_result` for the call carries the mark `subagent:<tool name>` (cut to 128 bytes on a character boundary), and
-  the parent's next turn is tainted. Without it a tainted child's answer would launder what it read. The child's
-  journal is read from the child's own store.
+  the parent's next turn is tainted. This covers a sub-agent tool and a tool that starts a programmatic sub-run
+  (`WithSubRuns`, `RunInfo.SubRunFor`) and returns its answer. Without it a tainted child's answer would launder
+  what it read. The child's journal is read from the child's own store. If it cannot be read, a call that succeeded
+  records nothing and stops with a storage error (a resume reads again), and a call that failed is marked, since
+  its error text may carry what the child read.
 - **Along a session.** A session keeps the questions and answers of its turns, so the answer of a tainted turn
   reaches the next turn as the assistant's own words. A turn that ended with marks records them in the session
-  journal (`taint/turn/<n>`, the union of all marks so far), and every later turn starts with them. A clean turn
+  journal (`taint/turn/<n>`, the union of all marks so far), and every later turn starts with the union of all the
+  session's taint records, so a record can add marks and never remove any. A clean turn
   after a tainted one does not clear it: the later turn inherits the marks and ends with them. The turns of a
   session before a policy joined are not retro-marked.
 - A tool that calls a sub-agent is itself a call: unless it is `ReadOnly` or `TaintExempt`, a tainted turn needs

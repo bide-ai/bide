@@ -431,7 +431,9 @@ func TestTaintInherit_AFailedCallWithAnUnreadableSubRunJournalIsMarked(t *testin
 	}
 	var childRun string
 	for id := range all.n {
-		childRun = id
+		if strings.HasPrefix(id, "r>") { // the sub-run, not a control run such as @stop
+			childRun = id
+		}
 	}
 	if childRun == "" {
 		t.Fatal("the sub-run did not journal to the child's store")
