@@ -312,3 +312,30 @@ func TestCheckName(t *testing.T) {
 		}
 	}
 }
+
+// write itself replaces the markers in one pass, whatever the caller checked: given a name that spells a
+// marker (checkName refuses one before write, so this is the second line of defence), the name is written
+// as it is, and the files still hold what the shape says.
+func TestWriteDoesNotRescanReplacements(t *testing.T) {
+	for _, single := range []bool{false, true} {
+		dir := filepath.Join(t.TempDir(), "p")
+		if err := write(dir, "a__SINGLE__b__GATE_TEXT__c", "module x\n", true, single); err != nil {
+			t.Fatal(err)
+		}
+		b, err := os.ReadFile(filepath.Join(dir, "main.go"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		first := strings.SplitN(string(b), "\n", 2)[0]
+		if !strings.Contains(first, "Command a__SINGLE__b__GATE_TEXT__c is a bide agent") {
+			t.Errorf("single=%v: the name was rewritten: %q", single, first)
+		}
+		want := "singleApprover = false"
+		if single {
+			want = "singleApprover = true"
+		}
+		if !strings.Contains(string(b), want) {
+			t.Errorf("single=%v: main.go lacks %q", single, want)
+		}
+	}
+}
