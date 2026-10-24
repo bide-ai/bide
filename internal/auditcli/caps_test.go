@@ -750,6 +750,9 @@ func TestCapsAudit_IntentUnreadable(t *testing.T) {
 	e.editIntent("r1", replaceIn(`"amount":30`, `"amount":30,"extra":1`))
 	code, out, errOut := unanchoredCaps()
 	wantFail(t, code, out, errOut, "INTENT_UNREADABLE", "INTENT_MISSING")
+	if !strings.Contains(out, "unknown field") {
+		t.Fatalf("the decode error must be shown:\n%s", out)
+	}
 }
 
 func TestCapsAudit_IntentUnderAnotherAttemptsName(t *testing.T) {
@@ -784,4 +787,71 @@ func TestCapsAudit_IntentWindowEarlierThanItsFloor(t *testing.T) {
 	e.editIntent("r2", replaceIn(`"floor":"2026-10-22"`, `"floor":"2026-10-23"`))
 	code, out, errOut := unanchoredCaps()
 	wantFail(t, code, out, errOut, "INTENT_CLOCK")
+}
+
+func TestCapsAudit_IntentInAnotherRunThanTheSlotsCall(t *testing.T) {
+	e := threeCalls(t)
+	run := e.ledgerRun()
+	// slot 1 claims to be a call of r3; the intent of its attempt is in r2.
+	e.tamper.edit = func(r, n string, d []byte) []byte {
+		if r == run && n == "slot:1" {
+			d = bytes.Replace(d, []byte(`"run":"r2"`), []byte(`"run":"r3"`), 1)
+		}
+		return d
+	}
+	code, out, errOut := unanchoredCaps()
+	wantFail(t, code, out, errOut, "INTENT_MISMATCH")
+	if !strings.Contains(out, "the intent is in run r2, the slot's call is in run r3") {
+		t.Fatalf("the runs must be named:\n%s", out)
+	}
+}
+
+func TestCapsAudit_TwoIntentsAndNoSlot(t *testing.T) {
+	e := threeCalls(t)
+	_ = e.call("r4", 9990)
+	_ = e.call("r5", 9990)
+	r4 := "r4%2Fr4%2Fc1%2Fattempt%253Atool%253Ac1%2523refund_total"
+	r5 := "r5%2Fr5%2Fc1%2Fattempt%253Atool%253Ac1%2523refund_total"
+	e.tamper.edit = func(run, n string, d []byte) []byte {
+		if run == "r5" && n == "cap-intent:"+r5 {
+			d = bytes.ReplaceAll(d, []byte(r5), []byte(r4))
+			d = bytes.Replace(d, []byte(`"attempt":"r5/r5/`), []byte(`"attempt":"r4/r4/`), 1)
+		}
+		return d
+	}
+	e.tamper.rename = func(run, n string) string {
+		if run == "r5" && n == "cap-intent:"+r5 {
+			return "cap-intent:" + r4
+		}
+		return n
+	}
+	code, out, errOut := unanchoredCaps()
+	wantFail(t, code, out, errOut, "INTENT_DUPLICATE")
+	if !strings.Contains(out, "and no slot") {
+		t.Fatalf("the duplicate of a slotless attempt must say so:\n%s", out)
+	}
+}
+
+func TestCapsAudit_APerRunRuleNeedsNoIndex(t *testing.T) {
+	e := newCapsEnv(t)
+	if err := e.call("r1", 30, `run_total: refund.amount[minor, currency=currency] sum 100 USD per run -> refuse`); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errOut := unanchoredCaps()
+	if code != 0 || !strings.Contains(out, "1 slot(s)") {
+		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
+	}
+}
+
+func TestCapsAudit_IntentOfALedgerOutsideTheFilter(t *testing.T) {
+	e := threeCalls(t)
+	_ = e.call("r4", 7, `refund_other: refund.amount[minor, currency=currency] sum 100 USD per day -> refuse`)
+	e.tamper.hide = func(r, n string) bool { return r == "r4" && strings.HasPrefix(n, "cap-intent:") }
+	// The damage is in refund_other's ledger: an audit of refund_total does not look, and says so.
+	code, out, errOut := unanchoredCaps("-rule", "refund_total")
+	if code != 0 || !strings.Contains(out, "NOT CHECKED") {
+		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
+	}
+	code, out, errOut = unanchoredCaps("-rule", "refund_other")
+	wantFail(t, code, out, errOut, "INTENT_MISSING")
 }
