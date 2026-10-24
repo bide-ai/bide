@@ -168,7 +168,15 @@ For each ledger run (`@cap/...`) it checks:
    holds no record is `UNRECORDED`. That last finding is also what a reservation interrupted between its
    slot and its record looks like, and a re-drive of the run writes the record; a ledger run the store no
    longer holds but a record or a signed head names is `LEDGER_MISSING`.
-4. **The signed heads** (`-sth`, with `-pubkey`). An `AuditedStore` anchors a head for every ledger run it
+4. **The intents.** Every reserve slot's attempt must have exactly one `cap-intent:` record, in the run
+   that made the call, and the intent must send the attempt to this ledger with this amount, currency
+   and marking (`INTENT_MISSING`, `INTENT_DUPLICATE`, `INTENT_MISMATCH`, `INTENT_UNREADABLE`). An intent whose
+   window differs from its slot's is the window-pinning attack: the writer chose the ledger the attempt is
+   counted in. For a `day` or `hour` rule the window must also be in the rule's index run (`INDEX_MISSING`)
+   and not earlier than the newest window the index held when the intent was written (`INTENT_CLOCK`). An
+   intent with no slot is information: the attempt was interrupted before its slot, or the reservation was
+   refused, and it counts nothing.
+5. **The signed heads** (`-sth`, with `-pubkey`). An `AuditedStore` anchors a head for every ledger run it
    writes; pass the heads from your anchor log (one JSON head per line, any number, for any runs). Each
    must verify, and the ledger must be the one the newest head signs: a slot changed or deleted since is a
    `DIVERGENT_HEAD`. Entries **after** the newest head are `NOT_ATTESTED` and fail: whoever can write the
@@ -194,8 +202,8 @@ ledger exits 4. Amounts are in minor units, as the ledger holds them.
 attested), 1 for any finding, 2 for a usage error (neither `-sth` nor `-unanchored`, or both), 4 when the
 store cannot be opened or read. The `-json` report carries the findings and the per-ledger figures.
 
-This does not check the `cap-intent` records or the index runs (a planted intent with a stale window is
-the same trust boundary, and the same detection: the signed heads). `bide sample` writes a small ledger to
+It does not check the index runs for entries no intent uses (they cost nothing), and it does not re-apply
+the clock bound: the bound is the writer's setting and is not recorded. `bide sample` writes a small ledger to
 try it on: `bide audit caps -db sample.db -unanchored`.
 
 ## A worked configuration

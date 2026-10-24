@@ -1472,7 +1472,10 @@ bide audit: produce and verify audit proof bundles
          is compared with the cap-reserve record the run that made the call holds: a record whose slot
          is missing is DELETED, one whose cum_after or attempt differs is CHANGED, a reserve slot with no
          record is UNRECORDED (a slot inserted from outside, or a reservation interrupted before its
-         record). With signed heads (-sth, each verified, from the anchor log of the AuditedStore that
+         record). Every reserve slot's attempt must have exactly one cap-intent, which sends it to this
+         ledger with this amount, currency and marking (a planted intent with another window is
+         INTENT_MISMATCH), and whose window the rule's index run holds; an intent with no slot is
+         listed, not failed. With signed heads (-sth, each verified, from the anchor log of the AuditedStore that
          anchors the store) a ledger run must be the one the newest head signs, and entries after it are
          NOT ATTESTED and fail; with -unanchored the report says first that whoever can write the store
          can delete a slot or append a release undetected, and that the audit only finds

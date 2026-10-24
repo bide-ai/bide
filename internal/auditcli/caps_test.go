@@ -855,3 +855,12 @@ func TestCapsAudit_IntentOfALedgerOutsideTheFilter(t *testing.T) {
 	code, out, errOut = unanchoredCaps("-rule", "refund_other")
 	wantFail(t, code, out, errOut, "INTENT_MISSING")
 }
+
+func TestCapsAudit_AFilterDoesNotCallAnotherLedgersIntentsOrphans(t *testing.T) {
+	e := threeCalls(t)
+	_ = e.call("r4", 7, `refund_other: refund.amount[minor, currency=currency] sum 100 USD per day -> refuse`)
+	code, out, errOut := unanchoredCaps("-rule", "refund_total")
+	if code != 0 || strings.Contains(out, "have no slot") {
+		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
+	}
+}
