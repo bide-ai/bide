@@ -93,21 +93,34 @@ func (s RunStart) inheritedMarks() []inheritedMark {
 
 type inheritedMarksKey struct{}
 
+// carriedMarks is the marks a context hands to the run it starts. strict says a later drive of that run
+// must show the same list (a sub-agent's: the calling turn is fixed in the parent's journal); a session
+// turn's list is read when its run starts and not held to afterwards.
+type carriedMarks struct {
+	list   []inheritedMark
+	strict bool
+}
+
 // withCallMarks binds to ctx the marks the model turn that made the call was shown: the runs the call
 // starts inherit them. Bound only for a run under taint, so a run that is not never passes marks.
 func withCallMarks(ctx context.Context, marks []taintMark) context.Context {
-	return context.WithValue(ctx, inheritedMarksKey{}, canonicalInherited(marks))
+	return context.WithValue(ctx, inheritedMarksKey{}, carriedMarks{list: canonicalInherited(marks), strict: true})
+}
+
+// withSessionMarks binds the marks a session turn starts with (the session's, from its journal).
+func withSessionMarks(ctx context.Context, l []inheritedMark) context.Context {
+	return context.WithValue(ctx, inheritedMarksKey{}, carriedMarks{list: l})
 }
 
 // callMarksFrom is the marks ctx carries for the runs a call starts, and whether it carries a list at
 // all (a list is carried, possibly empty, exactly when the calling run is under taint).
-func callMarksFrom(ctx context.Context) ([]inheritedMark, bool) {
-	l, ok := ctx.Value(inheritedMarksKey{}).([]inheritedMark)
-	return l, ok
+func callMarksFrom(ctx context.Context) (carriedMarks, bool) {
+	c, ok := ctx.Value(inheritedMarksKey{}).(carriedMarks)
+	return c, ok
 }
 
-// startInherited is the marks recs' run:start recorded as inherited.
-func startInherited(recs []Record) []taintMark {
+// startOfRecs is the ext of recs' run:start, as a RunStart that holds only it.
+func startOfRecs(recs []Record) RunStart {
 	for _, r := range recs {
 		if r.Kind != StepValue || r.Name != runStartStep {
 			continue
@@ -116,11 +129,16 @@ func startInherited(recs []Record) []taintMark {
 			Ext map[string]json.RawMessage `json:"ext"`
 		}
 		if json.Unmarshal(r.Result, &s) != nil {
-			return nil
+			return RunStart{}
 		}
-		return inheritedAsMarks(RunStart{Ext: s.Ext}.inheritedMarks())
+		return RunStart{Ext: s.Ext}
 	}
-	return nil
+	return RunStart{}
+}
+
+// startInherited is the marks recs' run:start recorded as inherited.
+func startInherited(recs []Record) []taintMark {
+	return inheritedAsMarks(startOfRecs(recs).inheritedMarks())
 }
 
 // A sub-agent's answer carries the taint of the run that gave it: if the child ended with any mark, the
@@ -183,12 +201,18 @@ func subAgentMarkSource(tool string) string {
 	return s[:cut]
 }
 
-// endedTainted reports whether the run runID of this agent's store ended with a mark in its journal:
-// inherited from above, or read by the run. The journal is the child's own, read from its own store.
+// endedTainted reports whether the run runID of this agent's store ended with a mark in its journal.
 func (a *Agent) endedTainted(ctx context.Context, runID string) (bool, error) {
+	l, _, err := a.endedMarks(ctx, runID)
+	return len(l) > 0, err
+}
+
+// endedMarks is the marks the run runID of this agent's store ended with: inherited from above, or read by
+// the run, one per source, and whether the run was under taint.
+func (a *Agent) endedMarks(ctx context.Context, runID string) ([]inheritedMark, bool, error) {
 	recs, err := a.store.History(ctx, runID)
 	if err != nil {
-		return false, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
+		return nil, false, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
 	}
 	declared := func(tool string) string {
 		if s := a.specs[tool]; s != nil {
@@ -198,5 +222,9 @@ func (a *Agent) endedTainted(ctx context.Context, runID string) (bool, error) {
 	}
 	// A model record at the end shows the marks the whole journal holds.
 	turns := foldTaint(append(slices.Clone(recs), Record{Kind: StepModel}), startInherited(recs), declared)
-	return len(turns) > 0 && len(turns[len(turns)-1].Marks) > 0, nil
+	under := startOfRecs(recs).taintDigest() != ""
+	if len(turns) == 0 {
+		return nil, under, nil
+	}
+	return canonicalInherited(turns[len(turns)-1].Marks), under, nil
 }
