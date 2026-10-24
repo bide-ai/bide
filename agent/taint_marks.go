@@ -69,6 +69,21 @@ func TaintExempt(reason string) ToolOption {
 	})
 }
 
+// trustedOutput declares that the results of the tool are the host's own, and why (the reason is required and
+// is kept in the declarations): the tool reads a table the host writes, calls a service it runs. It is the
+// positive counterpart of Untrusted, and records nothing in a result: a trusted result carries no mark. It
+// exists so that a taint policy that requires provenance can tell a tool someone classified from one nobody
+// did. A tool cannot be both Untrusted and trusted. Unexported until its name is decided.
+func trustedOutput(reason string) ToolOption {
+	return toolOption(func(c *toolConfig) error {
+		if err := checkProvenanceName("trusted output", reason); err != nil {
+			return err
+		}
+		c.spec.trusted = reason
+		return nil
+	})
+}
+
 // WithUntrustedInput declares that the run's input is untrusted content from the named source: an agent
 // started by an inbound email or a customer's message. It is journaled in run:start's settings, and a
 // later drive that passes another source is ErrConfig, as for any setting that differs from the
@@ -132,5 +147,8 @@ func normalizeUntrusted(s *ToolSpec) error {
 		}
 	}
 	s.Untrusted = s.untrustedSource()
+	if s.Untrusted != "" && s.trusted != "" {
+		return fmt.Errorf("agent: tool %q declares untrusted source %q and trusted output %q: it is one or the other: %w", s.Name, s.Untrusted, s.trusted, ErrConfig)
+	}
 	return nil
 }

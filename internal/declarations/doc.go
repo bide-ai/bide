@@ -39,6 +39,8 @@ type Document struct {
 type Policy struct {
 	Gate   *Gate `json:"gate,omitempty"`
 	Refuse bool  `json:"refuse,omitempty"`
+	// RequireProvenance: every tool declares a provenance and every run states its input's.
+	RequireProvenance bool `json:"require_provenance,omitempty"`
 }
 
 // Gate is an approval policy as the digest sees it. The approvers' keys are not part of it.
@@ -53,12 +55,14 @@ type Gate struct {
 // Tool is one registered tool. Untrusted, Exempt and Caps are what the digest covers; Effect (the tool can
 // have a side effect) and OwnGate (its own approval gate) are for the findings and the diff only.
 type Tool struct {
-	Name      string   `json:"name"`
-	Effect    bool     `json:"effect,omitempty"`
-	OwnGate   *Gate    `json:"own_gate,omitempty"`
-	Untrusted string   `json:"untrusted,omitempty"`
-	Exempt    string   `json:"exempt,omitempty"`
-	Caps      []string `json:"caps,omitempty"`
+	Name      string `json:"name"`
+	Effect    bool   `json:"effect,omitempty"`
+	OwnGate   *Gate  `json:"own_gate,omitempty"`
+	Untrusted string `json:"untrusted,omitempty"`
+	// Trusted is the reason the tool's results are the host's own (a positive provenance declaration).
+	Trusted string   `json:"trusted,omitempty"`
+	Exempt  string   `json:"exempt,omitempty"`
+	Caps    []string `json:"caps,omitempty"`
 }
 
 // Decode reads a document strictly: one JSON value, no unknown member (a document written by a newer
@@ -148,21 +152,23 @@ func (d Document) Recompute() string {
 	}
 	type toolDecl struct {
 		Untrusted string   `json:"untrusted,omitempty"`
+		Trusted   string   `json:"trusted,omitempty"`
 		Exempt    string   `json:"exempt,omitempty"`
 		Caps      []string `json:"caps,omitempty"`
 	}
 	covered := struct {
-		Format string              `json:"format"`
-		Gate   json.RawMessage     `json:"gate,omitempty"`
-		Refuse bool                `json:"refuse,omitempty"`
-		Tools  map[string]toolDecl `json:"tools,omitempty"`
-	}{Format: digestFormat, Gate: d.Policy.Gate.wire(), Refuse: d.Policy.Refuse}
+		Format            string              `json:"format"`
+		Gate              json.RawMessage     `json:"gate,omitempty"`
+		Refuse            bool                `json:"refuse,omitempty"`
+		RequireProvenance bool                `json:"require_provenance,omitempty"`
+		Tools             map[string]toolDecl `json:"tools,omitempty"`
+	}{Format: digestFormat, Gate: d.Policy.Gate.wire(), Refuse: d.Policy.Refuse, RequireProvenance: d.Policy.RequireProvenance}
 	for _, t := range d.Tools {
-		if t.Untrusted != "" || t.Exempt != "" || len(t.Caps) > 0 {
+		if t.Untrusted != "" || t.Trusted != "" || t.Exempt != "" || len(t.Caps) > 0 {
 			if covered.Tools == nil {
 				covered.Tools = map[string]toolDecl{}
 			}
-			covered.Tools[t.Name] = toolDecl{Untrusted: t.Untrusted, Exempt: t.Exempt, Caps: t.Caps}
+			covered.Tools[t.Name] = toolDecl{Untrusted: t.Untrusted, Trusted: t.Trusted, Exempt: t.Exempt, Caps: t.Caps}
 		}
 	}
 	sum := sha256.Sum256(mustJSON(covered))
@@ -195,6 +201,9 @@ func (d Document) validate() error {
 	for _, t := range d.Tools {
 		if err := t.OwnGate.validate("the own gate of tool " + t.Name); err != nil {
 			return err
+		}
+		if t.Untrusted != "" && t.Trusted != "" {
+			return fmt.Errorf("tool %q is both untrusted and trusted: a valid agent declares one", t.Name)
 		}
 	}
 	return nil

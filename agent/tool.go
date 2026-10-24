@@ -62,6 +62,10 @@ type ToolSpec struct {
 	// TaintExempt, when not empty, is the reason the tool's calls need no escalation gate in a run that
 	// read untrusted content (see TaintExempt).
 	TaintExempt string
+	// trusted, when not empty, is the reason the tool's results are the host's own and not outside text (see
+	// trustedOutput). A taint policy that requires provenance (TaintPolicy.requireProvenance) needs a tool to
+	// declare this or Untrusted. Unexported until the name is decided.
+	trusted string
 	// Timeout, when positive, bounds each call: the call runs under a context with this
 	// deadline. A result the tool returns is recorded even if the deadline has passed; an error
 	// it returns after the deadline has an unknown outcome (see WithTimeout).

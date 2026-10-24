@@ -88,6 +88,9 @@ func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs [
 		if err != nil {
 			return ctx, nil, nil, err
 		}
+		if err := a.checkInputProvenance(ctx, want); err != nil {
+			return ctx, nil, nil, err
+		}
 		now := clockFrom(ctx)
 		if d.cfg.clock != nil {
 			now = d.cfg.clock
@@ -478,4 +481,20 @@ func (a *Agent) putStart(ctx context.Context, runID string, b json.RawMessage) (
 	}
 	got, err := decodeStored(runID, runStartStep, e.Data)
 	return got.Result, false, err
+}
+
+// checkInputProvenance holds a new run to stating where its input came from when the taint policy requires
+// it. The run of a sub-agent is not asked: its input is written by its parent's model, and it inherits the
+// parent's marks. A later drive of a run that started is not asked either (it is read back, not started).
+func (a *Agent) checkInputProvenance(ctx context.Context, start RunStart) error {
+	if a.taint == nil || !a.taint.requireProvenance {
+		return nil
+	}
+	if c, ok := callMarksFrom(ctx); ok && c.strict {
+		return nil // started by a call of a run above it
+	}
+	if start.Settings.UntrustedInput != nil || start.Settings.TrustedInput != nil {
+		return nil
+	}
+	return fmt.Errorf("agent: the taint policy requires every run to state where its input came from: pass WithUntrustedInput(source) if it came from outside, or WithTrustedInput(reason) if it is the host's own: %w", ErrConfig)
 }
