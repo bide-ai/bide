@@ -1,0 +1,3 @@
+Section: Security
+
+`agent.ClaimAttempt` now refuses a name under a prefix the engine reserves for its own journal keys (`cap-intent:`, `cap-reserve:`, `gate-reason:`, `approval-pending:`, `slot:`, `taint/` and the rest that `Step` refuses), and an empty name, with `ErrConfig`; only attempt marker keys (`attempt:`) may still be claimed. Before, an application with journal access could use it to plant an engine record before the engine wrote it, for example a `cap-intent:` that pinned a cap reservation to an old window and so bypassed the cap. The engine's own paths (the halt resolution's claim included) do not go through the exported call and are unchanged.

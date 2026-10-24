@@ -178,13 +178,39 @@ func checkStepName(op, name string) error {
 	if name == "" {
 		return fmt.Errorf("%s: empty step name: %w", op, ErrConfig)
 	}
-	for _, p := range reservedPrefixes {
-		if strings.HasPrefix(name, p) {
-			return fmt.Errorf("%s: step name %q starts with %q, which the engine reserves for its own journal keys: %w", op, name, p, ErrConfig)
-		}
+	if p, ok := reservedPrefixOf(name); ok {
+		return fmt.Errorf("%s: step name %q starts with %q, which the engine reserves for its own journal keys: %w", op, name, p, ErrConfig)
 	}
 	return nil
 }
+
+// reservedPrefixOf returns the reserved prefix name starts with, if it starts with one.
+func reservedPrefixOf(name string) (string, bool) {
+	for _, p := range reservedPrefixes {
+		if strings.HasPrefix(name, p) {
+			return p, true
+		}
+	}
+	return "", false
+}
+
+// checkClaimName refuses, in the exported ClaimAttempt, an empty name and a name under a reserved prefix
+// (the check Step makes) except the attempt marker family "attempt:", which is what ClaimAttempt exists to
+// write. Every other key the engine writes (cap-intent:, cap-reserve:, gate-reason:, approval-pending: and
+// the rest) comes only from the engine's own paths, which claim through Journal.claim and never meet this
+// check: a caller with journal access could otherwise plant such a record before the engine writes it.
+func checkClaimName(op, name string) error {
+	if name == "" {
+		return fmt.Errorf("%s: empty name: %w", op, ErrConfig)
+	}
+	if p, ok := reservedPrefixOf(name); ok && !strings.HasPrefix(name, attemptPrefix) {
+		return fmt.Errorf("%s: name %q starts with %q, which the engine reserves for its own journal keys (only attempt markers, under %q, may be claimed): %w", op, name, p, attemptPrefix, ErrConfig)
+	}
+	return nil
+}
+
+// attemptPrefix starts the key of every attempt marker.
+const attemptPrefix = "attempt:"
 
 // subRunSep separates a derived run ID from the root it hangs off. A sub-agent's run is
 // "<parent run>><encoded call>" (SubRunID), and a session's journal and turn runs are

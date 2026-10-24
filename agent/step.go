@@ -27,8 +27,16 @@ import (
 // and writes it again at the next claim of the same name, which then loses to the marker its
 // earlier claim may have left: a caller that claims one name only (rather than numbered
 // re-attempts, as Step and tool calls do) halts on it, which is safe.
+//
+// name must be an attempt marker key (it starts with "attempt:"). Any other name the engine reserves
+// ("cap-intent:", "gate-reason:", "approval-pending:", "slot:" and the rest; see IsReservedStepName) is
+// ErrConfig, so a caller cannot plant an engine record with it; the engine writes those through its own
+// paths. An empty name is ErrConfig too.
 func ClaimAttempt(ctx context.Context, j *Journal, runID, name string, rec Record) (won bool, got Record, err error) {
 	if err := checkCallerRun("ClaimAttempt", runID); err != nil {
+		return false, Record{}, err
+	}
+	if err := checkClaimName("ClaimAttempt", name); err != nil {
 		return false, Record{}, err
 	}
 	return j.claim(ctx, runID, name, rec)
