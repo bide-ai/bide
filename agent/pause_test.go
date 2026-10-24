@@ -379,7 +379,7 @@ func TestResolveHalt_ContendedHaltIsNotResolvedWhileYoung(t *testing.T) {
 	unresolved("while young")
 
 	// The same young marker, halted by a crash, is resolved without a minimum age.
-	if won, _, err := ClaimAttempt(ctx, store, "r1", toolAttemptStep("c2"), Record{Kind: StepAttempt, ToolUseID: "c2", AttemptedAt: t0.UnixMilli()}); err != nil || !won {
+	if won, _, err := store.claim(ctx, "r1", toolAttemptStep("c2"), Record{Kind: StepAttempt, ToolUseID: "c2", AttemptedAt: t0.UnixMilli()}); err != nil || !won {
 		t.Fatal(won, err)
 	}
 	if err := ResolveHalt(ctx, store, HaltRef{RunID: "r1", Op: OpRef{Kind: OpTool, ID: "c2"}, Cause: HaltCrashed}, out); err != nil {
