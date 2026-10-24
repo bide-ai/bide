@@ -190,6 +190,10 @@ func (c *cli) caps(args []string) {
 	if b, merr := json.Marshal(rep); merr == nil {
 		c.artifact = b
 	}
+	if in.filter.any() && len(rep.Ledgers) == 0 && len(rep.Findings) == 0 {
+		c.note(unusable(errors.New("no cap ledger matches -namespace, -rule, -window and -run: nothing was checked")))
+		return
+	}
 	if len(rep.Findings) > 0 {
 		c.fail("%d problem(s): the cap ledgers do not hold together", len(rep.Findings))
 	}

@@ -643,3 +643,17 @@ func TestCapsAudit_AForgedHeadOfADeletedLedgerIsNotCounted(t *testing.T) {
 		t.Fatalf("a head that does not verify is evidence of nothing:\n%s", out)
 	}
 }
+
+func TestCapsAudit_AFilterThatMatchesNothingIsNotAPass(t *testing.T) {
+	threeCalls(t)
+	for _, args := range [][]string{{"-window", "2026-10-23"}, {"-rule", "nope"}, {"-namespace", "other"}, {"-run", "nope"}} {
+		code, out, errOut := unanchoredCaps(args...)
+		if code != 4 || strings.Contains(out, "PASS") || !strings.Contains(errOut, "no cap ledger matches") {
+			t.Fatalf("%v: exit %d\n%s\n%s", args, code, out, errOut)
+		}
+	}
+	// The window filter keeps the day it names.
+	if code, out, errOut := unanchoredCaps("-window", capsDay); code != 0 || !strings.Contains(out, "PASS (filtered)") {
+		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
+	}
+}
