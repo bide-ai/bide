@@ -22,6 +22,7 @@ const (
 	Weakened
 )
 
+// String is the class as the report prints it: weakened, strengthened or changed.
 func (c Class) String() string {
 	switch c {
 	case Strengthened:

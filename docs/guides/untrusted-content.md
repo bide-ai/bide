@@ -137,9 +137,9 @@ Taint and cap declarations are Go. Nothing at runtime changes them, so a change 
 review of it needs to see the declarations, not the diff of the Go around them. The agent dumps its declarations
 as a document, and `bide doctor` reports on one and diffs two.
 
-<!-- docsnip: setup agent *agent.Agent; w io.Writer; returns error -->
+<!-- docsnip: setup a *agent.Agent; w io.Writer; returns error -->
 ```go
-doc, err := agent.Declarations()
+doc, err := a.Declarations()
 if err != nil {
 	return err
 }
