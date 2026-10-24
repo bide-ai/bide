@@ -176,11 +176,13 @@ For each ledger run (`@cap/...`) it checks:
    counted in. For a `day` or `hour` rule the window must also be in the rule's index run (`INDEX_MISSING`)
    and not earlier than the newest window the index held when the intent was written (`INTENT_CLOCK`). The
    window must also fit the call's own time (`INTENT_WINDOW`, whatever ledger the intent names and whatever
-   `-window` says): not earlier than the window of the run's start (its `run:start`, on the run's clock), and
-   not later than the window after the one the attempt marker's time falls in (the store stamps the marker
-   when it claims the attempt). One window forward is allowed, for a boundary that falls between the claim
-   and the intent; one window back never is, because that is how a planted intent gains room. A `per run`
-   window must be the call's root run. An intent with no slot is information: the attempt was interrupted before its slot, or the reservation was
+   `-window` says): it must be the window that contains the attempt marker's time, or the next one. The
+   engine stamps the marker from the run's clock when it claims the attempt, a moment before the first
+   intent, and a caller cannot set it. One window forward is allowed, for a boundary that falls between the
+   claim and the intent; one window back never is, because that is how a planted intent gains room. An
+   attempt with no marker (a retry-safe tool) has only its run's start to date it by: its window must not be
+   earlier than the window of `run:start`, and a long-lived run can pin to any later one, so the report counts
+   those intents. A `per run` window must be the call's root run. An intent with no slot is information: the attempt was interrupted before its slot, or the reservation was
    refused, and it counts nothing.
 5. **The releases.** Only the loop releases, and only a call it proved never began, so such a call never has
    a result its tool produced. A release of a reservation whose run holds a successful tool result for the
