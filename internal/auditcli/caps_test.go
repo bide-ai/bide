@@ -1025,3 +1025,14 @@ func TestCapsAudit_JSONSchemaAndStatesMatchTheTextAndTheExit(t *testing.T) {
 		}
 	}
 }
+
+func TestCapsAudit_AForgedReleaseOfAnotherRunIsOutsideRun(t *testing.T) {
+	e := threeCalls(t)
+	e.forgeRelease("r1")
+	code, out, errOut := unanchoredCaps("-run", "r2")
+	if code != 0 || strings.Contains(out, "RELEASE_") || !strings.Contains(out, "NOT CHECKED") {
+		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
+	}
+	code, out, errOut = unanchoredCaps("-run", "r1")
+	wantFail(t, code, out, errOut, "RELEASE_OF_A_CALL_THAT_RAN")
+}
