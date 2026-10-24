@@ -12,8 +12,9 @@ import (
 type Class int
 
 const (
-	// Changed is a difference that is neither plainly looser nor plainly stricter (a rotated approver set, a
-	// longer gate timeout, a cap line that does not parse), or one of which the report cannot tell.
+	// Changed is a difference that is neither plainly looser nor plainly stricter (a gate timeout, another
+	// untrusted source name, an amount member), and that a person should read. Anything the report cannot
+	// judge as safe is Weakened, not Changed: a pipeline gate must stop on it.
 	Changed Class = iota
 	// Strengthened requires more than before.
 	Strengthened
@@ -190,11 +191,17 @@ func diffGate(subject string, old, new *Gate, covered bool) []Change {
 			add(Strengthened, "the requester is now excluded")
 		}
 		if !sameSet(old.Approvers, new.Approvers) {
+			removed := !isSubset(old.Approvers, new.Approvers)
 			note := ""
 			if !slices.ContainsFunc(new.Approvers, func(a string) bool { return slices.Contains(old.Approvers, a) }) {
 				note = ", none in common with the old set"
 			}
-			add(Changed, fmt.Sprintf("the approver set changed (%d approvers, was %d%s)", len(new.Approvers), len(old.Approvers), note))
+			if removed {
+				// A rotation is a change a person must approve, even when need is still met.
+				add(Weakened, fmt.Sprintf("an approver was removed or replaced (%d approvers, was %d%s): a person must approve a rotation", len(new.Approvers), len(old.Approvers), note))
+			} else {
+				add(Strengthened, fmt.Sprintf("approvers were added (%d approvers, was %d)", len(new.Approvers), len(old.Approvers)))
+			}
 		}
 	}
 	if old.TimeoutMS != new.TimeoutMS {
@@ -279,7 +286,7 @@ func diffCaps(subject string, oldLines, newLines []string) []Change {
 		// The new lines cannot be read, so nothing says they still limit anything: fail closed.
 		return []Change{{Weakened, subject, "the new cap lines do not parse, so they cannot be compared; treated as weakened", true}}
 	case errOld != nil:
-		return []Change{{Changed, subject, "the old cap lines do not parse; compare them by hand", true}}
+		return []Change{{Weakened, subject, "the old cap lines do not parse, so the new ones cannot be compared; treated as weakened", true}}
 	}
 	var out []Change
 	add := func(c Class, what string) { out = append(out, Change{c, subject, what, true}) }
@@ -405,7 +412,7 @@ func diffRule(subject string, o, n amount.Rule) []Change {
 		case n.Key == nil:
 			add(Strengthened, "the key is removed: one total per key becomes one shared total")
 		default:
-			add(Changed, "the key changed")
+			add(Weakened, "the key changed: the totals cannot be compared, treated as weakened")
 		}
 	}
 	return out

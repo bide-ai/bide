@@ -172,12 +172,13 @@ bide doctor -diff main/declarations.json declarations.json
   excluded; an m-of-n gate turned into one decision; a raised cap limit; a removed cap rule; a *renamed*
   cumulative rule (its name is its ledger, so the window starts again from zero); a refuse turned into a gate; a
   window of a day where it was an hour; a rule that applies to fewer tools; a key added to a cumulative rule (one
-  shared total becomes one per key); a tool that becomes `ReadOnly` (taint stops gating its calls); and, because
-  they cannot be compared and a pipeline should stop, a cap rule that changes kind (per call and cumulative), a
-  cap rule that changes currency, and new cap lines that do not parse. Changed, neither stricter nor looser: a
-  rotated approver set (the message says when none of the old approvers remain), a longer or shorter gate
-  timeout, another amount member, a new key replacing another, old cap lines that do not parse. Cap lines are
-  compared by their meaning, through the cap grammar, not as text.
+  shared total becomes one per key); a tool that becomes `ReadOnly` (taint stops gating its calls); an approver
+  removed or replaced in a gate, even when `need` is still met (a rotation is a change a person must approve; an
+  approver only added is strengthened); and, because they cannot be compared and a pipeline should stop, a cap
+  rule that changes kind (per call and cumulative), currency, exponent or key, and cap lines that do not parse on
+  either side. Anything the report cannot judge as safe is `WEAKENED`. Changed, for a person to read and not
+  stopping the pipeline: a longer or shorter gate timeout, another untrusted source name, another amount member.
+  Cap lines are compared by their meaning, through the cap grammar, not as text.
 - **The digest and the diff must agree.** Different digests with no difference in the documents mean the digest
   covers something the document does not carry; equal digests with a difference in what the digest covers mean
   the reverse. Either is an error (exit 1), not a report.
