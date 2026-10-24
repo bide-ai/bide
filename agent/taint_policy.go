@@ -26,10 +26,10 @@ type TaintPolicy struct {
 	Gate *ApprovalPolicy
 	// Refuse says a tainted turn's side-effecting calls are not run and not asked.
 	Refuse bool
-	// requireProvenance makes a tool that declares neither Untrusted nor a trusted output a registration
+	// RequireProvenance makes a tool that declares neither Untrusted nor a trusted output a registration
 	// error, and a Run, Send or SendOnce that states neither WithUntrustedInput nor WithTrustedInput an error
-	// at its first drive (a sub-agent's run and a resume are not asked). Unexported until its name is decided.
-	requireProvenance bool
+	// at its first drive (a sub-agent's run and a resume are not asked). Experimental.
+	RequireProvenance bool
 }
 
 // check refuses a policy that gates nothing, or gates with an invalid policy.
@@ -103,14 +103,14 @@ func (a *Agent) taintDigest() string {
 	if a.taint == nil {
 		return ""
 	}
-	d := taintDeclarations{Format: taintDeclarationsFormat, Gate: a.taint.Gate, Refuse: a.taint.Refuse, RequireProvenance: a.taint.requireProvenance}
+	d := taintDeclarations{Format: taintDeclarationsFormat, Gate: a.taint.Gate, Refuse: a.taint.Refuse, RequireProvenance: a.taint.RequireProvenance}
 	for _, name := range slices.Sorted(maps.Keys(a.specs)) {
 		s := a.specs[name]
-		if src := s.untrustedSource(); src != "" || s.trusted != "" || s.TaintExempt != "" || len(s.Caps) > 0 {
+		if src := s.untrustedSource(); src != "" || s.Trusted != "" || s.TaintExempt != "" || len(s.Caps) > 0 {
 			if d.Tools == nil {
 				d.Tools = map[string]toolTaintDecl{}
 			}
-			d.Tools[name] = toolTaintDecl{Untrusted: src, Trusted: s.trusted, Exempt: s.TaintExempt, Caps: s.Caps}
+			d.Tools[name] = toolTaintDecl{Untrusted: src, Trusted: s.Trusted, Exempt: s.TaintExempt, Caps: s.Caps}
 		}
 	}
 	b, err := json.Marshal(d)

@@ -7,8 +7,8 @@ import (
 	"testing"
 )
 
-// RequireProvenance (unexported until the names are decided: TaintPolicy.requireProvenance, the tool option
-// trustedOutput, ToolSpec.trusted): every tool declares a provenance and every run states its input's.
+// RequireProvenance (TaintPolicy.RequireProvenance, the tool option
+// Trusted, ToolSpec.Trusted): every tool declares a provenance and every run states its input's.
 
 func provTool(name string, opts ...ToolOption) Tool {
 	return MustFunc(name, name, func(context.Context, struct{}) (string, error) { return "ok", nil }, opts...)
@@ -17,11 +17,11 @@ func provTool(name string, opts ...ToolOption) Tool {
 func provAgent(t *testing.T, require bool, tools ...Tool) (*Agent, error) {
 	t.Helper()
 	return New(&scriptModel{turns: [][]Emit{textTurn("done"), textTurn("done"), textTurn("done"), textTurn("done"), textTurn("done"), textTurn("done")}}, memJournal(), WithTools(tools...),
-		WithTaintPolicy(TaintPolicy{Refuse: true, requireProvenance: require}))
+		WithTaintPolicy(TaintPolicy{Refuse: true, RequireProvenance: require}))
 }
 
 func TestRequireProvenance_EveryToolDeclaresOne(t *testing.T) {
-	declared := []Tool{provTool("a", Untrusted("crm")), provTool("b", trustedOutput("our own table"))}
+	declared := []Tool{provTool("a", Untrusted("crm")), provTool("b", Trusted("our own table"))}
 	if _, err := provAgent(t, true, declared...); err != nil {
 		t.Fatalf("tools that declare a provenance were refused: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestRequireProvenance_EveryToolDeclaresOne(t *testing.T) {
 		t.Fatalf("without RequireProvenance: %v", err)
 	}
 	// Declared both ways is a contradiction, whatever the policy.
-	if _, err := provAgent(t, false, provTool("both", Untrusted("crm"), trustedOutput("mine"))); !errors.Is(err, ErrConfig) {
+	if _, err := provAgent(t, false, provTool("both", Untrusted("crm"), Trusted("mine"))); !errors.Is(err, ErrConfig) {
 		t.Fatalf("a tool that is both untrusted and trusted = %v, want ErrConfig", err)
 	}
 	func() {
@@ -47,7 +47,7 @@ func TestRequireProvenance_EveryToolDeclaresOne(t *testing.T) {
 				t.Error("a trusted declaration with no reason was accepted")
 			}
 		}()
-		provTool("empty", trustedOutput(""))
+		provTool("empty", Trusted(""))
 	}()
 }
 
@@ -57,7 +57,7 @@ func TestRequireProvenance_EveryRunStatesItsInput(t *testing.T) {
 		_, err := a.Run(ctx, id, UserText("go"), opts...)
 		return err
 	}
-	a, err := provAgent(t, true, provTool("a", trustedOutput("mine")))
+	a, err := provAgent(t, true, provTool("a", Trusted("mine")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestRequireProvenance_EveryRunStatesItsInput(t *testing.T) {
 		}
 	}
 	// Not re-checked on a later drive of a run that started with a statement (a resume carries none).
-	b, _ := provAgent(t, true, provTool("a", trustedOutput("mine")))
+	b, _ := provAgent(t, true, provTool("a", Trusted("mine")))
 	if err := run(b, "r1", WithTrustedInput("the operator")); err != nil {
 		t.Fatal(err)
 	}
@@ -90,8 +90,8 @@ func TestRequireProvenance_EveryRunStatesItsInput(t *testing.T) {
 // A session's turns are runs: each Send states its input's provenance too.
 func TestRequireProvenance_SessionTurnsStateTheirInput(t *testing.T) {
 	ctx := context.Background()
-	a, err := New(&scriptModel{turns: [][]Emit{textTurn("one"), textTurn("two")}}, memJournal(), WithTools(provTool("a", trustedOutput("mine"))),
-		WithTaintPolicy(TaintPolicy{Refuse: true, requireProvenance: true}))
+	a, err := New(&scriptModel{turns: [][]Emit{textTurn("one"), textTurn("two")}}, memJournal(), WithTools(provTool("a", Trusted("mine"))),
+		WithTaintPolicy(TaintPolicy{Refuse: true, RequireProvenance: true}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,14 +112,14 @@ func TestRequireProvenance_SessionTurnsStateTheirInput(t *testing.T) {
 func TestRequireProvenance_ASubAgentRunIsNotAskedToState(t *testing.T) {
 	ctx := context.Background()
 	childJ := memJournal()
-	child, err := New(&scriptModel{turns: [][]Emit{textTurn("child answer")}}, childJ, WithTools(provTool("a", trustedOutput("mine"))),
-		WithTaintPolicy(TaintPolicy{Refuse: true, requireProvenance: true}))
+	child, err := New(&scriptModel{turns: [][]Emit{textTurn("child answer")}}, childJ, WithTools(provTool("a", Trusted("mine"))),
+		WithTaintPolicy(TaintPolicy{Refuse: true, RequireProvenance: true}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	parent, err := New(&scriptModel{turns: [][]Emit{toolTurn("d1", "delegate", `{"task":"go"}`), textTurn("done")}}, memJournal(),
-		WithTools(MustSubAgent("delegate", "delegate", child, TaintExempt("test"), trustedOutput("a sub-agent: what it read marks its answer by itself")), provTool("a", trustedOutput("mine"))),
-		WithTaintPolicy(TaintPolicy{Refuse: true, requireProvenance: true}))
+		WithTools(MustSubAgent("delegate", "delegate", child, TaintExempt("test"), Trusted("a sub-agent: what it read marks its answer by itself")), provTool("a", Trusted("mine"))),
+		WithTaintPolicy(TaintPolicy{Refuse: true, RequireProvenance: true}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,17 +148,17 @@ func TestRequireProvenance_IsInTheDigestOnlyWhenSet(t *testing.T) {
 	if mk(false, provTool("a", Untrusted("crm"))).taintDigest() != base.taintDigest() {
 		t.Error("the same declarations give another digest")
 	}
-	if mk(false, provTool("a", trustedOutput("mine"))).taintDigest() == mk(false, provTool("a")).taintDigest() {
+	if mk(false, provTool("a", Trusted("mine"))).taintDigest() == mk(false, provTool("a")).taintDigest() {
 		t.Error("a trusted declaration is not in the digest")
 	}
-	if mk(false, provTool("a", trustedOutput("mine"))).taintDigest() == mk(false, provTool("a", trustedOutput("other reason"))).taintDigest() {
+	if mk(false, provTool("a", Trusted("mine"))).taintDigest() == mk(false, provTool("a", Trusted("other reason"))).taintDigest() {
 		t.Error("the trusted reason is not in the digest")
 	}
 	// A policy that does not require it digests as before this existed: golden from before the field.
 	if d := base.declarationsDoc(); d.Policy.RequireProvenance || d.Tools[0].Trusted != "" {
 		t.Errorf("document = %+v", d)
 	}
-	doc := mk(true, provTool("a", trustedOutput("mine"))).declarationsDoc()
+	doc := mk(true, provTool("a", Trusted("mine"))).declarationsDoc()
 	if !doc.Policy.RequireProvenance || doc.Tools[0].Trusted != "mine" || doc.Recompute() != doc.Digest {
 		t.Errorf("document = %+v, recompute %q", doc, doc.Recompute())
 	}

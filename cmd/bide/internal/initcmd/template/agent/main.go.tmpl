@@ -97,6 +97,8 @@ func (p provider) refunds() int {
 // taint policy gates the side effects the model asks for after reading it. refund is a side effect
 // (the default Safety): bide runs it at most once, and if the process dies after it starts and
 // before its result is journaled, the run halts instead of refunding again (agent.ResolveHalt).
+// Both tools declare where their results come from (Untrusted or Trusted), because the policy sets
+// RequireProvenance: a tool nobody classified is refused at agent.New.
 func tools(p provider) []agent.Tool {
 	type refundArgs struct {
 		Order  string `json:"order"`
@@ -108,7 +110,7 @@ func tools(p provider) []agent.Tool {
 		}, agent.WithSafety(agent.Safety{ReadOnly: true}), agent.Untrusted("inbound-email")),
 		agent.MustFunc("refund", "refund an order", func(_ context.Context, a refundArgs) (string, error) {
 			return "refunded", p.refund(a.Order, a.Amount)
-		}),
+		}, agent.Trusted("the host's own refund provider")),
 	}
 }
 
@@ -119,7 +121,7 @@ func newAgent(p provider, k keys, j *agent.Journal, m agent.Model) (*agent.Agent
 		// The run acts for a customer: its requester. ExcludePrincipal keeps a requester from deciding
 		// a call their own input provoked.
 		agent.WithIdentity(agent.Identity{Actor: "support-agent@1", OnBehalfOf: "customer-7"}),
-		agent.WithTaintPolicy(agent.TaintPolicy{Gate: escalationGate()}),
+		agent.WithTaintPolicy(agent.TaintPolicy{Gate: escalationGate(), RequireProvenance: true}),
 	)
 }
 

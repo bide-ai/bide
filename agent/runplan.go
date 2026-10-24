@@ -487,7 +487,7 @@ func (a *Agent) putStart(ctx context.Context, runID string, b json.RawMessage) (
 // it. The run of a sub-agent is not asked: its input is written by its parent's model, and it inherits the
 // parent's marks. A later drive of a run that started is not asked either (it is read back, not started).
 func (a *Agent) checkInputProvenance(ctx context.Context, start RunStart) error {
-	if a.taint == nil || !a.taint.requireProvenance {
+	if a.taint == nil || !a.taint.RequireProvenance {
 		return nil
 	}
 	if c, ok := callMarksFrom(ctx); ok && c.strict {
