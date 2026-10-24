@@ -72,11 +72,11 @@ func TestClaimAttempt_EnginePathsStillWriteReservedNames(t *testing.T) {
 	}
 }
 
-// Pre-claiming the attempt marker of a capped call (the one attempt: form a caller may still claim) cannot
-// change a cap outcome: the engine's own claim loses and the call halts without running, the reservation stays
-// counted, and the reconcile pass releases nothing, since only a not-started record the winning claim wrote
-// (and ClaimAttempt refuses to write one, above) voids an attempt.
-func TestClaimAttempt_PreclaimedMarkerCannotRelease(t *testing.T) {
+// Pre-claiming the attempt marker of a capped call (the one attempt: form a caller may still claim) can only
+// stop the call: the engine's own claim loses and the call halts without running (the safe direction), no
+// reservation is left counted for it, and the reconcile pass changes nothing, since only a not-started record
+// written by the winning claim voids an attempt (and ClaimAttempt refuses to write one, above).
+func TestClaimAttempt_PreclaimedMarkerCannotChangeACapOutcome(t *testing.T) {
 	j := memJournal()
 	if won, _, err := ClaimAttempt(context.Background(), j, "r0", toolAttemptStep("c1"), Record{Kind: StepAttempt, ToolUseID: "c1", AttemptedAt: 1}); err != nil || !won {
 		t.Fatalf("pre-claim: won %v, err %v", won, err)
@@ -86,11 +86,10 @@ func TestClaimAttempt_PreclaimedMarkerCannotRelease(t *testing.T) {
 	if _, ok := errors.AsType[*OutcomeUnknown](err); !ok || tool.calls() != 0 {
 		t.Fatalf("run = %v, calls %d; want a halt (OutcomeUnknown) and the tool not run", err, tool.calls())
 	}
-	before := len(liveDay(t, j))
-	if released, err := reconcileCaps(capCtx(), j); err != nil || len(released) != 0 {
-		t.Fatalf("reconcileCaps = %v, %v; want nothing released for a pre-claimed marker", released, err)
+	if live := liveDay(t, j); len(live) != 0 {
+		t.Fatalf("live = %+v, want no reservation left counted for the stopped call", live)
 	}
-	if after := len(liveDay(t, j)); after != before {
-		t.Fatalf("live slots %d before reconcile, %d after", before, after)
+	if released, err := reconcileCaps(capCtx(), j); err != nil || len(released) != 0 {
+		t.Fatalf("reconcileCaps = %v, %v; want nothing released", released, err)
 	}
 }
