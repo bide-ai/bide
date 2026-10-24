@@ -177,14 +177,16 @@ bide doctor -diff main/declarations.json declarations.json
   approver only added is strengthened); and, because they cannot be compared and a pipeline should stop, a cap
   rule that changes kind (per call and cumulative), currency, exponent or key, and cap lines that do not parse on
   either side. Anything the report cannot judge as safe is `WEAKENED`. Changed, for a person to read and not
-  stopping the pipeline: a longer or shorter gate timeout, another untrusted source name, another amount member.
+  stopping the pipeline: a longer or shorter gate timeout, another untrusted source name, another amount member, the
+  same approvers in another order (the order is part of the digest).
   Cap lines are compared by their meaning, through the cap grammar, not as text.
 - **The digest and the diff must agree.** Different digests with no difference in the documents mean the digest
   covers something the document does not carry; equal digests with a difference in what the digest covers mean
   the reverse. Either is an error (exit 1), not a report.
 - **Strict reading.** The document is read so that what the text shows is what it holds: a duplicate member, a
   member spelled in another case, an unknown member, data after the document and a document over 16 MiB are
-  refused.
+  refused, and so is a gate no valid agent has (an approver listed twice, which would count twice toward `need`, a
+  `need` outside the approvers, no approvers).
 - **What it cannot see.** The report is only as good as the dump. It does not show what happens at run time: a
   sub-agent tool, or a tool that starts a programmatic sub-run, marks its answer when a run it drove read untrusted
   content (`subagent:<tool>`), and a child inherits its parent's marks, so a delegating tool taints its caller
