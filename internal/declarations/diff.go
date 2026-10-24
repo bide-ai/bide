@@ -323,7 +323,9 @@ func ruleKey(r amount.Rule) string {
 // diffRule classifies the differences between two rules of one name.
 func diffRule(subject string, o, n amount.Rule) []Change {
 	var out []Change
-	add := func(c Class, what string) { out = append(out, Change{c, subject, fmt.Sprintf("cap rule %q: %s", o.Name, what), true}) }
+	add := func(c Class, what string) {
+		out = append(out, Change{c, subject, fmt.Sprintf("cap rule %q: %s", o.Name, what), true})
+	}
 	if o.Kind != n.Kind {
 		add(Changed, "the kind changed (per call and cumulative)")
 		return out
