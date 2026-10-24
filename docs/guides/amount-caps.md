@@ -225,7 +225,10 @@ It does not check the index runs for entries no intent uses (they cost nothing),
 the writer's clock bound (a setting that is not recorded); the time check above stands in for it.
 **What remains.** Someone who can write the store and sign heads (a process that writes through the signing
 store, or holds the log key) can write a history that is consistent with itself, and the audit finds only
-contradictions: it cannot tell that history from an honest one. `bide sample` writes a small ledger to
+contradictions: it cannot tell that history from an honest one. A head signs whatever the run held when it
+was signed: a record planted in a run before a later, legitimate write to the same run is covered by the head
+that write anchors, so the head attests the plant and `RUN_NOT_ATTESTED` cannot see it. Detection by heads works
+only for what was written after the newest head; the time check above is what catches a plant of that kind. `bide sample` writes a small ledger to
 try it on: `bide audit caps -db sample.db -unanchored`.
 
 ## A worked configuration

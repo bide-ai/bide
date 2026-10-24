@@ -1261,3 +1261,49 @@ func TestCapsAudit_AnUnmarkedAttemptIsDatedByItsRunsStartAndSaysSo(t *testing.T)
 		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
 	}
 }
+
+// TestCapsAudit_APausedRunPinnedBackToItsStartDay: the reviewer's probe. A run waits at an approval for two
+// days; an intent planted while it waited fixes the day it started, and the resumed drive adopts it. The
+// attempt marker is claimed when the run resumes (the engine stamps it from the run's clock), so the audit
+// sees a window two days before the claim.
+func TestCapsAudit_APausedRunPinnedBackToItsStartDay(t *testing.T) {
+	e := newCapsEnv(t)
+	if err := e.call("r0", 8000); err != nil { // 80 of the day's 100 USD, on Oct 22
+		t.Fatal(err)
+	}
+	type in struct {
+		Amount   int64  `json:"amount"`
+		Currency string `json:"currency"`
+	}
+	tool, err := agent.Func("refund", "refund", func(context.Context, in) (string, error) { return "ok", nil },
+		agent.WithCaps(capsRule), agent.WithApproval(agent.SingleApproval()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	drive := func(now time.Time) error {
+		a, err := agent.New(agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "refund", `{"amount":9000,"currency":"USD"}`), agenttest.TextTurn("done")),
+			e.j, agent.WithTools(tool), agent.WithClock(func() time.Time { return now }))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = a.Run(context.Background(), "r1", agent.UserText("go"))
+		return err
+	}
+	if err := drive(capsNow); !errors.As(err, new(*agent.ApprovalPending)) {
+		t.Fatalf("drive 1 = %v, want the approval gate", err)
+	}
+	e.plantIntent("r1", capsDay, 9000) // while it waits: the day it started, with room for 90 only if r0 is not counted
+	if err := agent.Approve(context.Background(), e.j, "r1", "c1", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := drive(capsNow.Add(48 * time.Hour)); err != nil {
+		t.Fatalf("drive 2 = %v", err)
+	}
+	code, out, errOut := unanchoredCaps()
+	wantFail(t, code, out, errOut, "INTENT_WINDOW")
+	if !strings.Contains(out, "the attempt was claimed in window 2026-10-24: a call cannot be counted in an earlier window") {
+		t.Fatalf("the claim's window must be named:\n%s", out)
+	}
+	code, out, errOut = e.anchored()
+	wantFail(t, code, out, errOut, "INTENT_WINDOW")
+}
