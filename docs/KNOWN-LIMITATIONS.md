@@ -140,7 +140,7 @@ refuse a run ID that starts with `@cap/` (`ErrConfig`), as they refuse `@stop`, 
 `Parallel` and `ResolveHalt` refuse a step name that starts with `slot:`, `cap-intent:`,
 `cap-reserve:` or `gate-reason:`. The engine will keep cap ledgers and gate reasons under them in
 later releases. `ClaimAttempt` refuses every reserved name except an attempt marker key (`attempt:`), so a caller
-with journal access cannot plant an engine record such as a `cap-intent:` with it. `Approve`, `Cancel`, `Signal`, `Step`, `Lease` and the other exported calls that write to a run you name refuse a
+with journal access cannot plant an engine record such as a `cap-intent:` with it. A caller with journal access can still pre-claim an `attempt:tool:<call>` marker: that halts the call (`OutcomeUnknown`), a denial of service in the safe direction, and it cannot admit the call or release a cap, because only a not-started record that carries the marker's own claim id voids an attempt. `Approve`, `Cancel`, `Signal`, `Step`, `Lease` and the other exported calls that write to a run you name refuse a
 `@cap/` run too (`@stop` keeps its old behaviour in them: they still write to it, a known gap left
 as it was). A run already named under `@cap/` keeps its journal, but `Recover`, the run viewer,
 `bide approve -list`, `bide audit notifications` and `bide audit redactions` skip it from this version on, so it is not resumed and a gate
