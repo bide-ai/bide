@@ -210,7 +210,20 @@ func TestHandler_ServesTheEscalationInstance(t *testing.T) {
 	if esc == nil || !esc.Waiting || esc.Need != 2 || !slices.Equal(esc.Approvers, []string{"esc1", "esc2"}) {
 		t.Fatalf("gates = %+v, want c2#taint waiting on 2 of [esc1 esc2]", v.Gates)
 	}
+	if len(esc.Why) != 1 || esc.Why[0].Kind != "taint" || esc.Why[0].Source != "crm" {
+		t.Errorf("the instance's reasons = %+v, want the taint reason from crm", esc.Why)
+	}
+	for _, g := range v.Gates {
+		if g.ToolUseID == "c2" && len(g.Why) != 0 {
+			t.Errorf("the call's own gate carries reasons %+v", g.Why)
+		}
+	}
 	_, page := get(t, h, "/run?id="+taintfixture.Run)
+	for _, want := range []string{"why this gate", "untrusted content from crm", "not part of what an approver signs"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the run page does not show %q", want)
+		}
+	}
 	for _, want := range []string{"c2#taint", "esc1", "esc2"} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the run page does not show %q", want)

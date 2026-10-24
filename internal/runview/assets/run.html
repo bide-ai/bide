@@ -29,6 +29,7 @@
   {{if .Gates}}<div class="card"><h3>Approval {{if gt (len .Gates) 1}}gates{{else}}gate{{end}}</h3>{{range .Gates}}
     <p class="gatehead {{.Class}}"><b>{{.ToolName}}</b>: {{.Headline}}</p>
     <p class="cline">{{if .Single}}one decision{{else}}needs {{.Need}} of {{len .Approvers}}{{end}}{{if not .Waiting}}{{with .SigLine}}; <span class="gatesig {{if eq . "signatures verified"}}good{{else if . | hasPrefix "signatures NOT"}}bad{{else}}muted{{end}}">{{.}}</span>{{end}}{{end}}</p>
+    {{if .Why}}<details class="gatewhy"><summary>why this gate</summary>{{range .WhyLines}}<p class="small">{{.}}</p>{{end}}<p class="small muted">The application's record of why the call was held, as of the ask; it is not part of what an approver signs.</p></details>{{end}}
     {{if .Due}}<p class="cline gatedue {{if or .Expired .Overdue}}bad{{else}}muted{{end}}">{{.Due}}{{with .Timeout}}; timeout {{.}}{{end}}</p>{{end}}
     <details><summary>who decided</summary>
     {{if .Single}}<p class="small">{{if .Expired}}the gate expired{{with .DecisionAt}}, recorded {{.}} UTC by the clock of the drive that recorded it{{end}}{{else}}one decision{{with .DecisionAt}}, recorded {{.}} UTC by the clock of the process that called Approve{{end}}{{end}}</p>{{else}}<p class="small">approvers: {{join .Approvers ", "}}</p>{{end}}

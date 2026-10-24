@@ -25,6 +25,7 @@ import (
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
 	"github.com/bide-ai/bide/internal/approveline"
+	"github.com/bide-ai/bide/internal/gatereason"
 	"github.com/bide-ai/bide/internal/policyfile"
 	"github.com/bide-ai/bide/internal/runview"
 	"github.com/bide-ai/bide/internal/safefile"
@@ -1023,6 +1024,13 @@ func (c *cmd) show(g *gateOf, s agent.ApprovalSubject, sg audit.Signer) (clipped
 	if gt.AskedAt != "" {
 		row("asked", safe(gt.AskedAt))
 	}
+	for i, r := range gt.Why {
+		label := ""
+		if i == 0 {
+			label = "why"
+		}
+		row(label, safe(r.Line())+st.Dim(" (the application's record, as of the ask; not part of what you sign)"))
+	}
 	text := prettyArgs(g.call.Args)
 	hidden := 0
 	if !c.f.full {
@@ -1168,6 +1176,9 @@ type waiting struct {
 	Requesters []string `json:"requesters,omitempty"`
 	Excluded   []string `json:"excluded,omitempty"`
 	AskedAt    string   `json:"asked_at,omitempty"`
+	// Why says why the call needs this gate beyond its tool's own (the gate-reason record, the
+	// application's claim, as of the ask); nothing in the decision binds it.
+	Why []gatereason.Reason `json:"why,omitempty"`
 	// ExpiresAt is the gate's recorded deadline, Timeout its length, and Due where it stands on this
 	// command's clock. Overdue: the deadline has passed and no drive has recorded the expiry; the gate
 	// refuses decisions, so no command is offered.
@@ -1236,7 +1247,7 @@ func (c *cmd) list(ctx context.Context) error {
 				continue
 			}
 			w := waiting{Run: run, Call: g.ToolUseID, Tool: g.ToolName, Single: g.Single, Need: g.Need, Approvers: g.Approvers, ApprovedBy: g.ApprovedBy, DeniedBy: g.DeniedBy, Pending: g.Pending, AskedAt: g.AskedAt,
-				ExpiresAt: g.ExpiresAt, Timeout: g.Timeout, Due: g.Due, Overdue: g.Overdue, Identity: g.Identity, Held: g.Held}
+				ExpiresAt: g.ExpiresAt, Timeout: g.Timeout, Due: g.Due, Overdue: g.Overdue, Identity: g.Identity, Held: g.Held, Why: g.Why}
 			bound := g.Identity != nil && g.Identity.Bound
 			if g.ExcludePrincipal {
 				w.Requesters, w.Excluded = g.Requesters, g.Excluded
@@ -1302,6 +1313,9 @@ func (c *cmd) list(ctx context.Context) error {
 		fmt.Fprintf(c.out, "\n  run %s  call %s  tool %s\n", st.Bold(safe(w.Run)), st.Bold(safe(w.Call)), st.Bold(safe(w.Tool)))
 		if w.Single {
 			fmt.Fprintf(c.out, "    one approver, one decision (unsigned)\n")
+		}
+		for _, r := range w.Why {
+			fmt.Fprintf(c.out, "    why: %s\n", safe(r.Line()))
 		}
 		if w.Due != "" {
 			text := w.Due
