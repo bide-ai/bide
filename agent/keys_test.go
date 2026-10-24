@@ -77,6 +77,7 @@ var keyConstructors = map[string]func(string) string{
 	"sessionStartStep":       func(s string) string { return sessionStartStep(len(s)) },
 	"sessionFromStep":        sessionFromStep,
 	"sessionTaintStep":       func(string) string { return sessionTaintStep },
+	"sessionTaintTurnStep":   func(s string) string { return sessionTaintTurnStep(len(s)) },
 	"retrievalStep":          func(s string) string { return retrievalStep(len(s)) },
 	"planScopedStep": func(s string) string {
 		return planScopedStep(context.WithValue(context.Background(), planScopeKey{}, planScope{runID: "r", node: "node:n"}), "r", s)
@@ -113,7 +114,7 @@ func TestEngineKeys_AreDistinct(t *testing.T) {
 			if name == "runCompleteStep" || name == "runAbortedStep" || name == "runStartStep" || name == "runPrincipalStep" || name == "runCancelledStep" || name == "runCancelRequestedStep" || name == "headerStep" || name == "sessionTaintStep" {
 				from = name // a constant
 			}
-			if name == "sessionTurnStep" || name == "sessionStartStep" || name == "modelStep" || name == "retrievalStep" || name == "runLimitsStep" {
+			if name == "sessionTurnStep" || name == "sessionStartStep" || name == "sessionTaintTurnStep" || name == "modelStep" || name == "retrievalStep" || name == "runLimitsStep" {
 				from = name + "(" + build(s) + ")" // takes a number: equal numbers give equal keys
 			}
 			add(build(s), from)
