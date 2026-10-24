@@ -299,6 +299,7 @@ func TestTaintIntake_AnEscalationSubjectIsServedOnlyWhenItsReasonRecordAgreesWit
 		t.Fatalf("drive = %v, want a pause on the escalation instance", err)
 	}
 	// edit copies the journal into a plain store, changing the gate-reason record by fn (nil drops it).
+	decoyLast := false
 	var decoy func(m map[string]any) // when set, a second gate-reason record, built from the engine's, written ahead of it
 	edit := func(fn func(m map[string]any)) int {
 		t.Helper()
@@ -316,7 +317,7 @@ func TestTaintIntake_AnEscalationSubjectIsServedOnlyWhenItsReasonRecordAgreesWit
 				if err := json.Unmarshal(data, &rec); err != nil {
 					t.Fatal(err)
 				}
-				if decoy != nil {
+				if decoy != nil && !decoyLast {
 					var d map[string]any
 					_ = json.Unmarshal(data, &d)
 					decoy(d["result"].(map[string]any))
@@ -331,6 +332,16 @@ func TestTaintIntake_AnEscalationSubjectIsServedOnlyWhenItsReasonRecordAgreesWit
 			}
 			if _, _, err := ms.Insert(ctx, base.runID, e.Name, data); err != nil {
 				t.Fatal(err)
+			}
+			if decoy != nil && decoyLast && strings.HasPrefix(e.Name, "gate-reason:") {
+				var d map[string]any
+				_ = json.Unmarshal(e.Data, &d)
+				decoy(d["result"].(map[string]any))
+				d["name"] = "gate-reason:decoy"
+				dd, _ := json.Marshal(d)
+				if _, _, err := ms.Insert(ctx, base.runID, "gate-reason:decoy", dd); err != nil {
+					t.Fatal(err)
+				}
 			}
 		}
 		h, err := approvals.New(agenttest.MustJournal(ms), base.verify, approvals.WithGatePolicy(base.live), approvals.WithOnError(func(err error) { t.Log(err) }))
@@ -389,7 +400,11 @@ func TestTaintIntake_AnEscalationSubjectIsServedOnlyWhenItsReasonRecordAgreesWit
 	if got := edit(func(map[string]any) {}); got != http.StatusNotFound {
 		t.Errorf("a disagreeing record for this call ahead of the engine's: %d, want 404", got)
 	}
-	decoy = nil
+	decoyLast = true
+	if got := edit(func(map[string]any) {}); got != http.StatusNotFound {
+		t.Errorf("a disagreeing record for this call behind the engine's: %d, want 404", got)
+	}
+	decoy, decoyLast = nil, false
 	if got := edit(nil); got != http.StatusNotFound {
 		t.Errorf("no reason record: %d, want 404 (not served)", got)
 	}
