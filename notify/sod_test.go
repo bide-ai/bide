@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bide-ai/bide/internal/gatereason"
+	"github.com/bide-ai/bide/agent"
 )
 
 // The approval payload names the approvers a gate with separation of duties excludes, and omits the
@@ -45,7 +45,7 @@ func TestPayloadWhy(t *testing.T) {
 	if strings.Contains(plain, `"why"`) {
 		t.Fatalf("payload without a reason carries the field: %s", plain)
 	}
-	n.Approval.Why = []gatereason.Reason{
+	n.Approval.Why = []agent.GateReason{
 		{Kind: "taint", Source: "inbound-email", Ref: "tool:read_email/c1", Pos: 4, At: "2026-10-24T10:43:00.000Z"},
 		{Kind: "cap", Rule: "refund_one", Action: "gate", Why: "over", Currency: "USD", Amount: &amt, Limit: 500000, At: "2026-10-24T10:43:00.000Z"},
 	}

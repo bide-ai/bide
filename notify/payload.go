@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/agent"
-	"github.com/bide-ai/bide/internal/gatereason"
 )
 
 // Schema is the value of the payload's "schema" field. New fields are additive within v1; a
@@ -117,8 +116,8 @@ type Approval struct {
 	// the untrusted content its turn read, or the cap rule that holds it. It is the application's claim, for
 	// the approver, and no gate reads it. A cap reason carries its figures (amount, limit, currency) only
 	// with WithFields(Args(tool)), as they are the call's own numbers; omitted when there is no reason.
-	Why  []gatereason.Reason `json:"why,omitempty"`
-	Args json.RawMessage     `json:"args,omitempty"` // only with WithFields(Args(tool))
+	Why  []agent.GateReason `json:"why,omitempty"`
+	Args json.RawMessage    `json:"args,omitempty"` // only with WithFields(Args(tool))
 }
 
 // Policy is the gate's k of n.
@@ -363,11 +362,11 @@ func (p *Payload) stopDetail(w *Webhook, n agent.Notification) {
 
 // whyOf is the reasons for a payload: a copy, with a cap reason's figures left out unless figures says the
 // call's own numbers may be sent.
-func whyOf(why []gatereason.Reason, figures bool) []gatereason.Reason {
+func whyOf(why []agent.GateReason, figures bool) []agent.GateReason {
 	if len(why) == 0 {
 		return nil
 	}
-	out := make([]gatereason.Reason, len(why))
+	out := make([]agent.GateReason, len(why))
 	copy(out, why)
 	if !figures {
 		for i := range out {

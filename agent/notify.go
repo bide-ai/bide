@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"time"
-
-	"github.com/bide-ai/bide/internal/gatereason"
 )
 
 // This file is the public surface of the built-in notifier: a Notifier is told, at least once and
@@ -77,7 +75,7 @@ type NotifyApproval struct {
 	// call (the call ID with "#taint"), the untrusted content its turn had read; for a call a cap rule
 	// holds, the rule and this call's figures as of the ask. It is the engine's gate-reason record, the
 	// application's claim and evidence for the approver, never read by a gate. Empty for a plain gate.
-	Why []gatereason.Reason
+	Why []GateReason
 	// reaskGen is the generation of the count a certificate-bound gate asks for (ApprovalIdentReaskStep),
 	// with Reask PendingIdentReapproval (0) or PendingExecHoldReapproval (n >= 1).
 	reaskGen int
