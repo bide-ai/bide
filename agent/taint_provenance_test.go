@@ -245,9 +245,13 @@ func TestTrustedWrapperOverUntrustedToolIsRefused(t *testing.T) {
 // A blank reason is not a declaration.
 func TestTrustedRefusesABlankReason(t *testing.T) {
 	ok := func(context.Context, struct{}) (string, error) { return "ok", nil }
-	for _, r := range []string{"", " ", "   ", "\t", " \t ", "\n", "\u00a0", "\u2003", "\u200b", "\u3000"} {
+	for _, r := range []string{"", " ", "   ", "\t", " \t ", "\n", "\u00a0", "\u2003", "\u200b", "\u3000", strings.Repeat("x", 1<<20)} {
 		if _, err := Func("t", "t", ok, Trusted(r)); !errors.Is(err, ErrConfig) {
-			t.Errorf("Trusted(%q) = %v, want ErrConfig", r, err)
+			t.Errorf("Trusted of %d bytes = %v, want ErrConfig", len(r), err)
+		}
+		// The hand-built spec is held to the same rules (TestTrustedOnARawSpecIsValidated names the cases).
+		if _, err := provAgent(t, false, reclassify{provTool("a"), "", r}); r != "" && !errors.Is(err, ErrConfig) {
+			t.Errorf("a raw spec with Trusted of %d bytes registered = %v, want ErrConfig", len(r), err)
 		}
 	}
 }
