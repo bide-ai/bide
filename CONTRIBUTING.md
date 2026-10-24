@@ -309,12 +309,12 @@ release-branch mode for it; everything else (the root tag, the nested modules in
 checks, the Release workflow) is the same as above.
 
 The branch is `release/vX.Y`, one per line, created from the line's `vX.Y.0` tag and protected like
-main (pull requests only, the CI checks and `dco` required, no force pushes, no deletion; a ruleset
+main (pull requests only, the CI checks, `Models`, `dco` and `Changelog fragment` required, no force pushes, no deletion; a ruleset
 or classic protection with required pull request reviews: the script reads GitHub and refuses a
-branch that has neither). `ci.yml` runs on pushes to and pull requests against `release/**`; a branch
-made from a tag older than that trigger needs the trigger backported in its first pull request, or its
-pushes and pull requests run no CI. `models.yml` and `gsm-gate.yml` run for main only, so they are not
-required on `release/**`. A pull request into a release branch runs the fast subset of CI; add the
+branch that has neither). `ci.yml` and `models.yml` run on pushes to and pull requests against `release/**`
+(`gsm-gate.yml` is for main only and not required there); a branch made from a tag older than those
+triggers needs them backported in its first pull request, or its pushes and pull requests run no CI.
+A pull request into a release branch runs the fast subset of CI; add the
 `full-ci` label, since nothing else runs the rest before the push run after the merge.
 
 1. Create the branch from the tag, once per line: `git push origin vX.Y.0^{commit}:refs/heads/release/vX.Y`.
