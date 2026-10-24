@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"iter"
 	"slices"
 	"strings"
 	"testing"
@@ -273,4 +274,75 @@ func TestTaintInherit_AChildThatStartedTaintedEndsTainted(t *testing.T) {
 		}
 	}
 	t.Fatal("no tool_result for d1")
+}
+
+// failLoadAt fails the n-th Load of one run (n counted from 1; 0 never) with a storage error, and counts them.
+type failLoadAt struct {
+	Store
+	run    string
+	failAt int
+	loads  *int
+}
+
+func (f failLoadAt) Unwrap() Store { return f.Store }
+func (f failLoadAt) Load(ctx context.Context, runID string, after int64) iter.Seq2[Entry, error] {
+	if runID == f.run {
+		*f.loads++
+		if *f.loads == f.failAt {
+			return func(yield func(Entry, error) bool) { yield(Entry{}, errors.New("injected: the child's journal cannot be read")) }
+		}
+	}
+	return f.Store.Load(ctx, runID, after)
+}
+
+// If the child's journal cannot be read for its mark, the parent does not finish the call unmarked: the
+// call has no outcome yet (subRunUnfinished), the parent stops with a storage error, and its next turn
+// does not run. A retry reads the journal and marks the answer.
+func TestTaintInherit_AnUnreadableChildJournalFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	const sub = "r>d1"
+	run := func(parentJ *Journal, childStore Store, writes *counter, turns ...[]Emit) error {
+		childJ := mustJournal(childStore)
+		child := mustNew(&scriptModel{turns: [][]Emit{toolTurn("r1", "read_a", `{}`), textTurn("child answer")}}, childJ, WithTools(
+			MustFunc("read_a", "read", func(context.Context, struct{}) (string, error) { return "text", nil }, WithSafety(Safety{ReadOnly: true}), Untrusted("a-src"))))
+		parent := mustNew(&scriptModel{turns: turns}, parentJ,
+			WithTools(MustSubAgent("delegate", "delegate", child), writes.tool("write")), WithTaintPolicy(TaintPolicy{Refuse: true}))
+		_, err := parent.Run(ctx, "r", UserText("go"))
+		return err
+	}
+	// A clean run counts the loads of the child's journal; the last one is the read of its mark.
+	var total int
+	var w0 counter
+	if err := run(memJournal(), failLoadAt{Store: NewMemStore(), run: sub, loads: &total}, &w0, toolTurn("d1", "delegate", `{"task":"go"}`), toolTurn("w1", "write", `{}`), textTurn("done")); err != nil {
+		t.Fatal(err)
+	}
+	if total == 0 || w0.n.Load() != 0 {
+		t.Fatalf("control run: %d loads of the child, %d writes; want loads and no write (the child's answer taints the parent)", total, w0.n.Load())
+	}
+	// The same run with that last read failing.
+	var seen int
+	var w counter
+	parentJ := memJournal()
+	childStore := failLoadAt{Store: NewMemStore(), run: sub, failAt: total, loads: &seen}
+	err := run(parentJ, childStore, &w, toolTurn("d1", "delegate", `{"task":"go"}`), toolTurn("w1", "write", `{}`), textTurn("done"))
+	if !errors.Is(err, ErrStorage) {
+		t.Fatalf("with the mark unreadable the parent returned %v, want a storage error", err)
+	}
+	if w.n.Load() != 0 {
+		t.Fatalf("the parent's write ran %d times after an unreadable child journal", w.n.Load())
+	}
+	recs, _ := parentJ.History(ctx, "r")
+	for _, r := range recs {
+		if r.Kind == StepToolResult && r.ToolUseID == "d1" {
+			t.Fatalf("the parent recorded a result for the sub-agent call whose mark it could not read: %+v", r.Safety)
+		}
+	}
+	// A retry (the read works now) finishes the call with its mark, and the write is refused.
+	seen = 1 << 20
+	if err := run(parentJ, childStore, &w, toolTurn("w1", "write", `{}`), textTurn("done")); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if w.n.Load() != 0 {
+		t.Fatalf("after the retry the write ran %d times; the answer must taint the parent's next turn", w.n.Load())
+	}
 }
