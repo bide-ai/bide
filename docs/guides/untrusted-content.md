@@ -99,7 +99,37 @@ run and not asked; the model reads an error result.
 - **The `gate-reason` record** says why the call was held: the sources and positions of the marks and the
   escalation policy's digest. It is evidence for the approver and the auditor, and never authority: the engine
   recomputes the reasons and enforces the union, so a record can add a requirement and never remove one.
-- The policy does not cover [plan flows](plan-flows.md) nodes, and children and sessions do not inherit taint yet.
+- The policy does not cover [plan flows](plan-flows.md) nodes. Children and sessions inherit taint, as follows.
+
+## Children, sub-agents and sessions
+
+Taint follows the content, not the run that read it.
+
+- **Down.** A sub-agent started by a call of a tainted turn starts tainted: its `run:start` records the marks the
+  calling turn was shown (`ext.taint_inherited`, one entry per source, sorted), so its first turn is gated as the
+  parent's would have been. The marks pass exactly when the parent run is under taint; a child of a run that is
+  not under taint inherits nothing. A later drive of the child that finds another list is `ErrConfig`.
+  The child need not share the parent's store.
+- **Up.** If a run the call drove ended with any mark, whether it read one itself or started tainted, the parent's
+  `tool_result` for the call carries the mark `subagent:<tool name>` (cut to 128 bytes on a character boundary), and
+  the parent's next turn is tainted. This covers a sub-agent tool and a tool that starts a programmatic sub-run
+  (`WithSubRuns`, `RunInfo.SubRunFor`) and returns its answer. Without it a tainted child's answer would launder
+  what it read. The child's journal is read from the child's own store. If it cannot be read, a call that succeeded
+  records nothing and stops with a storage error (a resume reads again), and a call that failed is marked, since
+  its error text may carry what the child read.
+- **Along a session.** A session keeps the questions and answers of its turns, so the answer of a tainted turn
+  reaches the next turn as the assistant's own words. A turn that ended with marks records them in the session
+  journal (`taint/turn/<n>`, the union of all marks so far), and every later turn starts with the union of all the
+  session's taint records, so a record can add marks and never remove any. A clean turn
+  after a tainted one does not clear it: the later turn inherits the marks and ends with them. The turns of a
+  session before a policy joined are not retro-marked.
+- A tool that runs an agent on a context of its own (a fresh `context.Background()`, a run ID that is not a
+  sub-run of the call) is an ordinary tool that returns content from elsewhere: bide cannot see the run, so the
+  answer is not marked. Declare `Untrusted` on such a tool.
+- A tool that calls a sub-agent is itself a call: unless it is `ReadOnly` or `TaintExempt`, a tainted turn needs
+  the escalation gate to delegate. Attenuation (a narrower grant, [delegation](delegation.md)) is separate and does
+  not clear taint.
+- Not covered: a saga's rollback re-run of a sub-agent, and the answer a `ResolveHalt` injects.
 
 ## What this does not do
 

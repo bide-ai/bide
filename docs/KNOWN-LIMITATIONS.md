@@ -812,8 +812,12 @@ consequences and does not prevent prompt injection. Its limits:
   that writes to a memory or index the next run trusts launders the content.
 - **Text the host injects outside the journal** (a system prompt, a model middleware) is invisible to the marks;
   an input is trusted unless the entry point passes `WithUntrustedInput`.
-- **Children and sessions do not inherit taint yet.** A sub-agent run or a session turn is not gated for what its
-  parent read.
+- **Children and sessions inherit taint, with limits.** A sub-agent's run starts with the marks of the turn that
+  called it, its tainted answer marks the parent's result, and a tainted session turn marks the turns after it
+  ([guide](guides/untrusted-content.md#children-sub-agents-and-sessions)). A saga's rollback re-run of a sub-agent
+  and the answer `ResolveHalt` injects carry no mark. The turns of a session before a policy joined are not
+  retro-marked. A tool that starts a run by a path bide does not own (a goroutine of its own, another process)
+  passes nothing.
 - **A run is gated by the policy it started under.** A run that started with no policy is never gated for its
   marks; a no-policy process refuses the side effects of a policy-started run, and a changed policy digest holds
   a call asked under the old one. Roll the whole fleet before enabling a policy; an older binary ignores the

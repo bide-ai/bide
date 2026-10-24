@@ -97,6 +97,9 @@ func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs [
 		// their own (run:principal), so evidence can prove them without the run's input.
 		want.Ancestors = startAncestors(ctx, want.Principal)
 		want = want.withTaintDigest(a.startTaintDigest(ctx)) // under taint if the agent has a policy or the parent or session is
+		if c, ok := callMarksFrom(ctx); ok {
+			want = want.withInheritedMarks(c.list) // the marks the parent turn that started this run was shown
+		}
 		wrotePrincipal, err := putPrincipal(ctx, a.store, runID, want)
 		if err != nil {
 			return ctx, nil, nil, err
@@ -128,6 +131,11 @@ func (a *Agent) openPlan(ctx context.Context, runID string, d *driveSpec, recs [
 		if err := a.holdDrive(runID, d, start, idn, explicitID); err != nil {
 			return ctx, nil, nil, err
 		}
+	}
+	// A run is held to the marks it started with: a drive that reaches it with other ones (the parent's
+	// turn shows another set now) is ErrConfig, as for its ancestors.
+	if c, ok := callMarksFrom(ctx); ok && c.strict && found && !slices.Equal(c.list, start.inheritedMarks()) {
+		return ctx, nil, nil, fmt.Errorf("run %s was started with other inherited taint marks than the calling turn shows now; drive it with the declarations it started under: %w", runID, ErrConfig)
 	}
 	// A later drive's different limit is journaled before it drives (rule 10).
 	lim := journaledLimits(start.Settings, amends)

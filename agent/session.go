@@ -513,6 +513,11 @@ func (s *Session) runTurn(ctx context.Context, runID string, ref *SessionRef, in
 	if err != nil {
 		return answer, tot, turns, err // pause/error: transcript unadvanced; retry same input to resume
 	}
+	// The marks the turn ended with are recorded before the turn is, so a recorded turn's taint is on
+	// record and every later turn starts with it (session_taint.go).
+	if err := s.recordTurnTaint(ctx, runID); err != nil {
+		return answer, tot, turns, err
+	}
 
 	claim, err := newClaim()
 	if err != nil {
@@ -682,11 +687,15 @@ func (s *Session) withSessionTaint(ctx context.Context) (context.Context, error)
 		if json.Unmarshal(rec.Result, &d) != nil || d == "" {
 			return ctx, fmt.Errorf("session %s: %s does not hold a declarations digest: %w", s.id, sessionTaintStep, ErrStorage)
 		}
-		return withUnderTaint(ctx, d), nil
+		marks, err := s.sessionMarks(ctx)
+		if err != nil {
+			return ctx, err
+		}
+		return withSessionMarks(withUnderTaint(ctx, d), marks), nil
 	}
 	d := s.agent.taintDigest()
 	if d == "" {
-		return ctx, nil
+		return withSessionMarks(ctx, nil), nil
 	}
 	b, _ := json.Marshal(d)
 	got, _, err := s.agent.store.putNew(ctx, j, sessionTaintStep, Record{Kind: StepValue, Result: b})
@@ -697,5 +706,9 @@ func (s *Session) withSessionTaint(ctx context.Context) (context.Context, error)
 	if json.Unmarshal(got.Result, &have) != nil || have == "" {
 		return ctx, fmt.Errorf("session %s: %s does not hold a declarations digest: %w", s.id, sessionTaintStep, ErrStorage)
 	}
-	return withUnderTaint(ctx, have), nil
+	marks, err := s.sessionMarks(ctx)
+	if err != nil {
+		return ctx, err
+	}
+	return withSessionMarks(withUnderTaint(ctx, have), marks), nil
 }

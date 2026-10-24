@@ -154,7 +154,7 @@ func (a *Agent) turnMarks(ctx context.Context, runID, firstCall string) ([]taint
 		}
 		return ""
 	}
-	marks, _ := taintOfCall(recs, firstCall, nil, declared)
+	marks, _ := taintOfCall(recs, firstCall, startInherited(recs), declared)
 	return marks, nil
 }
 
