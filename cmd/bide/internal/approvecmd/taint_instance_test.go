@@ -137,3 +137,40 @@ func TestApprove_ShowsWhyTheInstanceAsks(t *testing.T) {
 		t.Errorf("the call's own gate shows the taint reason:\n%s", ownScreen.String())
 	}
 }
+
+// Probe: a cap reason in the record shows in -list, in its JSON and on the decision screen of the call's own
+// gate, with the figures and the label "as of the ask".
+func TestApprove_ShowsACapReason(t *testing.T) {
+	f := taintfixture.New(t, &agent.ApprovalPolicy{Need: 1, Approvers: []string{"own1"}})
+	_ = f.Drive()
+	j := f.WithCapReason() // the call's own gate (c2) still waits: its approval is not submitted
+	stub := Stores{Postgres: func(string, bool) (agent.Store, io.Closer, error) { return j.Store(), io.NopCloser(nil), nil }}
+	var out, errb bytes.Buffer
+	if code := Main([]string{"-postgres", "postgres://u@h/db", "-list", "-color", "never"}, strings.NewReader(""), &out, &errb, stub); code != 0 {
+		t.Fatalf("code %d: %s", code, errb.String())
+	}
+	if !strings.Contains(out.String(), "why: cap refund_one: this call 6000.00 USD, limit 5000.00 USD (over, gate)") {
+		t.Errorf("-list lacks the cap line:\n%s", out.String())
+	}
+	out.Reset()
+	if code := Main([]string{"-postgres", "postgres://u@h/db", "-list", "-json"}, strings.NewReader(""), &out, &errb, stub); code != 0 {
+		t.Fatalf("code %d: %s", code, errb.String())
+	}
+	var got []waiting
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil || len(got) != 1 || len(got[0].Why) != 1 || got[0].Why[0].Rule != "refund_one" || got[0].Why[0].Amount == nil || *got[0].Why[0].Amount != 600000 {
+		t.Fatalf("-list -json = %v / %s, want the cap reason with its figures", err, out.String())
+	}
+	own, err := load(context.Background(), j, taintfixture.Run, "c2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	var screen bytes.Buffer
+	c := &cmd{out: &screen, st: term.For(&screen, term.Never), f: flags{as: "own1", approverKeys: "keys"}}
+	c.show(own, f.Subject("c2"), audit.Ed25519Signer{Priv: priv})
+	for _, want := range []string{"cap refund_one: this call 6000.00 USD", "the application's record, as of the ask"} {
+		if !strings.Contains(screen.String(), want) {
+			t.Errorf("the decision screen lacks %q:\n%s", want, screen.String())
+		}
+	}
+}
