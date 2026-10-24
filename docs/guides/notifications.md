@@ -235,7 +235,13 @@ credential and never goes in a payload: an adapter that reads from Postgres repl
 <journal.db>` part with `-postgres "$DSN"` itself.
 
 **In it:** kind, run ID, the step and tool name, the gate's approver IDs and its policy (k of n), the
-run's principal, the times, and a view pointer. For a gate with separation of duties
+run's principal, the times, and a view pointer.
+`approval.why` says why the call needs the gate beyond its tool's own, when the engine recorded a reason: for the
+escalation instance of a tainted call (the call ID with `#taint`), each source of untrusted content its turn had
+read, with where it was read (`tool:<name>/<call>`, `input` or `retrieval`) and its position in the journal; for
+a gate a cap rule holds, the rule, what it decided and why it fired. A cap reason's figures (the call's amount, the
+limit, the currency) are sent only for a tool named in `Args(...)`, as they are the call's own numbers. The reason
+is the application's record, for the approver; no gate reads it, and the signed decision does not bind it. For a gate with separation of duties
 (`ExcludePrincipal`), `approval.excluded` lists the approvers who are requesters of the run: their
 decisions never count, so a router should not ask them. When the gate asks again over a recorded tally it does not act on
 (a redeploy turned on `ExcludePrincipal`, or the tally predates the decision format),

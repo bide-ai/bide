@@ -87,6 +87,11 @@ run and not asked; the model reads an error result.
 - **The gate that decides it is the one its pause note records**, never the tool's live gate or the process's
   current policy. The approvals intake serves an escalation subject only when its `gate-reason` record agrees with
   its pause note; a journal that disagrees is not served.
+- **The reason is shown, not signed.** The engine records why it held the call (`gate-reason:<call>`): the
+  sources of untrusted content its turn read, with where and at which journal position. `bide approve -list`,
+  the decision screen, `bide view` and the notifier's `approval.why` show it for the `#taint` instance (a cap
+  reason, for a call a cap rule holds, shows the rule and this call's figures as of the ask). It is the
+  application's record: no gate reads it and the signed decision does not bind it.
 - **An approval clears nothing.** It is a decision on one call. The next side-effecting call is gated again, and
   no operation clears taint on a run.
 - **Not gated:** a `ReadOnly` tool, a tool declared `TaintExempt`, a call requested in the same turn as the read

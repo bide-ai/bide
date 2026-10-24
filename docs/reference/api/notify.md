@@ -52,8 +52,10 @@ type Approval struct {
 
 	Excluded []string `json:"excluded,omitempty"`
 
-	Reask string          `json:"reask,omitempty"`
-	Args  json.RawMessage `json:"args,omitempty"`
+	Reask string `json:"reask,omitempty"`
+
+	Why  []gatereason.Reason `json:"why,omitempty"`
+	Args json.RawMessage     `json:"args,omitempty"`
 }
 ```
 

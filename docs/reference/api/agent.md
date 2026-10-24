@@ -1877,6 +1877,8 @@ type NotifyApproval struct {
 	Excluded []string
 
 	Reask string
+
+	Why []gatereason.Reason
 	// contains filtered or unexported fields
 }
 ```
