@@ -312,7 +312,7 @@ The branch is `release/vX.Y`, one per line, created from the line's `vX.Y.0` tag
 pushes from the start (a ruleset on `release/**`: pull requests and the CI checks, `Models`, `dco` and
 `Changelog fragment` required, no force pushes, no deletion, no bypass actor; or classic protection that
 also binds administrators). The script reads GitHub and refuses a branch that is not closed that way.
-It checks "changes arrive by pull request with the required checks", not a count of approvals, and
+It checks only that changes arrive by pull request with the required status checks; it does not check approvals (this repository has one maintainer, and main requires none), and
 it also requires every commit from the tag to the tip to be the merge of a pull request into the
 branch, so a commit pushed directly before the rule existed blocks the release. `ci.yml` and `models.yml` run on pushes to and pull requests against `release/**`
 (`gsm-gate.yml` is for main only and not required there); a branch made from a tag older than those

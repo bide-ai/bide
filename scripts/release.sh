@@ -33,7 +33,7 @@
 # A patch release of an older line (v0.23.1 after v0.24.0 is on main) is released from the branch
 # release/v0.23 instead of main: see release_branch_gate and CONTRIBUTING.md (Releasing, Patch releases).
 # REF must then be the tip of $REMOTE/release/vX.Y, VERSION the next patch above the line's newest tag,
-# the branch protected so that its commits were reviewed, and that branch's own ci.yml push run of
+# the branch PR-only with required status checks (approvals are not checked), and that branch's own ci.yml push run of
 # REF green. The steps below are the same; the queue fallback does not apply.
 #
 # The release commits are reachable from their tags only; main keeps its replace directives, so
@@ -277,12 +277,12 @@ line_latest() {
     END { print best }' <<<"$1"
 }
 
-# branch_reviewed REPO BRANCH: the branch is closed to direct pushes: it requires pull requests and
+# branch_pr_only REPO BRANCH: the branch is closed to direct pushes: it requires pull requests and
 # status checks through a ruleset with no bypass actor, or through classic protection that applies to
 # administrators too. This is "changes arrive by pull request with the required checks", not a count
 # of approvals (bide's rulesets ask for none). It cannot see how commits landed before the rule
 # existed; branch_commits_via_pr checks that. Anything else, or GitHub not answering, is no.
-branch_reviewed() {
+branch_pr_only() {
   local out id
   out=$(gh api "repos/$1/rules/branches/$2" --jq '[.[] | .type] | if (index("pull_request") and index("required_status_checks")) then (map(select(. == "pull_request")) | length) else 0 end' 2>/dev/null) || out=0
   if [ "${out:-0}" -gt 0 ]; then
@@ -312,7 +312,7 @@ branch_commits_via_pr() {
 
 # release_branch_gate version sha: the release-branch mode of the preflight. Prints why on stderr
 # and returns 1 unless release_branch_check passes, sha descends from the line's newest tag, the
-# branch is closed to direct pushes (branch_reviewed), every commit since the tag is the merge of a
+# branch is closed to direct pushes (branch_pr_only), every commit since the tag is the merge of a
 # pull request into it (branch_commits_via_pr), and (checked by the caller with the branch's own
 # push run) CI is green. Reads $REMOTE, $REPO, $remote_tags, $GITHUB_REPO; sets REL_BRANCH on success.
 release_branch_gate() {
@@ -329,7 +329,7 @@ release_branch_gate() {
   git -C "$REPO" fetch --quiet "$REMOTE" "refs/heads/$branch" "refs/tags/v$line.$latest" 2>/dev/null || { echo "could not fetch $REMOTE $branch" >&2; return 1; }
   git -C "$REPO" merge-base --is-ancestor "$tagsha" "$sha" 2>/dev/null || { echo "$sha does not descend from v$line.$latest ($tagsha)" >&2; return 1; }
   command -v gh >/dev/null 2>&1 || { echo "gh is not installed, so $branch cannot be checked" >&2; return 1; }
-  branch_reviewed "$GITHUB_REPO" "$branch" || { echo "$branch is not closed to direct pushes (it needs pull requests and status checks, no bypass actor, enforced for administrators)" >&2; return 1; }
+  branch_pr_only "$GITHUB_REPO" "$branch" || { echo "$branch is not closed to direct pushes (it needs pull requests and status checks, no bypass actor, enforced for administrators)" >&2; return 1; }
   branch_commits_via_pr "$GITHUB_REPO" "$branch" "$tagsha" "$sha" || return 1
   REL_BRANCH=$branch
 }
@@ -472,7 +472,7 @@ push_tags() {
 }
 
 # self_test_release_branch TMP: the release-branch mode (release_branch_check, line_latest,
-# branch_reviewed, release_branch_gate, and the branch filter of the CI status) against the fake gh
+# branch_pr_only, release_branch_gate, and the branch filter of the CI status) against the fake gh
 # that self_test_ci installed in TMP/bin and a scratch repository that stands in for the remote.
 self_test_release_branch() {
   local tmp=$1 ok=true got fx=$1/fx
@@ -499,12 +499,12 @@ self_test_release_branch() {
   [ -z "$(line_latest "$tags" 0.24)" ] || { echo "self-test: release branch: line_latest found a tag on a line without one"; ok=false; }
   [ "$(line_latest "$(printf '%s\trefs/tags/v0.23.0\n' "$a")" 0.23)" = 0 ] || { echo "self-test: release branch: line_latest missed v0.23.0"; ok=false; }
 
-  # branch_reviewed: a ruleset with pull_request and required_status_checks rules and no bypass actor,
+  # branch_pr_only: a ruleset with pull_request and required_status_checks rules and no bypass actor,
   # or classic protection with required reviews, status checks and enforcement for administrators.
   rm -f "$fx/down" "$fx"/rules-*.json "$fx"/protection-*.json "$fx"/ruleset-*.json
   rev_case() { # rev_case yes|no DESCRIPTION
-    local r=no; FX=$fx PATH="$tmp/bin:$PATH" branch_reviewed example/r release/v0.23 && r=yes
-    [ "$r" = "$1" ] || { echo "self-test: release branch: $2: branch_reviewed said $r, want $1"; ok=false; }
+    local r=no; FX=$fx PATH="$tmp/bin:$PATH" branch_pr_only example/r release/v0.23 && r=yes
+    [ "$r" = "$1" ] || { echo "self-test: release branch: $2: branch_pr_only said $r, want $1"; ok=false; }
   }
   local rules_ok='[{"type":"deletion","ruleset_id":7},{"type":"pull_request","ruleset_id":7},{"type":"required_status_checks","ruleset_id":7}]'
   rev_case no "no rule and no protection (GitHub answers 404)"
@@ -580,7 +580,7 @@ self_test_release_branch() {
             if release_branch_gate "$3" "$4" 2>"$tmp/gate.err"; then echo "yes:$REL_BRANCH"; else echo no; fi) )
     [ "$got" = "$1" ] || { echo "self-test: release branch: $2: the gate said $got, want $1 ($(tail -1 "$tmp/gate.err" 2>/dev/null))"; ok=false; }
   }
-  gate_case yes:release/v0.23 "the tip of the reviewed release branch, the next patch" v0.23.1 "$fix"
+  gate_case yes:release/v0.23 "the tip of the PR-only release branch, the next patch" v0.23.1 "$fix"
   gate_case no "main's own commit (not the branch tip)" v0.23.1 "$main2"
   gate_case no "the commit the branch started from" v0.23.1 "$tag"
   gate_case no "a commit that is not on the release branch" v0.23.1 "$other"
@@ -598,6 +598,9 @@ self_test_release_branch() {
   printf '%s' "$merged_pr" > "$fx/pulls-$fix.json"
   git -C "$wc" push --quiet --force "$rr" "$other:refs/heads/release/v0.23"
   printf '%s' "$merged_pr" > "$fx/pulls-$other.json"
+  git -C "$wc" push --quiet --force "$rr" "$tag:refs/heads/release/v0.23"
+  printf '%s' "$merged_pr" > "$fx/pulls-$tag.json"
+  gate_case no "a branch with no commit since the tag (the tag's own commit as the next patch)" v0.23.1 "$tag"
   gate_case no "a branch tip that does not descend from the line's tag" v0.23.1 "$other"
   git -C "$cl" fetch --quiet origin; git -C "$cl" tag -f v0.23.0 "$other" >/dev/null
   gate_case no "a local tag moved onto the tip does not stand in for the remote's tag" v0.23.1 "$other"
@@ -1023,7 +1026,7 @@ case "$(main_check "$SHA" "$(git -C "$REPO" rev-parse "$REMOTE/main" 2>/dev/null
   resuming) note "$SHA is not $REMOTE/main any more, but $VERSION is on $REMOTE at it; resuming" ;;
   *)
     if release_branch_gate "$VERSION" "$SHA"; then
-      note "$SHA is the tip of $REMOTE/$REL_BRANCH, a protected release branch, and $VERSION is the next patch of its line; the branch's own CI decides"
+      note "$SHA is the tip of $REMOTE/$REL_BRANCH, a PR-only release branch with required status checks (approvals are not checked: this repository has one maintainer), and $VERSION is the next patch of its line; the branch's own CI decides"
     else
       problem "$SHA is not $REMOTE/main"
     fi ;;
