@@ -645,8 +645,8 @@ func TestCapsSum_WindowComesFromTheRunsClock(t *testing.T) {
 	if live := liveOf(t, j, "refund_hour", capledger.Hour, "2031-03-04T17"); len(live) != 1 {
 		t.Fatalf("hour ledger of the run's clock: %+v", live)
 	}
-	if live := liveOf(t, j, "refund_total", capledger.Day, time.Now().UTC().Format("2006-01-02")); len(live) != 0 {
-		t.Fatalf("the reservation landed in today's ledger: %+v", live)
+	if live := liveOf(t, j, "refund_total", capledger.Day, capNow.Format("2006-01-02")); len(live) != 0 {
+		t.Fatalf("the reservation landed in the ledger of another clock's day: %+v", live)
 	}
 }
 
