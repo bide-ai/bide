@@ -3711,6 +3711,7 @@ type TaintPolicy struct {
 	Gate *ApprovalPolicy
 
 	Refuse bool
+	// contains filtered or unexported fields
 }
 ```
 
@@ -3929,6 +3930,7 @@ type ToolSpec struct {
 	TaintExempt string
 
 	Timeout time.Duration
+	// contains filtered or unexported fields
 }
 ```
 
