@@ -1,8 +1,10 @@
 # __NAME__
 
 An agent scaffolded by `bide init -agent`. It handles a customer's email and can refund an order, and
-it shows the one control that matters when an agent reads text it does not control: **a run that has
-read untrusted content needs a human decision on every side effect it asks for next.**
+it shows the one control that matters when an agent reads text it does not control: **once a model turn
+has been shown untrusted content, every side effect a later turn asks for needs a human decision.** (A
+side effect asked for in the same turn as the read was decided before the read returned, so it is not
+held back by it: the model can ask for both at once. Read the limits below.)
 
 ```sh
 go mod tidy

@@ -272,3 +272,43 @@ func TestSingleApproverNeedsAgent(t *testing.T) {
 		t.Error("a usage error wrote the directory")
 	}
 }
+
+// A project name that spells a marker of the project template is refused, in both shapes, before anything
+// is written: otherwise the marker is rewritten in the files (a name with __SINGLE__ turned into "false", a
+// name with __GATE_TEXT__ pasting a paragraph into the first comment line of main.go, so it does not build).
+func TestNamesThatSpellAMarkerAreRefused(t *testing.T) {
+	for _, name := range []string{"a__SINGLE__b", "__NAME__", "x__GATE_TEXT__", "ok/a__NAME__"} {
+		for _, args := range [][]string{{}, {"-agent"}, {"-agent", "-single-approver"}} {
+			dir := filepath.Join(t.TempDir(), "p")
+			code, out := initCmd("v0.14.0", append(append([]string{}, args...), "-module", name, dir)...)
+			if code != 2 || !strings.Contains(out, "marker") {
+				t.Errorf("bide init %v -module %q: exit %d, want 2 naming the marker\n%s", args, name, code, out)
+			}
+			if _, err := os.Stat(dir); err == nil {
+				t.Errorf("bide init %v -module %q wrote the directory", args, name)
+			}
+		}
+	}
+}
+
+// The markers are replaced in one pass: text a replacement holds is not scanned again.
+func TestPlaceholdersAreReplacedInOnePass(t *testing.T) {
+	got := placeholders("N", "false", "paragraph __NAME__ __SINGLE__").Replace("name=__NAME__ gate=__GATE_TEXT__ single=__SINGLE__")
+	if want := "name=N gate=paragraph __NAME__ __SINGLE__ single=false"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// What is a module path: elements are not empty, do not begin or end with a dot and do not hold "..".
+func TestCheckName(t *testing.T) {
+	for _, ok := range []string{"refund", "my_app", "my__app", "example.com/me/app", "a-b.c", "v2"} {
+		if err := checkName(ok); err != nil {
+			t.Errorf("checkName(%q) = %v, want it accepted", ok, err)
+		}
+	}
+	for _, bad := range []string{"", "bad name", "a//b", "a/", ".x", "x.", "a/../b", "a..b", "-x", "a/.hidden"} {
+		if err := checkName(bad); err == nil {
+			t.Errorf("checkName(%q) was accepted", bad)
+		}
+	}
+}

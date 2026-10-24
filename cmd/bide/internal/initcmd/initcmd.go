@@ -47,6 +47,34 @@ const (
 	singleGateText = "  The escalation gate here is ONE unsigned decision (`bide init -single-approver`, for a team of one). That is\n  the weaker choice: nothing is signed, and the person whose input provoked the call is not kept from\n  approving it. Use `agent.ApprovalPolicy{Need: 2, Approvers: ..., ExcludePrincipal: true}` as soon as you\n  have a second person."
 )
 
+// placeholders replaces the template's markers in a single pass.
+func placeholders(name, single, gateText string) *strings.Replacer {
+	return strings.NewReplacer("__NAME__", name, "__SINGLE__", single, "__GATE_TEXT__", gateText)
+}
+
+// placeholderNames are the markers a template holds; a project name that spells one is refused, so what the
+// project says about itself is never a marker's replacement by accident.
+var placeholderNames = []string{"__NAME__", "__SINGLE__", "__GATE_TEXT__"}
+
+// checkName refuses a name that is not a module path (see modName) whose elements Go would take: none empty,
+// none starting or ending with a dot, none with "..", and none spelling a template marker.
+func checkName(name string) error {
+	for _, p := range placeholderNames {
+		if strings.Contains(name, p) {
+			return fmt.Errorf("%q spells %s, a marker of the project template; name the project another way with -module", name, p)
+		}
+	}
+	if !modName.MatchString(name) {
+		return fmt.Errorf("%q is not a module path; name one with -module", name)
+	}
+	for _, e := range strings.Split(name, "/") {
+		if e == "" || strings.HasPrefix(e, ".") || strings.HasSuffix(e, ".") || strings.Contains(e, "..") {
+			return fmt.Errorf("%q is not a module path (the element %q is empty or begins or ends with a dot); name one with -module", name, e)
+		}
+	}
+	return nil
+}
+
 // modName is what a module path may hold, for the name bide init derives from the directory.
 var modName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._~/-]*$`)
 
@@ -102,8 +130,8 @@ covered by the taint policy.
 		}
 		name = filepath.Base(abs)
 	}
-	if !modName.MatchString(name) {
-		fmt.Fprintf(stderr, "%sbide init: %s\n", es.ErrorPrefix(), es.Hint(fmt.Sprintf("%q is not a module path; name one with -module", name), "; "))
+	if err := checkName(name); err != nil {
+		fmt.Fprintf(stderr, "%sbide init: %s\n", es.ErrorPrefix(), es.Hint(err.Error(), "; "))
 		return 2
 	}
 	gomod, err := goMod(name, version, *dev)
@@ -171,12 +199,13 @@ func write(dir, name, gomod string, agentProject, single bool) error {
 		}
 		// The template is written with LF line endings on every OS: a Windows checkout of bide may
 		// hold the embedded files with CRLF (core.autocrlf).
-		out := strings.ReplaceAll(strings.ReplaceAll(string(b), "\r\n", "\n"), "__NAME__", name)
-		gate, singleText := "false", strictGateText
+		gate, gateText := "false", strictGateText
 		if single {
-			gate, singleText = "true", singleGateText
+			gate, gateText = "true", singleGateText
 		}
-		out = strings.ReplaceAll(strings.ReplaceAll(out, "__SINGLE__", gate), "__GATE_TEXT__", singleText)
+		// One pass over the template, so no replacement is scanned again: a name or a paragraph that holds
+		// text spelled like another placeholder is written as it is.
+		out := placeholders(name, gate, gateText).Replace(strings.ReplaceAll(string(b), "\r\n", "\n"))
 		if err := os.WriteFile(filepath.Join(dir, dst), []byte(out), 0o644); err != nil {
 			return err
 		}
