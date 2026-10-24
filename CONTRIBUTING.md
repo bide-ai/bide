@@ -301,6 +301,51 @@ tree between releases.
    gh workflow run release-modules.yml -R bide-ai/bide --ref main -f tag=govern/vX.Y.Z
    ```
 
+### Patch releases from a release branch
+
+When main already holds the next line (v0.24.0 work) and an older line (v0.23) needs a fix, the
+patch (v0.23.1) is released from the branch `release/v0.23`, not from main. The script has a
+release-branch mode for it; everything else (the root tag, the nested modules in stages, the
+checks, the Release workflow) is the same as above.
+
+The branch is `release/vX.Y`, one per line, created from the line's `vX.Y.0` tag and protected like
+main (pull requests only, the CI checks and `dco` required, no force pushes, no deletion; a ruleset
+or classic protection with required pull request reviews: the script reads GitHub and refuses a
+branch that has neither). `ci.yml` runs on pushes to and pull requests against `release/**`; a branch
+made from a tag older than that trigger needs the trigger backported in its first pull request, or its
+pushes and pull requests run no CI. `models.yml` and `gsm-gate.yml` run for main only, so they are not
+required on `release/**`. A pull request into a release branch runs the fast subset of CI; add the
+`full-ci` label, since nothing else runs the rest before the push run after the merge.
+
+1. Create the branch from the tag, once per line: `git push origin vX.Y.0^{commit}:refs/heads/release/vX.Y`.
+2. Land each fix on main first (its pull request, tests and changelog fragment as usual), then
+   cherry-pick the squash commit onto a work branch off `release/vX.Y` with `git cherry-pick -x -s`,
+   resolving conflicts minimally: the result must be what the main commit does, with nothing from main's
+   newer work. State every conflict and its resolution in the pull request body, and have the delta
+   against the main commit reviewed. The pull request base is `release/vX.Y`.
+3. In the same pull request, add `docs/releases/vX.Y.Z.md` (absolute, tag-pinned links) and assemble
+   the changelog for the branch: `scripts/release.sh --assemble-changelog vX.Y.Z <date>` leaves
+   `changes/unreleased` with only `.gitkeep`. Merge it, then wait for the branch's own `ci.yml` push
+   run of the new tip to pass.
+4. From a clean checkout of main (the script that runs is main's), dry-run and then release the
+   branch tip:
+
+   ```
+   scripts/release.sh vX.Y.Z --ref origin/release/vX.Y
+   scripts/release.sh vX.Y.Z --ref origin/release/vX.Y --push
+   ```
+
+   The mode applies only when REF is not main. It refuses unless all of these hold: VERSION is a plain
+   patch (`Z` above 0, no pre-release) and the next one after the newest `vX.Y.Z` tag on the remote;
+   REF is the tip of `origin/release/vX.Y` as the remote reports it now (not a tracking ref, an
+   ancestor of the tip, or another branch); REF descends from that newest tag; the branch requires
+   pull requests; and a `ci.yml` push run of REF on that branch passed and none failed or is still
+   going. The merge queue's run is not an alternative there. The release notes and changelog checks are
+   the same. A release of a new line (`Z` of 0), a candidate, or any other commit is still main only.
+5. After the tag, open a pull request on main that adds the `[X.Y.Z]` section to its `CHANGELOG.md`
+   and deletes from `changes/unreleased` exactly the fragments the patch shipped, so that the next
+   minor release does not list them again.
+
 ### The Homebrew tap by hand
 
 Without `HOMEBREW_TAP_TOKEN`, the Release run attaches the formula to the release and leaves the
