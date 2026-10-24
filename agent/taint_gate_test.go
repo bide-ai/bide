@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"iter"
 	"slices"
@@ -626,5 +627,40 @@ func pendingOn2(t *testing.T, err error, id string) {
 	var pend *ApprovalPending
 	if !errors.As(err, &pend) || pend.ToolUseID != id {
 		t.Fatalf("err = %v, want *ApprovalPending on %s", err, id)
+	}
+}
+
+// A certificate-bound escalation gate asked for the first time by a replaying drive (the tool's own gate
+// was asked first, so the drive that passes it is a replay) records that it is bound in its pause note.
+// The note can only add a requirement: a later drive whose resolver knows the approver as a bare key
+// does not run the call on a bare-key decision.
+func TestTaintGate_ACertBoundEscalationGateAskedByAReplayRefusesABareKeyDecision(t *testing.T) {
+	ctx := context.Background()
+	cert := &fakeCertVerifier{id: "alice", check: func(CertDecision) CertCheck {
+		return CertCheck{Identity: "alice", KeyHash: [32]byte{1}, Tier: "final", Basis: "b"}
+	}}
+	e := newTG(t)
+	e.policy = TaintPolicy{Gate: &ApprovalPolicy{Need: 1, Approvers: []string{"alice"}}}
+	e.writeOp = []ToolOption{WithApproval(SingleApproval())}
+	e.opts = []Option{WithApproverVerifiers(certResolver(map[string]ApproverVerifier{"alice": cert}))}
+	pendingOn(t, e.drive(true, readThenWrite()...), "c2")
+	if err := Approve(ctx, e.j, "r", "c2", true); err != nil {
+		t.Fatal(err)
+	}
+	pendingOn2(t, e.drive(true, textTurn("done")), "c2#taint") // a replay asks the instance
+	note, ok := hasStep(t, e.j, "r", ApprovalPendingStep("c2#taint"))
+	var w ApprovalWait
+	if !ok || json.Unmarshal(note.Result, &w) != nil || !w.IdentityBound {
+		t.Fatalf("the replay's note for the instance = %+v (found %v), want identity_bound", w, ok)
+	}
+	// A bare-key decision by alice, and a drive whose resolver knows alice as a bare key.
+	approveAs(t, e.j, "r", "c2#taint", "alice", true)
+	e.opts = []Option{WithApproverVerifiers(fakeVerifiers("alice"))}
+	err := e.drive(true, textTurn("done"))
+	if e.writes.n.Load() != 0 {
+		t.Fatalf("the write ran on a bare-key decision of a certificate-bound gate (err %v)", err)
+	}
+	if err == nil {
+		t.Fatal("the drive returned no error for a certificate-bound gate decided by a bare key")
 	}
 }
