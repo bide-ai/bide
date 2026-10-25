@@ -329,6 +329,7 @@ function skipTo(target) {
     inspector: () => first('#inspector select, #inspector input, #inspector button:not(:disabled)') || $('h-inspector'),
     assertions: () => $('h-assert'),
     blocks: () => first('#palette button[tabindex="0"]') || $('h-blocks'),
+    run: () => $('h-run'),
   }[target];
   const to = el && el();
   if (to) to.focus();
@@ -1340,12 +1341,16 @@ export async function refreshRun({ reload = false } = {}) {
 }
 
 export function renderRun(r, reloaded = false) {
-  if (!r.configured) { runOff = true; $('run-panel').hidden = true; return; }
+  if (!r.configured) { runOff = true; $('run-panel').hidden = true; $('run-line').hidden = true; return; }
   $('run-panel').hidden = false;
+  $('run-line').hidden = false;
   const run = r.run || {};
   const [word, cls, ic] = RUN_WORDS[r.status] || ['NOT COMPARED', 'v-warn', 'unknown'];
   replace('run-facts', 'Run ' + (run.id || '') + (run.flow ? ' of the flow ' + run.flow : '') + (run.state_text ? ', ' + run.state_text : '') +
     (run.records ? ', ' + run.records + ' records' : '') + (run.digest ? '. Journaled digest ' + run.digest : '') + '.');
+  $('run-line-word').textContent = shown(word);
+  $('run-line-word').className = 'rl-word ' + cls;
+  replace('run-line-text', 'Run ' + (run.id || ''));
   replace('run-claim', h('section', { class: 'verdict ' + cls, 'aria-labelledby': 'run-word' },
     h('div', { class: 'vicon' }, icon(ic)),
     h('div', { class: 'vtext' },

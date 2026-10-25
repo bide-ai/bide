@@ -25,6 +25,13 @@ try {
   page.on('requestfailed', (r) => failed.push(`${r.method()} ${r.url()} ${r.failure()?.errorText}`));
   page.on('request', (r) => { if (!r.url().startsWith(origin) && !r.url().startsWith('data:')) offOrigin.push(r.url()); });
   await page.setBypassCSP(true); // for axe only
+  let hold = false;
+  const held = [];
+  await page.setRequestInterception(true);
+  page.on('request', (r) => {
+    if (hold && r.method() === 'POST' && r.url().endsWith('/api/run')) { hold = false; held.push(r); return; }
+    r.continue();
+  });
   await page.setViewport({ width: 1400, height: 1600 });
   await page.goto(env.PAGE_URL, { waitUntil: 'networkidle0', timeout: 30000 });
   await page.evaluate(axeSource);
@@ -75,6 +82,25 @@ try {
   const forced = await marks();
   await page.emulateMediaFeatures([{ name: 'forced-colors', value: 'none' }]);
 
+  // A redraw of the same text (the server's view of it drawn again) keeps the marks.
+  await page.evaluate(async () => {
+    const m = await import('/assets/editor.js');
+    const token = (/(?:^#|&)t=([0-9a-f]+)/.exec(location.hash) || [])[1] || '';
+    const res = await fetch('/api/report', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Bide-Token': token }, body: JSON.stringify({ text: document.getElementById('source').value, renames: [] }) });
+    m.render(await res.json(), { keepSource: true });
+  });
+  const redrawn = await marks();
+
+  // While the answer for new text is awaited, the marks of the old text are not left on it.
+  hold = true;
+  await page.$eval('#source', (e) => { e.value = e.value + '\n'; e.dispatchEvent(new Event('input', { bubbles: true })); });
+  for (let i = 0; i < 100 && held.length === 0; i++) await new Promise((r) => setTimeout(r, 50));
+  if (held.length === 0) throw new Error('the /api/run for the new text was not held');
+  const whilePending = await page.evaluate(() => ({ rings: document.querySelectorAll('#canvas .rring').length, marks: document.querySelectorAll('#canvas .rmark').length, taken: document.querySelectorAll('#canvas .rtaken').length }));
+  await held[0].continue();
+  await until(() => document.querySelector('#canvas .rring'), null, 'the marks after the answer');
+  await rest('answered');
+
   // The same text typed again draws the same marks (they are cleared and drawn again, not stacked).
   await page.$eval('#source', (e) => { e.value = e.value + ' '; e.dispatchEvent(new Event('input', { bubbles: true })); });
   await rest('typed again');
@@ -87,7 +113,7 @@ try {
   await rest('edited');
   const edited = await marks();
   await check('run path, a node of another block');
-  out = { ok: true, opened, forced, again, edited, results, console: console_, failed, offOrigin };
+  out = { ok: true, redrawn, whilePending, opened, forced, again, edited, results, console: console_, failed, offOrigin };
 } catch (e) {
   out = { ok: false, error: String(e && e.message || e), results, console: console_, failed, offOrigin };
 }

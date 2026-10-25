@@ -55,6 +55,28 @@ try {
 
   await until(() => !document.getElementById('run-panel').hidden && document.getElementById('run-word'), null, 'the run panel');
   const same = await panel();
+  const line = await page.evaluate(() => {
+    const l = document.getElementById('run-line');
+    const a = document.getElementById('run-line-link');
+    const canvas = document.getElementById('canvas');
+    const panel = document.getElementById('run-panel');
+    return {
+      hidden: l.hidden, word: document.getElementById('run-line-word').textContent, text: document.getElementById('run-line-text').textContent,
+      link: a.textContent, aboveFlow: !!(l.compareDocumentPosition(canvas) & Node.DOCUMENT_POSITION_FOLLOWING),
+      panelBelowFlow: !!(canvas.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING),
+    };
+  });
+  // The link is reached by keyboard and moves focus to the panel's heading.
+  await page.evaluate(() => document.getElementById('source').blur());
+  let linkReached = false;
+  for (let i = 0; i < 400 && !linkReached; i++) {
+    await page.keyboard.press('Tab');
+    linkReached = await page.evaluate(() => document.activeElement?.id === 'run-line-link');
+  }
+  if (!linkReached) throw new Error('Tab never reached the details link');
+  await page.keyboard.press('Enter');
+  const focusAfterLink = await page.evaluate(() => document.activeElement?.id ?? '');
+  await page.evaluate(() => { document.activeElement?.blur(); window.scrollTo(0, 0); });
   await check('run panel, same digest');
 
   // Change the block of node b in the source: the digest no longer matches.
@@ -79,7 +101,7 @@ try {
   await rest('reloaded');
   const liveAfterReload = await page.$eval('#live', (e) => e.textContent);
   const afterReload = await panel();
-  out = { ok: true, same, differs, afterReload, liveAfterEdit, liveAfterReload, reloadLabel, results, console: console_, failed, offOrigin };
+  out = { ok: true, line, linkReached, focusAfterLink, same, differs, afterReload, liveAfterEdit, liveAfterReload, reloadLabel, results, console: console_, failed, offOrigin };
 } catch (e) {
   out = { ok: false, error: String(e && e.message || e), results, console: console_, failed, offOrigin };
 }

@@ -104,3 +104,8 @@ dialog h2 { margin-top: 0; }
   .rring.run-ran { stroke-dasharray: none; }
   .rmark { fill: CanvasText; stroke: Canvas; }
 }
+.runline { margin: var(--s2) 0; }
+.rl-word { font-weight: 800; padding: 1px var(--s2); border: 2px solid var(--line-strong); border-radius: var(--r-sm); }
+.rl-word.v-good { border-color: var(--good); }
+.rl-word.v-warn { border-color: var(--warn); }
+.rl-word.v-bad { border-color: var(--bad); }

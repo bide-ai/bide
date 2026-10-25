@@ -276,3 +276,26 @@ func TestRunPathReadsAreBounded(t *testing.T) {
 		t.Errorf("too many nodes: %v after %d reads", err, reads)
 	}
 }
+
+// A Switch renamed in the session keeps its chosen arm: the marks of the arm out of it, and of the arm back, follow
+// the new name.
+func TestRunPathFollowsARenamedSwitch(t *testing.T) {
+	renamed := strings.NewReplacer(`"name":"check"`, `"name":"chk"`, `["refine","check"]`, `["refine","chk"]`, `"switch":"check"`, `"switch":"chk"`).Replace(loopRunCfg)
+	for _, typed := range []bool{true, false} {
+		s := loopServer(t, loopRunCfg, runview.JournalSource{J: ranLoop(t, 1)}, typed)
+		p := askRun(t, s, renamed, []Rename{{From: "check", To: "chk"}}, false).Path
+		if !hasEdge(p, "chk", "refine") || !hasEdge(p, "chk", "done") || !hasEdge(p, "refine", "chk") || len(p.OffCanvas) != 0 {
+			t.Errorf("typed=%v: %+v off canvas %q", typed, p.Edges, p.OffCanvas)
+		}
+	}
+}
+
+// A connection between a marked node and a node the file has with another block is not drawn: it is listed.
+func TestRunPathDoesNotDrawAnEdgeToAnotherNode(t *testing.T) {
+	j, _ := ranRun(t, runCfg)
+	other := strings.Replace(runCfg, `"block":"dbl"`, `"block":"inc"`, 1)
+	p := askRun(t, runServer(t, runCfg, runview.JournalSource{J: j}, "r1", false), other, nil, false).Path
+	if hasEdge(p, "a", "b") || !strings.Contains(strings.Join(p.OffCanvas, "\n"), "edge a -> b: the run took it") {
+		t.Errorf("edges %+v off canvas %q", p.Edges, p.OffCanvas)
+	}
+}

@@ -452,7 +452,7 @@ bide edit -run r1 -db journal.db flow.yaml
 ```
 
 With `-run` and a store (`-db`, `-postgres`, `-postgres-env` or `-journal`, the flags
-[`bide view`](run-viewer.md) takes and opened read-only), the page gains a panel, **Compared with a
+[`bide view`](run-viewer.md) takes and opened read-only), the page gains a line above the flow (the verdict word and the run's ID, with a link to the details) and, below the flow, a panel, **Compared with a
 run**. It reads the topology the run journaled (`flow:topology`, once its digest checks against
 `flow:digest`, as the viewer draws it) and compares the file with it by what the topology digest covers:
 the flow name, the entry, each node's name and block, the edges, the switches and their arms, and the

@@ -32,15 +32,25 @@ func TestRunPanelInChrome(t *testing.T) {
 	j, digest := ranRun(t, runCfg)
 	s := runServer(t, runCfg, runview.JournalSource{J: j}, "r1", true)
 	var r struct {
-		OK          bool   `json:"ok"`
-		Error       string `json:"error"`
-		Same        runPanel
-		Differs     runPanel
-		AfterReload runPanel `json:"afterReload"`
-		LiveEdit    string   `json:"liveAfterEdit"`
-		LiveReload  string   `json:"liveAfterReload"`
-		ReloadLabel string   `json:"reloadLabel"`
-		Results     map[string]struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+		Line  struct {
+			Hidden         bool   `json:"hidden"`
+			Word           string `json:"word"`
+			Text           string `json:"text"`
+			Link           string `json:"link"`
+			AboveFlow      bool   `json:"aboveFlow"`
+			PanelBelowFlow bool   `json:"panelBelowFlow"`
+		} `json:"line"`
+		LinkReached    bool   `json:"linkReached"`
+		FocusAfterLink string `json:"focusAfterLink"`
+		Same           runPanel
+		Differs        runPanel
+		AfterReload    runPanel `json:"afterReload"`
+		LiveEdit       string   `json:"liveAfterEdit"`
+		LiveReload     string   `json:"liveAfterReload"`
+		ReloadLabel    string   `json:"reloadLabel"`
+		Results        map[string]struct {
 			Violations []struct {
 				ID     string   `json:"id"`
 				Impact string   `json:"impact"`
@@ -56,6 +66,12 @@ func TestRunPanelInChrome(t *testing.T) {
 	runScript(t, "run.mjs", s, &r)
 	if !r.OK {
 		t.Fatalf("the script failed: %s", r.Error)
+	}
+	if l := r.Line; l.Hidden || l.Word != "SAME DIGEST" || l.Text != "Run r1" || l.Link != "Details of the comparison with the run" || !l.AboveFlow || !l.PanelBelowFlow {
+		t.Errorf("the headline line: %+v", l)
+	}
+	if !r.LinkReached || r.FocusAfterLink != "h-run" {
+		t.Errorf("the details link: reached by Tab %v, focus after Enter on %q, want h-run", r.LinkReached, r.FocusAfterLink)
 	}
 	same := r.Same
 	if same.Hidden || same.Heading != "Compared with a run" || same.Labelled != "h-run" || same.Word != "SAME DIGEST" || !same.Icon ||
@@ -179,6 +195,12 @@ func TestRunPathInChrome(t *testing.T) {
 		OK      bool      `json:"ok"`
 		Error   string    `json:"error"`
 		Opened  pageMarks `json:"opened"`
+		Redrawn pageMarks `json:"redrawn"`
+		Pending struct {
+			Rings int `json:"rings"`
+			Marks int `json:"marks"`
+			Taken int `json:"taken"`
+		} `json:"whilePending"`
 		Forced  pageMarks `json:"forced"`
 		Again   pageMarks `json:"again"`
 		Edited  pageMarks `json:"edited"`
@@ -214,6 +236,12 @@ func TestRunPathInChrome(t *testing.T) {
 	}
 	if w := r.Opened.Nodes["refine"].Words; !strings.HasSuffix(w, " times") {
 		t.Errorf("refine ran more than once: %q", w)
+	}
+	if len(r.Redrawn.Nodes) != 4 || strings.Count(r.Redrawn.Nodes["refine"].Ring, "rring") != 1 || len(r.Redrawn.Taken) != 4 {
+		t.Errorf("a redraw lost or stacked the marks: %+v", r.Redrawn)
+	}
+	if r.Pending.Rings != 0 || r.Pending.Marks != 0 || r.Pending.Taken != 0 {
+		t.Errorf("the marks of the old text stayed while the answer was awaited: %+v", r.Pending)
 	}
 	slices.Sort(r.Opened.Taken)
 	if !slices.Equal(r.Opened.Taken, []string{"check>done", "check>refine", "refine>check", "seed>refine"}) {
