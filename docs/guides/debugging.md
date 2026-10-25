@@ -422,6 +422,11 @@ tool's to keep: it derives a stable downstream key from its arguments (or uses
 `agent.NextOnceKey`) and sends it with the request. This keeps autonomous and ambient agents
 moving instead of stopping for a human on every uncertain call.
 
+A wrapper cannot lend its tool a safer `Safety` by declaring one: `agent.New` refuses (`ErrConfig`) a wrapper
+that embeds or unwraps a tool and declares a safer level (side effect, then `Idempotent`, then `ReadOnly`),
+since the wrapper's `Safety` is the one a resume acts on. A wrapper that does make the call safer says so with
+`agent.RaisesSafety(reason)` (experimental); see [untrusted content](untrusted-content.md).
+
 **Boundary: mechanism vs policy.** `Recover` is the mechanism (enumerate, skip finished,
 re-drive the rest). `resume` is deployment POLICY: it knows which agent drives a run and any
 `Waker` or clock to bind (the run's input and entry point are in its journal, see `RecordedStart`), and it should no-op a `runID` it does not own (a sub-agent run
