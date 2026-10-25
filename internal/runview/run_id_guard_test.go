@@ -1,4 +1,4 @@
-//go:build unix
+//go:build linux || darwin
 
 package runview
 
@@ -15,7 +15,8 @@ import (
 // stop (no bound, or one more unit) reads the guard page and faults, which kills the test binary:
 // that fault is the failure signal, since the output and the allocations of such a walk are the same
 // as the bounded one's and no assertion can see them. The test skips where mmap or mprotect is not
-// available.
+// available. It is built on linux and darwin only: syscall.Mprotect is not defined on the other unix
+// systems.
 func TestShownRunIDWalkStopsEarly(t *testing.T) {
 	page := syscall.Getpagesize()
 	mem, err := syscall.Mmap(-1, 0, 2*page, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_ANON|syscall.MAP_PRIVATE)
