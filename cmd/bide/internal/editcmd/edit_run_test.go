@@ -34,7 +34,12 @@ func TestRunFlagUsageErrors(t *testing.T) {
 		"a DSN as the env name": {[]string{"-run", "r1", "-postgres-env", "postgres://u:hunter2@h/db", good}, "environment variable"},
 	} {
 		var out, errb bytes.Buffer
-		if got := run(context.Background(), append([]string{"-color", "never"}, c.args...), &out, &errb, runview.Stores{}); got != 2 {
+		// A flag check that wrongly lets the command through would serve until stopped: the deadline stops
+		// it (exit 0), so the failure is the assertion on the exit code and the message, not a hang.
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		got := run(ctx, append([]string{"-color", "never", "-addr", "127.0.0.1:0"}, c.args...), &out, &errb, runview.Stores{})
+		cancel()
+		if got != 2 {
 			t.Errorf("%s: exit %d, want 2", name, got)
 		}
 		if !strings.Contains(errb.String(), c.want) || strings.Contains(errb.String(), "hunter2") || strings.Contains(out.String(), "serving") {
