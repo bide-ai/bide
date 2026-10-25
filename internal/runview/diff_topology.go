@@ -101,17 +101,21 @@ func DiffTopologies(d TopologyDiff) (*DiffView, error) {
 		v.NewBasis, v.OldDigest, v.NewDigest = d.Basis, d.Old.Digest, d.New.Digest
 		if d.New.Digest == "" {
 			v.Cannot = fmt.Sprintf("the file has errors (%d), so it has no digest", v.NewErrors)
-			v.Verdict = diffVerdict(v)
+			v.Changes = []Change{}
+			v.Verdict = topologyVerdict(v)
 			return v, nil
 		}
 	}
 	o, n := NormalizeForRun(d.Old, d.Typed), NormalizeForRun(d.New, d.Typed)
 	v.finish(o, n, nil, nil)
 	v.Changes = append(v.Changes, orderChanges(o, n)...)
-	v.Verdict = diffVerdict(v)
-	if d.Typed && d.Old.Digest != "" && d.Old.Digest != d.New.Digest && len(v.Changes) == 0 {
-		v.DigestNote = "the digest differs in a way the diff does not itemise (a type spelled with another package path)"
+	if v.Changes == nil {
+		v.Changes = []Change{}
 	}
+	if d.Typed && d.Old.Digest != "" && d.Old.Digest != d.New.Digest && len(v.Changes) == 0 {
+		v.DigestNote = "the digest differs in a way the diff does not itemise (for example a type spelled with another package path)"
+	}
+	v.Verdict = topologyVerdict(v)
 	return v, nil
 }
 
@@ -214,4 +218,29 @@ func sameOrder(a, b []string) bool {
 		return slices.DeleteFunc(slices.Clone(s), func(x string) bool { return !other[x] })
 	}
 	return slices.Equal(keep(a, inB), keep(b, inA))
+}
+
+// topologyVerdict is the headline of a comparison with a run. The config diff's words ("NO CHANGES",
+// "the two configs declare the same flow") claim more than a run comparison can: a file with errors
+// was not compared, a digest can differ with nothing itemised, and a structural comparison does not
+// see kinds, types or gates. So those cases say what they know. Weakened gates and itemised changes
+// keep the config diff's words and its stats, whose digest figure comes from the view's digests.
+func topologyVerdict(v *DiffView) Verdict {
+	d := diffVerdict(v)
+	switch {
+	case v.Cannot != "":
+		d.Class, d.Word, d.Icon, d.Line = "warn", "CANNOT COMPARE", "unknown", "Not compared: "+v.Cannot+"."
+	case v.DigestNote != "":
+		d.Class, d.Word, d.Icon, d.Line = "warn", "DIGEST DIFFERS", "tilde", "The digest differs from the run's: "+v.DigestNote+"."
+	case len(v.Changes) > 0:
+	case v.Typed && v.OldDigest != "" && v.OldDigest == v.NewDigest:
+		d.Class, d.Word, d.Icon = "good", "SAME DIGEST", "ok"
+		d.Line = "The file has the digest the run journaled; this does not say the run followed the file."
+	case v.Typed:
+		d.Class, d.Word, d.Icon, d.Line = "warn", "NO DIGEST TO COMPARE", "unknown", "The run's topology has no digest that can be computed, so the digests are not compared."
+	default:
+		d.Class, d.Word, d.Icon = "warn", "NO DIFFERENCE SEEN", "unknown"
+		d.Line = "Kinds, types and gates are not compared in this mode, so a change in them would not show."
+	}
+	return d
 }

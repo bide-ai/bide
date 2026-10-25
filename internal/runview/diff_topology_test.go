@@ -409,3 +409,87 @@ func TestSameOrder(t *testing.T) {
 func inspect(cfg string, reg *plan.Registry) plan.ConfigReport {
 	return plan.InspectConfig([]byte(cfg), reg, plan.AllowUnusedBlocks())
 }
+
+func digestStat(v *DiffView) Stat {
+	for _, s := range v.Verdict.Stats {
+		if s.Label == "digest" {
+			return s
+		}
+	}
+	return Stat{}
+}
+
+// The headline of a comparison with a run never claims more than it knows: not the config diff's "NO
+// CHANGES / the two configs declare the same flow" for a file that was not compared, for a digest that
+// differs with nothing itemised, or for a structural comparison that does not see kinds, types or gates.
+func TestRunDiffVerdictsSayWhatIsKnown(t *testing.T) {
+	reg := runRegistry(t)
+	// Same digest, typed.
+	v := diffRun(t, cfgLoop, cfgLoop, true)
+	if w := v.Verdict; w.Word != "SAME DIGEST" || w.Class != "good" || strings.Contains(w.Line, "same flow") || !strings.Contains(w.Line, "does not say the run followed") || digestStat(v).Value != "same" {
+		t.Errorf("typed, same: %+v", w)
+	}
+	// Nothing seen, structural: a warning that names what is not compared.
+	v = diffRun(t, cfgLoop, cfgLoop, false)
+	if w := v.Verdict; w.Word != "NO DIFFERENCE SEEN" || w.Class != "warn" || !strings.Contains(w.Line, "Kinds, types and gates are not compared") || strings.Contains(w.Word+w.Line, "NO CHANGES") || strings.Contains(w.Line, "same flow") {
+		t.Errorf("structural, nothing seen: %+v", w)
+	}
+	if b, _ := json.Marshal(v); !strings.Contains(string(b), `"changes":[]`) {
+		t.Errorf("no changes is null in the JSON: %s", b)
+	}
+	// A file with errors was not compared.
+	broken := strings.Replace(cfgLoop, `"block":"done"`, `"block":"nope"`, 1)
+	v = diffRun(t, cfgLoop, broken, true)
+	if w := v.Verdict; w.Word != "CANNOT COMPARE" || w.Class != "warn" || !strings.Contains(w.Line, "the file has errors") || strings.Contains(w.Word+w.Line, "NO CHANGES") || strings.Contains(w.Line, "same flow") {
+		t.Errorf("cannot: %+v", w)
+	}
+	if b, _ := json.Marshal(v); !strings.Contains(string(b), `"changes":[]`) {
+		t.Errorf("a refused comparison has null changes: %s", b)
+	}
+	// A real digest difference nothing itemises: the run's topology with one node's canonical input type
+	// spelled with another package path, its digest recomputed.
+	run := runSide(t, cfgLoop, reg)
+	t0 := run.Topology
+	t0.Nodes = append([]plan.TopologyNode(nil), t0.Nodes...)
+	t0.Nodes[1].InCanonical = "example.com/other." + t0.Nodes[1].InCanonical
+	dr := plan.InspectTopology(t0)
+	if dr.Digest == "" || dr.Digest == run.Digest {
+		t.Fatalf("setup: digest %q, was %q", dr.Digest, run.Digest)
+	}
+	v, err := DiffTopologies(TopologyDiff{Old: dr, New: fileSide(cfgLoop, reg), OldName: "run", NewName: "f", Typed: true, Basis: SourceRegistry})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v.Changes) != 0 || v.DigestNote == "" || !strings.Contains(v.DigestNote, "for example") || v.Verdict.Word != "DIGEST DIFFERS" || v.Verdict.Class != "warn" || strings.Contains(v.Verdict.Line, "same flow") || digestStat(v).Value != "new" {
+		t.Errorf("digest differs, nothing itemised: note %q changes %v verdict %+v stat %+v", v.DigestNote, v.Changes, v.Verdict, digestStat(v))
+	}
+	// A typed run with no computable digest is not "same" and not "no difference".
+	nd := runSide(t, cfgLoop, reg)
+	nd.Digest = ""
+	v, err = DiffTopologies(TopologyDiff{Old: nd, New: fileSide(cfgLoop, reg), OldName: "run", NewName: "f", Typed: true, Basis: SourceRegistry})
+	if err != nil || v.Verdict.Word != "NO DIGEST TO COMPARE" {
+		t.Errorf("no run digest: %v %+v", err, v.Verdict)
+	}
+	// Itemised changes keep the config diff's words, and the digest stat is from the view.
+	v = diffRun(t, cfgDiamond, strings.Replace(cfgDiamond, `{"name":"y","block":"y"},{"name":"z","block":"z"}`, `{"name":"z","block":"z"},{"name":"y","block":"y"}`, 1), true)
+	if w := v.Verdict; w.Word != "1 CHANGE" || w.Class != "warn" || digestStat(v).Value != "new" {
+		t.Errorf("changes: %+v stat %+v", w, digestStat(v))
+	}
+	// A gate weakened against the run is the one verdict made.
+	weaker := strings.Replace(cfgGated, `"need":2,"approvers":["ops","fin","risk"]`, `"need":1,"approvers":["ops","fin","risk"]`, 1)
+	if w := diffRun(t, cfgGated, weaker, true).Verdict; w.Word != "APPROVAL GATE WEAKENED" || w.Class != "bad" {
+		t.Errorf("weakened: %+v", w)
+	}
+}
+
+// A file over the bound is an error the caller shows as "too large to compare", never as no difference.
+func TestRunDiffRefusesAFileOverTheBound(t *testing.T) {
+	big := plan.Topology{Flow: "f", Entry: "n0"}
+	for i := 0; i <= MaxTopologyNodes; i++ {
+		big.Nodes = append(big.Nodes, plan.TopologyNode{Name: fmt.Sprint("n", i), Block: "b"})
+	}
+	reg := runRegistry(t)
+	if _, err := DiffTopologies(TopologyDiff{Old: runSide(t, cfgLoop, reg), New: plan.InspectTopology(big), OldName: "run", NewName: "file.json"}); err == nil || !strings.Contains(err.Error(), "file.json: the topology has") {
+		t.Errorf("%v", err)
+	}
+}

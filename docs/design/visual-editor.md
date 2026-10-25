@@ -836,6 +836,15 @@ flow's; a corpus test (every corpus config with joins, switch/else and loops) as
 topology's node, edge and arm order equals the typed (`Load`) topology's, so an unchanged file never
 reads "order changed".
 
+A new node with no gate, added since the run, is a change and is not judged as a weakening against the
+run: a journal holds no safety and no reachability through gates that the digest covers, so the only
+verdict made against a run is about a node's gate, in typed mode. The headline says what is known and no
+more: SAME DIGEST (typed, equal digests), NO DIFFERENCE SEEN (structural, with the kinds, types and gates
+it does not compare named), DIGEST DIFFERS (the digests differ and nothing itemises it), CANNOT COMPARE (a
+typed file with errors), NO DIGEST TO COMPARE (a typed run whose digest cannot be computed), or the config
+diff's words when changes are itemised. It never reads "no changes" or "the two configs declare the same
+flow".
+
 Session renames: `renameBaseline` is generalised to a Topology (`renameTopology`): a rename rewrites
 the entry, every node name, edge endpoint, switch `over`, arm target, join input and loop target, with
 a mutation test that fails when any one of those fields is skipped. A rename the topology cannot take
