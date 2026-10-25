@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
@@ -349,15 +350,26 @@ func noteOtherRun(ctx context.Context, kind, run string) {
 	}
 }
 
-// shownRunID is run quoted for the line: at most maxRunIDShown runes of it, escaped, and "..." after
-// the quotes when it was cut. The output is bounded whatever the ID's length (the cut is made before
-// escaping); the work is not: []rune(run) decodes the whole ID into a slice, 4 bytes per rune.
+// shownRunID is run quoted for the line: at most maxRunIDShown runes of it, escaped (an invalid byte
+// as \x{..}, cut or not, so two IDs that differ in a bad byte never show alike), and "..." after the
+// quotes when it was cut. A rune is never split: the cut falls after the maxRunIDShown'th unit, a unit
+// being a rune or one invalid byte. Both the output and the work are bounded whatever the ID's length:
+// the ID is walked for at most maxRunIDShown+1 units and nothing is copied but the escaped output.
 func shownRunID(run string) string {
-	cut := ""
-	if r := []rune(run); len(r) > maxRunIDShown {
-		run, cut = string(r[:maxRunIDShown]), "..."
+	end, n := 0, 0
+	kept := 0
+	for end < len(run) && n <= maxRunIDShown {
+		if n == maxRunIDShown {
+			kept = end
+		}
+		_, size := utf8.DecodeRuneInString(run[end:])
+		end += size
+		n++
 	}
-	return strconv.Quote(safetext.EscapeName(run)) + cut
+	if n <= maxRunIDShown {
+		return strconv.Quote(safetext.EscapeName(run))
+	}
+	return strconv.Quote(safetext.EscapeName(run[:kept])) + "..."
 }
 
 // maxRunIDShown is how many runes of a declined artifact's run ID the line shows.

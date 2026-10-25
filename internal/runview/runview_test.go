@@ -9,18 +9,23 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/audit"
+	safetext "github.com/bide-ai/bide/internal/printable"
 	"github.com/bide-ai/bide/plan"
 )
 
@@ -724,6 +729,104 @@ func TestSignaturesNoteConcurrentProvers(t *testing.T) {
 	v := viewOf(t, Handler(Options{Source: JournalSource{J: j}, Provers: []Prover{fan}}), "g1")
 	if !strings.Contains(v.Gates[0].Signatures, "another run") {
 		t.Errorf("signatures %q", v.Gates[0].Signatures)
+	}
+}
+
+// shownRunIDRef is shownRunID as it was first written, with a []rune of the whole ID. For valid UTF-8
+// its output is the contract of the bounded version; for an invalid byte it differs on purpose (the
+// first version showed U+FFFD for an invalid byte in a cut ID, and \x{..} in one that was not cut).
+func shownRunIDRef(run string) string {
+	cut := ""
+	if r := []rune(run); len(r) > maxRunIDShown {
+		run, cut = string(r[:maxRunIDShown]), "..."
+	}
+	return strconv.Quote(safetext.EscapeName(run)) + cut
+}
+
+// units is the number of units shownRunID counts in s: a rune, or one invalid byte.
+func units(s string) int {
+	n := 0
+	for len(s) > 0 {
+		_, size := utf8.DecodeRuneInString(s)
+		s = s[size:]
+		n++
+	}
+	return n
+}
+
+// shownRunID gives, for valid UTF-8, the line the first version gave. An invalid byte is shown the same
+// way whether the ID is cut or not (\x{..}), and the cut falls between units, so no byte of a rune is
+// separated from the rest of it and two IDs that differ in a bad byte never show alike. Its work does
+// not grow with the ID.
+func TestShownRunID(t *testing.T) {
+	at := func(n int, unit string) string { return strings.Repeat(unit, n) }
+	cases := []string{
+		"", "a", "run-b", "x\x1b[31m\nPASS", "r\u202e\u2800",
+		at(maxRunIDShown-1, "a"), at(maxRunIDShown, "a"), at(maxRunIDShown+1, "a"), at(maxRunIDShown+2, "a"),
+		at(maxRunIDShown, "\u00e9"), at(maxRunIDShown+1, "\u00e9"), at(maxRunIDShown-1, "a") + "\U0001F600", at(maxRunIDShown, "a") + "\U0001F600",
+		at(maxRunIDShown+1, "\U0001F600"), at(maxRunIDShown+3, "\"\\"),
+	}
+	rng := rand.New(rand.NewPCG(1, 2))
+	valid := []string{"a", "Z", "0", "\"", "\\", "\x1b", "\n", "\u202e", "\u2800", "\u00e9", "\U0001F600", "\x00", "\ufffd"}
+	bad := []string{"\xff", "\xc3", "\xe2\x82", "\xf0\x9f\x98", "\x82", "\xed\xa0\x80"}
+	gen := func(alphabet []string) string {
+		var b strings.Builder
+		for range rng.IntN(2*maxRunIDShown + 3) {
+			b.WriteString(alphabet[rng.IntN(len(alphabet))])
+		}
+		return b.String()
+	}
+	var invalid []string
+	for range 3000 {
+		cases = append(cases, gen(valid))
+		invalid = append(invalid, gen(append(slices.Clone(valid), bad...)))
+	}
+	invalid = append(invalid, at(maxRunIDShown, "\xff"), at(maxRunIDShown+1, "\xff"), at(maxRunIDShown-1, "a")+"\xe2\x82", at(maxRunIDShown, "a")+"\xe2\x82\xac",
+		at(maxRunIDShown-1, "a")+"\xf0\x9f\x98\x80\xff", at(maxRunIDShown, "a")+"\xf0\x9f\x98")
+	for _, c := range cases {
+		if got, want := shownRunID(c), shownRunIDRef(c); got != want {
+			t.Fatalf("shownRunID(%q) = %s, want %s", c, got, want)
+		}
+	}
+	for _, c := range invalid {
+		got := shownRunID(c)
+		if strings.Contains(got, "\ufffd") && !strings.Contains(c, "\ufffd") {
+			t.Fatalf("shownRunID(%q) = %s shows an invalid byte as U+FFFD", c, got)
+		}
+		// The line is the same text the uncut path gives for the first maxRunIDShown units.
+		prefix, n := c, 0
+		for n < maxRunIDShown && len(prefix) > 0 {
+			_, size := utf8.DecodeRuneInString(prefix)
+			prefix, n = prefix[size:], n+1
+		}
+		kept := c[:len(c)-len(prefix)]
+		want := strconv.Quote(safetext.EscapeName(kept))
+		if units(c) > maxRunIDShown {
+			want += "..."
+		}
+		if got != want {
+			t.Fatalf("shownRunID(%q) = %s, want %s", c, got, want)
+		}
+		if units(c) > maxRunIDShown && got != shownRunID(kept)+"..." {
+			t.Fatalf("shownRunID(%q) = %s: the cut path does not match the uncut path on %q (%s)", c, got, kept, shownRunID(kept))
+		}
+	}
+	// Two IDs that differ only in a bad byte do not render alike, cut or not.
+	for _, pair := range [][2]string{{"a\xffb", "a\xfeb"}, {at(maxRunIDShown+2, "a") + "\xff", at(maxRunIDShown-1, "a") + "\xffa"}, {at(maxRunIDShown-1, "a") + "\xff" + "tail", at(maxRunIDShown-1, "a") + "\xfe" + "tail"}} {
+		if shownRunID(pair[0]) == shownRunID(pair[1]) {
+			t.Errorf("%q and %q render alike: %s", pair[0], pair[1], shownRunID(pair[0]))
+		}
+	}
+
+	// A 5 MB ID costs a few allocations of a few hundred bytes, not a copy of the ID.
+	for name, id := range map[string]string{"ascii": strings.Repeat("r", 5_000_000), "invalid": strings.Repeat("\xff", 1_700_000)} {
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		shownRunID(id)
+		runtime.ReadMemStats(&after)
+		if n := after.TotalAlloc - before.TotalAlloc; n > 16<<10 {
+			t.Errorf("%s: shownRunID of a %d-byte ID allocated %d bytes", name, len(id), n)
+		}
 	}
 }
 
