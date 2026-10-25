@@ -1055,11 +1055,11 @@ type GateReason struct {
 }
 ```
 
-GateReason is one reason a call needs a gate beyond its tool's own, as the gate-reason record the engine wrote holds it.
+GateReason is one reason a call needs a gate beyond its tool's own, as the gate-reason record the engine wrote holds it. *(experimental)*
 
 **Methods**
 
-- `func (r GateReason) Line() string`: Line is the reason as one line of text, for a terminal or a log: "untrusted content from inbound-email (read by tool read\_email, call c3, journal position 4)", or "cap refund\_one: this call 6000.00 USD, limit 5000.00 USD (over, gate)".
+- `func (r GateReason) Line() string`: Line is the reason as one line of text, for a terminal or a log: "untrusted content from inbound-email (read by tool read\_email, call c3, journal position 4)", or "cap refund\_one: this call 6000.00 USD, limit 5000.00 USD (over, gate)". *(experimental)*
 
 ## type GateStanding
 
@@ -2262,13 +2262,13 @@ Option configures an Agent: New applies options to a new agent, and With to a co
 **Constructors and functions**
 
 - `func WithApproverVerifiers(fn ApproverVerifierFor) Option`: WithApproverVerifiers sets how the m-of-n approval gate resolves an approver id to the verifier of its decision signatures.
-- `func WithCapNamespace(name string) Option`: WithCapNamespace names the deployment's cap ledgers: the cumulative caps of two agents on one store that give the same namespace and the same rule name count in the same windows, and two that give different namespaces do not.
+- `func WithCapNamespace(name string) Option`: WithCapNamespace names the deployment's cap ledgers: the cumulative caps of two agents on one store that give the same namespace and the same rule name count in the same windows, and two that give different namespaces do not. *(experimental)*
 - `func WithMiddleware(mw ...Middleware) Option`: WithMiddleware appends model-call middleware, after any the agent has; the first one added is the outermost.
 - `func WithOptions(opts ...Option) Option`: WithOptions groups options into one, applied in order where it appears.
 - `func WithRetrieval(r Retriever, k int, opts ...RetrievalOption) Option`: WithRetrieval adds classic retrieval-augmented generation: for each run, the agent retrieves the top-k documents for the run's user message, as a journaled engine step, and adds them to every model request of the run as a user message placed just before that user message (after the system prompt and any earlier turns).
 - `func WithStopSwitch(sw *StopSwitch) Option`: WithStopSwitch gives the agent a kill switch (see StopSwitch, and docs/design/kill-switch.md): its runs are held, as a pause (\*Stopped), where a stop covers them, before any side effect that has not begun. *(experimental)*
 - `func WithSystemPromptFunc(fn func(ctx context.Context, run RunInfo) (string, error)) Option`: WithSystemPromptFunc sets a system message computed for each drive of a run (each Run, Stream or resume), from the run's context and its RunInfo, so it can carry dynamic context (the date, the tenant, state read from elsewhere).
-- `func WithTaintPolicy(p TaintPolicy) Option`: WithTaintPolicy makes the agent enforce p on the runs it starts (experimental).
+- `func WithTaintPolicy(p TaintPolicy) Option`: WithTaintPolicy makes the agent enforce p on the runs it starts (experimental). *(experimental)*
 - `func WithToolErrorRedactor(fn func(tool string, err error) string) Option`: WithToolErrorRedactor sets the text recorded for a tool call that fails (see Agent.WithToolErrorRedactor for what it covers).
 - `func WithToolMiddleware(mw ...ToolMiddleware) Option`: WithToolMiddleware appends tool-call middleware, after any the agent has; the first one added is the outermost (see ToolMiddleware).
 - `func WithTools(tools ...Tool) Option`: WithTools registers tools with the agent.
@@ -3716,7 +3716,7 @@ type TaintPolicy struct {
 }
 ```
 
-TaintPolicy is what an agent that enforces taint carries (WithTaintPolicy).
+TaintPolicy is what an agent that enforces taint carries (WithTaintPolicy). *(experimental)*
 
 ## type Task
 
@@ -3877,7 +3877,7 @@ ToolOption configures a tool built by Func, CompensatedFunc or SubAgent.
 - `func Trusted(reason string) ToolOption`: Trusted declares that the results of the tool are the host's own, and why (the reason is required and is kept in the declarations): the tool reads a table the host writes, calls a service it runs. *(experimental)*
 - `func Untrusted(source string) ToolOption`: Untrusted declares that the results of the tool are untrusted content, from the named source (for example "crm-notes" or "inbound-email"): text the host did not write and an attacker may have. *(experimental)*
 - `func WithApproval(p *ApprovalPolicy) ToolOption`: WithApproval gates every call to the tool on human approval before it runs: p is SingleApproval() for one decision (Approve), or an m-of-n policy (SubmitDecision, and the agent's WithApproverVerifiers).
-- `func WithCaps(lines ...string) ToolOption`: WithCaps declares amount-cap rules on a tool: one line per rule, in the grammar of the design note (docs/guides/amount-caps.md):
+- `func WithCaps(lines ...string) ToolOption`: WithCaps declares amount-cap rules on a tool: one line per rule, in the grammar of the design note (docs/guides/amount-caps.md): *(experimental)*
 - `func WithOutputSchema(schema json.RawMessage) ToolOption`: WithOutputSchema declares the JSON Schema of the tool's result (ToolSpec.Output).
 - `func WithSubRuns(agentFor func(name string) *Agent) ToolOption`: WithSubRuns declares the agents that run the tool's programmatic sub-runs: agentFor(name) is the agent the tool runs RunInfo.SubRunFor(name) with.
 - `func WithTimeout(d time.Duration) ToolOption`: WithTimeout bounds each call to the tool by d: the call runs under a context with that deadline, on top of the run's.

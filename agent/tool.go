@@ -53,7 +53,7 @@ type ToolSpec struct {
 	// each result.
 	Approval *ApprovalPolicy
 	// Caps are the amount-cap rule lines of the tool (see WithCaps): checked against Input when the
-	// tool is registered, and decided for every call. The model is never sent them.
+	// tool is registered, and decided for every call. The model is never sent them. Experimental.
 	Caps []string
 	// Untrusted, when not empty, is the source of untrusted content the tool's results carry (see
 	// Untrusted). The engine records it with each result. A source in Safety.Untrusted is the same

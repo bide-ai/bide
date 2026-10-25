@@ -333,6 +333,14 @@ with a [deadline](hitl-approval.md#deadlines) also says where it stands on the v
 in 40m 00s*, *deadline passed 30m 00s ago* (still waiting: no drive has recorded the expiry, and the
 gate refuses decisions), or *expired*, which is the gate's recorded outcome (the call never ran).
 
+A gate the application holds for a reason beyond its tool's own (the escalation gate of a tainted
+call, or a cap rule) carries a *why this gate* fold in its card. It lists the reasons as lines: the
+untrusted content the turn read, where it came from and at which journal position, or the cap rule
+and this call's figures as of the ask. They come from the `gate-reason` record the engine wrote when
+it held the call, and the card labels them as the application's record, which is not part of what an
+approver signs. The JSON view carries them as `why` on the gate. `bide approve -list` shows the same
+reasons (see [HITL approval](hitl-approval.md)).
+
 **AUDIT PROOF.** Given `-sth` or `-evidence` and `-pubkey`, whether the journal verifies, checked
 with the audit package's own verifiers, as `bide audit` does:
 

@@ -38,7 +38,7 @@ import (
 // digits than its currency allows, or arguments that repeat a member or differ in a member's case, is
 // not assessable and gets the rule's action; so does a call whose currency no rule of the argument
 // covers (compared byte for byte), with the strictest action among them. No float is used. Plan flows
-// do not carry caps (the plan registry refuses a tool that does).
+// do not carry caps (the plan registry refuses a tool that does). It is experimental.
 func WithCaps(lines ...string) ToolOption {
 	return toolOption(func(c *toolConfig) error {
 		if len(lines) == 0 {
@@ -55,7 +55,7 @@ func WithCaps(lines ...string) ToolOption {
 // WithCapNamespace names the deployment's cap ledgers: the cumulative caps of two agents on one store that
 // give the same namespace and the same rule name count in the same windows, and two that give different
 // namespaces do not. The default is "default". Renaming a namespace (or a rule) starts new ledgers and so
-// resets the windows' totals; the declarations report treats it as a weakening. An empty name is ErrConfig.
+// resets the windows' totals; the declarations report treats it as a weakening. An empty name is ErrConfig. It is experimental.
 func WithCapNamespace(name string) Option {
 	return agentOption(func(c *agentConfig) error {
 		if name == "" {
