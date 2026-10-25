@@ -1,0 +1,11 @@
+jobs:
+  a:
+    steps:
+      - name: Drive the page
+        env:
+          BIDE_FAKE_BROWSER: '1'
+        run: go test . -run 'InChrome' -count=1 -v
+      - name: Other
+        env:
+          BIDE_ORPHAN_BROWSER: '1'
+        run: go test ./other -run 'Whatever'

@@ -479,8 +479,9 @@ Safety and `assert` lines are in neither a journal nor the digest, so they are n
 verdict made against a run is about gates, in typed mode: a new node with no gate, added since the run, is
 listed as a change and is not judged as a weakening against the run. This comparison never blocks a save and never
 changes the weakened banner, which stays a comparison with the committed file. The page reads the run
-once; **Reload run** reads it again. A read that fails (a dropped connection, a timeout) is not kept:
-the next request tries again. From a store the page reads the run by point reads, never its history: the run's topology and digest, and whether it
+once; **Reload run** starts a fresh read, even while an older one is still running. A read that fails (a dropped connection,
+a timeout, a journal in a format this version cannot read) is kept for three seconds so that typing does not read it
+again on every keystroke, and then tried again. From a store the page reads the run by point reads, never its history: the run's topology and digest, and whether it
 has an end marker (completed, aborted or cancelled, else "no end marker"); its record count is not shown. The run's flow is the
 one its topology names. Every name, flow name and message from the journal is shown
 with each character that does not print written out, as `bide view` does. The run and the store are fixed when the command starts. A program

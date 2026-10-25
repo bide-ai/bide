@@ -112,12 +112,12 @@ func runScript(t *testing.T, script string, s *Server, out any) {
 	}
 }
 
-// TestScriptsHaveADeadline: a script that stalls fails the test at the deadline with what it had
+// TestScriptsHaveADeadlineInChrome: a script that stalls fails the test at the deadline with what it had
 // printed, instead of holding the run, and the Chrome it started is gone afterwards. browser/stall.mjs
 // prints a line and waits for ever; browser/stall-chrome.mjs launches real Chrome first, and with
 // STALL=busy then spins, which keeps puppeteer's SIGTERM handler from running: only the harness
 // killing the Chrome by its profile directory can remove it then.
-func TestScriptsHaveADeadline(t *testing.T) {
+func TestScriptsHaveADeadlineInChrome(t *testing.T) {
 	s, _ := newTestServer(t, "refund.yaml", testFlow)
 	old := browsertest.Deadline
 	defer func() { browsertest.Deadline = old }()
@@ -830,13 +830,13 @@ func TestStructureInChrome(t *testing.T) {
 	}
 }
 
-// TestNonPrintingNamesAreShownEscaped: plan refuses a name that does not print, so the server never sends
+// TestNonPrintingNamesAreShownEscapedInChrome: plan refuses a name that does not print, so the server never sends
 // one for a config; the page still writes such characters out (a typed-mode registry names a block in Go,
 // which can be any string). The script has the page draw the real view of a config with each placeholder
 // name replaced by a hostile one, walks every text node, title, aria-label, placeholder, alt and option
 // in each state, and checks the page's helpers on every class. The editing fields and the source keep
 // the raw text.
-func TestNonPrintingNamesAreShownEscaped(t *testing.T) {
+func TestNonPrintingNamesAreShownEscapedInChrome(t *testing.T) {
 	src := `{"version":1,"flow":"flowZ","entry":"nodeA","nodes":[` +
 		`{"name":"nodeA","block":"blockA","safety":"side_effect","approval":{"need":1,"approvers":["approvA"]}},` +
 		`{"name":"nodeB","block":"b2"},{"name":"nodeC","block":"ok"}],` +

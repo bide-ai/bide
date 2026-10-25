@@ -134,8 +134,8 @@ func TestRunPanelFollowsTheSessionInChrome(t *testing.T) {
 	}
 }
 
-// Without -run the panel stays hidden and the page asks once.
-func TestRunPanelIsAbsentWithoutARun(t *testing.T) {
+// TestRunPanelIsAbsentWithoutARunInChrome: without -run the panel stays hidden and the page asks once.
+func TestRunPanelIsAbsentWithoutARunInChrome(t *testing.T) {
 	s, _ := newTestServer(t, "refund.yaml", testFlow)
 	var r struct {
 		OK     bool   `json:"ok"`

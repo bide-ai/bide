@@ -280,7 +280,7 @@ func TestRunHostileJournals(t *testing.T) {
 		status string
 		want   string
 	}{
-		"no topology":          {drop(plan.TopologyStep), "no_topology", "journaled no topology"},
+		"no topology":          {drop(plan.TopologyStep), "no_topology", "has no flow:topology record"},
 		"topology, no digest":  {drop("flow:digest"), "no_digest", "has not recorded its digest yet"},
 		"digest, not a string": {set("flow:digest", str(7)), "no_digest", "has not recorded its digest yet"},
 		"digest not hex":       {set("flow:digest", str(strings.Repeat("z", 64))), "mismatch", "not a SHA-256 digest"},
@@ -469,6 +469,9 @@ func (f *flakySource) History(ctx context.Context, id string) ([]agent.Record, e
 // A read that failed is not kept: the next request reads the run again. Otherwise one dropped connection
 // would leave the page saying the run cannot be read until Reload.
 func TestRunFailedReadIsNotKept(t *testing.T) {
+	old := runBackoff
+	runBackoff = 0
+	t.Cleanup(func() { runBackoff = old })
 	j, _ := ranRun(t, runCfg)
 	s := runServer(t, runCfg, &flakySource{Source: runview.JournalSource{J: j}}, "r1", true)
 	if r := askRun(t, s, runCfg, nil, false); r.Status != "unreadable" || !strings.Contains(r.Claim, "read error") {
@@ -768,5 +771,107 @@ func TestRunFileWithErrorsIsSaidSo(t *testing.T) {
 	}
 	if r := askRun(t, s, runCfg, nil, false); slices.ContainsFunc(r.Notes, func(n string) bool { return strings.Contains(n, "The file has") }) {
 		t.Errorf("a clean file: notes %q", r.Notes)
+	}
+}
+
+// A failed read is kept only for runBackoff, so a store that is down or a journal this version cannot read is
+// not read again on every keystroke; Reload run reads at once, and after the backoff the next request does.
+func TestRunFailedReadIsBackedOff(t *testing.T) {
+	old := runBackoff
+	t.Cleanup(func() { runBackoff = old })
+	runBackoff = 300 * time.Millisecond
+	cs := &countingSource{Source: failingSource{errors.New("down")}}
+	s := runServer(t, runCfg, cs, "r1", true)
+	for i := 0; i < 5; i++ {
+		if r := askRun(t, s, runCfg, nil, false); r.Status != "unreadable" {
+			t.Fatalf("%s", r.Status)
+		}
+	}
+	if n := cs.n.Load(); n != 1 {
+		t.Errorf("5 requests read a failing store %d times, want 1 within the backoff", n)
+	}
+	askRun(t, s, runCfg, nil, true)
+	if n := cs.n.Load(); n != 2 {
+		t.Errorf("Reload run: %d reads, want 2", n)
+	}
+	time.Sleep(400 * time.Millisecond)
+	askRun(t, s, runCfg, nil, false)
+	if n := cs.n.Load(); n != 3 {
+		t.Errorf("after the backoff: %d reads, want 3", n)
+	}
+}
+
+// Reload run starts a fresh read; it does not wait on an older one, and the older one's answer, arriving
+// late (here a failure), does not replace the newer.
+func TestRunReloadStartsAFreshRead(t *testing.T) {
+	j, _ := ranRun(t, runCfg)
+	src := &firstHeldSource{Source: runview.JournalSource{J: j}, release: make(chan struct{}), started: make(chan struct{}, 1)}
+	s := runServer(t, runCfg, src, "r1", true)
+	a := make(chan *runReply, 1)
+	go func() { a <- s.compareRun(context.Background(), []byte(runCfg), nil, false) }()
+	<-src.started // the first read is under way and held
+	b := make(chan *runReply, 1)
+	go func() { b <- s.compareRun(context.Background(), []byte(runCfg), nil, true) }()
+	select {
+	case rb := <-b:
+		if rb.Status != "same" {
+			t.Fatalf("Reload run did not read afresh: %s %q", rb.Status, rb.Claim)
+		}
+	case <-time.After(5 * time.Second):
+		close(src.release)
+		t.Fatal("Reload run waited on the read in flight instead of starting its own")
+	}
+	close(src.release) // the first read now fails, long after the second answered
+	select {
+	case r := <-a:
+		if r.Status != "unreadable" && r.Status != "same" {
+			t.Errorf("the held request: %s", r.Status)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the held request did not finish")
+	}
+	if r := askRun(t, s, runCfg, nil, false); r.Status != "same" {
+		t.Errorf("the older read's failure replaced the newer answer: %s %q", r.Status, r.Claim)
+	}
+	if n := src.n.Load(); n != 2 {
+		t.Errorf("%d reads, want 2", n)
+	}
+}
+
+// firstHeldSource holds its first read until released and then fails it; later reads are real.
+type firstHeldSource struct {
+	runview.Source
+	release chan struct{}
+	started chan struct{}
+	n       atomic.Int32
+}
+
+func (f *firstHeldSource) History(ctx context.Context, id string) ([]agent.Record, error) {
+	if f.n.Add(1) == 1 {
+		f.started <- struct{}{}
+		<-f.release
+		return nil, errors.New("late failure")
+	}
+	return f.Source.History(ctx, id)
+}
+
+// A digest string is the journal's, of any length: it is neither shown nor stored when it is not a digest.
+func TestRunHostileDigestIsNotEchoed(t *testing.T) {
+	j, _ := ranRun(t, runCfg)
+	recs, err := j.History(context.Background(), "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	evil, _ := json.Marshal("ab\u202eevil\x1b[31m" + strings.Repeat("z", 200000))
+	forged := runview.Exports{"r1": slices.Clone(recs)}
+	for i := range forged["r1"] {
+		if forged["r1"][i].Name == "flow:digest" {
+			forged["r1"][i].Result = evil
+		}
+	}
+	r := askRun(t, runServer(t, runCfg, forged, "r1", true), runCfg, nil, false)
+	b, _ := json.Marshal(r)
+	if r.Status != "mismatch" || r.Run.Digest != "" || len(b) > 5000 || strings.ContainsAny(string(b), "\u202e\x1b") {
+		t.Errorf("%s digest %d bytes, reply %d bytes", r.Status, len(r.Run.Digest), len(b))
 	}
 }

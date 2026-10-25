@@ -107,34 +107,43 @@ func (s *Server) serveRun(w http.ResponseWriter, r *http.Request) {
 	reply(w, s.compareRun(ctx, []byte(req.Text), req.Renames, req.Reload))
 }
 
+// runBackoff is how long a failed read is kept: a store that is down, or a journal in a format this version
+// cannot read, is not read again on every keystroke, and Reload run reads at once. A var so a test can set it.
+var runBackoff = 3 * time.Second
+
 // runState is the server's one snapshot of its run, and the read in flight to make it.
 type runState struct {
 	mu       sync.Mutex
 	snap     *runSnap
+	until    time.Time // when a failed snapshot stops being kept; zero for a definitive one
 	inflight *runFlight
+	gen      int // the newest read started; an older read that finishes late is dropped
 }
 
-// runFlight is one read of the run, shared by every request that arrives while it runs.
+// runFlight is one read of the run, shared by every request that arrives while it is the newest.
 type runFlight struct {
 	done chan struct{}
 	snap *runSnap
+	gen  int
 }
 
-// snapshot returns the snapshot already read unless reload. A read runs under a context of its own (not a
-// request's: the first client leaving must not fail the others), is shared by the requests that arrive
-// while it runs, and is kept only when it is definitive: a cancelled, timed-out or failed read is
-// returned to those waiting and tried again by the next request. A request that gives up waiting returns
-// at once, whatever the store is doing.
+// snapshot returns the snapshot already read unless reload (or, for a failed read, unless runBackoff has
+// passed). A read runs under a context of its own (not a request's: the first client leaving must not fail
+// the others) and is shared by the requests that arrive while it runs; Reload run starts a fresh read
+// and does not join an older one, whose answer is then dropped. A definitive result is kept; a failed
+// one (the store, a cancelled or timed-out read) is kept for runBackoff only. A request that gives up
+// waiting returns at once, whatever the store is doing.
 func (s *Server) snapshot(ctx context.Context, reload bool) *runSnap {
 	s.runs.mu.Lock()
-	if s.runs.snap != nil && !reload {
+	if s.runs.snap != nil && !reload && (s.runs.until.IsZero() || time.Now().Before(s.runs.until)) {
 		sn := s.runs.snap
 		s.runs.mu.Unlock()
 		return sn
 	}
 	f := s.runs.inflight
-	if f == nil {
-		f = &runFlight{done: make(chan struct{})}
+	if f == nil || reload {
+		s.runs.gen++
+		f = &runFlight{done: make(chan struct{}), gen: s.runs.gen}
 		s.runs.inflight = f
 		run := *s.run
 		go func() {
@@ -142,10 +151,13 @@ func (s *Server) snapshot(ctx context.Context, reload bool) *runSnap {
 			defer cancel()
 			sn := readRun(rctx, run)
 			s.runs.mu.Lock()
-			if !sn.transient {
-				s.runs.snap = sn
+			if f.gen == s.runs.gen {
+				s.runs.snap, s.runs.until = sn, time.Time{}
+				if sn.transient {
+					s.runs.until = time.Now().Add(runBackoff)
+				}
+				s.runs.inflight = nil
 			}
-			s.runs.inflight = nil
 			s.runs.mu.Unlock()
 			f.snap = sn
 			close(f.done)
@@ -200,7 +212,7 @@ func readRun(ctx context.Context, run editrun.Run) *runSnap {
 	}
 	switch {
 	case topo == nil:
-		return refuse("no_topology", "Run "+id+" journaled no topology (it started before flow:topology was recorded), so there is nothing to compare.")
+		return refuse("no_topology", "Run "+id+" has no flow:topology record (it is not a flow run, or it started before that record was written), so there is nothing to compare.")
 	case len(topo.Result) > MaxFileSize:
 		return refuse("too_large", fmt.Sprintf("Run %s journaled a topology of more than %d bytes; it is not read.", id, MaxFileSize))
 	}
@@ -208,10 +220,11 @@ func readRun(ctx context.Context, run editrun.Run) *runSnap {
 	if dig == nil || json.Unmarshal(dig.Result, &digest) != nil {
 		return refuse("no_digest", "Run "+id+" has not recorded its digest yet, so there is nothing to compare; resume will record whichever flow resumes it.")
 	}
-	sn.info.Digest = digest
 	if !sixtyFourHex(digest) {
+		// The string is the journal's, of any length and content: it is not shown, only that it is not a digest.
 		return refuse("mismatch", "Run "+id+" journaled a digest that is not a SHA-256 digest; its topology is not shown.")
 	}
+	sn.info.Digest = digest
 	t, d, _, err := plan.JournaledTopology(recs)
 	if err != nil {
 		return refuse("mismatch", "Run "+id+" journaled a topology that does not match its digest; it is not shown.")
@@ -407,6 +420,7 @@ func (r *runReply) clean() *runReply {
 	fixAll(r.Notes)
 	if r.Run != nil {
 		fix(&r.Run.ID)
+		fix(&r.Run.Digest)
 		fix(&r.Run.Flow)
 		fix(&r.Run.State)
 		fix(&r.Run.StateText)
