@@ -56,6 +56,8 @@ func TestVerifyEvidenceStepKeyOfCall(t *testing.T) {
 func TestStepSubjectEveryCallKey(t *testing.T) {
 	const id = "c2#taint"
 	for name, key := range map[string]string{
+		"approval":         "approval:c2%23taint",
+		"after request":    "approval:c2%23taint:after-request",
 		"pending":          agent.ApprovalPendingStep(id),
 		"request":          agent.ApprovalRequestStep(id),
 		"deadline":         agent.ApprovalDeadlineStep(id),
