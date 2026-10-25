@@ -106,7 +106,8 @@ func TestRunReplyNeverHoldsAStoreError(t *testing.T) {
 	}
 }
 
-// The only text of an error the page may hold is the file's: every call of Error() in the files that build the
+// The only text of an error the page may hold is the file's (storeFailure is the one door a store's error goes through; this
+// guard sees only calls of Error(), so an fmt.Errorf("...%w", err) whose text reached a reply would escape it, and must not exist): every call of Error() in the files that build the
 // replies carries a comment saying it is the text of a file and not of a store, so a new one has to say what it
 // is, in review, before it ships.
 func TestOnlyFileTextIsTakenFromErrors(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -135,7 +136,7 @@ func (s *Server) scan(ctx context.Context, reload bool) *scanResult {
 		}
 		return f.res
 	case <-ctx.Done():
-		return &scanResult{readAt: time.Now().UTC(), status: "error", note: "The store could not be read (" + runview.ErrClass(ctx.Err()) + ").", transient: true}
+		return &scanResult{readAt: time.Now().UTC(), status: "error", note: storeFailure("The store could not be read", ctx.Err()), transient: true}
 	}
 }
 
@@ -159,7 +160,7 @@ func scanRuns(ctx context.Context, run editrun.Run) *scanResult {
 		}
 		for id, err := range l.Runs(ctx, agent.RunFilter{ExcludeHolding: endNames}) {
 			if err != nil {
-				res.status, res.note, res.transient = "error", "The runs could not be listed ("+runview.ErrClass(err)+").", true
+				res.status, res.note, res.transient = "error", storeFailure("The runs could not be listed", err), true
 				return res
 			}
 			if agent.IsReservedRun(id) {
@@ -175,7 +176,7 @@ func scanRuns(ctx context.Context, run editrun.Run) *scanResult {
 	default:
 		all, err := run.Source.Runs(ctx)
 		if err != nil {
-			res.status, res.note, res.transient = "error", "The runs could not be listed ("+runview.ErrClass(err)+").", true
+			res.status, res.note, res.transient = "error", storeFailure("The runs could not be listed", err), true
 			return res
 		}
 		slices.Sort(all)
@@ -256,7 +257,7 @@ func scanRuns(ctx context.Context, run editrun.Run) *scanResult {
 // followUp reads what one run says of its group: the flow it started, and its topology.
 func followUp(g *scanGroup, id string, get func(id, name string) (agent.Record, bool, error)) {
 	if rec, ok, err := get(id, "run:start"); err != nil {
-		g.flowErr = "run:start could not be read (" + runview.ErrClass(err) + ")"
+		g.flowErr = strings.TrimSuffix(storeFailure("run:start could not be read", err), ".")
 	} else if !ok {
 		g.flowErr = "the run has no run:start"
 	} else {
@@ -270,7 +271,7 @@ func followUp(g *scanGroup, id string, get func(id, name string) (agent.Record, 
 	rec, ok, err := get(id, plan.TopologyStep)
 	switch {
 	case err != nil:
-		g.topoNote = "its topology could not be read (" + runview.ErrClass(err) + ")"
+		g.topoNote = strings.TrimSuffix(storeFailure("its topology could not be read", err), ".")
 	case !ok:
 		g.topoNote = "the run recorded no topology"
 	case len(rec.Result) > MaxFileSize:
@@ -367,7 +368,7 @@ func (s *Server) affected(ctx context.Context, text []byte, reload bool) *affect
 	typed := s.typing != nil
 	file, err := s.fileConfig(text)
 	if err != nil {
-		rep.Status, rep.Summary = "cannot", "Cannot compare: the text is not a readable config ("+firstLine(err.Error())+")."
+		rep.Status, rep.Summary = "cannot", "Cannot compare: the text is not a readable config ("+firstLine(err.Error())+")." // text of the file, not of a store
 		return rep.clean()
 	}
 	frep := file.Inspect()
@@ -414,7 +415,7 @@ func (s *Server) affected(ctx context.Context, text []byte, reload bool) *affect
 			old.Digest = g.digest
 			v, err := runview.DiffTopologies(runview.TopologyDiff{Old: old, New: frep, OldName: "the runs", NewName: s.name})
 			if err != nil {
-				ag.Status, ag.Reason = "not_compared", firstLine(err.Error())
+				ag.Status, ag.Reason = "not_compared", firstLine(err.Error()) // text of the file, not of a store
 				break
 			}
 			if len(v.Changes) == 0 {

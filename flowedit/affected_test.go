@@ -412,7 +412,7 @@ func TestAffectedIsSingleFlightAndCached(t *testing.T) {
 		wg.Add(1)
 		go func() { defer wg.Done(); askAffected(t, s, v1, true, false) }()
 	}
-	wg.Wait()
+	waitOrFail(t, &wg, 20*time.Second)
 	once := cs.gets.Load()
 	if cs.runs.Load() != 1 || once != 52 {
 		t.Errorf("8 concurrent requests made %d gets and %d listings, want one scan's 52 and 1", once, cs.runs.Load())
@@ -569,7 +569,7 @@ func TestAffectedRequestsDuringAScanJoinIt(t *testing.T) {
 		start()
 		time.Sleep(3 * time.Millisecond)
 	}
-	wg.Wait()
+	waitOrFail(t, &wg, 20*time.Second)
 	if cs.runs.Load() != 1 || cs.gets.Load() != 62 {
 		t.Errorf("8 requests during a scan made %d listings and %d gets, want 1 and 62", cs.runs.Load(), cs.gets.Load())
 	}
@@ -622,5 +622,63 @@ func TestAffectedReloadCancelsTheSupersededScan(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the waiting request did not finish")
+	}
+}
+
+// An error from the store never reaches the list as text, whichever read fails (the listing, any record, the
+// first entry), and a command to open a run never holds a store's address: it says <store flags>.
+func TestAffectedReplyNeverHoldsAStoreError(t *testing.T) {
+	v1, v2 := flowCfg("pay", "dbl"), flowCfg("pay", "inc")
+	base := agent.NewMemStore()
+	cloneRun(t, templateRun(t, v1), base, "a", unfinished, nil)
+	cloneRun(t, templateRun(t, v2), base, "b", unfinished, nil)
+	cases := map[string]func(op, name string) bool{
+		"the listing":  func(op, n string) bool { return op == "runs" },
+		"every get":    func(op, n string) bool { return op == "get" },
+		"the digest":   func(op, n string) bool { return op == "get" && n == "flow:digest" },
+		"run:start":    func(op, n string) bool { return op == "get" && n == "run:start" },
+		"the topology": func(op, n string) bool { return op == "get" && n == plan.TopologyStep },
+		"first entry":  func(op, n string) bool { return op == "load" },
+		"nothing":      func(op, n string) bool { return false },
+	}
+	for name, fail := range cases {
+		for _, typed := range []bool{true, false} {
+			s, _ := storeServer(t, v1, poisonStore{Store: base, failOn: fail}, typed)
+			for _, reload := range []bool{false, true} {
+				body, _ := json.Marshal(map[string]any{"text": v1, "check": true, "reload": reload})
+				out := call(s.Handler(), s, "/api/affected", string(body), nil).Body.String()
+				for _, w := range leakWords {
+					if strings.Contains(out, w) {
+						t.Errorf("%s (typed=%v): the reply holds %q: %s", name, typed, w, out)
+					}
+				}
+				var r affectedReply
+				if err := json.Unmarshal([]byte(out), &r); err != nil {
+					t.Fatal(err)
+				}
+				for _, g := range r.Groups {
+					if g.Command != "" && !strings.HasSuffix(g.Command, " <store flags> <file>") {
+						t.Errorf("%s: a command holds more than a placeholder for the store: %q", name, g.Command)
+					}
+				}
+			}
+		}
+	}
+	// A failing listing says so in words and with the class.
+	s, _ := storeServer(t, v1, poisonStore{Store: base, failOn: cases["the listing"]}, true)
+	if r := askAffected(t, s, v1, true, false); r.Status != "error" || r.Summary != "The runs could not be listed (read error)." {
+		t.Errorf("%+v", r)
+	}
+}
+
+// waitOrFail waits for wg, and fails the test (not by hanging) if it does not finish in d.
+func waitOrFail(t *testing.T, wg *sync.WaitGroup, d time.Duration) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(d):
+		t.Fatalf("the requests did not finish in %v", d)
 	}
 }
