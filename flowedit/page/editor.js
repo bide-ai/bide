@@ -12,6 +12,9 @@
 //                                             typed{source, label, digest, palette[{name, kind, in, inputs[], out, safety, gate, used}]} (typed mode only) }
 //   POST /api/preview {text, hash, renames[]}  -> { diff, removed_comments[], changed, hash, conflict, needs_confirmation[], errors, warnings }
 //   POST /api/save {text, hash, confirmed[], renames[]} -> Doc, or 409 { conflict, hash, diff }, or 422 { needs_confirmation[] }
+//   POST /api/run {text, renames[], reload} -> { configured, run{id, flow, state, state_text, digest, records, read_at},
+//                                              status, claim, basis, run_digest, file_digest, changes[], weakened[], strengthened[], renamed[], notes[] }
+//                    (configured is false without bide edit -run, and the page then shows no panel)
 // renames is the list of renames made in this editing session, [{from, to}] in order: the weakened
 // verdict matches a renamed node to its baseline self by it (the saved file does not carry it). Every
 // call that returns a verdict sends it, and /api/apply answers with the list after the operation.
@@ -66,7 +69,7 @@ async function applyOp(text, operation) {
   return e;
 }
 
-const SESSION_PATHS = ['/api/report', '/api/apply', '/api/preview', '/api/save'];
+const SESSION_PATHS = ['/api/report', '/api/apply', '/api/preview', '/api/save', '/api/run'];
 
 async function api(path, body = {}) {
   if (SESSION_PATHS.includes(path) && body.renames === undefined) body = { ...body, renames: state.renames };
@@ -1246,6 +1249,76 @@ export function render(v, { keepSource = false } = {}) {
   // The weakened banner announces itself (it is an alert); the verdict is spoken here, once per change.
   const verdict = v.verdict.word + '. ' + v.verdict.line;
   if (verdict !== lastVerdict) { lastVerdict = verdict; announce(verdict); }
+  refreshRun();
+}
+
+// ---- the comparison with a run (bide edit -run) ----
+//
+// The panel says what the server computed of the text against the topology the run journaled: the
+// claim is a sentence the server wrote, and the page adds nothing to it. Without -run the first answer is
+// {configured: false} and the page asks no more. The run is read once by the server; "Reload run" asks it
+// to read again.
+const RUN_WORDS = {
+  same: ['SAME DIGEST', 'v-good', 'ok'],
+  none_seen: ['NO DIFFERENCE SEEN', 'v-warn', 'unknown'],
+  differs: ['DIFFERS FROM THE RUN', 'v-warn', 'tilde'],
+  cannot: ['CANNOT COMPARE', 'v-warn', 'unknown'],
+};
+let runOff = false;
+let runSeq = 0;
+let lastRunKey = '';
+let lastRunSpoken = '';
+export async function refreshRun({ reload = false } = {}) {
+  if (runOff) return;
+  const key = JSON.stringify([state.text, state.renames]);
+  if (!reload && key === lastRunKey) return;
+  lastRunKey = key;
+  const mine = ++runSeq;
+  let r;
+  try {
+    r = await api('/api/run', { text: state.text, reload });
+  } catch (e) {
+    if (mine !== runSeq) return;
+    lastRunKey = '';
+    if ($('run-panel').hidden) return;
+    replace('run-claim', h('p', { class: 'bad', role: 'alert' }, 'Could not compare with the run: ' + e.message));
+    return;
+  }
+  if (mine !== runSeq) return; // an answer to older text
+  renderRun(r, reload);
+}
+
+export function renderRun(r, reloaded = false) {
+  if (!r.configured) { runOff = true; $('run-panel').hidden = true; return; }
+  $('run-panel').hidden = false;
+  const run = r.run || {};
+  const [word, cls, ic] = RUN_WORDS[r.status] || ['NOT COMPARED', 'v-warn', 'unknown'];
+  replace('run-facts', 'Run ' + (run.id || '') + (run.flow ? ' of the flow ' + run.flow : '') + (run.state_text ? ', ' + run.state_text : '') +
+    (run.records ? ', ' + run.records + ' records' : '') + (run.digest ? '. Journaled digest ' + run.digest : '') + '.');
+  replace('run-claim', h('section', { class: 'verdict ' + cls, 'aria-labelledby': 'run-word' },
+    h('div', { class: 'vicon' }, icon(ic)),
+    h('div', { class: 'vtext' },
+      h('p', { class: 'vword', id: 'run-word' }, word),
+      h('p', { class: 'vline' }, r.claim || ''))));
+  const parts = [];
+  const list = (title, items, id) => {
+    if (!items || !items.length) return;
+    const shownItems = items.slice(0, 50);
+    parts.push(h('h3', { id }, title),
+      h('ul', { 'aria-labelledby': id, class: 'runlist' }, shownItems.map((x) => h('li', {}, x)),
+        items.length > shownItems.length ? h('li', { class: 'muted' }, 'and ' + (items.length - shownItems.length) + ' more') : null));
+  };
+  list('Changes from the run (' + (r.changes || []).length + ')', r.changes, 'run-h-changes');
+  list('Gates weaker than the run\'s', r.weakened, 'run-h-weak');
+  list('Gates stronger than the run\'s', r.strengthened, 'run-h-strong');
+  list('Renames of this session, matched to the run', r.renamed, 'run-h-renamed');
+  list('What this comparison does not cover', r.notes, 'run-h-notes');
+  replace('run-detail', parts);
+  replace('run-read', run.read_at ? 'The run was read from the store at ' + run.read_at + '. The page does not follow it; Reload run reads it again.' : '');
+  // Spoken when the answer changes, not on every keystroke.
+  const spoken = word + (run.id ? ', run ' + run.id : '') + ((r.changes || []).length ? ', ' + r.changes.length + ' changes' : '');
+  if (reloaded) { lastRunSpoken = spoken; announce('Run read again. ' + spoken); }
+  else if (spoken !== lastRunSpoken) { lastRunSpoken = spoken; announce('Compared with the run: ' + spoken); }
 }
 
 function renderState() {
@@ -1449,6 +1522,7 @@ async function main() {
     if (o && !o.disabled) o.focus();
     else if (o) $('source').focus();
   });
+  $('run-reload').addEventListener('click', () => refreshRun({ reload: true }));
   $('save').addEventListener('click', save);
   $('revert').addEventListener('click', revert);
   $('undo').addEventListener('click', undo);

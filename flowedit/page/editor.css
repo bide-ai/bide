@@ -86,3 +86,7 @@ dialog h2 { margin-top: 0; }
 #typed-info summary { cursor: pointer; font-family: var(--mono); }
 #blocks #palette { max-height: 20rem; overflow: auto; margin: var(--s2) 0; }
 #blocks .inline { display: flex; flex-wrap: wrap; gap: var(--s2); }
+#run-panel { margin-top: var(--s4); }
+#run-panel h3 { margin: var(--s3) 0 var(--s1); font-size: var(--t-md); }
+.runlist { margin: 0; padding-left: var(--s5); font-family: var(--mono); font-size: var(--t-xs); overflow-wrap: anywhere; }
+.runlist li { margin: var(--s1) 0; }
