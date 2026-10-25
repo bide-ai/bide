@@ -122,11 +122,16 @@ func TestAuditCaps_Postgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer admin.Close()
+	// Cleanups run last in, first out: the schema is dropped, then the handle that drops it is closed.
+	t.Cleanup(func() { admin.Close() })
 	if _, err := admin.ExecContext(ctx, `CREATE SCHEMA `+schema); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = admin.ExecContext(context.Background(), `DROP SCHEMA `+schema+` CASCADE`) })
+	t.Cleanup(func() {
+		if _, err := admin.ExecContext(context.Background(), `DROP SCHEMA `+schema+` CASCADE`); err != nil {
+			t.Logf("drop schema %s: %v", schema, err)
+		}
+	})
 	dsn := base + " search_path=" + schema
 	if strings.Contains(base, "://") {
 		sep := "?"
