@@ -1220,7 +1220,7 @@ func TestCapsAudit_ALongRunPinsToAnEarlierDay(t *testing.T) {
 	}
 }
 
-func TestCapsAudit_TheEngineStampsTheMarkerFromTheRunsClock(t *testing.T) {
+func TestCapsAudit_TheEngineRecordsTheMarkerOnTheRunsClock(t *testing.T) {
 	e := threeCalls(t)
 	recs, err := e.j.History(context.Background(), "r1")
 	if err != nil {
@@ -1228,8 +1228,9 @@ func TestCapsAudit_TheEngineStampsTheMarkerFromTheRunsClock(t *testing.T) {
 	}
 	for _, r := range recs {
 		if r.Kind == agent.StepAttempt {
-			if got := time.UnixMilli(r.AttemptedAt).UTC(); !got.Equal(capsNow) {
-				t.Fatalf("the marker is stamped %v, want the run's clock %v", got, capsNow)
+			got, err := agent.ParseTimestamp(r.RecordedAt())
+			if err != nil || !got.Equal(capsNow) {
+				t.Fatalf("the marker's recorded_at is %q (%v), want the run's clock %v", r.RecordedAt(), err, capsNow)
 			}
 			return
 		}

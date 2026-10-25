@@ -293,7 +293,7 @@ func auditCaps(ctx context.Context, store agent.Store, j *agent.Journal, led *ca
 	claims := map[string][]capClaim{}
 	intents := map[string][]capIntent{} // by attempt
 	rs := capRunFacts{results: map[string]map[string]bool{}, ended: map[string]bool{}, started: map[string]time.Time{},
-		attempted: map[string]map[string]int64{}, capRecs: map[string]int{}, records: map[string]int{}, unmarked: map[string]bool{}}
+		attempted: map[string]map[string]time.Time{}, capRecs: map[string]int{}, records: map[string]int{}, unmarked: map[string]bool{}}
 	for _, id := range runs {
 		recs, err := j.History(ctx, id)
 		if err != nil {
@@ -318,11 +318,16 @@ func auditCaps(ctx context.Context, store agent.Store, j *agent.Journal, led *ca
 					}
 				}
 			}
-			if r.Kind == agent.StepAttempt && r.AttemptedAt > 0 {
-				if rs.attempted[id] == nil {
-					rs.attempted[id] = map[string]int64{}
+			if r.Kind == agent.StepAttempt {
+				// The marker's recorded_at is the claim on the run's own clock (its AttemptedAt is the
+				// wall clock, which a run driven with WithClock does not share); a marker written before
+				// the field has none and dates nothing.
+				if t, err := agent.ParseTimestamp(r.RecordedAt()); err == nil {
+					if rs.attempted[id] == nil {
+						rs.attempted[id] = map[string]time.Time{}
+					}
+					rs.attempted[id][r.Name] = t
 				}
-				rs.attempted[id][r.Name] = r.AttemptedAt
 			}
 			if slices.Contains(capEndMarkers, r.Name) {
 				rs.ended[id] = true
@@ -845,11 +850,11 @@ func auditIntents(ctx context.Context, j *agent.Journal, led *capledger.Ledger, 
 type capRunFacts struct {
 	results   map[string]map[string]bool // run -> tool-use ID -> the result is an error
 	ended     map[string]bool
-	started   map[string]time.Time        // run -> the start time its run:start records (the run's clock)
-	attempted map[string]map[string]int64 // run -> attempt marker name -> attempted_at, Unix millis
-	capRecs   map[string]int              // run -> entries up to and including its last cap-intent or cap-reserve
-	records   map[string]int              // run -> number of entries
-	unmarked  map[string]bool             // the intents dated by their run's start only (no attempt marker)
+	started   map[string]time.Time            // run -> the start time its run:start records (the run's clock)
+	attempted map[string]map[string]time.Time // run -> attempt marker name -> recorded_at (the run clock)
+	capRecs   map[string]int                  // run -> entries up to and including its last cap-intent or cap-reserve
+	records   map[string]int                  // run -> number of entries
+	unmarked  map[string]bool                 // the intents dated by their run's start only (no attempt marker)
 }
 
 // failures counts the findings that fail the audit (not the warnings).
@@ -880,8 +885,8 @@ func checkIntentTime(led *capledger.Ledger, att string, ci capIntent, rs capRunF
 	}
 	start, haveStart := rs.started[ci.run]
 	var marked time.Time
-	if ms, ok := rs.attempted[ci.run][markerOf(in.Attempt)]; ok {
-		marked = time.UnixMilli(ms).UTC()
+	if t, ok := rs.attempted[ci.run][markerOf(in.Attempt)]; ok {
+		marked = t
 	}
 	if marked.IsZero() && haveStart {
 		rs.unmarked[ci.run+"\x00"+att] = true // dated by the run's start only
