@@ -1463,6 +1463,33 @@ bide audit: produce and verify audit proof bundles
          never_notified (and, with -strict, on the warnings unobserved_resolved and all_clear_untimed). A verdict that rests on records after the newest signed head is unattested and fails unless every tail record it rests on is within -max-unattested (default 0: strict; records within a nonzero bound are accepted without a signature); with -routing (the notifier's routing, agent.RoutingOf as JSON), an event with no delivery to a receiver it routes to, or a due escalation step with none, is no_delivery and fails. -db and -postgres-env (a variable holding the DSN) read every run, or -run,
          from a store, in the full bide command; the audit-only build reads exported files
 
+  caps (-db <file> | -postgres-env <var>) (-sth <file>... -pubkey <hex|file> | -unanchored)
+       [-namespace <ns>] [-rule <name>] [-window <id>] [-run <id>]
+         audit the amount-cap ledgers of a store (read-only; the full bide command only). Each ledger run
+         (@cap/...) must read under the ledger's own rules (dense slots, the cum_after chain, release
+         references, the over flag, one currency), and its window total, the sum of its live reserves,
+         must be its last cum_after; the over-limit slots counted under a waiver are listed. Each slot
+         is compared with the cap-reserve record the run that made the call holds: a record whose slot
+         is missing is DELETED, one whose cum_after or attempt differs is CHANGED, a reserve slot with no
+         record is UNRECORDED (a failure when the run has ended; a warning when it has not, since a reservation
+         interrupted before its record looks the same). A release of a call whose run holds a result the tool
+         produced is RELEASE_OF_A_CALL_THAT_RAN, since only a call that never began is released; any
+         other release must be explained by the loop's cap-release record or by the attempt's void
+         (RELEASE_UNCONFIRMED): without either it fails when anchored and warns when not. Every reserve slot's attempt must have exactly one cap-intent, which sends it to this
+         ledger with this amount, currency and marking (a planted intent with another window is
+         INTENT_MISMATCH), and whose window the rule's index run holds and fits its call's own time (the window of the attempt
+         marker's time or the next one; for an attempt with no marker, not before the run's start:
+         INTENT_WINDOW); an intent with
+         no slot is listed, not failed. With signed heads the cap-intent and cap-reserve records of each
+         run must also lie inside a signed head of that run (RUN_NOT_ATTESTED). With signed heads (-sth, each verified, from the anchor log of the AuditedStore that
+         anchors the store) a ledger run must be the one the newest head signs, and entries after it are
+         NOT ATTESTED and fail; with -unanchored the report says first that whoever can write the store
+         can delete a slot or append a release undetected, and that the audit only finds
+         inconsistencies it can see. It also reports, without failing, the reconcile exposure: the
+         slots still counted for attempts the journal records as never started. The filters narrow the
+         audit, and the report lists what they left unchecked; a filter that matches no ledger is
+         exit 4, not a pass
+
   redactions (-trail <file> | -trail-db <file> | -trail-postgres-env <var> | -db <file> | -postgres-env <var>)
              [-journal <file>...] [-run <id>] -deployment <name> -pubkey <hex|file> [-sth <file>... | -unanchored]
          verify the redaction trail (the signed, append-only record of each erasure of journal
@@ -1577,6 +1604,38 @@ Exit status:
   2  usage error: a bad flag or argument; nothing was read
   3  no verdict: the -checker gave none, or an internal error
   4  an input is unreadable or unusable
+```
+
+### bide audit caps
+
+```text
+Usage of bide audit caps:
+  -color when
+    	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never; -json is never colored
+  -db string
+    	read the ledgers and the runs from this SQLite journal (opened read-only)
+  -json
+    	print one JSON report on stdout instead of the text report
+  -max-clock-skew duration
+    	how far past this machine's clock a signed head's timestamp may be (default 5m0s)
+  -max-input-bytes int
+    	the largest input file, in bytes, the verb reads; a larger one is an error (default 268435456)
+  -namespace string
+    	only the ledgers of this cap namespace (agent.WithCapNamespace)
+  -postgres-env string
+    	read them from the Postgres journal whose DSN is in this environment variable (never given on the command line)
+  -pubkey string
+    	the public key as <scheme>:<hex> (ed25519, ecdsa-p256, ml-dsa-65, ed25519+ml-dsa-65) or bare ed25519 hex, or a path to a file containing it; it verifies every -sth
+  -rule string
+    	only the ledgers of this cap rule
+  -run string
+    	only the calls of this run and its sub-runs: their slots and cap-reserve records, and the ledgers that hold them; the other ledgers and runs are not checked, and the report says so
+  -sth value
+    	a signed tree head over a ledger run, as JSON (an entry's sth from the anchor log of the AuditedStore that anchors the store; a file may hold the heads of many runs, one JSON value after another); repeat for as many as you have: each must verify and match a prefix of its ledger, the largest is the newest
+  -unanchored
+    	read the ledgers with no signed head: whoever can write the store can delete a slot or append a release undetected, and this audit only finds inconsistencies it can see
+  -window string
+    	only the ledgers of this window (a day 2006-01-02, an hour 2006-01-02T15, or a root run's ID)
 ```
 
 ### bide audit notifications

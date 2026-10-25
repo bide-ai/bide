@@ -552,7 +552,9 @@ func (c countingLister) Runs(ctx context.Context, f agent.RunFilter) iter.Seq2[s
 	return func(yield func(string, error) bool) {
 		l, _ := agent.Capability[agent.Lister](c.Store)
 		for id, err := range l.Runs(ctx, f) {
-			*c.yielded++
+			if !agent.IsReservedRun(id) { // the sample's cap ledger is listed first and is no run to count
+				*c.yielded++
+			}
 			if !yield(id, err) {
 				return
 			}

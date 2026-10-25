@@ -72,6 +72,14 @@ func newExitFixture(t *testing.T) *exitFixture {
 	dir := t.TempDir()
 	f := &exitFixture{dir: dir}
 	f.stopFix = newStopFixture(t)
+	// bide audit caps reads a store: "empty.db" is an empty one, any other path cannot be opened.
+	Stores = &StoreOpeners{SQLite: func(path string) (NotifyStores, error) {
+		if filepath.Base(path) != "empty.db" {
+			return NotifyStores{}, fs.ErrNotExist
+		}
+		return NotifyStores{Journal: agent.NewMemStore(), Events: audit.NewMemEventStore(), Close: func() error { return nil }}, nil
+	}}
+	t.Cleanup(func() { Stores = nil })
 	file := func(name string, v any) string {
 		p := filepath.Join(dir, name)
 		writeJSON(t, p, v)
@@ -420,6 +428,9 @@ func exitCases(f *exitFixture) []exitCase {
 		{name: "redactions: no -pubkey", args: []string{"redactions", "-deployment", "test", "-trail", f.red.trail}, want: 2},
 		{name: "redactions: missing trail file", args: []string{"redactions", "-deployment", "test", "-trail", f.missing, "-unanchored", "-pubkey", f.pub}, want: 4},
 		{name: "redactions: a notification trail as the trail", args: []string{"redactions", "-deployment", "test", "-trail", f.notifyTrail, "-unanchored", "-pubkey", f.pub}, want: 4},
+		{name: "caps: an empty store", args: []string{"caps", "-db", "empty.db", "-unanchored"}, want: 0},
+		{name: "caps: a store that cannot be opened", args: []string{"caps", "-db", "missing.db", "-unanchored"}, want: 4},
+		{name: "caps: nothing to read", args: []string{"caps", "-unanchored"}, want: 2},
 		{name: "notifications: genuine", args: notif(f.notifyTrail, f.notifySTH), want: 0},
 		{name: "notifications: a record deleted", args: notif(f.notifyTrailCut, f.notifySTH), want: 1},
 		{name: "stops: genuine", args: []string{"stops", "-trail", f.stopFix.trail, "-sth", f.stopFix.sth, "-pubkey", f.stopFix.pub, "-stop-policy", f.stopFix.policy}, want: 0},

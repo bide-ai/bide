@@ -108,10 +108,24 @@ the window's total.
   resumes after midnight keeps the window it started in: the window is fixed once, in the call's `cap-intent`.
   The clock is checked at that first intent only: a driver whose window is earlier than the newest recorded one,
   or more than one window later, is refused.
-- **Cost.** One read of the ledger tail and one insert per reservation. On an `AuditedStore` a reservation
-  costs more as the ledger grows (the store anchors the run's head on growth): set `WithMinInterval` on a store
-  that holds ledgers, prefer per-key rules (many small ledgers) to one global total with thousands of
-  reservations a window, and see [KNOWN-LIMITATIONS](../KNOWN-LIMITATIONS.md).
+- **Cost.** One read of the ledger tail and one insert per reservation on a plain store. On an
+  `AuditedStore` a reservation costs more as its ledger grows, because the store anchors the run's head on
+  every growth and reads the whole run to do it: in the benchmarks (`audit/capledger_bench_test.go`, SQLite)
+  the bytes allocated per reservation grew from about 340 KB at 0 slots in the ledger to 2.5 MB at 1000,
+  about 7 times; a `MemStore` stays flat at 29 to 75 microseconds. Extrapolating the growth, a ledger of
+  10,000 slots costs about 25 MB allocated per reservation. So:
+  - set `WithMinInterval` on an `AuditedStore` that holds ledgers (`WithMinInterval(time.Minute)` lowered the
+    cost at 0 and 1000 slots from 340 KB and 2.5 MB to 240 KB and 1.78 MB: it lowers the constant, not the
+    growth);
+  - prefer per-key rules (`by customer_id`: many small ledgers) to one global total, and keep a global
+    window total below about 1000 reservations a window on an audited store;
+  - listing the reserved runs is cheap by comparison: 0.9 to 5 ms per `Runs` pass over 1000 ledger runs and
+    19 to 38 ms over 10,000.
+
+  There is no hard limit. If a deployment needs a large global total on an audited store, the remedy is a
+  ledger layout that rotates the run (a new ledger run every N slots, the last `cum_after` carried into the
+  next); that changes the protocol (model 17), has not been measured, and is not planned unless a user asks.
+  See [KNOWN-LIMITATIONS](../KNOWN-LIMITATIONS.md) and [Retention](retention.md).
 - **Release.** Only the loop releases, and only a *marked* (not retry-safe) attempt, and only once it has proved
   the tool never began: after the tool chain returned, it seals the call's began word (a tool that began cannot be
   sealed), journals why in a `cap-release:` record (a write that fails releases nothing), releases each of the call's reservations, and only then records the attempt as not started. A call
@@ -128,6 +142,131 @@ the window's total.
   and no more), a call
   `ResolveHalt` resolved, and a saga's rollback (a compensation reserves nothing and credits nothing). A window
   only over-counts.
+
+## Auditing the ledgers: `bide audit caps`
+
+A window's total is the sum of the live reservations in its ledger, and the ledger is rows in your store.
+`bide audit caps` reads them and tells you whether they hold together. It never writes.
+
+```
+bide audit caps -db journal.db -sth heads.jsonl -pubkey log.pub
+bide audit caps -db journal.db -unanchored
+bide audit caps -postgres-env BIDE_DSN -sth heads.jsonl -pubkey log.pub -rule refund_total -window 2026-10-22
+```
+
+For each ledger run (`@cap/...`) it checks:
+
+1. **The ledger's own rules.** The slots are dense (0, 1, 2, ...), each `cum_after` follows from the one
+   before it, a release voids an earlier live reserve of the same attempt and amount, the over flag is
+   what the limit implies, and the currency is the ledger's. Anything else is `CORRUPT`.
+2. **The window total.** The sum of the live reserves is recomputed and must equal the last `cum_after`
+   (`TOTAL`), and no attempt may hold two live reserves (`DOUBLE`). The slots counted over the limit under a
+   waiver are listed as `OVER LIMIT`.
+3. **The runs.** A reservation leaves a `cap-reserve:` record in the run that made the call, naming the
+   ledger, the slot and its `cum_after`. A record whose slot is missing is a `DELETED` slot; one whose
+   slot differs (its `cum_after`, its attempt, or it is a release) is `CHANGED`; a reserve slot whose run
+   holds no record is `UNRECORDED`: a failure when that run has ended, a warning when it has not (a
+   reservation interrupted between its slot and its record looks the same, and a re-drive of the run
+   writes the record). A ledger run the store no longer holds but a record or a signed head names is
+   `LEDGER_MISSING`.
+4. **The intents.** Every reserve slot's attempt must have exactly one `cap-intent:` record, in the run
+   that made the call, and the intent must send the attempt to this ledger with this amount, currency
+   and marking (`INTENT_MISSING`, `INTENT_DUPLICATE`, `INTENT_MISMATCH`, `INTENT_UNREADABLE`). An intent whose
+   window differs from its slot's is the window-pinning attack: the writer chose the ledger the attempt is
+   counted in. For a `day` or `hour` rule the window must also be in the rule's index run (`INDEX_MISSING`)
+   and not earlier than the newest window the index held when the intent was written (`INTENT_CLOCK`). The
+   window must also fit the call's own time (`INTENT_WINDOW`, whatever ledger the intent names and whatever
+   `-window` says): it must be the window that contains the attempt marker's `recorded_at`, or the next one. The
+   engine writes it when it claims the attempt, on the clock the run was driven with, a moment before the
+   first intent, and a caller cannot set it (the marker's `attempted_at` is the wall clock, which a run driven with `WithClock` does not share).
+   A marker written before `recorded_at` existed dates nothing and counts like an unmarked attempt. One window forward is allowed, for a boundary that falls between the
+   claim and the intent; one window back never is, because that is how a planted intent gains room. An
+   attempt with no marker (a retry-safe tool) has only its run's start to date it by: its window must not be
+   earlier than the window of `run:start`, and a long-lived run can pin to any later one, so the report counts
+   those intents. A `per run` window must be the call's root run. An intent with no slot is information: the attempt was interrupted before its slot, or the reservation was
+   refused, and it counts nothing.
+5. **The releases.** Only the loop releases, and only a call it proved never began. Before it releases, the
+   loop journals why in a `cap-release:` record in the run that made the call; the reconcile pass releases a
+   voided attempt and writes none, the void being its reason. A release of a reservation whose run holds a
+   successful tool result for the call is `RELEASE_OF_A_CALL_THAT_RAN` and fails, note or no note, whoever
+   wrote the slot and whether or not a signed head covers it. Otherwise a release must be explained by its
+   `cap-release:` record (which must read and name the attempt) or by the attempt's void
+   (`RELEASE_UNCONFIRMED`). With neither, it fails when the audit is anchored and warns when not: a crash
+   between the release and the void looks the same, and a re-drive voids it, but a writer of an unsigned
+   store can leave exactly this. A release of a call journaled before the record existed (its marker has no
+   `recorded_at`) cannot be told from a forgery: it warns, anchored or not, and the report counts it. The
+   record shows that the release was the loop's, not that the call did not run: a writer who plants the
+   record beside a forged release of a call that ran and failed passes. With signed heads, a release whose
+   explanation lies past the run's newest head (or in a run no head covers) fails (`RELEASE_UNATTESTED`).
+6. **The signed heads** (`-sth`, with `-pubkey`). An `AuditedStore` anchors a head for every ledger run it
+   writes; pass the heads from your anchor log (one JSON head per line, any number, for any runs). Each
+   must verify, and the ledger must be the one the newest head signs: a slot changed or deleted since is a
+   `DIVERGENT_HEAD`. The runs' own records are held to the same: the `cap-intent` and `cap-reserve`
+   records of each run must lie inside a signed head of that run, or the run is `RUN_NOT_ATTESTED` (the heads
+   file should hold the heads of those runs too; an `AuditedStore` anchors every run it writes). Entries **after** the newest head are `NOT_ATTESTED` and fail: whoever can write the
+   store could have deleted a slot or appended a release there unseen. A signature covers what the store was
+   given at signing, not that it was legitimate: a slot written through the signing store is signed. Run the audit after the store has
+   anchored (with `WithMinInterval`, after the interval or a `Flush`).
+
+It also reports, without failing, the **reconcile exposure**: per window, the slots still counted for
+attempts the journal records as never started, and their amount. Those are the slots the next `Recover`
+releases; a figure that does not go down after a recovery pass means recovery is not running.
+
+**Anchored or not.** With `-unanchored` the first line of the report says that whoever can write the store
+can delete a slot or append a release undetected, and that the audit only finds inconsistencies it can see.
+That is the limit, not a modesty: an attacker who edits a slot and the run's `cap-reserve` record to match,
+or who appends a valid release of a reserve whose call also has no result or ended in an error (and edits that
+run's journal to match), leaves a ledger every check above accepts. Only a signed head, held outside the store,
+shows a change made after the head. The audit does find the common forgery, a release of a call that ran. See [KNOWN-LIMITATIONS](../KNOWN-LIMITATIONS.md).
+
+**Filters.** `-namespace`, `-rule` and `-window` narrow the ledgers read, and `-run` narrows the audit to
+one run's calls and its sub-runs' (their slots and records, and the ledgers that hold them). A filtered
+report lists what it did not check and ends `PASS (filtered)`, never a bare `PASS`; a filter that matches no
+ledger exits 4. Amounts are in minor units, as the ledger holds them.
+
+**Exit status** is `bide audit`'s: 0 when every ledger checked reads and agrees (with `-sth`, and is
+unchanged since its newest signed head); warnings do not change it, 1 for any finding, 2 for a usage error (neither `-sth` nor `-unanchored`, or both), 4 when the
+store cannot be opened or its runs cannot be listed. A single run that cannot be read (a corrupt row, a
+record that does not decode) is not that: it is an `UNREADABLE` finding on the run (exit 1), the slots that
+run made are left out of the cross-checks that need it, and the audit goes on with the rest. A read that fails because the store does (a lost connection, a timeout, a cancelled context) ends the audit with exit 4 and "store error, re-run the audit"; the stores report a corrupt row and an I/O error alike, so the audit tells them apart by the causes only an I/O failure has, and an error it cannot place is reported as `UNREADABLE`: re-run the audit before treating one as tampering. The `-json` report carries the findings and the per-ledger figures.
+
+It does not check the index runs for entries no intent uses (they cost nothing), and it does not re-apply
+the writer's clock bound (a setting that is not recorded); the time check above stands in for it.
+**What remains.** Someone who can write the store and sign heads (a process that writes through the signing
+store, or holds the log key) can write a history that is consistent with itself, and the audit finds only
+contradictions: it cannot tell that history from a legitimate one. A head signs whatever the run held when it
+was signed: a record planted in a run before a later, legitimate write to the same run is covered by the head
+that write anchors, so the head attests the plant and `RUN_NOT_ATTESTED` cannot see it. Detection by heads works
+only for what was written after the newest head; the time check above is what catches a plant of that kind. `bide sample` writes a small ledger to
+try it on: `bide audit caps -db sample.db -unanchored`.
+
+## A worked configuration
+
+One tool, three rules, and a namespace for the deployment: a ceiling on one call, a total for the day, and a
+total per customer for the day.
+
+<!-- docsnip: setup type RefundIn struct { Amount int64 `json:"amount"`; Currency string `json:"currency"`; CustomerID string `json:"customer_id"` }; refund func(context.Context, RefundIn) (string, error); model agent.Model; journal *agent.Journal -->
+```go
+tool, err := agent.Func("refund", "refund a payment", refund,
+	agent.WithCaps(
+		`big_refund: refund.amount[minor, currency=currency] > 500 USD -> refuse`,
+		`refund_total: refund.amount[minor, currency=currency] sum 5000 USD per day -> refuse`,
+		`refund_by_customer: refund.amount[minor, currency=currency] sum 1000 USD per day by customer_id -> refuse`,
+	),
+)
+if err != nil {
+	panic(err)
+}
+a, err := agent.New(model, journal, agent.WithTools(tool), agent.WithCapNamespace("payments-prod"))
+```
+
+A call is refused if it is over 500 USD, would take the UTC day over 5000 USD for all customers, or would
+take that customer over 1000 USD for the day. The per-customer rule is paired with the unkeyed total, as
+advised above: a key the model chooses is only as strong as its canonical form. The journal can be any store,
+an `AuditedStore` included; the ledgers are runs under `@cap/payments-prod/`.
+
+`bide sample` writes a small ledger like this one: its two evidence runs (`refund-1041` and `refund-1049`)
+refund 120 USD each under `sum 500 USD per day`, so the sample journal holds one cap ledger with two slots.
 
 ## What a cap does not do
 

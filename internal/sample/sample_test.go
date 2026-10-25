@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/journalhook"
 )
 
 // dump is every entry of every run the sample wrote, in order, as text.
@@ -54,5 +56,33 @@ func TestDeterministic(t *testing.T) {
 	jb, _ := json.Marshal(rb)
 	if string(ja) != string(jb) {
 		t.Fatal("the keys or runs differ between calls")
+	}
+}
+
+// TestCapLedger: the two evidence runs' refunds are counted in one day's cap ledger, which bide audit caps
+// reads.
+func TestCapLedger(t *testing.T) {
+	ctx := context.Background()
+	s := agent.NewMemStore()
+	if _, err := Write(ctx, s, ""); err != nil {
+		t.Fatal(err)
+	}
+	j, err := agent.NewJournal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := journalhook.CapLedger(j, time.Now, 0)
+	var ledgers []string
+	for id := range s.Runs(ctx, agent.RunFilter{Prefix: "@cap/"}) {
+		if strings.Count(id, "/") == 5 {
+			ledgers = append(ledgers, id)
+		}
+	}
+	if len(ledgers) != 1 {
+		t.Fatalf("ledger runs = %v, want one", ledgers)
+	}
+	slots, err := l.Slots(ctx, ledgers[0])
+	if err != nil || len(slots) != 2 || slots[1].CumAfter != 24000 || slots[0].Run != "refund-1041" || slots[1].Run != "refund-1049" {
+		t.Fatalf("slots = %+v, %v, want the refunds of refund-1041 and refund-1049 (24000 in all)", slots, err)
 	}
 }

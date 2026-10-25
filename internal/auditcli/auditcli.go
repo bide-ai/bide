@@ -214,6 +214,33 @@ const usageText = `bide audit: produce and verify audit proof bundles
          never_notified (and, with -strict, on the warnings unobserved_resolved and all_clear_untimed). A verdict that rests on records after the newest signed head is unattested and fails unless every tail record it rests on is within -max-unattested (default 0: strict; records within a nonzero bound are accepted without a signature); with -routing (the notifier's routing, agent.RoutingOf as JSON), an event with no delivery to a receiver it routes to, or a due escalation step with none, is no_delivery and fails. -db and -postgres-env (a variable holding the DSN) read every run, or -run,
          from a store, in the full bide command; the audit-only build reads exported files
 
+  caps (-db <file> | -postgres-env <var>) (-sth <file>... -pubkey <hex|file> | -unanchored)
+       [-namespace <ns>] [-rule <name>] [-window <id>] [-run <id>]
+         audit the amount-cap ledgers of a store (read-only; the full bide command only). Each ledger run
+         (@cap/...) must read under the ledger's own rules (dense slots, the cum_after chain, release
+         references, the over flag, one currency), and its window total, the sum of its live reserves,
+         must be its last cum_after; the over-limit slots counted under a waiver are listed. Each slot
+         is compared with the cap-reserve record the run that made the call holds: a record whose slot
+         is missing is DELETED, one whose cum_after or attempt differs is CHANGED, a reserve slot with no
+         record is UNRECORDED (a failure when the run has ended; a warning when it has not, since a reservation
+         interrupted before its record looks the same). A release of a call whose run holds a result the tool
+         produced is RELEASE_OF_A_CALL_THAT_RAN, since only a call that never began is released; any
+         other release must be explained by the loop's cap-release record or by the attempt's void
+         (RELEASE_UNCONFIRMED): without either it fails when anchored and warns when not. Every reserve slot's attempt must have exactly one cap-intent, which sends it to this
+         ledger with this amount, currency and marking (a planted intent with another window is
+         INTENT_MISMATCH), and whose window the rule's index run holds and fits its call's own time (the window of the attempt
+         marker's time or the next one; for an attempt with no marker, not before the run's start:
+         INTENT_WINDOW); an intent with
+         no slot is listed, not failed. With signed heads the cap-intent and cap-reserve records of each
+         run must also lie inside a signed head of that run (RUN_NOT_ATTESTED). With signed heads (-sth, each verified, from the anchor log of the AuditedStore that
+         anchors the store) a ledger run must be the one the newest head signs, and entries after it are
+         NOT ATTESTED and fail; with -unanchored the report says first that whoever can write the store
+         can delete a slot or append a release undetected, and that the audit only finds
+         inconsistencies it can see. It also reports, without failing, the reconcile exposure: the
+         slots still counted for attempts the journal records as never started. The filters narrow the
+         audit, and the report lists what they left unchecked; a filter that matches no ledger is
+         exit 4, not a pass
+
   redactions (-trail <file> | -trail-db <file> | -trail-postgres-env <var> | -db <file> | -postgres-env <var>)
              [-journal <file>...] [-run <id>] -deployment <name> -pubkey <hex|file> [-sth <file>... | -unanchored]
          verify the redaction trail (the signed, append-only record of each erasure of journal

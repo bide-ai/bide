@@ -189,7 +189,7 @@ var demos = []struct {
 	}},
 	{"refund-1041", "completed; its evidence package proves the refund (refund-1041.evidence.json)", "agent", "completed", func(ctx context.Context, e *env, id string) error {
 		// Its evidence package proves the refund call (see Result.Evidence).
-		_, err := e.refundAgent(nil).Run(ctx, id, agent.UserText("Refund order 1041."), e.clock())
+		_, err := e.cappedRefundAgent(nil).Run(ctx, id, agent.UserText("Refund order 1041."), e.clock())
 		return err
 	}},
 	{"refund-1042", "halted, outcome unknown: the process died mid-refund, and bide will not refund twice", "agent", "halted", func(ctx context.Context, e *env, id string) error {
@@ -225,7 +225,7 @@ var demos = []struct {
 	{"refund-1049", "approved by 2 of 3 and completed; its evidence carries the signatures (refund-1049.evidence.json)", "agent", "completed", func(ctx context.Context, e *env, id string) error {
 		// Approved by two of the three approvers, who signed; the refund ran. Its evidence package
 		// carries the gate's decisions (see Result.Evidence).
-		p, err := e.pause(ctx, id, "Refund order 1049.")
+		p, err := e.pauseWith(ctx, e.cappedRefundAgent(&policy), id, "Refund order 1049.")
 		if err != nil {
 			return err
 		}
@@ -234,7 +234,7 @@ var demos = []struct {
 				return err
 			}
 		}
-		_, err = e.refundAgent(&policy).Run(ctx, id, agent.UserText("Refund order 1049."), e.clock())
+		_, err = e.cappedRefundAgent(&policy).Run(ctx, id, agent.UserText("Refund order 1049."), e.clock())
 		return err
 	}},
 	{"refund-1044", "in progress: the process died after the lookup, before its result was journaled", "agent", "in-progress", func(ctx context.Context, e *env, id string) error {
@@ -364,7 +364,12 @@ func (e *env) crashRefund(ctx context.Context, id, text string) (*agent.OutcomeU
 
 // pause runs a refund behind the 2-of-3 gate to the gate.
 func (e *env) pause(ctx context.Context, id, text string) (*agent.ApprovalPending, error) {
-	_, err := e.refundAgent(&policy).Run(ctx, id, agent.UserText(text), e.clock())
+	return e.pauseWith(ctx, e.refundAgent(&policy), id, text)
+}
+
+// pauseWith is pause with the agent a.
+func (e *env) pauseWith(ctx context.Context, a *agent.Agent, id, text string) (*agent.ApprovalPending, error) {
+	_, err := a.Run(ctx, id, agent.UserText(text), e.clock())
 	p, ok := errors.AsType[*agent.ApprovalPending](err)
 	if !ok {
 		return nil, fmt.Errorf("run = %v, want *agent.ApprovalPending", err)
@@ -385,6 +390,33 @@ func (e *env) pauseFlow(ctx context.Context, id string, o order) (*agent.Approva
 // refundAgent looks an order up (read-only) and refunds it (a side effect, behind gate when set).
 func (e *env) refundAgent(gate *agent.ApprovalPolicy) *agent.Agent {
 	return refundAgent(e.j, gate, e.verify)
+}
+
+// refundCap is the cumulative cap the two evidence runs' refund is under: 500 USD a day. Their refunds
+// (120 USD each) are counted in one ledger, which bide audit caps reads (see the sample's README.txt).
+const refundCap = `refund_total: refund.amount[minor, currency=currency] sum 500 USD per day -> refuse`
+
+// cappedRefundAgent is refundAgent with the refund under refundCap: it asks for 12000 minor units, and the
+// day's cap ledger counts them. The runs that use it write a cap-intent and a cap-reserve record more
+// than the others, and the ledger run @cap/... they share.
+func (e *env) cappedRefundAgent(gate *agent.ApprovalPolicy) *agent.Agent {
+	type refundIn struct {
+		Amount   int64  `json:"amount"`
+		Currency string `json:"currency"`
+	}
+	lookup := agent.MustFunc("lookup", "look up an order", func(context.Context, struct{}) (string, error) {
+		return "order: $120, paid by card", nil
+	}, agent.WithSafety(agent.Safety{ReadOnly: true}))
+	opts := []agent.ToolOption{agent.WithCaps(refundCap)}
+	if gate != nil {
+		opts = append(opts, agent.WithApproval(gate))
+	}
+	refund := agent.MustFunc("refund", "refund an order", func(context.Context, refundIn) (string, error) {
+		return "refunded $120", nil
+	}, opts...)
+	m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "lookup", `{}`),
+		agenttest.ToolTurn(refundCall, "refund", `{"amount":12000,"currency":"USD"}`), agenttest.TextTurn("Refunded."))
+	return agenttest.MustNew(m, e.j, agent.WithTools(lookup, refund), agent.WithApproverVerifiers(e.verify))
 }
 
 // refundAgent is the sample's refund agent over j: a scripted model asks for the lookup, then the

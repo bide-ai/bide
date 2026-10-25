@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/bide-ai/bide/internal/amount"
+	"github.com/bide-ai/bide/internal/capbridge"
 	"github.com/bide-ai/bide/internal/capledger"
 )
 
@@ -443,6 +444,31 @@ func storeID(store *Journal) any {
 	return id
 }
 
+// capSlotVoided reports whether the journal records the attempt behind s as never started: its marker is
+// there and its not-started record answers that marker. An unmarked attempt carries no marker key and is
+// never voided. It only reads; the reconcile pass and bide audit caps (through internal/capbridge) share it.
+func capSlotVoided(ctx context.Context, store *Journal, s capledger.Slot) (bool, error) {
+	key, found := capMarkerKey(s.Att)
+	if !found {
+		return false, nil
+	}
+	marker, ok, err := store.Get(ctx, s.Run, key)
+	if err != nil || !ok || marker.Kind != StepAttempt {
+		return false, err
+	}
+	return store.voided(ctx, s.Run, key, marker)
+}
+
+func init() {
+	capbridge.RegisterVoided(func(ctx context.Context, j any, s capledger.Slot) (bool, error) {
+		d, ok := j.(*Journal)
+		if !ok {
+			return false, errors.New("capbridge: not a *agent.Journal")
+		}
+		return capSlotVoided(ctx, d, s)
+	})
+}
+
 // reconcileCapRuns is reconcileCaps over the cap runs a caller already listed (Recover finds them in its own
 // listing of runs, which includes them: a ledger never ends). Index runs among them are skipped.
 func reconcileCapRuns(ctx context.Context, store *Journal, runs []string) ([]string, error) {
@@ -478,15 +504,7 @@ func reconcileCapRuns(ctx context.Context, store *Journal, runs []string) ([]str
 			}
 		}
 		got, err := l.Reconcile(ctx, run, func(ctx context.Context, s capledger.Slot) (bool, error) {
-			key, found := capMarkerKey(s.Att)
-			if !found {
-				return false, nil // an unmarked attempt carries no marker key; it is never released
-			}
-			marker, ok, err := store.Get(ctx, s.Run, key)
-			if err != nil || !ok || marker.Kind != StepAttempt {
-				return false, err
-			}
-			return store.voided(ctx, s.Run, key, marker)
+			return capSlotVoided(ctx, store, s)
 		})
 		released = append(released, got...)
 		if err != nil {
