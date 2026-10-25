@@ -8,9 +8,9 @@ require (
 	cloud.google.com/go/storage v1.69.0
 	github.com/aws/aws-sdk-go-v2/config v1.33.9
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.3
-	github.com/bide-ai/bide v0.0.0
-	github.com/bide-ai/bide/anchor/awss3 v0.0.0
-	github.com/bide-ai/bide/anchor/gcs v0.0.0
+	github.com/bide-ai/bide v0.23.2
+	github.com/bide-ai/bide/anchor/awss3 v0.23.2
+	github.com/bide-ai/bide/anchor/gcs v0.23.2
 )
 
 require (
@@ -77,9 +77,3 @@ require (
 	google.golang.org/grpc v1.83.2 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
-
-replace github.com/bide-ai/bide => ../../
-
-replace github.com/bide-ai/bide/anchor/awss3 => ../../anchor/awss3
-
-replace github.com/bide-ai/bide/anchor/gcs => ../../anchor/gcs
