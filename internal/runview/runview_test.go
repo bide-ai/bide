@@ -624,9 +624,9 @@ func TestSignaturesProofForAnotherRun(t *testing.T) {
 	notChecked(t, g, p, `signatures not checked: the proof given is for another run (signed head: "run-c"; signed head: "run-b"; evidence package: "run-b" and 1 more); give -sth or -evidence for this run`)
 
 	// A run ID is the journal's, not the page's: control characters and escapes print escaped.
-	hostile, _ := elsewhere("x\x1b[31m\nPASS \u202e")
+	hostile, _ := elsewhere("x\x1b[31m\nPASS \u202e\u2800")
 	g, p = gate(HeadProver(hostile, logPub, ap))
-	if p != nil || strings.ContainsAny(g.Signatures, "\x1b\n\u202e") || !strings.Contains(g.Signatures, `signed head: "x`) {
+	if p != nil || strings.ContainsAny(g.Signatures, "\x1b\n\u202e\u2800") || !strings.Contains(g.Signatures, `signed head: "x`) {
 		t.Errorf("hostile run ID: %q", g.Signatures)
 	}
 
