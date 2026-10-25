@@ -8,8 +8,10 @@ this page is how to use what has shipped.
 
 **What has shipped, and what has not.** v0.23.0 has the per-call form (`> N CUR`) and the cumulative
 form (`sum N CUR per run|hour|day [by key]`), both with the action `-> refuse`. `-> gate` is refused at
-registration with a "not yet supported" error: a cap gate is not built on the taint policy's escalation gate yet. **Stability:** caps are experimental, so the Go names
-(`agent.WithCaps`) may change in a minor release with a changelog entry.
+registration with a "not yet supported" error: a cap gate is not built on the taint policy's escalation gate yet. v0.24.0 adds the `cap-release:` record the loop journals before it releases a reservation and
+`bide audit caps`, which audits the ledgers read-only. **Stability:** caps are experimental, so
+the Go names (`agent.WithCaps`, `agent.WithCapNamespace`, `ToolSpec.Caps`) and `bide audit caps` may change in a minor release with a
+changelog entry (see [stability](../trust/stability.md)); a configured rule's refusal holds.
 
 ## A rule
 

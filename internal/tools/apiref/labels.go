@@ -79,7 +79,7 @@ type SymbolRule struct {
 }
 
 // SymbolRules label the parts of a package that are further along, or less far along, than the
-// package. The kill switch, accountable erasure (redaction), legal holds and the untrusted-content declarations (taint_marks.go) are experimental
+// package. The kill switch, accountable erasure (redaction), legal holds, the untrusted-content declarations (taint_marks.go), amount caps and the taint policy are experimental
 // inside the core packages: their API may change in a minor release while the audit guarantees
 // they state hold (docs/trust/stability.md).
 var SymbolRules = []SymbolRule{
@@ -93,7 +93,8 @@ var SymbolRules = []SymbolRule{
 		Names: []string{"WithRecoverStop", "RunEnded", "Redactor", "Compactor", "CompactionReport", "RedactState",
 			"ErrRedactNotTerminal", "ErrRedactLeased", "ErrRedactProtected", "ErrRedactMismatch", "ErrRedactSession",
 			"ErrRedactParentLive", "ErrRedactChanged", "ErrRedactNoEntry", "RedactionProtected", "RedactionEndMarkers",
-			"CheckRedaction", "RedactionAncestors", "RedactionSession"},
+			"CheckRedaction", "RedactionAncestors", "RedactionSession",
+			"WithCaps", "WithCapNamespace", "WithTaintPolicy", "TaintPolicy", "GateReason"},
 		Label: Experimental,
 	},
 	{

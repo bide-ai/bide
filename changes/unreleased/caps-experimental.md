@@ -1,0 +1,3 @@
+Section: Changed
+
+Amount caps are experimental: `agent.WithCaps`, `agent.WithCapNamespace` and `ToolSpec.Caps` are marked experimental in their documentation and in the API reference, as the taint names are, and `docs/trust/stability.md` now lists every experimental name and command of v0.23.0 and v0.24.0 (the caps names, `WithTaintPolicy` and `TaintPolicy`, `GateReason`, `(*Agent).Declarations`, the `Why` fields, `bide audit caps`, `bide doctor -declarations` and `-diff`, `bide init -agent` and `-single-approver`). Under that page, experimental means the Go names and the command flags may change in a minor release with a changelog entry; a configured cap still refuses the call it covers. No behavior changes.

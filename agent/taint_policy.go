@@ -22,9 +22,9 @@ import (
 // Opt-in: an agent with no policy gates nothing for taint, and a run it starts is never retro-gated.
 type TaintPolicy struct {
 	// Gate is the escalation gate a side-effecting call of a tainted turn needs, an ordinary approval
-	// policy. nil only when Refuse is set.
+	// policy. nil only when Refuse is set. Experimental.
 	Gate *ApprovalPolicy
-	// Refuse says a tainted turn's side-effecting calls are not run and not asked.
+	// Refuse says a tainted turn's side-effecting calls are not run and not asked. Experimental.
 	Refuse bool
 	// RequireProvenance makes a tool that declares neither Untrusted nor a trusted output a registration
 	// error, and a Run, Send or SendOnce that states neither WithUntrustedInput nor WithTrustedInput an error

@@ -53,14 +53,14 @@ type ToolSpec struct {
 	// each result.
 	Approval *ApprovalPolicy
 	// Caps are the amount-cap rule lines of the tool (see WithCaps): checked against Input when the
-	// tool is registered, and decided for every call. The model is never sent them.
+	// tool is registered, and decided for every call. The model is never sent them. Experimental.
 	Caps []string
 	// Untrusted, when not empty, is the source of untrusted content the tool's results carry (see
 	// Untrusted). The engine records it with each result. A source in Safety.Untrusted is the same
-	// declaration (see Safety.Untrusted); the agent registers the tool with both folded into this field.
+	// declaration (see Safety.Untrusted); the agent registers the tool with both folded into this field. Experimental.
 	Untrusted string
 	// TaintExempt, when not empty, is the reason the tool's calls need no escalation gate in a run that
-	// read untrusted content (see TaintExempt).
+	// read untrusted content (see TaintExempt). Experimental.
 	TaintExempt string
 	// Trusted, when not empty, is the reason the tool's results are the host's own and not outside text (see
 	// Trusted). A taint policy that requires provenance (TaintPolicy.RequireProvenance) needs a tool to
@@ -188,7 +188,7 @@ type Safety struct {
 	// what a result record's Safety records of it. It is also a declaration: a tool whose Safety, given
 	// through WithSafety, names a source is declared untrusted from that source, exactly as the
 	// Untrusted option would. When both are given and the sources differ, registration is ErrConfig.
-	// The name rules of Untrusted apply. The engine records the declared source on every result.
+	// The name rules of Untrusted apply. The engine records the declared source on every result. Experimental.
 	Untrusted string `json:"untrusted,omitempty"`
 }
 

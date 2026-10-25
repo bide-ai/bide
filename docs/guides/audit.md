@@ -770,7 +770,7 @@ signer that needs no anchor. The proof is made only of what holds, and a redacte
 are gone, cannot get one. From then on a head B that matches the journal and holds something else at
 the position is a contradiction of signed head A, checked against the journal rather than against A:
 the head sizes and the signing order do not matter. The receipt format stays `v1` (the field is
-optional and the format is not yet released). Run `-update` once the decision is anchored, and keep the
+optional; the format has been `v1` since v0.17.0). Run `-update` once the decision is anchored, and keep the
 updated receipt.
 
 Without an anchoring proof the receipt's `leaf_hash` is the approver's unsigned claim, so a plain record

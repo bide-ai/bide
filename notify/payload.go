@@ -115,7 +115,7 @@ type Approval struct {
 	// Why says why the call needs this gate beyond its tool's own (a gate-reason record of the run):
 	// the untrusted content its turn read, or the cap rule that holds it. It is the application's claim, for
 	// the approver, and no gate reads it. A cap reason carries its figures (amount, limit, currency) only
-	// with WithFields(Args(tool)), as they are the call's own numbers; omitted when there is no reason.
+	// with WithFields(Args(tool)), as they are the call's own numbers; omitted when there is no reason. Experimental.
 	Why  []agent.GateReason `json:"why,omitempty"`
 	Args json.RawMessage    `json:"args,omitempty"` // only with WithFields(Args(tool))
 }
