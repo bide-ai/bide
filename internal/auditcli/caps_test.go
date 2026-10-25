@@ -1259,7 +1259,7 @@ func TestCapsAudit_AnUnmarkedAttemptIsDatedByItsRunsStartAndSaysSo(t *testing.T)
 		t.Fatal(err)
 	}
 	code, out, errOut := unanchoredCaps()
-	if code != 0 || !strings.Contains(out, "1 cap-intent(s) belong to attempts with no marker") {
+	if code != 0 || !strings.Contains(out, "1 cap-intent(s) belong to attempts with no dated marker") {
 		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
 	}
 }
