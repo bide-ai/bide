@@ -1,6 +1,6 @@
 # Design: a visual editor for flow configs
 
-Status: accepted (the maintainer decided all 12 decisions as recommended on 2026-10-15). Phase 1 is built (`bide edit`, v0.19.0 and v0.20.0; see the [flow editor guide](../guides/flow-editor.md) and the phased plan below); phase 2 is built (v0.22.0: add, remove, rename and move nodes, the entry, the flow's name and types, edges, switches, arms and `else`, joins and loop bounds, undo and redo tested over every one of them, and drag to connect), phase 3 (typed mode) is built (v0.22.0: the read-only Registry description `Registry.Describe`, `plan.InspectConfigDescribed`, `plan.AllowUnusedBlocks`, the `-blocks` flag of `bide check` and `bide view -config`, and the typed editor, `bide edit -blocks` or `flowedit.WithRegistry` and `WithBlocks`: typed checks, type-refusing operations, the typed-plus-structural weakened verdict, and on the page the palette, the digest, `(types differ)` hints and the NOT CERTIFIED banner; as built, see "Phase 3 as built" below); phase 4 is not built, and the names in the unbuilt parts are a
+Status: accepted (the maintainer decided all 12 decisions as recommended on 2026-10-15). Phase 1 is built (`bide edit`, v0.19.0 and v0.20.0; see the [flow editor guide](../guides/flow-editor.md) and the phased plan below); phase 2 is built (v0.22.0: add, remove, rename and move nodes, the entry, the flow's name and types, edges, switches, arms and `else`, joins and loop bounds, undo and redo tested over every one of them, and drag to connect), phase 3 (typed mode) is built (v0.22.0: the read-only Registry description `Registry.Describe`, `plan.InspectConfigDescribed`, `plan.AllowUnusedBlocks`, the `-blocks` flag of `bide check` and `bide view -config`, and the typed editor, `bide edit -blocks` or `flowedit.WithRegistry` and `WithBlocks`: typed checks, type-refusing operations, the typed-plus-structural weakened verdict, and on the page the palette, the digest, `(types differ)` hints and the NOT CERTIFIED banner; as built, see "Phase 3 as built" below); phase 4 (compare with a run) is designed (see "Phase 4 design" under the phased plan) and is being built in four pull requests, and the names in the unbuilt parts are a
 sketch. Written against `main` at 759cf547 and, where it says so, against the open pull request
 #312 (approval deadlines).
 
@@ -756,6 +756,385 @@ matches what `Load` resolves.
 - *A description is only a file.* Every typed result that rests on one says so and, for `check`, names the file by its SHA-256. A diff is never less strict than without a Registry or description: a side with errors against its blocks makes the diff structural and not certified; a description for one side only is never compared with the side that has none; both sides described are compared typed against typed, from two files the CI job generated from the two program versions.
 - *The editor's verdict.* The program the baseline was written for is not the one the editor knows, so the weakened verdict is the typed comparison together with the structural one, never less than the structural editor says, and a comparison that is not certified needs the same confirmation as a weakening.
 - *Type-refusing operations.* The server refuses an operation that introduces a type problem the text did not have (an edge, a predicate, a join input, a terminal), with `plan`'s reason; the page's hints never decide.
+
+### Phase 4 design
+
+Confirmed by the maintainer and reviewed against `main` at a34e4c83; the pull requests that build it are
+listed at the end of this section, and the sections below say what each does. Names are as designed;
+the text under "as built" in the guide is what ships.
+
+#### What is there today
+
+- The editor's baseline is bytes: `baseline []byte` (git HEAD, `-base`, or the file as opened), fixed
+  at startup, compared by `flowedit.compare` -> `runview.BuildDiff(Diff{Old, New Config})`, where each
+  side is a config's bytes run through `plan.InspectConfig`. Renames of the session are replayed on
+  the baseline bytes (`renameBaseline`).
+- A run's journal holds a `plan.Topology` (record `flow:topology`) and `flow:digest`.
+  `plan.JournaledTopology(recs)` decodes it and checks its digest; the viewer draws it only then.
+- `diffChanges` takes two `plan.ConfigReport`s (Topology, Approvals, Safety, Gated, Assertions). A
+  journaled topology is a Topology, not config bytes, so it has no assertions and no `safety` text,
+  and no `Gated` map unless computed.
+
+#### 1. Flags
+
+`bide edit [existing flags] -run <id> (-db <file> | -postgres <dsn> | -postgres-env <VAR> | -journal <file>...) <flow>`
+
+Exactly the viewer's store flags, with the viewer's help text and rules: `-db` (SQLite, opened with
+`sqlite.OpenReadOnly`), `-postgres` / `-postgres-env` (`postgres.OpenReadOnly`; prefer the env form,
+which keeps the password out of argv), `-journal` (repeatable `audit.ExportJournal` JSON). One store
+at a time, as in the viewer. `-run` without a store, or a store without `-run`, is a usage error;
+except that a store alone is allowed and means "no baseline run chosen, but the affected-runs list
+(section 4) is on". Not carried over: `-sth`, `-evidence`, `-pubkey`, `-approver-keys`, `-stop-*`,
+`-topology`, `-digest` (proofs and conformance are the viewer's; section 5).
+
+The store flag parsing moves out of `runview/cli.go` into one shared helper that both commands call,
+so the two cannot drift (new, internal to `runview`). The run ID and the store are fixed at startup,
+like the file path: no endpoint opens another run or another store. Restart with another `-run`.
+
+#### 2. The run as a second baseline
+
+The run comparison answers one question: **would resume accept
+this file for that run**, which is the digest. So it compares exactly what the digest covers, and
+nothing the digest does not.
+
+What the digest covers (`plan/digest.go`): flow name, entry, each node's name, block, kind, input and
+output type and gate, every edge, every switch and its arms in order, and the **order** of nodes,
+edges and arms. It excludes `safety` and `assert` lines.
+
+Shared code: `diffChanges`, `diffGraph` and the verdict words are reused; `BuildDiff` is not, because
+its fallback branches rebuild both sides from config bytes (`diff.go:268,281`) and would erase a side
+that has only a Topology. A new `runview.DiffTopologies(old, new plan.ConfigReport, typed bool)`
+calls the same functions on two reports, and `BuildDiff` is refactored to call it too (one path).
+`Config.Topology` is dropped; the run side is a `ConfigReport` made by `plan.InspectTopology`.
+
+Normalisation, applied to **both** sides before `diffChanges`, so nothing the digest ignores can show
+and nothing a mode cannot know can read as a change:
+- Both modes: `Safety` and `Assertions` nil. The page lists "safety and assert lines are not in a
+  journal and not in the digest; not compared". The "safety lowered" and assertion categories can
+  never appear. The count N is of digest-covered changes only.
+- Structural mode (file has no Registry): also blank `Kind`, the input/output types and the canonical
+  types, and the **gates**, on both sides. The file's `Kind` is empty and `renamedNodes` needs equal
+  kinds, so without this a pure rename reads as a removed node plus an added one; and the journaled
+  gate is the resolved policy (block-declared Go gates, Single) while the structural file shows only
+  config gates, so it would read "gate removed (weakened)". The page says "gates are compared only in
+  typed mode". Gate and path weakened verdicts against a run are therefore **typed-only**; structural
+  mode reports structure (names, blocks, edges, arms, entry, flow name, order) and no weakened verdict.
+- Typed mode: compare the digests directly first. Same digest: no changes listed, nothing else is
+  needed. Different digest: list the digest-covered changes; if the list is empty, say "the digest
+  differs in a way the diff does not itemise (order, or types)" rather than "no changes".
+
+Order is compared explicitly (the diff matches by name): the node, edge and arm order of each side is
+compared as lists; a difference is listed as "order changed: nodes", "order changed: edges", "order
+changed: arms of S". Swapping two nodes (`move_node`, `move_wiring` can produce it) therefore reads
+"differs", as resume treats it.
+
+The run snapshot is cached and shared across requests, so `NormalizeForRun` works on a deep copy
+(Gate pointers, slices, maps); a test asserts normalising leaves the cached report unchanged.
+`InspectTopology` documents that its report does not alias `t` (it copies). Structural order
+comparison skips the derived `Loops` slice and relies on the config-derived order equalling the built
+flow's; a corpus test (every corpus config with joins, switch/else and loops) asserts the structural
+topology's node, edge and arm order equals the typed (`Load`) topology's, so an unchanged file never
+reads "order changed".
+
+Session renames: `renameBaseline` is generalised to a Topology (`renameTopology`): a rename rewrites
+the entry, every node name, edge endpoint, switch `over`, arm target, join input and loop target, with
+a mutation test that fails when any one of those fields is skipped. A rename the topology cannot take
+is skipped whole, as for the config baseline.
+
+`plan.InspectTopology(t Topology) ConfigReport` contract (godoc): returns the report of a declared
+Topology alone: `Topology` is t, `Digest` is `TopologyDigest(t)` when computable, `Approvals` from the
+gates, `Gated` computed as `InspectConfig` computes it; `Safety` and `Assertions` are nil, `Typed` is
+false, `Problems` are empty (it does not validate: a dangling edge or a duplicate name is tolerated
+and the unreachable parts are simply not gated); it never panics on any input and is O(nodes + edges).
+Tests: a corpus conformance test (for every corpus config, `InspectTopology(report.Topology).Gated`
+equals `report.Gated`, and Approvals and Digest agree), and a fuzz target over hostile topologies
+(dangling edges, duplicate names, self loops, huge fan-out).
+
+**With `-base`: both, as two baselines, not one.** The git baseline (the committed policy) keeps its
+job: it drives the WEAKENED banner and the save confirmation, unchanged. The run is a second,
+informational comparison shown in its own panel ("Compared with run X"); it never gates a save and
+never changes the banner. A file can be stronger than the committed policy and different from what
+the run used; both facts matter, and merging them into one verdict would hide one. The page has a
+selector (Committed policy | Run X) for which diff the canvas colours show; the other stays one click
+away; both verdicts are always in the status line.
+
+#### 3. The run's path on the current canvas
+
+The path comes from the existing `flowGraph` overlay computed against the run's own journaled
+topology (node status: done, halted, waiting, attempted; edges taken; last node; iteration counts).
+It is projected onto the edited file:
+
+- A node is matched only when its **name and block** agree (and, in typed mode, its kind). A name that
+  matches with another block is a different node: it carries no run mark and is listed under the
+  canvas as "the run ran `charge` with block `x`; this file's `charge` has block `y`".
+- Renamed in this session: the run side is replayed through the session's renames (`renameTopology`),
+  so the path follows the node. A rename from an earlier commit is matched only where the diff's own
+  rename rule matches, labelled "matched by shape".
+- Removed since the run: listed under the canvas in run order ("the run also ran: charge, not in this
+  file"), never dropped.
+- Taken edges and arms with no counterpart in the file (an endpoint removed, or the edge removed) are
+  listed the same way, as text.
+- Loop arms: the arm is matched by from/to; if its bound differs from the run's, the mark carries
+  "loop bound was N in the run".
+- Added since the run: drawn with no run mark; the legend says "not in the run's flow".
+- Run topology refused (section 6): no path, no baseline, a banner says why.
+
+Every run mark has text, not only colour.
+
+#### 4. Which runs the change would affect
+
+A button "Check unfinished runs" (not run at startup). Server side:
+
+1. List with the recovery pass's filter, not "no `run:complete`" alone: `ExcludeHolding:
+   run:complete, run:aborted, run:cancelled`. A cancelled run is refused by `Begin` regardless of the
+   flow, so it is not "affected by the change"; an aborted saga is over. Reserved runs
+   (`agent.IsReservedRun`) are skipped. Limit N = 5000; the query asks for N+1 so the page can say "at least N, the first N by run ID" when there are more. A store with no `agent.Lister`, and
+   `-journal` exports (only the runs given), say so.
+2. Per run, **one small point read**, `Journal.Get(run, "flow:digest")` (a narrow interface;
+   `Source.History` reads a whole run and is not used). `run:start` is **not** read per run: it carries
+   the flow input, which can be megabytes. Read errors count as "unreadable", by class. A digest
+   that is not 64 hex characters makes the run "unreadable", not a group.
+3. Group runs by distinct digest (at most 20 groups, see Bounds). The digest commits to the flow name
+   (`writeField("flow", ...)`), so **one** representative run per group is enough: read its `run:start`
+   once (at most 20 reads in all) to get the flow name, and keep the group only if that is the
+   **baseline** flow name (the name in the file as the editor opened it), not the edited one. A flow
+   renamed in the editor is itself refused by `holdToStart`, so those groups are still listed, with
+   that reason.
+4. A run with **no `flow:digest`** (including one that journaled `flow:topology` but crashed before
+   `flow:digest`, a normal crash window) is not refused by the digest rule (resume records the new
+   digest; `flow.go:181-195`). Without a digest it cannot be attributed to a flow without reading its
+   `run:start`, so the choice is: **count them, do not read them**: "K unfinished runs record no
+   digest yet (all flows, not attributed); resume records the digest of whichever flow resumes them".
+   They are not in the affected total. A group under the v1 digest (`DigestV1`) **is** refused by resume (`flow.go:196-199`), so it is in
+   the affected total, labelled "recorded under digest v1; resume refuses it": a fact about the run,
+   not a change you made. Only runs with no digest are in the separate, not-refused count.
+5. File with errors: when the file has errors its typed digest is empty (`flowedit/typed.go:148`), so
+   the run panel and this list say "cannot compare: the file has errors (N)" and never "differs" or
+   "affected". Typed mode, no errors: a group is affected iff its digest differs from the file's, and
+   the line carries the basis, as `DiffView.BasisLine` does ("the digest rests on the program's
+   Registry" or "rests on the description file, not checked against the program"). Structural mode:
+   read `flow:topology` once per group (point read), check it, diff with `DiffTopologies` (section 2:
+   any digest-covered difference or an order difference means refused). A group whose topology cannot
+   be read or trusted is listed as "could not be compared".
+
+The result is worded as "would be refused on its next drive (resume, recovery or restart)", never
+"affected now": a live process keeps the flow it started with.
+
+Bounds: at most 20 distinct digests are examined and the structural diffs share a total budget of
+10 s; more are reported as "N more digests not compared". Counts are "at least":
+`UnfinishedLimit` stops at the limit, so the page says "checked 5000 (there may be more)", never "of
+M". Concurrency: one computation at a time (single-flight) per server; a second request while one runs
+waits for and shares its answer. The shared computation has its own context, cancelled on server Close
+or when no waiter remains, so the first caller disconnecting does not kill it for the others. The result is
+cached until the file's text changes or "Reload run" is pressed, so repeated clicks or a script cannot
+multiply store reads. Output: per digest, the run count and up to 20 run IDs shown as sanitised text.
+
+The "restart with" command shown for a run is `bide edit -run '<id>' <store flags> <file>`, with the ID
+quoted for a POSIX shell by the same quoting the Needs attention list's `bide approve` commands use; an
+ID with a control character or one the quoter cannot make safe gets no command, just the ID as text.
+The command carries no DSN, store path or credential: it says `<store flags>`.
+
+#### 5. What the page claims, exact wording
+
+Same digest (typed; the line ends with the basis, "The digest rests on the program's Registry" or "rests
+on the description file `-blocks`, not checked against the program", as `DiffView.BasisLine` words it):
+"This file has the topology digest `D`, the same digest run `R` journaled. This
+does not say the run followed this file or what any step did; that is conformance (`bide view`)."
+
+No difference seen (structural): "No difference in flow name, entry, node names, blocks, edges, switch
+arms or their order between this file and the topology run `R` journaled. Kinds, types and gates are
+not compared in this mode, so a change in them would not show. Load the program's blocks (`-blocks`)
+to compare digests."
+
+Different: "This file differs from the topology run `R` journaled (N changes the digest covers). The
+digest is part of what resume checks, so a run paused under that topology will not resume under this
+file." Safety and assert lines are never counted, because the digest ignores them, and order is
+(see section 2). Sound in both modes because only digest-covered differences are counted; "same" is
+sound only when typed. A typed digest difference with nothing to itemise says "the digest differs in
+order or types".
+
+Affected list heading: "Unfinished runs whose topology differs from this file: N of M checked". With
+zero: "none of the at least M checked" plus the truncation note, and separately "K runs record no digest yet". Always followed by: "This lists unfinished runs
+in the store you gave; runs in other stores are not seen."
+
+Not claimed: conformance, what steps did, that a run "will" fail (it will not resume; that is the
+digest rule in `run-viewer.md`, "The digest"), or anything about runs after saving. Nothing here is
+executed or changed in any run; the store is read-only.
+
+File has errors (typed mode, empty digest): "Cannot compare: the file has errors (N), so it has no digest.
+Fix them to compare with run `R`." Never "differs", never "refused", never "same", on the run panel or
+in the affected list.
+
+#### 6. Security
+
+- Loopback, Host check, `Origin` equality and session token on every `/api` call: unchanged. The run
+  endpoints are `POST /api/run` and `POST /api/affected`, both behind `apiGuard`, JSON bodies capped
+  by `MaxBodySize`. Responses never contain a DSN, a file path of the store or a credential; store
+  errors are classed (`errClass`) as the viewer does.
+- Read-only: only `OpenReadOnly` constructors (sqlite file read-only, postgres read-only sessions),
+  and the code reaches the store through `UnfinishedHeads` and `Journal.Get`, over the opened
+  `OpenReadOnly` store. A test hands the code the real opened store type and asserts `Insert` is
+  rejected (no wrapper to test instead of the real thing).
+- Hostile journal. The journal is data written by whoever ran the flow, possibly adversarial:
+  names, block names, gate approver ids and run IDs are arbitrary strings: rendered with
+  `textContent` and the existing server-side escapers/`printable` filters (control, bidi and
+  non-printing characters), never HTML. Size: `flow:topology` is capped at `MaxFileSize` (1 MiB).
+  The loader caps bytes only, so node and edge counts get **new explicit caps**: a run topology of
+  more than 1000 nodes or 4000 edges and arms is refused with a note (measured: `diffChanges` takes
+  0.66 s at 1000 nodes and 3.2 s at 4000 with disjoint names). The digest string must be 64 hex
+  characters. The affected list is bounded as in section 4.
+  The digest check proves the topology is the one the digest names (self-consistent), not that the
+  run ran it or who wrote it; the page says "as the journal records it" and points at `bide view
+  -sth` for the journal's own proof. Responses carry no record payload, no DSN, no store path and no
+  credential (a test marshals every response of every endpoint against a store seeded with
+  recognisable secrets and asserts none appears); reserved runs are refused by `-run`. A real digest mismatch (`JournaledTopology` err): the topology is
+  not used for baseline, path or list; the page says "run R journaled a topology that does not match
+  its digest; it is not shown". A run with `flow:topology` and **no** `flow:digest` is a normal crash
+  window, not a mismatch: "this run has not recorded its digest yet, so there is nothing to compare;
+  resume will record whichever flow resumes it", and no baseline or path is drawn. A run with no
+  `flow:topology` (older run): "this run journaled no topology", no baseline; in the affected list it
+  is a group by its digest when it has one, compared by topology only if it has one (structural mode
+  needs it, section 4.5) and by digest alone in typed mode.
+- No new write paths, no new file reads, no new network listeners. A store is not reachable from the
+  page except through the fixed startup arguments.
+- Live runs change while the page is open: a snapshot is taken on first request and re-read only on an
+  explicit "Reload run" press, so a baseline never changes under an edit; the page shows when the
+  snapshot was read.
+
+#### 7. Accessibility
+
+Same bar as the editor (design note, "Accessibility"; the keyboard run and screen-reader pass at the
+phase gate). New items: the run panel is a labelled region with a heading; the baseline selector is a
+real radio group; run marks have text and a glyph beside colour, and pass the contrast check in all
+three themes plus forced-colors; the off-canvas path list is an ordered list in run order; the
+affected list is a table with header cells and a caption; "Check unfinished runs" and "Reload run"
+announce results through the existing `aria-live` region ("checked 120 runs, 3 differ"); focus moves
+to the result heading, never stolen on load; the nodes already carry `aria-label`, extended with the
+run mark ("charge, gate 2 of 3, ran 3 times"). Added to the existing browser a11y tests, themes test
+and the keyboard-only run.
+
+#### 8. New names, flags and JSON
+
+Flags (bide edit): `-run`, `-db`, `-postgres`, `-postgres-env`, `-journal` (same text as `bide view`).
+
+Exported (listed even though most are in internal packages; items marked P are published API):
+- P `plan.InspectTopology(Topology) ConfigReport` (question 1).
+- `runview.DiffTopologies` and `runview.NormalizeForRun` (internal; `BuildDiff` calls the former), `renameTopology`.
+- `runview.StoreFlags` (shared flag registration and open; internal) and `runview.OpenSource`.
+- `runview.RunPath` (path projected onto a topology) and `runview.UnfinishedHeads`
+  (unfinished runs with flow name and digest, by two point reads each).
+- No exported `flowedit` names (approved). The run's types (`runBaseline`, `affected`, `affectedGroup`)
+  are unexported in `flowedit`; the wiring is in section 8a.
+
+##### 8a. Wiring without public flowedit API
+
+`flowedit.Option` is `func(*options)` with an unexported `options`, so `cmd/bide` cannot build an option
+of its own. Decided: a registered constructor, following the repo's
+`journalhook`/`planaccess` pattern, with zero exported names.
+- New internal package `internal/editrun` (importable by `cmd/bide` and by `flowedit`, which already
+  imports `internal/runview`) holds the interface `editrun.Run` (the opened source, the run ID, the
+  point-read head reader) and `var NewOption func(Run) any`.
+- `flowedit`'s `init` sets `editrun.NewOption` to a function that returns a `flowedit.Option` which puts
+  the run into that `Server`'s own options.
+- `editcmd` opens the store, then appends `editrun.NewOption(run).(flowedit.Option)` to its options
+  before `flowedit.New`.
+There is no mutable session global: the run is per-Server state, so two editors in one process each
+have their own run, and tests run in parallel and reset nothing. The only package-level variable is the
+constructor, written once at init. A test asserts `editrun.NewOption` is non-nil once `flowedit` is
+linked (so a missing import fails loudly, not as a silently absent feature) and that the returned value
+is a `flowedit.Option`. A library user of `flowedit` who does not use `editcmd` gets today's editor, so
+embedding hosts have no run comparison.
+Rejected: (1) a set-once global hook read by `New` (`editrun.Set`), for five reasons: (a) it holds
+per-session data (a store, a run ID, a cancel scope) in a global, where the repo's precedents
+(`planaccess.RegisterParse`, `journalhook.Begin`) are stateless functions set at init; (b) set-once
+cannot serve a second editor in one process, and the cmd tests call `editcmd.run` repeatedly; (c) a
+missed reset leaks the run into every later `flowedit.New` in the test binary, with no failure where
+it starts; (d) Set then New is not atomic, so a concurrent `New` can read another session's store, and
+it forbids `t.Parallel`; (e) the global keeps the store reachable after `editcmd` closes it.
+(2) aliasing
+`options` to an internal type: puts an internal type in `Option`'s godoc and API reference; (3) a front
+handler in `editcmd`: it cannot reuse the unexported `apiGuard`, and `/api/doc` and the typed state are
+`flowedit`'s; (4) an exported `flowedit.WithRun`: public API, not approved.
+
+JSON, `POST /api/run` request `{"text","renames"}`, response:
+`{"run":{"id","flow","state","state_text","digest","records","read_at","source"},"weakening":{Weakening, baseline:"run <id>"},"path":{"nodes":[{"name","status","iters","last"}],"edges":[{"from","to","taken","label"}],"off_canvas":[{"name","status"}]},"notes":[],"error":""}`.
+`POST /api/affected` request `{"text"}`, response:
+`{"listed":0,"checked":0,"truncated":0,"unreadable":0,"can_list":true,"groups":[{"digest","runs":0,"ids":[],"command":""}],"differs":0,"notes":[]}`.
+`/api/doc` response gains `"run":{"id","flow","available":bool,"note"}` so the page knows to show the
+panel. No existing field changes meaning.
+
+#### 9. Cost and PR split
+
+About 4 to 6 working days of agent time plus reviews; adversarial review gate applies (journal).
+
+1. **PR 1, topology as a diff side** (`plan.InspectTopology` with its contract, corpus conformance
+   test and fuzz; `runview.DiffTopologies` with the normalisation, order comparison and
+   digest-covered-only counting; structural-mode kind/type/gate blanking; `renameTopology`
+   with a mutation test per field; tests that safety and assert lines never show, that a node swap
+   shows as "order changed", that a pure rename is a rename, and that `bide check -diff` output is
+   unchanged; the 1000-node / 4000-edge cap). Plan export approved.
+2. **PR 2, `-run` and the stores** (shared store flags, read-only open, `/api/run`: baseline panel,
+   verdict wording, digest check, hostile-journal tests, `-help`, guide section). No path yet.
+3. **PR 3, the path on the canvas** (projection, renames, off-canvas list, a11y, browser tests).
+4. **PR 4, affected runs** (point reads, recovery filter, grouping, caps, single-flight and cache, page table, big-store test with a synthetic
+   store that counts reads).
+Docs, godoc, CHANGELOG fragment, i18n pointers and the design note's phase status update land in
+each PR it touches; the final PR flips "phase 4 is not built".
+
+#### 9a. Tests, by PR
+
+PR 1: safety-only and assert-only differences never appear; node swap and edge swap read "order
+changed" and "differs"; pure rename (structural) is a rename, not remove plus add; a resolved Go gate or
+Single gate is not "gate removed" in structural mode; `renameTopology` mutation per field (Entry, Nodes,
+Edges, Branches, Joins, Loops), including rename swaps (a<->b) and chains (a->b, b->c);
+`InspectTopology` corpus conformance and fuzz (dangling edges, duplicate names, self loops); empty
+typed digest reads "cannot compare"; the 1000/4000 cap; `bide check -diff` golden output unchanged;
+API reference (`go test ./internal/tools/...` with -update), doccheck on every new exported name, and
+the CHANGELOG fragment.
+PR 2: `editrun.NewOption` is registered once flowedit is linked and returns a `flowedit.Option`; two
+editors in one process keep separate runs; the guard test enumerates every `POST /api` route and
+checks token, Origin and Host on each, including the new ones; the secrets-in-journal test (no payload,
+DSN, path or credential in any response or error); reserved runs refused; a concurrent writer to the
+store is not blocked by the read-only open; a digest-mismatch and a digest-less topology draw nothing;
+oversized topology refused; the keyboard and screen-reader checks of the run panel (a11y test in PR 2).
+PR 3: projection tests (block mismatch, removed node, missing taken edge, loop bound changed, session
+rename, shape-matched rename), text for every mark, themes and forced-colors.
+PR 4: a synthetic store that counts reads (two point reads per run, one topology read per distinct
+digest, none for a finished run), the recovery filter (cancelled and aborted excluded), digest-less
+runs counted apart, single-flight and cache (N concurrent requests, one scan), cancellation, the cap
+of distinct digests, and unsafe run IDs getting no command.
+
+##### 9b. More tests
+
+Also: PR 3's block-mismatch case names the run's block and the file's block in text; PR 4 adds a
+`-journal` export saying it cannot list the store, a v1 group counted as affected, and the no-digest
+read count (zero `run:start` reads for them); every new function gets a mutation check, run with -v
+and the PASS lines read (protocol).
+
+PR 1 also: `go test ./internal/tools/...` (`TestAPIReference`), doccheck, a byte-identical golden check
+of `bide check -diff` over the existing diff tests after the `BuildDiff` refactor, the order-corpus test
+and the no-aliasing/normalise-copy tests of section 2.
+PR 2 also: the run panel's browser a11y test (the panel ships here); hostile-journal cases: oversized
+topology, 65+ char or non-hex digest, bidi and control names, shell-metacharacter run ID, topology
+without digest, digest without topology, v1 digest, mismatched digest, `Topology.Flow` different from
+the `run:start` flow; the file-with-errors "cannot compare" state; the basis label (Registry vs
+description).
+PR 4 also: cancelled/aborted exclusion, reserved-run skip, flow rename listing old-name runs, the
+no-digest count, single-flight with the first caller disconnecting, cache invalidation on text change,
+cross-store (SQLite file and the Integration Postgres job), a concurrent writer not blocked by a scan,
+the 20-digest and 10 s budgets, and the guard test over every `POST /api` route.
+Across PRs: one test per sentence of section 5 that fails if the sentence would be false (same digest,
+no difference seen, differs, the three counts of the affected list).
+
+#### 10. Decisions (all taken as recommended)
+
+1. `plan.InspectTopology` is a published export; reachability through gates has one implementation.
+2. The run is an informational panel; it never gates a save. The git baseline is the policy.
+3. The run is a snapshot with an explicit reload, not a live follow: a baseline must not move under an edit.
+4. The affected list covers unfinished runs only, capped at 5000, with no prefix flag in the first version.
+5. A store without `-run` is allowed (the affected list alone).
+6. In structural mode the page says "no difference seen" and names what is not compared, never "equal".
+7. The page cannot switch runs; the run and the store are fixed at startup, and the list prints the restart command.
 
 ## Risks
 
