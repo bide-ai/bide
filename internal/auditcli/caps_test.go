@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"database/sql/driver"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -1672,5 +1673,95 @@ func TestCapsAudit_ALedgerWithSlotsInAnUnreadableRunSaysSo(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("-json has no UNREADABLE finding naming the ledger and slot: %+v", rep.Artifact.Findings)
+	}
+}
+
+// A release slot that names no run of its own belongs to the run of the reservation it voids.
+func TestCapsAudit_AReleaseWithNoRunFieldIsSkippedWithItsReservation(t *testing.T) {
+	e := threeCalls(t)
+	run := e.ledgerRun()
+	e.forgeRelease("r1")
+	e.tamper.failRun = func(r string) bool { return r == "r1" }
+	e.tamper.edit = func(r, n string, d []byte) []byte {
+		if r == run && n == "slot:3" {
+			d = bytes.Replace(d, []byte(`"run":"r1",`), nil, 1)
+		}
+		return d
+	}
+	code, out, errOut := unanchoredCaps()
+	wantFail(t, code, out, errOut, "UNREADABLE")
+	if !strings.Contains(out, "slot(s) [0 3] of this ledger, made by run r1") {
+		t.Fatalf("the release must be listed with its reservation:\n%s", out)
+	}
+}
+
+// A record of the cap protocol with its result dropped (a strict decoder reads io.EOF) or cut short is what
+// the store holds failing to decode, never the store failing: exit 1 with a finding, not exit 4.
+func TestCapsAudit_ADecodeErrorIsNeverAStoreError(t *testing.T) {
+	dropResult := regexp.MustCompile(`"result":\{[^}]*\},?`)
+	for _, c := range []struct {
+		name, run, prefix string
+		want              []string
+	}{
+		{"slot", "LEDGER", "slot:1", []string{"CORRUPT"}},
+		{"cap-reserve", "r2", "cap-reserve:", []string{"CHANGED"}},
+		{"cap-intent", "r2", "cap-intent:", []string{"INTENT_UNREADABLE"}},
+		{"cap-release", "r4", "cap-release:", []string{"RELEASE_UNCONFIRMED"}},
+	} {
+		for _, how := range []string{"dropped", "cut"} {
+			e := threeCalls(t)
+			_ = e.call("r4", 150, capsRule, capsRuleHr) // refused by the second rule: released, with its note
+			run := c.run
+			if run == "LEDGER" {
+				run = e.ledgerRun()
+			}
+			e.tamper.edit = func(r, n string, d []byte) []byte {
+				if r != run || !strings.HasPrefix(n, c.prefix) {
+					return d
+				}
+				if how == "dropped" {
+					return dropResult.ReplaceAll(d, nil)
+				}
+				return d[:len(d)/2]
+			}
+			code, out, errOut := unanchoredCaps()
+			// A cut record cannot be read by the journal at all: the run is UNREADABLE, still exit 1.
+			want := c.want
+			if how == "cut" && c.name != "slot" {
+				want = []string{"UNREADABLE"}
+			}
+			if how == "cut" && c.name == "slot" {
+				want = []string{"UNREADABLE"}
+			}
+			if code != 1 || strings.Contains(out, "PASS") {
+				t.Fatalf("%s %s: exit %d, want 1\n%s\n%s", c.name, how, code, out, errOut)
+			}
+			for _, k := range want {
+				if !strings.Contains(out, "FAIL  "+k) && !strings.Contains(out, "WARN  "+k) {
+					t.Fatalf("%s %s: no %s finding:\n%s", c.name, how, k, out)
+				}
+			}
+		}
+	}
+}
+
+func TestIsStoreIOError(t *testing.T) {
+	for name, c := range map[string]struct {
+		err  error
+		want bool
+	}{
+		"eof":                    {fmt.Errorf("read: %w", io.EOF), true},
+		"unexpected eof":         {fmt.Errorf("read: %w", io.ErrUnexpectedEOF), true},
+		"cancelled":              {fmt.Errorf("read: %w", context.Canceled), true},
+		"deadline":               {fmt.Errorf("read: %w", context.DeadlineExceeded), true},
+		"bad conn":               {fmt.Errorf("read: %w", driver.ErrBadConn), true},
+		"corrupt wrapping eof":   {fmt.Errorf("%w: slot:1 in x: %w", capledger.ErrCorrupt, io.EOF), false},
+		"corrupt wrapping cut":   {fmt.Errorf("%w: slot:1 in x: %w", capledger.ErrCorrupt, io.ErrUnexpectedEOF), false},
+		"corrupt row":            {fmt.Errorf("the row stored as step x holds a record named y (%w)", agent.ErrStorage), false},
+		"nothing the store does": {errors.New("invalid character"), false},
+	} {
+		if got := isStoreIOError(c.err); got != c.want {
+			t.Errorf("%s: isStoreIOError = %v, want %v", name, got, c.want)
+		}
 	}
 }

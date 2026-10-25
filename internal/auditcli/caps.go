@@ -1073,6 +1073,11 @@ func (rs capRunFacts) dated(run, att string) bool {
 // timeouts, a closed or refused or reset connection and context.DeadlineExceeded (they all implement it). A
 // failure it cannot place is not one: it is reported as an unreadable run.
 func isStoreIOError(err error) bool {
+	// What the store holds failing to decode is never the store failing, whatever it wraps (a strict decoder
+	// of an empty or cut record returns io.EOF or io.ErrUnexpectedEOF).
+	if errors.Is(err, capledger.ErrCorrupt) {
+		return false
+	}
 	var ne net.Error
 	return errors.Is(err, context.Canceled) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
 		errors.Is(err, driver.ErrBadConn) || errors.As(err, &ne)
