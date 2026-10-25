@@ -1,6 +1,7 @@
 package flowedit
 
 import (
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -146,5 +147,123 @@ func TestRunPanelIsAbsentWithoutARunInChrome(t *testing.T) {
 	runScript(t, "run-off.mjs", s, &r)
 	if !r.OK || !r.Hidden || r.Asked != 1 {
 		t.Errorf("%+v", r)
+	}
+}
+
+// TestRunPathInChrome draws the run's path on the canvas in real Chrome: a ring and words under each node the
+// run reached, a dashed line over each connection taken, the words in the outline and in the node's name,
+// the ring's dash pattern telling started from ran without color (and still drawn under forced colors), a
+// retyped text drawing the same marks and not more, a node of another block losing its marks and being
+// listed, and axe-core clean in the three themes.
+func TestRunPathInChrome(t *testing.T) {
+	type nodeMarks struct {
+		Ring       string  `json:"ring"`
+		Dash       string  `json:"dash"`
+		Width      float64 `json:"width"`
+		Stroke     string  `json:"stroke"`
+		Words      string  `json:"words"`
+		MarkHidden string  `json:"markHidden"`
+		Title      string  `json:"title"`
+	}
+	type pageMarks struct {
+		Nodes   map[string]nodeMarks `json:"nodes"`
+		Taken   []string             `json:"taken"`
+		Outline map[string]string    `json:"outline"`
+		Lists   []struct {
+			Label string   `json:"label"`
+			Items []string `json:"items"`
+		} `json:"lists"`
+		Legend string `json:"legend"`
+	}
+	var r struct {
+		OK      bool      `json:"ok"`
+		Error   string    `json:"error"`
+		Opened  pageMarks `json:"opened"`
+		Forced  pageMarks `json:"forced"`
+		Again   pageMarks `json:"again"`
+		Edited  pageMarks `json:"edited"`
+		Results map[string]struct {
+			Violations []struct {
+				ID     string   `json:"id"`
+				Impact string   `json:"impact"`
+				Help   string   `json:"help"`
+				Nodes  []string `json:"nodes"`
+			} `json:"violations"`
+			Passes int `json:"passes"`
+		} `json:"results"`
+		Console   []string `json:"console"`
+		Failed    []string `json:"failed"`
+		OffOrigin []string `json:"offOrigin"`
+	}
+	s := loopServer(t, loopRunCfg, runview.JournalSource{J: ranLoop(t, 1)}, true)
+	runScript(t, "run-path.mjs", s, &r)
+	if !r.OK {
+		t.Fatalf("the script failed: %s", r.Error)
+	}
+	for _, name := range []string{"seed", "refine", "check", "done"} {
+		n := r.Opened.Nodes[name]
+		if !strings.Contains(n.Ring, "run-ran") || !strings.HasPrefix(n.Words, "ran") || n.MarkHidden != "true" || !strings.Contains(n.Title, ". The run: ran") || !strings.HasPrefix(r.Opened.Outline[name], "The run: ran") {
+			t.Errorf("%s: %+v outline %q", name, n, r.Opened.Outline[name])
+		}
+		if n.Stroke == "" || n.Stroke == "none" || n.Width < 2 {
+			t.Errorf("%s: the ring is not drawn: %+v", name, n)
+		}
+		if f := r.Forced.Nodes[name]; f.Stroke == "" || f.Stroke == "none" || f.Width < 2 || !strings.HasPrefix(f.Words, "ran") {
+			t.Errorf("%s under forced colors: %+v", name, f)
+		}
+	}
+	if w := r.Opened.Nodes["refine"].Words; !strings.HasSuffix(w, " times") {
+		t.Errorf("refine ran more than once: %q", w)
+	}
+	slices.Sort(r.Opened.Taken)
+	if !slices.Equal(r.Opened.Taken, []string{"check>done", "check>refine", "refine>check", "seed>refine"}) {
+		t.Errorf("connections taken: %q", r.Opened.Taken)
+	}
+	if !strings.Contains(r.Opened.Legend, "dashed ring for started") {
+		t.Errorf("legend %q", r.Opened.Legend)
+	}
+	if !slices.Equal(slices.Sorted(maps.Keys(r.Again.Nodes)), slices.Sorted(maps.Keys(r.Opened.Nodes))) || len(r.Again.Taken) != len(r.Opened.Taken) {
+		t.Errorf("retyped: %+v", r.Again)
+	}
+	for name, n := range r.Again.Nodes {
+		if strings.Count(n.Ring, "rring") != 1 {
+			t.Errorf("%s: rings stacked: %q", name, n.Ring)
+		}
+	}
+	if n := r.Edited.Nodes["refine"]; n.Ring != "" || n.Words != "" || strings.Contains(n.Title, "The run") || r.Edited.Outline["refine"] != "" {
+		t.Errorf("refine kept its marks: %+v", n)
+	}
+	if n := r.Edited.Nodes["seed"]; !strings.Contains(n.Ring, "run-ran") {
+		t.Errorf("seed lost its mark: %+v", n)
+	}
+	listed := false
+	for _, l := range r.Edited.Lists {
+		for _, it := range l.Items {
+			if strings.HasPrefix(it, "refine: the run ran") && strings.Contains(it, "with block refine; this file's refine has block check, so it is another node.") {
+				listed = true
+			}
+		}
+	}
+	if !listed {
+		t.Errorf("the edited node is not listed: %+v", r.Edited.Lists)
+	}
+	if len(r.Results) != 6 {
+		t.Errorf("%d states were checked, want 6 (2 states in 3 themes)", len(r.Results))
+	}
+	for state, res := range r.Results {
+		if res.Passes < 20 {
+			t.Errorf("%s: only %d rules passed", state, res.Passes)
+		}
+		for _, v := range res.Violations {
+			t.Errorf("%s: %s (%s): %s at %q", state, v.ID, v.Impact, v.Help, v.Nodes)
+		}
+	}
+	for _, c := range r.Console {
+		if !strings.HasPrefix(c, "log:") {
+			t.Errorf("console: %s", c)
+		}
+	}
+	if len(r.Failed) != 0 || len(r.OffOrigin) != 0 {
+		t.Errorf("failed %q off origin %q", r.Failed, r.OffOrigin)
 	}
 }

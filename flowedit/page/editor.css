@@ -90,3 +90,17 @@ dialog h2 { margin-top: 0; }
 #run-panel h3 { margin: var(--s3) 0 var(--s1); font-size: var(--t-md); }
 .runlist { margin: 0; padding-left: var(--s5); font-family: var(--mono); font-size: var(--t-xs); overflow-wrap: anywhere; }
 .runlist li { margin: var(--s1) 0; }
+/* The run's path on the canvas: a ring round the node, words under it, a dashed line over a taken connection. The
+   ring's dash pattern tells ran, started and paused apart without color, and the words say it in text. */
+.rring { fill: none; stroke-width: 3; pointer-events: none; }
+.rring.run-ran { stroke: var(--good); }
+.rring.run-started { stroke: var(--warn); stroke-dasharray: 12 4; }
+.rring.run-paused { stroke: var(--info); stroke-dasharray: 12 3 2 3; }
+.rmark { font-size: 12.5px; font-weight: 700; text-anchor: middle; fill: var(--fg); paint-order: stroke; stroke: var(--bg); stroke-width: 4px; stroke-linejoin: round; pointer-events: none; }
+.rtaken { fill: none; stroke: var(--info); stroke-width: 4; stroke-dasharray: 10 6; pointer-events: none; }
+.outlist .rwords { display: block; font-size: var(--t-xs); font-weight: 600; }
+@media (forced-colors: active) {
+  .rring.run-ran, .rring.run-started, .rring.run-paused, .rtaken { stroke: Highlight; }
+  .rring.run-ran { stroke-dasharray: none; }
+  .rmark { fill: CanvasText; stroke: Canvas; }
+}
