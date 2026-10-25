@@ -688,6 +688,12 @@ func TestSignaturesProofForAnotherRunIDBounded(t *testing.T) {
 	if len(got) > 1000 || !strings.Contains(got, "...") || !strings.HasPrefix(got, "signatures not checked: the proof given is for another run") {
 		t.Errorf("a %d-byte line for a huge run ID: %.200s", len(got), got)
 	}
+	one := sth
+	one.RunID = strings.Repeat("a", maxRunIDShown+1)
+	v = viewOf(t, Handler(Options{Source: JournalSource{J: j}, Provers: []Prover{HeadProver(one, logPub, Approvals{})}}), "g1")
+	if got := v.Gates[0].Signatures; !strings.Contains(got, `"`+strings.Repeat("a", maxRunIDShown)+`"...`) {
+		t.Errorf("an ID one over the limit is not cut: %q", got)
+	}
 	short := sth
 	short.RunID = strings.Repeat("a", maxRunIDShown)
 	v = viewOf(t, Handler(Options{Source: JournalSource{J: j}, Provers: []Prover{HeadProver(short, logPub, Approvals{})}}), "g1")
