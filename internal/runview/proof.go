@@ -5,11 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
+	safetext "github.com/bide-ai/bide/internal/printable"
 )
 
 // Proof is the audit verdict on the run's journal, from the audit package's own verifiers (the
@@ -68,7 +71,9 @@ type IdentityAudit struct {
 }
 
 // Prover checks a run's records against an audit artifact. It returns nil for a run the artifact
-// is not about.
+// is not about. When no prover returns a proof for a run, the signatures line of its gates says so; the
+// provers HeadProver and EvidenceProver also name, there, the run their artifact is about. A prover of
+// the caller's that returns nil adds no name and gets the plain line.
 type Prover func(ctx context.Context, runID string, recs []agent.Record) *Proof
 
 // HeadProver checks a signed tree head: its signature under v and the timestamp rule
@@ -82,6 +87,7 @@ type Prover func(ctx context.Context, runID string, recs []agent.Record) *Proof
 func HeadProver(sth audit.SignedTreeHead, v audit.Verifier, ap Approvals) Prover {
 	return func(ctx context.Context, runID string, recs []agent.Record) *Proof {
 		if sth.RunID != runID {
+			noteOtherRun(ctx, "signed head", sth.RunID)
 			return nil
 		}
 		p := &Proof{Source: "signed tree head", Covers: sth.Size, SignedAt: headTime(sth)}
@@ -110,6 +116,7 @@ func HeadProver(sth audit.SignedTreeHead, v audit.Verifier, ap Approvals) Prover
 func EvidenceProver(pkg audit.EvidencePackage, v audit.Verifier, ap Approvals, opts ...audit.EvidenceVerifyOption) Prover {
 	return func(ctx context.Context, runID string, recs []agent.Record) *Proof {
 		if pkg.RunID != runID {
+			noteOtherRun(ctx, "evidence package", pkg.RunID)
 			return nil
 		}
 		p := &Proof{Source: "evidence package", Covers: pkg.STH.Size}
@@ -314,4 +321,64 @@ func finish(p *Proof, n int) {
 		}
 		p.Summary = fmt.Sprintf("verifies: all %d records are under the signed head", n)
 	}
+}
+
+// otherRunsKey is the context key of the otherRuns a view collects while its provers run. It is
+// unexported so only this package's provers can write to it: a caller's Prover cannot put a reason in
+// a gate's signatures line.
+type otherRunsKey struct{}
+
+// otherRuns are the artifacts the provers declined for the run being viewed, each as "<kind>: <run>"
+// with the run quoted and escaped, in the order they were tried.
+type otherRuns struct {
+	mu    sync.Mutex // a Prover of the caller's may call the bide provers from several goroutines
+	notes []string
+}
+
+// noteOtherRun records that the prover for an artifact of kind (what the flag gave) declined the run
+// because the artifact is about run. It does nothing when the view is not collecting. run is the
+// artifact's own field and may hold anything, so it is escaped (safetext.EscapeName) and quoted.
+func noteOtherRun(ctx context.Context, kind, run string) {
+	if o, ok := ctx.Value(otherRunsKey{}).(*otherRuns); ok {
+		n := kind + ": " + shownRunID(run)
+		o.mu.Lock()
+		defer o.mu.Unlock()
+		if !slices.Contains(o.notes, n) {
+			o.notes = append(o.notes, n)
+		}
+	}
+}
+
+// shownRunID is run quoted for the line: at most maxRunIDShown runes of it (cut before escaping, so a
+// huge ID costs no more than a short one), escaped, and "..." after the quotes when it was cut.
+func shownRunID(run string) string {
+	cut := ""
+	if r := []rune(run); len(r) > maxRunIDShown {
+		run, cut = string(r[:maxRunIDShown]), "..."
+	}
+	return strconv.Quote(safetext.EscapeName(run)) + cut
+}
+
+// maxRunIDShown is how many runes of a declined artifact's run ID the line shows.
+const maxRunIDShown = 64
+
+// maxOtherRuns is how many declined artifacts the signatures line names.
+const maxOtherRuns = 3
+
+// text is the signatures line for a gate no prover checked, when provers declined the run for being
+// another's, and "" when none did.
+func (o *otherRuns) text() string {
+	if o == nil {
+		return ""
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if len(o.notes) == 0 {
+		return ""
+	}
+	shown, more := o.notes, ""
+	if len(shown) > maxOtherRuns {
+		shown, more = shown[:maxOtherRuns], fmt.Sprintf(" and %d more", len(o.notes)-maxOtherRuns)
+	}
+	return "signatures not checked: the proof given is for another run (" + strings.Join(shown, "; ") + more + "); give -sth or -evidence for this run"
 }
