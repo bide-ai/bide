@@ -12,7 +12,6 @@ import (
 	"os"
 	"slices"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
@@ -1054,14 +1053,13 @@ func (rs capRunFacts) dated(run, att string) bool {
 
 // isStoreIOError reports whether err is the store failing (a lost connection, a timeout, a cancelled
 // context, an end of file) rather than what the store holds failing to decode or validate: the stores wrap
-// both in agent.ErrStorage, so this looks for the causes only a store call has. A failure it cannot place is
-// not one: it is reported as an unreadable run.
+// both in agent.ErrStorage, so this looks for the causes only a store call has. A net.Error covers the
+// timeouts, a closed or refused or reset connection and context.DeadlineExceeded (they all implement it). A
+// failure it cannot place is not one: it is reported as an unreadable run.
 func isStoreIOError(err error) bool {
 	var ne net.Error
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
-		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, driver.ErrBadConn) ||
-		errors.Is(err, net.ErrClosed) || errors.Is(err, os.ErrDeadlineExceeded) || errors.As(err, &ne) ||
-		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EPIPE)
+	return errors.Is(err, context.Canceled) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, driver.ErrBadConn) || errors.As(err, &ne)
 }
 
 // storeError is the error that ends an audit whose store failed: exit 4, and a message that says to run it
