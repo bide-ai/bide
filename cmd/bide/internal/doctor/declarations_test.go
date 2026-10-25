@@ -157,3 +157,16 @@ func TestRaisesSafety_IsListedAndDiffed(t *testing.T) {
 		t.Errorf("removing RaisesSafety: code %d, out %q", code, out)
 	}
 }
+
+// A baseline from before the idempotent member is not read as "no tool is Idempotent": -diff says to
+// regenerate it and exits 1.
+func TestDiff_AnOldBaselineIsToBeRegenerated(t *testing.T) {
+	pol := &declarations.Policy{Refuse: true}
+	old := write(t, "old.json", decl(pol, declarations.Tool{Name: "w", Effect: true, Trusted: "ours"}))
+	newer := decl(pol, declarations.Tool{Name: "w", Effect: true, Idempotent: true, Trusted: "ours"})
+	newer.TracksIdempotent = true
+	code, out, _ := runMain("-diff", old, write(t, "new.json", newer))
+	if code != 1 || !strings.Contains(out, "regenerate the baseline") || strings.Contains(out, "now Idempotent") {
+		t.Errorf("code %d, out %q", code, out)
+	}
+}

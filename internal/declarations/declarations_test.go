@@ -575,3 +575,35 @@ func TestDiff_AMemberOutsideTheDigestIsNotADigestMismatch(t *testing.T) {
 		t.Errorf("changes = %+v, want one uncovered change", changes)
 	}
 }
+
+// tracked marks a document as written by a version that carries each tool's Idempotent member.
+func tracked(d Document) Document { d.TracksIdempotent = true; return d }
+
+// A baseline from before the idempotent member says nothing about it: its absence is not "false". Diffing it
+// against a new dump with an Idempotent tool gives one line saying to regenerate it (weakened, so a pipeline
+// stops), never a per-tool "now Idempotent". With the member on both sides the tool rows come back.
+func TestDiff_AnOldDumpWithoutTheIdempotentMemberIsNotReadAsFalse(t *testing.T) {
+	pol := &Policy{Refuse: true}
+	oldDump := doc(pol, Tool{Name: "w", Effect: true})
+	newDump := tracked(doc(pol, Tool{Name: "w", Effect: true, Idempotent: true}))
+	got, err := Diff(oldDump, newDump)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Class != Weakened || got[0].Subject != "declarations" || !strings.Contains(got[0].What, "regenerate the baseline") || got[0].Covered {
+		t.Fatalf("changes = %+v, want one weakened line saying to regenerate the baseline", got)
+	}
+	// The other direction (a new dump from an older version) is the same.
+	if got, err := Diff(newDump, oldDump); err != nil || len(got) != 1 || got[0].Subject != "declarations" {
+		t.Errorf("reversed: %+v, %v", got, err)
+	}
+	// Both with the member: the tool row, and no regenerate line.
+	got, err = Diff(tracked(doc(pol, Tool{Name: "w", Effect: true})), newDump)
+	if err != nil || len(got) != 1 || got[0].Subject != "tool w" || !strings.Contains(got[0].What, "now Idempotent") {
+		t.Errorf("both tracked: %+v, %v", got, err)
+	}
+	// No Idempotent tool anywhere: an old dump costs nothing.
+	if got, err := Diff(oldDump, tracked(doc(pol, Tool{Name: "w", Effect: true}))); err != nil || len(got) != 0 {
+		t.Errorf("no Idempotent tool: %+v, %v", got, err)
+	}
+}

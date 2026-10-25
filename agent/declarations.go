@@ -14,7 +14,7 @@ import (
 // taint_policy_digest a run this agent starts records, "" for an agent with no policy. It is the document
 // the declarations report and diff are built on; nothing exports it yet.
 func (a *Agent) declarationsDoc() declarations.Document {
-	d := declarations.Document{Format: declarations.Format, Digest: a.taintDigest(), Tools: []declarations.Tool{}}
+	d := declarations.Document{Format: declarations.Format, TracksIdempotent: true, Digest: a.taintDigest(), Tools: []declarations.Tool{}}
 	if a.taint != nil {
 		d.Policy = &declarations.Policy{Gate: gateDoc(a.taint.Gate), Refuse: a.taint.Refuse, RequireProvenance: a.taint.RequireProvenance}
 	}

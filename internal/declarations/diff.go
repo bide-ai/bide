@@ -77,8 +77,15 @@ func Diff(old, new Document) ([]Change, error) {
 		}
 		return m
 	}()))
+	// A dump from before the idempotent member says nothing about it: its absence is not "false". When the two
+	// documents disagree about carrying it and a tool is Idempotent in either, nothing can be compared; the
+	// diff says so once and fails closed, rather than report every Idempotent tool as newly weakened.
+	idemKnown := old.TracksIdempotent == new.TracksIdempotent
+	if !idemKnown && slices.ContainsFunc(append(slices.Clone(old.Tools), new.Tools...), func(t Tool) bool { return t.Idempotent }) {
+		out = append(out, Change{Weakened, "declarations", "a dump predates the idempotent member, so whether a tool is Idempotent cannot be compared; regenerate the baseline with this version", false})
+	}
 	for _, n := range names {
-		out = append(out, diffTool(n, oldTools[n], newTools[n])...)
+		out = append(out, diffTool(n, oldTools[n], newTools[n], idemKnown)...)
 	}
 	if err := checkDigests(old.Digest, new.Digest, out); err != nil {
 		return nil, err
@@ -229,7 +236,7 @@ func timeout(ms int64) string {
 	return fmt.Sprintf("%dms", ms)
 }
 
-func diffTool(name string, old, new *Tool) []Change {
+func diffTool(name string, old, new *Tool, idemKnown bool) []Change {
 	subject := "tool " + name
 	var out []Change
 	add := func(c Class, what string, covered bool) { out = append(out, Change{c, subject, what, covered}) }
@@ -296,7 +303,7 @@ func diffTool(name string, old, new *Tool) []Change {
 	out = append(out, diffCaps(subject, old.Caps, new.Caps)...)
 	// A move between side effect and Idempotent (the tool has side effects on both sides; a move to or from
 	// ReadOnly is the Effect row below). Idempotent is retry-safe, so a resume re-runs the call.
-	if old.Effect && new.Effect && old.Idempotent != new.Idempotent {
+	if idemKnown && old.Effect && new.Effect && old.Idempotent != new.Idempotent {
 		if new.Idempotent {
 			add(Weakened, "now Idempotent: a resume re-runs its calls instead of halting on an unknown outcome", false)
 		} else {

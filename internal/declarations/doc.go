@@ -31,6 +31,9 @@ type Document struct {
 	// Digest is the taint_policy_digest a run started by this agent records, "" for an agent with no taint
 	// policy (no run it starts is under taint).
 	Digest string `json:"digest"`
+	// TracksIdempotent is set by a version that writes each tool's Idempotent member. A document without it
+	// predates the member, so a tool's absent idempotent is unknown, not false (see Diff).
+	TracksIdempotent bool `json:"tracks_idempotent,omitempty"`
 	// Policy is the agent's taint policy, nil for none.
 	Policy *Policy `json:"policy,omitempty"`
 	// Tools is every tool the agent registers, by name.
