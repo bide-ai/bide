@@ -347,13 +347,15 @@ func (o Options) viewOf(ctx context.Context, runID string, recs []agent.Record, 
 	if topoErr != nil {
 		v.Notes = append(v.Notes, "the journaled topology is not drawn: "+topoErr.Error())
 	}
+	declined := &otherRuns{}
+	pctx := context.WithValue(ctx, otherRunsKey{}, declined)
 	for _, p := range o.Provers {
-		if v.Proof = p(ctx, runID, recs); v.Proof != nil {
+		if v.Proof = p(pctx, runID, recs); v.Proof != nil {
 			break
 		}
 	}
 	for i := range v.Gates {
-		signatures(&v.Gates[i], v.Proof)
+		signatures(&v.Gates[i], v.Proof, declined)
 		if chk, ok := v.Proof.approval(v.Gates[i].ToolUseID); ok {
 			applyIdentityAudit(&v.Gates[i], chk.Identity)
 		}
@@ -370,8 +372,9 @@ func (o Options) viewOf(ctx context.Context, runID string, recs []agent.Record, 
 }
 
 // signatures sets g's signature verdict from the proof's approval checks, or says why its
-// signatures were not checked.
-func signatures(g *Gate, p *Proof) {
+// signatures were not checked. declined are the artifacts the provers declined for being another
+// run's; they only change the wording when no proof was made.
+func signatures(g *Gate, p *Proof, declined *otherRuns) {
 	switch c, ok := p.approval(g.ToolUseID); {
 	case g.Single:
 		g.Signatures = "one decision (agent.Approve), which is not signed"
@@ -381,6 +384,8 @@ func signatures(g *Gate, p *Proof) {
 		g.Signatures = "signatures not checked: the gate has not journaled its tally yet"
 	case p != nil && p.OK:
 		g.Signatures = "included in the signed log; signatures not checked (pass -approver-keys)"
+	case declined.text() != "":
+		g.Signatures = declined.text()
 	default:
 		g.Signatures = "signatures not checked (pass -approver-keys, with -sth or -evidence)"
 	}
