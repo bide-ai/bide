@@ -1,2 +1,4 @@
+github.com/bide-ai/bide v0.24.0 h1:18ueeZDHFTO3O7zt6drFP8f6Ul9Z01ZSDpuyt6rF6DY=
+github.com/bide-ai/bide v0.24.0/go.mod h1:/9TldvSgiSK7hwUc7FpvD2y3jGS5a6EgWhqaBUv+Diw=
 github.com/miekg/pkcs11 v1.1.2 h1:/VxmeAX5qU6Q3EwafypogwWbYryHFmF2RpkJmw3m4MQ=
 github.com/miekg/pkcs11 v1.1.2/go.mod h1:XsNlhZGX73bx86s2hdc/FuaLm2CPZJemRLMA+WTFxgs=
