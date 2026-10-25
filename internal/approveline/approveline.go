@@ -167,3 +167,13 @@ func ValidEnvName(s string) bool { return envName.MatchString(s) }
 // NotAnEnvName is the usage error for a -postgres-env value that is not a variable name. It never
 // holds the value.
 const NotAnEnvName = "-postgres-env takes the name of an environment variable, not a DSN"
+
+// Word returns s as one POSIX shell word for a command line a person will paste: s quoted where it needs
+// it, or ErrUnsafe if it holds a control, bidirectional, invisible or filler character or bytes that
+// are not UTF-8, which are never written into a command line.
+func Word(s string) (string, error) {
+	if err := checkText(s); err != nil {
+		return "", err
+	}
+	return quote(s), nil
+}

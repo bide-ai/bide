@@ -1,0 +1,546 @@
+package flowedit
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"iter"
+	"os"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/editrun"
+	"github.com/bide-ai/bide/internal/runview"
+	"github.com/bide-ai/bide/plan"
+)
+
+// flowCfg is a two-node flow of the given name and second block; flows of different names (or blocks) have
+// different digests.
+func flowCfg(name, block string) string {
+	return `{"version":1,"flow":"` + name + `","in":"int","out":"int","entry":"a","nodes":[{"name":"a","block":"inc"},{"name":"b","block":"` + block + `"}],"wiring":[{"edge":["a","b"]}]}`
+}
+
+// regFor registers the blocks cfg uses and no others (Load refuses a block nothing uses).
+func regFor(t *testing.T, cfg string) *plan.Registry {
+	t.Helper()
+	reg := plan.NewRegistry()
+	for name, f := range map[string]func(context.Context, int) (int, error){
+		"inc": func(_ context.Context, n int) (int, error) { return n + 1, nil },
+		"dbl": func(_ context.Context, n int) (int, error) { return n * 2, nil },
+	} {
+		if strings.Contains(cfg, `"block":"`+name+`"`) {
+			if err := reg.RegisterStep(name, f); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	return reg
+}
+
+// templateRun runs cfg once and returns its journal, to be cloned into a store as many runs as a test needs.
+func templateRun(t *testing.T, cfg string) *agent.Journal {
+	t.Helper()
+	flow, err := plan.Load[int, int]([]byte(cfg), regFor(t, cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	j, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := flow.Run(context.Background(), j, "r1", 1); err != nil {
+		t.Fatal(err)
+	}
+	return j
+}
+
+// cloneRun writes the entries of template's run r1 into st under id, leaving out those drop names; an entry can
+// be replaced by with.
+func cloneRun(t *testing.T, template *agent.Journal, st agent.Store, id string, drop func(name string) bool, with map[string][]byte) {
+	t.Helper()
+	for e, err := range template.Store().Load(context.Background(), "r1", -1) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if drop != nil && drop(e.Name) {
+			continue
+		}
+		data := e.Data
+		if w, ok := with[e.Name]; ok {
+			data = w
+		}
+		if _, _, err := st.Insert(context.Background(), id, e.Name, data); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func unfinished(name string) bool { return name == "run:complete" }
+
+// storeServer is an editor over file with a store and no run (the list of unfinished runs only).
+func storeServer(t *testing.T, file string, st agent.Store, typed bool) (*Server, *agent.Journal) {
+	t.Helper()
+	j, err := agent.NewJournal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(t.TempDir(), "flow.json")
+	if err := os.WriteFile(p, []byte(file), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opts := []Option{editrun.NewOption(editrun.Run{Source: runview.JournalSource{J: j}}).(Option)}
+	if typed {
+		opts = append(opts, WithRegistry(runRegistry(t)))
+	}
+	s, err := newServer(t, p, opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s, j
+}
+
+func askAffected(t *testing.T, s *Server, text string, check, reload bool) *affectedReply {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"text": text, "check": check, "reload": reload})
+	w := call(s.Handler(), s, "/api/affected", string(body), nil)
+	if w.Code != 200 {
+		t.Fatalf("/api/affected: %d %s", w.Code, w.Body)
+	}
+	var r affectedReply
+	if err := json.Unmarshal(w.Body.Bytes(), &r); err != nil {
+		t.Fatal(err)
+	}
+	return &r
+}
+
+func groupOf(r *affectedReply, digest string) *affectedGroup {
+	for i := range r.Groups {
+		if r.Groups[i].Digest == digest {
+			return &r.Groups[i]
+		}
+	}
+	return nil
+}
+
+func digestOf(t *testing.T, cfg string) string {
+	t.Helper()
+	flow, err := plan.Load[int, int]([]byte(cfg), regFor(t, cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return flow.Digest()
+}
+
+// The list of unfinished runs a file would refuse: the runs of the file's flow under another digest are refused,
+// those under the file's digest are not, runs of another flow are counted apart, and finished, cancelled, aborted
+// and reserved runs are not asked about.
+func TestAffectedListsWhatTheFileWouldRefuse(t *testing.T) {
+	v1, v2, other := flowCfg("pay", "dbl"), flowCfg("pay", "inc"), flowCfg("elsewhere", "dbl")
+	tv1, tv2, tother := templateRun(t, v1), templateRun(t, v2), templateRun(t, other)
+	st := agent.NewMemStore()
+	for i := 0; i < 3; i++ {
+		cloneRun(t, tv1, st, "same-"+strconv.Itoa(i), unfinished, nil)
+	}
+	for i := 0; i < 2; i++ {
+		cloneRun(t, tv2, st, "changed-"+strconv.Itoa(i), unfinished, nil)
+	}
+	cloneRun(t, tother, st, "foreign-0", unfinished, nil)
+	cloneRun(t, tv2, st, "done", nil, nil) // finished: run:complete
+	for _, marker := range []string{"run:aborted", "run:cancelled"} {
+		id := strings.TrimPrefix(marker, "run:")
+		cloneRun(t, tv2, st, id, unfinished, nil)
+		if _, _, err := st.Insert(context.Background(), id, marker, []byte(`{"name":"`+marker+`","kind":"value","result":1}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cloneRun(t, tv2, st, agent.StopControlRun, unfinished, nil) // reserved: not a run
+	s, _ := storeServer(t, v1, st, true)
+	r := askAffected(t, s, v1, true, false)
+	if r.Status != "ok" || r.Listed != 6 || r.Refused != 2 || r.OtherFlow != 1 || r.More {
+		t.Fatalf("%+v", r)
+	}
+	if g := groupOf(r, digestOf(t, v1)); g == nil || g.Status != "same" || g.Runs != 3 {
+		t.Errorf("same: %+v", g)
+	}
+	if g := groupOf(r, digestOf(t, v2)); g == nil || g.Status != "refused" || g.Runs != 2 || !slices.Equal(g.IDs, []string{"changed-0", "changed-1"}) {
+		t.Errorf("refused: %+v", g)
+	}
+	if g := groupOf(r, digestOf(t, other)); g == nil || g.Status != "other_flow" {
+		t.Errorf("other flow: %+v", g)
+	}
+	if r.Groups[0].Status != "refused" {
+		t.Errorf("refused groups come first: %+v", r.Groups)
+	}
+	if want := "Unfinished runs that would be refused on their next drive (resume, recovery or restart) with this file: 2 of 6 checked"; r.Heading != want {
+		t.Errorf("heading %q", r.Heading)
+	}
+	notes := strings.Join(r.Notes, "\n")
+	for _, want := range []string{"runs in other stores are not seen", "keeps the flow it started with", "of another flow"} {
+		if !strings.Contains(notes, want) {
+			t.Errorf("notes lack %q:\n%s", want, notes)
+		}
+	}
+	for _, bad := range []string{"done", "aborted", "cancelled", agent.StopControlRun} {
+		for _, g := range r.Groups {
+			if slices.Contains(g.IDs, bad) {
+				t.Errorf("%s was asked about", bad)
+			}
+		}
+	}
+}
+
+// A run with no flow:digest is not refused by the digest rule and is counted apart; a digest that is not a SHA-256
+// digest is unreadable; neither makes a group.
+func TestAffectedCountsNoDigestAndUnreadableApart(t *testing.T) {
+	v1 := flowCfg("pay", "dbl")
+	tv1 := templateRun(t, v1)
+	st := agent.NewMemStore()
+	cloneRun(t, tv1, st, "ok", unfinished, nil)
+	for i := 0; i < 3; i++ {
+		cloneRun(t, tv1, st, "nodigest-"+strconv.Itoa(i), func(n string) bool { return unfinished(n) || n == "flow:digest" }, nil)
+	}
+	cloneRun(t, tv1, st, "crashwindow", func(n string) bool { return unfinished(n) || n == "flow:digest" }, nil) // topology but no digest
+	cloneRun(t, tv1, st, "garbled", unfinished, map[string][]byte{"flow:digest": []byte(`{"name":"flow:digest","kind":"value","result":"not-a-digest"}`)})
+	s, _ := storeServer(t, v1, st, true)
+	r := askAffected(t, s, v1, true, false)
+	if r.NoDigest != 4 || r.Unreadable != 1 || r.Refused != 0 || len(r.Groups) != 1 || r.Groups[0].Runs != 1 {
+		t.Fatalf("%+v", r)
+	}
+	if !strings.Contains(strings.Join(r.Notes, "\n"), "4 unfinished runs record no digest yet (all flows, not attributed)") {
+		t.Errorf("notes %q", r.Notes)
+	}
+}
+
+// A digest that is not the digest of the run's own topology (a run recorded under digest v1) is refused by a
+// resume whatever the file says, so it counts, in both modes, and says why.
+func TestAffectedCountsARunRecordedUnderAnotherDigestVersion(t *testing.T) {
+	v1 := flowCfg("pay", "dbl")
+	tv1 := templateRun(t, v1)
+	old := strings.Repeat("ab", 32)
+	st := agent.NewMemStore()
+	cloneRun(t, tv1, st, "old", unfinished, map[string][]byte{"flow:digest": []byte(`{"name":"flow:digest","kind":"value","result":"` + old + `"}`)})
+	for _, typed := range []bool{true, false} {
+		s, _ := storeServer(t, v1, st, typed)
+		r := askAffected(t, s, v1, true, false)
+		g := groupOf(r, old)
+		if r.Refused != 1 || g == nil || g.Status != "refused" || !strings.Contains(g.Reason, "recorded under digest v1") {
+			t.Errorf("typed=%v: %+v", typed, r)
+		}
+	}
+}
+
+// A flow renamed in the editor still lists the runs of the flow it was: they are asked about by the flow's name when the
+// file was opened.
+func TestAffectedKeysOnTheFlowNameTheFileWasOpenedWith(t *testing.T) {
+	v1 := flowCfg("pay", "dbl")
+	tv1 := templateRun(t, v1)
+	st := agent.NewMemStore()
+	cloneRun(t, tv1, st, "r", unfinished, nil)
+	s, _ := storeServer(t, v1, st, true)
+	renamed := flowCfg("pay2", "dbl")
+	r := askAffected(t, s, renamed, true, false)
+	if r.Refused != 1 || r.OtherFlow != 0 {
+		t.Errorf("%+v", r)
+	}
+}
+
+// A typed file with errors has no digest: nothing is claimed.
+func TestAffectedTypedFileWithErrorsCannotCompare(t *testing.T) {
+	v1 := flowCfg("pay", "dbl")
+	st := agent.NewMemStore()
+	cloneRun(t, templateRun(t, v1), st, "r", unfinished, nil)
+	s, _ := storeServer(t, v1, st, true)
+	r := askAffected(t, s, flowCfg("pay", "nope"), true, false)
+	if r.Status != "cannot" || !strings.Contains(r.Summary, "Cannot compare: the file has errors (") || r.Refused != 0 || len(r.Groups) != 0 {
+		t.Errorf("%+v", r)
+	}
+	for _, bad := range []string{"refused", "same"} {
+		if strings.Contains(r.Summary, bad) {
+			t.Errorf("summary says %q", bad)
+		}
+	}
+}
+
+// Structural mode compares each group's topology with the file by what the digest covers.
+func TestAffectedStructuralComparesTopologies(t *testing.T) {
+	v1, v2 := flowCfg("pay", "dbl"), flowCfg("pay", "inc")
+	tv1, tv2 := templateRun(t, v1), templateRun(t, v2)
+	st := agent.NewMemStore()
+	cloneRun(t, tv1, st, "same", unfinished, nil)
+	cloneRun(t, tv2, st, "changed", unfinished, nil)
+	cloneRun(t, tv2, st, "notopology", func(n string) bool { return unfinished(n) || n == plan.TopologyStep }, map[string][]byte{"flow:digest": []byte(`{"name":"flow:digest","kind":"value","result":"` + strings.Repeat("cd", 32) + `"}`)})
+	s, _ := storeServer(t, v1, st, false)
+	r := askAffected(t, s, v1, true, false)
+	if r.Refused != 1 {
+		t.Fatalf("%+v", r)
+	}
+	if g := groupOf(r, digestOf(t, v1)); g == nil || g.Status != "none_seen" {
+		t.Errorf("same: %+v", g)
+	}
+	if g := groupOf(r, digestOf(t, v2)); g == nil || g.Status != "refused" || len(g.Changes) == 0 || !strings.Contains(g.Changes[0], "block") {
+		t.Errorf("changed: %+v", g)
+	}
+	if g := groupOf(r, strings.Repeat("cd", 32)); g == nil || g.Status != "not_compared" || g.Reason != "the run recorded no topology" {
+		t.Errorf("no topology: %+v", g)
+	}
+	if !strings.Contains(strings.Join(r.Notes, "\n"), "Kinds, types and gates are not compared") {
+		t.Errorf("notes %q", r.Notes)
+	}
+}
+
+// Only the first maxGroups digests are followed up; the runs under the others are counted.
+func TestAffectedBoundsTheGroups(t *testing.T) {
+	st := agent.NewMemStore()
+	for i := 0; i < maxGroups+5; i++ {
+		cloneRun(t, templateRun(t, flowCfg("pay"+strconv.Itoa(i), "dbl")), st, "r"+strconv.Itoa(i), unfinished, nil)
+	}
+	s, _ := storeServer(t, flowCfg("pay0", "dbl"), st, true)
+	r := askAffected(t, s, flowCfg("pay0", "dbl"), true, false)
+	if len(r.Groups) != maxGroups || r.Overflow != 5 || !strings.Contains(strings.Join(r.Notes, "\n"), "5 more digests (5 runs) not compared: only the first 20 are.") {
+		t.Errorf("%d groups, overflow %d, notes %q", len(r.Groups), r.Overflow, r.Notes)
+	}
+}
+
+// Past maxListed runs the page says "at least", and that only the first by run ID were read.
+func TestAffectedSaysAtLeast(t *testing.T) {
+	old := maxListed
+	maxListed = 10
+	t.Cleanup(func() { maxListed = old })
+	v1 := flowCfg("pay", "dbl")
+	tv1 := templateRun(t, v1)
+	st := agent.NewMemStore()
+	for i := 0; i < 25; i++ {
+		cloneRun(t, tv1, st, fmt.Sprintf("r%03d", i), unfinished, nil)
+	}
+	s, _ := storeServer(t, v1, st, true)
+	r := askAffected(t, s, v1, true, false)
+	if !r.More || r.Listed != 10 || !strings.Contains(r.Heading, "of at least 10 checked") || !strings.Contains(strings.Join(r.Notes, "\n"), "Only the first 10 unfinished runs by run ID were read; there may be more.") {
+		t.Errorf("%+v", r)
+	}
+	if g := r.Groups[0]; !slices.Equal(g.IDs[:3], []string{"r000", "r001", "r002"}) {
+		t.Errorf("not the first by run ID: %q", g.IDs)
+	}
+}
+
+// countStore counts the reads a scan makes of a store.
+type countStore struct {
+	agent.Store
+	gets, yielded, runs atomic.Int32
+	delay               time.Duration
+}
+
+func (c *countStore) Get(ctx context.Context, run, name string) (agent.Entry, bool, error) {
+	c.gets.Add(1)
+	if c.delay > 0 {
+		time.Sleep(c.delay)
+	}
+	return c.Store.Get(ctx, run, name)
+}
+
+func (c *countStore) Load(ctx context.Context, run string, after int64) iter.Seq2[agent.Entry, error] {
+	return func(yield func(agent.Entry, error) bool) {
+		for e, err := range c.Store.Load(ctx, run, after) {
+			c.yielded.Add(1)
+			if !yield(e, err) {
+				return
+			}
+		}
+	}
+}
+
+func (c *countStore) Runs(ctx context.Context, f agent.RunFilter) iter.Seq2[string, error] {
+	c.runs.Add(1)
+	l, _ := agent.Capability[agent.Lister](c.Store)
+	return l.Runs(ctx, f)
+}
+
+// A big synthetic store: the scan reads one record per run plus a constant per group, whatever the length of the
+// runs, and never loads a history.
+func TestAffectedReadsAreBoundedOnABigStore(t *testing.T) {
+	v1 := flowCfg("pay", "dbl")
+	tv1 := templateRun(t, v1)
+	count := func(runs, extra int) (gets, yielded int32) {
+		cs := &countStore{Store: agent.NewMemStore()}
+		for i := 0; i < runs; i++ {
+			id := fmt.Sprintf("r%05d", i)
+			cloneRun(t, tv1, cs.Store, id, unfinished, nil)
+			for j := 0; j < extra; j++ {
+				n := "extra:" + strconv.Itoa(j)
+				if _, _, err := cs.Store.Insert(context.Background(), id, n, []byte(`{"name":"`+n+`","kind":"value","result":1}`)); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		s, _ := storeServer(t, v1, cs, true)
+		cs.gets.Store(0)
+		cs.yielded.Store(0)
+		r := askAffected(t, s, v1, true, false)
+		if r.Listed != runs || len(r.Groups) != 1 || r.Groups[0].Runs != runs {
+			t.Fatalf("%+v", r)
+		}
+		return cs.gets.Load(), cs.yielded.Load()
+	}
+	shortGets, shortLoaded := count(2000, 0)
+	longGets, longLoaded := count(2000, 30)
+	// One flow:digest per run, one run:start and one topology; and the Journal's header check pulls the first entry
+	// of each run it reads from, so one entry per run, however long the run.
+	if shortGets != 2000+2 || longGets != shortGets || shortLoaded != 2000 || longLoaded != 2000 {
+		t.Errorf("reads: %d gets and %d entries pulled for short runs, %d and %d for long ones; want %d gets and %d entries", shortGets, shortLoaded, longGets, longLoaded, 2002, 2000)
+	}
+}
+
+// Requests that arrive together share one scan, and the scan is kept until the text's reload: a second
+// request reads nothing; Reload reads again.
+func TestAffectedIsSingleFlightAndCached(t *testing.T) {
+	v1 := flowCfg("pay", "dbl")
+	tv1 := templateRun(t, v1)
+	cs := &countStore{Store: agent.NewMemStore(), delay: time.Millisecond}
+	for i := 0; i < 50; i++ {
+		cloneRun(t, tv1, cs.Store, fmt.Sprintf("r%02d", i), unfinished, nil)
+	}
+	s, _ := storeServer(t, v1, cs, true)
+	cs.gets.Store(0)
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); askAffected(t, s, v1, true, false) }()
+	}
+	wg.Wait()
+	once := cs.gets.Load()
+	if cs.runs.Load() != 1 || once != 52 {
+		t.Errorf("8 concurrent requests made %d gets and %d listings, want one scan's 52 and 1", once, cs.runs.Load())
+	}
+	askAffected(t, s, flowCfg("pay", "inc"), true, false) // other text, same scan
+	if cs.gets.Load() != once {
+		t.Errorf("a second request read the store again: %d gets", cs.gets.Load())
+	}
+	askAffected(t, s, v1, true, true)
+	if cs.gets.Load() != 2*once {
+		t.Errorf("reload: %d gets, want %d", cs.gets.Load(), 2*once)
+	}
+	// Asking whether there is a store reads nothing.
+	cs.gets.Store(0)
+	if r := askAffected(t, s, v1, false, false); !r.Configured || r.Checked || cs.gets.Load() != 0 {
+		t.Errorf("probe: %+v, %d gets", r, cs.gets.Load())
+	}
+}
+
+// A scan that runs out of time says so and keeps what it read.
+func TestAffectedStopsAtItsTimeLimit(t *testing.T) {
+	old := scanTimeout
+	scanTimeout = 30 * time.Millisecond
+	t.Cleanup(func() { scanTimeout = old })
+	v1 := flowCfg("pay", "dbl")
+	tv1 := templateRun(t, v1)
+	cs := &countStore{Store: agent.NewMemStore(), delay: 2 * time.Millisecond}
+	for i := 0; i < 200; i++ {
+		cloneRun(t, tv1, cs.Store, fmt.Sprintf("r%03d", i), unfinished, nil)
+	}
+	s, _ := storeServer(t, v1, cs, true)
+	r := askAffected(t, s, v1, true, false)
+	if r.Listed >= 200 || r.Listed == 0 || !strings.Contains(strings.Join(r.Notes, "\n"), "The scan stopped at the time limit after reading") || !strings.Contains(r.Heading, "of at least") {
+		t.Errorf("listed %d heading %q notes %q", r.Listed, r.Heading, r.Notes)
+	}
+}
+
+// Structural diffs share a time budget; groups past it are listed as not compared.
+func TestAffectedStructuralDiffsShareABudget(t *testing.T) {
+	old := diffBudget
+	diffBudget = -time.Nanosecond
+	t.Cleanup(func() { diffBudget = old })
+	st := agent.NewMemStore()
+	for i := 0; i < 3; i++ {
+		cloneRun(t, templateRun(t, flowCfg("pay", []string{"dbl", "inc", "dbl"}[i])), st, "r"+strconv.Itoa(i), unfinished, nil)
+	}
+	s, _ := storeServer(t, flowCfg("pay", "dbl"), st, false)
+	r := askAffected(t, s, flowCfg("pay", "dbl"), true, false)
+	for _, g := range r.Groups {
+		if g.Status != "not_compared" || g.Reason != "the time budget of the structural comparison was used" {
+			t.Errorf("%+v", g)
+		}
+	}
+}
+
+// A run ID is the journal's: shown written out, in a command only when it is safe to paste, quoted for a shell.
+func TestAffectedCommandAndIDs(t *testing.T) {
+	v1, v2 := flowCfg("pay", "dbl"), flowCfg("pay", "inc")
+	st := agent.NewMemStore()
+	cloneRun(t, templateRun(t, v2), st, "has space", unfinished, nil)
+	cloneRun(t, templateRun(t, flowCfg("pay", "dbl")), st, "evil\u202e;rm", unfinished, nil)
+	cloneRun(t, templateRun(t, flowCfg("pay3", "dbl")), st, "quote'd", unfinished, nil) // another digest
+	s, _ := storeServer(t, v1, st, false)
+	r := askAffected(t, s, v1, true, false)
+	var cmds []string
+	for _, g := range r.Groups {
+		cmds = append(cmds, g.Command)
+		if strings.ContainsAny(strings.Join(g.IDs, ""), "\u202e\x00\x1b") {
+			t.Errorf("an ID is not written out: %q", g.IDs)
+		}
+	}
+	if !slices.Contains(cmds, "bide edit -run 'has space' <store flags> <file>") {
+		t.Errorf("commands %q", cmds)
+	}
+	for _, c := range cmds {
+		if strings.Contains(c, "evil") {
+			t.Errorf("a command holds an unsafe ID: %q", c)
+		}
+	}
+}
+
+// hidden is a store that cannot list its runs.
+type hidden struct{ agent.Store }
+
+// A store that cannot list says so; an exported journal lists the runs given and leaves out a finished one.
+func TestAffectedStoresWithoutAListerAndExports(t *testing.T) {
+	v1 := flowCfg("pay", "dbl")
+	st := agent.NewMemStore()
+	cloneRun(t, templateRun(t, v1), st, "r", unfinished, nil)
+	s, _ := storeServer(t, v1, hidden{Store: st}, true)
+	if r := askAffected(t, s, v1, true, false); r.Status != "nolister" || !strings.Contains(r.Summary, "cannot list its runs") {
+		t.Errorf("%+v", r)
+	}
+	tv1 := templateRun(t, v1)
+	recs, err := tv1.History(context.Background(), "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	open := slices.DeleteFunc(slices.Clone(recs), func(r agent.Record) bool { return r.Name == "run:complete" })
+	p := filepath.Join(t.TempDir(), "flow.json")
+	if err := os.WriteFile(p, []byte(v1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ex, err := newServer(t, p, editrun.NewOption(editrun.Run{Source: runview.Exports{"open": open, "finished": recs}}).(Option), WithRegistry(runRegistry(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := askAffected(t, ex, v1, true, false)
+	if r.Status != "ok" || r.Listed != 1 || len(r.Groups) != 1 || r.Groups[0].Status != "same" || !slices.Equal(r.Groups[0].IDs, []string{"open"}) {
+		t.Errorf("%+v", r)
+	}
+}
+
+// With a store and no run the editor lists unfinished runs and has no run panel; with no store it has neither.
+func TestAffectedWithoutARunAndWithoutAStore(t *testing.T) {
+	v1 := flowCfg("pay", "dbl")
+	st := agent.NewMemStore()
+	cloneRun(t, templateRun(t, v1), st, "r", unfinished, nil)
+	s, _ := storeServer(t, v1, st, true)
+	if r := askRun(t, s, v1, nil, false); r.Configured {
+		t.Errorf("a store alone has a run panel: %+v", r)
+	}
+	if r := askAffected(t, s, v1, false, false); !r.Configured {
+		t.Errorf("a store alone has no list: %+v", r)
+	}
+	plain, _ := newTestServer(t, "refund.yaml", testFlow)
+	body := call(plain.Handler(), plain, "/api/affected", `{"text":"","check":true}`, nil).Body.String()
+	if !strings.Contains(body, `"configured":false`) {
+		t.Errorf("no store: %s", body)
+	}
+}

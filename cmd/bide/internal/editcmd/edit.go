@@ -23,7 +23,7 @@ import (
 	"github.com/bide-ai/bide/internal/term"
 )
 
-const usageText = `usage: bide edit [-addr <host:port>] [-base <git revision>] [-blocks <description.json>] [-run <id> (-db <file> | -postgres <dsn> | -postgres-env <VAR> | -journal <export.json>)] [-theme <theme.json>] [-theme-default <name>] [-color auto|always|never] <flow.yaml|flow.json>
+const usageText = `usage: bide edit [-addr <host:port>] [-base <git revision>] [-blocks <description.json>] [-run <id>] [-db <file> | -postgres <dsn> | -postgres-env <VAR> | -journal <export.json>] [-theme <theme.json>] [-theme-default <name>] [-color auto|always|never] <flow.yaml|flow.json>
 
 Opens a local page for one flow config: the declared graph, an outline of its nodes and wiring,
 each node's approval gate and safety, the assertions and their verdicts, the problems bide check
@@ -45,7 +45,12 @@ and, when it differs, what differs, by what the digest covers (flow name, entry,
 switch arms, gates when the blocks are known, and their order). That is a comparison of topologies and
 nothing more: it does not say the run followed the file, which is conformance (bide view). A run that
 is paused under a topology the file no longer has will not resume under the file. The page reads the
-run once and again only when you press Reload run.
+run once and again only when you press Reload run. With a store, with or without -run, the page's button,
+Check unfinished runs, lists the store's unfinished runs by the digest each recorded and says which a drive
+under this file (resume, recovery or restart) would refuse by the digest rule: a run whose digest is the
+file's is not refused, a run of another flow is counted apart, and a run that has recorded no digest yet is
+counted and not read. It reads one small record per run (at most 5000 runs, the first by run ID) and never a
+history.
 
 The page draws from checked themes: light, dark and high-contrast, which its header button steps
 through, and the system's request for more contrast or forced colors is answered as bide view answers
@@ -90,7 +95,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, stores ru
 	blocks := fs.String("blocks", "", "a description of the program's registered blocks (json.Marshal of plan.Registry.Describe): typed mode, labelled as per the file, not checked against the program")
 	var sf runview.StoreFlags
 	sf.Register(fs)
-	runID := fs.String("run", "", "a run of the journal to compare the file with: the topology it journaled, and what differs from the file (needs one of -db, -postgres, -postgres-env, -journal)")
+	runID := fs.String("run", "", "a run of the journal to compare the file with: the topology it journaled, and what differs from the file (needs one of -db, -postgres, -postgres-env, -journal; a store without -run is for the list of unfinished runs)")
 	themeFile := fs.String("theme", "", runview.ThemeFlagHelp)
 	themeDefault := fs.String("theme-default", "", runview.ThemeDefaultFlagHelp)
 	color := term.Flag(fs)
@@ -117,8 +122,6 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, stores ru
 	switch {
 	case sf.Kinds() == 0 && *runID != "":
 		return usage("-run needs a store: one of -db, -postgres, -postgres-env or -journal")
-	case sf.Kinds() == 1 && *runID == "":
-		return usage("a store needs -run <id>: the run to compare the file with")
 	case agent.IsReservedRun(*runID):
 		return usage("-run: " + strconv.Quote(*runID) + " is not a run: the ID is reserved by the engine")
 	}
@@ -146,7 +149,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, stores ru
 		}
 		opts = append(opts, flowedit.WithBlocks(*d))
 	}
-	if *runID != "" {
+	if sf.Kinds() == 1 {
 		op, err := sf.Open(stores)
 		if err != nil {
 			fmt.Fprintln(stderr, es.ErrorPrefix()+"bide edit:", err)
