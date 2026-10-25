@@ -164,13 +164,16 @@ func TestRunPanelFollowsTheSessionInChrome(t *testing.T) {
 func TestRunPanelIsAbsentWithoutARunInChrome(t *testing.T) {
 	s, _ := newTestServer(t, "refund.yaml", testFlow)
 	var r struct {
-		OK     bool   `json:"ok"`
-		Error  string `json:"error"`
-		Hidden bool   `json:"hidden"`
-		Asked  int    `json:"asked"`
+		OK             bool   `json:"ok"`
+		Error          string `json:"error"`
+		Hidden         bool   `json:"hidden"`
+		Asked          int    `json:"asked"`
+		AffectedHidden bool   `json:"affectedHidden"`
+		LineHidden     bool   `json:"lineHidden"`
+		AskedAffected  int    `json:"askedAffected"`
 	}
 	runScript(t, "run-off.mjs", s, &r)
-	if !r.OK || !r.Hidden || r.Asked != 1 {
+	if !r.OK || !r.Hidden || r.Asked != 1 || !r.AffectedHidden || !r.LineHidden || r.AskedAffected != 1 {
 		t.Errorf("%+v", r)
 	}
 }

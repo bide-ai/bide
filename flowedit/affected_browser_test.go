@@ -20,8 +20,8 @@ func TestAffectedListInChrome(t *testing.T) {
 	for _, id := range []string{"same-a", "same-b"} {
 		cloneRun(t, tv1, st, id, unfinished, nil)
 	}
-	cloneRun(t, tv2, st, "changed-a", unfinished, nil)
-	cloneRun(t, tv2, st, "changed-b", unfinished, nil)
+	cloneRun(t, tv2, st, "zz-changed-a", unfinished, nil)
+	cloneRun(t, tv2, st, "zz-changed-b", unfinished, nil)
 	cloneRun(t, tother, st, "foreign", unfinished, nil)
 	cloneRun(t, tv1, st, "nodigest", func(n string) bool { return unfinished(n) || n == "flow:digest" }, nil)
 	s, _ := storeServer(t, v1, st, true)
@@ -90,7 +90,7 @@ func TestAffectedListInChrome(t *testing.T) {
 	if !slices.Equal(words, []string{"REFUSED", "another flow", "same digest"}) {
 		t.Errorf("results %q", words)
 	}
-	if len(l.Rows) == 3 && (!strings.Contains(l.Rows[0].Cells[2], "changed-a, changed-b") || !strings.Contains(l.Rows[0].Cells[2], "bide edit -run changed-a <store flags> <file>")) {
+	if len(l.Rows) == 3 && (!strings.Contains(l.Rows[0].Cells[2], "zz-changed-a, zz-changed-b") || !strings.Contains(l.Rows[0].Cells[2], "bide edit -run zz-changed-a <store flags> <file>")) {
 		t.Errorf("the refused row: %+v", l.Rows[0])
 	}
 	if !strings.Contains(strings.Join(l.Notes, "\n"), "1 unfinished run records no digest yet") {

@@ -149,7 +149,7 @@ func TestAffectedListsWhatTheFileWouldRefuse(t *testing.T) {
 		cloneRun(t, tv1, st, "same-"+strconv.Itoa(i), unfinished, nil)
 	}
 	for i := 0; i < 2; i++ {
-		cloneRun(t, tv2, st, "changed-"+strconv.Itoa(i), unfinished, nil)
+		cloneRun(t, tv2, st, "zz-changed-"+strconv.Itoa(i), unfinished, nil)
 	}
 	cloneRun(t, tother, st, "foreign-0", unfinished, nil)
 	cloneRun(t, tv2, st, "done", nil, nil) // finished: run:complete
@@ -169,7 +169,7 @@ func TestAffectedListsWhatTheFileWouldRefuse(t *testing.T) {
 	if g := groupOf(r, digestOf(t, v1)); g == nil || g.Status != "same" || g.Runs != 3 {
 		t.Errorf("same: %+v", g)
 	}
-	if g := groupOf(r, digestOf(t, v2)); g == nil || g.Status != "refused" || g.Runs != 2 || !slices.Equal(g.IDs, []string{"changed-0", "changed-1"}) {
+	if g := groupOf(r, digestOf(t, v2)); g == nil || g.Status != "refused" || g.Runs != 2 || !slices.Equal(g.IDs, []string{"zz-changed-0", "zz-changed-1"}) {
 		t.Errorf("refused: %+v", g)
 	}
 	if g := groupOf(r, digestOf(t, other)); g == nil || g.Status != "other_flow" {
@@ -542,5 +542,85 @@ func TestAffectedWithoutARunAndWithoutAStore(t *testing.T) {
 	body := call(plain.Handler(), plain, "/api/affected", `{"text":"","check":true}`, nil).Body.String()
 	if !strings.Contains(body, `"configured":false`) {
 		t.Errorf("no store: %s", body)
+	}
+}
+
+// Requests that arrive while a scan runs join it: eight, started one after the other while the first is reading, make
+// one listing and one scan's reads, not eight.
+func TestAffectedRequestsDuringAScanJoinIt(t *testing.T) {
+	v1 := flowCfg("pay", "dbl")
+	tv1 := templateRun(t, v1)
+	cs := &countStore{Store: agent.NewMemStore(), delay: 2 * time.Millisecond}
+	for i := 0; i < 60; i++ {
+		cloneRun(t, tv1, cs.Store, fmt.Sprintf("r%02d", i), unfinished, nil)
+	}
+	s, _ := storeServer(t, v1, cs, true)
+	cs.gets.Store(0)
+	var wg sync.WaitGroup
+	start := func() {
+		wg.Add(1)
+		go func() { defer wg.Done(); askAffected(t, s, v1, true, false) }()
+	}
+	start()
+	for cs.gets.Load() < 10 { // the first scan is reading
+		time.Sleep(time.Millisecond)
+	}
+	for i := 0; i < 7; i++ {
+		start()
+		time.Sleep(3 * time.Millisecond)
+	}
+	wg.Wait()
+	if cs.runs.Load() != 1 || cs.gets.Load() != 62 {
+		t.Errorf("8 requests during a scan made %d listings and %d gets, want 1 and 62", cs.runs.Load(), cs.gets.Load())
+	}
+}
+
+// ctxStore blocks the listing until its context ends the first time, and says so.
+type ctxStore struct {
+	agent.Store
+	started, cancelled chan struct{}
+	n                  atomic.Int32
+}
+
+func (c *ctxStore) Runs(ctx context.Context, f agent.RunFilter) iter.Seq2[string, error] {
+	if c.n.Add(1) == 1 {
+		return func(yield func(string, error) bool) {
+			c.started <- struct{}{}
+			<-ctx.Done()
+			close(c.cancelled)
+			yield("", ctx.Err())
+		}
+	}
+	l, _ := agent.Capability[agent.Lister](c.Store)
+	return l.Runs(ctx, f)
+}
+
+// Reading the store again cancels the scan it replaces, and a request that waited on the replaced scan gets the new
+// scan's answer, not "canceled".
+func TestAffectedReloadCancelsTheSupersededScan(t *testing.T) {
+	v1 := flowCfg("pay", "dbl")
+	st := agent.NewMemStore()
+	cloneRun(t, templateRun(t, v1), st, "r", unfinished, nil)
+	cx := &ctxStore{Store: st, started: make(chan struct{}, 1), cancelled: make(chan struct{})}
+	s, _ := storeServer(t, v1, cx, true)
+	a := make(chan *affectedReply, 1)
+	go func() { a <- s.affected(context.Background(), []byte(v1), false) }()
+	<-cx.started
+	rb := s.affected(context.Background(), []byte(v1), true)
+	if rb.Status != "ok" || rb.Listed != 1 {
+		t.Fatalf("the reload: %+v", rb)
+	}
+	select {
+	case <-cx.cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the replaced scan was not cancelled")
+	}
+	select {
+	case r := <-a:
+		if r.Status != "ok" || r.Listed != 1 {
+			t.Errorf("the request that waited on the replaced scan: %+v", r)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the waiting request did not finish")
 	}
 }
