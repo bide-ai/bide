@@ -349,8 +349,9 @@ func noteOtherRun(ctx context.Context, kind, run string) {
 	}
 }
 
-// shownRunID is run quoted for the line: at most maxRunIDShown runes of it (cut before escaping, so a
-// huge ID costs no more than a short one), escaped, and "..." after the quotes when it was cut.
+// shownRunID is run quoted for the line: at most maxRunIDShown runes of it, escaped, and "..." after
+// the quotes when it was cut. The output is bounded whatever the ID's length (the cut is made before
+// escaping); the work is one pass over the ID, to count its runes.
 func shownRunID(run string) string {
 	cut := ""
 	if r := []rune(run); len(r) > maxRunIDShown {
