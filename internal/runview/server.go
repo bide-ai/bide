@@ -384,7 +384,7 @@ func signatures(g *Gate, p *Proof, declined *otherRuns) {
 		g.Signatures = "signatures not checked: the gate has not journaled its tally yet"
 	case p != nil && p.OK:
 		g.Signatures = "included in the signed log; signatures not checked (pass -approver-keys)"
-	case declined.text() != "":
+	case p == nil && declined.text() != "":
 		g.Signatures = declined.text()
 	default:
 		g.Signatures = "signatures not checked (pass -approver-keys, with -sth or -evidence)"

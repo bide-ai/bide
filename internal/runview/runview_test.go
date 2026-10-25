@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"iter"
 	"net"
@@ -13,6 +14,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -650,6 +652,72 @@ func TestSignaturesProofForAnotherRun(t *testing.T) {
 	forged := func(ctx context.Context, _ string, _ []agent.Record) *Proof { return &Proof{} }
 	if g, p = gate(forged); p == nil || g.SignaturesOK {
 		t.Errorf("a prover that returns an empty proof reads as verified: %q (ok %v)", g.Signatures, g.SignaturesOK)
+	}
+}
+
+// A proof made for this run that fails is the proof of the view: the gate does not claim the proof
+// given was for another run because an earlier prover declined.
+func TestSignaturesNoteOnlyWithoutAProof(t *testing.T) {
+	logPub := audit.Ed25519Verifier{Pub: key("log").Public().(ed25519.PublicKey)}
+	j, sth := gatedRun(t, map[string]bool{"ops": true, "finance": true})
+	ap := Approvals{Keys: approverKeys(nil)}
+	other := sth
+	other.RunID = "run-b"
+	bad := sth
+	bad.Signature = slices.Clone(sth.Signature)
+	bad.Signature[0] ^= 1
+	failed := func(context.Context, string, []agent.Record) *Proof { return &Proof{Problems: []string{"mine"}} }
+	for name, ps := range map[string][]Prover{
+		"bide prover for this run that fails": {HeadProver(other, logPub, ap), HeadProver(bad, logPub, Approvals{})},
+		"caller's prover that fails":          {HeadProver(other, logPub, ap), failed},
+	} {
+		v := viewOf(t, Handler(Options{Source: JournalSource{J: j}, Provers: ps}), "g1")
+		if v.Proof == nil || v.Proof.OK || strings.Contains(v.Gates[0].Signatures, "another run") {
+			t.Errorf("%s: proof %+v, signatures %q", name, v.Proof, v.Gates[0].Signatures)
+		}
+	}
+}
+
+// The run ID of a declined artifact is the artifact's own field: the line shows a bounded part of it.
+func TestSignaturesProofForAnotherRunIDBounded(t *testing.T) {
+	logPub := audit.Ed25519Verifier{Pub: key("log").Public().(ed25519.PublicKey)}
+	j, sth := gatedRun(t, map[string]bool{"ops": true, "finance": true})
+	sth.RunID = strings.Repeat("r\u202e", 500000)
+	v := viewOf(t, Handler(Options{Source: JournalSource{J: j}, Provers: []Prover{HeadProver(sth, logPub, Approvals{})}}), "g1")
+	got := v.Gates[0].Signatures
+	if len(got) > 1000 || !strings.Contains(got, "...") || !strings.HasPrefix(got, "signatures not checked: the proof given is for another run") {
+		t.Errorf("a %d-byte line for a huge run ID: %.200s", len(got), got)
+	}
+	short := sth
+	short.RunID = strings.Repeat("a", maxRunIDShown)
+	v = viewOf(t, Handler(Options{Source: JournalSource{J: j}, Provers: []Prover{HeadProver(short, logPub, Approvals{})}}), "g1")
+	if got := v.Gates[0].Signatures; strings.Contains(got, "...") || !strings.Contains(got, `"`+short.RunID+`"`) {
+		t.Errorf("an ID of exactly the limit is cut: %q", got)
+	}
+}
+
+// A caller's Prover may call the bide provers from several goroutines with the context it got.
+func TestSignaturesNoteConcurrentProvers(t *testing.T) {
+	logPub := audit.Ed25519Verifier{Pub: key("log").Public().(ed25519.PublicKey)}
+	j, sth := gatedRun(t, map[string]bool{"ops": true, "finance": true})
+	var ps []Prover
+	for i := range 8 {
+		h := sth
+		h.RunID = fmt.Sprintf("run-%d", i)
+		ps = append(ps, HeadProver(h, logPub, Approvals{}))
+	}
+	fan := func(ctx context.Context, run string, recs []agent.Record) *Proof {
+		var wg sync.WaitGroup
+		for _, p := range ps {
+			wg.Add(1)
+			go func() { defer wg.Done(); p(ctx, run, recs) }()
+		}
+		wg.Wait()
+		return nil
+	}
+	v := viewOf(t, Handler(Options{Source: JournalSource{J: j}, Provers: []Prover{fan}}), "g1")
+	if !strings.Contains(v.Gates[0].Signatures, "another run") {
+		t.Errorf("signatures %q", v.Gates[0].Signatures)
 	}
 }
 
