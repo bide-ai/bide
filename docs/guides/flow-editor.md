@@ -36,7 +36,7 @@ settings](#order-wiring-order-and-the-flows-settings)), and wire edges, switches
 [Connections](#connections-edges-switches-arms-and-else)), set an arm's loop bound, and add, change and
 remove joins (see [Joins and loops](#joins-and-loops)), and, when it knows your program's blocks, list them with their types, check connections against them and show the digest (see [Typed mode](#typed-mode-the-programs-blocks)). It can
 compare the file with the topology a run journaled (see [Compare with a run](#compare-with-a-run)). It does **not**
-yet: draw the run's path on the canvas or list the runs a change would affect; or let you place nodes on the canvas
+yet: list the runs a change would affect; or let you place nodes on the canvas
 (the layout is derived from the topology, on purpose). A config with an anchor or alias anywhere,
 a repeated key, a key that is not a string, NaN or infinity, or mixed line ends is refused by the editor
 with the reason (edit it in a text editor); `plan` itself accepts an anchor or alias, and refuses the others too. The design note
@@ -452,7 +452,7 @@ bide edit -run r1 -db journal.db flow.yaml
 ```
 
 With `-run` and a store (`-db`, `-postgres`, `-postgres-env` or `-journal`, the flags
-[`bide view`](run-viewer.md) takes and opened read-only), the page gains a panel, **Compared with a
+[`bide view`](run-viewer.md) takes and opened read-only), the page gains a line above the flow (the verdict word and the run's ID, with a link to the details) and, below the flow, a panel, **Compared with a
 run**. It reads the topology the run journaled (`flow:topology`, once its digest checks against
 `flow:digest`, as the viewer draws it) and compares the file with it by what the topology digest covers:
 the flow name, the entry, each node's name and block, the edges, the switches and their arms, and the
@@ -479,13 +479,33 @@ Safety and `assert` lines are in neither a journal nor the digest, so they are n
 verdict made against a run is about gates, in typed mode: a new node with no gate, added since the run, is
 listed as a change and is not judged as a weakening against the run. This comparison never blocks a save and never
 changes the weakened banner, which stays a comparison with the committed file. The page reads the run
-once; **Reload run** starts a fresh read, even while an older one is still running. A read that fails (a dropped connection,
+once; **Reload run** starts a fresh read, and cancels the older one if it is still running. A read that fails (a dropped connection,
 a timeout, a journal in a format this version cannot read) is kept for three seconds so that typing does not read it
 again on every keystroke, and then tried again. From a store the page reads the run by point reads, never its history: the run's topology and digest, and whether it
 has an end marker (completed, aborted or cancelled; "ended (more than one end marker)" when it has several, since which was written first is not read; else "no end marker"); its record count is not shown. The run's flow is the
 one its topology names. Every name, flow name and message from the journal is shown
 with each character that does not print written out, as `bide view` does. The run and the store are fixed when the command starts. A program
 that embeds the editor with `flowedit.New` has no run comparison.
+
+### The run's path on the canvas
+
+With `-run` the flow also shows where the run went. Each node the run ran has a ring and, under it, words: **ran**
+(or **ran N times** for a loop body), **started, no result recorded** (the body began and its end is not recorded) or
+**paused at its approval gate**. A solid ring is ran, a dashed ring is started, a dash-dot ring is paused, so the three are
+told apart without colour, and under forced colors the ring is still drawn. A dashed line over a connection means
+the run took it. The same words are on the node's name for a screen reader and under the node in the outline.
+
+The path is the run's, laid on this file by name: a node is marked only when the file has a node of that name with
+the same block (and, in typed mode, the same kind); a rename made in this session carries its marks to the new
+name. What the file cannot show is listed under the panel, never dropped: a node the run ran that the file lacks, or
+has with another block (so it is another node), and a connection the run took that the file does not have between
+two marked nodes. When a loop's bound in the file is not the bound the run had, the connection says both. A node
+with no ring was not reached, or is not in the run. The path is read from the journal by a few point reads per node
+(at most 300 nodes; a larger flow says its path was not read). For a node outside a loop the reads do not grow with the run; for a
+loop body they grow with the iterations the journal holds, clamped at 100 per node whatever bound the topology claims. Where a loop
+stopped is said in the node's words: "ran 2 times, then started again, no result recorded", or "ran 2 times, then paused at its approval
+gate". If the path cannot be read (the store failed), the panel says so with the class of the failure ("store error", "timed out") and
+no more, and reads it again on the next request after three seconds or on **Reload run**: no text of a store's error is ever shown.
 
 ## Typed mode: the program's blocks
 

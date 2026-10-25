@@ -25,6 +25,12 @@ try {
   page.on('request', (r) => { if (!r.url().startsWith(origin) && !r.url().startsWith('data:')) offOrigin.push(r.url()); });
   await page.setBypassCSP(true); // for axe only, as in a11y.mjs
   await page.setViewport({ width: 1400, height: 1400 });
+  let abortNext = false;
+  await page.setRequestInterception(true);
+  page.on('request', (r) => {
+    if (abortNext && r.method() === 'POST' && r.url().endsWith('/api/run')) { abortNext = false; r.abort(); return; }
+    r.continue();
+  });
   await page.goto(env.PAGE_URL, { waitUntil: 'networkidle0', timeout: 30000 });
   await page.evaluate(axeSource);
   const rest = (what) => page.waitForFunction(() => document.documentElement.dataset.busy === '0', { timeout: 10000 }).catch(() => { throw new Error('timed out waiting for the page to be at rest: ' + what); });
@@ -55,6 +61,28 @@ try {
 
   await until(() => !document.getElementById('run-panel').hidden && document.getElementById('run-word'), null, 'the run panel');
   const same = await panel();
+  const line = await page.evaluate(() => {
+    const l = document.getElementById('run-line');
+    const a = document.getElementById('run-line-link');
+    const canvas = document.getElementById('canvas');
+    const panel = document.getElementById('run-panel');
+    return {
+      hidden: l.hidden, word: document.getElementById('run-line-word').textContent, text: document.getElementById('run-line-text').textContent,
+      link: a.textContent, aboveFlow: !!(l.compareDocumentPosition(canvas) & Node.DOCUMENT_POSITION_FOLLOWING),
+      panelBelowFlow: !!(canvas.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING),
+    };
+  });
+  // The link is reached by keyboard and moves focus to the panel's heading.
+  await page.evaluate(() => document.getElementById('source').blur());
+  let linkReached = false;
+  for (let i = 0; i < 400 && !linkReached; i++) {
+    await page.keyboard.press('Tab');
+    linkReached = await page.evaluate(() => document.activeElement?.id === 'run-line-link');
+  }
+  if (!linkReached) throw new Error('Tab never reached the details link');
+  await page.keyboard.press('Enter');
+  const focusAfterLink = await page.evaluate(() => document.activeElement?.id ?? '');
+  await page.evaluate(() => { document.activeElement?.blur(); window.scrollTo(0, 0); });
   await check('run panel, same digest');
 
   // Change the block of node b in the source: the digest no longer matches.
@@ -79,7 +107,12 @@ try {
   await rest('reloaded');
   const liveAfterReload = await page.$eval('#live', (e) => e.textContent);
   const afterReload = await panel();
-  out = { ok: true, same, differs, afterReload, liveAfterEdit, liveAfterReload, reloadLabel, results, console: console_, failed, offOrigin };
+  // A comparison that fails does not leave the old answer in the headline.
+  abortNext = true;
+  await page.$eval('#source', (e) => { e.value = e.value + ' '; e.dispatchEvent(new Event('input', { bubbles: true })); });
+  await until(() => document.getElementById('run-line-word').textContent === 'NOT COMPARED', null, 'the headline to leave the old answer');
+  const afterFailure = await page.evaluate(() => ({ word: document.getElementById('run-line-word').textContent, cls: document.getElementById('run-line-word').className, claim: document.getElementById('run-claim').textContent }));
+  out = { ok: true, afterFailure, line, linkReached, focusAfterLink, same, differs, afterReload, liveAfterEdit, liveAfterReload, reloadLabel, results, console: console_, failed, offOrigin };
 } catch (e) {
   out = { ok: false, error: String(e && e.message || e), results, console: console_, failed, offOrigin };
 }

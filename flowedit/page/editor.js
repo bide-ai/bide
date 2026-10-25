@@ -329,6 +329,7 @@ function skipTo(target) {
     inspector: () => first('#inspector select, #inspector input, #inspector button:not(:disabled)') || $('h-inspector'),
     assertions: () => $('h-assert'),
     blocks: () => first('#palette button[tabindex="0"]') || $('h-blocks'),
+    run: () => $('h-run'),
   }[target];
   const to = el && el();
   if (to) to.focus();
@@ -827,6 +828,54 @@ function setText(text, v) {
   render(v, { keepSource: true });
 }
 
+// applyRunPath draws the run's path on the canvas and the outline: a ring and words under each node the run
+// ran, started or paused at, and a dashed line over each connection it took. The words are also the node's
+// accessible name (the drawn text is hidden from assistive technology, as the node's other text is), and the
+// ring's dash pattern tells the three apart without color. The marks are the server's answer for the text on
+// the page; they are cleared when the text changes and drawn again after each redraw.
+export function applyRunPath() {
+  const svg = $('canvas').querySelector('svg');
+  for (const e of document.querySelectorAll('.rwords')) e.remove();
+  if (svg) {
+    for (const e of svg.querySelectorAll('.rring, .rmark, .rtaken')) e.remove();
+    for (const t of svg.querySelectorAll('title[data-orig]')) { t.textContent = t.getAttribute('data-orig'); t.removeAttribute('data-orig'); }
+  }
+  if (!runPath) return;
+  const NS = 'http://www.w3.org/2000/svg';
+  const mk = (tag, attrs, text) => {
+    const e = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+    if (text != null) e.textContent = shown(text);
+    return e;
+  };
+  const words = new Map();
+  for (const n of runPath.nodes || []) {
+    words.set(n.name, n.words);
+    const g = svg && [...svg.querySelectorAll('g.node')].find((x) => x.getAttribute('data-id') === n.name);
+    if (!g) continue;
+    const box = g.querySelector('rect.box');
+    if (!box) continue;
+    const x = Number(box.getAttribute('x')), y = Number(box.getAttribute('y')), w = Number(box.getAttribute('width')), hh = Number(box.getAttribute('height'));
+    g.insertBefore(mk('rect', { class: 'rring run-' + n.status, x: x - 5, y: y - 5, width: w + 10, height: hh + 10, rx: 16, 'aria-hidden': 'true' }), g.firstChild);
+    g.append(mk('text', { class: 'rmark run-' + n.status, x: x + w / 2, y: y + hh + 32, 'aria-hidden': 'true' }, n.words));
+    // The node's name is its <title> (the first one, which a screen reader reads); the run's words join it.
+    const t = [...g.children].find((c) => c.localName === 'title');
+    if (t) { t.setAttribute('data-orig', t.textContent); t.textContent = t.textContent + '. The run: ' + shown(n.words); }
+  }
+  for (const e of runPath.edges || []) {
+    const g = svg && [...svg.querySelectorAll('g.edge-g')].find((x) => x.getAttribute('data-from') === e.from && x.getAttribute('data-to') === e.to);
+    const path = g && g.querySelector('path');
+    if (!path) continue;
+    const ov = mk('path', { class: 'rtaken', d: path.getAttribute('d'), 'aria-hidden': 'true' });
+    ov.append(mk('title', {}, e.from + ' to ' + e.to + ': ' + e.words));
+    g.append(ov);
+  }
+  for (const b of document.querySelectorAll('#outline button[data-node]')) {
+    const wd = words.get(b.getAttribute('data-node'));
+    if (wd) b.append(h('span', { class: 'rwords' }, 'The run: ' + wd));
+  }
+}
+
 // ---- the assertions panel: the six forms as templates, each with its live verdict ----
 //
 // An assertion is written from a form, not typed: the page sends the form's parameters
@@ -1249,6 +1298,7 @@ export function render(v, { keepSource = false } = {}) {
   // The weakened banner announces itself (it is an alert); the verdict is spoken here, once per change.
   const verdict = v.verdict.word + '. ' + v.verdict.line;
   if (verdict !== lastVerdict) { lastVerdict = verdict; announce(verdict); }
+  applyRunPath();
   refreshRun();
 }
 
@@ -1265,6 +1315,7 @@ const RUN_WORDS = {
   cannot: ['CANNOT COMPARE', 'v-warn', 'unknown'],
 };
 let runOff = false;
+let runPath = null; // where the run went, on the text the panel last answered for
 let runSeq = 0;
 let lastRunKey = '';
 let lastRunSpoken = '';
@@ -1273,6 +1324,7 @@ export async function refreshRun({ reload = false } = {}) {
   const key = JSON.stringify([state.text, state.renames]);
   if (!reload && key === lastRunKey) return;
   lastRunKey = key;
+  if (runPath) { runPath = null; applyRunPath(); } // marks for older text are not left on new text
   const mine = ++runSeq;
   let r;
   try {
@@ -1281,6 +1333,9 @@ export async function refreshRun({ reload = false } = {}) {
     if (mine !== runSeq) return;
     lastRunKey = '';
     if ($('run-panel').hidden) return;
+    // What the page said of the text before is not left beside text it could not compare.
+    $('run-line-word').textContent = 'NOT COMPARED';
+    $('run-line-word').className = 'rl-word v-warn';
     replace('run-claim', h('p', { class: 'bad', role: 'alert' }, 'Could not compare with the run: ' + e.message));
     return;
   }
@@ -1289,12 +1344,16 @@ export async function refreshRun({ reload = false } = {}) {
 }
 
 export function renderRun(r, reloaded = false) {
-  if (!r.configured) { runOff = true; $('run-panel').hidden = true; return; }
+  if (!r.configured) { runOff = true; $('run-panel').hidden = true; $('run-line').hidden = true; return; }
   $('run-panel').hidden = false;
+  $('run-line').hidden = false;
   const run = r.run || {};
   const [word, cls, ic] = RUN_WORDS[r.status] || ['NOT COMPARED', 'v-warn', 'unknown'];
   replace('run-facts', 'Run ' + (run.id || '') + (run.flow ? ' of the flow ' + run.flow : '') + (run.state_text ? ', ' + run.state_text : '') +
     (run.records ? ', ' + run.records + ' records' : '') + (run.digest ? '. Journaled digest ' + run.digest : '') + '.');
+  $('run-line-word').textContent = shown(word);
+  $('run-line-word').className = 'rl-word ' + cls;
+  replace('run-line-text', 'Run ' + (run.id || ''));
   replace('run-claim', h('section', { class: 'verdict ' + cls, 'aria-labelledby': 'run-word' },
     h('div', { class: 'vicon' }, icon(ic)),
     h('div', { class: 'vtext' },
@@ -1312,8 +1371,16 @@ export function renderRun(r, reloaded = false) {
   list('Gates weaker than the run\'s', r.weakened, 'run-h-weak');
   list('Gates stronger than the run\'s', r.strengthened, 'run-h-strong');
   list('Renames of this session, matched to the run', r.renamed, 'run-h-renamed');
+  const pth = r.path || { nodes: [], edges: [], off_canvas: [] };
+  list('What the run did that this file cannot show', pth.off_canvas, 'run-h-off');
+  if (pth.not_read) parts.push(h('p', { class: 'muted small' }, pth.not_read));
+  if ((pth.nodes || []).length || (pth.edges || []).length) {
+    parts.push(h('p', { class: 'muted small', id: 'run-legend' }, 'On the flow, the words under a node say what the run did there, and its ring says it too: a solid ring for ran, a dashed ring for started with no result recorded, a dash-dot ring for paused at its approval gate. A dashed line over a connection means the run took it. A node with no ring was not reached, or is not in the run.'));
+  }
   list('What this comparison does not cover', r.notes, 'run-h-notes');
   replace('run-detail', parts);
+  runPath = r.path || null;
+  applyRunPath();
   replace('run-read', run.read_at ? 'The run was read from the store at ' + run.read_at + '. The page does not follow it; Reload run reads it again.' : '');
   // Spoken when the answer changes, not on every keystroke.
   const spoken = word + (run.id ? ', run ' + run.id : '') + ((r.changes || []).length ? ', ' + r.changes.length + ' changes' : '');
