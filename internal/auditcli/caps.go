@@ -305,15 +305,16 @@ func auditCaps(ctx context.Context, store agent.Store, j *agent.Journal, led *ca
 	// The cap-reserve records of the runs in scope, by the ledger they name.
 	claims := map[string][]capClaim{}
 	intents := map[string][]capIntent{} // by attempt
-	rs := capRunFacts{results: map[string]map[string]bool{}, notes: map[string]map[string][]byte{}, ended: map[string]bool{}, covered: map[string]bool{}, started: map[string]time.Time{},
+	rs := capRunFacts{results: map[string]map[string]bool{}, notes: map[string]map[string][]byte{}, ended: map[string]bool{}, unreadable: map[string]bool{}, covered: map[string]bool{}, started: map[string]time.Time{},
 		attempted: map[string]map[string]time.Time{}, capRecs: map[string]int{}, records: map[string]int{}, unmarked: map[string]bool{}, oldReleases: map[string]bool{}}
 	for _, id := range runs {
 		recs, err := j.History(ctx, id)
 		if err != nil {
-			if errors.Is(err, agent.ErrStorage) {
-				return rep, fmt.Errorf("read run %s: %w", id, err)
-			}
-			find(capUnreadable, "", -1, "run %s cannot be read, so its cap-reserve records are not cross-checked: %v", id, err)
+			// One run that cannot be read (a corrupt row, a record that does not decode) is a finding on
+			// that run; the audit goes on with the rest. Only the store itself being unreadable (it cannot
+			// be opened or its runs cannot be listed) ends the audit with exit 4.
+			rs.unreadable[id] = true
+			find(capUnreadable, "", -1, "run %s cannot be read, so its cap-reserve, cap-intent and cap-release records are not cross-checked: %v", cleanText(id), err)
 			continue
 		}
 		rs.records[id] = len(recs)
@@ -410,9 +411,6 @@ func auditCaps(ctx context.Context, store agent.Store, j *agent.Journal, led *ca
 			}
 			recs, err := j.History(ctx, id)
 			if err != nil {
-				if errors.Is(err, agent.ErrStorage) {
-					return rep, fmt.Errorf("read run %s: %w", id, err)
-				}
 				continue // already reported when it was read for its records
 			}
 			var runHeads []audit.SignedTreeHead
@@ -520,8 +518,6 @@ func auditLedger(ctx context.Context, j *agent.Journal, led *capledger.Ledger, v
 		switch {
 		case errors.Is(err, capledger.ErrCorrupt):
 			find(capCorrupt, run, -1, "%v", err)
-		case errors.Is(err, agent.ErrStorage):
-			return nil, fmt.Errorf("read ledger %s: %w", run, err)
 		default:
 			find(capUnreadable, run, -1, "%v", err)
 		}
@@ -541,9 +537,6 @@ func auditLedger(ctx context.Context, j *agent.Journal, led *capledger.Ledger, v
 	if in.anchored {
 		recs, err := j.History(ctx, run)
 		if err != nil {
-			if errors.Is(err, agent.ErrStorage) {
-				return nil, fmt.Errorf("read ledger %s: %w", run, err)
-			}
 			find(capUnreadable, run, -1, "the ledger's journal cannot be read for its signed heads: %v", err)
 		} else {
 			// CheckDecisionCoverage classifies heads against a journal with the one rule every verb
@@ -617,10 +610,10 @@ func auditLedger(ctx context.Context, j *agent.Journal, led *capledger.Ledger, v
 		}
 		firstOf[s.Attempt] = s.N
 		slotted[s.Attempt] = true
-		if in.filter.inRun(s.Run) {
+		if in.filter.inRun(s.Run) && !rs.unreadable[s.Run] {
 			checkIntentOfSlot(led, run, s, intents[s.Attempt], find)
 		}
-		if in.filter.inRun(s.Run) && len(claimed[s.N]) == 0 {
+		if in.filter.inRun(s.Run) && !rs.unreadable[s.Run] && len(claimed[s.N]) == 0 {
 			if rs.ended[s.Run] {
 				find(capUnrecorded, run, s.N, "slot %d (attempt %s) has no cap-reserve record in run %s, which has ended: a slot inserted from outside, or a record deleted", s.N, cleanText(s.Attempt), cleanText(s.Run))
 			} else {
@@ -642,7 +635,7 @@ func auditLedger(ctx context.Context, j *agent.Journal, led *capledger.Ledger, v
 			continue
 		}
 		r := slots[rel.Ref]
-		if !in.filter.inRun(r.Run) {
+		if !in.filter.inRun(r.Run) || rs.unreadable[r.Run] {
 			continue
 		}
 		isErr, answered := rs.results[r.Run][r.Tool]
@@ -679,9 +672,13 @@ func auditLedger(ctx context.Context, j *agent.Journal, led *capledger.Ledger, v
 		if s.Kind != "reserve" || released[s.N] || !in.filter.inRun(s.Run) {
 			continue
 		}
+		if rs.unreadable[s.Run] {
+			continue
+		}
 		v, err := voided(ctx, j, s)
 		if err != nil {
-			return nil, fmt.Errorf("read whether %s was voided: %w", s.Attempt, err)
+			find(capUnreadable, run, s.N, "slot %d: reading whether its attempt was voided failed: %v", s.N, err)
+			continue
 		}
 		if v {
 			lr.Exposed++
@@ -894,6 +891,7 @@ type capRunFacts struct {
 	results        map[string]map[string]bool   // run -> tool-use ID -> the result is an error
 	notes          map[string]map[string][]byte // run -> cap-release record name -> its data
 	covered        map[string]bool              // run -> its newest signed head covers the whole run (anchored audits)
+	unreadable     map[string]bool              // runs that could not be read
 	ended          map[string]bool
 	started        map[string]time.Time            // run -> the start time its run:start records (the run's clock)
 	attempted      map[string]map[string]time.Time // run -> attempt marker name -> recorded_at (the run clock)
@@ -1018,7 +1016,7 @@ func releaseExplained(ctx context.Context, j *agent.Journal, led *capledger.Ledg
 	}
 	v, err := voided(ctx, j, r)
 	if err != nil {
-		return false, "", fmt.Errorf("read whether %s was voided: %w", r.Attempt, err)
+		return false, fmt.Sprintf("reading whether the attempt was voided failed: %v", err), nil
 	}
 	return v, "", nil
 }
