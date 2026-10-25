@@ -501,7 +501,11 @@ name. What the file cannot show is listed under the panel, never dropped: a node
 has with another block (so it is another node), and a connection the run took that the file does not have between
 two marked nodes. When a loop's bound in the file is not the bound the run had, the connection says both. A node
 with no ring was not reached, or is not in the run. The path is read from the journal by a few point reads per node
-(at most 300 nodes; a larger flow says its path was not read), whatever the length of the run.
+(at most 300 nodes; a larger flow says its path was not read). For a node outside a loop the reads do not grow with the run; for a
+loop body they grow with the iterations the journal holds, clamped at 100 per node whatever bound the topology claims. Where a loop
+stopped is said in the node's words: "ran 2 times, then started again, no result recorded", or "ran 2 times, then paused at its approval
+gate". If the path cannot be read (the store failed), the panel says so with the class of the failure ("store error", "timed out") and
+no more, and reads it again on the next request after three seconds or on **Reload run**: no text of a store's error is ever shown.
 
 ## Typed mode: the program's blocks
 
