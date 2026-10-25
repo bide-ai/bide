@@ -439,6 +439,7 @@ The **Signatures** column says whether the approvals were verified (see AUDIT PR
 - `included in the signed log; signatures not checked (pass -approver-keys)`: the journal verifies
   under `-sth` or `-evidence`, but no approver keys were given.
 - `signatures not checked (pass -approver-keys, with -sth or -evidence)`: no proof was given.
+- `signatures not checked: the proof given is for another run (signed head: "run-b"); give -sth or -evidence for this run`: a `-sth` or `-evidence` was given, but for another run than this one (up to three are named, a run ID shown escaped). Open the run the head or package is about, or give one for this run. Nothing was checked for this run.
 - `signatures not checked: the gate has not journaled its tally yet`: the gate is still open.
 - A one-decision gate (`agent.SingleApproval`, recorded with `agent.Approve`) is not signed, so
   there is nothing to verify.
