@@ -107,6 +107,12 @@ type DiffView struct {
 	OldDigest string   `json:"old_digest,omitempty"`
 	NewDigest string   `json:"new_digest,omitempty"`
 	Changes   []Change `json:"changes"`
+	// Cannot, when set, says the sides could not be compared and why (a file with errors has no digest
+	// to compare); nothing is then claimed about them, and Changes is empty.
+	Cannot string `json:"cannot,omitempty"`
+	// DigestNote is set when the digests differ and no change explains it: the digest covers more than
+	// the diff itemises (a type spelled with another package path).
+	DigestNote string `json:"digest_note,omitempty"`
 	// Weakened and Strengthened name each change that made the flow's approval checks weaker or
 	// stronger, with how: "charge: approval 2 of 3 -> 1 of 3" for a gate, "receipt: reachable
 	// without an approval gate (validate -> receipt), not before; its safety is side effect" for a
@@ -264,7 +270,15 @@ func BuildDiff(d Diff) (*DiffView, error) {
 			v.Basis = SourceDescription
 		}
 	}
-	v.Changes = diffChanges(o, n, safeties(d.Old.Data), safeties(d.New.Data))
+	v.finish(o, n, safeties(d.Old.Data), safeties(d.New.Data))
+	return v, nil
+}
+
+// finish fills v from the two reports: the changes, their counts, the weakened and strengthened gates,
+// the graph and the verdict. BuildDiff and DiffTopologies both end here, so a change reads the same
+// whichever sides it was made from.
+func (v *DiffView) finish(o, n plan.ConfigReport, oldSafety, newSafety map[string]string) {
+	v.Changes = diffChanges(o, n, oldSafety, newSafety)
 	for _, c := range v.Changes {
 		switch {
 		case c.What == "node" && c.Change == "added":
@@ -290,7 +304,6 @@ func BuildDiff(d Diff) (*DiffView, error) {
 	}
 	v.Graph = diffGraph(o.Topology, n.Topology, v.Changes)
 	v.Verdict = diffVerdict(v)
-	return v, nil
 }
 
 // CheckDiff writes the diff as text, for CI and a pull request comment: one line per change, a

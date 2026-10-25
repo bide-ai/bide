@@ -166,6 +166,7 @@ ConfigReport is what InspectConfig finds in a flow config: the graph it declares
 
 - `func InspectConfig(data []byte, reg *Registry, opts ...InspectOption) (r ConfigReport)`: InspectConfig checks a flow config without running or building a Flow, for a viewer or a CI check.
 - `func InspectConfigDescribed(data []byte, d RegistryDescription, opts ...InspectOption) ConfigReport`: InspectConfigDescribed is InspectConfig for a program's registrations known only as a description: it runs the same checks (the same code) on a Registry built from d, so blocks, predicates, merges, types, safety, gates and the digest are checked without the program.
+- `func InspectTopology(t Topology) ConfigReport`: InspectTopology is the report of a declared Topology alone, for a tool that holds a topology and no config: the topology a run journaled (JournaledTopology), compared with the one a config declares.
 
 **Methods**
 
