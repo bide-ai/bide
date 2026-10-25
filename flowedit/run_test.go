@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -399,4 +400,52 @@ type countingSource struct {
 func (c *countingSource) History(ctx context.Context, id string) ([]agent.Record, error) {
 	c.n.Add(1)
 	return c.Source.History(ctx, id)
+}
+
+// A file of more nodes than the comparison reads is refused in words, not compared (the loader bounds a
+// config by bytes only, and the diff costs more than linear time).
+func TestRunRefusesAFileOfTooManyNodes(t *testing.T) {
+	j, _ := ranRun(t, runCfg)
+	s := runServer(t, runCfg, runview.JournalSource{J: j}, "r1", false)
+	var b strings.Builder
+	b.WriteString(`{"version":1,"flow":"pay","entry":"n0","nodes":[`)
+	for i := 0; i <= runview.MaxTopologyNodes; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString(`{"name":"n` + strconv.Itoa(i) + `","block":"inc"}`)
+	}
+	b.WriteString(`],"wiring":[]}`)
+	r := askRun(t, s, b.String(), nil, false)
+	if r.Status != "too_large" || !strings.Contains(r.Claim, "Cannot compare") || len(r.Changes) != 0 {
+		t.Errorf("%s %q", r.Status, r.Claim)
+	}
+}
+
+// The text is bounded as /api/report bounds it.
+func TestRunRefusesOversizedText(t *testing.T) {
+	j, _ := ranRun(t, runCfg)
+	s := runServer(t, runCfg, runview.JournalSource{J: j}, "r1", true)
+	body, _ := json.Marshal(map[string]any{"text": strings.Repeat("x", MaxFileSize+1)})
+	if w := call(s.Handler(), s, "/api/run", string(body), nil); w.Code != 413 {
+		t.Errorf("%d", w.Code)
+	}
+}
+
+// With a description file in place of the Registry the claim says the digest rests on the file, as
+// every typed result does.
+func TestRunClaimNamesTheDescriptionBasis(t *testing.T) {
+	j, _ := ranRun(t, runCfg)
+	p := filepath.Join(t.TempDir(), "flow.json")
+	if err := os.WriteFile(p, []byte(runCfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := newServer(t, p, WithBlocks(runRegistry(t).Describe()), editrun.NewOption(editrun.Run{ID: "r1", Source: runview.JournalSource{J: j}}).(Option))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := askRun(t, s, runCfg, nil, false)
+	if r.Status != "same" || !strings.Contains(r.Claim, "rests on the description file (-blocks), not checked against the program") || !strings.Contains(r.Basis, "description file") {
+		t.Errorf("%s %q basis %q", r.Status, r.Claim, r.Basis)
+	}
 }
