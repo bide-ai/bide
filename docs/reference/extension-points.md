@@ -355,12 +355,21 @@ an approver the wrapped gate does not name; no `ExcludePrincipal` where the wrap
 gate deadline, or a longer one, where the wrapped gate has one. For `Timeout`: none, or a longer one. For `Caps`: a rule line of the wrapped tool that the wrapper's `Caps` does not carry, word for word (a changed rule is a missing one; the wrapper may add rules). If the wrapper has another name, write one rule line naming both tools (`refund|refund_logged.amount[...]`, the grammar of the amount-caps guide) and carry it on the wrapped tool and the wrapper: a line that names only the wrapped tool is refused on a differently named wrapper.
 Declare the same on the wrapper, or build its spec from the wrapped tool's. A wrapper with neither
 embedding nor `Unwrap` cannot be seen through.
-`Safety` is not checked through the chain: a wrapper may legitimately raise it (a retry wrapper that
-adds an idempotency key), so the rule needs a design decision, and until it is made it is the wrapper
-author's duty not to declare a weaker `Safety` than the tool it wraps. A wrapper that claims
-`ReadOnly` over a side-effecting tool loses at-most-once protection (no attempt marker, a re-run on
-resume, not held by a stop). `Untrusted` is checked through the chain (#508): a wrapper must carry the
-wrapped tool's declaration (the option, or a source in `Safety`). `Safety` is still a follow-up.
+`Safety` is checked the same way, for a wrapper that unwraps a tool or embeds one, at any depth. The
+levels are ordered: a side effect (the zero value), then `Idempotent`, then `ReadOnly` (the safest, whether
+or not `Idempotent` is also set). A wrapper whose declared `Safety` is safer than the tool inside it (the
+least safe one, when it embeds several) is refused with `ErrConfig`, naming the wrapper, the tool and both
+levels. The wrapper's `Safety` is the one the agent acts on, so a wrapper that claims `ReadOnly` over a
+side-effecting tool would lose the taint gate, the attempt marker and the halt on an unknown outcome (the
+call would be re-run on resume), and one that claims `Idempotent` would have its call re-run. The same or a
+stricter level is accepted. A wrapper that really does make the call safer (it stops at a dry run, it adds an
+idempotency key) opts out with `agent.RaisesSafety(reason)` (experimental; `ToolSpec.RaisesSafety` is the
+same declaration for a spec built by hand). The reason is required, printable and at most 128 bytes, as for
+`agent.Trusted`; it is part of the declarations document and digest (only when set), `bide doctor
+-declarations` lists it, and `bide doctor -diff` reports adding it as `WEAKENED`. The wrapper is then treated
+by the level it declared. A wrapper is held to every tool inside it, not only the one it holds directly: a
+middle wrapper that raised the level with a reason does not let the outer one declare it without its own.
+`Untrusted` is checked through the chain as described above.
 
 ## `Compensator`: how a tool undoes its side effect
 

@@ -66,6 +66,10 @@ type ToolSpec struct {
 	// Trusted). A taint policy that requires provenance (TaintPolicy.RequireProvenance) needs a tool to
 	// declare this or Untrusted. Experimental.
 	Trusted string
+	// RaisesSafety, when not empty, is the reason a wrapper declares a Safety safer than a tool inside it
+	// (see RaisesSafety). Without it, a wrapper whose Safety is safer than the tool it wraps or embeds is
+	// refused at agent.New. Experimental.
+	RaisesSafety string
 	// Timeout, when positive, bounds each call: the call runs under a context with this
 	// deadline. A result the tool returns is recorded even if the deadline has passed; an error
 	// it returns after the deadline has an unknown outcome (see WithTimeout).

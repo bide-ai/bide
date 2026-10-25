@@ -46,6 +46,14 @@ _, err = a.Run(ctx, "run-1", agent.UserText("refund order 4417"), agent.WithUntr
   (see `RequireProvenance` below). A tool cannot be both `Untrusted` and `Trusted`; `ToolSpec.Trusted` is the same
   declaration, and a wrapper that embeds the inner tool or implements `Unwrap` must carry it like `Untrusted`.
 
+- `agent.RaisesSafety(reason)` on a wrapper (experimental): a wrapper that embeds a tool or implements `Unwrap` may not
+  declare a `Safety` safer than a tool inside it (side effect, then `Idempotent`, then `ReadOnly`), because the
+  agent acts on the wrapper's `Safety`: a `ReadOnly` wrapper over a side-effecting tool is not gated by the taint
+  policy, and its call is re-run on resume. `agent.New` refuses it with `ErrConfig`, naming the wrapper, the tool
+  and both levels, unless the wrapper declares `RaisesSafety(reason)` (the reason follows the rules of `Trusted`
+  and is part of the declarations digest). With it, the wrapper is treated by the level it declared, so use it only
+  when the wrapper does make the call safer. `ToolSpec.RaisesSafety` is the same declaration.
+
 A source given through `agent.WithSafety(agent.Safety{Untrusted: "..."})` is the same declaration, never ignored; giving two different sources (this and the option) is `ErrConfig` at registration.
 
 A source name is a short printable string (at most 128 bytes). A tool that wraps an `Untrusted` tool must declare
@@ -176,18 +184,21 @@ bide doctor -diff main/declarations.json declarations.json
 
 - **The document** (`bide.declarations.v1`) holds the taint policy (the escalation gate, or refuse), and every
   registered tool with whether it can have a side effect, its own gate, its `Untrusted` source, its `TaintExempt`
-  reason, its `Trusted` reason, its cap rules, and the policy's `require_provenance`. Its `digest` is the `taint_policy_digest` the runs of that agent record in `run:start`,
+  reason, its `Trusted` reason, its `RaisesSafety` reason, whether it is `Idempotent` (a side effect that is retry-safe; the document carries `tracks_idempotent` to say so), its cap rules, and the policy's `require_provenance`. Its `digest` is the `taint_policy_digest` the runs of that agent record in `run:start`,
   and the reader recomputes it from the document: a document whose digest is not the digest of what it declares is
   refused, and so is one with a member this version does not know (a document from a newer version).
 - **`-declarations`** prints what a reader should look at: a side-effecting tool in an agent with no taint
   policy, an `Untrusted` tool in an agent with no policy (the marks are recorded and nothing is gated), each
-  `TaintExempt` tool with its reason, each cap-carrying tool, and an escalation gate that is one decision, needs
+  `TaintExempt` tool with its reason, each tool that declares `RaisesSafety` with its reason, each cap-carrying tool, and an escalation gate that is one decision, needs
   fewer than two, or does not exclude the requester. These are notes, not failures: the exit status is 0 for a
   document that reads. When the policy does not require provenance, each tool that declares neither `Untrusted` nor
   `Trusted` is listed as unclassified: it may be trusted or forgotten, and the declaration tells them apart.
-- **`-diff old new`** lists every change as `WEAKENED`, `changed` or `strengthened`, and exits 1 if anything is
+- **`-diff old new`** needs both documents from the same generation: a dump from before `tracks_idempotent` (v0.24.0
+  and earlier) says nothing about which tools are `Idempotent`, so when one is, the diff reports one weakened line
+  asking you to regenerate the baseline with this version (regenerate it once after upgrading), and an older `bide
+  doctor` refuses a new document. Otherwise it lists every change as `WEAKENED`, `changed` or `strengthened`, and exits 1 if anything is
   weakened, so a pipeline can compare a branch against `main`. Weakened: a removed `Untrusted` (also when a `Trusted` replaces it); `require_provenance` turned off (turned on is strengthened); a new or reworded
-  `TaintExempt`; the policy removed, or `refuse` turned into a gate; a lower `need`; a requester no longer
+  `TaintExempt`; a new `RaisesSafety` (removing it is strengthened, rewording it is changed); any tool that becomes safer to re-run (side effect to `Idempotent`, or either to `ReadOnly`), since a resume then re-runs its calls (the move back is strengthened); the policy removed, or `refuse` turned into a gate; a lower `need`; a requester no longer
   excluded; an m-of-n gate turned into one decision; a raised cap limit; a removed cap rule; a *renamed*
   cumulative rule (its name is its ledger, so the window starts again from zero); a refuse turned into a gate; a
   window of a day where it was an hour; a rule that applies to fewer tools; a key added to a cumulative rule (one

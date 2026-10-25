@@ -254,7 +254,7 @@ Agent binds a model, a tool set, a durable store, and a middleware chain.
 
 **Methods**
 
-- `func (a *Agent) Declarations() ([]byte, error)`: Declarations returns the agent's taint and cap declarations as a document (format bide.declarations.v1, indented JSON): the taint policy, and every registered tool with whether it can have a side effect, its own gate, its Untrusted source, its TaintExempt reason and its cap rules.
+- `func (a *Agent) Declarations() ([]byte, error)`: Declarations returns the agent's taint and cap declarations as a document (format bide.declarations.v1, indented JSON): the taint policy, and every registered tool with whether it can have a side effect, its own gate, its Untrusted source, its TaintExempt reason, its RaisesSafety reason and its cap rules.
 - `func (a *Agent) FlushNotifications(ctx context.Context) error`: FlushNotifications waits for the deliveries of a's notifier that are in flight to finish their round, and stops its worker; a later event starts it again.
 - `func (a *Agent) Journal() *Journal`: Journal returns the journal the agent writes through: the one New was given.
 - `func (a *Agent) Resume(ctx context.Context, runID string, opts ...RunOption) (*Result, error)`: Resume drives runID's run on from its journal: the input, saga flag and options its first drive journaled (see RunStart), and the last limit amendment.
@@ -3873,6 +3873,7 @@ ToolOption configures a tool built by Func, CompensatedFunc or SubAgent.
 
 **Constructors and functions**
 
+- `func RaisesSafety(reason string) ToolOption`: RaisesSafety lets a wrapper declare a Safety that is safer than a tool it wraps (Unwrap) or embeds, and says why (the reason is required, follows the rules of Trusted, and is kept in the declarations and their digest). *(experimental)*
 - `func TaintExempt(reason string) ToolOption`: TaintExempt declares that the tool's calls need no escalation gate even in a run that read untrusted content, and why (the reason is required, and is kept for the audit). *(experimental)*
 - `func Trusted(reason string) ToolOption`: Trusted declares that the results of the tool are the host's own, and why (the reason is required and is kept in the declarations): the tool reads a table the host writes, calls a service it runs. *(experimental)*
 - `func Untrusted(source string) ToolOption`: Untrusted declares that the results of the tool are untrusted content, from the named source (for example "crm-notes" or "inbound-email"): text the host did not write and an attacker may have. *(experimental)*
@@ -3932,6 +3933,8 @@ type ToolSpec struct {
 	TaintExempt string
 
 	Trusted string
+
+	RaisesSafety string
 
 	Timeout time.Duration
 }

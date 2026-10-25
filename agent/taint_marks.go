@@ -84,6 +84,27 @@ func Trusted(reason string) ToolOption {
 	})
 }
 
+// RaisesSafety lets a wrapper declare a Safety that is safer than a tool it wraps (Unwrap) or embeds, and
+// says why (the reason is required, follows the rules of Trusted, and is kept in the declarations and their
+// digest). Safety is ordered side effect, then Idempotent, then ReadOnly (the safest: its calls are re-run
+// on resume and are not gated by the taint policy). Without this option the agent refuses, with ErrConfig, a
+// wrapper whose Safety is safer than any tool inside it, since the wrapper's Safety is the one the agent
+// acts on: a ReadOnly wrapper over a tool with side effects would lose the taint gate, and an Idempotent
+// one would have its call re-run on resume. A wrapper that really does make the call safer (it stops at
+// a dry run, say) declares so and gives the reason. The reason is checked for form only (the rules of
+// Trusted), not for meaning: it is recorded for the reviewer, who reads it in the declarations. A tool that
+// wraps nothing is not changed by it.
+// Experimental.
+func RaisesSafety(reason string) ToolOption {
+	return toolOption(func(c *toolConfig) error {
+		if err := checkProvenanceName("RaisesSafety", reason); err != nil {
+			return err
+		}
+		c.spec.RaisesSafety = reason
+		return nil
+	})
+}
+
 // WithUntrustedInput declares that the run's input is untrusted content from the named source: an agent
 // started by an inbound email or a customer's message. It is journaled in run:start's settings, and a
 // later drive that passes another source is ErrConfig, as for any setting that differs from the
@@ -134,6 +155,15 @@ func (s ToolSpec) untrustedSource() string {
 	return s.Safety.Untrusted
 }
 
+// checkRaisesSafety holds a RaisesSafety reason on a spec built by hand to the rules of the option (those of
+// Trusted). An empty one is not set.
+func checkRaisesSafety(s ToolSpec) error {
+	if s.RaisesSafety == "" {
+		return nil
+	}
+	return checkProvenanceName("RaisesSafety of tool "+s.Name, s.RaisesSafety)
+}
+
 // normalizeUntrusted folds Safety.Untrusted into ToolSpec.Untrusted, so that a source given through
 // WithSafety is a declaration like the option's and is never ignored. Both given and different, or an
 // invalid name, is ErrConfig.
@@ -150,6 +180,9 @@ func normalizeUntrusted(s *ToolSpec) error {
 		if err := checkProvenanceName("Trusted of tool "+s.Name, s.Trusted); err != nil {
 			return err
 		}
+	}
+	if err := checkRaisesSafety(*s); err != nil {
+		return err
 	}
 	s.Untrusted = s.untrustedSource()
 	if s.Untrusted != "" && s.Trusted != "" {

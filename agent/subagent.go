@@ -189,6 +189,9 @@ func init() {
 			return fmt.Errorf("agent: %T is not a Tool: %w", t, ErrConfig)
 		}
 		s := specOf(tool)
+		if err := checkRaisesSafety(s); err != nil { // the reason is validated as New does, since checkWrapper trusts it
+			return err
+		}
 		if err := checkWrapper(tool, s); err != nil {
 			return err
 		}

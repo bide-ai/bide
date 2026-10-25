@@ -157,6 +157,17 @@ func TestDiff_Classifies(t *testing.T) {
 		{"a key is removed from a cumulative rule", doc(pol(twoOfTwo), Tool{Name: "w", Caps: []string{`refund_total: refund.amount[minor, currency=currency] sum 10 USD per day by customer -> refuse`}}), doc(pol(twoOfTwo), Tool{Name: "w", Caps: []string{dayTotal}}), []want{{Strengthened, "tool w", "key is removed"}}},
 		{"a tool becomes ReadOnly", doc(pol(twoOfTwo), Tool{Name: "w", Effect: true}), doc(pol(twoOfTwo), Tool{Name: "w"}), []want{{Weakened, "tool w", "no longer has side effects"}}},
 		{"a tool gains side effects", doc(pol(twoOfTwo), Tool{Name: "w"}), doc(pol(twoOfTwo), Tool{Name: "w", Effect: true}), []want{{Strengthened, "tool w", "now has side effects"}}},
+		{"RaisesSafety is added", doc(pol(twoOfTwo), Tool{Name: "w", Effect: true}), doc(pol(twoOfTwo), Tool{Name: "w", Effect: true, RaisesSafety: "dry run"}), []want{{Weakened, "tool w", `RaisesSafety("dry run") added`}}},
+		{"RaisesSafety is removed", doc(pol(twoOfTwo), Tool{Name: "w", Effect: true, RaisesSafety: "dry run"}), doc(pol(twoOfTwo), Tool{Name: "w", Effect: true}), []want{{Strengthened, "tool w", "RaisesSafety removed"}}},
+		{"RaisesSafety is reworded", doc(pol(twoOfTwo), Tool{Name: "w", Effect: true, RaisesSafety: "dry run"}), doc(pol(twoOfTwo), Tool{Name: "w", Effect: true, RaisesSafety: "replica"}), []want{{Changed, "tool w", `reason is "replica", was "dry run"`}}},
+		{"a wrapper raised to ReadOnly under RaisesSafety", doc(pol(twoOfTwo), Tool{Name: "w", Effect: true}), doc(pol(twoOfTwo), Tool{Name: "w", RaisesSafety: "dry run"}), []want{{Weakened, "tool w", "RaisesSafety"}, {Weakened, "tool w", "no longer has side effects"}}},
+		{"a wrapper raised to Idempotent under RaisesSafety", doc(pol(twoOfTwo), Tool{Name: "w", Effect: true}), doc(pol(twoOfTwo), Tool{Name: "w", Effect: true, Idempotent: true, RaisesSafety: "keyed"}), []want{{Weakened, "tool w", "RaisesSafety"}, {Weakened, "tool w", "now Idempotent"}}},
+		{"a tool becomes Idempotent without it", doc(pol(twoOfTwo), Tool{Name: "w", Effect: true}), doc(pol(twoOfTwo), Tool{Name: "w", Effect: true, Idempotent: true}), []want{{Weakened, "tool w", "now Idempotent"}}},
+		{"a tool stops being Idempotent", doc(pol(twoOfTwo), Tool{Name: "w", Effect: true, Idempotent: true}), doc(pol(twoOfTwo), Tool{Name: "w", Effect: true}), []want{{Strengthened, "tool w", "no longer Idempotent"}}},
+		{"Idempotent becomes ReadOnly", doc(pol(twoOfTwo), Tool{Name: "w", Effect: true, Idempotent: true}), doc(pol(twoOfTwo), Tool{Name: "w"}), []want{{Weakened, "tool w", "no longer has side effects"}}},
+		{"ReadOnly becomes Idempotent", doc(pol(twoOfTwo), Tool{Name: "w"}), doc(pol(twoOfTwo), Tool{Name: "w", Effect: true, Idempotent: true}), []want{{Strengthened, "tool w", "now has side effects"}}},
+		{"a new tool with RaisesSafety", doc(pol(twoOfTwo)), doc(pol(twoOfTwo), Tool{Name: "w", RaisesSafety: "dry run"}), []want{{Weakened, "tool w", "added with RaisesSafety"}}},
+		{"a tool with RaisesSafety is removed", doc(pol(twoOfTwo), Tool{Name: "w", RaisesSafety: "dry run"}), doc(pol(twoOfTwo)), []want{{Strengthened, "tool w", "it was RaisesSafety"}}},
 		{"an approver set replaced outright", doc(pol(twoOfTwo)), doc(pol(gate(Gate{Need: 2, Approvers: []string{"mallory", "x"}, ExcludePrincipal: true}))), []want{{Weakened, "policy", "none in common"}}},
 		{"a tool's own gate is weakened (not covered by the digest)", doc(pol(twoOfTwo), Tool{Name: "w", OwnGate: twoOfTwo}), doc(pol(twoOfTwo), Tool{Name: "w", OwnGate: gate(Gate{Single: true})}), []want{{Weakened, "tool w own gate", "one decision"}}},
 	} {
@@ -225,6 +236,8 @@ func TestDiff_CoveredChangesAreExactlyTheDigestsDifferences(t *testing.T) {
 		"effect":        doc(&Policy{Gate: twoOfTwo}, Tool{Name: "write", Caps: []string{perCall}}, Tool{Name: "read", Untrusted: "crm"}),
 		"own gate":      doc(&Policy{Gate: twoOfTwo}, Tool{Name: "write", Effect: true, OwnGate: twoOfTwo, Caps: []string{perCall}}, Tool{Name: "read", Untrusted: "crm"}),
 		"plain tool":    doc(&Policy{Gate: twoOfTwo}, Tool{Name: "write", Effect: true, Caps: []string{perCall}}, Tool{Name: "read", Untrusted: "crm"}, Tool{Name: "zz"}),
+		"raises safety": doc(&Policy{Gate: twoOfTwo}, Tool{Name: "write", Effect: true, RaisesSafety: "x", Caps: []string{perCall}}, Tool{Name: "read", Untrusted: "crm"}),
+		"idempotent":    doc(&Policy{Gate: twoOfTwo}, Tool{Name: "write", Effect: true, Idempotent: true, Caps: []string{perCall}}, Tool{Name: "read", Untrusted: "crm"}),
 		"approver swap": doc(&Policy{Gate: gate(Gate{Need: 2, Approvers: []string{"ops", "x"}, ExcludePrincipal: true})}, Tool{Name: "write", Effect: true, Caps: []string{perCall}}, Tool{Name: "read", Untrusted: "crm"}),
 	}
 	for name, v := range variants {
@@ -496,5 +509,101 @@ func TestDecode_RefusesAnEmptyTrustedReason(t *testing.T) {
 	_ = Encode(&buf, doc(&Policy{Refuse: true}, Tool{Name: "t", Trusted: "the host's table"}))
 	if _, err := Decode(&buf); err != nil {
 		t.Errorf("a real trusted reason: %v", err)
+	}
+}
+
+// The digest covers RaisesSafety (only when set); Idempotent is for the diff and changes no digest.
+func TestRecompute_CoversRaisesSafety(t *testing.T) {
+	base := doc(&Policy{Refuse: true}, Tool{Name: "t", Effect: true})
+	raised := doc(&Policy{Refuse: true}, Tool{Name: "t", Effect: true, RaisesSafety: "dry run"})
+	other := doc(&Policy{Refuse: true}, Tool{Name: "t", Effect: true, RaisesSafety: "replica"})
+	if base.Digest == raised.Digest || raised.Digest == other.Digest {
+		t.Error("RaisesSafety, or its reason, is not in the digest")
+	}
+	if idem := doc(&Policy{Refuse: true}, Tool{Name: "t", Effect: true, Idempotent: true}); idem.Digest != base.Digest {
+		t.Error("Idempotent is in the digest")
+	}
+}
+
+// A RaisesSafety reason follows the rules of agent.Trusted, and Idempotent needs a side effect.
+func TestDecode_RefusesABadRaisesSafetyReasonOrAnIdempotentReadOnlyTool(t *testing.T) {
+	for _, r := range []string{" ", "\t", "\u200b", strings.Repeat("x", 129)} {
+		var buf bytes.Buffer
+		if err := Encode(&buf, doc(&Policy{Refuse: true}, Tool{Name: "t", RaisesSafety: r})); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Decode(&buf); err == nil {
+			t.Errorf("a RaisesSafety reason %q was accepted", r)
+		}
+	}
+	var buf bytes.Buffer
+	_ = Encode(&buf, doc(&Policy{Refuse: true}, Tool{Name: "t", Idempotent: true}))
+	if _, err := Decode(&buf); err == nil {
+		t.Error("an Idempotent tool with no side effect was accepted")
+	}
+	buf.Reset()
+	_ = Encode(&buf, doc(&Policy{Refuse: true}, Tool{Name: "t", Effect: true, Idempotent: true, RaisesSafety: "it stops at a dry run"}))
+	if _, err := Decode(&buf); err != nil {
+		t.Errorf("a valid RaisesSafety tool: %v", err)
+	}
+}
+
+// bide doctor -declarations lists a RaisesSafety tool.
+func TestFindings_ListsRaisesSafety(t *testing.T) {
+	for _, f := range doc(&Policy{Refuse: true, RequireProvenance: true}, Tool{Name: "w", Trusted: "ours", RaisesSafety: "dry run"}).Findings() {
+		if f.Subject == "tool w" && strings.Contains(f.Message, "RaisesSafety") && strings.Contains(f.Message, "dry run") {
+			return
+		}
+	}
+	t.Error("no finding for a tool that declares RaisesSafety")
+}
+
+// A dump that changes only a member outside the digest (Idempotent) has equal digests and a non-empty diff;
+// that is not the digest-consistency error, because the change is reported as not covered.
+func TestDiff_AMemberOutsideTheDigestIsNotADigestMismatch(t *testing.T) {
+	pol := &Policy{Refuse: true}
+	old := doc(pol, Tool{Name: "w", Effect: true})
+	nw := doc(pol, Tool{Name: "w", Effect: true, Idempotent: true})
+	if old.Digest != nw.Digest {
+		t.Fatal("Idempotent changed the digest")
+	}
+	changes, err := Diff(old, nw)
+	if err != nil {
+		t.Fatalf("Diff = %v, want no digest-consistency error", err)
+	}
+	if len(changes) != 1 || changes[0].Covered || changes[0].Class != Weakened {
+		t.Errorf("changes = %+v, want one uncovered change", changes)
+	}
+}
+
+// tracked marks a document as written by a version that carries each tool's Idempotent member.
+func tracked(d Document) Document { d.TracksIdempotent = true; return d }
+
+// A baseline from before the idempotent member says nothing about it: its absence is not "false". Diffing it
+// against a new dump with an Idempotent tool gives one line saying to regenerate it (weakened, so a pipeline
+// stops), never a per-tool "now Idempotent". With the member on both sides the tool rows come back.
+func TestDiff_AnOldDumpWithoutTheIdempotentMemberIsNotReadAsFalse(t *testing.T) {
+	pol := &Policy{Refuse: true}
+	oldDump := doc(pol, Tool{Name: "w", Effect: true})
+	newDump := tracked(doc(pol, Tool{Name: "w", Effect: true, Idempotent: true}))
+	got, err := Diff(oldDump, newDump)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Class != Weakened || got[0].Subject != "declarations" || !strings.Contains(got[0].What, "regenerate the baseline") || got[0].Covered {
+		t.Fatalf("changes = %+v, want one weakened line saying to regenerate the baseline", got)
+	}
+	// The other direction (a new dump from an older version) is the same.
+	if got, err := Diff(newDump, oldDump); err != nil || len(got) != 1 || got[0].Subject != "declarations" {
+		t.Errorf("reversed: %+v, %v", got, err)
+	}
+	// Both with the member: the tool row, and no regenerate line.
+	got, err = Diff(tracked(doc(pol, Tool{Name: "w", Effect: true})), newDump)
+	if err != nil || len(got) != 1 || got[0].Subject != "tool w" || !strings.Contains(got[0].What, "now Idempotent") {
+		t.Errorf("both tracked: %+v, %v", got, err)
+	}
+	// No Idempotent tool anywhere: an old dump costs nothing.
+	if got, err := Diff(oldDump, tracked(doc(pol, Tool{Name: "w", Effect: true}))); err != nil || len(got) != 0 {
+		t.Errorf("no Idempotent tool: %+v, %v", got, err)
 	}
 }

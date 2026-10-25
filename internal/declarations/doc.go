@@ -31,6 +31,9 @@ type Document struct {
 	// Digest is the taint_policy_digest a run started by this agent records, "" for an agent with no taint
 	// policy (no run it starts is under taint).
 	Digest string `json:"digest"`
+	// TracksIdempotent is set by a version that writes each tool's Idempotent member. A document without it
+	// predates the member, so a tool's absent idempotent is unknown, not false (see Diff).
+	TracksIdempotent bool `json:"tracks_idempotent,omitempty"`
 	// Policy is the agent's taint policy, nil for none.
 	Policy *Policy `json:"policy,omitempty"`
 	// Tools is every tool the agent registers, by name.
@@ -65,6 +68,11 @@ type Tool struct {
 	Trusted string   `json:"trusted,omitempty"`
 	Exempt  string   `json:"exempt,omitempty"`
 	Caps    []string `json:"caps,omitempty"`
+	// Idempotent is set for a tool that can have a side effect and is retry-safe (Safety.Idempotent without
+	// ReadOnly). It is for the diff only; the digest does not cover it.
+	Idempotent bool `json:"idempotent,omitempty"`
+	// RaisesSafety is the reason a wrapper declares a safer Safety than a tool inside it (agent.RaisesSafety).
+	RaisesSafety string `json:"raises_safety,omitempty"`
 }
 
 // Decode reads a document strictly: one JSON value, no unknown member (a document written by a newer
@@ -157,6 +165,7 @@ func (d Document) Recompute() string {
 		Trusted   string   `json:"trusted,omitempty"`
 		Exempt    string   `json:"exempt,omitempty"`
 		Caps      []string `json:"caps,omitempty"`
+		Raises    string   `json:"raises_safety,omitempty"`
 	}
 	covered := struct {
 		Format            string              `json:"format"`
@@ -166,11 +175,11 @@ func (d Document) Recompute() string {
 		Tools             map[string]toolDecl `json:"tools,omitempty"`
 	}{Format: digestFormat, Gate: d.Policy.Gate.wire(), Refuse: d.Policy.Refuse, RequireProvenance: d.Policy.RequireProvenance}
 	for _, t := range d.Tools {
-		if t.Untrusted != "" || t.Trusted != "" || t.Exempt != "" || len(t.Caps) > 0 {
+		if t.Untrusted != "" || t.Trusted != "" || t.Exempt != "" || t.RaisesSafety != "" || len(t.Caps) > 0 {
 			if covered.Tools == nil {
 				covered.Tools = map[string]toolDecl{}
 			}
-			covered.Tools[t.Name] = toolDecl{Untrusted: t.Untrusted, Trusted: t.Trusted, Exempt: t.Exempt, Caps: t.Caps}
+			covered.Tools[t.Name] = toolDecl{Untrusted: t.Untrusted, Trusted: t.Trusted, Exempt: t.Exempt, Caps: t.Caps, Raises: t.RaisesSafety}
 		}
 	}
 	sum := sha256.Sum256(mustJSON(covered))
@@ -215,6 +224,18 @@ func (d Document) validate() error {
 			}
 			if r, bad := printable.Bad(t.Trusted); bad {
 				return fmt.Errorf("tool %q: the trusted reason has the non-printing character %s", t.Name, printable.Describe(r))
+			}
+		}
+		if t.Idempotent && !t.Effect {
+			return fmt.Errorf("tool %q is Idempotent and has no side effect: a valid agent declares Idempotent for a tool that can have one", t.Name)
+		}
+		if t.RaisesSafety != "" {
+			// The rules of agent.RaisesSafety, which are those of agent.Trusted.
+			if len(t.RaisesSafety) > maxTrustedReason || !utf8.ValidString(t.RaisesSafety) {
+				return fmt.Errorf("tool %q: the RaisesSafety reason is over %d bytes or not valid UTF-8", t.Name, maxTrustedReason)
+			}
+			if r, bad := printable.Bad(t.RaisesSafety); bad {
+				return fmt.Errorf("tool %q: the RaisesSafety reason has the non-printing character %s", t.Name, printable.Describe(r))
 			}
 		}
 		if t.Untrusted != "" && t.Trusted != "" {

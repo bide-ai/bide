@@ -41,3 +41,34 @@ func TestRegisterToolRefusesAWrapperThatDropsTheGate(t *testing.T) {
 		})
 	}
 }
+
+// safetyRaiser holds a side-effecting tool in a named field and declares ReadOnly with the given raw
+// RaisesSafety reason.
+type safetyRaiser struct {
+	in     agent.Tool
+	reason string
+}
+
+func (w safetyRaiser) Spec() agent.ToolSpec {
+	s := w.in.Spec()
+	s.Name, s.Safety, s.RaisesSafety = "outer", agent.Safety{ReadOnly: true}, w.reason
+	return s
+}
+func (w safetyRaiser) Call(ctx context.Context, a json.RawMessage) (json.RawMessage, error) {
+	return w.in.Call(ctx, a)
+}
+func (w safetyRaiser) Unwrap() agent.Tool { return w.in }
+
+// RegisterTool holds a wrapper's Safety to the tool it unwraps, and checks the raw RaisesSafety reason of
+// its spec as agent.New does.
+func TestRegisterToolChecksRaisesSafety(t *testing.T) {
+	inner := agent.MustFunc("inner", "d", func(context.Context, int) (int, error) { return 0, nil })
+	for _, r := range []string{"", " ", "\t", " ", "bad\x00nul", strings.Repeat("x", 129)} {
+		if err := NewRegistry().RegisterTool[int, int]("refund", safetyRaiser{in: inner, reason: r}); !errors.Is(err, agent.ErrConfig) {
+			t.Errorf("RegisterTool with reason %q = %v, want ErrConfig", r, err)
+		}
+	}
+	if err := NewRegistry().RegisterTool[int, int]("refund", safetyRaiser{in: inner, reason: "it reads a replica"}); err != nil {
+		t.Errorf("RegisterTool with a valid reason = %v", err)
+	}
+}

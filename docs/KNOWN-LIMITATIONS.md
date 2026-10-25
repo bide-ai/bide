@@ -443,6 +443,8 @@ then a rule is `-> refuse`, which works on a tool with its own gate.
 
 **A decorator must carry the tool's caps.** A tool that embeds a capped tool but declares its own `Spec` without the same rule lines is refused at registration (`ErrConfig`), as one that hides an approval gate or timeout is; a decorator keeps the rules by returning them in its `Spec`. Implementing `Unwrap` does not exempt it: a wrapper whose `Spec` lacks a rule line of a tool on its `Unwrap` chain is refused too, word for word.
 
+**A wrapper that neither embeds nor unwraps is not seen.** The wrapper checks (approval gate, timeout, caps, `Untrusted`, and `Safety`, where a wrapper may not declare a safer level than a tool inside it without `agent.RaisesSafety(reason)`) read the tools a wrapper embeds (an anonymous field, at any depth) or reaches through `Unwrap`. A tool that holds another in a named field and implements neither is not seen through, so its `Safety`, like the rest of its spec, is its author's duty. `RaisesSafety` is a promise: the agent does not check that the wrapper makes the call safer, only that someone said so and why, and the declarations show it for review.
+
 **Compensation and plan flows are not capped.** A saga's rollback is not cap-checked, and neither is the
 rollback's re-run of a call that already ran. A tool that carries caps cannot be a plan flow block (the
 plan registry refuses it), so a flow cannot run it uncapped by accident.

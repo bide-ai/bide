@@ -156,7 +156,7 @@ func TestOptionScopes_TypeChecked(t *testing.T) {
 		"WithRecoverInterval": "RecoverLoopOption", "WithRecoverConcurrency": "RecoverLoopOption", "WithRecoverLapsedConcurrency": "RecoverLoopOption", "WithRecoverErrors": "RecoverLoopOption", "WithReanchor": "ReanchorOption", "WithReanchorTimeout": "ReanchorOption",
 		"WithMinHaltAge": "ResolveOption", "WithoutLiveDriverCheck": "ResolveOption", "WithEvidence": "ResolveOption",
 		"WithRetrievalRetry": "RetrievalOption", "RetrievalUntrusted": "RetrievalOption",
-		"WithApproval": "ToolOption", "Untrusted": "ToolOption", "Trusted": "ToolOption", "TaintExempt": "ToolOption", "WithTimeout": "ToolOption", "WithTitle": "ToolOption", "WithOutputSchema": "ToolOption", "WithSubRuns": "ToolOption",
+		"WithApproval": "ToolOption", "Untrusted": "ToolOption", "Trusted": "ToolOption", "RaisesSafety": "ToolOption", "TaintExempt": "ToolOption", "WithTimeout": "ToolOption", "WithTitle": "ToolOption", "WithOutputSchema": "ToolOption", "WithSubRuns": "ToolOption",
 		"WithCaps": "ToolOption",
 	}
 	optionTypes := append(slices.Clone(scopes), "AgentRunOption", "ConcurrencyOption", "ClockOption", "SafetyOption", "LeaseControl", "NotifierOption", "ReanchorOption")
