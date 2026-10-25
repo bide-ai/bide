@@ -708,8 +708,8 @@ func TestRunIsReadByPointReadsNotByHistory(t *testing.T) {
 	if r.Status != "same" || r.Run.State != "done" || r.Run.StateText != "completed" || r.Run.Flow != "pay" || r.Run.Records != 0 {
 		t.Errorf("%s run %+v", r.Status, r.Run)
 	}
-	if y, g := cs.yielded.Load(), cs.gets.Load(); y > 1 || g > 3 {
-		t.Errorf("reading a run of more than 100 records pulled %d entries (want 1, the first) and made %d point reads (want 3: topology, digest, the end marker)", y, g)
+	if y, g := cs.yielded.Load(), cs.gets.Load(); y > 1 || g > 5 {
+		t.Errorf("reading a run of more than 100 records pulled %d entries (want 1, the first) and made %d point reads (want 5: topology, digest, the three end markers)", y, g)
 	}
 	// A run with no end marker.
 	open, err := agent.NewJournal(agent.NewMemStore())
@@ -752,6 +752,28 @@ func TestRunIsReadByPointReadsNotByHistory(t *testing.T) {
 		if r.Run.State != want[0] || r.Run.StateText != want[1] {
 			t.Errorf("%s: run %+v", marker, r.Run)
 		}
+	}
+	// More than one end marker: the order of their names is not the order they were written in, so the panel
+	// does not pick one.
+	both, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for e, err := range open.Store().Load(context.Background(), "r1", -1) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := both.Store().Insert(context.Background(), "r1", e.Name, e.Data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, marker := range []string{"run:cancelled", "run:complete"} {
+		if _, _, err := both.Store().Insert(context.Background(), "r1", marker, []byte(`{"name":"`+marker+`","kind":"value","result":1}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if r := askRun(t, runServer(t, runCfg, runview.JournalSource{J: both}, "r1", true), runCfg, nil, false); r.Run.State != "ended" || r.Run.StateText != "ended (more than one end marker)" {
+		t.Errorf("two end markers: %+v", r.Run)
 	}
 	// A run with no records.
 	if r := askRun(t, runServer(t, runCfg, runview.JournalSource{J: open}, "nope", true), runCfg, nil, false); r.Status != "not_found" {

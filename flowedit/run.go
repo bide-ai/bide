@@ -247,7 +247,7 @@ var endMarkers = []struct{ name, state, text string }{
 
 // readFacts reads what the panel needs of the run: its flow:topology and flow:digest records, and, for the
 // facts line, whether it has ended. From a store these are point reads (the run's first entry to tell it
-// exists, the two records, and at most three end markers): no run:start, whose input can be large, and no
+// exists, the two records, and the three end markers): no run:start, whose input can be large, and no
 // history. The run's flow is then the topology's, which the digest commits to, and the record count is not
 // known. An exported journal is already in memory, so its state and flow are read as the viewer reads them.
 func readFacts(ctx context.Context, run editrun.Run, info *runInfo) (recs []agent.Record, found bool, err error) {
@@ -261,6 +261,8 @@ func readFacts(ctx context.Context, run editrun.Run, info *runInfo) (recs []agen
 		info.Flow, info.State, info.StateText, info.Records = v.Flow, v.State, v.StateText, v.Records
 		return recs, true, nil
 	}
+	// Only whether the run has an entry is tested here (a run with none is not found): the Journal's own header
+	// check is made by the Gets below, which refuse a run in a format this version cannot read.
 	any := false
 	for _, err := range js.J.Store().Load(ctx, run.ID, -1) {
 		if err != nil {
@@ -282,15 +284,21 @@ func readFacts(ctx context.Context, run editrun.Run, info *runInfo) (recs []agen
 		}
 	}
 	info.State, info.StateText = "unfinished", "no end marker"
+	ended := 0
 	for _, m := range endMarkers {
 		_, ok, err := js.J.Get(ctx, run.ID, m.name)
 		if err != nil {
 			return nil, false, err
 		}
 		if ok {
+			ended++
 			info.State, info.StateText = m.state, m.text
-			break
 		}
+	}
+	if ended > 1 {
+		// The engine takes the first end marker written; which was first is not read here, and the order of
+		// the names is not the order of the writes.
+		info.State, info.StateText = "ended", "ended (more than one end marker)"
 	}
 	return recs, true, nil
 }
