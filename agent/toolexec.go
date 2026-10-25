@@ -881,7 +881,7 @@ func (a *Agent) toolHandler(runID string) func(context.Context, ToolUse) (json.R
 		// began word, and a cumulative cap's reservation of a call proven not to have begun is released at
 		// the seal, before any void (the loop is the only releaser). releaseCaps seals the word itself when
 		// the call holds reservations.
-		sealedByCaps := state == callReached && a.releaseCaps(ctx, call.capHeld, &began)
+		sealedByCaps := state == callReached && a.releaseCaps(ctx, call.capHeld, &began, capReleaseWhy(err))
 		if state == callReached && (sealedByCaps || began.CompareAndSwap(beganNone, beganSealed)) {
 			// Reached, but no invocation began the tool's Call, and now none can: not called.
 			state = callRefusedClosed

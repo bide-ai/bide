@@ -50,6 +50,7 @@ var reservedPrefixes = []string{
 	"slot:",               // a cap ledger's slots: slot:<n>, in a run under @cap/ (see capRunPrefix)
 	"cap-intent:",         // a cap reservation's intent: its window and amount, written before the slot
 	"cap-reserve:",        // the slot a call reserved, in the run that made the call
+	"cap-release:",        // why the loop released a call's slot: the call never began (see capReleaseNote), in the run that made the call
 	"gate-reason:",        // why a call was gated: gate-reason:<call>
 }
 

@@ -1,0 +1,3 @@
+Section: Added
+
+When the loop releases a call's cumulative-cap reservation because the tool never began, it first journals why, as a `cap-release:<attempt>` record in the run that made the call (`bide.cap-release.v1`: the attempt and the reason, a cap refusal or a chain that returned without calling the tool). A write that fails releases nothing: the slot stays counted and the reconcile pass releases it after the void, as when a release fails. The name is reserved, so `Step` and `ClaimAttempt` refuse it. `bide audit caps` holds each release to this record or to a void. A release the reconcile pass makes is justified by the void and writes no record.

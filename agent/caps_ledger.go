@@ -290,7 +290,7 @@ func (h *capHeld) take() []capledger.Target {
 // A release that fails leaves the slot counted, and the void then lets the reconcile pass release it.
 // It reports whether it sealed the word. It is the only releaser: no handler writes a release.
 // protocol:caps begin LoopSeal
-func (a *Agent) releaseCaps(ctx context.Context, held *capHeld, began *atomic.Int32) (sealed bool) {
+func (a *Agent) releaseCaps(ctx context.Context, held *capHeld, began *atomic.Int32, why string) (sealed bool) {
 	targets := held.take()
 	if len(targets) == 0 {
 		return false
@@ -304,6 +304,14 @@ func (a *Agent) releaseCaps(ctx context.Context, held *capHeld, began *atomic.In
 		return false
 	}
 	for i, t := range targets {
+		// The reason is journaled before the slot is released, so no release of the loop's lacks it: a
+		// failed write releases nothing (the slot stays counted, as when a release fails).
+		if err := a.noteCapRelease(context.WithoutCancel(ctx), t, attempts[i], why); err != nil {
+			capReleaseFailures.Add(1)
+			slog.Default().Warn("bide: a cap reservation could not be released; it stays counted until the reconcile pass",
+				"run", t.RunID, "tool_use_id", t.ToolUseID, "rule", t.Rule.Name, "error", err.Error())
+			continue
+		}
 		if _, err := a.capLedger.Release(context.WithoutCancel(ctx), t, seals[i]); err != nil {
 			// The slot stays counted (the safe direction) and the void that follows lets the reconcile pass
 			// release it; say so, without any amount.
@@ -486,4 +494,40 @@ func reconcileCapRuns(ctx context.Context, store *Journal, runs []string) ([]str
 		}
 	}
 	return released, errors.Join(errs...)
+}
+
+// Why the loop released a call's reservation without the tool having begun.
+const (
+	capReleaseRefused = "cap refusal"               // a cumulative cap refused the call (errCapRefused), after another rule's slot was reserved
+	capReleaseNoCall  = "chain without a tool call" // the chain returned without reaching the tool's Call (a middleware's own error, a failed later reservation)
+)
+
+// capReleaseWhy is the reason to journal for a release after the chain returned err.
+func capReleaseWhy(err error) string {
+	if _, ok := errors.AsType[*errCapRefused](err); ok {
+		return capReleaseRefused
+	}
+	return capReleaseNoCall
+}
+
+// capReleaseNote is the cap-release record: the loop writes one, insert-once in the run that made the
+// call, before it releases that call's slot, so an audit can tell a release the loop wrote (the call never
+// began) from one a writer of the store appended. Only the engine writes the name (a reserved prefix).
+type capReleaseNote struct {
+	Format  string `json:"format"`
+	Attempt string `json:"attempt"`
+	Ledger  string `json:"ledger,omitempty"`
+	Why     string `json:"why"`
+}
+
+const capReleaseFormat = "bide.cap-release.v1"
+
+// noteCapRelease journals the reason for releasing the slot of attempt t, in t's run.
+func (a *Agent) noteCapRelease(ctx context.Context, t capledger.Target, attempt, why string) error {
+	b, err := marshalJournal(capReleaseNote{Format: capReleaseFormat, Attempt: attempt, Why: why})
+	if err != nil {
+		return err
+	}
+	_, _, err = a.store.putNew(ctx, t.RunID, "cap-release:"+encodeID(attempt), Record{Kind: StepValue, Result: b})
+	return err
 }
