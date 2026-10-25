@@ -110,12 +110,13 @@ func TestRunPanelInChrome(t *testing.T) {
 			t.Errorf("%s: %s (%s): %s at %q", state, v.ID, v.Impact, v.Help, v.Nodes)
 		}
 	}
+	// The one request the script aborts on purpose is the one failure, and the browser's one console line about it.
 	for _, c := range r.Console {
-		if !strings.HasPrefix(c, "log:") {
+		if !strings.HasPrefix(c, "log:") && c != "error: Failed to load resource: net::ERR_FAILED" {
 			t.Errorf("console: %s", c)
 		}
 	}
-	if len(r.Failed) != 0 || len(r.OffOrigin) != 0 {
+	if len(r.Failed) != 1 || !strings.HasSuffix(r.Failed[0], "/api/run net::ERR_FAILED") || len(r.OffOrigin) != 0 {
 		t.Errorf("failed %q off origin %q", r.Failed, r.OffOrigin)
 	}
 }
