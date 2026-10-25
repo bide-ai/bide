@@ -1275,7 +1275,7 @@ func decisionLabel(d audit.DecisionCoverage) string {
 	if a := cleanText(d.Approver); a != "" {
 		return a
 	}
-	return "(no approver signature) " + cleanText(d.Step)
+	return "(no approver signature) " + stepSubject(d.Step)
 }
 
 // verifyEvidence verifies a portable evidence package (audit.Evidence) from public artifacts alone:
@@ -1586,6 +1586,20 @@ func evidenceItemLine(it audit.EvidenceItem) string {
 // (agent's encodeID): the key is the prefix, the escaped ID, and an optional ":<suffix>".
 var callKeyPrefixes = []string{
 	"approval-pending:", "approval-request:", "approval-tally:", "approval-deadline:", "approval:", "gate-reason:", "attempt:tool:",
+	"approval-exec-hold:", "approval-identity:", "approval-pause:",
+}
+
+// callKeySuffixOK reports whether suffix (what follows the escaped ID, without its ':'; "" for none)
+// is one the engine writes after a call ID under prefix. Only "approval:" needs the check: the
+// notification keys (agent.ApprovalKey and the rest) also start with it, but hold a run ID first and
+// end in a number or "reask-...", and a decision's key (approval:<call>:<approver>:<64 hex>) ends in
+// the hash. A key of the notification shape is not a step of a call and is shown as stored.
+func callKeySuffixOK(prefix, suffix string) bool {
+	if prefix != "approval:" || suffix == "" || suffix == "after-request" {
+		return true
+	}
+	h := suffix[strings.LastIndexByte(suffix, ':')+1:]
+	return len(h) == 64 && strings.Trim(h, "0123456789abcdef") == ""
 }
 
 // stepSubject is how the report names a step key. The key itself is stored and signed with a call ID
@@ -1602,7 +1616,7 @@ func stepSubject(key string) string {
 		}
 		seg, suffix, hasSuffix := strings.Cut(rest, ":")
 		id, ok := decodeCallID(seg)
-		if !ok {
+		if !ok || !callKeySuffixOK(p, suffix) {
 			break
 		}
 		name := p[:len(p)-1]
