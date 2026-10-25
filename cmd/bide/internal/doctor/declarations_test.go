@@ -137,7 +137,8 @@ func TestDiff_Usage(t *testing.T) {
 func TestRaisesSafety_IsListedAndDiffed(t *testing.T) {
 	pol := &declarations.Policy{Refuse: true}
 	plain := write(t, "plain.json", decl(pol, declarations.Tool{Name: "quote", Effect: true, Trusted: "ours"}))
-	raised := write(t, "raised.json", decl(pol, declarations.Tool{Name: "quote", Trusted: "ours", RaisesSafety: "reads the quote only"}))
+	raised := write(t, "raised.json", decl(pol, declarations.Tool{Name: "quote", Effect: true, Trusted: "ours", RaisesSafety: "reads the quote only"}))
+	idem := write(t, "idem.json", decl(pol, declarations.Tool{Name: "quote", Effect: true, Idempotent: true, Trusted: "ours", RaisesSafety: "reads the quote only"}))
 	code, out, errs := runMain("-declarations", raised)
 	if code != 0 || !strings.Contains(out, "tool quote") || !strings.Contains(out, "RaisesSafety") || !strings.Contains(out, "reads the quote only") {
 		t.Errorf("-declarations: code %d, out %q, err %q", code, out, errs)
@@ -145,6 +146,11 @@ func TestRaisesSafety_IsListedAndDiffed(t *testing.T) {
 	code, out, _ = runMain("-diff", plain, raised)
 	if code != 1 || !strings.Contains(out, "WEAKENED") || !strings.Contains(out, "RaisesSafety") {
 		t.Errorf("adding RaisesSafety: code %d, out %q", code, out)
+	}
+	// Effect is unchanged, so only RaisesSafety makes these weakened.
+	code, out, _ = runMain("-diff", raised, idem)
+	if code != 1 || !strings.Contains(out, "WEAKENED") || !strings.Contains(out, "Idempotent under RaisesSafety") {
+		t.Errorf("raising to Idempotent under RaisesSafety: code %d, out %q", code, out)
 	}
 	code, out, _ = runMain("-diff", raised, plain)
 	if code != 0 || !strings.Contains(out, "strengthened") || strings.Contains(out, "WEAKENED") || !strings.Contains(out, "RaisesSafety removed") {

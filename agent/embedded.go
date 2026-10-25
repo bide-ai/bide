@@ -110,7 +110,8 @@ func embeddedTool(f reflect.Value) (Tool, bool) {
 // inner tool in a named field, implements Spec itself and implements Unwrap() Tool passes it, and
 // the outer Spec wins, so a gate the inner tool declared would silently not apply. Every tool the
 // chain reaches is compared with s, and the first weaker field is ErrConfig, naming the field and
-// the tool. The remedy is to declare the same on the wrapper (or take the spec from the wrapped tool).
+// the tool. Each tool on the chain is also walked for the tools it embeds (see checkEmbedded), so a tool
+// reached through Unwrap that embeds a gated or less safe one is held to the same. The remedy is to declare the same on the wrapper (or take the spec from the wrapped tool).
 //
 // Weaker, per field:
 //   - Approval: s has none; or s needs fewer decisions than the inner gate (a SingleApproval needs
@@ -134,6 +135,9 @@ func checkUnwrapChain(t Tool, s ToolSpec) error {
 			return nil
 		}
 		is := specOf(t)
+		if err := checkEmbedded(t, s); err != nil { // a tool on the chain may embed another that the outer spec must also keep
+			return err
+		}
 		if field, why := weakerSpec(s, is); field != "" {
 			return fmt.Errorf("agent: tool %q wraps %q (Unwrap) and weakens its %s: %s; declare the same %s on the wrapper: %w", s.Name, is.Name, field, why, field, ErrConfig)
 		}

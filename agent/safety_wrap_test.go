@@ -252,3 +252,28 @@ func TestSafetyWrap_ARaisedWrapperIsTreatedByItsDeclaredLevel(t *testing.T) {
 		t.Error("a resume would not re-run the raised wrapper's call")
 	}
 }
+
+// A tool reached through Unwrap that itself embeds a less safe tool is looked into: the outer spec is held to
+// the embedded tool too (unwrap, then embed, then a side effect).
+func TestSafetyWrap_UnwrapThenEmbedIsHeldToTheEmbeddedTool(t *testing.T) {
+	readOnly := func(s *ToolSpec) { s.Safety = Safety{ReadOnly: true} }
+	mid := swEmbed{Tool: swInner(Safety{}), mutate: func(s *ToolSpec) { s.Name = "middle"; readOnly(s) }} // never registered itself
+	err := swRegister(swNamed{in: mid, mutate: func(s *ToolSpec) { s.Name = "outer"; readOnly(s) }})
+	if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), `"outer"`) || !strings.Contains(err.Error(), `"inner"`) {
+		t.Fatalf("err = %v, want ErrConfig naming outer and inner", err)
+	}
+	err = swRegister(swNamed{in: mid, mutate: func(s *ToolSpec) { s.Name = "outer"; readOnly(s); s.RaisesSafety = "it reads a replica" }})
+	if err != nil {
+		t.Fatalf("with a reason: %v", err)
+	}
+	// The same holds for an approval gate below such a tool.
+	gated := swEmbed{Tool: innerGated(), mutate: func(s *ToolSpec) { s.Name = "middle"; s.Approval = SingleApproval() }}
+	if err := swRegister(swNamed{in: gated, mutate: func(s *ToolSpec) { s.Name = "outer"; s.Approval = nil }}); !errors.Is(err, ErrConfig) {
+		t.Errorf("a wrapper that drops the gate of an embedded tool below an Unwrap = %v, want ErrConfig", err)
+	}
+}
+
+func innerGated() Tool {
+	var c counter
+	return c.tool("inner", WithApproval(SingleApproval()))
+}

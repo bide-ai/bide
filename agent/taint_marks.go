@@ -91,7 +91,9 @@ func Trusted(reason string) ToolOption {
 // wrapper whose Safety is safer than any tool inside it, since the wrapper's Safety is the one the agent
 // acts on: a ReadOnly wrapper over a tool with side effects would lose the taint gate, and an Idempotent
 // one would have its call re-run on resume. A wrapper that really does make the call safer (it stops at
-// a dry run, say) declares so and gives the reason. A tool that wraps nothing is not changed by it.
+// a dry run, say) declares so and gives the reason. The reason is checked for form only (the rules of
+// Trusted), not for meaning: it is recorded for the reviewer, who reads it in the declarations. A tool that
+// wraps nothing is not changed by it.
 // Experimental.
 func RaisesSafety(reason string) ToolOption {
 	return toolOption(func(c *toolConfig) error {
