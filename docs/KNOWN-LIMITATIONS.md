@@ -353,7 +353,7 @@ and the operator who resolves a halt (`agent.ResolveHalt`) hold no key the runti
 time is anchored only by the journal's Merkle trail once a signed head covers the record, and no
 clock is vouched for. A record written before the times existed has none and is reported as having
 none. A tool result a model-driven call produced has no `recorded_at` (the attempt marker's
-`attempted_at` is its time). Nothing reads these times to decide anything.
+`attempted_at` is its time, on the wall clock; the marker's own `recorded_at` is the same instant on the run's clock). Nothing reads these times to decide anything.
 
 **A re-ask note is proven in what it supersedes, not in the policy it states.** Readers honor a re-ask note only where the journal holds a recorded tally the gate would ask again over and the note's `Supersedes` names it (`agent.ValidReaskNote`), so a note pre-inserted without that is ignored. A journal writer who does have write access can still pre-insert a note with the correct `Supersedes` and a forged `Need`, `Approvers` or `Requesters`; readers that only have the journal (`bide view`, `bide approve`, the intake's fallback, notification details, the verdict's `Reask`) then display that policy. It changes what is shown, not what counts: the gate never reads the note, every decision is signed by an approver's key, and the intake and the gate count under the application's live policy.
 

@@ -191,8 +191,8 @@ type Outcome struct {
 // is young could record an outcome that driver is about to contradict.
 //
 // The recorded outcome notes when it was written (Record.RecordedAt), by WithClock's clock, else
-// the wall clock (the one clock of the call: its claim marker and WithMinHaltAge use it too, and the
-// context's clock is not read). It is the claim of the process that
+// the wall clock (the one clock of the call: WithMinHaltAge measures against it, and the next-attempt
+// marker it claims carries it as its recorded_at, with AttemptedAt the wall clock; the context's clock is not read). It is the claim of the process that
 // resolved the halt: the resolver signs nothing (ResolveHalt takes no key, and the runtime has no
 // list of who may resolve), so the time is anchored only by the journal's Merkle trail once a
 // signed head covers the record. It is informational: no drive, resume, replay or recovery pass
@@ -315,7 +315,7 @@ func resolveHalt(ctx context.Context, store *Journal, op string, ref HaltRef, ou
 	var heldKey string
 	if !cfg.noLiveCheck && attempt != nil {
 		heldKey = nextAttemptStep(attempt.Name)
-		won, _, err := store.claim(ctx, ref.RunID, heldKey, Record{Kind: StepAttempt, ToolUseID: id, AttemptedAt: cfg.now().UnixMilli()})
+		won, _, err := store.claim(ctx, ref.RunID, heldKey, Record{Kind: StepAttempt, ToolUseID: id, AttemptedAt: time.Now().UnixMilli(), ApproverSignature: recordedStamp(cfg.now)})
 		if err != nil {
 			return fmt.Errorf("%s: claim %s: %w", op, heldKey, err)
 		}

@@ -79,7 +79,11 @@ type Record struct {
 	// AttemptedAt is the Unix-millis wall-clock time an attempt marker (StepAttempt) was
 	// written, i.e. just before a non-retriable side effect fired. It is set once and read
 	// back verbatim on replay, so it stays deterministic. Zero (and omitted) on every
-	// other kind; a reconciler uses it to honor a grace period before resolving a halt.
+	// other kind; a reconciler uses it to honor a grace period before resolving a halt. It is
+	// always the wall clock, whatever clock the run was driven with, so a run clock that lags
+	// or leads cannot shorten that grace period. The same claim notes the time on the run's own
+	// clock (WithClock) as the marker's RecordedAt, which the run's other records and its cap
+	// windows are dated on.
 	AttemptedAt int64 `json:"attempted_at,omitempty"`
 	// Reconciled marks a StepToolResult that ResolveHalt injected from verified evidence
 	// rather than one the tool produced by running. It lets a later reader (and bide audit)
@@ -182,6 +186,13 @@ type ApproverSignature struct {
 	// existed has none, and Record.RecordedAt reports "" for it: a reader never supplies one. On
 	// these records a clock with no canonical form (outside the years 0001 to 9999) records no
 	// time, since they never fail for want of one.
+	//
+	// On an attempt marker (the claim of a tool call, of a Step, or by ClaimAttempt) it is the
+	// instant of the claim on the clock the run was driven with (WithClock, else the wall clock),
+	// while the marker's AttemptedAt is always the wall clock, so a run clock that lags or leads
+	// does not move the marker's age. A caller cannot set it: ClaimAttempt refuses a record that
+	// carries any of these members. No drive, resume or recovery reads it; bide audit caps dates a
+	// call's cap window by it. A marker written before it existed has none.
 	DecidedAt  string `json:"decided_at,omitempty"`
 	RecordedAt string `json:"recorded_at,omitempty"`
 	// ApproverCert is the leaf-first DER certificate chain of a certificate-bound approver (base64
@@ -284,7 +295,9 @@ func (r Record) DecidedAt() string {
 }
 
 // RecordedAt returns when a signed decision was journaled (ApproverSignature.RecordedAt), or ""
-// when the record carries none.
+// when the record carries none. On a record that resolves something a person was told about it is
+// the claim of the process that wrote it, and on an attempt marker the instant of the claim on the
+// clock the run was driven with; see ApproverSignature.RecordedAt.
 func (r Record) RecordedAt() string {
 	if r.ApproverSignature == nil {
 		return ""

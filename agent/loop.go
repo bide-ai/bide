@@ -854,7 +854,7 @@ func (a *Agent) runLoop(ctx context.Context, runID string, d *driveSpec) (Messag
 				if !c.spec.Safety.retriableOnResume() {
 					// protocol:stop begin Claim
 					won, got, key, err := claimNextAttempt(gctx, a.store, runID, toolAttemptStep(c.tu.ID),
-						Record{Kind: StepAttempt, ToolUseID: c.tu.ID, AttemptedAt: time.Now().UnixMilli()})
+						Record{Kind: StepAttempt, ToolUseID: c.tu.ID, AttemptedAt: time.Now().UnixMilli(), ApproverSignature: recordedStamp(clockFrom(gctx))})
 					if err != nil {
 						return err
 					}

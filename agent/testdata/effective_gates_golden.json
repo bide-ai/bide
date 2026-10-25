@@ -121,6 +121,7 @@
    "name": "attempt:tool:b1",
    "kind": "attempt",
    "tool_use_id": "b1",
+   "recorded_at": "2026-10-22T09:00:00.000Z",
    "attempted_at": 0,
    "claim": "-",
    "salt": "-"
@@ -223,6 +224,7 @@
    "name": "attempt:tool:b1",
    "kind": "attempt",
    "tool_use_id": "b1",
+   "recorded_at": "2026-10-22T09:00:00.000Z",
    "attempted_at": 0,
    "claim": "-",
    "salt": "-"
@@ -310,6 +312,7 @@
    "name": "attempt:tool:c1",
    "kind": "attempt",
    "tool_use_id": "c1",
+   "recorded_at": "2026-10-22T09:00:00.000Z",
    "attempted_at": 0,
    "claim": "-",
    "salt": "-"
@@ -479,6 +482,7 @@
    "name": "attempt:tool:c1",
    "kind": "attempt",
    "tool_use_id": "c1",
+   "recorded_at": "2026-10-22T09:00:00.000Z",
    "attempted_at": 0,
    "claim": "-",
    "salt": "-"

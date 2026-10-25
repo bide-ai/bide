@@ -451,7 +451,7 @@ func (e *env) refundFlow() *plan.Flow[order, string] {
 var errCrash = errors.New("simulated crash")
 
 // sampleStore is the store the sample's runs write to. It fixes what the runtime stamps from the
-// wall clock: an attempt marker's attempted_at, run:start's started_at and an approval-request,
+// wall clock: an attempt marker's attempted_at and recorded_at, run:start's started_at and an approval-request,
 // approval-pending or run:complete record's recorded_at (a plan flow takes the wall clock, as plan has no clock option; an agent
 // run's are already its clock's). It also fails
 // the insert of the record named lose, when set: the write a crash loses. With noStartTime it
@@ -481,7 +481,7 @@ func (s *sampleStore) Insert(ctx context.Context, runID, name string, data []byt
 			data = startedAt.ReplaceAll(data, []byte(`"started_at":"`+s.at.UTC().Format("2006-01-02T15:04:05.000Z")+`"`))
 		}
 	}
-	if strings.HasPrefix(name, "approval-pending:") || strings.HasPrefix(name, "approval-request:") || name == "run:complete" {
+	if strings.HasPrefix(name, "approval-pending:") || strings.HasPrefix(name, "approval-request:") || name == "run:complete" || strings.HasPrefix(name, "attempt:") {
 		data = recordedAt.ReplaceAll(data, []byte(`"recorded_at":"`+agent.FormatTimestamp(s.at)+`"`))
 	}
 	data = attemptedAt.ReplaceAll(data, []byte(`"attempted_at":`+strconv.FormatInt(s.at.UnixMilli(), 10)))
