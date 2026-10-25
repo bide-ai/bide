@@ -498,8 +498,8 @@ func reconcileCapRuns(ctx context.Context, store *Journal, runs []string) ([]str
 
 // Why the loop released a call's reservation without the tool having begun.
 const (
-	capReleaseRefused = "cap refusal"               // a cumulative cap refused the call (errCapRefused), after another rule's slot was reserved
-	capReleaseNoCall  = "chain without a tool call" // the chain returned without reaching the tool's Call (a middleware's own error, a failed later reservation)
+	capReleaseRefused = capledger.ReleaseWhyRefused // a cumulative cap refused the call (errCapRefused), after another rule's slot was reserved
+	capReleaseNoCall  = capledger.ReleaseWhyNoCall  // the chain returned without reaching the tool's Call after a reservation (a later reservation the store failed)
 )
 
 // capReleaseWhy is the reason to journal for a release after the chain returned err.
@@ -516,7 +516,6 @@ func capReleaseWhy(err error) string {
 type capReleaseNote struct {
 	Format  string `json:"format"`
 	Attempt string `json:"attempt"`
-	Ledger  string `json:"ledger,omitempty"`
 	Why     string `json:"why"`
 }
 

@@ -117,3 +117,26 @@ func TestCapsReleaseNote_CallersCannotWriteTheName(t *testing.T) {
 		t.Fatalf("ClaimAttempt: %v, want ErrConfig", err)
 	}
 }
+
+// The other reason: a later reservation the store fails ends the call before its tool begins, and the earlier
+// rule's slot is released with the chain-without-a-tool-call reason.
+func TestCapsReleaseNote_AFailedLaterReservationLeavesItsReason(t *testing.T) {
+	os := &orderStore{Store: NewMemStore()}
+	j := newJournal(os)
+	os.failOn = func(name string, data []byte) bool {
+		return strings.HasPrefix(name, "slot:") && strings.Contains(string(data), "refund_hour")
+	}
+	tool := sumTool(Safety{}, capRuleDay, capRuleHour)
+	if _, err := runSum(t, j, "r0", sumArgs(60, ""), tool); err == nil {
+		t.Fatal("want the failed reservation")
+	}
+	notes := releaseNotes(t, j)
+	if len(notes) != 1 {
+		t.Fatalf("releases = %d, want the first rule's slot released", len(notes))
+	}
+	for n, note := range notes {
+		if note == nil || note.Why != capReleaseNoCall {
+			t.Fatalf("slot %d's note = %+v, want the chain-without-a-tool-call reason", n, note)
+		}
+	}
+}
