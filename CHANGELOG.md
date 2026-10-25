@@ -11,6 +11,12 @@ journal format can change between pre-releases without a version bump. Curated h
 
 Unreleased changes are in `changes/unreleased/`.
 
+## [0.23.2] - 2026-10-25
+
+### Fixed
+
+- `ClaimAttempt` stamps a marker's `AttemptedAt` from the wall clock again. v0.23.1 stamped it from the clock bound to the context (`WithClock`), so under a run clock that lagged the wall clock a marker claimed this instant looked old: `ResolveHalt` with `WithMinHaltAge` resolved it at once, and the notifier's sweep reported it as a halt before `WithNotifyHaltAge`, defeating the grace period they enforce. The engine's own claims for a tool call and a `Journal.Step` were always stamped from the wall clock. Without `WithClock` nothing changes.
+
 ## [0.23.1] - 2026-10-24
 
 ### Fixed
@@ -1223,7 +1229,8 @@ First public release.
 - `bide-audit` standalone verifier, prebuilt for Linux, macOS and Windows on amd64 and arm64.
 - `eval` statistical evaluation harness, `chaos` crash-injection harness, and `cmd/bench`.
 
-[Unreleased]: https://github.com/bide-ai/bide/compare/v0.23.1...HEAD
+[Unreleased]: https://github.com/bide-ai/bide/compare/v0.23.2...HEAD
+[0.23.2]: https://github.com/bide-ai/bide/compare/v0.23.1...v0.23.2
 [0.23.1]: https://github.com/bide-ai/bide/compare/v0.23.0...v0.23.1
 [0.23.0]: https://github.com/bide-ai/bide/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/bide-ai/bide/compare/v0.21.0...v0.22.0
