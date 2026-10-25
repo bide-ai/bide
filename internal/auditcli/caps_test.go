@@ -1555,16 +1555,17 @@ func TestCapsAudit_OneUnreadableRunIsAFindingNotTheEndOfTheAudit(t *testing.T) {
 
 func TestCapsAudit_ARunASlotNamesCannotBeReadFailsItsLedger(t *testing.T) {
 	e := threeCalls(t)
-	e.tamper.failRun = func(run string) bool { return run == "r2" }
+	e.forgeRelease("r1")
+	e.tamper.failRun = func(run string) bool { return run == "r2" || run == "r1" }
 	code, out, errOut := unanchoredCaps()
 	wantFail(t, code, out, errOut, "UNREADABLE")
 	// The unreadable run explains its own slot's missing cross-checks: no spurious findings on it.
-	for _, k := range []string{"UNRECORDED", "INTENT_MISSING", "RELEASE_"} {
+	for _, k := range []string{"UNRECORDED", "INTENT_MISSING", "RELEASE_", "voided"} {
 		if strings.Contains(out, k) {
 			t.Fatalf("a %s finding for a run that could not be read:\n%s", k, out)
 		}
 	}
-	if !strings.Contains(out, "run r2 cannot be read") {
+	if !strings.Contains(out, "run r2 cannot be read") || !strings.Contains(out, "run r1 cannot be read") {
 		t.Fatalf("the run must be named:\n%s", out)
 	}
 }
