@@ -41,6 +41,7 @@ const (
 	capIntentUndated = "INTENT_UNDATED"             // warning: an intent whose call has no start time to date it by
 	capRunHead       = "RUN_NOT_ATTESTED"           // cap records of a run that no signed head of that run covers
 	capReleaseRan    = "RELEASE_OF_A_CALL_THAT_RAN" // a release of a reservation whose call has a result the tool produced
+	capReleaseTail   = "RELEASE_UNATTESTED"         // a release whose verdict rests on records past the run's newest signed head
 	capReleaseUnk    = "RELEASE_UNCONFIRMED"        // warning: a release whose attempt is neither voided nor answered
 )
 
@@ -90,6 +91,8 @@ type capsReport struct {
 	Ledgers    []capsLedger  `json:"ledgers"`
 	Findings   []capsFinding `json:"findings"`
 	NotChecked []string      `json:"not_checked,omitempty"`
+	// Ignored says which signed heads the audit did not use (information, not a limit).
+	Ignored string `json:"ignored,omitempty"`
 	// OrphanIntents are the attempts with a cap-intent and no slot: interrupted before the slot (information).
 	OrphanIntents []string `json:"orphan_intents,omitempty"`
 }
@@ -230,13 +233,23 @@ func (c *cli) caps(args []string) {
 		slots += l.Slots
 		live += l.Live
 	}
+	unchecked := ""
+	warnings := len(rep.Findings) - rep.failures()
+	switch n := len(rep.NotChecked); {
+	case n > 0 && warnings > 0 && !in.filter.any():
+		unchecked = fmt.Sprintf(" (with %d NOT CHECKED note(s) and %d warning(s) above)", n, warnings)
+	case n > 0 && !in.filter.any():
+		unchecked = fmt.Sprintf(" (with %d NOT CHECKED note(s) above)", n)
+	case warnings > 0:
+		unchecked = fmt.Sprintf(" (with %d warning(s) above)", warnings)
+	}
 	switch {
 	case in.filter.any():
 		c.printf("PASS (filtered): the %d ledger(s) checked hold together (%d slots, %d live); the checks that were NOT made are listed above\n", len(rep.Ledgers), slots, live)
 	case in.anchored:
-		c.printf("PASS: %d ledger(s), %d slot(s), %d live: each reads under the ledger's rules, agrees with the runs' cap-reserve records, and is unchanged since its newest signed head, and so are the cap records of its runs (a signature covers what the store was given at signing, not that it was legitimate)\n", len(rep.Ledgers), slots, live)
+		c.printf("PASS: %d ledger(s), %d slot(s), %d live: each reads under the ledger's rules, agrees with the runs' cap-reserve records, and is unchanged since its newest signed head, and so are the cap records of its runs (a signature covers what the store was given at signing, not that it was legitimate)%s\n", len(rep.Ledgers), slots, live, unchecked)
 	default:
-		c.printf("PASS: %d ledger(s), %d slot(s), %d live: each reads under the ledger's rules and agrees with the runs' cap-reserve records; nothing attests that the store is complete (UNANCHORED)\n", len(rep.Ledgers), slots, live)
+		c.printf("PASS: %d ledger(s), %d slot(s), %d live: each reads under the ledger's rules and agrees with the runs' cap-reserve records; nothing attests that the store is complete (UNANCHORED)%s\n", len(rep.Ledgers), slots, live, unchecked)
 	}
 }
 
@@ -292,7 +305,7 @@ func auditCaps(ctx context.Context, store agent.Store, j *agent.Journal, led *ca
 	// The cap-reserve records of the runs in scope, by the ledger they name.
 	claims := map[string][]capClaim{}
 	intents := map[string][]capIntent{} // by attempt
-	rs := capRunFacts{results: map[string]map[string]bool{}, ended: map[string]bool{}, started: map[string]time.Time{},
+	rs := capRunFacts{results: map[string]map[string]capResult{}, ended: map[string]bool{}, covered: map[string]bool{}, started: map[string]time.Time{},
 		attempted: map[string]map[string]time.Time{}, capRecs: map[string]int{}, records: map[string]int{}, unmarked: map[string]bool{}}
 	for _, id := range runs {
 		recs, err := j.History(ctx, id)
@@ -334,9 +347,9 @@ func auditCaps(ctx context.Context, store agent.Store, j *agent.Journal, led *ca
 			}
 			if r.Kind == agent.StepToolResult {
 				if rs.results[id] == nil {
-					rs.results[id] = map[string]bool{}
+					rs.results[id] = map[string]capResult{}
 				}
-				rs.results[id][r.ToolUseID] = r.IsError
+				rs.results[id][r.ToolUseID] = capResult{isErr: r.IsError, refused: r.IsError && engineRefusal(r.Result)}
 			}
 			if r.Kind == agent.StepValue && capledger.IsIntentName(r.Name) {
 				in, err := capledger.DecodeIntent(r.Result)
@@ -414,6 +427,7 @@ func auditCaps(ctx context.Context, store agent.Store, j *agent.Journal, led *ca
 			for _, d := range cov.DivergentHeads {
 				find(capDivergent, id, -1, "run %s: the signed head of size %d does not match the run (a record was changed or deleted): %s", cleanText(id), d.Size, d.Reason)
 			}
+			rs.covered[id] = cov.Heads > 0 && cov.LargestHead >= len(recs)
 			switch {
 			case cov.Heads == 0:
 				find(capRunHead, id, -1, "no signed head covers run %s, whose cap-intent and cap-reserve records the audit relies on: NOT ATTESTED", cleanText(id))
@@ -453,7 +467,7 @@ func auditCaps(ctx context.Context, store agent.Store, j *agent.Journal, led *ca
 	}
 
 	if in.anchored && otherHeads > 0 {
-		rep.NotChecked = append(rep.NotChecked, fmt.Sprintf("%d signed head(s) of runs that are not cap ledgers were ignored", otherHeads))
+		rep.Ignored = fmt.Sprintf("%d signed head(s) of runs that hold no cap records were ignored", otherHeads)
 	}
 	if in.filter.any() {
 		rep.NotChecked = append(rep.NotChecked, in.filter.describe()...)
@@ -610,8 +624,11 @@ func auditLedger(ctx context.Context, j *agent.Journal, led *capledger.Ledger, v
 	}
 
 	// A release is the loop's, written only for a call it proved never began. The call's journal shows
-	// that: either it was voided (not started), or its result is an error (a refusal or a failure before
-	// the tool began). A release of a call whose result the tool produced is no honest drive's.
+	// that: it was voided (not started), or the engine answered it with a refusal and never called the
+	// tool. A release of a call whose result the tool produced is the loop's never. An error result that is
+	// not the engine's refusal is a tool that ran and failed, or a refusal this audit does not know: it
+	// cannot be told apart, and is a warning. A release whose verdict rests on records after the run's
+	// newest signed head (anchored) is not attested, and fails.
 	for _, rel := range slots {
 		if rel.Kind != "release" || rel.Ref < 0 || rel.Ref >= len(slots) {
 			continue
@@ -620,11 +637,15 @@ func auditLedger(ctx context.Context, j *agent.Journal, led *capledger.Ledger, v
 		if !in.filter.inRun(r.Run) {
 			continue
 		}
-		isErr, answered := rs.results[r.Run][r.Tool]
+		res, answered := rs.results[r.Run][r.Tool]
 		switch {
-		case answered && !isErr:
+		case in.anchored && !rs.covered[r.Run]:
+			find(capReleaseTail, run, rel.N, "slot %d releases slot %d (attempt %s), and what shows whether its call ran lies in run %s after the newest signed head (or no head covers the run): NOT ATTESTED", rel.N, r.N, cleanText(r.Attempt), cleanText(r.Run))
+		case answered && !res.isErr:
 			find(capReleaseRan, run, rel.N, "slot %d releases slot %d (attempt %s), and run %s holds a result of call %s that the tool produced: the call ran, so it was never released by the loop", rel.N, r.N, cleanText(r.Attempt), cleanText(r.Run), cleanText(r.Tool))
+		case answered && res.refused:
 		case answered:
+			warn(capReleaseUnk, run, rel.N, "slot %d releases slot %d (attempt %s), and the result of call %s in run %s is an error the engine did not write as a refusal: a tool that ran and failed looks the same, and so does a refusal this audit does not know", rel.N, r.N, cleanText(r.Attempt), cleanText(r.Tool), cleanText(r.Run))
 		default:
 			v, err := voided(ctx, j, r)
 			if err != nil {
@@ -677,6 +698,9 @@ func (c *cli) capsReport(rep capsReport) {
 	}
 	if n := len(rep.OrphanIntents); n > 0 {
 		c.printf("INFO  %d cap-intent(s) have no slot: the attempt was interrupted before its slot, and counts nothing\n", n)
+	}
+	if rep.Ignored != "" {
+		c.printf("INFO  %s\n", rep.Ignored)
 	}
 	for _, n := range rep.NotChecked {
 		c.printf("INFO  NOT CHECKED: %s\n", n)
@@ -848,7 +872,8 @@ func auditIntents(ctx context.Context, j *agent.Journal, led *capledger.Ledger, 
 // capRunFacts is what the audit read of the runs besides their cap records: which tool-use IDs of a run
 // have a result (and whether it is an error), and which runs have ended.
 type capRunFacts struct {
-	results   map[string]map[string]bool // run -> tool-use ID -> the result is an error
+	results   map[string]map[string]capResult // run -> tool-use ID -> its result
+	covered   map[string]bool                 // run -> its newest signed head covers the whole run (anchored audits)
 	ended     map[string]bool
 	started   map[string]time.Time            // run -> the start time its run:start records (the run's clock)
 	attempted map[string]map[string]time.Time // run -> attempt marker name -> recorded_at (the run clock)
@@ -901,7 +926,7 @@ func checkIntentTime(led *capledger.Ledger, att string, ci capIntent, rs capRunF
 }
 
 // windowOutOfTime says why window (of kind) cannot hold a call, or "" if it can. A call with an attempt
-// marker is dated by it: the engine stamps AttemptedAt from the run's clock when it claims the attempt, a
+// marker is dated by it: the engine writes recorded_at on the run's clock when it claims the attempt, a
 // moment before the first intent, so the window must be the one containing it or the one after (a boundary
 // may fall between the claim and the intent). A call with no marker (an unmarked attempt) is dated only by
 // the start of its run: the window must not be earlier than the window of the start, and a run that lives
@@ -953,4 +978,15 @@ func markerOf(attempt string) string {
 		return name
 	}
 	return ""
+}
+
+// capResult is a tool result as the audit needs it: whether it is an error, and whether it is the engine's
+// own refusal of the call (the tool was never called).
+type capResult struct{ isErr, refused bool }
+
+// engineRefusal reports whether a tool result is one the engine wrote when it refused a call before its tool
+// began ("tool call refused: ..." for an amount cap or a taint gate).
+func engineRefusal(result json.RawMessage) bool {
+	var text string
+	return json.Unmarshal(result, &text) == nil && strings.HasPrefix(text, "tool call refused: ")
 }

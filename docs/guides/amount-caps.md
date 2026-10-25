@@ -190,8 +190,11 @@ For each ledger run (`@cap/...`) it checks:
    call is `RELEASE_OF_A_CALL_THAT_RAN` and fails, whoever wrote the slot and whether or not a signed head
    covers it. A release of an attempt that is neither recorded as not started nor answered by a result is a
    warning (`RELEASE_UNCONFIRMED`): a crash between the release and the void looks the same, and a re-drive
-   voids it. A release of a call that ended in an error result (a refusal by a later rule, a failure before
-   the tool began) is what the loop writes and passes.
+   voids it. A release of a call the engine answered with its own refusal ("tool call refused: ...", the tool never
+   called) is what the loop writes and passes. A release of a call that ended in some other error result is a
+   warning too: a tool that ran and failed has a live marker and looks the same, and so does a refusal this
+   audit does not know; a retry-safe tool has no marker at all. With signed heads, a release whose verdict
+   rests on records past the run's newest head (or on a run no head covers) fails (`RELEASE_UNATTESTED`).
 6. **The signed heads** (`-sth`, with `-pubkey`). An `AuditedStore` anchors a head for every ledger run it
    writes; pass the heads from your anchor log (one JSON head per line, any number, for any runs). Each
    must verify, and the ledger must be the one the newest head signs: a slot changed or deleted since is a
@@ -226,7 +229,7 @@ It does not check the index runs for entries no intent uses (they cost nothing),
 the writer's clock bound (a setting that is not recorded); the time check above stands in for it.
 **What remains.** Someone who can write the store and sign heads (a process that writes through the signing
 store, or holds the log key) can write a history that is consistent with itself, and the audit finds only
-contradictions: it cannot tell that history from an honest one. A head signs whatever the run held when it
+contradictions: it cannot tell that history from a legitimate one. A head signs whatever the run held when it
 was signed: a record planted in a run before a later, legitimate write to the same run is covered by the head
 that write anchors, so the head attests the plant and `RUN_NOT_ATTESTED` cannot see it. Detection by heads works
 only for what was written after the newest head; the time check above is what catches a plant of that kind. `bide sample` writes a small ledger to

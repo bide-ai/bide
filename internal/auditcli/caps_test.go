@@ -1329,7 +1329,7 @@ func TestCapsAudit_AMarkerWithoutRecordedAtDatesNothingAndSaysSo(t *testing.T) {
 	if !strings.Contains(out, "no dated marker") {
 		t.Fatalf("the undated marker must be counted:\n%s", out)
 	}
-	// And with an honest intent the audit passes but still says the call was dated by run:start only.
+	// And with a plain intent the audit passes but still says the call was dated by run:start only.
 	e2 := newCapsEnv(t)
 	if err := e2.call("r1", 100); err != nil {
 		t.Fatal(err)
@@ -1337,6 +1337,77 @@ func TestCapsAudit_AMarkerWithoutRecordedAtDatesNothingAndSaysSo(t *testing.T) {
 	e2.tamper.edit = e.tamper.edit
 	code, out, errOut = unanchoredCaps()
 	if code != 0 || !strings.Contains(out, "NOT CHECKED: 1 cap-intent(s) belong to attempts with no dated marker") {
+		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
+	}
+}
+
+func TestCapsAudit_AForgedReleaseOfACallThatRanAndFailedIsAWarning(t *testing.T) {
+	e := newCapsEnv(t)
+	type in struct {
+		Amount   int64  `json:"amount"`
+		Currency string `json:"currency"`
+	}
+	tool, err := agent.Func("refund", "refund", func(context.Context, in) (string, error) { return "", errors.New("boom") }, agent.WithCaps(capsRule))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := agent.New(agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "refund", `{"amount":60,"currency":"USD"}`), agenttest.TextTurn("done")),
+		e.j, agent.WithTools(tool), agent.WithClock(func() time.Time { return capsNow }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(context.Background(), "r1", agent.UserText("go")); err != nil {
+		t.Fatal(err)
+	}
+	e.forgeRelease("r1") // the tool ran and failed: its marker stands, and it was never released by the loop
+	// The tool's own error is not the engine's refusal: the audit cannot tell it from one it does not know,
+	// and says so (a warning), where a legitimate refusal passes silently.
+	for name, run := range map[string]func() (int, string, string){"unanchored": func() (int, string, string) { return unanchoredCaps() }, "anchored": func() (int, string, string) { return e.anchored() }} {
+		code, out, errOut := run()
+		if code != 0 || !strings.Contains(out, "WARN  RELEASE_UNCONFIRMED") || !strings.Contains(out, "an error the engine did not write as a refusal") {
+			t.Fatalf("%s: exit %d\n%s\n%s", name, code, out, errOut)
+		}
+	}
+}
+
+func TestCapsAudit_AReleaseJudgedOnRecordsPastTheRunsNewestHead(t *testing.T) {
+	e := threeCalls(t)
+	e.heads()
+	// r1's newest head is the one through its last cap record; the rest of the run (result, completion) is past it.
+	recs, err := e.j.History(context.Background(), "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	size := 0
+	for i, r := range recs {
+		if capledger.IsIntentName(r.Name) || capledger.IsReserveName(r.Name) {
+			size = i + 1
+		}
+	}
+	var b bytes.Buffer
+	for _, en := range e.anchor.Entries() {
+		if en.RunID == "r1" && en.STH.Size != size {
+			continue
+		}
+		line, _ := json.Marshal(en.STH)
+		b.Write(append(line, '\n'))
+	}
+	p := filepath.Join(e.dir, "short.jsonl")
+	if err := os.WriteFile(p, b.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e.forgeRelease("r1")
+	// What shows whether r1's call ran (its result) lies past the run's newest head: the release is not attested.
+	code, out, errOut := runCLI("caps", "-db", "x.db", "-sth", p, "-pubkey", e.pub)
+	wantFail(t, code, out, errOut, "RELEASE_UNATTESTED")
+}
+
+func TestCapsAudit_APassSaysHowManyWarningsItCarries(t *testing.T) {
+	e := threeCalls(t)
+	e.forgeRelease("r1")
+	e.tamper.hide = func(r, n string) bool { return r == "r1" && n == "tool:c1" }
+	code, out, errOut := unanchoredCaps()
+	if code != 0 || !strings.Contains(out, "(with 1 warning(s) above)") {
 		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
 	}
 }
