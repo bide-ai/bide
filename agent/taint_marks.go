@@ -155,6 +155,15 @@ func (s ToolSpec) untrustedSource() string {
 	return s.Safety.Untrusted
 }
 
+// checkRaisesSafety holds a RaisesSafety reason on a spec built by hand to the rules of the option (those of
+// Trusted). An empty one is not set.
+func checkRaisesSafety(s ToolSpec) error {
+	if s.RaisesSafety == "" {
+		return nil
+	}
+	return checkProvenanceName("RaisesSafety of tool "+s.Name, s.RaisesSafety)
+}
+
 // normalizeUntrusted folds Safety.Untrusted into ToolSpec.Untrusted, so that a source given through
 // WithSafety is a declaration like the option's and is never ignored. Both given and different, or an
 // invalid name, is ErrConfig.
@@ -172,10 +181,8 @@ func normalizeUntrusted(s *ToolSpec) error {
 			return err
 		}
 	}
-	if s.RaisesSafety != "" { // likewise
-		if err := checkProvenanceName("RaisesSafety of tool "+s.Name, s.RaisesSafety); err != nil {
-			return err
-		}
+	if err := checkRaisesSafety(*s); err != nil {
+		return err
 	}
 	s.Untrusted = s.untrustedSource()
 	if s.Untrusted != "" && s.Trusted != "" {

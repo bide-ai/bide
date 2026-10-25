@@ -6,6 +6,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/bide-ai/bide/internal/toolhook"
 )
 
 // A wrapper's Safety is the one the agent acts on (taint gate, resume), so a wrapper may not declare a safer
@@ -157,7 +159,7 @@ func TestSafetyWrap_RaisesSafetyAcceptsASaferWrapper(t *testing.T) {
 // The reason follows the rules of Trusted: required, printable, at most 128 bytes. As the option and as a
 // field of a spec built by hand.
 func TestSafetyWrap_RaisesSafetyReasonIsValidated(t *testing.T) {
-	bad := map[string]string{"whitespace": "   ", "tab": "\t", "zero-width": "​", "control": "a\x01b", "over the cap": strings.Repeat("x", 129), "invalid UTF-8": "a\xffb"}
+	bad := map[string]string{"whitespace": "   ", "one space": " ", "tab": "\t", "no-break space": "\u00a0", "nul": "bad\x00nul", "newline": "\n", "RTL override": "a\u202eb", "zero-width": "​", "control": "a\x01b", "over the cap": strings.Repeat("x", 129), "invalid UTF-8": "a\xffb"}
 	for name, r := range bad {
 		t.Run(name, func(t *testing.T) {
 			if _, err := Func("f", "d", func(context.Context, struct{}) (string, error) { return "", nil }, RaisesSafety(r)); !errors.Is(err, ErrConfig) {
@@ -276,4 +278,28 @@ func TestSafetyWrap_UnwrapThenEmbedIsHeldToTheEmbeddedTool(t *testing.T) {
 func innerGated() Tool {
 	var c counter
 	return c.tool("inner", WithApproval(SingleApproval()))
+}
+
+// The raw field is validated on every path that registers a tool: New and the plan hook alike. An empty
+// reason is not an opt-out, so a wrapper that raises its level with it is refused; a short printable one is.
+func TestSafetyWrap_RawReasonIsCheckedOnTheFlowPathToo(t *testing.T) {
+	wrap := func(r string) Tool {
+		return swShape("unwrap", 1, swInner(Safety{}), func(s *ToolSpec) { s.Safety = Safety{ReadOnly: true}; s.RaisesSafety = r })
+	}
+	for _, r := range []string{"", " ", "\t", " ", "bad\x00nul", strings.Repeat("x", 129)} {
+		if err := toolhook.CheckTool(wrap(r)); !errors.Is(err, ErrConfig) {
+			t.Errorf("CheckTool with reason %q = %v, want ErrConfig", r, err)
+		}
+		if err := swRegister(wrap(r)); !errors.Is(err, ErrConfig) {
+			t.Errorf("New with reason %q = %v, want ErrConfig", r, err)
+		}
+	}
+	for _, r := range []string{"x", "it reads a replica"} {
+		if err := toolhook.CheckTool(wrap(r)); err != nil {
+			t.Errorf("CheckTool with reason %q = %v", r, err)
+		}
+		if err := swRegister(wrap(r)); err != nil {
+			t.Errorf("New with reason %q = %v", r, err)
+		}
+	}
 }
