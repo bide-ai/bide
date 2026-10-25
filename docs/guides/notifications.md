@@ -561,7 +561,7 @@ wait doubling to 30 seconds while it keeps failing, and the write that ends the 
 relay holds an exclusive operating-system lock (`<file>.lock`, `flock` on Unix, `LockFileEx` on
 Windows) for as long as it runs, and a second relay on the same file refuses to start, naming it. The
 lock belongs to the process, so a relay that crashes or is killed releases it and the next one starts;
-there is no stale lock to delete. A save that is killed part way leaves the previous state file
+there is no stale lock to delete. On a platform with no such lock (Solaris, where `syscall.Flock` does not exist; illumos has it) the relay refuses a `StatePath` at start (`relay: locking the state file: exclusive file locks are not supported on this platform`) instead of using the file unprotected; without a `StatePath` it runs, with its memory in the process. A save that is killed part way leaves the previous state file
 intact, and the next start removes the half-written temporary file. Two relays behind a load balancer
 still need a file each, and still have separate memories, so run one.
 

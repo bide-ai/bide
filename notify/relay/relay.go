@@ -89,6 +89,7 @@ type Config struct {
 	// The Handler holds an exclusive operating-system lock on StatePath+".lock" until Close or the
 	// process ends (a crash releases it), and New fails if another relay holds it: two relays
 	// sharing one file would overwrite each other's memory.
+	// Where the platform has no such lock (Solaris), New refuses a StatePath.
 	StatePath string
 	// ForwardTimeout bounds the forwarding of one delivery; zero means DefaultForwardTimeout. Forwarding
 	// continues after the sender gives up, so a retry finds it done.
