@@ -8,6 +8,10 @@ import (
 	"syscall"
 )
 
+// haveFileLock says whether this platform has an exclusive file lock (lockFile); the tests that need a
+// state file skip where it is false.
+const haveFileLock = true
+
 // lockFile takes an exclusive, non-blocking flock on f. It reports held=true if another holder has it.
 func lockFile(f *os.File) (held bool, err error) {
 	for {

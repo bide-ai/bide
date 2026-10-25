@@ -118,6 +118,7 @@ func TestSaveGivesUpOnAPersistentRefusal(t *testing.T) {
 // A save that fails is not forgotten: the state stays dirty and is written when the file can be written again,
 // with no further event, and a Close writes it too.
 func TestFailedSaveIsRetriedWithoutAnotherEvent(t *testing.T) {
+	requireFileLock(t)
 	path := filepath.Join(t.TempDir(), "relay.state")
 	var logs []string
 	var lmu sync.Mutex
@@ -229,6 +230,7 @@ func (ft *fakeTimers) recorded() []time.Duration {
 // the refusal passes, with no log line for the passing refusals. The timer is a fake: the test asserts on the
 // recorded waits and the sleep hook, not on elapsed time.
 func TestTransientRefusalIsRetriedOnATimerNotInLine(t *testing.T) {
+	requireFileLock(t)
 	path := filepath.Join(t.TempDir(), "relay.state")
 	var logged atomic.Int32
 	sink := &funcSink{name: "s"}
@@ -280,6 +282,7 @@ func TestTransientRefusalIsRetriedOnATimerNotInLine(t *testing.T) {
 // streak, and its recovery is logged, so a permanent fault is neither a busy loop nor a flood. The timer is a
 // fake, so the test asserts on the recorded waits (doubling from the retry delay), not on elapsed time.
 func TestPermanentFailureBacksOffAndLogsOncePerStreak(t *testing.T) {
+	requireFileLock(t)
 	path := filepath.Join(t.TempDir(), "relay.state")
 	var failedLines, recoveredLines atomic.Int32
 	sink := &funcSink{name: "s"}
@@ -336,6 +339,7 @@ func TestPermanentFailureBacksOffAndLogsOncePerStreak(t *testing.T) {
 
 // newFailingRelay returns a Handler whose saves always fail with a refusal that does not pass, on fake timers.
 func newFailingRelay(t *testing.T) (*Handler, *fakeTimers) {
+	requireFileLock(t)
 	t.Helper()
 	h, err := New(Config{Secrets: []string{secret}, Sinks: []Sink{&funcSink{name: "s"}}, StatePath: filepath.Join(t.TempDir(), "relay.state"), StateFlushDelay: -1})
 	if err != nil {
@@ -398,6 +402,7 @@ func TestRescheduleStopsThePreviousTimer(t *testing.T) {
 // measure the saves' own file I/O (CreateTemp, write, fsync), which is slow on a loaded Windows runner: with
 // StateFlushDelay < 0 the second persist saves in line itself.
 func TestRetryDoesNotHoldTheEventPath(t *testing.T) {
+	requireFileLock(t)
 	sink := &funcSink{name: "s"}
 	h, err := New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, StatePath: filepath.Join(t.TempDir(), "relay.state"), StateFlushDelay: -1})
 	if err != nil {
