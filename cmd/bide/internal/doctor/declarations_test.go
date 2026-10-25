@@ -149,8 +149,8 @@ func TestRaisesSafety_IsListedAndDiffed(t *testing.T) {
 	}
 	// Effect is unchanged, so only RaisesSafety makes these weakened.
 	code, out, _ = runMain("-diff", raised, idem)
-	if code != 1 || !strings.Contains(out, "WEAKENED") || !strings.Contains(out, "Idempotent under RaisesSafety") {
-		t.Errorf("raising to Idempotent under RaisesSafety: code %d, out %q", code, out)
+	if code != 1 || !strings.Contains(out, "WEAKENED") || !strings.Contains(out, "now Idempotent") {
+		t.Errorf("raising to Idempotent: code %d, out %q", code, out)
 	}
 	code, out, _ = runMain("-diff", raised, plain)
 	if code != 0 || !strings.Contains(out, "strengthened") || strings.Contains(out, "WEAKENED") || !strings.Contains(out, "RaisesSafety removed") {

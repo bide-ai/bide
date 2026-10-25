@@ -195,7 +195,7 @@ bide doctor -diff main/declarations.json declarations.json
   `Trusted` is listed as unclassified: it may be trusted or forgotten, and the declaration tells them apart.
 - **`-diff old new`** lists every change as `WEAKENED`, `changed` or `strengthened`, and exits 1 if anything is
   weakened, so a pipeline can compare a branch against `main`. Weakened: a removed `Untrusted` (also when a `Trusted` replaces it); `require_provenance` turned off (turned on is strengthened); a new or reworded
-  `TaintExempt`; a new `RaisesSafety` (a wrapper raising its `Safety` under it also shows as a tool that becomes `ReadOnly`, or as one that becomes `Idempotent` under `RaisesSafety`; removing it is strengthened, and rewording it is changed); the policy removed, or `refuse` turned into a gate; a lower `need`; a requester no longer
+  `TaintExempt`; a new `RaisesSafety` (removing it is strengthened, rewording it is changed); any tool that becomes safer to re-run (side effect to `Idempotent`, or either to `ReadOnly`), since a resume then re-runs its calls (the move back is strengthened); the policy removed, or `refuse` turned into a gate; a lower `need`; a requester no longer
   excluded; an m-of-n gate turned into one decision; a raised cap limit; a removed cap rule; a *renamed*
   cumulative rule (its name is its ledger, so the window starts again from zero); a refuse turned into a gate; a
   window of a day where it was an hour; a rule that applies to fewer tools; a key added to a cumulative rule (one

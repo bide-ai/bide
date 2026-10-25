@@ -161,8 +161,11 @@ func TestDiff_Classifies(t *testing.T) {
 		{"RaisesSafety is removed", doc(pol(twoOfTwo), Tool{Name: "w", Effect: true, RaisesSafety: "dry run"}), doc(pol(twoOfTwo), Tool{Name: "w", Effect: true}), []want{{Strengthened, "tool w", "RaisesSafety removed"}}},
 		{"RaisesSafety is reworded", doc(pol(twoOfTwo), Tool{Name: "w", Effect: true, RaisesSafety: "dry run"}), doc(pol(twoOfTwo), Tool{Name: "w", Effect: true, RaisesSafety: "replica"}), []want{{Changed, "tool w", `reason is "replica", was "dry run"`}}},
 		{"a wrapper raised to ReadOnly under RaisesSafety", doc(pol(twoOfTwo), Tool{Name: "w", Effect: true}), doc(pol(twoOfTwo), Tool{Name: "w", RaisesSafety: "dry run"}), []want{{Weakened, "tool w", "RaisesSafety"}, {Weakened, "tool w", "no longer has side effects"}}},
-		{"a wrapper raised to Idempotent under RaisesSafety", doc(pol(twoOfTwo), Tool{Name: "w", Effect: true}), doc(pol(twoOfTwo), Tool{Name: "w", Effect: true, Idempotent: true, RaisesSafety: "keyed"}), []want{{Weakened, "tool w", "RaisesSafety"}, {Weakened, "tool w", "Idempotent under RaisesSafety"}}},
-		{"a tool becomes Idempotent without it", doc(pol(twoOfTwo), Tool{Name: "w", Effect: true}), doc(pol(twoOfTwo), Tool{Name: "w", Effect: true, Idempotent: true}), []want{{Changed, "tool w", "now Idempotent"}}},
+		{"a wrapper raised to Idempotent under RaisesSafety", doc(pol(twoOfTwo), Tool{Name: "w", Effect: true}), doc(pol(twoOfTwo), Tool{Name: "w", Effect: true, Idempotent: true, RaisesSafety: "keyed"}), []want{{Weakened, "tool w", "RaisesSafety"}, {Weakened, "tool w", "now Idempotent"}}},
+		{"a tool becomes Idempotent without it", doc(pol(twoOfTwo), Tool{Name: "w", Effect: true}), doc(pol(twoOfTwo), Tool{Name: "w", Effect: true, Idempotent: true}), []want{{Weakened, "tool w", "now Idempotent"}}},
+		{"a tool stops being Idempotent", doc(pol(twoOfTwo), Tool{Name: "w", Effect: true, Idempotent: true}), doc(pol(twoOfTwo), Tool{Name: "w", Effect: true}), []want{{Strengthened, "tool w", "no longer Idempotent"}}},
+		{"Idempotent becomes ReadOnly", doc(pol(twoOfTwo), Tool{Name: "w", Effect: true, Idempotent: true}), doc(pol(twoOfTwo), Tool{Name: "w"}), []want{{Weakened, "tool w", "no longer has side effects"}}},
+		{"ReadOnly becomes Idempotent", doc(pol(twoOfTwo), Tool{Name: "w"}), doc(pol(twoOfTwo), Tool{Name: "w", Effect: true, Idempotent: true}), []want{{Strengthened, "tool w", "now has side effects"}}},
 		{"a new tool with RaisesSafety", doc(pol(twoOfTwo)), doc(pol(twoOfTwo), Tool{Name: "w", RaisesSafety: "dry run"}), []want{{Weakened, "tool w", "added with RaisesSafety"}}},
 		{"a tool with RaisesSafety is removed", doc(pol(twoOfTwo), Tool{Name: "w", RaisesSafety: "dry run"}), doc(pol(twoOfTwo)), []want{{Strengthened, "tool w", "it was RaisesSafety"}}},
 		{"an approver set replaced outright", doc(pol(twoOfTwo)), doc(pol(gate(Gate{Need: 2, Approvers: []string{"mallory", "x"}, ExcludePrincipal: true}))), []want{{Weakened, "policy", "none in common"}}},
@@ -568,7 +571,7 @@ func TestDiff_AMemberOutsideTheDigestIsNotADigestMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Diff = %v, want no digest-consistency error", err)
 	}
-	if len(changes) != 1 || changes[0].Covered || changes[0].Class != Changed {
+	if len(changes) != 1 || changes[0].Covered || changes[0].Class != Weakened {
 		t.Errorf("changes = %+v, want one uncovered change", changes)
 	}
 }

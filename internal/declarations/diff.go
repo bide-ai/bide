@@ -294,11 +294,13 @@ func diffTool(name string, old, new *Tool) []Change {
 		add(Changed, fmt.Sprintf("the RaisesSafety reason is %q, was %q", new.RaisesSafety, old.RaisesSafety), true)
 	}
 	out = append(out, diffCaps(subject, old.Caps, new.Caps)...)
-	if !old.Idempotent && new.Idempotent && new.Effect {
-		if new.RaisesSafety != "" {
-			add(Weakened, "now Idempotent under RaisesSafety: a resume re-runs its calls", false)
+	// A move between side effect and Idempotent (the tool has side effects on both sides; a move to or from
+	// ReadOnly is the Effect row below). Idempotent is retry-safe, so a resume re-runs the call.
+	if old.Effect && new.Effect && old.Idempotent != new.Idempotent {
+		if new.Idempotent {
+			add(Weakened, "now Idempotent: a resume re-runs its calls instead of halting on an unknown outcome", false)
 		} else {
-			add(Changed, "now Idempotent: a resume re-runs its calls", false)
+			add(Strengthened, "no longer Idempotent: a resume halts on an unknown outcome instead of re-running its calls", false)
 		}
 	}
 	if old.Effect != new.Effect {
