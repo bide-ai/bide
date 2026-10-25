@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bide-ai/bide/internal/editrun"
 	"github.com/bide-ai/bide/internal/runview"
 	"github.com/bide-ai/bide/internal/safefile"
 	"github.com/bide-ai/bide/plan"
@@ -75,10 +76,12 @@ type Server struct {
 	// session, so weakening in two saves is still weakening against it.
 	baseline       []byte
 	baselineSource string
-	baselineNote   string     // why git HEAD was not the baseline, when that is not just "not in git"
-	fs             fileSystem // what a save writes with; a test replaces it
-	typing         *typing    // nil: the structural editor
-	assets         fs.FS      // the viewer's files the editor serves, with the host's themes in style.css; nil: the shipped themes
+	baselineNote   string       // why git HEAD was not the baseline, when that is not just "not in git"
+	fs             fileSystem   // what a save writes with; a test replaces it
+	typing         *typing      // nil: the structural editor
+	run            *editrun.Run // the run the file is compared with (bide edit -run), nil for none
+	runs           runState     // the one snapshot of it
+	assets         fs.FS        // the viewer's files the editor serves, with the host's themes in style.css; nil: the shipped themes
 }
 
 // Option configures New.
@@ -90,6 +93,7 @@ type options struct {
 	regGiven bool // WithRegistry was given, even with nil
 	blocks   *plan.RegistryDescription
 	themes   runview.ThemeSet
+	run      *editrun.Run
 }
 
 // WithBase compares edits with the file at the git revision rev (a branch, tag or commit, as `git
@@ -190,7 +194,7 @@ func New(path string, opts ...Option) (*Server, error) {
 	if _, err := rand.Read(tok[:]); err != nil {
 		return fail(fmt.Errorf("flowedit: no randomness for the session token: %w", err))
 	}
-	return &Server{path: real, root: root, base: base, name: path, token: hex.EncodeToString(tok[:]), baseline: baseline, baselineSource: source, baselineNote: note, fs: osFS, typing: ty, assets: runview.AssetsWith(o.themes)}, nil
+	return &Server{path: real, root: root, base: base, name: path, token: hex.EncodeToString(tok[:]), baseline: baseline, baselineSource: source, baselineNote: note, fs: osFS, typing: ty, run: o.run, assets: runview.AssetsWith(o.themes)}, nil
 }
 
 // BaselineNote is "" when the baseline is what it should be, and otherwise says why git HEAD was not
@@ -286,6 +290,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/apply", s.apiGuard(s.apply))
 	mux.Handle("POST /api/preview", s.apiGuard(s.preview))
 	mux.Handle("POST /api/save", s.apiGuard(s.save))
+	mux.Handle("POST /api/run", s.apiGuard(s.serveRun))
 	return secure(mux)
 }
 

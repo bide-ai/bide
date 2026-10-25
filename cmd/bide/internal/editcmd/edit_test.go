@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/bide-ai/bide/internal/runview"
 )
 
 const flow = "version: 1\nflow: f\nentry: a\nnodes:\n  - {name: a, block: a, safety: readonly}\nwiring: []\n"
@@ -45,7 +47,7 @@ func TestUsageErrors(t *testing.T) {
 		"a base that is an option":     {[]string{"-base", "--output=/tmp/x", good}, 1},
 	} {
 		var out, errb bytes.Buffer
-		if got := run(context.Background(), c.args, &out, &errb); got != c.code {
+		if got := run(context.Background(), c.args, &out, &errb, runview.Stores{}); got != c.code {
 			t.Errorf("%s: exit %d, want %d\n%s%s", name, got, c.code, out.String(), errb.String())
 		}
 		if c.code == 2 && !strings.Contains(errb.String(), "usage: bide edit") && !strings.Contains(errb.String(), "loopback") {
@@ -75,7 +77,9 @@ func TestServes(t *testing.T) {
 	defer cancel()
 	var out syncBuffer
 	done := make(chan int, 1)
-	go func() { done <- run(ctx, []string{"-addr", "127.0.0.1:0", "-color", "never", p}, &out, io.Discard) }()
+	go func() {
+		done <- run(ctx, []string{"-addr", "127.0.0.1:0", "-color", "never", p}, &out, io.Discard, runview.Stores{})
+	}()
 	re := regexp.MustCompile(`serving (http://127\.0\.0\.1:\d+)/#t=([0-9a-f]{32}) `)
 	var m []string
 	for i := 0; i < 400 && m == nil; i++ {
@@ -143,7 +147,7 @@ func TestBlocksFlag(t *testing.T) {
 		"an unknown field":      {"-blocks", write(t, "b.json", `{"version":1,"blocks":[],"predicates":[],"merges":[],"x":1}`), good},
 	} {
 		var out, errb bytes.Buffer
-		if got := run(context.Background(), append([]string{"-addr", "127.0.0.1:0"}, args...), &out, &errb); got != 1 || errb.String() == "" {
+		if got := run(context.Background(), append([]string{"-addr", "127.0.0.1:0"}, args...), &out, &errb, runview.Stores{}); got != 1 || errb.String() == "" {
 			t.Errorf("%s: exit %d, stderr %q", name, got, errb.String())
 		}
 	}
@@ -152,7 +156,7 @@ func TestBlocksFlag(t *testing.T) {
 	var out syncBuffer
 	done := make(chan int, 1)
 	go func() {
-		done <- run(ctx, []string{"-addr", "127.0.0.1:0", "-color", "never", "-blocks", write(t, "b.json", blocks), good}, &out, io.Discard)
+		done <- run(ctx, []string{"-addr", "127.0.0.1:0", "-color", "never", "-blocks", write(t, "b.json", blocks), good}, &out, io.Discard, runview.Stores{})
 	}()
 	re := regexp.MustCompile(`serving (http://127\.0\.0\.1:\d+)/#t=([0-9a-f]{32}) `)
 	var m []string
@@ -209,7 +213,7 @@ func serveStyle(t *testing.T, args ...string) string {
 	var out syncBuffer
 	done := make(chan int, 1)
 	go func() {
-		done <- run(ctx, append([]string{"-addr", "127.0.0.1:0", "-color", "never"}, args...), &out, io.Discard)
+		done <- run(ctx, append([]string{"-addr", "127.0.0.1:0", "-color", "never"}, args...), &out, io.Discard, runview.Stores{})
 	}()
 	re := regexp.MustCompile(`serving (http://127\.0\.0\.1:\d+)/#t=`)
 	var m []string
@@ -268,7 +272,7 @@ func TestThemeFlagErrors(t *testing.T) {
 		"a default naming nothing": {[]string{"-theme-default", "nope", p}, 2, `"nope" names no theme`},
 	} {
 		var out, errb bytes.Buffer
-		if got := run(context.Background(), append([]string{"-color", "never"}, c.args...), &out, &errb); got != c.code {
+		if got := run(context.Background(), append([]string{"-color", "never"}, c.args...), &out, &errb, runview.Stores{}); got != c.code {
 			t.Errorf("%s: exit %d, want %d\n%s%s", name, got, c.code, out.String(), errb.String())
 		}
 		if !strings.Contains(errb.String(), c.want) {

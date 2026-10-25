@@ -78,8 +78,10 @@ func fullCommands() []command {
 		{
 			name:    "edit",
 			summary: "a local page for a flow config: the graph, the approval gates, the assertions, and what an edit weakens; edit the source and save",
-			run:     editcmd.Main,
-			exits:   commonExits,
+			run: func(args []string, stdout, stderr io.Writer) int {
+				return editcmd.Main(args, stdout, stderr, stores)
+			},
+			exits: commonExits,
 		},
 		{
 			name:    "notify",
