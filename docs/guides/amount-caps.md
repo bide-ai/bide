@@ -226,7 +226,9 @@ ledger exits 4. Amounts are in minor units, as the ledger holds them.
 
 **Exit status** is `bide audit`'s: 0 when every ledger checked reads and agrees (with `-sth`, and is
 unchanged since its newest signed head); warnings do not change it, 1 for any finding, 2 for a usage error (neither `-sth` nor `-unanchored`, or both), 4 when the
-store cannot be opened or read. The `-json` report carries the findings and the per-ledger figures.
+store cannot be opened or its runs cannot be listed. A single run that cannot be read (a corrupt row, a
+record that does not decode) is not that: it is an `UNREADABLE` finding on the run (exit 1), the slots that
+run made are left out of the cross-checks that need it, and the audit goes on with the rest. The `-json` report carries the findings and the per-ledger figures.
 
 It does not check the index runs for entries no intent uses (they cost nothing), and it does not re-apply
 the writer's clock bound (a setting that is not recorded); the time check above stands in for it.

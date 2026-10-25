@@ -107,25 +107,44 @@ func TestAuditCaps_SQLite(t *testing.T) {
 }
 
 // TestAuditCaps_Postgres is the same against Postgres (PG_DSN). The shared test database holds other
-// tests' ledgers, so the audit is limited to this test's cap namespace.
+// tests' runs, some deliberately corrupt, so the test works in a schema of its own (search_path) and the
+// audit never sees them. It also leaves one unreadable run of its own, which must be a finding on that run
+// and not the end of the audit.
 func TestAuditCaps_Postgres(t *testing.T) {
-	dsn := os.Getenv("PG_DSN")
-	if dsn == "" {
+	base := os.Getenv("PG_DSN")
+	if base == "" {
 		t.Skip("set PG_DSN to run the Postgres integration test")
 	}
-	t.Setenv("BIDE_AUDIT_TEST_DSN", dsn)
 	ctx := context.Background()
+	stamp := time.Now().Format("150405000000000")
+	schema := "capsaudit_" + stamp
+	admin, err := sql.Open("pgx", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	if _, err := admin.ExecContext(ctx, `CREATE SCHEMA `+schema); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = admin.ExecContext(context.Background(), `DROP SCHEMA `+schema+` CASCADE`) })
+	dsn := base + " search_path=" + schema
+	if strings.Contains(base, "://") {
+		sep := "?"
+		if strings.Contains(base, "?") {
+			sep = "&"
+		}
+		dsn = base + sep + "search_path=" + schema
+	}
+	t.Setenv("BIDE_AUDIT_TEST_DSN", dsn)
 	s, err := postgres.Open(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	stamp := time.Now().Format("150405000000000")
-	ns := "t" + stamp
-	pubkey, heads := cappedRuns(t, s, ns, "capsrun-"+stamp+"-")
-	args := []string{"audit", "caps", "-postgres-env", "BIDE_AUDIT_TEST_DSN", "-namespace", ns, "-sth", heads, "-pubkey", pubkey}
+	pubkey, heads := cappedRuns(t, s, "bank", "capsrun-")
+	args := []string{"audit", "caps", "-postgres-env", "BIDE_AUDIT_TEST_DSN", "-sth", heads, "-pubkey", pubkey}
 	code, out, errOut := runBide(args...)
-	if code != 0 || !strings.Contains(out, "2 slot(s), 2 live, window total 80 USD") || strings.Contains(out+errOut, dsn) {
+	if code != 0 || !strings.Contains(out, "2 slot(s), 2 live, window total 80 USD") || strings.Contains(out+errOut, base) {
 		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
 	}
 	db, err := sql.Open("pgx", dsn)
@@ -133,7 +152,19 @@ func TestAuditCaps_Postgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.ExecContext(ctx, `DELETE FROM bide_steps WHERE run_id LIKE $1 AND name = 'slot:1'`, "@cap/"+ns+"/%"); err != nil {
+	// A run whose stored row holds a record of another name: unreadable, and unrelated to any ledger.
+	if _, err := db.ExecContext(ctx, `INSERT INTO bide_steps (run_id, seq, name, data) VALUES ('rowname-corrupt', 1, 'x', $1)`, []byte(`{"name":"run:complete","kind":"value"}`)); err != nil {
+		t.Fatal(err)
+	}
+	unanchored := []string{"audit", "caps", "-postgres-env", "BIDE_AUDIT_TEST_DSN", "-unanchored"}
+	code, out, errOut = runBide(unanchored...)
+	if code != 1 || !strings.Contains(out, "FAIL  UNREADABLE") || !strings.Contains(out, "run rowname-corrupt cannot be read") || !strings.Contains(out, "2 slot(s), 2 live") {
+		t.Fatalf("an unreadable run: exit %d, want 1 with the ledger still audited\n%s\n%s", code, out, errOut)
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM bide_steps WHERE run_id = 'rowname-corrupt'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM bide_steps WHERE run_id LIKE '@cap/bank/%' AND name = 'slot:1'`); err != nil {
 		t.Fatal(err)
 	}
 	if code, out, _ = runBide(args...); code != 1 || !strings.Contains(out, "FAIL  DELETED") {
