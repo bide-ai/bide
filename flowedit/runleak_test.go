@@ -1,16 +1,25 @@
 package flowedit
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"go/ast"
+	"go/build"
+	"go/importer"
 	"go/parser"
 	"go/token"
+	"go/types"
+	"io"
 	"iter"
+	"maps"
 	"os"
+	"os/exec"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
@@ -109,10 +118,11 @@ func TestRunReplyNeverHoldsAStoreError(t *testing.T) {
 
 // storeFailure is the one door a store's error goes through to a reply. These files build the replies, and in them
 // an error value may not be formatted or wrapped into text: no fmt.Errorf, Sprintf, Sprint, Fprintf and the like with
-// an error among their arguments (an identifier named err, a `...Err` identifier, a call of Err() or Error()), no %w, no
-// errors.Join, and no call of Error() at all, unless the line carries "// text of the file, not of a store" (a parse error
-// of the user's file: not the store's). The check is by name, since the files are small and the names are the code's own;
-// it fails closed on a name it cannot tell, and a planted fmt.Sprintf("%v", err) fails it (see TestTheGuardFindsWhatItShould).
+// an argument whose type is an error (whatever it is called: err, cause, e, a struct's field), no %w, no errors.Join,
+// and no call of Error() on an error, unless the line carries "// text of the file, not of a store" (a parse error of
+// the user's file: not the store's). The check is by type: the package is type-checked with go/types against the export
+// data `go list -export` builds, as internal/tools/docsnip does. An error held in an `any` is not seen by type; the
+// formatters taking one are flagged all the same when an argument is `any` holding the result of a call of Err().
 const fileMark = "// text of the file, not of a store"
 
 var formatters = map[string]map[string]bool{
@@ -120,55 +130,116 @@ var formatters = map[string]map[string]bool{
 	"errors": {"Join": true},
 }
 
-// errorLike reports whether e is, by its name, an error value: err, a name ending in Err or err, or a call of Err() or Error().
-func errorLike(e ast.Expr) bool {
-	switch e := e.(type) {
-	case *ast.Ident:
-		n := strings.ToLower(e.Name)
-		return n == "err" || strings.HasSuffix(n, "err") || n == "e" || n == "cause"
-	case *ast.CallExpr:
-		if sel, ok := e.Fun.(*ast.SelectorExpr); ok && (sel.Sel.Name == "Err" || sel.Sel.Name == "Error") {
-			return true
+var (
+	exportsOnce sync.Once
+	exportFiles map[string]string
+	exportErr   error
+)
+
+// loadExports builds the export data of this package's imports and returns the file of each import path.
+func loadExports(t *testing.T) map[string]string {
+	t.Helper()
+	exportsOnce.Do(func() {
+		out, err := exec.Command("go", "list", "-e", "-export", "-deps", "-json=ImportPath,Export").Output()
+		if err != nil {
+			exportErr = fmt.Errorf("go list -export: %w", err)
+			return
 		}
-	case *ast.SelectorExpr:
-		n := strings.ToLower(e.Sel.Name)
-		return strings.HasSuffix(n, "err") || n == "cause"
+		exportFiles = map[string]string{}
+		dec := json.NewDecoder(bytes.NewReader(out))
+		for {
+			var p struct{ ImportPath, Export string }
+			if err := dec.Decode(&p); err != nil {
+				break
+			}
+			if p.Export != "" {
+				exportFiles[p.ImportPath] = p.Export
+			}
+		}
+	})
+	if exportErr != nil {
+		t.Fatal(exportErr)
 	}
-	return false
+	return exportFiles
 }
 
-// guardProblems lists the ways the source of a reply-building file lets an error's text through.
-func guardProblems(name string, src []byte) []string {
+// typeCheck parses and type-checks the files (name to source) as one package.
+func typeCheck(t *testing.T, srcs map[string][]byte) (*token.FileSet, []*ast.File, *types.Info) {
+	t.Helper()
+	exports := loadExports(t)
 	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, name, src, parser.ParseComments)
-	if err != nil {
-		return []string{name + ": " + err.Error()}
+	var files []*ast.File
+	for _, name := range slices.Sorted(maps.Keys(srcs)) {
+		f, err := parser.ParseFile(fset, name, srcs[name], parser.ParseComments)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, f)
 	}
-	lines := strings.Split(string(src), "\n")
+	imp := importer.ForCompiler(fset, "gc", func(path string) (io.ReadCloser, error) {
+		if f := exports[path]; f != "" {
+			return os.Open(f)
+		}
+		return nil, fmt.Errorf("package %s was not loaded", path)
+	})
+	info := &types.Info{Types: map[ast.Expr]types.TypeAndValue{}}
+	cfg := types.Config{Importer: imp, Error: func(err error) { t.Errorf("type-checking: %v", err) }}
+	if _, err := cfg.Check("flowedit", fset, files, info); err != nil {
+		t.Fatalf("type-checking: %v", err)
+	}
+	return fset, files, info
+}
+
+var errorType = types.Universe.Lookup("error").Type().Underlying().(*types.Interface)
+
+// isError reports whether the expression's type is, or points to, a type that implements error.
+func isError(info *types.Info, e ast.Expr) bool {
+	tv, ok := info.Types[e]
+	if !ok || tv.Type == nil || tv.IsType() {
+		return false
+	}
+	typ := tv.Type
+	if _, isIface := typ.Underlying().(*types.Interface); isIface && !types.Implements(typ, errorType) {
+		return false
+	}
+	return types.Implements(typ, errorType) || types.Implements(types.NewPointer(typ), errorType)
+}
+
+// guardProblems lists the ways the files named in only let an error's text through.
+func guardProblems(fset *token.FileSet, files []*ast.File, info *types.Info, srcs map[string][]byte, only map[string]bool) []string {
 	var problems []string
-	for _, decl := range f.Decls {
-		fd, ok := decl.(*ast.FuncDecl)
-		if !ok || fd.Body == nil || fd.Name.Name == "storeFailure" {
+	for _, f := range files {
+		name := fset.Position(f.Pos()).Filename
+		if !only[name] {
 			continue
 		}
-		ast.Inspect(fd.Body, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
+		lines := strings.Split(string(srcs[name]), "\n")
+		for _, decl := range f.Decls {
+			fd, ok := decl.(*ast.FuncDecl)
+			if !ok || fd.Body == nil || fd.Name.Name == "storeFailure" {
+				continue
 			}
-			pos := fset.Position(call.Pos())
-			marked := strings.Contains(lines[pos.Line-1], fileMark)
-			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			if sel.Sel.Name == "Error" && len(call.Args) == 0 && !marked {
-				problems = append(problems, fmt.Sprintf("%s:%d: Error() is called without saying it is the text of a file: use storeFailure for a store's error", name, pos.Line))
-			}
-			if pkg, ok := sel.X.(*ast.Ident); ok && formatters[pkg.Name][sel.Sel.Name] && !marked {
+			ast.Inspect(fd.Body, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				pos := fset.Position(call.Pos())
+				marked := strings.Contains(lines[pos.Line-1], fileMark)
+				sel, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok || marked {
+					return true
+				}
+				if sel.Sel.Name == "Error" && len(call.Args) == 0 && isError(info, sel.X) {
+					problems = append(problems, fmt.Sprintf("%s:%d: Error() is called on an error without saying it is the text of a file: use storeFailure for a store's error", name, pos.Line))
+				}
+				pkg, ok := sel.X.(*ast.Ident)
+				if !ok || !formatters[pkg.Name][sel.Sel.Name] {
+					return true
+				}
 				for _, a := range call.Args {
-					if errorLike(a) {
-						problems = append(problems, fmt.Sprintf("%s:%d: %s.%s formats an error value: use storeFailure for a store's error", name, pos.Line, pkg.Name, sel.Sel.Name))
+					if isError(info, a) {
+						problems = append(problems, fmt.Sprintf("%s:%d: %s.%s formats a value of an error type: use storeFailure for a store's error", name, pos.Line, pkg.Name, sel.Sel.Name))
 						break
 					}
 				}
@@ -180,56 +251,93 @@ func guardProblems(name string, src []byte) []string {
 				if pkg.Name == "errors" {
 					problems = append(problems, fmt.Sprintf("%s:%d: errors.%s joins errors: its text would reach a reply", name, pos.Line, sel.Sel.Name))
 				}
-			}
-			return true
-		})
+				return true
+			})
+		}
 	}
 	return problems
 }
 
 func TestOnlyFileTextIsTakenFromErrors(t *testing.T) {
-	for _, name := range []string{"run.go", "runpath.go", "affected.go"} {
-		src, err := os.ReadFile(name)
-		if err != nil {
-			continue // a file that does not exist in this change
+	pkg, err := build.ImportDir(".", 0) // the files of this platform's build, as the compiler sees them
+	if err != nil {
+		t.Fatal(err)
+	}
+	srcs := map[string][]byte{}
+	for _, n := range pkg.GoFiles {
+		if srcs[n], err = os.ReadFile(n); err != nil {
+			t.Fatal(err)
 		}
-		for _, p := range guardProblems(name, src) {
-			t.Error(p)
+	}
+	fset, files, info := typeCheck(t, srcs)
+	only := map[string]bool{}
+	for _, n := range []string{"run.go", "runpath.go", "affected.go"} {
+		if _, ok := srcs[n]; ok {
+			only[n] = true
 		}
+	}
+	if len(only) < 2 {
+		t.Fatalf("the files that build replies were not found: %v", only)
+	}
+	for _, p := range guardProblems(fset, files, info, srcs, only) {
+		t.Error(p)
 	}
 }
 
-// The guard finds what it is for: a store's error formatted, wrapped or joined, or its text taken, in a function that is
-// not storeFailure; and lets pass the file's text, marked, a class, and storeFailure itself.
+// The guard finds what it is for: an error of any name or field, formatted, wrapped or joined, or its text taken, in a
+// function that is not storeFailure; and lets pass the file's text, marked, a class, and storeFailure itself.
 func TestTheGuardFindsWhatItShould(t *testing.T) {
-	const head = "package flowedit\n\nimport (\n\t\"errors\"\n\t\"fmt\"\n)\n\nvar _ = fmt.Sprint\nvar _ = errors.New\n\n"
+	const head = `package flowedit
+
+import (
+	"errors"
+	"fmt"
+)
+
+var _ = errors.New
+
+type wrapped struct{ cause error }
+
+func (w wrapped) Error() string { return "w" }
+
+func storeFailure(what string, err error) string { return fmt.Sprintf("%s (%v)", what, err) }
+
+`
 	bad := map[string]string{
-		"Sprintf %v":  `func f(err error) string { return fmt.Sprintf("%v", err) }`,
-		"Sprint":      `func f(err error) string { return fmt.Sprint(err) }`,
-		"Errorf %w":   `func f(err error) error { return fmt.Errorf("read: %w", err) }`,
-		"Errorf %s":   `func f(err error) error { return fmt.Errorf("read: %s", err) }`,
-		"Fprintf":     `func f(w fmt.Stringer, err error) { fmt.Fprintf(nil, "%v", err) }`,
-		"Join":        `func f(err error) error { return errors.Join(err, nil) }`,
-		"Error()":     `func f(err error) string { return "x" + err.Error() }`,
-		"ctx.Err()":   `func f(ctx interface{ Err() error }) string { return fmt.Sprint(ctx.Err()) }`,
-		"a Err name":  `func f(listErr error) string { return fmt.Sprintf("%v", listErr) }`,
-		"a field err": `type t struct{ cause error }; func f(x t) string { return fmt.Sprint(x.cause) }`,
+		"Sprintf %v":            `func f(err error) string { return fmt.Sprintf("%v", err) }`,
+		"Sprint":                `func f(err error) string { return fmt.Sprint(err) }`,
+		"Errorf %w":             `func f(err error) error { return fmt.Errorf("read: %w", err) }`,
+		"Errorf %s":             `func f(err error) error { return fmt.Errorf("read: %s", err) }`,
+		"Fprintf":               `func f(err error) { fmt.Fprintf(nil, "%v", err) }`,
+		"Join":                  `func f(err error) error { return errors.Join(err, nil) }`,
+		"Error()":               `func f(err error) string { return "x" + err.Error() }`,
+		"an error named cause":  `func f(cause error) string { return fmt.Sprint(cause) }`,
+		"an error named e":      `func f(e error) string { return fmt.Sprintf("%v", e) }`,
+		"a field":               `func f(x wrapped) string { return fmt.Sprint(x.cause) }`,
+		"a call that returns":   `func g() error { return nil }; func f() string { return fmt.Sprint(g()) }`,
+		"a concrete error type": `func f(x wrapped) string { return fmt.Sprint(x) }`,
+		"a pointer to one":      `func f(x *wrapped) string { return fmt.Sprint(x) }`,
+		"Error() of a field":    `func f(x wrapped) string { return x.cause.Error() }`,
 	}
 	for name, body := range bad {
-		if got := guardProblems("x.go", []byte(head+body+"\n")); len(got) == 0 {
+		srcs := map[string][]byte{"x.go": []byte(head + body + "\n")}
+		fset, files, info := typeCheck(t, srcs)
+		if got := guardProblems(fset, files, info, srcs, map[string]bool{"x.go": true}); len(got) == 0 {
 			t.Errorf("%s: the guard let it pass", name)
 		}
 	}
 	ok := map[string]string{
-		"a class":      `func f(err error) string { return storeFailure("x", err) }`,
-		"storeFailure": `func storeFailure(what string, err error) string { return fmt.Sprintf("%s (%v)", what, err) }`,
-		"a marked file": `func f(err error) string { return fmt.Sprint(err.Error()) // text of the file, not of a store
-}`,
-		"no error":   `func f(n int) string { return fmt.Sprintf("%d", n) }`,
-		"errors.New": `func f() error { return errors.New("x") }`,
+		"a class":       `func f(err error) string { return storeFailure("x", err) }`,
+		"a marked file": "func f(err error) string { return fmt.Sprint(err.Error()) " + fileMark + "\n}",
+		"no error":      `func f(n int) string { return fmt.Sprintf("%d", n) }`,
+		"a string":      `func f(cause string) string { return fmt.Sprint(cause) }`,
+		"errors.New":    `func f() error { return errors.New("x") }`,
+		"errors.Is":     `func f(err error) bool { return errors.Is(err, errors.ErrUnsupported) }`,
 	}
 	for name, body := range ok {
-		if got := guardProblems("x.go", []byte(head+body+"\n")); len(got) != 0 {
+		srcs := map[string][]byte{"x.go": []byte(head + body + "\n")}
+		fset, files, info := typeCheck(t, srcs)
+		if got := guardProblems(fset, files, info, srcs, map[string]bool{"x.go": true}); len(got) != 0 {
 			t.Errorf("%s: the guard refused it: %q", name, got)
 		}
 	}
