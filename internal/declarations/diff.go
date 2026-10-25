@@ -238,6 +238,8 @@ func diffTool(name string, old, new *Tool) []Change {
 		switch {
 		case new.Exempt != "":
 			add(Weakened, fmt.Sprintf("added with TaintExempt (%q)", new.Exempt), true)
+		case new.RaisesSafety != "":
+			add(Weakened, fmt.Sprintf("added with RaisesSafety (%q)", new.RaisesSafety), true)
 		case new.Untrusted != "" || len(new.Caps) > 0:
 			add(Strengthened, "added with a declaration (untrusted source or caps)", true)
 		default:
@@ -252,6 +254,8 @@ func diffTool(name string, old, new *Tool) []Change {
 			add(Weakened, "removed; it carried cap rules", true)
 		case old.Exempt != "":
 			add(Strengthened, "removed; it was TaintExempt", true)
+		case old.RaisesSafety != "":
+			add(Strengthened, "removed; it was RaisesSafety", true)
 		default:
 			add(Changed, "removed", false)
 		}
@@ -281,7 +285,22 @@ func diffTool(name string, old, new *Tool) []Change {
 	case old.Exempt != new.Exempt:
 		add(Weakened, fmt.Sprintf("TaintExempt reason changed to %q, was %q", new.Exempt, old.Exempt), true)
 	}
+	switch {
+	case old.RaisesSafety == "" && new.RaisesSafety != "":
+		add(Weakened, fmt.Sprintf("RaisesSafety(%q) added", new.RaisesSafety), true)
+	case old.RaisesSafety != "" && new.RaisesSafety == "":
+		add(Strengthened, "RaisesSafety removed", true)
+	case old.RaisesSafety != new.RaisesSafety:
+		add(Changed, fmt.Sprintf("the RaisesSafety reason is %q, was %q", new.RaisesSafety, old.RaisesSafety), true)
+	}
 	out = append(out, diffCaps(subject, old.Caps, new.Caps)...)
+	if !old.Idempotent && new.Idempotent && new.Effect {
+		if new.RaisesSafety != "" {
+			add(Weakened, "now Idempotent under RaisesSafety: a resume re-runs its calls", false)
+		} else {
+			add(Changed, "now Idempotent: a resume re-runs its calls", false)
+		}
+	}
 	if old.Effect != new.Effect {
 		if new.Effect {
 			add(Strengthened, "now has side effects: taint gates its calls", false)

@@ -49,6 +49,9 @@ func (d Document) Findings() []Finding {
 		if t.Exempt != "" {
 			add("tool "+t.Name, "is exempt from the escalation gate (%q)", t.Exempt)
 		}
+		if t.RaisesSafety != "" {
+			add("tool "+t.Name, "declares a Safety safer than a tool inside it (RaisesSafety: %q)", t.RaisesSafety)
+		}
 		if len(t.Caps) > 0 {
 			add("tool "+t.Name, "carries %d cap rule(s)", len(t.Caps))
 		}

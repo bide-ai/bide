@@ -9,18 +9,21 @@ import (
 
 var toolType = reflect.TypeFor[Tool]()
 
-// checkEmbedded refuses a tool that hides the approval gate, timeout or amount caps of a tool it embeds. A
+// checkEmbedded refuses a tool that hides the approval gate, timeout or amount caps of, or declares a safer Safety than, a tool it embeds. A
 // decorator that embeds a Tool inherits its Spec, gate and timeout included; one that declares its
 // own Spec and builds the ToolSpec afresh (to rename the tool, say) drops them, and the gated tool
 // inside would run ungated. The agent cannot know whether a decorator meant to drop them, so it
 // fails closed: when any tool embedded in t (an anonymous field, at any depth) has an Approval, a
 // Timeout or a cap rule that t's own spec s lacks (for caps: any rule line the inner tool has and s
 // does not), the tool is ErrConfig. A decorator keeps them by declaring them in its Spec.
+// A Safety safer than the least safe embedded tool's (see safetyRank) is refused too, unless the spec
+// gives a RaisesSafety reason.
 // Implementing Unwrap() Tool does not exempt it: New does not read the spec through Unwrap, the
 // outer Spec wins, and checkUnwrapChain holds that spec to every tool on the chain.
 func checkEmbedded(t Tool, s ToolSpec) error {
 	var approval, timeout, untrusted bool
-	var caps []string // the cap rule lines of the embedded tools
+	var lowest *ToolSpec // the embedded tool whose Safety is the least safe
+	var caps []string    // the cap rule lines of the embedded tools
 	seen := map[uintptr]bool{}
 	var walk func(v reflect.Value, depth int)
 	walk = func(v reflect.Value, depth int) {
@@ -61,6 +64,9 @@ func checkEmbedded(t Tool, s ToolSpec) error {
 				timeout = timeout || is.Timeout > 0
 				caps = append(caps, is.Caps...)
 				untrusted = untrusted || is.untrustedSource() != ""
+				if lowest == nil || safetyRank(is.Safety) < safetyRank(lowest.Safety) {
+					lowest = &is
+				}
 			}
 			walk(f, depth+1)
 		}
@@ -77,6 +83,8 @@ func checkEmbedded(t Tool, s ToolSpec) error {
 		return fmt.Errorf("agent: tool %q embeds a tool that declares Untrusted, and its own spec does not: the decorator hides the provenance declaration; implement Spec or Unwrap: %w", s.Name, ErrConfig)
 	case timeout && s.Timeout <= 0:
 		return fmt.Errorf("agent: tool %q embeds a tool with a Timeout, and its own spec has none: the decorator hides the timeout; implement Spec or Unwrap: %w", s.Name, ErrConfig)
+	case lowest != nil && saferWithoutReason(s, *lowest):
+		return fmt.Errorf("agent: tool %q embeds %q and declares a Safety safer than its own: %s; declare the embedded tool's Safety on the decorator: %w", s.Name, lowest.Name, safetyRaisedWhy(s, *lowest), ErrConfig)
 	}
 	return nil
 }
@@ -112,6 +120,8 @@ func embeddedTool(f reflect.Value) (Tool, bool) {
 //     none or a longer one.
 //   - Untrusted: the inner tool declares a source (Untrusted, or Safety.Untrusted) and s declares none.
 //   - Timeout: the inner tool has one and s has none or a longer one.
+//   - Safety: s declares a safer Safety than the inner tool (side effect, Idempotent, ReadOnly, in that
+//     order) and gives no RaisesSafety reason.
 //   - Caps: a rule line (ToolSpec.Caps) of the inner tool that s does not carry, word for word. s may add
 //     rules; a rule it changes is a missing one.
 func checkUnwrapChain(t Tool, s ToolSpec) error {
@@ -164,7 +174,40 @@ func weakerSpec(outer, inner ToolSpec) (field, why string) {
 	if inner.Timeout > 0 && (outer.Timeout <= 0 || outer.Timeout > inner.Timeout) {
 		return "timeout", fmt.Sprintf("the wrapped tool's is %v, the wrapper's %v (0 is none)", inner.Timeout, outer.Timeout)
 	}
+	if saferWithoutReason(outer, inner) {
+		return "safety", safetyRaisedWhy(outer, inner)
+	}
 	return "", ""
+}
+
+// safetyRank orders Safety from the least safe to the safest: a side effect (0), Idempotent (1), ReadOnly
+// (2). ReadOnly is the safest whether or not Idempotent is also set, as the engine treats it (see
+// Safety.retrySafeWrite). The order is total.
+func safetyRank(s Safety) int {
+	switch {
+	case s.ReadOnly:
+		return 2
+	case s.Idempotent:
+		return 1
+	}
+	return 0
+}
+
+// safetyLevel names the level safetyRank ranks.
+func safetyLevel(s Safety) string {
+	return [...]string{"side effect", "Idempotent", "ReadOnly"}[safetyRank(s)]
+}
+
+// saferWithoutReason reports whether the wrapper's spec outer declares a Safety safer than the wrapped
+// tool's, with no RaisesSafety reason.
+func saferWithoutReason(outer, inner ToolSpec) bool {
+	return outer.RaisesSafety == "" && safetyRank(outer.Safety) > safetyRank(inner.Safety)
+}
+
+// safetyRaisedWhy is the explanation of a refusal by saferWithoutReason.
+func safetyRaisedWhy(outer, inner ToolSpec) string {
+	return fmt.Sprintf("the wrapper declares Safety %s and the wrapped tool %s: the agent acts on the wrapper's Safety, so a resume would re-run the call, or the taint policy would not gate it, as the wrapper's level says (RaisesSafety(reason) is the opt-out for a wrapper that does make the call safer)",
+		safetyLevel(outer.Safety), safetyLevel(inner.Safety))
 }
 
 // subset reports whether every element of a is in b.

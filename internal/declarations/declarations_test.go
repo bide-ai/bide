@@ -157,6 +157,14 @@ func TestDiff_Classifies(t *testing.T) {
 		{"a key is removed from a cumulative rule", doc(pol(twoOfTwo), Tool{Name: "w", Caps: []string{`refund_total: refund.amount[minor, currency=currency] sum 10 USD per day by customer -> refuse`}}), doc(pol(twoOfTwo), Tool{Name: "w", Caps: []string{dayTotal}}), []want{{Strengthened, "tool w", "key is removed"}}},
 		{"a tool becomes ReadOnly", doc(pol(twoOfTwo), Tool{Name: "w", Effect: true}), doc(pol(twoOfTwo), Tool{Name: "w"}), []want{{Weakened, "tool w", "no longer has side effects"}}},
 		{"a tool gains side effects", doc(pol(twoOfTwo), Tool{Name: "w"}), doc(pol(twoOfTwo), Tool{Name: "w", Effect: true}), []want{{Strengthened, "tool w", "now has side effects"}}},
+		{"RaisesSafety is added", doc(pol(twoOfTwo), Tool{Name: "w", Effect: true}), doc(pol(twoOfTwo), Tool{Name: "w", Effect: true, RaisesSafety: "dry run"}), []want{{Weakened, "tool w", `RaisesSafety("dry run") added`}}},
+		{"RaisesSafety is removed", doc(pol(twoOfTwo), Tool{Name: "w", Effect: true, RaisesSafety: "dry run"}), doc(pol(twoOfTwo), Tool{Name: "w", Effect: true}), []want{{Strengthened, "tool w", "RaisesSafety removed"}}},
+		{"RaisesSafety is reworded", doc(pol(twoOfTwo), Tool{Name: "w", Effect: true, RaisesSafety: "dry run"}), doc(pol(twoOfTwo), Tool{Name: "w", Effect: true, RaisesSafety: "replica"}), []want{{Changed, "tool w", `reason is "replica", was "dry run"`}}},
+		{"a wrapper raised to ReadOnly under RaisesSafety", doc(pol(twoOfTwo), Tool{Name: "w", Effect: true}), doc(pol(twoOfTwo), Tool{Name: "w", RaisesSafety: "dry run"}), []want{{Weakened, "tool w", "RaisesSafety"}, {Weakened, "tool w", "no longer has side effects"}}},
+		{"a wrapper raised to Idempotent under RaisesSafety", doc(pol(twoOfTwo), Tool{Name: "w", Effect: true}), doc(pol(twoOfTwo), Tool{Name: "w", Effect: true, Idempotent: true, RaisesSafety: "keyed"}), []want{{Weakened, "tool w", "RaisesSafety"}, {Weakened, "tool w", "Idempotent under RaisesSafety"}}},
+		{"a tool becomes Idempotent without it", doc(pol(twoOfTwo), Tool{Name: "w", Effect: true}), doc(pol(twoOfTwo), Tool{Name: "w", Effect: true, Idempotent: true}), []want{{Changed, "tool w", "now Idempotent"}}},
+		{"a new tool with RaisesSafety", doc(pol(twoOfTwo)), doc(pol(twoOfTwo), Tool{Name: "w", RaisesSafety: "dry run"}), []want{{Weakened, "tool w", "added with RaisesSafety"}}},
+		{"a tool with RaisesSafety is removed", doc(pol(twoOfTwo), Tool{Name: "w", RaisesSafety: "dry run"}), doc(pol(twoOfTwo)), []want{{Strengthened, "tool w", "it was RaisesSafety"}}},
 		{"an approver set replaced outright", doc(pol(twoOfTwo)), doc(pol(gate(Gate{Need: 2, Approvers: []string{"mallory", "x"}, ExcludePrincipal: true}))), []want{{Weakened, "policy", "none in common"}}},
 		{"a tool's own gate is weakened (not covered by the digest)", doc(pol(twoOfTwo), Tool{Name: "w", OwnGate: twoOfTwo}), doc(pol(twoOfTwo), Tool{Name: "w", OwnGate: gate(Gate{Single: true})}), []want{{Weakened, "tool w own gate", "one decision"}}},
 	} {
@@ -225,6 +233,8 @@ func TestDiff_CoveredChangesAreExactlyTheDigestsDifferences(t *testing.T) {
 		"effect":        doc(&Policy{Gate: twoOfTwo}, Tool{Name: "write", Caps: []string{perCall}}, Tool{Name: "read", Untrusted: "crm"}),
 		"own gate":      doc(&Policy{Gate: twoOfTwo}, Tool{Name: "write", Effect: true, OwnGate: twoOfTwo, Caps: []string{perCall}}, Tool{Name: "read", Untrusted: "crm"}),
 		"plain tool":    doc(&Policy{Gate: twoOfTwo}, Tool{Name: "write", Effect: true, Caps: []string{perCall}}, Tool{Name: "read", Untrusted: "crm"}, Tool{Name: "zz"}),
+		"raises safety": doc(&Policy{Gate: twoOfTwo}, Tool{Name: "write", Effect: true, RaisesSafety: "x", Caps: []string{perCall}}, Tool{Name: "read", Untrusted: "crm"}),
+		"idempotent":    doc(&Policy{Gate: twoOfTwo}, Tool{Name: "write", Effect: true, Idempotent: true, Caps: []string{perCall}}, Tool{Name: "read", Untrusted: "crm"}),
 		"approver swap": doc(&Policy{Gate: gate(Gate{Need: 2, Approvers: []string{"ops", "x"}, ExcludePrincipal: true})}, Tool{Name: "write", Effect: true, Caps: []string{perCall}}, Tool{Name: "read", Untrusted: "crm"}),
 	}
 	for name, v := range variants {
@@ -497,4 +507,50 @@ func TestDecode_RefusesAnEmptyTrustedReason(t *testing.T) {
 	if _, err := Decode(&buf); err != nil {
 		t.Errorf("a real trusted reason: %v", err)
 	}
+}
+
+// The digest covers RaisesSafety (only when set); Idempotent is for the diff and changes no digest.
+func TestRecompute_CoversRaisesSafety(t *testing.T) {
+	base := doc(&Policy{Refuse: true}, Tool{Name: "t", Effect: true})
+	raised := doc(&Policy{Refuse: true}, Tool{Name: "t", Effect: true, RaisesSafety: "dry run"})
+	other := doc(&Policy{Refuse: true}, Tool{Name: "t", Effect: true, RaisesSafety: "replica"})
+	if base.Digest == raised.Digest || raised.Digest == other.Digest {
+		t.Error("RaisesSafety, or its reason, is not in the digest")
+	}
+	if idem := doc(&Policy{Refuse: true}, Tool{Name: "t", Effect: true, Idempotent: true}); idem.Digest != base.Digest {
+		t.Error("Idempotent is in the digest")
+	}
+}
+
+// A RaisesSafety reason follows the rules of agent.Trusted, and Idempotent needs a side effect.
+func TestDecode_RefusesABadRaisesSafetyReasonOrAnIdempotentReadOnlyTool(t *testing.T) {
+	for _, r := range []string{" ", "\t", "\u200b", strings.Repeat("x", 129)} {
+		var buf bytes.Buffer
+		if err := Encode(&buf, doc(&Policy{Refuse: true}, Tool{Name: "t", RaisesSafety: r})); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Decode(&buf); err == nil {
+			t.Errorf("a RaisesSafety reason %q was accepted", r)
+		}
+	}
+	var buf bytes.Buffer
+	_ = Encode(&buf, doc(&Policy{Refuse: true}, Tool{Name: "t", Idempotent: true}))
+	if _, err := Decode(&buf); err == nil {
+		t.Error("an Idempotent tool with no side effect was accepted")
+	}
+	buf.Reset()
+	_ = Encode(&buf, doc(&Policy{Refuse: true}, Tool{Name: "t", Effect: true, Idempotent: true, RaisesSafety: "it stops at a dry run"}))
+	if _, err := Decode(&buf); err != nil {
+		t.Errorf("a valid RaisesSafety tool: %v", err)
+	}
+}
+
+// bide doctor -declarations lists a RaisesSafety tool.
+func TestFindings_ListsRaisesSafety(t *testing.T) {
+	for _, f := range doc(&Policy{Refuse: true, RequireProvenance: true}, Tool{Name: "w", Trusted: "ours", RaisesSafety: "dry run"}).Findings() {
+		if f.Subject == "tool w" && strings.Contains(f.Message, "RaisesSafety") && strings.Contains(f.Message, "dry run") {
+			return
+		}
+	}
+	t.Error("no finding for a tool that declares RaisesSafety")
 }

@@ -87,6 +87,9 @@ type toolTaintDecl struct {
 	Trusted   string   `json:"trusted,omitempty"`
 	Exempt    string   `json:"exempt,omitempty"`
 	Caps      []string `json:"caps,omitempty"`
+	// Raises is RaisesSafety's reason. It is in the digest only when set, so a tool without it digests as
+	// it did before the option existed.
+	Raises string `json:"raises_safety,omitempty"`
 }
 
 const taintDeclarationsFormat = "bide.taint-declarations.v1"
@@ -106,11 +109,11 @@ func (a *Agent) taintDigest() string {
 	d := taintDeclarations{Format: taintDeclarationsFormat, Gate: a.taint.Gate, Refuse: a.taint.Refuse, RequireProvenance: a.taint.RequireProvenance}
 	for _, name := range slices.Sorted(maps.Keys(a.specs)) {
 		s := a.specs[name]
-		if src := s.untrustedSource(); src != "" || s.Trusted != "" || s.TaintExempt != "" || len(s.Caps) > 0 {
+		if src := s.untrustedSource(); src != "" || s.Trusted != "" || s.TaintExempt != "" || s.RaisesSafety != "" || len(s.Caps) > 0 {
 			if d.Tools == nil {
 				d.Tools = map[string]toolTaintDecl{}
 			}
-			d.Tools[name] = toolTaintDecl{Untrusted: src, Trusted: s.Trusted, Exempt: s.TaintExempt, Caps: s.Caps}
+			d.Tools[name] = toolTaintDecl{Untrusted: src, Trusted: s.Trusted, Exempt: s.TaintExempt, Caps: s.Caps, Raises: s.RaisesSafety}
 		}
 	}
 	b, err := json.Marshal(d)
