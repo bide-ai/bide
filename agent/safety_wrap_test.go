@@ -204,7 +204,7 @@ func TestSafetyWrap_RaisesSafetyIsDeclaredAndDigested(t *testing.T) {
 	if err != nil || !strings.Contains(string(b), `"raises_safety": "dry run"`) {
 		t.Errorf("the dump = %s, %v", b, err)
 	}
-	if b, _ := plain.Declarations(); strings.Contains(string(b), "raises_safety") || strings.Contains(string(b), "idempotent") {
+	if b, _ := plain.Declarations(); strings.Contains(string(b), "raises_safety") || strings.Contains(string(b), `"idempotent"`) {
 		t.Errorf("a tool that sets neither has them in the dump: %s", b)
 	}
 	// An Idempotent tool is reported as such; ReadOnly is the effect flag.
