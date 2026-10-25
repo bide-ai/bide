@@ -475,6 +475,11 @@ func TestRunDiffVerdictsSayWhatIsKnown(t *testing.T) {
 	if w := v.Verdict; w.Word != "1 CHANGE" || w.Class != "warn" || digestStat(v).Value != "new" {
 		t.Errorf("changes: %+v stat %+v", w, digestStat(v))
 	}
+	// Structural with itemised changes: the count stands, the sentence about gates does not.
+	swap := strings.Replace(cfgDiamond, `{"name":"y","block":"y"},{"name":"z","block":"z"}`, `{"name":"z","block":"z"},{"name":"y","block":"y"}`, 1)
+	if w := diffRun(t, cfgDiamond, swap, false).Verdict; w.Word != "1 CHANGE" || w.Class != "warn" || strings.Contains(w.Line, "approval gate was weakened") || !strings.Contains(w.Line, "Gates, kinds and types are not compared") {
+		t.Errorf("structural, changes: %+v", w)
+	}
 	// A gate weakened against the run is the one verdict made.
 	weaker := strings.Replace(cfgGated, `"need":2,"approvers":["ops","fin","risk"]`, `"need":1,"approvers":["ops","fin","risk"]`, 1)
 	if w := diffRun(t, cfgGated, weaker, true).Verdict; w.Word != "APPROVAL GATE WEAKENED" || w.Class != "bad" {

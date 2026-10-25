@@ -233,6 +233,10 @@ func topologyVerdict(v *DiffView) Verdict {
 	case v.DigestNote != "":
 		d.Class, d.Word, d.Icon, d.Line = "warn", "DIGEST DIFFERS", "tilde", "The digest differs from the run's: "+v.DigestNote+"."
 	case len(v.Changes) > 0:
+		if !v.Typed {
+			// Gates are blanked in this mode: "no approval gate was weakened" would claim what was not compared.
+			d.Line = "Gates, kinds and types are not compared in this mode."
+		}
 	case v.Typed && v.OldDigest != "" && v.OldDigest == v.NewDigest:
 		d.Class, d.Word, d.Icon = "good", "SAME DIGEST", "ok"
 		d.Line = "The file has the digest the run journaled; this does not say the run followed the file."
