@@ -25,6 +25,12 @@ try {
   page.on('request', (r) => { if (!r.url().startsWith(origin) && !r.url().startsWith('data:')) offOrigin.push(r.url()); });
   await page.setBypassCSP(true); // for axe only, as in a11y.mjs
   await page.setViewport({ width: 1400, height: 1400 });
+  let abortNext = false;
+  await page.setRequestInterception(true);
+  page.on('request', (r) => {
+    if (abortNext && r.method() === 'POST' && r.url().endsWith('/api/run')) { abortNext = false; r.abort(); return; }
+    r.continue();
+  });
   await page.goto(env.PAGE_URL, { waitUntil: 'networkidle0', timeout: 30000 });
   await page.evaluate(axeSource);
   const rest = (what) => page.waitForFunction(() => document.documentElement.dataset.busy === '0', { timeout: 10000 }).catch(() => { throw new Error('timed out waiting for the page to be at rest: ' + what); });
@@ -101,7 +107,12 @@ try {
   await rest('reloaded');
   const liveAfterReload = await page.$eval('#live', (e) => e.textContent);
   const afterReload = await panel();
-  out = { ok: true, line, linkReached, focusAfterLink, same, differs, afterReload, liveAfterEdit, liveAfterReload, reloadLabel, results, console: console_, failed, offOrigin };
+  // A comparison that fails does not leave the old answer in the headline.
+  abortNext = true;
+  await page.$eval('#source', (e) => { e.value = e.value + ' '; e.dispatchEvent(new Event('input', { bubbles: true })); });
+  await until(() => document.getElementById('run-line-word').textContent === 'NOT COMPARED', null, 'the headline to leave the old answer');
+  const afterFailure = await page.evaluate(() => ({ word: document.getElementById('run-line-word').textContent, cls: document.getElementById('run-line-word').className, claim: document.getElementById('run-claim').textContent }));
+  out = { ok: true, afterFailure, line, linkReached, focusAfterLink, same, differs, afterReload, liveAfterEdit, liveAfterReload, reloadLabel, results, console: console_, failed, offOrigin };
 } catch (e) {
   out = { ok: false, error: String(e && e.message || e), results, console: console_, failed, offOrigin };
 }

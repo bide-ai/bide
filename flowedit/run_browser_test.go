@@ -42,6 +42,11 @@ func TestRunPanelInChrome(t *testing.T) {
 			AboveFlow      bool   `json:"aboveFlow"`
 			PanelBelowFlow bool   `json:"panelBelowFlow"`
 		} `json:"line"`
+		AfterFailure struct {
+			Word  string `json:"word"`
+			Class string `json:"cls"`
+			Claim string `json:"claim"`
+		} `json:"afterFailure"`
 		LinkReached    bool   `json:"linkReached"`
 		FocusAfterLink string `json:"focusAfterLink"`
 		Same           runPanel
@@ -69,6 +74,9 @@ func TestRunPanelInChrome(t *testing.T) {
 	}
 	if l := r.Line; l.Hidden || l.Word != "SAME DIGEST" || l.Text != "Run r1" || l.Link != "Details of the comparison with the run" || !l.AboveFlow || !l.PanelBelowFlow {
 		t.Errorf("the headline line: %+v", l)
+	}
+	if f := r.AfterFailure; f.Word != "NOT COMPARED" || !strings.Contains(f.Class, "v-warn") || !strings.Contains(f.Claim, "Could not compare with the run") {
+		t.Errorf("after a failed comparison: %+v", f)
 	}
 	if !r.LinkReached || r.FocusAfterLink != "h-run" {
 		t.Errorf("the details link: reached by Tab %v, focus after Enter on %q, want h-run", r.LinkReached, r.FocusAfterLink)

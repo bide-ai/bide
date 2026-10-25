@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
@@ -297,5 +298,144 @@ func TestRunPathDoesNotDrawAnEdgeToAnotherNode(t *testing.T) {
 	p := askRun(t, runServer(t, runCfg, runview.JournalSource{J: j}, "r1", false), other, nil, false).Path
 	if hasEdge(p, "a", "b") || !strings.Contains(strings.Join(p.OffCanvas, "\n"), "edge a -> b: the run took it") {
 		t.Errorf("edges %+v off canvas %q", p.Edges, p.OffCanvas)
+	}
+}
+
+// failFirstNode fails its first read of a node result, as a connection that drops in the middle of the path reads.
+type failFirstNode struct {
+	agent.Store
+	armed, failed atomic.Bool
+}
+
+func (f *failFirstNode) Get(ctx context.Context, run, name string) (agent.Entry, bool, error) {
+	if f.armed.Load() && strings.HasPrefix(name, "node:") && f.failed.CompareAndSwap(false, true) {
+		return agent.Entry{}, false, leak
+	}
+	return f.Store.Get(ctx, run, name)
+}
+
+// A path that could not be read says so in words (no text of the error), and is not kept as if it were the
+// answer: it is read again after the backoff, and Reload reads at once.
+func TestRunPathReadFailureIsNotKept(t *testing.T) {
+	old := runBackoff
+	runBackoff = 0
+	t.Cleanup(func() { runBackoff = old })
+	flow, err := plan.Load[int, int]([]byte(runCfg), runRegistry(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ff := &failFirstNode{Store: agent.NewMemStore()}
+	j, _ := agent.NewJournal(ff)
+	if _, err := flow.Run(context.Background(), j, "r1", 1); err != nil {
+		t.Fatal(err)
+	}
+	ff.armed.Store(true)
+	s := runServer(t, runCfg, runview.JournalSource{J: j}, "r1", true)
+	r := askRun(t, s, runCfg, nil, false)
+	if r.Path == nil || r.Path.NotRead != "The run's path was not read (store error)." || len(r.Path.Nodes) != 0 {
+		t.Fatalf("the failed read: %+v", r.Path)
+	}
+	for _, w := range leakWords {
+		if b, _ := json.Marshal(r); strings.Contains(string(b), w) {
+			t.Errorf("the reply holds %q", w)
+		}
+	}
+	if r := askRun(t, s, runCfg, nil, false); r.Path == nil || r.Path.NotRead != "" || len(r.Path.Nodes) != 2 {
+		t.Errorf("the next request did not read the path again: %+v", r.Path)
+	}
+}
+
+// A run halted in the middle of a loop is told: the last iteration that has a result, and that the next one started or
+// waits at its gate. Without that the halt point, the one thing an author wants of a path, is lost.
+func TestRunPathSaysWhereALoopStopped(t *testing.T) {
+	j := ranLoop(t, 1)
+	recs, err := j.History(context.Background(), "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	has := func(name string) bool {
+		return slices.ContainsFunc(recs, func(r agent.Record) bool { return r.Name == name })
+	}
+	for _, n := range []string{"node:iter:0:refine", "node:iter:1:refine", "attempt:step:node:iter:1:refine", "switch:iter:0:check"} {
+		if !has(n) {
+			t.Fatalf("setup: the run has no %s", n)
+		}
+	}
+	cut := func(drop ...string) runview.Exports {
+		return runview.Exports{"r1": slices.DeleteFunc(slices.Clone(recs), func(r agent.Record) bool {
+			return r.Name == "run:complete" || slices.Contains(drop, r.Name) || strings.Contains(r.Name, "iter:2") || strings.HasSuffix(r.Name, ":done") || strings.HasPrefix(r.Name, "switch:iter:1")
+		})}
+	}
+	pathOf := func(src runview.Source, file string) *runPath {
+		return askRun(t, loopServer(t, file, src, true), file, nil, false).Path
+	}
+	// The second iteration of the head started and left no result.
+	p := pathOf(cut("node:iter:1:refine", "node:iter:1:check", "switch:iter:1:check"), loopRunCfg)
+	if n, ok := nodeNamed(p, "refine"); !ok || n.Status != "started" || n.Words != "ran, then started again, no result recorded" || n.Iters != 1 {
+		t.Errorf("started again: %+v", n)
+	}
+	// The Switch chose to go round and the next iteration had not begun: the head ran once and nothing else is said.
+	p = pathOf(cut("node:iter:1:refine", "attempt:step:node:iter:1:refine", "node:iter:1:check", "attempt:step:node:iter:1:check"), loopRunCfg)
+	if n, _ := nodeNamed(p, "refine"); n.Status != "ran" || n.Words != "ran" {
+		t.Errorf("the next iteration had not begun: %+v", n)
+	}
+	// The body is gated and the second iteration waits at its gate.
+	gated := strings.Replace(loopRunCfg, `{"name":"refine","block":"refine"}`, `{"name":"refine","block":"refine","approval":{"need":1,"approvers":["ops"]}}`, 1)
+	topo := plan.InspectConfig([]byte(gated), loopRegistry(t)).Topology
+	tb, _ := json.Marshal(topo)
+	dg, _ := plan.TopologyDigest(topo)
+	db, _ := json.Marshal(dg)
+	g := cut("node:iter:1:refine", "attempt:step:node:iter:1:refine", "node:iter:1:check", "attempt:step:node:iter:1:check")
+	for i := range g["r1"] {
+		switch g["r1"][i].Name {
+		case plan.TopologyStep:
+			g["r1"][i].Result = tb
+		case "flow:digest":
+			g["r1"][i].Result = db
+		}
+	}
+	g["r1"] = append(g["r1"], agent.Record{Kind: agent.StepValue, Name: agent.ApprovalPendingStep("node:iter:1:refine"), Result: json.RawMessage(`{}`)})
+	p = pathOf(g, gated)
+	if n, ok := nodeNamed(p, "refine"); !ok || n.Status != "paused" || n.Words != "ran, then paused at its approval gate" {
+		t.Errorf("paused again: %+v", n)
+	}
+}
+
+// The reads of a loop node scale with its iterations, up to the clamp and no further, whatever the topology claims
+// of its bound: a hostile topology that says a million, with every iteration present, costs the clamp.
+func TestRunPathClampsALoopsReads(t *testing.T) {
+	topo := plan.Topology{Flow: "f", Entry: "n0"}
+	body := []string{}
+	for i := 0; i < maxPathNodes; i++ {
+		name := "n" + strconv.Itoa(i)
+		topo.Nodes = append(topo.Nodes, plan.TopologyNode{Name: name, Block: "b"})
+		body = append(body, name)
+	}
+	topo.Loops = []plan.TopologyLoop{{Head: "n0", Over: "n0", Body: body, Max: 1_000_000_000}}
+	reads := 0
+	get := func(name string) (agent.Record, bool, error) {
+		reads++
+		return agent.Record{}, strings.HasPrefix(name, "node:iter:"), nil // every iteration of every node is there
+	}
+	f, err := readPathFacts(get, topo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if per := reads / maxPathNodes; per > maxPathIters+3 || per < maxPathIters {
+		t.Errorf("%d reads per node, want about the clamp %d (and never more than %d)", per, maxPathIters, maxPathIters+3)
+	}
+	if f.Nodes["n7"].Iters != maxPathIters {
+		t.Errorf("iterations %d", f.Nodes["n7"].Iters)
+	}
+}
+
+// An edge the run took between two nodes the file has, that the file lacks, is said to be gone; one between nodes the
+// file cannot show is said to be in another place.
+func TestRunPathSaysAnEdgeIsGone(t *testing.T) {
+	j, _ := ranRun(t, runCfg)
+	gone := `{"version":1,"flow":"pay","in":"int","out":"int","entry":"a","nodes":[{"name":"a","block":"inc"},{"name":"b","block":"dbl"}],"wiring":[]}`
+	p := askRun(t, runServer(t, runCfg, runview.JournalSource{J: j}, "r1", false), gone, nil, false).Path
+	if len(p.Edges) != 0 || !slices.Contains(p.OffCanvas, "edge a -> b: the run took it; this file has no such connection.") {
+		t.Errorf("%+v", p)
 	}
 }

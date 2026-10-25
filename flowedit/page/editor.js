@@ -1333,6 +1333,9 @@ export async function refreshRun({ reload = false } = {}) {
     if (mine !== runSeq) return;
     lastRunKey = '';
     if ($('run-panel').hidden) return;
+    // What the page said of the text before is not left beside text it could not compare.
+    $('run-line-word').textContent = 'NOT COMPARED';
+    $('run-line-word').className = 'rl-word v-warn';
     replace('run-claim', h('p', { class: 'bad', role: 'alert' }, 'Could not compare with the run: ' + e.message));
     return;
   }

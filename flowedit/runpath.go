@@ -2,12 +2,16 @@ package flowedit
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/plan"
 )
+
+// errPathTooLarge is why the path of a topology of more than maxPathNodes nodes is not read.
+var errPathTooLarge = errors.New("the topology has too many nodes for its path to be read")
 
 // maxPathNodes bounds the nodes whose journal keys are read for the run's path: each costs a few point
 // reads. Past it the path is not read, and the panel says so.
@@ -44,7 +48,7 @@ type pathFacts struct {
 // checked by plan to hold no ':', so a key is that node's and no other's.
 func readPathFacts(get getFunc, t plan.Topology) (*pathFacts, error) {
 	if len(t.Nodes) > maxPathNodes {
-		return nil, fmt.Errorf("the topology has more than %d nodes", maxPathNodes)
+		return nil, errPathTooLarge
 	}
 	loopMax := map[string]int{}
 	for _, l := range t.Loops {
@@ -80,17 +84,19 @@ func readPathFacts(get getFunc, t plan.Topology) (*pathFacts, error) {
 				fact.Iters = 1
 			}
 		}
-		if fact.Iters == 0 {
-			key := "node:" + n.Name
-			if loopMax[n.Name] > 0 {
-				key = "node:iter:0:" + n.Name
-			}
+		// What follows the last result is where the run stopped: the next iteration of a loop body that has started
+		// (its attempt marker) or waits at its gate, or, for a node with no result, its one body.
+		next, more := "node:"+n.Name, fact.Iters == 0
+		if limit := loopMax[n.Name]; limit > 0 {
+			next, more = "node:iter:"+strconv.Itoa(fact.Iters)+":"+n.Name, fact.Iters < limit
+		}
+		if more {
 			var err error
-			if fact.Attempted, err = has("attempt:step:" + key); err != nil {
+			if fact.Attempted, err = has("attempt:step:" + next); err != nil {
 				return nil, err
 			}
 			if n.Gate != nil {
-				if fact.Paused, err = has(agent.ApprovalPendingStep(key)); err != nil {
+				if fact.Paused, err = has(agent.ApprovalPendingStep(next)); err != nil {
 					return nil, err
 				}
 			}
@@ -191,15 +197,26 @@ func currentNames(t plan.Topology, made []Rename) map[string]string {
 }
 
 func nodeWords(f pathFact) (status, words string) {
+	ran := ""
 	switch {
 	case f.Iters > 1:
-		return "ran", fmt.Sprintf("ran %d times", f.Iters)
+		ran = fmt.Sprintf("ran %d times", f.Iters)
 	case f.Iters == 1:
-		return "ran", "ran"
-	case f.Paused:
-		return "paused", "paused at its approval gate"
+		ran = "ran"
 	}
-	return "started", "started, no result recorded"
+	switch {
+	case f.Paused:
+		if ran != "" {
+			return "paused", ran + ", then paused at its approval gate"
+		}
+		return "paused", "paused at its approval gate"
+	case f.Attempted:
+		if ran != "" {
+			return "started", ran + ", then started again, no result recorded"
+		}
+		return "started", "started, no result recorded"
+	}
+	return "ran", ran
 }
 
 // projectPath puts the run's path on the file's topology. run is the run's topology after the session's
@@ -260,6 +277,8 @@ func projectPath(facts *pathFacts, orig plan.Topology, run plan.Topology, made [
 		case !ok:
 		case exists && onCanvas[from] && onCanvas[to]:
 			p.Edges = append(p.Edges, pathEdge{From: from, To: to, Words: words})
+		case onCanvas[from] && onCanvas[to] && !exists:
+			p.OffCanvas = append(p.OffCanvas, fmt.Sprintf("%s %s -> %s: the run took it; this file has no such connection.", label, from, to))
 		default:
 			p.OffCanvas = append(p.OffCanvas, fmt.Sprintf("%s %s -> %s: the run took it; this file does not have it between nodes the run ran.", label, from, to))
 		}

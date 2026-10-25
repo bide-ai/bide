@@ -112,6 +112,14 @@ func (s *Server) serveRun(w http.ResponseWriter, r *http.Request) {
 	reply(w, s.compareRun(ctx, []byte(req.Text), req.Renames, req.Reload))
 }
 
+// storeFailure is the only way an error from the store becomes text on the page: what failed, in the editor's
+// words, and the class of the failure ("timed out", "canceled", "store error", "read error"), never the error's text,
+// which can carry a connection string, a host, a path or a key. A test injects an error with a password and a host into
+// every read and asserts that no reply holds either.
+func storeFailure(what string, err error) string {
+	return what + " (" + runview.ErrClass(err) + ")."
+}
+
 // runBackoff is how long a failed read is kept: a store that is down, or a journal in a format this version
 // cannot read, is not read again on every keystroke, and Reload run reads at once. A var so a test can set it.
 var runBackoff = 3 * time.Second
@@ -187,7 +195,7 @@ func (s *Server) snapshot(ctx context.Context, reload bool) *runSnap {
 		return f.snap
 	case <-ctx.Done():
 		sn := &runSnap{readAt: time.Now().UTC(), info: runInfo{ID: s.run.ID}, transient: true}
-		sn.status, sn.claim = "unreadable", "Run "+s.run.ID+" could not be read ("+runview.ErrClass(ctx.Err())+")."
+		sn.status, sn.claim = "unreadable", storeFailure("Run "+s.run.ID+" could not be read", ctx.Err())
 		return sn
 	}
 }
@@ -214,7 +222,7 @@ func readRun(ctx context.Context, run editrun.Run) *runSnap {
 	recs, get, found, err := readFacts(ctx, run, &sn.info)
 	if err != nil {
 		sn.transient = true
-		return refuse("unreadable", "Run "+id+" could not be read ("+runview.ErrClass(err)+").")
+		return refuse("unreadable", storeFailure("Run "+id+" could not be read", err))
 	}
 	if !found {
 		return refuse("not_found", "Run "+id+" has no records in this store.")
@@ -251,7 +259,14 @@ func readRun(ctx context.Context, run editrun.Run) *runSnap {
 	// The path is read now, under this read's context. A failure to read it does not fail the snapshot: the
 	// panel says the path was not read.
 	if f, err := readPathFacts(get, t); err != nil {
-		sn.pathNote = "The run's path was not read: " + firstLine(err.Error()) + "."
+		if errors.Is(err, errPathTooLarge) {
+			sn.pathNote = fmt.Sprintf("The run's path was not read: the topology has more than %d nodes.", maxPathNodes)
+		} else {
+			// A failed read is not definitive: the snapshot is kept only for the backoff, as a failed read of
+			// the facts is.
+			sn.transient = true
+			sn.pathNote = storeFailure("The run's path was not read", err)
+		}
 	} else {
 		sn.facts = f
 	}
@@ -356,7 +371,7 @@ func (s *Server) compareRun(ctx context.Context, text []byte, renames []Rename, 
 	id := info.ID
 	file, err := s.fileConfig(text)
 	if err != nil {
-		rep.Status, rep.Claim = "cannot", "Cannot compare: the text is not a readable config ("+firstLine(err.Error())+")."
+		rep.Status, rep.Claim = "cannot", "Cannot compare: the text is not a readable config ("+firstLine(err.Error())+")." // text of the file, not of a store
 		return rep.clean()
 	}
 	topo, made := renameTopology(sn.topo, renames)
@@ -366,7 +381,7 @@ func (s *Server) compareRun(ctx context.Context, text []byte, renames []Rename, 
 	frep := file.Inspect()
 	v, err := runview.DiffTopologies(runview.TopologyDiff{Old: old, New: frep, OldName: "run " + id, NewName: s.name, Typed: typed, Basis: file.Source()})
 	if err != nil {
-		rep.Status, rep.Claim = "cannot", "Cannot compare: "+firstLine(err.Error())+"."
+		rep.Status, rep.Claim = "cannot", "Cannot compare: "+firstLine(err.Error())+"." // text of the file, not of a store
 		var big *runview.TooLargeError
 		if errors.As(err, &big) {
 			rep.Status = "too_large"
