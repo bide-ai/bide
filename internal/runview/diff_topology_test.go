@@ -297,6 +297,16 @@ func TestRunDiffRefusesAnOversizedTopology(t *testing.T) {
 	if _, err := DiffTopologies(TopologyDiff{Old: small, New: plan.InspectTopology(edges)}); err == nil {
 		t.Error("4001 edges: no error")
 	}
+	// The arms count toward the bound with the edges.
+	arms := plan.Topology{Flow: "f", Entry: "a", Nodes: []plan.TopologyNode{{Name: "a"}, {Name: "b"}}, Edges: []plan.TopologyEdge{{From: "a", To: "b"}}}
+	br := plan.TopologyBranch{Over: "a"}
+	for i := 0; i < MaxTopologyEdges; i++ {
+		br.Arms = append(br.Arms, plan.TopologyBranchArm{Target: "b"})
+	}
+	arms.Branches = []plan.TopologyBranch{br}
+	if _, err := DiffTopologies(TopologyDiff{Old: small, New: plan.InspectTopology(arms)}); err == nil {
+		t.Error("4000 arms and an edge: no error")
+	}
 	ok := plan.Topology{Flow: "f", Entry: "n0"}
 	for i := 0; i < MaxTopologyNodes; i++ {
 		ok.Nodes = append(ok.Nodes, plan.TopologyNode{Name: fmt.Sprint("n", i), Block: "b"})
@@ -351,8 +361,33 @@ func TestNormalizeForRunLeavesItsInputAlone(t *testing.T) {
 			t.Errorf("%s is not counted gated", x.Name)
 		}
 	}
+	if n.Digest != "" {
+		t.Errorf("a structural report holds the digest %q", n.Digest)
+	}
 	if n.Safety != nil || n.Assertions != nil || !n.Typed {
 		t.Errorf("safety %v assertions %v typed %v", n.Safety, n.Assertions, n.Typed)
+	}
+}
+
+// A node renamed in the file and moved is an order change: the order is read under the pairing of
+// renamed nodes, so a rename does not hide it.
+func TestRunDiffReadsAnOrderChangeBesideARename(t *testing.T) {
+	file := strings.NewReplacer(`{"name":"y","block":"y"},{"name":"z","block":"z"}`, `{"name":"z","block":"z"},{"name":"y2","block":"y"}`,
+		`["split","y"]`, `["split","y2"]`, `"inputs":["y","z"]`, `"inputs":["y2","z"]`).Replace(cfgDiamond)
+	v := diffRun(t, cfgDiamond, file, false)
+	if got := changeLines(v); !strings.Contains(got, "order of the nodes") || !strings.Contains(got, "renamed node y2") {
+		t.Errorf("changes\n%s", got)
+	}
+}
+
+// With no digest on the run side nothing is said about the digest.
+func TestRunDiffNoNoteWithoutARunDigest(t *testing.T) {
+	reg := runRegistry(t)
+	run := runSide(t, cfgLoop, reg)
+	run.Digest = ""
+	v, err := DiffTopologies(TopologyDiff{Old: run, New: fileSide(cfgLoop, reg), OldName: "run", NewName: "f", Typed: true, Basis: SourceRegistry})
+	if err != nil || v.DigestNote != "" || v.OldDigest != "" {
+		t.Errorf("note %q old digest %q err %v", v.DigestNote, v.OldDigest, err)
 	}
 }
 
