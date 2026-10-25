@@ -131,3 +131,23 @@ func TestDiff_Usage(t *testing.T) {
 		t.Errorf("a stray argument with -declarations: code %d, want 2", code)
 	}
 }
+
+// RaisesSafety is listed by -declarations; -diff reports adding it as WEAKENED (exit 1) and removing it as
+// strengthened (exit 0).
+func TestRaisesSafety_IsListedAndDiffed(t *testing.T) {
+	pol := &declarations.Policy{Refuse: true}
+	plain := write(t, "plain.json", decl(pol, declarations.Tool{Name: "quote", Effect: true, Trusted: "ours"}))
+	raised := write(t, "raised.json", decl(pol, declarations.Tool{Name: "quote", Trusted: "ours", RaisesSafety: "reads the quote only"}))
+	code, out, errs := runMain("-declarations", raised)
+	if code != 0 || !strings.Contains(out, "tool quote") || !strings.Contains(out, "RaisesSafety") || !strings.Contains(out, "reads the quote only") {
+		t.Errorf("-declarations: code %d, out %q, err %q", code, out, errs)
+	}
+	code, out, _ = runMain("-diff", plain, raised)
+	if code != 1 || !strings.Contains(out, "WEAKENED") || !strings.Contains(out, "RaisesSafety") {
+		t.Errorf("adding RaisesSafety: code %d, out %q", code, out)
+	}
+	code, out, _ = runMain("-diff", raised, plain)
+	if code != 0 || !strings.Contains(out, "strengthened") || strings.Contains(out, "WEAKENED") || !strings.Contains(out, "RaisesSafety removed") {
+		t.Errorf("removing RaisesSafety: code %d, out %q", code, out)
+	}
+}
