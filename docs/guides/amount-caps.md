@@ -114,7 +114,7 @@ the window's total.
   reservations a window, and see [KNOWN-LIMITATIONS](../KNOWN-LIMITATIONS.md).
 - **Release.** Only the loop releases, and only a *marked* (not retry-safe) attempt, and only once it has proved
   the tool never began: after the tool chain returned, it seals the call's began word (a tool that began cannot be
-  sealed), releases each of the call's reservations, and only then records the attempt as not started. A call
+  sealed), journals why in a `cap-release:` record (a write that fails releases nothing), releases each of the call's reservations, and only then records the attempt as not started. A call
   refused by a second rule after the first reserved, or failed by the store before the tool began, therefore
   gives its room back. `Recover` and every pass of `RecoverLoop` also run a reconcile pass over the ledgers of open
   windows (a day or hour window until a window length after it ended, a run window until its root run ends),

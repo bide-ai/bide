@@ -60,7 +60,7 @@ unique within the run: a second `Step` with the same `(runID, name)` returns the
 recorded result. It shares the run's journal with the engine's own records, so a name that starts
 with a prefix the engine reserves for them (`@`, `run:`, `tool:`, `attempt:`, `approval:`,
 `approval-tally:`, `approval-pending:`, `approval-pause:`, `approval-identity:`, `approval-status:`, `approval-exec-hold:`, `approval-request:`, `signal:`, `await-timeout:`, `await-resolved:`, `timer:`, `interrupt:`, `chan:`,
-`chanack:`, `turn/`, `start/`, `from/`, `audit:`, `slot:`, `cap-intent:`, `cap-reserve:`, `gate-reason:`, and a `plan` flow's `node:`, `switch:`, `flow:`;
+`chanack:`, `turn/`, `start/`, `from/`, `audit:`, `slot:`, `cap-intent:`, `cap-reserve:`, `cap-release:`, `gate-reason:`, and a `plan` flow's `node:`, `switch:`, `flow:`;
 see `agent.IsReservedStepName`) is `ErrConfig`,
 for `Step` and for a `Parallel` task alike, and so is an empty name. Inside the body of a `plan` flow's node, a `Step` for
 the flow's run is recorded under the node's key (`node:<node>:step:<name>`, per loop iteration in a
