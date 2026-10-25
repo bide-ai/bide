@@ -837,7 +837,7 @@ func auditIntents(ctx context.Context, j *agent.Journal, led *capledger.Ledger, 
 		}
 	}
 	if n := len(rs.unmarked); n > 0 {
-		rep.NotChecked = append(rep.NotChecked, fmt.Sprintf("%d cap-intent(s) belong to attempts with no marker (retry-safe tools): their window was held only to the start of their run, so a long-lived run could pin one to any later window", n))
+		rep.NotChecked = append(rep.NotChecked, fmt.Sprintf("%d cap-intent(s) belong to attempts with no dated marker (a retry-safe tool, or a marker written before recorded_at existed): their window was held only to the start of their run, so a long-lived run could pin one to any later window", n))
 	}
 	if outside > 0 {
 		rep.NotChecked = append(rep.NotChecked, fmt.Sprintf("%d cap-intent(s) fix a window the filter left out: their dates were checked, but their slots, and the ledgers they name, were not read", outside))

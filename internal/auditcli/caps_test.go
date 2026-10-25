@@ -12,6 +12,7 @@ import (
 	"iter"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1307,4 +1308,35 @@ func TestCapsAudit_APausedRunPinnedBackToItsStartDay(t *testing.T) {
 	}
 	code, out, errOut = e.anchored()
 	wantFail(t, code, out, errOut, "INTENT_WINDOW")
+}
+
+func TestCapsAudit_AMarkerWithoutRecordedAtDatesNothingAndSaysSo(t *testing.T) {
+	e := newCapsEnv(t)
+	e.plantIntent("r1", "2026-10-10", 100) // pinned to an earlier day
+	if err := e.call("r1", 100); err != nil {
+		t.Fatal(err)
+	}
+	// A marker written before recorded_at existed: with it gone, only run:start (the same day) dates the
+	// call, so the pin to an earlier day is still caught, and the note says the marker dated nothing.
+	e.tamper.edit = func(r, n string, d []byte) []byte {
+		if r == "r1" && strings.HasPrefix(n, "attempt:") {
+			d = regexp.MustCompile(`,?"recorded_at":"[^"]*"`).ReplaceAll(d, nil)
+		}
+		return d
+	}
+	code, out, errOut := unanchoredCaps()
+	wantFail(t, code, out, errOut, "INTENT_WINDOW")
+	if !strings.Contains(out, "no dated marker") {
+		t.Fatalf("the undated marker must be counted:\n%s", out)
+	}
+	// And with an honest intent the audit passes but still says the call was dated by run:start only.
+	e2 := newCapsEnv(t)
+	if err := e2.call("r1", 100); err != nil {
+		t.Fatal(err)
+	}
+	e2.tamper.edit = e.tamper.edit
+	code, out, errOut = unanchoredCaps()
+	if code != 0 || !strings.Contains(out, "NOT CHECKED: 1 cap-intent(s) belong to attempts with no dated marker") {
+		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
+	}
 }
