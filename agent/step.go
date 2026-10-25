@@ -35,8 +35,8 @@ import (
 // ("attempt:retry:") that derive from a marker. An empty name is ErrConfig too, and so is a rec whose Kind is
 // not StepAttempt or that carries a result, an approval, a model turn or a reconciliation, so a caller cannot
 // plant a tool result or an approval the engine would read. Only a bare attempt marker (ToolUseID, Safety,
-// Approval) can be claimed. Its AttemptedAt is stamped by the claim from the context's clock (the wall clock
-// when none is bound), and a caller-set AttemptedAt is ErrConfig: the marker's age decides when a halt may be
+// Approval) can be claimed. Its AttemptedAt is stamped by the claim from the wall clock, whatever clock the context
+// carries (a run clock that lags would shorten the grace period of WithMinHaltAge), and a caller-set AttemptedAt is ErrConfig: the marker's age decides when a halt may be
 // resolved (WithMinHaltAge).
 func ClaimAttempt(ctx context.Context, j *Journal, runID, name string, rec Record) (won bool, got Record, err error) {
 	if err := checkCallerRun("ClaimAttempt", runID); err != nil {
@@ -48,7 +48,7 @@ func ClaimAttempt(ctx context.Context, j *Journal, runID, name string, rec Recor
 	if err := checkClaimRecord("ClaimAttempt", rec); err != nil {
 		return false, Record{}, err
 	}
-	rec.AttemptedAt = clockFrom(ctx)().UnixMilli() // the age of the marker is the claim's, never a caller's
+	rec.AttemptedAt = time.Now().UnixMilli() // the age of the marker is the claim's wall-clock time, never a caller's
 	return j.claim(ctx, runID, name, rec)
 }
 
