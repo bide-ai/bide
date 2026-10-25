@@ -40,6 +40,10 @@ type tamperStore struct {
 	*agent.MemStore
 	hide func(run, name string) bool
 	gone func(run string) bool // a run that is not in the store at all
+	// failRun makes reading a run fail the way a storage error does (a corrupt row, a record that does not
+	// decode), and failList makes listing the store's runs fail.
+	failRun  func(run string) bool
+	failList bool
 	// rename shows an entry under another name (Load only: a planted record in another run).
 	rename func(run, name string) string
 	edit   func(run, name string, data []byte) []byte
@@ -47,6 +51,10 @@ type tamperStore struct {
 
 func (s *tamperStore) Load(ctx context.Context, run string, after int64) iter.Seq2[agent.Entry, error] {
 	return func(yield func(agent.Entry, error) bool) {
+		if s.failRun != nil && s.failRun(run) {
+			yield(agent.Entry{}, fmt.Errorf("the row stored as step %q holds a record named run:complete (%w)", "x", agent.ErrStorage))
+			return
+		}
 		for e, err := range s.MemStore.Load(ctx, run, after) {
 			if err == nil && s.hide != nil && s.hide(run, e.Name) {
 				continue
@@ -66,6 +74,10 @@ func (s *tamperStore) Load(ctx context.Context, run string, after int64) iter.Se
 
 func (s *tamperStore) Runs(ctx context.Context, f agent.RunFilter) iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
+		if s.failList {
+			yield("", fmt.Errorf("list runs: connection refused (%w)", agent.ErrStorage))
+			return
+		}
 		for id, err := range s.MemStore.Runs(ctx, f) {
 			if err == nil && s.gone != nil && s.gone(id) {
 				continue
@@ -148,6 +160,11 @@ func (e *capsEnv) call(runID string, amount int, lines ...string) error {
 }
 
 // ledgerRun is the one ledger run of the store.
+func (e *capsEnv) ledgerRun2(rule string) string {
+	l := journalhook.CapLedger(e.j, time.Now, 0)
+	return l.LedgerRun(capledger.Rule{Namespace: "default", Name: rule, Currency: "USD", Kind: capledger.Day}, capsDay, capledger.KeyDigest(""))
+}
+
 func (e *capsEnv) ledgerRun() string {
 	e.t.Helper()
 	var out []string
@@ -1514,5 +1531,49 @@ func TestCapsAudit_AReleaseNoteWithAnUnknownReasonDoesNotRead(t *testing.T) {
 	}
 	if _, err := capledger.DecodeRelease([]byte(`{"format":"bide.cap-release.v1","attempt":"a","why":"cap refusal"}`)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCapsAudit_OneUnreadableRunIsAFindingNotTheEndOfTheAudit(t *testing.T) {
+	e := threeCalls(t)
+	if err := e.call("other", 5, `unrelated: refund.amount[minor, currency=currency] sum 100 USD per day -> refuse`); err != nil {
+		t.Fatal(err)
+	}
+	// A run no ledger names cannot be read, and a slot of the main ledger is deleted besides.
+	e.tamper.failRun = func(run string) bool { return run == "other" }
+	run := e.ledgerRun2("refund_total")
+	e.tamper.hide = func(r, n string) bool { return r == run && n == "slot:2" }
+	code, out, errOut := unanchoredCaps()
+	wantFail(t, code, out, errOut, "UNREADABLE", "DELETED")
+	if code != 1 || !strings.Contains(out, "run other cannot be read") || strings.Contains(out, "PASS") {
+		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
+	}
+	if strings.Count(out, "INFO  ledger ") < 1 {
+		t.Fatalf("the ledgers are still audited:\n%s", out)
+	}
+}
+
+func TestCapsAudit_ARunASlotNamesCannotBeReadFailsItsLedger(t *testing.T) {
+	e := threeCalls(t)
+	e.tamper.failRun = func(run string) bool { return run == "r2" }
+	code, out, errOut := unanchoredCaps()
+	wantFail(t, code, out, errOut, "UNREADABLE")
+	// The unreadable run explains its own slot's missing cross-checks: no spurious findings on it.
+	for _, k := range []string{"UNRECORDED", "INTENT_MISSING", "RELEASE_"} {
+		if strings.Contains(out, k) {
+			t.Fatalf("a %s finding for a run that could not be read:\n%s", k, out)
+		}
+	}
+	if !strings.Contains(out, "run r2 cannot be read") {
+		t.Fatalf("the run must be named:\n%s", out)
+	}
+}
+
+func TestCapsAudit_AStoreThatCannotListItsRunsIsExit4(t *testing.T) {
+	e := threeCalls(t)
+	e.tamper.failList = true
+	code, out, errOut := unanchoredCaps()
+	if code != 4 || strings.Contains(out, "PASS") {
+		t.Fatalf("exit %d, want 4\n%s\n%s", code, out, errOut)
 	}
 }
