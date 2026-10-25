@@ -305,8 +305,8 @@ func auditCaps(ctx context.Context, store agent.Store, j *agent.Journal, led *ca
 	// The cap-reserve records of the runs in scope, by the ledger they name.
 	claims := map[string][]capClaim{}
 	intents := map[string][]capIntent{} // by attempt
-	rs := capRunFacts{results: map[string]map[string]capResult{}, ended: map[string]bool{}, covered: map[string]bool{}, started: map[string]time.Time{},
-		attempted: map[string]map[string]time.Time{}, capRecs: map[string]int{}, records: map[string]int{}, unmarked: map[string]bool{}}
+	rs := capRunFacts{results: map[string]map[string]bool{}, notes: map[string]map[string][]byte{}, ended: map[string]bool{}, covered: map[string]bool{}, started: map[string]time.Time{},
+		attempted: map[string]map[string]time.Time{}, capRecs: map[string]int{}, records: map[string]int{}, unmarked: map[string]bool{}, oldReleases: map[string]bool{}}
 	for _, id := range runs {
 		recs, err := j.History(ctx, id)
 		if err != nil {
@@ -347,9 +347,15 @@ func auditCaps(ctx context.Context, store agent.Store, j *agent.Journal, led *ca
 			}
 			if r.Kind == agent.StepToolResult {
 				if rs.results[id] == nil {
-					rs.results[id] = map[string]capResult{}
+					rs.results[id] = map[string]bool{}
 				}
-				rs.results[id][r.ToolUseID] = capResult{isErr: r.IsError, refused: r.IsError && engineRefusal(r.Result)}
+				rs.results[id][r.ToolUseID] = r.IsError
+			}
+			if r.Kind == agent.StepValue && capledger.IsReleaseName(r.Name) {
+				if rs.notes[id] == nil {
+					rs.notes[id] = map[string][]byte{}
+				}
+				rs.notes[id][r.Name] = []byte(r.Result)
 			}
 			if r.Kind == agent.StepValue && capledger.IsIntentName(r.Name) {
 				in, err := capledger.DecodeIntent(r.Result)
@@ -623,11 +629,13 @@ func auditLedger(ctx context.Context, j *agent.Journal, led *capledger.Ledger, v
 		}
 	}
 
-	// A release is the loop's, written only for a call it proved never began. The call's journal shows
-	// that: it was voided (not started), or the engine answered it with a refusal and never called the
-	// tool. A release of a call whose result the tool produced is the loop's never. An error result that is
-	// not the engine's refusal is a tool that ran and failed, or a refusal this audit does not know: it
-	// cannot be told apart, and is a warning. A release whose verdict rests on records after the run's
+	// A release is the loop's, and the loop releases only a call it proved never began, after it journals
+	// why (cap-release:). A release is explained by that record, or by the attempt's void (the reconcile
+	// pass releases a voided attempt and writes no record). A release of a call whose result the tool
+	// produced is the loop's never, note or not. A release neither explained nor refuted fails when
+	// anchored (the justification is missing from a journal whose writer cannot be shown to have left it
+	// out) and warns when not; a journal written before the record existed cannot be told from a forgery,
+	// so its releases warn and are counted. A release whose verdict rests on records after the run's
 	// newest signed head (anchored) is not attested, and fails.
 	for _, rel := range slots {
 		if rel.Kind != "release" || rel.Ref < 0 || rel.Ref >= len(slots) {
@@ -637,22 +645,30 @@ func auditLedger(ctx context.Context, j *agent.Journal, led *capledger.Ledger, v
 		if !in.filter.inRun(r.Run) {
 			continue
 		}
-		res, answered := rs.results[r.Run][r.Tool]
+		isErr, answered := rs.results[r.Run][r.Tool]
 		switch {
 		case in.anchored && !rs.covered[r.Run]:
-			find(capReleaseTail, run, rel.N, "slot %d releases slot %d (attempt %s), and what shows whether its call ran lies in run %s after the newest signed head (or no head covers the run): NOT ATTESTED", rel.N, r.N, cleanText(r.Attempt), cleanText(r.Run))
-		case answered && !res.isErr:
+			find(capReleaseTail, run, rel.N, "slot %d releases slot %d (attempt %s), and what explains it lies in run %s after the newest signed head (or no head covers the run): NOT ATTESTED", rel.N, r.N, cleanText(r.Attempt), cleanText(r.Run))
+		case answered && !isErr:
 			find(capReleaseRan, run, rel.N, "slot %d releases slot %d (attempt %s), and run %s holds a result of call %s that the tool produced: the call ran, so it was never released by the loop", rel.N, r.N, cleanText(r.Attempt), cleanText(r.Run), cleanText(r.Tool))
-		case answered && res.refused:
-		case answered:
-			warn(capReleaseUnk, run, rel.N, "slot %d releases slot %d (attempt %s), and the result of call %s in run %s is an error the engine did not write as a refusal: a tool that ran and failed looks the same, and so does a refusal this audit does not know", rel.N, r.N, cleanText(r.Attempt), cleanText(r.Tool), cleanText(r.Run))
 		default:
-			v, err := voided(ctx, j, r)
+			explained, why, err := releaseExplained(ctx, j, led, voided, rs, r)
 			if err != nil {
-				return nil, fmt.Errorf("read whether %s was voided: %w", r.Attempt, err)
+				return nil, err
 			}
-			if !v {
-				warn(capReleaseUnk, run, rel.N, "slot %d releases slot %d (attempt %s), and run %s shows the attempt neither recorded as not started nor answered: a crash between the release and the void looks the same, and a re-drive voids it", rel.N, r.N, cleanText(r.Attempt), cleanText(r.Run))
+			switch {
+			case explained:
+			case why != "":
+				find(capReleaseUnk, run, rel.N, "slot %d releases slot %d (attempt %s): %s", rel.N, r.N, cleanText(r.Attempt), why)
+			case rs.dated(r.Run, r.Att):
+				if in.anchored {
+					find(capReleaseUnk, run, rel.N, "slot %d releases slot %d (attempt %s), and run %s holds neither a cap-release record nor a void of the attempt: nothing shows the call never began", rel.N, r.N, cleanText(r.Attempt), cleanText(r.Run))
+				} else {
+					warn(capReleaseUnk, run, rel.N, "slot %d releases slot %d (attempt %s), and run %s holds neither a cap-release record nor a void of the attempt: nothing shows the call never began (a crash between the release and the void looks the same, and a re-drive voids it; unanchored, a writer who can edit the store can leave exactly this)", rel.N, r.N, cleanText(r.Attempt), cleanText(r.Run))
+				}
+			default:
+				rs.oldReleases[r.Attempt] = true
+				warn(capReleaseUnk, run, rel.N, "slot %d releases slot %d (attempt %s), a call journaled before the cap-release record existed: nothing shows the call never began", rel.N, r.N, cleanText(r.Attempt))
 			}
 		}
 	}
@@ -860,6 +876,9 @@ func auditIntents(ctx context.Context, j *agent.Journal, led *capledger.Ledger, 
 			}
 		}
 	}
+	if n := len(rs.oldReleases); n > 0 {
+		rep.NotChecked = append(rep.NotChecked, fmt.Sprintf("%d release(s) are of calls journaled before the cap-release record existed: nothing shows those calls never began", n))
+	}
 	if n := len(rs.unmarked); n > 0 {
 		rep.NotChecked = append(rep.NotChecked, fmt.Sprintf("%d cap-intent(s) belong to attempts with no dated marker (a retry-safe tool, or a marker written before recorded_at existed): their window was held only to the start of their run, so a long-lived run could pin one to any later window", n))
 	}
@@ -872,14 +891,17 @@ func auditIntents(ctx context.Context, j *agent.Journal, led *capledger.Ledger, 
 // capRunFacts is what the audit read of the runs besides their cap records: which tool-use IDs of a run
 // have a result (and whether it is an error), and which runs have ended.
 type capRunFacts struct {
-	results   map[string]map[string]capResult // run -> tool-use ID -> its result
-	covered   map[string]bool                 // run -> its newest signed head covers the whole run (anchored audits)
-	ended     map[string]bool
-	started   map[string]time.Time            // run -> the start time its run:start records (the run's clock)
-	attempted map[string]map[string]time.Time // run -> attempt marker name -> recorded_at (the run clock)
-	capRecs   map[string]int                  // run -> entries up to and including its last cap-intent or cap-reserve
-	records   map[string]int                  // run -> number of entries
-	unmarked  map[string]bool                 // the intents dated by their run's start only (no attempt marker)
+	results        map[string]map[string]bool   // run -> tool-use ID -> the result is an error
+	notes          map[string]map[string][]byte // run -> cap-release record name -> its data
+	covered        map[string]bool              // run -> its newest signed head covers the whole run (anchored audits)
+	ended          map[string]bool
+	started        map[string]time.Time            // run -> the start time its run:start records (the run's clock)
+	attempted      map[string]map[string]time.Time // run -> attempt marker name -> recorded_at (the run clock)
+	capRecs        map[string]int                  // run -> entries up to and including its last cap-intent or cap-reserve
+	records        map[string]int                  // run -> number of entries
+	undatedRelease int                             // releases of attempts journaled before the cap-release record existed
+	unmarked       map[string]bool                 // the intents dated by their run's start only (no attempt marker)
+	oldReleases    map[string]bool                 // releases of attempts journaled before the cap-release record existed
 }
 
 // failures counts the findings that fail the audit (not the warnings).
@@ -980,13 +1002,34 @@ func markerOf(attempt string) string {
 	return ""
 }
 
-// capResult is a tool result as the audit needs it: whether it is an error, and whether it is the engine's
-// own refusal of the call (the tool was never called).
-type capResult struct{ isErr, refused bool }
+// releaseExplained reports whether the release of reserve r is explained: the run holds the loop's
+// cap-release record for the attempt (and it names that attempt), or the attempt is voided. why is set when a
+// record is there and does not hold.
+func releaseExplained(ctx context.Context, j *agent.Journal, led *capledger.Ledger, voided capbridge.VoidedFunc, rs capRunFacts, r capledger.Slot) (explained bool, why string, err error) {
+	if data, ok := rs.notes[r.Run][led.ReleaseName(r.Attempt)]; ok {
+		note, derr := capledger.DecodeRelease(data)
+		switch {
+		case derr != nil:
+			return false, fmt.Sprintf("the cap-release record of the attempt does not read: %v", derr), nil
+		case note.Attempt != r.Attempt:
+			return false, fmt.Sprintf("the cap-release record under this attempt's name names another attempt (%s)", cleanText(note.Attempt)), nil
+		}
+		return true, "", nil
+	}
+	v, err := voided(ctx, j, r)
+	if err != nil {
+		return false, "", fmt.Errorf("read whether %s was voided: %w", r.Attempt, err)
+	}
+	return v, "", nil
+}
 
-// engineRefusal reports whether a tool result is one the engine wrote when it refused a call before its tool
-// began ("tool call refused: ..." for an amount cap or a taint gate).
-func engineRefusal(result json.RawMessage) bool {
-	var text string
-	return json.Unmarshal(result, &text) == nil && strings.HasPrefix(text, "tool call refused: ")
+// dated reports whether the attempt of a slot (its Att, "<marker key>#<rule>") has a marker with a
+// recorded_at in run: a journal written by a version that writes cap-release records.
+func (rs capRunFacts) dated(run, att string) bool {
+	i := strings.LastIndexByte(att, '#')
+	if i <= 0 {
+		return false
+	}
+	_, ok := rs.attempted[run][att[:i]]
+	return ok
 }

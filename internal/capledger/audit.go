@@ -92,3 +92,39 @@ func (in Intent) IntentRule() Rule {
 func (l *Ledger) IntentLedger(in Intent) string {
 	return l.LedgerRun(in.IntentRule(), in.Window, in.Key)
 }
+
+const (
+	releasePrefix = "cap-release:"
+	releaseFormat = "bide.cap-release.v1"
+)
+
+// Release is the decoded cap-release record: the loop writes one, in the run that made the call, before it
+// releases the call's slot, saying why (the call never began).
+type Release struct {
+	Attempt string
+	Why     string
+}
+
+// IsReleaseName reports whether an entry name is that of a cap-release record.
+func IsReleaseName(name string) bool { return strings.HasPrefix(name, releasePrefix) }
+
+// ReleaseName is the name of the cap-release record of attempt (an AttemptKey) in its call's run: the same
+// name package agent builds (capReleaseStep).
+func (l *Ledger) ReleaseName(attempt string) string { return releasePrefix + l.cfg.Encode(attempt) }
+
+// DecodeRelease decodes the data of a cap-release record, strictly.
+func DecodeRelease(b []byte) (Release, error) {
+	var r struct {
+		Format  string `json:"format"`
+		Attempt string `json:"attempt"`
+		Ledger  string `json:"ledger,omitempty"`
+		Why     string `json:"why"`
+	}
+	if err := strict(b, &r); err != nil {
+		return Release{}, fmt.Errorf("cap-release: %w", err)
+	}
+	if r.Format != releaseFormat {
+		return Release{}, fmt.Errorf("cap-release: format %q, want %q", r.Format, releaseFormat)
+	}
+	return Release{Attempt: r.Attempt, Why: r.Why}, nil
+}

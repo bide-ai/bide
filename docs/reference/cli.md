@@ -1473,8 +1473,9 @@ bide audit: produce and verify audit proof bundles
          is missing is DELETED, one whose cum_after or attempt differs is CHANGED, a reserve slot with no
          record is UNRECORDED (a failure when the run has ended; a warning when it has not, since a reservation
          interrupted before its record looks the same). A release of a call whose run holds a result the tool
-         produced is RELEASE_OF_A_CALL_THAT_RAN, since only a call that never began is released; one
-         whose attempt is neither voided nor answered is a warning. Every reserve slot's attempt must have exactly one cap-intent, which sends it to this
+         produced is RELEASE_OF_A_CALL_THAT_RAN, since only a call that never began is released; any
+         other release must be explained by the loop's cap-release record or by the attempt's void
+         (RELEASE_UNCONFIRMED): without either it fails when anchored and warns when not. Every reserve slot's attempt must have exactly one cap-intent, which sends it to this
          ledger with this amount, currency and marking (a planted intent with another window is
          INTENT_MISMATCH), and whose window the rule's index run holds and fits its call's own time (the window of the attempt
          marker's time or the next one; for an attempt with no marker, not before the run's start:

@@ -1341,7 +1341,7 @@ func TestCapsAudit_AMarkerWithoutRecordedAtDatesNothingAndSaysSo(t *testing.T) {
 	}
 }
 
-func TestCapsAudit_AForgedReleaseOfACallThatRanAndFailedIsAWarning(t *testing.T) {
+func TestCapsAudit_AForgedReleaseOfACallThatRanAndFailed(t *testing.T) {
 	e := newCapsEnv(t)
 	type in struct {
 		Amount   int64  `json:"amount"`
@@ -1359,12 +1359,80 @@ func TestCapsAudit_AForgedReleaseOfACallThatRanAndFailedIsAWarning(t *testing.T)
 	if _, err := a.Run(context.Background(), "r1", agent.UserText("go")); err != nil {
 		t.Fatal(err)
 	}
-	e.forgeRelease("r1") // the tool ran and failed: its marker stands, and it was never released by the loop
-	// The tool's own error is not the engine's refusal: the audit cannot tell it from one it does not know,
-	// and says so (a warning), where a legitimate refusal passes silently.
+	e.forgeRelease("r1") // the tool ran and failed: its marker stands, and the loop never released it
+	// No cap-release record and no void: the loop did not write this release. Anchored, that fails;
+	// unanchored it is a warning, and the report's first line states what a writer of the store can do.
+	code, out, errOut := unanchoredCaps()
+	if code != 0 || !strings.Contains(out, "WARN  RELEASE_UNCONFIRMED") || !strings.Contains(out, "neither a cap-release record nor a void") {
+		t.Fatalf("unanchored: exit %d\n%s\n%s", code, out, errOut)
+	}
+	code, out, errOut = e.anchored()
+	wantFail(t, code, out, errOut, "RELEASE_UNCONFIRMED")
+}
+
+func TestCapsAudit_AReleaseTheLoopWroteIsExplainedByItsNote(t *testing.T) {
+	e := threeCalls(t)
+	_ = e.call("r4", 150, capsRule, capsRuleHr) // refused by the second rule: released, with its note
+	for name, run := range map[string]func() (int, string, string){"unanchored": func() (int, string, string) { return unanchoredCaps() }, "anchored": func() (int, string, string) { return e.anchored() }} {
+		if code, out, errOut := run(); code != 0 || strings.Contains(out, "RELEASE_") || strings.Contains(out, "WARN") {
+			t.Fatalf("%s: exit %d\n%s\n%s", name, code, out, errOut)
+		}
+	}
+	// Without the note the same release is unexplained.
+	e.tamper.hide = func(r, n string) bool { return r == "r4" && strings.HasPrefix(n, "cap-release:") }
+	code, out, errOut := unanchoredCaps()
+	if code != 0 || !strings.Contains(out, "WARN  RELEASE_UNCONFIRMED") {
+		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
+	}
+	// Deleted after its head was signed, the run no longer matches the head.
+	code, out, errOut = e.anchored()
+	wantFail(t, code, out, errOut, "DIVERGENT_HEAD")
+	// A note that names another attempt explains nothing.
+	e.tamper.hide = nil
+	e.tamper.edit = func(r, n string, d []byte) []byte {
+		if r == "r4" && strings.HasPrefix(n, "cap-release:") {
+			d = bytes.Replace(d, []byte(`"attempt":"r4/r4/`), []byte(`"attempt":"r4/r9/`), 1)
+		}
+		return d
+	}
+	code, out, errOut = unanchoredCaps()
+	wantFail(t, code, out, errOut, "RELEASE_UNCONFIRMED")
+	if !strings.Contains(out, "names another attempt") {
+		t.Fatalf("the wrong attempt must be named:\n%s", out)
+	}
+}
+
+func TestCapsAudit_ANotePlantedForACallThatRanExplainsNothing(t *testing.T) {
+	e := threeCalls(t)
+	e.forgeRelease("r1")
+	// A note written for r1's attempt does not matter: its tool produced a result.
+	e.tamper.edit = nil
+	code, out, errOut := unanchoredCaps()
+	wantFail(t, code, out, errOut, "RELEASE_OF_A_CALL_THAT_RAN")
+}
+
+func TestCapsAudit_AReleaseOfAJournalFromBeforeTheNoteWarnsAndIsCounted(t *testing.T) {
+	e := threeCalls(t)
+	_ = e.call("r4", 150, capsRule, capsRuleHr)
+	// Strip what a journal written before the cap-release record and recorded_at had: no note, no recorded_at.
+	e.tamper.hide = func(r, n string) bool { return r == "r4" && strings.HasPrefix(n, "cap-release:") }
+	e.tamper.edit = func(r, n string, d []byte) []byte {
+		if r == "r4" && strings.HasPrefix(n, "attempt:") {
+			d = regexp.MustCompile(`,?"recorded_at":"[^"]*"`).ReplaceAll(d, nil)
+		}
+		return d
+	}
 	for name, run := range map[string]func() (int, string, string){"unanchored": func() (int, string, string) { return unanchoredCaps() }, "anchored": func() (int, string, string) { return e.anchored() }} {
 		code, out, errOut := run()
-		if code != 0 || !strings.Contains(out, "WARN  RELEASE_UNCONFIRMED") || !strings.Contains(out, "an error the engine did not write as a refusal") {
+		if name == "anchored" {
+			// The marker's recorded_at is gone too, so its head no longer matches: a failure of another kind.
+			if code != 1 {
+				t.Fatalf("%s: exit %d\n%s\n%s", name, code, out, errOut)
+			}
+			continue
+		}
+		if code != 0 || !strings.Contains(out, "WARN  RELEASE_UNCONFIRMED") || !strings.Contains(out, "journaled before the cap-release record existed") ||
+			!strings.Contains(out, "1 release(s) are of calls journaled before the cap-release record existed") {
 			t.Fatalf("%s: exit %d\n%s\n%s", name, code, out, errOut)
 		}
 	}

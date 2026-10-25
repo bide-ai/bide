@@ -185,16 +185,19 @@ For each ledger run (`@cap/...`) it checks:
    earlier than the window of `run:start`, and a long-lived run can pin to any later one, so the report counts
    those intents. A `per run` window must be the call's root run. An intent with no slot is information: the attempt was interrupted before its slot, or the reservation was
    refused, and it counts nothing.
-5. **The releases.** Only the loop releases, and only a call it proved never began, so such a call never has
-   a result its tool produced. A release of a reservation whose run holds a successful tool result for the
-   call is `RELEASE_OF_A_CALL_THAT_RAN` and fails, whoever wrote the slot and whether or not a signed head
-   covers it. A release of an attempt that is neither recorded as not started nor answered by a result is a
-   warning (`RELEASE_UNCONFIRMED`): a crash between the release and the void looks the same, and a re-drive
-   voids it. A release of a call the engine answered with its own refusal ("tool call refused: ...", the tool never
-   called) is what the loop writes and passes. A release of a call that ended in some other error result is a
-   warning too: a tool that ran and failed has a live marker and looks the same, and so does a refusal this
-   audit does not know; a retry-safe tool has no marker at all. With signed heads, a release whose verdict
-   rests on records past the run's newest head (or on a run no head covers) fails (`RELEASE_UNATTESTED`).
+5. **The releases.** Only the loop releases, and only a call it proved never began. Before it releases, the
+   loop journals why in a `cap-release:` record in the run that made the call; the reconcile pass releases a
+   voided attempt and writes none, the void being its reason. A release of a reservation whose run holds a
+   successful tool result for the call is `RELEASE_OF_A_CALL_THAT_RAN` and fails, note or no note, whoever
+   wrote the slot and whether or not a signed head covers it. Otherwise a release must be explained by its
+   `cap-release:` record (which must read and name the attempt) or by the attempt's void
+   (`RELEASE_UNCONFIRMED`). With neither, it fails when the audit is anchored and warns when not: a crash
+   between the release and the void looks the same, and a re-drive voids it, but a writer of an unsigned
+   store can leave exactly this. A release of a call journaled before the record existed (its marker has no
+   `recorded_at`) cannot be told from a forgery: it warns, anchored or not, and the report counts it. The
+   record shows that the release was the loop's, not that the call did not run: a writer who plants the
+   record beside a forged release of a call that ran and failed passes. With signed heads, a release whose
+   explanation lies past the run's newest head (or in a run no head covers) fails (`RELEASE_UNATTESTED`).
 6. **The signed heads** (`-sth`, with `-pubkey`). An `AuditedStore` anchors a head for every ledger run it
    writes; pass the heads from your anchor log (one JSON head per line, any number, for any runs). Each
    must verify, and the ledger must be the one the newest head signs: a slot changed or deleted since is a
