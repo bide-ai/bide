@@ -638,6 +638,8 @@ func TestEvidenceItemLineStepOfCall(t *testing.T) {
 		"escape in the id": {"approval-pending:x%1B%5B31m", `step "approval-pending" of call "x\x1b[31m": included`},
 		"digest form":      {"approval-pending:~" + strings.Repeat("a", 64), `step "approval-pending:~` + strings.Repeat("a", 64) + `": included`},
 		"lowercase hex":    {"approval-pending:c2%2a", `step "approval-pending:c2%2a": included`},
+		"escaped plain":    {"approval-pending:a%41", `step "approval-pending:a%41": included`},
+		"empty id":         {"approval-pending:", `step "approval-pending:": included`},
 		"truncated escape": {"approval-pending:c2%2", `step "approval-pending:c2%2": included`},
 		"unescaped hash":   {"approval-pending:c2#taint", `step "approval-pending:c2#taint": included`},
 		"other step":       {"plan:a%23b", `step "plan:a%23b": included`},
