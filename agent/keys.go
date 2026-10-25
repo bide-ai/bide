@@ -50,6 +50,7 @@ var reservedPrefixes = []string{
 	"slot:",               // a cap ledger's slots: slot:<n>, in a run under @cap/ (see capRunPrefix)
 	"cap-intent:",         // a cap reservation's intent: its window and amount, written before the slot
 	"cap-reserve:",        // the slot a call reserved, in the run that made the call
+	"cap-release:",        // why the loop released a call's slot: the call never began (see capReleaseNote), in the run that made the call
 	"gate-reason:",        // why a call was gated: gate-reason:<call>
 }
 
@@ -378,6 +379,10 @@ func modelStep(n int) string { return "@llm/" + strconv.Itoa(n) }
 // ToolResultStep is the key of the result of the call toolUseID: the record the loop, a saga
 // rollback, or ResolveHalt writes when the call's outcome is known.
 func ToolResultStep(toolUseID string) string { return "tool:" + encodeID(toolUseID) }
+
+// capReleaseStep is the key of the record that says why the loop released attempt's cap slot (an
+// AttemptKey), in the run that made the call.
+func capReleaseStep(attempt string) string { return "cap-release:" + encodeID(attempt) }
 
 // toolAttemptStep is the key of the attempt marker of the call toolUseID.
 func toolAttemptStep(toolUseID string) string { return "attempt:tool:" + encodeID(toolUseID) }
