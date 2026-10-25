@@ -44,7 +44,7 @@ One append-only journal, in a plain-Go library, gives five guarantees:
 - Provably convergent shared state: the convergence conditions are machine-checked.
 - People in control: k-of-n signed approvals with the requester excluded (separation of duties), signing keys in an HSM or a cloud KMS, and a notifier that tells a person and records that it did.
 
-Two further controls bound what text from outside can make an agent do: amount caps refuse a call over a limit whatever the model sent, and a taint policy makes a side effect after the agent read untrusted content wait for a human. They bound consequences; they do not detect or prevent the injection ([guide](docs/guides/untrusted-content.md)).
+Two further controls bound what text from outside can make an agent do: amount caps refuse a call over a limit, for a tool that carries a rule, whatever the model sent; and a taint policy (merged, not yet released) requires an escalation gate, which can be a human decision, for a side effect after the agent read content the host marked untrusted. They bound consequences; they do not detect or prevent the injection ([guide](docs/guides/untrusted-content.md)).
 
 Bide is built toward what a bank asks of software that moves money: keys outside the application, separation of duties, a tamper-evident trail, explicit failure modes. It is not certified against, and does not claim compliance with, any standard; [key custody](docs/guides/key-custody.md) and the [threat model](docs/trust/threat-model.md) state what is and is not covered.
 
