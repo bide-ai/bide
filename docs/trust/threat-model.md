@@ -54,6 +54,7 @@ Someone with write access to the journal tables, or to the SQLite file, who edit
 - **Does not address.**
   - Confidentiality: journal leaves are not encrypted; anyone with the database reads every record ([security model](../guides/security-model.md#what-is-not-guaranteed-confidentiality)). Encrypt sensitive payloads before they enter the journal or restrict the database.
   - A delegation's runtime authority is read from the journal, so someone who can write the journal could plant another validly signed child grant. That the journal was not rewritten is what anchoring makes provable afterward ([security model, key custody](../guides/security-model.md#key-custody)).
+  - A cumulative amount-cap window kept in unsigned journal rows can be undercounted by someone who can write the store. `bide audit caps` with the signed heads finds a slot or release changed or added after the newest head, and without them (`-unanchored`) it finds only what contradicts itself; a writer who can also sign heads writes a consistent history it cannot tell from a real one ([amount caps](../guides/amount-caps.md#auditing-the-ledgers-bide-audit-caps)).
   - Deleting a whole database with no anchored head ever published: nothing remains to compare. Anchor continuously (`AuditedStore`).
   - A storage layer that lies about a commit ([the guarantee](../GUARANTEE.md)).
 
