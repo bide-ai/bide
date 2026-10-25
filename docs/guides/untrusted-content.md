@@ -6,7 +6,7 @@ third-party tool's result. That text can tell the model to act. bide does not tr
 that read untrusted content will need a human for any side effect, and amounts will be capped. This page
 covers the first part: **provenance marks**, which record in the journal what a run read, and the **taint
 policy**, which makes a run that read marked content need an escalation gate for its side effects. Both
-**bound consequences; neither prevents prompt injection** ([limits](#what-this-does-not-do), [known limitations](../KNOWN-LIMITATIONS.md#untrusted-content-marks)).
+**bound consequences; neither prevents prompt injection** ([limits](#what-this-does-not-do), [known limitations](../KNOWN-LIMITATIONS.md#untrusted-content-and-the-taint-policy)).
 
 The declarations and the policy are experimental ([stability](../trust/stability.md)).
 
@@ -228,7 +228,7 @@ This bounds what an injected request can do. It does not detect or prevent one.
 7. Text the host injects outside the journal (a system prompt, a model middleware) is invisible to the marks.
 8. An input is trusted unless the entry point passes `WithUntrustedInput`.
 9. Amount caps, a separate control, bound magnitude and are not part of this policy.
-10. v0.23.0 covers agent runs only; see [plan flows](plan-flows.md).
+10. The policy covers agent runs only; see [plan flows](plan-flows.md).
 
 The approval volume of a deployment whose agents read outside text and write will rise. That is the intended
 effect; `TaintExempt` is the relief valve, and it is a code change visible in the declarations digest.

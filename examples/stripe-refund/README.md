@@ -127,6 +127,13 @@ the way Stripe does. The tests run the real binary as separate processes on one 
 
 The real-API path (`demo.sh` against Stripe) is manual only.
 
+## When the agent reads content from outside
+
+This example's model is scripted, so nothing it reads can steer it. An agent that reads a customer's email or a support ticket can be steered by it. Two controls bound what a steered refund request can do, and neither detects or prevents the injection:
+
+- A taint policy makes each side effect after the agent read untrusted content wait for a human. `bide init -agent` scaffolds a small project that does this (a tool that returns an email, a refund, an escalation gate), runs with no API key and checks its own story in `go test`; see the [untrusted content guide](../../docs/guides/untrusted-content.md).
+- An amount cap limits how much a refund can be, whatever the model asked for; `-max-refund` above is one, and the [amount caps guide](../../docs/guides/amount-caps.md) covers the rest, including a cumulative limit per day.
+
 ## Notes
 
 - `STRIPE_API_BASE` points the program at a loopback address instead of `https://api.stripe.com`; the tests use it for the fake. Any other host is refused.

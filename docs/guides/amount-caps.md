@@ -8,7 +8,7 @@ this page is how to use what has shipped.
 
 **What has shipped, and what has not.** v0.23.0 has the per-call form (`> N CUR`) and the cumulative
 form (`sum N CUR per run|hour|day [by key]`), both with the action `-> refuse`. `-> gate` is refused at
-registration with a "not yet supported" error: it arrives with the escalation gate. **Stability:** caps are experimental, so the Go names
+registration with a "not yet supported" error: a cap gate is not built on the taint policy's escalation gate yet. **Stability:** caps are experimental, so the Go names
 (`agent.WithCaps`) may change in a minor release with a changelog entry.
 
 ## A rule
@@ -237,7 +237,7 @@ store, or holds the log key) can write a history that is consistent with itself,
 contradictions: it cannot tell that history from a legitimate one. A head signs whatever the run held when it
 was signed: a record planted in a run before a later, legitimate write to the same run is covered by the head
 that write anchors, so the head attests the plant and `RUN_NOT_ATTESTED` cannot see it. Detection by heads works
-only for what was written after the newest head; the time check above is what catches a plant of that kind. `bide sample` writes a small ledger to
+only for what was tampered with after a head was signed; the time check above is what catches a plant of that kind. `bide sample` writes a small ledger to
 try it on: `bide audit caps -db sample.db -unanchored`.
 
 ## A worked configuration

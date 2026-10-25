@@ -17,7 +17,7 @@ Each section says what the limit is, whether it affects you, and what to do abou
 - [Anchoring](#anchoring)
 - [Governed state (gsm)](#governed-state-gsm)
 - [Notifications](#notifications)
-- [Untrusted-content marks](#untrusted-content-marks)
+- [Untrusted content and the taint policy](#untrusted-content-and-the-taint-policy)
 - [Stores](#stores)
 - [Anchoring: Google Cloud Storage](#anchoring-google-cloud-storage)
 
@@ -149,7 +149,18 @@ waiting in it is not listed: rename such a run (start it again under a new ID) b
 
 **Cumulative caps keep a reservation they cannot prove unused.** The loop releases the slot of a marked call it proved never began, and `Recover` and `RecoverLoop` release the slot of an attempt recorded as not started (in windows that are still open); nothing else is released, so a call that may have run, an `Idempotent` call that was refused or cancelled, a `ResolveHalt`ed call and a saga's rollback stay counted until the window ends and a window only over-counts. `Recover` and `RecoverLoop` decide which windows are still open by the wall clock; they take no clock option. An agent built with `WithClock` reserves by its own clock, so under a clock far from the wall clock the reconcile pass may skip a window that is open by the agent's clock, and the slot stays counted until the window ends: an over-count, never a release of a slot that may have run. A tumbling window allows up to twice the limit across a boundary. A key with a byte outside ASCII is refused (the key is hashed from its text, and without Unicode normalisation two spellings of one customer would be two windows): normalise the key in your tool, or make it ASCII, before it reaches the rule. A rule keyed by something the model chooses is only as strong as its canonical form (pair it with an unkeyed total). See the [amount caps guide](guides/amount-caps.md).
 
-**A writer of the store can undercount a cap window.** The cap ledger (`internal/capledger`) keeps its slots as ordinary journal entries, and they are unsigned: anyone who can write the store can append a fully valid release of a live marked reserve, which lowers the window's total and lets more through than the limit. The ledger refuses every slot that is not well formed (a wrong total, a release of nothing, a foreign currency), so a forged slot has to be one a correct writer could have written; it cannot refuse that one. What detects it is the `AuditedStore`: with the store anchored, a slot appended outside the engine changes the run's head, and `bide audit caps -sth ... -pubkey ...` compares each ledger with the heads and recomputes each window from its slots; entries after the newest head are reported as not attested and fail. `bide audit caps -unanchored` has no head to compare with, so it finds only what is inconsistent in the store itself (a slot that breaks the ledger's rules, a slot and the `cap-reserve` record of its run that disagree, a slot no run recorded): a writer who changes a slot and the run's record together passes it, and so does one who plants the loop's `cap-release:` record beside a forged release of a call that ran and failed (the audit does find a release of a call whose run holds a result the tool produced, and a release with neither the record nor a void fails when anchored and warns when not), and its first line says so. A signed head covers what the store was given when it signed: a slot written through the signing store is signed too. The audit compares each slot with the attempt's cap-intent (rule, key, amount, window) and the intent's window with the rule's index run, so a planted intent that moves a slot to another window is found; it does not re-apply the writer's clock bound (a setting, not recorded) but holds each intent's window to its call's own time (the window of the attempt marker's time, or the next one; for an attempt with no marker, not earlier than the window of the run's start, so a long-lived run can pin such an attempt to any later window), and it ignores index entries no intent uses. Someone who can write the store and sign heads can write a history that is consistent with itself: the audit finds contradictions, and does not find that. A head signs whatever the run held when it was signed, so a record planted before a later legitimate write to the same run is signed by that write's head. The same writer can also plant a cap-intent for an attempt before it first reserves, with a stale or a future window: that bypasses the clock bound (which runs only when an intent is first written) and moves the attempt's reservation into another ledger, so a window can be spent twice. It is the same trust boundary and the same detection. Without anchoring the window's total is only as trustworthy as the store's write access.
+**A writer of the store can undercount a cap window.** The cap ledger (`internal/capledger`) keeps its slots as ordinary journal entries, and they are unsigned: anyone who can write the store can append a fully valid release of a live marked reserve, which lowers the window's total and lets more through than the limit. The ledger refuses every slot that is not well formed (a wrong total, a release of nothing, a foreign currency), so a forged slot has to be one a correct writer could have written; it cannot refuse that one. What detects it is the `AuditedStore`: with the store anchored, a slot changed or deleted outside the engine after a head was signed no longer matches that head, and `bide audit caps -sth ... -pubkey ...` compares each ledger with the heads and recomputes each window from its slots; entries past the newest head fail as not attested, which does not say they were tampered with. `bide audit caps -unanchored` has no head to compare with, so it finds only what is inconsistent in the store itself (a slot that breaks the ledger's rules, a slot and the `cap-reserve` record of its run that disagree, a slot no run recorded): a writer who changes a slot and the run's record together passes it, and so does one who plants the loop's `cap-release:` record beside a forged release of a call that ran and failed (the audit does find a release of a call whose run holds a result the tool produced, and a release with neither the record nor a void fails when anchored and warns when not), and its first line says so. A signed head covers what the store was given when it signed: a slot written through the signing store is signed too. The audit compares each slot with the attempt's cap-intent (rule, key, amount, window) and the intent's window with the rule's index run, so a planted intent that moves a slot to another window is found; it does not re-apply the writer's clock bound (a setting, not recorded) but holds each intent's window to its call's own time (the window of the attempt marker's time, or the next one; for an attempt with no marker, not earlier than the window of the run's start, so a long-lived run can pin such an attempt to any later window), and it ignores index entries no intent uses. Someone who can write the store and sign heads can write a history that is consistent with itself: the audit finds contradictions, and does not find that. A head signs whatever the run held when it was signed, so a record planted before a later legitimate write to the same run is signed by that write's head. The same writer can also plant a cap-intent for an attempt before it first reserves, with a stale or a future window: that bypasses the clock bound (which runs only when an intent is first written) and moves the attempt's reservation into another ledger, so a window can be spent twice. It is the same trust boundary and the same detection. Without anchoring the window's total is only as trustworthy as the store's write access.
+
+**What `bide audit caps` can and cannot tell you.** It finds contradictions in the cap ledgers after the fact; it does not find a history that is consistent with itself, and it prevents nothing ([guide](guides/amount-caps.md#auditing-the-ledgers-bide-audit-caps)).
+
+- *Unanchored* (`-unanchored`): whoever can write the store can delete a slot or append a release undetected, and the report says so on its first line. The audit finds only what contradicts itself in the store.
+- *Someone who can write the store and sign heads* (a process that writes through the signing store, or holds the log key) can write a consistent history, and a head attests whatever the run held when it was signed, a plant included.
+- *Attempts with no dated marker* (a retry-safe tool, or a marker written before `recorded_at` existed) are listed as `NOT CHECKED`: their window was held only to the start of their run, so a long-lived run could pin one to a later window.
+- *An anchored audit run before the store has anchored*: entries past the newest signed head fail as not attested, without saying whether they were tampered with; a record written before a head was signed is attested by it, a plant included. Run it after the interval of `WithMinInterval` or a `Flush`.
+- *Dating is the writer's claim.* An intent's window is held to the call's own time, taken from the attempt marker's `recorded_at`, which the writing process set; one window forward is always accepted, so a call may be pinned a full window ahead undetected.
+- *A planted `cap-release:` record* beside a forged release of a call that ran and failed passes, from an unanchored writer or one writing through the signing store. Unanchored, a release with neither a record nor a void is only a warning, and a warning leaves the exit status 0.
+- *A retry-safe tool* is never released and never checked for a release.
+- *A read failure without a recognised cause*: a read that fails because the store does (a lost connection, a timeout) ends the audit with exit 4, but the stores report a corrupt row and an I/O error alike, so an error the audit cannot place is reported as `UNREADABLE`. Re-run before treating one as tampering.
 
 ## Sagas
 
@@ -404,6 +415,8 @@ together. A tie is never agreement. See [Quorum](guides/quorum.md#what-a-quorum-
 
 ## Amount caps
 
+**A tumbling window allows up to twice the limit across a boundary, and a key is only as strong as its canonical form.** A cumulative rule counts in fixed windows (a day, an hour), so a customer can spend the limit just before a boundary and again just after it. A rule keyed by something the model chooses (`by key`) is one window per spelling of the key, so pair it with an unkeyed total, and normalise the key in your tool before it reaches the rule. See the [amount caps guide](guides/amount-caps.md#cumulative-rules) and "Cumulative caps keep a reservation they cannot prove unused" above.
+
 **A cap reads an object member, not an array.** A rule (`agent.WithCaps`) names one argument by a path
 of object members, and registration refuses a member that is an array or object. A bulk tool that
 takes `payments: [{amount: ...}, ...]` cannot be capped by a line, and the input schema cannot say
@@ -424,9 +437,9 @@ minor units exactly, so registration refuses a limit above it; an amount the too
 the rule does not name is not capped.
 
 **Caps refuse; they do not yet hold a call for approval.** A rule with `-> gate` (or `-> gate(name)`)
-is refused at registration, because the gate a cap holds a call for is the escalation gate of the
-taint work, which has not shipped, and a cap gate on a tool that has its own approval gate needs two
-gate instances on one call. Until then a rule is `-> refuse`, which works on a tool with its own gate.
+is refused at registration. The taint policy's escalation gate exists, but a cap gate is not built on it
+yet, and a cap gate on a tool that has its own approval gate needs two gate instances on one call. Until
+then a rule is `-> refuse`, which works on a tool with its own gate.
 
 **A decorator must carry the tool's caps.** A tool that embeds a capped tool but declares its own `Spec` without the same rule lines is refused at registration (`ErrConfig`), as one that hides an approval gate or timeout is; a decorator keeps the rules by returning them in its `Spec`. Implementing `Unwrap` does not exempt it: a wrapper whose `Spec` lacks a rule line of a tool on its `Unwrap` chain is refused too, word for word.
 
@@ -793,13 +806,13 @@ acknowledged. A chain is at most four steps and is not repeated.
 - A session turn and a `Step` are not held by a stop of a tool; a global or agent stop holds the run
   at its next drive or turn start.
 
-## Untrusted-content marks
+## Untrusted content and the taint policy
 
 The provenance declarations (`agent.Untrusted`, `agent.WithUntrustedInput`, `agent.WithTrustedInput`,
-`agent.RetrievalUntrusted`, `agent.TaintExempt`, `agent.Trusted`) record what a run read. They are the
-first part of the [design](design/untrusted-content-and-amount-caps.md) of untrusted-content tainting and amount
+`agent.RetrievalUntrusted`, `agent.TaintExempt`, `agent.Trusted`) record what a run read. They are part of the
+[design](design/untrusted-content-and-amount-caps.md) of untrusted-content tainting and amount
 caps; `agent.WithTaintPolicy` ([guide](guides/untrusted-content.md)) acts on them. A taint policy bounds
-consequences and does not prevent prompt injection. Its limits:
+the consequences of an injected request. It does not detect or prevent the injection. Its limits:
 
 - **A mark is evidence, not a control, without a policy.** A run that read an untrusted tool's result still calls
   any tool its gates allow. With a policy, the side-effecting calls of a later turn need the escalation gate.
@@ -841,6 +854,15 @@ consequences and does not prevent prompt injection. Its limits:
   carries no `Safety` and so no mark. A taint policy does not yet derive it from the tool's declaration by name.
 - **Plan flow nodes are not covered.** A tool that declares `Untrusted` or `TaintExempt` is refused with
   `ErrConfig` as a plan node (`plan.Registry.RegisterTool`, `Builder.Tool`), because a flow has no taint rule yet.
+- **MCP tools are not untrusted by default.** A tool bridged by `mcptools` declares nothing unless the host
+  does: a server's results are outside text, and a host that does not mark them leaves no mark (with
+  `RequireProvenance`, registration refuses the unmarked tool, which is how the omission is caught). A default
+  that marks them under a policy is not built.
+- **No offline check that the gate held.** `bide doctor -declarations` reviews what the host declares. Nothing yet
+  proves from a run's journal that every side effect after a mark had a gate outcome or an exemption (a
+  run-certificate property), and `bide audit` does not report a run under taint with an ungated side effect.
+- **The relays do not show why.** The approve page, `bide approve -list`, `bide view` and the notifier's
+  `approval.why` say why a call is held; the Slack and PagerDuty relays do not render it.
 - **The experimental label.** The declarations and the new `Safety.Untrusted`, `ToolSpec.Untrusted`,
   `ToolSpec.TaintExempt`, `ToolSpec.Trusted`, `TaintPolicy.RequireProvenance` and `RunSettings` members may change in a minor release.
 - **Downgrade.** A binary older than this change ignores the new record members (checked by decoding the golden
