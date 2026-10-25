@@ -476,7 +476,8 @@ A journal is data someone else wrote: its names are shown as text, a topology of
 that the run ran it (`bide view -sth` proves a journal).
 
 Safety and `assert` lines are in neither a journal nor the digest, so they are not compared, and the only
-verdict made against a run is about gates, in typed mode. This comparison never blocks a save and never
+verdict made against a run is about gates, in typed mode: a new node with no gate, added since the run, is
+listed as a change and is not judged as a weakening against the run. This comparison never blocks a save and never
 changes the weakened banner, which stays a comparison with the committed file. The page reads the run
 once; **Reload run** reads it again. The run and the store are fixed when the command starts. A program
 that embeds the editor with `flowedit.New` has no run comparison.
