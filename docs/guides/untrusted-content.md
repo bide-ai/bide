@@ -6,7 +6,7 @@ third-party tool's result. That text can tell the model to act. bide does not tr
 that read untrusted content will need a human for any side effect, and amounts will be capped. This page
 covers the first part: **provenance marks**, which record in the journal what a run read, and the **taint
 policy**, which makes a run that read marked content need an escalation gate for its side effects. Both
-**bound consequences; neither prevents prompt injection** ([limits](#what-this-does-not-do), [known limitations](../KNOWN-LIMITATIONS.md#untrusted-content-marks)).
+**bound consequences; neither prevents prompt injection** ([limits](#what-this-does-not-do), [known limitations](../KNOWN-LIMITATIONS.md#untrusted-content-and-the-taint-policy)).
 
 The declarations and the policy are experimental ([stability](../trust/stability.md)).
 

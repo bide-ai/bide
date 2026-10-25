@@ -8,7 +8,7 @@ this page is how to use what has shipped.
 
 **What has shipped, and what has not.** v0.23.0 has the per-call form (`> N CUR`) and the cumulative
 form (`sum N CUR per run|hour|day [by key]`), both with the action `-> refuse`. `-> gate` is refused at
-registration with a "not yet supported" error: it arrives with the escalation gate. **Stability:** caps are experimental, so the Go names
+registration with a "not yet supported" error: a cap gate is not built on the taint policy's escalation gate yet. **Stability:** caps are experimental, so the Go names
 (`agent.WithCaps`) may change in a minor release with a changelog entry.
 
 ## A rule

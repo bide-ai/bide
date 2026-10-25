@@ -17,7 +17,7 @@ Each section says what the limit is, whether it affects you, and what to do abou
 - [Anchoring](#anchoring)
 - [Governed state (gsm)](#governed-state-gsm)
 - [Notifications](#notifications)
-- [Untrusted-content marks](#untrusted-content-marks)
+- [Untrusted content and the taint policy](#untrusted-content-and-the-taint-policy)
 - [Stores](#stores)
 - [Anchoring: Google Cloud Storage](#anchoring-google-cloud-storage)
 
@@ -424,9 +424,9 @@ minor units exactly, so registration refuses a limit above it; an amount the too
 the rule does not name is not capped.
 
 **Caps refuse; they do not yet hold a call for approval.** A rule with `-> gate` (or `-> gate(name)`)
-is refused at registration, because the gate a cap holds a call for is the escalation gate of the
-taint work, which has not shipped, and a cap gate on a tool that has its own approval gate needs two
-gate instances on one call. Until then a rule is `-> refuse`, which works on a tool with its own gate.
+is refused at registration. The taint policy's escalation gate exists, but a cap gate is not built on it
+yet, and a cap gate on a tool that has its own approval gate needs two gate instances on one call. Until
+then a rule is `-> refuse`, which works on a tool with its own gate.
 
 **A decorator must carry the tool's caps.** A tool that embeds a capped tool but declares its own `Spec` without the same rule lines is refused at registration (`ErrConfig`), as one that hides an approval gate or timeout is; a decorator keeps the rules by returning them in its `Spec`. Implementing `Unwrap` does not exempt it: a wrapper whose `Spec` lacks a rule line of a tool on its `Unwrap` chain is refused too, word for word.
 
@@ -793,13 +793,13 @@ acknowledged. A chain is at most four steps and is not repeated.
 - A session turn and a `Step` are not held by a stop of a tool; a global or agent stop holds the run
   at its next drive or turn start.
 
-## Untrusted-content marks
+## Untrusted content and the taint policy
 
 The provenance declarations (`agent.Untrusted`, `agent.WithUntrustedInput`, `agent.WithTrustedInput`,
-`agent.RetrievalUntrusted`, `agent.TaintExempt`, `agent.Trusted`) record what a run read. They are the
-first part of the [design](design/untrusted-content-and-amount-caps.md) of untrusted-content tainting and amount
+`agent.RetrievalUntrusted`, `agent.TaintExempt`, `agent.Trusted`) record what a run read. They are part of the
+[design](design/untrusted-content-and-amount-caps.md) of untrusted-content tainting and amount
 caps; `agent.WithTaintPolicy` ([guide](guides/untrusted-content.md)) acts on them. A taint policy bounds
-consequences and does not prevent prompt injection. Its limits:
+the consequences of an injected request. It does not detect or prevent the injection. Its limits:
 
 - **A mark is evidence, not a control, without a policy.** A run that read an untrusted tool's result still calls
   any tool its gates allow. With a policy, the side-effecting calls of a later turn need the escalation gate.
@@ -841,6 +841,15 @@ consequences and does not prevent prompt injection. Its limits:
   carries no `Safety` and so no mark. A taint policy does not yet derive it from the tool's declaration by name.
 - **Plan flow nodes are not covered.** A tool that declares `Untrusted` or `TaintExempt` is refused with
   `ErrConfig` as a plan node (`plan.Registry.RegisterTool`, `Builder.Tool`), because a flow has no taint rule yet.
+- **MCP tools are not untrusted by default.** A tool bridged by `mcptools` declares nothing unless the host
+  does: a server's results are outside text, and a host that does not mark them leaves no mark (with
+  `RequireProvenance`, registration refuses the unmarked tool, which is how the omission is caught). A default
+  that marks them under a policy is not built.
+- **No offline check that the gate held.** `bide doctor -declarations` reviews what the host declares. Nothing yet
+  proves from a run's journal that every side effect after a mark had a gate outcome or an exemption (a
+  run-certificate property), and `bide audit` does not report a run under taint with an ungated side effect.
+- **The relays do not show why.** The approve page, `bide approve -list`, `bide view` and the notifier's
+  `approval.why` say why a call is held; the Slack and PagerDuty relays do not render it.
 - **The experimental label.** The declarations and the new `Safety.Untrusted`, `ToolSpec.Untrusted`,
   `ToolSpec.TaintExempt`, `ToolSpec.Trusted`, `TaintPolicy.RequireProvenance` and `RunSettings` members may change in a minor release.
 - **Downgrade.** A binary older than this change ignores the new record members (checked by decoding the golden
