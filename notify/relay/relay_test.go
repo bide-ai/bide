@@ -724,7 +724,9 @@ func TestClearBeforeItsEventNeverOpensAnIncident(t *testing.T) {
 
 // restartRig is a Handler with a state file, restarted by building another over the same file.
 func restartHandler(t *testing.T, path string, sends *atomic.Int32, size int) (*httptest.Server, *rig) {
-	requireFileLock(t)
+	if path != "" {
+		requireFileLock(t)
+	}
 	t.Helper()
 	sink := &funcSink{name: "s", fn: func(context.Context, notify.Payload) error { sends.Add(1); return nil }}
 	h, err := New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, StatePath: path, StateFlushDelay: -1, DedupeSize: size, Logf: func(string, ...any) {},
@@ -1074,7 +1076,9 @@ func TestKilledSaveLeavesTheOldStateLoadable(t *testing.T) {
 // ---- coalesced writes, directory sync, duplicate restore ----
 
 func coalescingHandler(t *testing.T, path string, delay time.Duration) (*Handler, *rig) {
-	requireFileLock(t)
+	if path != "" {
+		requireFileLock(t)
+	}
 	t.Helper()
 	sink := &funcSink{name: "s"}
 	h, err := New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, StatePath: path, StateFlushDelay: delay, Logf: func(string, ...any) {},
