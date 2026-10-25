@@ -29,7 +29,7 @@ func renameTopology(t plan.Topology, renames []Rename) (plan.Topology, []Rename)
 	}
 	var made []Rename
 	for _, r := range renames {
-		if names[r.From] != 1 || joins[r.From] || r.From == r.To || checkName(r.To) != nil || names[r.To] > 0 || joins[r.To] {
+		if names[r.From] != 1 || joins[r.From] || checkName(r.To) != nil || names[r.To] > 0 || joins[r.To] {
 			continue
 		}
 		sub := func(s *string) {
