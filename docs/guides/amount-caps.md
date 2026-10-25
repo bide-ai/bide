@@ -237,7 +237,7 @@ store, or holds the log key) can write a history that is consistent with itself,
 contradictions: it cannot tell that history from a legitimate one. A head signs whatever the run held when it
 was signed: a record planted in a run before a later, legitimate write to the same run is covered by the head
 that write anchors, so the head attests the plant and `RUN_NOT_ATTESTED` cannot see it. Detection by heads works
-only for what was written after the newest head; the time check above is what catches a plant of that kind. `bide sample` writes a small ledger to
+only for what was tampered with after a head was signed; the time check above is what catches a plant of that kind. `bide sample` writes a small ledger to
 try it on: `bide audit caps -db sample.db -unanchored`.
 
 ## A worked configuration
