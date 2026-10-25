@@ -1571,7 +1571,7 @@ func evidenceItemLine(it audit.EvidenceItem) string {
 			subject = fmt.Sprintf("tool call %q", it.Label)
 		}
 	case "step":
-		subject = fmt.Sprintf("step %q", it.Label)
+		subject = stepSubject(it.Label)
 	case "grant":
 		subject = fmt.Sprintf("grant %s", cleanText(it.Label))
 	case "run-certificate":
@@ -1580,6 +1580,71 @@ func evidenceItemLine(it audit.EvidenceItem) string {
 		subject = cleanText(it.Label)
 	}
 	return fmt.Sprintf("%s: %s", subject, cleanText(it.Note))
+}
+
+// callKeyPrefixes are the step key prefixes the engine follows with a call ID in its escaped form
+// (agent's encodeID): the key is the prefix, the escaped ID, and an optional ":<suffix>".
+var callKeyPrefixes = []string{
+	"approval-pending:", "approval-request:", "approval-tally:", "approval-deadline:", "approval:", "gate-reason:", "attempt:tool:",
+}
+
+// stepSubject is how the report names a step key. The key itself is stored and signed with a call ID
+// escaped (the ID c2#taint is "c2%23taint" in "approval-pending:c2%23taint"), which no other verb
+// shows. A key built from a call ID is shown as `"<prefix><suffix>" of call "<ID>"`, the ID
+// decoded and quoted, so an ID holding ':' or '%' cannot be taken for part of the key; any other key,
+// and a key whose ID segment is not a valid escaped ID (or is the digest form of a long ID), is shown
+// as it is, quoted. Display only: the label the seal covers is unchanged.
+func stepSubject(key string) string {
+	for _, p := range callKeyPrefixes {
+		rest, ok := strings.CutPrefix(key, p)
+		if !ok {
+			continue
+		}
+		seg, suffix, hasSuffix := strings.Cut(rest, ":")
+		id, ok := decodeCallID(seg)
+		if !ok {
+			break
+		}
+		name := p[:len(p)-1]
+		if hasSuffix {
+			name += ":" + suffix
+		}
+		return fmt.Sprintf("step %q of call %q", name, id)
+	}
+	return fmt.Sprintf("step %q", key)
+}
+
+// decodeCallID returns the call ID whose escaped form is s, and false if s is not one (the escaped
+// form leaves [A-Za-z0-9._-] as it is and writes every other byte as %XX in upper case; a long ID
+// is a digest and cannot be decoded). It mirrors agent's encodeID, so a key of another shape is never
+// rewritten.
+func decodeCallID(s string) (string, bool) {
+	if s == "" {
+		return "", false
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if unreservedID(c) {
+			b.WriteByte(c)
+			continue
+		}
+		if c != '%' || i+2 >= len(s) {
+			return "", false
+		}
+		v, err := strconv.ParseUint(s[i+1:i+3], 16, 8)
+		if err != nil || s[i+1:i+3] != strings.ToUpper(s[i+1:i+3]) || unreservedID(byte(v)) {
+			return "", false
+		}
+		b.WriteByte(byte(v))
+		i += 2
+	}
+	return b.String(), true
+}
+
+// unreservedID reports whether encodeID leaves c as it is.
+func unreservedID(c byte) bool {
+	return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '.' || c == '_' || c == '-'
 }
 
 // allowlist returns the evidence verify options for the auditor's approved-policy allowlist, the
