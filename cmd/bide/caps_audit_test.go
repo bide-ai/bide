@@ -129,7 +129,7 @@ func TestAuditCaps_Postgres(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		if _, err := admin.ExecContext(context.Background(), `DROP SCHEMA `+schema+` CASCADE`); err != nil {
-			t.Logf("drop schema %s: %v", schema, err)
+			t.Errorf("drop schema %s: %v (the test leaks it)", schema, err)
 		}
 	})
 	dsn := base + " search_path=" + schema

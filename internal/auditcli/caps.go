@@ -2,13 +2,17 @@ package auditcli
 
 import (
 	"context"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/url"
 	"os"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
@@ -311,8 +315,11 @@ func auditCaps(ctx context.Context, store agent.Store, j *agent.Journal, led *ca
 		recs, err := j.History(ctx, id)
 		if err != nil {
 			// One run that cannot be read (a corrupt row, a record that does not decode) is a finding on
-			// that run; the audit goes on with the rest. Only the store itself being unreadable (it cannot
-			// be opened or its runs cannot be listed) ends the audit with exit 4.
+			// that run; the audit goes on with the rest. The store failing (it cannot be opened, its runs
+			// cannot be listed, a connection is lost) ends the audit with exit 4.
+			if isStoreIOError(err) {
+				return rep, storeError("read run "+id, err)
+			}
 			rs.unreadable[id] = true
 			find(capUnreadable, "", -1, "run %s cannot be read, so its cap-reserve, cap-intent and cap-release records are not cross-checked: %v", cleanText(id), err)
 			continue
@@ -411,6 +418,9 @@ func auditCaps(ctx context.Context, store agent.Store, j *agent.Journal, led *ca
 			}
 			recs, err := j.History(ctx, id)
 			if err != nil {
+				if isStoreIOError(err) {
+					return rep, storeError("read run "+id, err)
+				}
 				continue // already reported when it was read for its records
 			}
 			var runHeads []audit.SignedTreeHead
@@ -518,6 +528,8 @@ func auditLedger(ctx context.Context, j *agent.Journal, led *capledger.Ledger, v
 		switch {
 		case errors.Is(err, capledger.ErrCorrupt):
 			find(capCorrupt, run, -1, "%v", err)
+		case isStoreIOError(err):
+			return nil, storeError("read ledger "+run, err)
 		default:
 			find(capUnreadable, run, -1, "%v", err)
 		}
@@ -536,7 +548,9 @@ func auditLedger(ctx context.Context, j *agent.Journal, led *capledger.Ledger, v
 	// Heads: the records of the run, as the AuditedStore signed them, against the heads we hold.
 	if in.anchored {
 		recs, err := j.History(ctx, run)
-		if err != nil {
+		if err != nil && isStoreIOError(err) {
+			return nil, storeError("read ledger "+run, err)
+		} else if err != nil {
 			find(capUnreadable, run, -1, "the ledger's journal cannot be read for its signed heads: %v", err)
 		} else {
 			// CheckDecisionCoverage classifies heads against a journal with the one rule every verb
@@ -677,6 +691,9 @@ func auditLedger(ctx context.Context, j *agent.Journal, led *capledger.Ledger, v
 		}
 		v, err := voided(ctx, j, s)
 		if err != nil {
+			if isStoreIOError(err) {
+				return nil, storeError("read whether "+s.Attempt+" was voided", err)
+			}
 			find(capUnreadable, run, s.N, "slot %d: reading whether its attempt was voided failed: %v", s.N, err)
 			continue
 		}
@@ -1016,6 +1033,9 @@ func releaseExplained(ctx context.Context, j *agent.Journal, led *capledger.Ledg
 	}
 	v, err := voided(ctx, j, r)
 	if err != nil {
+		if isStoreIOError(err) {
+			return false, "", storeError("read whether "+r.Attempt+" was voided", err)
+		}
 		return false, fmt.Sprintf("reading whether the attempt was voided failed: %v", err), nil
 	}
 	return v, "", nil
@@ -1030,4 +1050,22 @@ func (rs capRunFacts) dated(run, att string) bool {
 	}
 	_, ok := rs.attempted[run][att[:i]]
 	return ok
+}
+
+// isStoreIOError reports whether err is the store failing (a lost connection, a timeout, a cancelled
+// context, an end of file) rather than what the store holds failing to decode or validate: the stores wrap
+// both in agent.ErrStorage, so this looks for the causes only a store call has. A failure it cannot place is
+// not one: it is reported as an unreadable run.
+func isStoreIOError(err error) bool {
+	var ne net.Error
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, driver.ErrBadConn) ||
+		errors.Is(err, net.ErrClosed) || errors.Is(err, os.ErrDeadlineExceeded) || errors.As(err, &ne) ||
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EPIPE)
+}
+
+// storeError is the error that ends an audit whose store failed: exit 4, and a message that says to run it
+// again, since nothing was found wrong with what the store holds.
+func storeError(what string, err error) error {
+	return fmt.Errorf("store error, re-run the audit (%s): %w", what, err)
 }

@@ -228,7 +228,7 @@ ledger exits 4. Amounts are in minor units, as the ledger holds them.
 unchanged since its newest signed head); warnings do not change it, 1 for any finding, 2 for a usage error (neither `-sth` nor `-unanchored`, or both), 4 when the
 store cannot be opened or its runs cannot be listed. A single run that cannot be read (a corrupt row, a
 record that does not decode) is not that: it is an `UNREADABLE` finding on the run (exit 1), the slots that
-run made are left out of the cross-checks that need it, and the audit goes on with the rest. A read that fails in the middle of the audit (a dropped connection) is reported the same way, indistinguishable from a corrupt row: re-run the audit before treating an `UNREADABLE` finding as tampering. The `-json` report carries the findings and the per-ledger figures.
+run made are left out of the cross-checks that need it, and the audit goes on with the rest. A read that fails because the store does (a lost connection, a timeout, a cancelled context) ends the audit with exit 4 and "store error, re-run the audit"; the stores report a corrupt row and an I/O error alike, so the audit tells them apart by the causes only an I/O failure has, and an error it cannot place is reported as `UNREADABLE`: re-run the audit before treating one as tampering. The `-json` report carries the findings and the per-ledger figures.
 
 It does not check the index runs for entries no intent uses (they cost nothing), and it does not re-apply
 the writer's clock bound (a setting that is not recorded); the time check above stands in for it.

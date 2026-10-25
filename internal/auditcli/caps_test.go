@@ -9,12 +9,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"iter"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -43,6 +46,7 @@ type tamperStore struct {
 	// failRun makes reading a run fail the way a storage error does (a corrupt row, a record that does not
 	// decode), and failList makes listing the store's runs fail.
 	failRun  func(run string) bool
+	failIO   func(run string) error // reading a run fails with this error (the store's, not the record's)
 	failList bool
 	// rename shows an entry under another name (Load only: a planted record in another run).
 	rename func(run, name string) string
@@ -51,6 +55,12 @@ type tamperStore struct {
 
 func (s *tamperStore) Load(ctx context.Context, run string, after int64) iter.Seq2[agent.Entry, error] {
 	return func(yield func(agent.Entry, error) bool) {
+		if s.failIO != nil {
+			if err := s.failIO(run); err != nil {
+				yield(agent.Entry{}, err)
+				return
+			}
+		}
 		if s.failRun != nil && s.failRun(run) {
 			yield(agent.Entry{}, fmt.Errorf("the row stored as step %q holds a record named run:complete (%w)", "x", agent.ErrStorage))
 			return
@@ -1577,4 +1587,43 @@ func TestCapsAudit_AStoreThatCannotListItsRunsIsExit4(t *testing.T) {
 	if code != 4 || strings.Contains(out, "PASS") {
 		t.Fatalf("exit %d, want 4\n%s\n%s", code, out, errOut)
 	}
+}
+
+// The store failing is not a finding about what it holds: the audit stops with exit 4 and says to run it
+// again. The stores wrap it in ErrStorage like a corrupt row, so the audit looks at the cause.
+func TestCapsAudit_AStoreErrorEndsTheAuditWithExit4(t *testing.T) {
+	for name, cause := range map[string]error{
+		"lost connection": fmt.Errorf("read: %w (%w)", io.ErrUnexpectedEOF, agent.ErrStorage),
+		"deadline":        fmt.Errorf("query: %w (%w)", context.DeadlineExceeded, agent.ErrStorage),
+		"closed":          fmt.Errorf("query: %w (%w)", net.ErrClosed, agent.ErrStorage),
+		"reset":           fmt.Errorf("query: %w (%w)", syscall.ECONNRESET, agent.ErrStorage),
+	} {
+		for _, where := range []string{"a run", "the ledger"} {
+			e := threeCalls(t)
+			ledger := e.ledgerRun()
+			e.tamper.failIO = func(run string) error {
+				if (where == "a run" && run == "r2") || (where == "the ledger" && run == ledger) {
+					return cause
+				}
+				return nil
+			}
+			code, out, errOut := unanchoredCaps()
+			if code != 4 || strings.Contains(out, "PASS") || !strings.Contains(errOut, "store error, re-run the audit") {
+				t.Fatalf("%s, %s: exit %d, want 4 with \"store error, re-run the audit\"\n%s\n%s", name, where, code, out, errOut)
+			}
+		}
+	}
+}
+
+// A corrupt row is the record's fault, not the store's: a finding, exit 1.
+func TestCapsAudit_ACorruptRowIsNotAStoreError(t *testing.T) {
+	e := threeCalls(t)
+	e.tamper.failIO = func(run string) error {
+		if run == "r2" {
+			return fmt.Errorf("run r2: the row stored as step %q holds a record named %q (%w)", "x", "run:complete", agent.ErrStorage)
+		}
+		return nil
+	}
+	code, out, errOut := unanchoredCaps()
+	wantFail(t, code, out, errOut, "UNREADABLE")
 }
