@@ -181,22 +181,13 @@ func readRun(ctx context.Context, run editrun.Run) *runSnap {
 	if agent.IsReservedRun(id) {
 		return refuse("unreadable", "Run "+id+" is not a run: the ID is reserved by the engine.")
 	}
-	recs, truncated, err := readRecords(ctx, run)
-	switch {
-	case err != nil:
+	recs, found, err := readFacts(ctx, run, &sn.info)
+	if err != nil {
 		sn.transient = true
 		return refuse("unreadable", "Run "+id+" could not be read ("+runview.ErrClass(err)+").")
-	case len(recs) == 0:
+	}
+	if !found {
 		return refuse("not_found", "Run "+id+" has no records in this store.")
-	case truncated:
-		sn.info.Flow = startFlow(recs)
-		// The topology and the digest are among a run's first records. Its state and record count need all
-		// of them, so they are not read: a long run is never held whole.
-		sn.info.StateText = fmt.Sprintf("state not read: the run has more than %d records", maxRunRecords)
-		sn.notes = append(sn.notes, sn.info.StateText+".")
-	default:
-		v := runview.Build(ctx, id, recs, nil)
-		sn.info.Flow, sn.info.State, sn.info.StateText, sn.info.Records = v.Flow, v.State, v.StateText, v.Records
 	}
 	var topo, dig *agent.Record
 	for i := range recs {
@@ -226,53 +217,69 @@ func readRun(ctx context.Context, run editrun.Run) *runSnap {
 		return refuse("mismatch", "Run "+id+" journaled a topology that does not match its digest; it is not shown.")
 	}
 	sn.topo, sn.digest, sn.status = t, d, "ok"
-	if sn.info.Flow != "" && sn.info.Flow != t.Flow {
+	if sn.info.Flow == "" {
+		sn.info.Flow = t.Flow // the flow the topology names, which its digest commits to
+	} else if sn.info.Flow != t.Flow {
 		sn.notes = append(sn.notes, "The run started the flow "+sn.info.Flow+" but the topology it journaled names the flow "+t.Flow+".")
 	}
 	return sn
 }
 
-// startFlow is the flow name run:start records, "" when it records none.
-func startFlow(recs []agent.Record) string {
-	for _, r := range recs {
-		if r.Name == "run:start" {
-			var st agent.RunStart
-			if json.Unmarshal(r.Result, &st) == nil && st.Flow != nil {
-				return st.Flow.Name
-			}
-			return ""
-		}
-	}
-	return ""
+// endMarkers are the records that end a run, in the words the panel shows for each.
+var endMarkers = []struct{ name, state, text string }{
+	{"run:complete", "done", "completed"},
+	{"run:aborted", "aborted", "aborted"},
+	{"run:cancelled", "cancelled", "cancelled"},
 }
 
-// maxRunRecords and maxRunBytes bound what is read of a run: past either, the run's state and record count
-// are not read (its topology and digest are among its first records). A var so a test can lower it.
-var maxRunRecords = 20000
-
-const maxRunBytes = 64 << 20
-
-// readRecords reads the run's records, at most maxRunRecords and maxRunBytes of them when the source
-// is a journal (a store streams them), and reports whether it stopped short. An exported journal is
-// already in memory.
-func readRecords(ctx context.Context, run editrun.Run) (recs []agent.Record, truncated bool, err error) {
+// readFacts reads what the panel needs of the run: its flow:topology and flow:digest records, and, for the
+// facts line, whether it has ended. From a store these are point reads (the run's first entry to tell it
+// exists, the two records, and at most three end markers): no run:start, whose input can be large, and no
+// history. The run's flow is then the topology's, which the digest commits to, and the record count is not
+// known. An exported journal is already in memory, so its state and flow are read as the viewer reads them.
+func readFacts(ctx context.Context, run editrun.Run, info *runInfo) (recs []agent.Record, found bool, err error) {
 	js, ok := run.Source.(runview.JournalSource)
 	if !ok {
 		recs, err = run.Source.History(ctx, run.ID)
-		return recs, false, err
+		if err != nil || len(recs) == 0 {
+			return nil, false, err
+		}
+		v := runview.Build(ctx, run.ID, recs, nil)
+		info.Flow, info.State, info.StateText, info.Records = v.Flow, v.State, v.StateText, v.Records
+		return recs, true, nil
 	}
-	n := 0
-	for rec, err := range js.J.Records(ctx, run.ID) {
+	any := false
+	for _, err := range js.J.Store().Load(ctx, run.ID, -1) {
 		if err != nil {
 			return nil, false, err
 		}
-		if len(recs) >= maxRunRecords || n > maxRunBytes {
-			return recs, true, nil
-		}
-		recs = append(recs, rec)
-		n += len(rec.Result)
+		any = true
+		break
 	}
-	return recs, false, nil
+	if !any {
+		return nil, false, nil
+	}
+	for _, name := range []string{plan.TopologyStep, "flow:digest"} {
+		rec, ok, err := js.J.Get(ctx, run.ID, name)
+		if err != nil {
+			return nil, false, err
+		}
+		if ok {
+			recs = append(recs, rec)
+		}
+	}
+	info.State, info.StateText = "unfinished", "no end marker"
+	for _, m := range endMarkers {
+		_, ok, err := js.J.Get(ctx, run.ID, m.name)
+		if err != nil {
+			return nil, false, err
+		}
+		if ok {
+			info.State, info.StateText = m.state, m.text
+			break
+		}
+	}
+	return recs, true, nil
 }
 
 // fileConfig is the text as the runview package reads a config: converted from YAML, and typed when the

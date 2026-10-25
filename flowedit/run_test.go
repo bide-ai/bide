@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"iter"
 	"os"
 	"path/filepath"
 	"slices"
@@ -134,7 +135,7 @@ func TestRunSameDigest(t *testing.T) {
 	if !strings.Contains(r.Claim, "rests on the program's Registry") || r.Basis == "" {
 		t.Errorf("basis missing: %q", r.Claim)
 	}
-	if r.Run.Flow != "pay" || r.Run.Digest != digest || r.Run.ReadAt == "" || r.Run.Records == 0 {
+	if r.Run.Flow != "pay" || r.Run.Digest != digest || r.Run.ReadAt == "" || r.Run.State != "done" {
 		t.Errorf("run %+v", r.Run)
 	}
 }
@@ -654,31 +655,104 @@ func TestRunConsistentHostileTopologyIsWrittenOut(t *testing.T) {
 	}
 }
 
-// A long run is not held whole: past the bound the state and record count are not read, and the topology and
-// digest, among its first records, still are.
-func TestRunLongRunIsNotReadWhole(t *testing.T) {
-	j, _ := ranRun(t, runCfg)
-	for i := 0; i < 60; i++ {
-		if _, _, err := j.Store().Insert(context.Background(), "r1", "extra:"+strconv.Itoa(i), []byte(`{"name":"extra:`+strconv.Itoa(i)+`","kind":"value","result":1}`)); err != nil {
+// countingStore counts the entries a reader pulls from a store and the point reads it makes.
+type countingStore struct {
+	agent.Store
+	yielded, gets atomic.Int32
+}
+
+func (c *countingStore) Get(ctx context.Context, run, name string) (agent.Entry, bool, error) {
+	c.gets.Add(1)
+	return c.Store.Get(ctx, run, name)
+}
+
+func (c *countingStore) Load(ctx context.Context, run string, after int64) iter.Seq2[agent.Entry, error] {
+	return func(yield func(agent.Entry, error) bool) {
+		for e, err := range c.Store.Load(ctx, run, after) {
+			c.yielded.Add(1)
+			if !yield(e, err) {
+				return
+			}
+		}
+	}
+}
+
+// The panel needs the run's topology, its digest and whether it has ended, so it reads those by point reads:
+// a run of a hundred records is not streamed, not held, and no View is built of it. The end of the run is
+// read from its end markers, and a run without one is said to have none.
+func TestRunIsReadByPointReadsNotByHistory(t *testing.T) {
+	flow, err := plan.Load[int, int]([]byte(runCfg), runRegistry(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := &countingStore{Store: agent.NewMemStore()}
+	j, err := agent.NewJournal(cs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := flow.Run(context.Background(), j, "r1", 1); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 100; i++ {
+		if _, _, err := cs.Store.Insert(context.Background(), "r1", "extra:"+strconv.Itoa(i), []byte(`{"name":"extra:`+strconv.Itoa(i)+`","kind":"value","result":1}`)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	old := maxRunRecords
-	maxRunRecords = 20
-	t.Cleanup(func() { maxRunRecords = old })
+	cs.yielded.Store(0)
+	cs.gets.Store(0)
 	s := runServer(t, runCfg, runview.JournalSource{J: j}, "r1", true)
 	r := askRun(t, s, runCfg, nil, false)
-	if r.Status != "same" || r.Run.State != "" || r.Run.Records != 0 || !strings.Contains(r.Run.StateText, "state not read: the run has more than 20 records") || r.Run.Flow != "pay" {
+	if r.Status != "same" || r.Run.State != "done" || r.Run.StateText != "completed" || r.Run.Flow != "pay" || r.Run.Records != 0 {
 		t.Errorf("%s run %+v", r.Status, r.Run)
 	}
-	if !slices.ContainsFunc(r.Notes, func(n string) bool { return strings.Contains(n, "more than 20 records") }) {
-		t.Errorf("notes %q", r.Notes)
+	if y, g := cs.yielded.Load(), cs.gets.Load(); y > 1 || g > 3 {
+		t.Errorf("reading a run of more than 100 records pulled %d entries (want 1, the first) and made %d point reads (want 3: topology, digest, the end marker)", y, g)
 	}
-	// Under the bound the state is read.
-	maxRunRecords = 100000
-	s = runServer(t, runCfg, runview.JournalSource{J: j}, "r1", true)
-	if r := askRun(t, s, runCfg, nil, false); r.Run.State == "" || r.Run.Records < 60 {
-		t.Errorf("under the bound: %+v", r.Run)
+	// A run with no end marker.
+	open, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for e, err := range cs.Store.Load(context.Background(), "r1", -1) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if e.Name == "run:complete" || strings.HasPrefix(e.Name, "extra:") {
+			continue
+		}
+		if _, _, err := open.Store().Insert(context.Background(), "r1", e.Name, e.Data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r = askRun(t, runServer(t, runCfg, runview.JournalSource{J: open}, "r1", true), runCfg, nil, false)
+	if r.Status != "same" || r.Run.State != "unfinished" || r.Run.StateText != "no end marker" {
+		t.Errorf("no end marker: %s run %+v", r.Status, r.Run)
+	}
+	// An aborted and a cancelled run, by their end markers.
+	for marker, want := range map[string][2]string{"run:aborted": {"aborted", "aborted"}, "run:cancelled": {"cancelled", "cancelled"}} {
+		ended, err := agent.NewJournal(agent.NewMemStore())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for e, err := range open.Store().Load(context.Background(), "r1", -1) {
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := ended.Store().Insert(context.Background(), "r1", e.Name, e.Data); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, _, err := ended.Store().Insert(context.Background(), "r1", marker, []byte(`{"name":"`+marker+`","kind":"value","result":1}`)); err != nil {
+			t.Fatal(err)
+		}
+		r := askRun(t, runServer(t, runCfg, runview.JournalSource{J: ended}, "r1", true), runCfg, nil, false)
+		if r.Run.State != want[0] || r.Run.StateText != want[1] {
+			t.Errorf("%s: run %+v", marker, r.Run)
+		}
+	}
+	// A run with no records.
+	if r := askRun(t, runServer(t, runCfg, runview.JournalSource{J: open}, "nope", true), runCfg, nil, false); r.Status != "not_found" {
+		t.Errorf("no such run: %s", r.Status)
 	}
 }
 
