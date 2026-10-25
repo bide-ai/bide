@@ -1628,3 +1628,49 @@ func TestCapsAudit_ACorruptRowIsNotAStoreError(t *testing.T) {
 	code, out, errOut := unanchoredCaps()
 	wantFail(t, code, out, errOut, "UNREADABLE")
 }
+
+// A ledger with slots in an unreadable run is marked as not fully checked, in the text and in -json, and
+// its UNREADABLE finding names the ledger and the slot (a release that hides behind it included).
+func TestCapsAudit_ALedgerWithSlotsInAnUnreadableRunSaysSo(t *testing.T) {
+	e := threeCalls(t)
+	run := e.ledgerRun()
+	e.forgeRelease("r1")
+	e.tamper.failRun = func(r string) bool { return r == "r1" }
+	code, out, errOut := unanchoredCaps()
+	wantFail(t, code, out, errOut, "UNREADABLE")
+	if !strings.Contains(out, "INFO  NOT CHECKED: slot(s) [0 3] of this ledger, made by run r1, which could not be read") ||
+		!strings.Contains(out, "FAIL  UNREADABLE "+run+" slot 0: run r1 cannot be read: its slot(s) [0 3] of this ledger") {
+		t.Fatalf("the text must mark the ledger and name it in the finding:\n%s", out)
+	}
+	code, outJ, _ := unanchoredCaps("-json")
+	var rep struct {
+		ExitCode int `json:"exit_code"`
+		Artifact struct {
+			Ledgers []struct {
+				Ledger  string `json:"ledger"`
+				Skipped []struct {
+					Run   string `json:"run"`
+					Slots []int  `json:"slots"`
+				} `json:"skipped"`
+			} `json:"ledgers"`
+			Findings []struct {
+				Kind, Ledger string
+				Slot         int
+			} `json:"findings"`
+		} `json:"artifact"`
+	}
+	if err := json.Unmarshal([]byte(outJ), &rep); err != nil {
+		t.Fatal(err)
+	}
+	l := rep.Artifact.Ledgers
+	if code != 1 || len(l) != 1 || len(l[0].Skipped) != 1 || l[0].Skipped[0].Run != "r1" || len(l[0].Skipped[0].Slots) != 2 {
+		t.Fatalf("exit %d, -json ledgers %+v", code, l)
+	}
+	found := false
+	for _, f := range rep.Artifact.Findings {
+		found = found || f.Kind == "UNREADABLE" && f.Ledger == run && f.Slot == 0
+	}
+	if !found {
+		t.Fatalf("-json has no UNREADABLE finding naming the ledger and slot: %+v", rep.Artifact.Findings)
+	}
+}

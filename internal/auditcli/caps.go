@@ -86,6 +86,15 @@ type capsLedger struct {
 	Tail       int        `json:"tail"`
 	Exposed    int        `json:"exposed"`
 	ExposedSum int64      `json:"exposed_amount"`
+	// Skipped lists the runs this ledger has slots of that could not be read: their slots were left out of
+	// the cross-checks that need the run (cap-reserve, cap-intent, cap-release, voids).
+	Skipped []capsSkipped `json:"skipped,omitempty"`
+}
+
+// capsSkipped is a run that could not be read and the slots of a ledger it made.
+type capsSkipped struct {
+	Run   string `json:"run"`
+	Slots []int  `json:"slots"`
 }
 
 // capsReport is what bide audit caps found; -json embeds it as the artifact.
@@ -589,6 +598,10 @@ func auditLedger(ctx context.Context, j *agent.Journal, led *capledger.Ledger, v
 		find(f.Kind, run, f.Slot, "%s", f.Detail)
 	}
 	lr.Slots, lr.Live, lr.Total = len(slots), live, total
+	lr.Skipped = skippedSlots(slots, rs, in.filter)
+	for _, sk := range lr.Skipped {
+		find(capUnreadable, run, sk.Slots[0], "run %s cannot be read: its slot(s) %s of this ledger were not cross-checked against its cap-reserve, cap-intent, cap-release and void records", cleanText(sk.Run), cleanText(fmt.Sprint(sk.Slots)))
+	}
 	if len(slots) > 0 {
 		lr.Currency, lr.Limit = slots[len(slots)-1].Currency, slots[len(slots)-1].Limit
 	}
@@ -718,6 +731,9 @@ func (c *cli) capsReport(rep capsReport) {
 			line += fmt.Sprintf("; signed head covers %d of %d entries", l.Attested, l.Entries)
 		}
 		c.println(line)
+		for _, sk := range l.Skipped {
+			c.printf("INFO  NOT CHECKED: slot(s) %s of this ledger, made by run %s, which could not be read\n", cleanText(fmt.Sprint(sk.Slots)), cleanText(sk.Run))
+		}
 		for _, o := range l.Over {
 			c.printf("WARN  OVER LIMIT slot %d (attempt %s): cum_after %d exceeds the limit %d, counted under a waiver\n", o.Slot, cleanText(o.Attempt), o.CumAfter, o.Limit)
 		}
@@ -1066,4 +1082,23 @@ func isStoreIOError(err error) bool {
 // again, since nothing was found wrong with what the store holds.
 func storeError(what string, err error) error {
 	return fmt.Errorf("store error, re-run the audit (%s): %w", what, err)
+}
+
+// skippedSlots lists, by run in order, the slots of a ledger made by runs that could not be read.
+func skippedSlots(slots []capledger.Slot, rs capRunFacts, f capsFilter) []capsSkipped {
+	by := map[string][]int{}
+	for _, s := range slots {
+		run := s.Run
+		if s.Kind == "release" && s.Ref >= 0 && s.Ref < len(slots) {
+			run = slots[s.Ref].Run // a release belongs to the run of the reservation it voids
+		}
+		if rs.unreadable[run] && f.inRun(run) {
+			by[run] = append(by[run], s.N)
+		}
+	}
+	var out []capsSkipped
+	for _, run := range sortedKeys(by) {
+		out = append(out, capsSkipped{Run: run, Slots: by[run]})
+	}
+	return out
 }
