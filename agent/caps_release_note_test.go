@@ -30,7 +30,7 @@ func releaseNotes(t *testing.T, j *Journal) map[int]*capReleaseNote {
 		if s.Kind != "release" {
 			continue
 		}
-		rec, ok, err := j.Get(context.Background(), s.Run, "cap-release:"+encodeID(s.Attempt))
+		rec, ok, err := j.Get(context.Background(), s.Run, capReleaseStep(s.Attempt))
 		if err != nil {
 			t.Fatal(err)
 		}

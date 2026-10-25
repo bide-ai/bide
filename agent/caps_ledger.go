@@ -528,6 +528,6 @@ func (a *Agent) noteCapRelease(ctx context.Context, t capledger.Target, attempt,
 	if err != nil {
 		return err
 	}
-	_, _, err = a.store.putNew(ctx, t.RunID, "cap-release:"+encodeID(attempt), Record{Kind: StepValue, Result: b})
+	_, _, err = a.store.putNew(ctx, t.RunID, capReleaseStep(attempt), Record{Kind: StepValue, Result: b})
 	return err
 }

@@ -380,6 +380,10 @@ func modelStep(n int) string { return "@llm/" + strconv.Itoa(n) }
 // rollback, or ResolveHalt writes when the call's outcome is known.
 func ToolResultStep(toolUseID string) string { return "tool:" + encodeID(toolUseID) }
 
+// capReleaseStep is the key of the record that says why the loop released attempt's cap slot (an
+// AttemptKey), in the run that made the call.
+func capReleaseStep(attempt string) string { return "cap-release:" + encodeID(attempt) }
+
 // toolAttemptStep is the key of the attempt marker of the call toolUseID.
 func toolAttemptStep(toolUseID string) string { return "attempt:tool:" + encodeID(toolUseID) }
 

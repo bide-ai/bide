@@ -83,6 +83,7 @@ var keyConstructors = map[string]func(string) string{
 		return planScopedStep(context.WithValue(context.Background(), planScopeKey{}, planScope{runID: "r", node: "node:n"}), "r", s)
 	},
 	"gateReasonStep": gateReasonStep,
+	"capReleaseStep": capReleaseStep,
 	"spendStep":      spendStep,
 	"lateSpendStep":  lateSpendStep,
 }
