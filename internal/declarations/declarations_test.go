@@ -554,3 +554,21 @@ func TestFindings_ListsRaisesSafety(t *testing.T) {
 	}
 	t.Error("no finding for a tool that declares RaisesSafety")
 }
+
+// A dump that changes only a member outside the digest (Idempotent) has equal digests and a non-empty diff;
+// that is not the digest-consistency error, because the change is reported as not covered.
+func TestDiff_AMemberOutsideTheDigestIsNotADigestMismatch(t *testing.T) {
+	pol := &Policy{Refuse: true}
+	old := doc(pol, Tool{Name: "w", Effect: true})
+	nw := doc(pol, Tool{Name: "w", Effect: true, Idempotent: true})
+	if old.Digest != nw.Digest {
+		t.Fatal("Idempotent changed the digest")
+	}
+	changes, err := Diff(old, nw)
+	if err != nil {
+		t.Fatalf("Diff = %v, want no digest-consistency error", err)
+	}
+	if len(changes) != 1 || changes[0].Covered || changes[0].Class != Changed {
+		t.Errorf("changes = %+v, want one uncovered change", changes)
+	}
+}
