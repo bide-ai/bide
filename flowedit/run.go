@@ -47,6 +47,9 @@ type runSnap struct {
 	// transient is set when the read failed in a way a later try may not (a cancelled or timed-out read,
 	// a store error): such a result is returned and never kept.
 	transient bool
+	// facts are what the journal says of each node (nil when not read, and pathNote says why).
+	facts    *pathFacts
+	pathNote string
 }
 
 // runInfo is what the page shows of the run.
@@ -82,6 +85,8 @@ type runReply struct {
 	// Renamed lists the session's renames the comparison honoured.
 	Renamed []string `json:"renamed,omitempty"`
 	Notes   []string `json:"notes,omitempty"`
+	// Path is where the run went, on this file's graph; nil when no comparison was made.
+	Path *runPath `json:"path,omitempty"`
 }
 
 // serveRun answers /api/run: the file's text compared with the topology the run journaled.
@@ -122,9 +127,11 @@ type runState struct {
 
 // runFlight is one read of the run, shared by every request that arrives while it is the newest.
 type runFlight struct {
-	done chan struct{}
-	snap *runSnap
-	gen  int
+	done       chan struct{}
+	snap       *runSnap
+	gen        int
+	cancel     context.CancelFunc
+	superseded bool // a Reload run started a newer read: this one is cancelled and its answer is not used
 }
 
 // snapshot returns the snapshot already read unless reload (or, for a failed read, unless runBackoff has
@@ -142,12 +149,16 @@ func (s *Server) snapshot(ctx context.Context, reload bool) *runSnap {
 	}
 	f := s.runs.inflight
 	if f == nil || reload {
+		if f != nil {
+			f.superseded = true
+			f.cancel() // the older read is of no use now; do not leave it holding the store
+		}
 		s.runs.gen++
-		f = &runFlight{done: make(chan struct{}), gen: s.runs.gen}
+		rctx, cancel := context.WithTimeout(context.Background(), runTimeout)
+		f = &runFlight{done: make(chan struct{}), gen: s.runs.gen, cancel: cancel}
 		s.runs.inflight = f
 		run := *s.run
 		go func() {
-			rctx, cancel := context.WithTimeout(context.Background(), runTimeout)
 			defer cancel()
 			sn := readRun(rctx, run)
 			s.runs.mu.Lock()
@@ -166,6 +177,13 @@ func (s *Server) snapshot(ctx context.Context, reload bool) *runSnap {
 	s.runs.mu.Unlock()
 	select {
 	case <-f.done:
+		s.runs.mu.Lock()
+		superseded := f.superseded
+		s.runs.mu.Unlock()
+		if superseded {
+			// A request that was waiting on the read a Reload replaced takes the newer read's answer.
+			return s.snapshot(ctx, false)
+		}
 		return f.snap
 	case <-ctx.Done():
 		sn := &runSnap{readAt: time.Now().UTC(), info: runInfo{ID: s.run.ID}, transient: true}
@@ -193,7 +211,7 @@ func readRun(ctx context.Context, run editrun.Run) *runSnap {
 	if agent.IsReservedRun(id) {
 		return refuse("unreadable", "Run "+id+" is not a run: the ID is reserved by the engine.")
 	}
-	recs, found, err := readFacts(ctx, run, &sn.info)
+	recs, get, found, err := readFacts(ctx, run, &sn.info)
 	if err != nil {
 		sn.transient = true
 		return refuse("unreadable", "Run "+id+" could not be read ("+runview.ErrClass(err)+").")
@@ -230,6 +248,13 @@ func readRun(ctx context.Context, run editrun.Run) *runSnap {
 		return refuse("mismatch", "Run "+id+" journaled a topology that does not match its digest; it is not shown.")
 	}
 	sn.topo, sn.digest, sn.status = t, d, "ok"
+	// The path is read now, under this read's context. A failure to read it does not fail the snapshot: the
+	// panel says the path was not read.
+	if f, err := readPathFacts(get, t); err != nil {
+		sn.pathNote = "The run's path was not read: " + firstLine(err.Error()) + "."
+	} else {
+		sn.facts = f
+	}
 	if sn.info.Flow == "" {
 		sn.info.Flow = t.Flow // the flow the topology names, which its digest commits to
 	} else if sn.info.Flow != t.Flow {
@@ -250,34 +275,34 @@ var endMarkers = []struct{ name, state, text string }{
 // exists, the two records, and the three end markers): no run:start, whose input can be large, and no
 // history. The run's flow is then the topology's, which the digest commits to, and the record count is not
 // known. An exported journal is already in memory, so its state and flow are read as the viewer reads them.
-func readFacts(ctx context.Context, run editrun.Run, info *runInfo) (recs []agent.Record, found bool, err error) {
+func readFacts(ctx context.Context, run editrun.Run, info *runInfo) (recs []agent.Record, get getFunc, found bool, err error) {
 	js, ok := run.Source.(runview.JournalSource)
 	if !ok {
 		recs, err = run.Source.History(ctx, run.ID)
 		if err != nil || len(recs) == 0 {
-			return nil, false, err
+			return nil, nil, false, err
 		}
 		v := runview.Build(ctx, run.ID, recs, nil)
 		info.Flow, info.State, info.StateText, info.Records = v.Flow, v.State, v.StateText, v.Records
-		return recs, true, nil
+		return recs, getOf(recs), true, nil
 	}
 	// Only whether the run has an entry is tested here (a run with none is not found): the Journal's own header
 	// check is made by the Gets below, which refuse a run in a format this version cannot read.
 	any := false
 	for _, err := range js.J.Store().Load(ctx, run.ID, -1) {
 		if err != nil {
-			return nil, false, err
+			return nil, nil, false, err
 		}
 		any = true
 		break
 	}
 	if !any {
-		return nil, false, nil
+		return nil, nil, false, nil
 	}
 	for _, name := range []string{plan.TopologyStep, "flow:digest"} {
 		rec, ok, err := js.J.Get(ctx, run.ID, name)
 		if err != nil {
-			return nil, false, err
+			return nil, nil, false, err
 		}
 		if ok {
 			recs = append(recs, rec)
@@ -288,7 +313,7 @@ func readFacts(ctx context.Context, run editrun.Run, info *runInfo) (recs []agen
 	for _, m := range endMarkers {
 		_, ok, err := js.J.Get(ctx, run.ID, m.name)
 		if err != nil {
-			return nil, false, err
+			return nil, nil, false, err
 		}
 		if ok {
 			ended++
@@ -300,7 +325,7 @@ func readFacts(ctx context.Context, run editrun.Run, info *runInfo) (recs []agen
 		// the names is not the order of the writes.
 		info.State, info.StateText = "ended", "ended (more than one end marker)"
 	}
-	return recs, true, nil
+	return recs, func(name string) (agent.Record, bool, error) { return js.J.Get(ctx, run.ID, name) }, true, nil
 }
 
 // fileConfig is the text as the runview package reads a config: converted from YAML, and typed when the
@@ -338,7 +363,8 @@ func (s *Server) compareRun(ctx context.Context, text []byte, renames []Rename, 
 	old := plan.InspectTopology(topo)
 	old.Digest = sn.digest // the digest the run journaled, not the renamed topology's
 	typed := s.typing != nil
-	v, err := runview.DiffTopologies(runview.TopologyDiff{Old: old, New: file.Inspect(), OldName: "run " + id, NewName: s.name, Typed: typed, Basis: file.Source()})
+	frep := file.Inspect()
+	v, err := runview.DiffTopologies(runview.TopologyDiff{Old: old, New: frep, OldName: "run " + id, NewName: s.name, Typed: typed, Basis: file.Source()})
 	if err != nil {
 		rep.Status, rep.Claim = "cannot", "Cannot compare: "+firstLine(err.Error())+"."
 		var big *runview.TooLargeError
@@ -351,6 +377,11 @@ func (s *Server) compareRun(ctx context.Context, text []byte, renames []Rename, 
 		rep.Renamed = append(rep.Renamed, m.From+" -> "+m.To)
 	}
 	rep.RunDigest, rep.FileDigest = v.OldDigest, v.NewDigest
+	if sn.facts != nil {
+		rep.Path = projectPath(sn.facts, sn.topo, topo, made, frep.Topology, typed)
+	} else {
+		rep.Path = &runPath{NotRead: sn.pathNote, Nodes: []pathNode{}, Edges: []pathEdge{}, OffCanvas: []string{}}
+	}
 	for _, c := range v.Changes {
 		if len(rep.Changes) < maxRunLines {
 			rep.Changes = append(rep.Changes, c.String())
@@ -426,6 +457,10 @@ func (r *runReply) clean() *runReply {
 	fixAll(r.Strengthened)
 	fixAll(r.Renamed)
 	fixAll(r.Notes)
+	if r.Path != nil {
+		fix(&r.Path.NotRead)
+		fixAll(r.Path.OffCanvas)
+	}
 	if r.Run != nil {
 		fix(&r.Run.ID)
 		fix(&r.Run.Digest)

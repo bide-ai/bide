@@ -708,8 +708,8 @@ func TestRunIsReadByPointReadsNotByHistory(t *testing.T) {
 	if r.Status != "same" || r.Run.State != "done" || r.Run.StateText != "completed" || r.Run.Flow != "pay" || r.Run.Records != 0 {
 		t.Errorf("%s run %+v", r.Status, r.Run)
 	}
-	if y, g := cs.yielded.Load(), cs.gets.Load(); y > 1 || g > 5 {
-		t.Errorf("reading a run of more than 100 records pulled %d entries (want 1, the first) and made %d point reads (want 5: topology, digest, the three end markers)", y, g)
+	if y, g := cs.yielded.Load(), cs.gets.Load(); y > 1 || g > 7 {
+		t.Errorf("reading a run of more than 100 records pulled %d entries (want 1, the first) and made %d point reads (want 7: topology, digest, the three end markers, one result per node)", y, g)
 	}
 	// A run with no end marker.
 	open, err := agent.NewJournal(agent.NewMemStore())
@@ -895,5 +895,51 @@ func TestRunHostileDigestIsNotEchoed(t *testing.T) {
 	b, _ := json.Marshal(r)
 	if r.Status != "mismatch" || r.Run.Digest != "" || len(b) > 5000 || strings.ContainsAny(string(b), "\u202e\x1b") {
 		t.Errorf("%s digest %d bytes, reply %d bytes", r.Status, len(r.Run.Digest), len(b))
+	}
+}
+
+// ctxSource blocks its read until the read's context ends, and says so.
+type ctxSource struct {
+	runview.Source
+	started   chan struct{}
+	cancelled chan struct{}
+	n         atomic.Int32
+}
+
+func (c *ctxSource) History(ctx context.Context, id string) ([]agent.Record, error) {
+	if c.n.Add(1) == 1 {
+		c.started <- struct{}{}
+		<-ctx.Done()
+		close(c.cancelled)
+		return nil, ctx.Err()
+	}
+	return c.Source.History(ctx, id)
+}
+
+// Reload run cancels the read it replaces, so a script pressing it does not stack reads on the store; a
+// request that was waiting on the replaced read gets the new read's answer, not "canceled".
+func TestRunReloadCancelsTheSupersededRead(t *testing.T) {
+	j, _ := ranRun(t, runCfg)
+	src := &ctxSource{Source: runview.JournalSource{J: j}, started: make(chan struct{}, 1), cancelled: make(chan struct{})}
+	s := runServer(t, runCfg, src, "r1", true)
+	a := make(chan *runReply, 1)
+	go func() { a <- s.compareRun(context.Background(), []byte(runCfg), nil, false) }()
+	<-src.started
+	rb := s.compareRun(context.Background(), []byte(runCfg), nil, true)
+	if rb.Status != "same" {
+		t.Fatalf("the reload: %s %q", rb.Status, rb.Claim)
+	}
+	select {
+	case <-src.cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the replaced read was not cancelled")
+	}
+	select {
+	case r := <-a:
+		if r.Status != "same" {
+			t.Errorf("the request that waited on the replaced read: %s %q", r.Status, r.Claim)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the waiting request did not finish")
 	}
 }
