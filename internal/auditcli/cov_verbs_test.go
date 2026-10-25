@@ -622,6 +622,34 @@ func TestEvidenceItemLine(t *testing.T) {
 	}
 }
 
+// A step key built from a call ID holds the ID percent-escaped (agent.ApprovalPendingStep and the
+// rest). The report shows the call ID as the other verbs do, and states the key unambiguously: the
+// key's kind first, then "of call" and the quoted ID.
+func TestEvidenceItemLineStepOfCall(t *testing.T) {
+	step := func(label string) audit.EvidenceItem {
+		return audit.EvidenceItem{Kind: "step", Label: label, Ref: label, Note: "included"}
+	}
+	for name, tc := range map[string]struct{ label, want string }{
+		"pending":          {"approval-pending:c2%23taint", `step "approval-pending" of call "c2#taint": included`},
+		"plain id":         {"approval-pending:call_01", `step "approval-pending" of call "call_01": included`},
+		"suffix kept":      {"approval-tally:c2%23taint:v3", `step "approval-tally:v3" of call "c2#taint": included`},
+		"colon in the id":  {"approval-request:a%3Av3", `step "approval-request" of call "a:v3": included`},
+		"a percent":        {"approval-request:a%2523", `step "approval-request" of call "a%23": included`},
+		"escape in the id": {"approval-pending:x%1B%5B31m", `step "approval-pending" of call "x\x1b[31m": included`},
+		"digest form":      {"approval-pending:~" + strings.Repeat("a", 64), `step "approval-pending:~` + strings.Repeat("a", 64) + `": included`},
+		"lowercase hex":    {"approval-pending:c2%2a", `step "approval-pending:c2%2a": included`},
+		"escaped plain":    {"approval-pending:a%41", `step "approval-pending:a%41": included`},
+		"empty id":         {"approval-pending:", `step "approval-pending:": included`},
+		"truncated escape": {"approval-pending:c2%2", `step "approval-pending:c2%2": included`},
+		"unescaped hash":   {"approval-pending:c2#taint", `step "approval-pending:c2#taint": included`},
+		"other step":       {"plan:a%23b", `step "plan:a%23b": included`},
+	} {
+		if got := evidenceItemLine(step(tc.label)); got != tc.want {
+			t.Errorf("%s: %s\n got  %s\n want %s", name, tc.label, got, tc.want)
+		}
+	}
+}
+
 // decisionTimes prints nothing without decisions, says so when no approval-asked time is recorded,
 // and prints a decision whose recorded time is missing as "not recorded".
 func TestDecisionTimes(t *testing.T) {
