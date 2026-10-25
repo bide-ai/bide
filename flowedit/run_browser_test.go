@@ -94,3 +94,57 @@ func TestRunPanelInChrome(t *testing.T) {
 		t.Errorf("failed %q off origin %q", r.Failed, r.OffOrigin)
 	}
 }
+
+// The comparison follows the editing session: a rename made in the page is matched to the run's node, and an
+// answer to older text, arriving last, never replaces the answer to newer text.
+func TestRunPanelFollowsTheSessionInChrome(t *testing.T) {
+	j, _ := ranRun(t, runCfg)
+	s := runServer(t, runCfg, runview.JournalSource{J: j}, "r1", true)
+	var r struct {
+		OK         bool   `json:"ok"`
+		Error      string `json:"error"`
+		First      string `json:"first"`
+		Second     string `json:"second"`
+		AfterStale string `json:"afterStale"`
+		Lists      []struct {
+			Label string   `json:"label"`
+			Items []string `json:"items"`
+		} `json:"lists"`
+	}
+	runScript(t, "run-session.mjs", s, &r)
+	if !r.OK {
+		t.Fatalf("the script failed: %s", r.Error)
+	}
+	if r.First != "SAME DIGEST" || r.Second != "SAME DIGEST" || r.AfterStale != "SAME DIGEST" {
+		t.Errorf("race: %q, then %q, then %q after the older answer arrived", r.First, r.Second, r.AfterStale)
+	}
+	var renamed []string
+	for _, l := range r.Lists {
+		if strings.HasPrefix(l.Label, "Renames of this session") {
+			renamed = l.Items
+		}
+		for _, it := range l.Items {
+			if strings.Contains(it, "removed node") || strings.Contains(it, "added node") {
+				t.Errorf("the rename read as %q", it)
+			}
+		}
+	}
+	if !slices.Equal(renamed, []string{"b -> c"}) {
+		t.Errorf("renames listed: %q (lists %+v)", renamed, r.Lists)
+	}
+}
+
+// Without -run the panel stays hidden and the page asks once.
+func TestRunPanelIsAbsentWithoutARun(t *testing.T) {
+	s, _ := newTestServer(t, "refund.yaml", testFlow)
+	var r struct {
+		OK     bool   `json:"ok"`
+		Error  string `json:"error"`
+		Hidden bool   `json:"hidden"`
+		Asked  int    `json:"asked"`
+	}
+	runScript(t, "run-off.mjs", s, &r)
+	if !r.OK || !r.Hidden || r.Asked != 1 {
+		t.Errorf("%+v", r)
+	}
+}
