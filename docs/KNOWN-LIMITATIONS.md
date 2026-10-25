@@ -415,6 +415,8 @@ together. A tie is never agreement. See [Quorum](guides/quorum.md#what-a-quorum-
 
 ## Amount caps
 
+**A tumbling window allows up to twice the limit across a boundary, and a key is only as strong as its canonical form.** A cumulative rule counts in fixed windows (a day, an hour), so a customer can spend the limit just before a boundary and again just after it. A rule keyed by something the model chooses (`by key`) is one window per spelling of the key, so pair it with an unkeyed total, and normalise the key in your tool before it reaches the rule. See the [amount caps guide](guides/amount-caps.md#cumulative-rules) and "Cumulative caps keep a reservation they cannot prove unused" above.
+
 **A cap reads an object member, not an array.** A rule (`agent.WithCaps`) names one argument by a path
 of object members, and registration refuses a member that is an array or object. A bulk tool that
 takes `payments: [{amount: ...}, ...]` cannot be capped by a line, and the input schema cannot say
