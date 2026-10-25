@@ -1,6 +1,6 @@
 # Design: a visual editor for flow configs
 
-Status: accepted (the maintainer decided all 12 decisions as recommended on 2026-10-15). Phase 1 is built (`bide edit`, v0.19.0 and v0.20.0; see the [flow editor guide](../guides/flow-editor.md) and the phased plan below); phase 2 is built (v0.22.0: add, remove, rename and move nodes, the entry, the flow's name and types, edges, switches, arms and `else`, joins and loop bounds, undo and redo tested over every one of them, and drag to connect), phase 3 (typed mode) is built (v0.22.0: the read-only Registry description `Registry.Describe`, `plan.InspectConfigDescribed`, `plan.AllowUnusedBlocks`, the `-blocks` flag of `bide check` and `bide view -config`, and the typed editor, `bide edit -blocks` or `flowedit.WithRegistry` and `WithBlocks`: typed checks, type-refusing operations, the typed-plus-structural weakened verdict, and on the page the palette, the digest, `(types differ)` hints and the NOT CERTIFIED banner; as built, see "Phase 3 as built" below); phase 4 (compare with a run) is designed (see "Phase 4 design" under the phased plan) and is being built in four pull requests, and the names in the unbuilt parts are a
+Status: accepted (the maintainer decided all 12 decisions as recommended on 2026-10-15). Phase 1 is built (`bide edit`, v0.19.0 and v0.20.0; see the [flow editor guide](../guides/flow-editor.md) and the phased plan below); phase 2 is built (v0.22.0: add, remove, rename and move nodes, the entry, the flow's name and types, edges, switches, arms and `else`, joins and loop bounds, undo and redo tested over every one of them, and drag to connect), phase 3 (typed mode) is built (v0.22.0: the read-only Registry description `Registry.Describe`, `plan.InspectConfigDescribed`, `plan.AllowUnusedBlocks`, the `-blocks` flag of `bide check` and `bide view -config`, and the typed editor, `bide edit -blocks` or `flowedit.WithRegistry` and `WithBlocks`: typed checks, type-refusing operations, the typed-plus-structural weakened verdict, and on the page the palette, the digest, `(types differ)` hints and the NOT CERTIFIED banner; as built, see "Phase 3 as built" below); phase 4 (compare with a run) is built (see "Phase 4 design" under the phased plan: the run as a baseline, its path on the canvas, and the list of unfinished runs a change would refuse), and the names in the unbuilt parts are a
 sketch. Written against `main` at 759cf547 and, where it says so, against the open pull request
 #312 (approval deadlines).
 
@@ -1091,7 +1091,7 @@ About 4 to 6 working days of agent time plus reviews; adversarial review gate ap
 4. **PR 4, affected runs** (point reads, recovery filter, grouping, caps, single-flight and cache, page table, big-store test with a synthetic
    store that counts reads).
 Docs, godoc, CHANGELOG fragment, i18n pointers and the design note's phase status update land in
-each PR it touches; the final PR flips "phase 4 is not built".
+each PR it touches.
 
 #### 9a. Tests, by PR
 

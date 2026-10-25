@@ -455,13 +455,13 @@ func (s *Server) affected(ctx context.Context, text []byte, reload bool) *affect
 		notes = append(notes, "The scan stopped at "+sc.stopped+" after reading "+fmt.Sprint(sc.listed)+" runs.")
 	}
 	if sc.noDigest > 0 {
-		notes = append(notes, fmt.Sprintf("%d unfinished run%s record no digest yet (all flows, not attributed); resume records the digest of whichever flow resumes them, so they are not counted.", sc.noDigest, plural(sc.noDigest)))
+		notes = append(notes, fmt.Sprintf("%d unfinished %s no digest yet (all flows, not attributed); resume records the digest of whichever flow resumes %s, so %s not counted.", sc.noDigest, verb(sc.noDigest, "run records", "runs record"), pronoun(sc.noDigest), verb(sc.noDigest, "it is", "they are")))
 	}
 	if sc.unreadable > 0 {
-		notes = append(notes, fmt.Sprintf("%d run%s could not be read or recorded a digest that is not a SHA-256 digest.", sc.unreadable, plural(sc.unreadable)))
+		notes = append(notes, fmt.Sprintf("%d %s be read, or recorded a digest that is not a SHA-256 digest.", sc.unreadable, verb(sc.unreadable, "run could not", "runs could not")))
 	}
 	if rep.OtherFlow > 0 {
-		notes = append(notes, fmt.Sprintf("%d run%s are of another flow than %q, which this file is not.", rep.OtherFlow, plural(rep.OtherFlow), baseFlow))
+		notes = append(notes, fmt.Sprintf("%d %s of another flow than %q, which this file is not.", rep.OtherFlow, verb(rep.OtherFlow, "run is", "runs are"), baseFlow))
 	}
 	if sc.overflowDigests > 0 {
 		notes = append(notes, fmt.Sprintf("%d more digest%s (%d runs) not compared: only the first %d are.", sc.overflowDigests, plural(sc.overflowDigests), sc.overflowRuns, maxGroups))
@@ -476,6 +476,16 @@ func (s *Server) affected(ctx context.Context, text []byte, reload bool) *affect
 	rep.Summary = rep.Heading + "."
 	return rep.clean()
 }
+
+// verb picks the singular or plural words for n: one when n is 1.
+func verb(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
+}
+
+func pronoun(n int) string { return verb(n, "it", "them") }
 
 func errorsOf(r plan.ConfigReport) int {
 	n := 0

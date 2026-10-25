@@ -330,6 +330,7 @@ function skipTo(target) {
     assertions: () => $('h-assert'),
     blocks: () => first('#palette button[tabindex="0"]') || $('h-blocks'),
     run: () => $('h-run'),
+    affected: () => $('h-affected'),
   }[target];
   const to = el && el();
   if (to) to.focus();
@@ -876,6 +877,79 @@ export function applyRunPath() {
   }
 }
 
+// ---- the unfinished runs a change would refuse (bide edit with a store) ----
+//
+// The panel appears when the server has a store (the first answer says so). A button asks the server to list the
+// store's unfinished runs by digest and compare each with the text on the page: the answer is a table of the digests
+// with how many runs, a few run IDs and, for a group the file would refuse, the command that opens one of them. It runs
+// only on the button, because it reads the store; the text it was made for is remembered, and the page says when the
+// text has changed since.
+let affOff = false;
+let affText = null; // the text the last list was made for
+const AFF_WORDS = { refused: 'REFUSED', same: 'same digest', none_seen: 'no difference seen', other_flow: 'another flow', not_compared: 'not compared' };
+
+export async function probeAffected() {
+  if (affOff) return;
+  try {
+    const r = await api('/api/affected', { text: state.text, check: false });
+    if (!r.configured) { affOff = true; $('affected-panel').hidden = true; return; }
+    $('affected-panel').hidden = false;
+  } catch (e) { /* the panel stays as it was */ }
+}
+
+async function checkAffected(reload) {
+  const sent = state.text;
+  announce('Checking the unfinished runs');
+  let r;
+  try {
+    r = await api('/api/affected', { text: sent, check: true, reload });
+  } catch (e) {
+    replace('aff-result', h('p', { class: 'bad', role: 'alert' }, 'Could not check the unfinished runs: ' + e.message));
+    return;
+  }
+  affText = sent;
+  renderAffected(r);
+}
+
+export function renderAffected(r) {
+  $('aff-again').hidden = false;
+  $('aff-check').textContent = 'Check unfinished runs again';
+  const parts = [];
+  const cls = r.status === 'ok' ? (r.refused > 0 ? 'v-warn' : 'v-good') : 'v-warn';
+  const word = r.status === 'ok' ? (r.refused > 0 ? r.refused + ' RUN' + (r.refused === 1 ? '' : 'S') + ' REFUSED' : 'NONE REFUSED') : r.status === 'cannot' ? 'CANNOT COMPARE' : 'NOT CHECKED';
+  parts.push(h('section', { class: 'verdict ' + cls, 'aria-labelledby': 'aff-word' },
+    h('div', { class: 'vicon' }, icon(r.status === 'ok' ? (r.refused > 0 ? 'tilde' : 'ok') : 'unknown')),
+    h('div', { class: 'vtext' },
+      h('p', { class: 'vword', id: 'aff-word', tabindex: '-1' }, word),
+      h('p', { class: 'vline' }, r.summary || ''))));
+  if ((r.groups || []).length) {
+    const rows = r.groups.map((g) => h('tr', {},
+      h('th', { scope: 'row' }, AFF_WORDS[g.status] || g.status),
+      h('td', {}, String(g.runs)),
+      h('td', { class: 'mono wrapany' }, g.digest, g.reason ? h('div', { class: 'muted' }, g.reason) : null,
+        (g.changes || []).length ? h('ul', { class: 'runlist' }, g.changes.map((c) => h('li', {}, c))) : null),
+      h('td', { class: 'wrapany' }, (g.ids || []).join(', '), g.command ? h('div', {}, h('code', {}, g.command)) : null)));
+    parts.push(h('table', { class: 'afftable' },
+      h('caption', {}, 'Unfinished runs by the digest they recorded, the ones this file would refuse first'),
+      h('thead', {}, h('tr', {}, h('th', { scope: 'col' }, 'Result'), h('th', { scope: 'col' }, 'Runs'), h('th', { scope: 'col' }, 'Recorded digest'), h('th', { scope: 'col' }, 'Run IDs (the first)'))),
+      h('tbody', {}, rows)));
+  }
+  if ((r.notes || []).length) {
+    parts.push(h('h3', { id: 'aff-h-notes' }, 'What this list does not cover'),
+      h('ul', { 'aria-labelledby': 'aff-h-notes', class: 'runlist' }, r.notes.map((n) => h('li', {}, n))));
+  }
+  replace('aff-result', parts);
+  announce(r.heading || r.summary || word);
+  $('aff-word').focus();
+  updateAffStale();
+}
+
+// updateAffStale says, beside the button, when the list was made for other text than the page holds.
+function updateAffStale() {
+  if (affText === null) { replace('aff-stale', ''); return; }
+  replace('aff-stale', affText === state.text ? '' : 'The text has changed since this list was made: press the button to check it again.');
+}
+
 // ---- the assertions panel: the six forms as templates, each with its live verdict ----
 //
 // An assertion is written from a form, not typed: the page sends the form's parameters
@@ -1300,6 +1374,7 @@ export function render(v, { keepSource = false } = {}) {
   if (verdict !== lastVerdict) { lastVerdict = verdict; announce(verdict); }
   applyRunPath();
   refreshRun();
+  updateAffStale();
 }
 
 // ---- the comparison with a run (bide edit -run) ----
@@ -1590,6 +1665,8 @@ async function main() {
     else if (o) $('source').focus();
   });
   $('run-reload').addEventListener('click', () => refreshRun({ reload: true }));
+  $('aff-check').addEventListener('click', () => checkAffected(false));
+  $('aff-again').addEventListener('click', () => checkAffected(true));
   $('save').addEventListener('click', save);
   $('revert').addEventListener('click', revert);
   $('undo').addEventListener('click', undo);
@@ -1600,6 +1677,7 @@ async function main() {
     state.text = state.disk = d.text;
     state.hash = d.hash;
     render(d);
+    probeAffected();
   } catch (e) {
     replace('verdict', h('p', { class: 'bad' }, 'Could not read the file: ' + e.message));
   }

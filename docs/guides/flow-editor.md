@@ -36,7 +36,7 @@ settings](#order-wiring-order-and-the-flows-settings)), and wire edges, switches
 [Connections](#connections-edges-switches-arms-and-else)), set an arm's loop bound, and add, change and
 remove joins (see [Joins and loops](#joins-and-loops)), and, when it knows your program's blocks, list them with their types, check connections against them and show the digest (see [Typed mode](#typed-mode-the-programs-blocks)). It can
 compare the file with the topology a run journaled (see [Compare with a run](#compare-with-a-run)). It does **not**
-yet: list the runs a change would affect; or let you place nodes on the canvas
+yet: or let you place nodes on the canvas
 (the layout is derived from the topology, on purpose). A config with an anchor or alias anywhere,
 a repeated key, a key that is not a string, NaN or infinity, or mixed line ends is refused by the editor
 with the reason (edit it in a text editor); `plan` itself accepts an anchor or alias, and refuses the others too. The design note
@@ -507,6 +507,45 @@ stopped is said in the node's words: "ran 2 times, then started again, no result
 gate". If the path cannot be read (the store failed), the panel says so with the class of the failure ("store error", "timed out") and
 no more, and reads it again on the next request after three seconds or on **Reload run**: no text of a store's error is ever shown.
 
+## The unfinished runs this file would refuse
+
+```sh
+bide edit -db journal.db flow.yaml          # a store, no run
+bide edit -run r1 -db journal.db flow.yaml  # a run too
+```
+
+With a store (`-db`, `-postgres`, `-postgres-env` or `-journal`), with or without `-run`, the page has a panel, **Unfinished runs
+this file would refuse**, and a button, **Check unfinished runs**. It answers the question an author has before merging: which runs
+that are waiting or in flight would be refused on their next drive (resume, recovery or restart) with this file, because the digest
+they recorded is not this file's (the topology digest, `flow:digest`; see [Compare two versions of a flow](run-viewer.md#compare-two-versions-of-a-flow)). A process that is running keeps the flow it started
+with; this is about the next drive.
+
+The list is the recovery pass's: runs with no end marker (no `run:complete`, `run:aborted` or `run:cancelled`), the engine's reserved
+runs left out. Per run the server reads one small record, `flow:digest`, never the run's history, and groups the runs by the digest
+they recorded. For the first run of each of at most 20 digests it reads `run:start` (the flow it is of) and `flow:topology`. The
+groups are then compared with the text on the page:
+
+- **REFUSED**: the digest is not the file's (typed mode), or the topology differs from the file by what the digest covers
+  (structural mode: names, blocks, edges, arms, order; kinds, types and gates are not compared without `-blocks`). A digest that
+  is not the digest of the run's own topology (a run recorded under digest v1, or a journal that does not match itself) is refused
+  by a resume whatever the file says, and says so.
+- **same digest** (typed) or **no difference seen** (structural).
+- **another flow**: the runs are of another flow than the file's name when the editor opened it, so this file is not theirs. A flow
+  renamed in the editor still lists the runs of the flow it was.
+- **not compared**, with the reason: which flow it is of, or its topology, could not be read; or the time budget of the structural
+  comparison (10 s) was used.
+
+A run that has recorded no digest yet (including one that crashed between its topology and its digest) is not refused by the digest rule,
+because resume records the digest of whichever flow resumes it: such runs are counted and not read, apart from the rest. A file with
+errors has no typed digest, so the panel says it cannot compare and lists nothing as refused.
+
+The list says **at least** and **the first 5000 by run ID** when the store holds more unfinished runs than it reads; runs under a
+21st or later digest are counted and not compared; a scan that runs past a minute says where it stopped. The scan is shared by requests
+that arrive together, kept until you press **Read the store again**, and not repeated when you edit the text: editing only changes what
+it is compared with, and the page says when the list was made for text it no longer holds. For each group it shows the command to open
+its first run in the editor, `bide edit -run '<id>' <store flags> <file>`, quoted for a POSIX shell, and none for an ID that holds a
+control or direction-changing character. The list is of the store you gave: runs in other stores are not seen.
+
 ## Typed mode: the program's blocks
 
 Alone, the editor knows block names only from the config, so it checks structure: it cannot check types,
@@ -569,7 +608,7 @@ node gains `in` and `out`, the type names the digest writes (from its block's de
 |---|---|
 | `-blocks` | A description of the program's registered blocks: typed mode, labelled as per the file. See [Typed mode](#typed-mode-the-programs-blocks). A file that cannot be read or is not valid makes `bide edit` exit 1. |
 | `-base` | Compare with the file at this git revision instead of at `HEAD`; the file must be in it, or `bide edit` exits 1. |
-| `-run`, `-db`, `-postgres`, `-postgres-env`, `-journal` | Compare the file with the topology a run journaled; see [Compare with a run](#compare-with-a-run). `-run` needs exactly one store flag and a store needs `-run`. A store that cannot be opened makes `bide edit` exit 1. |
+| `-run`, `-db`, `-postgres`, `-postgres-env`, `-journal` | Compare the file with the topology a run journaled; see [Compare with a run](#compare-with-a-run). `-run` needs exactly one store flag; a store without `-run` is for the list of unfinished runs (see [The unfinished runs this file would refuse](#the-unfinished-runs-this-file-would-refuse)). A store that cannot be opened makes `bide edit` exit 1. |
 | `-addr` | Address to serve on: a loopback IP (`127.0.0.1` or `::1`) or `localhost`, with a port. Default `127.0.0.1:8585`. |
 | `-color` | `auto`, `always` or `never`, for the line it prints. |
 
