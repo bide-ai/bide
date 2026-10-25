@@ -1479,3 +1479,40 @@ func TestCapsAudit_APassSaysHowManyWarningsItCarries(t *testing.T) {
 		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
 	}
 }
+
+// A cap-release record written after the run's newest head explains nothing: the release is not attested.
+func TestCapsAudit_ANotePlantedAfterTheRunsHead(t *testing.T) {
+	e := threeCalls(t)
+	e.heads()
+	e.forgeRelease("r1") // the ledger's own head is stale too; the run's is what matters here
+	// A raw write (not through the signing store) of r1's cap-release record, past r1's newest head.
+	attempt := "r1/r1/c1/attempt%3Atool%3Ac1%23refund_total"
+	salt := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
+	name := "cap-release:" + strings.NewReplacer("/", "%2F", "%", "%25").Replace(attempt)
+	body, _ := json.Marshal(map[string]any{"name": name, "kind": "value", "salt": salt,
+		"result": map[string]any{"format": "bide.cap-release.v1", "attempt": attempt, "why": "cap refusal"}})
+	if _, _, err := e.mem.Insert(context.Background(), "r1", name, body); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(e.dir, "stale.jsonl")
+	var b bytes.Buffer
+	for _, en := range e.anchor.Entries() {
+		line, _ := json.Marshal(en.STH)
+		b.Write(append(line, '\n'))
+	}
+	if err := os.WriteFile(p, b.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Heads as they were before the plant: r1's newest head does not cover the new record.
+	code, out, errOut := runCLI("caps", "-db", "x.db", "-sth", p, "-pubkey", e.pub)
+	wantFail(t, code, out, errOut, "RELEASE_UNATTESTED")
+}
+
+func TestCapsAudit_AReleaseNoteWithAnUnknownReasonDoesNotRead(t *testing.T) {
+	if _, err := capledger.DecodeRelease([]byte(`{"format":"bide.cap-release.v1","attempt":"a","why":"because"}`)); err == nil {
+		t.Fatal("an unknown reason decoded")
+	}
+	if _, err := capledger.DecodeRelease([]byte(`{"format":"bide.cap-release.v1","attempt":"a","why":"cap refusal"}`)); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -117,7 +117,6 @@ func DecodeRelease(b []byte) (Release, error) {
 	var r struct {
 		Format  string `json:"format"`
 		Attempt string `json:"attempt"`
-		Ledger  string `json:"ledger,omitempty"`
 		Why     string `json:"why"`
 	}
 	if err := strict(b, &r); err != nil {
@@ -125,6 +124,9 @@ func DecodeRelease(b []byte) (Release, error) {
 	}
 	if r.Format != releaseFormat {
 		return Release{}, fmt.Errorf("cap-release: format %q, want %q", r.Format, releaseFormat)
+	}
+	if r.Why != ReleaseWhyRefused && r.Why != ReleaseWhyNoCall {
+		return Release{}, fmt.Errorf("cap-release: unknown reason %q", r.Why)
 	}
 	return Release{Attempt: r.Attempt, Why: r.Why}, nil
 }
