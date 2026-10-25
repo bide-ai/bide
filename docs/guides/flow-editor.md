@@ -34,8 +34,9 @@ rename a node, write the entry (see [Nodes](#nodes-add-remove-rename-and-the-ent
 wiring elements, and set the flow's name and types (see [Order, wiring order and the flow's
 settings](#order-wiring-order-and-the-flows-settings)), and wire edges, switches, arms and `else` (see
 [Connections](#connections-edges-switches-arms-and-else)), set an arm's loop bound, and add, change and
-remove joins (see [Joins and loops](#joins-and-loops)), and, when it knows your program's blocks, list them with their types, check connections against them and show the digest (see [Typed mode](#typed-mode-the-programs-blocks)). It does **not**
-yet: compare with a journaled run; or let you place nodes on the canvas
+remove joins (see [Joins and loops](#joins-and-loops)), and, when it knows your program's blocks, list them with their types, check connections against them and show the digest (see [Typed mode](#typed-mode-the-programs-blocks)). It can
+compare the file with the topology a run journaled (see [Compare with a run](#compare-with-a-run)). It does **not**
+yet: draw the run's path on the canvas or list the runs a change would affect; or let you place nodes on the canvas
 (the layout is derived from the topology, on purpose). A config with an anchor or alias anywhere,
 a repeated key, a key that is not a string, NaN or infinity, or mixed line ends is refused by the editor
 with the reason (edit it in a text editor); `plan` itself accepts an anchor or alias, and refuses the others too. The design note
@@ -426,7 +427,9 @@ has not been done:** the checks above are not a substitute for one, and the chec
 `bide edit` serves on a loopback address (`-addr`, default `127.0.0.1:8585`) and refuses any other
 host, as `bide view` does. It reads and writes only the file named on the command line: that file must exist,
 be a regular file of at most 1 MiB and end in `.yaml`, `.yml` or `.json`; a symbolic link is
-resolved once at startup. There is no endpoint that opens another file.
+resolved once at startup. There is no endpoint that opens another file. With `-run` it also reads one
+run of one journal, opened read-only, fixed at startup; the page cannot name another run or store, and
+no reply carries a record, a store path or a connection string.
 
 The page is served by the binary, with no CDN, no web font and no request to another host, under a
 Content-Security-Policy that allows only same-origin script, style and requests and no inline
@@ -441,6 +444,48 @@ machine, who can edit the file directly.
 
 `bide edit` is in the full `bide` binary and not in a `bide_audit_only` build, which holds no YAML
 reader and writes no files.
+
+## Compare with a run
+
+```sh
+bide edit -run r1 -db journal.db flow.yaml
+```
+
+With `-run` and a store (`-db`, `-postgres`, `-postgres-env` or `-journal`, the flags
+[`bide view`](run-viewer.md) takes and opened read-only), the page gains a panel, **Compared with a
+run**. It reads the topology the run journaled (`flow:topology`, once its digest checks against
+`flow:digest`, as the viewer draws it) and compares the file with it by what the topology digest covers:
+the flow name, the entry, each node's name and block, the edges, the switches and their arms, and the
+order of all of them, and, when the editor knows the program's blocks (`-blocks`), each node's kind,
+types and gate. The panel opens with one of these, in words and not by colour alone:
+
+- **SAME DIGEST** (typed mode): the file has the digest the run journaled. This says nothing about whether
+  the run followed the file; that is conformance, which `bide view` shows.
+- **NO DIFFERENCE SEEN** (structural mode): no difference in the names, blocks, edges, arms or their order.
+  Kinds, types and gates are not compared without `-blocks`, so the panel does not say the topologies are
+  equal; load the blocks to compare digests.
+- **DIFFERS FROM THE RUN**: it lists the changes the digest covers, one line each. The digest is part of what
+  resume checks, so a run paused under that topology will not resume under this file. A renamed node is
+  matched to its run self by the renames of this session and by the diff's own rename rule.
+- **CANNOT COMPARE**: the file has errors (a typed file with errors has no digest) or does not parse.
+
+A run that journaled no topology (it started before `flow:topology` existed), has not recorded its digest
+yet, or journaled a topology that does not match its digest is named as such, and nothing is drawn from it.
+A journal is data someone else wrote: its names are shown as text, a topology of more than 1000 nodes or
+4000 edges and arms is refused, and the digest check shows the topology is the one its digest names, not
+that the run ran it (`bide view -sth` proves a journal).
+
+Safety and `assert` lines are in neither a journal nor the digest, so they are not compared, and the only
+verdict made against a run is about gates, in typed mode: a new node with no gate, added since the run, is
+listed as a change and is not judged as a weakening against the run. This comparison never blocks a save and never
+changes the weakened banner, which stays a comparison with the committed file. The page reads the run
+once; **Reload run** starts a fresh read, even while an older one is still running. A read that fails (a dropped connection,
+a timeout, a journal in a format this version cannot read) is kept for three seconds so that typing does not read it
+again on every keystroke, and then tried again. From a store the page reads the run by point reads, never its history: the run's topology and digest, and whether it
+has an end marker (completed, aborted or cancelled; "ended (more than one end marker)" when it has several, since which was written first is not read; else "no end marker"); its record count is not shown. The run's flow is the
+one its topology names. Every name, flow name and message from the journal is shown
+with each character that does not print written out, as `bide view` does. The run and the store are fixed when the command starts. A program
+that embeds the editor with `flowedit.New` has no run comparison.
 
 ## Typed mode: the program's blocks
 
@@ -504,6 +549,7 @@ node gains `in` and `out`, the type names the digest writes (from its block's de
 |---|---|
 | `-blocks` | A description of the program's registered blocks: typed mode, labelled as per the file. See [Typed mode](#typed-mode-the-programs-blocks). A file that cannot be read or is not valid makes `bide edit` exit 1. |
 | `-base` | Compare with the file at this git revision instead of at `HEAD`; the file must be in it, or `bide edit` exits 1. |
+| `-run`, `-db`, `-postgres`, `-postgres-env`, `-journal` | Compare the file with the topology a run journaled; see [Compare with a run](#compare-with-a-run). `-run` needs exactly one store flag and a store needs `-run`. A store that cannot be opened makes `bide edit` exit 1. |
 | `-addr` | Address to serve on: a loopback IP (`127.0.0.1` or `::1`) or `localhost`, with a port. Default `127.0.0.1:8585`. |
 | `-color` | `auto`, `always` or `never`, for the line it prints. |
 

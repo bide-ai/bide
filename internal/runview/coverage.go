@@ -99,6 +99,10 @@ const (
 	StatusUnknown   = "unknown"
 )
 
+// ErrClass names what kind of failure err is, without the error's text, which may hold a path, a
+// DSN or a record: "timed out", "canceled", "store error" or "read error".
+func ErrClass(err error) string { return errClass(err) }
+
 // errClass is what a page says of a source error: its class, never the store's text, which can carry
 // a connection string or a query.
 func errClass(err error) string {

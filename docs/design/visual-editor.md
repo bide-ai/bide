@@ -1065,12 +1065,15 @@ it forbids `t.Parallel`; (e) the global keeps the store reachable after `editcmd
 handler in `editcmd`: it cannot reuse the unexported `apiGuard`, and `/api/doc` and the typed state are
 `flowedit`'s; (4) an exported `flowedit.WithRun`: public API, not approved.
 
-JSON, `POST /api/run` request `{"text","renames"}`, response:
-`{"run":{"id","flow","state","state_text","digest","records","read_at","source"},"weakening":{Weakening, baseline:"run <id>"},"path":{"nodes":[{"name","status","iters","last"}],"edges":[{"from","to","taken","label"}],"off_canvas":[{"name","status"}]},"notes":[],"error":""}`.
-`POST /api/affected` request `{"text"}`, response:
-`{"listed":0,"checked":0,"truncated":0,"unreadable":0,"can_list":true,"groups":[{"digest","runs":0,"ids":[],"command":""}],"differs":0,"notes":[]}`.
-`/api/doc` response gains `"run":{"id","flow","available":bool,"note"}` so the page knows to show the
-panel. No existing field changes meaning.
+JSON, as built in the first pull request that serves it: `POST /api/run` request `{"text","renames","reload"}`,
+response `{"configured":false}` without `-run`, and otherwise
+`{"configured":true,"run":{"id","flow","state","state_text","digest","records","read_at"},"status","claim","basis","run_digest","file_digest","changes":[],"weakened":[],"strengthened":[],"renamed":[],"notes":[]}`
+where `status` is `same`, `none_seen`, `differs`, `cannot`, or one of `no_topology`, `no_digest`, `mismatch`,
+`too_large`, `unreadable`, `not_found`, and `claim` is the sentence the page shows. The page learns whether
+there is a run from the first answer, so `/api/doc` and the exported `Doc` and `View` types gain no field
+(a field on them would be a new exported name). The run's path (`path`, later) and `POST /api/affected`
+(`{"text"}` in, `{"listed","checked","truncated","unreadable","can_list","groups":[{"digest","runs","ids","command"}],"differs","notes"}`
+out) are added by the pull requests that build them; no existing field changes meaning.
 
 #### 9. Cost and PR split
 

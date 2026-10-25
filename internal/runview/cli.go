@@ -1,7 +1,6 @@
 package runview
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"flag"
@@ -138,10 +137,10 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 		fmt.Fprint(stderr, usageText)
 		fs.PrintDefaults()
 	}
-	fs.StringVar(&f.db, "db", "", "SQLite journal file to read, opened read-only (sqlite.OpenReadOnly)")
-	fs.StringVar(&f.postgres, "postgres", "", "Postgres journal to read, a pgx DSN such as postgres://user:pass@host:5432/db, read in sessions the server holds read-only (postgres.OpenReadOnly)")
-	fs.StringVar(&f.postgresEnv, "postgres-env", "", "name of the environment variable that holds the Postgres DSN, instead of -postgres: keeps the password out of the argument list, and is the name the Needs attention list's bide approve commands use")
-	fs.Var(&f.journals, "journal", "exported journal (audit.ExportJournal as JSON) to read; repeatable")
+	fs.StringVar(&f.db, "db", "", DBFlagHelp)
+	fs.StringVar(&f.postgres, "postgres", "", PostgresFlagHelp)
+	fs.StringVar(&f.postgresEnv, "postgres-env", "", PostgresEnvFlagHelp)
+	fs.Var(&f.journals, "journal", JournalFlagHelp)
 	fs.StringVar(&f.config, "config", "", "a flow config (.json, or .yaml/.yml) to show instead of runs: its declared graph and its problems; nothing runs")
 	fs.BoolVar(&f.check, "check", false, "with -config: serve nothing, print each problem as file:node: message, and exit 1 if any is an error; with -diff, print each change instead")
 	fs.BoolVar(&f.strict, "strict", false, "with -check: exit 1 on a warning too")
@@ -279,20 +278,12 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 		}
 		return serve(*addr, "", themed(Options{Config: &c}), nil, st, es, stdout, stderr)
 	}
-	inputs := 0
-	for _, set := range []bool{f.db != "", f.postgres != "" || f.postgresEnv != "", len(f.journals) > 0} {
-		if set {
-			inputs++
-		}
-	}
-	if inputs != 1 {
+	sf := f.storeFlags()
+	if sf.Kinds() != 1 {
 		return usage("give exactly one of -db, -postgres (or -postgres-env) and -journal")
 	}
-	if f.postgresEnv != "" && !approveline.ValidEnvName(f.postgresEnv) {
-		return usage(approveline.NotAnEnvName) // the value is not echoed: it may be a DSN with a password
-	}
-	if f.postgres != "" && f.postgresEnv != "" {
-		return usage("give -postgres or -postgres-env, not both")
+	if msg := sf.Validate(); msg != "" {
+		return usage(msg)
 	}
 	if (f.sth != "" || f.evidence != "") && f.pubkey == "" {
 		return usage("-sth and -evidence need -pubkey")
@@ -377,53 +368,21 @@ func servingLine(st term.Style, link string) string {
 func options(f flags, stores Stores) (Options, io.Closer, error) {
 	var o Options
 	var closer io.Closer
-	open, what := stores.SQLite, f.db
-	dsn := f.postgres
-	if f.postgresEnv != "" {
-		if dsn = os.Getenv(f.postgresEnv); dsn == "" {
-			return o, nil, fmt.Errorf("-postgres-env %s: the variable is empty or not set", f.postgresEnv)
-		}
+	op, err := f.storeFlags().Open(stores)
+	if err != nil {
+		return o, nil, err
 	}
-	if dsn != "" {
-		open, what = stores.Postgres, "the Postgres journal"
-	}
-	if what != "" {
-		if open == nil {
-			return o, nil, errors.New("this build cannot read that store; use -journal")
-		}
-		s, c, err := open(cmp.Or(f.db, dsn))
-		if err != nil {
-			return o, nil, fmt.Errorf("open %s: %w", what, err)
-		}
-		j, err := agent.NewJournal(s)
-		if err != nil {
-			c.Close()
-			return o, nil, err
-		}
-		o.Source, closer = JournalSource{J: j}, c
-		if o.Stops, err = stopFeed(j, f); err != nil {
-			c.Close()
+	o.Source, closer = op.Source, op.Closer
+	if op.Journal != nil {
+		if o.Stops, err = stopFeed(op.Journal, f); err != nil {
+			op.Closer.Close()
 			return o, nil, err
 		}
 		o.ApproveCommand = approveCommand(f)
 		o.ApproveCertCommand = approveCertCommand(f)
 		if stores.Events != nil {
-			o.Events = stores.Events(s)
+			o.Events = stores.Events(op.Store)
 		}
-	} else {
-		x := Exports{}
-		for _, path := range f.journals {
-			var exp audit.JournalExport
-			if err := readStrict("", path, &exp); err != nil {
-				return o, nil, err
-			}
-			recs, err := exp.Journal()
-			if err != nil {
-				return o, nil, fmt.Errorf("%s: %w", path, err)
-			}
-			x[exp.RunID] = recs
-		}
-		o.Source = x
 	}
 	if f.topo != "" {
 		var t plan.Topology
@@ -469,6 +428,11 @@ func options(f flags, stores Stores) (Options, io.Closer, error) {
 		}
 	}
 	return o, closer, nil
+}
+
+// storeFlags are the flags that name the store, as the shared type.
+func (f flags) storeFlags() StoreFlags {
+	return StoreFlags{DB: f.db, Postgres: f.postgres, PostgresEnv: f.postgresEnv, Journals: f.journals}
 }
 
 // readConfig reads a flow config file, converting a .yaml or .yml file to JSON with toJSON.

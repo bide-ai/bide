@@ -16,6 +16,14 @@ const (
 	MaxTopologyEdges = 4000
 )
 
+// TooLargeError is the error DiffTopologies returns for a side past MaxTopologyNodes or
+// MaxTopologyEdges: the sides were not compared, which a caller shows as "too large to compare" and never
+// as "no difference".
+type TooLargeError struct{ msg string }
+
+// Error implements error.
+func (e *TooLargeError) Error() string { return e.msg }
+
 // TopologyDiff is two sides compared as what a run's resume compares: the topology digest.
 //
 // A journaled run holds a plan.Topology and nothing else, so each side is a report (plan.InspectTopology
@@ -91,8 +99,8 @@ func DiffTopologies(d TopologyDiff) (*DiffView, error) {
 			arms += len(b.Arms)
 		}
 		if len(t.Nodes) > MaxTopologyNodes || len(t.Edges)+arms > MaxTopologyEdges {
-			return nil, fmt.Errorf("%s: the topology has %d nodes and %d edges and arms; the comparison reads at most %d and %d",
-				s.name, len(t.Nodes), len(t.Edges)+arms, MaxTopologyNodes, MaxTopologyEdges)
+			return nil, &TooLargeError{msg: fmt.Sprintf("%s: the topology has %d nodes and %d edges and arms; the comparison reads at most %d and %d",
+				s.name, len(t.Nodes), len(t.Edges)+arms, MaxTopologyNodes, MaxTopologyEdges)}
 		}
 	}
 	v := &DiffView{Name: d.NewName, OldName: d.OldName, Flow: d.New.Topology.Flow, Typed: d.Typed, Basis: d.Basis,

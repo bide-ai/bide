@@ -67,6 +67,13 @@ func (c Config) source() string {
 	return ""
 }
 
+// Inspect is plan.InspectConfig for c, against its Registry or else its Description.
+func (c Config) Inspect() plan.ConfigReport { return c.inspect() }
+
+// Source says what a typed result of c rests on: SourceRegistry, SourceDescription, or "" for the
+// structural check.
+func (c Config) Source() string { return c.source() }
+
 // inspect is plan.InspectConfig for c, against its Registry or else its Description.
 func (c Config) inspect() plan.ConfigReport {
 	var opts []plan.InspectOption

@@ -3,6 +3,7 @@ package runview
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -496,5 +497,7 @@ func TestRunDiffRefusesAFileOverTheBound(t *testing.T) {
 	reg := runRegistry(t)
 	if _, err := DiffTopologies(TopologyDiff{Old: runSide(t, cfgLoop, reg), New: plan.InspectTopology(big), OldName: "run", NewName: "file.json"}); err == nil || !strings.Contains(err.Error(), "file.json: the topology has") {
 		t.Errorf("%v", err)
+	} else if !errors.As(err, new(*TooLargeError)) {
+		t.Errorf("%T is not a *TooLargeError", err)
 	}
 }

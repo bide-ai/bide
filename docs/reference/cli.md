@@ -346,7 +346,7 @@ Exit status:
 A local page for a flow config: the graph, the approval gates, the assertions, and what an edit weakens; edit the source and save.
 
 ```text
-usage: bide edit [-addr <host:port>] [-base <git revision>] [-blocks <description.json>] [-theme <theme.json>] [-theme-default <name>] [-color auto|always|never] <flow.yaml|flow.json>
+usage: bide edit [-addr <host:port>] [-base <git revision>] [-blocks <description.json>] [-run <id> (-db <file> | -postgres <dsn> | -postgres-env <VAR> | -journal <export.json>)] [-theme <theme.json>] [-theme-default <name>] [-color auto|always|never] <flow.yaml|flow.json>
 
 Opens a local page for one flow config: the declared graph, an outline of its nodes and wiring,
 each node's approval gate and safety, the assertions and their verdicts, the problems bide check
@@ -361,6 +361,14 @@ connects what does not fit, and knows the gate a block declares in Go when a blo
 typed result is labelled as resting on the file, not checked against the program: the check made
 with the program's own plan.Registry is the control. A program can embed the editor beside its
 Registry instead (package flowedit, WithRegistry).
+
+With -run and a store (the same flags bide view takes, opened read-only), the page also compares the
+file with the topology that run journaled: it says whether the file has the digest the run journaled
+and, when it differs, what differs, by what the digest covers (flow name, entry, nodes, blocks, edges,
+switch arms, gates when the blocks are known, and their order). That is a comparison of topologies and
+nothing more: it does not say the run followed the file, which is conformance (bide view). A run that
+is paused under a topology the file no longer has will not resume under the file. The page reads the
+run once and again only when you press Reload run.
 
 The page draws from checked themes: light, dark and high-contrast, which its header button steps
 through, and the system's request for more contrast or forced colors is answered as bide view answers
@@ -391,6 +399,16 @@ A save is refused, and writes nothing, if the file changed on disk since the pag
     	a description of the program's registered blocks (json.Marshal of plan.Registry.Describe): typed mode, labelled as per the file, not checked against the program
   -color when
     	when to color the output: auto (the default: on a terminal, unless NO_COLOR is set or TERM is dumb), always or never
+  -db string
+    	SQLite journal file to read, opened read-only (sqlite.OpenReadOnly)
+  -journal value
+    	exported journal (audit.ExportJournal as JSON) to read; repeatable
+  -postgres string
+    	Postgres journal to read, a pgx DSN such as postgres://user:pass@host:5432/db, read in sessions the server holds read-only (postgres.OpenReadOnly)
+  -postgres-env string
+    	name of the environment variable that holds the Postgres DSN, instead of -postgres: keeps the password out of the argument list, and is the name the Needs attention list's bide approve commands use
+  -run string
+    	a run of the journal to compare the file with: the topology it journaled, and what differs from the file (needs one of -db, -postgres, -postgres-env, -journal)
   -theme string
     	a theme file (JSON, see docs/guides/themes.md; check it first with bide theme check) the pages offer beside light, dark and high-contrast; refused, with the failed checks, and nothing served, if it is not valid or fails a contrast, distinctness or polarity check (C1 to C4, C8); the colour-blindness check (C6) only prints a warning
   -theme-default string
