@@ -11,9 +11,11 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/internal/editrun"
+	"github.com/bide-ai/bide/internal/printable"
 	"github.com/bide-ai/bide/internal/runview"
 	"github.com/bide-ai/bide/plan"
 )
@@ -447,5 +449,250 @@ func TestRunClaimNamesTheDescriptionBasis(t *testing.T) {
 	r := askRun(t, s, runCfg, nil, false)
 	if r.Status != "same" || !strings.Contains(r.Claim, "rests on the description file (-blocks), not checked against the program") || !strings.Contains(r.Basis, "description file") {
 		t.Errorf("%s %q basis %q", r.Status, r.Claim, r.Basis)
+	}
+}
+
+// flakySource fails its first read, as a store does when a client leaves, a deadline passes or a connection drops.
+type flakySource struct {
+	runview.Source
+	calls atomic.Int32
+}
+
+func (f *flakySource) History(ctx context.Context, id string) ([]agent.Record, error) {
+	if f.calls.Add(1) == 1 {
+		return nil, errors.New("connection reset")
+	}
+	return f.Source.History(ctx, id)
+}
+
+// A read that failed is not kept: the next request reads the run again. Otherwise one dropped connection
+// would leave the page saying the run cannot be read until Reload.
+func TestRunFailedReadIsNotKept(t *testing.T) {
+	j, _ := ranRun(t, runCfg)
+	s := runServer(t, runCfg, &flakySource{Source: runview.JournalSource{J: j}}, "r1", true)
+	if r := askRun(t, s, runCfg, nil, false); r.Status != "unreadable" || !strings.Contains(r.Claim, "read error") {
+		t.Fatalf("first: %s %q", r.Status, r.Claim)
+	}
+	if r := askRun(t, s, runCfg, nil, false); r.Status != "same" {
+		t.Errorf("second: %s %q: the failed read was kept", r.Status, r.Claim)
+	}
+	// A definitive answer is kept: the run is read once more only on request.
+	cs := &countingSource{Source: runview.Exports{}}
+	s = runServer(t, runCfg, cs, "r1", true)
+	askRun(t, s, runCfg, nil, false)
+	askRun(t, s, runCfg, nil, false)
+	if n := cs.n.Load(); n != 1 {
+		t.Errorf("a run with no records was read %d times, want 1 (not_found is definitive)", n)
+	}
+}
+
+// blockingSource holds its read until released or cancelled: a store that hangs.
+type blockingSource struct {
+	runview.Source
+	release chan struct{}
+}
+
+func (b *blockingSource) History(ctx context.Context, id string) ([]agent.Record, error) {
+	select {
+	case <-b.release:
+		return b.Source.History(ctx, id)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// A hung store does not hold a request past its own context, and a request whose client left does not
+// fail the read for the next one.
+func TestRunHungStoreDoesNotHoldRequests(t *testing.T) {
+	j, _ := ranRun(t, runCfg)
+	b := &blockingSource{Source: runview.JournalSource{J: j}, release: make(chan struct{})}
+	s := runServer(t, runCfg, b, "r1", true)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	got := make(chan *runReply, 1)
+	go func() { got <- s.compareRun(ctx, []byte(runCfg), nil, false) }()
+	select {
+	case r := <-got:
+		if r.Status != "unreadable" || !strings.Contains(r.Claim, "timed out") {
+			t.Fatalf("a request past its deadline: %s %q", r.Status, r.Claim)
+		}
+	case <-time.After(5 * time.Second):
+		close(b.release)
+		t.Fatalf("a request past its deadline was still waiting for the store after %v", time.Since(start))
+	}
+	close(b.release)
+	if r := askRun(t, s, runCfg, nil, false); r.Status != "same" {
+		t.Errorf("after the store answered: %s %q", r.Status, r.Claim)
+	}
+}
+
+// With the renames of the session the run's names are the file's, but the digests are still compared as
+// they are: a type difference is not hidden behind "only the renames".
+func TestRunRenameDoesNotHideATypeDifference(t *testing.T) {
+	j, digest := ranRun(t, runCfg)
+	recs, err := j.History(context.Background(), "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var topo plan.Topology
+	for _, r := range recs {
+		if r.Name == plan.TopologyStep {
+			_ = json.Unmarshal(r.Result, &topo)
+		}
+	}
+	renamed := strings.NewReplacer(`"name":"b"`, `"name":"c"`, `["a","b"]`, `["a","c"]`).Replace(runCfg)
+	asked := func(src runview.Source) *runReply {
+		return askRun(t, runServer(t, runCfg, src, "r1", true), renamed, []Rename{{From: "b", To: "c"}}, false)
+	}
+	// Only the rename: the renamed run topology has the file's digest.
+	if r := asked(runview.JournalSource{J: j}); r.Status != "differs" || !strings.Contains(r.Claim, "only the renames made in this session") {
+		t.Errorf("only a rename: %s %q", r.Status, r.Claim)
+	}
+	// The rename and a type spelled with another package path in the run: the digest differs for more.
+	t0 := topo
+	t0.Nodes = slices.Clone(topo.Nodes)
+	t0.Nodes[1].InCanonical = "example.com/other." + t0.Nodes[1].InCanonical
+	d0, err := plan.TopologyDigest(t0)
+	if err != nil || d0 == digest {
+		t.Fatalf("setup: %v %q", err, d0)
+	}
+	b, _ := json.Marshal(t0)
+	db, _ := json.Marshal(d0)
+	forged := runview.Exports{"r1": slices.Clone(recs)}
+	for i := range forged["r1"] {
+		switch forged["r1"][i].Name {
+		case plan.TopologyStep:
+			forged["r1"][i].Result = b
+		case "flow:digest":
+			forged["r1"][i].Result = db
+		}
+	}
+	r := asked(forged)
+	if r.Status != "differs" || !strings.Contains(r.Claim, "the renames made in this session, and the digest differs in order or types as well") || strings.Contains(r.Claim, "only the renames") {
+		t.Errorf("a rename and a type: %s %q", r.Status, r.Claim)
+	}
+}
+
+// A journal's names reach the reply written out: a topology that passes the digest check but names a
+// node with a direction override, a NUL and an escape sequence shows none of them raw in any field.
+func TestRunConsistentHostileTopologyIsWrittenOut(t *testing.T) {
+	j, _ := ranRun(t, runCfg)
+	recs, err := j.History(context.Background(), "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var topo plan.Topology
+	for _, r := range recs {
+		if r.Name == plan.TopologyStep {
+			_ = json.Unmarshal(r.Result, &topo)
+		}
+	}
+	raw, _ := json.Marshal(topo)
+	evil, _ := json.Marshal("b‮evil\x00\x1b[31m")
+	hostile := strings.ReplaceAll(string(raw), `"b"`, string(evil))
+	var ht plan.Topology
+	if err := json.Unmarshal([]byte(hostile), &ht); err != nil {
+		t.Fatal(err)
+	}
+	ht.Flow = "pay\u202e\x00"
+	hostile2, _ := json.Marshal(ht)
+	d, err := plan.TopologyDigest(ht)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, _ := json.Marshal(d)
+	const evilID = "r\u202e1\x1b"
+	forged := runview.Exports{evilID: slices.Clone(recs)}
+	for i := range forged[evilID] {
+		switch forged[evilID][i].Name {
+		case plan.TopologyStep:
+			forged[evilID][i].Result = hostile2
+		case "flow:digest":
+			forged[evilID][i].Result = db
+		case "run:start":
+			var st agent.RunStart
+			if err := json.Unmarshal(forged[evilID][i].Result, &st); err != nil || st.Flow == nil {
+				t.Fatalf("run:start: %v", err)
+			}
+			st.Flow.Name = "start\u202eflow"
+			forged[evilID][i].Result, _ = json.Marshal(st)
+		}
+	}
+	for _, typed := range []bool{true, false} {
+		s := runServer(t, runCfg, forged, evilID, typed)
+		r := askRun(t, s, runCfg, nil, false)
+		if r.Status != "differs" || len(r.Changes) == 0 {
+			t.Fatalf("typed=%v: the hostile topology was not compared: %s %q", typed, r.Status, r.Claim)
+		}
+		b, _ := json.Marshal(r)
+		var m any
+		_ = json.Unmarshal(b, &m)
+		var walk func(string, any)
+		walk = func(path string, v any) {
+			switch x := v.(type) {
+			case string:
+				if c, bad := printable.Bad(strings.ReplaceAll(strings.ReplaceAll(x, "\n", ""), "\t", "")); bad {
+					t.Errorf("typed=%v: %s holds %U raw: %q", typed, path, c, x)
+				}
+			case []any:
+				for i, e := range x {
+					walk(path+"[]"+strconv.Itoa(i), e)
+				}
+			case map[string]any:
+				for k, e := range x {
+					walk(path+"."+k, e)
+				}
+			}
+		}
+		walk("reply", m)
+		for name, field := range map[string]string{"changes": strings.Join(r.Changes, "\n"), "claim": r.Claim, "run id": r.Run.ID, "flow": r.Run.Flow, "notes": strings.Join(r.Notes, "\n")} {
+			if !strings.Contains(field, `\u{202E}`) {
+				t.Errorf("typed=%v: the override is not written out in %s: %q", typed, name, field)
+			}
+		}
+	}
+}
+
+// A long run is not held whole: past the bound the state and record count are not read, and the topology and
+// digest, among its first records, still are.
+func TestRunLongRunIsNotReadWhole(t *testing.T) {
+	j, _ := ranRun(t, runCfg)
+	for i := 0; i < 60; i++ {
+		if _, _, err := j.Store().Insert(context.Background(), "r1", "extra:"+strconv.Itoa(i), []byte(`{"name":"extra:`+strconv.Itoa(i)+`","kind":"value","result":1}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := maxRunRecords
+	maxRunRecords = 20
+	t.Cleanup(func() { maxRunRecords = old })
+	s := runServer(t, runCfg, runview.JournalSource{J: j}, "r1", true)
+	r := askRun(t, s, runCfg, nil, false)
+	if r.Status != "same" || r.Run.State != "" || r.Run.Records != 0 || !strings.Contains(r.Run.StateText, "state not read: the run has more than 20 records") || r.Run.Flow != "pay" {
+		t.Errorf("%s run %+v", r.Status, r.Run)
+	}
+	if !slices.ContainsFunc(r.Notes, func(n string) bool { return strings.Contains(n, "more than 20 records") }) {
+		t.Errorf("notes %q", r.Notes)
+	}
+	// Under the bound the state is read.
+	maxRunRecords = 100000
+	s = runServer(t, runCfg, runview.JournalSource{J: j}, "r1", true)
+	if r := askRun(t, s, runCfg, nil, false); r.Run.State == "" || r.Run.Records < 60 {
+		t.Errorf("under the bound: %+v", r.Run)
+	}
+}
+
+// A file with errors is compared on what reads, and the panel says it has errors, so a structural "no
+// difference seen" is not read as a clean bill.
+func TestRunFileWithErrorsIsSaidSo(t *testing.T) {
+	j, _ := ranRun(t, runCfg)
+	s := runServer(t, runCfg, runview.JournalSource{J: j}, "r1", false)
+	broken := strings.Replace(runCfg, `"wiring":[{"edge":["a","b"]}]`, `"wiring":[{"edge":["a","b"]},{"edge":["b","nowhere"]}]`, 1)
+	r := askRun(t, s, broken, nil, false)
+	if !slices.ContainsFunc(r.Notes, func(n string) bool { return strings.Contains(n, "The file has 1 error (see Problems)") }) {
+		t.Errorf("%s %q notes %q", r.Status, r.Claim, r.Notes)
+	}
+	if r := askRun(t, s, runCfg, nil, false); slices.ContainsFunc(r.Notes, func(n string) bool { return strings.Contains(n, "The file has") }) {
+		t.Errorf("a clean file: notes %q", r.Notes)
 	}
 }

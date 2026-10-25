@@ -479,7 +479,10 @@ Safety and `assert` lines are in neither a journal nor the digest, so they are n
 verdict made against a run is about gates, in typed mode: a new node with no gate, added since the run, is
 listed as a change and is not judged as a weakening against the run. This comparison never blocks a save and never
 changes the weakened banner, which stays a comparison with the committed file. The page reads the run
-once; **Reload run** reads it again. The run and the store are fixed when the command starts. A program
+once; **Reload run** reads it again. A read that fails (a dropped connection, a timeout) is not kept:
+the next request tries again. A run of more than 20000 records is not read whole: its topology and digest, among its first
+records, are, and its state and record count are marked as not read. Every name, flow name and message from the journal is shown
+with each character that does not print written out, as `bide view` does. The run and the store are fixed when the command starts. A program
 that embeds the editor with `flowedit.New` has no run comparison.
 
 ## Typed mode: the program's blocks

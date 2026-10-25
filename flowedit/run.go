@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/internal/editrun"
+	"github.com/bide-ai/bide/internal/printable"
 	"github.com/bide-ai/bide/internal/runview"
 	"github.com/bide-ai/bide/plan"
 )
@@ -42,6 +44,9 @@ type runSnap struct {
 	topo          plan.Topology
 	digest        string
 	notes         []string
+	// transient is set when the read failed in a way a later try may not (a cancelled or timed-out read,
+	// a store error): such a result is returned and never kept.
+	transient bool
 }
 
 // runInfo is what the page shows of the run.
@@ -102,20 +107,59 @@ func (s *Server) serveRun(w http.ResponseWriter, r *http.Request) {
 	reply(w, s.compareRun(ctx, []byte(req.Text), req.Renames, req.Reload))
 }
 
-// runState is the server's one snapshot of its run.
+// runState is the server's one snapshot of its run, and the read in flight to make it.
 type runState struct {
-	mu   sync.Mutex
+	mu       sync.Mutex
+	snap     *runSnap
+	inflight *runFlight
+}
+
+// runFlight is one read of the run, shared by every request that arrives while it runs.
+type runFlight struct {
+	done chan struct{}
 	snap *runSnap
 }
 
-// snapshot reads the run, or returns the snapshot already read unless reload.
+// snapshot returns the snapshot already read unless reload. A read runs under a context of its own (not a
+// request's: the first client leaving must not fail the others), is shared by the requests that arrive
+// while it runs, and is kept only when it is definitive: a cancelled, timed-out or failed read is
+// returned to those waiting and tried again by the next request. A request that gives up waiting returns
+// at once, whatever the store is doing.
 func (s *Server) snapshot(ctx context.Context, reload bool) *runSnap {
 	s.runs.mu.Lock()
-	defer s.runs.mu.Unlock()
-	if s.runs.snap == nil || reload {
-		s.runs.snap = readRun(ctx, *s.run)
+	if s.runs.snap != nil && !reload {
+		sn := s.runs.snap
+		s.runs.mu.Unlock()
+		return sn
 	}
-	return s.runs.snap
+	f := s.runs.inflight
+	if f == nil {
+		f = &runFlight{done: make(chan struct{})}
+		s.runs.inflight = f
+		run := *s.run
+		go func() {
+			rctx, cancel := context.WithTimeout(context.Background(), runTimeout)
+			defer cancel()
+			sn := readRun(rctx, run)
+			s.runs.mu.Lock()
+			if !sn.transient {
+				s.runs.snap = sn
+			}
+			s.runs.inflight = nil
+			s.runs.mu.Unlock()
+			f.snap = sn
+			close(f.done)
+		}()
+	}
+	s.runs.mu.Unlock()
+	select {
+	case <-f.done:
+		return f.snap
+	case <-ctx.Done():
+		sn := &runSnap{readAt: time.Now().UTC(), info: runInfo{ID: s.run.ID}, transient: true}
+		sn.status, sn.claim = "unreadable", "Run "+s.run.ID+" could not be read ("+runview.ErrClass(ctx.Err())+")."
+		return sn
+	}
 }
 
 // sixtyFourHex reports whether s is a SHA-256 digest as hex.
@@ -137,15 +181,23 @@ func readRun(ctx context.Context, run editrun.Run) *runSnap {
 	if agent.IsReservedRun(id) {
 		return refuse("unreadable", "Run "+id+" is not a run: the ID is reserved by the engine.")
 	}
-	recs, err := run.Source.History(ctx, id)
+	recs, truncated, err := readRecords(ctx, run)
 	switch {
 	case err != nil:
+		sn.transient = true
 		return refuse("unreadable", "Run "+id+" could not be read ("+runview.ErrClass(err)+").")
 	case len(recs) == 0:
 		return refuse("not_found", "Run "+id+" has no records in this store.")
+	case truncated:
+		sn.info.Flow = startFlow(recs)
+		// The topology and the digest are among a run's first records. Its state and record count need all
+		// of them, so they are not read: a long run is never held whole.
+		sn.info.StateText = fmt.Sprintf("state not read: the run has more than %d records", maxRunRecords)
+		sn.notes = append(sn.notes, sn.info.StateText+".")
+	default:
+		v := runview.Build(ctx, id, recs, nil)
+		sn.info.Flow, sn.info.State, sn.info.StateText, sn.info.Records = v.Flow, v.State, v.StateText, v.Records
 	}
-	v := runview.Build(ctx, id, recs, nil)
-	sn.info.Flow, sn.info.State, sn.info.StateText, sn.info.Records = v.Flow, v.State, v.StateText, v.Records
 	var topo, dig *agent.Record
 	for i := range recs {
 		switch recs[i].Name {
@@ -174,10 +226,53 @@ func readRun(ctx context.Context, run editrun.Run) *runSnap {
 		return refuse("mismatch", "Run "+id+" journaled a topology that does not match its digest; it is not shown.")
 	}
 	sn.topo, sn.digest, sn.status = t, d, "ok"
-	if v.Flow != "" && v.Flow != t.Flow {
-		sn.notes = append(sn.notes, "The run started the flow "+v.Flow+" but the topology it journaled names the flow "+t.Flow+".")
+	if sn.info.Flow != "" && sn.info.Flow != t.Flow {
+		sn.notes = append(sn.notes, "The run started the flow "+sn.info.Flow+" but the topology it journaled names the flow "+t.Flow+".")
 	}
 	return sn
+}
+
+// startFlow is the flow name run:start records, "" when it records none.
+func startFlow(recs []agent.Record) string {
+	for _, r := range recs {
+		if r.Name == "run:start" {
+			var st agent.RunStart
+			if json.Unmarshal(r.Result, &st) == nil && st.Flow != nil {
+				return st.Flow.Name
+			}
+			return ""
+		}
+	}
+	return ""
+}
+
+// maxRunRecords and maxRunBytes bound what is read of a run: past either, the run's state and record count
+// are not read (its topology and digest are among its first records). A var so a test can lower it.
+var maxRunRecords = 20000
+
+const maxRunBytes = 64 << 20
+
+// readRecords reads the run's records, at most maxRunRecords and maxRunBytes of them when the source
+// is a journal (a store streams them), and reports whether it stopped short. An exported journal is
+// already in memory.
+func readRecords(ctx context.Context, run editrun.Run) (recs []agent.Record, truncated bool, err error) {
+	js, ok := run.Source.(runview.JournalSource)
+	if !ok {
+		recs, err = run.Source.History(ctx, run.ID)
+		return recs, false, err
+	}
+	n := 0
+	for rec, err := range js.J.Records(ctx, run.ID) {
+		if err != nil {
+			return nil, false, err
+		}
+		if len(recs) >= maxRunRecords || n > maxRunBytes {
+			return recs, true, nil
+		}
+		recs = append(recs, rec)
+		n += len(rec.Result)
+	}
+	return recs, false, nil
 }
 
 // fileConfig is the text as the runview package reads a config: converted from YAML, and typed when the
@@ -203,13 +298,13 @@ func (s *Server) compareRun(ctx context.Context, text []byte, renames []Rename, 
 	info := sn.info
 	rep := &runReply{Configured: true, Run: &info, Status: sn.status, Claim: sn.claim, Notes: slicesClone(sn.notes)}
 	if sn.status != "ok" {
-		return rep
+		return rep.clean()
 	}
 	id := info.ID
 	file, err := s.fileConfig(text)
 	if err != nil {
 		rep.Status, rep.Claim = "cannot", "Cannot compare: the text is not a readable config ("+firstLine(err.Error())+")."
-		return rep
+		return rep.clean()
 	}
 	topo, made := renameTopology(sn.topo, renames)
 	old := plan.InspectTopology(topo)
@@ -218,10 +313,11 @@ func (s *Server) compareRun(ctx context.Context, text []byte, renames []Rename, 
 	v, err := runview.DiffTopologies(runview.TopologyDiff{Old: old, New: file.Inspect(), OldName: "run " + id, NewName: s.name, Typed: typed, Basis: file.Source()})
 	if err != nil {
 		rep.Status, rep.Claim = "cannot", "Cannot compare: "+firstLine(err.Error())+"."
-		if strings.Contains(err.Error(), "the topology has") {
+		var big *runview.TooLargeError
+		if errors.As(err, &big) {
 			rep.Status = "too_large"
 		}
-		return rep
+		return rep.clean()
 	}
 	for _, m := range made {
 		rep.Renamed = append(rep.Renamed, m.From+" -> "+m.To)
@@ -258,10 +354,22 @@ func (s *Server) compareRun(ctx context.Context, text []byte, renames []Rename, 
 		switch {
 		case n == 0 && len(made) > 0:
 			what = "the renames made in this session"
+			// With the renames undone the digests are compared as they are: if they still differ, the
+			// renames are not the whole difference.
+			if typed {
+				if rd, err := plan.TopologyDigest(topo); err != nil || rd != v.NewDigest {
+					what += ", and the digest differs in order or types as well"
+				} else {
+					what = "only the renames made in this session"
+				}
+			}
 		case n == 0:
 			what = "the digest differs in order or types"
 		}
 		rep.Claim = "This file differs from the topology run " + id + " journaled (" + what + "). The digest is part of what resume checks, so a run paused under that topology will not resume under this file." + basis
+	}
+	if v.NewErrors > 0 && rep.Status != "cannot" {
+		rep.Notes = append(rep.Notes, fmt.Sprintf("The file has %d error%s (see Problems); the comparison was made on what could be read.", v.NewErrors, plural(v.NewErrors)))
 	}
 	rep.Notes = append(rep.Notes,
 		"Safety and assert lines are not in a journal or in the digest, so they are not compared.",
@@ -269,7 +377,34 @@ func (s *Server) compareRun(ctx context.Context, text []byte, renames []Rename, 
 	if !typed {
 		rep.Notes = append(rep.Notes, "Gates are compared only when the editor knows the program's blocks (-blocks), because a journaled gate is the resolved policy, which includes gates a block declares in Go.")
 	}
-	return rep
+	return rep.clean()
+}
+
+// clean writes out every character that does not print (a control or direction-changing character, a
+// zero-width one) in every string of the reply: names, blocks and flow names come from a journal someone
+// else wrote, and a name must not read as another in a change line, or carry a control character into a copy.
+// The HTML is already safe (the page uses text); this is the same rule bide view and bide check apply.
+func (r *runReply) clean() *runReply {
+	fix := func(s *string) { *s = printable.Escape(*s) }
+	fixAll := func(l []string) {
+		for i := range l {
+			fix(&l[i])
+		}
+	}
+	fix(&r.Claim)
+	fix(&r.Basis)
+	fixAll(r.Changes)
+	fixAll(r.Weakened)
+	fixAll(r.Strengthened)
+	fixAll(r.Renamed)
+	fixAll(r.Notes)
+	if r.Run != nil {
+		fix(&r.Run.ID)
+		fix(&r.Run.Flow)
+		fix(&r.Run.State)
+		fix(&r.Run.StateText)
+	}
+	return r
 }
 
 func plural(n int) string {
