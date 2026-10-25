@@ -94,7 +94,7 @@ type RunSettings struct {
 	ToolChoice   *ToolChoice `json:"tool_choice,omitempty"`
 	// UntrustedInput and TrustedInput are the run's input provenance (WithUntrustedInput,
 	// WithTrustedInput): the source of untrusted input, or the reason the input is the host's own. At
-	// most one is set.
+	// most one is set. Experimental.
 	UntrustedInput *string `json:"untrusted_input,omitempty"`
 	TrustedInput   *string `json:"trusted_input,omitempty"`
 }

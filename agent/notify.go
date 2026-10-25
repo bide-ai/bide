@@ -74,7 +74,7 @@ type NotifyApproval struct {
 	// Why says why the call needs this gate beyond its tool's own: for the escalation instance of a tainted
 	// call (the call ID with "#taint"), the untrusted content its turn had read; for a call a cap rule
 	// holds, the rule and this call's figures as of the ask. It is the engine's gate-reason record, the
-	// application's claim and evidence for the approver, never read by a gate. Empty for a plain gate.
+	// application's claim and evidence for the approver, never read by a gate. Empty for a plain gate. Experimental.
 	Why []GateReason
 	// reaskGen is the generation of the count a certificate-bound gate asks for (ApprovalIdentReaskStep),
 	// with Reask PendingIdentReapproval (0) or PendingExecHoldReapproval (n >= 1).

@@ -135,7 +135,7 @@ type Pending struct {
 	// call, the untrusted content its turn had read; for a gate a cap rule holds, the rule and this call's
 	// figures as of the ask. It is the gate-reason record the engine wrote: the application's claim, shown to
 	// help an approver decide, read by no gate and not bound by the signed decision. If two records of the run
-	// name the call and disagree, it is the one reason of kind "conflict". Omitted when there is none.
+	// name the call and disagree, it is the one reason of kind "conflict". Omitted when there is none. Experimental.
 	Why  []agent.GateReason `json:"why,omitempty"`
 	Gate Gate               `json:"gate"`
 }
