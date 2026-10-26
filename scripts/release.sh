@@ -480,9 +480,6 @@ push_tags() {
   done
 }
 
-# self_test_release_branch TMP: the release-branch mode (release_branch_check, line_latest,
-# branch_pr_only, release_branch_gate, and the branch filter of the CI status) against the fake gh
-# that self_test_ci installed in TMP/bin and a scratch repository that stands in for the remote.
 # finish_work dir keep status: runs when the script ends. The work tree (a scratch clone and a module
 # cache of about 2.5 GB, its files read-only) is removed when the run succeeded; it is kept, with its
 # path, when the run failed or --keep was given. A --push run that stopped is run again from scratch,
@@ -494,6 +491,15 @@ finish_work() {
     chmod -R u+w "$1" 2>/dev/null
     rm -rf "$1"
   fi
+}
+
+# work_traps: finish_work runs when the script ends, with the script's exit status. An interrupt or a
+# termination is a failed run: bash 3.2 hands the EXIT trap a status of 0 for them, which would delete
+# the tree, so they exit non-zero first.
+work_traps() {
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'finish_work "$WORK" "$KEEP" $?' EXIT
 }
 
 # self_test_work: the work tree is removed after a successful run, read-only files included, and kept
@@ -511,9 +517,21 @@ self_test_work() {
   out=$(finish_work "$d" true 0)
   { [ -d "$d" ] && [ "$out" = "release: work tree kept at $d" ]; } || { echo "self-test: --keep did not keep the work tree: [$out]"; ok=false; }
   rm -rf "$d"
+  # An interrupt or a termination keeps the tree, as any failure does: a child shell with the same traps
+  # signals itself, and bash 3.2 would hand the EXIT trap a status of 0 without the INT and TERM traps.
+  local sig
+  for sig in INT TERM; do
+    d=$(mktemp -d)
+    out=$("$BASH" -c "$(declare -f finish_work work_traps); WORK=$d KEEP=false; work_traps; kill -$sig \$\$; sleep 5" 2>/dev/null)
+    { [ -d "$d" ] && [ "$out" = "release: work tree kept at $d" ]; } || { echo "self-test: a run ended by $sig did not keep its work tree: [$out]"; ok=false; }
+    rm -rf "$d"
+  done
   $ok
 }
 
+# self_test_release_branch TMP: the release-branch mode (release_branch_check, line_latest,
+# branch_pr_only, release_branch_gate, and the branch filter of the CI status) against the fake gh
+# that self_test_ci installed in TMP/bin and a scratch repository that stands in for the remote.
 self_test_release_branch() {
   local tmp=$1 ok=true got fx=$1/fx
   rb_case() { # rb_case ok|no DESCRIPTION VERSION SHA TIP LATEST
@@ -1049,7 +1067,7 @@ REPO=$(git rev-parse --show-toplevel)
 REL_BRANCH=""   # set by release_branch_gate when SHA is released from a release branch
 SHA=$(git -C "$REPO" rev-parse --verify "$REF^{commit}")
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/bide-release.XXXXXX")
-trap 'finish_work "$WORK" "$KEEP" $?' EXIT
+work_traps
 
 if $PUSH; then say "release $VERSION from $SHA (PUSH: tags go to $REMOTE)"; else say "release $VERSION from $SHA (dry run: nothing is pushed)"; fi
 
