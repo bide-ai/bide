@@ -1,2 +1,4 @@
+github.com/bide-ai/bide v0.25.0 h1:zFpyTzJAWLgns7ellvCwikcFIqJIH2hRuLUx5W4by5A=
+github.com/bide-ai/bide v0.25.0/go.mod h1:/9TldvSgiSK7hwUc7FpvD2y3jGS5a6EgWhqaBUv+Diw=
 go.yaml.in/yaml/v3 v3.0.5 h1:N6y/pJk8buWs9NY5ERU2HSMfm+IuD/OtfdAnq6kESPw=
 go.yaml.in/yaml/v3 v3.0.5/go.mod h1:HVTZu1O7/Vkt2N+BFy8Zza+lnLsABggaTM2ZpNIGuKg=
