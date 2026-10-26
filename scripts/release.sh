@@ -480,6 +480,55 @@ push_tags() {
   done
 }
 
+# finish_work dir keep status: runs when the script ends. The work tree (a scratch clone and a module
+# cache of about 2.5 GB, its files read-only) is removed when the run succeeded; it is kept, with its
+# path, when the run failed or --keep was given. A --push run that stopped is run again from scratch,
+# so nothing in the tree is needed to resume.
+finish_work() {
+  if [ "$2" = true ] || [ "$3" -ne 0 ]; then
+    echo "release: work tree kept at $1"
+  else
+    chmod -R u+w "$1" 2>/dev/null
+    rm -rf "$1"
+  fi
+}
+
+# work_traps: finish_work runs when the script ends, with the script's exit status. An interrupt or a
+# termination is a failed run: bash 3.2 hands the EXIT trap a status of 0 for them, which would delete
+# the tree, so they exit non-zero first.
+work_traps() {
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'finish_work "$WORK" "$KEEP" $?' EXIT
+}
+
+# self_test_work: the work tree is removed after a successful run, read-only files included, and kept
+# with its path after a failed one or with --keep.
+self_test_work() {
+  local d out ok=true
+  d=$(mktemp -d); mkdir -p "$d/modcache/x"; : >"$d/modcache/x/f"; chmod a-w "$d/modcache/x/f" "$d/modcache/x"
+  out=$(finish_work "$d" false 0)
+  { [ ! -e "$d" ] && [ -z "$out" ]; } || { echo "self-test: a successful run left its work tree"; ok=false; chmod -R u+w "$d"; rm -rf "$d"; }
+  d=$(mktemp -d)
+  out=$(finish_work "$d" false 1)
+  { [ -d "$d" ] && [ "$out" = "release: work tree kept at $d" ]; } || { echo "self-test: a failed run did not keep its work tree and say where: [$out]"; ok=false; }
+  rm -rf "$d"
+  d=$(mktemp -d)
+  out=$(finish_work "$d" true 0)
+  { [ -d "$d" ] && [ "$out" = "release: work tree kept at $d" ]; } || { echo "self-test: --keep did not keep the work tree: [$out]"; ok=false; }
+  rm -rf "$d"
+  # An interrupt or a termination keeps the tree, as any failure does: a child shell with the same traps
+  # signals itself, and bash 3.2 would hand the EXIT trap a status of 0 without the INT and TERM traps.
+  local sig
+  for sig in INT TERM; do
+    d=$(mktemp -d)
+    out=$("$BASH" -c "$(declare -f finish_work work_traps); WORK=$d KEEP=false; work_traps; kill -$sig \$\$; sleep 5" 2>/dev/null)
+    { [ -d "$d" ] && [ "$out" = "release: work tree kept at $d" ]; } || { echo "self-test: a run ended by $sig did not keep its work tree: [$out]"; ok=false; }
+    rm -rf "$d"
+  done
+  $ok
+}
+
 # self_test_release_branch TMP: the release-branch mode (release_branch_check, line_latest,
 # branch_pr_only, release_branch_gate, and the branch filter of the CI status) against the fake gh
 # that self_test_ci installed in TMP/bin and a scratch repository that stands in for the remote.
@@ -979,6 +1028,7 @@ self_test() {
   [ -z "$(candidate_before "$cl" v0.21.0-rc.2)" ] || { echo "self-test: a second candidate was warned about"; fail=true; }
   [ -z "$(candidate_before "$cl" v0.22.0)" ] || { echo "self-test: another version was warned about"; fail=true; }
   [ -z "$(candidate_before $'# Changelog\n\n## [Unreleased]\n\n## [0.20.0] - 2026-10-16\n' v0.21.0)" ] || { echo "self-test: a final after a final was warned about"; fail=true; }
+  self_test_work || fail=true
   self_test_push || fail=true
   self_test_ci || fail=true
   self_test_changelog || fail=true
@@ -1017,11 +1067,7 @@ REPO=$(git rev-parse --show-toplevel)
 REL_BRANCH=""   # set by release_branch_gate when SHA is released from a release branch
 SHA=$(git -C "$REPO" rev-parse --verify "$REF^{commit}")
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/bide-release.XXXXXX")
-if $KEEP || $PUSH; then
-  trap 'echo "release: work tree kept at $WORK"' EXIT
-else
-  trap 'chmod -R u+w "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
-fi
+work_traps
 
 if $PUSH; then say "release $VERSION from $SHA (PUSH: tags go to $REMOTE)"; else say "release $VERSION from $SHA (dry run: nothing is pushed)"; fi
 

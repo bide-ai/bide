@@ -397,7 +397,7 @@ If a `--push` run stops partway, re-run the same command: the core tag and any n
 on the remote are reused (each is only checked against the proxy) and the rest are made. Never move
 or delete a pushed tag (the proxy and the checksum database keep the first version they saw); fix
 forward with a patch release. `--ref <commit>` dry-runs a commit other than HEAD, `--no-test` skips
-the module tests, and `--keep` keeps the scratch work tree for inspection.
+the module tests, and `--keep` keeps the scratch work tree (about 2.5 GB) for inspection. The work tree is removed when the run succeeds; a run that fails keeps it and prints its path, so delete it when you are done.
 
 ## Formal models
 
