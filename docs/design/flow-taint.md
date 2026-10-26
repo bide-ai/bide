@@ -217,30 +217,54 @@ instance cannot count for the other (the signature binds the subject key, `stale
 `agent/flowgate.go:99`, once the subject parsers recognise the key); this is about the person.
 
 - Shape: a field of the policy, `TaintPolicy.SeparateApprovers bool` (alternative name: `DisjointApprovers`),
-  not a plan-only option and not a config key. Reason: the same weakness exists for an agent (a tool's own
-  gate and its `<call>#taint` instance), a plan-only option would leave agents without the control, and
+  not a plan-only option and not a config key. The same weakness exists for an agent (a tool's own gate and
+  its `<call>#taint` instance), a plan-only option would leave agents without the control, and
   `plan.WithTaintPolicy` already takes `agent.TaintPolicy`. Cost: one exported field on an agent type and an
   agent behaviour behind a flag that is off by default. Go-only, as the policy is.
-- Meaning, when set: an approver whose decision is counted on a call's own gate is not counted on its
-  escalation instance, and the reverse (the tally excludes them as `ExcludePrincipal` excludes the requester;
-  the viewer says "excluded: already decided on the call's other gate", as `internal/runview/approvers.go:143`
-  does for separation of duties). It works on approver IDs; two IDs of one person are not detected (the
-  approver-identity design is the layer for that), and the docs say so.
-- Two layers. (1) Registration or Build: for every tool or node that can be escalated (side-effecting, not
-  exempt) and has its own gate, the own gate's approver set and the policy Gate's approver set must be
-  disjoint, else ErrConfig naming the tool or node and the shared IDs; a node with no gate of its own has
-  nothing to separate from. This fails early and makes the gates always satisfiable. (2) Run time: the tally
-  of each instance excludes approvers with a counted decision on the sibling instance, read from the journal;
-  it is defence in depth for approver sets that differ from registration (WithApproverVerifiers, rotation),
-  and order-dependent when sets overlap (the first to decide takes the seat), which layer 1 prevents.
+- Meaning, one direction only: the instance's tally excludes the approvers counted in the own gate's terminal
+  tally. The instance request is recorded only after the own gate passes (order in A2), so that tally is a
+  fixed, recorded set. The own gate is never recounted because of the instance: a "reverse" exclusion would be
+  circular (a person who decided both could be excluded from both, or the result would depend on record order)
+  and could flip an already-passed own gate after the node ran (`flowGate` lets a pass be superseded by a
+  re-tally when separation of duties is in play). The viewer says "excluded: already decided on the call's
+  own gate", as `internal/runview/approvers.go:143` does for separation of duties.
+- Both gates must be m-of-n with named approvers. A `SingleApproval` gate has no approver IDs (unsigned
+  decisions, `agent/tool.go:238`, `flowSingle` requires an empty approver), so "disjoint" is undefined for it;
+  with the field set, a single own gate or a single policy Gate is ErrConfig at registration or Build, naming
+  the tool or node (a flag that silently did nothing would not fail closed). The policy Gate being m-of-n
+  already needs `WithApproverVerifiers`.
+- Registration and Build check (layer 1): for every tool or node that can be escalated (side-effecting, not
+  exempt) and has an own gate, the approver ID sets of the effective own gate and of the policy Gate are
+  disjoint, else ErrConfig naming the tool or node and the shared IDs. It runs over `effectiveGates`
+  (`agent/effective_gate.go:24`), not over `spec.Approval` alone, because a cap gate can stand in as the own
+  gate and its approvers come from a cap rule; it runs after config lowering (a config `approval` block can
+  add a node gate), on the final node set, and for an agent after all options, so tool and policy option order
+  do not matter, delegated and sub-agent tools included; a read-only or exempt tool is skipped. `bide check` in
+  structural mode has no policy, so it cannot run it and says so, not nothing.
+- Run time (layer 2): the exclusion above applies to the tally. It is defence in depth for approver sets that
+  differ from registration (`WithApproverVerifiers`, rotation). If it leaves fewer eligible approvers than the
+  gate's `need`, the instance can never pass: it is a terminal denial with the reason "separation: the
+  approvers left cannot reach the need", on the path of the existing separation-of-duties infeasible case
+  (`spec/tla/claims/ap-sod-infeasible.cfg` is the precedent; a cfg for the instance is added), not a pause
+  that waits forever.
+- Offline verification: the instance's tally records the excluded set (`excluded_by_sibling`, the approver IDs),
+  the evidence includes the own gate's terminal tally record, and `VerifyApprovals` recounts with the same
+  exclusion, as it recounts `ExcludePrincipal` from the evidence and `run:principal` (`audit/approval.go`).
+  Without it an offline recount would count the person and disagree with the engine, or a verifier ignoring the
+  field would accept what the engine refused. A test where the recount differs without the exclusion (a mutant)
+  is part of the PR.
 - Journaled and digested: the field is in the taint declarations digest only when set (the precedent is
-  `RequireProvenance`, `agent/taint_policy.go:79`), so no existing digest moves, and it is in the policy
-  summary recorded in `run:start`, so the exact resume comparison refuses a drive that dropped it. The
-  gate-reason record is unchanged.
-- With `ExcludePrincipal`: independent and cumulative. On the instance an approver counts only if they are not
-  excluded by the Gate's `ExcludePrincipal` (not a requester of the run) and, with this field, not a decider
-  of the node's gate. The Build check compares ID sets as written, before any requester exclusion, so it does
-  not depend on who started a run.
+  `RequireProvenance`, `agent/taint_policy.go:79`), so no existing digest moves, and in the policy summary
+  recorded in `run:start`, so the exact resume comparison refuses a drive that dropped it. `bide doctor`
+  declarations (`agent/declarations.go`, `internal/declarations/diff.go`) carry it, and `bide doctor -diff`
+  reports its removal as weakened, as it does for `RequireProvenance`. The gate-reason record is unchanged.
+- With `ExcludePrincipal`: independent and cumulative. On the instance an approver counts only if not excluded
+  by the Gate's `ExcludePrincipal` (a requester of the run) and not counted in the own gate's terminal tally.
+  The layer 1 check compares ID sets as written, before any requester exclusion, so it does not depend on who
+  started a run.
+- Limits, stated in the docs: it works on approver IDs, so two IDs of one person are not detected, and in a
+  certificate-bound gate the decider identity is the approver name, not the certificate subject; the
+  approver-identity design is the future layer for both.
 - Names: one exported field. Flag: none. Config key: none.
 
 **Options a flow run takes.** `Flow.Run` takes `WithIdentity` through `journalhook.RunIdentity` today. It
@@ -298,7 +322,7 @@ tally scoped per iteration (GKey-style); Refuse as a mode; a Join with one taint
 stale-result variant; a drive resuming under changed declarations (must be refused); and an invariant that a
 side-effecting node's body fires only if its read set is empty, or it is exempt, or its taint tally passed
 (extend `badFire`, `Flows.tla:196`). Mutants in `regress/`: NoTaintGate, TaintGateUnscoped, TaintReuse (a
-node-gate decision counts for the taint key), ReadSetOnResumeEmpty, JoinDropsTaint, RefuseAsSkip. The
+node-gate decision counts for the taint key), ReadSetOnResumeEmpty, JoinDropsTaint, RefuseAsSkip; and for the disjoint-approvers field TaintReusesNodeDecider (the flag ignored), SeparateReverse (the circular rule), CountsUnsigned (a single gate passes the check) and VerifierIgnoresExclusion. The
 `protocol:flows` markers (`plan/flow.go:141,317,407,584,700`) must wrap the new calls; `spec/tla/claims/
 taint-*.cfg` can be reused to count the instance.
 
