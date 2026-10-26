@@ -428,7 +428,7 @@ has not been done:** the checks above are not a substitute for one, and the chec
 host, as `bide view` does. It reads and writes only the file named on the command line: that file must exist,
 be a regular file of at most 1 MiB and end in `.yaml`, `.yml` or `.json`; a symbolic link is
 resolved once at startup. There is no endpoint that opens another file. With a store (`-db`,
-`-postgres`, `-postgres-env` or `-journal`) it opens the store or stores you name (`-journal` can be given more than once) read-only, fixed at startup. With `-run` it reads the one run you name from it (or from them);
+`-postgres`, `-postgres-env` or `-journal`) it opens the store or stores you name (`-journal` can be given more than once) read-only, fixed at startup. With `-run` it reads the one run you name (an exported journal holds one run, so with several `-journal` files `-run` picks the file whose run ID it is, and if two files hold the same run ID the later one on the command line wins, with no error);
 for the unfinished-runs panel it reads one small record per unfinished run (at most 5000 runs). The page cannot name another run or
 store, and no reply carries a record, a store path or a connection string.
 
