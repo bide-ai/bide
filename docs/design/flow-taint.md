@@ -310,19 +310,19 @@ switch arms, joins, a recorded gate-reason from an older drive, a store writer w
 cannot pass another iteration's; (3) no path clears taint (monotone); (4) no name or key collision: `node:x:taint` against a node, a node's step, a loop key; and every consumer treating it as the instance, never as the node;
 (5) policy removed, changed gate, changed declarations between drives; (6) the refusal cannot be turned into
 a skip that changes output; (7) the Part B analysis never says "not reached" for a node the engine gates; (8) resume with a weaker or different policy or declarations is refused, and the run:start digest is compared every drive, not read as a flag; (9) the recorded declarations cannot be edited in the store to lower a requirement (only-add rule); (10) a refused node has a gate-reason record and no node record, no attempt and no approval request.
-Formal model: A5b names the invariant and the six mutants (extend `badFire`, Flows.tla:196). The `protocol:flows` markers (`plan/flow.go`) must wrap the new
+Formal model: A5b names the invariant and the mutants (extend `badFire`, Flows.tla:196). The `protocol:flows` markers (`plan/flow.go`) must wrap the new
 calls so the protocol conformance test covers them. That is the cost driver.
 
 ### A5b. Model additions
 
-`spec/tla/flows/Flows.tla` models one fixed graph (E,Q,T,H,S,N) with one gate per key and no Join, taint,
+`spec/tla/flows/Flows.tla` models one fixed graph (E,Q,T,H,S,N) with one gate per key and no taint,
 policy or sources. Add: a Sources set; the read-set fold as a function of the journal (recorded declarations,
 results present, choices); a second gate instance per key with its own req, dec and
-tally scoped per iteration (GKey-style); Refuse as a mode; a Join with one tainted and one clean input, and a
-stale-result variant; a drive resuming under changed declarations (must be refused); and an invariant that a
+tally scoped per iteration (GKey-style); Refuse as a mode; a drive resuming under changed declarations (must be refused); and an invariant that a
 side-effecting node's body fires only if its read set is empty, or it is exempt, or its taint tally passed
 (extend `badFire`, `Flows.tla:196`). Mutants in `regress/`: NoTaintGate, TaintGateUnscoped, TaintReuse (a
-node-gate decision counts for the taint key), ReadSetOnResumeEmpty, JoinDropsTaint, RefuseAsSkip; and for the disjoint-approvers field TaintReusesNodeDecider (the flag ignored), SeparateReverse (the circular rule), CountsUnsigned (a single gate passes the check) and VerifierIgnoresExclusion. The
+node-gate decision counts for the taint key), ReadSetOnResumeEmpty, ReadSetIgnoresOrder (a source after the node counts, or an earlier one does not),
+ReadSetResetsPerIteration (loop iteration k forgets iterations below k), TaintMarkIgnored, RefuseAsSkip; and for the disjoint-approvers field TaintReusesNodeDecider (the flag ignored), SeparateReverse (the circular rule), CountsUnsigned (a single gate passes the check) and VerifierIgnoresExclusion. The
 `protocol:flows` markers (`plan/flow.go:141,317,407,584,700`) must wrap the new calls; `spec/tla/claims/
 taint-*.cfg` can be reused to count the instance.
 
@@ -355,7 +355,7 @@ computed too, only to explain ("via triage", else "earlier in the flow order").
 
 The flow input: whether it is untrusted is a RunOption the config does not carry, so it is a third
 state, never "not reached": "reads untrusted if the run's input is untrusted" for every node reachable from
-the entry, unless the flow declares a flow-level `Trusted`. A node is never called "not reached" without
+the entry. A node is never called "not reached" without
 "unless the run declares its input untrusted". An agent-running node may bring taint up to downstream nodes
 (see "Sub-agent and nested-flow blocks"), so downstream is "may read" with no declared source in the flow.
 
@@ -367,7 +367,7 @@ Per-node verdict, computed from topology, declarations and policy:
 | escalates | tainted, side-effecting (`tracked`), not exempt, policy has a Gate: needs `<node>:taint` |
 | refused | same, policy has Refuse |
 | exempt (reason) | tainted, `TaintExempt` declared |
-| no declared source reaches it | unless a block runs an agent or a nested flow (whose taint this view cannot see) or the run declares its input untrusted (see 2); never "no taint" |
+| no declared source runs before it | unless a block runs an agent or a nested flow (whose taint this view cannot see) or the run declares its input untrusted (see 2); never "no taint" |
 | unknown | declarations or policy not known (structural mode, description without the fields) |
 
 Only a node whose Safety can have an effect (readonly excluded, as `taintApplies`) can escalate or be refused.
@@ -381,8 +381,8 @@ Cannot know:
 - What a Step, Tool or Model does inside: a step can read a database or the network without declaring
   `Untrusted`. Undeclared is not trusted. Only a declaration (`Trusted(reason)`) says trusted, and the
   engine's `RequireProvenance` is the existing answer for unknown (a registration error).
-- Whether a Model node's prompt contains tainted text: it does when upstream is tainted; the model's output is
-  then tainted (the model is the dataflow, design 5.2).
+- Whether a Model node's prompt contains tainted text: under the run-level rule a Model node after a source
+  is covered like any node; it is not itself a source (the model is the dataflow, design 5.2).
 - A tool-call inside a model step: not applicable to flow Model nodes (no tools); applicable to a block that
   runs an agent, whose own journal and taint are the agent's, not the flow's. The view says "runs an agent:
   its tool calls are gated by that agent's policy, not shown here" for such a block, when the description
@@ -391,8 +391,8 @@ Cannot know:
 - Journal history: a resumed run that inherits marks.
 
 Must never claim:
-- "safe", "no taint", "clean", "protected" for any node. The strongest allowed wording is "no path from a
-  declared untrusted source" and only when declarations are known (typed, with the fields).
+- "safe", "no taint", "clean", "protected" for any node. The strongest allowed wording is "no declared
+  source can run before it" and only when declarations are known (typed, with the fields).
 - Anything about escalation when the policy is unknown (structural, or description lacking the policy).
   Show "unknown: provenance not declared" instead, with the reason (structural mode / description from an
   older release / block declares no provenance).
@@ -477,7 +477,7 @@ Runtime prerequisites are Part A (A6). Part B additionally:
   to 2; version 1 reads as "taint not known"). Describing is the only place Part A's declarations reach the
   editor and `-blocks`.
 - `bide doctor` declarations document: flow blocks and the flow policy, and its `-diff` weakened rules.
-- No topology or digest change (A3), no config key, no flag.
+- No topology or digest change (A3), no new config key beyond decision 3, no flag.
 
 ## 8. Tests and accessibility
 
@@ -489,7 +489,7 @@ Runtime prerequisites are Part A (A6). Part B additionally:
   held at `<node>:taint`, and no node the analysis calls "not reached" is ever held (soundness against the
   runtime), including loops, switches and joins.
 - Editor: server view tests, browser tests (existing chromedp harness) for canvas tags, outline labels,
-  inspector path, summary buttons; the weakened banner for a new exposing edge; typed-with-description vs
+  inspector path, summary buttons; the weakened banner for a new exposing source or a reordering; typed-with-description vs
   structural labels; forced-colors and each theme (`themes_browser_test.go`), contrast of the new tags,
   keyboard path, announce text. No claim words: a test greps the page and the view for "safe", "clean",
   "no taint", "protected" and fails.
@@ -523,8 +523,8 @@ Decided by the maintainer on 2026-10-26, or accepted as recommended:
 4. Weakening (section 6): only an uncovered side-effecting exposure is a weakening; a covered one is a listed
    change.
 5. `DescriptionVersion` 2 with an explicit "declarations carried" marker, so absence never reads as "none".
-6. A flow Model node with tainted upstream is covered by the run-level rule; its output is a source for what
-   follows.
+6. A flow Model node with tainted upstream is covered by the run-level rule; it is not a source itself (it has no
+   declaration to record); everything after a source is covered.
 7. An agent-wrapping block is shown as gated by its own agent's policy, in typed mode only, when the
    description can say so.
 8. an opt-in check that the node gate's and the taint gate's approvers are disjoint (A2, "Disjoint
