@@ -1,0 +1,71 @@
+name: Queue guard
+
+# A pull request is reviewed and queued at one commit. GitHub keeps auto-merge enabled when a new
+# commit is pushed to such a pull request (a pull request in the merge queue is removed from it,
+# but auto-merge stays on and queues the new commit as soon as its checks pass), so unreviewed code
+# could merge. This workflow turns auto-merge off and takes the pull request out of the merge
+# queue on every push, and says so in a comment: a push after queueing needs a new review and a
+# new queueing. It reads and writes nothing but the pull request it runs for, with GITHUB_TOKEN.
+#
+# It runs on the pull request event only, so the merge queue's own branches (merge_group) never
+# start it. A pull request from a fork gets a read-only token and cannot have been queued by its
+# author, so it is skipped.
+on:
+  pull_request:
+    types: [synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# One run per pull request; a newer push supersedes a run that has not finished.
+concurrency:
+  group: queue-guard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    name: Queue guard
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Disable auto-merge and dequeue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          NEW_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          owner="${REPO%/*}"
+          name="${REPO#*/}"
+          read -r id auto queued < <(gh api graphql \
+            -f owner="$owner" -f name="$name" -F number="$NUMBER" \
+            -f query='query($owner:String!,$name:String!,$number:Int!){
+              repository(owner:$owner,name:$name){
+                pullRequest(number:$number){
+                  id
+                  autoMergeRequest{enabledAt}
+                  mergeQueueEntry{id}
+                }
+              }
+            }' \
+            --jq '.data.repository.pullRequest | [.id, (.autoMergeRequest != null), (.mergeQueueEntry != null)] | @tsv')
+          echo "pull request $NUMBER: auto-merge=$auto in-queue=$queued"
+          if [ "$auto" != true ] && [ "$queued" != true ]; then
+            echo "Not queued: nothing to do."
+            exit 0
+          fi
+          if [ "$queued" = true ]; then
+            gh api graphql -f id="$id" -f query='mutation($id:ID!){
+              dequeuePullRequest(input:{id:$id}){clientMutationId}
+            }' >/dev/null && echo "Dequeued." || echo "Dequeue failed (already out of the queue?); continuing."
+          fi
+          if [ "$auto" = true ]; then
+            gh api graphql -f id="$id" -f query='mutation($id:ID!){
+              disablePullRequestAutoMerge(input:{pullRequestId:$id}){clientMutationId}
+            }' >/dev/null
+            echo "Auto-merge disabled."
+          fi
+          gh pr comment "$NUMBER" --repo "$REPO" --body "A commit (\`${NEW_SHA:0:9}\`) was pushed after this pull request was queued for merge, so auto-merge is off and the pull request is out of the merge queue. The new commit needs a review, then a new queueing."

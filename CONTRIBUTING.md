@@ -90,6 +90,10 @@ Still uncached by design: Integration (`-count=2` against the services), the `bi
 
 Pushing a new commit to a pull request cancels the superseded run of the same workflow; pushes to main, merge queue batches and the nightly are never cancelled. The Linux test shards and the Models shards are balanced by measured time; the longest single package is `agent` on Linux (about four minutes under `-race`). When a shard becomes the slowest check, move modules between shard lines (`TEST_SHARDS`, `MODEL_SHARDS`); the Changes and plan jobs fail unless every module and configuration is on exactly one line. Prefer fewer jobs over a shorter critical path: each job costs a runner start and its setup.
 
+### Queueing
+
+A pull request is queued (auto-merge, then the merge queue) at the commit that was reviewed. A push to a pull request after it was queued needs a new review and a new queueing: GitHub keeps auto-merge enabled on the new commit, so the `Queue guard` workflow (`.github/workflows/queue-guard.yml`) turns auto-merge off, takes the pull request out of the merge queue and comments on it, on every push (`pull_request` `synchronize`; the merge queue's own branches do not start it). It uses only `GITHUB_TOKEN` with `pull-requests: write`. The guard runs a few seconds after the push, so a push is not safe in that window either: do not push to a queued pull request, and queue again only after the new commit is reviewed. A pull request from a fork is not guarded (its token is read-only), and none can be queued without a maintainer.
+
 ## Module layout
 
 See [docs/reference/module-structure.md](docs/reference/module-structure.md). The rule the architecture test enforces: the core imports no adapter and no infrastructure. A user who does not import `trace` gets no OpenTelemetry in their binary; the same holds for every adapter.
