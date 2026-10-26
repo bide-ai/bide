@@ -76,7 +76,7 @@ Bide उन अपेक्षाओं की ओर बनाया जा र
   </picture>
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="../../docs/guides/img/run-viewer-needs-attention-dark.png">
-    <img src="../../docs/guides/img/run-viewer-needs-attention-light.png" width="49%" alt="bide view की "ध्यान चाहिए" सूची: दो प्रतीक्षारत अनुमोदन, दो रुकावटें जिनका परिणाम अज्ञात है और एक निरस्त रन, हर एक के साथ क्या करना है और उसकी सूचना की स्थिति">
+    <img src="../../docs/guides/img/run-viewer-needs-attention-light.png" width="49%" alt="bide view की «ध्यान चाहिए» सूची: दो प्रतीक्षारत अनुमोदन, दो रुकावटें जिनका परिणाम अज्ञात है और एक निरस्त रन, हर एक के साथ क्या करना है और उसकी सूचना की स्थिति">
   </picture>
 </p>
 
