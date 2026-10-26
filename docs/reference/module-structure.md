@@ -41,7 +41,6 @@ only when that adapter is imported.
 | bide command | `…/cmd/bide` | the two store modules, `flowedit`, go.yaml.in/yaml/v3 (a program, installed with `go install`, not imported) |
 | bide-hsm command | `…/cmd/bide/bide-hsm` | the PKCS#11, AWS KMS, Google Cloud KMS and Azure Key Vault signers (`signer/pkcs11` needs cgo), the AWS SDK, the Cloud KMS client, the two store modules, and `cmd/bide` for its internal approval code (a program, built from source with `go install`; not in the release archives) |
 | bide-anchor command | `…/cmd/bide-anchor` | the AWS SDK for Go v2 (through `anchor/awss3`) and the Cloud Storage client (through `anchor/gcs`); a program, installed with `go install`, with `-backend` choosing the object store |
-| bide-view (deprecated) | `…/cmd/bide-view` | none: a program that only points to `bide view` and exits; still tagged at every release |
 
 The core module keeps everything with no heavy deps: `agent` (loop), `approvals` (the HTTP intake for signed approval decisions, and the browser approve page), `schema`, `middleware`,
 `model/anthropic`, `model/openai`, `model/gemini`, `plan`, `audit`, `eval`, `chaos`, `cmd/bench`,
@@ -108,7 +107,7 @@ module from the proxy. Main keeps its `replace` directives, so development is un
 
 Published (tagged at every release): `govern`, `store/sqlite`, `store/postgres`, `mcptools`, `trace`,
 `codec/gcf`, `anchor/awss3`, `anchor/gcs`, `flowedit`, `govern/sqlitelog`, `govern/redislog`, `govern/postgreslog`, `signer/pkcs11`, `signer/awskms`, `signer/azurekv`, `signer/gcpkms`, and the commands
-`cmd/bide`, `cmd/bide/bide-hsm`, `cmd/bide-anchor` and `cmd/bide-view` (a stub that points to `bide view`).
+`cmd/bide`, `cmd/bide/bide-hsm` and `cmd/bide-anchor`. `cmd/bide-view`, a stub that only pointed to `bide view`, was tagged with every release through v0.25.0 and is removed: its last tag is `cmd/bide-view/v0.25.0`, where `go install github.com/bide-ai/bide/cmd/bide-view@latest` still resolves to the stub, which prints that it moved; install `cmd/bide` and run `bide view`.
 
 Repo-only (never tagged; they keep their `replace` directives): `examples/approval`,
 `examples/plan`, `examples/mcp`, `examples/observability`, `examples/govern`, `examples/hsm-signing`,
