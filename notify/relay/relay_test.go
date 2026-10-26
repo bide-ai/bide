@@ -705,6 +705,7 @@ func TestTriggerThenResolveWithPagerDuty(t *testing.T) {
 }
 
 func TestClearBeforeItsEventNeverOpensAnIncident(t *testing.T) {
+	requireFileLock(t)
 	r := newRig(t)
 	if err := r.send(t, resolved("orders-7")); err != nil {
 		t.Fatal(err)
@@ -723,6 +724,9 @@ func TestClearBeforeItsEventNeverOpensAnIncident(t *testing.T) {
 
 // restartRig is a Handler with a state file, restarted by building another over the same file.
 func restartHandler(t *testing.T, path string, sends *atomic.Int32, size int) (*httptest.Server, *rig) {
+	if path != "" {
+		requireFileLock(t)
+	}
 	t.Helper()
 	sink := &funcSink{name: "s", fn: func(context.Context, notify.Payload) error { sends.Add(1); return nil }}
 	h, err := New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, StatePath: path, StateFlushDelay: -1, DedupeSize: size, Logf: func(string, ...any) {},
@@ -859,6 +863,7 @@ func requireStateFree(t *testing.T, path, what string) {
 }
 
 func TestStateFileProblemsAreRefusedAtStart(t *testing.T) {
+	requireFileLock(t)
 	dir := t.TempDir()
 	bad := filepath.Join(dir, "bad.state")
 	os.WriteFile(bad, []byte("{not json"), 0o600)
@@ -954,6 +959,7 @@ func TestStateFileKeepsRecencyOrderAcrossARestart(t *testing.T) {
 // ---- the state lock and torn writes ----
 
 func TestASecondRelayOnTheSameStateFileIsRefused(t *testing.T) {
+	requireFileLock(t)
 	path := filepath.Join(t.TempDir(), "relay.state")
 	sink := &funcSink{name: "s"}
 	first, err := New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, StatePath: path})
@@ -1014,6 +1020,7 @@ func startHolder(t *testing.T, path string) *exec.Cmd {
 }
 
 func TestStateLockIsHeldAcrossProcessesAndDiesWithTheHolder(t *testing.T) {
+	requireFileLock(t)
 	path := filepath.Join(t.TempDir(), "relay.state")
 	sink := &funcSink{name: "s"}
 	holder := startHolder(t, path)
@@ -1036,6 +1043,7 @@ func TestStateLockIsHeldAcrossProcessesAndDiesWithTheHolder(t *testing.T) {
 }
 
 func TestKilledSaveLeavesTheOldStateLoadable(t *testing.T) {
+	requireFileLock(t)
 	path := filepath.Join(t.TempDir(), "relay.state")
 	var sends atomic.Int32
 	srv, rg := restartHandler(t, path, &sends, 0)
@@ -1068,6 +1076,9 @@ func TestKilledSaveLeavesTheOldStateLoadable(t *testing.T) {
 // ---- coalesced writes, directory sync, duplicate restore ----
 
 func coalescingHandler(t *testing.T, path string, delay time.Duration) (*Handler, *rig) {
+	if path != "" {
+		requireFileLock(t)
+	}
 	t.Helper()
 	sink := &funcSink{name: "s"}
 	h, err := New(Config{Secrets: []string{secret}, Sinks: []Sink{sink}, StatePath: path, StateFlushDelay: delay, Logf: func(string, ...any) {},

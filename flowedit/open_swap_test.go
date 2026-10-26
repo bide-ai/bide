@@ -57,8 +57,8 @@ func TestReadConfig_SwappedForADirectory(t *testing.T) {
 
 // A config replaced by a named pipe between the check and the open does not stop the editor.
 func TestReadConfig_SwappedForANamedPipe(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("no named pipe can sit at a file path on Windows")
+	if !haveFIFO {
+		t.Skip("no named pipe can sit at a file path on " + runtime.GOOS)
 	}
 	err := swapped(t, mkfifo)
 	if err == nil || !strings.Contains(err.Error(), "not a regular file") {

@@ -17,6 +17,10 @@ const (
 	errLockViolation        = syscall.Errno(33)
 )
 
+// haveFileLock says whether this platform has an exclusive file lock (lockFile); the tests that need a
+// state file skip where it is false.
+const haveFileLock = true
+
 // lockFile takes an exclusive, non-blocking LockFileEx on f. It reports held=true if another holder has it.
 func lockFile(f *os.File) (held bool, err error) {
 	var ol syscall.Overlapped
