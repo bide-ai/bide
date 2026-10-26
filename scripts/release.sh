@@ -68,7 +68,7 @@ PROXY=https://proxy.golang.org
 PUBLISHED="govern store/sqlite store/postgres mcptools trace codec/gcf anchor/awss3 anchor/gcs govern/sqlitelog govern/redislog govern/postgreslog signer/pkcs11 signer/awskms signer/azurekv signer/gcpkms flowedit cmd/bide cmd/bide/bide-hsm cmd/bide-anchor cmd/bide-view"
 # Published modules whose root package is a command (package main), installed with go install. The
 # consumer check builds them instead of importing them, since a program cannot be imported.
-# cmd/bide-view is a signpost to bide view, tagged one last time at v0.14.0 and then removed.
+# cmd/bide-view is a signpost to bide view; it is still tagged with every release.
 # cmd/bide/bide-hsm is bide approve for keys in an HSM or a KMS; it needs cgo, so it is released as
 # source (go install) and not as a prebuilt binary (see .goreleaser.yaml). It lives under cmd/bide
 # so that it can use that module's internal approvecmd package.

@@ -550,7 +550,9 @@ Published tags cannot be deleted from the module proxy, and none should be.
   `module` line, which `go get` and `go list -m -u` print, and a `main` that prints the replacement
   command and exits 2. It runs nothing, so it is a signpost rather than a compatibility shim. The
   directory, its `PUBLISHED`/`COMMANDS` entries, `go.work` and CI lines are deleted in the first
-  PR after v0.14.0. See open question 3.
+  PR after v0.14.0. See open question 3. (As built, the signpost was not deleted: `cmd/bide-view`
+  is still in the repository, still in `go.work`, and is tagged again with every release; CONTEXT.md
+  calls it a deprecated program.)
 
 ## 8. Open questions (all decided: each recommendation was accepted)
 

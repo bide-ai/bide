@@ -1,5 +1,7 @@
 # Bide: Design Doc
 
+Status: historical design sketch, kept as written. The shipped API is described in the guides and the README: the typed tool is `agent.Func`, flows are `plan` with `(*plan.Flow).RenderMermaid`, `ToolChoice` and image parts exist, and the open questions at the end are not tracked here (see the [roadmap](../ROADMAP.md)). Names such as `Durable`, `RequiresApproval`, `a.Tool(...)` and `RenderGraph(runID)` below are not the shipped API.
+
 ## Thesis
 
 Every existing Go agent framework (Eino, Google ADK Go, Genkit Go, LangChainGo) ported

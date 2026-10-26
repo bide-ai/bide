@@ -1,6 +1,6 @@
 # Design: the decision layer (System One deciders that can only make bide stricter)
 
-Status: accepted (user, 2026-10-18: all 15 decisions in section 14 as recommended); nothing is built, and code waits until v0.21.0 ships. The direction (target the `/v1/systemone` protocol, not a vendor) was chosen by the user. Target release: v0.22.0, after the v0.21.0 bank pilot.
+Status: accepted (user, 2026-10-18: all 15 decisions in section 14 as recommended); nothing is built, and no release is scheduled: the original target (v0.22.0, after the v0.21.0 bank pilot) has passed without a decider shipping, and a new target is not set. The direction (target the `/v1/systemone` protocol, not a vendor) was chosen by the user.
 
 ## 1. Problem
 
@@ -372,7 +372,7 @@ Decided: the user accepted all 15 as recommended on 2026-10-18.
 12. **OPA embedded** (the Go library, bundle digest pinned in the record as the "model version") rather than a sidecar. Recommend embedded; revisit if the dependency cost bites.
 13. **CI backend**: step 0 picks a CPU-capable pinned server if Kev will not run on a hosted runner. Recommend that, and Kev's conformance run on the maintainer's machine until a self-hosted runner exists. This departs from "CI against a local Kev" only if Kev cannot run there, which is not yet known.
 14. **Multiple deciders** joined by `max` in v1. Recommend yes (it is free in the lattice).
-15. **Release**: v0.22.0 after the v0.21.0 pilot, labelled experimental until a bank pilot uses it. Recommend yes.
+15. **Release**: v0.22.0 after the v0.21.0 pilot (the target has since passed and is not scheduled; see the status line), labelled experimental until a bank pilot uses it. Recommend yes.
 
 ## 15. PR plan
 
