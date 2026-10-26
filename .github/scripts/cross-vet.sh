@@ -81,8 +81,11 @@ vet_system() { # GOOS
   printf 'package sqlite\n' > "$stub/sqlite.go"
   real=$root/cross-vet.real.work; stubw=$root/cross-vet.stub.work
   trap "rm -rf '$tmp' '$real' '$stubw'" RETURN
+  # The go line is the repository's own (go.work): the modules require it, and a lower one is refused.
+  local goline
+  goline=$(awk '$1 == "go" { print $2; exit }' go.work 2>/dev/null || true)
   for w in "$real" "$stubw"; do
-    { printf 'go 1.27\n\nuse (\n'; for m in $MODULES; do printf '\t./%s\n' "$m"; done; printf ')\n'; } > "$w"
+    { printf 'go %s\n\nuse (\n' "${goline:-1.27}"; for m in $MODULES; do printf '\t./%s\n' "$m"; done; printf ')\n'; } > "$w"
   done
   printf '\nreplace %s => %s\n' "$DRIVER" "$stub" >> "$stubw"
 
