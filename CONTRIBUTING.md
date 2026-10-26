@@ -222,6 +222,23 @@ tree between releases.
    previous final release: retitle the candidate's section to `[X.Y.Z]` (merging the sections of
    several candidates into it), assemble the new fragments into it, point its compare link at the
    previous final release, and write `docs/releases/vX.Y.Z.md` as the full list.
+
+   Before the release pull request merges, audit the docs for freshness, and fix every confirmed
+   finding in that pull request, before anything is tagged. The audit is short and checks claims
+   against the code and the tags, not wording:
+   - the pages changed since the last tag (`git diff --stat vPREV..origin/main -- '*.md'`), for
+     version claims, flag and command names, and exported names (`go doc` resolves each);
+   - the status line of every design note (`docs/design/*.md`), for "not built", "not yet
+     released" or a target version that the changelog or the tags now contradict, and
+     `docs/ROADMAP.md` and the gap table of `docs/trust/control-mapping.md`, for items that
+     shipped;
+   - the translated READMEs and tours (`docs/i18n`), against the English `README.md` and the
+     changelog, for what they omit or still state as unreleased;
+   - the module lists (`scripts/release.sh`, the `MODULES` list in `ci.yml`, `go.work`, `CONTRIBUTING.md`,
+     `docs/reference/module-structure.md`), against the directories that hold a `go.mod`.
+   Run `go run ./internal/tools/doccheck -root . -links` and `go run ./internal/tools/docsnip` as
+   well. A finding that is not confirmed against the code or a tag is not a finding; one that is
+   not yet fixed in the release pull request blocks the tag, and the lead is told why.
 2. From a clean checkout of main, dry-run the release. Nothing leaves the machine: the script
    works in a scratch clone and pushes to a scratch repository that stands in for GitHub, and the
    go command resolves the bide modules from it.
