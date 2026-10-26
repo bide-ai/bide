@@ -73,7 +73,7 @@ func TestRunShowsStderrOfAFailingScript(t *testing.T) {
 	}
 }
 
-// A script that outlives its deadline is killed, fast, and the error says where it had got to.
+// A script that outlives its deadline is killed, and the error says where it had got to.
 func TestRunKillsAStalledScript(t *testing.T) {
 	out, err, _ := run(t, "stall", 3*time.Second)
 	if !TimedOut(err) || !strings.Contains(err.Error(), "was still running after 3s") || !strings.Contains(err.Error(), "waiting for chrome") || !strings.Contains(err.Error(), "partial") {
