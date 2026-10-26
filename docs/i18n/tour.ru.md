@@ -186,7 +186,7 @@ res, err := a.Run(ctx, runID, agent.UserText(input),
 _ = err
 ```
 
-Первый запуск прогона записывает свой вход и опции в `run:start`, и каждый следующий запуск, включая восстановление, идёт под ними: другой лимит (`WithMaxTurns`, `WithTokenBudget`) записывается как поправка `run:limits:<n>`, а любая другая отличающаяся настройка даёт `ErrConfig`. `agent.Cancel` отменяет прогон (сага сначала откатывается), а `agent.Status` читает его состояние из журнала.
+Первый запуск прогона записывает свой вход и опции в `run:start`, и каждый следующий запуск, включая восстановление, идёт под ними: `Resume(ctx, runID)` не нуждается ни в том, ни в другом, следующий запуск может поднять или снизить лимит (`WithMaxTurns`, `WithTokenBudget`: записывается как поправка), а любая другая отличающаяся настройка даёт `ErrConfig`. `WithSaga()` ведёт прогон как сагу, а `WithToolFilter(names...)` ограничивает его частью инструментов агента, что проверяется при диспетчеризации каждого вызова. `agent.Cancel(ctx, j, runID, reason)` отменяет прогон (сага сначала откатывается), а `agent.Status(ctx, j, runID)` читает его состояние из журнала.
 
 ## Стриминг
 
@@ -210,10 +210,10 @@ for ev := range stream.Events() {
 res, err := stream.Result() // what Run returns: the Result and an error (incl. a pause: *ApprovalPending, *OutcomeUnknown, ...)
 ```
 
-События: `TurnStarted`, `ModelEvent` (поток токенов), `AssistantTurn`, `ToolStarted` / `ToolCompleted`, `ApprovalRequired`, `Finished`. Пройдитесь по `Events()` ради UI, затем вызовите `Result()`, или вызовите `Result()` в одиночку, чтобы вести себя точно как `Run` (он осушит события за вас).
+События: `TurnStarted`, `ModelEvent` (поток токенов), `TurnRestarted`, `AssistantTurn`, `ToolStarted` / `ToolCompleted`, `ApprovalRequired`, `Finished`. Пройдитесь по `Events()` ради UI, затем вызовите `Result()`, или вызовите `Result()` в одиночку, чтобы вести себя точно как `Run` (он осушит события за вас). `ToolStarted` срабатывает непосредственно перед вызовом инструмента, поэтому вызов, отменённый до начала (и записанный как не начавшийся), не порождает ни `ToolStarted`, ни `ToolCompleted`.
 
 Две вещи, которые стоит знать, обе – следствия надёжности:
-- **Дельты токенов приходят ниже цепочки middleware** (Retry / Cost всё равно видят целые собранные сообщения) и **только при свежем вызове модели**.
+- **Дельты токенов приходят ниже цепочки middleware** (Retry / Cost всё равно видят целые собранные сообщения) и **только при свежем вызове модели**. За раз стримится один запрос хода. Когда middleware, например Retry, снова вызывает модель после попытки, которая уже отдала дельты, или ответ хода не тот, что стримился (победил резервный вызов Hedge, ответили запасной вариант или кэш), `TurnRestarted` помечает эти дельты как отброшенные, а дальше следует ответ, который записывает ход: очистите текст хода, когда он придёт. В middleware для этого нет кода стриминга; это делает агент.
 - **При возобновлении записанный в журнал транскрипт переиздаётся** как `AssistantTurn{Replayed: true}` + `ToolCompleted` перед живым прогрессом, так что свежий UI реконструирует всю историю после сбоя, а переигранный ход не производит дельт токенов (он уже был решён).
 
 `Stream` принимает те же опции, что и `Run` (`WithSaga()` для саги), а его `RunStream.Result()` возвращает то же, что вернул бы `Run`.
@@ -301,16 +301,12 @@ sig, _ := audit.Sign(head, audit.Ed25519Signer{Priv: priv}) // anchor it: sign /
 
 Для **избирательного раскрытия** `audit.Root` / `Prove` / `VerifyInclusion` строят дерево Меркла по **RFC 6962** (Certificate Transparency), так что вы можете доказать, что одна запись является частью зафиксированного прогона, через доказательство включения за O(log n), не раскрывая остальные записи (например показать аудитору, что одно списание произошло, не выставляя других клиентов или промпты). А `ProveConsistency` / `VerifyConsistency` доказывают, что более ранний корень является **только-добавляемым префиксом** более позднего: что история только дополнялась, никогда не переписывалась и не переупорядочивалась (гарантия лога прозрачности). Реализация сверена с опубликованными тестовыми векторами RFC 6962.
 
-`SignTreeHead` производит подписанную верхушку дерева (**Signed Tree Head**) в стиле CT – `{Kind, RunID, Size, Root, TimestampNanos}`, подписанные вместе со схемой подписи любым `audit.Signer` (Ed25519, ECDSA P-256, ML-DSA-65 или их гибрид), – тот артефакт, что вы публикуете. Полный поток: подписать STH, позже раскрыть одну запись с доказательством включения, которое аудитор сверяет с подписанным корнем, и доказать только-добавляемый рост между двумя STH. См. [docs/guides/audit.md](../../docs/guides/audit.md) для модели, API и сквозного потока соответствия.
+`SignTreeHead` производит подписанную верхушку дерева (**Signed Tree Head**, формат `bide.audit.sth.v5`) в стиле CT – `{Kind, RunID, Size, Root, TimestampNanos}`, подписанные вместе со схемой подписи любым `audit.Signer` (Ed25519, ECDSA P-256, ML-DSA-65 или их гибрид), – тот артефакт, что вы публикуете. Листья фиксируют байты, которые журнал хранит для каждой записи, дословно, поэтому доказательство несёт эти байты (`record_bytes`), а запись, записанная более новым выпуском с полями, которых этот не знает, всё равно проверяется. Полный поток: подписать STH, позже раскрыть одну запись с доказательством включения, которое аудитор сверяет с подписанным корнем, и доказать только-добавляемый рост между двумя STH. См. [docs/guides/audit.md](../../docs/guides/audit.md) для модели, API и сквозного потока соответствия.
 
 ### Просмотрщик запусков
 
-`bide view` открывает страницу только для чтения для одного запуска, на `127.0.0.1`, из журнала SQLite
-или Postgres либо экспортированного журнала. Установка: `go install github.com/bide-ai/bide/cmd/bide@latest`. `bide view -config flow.yaml` так же показывает определение потока, отмечая проблемы на графе, а `-check` выполняет эту проверку в CI. `bide check flow.yaml -diff main` сравнивает две версии потока на графе (добавленное зелёным, удалённое красным пунктиром, изменённое янтарным) и отдельно отмечает ослабленную политику одобрения (шлюз удалён, его порог снижен, снят `exclude_principal` или убран либо удлинён `timeout`). Страница окрашивает каждый узел по тому, что с ним делает сбой (побочный эффект останавливает возобновление, узел только для чтения или идемпотентный запускается снова), и проверяет строки `assert` конфигурации, например `every path to charge passes approval >= 2 of 3`, рисуя контрпример нарушения красным. Она показывает хронологию запуска (ходы модели, вызовы инструментов и их
-`Safety`, попытки, одобрения), остановленную операцию с вызовом `ResolveHalt`, который записывает её
-исход, статус k-of-n каждого шлюза одобрения, путь потока `plan` по объявленной топологии и то,
-проверяется ли журнал по подписанной вершине дерева или пакету доказательств. В хранилище она никогда
-не пишет. Пока запуск идёт, страница (из журнала SQLite или Postgres) обновляется по мере появления новых записей, до его завершения. Без `-run` она открывает список запусков с фильтрами по состоянию, виду и ID запуска. См. [руководство по просмотрщику](../../docs/guides/run-viewer.md) (на английском).
+`bide view` открывает страницу только для чтения для одного запуска, на `127.0.0.1`, из журнала SQLite или Postgres либо экспортированного журнала. Она показывает хронологию запуска (ходы модели, вызовы инструментов и их `Safety`, попытки, одобрения), остановленную операцию с вызовом `ResolveHalt`, который записывает её исход, статус k-из-n каждого шлюза одобрения (вызова инструмента или узла потока) и проверяются ли его подписи, путь потока `plan` по объявленной топологии и то, проверяется ли журнал по подписанной вершине дерева или пакету доказательств. В хранилище она никогда не пишет. Пока запуск идёт, страница (из журнала SQLite или Postgres) обновляется по мере появления новых записей, до его завершения. Без `-run` она открывает список запусков с фильтрами по состоянию, виду и ID запуска. `bide view -config flow.yaml` так же показывает определение потока, отмечая проблемы на графе, а `bide check flow.yaml` выполняет эту проверку в CI. `bide check flow.yaml -diff main` рисует две версии потока на одном графе (добавленное зелёным, удалённое красными пунктирными призраками, изменённое янтарным) и отдельно отмечает ослабленную политику одобрения (шлюз удалён, его порог снижен, снят `exclude_principal` или убран либо удлинён `timeout`). Страница окрашивает каждый узел по тому, что с ним делает сбой (побочный эффект останавливается, узел только для чтения или идемпотентный запускается снова), и проверяет строки `assert` конфигурации, например `every path to charge passes approval >= 2 of 3`, рисуя контрпример нарушения красным.
+Установите его через `go install github.com/bide-ai/bide/cmd/bide@latest` (или `brew install bide-ai/tap/bide`); см. [руководство по просмотрщику](../../docs/guides/run-viewer.md) (на английском).
 
 <table>
 <tr>
@@ -474,9 +470,9 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 }
 ```
 
-Категории: `ErrConfig`, `ErrModel`, `ErrTool`, `ErrStorage`, `ErrProtocol`, `ErrBudget`. Условия (каждое оборачивает категорию): `ErrUnknownTool`, `ErrToolArgs` (оборачивают `ErrTool`), `ErrToolReinvoked`, `ErrInvalidApproval`, `ErrAlreadyDecided` (оборачивают `ErrConfig`), `ErrNoRecordedOutput`, `ErrIncompleteResponse` (оборачивают `ErrModel`), `ErrTruncatedToolArgs` (оборачивает `ErrProtocol`), `ErrBudgetExceeded`, `ErrMaxTurns` (оборачивают `ErrBudget`). `ErrToolNotCalled` не оборачивает никакую категорию: он помечает вызов инструмента, о котором известно, что он так и не дошёл до инструмента (его оборачивает отказ middleware инструментов). Адаптеры поставщиков также возвращают `*RateLimited` (HTTP 429, с подсказкой `RetryAfter`) и `*APIError` (прочие не-2xx, с `StatusCode`), оба оборачивают `ErrModel`. Каждая ошибка, которую возвращает набор инструментов (включая из модели, MCP, хранилища и адаптеров управления), несёт категорию, так что `errors.Is` надёжен по всей поверхности.
+Категории: `ErrConfig`, `ErrModel`, `ErrTool`, `ErrStorage`, `ErrProtocol`, `ErrBudget`. Условия (каждое оборачивает категорию): `ErrUnknownTool`, `ErrToolArgs`, `ErrToolOutcomeUnknown` (оборачивают `ErrTool`), `ErrToolReinvoked`, `ErrInvalidApproval`, `ErrAlreadyDecided` (оборачивают `ErrConfig`), `ErrNoRecordedOutput`, `ErrIncompleteResponse` (оборачивают `ErrModel`), `ErrTruncatedToolArgs` (оборачивает `ErrProtocol`), `ErrStreamProtocol` и `ErrNegativeUsage` (оборачивают `ErrProtocol` и `ErrModel`), `ErrBudgetExceeded`, `ErrMaxTurns` (оборачивают `ErrBudget`). `ErrToolNotCalled` не оборачивает никакую категорию: он помечает вызов инструмента, о котором известно, что он так и не дошёл до инструмента (его оборачивает отказ middleware инструментов). Адаптеры поставщиков также возвращают `*RateLimited` (HTTP 429, с подсказкой `RetryAfter`) и `*APIError` (прочие не-2xx, с `StatusCode`), оба оборачивают `ErrModel`. Каждая ошибка, которую возвращает набор инструментов (включая из модели, MCP, хранилища и адаптеров управления), несёт категорию, так что `errors.Is` надёжен по всей поверхности.
 
-А **сигналы потока управления** богаче, чем категория, поэтому они остаются конкретными типами, сопоставляемыми через `errors.As`: `*ApprovalPending` (нужно одобрение), `*InterruptPending` (ожидание ввода человека), `*TimerPending` (ожидает надёжный таймер), `*SignalPending` (ожидание внешнего сигнала), `*OutcomeUnknown` (небезопасно возобновлять), `*SagaAborted` (откачено) и `*HaltTooYoung` (из `ResolveHalt`, когда `WithMinHaltAge` ещё не истёк). Все они реализуют запечатанный интерфейс `agent.Pause`; проверяйте его через `agent.IsPause(err)` и читайте через `agent.AsPause(err)`. Приостановленный или остановленный прогон не относится к категории «сбоя»; инспектируйте структуру ради `RunID` / `ToolUseID` / деталей компенсации. Отмена всплывает как обычные `context.Canceled` / `context.DeadlineExceeded`, а ведение прогона, отменённое из-за потери его аренды (`agent.Lease`), всплывает как `ErrLeaseLost`; как и отмена, эта ошибка не несёт категории.
+А **сигналы потока управления** богаче, чем категория, поэтому они остаются конкретными типами. Приостановленный или остановленный прогон возвращает `agent.Pause`, запечатанный интерфейс ровно с пятью видами: `*ApprovalPending` (нужно одобрение), `*InterruptPending` (ожидание ввода человека), `*TimerPending` (ожидает надёжный таймер), `*SignalPending` (ожидание внешнего сигнала или сообщения канала) и `*OutcomeUnknown` (небезопасно возобновлять; его `Cause` равен `HaltCrashed` или `HaltContended`; узел потока `plan` выполняется как `Step` и останавливается как `Step`, под именем своего ключа узла `node:<name>`, а `Flow.ResolveHalt` снимает остановку). Проверяйте его через `agent.IsPause(err)`, читайте через `agent.AsPause(err)` (его `Paused()` называет прогон, на который нужно ответить, и прогон, который нужно вызвать заново) или сопоставляйте вид через `errors.As`. Остальные: `*SagaAborted` (откачено) и `*HaltTooYoung` (из `ResolveHalt`, когда `WithMinHaltAge` ещё не истёк). Приостановленный или остановленный прогон не относится к категории «сбоя»; инспектируйте структуру ради деталей прогона, операции или компенсации. Прогон, отменённый через `agent.Cancel`, возвращает `ErrRunCancelled` (с `Result`), который не несёт категории: это терминальный статус, а не сбой. Отмена контекста всплывает как обычные `context.Canceled` / `context.DeadlineExceeded`, а ведение прогона, отменённое из-за потери его аренды (`agent.Lease`), всплывает как `ErrLeaseLost`; как и отмена, эта ошибка не несёт категории.
 
 ## Middleware и наблюдаемость
 
@@ -507,6 +503,24 @@ a, err = a.With(
 ```
 
 `Retry` делает экспоненциальный откат с джиттером и уважает `Retry-After` на 429 поставщика (адаптер возвращает типизированный `*agent.RateLimited`); `Cost` накапливает USD из использования токенов (включая чтение/запись кэша) в `CostMeter`, который вы читаете после прогона.
+
+Middleware модели имеет вид `func(next agent.ModelHandler) agent.ModelHandler`. Оно получает `agent.ModelCall` (`Request`, целевую `Model`, `RunID` и `Turn`) и возвращает `agent.ModelResponse` (`Message`, его `Usage` и причину завершения `Finish`). Вызов является значением: измените копию и передайте дальше (`c := call; c.Model = backup` – всё, что делает `Hedge`). Работа, которая относится к каждому реально отправленному запросу, а не к вызову, помещается в хук, который выполняется один раз вокруг каждого запроса каждой повторной попытки и каждой хеджированной цели ниже него:
+
+<!-- docsnip: setup import "log" -->
+```go
+// Log every request a turn sends, with its number within the turn.
+func LogRequests(next agent.ModelHandler) agent.ModelHandler {
+	return func(ctx context.Context, call agent.ModelCall) (agent.ModelResponse, error) {
+		return next(ctx, call.AddHook(agent.ModelCallHook{
+			After: func(_ context.Context, c agent.ModelCall, a agent.ModelAttempt) {
+				log.Printf("run %s turn %d request %d: %d tokens, err %v", c.RunID, c.Turn, c.Attempt(), a.Response.Usage.TotalTokens(), a.Err)
+			},
+		}))
+	}
+}
+```
+
+Хуки только добавляются, а собственный учёт расхода прогона не является хуком, поэтому никакое middleware не может скрыть запрос от `WithTokenBudget` или `Result.Spend`. Вне агента `agent.CallModel(ctx, model, req, mw...)` отправляет один вызов через ту же цепочку.
 
 Поскольку `trace.Tool` выполняется внутри цикла, его span сидит в контексте, переданном инструменту, так что когда инструмент сам является суб-агентом, прогон этого суб-агента и его собственные span'ы вкладываются как дочерние. Трейс пересекает границу суб-агента.
 
@@ -539,7 +553,7 @@ Bide представляет собой репозиторий с нескол�
 
 ```
 agent (root)     durable loop · Journal/Store · Message/Part · Tool/Safety · middleware types · RenderMermaid
-plan             optional typed flow builder + declarative config; lowers to the loop (Topology · Conform)
+plan             plan flows: the optional builder + declarative config; lowers to the loop (Topology · Conform)
 model/anthropic  native Claude (thinking + signatures)
 model/openai     any OpenAI-compatible endpoint
 model/gemini     native Gemini (generativelanguage / Vertex via WithBaseURL)
@@ -547,7 +561,7 @@ schema           reflect Go types → inline JSON Schema + OpenAIStrict
 middleware       Retry, RateLimit, Cost, Hedge
 trace            opt-in OTel gen_ai.* spans
 store/sqlite     on-disk durable resume (single binary, no cluster)
-store/postgres   HA durable resume (any node resumes any run)
+store/postgres   HA durable resume (any node resumes any run); bide migrate + WithoutMigration for a role with no DDL rights
 govern           Tier-2: federated governed state + quorum for agents that must agree (gsm-backed; own module)
 ```
 

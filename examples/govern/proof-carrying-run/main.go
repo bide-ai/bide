@@ -22,6 +22,8 @@
 // What the certificate proves, precisely: properties of the GOVERNED, COMMITTED boundary (which
 // policies ran, that each is approved and has an anchored, oracle-checkable convergence certificate).
 // It does NOT prove the model's judgment was correct or close the runtime-refinement gap.
+//
+//	cd examples/govern && go run ./proof-carrying-run
 package main
 
 import (

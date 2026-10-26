@@ -1,7 +1,7 @@
 # Examples
 
 Runnable programs that exercise Bide end to end. Each is a `main.go` in its own
-directory with a header comment giving a one-line description and its run command.
+directory with a header comment describing it and giving its run command.
 
 Model-centric examples call an OpenAI-compatible endpoint (here OpenRouter) and read an
 API key from the environment; set `OPENROUTER_API_KEY` before running them. Examples

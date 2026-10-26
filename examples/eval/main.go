@@ -9,6 +9,8 @@
 // Remember the boundary (see docs/testing/testing.md): eval measures the model statistically; the provable
 // guarantees (governed convergence, cryptographic audit) live in the govern and audit packages. A
 // pass rate is a signal, not a proof.
+//
+//	go run ./examples/eval
 package main
 
 import (

@@ -18,6 +18,8 @@
 //
 // The model here is a stub (offline, deterministic) so the example runs with no API key; the
 // mechanism is identical with anthropic.New / openai.New / gemini.New.
+//
+//	go run ./examples/webhook
 package main
 
 import (
