@@ -18,6 +18,8 @@
 // The boundary, stated plainly: the k-of-n gate is machine-checked; the agreement is statistical.
 // Correlated model errors mean agreement is not independence, so a quorum lowers single-model risk
 // without certifying the answer. This demo proves the gate, not the correctness of the decision.
+//
+//	cd examples/govern && go run ./quorum
 package main
 
 import (

@@ -186,7 +186,7 @@ res, err := a.Run(ctx, runID, agent.UserText(input),
 _ = err
 ```
 
-रन की पहली ड्राइव अपना इनपुट और विकल्प `run:start` में जर्नल करती है, और हर बाद की ड्राइव, रिकवरी सहित, उन्हीं के तहत चलती है: एक अलग सीमा (`WithMaxTurns`, `WithTokenBudget`) एक संशोधन `run:limits:<n>` के रूप में जर्नल होती है, और कोई अन्य अलग सेटिंग `ErrConfig` है। `agent.Cancel` एक रन रद्द करता है (एक सागा पहले वापस घुमाई जाती है), और `agent.Status` जर्नल से उसकी स्थिति पढ़ता है।
+रन की पहली ड्राइव अपना इनपुट और वे विकल्प जो उसके कॉलर ने दिए `run:start` में जर्नल करती है, और हर बाद की ड्राइव, रिकवरी सहित, उन्हीं के तहत चलती है: `Resume(ctx, runID)` को दोनों में से कुछ नहीं चाहिए, बाद की ड्राइव कोई सीमा बढ़ा या घटा सकती है (`WithMaxTurns`, `WithTokenBudget`: एक संशोधन के रूप में जर्नल होती है), और कोई अन्य अलग सेटिंग `ErrConfig` है। `WithSaga()` रन को सागा के रूप में चलाता है, और `WithToolFilter(names...)` उसे एजेंट के कुछ ही टूलों तक सीमित करता है, जो हर कॉल के डिस्पैच के समय लागू होता है। `agent.Cancel(ctx, j, runID, reason)` एक रन रद्द करता है (एक सागा पहले वापस घुमाई जाती है), और `agent.Status(ctx, j, runID)` जर्नल से उसकी स्थिति पढ़ता है।
 
 ## स्ट्रीमिंग
 
@@ -210,10 +210,10 @@ for ev := range stream.Events() {
 res, err := stream.Result() // what Run returns: the Result and an error (incl. a pause: *ApprovalPending, *OutcomeUnknown, ...)
 ```
 
-घटनाएँ: `TurnStarted`, `ModelEvent` (टोकन फ़ीड), `AssistantTurn`, `ToolStarted` / `ToolCompleted`, `ApprovalRequired`, `Finished`। एक UI के लिए `Events()` पर रेंज करें फिर `Result()` को कॉल करें, या अकेले `Result()` कॉल करें ताकि यह ठीक `Run` की तरह व्यवहार करे (यह आपके लिए घटनाओं को निकाल देता है)।
+घटनाएँ: `TurnStarted`, `ModelEvent` (टोकन फ़ीड), `TurnRestarted`, `AssistantTurn`, `ToolStarted` / `ToolCompleted`, `ApprovalRequired`, `Finished`। एक UI के लिए `Events()` पर रेंज करें फिर `Result()` को कॉल करें, या अकेले `Result()` कॉल करें ताकि यह ठीक `Run` की तरह व्यवहार करे (यह आपके लिए घटनाओं को निकाल देता है)। `ToolStarted` टूल को बुलाए जाने से ठीक पहले फ़ायर होता है, इसलिए जो कॉल शुरू होने से पहले रद्द हो गई (और शुरू नहीं हुई के रूप में दर्ज हुई) वह न `ToolStarted` उत्सर्जित करती है न `ToolCompleted`।
 
 दो बातें जानने योग्य, दोनों टिकाऊपन के परिणाम:
-- **टोकन डेल्टा middleware शृंखला के नीचे पहुँचते हैं** (Retry / Cost फिर भी पूरे संयोजित संदेश देखते हैं), और **केवल एक ताज़ा मॉडल कॉल पर**।
+- **टोकन डेल्टा middleware शृंखला के नीचे पहुँचते हैं** (Retry / Cost फिर भी पूरे संयोजित संदेश देखते हैं), और **केवल एक ताज़ा मॉडल कॉल पर**। एक ट्रन का एक ही अनुरोध एक समय में स्ट्रीम होता है। जब Retry जैसी कोई middleware ऐसे प्रयास के बाद मॉडल को फिर बुलाती है जो पहले ही डेल्टा स्ट्रीम कर चुका था, या ट्रन का उत्तर वह नहीं है जो स्ट्रीम हुआ (Hedge का बैकअप जीता, किसी फ़ॉलबैक या कैश ने उत्तर दिया), तो `TurnRestarted` उन डेल्टा को रद्द किए गए के रूप में चिह्नित करता है, और ट्रन जो उत्तर रिकॉर्ड करता है वह उसके बाद आता है: उसके आने पर ट्रन का टेक्स्ट साफ़ कर दें। इसके लिए middleware में कोई स्ट्रीमिंग कोड नहीं होता; एजेंट यह करता है।
 - **पुनरारंभ पर, जर्नल-किया गया ट्रांसक्रिप्ट फिर से उत्सर्जित होता है** `AssistantTurn{Replayed: true}` + `ToolCompleted` के रूप में, लाइव प्रगति से पहले, ताकि एक ताज़ा UI क्रैश के बाद पूरी कहानी पुनर्निर्मित कर ले, और एक पुनर्खेल-किया गया ट्रन कोई टोकन डेल्टा उत्पन्न नहीं करता (वह पहले ही तय हो चुका था)।
 
 `Stream` वही विकल्प लेता है जो `Run` (सागा के लिए `WithSaga()`), और उसका `RunStream.Result()` वही लौटाता है जो `Run` लौटाता।
@@ -301,20 +301,17 @@ sig, _ := audit.Sign(head, audit.Ed25519Signer{Priv: priv}) // anchor it: sign /
 
 **चयनात्मक प्रकटीकरण** के लिए, `audit.Root` / `Prove` / `VerifyInclusion` एक **RFC 6962** (Certificate Transparency) Merkle ट्री बनाते हैं, ताकि आप एक O(log n) समावेशन प्रमाण के माध्यम से सिद्ध कर सकें कि एक रिकॉर्ड एक प्रतिबद्ध रन का भाग है, बाकी रिकॉर्ड उजागर किए बिना (जैसे एक ऑडिटर को दिखाएँ कि एक चार्ज हुआ, कोई अन्य ग्राहक या प्रॉम्प्ट प्रकट किए बिना)। और `ProveConsistency` / `VerifyConsistency` सिद्ध करते हैं कि एक पूर्ववर्ती रूट एक बाद वाले का **append-only उपसर्ग** है: कि इतिहास में केवल जोड़ा गया, कभी दोबारा लिखा या पुनः-क्रमबद्ध नहीं किया गया (ट्रांसपेरेंसी-लॉग गारंटी)। कार्यान्वयन प्रकाशित RFC 6962 परीक्षण वेक्टरों के विरुद्ध जाँचा गया है।
 
-`SignTreeHead` CT-शैली का **हस्ताक्षरित ट्री हेड (Signed Tree Head)** उत्पन्न करता है, `{Kind, RunID, Size, Root, TimestampNanos}` जो अपनी हस्ताक्षर योजना सहित किसी भी `audit.Signer` (Ed25519, ECDSA P-256, ML-DSA-65, या दोनों का हाइब्रिड) से हस्ताक्षरित है, वह कलाकृति जिसे आप प्रकाशित करते हैं। पूरा प्रवाह: एक STH पर हस्ताक्षर करें, बाद में एक समावेशन प्रमाण के साथ एक एकल रिकॉर्ड प्रकट करें जिसे एक ऑडिटर हस्ताक्षरित रूट के विरुद्ध जाँचता है, और दो STH के बीच append-only वृद्धि सिद्ध करें। मॉडल, API, और एंड-टू-एंड अनुपालना प्रवाह के लिए [docs/guides/audit.md](../../docs/guides/audit.md) देखें।
+`SignTreeHead` CT-शैली का **हस्ताक्षरित ट्री हेड (Signed Tree Head)** (प्रारूप `bide.audit.sth.v5`) उत्पन्न करता है, `{Kind, RunID, Size, Root, TimestampNanos}` जो अपनी हस्ताक्षर योजना सहित किसी भी `audit.Signer` (Ed25519, ECDSA P-256 (वह योजना जिस पर HSM और क्लाउड KMS हस्ताक्षर करते हैं), ML-DSA-65 (पोस्ट-क्वांटम), या Ed25519 और ML-DSA-65 का हाइब्रिड) से हस्ताक्षरित है, वह कलाकृति जिसे आप प्रकाशित करते हैं। पत्तियाँ हर रिकॉर्ड के लिए जर्नल द्वारा संग्रहीत बाइटों से ज्यों-का-त्यों प्रतिबद्ध होती हैं, इसलिए एक प्रमाण वे बाइट (`record_bytes`) वहन करता है, और जो रिकॉर्ड किसी नई रिलीज़ ने ऐसे फ़ील्डों के साथ लिखा जिन्हें यह रिलीज़ नहीं जानती, वह फिर भी सत्यापित होता है। पूरा प्रवाह: एक STH पर हस्ताक्षर करें, बाद में एक समावेशन प्रमाण के साथ एक एकल रिकॉर्ड प्रकट करें जिसे एक ऑडिटर हस्ताक्षरित रूट के विरुद्ध जाँचता है, और दो STH के बीच append-only वृद्धि सिद्ध करें। मॉडल, API, और एंड-टू-एंड अनुपालना प्रवाह के लिए [docs/guides/audit.md](../../docs/guides/audit.md) देखें।
 
 ### रन व्यूअर
 
-`bide view` एक रन के लिए केवल-पढ़ने वाला पेज खोलता है, `127.0.0.1` पर, SQLite या Postgres जर्नल या निर्यात किए गए
-जर्नल से। इंस्टॉल करें: `go install github.com/bide-ai/bide/cmd/bide@latest`। `bide view -config flow.yaml` इसी तरह फ़्लो की परिभाषा दिखाता है और समस्याओं को ग्राफ़ पर चिह्नित करता है; `-check` यही जाँच CI में चलाता है। `bide check flow.yaml -diff main` फ़्लो के दो संस्करणों की तुलना ग्राफ़ पर दिखाता है (जोड़े गए हरे, हटाए गए धराशायी लाल, बदले गए एम्बर में) और कमज़ोर हुई अनुमोदन नीति (गेट हटाया गया, उसकी आवश्यकता घटी, `exclude_principal` हटा, या `timeout` हटाया या लंबा किया गया) को अलग से बताता है। पेज हर नोड को इस आधार पर रंगता है कि क्रैश उसके साथ क्या करता है (साइड इफ़ेक्ट रुकता है, रीड-ओनली या idempotent नोड फिर से चलता है), और कॉन्फ़िग की `assert` पंक्तियों, जैसे `every path to charge passes approval >= 2 of 3`, का निर्णय करता है; उल्लंघन का प्रति-उदाहरण पथ लाल रंग में दिखता है। यह रन की समय-रेखा (मॉडल टर्न, टूल कॉल और उनकी `Safety`, प्रयास, अनुमोदन), रुका हुआ ऑपरेशन
-और उसका परिणाम दर्ज करने वाला `ResolveHalt` कॉल, हर अनुमोदन गेट की k-of-n स्थिति, घोषित टोपोलॉजी पर
-`plan` फ़्लो का पथ, और यह दिखाता है कि जर्नल हस्ताक्षरित ट्री हेड या साक्ष्य पैकेज के विरुद्ध सत्यापित
-होता है या नहीं। यह स्टोर में कभी नहीं लिखता। जब तक रन चल रहा है, उसका पेज (SQLite या Postgres जर्नल से) नए रिकॉर्ड आते ही अपने-आप अपडेट होता है, रन समाप्त होने तक। `-run` के बिना यह रनों की सूची खोलता है, जिसे स्थिति, प्रकार और रन ID से छाना जा सकता है। देखें [रन व्यूअर गाइड](../../docs/guides/run-viewer.md) (अंग्रेज़ी में)।
+`bide view` एक रन के लिए केवल-पढ़ने वाला पेज खोलता है, `127.0.0.1` पर, SQLite या Postgres जर्नल या निर्यात किए गए जर्नल से। यह रन की समय-रेखा (मॉडल टर्न, टूल कॉल और उनकी `Safety`, प्रयास, अनुमोदन), रुका हुआ ऑपरेशन और उसका परिणाम दर्ज करने वाला `ResolveHalt` कॉल, हर अनुमोदन गेट की k-of-n स्थिति (टूल कॉल की या फ़्लो नोड की) और उसके हस्ताक्षर सत्यापित होते हैं या नहीं, घोषित टोपोलॉजी पर `plan` फ़्लो का पथ, और यह दिखाता है कि जर्नल हस्ताक्षरित ट्री हेड या साक्ष्य पैकेज के विरुद्ध सत्यापित होता है या नहीं। यह स्टोर में कभी नहीं लिखता। जब तक रन चल रहा है, उसका पेज (SQLite या Postgres जर्नल से) नए रिकॉर्ड आते ही उसका अनुसरण करता है, रन समाप्त होने तक। `-run` के बिना यह रनों की सूची खोलता है, जिसे स्थिति, प्रकार और रन ID से छाना जा सकता है। `bide view -config flow.yaml` इसी तरह फ़्लो की परिभाषा दिखाता है और समस्याओं को ग्राफ़ पर चिह्नित करता है, और `bide check flow.yaml` यही जाँच CI में चलाता है। `bide check flow.yaml -diff main` फ़्लो के दो संस्करणों को एक ही ग्राफ़ पर खींचता है (जोड़े गए हरे, हटाए गए धराशायी लाल भूतों के रूप में, बदले गए एम्बर में) और कमज़ोर हुई अनुमोदन नीति (गेट हटाया गया, उसकी आवश्यकता घटी, `exclude_principal` हटा, या `timeout` हटाया या लंबा किया गया) को अलग से बताता है। पेज हर नोड को इस आधार पर रंगता है कि क्रैश उसके साथ क्या करता है (साइड इफ़ेक्ट रुकता है, रीड-ओनली या idempotent नोड फिर से चलता है), और कॉन्फ़िग की `assert` पंक्तियों, जैसे `every path to charge passes approval >= 2 of 3`, का निर्णय करता है; उल्लंघन का प्रति-उदाहरण पथ लाल रंग में दिखता है।
+इसे `go install github.com/bide-ai/bide/cmd/bide@latest` से इंस्टॉल करें (या `brew install bide-ai/tap/bide`); देखें [रन व्यूअर गाइड](../../docs/guides/run-viewer.md) (अंग्रेज़ी में)।
 
 <table>
 <tr>
-<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/guides/img/refund-before-dark.png"><img src="../../docs/guides/img/refund-before-light.png" width="100%" alt="bide view: refund-42, before"></picture></td>
-<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/guides/img/refund-after-dark.png"><img src="../../docs/guides/img/refund-after-light.png" width="100%" alt="bide view: refund-42, after"></picture></td>
+<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/guides/img/refund-before-dark.png"><img src="../../docs/guides/img/refund-before-light.png" width="100%" alt="bide view: run refund-42 halted, outcome unknown, with its ResolveHalt call"></picture></td>
+<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/guides/img/refund-after-dark.png"><img src="../../docs/guides/img/refund-after-light.png" width="100%" alt="bide view: run refund-42 completed, approved 2 of 3, audit proof verified"></picture></td>
 </tr>
 <tr>
 <td>पहले: रिफ़ंड चलने के बाद क्रैश हुआ, इसलिए रन रुका है और परिणाम अज्ञात है; पेज <code>ResolveHalt</code> कॉल देता है।</td>
@@ -473,9 +470,9 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 }
 ```
 
-श्रेणियाँ: `ErrConfig`, `ErrModel`, `ErrTool`, `ErrStorage`, `ErrProtocol`, `ErrBudget`। स्थितियाँ (हर एक एक श्रेणी को लपेटती है): `ErrUnknownTool`, `ErrToolArgs` (`ErrTool` को लपेटती हैं), `ErrToolReinvoked`, `ErrInvalidApproval`, `ErrAlreadyDecided` (`ErrConfig` को लपेटती हैं), `ErrNoRecordedOutput`, `ErrIncompleteResponse` (`ErrModel` को लपेटती हैं), `ErrTruncatedToolArgs` (`ErrProtocol` को लपेटती है), `ErrBudgetExceeded`, `ErrMaxTurns` (`ErrBudget` को लपेटती हैं)। `ErrToolNotCalled` किसी श्रेणी को नहीं लपेटती: यह एक ऐसी टूल कॉल को चिह्नित करती है जिसके बारे में ज्ञात है कि वह अपने टूल तक कभी नहीं पहुँची (एक टूल middleware की अस्वीकृति इसे लपेटती है)। प्रदाता अडैप्टर `*RateLimited` (HTTP 429, एक `RetryAfter` संकेत के साथ) और `*APIError` (अन्य non-2xx, `StatusCode` के साथ) भी लौटाते हैं, दोनों `ErrModel` को लपेटते हैं। टूलकिट जो भी त्रुटि लौटाता है (मॉडल, MCP, स्टोर, और शासन अडैप्टरों से सहित) एक श्रेणी वहन करती है, इसलिए `errors.Is` पूरी सतह पर विश्वसनीय है।
+श्रेणियाँ: `ErrConfig`, `ErrModel`, `ErrTool`, `ErrStorage`, `ErrProtocol`, `ErrBudget`। स्थितियाँ (हर एक एक श्रेणी को लपेटती है): `ErrUnknownTool`, `ErrToolArgs`, `ErrToolOutcomeUnknown` (`ErrTool` को लपेटती हैं), `ErrToolReinvoked`, `ErrInvalidApproval`, `ErrAlreadyDecided` (`ErrConfig` को लपेटती हैं), `ErrNoRecordedOutput`, `ErrIncompleteResponse` (`ErrModel` को लपेटती हैं), `ErrTruncatedToolArgs` (`ErrProtocol` को लपेटती है), `ErrStreamProtocol` और `ErrNegativeUsage` (`ErrProtocol` और `ErrModel` को लपेटती हैं), `ErrBudgetExceeded`, `ErrMaxTurns` (`ErrBudget` को लपेटती हैं)। `ErrToolNotCalled` किसी श्रेणी को नहीं लपेटती: यह एक ऐसी टूल कॉल को चिह्नित करती है जिसके बारे में ज्ञात है कि वह अपने टूल तक कभी नहीं पहुँची (एक टूल middleware की अस्वीकृति इसे लपेटती है)। प्रदाता अडैप्टर `*RateLimited` (HTTP 429, एक `RetryAfter` संकेत के साथ) और `*APIError` (अन्य non-2xx, `StatusCode` के साथ) भी लौटाते हैं, दोनों `ErrModel` को लपेटते हैं। टूलकिट जो भी त्रुटि लौटाता है (मॉडल, MCP, स्टोर, और शासन अडैप्टरों से सहित) एक श्रेणी वहन करती है, इसलिए `errors.Is` पूरी सतह पर विश्वसनीय है।
 
-और **नियंत्रण-प्रवाह संकेत** एक श्रेणी से समृद्धतर हैं, इसलिए वे ठोस प्रकार बने रहते हैं जिन्हें `errors.As` मिलाता है: `*ApprovalPending` (अनुमोदन आवश्यक), `*InterruptPending` (इंसानी इनपुट की प्रतीक्षा), `*TimerPending` (टिकाऊ टाइमर लंबित), `*SignalPending` (एक बाहरी सिग्नल की प्रतीक्षा), `*OutcomeUnknown` (पुनरारंभ असुरक्षित), `*SagaAborted` (वापस लुढ़काया गया), और `*HaltTooYoung` (`ResolveHalt` से, जब `WithMinHaltAge` अभी बीता नहीं है)। ये सभी सील किए गए इंटरफ़ेस `agent.Pause` को संतुष्ट करते हैं; `agent.IsPause(err)` से जाँचें और `agent.AsPause(err)` से पढ़ें। एक रुका या ठहरा हुआ रन एक "विफलता" श्रेणी नहीं है; `RunID` / `ToolUseID` / क्षतिपूर्ति विवरण के लिए struct का निरीक्षण करें। रद्दीकरण सामान्य `context.Canceled` / `context.DeadlineExceeded` के रूप में उभरता है, और जो ड्राइव अपने रन की लीज़ (`agent.Lease`) खो जाने के कारण रद्द हुई, वह `ErrLeaseLost` के रूप में; रद्दीकरण की तरह, यह कोई श्रेणी वहन नहीं करती।
+**नियंत्रण-प्रवाह संकेत** एक श्रेणी से समृद्धतर हैं, इसलिए वे ठोस प्रकार बने रहते हैं। एक रुका या ठहरा हुआ रन एक `agent.Pause` लौटाता है, जो सील किया गया इंटरफ़ेस है और जिसके ठीक पाँच प्रकार हैं: `*ApprovalPending` (अनुमोदन आवश्यक), `*InterruptPending` (इंसानी इनपुट की प्रतीक्षा), `*TimerPending` (टिकाऊ टाइमर लंबित), `*SignalPending` (एक बाहरी सिग्नल या चैनल संदेश की प्रतीक्षा), और `*OutcomeUnknown` (पुनरारंभ असुरक्षित; उसका `Cause` `HaltCrashed` या `HaltContended` है; `plan` फ़्लो का नोड एक `Step` के रूप में चलता है और एक की तरह ही रुकता है, जिसे उसकी नोड कुंजी `node:<name>` नाम देती है, और `Flow.ResolveHalt` उसे हटाता है)। इनमें से किसी की जाँच `agent.IsPause(err)` से करें, उसे `agent.AsPause(err)` से पढ़ें (उसका `Paused()` उस रन को नाम देता है जिसका उत्तर देना है और उस रन को जिसे फिर बुलाना है), या `errors.As` से कोई प्रकार मिलाएँ। बाकी हैं `*SagaAborted` (वापस लुढ़काया गया) और `*HaltTooYoung` (`ResolveHalt` से, जब `WithMinHaltAge` अभी बीता नहीं है)। एक रुका या ठहरा हुआ रन एक "विफलता" श्रेणी नहीं है; उसके रन, ऑपरेशन या क्षतिपूर्ति विवरण के लिए struct का निरीक्षण करें। `agent.Cancel` से रद्द किया गया रन `ErrRunCancelled` लौटाता है (एक `Result` के साथ), जो कोई श्रेणी वहन नहीं करता: यह एक अंतिम स्थिति है, कोई दोष नहीं। संदर्भ-रद्दीकरण सामान्य `context.Canceled` / `context.DeadlineExceeded` के रूप में उभरता है, और जो ड्राइव अपने रन की लीज़ (`agent.Lease`) खो जाने के कारण रद्द हुई, वह `ErrLeaseLost` के रूप में; रद्दीकरण की तरह, यह कोई श्रेणी वहन नहीं करती।
 
 ## Middleware और अवलोकनीयता
 
@@ -506,6 +503,24 @@ a, err = a.With(
 ```
 
 `Retry` जिटर के साथ घातांकीय बैकऑफ़ करता है और एक प्रदाता 429 पर एक `Retry-After` का सम्मान करता है (अडैप्टर एक टाइप-किया गया `*agent.RateLimited` लौटाता है); `Cost` टोकन उपयोग (कैश-रीड/राइट सहित) से USD को एक `CostMeter` में जमा करता है जिसे आप रन के बाद पढ़ते हैं।
+
+एक मॉडल middleware `func(next agent.ModelHandler) agent.ModelHandler` है। वह एक `agent.ModelCall` पाती है (`Request`, लक्ष्य `Model`, `RunID` और `Turn`) और एक `agent.ModelResponse` लौटाती है (`Message`, उसका `Usage`, और `Finish` कारण)। कॉल एक मान है: प्रति बदलें और उसे आगे बढ़ा दें (`c := call; c.Model = backup` ही `Hedge` करता है)। जो काम कॉल का नहीं बल्कि वास्तव में भेजे गए हर अनुरोध का है, वह एक हुक में जाता है, जो उसके नीचे के हर दोहराए गए प्रयास और हेज्ड लक्ष्य के हर अनुरोध के चारों ओर एक बार चलता है:
+
+<!-- docsnip: setup import "log" -->
+```go
+// Log every request a turn sends, with its number within the turn.
+func LogRequests(next agent.ModelHandler) agent.ModelHandler {
+	return func(ctx context.Context, call agent.ModelCall) (agent.ModelResponse, error) {
+		return next(ctx, call.AddHook(agent.ModelCallHook{
+			After: func(_ context.Context, c agent.ModelCall, a agent.ModelAttempt) {
+				log.Printf("run %s turn %d request %d: %d tokens, err %v", c.RunID, c.Turn, c.Attempt(), a.Response.Usage.TotalTokens(), a.Err)
+			},
+		}))
+	}
+}
+```
+
+हुक केवल जोड़े जा सकते हैं, और रन का अपना व्यय-लेखा हुक नहीं है, इसलिए कोई middleware किसी अनुरोध को `WithTokenBudget` या `Result.Spend` से छिपा नहीं सकती। एजेंट के बाहर, `agent.CallModel(ctx, model, req, mw...)` उसी शृंखला से एक कॉल भेजता है।
 
 चूँकि `trace.Tool` लूप के भीतर चलता है, उसका span टूल को सौंपे गए संदर्भ में बैठता है, इसलिए जब एक टूल स्वयं एक उप-एजेंट होता है, तो उप-एजेंट का रन और उसके अपने span बच्चों के रूप में नेस्ट होते हैं। ट्रेस उप-एजेंट सीमा को पार करता है।
 
@@ -538,7 +553,7 @@ Bide एक बहु-मॉड्यूल रेपो है: एक नि�
 
 ```
 agent (root)     durable loop · Journal/Store · Message/Part · Tool/Safety · middleware types · RenderMermaid
-plan             optional typed flow builder + declarative config; lowers to the loop (Topology · Conform)
+plan             plan flows: the optional builder + declarative config; lowers to the loop (Topology · Conform)
 model/anthropic  native Claude (thinking + signatures)
 model/openai     any OpenAI-compatible endpoint
 model/gemini     native Gemini (generativelanguage / Vertex via WithBaseURL)
@@ -546,7 +561,7 @@ schema           reflect Go types → inline JSON Schema + OpenAIStrict
 middleware       Retry, RateLimit, Cost, Hedge
 trace            opt-in OTel gen_ai.* spans
 store/sqlite     on-disk durable resume (single binary, no cluster)
-store/postgres   HA durable resume (any node resumes any run)
+store/postgres   HA durable resume (any node resumes any run); bide migrate + WithoutMigration for a role with no DDL rights
 govern           Tier-2: federated governed state + quorum for agents that must agree (gsm-backed; own module)
 ```
 

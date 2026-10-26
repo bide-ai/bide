@@ -5,6 +5,8 @@
 //
 // Add another SDK by implementing chaos.System for it (a small adapter wiring that SDK to
 // do one non-idempotent side effect against a fault-injectable store) and adding it here.
+//
+//	go run ./examples/chaosbench
 package main
 
 import (

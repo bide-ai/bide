@@ -12,6 +12,8 @@
 //     with whatever limit the controller currently grants.
 //
 // Offline, no LLM: the "compliant actions" and "anomaly" are driven directly so the loop is visible.
+//
+//	cd examples/govern && go run ./earned-authority
 package main
 
 import (

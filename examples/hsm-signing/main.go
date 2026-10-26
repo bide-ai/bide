@@ -1,8 +1,8 @@
 // Command hsm-signing runs an agent whose audit log is signed by a key held in a
-// hardware security module (or SoftHSM2, a software token, for trying it out) or in Google Cloud
-// KMS. The agent refunds an order; every journal write is anchored with a tree head signed inside
-// the token or by Cloud KMS; an auditor then verifies the anchored head and an evidence package with
-// the public key alone.
+// hardware security module (or SoftHSM2, a software token, for trying it out), in Google Cloud
+// KMS, or in Azure Key Vault. The agent refunds an order; every journal write is anchored with a
+// tree head signed inside the token or by the cloud key service; an auditor then verifies the
+// anchored head and an evidence package with the public key alone.
 //
 // Configure a PKCS#11 token with environment variables (a PIN is never a command-line argument):
 //

@@ -9,6 +9,8 @@
 // so the example runs as-is and exercises the durability + governance + audit machinery. In a real
 // agent the checks would be tool calls or sub-agents and the governed events would be applied
 // through an attested govern.EventTool (which journals each one); the guarantees are identical.
+//
+//	cd examples/govern && go run ./compliance
 package main
 
 import (

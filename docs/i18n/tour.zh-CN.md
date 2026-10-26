@@ -1,6 +1,6 @@
 # bide 导览
 
-逐节介绍 API：图、环境式运行、智能体循环、流式输出、类型化输出、会话、审计轨迹、人工审批、错误、中间件与治理。每一节都链接到完整介绍它的指南。
+逐节介绍 API：图、环境式运行、智能体循环、流式输出、类型化输出、会话、审计轨迹、人工审批、错误、中间件与治理。每一节都链接到完整介绍它的指南。刚接触 bide？请从[入门](../getting-started.md)开始。
 
 ## Graphs（图）
 
@@ -79,6 +79,8 @@ flow, err := b.Build() // inherits at-most-once and the audit trail
 flow, err := plan.Load[Order, Receipt](configBytes, reg) // same topology, same Digest()
 ```
 
+`bide view -config` 在加载之前绘制一份配置并标出其中的问题（见[检查流程配置](../../docs/guides/run-viewer.md#check-a-flow-config)）。
+
 三者都下沉到那一个由日志支撑的运行时，因此无论你选哪一种，至多一次、高可用恢复和可验证的轨迹都适用。
 
 ## 环境运行：持久化的休眠、唤醒与中断
@@ -86,7 +88,7 @@ flow, err := plan.Load[Order, Receipt](configBytes, reg) // same topology, same 
 一次环境运行并不待在一个同步的聊天循环里。它休眠，在某个触发下唤醒，为一个人类暂停，而其中每一次转换都是日志上一个持久化、至多一次的步骤，因此运行能在它们之间幸免于崩溃和节点交接。
 
 - **休眠至某个截止时刻。** `Sleep`/`WaitUntil` 暂停一次运行并把它的唤醒时间记入日志，从而暂停能挺过一次重启。在唤醒时刻重新调用会恰好一次地恢复。（在智能体的工具中可用，但目前不能在 `plan` 流程节点中使用。）
-- **按时间或事件唤醒。** 一个可插拔的 `Waker`（默认是进程内的 `MemWaker`）重新调用一个到期的运行；触发源是你的（一个进程内循环、一个 cron、一个队列、一个入站 webhook），因此同一底座既驱动计划型、也驱动事件驱动型的智能体。
+- **按时间或事件唤醒。** 一个可插拔的 `Waker`（默认是进程内的 `MemWaker`）重新调用一个到期的运行；触发源是你的（一个进程内循环、一个 cron、一个队列、一个入站 webhook），因此同一底座既驱动计划型、也驱动事件驱动型的智能体。无法被调度的唤醒会使该运行失败（包裹 `ErrStorage`），而不是让它在无人唤醒的情况下一直休眠，`RecoverLoop` 会重试它。
 - **为一个人类持久化地中断。** `Interrupt[T]`/`AnswerInterrupt` 在任意点暂停一次运行以请求一个类型化的决定，并以人类的回答作为一个记入日志的步骤来恢复（见 [Human-in-the-loop（人在回路）](#人在回路human-in-the-loop)）。批准/拒绝是那个布尔的特例。
 
 你提供触发源和监督表面；运行时保证运行在每一次休眠、唤醒、中断、崩溃和交接之间始终正确。可在 `examples/signals`（把一个事件投递进一个等待中的运行）、`examples/interrupt`（人在回路的暂停/恢复）和 `examples/recover`（持久化恢复）中运行。见[信号与环境指南](../../docs/guides/signals.md)。
@@ -105,6 +107,8 @@ if halt, ok := errors.AsType[*agent.OutcomeUnknown](err); ok {
 	// halt.Op.ToolName == "charge_card": outcome unknown, a human decides, no double side effect.
 }
 ```
+
+<p align="center"><img src="../../assets/divider-line.png" width="100%" alt=""></p>
 
 ## 快速上手
 
@@ -176,6 +180,8 @@ func main() {
 
 运行实地冒烟示例：`OPENROUTER_API_KEY=sk-... go run github.com/bide-ai/bide/examples/smoke@latest`
 
+`Func` 工具会**严格**解码它的参数，因此工具读到的恰恰是模型发来的内容。一次调用若缺少必需字段（schema 中列为必需的字段：不是指针，且其 json 标签中没有 `omitempty` 或 `omitzero`），或把它发为 `null`（除非其 schema 接受任意值，如 `any` 或 `json.RawMessage`），使用了不是字段的名字（未知名字，或大小写变体，例如用 `"CITY"` 代替 `city`），重复了某个名字，在对象之后还有数据，或含有无效的 UTF-8 或被转义的孤立代理项（surrogate），就是一个 `ErrToolArgs` 错误。该错误会作为这次调用的结果返回给模型，因此模型可以更正这次调用。`encoding/json` 则会填入零值、不区分大小写地匹配名字、丢弃未知名字，并保留最后一个重复项。请为每个参数字段给出模型在 schema 中看到的那个 json 标签。
+
 `Run` 接受一个 `Message` 输入（文本，或文本加图像）和每次运行的选项，并返回一个 `Result`：最终消息、整次运行的 token 用量（含缓存与子智能体）、模型轮次计数和墙钟时长。`Turns` 只计本次调用的模型轮次，因此恢复的运行，或再次驱动的已完成运行，显示的轮次可能少于整次运行的轮次（`Usage` 和 `Spend` 是整次运行的）。只要运行 ID 有效，`Result` 在任何错误时都不为 nil：暂停、停机、失败、saga 中止、取消：
 
 <!-- docsnip: setup ctx context.Context; a *agent.Agent; runID string; input string -->
@@ -186,7 +192,7 @@ res, err := a.Run(ctx, runID, agent.UserText(input),
 _ = err
 ```
 
-运行的首次驱动把它的输入和选项记入 `run:start`，之后的每次驱动（包括恢复）都在其下运行：不同的限额（`WithMaxTurns`、`WithTokenBudget`）作为修订 `run:limits:<n>` 记入日志，其他任何不同的设置都是 `ErrConfig`。`agent.Cancel` 取消一次运行（saga 会先回滚），`agent.Status` 从日志读取它的状态。
+运行的首次驱动把它的输入和调用方传入的选项记入 `run:start`，之后的每次驱动（包括恢复驱动）都在这些之下运行：`Resume(ctx, runID)` 两者都不需要，之后的驱动可以提高或降低限额（`WithMaxTurns`、`WithTokenBudget`：作为修订记入日志），其他任何不同的设置都是 `ErrConfig`。`WithSaga()` 让该运行作为 saga 运行，`WithToolFilter(names...)` 把它限制在智能体的部分工具上，在每次调用被分派时强制执行。`agent.Cancel(ctx, j, runID, reason)` 取消一次运行（saga 会先回滚），`agent.Status(ctx, j, runID)` 从日志读取它的状态。
 
 ## 流式（Streaming）
 
@@ -210,10 +216,10 @@ for ev := range stream.Events() {
 res, err := stream.Result() // what Run returns: the Result and an error (incl. a pause: *ApprovalPending, *OutcomeUnknown, ...)
 ```
 
-事件：`TurnStarted`、`ModelEvent`（token 流）、`AssistantTurn`、`ToolStarted` / `ToolCompleted`、`ApprovalRequired`、`Finished`。为 UI 而 range `Events()` 然后调用 `Result()`，或者单独调用 `Result()` 以表现得与 `Run` 完全一样（它会替你把事件排空）。
+事件：`TurnStarted`、`ModelEvent`（token 流）、`TurnRestarted`、`AssistantTurn`、`ToolStarted` / `ToolCompleted`、`ApprovalRequired`、`Finished`。为 UI 而 range `Events()` 然后调用 `Result()`，或者单独调用 `Result()` 以表现得与 `Run` 完全一样（它会替你把事件排空）。`ToolStarted` 在工具被调用之前立即触发，因此一次在开始之前就被取消的调用（并被记为未开始）既不发出 `ToolStarted` 也不发出 `ToolCompleted`。
 
 有两件事值得知道，两者都是持久性的后果：
-- **token 增量在中间件链之下抵达**（Retry / Cost 仍然看到整条组装好的消息），而且**只在一次全新的模型调用上**出现。
+- **token 增量在中间件链之下抵达**（Retry / Cost 仍然看到整条组装好的消息），而且**只在一次全新的模型调用上**出现。一个轮次同一时间只有一个请求在流式输出。当 Retry 之类的中间件在某次已经流出增量的尝试之后再次调用模型，或该轮次的响应并非流出的那一个（Hedge 的备份获胜，或某个回退或缓存给出了答案）时，`TurnRestarted` 会把那些增量标记为已丢弃，随后是该轮次记录的响应：它抵达时请清除该轮次的文本。中间件中没有为此写任何流式代码；这由智能体完成。
 - **恢复时，记入日志的记录（transcript）会被重新发出**，作为 `AssistantTurn{Replayed: true}` + `ToolCompleted`，在实时进度之前，因此一个全新的 UI 能在一次崩溃之后重建整个故事，而一个被重放的轮次不产生 token 增量（它已经被决定了）。
 
 `Stream` 接受与 `Run` 相同的选项（saga 用 `WithSaga()`），它的 `RunStream.Result()` 返回 `Run` 会返回的内容。
@@ -233,7 +239,7 @@ w, _, err := a.RunTyped[Weather](ctx, runID, agent.UserText("weather in SF?"))
 // w.City == "SF", w.TempF == 68
 ```
 
-它是一个 Go 1.27 泛型方法；它也返回运行的 `Result`（其 `Output` 是记入日志的答案）。该值是从*记入日志的*工具调用中解码出来的，所以它是**恢复安全的**：一次运行中途的崩溃会在恢复时从日志中把类型化的答案找回来。该工具接受的第一次 `final_answer` 调用即结束本次运行。只有当模型从未发出这样的调用（而是以纯 JSON 文本回复）时，`RunTyped` 才会解析该运行最后一轮的文本。`T` 必须是一个 JSON 对象（结构体、指向结构体的指针或 map），因为提供商只接受对象形式的工具参数；其他任何 `T` 都是 `ErrConfig`。
+`a.RunTyped[T](ctx, runID, input, opts...)` 是一个 Go 1.27 泛型方法；它也返回运行的 `Result`（其 `Output` 是记入日志的答案）。类型化运行把它的输出模式和 `T` 的 schema 记入 `run:start`，因此通过非类型化的入口，或用另一个 `T` 去恢复它，都是 `ErrConfig`；恢复时用 `agent.ResumeTyped[T](a)` 来恢复它。答案是 `final_answer` 接受的参数，与任何 `Func` 工具一样被严格解码（宽松的调用会回到模型那里更正），取的是经过任何工具中间件之后工具收到的那份。该工具把它们作为自己的结果记入日志，因此答案是**恢复安全的**：一次运行中途的崩溃会在恢复时从日志中把类型化的答案找回来。该工具接受的第一次 `final_answer` 调用即结束本次运行。只有当模型从未发出这样的调用（而是以纯 JSON 文本回复）时，`RunTyped` 才会解析该运行最后一轮的文本。`T` 必须是一个 JSON 对象（结构体、指向结构体的指针或 map），因为提供商只接受对象形式的工具参数；其他任何 `T` 都是 `ErrConfig`。
 
 在支持严格结构化输出的 OpenAI 兼容提供商上，带 `agent.WithOutputMode(agent.OutputNative)` 的 `RunTyped[T]` 使用提供商原生的 JSON-schema 响应格式而非工具（schema 在提供商侧强制执行，无需工具往返）；Anthropic 适配器不支持它并返回 `ErrConfig`，所以在那里请用默认的工具模式以获得与提供商无关的输出。
 
@@ -285,7 +291,7 @@ if err != nil {
 fmt.Println(r1.Message.Text(), r2.Message.Text())
 ```
 
-记录按会话 id 逐轮记入日志，因此一个重启的进程 `a.Session(ctx, "user-42")` 会把它重建出来并继续。第 N 轮在 `"<id>>@turn/N"` 之下运行（它自己的持久化日志处理该轮*之内*的崩溃恢复）；对话记忆是问答记录：一轮的中间工具调用留在那一轮里，不会泄漏进后面的轮次。如果一轮暂停了（批准 / `Interrupt`），`Send` 会返回那个错误；解决它，然后用相同的输入再次调用 `Send` 以恢复。在此之前，用一条不同的消息调用 `Send` 会返回 `ErrConfig`：那个未完成的轮次属于它自己的消息。对于可能被重投递的入站消息，`SendOnce(ctx, id, text)` 对每个消息 id 只回答一次。同一个会话上的多个句柄既不会丢失任何一轮，也不会把一轮记录两次，也不会用另一条消息的回复来回答某条消息。在支持租约的存储上（`MemStore`、SQLite、Postgres），一轮在其运行的租约下同一时间只由一个 worker 驱动，因此它的 token 预算在多个 worker 之间依然成立；在此期间收到同一条消息的第二个 worker 会得到 `ErrTurnContended`，稍后再发送一次即可。运行被取消的 Send 轮次会被记为关闭：该消息的 `Send` 返回 `ErrRunCancelled`，下一条消息的 `Send` 把该轮记为关闭（没有回答）并运行自己的轮次。
+记录按会话 id 逐轮记入日志，因此一个重启的进程 `a.Session(ctx, "user-42")` 会把它重建出来并继续。id 不得包含 `>`。第 N 轮在 `"<id>>@turn/N"` 之下运行（它自己的持久化日志处理该轮*之内*的崩溃恢复）；对话记忆是问答记录：一轮的中间工具调用留在那一轮里，不会泄漏进后面的轮次。如果一轮暂停了（批准 / `Interrupt`），`Send` 会返回那个错误；解决它，然后用相同的输入再次调用 `Send` 以恢复。在此之前，用一条不同的消息调用 `Send` 会返回 `ErrConfig`：那个未完成的轮次属于它自己的消息。对于可能被重投递的入站消息，`SendOnce(ctx, id, input)` 对每个消息 id 只回答一次。同一个会话上的多个句柄既不会丢失任何一轮，也不会把一轮记录两次，也不会用另一条消息的回复来回答某条消息。在支持租约的存储上（`MemStore`、SQLite、Postgres），一轮在其运行的租约下同一时间只由一个 worker 驱动，因此它的 token 预算在多个 worker 之间依然成立；在此期间收到同一条消息的第二个 worker 会得到 `ErrTurnContended`，稍后再发送一次即可。一轮在崩溃后恢复时，种入的是它开始时的同一份记录，即使其间已回答了其他消息。`Send` 和 `SendOnce` 接受一个 `Message` 和运行选项，并返回一个 `Result`。运行被取消（`agent.Cancel`）的轮次是已关闭的：该消息的 `Send` 返回 `ErrRunCancelled`，下一条消息的 `Send` 把该轮记为关闭，没有回答，且不在记录之内，并运行自己的轮次。
 
 ## 可审计性（防篡改日志）
 
@@ -301,16 +307,17 @@ sig, _ := audit.Sign(head, audit.Ed25519Signer{Priv: priv}) // anchor it: sign /
 
 对于**选择性披露**，`audit.Root` / `Prove` / `VerifyInclusion` 构建一棵 **RFC 6962**（证书透明度）Merkle 树，因此你能经由一个 O(log n) 的包含性证明证明某条记录是一次已承诺运行的一部分，而不泄露其他记录（例如向审计员表明发生过某一笔扣款，却不暴露任何其他客户或提示）。而 `ProveConsistency` / `VerifyConsistency` 证明一个较早的根是一个较晚的根的**仅追加前缀**：历史只被追加，从未被重写或重排（透明度日志的保证）。该实现已对照发布的 RFC 6962 测试向量核验。
 
-`SignTreeHead` 产出 CT 风格的**签名树头（Signed Tree Head）**，即 `{Kind, RunID, Size, Root, TimestampNanos}` 连同其签名方案一起，由任意 `audit.Signer`（Ed25519、ECDSA P-256、ML-DSA-65 或二者混合）签名，就是你要发布的那件工件。完整流程：签署一个 STH，稍后用一个包含性证明披露单条记录，审计员对照签名过的根来核验它，并证明两个 STH 之间的仅追加式增长。关于该模型、API 以及端到端的合规流程，见 [docs/guides/audit.md](../../docs/guides/audit.md)。
+`SignTreeHead` 产出 CT 风格的**签名树头（Signed Tree Head）**（格式 `bide.audit.sth.v5`），即 `{Kind, RunID, Size, Root, TimestampNanos}` 连同其签名方案一起，由任意 `audit.Signer` 签名：Ed25519、ECDSA P-256（HSM 和云 KMS 所签的方案）、ML-DSA-65（后量子）或 Ed25519 与 ML-DSA-65 的混合。那就是你要发布的那件工件。叶子承诺到日志为每条记录存储的字节，原样不变，因此证明携带这些字节（`record_bytes`），由更新版本写下、带有当前版本不认识的字段的记录仍然能通过验证。完整流程：签署一个 STH，稍后用一个包含性证明披露单条记录，审计员对照签名过的根来核验它，并证明两个 STH 之间的仅追加式增长。关于该模型、API 以及端到端的合规流程，见 [docs/guides/audit.md](../../docs/guides/audit.md)。
 
 ### 运行查看器
 
-`bide view` 为单次运行打开一个只读页面，在 `127.0.0.1` 上提供，数据来自 SQLite 或 Postgres 日志或导出的日志。安装：`go install github.com/bide-ai/bide/cmd/bide@latest`。`bide view -config flow.yaml` 以同样方式展示流程定义，并在图上标出问题；`-check` 在 CI 中运行同一检查。`bide check flow.yaml -diff main` 在图上比较流程的两个版本（新增为绿色，删除为红色虚线，变更为琥珀色），并单独标出被削弱的审批策略（关卡被移除、所需人数降低、去掉了 `exclude_principal`，或 `timeout` 被移除或加长）。页面按崩溃对每个节点的影响为其着色（副作用会停下并询问，只读或幂等节点会重新运行），并判定配置中的 `assert` 行，例如 `every path to charge passes approval >= 2 of 3`，违反时以红色画出反例路径。它展示运行的时间线（模型轮次、工具调用及其 `Safety`、尝试、审批），被暂停的操作及记录其结果的 `ResolveHalt` 调用，每个审批关卡的 k-of-n 状态，`plan` 流程在其声明拓扑上走过的路径，以及日志能否通过签名树头或证据包验证。它从不写入存储。运行仍在进行时，页面（来自 SQLite 或 Postgres 日志）会随新记录写入而更新，直到运行结束。不带 `-run` 时，它打开运行列表，可按状态、类型和运行 ID 过滤。参见[运行查看器指南](../../docs/guides/run-viewer.md)（英文）。
+`bide view` 为单次运行打开一个只读页面，在 `127.0.0.1` 上提供，数据来自 SQLite 或 Postgres 日志或导出的日志。它展示运行的时间线（模型轮次、工具调用及其 `Safety`、尝试、审批），被暂停的操作及记录其结果的 `ResolveHalt` 调用，每个审批关卡（工具调用的或流程节点的）的 k-of-n 状态以及其签名是否验证通过，`plan` 流程在其声明拓扑上走过的路径，以及日志能否通过签名树头或证据包验证。它从不写入存储。运行仍在进行时，页面（来自 SQLite 或 Postgres 日志）会随新记录写入而更新，直到运行结束。不带 `-run` 时，它打开运行列表，可按状态、类型和运行 ID 过滤。`bide view -config flow.yaml` 以同样方式展示流程定义，并在图上标出问题，`bide check flow.yaml` 在 CI 中运行该检查。`bide check flow.yaml -diff main` 在图上比较流程的两个版本（新增为绿色，删除为红色虚线，变更为琥珀色），并单独标出被削弱的审批策略（关卡被移除、所需人数降低、去掉了 `exclude_principal`，或 `timeout` 被移除或加长）。页面按崩溃对每个节点的影响为其着色（副作用会停下并询问，只读或幂等节点会重新运行），并判定配置中的 `assert` 行，例如 `every path to charge passes approval >= 2 of 3`，违反时以红色画出反例路径。
+用 `go install github.com/bide-ai/bide/cmd/bide@latest`（或 `brew install bide-ai/tap/bide`）安装；参见[运行查看器指南](../../docs/guides/run-viewer.md)。
 
 <table>
 <tr>
-<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/guides/img/refund-before-dark.png"><img src="../../docs/guides/img/refund-before-light.png" width="100%" alt="bide view: refund-42, before"></picture></td>
-<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/guides/img/refund-after-dark.png"><img src="../../docs/guides/img/refund-after-light.png" width="100%" alt="bide view: refund-42, after"></picture></td>
+<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/guides/img/refund-before-dark.png"><img src="../../docs/guides/img/refund-before-light.png" width="100%" alt="bide view：运行 refund-42 已停机，结果未知，附带其 ResolveHalt 调用"></picture></td>
+<td width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="../../docs/guides/img/refund-after-dark.png"><img src="../../docs/guides/img/refund-after-light.png" width="100%" alt="bide view：运行 refund-42 已完成，3 位批准人中 2 位批准，审计证明已验证"></picture></td>
 </tr>
 <tr>
 <td>之前：退款在执行后崩溃，因此运行已暂停、结果未知，页面给出了 <code>ResolveHalt</code> 调用。</td>
@@ -358,7 +365,7 @@ agent.WithApproval(agent.SingleApproval()) // not Safety: a tool option that pau
 
 该测试工具是导出的（`chaos/`），并在 `benchmarks/` 中被指向其他 SDK。实测结果：**Bide `maxFired=1`（通过）；trpc-agent-go `maxFired=6`；langchaingo `maxFired=64`（两者均失败）。** trpc 的检查点/恢复有效（恢复一次已完成的运行是一个空操作）；它的双重触发是那个有文档记载的 LangGraph"节点必须幂等"窗口。langchaingo 没有持久性，所以重试会把一切重新运行。Bide 的尝试标记关闭了那个窗口。
 
-`WithMaxTurns(n)` 为每次运行的模型轮次设上限，使一个不停调用工具的模型无法永远循环下去：触及它会返回 `ErrMaxTurns`（它是 `errors.Is` `ErrBudget` 的）。`WithTokenBudget(n)` 为一次运行可使用的 token 设上限，缓存的输入也计算在内：一旦运行已用掉 `n`，它就不再发起任何模型调用，并返回 `ErrBudgetExceeded`。每次调用的用量都随其轮次记入日志，因此两项限制都从日志中重建，并在崩溃与恢复之后依然成立。
+`WithMaxTurns(n)` 为每次运行的模型轮次设上限，使一个不停调用工具的模型无法永远循环下去：触及它会返回 `ErrMaxTurns`（它是 `errors.Is` `ErrBudget` 的）。`WithTokenBudget(n)` 为一次运行可使用的 token 设上限，缓存的输入也计算在内：一旦运行已用掉 `n`，它就不再发起任何模型调用，并返回 `ErrBudgetExceeded`。该预算覆盖运行的整个智能体树：其子智能体的模型调用也计入其中，并行的也不例外。每次调用的用量都随其轮次记入日志，因此两项限制都从日志中重建，并在崩溃与恢复之后依然成立。
 
 ## 人在回路（Human-in-the-loop）
 
@@ -422,7 +429,7 @@ agent.SubmitDecision(ctx, journal, agent.Decision{RunID: pend.RunID, ToolUseID: 
 	ApproverID: "finance", Approved: true, DecidedAt: decidedAt, Alg: signer.Alg(), Signature: sig})
 ```
 
-然后，`audit.ApprovalEvidence` 与 `audit.VerifyApprovals`（或 `bide audit verify-approvals`）离线证明：k 位具名批准人在这次确切的调用运行*之前*、依照预期的策略签核了它，所依据的证据不可能在不被察觉的情况下漏掉任何一份决定。每位批准人都需要自己的密钥：若策略中有两位批准人解析到同一个密钥，该策略会以 `ErrConfig` 被拒绝，因为持有该密钥的人可以替两人签名。见[批准指南](../../docs/guides/hitl-approval.md)；可跨独立进程在 `examples/approval` 中运行。
+然后，`audit.ApprovalEvidence` 与 `audit.VerifyApprovals`（或 `bide audit verify-approvals`）离线证明：k 位具名批准人在这次确切的调用运行*之前*（每份决定只在随它记入日志的签名方案下才计入，而该方案必须是其批准人密钥所用的方案）、依照预期的策略签核了它，所依据的证据不可能在不被察觉的情况下漏掉任何一份决定。每位批准人都需要自己的密钥：若策略中有两位批准人解析到同一个密钥，该策略会以 `ErrConfig` 被拒绝，因为持有该密钥的人可以替两人签名。一个[流程节点](../../docs/guides/plan-flows.md#approval-gates-on-nodes)带有同样的关卡。见[批准指南](../../docs/guides/hitl-approval.md)；可跨独立进程在 `examples/approval` 中运行（带关卡的流程节点见 `examples/approval/flow`）。
 
 **职责分离**：设置 `ExcludePrincipal` 后，关卡从不计入运行发起人的决定，因此发起某个动作的人不能同时批准它（maker-checker）：
 
@@ -469,9 +476,9 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 }
 ```
 
-类别：`ErrConfig`、`ErrModel`、`ErrTool`、`ErrStorage`、`ErrProtocol`、`ErrBudget`。条件（每一个都包裹一个类别）：`ErrUnknownTool`、`ErrToolArgs`（包裹 `ErrTool`）；`ErrToolReinvoked`、`ErrInvalidApproval`、`ErrAlreadyDecided`（包裹 `ErrConfig`）；`ErrNoRecordedOutput`、`ErrIncompleteResponse`（包裹 `ErrModel`）；`ErrTruncatedToolArgs`（包裹 `ErrProtocol`）；`ErrBudgetExceeded`、`ErrMaxTurns`（包裹 `ErrBudget`）。`ErrToolNotCalled` 不包裹任何类别：它标记一次已知从未到达其工具的工具调用（工具中间件的拒绝会包裹它）。提供商适配器还会返回 `*RateLimited`（HTTP 429，附带一个 `RetryAfter` 提示）和 `*APIError`（其他非 2xx，附带 `StatusCode`），两者都包裹 `ErrModel`。该工具包返回的每一个错误（包括来自模型、MCP、存储和治理适配器的）都带有一个类别，所以 `errors.Is` 在整个表面上都是可靠的。
+类别：`ErrConfig`、`ErrModel`、`ErrTool`、`ErrStorage`、`ErrProtocol`、`ErrBudget`。条件（每一个都包裹一个类别）：`ErrUnknownTool`、`ErrToolArgs`、`ErrToolOutcomeUnknown`（包裹 `ErrTool`），`ErrToolReinvoked`、`ErrInvalidApproval`、`ErrAlreadyDecided`（包裹 `ErrConfig`），`ErrNoRecordedOutput`、`ErrIncompleteResponse`（包裹 `ErrModel`），`ErrTruncatedToolArgs`（包裹 `ErrProtocol`），`ErrStreamProtocol` 和 `ErrNegativeUsage`（包裹 `ErrProtocol` 和 `ErrModel`），`ErrBudgetExceeded`、`ErrMaxTurns`（包裹 `ErrBudget`）。`ErrToolNotCalled` 不包裹任何类别：它标记一次已知从未到达其工具的工具调用（工具中间件的拒绝会包裹它）。提供商适配器还会返回 `*RateLimited`（HTTP 429，附带一个 `RetryAfter` 提示）和 `*APIError`（其他非 2xx，附带 `StatusCode`），两者都包裹 `ErrModel`。该工具包返回的每一个错误（包括来自模型、MCP、存储和治理适配器的）都带有一个类别，所以 `errors.Is` 在整个表面上都是可靠的。
 
-而**控制流信号**比一个类别更丰富，所以它们保持为具体类型，由 `errors.As` 匹配：`*ApprovalPending`（需要批准）、`*InterruptPending`（等待人类输入）、`*TimerPending`（持久化定时器待触发）、`*SignalPending`（等待一个外部信号）、`*OutcomeUnknown`（恢复不安全）、`*SagaAborted`（已回滚），以及 `*HaltTooYoung`（来自 `ResolveHalt`，当 `WithMinHaltAge` 尚未到期时）。它们都实现了密封接口 `agent.Pause`；用 `agent.IsPause(err)` 判断，用 `agent.AsPause(err)` 读取。一个暂停或停机的运行不是一个"失败"类别；检视那个结构体以获取 `RunID` / `ToolUseID` / 补偿细节。取消以通常的 `context.Canceled` / `context.DeadlineExceeded` 浮现，而一次因其运行租约（`agent.Lease`）丢失而被取消的驱动则以 `ErrLeaseLost` 浮现；与取消一样，它不带任何类别。
+而**控制流信号**比一个类别更丰富，所以它们保持为具体类型。一个暂停或停机的运行返回一个 `agent.Pause`，这是一个密封接口，恰有五种：`*ApprovalPending`（需要批准）、`*InterruptPending`（等待人类输入）、`*TimerPending`（持久化定时器待触发）、`*SignalPending`（等待一个外部信号或通道消息）和 `*OutcomeUnknown`（恢复不安全；其 `Cause` 为 `HaltCrashed` 或 `HaltContended`；`plan` 流程的节点作为一个 `Step` 运行并同样作为 `Step` 停机，以其节点键 `node:<name>` 命名，由 `Flow.ResolveHalt` 解除）。用 `agent.IsPause(err)` 判断，用 `agent.AsPause(err)` 读取（它的 `Paused()` 给出要回答的运行和要重新调用的运行），或用 `errors.As` 匹配某一种。其余的是 `*SagaAborted`（已回滚）和 `*HaltTooYoung`（来自 `ResolveHalt`，当 `WithMinHaltAge` 尚未到期时）。一个暂停或停机的运行不是一个"失败"类别；检视那个结构体以获取它的运行、操作或补偿细节。以 `agent.Cancel` 取消的运行返回 `ErrRunCancelled`（附带一个 `Result`），它不带任何类别：它是一个终态，而不是故障。取消以通常的 `context.Canceled` / `context.DeadlineExceeded` 浮现，而一次因其运行租约（`agent.Lease`）丢失而被取消的驱动则以 `ErrLeaseLost` 浮现；与取消一样，它不带任何类别。
 
 ## 中间件与可观测性
 
@@ -503,6 +510,24 @@ a, err = a.With(
 
 `Retry` 做带抖动的指数退避，并在一个提供商 429 上尊重 `Retry-After`（适配器返回一个类型化的 `*agent.RateLimited`）；`Cost` 把来自 token 用量（含缓存读/写）的 USD 累加进一个你在运行后读取的 `CostMeter`。
 
+模型中间件是一个 `func(next agent.ModelHandler) agent.ModelHandler`。它接收一个 `agent.ModelCall`（`Request`、目标 `Model`、`RunID` 和 `Turn`），并返回一个 `agent.ModelResponse`（`Message`、它的 `Usage` 和 `Finish` 原因）。调用是一个值：修改一份副本并把它传下去（`c := call; c.Model = backup` 就是 `Hedge` 所做的全部）。属于实际发出的每一个请求、而不属于这次调用的工作，放在钩子（hook）里，它会在其下每一次重试尝试和每一个对冲目标的每个请求周围各运行一次：
+
+<!-- docsnip: setup import "log" -->
+```go
+// Log every request a turn sends, with its number within the turn.
+func LogRequests(next agent.ModelHandler) agent.ModelHandler {
+	return func(ctx context.Context, call agent.ModelCall) (agent.ModelResponse, error) {
+		return next(ctx, call.AddHook(agent.ModelCallHook{
+			After: func(_ context.Context, c agent.ModelCall, a agent.ModelAttempt) {
+				log.Printf("run %s turn %d request %d: %d tokens, err %v", c.RunID, c.Turn, c.Attempt(), a.Response.Usage.TotalTokens(), a.Err)
+			},
+		}))
+	}
+}
+```
+
+钩子只能追加，而运行自己的花费核算不是钩子，因此没有任何中间件能向 `WithTokenBudget` 或 `Result.Spend` 隐藏一个请求。在智能体之外，`agent.CallModel(ctx, model, req, mw...)` 让一次调用经过同一条链发出。
+
 因为 `trace.Tool` 在循环内部运行，它的 span 处于交给工具的上下文中，所以当一个工具本身就是一个子智能体时，该子智能体的运行及其自己的 span 会作为子级嵌套。该 trace 跨越子智能体边界。
 
 工具中间件在持久化步骤*内部*运行，所以一次短路的结果（一次 `ToolCache` 命中）会像任何工具结果一样被记入日志，包裹了 `agent.ErrToolNotCalled` 的策略拒绝也一样；拒绝必须包裹 `agent.ErrToolNotCalled`：不包裹它的拒绝会让副作用的结果未知，什么都不记录，运行随之停止；恢复会重放它，绝不重新运行中间件或工具。`ToolRetry` 和 `ToolCache` 只作用于 `Safety` 允许的工具（分别是可重试安全的和 `ReadOnly` 的），而无论中间件做什么，智能体对一个不可重试安全的工具每次调用至多运行一次。用 `agent.ToolMiddleware` 签名写你自己的：
@@ -524,6 +549,8 @@ func RequireTag(tag string) agent.ToolMiddleware {
 }
 ```
 
+<p align="center"><img src="../../assets/divider-wave-2.png" width="100%" alt=""></p>
+
 ## 模块
 
 Bide 是一个多模块仓库：一个依赖精简的**核心**（`github.com/bide-ai/bide`，即循环、schema、中间件、模型适配器、`plan` 流程构建器、`audit`；除标准库外没有任何依赖），外加每个重型适配器一个模块（`mcptools`、`trace`、`store/sqlite`、`store/postgres`、`govern/redislog`、`govern/sqlitelog`、`govern/postgreslog`、`codec/gcf`），`bide` 命令（`cmd/bide`），以及承载 gsm 的 `govern` 模块（在 gsm 稳定之前保持 v0.x）。导入一个适配器，你就拉进它的依赖树；只导入核心，你就不会。一个仅用核心的消费者，其外部模块表面是 0，而不是 54。见 [docs/reference/module-structure.md](../../docs/reference/module-structure.md)。
@@ -534,7 +561,7 @@ Bide 是一个多模块仓库：一个依赖精简的**核心**（`github.com/bi
 
 ```
 agent (root)     durable loop · Journal/Store · Message/Part · Tool/Safety · middleware types · RenderMermaid
-plan             optional typed flow builder + declarative config; lowers to the loop (Topology · Conform)
+plan             plan flows: the optional builder + declarative config; lowers to the loop (Topology · Conform)
 model/anthropic  native Claude (thinking + signatures)
 model/openai     any OpenAI-compatible endpoint
 model/gemini     native Gemini (generativelanguage / Vertex via WithBaseURL)
@@ -542,7 +569,7 @@ schema           reflect Go types → inline JSON Schema + OpenAIStrict
 middleware       Retry, RateLimit, Cost, Hedge
 trace            opt-in OTel gen_ai.* spans
 store/sqlite     on-disk durable resume (single binary, no cluster)
-store/postgres   HA durable resume (any node resumes any run)
+store/postgres   HA durable resume (any node resumes any run); bide migrate + WithoutMigration for a role with no DDL rights
 govern           Tier-2: federated governed state + quorum for agents that must agree (gsm-backed; own module)
 ```
 
@@ -562,3 +589,5 @@ tool := govern.EventTool(gov, govern.EventToolConfig{Name: "pay", Description: "
 ```
 
 > 完整指南、能力阶梯，以及可运行的演示（`examples/govern/mesh`、`examples/govern/compose`、`examples/govern/quorum`）见 **[docs/guides/governance.md](../../docs/guides/governance.md)**。
+
+<p align="center"><img src="../../assets/divider-line.png" width="100%" alt=""></p>

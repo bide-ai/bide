@@ -28,6 +28,7 @@ bide view -db run.db
 #    可选，无需写代码：浏览一份包含 14 次运行、涵盖各种状态的示例日志
 bide sample
 #    某个调用停在审批关卡？列出它，并在终端签署你的决定
+#    （密钥在 HSM 或 KMS 中：bide-hsm approve，从源码构建；见 docs/guides/key-custody.md）
 bide approve -db run.db -list
 # 4. 证明：离线验证这次运行的证据
 bide audit verify-evidence -evidence evidence.json -pubkey keys/log.pub
@@ -35,7 +36,13 @@ bide audit verify-evidence -evidence evidence.json -pubkey keys/log.pub
 bide audit notifications -db run.db -pubkey keys/log.pub -sth notify-run.sth.json
 ```
 
-一条仅追加（append-only）的日志，作为一个纯 Go 库，带来五项保证：副作用至多触发一次，即使跨越崩溃也是如此，因此它们无需是幂等的；在单个进程内承载成千上万个并发的持久化运行，它是一个库，无需运行集群；一条可加密验证的审计轨迹（RFC 6962 Merkle 证明，无需信任厂商即可核验）；可证明收敛的共享状态，其收敛条件经过机器核验；以及人保持掌控：k-of-n 签名审批、排除发起人的职责分离、放在 HSM 或云 KMS 中的签名密钥，还有一个通知人并记录通知已发出的通知器。
+一条仅追加（append-only）的日志，作为一个纯 Go 库，带来五项保证：
+
+- 副作用至多触发一次，即使跨越崩溃也是如此，因此它们无需是幂等的。
+- 在单个进程内承载成千上万个并发的持久化运行。它是一个库，无需运行集群。
+- 一条可加密验证的审计轨迹：RFC 6962 Merkle 证明，无需信任厂商即可离线核验。
+- 可证明收敛的共享状态：其收敛条件经过机器核验。
+- 人保持掌控：k-of-n 签名审批、排除发起人的职责分离、放在 HSM 或云 KMS 中的签名密钥，还有一个通知人并记录通知已发出的通知器。
 
 另有两项控制，约束来自外部的文本能让智能体做什么：金额上限（实验性）会拒绝超出限额的调用（针对带有规则的工具，且只针对规则所指明的字段；时间窗口在边界处最多可放过两倍限额），无论模型发来了什么；污点策略（taint policy，实验性，v0.24.0）要求智能体读取宿主标记为不可信的内容之后的副作用经过升级闸门，该闸门可以是人工决定。它们约束的是后果，既不检测也不阻止注入本身（[指南](../../docs/guides/untrusted-content.md)）。
 
@@ -50,11 +57,42 @@ Bide 朝着银行对处理资金的软件的要求构建：密钥置于应用之
   <img src="../../docs/guides/img/run-viewer-config-assert-dark.png" width="49%" alt="bide view -config: a violated policy assertion, its shortest counterexample path drawn in red">
 </p>
 
-**发布前看清流程的风险。** `bide view -config flow.yaml` 按崩溃对每个节点的影响为其着色（副作用会停下并询问；只读步骤会重新运行），并在图上检查流程的 `assert:` 策略，例如 `every path to charge passes approval >= 2 of 3`。违反时会以红色给出最短的反例路径。`bide check flow.yaml` 在 CI 中执行相同的检查，并以退出码 1 结束。参见[运行查看器指南](../../docs/guides/run-viewer.md#check-a-flow-config)。
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../../docs/guides/img/cli-approve-dark.gif">
+    <img src="../../docs/guides/img/cli-approve-light.gif" width="100%" alt="终端中的 bide approve：一笔停在 2/3 关卡的退款，连同其待定的批准人一并列出；ops（该运行的发起人）被拒绝，因为其决定不会被计入；finance 看到调用、其参数以及签名所绑定的 SHA-256，输入自己的 id，得到签名的决定、其回执和 1/2 的计票；随后 risk 的批准使关卡完成">
+  </picture>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../../docs/guides/img/cli-audit-notifications-pass-dark.png">
+    <img src="../../docs/guides/img/cli-audit-notifications-pass-light.png" width="49%" alt="bide audit notifications 对运行 refund-2001 的检查：它的 approval_pending 事件由 webhook 投递，一次尝试后即被确认，并位于带有签名树头的轨迹上；PASS，每个需要人处理的事件都已通知">
+  </picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../../docs/guides/img/cli-audit-notifications-fail-dark.png">
+    <img src="../../docs/guides/img/cli-audit-notifications-fail-light.png" width="49%" alt="bide audit notifications 对运行 refund-2002 的检查：红色的 FAIL never_notified，因为日志显示有一个批准在等待，而轨迹中没有任何人被告知的记录">
+  </picture>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../../docs/guides/img/approve-page-waiting-dark.png">
+    <img src="../../docs/guides/img/approve-page-waiting-light.png" width="49%" alt="浏览器中针对一笔等待中的退款调用的批准页面：批准人的公钥和指纹、每个参数、参数的 SHA-256，以及批准和拒绝按钮">
+  </picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../../docs/guides/img/run-viewer-needs-attention-dark.png">
+    <img src="../../docs/guides/img/run-viewer-needs-attention-light.png" width="49%" alt="bide view 的“需要关注”列表：两个等待中的批准、两个结果未知的停机和一个中止的运行，每项都附有该做什么及其通知状态">
+  </picture>
+</p>
 
 **在终端中决定，并证明人们得到了通知。** `bide approve` 显示它从日志中读到的调用、其参数以及你的签名所绑定的 SHA-256，拒绝其决定不会被计入的发起人，并留下一份回执；之后 `bide audit verify-receipts` 会对照已签名的树头检查该回执，以发现在某个树头已承诺该决定之后被删除的决定。`bide audit notifications` 对照运行日志和已签名的轨迹离线检查：每一次停机和每一个等待中的批准是否都已及时送达并被确认，对无人被告知的情形则判定失败。参见[批准指南](../../docs/guides/hitl-approval.md#deciding-from-the-terminal)、[审计指南](../../docs/guides/audit.md#decision-receipts-noticing-a-decision-deleted-before-it-was-anchored)和[通知指南](../../docs/guides/notifications.md#auditing-were-the-people-told)。
 
-**审批人身份（绑定证书的审批人）。** `bide view` 与 `bide approve -list` 对此类网关显示网关记录的标识符、层级、依据和状态时间；只有审计结果才会使任何内容变绿，临时计数始终明显不同。带 `-identity-policy` 的 `bide approve -verify-receipt` 与 `bide audit verify-receipts` 检查证书链和身份（不检查吊销）。参见[运行查看器指南](../../docs/guides/run-viewer.md)。
+**审批人身份（绑定证书的审批人）。** `bide view` 与 `bide approve -list` 对此类网关显示网关记录的标识符、层级、依据和状态时间；只有审计结果才会使任何内容变绿，临时计数始终明显不同。带 `-identity-policy` 的 `bide approve -verify-receipt` 与 `bide audit verify-receipts` 检查证书链和身份（不检查吊销）。参见[运行查看器指南](../../docs/guides/run-viewer.md#the-page)和[批准指南](../../docs/guides/hitl-approval.md)。
+
+**发布前看清流程的风险。** `bide view -config flow.yaml` 按崩溃对每个节点的影响为其着色（副作用会停下并询问；只读步骤会重新运行），并在图上检查流程的 `assert:` 策略，例如 `every path to charge passes approval >= 2 of 3`。违反时会以红色给出最短的反例路径。`bide check flow.yaml` 在 CI 中执行相同的检查，并以退出码 1 结束。参见[运行查看器指南](../../docs/guides/run-viewer.md#check-a-flow-config)。
+
+<p align="center"><img src="../../assets/divider-wave-2.png" width="100%" alt=""></p>
 
 ## 一条日志，五项保证
 
@@ -62,11 +100,11 @@ Bide 朝着银行对处理资金的软件的要求构建：密钥置于应用之
 
 ### 1 · 至多一次（实测）
 
-Temporal、DBOS、trpc-agent-go、ADK 和 eino 通过重新运行来恢复：活动或步骤必须是幂等的，因此一个非幂等的副作用（一笔扣款、一封邮件、一次发货）可能在崩溃后触发两次。一个崩溃注入基准测试（[`chaos/`](../../chaos)，跨 SDK 结果见 [`benchmarks/`](../../benchmarks/README.md)）驱动一笔非幂等的 `charge`（扣款）穿过每一个崩溃点：
+Temporal、DBOS、LangGraph、trpc-agent-go、ADK 和 eino 通过重新运行来恢复：活动或步骤必须是幂等的，因此一个非幂等的副作用（一笔扣款、一封邮件、一次发货）可能在崩溃后触发两次。一个崩溃注入基准测试（[`chaos/`](../../chaos)，跨 SDK 结果见 [`benchmarks/`](../../benchmarks/README.md)）驱动一笔非幂等的 `charge`（扣款）穿过每一个崩溃点：
 
 <p align="center"><img src="../../assets/chaos-results.png" width="600" alt="Crash-injection benchmark: bide never repeated the charge; LangGraph (SQLite and Postgres), adk-go, trpc-agent-go, langchaingo and eino each charged again after a crash."></p>
 
-`maxFired` 是同一个副作用实际执行的最多次数。**1 是正确的；更高就是一次重复扣款。** 每个竞品适配器都通过一项公平性测试（证明其恢复机制有效）。所有被测框架都没有的是：在非幂等写入之前写下的持久化尝试标记（attempt marker），以及恢复时的结果未知即停机（halt-on-unknown-outcome）：如果一次写入的结果从未被记入日志，运行就会停下来交由人类决定。
+每个框架要么从未重复扣款，要么重复扣款了；最坏情况下的次数取决于一个框架保存状态的频率，因此这不是一个排名。每个竞品适配器都通过一项公平性测试（一次没有崩溃的运行恰好扣款一次，且在该框架有恢复机制之处，它是有效的），而 LangGraph 运行在其文档记载中最持久的模式下。所有被测框架都没有的是：在非幂等写入之前写下的持久化尝试标记（attempt marker），以及恢复时的结果未知即停机（halt-on-unknown-outcome）：如果一次写入的结果从未被记入日志，运行就会停下来交由人类决定。
 
 ### 结果未知时，它就停下
 
@@ -87,9 +125,9 @@ Temporal、DBOS、trpc-agent-go、ADK 和 eino 通过重新运行来恢复：活
 
 Temporal 借助一个服务器和一支 worker 机群提供持久化执行。而这里，它来自一个你本就在运行的存储适配器（本地用 SQLite，生产用 Postgres）。一个 hello-world 只导入标准库：没有 Temporal、gRPC 或向量数据库依赖（由 `architecture_test.go` 强制保证）。
 
-单个进程可以同时让许多持久化运行处于进行中。智能体的工作是 I/O 密集型的（在等待模型和工具调用），而 goroutine 无需集群即可吸收这类等待。[`cmd/bench`](../../cmd/bench/README.md) 测试工具对此做了测量：20,000 次运行，每次同时有 5,000 次处于进行中，每次运行在模型上阻塞约 100ms，在 10 核 Apple silicon Mac 上约半秒（约 470ms，于 v0.7.0 测得）、标准 4 vCPU CI 运行器上约一秒的墙钟时间内完成，跑在几千个 goroutine 和数十 MB 之上（`go run ./cmd/bench -runs 20000 -concurrency 5000 -latency 50ms`）。这测量的是吞吐量；每次调用的延迟由提供商决定。在高扇出下，上限是持久化存储的写入吞吐量。每一个并发运行都在同一条日志上，因此保有上述保证。为了负载下的可靠性，提供了按尝试计的超时、带退避（backoff）且能区分瞬时错误与终结性错误的重试、对冲式（hedged）模型调用（同时发起一个备份调用，取先到者，用于降低尾延迟并实现提供商故障切换），以及用于模型和工具调用的限流器（rate limiter）（[middleware](../../middleware)、[docs/guides/reliability.md](../../docs/guides/reliability.md)）。
+单个进程可以同时让许多持久化运行处于进行中。智能体的工作是 I/O 密集型的（在等待模型和工具调用），而 goroutine 无需集群即可吸收这类等待。[`cmd/bench`](../../cmd/bench/README.md) 测试工具对此做了测量：20,000 次运行，每次同时有 5,000 次处于进行中，每次运行在模型上阻塞约 100ms，在 10 核 Apple silicon Mac 上约半秒（约 470ms，于 v0.7.0 测得）、标准 4 vCPU CI 运行器上约一秒的墙钟时间内完成，跑在几千个 goroutine 和数十 MB 之上（`go run ./cmd/bench -runs 20000 -concurrency 5000 -latency 50ms`；可用 [Benchmark workflow](../../.github/workflows/bench.yml) 复现）。这测量的是吞吐量；每次调用的延迟由提供商决定。在高扇出下，上限是持久化存储的写入吞吐量。每一个并发运行都在同一条日志上，因此保有上述保证。为了负载下的可靠性，提供了按尝试计的超时、带退避（backoff）且能区分瞬时错误与终结性错误的重试、对冲式（hedged）模型调用（同时发起一个备份调用，取先到者，用于降低尾延迟并实现提供商故障切换），以及用于模型和工具调用的限流器（rate limiter）（[middleware](../../middleware)、[docs/guides/reliability.md](../../docs/guides/reliability.md)）。
 
-为实现高可用，任意节点都能从共享存储恢复任意运行，而相互竞争的驱动方通过一个按运行计的租约（lease）（`agent.Lease`）来协调：通常同一时刻只有一个进程驱动某个运行，崩溃持有者的租约会过期，从而由另一个节点的 `agent.RecoverLoop` 接管。停顿超过租约期限的持有者可能醒来时仍在驱动该运行，但它无法再次触发副作用：至多一次依靠的是尝试声明（attempt claim），而不是租约。测试覆盖了内存存储上的并发 worker 互斥、崩溃接管，以及并发驱动方下的至多一次（`agent/ha_e2e_test.go`），还有 Postgres 上的跨进程至多一次，即两个存储实例共享同一个数据库（`store/postgres/postgres_test.go` 中的 `TestPostgres_HAAtMostOnceAcrossInstances`；Postgres 后端用一次 DB 时钟 upsert 实现该租约）。
+为实现高可用，任意节点都能从共享存储恢复任意运行，而相互竞争的驱动方通过一个按运行计的租约（lease）（`agent.Lease`）来协调：通常同一时刻只有一个进程驱动某个运行，崩溃持有者的租约会过期，从而由另一个节点的 `agent.RecoverLoop` 接管。停顿超过租约期限的持有者可能醒来时仍在驱动该运行，但它无法再次触发副作用：至多一次依靠的是尝试声明（attempt claim），而不是租约。测试覆盖了内存存储上的并发 worker 互斥、崩溃接管，以及并发驱动方下的至多一次（`agent/ha_e2e_test.go`），以及 Postgres 上跨真实进程的至多一次，这些进程由测试杀死、停顿超过其租约并重启（`store/postgres/ha_multiproc_test.go`；Postgres 后端用一次 DB 时钟 upsert 实现该租约）。
 
 ### 3 · 一条可验证的审计轨迹，出自同一条日志
 
@@ -99,7 +137,7 @@ Temporal 借助一个服务器和一支 worker 机群提供持久化执行。而
 
 - **包含性证明（inclusion proof）**：以 O(log n) 证明某一具体动作发生过（这笔扣款、这次批准），且不泄露任何其他记录（只泄露它的位置和该运行的大小）。为审计员提供选择性披露。
 - **一致性证明（consistency proof）**：证明历史只被追加，从未被重写或重排。
-- **签名的树头（signed tree head）＋ 持续锚定**：`AuditedStore` 为每一步签署一份承诺并将其带外发布到一个外部透明度日志，从而篡改可以被证明。
+- **签名的树头（signed tree head）＋ 持续锚定**：`AuditedStore` 为每一步签署一份承诺并将其带外发布到一个外部透明度日志，从而篡改可以被证明。`anchor/awss3` 提供了一个面向 S3 Object Lock 的实现（[锚定](../../docs/guides/anchoring.md)），`anchor/gcs` 提供了一个面向带锁定保留策略的 Google Cloud Storage 存储桶的实现（[锚定](../../docs/guides/anchoring-gcs.md)）。
 - **谁在行动，依据什么授权**：同一片叶子可以承诺到行动者身份（谁行动、代表谁、依据哪一份签名授权），并将委派授权作为一项受治理的不变量来强制执行，从而一个证明显示谁为所发生之事被授权。自带你自己的 IdP；这让被授权的动作变得可证明，它并不替代身份认证。
 
 为单个动作生成一份可移植的 `ProofBundle`（`audit.ProveToolCall`），或生成整次运行的 `EvidencePackage`（`audit.Evidence`），将每一个实质性动作的证明打包进一个文件，交给一位审计员，他用 `bide audit verify` / `verify-evidence`，或用一个从不导入该 SDK 的纯标准库验证器，离线核验它。同一条脊柱还承载着问责层的其余部分，全部可离线验证：带证明的运行（一份 `RunCertificate` 证明整次运行的策略合规性）、带衰减式委派的签名能力授权、从一份干净审计轨迹中赢得的权限，以及受治理的 k-of-n 法定人数（quorum）。→ [docs/guides/audit.md](../../docs/guides/audit.md)
@@ -119,12 +157,11 @@ Temporal 借助一个服务器和一支 worker 机群提供持久化执行。而
 
 智能体要经手资金时，由人来决定，而这个人决定了什么会记录在案。关卡和通知记录在与其余部分相同的审计轨迹上，密钥为这份记录签名。
 
-- **k-of-n 签名审批。** 用 `WithApproval` 构建的工具会让运行在执行前停下，直到 n 位具名批准人中有 k 位对这一确切调用签署了决定（`bide.approval.v3`；决定时间在签名之内）。审计员可离线核验 k 位具名批准人在动作之前批准了它。批准人用 `bide approve` 在终端中决定，既可针对日志，也可用 `-to` 通过应用自己提供的审批接入端点，由应用经其自己的、受审计的日志记录该决定。参见[批准指南](../../docs/guides/hitl-approval.md)。
+- **k-of-n 签名审批。** 用 `WithApproval` 构建的工具会让运行在执行前停下，直到 n 位具名批准人中有 k 位对这一确切调用签署了决定（`bide.approval.v3`；决定时间在签名之内）。审计员可离线核验 k 位具名批准人在动作之前批准了它。批准人用 `bide approve` 在终端中决定，既可针对日志，也可用 `-to` 通过应用自己提供的审批接入端点，由应用经其自己的、受审计的日志记录该决定。批准人也可以打开通知中的链接，在浏览器页面里用不可导出的密钥签名（由你的组织托管的页面；需要 `WithAuth`）。参见[批准指南](../../docs/guides/hitl-approval.md)。
 - **职责分离。** 使用 `ExcludePrincipal` 时，关卡从不计入运行发起人（或上层任何运行的发起人）的决定；被排除的决定仍留在记录中并被标明。Bide 比较的是 id，无法看出同一个人持有两个身份。
 - **截止时间。** 使用 `Timeout` 时，未能按时获得批准的关卡会过期：过期被记录为关卡的结果，调用永不执行，迟到的决定不被计入，通知器会发出通知（`approval_expired`）。见[截止时间](../../docs/guides/hitl-approval.md#deadlines)。
 - **密钥置于应用之外。** 审计日志和批准人的签名密钥可以放在 PKCS#11 HSM、AWS KMS、Google Cloud KMS 或 Azure Key Vault 中，位于同一个 `audit.Signer` 接口之后，使用 Ed25519 或 ECDSA P-256。验证方只持有公钥。这是密钥托管，不是合规认证：[密钥托管](../../docs/guides/key-custody.md)列出了每种签名器所针对的测试对象（SoftHSM2 和模拟器，从不是真实的云）以及它不检查的内容。
-- **有记录的通知。** 运行停止或等待批准时会发出通知（已签名的 HTTPS webhook，`notify.NewWebhook`），审计轨迹记录每次尝试以及接收端是否确认。确认的意思是你的端点返回了 2xx，而不是有人读过它。通知可按类别或批准人路由，在截止时间前无人确认时升级，事件不再有效时发出 `resolved` 解除通知。该轨迹可用与日志相同的签名器签名并锚定（可选；发布尽力而为，从不延迟投递）。批准人也可以打开通知中的链接，在浏览器页面里用不可导出的密钥签名（由你的组织托管，需要 `WithAuth`）。参见[通知](../../docs/guides/notifications.md)。
-- **[删除个人数据](../../docs/guides/retention.md#erasing-personal-data)**：`bide journal redact` 先给出演练计划，再把已结束运行中选定的记录替换为墓碑，墓碑保留它们在已签名头中的位置，并把每次删除记录到已签名的轨迹中，由 `bide audit redactions` 校验。它不涉及日志之外的副本（导出文件、备份、事件存储、模型提供方）；指南列出了它做不到的事。
+- **有记录的通知。** 运行停止或等待批准时会发出通知（已签名的 HTTPS webhook，`notify.NewWebhook`），按类别或批准人路由，在截止时间前无人确认时升级，审计轨迹记录每次尝试以及接收端是否确认。事件不再有效时，`resolved` 解除通知会结束该事件。该轨迹可用与日志相同的签名器签名并锚定（可选；发布尽力而为，从不延迟投递）。确认的意思是你的端点返回了 2xx，而不是有人读过它。参见[通知](../../docs/guides/notifications.md)。
 
 范围见[已知限制](../../docs/KNOWN-LIMITATIONS.md#approval-and-quorum)：批准人是固定的具名集合；把密钥关联到某个人是你的身份提供方的工作；决定的时间是批准人自己的声明。
 
@@ -145,56 +182,73 @@ Temporal 借助一个服务器和一支 worker 机群提供持久化执行。而
 - **Claude 的扩展思考可与工具配合使用。** 思考签名在各轮之间得以保留；当扩展思考与工具使用结合时，API 要求这样做。
 - **按提供商生成的工具 schema。** 一个工具的 schema 从其 Go 类型生成一次，并以每个提供商的方言发出，包括 OpenAI 严格模式和 Gemini 的子集。
 - **模型适配器。** 原生 Claude 与 Gemini，以及经由 `WithBaseURL` 的任意 OpenAI 兼容端点（OpenAI、Ollama、DeepSeek、Groq、OpenRouter、vLLM、Azure、xAI）。
+- **没有 DDL 权限的 Postgres。** `bide migrate` 以所有者身份创建或检查 schema，而 `postgres.WithoutMigration` 打开存储时只验证 schema 而不创建它，因此服务角色无需 `CREATE` 权限。参见 [Postgres 指南](../../docs/guides/postgres.md)。
 - **跨节点故障切换。** 使用 Postgres 时，任意节点都能恢复任意运行。按运行计的租约阻止两个节点驱动同一个运行，而 `agent.RecoverLoop` 会在崩溃节点的租约过期时接手它的运行。
 
-**构建者**在自己的模块中添加库：`go get github.com/bide-ai/bide/agent`。然后阅读 API [导览](tour.zh-CN.md)。
+**构建者**在自己的模块中添加库：`go get github.com/bide-ai/bide/agent`。然后阅读[入门](../../docs/getting-started.md)，浏览 API 的[导览](tour.zh-CN.md)，并参见[文档索引](../../docs/README.md)。
 
-## 指南
+## 文档
 
-初来乍到？从 **[入门](../../docs/getting-started.md)** 开始，用 **[文档索引](../../docs/README.md)** 获取完整地图，并参见 **[概念](../../docs/CONCEPTS.md)** 了解词汇（journal、at-most-once、lease、Waker、gsm、ProofBundle）。精确的持久性保证陈述于 **[保证](../../docs/GUARANTEE.md)**，其边界见 **[已知限制](../../docs/KNOWN-LIMITATIONS.md)**。
+**从这里开始**
 
-信任文档（面向安全与风险评审）：[威胁模型](../../docs/trust/threat-model.md)、[稳定性与支持](../../docs/trust/stability.md)、[对比](../../docs/trust/comparison.md)、[运维指南](../../docs/trust/operations.md)、[验证发布版本](../../docs/trust/verify-releases.md)（英文）。
-
-**手写与构建**
-
+- **[入门](../../docs/getting-started.md)**：安装、`bide demo`、`bide init`、你的第一个智能体，以及示例。
+- **[bide 导览](tour.zh-CN.md)**：逐节介绍 API：图、环境式运行、智能体循环、流式输出、类型化输出、会话、审计轨迹、人工审批、错误、中间件与治理。
 - **[配方](../../docs/recipes/index.md)**：六个可复制即用、无需 API 密钥即可运行的完整流程：3 选 2 审批的退款、发票审批、工单分流、安全更新客户记录、会休眠并唤醒的环境智能体，以及在运行需要人工介入时通知相关人员的 webhook。
-- **[流程](../../docs/guides/plan-flows.md)**：`plan` 类型化流程构建器。手写下沉到同一条日志的拓扑（`Step`/`Tool`/`Model`/`Switch`/`Join`/`LoopBack`），然后证明一次运行遵循了它（`Conform`）。可在 `examples/plan` 中运行。
-- **[持久化步骤](../../docs/guides/durable-steps.md)**：组合你自己的持久化工作：`Step`、`Parallel`/`Task` 扇入、saga（`WithSaga`）以及持久化定时器（`Sleep`/`WaitUntil`）。可在 `examples/parallel` 中运行。
-- **[可靠性](../../docs/guides/reliability.md)**：按尝试计的超时、分类的重试、对冲式模型调用、限流和成本跟踪，以及它们如何组合。可在 `examples/hedge` 中运行。
-- **[信号与环境运行](../../docs/guides/signals.md)**：把外部事件接收进一次运行：持久化定时器和 `Waker`、人在回路（`Interrupt`/`AnswerInterrupt`），以及持久化信号（传输进来是至少一次，应用出去是恰好一次）。可在 `examples/signals`、`examples/interrupt` 中运行。
-- **[模型](../../docs/guides/models.md)**：Anthropic、OpenAI 兼容和 Gemini 适配器：`WithBaseURL`、采样、提示缓存、类型化错误和多模态图像输入。
-- **[MCP](../../docs/guides/mcp.md)**：把一个 MCP 服务器作为运行时工具源接入，并具备副作用安全的恢复；一个受信任服务器的工具注解可以把工具标记为可安全重新运行。
-- **[可观测性](../../docs/guides/observability.md)**：一行搞定 OTel gen_ai span（`trace.Instrument`）：span 分类法、子智能体嵌套、token 到成本，以及内容捕获的隐私默认值。可在 `examples/observability` 中运行。
-- **[消息](../../docs/guides/messaging.md)**：从一个入站 webhook（Slack、Telegram、SMS、Discord）驱动一个智能体，且重投递安全：一个被重试的 webhook 会重放，而不是重复触发。可在 `examples/webhook` 中运行。
-- **[调试与恢复](../../docs/guides/debugging.md)**：确定性重放（`Replay`）、事件重建（`ReplayEvents`）、Mermaid 运行图，以及重新驱动被中断运行的崩溃恢复（`Recover`）。
-- **[流程编辑器](../../docs/guides/flow-editor.md)**：`bide edit`，用于编辑流程配置的本地页面：图、大纲、每个节点的审批门、安全级别和代码块的表单、以六个模板构建并即时给出结论的 `assert` 断言、相对已提交策略削弱流程时无法关闭的横幅、保存前的 diff 以及原子保存。
+- **[保证](../../docs/GUARANTEE.md)**与**[已知限制](../../docs/KNOWN-LIMITATIONS.md)**：精确的持久性保证及其边界。
+- **信任**：面向安全与风险评审：[威胁模型](../../docs/trust/threat-model.md)、[稳定性与支持](../../docs/trust/stability.md)、与 Temporal、LangGraph 和幂等键的[对比](../../docs/trust/comparison.md)、[运维指南](../../docs/trust/operations.md)（密钥、备份、数据库角色）、[保留与归档](../../docs/guides/retention.md)、[验证发布版本](../../docs/trust/verify-releases.md)（签名、SBOM 和构建来源证明），以及[控制映射](../../docs/trust/control-mapping.md)（SOC 2、ISO 27001、PCI DSS、DORA、EU AI Act、SR 11-7）（英文）。
+
+**概念**
+
+- **[概念](../../docs/CONCEPTS.md)**：词汇（journal、at-most-once、lease、Waker、gsm、ProofBundle）集中在一处。
+- **[设计](../../docs/design/design.md)**：运行时是如何搭建的。
+- **[架构](../../docs/ARCHITECTURE.md)**：代码在哪里：每个包中最先要打开的源文件，按阅读顺序排列，从日志、步骤、声明与租约、循环、批准、通知器和审计日志开始。
+
+**指南：构建**
+
+- **[流程](../../docs/guides/plan-flows.md)**：`plan` 包。手写下沉到同一条日志的拓扑（`Step`/`Tool`/`Model`/`Switch`/`Join`/`LoopBack`），为节点设置 m-of-n 人工批准关卡，然后证明一次运行遵循了它（`Conform`）。可运行：`examples/plan`。
+- **[持久化步骤](../../docs/guides/durable-steps.md)**：`Step`、`Parallel`/`Task` 扇入、saga（`WithSaga`）以及持久化定时器（`Sleep`/`WaitUntil`）。可运行：`examples/parallel`。
+- **[可靠性](../../docs/guides/reliability.md)**：按尝试计的超时、分类的重试、对冲式模型调用、限流和成本跟踪。可运行：`examples/hedge`。
+- **[信号与环境运行](../../docs/guides/signals.md)**：持久化定时器和 `Waker`、`Interrupt`/`AnswerInterrupt`，以及持久化信号（传输进来是至少一次，应用出去是恰好一次）。可运行：`examples/signals`、`examples/interrupt`。
+- **[模型](../../docs/guides/models.md)**：Anthropic、OpenAI 兼容和 Gemini 适配器、采样、提示缓存、类型化错误和多模态输入。
+- **[MCP](../../docs/guides/mcp.md)**、**[消息](../../docs/guides/messaging.md)**、**[RAG 与记忆](../../docs/guides/rag-memory.md)**、**[可观测性](../../docs/guides/observability.md)**：把 MCP 服务器作为工具源、重投递安全的 webhook、自带检索，以及一行搞定的 OTel span。
+
+**指南：检视**
+
+- **[流程编辑器](../../docs/guides/flow-editor.md)**：`bide edit`，用于编辑流程配置的本地页面：图、大纲、每个节点的审批门、安全级别和代码块的表单、添加、删除、重命名和重排节点、连接边、switch、分支臂和 join（通过表单，或在节点之间拖拽）、带 `-blocks` 的类型化模式（它了解程序已注册的代码块）、以六个模板构建并即时给出结论的断言、相对已提交策略削弱流程时无法关闭的横幅、保存前的 diff 以及原子保存，以及（带存储的 `-run`，v0.25.0）把该文件与某次运行记入日志的拓扑做比较、该运行在流程上的路径，以及该文件会拒绝的未完成运行。
 - **[运行查看器](../../docs/guides/run-viewer.md)**：`bide view`，一个只读的本地页面，用于查看日志中的各次运行（可按状态、类型和 ID 过滤的运行列表，以及“需要关注”列表：每个在等人处理的运行，批准期限最近的排在前面，并标明是否已通知、是否已确认），也用于查看单次运行（时间线、流程的路径、停机、批准关卡和审计结论，可跟随进行中的运行）；`bide view -config` 查看流程配置（每个节点的崩溃行为风险图，以及诸如 `every path to charge passes approval >= 2 of 3` 的策略断言，违反时以反例路径画出）；`bide check` 在 CI 中以文本形式检查其问题与断言，`-diff` 可比较一个流程的两个版本并标出被削弱的批准关卡（包括被去掉的 `exclude_principal`，以及被移除或加长的 `timeout`）、原先所有路径都经过关卡而现在有路径绕过关卡的节点，或被调低的 `safety`。
+- **[主题](../../docs/guides/themes.md)**：`bide view`、`bide edit` 和批准页面使用经检查的主题（`light`、`dark`、`high-contrast`，以及系统的对比度和强制颜色设置）；`bide view` 和 `bide edit` 接受 `-theme file.json` 来使用你自己的主题（批准页面不接受），`bide theme check` 依据对比度和可区分性规则衡量它。
+- **[调试与恢复](../../docs/guides/debugging.md)**：`Replay`、`ReplayEvents`、Mermaid 运行图，以及 `Recover`。
 
-**问责与治理**
+**指南：证明与治理**
 
-- **[审计](../../docs/guides/audit.md)**：带证明的运行。一次运行随附一份可移植的 `RunCertificate`，可用 `bide audit verify-run` 离线核验。可在 `examples/govern/proof-carrying-run` 中运行。
-- **[委派](../../docs/guides/delegation.md)**：子智能体只能收窄的签名能力授权（`Grant`/`SignGrant`），离线核验（`VerifyDelegationChain`），外加从一份干净轨迹中赢得的权限。可在 `examples/govern/delegation`、`examples/govern/authority` 中运行。
-- **[安全模型](../../docs/guides/security-model.md)**：密码学保证的确切范围（完整性、真实性、防篡改性、不可否认性、选择性披露）以及范围之外的内容（机密性）。在依赖审计轨迹之前请读这个。
+- **[审计](../../docs/guides/audit.md)**：防篡改的轨迹和带证明的运行，可用 `bide audit` 离线核验。可运行：`examples/govern/proof-carrying-run`。
+- **[通知](../../docs/guides/notifications.md)**：运行停止或等待批准时通知人，并在事件结束时（解除通知）再通知，按事件类型和批准人路由，并对无人确认或无人决定的事件设有限长度的升级链：已签名的 HTTPS webhook（`notify.NewWebhook`）、一次调用的接收端检查（`notify.Verify`）、可选的双向 TLS 与密钥固定，以及负载省略了什么。`bide notify test` 检查你的接收端，`bide notify listen` 是本地接收端，`bide notify relay` 转发到 Slack 和 PagerDuty。`bide audit notifications` 可离线检查每个需要人处理的事件是否都已通知并及时确认。
+- **[删除个人数据](../../docs/guides/retention.md#erasing-personal-data)**：`bide journal redact` 先给出演练计划，再把已结束运行中选定的记录替换为墓碑，墓碑保留它们在已签名头中的位置，并把每次删除记录到已签名的轨迹中，由 `bide audit redactions` 校验。`bide journal hold` 阻止某个事项相关的运行被删除，并记录在同一条轨迹中。它不涉及日志之外的副本（导出文件、备份、事件存储、模型提供方）；指南列出了它做不到的事。
+- **[紧急停止开关](../../docs/guides/kill-switch.md)**：对所有智能体、某个工具或某个智能体立即停止，作为一次暂停，停止解除时恢复：已开始的调用会完成，未开始的不会开始，尝试标记绝不会被重新触发。基础模式无需密钥；审计模式对每条记录签名、以法定人数解除并挺得过密钥轮换，还会写下已签名并已锚定的轨迹，`bide audit stops` 对照策略和控制运行对其进行校验。`bide stop` 用于设置、列出和解除停止（审计模式用已登记的密钥签名，密钥在 HSM 或 KMS 中时用 `bide-hsm stop`），`bide audit stops -sign-head` 让轨迹的已签名头保持最新（日志密钥在 HSM 或 KMS 中时用 `bide-hsm audit stops`）；库 API：`agent.StopControl`、`StopSwitch`、`WithStopSwitch`。`bide view` 在每个页面显示生效的停止及其保持的运行；停止的设置与解除通过通知器发出通知（`stop_set`、`stop_lifted`），`bide audit notifications` 会检查是否已通知。
+- **[批准](../../docs/guides/hitl-approval.md)**：工具运行之前的签核，从 1-of-1 到签名的 m-of-n，可选职责分离（运行的发起人永不计入，`ExcludePrincipal`），并离线证明 k 位具名批准人在动作之前批准了它。用 `bide approve` 在终端中决定（它先显示日志中的调用，再签名），并用 `bide keygen` 生成密钥；密钥在 HSM 或 KMS 中时，用 `bide-hsm approve`。应用可挂载 `approvals.Handler`，通过 HTTP 接收已签名的决定，并为没有 `bide` 二进制文件的批准人提供浏览器页面。可运行：`examples/approval`。
+- **[SSO 证书](../../docs/guides/sso-certificates.md)**：单点登录之后签发的批准人证书，作为一个经过测试的配方，使用 step-ca（OIDC provisioner、证书模板、批准人的续期脚本、吊销以及 step-ca 的 CRL 限制）；可运行：`examples/sso-certs`。
+- **[Stripe 测试模式退款](../../examples/stripe-refund/README.md)**：在退款中途杀掉智能体；重启时停下而不是退两次款，随后对账器依据 Stripe 自己的记录解决该步骤。可运行：`examples/stripe-refund`。
+- **[安全模型](../../docs/guides/security-model.md)**：密码学保证的确切范围，以及 `bide` 的仅审计构建。在依赖审计轨迹之前请读这个。
 - **[锚定](../../docs/guides/anchoring.md)**：把每个已签名的树头发布到启用 Object Lock 的 S3 存储桶（`anchor/awss3`），使用合规模式并放在单独的 AWS 账户中，数据库的运维者便无法改写已锚定的内容；写入后会回读并校验；附 IAM 策略、失败模式，以及可离线或用只读凭证校验对象、并检查存储桶版本控制、锁定和加密的 `bide-anchor`。已针对 MinIO 和模拟实现测试，从未针对 AWS 测试。
 - **[在 Google Cloud Storage 中锚定](../../docs/guides/anchoring-gcs.md)**：对保留策略已锁定的存储桶（`anchor/gcs`）做同样的事，放在单独的 Google Cloud 项目中；附自定义 IAM 角色、失败模式、用于校验和检查它的 `bide-anchor -backend gcs`，以及针对真实存储桶一次性运行的操作手册。曾在真实存储桶上运行过一次，其余针对内存模型测试。
-- **[密钥托管](../../docs/guides/key-custody.md)**：把审计日志和审批人的签名密钥放在 PKCS#11 HSM（测试用 SoftHSM2）、AWS KMS、Google Cloud KMS 或 Azure Key Vault（ECDSA P-256）中，位于 `audit.Signer` 之后。审批人可用 HSM、AWS KMS 或 Google Cloud KMS 或 Azure Key Vault 中的密钥通过 `bide-hsm approve`（从源码构建）在终端中决定。可运行示例：`examples/hsm-signing`。
-- **[治理](../../docs/guides/governance.md)**：Tier-2 受治理状态底座（gsm）。把共享状态描述为一个注册表，而 `Build()` 检查每一种交错都收敛，否则返回一个反例。可在 `examples/govern/mesh`、`examples/govern/compose` 中运行。
-- **[通知](../../docs/guides/notifications.md)**：运行停止或等待批准时通知人，事件结束时发出解除通知（all-clear）：已签名的 HTTPS webhook（`notify.NewWebhook`）、一次调用的接收端验证（`notify.Verify`）、可选的双向 TLS 与密钥固定，以及按事件类型和批准人把事件路由到不同接收方，并对无人确认或无人决定的事件进行有限长度的升级链。 `bide notify test` 检查你的接收端，`bide notify listen` 是本地接收端，`bide notify relay` 转发到 Slack 和 PagerDuty。 `bide audit notifications` 可离线检查每个需要人处理的事件是否都已通知并及时确认。
-- **[紧急停止开关](../../docs/guides/kill-switch.md)**：对所有智能体、某个工具或某个智能体的紧急停止，在任何副作用开始之前作为暂停（而非失败）生效；已开始的调用会完成并记录，未开始的不会开始，尝试标记绝不会被重新触发。基础模式无需密钥；审计模式对每条记录签名并以法定人数解除。`bide stop` 用于设置、列出和解除停止（密钥在 HSM 或 KMS 中时用 `bide-hsm stop`），`bide audit stops -sign-head` 为轨迹签署头部（日志密钥在 HSM 或 KMS 中时用 `bide-hsm audit stops`）；Go API 为 `agent.StopControl`。`bide view` 在每个页面显示生效的停止及其保持的运行；停止的设置与解除通过通知器发出通知（`stop_set`、`stop_lifted`）。`bide audit notifications` 会检查是否已通知。
-- **[批准](../../docs/guides/hitl-approval.md)**：工具运行之前的持久化人类签核，从 1-of-1 到签名的 m-of-n（`ApprovalPolicy`、`SubmitDecision`），可选职责分离（运行的发起人永不计入，`ExcludePrincipal`），并离线证明 k 位具名批准人在动作之前批准了它（`audit.ApprovalEvidence`、`audit.VerifyApprovals`）。可在 `examples/approval` 中运行。 审批人可用 `bide approve` 在终端中决定（它先显示日志中的调用，再签名），密钥由 `bide keygen` 生成。应用可挂载 `approvals.Handler`，通过 HTTP 接收已签名的决定，审批人再用 `bide approve -to <url>` 提交；没有 `bide` 的审批人可使用浏览器页面（由审批人所在机构在专用来源托管）。
-- **[Stripe 测试模式退款](../../examples/stripe-refund/README.md)**：在退款中途杀掉智能体；重启时停下而不是退两次款，随后对账器依据 Stripe 自己的记录解决该步骤。可在 `examples/stripe-refund` 中运行。
-- **[法定人数](../../docs/guides/quorum.md)**：受治理的 k-of-n 模型一致（`govern.Quorum`），计票锚定在日志中并可离线重新核对（`bide audit verify-quorum`）。可在 `examples/govern/quorum` 中运行。
+- **[密钥托管](../../docs/guides/key-custody.md)**：把审计日志和审批人的签名密钥放在 PKCS#11 HSM（测试用 SoftHSM2）、AWS KMS、Google Cloud KMS 或 Azure Key Vault（ECDSA P-256）中，位于 `audit.Signer` 之后；审批人可用 HSM、AWS KMS、Google Cloud KMS 或 Azure Key Vault 中的密钥通过 `bide-hsm approve`（从源码构建）在终端中决定。可运行：`examples/hsm-signing`。
+- **[委派](../../docs/guides/delegation.md)**、**[治理](../../docs/guides/governance.md)**、**[法定人数](../../docs/guides/quorum.md)**：子智能体只能收窄的签名授权、收敛的受治理状态（gsm），以及受治理的 k-of-n 一致。
 
-**参考与内部机制**
+**参考**
 
 - **[CLI 参考](../../docs/reference/cli.md)**：每个 `bide` 命令、标志和退出状态。
 - **[SDK API 参考](../../docs/reference/api/index.md)**：每个已发布包的每个导出符号，附声明、文档注释的第一句和稳定性标签，由 Go 源码生成。
-- **[模块结构](../../docs/reference/module-structure.md)**：多模块布局。
-- **[扩展点](../../docs/reference/extension-points.md)**：端口与适配器（`Model`、`Store`、`Tool`、`Compensator`、`Retriever`、`Anchor`、`EventStore`），附一个"实现你自己的存储"的演练。
-- **[bide 如何被验证](../../docs/testing/verification.md)**：没有失败测试就没有修复、变异检查、崩溃与取消扫描、强制交错、一致性测试套件、协调协议的 TLA+ 模型检验，以及 CI 强制执行的内容。
-- **[形式化验证](../../docs/formal-verification.md)**：bide 协调协议的 TLA+ 模型（每个 pull request 用 TLC 检验，每晚用 Apalache 检验：一个归纳不变式证明认领协议的“至多一次”规则在任意深度下成立，适用于两个驱动者、有界的尝试次数和认领 ID）、每个模型保证什么并覆盖哪些代码、模型发现或确认的每个缺陷，以及模型不覆盖的范围。
-- **[测试与证据](../../docs/testing/testing.md)**：测试了什么以及如何测试、混沌崩溃注入基准、差分预言机、RFC 6962 一致性，以及 `eval` 包中可证明与统计之间的边界。
-- **[日志压紧](../../docs/design/compaction.md)**（设计说明）：在不破坏审计脊柱的包含性和一致性证明的前提下，压紧一条无界的日志。
+- **[bide-anchor 参考](../../docs/reference/bide-anchor.md)**：`bide-anchor verify`、`export` 和 `check`，用于 S3 Object Lock 或 Google Cloud Storage 锚点中的树头（`-backend s3` 或 `gcs`）。
+- **[bide-hsm 参考](../../docs/reference/bide-hsm.md)**：`bide-hsm approve`、`pubkey` 和 `csr`，用于放在 HSM、智能卡或云 KMS 中的批准人密钥。
+- **[扩展点](../../docs/reference/extension-points.md)**与**[模块结构](../../docs/reference/module-structure.md)**：端口与适配器，以及多模块布局。
+- **API**：[pkg.go.dev/github.com/bide-ai/bide](https://pkg.go.dev/github.com/bide-ai/bide/agent)。
+
+**证明**
+
+- **[形式化验证](../../docs/formal-verification.md)**：协调协议的 TLA+ 模型、TLC 和 Apalache 检验什么、它们发现的每个缺陷，以及它们不覆盖的范围。
+- **[bide 如何被验证](../../docs/testing/verification.md)**与**[测试](../../docs/testing/testing.md)**：没有失败测试就没有修复、变异检查、崩溃扫描，以及混沌基准。
+
+完整的地图是**[文档索引](../../docs/README.md)**。
 
 ## 联系方式
 

@@ -9,6 +9,8 @@
 // buy tool six times, so the example runs offline and exercises the governance + identity + audit
 // machinery through a real agent run. Swap the scripted model for a real one and the guarantees are
 // identical.
+//
+//	cd examples/govern && go run ./authority
 package main
 
 import (

@@ -7,6 +7,8 @@
 //
 // Offline, no LLM or network: the sub-agent's model is scripted (agenttest.ScriptedModel) to call
 // the governed tool. The keyring stands in for a PKI/IdP.
+//
+//	cd examples/govern && go run ./delegation
 package main
 
 import (

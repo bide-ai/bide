@@ -2,6 +2,8 @@
 // take the first good answer, which cuts tail latency and fails over around a down provider. The
 // models here are offline stubs with fixed latencies so the effect is visible without an API key;
 // with real adapters (anthropic.New, openai.New, gemini.New) the usage is identical.
+//
+//	go run ./examples/hedge
 package main
 
 import (

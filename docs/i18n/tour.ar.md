@@ -219,7 +219,7 @@ res, err := a.Run(ctx, runID, agent.UserText(input),
 _ = err
 ```
 
-يسجّل أول تشغيل مدخله وخياراته في `run:start`، وكل تشغيل لاحق، بما فيه الاستعادة، يعمل بها: الحدّ المختلف (`WithMaxTurns`، `WithTokenBudget`) يُسجَّل تعديلًا `run:limits:<n>`، وأي إعداد مختلف آخر هو `ErrConfig`. تُلغي `agent.Cancel` تشغيلًا (وتُرجَع الـ saga أولًا)، وتقرأ `agent.Status` حالته من السجل.
+يسجّل أول تشغيل مدخله والخيارات التي مرّرها مستدعيه في `run:start`، وكل تشغيل لاحق، بما فيه الاستعادة، يعمل بها: لا تحتاج `Resume(ctx, runID)` إلى أيٍّ منهما، وقد يرفع تشغيل لاحق حدًّا أو يخفضه (`WithMaxTurns`، `WithTokenBudget`: يُسجَّل تعديلًا `run:limits:<n>`)، وأي إعداد مختلف آخر هو `ErrConfig`. تُشغِّل `WithSaga()` التشغيلة بوصفها saga، وتقصرها `WithToolFilter(names...)` على بعض أدوات الوكيل، ويُفرض ذلك عند إرسال كل نداء. تُلغي `agent.Cancel(ctx, j, runID, reason)` تشغيلًا (وتُرجَع الـ saga أولًا)، وتقرأ `agent.Status(ctx, j, runID)` حالته من السجل.
 
 ## البثّ (Streaming)
 
@@ -245,13 +245,16 @@ for ev := range stream.Events() {
 res, err := stream.Result() // what Run returns: the Result and an error (incl. a pause: *ApprovalPending, *OutcomeUnknown, ...)
 ```
 
-الأحداث: `TurnStarted`، `ModelEvent` (تغذية الرموز)، `AssistantTurn`، `ToolStarted` / `ToolCompleted`،
+الأحداث: `TurnStarted`، `ModelEvent` (تغذية الرموز)، `TurnRestarted`، `AssistantTurn`، `ToolStarted` / `ToolCompleted`،
 `ApprovalRequired`، `Finished`. مرِّر على `Events()` لأجل واجهة ثم استدعِ `Result()`، أو استدعِ `Result()`
-وحدها لتتصرّف تمامًا كـ `Run` (تستنزف الأحداث نيابةً عنك).
+وحدها لتتصرّف تمامًا كـ `Run` (تستنزف الأحداث نيابةً عنك). يُطلَق `ToolStarted` مباشرةً قبل استدعاء الأداة، فالنداء الذي يُلغى قبل أن يبدأ (ويُسجَّل بأنه لم يبدأ) لا يُصدر `ToolStarted` ولا `ToolCompleted`.
 
 شيئان جديران بالمعرفة، وكلاهما نتيجة للمعمورية:
 - **فروق الرموز تصل أسفل سلسلة الـ middleware** (يظل Retry / Cost يريان الرسائل المُجمَّعة كاملة)،
-  و**فقط عند نداء نموذج جديد**.
+  و**فقط عند نداء نموذج جديد**. يُبَثّ طلب واحد من الدور في المرة الواحدة. وحين يستدعي middleware مثل Retry
+  النموذج ثانيةً بعد محاولة بثّت فروقًا بالفعل، أو لا تكون استجابة الدور هي التي بُثّت (فاز نداء احتياطي في
+  Hedge، أو أجاب بديل (fallback) أو ذاكرة مؤقتة)، يَسِم `TurnRestarted` تلك الفروق بأنها مُهمَلة، وتتبعها
+  الاستجابة التي يسجّلها الدور: امسح نص الدور حين تصل. ليس في الـ middleware شيفرة بثّ لهذا؛ يتولاه الوكيل.
 - **عند الاستئناف، يُعاد إصدار النصّ المُسجَّل** كـ `AssistantTurn{Replayed: true}` + `ToolCompleted`
   قبل التقدّم الحيّ، فتعيد واجهةٌ جديدة بناء القصة كاملة بعد انهيار، والدور المُعاد لا يُنتج فروق رموز (كان
   قد حُسم بالفعل).
@@ -374,14 +377,14 @@ O(log n)، دون كشف السجلات الأخرى (مثلًا: أرِ مُد�
 لاحق: أن التاريخ أُلحِق فقط، لم يُعَد كتابته أو ترتيبه (ضمان سجل الشفافية). التنفيذ مفحوص مقابل متجهات اختبار
 RFC 6962 المنشورة.
 
-يُنتج `SignTreeHead` **رأس الشجرة الموقَّع** بأسلوب CT، `{Kind, RunID, Size, Root, TimestampNanos}` موقَّعًا مع اسم مخطط التوقيع بأي `audit.Signer` (Ed25519 أو ECDSA P-256 أو ML-DSA-65 أو هجين منهما)، وهو
-الأثر الذي تنشره. التدفّق الكامل: وقّع رأس شجرة (STH)، ثم أفصِح لاحقًا عن سجلّ واحد ببرهان شمول يفحصه مُدقِّق
+يُنتج `SignTreeHead` **رأس الشجرة الموقَّع** بأسلوب CT (الصيغة `bide.audit.sth.v5`)، `{Kind, RunID, Size, Root, TimestampNanos}` موقَّعًا مع اسم مخطط التوقيع بأي `audit.Signer` (Ed25519 أو ECDSA P-256 أو ML-DSA-65 أو هجين منهما)، وهو
+الأثر الذي تنشره. تلتزم الأوراق بالبايتات التي يخزّنها السجل لكل سجلّ، حرفيًّا، فيحمل البرهان تلك البايتات (`record_bytes`)، ويظلّ السجلّ الذي كتبه إصدار أحدث بحقول لا يعرفها هذا الإصدار يتحقّق. التدفّق الكامل: وقّع رأس شجرة (STH)، ثم أفصِح لاحقًا عن سجلّ واحد ببرهان شمول يفحصه مُدقِّق
 مقابل الجذر الموقَّع، وأثبِت النموّ بالإلحاق فقط بين رأسَي شجرة (STHs). انظر
 [docs/guides/audit.md](../../docs/guides/audit.md) للنموذج والواجهة البرمجية وتدفّق الامتثال من طرف إلى طرف.
 
 ### عارض التشغيل
 
-يفتح `bide view` صفحة للقراءة فقط لتشغيل واحد، على `127.0.0.1`، من سجلّ SQLite أو Postgres أو سجلّ مُصدَّر. للتثبيت: `go install github.com/bide-ai/bide/cmd/bide@latest`. ويعرض `bide view -config flow.yaml` تعريف التدفق بالطريقة نفسها مع تعليم المشكلات على الرسم، ويُجري `-check` هذا الفحص في CI. ويقارن `bide check flow.yaml -diff main` إصدارين من التدفق على الرسم (الإضافات بالأخضر، والمحذوفات بالأحمر المتقطع، والتغييرات بالكهرماني)، وينبّه إلى أي سياسة موافقة أُضعفت (حُذفت بوابة، أو خُفّض العدد المطلوب، أو أُسقط `exclude_principal`، أو أُزيل `timeout` أو طُوِّل). وتلوّن الصفحة كل عقدة بحسب ما يفعله الانهيار بها (الأثر الجانبي يتوقف، والعقدة للقراءة فقط أو المتساوية الأثر تُعاد)، وتحكم على أسطر `assert` في الإعداد، مثل `every path to charge passes approval >= 2 of 3`، وترسم مسار المثال المضاد للمخالفة بالأحمر. تعرض
+يفتح `bide view` صفحة للقراءة فقط لتشغيل واحد، على `127.0.0.1`، من سجلّ SQLite أو Postgres أو سجلّ مُصدَّر. للتثبيت: `go install github.com/bide-ai/bide/cmd/bide@latest` (أو `brew install bide-ai/tap/bide`). ويعرض `bide view -config flow.yaml` تعريف التدفق بالطريقة نفسها مع تعليم المشكلات على الرسم، ويُجري `bide check flow.yaml` هذا الفحص في CI. ويقارن `bide check flow.yaml -diff main` إصدارين من التدفق على الرسم (الإضافات بالأخضر، والمحذوفات بالأحمر المتقطع، والتغييرات بالكهرماني)، وينبّه إلى أي سياسة موافقة أُضعفت (حُذفت بوابة، أو خُفّض العدد المطلوب، أو أُسقط `exclude_principal`، أو أُزيل `timeout` أو طُوِّل). وتلوّن الصفحة كل عقدة بحسب ما يفعله الانهيار بها (الأثر الجانبي يتوقف، والعقدة للقراءة فقط أو المتساوية الأثر تُعاد)، وتحكم على أسطر `assert` في الإعداد، مثل `every path to charge passes approval >= 2 of 3`، وترسم مسار المثال المضاد للمخالفة بالأحمر. تعرض
 الصفحة الخطّ الزمني للتشغيل (أدوار النموذج، واستدعاءات الأدوات وقيمة `Safety` لكل منها، والمحاولات،
 والموافقات)، والعملية المتوقّفة مع استدعاء `ResolveHalt` الذي يسجّل نتيجتها، وحالة k-of-n لكل بوابة
 موافقة، ومسار تدفّق `plan` على طوبولوجيته المُعلَنة، وما إذا كان السجلّ يتحقّق مقابل رأس شجرة موقَّع
@@ -574,10 +577,10 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 ```
 
 الأصناف: `ErrConfig`، `ErrModel`، `ErrTool`، `ErrStorage`، `ErrProtocol`، `ErrBudget`.
-الشروط (يلفّ كلٌّ منها صنفًا): `ErrUnknownTool`، `ErrToolArgs` (يلفّان `ErrTool`)،
+الشروط (يلفّ كلٌّ منها صنفًا): `ErrUnknownTool`، `ErrToolArgs`، `ErrToolOutcomeUnknown` (تلفّ `ErrTool`)،
 `ErrToolReinvoked`، `ErrInvalidApproval`، `ErrAlreadyDecided` (تلفّ `ErrConfig`)،
 `ErrNoRecordedOutput`، `ErrIncompleteResponse` (يلفّان `ErrModel`)، `ErrTruncatedToolArgs` (يلفّ
-`ErrProtocol`)، `ErrBudgetExceeded`، `ErrMaxTurns` (يلفّان `ErrBudget`). أما `ErrToolNotCalled` فلا يلفّ أي صنف: إنه يَسِم نداء أداة معلومًا
+`ErrProtocol`)، `ErrStreamProtocol` و`ErrNegativeUsage` (يلفّان `ErrProtocol` و`ErrModel`)، `ErrBudgetExceeded`، `ErrMaxTurns` (يلفّان `ErrBudget`). أما `ErrToolNotCalled` فلا يلفّ أي صنف: إنه يَسِم نداء أداة معلومًا
 أنه لم يبلغ أداته قط (ويلفّه رفضُ middleware الأداة). وتُرجِع مُحوّلات المورّدين أيضًا
 `*RateLimited` (HTTP 429، مع تلميح `RetryAfter`) و`*APIError` (أي استجابة غير 2xx أخرى، مع `StatusCode`)،
 وكلاهما يلفّ `ErrModel`. كل خطأ تُرجِعه العُدّة (بما فيه من النموذج وMCP والمخزن ومُحوّلات الحوكمة) يحمل صنفًا،
@@ -585,7 +588,7 @@ case errors.Is(err, agent.ErrStorage):      // durable-store I/O
 
 **إشارات التحكّم في التدفّق** أغنى من صنف، فتبقى أنواعًا ملموسة تُطابَق بـ `errors.As`: `*ApprovalPending`
 (الموافقة مطلوبة)، `*InterruptPending` (بانتظار مُدخَل بشري)، `*TimerPending` (مؤقّت مُعمَّر مُعلَّق)، `*SignalPending`
-(بانتظار إشارة خارجية)، `*OutcomeUnknown` (غير آمن للاستئناف)، `*SagaAborted` (تراجَع)، و`*HaltTooYoung` (من
+(بانتظار إشارة خارجية)، `*OutcomeUnknown` (غير آمن للاستئناف؛ سببه `Cause` هو `HaltCrashed` أو `HaltContended`؛ وعقدة تدفّق `plan` تعمل بوصفها `Step` وتتوقف بوصفها كذلك، وتُسمّى بمفتاح عقدتها `node:<name>`، ويرفع توقفها `Flow.ResolveHalt`)، `*SagaAborted` (تراجَع)، و`*HaltTooYoung` (من
 `ResolveHalt`، حين لم تنقضِ مدّة `WithMinHaltAge` بعد). جميعها تحقّق الواجهة المختومة `agent.Pause`؛ اختبرها بـ `agent.IsPause(err)` واقرأها بـ `agent.AsPause(err)`. التشغيلة المتوقّفة أو
 المُتوقِّفة ليست صنف «إخفاق»؛ افحص البنية للحصول على `RunID` / `ToolUseID` / تفاصيل التعويض. ويظهر الإلغاء
 كـ `context.Canceled` / `context.DeadlineExceeded` المعتادَين، وتظهر القيادة التي أُلغيت لأن حجز تشغيلتها
@@ -624,6 +627,30 @@ a, err = a.With(
 يقوم `Retry` بتراجع أُسّي مع اهتزاز (jitter) ويحترم `Retry-After` عند 429 من المورّد (يُرجِع المُحوّل نوعًا
 مُصنَّفًا `*agent.RateLimited`)؛ ويُراكِم `Cost` الدولارات من استهلاك الرموز (شاملًا القراءة/الكتابة من
 التخزين المؤقت) في `CostMeter` تقرؤه بعد التشغيلة.
+
+الـ middleware للنموذج هو `func(next agent.ModelHandler) agent.ModelHandler`. يتلقى `agent.ModelCall` (الـ `Request`
+و`Model` المستهدف و`RunID` و`Turn`) ويُرجِع `agent.ModelResponse` (الـ `Message` و`Usage` الخاص بها وسبب الإنهاء
+`Finish`). النداء قيمة: غيّر نسخة منه ومرّرها (`c := call; c.Model = backup` هو كل ما يفعله `Hedge`). والعمل الذي
+يخصّ كل طلب أُرسل فعلًا، لا النداء نفسه، يوضع في خُطّاف (hook)، يعمل مرة واحدة حول كل طلب من كل محاولة مُعادة
+وكل هدف مُتحوَّط تحته:
+
+<!-- docsnip: setup import "log" -->
+```go
+// Log every request a turn sends, with its number within the turn.
+func LogRequests(next agent.ModelHandler) agent.ModelHandler {
+	return func(ctx context.Context, call agent.ModelCall) (agent.ModelResponse, error) {
+		return next(ctx, call.AddHook(agent.ModelCallHook{
+			After: func(_ context.Context, c agent.ModelCall, a agent.ModelAttempt) {
+				log.Printf("run %s turn %d request %d: %d tokens, err %v", c.RunID, c.Turn, c.Attempt(), a.Response.Usage.TotalTokens(), a.Err)
+			},
+		}))
+	}
+}
+```
+
+الخُطّافات للإلحاق فقط، ومحاسبة إنفاق التشغيلة نفسها ليست خُطّافًا، فلا يستطيع أي middleware أن يُخفي طلبًا عن
+`WithTokenBudget` أو `Result.Spend`. وخارج الوكيل، يرسل `agent.CallModel(ctx, model, req, mw...)` نداءً واحدًا
+عبر السلسلة نفسها.
 
 لأن `trace.Tool` يعمل داخل الحلقة، يجلس نطاقه (span) في السياق المُسلَّم إلى الأداة، فحين تكون الأداة نفسها
 وكيلًا فرعيًّا، تتداخل تشغيلة الوكيل الفرعي ونطاقاته كأبناء. ويعبر التتبّع حدّ الوكيل الفرعي.
@@ -671,7 +698,7 @@ middleware، مُحوّلات النموذج، باني تدفّق `plan`، `aud
 
 ```
 agent (root)     durable loop · Journal/Store · Message/Part · Tool/Safety · middleware types · RenderMermaid
-plan             optional typed flow builder + declarative config; lowers to the loop (Topology · Conform)
+plan             plan flows: the optional builder + declarative config; lowers to the loop (Topology · Conform)
 model/anthropic  native Claude (thinking + signatures)
 model/openai     any OpenAI-compatible endpoint
 model/gemini     native Gemini (generativelanguage / Vertex via WithBaseURL)
@@ -679,7 +706,7 @@ schema           reflect Go types → inline JSON Schema + OpenAIStrict
 middleware       Retry, RateLimit, Cost, Hedge
 trace            opt-in OTel gen_ai.* spans
 store/sqlite     on-disk durable resume (single binary, no cluster)
-store/postgres   HA durable resume (any node resumes any run)
+store/postgres   HA durable resume (any node resumes any run); bide migrate + WithoutMigration for a role with no DDL rights
 govern           Tier-2: federated governed state + quorum for agents that must agree (gsm-backed; own module)
 ```
 
