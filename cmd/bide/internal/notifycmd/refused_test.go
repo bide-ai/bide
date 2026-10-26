@@ -20,6 +20,7 @@ func TestRefusedByText(t *testing.T) {
 		err  error
 		want bool
 	}{
+		"a dial with no cause":   {&net.OpError{Op: "dial", Net: "tcp"}, false},
 		"nil":                    {nil, false},
 		"plan 9 dial":            {dial(errors.New("connection refused")), true},
 		"dial through a syscall": {dial(os.NewSyscallError("connect", errors.New("connection refused"))), true},
