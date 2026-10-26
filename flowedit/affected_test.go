@@ -217,11 +217,54 @@ func TestAffectedCountsNoDigestAndUnreadableApart(t *testing.T) {
 	if r.NoDigest != 5 || r.Unreadable != 1 || r.Refused != 0 || len(r.Groups) != 1 || r.Groups[0].Runs != 1 {
 		t.Fatalf("%+v", r)
 	}
-	if !strings.Contains(strings.Join(r.Notes, "\n"), "and runs that are not flow runs. They are not attributed to a flow and are not counted.") {
-		t.Errorf("the note does not say the runs may not be flow runs: %q", r.Notes)
+	want := `5 unfinished runs have no flow:digest. 4 of them wrote a flow:topology, so they are flow runs that have not recorded their digest yet (4 of the flow "pay"); resume records the digest of whichever flow resumes them, so they are not counted. 1 of them wrote no flow:topology: runs that are not flow runs, or flow runs that stopped before writing it; they are not attributed to a flow. None of these is counted.`
+	if !slices.Contains(r.Notes, want) {
+		t.Errorf("the note is not the split of the runs with no digest:\n%q\nwant\n%q", r.Notes, want)
 	}
-	if !strings.Contains(strings.Join(r.Notes, "\n"), "5 unfinished runs have no flow:digest: flow runs that have not recorded it yet (resume records the digest of whichever flow resumes them) and runs that are not flow runs.") {
-		t.Errorf("notes %q", r.Notes)
+}
+
+// The runs with no digest are told apart by one read of their topology each, for the first maxNoDigestReads only: 500 of them
+// cost 500 digest reads and maxNoDigestReads topology reads, however long they are, and the note says the rest were not
+// looked at.
+func TestAffectedToldApartNoDigestRunsAreBounded(t *testing.T) {
+	v1 := flowCfg("pay", "dbl")
+	tv1 := templateRun(t, v1)
+	count := func(extra int) (gets int32, note string) {
+		cs := &countStore{Store: agent.NewMemStore()}
+		for i := 0; i < 500; i++ {
+			drop := func(n string) bool { return unfinished(n) || n == "flow:digest" }
+			if i%2 == 1 { // not a flow run: neither a topology
+				drop = func(n string) bool { return unfinished(n) || n == "flow:digest" || n == plan.TopologyStep }
+			}
+			id := fmt.Sprintf("r%04d", i)
+			cloneRun(t, tv1, cs.Store, id, drop, nil)
+			for j := 0; j < extra; j++ {
+				n := "extra:" + strconv.Itoa(j)
+				if _, _, err := cs.Store.Insert(context.Background(), id, n, []byte(`{"name":"`+n+`","kind":"value","result":1}`)); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		s, _ := storeServer(t, v1, cs, true)
+		cs.gets.Store(0)
+		r := askAffected(t, s, v1, true, false)
+		if r.NoDigest != 500 {
+			t.Fatalf("%+v", r)
+		}
+		for _, n := range r.Notes {
+			if strings.HasPrefix(n, "500 unfinished runs have no flow:digest.") {
+				note = n
+			}
+		}
+		return cs.gets.Load(), note
+	}
+	short, note := count(0)
+	long, _ := count(30)
+	if short != 500+maxNoDigestReads || long != short {
+		t.Errorf("reads: %d for short runs, %d for long ones; want %d (a digest read each, and a topology read for the first %d)", short, long, 500+maxNoDigestReads, maxNoDigestReads)
+	}
+	if !strings.Contains(note, "10 of them wrote a flow:topology") || !strings.Contains(note, "10 of them wrote no flow:topology") || !strings.Contains(note, "Only the first 20 were looked at; the other 480 are not told apart.") {
+		t.Errorf("note %q", note)
 	}
 }
 
@@ -741,5 +784,23 @@ func TestAffectedComparesATextOnce(t *testing.T) {
 	askAffected(t, s, flowCfg("pay", "inc"), true, true) // reading the store again is a new scan
 	if n := s.affEvals.Load(); n != 3 {
 		t.Errorf("a new scan: %d comparisons, want 3", n)
+	}
+}
+
+// A run with no digest whose topology is larger than the comparison reads, or cannot be read, is not told apart and the
+// note says so.
+func TestAffectedNoDigestRunWithAnUnreadableTopologyIsNotToldApart(t *testing.T) {
+	v1 := flowCfg("pay", "dbl")
+	tv1 := templateRun(t, v1)
+	st := agent.NewMemStore()
+	big := `{"name":"` + plan.TopologyStep + `","kind":"value","result":{"flow":"` + strings.Repeat("x", MaxFileSize) + `"}}`
+	cloneRun(t, tv1, st, "big", func(n string) bool { return unfinished(n) || n == "flow:digest" }, map[string][]byte{plan.TopologyStep: []byte(big)})
+	cloneRun(t, tv1, st, "junk", func(n string) bool { return unfinished(n) || n == "flow:digest" }, map[string][]byte{plan.TopologyStep: []byte(`{"name":"` + plan.TopologyStep + `","kind":"value","result":7}`)})
+	s, _ := storeServer(t, v1, st, true)
+	r := askAffected(t, s, v1, true, false)
+	if !slices.ContainsFunc(r.Notes, func(n string) bool {
+		return strings.HasPrefix(n, "2 unfinished runs have no flow:digest.") && strings.Contains(n, "2 could not be told apart (their topology could not be read).") && !strings.Contains(n, "wrote a flow:topology")
+	}) {
+		t.Errorf("%q", r.Notes)
 	}
 }

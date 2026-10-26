@@ -26,6 +26,8 @@ const (
 	maxGroups = 20
 	// maxGroupIDs is how many run IDs a group shows.
 	maxGroupIDs = 20
+	// maxNoDigestReads is how many runs with no digest are told apart by their topology; past it they are counted only.
+	maxNoDigestReads = 20
 )
 
 // The bounds a test may change: how many unfinished runs are read (the first by run ID; the listing asks
@@ -67,7 +69,13 @@ type scanResult struct {
 	stopped    string
 	unreadable int
 	noDigest   int
-	groups     []*scanGroup
+	// Of the runs with no digest, the first maxNoDigestReads are told apart by one read of flow:topology, which a flow run
+	// writes before its digest: noTopo have none (not a flow run, or one that stopped before writing it), topoFlows holds
+	// the flow each of the others names, and the rest (noDigest less these) were not looked at, or could not be.
+	noTopo    int
+	topoFlows map[string]int
+	nTopo     int
+	groups    []*scanGroup
 	// overflowRuns and overflowDigests count the runs and the distinct digests past maxGroups.
 	overflowRuns, overflowDigests int
 	transient                     bool
@@ -225,6 +233,9 @@ func scanRuns(ctx context.Context, run editrun.Run) *scanResult {
 		}
 		if !ok {
 			res.noDigest++
+			if res.noDigest <= maxNoDigestReads {
+				classifyNoDigest(res, id, get)
+			}
 			continue
 		}
 		var d string
@@ -254,6 +265,29 @@ func scanRuns(ctx context.Context, run editrun.Run) *scanResult {
 }
 
 // editrun0 is the run (or the store alone) the scan reads.
+
+// classifyNoDigest tells a run that has no digest from the topology it wrote, if any: a flow run writes flow:topology just
+// before flow:digest, so one with a topology is a flow run that has not recorded its digest yet (and its flow is known),
+// and one without is not a flow run, or stopped before it wrote one. A topology that cannot be read is left unclassified.
+func classifyNoDigest(res *scanResult, id string, get func(id, name string) (agent.Record, bool, error)) {
+	rec, ok, err := get(id, plan.TopologyStep)
+	switch {
+	case err != nil:
+	case !ok:
+		res.noTopo++
+	case len(rec.Result) > MaxFileSize:
+	default:
+		var t plan.Topology
+		if json.Unmarshal(rec.Result, &t) != nil || t.Flow == "" {
+			return
+		}
+		if res.topoFlows == nil {
+			res.topoFlows = map[string]int{}
+		}
+		res.topoFlows[t.Flow]++
+		res.nTopo++
+	}
+}
 
 // followUp reads what one run says of its group: the flow it started, and its topology.
 func followUp(g *scanGroup, id string, get func(id, name string) (agent.Record, bool, error)) {
@@ -496,7 +530,7 @@ func (s *Server) evaluate(sc *scanResult, text []byte) *affectedReply {
 		notes = append(notes, "The scan stopped at "+sc.stopped+" after reading "+fmt.Sprint(sc.listed)+" runs.")
 	}
 	if sc.noDigest > 0 {
-		notes = append(notes, fmt.Sprintf("%d unfinished %s no flow:digest: flow runs that have not recorded it yet (resume records the digest of whichever flow resumes them) and runs that are not flow runs. They are not attributed to a flow and are not counted.", sc.noDigest, verb(sc.noDigest, "run has", "runs have")))
+		notes = append(notes, noDigestNote(sc, baseFlow))
 	}
 	if sc.unreadable > 0 {
 		notes = append(notes, fmt.Sprintf("%d %s be read, or recorded a digest that is not a SHA-256 digest.", sc.unreadable, verb(sc.unreadable, "run could not", "runs could not")))
@@ -530,6 +564,32 @@ func verb(n int, one, many string) string {
 }
 
 func pronoun(n int) string { return verb(n, "it", "them") }
+
+// noDigestNote says what is known of the runs that recorded no digest: how many, which of them wrote a topology (flow runs that
+// have not recorded their digest yet, and the flow each names), which wrote none, and how many were not looked at.
+func noDigestNote(sc *scanResult, baseFlow string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d unfinished %s no flow:digest.", sc.noDigest, verb(sc.noDigest, "run has", "runs have"))
+	if sc.nTopo > 0 {
+		fmt.Fprintf(&b, " %d of them wrote a flow:topology, so %s digest yet", sc.nTopo, verb(sc.nTopo, "it is a flow run that has not recorded its", "they are flow runs that have not recorded their"))
+		if n := sc.topoFlows[baseFlow]; n > 0 {
+			fmt.Fprintf(&b, " (%d of the flow %q)", n, baseFlow)
+		}
+		b.WriteString("; resume records the digest of whichever flow resumes them, so they are not counted.")
+	}
+	if sc.noTopo > 0 {
+		fmt.Fprintf(&b, " %d of them wrote no flow:topology: runs that are not flow runs, or flow runs that stopped before writing it; they are not attributed to a flow.", sc.noTopo)
+	}
+	if rest := sc.noDigest - sc.nTopo - sc.noTopo; rest > 0 {
+		if sc.noDigest > maxNoDigestReads {
+			fmt.Fprintf(&b, " Only the first %d were looked at; the other %d are not told apart.", maxNoDigestReads, rest)
+		} else {
+			fmt.Fprintf(&b, " %d could not be told apart (their topology could not be read).", rest)
+		}
+	}
+	b.WriteString(" None of these is counted.")
+	return b.String()
+}
 
 func errorsOf(r plan.ConfigReport) int {
 	n := 0

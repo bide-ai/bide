@@ -537,7 +537,9 @@ groups are then compared with the text on the page:
 
 A run with no `flow:digest` is either a flow run that has not recorded it yet (including one that crashed between its topology and its
 digest), which the digest rule does not refuse because resume records the digest of whichever flow resumes it, or a run that is not a flow run
-at all (an agent run has none): such runs are counted and not read, apart from the rest, and the panel says it cannot tell which. A file with
+at all (an agent run has none). They are never counted as refused. To tell the two apart the panel reads one record, `flow:topology`, which a flow
+run writes just before its digest, for the first 20 of them: one that has it is a flow run that has not recorded its digest yet (and the flow it
+names is said), one without it is not a flow run or stopped before writing it, and the rest are counted and not told apart. A file with
 errors has no typed digest, so the panel says it cannot compare and lists nothing as refused.
 
 The list says **at least** and **the first 5000 by run ID** when the store holds more unfinished runs than it reads; runs under a
