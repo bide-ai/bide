@@ -650,3 +650,20 @@ func TestRedactionsVerb_SkipsCapLedgerRuns(t *testing.T) {
 		t.Fatalf("the audit read the journals of %v, want only a", runs)
 	}
 }
+
+// Two -journal exports of the same run are an unusable input naming both files, as for the other
+// audit verbs: two exports of one run taken at different times would otherwise both feed the
+// cross-check, and the run's events would be counted from each.
+func TestNotificationsVerb_RefusesTwoJournalsOfOneRun(t *testing.T) {
+	f := newNotifyFixture(t).event(agent.ApprovalKey("r1", "other", 0), agent.NotificationApprovalPending, 3)
+	one, two := filepath.Join(f.dir, "one.json"), filepath.Join(f.dir, "two.json")
+	exp := gateJournal(t, "r1")
+	writeJSON(t, one, exp)
+	writeJSON(t, two, exp)
+	late := time.Now().Add(time.Hour).Format(time.RFC3339)
+	trail, sth := f.files()
+	code, out, errs := runCLI("notifications", "-trail", trail, "-sth", sth, "-pubkey", f.pub, "-journal", one, "-journal", two, "-as-of", late)
+	if code != 4 || !strings.Contains(errs, one) || !strings.Contains(errs, two) || !strings.Contains(errs, "r1") {
+		t.Fatalf("exit %d\n%s\n%s", code, out, errs)
+	}
+}

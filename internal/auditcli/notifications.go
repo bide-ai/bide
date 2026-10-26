@@ -116,9 +116,18 @@ func (c *cli) notifications(args []string) {
 		ok = c.note(c.readJSON(p, &h)) && ok
 		in.Heads = append(in.Heads, h)
 	}
+	from := map[string]string{}
 	for _, p := range journals {
 		var x audit.JournalExport
-		ok = c.note(c.readJSON(p, &x)) && ok
+		readOK := c.note(c.readJSON(p, &x))
+		ok = readOK && ok
+		if readOK {
+			if first, dup := from[x.RunID]; dup {
+				ok = c.note(duplicateJournal(first, p, x.RunID)) && ok
+			} else {
+				from[x.RunID] = p
+			}
+		}
 		in.Journals = append(in.Journals, x)
 	}
 	if haveStore {
