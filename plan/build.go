@@ -34,12 +34,6 @@ func (b *Builder[In, Out]) Build() (*Flow[In, Out], error) {
 		return nil, fmt.Errorf("plan: build %q: %w", c.flowName, errors.Join(c.errs...))
 	}
 
-	// Taint is declared but the engine does not enforce it yet: refuse, so nothing declared is lost
-	// silently. This is the one place (see taintNotEnforced).
-	if err := c.taintNotEnforced(); err != nil {
-		return nil, err
-	}
-
 	// Every node needs a name: it is the node's journal key, and register makes the first
 	// NAMED node the entry, so an empty name would also move the entry to a later node.
 	for _, n := range c.nodes {
@@ -201,6 +195,13 @@ func (b *Builder[In, Out]) Build() (*Flow[In, Out], error) {
 			return nil, fmt.Errorf("plan: build %q: terminal step %q produces %s but the flow output is %s",
 				c.flowName, n.name, typeName(n.outType), typeName(c.outType))
 		}
+	}
+
+	// Taint is declared but the engine does not enforce it yet: refuse, so nothing declared is lost
+	// silently. This is the one place (see taintNotEnforced), after the structural checks so that a
+	// config's other problems are reported first.
+	if err := c.taintNotEnforced(); err != nil {
+		return nil, err
 	}
 
 	// Freeze: seal a distinct spec into the Flow so post-Build mutation of the

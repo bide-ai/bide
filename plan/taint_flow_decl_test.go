@@ -351,3 +351,48 @@ func mustParse(t *testing.T, data []byte) *config {
 	}
 	return &c
 }
+
+// The key belongs on a node or a join. On an edge or a switch element there is no node to mark, so it is
+// refused where the union is checked, not accepted and ignored: a declaration that reached nowhere would
+// read as protection once the engine enforces taint.
+func TestConfigKey_UntrustedOnAnEdgeOrSwitchIsRefused(t *testing.T) {
+	reg := NewRegistry()
+	for _, n := range []string{"a", "b"} {
+		if err := reg.RegisterStep[int, int](n, stepInt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := reg.RegisterPredicate[int]("big", func(v int) bool { return v > 1 }); err != nil {
+		t.Fatal(err)
+	}
+	for what, wiring := range map[string]string{
+		"an edge":  `{"edge":["a","b"],"untrusted":"feed"}`,
+		"a switch": `{"switch":"a","when":[{"pred":"big","to":"b"}],"untrusted":"feed"}`,
+	} {
+		cfg := []byte(`{"version":1,"flow":"f","nodes":[{"name":"a","block":"a"},{"name":"b","block":"b"}],"wiring":[` + wiring + `]}`)
+		if err := Validate(cfg, reg); !errors.Is(err, agent.ErrConfig) || err == nil || !strings.Contains(err.Error(), "wiring[0]") || !strings.Contains(err.Error(), "untrusted") {
+			t.Errorf("%s: Validate = %v, want ErrConfig naming wiring[0] and untrusted", what, err)
+		}
+		if _, err := Load[int, int](cfg, reg); !errors.Is(err, agent.ErrConfig) || err == nil || strings.Contains(err.Error(), "not enforced") {
+			t.Errorf("%s: Load = %v, want the union ErrConfig, not nothing and not the guard", what, err)
+		}
+		if r := InspectConfig(cfg, reg); !r.Errors() {
+			t.Errorf("%s: InspectConfig reports no error", what)
+		}
+	}
+}
+
+// Structural problems come before the taint refusal, so a check of a config reports what is wrong with
+// its shape first; the refusal is still one function in Build.
+func TestTaintGuard_StructuralProblemsComeFirst(t *testing.T) {
+	b := New[int, int]("f")
+	a := b.Step[int, int]("a", stepInt, Untrusted("feed"))
+	bb := b.Step[int, int]("b", stepInt)
+	c := b.Step[int, int]("c", stepInt)
+	b.Edge(a, c)
+	b.Edge(bb, c) // c has two producers and no Join, and b is not reached: shapes Build refuses
+	_, err := b.Build()
+	if err == nil || strings.Contains(err.Error(), "not enforced") {
+		t.Errorf("Build = %v, want the shape error before the taint refusal", err)
+	}
+}

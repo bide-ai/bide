@@ -352,6 +352,9 @@ func LoadReader[In, Out any](r io.Reader, reg *Registry, opts ...LoadOption) (*F
 // therefore the drift guard (the stringly-typed footgun re-created at rung 2);
 // Load is the full typed check.
 //
+// Validate does not run Build's checks, so it accepts a config that declares taint (the "untrusted" key)
+// where Load and InspectConfig refuse it until flow taint is enforced.
+//
 // Validate's errors carry no problem kinds, only messages (and agent.ErrConfig). A tool that wants each
 // problem's kind (ConfigReport.Findings) calls InspectConfig or InspectConfigDescribed.
 func Validate(data []byte, reg *Registry) error {
@@ -574,14 +577,18 @@ func assemble(cfg *config, reg *Registry, allowUnused bool) (*builderCore, error
 		if w.isJoin() {
 			set++
 		}
-		// "safety" and "approval" apply to a node, so they belong on a join, which creates one. On an edge or a
-		// switch there is no node to apply them to, and they would be accepted and dropped.
+		// "safety", "approval" and "untrusted" apply to a node, so they belong on a join, which creates one.
+		// On an edge or a switch there is no node to apply them to, and they would be accepted and dropped
+		// (an "untrusted" that marked nothing would read as protection once flow taint is enforced).
 		if !w.isJoin() {
 			if w.Safety != "" {
 				problems = append(problems, atWire(otherf("wiring[%d] sets safety, which applies to a node: set it on a join, or on a node in nodes", i), w))
 			}
 			if w.Approval != nil {
 				problems = append(problems, atWire(otherf("wiring[%d] sets approval, which gates a node: set it on a join, or on a node in nodes", i), w))
+			}
+			if w.Untrusted != "" {
+				problems = append(problems, atWire(otherf("wiring[%d] sets untrusted, which marks a node's results: set it on a join, or on a node in nodes", i), w))
 			}
 		}
 		switch {
