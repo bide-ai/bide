@@ -29,14 +29,14 @@ with every request, and it is not sent to the server as part of the address or i
 The first phase of the editor (the accountability editor) is complete as designed: the
 read-only views, the baseline and the weakened banner, the source pane with a diff and an atomic save,
 the forms for a node's safety, block and approval gate, the assertions panel, and the accessibility
-work below. The second phase (structure) is being added in steps; so far you can add, remove and
+work below. The second phase (structure) is built (v0.22.0): you can add, remove and
 rename a node, write the entry (see [Nodes](#nodes-add-remove-rename-and-the-entry)), reorder nodes and
 wiring elements, and set the flow's name and types (see [Order, wiring order and the flow's
 settings](#order-wiring-order-and-the-flows-settings)), and wire edges, switches, arms and `else` (see
 [Connections](#connections-edges-switches-arms-and-else)), set an arm's loop bound, and add, change and
 remove joins (see [Joins and loops](#joins-and-loops)), and, when it knows your program's blocks, list them with their types, check connections against them and show the digest (see [Typed mode](#typed-mode-the-programs-blocks)). It can
-compare the file with the topology a run journaled (see [Compare with a run](#compare-with-a-run)). It does **not**
-yet: or let you place nodes on the canvas
+compare the file with the topology a run journaled (v0.25.0; see [Compare with a run](#compare-with-a-run)). It does **not**
+let you place nodes on the canvas
 (the layout is derived from the topology, on purpose). A config with an anchor or alias anywhere,
 a repeated key, a key that is not a string, NaN or infinity, or mixed line ends is refused by the editor
 with the reason (edit it in a text editor); `plan` itself accepts an anchor or alias, and refuses the others too. The design note
@@ -446,6 +446,8 @@ machine, who can edit the file directly.
 reader and writes no files.
 
 ## Compare with a run
+
+New in v0.25.0 (experimental, like the `flowedit` package: the flags may change in a minor release).
 
 ```sh
 bide edit -run r1 -db journal.db flow.yaml
