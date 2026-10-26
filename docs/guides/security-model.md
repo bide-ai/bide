@@ -147,7 +147,7 @@ Get "https://REDACTED@api.example.com/v1/items?key=REDACTED&page=REDACTED": dial
 ```
 
 A `*url.Error`'s URL is redacted as a whole; every other URL is found by scanning the text.
-`Agent.WithToolErrorRedactor(func(tool string, err error) string)` chooses the recorded text for
+the option `agent.WithToolErrorRedactor(func(tool string, err error) string)` chooses the recorded text for
 a failed call when URL redaction is not enough (an account number, a token a service echoed
 back); URL redaction still applies to what it returns. This covers every failed tool call, a
 failed sub-agent (its failure is its tool call's error), and the two records a saga journals

@@ -101,7 +101,7 @@ exception event is recorded. With capture on, the span records an `exception` ev
 error's text as the status description, with every URL in the text redacted as the agent redacts
 a tool error before journaling it (see the security model's tool-error redaction): capture is for
 content, not credentials. An `execute_tool` span records exactly the text the agent journals for
-the call, so an `Agent.WithToolErrorRedactor` applies there too. A tool middleware of your own
+the call, so an `agent.WithToolErrorRedactor` option applies there too. A tool middleware of your own
 that records error text gets the same text from `call.ErrorText(err)` on the `agent.ToolCall` it
 receives.
 

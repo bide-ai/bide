@@ -240,6 +240,20 @@ The links were fetched and their content read on 2026-10-16, and the procedures 
 
 After any of these, run the `bide-hsm pubkey` comparison above with the key reference.
 
+### What the gate will look for, from the library
+
+A tool that builds a certificate request can ask the policy what to request instead of copying it by hand. The
+`audit.CertIdentity` built from the policy (v0.21.0) reports, read-only: `IDKind()` (the kind of the one subject
+alternative name a leaf must carry), `EKU()` (the extended key usage, a copy), `AllowsEmailProtectionEKU()` (whether
+id-kp-emailProtection is accepted in place of it), `PolicyOID()` (the certificate policy a leaf must assert) and
+`MaxLeafLifetime()` (the effective bound, 24 hours when the policy set none). They change no verdict.
+
+To check a chain without a journal, signature or signed head, call
+`(*audit.CertApprover).CheckCertificate(chain, decidedAt, anchoredAt, mode)`. It returns the verdict a gate reaches
+on the chain: whether the chain is accepted for the approver and what the revocation status rule makes of it, judged
+by the counting rule (`audit.CheckCount`) or the pre-execution rule (`audit.CheckExec`). It is the function the
+gate's counting and execution checks call, and the one `bide identity check -cert` reports.
+
 ## Declare the CA's facts
 
 Every value is a statement about your CA. A wrong one is a wrong verdict, so each is read from the capture

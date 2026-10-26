@@ -747,7 +747,7 @@ every class is exact, a config's lowering included: a Model node, for example, i
 
 ### Policy assertions
 
-A config's `assert` list (see [Policy assertions](plan-flows.md#policy-assertions) for the grammar)
+A config's `assert` list (see [Policy assertions](plan-flows.md#policy-assertions-the-assert-list) for the grammar)
 is decided on the graph. The Assertions card lists each verdict (holds, violated, undecided or
 invalid), and a violated assertion's counterexample, a shortest path from the entry, is drawn in red
 on the graph. `examples/plan/flows/refund-policy.yaml` routes a large refund through `review`, a 2-of-3

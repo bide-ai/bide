@@ -427,9 +427,10 @@ has not been done:** the checks above are not a substitute for one, and the chec
 `bide edit` serves on a loopback address (`-addr`, default `127.0.0.1:8585`) and refuses any other
 host, as `bide view` does. It reads and writes only the file named on the command line: that file must exist,
 be a regular file of at most 1 MiB and end in `.yaml`, `.yml` or `.json`; a symbolic link is
-resolved once at startup. There is no endpoint that opens another file. With `-run` it also reads one
-run of one journal, opened read-only, fixed at startup; the page cannot name another run or store, and
-no reply carries a record, a store path or a connection string.
+resolved once at startup. There is no endpoint that opens another file. With a store (`-db`,
+`-postgres`, `-postgres-env` or `-journal`) it opens that one store read-only, fixed at startup. With `-run` it reads one run of it;
+for the unfinished-runs panel it reads one small record per unfinished run (at most 5000 runs). The page cannot name another run or
+store, and no reply carries a record, a store path or a connection string.
 
 The page is served by the binary, with no CDN, no web font and no request to another host, under a
 Content-Security-Policy that allows only same-origin script, style and requests and no inline
