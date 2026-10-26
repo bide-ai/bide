@@ -58,15 +58,16 @@ jobs:
             echo "Not queued: nothing to do."
             exit 0
           fi
+          done=''
           if [ "$queued" = true ]; then
             gh api graphql -f id="$id" -f query='mutation($id:ID!){
               dequeuePullRequest(input:{id:$id}){clientMutationId}
-            }' >/dev/null && echo "Dequeued." || echo "Dequeue failed (already out of the queue?); continuing."
+            }' >/dev/null && done='it is out of the merge queue' || echo "Dequeue failed (already out of the queue?); continuing."
           fi
           if [ "$auto" = true ]; then
             gh api graphql -f id="$id" -f query='mutation($id:ID!){
               disablePullRequestAutoMerge(input:{pullRequestId:$id}){clientMutationId}
             }' >/dev/null
-            echo "Auto-merge disabled."
+            done="auto-merge is off${done:+ and $done}"
           fi
-          gh pr comment "$NUMBER" --repo "$REPO" --body "A commit (\`${NEW_SHA:0:9}\`) was pushed after this pull request was queued for merge, so auto-merge is off and the pull request is out of the merge queue. The new commit needs a review, then a new queueing."
+          gh pr comment "$NUMBER" --repo "$REPO" --body "A commit (\`${NEW_SHA:0:9}\`) was pushed after this pull request was queued for merge, so ${done:-it was taken out of the queue}. The new commit needs a review, then a new queueing."
