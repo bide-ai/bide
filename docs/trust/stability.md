@@ -5,7 +5,7 @@ This page states what bide promises about versions today, derived from what the 
 ## Versioning policy
 
 - **Semantic Versioning, with the 0.x rule.** The changelog declares that bide adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and that, while pre-1.0, a minor version (0.x.0) may include breaking API changes. A patch version (0.x.y) is for fixes.
-- **One version for all modules.** The core module and the published library modules (`govern`, `store/sqlite`, `store/postgres`, `mcptools`, `trace`, `codec/gcf`, the governed-event log backends and `cmd/bide`) are released together under one version, each tagged `<dir>/vX.Y.Z` ([CONTRIBUTING, Releasing](../../CONTRIBUTING.md#releasing)). Use matching versions.
+- **One version for all modules.** The core module and the published modules (every one in `PUBLISHED` of `scripts/release.sh`: `govern`, `store/sqlite`, `store/postgres`, `mcptools`, `trace`, `codec/gcf`, `flowedit`, the governed-event log backends, the anchors `anchor/awss3` and `anchor/gcs`, the signers `signer/pkcs11`, `signer/awskms`, `signer/azurekv` and `signer/gcpkms`, and the commands `cmd/bide`, `cmd/bide/bide-hsm` and `cmd/bide-anchor`, and the `cmd/bide-view` stub) are released together under one version, each tagged `<dir>/vX.Y.Z` ([CONTRIBUTING, Releasing](../../CONTRIBUTING.md#releasing)). Use matching versions.
 - **No 1.0 date.** The project stays on 0.x until the journal and proof formats are final. The roadmap states the 1.0 work that remains ([roadmap](../ROADMAP.md)).
 - **Go version.** The release binaries are built with a pinned Go release recorded in the binary (`go version -m bide`); the library requires Go 1.27.
 
@@ -93,7 +93,7 @@ Formats carry their own version tags, and a reader refuses what it does not read
 | Decision receipt | `bide.audit.decision-receipt.v1` | The signed decision an approver keeps, checked on its own and against signed tree heads |
 | Notification trail export | `bide.audit.notify-trail-export.v1` | Read strictly: an unknown record kind or field is an error |
 | Approval decision | `bide.approval.v3` | Decisions signed under `v2` no longer verify and must be signed again; a pending run asks again rather than run on them |
-| Certificate-bound approval decision | `bide.approval.v4` | The `v3` layout plus the SHA-256 of the signer's leaf certificate, with the chain in the journal record (`approver_cert`) and in a receipt (`cert`). Defined and journaled by this version; nothing counts one yet ([design](../design/design-mofn-approval.md#v4-certificate-bound-decisions-format-only)) |
+| Certificate-bound approval decision | `bide.approval.v4` | The `v3` layout plus the SHA-256 of the signer's leaf certificate, with the chain in the journal record (`approver_cert`) and in a receipt (`cert`). Approval gates count one (a certificate-bound approver, see [certificate approvers](../guides/certificate-approvers.md)) ([design](../design/design-mofn-approval.md#v4-certificate-bound-decisions-format-only)) |
 | Notification payload | `bide.notification.v1` | Receivers should ignore unknown fields |
 
 ### What stays verifiable across versions

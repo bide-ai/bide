@@ -193,7 +193,7 @@ go run github.com/bide-ai/bide/examples/signals@latest     # deliver an external
 go run github.com/bide-ai/bide/examples/recover@latest     # durable resume after a simulated crash
 ```
 
-From a clone (`git clone https://github.com/bide-ai/bide && cd bide`), the same examples run as `go run ./examples/<name>`. A few examples are modules of their own, to keep their dependencies out of the core (`approval`, `govern`, `mcp`, `observability`, `plan`): run them from their own directory in the clone, as [examples/README.md](../examples/README.md) does, for example `cd examples/observability && go run .` (OTel spans printed to stdout, with token-to-cost).
+From a clone (`git clone https://github.com/bide-ai/bide && cd bide`), the same examples run as `go run ./examples/<name>`. A few examples are modules of their own, to keep their dependencies out of the core (`approval`, `govern`, `hsm-signing`, `mcp`, `observability`, `plan`, `sso-certs`, `stripe-refund`): run them from their own directory in the clone, as [examples/README.md](../examples/README.md) does, for example `cd examples/observability && go run .` (OTel spans printed to stdout, with token-to-cost).
 
 See [examples/README.md](../examples/README.md) for the full list.
 

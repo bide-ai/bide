@@ -2,10 +2,10 @@
 
 `strict-protection.json` is the `main`-branch ruleset copied verbatim from
 `blackwell-systems/gcf` (block deletion, block non-fast-forward, require linear
-history; admin role bypasses). It is **not applied**: the repository has no
-rulesets. `main` is protected by classic branch protection instead, which
+history; admin role bypasses). It is **not applied**: the repository has one
+ruleset, `release branches` (on `release/**`, see CONTRIBUTING, Releasing), and none for `main`. `main` is protected by classic branch protection instead, which
 requires the Lint, Test (ubuntu-latest, macos-latest, windows-latest), dco,
-Integration (Postgres, Redis) and Models checks, blocks force pushes and deletion, and merges
+Integration (Postgres, Redis), Models, gsm machine gate, Changelog fragment, Docs build and Viewer (Chrome) checks, blocks force pushes and deletion, and merges
 through a merge queue (squash). Test (ubuntu-latest), Test (windows-latest) and Models each
 stand for parallel shard jobs (`Test (ubuntu-latest, <shard>)`, `Test (windows-latest, <shard>)`,
 `Models (<shard>)`): a final job of that name needs every shard
@@ -18,7 +18,7 @@ push or queue batch skips them too
 (see CONTRIBUTING.md, "What CI runs, and when").
 
 `gsm machine gate` (the job of `.github/workflows/gsm-gate.yml`, see `.github/gsm-gate/README.md`)
-is to be required too, added to branch protection once the workflow is on `main`. Its name is
+is required too. Its name is
 fixed, and it always runs and reports: it runs on `pull_request`, `merge_group` and pushes to
 `main`, with no path filter and no job-level condition, so a documentation-only change runs it as
 well (the coverage scan reads the docs) and it never waits as pending.

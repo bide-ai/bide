@@ -226,7 +226,7 @@ is a deployment requirement documented in the [audit guide](../guides/audit.md).
 `middleware`, `govern`) or any heavy infrastructure (`opentelemetry`, `modernc.org/sqlite`,
 `jackc/pgx`, `temporal`, `weaviate`, `blackwell-systems/gsm`). It skips (does not fail) if
 `go list` is unavailable. `plan/architecture_test.go` (`TestPlanNoAdapterImports`) holds `plan` to
-the same adapter list. `TestCoreModuleHasNoGSM` checks the module graph as well: read with no
+the same adapter list. `TestCoreModuleRequiresNothing` checks the module graph as well: read with no
 workspace, the core module's `go mod graph`, `go.mod` and `go.sum` never name gsm. In the govern
 module, `TestGovernImportsNoCoreInternal` checks that no govern package imports a package under
 the core's `internal/`, since govern is versioned apart from the core. This is the ports-and-adapters discipline verified mechanically: the

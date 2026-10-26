@@ -76,7 +76,7 @@ An approver whose key is stolen, who is coerced, or who approves carelessly.
   - What an HSM or KMS key does not protect. With the key in a token (`bide-hsm approve`), the key cannot be copied out when the token marks it non-extractable (the token's word, not an attestation), but the token signs the bytes it is handed: on a compromised approver workstation with the token unlocked, malware can have it sign a decision other than the one `bide-hsm` displayed. A token with a trusted display that confirms each signature is not supported. A PIN kept in a file or an environment variable on that workstation is exposed with it.
   - Whether an approver understood what they approved.
   - Trusted time: `decided_at` is the approver's clock, and no RFC 3161 authority stamps decisions yet ([known limitations](../KNOWN-LIMITATIONS.md#approval-and-quorum)).
-  - Weighted votes, role rules and approval deadlines are not supported.
+  - Weighted votes and role rules are not supported.
 
 ### A network attacker
 
