@@ -20,6 +20,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bide-ai/bide/internal/editrun"
@@ -76,14 +77,17 @@ type Server struct {
 	// session, so weakening in two saves is still weakening against it.
 	baseline       []byte
 	baselineSource string
-	baselineNote   string       // why git HEAD was not the baseline, when that is not just "not in git"
-	fs             fileSystem   // what a save writes with; a test replaces it
-	typing         *typing      // nil: the structural editor
-	run            *editrun.Run // the run the file is compared with (bide edit -run), nil for none
-	runs           runState     // the one snapshot of it
-	aff            scanState    // the one scan of the store's unfinished runs
-	opened         []byte       // the file as it was when the editor opened it
-	assets         fs.FS        // the viewer's files the editor serves, with the host's themes in style.css; nil: the shipped themes
+	baselineNote   string        // why git HEAD was not the baseline, when that is not just "not in git"
+	fs             fileSystem    // what a save writes with; a test replaces it
+	typing         *typing       // nil: the structural editor
+	run            *editrun.Run  // the run the file is compared with (bide edit -run), nil for none
+	runs           runState      // the one snapshot of it
+	aff            scanState     // the one scan of the store's unfinished runs
+	affSem         chan struct{} // one comparison of a text with the scan at a time
+	affLast        affectCache   // the last comparison made
+	affEvals       atomic.Int32  // how many comparisons were made (a test counts them)
+	opened         []byte        // the file as it was when the editor opened it
+	assets         fs.FS         // the viewer's files the editor serves, with the host's themes in style.css; nil: the shipped themes
 }
 
 // Option configures New.
@@ -196,7 +200,7 @@ func New(path string, opts ...Option) (*Server, error) {
 	if _, err := rand.Read(tok[:]); err != nil {
 		return fail(fmt.Errorf("flowedit: no randomness for the session token: %w", err))
 	}
-	return &Server{path: real, root: root, base: base, name: path, token: hex.EncodeToString(tok[:]), baseline: baseline, baselineSource: source, baselineNote: note, fs: osFS, typing: ty, run: o.run, opened: text, assets: runview.AssetsWith(o.themes)}, nil
+	return &Server{path: real, root: root, base: base, name: path, token: hex.EncodeToString(tok[:]), baseline: baseline, baselineSource: source, baselineNote: note, fs: osFS, typing: ty, run: o.run, opened: text, affSem: make(chan struct{}, 1), assets: runview.AssetsWith(o.themes)}, nil
 }
 
 // BaselineNote is "" when the baseline is what it should be, and otherwise says why git HEAD was not

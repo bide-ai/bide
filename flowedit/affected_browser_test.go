@@ -93,7 +93,7 @@ func TestAffectedListInChrome(t *testing.T) {
 	if len(l.Rows) == 3 && (!strings.Contains(l.Rows[0].Cells[2], "zz-changed-a, zz-changed-b") || !strings.Contains(l.Rows[0].Cells[2], "bide edit -run zz-changed-a <store flags> <file>")) {
 		t.Errorf("the refused row: %+v", l.Rows[0])
 	}
-	if !strings.Contains(strings.Join(l.Notes, "\n"), "1 unfinished run records no digest yet") {
+	if !strings.Contains(strings.Join(l.Notes, "\n"), "1 unfinished run has no flow:digest") {
 		t.Errorf("notes %q", l.Notes)
 	}
 	if r.Stale.Stale != "The text has changed since this list was made: press the button to check it again." || r.Stale.Word != "2 RUNS REFUSED" || r.Stale.AgainHidden {

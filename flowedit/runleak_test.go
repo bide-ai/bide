@@ -182,7 +182,7 @@ func typeCheck(t *testing.T, srcs map[string][]byte) (*token.FileSet, []*ast.Fil
 		}
 		return nil, fmt.Errorf("package %s was not loaded", path)
 	})
-	info := &types.Info{Types: map[ast.Expr]types.TypeAndValue{}}
+	info := &types.Info{Types: map[ast.Expr]types.TypeAndValue{}, Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{}}
 	cfg := types.Config{Importer: imp, Error: func(err error) { t.Errorf("type-checking: %v", err) }}
 	if _, err := cfg.Check("flowedit", fset, files, info); err != nil {
 		t.Fatalf("type-checking: %v", err)
@@ -205,7 +205,66 @@ func isError(info *types.Info, e ast.Expr) bool {
 	return types.Implements(typ, errorType) || types.Implements(types.NewPointer(typ), errorType)
 }
 
-// guardProblems lists the ways the files named in only let an error's text through.
+// mentionsError reports whether a value of type t can carry an error: it is one, or holds one (an element, a field, a
+// pointee, a key). Formatting such a value formats the error.
+func mentionsError(t types.Type, seen map[types.Type]bool) bool {
+	if t == nil || seen[t] {
+		return false
+	}
+	seen[t] = true
+	if types.Implements(t, errorType) || types.Implements(types.NewPointer(t), errorType) {
+		return true
+	}
+	switch u := t.Underlying().(type) {
+	case *types.Slice:
+		return mentionsError(u.Elem(), seen)
+	case *types.Array:
+		return mentionsError(u.Elem(), seen)
+	case *types.Pointer:
+		return mentionsError(u.Elem(), seen)
+	case *types.Chan:
+		return mentionsError(u.Elem(), seen)
+	case *types.Map:
+		return mentionsError(u.Key(), seen) || mentionsError(u.Elem(), seen)
+	case *types.Struct:
+		for i := 0; i < u.NumFields(); i++ {
+			if mentionsError(u.Field(i).Type(), seen) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// toOtherInterface reports whether storing expr in a place of type target turns a value that can carry an error into
+// an interface other than error itself: `any`, fmt.Stringer, whatever the code then does with it can format the error.
+func toOtherInterface(info *types.Info, expr ast.Expr, target types.Type) bool {
+	if target == nil {
+		return false
+	}
+	if _, ok := target.Underlying().(*types.Interface); !ok {
+		return false
+	}
+	if types.Identical(target, types.Universe.Lookup("error").Type()) {
+		return false
+	}
+	return mentionsError(info.TypeOf(expr), map[types.Type]bool{})
+}
+
+// isErrorsAs is a call of errors.As, whose target is a pointer to an error type by design: it finds a typed error to
+// inspect, and what is then done with the one it finds is checked like any error.
+func isErrorsAs(n *ast.CallExpr) bool {
+	sel, ok := n.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	return ok && pkg.Name == "errors" && sel.Sel.Name == "As"
+}
+
+// guardProblems lists the ways the files named in only let an error's text through: an error formatted, wrapped,
+// joined, asserted to another type, its text taken, or an error-carrying value converted (an argument, an assignment, a
+// declaration, a return, an element of a literal) to an interface other than error.
 func guardProblems(fset *token.FileSet, files []*ast.File, info *types.Info, srcs map[string][]byte, only map[string]bool) []string {
 	var problems []string
 	for _, f := range files {
@@ -214,47 +273,148 @@ func guardProblems(fset *token.FileSet, files []*ast.File, info *types.Info, src
 			continue
 		}
 		lines := strings.Split(string(srcs[name]), "\n")
+		report := func(pos token.Pos, format string, args ...any) {
+			p := fset.Position(pos)
+			if strings.Contains(lines[p.Line-1], fileMark) {
+				return
+			}
+			problems = append(problems, fmt.Sprintf("%s:%d: ", name, p.Line)+fmt.Sprintf(format, args...))
+		}
 		for _, decl := range f.Decls {
 			fd, ok := decl.(*ast.FuncDecl)
 			if !ok || fd.Body == nil || fd.Name.Name == "storeFailure" {
 				continue
 			}
+			var enclosing []*types.Signature // the function the node is in: a literal inside a declaration has its own
+			if sig, ok := info.Defs[fd.Name].Type().(*types.Signature); ok {
+				enclosing = append(enclosing, sig)
+			}
+			var stack []ast.Node
 			ast.Inspect(fd.Body, func(n ast.Node) bool {
-				call, ok := n.(*ast.CallExpr)
-				if !ok {
+				if n == nil {
+					if top := stack[len(stack)-1]; top != nil {
+						if _, isLit := top.(*ast.FuncLit); isLit {
+							enclosing = enclosing[:len(enclosing)-1]
+						}
+					}
+					stack = stack[:len(stack)-1]
 					return true
 				}
-				pos := fset.Position(call.Pos())
-				marked := strings.Contains(lines[pos.Line-1], fileMark)
-				sel, ok := call.Fun.(*ast.SelectorExpr)
-				if !ok || marked {
-					return true
-				}
-				if sel.Sel.Name == "Error" && len(call.Args) == 0 && isError(info, sel.X) {
-					problems = append(problems, fmt.Sprintf("%s:%d: Error() is called on an error without saying it is the text of a file: use storeFailure for a store's error", name, pos.Line))
-				}
-				pkg, ok := sel.X.(*ast.Ident)
-				if !ok || !formatters[pkg.Name][sel.Sel.Name] {
-					return true
-				}
-				for _, a := range call.Args {
-					if isError(info, a) {
-						problems = append(problems, fmt.Sprintf("%s:%d: %s.%s formats a value of an error type: use storeFailure for a store's error", name, pos.Line, pkg.Name, sel.Sel.Name))
+				stack = append(stack, n)
+				switch n := n.(type) {
+				case *ast.FuncLit:
+					sig, _ := info.TypeOf(n).(*types.Signature)
+					enclosing = append(enclosing, sig)
+				case *ast.TypeAssertExpr:
+					if n.Type != nil && mentionsError(info.TypeOf(n.X), map[types.Type]bool{}) {
+						report(n.Pos(), "a type assertion on a value that can carry an error: its text would be one call away from a reply")
+					}
+				case *ast.ReturnStmt:
+					if sig := enclosing[len(enclosing)-1]; sig != nil && sig.Results().Len() == len(n.Results) {
+						for i, r := range n.Results {
+							if toOtherInterface(info, r, sig.Results().At(i).Type()) {
+								report(r.Pos(), "an error-carrying value is returned as an interface other than error")
+							}
+						}
+					}
+				case *ast.AssignStmt:
+					if n.Tok == token.ASSIGN && len(n.Lhs) == len(n.Rhs) {
+						for i := range n.Rhs {
+							if toOtherInterface(info, n.Rhs[i], info.TypeOf(n.Lhs[i])) {
+								report(n.Rhs[i].Pos(), "an error-carrying value is assigned to an interface other than error")
+							}
+						}
+					}
+				case *ast.ValueSpec:
+					if n.Type != nil {
+						for _, v := range n.Values {
+							if toOtherInterface(info, v, info.TypeOf(n.Type)) {
+								report(v.Pos(), "an error-carrying value is declared as an interface other than error")
+							}
+						}
+					}
+				case *ast.CompositeLit:
+					switch u := info.TypeOf(n).Underlying().(type) {
+					case *types.Struct:
+						for i, e := range n.Elts {
+							if kv, ok := e.(*ast.KeyValueExpr); ok {
+								for k := 0; k < u.NumFields(); k++ {
+									if id, ok := kv.Key.(*ast.Ident); ok && u.Field(k).Name() == id.Name && toOtherInterface(info, kv.Value, u.Field(k).Type()) {
+										report(kv.Value.Pos(), "an error-carrying value is put in a field of an interface other than error")
+									}
+								}
+							} else if i < u.NumFields() && toOtherInterface(info, e, u.Field(i).Type()) {
+								report(e.Pos(), "an error-carrying value is put in a field of an interface other than error")
+							}
+						}
+					case *types.Slice, *types.Array, *types.Map:
+						var elem types.Type
+						switch u := u.(type) {
+						case *types.Slice:
+							elem = u.Elem()
+						case *types.Array:
+							elem = u.Elem()
+						case *types.Map:
+							elem = u.Elem()
+						}
+						for _, e := range n.Elts {
+							if kv, ok := e.(*ast.KeyValueExpr); ok {
+								e = kv.Value
+							}
+							if toOtherInterface(info, e, elem) {
+								report(e.Pos(), "an error-carrying value is put in a collection of an interface other than error")
+							}
+						}
+					}
+				case *ast.CallExpr:
+					// A conversion T(x), and a call: each argument against its parameter.
+					if tv := info.Types[n.Fun]; tv.IsType() && len(n.Args) == 1 {
+						if toOtherInterface(info, n.Args[0], tv.Type) {
+							report(n.Pos(), "an error-carrying value is converted to an interface other than error")
+						}
+					} else if sig, ok := info.TypeOf(n.Fun).(*types.Signature); ok && !isErrorsAs(n) {
+						for i, a := range n.Args {
+							var pt types.Type
+							switch {
+							case sig.Variadic() && i >= sig.Params().Len()-1:
+								last := sig.Params().At(sig.Params().Len() - 1).Type().(*types.Slice)
+								pt = last.Elem()
+								if n.Ellipsis.IsValid() {
+									pt = last
+								}
+							case i < sig.Params().Len():
+								pt = sig.Params().At(i).Type()
+							}
+							if toOtherInterface(info, a, pt) {
+								report(a.Pos(), "an error-carrying value is passed as an interface other than error: use storeFailure for a store's error")
+							}
+						}
+					}
+					sel, ok := n.Fun.(*ast.SelectorExpr)
+					if !ok {
 						break
 					}
-				}
-				if pkg.Name == "fmt" && sel.Sel.Name == "Errorf" && len(call.Args) > 0 {
-					if lit, ok := call.Args[0].(*ast.BasicLit); ok && strings.Contains(lit.Value, "%w") {
-						problems = append(problems, fmt.Sprintf("%s:%d: fmt.Errorf wraps an error with %%w: its text would reach a reply", name, pos.Line))
+					if sel.Sel.Name == "Error" && len(n.Args) == 0 && isError(info, sel.X) {
+						report(n.Pos(), "Error() is called on an error without saying it is the text of a file: use storeFailure for a store's error")
 					}
-				}
-				if pkg.Name == "errors" {
-					problems = append(problems, fmt.Sprintf("%s:%d: errors.%s joins errors: its text would reach a reply", name, pos.Line, sel.Sel.Name))
+					pkg, ok := sel.X.(*ast.Ident)
+					if !ok || !formatters[pkg.Name][sel.Sel.Name] {
+						break
+					}
+					if pkg.Name == "fmt" && sel.Sel.Name == "Errorf" && len(n.Args) > 0 {
+						if lit, ok := n.Args[0].(*ast.BasicLit); ok && strings.Contains(lit.Value, "%w") {
+							report(n.Pos(), "fmt.Errorf wraps an error with %%w: its text would reach a reply")
+						}
+					}
+					if pkg.Name == "errors" {
+						report(n.Pos(), "errors.%s joins errors: its text would reach a reply", sel.Sel.Name)
+					}
 				}
 				return true
 			})
 		}
 	}
+	slices.Sort(problems)
 	return problems
 }
 
@@ -290,11 +450,13 @@ func TestTheGuardFindsWhatItShould(t *testing.T) {
 	const head = `package flowedit
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 )
 
 var _ = errors.New
+var _ = json.Marshal
 
 type wrapped struct{ cause error }
 
@@ -333,6 +495,10 @@ func storeFailure(what string, err error) string { return fmt.Sprintf("%s (%v)",
 		"a string":      `func f(cause string) string { return fmt.Sprint(cause) }`,
 		"errors.New":    `func f() error { return errors.New("x") }`,
 		"errors.Is":     `func f(err error) bool { return errors.Is(err, errors.ErrUnsupported) }`,
+		"an error var":  `func f(err error) error { var e error = err; e = err; return e }`,
+		"a func(error)": `func g(error) {}; func f(err error) { g(err) }`,
+		"an error list": `func f(err error) []error { return []error{err} }`,
+		"errors.As":     `type pe struct{}; func (*pe) Error() string { return "" }; func f(err error) bool { var p *pe; return errors.As(err, &p) }`,
 	}
 	for name, body := range ok {
 		srcs := map[string][]byte{"x.go": []byte(head + body + "\n")}

@@ -2,6 +2,7 @@ package flowedit
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -356,9 +357,39 @@ func (s *Server) serveAffected(w http.ResponseWriter, r *http.Request) {
 	reply(w, s.affected(r.Context(), []byte(req.Text), req.Reload))
 }
 
+// affectCache is the last comparison made: for a scan and a text, the reply. The scan is shared and kept; the
+// comparison of a text with it (up to maxGroups structural diffs, within diffBudget) is made once for a scan and a
+// text, one at a time, so a script that asks again and again, or at once, spends the time once.
+type affectCache struct {
+	scan *scanResult
+	key  [sha256.Size]byte
+	rep  *affectedReply
+}
+
 // affected compares the text with the digests of the unfinished runs the store holds.
 func (s *Server) affected(ctx context.Context, text []byte, reload bool) *affectedReply {
 	sc := s.scan(ctx, reload)
+	if sc.status != "ok" {
+		return s.evaluate(sc, text)
+	}
+	key := sha256.Sum256(text)
+	select {
+	case s.affSem <- struct{}{}:
+		defer func() { <-s.affSem }()
+	case <-ctx.Done():
+		return &affectedReply{Configured: true, Checked: true, Status: "error", Groups: []affectedGroup{}, Summary: storeFailure("The list could not be made", ctx.Err())}
+	}
+	if c := s.affLast; c.rep != nil && c.scan == sc && c.key == key {
+		return c.rep
+	}
+	rep := s.evaluate(sc, text)
+	s.affEvals.Add(1)
+	s.affLast = affectCache{scan: sc, key: key, rep: rep}
+	return rep
+}
+
+// evaluate compares the text with the groups of a scan.
+func (s *Server) evaluate(sc *scanResult, text []byte) *affectedReply {
 	rep := &affectedReply{Configured: true, Checked: true, Status: sc.status, Groups: []affectedGroup{},
 		Listed: sc.listed, More: sc.more, NoDigest: sc.noDigest, Unreadable: sc.unreadable, Overflow: sc.overflowRuns, ReadAt: sc.readAt.Format(time.RFC3339)}
 	if sc.status != "ok" {
@@ -378,6 +409,11 @@ func (s *Server) affected(ctx context.Context, text []byte, reload bool) *affect
 		return rep.clean()
 	}
 	baseFlow := flowNameOf(s.opened, s.name)
+	// A flow renamed in the editor: the runs are still of the flow it was, and a drive of a run under another flow is refused.
+	renamed := ""
+	if edited := flowNameOf(text, s.name); edited != "" && edited != baseFlow {
+		renamed = fmt.Sprintf("this file names the flow %q; these runs started the flow %q, and a drive of a run under another flow is refused", edited, baseFlow)
+	}
 	start := time.Now()
 	for _, g := range sc.groups {
 		ag := affectedGroup{Digest: g.digest, Runs: g.count, IDs: slices.Clone(g.ids)}
@@ -431,6 +467,10 @@ func (s *Server) affected(ctx context.Context, text []byte, reload bool) *affect
 				ag.Changes = append(ag.Changes, c.String())
 			}
 		}
+		if ag.Status == "refused" && renamed != "" {
+			ag.Reason = strings.TrimSpace(renamed + "; " + ag.Reason)
+			ag.Reason = strings.TrimSuffix(ag.Reason, ";")
+		}
 		rep.Groups = append(rep.Groups, ag)
 	}
 	slices.SortStableFunc(rep.Groups, func(a, b affectedGroup) int {
@@ -456,7 +496,7 @@ func (s *Server) affected(ctx context.Context, text []byte, reload bool) *affect
 		notes = append(notes, "The scan stopped at "+sc.stopped+" after reading "+fmt.Sprint(sc.listed)+" runs.")
 	}
 	if sc.noDigest > 0 {
-		notes = append(notes, fmt.Sprintf("%d unfinished %s no digest yet (all flows, not attributed); resume records the digest of whichever flow resumes %s, so %s not counted.", sc.noDigest, verb(sc.noDigest, "run records", "runs record"), pronoun(sc.noDigest), verb(sc.noDigest, "it is", "they are")))
+		notes = append(notes, fmt.Sprintf("%d unfinished %s no flow:digest: flow runs that have not recorded it yet (resume records the digest of whichever flow resumes them) and runs that are not flow runs. They are not attributed to a flow and are not counted.", sc.noDigest, verb(sc.noDigest, "run has", "runs have")))
 	}
 	if sc.unreadable > 0 {
 		notes = append(notes, fmt.Sprintf("%d %s be read, or recorded a digest that is not a SHA-256 digest.", sc.unreadable, verb(sc.unreadable, "run could not", "runs could not")))
@@ -466,6 +506,9 @@ func (s *Server) affected(ctx context.Context, text []byte, reload bool) *affect
 	}
 	if sc.overflowDigests > 0 {
 		notes = append(notes, fmt.Sprintf("%d more digest%s (%d runs) not compared: only the first %d are.", sc.overflowDigests, plural(sc.overflowDigests), sc.overflowRuns, maxGroups))
+	}
+	if !typed && errorsOf(frep) > 0 {
+		notes = append(notes, fmt.Sprintf("The file has %d error%s (see Problems); the comparison was made on what could be read.", errorsOf(frep), plural(errorsOf(frep))))
 	}
 	if !typed {
 		notes = append(notes, "Kinds, types and gates are not compared without the program's blocks (-blocks), so a change in them would not show.")

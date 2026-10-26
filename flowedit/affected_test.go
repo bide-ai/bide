@@ -207,13 +207,20 @@ func TestAffectedCountsNoDigestAndUnreadableApart(t *testing.T) {
 		cloneRun(t, tv1, st, "nodigest-"+strconv.Itoa(i), func(n string) bool { return unfinished(n) || n == "flow:digest" }, nil)
 	}
 	cloneRun(t, tv1, st, "crashwindow", func(n string) bool { return unfinished(n) || n == "flow:digest" }, nil) // topology but no digest
+	// A run that is not a flow run at all: no digest, no topology, no flow in its start.
+	cloneRun(t, tv1, st, "agentrun", func(n string) bool {
+		return unfinished(n) || n == "flow:digest" || n == plan.TopologyStep
+	}, nil)
 	cloneRun(t, tv1, st, "garbled", unfinished, map[string][]byte{"flow:digest": []byte(`{"name":"flow:digest","kind":"value","result":"not-a-digest"}`)})
 	s, _ := storeServer(t, v1, st, true)
 	r := askAffected(t, s, v1, true, false)
-	if r.NoDigest != 4 || r.Unreadable != 1 || r.Refused != 0 || len(r.Groups) != 1 || r.Groups[0].Runs != 1 {
+	if r.NoDigest != 5 || r.Unreadable != 1 || r.Refused != 0 || len(r.Groups) != 1 || r.Groups[0].Runs != 1 {
 		t.Fatalf("%+v", r)
 	}
-	if !strings.Contains(strings.Join(r.Notes, "\n"), "4 unfinished runs record no digest yet (all flows, not attributed)") {
+	if !strings.Contains(strings.Join(r.Notes, "\n"), "and runs that are not flow runs. They are not attributed to a flow and are not counted.") {
+		t.Errorf("the note does not say the runs may not be flow runs: %q", r.Notes)
+	}
+	if !strings.Contains(strings.Join(r.Notes, "\n"), "5 unfinished runs have no flow:digest: flow runs that have not recorded it yet (resume records the digest of whichever flow resumes them) and runs that are not flow runs.") {
 		t.Errorf("notes %q", r.Notes)
 	}
 }
@@ -243,11 +250,20 @@ func TestAffectedKeysOnTheFlowNameTheFileWasOpenedWith(t *testing.T) {
 	tv1 := templateRun(t, v1)
 	st := agent.NewMemStore()
 	cloneRun(t, tv1, st, "r", unfinished, nil)
-	s, _ := storeServer(t, v1, st, true)
 	renamed := flowCfg("pay2", "dbl")
-	r := askAffected(t, s, renamed, true, false)
-	if r.Refused != 1 || r.OtherFlow != 0 {
-		t.Errorf("%+v", r)
+	for _, typed := range []bool{true, false} {
+		s, _ := storeServer(t, v1, st, typed)
+		r := askAffected(t, s, renamed, true, false)
+		if r.Refused != 1 || r.OtherFlow != 0 || len(r.Groups) != 1 || r.Groups[0].Status != "refused" {
+			t.Fatalf("typed=%v: %+v", typed, r)
+		}
+		if want := `this file names the flow "pay2"; these runs started the flow "pay", and a drive of a run under another flow is refused`; !strings.Contains(r.Groups[0].Reason, want) {
+			t.Errorf("typed=%v: the reason is %q, want it to say %q", typed, r.Groups[0].Reason, want)
+		}
+		// Without a rename there is no such reason.
+		if g := askAffected(t, s, flowCfg("pay", "inc"), true, false).Groups[0]; strings.Contains(g.Reason, "this file names the flow") {
+			t.Errorf("typed=%v: a reason about a rename with none: %q", typed, g.Reason)
+		}
 	}
 }
 
@@ -680,5 +696,50 @@ func waitOrFail(t *testing.T, wg *sync.WaitGroup, d time.Duration) {
 	case <-done:
 	case <-time.After(d):
 		t.Fatalf("the requests did not finish in %v", d)
+	}
+}
+
+// A structural file with errors is compared on what reads, and the list says it has errors, as the run panel does.
+func TestAffectedStructuralFileWithErrorsIsSaidSo(t *testing.T) {
+	v1 := flowCfg("pay", "dbl")
+	st := agent.NewMemStore()
+	cloneRun(t, templateRun(t, v1), st, "r", unfinished, nil)
+	s, _ := storeServer(t, v1, st, false)
+	broken := strings.Replace(v1, `"wiring":[{"edge":["a","b"]}]`, `"wiring":[{"edge":["a","b"]},{"edge":["b","nowhere"]}]`, 1)
+	r := askAffected(t, s, broken, true, false)
+	if !slices.ContainsFunc(r.Notes, func(n string) bool { return strings.Contains(n, "The file has 1 error (see Problems)") }) {
+		t.Errorf("%+v", r)
+	}
+	if r := askAffected(t, s, v1, true, false); slices.ContainsFunc(r.Notes, func(n string) bool { return strings.Contains(n, "The file has") }) {
+		t.Errorf("a clean file: %q", r.Notes)
+	}
+}
+
+// The comparison of a text with a scan is made once: the same text asked again, at once or later, is answered from the
+// last comparison; another text, or another scan, is compared anew.
+func TestAffectedComparesATextOnce(t *testing.T) {
+	st := agent.NewMemStore()
+	for i := 0; i < 3; i++ {
+		cloneRun(t, templateRun(t, flowCfg("pay", []string{"dbl", "inc", "dbl"}[i])), st, "r"+strconv.Itoa(i), unfinished, nil)
+	}
+	v1 := flowCfg("pay", "dbl")
+	s, _ := storeServer(t, v1, st, false)
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); askAffected(t, s, v1, true, false) }()
+	}
+	waitOrFail(t, &wg, 20*time.Second)
+	askAffected(t, s, v1, true, false)
+	if n := s.affEvals.Load(); n != 1 {
+		t.Errorf("9 requests for one text made %d comparisons, want 1", n)
+	}
+	askAffected(t, s, flowCfg("pay", "inc"), true, false)
+	if n := s.affEvals.Load(); n != 2 {
+		t.Errorf("another text: %d comparisons, want 2", n)
+	}
+	askAffected(t, s, flowCfg("pay", "inc"), true, true) // reading the store again is a new scan
+	if n := s.affEvals.Load(); n != 3 {
+		t.Errorf("a new scan: %d comparisons, want 3", n)
 	}
 }
