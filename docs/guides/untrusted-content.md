@@ -127,7 +127,8 @@ run and not asked; the model reads an error result.
   resume (the input was stated when the run started) are not asked. The setting is part of the declarations
   digest only when it is on, so an existing policy's digest does not change. It declares; it does not verify: a
   `Trusted` reason is the host's word, and a tool that returns outside text under `Trusted` taints nothing.
-- The policy does not cover [plan flows](plan-flows.md) nodes. Children and sessions inherit taint, as follows.
+- The policy does not cover [plan flows](plan-flows.md) nodes yet: a flow can declare taint, and `Build` refuses it until the
+  engine enforces it ([design](../design/flow-taint.md)). Children and sessions inherit taint, as follows.
 
 ## Children, sub-agents and sessions
 

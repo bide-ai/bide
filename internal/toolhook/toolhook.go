@@ -23,6 +23,17 @@ type RollbackBinder interface {
 // package sets it in init; plan calls it so a flow refuses what an agent refuses.
 var CheckTool func(t any) error
 
+// CheckProvenanceName refuses a source or reason that agent.Untrusted, Trusted and TaintExempt would
+// refuse (empty, over-long, not UTF-8, or with a non-printing character), with an error wrapping
+// agent.ErrConfig that begins with what. The agent package sets it in init; plan calls it so a flow
+// declaration is held to the rules of an agent's.
+var CheckProvenanceName func(what, s string) error
+
+// CheckTaintPolicy refuses a policy agent.WithTaintPolicy would refuse, where p is an
+// agent.TaintPolicy: neither a Gate nor Refuse, both, or a Gate that is not a valid approval policy.
+// The agent package sets it in init; plan calls it for a flow's policy.
+var CheckTaintPolicy func(p any) error
+
 // WithIdentity binds the acting identity (actor, on behalf of whom, under what authority) to ctx
 // for the sub-run a tool wrapper starts, as a run's WithIdentity option binds a run's: the
 // delegation's sub-run acts as the delegate, on behalf of the parent, under the child grant. The

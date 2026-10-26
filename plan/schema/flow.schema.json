@@ -110,6 +110,11 @@
         "approval": {
           "$ref": "#/$defs/approval",
           "description": "Gate this node behind an m-of-n approval. Omitted keeps the gate the block declares, if any."
+        },
+        "untrusted": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Add a source of untrusted content to this node's results, from the named source (for example inbound-email). A config can only add a source, never remove one the block declares. Flow taint is not enforced yet, so Load refuses a config that sets it."
         }
       }
     },
@@ -206,6 +211,11 @@
             "approval": {
               "$ref": "#/$defs/approval",
               "description": "Gate the join node behind an m-of-n approval."
+            },
+            "untrusted": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Add a source of untrusted content to the join node's results, as a node's untrusted does. Flow taint is not enforced yet, so Load refuses a config that sets it."
             }
           }
         }

@@ -70,6 +70,11 @@ type configNode struct {
 	// approvals (see Approval). Absent keeps the gate the registered block declares (a tool's own,
 	// or none); a block that declares another gate is a load error.
 	Approval *configApproval `json:"approval,omitempty"`
+	// Untrusted, when present, adds a source of untrusted content to the node's results, from the
+	// named source (see Untrusted). A config can only add a source: the block's own declarations
+	// stay, and a node whose block declares its results trusted cannot take one. It is optional and
+	// leaves the flow's digest as it was; Build does not accept it yet (taintNotEnforced).
+	Untrusted string `json:"untrusted,omitempty"`
 }
 
 // configApproval is a node's m-of-n approval block: Need decisions required from the
@@ -115,6 +120,9 @@ type configWire struct {
 	Safety string `json:"safety,omitempty"`
 	// Approval optionally gates the join node, as configNode.Approval gates a node.
 	Approval *configApproval `json:"approval,omitempty"`
+	// Untrusted adds a source of untrusted content to the join node's results, as configNode.Untrusted
+	// does for a node.
+	Untrusted string `json:"untrusted,omitempty"`
 }
 
 // configGate lowers a config "approval" block onto a node whose registered block declares the
@@ -630,7 +638,12 @@ func assemble(cfg *config, reg *Registry, allowUnused bool) (*builderCore, error
 			}
 			approval = p
 		}
+		taint, why := configTaint(b.taint, cn.Untrusted)
+		if why != "" {
+			problems = append(problems, otherf("node %q %s", cn.Name, why).at(cn.Name))
+		}
 		resolvedNodes = append(resolvedNodes, &node{
+			taint:   taint,
 			name:    cn.Name,
 			block:   cn.Block,
 			kind:    b.kind,
@@ -777,7 +790,12 @@ func assemble(cfg *config, reg *Registry, allowUnused bool) (*builderCore, error
 				}
 				jgate = p
 			}
+			jtaint, why := configTaint(m.taint, w.Untrusted)
+			if why != "" {
+				return nil, &problemList{prefix: fmt.Sprintf("plan: load %q: ", cfg.Flow), lead: fmt.Sprintf("wiring[%d] join %q ", i, w.Join), finds: otherAll([]string{why}, w.Join), sentinel: agent.ErrConfig}
+			}
 			core.register(&node{
+				taint:       jtaint,
 				name:        w.Join,
 				approval:    jgate,
 				block:       w.Merge,

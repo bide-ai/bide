@@ -66,6 +66,10 @@ type regBlock struct {
 	// Approval option given at registration. It is carried onto the loaded node, as for a
 	// hand-built node; a config "approval" block may restate it but not replace it.
 	approval *agent.ApprovalPolicy
+	// taint is the block's taint declarations: a wrapped tool's, and the Untrusted, Trusted and
+	// TaintExempt options given at registration. A config node may add a source (the key
+	// "untrusted"), never remove one.
+	taint nodeTaint
 }
 
 // regPred is a registered Switch predicate. mType is the switched value's type M
@@ -91,6 +95,9 @@ type regPred struct {
 type regMerge struct {
 	// approval is the merge block's approval gate, set in Go by the Approval option.
 	approval *agent.ApprovalPolicy
+	// taint is the merge block's taint declarations, set in Go by the options given to RegisterJoin2
+	// and RegisterJoin3.
+	taint nodeTaint
 	// safety is the merge block's retry-on-resume classification, set in Go by the
 	// NodeOptions given to RegisterJoin2/RegisterJoin3 (none: a side effect, which halts on
 	// an ambiguous crash). A config join's "safety" may only lower it.
@@ -101,15 +108,16 @@ type regMerge struct {
 	merge   func(ctx context.Context, inputs []any) (any, error)
 }
 
-// gateFromOptions resolves the approval gate opts set on the block name, from base (a wrapped
-// tool's own gate, or nil). An option's error (Approval(nil), or a gate other than the tool's) is
+// blockOptions resolves the approval gate and the taint declarations opts set on the block name,
+// from base (a wrapped tool's own gate, or nil) and baseTaint (its own declarations, or none). An
+// option's error (Approval(nil), a gate other than the tool's, a contradicting declaration) is
 // recorded on the Registry, as a duplicate is, so Load reports it, and returned.
-func (r *Registry) gateFromOptions(name string, base *agent.ApprovalPolicy, opts []NodeOption) (*agent.ApprovalPolicy, error) {
-	gate, err := gateFromOptions(name, base, opts)
+func (r *Registry) blockOptions(name string, base *agent.ApprovalPolicy, baseTaint nodeTaint, opts []NodeOption) (*agent.ApprovalPolicy, nodeTaint, error) {
+	gate, taint, err := blockOptions(name, base, baseTaint, opts)
 	if err != nil {
 		r.errs = append(r.errs, err)
 	}
-	return gate, err
+	return gate, taint, err
 }
 
 // NewRegistry returns a fresh, empty Registry. Every Load takes an explicit
@@ -175,12 +183,13 @@ func (r *Registry) registerMerge(name string, m *regMerge) error {
 // effect and halts on an ambiguous crash, like a hand-built Join. Only Go code can mark a merge
 // retry-safe (ReadOnly, Idempotent); a config join's "safety" may only lower what opts declare.
 func (r *Registry) RegisterJoin2[A, B, O any](name string, fn func(context.Context, A, B) (O, error), opts ...NodeOption) error {
-	gate, err := r.gateFromOptions(name, nil, opts)
+	gate, taint, err := r.blockOptions(name, nil, nodeTaint{}, opts)
 	if err != nil {
 		return err
 	}
 	return r.registerMerge(name, &regMerge{
 		approval: gate,
+		taint:    taint,
 		safety:   safetyFromOptions(agent.Safety{}, opts),
 		arity:    2,
 		inTypes:  []reflect.Type{reflect.TypeFor[A](), reflect.TypeFor[B]()},
@@ -214,12 +223,13 @@ func (r *Registry) RegisterJoin2[A, B, O any](name string, fn func(context.Conte
 // calling fn. A duplicate name is an error, surfaced at Load and returned here for
 // inline checking. opts set the merge block's Safety, as for RegisterJoin2.
 func (r *Registry) RegisterJoin3[A, B, C, O any](name string, fn func(context.Context, A, B, C) (O, error), opts ...NodeOption) error {
-	gate, err := r.gateFromOptions(name, nil, opts)
+	gate, taint, err := r.blockOptions(name, nil, nodeTaint{}, opts)
 	if err != nil {
 		return err
 	}
 	return r.registerMerge(name, &regMerge{
 		approval: gate,
+		taint:    taint,
 		safety:   safetyFromOptions(agent.Safety{}, opts),
 		arity:    3,
 		inTypes:  []reflect.Type{reflect.TypeFor[A](), reflect.TypeFor[B](), reflect.TypeFor[C]()},
@@ -259,12 +269,13 @@ func (r *Registry) RegisterJoin3[A, B, C, O any](name string, fn func(context.Co
 // Safety in Go (the config JSON carries no Safety); a loaded node then resumes
 // identically to one built with Builder.Step and the same option.
 func (r *Registry) RegisterStep[I, O any](name string, fn func(context.Context, I) (O, error), opts ...NodeOption) error {
-	gate, err := r.gateFromOptions(name, nil, opts)
+	gate, taint, err := r.blockOptions(name, nil, nodeTaint{}, opts)
 	if err != nil {
 		return err
 	}
 	return r.registerBlock(name, &regBlock{
 		approval: gate,
+		taint:    taint,
 		kind:     kindStep,
 		inType:   reflect.TypeFor[I](),
 		outType:  reflect.TypeFor[O](),
@@ -302,11 +313,12 @@ func (r *Registry) RegisterTool[I, O any](name string, t agent.Tool, opts ...Nod
 		r.errs = append(r.errs, err)
 		return err
 	}
-	gate, err := r.gateFromOptions(name, spec.Approval.Clone(), opts)
+	gate, taint, err := r.blockOptions(name, spec.Approval.Clone(), taintOfSpec(spec), opts)
 	if err != nil {
 		return err
 	}
 	return r.registerBlock(name, &regBlock{
+		taint:    taint,
 		kind:     kindTool,
 		inType:   reflect.TypeFor[I](),
 		outType:  reflect.TypeFor[O](),
@@ -352,12 +364,13 @@ func (r *Registry) RegisterTool[I, O any](name string, t agent.Tool, opts ...Nod
 // is unknown is made again on the next drive. A config node's "safety" lowers it
 // ("side_effect" halts instead).
 func (r *Registry) RegisterModel[I, O any](name, prompt string, opts ...NodeOption) error {
-	gate, err := r.gateFromOptions(name, nil, opts)
+	gate, taint, err := r.blockOptions(name, nil, nodeTaint{}, opts)
 	if err != nil {
 		return err
 	}
 	return r.registerBlock(name, &regBlock{
 		approval:  gate,
+		taint:     taint,
 		kind:      kindModel,
 		inType:    reflect.TypeFor[I](),
 		outType:   reflect.TypeFor[O](),

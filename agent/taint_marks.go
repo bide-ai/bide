@@ -43,8 +43,8 @@ func checkProvenanceName(what, s string) error {
 // embeds or unwraps another must declare it too, or registration refuses it (see checkEmbedded and
 // checkUnwrapChain); a wrapper that does neither is not seen, and carrying the declaration is its author's
 // duty. A plan flow node
-// cannot yet be built from a tool that declares it: the plan registry refuses it with ErrConfig, since
-// flows have no taint rule yet.
+// takes the declaration, but flows do not enforce taint yet, so building a flow with such a tool is
+// refused with ErrConfig.
 func Untrusted(source string) ToolOption {
 	return toolOption(func(c *toolConfig) error {
 		if err := checkProvenanceName("Untrusted", source); err != nil {
