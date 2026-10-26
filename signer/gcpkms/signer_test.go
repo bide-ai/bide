@@ -994,7 +994,14 @@ func TestCancelStopsRetries(t *testing.T) {
 	}
 }
 
-// Timeout bounds Sign as a whole: three slow attempts do not take three timeouts.
+// Timeout bounds Sign as a whole: three slow attempts do not take three timeouts. The property is
+// counted in attempts, not measured in wall-clock time: each attempt sleeps 60ms and the deadline is
+// 100ms, so the first attempt ends inside it, the second starts inside it and ends after it, and the
+// loop must then stop. Elapsed time says nothing about that on a loaded runner (a sleep can overrun
+// by hundreds of milliseconds, which failed this test on macOS with "311ms"), while a loop that
+// gave each attempt its own timeout, or did not check the deadline between attempts, makes a third
+// call. A loaded machine can only make fewer attempts fit, never more, so this cannot fail by
+// slowness alone.
 func TestTimeoutBoundsTheWholeRetryLoop(t *testing.T) {
 	f := newEd(t)
 	s := open(t, f, func(c *Config) { c.Timeout = 100 * time.Millisecond })
@@ -1003,11 +1010,7 @@ func TestTimeoutBoundsTheWholeRetryLoop(t *testing.T) {
 		r.SignatureCrc32C = wrapperspb.Int64(r.SignatureCrc32C.Value ^ 1)
 	}
 	before := f.signs.Load()
-	start := time.Now()
 	_, err := s.Sign([]byte("m"))
-	if d := time.Since(start); d > 180*time.Millisecond {
-		t.Fatalf("Sign took %v with Timeout 100ms", d)
-	}
 	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, ErrIntegrity) {
 		t.Fatalf("err = %v", err)
 	}
