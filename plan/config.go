@@ -566,6 +566,16 @@ func assemble(cfg *config, reg *Registry, allowUnused bool) (*builderCore, error
 		if w.isJoin() {
 			set++
 		}
+		// "safety" and "approval" apply to a node, so they belong on a join, which creates one. On an edge or a
+		// switch there is no node to apply them to, and they would be accepted and dropped.
+		if !w.isJoin() {
+			if w.Safety != "" {
+				problems = append(problems, atWire(otherf("wiring[%d] sets safety, which applies to a node: set it on a join, or on a node in nodes", i), w))
+			}
+			if w.Approval != nil {
+				problems = append(problems, atWire(otherf("wiring[%d] sets approval, which gates a node: set it on a join, or on a node in nodes", i), w))
+			}
+		}
 		switch {
 		case set > 1:
 			problems = append(problems, atWire(otherf("wiring[%d] sets more than one of edge/switch/join; set exactly one", i), w))
