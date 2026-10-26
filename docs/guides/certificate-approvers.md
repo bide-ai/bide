@@ -251,8 +251,8 @@ id-kp-emailProtection is accepted in place of it), `PolicyOID()` (the certificat
 To check a chain without a journal, signature or signed head, call
 `(*audit.CertApprover).CheckCertificate(chain, decidedAt, anchoredAt, mode)`. It returns the verdict a gate reaches
 on the chain: whether the chain is accepted for the approver and what the revocation status rule makes of it, judged
-by the counting rule (`audit.CheckCount`) or the pre-execution rule (`audit.CheckExec`). It is the function the
-gate's counting and execution checks call, and the one `bide identity check -cert` reports.
+by the counting rule (`audit.CheckCount`) or the pre-execution rule (`audit.CheckExec`). It wraps the same check the
+gate's counting and execution rules run, and it is the check `bide identity check -cert` reports.
 
 ## Declare the CA's facts
 
