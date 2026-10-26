@@ -1,20 +1,21 @@
 name: Queue guard
 
-# A pull request is reviewed and queued at one commit. GitHub keeps auto-merge enabled when a new
-# commit is pushed to such a pull request (a pull request in the merge queue is removed from it,
-# but auto-merge stays on and queues the new commit as soon as its checks pass), so unreviewed code
-# could merge. This workflow turns auto-merge off and takes the pull request out of the merge
-# queue on every push, and says so in a comment: a push after queueing needs a new review and a
-# new queueing. It acts only on the pull request it runs for, with GITHUB_TOKEN, and checks nothing out.
+# A pull request is reviewed and given auto-merge at one commit. GitHub keeps auto-merge enabled
+# when a new commit is pushed, and merges the new commit as soon as its checks pass, so unreviewed
+# code could merge (three times on 2026-10-26, each a pull request waiting on its checks). This
+# workflow turns auto-merge off on every push and says so in a comment: a push after queueing needs
+# a new review and a new queueing. Once a pull request is in the merge queue GitHub already
+# rejects a push to its branch ("queued branches cannot be updated"), so that case needs no guard.
 #
-# It runs on the pull request event only, so the merge queue's own branches (merge_group) never
-# start it. A pull request from a fork gets a read-only token and cannot have been queued by its
-# author, so it is skipped.
+# It acts only on the pull request it runs for, with GITHUB_TOKEN, and checks nothing out. It runs
+# on the pull request event only, so the merge queue's own branches (merge_group) never start it.
+# A pull request from a fork gets a read-only token and is skipped.
 on:
   pull_request:
     types: [synchronize]
 
-# contents: write is what GitHub requires to disable auto-merge or dequeue (pull-requests: write is not enough).
+# contents: write is what GitHub requires to disable auto-merge: with pull-requests: write alone
+# the mutation fails with "Resource not accessible by integration" (tried on a probe pull request).
 permissions:
   contents: write
   pull-requests: write
@@ -31,7 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Disable auto-merge and dequeue
+      - name: Disable auto-merge
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -41,33 +42,24 @@ jobs:
           set -euo pipefail
           owner="${REPO%/*}"
           name="${REPO#*/}"
-          read -r id auto queued < <(gh api graphql \
+          read -r id auto < <(gh api graphql \
             -f owner="$owner" -f name="$name" -F number="$NUMBER" \
             -f query='query($owner:String!,$name:String!,$number:Int!){
               repository(owner:$owner,name:$name){
                 pullRequest(number:$number){
                   id
                   autoMergeRequest{enabledAt}
-                  mergeQueueEntry{id}
                 }
               }
             }' \
-            --jq '.data.repository.pullRequest | [.id, (.autoMergeRequest != null), (.mergeQueueEntry != null)] | @tsv')
-          echo "pull request $NUMBER: auto-merge=$auto in-queue=$queued"
-          if [ "$auto" != true ] && [ "$queued" != true ]; then
-            echo "Not queued: nothing to do."
+            --jq '.data.repository.pullRequest | [.id, (.autoMergeRequest != null)] | @tsv')
+          echo "pull request $NUMBER: auto-merge=$auto"
+          if [ "$auto" != true ]; then
+            echo "Auto-merge is off: nothing to do."
             exit 0
           fi
-          did=''
-          if [ "$queued" = true ]; then
-            gh api graphql -f id="$id" -f query='mutation($id:ID!){
-              dequeuePullRequest(input:{id:$id}){clientMutationId}
-            }' >/dev/null && did='it is out of the merge queue' || echo "Dequeue failed (already out of the queue?); continuing."
-          fi
-          if [ "$auto" = true ]; then
-            gh api graphql -f id="$id" -f query='mutation($id:ID!){
-              disablePullRequestAutoMerge(input:{pullRequestId:$id}){clientMutationId}
-            }' >/dev/null
-            did="auto-merge is off${did:+ and $did}"
-          fi
-          gh pr comment "$NUMBER" --repo "$REPO" --body "A commit (\`${NEW_SHA:0:9}\`) was pushed after this pull request was queued for merge, so ${did:-it was taken out of the queue}. The new commit needs a review, then a new queueing."
+          gh api graphql -f id="$id" -f query='mutation($id:ID!){
+            disablePullRequestAutoMerge(input:{pullRequestId:$id}){clientMutationId}
+          }' >/dev/null
+          echo "Auto-merge disabled."
+          gh pr comment "$NUMBER" --repo "$REPO" --body "A commit (\`${NEW_SHA:0:9}\`) was pushed after auto-merge was enabled, so auto-merge is now off. The new commit needs a review, then auto-merge or the queue again."
