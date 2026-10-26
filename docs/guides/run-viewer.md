@@ -161,7 +161,8 @@ The list shows 50 runs and a **Show more** link for the next 50. To classify a r
 its journal, so one load reads at most 5,000 runs (the first by run ID among those the run ID filter
 admits) and says so when there are more; narrow the run ID filter to reach the others. An exported
 journal holds one run, so `-journal` lists as many runs as files it is given, and the page says so
-when it is one.
+when it is one. Two files that export the same run ID are refused as a usage error (exit 2) naming both
+files, so a stale or substituted copy cannot stand in for the run.
 
 The screenshot is of the journal `bide sample` writes (see
 [Explore a sample journal](#explore-a-sample-journal)); `assets/demo/shots.sh` retakes it, and
@@ -254,7 +255,7 @@ has an item. An aborted or cancelled run is listed too, since a halt outlives ei
 | `-db <file>` | SQLite journal to read, opened read-only. Give one of `-db`, `-postgres` and `-journal`. |
 | `-postgres <dsn>` | Postgres journal to read, a pgx DSN; read in read-only sessions. |
 | `-postgres-env <VAR>` | The Postgres journal, its DSN read from this environment variable instead of the command line, so the password stays out of the argument list. The value is a variable's name (letters, digits, underscore); a DSN given here is refused without being echoed. Exclusive with `-postgres`. The Needs attention list's `bide approve` commands name the same variable. |
-| `-journal <file>` | An exported journal (`audit.JournalExport` JSON). Repeat it for several runs. |
+| `-journal <file>` | An exported journal (`audit.JournalExport` JSON). Repeat it for several runs; two files of the same run are refused. |
 | `-run <id>` | The run whose URL to print. Without it, the printed URL is the [run list](#the-run-list). |
 | `-topology <file>` | A declared topology, as JSON of `flow.Topology()`, to draw a flow run against instead of the topology the run journaled: for a run started before `flow:topology` was journaled, or to check a run against another flow. |
 | `-digest <hex>` | `flow.Digest()` of the `-topology` flow, compared with the digest the run journaled. Needs `-topology`. By default it is computed from the `-topology` file when the file carries the digest's inputs (a topology exported by this version does). |

@@ -31,6 +31,10 @@ type StoreFlags struct {
 	Journals    []string
 }
 
+// ErrDuplicateRun is what Open wraps when two -journal files export the same run: a usage error,
+// since the later file would replace the earlier with no sign.
+var ErrDuplicateRun = errors.New("two exported journals hold the same run")
+
 // Register adds the four flags to fs.
 func (f *StoreFlags) Register(fs *flag.FlagSet) {
 	fs.StringVar(&f.DB, "db", "", DBFlagHelp)
@@ -108,6 +112,7 @@ func (f StoreFlags) Open(stores Stores) (OpenedStore, error) {
 		return o, nil
 	}
 	x := Exports{}
+	from := map[string]string{}
 	for _, path := range f.Journals {
 		var exp audit.JournalExport
 		if err := readStrict("", path, &exp); err != nil {
@@ -117,6 +122,10 @@ func (f StoreFlags) Open(stores Stores) (OpenedStore, error) {
 		if err != nil {
 			return o, fmt.Errorf("%s: %w", path, err)
 		}
+		if first, dup := from[exp.RunID]; dup {
+			return o, fmt.Errorf("-journal %s and -journal %s both export run %q: %w", first, path, exp.RunID, ErrDuplicateRun)
+		}
+		from[exp.RunID] = path
 		x[exp.RunID] = recs
 	}
 	o.Source = x

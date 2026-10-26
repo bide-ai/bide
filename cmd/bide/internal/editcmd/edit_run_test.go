@@ -203,3 +203,38 @@ func TestServesAStoreWithoutARun(t *testing.T) {
 		t.Fatal("did not stop")
 	}
 }
+
+// Two -journal exports of one run are a usage error naming both files, not a page served from
+// whichever came last.
+func TestEditRefusesTwoExportsOfOneRun(t *testing.T) {
+	cfg := `{"version":1,"flow":"f","in":"int","out":"int","entry":"a","nodes":[{"name":"a","block":"a"}],"wiring":[]}`
+	reg := plan.NewRegistry()
+	if err := reg.RegisterStep("a", func(_ context.Context, n int) (int, error) { return n, nil }); err != nil {
+		t.Fatal(err)
+	}
+	fl, err := plan.Load[int, int]([]byte(cfg), reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fl.Run(context.Background(), j, "r1", 1); err != nil {
+		t.Fatal(err)
+	}
+	exp, err := audit.ExportJournal(context.Background(), j, "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(exp)
+	one, two := write(t, "a.json", string(b)), write(t, "b.json", string(b))
+	// Bounded, so that a build that serves the page fails the test instead of hanging it.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var out, errb bytes.Buffer
+	got := run(ctx, []string{"-color", "never", "-run", "r1", "-journal", one, "-journal", two, write(t, "f.json", cfg)}, &out, &errb, runview.Stores{})
+	if got != 2 || !strings.Contains(errb.String(), one) || !strings.Contains(errb.String(), two) || strings.Contains(out.String(), "serving") {
+		t.Errorf("exit %d, stderr %q", got, errb.String())
+	}
+}
