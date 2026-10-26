@@ -79,13 +79,12 @@ vet_system() { # GOOS
   stub=$tmp/stub; mkdir -p "$stub"
   printf 'module %s\n\ngo 1.27\n' "$DRIVER" > "$stub/go.mod"
   printf 'package sqlite\n' > "$stub/sqlite.go"
-  real=$root/cross-vet.real.work; stubw=$root/cross-vet.stub.work
-  trap "rm -rf '$tmp' '$real' '$real.sum' '$stubw' '$stubw.sum'" RETURN
+  real=$tmp/real.work; stubw=$tmp/stub.work # outside the tree: nothing is left in the checkout
   # The go line is the repository's own (go.work): the modules require it, and a lower one is refused.
   local goline
   goline=$(awk '$1 == "go" { print $2; exit }' go.work 2>/dev/null || true)
   for w in "$real" "$stubw"; do
-    { printf 'go %s\n\nuse (\n' "${goline:-1.27}"; for m in $MODULES; do printf '\t./%s\n' "$m"; done; printf ')\n'; } > "$w"
+    { printf 'go %s\n\nuse (\n' "${goline:-1.27}"; for m in $MODULES; do printf '\t%s\n' "$(cd "$m" && pwd)"; done; printf ')\n'; } > "$w"
   done
   printf '\nreplace %s => %s\n' "$DRIVER" "$stub" >> "$stubw"
 
