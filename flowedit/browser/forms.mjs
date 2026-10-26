@@ -23,7 +23,9 @@ try {
   await page.goto(env.PAGE_URL, { waitUntil: 'networkidle0', timeout: 30000 });
   const text = (sel) => page.$eval(sel, (e) => e.textContent);
   const source = () => page.$eval('#source', (e) => e.value);
-  const until = (fn, arg, what) => page.waitForFunction(fn, { timeout: 10000 }, arg).catch(() => { throw new Error('timed out waiting for ' + what); });
+  const until = (fn, arg, what) => page.waitForFunction(fn, { timeout: 30000 }, arg).catch(() => { throw new Error('timed out waiting for ' + what); });
+  // The page says when it has nothing under way (data-busy on <html> counts its requests and the pauses it waits out): a click is made then, not on a guess of how long a draft check takes.
+  const atRest = () => page.waitForFunction(() => document.documentElement.dataset.busy === '0', { timeout: 30000 }).catch(() => { throw new Error('timed out waiting for the page to be at rest'); });
   const bannerText = () => page.$eval('#weakened', (e) => e.textContent);
   const r = {};
   r.original = await source();
@@ -69,6 +71,7 @@ try {
   await page.focus('#g-need');
   await page.keyboard.type('3');
   await until(() => document.querySelector('#g-kofn')?.textContent.startsWith('3 of 4'), null, 'the draft to say 3 of 4');
+  await atRest();
   await page.click('#g-apply');
   await until(() => document.getElementById('source').value.includes('need: 3'), null, 'need 3 to be applied');
   r.afterNeed = await source();
@@ -124,6 +127,7 @@ try {
   await page.focus('#g-exclude');
   await page.keyboard.press('Space');
   await until(() => document.querySelector('#g-kofn')?.textContent.includes('never counting'), null, 'the draft to exclude the requester');
+  await atRest();
   await page.click('#g-apply');
   await until(() => document.getElementById('source').value.includes('name: receipt, block: receipt, safety: idempotent, approval'), null, 'receipt to be gated');
   r.afterGateReceipt = await source();

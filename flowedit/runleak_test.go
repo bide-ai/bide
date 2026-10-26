@@ -309,6 +309,10 @@ func guardProblems(fset *token.FileSet, files []*ast.File, info *types.Info, src
 					if n.Type != nil && mentionsError(info.TypeOf(n.X), map[types.Type]bool{}) {
 						report(n.Pos(), "a type assertion on a value that can carry an error: its text would be one call away from a reply")
 					}
+				case *ast.SendStmt:
+					if ch, ok := info.TypeOf(n.Chan).Underlying().(*types.Chan); ok && toOtherInterface(info, n.Value, ch.Elem()) {
+						report(n.Pos(), "an error-carrying value is sent on a channel of an interface other than error")
+					}
 				case *ast.ReturnStmt:
 					if sig := enclosing[len(enclosing)-1]; sig != nil && sig.Results().Len() == len(n.Results) {
 						for i, r := range n.Results {
@@ -466,20 +470,36 @@ func storeFailure(what string, err error) string { return fmt.Sprintf("%s (%v)",
 
 `
 	bad := map[string]string{
-		"Sprintf %v":            `func f(err error) string { return fmt.Sprintf("%v", err) }`,
-		"Sprint":                `func f(err error) string { return fmt.Sprint(err) }`,
-		"Errorf %w":             `func f(err error) error { return fmt.Errorf("read: %w", err) }`,
-		"Errorf %s":             `func f(err error) error { return fmt.Errorf("read: %s", err) }`,
-		"Fprintf":               `func f(err error) { fmt.Fprintf(nil, "%v", err) }`,
-		"Join":                  `func f(err error) error { return errors.Join(err, nil) }`,
-		"Error()":               `func f(err error) string { return "x" + err.Error() }`,
-		"an error named cause":  `func f(cause error) string { return fmt.Sprint(cause) }`,
-		"an error named e":      `func f(e error) string { return fmt.Sprintf("%v", e) }`,
-		"a field":               `func f(x wrapped) string { return fmt.Sprint(x.cause) }`,
-		"a call that returns":   `func g() error { return nil }; func f() string { return fmt.Sprint(g()) }`,
-		"a concrete error type": `func f(x wrapped) string { return fmt.Sprint(x) }`,
-		"a pointer to one":      `func f(x *wrapped) string { return fmt.Sprint(x) }`,
-		"Error() of a field":    `func f(x wrapped) string { return x.cause.Error() }`,
+		"Sprintf %v":                `func f(err error) string { return fmt.Sprintf("%v", err) }`,
+		"Sprint":                    `func f(err error) string { return fmt.Sprint(err) }`,
+		"Errorf %w":                 `func f(err error) error { return fmt.Errorf("read: %w", err) }`,
+		"Errorf %s":                 `func f(err error) error { return fmt.Errorf("read: %s", err) }`,
+		"Fprintf":                   `func f(err error) { fmt.Fprintf(nil, "%v", err) }`,
+		"Join":                      `func f(err error) error { return errors.Join(err, nil) }`,
+		"Error()":                   `func f(err error) string { return "x" + err.Error() }`,
+		"an error named cause":      `func f(cause error) string { return fmt.Sprint(cause) }`,
+		"an error named e":          `func f(e error) string { return fmt.Sprintf("%v", e) }`,
+		"a field":                   `func f(x wrapped) string { return fmt.Sprint(x.cause) }`,
+		"a call that returns":       `func g() error { return nil }; func f() string { return fmt.Sprint(g()) }`,
+		"a concrete error type":     `func f(x wrapped) string { return fmt.Sprint(x) }`,
+		"a pointer to one":          `func f(x *wrapped) string { return fmt.Sprint(x) }`,
+		"Error() of a field":        `func f(x wrapped) string { return x.cause.Error() }`,
+		"via an any variable":       `func f(err error) string { var x any = err; return fmt.Sprint(x) }`,
+		"json.Marshal":              `func f(err error) []byte { b, _ := json.Marshal(err); return b }`,
+		"in a slice":                `func f(err error) string { return fmt.Sprint([]error{err}) }`,
+		"in a struct":               `func f(err error) string { return fmt.Sprint(struct{ e error }{err}) }`,
+		"a Stringer assertion":      `func f(err error) string { return err.(fmt.Stringer).String() }`,
+		"returned as any":           `func g(err error) any { return err }; func f(err error) string { return fmt.Sprint(g(err)) }`,
+		"assigned to any":           `func f(err error) string { var x any; x = err; return fmt.Sprint(x) }`,
+		"a map of errors":           `func f(err error) string { return fmt.Sprint(map[string]error{"a": err}) }`,
+		"converted":                 `func f(err error) string { return fmt.Sprint(any(err)) }`,
+		"a closure":                 `func f(err error) string { return func() any { return err }().(string) }`,
+		"sent on a chan any":        `func f(err error) { c := make(chan any, 1); c <- err }`,
+		"sent in a slice on a chan": `func f(err error) { c := make(chan any, 1); c <- []error{err} }`,
+		"an any slice":              `func f(err error) { _ = []any{err} }`,
+		"an any map":                `func f(err error) { _ = map[string]any{"a": err} }`,
+		"an any field, unkeyed":     `func f(err error) { _ = struct{ v any }{err} }`,
+		"an any field, keyed":       `func f(err error) { _ = struct{ v any }{v: err} }`,
 	}
 	for name, body := range bad {
 		srcs := map[string][]byte{"x.go": []byte(head + body + "\n")}
@@ -489,16 +509,17 @@ func storeFailure(what string, err error) string { return fmt.Sprintf("%s (%v)",
 		}
 	}
 	ok := map[string]string{
-		"a class":       `func f(err error) string { return storeFailure("x", err) }`,
-		"a marked file": "func f(err error) string { return fmt.Sprint(err.Error()) " + fileMark + "\n}",
-		"no error":      `func f(n int) string { return fmt.Sprintf("%d", n) }`,
-		"a string":      `func f(cause string) string { return fmt.Sprint(cause) }`,
-		"errors.New":    `func f() error { return errors.New("x") }`,
-		"errors.Is":     `func f(err error) bool { return errors.Is(err, errors.ErrUnsupported) }`,
-		"an error var":  `func f(err error) error { var e error = err; e = err; return e }`,
-		"a func(error)": `func g(error) {}; func f(err error) { g(err) }`,
-		"an error list": `func f(err error) []error { return []error{err} }`,
-		"errors.As":     `type pe struct{}; func (*pe) Error() string { return "" }; func f(err error) bool { var p *pe; return errors.As(err, &p) }`,
+		"a class":              `func f(err error) string { return storeFailure("x", err) }`,
+		"a marked file":        "func f(err error) string { return fmt.Sprint(err.Error()) " + fileMark + "\n}",
+		"no error":             `func f(n int) string { return fmt.Sprintf("%d", n) }`,
+		"a string":             `func f(cause string) string { return fmt.Sprint(cause) }`,
+		"errors.New":           `func f() error { return errors.New("x") }`,
+		"errors.Is":            `func f(err error) bool { return errors.Is(err, errors.ErrUnsupported) }`,
+		"an error var":         `func f(err error) error { var e error = err; e = err; return e }`,
+		"a func(error)":        `func g(error) {}; func f(err error) { g(err) }`,
+		"an error list":        `func f(err error) []error { return []error{err} }`,
+		"sent on a chan error": `func f(err error) { c := make(chan error, 1); c <- err }`,
+		"errors.As":            `type pe struct{}; func (*pe) Error() string { return "" }; func f(err error) bool { var p *pe; return errors.As(err, &p) }`,
 	}
 	for name, body := range ok {
 		srcs := map[string][]byte{"x.go": []byte(head + body + "\n")}
