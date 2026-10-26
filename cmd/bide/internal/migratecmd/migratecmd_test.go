@@ -149,3 +149,14 @@ func TestFailureRedactsAKeywordDSN(t *testing.T) {
 		t.Fatalf("code %d, err %q", code, errOut)
 	}
 }
+
+// The help names everything the migration creates, including the legal-holds table and the
+// redaction function that docs/guides/postgres.md says it creates.
+func TestHelpNamesWhatItCreates(t *testing.T) {
+	_, _, errOut := run(t, nil, "-h")
+	for _, want := range []string{"bide_steps", "bide_leases", "bide_events", "bide_schema_version", "bide_holds", "bide_next_seq_v1", "bide_redact_v3"} {
+		if !strings.Contains(errOut, want) {
+			t.Errorf("help does not name %s", want)
+		}
+	}
+}

@@ -44,10 +44,11 @@ Creates or checks a Postgres journal's schema, as the role in the DSN, so that t
 can open the store with postgres.WithoutMigration under a role that has no DDL rights. Run it
 with the schema's owner at deploy time, and again after upgrading bide.
 
-It creates the tables (bide_steps, bide_leases, bide_events, bide_schema_version), the
-bide_next_seq_v1 function and the lease indexes that are missing, and nothing else: it never
-alters or drops a table or replaces a function, it is idempotent, and it refuses a schema newer
-than this bide's. It reports the schema version before and after ("none" before the first
+It creates the tables (bide_steps, bide_leases, bide_events, bide_schema_version, bide_holds),
+the bide_next_seq_v1 and bide_redact_v3 functions and the lease indexes that are missing, and
+revokes EXECUTE on every older bide_redact function from PUBLIC and from the roles it was granted
+to, and does nothing else: it never alters or drops a table or replaces a function, it is
+idempotent, and it refuses a schema newer than this bide's. It reports the schema version before and after ("none" before the first
 migration), and what it created. With -dry-run it runs the migration in a transaction and rolls
 it back, printing the SQL: that shows what would be created and that the role may create it, and
 leaves nothing behind.
