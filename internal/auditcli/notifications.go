@@ -124,9 +124,9 @@ func (c *cli) notifications(args []string) {
 		if readOK {
 			if first, dup := from[x.RunID]; dup {
 				ok = c.note(duplicateJournal(first, p, x.RunID)) && ok
-				continue
+			} else {
+				from[x.RunID] = p
 			}
-			from[x.RunID] = p
 		}
 		in.Journals = append(in.Journals, x)
 	}
