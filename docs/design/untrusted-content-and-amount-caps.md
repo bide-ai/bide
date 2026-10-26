@@ -202,7 +202,7 @@ v0.23.0 does not taint or cap plan flow nodes. A flow node has no model turn to 
 - the flow YAML has no `caps:` or taint keys in v0.23.0;
 - a tool that carries caps cannot be a flow block: `plan.Registry.RegisterTool` and `Builder.Tool` refuse it with `ErrConfig` (a node's gate path is separate from `effectiveGates`, so the cap would otherwise be lost silently), and the flows guide says so.
 
-Decision 18 asks whether to specify flows for a later release; the recommendation is a separate note.
+Decision 18 asks whether to specify flows for a later release; the recommendation is a separate note, which is now written for taint: [taint in plan flows](flow-taint.md) (proposed; not implemented; caps for flows stay out of scope). The statements of this section stay true until that note is built.
 
 ## 6. First-class amount caps
 
