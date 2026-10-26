@@ -340,7 +340,11 @@ Two pieces make it work:
   the drawing (each node's block, each arm's predicate name, and every type with its package path in
   the `*_canonical` fields). `plan.JournaledTopology(records)` reads the record and checks its digest
   against `flow:digest`, so a reader (such as `bide view`) can draw the flow a run ran from its
-  journal alone and know the drawing is what ran. The record is informational: `Run`, resume,
+  journal alone and know the drawing is what ran. `plan.InspectTopology(t)` (v0.25.0) then reports
+  that `Topology` as `InspectConfig` would a config: its digest, its approval gates and which nodes
+  every path passes through a gate (`Safety` and `Assertions` are nil, since a topology carries
+  neither); it does not validate, so a dangling edge or a duplicate name is tolerated. `bide edit -run`
+  uses it for its comparison with a run. The record is informational: `Run`, resume,
   routing and recovery do not read it. A run started before this record existed has none.
 
 The flow, end to end:
@@ -418,7 +422,7 @@ release reads, exported as `plan.ConfigVersion`), a top-level `flow` name, optio
 documentation, an explicit `entry` (else `nodes[0]`), the `nodes`, and an ordered `wiring` list. Each
 wiring element is EITHER an edge `{"edge": [from, to]}` OR a switch
 `{"switch": over, "when": [{"pred": p, "to": t}], "else": t}`. An optional `assert` list states
-policy about the graph, which `Load` ignores (see [Policy assertions](#policy-assertions)). Every key is snake_case. Illustrative
+policy about the graph, which `Load` ignores (see [Policy assertions](#policy-assertions-the-assert-list)). Every key is snake_case. Illustrative
 YAML:
 
 ```yaml
