@@ -193,7 +193,7 @@ go run ./internal/tools/changelog check -base origin/main -head HEAD
 
 The core module and the library modules are released together under one version. Published
 modules, tagged `<dir>/vX.Y.Z` at every release: `govern`, `store/sqlite`, `store/postgres`, `mcptools`,
-`trace`, `codec/gcf`, `anchor/awss3`, `anchor/gcs`, `govern/sqlitelog`, `govern/redislog`, `govern/postgreslog`, `signer/pkcs11`, `signer/awskms`, `signer/azurekv`, `signer/gcpkms`, and the commands
+`trace`, `codec/gcf`, `flowedit`, `anchor/awss3`, `anchor/gcs`, `govern/sqlitelog`, `govern/redislog`, `govern/postgreslog`, `signer/pkcs11`, `signer/awskms`, `signer/azurekv`, `signer/gcpkms`, and the commands
 `cmd/bide`, `cmd/bide-anchor` (verifies the heads of the object-store anchors), `cmd/bide/bide-hsm` (installed from source with `go install`, never built into the release archives: it needs cgo) and `cmd/bide-view` (a stub that only points to `bide view`). Repo-only
 modules, never tagged: `examples/*`, `integration`, `benchmarks` and the test-only emulator modules (`signer/awskms/emulatortest`, `signer/gcpkms/emulatortest`, `cmd/bide/bide-hsm/emulatortest`, `cmd/bide/bide-hsm/azuretest`). The lists live in
 `scripts/release.sh`, and the Lint job fails if a module is in neither.
