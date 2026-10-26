@@ -531,16 +531,17 @@ groups are then compared with the text on the page:
   by a resume whatever the file says, and says so.
 - **same digest** (typed) or **no difference seen** (structural).
 - **another flow**: the runs are of another flow than the file's name when the editor opened it, so this file is not theirs. A flow
-  renamed in the editor still lists the runs of the flow it was.
+  renamed in the editor still lists the runs of the flow it was, as refused, and says why: a drive of a run under another flow is refused.
 - **not compared**, with the reason: which flow it is of, or its topology, could not be read; or the time budget of the structural
   comparison (10 s) was used.
 
-A run that has recorded no digest yet (including one that crashed between its topology and its digest) is not refused by the digest rule,
-because resume records the digest of whichever flow resumes it: such runs are counted and not read, apart from the rest. A file with
+A run with no `flow:digest` is either a flow run that has not recorded it yet (including one that crashed between its topology and its
+digest), which the digest rule does not refuse because resume records the digest of whichever flow resumes it, or a run that is not a flow run
+at all (an agent run has none): such runs are counted and not read, apart from the rest, and the panel says it cannot tell which. A file with
 errors has no typed digest, so the panel says it cannot compare and lists nothing as refused.
 
 The list says **at least** and **the first 5000 by run ID** when the store holds more unfinished runs than it reads; runs under a
-21st or later digest are counted and not compared; a scan that runs past a minute says where it stopped. The scan is shared by requests
+21st or later digest are counted and not compared; a scan that runs past a minute says where it stopped. The comparison of a text with a scan is made once (a structural comparison of many groups can take seconds), and the scan is shared by requests
 that arrive together, kept until you press **Read the store again**, and not repeated when you edit the text: editing only changes what
 it is compared with, and the page says when the list was made for text it no longer holds. For each group it shows the command to open
 its first run in the editor, `bide edit -run '<id>' <store flags> <file>`, quoted for a POSIX shell, and none for an ID that holds a
