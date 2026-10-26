@@ -233,8 +233,12 @@ func TestKillProfileStillKillsWhenTheScanOutlastsTheBudget(t *testing.T) {
 			killed = ctx.Err() == nil // it must start with time left
 			return nil
 		}
-		<-ctx.Done() // pgrep, as CommandContext ends it: killed, Run returns an error
-		return ctx.Err()
+		select { // pgrep, as CommandContext ends it: killed, Run returns an error
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Second): // a context that never ends would hang the test
+			return nil
+		}
 	}
 	killProfile("/tmp/bide-chrome-0123456789abcdef")
 	if !killed {
