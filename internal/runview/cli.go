@@ -319,6 +319,9 @@ func Main(args []string, stdout, stderr io.Writer, stores Stores) int {
 		return code
 	}
 	o, closer, err := options(f, stores)
+	if errors.Is(err, ErrDuplicateRun) {
+		return usage(err.Error())
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, es.ErrorPrefix()+"bide view:", err)
 		return 1

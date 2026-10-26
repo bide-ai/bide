@@ -1,8 +1,12 @@
 package runview
 
 import (
+	"bytes"
+	"errors"
 	"flag"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -78,5 +82,28 @@ func TestStoreFlagsOpen(t *testing.T) {
 	}
 	if _, ok := o.Source.(Exports); !ok {
 		t.Errorf("source %T", o.Source)
+	}
+}
+
+// Two exported journals of the same run are refused, naming both files: the later one would
+// otherwise replace the earlier with no sign, and a substituted export would pass as the run.
+func TestOpenRefusesTwoJournalsOfOneRun(t *testing.T) {
+	in := newCLIInputs(t)
+	dup := filepath.Join(in.dir, "copy.json")
+	b, err := os.ReadFile(in.journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dup, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = (StoreFlags{Journals: []string{in.journal, dup}}).Open(Stores{})
+	if !errors.Is(err, ErrDuplicateRun) || !strings.Contains(err.Error(), in.journal) || !strings.Contains(err.Error(), dup) || !strings.Contains(err.Error(), "g1") {
+		t.Fatalf("two exports of g1: %v", err)
+	}
+	// bide view treats it as a usage error.
+	var out, errb bytes.Buffer
+	if code := Main([]string{"-journal", in.journal, "-journal", dup}, &out, &errb, Stores{}); code != 2 || !strings.Contains(errb.String(), "g1") {
+		t.Errorf("bide view: exit %d, %q", code, errb.String())
 	}
 }

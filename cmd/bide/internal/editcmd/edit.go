@@ -151,6 +151,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, stores ru
 	}
 	if sf.Kinds() == 1 {
 		op, err := sf.Open(stores)
+		if errors.Is(err, runview.ErrDuplicateRun) {
+			return usage(err.Error())
+		}
 		if err != nil {
 			fmt.Fprintln(stderr, es.ErrorPrefix()+"bide edit:", err)
 			return 1
