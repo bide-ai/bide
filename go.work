@@ -9,7 +9,6 @@ use (
 	./cmd/bide/bide-hsm
 	./cmd/bide/bide-hsm/azuretest
 	./cmd/bide/bide-hsm/emulatortest
-	./cmd/bide-view
 	./codec/gcf
 	./examples/approval
 	./examples/govern

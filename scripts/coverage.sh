@@ -16,11 +16,11 @@
 # integration module are not measured; codecov.yml also ignores generated code.
 set -euo pipefail
 
-# The root module and every published module, less the deprecated cmd/bide-view. The list comes
+# The root module and every published module. The list comes
 # from release.sh, whose classification check (run by CI) fails when a module is in neither its
 # published nor its repo-only list, so a new published module cannot be left out of coverage.
 here=$(cd "$(dirname "$0")" && pwd)
-MODULES=". $("$here/release.sh" --list-published | grep -vx 'cmd/bide-view' | tr '\n' ' ')"
+MODULES=". $("$here/release.sh" --list-published | tr '\n' ' ')"
 
 [ "${1:-}" = --list ] && { echo $MODULES | tr ' ' '\n'; exit; }
 
