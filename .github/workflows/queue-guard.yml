@@ -5,7 +5,7 @@ name: Queue guard
 # but auto-merge stays on and queues the new commit as soon as its checks pass), so unreviewed code
 # could merge. This workflow turns auto-merge off and takes the pull request out of the merge
 # queue on every push, and says so in a comment: a push after queueing needs a new review and a
-# new queueing. It reads and writes nothing but the pull request it runs for, with GITHUB_TOKEN.
+# new queueing. It acts only on the pull request it runs for, with GITHUB_TOKEN, and checks nothing out.
 #
 # It runs on the pull request event only, so the merge queue's own branches (merge_group) never
 # start it. A pull request from a fork gets a read-only token and cannot have been queued by its
@@ -14,8 +14,9 @@ on:
   pull_request:
     types: [synchronize]
 
+# contents: write is what GitHub requires to disable auto-merge or dequeue (pull-requests: write is not enough).
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
 
 # One run per pull request; a newer push supersedes a run that has not finished.
