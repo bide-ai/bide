@@ -80,7 +80,7 @@ vet_system() { # GOOS
   printf 'module %s\n\ngo 1.27\n' "$DRIVER" > "$stub/go.mod"
   printf 'package sqlite\n' > "$stub/sqlite.go"
   real=$root/cross-vet.real.work; stubw=$root/cross-vet.stub.work
-  trap "rm -rf '$tmp' '$real' '$stubw'" RETURN
+  trap "rm -rf '$tmp' '$real' '$real.sum' '$stubw' '$stubw.sum'" RETURN
   # The go line is the repository's own (go.work): the modules require it, and a lower one is refused.
   local goline
   goline=$(awk '$1 == "go" { print $2; exit }' go.work 2>/dev/null || true)
