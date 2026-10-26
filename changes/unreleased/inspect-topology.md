@@ -1,3 +1,0 @@
-Section: Added
-
-`plan.InspectTopology(t Topology) ConfigReport` is the report of a declared `Topology` alone: its digest, its approval gates and which nodes every path to passes through a gate, computed by the code `InspectConfig` uses. It is for a tool that holds a topology and no config, such as the topology a run journaled (`JournaledTopology`). `Safety` and `Assertions` are nil, since a topology carries neither; it does not validate (a dangling edge or a duplicate name is tolerated), never panics, costs time linear in the nodes and edges, and shares no memory with its argument. This is the first step of the editor's "compare with a run" (docs/design/visual-editor.md, "Phase 4 design"); no command changes yet.

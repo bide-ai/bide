@@ -1,6 +1,6 @@
 # Design: m-of-n human approval
 
-Status: shipped (not yet released). Composes existing seams (durable approval + the quorum tally
+Status: shipped in v0.4.0. Composes existing seams (durable approval + the quorum tally
 semantics) into a k-of-n human gate. No new persistence model and no new executor. The user-facing
 guide is [docs/guides/hitl-approval.md](../guides/hitl-approval.md).
 
