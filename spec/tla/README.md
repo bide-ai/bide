@@ -3,7 +3,7 @@
 TLA+ models of bide's coordination protocols, written in PlusCal and checked with the TLC model
 checker. The plan and the reasoning behind it are in the design note
 [formal models of the coordination protocols](../../docs/design/formal-models.md);
-this directory holds models 1 (the claim protocol), 1b (the approval gate), 2 (the bide protocol's claim rules), 7 (flow semantics), 8 (spend accounting), 9 (the tool-call state machine), 10 (the run lifecycle and recovery), 11 (delegation, sub-run authority and saga trees) and 12 (sessions) of that plan, two design models: 13 (probes for unknown outcomes) and 14 (notifications), model 15 (approver identity: the counting, status, time and gate rules of the certificate-bound approver design) model 16 (the kill switch: the stop, the lift and the change of mode, and a call's read of them) and model 17 (the cap ledger: dense insert-once slots, the intent and the window, release and reconcile).
+this directory holds models 1 (the claim protocol), 1b (the approval gate), 2 (the bide protocol's claim rules), 7 (flow semantics), 8 (spend accounting), 9 (the tool-call state machine), 10 (the run lifecycle and recovery), 11 (delegation, sub-run authority and saga trees) and 12 (sessions) of that plan, a design model: 13 (probes for unknown outcomes); model 14 (notifications), which checks the shipped notifier; model 15 (approver identity: the counting, status, time and gate rules of the certificate-bound approver design) model 16 (the kill switch: the stop, the lift and the change of mode, and a call's read of them) and model 17 (the cap ledger: dense insert-once slots, the intent and the window, release and reconcile).
 
 What a model check establishes, stated narrowly: within the bounds a configuration states (drivers,
 processes, faults, attempt numbers), TLC explores every interleaving of the modelled rules and every
@@ -69,7 +69,7 @@ The workflow `.github/workflows/models.yml` has a plan job, **Models (plan)**, t
 (**Models (claims)** and the like), the required **Models** job, and **Models (nightly)**. On every
 pull request, in the merge queue and on pushes to main they run the self-test, the translation
 check, and every `ci`, `regress`, `finding` and `limit` configuration, four at a time (`TLC_JOBS=4`,
-one TLC worker each, on the 4-vCPU runner). The configurations run in ten parallel shard jobs, each
+one TLC worker each, on the 4-vCPU runner). The configurations run in twelve parallel shard jobs, each
 a set of configuration directories (`MODEL_SHARDS` in the workflow, passed as `TLC_DIRS`), and the
 **Models** job, the required check, fails unless every shard succeeded. A plan job fails first
 unless every `ci`, `regress`, `finding` and `limit` configuration is in exactly one shard

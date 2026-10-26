@@ -1,6 +1,6 @@
 # Design: tell a human when a run needs them
 
-Status: shipped in v0.16.0 (`agent.WithNotifier`, `agent.NotifyPending`, `plan.Builder.WithNotifier`, the `notify` package, TLA+ Model 14); `audit.VerifyNotifications` with `bide audit notifications` (build plan item 7) follows in the next release. The viewer's "Needs attention" view (item 8) is not built. It adds a
+Status: shipped in v0.16.0 (`agent.WithNotifier`, `agent.NotifyPending`, `plan.Builder.WithNotifier`, the `notify` package, TLA+ Model 14); `audit.VerifyNotifications` with `bide audit notifications` (build plan item 7) and the viewer's "Needs attention" view (item 8) shipped in v0.17.0. It adds a
 small `Notifier` seam, a signed webhook implementation, and an audited delivery trail that gives
 notify-once across crashes and makes the notification itself evidence. The recipe "Get notified when a run needs a human"
 wires the existing hooks to a webhook with an in-process dedupe; this note is the crash-safe,

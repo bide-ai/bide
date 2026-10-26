@@ -2,7 +2,7 @@
 
 Status: accepted, in progress. It expands the
 [roadmap item](../ROADMAP.md#formal-models-of-the-coordination-protocols) into a plan. Models 1,
-1b, 2, 7, 8, 9, 10, 11 and 12 (numbered as in `spec/tla/README.md`) are implemented in
+1b, 2, 7, 8, 9, 10, 11 and 12 of this plan (numbered as in `spec/tla/README.md`) are implemented, and models 13 to 17 were added later (13 is a design model; see the README) in
 [spec/tla](../../spec/tla/README.md) and checked by TLC on every pull request that changes them (all of them when it changes `check.sh`, `tools.lock`, the shard script or the Models workflow), and all of them in the merge queue and on main. M0, M1 and M4 (#125) are
 done; of M2, the regression configurations and the expected-violation check are done and the
 counterexample-to-test helper is not built yet; M3 and M5 are not started. The overview is
