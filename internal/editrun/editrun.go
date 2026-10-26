@@ -6,7 +6,8 @@ package editrun
 
 import "github.com/bide-ai/bide/internal/runview"
 
-// Run is the run to compare a file with: its ID and the read-only source its journal is read from. The
+// Run is the run to compare a file with: its ID and the read-only source its journal is read from. ID may be
+// empty: the store is then there for the list of its unfinished runs a change would refuse, and no run is compared. The
 // command opens the source (runview.StoreFlags.Open) and closes it after the editor stops.
 type Run struct {
 	ID     string

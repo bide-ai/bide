@@ -103,7 +103,7 @@ func (s *Server) serveRun(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("the text is larger than %d bytes", MaxFileSize))
 		return
 	}
-	if s.run == nil {
+	if s.run == nil || s.run.ID == "" { // no run: a store alone has only the list of unfinished runs
 		reply(w, &runReply{})
 		return
 	}

@@ -27,7 +27,6 @@ func TestRunFlagUsageErrors(t *testing.T) {
 		want string
 	}{
 		"-run alone":            {[]string{"-run", "r1", good}, "-run needs a store"},
-		"a store alone":         {[]string{"-db", "x.db", good}, "a store needs -run"},
 		"two kinds of store":    {[]string{"-run", "r1", "-db", "x.db", "-journal", "y.json", good}, "give exactly one of"},
 		"both postgres flags":   {[]string{"-run", "r1", "-postgres", "p", "-postgres-env", "V", good}, "not both"},
 		"a reserved run":        {[]string{"-run", agent.StopControlRun, "-journal", "y.json", good}, "reserved"},
@@ -131,3 +130,76 @@ func TestServesTheRunComparison(t *testing.T) {
 }
 
 func mustJSON(v any) []byte { b, _ := json.Marshal(v); return b }
+
+// A store without -run is allowed: the page has the list of unfinished runs and no run panel.
+func TestServesAStoreWithoutARun(t *testing.T) {
+	cfg := `{"version":1,"flow":"f","in":"int","out":"int","entry":"a","nodes":[{"name":"a","block":"a"}],"wiring":[]}`
+	reg := plan.NewRegistry()
+	if err := reg.RegisterStep("a", func(_ context.Context, n int) (int, error) { return n, nil }); err != nil {
+		t.Fatal(err)
+	}
+	fl, err := plan.Load[int, int]([]byte(cfg), reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j, err := agent.NewJournal(agent.NewMemStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fl.Run(context.Background(), j, "r1", 1); err != nil {
+		t.Fatal(err)
+	}
+	exp, err := audit.ExportJournal(context.Background(), j, "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(exp)
+	export := write(t, "r1.json", string(b))
+	file := write(t, "f.json", cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var out syncBuffer
+	done := make(chan int, 1)
+	go func() {
+		done <- run(ctx, []string{"-addr", "127.0.0.1:0", "-color", "never", "-journal", export, file}, &out, io.Discard, runview.Stores{})
+	}()
+	re := regexp.MustCompile(`serving (http://127\.0\.0\.1:\d+)/#t=([0-9a-f]{32}) `)
+	var m []string
+	for i := 0; i < 400 && m == nil; i++ {
+		m = re.FindStringSubmatch(out.String())
+		time.Sleep(10 * time.Millisecond)
+	}
+	if m == nil {
+		t.Fatalf("no address in %q", out.String())
+	}
+	ask := func(path, body string) string {
+		req, _ := http.NewRequest("POST", m[1]+path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Origin", m[1])
+		req.Header.Set("X-Bide-Token", m[2])
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		var buf bytes.Buffer
+		_, _ = buf.ReadFrom(res.Body)
+		return buf.String()
+	}
+	if got := ask("/api/run", `{"text":""}`); !strings.Contains(got, `"configured":false`) {
+		t.Errorf("a store without a run has a run panel: %s", got)
+	}
+	if got := ask("/api/affected", `{"text":`+string(mustJSON(cfg))+`,"check":true}`); !strings.Contains(got, `"configured":true`) || !strings.Contains(got, `"checked":true`) {
+		t.Errorf("no list of unfinished runs: %s", got)
+	}
+	cancel()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Errorf("exit %d after a clean stop", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("did not stop")
+	}
+}

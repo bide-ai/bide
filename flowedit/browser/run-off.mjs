@@ -8,7 +8,8 @@ let out;
 try {
   const page = await browser.newPage();
   let asked = 0;
-  page.on('request', (r) => { if (r.url().endsWith('/api/run')) asked++; });
+  let askedAffected = 0;
+  page.on('request', (r) => { if (r.url().endsWith('/api/run')) asked++; if (r.url().endsWith('/api/affected')) askedAffected++; });
   await page.goto(env.PAGE_URL, { waitUntil: 'networkidle0', timeout: 30000 });
   const atRest = () => page.waitForFunction(() => document.documentElement.dataset.busy === '0', { timeout: 30000 });
   await atRest();
@@ -17,7 +18,7 @@ try {
     await new Promise((r) => setTimeout(r, 600));
     await atRest();
   }
-  out = { ok: true, hidden: await page.$eval('#run-panel', (e) => e.hidden), asked };
+  out = { ok: true, hidden: await page.$eval('#run-panel', (e) => e.hidden), affectedHidden: await page.$eval('#affected-panel', (e) => e.hidden), lineHidden: await page.$eval('#run-line', (e) => e.hidden), asked, askedAffected };
 } catch (e) {
   out = { ok: false, error: String(e && e.message || e) };
 }

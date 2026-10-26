@@ -109,3 +109,10 @@ dialog h2 { margin-top: 0; }
 .rl-word.v-good { border-color: var(--good); }
 .rl-word.v-warn { border-color: var(--warn); }
 .rl-word.v-bad { border-color: var(--bad); }
+.afftable { width: 100%; border-collapse: collapse; margin: var(--s3) 0; }
+.afftable caption { text-align: left; font-weight: 700; padding: var(--s1) 0; }
+.afftable th, .afftable td { text-align: left; vertical-align: top; padding: var(--s1) var(--s2); border-bottom: 1px solid var(--line); }
+.afftable thead th { border-bottom: 2px solid var(--line-strong); }
+.afftable td:nth-child(2) { text-align: right; }
+.mono { font-family: var(--mono); font-size: var(--t-xs); }
+.wrapany { overflow-wrap: anywhere; }

@@ -346,7 +346,7 @@ Exit status:
 A local page for a flow config: the graph, the approval gates, the assertions, and what an edit weakens; edit the source and save.
 
 ```text
-usage: bide edit [-addr <host:port>] [-base <git revision>] [-blocks <description.json>] [-run <id> (-db <file> | -postgres <dsn> | -postgres-env <VAR> | -journal <export.json>)] [-theme <theme.json>] [-theme-default <name>] [-color auto|always|never] <flow.yaml|flow.json>
+usage: bide edit [-addr <host:port>] [-base <git revision>] [-blocks <description.json>] [-run <id>] [-db <file> | -postgres <dsn> | -postgres-env <VAR> | -journal <export.json>] [-theme <theme.json>] [-theme-default <name>] [-color auto|always|never] <flow.yaml|flow.json>
 
 Opens a local page for one flow config: the declared graph, an outline of its nodes and wiring,
 each node's approval gate and safety, the assertions and their verdicts, the problems bide check
@@ -368,7 +368,12 @@ and, when it differs, what differs, by what the digest covers (flow name, entry,
 switch arms, gates when the blocks are known, and their order). That is a comparison of topologies and
 nothing more: it does not say the run followed the file, which is conformance (bide view). A run that
 is paused under a topology the file no longer has will not resume under the file. The page reads the
-run once and again only when you press Reload run.
+run once and again only when you press Reload run. With a store, with or without -run, the page's button,
+Check unfinished runs, lists the store's unfinished runs by the digest each recorded and says which a drive
+under this file (resume, recovery or restart) would refuse by the digest rule: a run whose digest is the
+file's is not refused, a run of another flow is counted apart, and a run that has recorded no digest yet is
+counted and not read. It reads one small record per run (at most 5000 runs, the first by run ID) and never a
+history.
 
 The page draws from checked themes: light, dark and high-contrast, which its header button steps
 through, and the system's request for more contrast or forced colors is answered as bide view answers
@@ -408,7 +413,7 @@ A save is refused, and writes nothing, if the file changed on disk since the pag
   -postgres-env string
     	name of the environment variable that holds the Postgres DSN, instead of -postgres: keeps the password out of the argument list, and is the name the Needs attention list's bide approve commands use
   -run string
-    	a run of the journal to compare the file with: the topology it journaled, and what differs from the file (needs one of -db, -postgres, -postgres-env, -journal)
+    	a run of the journal to compare the file with: the topology it journaled, and what differs from the file (needs one of -db, -postgres, -postgres-env, -journal; a store without -run is for the list of unfinished runs)
   -theme string
     	a theme file (JSON, see docs/guides/themes.md; check it first with bide theme check) the pages offer beside light, dark and high-contrast; refused, with the failed checks, and nothing served, if it is not valid or fails a contrast, distinctness or polarity check (C1 to C4, C8); the colour-blindness check (C6) only prints a warning
   -theme-default string
