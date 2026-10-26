@@ -438,7 +438,7 @@ Typed mode removes the unknown, because the gates are then known on both sides.
 The viewer already draws a flow run's declared topology, taken from the journal after its digest
 is checked against `flow:digest`, with the path the run took and a conformance card
 (`docs/guides/run-viewer.md`, "CONFORMANCE"). The editor adds the question the author has: how does
-the file I am editing differ from the flow a run actually used? In a later phase, `bide edit -run
+the file I am editing differ from the flow a run actually used? Since v0.25.0 (phase 4), `bide edit -run
 <id> -db ...` loads the run's journaled topology as a second baseline and shows the same diff the
 config diff page shows (added, removed and changed nodes, weakened gates), with the run's path
 drawn on the current canvas. That tells an author, before merging, which in-flight runs a change

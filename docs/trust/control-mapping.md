@@ -107,7 +107,7 @@ A runtime does not validate models. It can make the evidence for inventory, moni
 | Gap | Status | Link |
 |---|---|---|
 | An RFC 3161 timestamp-authority anchor | In progress. Coalescing of anchored heads is `WithMinInterval` ([audit guide](../guides/audit.md#bounding-how-often-heads-are-published-withmininterval)). The S3 Object Lock anchor (`anchor/awss3`) is covered above, untested against AWS | [Anchoring](../guides/anchoring.md), [Known limitations](../KNOWN-LIMITATIONS.md#anchoring), [roadmap](../ROADMAP.md#bank-readiness) |
-| Kill switch | On main. `bide stop` (set, list, lift, audited with a lift quorum), `bide audit stops`, the `bide view` banner, and the notifications (`stop_set`, `stop_lifted`) with `bide audit notifications` checking that each was told | [Kill switch guide](../guides/kill-switch.md), [roadmap](../ROADMAP.md) |
+| Kill switch | Shipped in v0.21.0. `bide stop` (set, list, lift, audited with a lift quorum), `bide audit stops`, the `bide view` banner, and the notifications (`stop_set`, `stop_lifted`) with `bide audit notifications` checking that each was told | [Kill switch guide](../guides/kill-switch.md) |
 | Independent time: RFC 3161 is not yet used by any gate, endpoint or command | Verifier exists; wiring left | [Roadmap](../ROADMAP.md#bank-readiness), [known limitations](../KNOWN-LIMITATIONS.md#audit-and-proofs) |
 | External security review | Not done; no third party has assessed bide | [Threat model](threat-model.md#what-bide-does-not-address-in-one-list) |
 | A second person's signed authorization of an erasure, erasure of session transcripts and event-store copies | Designed, not built ([design](../design/journal-redaction.md)) | [Retention guide](../guides/retention.md#erasing-personal-data) |
