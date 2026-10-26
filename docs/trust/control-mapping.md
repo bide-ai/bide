@@ -112,7 +112,7 @@ A runtime does not validate models. It can make the evidence for inventory, moni
 | External security review | Not done; no third party has assessed bide | [Threat model](threat-model.md#what-bide-does-not-address-in-one-list) |
 | A second person's signed authorization of an erasure, erasure of session transcripts and event-store copies | Designed, not built ([design](../design/journal-redaction.md)) | [Retention guide](../guides/retention.md#erasing-personal-data) |
 | Hardware HSM trial | Left | [Roadmap](../ROADMAP.md#bank-readiness) |
-| Keys issued through an institution's SSO | Left | [Roadmap](../ROADMAP.md#bank-readiness) |
+| Keys issued through an institution's SSO | A tested recipe (v0.21.0): step-ca with an OIDC provisioner issues short-lived approver certificates after the login; bide builds no SSO, identity provider or CA | [SSO certificates guide](../guides/sso-certificates.md) |
 | Passkey (WebAuthn) approvals | Left | [Roadmap](../ROADMAP.md#notifications-and-approvals) |
 | Journal format tag final value | Waits for 1.0; before then a verifier reads only the current format | [Stability](stability.md) |
 
