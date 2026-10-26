@@ -7,8 +7,8 @@
 # the list fails there; this script also fails on a listed directory that is not a module and on an
 # empty list.
 #
-# Four systems cannot build the SQLite driver: modernc.org/libc has no files for dragonfly, solaris and
-# aix, and illumos lacks symbols. Every package that imports modernc.org/sqlite, however far down
+# Six systems cannot build the SQLite driver: modernc.org/libc has no files for dragonfly, solaris, aix,
+# plan9 and js, and illumos lacks symbols. Every package that imports modernc.org/sqlite, however far down
 # (cmd/bide's main package among them), would then not type-check, and that is not bide's code. So on
 # those systems the driver is replaced, by a workspace replace, with an empty package of the same
 # import path: the packages that only blank-import it (as store/sqlite does, to register the database/sql
@@ -27,7 +27,7 @@
 #   .github/scripts/cross-vet.sh --self-test   prove the failures above are caught
 set -euo pipefail
 
-NO_LIBC="dragonfly solaris illumos aix"
+NO_LIBC="dragonfly solaris illumos aix plan9 js"
 LIBC=modernc.org/libc
 DRIVER=modernc.org/sqlite
 
@@ -54,10 +54,9 @@ list_split() {
 }
 
 vet_system() { # GOOS
-  local os=$1 arch dir m vetted=0 root
+  local os=$1 arch dir m vetted=0
   arch=$(arch_of "$os")
   [ -n "${MODULES:-}" ] || { echo "::error::MODULES is empty"; return 1; }
-  root=$(pwd)
   for m in $MODULES; do
     [ -f "$m/go.mod" ] || { echo "::error::module $m is in MODULES but $m/go.mod does not exist"; return 1; }
   done
@@ -88,7 +87,7 @@ vet_system() { # GOOS
   done
   printf '\nreplace %s => %s\n' "$DRIVER" "$stub" >> "$stubw"
 
-  local libc_total=0 left_total=0 probe="" probe_dir="" probe_is_left=false n_clean n_left
+  local libc_total=0 left_total=0 probe="" probe_dir="" n_clean n_left
   for m in $MODULES; do
     list_split "$real" "$m" "$tmp/real" # the host, the real driver
     list_split "$stubw" "$m" "$tmp/stub" # the host, the stand-in
@@ -107,7 +106,7 @@ vet_system() { # GOOS
     n_clean=$(grep -c . "$tmp/clean" || true); n_left=$(grep -c . "$tmp/stub.bad" || true)
     left_total=$((left_total + n_left))
     if [ -z "$probe" ]; then
-      if [ "$n_left" -gt 0 ]; then probe=$(head -1 "$tmp/stub.bad"); probe_dir=$m; probe_is_left=true
+      if [ "$n_left" -gt 0 ]; then probe=$(head -1 "$tmp/stub.bad"); probe_dir=$m
       elif [ -s "$tmp/real.libc" ]; then probe=$(head -1 "$tmp/real.libc"); probe_dir=$m; fi
     fi
     echo "== vet $m ($os/$arch): $n_clean packages; left out: $n_left that use the driver's API"

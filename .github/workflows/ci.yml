@@ -548,12 +548,12 @@ jobs:
           path: ${{ steps.gocache.outputs.paths }}
           key: go-${{ runner.os }}-windows-${{ github.sha }}
 
-  # go vet of every module for ten systems that CI does not run on (cross-vet.sh): it type-checks the
+  # go vet of every module for twelve systems that CI does not run on (cross-vet.sh): it type-checks the
   # packages and their tests for the system, so a syscall, a constant or a build tag that exists on the
   # systems the author uses and not on another fails here (2026-10: Mkfifo and Flock on Solaris and
-  # illumos, Kill and ECONNRESET on Plan 9). Nothing is run. Four systems cannot build the SQLite driver
-  # (modernc.org/libc), so there the packages that import it are left out, derived from `go list` and
-  # counted in the log; the script fails if that set is empty or no longer needed. The job runs where
+  # illumos, Kill and ECONNRESET on Plan 9). Nothing is run. Six systems cannot build the SQLite driver
+  # (modernc.org/libc), so there it is replaced by an empty stand-in and the packages that use its API
+  # are left out, derived from `go list` and named in the log; the script fails if that set is stale. The job runs where
   # macOS and Integration run (the merge queue, main, a pull request with the full-ci label).
   # Not a required check: making it one is a branch protection change for the repository owner, to be
   # decided once it has run green for a while.
@@ -566,7 +566,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        goos: [linux, darwin, windows, freebsd, netbsd, openbsd, dragonfly, solaris, illumos, aix]
+        goos: [linux, darwin, windows, freebsd, netbsd, openbsd, dragonfly, solaris, illumos, aix, plan9, js]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
