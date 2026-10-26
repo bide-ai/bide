@@ -1,0 +1,40 @@
+go 1.27.0
+
+use (
+	./.
+	./mcptools
+	./trace
+	./flowedit
+	./store/sqlite
+	./store/postgres
+	./govern
+	./govern/redislog
+	./govern/sqlitelog
+	./govern/postgreslog
+	./codec/gcf
+	./anchor/awss3
+	./anchor/gcs
+	./signer/pkcs11
+	./signer/awskms
+	./signer/azurekv
+	./signer/gcpkms
+	./signer/gcpkms/emulatortest
+	./signer/awskms/emulatortest
+	./cmd/bide
+	./cmd/bide-anchor
+	./cmd/bide/bide-hsm
+	./cmd/bide/bide-hsm/emulatortest
+	./cmd/bide/bide-hsm/azuretest
+	./cmd/bide-view
+	./examples/approval
+	./examples/plan
+	./examples/mcp
+	./examples/observability
+	./examples/govern
+	./examples/stripe-refund
+	./examples/sso-certs
+	./examples/hsm-signing
+	./integration
+)
+
+replace modernc.org/sqlite => /var/folders/v4/g5t7m0fd3lv7fpy9qbht9kk00000gn/T/tmp.Xoeb5uN89s/stub
