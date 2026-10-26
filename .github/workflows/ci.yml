@@ -245,6 +245,7 @@ jobs:
           # A push to main is classified only when it is one commit on top of its before SHA; the
           # self-test proves a multi-commit, forced, first or unreachable-before push is not.
           .github/scripts/push-files.sh --self-test
+          .github/scripts/cross-vet.sh --self-test
       - name: Every module is published or repo-only
         if: needs.changes.outputs.code != 'false'
         run: |
@@ -546,6 +547,47 @@ jobs:
         with:
           path: ${{ steps.gocache.outputs.paths }}
           key: go-${{ runner.os }}-windows-${{ github.sha }}
+
+  # go vet of every module for ten systems that CI does not run on (cross-vet.sh): it type-checks the
+  # packages and their tests for the system, so a syscall, a constant or a build tag that exists on the
+  # systems the author uses and not on another fails here (2026-10: Mkfifo and Flock on Solaris and
+  # illumos, Kill and ECONNRESET on Plan 9). Nothing is run. Four systems cannot build the SQLite driver
+  # (modernc.org/libc), so there the packages that import it are left out, derived from `go list` and
+  # counted in the log; the script fails if that set is empty or no longer needed. The job runs where
+  # macOS and Integration run (the merge queue, main, a pull request with the full-ci label).
+  # Not a required check: making it one is a branch protection change for the repository owner, to be
+  # decided once it has run green for a while.
+  cross-vet:
+    name: Vet (${{ matrix.goos }})
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.heavy != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [linux, darwin, windows, freebsd, netbsd, openbsd, dragonfly, solaris, illumos, aix]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27'
+          cache: false # the go-cache action below restores the build cache
+      - uses: ./.github/actions/go-cache
+        id: gocache
+        with:
+          name: vet-${{ matrix.goos }}
+      - name: Every module is in MODULES
+        run: .github/scripts/check-modules.sh .
+      - name: go vet (all modules, ${{ matrix.goos }})
+        run: .github/scripts/cross-vet.sh "${{ matrix.goos }}"
+      # Only a push to main saves the cache: a cache saved on a pull request or a merge queue branch
+      # is not readable by other runs, and would only evict the useful ones.
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: github.event_name == 'push'
+        with:
+          path: ${{ steps.gocache.outputs.paths }}
+          key: go-${{ runner.os }}-vet-${{ matrix.goos }}-${{ github.sha }}
 
   # Go's FIPS 140-3 mode: the modules' Go tests with GODEBUG=fips140=only, built against Go's in-tree
   # cryptographic module (GOFIPS140=off) and its frozen modules v1.26.0 (ML-DSA works) and v1.0.0 (no
