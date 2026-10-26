@@ -210,7 +210,7 @@ for ev := range stream.Events() {
 res, err := stream.Result() // what Run returns: the Result and an error (incl. a pause: *ApprovalPending, *OutcomeUnknown, ...)
 ```
 
-घटनाएँ: `TurnStarted`, `ModelEvent` (टोकन फ़ीड), `TurnRestarted`, `AssistantTurn`, `ToolStarted` / `ToolCompleted`, `ApprovalRequired`, `Finished`। एक UI के लिए `Events()` पर रेंज करें फिर `Result()` को कॉल करें, या अकेले `Result()` कॉल करें ताकि यह ठीक `Run` की तरह व्यवहार करे (यह आपके लिए घटनाओं को निकाल देता है)।
+घटनाएँ: `TurnStarted`, `ModelEvent` (टोकन फ़ीड), `TurnRestarted`, `AssistantTurn`, `ToolStarted` / `ToolCompleted`, `ApprovalRequired`, `Finished`। एक UI के लिए `Events()` पर रेंज करें फिर `Result()` को कॉल करें, या अकेले `Result()` कॉल करें ताकि यह ठीक `Run` की तरह व्यवहार करे (यह आपके लिए घटनाओं को निकाल देता है)। `ToolStarted` टूल को बुलाए जाने से ठीक पहले फ़ायर होता है, इसलिए जो कॉल शुरू होने से पहले रद्द हो गई (और शुरू नहीं हुई के रूप में दर्ज हुई) वह न `ToolStarted` उत्सर्जित करती है न `ToolCompleted`।
 
 दो बातें जानने योग्य, दोनों टिकाऊपन के परिणाम:
 - **टोकन डेल्टा middleware शृंखला के नीचे पहुँचते हैं** (Retry / Cost फिर भी पूरे संयोजित संदेश देखते हैं), और **केवल एक ताज़ा मॉडल कॉल पर**। एक ट्रन का एक ही अनुरोध एक समय में स्ट्रीम होता है। जब Retry जैसी कोई middleware ऐसे प्रयास के बाद मॉडल को फिर बुलाती है जो पहले ही डेल्टा स्ट्रीम कर चुका था, या ट्रन का उत्तर वह नहीं है जो स्ट्रीम हुआ (Hedge का बैकअप जीता, किसी फ़ॉलबैक या कैश ने उत्तर दिया), तो `TurnRestarted` उन डेल्टा को रद्द किए गए के रूप में चिह्नित करता है, और ट्रन जो उत्तर रिकॉर्ड करता है वह उसके बाद आता है: उसके आने पर ट्रन का टेक्स्ट साफ़ कर दें। इसके लिए middleware में कोई स्ट्रीमिंग कोड नहीं होता; एजेंट यह करता है।

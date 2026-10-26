@@ -247,7 +247,7 @@ res, err := stream.Result() // what Run returns: the Result and an error (incl. 
 
 الأحداث: `TurnStarted`، `ModelEvent` (تغذية الرموز)، `TurnRestarted`، `AssistantTurn`، `ToolStarted` / `ToolCompleted`،
 `ApprovalRequired`، `Finished`. مرِّر على `Events()` لأجل واجهة ثم استدعِ `Result()`، أو استدعِ `Result()`
-وحدها لتتصرّف تمامًا كـ `Run` (تستنزف الأحداث نيابةً عنك).
+وحدها لتتصرّف تمامًا كـ `Run` (تستنزف الأحداث نيابةً عنك). يُطلَق `ToolStarted` مباشرةً قبل استدعاء الأداة، فالنداء الذي يُلغى قبل أن يبدأ (ويُسجَّل بأنه لم يبدأ) لا يُصدر `ToolStarted` ولا `ToolCompleted`.
 
 شيئان جديران بالمعرفة، وكلاهما نتيجة للمعمورية:
 - **فروق الرموز تصل أسفل سلسلة الـ middleware** (يظل Retry / Cost يريان الرسائل المُجمَّعة كاملة)،
