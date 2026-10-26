@@ -18,7 +18,6 @@ import (
 	"regexp"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -1598,7 +1597,7 @@ func TestCapsAudit_AStoreErrorEndsTheAuditWithExit4(t *testing.T) {
 		"deadline":        fmt.Errorf("query: %w (%w)", context.DeadlineExceeded, agent.ErrStorage),
 		"closed":          fmt.Errorf("query: %w (%w)", net.ErrClosed, agent.ErrStorage),
 		"cancelled":       fmt.Errorf("query: %w (%w)", context.Canceled, agent.ErrStorage),
-		"reset":           fmt.Errorf("query: %w (%w)", syscall.ECONNRESET, agent.ErrStorage),
+		"reset":           fmt.Errorf("query: %w (%w)", &net.OpError{Op: "read", Net: "tcp", Err: errors.New("connection reset by peer")}, agent.ErrStorage),
 	} {
 		for _, where := range []string{"a run", "the ledger"} {
 			e := threeCalls(t)

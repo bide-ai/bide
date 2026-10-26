@@ -1,6 +1,6 @@
-//go:build !windows
+//go:build !windows && !plan9
 
-package demo
+package runview
 
 import (
 	"os"

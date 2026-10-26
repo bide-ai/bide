@@ -570,17 +570,21 @@ func TestRelayStateFileSurvivesARestart(t *testing.T) {
 // machine actively refused it" and reports WSAECONNREFUSED (10061), Unix says "connection refused"
 // with ECONNREFUSED; the test builds both shapes, so it checks the Windows path on any OS.
 func TestConnectionRefusedIsRecognizedByErrnoNotByOSText(t *testing.T) {
-	for name, errno := range map[string]error{
-		"unix":    syscall.ECONNREFUSED,
-		"windows": syscall.Errno(10061),
-	} {
+	shapes := map[string]error{"unix": errConnRefused}
+	if refusedByErrno {
+		shapes["windows"] = syscall.Errno(10061) // not an error number anywhere else, and not worded
+	}
+	for name, errno := range shapes {
 		wrapped := fmt.Errorf("notify: POST to 127.0.0.1:1 failed: %w", &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connectex", errno)})
 		got := hint(notify.ProbeResult{}, wrapped)
 		if !strings.Contains(got, "nothing is listening") {
 			t.Errorf("%s: hint %q", name, got)
 		}
 	}
-	// Other errors, however they are worded, are not taken for a refusal.
+	// Other errors, however they are worded, are not taken for a refusal (where the number is the rule).
+	if !refusedByErrno {
+		return
+	}
 	if got := hint(notify.ProbeResult{}, errors.New("connection refused by the proxy policy")); strings.Contains(got, "nothing is listening") {
 		t.Errorf("a message with the words, but no errno, was taken for a refused connection: %q", got)
 	}
