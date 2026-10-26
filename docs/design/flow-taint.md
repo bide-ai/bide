@@ -3,7 +3,7 @@
 Status: proposed. The maintainer approved the direction (taint coverage in the visual editor, which needs a
 run-time rule for flows first) and decided the open questions on 2026-10-26: what a node has read is the
 run-level rule, a tighten-only per-node `untrusted:` config key is in, a node's own gate does not cover taint
-exposure, and an opt-in disjoint-approvers check is in (the name is not yet approved). Section 10 lists them.
+exposure, and an opt-in disjoint-approvers check is in (the field name `TaintPolicy.SeparateApprovers` was approved on 2026-10-26). Section 10 lists them.
 Nothing here is built. Written against `main` at aab4f530 (v0.25.0). It resolves decision 18 of the
 [untrusted content and amount caps note](untrusted-content-and-amount-caps.md) (section 5.9: "specify taint
 and caps for flow nodes in a separate note"), for taint; caps for flows stay out of scope. Where it says what
@@ -211,12 +211,12 @@ a child whose context carries no under-taint status. So, as a requirement of PR 
   it brings nothing up (no sink consulted then).
 - Not in this cut: folding the child's journal at `SubRunID(run, nodeKey)`.
 
-**Disjoint approvers (decision 8: opt-in; the name awaits approval).** Without it nothing stops one approver
+**Disjoint approvers (decision 8: opt-in).** Without it nothing stops one approver
 approving both `node:x` and `node:x:taint`, so the intended second look can be one person. A decision for one
 instance cannot count for the other (the signature binds the subject key, `staleDecision`,
 `agent/flowgate.go:99`, once the subject parsers recognise the key); this is about the person.
 
-- Shape: a field of the policy, `TaintPolicy.SeparateApprovers bool` (alternative name: `DisjointApprovers`),
+- Shape: a field of the policy, `TaintPolicy.SeparateApprovers bool` (approved name),
   not a plan-only option and not a config key. The same weakness exists for an agent (a tool's own gate and
   its `<call>#taint` instance), a plan-only option would leave agents without the control, and
   `plan.WithTaintPolicy` already takes `agent.TaintPolicy`. Cost: one exported field on an agent type and an
@@ -528,8 +528,7 @@ Decided by the maintainer on 2026-10-26, or accepted as recommended:
 7. An agent-wrapping block is shown as gated by its own agent's policy, in typed mode only, when the
    description can say so.
 8. an opt-in check that the node gate's and the taint gate's approvers are disjoint (A2, "Disjoint
-   approvers"). The shape is proposed there; the field name (`SeparateApprovers`, or `DisjointApprovers`) is
-   not yet approved.
+   approvers"). The shape and the field name, `TaintPolicy.SeparateApprovers`, are approved.
 9. a node's own approval gate does not cover taint exposure.
 
 New exported names (A6, section 7): `plan.Untrusted`, `plan.Trusted`, `plan.TaintExempt`,
