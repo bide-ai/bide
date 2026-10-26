@@ -195,3 +195,24 @@ func TestKillProfileStopsAtItsDeadline(t *testing.T) {
 		t.Fatalf("%d pgrep/pkill calls inside a 500ms budget", calls)
 	}
 }
+
+// A scan that hangs is cut off with the rest of the budget: the context given to pgrep and pkill ends
+// when the budget does.
+func TestKillProfileCutsOffAHungScan(t *testing.T) {
+	oldWait, oldRun := profileWait, runTool
+	defer func() { profileWait, runTool = oldWait, oldRun }()
+	profileWait = 300 * time.Millisecond
+	cutOff := false
+	runTool = func(ctx context.Context, name string, args ...string) error {
+		select {
+		case <-ctx.Done():
+			cutOff = true
+		case <-time.After(5 * time.Second): // a scan that never ends
+		}
+		return nil
+	}
+	killProfile("/tmp/bide-chrome-0123456789abcdef")
+	if !cutOff {
+		t.Errorf("a hung pgrep was not cut off when the budget ended")
+	}
+}
