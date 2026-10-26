@@ -9,7 +9,12 @@ name: Queue guard
 #
 # It acts only on the pull request it runs for, with GITHUB_TOKEN, and checks nothing out. It runs
 # on the pull request event only, so the merge queue's own branches (merge_group) never start it.
-# A pull request from a fork gets a read-only token and is skipped.
+# A pull request from a fork, and one opened by Dependabot, gets a read-only token that cannot
+# disable auto-merge, so both are skipped rather than failed red.
+#
+# Limit: pull_request runs the workflow file as it exists in the pushed commit, so a push that
+# edits or deletes this file escapes the guard. Only an author with write access can do that, on
+# purpose; the guard stops the mistaken push, not that one.
 on:
   pull_request:
     types: [synchronize]
@@ -28,7 +33,7 @@ concurrency:
 jobs:
   guard:
     name: Queue guard
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
