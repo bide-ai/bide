@@ -814,7 +814,7 @@ completion_reports:
         notes: 'INTERFACE DEVIATION (per brief constraint): tallyApprovals(recs []Record, runID, toolUseID string, need int, approvers []string, verifierFor ApproverVerifierFor) ApprovalTally, not *ApprovalPolicy; Agent C passes policy.Need, policy.Approvers. Added Record.Approver/Signature, ApproveAs (step key approval:<tool>:<approver>, ErrConfig on empty runID/toolUseID/approverID), ApprovalTally, PendingApproval.Quorum, ApproverVerifier, ApproverVerifierFor, ApprovalDecisionBytes (prefix bide.approval.v1 newline + uint32 BE length-prefixed runID/toolUseID/approverID + 1 byte approved). Approve unchanged. tallyApprovals skips legacy 1-of-1 key, requires rec.Approver == name suffix and rec.ToolUseID match, nil verifierFor counts nothing, Pending in policy order deduped. Sanity-tested with a throwaway test (not committed); thorough tests left to Agent C.'
     C:
         status: complete
-        worktree: /Users/dayna/code/go-agents/.claude/worktrees/polywave/mofn-approval/wave2-agent-C
+        worktree: .claude/worktrees/polywave/mofn-approval/wave2-agent-C
         branch: polywave/mofn-approval/wave2-agent-C
         commit: 094c5d1
         files_changed:

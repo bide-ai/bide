@@ -1290,11 +1290,11 @@ v1 questions now resolved, and not asked again:
 - **Recommendation:** ship core 1.0 with govern at v0.x, stated in the README. Governance users then accept v0 churn explicitly, and the core promise does not wait on another project's schedule.
 
 **Critical files for implementation**
-- /Users/dayna/code/go-agents/agent/store.go (becomes journal.go, memstore.go, record.go, step.go and halt.go)
-- /Users/dayna/code/go-agents/agent/agent.go (becomes loop.go, toolexec.go, generate.go and runctx.go)
-- /Users/dayna/code/go-agents/agent/modelcall.go
-- /Users/dayna/code/go-agents/audit/merkle.go (raw-byte leaves) and /Users/dayna/code/go-agents/audit/sth.go (STH v5)
-- /Users/dayna/code/go-agents/plan/flow.go
+- agent/store.go (becomes journal.go, memstore.go, record.go, step.go and halt.go)
+- agent/agent.go (becomes loop.go, toolexec.go, generate.go and runctx.go)
+- agent/modelcall.go
+- audit/merkle.go (raw-byte leaves) and audit/sth.go (STH v5)
+- plan/flow.go
 ## 13. Decision: generic methods (maintainer, 2026-09-30)
 
 Use Go 1.27 generic methods wherever a generic function has a natural receiver of a concrete type:
