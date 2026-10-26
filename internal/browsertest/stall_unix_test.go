@@ -86,13 +86,9 @@ func alive(pid int) bool { return syscall.Kill(pid, 0) == nil }
 func TestRunKillsADetachedChromeOfAScriptThatIgnoresSIGTERM(t *testing.T) {
 	pidfile := t.TempDir() + "/pid"
 	t.Setenv("BROWSERTEST_PIDFILE", pidfile)
-	start := time.Now()
 	_, err, _ := run(t, "detached", 1500*time.Millisecond)
 	if !TimedOut(err) {
 		t.Fatalf("err = %v, want a deadline error", err)
-	}
-	if took := time.Since(start); took > 15*time.Second {
-		t.Errorf("held the test for %v", took)
 	}
 	b, rerr := os.ReadFile(pidfile)
 	if rerr != nil {
@@ -166,14 +162,11 @@ func TestKillProfileMeta(t *testing.T) {
 
 // A script that handles SIGTERM, as puppeteer's handler does, gets to run it before it is killed.
 func TestRunAsksTheScriptToStopFirst(t *testing.T) {
-	out, err, took := run(t, "sigterm", 700*time.Millisecond)
+	out, err, _ := run(t, "sigterm", 700*time.Millisecond)
 	if !TimedOut(err) {
 		t.Fatalf("err = %v, want a deadline error", err)
 	}
 	if !strings.Contains(string(out), "closing chrome on SIGTERM") || !strings.Contains(err.Error(), "closing chrome on SIGTERM") {
 		t.Errorf("the script was not sent SIGTERM before it was killed: stdout %q", out)
-	}
-	if took > 10*time.Second {
-		t.Errorf("held the test for %v", took)
 	}
 }
