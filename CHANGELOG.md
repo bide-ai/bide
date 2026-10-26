@@ -11,6 +11,19 @@ journal format can change between pre-releases without a version bump. Curated h
 
 Unreleased changes are in `changes/unreleased/`.
 
+## [0.25.1] - 2026-10-27
+
+### Fixed
+
+- `bide audit verify-receipts`, `bide audit redactions` and `bide audit notifications` now refuse two `-journal` exports of the same run, as an unusable input (exit 4) naming both files and the run ID. Before, the later file on the command line silently replaced the earlier one, so the receipt or the tombstones were checked against whichever came last, and the verdict could change with the order of the flags (a redacted journal and the whole journal it came from gave PASS or FAIL depending on which was listed last). Pass one export per run. For `notifications`, two exports of one run taken at different times were both read, so the run's events were counted from each.
+- `bide migrate -h` now lists everything the migration creates: it named the tables, `bide_next_seq_v1` and the lease indexes, but left out the `bide_holds` table and the `bide_redact_v3` function (which the Postgres guide already said it creates), and the `EXECUTE` revokes on older redaction functions. Help text only; the migration is unchanged.
+- `bide view` and `bide edit` now refuse two `-journal` exports of the same run, as a usage error (exit 2) naming both files and the run ID. Before, the later file on the command line silently replaced the earlier one, so a substituted or stale export of a run could be shown as that run with no sign. Exports of different runs are unchanged. Two exports of one run taken at different times used to resolve to the later file; to look at one of them, pass only that file.
+- A flow config that sets `safety` or `approval` on an `edge` or `switch` wiring element is now refused with `ErrConfig` naming `wiring[i]` (by `Load`, `Validate` and `InspectConfig`). The key has no node to apply to there and was accepted and dropped, so a config could look gated and not be.
+
+### Removed
+
+- The `cmd/bide-view` module, a stub that only printed that `bide-view` is now `bide view`, is removed and no longer tagged at a release. Its last tag is `cmd/bide-view/v0.25.0`, so `go install github.com/bide-ai/bide/cmd/bide-view@latest` still resolves to that stub, which prints that it moved; install `cmd/bide` (`go install github.com/bide-ai/bide/cmd/bide@latest` or `brew install bide-ai/tap/bide`) and run `bide view`. Nothing else changes: `bide view` is part of `cmd/bide`, and a release tags one module fewer.
+
 ## [0.25.0] - 2026-10-26
 
 ### Added
@@ -1266,7 +1279,8 @@ First public release.
 - `bide-audit` standalone verifier, prebuilt for Linux, macOS and Windows on amd64 and arm64.
 - `eval` statistical evaluation harness, `chaos` crash-injection harness, and `cmd/bench`.
 
-[Unreleased]: https://github.com/bide-ai/bide/compare/v0.25.0...HEAD
+[Unreleased]: https://github.com/bide-ai/bide/compare/v0.25.1...HEAD
+[0.25.1]: https://github.com/bide-ai/bide/compare/v0.25.0...v0.25.1
 [0.25.0]: https://github.com/bide-ai/bide/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/bide-ai/bide/compare/v0.23.0...v0.24.0
 [0.23.2]: https://github.com/bide-ai/bide/compare/v0.23.1...v0.23.2
