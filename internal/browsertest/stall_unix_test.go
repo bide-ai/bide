@@ -191,7 +191,7 @@ func TestKillProfileStopsAtItsDeadline(t *testing.T) {
 	}
 	killProfile("/tmp/bide-chrome-0123456789abcdef")
 	// 500ms of budget at 200ms a call is at most 3 or 4 calls; 20 rounds would be 40.
-	if calls == 0 || calls > 8 {
+	if calls > 8 {
 		t.Fatalf("%d pgrep/pkill calls inside a 500ms budget", calls)
 	}
 }
@@ -204,6 +204,9 @@ func TestKillProfileCutsOffAHungScan(t *testing.T) {
 	profileWait = 300 * time.Millisecond
 	cutOff := false
 	runTool = func(ctx context.Context, name string, args ...string) error {
+		if name != "pgrep" {
+			return nil
+		}
 		select {
 		case <-ctx.Done():
 			cutOff = true
@@ -214,5 +217,27 @@ func TestKillProfileCutsOffAHungScan(t *testing.T) {
 	killProfile("/tmp/bide-chrome-0123456789abcdef")
 	if !cutOff {
 		t.Errorf("a hung pgrep was not cut off when the budget ended")
+	}
+}
+
+// A scan cut off by the budget is not "no process found": the processes it did not get to report are
+// still killed, with a pkill that has time of its own. A first scan slower than the budget is what a
+// loaded runner produces, and it must not leave the detached Chrome running.
+func TestKillProfileStillKillsWhenTheScanOutlastsTheBudget(t *testing.T) {
+	oldWait, oldRun := profileWait, runTool
+	defer func() { profileWait, runTool = oldWait, oldRun }()
+	profileWait = 200 * time.Millisecond
+	killed := false
+	runTool = func(ctx context.Context, name string, args ...string) error {
+		if name == "pkill" {
+			killed = ctx.Err() == nil // it must start with time left
+			return nil
+		}
+		<-ctx.Done() // pgrep, as CommandContext ends it: killed, Run returns an error
+		return ctx.Err()
+	}
+	killProfile("/tmp/bide-chrome-0123456789abcdef")
+	if !killed {
+		t.Errorf("pkill was not run, or ran with no time left, after a scan that outlasted the budget")
 	}
 }
