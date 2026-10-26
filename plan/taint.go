@@ -155,10 +155,10 @@ func (c *builderCore) setTaintPolicy(p agent.TaintPolicy) {
 	c.taintPolicy = &p
 }
 
-// taintNotEnforced is the one place a flow is refused for taint until the engine enforces it: a flow
+// taintNotEnforced is the one function that refuses a flow for taint until the engine enforces it: a flow
 // with a policy, or with a node that declares a source, a trusted output or an exemption, whether in
-// Go or in the config. The refusal names the first node. Enforcement removes this function and its
-// call in Build.
+// Go or in the config. The refusal names the first node. Build and Validate call it; enforcement
+// removes it and both calls.
 func (c *builderCore) taintNotEnforced() error {
 	why := ""
 	for _, n := range c.nodes {
