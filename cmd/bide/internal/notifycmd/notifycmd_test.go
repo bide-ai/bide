@@ -571,7 +571,7 @@ func TestRelayStateFileSurvivesARestart(t *testing.T) {
 // with ECONNREFUSED; the test builds both shapes, so it checks the Windows path on any OS.
 func TestConnectionRefusedIsRecognizedByErrnoNotByOSText(t *testing.T) {
 	for name, errno := range map[string]error{
-		"unix":    syscall.ECONNREFUSED,
+		"unix":    errConnRefused,
 		"windows": syscall.Errno(10061),
 	} {
 		wrapped := fmt.Errorf("notify: POST to 127.0.0.1:1 failed: %w", &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connectex", errno)})
