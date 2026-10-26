@@ -1,4 +1,4 @@
-//go:build unix && (!solaris || illumos)
+//go:build linux || darwin || freebsd || netbsd || openbsd || dragonfly || illumos
 
 package relay
 

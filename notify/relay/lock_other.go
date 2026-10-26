@@ -1,4 +1,4 @@
-//go:build (solaris && !illumos) || (!unix && !windows)
+//go:build !(linux || darwin || freebsd || netbsd || openbsd || dragonfly || illumos) && !windows
 
 package relay
 
@@ -8,7 +8,7 @@ import "os"
 // state file skip where it is false.
 const haveFileLock = false
 
-// lockFile has no OS lock on this platform (syscall.Flock is not defined on Solaris, nor on a system
-// that is neither Unix nor Windows): a state file cannot be made exclusive, so it is refused rather than
-// used unprotected (unsupportedLock).
+// lockFile has no OS lock on this platform (Flock is defined on Linux, macOS, the BSDs, DragonFly and
+// illumos, and Windows has its own lock; Solaris, AIX and the rest have neither): a state file cannot
+// be made exclusive, so it is refused rather than used unprotected (unsupportedLock).
 func lockFile(f *os.File) (bool, error) { return unsupportedLock(f) }
