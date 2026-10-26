@@ -13,7 +13,7 @@ cd benchmarks && GOWORK=off go test -run Comparison -v
 ## Result
 
 ```
-Bide             sweeps=8   schedules=208   maxFired=1  PASS ✓ (at-most-once held)
+Bide             sweeps=9   schedules=209   maxFired=1  PASS ✓ (at-most-once held)
 trpc-agent-go    sweeps=5   schedules=205   maxFired=6  FAIL ✗ (119 double-fires, worst=6)
 langchaingo      sweeps=4   schedules=204   maxFired=64  FAIL ✗ (204 double-fires, worst=64)
 eino             sweeps=4   schedules=204   maxFired=64  FAIL ✗ (204 double-fires, worst=64)

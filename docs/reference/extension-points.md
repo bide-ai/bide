@@ -19,6 +19,8 @@ stability label, is in the generated [SDK API reference](api/index.md).
 | `Retriever` | root | bring-your-own RAG | your store; wired via `RetrievalTool` / `WithRetrieval` |
 | `Anchor` | `audit` | out-of-band anchoring of a commitment | `MemAnchorLog`, `anchor/awss3` (S3 Object Lock), `anchor/gcs` (Google Cloud Storage, locked retention policy) |
 | `EventStore` | `audit` | durable event-trail persistence | `MemEventStore` |
+| `Waker` | root | what re-invokes a run at a durable timer's wake time (`WithWaker`) | `MemWaker`; a cron, queue or in-process loop is your policy ([signals](../guides/signals.md)) |
+| `Signer` | `audit` | one signing key under one scheme, for the log, grants and approvers | in-memory keys, `signer/pkcs11`, `signer/awskms`, `signer/azurekv`, `signer/gcpkms` ([key custody](../guides/key-custody.md)) |
 | `Notifier` | root | telling a person a run needs them | your webhook, chat or pager adapter |
 | `NotifyTrail` | root | the audited delivery state behind `Notifier` | `audit.NewNotifyTrail` (over an `EventStore`), `MemNotifyTrail` |
 
@@ -90,7 +92,7 @@ type Store interface {
 	// Get returns runID's entry named name, if there is one.
 	Get(ctx context.Context, runID, name string) (Entry, bool, error)
 	// Load yields runID's entries whose Seq is greater than after (-1 for all of them), in
-	// ascending Seq.
+	// ascending Seq. It yields an error at most once, as its last element.
 	Load(ctx context.Context, runID string, after int64) iter.Seq2[Entry, error]
 }
 

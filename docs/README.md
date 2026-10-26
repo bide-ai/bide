@@ -69,9 +69,10 @@ For security and risk reviewers. Read with the guarantee and the known limitatio
 
 ## Reference
 
-- **[CLI reference](reference/cli.md)**: every `bide` command (`init`, `demo`, `doctor`, `sample`, `view`, `notify`, `approve`, `keygen`, `migrate`, `check`, `audit`, `version`), its flags and its exit statuses, generated from the flag sets.
+- **[CLI reference](reference/cli.md)**: every `bide` command (`init`, `demo`, `doctor`, `sample`, `theme`, `view`, `edit`, `notify`, `journal`, `approve`, `stop`, `identity`, `keygen`, `migrate`, `check`, `audit`, `version`), its flags and its exit statuses, generated from the flag sets.
 - **[SDK API reference](reference/api/index.md)**: every exported symbol of every published package, with its declaration, the first sentence of its doc comment and a [stability label](trust/stability.md#package-stability), generated from the Go sources (`go test ./internal/tools/apiref -run TestAPIReference -update`; CI fails when it is stale).
-- **[bide-hsm reference](reference/bide-hsm.md)**: `bide-hsm approve` and `pubkey`, for approvers whose keys are in an HSM, on a smart card or in a cloud KMS: the key references, flags and exit statuses.
+- **[bide-hsm reference](reference/bide-hsm.md)**: `bide-hsm approve`, `pubkey`, `csr` and `version`, for approvers whose keys are in an HSM, on a smart card or in a cloud KMS: the key references, flags and exit statuses.
+- **[bide-anchor reference](reference/bide-anchor.md)**: `bide-anchor verify`, `export` and `check` for the heads an S3 Object Lock or Google Cloud Storage anchor wrote (`-backend s3` or `gcs`): flags and exit statuses.
 - **[Extension points](reference/extension-points.md)**: the ports and adapters (`Model`, `Store`, `Tool`, ...) and an "implement your own store" walkthrough.
 - **[Module structure](reference/module-structure.md)**: the multi-module repo layout.
 - **API**: the godoc of every package, at [pkg.go.dev](https://pkg.go.dev/github.com/bide-ai/bide/agent).
@@ -82,6 +83,7 @@ For security and risk reviewers. Read with the guarantee and the known limitatio
 - **[Formal models](../spec/tla/README.md)**: the reference for each TLA+ model (the claim protocol, the approval gate, the bide protocol's claim rules, flow semantics, spend accounting, the tool-call state machine, the run lifecycle, delegation and saga trees, and sessions), what TLC checks on every pull request, and the bounds.
 - **[How bide is verified](testing/verification.md)** (evaluator): the discipline behind the guarantees: no fix without a failing test, mutation checks, crash and cancellation sweeps, forced interleavings, conformance suites, and CI.
 - **[Testing](testing/testing.md)**: what is tested and how, the chaos crash-injection benchmark, differential oracles, and the statistical `eval` boundary.
+- **[Running the GCS anchor against a real bucket](testing/gcs-anchor-real-run.md)**: the one-time runbook for `TestRealGCS`, the test CI cannot run.
 
 ## Examples
 
@@ -95,4 +97,4 @@ For security and risk reviewers. Read with the guarantee and the known limitatio
 
 ## Design notes
 
-- **[Durable signals](design/design-durable-signals.md)**, **[m-of-n approval](design/design-mofn-approval.md)**, **[Compaction](design/compaction.md)**, **[Chaos benchmark](design/chaos-benchmark.md)**, **[Formal models](design/formal-models.md)** (accepted, in progress), **[The bide protocol](design/protocol.md)** (accepted; not implemented), **[Probes](design/probes.md)** (draft; not implemented), **[Tooling and onboarding](design/tooling-and-onboarding.md)** (accepted; in progress), **[Visual editor](design/visual-editor.md)** (accepted; phases 1 to 3 built, phase 4 not), **[Themes](design/themes.md)** (accepted; built in v0.22.0), **[Decision layer](design/decision-layer.md)** (accepted; not implemented), **[Untrusted content and amount caps](design/untrusted-content-and-amount-caps.md)** (proposed; not implemented), **[Taint in plan flows](design/flow-taint.md)** (proposed; not implemented).
+- **[Durable signals](design/design-durable-signals.md)**, **[m-of-n approval](design/design-mofn-approval.md)**, **[Compaction](design/compaction.md)**, **[Chaos benchmark](design/chaos-benchmark.md)**, **[Formal models](design/formal-models.md)** (accepted, in progress), **[The bide protocol](design/protocol.md)** (accepted; not implemented), **[Probes](design/probes.md)** (draft; not implemented), **[Tooling and onboarding](design/tooling-and-onboarding.md)** (accepted; shipped in v0.14.0), **[Visual editor](design/visual-editor.md)** (accepted; phases 1 to 4 built), **[Themes](design/themes.md)** (accepted; built in v0.22.0), **[Decision layer](design/decision-layer.md)** (accepted; not implemented), **[Untrusted content and amount caps](design/untrusted-content-and-amount-caps.md)** (accepted; built in v0.23.0 and v0.24.0, experimental), **[Taint in plan flows](design/flow-taint.md)** (proposed; not implemented).

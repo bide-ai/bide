@@ -32,14 +32,16 @@ only when that adapter is imported.
 | postgres log | `…/govern/postgreslog` | jackc/pgx |
 | PKCS#11 signer | `…/signer/pkcs11` | miekg/pkcs11 (needs cgo; without it the module builds and `Open` returns `ErrNoCgo`) |
 | AWS KMS signer | `…/signer/awskms` | the AWS SDK for Go v2 KMS client |
+| Azure Key Vault signer | `…/signer/azurekv` | the Azure SDK for Go (azcore, azidentity, azkeys); ECDSA P-256 only |
+| Google Cloud KMS signer | `…/signer/gcpkms` | cloud.google.com/go/kms |
 | S3 Object Lock anchor | `…/anchor/awss3` | the AWS SDK for Go v2 S3 client (and its `bide-anchor` command) |
-| Google Cloud Storage anchor | `…/anchor/gcs` | cloud.google.com/go/storage (a locked bucket retention policy; no command of its own yet) |
+| Google Cloud Storage anchor | `…/anchor/gcs` | cloud.google.com/go/storage (a locked bucket retention policy; its heads are read by `bide-anchor -backend gcs`) |
 | gcf codec | `…/codec/gcf` | blackwell-systems/gcf-go |
 | flow editor | `…/flowedit` | go.yaml.in/yaml/v3 (it splices a flow config's YAML text, which the core module, with no dependency, cannot) |
 | bide command | `…/cmd/bide` | the two store modules, `flowedit`, go.yaml.in/yaml/v3 (a program, installed with `go install`, not imported) |
 | bide-hsm command | `…/cmd/bide/bide-hsm` | the PKCS#11, AWS KMS, Google Cloud KMS and Azure Key Vault signers (`signer/pkcs11` needs cgo), the AWS SDK, the Cloud KMS client, the two store modules, and `cmd/bide` for its internal approval code (a program, built from source with `go install`; not in the release archives) |
 | bide-anchor command | `…/cmd/bide-anchor` | the AWS SDK for Go v2 (through `anchor/awss3`) and the Cloud Storage client (through `anchor/gcs`); a program, installed with `go install`, with `-backend` choosing the object store |
-| bide-view (deprecated) | `…/cmd/bide-view` | none: a program that only points to `bide view`, removed after v0.14.0 |
+| bide-view (deprecated) | `…/cmd/bide-view` | none: a program that only points to `bide view` and exits; still tagged at every release |
 
 The core module keeps everything with no heavy deps: `agent` (loop), `approvals` (the HTTP intake for signed approval decisions, and the browser approve page), `schema`, `middleware`,
 `model/anthropic`, `model/openai`, `model/gemini`, `plan`, `audit`, `eval`, `chaos`, `cmd/bench`,
@@ -56,7 +58,7 @@ while the core moves on its own schedule. It uses only the core's exported API (
 under `internal/`), which its `TestGovernImportsNoCoreInternal` enforces. The three governed-event
 log modules (`govern/redislog`, `govern/sqlitelog`, `govern/postgreslog`) require it.
 
-Seven more modules are not libraries you import; they exist so their dependencies stay out of the
+More modules are not libraries you import; they exist so their dependencies stay out of the
 core:
 
 | Module | Path | Why it is separate |
@@ -66,6 +68,10 @@ core:
 | mcp example | `…/examples/mcp` | imports `mcptools` and the MCP go-sdk |
 | observability example | `…/examples/observability` | imports `trace` and the OpenTelemetry SDK |
 | governance examples | `…/examples/govern` | nine programs (`authority`, `compliance`, `compose`, `coordination`, `delegation`, `earned-authority`, `mesh`, `proof-carrying-run`, `quorum`) that import `govern` and gsm |
+| HSM signing example | `…/examples/hsm-signing` | imports the signer modules (PKCS#11, Google Cloud KMS, Azure Key Vault) |
+| SSO certificates example | `…/examples/sso-certs` | a step-ca recipe with an end-to-end test against containers |
+| Stripe refund example | `…/examples/stripe-refund` | drives Stripe's test-mode API |
+| emulator and fake-server tests | `…/signer/awskms/emulatortest`, `…/signer/gcpkms/emulatortest`, `…/cmd/bide/bide-hsm/emulatortest`, `…/cmd/bide/bide-hsm/azuretest` | test-only: run the KMS signers and `bide-hsm` against in-process emulators, keeping them out of the signers' module graphs |
 | integration tests | `…/integration` | test-only: the core's tests that need `govern` and gsm (the many-agent convergence test, the run-certificate tests over real gsm policies, and the `bide audit` CLI tests fed by quorum runs and convergence certificates) |
 | benchmarks | `…/benchmarks` | the cross-SDK chaos comparison: eino, langchaingo, adk-go, trpc-agent-go |
 
@@ -101,11 +107,12 @@ It tags each library module `<dir>/vX.Y.Z` at that commit, so a consumer's `go g
 module from the proxy. Main keeps its `replace` directives, so development is unchanged.
 
 Published (tagged at every release): `govern`, `store/sqlite`, `store/postgres`, `mcptools`, `trace`,
-`codec/gcf`, `flowedit`, `govern/sqlitelog`, `govern/redislog`, `govern/postgreslog`, and the commands
-`cmd/bide`, `cmd/bide-anchor` and `cmd/bide-view` (tagged one last time at v0.14.0, then removed).
+`codec/gcf`, `anchor/awss3`, `anchor/gcs`, `flowedit`, `govern/sqlitelog`, `govern/redislog`, `govern/postgreslog`, `signer/pkcs11`, `signer/awskms`, `signer/azurekv`, `signer/gcpkms`, and the commands
+`cmd/bide`, `cmd/bide/bide-hsm`, `cmd/bide-anchor` and `cmd/bide-view` (a stub that points to `bide view`).
 
 Repo-only (never tagged; they keep their `replace` directives): `examples/approval`,
-`examples/plan`, `examples/mcp`, `examples/observability`, `examples/govern`, `integration`,
+`examples/plan`, `examples/mcp`, `examples/observability`, `examples/govern`, `examples/hsm-signing`,
+`examples/sso-certs`, `examples/stripe-refund`, the four emulator and fake-server test modules, `integration` and
 `benchmarks`.
 
 The exported API of every package in the published modules is listed in the generated [SDK API reference](api/index.md), one page per module (the core module, one per package), with each package's [stability label](../trust/stability.md#package-stability). The reference reads the Repo-only and command lists from `scripts/release.sh`, so a module added to the release is documented and a repo-only module is not.

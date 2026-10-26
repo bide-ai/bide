@@ -46,7 +46,7 @@ a reproduction is comparable only on the same model.
 
 At v0.9.0 the fan-out p99 is higher than at v0.8.0 (447 vs 419 ms) while throughput and the mean
 improved: the sixth journal record each run writes (the `@journal` header, #92) reshapes the
-latency distribution. The `Record` shrink planned after P12 is expected to recover some of it.
+latency distribution. The later `Record` shrink (368 to 256 bytes, [#140](https://github.com/bide-ai/bide/pull/140)) was measured as within the runners' noise on these scenarios, so it did not recover it.
 
 **A 10-core Apple silicon Mac** (darwin/arm64, Go 1.27), measured at v0.7.0, each scenario run
 seven times, when each run wrote four journal records. It was measured with other work running (a

@@ -31,7 +31,7 @@ The measured result for crash points is in [benchmarks/README.md](../../benchmar
 | Proof that the approval happened before the action | `bide audit verify-approvals` checks offline that k named approvers signed before the call ran | Not described in the pages cited here (Event History is "a complete and durable log of everything that has happened in the lifecycle of a Workflow Execution", [event history](https://docs.temporal.io/encyclopedia/event-history)) | Not described in the pages cited here | Not provided |
 | Binding keys to people | Not provided; your identity provider's job ([threat model](threat-model.md)) | Your auth layer | Your auth layer | Not applicable |
 
-Where bide is limited: a fixed named approver set, no weighted votes, roles or deadlines, and unsigned `recorded_at` times ([known limitations](../KNOWN-LIMITATIONS.md#approval-and-quorum)).
+Where bide is limited: a fixed named approver set, no weighted votes or roles, and unsigned `recorded_at` times ([known limitations](../KNOWN-LIMITATIONS.md#approval-and-quorum)).
 
 ## Audit evidence
 
