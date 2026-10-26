@@ -31,11 +31,32 @@ func TestMain(m *testing.M) {
 	}
 }
 
+// killSlack is how long past its deadline a run may take before the test calls the kill broken. The
+// stalled helper sleeps for an hour, so a kill that does not work holds Run for that hour; any limit
+// far below it tells the two apart. It is generous because the elapsed time of a correct kill is
+// dominated by the runner, not the code: a macOS CI runner took 18s for a 3s deadline (process starts
+// and pgrep/pkill scans stall under load), and a tight bound failed unrelated pull requests.
+const killSlack = 90 * time.Second
+
 func run(t *testing.T, mode string, d time.Duration) ([]byte, error, time.Duration) {
 	t.Helper()
+	type result struct {
+		out []byte
+		err error
+	}
 	start := time.Now()
-	out, err := RunFor(d, os.Args[0], "", append(os.Environ(), "BROWSERTEST_HELPER="+mode))
-	return out, err, time.Since(start)
+	c := make(chan result, 1)
+	go func() {
+		out, err := RunFor(d, os.Args[0], "", append(os.Environ(), "BROWSERTEST_HELPER="+mode))
+		c <- result{out, err}
+	}()
+	select {
+	case r := <-c:
+		return r.out, r.err, time.Since(start)
+	case <-time.After(d + killSlack):
+		t.Fatalf("RunFor with a %v deadline was still running after %v: the stalled script was not killed", d, d+killSlack)
+		return nil, nil, 0
+	}
 }
 
 func TestRunReturnsStdout(t *testing.T) {
@@ -52,17 +73,14 @@ func TestRunShowsStderrOfAFailingScript(t *testing.T) {
 	}
 }
 
-// A script that outlives its deadline is killed, fast, and the error says where it had got to.
+// A script that outlives its deadline is killed, and the error says where it had got to.
 func TestRunKillsAStalledScript(t *testing.T) {
-	out, err, took := run(t, "stall", 3*time.Second)
+	out, err, _ := run(t, "stall", 3*time.Second)
 	if !TimedOut(err) || !strings.Contains(err.Error(), "was still running after 3s") || !strings.Contains(err.Error(), "waiting for chrome") || !strings.Contains(err.Error(), "partial") {
 		t.Errorf("err = %v, want a deadline error quoting stderr and stdout", err)
 	}
 	if !strings.Contains(string(out), "partial") {
 		t.Errorf("stdout %q lost what the script had printed", out)
-	}
-	if took > 10*time.Second {
-		t.Errorf("the stalled script held the test for %v", took)
 	}
 }
 
