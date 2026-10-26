@@ -92,10 +92,16 @@ func (c *cli) redactions(args []string) {
 		}
 		in.Trail = x.Leaves
 	}
+	from := map[string]string{}
 	for _, p := range journals {
 		var jx audit.JournalExport
 		ok = c.note(c.readJSON(p, &jx)) && ok
 		if recs, err := jx.Journal(); err == nil {
+			if first, dup := from[jx.RunID]; dup {
+				ok = c.note(duplicateJournal(first, p, jx.RunID)) && ok
+				continue
+			}
+			from[jx.RunID] = p
 			in.Journals[jx.RunID] = recs
 		} else {
 			ok = c.note(unusable(err)) && ok

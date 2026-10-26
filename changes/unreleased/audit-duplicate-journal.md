@@ -1,0 +1,3 @@
+Section: Fixed
+
+`bide audit verify-receipts` and `bide audit redactions` now refuse two `-journal` exports of the same run, as an unusable input (exit 4) naming both files and the run ID. Before, the later file on the command line silently replaced the earlier one, so the receipt or the tombstones were checked against whichever came last, and the verdict could change with the order of the flags (a redacted journal and the whole journal it came from gave PASS or FAIL depending on which was listed last). Pass one export per run. `bide audit notifications` is unchanged: it reads events from every export and does not replace one with another.

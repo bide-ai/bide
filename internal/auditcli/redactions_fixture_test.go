@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,4 +59,15 @@ func newRedactionFiles(t *testing.T, signer audit.Signer, file func(string, any)
 	f.trailEmpty = file("redact-trail-empty.json", audit.NotifyTrailExport{Format: x.Format, Trail: x.Trail, Leaves: [][]byte{}})
 	f.journal = file("red-journal.json", exportJournal(t, j, "red"))
 	return f
+}
+
+// Two -journal exports of the same run (the redacted journal and the whole one it came from) are an
+// unusable input naming both files, not a check of whichever came last.
+func TestRedactions_RefusesTwoJournalsOfOneRun(t *testing.T) {
+	f := newExitFixture(t)
+	args := []string{"redactions", "-deployment", "test", "-trail", f.red.trail, "-sth", f.red.sth, "-pubkey", f.pub, "-journal", f.red.journal, "-journal", f.red.journalWhole}
+	code, out, errs := runCLI(args...)
+	if code != 4 || !strings.Contains(errs, f.red.journal) || !strings.Contains(errs, f.red.journalWhole) {
+		t.Fatalf("two exports of one run: exit %d\n%s\n%s", code, out, errs)
+	}
 }

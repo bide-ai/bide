@@ -323,3 +323,21 @@ func TestVerifyReceipts_TailIgnoresAHeadWithAnotherRoot(t *testing.T) {
 		t.Fatalf("a head over another journal was counted as covering:\n%s", out)
 	}
 }
+
+// Two -journal exports of the same run are an unusable input naming both files: the later one would
+// otherwise replace the earlier with no sign, and the receipt would be checked against whichever
+// came last.
+func TestVerifyReceipts_RefusesTwoJournalsOfOneRun(t *testing.T) {
+	f := newReceiptFixture(t)
+	exp, err := audit.ExportJournal(context.Background(), f.store, f.rc.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dup := filepath.Join(f.dir, "dup.journal.json")
+	writeJSON(t, dup, exp)
+	args := append(f.args(f.headsAnchored), "-journal", dup)
+	code, out, errs := runCLI(args...)
+	if code != 4 || !strings.Contains(errs, f.journal) || !strings.Contains(errs, dup) || !strings.Contains(errs, f.rc.RunID) {
+		t.Fatalf("two exports of %s: exit %d\n%s\n%s", f.rc.RunID, code, out, errs)
+	}
+}

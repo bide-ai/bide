@@ -66,6 +66,7 @@ func (c *cli) verifyReceipts(args []string) {
 	files, err := receiptFiles(receipts)
 	ok = c.note(err) && ok
 	byRun := map[string][]agent.Record{}
+	from := map[string]string{}
 	for _, p := range journals {
 		var x audit.JournalExport
 		if err := c.readJSON(p, &x); err != nil {
@@ -77,6 +78,11 @@ func (c *cli) verifyReceipts(args []string) {
 			ok = c.note(unusable(fmt.Errorf("%s: %w", p, err))) && ok
 			continue
 		}
+		if first, dup := from[x.RunID]; dup {
+			ok = c.note(duplicateJournal(first, p, x.RunID)) && ok
+			continue
+		}
+		from[x.RunID] = p
 		byRun[x.RunID] = recs
 	}
 	var signed []audit.SignedTreeHead

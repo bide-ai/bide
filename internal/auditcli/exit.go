@@ -504,3 +504,10 @@ func printVersion(w io.Writer, asJSON bool, st term.Style) {
 		fmt.Fprintf(w, "  %-17s %s  %s\n", f.Artifact+":", f.Format, st.Dim("("+f.Verbs+")"))
 	}
 }
+
+// duplicateJournal is the unusable-input error for two -journal exports of one run: the later file
+// would replace the earlier with no sign, so the verb would check whichever came last, and which that
+// is would change the verdict.
+func duplicateJournal(first, second, runID string) error {
+	return unusable(fmt.Errorf("-journal %s and -journal %s both export run %q: give one export of a run", first, second, runID))
+}
