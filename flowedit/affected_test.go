@@ -804,3 +804,18 @@ func TestAffectedNoDigestRunWithAnUnreadableTopologyIsNotToldApart(t *testing.T)
 		t.Errorf("%q", r.Notes)
 	}
 }
+
+// With exactly one run that wrote a topology and one that wrote none, the note reads in the singular throughout.
+func TestAffectedNoDigestNoteInTheSingular(t *testing.T) {
+	v1 := flowCfg("pay", "dbl")
+	tv1 := templateRun(t, v1)
+	st := agent.NewMemStore()
+	cloneRun(t, tv1, st, "flowrun", func(n string) bool { return unfinished(n) || n == "flow:digest" }, nil)
+	cloneRun(t, tv1, st, "agentrun", func(n string) bool { return unfinished(n) || n == "flow:digest" || n == plan.TopologyStep }, nil)
+	s, _ := storeServer(t, v1, st, true)
+	r := askAffected(t, s, v1, true, false)
+	want := `2 unfinished runs have no flow:digest. 1 of them wrote a flow:topology, so it is a flow run that has not recorded its digest yet (1 of the flow "pay"); resume records the digest of whichever flow resumes it, so it is not counted. 1 of them wrote no flow:topology: runs that are not flow runs, or flow runs that stopped before writing it; they are not attributed to a flow. None of these is counted.`
+	if !slices.Contains(r.Notes, want) {
+		t.Errorf("%q\nwant\n%q", r.Notes, want)
+	}
+}

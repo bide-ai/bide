@@ -575,7 +575,7 @@ func noDigestNote(sc *scanResult, baseFlow string) string {
 		if n := sc.topoFlows[baseFlow]; n > 0 {
 			fmt.Fprintf(&b, " (%d of the flow %q)", n, baseFlow)
 		}
-		b.WriteString("; resume records the digest of whichever flow resumes them, so they are not counted.")
+		fmt.Fprintf(&b, "; resume records the digest of whichever flow resumes %s, so %s not counted.", verb(sc.nTopo, "it", "them"), verb(sc.nTopo, "it is", "they are"))
 	}
 	if sc.noTopo > 0 {
 		fmt.Fprintf(&b, " %d of them wrote no flow:topology: runs that are not flow runs, or flow runs that stopped before writing it; they are not attributed to a flow.", sc.noTopo)
