@@ -39,8 +39,6 @@ jobs:
           NEW_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          # The GraphQL variables ($id, $owner...) are meant to stay unexpanded in single quotes.
-          # shellcheck disable=SC2016
           owner="${REPO%/*}"
           name="${REPO#*/}"
           read -r id auto queued < <(gh api graphql \
