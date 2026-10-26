@@ -508,6 +508,10 @@ A node (or a join) may carry a `safety` classifying how `Run` treats it on the a
 `"side_effect"` (one spelling per level; the pre-v1 alias `"retryable"` is refused, naming `"idempotent"`). A read-only or idempotent node re-runs its body on resume rather
 than halting, because its body is safe to repeat; a side effect halts.
 
+`safety` and `approval` apply to a node, so they go on a node in `nodes` or on a `join` wiring element, which
+creates one. On an `edge` or a `switch` element there is no node, and `Load`, `Validate` and `bide check` refuse
+the key with `ErrConfig` naming the element, rather than accept it and drop it.
+
 **A config may only lower retry safety.** Whether a step is safe to run twice is a property of its Go
 code, so only Go declares it: `RegisterStep`, `RegisterTool` (from the `Safety` in the tool's spec),
 `RegisterModel`, `RegisterJoin2` and `RegisterJoin3` take `ReadOnly()`/`Idempotent()` options (a
