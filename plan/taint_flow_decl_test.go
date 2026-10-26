@@ -396,3 +396,27 @@ func TestTaintGuard_StructuralProblemsComeFirst(t *testing.T) {
 		t.Errorf("Build = %v, want the shape error before the taint refusal", err)
 	}
 }
+
+// Validate is the drift guard CI runs; it must not pass a config Load refuses for taint, or an
+// unenforced declaration would clear the check and fail at process start.
+func TestTaintGuard_ValidateRefusesWhatLoadRefuses(t *testing.T) {
+	withKey := []byte(strings.Replace(taintConfig, "%s", `, "untrusted": "inbound-email"`, 1))
+	plain := []byte(strings.Replace(taintConfig, "%s", "", 1))
+	for what, c := range map[string]struct {
+		cfg []byte
+		reg *Registry
+	}{
+		"the node key":     {withKey, taintRegistry(t)},
+		"a declared block": {plain, taintRegistry(t, Untrusted("crm"))},
+		"a trusted block":  {plain, taintRegistry(t, Trusted("ours"))},
+		"an exempt block":  {plain, taintRegistry(t, TaintExempt("ok"))},
+	} {
+		err := Validate(c.cfg, c.reg)
+		if !errors.Is(err, agent.ErrConfig) || err == nil || !strings.Contains(err.Error(), "not enforced yet") {
+			t.Errorf("%s: Validate = %v, want ErrConfig \"flow taint is not enforced yet\"", what, err)
+		}
+	}
+	if err := Validate(plain, taintRegistry(t)); err != nil {
+		t.Errorf("Validate with no taint = %v", err)
+	}
+}

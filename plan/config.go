@@ -352,8 +352,8 @@ func LoadReader[In, Out any](r io.Reader, reg *Registry, opts ...LoadOption) (*F
 // therefore the drift guard (the stringly-typed footgun re-created at rung 2);
 // Load is the full typed check.
 //
-// Validate does not run Build's checks, so it accepts a config that declares taint (the "untrusted" key)
-// where Load and InspectConfig refuse it until flow taint is enforced.
+// Validate also refuses what Load refuses for taint until flow taint is enforced: a config, or a block,
+// that declares it (the "untrusted" key, a block's Untrusted, Trusted or TaintExempt).
 //
 // Validate's errors carry no problem kinds, only messages (and agent.ErrConfig). A tool that wants each
 // problem's kind (ConfigReport.Findings) calls InspectConfig or InspectConfigDescribed.
@@ -365,7 +365,11 @@ func Validate(data []byte, reg *Registry) error {
 	if err := parseConfig(data, &cfg); err != nil {
 		return fmt.Errorf("plan: validate: parse config: %w", err)
 	}
-	_, err := assemble(&cfg, reg, false)
+	core, err := assemble(&cfg, reg, false)
+	if err == nil {
+		// The check CI runs must not pass a config Load refuses for taint (see taintNotEnforced).
+		err = core.taintNotEnforced()
+	}
 	return asConfigError(err)
 }
 
