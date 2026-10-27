@@ -448,6 +448,11 @@ func holdToStart(ctx context.Context, d *Journal, runID string, recs []Record, w
 		// recorded with none (every flow run an earlier version started) keeps none: a drive under a
 		// principal is not refused, and its principal is not recorded.
 		return RunStart{}, fmt.Errorf("run %s was started with another principal (OnBehalfOf, AuthorityRef; see RecordedStart); drive it with the journaled one, or with none, or start a new run with a new run ID: %w", runID, ErrConfig)
+	case got.kind() == RunKindFlow && (want.Settings.UntrustedInput != nil && !sameSetting(want.Settings.UntrustedInput, got.Settings.UntrustedInput) ||
+		want.Settings.TrustedInput != nil && !sameSetting(want.Settings.TrustedInput, got.Settings.TrustedInput)):
+		// A flow drive that states where the input came from must state what the run started with (an agent
+		// run's drives are held to it the same way); one that states nothing runs under the recorded one.
+		return RunStart{}, fmt.Errorf("run %s was started with another input provenance (WithUntrustedInput, WithTrustedInput; see RecordedStart); pass the journaled one, or none, or start a new run with a new run ID: %w", runID, ErrConfig)
 	case got.kind() == RunKindFlow:
 		same, err := equalJSON([]byte(got.Input.Text()), []byte(want.Input.Text()))
 		if err != nil {

@@ -50,8 +50,8 @@ func IdentityFrom(ctx context.Context) (Identity, bool) {
 }
 
 // flowRunIdentity is journalhook.RunIdentity: the identity a plan flow run's options give. A flow
-// run takes WithIdentity alone: its other settings (the turn limit, a tool filter, a saga, ...) are
-// an agent run's.
+// run takes WithIdentity, WithUntrustedInput and WithTrustedInput (see flowRunProvenance): its other
+// settings (the turn limit, a tool filter, a saga, ...) are an agent run's.
 func flowRunIdentity(opts []any) (actor, onBehalfOf, authorityRef string, set bool, err error) {
 	var c runConfig
 	for i, o := range opts {
@@ -62,15 +62,35 @@ func flowRunIdentity(opts []any) (actor, onBehalfOf, authorityRef string, set bo
 		if err := ro.applyRun(&c); err != nil {
 			return "", "", "", false, err
 		}
-		id := c.identity
-		c.identity = nil
+		id, un, tr := c.identity, c.untrustedInput, c.trustedInput
+		c.identity, c.untrustedInput, c.trustedInput = nil, nil, nil
 		if !reflect.DeepEqual(c, runConfig{}) {
-			return "", "", "", false, fmt.Errorf("plan flow run option %d: a flow run takes agent.WithIdentity only: %w", i, ErrConfig)
+			return "", "", "", false, fmt.Errorf("plan flow run option %d: a flow run takes agent.WithIdentity, WithUntrustedInput and WithTrustedInput only: %w", i, ErrConfig)
 		}
-		c.identity = id
+		c.identity, c.untrustedInput, c.trustedInput = id, un, tr
 	}
 	if c.identity == nil {
 		return "", "", "", false, nil
 	}
 	return c.identity.Actor, c.identity.OnBehalfOf, c.identity.AuthorityRef, true, nil
+}
+
+// flowRunProvenance is journalhook.RunProvenance: where a plan flow run's options say its input came from.
+// The options are checked as flowRunIdentity checks them; WithUntrustedInput together with WithTrustedInput
+// is ErrConfig, as for an agent run.
+func flowRunProvenance(opts []any) (untrusted, trusted *string, err error) {
+	var c runConfig
+	for i, o := range opts {
+		ro, ok := o.(RunOption)
+		if !ok || isNil(ro) {
+			return nil, nil, fmt.Errorf("plan flow run option %d is %T, not an agent.RunOption: %w", i, o, ErrConfig)
+		}
+		if err := ro.applyRun(&c); err != nil {
+			return nil, nil, err
+		}
+	}
+	if c.untrustedInput != nil && c.trustedInput != nil {
+		return nil, nil, fmt.Errorf("WithUntrustedInput and WithTrustedInput both state the run's input provenance; pass one: %w", ErrConfig)
+	}
+	return c.untrustedInput, c.trustedInput, nil
 }

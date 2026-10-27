@@ -114,6 +114,7 @@ func init() {
 	}
 	journalhook.CheckRunID = checkRunID
 	journalhook.RunIdentity = flowRunIdentity
+	journalhook.RunProvenance = flowRunProvenance
 	journalhook.Marshal = marshalJournal
 	journalhook.SameJSON = sameJSON
 	// protocol:flows begin Begin BeginStart
