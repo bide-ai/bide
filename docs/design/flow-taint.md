@@ -294,7 +294,9 @@ run ungated, which fails open where an agent child fails closed). What the chose
   node that can have a side effect is ErrConfig, and a flow with any such node is refused at Begin, before
   any record is written, and on every later drive, before any node runs (a flow redeployed with a side effect
   is not the one that started the run; the per-node check stays as defence in depth, since `Safety` is not in
-  any digest).
+  any digest). The same holds for a run that started under a policy of its own and is driven by a flow that
+  lost it: with a node that can have a side effect it is refused before any node runs; a flow of read-only
+  nodes resumes.
 - Resume holds the recorded marks: a drive that carries other marks is ErrConfig. The marks a parent passes
   are its node's read set at the node's gating position, not at the end of its journal, so a retry-safe
   node that is driven again after its first attempt wrote records passes the same list.

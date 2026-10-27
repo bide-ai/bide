@@ -158,11 +158,12 @@ func flowTaintEnter(ctx context.Context, j any, runID string, d *journalhook.Flo
 	if err != nil {
 		return 0, err
 	}
-	// A run that started inside a tainted run under a flow with no policy runs no node that can have a side
-	// effect, on any drive: the flow that drives it now is refused when it has one, before its read-only nodes
-	// run (a redeployed flow whose node became a side effect is not the one that started it).
-	if rec.inheritedOnly() && len(tracked) > 0 {
-		return 0, fmt.Errorf("agent: run %s started inside a run under taint (%.12s) under a flow with no taint policy, and this flow's steps %s can have a side effect, which a flow with no policy to enforce cannot run under taint; drive it with the flow that started it, or start a new run with a new run ID: %w", runID, digestPrefix(rec.Ext[extTaintDigest]), strings.Join(tracked, ", "), ErrConfig)
+	// A run under taint driven by a flow with no policy to enforce it runs no node that can have a side effect, on
+	// any drive, whether it started under a policy of its own that the flow has lost or inside a tainted run under
+	// a flow with none: the flow is refused when it has one, before its read-only nodes run (a redeployed flow whose
+	// node became a side effect is not the one that started it).
+	if st == flowPolicyless && len(tracked) > 0 {
+		return 0, fmt.Errorf("agent: run %s is under taint (%.12s), and this flow has no taint policy to enforce it but its steps %s can have a side effect; drive it with the flow that started it, restore its taint policy, or cancel the run: %w", runID, digestPrefix(rec.Ext[extTaintDigest]), strings.Join(tracked, ", "), ErrConfig)
 	}
 	switch st {
 	case flowUnderTaint:

@@ -590,21 +590,24 @@ func TestFlowTaint_ARedeployedFlowWithASideEffectIsRefusedOnEveryDrive(t *testin
 	}
 }
 
-// A run that started under a policy of its own, driven by a flow that lost the policy, is refused at the node that can
-// have a side effect, not before: its read-only prefix runs. (Only a run that started with no policy inside a tainted
-// run is refused for the flow's side effects on every drive.)
-func TestFlowTaint_AFlowThatLostItsPolicyRunsItsReadOnlyPrefix(t *testing.T) {
+// A run that started under a policy of its own, driven by a flow that lost the policy, is refused before any node
+// runs when the flow has a node that can have a side effect, whether the run started at the top or inside a tainted
+// run; a flow of read-only nodes resumes.
+func TestFlowTaint_AFlowThatLostItsPolicyIsRefusedBeforeAnyNodeRuns(t *testing.T) {
 	allowTaint(t)
 	ctx := context.Background()
-	j := agenttest.MemJournal()
 	looks := 0
-	mk := func(pol *agent.TaintPolicy) *Flow[int, int] {
+	mk := func(pol *agent.TaintPolicy, payReadOnly bool) *Flow[int, int] {
 		b := New[int, int]("lost")
 		if pol != nil {
 			b.WithTaintPolicy(*pol)
 		}
 		look := b.Step("look", func(_ context.Context, v int) (int, error) { looks++; return v, nil }, ReadOnly(), Approval(agent.SingleApproval()))
-		pay := b.Step("pay", func(_ context.Context, v int) (int, error) { return v, nil })
+		var opts []NodeOption
+		if payReadOnly {
+			opts = append(opts, ReadOnly())
+		}
+		pay := b.Step("pay", func(_ context.Context, v int) (int, error) { return v, nil }, opts...)
 		b.Edge(look, pay)
 		f, err := b.Build()
 		if err != nil {
@@ -612,16 +615,41 @@ func TestFlowTaint_AFlowThatLostItsPolicyRunsItsReadOnlyPrefix(t *testing.T) {
 		}
 		return f
 	}
-	if _, err := mk(single()).Run(ctx, j, "r1", 1); !isPendingAt(err, "node:look") {
+	// A run at the top.
+	j := agenttest.MemJournal()
+	if _, err := mk(single(), true).Run(ctx, j, "r1", 1); !isPendingAt(err, "node:look") {
 		t.Fatalf("the first drive: %v", err)
 	}
 	if err := agent.Approve(ctx, j, "r1", "node:look", true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mk(nil).Run(ctx, j, "r1", 1); !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "pay") {
-		t.Errorf("the flow that lost its policy: %v, want ErrConfig at pay", err)
+	if _, err := mk(nil, false).Run(ctx, j, "r1", 1); !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "pay") {
+		t.Errorf("the flow that lost its policy: %v, want ErrConfig naming the step", err)
 	}
-	if looks != 1 {
-		t.Errorf("look ran %d times, want its read-only prefix to run", looks)
+	if looks != 0 {
+		t.Errorf("look ran %d times, want no node to run", looks)
+	}
+	// With read-only nodes only it resumes.
+	if _, err := mk(nil, true).Run(ctx, j, "r1", 1); err != nil || looks != 1 {
+		t.Errorf("a flow of read-only nodes without the policy: %v, look ran %d times; want it to finish", err, looks)
+	}
+	// A run started under a policy of its own inside a tainted node, driven directly by the flow without it.
+	n := &nested{t: t, j: agenttest.MemJournal(), errs: map[string]error{}}
+	looks = 0
+	p := n.parent("inbound-email", single(), map[string]*Flow[int, int]{"c1": mk(single(), true)})
+	if _, err := p.Run(ctx, n.j, "p1", 1); err != nil {
+		t.Fatalf("parent: %v", err)
+	}
+	if err := n.errs["c1"]; !isPendingAt(err, "node:look") {
+		t.Fatalf("the nested first drive: %v", err)
+	}
+	if err := agent.Approve(ctx, n.j, "c1", "node:look", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mk(nil, false).Run(ctx, n.j, "c1", 1); !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "pay") {
+		t.Errorf("the nested run driven by the flow that lost its policy: %v, want ErrConfig naming the step", err)
+	}
+	if looks != 0 {
+		t.Errorf("look ran %d times in the nested run, want no node to run", looks)
 	}
 }
