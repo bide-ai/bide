@@ -874,6 +874,8 @@ the consequences of an injected request. It does not detect or prevent the injec
   lease; a `taint-mark:` or `taint-child:` record that does not read, or runs nested deeper than 64, fails it with
   an error after the claim of the next attempt, as a resolver that crashed between the claim and the write
   would leave it, until the record is repaired. Safety does not depend on the lease past the claim.
+- **A run under taint reads its journal twice per node per drive.** The gate and the sink each fold it, with no cache, so a
+  mark is never counted late; the cost grows with the run's length.
 - **Adding a source to a node strands runs in flight.** A flow with no policy records the sources its nodes declare
   in `run:start`, so a node that gains `Untrusted` (or loses it, or changes it) makes a drive of a run that
   started before the change `ErrConfig`, as a changed policy does; cancel such runs, or restore the declaration.
