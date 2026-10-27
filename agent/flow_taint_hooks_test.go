@@ -401,3 +401,31 @@ func TestFlowTaintNode(t *testing.T) {
 		}
 	})
 }
+
+// The start a drive is bound to is for its own run: a context bound by another run's Begin is not read for
+// this one.
+func TestFlowTaintHooks_ReadTheBoundStartOfTheirOwnRunOnly(t *testing.T) {
+	ctx := context.Background()
+	ja := memJournal()
+	start := RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}, Input: UserText("1")}
+	got, err := flowTaintPrepare(ctx, ja, "rA", start, hookDecls(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctxA, _, _, err := beginRun(ctx, ja, "rA", got.(RunStart))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Run rB has no start in its journal: the hooks must not answer from rA's.
+	jb := memJournal()
+	if _, err := flowTaintEnter(ctxA, jb, "rB", hookDecls(nil)); !errors.Is(err, ErrStorage) {
+		t.Errorf("Enter for another run with rA's context: %v, want ErrStorage", err)
+	}
+	if _, err := flowTaintNode(ctxA, jb, "rB", "node:pay", Safety{}, journalhook.FlowTaintUnder); !errors.Is(err, ErrStorage) {
+		t.Errorf("the node decision for another run with rA's context: %v, want ErrStorage", err)
+	}
+	// For its own run the bound start answers without a read of the journal.
+	if st, err := flowTaintEnter(ctxA, ja, "rA", hookDecls(nil)); err != nil || st != journalhook.FlowTaintUnder {
+		t.Errorf("Enter for the bound run: %d, %v", st, err)
+	}
+}

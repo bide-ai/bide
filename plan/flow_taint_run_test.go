@@ -8,6 +8,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/agent/agenttest"
+	"github.com/bide-ai/bide/internal/identitygate"
 )
 
 // Enforcement of flow taint (docs/design/flow-taint.md, A2) through whole runs of a flow. The guard that
@@ -414,6 +415,52 @@ func TestFlowTaint_ALoopBodyAsksOncePerIteration(t *testing.T) {
 	for _, id := range asked {
 		if !strings.HasPrefix(id, "node:iter:") {
 			t.Errorf("a loop body node asked at %q, want an iteration key", id)
+		}
+	}
+}
+
+// The escalation gate has the pre-execution status check of a gate with certificate-bound approvers, on the
+// way to the node's body, as the node's own gate has (TestFlowNode_PreExecuteIsOnTheWayToTheBody).
+func TestFlowTaint_PreExecuteOfTheInstanceIsOnTheWayToTheBody(t *testing.T) {
+	was := identitygate.Enabled.Load()
+	identitygate.Enabled.Store(true)
+	defer identitygate.Enabled.Store(was)
+	ctx := context.Background()
+	as, vf, exec, _, bad := certApprovers("ops")
+	r := newTaintRun(t, flowOpts{policy: &agent.TaintPolicy{Gate: &agent.ApprovalPolicy{Need: 1, Approvers: []string{"ops"}}}, verifiers: vf})
+	_, err := r.run()
+	pend := asPending(t, err)
+	if pend.ToolUseID != "node:pay:taint" {
+		t.Fatalf("paused at %q", pend.ToolUseID)
+	}
+	as["ops"].decide(t, r.j, pend, true)
+	// A revocation lands between the count and the body: the node does not run, and the instance's gate holds
+	// and asks again.
+	*exec = func(agent.CertDecision) agent.CertCheck {
+		*bad = true
+		return agent.CertCheck{Reason: agent.ReasonRevoked, Detail: "d"}
+	}
+	_, err = r.run()
+	held := asPending(t, err)
+	if held.ToolUseID != "node:pay:taint" || held.Reason != agent.PendingExecHoldReapproval || r.runs["pay"] != 0 {
+		t.Fatalf("held at %q reason %q, pay ran %d", held.ToolUseID, held.Reason, r.runs["pay"])
+	}
+	if _, ok, _ := r.j.Get(ctx, "r1", agent.ApprovalExecHoldStep("node:pay:taint", 0)); !ok {
+		t.Fatal("no exec hold on the instance")
+	}
+}
+
+// A refusal comes before any gate: no approval is asked for a node that will not run.
+func TestFlowTaint_RefusalComesBeforeTheNodesOwnGate(t *testing.T) {
+	r := newTaintRun(t, flowOpts{policy: &agent.TaintPolicy{Refuse: true}, pay: []NodeOption{Approval(agent.SingleApproval())}})
+	_, err := r.run()
+	if !errors.Is(err, ErrTaintRefused) {
+		t.Fatalf("%v, want ErrTaintRefused, not a pause at the node's own gate", err)
+	}
+	recs, _ := r.j.History(context.Background(), "r1")
+	for _, rec := range recs {
+		if strings.HasPrefix(rec.Name, "approval-") {
+			t.Errorf("a gate was asked for before the refusal: %q", rec.Name)
 		}
 	}
 }
