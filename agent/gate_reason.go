@@ -81,9 +81,12 @@ type gateReasonRecord struct {
 	Reasons      []gateReason `json:"reasons,omitempty"`
 	PolicyDigest string       `json:"policy_digest,omitempty"`
 	// Gate is the escalation gate the call was held under, a snapshot for the audit.
-	Gate       *ApprovalPolicy `json:"gate,omitempty"`
-	Exempt     string          `json:"exempt,omitempty"`
-	RecordedAt string          `json:"recorded_at,omitempty"`
+	Gate   *ApprovalPolicy `json:"gate,omitempty"`
+	Exempt string          `json:"exempt,omitempty"`
+	// Refused says the node of a plan flow was refused for these reasons under a Refuse policy: it is not run
+	// and not asked, and a later drive refuses it again. Like a reason, it can only add a requirement.
+	Refused    bool   `json:"refused,omitempty"`
+	RecordedAt string `json:"recorded_at,omitempty"`
 }
 
 // unionReasons is the reasons a call is gated for: those the engine recomputed now and those a record

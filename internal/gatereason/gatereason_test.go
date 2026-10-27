@@ -230,3 +230,14 @@ func TestFind_TheInstanceOfAPlanFlowNode(t *testing.T) {
 		}
 	}
 }
+
+// A refused plan flow node's record carries "refused": the record is read as the engine writes it, and the
+// reasons show as for any gated call.
+func TestFind_ARefusedRecordIsRead(t *testing.T) {
+	rec := strings.Replace(taintRecord, `"policy_digest"`, `"refused":true,"policy_digest"`, 1)
+	rec = strings.Replace(rec, `"c3"`, `"node:pay"`, 1)
+	got := Find("node:pay:taint", recs("gate-reason:node%3Apay", rec))
+	if len(got) != 1 || got[0].Kind != KindTaint {
+		t.Errorf("reasons of a refused record = %+v, want the taint reason", got)
+	}
+}

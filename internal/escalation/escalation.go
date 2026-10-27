@@ -105,3 +105,19 @@ func IsSubject(subject string) bool {
 	_, ok := Base(subject)
 	return ok
 }
+
+// NodeName is the name of the plan flow node a node key belongs to ("x" for "node:x" and "node:iter:3:x").
+// ok is false for any name that is not a node key: a Step a node's body runs, and an instance, included.
+func NodeName(key string) (name string, ok bool) {
+	node, step, ok := PlanKey(key)
+	if !ok || step != "" {
+		return "", false
+	}
+	rest := strings.TrimPrefix(node, planPrefix)
+	if it, ok := strings.CutPrefix(rest, "iter:"); ok {
+		if digits, after, ok := strings.Cut(it, ":"); ok && isIterNumber(digits) {
+			return after, true
+		}
+	}
+	return rest, true
+}

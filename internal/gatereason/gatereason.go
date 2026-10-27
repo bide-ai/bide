@@ -88,6 +88,7 @@ type wireRecord struct {
 	PolicyDigest string       `json:"policy_digest"`
 	Gate         any          `json:"gate"`
 	Exempt       string       `json:"exempt"`
+	Refused      bool         `json:"refused"`
 	RecordedAt   string       `json:"recorded_at"`
 }
 
