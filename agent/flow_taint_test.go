@@ -62,6 +62,22 @@ func TestFlowTaintDecls_DigestCommitsToEverything(t *testing.T) {
 	if a.digest() != b.digest() {
 		t.Error("the digest depends on the order or repetition of sources")
 	}
+	// The approvers of a gate are a set: their order and repetition do not change the digest, so reordering
+	// them does not strand a run in flight.
+	g1, g2 := baseDecls(), baseDecls()
+	g1.Policy.Gate = &ApprovalPolicy{Need: 2, Approvers: []string{"c", "a", "b", "a"}}
+	g2.Policy.Gate = &ApprovalPolicy{Need: 2, Approvers: []string{"a", "b", "c"}}
+	if g1.digest() != g2.digest() {
+		t.Error("the digest depends on the order or repetition of a gate's approvers")
+	}
+	g3 := baseDecls()
+	g3.Policy.Gate = &ApprovalPolicy{Need: 2, Approvers: []string{"a", "b", "d"}}
+	if g3.digest() == g2.digest() {
+		t.Error("the digest does not see a different approver")
+	}
+	if baseDecls().Policy.Gate.Approvers[0] != "a" {
+		t.Error("normalising reordered the receiver's approvers")
+	}
 	// A node that declares nothing is the same as an absent node.
 	c, e := baseDecls(), baseDecls()
 	delete(e.Nodes, "pay")
@@ -104,6 +120,31 @@ func TestFlowTaintDecls_RunStartRoundTrip(t *testing.T) {
 	}
 }
 
+// A start never records empty declarations (no policy: the run does not start under taint), and one that does is
+// refused, not read as a run under taint that refuses every side effect for ever.
+func TestFlowTaintDecls_EmptyDeclarationsAreNotRecorded(t *testing.T) {
+	s := RunStart{Kind: RunKindFlow}.withFlowTaint(flowTaintDecls{})
+	if s.taintDigest() != "" || len(s.Ext) != 0 {
+		t.Errorf("zero declarations were recorded: %v", s.Ext)
+	}
+	if _, ok, err := s.flowTaintDecls(); ok || err != nil {
+		t.Errorf("a start with nothing recorded: %v, %v", ok, err)
+	}
+	// Declarations of nodes alone, with no policy, are not recorded either: a run is under taint by its policy.
+	d := flowTaintDecls{Nodes: map[string]flowNodeTaint{"fetch": {Untrusted: []string{"x"}}}}
+	if s := (RunStart{}).withFlowTaint(d); s.taintDigest() != "" {
+		t.Errorf("declarations with no policy were recorded: %v", s.Ext)
+	}
+	// A record that carries an empty policy anyway (forged, or written by another binary) is refused.
+	empty := flowTaintDecls{Format: flowTaintDeclarationsFormat}
+	body, _ := json.Marshal(empty)
+	dig, _ := json.Marshal(empty.digest())
+	forged := RunStart{Ext: map[string]json.RawMessage{extTaintDigest: dig, extTaintDeclarations: body}}
+	if _, _, err := forged.flowTaintDecls(); !errors.Is(err, ErrStorage) {
+		t.Errorf("a recorded empty policy: %v, want ErrStorage", err)
+	}
+}
+
 func TestFlowTaintDecls_ARecordThatDoesNotHoldTogetherIsRefused(t *testing.T) {
 	good := RunStart{}.withFlowTaint(baseDecls())
 	set := func(mut func(ext map[string]json.RawMessage)) RunStart {
@@ -118,7 +159,6 @@ func TestFlowTaintDecls_ARecordThatDoesNotHoldTogetherIsRefused(t *testing.T) {
 	tampered := strings.Replace(string(good.Ext[extTaintDeclarations]), "inbound-email", "nothing", 1)
 	cases := map[string]RunStart{
 		"declarations edited under the digest": set(func(e map[string]json.RawMessage) { e[extTaintDeclarations] = json.RawMessage(tampered) }),
-		"a digest with no declarations":        set(func(e map[string]json.RawMessage) { delete(e, extTaintDeclarations) }),
 		"declarations with no digest":          set(func(e map[string]json.RawMessage) { delete(e, extTaintDigest) }),
 		"another format": set(func(e map[string]json.RawMessage) {
 			e[extTaintDeclarations] = json.RawMessage(strings.Replace(string(good.Ext[extTaintDeclarations]), "v1", "v9", 1))
@@ -137,11 +177,9 @@ func TestFlowTaintDecls_ARecordThatDoesNotHoldTogetherIsRefused(t *testing.T) {
 			t.Errorf("%s: flowTaintDecls = ok %v, err %v; want an ErrStorage refusal", what, ok, err)
 		}
 	}
-	// One member without the other is said so, not left to the later checks to trip over.
-	for _, what := range []string{"a digest with no declarations", "declarations with no digest"} {
-		if _, _, err := cases[what].flowTaintDecls(); err == nil || !strings.Contains(err.Error(), "without the other") {
-			t.Errorf("%s: %v, want the message to say one member is recorded without the other", what, err)
-		}
+	// Declarations without a digest are said to be so.
+	if _, _, err := cases["declarations with no digest"].flowTaintDecls(); err == nil || !strings.Contains(err.Error(), "without") {
+		t.Errorf("declarations with no digest: %v, want the message to say so", err)
 	}
 }
 
@@ -195,11 +233,22 @@ func TestFlowTaintCheck(t *testing.T) {
 			}
 		}
 	}
-	// A recorded start that does not hold together is a storage refusal, not a standing.
-	bad := started
-	bad.Ext = map[string]json.RawMessage{extTaintDigest: started.Ext[extTaintDigest]}
-	if _, err := flowTaintCheck(bad, &cur); !errors.Is(err, ErrStorage) {
-		t.Errorf("a start with a digest and no declarations: %v, want ErrStorage", err)
+	// A start with a digest and no declarations is a run started under taint it inherited (an agent engine records
+	// the digest it inherited). A flow does not take inherited taint yet: the refusal says so, and is a config
+	// error, not a storage fault.
+	inherited := started
+	inherited.Ext = map[string]json.RawMessage{extTaintDigest: started.Ext[extTaintDigest]}
+	if _, err := flowTaintCheck(inherited, &cur); !errors.Is(err, ErrConfig) || errors.Is(err, ErrStorage) || !strings.Contains(err.Error(), "inherit") {
+		t.Errorf("a start with a digest and no declarations: %v, want an ErrConfig refusal that names inherited taint", err)
+	}
+	if _, err := flowTaintCheck(inherited, nil); !errors.Is(err, ErrConfig) {
+		t.Errorf("an inherited start, driven by a flow with no policy: %v, want the same refusal", err)
+	}
+	// Declarations with no digest are corrupt: a storage refusal.
+	noDigest := started
+	noDigest.Ext = map[string]json.RawMessage{extTaintDeclarations: started.Ext[extTaintDeclarations]}
+	if _, err := flowTaintCheck(noDigest, &cur); !errors.Is(err, ErrStorage) {
+		t.Errorf("declarations with no digest: %v, want ErrStorage", err)
 	}
 }
 
@@ -245,43 +294,43 @@ func TestFlowReadSet(t *testing.T) {
 		"a loop iteration adds no new pair":    {recs, 6, []string{"inbound-email@node:fetch"}},
 		"records after the point are not read": {recs, 3, nil},
 	} {
-		got, err := flowReadSet(c.recs, d, c.before, nil)
+		got, err := flowReadSet(c.recs, d, c.before, "node:pay", nil)
 		if err != nil || !slices.Equal(markSources(got), c.want) {
 			t.Errorf("%s: %v, %v; want %v", what, markSources(got), err, c.want)
 		}
 	}
 	// The mark's position is where the source's first result is.
-	got, _ := flowReadSet(recs, d, 6, nil)
+	got, _ := flowReadSet(recs, d, 6, "node:pay", nil)
 	if len(got) != 1 || got[0].Pos != 3 {
 		t.Errorf("marks %+v, want one at position 3", got)
 	}
 	// The run's input is a source when the start says so.
 	withInput := append([]Record{flowStartRecord(&mail)}, recs[1:]...)
-	got, err := flowReadSet(withInput, d, 2, nil)
+	got, err := flowReadSet(withInput, d, 2, "node:pay", nil)
 	if err != nil || !slices.Equal(markSources(got), []string{"mail-input@input"}) {
 		t.Errorf("input: %v, %v", markSources(got), err)
 	}
 	// Inherited marks (a parent's) come first and are kept.
 	inh := []taintMark{{Source: "parent-feed", Ref: "inherited", Pos: 0}}
-	got, _ = flowReadSet(recs, d, 3, inh)
+	got, _ = flowReadSet(recs, d, 3, "node:pay", inh)
 	if !slices.Equal(markSources(got), []string{"parent-feed@inherited"}) {
 		t.Errorf("inherited: %v", markSources(got))
 	}
 	// A node's declaration comes from the recorded declarations, by node name: a result of a node the
 	// declarations do not know leaves no mark.
-	got, _ = flowReadSet([]Record{flowVal("node:ghost", `1`)}, d, 1, nil)
+	got, _ = flowReadSet([]Record{flowVal("node:ghost", `1`)}, d, 1, "node:pay", nil)
 	if len(got) != 0 {
 		t.Errorf("an undeclared node left marks %v", markSources(got))
 	}
 	// A Step a node's body ran ("node:fetch:step:x") is not the node's result.
-	got, _ = flowReadSet([]Record{flowVal("node:fetch:step:x", `1`)}, d, 1, nil)
+	got, _ = flowReadSet([]Record{flowVal("node:fetch:step:x", `1`)}, d, 1, "node:pay", nil)
 	if len(got) != 0 {
 		t.Errorf("a node's inner Step left marks %v", markSources(got))
 	}
 	// Two sources on one node are two marks.
 	two := baseDecls()
 	two.Nodes["fetch"] = flowNodeTaint{Untrusted: []string{"a", "b"}}
-	got, _ = flowReadSet([]Record{flowVal("node:fetch", `1`)}, two, 1, nil)
+	got, _ = flowReadSet([]Record{flowVal("node:fetch", `1`)}, two, 1, "node:pay", nil)
 	if !slices.Equal(markSources(got), []string{"a@node:fetch", "b@node:fetch"}) {
 		t.Errorf("two sources: %v", markSources(got))
 	}
@@ -301,7 +350,7 @@ func TestFlowReadSet_TaintMarkRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := flowReadSet(recs, d, len(recs), nil)
+	got, err := flowReadSet(recs, d, len(recs), "node:pay", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,13 +360,13 @@ func TestFlowReadSet_TaintMarkRecords(t *testing.T) {
 	}
 	// A record under the reserved prefix that does not read is an error, never a missing mark.
 	bad := []Record{flowVal(taintMarkPrefix+"x", `"junk"`)}
-	if _, err := flowReadSet(bad, d, 1, nil); !errors.Is(err, ErrStorage) {
+	if _, err := flowReadSet(bad, d, 1, "node:pay", nil); !errors.Is(err, ErrStorage) {
 		t.Errorf("an unreadable taint-mark record: %v, want ErrStorage", err)
 	}
 	// A mark record whose name and body disagree is unreadable too.
 	b, _ := json.Marshal(taintMarkRecord{Format: taintMarkFormat, NodeKey: "node:look", Source: "agent:x"})
 	mismatch := []Record{flowVal(taintMarkStep("node:look", "agent:y"), string(b))}
-	if _, err := flowReadSet(mismatch, d, 1, nil); !errors.Is(err, ErrStorage) {
+	if _, err := flowReadSet(mismatch, d, 1, "node:pay", nil); !errors.Is(err, ErrStorage) {
 		t.Errorf("a mark whose name disagrees with its body: %v, want ErrStorage", err)
 	}
 }
@@ -493,5 +542,89 @@ func TestNodeNameOfKey(t *testing.T) {
 		if got, ok := nodeNameOfKey(key); ok {
 			t.Errorf("nodeNameOfKey(%q) = %q, true; want not a node key", key, got)
 		}
+	}
+}
+
+// The read set a node has when it is gated is the read set recomputed at its record: the node's own child's
+// taint-mark, written before the node's result, is not among them (the model's Reads takes the marks of the
+// other nodes), so Conform's recompute and a re-driven node get the requirement it had when it was gated.
+func TestFlowReadSet_ExcludesTheNodesOwnChildMark(t *testing.T) {
+	ctx := context.Background()
+	j := memJournal()
+	d := baseDecls()
+	writeRaw(t, j, "r1", "node:fetch", flowVal("node:fetch", `1`))
+	if _, err := putTaintMark(ctx, j, "r1", "node:pay", "web"); err != nil { // pay's child learned a mark
+		t.Fatal(err)
+	}
+	if _, err := putTaintMark(ctx, j, "r1", "node:other", "feed"); err != nil { // another node's child
+		t.Fatal(err)
+	}
+	writeRaw(t, j, "r1", "node:pay", flowVal("node:pay", `1`))
+	recs, _ := j.History(ctx, "r1")
+	var payAt, markAt int
+	for i, r := range recs {
+		if r.Name == "node:pay" {
+			payAt = i
+		}
+		if r.Name == taintMarkStep("node:pay", "web") {
+			markAt = i
+		}
+	}
+	atGate, err := flowReadSet(recs, d, markAt, "node:pay", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	atRecord, err := flowReadSet(recs, d, payAt, "node:pay", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// atGate is before pay's mark and other's mark was written after it: only the source. At the record, the other
+	// node's mark counts and pay's own does not.
+	if !slices.Equal(markSources(atGate), []string{"inbound-email@node:fetch"}) {
+		t.Errorf("at the gate: %v", markSources(atGate))
+	}
+	if !slices.Equal(markSources(atRecord), []string{"inbound-email@node:fetch", "feed@child:node:other"}) {
+		t.Errorf("at the record: %v, want the other node's mark and not pay's own", markSources(atRecord))
+	}
+	// A re-driven node, whose body wrote its mark before a crash, is asked what it was asked the first time.
+	atRedrive, _ := flowReadSet(recs, d, len(recs), "node:pay", nil)
+	for _, m := range atRedrive {
+		if m.Source == "web" {
+			t.Errorf("a re-drive counts the node's own child's mark: %v", markSources(atRedrive))
+		}
+	}
+	// The same node in another iteration is another node: its mark counts.
+	if _, err := putTaintMark(ctx, j, "r1", "node:iter:0:pay", "loopweb"); err != nil {
+		t.Fatal(err)
+	}
+	recs, _ = j.History(ctx, "r1")
+	got, _ := flowReadSet(recs, d, len(recs), "node:iter:1:pay", nil)
+	found := false
+	for _, m := range got {
+		found = found || m.Source == "loopweb"
+	}
+	if !found {
+		t.Errorf("an earlier iteration's child mark is not read by the next: %v", markSources(got))
+	}
+}
+
+// Positions are indexes into the unfiltered history: extending the prefix, or an extra record in front of the
+// marks that the filtering of Conform used to drop, keeps the position of a mark that was already there from
+// the same prefix; a reader that filters first would see other positions and so other reasons.
+func TestFlowReadSet_PositionsAreOfTheUnfilteredHistory(t *testing.T) {
+	d := baseDecls()
+	recs := []Record{flowStartRecord(nil), flowVal("flow:digest", `"x"`), flowVal("node:fetch", `1`)}
+	before, _ := flowReadSet(recs, d, len(recs), "node:pay", nil)
+	more := append(slices.Clone(recs), flowVal("node:look", `1`), flowVal("node:other", `1`))
+	after, _ := flowReadSet(more, d, len(more), "node:pay", nil)
+	if len(before) != 1 || len(after) != 1 || before[0].Pos != 2 || after[0].Pos != 2 {
+		t.Errorf("positions %v then %v, want the mark at 2 both times", before, after)
+	}
+	// A header record at the front shifts every position; that is why the recompute must read the same history
+	// the engine did, not a filtered copy.
+	withHeader := append([]Record{{Name: headerStep, Kind: StepHeader}}, recs...)
+	shifted, _ := flowReadSet(withHeader, d, len(withHeader), "node:pay", nil)
+	if len(shifted) != 1 || shifted[0].Pos != 3 {
+		t.Errorf("with a header in front: %v, want position 3", shifted)
 	}
 }

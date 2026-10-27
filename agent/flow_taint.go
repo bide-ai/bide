@@ -61,6 +61,11 @@ type flowTaintDecls struct {
 func (d flowTaintDecls) normalized() flowTaintDecls {
 	out := flowTaintDecls{Format: flowTaintDeclarationsFormat, Policy: d.Policy}
 	out.Policy.Gate = d.Policy.Gate.Clone()
+	if g := out.Policy.Gate; g != nil {
+		// A gate's approvers are a set: their order and repetition are not part of the declarations, so a
+		// reordered list does not change the digest or strand a run in flight.
+		g.Approvers = slices.Compact(slices.Sorted(slices.Values(g.Approvers)))
+	}
 	for name, n := range d.Nodes {
 		n.Untrusted = slices.Compact(slices.Sorted(slices.Values(n.Untrusted)))
 		if n.isZero() {
@@ -86,8 +91,12 @@ func (d flowTaintDecls) digest() string {
 }
 
 // withFlowTaint returns s recording the declarations d and their digest (a new Ext map: a RunStart copy
-// shares its Ext).
+// shares its Ext). A run is under taint by its policy: declarations with no policy record nothing, and s is
+// returned as it is.
 func (s RunStart) withFlowTaint(d flowTaintDecls) RunStart {
+	if d.Policy.isZero() {
+		return s
+	}
 	n := d.normalized()
 	ext := maps.Clone(s.Ext)
 	if ext == nil {
@@ -113,8 +122,13 @@ func (s RunStart) flowTaintDecls() (d flowTaintDecls, ok bool, err error) {
 	if !hasDigest && !hasDecls {
 		return flowTaintDecls{}, false, nil
 	}
-	if hasDigest != hasDecls {
-		return flowTaintDecls{}, false, fmt.Errorf("agent: run:start records one of %s and %s without the other: %w", extTaintDigest, extTaintDeclarations, ErrStorage)
+	switch {
+	case hasDigest && !hasDecls:
+		// The digest an agent engine records for a run it starts inside a tainted run (a flow started by a tool
+		// call or a node's body): the run is under taint it inherited, which has no declarations to compare.
+		return flowTaintDecls{}, false, fmt.Errorf("agent: run:start records taint %s without declarations, the shape of a run started inside a tainted run, and a flow does not take inherited taint yet (docs/design/flow-taint.md): drive it with the agent or flow that started it, or start a new run with a new run ID: %w", digestPrefix(rawDigest), ErrConfig)
+	case hasDecls && !hasDigest:
+		return flowTaintDecls{}, false, fmt.Errorf("agent: run:start records %s without %s: %w", extTaintDeclarations, extTaintDigest, ErrStorage)
 	}
 	var recorded string
 	if err := json.Unmarshal(rawDigest, &recorded); err != nil {
@@ -122,6 +136,9 @@ func (s RunStart) flowTaintDecls() (d flowTaintDecls, ok bool, err error) {
 	}
 	if err := strictjson.Unmarshal(rawDecls, &d, nil); err != nil || d.Format != flowTaintDeclarationsFormat {
 		return flowTaintDecls{}, false, fmt.Errorf("agent: run:start's %s does not read as a %s record: %w", extTaintDeclarations, flowTaintDeclarationsFormat, ErrStorage)
+	}
+	if d.Policy.isZero() {
+		return flowTaintDecls{}, false, fmt.Errorf("agent: run:start's %s records no policy, and a run is under taint by its policy: %w", extTaintDeclarations, ErrStorage)
 	}
 	if got := d.digest(); got != recorded {
 		return flowTaintDecls{}, false, fmt.Errorf("agent: run:start's %s hashes to %.12s, not the recorded %.12s: %w", extTaintDeclarations, got, recorded, ErrStorage)
@@ -220,13 +237,15 @@ func decodeTaintMark(r Record) (taintMarkRecord, error) {
 	return rec, nil
 }
 
-// flowReadSet is the marks a node has read at position before of the run's journal recs: the inherited
-// marks, then in journal order the run's input when its start declares it untrusted, the declared sources of
+// flowReadSet is the marks the node with key self has read at position before of the run's journal recs, the
+// unfiltered History: positions are indexes into it, so a copy with records left out (a header, a not-started
+// marker) gives other positions and so other reasons. It is the inherited marks, then in journal order the run's input when its start declares it untrusted, the declared sources of
 // every node whose result is recorded before, and the taint-mark records before. It is the run-level rule
 // (docs/design/flow-taint.md, A2): no edge, join or switch is read, and a node's own result is after it. A
-// source is a mark once, at its first position, whatever the iteration. A taint-mark record that does not
+// source is a mark once, at its first position, whatever the iteration; the marks the node's own child wrote
+// (taint-mark records for self) are not read. A taint-mark record that does not
 // read is an ErrStorage error.
-func flowReadSet(recs []Record, d flowTaintDecls, before int, inherited []taintMark) ([]taintMark, error) {
+func flowReadSet(recs []Record, d flowTaintDecls, before int, self string, inherited []taintMark) ([]taintMark, error) {
 	marks := slices.Clone(inherited)
 	seen := map[[2]string]bool{}
 	for _, m := range marks {
@@ -253,7 +272,12 @@ func flowReadSet(recs []Record, d flowTaintDecls, before int, inherited []taintM
 			if err != nil {
 				return nil, err
 			}
-			add(rec.Source, "child:"+rec.NodeKey, i)
+			// A mark the node's own child wrote is written before the node's result, and the node could not
+			// have read it when it was gated: the requirement must be the same at the gate, at the record and
+			// on a re-drive. The same node in another iteration is another node (another key).
+			if rec.NodeKey != self {
+				add(rec.Source, "child:"+rec.NodeKey, i)
+			}
 		default:
 			if name, ok := nodeNameOfKey(r.Name); ok {
 				for _, s := range nodes[name].Untrusted {
@@ -312,4 +336,16 @@ func flowRequirementFor(d flowTaintDecls, node string, tracked bool, marks []tai
 	}
 	out.Gate = d.Policy.Gate.Clone()
 	return out
+}
+
+// digestPrefix is the first 12 characters of a recorded digest, for an error.
+func digestPrefix(raw json.RawMessage) string {
+	var d string
+	if json.Unmarshal(raw, &d) != nil {
+		return "(unreadable)"
+	}
+	if len(d) > 12 {
+		d = d[:12]
+	}
+	return d
 }
