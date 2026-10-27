@@ -65,6 +65,10 @@ CONSTANTS
   Exempt,      \* node names declared TaintExempt, a subset of SideEffects
   Idempotent,  \* nodes that are retry-safe (no attempt claim, the body can run again) but not read-only:
                \* tracked for taint all the same (tracked = not read-only), a subset of Names \ SideEffects
+  Inherited,   \* whether the flow is started as a node of a tainted parent: the marks the parent passes (its
+               \* node's read set at the gating position) are recorded at start and held on resume
+  Parent,      \* whether the parent's side is modelled: the node that runs this flow, its taint-mark
+               \* records, its result, and ResolveHalt of that node
   Revocable,   \* whether an approval certificate can be revoked after the gates pass (PreExec)
   MarkNodes,   \* nodes whose body can run a child that learns a taint mark
   DeclNames,   \* the declaration sets a drive can run under: "none" (no policy), "gate",
@@ -99,6 +103,7 @@ ASSUME Gated \subseteq {"E", "Q", "T", "H", "S"}
 ASSUME Need \in 1..Cardinality(Approvers) \/ Gated = {}
 ASSUME Early \in BOOLEAN
 ASSUME Sources \subseteq {"E", "Q", "T", "H", "S", "input"}
+ASSUME Inherited \in BOOLEAN /\ Parent \in BOOLEAN
 ASSUME Idempotent \subseteq {"E", "Q", "T", "H", "S"} \ SideEffects /\ Revocable \in BOOLEAN
 ASSUME Exempt \subseteq SideEffects \cup Idempotent /\ MarkNodes \subseteq {"E", "Q", "T", "H", "S"}
 ASSUME DeclNames \subseteq {"none", "gate", "refuse", "dropsrc", "exempt"} /\ DeclNames # {}
@@ -110,7 +115,9 @@ ASSUME Bug \in {"none", "NestedUnscoped", "LoopSwitchUnscoped", "ResolveAnyNode"
                 "ReadSetIgnoresOrder", "ReadSetResetsPerIteration", "TaintMarkIgnored",
                 "RefuseAsSkip", "RefuseNotDurable", "ResumeNoCompare", "TaintReusesNodeDecider",
                 "NoPreExec", "PreExecIgnoresRevocation", "PreExecOwnOnly", "RunBeforeRefusal",
-                "IdempotentUngated", "PreExecOnReplay"}
+                "IdempotentUngated", "PreExecOnReplay", "SinkNotReplayed", "ResolveDropsMarks",
+                "InheritedAsClean", "InheritedNotHeld", "PolicylessInheritRuns", "PolicylessUnchecked",
+                "EchoInherited"}
 
 \* The declarations a run records in run:start and a drive runs under (A2, "Declarations are
 \* recorded"): the policy, the exempt nodes, the declared sources.
@@ -129,6 +136,7 @@ Tracked == IF Bug = "IdempotentUngated" THEN SideEffects ELSE SideEffects \cup I
 TrackedKeys == {k \in NodeKeys : k[1] \in Tracked}
 TKeys == IF \E d \in Decls : d.pol = "gate" THEN TrackedKeys ELSE {}
 MarkKeys == {k \in NodeKeys : k[1] \in MarkNodes}
+ParentSet == IF Parent THEN {"parent"} ELSE {}
 \* Whether any declaration set carries a policy: only then does the model track the journal's order.
 Track == \E d \in Decls : d.pol # "none"
 ApproverSet == IF Gated = {} /\ \A d \in Decls : d.pol # "gate" THEN {} ELSE Approvers
@@ -201,6 +209,15 @@ variables
   \* Ghosts: a recorded node refused by a PreExec (replays are not blocked); a recorded node replayed while
   \* an approval was revoked (vacuity of that check).
   badReplay = FALSE, sawReplayRev = FALSE,
+  \* Inherited taint (3m2). rinh: the inherited marks run:start recorded (first writer wins); gi[d]: whether
+  \* drive d is given them (the parent's drive, not a recovery pass that drives the child directly).
+  rinh = FALSE,
+  gi   = [d \in Drivers |-> FALSE],
+  \* The parent's side: pm, a taint-mark record for the parent node holding this flow's own marks; pecho,
+  \* a record of the inherited marks sent up again; pres, the parent node's result; ghosts badUp (the
+  \* node's result recorded with an own mark missing) and badInh (a tracked node ran under an inherited,
+  \* policyless declaration).
+  pm = FALSE, pecho = FALSE, pres = FALSE, badUp = FALSE, badInh = FALSE,
   badOrder = FALSE;
 
 define
@@ -230,6 +247,19 @@ define
              ELSE Cardinality({a \in TElig(k) : tdec[TKey(k)][a] = "yes"})
   TNo(k)  == IF Bug = "TaintReuse" THEN No(k)
              ELSE Cardinality({a \in TElig(k) : tdec[TKey(k)][a] = "no"})
+  \* The inherited marks in the fold: the recorded ones (InheritedAsClean: ignored; InheritedNotHeld: the
+  \* drive's own, lost when a recovery pass drives the flow directly).
+  InhUsed(me) == IF Bug = "InheritedAsClean" THEN FALSE ELSE IF Bug = "InheritedNotHeld" THEN gi[me] ELSE rinh
+  \* This flow's own marks: a declared source's result, a taint mark a child learned. They go up to the parent.
+  OwnMarkKey(k) == (res[k].rec /\ k[1] \in rdecl.src) \/ tm[k]
+  OwnMarks == \E k \in NodeKeys : OwnMarkKey(k)
+  \* A policyless declaration under inherited marks, in a flow with a tracked node: refused at Begin.
+  PolicylessBlock(me) == Bug \notin {"PolicylessInheritRuns", "PolicylessUnchecked"} /\ (IF started THEN rinh ELSE gi[me])
+                         /\ cur[me].pol = "none" /\ TrackedKeys # {}
+  \* Defence in depth under inherited marks and a policyless declaration: a tracked node is refused at its
+  \* own gating too, as under Refuse (Safety is in no digest, so the Begin check alone is not trusted).
+  InhPolicyless(me, k) == rinh /\ dd[me].pol = "none" /\ k[1] \in Tracked /\ Bug # "PolicylessUnchecked"
+  InhBreach(k) == rinh /\ rdecl.pol = "none" /\ k[1] \in SideEffects \cup Idempotent
   \* A node's place in the journal: its own record if it has one, else the end.
   Pos(k) == IF res[k].rec THEN ord[k] ELSE jn
   \* The read set of node k is non-empty, folded from the journal by drive me under declarations d:
@@ -237,6 +267,7 @@ define
   \* records of other nodes earlier than that, and the flow input if declared untrusted.
   Reads(me, k, d) ==
     \/ "input" \in d.src
+    \/ InhUsed(me)
     \/ \E s \in NodeKeys \ {k} :
          /\ s[1] \in d.src /\ res[s].rec
          /\ IF Bug = "ReadSetOnResumeEmpty" THEN s \in seen[me] ELSE TRUE
@@ -248,14 +279,17 @@ define
   \* (RefuseNotDurable: a recorded refusal is not re-applied).
   TaintNeed(me, k) ==
     /\ Bug # "NoTaintGate"
-    /\ k[1] \in Tracked /\ dd[me].pol # "none" /\ k[1] \notin dd[me].ex
-    /\ Reads(me, k, dd[me])
-    /\ ~(Bug = "RefuseNotDurable" /\ dd[me].pol = "refuse" /\ grec[k])
-    /\ ~(Bug = "RunBeforeRefusal" /\ dd[me].pol = "refuse")
+    /\ k[1] \in Tracked
+    /\ \/ /\ dd[me].pol # "none" /\ k[1] \notin dd[me].ex
+          /\ Reads(me, k, dd[me])
+          /\ ~(Bug = "RefuseNotDurable" /\ dd[me].pol = "refuse" /\ grec[k])
+          /\ ~(Bug = "RunBeforeRefusal" /\ dd[me].pol = "refuse")
+       \/ InhPolicyless(me, k)
   \* The ground truth when the attempt is claimed: the recorded declarations, and everything the
   \* journal holds then.
   TrueReads(k) ==
     \/ "input" \in rdecl.src
+    \/ rinh
     \/ \E s \in NodeKeys \ {k} : s[1] \in rdecl.src /\ res[s].rec
     \/ \E j \in NodeKeys \ {k} : tm[j]
   \* An approved attempt (own gate or instance) without a PreExec that saw no revocation of that approval.
@@ -299,7 +333,7 @@ GRead:
   tneed := TaintNeed(self, key);
   preN[self] := FALSE; preT[self] := FALSE; rvN[self] := FALSE; rvT[self] := FALSE;
   if tneed then grec[key] := TRUE; end if;
-  if tneed /\ dd[self].pol = "refuse" then goto TRefuse;
+  if tneed /\ (dd[self].pol = "refuse" \/ InhPolicyless(self, key)) then goto TRefuse;
   elsif key[1] \notin Gated \/ Bug = "NoGate" then
     if tneed then goto TGate; else goto NGet; end if;
   elsif tally[GKey(key)] # None then goto GPause;
@@ -331,6 +365,8 @@ NGet:
     goto TPre;       \* PreExecOnReplay: the PreExec runs before the replay check
   elsif res[key].rec then
     sawReplayRev := sawReplayRev \/ revN \/ revT;
+    \* the child's engine calls the mark sink on every drive, replay included
+    pm := pm \/ (Parent /\ Bug # "SinkNotReplayed" /\ OwnMarkKey(key));
     nval[self] := res[key].v; return;
   elsif Revocable /\ (key[1] \in Gated \/ tneed) then
     goto TPre;       \* the PreExec runs right before the body executes, never on a replay
@@ -349,6 +385,7 @@ NClaim:
       badTaint := badTaint \/ TaintBreach(key);
       badPre := badPre \/ PreBreach(self, key, tneed);
       badOrder := badOrder \/ OrderBreach(key);
+      badInh := badInh \/ InhBreach(key);
     end if;
     if reply[self] # "ok" then
       failed[self] := "error"; return;
@@ -369,6 +406,7 @@ NBody:
     badTaint := badTaint \/ TaintBreach(key);
     badPre := badPre \/ PreBreach(self, key, tneed);
     badOrder := badOrder \/ OrderBreach(key);
+    badInh := badInh \/ InhBreach(key);
   end if;
   if key[1] \in MarkNodes /\ ~tm[key] then
     \* A child learned a taint mark: the sink writes taint-mark:<node key>:<source> before the
@@ -397,6 +435,13 @@ NRecord:
   else
     nval[self] := IF res[key].rec THEN res[key].v ELSE bodyVal;
   end if;
+  if Parent /\ failed[self] = None then goto NSink; else return; end if;
+NSink:
+  \* The mark sink: the parent's taint-mark record for an own mark, after the node's record (a crash in
+  \* between leaves the mark unsent until a drive replays the node). EchoInherited: the inherited marks go
+  \* up as well.
+  pm := pm \/ OwnMarkKey(key);
+  pecho := pecho \/ (Bug = "EchoInherited" /\ rinh);
   return;
 TRefuse:
   \* Refuse: the gate-reason record is written (GRead), then the sentinel is returned before any
@@ -483,19 +528,26 @@ Begin:
   nval[self] := 0; choice[self] := None; reply[self] := ""; seen[self] := {};
   \* The declarations this drive runs under: the operator may have changed them since the start.
   with c \in Decls do cur[self] := c; end with;
+  \* Given the inherited marks: the first drive of an inherited run is the parent's; a later one may be a
+  \* recovery pass that drives the flow directly.
+  with g \in (IF Inherited THEN (IF started THEN {TRUE, FALSE} ELSE {TRUE}) ELSE {FALSE}) do gi[self] := g; end with;
   if done.rec then goto Finish; end if;
 BeginStart:
   \* run:start records the declarations (first writer wins). A drive reads the journaled start and
   \* runs under IT; it compares the recorded declarations with its own exactly, and any difference
   \* (a weaker policy, a dropped declaration) is an ErrConfig before the first node.
-  Reply(reply[self]);
-  if reply[self] # "err_nc" then
-    if ~started then rdecl := cur[self]; end if;
-    started := TRUE;
-    dd[self] := IF Bug = "ResumeNoCompare" \/ ~started THEN cur[self] ELSE rdecl;
-  end if;
-  if reply[self] # "ok" then failed[self] := "error"; goto Finish;
-  elsif Bug # "ResumeNoCompare" /\ started /\ cur[self] # rdecl then failed[self] := "config"; goto Finish;
+  \* A policyless declaration under inherited marks in a flow with a tracked node: ErrConfig before any record.
+  if PolicylessBlock(self) then failed[self] := "config"; goto Finish;
+  else
+    Reply(reply[self]);
+    if reply[self] # "err_nc" then
+      if ~started then rdecl := cur[self]; rinh := gi[self]; end if;
+      started := TRUE;
+      dd[self] := IF Bug = "ResumeNoCompare" \/ ~started THEN cur[self] ELSE rdecl;
+    end if;
+    if reply[self] # "ok" then failed[self] := "error"; goto Finish;
+    elsif Bug # "ResumeNoCompare" /\ started /\ cur[self] # rdecl then failed[self] := "config"; goto Finish;
+    end if;
   end if;
 RunE:
   call Node(<<"E", 0>>);
@@ -571,6 +623,25 @@ RWrite:
   end if;
 end process;
 
+fair process parentp \in ParentSet
+begin
+PEnd:
+  \* The parent node that runs this flow gets its result: after the flow completed, or through
+  \* Flow.ResolveHalt of the halted node, which folds this flow's marks into the parent's journal
+  \* (ResolveDropsMarks: not). The node's result is recorded only with every own mark of the child up.
+  either
+    await done.rec;
+    badUp := badUp \/ (OwnMarks /\ ~pm);
+  or
+    await started /\ ~done.rec;
+    with nm = IF Bug = "ResolveDropsMarks" THEN pm ELSE pm \/ OwnMarks do
+      pm := nm;
+      badUp := badUp \/ (OwnMarks /\ ~nm);
+    end with;
+  end either;
+  pres := TRUE;
+end process;
+
 fair process approver \in ApproverSet
 begin
 ADecide:
@@ -604,7 +675,8 @@ VARIABLES started, res, mk, sw, done, tally, req, dec, nval, choice, failed,
           reply, ambig, crashes, fired, firedN, badRoute, badFire, rdecl, cur, 
           dd, jn, ord, tm, mord, seen, grec, refused, treq, tdec, ttally, 
           ncnt, badTaint, badResume, revN, revT, preN, preT, rvN, rvT, badPre, 
-          badReplay, sawReplayRev, badOrder, pc, stack
+          badReplay, sawReplayRev, rinh, gi, pm, pecho, pres, badUp, badInh, 
+          badOrder, pc, stack
 
 (* define statement *)
 SKey(i) == IF Bug = "LoopSwitchUnscoped" THEN <<"S", 0>> ELSE <<"S", i>>
@@ -633,12 +705,26 @@ TYes(k) == IF Bug = "TaintReuse" THEN Yes(k)
 TNo(k)  == IF Bug = "TaintReuse" THEN No(k)
            ELSE Cardinality({a \in TElig(k) : tdec[TKey(k)][a] = "no"})
 
+
+InhUsed(me) == IF Bug = "InheritedAsClean" THEN FALSE ELSE IF Bug = "InheritedNotHeld" THEN gi[me] ELSE rinh
+
+OwnMarkKey(k) == (res[k].rec /\ k[1] \in rdecl.src) \/ tm[k]
+OwnMarks == \E k \in NodeKeys : OwnMarkKey(k)
+
+PolicylessBlock(me) == Bug \notin {"PolicylessInheritRuns", "PolicylessUnchecked"} /\ (IF started THEN rinh ELSE gi[me])
+                       /\ cur[me].pol = "none" /\ TrackedKeys # {}
+
+
+InhPolicyless(me, k) == rinh /\ dd[me].pol = "none" /\ k[1] \in Tracked /\ Bug # "PolicylessUnchecked"
+InhBreach(k) == rinh /\ rdecl.pol = "none" /\ k[1] \in SideEffects \cup Idempotent
+
 Pos(k) == IF res[k].rec THEN ord[k] ELSE jn
 
 
 
 Reads(me, k, d) ==
   \/ "input" \in d.src
+  \/ InhUsed(me)
   \/ \E s \in NodeKeys \ {k} :
        /\ s[1] \in d.src /\ res[s].rec
        /\ IF Bug = "ReadSetOnResumeEmpty" THEN s \in seen[me] ELSE TRUE
@@ -650,14 +736,17 @@ Reads(me, k, d) ==
 
 TaintNeed(me, k) ==
   /\ Bug # "NoTaintGate"
-  /\ k[1] \in Tracked /\ dd[me].pol # "none" /\ k[1] \notin dd[me].ex
-  /\ Reads(me, k, dd[me])
-  /\ ~(Bug = "RefuseNotDurable" /\ dd[me].pol = "refuse" /\ grec[k])
-  /\ ~(Bug = "RunBeforeRefusal" /\ dd[me].pol = "refuse")
+  /\ k[1] \in Tracked
+  /\ \/ /\ dd[me].pol # "none" /\ k[1] \notin dd[me].ex
+        /\ Reads(me, k, dd[me])
+        /\ ~(Bug = "RefuseNotDurable" /\ dd[me].pol = "refuse" /\ grec[k])
+        /\ ~(Bug = "RunBeforeRefusal" /\ dd[me].pol = "refuse")
+     \/ InhPolicyless(me, k)
 
 
 TrueReads(k) ==
   \/ "input" \in rdecl.src
+  \/ rinh
   \/ \E s \in NodeKeys \ {k} : s[1] \in rdecl.src /\ res[s].rec
   \/ \E j \in NodeKeys \ {k} : tm[j]
 
@@ -687,10 +776,11 @@ vars == << started, res, mk, sw, done, tally, req, dec, nval, choice, failed,
            reply, ambig, crashes, fired, firedN, badRoute, badFire, rdecl, 
            cur, dd, jn, ord, tm, mord, seen, grec, refused, treq, tdec, 
            ttally, ncnt, badTaint, badResume, revN, revT, preN, preT, rvN, 
-           rvT, badPre, badReplay, sawReplayRev, badOrder, pc, stack, key, 
-           bodyVal, tneed, ckey, val, name, it, out, term, rk, rv, rf >>
+           rvT, badPre, badReplay, sawReplayRev, rinh, gi, pm, pecho, pres, 
+           badUp, badInh, badOrder, pc, stack, key, bodyVal, tneed, ckey, val, 
+           name, it, out, term, rk, rv, rf >>
 
-ProcSet == (Drivers) \cup (ResolverSet) \cup (ApproverSet)
+ProcSet == (Drivers) \cup (ResolverSet) \cup (ParentSet) \cup (ApproverSet)
 
 Init == (* Global variables *)
         /\ started = FALSE
@@ -736,6 +826,13 @@ Init == (* Global variables *)
         /\ badPre = FALSE
         /\ badReplay = FALSE
         /\ sawReplayRev = FALSE
+        /\ rinh = FALSE
+        /\ gi = [d \in Drivers |-> FALSE]
+        /\ pm = FALSE
+        /\ pecho = FALSE
+        /\ pres = FALSE
+        /\ badUp = FALSE
+        /\ badInh = FALSE
         /\ badOrder = FALSE
         (* Procedure Node *)
         /\ key = [ self \in ProcSet |-> defaultInitValue]
@@ -756,6 +853,7 @@ Init == (* Global variables *)
         /\ stack = [self \in ProcSet |-> << >>]
         /\ pc = [self \in ProcSet |-> CASE self \in Drivers -> "Begin"
                                         [] self \in ResolverSet -> "RPick"
+                                        [] self \in ParentSet -> "PEnd"
                                         [] self \in ApproverSet -> "ADecide"]
 
 GRead(self) == /\ pc[self] = "GRead"
@@ -768,7 +866,7 @@ GRead(self) == /\ pc[self] = "GRead"
                      THEN /\ grec' = [grec EXCEPT ![key[self]] = TRUE]
                      ELSE /\ TRUE
                           /\ grec' = grec
-               /\ IF tneed'[self] /\ dd[self].pol = "refuse"
+               /\ IF tneed'[self] /\ (dd[self].pol = "refuse" \/ InhPolicyless(self, key[self]))
                      THEN /\ pc' = [pc EXCEPT ![self] = "TRefuse"]
                           /\ req' = req
                      ELSE /\ IF key[self][1] \notin Gated \/ Bug = "NoGate"
@@ -786,9 +884,10 @@ GRead(self) == /\ pc[self] = "GRead"
                                firedN, badRoute, badFire, rdecl, cur, dd, jn, 
                                ord, tm, mord, seen, refused, treq, tdec, 
                                ttally, ncnt, badTaint, badResume, revN, revT, 
-                               badPre, badReplay, sawReplayRev, badOrder, 
-                               stack, key, bodyVal, ckey, val, name, it, out, 
-                               term, rk, rv, rf >>
+                               badPre, badReplay, sawReplayRev, rinh, gi, pm, 
+                               pecho, pres, badUp, badInh, badOrder, stack, 
+                               key, bodyVal, ckey, val, name, it, out, term, 
+                               rk, rv, rf >>
 
 GCount(self) == /\ pc[self] = "GCount"
                 /\ LET y == GYes(GKey(key[self])) IN
@@ -830,6 +929,7 @@ GCount(self) == /\ pc[self] = "GCount"
                                 seen, grec, refused, treq, tdec, ttally, 
                                 badTaint, badResume, revN, revT, preN, preT, 
                                 rvN, rvT, badPre, badReplay, sawReplayRev, 
+                                rinh, gi, pm, pecho, pres, badUp, badInh, 
                                 badOrder, ckey, val, name, it, out, term, rk, 
                                 rv, rf >>
 
@@ -851,16 +951,18 @@ GPause(self) == /\ pc[self] = "GPause"
                                 ord, tm, mord, seen, grec, refused, treq, tdec, 
                                 ttally, ncnt, badTaint, badResume, revN, revT, 
                                 preN, preT, rvN, rvT, badPre, badReplay, 
-                                sawReplayRev, badOrder, ckey, val, name, it, 
-                                out, term, rk, rv, rf >>
+                                sawReplayRev, rinh, gi, pm, pecho, pres, badUp, 
+                                badInh, badOrder, ckey, val, name, it, out, 
+                                term, rk, rv, rf >>
 
 NGet(self) == /\ pc[self] = "NGet"
               /\ IF Bug = "PreExecOnReplay" /\ Revocable /\ (key[self][1] \in Gated \/ tneed[self])
                     THEN /\ pc' = [pc EXCEPT ![self] = "TPre"]
-                         /\ UNCHANGED << nval, sawReplayRev, stack, key, 
+                         /\ UNCHANGED << nval, sawReplayRev, pm, stack, key, 
                                          bodyVal, tneed >>
                     ELSE /\ IF res[key[self]].rec
                                THEN /\ sawReplayRev' = (sawReplayRev \/ revN \/ revT)
+                                    /\ pm' = (pm \/ (Parent /\ Bug # "SinkNotReplayed" /\ OwnMarkKey(key[self])))
                                     /\ nval' = [nval EXCEPT ![self] = res[key[self]].v]
                                     /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
                                     /\ bodyVal' = [bodyVal EXCEPT ![self] = Head(stack[self]).bodyVal]
@@ -872,16 +974,16 @@ NGet(self) == /\ pc[self] = "NGet"
                                           ELSE /\ IF key[self][1] \notin SideEffects
                                                      THEN /\ pc' = [pc EXCEPT ![self] = "NBody"]
                                                      ELSE /\ pc' = [pc EXCEPT ![self] = "NClaim"]
-                                    /\ UNCHANGED << nval, sawReplayRev, stack, 
-                                                    key, bodyVal, tneed >>
+                                    /\ UNCHANGED << nval, sawReplayRev, pm, 
+                                                    stack, key, bodyVal, tneed >>
               /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
                               choice, failed, reply, ambig, crashes, fired, 
                               firedN, badRoute, badFire, rdecl, cur, dd, jn, 
                               ord, tm, mord, seen, grec, refused, treq, tdec, 
                               ttally, ncnt, badTaint, badResume, revN, revT, 
-                              preN, preT, rvN, rvT, badPre, badReplay, 
-                              badOrder, ckey, val, name, it, out, term, rk, rv, 
-                              rf >>
+                              preN, preT, rvN, rvT, badPre, badReplay, rinh, 
+                              gi, pecho, pres, badUp, badInh, badOrder, ckey, 
+                              val, name, it, out, term, rk, rv, rf >>
 
 NClaim(self) == /\ pc[self] = "NClaim"
                 /\ LET was == mk[key[self]] IN
@@ -898,8 +1000,10 @@ NClaim(self) == /\ pc[self] = "NClaim"
                                 /\ badTaint' = (badTaint \/ TaintBreach(key[self]))
                                 /\ badPre' = (badPre \/ PreBreach(self, key[self], tneed[self]))
                                 /\ badOrder' = (badOrder \/ OrderBreach(key[self]))
+                                /\ badInh' = (badInh \/ InhBreach(key[self]))
                            ELSE /\ TRUE
-                                /\ UNCHANGED << mk, badTaint, badPre, badOrder >>
+                                /\ UNCHANGED << mk, badTaint, badPre, badInh, 
+                                                badOrder >>
                      /\ IF reply'[self] # "ok"
                            THEN /\ failed' = [failed EXCEPT ![self] = "error"]
                                 /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
@@ -927,8 +1031,9 @@ NClaim(self) == /\ pc[self] = "NClaim"
                                 badFire, rdecl, cur, dd, jn, ord, tm, mord, 
                                 seen, grec, refused, treq, tdec, ttally, ncnt, 
                                 badResume, revN, revT, preN, preT, rvN, rvT, 
-                                badReplay, sawReplayRev, ckey, val, name, it, 
-                                out, term, rk, rv, rf >>
+                                badReplay, sawReplayRev, rinh, gi, pm, pecho, 
+                                pres, badUp, ckey, val, name, it, out, term, 
+                                rk, rv, rf >>
 
 NBody(self) == /\ pc[self] = "NBody"
                /\ \E x \in {0, 1}:
@@ -949,8 +1054,9 @@ NBody(self) == /\ pc[self] = "NBody"
                      THEN /\ badTaint' = (badTaint \/ TaintBreach(key[self]))
                           /\ badPre' = (badPre \/ PreBreach(self, key[self], tneed[self]))
                           /\ badOrder' = (badOrder \/ OrderBreach(key[self]))
+                          /\ badInh' = (badInh \/ InhBreach(key[self]))
                      ELSE /\ TRUE
-                          /\ UNCHANGED << badTaint, badPre, badOrder >>
+                          /\ UNCHANGED << badTaint, badPre, badInh, badOrder >>
                /\ IF key[self][1] \in MarkNodes /\ ~tm[key[self]]
                      THEN /\ \/ /\ TRUE
                                 /\ UNCHANGED <<jn, tm, mord>>
@@ -967,8 +1073,9 @@ NBody(self) == /\ pc[self] = "NBody"
                                firedN, badRoute, rdecl, cur, dd, ord, seen, 
                                grec, refused, treq, tdec, ttally, ncnt, revN, 
                                revT, preN, preT, rvN, rvT, badReplay, 
-                               sawReplayRev, stack, key, tneed, ckey, val, 
-                               name, it, out, term, rk, rv, rf >>
+                               sawReplayRev, rinh, gi, pm, pecho, pres, badUp, 
+                               stack, key, tneed, ckey, val, name, it, out, 
+                               term, rk, rv, rf >>
 
 NNested(self) == /\ pc[self] = "NNested"
                  /\ IF ~res[NKey(key[self][2])].rec
@@ -983,7 +1090,8 @@ NNested(self) == /\ pc[self] = "NNested"
                                  tm, mord, seen, grec, refused, treq, tdec, 
                                  ttally, ncnt, badTaint, badResume, revN, revT, 
                                  preN, preT, rvN, rvT, badPre, badReplay, 
-                                 sawReplayRev, badOrder, stack, key, bodyVal, 
+                                 sawReplayRev, rinh, gi, pm, pecho, pres, 
+                                 badUp, badInh, badOrder, stack, key, bodyVal, 
                                  tneed, ckey, val, name, it, out, term, rk, rv, 
                                  rf >>
 
@@ -1008,18 +1116,40 @@ NRecord(self) == /\ pc[self] = "NRecord"
                             /\ nval' = nval
                        ELSE /\ nval' = [nval EXCEPT ![self] = IF res'[key[self]].rec THEN res'[key[self]].v ELSE bodyVal[self]]
                             /\ UNCHANGED failed
-                 /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
-                 /\ bodyVal' = [bodyVal EXCEPT ![self] = Head(stack[self]).bodyVal]
-                 /\ tneed' = [tneed EXCEPT ![self] = Head(stack[self]).tneed]
-                 /\ key' = [key EXCEPT ![self] = Head(stack[self]).key]
-                 /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
+                 /\ IF Parent /\ failed'[self] = None
+                       THEN /\ pc' = [pc EXCEPT ![self] = "NSink"]
+                            /\ UNCHANGED << stack, key, bodyVal, tneed >>
+                       ELSE /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
+                            /\ bodyVal' = [bodyVal EXCEPT ![self] = Head(stack[self]).bodyVal]
+                            /\ tneed' = [tneed EXCEPT ![self] = Head(stack[self]).tneed]
+                            /\ key' = [key EXCEPT ![self] = Head(stack[self]).key]
+                            /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                  /\ UNCHANGED << started, mk, sw, done, tally, req, dec, 
                                  choice, crashes, fired, firedN, badRoute, 
                                  badFire, rdecl, cur, dd, tm, mord, grec, 
                                  refused, treq, tdec, ttally, ncnt, badTaint, 
                                  badResume, revN, revT, preN, preT, rvN, rvT, 
-                                 badPre, badReplay, sawReplayRev, badOrder, 
-                                 ckey, val, name, it, out, term, rk, rv, rf >>
+                                 badPre, badReplay, sawReplayRev, rinh, gi, pm, 
+                                 pecho, pres, badUp, badInh, badOrder, ckey, 
+                                 val, name, it, out, term, rk, rv, rf >>
+
+NSink(self) == /\ pc[self] = "NSink"
+               /\ pm' = (pm \/ OwnMarkKey(key[self]))
+               /\ pecho' = (pecho \/ (Bug = "EchoInherited" /\ rinh))
+               /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
+               /\ bodyVal' = [bodyVal EXCEPT ![self] = Head(stack[self]).bodyVal]
+               /\ tneed' = [tneed EXCEPT ![self] = Head(stack[self]).tneed]
+               /\ key' = [key EXCEPT ![self] = Head(stack[self]).key]
+               /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
+               /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
+                               nval, choice, failed, reply, ambig, crashes, 
+                               fired, firedN, badRoute, badFire, rdecl, cur, 
+                               dd, jn, ord, tm, mord, seen, grec, refused, 
+                               treq, tdec, ttally, ncnt, badTaint, badResume, 
+                               revN, revT, preN, preT, rvN, rvT, badPre, 
+                               badReplay, sawReplayRev, rinh, gi, pres, badUp, 
+                               badInh, badOrder, ckey, val, name, it, out, 
+                               term, rk, rv, rf >>
 
 TRefuse(self) == /\ pc[self] = "TRefuse"
                  /\ refused' = [refused EXCEPT ![key[self]] = TRUE]
@@ -1042,6 +1172,7 @@ TRefuse(self) == /\ pc[self] = "TRefuse"
                                  seen, grec, treq, tdec, ttally, ncnt, 
                                  badTaint, badResume, revN, revT, preN, preT, 
                                  rvN, rvT, badPre, badReplay, sawReplayRev, 
+                                 rinh, gi, pm, pecho, pres, badUp, badInh, 
                                  badOrder, ckey, val, name, it, out, term, rk, 
                                  rv, rf >>
 
@@ -1057,9 +1188,9 @@ TGate(self) == /\ pc[self] = "TGate"
                                dd, jn, ord, tm, mord, seen, grec, refused, 
                                tdec, ttally, ncnt, badTaint, badResume, revN, 
                                revT, preN, preT, rvN, rvT, badPre, badReplay, 
-                               sawReplayRev, badOrder, stack, key, bodyVal, 
-                               tneed, ckey, val, name, it, out, term, rk, rv, 
-                               rf >>
+                               sawReplayRev, rinh, gi, pm, pecho, pres, badUp, 
+                               badInh, badOrder, stack, key, bodyVal, tneed, 
+                               ckey, val, name, it, out, term, rk, rv, rf >>
 
 TCount(self) == /\ pc[self] = "TCount"
                 /\ LET y == TYes(key[self]) IN
@@ -1100,6 +1231,7 @@ TCount(self) == /\ pc[self] = "TCount"
                                 seen, grec, refused, treq, tdec, ncnt, 
                                 badTaint, badResume, revN, revT, preN, preT, 
                                 rvN, rvT, badPre, badReplay, sawReplayRev, 
+                                rinh, gi, pm, pecho, pres, badUp, badInh, 
                                 badOrder, ckey, val, name, it, out, term, rk, 
                                 rv, rf >>
 
@@ -1119,8 +1251,9 @@ TPause(self) == /\ pc[self] = "TPause"
                                 ord, tm, mord, seen, grec, refused, treq, tdec, 
                                 ttally, ncnt, badTaint, badResume, revN, revT, 
                                 preN, preT, rvN, rvT, badPre, badReplay, 
-                                sawReplayRev, badOrder, ckey, val, name, it, 
-                                out, term, rk, rv, rf >>
+                                sawReplayRev, rinh, gi, pm, pecho, pres, badUp, 
+                                badInh, badOrder, ckey, val, name, it, out, 
+                                term, rk, rv, rf >>
 
 TPre(self) == /\ pc[self] = "TPre"
               /\ IF Bug # "NoPreExec" /\ ((revN /\ key[self][1] \in Gated) \/ (revT /\ tneed[self] /\ Bug # "PreExecOwnOnly"))
@@ -1160,13 +1293,15 @@ TPre(self) == /\ pc[self] = "TPre"
                               badRoute, badFire, rdecl, cur, dd, jn, ord, tm, 
                               mord, seen, grec, refused, treq, tdec, ttally, 
                               ncnt, badTaint, badResume, revN, revT, badPre, 
-                              sawReplayRev, badOrder, ckey, val, name, it, out, 
-                              term, rk, rv, rf >>
+                              sawReplayRev, rinh, gi, pm, pecho, pres, badUp, 
+                              badInh, badOrder, ckey, val, name, it, out, term, 
+                              rk, rv, rf >>
 
 Node(self) == GRead(self) \/ GCount(self) \/ GPause(self) \/ NGet(self)
                  \/ NClaim(self) \/ NBody(self) \/ NNested(self)
-                 \/ NRecord(self) \/ TRefuse(self) \/ TGate(self)
-                 \/ TCount(self) \/ TPause(self) \/ TPre(self)
+                 \/ NRecord(self) \/ NSink(self) \/ TRefuse(self)
+                 \/ TGate(self) \/ TCount(self) \/ TPause(self)
+                 \/ TPre(self)
 
 CDo(self) == /\ pc[self] = "CDo"
              /\ IF sw[ckey[self]] = None
@@ -1200,7 +1335,8 @@ CDo(self) == /\ pc[self] = "CDo"
                              rdecl, cur, dd, jn, ord, tm, mord, seen, grec, 
                              refused, treq, tdec, ttally, ncnt, badTaint, 
                              badResume, revN, revT, preN, preT, rvN, rvT, 
-                             badPre, badReplay, sawReplayRev, badOrder, key, 
+                             badPre, badReplay, sawReplayRev, rinh, gi, pm, 
+                             pecho, pres, badUp, badInh, badOrder, key, 
                              bodyVal, tneed, it, out, term, rk, rv, rf >>
 
 CRoute(self) == /\ pc[self] = "CRoute"
@@ -1220,8 +1356,9 @@ CRoute(self) == /\ pc[self] = "CRoute"
                                 mord, seen, grec, refused, treq, tdec, ttally, 
                                 ncnt, badTaint, badResume, revN, revT, preN, 
                                 preT, rvN, rvT, badPre, badReplay, 
-                                sawReplayRev, badOrder, key, bodyVal, tneed, 
-                                it, out, term, rk, rv, rf >>
+                                sawReplayRev, rinh, gi, pm, pecho, pres, badUp, 
+                                badInh, badOrder, key, bodyVal, tneed, it, out, 
+                                term, rk, rv, rf >>
 
 Choose(self) == CDo(self) \/ CRoute(self)
 
@@ -1236,6 +1373,8 @@ Begin(self) == /\ pc[self] = "Begin"
                /\ seen' = [seen EXCEPT ![self] = {}]
                /\ \E c \in Decls:
                     cur' = [cur EXCEPT ![self] = c]
+               /\ \E g \in (IF Inherited THEN (IF started THEN {TRUE, FALSE} ELSE {TRUE}) ELSE {FALSE}):
+                    gi' = [gi EXCEPT ![self] = g]
                /\ IF done.rec
                      THEN /\ pc' = [pc EXCEPT ![self] = "Finish"]
                      ELSE /\ pc' = [pc EXCEPT ![self] = "BeginStart"]
@@ -1244,45 +1383,55 @@ Begin(self) == /\ pc[self] = "Begin"
                                badFire, rdecl, dd, jn, ord, tm, mord, grec, 
                                refused, treq, tdec, ttally, ncnt, badTaint, 
                                badResume, revN, revT, preN, preT, rvN, rvT, 
-                               badPre, badReplay, sawReplayRev, badOrder, 
-                               stack, key, bodyVal, tneed, ckey, val, name, rk, 
-                               rv, rf >>
+                               badPre, badReplay, sawReplayRev, rinh, pm, 
+                               pecho, pres, badUp, badInh, badOrder, stack, 
+                               key, bodyVal, tneed, ckey, val, name, rk, rv, 
+                               rf >>
 
 BeginStart(self) == /\ pc[self] = "BeginStart"
-                    /\ \/ /\ reply' = [reply EXCEPT ![self] = "ok"]
-                          /\ ambig' = ambig
-                       \/ /\ ambig < MaxAmbig
-                          /\ ambig' = ambig + 1
-                          /\ reply' = [reply EXCEPT ![self] = "err_nc"]
-                       \/ /\ ambig < MaxAmbig
-                          /\ ambig' = ambig + 1
-                          /\ reply' = [reply EXCEPT ![self] = "err_c"]
-                    /\ IF reply'[self] # "err_nc"
-                          THEN /\ IF ~started
-                                     THEN /\ rdecl' = cur[self]
-                                     ELSE /\ TRUE
-                                          /\ rdecl' = rdecl
-                               /\ started' = TRUE
-                               /\ dd' = [dd EXCEPT ![self] = IF Bug = "ResumeNoCompare" \/ ~started' THEN cur[self] ELSE rdecl']
-                          ELSE /\ TRUE
-                               /\ UNCHANGED << started, rdecl, dd >>
-                    /\ IF reply'[self] # "ok"
-                          THEN /\ failed' = [failed EXCEPT ![self] = "error"]
+                    /\ IF PolicylessBlock(self)
+                          THEN /\ failed' = [failed EXCEPT ![self] = "config"]
                                /\ pc' = [pc EXCEPT ![self] = "Finish"]
-                          ELSE /\ IF Bug # "ResumeNoCompare" /\ started' /\ cur[self] # rdecl'
-                                     THEN /\ failed' = [failed EXCEPT ![self] = "config"]
+                               /\ UNCHANGED << started, reply, ambig, rdecl, 
+                                               dd, rinh >>
+                          ELSE /\ \/ /\ reply' = [reply EXCEPT ![self] = "ok"]
+                                     /\ ambig' = ambig
+                                  \/ /\ ambig < MaxAmbig
+                                     /\ ambig' = ambig + 1
+                                     /\ reply' = [reply EXCEPT ![self] = "err_nc"]
+                                  \/ /\ ambig < MaxAmbig
+                                     /\ ambig' = ambig + 1
+                                     /\ reply' = [reply EXCEPT ![self] = "err_c"]
+                               /\ IF reply'[self] # "err_nc"
+                                     THEN /\ IF ~started
+                                                THEN /\ rdecl' = cur[self]
+                                                     /\ rinh' = gi[self]
+                                                ELSE /\ TRUE
+                                                     /\ UNCHANGED << rdecl, 
+                                                                     rinh >>
+                                          /\ started' = TRUE
+                                          /\ dd' = [dd EXCEPT ![self] = IF Bug = "ResumeNoCompare" \/ ~started' THEN cur[self] ELSE rdecl']
+                                     ELSE /\ TRUE
+                                          /\ UNCHANGED << started, rdecl, dd, 
+                                                          rinh >>
+                               /\ IF reply'[self] # "ok"
+                                     THEN /\ failed' = [failed EXCEPT ![self] = "error"]
                                           /\ pc' = [pc EXCEPT ![self] = "Finish"]
-                                     ELSE /\ pc' = [pc EXCEPT ![self] = "RunE"]
-                                          /\ UNCHANGED failed
+                                     ELSE /\ IF Bug # "ResumeNoCompare" /\ started' /\ cur[self] # rdecl'
+                                                THEN /\ failed' = [failed EXCEPT ![self] = "config"]
+                                                     /\ pc' = [pc EXCEPT ![self] = "Finish"]
+                                                ELSE /\ pc' = [pc EXCEPT ![self] = "RunE"]
+                                                     /\ UNCHANGED failed
                     /\ UNCHANGED << res, mk, sw, done, tally, req, dec, nval, 
                                     choice, crashes, fired, firedN, badRoute, 
                                     badFire, cur, jn, ord, tm, mord, seen, 
                                     grec, refused, treq, tdec, ttally, ncnt, 
                                     badTaint, badResume, revN, revT, preN, 
                                     preT, rvN, rvT, badPre, badReplay, 
-                                    sawReplayRev, badOrder, stack, key, 
-                                    bodyVal, tneed, ckey, val, name, it, out, 
-                                    term, rk, rv, rf >>
+                                    sawReplayRev, gi, pm, pecho, pres, badUp, 
+                                    badInh, badOrder, stack, key, bodyVal, 
+                                    tneed, ckey, val, name, it, out, term, rk, 
+                                    rv, rf >>
 
 RunE(self) == /\ pc[self] = "RunE"
               /\ /\ key' = [key EXCEPT ![self] = <<"E", 0>>]
@@ -1301,8 +1450,9 @@ RunE(self) == /\ pc[self] = "RunE"
                               jn, ord, tm, mord, seen, grec, refused, treq, 
                               tdec, ttally, ncnt, badTaint, badResume, revN, 
                               revT, preN, preT, rvN, rvT, badPre, badReplay, 
-                              sawReplayRev, badOrder, ckey, val, name, it, out, 
-                              term, rk, rv, rf >>
+                              sawReplayRev, rinh, gi, pm, pecho, pres, badUp, 
+                              badInh, badOrder, ckey, val, name, it, out, term, 
+                              rk, rv, rf >>
 
 AfterE(self) == /\ pc[self] = "AfterE"
                 /\ IF failed[self] # None
@@ -1314,7 +1464,8 @@ AfterE(self) == /\ pc[self] = "AfterE"
                                 dd, jn, ord, tm, mord, seen, grec, refused, 
                                 treq, tdec, ttally, ncnt, badTaint, badResume, 
                                 revN, revT, preN, preT, rvN, rvT, badPre, 
-                                badReplay, sawReplayRev, badOrder, stack, key, 
+                                badReplay, sawReplayRev, rinh, gi, pm, pecho, 
+                                pres, badUp, badInh, badOrder, stack, key, 
                                 bodyVal, tneed, ckey, val, name, it, out, term, 
                                 rk, rv, rf >>
 
@@ -1335,8 +1486,9 @@ ChooseE(self) == /\ pc[self] = "ChooseE"
                                  dd, jn, ord, tm, mord, seen, grec, refused, 
                                  treq, tdec, ttally, ncnt, badTaint, badResume, 
                                  revN, revT, preN, preT, rvN, rvT, badPre, 
-                                 badReplay, sawReplayRev, badOrder, key, 
-                                 bodyVal, tneed, it, out, term, rk, rv, rf >>
+                                 badReplay, sawReplayRev, rinh, gi, pm, pecho, 
+                                 pres, badUp, badInh, badOrder, key, bodyVal, 
+                                 tneed, it, out, term, rk, rv, rf >>
 
 AfterChooseE(self) == /\ pc[self] = "AfterChooseE"
                       /\ IF failed[self] # None
@@ -1351,9 +1503,10 @@ AfterChooseE(self) == /\ pc[self] = "AfterChooseE"
                                       mord, seen, grec, refused, treq, tdec, 
                                       ttally, ncnt, badTaint, badResume, revN, 
                                       revT, preN, preT, rvN, rvT, badPre, 
-                                      badReplay, sawReplayRev, badOrder, stack, 
-                                      key, bodyVal, tneed, ckey, val, name, it, 
-                                      out, term, rk, rv, rf >>
+                                      badReplay, sawReplayRev, rinh, gi, pm, 
+                                      pecho, pres, badUp, badInh, badOrder, 
+                                      stack, key, bodyVal, tneed, ckey, val, 
+                                      name, it, out, term, rk, rv, rf >>
 
 LoopH(self) == /\ pc[self] = "LoopH"
                /\ /\ key' = [key EXCEPT ![self] = <<"H", it[self]>>]
@@ -1372,8 +1525,9 @@ LoopH(self) == /\ pc[self] = "LoopH"
                                dd, jn, ord, tm, mord, seen, grec, refused, 
                                treq, tdec, ttally, ncnt, badTaint, badResume, 
                                revN, revT, preN, preT, rvN, rvT, badPre, 
-                               badReplay, sawReplayRev, badOrder, ckey, val, 
-                               name, it, out, term, rk, rv, rf >>
+                               badReplay, sawReplayRev, rinh, gi, pm, pecho, 
+                               pres, badUp, badInh, badOrder, ckey, val, name, 
+                               it, out, term, rk, rv, rf >>
 
 AfterH(self) == /\ pc[self] = "AfterH"
                 /\ IF failed[self] # None
@@ -1385,7 +1539,8 @@ AfterH(self) == /\ pc[self] = "AfterH"
                                 dd, jn, ord, tm, mord, seen, grec, refused, 
                                 treq, tdec, ttally, ncnt, badTaint, badResume, 
                                 revN, revT, preN, preT, rvN, rvT, badPre, 
-                                badReplay, sawReplayRev, badOrder, stack, key, 
+                                badReplay, sawReplayRev, rinh, gi, pm, pecho, 
+                                pres, badUp, badInh, badOrder, stack, key, 
                                 bodyVal, tneed, ckey, val, name, it, out, term, 
                                 rk, rv, rf >>
 
@@ -1406,8 +1561,9 @@ RunS(self) == /\ pc[self] = "RunS"
                               jn, ord, tm, mord, seen, grec, refused, treq, 
                               tdec, ttally, ncnt, badTaint, badResume, revN, 
                               revT, preN, preT, rvN, rvT, badPre, badReplay, 
-                              sawReplayRev, badOrder, ckey, val, name, it, out, 
-                              term, rk, rv, rf >>
+                              sawReplayRev, rinh, gi, pm, pecho, pres, badUp, 
+                              badInh, badOrder, ckey, val, name, it, out, term, 
+                              rk, rv, rf >>
 
 AfterS(self) == /\ pc[self] = "AfterS"
                 /\ IF failed[self] # None
@@ -1419,7 +1575,8 @@ AfterS(self) == /\ pc[self] = "AfterS"
                                 dd, jn, ord, tm, mord, seen, grec, refused, 
                                 treq, tdec, ttally, ncnt, badTaint, badResume, 
                                 revN, revT, preN, preT, rvN, rvT, badPre, 
-                                badReplay, sawReplayRev, badOrder, stack, key, 
+                                badReplay, sawReplayRev, rinh, gi, pm, pecho, 
+                                pres, badUp, badInh, badOrder, stack, key, 
                                 bodyVal, tneed, ckey, val, name, it, out, term, 
                                 rk, rv, rf >>
 
@@ -1440,8 +1597,9 @@ ChooseS(self) == /\ pc[self] = "ChooseS"
                                  dd, jn, ord, tm, mord, seen, grec, refused, 
                                  treq, tdec, ttally, ncnt, badTaint, badResume, 
                                  revN, revT, preN, preT, rvN, rvT, badPre, 
-                                 badReplay, sawReplayRev, badOrder, key, 
-                                 bodyVal, tneed, it, out, term, rk, rv, rf >>
+                                 badReplay, sawReplayRev, rinh, gi, pm, pecho, 
+                                 pres, badUp, badInh, badOrder, key, bodyVal, 
+                                 tneed, it, out, term, rk, rv, rf >>
 
 AfterChooseS(self) == /\ pc[self] = "AfterChooseS"
                       /\ IF failed[self] # None
@@ -1464,7 +1622,8 @@ AfterChooseS(self) == /\ pc[self] = "AfterChooseS"
                                       refused, treq, tdec, ttally, ncnt, 
                                       badTaint, badResume, revN, revT, preN, 
                                       preT, rvN, rvT, badPre, badReplay, 
-                                      sawReplayRev, badOrder, stack, key, 
+                                      sawReplayRev, rinh, gi, pm, pecho, pres, 
+                                      badUp, badInh, badOrder, stack, key, 
                                       bodyVal, tneed, ckey, val, name, out, 
                                       term, rk, rv, rf >>
 
@@ -1485,8 +1644,9 @@ RunT(self) == /\ pc[self] = "RunT"
                               jn, ord, tm, mord, seen, grec, refused, treq, 
                               tdec, ttally, ncnt, badTaint, badResume, revN, 
                               revT, preN, preT, rvN, rvT, badPre, badReplay, 
-                              sawReplayRev, badOrder, ckey, val, name, it, out, 
-                              term, rk, rv, rf >>
+                              sawReplayRev, rinh, gi, pm, pecho, pres, badUp, 
+                              badInh, badOrder, ckey, val, name, it, out, term, 
+                              rk, rv, rf >>
 
 AfterT(self) == /\ pc[self] = "AfterT"
                 /\ IF failed[self] # None
@@ -1498,7 +1658,8 @@ AfterT(self) == /\ pc[self] = "AfterT"
                                 dd, jn, ord, tm, mord, seen, grec, refused, 
                                 treq, tdec, ttally, ncnt, badTaint, badResume, 
                                 revN, revT, preN, preT, rvN, rvT, badPre, 
-                                badReplay, sawReplayRev, badOrder, stack, key, 
+                                badReplay, sawReplayRev, rinh, gi, pm, pecho, 
+                                pres, badUp, badInh, badOrder, stack, key, 
                                 bodyVal, tneed, ckey, val, name, it, out, term, 
                                 rk, rv, rf >>
 
@@ -1512,8 +1673,9 @@ SetT(self) == /\ pc[self] = "SetT"
                               jn, ord, tm, mord, seen, grec, refused, treq, 
                               tdec, ttally, ncnt, badTaint, badResume, revN, 
                               revT, preN, preT, rvN, rvT, badPre, badReplay, 
-                              sawReplayRev, badOrder, stack, key, bodyVal, 
-                              tneed, ckey, val, name, it, rk, rv, rf >>
+                              sawReplayRev, rinh, gi, pm, pecho, pres, badUp, 
+                              badInh, badOrder, stack, key, bodyVal, tneed, 
+                              ckey, val, name, it, rk, rv, rf >>
 
 RunQ(self) == /\ pc[self] = "RunQ"
               /\ /\ key' = [key EXCEPT ![self] = <<"Q", 0>>]
@@ -1532,8 +1694,9 @@ RunQ(self) == /\ pc[self] = "RunQ"
                               jn, ord, tm, mord, seen, grec, refused, treq, 
                               tdec, ttally, ncnt, badTaint, badResume, revN, 
                               revT, preN, preT, rvN, rvT, badPre, badReplay, 
-                              sawReplayRev, badOrder, ckey, val, name, it, out, 
-                              term, rk, rv, rf >>
+                              sawReplayRev, rinh, gi, pm, pecho, pres, badUp, 
+                              badInh, badOrder, ckey, val, name, it, out, term, 
+                              rk, rv, rf >>
 
 AfterQ(self) == /\ pc[self] = "AfterQ"
                 /\ IF failed[self] # None
@@ -1545,7 +1708,8 @@ AfterQ(self) == /\ pc[self] = "AfterQ"
                                 dd, jn, ord, tm, mord, seen, grec, refused, 
                                 treq, tdec, ttally, ncnt, badTaint, badResume, 
                                 revN, revT, preN, preT, rvN, rvT, badPre, 
-                                badReplay, sawReplayRev, badOrder, stack, key, 
+                                badReplay, sawReplayRev, rinh, gi, pm, pecho, 
+                                pres, badUp, badInh, badOrder, stack, key, 
                                 bodyVal, tneed, ckey, val, name, it, out, term, 
                                 rk, rv, rf >>
 
@@ -1559,8 +1723,9 @@ SetQ(self) == /\ pc[self] = "SetQ"
                               jn, ord, tm, mord, seen, grec, refused, treq, 
                               tdec, ttally, ncnt, badTaint, badResume, revN, 
                               revT, preN, preT, rvN, rvT, badPre, badReplay, 
-                              sawReplayRev, badOrder, stack, key, bodyVal, 
-                              tneed, ckey, val, name, it, rk, rv, rf >>
+                              sawReplayRev, rinh, gi, pm, pecho, pres, badUp, 
+                              badInh, badOrder, stack, key, bodyVal, tneed, 
+                              ckey, val, name, it, rk, rv, rf >>
 
 Complete(self) == /\ pc[self] = "Complete"
                   /\ IF Bug # "NoCompletion"
@@ -1589,7 +1754,8 @@ Complete(self) == /\ pc[self] = "Complete"
                                   seen, grec, refused, treq, tdec, ttally, 
                                   ncnt, badTaint, badResume, revN, revT, preN, 
                                   preT, rvN, rvT, badPre, badReplay, 
-                                  sawReplayRev, badOrder, stack, key, bodyVal, 
+                                  sawReplayRev, rinh, gi, pm, pecho, pres, 
+                                  badUp, badInh, badOrder, stack, key, bodyVal, 
                                   tneed, ckey, val, name, it, out, term, rk, 
                                   rv, rf >>
 
@@ -1603,7 +1769,8 @@ Finish(self) == /\ pc[self] = "Finish"
                                 dd, jn, ord, tm, mord, seen, grec, refused, 
                                 treq, tdec, ttally, ncnt, badTaint, badResume, 
                                 revN, revT, preN, preT, rvN, rvT, badPre, 
-                                badReplay, sawReplayRev, badOrder, stack, key, 
+                                badReplay, sawReplayRev, rinh, gi, pm, pecho, 
+                                pres, badUp, badInh, badOrder, stack, key, 
                                 bodyVal, tneed, ckey, val, name, it, out, term, 
                                 rk, rv, rf >>
 
@@ -1632,7 +1799,8 @@ RPick(self) == /\ pc[self] = "RPick"
                                dd, jn, ord, tm, mord, seen, grec, refused, 
                                treq, tdec, ttally, ncnt, badTaint, badResume, 
                                revN, revT, preN, preT, rvN, rvT, badPre, 
-                               badReplay, sawReplayRev, badOrder, stack, key, 
+                               badReplay, sawReplayRev, rinh, gi, pm, pecho, 
+                               pres, badUp, badInh, badOrder, stack, key, 
                                bodyVal, tneed, ckey, val, name, it, out, term >>
 
 RWrite(self) == /\ pc[self] = "RWrite"
@@ -1657,10 +1825,33 @@ RWrite(self) == /\ pc[self] = "RWrite"
                                 seen, grec, refused, treq, tdec, ttally, ncnt, 
                                 badTaint, badResume, revN, revT, preN, preT, 
                                 rvN, rvT, badPre, badReplay, sawReplayRev, 
+                                rinh, gi, pm, pecho, pres, badUp, badInh, 
                                 badOrder, stack, key, bodyVal, tneed, ckey, 
                                 val, name, it, out, term, rk, rv, rf >>
 
 resolver(self) == RPick(self) \/ RWrite(self)
+
+PEnd(self) == /\ pc[self] = "PEnd"
+              /\ \/ /\ done.rec
+                    /\ badUp' = (badUp \/ (OwnMarks /\ ~pm))
+                    /\ pm' = pm
+                 \/ /\ started /\ ~done.rec
+                    /\ LET nm == IF Bug = "ResolveDropsMarks" THEN pm ELSE pm \/ OwnMarks IN
+                         /\ pm' = nm
+                         /\ badUp' = (badUp \/ (OwnMarks /\ ~nm))
+              /\ pres' = TRUE
+              /\ pc' = [pc EXCEPT ![self] = "Done"]
+              /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
+                              nval, choice, failed, reply, ambig, crashes, 
+                              fired, firedN, badRoute, badFire, rdecl, cur, dd, 
+                              jn, ord, tm, mord, seen, grec, refused, treq, 
+                              tdec, ttally, ncnt, badTaint, badResume, revN, 
+                              revT, preN, preT, rvN, rvT, badPre, badReplay, 
+                              sawReplayRev, rinh, gi, pecho, badInh, badOrder, 
+                              stack, key, bodyVal, tneed, ckey, val, name, it, 
+                              out, term, rk, rv, rf >>
+
+parentp(self) == PEnd(self)
 
 ADecide(self) == /\ pc[self] = "ADecide"
                  /\ \/ /\ \E k \in {k \in GateKeys : (dec[k][self] = None /\ (req[k] \/ Early)) \/ (dec[k][self] \in {"eyes", "eno"} /\ req[k])}:
@@ -1682,7 +1873,8 @@ ADecide(self) == /\ pc[self] = "ADecide"
                                  ord, tm, mord, seen, grec, refused, treq, 
                                  ttally, ncnt, badTaint, badResume, revN, revT, 
                                  preN, preT, rvN, rvT, badPre, badReplay, 
-                                 sawReplayRev, badOrder, stack, key, bodyVal, 
+                                 sawReplayRev, rinh, gi, pm, pecho, pres, 
+                                 badUp, badInh, badOrder, stack, key, bodyVal, 
                                  tneed, ckey, val, name, it, out, term, rk, rv, 
                                  rf >>
 
@@ -1695,12 +1887,14 @@ Terminating == /\ \A self \in ProcSet: pc[self] = "Done"
 Next == (\E self \in ProcSet: Node(self) \/ Choose(self))
            \/ (\E self \in Drivers: driver(self))
            \/ (\E self \in ResolverSet: resolver(self))
+           \/ (\E self \in ParentSet: parentp(self))
            \/ (\E self \in ApproverSet: approver(self))
            \/ Terminating
 
 Spec == /\ Init /\ [][Next]_vars
         /\ \A self \in Drivers : WF_vars(driver(self)) /\ WF_vars(Node(self)) /\ WF_vars(Choose(self))
         /\ \A self \in ResolverSet : WF_vars((pc[self] # "RPick") /\ resolver(self))
+        /\ \A self \in ParentSet : WF_vars(parentp(self))
         /\ \A self \in ApproverSet : WF_vars(approver(self))
 
 Termination == <>(\A self \in ProcSet: pc[self] = "Done")
@@ -1724,6 +1918,7 @@ Crash(d) ==
   /\ out' = [out EXCEPT ![d] = 0]
   /\ term' = [term EXCEPT ![d] = None]
   /\ cur' = [cur EXCEPT ![d] = NoDecl]
+  /\ gi' = [gi EXCEPT ![d] = FALSE]
   /\ dd' = [dd EXCEPT ![d] = NoDecl]
   /\ seen' = [seen EXCEPT ![d] = {}]
   /\ tneed' = [tneed EXCEPT ![d] = FALSE]
@@ -1733,7 +1928,7 @@ Crash(d) ==
   /\ name' = [name EXCEPT ![d] = defaultInitValue]
   /\ UNCHANGED <<started, res, mk, sw, done, tally, req, dec, ambig, fired, firedN, badRoute, badFire, rk, rv, rf,
                  rdecl, jn, ord, tm, mord, grec, refused, treq, tdec, ttally, ncnt, badTaint, badResume,
-                 revN, revT, preN, preT, rvN, rvT, badPre, badOrder, badReplay, sawReplayRev>>
+                 revN, revT, preN, preT, rvN, rvT, badPre, badOrder, badReplay, sawReplayRev, rinh, pm, pecho, pres, badUp, badInh>>
 
 \* A certificate of an approval is revoked (once), whenever (only in a model that tracks taint).
 Revoke ==
@@ -1742,7 +1937,7 @@ Revoke ==
        IF w = "N" THEN ~revN /\ revN' = TRUE /\ revT' = revT ELSE ~revT /\ revT' = TRUE /\ revN' = revN
   /\ UNCHANGED <<started, res, mk, sw, done, tally, req, dec, nval, choice, failed, reply, ambig, crashes,
                  fired, firedN, badRoute, badFire, rdecl, cur, dd, jn, ord, tm, mord, seen, grec, refused,
-                 treq, tdec, ttally, ncnt, badTaint, badResume, preN, preT, rvN, rvT, badPre, badOrder, badReplay, sawReplayRev, pc, stack,
+                 treq, tdec, ttally, ncnt, badTaint, badResume, preN, preT, rvN, rvT, badPre, badOrder, badReplay, sawReplayRev, rinh, gi, pm, pecho, pres, badUp, badInh, pc, stack,
                  key, bodyVal, tneed, ckey, val, name, it, out, term, rk, rv, rf>>
 
 FullNext == Next \/ \E d \in Drivers : Crash(d) \/ Revoke
@@ -1826,6 +2021,25 @@ RefusedClean == \A k \in NodeKeys : refused[k] =>
 
 \* PreExec: an approved attempt is claimed only after a PreExec that saw no revocation.
 PreExecHeld == ~badPre
+
+\* Inherited taint (3m2, docs/design/flow-taint.md, C1 option B). A flow started under a tainted parent is
+\* refused at Begin, before any record, when its declaration has no policy and it has a tracked node; so
+\* it never starts, and no tracked node of such a run ever runs (read-only flows run).
+InheritedPolicylessRefused == started => ~(rinh /\ rdecl.pol = "none" /\ TrackedKeys # {})
+InheritedPolicylessNoTracked == ~badInh
+
+\* Taint coming up: the parent node's result is recorded only with every own mark of the child already in
+\* the parent's journal (the sink on every drive, replay included; ResolveHalt folds the marks).
+ParentMarksUp == ~badUp
+
+\* The marks sent up are the child's own: the inherited ones, which the parent passed down, are not echoed
+\* (a chain flow -> node -> flow -> node does not grow the list at each level).
+NoEcho == ~pecho
+
+ReadOnlyRunNotReachable == ~(done.rec /\ rinh /\ rdecl.pol = "none")
+MarksUpNotReachable == ~pm
+ParentResolvedNotReachable == ~(pres /\ pm /\ ~done.rec)
+InheritedGateNotReachable == ~(rinh /\ \E k \in TKeys : ttally[k] = "pass" /\ mk[k] # None)
 
 \* Replays are not blocked: no PreExec refuses a node whose result is recorded.
 ReplayNeverBlocked == ~badReplay
