@@ -193,8 +193,9 @@ bide doctor -diff main/declarations.json declarations.json
   with the flow's policy set from `plan.DescribeTaintPolicy`; the reader tells the two kinds apart, and refuses to
   compare one with the other. It has no digest. `-declarations` lists a side-effecting block when the description
   gives no policy, each block with a source and no policy, each exempt block and the notes on the gate, as for an agent. `-diff` applies the
-  same rules to blocks: a removed `Untrusted` source, a new `TaintExempt`, a policy removed, a gate lowered or
-  `require_provenance` turned off is `WEAKENED`. A description of version 1 carries no taint declarations: `-declarations` says
+  same rules to blocks: a removed `Untrusted` source, a new `TaintExempt`, a gate lowered or
+  `require_provenance` turned off is `WEAKENED`. A policy that was not given to a description is not "no policy", so
+  when either description gives none the diff reports one weakened line that the policies cannot be compared. A description of version 1 carries no taint declarations: `-declarations` says
   taint is not known, and `-diff` reports one weakened line when either side lacks them, so regenerate the baseline once.
   The description cannot show a run's input provenance, which is a run option.
 - **`-declarations`** prints what a reader should look at: a side-effecting tool in an agent with no taint

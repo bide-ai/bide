@@ -61,7 +61,7 @@ func TestFlowDeclarations_Report(t *testing.T) {
 func TestFlowDeclarations_NoPolicyGiven(t *testing.T) {
 	d := flowDesc(blk("pay", "side_effect"))
 	code, out, _ := runMain("-declarations", writeFlow(t, "f.json", d))
-	if code != 0 || !strings.Contains(out, "taint policy not given to the description") || !strings.Contains(out, "gives no taint policy") {
+	if code != 0 || !strings.Contains(out, "taint policy not given to the description") || !strings.Contains(out, "no taint policy was given to this description") {
 		t.Fatalf("code %d:\n%s", code, out)
 	}
 }
@@ -126,7 +126,7 @@ func TestFlowDiff_PolicyAndProvenanceRules(t *testing.T) {
 		edit func(*plan.RegistryDescription)
 		want string
 	}{
-		"policy removed":     {func(d *plan.RegistryDescription) { d.TaintPolicy = nil }, "the taint policy is removed"},
+		"policy not given":   {func(d *plan.RegistryDescription) { d.TaintPolicy = nil }, "no taint policy was given to the new description"},
 		"refuse to gate":     {func(d *plan.RegistryDescription) { d.TaintPolicy.Refuse, d.TaintPolicy.Gate = false, gatePolicy.Gate }, "an escalation gate, was refuse"},
 		"provenance dropped": {func(d *plan.RegistryDescription) { d.TaintPolicy.RequireProvenance = false }, "no longer required to declare a provenance"},
 		"block removed":      {func(d *plan.RegistryDescription) { d.Blocks[0].Untrusted = nil }, ""},
@@ -194,7 +194,7 @@ func TestFlowDeclarations_NilPolicyIsNotGiven(t *testing.T) {
 	d := flowDesc(blk("fetch", "side_effect"))
 	d.Blocks[0].Untrusted = []string{"inbound-email"}
 	_, out, _ := runMain("-declarations", writeFlow(t, "f.json", d))
-	for _, want := range []string{"taint policy not given to the description", "the description gives no taint policy", "block fetch", "declares untrusted source(s) inbound-email and the description gives no taint policy"} {
+	for _, want := range []string{"taint policy not given to the description", "no taint policy was given to this description", "block fetch", "declares untrusted source(s) inbound-email, and no taint policy was given to this description"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the report lacks %q:\n%s", want, out)
 		}
@@ -208,7 +208,7 @@ func TestFlowDeclarations_Version1SaysOnlyThat(t *testing.T) {
 	d := flowDesc(blk("pay", "side_effect"))
 	d.Version, d.TaintDeclared = 1, false
 	_, out, _ := runMain("-declarations", writeFlow(t, "f.json", d))
-	if !strings.Contains(out, "regenerate it with this version") || strings.Contains(out, "gives no taint policy") {
+	if !strings.Contains(out, "regenerate it with this version") || strings.Contains(out, "no taint policy was given") {
 		t.Errorf("version 1 report:\n%s", out)
 	}
 }
@@ -260,10 +260,39 @@ func TestFlowDiff_BlockAndPolicyDetails(t *testing.T) {
 // A block's own gate is compared like a tool's.
 func TestFlowDiff_OwnGate(t *testing.T) {
 	a, b := flowDesc(blk("pay", "side_effect")), flowDesc(blk("pay", "side_effect"))
+	a.TaintPolicy, b.TaintPolicy = gatePolicy, gatePolicy
 	a.Blocks[0].Gate = &plan.GateDescription{Need: 2, Approvers: []string{"a", "b"}}
 	b.Blocks[0].Gate = &plan.GateDescription{Need: 1, Approvers: []string{"a", "b"}}
 	code, out, _ := runMain("-diff", writeFlow(t, "o.json", a), writeFlow(t, "n.json", b))
 	if code != 1 || !strings.Contains(out, "block pay own gate") || !strings.Contains(out, "need lowered from 2 to 1") {
 		t.Errorf("code %d:\n%s", code, out)
+	}
+}
+
+// A policy that was not given on a side is not "no policy": the policies are not compared, and the diff
+// weakens (fails closed) rather than call a refuse turned into a gate, or a policy added or removed, a change.
+func TestFlowDiff_AnUngivenPolicyCannotBeCompared(t *testing.T) {
+	refuse := &plan.TaintPolicyDescription{Refuse: true}
+	cases := []struct {
+		name     string
+		old, new *plan.TaintPolicyDescription
+		want     string
+	}{
+		{"gate to not given", gatePolicy, nil, "no taint policy was given to the new description"},
+		{"refuse to not given", refuse, nil, "no taint policy was given to the new description"},
+		{"not given to gate", nil, gatePolicy, "no taint policy was given to the old description"},
+		{"not given to refuse", nil, refuse, "no taint policy was given to the old description"},
+		{"not given on both", nil, nil, "no taint policy was given to either description"},
+	}
+	for _, c := range cases {
+		o, n := flowDesc(blk("pay", "side_effect")), flowDesc(blk("pay", "side_effect"))
+		o.TaintPolicy, n.TaintPolicy = c.old, c.new
+		code, out, _ := runMain("-diff", writeFlow(t, "o.json", o), writeFlow(t, "n.json", n))
+		if code != 1 || !strings.Contains(out, "WEAKENED") || !strings.Contains(out, c.want) || strings.Contains(out, "policy is removed") || strings.Contains(out, "policy is added") || strings.Contains(out, "strengthened") {
+			t.Errorf("%s: code %d, want WEAKENED with %q:\n%s", c.name, code, c.want, out)
+		}
+		if strings.Count(out, "policy") < 1 || strings.Count(out, "WEAKENED") != 1 {
+			t.Errorf("%s: want exactly one weakened line:\n%s", c.name, out)
+		}
 	}
 }

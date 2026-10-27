@@ -134,7 +134,8 @@ Both reports also read a flow's declarations: the plan.RegistryDescription of ve
 program writes from its Registry (the file bide edit -blocks and bide check -blocks read), with
 the flow's taint policy set by plan.DescribeTaintPolicy. It has no digest. A description of
 version 1 carries no taint declarations: -declarations says taint is not known, and -diff reports
-one weakened line when either side lacks them. Two files of different kinds are not compared.
+one weakened line when either side lacks them, and likewise when either gives no taint policy (an ungiven policy
+is not "no policy"). Two files of different kinds are not compared.
 
 Exit status is 0 when nothing failed (a warning does not fail), and 1 when a check failed. On a
 terminal the output is colored; -color=never, or NO_COLOR set to any value, turns color off.

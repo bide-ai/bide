@@ -35,6 +35,10 @@ type Registry struct {
 	// whose types are stand-ins. It only checks a config (InspectConfigDescribed); Load and Validate
 	// refuse it, and no exported function returns one.
 	inert bool
+	// taintDeclared is set on an inert Registry whose description carried the taint declarations
+	// (RegistryDescription.TaintDeclared); a Registry built in Go always has them. An inert Registry
+	// without it knows nothing about taint, and does not declare "none".
+	taintDeclared bool
 }
 
 // regBlock is a registered Step/Tool/Model. It mirrors the fields of node that a

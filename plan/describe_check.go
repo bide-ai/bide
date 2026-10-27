@@ -26,6 +26,7 @@ const (
 	maxGateApprovers    = 256
 	maxApproverID       = 256
 	maxDescribedError   = 4096
+	maxDescribedSources = 64 // untrusted sources of one block
 )
 
 // Validate reports whether d is a description this release reads: its version, no registration
@@ -38,9 +39,6 @@ const (
 func (d RegistryDescription) Validate() error {
 	if d.Version != DescriptionVersion && d.Version != descriptionVersionNoTaint {
 		return fmt.Errorf("description version %d is not one this release reads (it reads %d and %d)", d.Version, descriptionVersionNoTaint, DescriptionVersion)
-	}
-	if err := d.checkTaint(); err != nil {
-		return err
 	}
 	if n := len(d.Blocks) + len(d.Predicates) + len(d.Merges); n > maxDescribedEntries {
 		return fmt.Errorf("description has %d entries, more than the %d this release reads", n, maxDescribedEntries)
@@ -55,6 +53,9 @@ func (d RegistryDescription) Validate() error {
 		return fmt.Errorf("the program's Registry reported %d error(s), so Load will not load it; the first: %s", len(d.Errors), e)
 	}
 	if err := d.checkTypeBudget(); err != nil {
+		return err
+	}
+	if err := d.checkTaint(); err != nil {
 		return err
 	}
 	seen := map[string]bool{}
@@ -169,6 +170,9 @@ func checkNoTaint(what, name string, untrusted []string, trusted, exempt string)
 // checkDescribedTaint holds a block's or merge's declarations to the rules of plan.Untrusted, plan.Trusted and
 // plan.TaintExempt: valid names, sources sorted and each once, and not both untrusted and trusted.
 func checkDescribedTaint(what, name string, untrusted []string, trusted, exempt string) error {
+	if len(untrusted) > maxDescribedSources {
+		return fmt.Errorf("%s %q declares %d untrusted sources, more than the %d this release reads", what, name, len(untrusted), maxDescribedSources)
+	}
 	for i, src := range untrusted {
 		if err := toolhook.CheckProvenanceName("untrusted", src); err != nil {
 			return fmt.Errorf("%s %q: %w", what, name, err)
@@ -407,6 +411,7 @@ func registryFromDescription(d RegistryDescription) (*Registry, error) {
 	}
 	reg := NewRegistry()
 	reg.inert = true
+	reg.taintDeclared = d.TaintDeclared
 	for _, b := range d.Blocks {
 		kind := kindStep
 		switch b.Kind {

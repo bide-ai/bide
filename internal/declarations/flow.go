@@ -62,11 +62,11 @@ func (d FlowDocument) Findings() []Finding {
 			}
 		}
 		if effects > 0 {
-			add("policy", "the description gives no taint policy (a Registry does not hold it; set it with plan.DescribeTaintPolicy) and %d block(s) can have a side effect: a flow that runs without a policy does not gate them when a run has read untrusted content", effects)
+			add("policy", "no taint policy was given to this description (a Registry does not hold it; set it with plan.DescribeTaintPolicy), and %d block(s) can have a side effect; if the flow has none, a run that has read untrusted content does not gate them", effects)
 		}
 		for _, b := range d.Blocks {
 			if len(b.Untrusted) > 0 {
-				add(b.subject(), "declares untrusted source(s) %s and the description gives no taint policy: marks are recorded, nothing is gated", strings.Join(b.Untrusted, ", "))
+				add(b.subject(), "declares untrusted source(s) %s, and no taint policy was given to this description; if the flow has none, marks are recorded and nothing is gated", strings.Join(b.Untrusted, ", "))
 			}
 		}
 	} else {
@@ -95,6 +95,17 @@ func FlowDiff(old, new FlowDocument) []Change {
 	taint := old.TaintKnown && new.TaintKnown
 	if !taint {
 		out = append(out, Change{Weakened, "declarations", "a description does not carry taint declarations (version 1), so the sources, exemptions and policy cannot be compared; regenerate the baseline with this version", false})
+	} else if old.Policy == nil || new.Policy == nil {
+		// A nil policy is "not given", not "no policy": nothing says whether the flow gained or lost one, so
+		// the policies are not compared (a refuse turned into a gate could hide behind it).
+		which := "the old description"
+		switch {
+		case old.Policy == nil && new.Policy == nil:
+			which = "either description"
+		case new.Policy == nil:
+			which = "the new description"
+		}
+		out = append(out, Change{Weakened, "policy", "no taint policy was given to " + which + ", so the policies cannot be compared; give both descriptions the flow's policy (plan.DescribeTaintPolicy)", false})
 	} else {
 		out = append(out, diffPolicies(old.Policy, new.Policy, "block")...)
 	}

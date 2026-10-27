@@ -151,7 +151,7 @@ type MergeDescription struct {
 func (r *Registry) Describe() RegistryDescription {
 	d := RegistryDescription{
 		Version:       DescriptionVersion,
-		TaintDeclared: true,
+		TaintDeclared: !r.inert || r.taintDeclared,
 		Blocks:        []BlockDescription{},
 		Predicates:    []PredicateDescription{},
 		Merges:        []MergeDescription{},

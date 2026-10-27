@@ -3,6 +3,7 @@ package plan
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -211,5 +212,61 @@ func TestDescriptionVersion2TaintValidate(t *testing.T) {
 	d.TaintPolicy = &TaintPolicyDescription{Refuse: true, RequireProvenance: true}
 	if err := d.Validate(); err != nil {
 		t.Errorf("a refuse policy: %v", err)
+	}
+}
+
+// A version 1 description builds a Registry that knows nothing about taint: it does not declare "none".
+func TestVersion1DescriptionBuildsARegistryThatKnowsNoTaint(t *testing.T) {
+	d := describedRegistry(t, false).Describe()
+	d.Version, d.TaintDeclared = 1, false
+	reg, err := registryFromDescription(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reg.taintDeclared {
+		t.Error("the Registry built from a version 1 description declares taint")
+	}
+	if got := reg.Describe(); got.TaintDeclared || got.Version != DescriptionVersion {
+		t.Errorf("describing it: taint_declared %v, version %d; want false, %d", got.TaintDeclared, got.Version, DescriptionVersion)
+	}
+	// A version 2 description does carry them.
+	d2 := describeTaintRegistry(t).Describe()
+	reg2, err := registryFromDescription(d2)
+	if err != nil || !reg2.taintDeclared || !reg2.Describe().TaintDeclared {
+		t.Errorf("version 2: %v, declared %v", err, reg2 != nil && reg2.taintDeclared)
+	}
+}
+
+func TestDescriptionBoundsTheUntrustedSourcesOfABlock(t *testing.T) {
+	d := describeTaintRegistry(t).Describe()
+	fetch := 0
+	for i, b := range d.Blocks {
+		if b.Name == "fetch" {
+			fetch = i
+		}
+	}
+	d.Blocks[fetch].Untrusted = nil
+	for i := 0; i < maxDescribedSources; i++ {
+		d.Blocks[fetch].Untrusted = append(d.Blocks[fetch].Untrusted, fmt.Sprintf("s%04d", i))
+	}
+	if err := d.Validate(); err != nil {
+		t.Fatalf("%d sources are the most: %v", maxDescribedSources, err)
+	}
+	d.Blocks[fetch].Untrusted = append(d.Blocks[fetch].Untrusted, "s9999")
+	if err := d.Validate(); err == nil || !strings.Contains(err.Error(), "more than the 64") {
+		t.Errorf("%d sources: %v", len(d.Blocks[fetch].Untrusted), err)
+	}
+	// The entry bound is checked first, before any block is walked for taint.
+	d = describeTaintRegistry(t).Describe()
+	for i := range d.Blocks {
+		if d.Blocks[i].Name == "fetch" {
+			d.Blocks[i].Untrusted = []string{"b", "a"} // unsorted: a taint error if it is reached
+		}
+	}
+	for len(d.Predicates) <= maxDescribedEntries {
+		d.Predicates = append(d.Predicates, PredicateDescription{Name: fmt.Sprint(len(d.Predicates)), Switched: "x"})
+	}
+	if err := d.Validate(); err == nil || !strings.Contains(err.Error(), "entries") {
+		t.Errorf("too many entries: %v", err)
 	}
 }
