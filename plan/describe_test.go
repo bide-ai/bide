@@ -104,7 +104,7 @@ func TestDescribeIsDeterministicAndEmptyIsArrays(t *testing.T) {
 		t.Errorf("registration order changed the description:\n%s\n%s", a, b)
 	}
 	e, _ := json.Marshal(NewRegistry().Describe())
-	if string(e) != `{"version":1,"blocks":[],"predicates":[],"merges":[]}` {
+	if string(e) != `{"version":2,"taint_declared":true,"blocks":[],"predicates":[],"merges":[]}` {
 		t.Errorf("empty description %s", e)
 	}
 }

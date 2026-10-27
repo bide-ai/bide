@@ -24,7 +24,8 @@ func ExampleRegistry_Describe() {
 	fmt.Println(string(out))
 	// Output:
 	// {
-	//   "version": 1,
+	//   "version": 2,
+	//   "taint_declared": true,
 	//   "blocks": [
 	//     {
 	//       "name": "price",

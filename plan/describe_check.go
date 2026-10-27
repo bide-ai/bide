@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/internal/printable"
+	"github.com/bide-ai/bide/internal/toolhook"
 )
 
 // Bounds on a RegistryDescription, which may come from a file: Validate refuses more. Each
@@ -24,6 +26,7 @@ const (
 	maxGateApprovers    = 256
 	maxApproverID       = 256
 	maxDescribedError   = 4096
+	maxDescribedSources = 64 // untrusted sources of one block
 )
 
 // Validate reports whether d is a description this release reads: its version, no registration
@@ -34,8 +37,8 @@ const (
 // Errors is empty (Describe reports what Validate would refuse); a description read from a file need
 // not be.
 func (d RegistryDescription) Validate() error {
-	if d.Version != DescriptionVersion {
-		return fmt.Errorf("description version %d is not one this release reads (it reads %d)", d.Version, DescriptionVersion)
+	if d.Version != DescriptionVersion && d.Version != descriptionVersionNoTaint {
+		return fmt.Errorf("description version %d is not one this release reads (it reads %d and %d)", d.Version, descriptionVersionNoTaint, DescriptionVersion)
 	}
 	if n := len(d.Blocks) + len(d.Predicates) + len(d.Merges); n > maxDescribedEntries {
 		return fmt.Errorf("description has %d entries, more than the %d this release reads", n, maxDescribedEntries)
@@ -50,6 +53,9 @@ func (d RegistryDescription) Validate() error {
 		return fmt.Errorf("the program's Registry reported %d error(s), so Load will not load it; the first: %s", len(d.Errors), e)
 	}
 	if err := d.checkTypeBudget(); err != nil {
+		return err
+	}
+	if err := d.checkTaint(); err != nil {
 		return err
 	}
 	seen := map[string]bool{}
@@ -105,6 +111,87 @@ func (d RegistryDescription) Validate() error {
 		}
 		if _, err := describedGate(m.Gate); err != nil {
 			return fmt.Errorf("merge %q: %w", m.Name, err)
+		}
+	}
+	return nil
+}
+
+// checkTaint holds the taint members of d to the version: a description of version 1 has none and says
+// nothing about taint, one of version 2 carries the marker and every declaration is a valid one.
+func (d RegistryDescription) checkTaint() error {
+	if d.Version == descriptionVersionNoTaint {
+		if d.TaintDeclared || d.TaintPolicy != nil {
+			return fmt.Errorf("description version %d has no taint members, but this one carries taint_declared or taint_policy: they are version %d", d.Version, DescriptionVersion)
+		}
+		for _, b := range d.Blocks {
+			if err := checkNoTaint("block", b.Name, b.Untrusted, b.Trusted, b.TaintExempt); err != nil {
+				return err
+			}
+		}
+		for _, m := range d.Merges {
+			if err := checkNoTaint("merge", m.Name, m.Untrusted, m.Trusted, m.TaintExempt); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if !d.TaintDeclared {
+		return fmt.Errorf("description version %d must set taint_declared: it carries the taint declarations, and without the marker an absent one would read as none", d.Version)
+	}
+	for _, b := range d.Blocks {
+		if err := checkDescribedTaint("block", b.Name, b.Untrusted, b.Trusted, b.TaintExempt); err != nil {
+			return err
+		}
+	}
+	for _, m := range d.Merges {
+		if err := checkDescribedTaint("merge", m.Name, m.Untrusted, m.Trusted, m.TaintExempt); err != nil {
+			return err
+		}
+	}
+	if p := d.TaintPolicy; p != nil {
+		g, err := describedGate(p.Gate)
+		if err != nil {
+			return fmt.Errorf("taint policy: %w", err)
+		}
+		if err := toolhook.CheckTaintPolicy(agent.TaintPolicy{Gate: g, Refuse: p.Refuse, RequireProvenance: p.RequireProvenance}); err != nil {
+			return fmt.Errorf("taint policy: %w", err)
+		}
+	}
+	return nil
+}
+
+func checkNoTaint(what, name string, untrusted []string, trusted, exempt string) error {
+	if len(untrusted) > 0 || trusted != "" || exempt != "" {
+		return fmt.Errorf("%s %q declares taint, but a description of version %d has no taint members", what, name, descriptionVersionNoTaint)
+	}
+	return nil
+}
+
+// checkDescribedTaint holds a block's or merge's declarations to the rules of plan.Untrusted, plan.Trusted and
+// plan.TaintExempt: valid names, sources sorted and each once, and not both untrusted and trusted.
+func checkDescribedTaint(what, name string, untrusted []string, trusted, exempt string) error {
+	if len(untrusted) > maxDescribedSources {
+		return fmt.Errorf("%s %q declares %d untrusted sources, more than the %d this release reads", what, name, len(untrusted), maxDescribedSources)
+	}
+	for i, src := range untrusted {
+		if err := toolhook.CheckProvenanceName("untrusted", src); err != nil {
+			return fmt.Errorf("%s %q: %w", what, name, err)
+		}
+		if i > 0 && untrusted[i-1] >= src {
+			return fmt.Errorf("%s %q: the untrusted sources are not sorted and distinct (%q, %q)", what, name, untrusted[i-1], src)
+		}
+	}
+	if trusted != "" {
+		if err := toolhook.CheckProvenanceName("trusted", trusted); err != nil {
+			return fmt.Errorf("%s %q: %w", what, name, err)
+		}
+		if len(untrusted) > 0 {
+			return fmt.Errorf("%s %q declares both untrusted sources and a trusted reason: a block declares one", what, name)
+		}
+	}
+	if exempt != "" {
+		if err := toolhook.CheckProvenanceName("taint_exempt", exempt); err != nil {
+			return fmt.Errorf("%s %q: %w", what, name, err)
 		}
 	}
 	return nil
@@ -324,6 +411,7 @@ func registryFromDescription(d RegistryDescription) (*Registry, error) {
 	}
 	reg := NewRegistry()
 	reg.inert = true
+	reg.taintDeclared = d.TaintDeclared
 	for _, b := range d.Blocks {
 		kind := kindStep
 		switch b.Kind {
@@ -334,7 +422,8 @@ func registryFromDescription(d RegistryDescription) (*Registry, error) {
 		}
 		safety, _ := describedSafety(b.Safety)
 		gate, _ := describedGate(b.Gate)
-		reg.blocks[b.Name] = &regBlock{kind: kind, inType: describedType(b.In), outType: describedType(b.Out), safety: safety, approval: gate}
+		reg.blocks[b.Name] = &regBlock{kind: kind, inType: describedType(b.In), outType: describedType(b.Out), safety: safety, approval: gate,
+			taint: nodeTaint{untrusted: slices.Clone(b.Untrusted), trusted: b.Trusted, exempt: b.TaintExempt}}
 	}
 	for _, p := range d.Predicates {
 		reg.preds[p.Name] = &regPred{mType: describedType(p.Switched)}
@@ -346,7 +435,8 @@ func registryFromDescription(d RegistryDescription) (*Registry, error) {
 		}
 		safety, _ := describedSafety(m.Safety)
 		gate, _ := describedGate(m.Gate)
-		reg.merges[m.Name] = &regMerge{approval: gate, safety: safety, arity: len(in), inTypes: in, outType: describedType(m.Out)}
+		reg.merges[m.Name] = &regMerge{approval: gate, safety: safety, arity: len(in), inTypes: in, outType: describedType(m.Out),
+			taint: nodeTaint{untrusted: slices.Clone(m.Untrusted), trusted: m.Trusted, exempt: m.TaintExempt}}
 	}
 	return reg, nil
 }

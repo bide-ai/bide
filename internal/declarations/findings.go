@@ -28,15 +28,8 @@ func (d Document) Findings() []Finding {
 				add("tool "+t.Name, "declares untrusted source %q and the agent has no taint policy: marks are recorded, nothing is gated", t.Untrusted)
 			}
 		}
-	} else if g := d.Policy.Gate; g != nil && !d.Policy.Refuse {
-		switch {
-		case g.Single:
-			add("policy", "the escalation gate is one decision: unsigned, and the requester can approve")
-		case g.Need < 2:
-			add("policy", "the escalation gate needs %d decision: a bank deployment is advised need >= 2", g.Need)
-		case !g.ExcludePrincipal:
-			add("policy", "the escalation gate does not exclude the requester: the person whose input provoked the call can approve it")
-		}
+	} else {
+		policyFindings(add, d.Policy)
 	}
 	if d.Policy != nil && !d.Policy.RequireProvenance {
 		for _, t := range d.Tools {
@@ -57,4 +50,20 @@ func (d Document) Findings() []Finding {
 		}
 	}
 	return out
+}
+
+// policyFindings are the notes on a policy's escalation gate, shared by the agent's report and a flow's.
+func policyFindings(add func(subject, format string, args ...any), p *Policy) {
+	g := p.Gate
+	if g == nil || p.Refuse {
+		return
+	}
+	switch {
+	case g.Single:
+		add("policy", "the escalation gate is one decision: unsigned, and the requester can approve")
+	case g.Need < 2:
+		add("policy", "the escalation gate needs %d decision: a bank deployment is advised need >= 2", g.Need)
+	case !g.ExcludePrincipal:
+		add("policy", "the escalation gate does not exclude the requester: the person whose input provoked the call can approve it")
+	}
 }

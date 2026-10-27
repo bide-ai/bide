@@ -58,14 +58,7 @@ func Diff(old, new Document) ([]Change, error) {
 		}
 	}
 	var out []Change
-	out = append(out, diffPolicy(old.Policy, new.Policy)...)
-	if old.Policy != nil && new.Policy != nil && old.Policy.RequireProvenance != new.Policy.RequireProvenance {
-		if new.Policy.RequireProvenance {
-			out = append(out, Change{Strengthened, "policy", "every tool must now declare a provenance and every run state its input's", true})
-		} else {
-			out = append(out, Change{Weakened, "policy", "tools and runs are no longer required to declare a provenance", true})
-		}
-	}
+	out = append(out, diffPolicies(old.Policy, new.Policy, "tool")...)
 	oldTools, newTools := toolsByName(old), toolsByName(new)
 	names := slices.Sorted(maps.Keys(func() map[string]bool {
 		m := map[string]bool{}
@@ -156,6 +149,20 @@ func diffPolicy(old, new *Policy) []Change {
 		return nil
 	}
 	return diffGate(subject, old.Gate, new.Gate, true)
+}
+
+// diffPolicies is the changes of the policy, including require_provenance; what is required to declare a
+// provenance is the tools of an agent, the blocks of a flow (unit).
+func diffPolicies(old, new *Policy, unit string) []Change {
+	out := diffPolicy(old, new)
+	if old != nil && new != nil && old.RequireProvenance != new.RequireProvenance {
+		if new.RequireProvenance {
+			out = append(out, Change{Strengthened, "policy", "every " + unit + " must now declare a provenance and every run state its input's", true})
+		} else {
+			out = append(out, Change{Weakened, "policy", unit + "s and runs are no longer required to declare a provenance", true})
+		}
+	}
+	return out
 }
 
 func sameGate(a, b *Gate) bool {

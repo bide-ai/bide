@@ -842,7 +842,9 @@ the consequences of an injected request. It does not detect or prevent the injec
 - **The declarations report sees only what the host dumps.** `bide doctor -declarations` and `-diff` read a
   document the host writes from its agent; a tool behind a wrapper that hides its spec, a tool that runs an
   agent on a context of its own, and an agent the host does not dump are not in it. It lists a tool
-  with no provenance declaration only when the policy does not require one.
+  with no provenance declaration only when the policy does not require one. A flow's declarations come from
+  its `RegistryDescription` (version 2), and a Registry does not hold the flow's taint policy: the host sets it on
+  the description, and a description without one says none was given, not that the flow has none.
 - **Approval volume.** A deployment whose agents read outside text and write will be asked more. `TaintExempt` is
   the relief valve and is visible in the declarations digest.
 - **`RequireProvenance` declares; it does not verify.** With it on, every tool says `Untrusted` or `Trusted` and
@@ -859,7 +861,7 @@ the consequences of an injected request. It does not detect or prevent the injec
 - **Plan flow nodes are not covered.** A flow can declare taint (`plan.Untrusted`, `plan.Trusted`,
   `plan.TaintExempt`, a tool's own declarations, the `untrusted:` config key, a flow policy), but the engine does not
   enforce it yet, so `plan.Flow` building (`Builder.Build`, `Load`) refuses a flow that declares any of it with
-  `ErrConfig`, rather than run it with no taint handling. A flow with no declaration and no policy is not taint-gated. `bide check -blocks` and the typed editor read a description of the registered blocks, which carries no taint declarations yet, so they do not report a block whose tool declares `Untrusted` or `TaintExempt`; `Load` refuses it.
+  `ErrConfig`, rather than run it with no taint handling. A flow with no declaration and no policy is not taint-gated. `bide check -blocks` and the typed editor read a description of the registered blocks, which now carries the declarations of each block (version 2) but not the flow's policy unless the host sets it; `Load` refuses a flow that declares taint.
 - **MCP tools are not untrusted by default.** A tool bridged by `mcptools` declares nothing unless the host
   does: a server's results are outside text, and a host that does not mark them leaves no mark (with
   `RequireProvenance`, registration refuses the unmarked tool, which is how the omission is caught). A default

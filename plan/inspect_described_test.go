@@ -310,7 +310,7 @@ func TestRegistryDescriptionValidate(t *testing.T) {
 		edit   func(d *RegistryDescription)
 		reason string
 	}{
-		{"version", func(d *RegistryDescription) { d.Version = 2 }, "version 2"},
+		{"version", func(d *RegistryDescription) { d.Version = 3 }, "version 3"},
 		{"kind", func(d *RegistryDescription) { d.Blocks[0].Kind = "join" }, "kind"},
 		{"block safety", func(d *RegistryDescription) { d.Blocks[0].Safety = "safe" }, "safety"},
 		{"merge safety", func(d *RegistryDescription) { d.Merges[0].Safety = "" }, "safety"},

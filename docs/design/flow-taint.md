@@ -571,6 +571,12 @@ Decided by the maintainer on 2026-10-26, or accepted as recommended:
 10. a flow started inside a tainted run mirrors an agent child (A2, "Nested flows and inherited taint"); decided
     2026-10-27. `plan.ErrTaintRefused` is the final name of the sentinel.
 
+Approved on 2026-10-27 (PR 4): `plan.TaintPolicyDescription` (Gate, Refuse, RequireProvenance); on `BlockDescription` and
+`MergeDescription` the fields `Untrusted`, `Trusted`, `TaintExempt` (JSON `untrusted`, `trusted`, `taint_exempt`); on
+`RegistryDescription` the fields `TaintPolicy` and `TaintDeclared` (JSON `taint_policy`, `taint_declared`); and
+`plan.DescribeTaintPolicy(agent.TaintPolicy) (*TaintPolicyDescription, error)`. A Registry holds no policy: the host sets
+`TaintPolicy` with the helper, and a nil `TaintPolicy` reads "policy not given" in every view, never "no policy".
+
 New exported names (A6, section 7): `plan.Untrusted`, `plan.Trusted`, `plan.TaintExempt`,
 `(*plan.Builder).WithTaintPolicy`, `plan.WithLoadedTaintPolicy`, one sentinel error (`plan.ErrTaintRefused`), the policy field of decision 8,
 `plan.ConfigReport.Taint` and `plan.NodeTaint`, the `RegistryDescription` version 2 fields, and the "exposure"
