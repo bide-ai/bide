@@ -74,8 +74,10 @@ Go declares what loosens (`Trusted`, `TaintExempt`, the policy); the config may 
   and the Builder twins). A Tool block takes them from its spec, so `checkTool` (`plan/builder.go:525`) stops
   refusing `Untrusted` and `TaintExempt`; a NodeOption that disagrees with the tool's spec is ErrConfig, and
   a NodeOption may not drop the tool's `Untrusted` (the larger-of rule).
-- Flow policy: Build/Load option `plan.WithTaintPolicy(agent.TaintPolicy)` (Gate or Refuse, optional
-  `RequireProvenance`), same checks as `agent.WithTaintPolicy` (`agent/taint_policy.go:36`). Opt-in: a flow
+- Flow policy: `(*plan.Builder).WithTaintPolicy(agent.TaintPolicy)` and its load twin
+  `plan.WithLoadedTaintPolicy(agent.TaintPolicy)` (the repo's pattern: `WithApproverVerifiers` and
+  `WithLoadedApproverVerifiers`), taking Gate or Refuse, with optional
+  `RequireProvenance`; same checks as `agent.WithTaintPolicy` (`agent/taint_policy.go:36`). Opt-in: a flow
   with no policy gates nothing (the user's amendment to decision 6), and a run is never retro-gated.
 - Input provenance: no new name. `agent.WithUntrustedInput` / `WithTrustedInput` are RunOptions and
   `Flow.Run` already takes `agent.RunOption`s (`plan/flow.go:104`); the flow records the choice in run:start
@@ -219,7 +221,7 @@ instance cannot count for the other (the signature binds the subject key, `stale
 - Shape: a field of the policy, `TaintPolicy.SeparateApprovers bool` (approved name),
   not a plan-only option and not a config key. The same weakness exists for an agent (a tool's own gate and
   its `<call>#taint` instance), a plan-only option would leave agents without the control, and
-  `plan.WithTaintPolicy` already takes `agent.TaintPolicy`. Cost: one exported field on an agent type and an
+  the flow's policy option already takes `agent.TaintPolicy`. Cost: one exported field on an agent type and an
   agent behaviour behind a flag that is off by default. Go-only, as the policy is.
 - Meaning, one direction only: the instance's tally excludes the approvers counted in the own gate's terminal
   tally. The instance request is recorded only after the own gate passes (order in A2), so that tally is a
@@ -328,7 +330,7 @@ taint-*.cfg` can be reused to count the instance.
 
 ### A6. New names, part A (all need the user's approval)
 
-Go API: `plan.Untrusted`, `plan.Trusted`, `plan.TaintExempt` (NodeOptions); `plan.WithTaintPolicy` (flow
+Go API: `plan.Untrusted`, `plan.Trusted`, `plan.TaintExempt` (NodeOptions); `(*plan.Builder).WithTaintPolicy` and `plan.WithLoadedTaintPolicy` (flow
 option); one refusal sentinel (name sketch `plan.ErrTaintRefused`, wrapping the agent's refusal class).
 Behaviour changes: `checkTool` accepts `Untrusted`/`TaintExempt` tools; `Flow.Run` honours
 `WithUntrustedInput`/`WithTrustedInput`. Journal: the derived subject `node:[iter:<n>:]<name>:taint`,
@@ -532,7 +534,7 @@ Decided by the maintainer on 2026-10-26, or accepted as recommended:
 9. a node's own approval gate does not cover taint exposure.
 
 New exported names (A6, section 7): `plan.Untrusted`, `plan.Trusted`, `plan.TaintExempt`,
-`plan.WithTaintPolicy`, one sentinel error (sketch `plan.ErrTaintRefused`), the policy field of decision 8,
+`(*plan.Builder).WithTaintPolicy`, `plan.WithLoadedTaintPolicy`, one sentinel error (sketch `plan.ErrTaintRefused`), the policy field of decision 8,
 `plan.ConfigReport.Taint` and `plan.NodeTaint`, the `RegistryDescription` version 2 fields, and the "exposure"
 value of `Change.Weakening`; one config key (`untrusted:`); no flag and no command. The names in unbuilt parts
 are a sketch.

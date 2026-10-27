@@ -70,6 +70,11 @@ type configNode struct {
 	// approvals (see Approval). Absent keeps the gate the registered block declares (a tool's own,
 	// or none); a block that declares another gate is a load error.
 	Approval *configApproval `json:"approval,omitempty"`
+	// Untrusted, when present, adds a source of untrusted content to the node's results, from the
+	// named source (see Untrusted). A config can only add a source: the block's own declarations
+	// stay, and a node whose block declares its results trusted cannot take one. It is optional and
+	// leaves the flow's digest as it was; Build does not accept it yet (taintNotEnforced).
+	Untrusted string `json:"untrusted,omitempty"`
 }
 
 // configApproval is a node's m-of-n approval block: Need decisions required from the
@@ -115,6 +120,9 @@ type configWire struct {
 	Safety string `json:"safety,omitempty"`
 	// Approval optionally gates the join node, as configNode.Approval gates a node.
 	Approval *configApproval `json:"approval,omitempty"`
+	// Untrusted adds a source of untrusted content to the join node's results, as configNode.Untrusted
+	// does for a node.
+	Untrusted string `json:"untrusted,omitempty"`
 }
 
 // configGate lowers a config "approval" block onto a node whose registered block declares the
@@ -344,6 +352,9 @@ func LoadReader[In, Out any](r io.Reader, reg *Registry, opts ...LoadOption) (*F
 // therefore the drift guard (the stringly-typed footgun re-created at rung 2);
 // Load is the full typed check.
 //
+// Validate also refuses what Load refuses for taint until flow taint is enforced: a config, or a block,
+// that declares it (the "untrusted" key, a block's Untrusted, Trusted or TaintExempt).
+//
 // Validate's errors carry no problem kinds, only messages (and agent.ErrConfig). A tool that wants each
 // problem's kind (ConfigReport.Findings) calls InspectConfig or InspectConfigDescribed.
 func Validate(data []byte, reg *Registry) error {
@@ -354,7 +365,11 @@ func Validate(data []byte, reg *Registry) error {
 	if err := parseConfig(data, &cfg); err != nil {
 		return fmt.Errorf("plan: validate: parse config: %w", err)
 	}
-	_, err := assemble(&cfg, reg, false)
+	core, err := assemble(&cfg, reg, false)
+	if err == nil {
+		// The check CI runs must not pass a config Load refuses for taint (see taintNotEnforced).
+		err = core.taintNotEnforced()
+	}
 	return asConfigError(err)
 }
 
@@ -566,14 +581,18 @@ func assemble(cfg *config, reg *Registry, allowUnused bool) (*builderCore, error
 		if w.isJoin() {
 			set++
 		}
-		// "safety" and "approval" apply to a node, so they belong on a join, which creates one. On an edge or a
-		// switch there is no node to apply them to, and they would be accepted and dropped.
+		// "safety", "approval" and "untrusted" apply to a node, so they belong on a join, which creates one.
+		// On an edge or a switch there is no node to apply them to, and they would be accepted and dropped
+		// (an "untrusted" that marked nothing would read as protection once flow taint is enforced).
 		if !w.isJoin() {
 			if w.Safety != "" {
 				problems = append(problems, atWire(otherf("wiring[%d] sets safety, which applies to a node: set it on a join, or on a node in nodes", i), w))
 			}
 			if w.Approval != nil {
 				problems = append(problems, atWire(otherf("wiring[%d] sets approval, which gates a node: set it on a join, or on a node in nodes", i), w))
+			}
+			if w.Untrusted != "" {
+				problems = append(problems, atWire(otherf("wiring[%d] sets untrusted, which marks a node's results: set it on a join, or on a node in nodes", i), w))
 			}
 		}
 		switch {
@@ -630,7 +649,12 @@ func assemble(cfg *config, reg *Registry, allowUnused bool) (*builderCore, error
 			}
 			approval = p
 		}
+		taint, why := configTaint(b.taint, cn.Untrusted)
+		if why != "" {
+			problems = append(problems, otherf("node %q %s", cn.Name, why).at(cn.Name))
+		}
 		resolvedNodes = append(resolvedNodes, &node{
+			taint:   taint,
 			name:    cn.Name,
 			block:   cn.Block,
 			kind:    b.kind,
@@ -777,7 +801,12 @@ func assemble(cfg *config, reg *Registry, allowUnused bool) (*builderCore, error
 				}
 				jgate = p
 			}
+			jtaint, why := configTaint(m.taint, w.Untrusted)
+			if why != "" {
+				return nil, &problemList{prefix: fmt.Sprintf("plan: load %q: ", cfg.Flow), lead: fmt.Sprintf("wiring[%d] join %q ", i, w.Join), finds: otherAll([]string{why}, w.Join), sentinel: agent.ErrConfig}
+			}
 			core.register(&node{
+				taint:       jtaint,
 				name:        w.Join,
 				approval:    jgate,
 				block:       w.Merge,

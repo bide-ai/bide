@@ -121,6 +121,7 @@ Builder\[In, Out\] accumulates a flow spec.
 - `func (b *Builder[In, Out]) WithModel(m agent.Model) *Builder[In, Out]`: WithModel binds an agent.Model to the flow, so a Model step can render its prompt, call the model, and decode the structured result.
 - `func (b *Builder[In, Out]) WithNotifier(n agent.Notifier, trail agent.NotifyTrail, opts ...agent.NotifyOption) *Builder[In, Out]`: WithNotifier tells n, at least once and with a stable ID, when a run of the flow that Run drives halts on an unknown outcome, waits at an approval gate, or is aborted: see agent.WithNotifier, whose semantics, trail requirements and options this takes.
 - `func (b *Builder[In, Out]) WithStopSwitch(sw *agent.StopSwitch) *Builder[In, Out]`: WithStopSwitch gives the flow a kill switch (see agent.StopSwitch and docs/guides/kill-switch.md): a run of the flow is held, as a pause (\*agent.Stopped), at its start, and each node is held before its claim and, with the control run read then, after the claim and before the node's body, where a stop covers the flow (agent.StopFlow, by the flow's name), the agent that acts (an agent stop) or every run (a global stop).
+- `func (b *Builder[In, Out]) WithTaintPolicy(p agent.TaintPolicy) *Builder[In, Out]`: WithTaintPolicy gives the flow a taint policy, the same type an agent takes (agent.WithTaintPolicy): an escalation Gate, or Refuse, and optionally RequireProvenance.
 
 ## type ConfigProblem
 
@@ -279,6 +280,7 @@ LoadOption configures a flow at Load time (before Build).
 - `func WithLoadedModel(m agent.Model) LoadOption`: WithLoadedModel binds an agent.Model to a flow produced by Load or LoadReader, so a config that declares a Model node (a RegisterModel block) can render its prompt, call the model, and decode the structured result at run time.
 - `func WithLoadedNotifier(n agent.Notifier, trail agent.NotifyTrail, opts ...agent.NotifyOption) LoadOption`: WithLoadedNotifier binds a notifier to a loaded flow: the loader's equivalent of Builder.WithNotifier.
 - `func WithLoadedStopSwitch(sw *agent.StopSwitch) LoadOption`: WithLoadedStopSwitch binds a kill switch to a loaded flow: the loader's equivalent of Builder.WithStopSwitch.
+- `func WithLoadedTaintPolicy(p agent.TaintPolicy) LoadOption`: WithLoadedTaintPolicy gives a flow produced by Load or LoadReader a taint policy: the loader's equivalent of Builder.WithTaintPolicy.
 
 ## type MergeDescription
 
@@ -311,6 +313,9 @@ NodeOption configures a node at construction (Step, Tool, Model) or at registrat
 - `func BlockName(name string) NodeOption`: BlockName names the behaviour a node built in Go runs, the way a config node names its registered block.
 - `func Idempotent() NodeOption`: Idempotent marks a node as idempotent: it mutates state but a repeat with the same input is a no-op downstream, so it is safe to retry.
 - `func ReadOnly() NodeOption`: ReadOnly marks a node as read-only: it has no external side effect, so it is always safe to re-run from the top on resume.
+- `func TaintExempt(reason string) NodeOption`: TaintExempt declares that the node needs no escalation gate even when the run has read untrusted content, and why (the reason is required, and follows the rules of agent.TaintExempt).
+- `func Trusted(reason string) NodeOption`: Trusted declares that the results of the node are the host's own, and why (the reason is required, and follows the rules of agent.Trusted).
+- `func Untrusted(source string) NodeOption`: Untrusted declares that the results of the node come from outside, from the named source (for example "inbound-email"): text the host did not write and an attacker may have.
 
 ## type NodeSafety
 

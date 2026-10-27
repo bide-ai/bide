@@ -869,8 +869,12 @@ and a long-lived host must restart to check new type names.
   honours a response format is sent `O`'s schema (structured output); for any other model the
   prompt should instruct JSON output, naming each field's type.
 - The [taint policy](untrusted-content.md#the-taint-policy) does not cover flow nodes. A flow node has no model
-  turn to taint, so a node that is a side-effecting tool call is not escalation-gated, and a tool declared
-  `Untrusted` or `TaintExempt` is refused as a node. A plan node may carry a `#` in its name; its subject is
+  turn to taint, so a node that is a side-effecting tool call is not escalation-gated. A flow can already
+  declare taint (`plan.Untrusted`, `plan.Trusted`, `plan.TaintExempt`, `Builder.WithTaintPolicy`, the
+  `untrusted:` key of a config node), but the engine does not enforce it yet, so `Build` and `Load` refuse a
+  flow that declares any of it, or whose tool declares `Untrusted` or `TaintExempt`, with `ErrConfig`
+  ("flow taint is not enforced yet"): nothing declared is lost silently. The [design](../design/flow-taint.md)
+  says how it will be enforced. A plan node may carry a `#` in its name; its subject is
   `node:<name>`, never an escalation instance.
 - A tool that carries [amount caps](amount-caps.md) (`agent.WithCaps`) cannot be a flow block:
   `Registry.RegisterTool` and `Builder.Tool` refuse it with `ErrConfig` naming the tool, because a

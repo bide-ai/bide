@@ -174,11 +174,12 @@ func safetyFromOptions(base agent.Safety, opts []NodeOption) agent.Safety {
 	return applyNodeOptions(&node{safety: base}, opts).safety
 }
 
-// gateFromOptions resolves opts to the approval gate they set, starting from base (a Tool's own
-// gate, or none), with the error an option recorded, for a Registry block.
-func gateFromOptions(name string, base *agent.ApprovalPolicy, opts []NodeOption) (*agent.ApprovalPolicy, error) {
-	n := applyNodeOptions(&node{name: name, approval: base}, opts)
-	return n.approval, n.optErr
+// blockOptions resolves opts to the approval gate and the taint declarations they set, starting
+// from base (a Tool's own gate, or none) and baseTaint (a Tool's own declarations, or none), with
+// the error an option recorded, for a Registry block.
+func blockOptions(name string, base *agent.ApprovalPolicy, baseTaint nodeTaint, opts []NodeOption) (*agent.ApprovalPolicy, nodeTaint, error) {
+	n := applyNodeOptions(&node{name: name, approval: base, taint: baseTaint.clone()}, opts)
+	return n.approval, n.taint, n.optErr
 }
 
 // register appends n to the core, enforcing name uniqueness.
@@ -290,6 +291,7 @@ func (b *Builder[In, Out]) Tool[I, O any](name string, t agent.Tool, opts ...Nod
 		outType:  typeOf[O](),
 		safety:   spec.Safety, // auto-derived; an explicit option below overrides it
 		approval: spec.Approval.Clone(),
+		taint:    taintOfSpec(spec), // the tool's own declarations; an option adds to them, and cannot contradict them
 		run: func(ctx context.Context, in any) (any, error) {
 			typed, ok := in.(I)
 			if !ok {
@@ -519,16 +521,6 @@ func callTool(ctx context.Context, t agent.Tool, timeout time.Duration, args jso
 // Unwrap chain, a timeout over a sub-agent) or for an old Tool method that disagrees with its spec
 // (the agent's own checks, shared through toolhook).
 func checkTool(t agent.Tool) error {
-	// A tool that declares untrusted content, or an exemption from the taint gate, cannot be a plan node
-	// until flows have a taint rule (docs/design/untrusted-content-and-amount-caps.md, section 5.9): the
-	// node would run it with no taint handling, and silently lose what the declaration asks for.
-	if spec := t.Spec(); spec.Untrusted != "" || spec.Safety.Untrusted != "" || spec.TaintExempt != "" {
-		what := "Untrusted"
-		if spec.Untrusted == "" && spec.Safety.Untrusted == "" {
-			what = "TaintExempt"
-		}
-		return fmt.Errorf("tool %q declares %s, which a plan flow node does not support yet (flows have no taint rule): %w", spec.Name, what, agent.ErrConfig)
-	}
 	if toolhook.CheckTool == nil { // set by the agent package's init, which plan imports
 		return nil
 	}

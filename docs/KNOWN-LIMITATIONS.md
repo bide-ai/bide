@@ -854,8 +854,10 @@ the consequences of an injected request. It does not detect or prevent the injec
   nor implements `Unwrap` is not seen: carrying the declaration through it is the wrapper author's duty.
 - **`ResolveHalt` records no mark.** It has the journal, not the registered tools, so the result it injects
   carries no `Safety` and so no mark. A taint policy does not yet derive it from the tool's declaration by name.
-- **Plan flow nodes are not covered.** A tool that declares `Untrusted` or `TaintExempt` is refused with
-  `ErrConfig` as a plan node (`plan.Registry.RegisterTool`, `Builder.Tool`), because a flow has no taint rule yet.
+- **Plan flow nodes are not covered.** A flow can declare taint (`plan.Untrusted`, `plan.Trusted`,
+  `plan.TaintExempt`, a tool's own declarations, the `untrusted:` config key, a flow policy), but the engine does not
+  enforce it yet, so `plan.Flow` building (`Builder.Build`, `Load`) refuses a flow that declares any of it with
+  `ErrConfig`, rather than run it with no taint handling. A flow with no declaration and no policy is not taint-gated. `bide check -blocks` and the typed editor read a description of the registered blocks, which carries no taint declarations yet, so they do not report a block whose tool declares `Untrusted` or `TaintExempt`; `Load` refuses it.
 - **MCP tools are not untrusted by default.** A tool bridged by `mcptools` declares nothing unless the host
   does: a server's results are outside text, and a host that does not mark them leaves no mark (with
   `RequireProvenance`, registration refuses the unmarked tool, which is how the omission is caught). A default

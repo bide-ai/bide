@@ -183,6 +183,14 @@ func checkWrapper(t Tool, s ToolSpec) error {
 // what New refuses,
 // and lets audit's delegation bind its sub-run's identity (toolhook.WithIdentity).
 func init() {
+	toolhook.CheckProvenanceName = checkProvenanceName
+	toolhook.CheckTaintPolicy = func(p any) error {
+		tp, ok := p.(TaintPolicy)
+		if !ok {
+			return fmt.Errorf("agent: %T is not a TaintPolicy: %w", p, ErrConfig)
+		}
+		return tp.check()
+	}
 	toolhook.CheckTool = func(t any) error {
 		tool, ok := t.(Tool)
 		if !ok {
