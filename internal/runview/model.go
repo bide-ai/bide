@@ -590,14 +590,15 @@ func flowRequest(r agent.Record) (agent.ToolUse, bool) {
 }
 
 // withEscalationInstances adds, after each call, its escalation instance (the taint policy's gate, subject
-// "<call>#taint") when the journal holds a pause note or a decision for it, as a call of the same tool.
+// "<call>#taint") when the journal holds a pause note or a decision for it, as a call of the same tool. A plan
+// flow node's instance is not added here: it records a request of its own, from which it is listed.
 func withEscalationInstances(recs []agent.Record, byName map[string]agent.Record, calls map[string]agent.ToolUse, order []string) ([]string, map[string]agent.ToolUse) {
 	var out []string
 	var extra map[string]agent.ToolUse
 	for _, id := range order {
 		out = append(out, id)
 		if strings.HasPrefix(id, "node:") {
-			continue // a plan node's key may end in #taint; it is a node, and a flow has no escalation instance
+			continue // a plan flow node's instance records a request of its own, so it is listed as a gate by itself
 		}
 		eid := escalation.ID(id)
 		if _, ok := agent.LatestPauseNote(byName, eid); !ok && !slices.ContainsFunc(recs, func(r agent.Record) bool { return r.Kind == agent.StepApproval && r.ToolUseID == eid }) {
@@ -648,12 +649,12 @@ func gates(recs []agent.Record, calls map[string]agent.ToolUse, order []string) 
 			}
 		}
 		resulted := false
-		resultID := id // the escalation instance of a call has no result of its own: the call's is its result
+		resultID := id // the escalation instance of a call or node has no result of its own: the call's or node's is its result
 		if base, ok := escalation.Base(id); ok {
 			resultID = base
 		}
 		for _, r := range recs {
-			if (r.Kind == agent.StepToolResult || r.Kind == agent.StepSagaFail) && r.ToolUseID == resultID || r.Kind == agent.StepValue && r.Name == id && strings.HasPrefix(id, "node:") {
+			if (r.Kind == agent.StepToolResult || r.Kind == agent.StepSagaFail) && r.ToolUseID == resultID || r.Kind == agent.StepValue && r.Name == resultID && strings.HasPrefix(resultID, "node:") {
 				resulted = true
 			}
 			if r.Kind == agent.StepApproval && r.ToolUseID == id {

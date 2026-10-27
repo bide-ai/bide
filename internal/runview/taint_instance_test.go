@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/journalhook"
 	"github.com/bide-ai/bide/internal/taintfixture"
 )
 
@@ -302,5 +303,140 @@ func TestHandler_ShowsACapReasonOnTheCallsOwnGate(t *testing.T) {
 	_, page := get(t, h, "/run?id="+taintfixture.Run)
 	if !strings.Contains(page, "cap refund_one: this call 6000.00 USD, limit 5000.00 USD (over, gate)") {
 		t.Errorf("the page lacks the cap line:\n%s", page)
+	}
+}
+
+// The escalation instance of a gated plan flow node ("node:refund:taint", docs/design/flow-taint.md) is a gate
+// of its own in the viewer, as a tool call's is: it has its policy and decisions, it waits until decided, and
+// it is done once the node it guards has run. The engine writes no instance yet, so the test drives the
+// instance's gate through the flow hook.
+func TestBuild_EscalationInstanceOfAFlowNodeIsAGateOfItsOwn(t *testing.T) {
+	ctx := context.Background()
+	j := agenttest.MemJournal()
+	own := agent.ApprovalPolicy{Need: 1, Approvers: []string{"ops"}}
+	b := plan.New[int, string]("refunds").WithApproverVerifiers(approverKeys(nil))
+	b.Step("refund", func(_ context.Context, n int) (string, error) { return "refunded", nil }, plan.Approval(&own))
+	f, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pend *agent.ApprovalPending
+	if _, err := f.Run(ctx, j, "f1", 120); !errors.As(err, &pend) {
+		t.Fatalf("Run = %v, want a pause", err)
+	}
+	nodePend := pend
+	const inst = "node:refund:taint"
+	esc := &agent.ApprovalPolicy{Need: 1, Approvers: []string{"risk"}}
+	if _, err := journalhook.Gate(ctx, j, "f1", inst, "refund", json.RawMessage(`120`), esc, approverKeys(nil)); !errors.As(err, &pend) {
+		t.Fatalf("the instance's first evaluation = %v, want a pause", err)
+	}
+	gates := func() map[string]Gate {
+		t.Helper()
+		recs, err := j.History(ctx, "f1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := map[string]Gate{}
+		for _, g := range Build(ctx, "f1", recs, nil).Gates {
+			m[g.ToolUseID] = g
+		}
+		return m
+	}
+	m := gates()
+	ownG, escG := m["node:refund"], m[inst]
+	if ownG.ToolUseID == "" || escG.ToolUseID == "" {
+		t.Fatalf("gates = %+v, want both node:refund and %s", m, inst)
+	}
+	if ownG.ToolName != "refund" || ownG.Need != 1 || !slices.Equal(ownG.Approvers, []string{"ops"}) || !ownG.Waiting {
+		t.Errorf("the node's gate = %+v", ownG)
+	}
+	if escG.ToolName != "refund" || escG.Need != 1 || !slices.Equal(escG.Approvers, []string{"risk"}) || !escG.Waiting {
+		t.Errorf("the instance's gate = %+v, want refund, 1 of [risk], waiting", escG)
+	}
+	// The instance's result is its node's: once the node has a record, the instance no longer waits, though
+	// it has no decision of its own.
+	recs, err := j.History(ctx, "f1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ran := append(recs[:len(recs):len(recs)], agent.Record{Name: "node:refund", Kind: agent.StepValue, Result: json.RawMessage(`"refunded"`)})
+	for _, g := range Build(ctx, "f1", ran, nil).Gates {
+		if g.ToolUseID == inst && g.Waiting {
+			t.Errorf("the instance still waits after its node's record: %+v", g)
+		}
+	}
+	// Decide both, run the flow: neither gate waits, and the instance's result is the node's.
+	for _, d := range []struct {
+		p        *agent.ApprovalPending
+		key, who string
+	}{{pend, inst, "risk"}, {nodePend, "node:refund", "ops"}} {
+		sig := ed25519.Sign(key(d.who), agent.ApprovalDecisionBytes(d.p.Subject(), d.who, true, testDecidedAt))
+		if err := agent.SubmitDecision(ctx, j, agent.Decision{RunID: "f1", ToolUseID: d.key, ApproverID: d.who, Approved: true, DecidedAt: testDecidedAt, Alg: audit.AlgEd25519, Signature: sig}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if ok, err := journalhook.Gate(ctx, j, "f1", inst, "refund", json.RawMessage(`120`), esc, approverKeys(nil)); err != nil || !ok {
+		t.Fatalf("the instance's gate after its decision = %v, %v", ok, err)
+	}
+	if _, err := f.Run(ctx, j, "f1", 120); err != nil {
+		t.Fatal(err)
+	}
+	for id, g := range gates() {
+		if g.Waiting {
+			t.Errorf("gate %s still waits after the node ran: %+v", id, g)
+		}
+	}
+	// Each gate lists the decisions recorded under its own subject only.
+	m = gates()
+	for _, d := range m[inst].Decisions {
+		if d.Approver == "ops" {
+			t.Errorf("the node's approver is listed on the instance: %+v", d)
+		}
+	}
+	for _, d := range m["node:refund"].Decisions {
+		if d.Approver == "risk" {
+			t.Errorf("the instance's approver is listed on the node: %+v", d)
+		}
+	}
+}
+
+// A node with no gate of its own, whose only gate is the escalation instance, is listed as a gate in the viewer:
+// the instance has its own request, and its decisions and tally.
+func TestBuild_EscalationInstanceOfAnUngatedNodeIsAGate(t *testing.T) {
+	ctx := context.Background()
+	j := agenttest.MemJournal()
+	const inst = "node:refund:taint"
+	esc := &agent.ApprovalPolicy{Need: 1, Approvers: []string{"risk"}}
+	var pend *agent.ApprovalPending
+	if _, err := journalhook.Gate(ctx, j, "f1", inst, "refund", json.RawMessage(`120`), esc, approverKeys(nil)); !errors.As(err, &pend) {
+		t.Fatalf("the instance's first evaluation = %v, want a pause", err)
+	}
+	gate := func() (Gate, bool) {
+		t.Helper()
+		recs, err := j.History(ctx, "f1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, g := range Build(ctx, "f1", recs, nil).Gates {
+			if g.ToolUseID == inst {
+				return g, true
+			}
+		}
+		return Gate{}, false
+	}
+	g, ok := gate()
+	if !ok || g.ToolName != "refund" || g.Need != 1 || !slices.Equal(g.Approvers, []string{"risk"}) || !g.Waiting {
+		t.Fatalf("the instance's gate = %+v, %v; want refund, 1 of [risk], waiting", g, ok)
+	}
+	sig := ed25519.Sign(key("risk"), agent.ApprovalDecisionBytes(pend.Subject(), "risk", true, testDecidedAt))
+	if err := agent.SubmitDecision(ctx, j, agent.Decision{RunID: "f1", ToolUseID: inst, ApproverID: "risk", Approved: true, DecidedAt: testDecidedAt, Alg: audit.AlgEd25519, Signature: sig}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := journalhook.Gate(ctx, j, "f1", inst, "refund", json.RawMessage(`120`), esc, approverKeys(nil)); err != nil || !ok {
+		t.Fatalf("the gate after its decision = %v, %v", ok, err)
+	}
+	g, ok = gate()
+	if !ok || g.Waiting || !g.Tallied || len(g.Decisions) != 1 || g.Decisions[0].Approver != "risk" {
+		t.Errorf("the instance's gate after its decision = %+v, %v; want tallied with risk's decision", g, ok)
 	}
 }

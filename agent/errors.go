@@ -88,7 +88,8 @@ var (
 	ErrToolUseIDReused = fmt.Errorf("tool-use id missing, reused, or malformed: %w (%w)", ErrProtocol, ErrModel)
 	// ErrToolUseIDInvalid is a model turn whose tool call has an ID that holds '#', which the
 	// engine reserves: it derives a second approval subject from a call's ID by appending "#"
-	// and a suffix, so no ID a model chooses may spell one. Only a live turn is checked; a
+	// and a suffix, so no ID a model chooses may spell one. An ID that starts with "node:", the
+	// prefix of a plan flow's node keys and of the gate subjects on them, is refused the same way. Only a live turn is checked; a
 	// journal that holds such an ID from before the check replays. It wraps ErrModel as well as
 	// ErrProtocol: the fault is in the model's output, the turn is not journaled, and a fresh
 	// attempt can issue a valid ID, so a retry middleware treats it as retryable.

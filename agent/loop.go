@@ -1174,7 +1174,8 @@ func toolUseIDs(msgs []Message) map[string]bool {
 // and journal step under its ID, so a reused ID would pass a new call off as one already done.
 // An ID with a '#' is refused as well (ErrToolUseIDInvalid): the engine derives a second
 // approval subject from a call's ID by appending "#<suffix>", and no model-chosen ID may spell
-// one. Any other ID is safe: the keys and sub-run ID derived from it encode it (see encodeID).
+// one, and so does the prefix "node:", which the keys and gate subjects of a plan flow's nodes use (a node's
+// escalation instance is "node:x:taint", package escalation). Any other ID is safe: the keys and sub-run ID derived from it encode it (see encodeID).
 // Only live turns are checked; a turn replayed from the journal is taken as recorded, so a
 // journal that holds a '#' ID from before the check replays.
 func checkToolUseIDs(m Message, used map[string]bool) error {
@@ -1187,6 +1188,8 @@ func checkToolUseIDs(m Message, used map[string]bool) error {
 			return fmt.Errorf("model called tool %q with tool-use id %q, which is not valid UTF-8: %w", tu.Name, tu.ID, ErrToolUseIDReused)
 		case strings.Contains(tu.ID, "#"):
 			return fmt.Errorf("model called tool %q with tool-use id %q, which holds '#': %w", tu.Name, tu.ID, ErrToolUseIDInvalid)
+		case strings.HasPrefix(tu.ID, planNodePrefix):
+			return fmt.Errorf("model called tool %q with tool-use id %q, which starts with %q, reserved for plan flow nodes: %w", tu.Name, tu.ID, planNodePrefix, ErrToolUseIDInvalid)
 		case used[tu.ID]:
 			return fmt.Errorf("model called tool %q with tool-use id %q from an earlier turn: %w", tu.Name, tu.ID, ErrToolUseIDReused)
 		case seen[tu.ID]:

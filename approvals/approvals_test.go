@@ -523,16 +523,9 @@ func TestDecision_UnsupportedGates(t *testing.T) {
 	if single.records() != before {
 		t.Error("a decision on a single-approver gate was recorded")
 	}
-
-	node := newRigWith(t, "node:review", nil)
-	before = node.records()
-	b = node.decisionOn(node.subject(), "alice", true)
-	if status, out := node.post(b); status != 422 || code(out) != "unsupported" {
-		t.Errorf("node gate: %d %v", status, out)
-	}
-	if node.records() != before {
-		t.Error("a decision on a node-key gate was recorded")
-	}
+	// A plan flow node's gate, and its escalation instance, are refused too: TestIntake_DoesNotDecideAFlowNodesInstance
+	// drives a real flow (a model may not choose a tool-use ID that starts with "node:", so an agent run cannot
+	// stand in for one).
 }
 
 // Work on the journal is capped: past the cap a request is told to retry, and the one in progress

@@ -93,8 +93,10 @@ func evaluateGate(recs []Record, s ApprovalSubject, pol *ApprovalPolicy, verifie
 	var single Record
 	for _, r := range recs {
 		switch {
-		case r.Kind == StepValue && r.Name == s.ToolUseID && planNodeKey(s.ToolUseID):
-			return GateStanding{Status: GateDecided, Ran: true} // a plan flow node's result is its key's own record
+		case r.Kind == StepValue && planGateKey(s.ToolUseID) && r.Name == planGateNode(s.ToolUseID):
+			// A plan flow node's result is its key's own record. The node's escalation instance is decided
+			// once the node ran: an instance passed to get there.
+			return GateStanding{Status: GateDecided, Ran: true}
 		case (r.Kind == StepToolResult || r.Kind == StepSagaFail) && r.ToolUseID == s.ToolUseID:
 			denial := r.Kind == StepToolResult && r.IsError && (string(r.Result) == `"tool call denied by human"` || string(r.Result) == ExpiredResult)
 			st := GateStanding{Status: GateDecided, Ran: true, Denied: denial, Expired: denial && string(r.Result) == ExpiredResult}

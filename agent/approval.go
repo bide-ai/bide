@@ -1086,6 +1086,15 @@ func FindToolCall(recs []Record, toolUseID string) (idx int, call ToolUse, ok bo
 	// The escalation instance of a call (taint_gate.go) is the same call under a derived subject: its
 	// name and arguments are the call's, its ID the subject, which the decisions on it sign.
 	if base, derived := baseCallID(toolUseID); derived {
+		// A plan flow node's instance records a request of its own (flowGate), which is the one to find: the
+		// node itself may have no gate, and so no request. Failing that, it is the node's.
+		if planGateKey(toolUseID) {
+			for i, r := range recs {
+				if q, ok := decodeApprovalRequest(r, toolUseID); ok {
+					return i, ToolUse{ID: q.ToolUseID, Name: q.ToolName, Args: q.Args}, true
+				}
+			}
+		}
 		idx, call, ok = FindToolCall(recs, base)
 		if ok {
 			call.ID = toolUseID

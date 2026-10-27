@@ -22,6 +22,7 @@ import (
 	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/approvals"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/journalhook"
 	"github.com/bide-ai/bide/plan"
 )
 
@@ -487,5 +488,125 @@ func TestTaintIntake_SaysWhyTheInstanceAsks(t *testing.T) {
 	}
 	if status, out := r.pending("c2"); status != http.StatusOK || out["why"] != nil {
 		t.Fatalf("the own gate after the instance asks: %d why=%v, want no reason", status, out["why"])
+	}
+}
+
+// The escalation instance of a plan flow node ("node:pay:taint", docs/design/flow-taint.md) is not served by
+// the intake, as the node's own gate is not: a decision for it records nothing, whatever it is signed for, and
+// it is not decided under the node's own gate. The engine writes no instance yet, so the instance's gate is
+// driven through the flow hook.
+func TestIntake_DoesNotDecideAFlowNodesInstance(t *testing.T) {
+	ctx := context.Background()
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	verifiers := func(id string) (agent.ApproverVerifier, bool) {
+		if id != "carol" {
+			return nil, false
+		}
+		return audit.Ed25519Verifier{Pub: pub}, true
+	}
+	j := agenttest.MustJournal(agent.NewMemStore())
+	own := agent.ApprovalPolicy{Need: 1, Approvers: []string{"carol"}}
+	b := plan.New[int, int]("refunds").WithApproverVerifiers(verifiers)
+	b.Step("pay", func(_ context.Context, n int) (int, error) { return n, nil }, plan.Approval(&own))
+	f, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Run(ctx, j, "f1", 120); err == nil {
+		t.Fatal("the flow did not pause")
+	}
+	const inst = "node:pay:taint"
+	esc := &agent.ApprovalPolicy{Need: 1, Approvers: []string{"carol"}}
+	var pend *agent.ApprovalPending
+	if _, err := journalhook.Gate(ctx, j, "f1", inst, "pay", json.RawMessage(`120`), esc, agent.ApproverVerifierFor(verifiers)); !errors.As(err, &pend) {
+		t.Fatalf("the instance's first evaluation = %v, want a pause", err)
+	}
+	h, err := approvals.New(j, verifiers, approvals.WithGatePolicy(func(string) (*agent.ApprovalPolicy, bool) { return &own, true }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	count := func() int {
+		recs, _ := j.History(ctx, "f1")
+		return len(recs)
+	}
+	at := time.Date(2026, 10, 13, 12, 0, 1, 0, time.UTC)
+	for _, call := range []string{inst, "node:pay"} {
+		subj := agent.ApprovalSubject{RunID: "f1", ToolUseID: call, ToolName: "pay", Args: json.RawMessage(`120`)}
+		sig := ed25519.Sign(priv, agent.ApprovalDecisionBytes(subj, "carol", true, at))
+		raw, _ := json.Marshal(map[string]any{"run": "f1", "call": call, "approver": "carol", "approved": true,
+			"decided_at": agent.FormatTimestamp(at), "alg": string(audit.AlgEd25519), "signature": base64.StdEncoding.EncodeToString(sig)})
+		before := count()
+		resp, err := http.Post(srv.URL+"/decisions", "application/json", bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode < 400 {
+			t.Errorf("%s: a decision on a flow gate was accepted: %d", call, resp.StatusCode)
+		}
+		if count() != before {
+			t.Errorf("%s: a decision on a flow gate was recorded", call)
+		}
+	}
+}
+
+// The instance of a node with no gate of its own is found by the intake (it has a request of its own) and
+// refused as a node gate is: the response is the refusal of plan flow gates, not "no such gate", and nothing is
+// recorded. The engine writes the instance's gate-reason record before it asks; the test plants the same.
+func TestIntake_FindsAndRefusesTheInstanceOfAnUngatedNode(t *testing.T) {
+	ctx := context.Background()
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	verifiers := func(id string) (agent.ApproverVerifier, bool) {
+		if id != "carol" {
+			return nil, false
+		}
+		return audit.Ed25519Verifier{Pub: pub}, true
+	}
+	j := agenttest.MustJournal(agent.NewMemStore())
+	const inst = "node:pay:taint"
+	esc := &agent.ApprovalPolicy{Need: 1, Approvers: []string{"carol"}}
+	var pend *agent.ApprovalPending
+	if _, err := journalhook.Gate(ctx, j, "f1", inst, "pay", json.RawMessage(`120`), esc, agent.ApproverVerifierFor(verifiers)); !errors.As(err, &pend) {
+		t.Fatalf("the instance's first evaluation = %v, want a pause", err)
+	}
+	gb, _ := json.Marshal(esc)
+	sum := sha256.Sum256(gb)
+	body, _ := json.Marshal(map[string]any{"format": "bide.gate-reason.v1", "tool_use_id": "node:pay", "policy_digest": hex.EncodeToString(sum[:]),
+		"gate": esc, "reasons": []any{map[string]any{"kind": "taint", "source": "inbound-email", "ref": "node:fetch", "pos": 2}}, "recorded_at": "2026-10-27T00:00:00.000Z"})
+	data, err := agent.JournalEntry("gate-reason:node%3Apay", agent.Record{Kind: agent.StepValue, Result: body})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := j.Store().Insert(ctx, "f1", "gate-reason:node%3Apay", data); err != nil {
+		t.Fatal(err)
+	}
+	h, err := approvals.New(j, verifiers, approvals.WithGatePolicy(func(string) (*agent.ApprovalPolicy, bool) { return nil, false }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	recs, _ := j.History(ctx, "f1")
+	before := len(recs)
+	at := time.Date(2026, 10, 13, 12, 0, 1, 0, time.UTC)
+	subj := agent.ApprovalSubject{RunID: "f1", ToolUseID: inst, ToolName: "pay", Args: json.RawMessage(`120`)}
+	sig := ed25519.Sign(priv, agent.ApprovalDecisionBytes(subj, "carol", true, at))
+	raw, _ := json.Marshal(map[string]any{"run": "f1", "call": inst, "approver": "carol", "approved": true,
+		"decided_at": agent.FormatTimestamp(at), "alg": string(audit.AlgEd25519), "signature": base64.StdEncoding.EncodeToString(sig)})
+	resp, err := http.Post(srv.URL+"/decisions", "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	resp.Body.Close()
+	if e, _ := out["error"].(map[string]any); resp.StatusCode != 422 || e["code"] != "unsupported" {
+		t.Errorf("a decision on the instance of an ungated node: %d %v, want 422 unsupported (found, then refused as a flow gate)", resp.StatusCode, out)
+	}
+	recs, _ = j.History(ctx, "f1")
+	if len(recs) != before {
+		t.Error("a decision on a flow gate was recorded")
 	}
 }

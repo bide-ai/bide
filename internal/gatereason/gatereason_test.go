@@ -201,3 +201,32 @@ func TestClean_NeverSplitsAnEscape(t *testing.T) {
 		t.Errorf("multibyte: %q", got)
 	}
 }
+
+// A plan flow node's escalation instance shows the node's taint reasons, and the node's own gate its caps,
+// as a call's do; the record names the node by its key.
+func TestFind_TheInstanceOfAPlanFlowNode(t *testing.T) {
+	rec := strings.Replace(taintRecord, `"c3"`, `"node:pay"`, 1)
+	r := recs("gate-reason:node%3Apay", rec)
+	taint := Find("node:pay:taint", r)
+	if len(taint) != 1 || taint[0].Kind != KindTaint || taint[0].Source != "inbound-email" {
+		t.Fatalf("instance reasons = %+v, want the taint reason alone", taint)
+	}
+	caps := Find("node:pay", r)
+	if len(caps) != 1 || caps[0].Kind != KindCap {
+		t.Fatalf("node reasons = %+v, want the cap reason alone", caps)
+	}
+	// In a loop body the iteration's key names the node.
+	it := strings.Replace(taintRecord, `"c3"`, `"node:iter:2:pay"`, 1)
+	if got := Find("node:iter:2:pay:taint", recs("gate-reason:node%3Aiter%3A2%3Apay", it)); len(got) != 1 || got[0].Kind != KindTaint {
+		t.Errorf("loop instance reasons = %+v", got)
+	}
+	// Another node's record, a Step named taint, and the node named taint are not this instance's.
+	for subject, r := range map[string]Records{
+		"node:pay:taint":      recs("gate-reason:node%3Aother", strings.Replace(taintRecord, `"c3"`, `"node:other"`, 1)),
+		"node:pay:step:taint": r,
+	} {
+		if got := Find(subject, r); len(got) != 0 {
+			t.Errorf("Find(%q) = %+v, want none", subject, got)
+		}
+	}
+}
