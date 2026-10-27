@@ -297,7 +297,7 @@ func TestGate_ReplayReadsTheTallyOnly(t *testing.T) {
 	}
 	// Drop run:complete's shortcut by asking the gate directly, through a replay of the node.
 	cs.Reset()
-	if err := runGate(ctx, j, "r1", f.core, nil, f.core.byName["refund"], "node:refund", refund{Order: "order-42", Amount: 120}); err != nil {
+	if _, err := runGate(ctx, j, "r1", f.core, nil, f.core.byName["refund"], "node:refund", refund{Order: "order-42", Amount: 120}); err != nil {
 		t.Fatalf("runGate on a passed gate = %v", err)
 	}
 	if c := cs.Counts(); c.Load != 0 || c.Insert != 0 || c.Get != 3 {

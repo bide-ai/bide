@@ -304,8 +304,10 @@ run ungated, which fails open where an agent child fails closed). What the chose
   a node folds the marks of its child run or refuses until the sink was drained, so a mark is not lost to a
   crash or to the operator's resolution.
 - Parts: inheritance down is the change that follows the enforcement core (3c-2); taint coming up and the
-  removal of the guard are the one after (3c-3). Until then a flow started under inherited taint is refused
-  with a clear ErrConfig.
+  removal of the guard are the one after (3c-3). Until the whole enforcement is complete the inheritance is
+  off in production (a test-only switch turns it on), so a flow that a tool of an agent under a taint policy
+  runs is as it was and is not refused for a policy that `Build` would not yet let it have; the guard and the
+  switch are removed together.
 
 ### A3. What is journaled
 

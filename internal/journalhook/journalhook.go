@@ -144,18 +144,26 @@ const (
 // escalation Gate (an *agent.ApprovalPolicy) on the node's instance, or, for a refused node, an error.
 type FlowTaintDecision struct {
 	Gate any
+	// Ctx is the context the node's body runs under, for a run under taint: ctx bound with the run's
+	// under-taint status and the node's read set as the marks the runs the body starts inherit. nil for a run
+	// that is not under taint, whose body runs under the context the drive has.
+	Ctx context.Context
 }
 
 // FlowTaintPrepare returns start (an agent.RunStart) recording d, the flow's declarations, for a drive
-// that may start the run; it returns start unchanged for d == nil. With d.RequireProvenance it refuses
-// (ErrConfig) a drive that states neither where the run's input came from nor has a run that did, before the
-// run's journal is written. The agent package sets it in init.
-var FlowTaintPrepare func(ctx context.Context, j any, runID string, start any, d *FlowTaint) (any, error)
+// that may start the run; it returns start unchanged for d == nil and a run that is not under taint by
+// inheritance. With d.RequireProvenance it refuses (ErrConfig) a new run that states neither where its input
+// came from nor started inside a tainted run, before the run's journal is written. A run started inside a
+// tainted run (ctx carries its status) records the marks it inherited; a flow with no policy records the
+// parent's status with no declarations, and with a node that can have a side effect (tracked names them) it is
+// refused (ErrConfig) when the run is new, before anything is written. All of the inheritance is off when
+// inherit is false (the flow runs as if its parent were not under taint). The agent package sets it in init.
+var FlowTaintPrepare func(ctx context.Context, j any, runID string, start any, d *FlowTaint, tracked []string, inherit bool) (any, error)
 
 // FlowTaintEnter compares a drive of the flow, whose declarations are d (nil for a flow with no policy),
 // with the declarations the run's recorded start holds, and returns one of the FlowTaint standings. Any
 // difference is ErrConfig, naming both digests, before a node runs. The agent package sets it in init.
-var FlowTaintEnter func(ctx context.Context, j any, runID string, d *FlowTaint) (standing int, err error)
+var FlowTaintEnter func(ctx context.Context, j any, runID string, d *FlowTaint, inherit bool) (standing int, err error)
 
 // FlowTaintNodeHook decides what taint requires of the node with key nodeKey (and safety, an agent.Safety),
 // about to run in a run at standing: it computes the node's read set from the journal, records the

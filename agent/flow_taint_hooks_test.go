@@ -37,7 +37,7 @@ func startFlowRun(t *testing.T, d *journalhook.FlowTaint, untrusted *string) *Jo
 	ctx := context.Background()
 	j := memJournal()
 	start := RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}, Input: UserText("1"), Settings: RunSettings{UntrustedInput: untrusted}}
-	got, err := flowTaintPrepare(ctx, j, "r1", start, d)
+	got, err := flowTaintPrepare(ctx, j, "r1", start, d, nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,12 +52,12 @@ func TestFlowTaintPrepare(t *testing.T) {
 	j := memJournal()
 	base := RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}}
 	// No policy: the start is unchanged.
-	got, err := flowTaintPrepare(ctx, j, "r1", base, nil)
+	got, err := flowTaintPrepare(ctx, j, "r1", base, nil, nil, true)
 	if err != nil || got.(RunStart).taintDigest() != "" {
 		t.Fatalf("no declarations: %v, digest %q", err, got.(RunStart).taintDigest())
 	}
 	// With a policy: the declarations are recorded, normalised.
-	got, err = flowTaintPrepare(ctx, j, "r1", base, hookDecls(nil))
+	got, err = flowTaintPrepare(ctx, j, "r1", base, hookDecls(nil), nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,10 +65,10 @@ func TestFlowTaintPrepare(t *testing.T) {
 	if err != nil || !ok || decls.Policy.Gate.Need != 2 || decls.Nodes["fetch"].Untrusted[0] != "inbound-email" || decls.Nodes["safe"].Exempt != "reviewed" {
 		t.Fatalf("recorded declarations %+v, %v, %v", decls, ok, err)
 	}
-	if _, err := flowTaintPrepare(ctx, j, "r1", "not a start", hookDecls(nil)); !errors.Is(err, ErrConfig) {
+	if _, err := flowTaintPrepare(ctx, j, "r1", "not a start", hookDecls(nil), nil, true); !errors.Is(err, ErrConfig) {
 		t.Errorf("a start that is not a RunStart: %v", err)
 	}
-	if _, err := flowTaintPrepare(ctx, j, "r1", base, &journalhook.FlowTaint{Gate: "x"}); !errors.Is(err, ErrConfig) {
+	if _, err := flowTaintPrepare(ctx, j, "r1", base, &journalhook.FlowTaint{Gate: "x"}, nil, true); !errors.Is(err, ErrConfig) {
 		t.Errorf("a gate that is not a policy: %v", err)
 	}
 }
@@ -81,27 +81,27 @@ func TestFlowTaintPrepare_RequireProvenance(t *testing.T) {
 	}
 	j := memJournal()
 	// A new run that states neither is refused before anything is written.
-	if _, err := flowTaintPrepare(ctx, j, "r1", mk(nil, nil), req); !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "WithUntrustedInput") {
+	if _, err := flowTaintPrepare(ctx, j, "r1", mk(nil, nil), req, nil, true); !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "WithUntrustedInput") {
 		t.Fatalf("a new run stating nothing: %v, want errInputProvenance", err)
 	}
 	if recs, _ := j.History(ctx, "r1"); len(recs) != 0 {
 		t.Errorf("the refused drive wrote %d records", len(recs))
 	}
 	for what, s := range map[string]RunStart{"untrusted": mk(str("mail"), nil), "trusted": mk(nil, str("ours"))} {
-		if _, err := flowTaintPrepare(ctx, j, "r2", s, req); err != nil {
+		if _, err := flowTaintPrepare(ctx, j, "r2", s, req, nil, true); err != nil {
 			t.Errorf("a run stating its input %s: %v", what, err)
 		}
 	}
 	// A run that began with a statement is resumed by a drive that states none.
-	got, _ := flowTaintPrepare(ctx, j, "r3", mk(str("mail"), nil), req)
+	got, _ := flowTaintPrepare(ctx, j, "r3", mk(str("mail"), nil), req, nil, true)
 	if _, _, _, err := beginRun(ctx, j, "r3", got.(RunStart)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := flowTaintPrepare(ctx, j, "r3", mk(nil, nil), req); err != nil {
+	if _, err := flowTaintPrepare(ctx, j, "r3", mk(nil, nil), req, nil, true); err != nil {
 		t.Errorf("a resume that states nothing: %v", err)
 	}
 	// Without RequireProvenance nothing is asked.
-	if _, err := flowTaintPrepare(ctx, j, "r4", mk(nil, nil), hookDecls(nil)); err != nil {
+	if _, err := flowTaintPrepare(ctx, j, "r4", mk(nil, nil), hookDecls(nil), nil, true); err != nil {
 		t.Errorf("no RequireProvenance: %v", err)
 	}
 }
@@ -124,7 +124,7 @@ func TestFlowTaintEnter(t *testing.T) {
 		"no policy then, none now":     {plain, nil, journalhook.FlowTaintNone, false},
 		"no policy then, a policy now": {plain, hookDecls(nil), journalhook.FlowTaintNone, false},
 	} {
-		got, err := flowTaintEnter(ctx, c.j, "r1", c.d)
+		got, err := flowTaintEnter(ctx, c.j, "r1", c.d, true)
 		if (err != nil) != c.err || err == nil && got != c.want {
 			t.Errorf("%s: standing %d, err %v; want %d, err %v", what, got, err, c.want, c.err)
 		}
@@ -133,7 +133,7 @@ func TestFlowTaintEnter(t *testing.T) {
 		}
 	}
 	// A run with no recorded start has nothing to compare with.
-	if _, err := flowTaintEnter(ctx, memJournal(), "none", hookDecls(nil)); !errors.Is(err, ErrStorage) {
+	if _, err := flowTaintEnter(ctx, memJournal(), "none", hookDecls(nil), true); !errors.Is(err, ErrStorage) {
 		t.Errorf("no recorded start: %v, want ErrStorage", err)
 	}
 }
@@ -408,7 +408,7 @@ func TestFlowTaintHooks_ReadTheBoundStartOfTheirOwnRunOnly(t *testing.T) {
 	ctx := context.Background()
 	ja := memJournal()
 	start := RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}, Input: UserText("1")}
-	got, err := flowTaintPrepare(ctx, ja, "rA", start, hookDecls(nil))
+	got, err := flowTaintPrepare(ctx, ja, "rA", start, hookDecls(nil), nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -418,28 +418,39 @@ func TestFlowTaintHooks_ReadTheBoundStartOfTheirOwnRunOnly(t *testing.T) {
 	}
 	// Run rB has no start in its journal: the hooks must not answer from rA's.
 	jb := memJournal()
-	if _, err := flowTaintEnter(ctxA, jb, "rB", hookDecls(nil)); !errors.Is(err, ErrStorage) {
+	if _, err := flowTaintEnter(ctxA, jb, "rB", hookDecls(nil), true); !errors.Is(err, ErrStorage) {
 		t.Errorf("Enter for another run with rA's context: %v, want ErrStorage", err)
 	}
 	if _, err := flowTaintNode(ctxA, jb, "rB", "node:pay", Safety{}, journalhook.FlowTaintUnder); !errors.Is(err, ErrStorage) {
 		t.Errorf("the node decision for another run with rA's context: %v, want ErrStorage", err)
 	}
 	// For its own run the bound start answers without a read of the journal.
-	if st, err := flowTaintEnter(ctxA, ja, "rA", hookDecls(nil)); err != nil || st != journalhook.FlowTaintUnder {
+	if st, err := flowTaintEnter(ctxA, ja, "rA", hookDecls(nil), true); err != nil || st != journalhook.FlowTaintUnder {
 		t.Errorf("Enter for the bound run: %d, %v", st, err)
 	}
 }
 
 // A node that cannot have a side effect is decided without reading the journal for a read set: an unreadable
 // taint-mark record is an error for a node that can have a side effect, and nothing for one that cannot.
-func TestFlowTaintNode_ReadOnlyNodeReadsNothing(t *testing.T) {
+func TestFlowTaintNode_ReadOnlyNodeNeedsNoGateButBindsTheTaint(t *testing.T) {
 	j := startFlowRun(t, hookDecls(nil), nil)
-	writeRaw(t, j, "r1", taintMarkPrefix+"junk", Record{Kind: StepValue, Result: json.RawMessage(`"junk"`)})
-	if d, err := decide(j, "node:look", Safety{ReadOnly: true}, journalhook.FlowTaintUnder); err != nil || d.Gate != nil {
-		t.Errorf("a read-only node: %+v, %v", d, err)
+	put(t, j, "node:fetch")
+	d, err := decide(j, "node:look", Safety{ReadOnly: true}, journalhook.FlowTaintUnder)
+	if err != nil || d.Gate != nil {
+		t.Fatalf("a read-only node: %+v, %v; want no gate", d, err)
 	}
-	if _, err := decide(j, "node:pay", Safety{}, journalhook.FlowTaintUnder); !errors.Is(err, ErrStorage) {
-		t.Errorf("a node that can have a side effect: %v, want the unreadable record to be ErrStorage", err)
+	// The body of a node in a run under taint runs under its status and its read set, read-only or not: a child
+	// it starts inherits them.
+	if d.Ctx == nil || underTaintFrom(d.Ctx) == "" {
+		t.Fatalf("the read-only node's body context is not bound: %+v", d)
+	}
+	if c, ok := callMarksFrom(d.Ctx); !ok || !c.strict || len(c.list) != 1 || c.list[0].Source != "inbound-email" || c.list[0].Ref != "parent:node:fetch" {
+		t.Errorf("the marks bound for the body: %+v, %v", c, ok)
+	}
+	// An unreadable mark record is an error for any node of a run under taint, since the body needs the set.
+	writeRaw(t, j, "r1", taintMarkPrefix+"junk", Record{Kind: StepValue, Result: json.RawMessage(`"junk"`)})
+	if _, err := decide(j, "node:look", Safety{ReadOnly: true}, journalhook.FlowTaintUnder); !errors.Is(err, ErrStorage) {
+		t.Errorf("a read-only node with an unreadable mark record: %v, want ErrStorage", err)
 	}
 }
 
@@ -450,10 +461,10 @@ func TestFlowTaintPrepare_RequireProvenanceIsForNewRunsOnly(t *testing.T) {
 	j := startFlowRun(t, nil, nil) // r1 started with no declarations
 	req := hookDecls(func(d *journalhook.FlowTaint) { d.RequireProvenance = true })
 	resume := RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}, Input: UserText("1")}
-	if _, err := flowTaintPrepare(ctx, j, "r1", resume, req); err != nil {
+	if _, err := flowTaintPrepare(ctx, j, "r1", resume, req, nil, true); err != nil {
 		t.Errorf("a resume of a run that started with no declarations: %v", err)
 	}
-	if _, err := flowTaintPrepare(ctx, j, "r-new", resume, req); !errors.Is(err, ErrConfig) {
+	if _, err := flowTaintPrepare(ctx, j, "r-new", resume, req, nil, true); !errors.Is(err, ErrConfig) {
 		t.Errorf("a new run stating nothing: %v, want ErrConfig", err)
 	}
 }

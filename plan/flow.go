@@ -151,7 +151,7 @@ func (f *Flow[In, Out]) run(ctx context.Context, store *agent.Journal, runID str
 	}
 	// The flow's taint declarations are recorded with the start of a run that starts under a policy; a policy
 	// that requires provenance refuses a new run that states none, before the run's journal is written.
-	taintStart, err := journalhook.FlowTaintPrepare(ctx, store, runID, start, c.flowTaint())
+	taintStart, err := journalhook.FlowTaintPrepare(ctx, store, runID, start, c.flowTaint(), c.trackedNames(), inheritsTaint())
 	if err != nil {
 		return out, fmt.Errorf("plan: run %q: %w", c.flowName, err)
 	}
@@ -168,7 +168,7 @@ func (f *Flow[In, Out]) run(ctx context.Context, store *agent.Journal, runID str
 	// Every drive is compared with the declarations the run started under before a node runs: a different
 	// policy or declaration is ErrConfig, and a flow with no policy driving a run that started under one
 	// refuses its side-effecting nodes.
-	standing, err := journalhook.FlowTaintEnter(ctx, store, runID, c.flowTaint())
+	standing, err := journalhook.FlowTaintEnter(ctx, store, runID, c.flowTaint(), inheritsTaint())
 	if err != nil {
 		return out, fmt.Errorf("plan: run %q: %w", c.flowName, err)
 	}
@@ -340,10 +340,11 @@ func (f *Flow[In, Out]) run(ctx context.Context, store *agent.Journal, runID str
 		// exactly as for any node: it is a plain sequential step, so a non-idempotent
 		// merge halts on the ambiguous crash unless marked retry-safe.
 		// A gated node waits at its gate before it runs (see runGate).
-		if gateErr := runGate(ctx, store, runID, c, ts, node, nodeKey(name), input); gateErr != nil {
+		bodyCtx, gateErr := runGate(ctx, store, runID, c, ts, node, nodeKey(name), input)
+		if gateErr != nil {
 			return out, gateErr
 		}
-		result, runErr := runNode(ctx, store, runID, c.model, node, nodeKey(name), input)
+		result, runErr := runNode(bodyCtx, store, runID, c.model, node, nodeKey(name), input)
 		if runErr != nil {
 			return out, runErr
 		}
@@ -484,10 +485,11 @@ func (f *Flow[In, Out]) runLoop(ctx context.Context, store *agent.Journal, runID
 
 			// A gated body node waits at its gate in each iteration, under the iteration's key:
 			// each iteration's input is its own subject, approved on its own.
-			if gateErr := runGate(ctx, store, runID, c, ts, node, iterNodeKey(iter, name), input); gateErr != nil {
+			bodyCtx, gateErr := runGate(ctx, store, runID, c, ts, node, iterNodeKey(iter, name), input)
+			if gateErr != nil {
 				return "", nil, gateErr
 			}
-			result, runErr := runNode(ctx, store, runID, c.model, node, iterNodeKey(iter, name), input)
+			result, runErr := runNode(bodyCtx, store, runID, c.model, node, iterNodeKey(iter, name), input)
 			if runErr != nil {
 				return "", nil, runErr
 			}

@@ -161,11 +161,33 @@ func (c *builderCore) setTaintPolicy(p agent.TaintPolicy) {
 // guard when enforcement is complete.
 var taintGuardOff bool
 
+// taintInheritOn turns the inheritance of taint into a nested flow on (a flow started inside a run under taint
+// records the status and marks it inherited, and a policyless one with a side effect is refused). It is off in
+// production until flow taint is enforced as a whole, so a flow that an agent under a taint policy runs as a
+// tool is not refused for a policy it cannot yet be given (Build refuses one). Tests of the enforcement set it
+// (allowTaint); TestTaintGuardOffIsAssignedOnlyInTests holds it, like taintGuardOff, to tests. It is removed
+// with the guard.
+var taintInheritOn bool
+
+// inheritsTaint reports whether nested flows take the taint of the run they start in.
+func inheritsTaint() bool { return taintInheritOn }
+
 // ErrTaintRefused is returned (wrapped, naming the node) by Flow.Run when the flow's taint policy is Refuse,
 // the run has read untrusted content, and the node can have a side effect: the node does not run, no record
 // is written for it, and every later drive refuses it again; the run stays unfinished until it is cancelled
 // (agent.Cancel). It wraps agent.ErrConfig.
 var ErrTaintRefused = fmt.Errorf("the taint policy refused the node: %w", agent.ErrConfig)
+
+// trackedNames are the nodes that can have a side effect (not read-only), in order.
+func (c *builderCore) trackedNames() []string {
+	var out []string
+	for _, n := range c.nodes {
+		if !n.safety.ReadOnly {
+			out = append(out, n.name)
+		}
+	}
+	return out
+}
 
 // flowTaint is the flow's taint declarations as plain data for the engine: its policy and, by node name, what
 // each node declares. nil for a flow with no policy: node declarations alone gate nothing, as an agent's marks

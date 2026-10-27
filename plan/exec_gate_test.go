@@ -110,7 +110,7 @@ func TestFlowNode_PreExecuteIsOnTheWayToTheBody(t *testing.T) {
 
 	// The node's result is recorded: asking the gate again does not run the check (the node replays).
 	before := *n
-	if err := runGate(ctx, j, "r2", f2.core, nil, f2.core.byName["refund"], "node:refund", refund{Order: "order-43", Amount: 120}); err != nil {
+	if _, err := runGate(ctx, j, "r2", f2.core, nil, f2.core.byName["refund"], "node:refund", refund{Order: "order-43", Amount: 120}); err != nil {
 		t.Fatalf("runGate on a node that ran: %v", err)
 	}
 	if *n != before {

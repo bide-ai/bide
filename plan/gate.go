@@ -44,24 +44,28 @@ type taintState struct {
 // node would run. Both gates are evaluated by the agent package (journalhook.Gate) with the records and the
 // counting rule an agent's gated tool call uses; the node's input, encoded as the journal encodes it, is what
 // the approvers of either gate sign (the subject's Args). All of this comes before the node's attempt claim.
-func runGate(ctx context.Context, store *agent.Journal, runID string, c *builderCore, ts *taintState, node *node, key string, input any) error {
+func runGate(ctx context.Context, store *agent.Journal, runID string, c *builderCore, ts *taintState, node *node, key string, input any) (context.Context, error) {
+	bodyCtx := ctx
 	var escalationGate any
 	if ts != nil && ts.standing != 0 {
 		dec, err := journalhook.FlowTaintNodeHook(ctx, store, runID, key, node.safety, ts.standing)
 		if err != nil {
 			if errors.Is(err, journalhook.ErrTaintRefused) {
-				return fmt.Errorf("plan: run %q: step %q (%s): %w: %w", c.flowName, node.name, key, ErrTaintRefused, err)
+				return ctx, fmt.Errorf("plan: run %q: step %q (%s): %w: %w", c.flowName, node.name, key, ErrTaintRefused, err)
 			}
-			return fmt.Errorf("plan: run %q: the taint check of step %q: %w", c.flowName, node.name, err)
+			return ctx, fmt.Errorf("plan: run %q: the taint check of step %q: %w", c.flowName, node.name, err)
 		}
 		escalationGate = dec.Gate
+		if dec.Ctx != nil {
+			bodyCtx = dec.Ctx // the node's body runs under the run's taint status and its read set
+		}
 	}
 	if node.approval == nil && escalationGate == nil {
-		return nil
+		return bodyCtx, nil
 	}
 	args, err := journalhook.Marshal(input)
 	if err != nil {
-		return fmt.Errorf("plan: run %q: encode the input of gated step %q: %w", c.flowName, node.name, err)
+		return ctx, fmt.Errorf("plan: run %q: encode the input of gated step %q: %w", c.flowName, node.name, err)
 	}
 	var verifiers any
 	if c.approverVerifiers != nil {
@@ -69,13 +73,13 @@ func runGate(ctx context.Context, store *agent.Journal, runID string, c *builder
 	}
 	if node.approval != nil {
 		if err := evalGate(ctx, store, runID, c, node, key, args, node.approval, verifiers, "approval gate"); err != nil {
-			return err
+			return ctx, err
 		}
 	}
 	instance := escalation.NodeInstance(key)
 	if escalationGate != nil {
 		if err := evalGate(ctx, store, runID, c, node, instance, args, escalationGate, verifiers, "escalation gate"); err != nil {
-			return err
+			return ctx, err
 		}
 	}
 	// The pre-execution status check of a gate with certificate-bound approvers, immediately before the
@@ -83,15 +87,15 @@ func runGate(ctx context.Context, store *agent.Journal, runID string, c *builder
 	// replays and runs nothing). The escalation gate's is as the node's own.
 	if node.approval != nil {
 		if err := preExec(ctx, store, runID, c, node, key, node.approval, verifiers); err != nil {
-			return err
+			return ctx, err
 		}
 	}
 	if escalationGate != nil {
 		if err := preExec(ctx, store, runID, c, node, instance, escalationGate, verifiers); err != nil {
-			return err
+			return ctx, err
 		}
 	}
-	return nil
+	return bodyCtx, nil
 }
 
 // evalGate evaluates the gate pol on subject, the node's key or its escalation instance, and returns nil
