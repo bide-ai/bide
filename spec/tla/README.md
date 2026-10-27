@@ -1069,8 +1069,8 @@ Not modelled for inherited taint (owner: the Go pull request named):
 
 | Item | Why | Go test it must contain |
 |---|---|---|
-| which marks (names) are passed, and the canonical list (one per source, first ref kept, so the list passed down does not grow with depth) | the model has presence only, no list | 3c-2: a flow -> node -> flow -> node test: the inherited list stays one entry per source at every depth |
-| a drive carrying a different non-empty list than the recorded one | no list identity | 3c-2: that drive is ErrConfig |
+| which marks (names) are passed, and the canonical list (one per source, first ref kept, so the list passed down does not grow with depth) | the model has presence only, no list | 3c-2, built: `TestFlowTaint_TheInheritedListDoesNotGrowDownAChain` (a flow -> node -> flow -> node run: one entry per source at every depth, the first ref kept) and `TestCanonicalInherited_ChainDoesNotGrow` |
+| a drive carrying a different non-empty list than the recorded one | no list identity | 3c-2, built: `TestFlowTaintEnter_HoldsTheInheritedMarks` and `TestFlowTaint_ANestedFlowWithItsOwnPolicyInheritsTheMarks` (that drive is ErrConfig) |
 | `ResolveHalt` refusing until the sink is drained | the fold is modelled instead | 3c-3: the resolve path |
 | the sink sends marks the child learned as the child's own marks; transitivity up a chain depends on that | the model has one level | 3c-3: a mark learned by a grandchild reaches the root through the child's own record |
 | a parent node after the child is gated through the sink record | modelled as above (`ParentGated`) | 3c-3: a parent node after the child needs its instance through the sink record, after a crash between the child's record and the sink, and after `ResolveHalt` of the parent node |

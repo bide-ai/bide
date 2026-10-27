@@ -27,7 +27,7 @@ func TestGate_StoreBudget(t *testing.T) {
 	}
 	eval := func() (agenttest.Counts, error) {
 		cs.Reset()
-		err := runGate(ctx, j, "r1", f.core, nil, f.core.byName["refund"], "node:refund", in)
+		_, err := runGate(ctx, j, "r1", f.core, nil, f.core.byName["refund"], "node:refund", in)
 		return cs.Counts(), err
 	}
 	want := func(name string, c agenttest.Counts, get, insert, load int) {
@@ -37,7 +37,7 @@ func TestGate_StoreBudget(t *testing.T) {
 		}
 	}
 	cs.Reset()
-	if err := runGate(ctx, j, "r2", f.core, nil, f.core.byName["lookup"], "node:lookup", "order-42"); err != nil {
+	if _, err := runGate(ctx, j, "r2", f.core, nil, f.core.byName["lookup"], "node:lookup", "order-42"); err != nil {
 		t.Fatal(err)
 	}
 	want("an ungated node", cs.Counts(), 0, 0, 0)
@@ -62,7 +62,7 @@ func TestGate_StoreBudget(t *testing.T) {
 	}
 	c, _ = func() (agenttest.Counts, error) {
 		cs.Reset()
-		err := runGate(ctx, j, "r3", f.core, nil, f.core.byName["refund"], "node:refund", in)
+		_, err := runGate(ctx, j, "r3", f.core, nil, f.core.byName["refund"], "node:refund", in)
 		return cs.Counts(), err
 	}()
 	want("a first pause", c, 1, 2, 1)
@@ -74,7 +74,7 @@ func TestGate_StoreBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	cs.Reset()
-	if err := runGate(ctx, j, "r5", single.core, nil, single.core.byName["refund"], "node:refund", in); err != nil {
+	if _, err := runGate(ctx, j, "r5", single.core, nil, single.core.byName["refund"], "node:refund", in); err != nil {
 		t.Fatal(err)
 	}
 	want("a decided single gate", cs.Counts(), 2, 0, 0)

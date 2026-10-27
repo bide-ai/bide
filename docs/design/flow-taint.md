@@ -292,7 +292,11 @@ run ungated, which fails open where an agent child fails closed). What the chose
 - A flow with no policy that is started under taint records the parent's digest in `taint_policy_digest` and
   the marks in `taint_inherited`, and no declarations. Its standing is the fourth: a read-only node runs, a
   node that can have a side effect is ErrConfig, and a flow with any such node is refused at Begin, before
-  any record is written (the per-node check stays as defence in depth, since `Safety` is not in any digest).
+  any record is written, and on every later drive, before any node runs (a flow redeployed with a side effect
+  is not the one that started the run; the per-node check stays as defence in depth, since `Safety` is not in
+  any digest). The same holds for a run that started under a policy of its own and is driven by a flow that
+  lost it: with a node that can have a side effect it is refused before any node runs; a flow of read-only
+  nodes resumes.
 - Resume holds the recorded marks: a drive that carries other marks is ErrConfig. The marks a parent passes
   are its node's read set at the node's gating position, not at the end of its journal, so a retry-safe
   node that is driven again after its first attempt wrote records passes the same list.
@@ -304,8 +308,10 @@ run ungated, which fails open where an agent child fails closed). What the chose
   a node folds the marks of its child run or refuses until the sink was drained, so a mark is not lost to a
   crash or to the operator's resolution.
 - Parts: inheritance down is the change that follows the enforcement core (3c-2); taint coming up and the
-  removal of the guard are the one after (3c-3). Until then a flow started under inherited taint is refused
-  with a clear ErrConfig.
+  removal of the guard are the one after (3c-3). Until the whole enforcement is complete the inheritance is
+  off in production (a test-only switch turns it on), so a flow that a tool of an agent under a taint policy
+  runs is as it was and is not refused for a policy that `Build` would not yet let it have; the guard and the
+  switch are removed together.
 
 ### A3. What is journaled
 

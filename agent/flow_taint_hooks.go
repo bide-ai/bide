@@ -3,8 +3,11 @@ package agent
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/bide-ai/bide/internal/journalhook"
+	"github.com/bide-ai/bide/internal/strictjson"
 )
 
 // The hooks by which package plan takes part in flow taint (docs/design/flow-taint.md, A2): they join the
@@ -37,37 +40,91 @@ func declsOf(d *journalhook.FlowTaint) (flowTaintDecls, error) {
 }
 
 // flowTaintPrepare is journalhook.FlowTaintPrepare.
-func flowTaintPrepare(ctx context.Context, j any, runID string, start any, d *journalhook.FlowTaint) (any, error) {
+func flowTaintPrepare(ctx context.Context, j any, runID string, start any, d *journalhook.FlowTaint, tracked []string, inherit bool) (any, error) {
 	want, ok := start.(RunStart)
 	if !ok {
 		return nil, fmt.Errorf("agent: FlowTaintPrepare: start is %T, not an agent.RunStart: %w", start, ErrConfig)
 	}
+	jr, ok := j.(*Journal)
+	if !ok {
+		return nil, fmt.Errorf("agent: FlowTaintPrepare: %T is not a journal: %w", j, ErrConfig)
+	}
+	// Inside a tainted run (a tool of a tainted agent, the body of a tainted node) the run inherits the status
+	// and the marks its parent was shown, as an agent child does.
+	var parent string
+	var carried carriedMarks
+	var hasCarried bool
+	if inherit {
+		parent = underTaintFrom(ctx)
+		carried, hasCarried = callMarksFrom(ctx)
+	}
+	// Only a new run is judged here: a run that has started keeps its recorded start, which holdToStart returns,
+	// and a resume is checked by FlowTaintEnter. The start is read only when a judgement needs it.
+	startedRun := func() (bool, error) {
+		_, has, err := RecordedStart(ctx, jr, runID)
+		return has, err
+	}
 	if d == nil {
+		if parent == "" {
+			return want, nil
+		}
+		started := false
+		if len(tracked) > 0 {
+			var err error
+			if started, err = startedRun(); err != nil {
+				return nil, err
+			}
+		}
+		if !started && len(tracked) > 0 {
+			return nil, fmt.Errorf("agent: this flow has no taint policy, and run %s starts inside a run under taint (%.12s); its steps %s can have a side effect, and a flow cannot run one under taint it has no policy to enforce; give it a taint policy, or start it outside the tainted run: %w", runID, parent, strings.Join(tracked, ", "), ErrConfig)
+		}
+		want = want.withTaintDigest(parent)
+		if hasCarried {
+			want = want.withInheritedMarks(carried.list)
+		}
 		return want, nil
 	}
 	decls, err := declsOf(d)
 	if err != nil {
 		return nil, err
 	}
-	if decls.Policy.RequireProvenance && want.Settings.UntrustedInput == nil && want.Settings.TrustedInput == nil {
-		// Only a new run is asked where its input came from: a run that has started keeps its recorded start, so
-		// a resume is never asked again, and a run that started with no declarations (before the flow had a
-		// policy) is not refused for the policy it has now.
-		jr, ok := j.(*Journal)
-		if !ok {
-			return nil, fmt.Errorf("agent: FlowTaintPrepare: %T is not a journal: %w", j, ErrConfig)
-		}
-		if _, has, err := RecordedStart(ctx, jr, runID); err != nil {
+	// The run of a flow started inside a tainted run is not asked where its input came from: its input is
+	// written by its parent's code, and its marks are inherited.
+	if decls.Policy.RequireProvenance && parent == "" && want.Settings.UntrustedInput == nil && want.Settings.TrustedInput == nil {
+		if started, err := startedRun(); err != nil {
 			return nil, err
-		} else if !has {
+		} else if !started {
 			return nil, errInputProvenance
 		}
+	}
+	if hasCarried {
+		want = want.withInheritedMarks(carried.list)
 	}
 	return want.withFlowTaint(decls), nil
 }
 
+// checkInheritedMarks reads the inherited marks a start records strictly: in the canonical form a run records
+// them in (one per source, sorted by source, a valid name, a "parent:" ref). A list that is not is ErrStorage:
+// a read set built on it would not be the one the parent passed.
+func checkInheritedMarks(s RunStart) ([]inheritedMark, error) {
+	raw, ok := s.Ext[extTaintInherited]
+	if !ok {
+		return nil, nil
+	}
+	var l []inheritedMark
+	if err := strictjson.Unmarshal(raw, &l, nil); err != nil {
+		return nil, fmt.Errorf("agent: run:start's %s does not read: %w", extTaintInherited, ErrStorage)
+	}
+	for i, m := range l {
+		if checkProvenanceName("inherited mark", m.Source) != nil || !strings.HasPrefix(m.Ref, parentRefPrefix) || i > 0 && l[i-1].Source >= m.Source {
+			return nil, fmt.Errorf("agent: run:start's %s is not in the canonical form (one mark per source, sorted, a valid name, a %q ref): %w", extTaintInherited, parentRefPrefix, ErrStorage)
+		}
+	}
+	return l, nil
+}
+
 // flowTaintEnter is journalhook.FlowTaintEnter.
-func flowTaintEnter(ctx context.Context, j any, runID string, d *journalhook.FlowTaint) (int, error) {
+func flowTaintEnter(ctx context.Context, j any, runID string, d *journalhook.FlowTaint, tracked []string, inherit bool) (int, error) {
 	jr, ok := j.(*Journal)
 	if !ok {
 		return 0, fmt.Errorf("agent: FlowTaintEnter: %T is not a journal: %w", j, ErrConfig)
@@ -78,6 +135,16 @@ func flowTaintEnter(ctx context.Context, j any, runID string, d *journalhook.Flo
 	}
 	if !has {
 		return 0, fmt.Errorf("agent: run %s has no recorded start to check its taint declarations against: %w", runID, ErrStorage)
+	}
+	recorded, err := checkInheritedMarks(rec)
+	if err != nil {
+		return 0, err
+	}
+	// A run is held to the marks it started with: a drive that reaches it with other ones (the parent's node
+	// shows another set now) is ErrConfig. A drive that carries none (a recovery pass, a direct call) runs under
+	// the recorded ones.
+	if c, ok := callMarksFrom(ctx); inherit && ok && len(c.list) > 0 && !slices.Equal(c.list, recorded) {
+		return 0, fmt.Errorf("run %s was started with other inherited taint marks than the calling node shows now; drive it with the declarations it started under: %w", runID, ErrConfig)
 	}
 	var cur *flowTaintDecls
 	if d != nil {
@@ -91,6 +158,13 @@ func flowTaintEnter(ctx context.Context, j any, runID string, d *journalhook.Flo
 	if err != nil {
 		return 0, err
 	}
+	// A run under taint driven by a flow with no policy to enforce it runs no node that can have a side effect, on
+	// any drive, whether it started under a policy of its own that the flow has lost or inside a tainted run under
+	// a flow with none: the flow is refused when it has one, before its read-only nodes run (a redeployed flow whose
+	// node became a side effect is not the one that started it).
+	if st == flowPolicyless && len(tracked) > 0 {
+		return 0, fmt.Errorf("agent: run %s is under taint (%.12s), and this flow has no taint policy to enforce it but its steps %s can have a side effect; drive it with the flow that started it, restore its taint policy, or cancel the run: %w", runID, digestPrefix(rec.Ext[extTaintDigest]), strings.Join(tracked, ", "), ErrConfig)
+	}
 	switch st {
 	case flowUnderTaint:
 		return journalhook.FlowTaintUnder, nil
@@ -102,11 +176,13 @@ func flowTaintEnter(ctx context.Context, j any, runID string, d *journalhook.Flo
 
 // protocol:flows begin TRefuse
 
-// flowTaintNode is journalhook.FlowTaintNodeHook. For a run under taint it computes the node's requirement
-// from the declarations the run's start recorded and the journal before the node's own result (the position
-// it ran at, or the end of the journal for a node that has not run), records the gate-reason record
-// (insert-once, add-only), and returns the escalation gate the node's instance needs. A refused node
-// leaves its gate-reason record (refused) and no record of its own, and the error wraps ErrTaintRefused.
+// flowTaintNode is journalhook.FlowTaintNodeHook. For a run under taint it computes the node's read set from
+// the declarations the run's start recorded, the marks it inherited and the journal before the node's own
+// result (the position it ran at, or the end of the journal for a node that has not run), and from it the
+// node's requirement: it records the gate-reason record (insert-once, add-only) and returns the escalation
+// gate the node's instance needs. A refused node leaves its gate-reason record (refused) and no record of its
+// own, and the error wraps ErrTaintRefused. The decision's context binds the run's status and the read set for
+// the runs the node's body starts, for a node that can have a side effect or not.
 func flowTaintNode(ctx context.Context, j any, runID, nodeKey string, safety any, standing int) (journalhook.FlowTaintDecision, error) {
 	jr, ok := j.(*Journal)
 	if !ok {
@@ -116,22 +192,15 @@ func flowTaintNode(ctx context.Context, j any, runID, nodeKey string, safety any
 	if !ok {
 		return journalhook.FlowTaintDecision{}, fmt.Errorf("agent: FlowTaintNode: safety is %T, not an agent.Safety: %w", safety, ErrConfig)
 	}
-	switch standing {
-	case journalhook.FlowTaintNone:
+	if standing == journalhook.FlowTaintNone {
 		return journalhook.FlowTaintDecision{}, nil
-	case journalhook.FlowTaintPolicyless:
-		if tracked(s) {
-			return journalhook.FlowTaintDecision{}, fmt.Errorf("agent: node %q can have a side effect, and its run started under taint declarations this flow has no policy to enforce; drive it with the flow that started it, or cancel it: %w", nodeKey, ErrConfig)
-		}
-		return journalhook.FlowTaintDecision{}, nil
+	}
+	if standing == journalhook.FlowTaintPolicyless && tracked(s) {
+		return journalhook.FlowTaintDecision{}, fmt.Errorf("agent: node %q can have a side effect, and its run is under taint this flow has no policy to enforce; drive it with the flow that started it, or cancel it: %w", nodeKey, ErrConfig)
 	}
 	name, ok := nodeNameOfKey(nodeKey)
 	if !ok {
 		return journalhook.FlowTaintDecision{}, fmt.Errorf("agent: FlowTaintNode: %q is not a plan node key: %w", nodeKey, ErrConfig)
-	}
-	if !tracked(s) {
-		// A node that cannot have a side effect needs nothing, and leaves no record: the journal is not read.
-		return journalhook.FlowTaintDecision{}, nil
 	}
 	start, has, err := recordedStartOf(ctx, jr, runID)
 	if err != nil {
@@ -140,12 +209,17 @@ func flowTaintNode(ctx context.Context, j any, runID, nodeKey string, safety any
 	if !has {
 		return journalhook.FlowTaintDecision{}, fmt.Errorf("agent: run %s has no recorded start: %w", runID, ErrStorage)
 	}
-	decls, under, err := start.flowTaintDecls()
+	decls, _, err := start.flowTaintDecls()
 	if err != nil {
 		return journalhook.FlowTaintDecision{}, err
 	}
-	if !under {
+	digest := start.taintDigest()
+	if digest == "" {
 		return journalhook.FlowTaintDecision{}, nil
+	}
+	inherited, err := checkInheritedMarks(start)
+	if err != nil {
+		return journalhook.FlowTaintDecision{}, err
 	}
 	recs, err := jr.History(ctx, runID)
 	if err != nil {
@@ -158,9 +232,19 @@ func flowTaintNode(ctx context.Context, j any, runID, nodeKey string, safety any
 			break
 		}
 	}
-	marks, err := flowReadSet(recs, decls, before, nodeKey, nil)
+	// The read set is folded for a node that cannot have a side effect too, and so is the journal read above:
+	// the node's body is bound to it, as the marks the runs the body starts inherit. A read-only node was once
+	// left out (it needs no gate, so it read nothing); that no longer holds, because a read-only node's body is
+	// where a nested flow or an agent starts.
+	marks, err := flowReadSet(recs, decls, before, nodeKey, inheritedAsMarks(inherited))
 	if err != nil {
 		return journalhook.FlowTaintDecision{}, err
+	}
+	// The body's runs inherit the status and the read set, whether or not the node is gated: a read-only node
+	// that runs an agent hands it the taint too.
+	bound := withCallMarks(withUnderTaint(ctx, digest), marks)
+	if standing == journalhook.FlowTaintPolicyless || !tracked(s) {
+		return journalhook.FlowTaintDecision{Ctx: bound}, nil
 	}
 	have, found, err := getGateReason(ctx, jr, runID, nodeKey)
 	if err != nil {
@@ -173,9 +257,9 @@ func flowTaintNode(ctx context.Context, j any, runID, nodeKey string, safety any
 			return journalhook.FlowTaintDecision{}, fmt.Errorf("run %s: the node %q was held under an escalation gate with digest %.12s, and the taint policy now has %.12s; restore the policy it was held under, or cancel the run: %w", runID, nodeKey, have.PolicyDigest, want, ErrConfig)
 		}
 	}
-	req := flowRequirementFor(decls, name, tracked(s), marks, recorded)
+	req := flowRequirementFor(decls, name, true, marks, recorded)
 	if len(req.Reasons) == 0 && !req.Required {
-		return journalhook.FlowTaintDecision{}, nil
+		return journalhook.FlowTaintDecision{Ctx: bound}, nil
 	}
 	if !found {
 		rec := gateReasonRecord{Format: gateReasonFormat, ToolUseID: nodeKey, Reasons: req.Reasons, PolicyDigest: gateDigest(decls.Policy.Gate),
@@ -185,15 +269,15 @@ func flowTaintNode(ctx context.Context, j any, runID, nodeKey string, safety any
 			return journalhook.FlowTaintDecision{}, err
 		}
 		// Another driver's record may have won: the requirement is the union of both, add-only.
-		req = flowRequirementFor(decls, name, tracked(s), marks, &winner)
+		req = flowRequirementFor(decls, name, true, marks, &winner)
 	}
 	switch {
 	case !req.Required:
-		return journalhook.FlowTaintDecision{}, nil
+		return journalhook.FlowTaintDecision{Ctx: bound}, nil
 	case req.Refuse:
 		return journalhook.FlowTaintDecision{}, fmt.Errorf("node %q: %s: %w", nodeKey, reasonText(req.Reasons), journalhook.ErrTaintRefused)
 	}
-	return journalhook.FlowTaintDecision{Gate: req.Gate}, nil
+	return journalhook.FlowTaintDecision{Gate: req.Gate, Ctx: bound}, nil
 }
 
 // protocol:flows end

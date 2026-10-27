@@ -41,8 +41,34 @@ func flowTaintConform(recsAny any, cur *journalhook.FlowTaint, safeties map[stri
 		}
 		decls, under = d, ok
 	}
+	declared := func(nodeKey string) (string, bool) {
+		name, ok := nodeNameOfKey(nodeKey)
+		if !ok {
+			return "", false
+		}
+		_, has := safeties[name]
+		return name, has
+	}
 	taintRecord := func(name string) bool {
 		return strings.HasPrefix(name, gateReasonPrefix) || strings.HasPrefix(name, taintMarkPrefix)
+	}
+	inheritedList, inhErr := checkInheritedMarks(start)
+	if inhErr != nil {
+		diffs = append(diffs, runStartStep+" (the inherited taint marks do not read in the canonical form)")
+	}
+	if start.inheritedOnly() {
+		// Started inside a tainted run by a flow with no policy: a flow with a policy now is not the one that
+		// started it, and no node that can have a side effect could have run.
+		if cur != nil && (cur.Gate != nil || cur.Refuse || cur.RequireProvenance) {
+			diffs = append(diffs, runStartStep+" (the run started inside a tainted run with a flow that had no taint policy, and this flow has one)")
+		}
+		for _, r := range recs {
+			if name, ok := declared(r.Name); r.Kind == StepValue && ok {
+				if s, _ := safeties[name].(Safety); tracked(s) {
+					diffs = append(diffs, r.Name+" (a node that can have a side effect ran in a run that started inside a tainted run with no taint policy)")
+				}
+			}
+		}
 	}
 	if !under {
 		for _, r := range recs {
@@ -56,14 +82,6 @@ func flowTaintConform(recsAny any, cur *journalhook.FlowTaint, safeties map[stri
 		diffs = append(diffs, runStartStep+" (the run started under taint declarations, and this flow has no taint policy)")
 	} else if c, err := declsOf(cur); err != nil || c.digest() != decls.digest() {
 		diffs = append(diffs, runStartStep+" (the taint declarations the run started under are not this flow's)")
-	}
-	declared := func(nodeKey string) (string, bool) {
-		name, ok := nodeNameOfKey(nodeKey)
-		if !ok {
-			return "", false
-		}
-		_, has := safeties[name]
-		return name, has
 	}
 	// The gate-reason and taint-mark records must read, be named for what they hold, and name a declared node.
 	reasons := map[string]gateReasonRecord{}
@@ -99,7 +117,7 @@ func flowTaintConform(recsAny any, cur *journalhook.FlowTaint, safeties map[stri
 			continue
 		}
 		s, _ := safeties[name].(Safety)
-		marks, err := flowReadSet(recs, decls, i, r.Name, nil)
+		marks, err := flowReadSet(recs, decls, i, r.Name, inheritedAsMarks(inheritedList))
 		if err != nil {
 			diffs = append(diffs, r.Name+" (the read set could not be recomputed: "+err.Error()+")")
 			continue

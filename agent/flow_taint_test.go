@@ -238,11 +238,14 @@ func TestFlowTaintCheck(t *testing.T) {
 	// error, not a storage fault.
 	inherited := started
 	inherited.Ext = map[string]json.RawMessage{extTaintDigest: started.Ext[extTaintDigest]}
-	if _, err := flowTaintCheck(inherited, &cur); !errors.Is(err, ErrConfig) || errors.Is(err, ErrStorage) || !strings.Contains(err.Error(), "inherit") {
-		t.Errorf("a start with a digest and no declarations: %v, want an ErrConfig refusal that names inherited taint", err)
+	if _, err := flowTaintCheck(inherited, &cur); !errors.Is(err, ErrConfig) || errors.Is(err, ErrStorage) || !strings.Contains(err.Error(), "inside a tainted run") {
+		t.Errorf("a start with a digest and no declarations, driven by a flow that has a policy: %v, want an ErrConfig refusal that names the tainted run", err)
 	}
-	if _, err := flowTaintCheck(inherited, nil); !errors.Is(err, ErrConfig) {
-		t.Errorf("an inherited start, driven by a flow with no policy: %v, want the same refusal", err)
+	if st, err := flowTaintCheck(inherited, nil); err != nil || st != flowPolicyless {
+		t.Errorf("an inherited start, driven by a flow with no policy: %v, %v; want the policyless standing", st, err)
+	}
+	if st, err := flowTaintCheck(inherited, &noPolicy); err != nil || st != flowPolicyless {
+		t.Errorf("an inherited start, driven by a flow with declarations and no policy: %v, %v; want the policyless standing", st, err)
 	}
 	// Declarations with no digest are corrupt: a storage refusal.
 	noDigest := started

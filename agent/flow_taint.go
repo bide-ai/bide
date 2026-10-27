@@ -112,8 +112,20 @@ func (s RunStart) withFlowTaint(d flowTaintDecls) RunStart {
 	return s
 }
 
-// flowTaintDecls reads the declarations s records. ok is false when it records none. A start that records
-// a digest and no declarations, declarations and no digest, declarations that do not read strictly or are of
+// inheritedOnly reports whether s records the taint digest of a run started inside a tainted run with no
+// declarations of its own: a flow with no policy that was started by a tool of a tainted agent or by the body
+// of a tainted node. The digest is the parent's status. (A digest that is not a string is not that shape.)
+func (s RunStart) inheritedOnly() bool {
+	raw, hasDigest := s.Ext[extTaintDigest]
+	if _, hasDecls := s.Ext[extTaintDeclarations]; !hasDigest || hasDecls {
+		return false
+	}
+	var d string
+	return json.Unmarshal(raw, &d) == nil && d != ""
+}
+
+// flowTaintDecls reads the declarations s records. ok is false when it records none (or only an inherited
+// digest, see inheritedOnly). A start that records a digest that is not a string, declarations and no digest, declarations that do not read strictly or are of
 // another format, or declarations that do not hash to the recorded digest, is an ErrStorage refusal: the
 // engine cannot recompute a requirement from it, and no drive runs a node on it.
 func (s RunStart) flowTaintDecls() (d flowTaintDecls, ok bool, err error) {
@@ -124,9 +136,9 @@ func (s RunStart) flowTaintDecls() (d flowTaintDecls, ok bool, err error) {
 	}
 	switch {
 	case hasDigest && !hasDecls:
-		// The digest an agent engine records for a run it starts inside a tainted run (a flow started by a tool
-		// call or a node's body): the run is under taint it inherited, which has no declarations to compare.
-		return flowTaintDecls{}, false, fmt.Errorf("agent: run:start records taint %s without declarations, the shape of a run started inside a tainted run, and a flow does not take inherited taint yet (docs/design/flow-taint.md): drive it with the agent or flow that started it, or start a new run with a new run ID: %w", digestPrefix(rawDigest), ErrConfig)
+		// The digest of a run started inside a tainted run, with no declarations of its own to compare (see
+		// inheritedOnly).
+		return flowTaintDecls{}, false, nil
 	case hasDecls && !hasDigest:
 		return flowTaintDecls{}, false, fmt.Errorf("agent: run:start records %s without %s: %w", extTaintDeclarations, extTaintDigest, ErrStorage)
 	}
@@ -155,8 +167,9 @@ const (
 	flowNotUnderTaint flowTaintStanding = iota + 1
 	// flowUnderTaint: the run started under declarations, and this flow declares exactly those.
 	flowUnderTaint
-	// flowPolicyless: the run started under declarations and this flow has no taint policy to enforce them:
-	// it must not run a node that can have a side effect (ErrConfig); a flow of read-only nodes resumes.
+	// flowPolicyless: the run started under declarations, or under taint it inherited, and this flow has no
+	// taint policy to enforce it: it must not run a node that can have a side effect (ErrConfig); a flow of
+	// read-only nodes resumes.
 	flowPolicyless
 )
 
@@ -165,6 +178,15 @@ const (
 // or in what a node declares is ErrConfig, naming both digests, before a node runs. An operator cancels the
 // run or restores the declarations it started under; a stricter policy is not allowed yet either.
 func flowTaintCheck(start RunStart, current *flowTaintDecls) (flowTaintStanding, error) {
+	if start.inheritedOnly() {
+		// Started inside a tainted run by a flow with no policy: there are no declarations to compare. A flow that
+		// has a policy now is not the one that started it (and a policy added after the start is not trusted to
+		// be the one the parent expected): ErrConfig; one without is policyless.
+		if current != nil && !current.Policy.isZero() {
+			return 0, fmt.Errorf("agent: the run started inside a tainted run with a flow that had no taint policy (run:start records taint %s without declarations), and this flow has one; drive it with the flow that started it, or start a new run with a new run ID: %w", digestPrefix(start.Ext[extTaintDigest]), ErrConfig)
+		}
+		return flowPolicyless, nil
+	}
 	rec, ok, err := start.flowTaintDecls()
 	if err != nil {
 		return 0, err

@@ -17,8 +17,8 @@ import (
 
 func allowTaint(t *testing.T) {
 	t.Helper()
-	taintGuardOff = true
-	t.Cleanup(func() { taintGuardOff = false })
+	taintGuardOff, taintInheritOn = true, true
+	t.Cleanup(func() { taintGuardOff, taintInheritOn = false, false })
 }
 
 // taintRun is a flow of fetch (a source of untrusted content), then pay (a side effect), then notify (a read),
@@ -488,7 +488,7 @@ func TestFlowTaint_ReplayOfARecordedNodeRunsNoPreExecuteOfTheInstance(t *testing
 	before := *n
 	ts := &taintState{flow: r.f.core.flowTaint(), standing: 2}
 	node := r.f.core.byName["pay"]
-	if err := runGate(ctx, r.j, "r1", r.f.core, ts, node, "node:pay", 1); err != nil {
+	if _, err := runGate(ctx, r.j, "r1", r.f.core, ts, node, "node:pay", 1); err != nil {
 		t.Fatalf("runGate on a node that ran: %v", err)
 	}
 	if *n != before {
@@ -567,7 +567,7 @@ func TestFlowTaint_PreExecuteOfBothGatesTogether(t *testing.T) {
 	}
 	before = *n
 	ts := &taintState{flow: r.f.core.flowTaint(), standing: 2}
-	if err := runGate(ctx, r.j, "r1", r.f.core, ts, r.f.core.byName["pay"], "node:pay", 1); err != nil {
+	if _, err := runGate(ctx, r.j, "r1", r.f.core, ts, r.f.core.byName["pay"], "node:pay", 1); err != nil {
 		t.Fatalf("runGate on a node that ran: %v", err)
 	}
 	if *n != before {

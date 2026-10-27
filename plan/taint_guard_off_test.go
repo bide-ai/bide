@@ -9,17 +9,20 @@ import (
 	"testing"
 )
 
-// taintGuardOff turns the refusal of flow taint off for the tests of its enforcement. It must be impossible to
-// reach outside a test: no build tag, environment variable, option or config key sets it, and no file that is
-// not a _test.go file assigns it, takes its address or reads it except the one function that implements the
-// refusal.
-func TestTaintGuardOffIsAssignedOnlyInTests(t *testing.T) {
+// taintGuardOff and taintInheritOn are the test-only switches of flow taint: the first turns off the refusal of
+// a flow that declares taint, the second turns on the inheritance of taint by a nested flow. Both must be
+// impossible to reach outside a test: no build tag, environment variable, option or config key sets them, and
+// no file that is not a _test.go file assigns them, takes their address, or reads them except the one function
+// that implements each (taintNotEnforced, inheritsTaint). The change that completes the enforcement removes
+// the switches and this test with them.
+func TestTaintSwitchesAreAssignedOnlyInTests(t *testing.T) {
+	readers := map[string]string{"taintGuardOff": "taintNotEnforced", "taintInheritOn": "inheritsTaint"}
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
 	}
 	fset := token.NewFileSet()
-	uses := 0
+	uses := map[string]int{}
 	for _, e := range entries {
 		n := e.Name()
 		if e.IsDir() || !strings.HasSuffix(n, ".go") || strings.HasSuffix(n, "_test.go") {
@@ -31,38 +34,50 @@ func TestTaintGuardOffIsAssignedOnlyInTests(t *testing.T) {
 		}
 		for _, d := range f.Decls {
 			fn, isFn := d.(*ast.FuncDecl)
+			declaring := map[*ast.Ident]bool{} // the names a var declaration introduces: not uses
+			ast.Inspect(d, func(x ast.Node) bool {
+				if vs, ok := x.(*ast.ValueSpec); ok {
+					for _, id := range vs.Names {
+						if readers[id.Name] != "" {
+							declaring[id] = true
+						}
+					}
+				}
+				return true
+			})
 			ast.Inspect(d, func(x ast.Node) bool {
 				switch x := x.(type) {
 				case *ast.AssignStmt:
 					for _, l := range x.Lhs {
-						if id, ok := l.(*ast.Ident); ok && id.Name == "taintGuardOff" {
-							t.Errorf("%s: assigns taintGuardOff outside a test", fset.Position(x.Pos()))
+						if id, ok := l.(*ast.Ident); ok && readers[id.Name] != "" {
+							t.Errorf("%s: assigns %s outside a test", fset.Position(x.Pos()), id.Name)
 						}
 					}
 				case *ast.IncDecStmt:
-					if id, ok := x.X.(*ast.Ident); ok && id.Name == "taintGuardOff" {
-						t.Errorf("%s: changes taintGuardOff outside a test", fset.Position(x.Pos()))
+					if id, ok := x.X.(*ast.Ident); ok && readers[id.Name] != "" {
+						t.Errorf("%s: changes %s outside a test", fset.Position(x.Pos()), id.Name)
 					}
 				case *ast.UnaryExpr:
-					if id, ok := x.X.(*ast.Ident); ok && id.Name == "taintGuardOff" && x.Op == token.AND {
-						t.Errorf("%s: takes the address of taintGuardOff outside a test", fset.Position(x.Pos()))
+					if id, ok := x.X.(*ast.Ident); ok && readers[id.Name] != "" && x.Op == token.AND {
+						t.Errorf("%s: takes the address of %s outside a test", fset.Position(x.Pos()), id.Name)
 					}
 				case *ast.Ident:
-					if x.Name == "taintGuardOff" {
-						uses++
-						if !isFn || fn.Name.Name != "taintNotEnforced" {
-							// The declaration itself is a GenDecl, not a function.
-							if _, gen := d.(*ast.GenDecl); !gen {
-								t.Errorf("%s: reads taintGuardOff outside taintNotEnforced", fset.Position(x.Pos()))
-							}
-						}
+					want, ok := readers[x.Name]
+					if !ok {
+						return true
+					}
+					uses[x.Name]++
+					if !declaring[x] && (!isFn || fn.Name.Name != want) {
+						t.Errorf("%s: reads %s outside %s", fset.Position(x.Pos()), x.Name, want)
 					}
 				}
 				return true
 			})
 		}
 	}
-	if uses < 2 {
-		t.Fatalf("found %d uses of taintGuardOff in non-test files; the scan is not seeing it", uses)
+	for name := range readers {
+		if uses[name] < 2 {
+			t.Fatalf("found %d uses of %s in non-test files; the scan is not seeing it", uses[name], name)
+		}
 	}
 }
