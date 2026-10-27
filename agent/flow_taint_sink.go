@@ -115,8 +115,7 @@ func linkChild(ctx context.Context, j *Journal, runID, kind string) error {
 // or for every node when nodeKey is "": the sources the node declares, once its result is recorded, and those
 // of the taint-mark records written for it (a mark its own child brought up). They are the run's own marks: the
 // marks it inherited are not among them. Sorted, once each. An error is a record that does not read.
-func ownMarkSources(recs []Record, decls flowTaintDecls, nodeKey string) ([]string, error) {
-	nodes := decls.normalized().Nodes
+func ownMarkSources(recs []Record, nodeSources map[string][]string, nodeKey string) ([]string, error) {
 	seen := map[string]bool{}
 	for _, r := range recs {
 		if r.Kind != StepValue {
@@ -133,7 +132,7 @@ func ownMarkSources(recs []Record, decls flowTaintDecls, nodeKey string) ([]stri
 			}
 		case nodeKey == "" || r.Name == nodeKey:
 			if name, ok := nodeNameOfKey(r.Name); ok {
-				for _, s := range nodes[name].Untrusted {
+				for _, s := range nodeSources[name] {
 					seen[s] = true
 				}
 			}
@@ -165,11 +164,11 @@ func flowTaintSink(ctx context.Context, j any, runID, nodeKey string) error {
 	if start.taintDigest() == "" {
 		return nil
 	}
-	decls, _, err := start.flowTaintDecls()
+	src, err := start.nodeSources()
 	if err != nil {
 		return err
 	}
-	sources, err := ownMarkSources(recs, decls, nodeKey)
+	sources, err := ownMarkSources(recs, src, nodeKey)
 	if err != nil {
 		return err
 	}
@@ -234,11 +233,11 @@ func foldChildMarks(ctx context.Context, j *Journal, runID, nodeKey string) erro
 			if start.taintDigest() == "" {
 				continue
 			}
-			decls, _, err := start.flowTaintDecls()
+			src, err := start.nodeSources()
 			if err != nil {
 				return err
 			}
-			own, err := ownMarkSources(child, decls, "")
+			own, err := ownMarkSources(child, src, "")
 			if err != nil {
 				return err
 			}
@@ -269,17 +268,19 @@ func flowEndedTainted(ctx context.Context, j *Journal, runID string) (bool, erro
 		return false, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
 	}
 	start := startOfRecs(recs)
-	if start.taintDigest() == "" {
+	// A run is under taint by its status (a policy, or a parent's) or declares sources of its own (a flow with no
+	// policy records them).
+	src, err := start.nodeSources()
+	if err != nil {
+		return false, err
+	}
+	if start.taintDigest() == "" && len(src) == 0 {
 		return false, nil
 	}
 	if len(start.inheritedMarks()) > 0 {
 		return true, nil
 	}
-	decls, _, err := start.flowTaintDecls()
-	if err != nil {
-		return false, err
-	}
-	own, err := ownMarkSources(recs, decls, "")
+	own, err := ownMarkSources(recs, src, "")
 	return len(own) > 0, err
 }
 

@@ -338,8 +338,11 @@ run ungated, which fails open where an agent child fails closed). What the chose
   (its tools' declarations are in the `Agent`), so it records `subagent:<node name>`: an approximation that
   over-taints and fails closed, on that path only. The child link (`taint-child:`) carries the run's kind,
   `flow` or `agent`; an agent keeps its own store (no shared-journal rule for it). A flow with no policy
-  records no declarations, so a flow without a policy that reads a declared source marks nothing when it is run
-  as a tool; give it a policy.
+  with no policy records the sources its nodes declare in `run:start` (`ext.taint_sources`: node name to sorted
+  sources; nothing is recorded when no node declares one, so a flow that declares nothing starts as it did; user
+  decision of 2026-10-27). They gate nothing; they are what the run's own marks are counted from, so a flow with no
+  policy run as a tool, or as a child of a node, brings up what it read. A drive by a flow that declares other
+  sources is `ErrConfig`, and a run that started with none (an earlier release's) is held to none.
 - Parts: inheritance down was the change after the enforcement core (3c-2); taint coming up and the removal of
   the guard are the one after (3c-3). 3c-3 removes the guard, which refused every flow that declared taint, and
   the test-only switch that kept the inheritance off, together.

@@ -356,7 +356,7 @@ func (c *builderCore) conform(ctx context.Context, store *agent.Journal, runID s
 	for _, n := range c.nodes {
 		safeties[n.name] = n.safety
 	}
-	diffs = append(diffs, journalhook.FlowTaintConform(history, c.flowTaint(), safeties)...)
+	diffs = append(diffs, journalhook.FlowTaintConform(history, c.flowTaint(), c.declaredSources(), safeties)...)
 
 	return len(diffs) == 0, diffs, nil
 }

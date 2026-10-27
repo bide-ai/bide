@@ -846,3 +846,95 @@ func TestFlowTaintSink_AnAgentDoesNotSendBackTheMarksItInherited(t *testing.T) {
 		t.Errorf("the agent sent back %v", got)
 	}
 }
+
+// policylessSource is a flow with no policy whose node fetch declares the source src ("" for none).
+func policylessSource(t *testing.T, name, src string, extra ...NodeOption) *Flow[int, int] {
+	t.Helper()
+	b := New[int, int](name)
+	opts := slices.Clone(extra)
+	if src != "" {
+		opts = append(opts, Untrusted(src))
+	}
+	b.Step("fetch", func(_ context.Context, v int) (int, error) { return v, nil }, append(opts, ReadOnly())...)
+	f, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+// A flow with no policy that declares a source marks the tool result when an agent under a policy runs it and the
+// run read the source: the agent's next side effect is gated. A flow that declares nothing does not.
+func TestFlowTaintSink_APolicylessFlowThatDeclaresASourceMarksTheResult(t *testing.T) {
+	ctx := context.Background()
+	for _, src := range []string{"inbox", ""} {
+		j := agenttest.MemJournal()
+		f := policylessSource(t, "tool-flow", src)
+		runflow := agent.MustFunc("runflow", "runs a flow", func(c context.Context, _ struct{}) (string, error) {
+			_, err := f.Run(c, j, "child", 1)
+			return "ok", err
+		}, agent.WithSafety(agent.Safety{ReadOnly: true}))
+		paid := 0
+		pay := agent.MustFunc("pay", "pays", func(context.Context, struct{}) (string, error) { paid++; return "ok", nil })
+		m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "runflow", `{}`), agenttest.ToolTurn("c2", "pay", `{}`), agenttest.TextTurn("done"))
+		a := agenttest.MustNew(m, j, agent.WithTools(runflow, pay), agent.WithTaintPolicy(agent.TaintPolicy{Gate: agent.SingleApproval()}))
+		_, err := a.Run(ctx, "agent", agent.UserText("go"), agent.WithTrustedInput("the host's own"))
+		var pend *agent.ApprovalPending
+		switch {
+		case src != "" && (!errors.As(err, &pend) || paid != 0):
+			t.Errorf("a declared source: Run = %v, pay ran %d times; want a pause at the taint gate", err, paid)
+		case src == "" && (err != nil || paid != 1):
+			t.Errorf("no declaration: Run = %v, pay ran %d times; want it ungated", err, paid)
+		}
+	}
+}
+
+// A flow with no declarations starts with no more in run:start than it did before; one with a source records it, and
+// a drive by a flow that declares other sources is refused.
+func TestFlowTaintSink_APolicylessFlowsStartRecordsOnlyWhatItDeclares(t *testing.T) {
+	ctx := context.Background()
+	j := agenttest.MemJournal()
+	if _, err := policylessSource(t, "f", "").Run(ctx, j, "plain", 1); err != nil {
+		t.Fatal(err)
+	}
+	for k := range startOf(t, j, "plain").Ext {
+		if strings.HasPrefix(k, "taint") {
+			t.Errorf("a flow that declares nothing records %q in run:start", k)
+		}
+	}
+	if _, err := policylessSource(t, "f", "inbox", Approval(agent.SingleApproval())).Run(ctx, j, "decl", 1); !isPendingAt(err, "node:fetch") {
+		t.Fatalf("the flow with a gated source: %v", err)
+	}
+	if _, has := startOf(t, j, "decl").Ext["taint_sources"]; !has {
+		t.Error("a flow that declares a source records none")
+	}
+	if _, err := policylessSource(t, "f", "web", Approval(agent.SingleApproval())).Run(ctx, j, "decl", 1); !errors.Is(err, agent.ErrConfig) {
+		t.Errorf("a drive by a flow that declares another source: %v, want ErrConfig", err)
+	}
+	if ok, diffs, err := policylessSource(t, "f", "inbox", Approval(agent.SingleApproval())).Conform(ctx, j, "decl"); err != nil || !ok {
+		t.Errorf("Conform of the same flow: %v, %v, %v", ok, diffs, err)
+	}
+	ok, diffs, err := policylessSource(t, "f", "web", Approval(agent.SingleApproval())).Conform(ctx, j, "decl")
+	if err != nil || ok || !strings.Contains(strings.Join(diffs, "|"), "sources the run started with") {
+		t.Errorf("Conform of a flow that declares another source: %v, %v, %v", ok, diffs, err)
+	}
+}
+
+// A nested flow with no policy that declares a source sends it up to the node that started it, as one with a policy.
+func TestFlowTaintSink_APolicylessChildThatDeclaresASourceSendsItUp(t *testing.T) {
+	ctx := context.Background()
+	j := agenttest.MemJournal()
+	c := policylessSource(t, "child", "feed")
+	pp := &sinkParent{t: t}
+	p := pp.build(single(), false, func(ctx context.Context) error {
+		_, err := c.Run(ctx, j, "c1", 1)
+		return err
+	})
+	_, err := p.Run(ctx, j, "p1", 1)
+	if pend := pending(t, err); pend.ToolUseID != "node:pay:taint" {
+		t.Fatalf("paused at %q, want node:pay:taint", pend.ToolUseID)
+	}
+	if got := marksOf(t, j, "p1", "node:call"); !slices.Equal(got, []string{"feed"}) {
+		t.Errorf("the parent holds %v, want [feed]", got)
+	}
+}

@@ -16,7 +16,7 @@ func init() { journalhook.FlowTaintConform = flowTaintConform }
 // from the declarations its start recorded and the journal alone. A node that ran needed the escalation gate
 // if its read set before its record was not empty, it can have a side effect and it is not exempt; the gate
 // had to have passed before the node's record, and a Refuse policy means the node could not have run.
-func flowTaintConform(recsAny any, cur *journalhook.FlowTaint, safeties map[string]any) []string {
+func flowTaintConform(recsAny any, cur *journalhook.FlowTaint, sources map[string][]string, safeties map[string]any) []string {
 	recs, ok := recsAny.([]Record)
 	if !ok {
 		return []string{"(the journal passed to the taint conformance is not a record list)"}
@@ -51,6 +51,15 @@ func flowTaintConform(recsAny any, cur *journalhook.FlowTaint, safeties map[stri
 	}
 	taintRecord := func(name string) bool {
 		return strings.HasPrefix(name, gateReasonPrefix) || strings.HasPrefix(name, taintMarkPrefix) || strings.HasPrefix(name, taintChildPrefix)
+	}
+	// A run that started with no declarations of its own recorded the sources its flow declared: the flow's now are
+	// those (a flow with a policy records them in its declarations, compared below).
+	if _, hasDecls := start.Ext[extTaintDeclarations]; haveStart && !hasDecls && (cur == nil || cur.Gate == nil && !cur.Refuse && !cur.RequireProvenance) {
+		if was, err := start.declaredSources(); err != nil {
+			diffs = append(diffs, runStartStep+" (the declared sources do not read in the canonical form)")
+		} else if !sameSources(was, sources) {
+			diffs = append(diffs, runStartStep+" (the sources the run started with are not those this flow declares)")
+		}
 	}
 	inheritedList, inhErr := checkInheritedMarks(start)
 	if inhErr != nil {

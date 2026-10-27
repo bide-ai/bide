@@ -151,7 +151,7 @@ func (f *Flow[In, Out]) run(ctx context.Context, store *agent.Journal, runID str
 	}
 	// The flow's taint declarations are recorded with the start of a run that starts under a policy; a policy
 	// that requires provenance refuses a new run that states none, before the run's journal is written.
-	taintStart, err := journalhook.FlowTaintPrepare(ctx, store, runID, start, c.flowTaint(), c.trackedNames())
+	taintStart, err := journalhook.FlowTaintPrepare(ctx, store, runID, start, c.flowTaint(), c.trackedNames(), c.declaredSources())
 	if err != nil {
 		return out, fmt.Errorf("plan: run %q: %w", c.flowName, err)
 	}
@@ -176,7 +176,7 @@ func (f *Flow[In, Out]) run(ctx context.Context, store *agent.Journal, runID str
 	// Every drive is compared with the declarations the run started under before a node runs: a different
 	// policy or declaration is ErrConfig, and a flow with no policy driving a run that started under one
 	// refuses its side-effecting nodes.
-	standing, err := journalhook.FlowTaintEnter(ctx, store, runID, c.flowTaint(), c.trackedNames())
+	standing, err := journalhook.FlowTaintEnter(ctx, store, runID, c.flowTaint(), c.trackedNames(), c.declaredSources())
 	if err != nil {
 		return out, fmt.Errorf("plan: run %q: %w", c.flowName, err)
 	}

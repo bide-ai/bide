@@ -197,8 +197,9 @@ It is experimental, like the rest of the policy, and Go only: a config cannot gi
   node is recorded. A flow run as a tool of an agent marks the tool's result `subflow:<tool>` when it ended with a mark
   (its own, or inherited), so the agent's next side effect is gated. A `ResolveHalt` of a node that drove an agent
   cannot read the agent's marks (its tools' declarations are not in the journal): it marks the node
-  `subagent:<node name>`, which over-taints, on that path only. A flow with no policy records no declarations, so
-  it marks nothing it reads itself: give a flow run as a tool a policy.
+  `subagent:<node name>`, which over-taints, on that path only. A flow with no policy records the sources its nodes
+  declare in `run:start` (`taint_sources`, only when it declares some), so it marks what it reads too; they gate
+  nothing in it, and a drive by a flow that declares other sources is `ErrConfig`.
 - **Not built:** `SeparateApprovers` (an approver of the node's own gate counted again on its instance), a
   `Trusted` block that brings nothing up (a node that declares its results trusted still takes the marks its nested
   flows and agents bring up), and the view of all this in `bide check` and the editor.

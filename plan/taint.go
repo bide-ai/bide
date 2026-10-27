@@ -196,6 +196,23 @@ func (c *builderCore) flowTaint() *journalhook.FlowTaint {
 	return d
 }
 
+// declaredSources are the sources each node declares, by node name, sorted: nil when no node declares one. A flow
+// with no policy records them in its runs' start, so what the run learns can be counted for the node that started
+// it (agent.RunStart, "taint_sources").
+func (c *builderCore) declaredSources() map[string][]string {
+	var out map[string][]string
+	for _, n := range c.nodes {
+		if len(n.taint.untrusted) == 0 {
+			continue
+		}
+		if out == nil {
+			out = map[string][]string{}
+		}
+		out[n.name] = slices.Clone(n.taint.untrusted)
+	}
+	return out
+}
+
 // checkTaintPolicy holds a flow with a taint policy to what its enforcement needs: an m-of-n escalation Gate
 // needs approver verifiers (no decision could pass it without), and a policy that requires provenance needs a
 // declaration on every node: Untrusted, or Trusted with a reason. (A Run that states where its input came from

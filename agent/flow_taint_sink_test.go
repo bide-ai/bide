@@ -2,9 +2,12 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/bide-ai/bide/internal/journalhook"
 )
 
 // The pieces of taint coming up out of a nested flow (flow_taint_sink.go): the child link, the sink in a context,
@@ -140,26 +143,26 @@ func TestOwnMarkSources_AreTheNodesDeclaredSourcesAndWhatItsChildrenBroughtUp(t 
 	}
 	recs, _ := j.History(ctx, "c1")
 	// Before a's result is recorded only the mark its child brought up is a's.
-	if got, err := ownMarkSources(recs, d, "node:a"); err != nil || strings.Join(got, ",") != "deep" {
+	if got, err := ownMarkSources(recs, d.nodeUntrusted(), "node:a"); err != nil || strings.Join(got, ",") != "deep" {
 		t.Errorf("before the result: %v, %v; want [deep]", got, err)
 	}
 	recordNode(t, j, "c1", "node:a")
 	recs, _ = j.History(ctx, "c1")
-	if got, _ := ownMarkSources(recs, d, "node:a"); strings.Join(got, ",") != "deep,s1,s2" {
+	if got, _ := ownMarkSources(recs, d.nodeUntrusted(), "node:a"); strings.Join(got, ",") != "deep,s1,s2" {
 		t.Errorf("after the result: %v; want deep,s1,s2 (sorted, b's marks not among them)", got)
 	}
 	// Another node's declared source is that node's once its result is recorded, not a's.
 	recordNode(t, j, "c1", "node:b")
 	recs, _ = j.History(ctx, "c1")
-	if got, _ := ownMarkSources(recs, d, "node:a"); strings.Join(got, ",") != "deep,s1,s2" {
+	if got, _ := ownMarkSources(recs, d.nodeUntrusted(), "node:a"); strings.Join(got, ",") != "deep,s1,s2" {
 		t.Errorf("after b's result: %v; want deep,s1,s2 (not s3, which is b's)", got)
 	}
-	if got, _ := ownMarkSources(recs, d, ""); strings.Join(got, ",") != "deep,other,s1,s2,s3" {
+	if got, _ := ownMarkSources(recs, d.nodeUntrusted(), ""); strings.Join(got, ",") != "deep,other,s1,s2,s3" {
 		t.Errorf("every node: %v; want deep,other,s1,s2,s3", got)
 	}
 	// A taint-mark record that does not read is a fault, never no mark.
 	bad := append(recs, Record{Kind: StepValue, Name: taintMarkPrefix + "x", Result: []byte(`{}`)})
-	if _, err := ownMarkSources(bad, d, "node:a"); !errors.Is(err, ErrStorage) {
+	if _, err := ownMarkSources(bad, d.nodeUntrusted(), "node:a"); !errors.Is(err, ErrStorage) {
 		t.Errorf("an unreadable mark: %v, want ErrStorage", err)
 	}
 }
@@ -296,5 +299,145 @@ func TestFlowEndedTainted_NeedsARunUnderTaint(t *testing.T) {
 	}
 	if got, err := flowEndedTainted(ctx, j, "c2"); err != nil || got {
 		t.Errorf("a run not under taint: %v, %v", got, err)
+	}
+}
+
+// nodeUntrusted is the sources each node of the declarations declares, as ownMarkSources takes them.
+func (d flowTaintDecls) nodeUntrusted() map[string][]string {
+	out := map[string][]string{}
+	for name, n := range d.normalized().Nodes {
+		if len(n.Untrusted) > 0 {
+			out[name] = n.Untrusted
+		}
+	}
+	return out
+}
+
+// A flow with no policy that declares sources records them in run:start, and only then: a flow that declares none
+// starts byte for byte as it did.
+func TestFlowTaintPrepare_APolicylessFlowRecordsItsDeclaredSources(t *testing.T) {
+	src := map[string][]string{"fetch": {"crm", "inbox"}}
+	j := memJournal()
+	got, err := flowTaintPrepare(context.Background(), j, "r1", flowStart(), nil, nil, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ds, err := got.(RunStart).declaredSources()
+	if err != nil || !sameSources(ds, src) {
+		t.Fatalf("recorded %v, %v; want %v", ds, err, src)
+	}
+	if _, has := got.(RunStart).Ext[extTaintDigest]; has {
+		t.Error("a flow with no policy that is not under taint recorded a taint status")
+	}
+	for _, none := range []map[string][]string{nil, {}} {
+		got, err = flowTaintPrepare(context.Background(), j, "r2", flowStart(), nil, nil, none)
+		if err != nil || len(got.(RunStart).Ext) != 0 {
+			t.Errorf("no sources: %v, ext %v; want the start unchanged", err, got.(RunStart).Ext)
+		}
+	}
+	// Under a tainted parent it records the parent's status and its sources.
+	got, err = flowTaintPrepare(taintedCtx(taintMark{Source: "a", Ref: "node:x"}), j, "r3", flowStart(), nil, nil, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ds, _ := got.(RunStart).declaredSources(); !sameSources(ds, src) || got.(RunStart).taintDigest() == "" {
+		t.Errorf("under a tainted parent: sources %v, digest %q", ds, got.(RunStart).taintDigest())
+	}
+	// A flow with a policy does not record them apart from its declarations.
+	got, err = flowTaintPrepare(context.Background(), j, "r4", flowStart(), hookDecls(nil), nil, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, has := got.(RunStart).Ext[extTaintSources]; has {
+		t.Error("a flow with a policy recorded taint_sources")
+	}
+}
+
+func TestFlowTaintEnter_HoldsAPolicylessFlowToItsSources(t *testing.T) {
+	ctx := context.Background()
+	src := map[string][]string{"fetch": {"inbox"}}
+	start := func(s map[string][]string) *Journal {
+		j := memJournal()
+		got, err := flowTaintPrepare(ctx, j, "r1", flowStart(), nil, nil, s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, _, err := beginRun(ctx, j, "r1", got.(RunStart)); err != nil {
+			t.Fatal(err)
+		}
+		return j
+	}
+	j := start(src)
+	if _, err := flowTaintEnter(ctx, j, "r1", nil, nil, src); err != nil {
+		t.Errorf("the same sources: %v", err)
+	}
+	for what, other := range map[string]map[string][]string{
+		"other sources": {"fetch": {"web"}}, "more sources": {"fetch": {"inbox", "web"}}, "another node": {"look": {"inbox"}}, "none": nil,
+	} {
+		if _, err := flowTaintEnter(ctx, j, "r1", nil, nil, other); !errors.Is(err, ErrConfig) {
+			t.Errorf("%s: %v, want ErrConfig", what, err)
+		}
+	}
+	// A run that started with no sources (an earlier release's, say), driven by a flow that declares some now.
+	if _, err := flowTaintEnter(ctx, start(nil), "r1", nil, nil, src); !errors.Is(err, ErrConfig) {
+		t.Errorf("a start with none, a flow that declares some: %v, want ErrConfig", err)
+	}
+	if _, err := flowTaintEnter(ctx, start(nil), "r1", nil, nil, nil); err != nil {
+		t.Errorf("a start with none, a flow that declares none: %v", err)
+	}
+	// A flow with a policy now is not retro-gated.
+	if st, err := flowTaintEnter(ctx, j, "r1", hookDecls(nil), nil, nil); err != nil || st != journalhook.FlowTaintNone {
+		t.Errorf("a policy added after the start: %d, %v", st, err)
+	}
+}
+
+func TestDeclaredSources_AreReadStrictly(t *testing.T) {
+	for what, raw := range map[string]string{
+		"not a map":     `[1]`,
+		"empty":         `{}`,
+		"an empty list": `{"a":[]}`,
+		"unsorted":      `{"a":["z","b"]}`,
+		"repeated":      `{"a":["b","b"]}`,
+		"a bad name":    `{"a":["x\u0000y"]}`,
+		"an empty node": `{"":["b"]}`,
+		"a field":       `{"a":["b"],"c":1}`,
+	} {
+		s := RunStart{Ext: map[string]json.RawMessage{extTaintSources: json.RawMessage(raw)}}
+		if _, err := s.declaredSources(); !errors.Is(err, ErrStorage) {
+			t.Errorf("%s: %v, want ErrStorage", what, err)
+		}
+	}
+	s := RunStart{Ext: map[string]json.RawMessage{extTaintSources: json.RawMessage(`{"a":["b","c"]}`)}}
+	if got, err := s.declaredSources(); err != nil || !sameSources(got, map[string][]string{"a": {"b", "c"}}) {
+		t.Errorf("a good member: %v, %v", got, err)
+	}
+}
+
+func TestFlowEndedTainted_ForAFlowThatDeclaresSourcesAndHasNoPolicy(t *testing.T) {
+	ctx := context.Background()
+	j := memJournal()
+	got, _ := flowTaintPrepare(ctx, j, "c1", flowStart(), nil, nil, map[string][]string{"a": {"s"}})
+	if _, _, _, err := beginRun(ctx, j, "c1", got.(RunStart)); err != nil {
+		t.Fatal(err)
+	}
+	if t1, err := flowEndedTainted(ctx, j, "c1"); err != nil || t1 {
+		t.Errorf("before its source node: %v, %v", t1, err)
+	}
+	recordNode(t, j, "c1", "node:a")
+	if t1, err := flowEndedTainted(ctx, j, "c1"); err != nil || !t1 {
+		t.Errorf("after its source node: %v, %v", t1, err)
+	}
+}
+
+func TestFlowTaintEnter_AnUnreadableSourcesMemberIsAStorageFault(t *testing.T) {
+	ctx := context.Background()
+	j := memJournal()
+	bad := flowStart()
+	bad.Ext = map[string]json.RawMessage{extTaintSources: json.RawMessage(`{"a":["z","b"]}`)}
+	if _, _, _, err := beginRun(ctx, j, "r1", bad); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := flowTaintEnter(ctx, j, "r1", nil, nil, map[string][]string{"a": {"b", "z"}}); !errors.Is(err, ErrStorage) {
+		t.Errorf("an unreadable member: %v, want ErrStorage", err)
 	}
 }

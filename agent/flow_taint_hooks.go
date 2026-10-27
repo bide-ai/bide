@@ -43,7 +43,7 @@ func declsOf(d *journalhook.FlowTaint) (flowTaintDecls, error) {
 }
 
 // flowTaintPrepare is journalhook.FlowTaintPrepare.
-func flowTaintPrepare(ctx context.Context, j any, runID string, start any, d *journalhook.FlowTaint, tracked []string) (any, error) {
+func flowTaintPrepare(ctx context.Context, j any, runID string, start any, d *journalhook.FlowTaint, tracked []string, sources map[string][]string) (any, error) {
 	want, ok := start.(RunStart)
 	if !ok {
 		return nil, fmt.Errorf("agent: FlowTaintPrepare: start is %T, not an agent.RunStart: %w", start, ErrConfig)
@@ -69,7 +69,7 @@ func flowTaintPrepare(ctx context.Context, j any, runID string, start any, d *jo
 	}
 	if d == nil {
 		if parent == "" {
-			return want, nil
+			return want.withDeclaredSources(sources), nil
 		}
 		started := false
 		if len(tracked) > 0 {
@@ -81,7 +81,7 @@ func flowTaintPrepare(ctx context.Context, j any, runID string, start any, d *jo
 		if !started && len(tracked) > 0 {
 			return nil, fmt.Errorf("agent: this flow has no taint policy, and run %s starts inside a run under taint (%.12s); its steps %s can have a side effect, and a flow cannot run one under taint it has no policy to enforce; give it a taint policy, or start it outside the tainted run: %w", runID, parent, strings.Join(tracked, ", "), ErrConfig)
 		}
-		want = want.withTaintDigest(parent)
+		want = want.withTaintDigest(parent).withDeclaredSources(sources)
 		if hasCarried {
 			want = want.withInheritedMarks(carried.list)
 		}
@@ -127,7 +127,7 @@ func checkInheritedMarks(s RunStart) ([]inheritedMark, error) {
 }
 
 // flowTaintEnter is journalhook.FlowTaintEnter.
-func flowTaintEnter(ctx context.Context, j any, runID string, d *journalhook.FlowTaint, tracked []string) (int, error) {
+func flowTaintEnter(ctx context.Context, j any, runID string, d *journalhook.FlowTaint, tracked []string, sources map[string][]string) (int, error) {
 	jr, ok := j.(*Journal)
 	if !ok {
 		return 0, fmt.Errorf("agent: FlowTaintEnter: %T is not a journal: %w", j, ErrConfig)
@@ -148,6 +148,17 @@ func flowTaintEnter(ctx context.Context, j any, runID string, d *journalhook.Flo
 	// the recorded ones.
 	if c, ok := callMarksFrom(ctx); ok && len(c.list) > 0 && !slices.Equal(c.list, recorded) {
 		return 0, fmt.Errorf("run %s was started with other inherited taint marks than the calling node shows now; drive it with the declarations it started under: %w", runID, ErrConfig)
+	}
+	// A run that started with no declarations of its own (no policy) is held to the sources it recorded: a flow
+	// that declares others now is not the one that started it. (A flow with a policy compares its declarations.)
+	if _, hasDecls := rec.Ext[extTaintDeclarations]; d == nil && !hasDecls {
+		was, err := rec.declaredSources()
+		if err != nil {
+			return 0, err
+		}
+		if !sameSources(was, sources) {
+			return 0, fmt.Errorf("agent: the flow declares other untrusted sources than the run %s started with; drive it with the flow that started it, or start a new run with a new run ID: %w", runID, ErrConfig)
+		}
 	}
 	var cur *flowTaintDecls
 	if d != nil {

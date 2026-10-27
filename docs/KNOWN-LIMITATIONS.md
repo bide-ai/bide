@@ -866,8 +866,7 @@ the consequences of an injected request. It does not detect or prevent the injec
   writes the marks of the flows the node started before the result, so a resolution that then fails leaves marks
   the flows did bring up. `SeparateApprovers` is not built. A `Trusted` node still takes the marks its nested
   flows and agents bring up (fail closed). A `ResolveHalt` of a node that drove an agent marks the node `subagent:<node name>`
-  whatever the agent read (it cannot read the agent's marks, so it over-taints). A flow with no policy records no declarations,
-  so a flow without one that reads a declared source marks nothing when it is run as an agent's tool: give it a policy. `bide check -blocks`
+  whatever the agent read (it cannot read the agent's marks, so it over-taints). `bide check -blocks`
   and the typed editor read a description of the registered blocks, which carries the declarations of each block
   (version 2) but not the flow's policy unless the host sets it, so neither shows what a policy would gate. [Plan flows](guides/untrusted-content.md#plan-flows) has the rule.
 - **A run started under a flow taint policy is not safe to drive with v0.25.x or earlier.** Those releases ran plan

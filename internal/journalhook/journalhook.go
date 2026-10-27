@@ -159,15 +159,18 @@ type FlowTaintDecision struct {
 // parent's status with no declarations, and with a node that can have a side effect (tracked names them) it is
 // refused (ErrConfig) when the run is new, before anything is written. A run that ctx's node started under taint
 // is recorded as a child of that node in the node's journal (ErrConfig when it uses another journal), so a
-// ResolveHalt of the node finds it. The agent package sets it in init.
-var FlowTaintPrepare func(ctx context.Context, j any, runID string, start any, d *FlowTaint, tracked []string) (any, error)
+// ResolveHalt of the node finds it. A flow with no policy (d == nil) that declares sources (sources: node name to
+// its sorted sources, nil for none) records them in run:start, so the marks it learns are counted from them; a flow
+// that declares none starts as it always did. The agent package sets it in init.
+var FlowTaintPrepare func(ctx context.Context, j any, runID string, start any, d *FlowTaint, tracked []string, sources map[string][]string) (any, error)
 
 // FlowTaintEnter compares a drive of the flow, whose declarations are d (nil for a flow with no policy),
 // with the declarations the run's recorded start holds, and returns one of the FlowTaint standings. Any
 // difference is ErrConfig, naming both digests, before a node runs. A run that started inside a tainted run under a
 // flow with no policy is refused (ErrConfig) on every drive by a flow with a node that can have a side effect
-// (tracked names them), as it was at Begin, before any node runs. The agent package sets it in init.
-var FlowTaintEnter func(ctx context.Context, j any, runID string, d *FlowTaint, tracked []string) (standing int, err error)
+// (tracked names them), as it was at Begin, before any node runs. A flow with no policy is held to the sources it
+// recorded as well: other sources are ErrConfig. The agent package sets it in init.
+var FlowTaintEnter func(ctx context.Context, j any, runID string, d *FlowTaint, tracked []string, sources map[string][]string) (standing int, err error)
 
 // FlowTaintNodeHook decides what taint requires of the node with key nodeKey (and safety, an agent.Safety),
 // about to run in a run at standing: it computes the node's read set from the journal, records the
@@ -209,4 +212,4 @@ var RunProvenance func(opts []any) (untrusted, trusted *string, err error)
 // though its requirement was not met (a refused node, or an escalation gate that was not passed before its
 // record), and a gate-reason or taint-mark record that does not read or names an undeclared node. The agent
 // package sets it in init.
-var FlowTaintConform func(recs any, cur *FlowTaint, safeties map[string]any) []string
+var FlowTaintConform func(recs any, cur *FlowTaint, sources map[string][]string, safeties map[string]any) []string
