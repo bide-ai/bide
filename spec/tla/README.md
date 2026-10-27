@@ -1139,16 +1139,16 @@ resolution through another flow or digest recorded a value this flow cannot read
 `ResultsTyped`, 13 states).
 
 Taint regressions (design mutants, each must fail with its property; the taint design is not built, so
-none is a found bug): `flows/regress/taint-no-gate` (no second gate instance; `TaintGateHeld`, 40 states),
-`taint-gate-unscoped` (the instance keyed per node, not per iteration; `TaintGateHeld`, 1,026),
-`taint-reuse` (the node gate's decisions count for the instance; `TaintTallySound`, 304),
+none is a found bug): `flows/regress/taint-no-gate` (no second gate instance; `TaintGateHeld`, 80 states),
+`taint-gate-unscoped` (the instance keyed per node, not per iteration; `TaintGateHeld`, 1,987),
+`taint-reuse` (the node gate's decisions count for the instance; `TaintTallySound`, 387),
 `taint-readset-resume-empty` (the read set kept in the drive's memory, lost on resume; `TaintGateHeld`,
-1,000), `taint-readset-order` (a source after the node counts and an earlier one does not;
-`TaintGateHeld`, 40), `taint-readset-iteration` (iteration k forgets iterations below k;
-`TaintGateHeld`, 765), `taint-mark-ignored` (the fold ignores the taint-mark records; `TaintGateHeld`,
-435), `taint-refuse-as-skip` (a refusal recorded as a skip; `RefusedClean`, 193), `taint-refuse-not-durable`
-(a recorded refusal read as a decision made, so the next drive runs the node; `TaintGateHeld`, 409),
-`taint-resume-no-compare` (no comparison of the recorded declarations; `ResumeExact`, 498) and
+1,611), `taint-readset-order` (a source after the node counts and an earlier one does not;
+`TaintGateHeld`, 80), `taint-readset-iteration` (iteration k forgets iterations below k;
+`TaintGateHeld`, 1,348), `taint-mark-ignored` (the fold ignores the taint-mark records; `TaintGateHeld`,
+538), `taint-refuse-as-skip` (a refusal recorded as a skip; `RefusedClean`, 369), `taint-refuse-not-durable`
+(a recorded refusal read as a decision made, so the next drive runs the node; `TaintGateHeld`, 793),
+`taint-resume-no-compare` (no comparison of the recorded declarations; `ResumeExact`, 770) and
 `taint-reuses-node-decider` (`SeparateApprovers` ignored; `SeparateHeld`, 596), `taint-no-preexec` (no PreExec before the claim, so a revoked approval does not stop the node; `PreExecHeld`, 1,400), `taint-preexec-ignores-revocation` (the PreExec's result ignored; `PreExecHeld`, 1,263) and `taint-run-before-refusal` (a node claimed with no gate-reason or refusal journaled first; `GateReasonFirst`, 386).
 
 Not modelled here: the flow input's canonical comparison (#103 F2, a Go encoding question), the
