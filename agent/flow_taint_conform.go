@@ -134,7 +134,7 @@ func flowTaintConform(recsAny any, cur *journalhook.FlowTaint, safeties map[stri
 func instancePassed(recs []Record, instance, name string, pol *ApprovalPolicy) bool {
 	if pol.single() {
 		st := EvaluateGateAfter(recs, ApprovalSubject{ToolUseID: instance, ToolName: name}, pol, nil, ApprovalRequestStep(instance))
-		return st.Status == GateSingle && st.SingleDecided && st.SingleApproved
+		return st.Status == GateSingle && st.SingleApproved
 	}
 	rt, ok := RecordedTally(GateTallyValues(recs, instance), instance)
 	if !ok {

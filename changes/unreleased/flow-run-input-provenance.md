@@ -1,3 +1,3 @@
 Section: Added
 
-`plan.ErrTaintRefused`, and `Flow.Run` takes `agent.WithUntrustedInput` and `agent.WithTrustedInput`, recorded in `run:start`'s settings (a later drive that states another source is `ErrConfig`). They have an effect only with a flow taint policy, which `Build` still refuses until flow taint is enforced. Experimental.
+`Flow.Run` takes `agent.WithUntrustedInput` and `agent.WithTrustedInput` (a flow run refused them before): the source or reason is recorded in `run:start`'s settings, and a later drive that states another source is `ErrConfig`. They have no other effect yet. `plan.ErrTaintRefused` exists, but no flow can return it yet: `Build` refuses a flow with a taint policy until flow taint is enforced. Experimental.

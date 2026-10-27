@@ -429,3 +429,31 @@ func TestFlowTaintHooks_ReadTheBoundStartOfTheirOwnRunOnly(t *testing.T) {
 		t.Errorf("Enter for the bound run: %d, %v", st, err)
 	}
 }
+
+// A node that cannot have a side effect is decided without reading the journal for a read set: an unreadable
+// taint-mark record is an error for a node that can have a side effect, and nothing for one that cannot.
+func TestFlowTaintNode_ReadOnlyNodeReadsNothing(t *testing.T) {
+	j := startFlowRun(t, hookDecls(nil), nil)
+	writeRaw(t, j, "r1", taintMarkPrefix+"junk", Record{Kind: StepValue, Result: json.RawMessage(`"junk"`)})
+	if d, err := decide(j, "node:look", Safety{ReadOnly: true}, journalhook.FlowTaintUnder); err != nil || d.Gate != nil {
+		t.Errorf("a read-only node: %+v, %v", d, err)
+	}
+	if _, err := decide(j, "node:pay", Safety{}, journalhook.FlowTaintUnder); !errors.Is(err, ErrStorage) {
+		t.Errorf("a node that can have a side effect: %v, want the unreadable record to be ErrStorage", err)
+	}
+}
+
+// Only a new run is asked where its input came from: a run that started with no declarations is resumed by a flow
+// that now requires provenance, without being asked.
+func TestFlowTaintPrepare_RequireProvenanceIsForNewRunsOnly(t *testing.T) {
+	ctx := context.Background()
+	j := startFlowRun(t, nil, nil) // r1 started with no declarations
+	req := hookDecls(func(d *journalhook.FlowTaint) { d.RequireProvenance = true })
+	resume := RunStart{Kind: RunKindFlow, Flow: &FlowRef{Name: "f"}, Input: UserText("1")}
+	if _, err := flowTaintPrepare(ctx, j, "r1", resume, req); err != nil {
+		t.Errorf("a resume of a run that started with no declarations: %v", err)
+	}
+	if _, err := flowTaintPrepare(ctx, j, "r-new", resume, req); !errors.Is(err, ErrConfig) {
+		t.Errorf("a new run stating nothing: %v, want ErrConfig", err)
+	}
+}

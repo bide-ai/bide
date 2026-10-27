@@ -104,9 +104,14 @@ func init() {
 		if pol == nil || pol.single() || vf == nil || !isBound(pol, vf) {
 			return nil // no certificate-bound approver: nothing to re-check, and no read
 		}
-		// A node whose result is recorded replays and runs nothing: the check is for a body about to run.
-		if _, done, err := d.Get(ctx, runID, key); err != nil {
-			return fmt.Errorf("read the result of %s (run %s): %w (%w)", key, runID, err, ErrStorage)
+		// A node whose result is recorded replays and runs nothing: the check is for a body about to run. The
+		// result of a node's escalation instance is the node's own.
+		resultKey := key
+		if base, instance := baseCallID(key); instance && planGateKey(key) {
+			resultKey = base
+		}
+		if _, done, err := d.Get(ctx, runID, resultKey); err != nil {
+			return fmt.Errorf("read the result of %s (run %s): %w (%w)", resultKey, runID, err, ErrStorage)
 		} else if done {
 			return nil
 		}

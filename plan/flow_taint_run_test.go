@@ -464,3 +464,71 @@ func TestFlowTaint_RefusalComesBeforeTheNodesOwnGate(t *testing.T) {
 		}
 	}
 }
+
+// A node whose result is recorded replays and runs no pre-execution check, the escalation gate's included: a
+// certificate revoked after the flow ran does not hold a node that already ran.
+func TestFlowTaint_ReplayOfARecordedNodeRunsNoPreExecuteOfTheInstance(t *testing.T) {
+	was := identitygate.Enabled.Load()
+	identitygate.Enabled.Store(true)
+	defer identitygate.Enabled.Store(was)
+	ctx := context.Background()
+	as, vf, exec, n, bad := certApprovers("ops")
+	r := newTaintRun(t, flowOpts{policy: &agent.TaintPolicy{Gate: &agent.ApprovalPolicy{Need: 1, Approvers: []string{"ops"}}}, verifiers: vf})
+	_, err := r.run()
+	pend := asPending(t, err)
+	as["ops"].decide(t, r.j, pend, true)
+	if _, err := r.run(); err != nil || r.runs["pay"] != 1 {
+		t.Fatalf("the flow did not run to completion: %v, pay ran %d", err, r.runs["pay"])
+	}
+	// The certificate is revoked afterwards. The node's record is there: asking its gates again checks nothing.
+	*exec = func(agent.CertDecision) agent.CertCheck {
+		*bad = true
+		return agent.CertCheck{Reason: agent.ReasonRevoked, Detail: "d"}
+	}
+	before := *n
+	ts := &taintState{flow: r.f.core.flowTaint(), standing: 2}
+	node := r.f.core.byName["pay"]
+	if err := runGate(ctx, r.j, "r1", r.f.core, ts, node, "node:pay", 1); err != nil {
+		t.Fatalf("runGate on a node that ran: %v", err)
+	}
+	if *n != before {
+		t.Fatalf("the pre-execution check ran for a node whose result is recorded (%d -> %d)", before, *n)
+	}
+	if _, ok, _ := r.j.Get(ctx, "r1", agent.ApprovalExecHoldStep("node:pay:taint", 0)); ok {
+		t.Error("a hold was written for the instance of a node that ran")
+	}
+}
+
+// A run that started with no taint declarations is resumed by a flow that now has a policy requiring provenance
+// without being asked where its input came from: the requirement is for a new run only.
+func TestFlowTaint_RequireProvenanceIsForNewRunsOnly(t *testing.T) {
+	allowTaint(t)
+	ctx := context.Background()
+	j := agenttest.MemJournal()
+	own := agent.SingleApproval()
+	build := func(pol *agent.TaintPolicy) *Flow[int, int] {
+		b := New[int, int]("f")
+		if pol != nil {
+			b.WithTaintPolicy(*pol)
+		}
+		b.Step("pay", func(_ context.Context, n int) (int, error) { return n, nil }, Approval(own), Trusted("ours"))
+		f, err := b.Build()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	// Started with no policy (as v0.25.x flows did), paused at the node's own gate.
+	_, err := build(nil).Run(ctx, j, "r1", 1)
+	pending(t, err)
+	// Driven by the same flow with a policy that requires provenance: not asked.
+	req := &agent.TaintPolicy{Gate: agent.SingleApproval(), RequireProvenance: true}
+	_, err = build(req).Run(ctx, j, "r1", 1)
+	if errors.Is(err, agent.ErrConfig) && strings.Contains(err.Error(), "WithUntrustedInput") {
+		t.Fatalf("a resume of a run that started with no declarations was asked for its input's provenance: %v", err)
+	}
+	// A new run still is.
+	if _, err := build(req).Run(ctx, agenttest.MemJournal(), "r2", 1); !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "WithUntrustedInput") {
+		t.Fatalf("a new run stating nothing: %v", err)
+	}
+}

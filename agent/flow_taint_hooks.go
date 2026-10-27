@@ -49,21 +49,17 @@ func flowTaintPrepare(ctx context.Context, j any, runID string, start any, d *jo
 	if err != nil {
 		return nil, err
 	}
-	if decls.Policy.RequireProvenance {
-		stated := want.Settings.UntrustedInput != nil || want.Settings.TrustedInput != nil
-		if !stated {
-			// A run that has started is judged by its recorded start: a resume is not asked again.
-			jr, ok := j.(*Journal)
-			if !ok {
-				return nil, fmt.Errorf("agent: FlowTaintPrepare: %T is not a journal: %w", j, ErrConfig)
-			}
-			rec, has, err := RecordedStart(ctx, jr, runID)
-			if err != nil {
-				return nil, err
-			}
-			stated = has && (rec.Settings.UntrustedInput != nil || rec.Settings.TrustedInput != nil)
+	if decls.Policy.RequireProvenance && want.Settings.UntrustedInput == nil && want.Settings.TrustedInput == nil {
+		// Only a new run is asked where its input came from: a run that has started keeps its recorded start, so
+		// a resume is never asked again, and a run that started with no declarations (before the flow had a
+		// policy) is not refused for the policy it has now.
+		jr, ok := j.(*Journal)
+		if !ok {
+			return nil, fmt.Errorf("agent: FlowTaintPrepare: %T is not a journal: %w", j, ErrConfig)
 		}
-		if !stated {
+		if _, has, err := RecordedStart(ctx, jr, runID); err != nil {
+			return nil, err
+		} else if !has {
 			return nil, errInputProvenance
 		}
 	}
@@ -132,6 +128,10 @@ func flowTaintNode(ctx context.Context, j any, runID, nodeKey string, safety any
 	name, ok := nodeNameOfKey(nodeKey)
 	if !ok {
 		return journalhook.FlowTaintDecision{}, fmt.Errorf("agent: FlowTaintNode: %q is not a plan node key: %w", nodeKey, ErrConfig)
+	}
+	if !tracked(s) {
+		// A node that cannot have a side effect needs nothing, and leaves no record: the journal is not read.
+		return journalhook.FlowTaintDecision{}, nil
 	}
 	start, has, err := recordedStartOf(ctx, jr, runID)
 	if err != nil {
