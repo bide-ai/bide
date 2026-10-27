@@ -399,3 +399,44 @@ func TestBuild_EscalationInstanceOfAFlowNodeIsAGateOfItsOwn(t *testing.T) {
 		}
 	}
 }
+
+// A node with no gate of its own, whose only gate is the escalation instance, is listed as a gate in the viewer:
+// the instance has its own request, and its decisions and tally.
+func TestBuild_EscalationInstanceOfAnUngatedNodeIsAGate(t *testing.T) {
+	ctx := context.Background()
+	j := agenttest.MemJournal()
+	const inst = "node:refund:taint"
+	esc := &agent.ApprovalPolicy{Need: 1, Approvers: []string{"risk"}}
+	var pend *agent.ApprovalPending
+	if _, err := journalhook.Gate(ctx, j, "f1", inst, "refund", json.RawMessage(`120`), esc, approverKeys(nil)); !errors.As(err, &pend) {
+		t.Fatalf("the instance's first evaluation = %v, want a pause", err)
+	}
+	gate := func() (Gate, bool) {
+		t.Helper()
+		recs, err := j.History(ctx, "f1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, g := range Build(ctx, "f1", recs, nil).Gates {
+			if g.ToolUseID == inst {
+				return g, true
+			}
+		}
+		return Gate{}, false
+	}
+	g, ok := gate()
+	if !ok || g.ToolName != "refund" || g.Need != 1 || !slices.Equal(g.Approvers, []string{"risk"}) || !g.Waiting {
+		t.Fatalf("the instance's gate = %+v, %v; want refund, 1 of [risk], waiting", g, ok)
+	}
+	sig := ed25519.Sign(key("risk"), agent.ApprovalDecisionBytes(pend.Subject(), "risk", true, testDecidedAt))
+	if err := agent.SubmitDecision(ctx, j, agent.Decision{RunID: "f1", ToolUseID: inst, ApproverID: "risk", Approved: true, DecidedAt: testDecidedAt, Alg: audit.AlgEd25519, Signature: sig}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := journalhook.Gate(ctx, j, "f1", inst, "refund", json.RawMessage(`120`), esc, approverKeys(nil)); err != nil || !ok {
+		t.Fatalf("the gate after its decision = %v, %v", ok, err)
+	}
+	g, ok = gate()
+	if !ok || g.Waiting || !g.Tallied || len(g.Decisions) != 1 || g.Decisions[0].Approver != "risk" {
+		t.Errorf("the instance's gate after its decision = %+v, %v; want tallied with risk's decision", g, ok)
+	}
+}

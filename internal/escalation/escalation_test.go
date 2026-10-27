@@ -34,8 +34,8 @@ func TestNodeInstance(t *testing.T) {
 		"node:iter":        "node:iter:taint", // a node named iter
 		"node:iter:3:iter": "node:iter:3:iter:taint",
 	} {
-		if got := ID(node); got != want {
-			t.Errorf("ID(%q) = %q, want %q", node, got, want)
+		if got := NodeInstance(node); got != want {
+			t.Errorf("NodeInstance(%q) = %q, want %q", node, got, want)
 		}
 		if b, ok := Base(want); !ok || b != node {
 			t.Errorf("Base(%q) = %q %v, want %q", want, b, ok, node)
@@ -100,8 +100,9 @@ func TestPlanKey(t *testing.T) {
 }
 
 // The keys that existed before the instance of a node did parse and classify exactly as they did: the
-// old parser and the old Base, kept here as they were, agree with the current ones on every string built
-// from the pieces a key is made of, except on the one shape that is new (a node key and ":taint").
+// old parser, the old Base and the old ID, kept here as they were, agree with the current ones on every
+// string built from the pieces a key is made of, except on the one shape that is new in Base (a node key and
+// ":taint", which was not an instance before). ID is compared on every string, node: keys included.
 func TestExistingKeysAreUnchanged(t *testing.T) {
 	oldPlanKey := func(name string) (node, step string, ok bool) {
 		rest, ok := strings.CutPrefix(name, "node:")
@@ -166,9 +167,10 @@ func TestExistingKeysAreUnchanged(t *testing.T) {
 				t.Fatalf("Base(%q) = %q, true: not a node key and :taint", k, gb)
 			}
 		}
-		// A call's instance is its ID and "#taint", as before.
-		if !strings.HasPrefix(k, "node:") && ID(k) != k+"#taint" {
-			t.Fatalf("ID(%q) = %q", k, ID(k))
+		// A call's instance is its ID and "#taint", for every ID as before, a "node:" one included: a journal
+		// written by v0.25.x may hold an agent call named so, and its decisions are under that subject.
+		if ID(k) != k+"#taint" {
+			t.Fatalf("ID(%q) = %q, want %q", k, ID(k), k+"#taint")
 		}
 	}
 	t.Logf("compared %d keys", len(keys))

@@ -157,3 +157,51 @@ func TestFlowGateEvidence_EscalationInstanceOfANode(t *testing.T) {
 		t.Fatalf("the node recounted under the instance's gate verified: %+v", v)
 	}
 }
+
+// A node with no gate of its own, whose only gate is the escalation instance, is the common tainted node: the
+// instance has a request of its own, and its evidence is that request, its decisions and tally, and the
+// node's record.
+func TestFlowGateEvidence_EscalationInstanceOfAnUngatedNode(t *testing.T) {
+	ctx := context.Background()
+	g := newGate(1, []string{"carol"}, []string{"carol"})
+	const inst = "node:pay:taint"
+	esc := &agent.ApprovalPolicy{Need: 1, Approvers: []string{"carol"}}
+	args := json.RawMessage(`120`)
+	var pend *agent.ApprovalPending
+	if _, err := journalhook.Gate(ctx, g.store, flowRun, inst, "pay", args, esc, g.resolver()); !errors.As(err, &pend) {
+		t.Fatalf("the instance's first evaluation = %v, want a pause", err)
+	}
+	sig := ed25519.Sign(g.privs["carol"], agent.ApprovalDecisionBytes(pend.Subject(), "carol", true, testDecidedAt))
+	if err := agent.SubmitDecision(ctx, g.store, agent.Decision{RunID: flowRun, ToolUseID: inst, ApproverID: "carol", Approved: true, DecidedAt: testDecidedAt, Alg: audit.AlgEd25519, Signature: sig},
+		agent.WithDecisionCheck(g.resolver())); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := journalhook.Gate(ctx, g.store, flowRun, inst, "pay", args, esc, g.resolver()); err != nil || !ok {
+		t.Fatalf("the instance's gate after quorum = %v, %v", ok, err)
+	}
+	b := plan.New[int, int]("refunds")
+	b.Step("pay", func(_ context.Context, n int) (int, error) { g.charged++; return n, nil })
+	f, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Run(ctx, g.store, flowRun, 120); err != nil || g.charged != 1 {
+		t.Fatalf("the ungated node = %v, ran %d", err, g.charged)
+	}
+	th, err := audit.NewTreeHead(ctx, g.store, flowRun, 1700000000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sth := signTH(t, th, g.logPriv)
+	acts, err := audit.ApprovalEvidence(ctx, g.store, flowRun, inst, sth)
+	if err != nil {
+		t.Fatalf("ApprovalEvidence(instance of an ungated node): %v", err)
+	}
+	v, err := audit.VerifyApprovals(acts, inst, *esc, g.resolver(), edV(g.logPub))
+	if err != nil || !v.OK || len(v.Counted) != 1 || v.Counted[0] != "carol" || v.ToolName != "pay" || string(v.Args) != "120" {
+		t.Fatalf("the instance of an ungated node under its gate: %+v, %v", v, err)
+	}
+	if v.AskedAt == "" {
+		t.Error("the evidence does not say when the instance asked")
+	}
+}

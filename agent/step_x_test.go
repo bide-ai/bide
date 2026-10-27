@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"iter"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -505,18 +506,49 @@ func TestRev201_AgentCallIDLooksLikeNodeKey(t *testing.T) {
 	j := agenttest.MemJournal()
 	ran := 0
 	tool := agent.MustFunc("refund", "refund", func(context.Context, struct{}) (string, error) { ran++; return "ok", nil }, agent.WithApproval(agent.SingleApproval()))
-	newAgent := func() *agent.Agent {
-		m := agenttest.NewScriptedModel(agenttest.ToolTurn("node:x", "refund", `{}`), agenttest.TextTurn("done"))
+	newAgent := func(id string) *agent.Agent {
+		m := agenttest.NewScriptedModel(agenttest.ToolTurn(id, "refund", `{}`), agenttest.TextTurn("done"))
 		return agenttest.MustNew(m, j, agent.WithTools(tool))
 	}
-	_, err := newAgent().Run(ctx, "r", agent.UserText("go"))
+	// A live turn may no longer choose such an ID; a journal that holds one from before (made here by renaming
+	// the call of a run that paused) is still decidable and resumes.
+	if _, err := newAgent("node:x").Run(ctx, "r0", agent.UserText("go")); !errors.Is(err, agent.ErrToolUseIDInvalid) {
+		t.Fatalf("a live turn with ID node:x = %v, want ErrToolUseIDInvalid", err)
+	}
+	_, err := newAgent("call_x").Run(ctx, "r", agent.UserText("go"))
 	t.Logf("first run: %v", err)
+	j = renameCall(t, j, "r", "call_x", "node:x")
 	if err := agent.Approve(ctx, j, "r", "node:x", true); err != nil {
 		t.Fatalf("Approve on an agent call with ID node:x: %v", err)
 	}
-	if _, err := newAgent().Run(ctx, "r", agent.UserText("go")); err != nil || ran != 1 {
+	if _, err := newAgent("node:x").Run(ctx, "r", agent.UserText("go")); err != nil || ran != 1 {
 		t.Fatalf("run after approval: err=%v ran=%d", err, ran)
 	}
+}
+
+// renameCall returns a journal holding run's records with the call ID from replaced by to, in every record body
+// and name, as a journal written by a version that allowed the ID would hold them.
+func renameCall(t *testing.T, j *agent.Journal, run, from, to string) *agent.Journal {
+	t.Helper()
+	ctx := context.Background()
+	ms := agent.NewMemStore()
+	enc := func(s string) string { return strings.ReplaceAll(s, ":", "%3A") }
+	swap := func(s string) string {
+		return strings.ReplaceAll(strings.ReplaceAll(s, from, to), enc(from), enc(to))
+	}
+	for e, err := range j.Store().Load(ctx, run, -1) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := ms.Insert(ctx, run, swap(e.Name), []byte(swap(string(e.Data)))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	nj, err := agent.NewJournal(ms)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return nj
 }
 
 type rv struct{ pub ed25519.PublicKey }
@@ -536,20 +568,26 @@ func TestRev201b_AgentIterShapedIDMofN(t *testing.T) {
 	ran := 0
 	tool := agent.MustFunc("refund", "refund", func(context.Context, struct{}) (string, error) { ran++; return "ok", nil },
 		agent.WithApproval(&agent.ApprovalPolicy{Need: 1, Approvers: []string{"ops"}}))
-	newAgent := func() *agent.Agent {
-		m := agenttest.NewScriptedModel(agenttest.ToolTurn("node:iter:2:x", "refund", `{}`), agenttest.TextTurn("done"))
+	newAgent := func(id string) *agent.Agent {
+		m := agenttest.NewScriptedModel(agenttest.ToolTurn(id, "refund", `{}`), agenttest.TextTurn("done"))
 		return agenttest.MustNew(m, j, agent.WithTools(tool), agent.WithApproverVerifiers(vf))
 	}
-	_, err := newAgent().Run(ctx, "r", agent.UserText("go"))
+	_, err := newAgent("call_iter").Run(ctx, "r", agent.UserText("go"))
 	var pend *agent.ApprovalPending
 	if !errors.As(err, &pend) {
 		t.Fatalf("first run: %v", err)
+	}
+	// The ID is renamed in the journal, as one from before the prefix was refused would be.
+	j = renameCall(t, j, "r", "call_iter", "node:iter:2:x")
+	_, err = newAgent("node:iter:2:x").Run(ctx, "r", agent.UserText("go"))
+	if !errors.As(err, &pend) {
+		t.Fatalf("resume of the renamed journal: %v", err)
 	}
 	sig := ed25519.Sign(priv, agent.ApprovalDecisionBytes(pend.Subject(), "ops", true, testDecidedAt))
 	if err := agent.SubmitDecision(ctx, j, agent.Decision{RunID: "r", ToolUseID: pend.ToolUseID, ApproverID: "ops", Approved: true, DecidedAt: testDecidedAt, Alg: "ed25519", Signature: sig}); err != nil {
 		t.Fatalf("SubmitDecision: %v", err)
 	}
-	if _, err := newAgent().Run(ctx, "r", agent.UserText("go")); err != nil || ran != 1 {
+	if _, err := newAgent("node:iter:2:x").Run(ctx, "r", agent.UserText("go")); err != nil || ran != 1 {
 		t.Fatalf("after approval: err=%v ran=%d", err, ran)
 	}
 }

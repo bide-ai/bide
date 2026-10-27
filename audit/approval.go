@@ -61,6 +61,12 @@ func resultSubject(subject string) string {
 	return subject
 }
 
+// isFlowRequest reports whether the record named name is the request of the plan flow gate on subject: the
+// request of the node itself, or, for a node's escalation instance, its own or the node's.
+func isFlowRequest(name, subject string) bool {
+	return name == agent.ApprovalRequestStep(subject) || name == agent.ApprovalRequestStep(resultSubject(subject))
+}
+
 // ApprovalEvidence builds the complete evidence for an m-of-n gated call under one STH, in
 // this order: for a gate whose tally excluded the requester (agent.ApprovalTally.ExcludePrincipal),
 // the run's run:principal record (Kind "step", Ref "run:principal"; agent.RunPrincipal), which names
@@ -117,7 +123,7 @@ func ApprovalEvidence(ctx context.Context, store *agent.Journal, runID, toolUseI
 	// The escalation instance of a call (the taint policy's gate, subject "<call>#taint") or of a plan flow
 	// node ("<node key>:taint") has no result or request of its own: they are the call's or the node's.
 	resultID := resultSubject(toolUseID)
-	flowNode := recs[callIdx].Name == agent.ApprovalRequestStep(resultID)
+	flowNode := isFlowRequest(recs[callIdx].Name, toolUseID)
 	result := EvidenceAction{Label: resultID, Kind: KindTool, Ref: resultID}
 	if flowNode {
 		result.Kind = KindStep
@@ -363,7 +369,7 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 			return false
 		}
 		_, tu, ok := agent.FindToolCall([]agent.Record{r}, toolUseID)
-		call, flowNode = tu, ok && r.Name == agent.ApprovalRequestStep(resultSubject(toolUseID))
+		call, flowNode = tu, ok && isFlowRequest(r.Name, toolUseID)
 		return ok
 	}, "request")
 	if err != nil {

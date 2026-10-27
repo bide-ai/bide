@@ -218,3 +218,39 @@ func TestEvaluateGate_ExistingSubjectsAreUnchanged(t *testing.T) {
 		}
 	}
 }
+
+// A node with no gate of its own, whose only gate is the escalation instance, has no request of its own: the
+// instance's call is found from the instance's request. (FindToolCall once looked for the node's alone.)
+func TestFindToolCall_InstanceOfAnUngatedNode(t *testing.T) {
+	ctx := context.Background()
+	j := memJournal()
+	args := json.RawMessage(`{"amount":1}`)
+	const inst = "node:pay:taint"
+	var pend *ApprovalPending
+	if _, err := flowGate(ctx, j, "r1", inst, "pay", args, SingleApproval(), nil); !errors.As(err, &pend) {
+		t.Fatalf("the instance's first evaluation = %v, want a pause", err)
+	}
+	recs, err := j.History(ctx, "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx, call, ok := FindToolCall(recs, inst)
+	if !ok || call.ID != inst || call.Name != "pay" || string(call.Args) != `{"amount":1}` || recs[idx].Name != ApprovalRequestStep(inst) {
+		t.Fatalf("FindToolCall(instance of an ungated node) = %d %+v, %v; want the instance's own request", idx, call, ok)
+	}
+	// With both requests, the instance's own is the one found; the node's alone is not mistaken for it.
+	if _, err := flowGate(ctx, j, "r1", "node:pay", "pay", args, SingleApproval(), nil); !errors.As(err, &pend) {
+		t.Fatal(err)
+	}
+	recs, _ = j.History(ctx, "r1")
+	if idx, _, ok := FindToolCall(recs, inst); !ok || recs[idx].Name != ApprovalRequestStep(inst) {
+		t.Errorf("with both requests FindToolCall chose record %d (%v)", idx, ok)
+	}
+	// And a decision on the instance is takeable: the standing reads it from its own request.
+	if err := Approve(ctx, j, "r1", inst, true); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := flowGate(ctx, j, "r1", inst, "pay", args, SingleApproval(), nil); err != nil || !ok {
+		t.Fatalf("the instance's gate after its approval = %v, %v", ok, err)
+	}
+}

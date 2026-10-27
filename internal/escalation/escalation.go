@@ -9,6 +9,11 @@
 // and ":taint" ("node:x:taint", "node:iter:2:x:taint"): a node name holds no ':' (package plan refuses
 // one), so no node can be named so, and the form is not a plan key, so it collides with no node and no Step
 // a node's body runs. A node whose name contains '#' (which plan allows) is a node, never an instance.
+//
+// PlanKey is the parser the gate machinery and the consumers of gate subjects share. Node-only copies of it
+// remain where only a node's own records are read: plan/conformance.go (parseNodeKey), plan/resolve.go and
+// internal/runview/graph.go (nodeOf). They do not take an instance, and the change that makes the engine write
+// instances teaches Conform to.
 package escalation
 
 import "strings"
@@ -70,17 +75,21 @@ func IsNodeKey(name string) bool {
 	return ok && step == ""
 }
 
-// ID is the subject of the escalation gate instance of the call or plan flow node.
-func ID(call string) string {
-	if IsNodeKey(call) {
-		return call + NodeSuffix
-	}
-	return call + Suffix
-}
+// ID is the subject of the escalation gate instance of the tool call with this ID: the ID and "#taint", for
+// every ID, as it always was. A plan flow node's instance is NodeInstance's. The two are not told apart by
+// the argument: a tool-use ID that is a plan key ("node:x") is a call's, and a model may not choose one on a
+// live turn (agent.ErrToolUseIDInvalid), but a journal written before that may hold one, and its instance
+// stays "node:x#taint".
+func ID(call string) string { return call + Suffix }
+
+// NodeInstance is the subject of the escalation gate instance of the plan flow node with this key.
+func NodeInstance(nodeKey string) string { return nodeKey + NodeSuffix }
 
 // Base is the call or plan flow node a gate subject belongs to, and whether the subject is an escalation
-// instance. A node's key is a node, not an instance, whatever it ends with: "node:taint" is the node named
-// taint, and "node:x:step:taint" a Step named taint.
+// instance: ID's form for a subject that does not start with "node:", NodeInstance's for one that does. A
+// node's key is a node, not an instance, whatever it ends with: "node:taint" is the node named taint, and
+// "node:x:step:taint" a Step named taint. A call's "node:x#taint" is not recognised (no live tool-use ID
+// starts with "node:"); it can only come from a journal written before that was refused.
 func Base(subject string) (string, bool) {
 	if strings.HasPrefix(subject, planPrefix) {
 		if node, ok := strings.CutSuffix(subject, NodeSuffix); ok && IsNodeKey(node) {

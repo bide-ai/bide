@@ -248,22 +248,35 @@ func TestCheckToolUseIDs_HashIsRefused(t *testing.T) {
 	}
 }
 
-// A tool-use ID that spells the escalation instance of a plan flow node ("node:x:taint", "node:iter:2:x:taint")
-// is refused on a live turn like one with '#': the engine reads that subject as the instance of a node, so no
-// model-chosen ID may spell one. IDs that are plan keys but not instances, and IDs that only end in ":taint",
-// are unchanged.
-func TestCheckToolUseIDs_NodeInstanceIsRefused(t *testing.T) {
-	for _, id := range []string{"node:x:taint", "node:iter:2:x:taint", "node:iter:taint", "node:a#b:taint"} {
+// A tool-use ID that starts with "node:" is refused on a live turn like one with '#': the keys and gate
+// subjects of a plan flow's nodes (and a node's escalation instance, "node:x:taint") are spelled so, and no
+// model-chosen ID may share them. An ID that only contains or ends like one is unchanged. A turn replayed from
+// a journal is not checked (checkToolUseIDs is called on live turns only).
+func TestCheckToolUseIDs_NodePrefixIsRefused(t *testing.T) {
+	for _, id := range []string{"node:x", "node:x:taint", "node:iter:2:x:taint", "node:iter:taint", "node:", "node:taint", "node:x:foo", "node:x:step:y", "node:a#b:taint"} {
 		m := Message{Role: RoleAssistant, Parts: []Part{ToolUse{ID: id, Name: "lookup", Args: json.RawMessage(`{}`)}}}
 		err := checkToolUseIDs(m, map[string]bool{})
 		if !errors.Is(err, ErrToolUseIDInvalid) || !errors.Is(err, ErrModel) || !errors.Is(err, ErrProtocol) {
 			t.Errorf("checkToolUseIDs(%q) = %v, want ErrToolUseIDInvalid wrapping ErrModel and ErrProtocol", id, err)
 		}
+		if errors.Is(err, ErrToolUseIDReused) || errors.Is(err, ErrConfig) {
+			t.Errorf("checkToolUseIDs(%q) = %v, reported as a reuse or a config error", id, err)
+		}
 	}
-	for _, id := range []string{"node:x", "node:taint", "node:x:step:taint", "x:taint", "call:taint", "node:x:taint:taint"} {
+	for _, id := range []string{"x:taint", "call:taint", "xnode:x", "a:node:x", "Node:x", "nodes:x", "no", "call_node:1"} {
 		m := Message{Role: RoleAssistant, Parts: []Part{ToolUse{ID: id, Name: "lookup", Args: json.RawMessage(`{}`)}}}
 		if err := checkToolUseIDs(m, map[string]bool{}); err != nil {
 			t.Errorf("checkToolUseIDs(%q) = %v, want nil", id, err)
+		}
+	}
+}
+
+// A call named "node:x" in a journal written before the prefix was refused keeps the escalation subject it
+// had ("node:x#taint", the ID and "#taint", as for every call), so a decision recorded under it still counts.
+func TestEscalationSubject_OfAnOldNodePrefixedCallIsUnchanged(t *testing.T) {
+	for _, id := range []string{"node:x", "node:iter:2:x", "node:x:foo", "node:"} {
+		if got := escalationID(id); got != id+"#taint" {
+			t.Errorf("escalationID(%q) = %q, want %q", id, got, id+"#taint")
 		}
 	}
 }

@@ -590,14 +590,17 @@ func flowRequest(r agent.Record) (agent.ToolUse, bool) {
 }
 
 // withEscalationInstances adds, after each call, its escalation instance (the taint policy's gate, subject
-// "<call>#taint", or "<node key>:taint" for a plan flow node) when the journal holds a pause note or a
-// decision for it, as a call of the same tool.
+// "<call>#taint") when the journal holds a pause note or a decision for it, as a call of the same tool. A plan
+// flow node's instance is not added here: it records a request of its own, from which it is listed.
 func withEscalationInstances(recs []agent.Record, byName map[string]agent.Record, calls map[string]agent.ToolUse, order []string) ([]string, map[string]agent.ToolUse) {
 	var out []string
 	var extra map[string]agent.ToolUse
 	for _, id := range order {
 		out = append(out, id)
-		eid := escalation.ID(id) // a call's "#taint", a plan flow node's ":taint"
+		if strings.HasPrefix(id, "node:") {
+			continue // a plan flow node's instance records a request of its own, so it is listed as a gate by itself
+		}
+		eid := escalation.ID(id)
 		if _, ok := agent.LatestPauseNote(byName, eid); !ok && !slices.ContainsFunc(recs, func(r agent.Record) bool { return r.Kind == agent.StepApproval && r.ToolUseID == eid }) {
 			continue
 		}
