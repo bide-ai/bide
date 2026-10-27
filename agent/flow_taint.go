@@ -259,6 +259,8 @@ func decodeTaintMark(r Record) (taintMarkRecord, error) {
 	return rec, nil
 }
 
+// protocol:flows begin PGate
+
 // flowReadSet is the marks the node with key self has read at position before of the run's journal recs, the
 // unfiltered History: positions are indexes into it, so a copy with records left out (a header, a not-started
 // marker) gives other positions and so other reasons. It is the inherited marks, then in journal order the run's input when its start declares it untrusted, the declared sources of
@@ -310,6 +312,8 @@ func flowReadSet(recs []Record, d flowTaintDecls, before int, self string, inher
 	}
 	return marks, nil
 }
+
+// protocol:flows end
 
 // flowRequirement is what taint requires of a node about to run.
 type flowRequirement struct {

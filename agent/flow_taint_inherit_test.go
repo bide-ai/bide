@@ -29,7 +29,7 @@ func TestFlowTaintPrepare_Inherits(t *testing.T) {
 	ctx := taintedCtx(taintMark{Source: "inbound-email", Ref: "node:fetch"}, taintMark{Source: "crm", Ref: "node:look"})
 	j := memJournal()
 	// A flow with its own policy: its own declarations, strictly paired, and the inherited marks, canonical.
-	got, err := flowTaintPrepare(ctx, j, "r1", flowStart(), hookDecls(nil), []string{"pay"}, true)
+	got, err := flowTaintPrepare(ctx, j, "r1", flowStart(), hookDecls(nil), []string{"pay"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func TestFlowTaintPrepare_Inherits(t *testing.T) {
 		t.Error("a flow with its own policy recorded the parent's digest as its own")
 	}
 	// A flow with no policy: the parent's status and the marks, and no declarations.
-	got, err = flowTaintPrepare(ctx, j, "r2", flowStart(), nil, nil, true)
+	got, err = flowTaintPrepare(ctx, j, "r2", flowStart(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestFlowTaintPrepare_Inherits(t *testing.T) {
 		t.Errorf("policyless marks %v, %v", l, err)
 	}
 	// Outside a tainted run nothing is recorded for a policyless flow.
-	got, err = flowTaintPrepare(context.Background(), j, "r3", flowStart(), nil, []string{"pay"}, true)
+	got, err = flowTaintPrepare(context.Background(), j, "r3", flowStart(), nil, []string{"pay"})
 	if err != nil || got.(RunStart).taintDigest() != "" || len(got.(RunStart).Ext) != 0 {
 		t.Errorf("not under taint: %v, %+v", err, got.(RunStart).Ext)
 	}
@@ -67,7 +67,7 @@ func TestFlowTaintPrepare_Inherits(t *testing.T) {
 func TestFlowTaintPrepare_PolicylessWithASideEffectIsRefusedAtBegin(t *testing.T) {
 	ctx := taintedCtx(taintMark{Source: "s", Ref: "node:x"})
 	j := memJournal()
-	_, err := flowTaintPrepare(ctx, j, "r1", flowStart(), nil, []string{"fetch", "pay"}, true)
+	_, err := flowTaintPrepare(ctx, j, "r1", flowStart(), nil, []string{"fetch", "pay"})
 	if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "fetch, pay") {
 		t.Fatalf("a policyless flow with side-effecting steps: %v, want ErrConfig naming them", err)
 	}
@@ -75,25 +75,25 @@ func TestFlowTaintPrepare_PolicylessWithASideEffectIsRefusedAtBegin(t *testing.T
 		t.Errorf("the refused run wrote %d records", len(recs))
 	}
 	// A flow of read-only nodes runs.
-	if _, err := flowTaintPrepare(ctx, j, "r2", flowStart(), nil, nil, true); err != nil {
+	if _, err := flowTaintPrepare(ctx, j, "r2", flowStart(), nil, nil); err != nil {
 		t.Errorf("a policyless flow of read-only nodes: %v", err)
 	}
 	// A run that has started is not refused here: it keeps its recorded start, and Enter judges the drive.
-	got, _ := flowTaintPrepare(ctx, j, "r3", flowStart(), nil, nil, true)
+	got, _ := flowTaintPrepare(ctx, j, "r3", flowStart(), nil, nil)
 	if _, _, _, err := beginRun(ctx, j, "r3", got.(RunStart)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := flowTaintPrepare(ctx, j, "r3", flowStart(), nil, []string{"pay"}, true); err != nil {
+	if _, err := flowTaintPrepare(ctx, j, "r3", flowStart(), nil, []string{"pay"}); err != nil {
 		t.Errorf("a resume of a started run: %v", err)
 	}
 }
 
 func TestFlowTaintPrepare_RequireProvenanceIsNotAskedOfANestedFlow(t *testing.T) {
 	req := hookDecls(func(d *journalhook.FlowTaint) { d.RequireProvenance = true })
-	if _, err := flowTaintPrepare(taintedCtx(), memJournal(), "r1", flowStart(), req, nil, true); err != nil {
+	if _, err := flowTaintPrepare(taintedCtx(), memJournal(), "r1", flowStart(), req, nil); err != nil {
 		t.Errorf("a flow started inside a tainted run: %v", err)
 	}
-	if _, err := flowTaintPrepare(context.Background(), memJournal(), "r1", flowStart(), req, nil, true); !errors.Is(err, ErrConfig) {
+	if _, err := flowTaintPrepare(context.Background(), memJournal(), "r1", flowStart(), req, nil); !errors.Is(err, ErrConfig) {
 		t.Errorf("a top-level new run stating nothing: %v, want ErrConfig", err)
 	}
 }
@@ -102,7 +102,7 @@ func TestFlowTaintPrepare_RequireProvenanceIsNotAskedOfANestedFlow(t *testing.T)
 func beginNested(t *testing.T, ctx context.Context, d *journalhook.FlowTaint, tracked []string) (*Journal, context.Context) {
 	t.Helper()
 	j := memJournal()
-	got, err := flowTaintPrepare(ctx, j, "r1", flowStart(), d, tracked, true)
+	got, err := flowTaintPrepare(ctx, j, "r1", flowStart(), d, tracked)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestFlowTaintEnter_HoldsTheInheritedMarks(t *testing.T) {
 	m1 := taintMark{Source: "inbound-email", Ref: "node:fetch"}
 	j, _ := beginNested(t, taintedCtx(m1), hookDecls(nil), nil)
 	enter := func(ctx context.Context, d *journalhook.FlowTaint) (int, error) {
-		return flowTaintEnter(ctx, j, "r1", d, nil, true)
+		return flowTaintEnter(ctx, j, "r1", d, nil)
 	}
 	if st, err := enter(taintedCtx(m1), hookDecls(nil)); err != nil || st != journalhook.FlowTaintUnder {
 		t.Errorf("the same marks: %d, %v", st, err)
@@ -138,7 +138,7 @@ func TestFlowTaintEnter_HoldsTheInheritedMarks(t *testing.T) {
 	if _, _, _, err := beginRun(context.Background(), jb, "r1", bad); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := flowTaintEnter(context.Background(), jb, "r1", &journalhook.FlowTaint{Refuse: true}, nil, true); !errors.Is(err, ErrStorage) {
+	if _, err := flowTaintEnter(context.Background(), jb, "r1", &journalhook.FlowTaint{Refuse: true}, nil); !errors.Is(err, ErrStorage) {
 		t.Errorf("a list not sorted: %v, want ErrStorage", err)
 	}
 	for what, raw := range map[string]string{
@@ -158,11 +158,11 @@ func TestFlowTaintEnter_HoldsTheInheritedMarks(t *testing.T) {
 func TestFlowTaintEnter_InheritedPolicylessStanding(t *testing.T) {
 	m1 := taintMark{Source: "s", Ref: "node:x"}
 	j, _ := beginNested(t, taintedCtx(m1), nil, nil)
-	if st, err := flowTaintEnter(context.Background(), j, "r1", nil, nil, true); err != nil || st != journalhook.FlowTaintPolicyless {
+	if st, err := flowTaintEnter(context.Background(), j, "r1", nil, nil); err != nil || st != journalhook.FlowTaintPolicyless {
 		t.Errorf("the flow that started it: %d, %v; want the policyless standing", st, err)
 	}
 	// A flow that has a policy now is not the one that started it.
-	if _, err := flowTaintEnter(context.Background(), j, "r1", hookDecls(nil), nil, true); !errors.Is(err, ErrConfig) {
+	if _, err := flowTaintEnter(context.Background(), j, "r1", hookDecls(nil), nil); !errors.Is(err, ErrConfig) {
 		t.Errorf("a flow with a policy now: %v, want ErrConfig", err)
 	}
 }
@@ -220,27 +220,5 @@ func TestCanonicalInherited_ChainDoesNotGrow(t *testing.T) {
 	want := []inheritedMark{{Source: "s", Ref: "parent:node:fetch"}, {Source: "t", Ref: "parent:node:look"}}
 	if !slices.Equal(level2, want) || !slices.Equal(level3, want) {
 		t.Errorf("level 2 %v, level 3 %v; want %v", level2, level3, want)
-	}
-}
-
-// With the inheritance off (production, until flow taint is enforced as a whole) a flow started inside a run
-// under taint is as it was: nothing is recorded or refused, and a carried list is not held.
-func TestFlowTaint_InheritanceOffChangesNothing(t *testing.T) {
-	ctx := taintedCtx(taintMark{Source: "s", Ref: "node:x"})
-	j := memJournal()
-	got, err := flowTaintPrepare(ctx, j, "r1", flowStart(), nil, []string{"pay"}, false)
-	if err != nil || len(got.(RunStart).Ext) != 0 {
-		t.Fatalf("a policyless flow with a side effect, inheritance off: %v, %v", err, got.(RunStart).Ext)
-	}
-	got, err = flowTaintPrepare(ctx, j, "r2", flowStart(), hookDecls(nil), nil, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, has := got.(RunStart).Ext[extTaintInherited]; has {
-		t.Errorf("marks were recorded with the inheritance off")
-	}
-	jb, _ := beginNested(t, taintedCtx(taintMark{Source: "a", Ref: "node:x"}), hookDecls(nil), nil)
-	if _, err := flowTaintEnter(taintedCtx(taintMark{Source: "b", Ref: "node:y"}), jb, "r1", hookDecls(nil), nil, false); err != nil {
-		t.Errorf("other marks, inheritance off: %v", err)
 	}
 }

@@ -125,8 +125,8 @@ func TestFlowTaintConform_RecordsInARunThatDidNotStartUnderTaint(t *testing.T) {
 	if ok, diffs, err := r.f.Conform(ctx, r.j, "r1"); err != nil || !ok {
 		t.Fatalf("a run with no policy: Conform = %v, %q, %v", ok, diffs, err)
 	}
-	// A gate-reason or taint-mark record planted in it is a divergence.
-	for _, name := range []string{"gate-reason:node%3Apay", "taint-mark:node%3Apay:x"} {
+	// A gate-reason, taint-mark or taint-child record planted in it is a divergence.
+	for _, name := range []string{"gate-reason:node%3Apay", "taint-mark:node%3Apay:x", "taint-child:node%3Apay:r"} {
 		data, _ := agent.JournalEntry(name, agent.Record{Kind: agent.StepValue, Result: []byte(`1`)})
 		j2 := agenttest.MemJournal()
 		_ = j2

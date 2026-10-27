@@ -63,8 +63,8 @@ func TestNodeOptions_RefuseWhatAgentRefuses(t *testing.T) {
 	for what, opts := range cases {
 		b := New[int, int]("f")
 		b.Step[int, int]("s", stepInt, opts...)
-		if _, err := b.Build(); !errors.Is(err, agent.ErrConfig) || strings.Contains(err.Error(), "not enforced") {
-			t.Errorf("%s: Build = %v, want an ErrConfig about the option, not the guard", what, err)
+		if _, err := b.Build(); !errors.Is(err, agent.ErrConfig) {
+			t.Errorf("%s: Build = %v, want an ErrConfig about the option", what, err)
 		}
 	}
 	// The same declaration twice is not a conflict.
@@ -151,10 +151,8 @@ func TestRegistry_BlocksCarryDeclarations(t *testing.T) {
 	}
 }
 
-// taintGuard is the one place a flow with taint declarations or a policy is refused until the engine
-// enforces them. The test names the shape of the refusal, so the change that enforces taint removes
-// it on purpose: it must fail there, and be deleted with the guard.
-func TestTaintGuard_RefusesDeclarationsAndPolicyUntilEnforced(t *testing.T) {
+// A flow with taint declarations or a policy builds: the engine enforces them (docs/design/flow-taint.md).
+func TestTaintDeclarations_AFlowWithThemBuilds(t *testing.T) {
 	policy := agent.TaintPolicy{Refuse: true}
 	cases := map[string]func() error{
 		"a step's Untrusted": func() error {
@@ -189,22 +187,9 @@ func TestTaintGuard_RefusesDeclarationsAndPolicyUntilEnforced(t *testing.T) {
 		},
 	}
 	for what, build := range cases {
-		err := build()
-		if !errors.Is(err, agent.ErrConfig) || err == nil || !strings.Contains(err.Error(), "flow taint is not enforced yet") {
-			t.Errorf("%s: Build = %v, want ErrConfig \"flow taint is not enforced yet\"", what, err)
+		if err := build(); err != nil {
+			t.Errorf("%s: Build = %v, want a flow", what, err)
 		}
-	}
-	// A flow that declares nothing and sets no policy is not touched by it.
-	b := New[int, int]("f")
-	b.Step[int, int]("s", stepInt)
-	if _, err := b.Build(); err != nil {
-		t.Errorf("a flow with no taint declarations: Build = %v", err)
-	}
-	// The refusal names the node, so an author can find it.
-	b = New[int, int]("f")
-	b.Step[int, int]("fetch_mail", stepInt, Untrusted("inbox"))
-	if _, err := b.Build(); err == nil || !strings.Contains(err.Error(), "fetch_mail") {
-		t.Errorf("the refusal does not name the node: %v", err)
 	}
 }
 
@@ -218,15 +203,15 @@ func TestWithTaintPolicy_ChecksThePolicyAsAgentDoes(t *testing.T) {
 		b := New[int, int]("f")
 		b.Step[int, int]("s", stepInt)
 		_, err := b.WithTaintPolicy(p).Build()
-		if !errors.Is(err, agent.ErrConfig) || err == nil || strings.Contains(err.Error(), "not enforced") {
-			t.Errorf("%s: Build = %v, want ErrConfig about the policy, not the guard", what, err)
+		if !errors.Is(err, agent.ErrConfig) || err == nil {
+			t.Errorf("%s: Build = %v, want ErrConfig about the policy", what, err)
 		}
 	}
-	// A valid policy reaches the guard, which is where it stops for now.
+	// A valid policy builds.
 	b := New[int, int]("f")
 	b.Step[int, int]("s", stepInt)
-	if _, err := b.WithTaintPolicy(agent.TaintPolicy{Gate: agent.SingleApproval()}).Build(); err == nil || !strings.Contains(err.Error(), "not enforced") {
-		t.Errorf("a valid policy: Build = %v, want the guard", err)
+	if _, err := b.WithTaintPolicy(agent.TaintPolicy{Gate: agent.SingleApproval()}).Build(); err != nil {
+		t.Errorf("a valid policy: Build = %v", err)
 	}
 }
 
@@ -314,32 +299,38 @@ func TestConfigKey_UntrustedOnAJoin(t *testing.T) {
 	}
 }
 
-func TestTaintGuard_AppliesToLoadAndCheck(t *testing.T) {
+// Load, Validate and bide check agree: a config that declares a source, a block that declares taint and a policy
+// through the load option are all accepted, and an invalid policy is the policy's error.
+func TestTaintDeclarations_LoadValidateAndCheckAccept(t *testing.T) {
 	cfg := []byte(strings.Replace(taintConfig, "%s", `, "untrusted": "inbound-email"`, 1))
-	// Load refuses a config that declares a source.
-	if _, err := Load[int, int](cfg, taintRegistry(t)); !errors.Is(err, agent.ErrConfig) || err == nil || !strings.Contains(err.Error(), "not enforced yet") {
-		t.Errorf("Load = %v, want the guard", err)
-	}
-	// So does a block's declaration with a plain config, and a policy through the load option.
 	plain := []byte(strings.Replace(taintConfig, "%s", "", 1))
-	if _, err := Load[int, int](plain, taintRegistry(t, Untrusted("crm"))); err == nil || !strings.Contains(err.Error(), "not enforced yet") {
-		t.Errorf("Load with a declared block = %v, want the guard", err)
+	if _, err := Load[int, int](cfg, taintRegistry(t)); err != nil {
+		t.Errorf("Load of a config that declares a source = %v", err)
 	}
-	if _, err := Load[int, int](plain, taintRegistry(t), WithLoadedTaintPolicy(agent.TaintPolicy{Refuse: true})); err == nil || !strings.Contains(err.Error(), "not enforced yet") {
-		t.Errorf("Load with a policy = %v, want the guard", err)
+	if _, err := Load[int, int](plain, taintRegistry(t, Untrusted("crm"))); err != nil {
+		t.Errorf("Load with a declared block = %v", err)
 	}
-	// An invalid policy through the load option is the policy's error.
-	if _, err := Load[int, int](plain, taintRegistry(t), WithLoadedTaintPolicy(agent.TaintPolicy{})); !errors.Is(err, agent.ErrConfig) || err == nil || strings.Contains(err.Error(), "not enforced") {
+	if _, err := Load[int, int](plain, taintRegistry(t), WithLoadedTaintPolicy(agent.TaintPolicy{Refuse: true})); err != nil {
+		t.Errorf("Load with a policy = %v", err)
+	}
+	if _, err := Load[int, int](plain, taintRegistry(t), WithLoadedTaintPolicy(agent.TaintPolicy{})); !errors.Is(err, agent.ErrConfig) || err == nil {
 		t.Errorf("Load with an empty policy = %v, want the policy's ErrConfig", err)
 	}
-	// A config with none of it loads as before.
-	if _, err := Load[int, int](plain, taintRegistry(t)); err != nil {
-		t.Errorf("Load with no taint = %v", err)
+	if r := InspectConfig(cfg, taintRegistry(t)); r.Errors() {
+		t.Errorf("InspectConfig of a config that declares a source reports an error")
 	}
-	// bide check agrees with Load: the report carries the refusal as an error, so CI and Load do not differ.
-	r := InspectConfig(cfg, taintRegistry(t))
-	if !r.Errors() {
-		t.Error("InspectConfig of a config Load refuses reports no error")
+	for what, c := range map[string]struct {
+		cfg []byte
+		reg *Registry
+	}{
+		"the node key":     {cfg, taintRegistry(t)},
+		"a declared block": {plain, taintRegistry(t, Untrusted("crm"))},
+		"a trusted block":  {plain, taintRegistry(t, Trusted("ours"))},
+		"an exempt block":  {plain, taintRegistry(t, TaintExempt("ok"))},
+	} {
+		if err := Validate(c.cfg, c.reg); err != nil {
+			t.Errorf("%s: Validate = %v", what, err)
+		}
 	}
 }
 
@@ -373,50 +364,11 @@ func TestConfigKey_UntrustedOnAnEdgeOrSwitchIsRefused(t *testing.T) {
 		if err := Validate(cfg, reg); !errors.Is(err, agent.ErrConfig) || err == nil || !strings.Contains(err.Error(), "wiring[0]") || !strings.Contains(err.Error(), "untrusted") {
 			t.Errorf("%s: Validate = %v, want ErrConfig naming wiring[0] and untrusted", what, err)
 		}
-		if _, err := Load[int, int](cfg, reg); !errors.Is(err, agent.ErrConfig) || err == nil || strings.Contains(err.Error(), "not enforced") {
-			t.Errorf("%s: Load = %v, want the union ErrConfig, not nothing and not the guard", what, err)
+		if _, err := Load[int, int](cfg, reg); !errors.Is(err, agent.ErrConfig) || err == nil {
+			t.Errorf("%s: Load = %v, want the union ErrConfig, not nothing", what, err)
 		}
 		if r := InspectConfig(cfg, reg); !r.Errors() {
 			t.Errorf("%s: InspectConfig reports no error", what)
 		}
-	}
-}
-
-// Structural problems come before the taint refusal, so a check of a config reports what is wrong with
-// its shape first; the refusal is still one function in Build.
-func TestTaintGuard_StructuralProblemsComeFirst(t *testing.T) {
-	b := New[int, int]("f")
-	a := b.Step[int, int]("a", stepInt, Untrusted("feed"))
-	bb := b.Step[int, int]("b", stepInt)
-	c := b.Step[int, int]("c", stepInt)
-	b.Edge(a, c)
-	b.Edge(bb, c) // c has two producers and no Join, and b is not reached: shapes Build refuses
-	_, err := b.Build()
-	if err == nil || strings.Contains(err.Error(), "not enforced") {
-		t.Errorf("Build = %v, want the shape error before the taint refusal", err)
-	}
-}
-
-// Validate is the drift guard CI runs; it must not pass a config Load refuses for taint, or an
-// unenforced declaration would clear the check and fail at process start.
-func TestTaintGuard_ValidateRefusesWhatLoadRefuses(t *testing.T) {
-	withKey := []byte(strings.Replace(taintConfig, "%s", `, "untrusted": "inbound-email"`, 1))
-	plain := []byte(strings.Replace(taintConfig, "%s", "", 1))
-	for what, c := range map[string]struct {
-		cfg []byte
-		reg *Registry
-	}{
-		"the node key":     {withKey, taintRegistry(t)},
-		"a declared block": {plain, taintRegistry(t, Untrusted("crm"))},
-		"a trusted block":  {plain, taintRegistry(t, Trusted("ours"))},
-		"an exempt block":  {plain, taintRegistry(t, TaintExempt("ok"))},
-	} {
-		err := Validate(c.cfg, c.reg)
-		if !errors.Is(err, agent.ErrConfig) || err == nil || !strings.Contains(err.Error(), "not enforced yet") {
-			t.Errorf("%s: Validate = %v, want ErrConfig \"flow taint is not enforced yet\"", what, err)
-		}
-	}
-	if err := Validate(plain, taintRegistry(t)); err != nil {
-		t.Errorf("Validate with no taint = %v", err)
 	}
 }

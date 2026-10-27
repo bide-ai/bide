@@ -324,6 +324,19 @@ func resolveHalt(ctx context.Context, store *Journal, op string, ref HaltRef, ou
 			return &HaltInFlight{RunID: ref.RunID, RootRunID: root, Op: ref.Op, Attempt: heldKey}
 		}
 	}
+	// protocol:flows begin PEnd
+
+	// A plan flow node of a run under taint gets its result from the resolution: the marks the runs it started
+	// have learned go into the run's journal first, as the marks they sent up would have, so the nodes after it
+	// are read under them. A crash before the result leaves marks that were learned, never fewer.
+	if ref.Op.Kind == OpStep && planNodeKey(id) {
+		if err := foldChildMarks(ctx, store, ref.RunID, id); err != nil {
+			return fmt.Errorf("%s: fold the taint marks of the runs %q started: %w", op, id, err)
+		}
+	}
+
+	// protocol:flows end
+
 	// The resolution's recorded_at is informational (Record.RecordedAt) and comes from cfg.now, the
 	// clock the call's claim marker and WithMinHaltAge use too: WithClock, else the wall clock. A
 	// resolver is not a drive of the run, so the context's clock is not read.

@@ -145,7 +145,8 @@ const (
 type FlowTaintDecision struct {
 	Gate any
 	// Ctx is the context the node's body runs under, for a run under taint: ctx bound with the run's
-	// under-taint status and the node's read set as the marks the runs the body starts inherit. nil for a run
+	// under-taint status, the node's read set as the marks the runs the body starts inherit, and the node's
+	// sink, where the runs the body starts send the marks they learn. nil for a run
 	// that is not under taint, whose body runs under the context the drive has.
 	Ctx context.Context
 }
@@ -156,16 +157,17 @@ type FlowTaintDecision struct {
 // came from nor started inside a tainted run, before the run's journal is written. A run started inside a
 // tainted run (ctx carries its status) records the marks it inherited; a flow with no policy records the
 // parent's status with no declarations, and with a node that can have a side effect (tracked names them) it is
-// refused (ErrConfig) when the run is new, before anything is written. All of the inheritance is off when
-// inherit is false (the flow runs as if its parent were not under taint). The agent package sets it in init.
-var FlowTaintPrepare func(ctx context.Context, j any, runID string, start any, d *FlowTaint, tracked []string, inherit bool) (any, error)
+// refused (ErrConfig) when the run is new, before anything is written. A run that ctx's node started under taint
+// is recorded as a child of that node in the node's journal (ErrConfig when it uses another journal), so a
+// ResolveHalt of the node finds it. The agent package sets it in init.
+var FlowTaintPrepare func(ctx context.Context, j any, runID string, start any, d *FlowTaint, tracked []string) (any, error)
 
 // FlowTaintEnter compares a drive of the flow, whose declarations are d (nil for a flow with no policy),
 // with the declarations the run's recorded start holds, and returns one of the FlowTaint standings. Any
 // difference is ErrConfig, naming both digests, before a node runs. A run that started inside a tainted run under a
 // flow with no policy is refused (ErrConfig) on every drive by a flow with a node that can have a side effect
 // (tracked names them), as it was at Begin, before any node runs. The agent package sets it in init.
-var FlowTaintEnter func(ctx context.Context, j any, runID string, d *FlowTaint, tracked []string, inherit bool) (standing int, err error)
+var FlowTaintEnter func(ctx context.Context, j any, runID string, d *FlowTaint, tracked []string) (standing int, err error)
 
 // FlowTaintNodeHook decides what taint requires of the node with key nodeKey (and safety, an agent.Safety),
 // about to run in a run at standing: it computes the node's read set from the journal, records the
@@ -173,6 +175,15 @@ var FlowTaintEnter func(ctx context.Context, j any, runID string, d *FlowTaint, 
 // error that wraps ErrTaintRefused for a refused node (recorded, and no node record written). The agent
 // package sets it in init.
 var FlowTaintNodeHook func(ctx context.Context, j any, runID, nodeKey string, safety any, standing int) (FlowTaintDecision, error)
+
+// FlowTaintSink sends the marks the run runID has learned to the node that started it, when ctx carries that
+// node's sink: the sources the node nodeKey declares once its result is recorded and those its own children
+// brought up, or those of every node for nodeKey "". It is insert-once per mark, called after the node's result
+// is recorded and again on every drive that replays it, and for a run that already finished, so a mark is not
+// lost to a crash, a ResolveHalt of the child's node, or a drive without the parent. It sends the run's own
+// marks, never the ones it inherited. Nothing happens when ctx carries no sink or the run is not under taint.
+// The agent package sets it in init.
+var FlowTaintSink func(ctx context.Context, j any, runID, nodeKey string) error
 
 // RunProvenance reads a plan flow run's options (each an agent.RunOption) for where the run's input came
 // from: the source WithUntrustedInput names, or the reason WithTrustedInput gives (at most one is set; both

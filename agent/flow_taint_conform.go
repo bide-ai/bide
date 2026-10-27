@@ -50,7 +50,7 @@ func flowTaintConform(recsAny any, cur *journalhook.FlowTaint, safeties map[stri
 		return name, has
 	}
 	taintRecord := func(name string) bool {
-		return strings.HasPrefix(name, gateReasonPrefix) || strings.HasPrefix(name, taintMarkPrefix)
+		return strings.HasPrefix(name, gateReasonPrefix) || strings.HasPrefix(name, taintMarkPrefix) || strings.HasPrefix(name, taintChildPrefix)
 	}
 	inheritedList, inhErr := checkInheritedMarks(start)
 	if inhErr != nil {
@@ -71,9 +71,17 @@ func flowTaintConform(recsAny any, cur *journalhook.FlowTaint, safeties map[stri
 		}
 	}
 	if !under {
+		// A run started inside a tainted run with no policy of its own is under taint, and its nodes' children
+		// bring marks up into its journal: those records must read and name a declared node, and nothing in it
+		// is gated. Any taint record in a run that is not under taint is a divergence.
+		inherited := start.inheritedOnly()
 		for _, r := range recs {
-			if taintRecord(r.Name) {
-				diffs = append(diffs, r.Name+" (a taint record in a run that did not start under taint)")
+			switch {
+			case !taintRecord(r.Name):
+			case !inherited || strings.HasPrefix(r.Name, gateReasonPrefix):
+				diffs = append(diffs, r.Name+" (a taint record in a run that did not start under taint with declarations)")
+			default:
+				diffs = append(diffs, linkRecordProblems(r, declared)...)
 			}
 		}
 		return diffs
@@ -98,13 +106,8 @@ func flowTaintConform(recsAny any, cur *journalhook.FlowTaint, safeties map[stri
 				continue
 			}
 			reasons[rec.ToolUseID] = rec
-		case strings.HasPrefix(r.Name, taintMarkPrefix):
-			rec, err := decodeTaintMark(r)
-			if err != nil {
-				diffs = append(diffs, r.Name+" (a taint-mark record that does not read)")
-			} else if _, ok := declared(rec.NodeKey); !ok {
-				diffs = append(diffs, r.Name+" (a taint-mark record of an undeclared node)")
-			}
+		case strings.HasPrefix(r.Name, taintMarkPrefix), strings.HasPrefix(r.Name, taintChildPrefix):
+			diffs = append(diffs, linkRecordProblems(r, declared)...)
 		}
 	}
 	// Each node that ran met its requirement.
@@ -143,6 +146,31 @@ func flowTaintConform(recsAny any, cur *journalhook.FlowTaint, safeties map[stri
 		}
 	}
 	return diffs
+}
+
+// linkRecordProblems are the divergences of a taint-mark or taint-child record: one that does not read, or that
+// names a node the flow does not declare.
+func linkRecordProblems(r Record, declared func(string) (string, bool)) []string {
+	var nodeKey, what string
+	if strings.HasPrefix(r.Name, taintChildPrefix) {
+		what = "taint-child"
+		rec, err := decodeTaintChild(r)
+		if err != nil {
+			return []string{r.Name + " (a " + what + " record that does not read)"}
+		}
+		nodeKey = rec.NodeKey
+	} else {
+		what = "taint-mark"
+		rec, err := decodeTaintMark(r)
+		if err != nil {
+			return []string{r.Name + " (a " + what + " record that does not read)"}
+		}
+		nodeKey = rec.NodeKey
+	}
+	if _, ok := declared(nodeKey); !ok {
+		return []string{r.Name + " (a " + what + " record of an undeclared node)"}
+	}
+	return nil
 }
 
 // instancePassed reports whether the escalation gate pol on instance had passed in recs, the journal before the

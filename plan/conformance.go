@@ -317,9 +317,9 @@ func (c *builderCore) conform(ctx context.Context, store *agent.Journal, runID s
 			haveProgress = true
 			reached(r.Name, n, iter)
 
-		case strings.HasPrefix(r.Name, "gate-reason:"), strings.HasPrefix(r.Name, "taint-mark:"):
-			// A taint record (why a node was gated or refused, a mark a node's child brought up): checked
-			// with the rest of the taint obligations below.
+		case strings.HasPrefix(r.Name, "gate-reason:"), strings.HasPrefix(r.Name, "taint-mark:"), strings.HasPrefix(r.Name, "taint-child:"):
+			// A taint record (why a node was gated or refused, a mark a node's child brought up, a run a node
+			// started): checked with the rest of the taint obligations below.
 
 		default:
 			// A node's result, or that of a Step its body ran.

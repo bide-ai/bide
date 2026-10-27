@@ -127,8 +127,8 @@ run and not asked; the model reads an error result.
   resume (the input was stated when the run started) are not asked. The setting is part of the declarations
   digest only when it is on, so an existing policy's digest does not change. It declares; it does not verify: a
   `Trusted` reason is the host's word, and a tool that returns outside text under `Trusted` taints nothing.
-- The policy does not cover [plan flows](plan-flows.md) nodes yet: a flow can declare taint, and `Build` refuses it until the
-  engine enforces it ([design](../design/flow-taint.md)). Children and sessions inherit taint, as follows.
+- [Plan flows](plan-flows.md) take the same policy, with a rule of their own (see [Plan flows](#plan-flows)).
+  Children and sessions inherit taint, as follows.
 
 ## Children, sub-agents and sessions
 
@@ -159,6 +159,44 @@ Taint follows the content, not the run that read it.
   the escalation gate to delegate. Attenuation (a narrower grant, [delegation](delegation.md)) is separate and does
   not clear taint.
 - Not covered: a saga's rollback re-run of a sub-agent, and the answer a `ResolveHalt` injects.
+
+## Plan flows
+
+A plan flow has no model turn to taint, so it has a rule of its own, the run-level one ([design](../design/flow-taint.md)).
+It is experimental, like the rest of the policy, and Go only: a config cannot give a flow a policy.
+
+- **Declare.** A node says what its results carry with `plan.Untrusted(source)` (a Step, Model, Join or Tool
+  block; the `untrusted` key of a config node adds a source and never removes one; a tool's own `Untrusted` is
+  taken), `plan.Trusted(reason)` or `plan.TaintExempt(reason)`. `Builder.WithTaintPolicy` (or
+  `plan.WithLoadedTaintPolicy` for a flow loaded from a config) gives the flow an `agent.TaintPolicy`: an escalation
+  `Gate`, or `Refuse`, and optionally `RequireProvenance` (every node declares `Untrusted` or `Trusted`, and a new
+  run states where its input came from). A declaration without a policy gates nothing, as for an agent.
+- **The rule.** What a node has read is the run's journal in order, not an edge: the sources of the nodes whose
+  results are recorded before it, the flow's input when `WithUntrustedInput` names it, the marks the run inherited
+  (below), and the marks a run its nodes started brought up. A node that can have a side effect (not `ReadOnly`),
+  not `TaintExempt`, and run after any of those needs the policy's escalation gate on a second subject,
+  `node:<name>:taint` (`node:iter:<n>:<name>:taint` in a loop body, so a loop asks once per iteration), after its
+  own gate and before its attempt claim; under `Refuse` it is refused instead (`plan.ErrTaintRefused`, no node
+  record, attempt or approval request; the run stays unfinished until `agent.Cancel`). An approval clears
+  nothing: the next such node is gated again. A node does not read itself, nor the marks its own child brought up.
+- **It is a property of the run.** The run records the policy, the exempt nodes and the declared sources in
+  `run:start`; a drive under other declarations (a weaker policy included) is `ErrConfig`, naming both digests. Roll
+  the whole fleet before enabling a policy, and cancel a run, or restore its declarations, to change them in flight.
+  A flow with no policy that drives a run that started under one runs only nodes that cannot have a side effect.
+  `Flow.Conform` recomputes each node's obligation from the journal and reports a node that ran without its gate.
+- **Nested flows.** A flow a node's body starts inside a run under taint (or a tool of a tainted agent that runs one)
+  inherits the status and the marks the node had read, as an agent child does (`ext.taint_inherited`, one entry per
+  source). With a policy of its own it enforces it; with none it may run only nodes that cannot have a side effect,
+  and a flow with such a node is refused (`ErrConfig`) before it writes anything. It must use its parent's journal.
+- **Up.** A nested flow sends the marks it learned to the node that started it, as `taint-mark:` records in the
+  parent's journal, so the nodes after that node are gated: the sources its own nodes declare, and what its own
+  nested flows brought up, not the marks it inherited. It sends after each node's record, again when a drive
+  replays the node, and for a run that finished, so a crash does not lose a mark. `ResolveHalt` of a node folds
+  in the marks of the flows the node started (`taint-child:` records name them), then records the operator's result.
+- **Not built:** `SeparateApprovers` (an approver of the node's own gate counted again on its instance), a
+  `Trusted` block that brings nothing up (a node that declares its results trusted still takes the marks its nested
+  flows bring up), the marks of an agent a node's body runs (an agent child's marks do not come up to the flow),
+  and the view of all this in `bide check` and the editor.
 
 ## Reviewing the declarations
 

@@ -73,7 +73,7 @@ type configNode struct {
 	// Untrusted, when present, adds a source of untrusted content to the node's results, from the
 	// named source (see Untrusted). A config can only add a source: the block's own declarations
 	// stay, and a node whose block declares its results trusted cannot take one. It is optional and
-	// leaves the flow's digest as it was; Build does not accept it yet (taintNotEnforced).
+	// leaves the flow's digest as it was.
 	Untrusted string `json:"untrusted,omitempty"`
 }
 
@@ -365,11 +365,7 @@ func Validate(data []byte, reg *Registry) error {
 	if err := parseConfig(data, &cfg); err != nil {
 		return fmt.Errorf("plan: validate: parse config: %w", err)
 	}
-	core, err := assemble(&cfg, reg, false)
-	if err == nil {
-		// The check CI runs must not pass a config Load refuses for taint (see taintNotEnforced).
-		err = core.taintNotEnforced()
-	}
+	_, err := assemble(&cfg, reg, false)
 	return asConfigError(err)
 }
 

@@ -54,6 +54,7 @@ var reservedPrefixes = []string{
 	"cap-release:",        // why the loop released a call's slot: the call never began (see capReleaseNote), in the run that made the call
 	"gate-reason:",        // why a call was gated: gate-reason:<call>
 	"taint-mark:",         // that a plan flow node's child brought a taint mark up: taint-mark:<node key>:<source>
+	"taint-child:",        // that a run is a child of a plan flow node under taint: taint-child:<node key>:<run ID>
 }
 
 // capRunPrefix starts the ID of every cap ledger run, which holds a cap's reservations in the same

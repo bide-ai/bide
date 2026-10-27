@@ -18,6 +18,7 @@ func init() {
 	journalhook.FlowTaintPrepare = flowTaintPrepare
 	journalhook.FlowTaintEnter = flowTaintEnter
 	journalhook.FlowTaintNodeHook = flowTaintNode
+	journalhook.FlowTaintSink = flowTaintSink
 }
 
 // declsOf converts the plain declarations of package plan.
@@ -40,7 +41,7 @@ func declsOf(d *journalhook.FlowTaint) (flowTaintDecls, error) {
 }
 
 // flowTaintPrepare is journalhook.FlowTaintPrepare.
-func flowTaintPrepare(ctx context.Context, j any, runID string, start any, d *journalhook.FlowTaint, tracked []string, inherit bool) (any, error) {
+func flowTaintPrepare(ctx context.Context, j any, runID string, start any, d *journalhook.FlowTaint, tracked []string) (any, error) {
 	want, ok := start.(RunStart)
 	if !ok {
 		return nil, fmt.Errorf("agent: FlowTaintPrepare: start is %T, not an agent.RunStart: %w", start, ErrConfig)
@@ -51,12 +52,12 @@ func flowTaintPrepare(ctx context.Context, j any, runID string, start any, d *jo
 	}
 	// Inside a tainted run (a tool of a tainted agent, the body of a tainted node) the run inherits the status
 	// and the marks its parent was shown, as an agent child does.
-	var parent string
-	var carried carriedMarks
-	var hasCarried bool
-	if inherit {
-		parent = underTaintFrom(ctx)
-		carried, hasCarried = callMarksFrom(ctx)
+	parent := underTaintFrom(ctx)
+	carried, hasCarried := callMarksFrom(ctx)
+	if parent != "" {
+		if err := linkChild(ctx, jr, runID); err != nil {
+			return nil, err
+		}
 	}
 	// Only a new run is judged here: a run that has started keeps its recorded start, which holdToStart returns,
 	// and a resume is checked by FlowTaintEnter. The start is read only when a judgement needs it.
@@ -124,7 +125,7 @@ func checkInheritedMarks(s RunStart) ([]inheritedMark, error) {
 }
 
 // flowTaintEnter is journalhook.FlowTaintEnter.
-func flowTaintEnter(ctx context.Context, j any, runID string, d *journalhook.FlowTaint, tracked []string, inherit bool) (int, error) {
+func flowTaintEnter(ctx context.Context, j any, runID string, d *journalhook.FlowTaint, tracked []string) (int, error) {
 	jr, ok := j.(*Journal)
 	if !ok {
 		return 0, fmt.Errorf("agent: FlowTaintEnter: %T is not a journal: %w", j, ErrConfig)
@@ -143,7 +144,7 @@ func flowTaintEnter(ctx context.Context, j any, runID string, d *journalhook.Flo
 	// A run is held to the marks it started with: a drive that reaches it with other ones (the parent's node
 	// shows another set now) is ErrConfig. A drive that carries none (a recovery pass, a direct call) runs under
 	// the recorded ones.
-	if c, ok := callMarksFrom(ctx); inherit && ok && len(c.list) > 0 && !slices.Equal(c.list, recorded) {
+	if c, ok := callMarksFrom(ctx); ok && len(c.list) > 0 && !slices.Equal(c.list, recorded) {
 		return 0, fmt.Errorf("run %s was started with other inherited taint marks than the calling node shows now; drive it with the declarations it started under: %w", runID, ErrConfig)
 	}
 	var cur *flowTaintDecls
@@ -242,7 +243,7 @@ func flowTaintNode(ctx context.Context, j any, runID, nodeKey string, safety any
 	}
 	// The body's runs inherit the status and the read set, whether or not the node is gated: a read-only node
 	// that runs an agent hands it the taint too.
-	bound := withCallMarks(withUnderTaint(ctx, digest), marks)
+	bound := withMarkSink(withCallMarks(withUnderTaint(ctx, digest), marks), jr, runID, nodeKey)
 	if standing == journalhook.FlowTaintPolicyless || !tracked(s) {
 		return journalhook.FlowTaintDecision{Ctx: bound}, nil
 	}

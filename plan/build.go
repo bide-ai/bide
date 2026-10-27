@@ -197,13 +197,9 @@ func (b *Builder[In, Out]) Build() (*Flow[In, Out], error) {
 		}
 	}
 
-	// Taint is declared but the engine does not enforce it yet: refuse, so nothing declared is lost
-	// silently. The refusal is one function (see taintNotEnforced), called here and by Validate, after the
-	// structural checks so that a config's other problems are reported first.
+	// The taint policy is held to what its enforcement needs, after the structural checks so that a
+	// config's other problems are reported first.
 	if err := c.checkTaintPolicy(); err != nil {
-		return nil, err
-	}
-	if err := c.taintNotEnforced(); err != nil {
 		return nil, err
 	}
 

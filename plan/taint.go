@@ -12,9 +12,8 @@ import (
 
 // Taint in plan flows (docs/design/flow-taint.md). This file holds what a flow can declare: the
 // provenance of a node's results (Untrusted, Trusted), an exemption (TaintExempt), and the flow's
-// policy (WithTaintPolicy). The engine does not enforce any of it yet, so Build refuses a flow that
-// carries a declaration or a policy (taintNotEnforced), rather than run it with no taint handling
-// and lose what the declaration asks for.
+// policy (WithTaintPolicy). With a policy the engine enforces them (docs/design/flow-taint.md); a
+// declaration without a policy gates nothing, as an agent's marks do without a policy.
 
 // nodeTaint is what a node declares for taint. The names follow the agent's: a source is the
 // declared origin of untrusted content the node's result carries, trusted says why the result is
@@ -59,8 +58,8 @@ func (t *nodeTaint) withSource(what, source string) error {
 // Model or Join block, or on a Tool block that does not already declare it (a tool's own Untrusted
 // is taken as it is). Sources accumulate: a second Untrusted, a tool's declaration and the config
 // key "untrusted" each add one, and none removes one. A node cannot also be Trusted. The name rules
-// are those of agent.Untrusted. Experimental, and not enforced yet: Build refuses a flow with a
-// declaration until flows have a taint rule (docs/design/flow-taint.md).
+// are those of agent.Untrusted. Experimental. It marks what the run has read for the flow's taint policy
+// (WithTaintPolicy); without a policy it gates nothing.
 func Untrusted(source string) NodeOption {
 	return func(n *node) {
 		if err := n.taint.withSource("plan.Untrusted", source); err != nil {
@@ -72,8 +71,7 @@ func Untrusted(source string) NodeOption {
 // Trusted declares that the results of the node are the host's own, and why (the reason is
 // required, and follows the rules of agent.Trusted). It is the positive counterpart of Untrusted and
 // records no mark; a flow whose policy requires provenance needs a node to declare one or the
-// other. A node cannot be both, and two different reasons are an error. Experimental, and not
-// enforced yet: see Untrusted.
+// other. A node cannot be both, and two different reasons are an error. Experimental: see Untrusted.
 func Trusted(reason string) NodeOption {
 	return func(n *node) {
 		if err := toolhook.CheckProvenanceName("plan.Trusted", reason); err != nil {
@@ -94,7 +92,7 @@ func Trusted(reason string) NodeOption {
 // TaintExempt declares that the node needs no escalation gate even when the run has read untrusted
 // content, and why (the reason is required, and follows the rules of agent.TaintExempt). It loosens
 // a requirement, so it is Go only: the config cannot declare it. A different reason than the one a
-// tool already declares is an error. Experimental, and not enforced yet: see Untrusted.
+// tool already declares is an error. Experimental: see Untrusted.
 func TaintExempt(reason string) NodeOption {
 	return func(n *node) {
 		if err := toolhook.CheckProvenanceName("plan.TaintExempt", reason); err != nil {
@@ -133,15 +131,17 @@ func taintOfSpec(spec agent.ToolSpec) nodeTaint {
 // WithTaintPolicy gives the flow a taint policy, the same type an agent takes (agent.WithTaintPolicy):
 // an escalation Gate, or Refuse, and optionally RequireProvenance. It is Go only, as a policy is: a
 // config cannot opt a flow in. The policy is checked as an agent checks one; an invalid policy is an
-// error at Build. Experimental, and not enforced yet: Build refuses a flow with a policy until flows
-// have a taint rule (docs/design/flow-taint.md), so no flow runs believing it is protected.
+// error at Build. A node that can have a side effect, run after the run has read untrusted content (a node
+// that declares a source, the run's input when it is declared untrusted, or what a run a node started
+// brought up), needs the policy's escalation gate on the node's instance, or is refused under Refuse.
+// Experimental (docs/design/flow-taint.md).
 func (b *Builder[In, Out]) WithTaintPolicy(p agent.TaintPolicy) *Builder[In, Out] {
 	b.core.setTaintPolicy(p)
 	return b
 }
 
 // WithLoadedTaintPolicy gives a flow produced by Load or LoadReader a taint policy: the loader's
-// equivalent of Builder.WithTaintPolicy. Experimental, and not enforced yet.
+// equivalent of Builder.WithTaintPolicy. Experimental.
 func WithLoadedTaintPolicy(p agent.TaintPolicy) LoadOption {
 	return func(c *builderCore) { c.setTaintPolicy(p) }
 }
@@ -155,22 +155,6 @@ func (c *builderCore) setTaintPolicy(p agent.TaintPolicy) {
 	p.Gate = p.Gate.Clone()
 	c.taintPolicy = &p
 }
-
-// taintGuardOff turns the refusal below off. It is set only by tests of the enforcement (a _test.go file
-// assigns it; TestTaintGuardOffIsAssignedOnlyInTests holds every other file to that), and is removed with the
-// guard when enforcement is complete.
-var taintGuardOff bool
-
-// taintInheritOn turns the inheritance of taint into a nested flow on (a flow started inside a run under taint
-// records the status and marks it inherited, and a policyless one with a side effect is refused). It is off in
-// production until flow taint is enforced as a whole, so a flow that an agent under a taint policy runs as a
-// tool is not refused for a policy it cannot yet be given (Build refuses one). Tests of the enforcement set it
-// (allowTaint); TestTaintGuardOffIsAssignedOnlyInTests holds it, like taintGuardOff, to tests. It is removed
-// with the guard.
-var taintInheritOn bool
-
-// inheritsTaint reports whether nested flows take the taint of the run they start in.
-func inheritsTaint() bool { return taintInheritOn }
 
 // ErrTaintRefused is returned (wrapped, naming the node) by Flow.Run when the flow's taint policy is Refuse,
 // the run has read untrusted content, and the node can have a side effect: the node does not run, no record
@@ -232,30 +216,6 @@ func (c *builderCore) checkTaintPolicy() error {
 		}
 	}
 	return nil
-}
-
-// taintNotEnforced is the one function that refuses a flow for taint until the engine enforces it: a flow
-// with a policy, or with a node that declares a source, a trusted output or an exemption, whether in
-// Go or in the config. The refusal names the first node. Build and Validate call it; enforcement
-// removes it and both calls.
-func (c *builderCore) taintNotEnforced() error {
-	if taintGuardOff {
-		return nil
-	}
-	why := ""
-	for _, n := range c.nodes {
-		if n.taint.any() {
-			why = fmt.Sprintf("node %q declares taint", n.name)
-			break
-		}
-	}
-	if why == "" && c.taintPolicy != nil {
-		why = "the flow has a taint policy"
-	}
-	if why == "" {
-		return nil
-	}
-	return fmt.Errorf("plan: build %q: flow taint is not enforced yet (%s): a flow would run with no taint handling and lose what the declaration asks for; remove it, or wait for the release that enforces it (docs/design/flow-taint.md): %w", c.flowName, why, agent.ErrConfig)
 }
 
 // configTaint is the declarations of a node whose block declares base and whose config says

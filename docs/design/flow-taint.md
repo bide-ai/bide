@@ -1,10 +1,14 @@
 # Design: taint in plan flows, and its view in the flow editor
 
-Status: proposed. The maintainer approved the direction (taint coverage in the visual editor, which needs a
+Status: Part A is built except `SeparateApprovers` (the run-time rule, the declarations in `run:start`, Conform,
+nested flows and the sink for taint coming up are enforced; the disjoint-approvers option is the pull request
+that follows) and Part B (the view in `bide check` and the editor) is not. This text was written before the
+code and keeps its original wording where the code follows it; "today" in section 0 means `main` at the commit
+named below. The maintainer approved the direction (taint coverage in the visual editor, which needs a
 run-time rule for flows first) and decided the open questions on 2026-10-26: what a node has read is the
 run-level rule, a tighten-only per-node `untrusted:` config key is in, a node's own gate does not cover taint
 exposure, and an opt-in disjoint-approvers check is in (the field name `TaintPolicy.SeparateApprovers` was approved on 2026-10-26). Section 10 lists them.
-Nothing here is built. Written against `main` at aab4f530 (v0.25.0). It resolves decision 18 of the
+Written against `main` at aab4f530 (v0.25.0). It resolves decision 18 of the
 [untrusted content and amount caps note](untrusted-content-and-amount-caps.md) (section 5.9: "specify taint
 and caps for flow nodes in a separate note"), for taint; caps for flows stay out of scope. Where it says what
 the code does today it names the file and line, so a reviewer can check it; where it is about the design it
@@ -205,12 +209,15 @@ a child whose context carries no under-taint status. So, as a requirement of PR 
   flow inherits them as a child of a tainted turn does (`agent/taint_inherit.go:80-100`), and a policy-less
   child fails closed by the existing `taintRefusal` (`agent/taint_policy.go`, ~240). Documented.
 - Taint coming UP: a node whose child learned a mark needs a journal record the flow can read without
-  knowing the child's run ID. A context-bound sink, which the child's engine calls when a mark is recorded
-  in it, writes an insert-once `taint-mark:<nodeKey>:<source>` record (source `encodeID`d, so a second child or mark source of the same node is kept) into the flow's journal before the node's result
-  is recorded (a crash in between leaves an extra mark; add-only, safe). `taint-mark:` records are known names for Conform's `gate()` and classification and are fold input for the
-  obligation check. The fold reads these records as
-  sources `agent:<name>` / `flow:<name>` for the nodes after it. A block may declare `Trusted(reason)` to say
-  it brings nothing up (no sink consulted then).
+  knowing the child's run ID. A context-bound sink, which the child's engine calls, writes an insert-once
+  `taint-mark:<nodeKey>:<source>` record (source `encodeID`d, so a second child or mark source of the same node
+  is kept) into the flow's journal. As built it runs after the child's node record and again on every drive
+  that replays the node (a crash in between leaves the mark unsent until a drive replays the node, and an
+  extra mark is add-only, safe); the details are under "Nested flows and inherited taint" above.
+  `taint-mark:` records are known names for Conform's `gate()` and classification and are fold input for the
+  obligation check. The fold reads these records as sources for the nodes after it. The design allowed a
+  block to declare `Trusted(reason)` to say it brings nothing up (no sink consulted); that is not built: a
+  node that declares its results trusted still takes the marks its children bring up, which fails closed.
 - Not in this cut: folding the child's journal at `SubRunID(run, nodeKey)`.
 
 **Disjoint approvers (decision 8: opt-in).** Without it nothing stops one approver
@@ -303,21 +310,31 @@ run ungated, which fails open where an agent child fails closed). What the chose
 - A digest-only start driven by a flow that now has a policy is ErrConfig (the declarations differ from none
   recorded); it is not retro-gated by a policy added after the start. The reverse, a start with its own
   declarations driven by a flow that lost its policy, is the policyless standing above.
-- Taint comes back up through the sink (below), whether the nested flow has a policy or not: it is called on
-  every drive of the nested run for the marks its journal already holds (insert-once), and a ResolveHalt of
-  a node folds the marks of its child run or refuses until the sink was drained, so a mark is not lost to a
-  crash or to the operator's resolution.
-- Parts: inheritance down is the change that follows the enforcement core (3c-2); taint coming up and the
-  removal of the guard are the one after (3c-3). Until the whole enforcement is complete the inheritance is
-  off in production (a test-only switch turns it on), so a flow that a tool of an agent under a taint policy
-  runs is as it was and is not refused for a policy that `Build` would not yet let it have; the guard and the
-  switch are removed together.
+- Taint comes back up through the sink (below), whether the nested flow has a policy or not. The node that
+  starts a nested run binds the sink to its body's context; the nested run records itself as a child of that
+  node (`taint-child:<node key>:<run ID>`, insert-once, in the parent's journal) and sends the marks it
+  learned as `taint-mark:<node key>:<source>` records there. It sends its own marks only: the sources its
+  nodes declare once their results are recorded, and what its own children brought up (so a mark learned by
+  a grandchild reaches the root through each level's record); the marks it inherited are not echoed. It sends
+  after each node's record, again when a drive replays a recorded node, and for a run that finished (a drive
+  without the parent may have finished it), so a mark is not lost to a crash between the child's record and
+  the sink, to a `ResolveHalt` of the child's node, or to a recovery pass. A nested run must use its parent's
+  journal (`ErrConfig` at Begin otherwise): the marks go into it, and the child link is read from it.
+  `ResolveHalt` of a node folds into the node's marks those of every run linked to it and, from their
+  journals, of their children, before it records the operator's result; the nodes after it are read under
+  them. The fold reads the child's journal, so it does not depend on the child having been driven again.
+- Parts: inheritance down was the change after the enforcement core (3c-2); taint coming up and the removal of
+  the guard are the one after (3c-3). 3c-3 removes the guard, which refused every flow that declared taint, and
+  the test-only switch that kept the inheritance off, together.
 
 ### A3. What is journaled
 
 - run:start `ext.taint_policy_digest` (key reused, flow-specific format tag), plus `ext.taint_declarations`
   (new ext member, recorded map, see A2), plus input provenance in settings. The presence of the digest puts
   the run under taint; its equality is checked every drive (A2).
+- `taint-child:<node key>:<run ID>` (insert-once, in the parent's journal): the run is a child of the node, for
+  the fold of a ResolveHalt of the node. `taint-mark:<node key>:<source>` (insert-once): the child brought the
+  source up. Both are reserved step names, protected for redaction, and read by Conform.
 - The gate-reason record at the node key, insert-once, as `escalate` writes it (`agent/gate_reason.go`):
   reasons (source, ref "node:<name>" / "input" / "inherited", journal position), policy digest, gate.
 - The instance's approval records under `node:...:taint`: request, pause note, decisions, tally, as the flow

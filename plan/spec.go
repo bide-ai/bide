@@ -54,8 +54,7 @@ type node struct {
 	// register surfaces at Build.
 	optErr error
 	// taint is what the node declares for taint: a tool's declarations, the Untrusted, Trusted and
-	// TaintExempt options, and the config key "untrusted". The engine does not enforce it yet
-	// (taintNotEnforced). It is not part of Digest or Topology.
+	// TaintExempt options, and the config key "untrusted". It is not part of Digest or Topology.
 	taint nodeTaint
 	// prompt is the raw prompt template of a kindModel node, recorded at
 	// construction. It is a Go text/template rendered with the decoded input I as
@@ -158,8 +157,7 @@ type builderCore struct {
 	// where a stop covers the flow. A runtime binding, not part of the flow's Digest.
 	stop    *agent.StopSwitch
 	stopSet bool // WithStopSwitch was called (a nil switch is then ErrConfig)
-	// taintPolicy is the flow's taint policy (WithTaintPolicy, WithLoadedTaintPolicy), nil for none. The
-	// engine does not enforce it yet (taintNotEnforced).
+	// taintPolicy is the flow's taint policy (WithTaintPolicy, WithLoadedTaintPolicy), nil for none.
 	taintPolicy *agent.TaintPolicy
 	// notify holds the per-journal notifiers of a built flow; Build makes it.
 	notify *flowNotify
