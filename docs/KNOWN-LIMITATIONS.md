@@ -867,8 +867,16 @@ the consequences of an injected request. It does not detect or prevent the injec
   the flows did bring up. `SeparateApprovers` is not built. A `Trusted` node still takes the marks its nested
   flows and agents bring up (fail closed). A `ResolveHalt` of a node that drove an agent marks the node `subagent:<node name>`
   whatever the agent read (it cannot read the agent's marks, so it over-taints). `bide check -blocks`
-  and the typed editor read a description of the registered blocks, which carries the declarations of each block
-  (version 2) but not the flow's policy unless the host sets it, so neither shows what a policy would gate. [Plan flows](guides/untrusted-content.md#plan-flows) has the rule.
+  and the typed editor read a description of the registered blocks, which carries no taint declarations, and
+  neither shows what a flow's policy would gate. [Plan flows](guides/untrusted-content.md#plan-flows) has the rule.
+- **A `ResolveHalt` of a plan node in a run under taint can fail after its claim.** It writes the taint marks of the
+  runs the node started before it records the result, reading their journals (and theirs) inside its 30 second
+  lease; a `taint-mark:` or `taint-child:` record that does not read, or runs nested deeper than 64, fails it with
+  an error after the claim of the next attempt, as a resolver that crashed between the claim and the write
+  would leave it, until the record is repaired. Safety does not depend on the lease past the claim.
+- **Adding a source to a node strands runs in flight.** A flow with no policy records the sources its nodes declare
+  in `run:start`, so a node that gains `Untrusted` (or loses it, or changes it) makes a drive of a run that
+  started before the change `ErrConfig`, as a changed policy does; cancel such runs, or restore the declaration.
 - **A run started under a flow taint policy is not safe to drive with v0.25.x or earlier.** Those releases ran plan
   flows with no taint rule: they do not read `run:start`'s taint declarations or the `gate-reason`, `taint-mark`
   and `taint-child` records, so they run a node that this release refused or held at its escalation gate

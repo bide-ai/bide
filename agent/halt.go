@@ -201,6 +201,8 @@ type Outcome struct {
 // For a plan flow's node in a run under a taint policy, it writes the taint marks of the flows the node
 // started (and theirs, and a mark for an agent it drove) into the run's journal after its checks and its claim,
 // before it records the outcome, so the nodes after the node are gated under them (docs/design/flow-taint.md).
+// That fold reads the journals of the runs the node started, inside the resolution's lease: a taint record that
+// does not read, or runs nested deeper than 64, fails the resolution after its claim until the record is repaired.
 //
 // Deciding the true outcome is a human (or reconciler) judgment the runtime cannot make for you.
 func ResolveHalt(ctx context.Context, store *Journal, ref HaltRef, out Outcome, opts ...ResolveOption) error {

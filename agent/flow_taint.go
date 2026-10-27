@@ -17,8 +17,7 @@ import (
 // The pure parts of taint in a plan flow (docs/design/flow-taint.md, A2 and A3): the declarations a flow run
 // starts under, recorded in run:start and compared exactly on every drive; the read set a node has at a point
 // in the run's journal; the requirement that read set makes of a node; and the taint-mark record a node's
-// child leaves. Nothing here is reached by a running flow yet: the engine wires it in a later change, and
-// package plan refuses a flow that declares taint until then.
+// child leaves. Package plan reaches it through the hooks in flow_taint_hooks.go and flow_taint_sink.go.
 
 // flowTaintDeclarationsFormat tags the declarations a flow run records in run:start.
 const flowTaintDeclarationsFormat = "bide.flow-taint-declarations.v1"

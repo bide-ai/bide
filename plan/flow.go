@@ -97,8 +97,7 @@ type Flow[In, Out any] struct {
 // is ErrConfig). WithIdentity gives the identity the run acts under, as an agent run's. The other two say
 // where the run's input came from (the source of untrusted content, or the reason it is the host's own; at
 // most one): they are recorded in run:start's settings, and a later drive that states another source is
-// ErrConfig. Their taint effects need a taint policy (Builder.WithTaintPolicy), which Build refuses until
-// flow taint is enforced. Without WithIdentity the identity ctx carries applies (a flow run started inside
+// ErrConfig. Their taint effects need a taint policy (Builder.WithTaintPolicy). Without WithIdentity the identity ctx carries applies (a flow run started inside
 // an agent run's tool call inherits that run's). The run journals the identity's principal
 // (OnBehalfOf, AuthorityRef) with its start, in its run:principal and run:start, as an agent run
 // does: a later drive under another principal is ErrConfig, a drive that passes none runs under the

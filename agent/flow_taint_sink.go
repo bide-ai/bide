@@ -156,17 +156,22 @@ func flowTaintSink(ctx context.Context, j any, runID, nodeKey string) error {
 	if !ok {
 		return fmt.Errorf("agent: FlowTaintSink: %T is not a journal: %w", j, ErrConfig)
 	}
-	recs, err := jr.History(ctx, runID)
+	// The run's start first (a point read, bound to ctx once the run began): a run that is not under taint has
+	// nothing to send, and its journal is not read for each of its nodes.
+	start, has, err := recordedStartOf(ctx, jr, runID)
 	if err != nil {
-		return fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
+		return err
 	}
-	start := startOfRecs(recs)
-	if start.taintDigest() == "" {
+	if !has || start.taintDigest() == "" {
 		return nil
 	}
 	src, err := start.nodeSources()
 	if err != nil {
 		return err
+	}
+	recs, err := jr.History(ctx, runID)
+	if err != nil {
+		return fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
 	}
 	sources, err := ownMarkSources(recs, src, nodeKey)
 	if err != nil {
