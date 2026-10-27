@@ -1162,7 +1162,7 @@ every journal the drivers and the resolver can produce is a declared path, which
 | `flow-taint-inherit-policyless` | ci | an inherited, policyless declaration with a tracked node: refused at Begin before any record, every drive | 8 | <1 s |
 | `flow-taint-inherit-policyless-reach` | ci | reachability: that refusal happens | violated at depth 3 | <1 s |
 | `flow-taint-inherit-readonly` | ci | an inherited, policyless flow with no tracked node runs | 3,376 | <1 s |
-| `flow-taint-inherit-readonly-reach` | ci | reachability: the read-only flow completes | violated at depth 39 | <1 s |
+| `flow-taint-inherit-readonly-reach` | ci | reachability: the read-only flow completes | violated; the depth of the trace depends on the worker count (21 to 41 seen), 24 in CI | <1 s |
 | `flow-taint-up` | ci | the child's own mark (S) goes up; the parent node's result needs it, also when the halted node is resolved; a later tracked node of the parent is gated by it; 1 crash, 1 error reply | 1,334,199 | 1 min |
 | `flow-taint-chain` | ci | inherited marks and an own source: only the own mark goes up, the inherited marks are not echoed up; 1 crash | 97,482 | 7 s |
 | `flow-two` | nightly | two drivers; `E`, `H`, `T` side effects; 1 error reply, 1 crash | 2,125,920 | 23 s |
