@@ -27,6 +27,22 @@
 (* decisions (each approver's first decision; model 1b checks the counting  *)
 (* rule over signed records) and records a terminal tally (first writer     *)
 (* wins), or pauses. Approvers decide at any time, a driver up or not.      *)
+(*                                                                          *)
+(* Taint (docs/design/flow-taint.md, A2 to A5b). A run records its          *)
+(* declarations in run:start (rdecl: the policy, the exempt nodes, the      *)
+(* sources), first writer wins. Each drive compares its own declarations    *)
+(* with the recorded ones exactly and refuses on any difference (a weaker   *)
+(* policy included). A node's read set is a fold of the journal in journal  *)
+(* order (ord): the declared sources with a result earlier than the node's  *)
+(* own record (or any, if it has none), the taint-mark records of other     *)
+(* nodes, and the flow input if declared untrusted; a node that is both     *)
+(* source and side effect does not read itself. A side-effecting,           *)
+(* non-exempt node with a non-empty read set, under a policy, first records *)
+(* a gate-reason (grec), then under Refuse is refused (no gate, request,    *)
+(* record or claim, every drive), else passes its own gate and then the     *)
+(* second gate instance node:[iter:n:]name:taint (treq, tdec, ttally),      *)
+(* before the attempt claim. SeparateApprovers excludes from the instance   *)
+(* the approvers the own gate's terminal tally counted (ncnt).              *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets, Sequences, TLC
 
@@ -44,6 +60,15 @@ CONSTANTS
   Need,        \* approvals a gate needs
   Early,       \* whether a decision can be recorded before its gate's request (a record written
                \* directly, which Approve and SubmitDecision refuse)
+  Sources,     \* node names declared Untrusted, and "input" if the run declares its input
+               \* untrusted: a subset of {"E","Q","T","H","S","input"}
+  Exempt,      \* node names declared TaintExempt, a subset of SideEffects
+  MarkNodes,   \* nodes whose body can run a child that learns a taint mark
+  DeclNames,   \* the declaration sets a drive can run under: "none" (no policy), "gate",
+               \* "refuse", "dropsrc" (Gate with the source declarations dropped), "exempt"
+               \* (Gate with every side effect exempt)
+  TNeed,       \* approvals the second gate instance needs
+  Separate,    \* TaintPolicy.SeparateApprovers
   Bug          \* "none" or a reverted rule, see regress/
 
 None == "none"
@@ -58,7 +83,6 @@ ChoiceKeys == {<<"E", 0>>} \cup {<<"S", i>> : i \in Iters}
 NoRes == [rec |-> FALSE, v |-> 0, by |-> None, ty |-> None]
 ResolverSet == IF HasResolver THEN {"resolver"} ELSE {}
 GateKeys == {k \in NodeKeys : k[1] \in Gated}
-ApproverSet == IF Gated = {} THEN {} ELSE Approvers
 
 \* The Switch predicates, pure over the switched node's value (When): E routes to the loop on 1,
 \* else to Q; S loops back on 1, else exits to T.
@@ -71,8 +95,34 @@ ASSUME RFlows \subseteq {"F", "G"}
 ASSUME Gated \subseteq {"E", "Q", "T", "H", "S"}
 ASSUME Need \in 1..Cardinality(Approvers) \/ Gated = {}
 ASSUME Early \in BOOLEAN
+ASSUME Sources \subseteq {"E", "Q", "T", "H", "S", "input"}
+ASSUME Exempt \subseteq SideEffects /\ MarkNodes \subseteq {"E", "Q", "T", "H", "S"}
+ASSUME DeclNames \subseteq {"none", "gate", "refuse", "dropsrc", "exempt"} /\ DeclNames # {}
+ASSUME (\A n \in DeclNames : n # "gate") \/ TNeed \in 1..Cardinality(Approvers)
+ASSUME Separate \in BOOLEAN
 ASSUME Bug \in {"none", "NestedUnscoped", "LoopSwitchUnscoped", "ResolveAnyNode", "ResolveAnyFlow",
-                "NoCompletion", "NoGate", "GateUnscoped", "NoRequestOrder"}
+                "NoCompletion", "NoGate", "GateUnscoped", "NoRequestOrder",
+                "NoTaintGate", "TaintGateUnscoped", "TaintReuse", "ReadSetOnResumeEmpty",
+                "ReadSetIgnoresOrder", "ReadSetResetsPerIteration", "TaintMarkIgnored",
+                "RefuseAsSkip", "RefuseNotDurable", "ResumeNoCompare", "TaintReusesNodeDecider"}
+
+\* The declarations a run records in run:start and a drive runs under (A2, "Declarations are
+\* recorded"): the policy, the exempt nodes, the declared sources.
+NoDecl == [pol |-> "none", ex |-> {}, src |-> {}]
+DeclOf(n) ==
+  CASE n = "none"    -> [pol |-> "none",   ex |-> Exempt,      src |-> Sources]
+    [] n = "gate"    -> [pol |-> "gate",   ex |-> Exempt,      src |-> Sources]
+    [] n = "refuse"  -> [pol |-> "refuse", ex |-> Exempt,      src |-> Sources]
+    [] n = "dropsrc" -> [pol |-> "gate",   ex |-> Exempt,      src |-> {}]
+    [] n = "exempt"  -> [pol |-> "gate",   ex |-> SideEffects, src |-> Sources]
+Decls == {DeclOf(n) : n \in DeclNames}
+\* The keys whose second gate instance exists: the side-effecting nodes, when a Gate policy is possible.
+TKeys == IF \E d \in Decls : d.pol = "gate" THEN SideKeys ELSE {}
+MarkKeys == {k \in NodeKeys : k[1] \in MarkNodes}
+\* Whether any declaration set carries a policy: only then does the model track the journal's order.
+Track == \E d \in Decls : d.pol # "none"
+ApproverSet == IF Gated = {} /\ \A d \in Decls : d.pol # "gate" THEN {} ELSE Approvers
+
 
 (* --algorithm flows
 variables
@@ -101,7 +151,34 @@ variables
   firedN  = [i \in Iters |-> 0],
   badRoute = FALSE,
   \* Ghost: a gated node's body ran with fewer than Need approvals recorded for its key.
-  badFire = FALSE;
+  badFire = FALSE,
+  \* Taint. rdecl: the declarations run:start records (first writer wins); cur: the declarations
+  \* a drive runs under now (an operator may have changed them); dd: the ones its fold uses.
+  rdecl   = NoDecl,
+  cur     = [d \in Drivers |-> NoDecl],
+  dd      = [d \in Drivers |-> NoDecl],
+  \* The journal's order: the next position, and the position of each node record and of each
+  \* taint-mark record (taint-mark:<node key>:<source>, written by a child's mark sink).
+  jn      = 1,
+  ord     = [k \in Keys |-> 0],
+  tm      = [k \in NodeKeys |-> FALSE],
+  mord    = [k \in NodeKeys |-> 0],
+  \* A drive's in-memory memory of the sources it ran (used only by ReadSetOnResumeEmpty).
+  seen    = [d \in Drivers |-> {}],
+  \* The gate-reason record; a refusal (ghost: the node was refused, always, in every drive).
+  grec    = [k \in NodeKeys |-> FALSE],
+  refused = [k \in NodeKeys |-> FALSE],
+  \* The second gate instance node:...:taint of a side-effecting node: request, decisions (each
+  \* approver's first valid one), terminal tally; and the approvers the node's own gate's
+  \* terminal tally counted (SeparateApprovers excludes them from the instance).
+  treq    = [k \in TKeys |-> FALSE],
+  tdec    = [k \in TKeys |-> [a \in Approvers |-> None]],
+  ttally  = [k \in TKeys |-> None],
+  ncnt    = [k \in GateKeys |-> {}],
+  \* Ghosts: an attempt claimed with a non-empty read set and no passed taint gate and no
+  \* exemption, under a policy; a node body that ran under declarations other than the recorded.
+  badTaint = FALSE,
+  badResume = FALSE;
 
 define
   \* The loop's switch key for iteration i (historically unscoped: LoopSwitchUnscoped).
@@ -116,6 +193,49 @@ define
   \* What the gate counts: only decisions after the request (NoRequestOrder: any decision).
   GYes(k) == IF Bug = "NoRequestOrder" THEN Cardinality({a \in Approvers : dec[k][a] \in {"yes", "eyes"}}) ELSE Yes(k)
   GNo(k)  == IF Bug = "NoRequestOrder" THEN Cardinality({a \in Approvers : dec[k][a] \in {"no", "eno"}}) ELSE No(k)
+
+  \* ---- Taint ----
+  \* The second gate instance's key (per iteration, like the node's; TaintGateUnscoped keys every
+  \* iteration as the first).
+  TKey(k) == IF Bug = "TaintGateUnscoped" THEN <<k[1], 0>> ELSE k
+  \* The approvers the node's own gate's terminal tally counted, whom SeparateApprovers excludes from
+  \* the instance (TaintReusesNodeDecider: the flag ignored).
+  Excl(k) == IF Separate /\ k[1] \in Gated /\ Bug # "TaintReusesNodeDecider" THEN ncnt[k] ELSE {}
+  TElig(k) == Approvers \ Excl(k)
+  \* The instance's counted decisions (TaintReuse: the node gate's decisions count for it).
+  TYes(k) == IF Bug = "TaintReuse" THEN Yes(k)
+             ELSE Cardinality({a \in TElig(k) : tdec[TKey(k)][a] = "yes"})
+  TNo(k)  == IF Bug = "TaintReuse" THEN No(k)
+             ELSE Cardinality({a \in TElig(k) : tdec[TKey(k)][a] = "no"})
+  \* A node's place in the journal: its own record if it has one, else the end.
+  Pos(k) == IF res[k].rec THEN ord[k] ELSE jn
+  \* The read set of node k is non-empty, folded from the journal by drive me under declarations d:
+  \* declared sources with a result earlier than k's place (k itself never counts), taint-mark
+  \* records of other nodes earlier than that, and the flow input if declared untrusted.
+  Reads(me, k, d) ==
+    \/ "input" \in d.src
+    \/ \E s \in NodeKeys \ {k} :
+         /\ s[1] \in d.src /\ res[s].rec
+         /\ IF Bug = "ReadSetOnResumeEmpty" THEN s \in seen[me] ELSE TRUE
+         /\ IF Bug = "ReadSetIgnoresOrder" THEN ord[s] > Pos(k) ELSE ord[s] < Pos(k)
+         /\ (Bug # "ReadSetResetsPerIteration" \/ s[1] \notin LoopNames \/ s[2] = k[2])
+    \/ /\ Bug # "TaintMarkIgnored"
+       /\ \E j \in NodeKeys \ {k} : tm[j] /\ mord[j] < Pos(k)
+  \* The requirement: tracked (side effect), not exempt, a policy, a non-empty read set
+  \* (RefuseNotDurable: a recorded refusal is not re-applied).
+  TaintNeed(me, k) ==
+    /\ Bug # "NoTaintGate"
+    /\ k[1] \in SideEffects /\ dd[me].pol # "none" /\ k[1] \notin dd[me].ex
+    /\ Reads(me, k, dd[me])
+    /\ ~(Bug = "RefuseNotDurable" /\ dd[me].pol = "refuse" /\ grec[k])
+  \* The ground truth when the attempt is claimed: the recorded declarations, and everything the
+  \* journal holds then.
+  TrueReads(k) ==
+    \/ "input" \in rdecl.src
+    \/ \E s \in NodeKeys \ {k} : s[1] \in rdecl.src /\ res[s].rec
+    \/ \E j \in NodeKeys \ {k} : tm[j]
+  TaintBreach(k) ==
+    /\ rdecl.pol # "none" /\ k[1] \notin rdecl.ex /\ TrueReads(k) /\ ~(k \in TKeys /\ ttally[k] = "pass")
 
   \* Conform: the journal holds a declared path. Which node keys the recorded choices reach:
   LoopOn == sw[<<"E", 0>>] = "loop"
@@ -141,11 +261,17 @@ end macro;
 \* runNode: one node as an agent.Step under its key. It sets nval[self] to the recorded output, or
 \* failed[self] to "halt" or "error".
 procedure Node(key)
-variables bodyVal = 0;
+variables bodyVal = 0, tneed = FALSE;
 begin
 GRead:
-  \* runGate, then flowGate: a node with no gate goes to its Step; a recorded tally decides.
-  if key[1] \notin Gated \/ Bug = "NoGate" then goto NGet;
+  \* The taint requirement, folded from the journal, and its gate-reason record (insert-once, also
+  \* written for a refused node). Under Refuse the node is refused before any gate. Then runGate,
+  \* then flowGate: a node with no gate goes to its taint gate or Step; a recorded tally decides.
+  tneed := TaintNeed(self, key);
+  if tneed then grec[key] := TRUE; end if;
+  if tneed /\ dd[self].pol = "refuse" then goto TRefuse;
+  elsif key[1] \notin Gated \/ Bug = "NoGate" then
+    if tneed then goto TGate; else goto NGet; end if;
   elsif tally[GKey(key)] # None then goto GPause;
   else req[GKey(key)] := TRUE;    \* the request, recorded once, before any count
   end if;
@@ -157,6 +283,7 @@ GCount:
       Reply(reply[self]);
       if reply[self] # "err_nc" /\ tally[GKey(key)] = None then
         tally[GKey(key)] := IF y >= Need THEN "pass" ELSE "deny";
+        ncnt[GKey(key)] := IF Separate THEN {a \in Approvers : dec[GKey(key)][a] = "yes"} ELSE {};
       end if;
       if reply[self] # "ok" then failed[self] := "error"; return; end if;
     else
@@ -165,7 +292,9 @@ GCount:
   end with;
 GPause:
   \* A denying tally stops the run (ErrApprovalDenied); a passing one lets the node run.
-  if tally[GKey(key)] = "deny" then failed[self] := "denied"; return; end if;
+  if tally[GKey(key)] = "deny" then failed[self] := "denied"; return;
+  elsif tneed then goto TGate;
+  end if;
 NGet:
   \* A recorded result replays without running the body (one point read).
   if res[key].rec then
@@ -180,7 +309,10 @@ NClaim:
   \* driver's, or this driver's from a drive a crash cut off) is lost to.
   with was = mk[key] do
     Reply(reply[self]);
-    if reply[self] # "err_nc" /\ was = None then mk[key] := self; end if;
+    if reply[self] # "err_nc" /\ was = None then
+      mk[key] := self;
+      badTaint := badTaint \/ TaintBreach(key);
+    end if;
     if reply[self] # "ok" then
       failed[self] := "error"; return;
     elsif was # None then
@@ -194,6 +326,14 @@ NBody:
   with x \in {0, 1} do bodyVal := x; end with;
   if key[1] \in SideEffects then fired[key] := fired[key] + 1; end if;
   if key[1] \in Gated /\ Yes(key) < Need then badFire := TRUE; end if;
+  if cur[self] # rdecl then badResume := TRUE; end if;
+  if key[1] \in MarkNodes /\ ~tm[key] then
+    \* A child learned a taint mark: the sink writes taint-mark:<node key>:<source> before the
+    \* node's result (insert-once).
+    either skip;
+    or tm[key] := TRUE; mord[key] := IF Track THEN jn ELSE 0; jn := IF Track THEN jn + 1 ELSE jn;
+    end either;
+  end if;
   if key[1] = "H" then goto NNested; else goto NRecord; end if;
 NNested:
   \* H's body runs a Step N, recorded under node:iter:<i>:H:step:N: it runs once per iteration,
@@ -206,6 +346,8 @@ NRecord:
   Reply(reply[self]);
   if reply[self] # "err_nc" /\ ~res[key].rec then
     res[key] := [rec |-> TRUE, v |-> bodyVal, by |-> "drv", ty |-> "F"];
+    ord[key] := IF Track THEN jn ELSE 0; jn := IF Track THEN jn + 1 ELSE jn;
+    seen[self] := IF Bug = "ReadSetOnResumeEmpty" THEN seen[self] \cup {key} ELSE {};
   end if;
   if reply[self] # "ok" then
     failed[self] := "error";
@@ -213,6 +355,43 @@ NRecord:
     nval[self] := IF res[key].rec THEN res[key].v ELSE bodyVal;
   end if;
   return;
+TRefuse:
+  \* Refuse: the gate-reason record is written (GRead), then the sentinel is returned before any
+  \* gate: no node record, no attempt, no approval request. The run stays unfinished and every drive
+  \* re-refuses. RefuseAsSkip: the node is skipped (a record with a default output) instead.
+  refused[key] := TRUE;
+  if Bug = "RefuseAsSkip" then
+    res[key] := [rec |-> TRUE, v |-> 0, by |-> "drv", ty |-> "F"];
+    ord[key] := IF Track THEN jn ELSE 0; jn := IF Track THEN jn + 1 ELSE jn;
+    nval[self] := 0;
+  else
+    failed[self] := "refused";
+  end if;
+  return;
+TGate:
+  \* The second gate instance node:[iter:<n>:]<name>:taint, after the node's own gate and before the
+  \* attempt claim: its request is recorded once, before any count.
+  if ttally[TKey(key)] # None then goto TPause;
+  else treq[TKey(key)] := TRUE;
+  end if;
+TCount:
+  \* The instance's count: its own decisions (SeparateApprovers: not those the own gate counted).
+  \* A terminal count is recorded; when the approvers left cannot reach the need it is a denial.
+  with y = TYes(key), n = TNo(key) do
+    if y >= TNeed \/ Cardinality(TElig(key)) - n < TNeed then
+      Reply(reply[self]);
+      if reply[self] # "err_nc" /\ ttally[TKey(key)] = None then
+        ttally[TKey(key)] := IF y >= TNeed THEN "pass" ELSE "deny";
+      end if;
+      if reply[self] # "ok" then failed[self] := "error"; return; end if;
+    else
+      failed[self] := "pause"; return;
+    end if;
+  end with;
+TPause:
+  if ttally[TKey(key)] = "deny" then failed[self] := "denied"; return;
+  else goto NGet;
+  end if;
 end procedure;
 
 \* chooseArm: the Switch over the switched node's recorded value, journaled under key. Sets
@@ -238,12 +417,23 @@ begin
 Begin:
   \* journalhook.Begin: run:start (first writer), or the recorded completion.
   failed[self] := None; it := 0; out := 0; term := None;
-  nval[self] := 0; choice[self] := None; reply[self] := "";
+  nval[self] := 0; choice[self] := None; reply[self] := ""; seen[self] := {};
+  \* The declarations this drive runs under: the operator may have changed them since the start.
+  with c \in Decls do cur[self] := c; end with;
   if done.rec then goto Finish; end if;
 BeginStart:
+  \* run:start records the declarations (first writer wins). A drive reads the journaled start and
+  \* runs under IT; it compares the recorded declarations with its own exactly, and any difference
+  \* (a weaker policy, a dropped declaration) is an ErrConfig before the first node.
   Reply(reply[self]);
-  if reply[self] # "err_nc" then started := TRUE; end if;
-  if reply[self] # "ok" then failed[self] := "error"; goto Finish; end if;
+  if reply[self] # "err_nc" then
+    if ~started then rdecl := cur[self]; end if;
+    started := TRUE;
+    dd[self] := IF Bug = "ResumeNoCompare" \/ ~started THEN cur[self] ELSE rdecl;
+  end if;
+  if reply[self] # "ok" then failed[self] := "error"; goto Finish;
+  elsif Bug # "ResumeNoCompare" /\ started /\ cur[self] # rdecl then failed[self] := "config"; goto Finish;
+  end if;
 RunE:
   call Node(<<"E", 0>>);
 AfterE:
@@ -314,6 +504,7 @@ RWrite:
   Reply(reply[self]);
   if reply[self] # "err_nc" /\ ~res[rk].rec then
     res[rk] := [rec |-> TRUE, v |-> rv, by |-> "res", ty |-> rf];
+    ord[rk] := IF Track THEN jn ELSE 0; jn := IF Track THEN jn + 1 ELSE jn;
   end if;
 end process;
 
@@ -327,17 +518,29 @@ ADecide:
   \* not take the approver's seat: their identical decision after the request has its name and is
   \* not recorded, but a decision signed again at a new decided_at is a new record, so after the
   \* request an approver with only an early decision decides again, and that decision counts.
-  with k \in {k \in GateKeys : (dec[k][self] = None /\ (req[k] \/ Early)) \/ (dec[k][self] \in {"eyes", "eno"} /\ req[k])},
-       v \in IF req[k] THEN {"yes", "no"} ELSE {"eyes", "eno"} do
-    dec[k][self] := v;
-  end with;
-  if \E k \in GateKeys : dec[k][self] \in {None, "eyes", "eno"} then goto ADecide; end if;
+  either
+    with k \in {k \in GateKeys : (dec[k][self] = None /\ (req[k] \/ Early)) \/ (dec[k][self] \in {"eyes", "eno"} /\ req[k])},
+         v \in IF req[k] THEN {"yes", "no"} ELSE {"eyes", "eno"} do
+      dec[k][self] := v;
+    end with;
+  or
+    \* A decision on the second gate instance (no early decisions: Approve and SubmitDecision refuse
+    \* one before the request, and this model keeps Early for the node gates).
+    with k \in {k \in TKeys : tdec[k][self] = None /\ treq[k]}, v \in {"yes", "no"} do
+      tdec[k][self] := v;
+    end with;
+  end either;
+  if \E k \in GateKeys : dec[k][self] \in {None, "eyes", "eno"} then goto ADecide;
+  elsif \E k \in TKeys : tdec[k][self] = None then goto ADecide;
+  end if;
 end process;
 end algorithm; *)
 \* BEGIN TRANSLATION
 CONSTANT defaultInitValue
 VARIABLES started, res, mk, sw, done, tally, req, dec, nval, choice, failed, 
-          reply, ambig, crashes, fired, firedN, badRoute, badFire, pc, stack
+          reply, ambig, crashes, fired, firedN, badRoute, badFire, rdecl, cur, 
+          dd, jn, ord, tm, mord, seen, grec, refused, treq, tdec, ttally, 
+          ncnt, badTaint, badResume, pc, stack
 
 (* define statement *)
 SKey(i) == IF Bug = "LoopSwitchUnscoped" THEN <<"S", 0>> ELSE <<"S", i>>
@@ -353,6 +556,49 @@ GYes(k) == IF Bug = "NoRequestOrder" THEN Cardinality({a \in Approvers : dec[k][
 GNo(k)  == IF Bug = "NoRequestOrder" THEN Cardinality({a \in Approvers : dec[k][a] \in {"no", "eno"}}) ELSE No(k)
 
 
+
+
+TKey(k) == IF Bug = "TaintGateUnscoped" THEN <<k[1], 0>> ELSE k
+
+
+Excl(k) == IF Separate /\ k[1] \in Gated /\ Bug # "TaintReusesNodeDecider" THEN ncnt[k] ELSE {}
+TElig(k) == Approvers \ Excl(k)
+
+TYes(k) == IF Bug = "TaintReuse" THEN Yes(k)
+           ELSE Cardinality({a \in TElig(k) : tdec[TKey(k)][a] = "yes"})
+TNo(k)  == IF Bug = "TaintReuse" THEN No(k)
+           ELSE Cardinality({a \in TElig(k) : tdec[TKey(k)][a] = "no"})
+
+Pos(k) == IF res[k].rec THEN ord[k] ELSE jn
+
+
+
+Reads(me, k, d) ==
+  \/ "input" \in d.src
+  \/ \E s \in NodeKeys \ {k} :
+       /\ s[1] \in d.src /\ res[s].rec
+       /\ IF Bug = "ReadSetOnResumeEmpty" THEN s \in seen[me] ELSE TRUE
+       /\ IF Bug = "ReadSetIgnoresOrder" THEN ord[s] > Pos(k) ELSE ord[s] < Pos(k)
+       /\ (Bug # "ReadSetResetsPerIteration" \/ s[1] \notin LoopNames \/ s[2] = k[2])
+  \/ /\ Bug # "TaintMarkIgnored"
+     /\ \E j \in NodeKeys \ {k} : tm[j] /\ mord[j] < Pos(k)
+
+
+TaintNeed(me, k) ==
+  /\ Bug # "NoTaintGate"
+  /\ k[1] \in SideEffects /\ dd[me].pol # "none" /\ k[1] \notin dd[me].ex
+  /\ Reads(me, k, dd[me])
+  /\ ~(Bug = "RefuseNotDurable" /\ dd[me].pol = "refuse" /\ grec[k])
+
+
+TrueReads(k) ==
+  \/ "input" \in rdecl.src
+  \/ \E s \in NodeKeys \ {k} : s[1] \in rdecl.src /\ res[s].rec
+  \/ \E j \in NodeKeys \ {k} : tm[j]
+TaintBreach(k) ==
+  /\ rdecl.pol # "none" /\ k[1] \notin rdecl.ex /\ TrueReads(k) /\ ~(k \in TKeys /\ ttally[k] = "pass")
+
+
 LoopOn == sw[<<"E", 0>>] = "loop"
 IterReached(i) == LoopOn /\ \A j \in Iters : j < i => sw[<<"S", j>>] = "back"
 ExitAt(i) == IterReached(i) /\ sw[<<"S", i>>] = "exit"
@@ -365,11 +611,13 @@ Allowed(k) ==
 Reached == IF sw[<<"E", 0>>] = "Q" THEN <<"Q", 0>>
            ELSE IF \E i \in Iters : ExitAt(i) THEN <<"T", 0>> ELSE <<"none", 0>>
 
-VARIABLES key, bodyVal, ckey, val, name, it, out, term, rk, rv, rf
+VARIABLES key, bodyVal, tneed, ckey, val, name, it, out, term, rk, rv, rf
 
 vars == << started, res, mk, sw, done, tally, req, dec, nval, choice, failed, 
-           reply, ambig, crashes, fired, firedN, badRoute, badFire, pc, stack, 
-           key, bodyVal, ckey, val, name, it, out, term, rk, rv, rf >>
+           reply, ambig, crashes, fired, firedN, badRoute, badFire, rdecl, 
+           cur, dd, jn, ord, tm, mord, seen, grec, refused, treq, tdec, 
+           ttally, ncnt, badTaint, badResume, pc, stack, key, bodyVal, tneed, 
+           ckey, val, name, it, out, term, rk, rv, rf >>
 
 ProcSet == (Drivers) \cup (ResolverSet) \cup (ApproverSet)
 
@@ -392,9 +640,26 @@ Init == (* Global variables *)
         /\ firedN = [i \in Iters |-> 0]
         /\ badRoute = FALSE
         /\ badFire = FALSE
+        /\ rdecl = NoDecl
+        /\ cur = [d \in Drivers |-> NoDecl]
+        /\ dd = [d \in Drivers |-> NoDecl]
+        /\ jn = 1
+        /\ ord = [k \in Keys |-> 0]
+        /\ tm = [k \in NodeKeys |-> FALSE]
+        /\ mord = [k \in NodeKeys |-> 0]
+        /\ seen = [d \in Drivers |-> {}]
+        /\ grec = [k \in NodeKeys |-> FALSE]
+        /\ refused = [k \in NodeKeys |-> FALSE]
+        /\ treq = [k \in TKeys |-> FALSE]
+        /\ tdec = [k \in TKeys |-> [a \in Approvers |-> None]]
+        /\ ttally = [k \in TKeys |-> None]
+        /\ ncnt = [k \in GateKeys |-> {}]
+        /\ badTaint = FALSE
+        /\ badResume = FALSE
         (* Procedure Node *)
         /\ key = [ self \in ProcSet |-> defaultInitValue]
         /\ bodyVal = [ self \in ProcSet |-> 0]
+        /\ tneed = [ self \in ProcSet |-> FALSE]
         (* Procedure Choose *)
         /\ ckey = [ self \in ProcSet |-> defaultInitValue]
         /\ val = [ self \in ProcSet |-> defaultInitValue]
@@ -413,18 +678,31 @@ Init == (* Global variables *)
                                         [] self \in ApproverSet -> "ADecide"]
 
 GRead(self) == /\ pc[self] = "GRead"
-               /\ IF key[self][1] \notin Gated \/ Bug = "NoGate"
-                     THEN /\ pc' = [pc EXCEPT ![self] = "NGet"]
+               /\ tneed' = [tneed EXCEPT ![self] = TaintNeed(self, key[self])]
+               /\ IF tneed'[self]
+                     THEN /\ grec' = [grec EXCEPT ![key[self]] = TRUE]
+                     ELSE /\ TRUE
+                          /\ grec' = grec
+               /\ IF tneed'[self] /\ dd[self].pol = "refuse"
+                     THEN /\ pc' = [pc EXCEPT ![self] = "TRefuse"]
                           /\ req' = req
-                     ELSE /\ IF tally[GKey(key[self])] # None
-                                THEN /\ pc' = [pc EXCEPT ![self] = "GPause"]
+                     ELSE /\ IF key[self][1] \notin Gated \/ Bug = "NoGate"
+                                THEN /\ IF tneed'[self]
+                                           THEN /\ pc' = [pc EXCEPT ![self] = "TGate"]
+                                           ELSE /\ pc' = [pc EXCEPT ![self] = "NGet"]
                                      /\ req' = req
-                                ELSE /\ req' = [req EXCEPT ![GKey(key[self])] = TRUE]
-                                     /\ pc' = [pc EXCEPT ![self] = "GCount"]
+                                ELSE /\ IF tally[GKey(key[self])] # None
+                                           THEN /\ pc' = [pc EXCEPT ![self] = "GPause"]
+                                                /\ req' = req
+                                           ELSE /\ req' = [req EXCEPT ![GKey(key[self])] = TRUE]
+                                                /\ pc' = [pc EXCEPT ![self] = "GCount"]
                /\ UNCHANGED << started, res, mk, sw, done, tally, dec, nval, 
                                choice, failed, reply, ambig, crashes, fired, 
-                               firedN, badRoute, badFire, stack, key, bodyVal, 
-                               ckey, val, name, it, out, term, rk, rv, rf >>
+                               firedN, badRoute, badFire, rdecl, cur, dd, jn, 
+                               ord, tm, mord, seen, refused, treq, tdec, 
+                               ttally, ncnt, badTaint, badResume, stack, key, 
+                               bodyVal, ckey, val, name, it, out, term, rk, rv, 
+                               rf >>
 
 GCount(self) == /\ pc[self] = "GCount"
                 /\ LET y == GYes(GKey(key[self])) IN
@@ -440,57 +718,70 @@ GCount(self) == /\ pc[self] = "GCount"
                                      /\ reply' = [reply EXCEPT ![self] = "err_c"]
                                /\ IF reply'[self] # "err_nc" /\ tally[GKey(key[self])] = None
                                      THEN /\ tally' = [tally EXCEPT ![GKey(key[self])] = IF y >= Need THEN "pass" ELSE "deny"]
+                                          /\ ncnt' = [ncnt EXCEPT ![GKey(key[self])] = IF Separate THEN {a \in Approvers : dec[GKey(key[self])][a] = "yes"} ELSE {}]
                                      ELSE /\ TRUE
-                                          /\ tally' = tally
+                                          /\ UNCHANGED << tally, ncnt >>
                                /\ IF reply'[self] # "ok"
                                      THEN /\ failed' = [failed EXCEPT ![self] = "error"]
                                           /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
                                           /\ bodyVal' = [bodyVal EXCEPT ![self] = Head(stack[self]).bodyVal]
+                                          /\ tneed' = [tneed EXCEPT ![self] = Head(stack[self]).tneed]
                                           /\ key' = [key EXCEPT ![self] = Head(stack[self]).key]
                                           /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                                      ELSE /\ pc' = [pc EXCEPT ![self] = "GPause"]
                                           /\ UNCHANGED << failed, stack, key, 
-                                                          bodyVal >>
+                                                          bodyVal, tneed >>
                           ELSE /\ failed' = [failed EXCEPT ![self] = "pause"]
                                /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
                                /\ bodyVal' = [bodyVal EXCEPT ![self] = Head(stack[self]).bodyVal]
+                               /\ tneed' = [tneed EXCEPT ![self] = Head(stack[self]).tneed]
                                /\ key' = [key EXCEPT ![self] = Head(stack[self]).key]
                                /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
-                               /\ UNCHANGED << tally, reply, ambig >>
+                               /\ UNCHANGED << tally, reply, ambig, ncnt >>
                 /\ UNCHANGED << started, res, mk, sw, done, req, dec, nval, 
                                 choice, crashes, fired, firedN, badRoute, 
-                                badFire, ckey, val, name, it, out, term, rk, 
-                                rv, rf >>
+                                badFire, rdecl, cur, dd, jn, ord, tm, mord, 
+                                seen, grec, refused, treq, tdec, ttally, 
+                                badTaint, badResume, ckey, val, name, it, out, 
+                                term, rk, rv, rf >>
 
 GPause(self) == /\ pc[self] = "GPause"
                 /\ IF tally[GKey(key[self])] = "deny"
                       THEN /\ failed' = [failed EXCEPT ![self] = "denied"]
                            /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
                            /\ bodyVal' = [bodyVal EXCEPT ![self] = Head(stack[self]).bodyVal]
+                           /\ tneed' = [tneed EXCEPT ![self] = Head(stack[self]).tneed]
                            /\ key' = [key EXCEPT ![self] = Head(stack[self]).key]
                            /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
-                      ELSE /\ pc' = [pc EXCEPT ![self] = "NGet"]
-                           /\ UNCHANGED << failed, stack, key, bodyVal >>
+                      ELSE /\ IF tneed[self]
+                                 THEN /\ pc' = [pc EXCEPT ![self] = "TGate"]
+                                 ELSE /\ pc' = [pc EXCEPT ![self] = "NGet"]
+                           /\ UNCHANGED << failed, stack, key, bodyVal, tneed >>
                 /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
                                 nval, choice, reply, ambig, crashes, fired, 
-                                firedN, badRoute, badFire, ckey, val, name, it, 
-                                out, term, rk, rv, rf >>
+                                firedN, badRoute, badFire, rdecl, cur, dd, jn, 
+                                ord, tm, mord, seen, grec, refused, treq, tdec, 
+                                ttally, ncnt, badTaint, badResume, ckey, val, 
+                                name, it, out, term, rk, rv, rf >>
 
 NGet(self) == /\ pc[self] = "NGet"
               /\ IF res[key[self]].rec
                     THEN /\ nval' = [nval EXCEPT ![self] = res[key[self]].v]
                          /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
                          /\ bodyVal' = [bodyVal EXCEPT ![self] = Head(stack[self]).bodyVal]
+                         /\ tneed' = [tneed EXCEPT ![self] = Head(stack[self]).tneed]
                          /\ key' = [key EXCEPT ![self] = Head(stack[self]).key]
                          /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                     ELSE /\ IF key[self][1] \notin SideEffects
                                THEN /\ pc' = [pc EXCEPT ![self] = "NBody"]
                                ELSE /\ pc' = [pc EXCEPT ![self] = "NClaim"]
-                         /\ UNCHANGED << nval, stack, key, bodyVal >>
+                         /\ UNCHANGED << nval, stack, key, bodyVal, tneed >>
               /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
                               choice, failed, reply, ambig, crashes, fired, 
-                              firedN, badRoute, badFire, ckey, val, name, it, 
-                              out, term, rk, rv, rf >>
+                              firedN, badRoute, badFire, rdecl, cur, dd, jn, 
+                              ord, tm, mord, seen, grec, refused, treq, tdec, 
+                              ttally, ncnt, badTaint, badResume, ckey, val, 
+                              name, it, out, term, rk, rv, rf >>
 
 NClaim(self) == /\ pc[self] = "NClaim"
                 /\ LET was == mk[key[self]] IN
@@ -504,12 +795,14 @@ NClaim(self) == /\ pc[self] = "NClaim"
                            /\ reply' = [reply EXCEPT ![self] = "err_c"]
                      /\ IF reply'[self] # "err_nc" /\ was = None
                            THEN /\ mk' = [mk EXCEPT ![key[self]] = self]
+                                /\ badTaint' = (badTaint \/ TaintBreach(key[self]))
                            ELSE /\ TRUE
-                                /\ mk' = mk
+                                /\ UNCHANGED << mk, badTaint >>
                      /\ IF reply'[self] # "ok"
                            THEN /\ failed' = [failed EXCEPT ![self] = "error"]
                                 /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
                                 /\ bodyVal' = [bodyVal EXCEPT ![self] = Head(stack[self]).bodyVal]
+                                /\ tneed' = [tneed EXCEPT ![self] = Head(stack[self]).tneed]
                                 /\ key' = [key EXCEPT ![self] = Head(stack[self]).key]
                                 /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                                 /\ nval' = nval
@@ -521,14 +814,17 @@ NClaim(self) == /\ pc[self] = "NClaim"
                                                       /\ nval' = nval
                                            /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
                                            /\ bodyVal' = [bodyVal EXCEPT ![self] = Head(stack[self]).bodyVal]
+                                           /\ tneed' = [tneed EXCEPT ![self] = Head(stack[self]).tneed]
                                            /\ key' = [key EXCEPT ![self] = Head(stack[self]).key]
                                            /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                                       ELSE /\ pc' = [pc EXCEPT ![self] = "NBody"]
                                            /\ UNCHANGED << nval, failed, stack, 
-                                                           key, bodyVal >>
+                                                           key, bodyVal, tneed >>
                 /\ UNCHANGED << started, res, sw, done, tally, req, dec, 
                                 choice, crashes, fired, firedN, badRoute, 
-                                badFire, ckey, val, name, it, out, term, rk, 
+                                badFire, rdecl, cur, dd, jn, ord, tm, mord, 
+                                seen, grec, refused, treq, tdec, ttally, ncnt, 
+                                badResume, ckey, val, name, it, out, term, rk, 
                                 rv, rf >>
 
 NBody(self) == /\ pc[self] = "NBody"
@@ -542,12 +838,26 @@ NBody(self) == /\ pc[self] = "NBody"
                      THEN /\ badFire' = TRUE
                      ELSE /\ TRUE
                           /\ UNCHANGED badFire
+               /\ IF cur[self] # rdecl
+                     THEN /\ badResume' = TRUE
+                     ELSE /\ TRUE
+                          /\ UNCHANGED badResume
+               /\ IF key[self][1] \in MarkNodes /\ ~tm[key[self]]
+                     THEN /\ \/ /\ TRUE
+                                /\ UNCHANGED <<jn, tm, mord>>
+                             \/ /\ tm' = [tm EXCEPT ![key[self]] = TRUE]
+                                /\ mord' = [mord EXCEPT ![key[self]] = IF Track THEN jn ELSE 0]
+                                /\ jn' = IF Track THEN jn + 1 ELSE jn
+                     ELSE /\ TRUE
+                          /\ UNCHANGED << jn, tm, mord >>
                /\ IF key[self][1] = "H"
                      THEN /\ pc' = [pc EXCEPT ![self] = "NNested"]
                      ELSE /\ pc' = [pc EXCEPT ![self] = "NRecord"]
                /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
                                nval, choice, failed, reply, ambig, crashes, 
-                               firedN, badRoute, stack, key, ckey, val, name, 
+                               firedN, badRoute, rdecl, cur, dd, ord, seen, 
+                               grec, refused, treq, tdec, ttally, ncnt, 
+                               badTaint, stack, key, tneed, ckey, val, name, 
                                it, out, term, rk, rv, rf >>
 
 NNested(self) == /\ pc[self] = "NNested"
@@ -559,8 +869,11 @@ NNested(self) == /\ pc[self] = "NNested"
                  /\ pc' = [pc EXCEPT ![self] = "NRecord"]
                  /\ UNCHANGED << started, mk, sw, done, tally, req, dec, nval, 
                                  choice, failed, reply, ambig, crashes, fired, 
-                                 badRoute, badFire, stack, key, bodyVal, ckey, 
-                                 val, name, it, out, term, rk, rv, rf >>
+                                 badRoute, badFire, rdecl, cur, dd, jn, ord, 
+                                 tm, mord, seen, grec, refused, treq, tdec, 
+                                 ttally, ncnt, badTaint, badResume, stack, key, 
+                                 bodyVal, tneed, ckey, val, name, it, out, 
+                                 term, rk, rv, rf >>
 
 NRecord(self) == /\ pc[self] = "NRecord"
                  /\ \/ /\ reply' = [reply EXCEPT ![self] = "ok"]
@@ -573,8 +886,11 @@ NRecord(self) == /\ pc[self] = "NRecord"
                        /\ reply' = [reply EXCEPT ![self] = "err_c"]
                  /\ IF reply'[self] # "err_nc" /\ ~res[key[self]].rec
                        THEN /\ res' = [res EXCEPT ![key[self]] = [rec |-> TRUE, v |-> bodyVal[self], by |-> "drv", ty |-> "F"]]
+                            /\ ord' = [ord EXCEPT ![key[self]] = IF Track THEN jn ELSE 0]
+                            /\ jn' = IF Track THEN jn + 1 ELSE jn
+                            /\ seen' = [seen EXCEPT ![self] = IF Bug = "ReadSetOnResumeEmpty" THEN seen[self] \cup {key[self]} ELSE {}]
                        ELSE /\ TRUE
-                            /\ res' = res
+                            /\ UNCHANGED << res, jn, ord, seen >>
                  /\ IF reply'[self] # "ok"
                        THEN /\ failed' = [failed EXCEPT ![self] = "error"]
                             /\ nval' = nval
@@ -582,16 +898,113 @@ NRecord(self) == /\ pc[self] = "NRecord"
                             /\ UNCHANGED failed
                  /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
                  /\ bodyVal' = [bodyVal EXCEPT ![self] = Head(stack[self]).bodyVal]
+                 /\ tneed' = [tneed EXCEPT ![self] = Head(stack[self]).tneed]
                  /\ key' = [key EXCEPT ![self] = Head(stack[self]).key]
                  /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                  /\ UNCHANGED << started, mk, sw, done, tally, req, dec, 
                                  choice, crashes, fired, firedN, badRoute, 
-                                 badFire, ckey, val, name, it, out, term, rk, 
+                                 badFire, rdecl, cur, dd, tm, mord, grec, 
+                                 refused, treq, tdec, ttally, ncnt, badTaint, 
+                                 badResume, ckey, val, name, it, out, term, rk, 
                                  rv, rf >>
+
+TRefuse(self) == /\ pc[self] = "TRefuse"
+                 /\ refused' = [refused EXCEPT ![key[self]] = TRUE]
+                 /\ IF Bug = "RefuseAsSkip"
+                       THEN /\ res' = [res EXCEPT ![key[self]] = [rec |-> TRUE, v |-> 0, by |-> "drv", ty |-> "F"]]
+                            /\ ord' = [ord EXCEPT ![key[self]] = IF Track THEN jn ELSE 0]
+                            /\ jn' = IF Track THEN jn + 1 ELSE jn
+                            /\ nval' = [nval EXCEPT ![self] = 0]
+                            /\ UNCHANGED failed
+                       ELSE /\ failed' = [failed EXCEPT ![self] = "refused"]
+                            /\ UNCHANGED << res, nval, jn, ord >>
+                 /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
+                 /\ bodyVal' = [bodyVal EXCEPT ![self] = Head(stack[self]).bodyVal]
+                 /\ tneed' = [tneed EXCEPT ![self] = Head(stack[self]).tneed]
+                 /\ key' = [key EXCEPT ![self] = Head(stack[self]).key]
+                 /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
+                 /\ UNCHANGED << started, mk, sw, done, tally, req, dec, 
+                                 choice, reply, ambig, crashes, fired, firedN, 
+                                 badRoute, badFire, rdecl, cur, dd, tm, mord, 
+                                 seen, grec, treq, tdec, ttally, ncnt, 
+                                 badTaint, badResume, ckey, val, name, it, out, 
+                                 term, rk, rv, rf >>
+
+TGate(self) == /\ pc[self] = "TGate"
+               /\ IF ttally[TKey(key[self])] # None
+                     THEN /\ pc' = [pc EXCEPT ![self] = "TPause"]
+                          /\ treq' = treq
+                     ELSE /\ treq' = [treq EXCEPT ![TKey(key[self])] = TRUE]
+                          /\ pc' = [pc EXCEPT ![self] = "TCount"]
+               /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
+                               nval, choice, failed, reply, ambig, crashes, 
+                               fired, firedN, badRoute, badFire, rdecl, cur, 
+                               dd, jn, ord, tm, mord, seen, grec, refused, 
+                               tdec, ttally, ncnt, badTaint, badResume, stack, 
+                               key, bodyVal, tneed, ckey, val, name, it, out, 
+                               term, rk, rv, rf >>
+
+TCount(self) == /\ pc[self] = "TCount"
+                /\ LET y == TYes(key[self]) IN
+                     LET n == TNo(key[self]) IN
+                       IF y >= TNeed \/ Cardinality(TElig(key[self])) - n < TNeed
+                          THEN /\ \/ /\ reply' = [reply EXCEPT ![self] = "ok"]
+                                     /\ ambig' = ambig
+                                  \/ /\ ambig < MaxAmbig
+                                     /\ ambig' = ambig + 1
+                                     /\ reply' = [reply EXCEPT ![self] = "err_nc"]
+                                  \/ /\ ambig < MaxAmbig
+                                     /\ ambig' = ambig + 1
+                                     /\ reply' = [reply EXCEPT ![self] = "err_c"]
+                               /\ IF reply'[self] # "err_nc" /\ ttally[TKey(key[self])] = None
+                                     THEN /\ ttally' = [ttally EXCEPT ![TKey(key[self])] = IF y >= TNeed THEN "pass" ELSE "deny"]
+                                     ELSE /\ TRUE
+                                          /\ UNCHANGED ttally
+                               /\ IF reply'[self] # "ok"
+                                     THEN /\ failed' = [failed EXCEPT ![self] = "error"]
+                                          /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
+                                          /\ bodyVal' = [bodyVal EXCEPT ![self] = Head(stack[self]).bodyVal]
+                                          /\ tneed' = [tneed EXCEPT ![self] = Head(stack[self]).tneed]
+                                          /\ key' = [key EXCEPT ![self] = Head(stack[self]).key]
+                                          /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
+                                     ELSE /\ pc' = [pc EXCEPT ![self] = "TPause"]
+                                          /\ UNCHANGED << failed, stack, key, 
+                                                          bodyVal, tneed >>
+                          ELSE /\ failed' = [failed EXCEPT ![self] = "pause"]
+                               /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
+                               /\ bodyVal' = [bodyVal EXCEPT ![self] = Head(stack[self]).bodyVal]
+                               /\ tneed' = [tneed EXCEPT ![self] = Head(stack[self]).tneed]
+                               /\ key' = [key EXCEPT ![self] = Head(stack[self]).key]
+                               /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
+                               /\ UNCHANGED << reply, ambig, ttally >>
+                /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
+                                nval, choice, crashes, fired, firedN, badRoute, 
+                                badFire, rdecl, cur, dd, jn, ord, tm, mord, 
+                                seen, grec, refused, treq, tdec, ncnt, 
+                                badTaint, badResume, ckey, val, name, it, out, 
+                                term, rk, rv, rf >>
+
+TPause(self) == /\ pc[self] = "TPause"
+                /\ IF ttally[TKey(key[self])] = "deny"
+                      THEN /\ failed' = [failed EXCEPT ![self] = "denied"]
+                           /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
+                           /\ bodyVal' = [bodyVal EXCEPT ![self] = Head(stack[self]).bodyVal]
+                           /\ tneed' = [tneed EXCEPT ![self] = Head(stack[self]).tneed]
+                           /\ key' = [key EXCEPT ![self] = Head(stack[self]).key]
+                           /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
+                      ELSE /\ pc' = [pc EXCEPT ![self] = "NGet"]
+                           /\ UNCHANGED << failed, stack, key, bodyVal, tneed >>
+                /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
+                                nval, choice, reply, ambig, crashes, fired, 
+                                firedN, badRoute, badFire, rdecl, cur, dd, jn, 
+                                ord, tm, mord, seen, grec, refused, treq, tdec, 
+                                ttally, ncnt, badTaint, badResume, ckey, val, 
+                                name, it, out, term, rk, rv, rf >>
 
 Node(self) == GRead(self) \/ GCount(self) \/ GPause(self) \/ NGet(self)
                  \/ NClaim(self) \/ NBody(self) \/ NNested(self)
-                 \/ NRecord(self)
+                 \/ NRecord(self) \/ TRefuse(self) \/ TGate(self)
+                 \/ TCount(self) \/ TPause(self)
 
 CDo(self) == /\ pc[self] = "CDo"
              /\ IF sw[ckey[self]] = None
@@ -622,7 +1035,10 @@ CDo(self) == /\ pc[self] = "CDo"
                                         val, name >>
              /\ UNCHANGED << started, res, mk, done, tally, req, dec, nval, 
                              choice, crashes, fired, firedN, badRoute, badFire, 
-                             key, bodyVal, it, out, term, rk, rv, rf >>
+                             rdecl, cur, dd, jn, ord, tm, mord, seen, grec, 
+                             refused, treq, tdec, ttally, ncnt, badTaint, 
+                             badResume, key, bodyVal, tneed, it, out, term, rk, 
+                             rv, rf >>
 
 CRoute(self) == /\ pc[self] = "CRoute"
                 /\ choice' = [choice EXCEPT ![self] = sw[ckey[self]]]
@@ -637,8 +1053,10 @@ CRoute(self) == /\ pc[self] = "CRoute"
                 /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                 /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
                                 nval, failed, reply, ambig, crashes, fired, 
-                                firedN, badFire, key, bodyVal, it, out, term, 
-                                rk, rv, rf >>
+                                firedN, badFire, rdecl, cur, dd, jn, ord, tm, 
+                                mord, seen, grec, refused, treq, tdec, ttally, 
+                                ncnt, badTaint, badResume, key, bodyVal, tneed, 
+                                it, out, term, rk, rv, rf >>
 
 Choose(self) == CDo(self) \/ CRoute(self)
 
@@ -650,13 +1068,18 @@ Begin(self) == /\ pc[self] = "Begin"
                /\ nval' = [nval EXCEPT ![self] = 0]
                /\ choice' = [choice EXCEPT ![self] = None]
                /\ reply' = [reply EXCEPT ![self] = ""]
+               /\ seen' = [seen EXCEPT ![self] = {}]
+               /\ \E c \in Decls:
+                    cur' = [cur EXCEPT ![self] = c]
                /\ IF done.rec
                      THEN /\ pc' = [pc EXCEPT ![self] = "Finish"]
                      ELSE /\ pc' = [pc EXCEPT ![self] = "BeginStart"]
                /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
                                ambig, crashes, fired, firedN, badRoute, 
-                               badFire, stack, key, bodyVal, ckey, val, name, 
-                               rk, rv, rf >>
+                               badFire, rdecl, dd, jn, ord, tm, mord, grec, 
+                               refused, treq, tdec, ttally, ncnt, badTaint, 
+                               badResume, stack, key, bodyVal, tneed, ckey, 
+                               val, name, rk, rv, rf >>
 
 BeginStart(self) == /\ pc[self] = "BeginStart"
                     /\ \/ /\ reply' = [reply EXCEPT ![self] = "ok"]
@@ -668,32 +1091,47 @@ BeginStart(self) == /\ pc[self] = "BeginStart"
                           /\ ambig' = ambig + 1
                           /\ reply' = [reply EXCEPT ![self] = "err_c"]
                     /\ IF reply'[self] # "err_nc"
-                          THEN /\ started' = TRUE
+                          THEN /\ IF ~started
+                                     THEN /\ rdecl' = cur[self]
+                                     ELSE /\ TRUE
+                                          /\ rdecl' = rdecl
+                               /\ started' = TRUE
+                               /\ dd' = [dd EXCEPT ![self] = IF Bug = "ResumeNoCompare" \/ ~started' THEN cur[self] ELSE rdecl']
                           ELSE /\ TRUE
-                               /\ UNCHANGED started
+                               /\ UNCHANGED << started, rdecl, dd >>
                     /\ IF reply'[self] # "ok"
                           THEN /\ failed' = [failed EXCEPT ![self] = "error"]
                                /\ pc' = [pc EXCEPT ![self] = "Finish"]
-                          ELSE /\ pc' = [pc EXCEPT ![self] = "RunE"]
-                               /\ UNCHANGED failed
+                          ELSE /\ IF Bug # "ResumeNoCompare" /\ started' /\ cur[self] # rdecl'
+                                     THEN /\ failed' = [failed EXCEPT ![self] = "config"]
+                                          /\ pc' = [pc EXCEPT ![self] = "Finish"]
+                                     ELSE /\ pc' = [pc EXCEPT ![self] = "RunE"]
+                                          /\ UNCHANGED failed
                     /\ UNCHANGED << res, mk, sw, done, tally, req, dec, nval, 
                                     choice, crashes, fired, firedN, badRoute, 
-                                    badFire, stack, key, bodyVal, ckey, val, 
-                                    name, it, out, term, rk, rv, rf >>
+                                    badFire, cur, jn, ord, tm, mord, seen, 
+                                    grec, refused, treq, tdec, ttally, ncnt, 
+                                    badTaint, badResume, stack, key, bodyVal, 
+                                    tneed, ckey, val, name, it, out, term, rk, 
+                                    rv, rf >>
 
 RunE(self) == /\ pc[self] = "RunE"
               /\ /\ key' = [key EXCEPT ![self] = <<"E", 0>>]
                  /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "Node",
                                                           pc        |->  "AfterE",
                                                           bodyVal   |->  bodyVal[self],
+                                                          tneed     |->  tneed[self],
                                                           key       |->  key[self] ] >>
                                                       \o stack[self]]
               /\ bodyVal' = [bodyVal EXCEPT ![self] = 0]
+              /\ tneed' = [tneed EXCEPT ![self] = FALSE]
               /\ pc' = [pc EXCEPT ![self] = "GRead"]
               /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
                               nval, choice, failed, reply, ambig, crashes, 
-                              fired, firedN, badRoute, badFire, ckey, val, 
-                              name, it, out, term, rk, rv, rf >>
+                              fired, firedN, badRoute, badFire, rdecl, cur, dd, 
+                              jn, ord, tm, mord, seen, grec, refused, treq, 
+                              tdec, ttally, ncnt, badTaint, badResume, ckey, 
+                              val, name, it, out, term, rk, rv, rf >>
 
 AfterE(self) == /\ pc[self] = "AfterE"
                 /\ IF failed[self] # None
@@ -701,9 +1139,11 @@ AfterE(self) == /\ pc[self] = "AfterE"
                       ELSE /\ pc' = [pc EXCEPT ![self] = "ChooseE"]
                 /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
                                 nval, choice, failed, reply, ambig, crashes, 
-                                fired, firedN, badRoute, badFire, stack, key, 
-                                bodyVal, ckey, val, name, it, out, term, rk, 
-                                rv, rf >>
+                                fired, firedN, badRoute, badFire, rdecl, cur, 
+                                dd, jn, ord, tm, mord, seen, grec, refused, 
+                                treq, tdec, ttally, ncnt, badTaint, badResume, 
+                                stack, key, bodyVal, tneed, ckey, val, name, 
+                                it, out, term, rk, rv, rf >>
 
 ChooseE(self) == /\ pc[self] = "ChooseE"
                  /\ /\ ckey' = [ckey EXCEPT ![self] = <<"E", 0>>]
@@ -718,8 +1158,11 @@ ChooseE(self) == /\ pc[self] = "ChooseE"
                  /\ pc' = [pc EXCEPT ![self] = "CDo"]
                  /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
                                  nval, choice, failed, reply, ambig, crashes, 
-                                 fired, firedN, badRoute, badFire, key, 
-                                 bodyVal, it, out, term, rk, rv, rf >>
+                                 fired, firedN, badRoute, badFire, rdecl, cur, 
+                                 dd, jn, ord, tm, mord, seen, grec, refused, 
+                                 treq, tdec, ttally, ncnt, badTaint, badResume, 
+                                 key, bodyVal, tneed, it, out, term, rk, rv, 
+                                 rf >>
 
 AfterChooseE(self) == /\ pc[self] = "AfterChooseE"
                       /\ IF failed[self] # None
@@ -730,22 +1173,29 @@ AfterChooseE(self) == /\ pc[self] = "AfterChooseE"
                       /\ UNCHANGED << started, res, mk, sw, done, tally, req, 
                                       dec, nval, choice, failed, reply, ambig, 
                                       crashes, fired, firedN, badRoute, 
-                                      badFire, stack, key, bodyVal, ckey, val, 
-                                      name, it, out, term, rk, rv, rf >>
+                                      badFire, rdecl, cur, dd, jn, ord, tm, 
+                                      mord, seen, grec, refused, treq, tdec, 
+                                      ttally, ncnt, badTaint, badResume, stack, 
+                                      key, bodyVal, tneed, ckey, val, name, it, 
+                                      out, term, rk, rv, rf >>
 
 LoopH(self) == /\ pc[self] = "LoopH"
                /\ /\ key' = [key EXCEPT ![self] = <<"H", it[self]>>]
                   /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "Node",
                                                            pc        |->  "AfterH",
                                                            bodyVal   |->  bodyVal[self],
+                                                           tneed     |->  tneed[self],
                                                            key       |->  key[self] ] >>
                                                        \o stack[self]]
                /\ bodyVal' = [bodyVal EXCEPT ![self] = 0]
+               /\ tneed' = [tneed EXCEPT ![self] = FALSE]
                /\ pc' = [pc EXCEPT ![self] = "GRead"]
                /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
                                nval, choice, failed, reply, ambig, crashes, 
-                               fired, firedN, badRoute, badFire, ckey, val, 
-                               name, it, out, term, rk, rv, rf >>
+                               fired, firedN, badRoute, badFire, rdecl, cur, 
+                               dd, jn, ord, tm, mord, seen, grec, refused, 
+                               treq, tdec, ttally, ncnt, badTaint, badResume, 
+                               ckey, val, name, it, out, term, rk, rv, rf >>
 
 AfterH(self) == /\ pc[self] = "AfterH"
                 /\ IF failed[self] # None
@@ -753,23 +1203,29 @@ AfterH(self) == /\ pc[self] = "AfterH"
                       ELSE /\ pc' = [pc EXCEPT ![self] = "RunS"]
                 /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
                                 nval, choice, failed, reply, ambig, crashes, 
-                                fired, firedN, badRoute, badFire, stack, key, 
-                                bodyVal, ckey, val, name, it, out, term, rk, 
-                                rv, rf >>
+                                fired, firedN, badRoute, badFire, rdecl, cur, 
+                                dd, jn, ord, tm, mord, seen, grec, refused, 
+                                treq, tdec, ttally, ncnt, badTaint, badResume, 
+                                stack, key, bodyVal, tneed, ckey, val, name, 
+                                it, out, term, rk, rv, rf >>
 
 RunS(self) == /\ pc[self] = "RunS"
               /\ /\ key' = [key EXCEPT ![self] = <<"S", it[self]>>]
                  /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "Node",
                                                           pc        |->  "AfterS",
                                                           bodyVal   |->  bodyVal[self],
+                                                          tneed     |->  tneed[self],
                                                           key       |->  key[self] ] >>
                                                       \o stack[self]]
               /\ bodyVal' = [bodyVal EXCEPT ![self] = 0]
+              /\ tneed' = [tneed EXCEPT ![self] = FALSE]
               /\ pc' = [pc EXCEPT ![self] = "GRead"]
               /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
                               nval, choice, failed, reply, ambig, crashes, 
-                              fired, firedN, badRoute, badFire, ckey, val, 
-                              name, it, out, term, rk, rv, rf >>
+                              fired, firedN, badRoute, badFire, rdecl, cur, dd, 
+                              jn, ord, tm, mord, seen, grec, refused, treq, 
+                              tdec, ttally, ncnt, badTaint, badResume, ckey, 
+                              val, name, it, out, term, rk, rv, rf >>
 
 AfterS(self) == /\ pc[self] = "AfterS"
                 /\ IF failed[self] # None
@@ -777,9 +1233,11 @@ AfterS(self) == /\ pc[self] = "AfterS"
                       ELSE /\ pc' = [pc EXCEPT ![self] = "ChooseS"]
                 /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
                                 nval, choice, failed, reply, ambig, crashes, 
-                                fired, firedN, badRoute, badFire, stack, key, 
-                                bodyVal, ckey, val, name, it, out, term, rk, 
-                                rv, rf >>
+                                fired, firedN, badRoute, badFire, rdecl, cur, 
+                                dd, jn, ord, tm, mord, seen, grec, refused, 
+                                treq, tdec, ttally, ncnt, badTaint, badResume, 
+                                stack, key, bodyVal, tneed, ckey, val, name, 
+                                it, out, term, rk, rv, rf >>
 
 ChooseS(self) == /\ pc[self] = "ChooseS"
                  /\ /\ ckey' = [ckey EXCEPT ![self] = SKey(it[self])]
@@ -794,8 +1252,11 @@ ChooseS(self) == /\ pc[self] = "ChooseS"
                  /\ pc' = [pc EXCEPT ![self] = "CDo"]
                  /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
                                  nval, choice, failed, reply, ambig, crashes, 
-                                 fired, firedN, badRoute, badFire, key, 
-                                 bodyVal, it, out, term, rk, rv, rf >>
+                                 fired, firedN, badRoute, badFire, rdecl, cur, 
+                                 dd, jn, ord, tm, mord, seen, grec, refused, 
+                                 treq, tdec, ttally, ncnt, badTaint, badResume, 
+                                 key, bodyVal, tneed, it, out, term, rk, rv, 
+                                 rf >>
 
 AfterChooseS(self) == /\ pc[self] = "AfterChooseS"
                       /\ IF failed[self] # None
@@ -813,23 +1274,30 @@ AfterChooseS(self) == /\ pc[self] = "AfterChooseS"
                                             /\ UNCHANGED << failed, it >>
                       /\ UNCHANGED << started, res, mk, sw, done, tally, req, 
                                       dec, nval, choice, reply, ambig, crashes, 
-                                      fired, firedN, badRoute, badFire, stack, 
-                                      key, bodyVal, ckey, val, name, out, term, 
-                                      rk, rv, rf >>
+                                      fired, firedN, badRoute, badFire, rdecl, 
+                                      cur, dd, jn, ord, tm, mord, seen, grec, 
+                                      refused, treq, tdec, ttally, ncnt, 
+                                      badTaint, badResume, stack, key, bodyVal, 
+                                      tneed, ckey, val, name, out, term, rk, 
+                                      rv, rf >>
 
 RunT(self) == /\ pc[self] = "RunT"
               /\ /\ key' = [key EXCEPT ![self] = <<"T", 0>>]
                  /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "Node",
                                                           pc        |->  "AfterT",
                                                           bodyVal   |->  bodyVal[self],
+                                                          tneed     |->  tneed[self],
                                                           key       |->  key[self] ] >>
                                                       \o stack[self]]
               /\ bodyVal' = [bodyVal EXCEPT ![self] = 0]
+              /\ tneed' = [tneed EXCEPT ![self] = FALSE]
               /\ pc' = [pc EXCEPT ![self] = "GRead"]
               /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
                               nval, choice, failed, reply, ambig, crashes, 
-                              fired, firedN, badRoute, badFire, ckey, val, 
-                              name, it, out, term, rk, rv, rf >>
+                              fired, firedN, badRoute, badFire, rdecl, cur, dd, 
+                              jn, ord, tm, mord, seen, grec, refused, treq, 
+                              tdec, ttally, ncnt, badTaint, badResume, ckey, 
+                              val, name, it, out, term, rk, rv, rf >>
 
 AfterT(self) == /\ pc[self] = "AfterT"
                 /\ IF failed[self] # None
@@ -837,9 +1305,11 @@ AfterT(self) == /\ pc[self] = "AfterT"
                       ELSE /\ pc' = [pc EXCEPT ![self] = "SetT"]
                 /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
                                 nval, choice, failed, reply, ambig, crashes, 
-                                fired, firedN, badRoute, badFire, stack, key, 
-                                bodyVal, ckey, val, name, it, out, term, rk, 
-                                rv, rf >>
+                                fired, firedN, badRoute, badFire, rdecl, cur, 
+                                dd, jn, ord, tm, mord, seen, grec, refused, 
+                                treq, tdec, ttally, ncnt, badTaint, badResume, 
+                                stack, key, bodyVal, tneed, ckey, val, name, 
+                                it, out, term, rk, rv, rf >>
 
 SetT(self) == /\ pc[self] = "SetT"
               /\ term' = [term EXCEPT ![self] = "T"]
@@ -847,22 +1317,29 @@ SetT(self) == /\ pc[self] = "SetT"
               /\ pc' = [pc EXCEPT ![self] = "Complete"]
               /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
                               nval, choice, failed, reply, ambig, crashes, 
-                              fired, firedN, badRoute, badFire, stack, key, 
-                              bodyVal, ckey, val, name, it, rk, rv, rf >>
+                              fired, firedN, badRoute, badFire, rdecl, cur, dd, 
+                              jn, ord, tm, mord, seen, grec, refused, treq, 
+                              tdec, ttally, ncnt, badTaint, badResume, stack, 
+                              key, bodyVal, tneed, ckey, val, name, it, rk, rv, 
+                              rf >>
 
 RunQ(self) == /\ pc[self] = "RunQ"
               /\ /\ key' = [key EXCEPT ![self] = <<"Q", 0>>]
                  /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "Node",
                                                           pc        |->  "AfterQ",
                                                           bodyVal   |->  bodyVal[self],
+                                                          tneed     |->  tneed[self],
                                                           key       |->  key[self] ] >>
                                                       \o stack[self]]
               /\ bodyVal' = [bodyVal EXCEPT ![self] = 0]
+              /\ tneed' = [tneed EXCEPT ![self] = FALSE]
               /\ pc' = [pc EXCEPT ![self] = "GRead"]
               /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
                               nval, choice, failed, reply, ambig, crashes, 
-                              fired, firedN, badRoute, badFire, ckey, val, 
-                              name, it, out, term, rk, rv, rf >>
+                              fired, firedN, badRoute, badFire, rdecl, cur, dd, 
+                              jn, ord, tm, mord, seen, grec, refused, treq, 
+                              tdec, ttally, ncnt, badTaint, badResume, ckey, 
+                              val, name, it, out, term, rk, rv, rf >>
 
 AfterQ(self) == /\ pc[self] = "AfterQ"
                 /\ IF failed[self] # None
@@ -870,9 +1347,11 @@ AfterQ(self) == /\ pc[self] = "AfterQ"
                       ELSE /\ pc' = [pc EXCEPT ![self] = "SetQ"]
                 /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
                                 nval, choice, failed, reply, ambig, crashes, 
-                                fired, firedN, badRoute, badFire, stack, key, 
-                                bodyVal, ckey, val, name, it, out, term, rk, 
-                                rv, rf >>
+                                fired, firedN, badRoute, badFire, rdecl, cur, 
+                                dd, jn, ord, tm, mord, seen, grec, refused, 
+                                treq, tdec, ttally, ncnt, badTaint, badResume, 
+                                stack, key, bodyVal, tneed, ckey, val, name, 
+                                it, out, term, rk, rv, rf >>
 
 SetQ(self) == /\ pc[self] = "SetQ"
               /\ term' = [term EXCEPT ![self] = "Q"]
@@ -880,8 +1359,11 @@ SetQ(self) == /\ pc[self] = "SetQ"
               /\ pc' = [pc EXCEPT ![self] = "Complete"]
               /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
                               nval, choice, failed, reply, ambig, crashes, 
-                              fired, firedN, badRoute, badFire, stack, key, 
-                              bodyVal, ckey, val, name, it, rk, rv, rf >>
+                              fired, firedN, badRoute, badFire, rdecl, cur, dd, 
+                              jn, ord, tm, mord, seen, grec, refused, treq, 
+                              tdec, ttally, ncnt, badTaint, badResume, stack, 
+                              key, bodyVal, tneed, ckey, val, name, it, rk, rv, 
+                              rf >>
 
 Complete(self) == /\ pc[self] = "Complete"
                   /\ IF Bug # "NoCompletion"
@@ -906,8 +1388,11 @@ Complete(self) == /\ pc[self] = "Complete"
                   /\ pc' = [pc EXCEPT ![self] = "Finish"]
                   /\ UNCHANGED << started, res, mk, sw, tally, req, dec, nval, 
                                   choice, crashes, fired, firedN, badRoute, 
-                                  badFire, stack, key, bodyVal, ckey, val, 
-                                  name, it, out, term, rk, rv, rf >>
+                                  badFire, rdecl, cur, dd, jn, ord, tm, mord, 
+                                  seen, grec, refused, treq, tdec, ttally, 
+                                  ncnt, badTaint, badResume, stack, key, 
+                                  bodyVal, tneed, ckey, val, name, it, out, 
+                                  term, rk, rv, rf >>
 
 Finish(self) == /\ pc[self] = "Finish"
                 /\ IF failed[self] \notin {None, "runaway", "denied"}
@@ -915,9 +1400,11 @@ Finish(self) == /\ pc[self] = "Finish"
                       ELSE /\ pc' = [pc EXCEPT ![self] = "Done"]
                 /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
                                 nval, choice, failed, reply, ambig, crashes, 
-                                fired, firedN, badRoute, badFire, stack, key, 
-                                bodyVal, ckey, val, name, it, out, term, rk, 
-                                rv, rf >>
+                                fired, firedN, badRoute, badFire, rdecl, cur, 
+                                dd, jn, ord, tm, mord, seen, grec, refused, 
+                                treq, tdec, ttally, ncnt, badTaint, badResume, 
+                                stack, key, bodyVal, tneed, ckey, val, name, 
+                                it, out, term, rk, rv, rf >>
 
 driver(self) == Begin(self) \/ BeginStart(self) \/ RunE(self)
                    \/ AfterE(self) \/ ChooseE(self) \/ AfterChooseE(self)
@@ -940,8 +1427,11 @@ RPick(self) == /\ pc[self] = "RPick"
                /\ pc' = [pc EXCEPT ![self] = "RWrite"]
                /\ UNCHANGED << started, res, mk, sw, done, tally, req, dec, 
                                nval, choice, failed, reply, ambig, crashes, 
-                               fired, firedN, badRoute, badFire, stack, key, 
-                               bodyVal, ckey, val, name, it, out, term >>
+                               fired, firedN, badRoute, badFire, rdecl, cur, 
+                               dd, jn, ord, tm, mord, seen, grec, refused, 
+                               treq, tdec, ttally, ncnt, badTaint, badResume, 
+                               stack, key, bodyVal, tneed, ckey, val, name, it, 
+                               out, term >>
 
 RWrite(self) == /\ pc[self] = "RWrite"
                 /\ \/ /\ reply' = [reply EXCEPT ![self] = "ok"]
@@ -954,28 +1444,42 @@ RWrite(self) == /\ pc[self] = "RWrite"
                       /\ reply' = [reply EXCEPT ![self] = "err_c"]
                 /\ IF reply'[self] # "err_nc" /\ ~res[rk[self]].rec
                       THEN /\ res' = [res EXCEPT ![rk[self]] = [rec |-> TRUE, v |-> rv[self], by |-> "res", ty |-> rf[self]]]
+                           /\ ord' = [ord EXCEPT ![rk[self]] = IF Track THEN jn ELSE 0]
+                           /\ jn' = IF Track THEN jn + 1 ELSE jn
                       ELSE /\ TRUE
-                           /\ res' = res
+                           /\ UNCHANGED << res, jn, ord >>
                 /\ pc' = [pc EXCEPT ![self] = "Done"]
                 /\ UNCHANGED << started, mk, sw, done, tally, req, dec, nval, 
                                 choice, failed, crashes, fired, firedN, 
-                                badRoute, badFire, stack, key, bodyVal, ckey, 
-                                val, name, it, out, term, rk, rv, rf >>
+                                badRoute, badFire, rdecl, cur, dd, tm, mord, 
+                                seen, grec, refused, treq, tdec, ttally, ncnt, 
+                                badTaint, badResume, stack, key, bodyVal, 
+                                tneed, ckey, val, name, it, out, term, rk, rv, 
+                                rf >>
 
 resolver(self) == RPick(self) \/ RWrite(self)
 
 ADecide(self) == /\ pc[self] = "ADecide"
-                 /\ \E k \in {k \in GateKeys : (dec[k][self] = None /\ (req[k] \/ Early)) \/ (dec[k][self] \in {"eyes", "eno"} /\ req[k])}:
-                      \E v \in IF req[k] THEN {"yes", "no"} ELSE {"eyes", "eno"}:
-                        dec' = [dec EXCEPT ![k][self] = v]
+                 /\ \/ /\ \E k \in {k \in GateKeys : (dec[k][self] = None /\ (req[k] \/ Early)) \/ (dec[k][self] \in {"eyes", "eno"} /\ req[k])}:
+                            \E v \in IF req[k] THEN {"yes", "no"} ELSE {"eyes", "eno"}:
+                              dec' = [dec EXCEPT ![k][self] = v]
+                       /\ tdec' = tdec
+                    \/ /\ \E k \in {k \in TKeys : tdec[k][self] = None /\ treq[k]}:
+                            \E v \in {"yes", "no"}:
+                              tdec' = [tdec EXCEPT ![k][self] = v]
+                       /\ dec' = dec
                  /\ IF \E k \in GateKeys : dec'[k][self] \in {None, "eyes", "eno"}
                        THEN /\ pc' = [pc EXCEPT ![self] = "ADecide"]
-                       ELSE /\ pc' = [pc EXCEPT ![self] = "Done"]
+                       ELSE /\ IF \E k \in TKeys : tdec'[k][self] = None
+                                  THEN /\ pc' = [pc EXCEPT ![self] = "ADecide"]
+                                  ELSE /\ pc' = [pc EXCEPT ![self] = "Done"]
                  /\ UNCHANGED << started, res, mk, sw, done, tally, req, nval, 
                                  choice, failed, reply, ambig, crashes, fired, 
-                                 firedN, badRoute, badFire, stack, key, 
-                                 bodyVal, ckey, val, name, it, out, term, rk, 
-                                 rv, rf >>
+                                 firedN, badRoute, badFire, rdecl, cur, dd, jn, 
+                                 ord, tm, mord, seen, grec, refused, treq, 
+                                 ttally, ncnt, badTaint, badResume, stack, key, 
+                                 bodyVal, tneed, ckey, val, name, it, out, 
+                                 term, rk, rv, rf >>
 
 approver(self) == ADecide(self)
 
@@ -1014,11 +1518,16 @@ Crash(d) ==
   /\ it' = [it EXCEPT ![d] = 0]
   /\ out' = [out EXCEPT ![d] = 0]
   /\ term' = [term EXCEPT ![d] = None]
+  /\ cur' = [cur EXCEPT ![d] = NoDecl]
+  /\ dd' = [dd EXCEPT ![d] = NoDecl]
+  /\ seen' = [seen EXCEPT ![d] = {}]
+  /\ tneed' = [tneed EXCEPT ![d] = FALSE]
   /\ key' = [key EXCEPT ![d] = defaultInitValue]
   /\ ckey' = [ckey EXCEPT ![d] = defaultInitValue]
   /\ val' = [val EXCEPT ![d] = defaultInitValue]
   /\ name' = [name EXCEPT ![d] = defaultInitValue]
-  /\ UNCHANGED <<started, res, mk, sw, done, tally, req, dec, ambig, fired, firedN, badRoute, badFire, rk, rv, rf>>
+  /\ UNCHANGED <<started, res, mk, sw, done, tally, req, dec, ambig, fired, firedN, badRoute, badFire, rk, rv, rf,
+                 rdecl, jn, ord, tm, mord, grec, refused, treq, tdec, ttally, ncnt, badTaint, badResume>>
 
 FullNext == Next \/ \E d \in Drivers : Crash(d)
 
@@ -1071,9 +1580,47 @@ TallySound == \A k \in GateKeys :
   /\ tally[k] = "pass" => Yes(k) >= Need
   /\ tally[k] = "deny" => Cardinality(Approvers) - No(k) < Need
 
+\* Taint (docs/design/flow-taint.md, A5b). No side-effecting node attempt is claimed after a source
+\* read (a non-empty read set) unless its taint gate passed or it is exempt, under a policy; across
+\* crashes, error replies, drivers and resumes.
+TaintGateHeld == ~badTaint
+
+\* No node body runs under declarations other than the recorded ones: a drive resuming under
+\* changed declarations (a weaker policy, a dropped declaration) is refused before the first node.
+ResumeExact == ~badResume
+
+\* A recorded instance tally says what the instance's own decisions say (decisions of the node gate
+\* do not count for it): a pass has TNeed approvals, a deny leaves too few approvers.
+TaintTallySound == \A k \in TKeys :
+  LET ex == IF Separate /\ k \in GateKeys THEN ncnt[k] ELSE {}
+      no == Cardinality({a \in Approvers \ ex : tdec[k][a] = "no"})
+  IN /\ ttally[k] = "pass" => Cardinality({a \in Approvers : tdec[k][a] = "yes"}) >= TNeed
+     /\ ttally[k] = "deny" => Cardinality(Approvers \ ex) - no < TNeed
+
+\* SeparateApprovers: no approver counted by the node's own gate also counted by a passing instance.
+SeparateHeld == Separate =>
+  \A k \in TKeys \cap GateKeys : ttally[k] = "pass" =>
+    Cardinality({a \in Approvers \ ncnt[k] : tdec[k][a] = "yes"}) >= TNeed
+
+\* A refused node has a gate-reason record and no node record, no attempt, no approval request.
+RefusedClean == \A k \in NodeKeys : refused[k] =>
+  /\ grec[k] /\ ~res[k].rec /\ mk[k] = None
+  /\ (k \in GateKeys => ~req[k])
+  /\ (k \in TKeys => ~treq[k])
+
 \* Vacuity, expected to be violated: the flow completes after an effect fired.
 EffectNotReachable == ~(done.rec /\ \E k \in NodeKeys : fired[k] > 0)
 
+\* Vacuity of the taint checks, each expected to be violated by a configuration that claims it:
+\* a tainted attempt claimed after its instance passed (in iteration 1 of the loop), a terminal
+\* denial of the instance, a refused node, a drive refused for changed declarations, a taint mark.
+TaintPassNotReachable == ~(\E k \in TKeys : ttally[k] = "pass" /\ mk[k] # None)
+TaintPassLoopNotReachable == ~(\E k \in TKeys : k[2] = 1 /\ ttally[k] = "pass" /\ mk[k] # None)
+TaintDenyNotReachable == ~(\E k \in TKeys : ttally[k] = "deny")
+RefusalNotReachable == ~(\E k \in NodeKeys : refused[k])
+ConfigRefusalNotReachable == ~(\E d \in Drivers : failed[d] = "config")
+MarkNotReachable == ~(\E j \in NodeKeys : tm[j] /\ \E k \in TKeys : ttally[k] = "pass" /\ mk[k] # None)
+
 \* Liveness: a run whose drives do not crash or halt completes (recovery skips it then).
-Completes == <>(done.rec \/ \E d \in Drivers : failed[d] \in {"halt", "runaway", "denied"})
+Completes == <>(done.rec \/ \E d \in Drivers : failed[d] \in {"halt", "runaway", "denied", "refused"})
 =============================================================================
