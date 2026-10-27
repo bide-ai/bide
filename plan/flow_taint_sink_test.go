@@ -590,7 +590,7 @@ func TestFlowTaintSink_ConformChecksTheLinkRecords(t *testing.T) {
 	}
 	for what, f := range map[string]struct{ name, body, want string }{
 		"a link that does not read":    {"taint-child:node%3Acall:c9", `1`, "taint-child record that does not read"},
-		"a link of an undeclared node": {"taint-child:node%3Aghost:c9", `{"format":"bide.taint-child.v1","node_key":"node:ghost","run_id":"c9"}`, "taint-child record of an undeclared node"},
+		"a link of an undeclared node": {"taint-child:node%3Aghost:c9", `{"format":"bide.taint-child.v1","node_key":"node:ghost","run_id":"c9","kind":"flow"}`, "taint-child record of an undeclared node"},
 		"a mark of an undeclared node": {"taint-mark:node%3Aghost:s", `{"format":"bide.taint-mark.v1","node_key":"node:ghost","source":"s"}`, "taint-mark record of an undeclared node"},
 	} {
 		ok, diffs, err := p.Conform(ctx, plant(t, j, "p1", f.name, f.body), "p1")
@@ -655,5 +655,194 @@ func TestFlowTaintSink_ALoopInTheChildSendsWhatItsBodyLearned(t *testing.T) {
 	}
 	if got := marksOf(t, j, "p1", "node:call"); !slices.Equal(got, []string{"feed"}) {
 		t.Errorf("the parent holds %v for node:call, want [feed]", got)
+	}
+}
+
+// agentRunner is a node body that runs an agent which calls a read-only tool, declared Untrusted(src) when src is
+// not "": the agent's journal is j, its run ID run.
+func agentRunner(t *testing.T, j *agent.Journal, run, src string, reads *int) func(context.Context) error {
+	t.Helper()
+	read := agent.MustFunc("read", "reads", func(context.Context, struct{}) (string, error) { *reads++; return "text", nil },
+		agent.WithSafety(agent.Safety{ReadOnly: true, Untrusted: src}))
+	return func(ctx context.Context) error {
+		m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "read", `{}`), agenttest.TextTurn("done"))
+		_, err := agenttest.MustNew(m, j, agent.WithTools(read)).Run(ctx, run, agent.UserText("go"), agent.WithTrustedInput("the flow's own"))
+		return err
+	}
+}
+
+// An agent a node's body runs hands what it read up to the node, so the node after it is gated; an agent that read
+// nothing untrusted brings nothing.
+func TestFlowTaintSink_AnAgentTheBodyRunsBringsItsMarksUp(t *testing.T) {
+	ctx := context.Background()
+	j := agenttest.MemJournal()
+	reads := 0
+	pp := &sinkParent{t: t}
+	p := pp.build(single(), false, agentRunner(t, j, "a1", "web", &reads))
+	_, err := p.Run(ctx, j, "p1", 1)
+	if pend := pending(t, err); pend.ToolUseID != "node:pay:taint" {
+		t.Fatalf("paused at %q, want node:pay:taint", pend.ToolUseID)
+	}
+	if got := marksOf(t, j, "p1", "node:call"); !slices.Equal(got, []string{"web"}) {
+		t.Errorf("the parent holds %v for node:call, want [web]", got)
+	}
+	if pp.pays != 0 {
+		t.Errorf("pay ran %d times ungated", pp.pays)
+	}
+	// An agent that read nothing untrusted sends nothing, and the mark it inherited is not sent back.
+	j2 := agenttest.MemJournal()
+	pp2 := &sinkParent{t: t}
+	p2 := pp2.build(single(), false, agentRunner(t, j2, "a1", "", &reads))
+	if _, err := p2.Run(ctx, j2, "p2", 1); err != nil || pp2.pays != 1 {
+		t.Fatalf("an agent that read nothing: %v, pay ran %d times", err, pp2.pays)
+	}
+	if got := marksOf(t, j2, "p2", "node:call"); len(got) != 0 {
+		t.Errorf("sent %v", got)
+	}
+}
+
+// The marks go up before the node is recorded: a crash between them leaves the marks, the next drive finds the
+// agent's recorded run, and the node after it is gated. The tool the agent ran does not run again.
+func TestFlowTaintSink_ACrashBetweenTheAgentsMarksAndTheNodesRecordLosesNothing(t *testing.T) {
+	ctx := context.Background()
+	ss := &sinkStore{Store: agent.NewMemStore()}
+	j := agenttest.MustJournal(ss)
+	reads := 0
+	pp := &sinkParent{t: t}
+	p := pp.build(single(), false, agentRunner(t, j, "a1", "web", &reads))
+	ss.fail(func(name string) bool { return name == "node:call" })
+	if _, err := p.Run(ctx, j, "p1", 1); err == nil {
+		t.Fatal("the first drive did not fail")
+	}
+	if got := marksOf(t, j, "p1", "node:call"); !slices.Equal(got, []string{"web"}) {
+		t.Fatalf("after the crash the parent holds %v, want [web] (written before the node's record)", got)
+	}
+	_, err := p.Run(ctx, j, "p1", 1)
+	if pend := pending(t, err); pend.ToolUseID != "node:pay:taint" {
+		t.Fatalf("paused at %q, want node:pay:taint", pend.ToolUseID)
+	}
+	if reads != 1 || pp.pays != 0 {
+		t.Errorf("the tool ran %d times and pay %d; want 1 and 0", reads, pp.pays)
+	}
+}
+
+// ResolveHalt of a node that drove an agent cannot read the agent's marks (its tools' declarations are in the
+// Agent, not the journal), so it marks the node as if the agent had read untrusted content: it over-taints.
+func TestFlowTaintSink_AResolveHaltOfANodeThatDroveAnAgentMarksItSubagent(t *testing.T) {
+	ctx := context.Background()
+	ss := &sinkStore{Store: agent.NewMemStore()}
+	j := agenttest.MustJournal(ss)
+	reads := 0
+	pp := &sinkParent{t: t}
+	// A node with a side effect, so its crash halts; the marks cannot be written.
+	p := pp.build(single(), true, agentRunner(t, j, "a1", "", &reads))
+	ss.fail(func(name string) bool { return name == "node:call" })
+	if _, err := p.Run(ctx, j, "p1", 1); err == nil {
+		t.Fatal("the first drive did not fail")
+	}
+	halt, ok := errors.AsType[*agent.OutcomeUnknown](func() error { _, err := p.Run(ctx, j, "p1", 1); return err }())
+	if !ok {
+		t.Fatal("the second drive did not halt")
+	}
+	if got := marksOf(t, j, "p1", "node:call"); len(got) != 0 {
+		t.Fatalf("the agent read nothing untrusted, yet the parent holds %v", got)
+	}
+	if err := p.ResolveHalt(ctx, j, halt.Ref(), agent.Outcome{Result: 5}, agent.WithoutLiveDriverCheck()); err != nil {
+		t.Fatal(err)
+	}
+	if got := marksOf(t, j, "p1", "node:call"); !slices.Equal(got, []string{"subagent:call"}) {
+		t.Errorf("after the resolution the parent holds %v, want [subagent:call]", got)
+	}
+	_, err := p.Run(ctx, j, "p1", 1)
+	if pend := pending(t, err); pend.ToolUseID != "node:pay:taint" {
+		t.Fatalf("paused at %q, want node:pay:taint", pend.ToolUseID)
+	}
+}
+
+// A flow run as a tool of an agent under a taint policy marks the tool's result when the run ended with a mark, so the
+// agent's next side effect is gated: the flow does not launder what it read.
+func TestFlowTaintSink_AFlowRunAsAToolMarksTheResult(t *testing.T) {
+	ctx := context.Background()
+	for _, src := range []string{"inbox", ""} {
+		j := agenttest.MemJournal()
+		fb := New[int, int]("tool-flow").WithTaintPolicy(*single())
+		var opts []NodeOption
+		if src != "" {
+			opts = append(opts, Untrusted(src))
+		}
+		fb.Step("fetch", func(_ context.Context, v int) (int, error) { return v, nil }, append(opts, ReadOnly())...)
+		f, err := fb.Build()
+		if err != nil {
+			t.Fatal(err)
+		}
+		runflow := agent.MustFunc("runflow", "runs a flow", func(c context.Context, _ struct{}) (string, error) {
+			_, err := f.Run(c, j, "child", 1)
+			return "ok", err
+		}, agent.WithSafety(agent.Safety{ReadOnly: true}))
+		paid := 0
+		pay := agent.MustFunc("pay", "pays", func(context.Context, struct{}) (string, error) { paid++; return "ok", nil })
+		m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "runflow", `{}`), agenttest.ToolTurn("c2", "pay", `{}`), agenttest.TextTurn("done"))
+		a := agenttest.MustNew(m, j, agent.WithTools(runflow, pay), agent.WithTaintPolicy(agent.TaintPolicy{Gate: agent.SingleApproval()}))
+		_, err = a.Run(ctx, "agent", agent.UserText("go"), agent.WithTrustedInput("the host's own"))
+		if src != "" {
+			var pend *agent.ApprovalPending
+			if !errors.As(err, &pend) || paid != 0 {
+				t.Errorf("%s: Run = %v, pay ran %d times; want a pause at the taint gate of pay", src, err, paid)
+			}
+			recs, _ := j.History(ctx, "agent")
+			found := false
+			for _, r := range recs {
+				found = found || r.Kind == agent.StepToolResult && r.ToolUseID == "c1" && r.Safety != nil && r.Safety.Untrusted == "subflow:runflow"
+			}
+			if !found {
+				t.Errorf("%s: the result of runflow does not carry the mark subflow:runflow", src)
+			}
+		} else if err != nil || paid != 1 {
+			t.Errorf("a flow that read nothing: Run = %v, pay ran %d times; want it to run ungated", err, paid)
+		}
+	}
+}
+
+// An agent keeps its own store: it may differ from the flow's, and its marks come up all the same.
+func TestFlowTaintSink_AnAgentInAnotherJournalStillBringsItsMarksUp(t *testing.T) {
+	ctx := context.Background()
+	j, aj := agenttest.MemJournal(), agenttest.MemJournal()
+	reads := 0
+	pp := &sinkParent{t: t}
+	p := pp.build(single(), false, agentRunner(t, aj, "a1", "web", &reads))
+	_, err := p.Run(ctx, j, "p1", 1)
+	if pend := pending(t, err); pend.ToolUseID != "node:pay:taint" {
+		t.Fatalf("paused at %q, want node:pay:taint", pend.ToolUseID)
+	}
+	if got := marksOf(t, j, "p1", "node:call"); !slices.Equal(got, []string{"web"}) {
+		t.Errorf("the parent holds %v, want [web]", got)
+	}
+	if got := childrenOf(t, j, "p1"); !slices.Equal(got, []string{"node:call -> a1"}) {
+		t.Errorf("the children %v, want node:call -> a1", got)
+	}
+}
+
+// The marks an agent inherited from the node are the node's already: the agent does not send them back.
+func TestFlowTaintSink_AnAgentDoesNotSendBackTheMarksItInherited(t *testing.T) {
+	ctx := context.Background()
+	j := agenttest.MemJournal()
+	reads := 0
+	run := agentRunner(t, j, "a1", "", &reads)
+	b := New[int, int]("parent").WithTaintPolicy(*single())
+	fetch := b.Step("fetch", func(_ context.Context, v int) (int, error) { return v, nil }, Untrusted("inbox"))
+	call := b.Step("call", func(ctx context.Context, v int) (int, error) { return v, run(ctx) }, ReadOnly())
+	b.Edge(fetch, call)
+	p, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Run(ctx, j, "p1", 1); err != nil {
+		t.Fatal(err)
+	}
+	if inh := inherited(t, startOf(t, j, "a1")); len(inh) != 1 || inh[0]["source"] != "inbox" {
+		t.Fatalf("the agent inherited %v, want inbox", inh)
+	}
+	if got := marksOf(t, j, "p1", "node:call"); len(got) != 0 {
+		t.Errorf("the agent sent back %v", got)
 	}
 }

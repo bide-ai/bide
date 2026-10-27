@@ -105,6 +105,11 @@ func (a *Agent) drive(ctx context.Context, runID string, d *driveSpec) (Message,
 	if rm := resultMarkFrom(ctx); rm != nil {
 		rm.addRun(a, runID) // a run a call drives: its result carries what the run read (taint_inherit.go)
 	}
+	// An agent run a plan flow's node under taint drives is linked to the node: a ResolveHalt of the node, which
+	// cannot read the run's marks, marks the node for it (flow_taint_sink.go).
+	if err := linkChild(ctx, a.store, runID, childKindAgent); err != nil {
+		return Message{}, usageTotals{}, 0, err
+	}
 	msg, tot, turns, err := a.driveRun(ctx, runID, d)
 	if a.notify != nil {
 		a.notify.driveEnd(runID, err)

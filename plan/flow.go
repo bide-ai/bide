@@ -162,6 +162,9 @@ func (f *Flow[In, Out]) run(ctx context.Context, store *agent.Journal, runID str
 		return out, fmt.Errorf("plan: run %q: %w", c.flowName, err)
 	}
 	// protocol:flows end
+	// A tool call that drives the run (a flow used as an agent tool) gets its answer marked when the run ended
+	// with a mark, a finished run's included.
+	journalhook.FlowTaintDriven(ctx, store, runID)
 	if finished {
 		// A run that finished is not replayed node by node, and a drive without its parent may have finished
 		// it: its parent still gets every mark it learned.
@@ -666,6 +669,10 @@ func runNode(ctx context.Context, store *agent.Journal, runID string, model agen
 		}
 		if runErr != nil {
 			return nil, runErr
+		}
+		// The agent runs the body drove hand their marks up before the node is recorded.
+		if err := journalhook.FlowTaintBodyDone(ctx, store, runID, key); err != nil {
+			return nil, fmt.Errorf("plan: step %q: hand the marks of the runs it drove up: %w", node.name, err)
 		}
 		encoded, encErr := journalhook.Marshal(result)
 		if encErr != nil {

@@ -156,8 +156,10 @@ type resultMark struct {
 	runs []drivenRun
 }
 
+// drivenRun is an agent run (a, in a's store) or a plan flow run (j, in that journal).
 type drivenRun struct {
 	a  *Agent
+	j  *Journal
 	id string
 }
 
@@ -176,29 +178,47 @@ func resultMarkFrom(ctx context.Context) *resultMark {
 func (m *resultMark) addRun(a *Agent, id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if !slices.Contains(m.runs, drivenRun{a, id}) {
-		m.runs = append(m.runs, drivenRun{a, id})
+	if !slices.Contains(m.runs, drivenRun{a: a, id: id}) {
+		m.runs = append(m.runs, drivenRun{a: a, id: id})
+	}
+}
+
+// addFlow registers a plan flow run the call drives, in journal j.
+func (m *resultMark) addFlow(j *Journal, id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !slices.Contains(m.runs, drivenRun{j: j, id: id}) {
+		m.runs = append(m.runs, drivenRun{j: j, id: id})
 	}
 }
 
 // endedTainted reports whether any run the call drove ended with a mark in its journal, each read from
-// its own agent's store. A run whose journal cannot be read is an error (the caller decides).
-func (m *resultMark) endedTainted(ctx context.Context) (bool, error) {
+// its own agent's store (a flow run's, from its journal). A run whose journal cannot be read is an error (the
+// caller decides). flowOnly says every tainted run was a plan flow's: the mark is then "subflow:".
+func (m *resultMark) endedTainted(ctx context.Context) (tainted, flowOnly bool, err error) {
 	if m == nil {
-		return false, nil
+		return false, false, nil
 	}
 	m.mu.Lock()
 	runs := slices.Clone(m.runs)
 	m.mu.Unlock()
-	tainted := false
+	flowOnly = true
 	for _, r := range runs {
-		t, err := r.a.endedTainted(ctx, r.id)
+		var t bool
+		if r.a != nil {
+			t, err = r.a.endedTainted(ctx, r.id)
+		} else {
+			t, err = flowEndedTainted(ctx, r.j, r.id)
+		}
 		if err != nil {
-			return false, err
+			return false, false, err
+		}
+		if t && r.a != nil {
+			flowOnly = false
 		}
 		tainted = tainted || t
 	}
-	return tainted, nil
+	return tainted, flowOnly && tainted, nil
 }
 
 // markResult gives a call's result its mark when a run the call drove ended tainted, unless its tool
@@ -209,12 +229,15 @@ func (m *resultMark) markResult(ctx context.Context, s *Safety, tool string, cal
 	if m == nil || s == nil {
 		return nil
 	}
-	tainted, err := m.endedTainted(ctx)
+	tainted, flowOnly, err := m.endedTainted(ctx)
 	switch {
 	case err != nil && callErr == nil:
 		return &subRunUnfinished{err: err}
 	case (err != nil || tainted) && s.Untrusted == "":
 		s.Untrusted = runMarkSource(tool)
+		if flowOnly {
+			s.Untrusted = subFlowMarkSource(tool)
+		}
 	}
 	return nil
 }
@@ -225,8 +248,14 @@ func runMarkSource(tool string) string { return subAgentMarkSource(tool) }
 // subAgentMarkSource is the source name of the mark a tainted sub-run's answer carries: "subagent:" and
 // the tool's name, cut on a rune boundary to fit a source name (maxProvenanceName), the same for every
 // call of the name.
-func subAgentMarkSource(tool string) string {
-	s := "subagent:" + tool
+func subAgentMarkSource(tool string) string { return prefixedMarkSource("subagent:", tool) }
+
+// subFlowMarkSource is the source name of the mark a tainted plan flow run's answer carries: "subflow:" and the
+// tool's name, cut as subAgentMarkSource does.
+func subFlowMarkSource(tool string) string { return prefixedMarkSource("subflow:", tool) }
+
+func prefixedMarkSource(prefix, tool string) string {
+	s := prefix + tool
 	if len(s) <= maxProvenanceName {
 		return s
 	}

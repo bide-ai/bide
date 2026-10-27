@@ -865,7 +865,9 @@ the consequences of an injected request. It does not detect or prevent the injec
   restored; a loop asks once per iteration. A nested flow must use its parent's journal. `ResolveHalt` of a node
   writes the marks of the flows the node started before the result, so a resolution that then fails leaves marks
   the flows did bring up. `SeparateApprovers` is not built. A `Trusted` node still takes the marks its nested
-  flows bring up (fail closed). The marks of an agent a node's body runs do not come up to the flow. `bide check -blocks`
+  flows and agents bring up (fail closed). A `ResolveHalt` of a node that drove an agent marks the node `subagent:<node name>`
+  whatever the agent read (it cannot read the agent's marks, so it over-taints). A flow with no policy records no declarations,
+  so a flow without one that reads a declared source marks nothing when it is run as an agent's tool: give it a policy. `bide check -blocks`
   and the typed editor read a description of the registered blocks, which carries the declarations of each block
   (version 2) but not the flow's policy unless the host sets it, so neither shows what a policy would gate. [Plan flows](guides/untrusted-content.md#plan-flows) has the rule.
 - **A run started under a flow taint policy is not safe to drive with v0.25.x or earlier.** Those releases ran plan

@@ -14,7 +14,7 @@ func TestTaintChild_IsWrittenOnceAndReadStrictly(t *testing.T) {
 	ctx := context.Background()
 	j := memJournal()
 	for range 2 {
-		if err := putTaintChild(ctx, j, "p1", "node:call", "c1"); err != nil {
+		if err := putTaintChild(ctx, j, "p1", "node:call", "c1", childKindFlow); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -33,17 +33,19 @@ func TestTaintChild_IsWrittenOnceAndReadStrictly(t *testing.T) {
 		t.Errorf("decode = %+v, %v", rec, err)
 	}
 	for what, r := range map[string]Record{
-		"another format":     {Name: link.Name, Result: []byte(`{"format":"x","node_key":"node:call","run_id":"c1"}`)},
+		"another format":     {Name: link.Name, Result: []byte(`{"format":"x","node_key":"node:call","run_id":"c1","kind":"flow"}`)},
 		"a name not its own": {Name: taintChildStep("node:other", "c1"), Result: link.Result},
-		"an empty run":       {Name: taintChildStep("node:call", ""), Result: []byte(`{"format":"` + taintChildFormat + `","node_key":"node:call","run_id":""}`)},
-		"a field too many":   {Name: link.Name, Result: []byte(`{"format":"` + taintChildFormat + `","node_key":"node:call","run_id":"c1","x":1}`)},
+		"an empty run":       {Name: taintChildStep("node:call", ""), Result: []byte(`{"format":"` + taintChildFormat + `","node_key":"node:call","run_id":"","kind":"flow"}`)},
+		"a field too many":   {Name: link.Name, Result: []byte(`{"format":"` + taintChildFormat + `","node_key":"node:call","run_id":"c1","kind":"flow","x":1}`)},
+		"an unknown kind":    {Name: link.Name, Result: []byte(`{"format":"` + taintChildFormat + `","node_key":"node:call","run_id":"c1","kind":"x"}`)},
+		"no kind":            {Name: link.Name, Result: []byte(`{"format":"` + taintChildFormat + `","node_key":"node:call","run_id":"c1"}`)},
 		"not json":           {Name: link.Name, Result: []byte(`nope`)},
 	} {
 		if _, err := decodeTaintChild(r); !errors.Is(err, ErrStorage) {
 			t.Errorf("%s: %v, want ErrStorage", what, err)
 		}
 	}
-	if err := putTaintChild(ctx, j, "p1", "not a node key", "c1"); !errors.Is(err, ErrConfig) {
+	if err := putTaintChild(ctx, j, "p1", "not a node key", "c1", childKindFlow); !errors.Is(err, ErrConfig) {
 		t.Errorf("a link for a name that is not a node key: %v, want ErrConfig", err)
 	}
 	if !IsReservedStepName(taintChildPrefix + "x") {
@@ -57,16 +59,16 @@ func TestTaintChild_IsWrittenOnceAndReadStrictly(t *testing.T) {
 func TestLinkChild_HoldsTheChildToTheSinksJournal(t *testing.T) {
 	j := memJournal()
 	bound := withMarkSink(context.Background(), j, "p1", "node:call")
-	if err := linkChild(context.Background(), j, "c1"); err != nil {
+	if err := linkChild(context.Background(), j, "c1", childKindFlow); err != nil {
 		t.Errorf("no sink: %v", err)
 	}
-	if err := linkChild(bound, memJournal(), "c1"); !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "journal") {
+	if err := linkChild(bound, memJournal(), "c1", childKindFlow); !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "journal") {
 		t.Errorf("another journal: %v, want ErrConfig naming the journal", err)
 	}
-	if err := linkChild(bound, j, "p1"); !errors.Is(err, ErrConfig) {
+	if err := linkChild(bound, j, "p1", childKindFlow); !errors.Is(err, ErrConfig) {
 		t.Errorf("the parent's own ID: %v, want ErrConfig", err)
 	}
-	if err := linkChild(bound, j, "c1"); err != nil {
+	if err := linkChild(bound, j, "c1", childKindFlow); err != nil {
 		t.Fatal(err)
 	}
 	recs, _ := j.History(context.Background(), "p1")
@@ -78,7 +80,7 @@ func TestLinkChild_HoldsTheChildToTheSinksJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := linkChild(bound, jb, "c2"); err != nil {
+	if err := linkChild(bound, jb, "c2", childKindFlow); err != nil {
 		t.Errorf("a journal over the same store: %v", err)
 	}
 }
@@ -204,14 +206,14 @@ func TestFoldChildMarks_FollowsLinksReadsEveryRecordAndIsBounded(t *testing.T) {
 	startTainted(t, j, "g1", d)
 	recordNode(t, j, "c1", "node:a")
 	recordNode(t, j, "g1", "node:a")
-	if err := putTaintChild(ctx, j, "p1", "node:call", "c1"); err != nil {
+	if err := putTaintChild(ctx, j, "p1", "node:call", "c1", childKindFlow); err != nil {
 		t.Fatal(err)
 	}
-	if err := putTaintChild(ctx, j, "p1", "node:other", "g1"); err != nil {
+	if err := putTaintChild(ctx, j, "p1", "node:other", "g1", childKindFlow); err != nil {
 		t.Fatal(err)
 	}
 	// A link back to the parent does not loop.
-	if err := putTaintChild(ctx, j, "c1", "node:a", "p1"); err != nil {
+	if err := putTaintChild(ctx, j, "c1", "node:a", "p1", childKindFlow); err != nil {
 		t.Fatal(err)
 	}
 	if err := foldChildMarks(ctx, j, "p1", "node:call"); err != nil {
@@ -227,7 +229,7 @@ func TestFoldChildMarks_FollowsLinksReadsEveryRecordAndIsBounded(t *testing.T) {
 	plain := memJournal()
 	startTainted(t, plain, "c9", d)
 	recordNode(t, plain, "c9", "node:a")
-	if err := putTaintChild(ctx, plain, "p9", "node:call", "c9"); err != nil {
+	if err := putTaintChild(ctx, plain, "p9", "node:call", "c9", childKindFlow); err != nil {
 		t.Fatal(err)
 	}
 	if err := foldChildMarks(ctx, plain, "p9", "node:call"); err != nil || len(marksFor(t, plain, "p9", "node:call")) != 0 {
@@ -238,14 +240,14 @@ func TestFoldChildMarks_FollowsLinksReadsEveryRecordAndIsBounded(t *testing.T) {
 	if _, err := putTaintMark(ctx, j, "c4", "node:a", "planted"); err != nil {
 		t.Fatal(err)
 	}
-	if err := putTaintChild(ctx, j, "p4", "node:call", "c4"); err != nil {
+	if err := putTaintChild(ctx, j, "p4", "node:call", "c4", childKindFlow); err != nil {
 		t.Fatal(err)
 	}
 	if err := foldChildMarks(ctx, j, "p4", "node:call"); err != nil || len(marksFor(t, j, "p4", "node:call")) != 0 {
 		t.Errorf("a child not under taint: %v, %v", err, marksFor(t, j, "p4", "node:call"))
 	}
 	startTainted(t, j, "p2", flowTaintDecls{Policy: flowTaintPolicy{Refuse: true}})
-	if err := putTaintChild(ctx, j, "p2", "node:call", "never-started"); err != nil {
+	if err := putTaintChild(ctx, j, "p2", "node:call", "never-started", childKindFlow); err != nil {
 		t.Fatal(err)
 	}
 	if err := foldChildMarks(ctx, j, "p2", "node:call"); err != nil || len(marksFor(t, j, "p2", "node:call")) != 0 {
@@ -266,12 +268,33 @@ func TestFoldChildMarks_FollowsLinksReadsEveryRecordAndIsBounded(t *testing.T) {
 		id := "d" + strings.Repeat("x", i)
 		startTainted(t, j, id, d)
 		node := "node:a"
-		if err := putTaintChild(ctx, j, prev, node, id); err != nil {
+		if err := putTaintChild(ctx, j, prev, node, id, childKindFlow); err != nil {
 			t.Fatal(err)
 		}
 		prev = id
 	}
 	if err := foldChildMarks(ctx, j, "d0", "node:a"); !errors.Is(err, ErrConfig) {
 		t.Errorf("a chain deeper than %d: %v, want ErrConfig", maxChildDepth, err)
+	}
+}
+
+func TestFlowEndedTainted_NeedsARunUnderTaint(t *testing.T) {
+	ctx := context.Background()
+	j := memJournal()
+	d := flowTaintDecls{Policy: flowTaintPolicy{Refuse: true}, Nodes: map[string]flowNodeTaint{"a": {Untrusted: []string{"s"}}}}
+	startTainted(t, j, "c1", d)
+	if got, err := flowEndedTainted(ctx, j, "c1"); err != nil || got {
+		t.Errorf("no result yet: %v, %v", got, err)
+	}
+	recordNode(t, j, "c1", "node:a")
+	if got, err := flowEndedTainted(ctx, j, "c1"); err != nil || !got {
+		t.Errorf("a source recorded: %v, %v", got, err)
+	}
+	// A run that is not under taint holds no mark, whatever its journal holds.
+	if _, err := putTaintMark(ctx, j, "c2", "node:a", "planted"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := flowEndedTainted(ctx, j, "c2"); err != nil || got {
+		t.Errorf("a run not under taint: %v, %v", got, err)
 	}
 }

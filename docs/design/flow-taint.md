@@ -323,6 +323,23 @@ run ungated, which fails open where an agent child fails closed). What the chose
   `ResolveHalt` of a node folds into the node's marks those of every run linked to it and, from their
   journals, of their children, before it records the operator's result; the nodes after it are read under
   them. The fold reads the child's journal, so it does not depend on the child having been driven again.
+- Decision 16 (2026-10-27): the child link. Run IDs are chosen by the node's body, so nothing derives them; the
+  link `taint-child:<node key>:<child run>` (insert-once, in the parent's journal, reserved like `taint-mark:`) is
+  how `ResolveHalt` finds the runs to fold, recursively, and a nested run under taint in another journal is
+  `ErrConfig` at Begin. The alternative, refusing `ResolveHalt` of a node in a run under taint, was not chosen.
+- Across engine kinds (decisions 17 to 19, 2026-10-27). An agent run a node's body drives hands the marks it
+  read itself (not the ones it inherited) up as `taint-mark:` records for the node, before the node's own
+  record (sink first, so a crash between them keeps the marks; the agent's recorded run is found again on the
+  next drive): the node's body context carries a result mark, the agent registers there as it does for a tool
+  call, and the body's return reads the agent's journal with the agent's tool declarations. A plan flow run
+  as a tool of an agent registers the same way, and when it ended with a mark (inherited or its own) the tool
+  result carries `subflow:<tool>` (cut like `subagent:`), so the agent's next turn is tainted and its side
+  effect is gated. `ResolveHalt` of a node that drove an agent cannot read the agent's marks from the journal
+  (its tools' declarations are in the `Agent`), so it records `subagent:<node name>`: an approximation that
+  over-taints and fails closed, on that path only. The child link (`taint-child:`) carries the run's kind,
+  `flow` or `agent`; an agent keeps its own store (no shared-journal rule for it). A flow with no policy
+  records no declarations, so a flow without a policy that reads a declared source marks nothing when it is run
+  as a tool; give it a policy.
 - Parts: inheritance down was the change after the enforcement core (3c-2); taint coming up and the removal of
   the guard are the one after (3c-3). 3c-3 removes the guard, which refused every flow that declared taint, and
   the test-only switch that kept the inheritance off, together.

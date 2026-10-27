@@ -54,14 +54,23 @@ type taintChildRecord struct {
 	Format  string `json:"format"`
 	NodeKey string `json:"node_key"`
 	RunID   string `json:"run_id"`
+	// Kind is what the run is: a plan flow's ("flow"), whose journal the fold reads, or an agent's ("agent"),
+	// whose marks need its tools' declarations, which the journal does not hold.
+	Kind string `json:"kind"`
 }
 
+// The kinds of a taint-child record.
+const (
+	childKindFlow  = "flow"
+	childKindAgent = "agent"
+)
+
 // putTaintChild records, insert-once, that childRun is a child of node nodeKey of run runID.
-func putTaintChild(ctx context.Context, j *Journal, runID, nodeKey, childRun string) error {
+func putTaintChild(ctx context.Context, j *Journal, runID, nodeKey, childRun, kind string) error {
 	if !planNodeKey(nodeKey) {
 		return fmt.Errorf("agent: a taint child names %q, which is not a plan node key: %w", nodeKey, ErrConfig)
 	}
-	b, err := marshalJournal(taintChildRecord{Format: taintChildFormat, NodeKey: nodeKey, RunID: childRun})
+	b, err := marshalJournal(taintChildRecord{Format: taintChildFormat, NodeKey: nodeKey, RunID: childRun, Kind: kind})
 	if err != nil {
 		return fmt.Errorf("encode %s (run %s): %w (%w)", taintChildStep(nodeKey, childRun), runID, err, ErrConfig)
 	}
@@ -77,7 +86,7 @@ func putTaintChild(ctx context.Context, j *Journal, runID, nodeKey, childRun str
 // not read is ErrStorage: a fold never takes it for no child.
 func decodeTaintChild(r Record) (taintChildRecord, error) {
 	var rec taintChildRecord
-	if err := strictjson.Unmarshal(r.Result, &rec, nil); err != nil || rec.Format != taintChildFormat || r.Name != taintChildStep(rec.NodeKey, rec.RunID) || !planNodeKey(rec.NodeKey) || rec.RunID == "" {
+	if err := strictjson.Unmarshal(r.Result, &rec, nil); err != nil || rec.Format != taintChildFormat || r.Name != taintChildStep(rec.NodeKey, rec.RunID) || !planNodeKey(rec.NodeKey) || rec.RunID == "" || rec.Kind != childKindFlow && rec.Kind != childKindAgent {
 		return taintChildRecord{}, fmt.Errorf("agent: the record %q does not read as a %s record: %w", r.Name, taintChildFormat, ErrStorage)
 	}
 	return rec, nil
@@ -86,18 +95,20 @@ func decodeTaintChild(r Record) (taintChildRecord, error) {
 // linkChild records the run runID, which is about to start (or be driven), as a child of the node whose sink
 // ctx carries, and holds it to the sink's journal: the marks go up as records of that journal, and a
 // ResolveHalt of the node finds the child in it, so a child in another journal could not be folded.
-func linkChild(ctx context.Context, j *Journal, runID string) error {
+func linkChild(ctx context.Context, j *Journal, runID, kind string) error {
 	sink, ok := markSinkFrom(ctx)
 	if !ok {
 		return nil
 	}
-	if sink.j.id != j.id {
+	// An agent run may keep its own store (it never sends marks into the journal: the node collects them), a
+	// flow run's marks are written into the sink's journal and its own is read by the fold.
+	if kind == childKindFlow && sink.j.id != j.id {
 		return fmt.Errorf("agent: run %s is started by node %q of run %s, which is under taint, and uses another journal; a flow started inside a run under taint must use its parent's journal, so its marks can go up into it: %w", runID, sink.nodeKey, sink.runID, ErrConfig)
 	}
 	if runID == sink.runID {
 		return fmt.Errorf("agent: node %q of run %s starts a flow under the run's own ID; a child needs an ID of its own: %w", sink.nodeKey, sink.runID, ErrConfig)
 	}
-	return putTaintChild(ctx, sink.j, sink.runID, sink.nodeKey, runID)
+	return putTaintChild(ctx, sink.j, sink.runID, sink.nodeKey, runID, kind)
 }
 
 // ownMarkSources are the sources of the marks a flow run's journal recs holds for the node with key nodeKey,
@@ -206,6 +217,15 @@ func foldChildMarks(ctx context.Context, j *Journal, runID, nodeKey string) erro
 				return fmt.Errorf("agent: run %s: the runs below node %q nest deeper than %d; their marks cannot be folded: %w", runID, rec.NodeKey, maxChildDepth, ErrConfig)
 			}
 			seen[rec.RunID] = true
+			if rec.Kind == childKindAgent {
+				// The agent's marks cannot be read from its journal, which does not hold its tools'
+				// declarations: the node is marked as if the agent had read something untrusted (it over-taints,
+				// and fails closed). Only this path is an approximation.
+				if name, ok := nodeNameOfKey(rec.NodeKey); ok {
+					sources = append(sources, subAgentMarkSource(name))
+				}
+				continue
+			}
 			child, err := j.History(ctx, rec.RunID)
 			if err != nil {
 				return fmt.Errorf("load history %s: %w (%w)", rec.RunID, err, ErrStorage)
@@ -236,6 +256,91 @@ func foldChildMarks(ctx context.Context, j *Journal, runID, nodeKey string) erro
 	for _, s := range slices.Compact(sources) {
 		if _, err := putTaintMark(ctx, j, runID, nodeKey, s); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// flowEndedTainted reports whether the plan flow run runID of journal j ended with a mark: one it inherited, or
+// one of its own (ownMarkSources). A run that is not under taint has none.
+func flowEndedTainted(ctx context.Context, j *Journal, runID string) (bool, error) {
+	recs, err := j.History(ctx, runID)
+	if err != nil {
+		return false, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
+	}
+	start := startOfRecs(recs)
+	if start.taintDigest() == "" {
+		return false, nil
+	}
+	if len(start.inheritedMarks()) > 0 {
+		return true, nil
+	}
+	decls, _, err := start.flowTaintDecls()
+	if err != nil {
+		return false, err
+	}
+	own, err := ownMarkSources(recs, decls, "")
+	return len(own) > 0, err
+}
+
+// flowTaintDriven is journalhook.FlowTaintDriven.
+func flowTaintDriven(ctx context.Context, j any, runID string) {
+	if rm := resultMarkFrom(ctx); rm != nil {
+		if jr, ok := j.(*Journal); ok {
+			rm.addFlow(jr, runID) // a run a call drives: its result carries what the run read
+		}
+	}
+}
+
+// ownEndedSources are the sources of the marks the agent run runID of a's store read itself: those it ended
+// with, less the ones it started with (inherited from the node, which already has them).
+func (a *Agent) ownEndedSources(ctx context.Context, runID string) ([]string, error) {
+	ended, _, err := a.endedMarks(ctx, runID)
+	if err != nil || len(ended) == 0 {
+		return nil, err
+	}
+	recs, err := a.store.History(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("load history %s: %w (%w)", runID, err, ErrStorage)
+	}
+	inherited := map[string]bool{}
+	for _, m := range startInherited(recs) {
+		inherited[m.Source] = true
+	}
+	var out []string
+	for _, m := range ended {
+		if !inherited[m.Source] {
+			out = append(out, m.Source)
+		}
+	}
+	return out, nil
+}
+
+// flowTaintBodyDone is journalhook.FlowTaintBodyDone.
+func flowTaintBodyDone(ctx context.Context, j any, runID, nodeKey string) error {
+	rm := resultMarkFrom(ctx)
+	if rm == nil {
+		return nil
+	}
+	jr, ok := j.(*Journal)
+	if !ok {
+		return fmt.Errorf("agent: FlowTaintBodyDone: %T is not a journal: %w", j, ErrConfig)
+	}
+	rm.mu.Lock()
+	runs := slices.Clone(rm.runs)
+	rm.mu.Unlock()
+	for _, r := range runs {
+		if r.a == nil {
+			continue // a flow run sends its own marks (flowTaintSink)
+		}
+		sources, err := r.a.ownEndedSources(ctx, r.id)
+		if err != nil {
+			return err
+		}
+		for _, s := range sources {
+			if _, err := putTaintMark(ctx, jr, runID, nodeKey, s); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

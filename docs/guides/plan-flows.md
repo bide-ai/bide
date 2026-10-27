@@ -881,7 +881,7 @@ and a long-lived host must restart to check new type names.
 - A flow can carry a [taint policy](untrusted-content.md#plan-flows) (`Builder.WithTaintPolicy`, experimental,
   Go only): a node that can have a side effect, run after the run has read untrusted content, needs an escalation
   gate on `node:<name>:taint` or is refused. It stops there: `bide check` and the editor do not show it yet,
-  `SeparateApprovers` is not built, and the marks of an agent a node's body runs do not come up to the flow. A plan
+  `SeparateApprovers` is not built. A plan
   node may carry a `#` in its name; its subject is `node:<name>`, never an escalation instance.
 - A tool that carries [amount caps](amount-caps.md) (`agent.WithCaps`) cannot be a flow block:
   `Registry.RegisterTool` and `Builder.Tool` refuse it with `ErrConfig` naming the tool, because a

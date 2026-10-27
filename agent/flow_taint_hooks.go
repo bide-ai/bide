@@ -19,6 +19,8 @@ func init() {
 	journalhook.FlowTaintEnter = flowTaintEnter
 	journalhook.FlowTaintNodeHook = flowTaintNode
 	journalhook.FlowTaintSink = flowTaintSink
+	journalhook.FlowTaintDriven = flowTaintDriven
+	journalhook.FlowTaintBodyDone = flowTaintBodyDone
 }
 
 // declsOf converts the plain declarations of package plan.
@@ -55,7 +57,7 @@ func flowTaintPrepare(ctx context.Context, j any, runID string, start any, d *jo
 	parent := underTaintFrom(ctx)
 	carried, hasCarried := callMarksFrom(ctx)
 	if parent != "" {
-		if err := linkChild(ctx, jr, runID); err != nil {
+		if err := linkChild(ctx, jr, runID, childKindFlow); err != nil {
 			return nil, err
 		}
 	}
@@ -243,7 +245,9 @@ func flowTaintNode(ctx context.Context, j any, runID, nodeKey string, safety any
 	}
 	// The body's runs inherit the status and the read set, whether or not the node is gated: a read-only node
 	// that runs an agent hands it the taint too.
-	bound := withMarkSink(withCallMarks(withUnderTaint(ctx, digest), marks), jr, runID, nodeKey)
+	// The body also gets a result mark: an agent it runs registers there, and hands its marks up when the body is
+	// done (FlowTaintBodyDone), before the node's record.
+	bound, _ := withResultMark(withMarkSink(withCallMarks(withUnderTaint(ctx, digest), marks), jr, runID, nodeKey))
 	if standing == journalhook.FlowTaintPolicyless || !tracked(s) {
 		return journalhook.FlowTaintDecision{Ctx: bound}, nil
 	}

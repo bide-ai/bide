@@ -185,6 +185,18 @@ var FlowTaintNodeHook func(ctx context.Context, j any, runID, nodeKey string, sa
 // The agent package sets it in init.
 var FlowTaintSink func(ctx context.Context, j any, runID, nodeKey string) error
 
+// FlowTaintDriven registers the plan flow run runID of journal j with the call that drives it, when ctx carries
+// the result mark of a tool call: the call's result then carries "subflow:<tool>" if the run ended with a mark
+// (one it inherited or one of its own), as a sub-agent's answer carries "subagent:<tool>". The agent package
+// sets it in init.
+var FlowTaintDriven func(ctx context.Context, j any, runID string)
+
+// FlowTaintBodyDone is called when the body of node nodeKey of run runID returns without an error, before the
+// node's result is recorded: the agent runs the body drove hand the marks they read up as taint-mark records for
+// the node (a crash before the node's record leaves them, never fewer). Nothing happens when ctx carries no
+// result mark (the run is not under taint). The agent package sets it in init.
+var FlowTaintBodyDone func(ctx context.Context, j any, runID, nodeKey string) error
+
 // RunProvenance reads a plan flow run's options (each an agent.RunOption) for where the run's input came
 // from: the source WithUntrustedInput names, or the reason WithTrustedInput gives (at most one is set; both
 // is ErrConfig). The agent package sets it in init.
