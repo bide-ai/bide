@@ -104,6 +104,8 @@ func flowTaintEnter(ctx context.Context, j any, runID string, d *journalhook.Flo
 	return journalhook.FlowTaintNone, nil
 }
 
+// protocol:flows begin TRefuse
+
 // flowTaintNode is journalhook.FlowTaintNodeHook. For a run under taint it computes the node's requirement
 // from the declarations the run's start recorded and the journal before the node's own result (the position
 // it ran at, or the end of the journal for a node that has not run), records the gate-reason record
@@ -193,6 +195,8 @@ func flowTaintNode(ctx context.Context, j any, runID, nodeKey string, safety any
 	}
 	return journalhook.FlowTaintDecision{Gate: req.Gate}, nil
 }
+
+// protocol:flows end
 
 // reasonText names the first taint source of reasons for an error.
 func reasonText(rs []gateReason) string {

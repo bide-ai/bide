@@ -1027,7 +1027,7 @@ decision here is their first valid one; model 1b checks the counting rule over s
 invalid records, and that a counted signature binds the request's input is checked by Go tests
 (`plan/gate_test.go`), not by this model.
 
-Taint (the design [flow-taint](../../docs/design/flow-taint.md), A2 to A5b; not built yet). The same
+Taint (the design [flow-taint](../../docs/design/flow-taint.md), A2 to A5b; the enforcement core is built, and nested flows, the sink for taint coming up and `SeparateApprovers` are not). The same
 module models it: a run records its declarations in `run:start` (the policy, the exempt nodes, the
 declared sources: `rdecl`, first writer wins) and each drive, which may be run under other
 declarations (`DeclNames`: no policy, Gate, Refuse, dropped sources, an added exemption), compares
@@ -1064,7 +1064,6 @@ static analysis. The instance has no early decisions (a decision recorded before
 decision-after-request ordering for the instance is left to the Go pull request that adds the instance
 (3c), as is every other Go-side property of the key parsers.
 
-<!-- modelsync: no-code flows TRefuse TGate TCount TPause TPre -->
 <!-- modelsync: map flows -->
 | Label | Go |
 |---|---|
@@ -1077,11 +1076,11 @@ decision-after-request ordering for the instance is left to the Go pull request 
 | `GRead` | `runGate` through `journalhook.Gate` to `flowGate`: the gate's recorded outcome (`approval-tally:<node key>`, or `Approve`'s record if it follows the request); else the request (`approval-request:<node key>`) |
 | `GCount` | `flowGate`'s count (`tallyGate` over the records after the request, `TallyApprovals`): a terminal tally is recorded before the node runs, else the drive pauses (`*agent.ApprovalPending`) |
 | `GPause` | `runGate`: a denying tally stops the run (`ErrApprovalDenied`); a passing one lets the node's Step run |
-| `TRefuse` | (taint design, A2 "Refuse", not built) the refusal sentinel returned before any gate, after the gate-reason record `GRead` writes: no node record, attempt marker or approval request |
-| `TGate` | (taint design, A2 "Subject", not built) the second gate instance `node:[iter:<n>:]<name>:taint`: its request, after the node's own gate and before the attempt claim |
-| `TCount` | (taint design, not built) the instance's count: the instance's own decisions, minus the approvers the own gate counted under `SeparateApprovers`; a terminal tally, or a denial when the approvers left cannot reach the need |
-| `TPause` | (taint design, not built) a denying instance tally stops the run; a passing one goes to the PreExec |
-| `TPre` | (taint design, A2 step 4, not built) both PreExecs (`journalhook.PreExec` after the node gate and after the instance), immediately before the body executes, not on a replay: a certificate revoked after approval stops the node before the claim |
+| `TRefuse` | `flowTaintNode` (through `journalhook.FlowTaintNodeHook`, called by `runGate` before any gate): the refusal, after it writes the gate-reason record (insert-once, `refused`): no node record, attempt marker or approval request; `runGate` returns it as `plan.ErrTaintRefused` |
+| `TGate` | `runGate`: the second gate instance `node:[iter:<n>:]<name>:taint` (`escalation.NodeInstance`), evaluated by `evalGate` through `journalhook.Gate` after the node's own gate and before the attempt claim: its request |
+| `TCount` | `flowGate`'s count for the instance subject (the same code as `GCount`, over the instance's own decisions after its request): a terminal tally, or a pause; the exclusion of the approvers the own gate counted under `SeparateApprovers`, and the denial when too few are left, are 3d |
+| `TPause` | `runGate`/`evalGate`: a denying instance tally stops the run (`plan.ErrApprovalDenied`); a passing one goes to the PreExecs |
+| `TPre` | `runGate`'s `preExec` (`journalhook.PreExec`) of the node gate and then of the instance, immediately before the node's Step: a certificate revoked after approval stops the node before the claim; a node whose result is recorded replays and runs no check |
 | `ADecide` | `agent.SubmitDecision` (or `agent.Approve`; in a flow's run both refuse a node key with no request, `flowDecision`, and report one whose name an earlier record holds, `staleDecision`): an approver's decision on a gate, recorded whether a driver runs or not; an early one (with `Early`) stands for a record written directly, and the approver may decide again after the request |
 
 | Property | Kind | Statement |

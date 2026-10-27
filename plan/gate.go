@@ -23,7 +23,7 @@ var ErrApprovalDenied = errors.New("approval denied")
 // every later drive returns it.
 var ErrApprovalExpired = fmt.Errorf("%w (%w)", agent.ErrApprovalExpired, ErrApprovalDenied)
 
-// protocol:flows begin GRead GPause
+// protocol:flows begin GRead GPause TRefuse TGate TPause TPre
 
 // taintState is a drive's standing against the taint declarations its run started under, and the flow's
 // declarations (nil for a flow with no policy). A nil *taintState is a run that is not under taint.
