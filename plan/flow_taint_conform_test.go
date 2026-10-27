@@ -163,4 +163,7 @@ func TestFlowTaintConform_DeclarationsAreTheFlows(t *testing.T) {
 	if err != nil || ok || !strings.Contains(strings.Join(diffs, "|"), "no taint policy") {
 		t.Errorf("no policy: Conform = %v, %q, %v", ok, diffs, err)
 	}
+	if !strings.Contains(strings.Join(diffs, "|"), "escalation gate of a flow with no taint policy") {
+		t.Errorf("no policy: %q, want the escalation gate records named as the flow's own to have", diffs)
+	}
 }
