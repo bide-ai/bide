@@ -124,7 +124,7 @@ func checkInheritedMarks(s RunStart) ([]inheritedMark, error) {
 }
 
 // flowTaintEnter is journalhook.FlowTaintEnter.
-func flowTaintEnter(ctx context.Context, j any, runID string, d *journalhook.FlowTaint, inherit bool) (int, error) {
+func flowTaintEnter(ctx context.Context, j any, runID string, d *journalhook.FlowTaint, tracked []string, inherit bool) (int, error) {
 	jr, ok := j.(*Journal)
 	if !ok {
 		return 0, fmt.Errorf("agent: FlowTaintEnter: %T is not a journal: %w", j, ErrConfig)
@@ -157,6 +157,12 @@ func flowTaintEnter(ctx context.Context, j any, runID string, d *journalhook.Flo
 	st, err := flowTaintCheck(rec, cur)
 	if err != nil {
 		return 0, err
+	}
+	// A run that started inside a tainted run under a flow with no policy runs no node that can have a side
+	// effect, on any drive: the flow that drives it now is refused when it has one, before its read-only nodes
+	// run (a redeployed flow whose node became a side effect is not the one that started it).
+	if rec.inheritedOnly() && len(tracked) > 0 {
+		return 0, fmt.Errorf("agent: run %s started inside a run under taint (%.12s) under a flow with no taint policy, and this flow's steps %s can have a side effect, which a flow with no policy to enforce cannot run under taint; drive it with the flow that started it, or start a new run with a new run ID: %w", runID, digestPrefix(rec.Ext[extTaintDigest]), strings.Join(tracked, ", "), ErrConfig)
 	}
 	switch st {
 	case flowUnderTaint:
@@ -225,6 +231,10 @@ func flowTaintNode(ctx context.Context, j any, runID, nodeKey string, safety any
 			break
 		}
 	}
+	// The read set is folded for a node that cannot have a side effect too, and so is the journal read above:
+	// the node's body is bound to it, as the marks the runs the body starts inherit. A read-only node was once
+	// left out (it needs no gate, so it read nothing); that no longer holds, because a read-only node's body is
+	// where a nested flow or an agent starts.
 	marks, err := flowReadSet(recs, decls, before, nodeKey, inheritedAsMarks(inherited))
 	if err != nil {
 		return journalhook.FlowTaintDecision{}, err

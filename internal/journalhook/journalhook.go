@@ -162,8 +162,10 @@ var FlowTaintPrepare func(ctx context.Context, j any, runID string, start any, d
 
 // FlowTaintEnter compares a drive of the flow, whose declarations are d (nil for a flow with no policy),
 // with the declarations the run's recorded start holds, and returns one of the FlowTaint standings. Any
-// difference is ErrConfig, naming both digests, before a node runs. The agent package sets it in init.
-var FlowTaintEnter func(ctx context.Context, j any, runID string, d *FlowTaint, inherit bool) (standing int, err error)
+// difference is ErrConfig, naming both digests, before a node runs. A run that started inside a tainted run under a
+// flow with no policy is refused (ErrConfig) on every drive by a flow with a node that can have a side effect
+// (tracked names them), as it was at Begin, before any node runs. The agent package sets it in init.
+var FlowTaintEnter func(ctx context.Context, j any, runID string, d *FlowTaint, tracked []string, inherit bool) (standing int, err error)
 
 // FlowTaintNodeHook decides what taint requires of the node with key nodeKey (and safety, an agent.Safety),
 // about to run in a run at standing: it computes the node's read set from the journal, records the

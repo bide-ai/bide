@@ -117,7 +117,7 @@ func TestFlowTaintEnter_HoldsTheInheritedMarks(t *testing.T) {
 	m1 := taintMark{Source: "inbound-email", Ref: "node:fetch"}
 	j, _ := beginNested(t, taintedCtx(m1), hookDecls(nil), nil)
 	enter := func(ctx context.Context, d *journalhook.FlowTaint) (int, error) {
-		return flowTaintEnter(ctx, j, "r1", d, true)
+		return flowTaintEnter(ctx, j, "r1", d, nil, true)
 	}
 	if st, err := enter(taintedCtx(m1), hookDecls(nil)); err != nil || st != journalhook.FlowTaintUnder {
 		t.Errorf("the same marks: %d, %v", st, err)
@@ -138,7 +138,7 @@ func TestFlowTaintEnter_HoldsTheInheritedMarks(t *testing.T) {
 	if _, _, _, err := beginRun(context.Background(), jb, "r1", bad); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := flowTaintEnter(context.Background(), jb, "r1", &journalhook.FlowTaint{Refuse: true}, true); !errors.Is(err, ErrStorage) {
+	if _, err := flowTaintEnter(context.Background(), jb, "r1", &journalhook.FlowTaint{Refuse: true}, nil, true); !errors.Is(err, ErrStorage) {
 		t.Errorf("a list not sorted: %v, want ErrStorage", err)
 	}
 	for what, raw := range map[string]string{
@@ -158,11 +158,11 @@ func TestFlowTaintEnter_HoldsTheInheritedMarks(t *testing.T) {
 func TestFlowTaintEnter_InheritedPolicylessStanding(t *testing.T) {
 	m1 := taintMark{Source: "s", Ref: "node:x"}
 	j, _ := beginNested(t, taintedCtx(m1), nil, nil)
-	if st, err := flowTaintEnter(context.Background(), j, "r1", nil, true); err != nil || st != journalhook.FlowTaintPolicyless {
+	if st, err := flowTaintEnter(context.Background(), j, "r1", nil, nil, true); err != nil || st != journalhook.FlowTaintPolicyless {
 		t.Errorf("the flow that started it: %d, %v; want the policyless standing", st, err)
 	}
 	// A flow that has a policy now is not the one that started it.
-	if _, err := flowTaintEnter(context.Background(), j, "r1", hookDecls(nil), true); !errors.Is(err, ErrConfig) {
+	if _, err := flowTaintEnter(context.Background(), j, "r1", hookDecls(nil), nil, true); !errors.Is(err, ErrConfig) {
 		t.Errorf("a flow with a policy now: %v, want ErrConfig", err)
 	}
 }
@@ -240,7 +240,7 @@ func TestFlowTaint_InheritanceOffChangesNothing(t *testing.T) {
 		t.Errorf("marks were recorded with the inheritance off")
 	}
 	jb, _ := beginNested(t, taintedCtx(taintMark{Source: "a", Ref: "node:x"}), hookDecls(nil), nil)
-	if _, err := flowTaintEnter(taintedCtx(taintMark{Source: "b", Ref: "node:y"}), jb, "r1", hookDecls(nil), false); err != nil {
+	if _, err := flowTaintEnter(taintedCtx(taintMark{Source: "b", Ref: "node:y"}), jb, "r1", hookDecls(nil), nil, false); err != nil {
 		t.Errorf("other marks, inheritance off: %v", err)
 	}
 }

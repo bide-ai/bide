@@ -472,3 +472,156 @@ func TestFlowTaint_WithTheSwitchOffABodyRunsAsItDid(t *testing.T) {
 		t.Error("the agent inherited marks with the switch off")
 	}
 }
+
+// A node declared Idempotent has no claim, but it can have a side effect: in a policyless flow started inside a run
+// under taint it is refused at Begin, as a plain side effect is, with nothing written.
+func TestFlowTaint_AnIdempotentNodeInAPolicylessNestedFlowIsRefusedAtBegin(t *testing.T) {
+	ctx := context.Background()
+	allowTaint(t)
+	n := &nested{t: t, j: agenttest.MemJournal(), errs: map[string]error{}}
+	idem := child(t, "idem", nil, false, Idempotent())
+	p := n.parent("inbound-email", single(), map[string]*Flow[int, int]{"idem": idem})
+	if _, err := p.Run(ctx, n.j, "p1", 1); err != nil {
+		t.Fatalf("parent: %v", err)
+	}
+	if err := n.errs["idem"]; !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "pay") {
+		t.Fatalf("the policyless child with an idempotent side effect: %v, want ErrConfig naming the step", err)
+	}
+	if recs, _ := n.j.History(ctx, "idem"); len(recs) != 0 {
+		t.Errorf("the refused child wrote %d records", len(recs))
+	}
+}
+
+// The marks a parent passes are its node's read set at the node's gating position: a retry-safe node whose body
+// ran the child and failed is driven again, passes the same list, and the child (unfinished, so checked on
+// every drive) accepts it, with one entry.
+func TestFlowTaint_ARetrySafeNodeDrivenAgainPassesTheSameMarks(t *testing.T) {
+	ctx := context.Background()
+	allowTaint(t)
+	n := &nested{t: t, j: agenttest.MemJournal(), errs: map[string]error{}}
+	c := child(t, "c", single(), true, Approval(agent.SingleApproval()))
+	attempts := 0
+	b := New[int, int]("parent").WithTaintPolicy(*single())
+	fetch := b.Step("fetch", func(_ context.Context, v int) (int, error) { return v, nil }, Untrusted("inbound-email"))
+	call := b.Step("call", func(ctx context.Context, v int) (int, error) {
+		attempts++
+		n.runChild(ctx, c, "c1")
+		if attempts == 1 {
+			return 0, errors.New("the body fails once, after the child ran")
+		}
+		return v, nil
+	}, Idempotent(), Approval(agent.SingleApproval()))
+	b.Edge(fetch, call)
+	p, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := false
+	for range 8 {
+		_, err = p.Run(ctx, n.j, "p1", 1)
+		var pend *agent.ApprovalPending
+		switch {
+		case errors.As(err, &pend):
+			if err := agent.Approve(ctx, n.j, "p1", pend.ToolUseID, true); err != nil {
+				t.Fatal(err)
+			}
+		case err != nil && !failed:
+			failed = true // the body's failure: drive again
+		default:
+			err = nil
+		}
+		if err == nil || attempts >= 2 && !errors.As(err, &pend) {
+			break
+		}
+	}
+	if attempts < 2 {
+		t.Fatalf("the body ran %d times, want it driven again", attempts)
+	}
+	if err := n.errs["c1"]; !isPendingAt(err, "node:pay") {
+		t.Errorf("the child driven again: %v, want it to accept the marks and wait at its own gate", err)
+	}
+	if l := inherited(t, startOf(t, n.j, "c1")); len(l) != 1 || l[0]["source"] != "inbound-email" {
+		t.Errorf("the child holds %v, want one entry: inbound-email", l)
+	}
+}
+
+// A run that started inside a tainted run under a flow with no policy runs no node that can have a side effect on
+// any drive: a flow redeployed with a node that now has one is refused before its read-only prefix runs.
+func TestFlowTaint_ARedeployedFlowWithASideEffectIsRefusedOnEveryDrive(t *testing.T) {
+	allowTaint(t)
+	ctx := context.Background()
+	n := &nested{t: t, j: agenttest.MemJournal(), errs: map[string]error{}}
+	looks := 0
+	mk := func(payReadOnly bool) *Flow[int, int] {
+		b := New[int, int]("reads")
+		look := b.Step("look", func(_ context.Context, v int) (int, error) { looks++; return v, nil }, ReadOnly(), Approval(agent.SingleApproval()))
+		var opts []NodeOption
+		if payReadOnly {
+			opts = append(opts, ReadOnly())
+		}
+		pay := b.Step("pay", func(_ context.Context, v int) (int, error) { return v, nil }, opts...)
+		b.Edge(look, pay)
+		f, err := b.Build()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	p := n.parent("inbound-email", single(), map[string]*Flow[int, int]{"c1": mk(true)})
+	if _, err := p.Run(ctx, n.j, "p1", 1); err != nil {
+		t.Fatalf("parent: %v", err)
+	}
+	if err := n.errs["c1"]; !isPendingAt(err, "node:look") || looks != 0 {
+		t.Fatalf("the first drive: %v, look ran %d times; want a pause at look's gate before it ran", err, looks)
+	}
+	if err := agent.Approve(ctx, n.j, "c1", "node:look", true); err != nil {
+		t.Fatal(err)
+	}
+	// The flow is redeployed with a node that can have a side effect after the read-only prefix.
+	if _, err := mk(false).Run(ctx, n.j, "c1", 1); !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "pay") {
+		t.Errorf("the redeployed flow: %v, want ErrConfig naming the step", err)
+	}
+	if looks != 0 {
+		t.Errorf("look ran %d times, want the read-only prefix not to run", looks)
+	}
+	// The flow that started it still drives it.
+	if _, err := mk(true).Run(ctx, n.j, "c1", 1); err != nil || looks != 1 {
+		t.Errorf("the original flow: %v, look ran %d times; want it to finish", err, looks)
+	}
+}
+
+// A run that started under a policy of its own, driven by a flow that lost the policy, is refused at the node that can
+// have a side effect, not before: its read-only prefix runs. (Only a run that started with no policy inside a tainted
+// run is refused for the flow's side effects on every drive.)
+func TestFlowTaint_AFlowThatLostItsPolicyRunsItsReadOnlyPrefix(t *testing.T) {
+	allowTaint(t)
+	ctx := context.Background()
+	j := agenttest.MemJournal()
+	looks := 0
+	mk := func(pol *agent.TaintPolicy) *Flow[int, int] {
+		b := New[int, int]("lost")
+		if pol != nil {
+			b.WithTaintPolicy(*pol)
+		}
+		look := b.Step("look", func(_ context.Context, v int) (int, error) { looks++; return v, nil }, ReadOnly(), Approval(agent.SingleApproval()))
+		pay := b.Step("pay", func(_ context.Context, v int) (int, error) { return v, nil })
+		b.Edge(look, pay)
+		f, err := b.Build()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	if _, err := mk(single()).Run(ctx, j, "r1", 1); !isPendingAt(err, "node:look") {
+		t.Fatalf("the first drive: %v", err)
+	}
+	if err := agent.Approve(ctx, j, "r1", "node:look", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mk(nil).Run(ctx, j, "r1", 1); !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "pay") {
+		t.Errorf("the flow that lost its policy: %v, want ErrConfig at pay", err)
+	}
+	if looks != 1 {
+		t.Errorf("look ran %d times, want its read-only prefix to run", looks)
+	}
+}

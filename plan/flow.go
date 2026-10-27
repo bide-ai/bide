@@ -168,7 +168,7 @@ func (f *Flow[In, Out]) run(ctx context.Context, store *agent.Journal, runID str
 	// Every drive is compared with the declarations the run started under before a node runs: a different
 	// policy or declaration is ErrConfig, and a flow with no policy driving a run that started under one
 	// refuses its side-effecting nodes.
-	standing, err := journalhook.FlowTaintEnter(ctx, store, runID, c.flowTaint(), inheritsTaint())
+	standing, err := journalhook.FlowTaintEnter(ctx, store, runID, c.flowTaint(), c.trackedNames(), inheritsTaint())
 	if err != nil {
 		return out, fmt.Errorf("plan: run %q: %w", c.flowName, err)
 	}

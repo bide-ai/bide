@@ -124,7 +124,7 @@ func TestFlowTaintEnter(t *testing.T) {
 		"no policy then, none now":     {plain, nil, journalhook.FlowTaintNone, false},
 		"no policy then, a policy now": {plain, hookDecls(nil), journalhook.FlowTaintNone, false},
 	} {
-		got, err := flowTaintEnter(ctx, c.j, "r1", c.d, true)
+		got, err := flowTaintEnter(ctx, c.j, "r1", c.d, nil, true)
 		if (err != nil) != c.err || err == nil && got != c.want {
 			t.Errorf("%s: standing %d, err %v; want %d, err %v", what, got, err, c.want, c.err)
 		}
@@ -133,7 +133,7 @@ func TestFlowTaintEnter(t *testing.T) {
 		}
 	}
 	// A run with no recorded start has nothing to compare with.
-	if _, err := flowTaintEnter(ctx, memJournal(), "none", hookDecls(nil), true); !errors.Is(err, ErrStorage) {
+	if _, err := flowTaintEnter(ctx, memJournal(), "none", hookDecls(nil), nil, true); !errors.Is(err, ErrStorage) {
 		t.Errorf("no recorded start: %v, want ErrStorage", err)
 	}
 }
@@ -418,14 +418,14 @@ func TestFlowTaintHooks_ReadTheBoundStartOfTheirOwnRunOnly(t *testing.T) {
 	}
 	// Run rB has no start in its journal: the hooks must not answer from rA's.
 	jb := memJournal()
-	if _, err := flowTaintEnter(ctxA, jb, "rB", hookDecls(nil), true); !errors.Is(err, ErrStorage) {
+	if _, err := flowTaintEnter(ctxA, jb, "rB", hookDecls(nil), nil, true); !errors.Is(err, ErrStorage) {
 		t.Errorf("Enter for another run with rA's context: %v, want ErrStorage", err)
 	}
 	if _, err := flowTaintNode(ctxA, jb, "rB", "node:pay", Safety{}, journalhook.FlowTaintUnder); !errors.Is(err, ErrStorage) {
 		t.Errorf("the node decision for another run with rA's context: %v, want ErrStorage", err)
 	}
 	// For its own run the bound start answers without a read of the journal.
-	if st, err := flowTaintEnter(ctxA, ja, "rA", hookDecls(nil), true); err != nil || st != journalhook.FlowTaintUnder {
+	if st, err := flowTaintEnter(ctxA, ja, "rA", hookDecls(nil), nil, true); err != nil || st != journalhook.FlowTaintUnder {
 		t.Errorf("Enter for the bound run: %d, %v", st, err)
 	}
 }
