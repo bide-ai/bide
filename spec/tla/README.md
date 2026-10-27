@@ -1060,10 +1060,20 @@ its own gating like Refuse (`InhPolicyless`; Safety is in no digest); a flow wit
 in `NGet` on every drive for a node that is already recorded) writes the parent node's `taint-mark` record
 (`pm`) for each own mark of the child (a declared source's result, a mark of a child's child); the parent node's
 result (`PEnd`) is recorded after the flow completed, or by `Flow.ResolveHalt` of the halted node, which folds
-the marks (`ParentMarksUp`). The marks sent up are the child's own only (`NoEcho`). Not modelled: which marks
-(names) are passed, only whether there are any; the parent's own later nodes reading `pm` (the same fold, checked
-by the configurations above); refusing `ResolveHalt` until the marks are drained (the fold is modelled instead);
-a drive that carries a different non-empty list than the recorded one (ErrConfig in the code; the model has no list identity); a grandchild (the chain is the one rule, `NoEcho`, applied at each level).
+the marks (`ParentMarksUp`). The parent's later tracked node X (`PGate`, `PX`) folds `pm` into its read set, so
+the child's mark makes X need its taint instance, and X is never claimed ungated while the child's own marks held
+when the parent node's result was recorded (`ParentGated`); the sink mutants fail this, not only the bookkeeping.
+The marks sent up are the child's own only (`NoEcho`: the inherited marks are not echoed up).
+
+Not modelled for inherited taint (owner: the Go pull request named):
+
+| Item | Why | Go test it must contain |
+|---|---|---|
+| which marks (names) are passed, and the canonical list (one per source, first ref kept, so the list passed down does not grow with depth) | the model has presence only, no list | 3c-2: a flow -> node -> flow -> node test: the inherited list stays one entry per source at every depth |
+| a drive carrying a different non-empty list than the recorded one | no list identity | 3c-2: that drive is ErrConfig |
+| `ResolveHalt` refusing until the sink is drained | the fold is modelled instead | 3c-3: the resolve path |
+| the sink sends marks the child learned as the child's own marks; transitivity up a chain depends on that | the model has one level | 3c-3: a mark learned by a grandchild reaches the root through the child's own record |
+| a parent node after the child is gated through the sink record | modelled as above (`ParentGated`) | 3c-3: a parent node after the child needs its instance through the sink record, after a crash between the child's record and the sink, and after `ResolveHalt` of the parent node |
 
 Not modelled, and who owns the Go test (none of the three exists yet; the pull request named adds it):
 
@@ -1078,7 +1088,7 @@ static analysis. The instance has no early decisions (a decision recorded before
 decision-after-request ordering for the instance is left to the Go pull request that adds the instance
 (3c), as is every other Go-side property of the key parsers.
 
-<!-- modelsync: no-code flows NSink PEnd -->
+<!-- modelsync: no-code flows NSink PEnd PGate PX -->
 <!-- modelsync: map flows -->
 | Label | Go |
 |---|---|
@@ -1096,6 +1106,8 @@ decision-after-request ordering for the instance is left to the Go pull request 
 | `TCount` | `flowGate`'s count for the instance subject (the same code as `GCount`, over the instance's own decisions after its request): a terminal tally, or a pause; the exclusion of the approvers the own gate counted under `SeparateApprovers`, and the denial when too few are left, are 3d |
 | `TPause` | `runGate`/`evalGate`: a denying instance tally stops the run (`plan.ErrApprovalDenied`); a passing one goes to the PreExecs |
 | `TPre` | `runGate`'s `preExec` (`journalhook.PreExec`) of the node gate and then of the instance, immediately before the node's Step: a certificate revoked after approval stops the node before the claim; a node whose result is recorded replays and runs no check |
+| `PGate` | (taint design, not built) the parent's later tracked node: its fold reads the sink's taint-mark record, so the child's mark makes it need its taint instance |
+| `PX` | (taint design, not built) that node's attempt claim: never ungated while the child's marks held |
 | `NSink` | (taint design, C1 option B, not built) the context-bound mark sink after the node's record: the insert-once `taint-mark:<node key>:<source>` record in the parent's journal for an own mark of the child |
 | `PEnd` | (taint design, not built) the parent node that runs this flow gets its result, after the flow completed or through `Flow.ResolveHalt` of the halted node, which folds the child's marks into the parent's journal |
 | `ADecide` | `agent.SubmitDecision` (or `agent.Approve`; in a flow's run both refuse a node key with no request, `flowDecision`, and report one whose name an earlier record holds, `staleDecision`): an approver's decision on a gate, recorded whether a driver runs or not; an early one (with `Early`) stands for a record written directly, and the approver may decide again after the request |
@@ -1121,7 +1133,8 @@ decision-after-request ordering for the instance is left to the Go pull request 
 | `InheritedPolicylessRefused` | invariant | a flow started under a tainted parent, whose declaration has no policy and which has a tracked node, never starts: it is refused at Begin before any record |
 | `InheritedPolicylessNoTracked` | invariant | and no tracked node of a run under inherited marks and a policyless declaration ever runs (read-only flows run) |
 | `ParentMarksUp` | invariant | the parent node's result is recorded only with every own mark of the child already in the parent's journal: the sink runs on every drive, replay included, and `ResolveHalt` of the parent node folds the marks |
-| `NoEcho` | invariant | only the child's own marks go up; the inherited ones, which the parent passed down, are not sent back (a chain of nested flows does not grow the list at each level) |
+| `ParentGated` | invariant | a parent node after the child is not claimed ungated while the child's own marks held when the parent node's result was recorded (its fold reads the sink's record) |
+| `NoEcho` | invariant | only the child's own marks go up; the inherited ones, which the parent passed down, are not sent back (list growth along a chain is not modelled: there is no list) |
 | `RefusedClean` | invariant | a refused node has a gate-reason record and no node record, no attempt, no approval request |
 
 `Conform` here is the property the journal must have, not `plan.Conform` itself: the model shows
@@ -1147,11 +1160,11 @@ every journal the drivers and the resolver can produce is a declared path, which
 | `flow-taint-idempotent` | ci | idempotent nodes `H` and `T` (retry-safe, no claim, not read-only) read the source `E` and need the instance before their body; 1 crash | 216,730 | 16 s |
 | `flow-taint-inherit` | ci | the flow runs under inherited marks: every tracked node needs the instance with no declared source; a recovery pass may drive it directly; 1 crash | 11,915 | 1 s |
 | `flow-taint-inherit-policyless` | ci | an inherited, policyless declaration with a tracked node: refused at Begin before any record, every drive | 8 | <1 s |
-| `flow-taint-inherit-policyless-reach` | ci | reachability: that refusal happens | 3 | <1 s |
+| `flow-taint-inherit-policyless-reach` | ci | reachability: that refusal happens | violated at depth 3 | <1 s |
 | `flow-taint-inherit-readonly` | ci | an inherited, policyless flow with no tracked node runs | 3,376 | <1 s |
-| `flow-taint-inherit-readonly-reach` | ci | reachability: the read-only flow completes | 709 | <1 s |
-| `flow-taint-up` | ci | the child's own mark (S) goes up; the parent node's result needs it, also when the halted node is resolved; 1 crash, 1 error reply | 297,715 | 10 s |
-| `flow-taint-chain` | ci | inherited marks and an own source: only the own mark goes up; 1 crash | 22,730 | 1 s |
+| `flow-taint-inherit-readonly-reach` | ci | reachability: the read-only flow completes | violated at depth 39 | <1 s |
+| `flow-taint-up` | ci | the child's own mark (S) goes up; the parent node's result needs it, also when the halted node is resolved; a later tracked node of the parent is gated by it; 1 crash | 474,492 | 38 s |
+| `flow-taint-chain` | ci | inherited marks and an own source: only the own mark goes up, the inherited marks are not echoed up; 1 crash | 97,482 | 7 s |
 | `flow-two` | nightly | two drivers; `E`, `H`, `T` side effects; 1 error reply, 1 crash | 2,125,920 | 23 s |
 | `deep-flow-all-side` | nightly | every node a side effect, two drivers | 7,165,894 | 8 min (2 workers, beside other runs) |
 | `deep-flow-resolve` | nightly | two drivers and the resolver, 1 crash | 20,510,386 | 22 min (2 workers, beside other runs) |
@@ -1197,7 +1210,7 @@ declarations; `ResumeExact`), `taint-reuses-node-decider` (`SeparateApprovers` i
 `taint-preexec-ignores-revocation` (the PreExec's result ignored; `PreExecHeld`),
 `taint-preexec-own-only` (only the node gate's approval is checked, the instance's revoked approval does
 not stop the node; `PreExecHeld`), `taint-run-before-refusal` (a node claimed with no gate-reason or
-refusal journaled first; `GateReasonFirst`), `taint-preexec-on-replay` (the PreExec runs before the replay check, so a recorded node is refused once its approval is revoked; `ReplayNeverBlocked`) `taint-idempotent-ungated`, `taint-sink-not-replayed` (the sink runs only when the child records a mark, so a crash between the record and the sink loses it; `ParentMarksUp`), `taint-resolve-drops-marks` (`ResolveHalt` of the parent node does not fold the marks; `ParentMarksUp`), `taint-inherited-as-clean` (the inherited marks are not in the read set; `TaintGateHeld`), `taint-inherited-not-held` (the marks taken from the drive's context, lost when a recovery pass drives the flow; `TaintGateHeld`), `taint-policyless-inherit-runs` (no Begin refusal; `InheritedPolicylessRefused`) and `taint-policyless-inherit-tracked` (neither it nor the node's own refusal; `InheritedPolicylessNoTracked`) and `taint-echo-inherited` (the inherited marks go up as well; `NoEcho`) (an idempotent node, with no
+refusal journaled first; `GateReasonFirst`), `taint-preexec-on-replay` (the PreExec runs before the replay check, so a recorded node is refused once its approval is revoked; `ReplayNeverBlocked`) `taint-idempotent-ungated`, `taint-sink-not-replayed` (the sink runs only when the child records a mark, so a crash between the record and the sink loses it and the parent's later node runs ungated; `ParentGated`), `taint-resolve-drops-marks` (`ResolveHalt` of the parent node does not fold the marks; `ParentGated`), `taint-inherited-as-clean` (the inherited marks are not in the read set; `TaintGateHeld`), `taint-inherited-not-held` (the marks taken from the drive's context, lost when a recovery pass drives the flow; `TaintGateHeld`), `taint-policyless-inherit-runs` (no Begin refusal; `InheritedPolicylessRefused`) and `taint-policyless-inherit-tracked` (neither it nor the node's own refusal; `InheritedPolicylessNoTracked`) and `taint-echo-inherited` (the inherited marks go up as well; `NoEcho`) (an idempotent node, with no
 claim, is not tracked and runs its body after a source read; `TaintGateHeld`).
 
 Not modelled here: the flow input's canonical comparison (#103 F2, a Go encoding question), the
