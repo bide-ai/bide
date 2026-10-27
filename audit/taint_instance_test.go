@@ -2,12 +2,17 @@ package audit_test
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/bide-ai/bide/agent"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/journalhook"
 	"github.com/bide-ai/bide/internal/taintfixture"
+	"github.com/bide-ai/bide/plan"
 )
 
 // Probe: the evidence and the offline recount of a call and of its escalation instance are separate: each is
@@ -78,5 +83,77 @@ func TestApprovalEvidence_EscalationInstanceIsRecountedUnderItsOwnGate(t *testin
 	}
 	if v := verify("c2#taint", own); v.OK || len(v.Counted) != 0 {
 		t.Fatalf("the instance recounted under the tool's own gate: %+v, want nothing counted", v)
+	}
+}
+
+// The escalation instance of a gated plan flow node ("node:pay:taint", docs/design/flow-taint.md) has the
+// node's request and the node's own record as its request and result, and its own decisions and tally. The
+// engine writes no instance yet, so the test drives the instance's gate through the flow hook, with the
+// node already run.
+func TestFlowGateEvidence_EscalationInstanceOfANode(t *testing.T) {
+	ctx := context.Background()
+	g := newGate(1, []string{"alice", "bob"}, []string{"alice", "bob", "carol"})
+	b := plan.New[int, int]("refunds").WithApproverVerifiers(g.resolver())
+	b.Step("pay", func(_ context.Context, n int) (int, error) { g.charged++; return n, nil }, plan.Approval(&g.policy))
+	f, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pend *agent.ApprovalPending
+	if _, err := f.Run(ctx, g.store, flowRun, 120); !errors.As(err, &pend) {
+		t.Fatalf("first drive = %v, want a pause at the node's gate", err)
+	}
+	nodePend := pend
+	const inst = "node:pay:taint"
+	esc := &agent.ApprovalPolicy{Need: 1, Approvers: []string{"carol"}}
+	args := json.RawMessage(`120`)
+	if _, err := journalhook.Gate(ctx, g.store, flowRun, inst, "pay", args, esc, g.resolver()); !errors.As(err, &pend) {
+		t.Fatalf("the instance's first evaluation = %v, want a pause", err)
+	}
+	sign := func(p *agent.ApprovalPending, key, id string) {
+		t.Helper()
+		sig := ed25519.Sign(g.privs[id], agent.ApprovalDecisionBytes(p.Subject(), id, true, testDecidedAt))
+		if err := agent.SubmitDecision(ctx, g.store, agent.Decision{RunID: flowRun, ToolUseID: key, ApproverID: id, Approved: true, DecidedAt: testDecidedAt, Alg: audit.AlgEd25519, Signature: sig},
+			agent.WithDecisionCheck(g.resolver())); err != nil {
+			t.Fatalf("SubmitDecision %s on %s: %v", id, key, err)
+		}
+	}
+	sign(pend, inst, "carol")
+	if ok, err := journalhook.Gate(ctx, g.store, flowRun, inst, "pay", args, esc, g.resolver()); err != nil || !ok {
+		t.Fatalf("the instance's gate after quorum = %v, %v", ok, err)
+	}
+	sign(nodePend, "node:pay", "alice")
+	if _, err := f.Run(ctx, g.store, flowRun, 120); err != nil || g.charged != 1 {
+		t.Fatalf("drive at both quorums = %v, ran %d", err, g.charged)
+	}
+
+	th, err := audit.NewTreeHead(ctx, g.store, flowRun, 1700000000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sth := signTH(t, th, g.logPriv)
+	// The evidence of the instance proves its own tally and the node's request and record.
+	acts, err := audit.ApprovalEvidence(ctx, g.store, flowRun, inst, sth)
+	if err != nil {
+		t.Fatalf("ApprovalEvidence(instance): %v", err)
+	}
+	v, err := audit.VerifyApprovals(acts, inst, *esc, g.resolver(), edV(g.logPub))
+	if err != nil || !v.OK || len(v.Counted) != 1 || v.Counted[0] != "carol" {
+		t.Fatalf("the instance under its gate: %+v, %v", v, err)
+	}
+	if v.ToolName != "pay" || string(v.Args) != "120" {
+		t.Errorf("the instance's call is %q(%s), want the node's pay(120)", v.ToolName, v.Args)
+	}
+	// Its approver does not count under the node's own gate, and the node's does not count under the
+	// instance's: each is recounted under its own subject.
+	if v, _ := audit.VerifyApprovals(acts, inst, g.policy, g.resolver(), edV(g.logPub)); v.OK {
+		t.Fatalf("the instance recounted under the node's own gate verified: %+v", v)
+	}
+	nodeActs, err := audit.ApprovalEvidence(ctx, g.store, flowRun, "node:pay", sth)
+	if err != nil {
+		t.Fatalf("ApprovalEvidence(node): %v", err)
+	}
+	if v, _ := audit.VerifyApprovals(nodeActs, "node:pay", *esc, g.resolver(), edV(g.logPub)); v.OK {
+		t.Fatalf("the node recounted under the instance's gate verified: %+v", v)
 	}
 }

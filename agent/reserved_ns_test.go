@@ -248,6 +248,26 @@ func TestCheckToolUseIDs_HashIsRefused(t *testing.T) {
 	}
 }
 
+// A tool-use ID that spells the escalation instance of a plan flow node ("node:x:taint", "node:iter:2:x:taint")
+// is refused on a live turn like one with '#': the engine reads that subject as the instance of a node, so no
+// model-chosen ID may spell one. IDs that are plan keys but not instances, and IDs that only end in ":taint",
+// are unchanged.
+func TestCheckToolUseIDs_NodeInstanceIsRefused(t *testing.T) {
+	for _, id := range []string{"node:x:taint", "node:iter:2:x:taint", "node:iter:taint", "node:a#b:taint"} {
+		m := Message{Role: RoleAssistant, Parts: []Part{ToolUse{ID: id, Name: "lookup", Args: json.RawMessage(`{}`)}}}
+		err := checkToolUseIDs(m, map[string]bool{})
+		if !errors.Is(err, ErrToolUseIDInvalid) || !errors.Is(err, ErrModel) || !errors.Is(err, ErrProtocol) {
+			t.Errorf("checkToolUseIDs(%q) = %v, want ErrToolUseIDInvalid wrapping ErrModel and ErrProtocol", id, err)
+		}
+	}
+	for _, id := range []string{"node:x", "node:taint", "node:x:step:taint", "x:taint", "call:taint", "node:x:taint:taint"} {
+		m := Message{Role: RoleAssistant, Parts: []Part{ToolUse{ID: id, Name: "lookup", Args: json.RawMessage(`{}`)}}}
+		if err := checkToolUseIDs(m, map[string]bool{}); err != nil {
+			t.Errorf("checkToolUseIDs(%q) = %v, want nil", id, err)
+		}
+	}
+}
+
 // A turn with a '#' ID fails the run without running the tool or journaling the turn.
 func TestRun_HashToolUseIDIsAnError(t *testing.T) {
 	var calls int

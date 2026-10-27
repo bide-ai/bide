@@ -230,8 +230,10 @@ instead of being silently changed.
 **Gemini does not receive earlier reasoning text.** Gemini does not accept thought text as input, so
 the adapter sends back only the thought signatures Gemini needs to continue a thinking turn.
 
-**A tool-use ID that holds `#` fails the turn.** The engine reserves `#` in a tool-use ID, to derive
-a second approval subject from a call's ID, so a live model turn whose call has one fails with
+**A tool-use ID that holds `#`, or spells a plan flow node's escalation instance, fails the turn.** The
+engine reserves `#` in a tool-use ID, to derive a second approval subject from a call's ID, and the form
+`node:<name>:taint` (`node:iter:<n>:<name>:taint` in a loop body), which a plan flow node's escalation
+instance uses ([design](design/flow-taint.md)), so a live model turn whose call has one fails with
 `ErrToolUseIDInvalid` (wrapping `ErrModel` and `ErrProtocol`; `middleware.Retry` asks the model
 again, and the rejected turn is never journaled). The shipped adapters pass the provider's ID
 through, and none of their tests or generated IDs holds a `#`; whether a provider, or a model

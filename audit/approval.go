@@ -52,6 +52,15 @@ func ProveApproval(ctx context.Context, store *agent.Journal, runID, step string
 	return ProofBundle{}, fmt.Errorf("audit: no approver decision %q in run %s", step, runID)
 }
 
+// resultSubject is the call or plan flow node whose result stands for the gate on subject: the subject
+// itself, or for an escalation instance (package escalation) the call or node it guards.
+func resultSubject(subject string) string {
+	if base, ok := escalation.Base(subject); ok {
+		return base
+	}
+	return subject
+}
+
 // ApprovalEvidence builds the complete evidence for an m-of-n gated call under one STH, in
 // this order: for a gate whose tally excluded the requester (agent.ApprovalTally.ExcludePrincipal),
 // the run's run:principal record (Kind "step", Ref "run:principal"; agent.RunPrincipal), which names
@@ -105,17 +114,14 @@ func ApprovalEvidence(ctx context.Context, store *agent.Journal, runID, toolUseI
 	}
 	// A gated plan flow node's request is its ApprovalRequest, and its result is the node's own
 	// record (a step named by the node's key); an agent tool call's result is its tool result.
-	flowNode := recs[callIdx].Name == agent.ApprovalRequestStep(toolUseID)
-	// The escalation instance of a call (the taint policy's gate, subject "<call>#taint") has no result of
-	// its own: its result is the call's.
-	resultID := toolUseID
-	if base, ok := escalation.Base(toolUseID); ok {
-		resultID = base
-	}
+	// The escalation instance of a call (the taint policy's gate, subject "<call>#taint") or of a plan flow
+	// node ("<node key>:taint") has no result or request of its own: they are the call's or the node's.
+	resultID := resultSubject(toolUseID)
+	flowNode := recs[callIdx].Name == agent.ApprovalRequestStep(resultID)
 	result := EvidenceAction{Label: resultID, Kind: KindTool, Ref: resultID}
 	if flowNode {
 		result.Kind = KindStep
-		result.Bundle, err = ProveStep(ctx, store, runID, toolUseID, sth)
+		result.Bundle, err = ProveStep(ctx, store, runID, resultID, sth)
 	} else {
 		result.Bundle, err = ProveToolCall(ctx, store, runID, resultID, sth)
 	}
@@ -357,7 +363,7 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 			return false
 		}
 		_, tu, ok := agent.FindToolCall([]agent.Record{r}, toolUseID)
-		call, flowNode = tu, ok && r.Name == agent.ApprovalRequestStep(toolUseID)
+		call, flowNode = tu, ok && r.Name == agent.ApprovalRequestStep(resultSubject(toolUseID))
 		return ok
 	}, "request")
 	if err != nil {
@@ -394,13 +400,9 @@ func VerifyApprovals(actions []EvidenceAction, toolUseID string, policy agent.Ap
 	// The result of a gated plan flow node is the node's record, named by its key.
 	resultI, err := find(func(a EvidenceAction, r agent.Record) bool {
 		if flowNode {
-			return a.Kind == KindStep && r.Kind == agent.StepValue && r.Name == toolUseID
+			return a.Kind == KindStep && r.Kind == agent.StepValue && r.Name == resultSubject(toolUseID)
 		}
-		resultID := toolUseID
-		if base, ok := escalation.Base(toolUseID); ok {
-			resultID = base // an escalation instance's result is its call's
-		}
-		return a.Kind == KindTool && r.Kind == agent.StepToolResult && r.ToolUseID == resultID
+		return a.Kind == KindTool && r.Kind == agent.StepToolResult && r.ToolUseID == resultSubject(toolUseID)
 	}, "result")
 	if err != nil {
 		return v, err

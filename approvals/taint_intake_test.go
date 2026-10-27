@@ -22,6 +22,7 @@ import (
 	"github.com/bide-ai/bide/agent/agenttest"
 	"github.com/bide-ai/bide/approvals"
 	"github.com/bide-ai/bide/audit"
+	"github.com/bide-ai/bide/internal/journalhook"
 	"github.com/bide-ai/bide/plan"
 )
 
@@ -487,5 +488,66 @@ func TestTaintIntake_SaysWhyTheInstanceAsks(t *testing.T) {
 	}
 	if status, out := r.pending("c2"); status != http.StatusOK || out["why"] != nil {
 		t.Fatalf("the own gate after the instance asks: %d why=%v, want no reason", status, out["why"])
+	}
+}
+
+// The escalation instance of a plan flow node ("node:pay:taint", docs/design/flow-taint.md) is not served by
+// the intake, as the node's own gate is not: a decision for it records nothing, whatever it is signed for, and
+// it is not decided under the node's own gate. The engine writes no instance yet, so the instance's gate is
+// driven through the flow hook.
+func TestIntake_DoesNotDecideAFlowNodesInstance(t *testing.T) {
+	ctx := context.Background()
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	verifiers := func(id string) (agent.ApproverVerifier, bool) {
+		if id != "carol" {
+			return nil, false
+		}
+		return audit.Ed25519Verifier{Pub: pub}, true
+	}
+	j := agenttest.MustJournal(agent.NewMemStore())
+	own := agent.ApprovalPolicy{Need: 1, Approvers: []string{"carol"}}
+	b := plan.New[int, int]("refunds").WithApproverVerifiers(verifiers)
+	b.Step("pay", func(_ context.Context, n int) (int, error) { return n, nil }, plan.Approval(&own))
+	f, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Run(ctx, j, "f1", 120); err == nil {
+		t.Fatal("the flow did not pause")
+	}
+	const inst = "node:pay:taint"
+	esc := &agent.ApprovalPolicy{Need: 1, Approvers: []string{"carol"}}
+	var pend *agent.ApprovalPending
+	if _, err := journalhook.Gate(ctx, j, "f1", inst, "pay", json.RawMessage(`120`), esc, agent.ApproverVerifierFor(verifiers)); !errors.As(err, &pend) {
+		t.Fatalf("the instance's first evaluation = %v, want a pause", err)
+	}
+	h, err := approvals.New(j, verifiers, approvals.WithGatePolicy(func(string) (*agent.ApprovalPolicy, bool) { return &own, true }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	count := func() int {
+		recs, _ := j.History(ctx, "f1")
+		return len(recs)
+	}
+	at := time.Date(2026, 10, 13, 12, 0, 1, 0, time.UTC)
+	for _, call := range []string{inst, "node:pay"} {
+		subj := agent.ApprovalSubject{RunID: "f1", ToolUseID: call, ToolName: "pay", Args: json.RawMessage(`120`)}
+		sig := ed25519.Sign(priv, agent.ApprovalDecisionBytes(subj, "carol", true, at))
+		raw, _ := json.Marshal(map[string]any{"run": "f1", "call": call, "approver": "carol", "approved": true,
+			"decided_at": agent.FormatTimestamp(at), "alg": string(audit.AlgEd25519), "signature": base64.StdEncoding.EncodeToString(sig)})
+		before := count()
+		resp, err := http.Post(srv.URL+"/decisions", "application/json", bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode < 400 {
+			t.Errorf("%s: a decision on a flow gate was accepted: %d", call, resp.StatusCode)
+		}
+		if count() != before {
+			t.Errorf("%s: a decision on a flow gate was recorded", call)
+		}
 	}
 }

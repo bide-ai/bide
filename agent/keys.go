@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	escsubject "github.com/bide-ai/bide/internal/escalation"
 	"strconv"
 	"strings"
 )
@@ -106,39 +107,27 @@ const planStepSep = ":step:"
 // Step's name: "node:[iter:<n>:]<node>" or "node:[iter:<n>:]<node>:step:<step>". A node name holds
 // no ':', so the node ends at the first ':' after the iteration scope, and "iter:" followed by
 // anything but a number is the node named "iter".
-func parsePlanKey(name string) (node, step string, ok bool) {
-	rest, ok := strings.CutPrefix(name, planNodePrefix)
-	if !ok {
-		return "", "", false
+func parsePlanKey(name string) (node, step string, ok bool) { return escsubject.PlanKey(name) }
+
+// planGateKey reports whether name is the subject of a plan flow node's approval gate: the node's key, or its
+// escalation instance ("node:<name>:taint", "node:iter:<n>:<name>:taint", package escalation). The gate
+// machinery (the request, the decisions, the standing) takes either; the Step hook and ResolveHalt take
+// only a node key (planNodeKey, planNodeStep), and a Step a node's body runs is neither.
+func planGateKey(name string) bool {
+	if planNodeKey(name) {
+		return true
 	}
-	body := rest
-	if it, ok := strings.CutPrefix(rest, "iter:"); ok {
-		if digits, after, ok := strings.Cut(it, ":"); ok && isIterNumber(digits) {
-			body = after
-		}
-	}
-	n, tail, scoped := strings.Cut(body, ":")
-	if n == "" {
-		return "", "", false
-	}
-	nodeKey := name[:len(name)-len(body)] + n
-	if !scoped {
-		return nodeKey, "", true
-	}
-	step, ok = strings.CutPrefix(":"+tail, planStepSep)
-	if !ok || step == "" {
-		return "", "", false
-	}
-	return nodeKey, step, true
+	_, instance := escsubject.Base(name)
+	return instance && strings.HasPrefix(name, planNodePrefix)
 }
 
-// isIterNumber reports whether s is a loop iteration as package plan writes it: decimal digits
-// with no leading zero, or "0".
-func isIterNumber(s string) bool {
-	if s == "" || len(s) > 1 && s[0] == '0' {
-		return false
+// planGateNode is the node key a plan flow gate subject guards: the subject itself for a node key, the node's
+// key for its escalation instance. name must satisfy planGateKey.
+func planGateNode(name string) string {
+	if base, instance := escsubject.Base(name); instance {
+		return base
 	}
-	return strings.Trim(s, "0123456789") == ""
+	return name
 }
 
 // planScopeKey carries, in the context of a plan node's body, the run and key of the node.

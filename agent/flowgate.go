@@ -41,7 +41,7 @@ type ApprovalRequest struct {
 // ApprovalRequestStep(toolUseID), on a plan node key, whose Result decodes strictly and names
 // toolUseID.
 func decodeApprovalRequest(r Record, toolUseID string) (ApprovalRequest, bool) {
-	if r.Kind != StepValue || r.Name != ApprovalRequestStep(toolUseID) || !planNodeKey(toolUseID) {
+	if r.Kind != StepValue || r.Name != ApprovalRequestStep(toolUseID) || !planGateKey(toolUseID) {
 		return ApprovalRequest{}, false
 	}
 	var q ApprovalRequest
@@ -58,7 +58,7 @@ func decodeApprovalRequest(r Record, toolUseID string) (ApprovalRequest, bool) {
 // the gate has recorded no request yet, since the node's input is not fixed until then, and
 // returns the request's journal position for staleDecision.
 func flowDecision(ctx context.Context, d *Journal, op, runID, toolUseID string) (reqSeq int64, flow bool, err error) {
-	if !planNodeKey(toolUseID) {
+	if !planGateKey(toolUseID) {
 		return 0, false, nil
 	}
 	start, ok, err := RecordedStart(ctx, d, runID)
@@ -113,8 +113,8 @@ func staleDecision(ctx context.Context, d *Journal, op, runID, toolUseID, name s
 // after the request count. A pause records ApprovalWait if it is missing; no part of the engine
 // reads it.
 func flowGate(ctx context.Context, d *Journal, runID, key, node string, args json.RawMessage, pol *ApprovalPolicy, verifierFor ApproverVerifierFor) (bool, error) {
-	if !planNodeKey(key) {
-		return false, fmt.Errorf("plan node %q: gate key %q is not a plan node key: %w", node, key, ErrConfig)
+	if !planGateKey(key) {
+		return false, fmt.Errorf("plan node %q: gate key %q is not a plan node key or the escalation instance of one: %w", node, key, ErrConfig)
 	}
 	if pol == nil {
 		return false, fmt.Errorf("plan node %q: no approval policy: %w", node, ErrConfig)
