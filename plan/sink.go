@@ -14,11 +14,9 @@ import (
 // sources of node key once its result is recorded, and those its own children brought up, or every node's for
 // key "". It runs after the node's result is recorded, whether the drive ran the node or replayed it, so a
 // mark is sent on every drive. The run's parent is the node whose sink ctx carries: a run no node started has
-// nowhere to send them, and nothing happens. It does nothing for a run that is not under taint.
-func sendMarks(ctx context.Context, store *agent.Journal, runID string, c *builderCore, ts *taintState, node *node, key string) error {
-	if ts != nil && ts.standing == 0 {
-		return nil
-	}
+// nowhere to send them, and nothing happens. It does nothing for a run that is not under taint and declares no
+// source (the hook decides: a run that began outside taint still sends the sources its flow declares).
+func sendMarks(ctx context.Context, store *agent.Journal, runID string, c *builderCore, node *node, key string) error {
 	if err := journalhook.FlowTaintSink(ctx, store, runID, key); err != nil {
 		what := "the run"
 		if node != nil {

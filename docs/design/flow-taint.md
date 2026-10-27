@@ -342,7 +342,9 @@ run ungated, which fails open where an agent child fails closed). What the chose
   sources; nothing is recorded when no node declares one, so a flow that declares nothing starts as it did; user
   decision of 2026-10-27). They gate nothing; they are what the run's own marks are counted from, so a flow with no
   policy run as a tool, or as a child of a node, brings up what it read. A drive by a flow that declares other
-  sources is `ErrConfig`, and a run that started with none (an earlier release's) is held to none.
+  sources is `ErrConfig`, and a run that started with none (an earlier release's) is held to none. A run that began outside taint and
+  declares sources still sends them up when a tainted node's body drives it (it fails closed, as one that began
+  inside taint does).
 - Parts: inheritance down was the change after the enforcement core (3c-2); taint coming up and the removal of
   the guard are the one after (3c-3). 3c-3 removes the guard, which refused every flow that declared taint, and
   the test-only switch that kept the inheritance off, together.

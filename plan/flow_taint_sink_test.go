@@ -938,3 +938,36 @@ func TestFlowTaintSink_APolicylessChildThatDeclaresASourceSendsItUp(t *testing.T
 		t.Errorf("the parent holds %v, want [feed]", got)
 	}
 }
+
+// A run that began outside taint, with the sources its flow declares recorded in its start, and is now driven from a
+// tainted node's body, sends what it declared up to the node: it fails closed, as a run that began inside taint
+// does. A run that began outside taint and declares nothing sends nothing.
+func TestFlowTaintSink_ARunThatBeganOutsideTaintStillSendsItsDeclaredSources(t *testing.T) {
+	ctx := context.Background()
+	for _, src := range []string{"feed", ""} {
+		j := agenttest.MemJournal()
+		c := policylessSource(t, "child", src, Approval(agent.SingleApproval()))
+		// It begins at the top, outside any run under taint, and waits at its gate.
+		if _, err := c.Run(ctx, j, "c1", 1); !isPendingAt(err, "node:fetch") {
+			t.Fatalf("%q: the first drive: %v", src, err)
+		}
+		if err := agent.Approve(ctx, j, "c1", "node:fetch", true); err != nil {
+			t.Fatal(err)
+		}
+		pp := &sinkParent{t: t}
+		p := pp.build(single(), false, func(ctx context.Context) error {
+			_, err := c.Run(ctx, j, "c1", 1)
+			return err
+		})
+		_, err := p.Run(ctx, j, "p1", 1)
+		got := marksOf(t, j, "p1", "node:call")
+		switch {
+		case src != "":
+			if pend := pending(t, err); pend.ToolUseID != "node:pay:taint" || !slices.Equal(got, []string{"feed"}) {
+				t.Errorf("a declared source: paused at %q, marks %v; want node:pay:taint and [feed]", pend.ToolUseID, got)
+			}
+		case err != nil || len(got) != 0 || pp.pays != 1:
+			t.Errorf("no declaration: %v, marks %v, pay ran %d times; want pay ungated and no marks", err, got, pp.pays)
+		}
+	}
+}

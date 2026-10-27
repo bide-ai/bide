@@ -199,7 +199,7 @@ It is experimental, like the rest of the policy, and Go only: a config cannot gi
   cannot read the agent's marks (its tools' declarations are not in the journal): it marks the node
   `subagent:<node name>`, which over-taints, on that path only. A flow with no policy records the sources its nodes
   declare in `run:start` (`taint_sources`, only when it declares some), so it marks what it reads too; they gate
-  nothing in it, and a drive by a flow that declares other sources is `ErrConfig`.
+  nothing in it, and a drive by a flow that declares other sources is `ErrConfig`. A run that began outside taint sends them up too when a tainted node's body drives it.
 - **Not built:** `SeparateApprovers` (an approver of the node's own gate counted again on its instance), a
   `Trusted` block that brings nothing up (a node that declares its results trusted still takes the marks its nested
   flows and agents bring up), and the view of all this in `bide check` and the editor.

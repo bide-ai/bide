@@ -156,18 +156,23 @@ func flowTaintSink(ctx context.Context, j any, runID, nodeKey string) error {
 	if !ok {
 		return fmt.Errorf("agent: FlowTaintSink: %T is not a journal: %w", j, ErrConfig)
 	}
-	// The run's start first (a point read, bound to ctx once the run began): a run that is not under taint has
-	// nothing to send, and its journal is not read for each of its nodes.
+	// The run's start first (a point read, bound to ctx once the run began): a run with nothing to send does not
+	// read its journal for each of its nodes. It has something to send when it is under taint, or when its flow
+	// declares sources (recorded in its start, outside taint too): a run that began outside taint and is now driven
+	// from a tainted node's body sends what it declared, as one that began inside it does.
 	start, has, err := recordedStartOf(ctx, jr, runID)
 	if err != nil {
 		return err
 	}
-	if !has || start.taintDigest() == "" {
+	if !has {
 		return nil
 	}
 	src, err := start.nodeSources()
 	if err != nil {
 		return err
+	}
+	if start.taintDigest() == "" && len(src) == 0 {
+		return nil
 	}
 	recs, err := jr.History(ctx, runID)
 	if err != nil {
@@ -235,12 +240,12 @@ func foldChildMarks(ctx context.Context, j *Journal, runID, nodeKey string) erro
 				return fmt.Errorf("load history %s: %w (%w)", rec.RunID, err, ErrStorage)
 			}
 			start := startOfRecs(child)
-			if start.taintDigest() == "" {
-				continue
-			}
 			src, err := start.nodeSources()
 			if err != nil {
 				return err
+			}
+			if start.taintDigest() == "" && len(src) == 0 {
+				continue // not under taint, and declares nothing
 			}
 			own, err := ownMarkSources(child, src, "")
 			if err != nil {

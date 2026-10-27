@@ -167,7 +167,7 @@ func (f *Flow[In, Out]) run(ctx context.Context, store *agent.Journal, runID str
 	if finished {
 		// A run that finished is not replayed node by node, and a drive without its parent may have finished
 		// it: its parent still gets every mark it learned.
-		if err := sendMarks(ctx, store, runID, c, nil, nil, ""); err != nil {
+		if err := sendMarks(ctx, store, runID, c, nil, ""); err != nil {
 			return out, err
 		}
 		return decodeCompletion[Out](c.flowName, runID, done)
@@ -355,7 +355,7 @@ func (f *Flow[In, Out]) run(ctx context.Context, store *agent.Journal, runID str
 		if runErr != nil {
 			return out, runErr
 		}
-		if err := sendMarks(ctx, store, runID, c, ts, node, nodeKey(name)); err != nil {
+		if err := sendMarks(ctx, store, runID, c, node, nodeKey(name)); err != nil {
 			return out, err
 		}
 		results[name] = result
@@ -503,7 +503,7 @@ func (f *Flow[In, Out]) runLoop(ctx context.Context, store *agent.Journal, runID
 			if runErr != nil {
 				return "", nil, runErr
 			}
-			if err := sendMarks(ctx, store, runID, c, ts, node, iterNodeKey(iter, name)); err != nil {
+			if err := sendMarks(ctx, store, runID, c, node, iterNodeKey(iter, name)); err != nil {
 				return "", nil, err
 			}
 			results[name] = result
