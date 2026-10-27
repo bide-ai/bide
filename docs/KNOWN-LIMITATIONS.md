@@ -138,8 +138,8 @@ and [the formal models](../spec/tla/README.md).
 **Run IDs under `@cap/` and the cap and gate step-name prefixes are reserved.** `Run`, `Stream` and `Session`
 refuse a run ID that starts with `@cap/` (`ErrConfig`), as they refuse `@stop`, and `Step`,
 `Parallel` and `ResolveHalt` refuse a step name that starts with `slot:`, `cap-intent:`,
-`cap-reserve:`, `cap-release:` or `gate-reason:`. The engine will keep cap ledgers and gate reasons under them in
-later releases. `ClaimAttempt` claims bare attempt markers only: it refuses every reserved name except an attempt marker key (`attempt:`, not the engine's own `attempt:not-started:` and `attempt:retry:` forms) and any record that is not an attempt marker, so a caller
+`cap-reserve:`, `cap-release:`, `gate-reason:` or `taint-mark:`. The engine keeps cap ledgers and gate reasons under them,
+and will keep a plan flow's taint marks (`taint-mark:`) in a later release. `ClaimAttempt` claims bare attempt markers only: it refuses every reserved name except an attempt marker key (`attempt:`, not the engine's own `attempt:not-started:` and `attempt:retry:` forms) and any record that is not an attempt marker, so a caller
 with journal access cannot plant an engine record such as a `cap-intent:`, a tool result or a single-approver approval with it (v0.23.0 and earlier could). A caller with journal access can still pre-claim an `attempt:tool:<call>` marker: that halts the call (`OutcomeUnknown`), a denial of service in the safe direction, and it cannot admit the call or release a cap, because only a not-started record that carries the marker's own claim id voids an attempt. `Approve`, `Cancel`, `Signal`, `Step`, `Lease` and the other exported calls that write to a run you name refuse a
 `@cap/` run too (`@stop` keeps its old behaviour in them: they still write to it, a known gap left
 as it was). A run already named under `@cap/` keeps its journal, but `Recover`, the run viewer,

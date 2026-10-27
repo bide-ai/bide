@@ -175,3 +175,16 @@ func TestExistingKeysAreUnchanged(t *testing.T) {
 	}
 	t.Logf("compared %d keys", len(keys))
 }
+
+func TestNodeName(t *testing.T) {
+	for key, want := range map[string]string{"node:x": "x", "node:iter:3:x": "x", "node:iter": "iter", "node:iter:0:iter": "iter", "node:taint": "taint"} {
+		if got, ok := NodeName(key); !ok || got != want {
+			t.Errorf("NodeName(%q) = %q, %v; want %q", key, got, ok, want)
+		}
+	}
+	for _, key := range []string{"node:x:step:y", "node:x:taint", "node:iter:3:x:taint", "x", "node:", ""} {
+		if got, ok := NodeName(key); ok {
+			t.Errorf("NodeName(%q) = %q, true; want not a node key", key, got)
+		}
+	}
+}
