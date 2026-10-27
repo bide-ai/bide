@@ -156,6 +156,11 @@ func (r *Registry) Describe() RegistryDescription {
 		Predicates:    []PredicateDescription{},
 		Merges:        []MergeDescription{},
 	}
+	if !d.TaintDeclared {
+		// A Registry built from a version 1 description knows nothing about taint: it describes itself as that
+		// version, which a reader accepts, not as a version 2 that says it carries what it does not.
+		d.Version = descriptionVersionNoTaint
+	}
 	var gateErrs []string
 	for name, b := range r.blocks {
 		if w := gateProblem(b.approval); w != "" {

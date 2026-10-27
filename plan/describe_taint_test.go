@@ -226,8 +226,12 @@ func TestVersion1DescriptionBuildsARegistryThatKnowsNoTaint(t *testing.T) {
 	if reg.taintDeclared {
 		t.Error("the Registry built from a version 1 description declares taint")
 	}
-	if got := reg.Describe(); got.TaintDeclared || got.Version != DescriptionVersion {
-		t.Errorf("describing it: taint_declared %v, version %d; want false, %d", got.TaintDeclared, got.Version, DescriptionVersion)
+	got := reg.Describe()
+	if got.TaintDeclared || got.Version != descriptionVersionNoTaint {
+		t.Errorf("describing it: taint_declared %v, version %d; want false, %d", got.TaintDeclared, got.Version, descriptionVersionNoTaint)
+	}
+	if err := got.Validate(); err != nil {
+		t.Errorf("a version 1 description does not survive a round trip through a Registry: %v", err)
 	}
 	// A version 2 description does carry them.
 	d2 := describeTaintRegistry(t).Describe()
