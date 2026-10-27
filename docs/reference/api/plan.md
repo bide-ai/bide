@@ -13,7 +13,7 @@ Package plan is rung-1 of the expression-surfaces stack: a handle-based flow bui
 **Constants**
 
 - `const ConfigVersion = 1`: ConfigVersion is the one config format version this release reads.
-- `const DescriptionVersion = 1`: DescriptionVersion is the Version of a RegistryDescription this release writes and reads.
+- `const DescriptionVersion = 2`: DescriptionVersion is the Version of a RegistryDescription this release writes.
 - `const TopologyStep = "flow:topology"`: TopologyStep is the reserved journal name under which a flow run's first drive records the flow's declared Topology, as JSON (the encoding Flow.Topology's json tags define), as a StepValue just before flow:digest.
 
 **Variables**
@@ -89,6 +89,12 @@ type BlockDescription struct {
 	Safety string `json:"safety"`
 
 	Gate *GateDescription `json:"gate,omitempty"`
+
+	Untrusted []string `json:"untrusted,omitempty"`
+
+	Trusted string `json:"trusted,omitempty"`
+
+	TaintExempt string `json:"taint_exempt,omitempty"`
 }
 ```
 
@@ -295,6 +301,10 @@ type MergeDescription struct {
 
 	Safety string           `json:"safety"`
 	Gate   *GateDescription `json:"gate,omitempty"`
+
+	Untrusted   []string `json:"untrusted,omitempty"`
+	Trusted     string   `json:"trusted,omitempty"`
+	TaintExempt string   `json:"taint_exempt,omitempty"`
 }
 ```
 
@@ -413,6 +423,10 @@ Registry maps config names to typed Go behavior, so a rung-2 config can referenc
 type RegistryDescription struct {
 	Version int `json:"version"`
 
+	TaintDeclared bool `json:"taint_declared,omitempty"`
+
+	TaintPolicy *TaintPolicyDescription `json:"taint_policy,omitempty"`
+
 	Blocks []BlockDescription `json:"blocks"`
 
 	Predicates []PredicateDescription `json:"predicates"`
@@ -428,6 +442,24 @@ RegistryDescription is what a Registry has registered, as data: names, kinds, ty
 **Methods**
 
 - `func (d RegistryDescription) Validate() error`: Validate reports whether d is a description this release reads: its version, no registration errors (a program whose Registry refused something does not load), every name and type name present, printable and within bounds, every kind and safety one of the known words, every gate a policy agent.ApprovalPolicy.Validate accepts, no name twice in a namespace, and a merge of arity two or three (the arities Registry registers).
+
+## type TaintPolicyDescription
+
+```go
+type TaintPolicyDescription struct {
+	Gate *GateDescription `json:"gate,omitempty"`
+
+	Refuse bool `json:"refuse,omitempty"`
+
+	RequireProvenance bool `json:"require_provenance,omitempty"`
+}
+```
+
+TaintPolicyDescription is a flow's taint policy as data: the escalation gate a tainted node's side effects need, or Refuse, and whether provenance is required.
+
+**Constructors and functions**
+
+- `func DescribeTaintPolicy(p agent.TaintPolicy) (*TaintPolicyDescription, error)`: DescribeTaintPolicy is p as a TaintPolicyDescription, for RegistryDescription.TaintPolicy, or an error if p is not a policy Builder.WithTaintPolicy accepts.
 
 ## type Topology
 

@@ -188,6 +188,15 @@ bide doctor -diff main/declarations.json declarations.json
   reason, its `Trusted` reason, its `RaisesSafety` reason, whether it is `Idempotent` (a side effect that is retry-safe; the document carries `tracks_idempotent` to say so), its cap rules, and the policy's `require_provenance`. Its `digest` is the `taint_policy_digest` the runs of that agent record in `run:start`,
   and the reader recomputes it from the document: a document whose digest is not the digest of what it declares is
   refused, and so is one with a member this version does not know (a document from a newer version).
+- **A flow's declarations** are read from the same two commands. The file is the `plan.RegistryDescription` of
+  version 2 that a program writes from its `Registry` (see [Describing a Registry](plan-flows.md#describing-a-registry)),
+  with the flow's policy set from `plan.DescribeTaintPolicy`; the reader tells the two kinds apart, and refuses to
+  compare one with the other. It has no digest. `-declarations` lists a side-effecting block when the description
+  gives no policy, each block with a source and no policy, each exempt block and the notes on the gate, as for an agent. `-diff` applies the
+  same rules to blocks: a removed `Untrusted` source, a new `TaintExempt`, a policy removed, a gate lowered or
+  `require_provenance` turned off is `WEAKENED`. A description of version 1 carries no taint declarations: `-declarations` says
+  taint is not known, and `-diff` reports one weakened line when either side lacks them, so regenerate the baseline once.
+  The description cannot show a run's input provenance, which is a run option.
 - **`-declarations`** prints what a reader should look at: a side-effecting tool in an agent with no taint
   policy, an `Untrusted` tool in an agent with no policy (the marks are recorded and nothing is gated), each
   `TaintExempt` tool with its reason, each tool that declares `RaisesSafety` with its reason, each cap-carrying tool, and an escalation gate that is one decision, needs

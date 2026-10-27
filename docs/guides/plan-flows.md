@@ -846,6 +846,16 @@ path. It holds no functions, prompts or schemas, it is sorted by name, and the s
 so a program can write it to a file for a tool to read. It is experimental: it may change in any 0.x release. The
 flow editor's typed mode is built on it.
 
+Version 2 of the description also carries the taint declarations of each block and merge (`untrusted`, the
+sources, `trusted`, the reason, and `taint_exempt`, the reason) and a marker, `taint_declared`, that says so: with the
+marker, a block that lists none declares none. A Registry does not hold the flow's taint policy (that is
+`Builder.WithTaintPolicy`), so `Describe` leaves `taint_policy` empty; a host that has a policy sets it with
+`plan.DescribeTaintPolicy(policy)`. An empty `taint_policy` means none was given to the description, not that the
+flow runs without one. A version 1 description (written by an earlier release) is still read; it has no marker and
+says nothing about taint, so a reader shows taint as not known, never as none. `bide doctor -declarations` and
+`-diff` read this description as a flow's declarations (see
+[Reviewing the declarations](untrusted-content.md#reviewing-the-declarations)).
+
 `plan.InspectConfigDescribed(data, description)` checks a config against such a description, with the same code as
 `InspectConfig`, so a tool that has only the file (the flow editor's `-blocks` form) checks blocks, types, safety,
 gates and the digest without the program. `RegistryDescription.Validate` says why a description read from a file is

@@ -842,7 +842,9 @@ the consequences of an injected request. It does not detect or prevent the injec
 - **The declarations report sees only what the host dumps.** `bide doctor -declarations` and `-diff` read a
   document the host writes from its agent; a tool behind a wrapper that hides its spec, a tool that runs an
   agent on a context of its own, and an agent the host does not dump are not in it. It lists a tool
-  with no provenance declaration only when the policy does not require one.
+  with no provenance declaration only when the policy does not require one. A flow's declarations come from
+  its `RegistryDescription` (version 2), and a Registry does not hold the flow's taint policy: the host sets it on
+  the description, and a description without one says none was given, not that the flow has none.
 - **Approval volume.** A deployment whose agents read outside text and write will be asked more. `TaintExempt` is
   the relief valve and is visible in the declarations digest.
 - **`RequireProvenance` declares; it does not verify.** With it on, every tool says `Untrusted` or `Trusted` and
