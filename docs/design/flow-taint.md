@@ -277,6 +277,36 @@ compares kind, flow, saga, principal and input only, so the flow path adds it).
 **Policy and declaration surface.** Policy is Go-only: a host that drives flows from YAML alone cannot opt in;
 the docs say so.
 
+**Nested flows and inherited taint (decision 10, 2026-10-27).** A flow run can start inside a run that is
+under taint: a tool of a tainted agent that runs a flow, or a node's body that runs one. It mirrors what an
+agent child does (`agent/taint_inherit.go`): the child enforces its own policy, and with none it fails closed.
+Three options were put to the maintainer: refuse such a flow (flows become unusable as tools under a taint
+policy); mirror agents (chosen); or record the inheritance as untrusted input (a policyless flow would then
+run ungated, which fails open where an agent child fails closed). What the chosen one means:
+
+- A flow with its own policy records its own declarations and digest, strictly paired as above, plus the
+  marks it inherited in the existing `taint_inherited` member: one per source, sorted by source, valid names,
+  refs rewritten with the "parent:" prefix and the first ref of a source kept, so a chain flow -> node -> flow
+  -> node does not grow the list. The member is read strictly (not canonical, or a name that fails the
+  provenance rules, is ErrStorage). Its read set is the inherited marks first, then the journal's.
+- A flow with no policy that is started under taint records the parent's digest in `taint_policy_digest` and
+  the marks in `taint_inherited`, and no declarations. Its standing is the fourth: a read-only node runs, a
+  node that can have a side effect is ErrConfig, and a flow with any such node is refused at Begin, before
+  any record is written (the per-node check stays as defence in depth, since `Safety` is not in any digest).
+- Resume holds the recorded marks: a drive that carries other marks is ErrConfig. The marks a parent passes
+  are its node's read set at the node's gating position, not at the end of its journal, so a retry-safe
+  node that is driven again after its first attempt wrote records passes the same list.
+- A digest-only start driven by a flow that now has a policy is ErrConfig (the declarations differ from none
+  recorded); it is not retro-gated by a policy added after the start. The reverse, a start with its own
+  declarations driven by a flow that lost its policy, is the policyless standing above.
+- Taint comes back up through the sink (below), whether the nested flow has a policy or not: it is called on
+  every drive of the nested run for the marks its journal already holds (insert-once), and a ResolveHalt of
+  a node folds the marks of its child run or refuses until the sink was drained, so a mark is not lost to a
+  crash or to the operator's resolution.
+- Parts: inheritance down is the change that follows the enforcement core (3c-2); taint coming up and the
+  removal of the guard are the one after (3c-3). Until then a flow started under inherited taint is refused
+  with a clear ErrConfig.
+
 ### A3. What is journaled
 
 - run:start `ext.taint_policy_digest` (key reused, flow-specific format tag), plus `ext.taint_declarations`
@@ -331,7 +361,7 @@ taint-*.cfg` can be reused to count the instance.
 ### A6. New names, part A (all need the user's approval)
 
 Go API: `plan.Untrusted`, `plan.Trusted`, `plan.TaintExempt` (NodeOptions); `(*plan.Builder).WithTaintPolicy` and `plan.WithLoadedTaintPolicy` (flow
-option); one refusal sentinel (name sketch `plan.ErrTaintRefused`, wrapping the agent's refusal class).
+option); one refusal sentinel (`plan.ErrTaintRefused`, wrapping `agent.ErrConfig`).
 Behaviour changes: `checkTool` accepts `Untrusted`/`TaintExempt` tools; `Flow.Run` honours
 `WithUntrustedInput`/`WithTrustedInput`. Journal: the derived subject `node:[iter:<n>:]<name>:taint`,
 a gate-reason record for node keys, `run:start` ext key reused (`taint_policy_digest`, new format tag
@@ -532,9 +562,11 @@ Decided by the maintainer on 2026-10-26, or accepted as recommended:
 8. an opt-in check that the node gate's and the taint gate's approvers are disjoint (A2, "Disjoint
    approvers"). The shape and the field name, `TaintPolicy.SeparateApprovers`, are approved.
 9. a node's own approval gate does not cover taint exposure.
+10. a flow started inside a tainted run mirrors an agent child (A2, "Nested flows and inherited taint"); decided
+    2026-10-27. `plan.ErrTaintRefused` is the final name of the sentinel.
 
 New exported names (A6, section 7): `plan.Untrusted`, `plan.Trusted`, `plan.TaintExempt`,
-`(*plan.Builder).WithTaintPolicy`, `plan.WithLoadedTaintPolicy`, one sentinel error (sketch `plan.ErrTaintRefused`), the policy field of decision 8,
+`(*plan.Builder).WithTaintPolicy`, `plan.WithLoadedTaintPolicy`, one sentinel error (`plan.ErrTaintRefused`), the policy field of decision 8,
 `plan.ConfigReport.Taint` and `plan.NodeTaint`, the `RegistryDescription` version 2 fields, and the "exposure"
 value of `Change.Weakening`; one config key (`untrusted:`); no flag and no command. The names in unbuilt parts
 are a sketch.
