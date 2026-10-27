@@ -1043,11 +1043,26 @@ passes its own gate (if it has one) and then the second gate instance
 its attempt claim. With `Separate` (`TaintPolicy.SeparateApprovers`) the instance does not count the
 approvers the own gate's terminal tally counted (`ncnt`), and when too few are left it is a terminal
 denial. All of it is off (no new state) when `Sources`, `MarkNodes` and the policy are empty, so the
-configurations above are unchanged. PreExec is modelled (`TPre`): an approval certificate can be revoked (`Revoke`, once, at any time) after the
-gates pass, and the PreExec just before the claim stops the node. Not modelled: the decision-key parsers and consumers (A2, A4), Conform's replay (A3),
-`bide check`'s static analysis (part B), and the checks of `SeparateApprovers` that are not about the
-run: Build's disjoint approver sets, the single-approval error and the offline verifier's recount
-(`SeparateReverse`, `CountsUnsigned` and `VerifierIgnoresExclusion` of A5b), which Go tests cover.
+configurations above are unchanged. Tracked nodes (not read-only) are the ones that claim an attempt
+(`SideEffects`) and the idempotent ones (`Idempotent`: retry-safe, no claim, so the body is checked
+directly, `TaintGateHeld`, `PreExecHeld` and `GateReasonFirst` at `NBody`). PreExec is modelled
+(`TPre`, with `Revocable`): the node gate's approval and the instance's approval can each be revoked
+(`Revoke`, once each, at any time) after the gates pass, and the PreExec of each, just before the claim
+or body, stops the node. It does not run on a replay of a recorded result, and a revocation after it and
+before the claim is not caught (the window the Go code has too).
+
+Not modelled, and who owns the Go test (none of the three exists yet; the pull request named adds it):
+
+| Item | Property | Go test its owner pull request must contain |
+|---|---|---|
+| `SeparateReverse` (A5b) | the own gate is never recounted because of the instance; no circular exclusion | 3d: Build refuses a tool or node whose own gate and policy Gate share approver IDs, over `effectiveGates` (the model's tally is first-writer-wins, with no re-tally to attack) |
+| `CountsUnsigned` (A5b) | with `SeparateApprovers` set, a `SingleApproval` own gate or policy Gate is ErrConfig | 3d: a single-approval own gate with `SeparateApprovers` set is ErrConfig at registration or Build, naming the tool or node |
+| `VerifierIgnoresExclusion` (A5b) | `VerifyApprovals` recounts the instance with the same exclusion | 3d: `VerifyApprovals` recounts with `excluded_by_sibling`; the recount differs without it (the mutant test) |
+
+Also not modelled: the decision-key parsers and consumers (A2, A4), Conform's replay (A3), and part B's
+static analysis. The instance has no early decisions (a decision recorded before its request), so the
+decision-after-request ordering for the instance is left to the Go pull request that adds the instance
+(3c), as is every other Go-side property of the key parsers.
 
 <!-- modelsync: no-code flows TRefuse TGate TCount TPause TPre -->
 <!-- modelsync: map flows -->
@@ -1066,7 +1081,7 @@ run: Build's disjoint approver sets, the single-approval error and the offline v
 | `TGate` | (taint design, A2 "Subject", not built) the second gate instance `node:[iter:<n>:]<name>:taint`: its request, after the node's own gate and before the attempt claim |
 | `TCount` | (taint design, not built) the instance's count: the instance's own decisions, minus the approvers the own gate counted under `SeparateApprovers`; a terminal tally, or a denial when the approvers left cannot reach the need |
 | `TPause` | (taint design, not built) a denying instance tally stops the run; a passing one goes to the PreExec |
-| `TPre` | (taint design, A2 step 4, not built) both PreExecs (`journalhook.PreExec` after the node gate and after the instance), immediately before `runNode`: a certificate revoked after approval stops the node before the claim |
+| `TPre` | (taint design, A2 step 4, not built) both PreExecs (`journalhook.PreExec` after the node gate and after the instance), immediately before the body executes, not on a replay: a certificate revoked after approval stops the node before the claim |
 | `ADecide` | `agent.SubmitDecision` (or `agent.Approve`; in a flow's run both refuse a node key with no request, `flowDecision`, and report one whose name an earlier record holds, `staleDecision`): an approver's decision on a gate, recorded whether a driver runs or not; an early one (with `Early`) stands for a record written directly, and the approver may decide again after the request |
 
 | Property | Kind | Statement |
@@ -1084,7 +1099,7 @@ run: Build's disjoint approver sets, the single-approval error and the offline v
 | `ResumeExact` | invariant | no node body runs under declarations other than the ones `run:start` recorded: a drive under others is refused first |
 | `TaintTallySound` | invariant | a recorded instance tally rests on the instance's own decisions (the node gate's do not count for it): a pass has `TNeed` approvals, a deny leaves too few approvers |
 | `SeparateHeld` | invariant | with `SeparateApprovers`, a passing instance has `TNeed` approvals from approvers the own gate's terminal tally did not count |
-| `PreExecHeld` | invariant | an approved attempt (own gate or instance) is claimed only after a PreExec that saw no revocation of the approval |
+| `PreExecHeld` | invariant | no PreExec ignored a revocation it saw: an approved attempt (own gate or instance) follows a PreExec that saw no revocation of that approval |
 | `GateReasonFirst` | invariant | a tainted side-effecting node's attempt is claimed only after its gate-reason record (and so a refusal) is journaled |
 | `RefusedClean` | invariant | a refused node has a gate-reason record and no node record, no attempt, no approval request |
 
@@ -1101,13 +1116,14 @@ every journal the drivers and the resolver can produce is a declared path, which
 | `flow-gate` | ci | gates on `H` (per iteration) and `T`, 2 of 2; one driver, the resolver; 1 crash | 2,575,445 | 7 min (1 worker, beside other runs) |
 | `flow-gate-live` | ci | `Completes` with gates on `H` and `T`, 2 of 2, no early decisions; one driver; 1 error reply, 1 crash | 25,806 | 6 s |
 | `flow-gate-early` | ci | `Completes` and every safety property with a gate on `T`, 2 of 2, early decisions possible (each approver signs again after the request); one driver, no faults | 7,218 | 18 s |
-| `flow-taint-gate` | ci | E is a source: H (both iterations) and T need the instance, 2 of 2; one driver, 1 crash | 25,893 | 3 s |
-| `flow-taint-loop` | ci | S, in the loop, is a source: H in iteration 1 and T read it, H in iteration 0 does not; one driver, 1 crash | 122,884 | 4 s |
-| `flow-taint-refuse` | ci | Refuse: T is refused on every drive, the Q route completes; one driver, 1 error reply, 1 crash | 10,778 | 1 s |
-| `flow-taint-resume` | ci | a run started under Gate is driven again under no policy, dropped sources or an added exemption (refused), or under the recorded ones; 1 crash | 950,191 | 41 s |
-| `flow-taint-marks` | ci | no declared source, a child of H learns a taint mark; one driver, 1 crash | 258,424 | 9 s |
-| `flow-taint-separate` | ci | `SeparateApprovers`: T has its own gate (1 of 2) and the instance excludes the approvers it counted, or is denied when none is left; 1 crash | 138,896 | 6 s |
-| `flow-taint-preexec` | ci | PreExec: T is tainted, has its own gate and the instance; the approval can be revoked at any time after the gates pass; 1 crash | 137,528 | 4 s |
+| `flow-taint-gate` | ci | E is a source: H (both iterations) and T need the instance, 2 of 2; one driver, 1 crash | 10,930 | 2 s |
+| `flow-taint-loop` | ci | S, in the loop, is a source: H in iteration 1 and T read it, H in iteration 0 does not; one driver, 1 crash | 52,262 | 3 s |
+| `flow-taint-refuse` | ci | Refuse: T is refused on every drive, the Q route completes; one driver, 1 error reply, 1 crash | 5,389 | 1 s |
+| `flow-taint-resume` | ci | a run started under Gate is driven again under no policy, dropped sources or an added exemption (refused), or under the recorded ones; 1 crash | 360,808 | 27 s |
+| `flow-taint-marks` | ci | no declared source, a child of H learns a taint mark; one driver, 1 crash | 110,612 | 6 s |
+| `flow-taint-separate` | ci | `SeparateApprovers`: T has its own gate (1 of 2) and the instance excludes the approvers it counted, or is denied when none is left; 1 crash | 64,696 | 8 s |
+| `flow-taint-preexec` | ci | PreExec: T is tainted, has its own gate and the instance; the node gate's or the instance's approval can be revoked at any time after the gates pass (a crash between the tally and the claim included); 1 crash | 280,156 | 10 s |
+| `flow-taint-idempotent` | ci | idempotent nodes `H` and `T` (retry-safe, no claim, not read-only) read the source `E` and need the instance before their body; 1 crash | 216,730 | 16 s |
 | `flow-two` | nightly | two drivers; `E`, `H`, `T` side effects; 1 error reply, 1 crash | 2,125,920 | 23 s |
 | `deep-flow-all-side` | nightly | every node a side effect, two drivers | 7,165,894 | 8 min (2 workers, beside other runs) |
 | `deep-flow-resolve` | nightly | two drivers and the resolver, 1 crash | 20,510,386 | 22 min (2 workers, beside other runs) |
@@ -1138,18 +1154,23 @@ off the taken path; `Conform`, 6 states), `flows/regress/resolve-any-flow` (#103
 resolution through another flow or digest recorded a value this flow cannot read;
 `ResultsTyped`, 13 states).
 
-Taint regressions (design mutants, each must fail with its property; the taint design is not built, so
-none is a found bug): `flows/regress/taint-no-gate` (no second gate instance; `TaintGateHeld`, 80 states),
-`taint-gate-unscoped` (the instance keyed per node, not per iteration; `TaintGateHeld`, 1,987),
-`taint-reuse` (the node gate's decisions count for the instance; `TaintTallySound`, 387),
-`taint-readset-resume-empty` (the read set kept in the drive's memory, lost on resume; `TaintGateHeld`,
-1,611), `taint-readset-order` (a source after the node counts and an earlier one does not;
-`TaintGateHeld`, 80), `taint-readset-iteration` (iteration k forgets iterations below k;
-`TaintGateHeld`, 1,348), `taint-mark-ignored` (the fold ignores the taint-mark records; `TaintGateHeld`,
-538), `taint-refuse-as-skip` (a refusal recorded as a skip; `RefusedClean`, 369), `taint-refuse-not-durable`
-(a recorded refusal read as a decision made, so the next drive runs the node; `TaintGateHeld`, 793),
-`taint-resume-no-compare` (no comparison of the recorded declarations; `ResumeExact`, 770) and
-`taint-reuses-node-decider` (`SeparateApprovers` ignored; `SeparateHeld`, 596), `taint-no-preexec` (no PreExec before the claim, so a revoked approval does not stop the node; `PreExecHeld`, 1,400), `taint-preexec-ignores-revocation` (the PreExec's result ignored; `PreExecHeld`, 1,263) and `taint-run-before-refusal` (a node claimed with no gate-reason or refusal journaled first; `GateReasonFirst`, 386).
+Taint regressions (design mutants, each must fail with its property, in a few seconds with the default
+workers; the taint design is not built, so none is a found bug): `flows/regress/taint-no-gate` (no second
+gate instance; `TaintGateHeld`), `taint-gate-unscoped` (the instance keyed per node, not per iteration;
+`TaintGateHeld`), `taint-reuse` (the node gate's decisions count for the instance; `TaintTallySound`),
+`taint-readset-resume-empty` (the read set kept in the drive's memory, lost on resume; `TaintGateHeld`),
+`taint-readset-order` (a source after the node counts and an earlier one does not; `TaintGateHeld`),
+`taint-readset-iteration` (iteration k forgets iterations below k; `TaintGateHeld`), `taint-mark-ignored`
+(the fold ignores the taint-mark records; `TaintGateHeld`), `taint-refuse-as-skip` (a refusal recorded as a
+skip; `RefusedClean`), `taint-refuse-not-durable` (a recorded refusal read as a decision made, so the next
+drive runs the node; `TaintGateHeld`), `taint-resume-no-compare` (no comparison of the recorded
+declarations; `ResumeExact`), `taint-reuses-node-decider` (`SeparateApprovers` ignored; `SeparateHeld`),
+`taint-no-preexec` (no PreExec, so a revoked approval does not stop the node; `PreExecHeld`),
+`taint-preexec-ignores-revocation` (the PreExec's result ignored; `PreExecHeld`),
+`taint-preexec-own-only` (only the node gate's approval is checked, the instance's revoked approval does
+not stop the node; `PreExecHeld`), `taint-run-before-refusal` (a node claimed with no gate-reason or
+refusal journaled first; `GateReasonFirst`) and `taint-idempotent-ungated` (an idempotent node, with no
+claim, is not tracked and runs its body after a source read; `TaintGateHeld`).
 
 Not modelled here: the flow input's canonical comparison (#103 F2, a Go encoding question), the
 run ID check (F6), and joins (a Join is ordinary sequential Step under topological order).
