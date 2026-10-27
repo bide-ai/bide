@@ -93,8 +93,12 @@ type Flow[In, Out any] struct {
 // m-of-n gate's terminal tally, before the node runs). In a loop body the key is the iteration's,
 // so each iteration is approved on its own.
 //
-// opts takes agent.WithIdentity alone (any other option is ErrConfig): the identity the run acts
-// under, as an agent run's. Without it the identity ctx carries applies (a flow run started inside
+// opts takes agent.WithIdentity, agent.WithUntrustedInput and agent.WithTrustedInput (any other option
+// is ErrConfig). WithIdentity gives the identity the run acts under, as an agent run's. The other two say
+// where the run's input came from (the source of untrusted content, or the reason it is the host's own; at
+// most one): they are recorded in run:start's settings, and a later drive that states another source is
+// ErrConfig. They have an effect only under a taint policy (Builder.WithTaintPolicy), which Build refuses
+// until flow taint is enforced. Without WithIdentity the identity ctx carries applies (a flow run started inside
 // an agent run's tool call inherits that run's). The run journals the identity's principal
 // (OnBehalfOf, AuthorityRef) with its start, in its run:principal and run:start, as an agent run
 // does: a later drive under another principal is ErrConfig, a drive that passes none runs under the
