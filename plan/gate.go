@@ -56,7 +56,7 @@ func runGate(ctx context.Context, store *agent.Journal, runID string, c *builder
 			return ctx, fmt.Errorf("plan: run %q: the taint check of step %q: %w", c.flowName, node.name, err)
 		}
 		escalationGate = dec.Gate
-		if dec.Ctx != nil {
+		if dec.Ctx != nil && inheritsTaint() {
 			bodyCtx = dec.Ctx // the node's body runs under the run's taint status and its read set
 		}
 	}

@@ -429,3 +429,46 @@ func TestFlowTaint_InheritanceIsOffInProduction(t *testing.T) {
 		}
 	}
 }
+
+// With the switch off (production), the body of a node in a run under taint runs under the context the drive has,
+// as it did: an agent a node's body starts is not tainted by it, whatever the flow's policy says. (A flow with a
+// policy exists here only because the test turns the guard off.)
+func TestFlowTaint_WithTheSwitchOffABodyRunsAsItDid(t *testing.T) {
+	ctx := context.Background()
+	taintGuardOff, taintInheritOn = true, false
+	defer func() { taintGuardOff, taintInheritOn = false, false }()
+	j := agenttest.MemJournal()
+	ran := 0
+	tool := agent.MustFunc("refund", "refund", func(context.Context, struct{}) (string, error) { ran++; return "ok", nil })
+	var agentErr error
+	b := New[int, int]("parent").WithTaintPolicy(*single())
+	fetch := b.Step("fetch", func(_ context.Context, v int) (int, error) { return v, nil }, Untrusted("inbound-email"))
+	call := b.Step("call", func(c context.Context, v int) (int, error) {
+		m := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "refund", `{}`), agenttest.TextTurn("done"))
+		_, agentErr = agenttest.MustNew(m, j, agent.WithTools(tool), agent.WithTaintPolicy(agent.TaintPolicy{Gate: agent.SingleApproval()})).Run(c, "agent", agent.UserText("go"), agent.WithTrustedInput("the flow's own"))
+		return v, nil
+	}, ReadOnly())
+	b.Edge(fetch, call)
+	f, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Run(ctx, j, "p1", 1); err != nil {
+		t.Fatal(err)
+	}
+	if agentErr != nil || ran != 1 {
+		t.Errorf("the agent a tainted node's body started: %v, the tool ran %d times; want it to run as on a flow that is not under taint", agentErr, ran)
+	}
+	// Its start is what the same agent records outside any flow: its own policy's digest, no inherited marks.
+	s, ok, _ := agent.RecordedStart(ctx, j, "agent")
+	jb := agenttest.MemJournal()
+	mb := agenttest.NewScriptedModel(agenttest.ToolTurn("c1", "refund", `{}`), agenttest.TextTurn("done"))
+	_, _ = agenttest.MustNew(mb, jb, agent.WithTools(tool), agent.WithTaintPolicy(agent.TaintPolicy{Gate: agent.SingleApproval()})).Run(ctx, "agent", agent.UserText("go"), agent.WithTrustedInput("the flow's own"))
+	base, _, _ := agent.RecordedStart(ctx, jb, "agent")
+	if !ok || len(s.Ext) != len(base.Ext) || string(s.Ext["taint_policy_digest"]) != string(base.Ext["taint_policy_digest"]) {
+		t.Errorf("the agent's start records %v, and outside any flow %v; want the same", s.Ext, base.Ext)
+	}
+	if _, has := s.Ext["taint_inherited"]; has {
+		t.Error("the agent inherited marks with the switch off")
+	}
+}

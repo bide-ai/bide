@@ -34,7 +34,17 @@ func TestTaintSwitchesAreAssignedOnlyInTests(t *testing.T) {
 		}
 		for _, d := range f.Decls {
 			fn, isFn := d.(*ast.FuncDecl)
-			_, isGen := d.(*ast.GenDecl)
+			declaring := map[*ast.Ident]bool{} // the names a var declaration introduces: not uses
+			ast.Inspect(d, func(x ast.Node) bool {
+				if vs, ok := x.(*ast.ValueSpec); ok {
+					for _, id := range vs.Names {
+						if readers[id.Name] != "" {
+							declaring[id] = true
+						}
+					}
+				}
+				return true
+			})
 			ast.Inspect(d, func(x ast.Node) bool {
 				switch x := x.(type) {
 				case *ast.AssignStmt:
@@ -57,7 +67,7 @@ func TestTaintSwitchesAreAssignedOnlyInTests(t *testing.T) {
 						return true
 					}
 					uses[x.Name]++
-					if !isGen && (!isFn || fn.Name.Name != want) {
+					if !declaring[x] && (!isFn || fn.Name.Name != want) {
 						t.Errorf("%s: reads %s outside %s", fset.Position(x.Pos()), x.Name, want)
 					}
 				}
