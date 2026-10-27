@@ -353,7 +353,7 @@ func beginRun(ctx context.Context, d *Journal, runID string, want RunStart) (con
 		return ctx, nil, false, fmt.Errorf("record %s (run %s): %w", runStartStep, runID, err)
 	}
 	if inserted {
-		return bindRun(ctx, want), nil, false, nil // a new run: nothing to hold it to, and no completion
+		return bindRun(ctx, runID, want), nil, false, nil // a new run: nothing to hold it to, and no completion
 	}
 	recs := []Record{rec}
 	end, ok, err := firstEndOf(ctx, d, runID, runCompleteStep, runCancelledStep)
@@ -364,7 +364,7 @@ func beginRun(ctx context.Context, d *Journal, runID string, want RunStart) (con
 	if err != nil {
 		return ctx, nil, false, err
 	}
-	ctx = bindRun(ctx, got)
+	ctx = bindRun(ctx, runID, got)
 	switch {
 	case ok && end.rec.Redacted:
 		// The end marker's content was erased: there is no completion to return, and the run, which holds a
@@ -448,6 +448,11 @@ func holdToStart(ctx context.Context, d *Journal, runID string, recs []Record, w
 		// recorded with none (every flow run an earlier version started) keeps none: a drive under a
 		// principal is not refused, and its principal is not recorded.
 		return RunStart{}, fmt.Errorf("run %s was started with another principal (OnBehalfOf, AuthorityRef; see RecordedStart); drive it with the journaled one, or with none, or start a new run with a new run ID: %w", runID, ErrConfig)
+	case got.kind() == RunKindFlow && (want.Settings.UntrustedInput != nil && !sameSetting(want.Settings.UntrustedInput, got.Settings.UntrustedInput) ||
+		want.Settings.TrustedInput != nil && !sameSetting(want.Settings.TrustedInput, got.Settings.TrustedInput)):
+		// A flow drive that states where the input came from must state what the run started with (an agent
+		// run's drives are held to it the same way); one that states nothing runs under the recorded one.
+		return RunStart{}, fmt.Errorf("run %s was started with another input provenance (WithUntrustedInput, WithTrustedInput; see RecordedStart); pass the journaled one, or none, or start a new run with a new run ID: %w", runID, ErrConfig)
 	case got.kind() == RunKindFlow:
 		same, err := equalJSON([]byte(got.Input.Text()), []byte(want.Input.Text()))
 		if err != nil {
@@ -484,7 +489,8 @@ func sameMessage(a, b Message) bool {
 // bindRun binds a flow run's principal chain, and its identity (the drive's Actor, the journaled
 // principal), to ctx for the code its nodes run and the runs they start, as openPlan does for an
 // agent run.
-func bindRun(ctx context.Context, start RunStart) context.Context {
+func bindRun(ctx context.Context, runID string, start RunStart) context.Context {
+	ctx = context.WithValue(ctx, boundStartKey{}, boundStart{runID: runID, start: start})
 	ctx = contextWithChain(ctx, runChain(start))
 	idn, _ := IdentityFrom(ctx)
 	if idn.Actor == "" && start.Principal == nil {
@@ -495,4 +501,22 @@ func bindRun(ctx context.Context, start RunStart) context.Context {
 		run.OnBehalfOf, run.AuthorityRef = pr.OnBehalfOf, pr.AuthorityRef
 	}
 	return contextWithIdentity(ctx, run)
+}
+
+// boundStartKey carries, in the context a drive of a flow runs under, the start the run is held to, so the flow
+// taint hooks read it without another read of the journal for every drive and every node.
+type boundStartKey struct{}
+
+type boundStart struct {
+	runID string
+	start RunStart
+}
+
+// recordedStartOf is the start the drive of runID is held to: the one bound to ctx by beginRun when it is for
+// this run, else the journal's.
+func recordedStartOf(ctx context.Context, j *Journal, runID string) (RunStart, bool, error) {
+	if b, ok := ctx.Value(boundStartKey{}).(boundStart); ok && b.runID == runID {
+		return b.start, true, nil
+	}
+	return RecordedStart(ctx, j, runID)
 }

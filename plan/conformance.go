@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/escalation"
 	"github.com/bide-ai/bide/internal/journalhook"
 )
 
@@ -82,6 +83,9 @@ func (c *builderCore) conform(ctx context.Context, store *agent.Journal, runID s
 	if err != nil {
 		return false, nil, fmt.Errorf("plan: conform run %q: load history: %w", runID, err)
 	}
+	// The taint obligations are recomputed over the history as the engine read it: a position is an index into
+	// it, so a copy without the header or the not-started markers would give other positions.
+	history := recs
 	recs = slices.DeleteFunc(slices.Clone(recs), func(r agent.Record) bool {
 		return r.Kind == agent.StepHeader || r.Kind == agent.StepNotStarted
 	})
@@ -155,8 +159,21 @@ func (c *builderCore) conform(ctx context.Context, store *agent.Journal, runID s
 	// gate reports the divergence, if any, of a record of the approval gate of the node key key: the
 	// node must be declared, gated, and reached.
 	gate := func(name, key string) {
-		n, iter, isNode := parseNodeKey(key)
-		if !isNode || c.byName[n] == nil || c.byName[n].approval == nil {
+		// The gate of a node's escalation instance (escalation.NodeInstance) is the node's, asked only by a
+		// flow with a taint policy; the node needs no gate of its own for it.
+		nodeKey, instance := key, false
+		if base, ok := escalation.Base(key); ok {
+			nodeKey, instance = base, true
+		}
+		n, iter, isNode := parseNodeKey(nodeKey)
+		switch {
+		case !isNode || c.byName[n] == nil:
+			diffs = append(diffs, name+" (approval gate of an undeclared or ungated step)")
+			return
+		case instance && c.taintPolicy == nil:
+			diffs = append(diffs, name+" (escalation gate of a flow with no taint policy)")
+			return
+		case !instance && c.byName[n].approval == nil:
 			diffs = append(diffs, name+" (approval gate of an undeclared or ungated step)")
 			return
 		}
@@ -191,7 +208,11 @@ func (c *builderCore) conform(ctx context.Context, store *agent.Journal, runID s
 		case r.Kind == agent.StepApproval && strings.HasPrefix(r.Name, "approval:"):
 			// A decision is recorded from outside the run, possibly before the run reaches the
 			// gate, so it need only name a declared gated node.
-			if n, _, isNode := parseNodeKey(r.ToolUseID); !isNode || c.byName[n] == nil || c.byName[n].approval == nil {
+			key, instance := r.ToolUseID, false
+			if base, ok := escalation.Base(key); ok {
+				key, instance = base, true
+			}
+			if n, _, isNode := parseNodeKey(key); !isNode || c.byName[n] == nil || !instance && c.byName[n].approval == nil || instance && c.taintPolicy == nil {
 				diffs = append(diffs, r.Name+" (decision on an undeclared or ungated step)")
 			}
 
@@ -296,6 +317,10 @@ func (c *builderCore) conform(ctx context.Context, store *agent.Journal, runID s
 			haveProgress = true
 			reached(r.Name, n, iter)
 
+		case strings.HasPrefix(r.Name, "gate-reason:"), strings.HasPrefix(r.Name, "taint-mark:"):
+			// A taint record (why a node was gated or refused, a mark a node's child brought up): checked
+			// with the rest of the taint obligations below.
+
 		default:
 			// A node's result, or that of a Step its body ran.
 			n, iter, isNode := parseNodeKey(r.Name)
@@ -325,6 +350,13 @@ func (c *builderCore) conform(ctx context.Context, store *agent.Journal, runID s
 	if completed != nil {
 		diffs = append(diffs, c.checkCompletion(completed, recs, choices, live, iters, loopOf)...)
 	}
+	// The taint obligations: the declarations the run started under are this flow's, and every node that ran
+	// met what taint required of it (a Refuse policy, or an escalation gate passed before the node's record).
+	safeties := make(map[string]any, len(c.nodes))
+	for _, n := range c.nodes {
+		safeties[n.name] = n.safety
+	}
+	diffs = append(diffs, journalhook.FlowTaintConform(history, c.flowTaint(), safeties)...)
 
 	return len(diffs) == 0, diffs, nil
 }

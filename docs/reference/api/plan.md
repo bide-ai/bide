@@ -20,6 +20,7 @@ Package plan is rung-1 of the expression-surfaces stack: a handle-based flow bui
 
 - `var ErrApprovalDenied = errors.New("approval denied")`: ErrApprovalDenied is returned (wrapped, naming the node) by Flow.Run when a node's approval gate denied it: a SingleApproval gate's agent.Approve(false), or an m-of-n gate whose terminal tally did not pass.
 - `var ErrApprovalExpired`: ErrApprovalExpired is returned (wrapped, naming the node) by Flow.Run when a node's approval gate expired: its deadline (agent.ApprovalPolicy.Timeout) passed with no approval.
+- `var ErrTaintRefused`: ErrTaintRefused is returned (wrapped, naming the node) by Flow.Run when the flow's taint policy is Refuse, the run has read untrusted content, and the node can have a side effect: the node does not run, no record is written for it, and every later drive refuses it again; the run stays unfinished until it is cancelled (agent.Cancel).
 
 **Functions**
 

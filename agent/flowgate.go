@@ -98,7 +98,7 @@ func staleDecision(ctx context.Context, d *Journal, op, runID, toolUseID, name s
 	return fmt.Errorf("%s: this approver's identical decision on %s was recorded before the gate's request, so it cannot count and this one was not recorded; sign the decision again at a new decided_at (a new decision, recorded after the request) and submit that: %w", op, toolUseID, ErrConfig)
 }
 
-// protocol:flows begin GRead GCount
+// protocol:flows begin GRead GCount TCount
 
 // flowGate evaluates the approval gate pol of the plan flow node named node, under its key key, in
 // run runID, for the node's input args (JSON). It reports approved=true when the node may run and

@@ -8,6 +8,7 @@ package journalhook
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/bide-ai/bide/internal/capledger"
@@ -104,3 +105,75 @@ var WithStop func(ctx context.Context, flow string, sw any) context.Context
 // is agent's newCapLedger, for the tests of the store modules (internal/capledger/capledgertest), which
 // run the ledger across real processes on real stores; the engine does not call it.
 var CapLedger func(j any, clock func() time.Time, bound int) *capledger.Ledger
+
+// ErrTaintRefused is what FlowTaintNode wraps when a plan flow's taint policy refuses a node: the run has
+// read untrusted content, the policy is Refuse, and the node can have a side effect. Package plan wraps it in
+// its own sentinel.
+var ErrTaintRefused = errors.New("refused: the run has read untrusted content")
+
+// FlowTaintNode is what a plan flow node declares for taint (docs/design/flow-taint.md): the sources of
+// untrusted content its results carry, the reason they are the host's own, and the reason the node needs no
+// escalation gate.
+type FlowTaintNode struct {
+	Untrusted []string
+	Trusted   string
+	Exempt    string
+}
+
+// FlowTaint is a plan flow's taint declarations: its policy (an escalation Gate, an *agent.ApprovalPolicy,
+// or Refuse, and RequireProvenance) and, by node name, what each node declares. A flow with no taint
+// policy passes none (nil).
+type FlowTaint struct {
+	Gate              any
+	Refuse            bool
+	RequireProvenance bool
+	Nodes             map[string]FlowTaintNode
+}
+
+// What a drive of a plan flow stands at against its run's taint declarations (FlowTaintEnter).
+const (
+	// FlowTaintNone: the run started with no declarations; it is never gated or refused for taint.
+	FlowTaintNone = iota + 1
+	// FlowTaintUnder: the run started under the declarations this flow has.
+	FlowTaintUnder
+	// FlowTaintPolicyless: the run started under declarations and this flow has no policy to enforce them.
+	FlowTaintPolicyless
+)
+
+// FlowTaintDecision is what taint requires of a node about to run: nothing (the zero value), the
+// escalation Gate (an *agent.ApprovalPolicy) on the node's instance, or, for a refused node, an error.
+type FlowTaintDecision struct {
+	Gate any
+}
+
+// FlowTaintPrepare returns start (an agent.RunStart) recording d, the flow's declarations, for a drive
+// that may start the run; it returns start unchanged for d == nil. With d.RequireProvenance it refuses
+// (ErrConfig) a drive that states neither where the run's input came from nor has a run that did, before the
+// run's journal is written. The agent package sets it in init.
+var FlowTaintPrepare func(ctx context.Context, j any, runID string, start any, d *FlowTaint) (any, error)
+
+// FlowTaintEnter compares a drive of the flow, whose declarations are d (nil for a flow with no policy),
+// with the declarations the run's recorded start holds, and returns one of the FlowTaint standings. Any
+// difference is ErrConfig, naming both digests, before a node runs. The agent package sets it in init.
+var FlowTaintEnter func(ctx context.Context, j any, runID string, d *FlowTaint) (standing int, err error)
+
+// FlowTaintNodeHook decides what taint requires of the node with key nodeKey (and safety, an agent.Safety),
+// about to run in a run at standing: it computes the node's read set from the journal, records the
+// gate-reason record (insert-once), and returns the escalation Gate the node's instance needs, nothing, or an
+// error that wraps ErrTaintRefused for a refused node (recorded, and no node record written). The agent
+// package sets it in init.
+var FlowTaintNodeHook func(ctx context.Context, j any, runID, nodeKey string, safety any, standing int) (FlowTaintDecision, error)
+
+// RunProvenance reads a plan flow run's options (each an agent.RunOption) for where the run's input came
+// from: the source WithUntrustedInput names, or the reason WithTrustedInput gives (at most one is set; both
+// is ErrConfig). The agent package sets it in init.
+var RunProvenance func(opts []any) (untrusted, trusted *string, err error)
+
+// FlowTaintConform checks the taint records of a plan flow run against the flow (Flow.Conform): recs is the
+// run's journal (a []agent.Record), cur the flow's declarations (nil for a flow with no policy), and safeties
+// maps each declared node name to its agent.Safety. It returns the divergences, each naming the record: a
+// taint record in a run that did not start under taint, declarations that are not the flow's, a node that ran
+// though its requirement was not met (a refused node, or an escalation gate that was not passed before its
+// record), and a gate-reason or taint-mark record that does not read or names an undeclared node. The agent
+// package sets it in init.
+var FlowTaintConform func(recs any, cur *FlowTaint, safeties map[string]any) []string
