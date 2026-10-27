@@ -133,11 +133,25 @@ func (f *Flow[In, Out]) run(ctx context.Context, store *agent.Journal, runID str
 		return out, fmt.Errorf("plan: run %q: encode flow input: %w (%w)", c.flowName, encErr, agent.ErrConfig)
 	}
 	start := agent.RunStart{Kind: agent.RunKindFlow, Flow: &agent.FlowRef{Name: c.flowName}, Input: agent.UserText(string(input))}
+	// Where the run's input came from (agent.WithUntrustedInput, WithTrustedInput): journaled with the start,
+	// and the first untrusted mark of a run under taint.
+	untrusted, trusted, provErr := journalhook.RunProvenance(anyOpts)
+	if provErr != nil {
+		return out, fmt.Errorf("plan: run %q: %w", c.flowName, provErr)
+	}
+	start.Settings.UntrustedInput, start.Settings.TrustedInput = untrusted, trusted
 	// The run's principal, from its identity (agent.WithIdentity, or the one ctx carries): it is
 	// journaled with the start, and it is the requester a gate that excludes the requester reads.
 	if id, ok := agent.IdentityFrom(ctx); ok && (id.OnBehalfOf != "" || id.AuthorityRef != "") {
 		start.Principal = &agent.Principal{OnBehalfOf: id.OnBehalfOf, AuthorityRef: id.AuthorityRef}
 	}
+	// The flow's taint declarations are recorded with the start of a run that starts under a policy; a policy
+	// that requires provenance refuses a new run that states none, before the run's journal is written.
+	taintStart, err := journalhook.FlowTaintPrepare(ctx, store, runID, start, c.flowTaint())
+	if err != nil {
+		return out, fmt.Errorf("plan: run %q: %w", c.flowName, err)
+	}
+	start = taintStart.(agent.RunStart)
 	// protocol:flows begin Begin BeginStart
 	ctx, done, finished, err := journalhook.Begin(ctx, store, runID, start)
 	if err != nil {
@@ -147,6 +161,14 @@ func (f *Flow[In, Out]) run(ctx context.Context, store *agent.Journal, runID str
 	if finished {
 		return decodeCompletion[Out](c.flowName, runID, done)
 	}
+	// Every drive is compared with the declarations the run started under before a node runs: a different
+	// policy or declaration is ErrConfig, and a flow with no policy driving a run that started under one
+	// refuses its side-effecting nodes.
+	standing, err := journalhook.FlowTaintEnter(ctx, store, runID, c.flowTaint())
+	if err != nil {
+		return out, fmt.Errorf("plan: run %q: %w", c.flowName, err)
+	}
+	ts := &taintState{flow: c.flowTaint(), standing: standing}
 	// The kill switch, at a drive's start: a covering global, flow or agent stop holds the run (a cached
 	// check). Each node is checked against it too (journalhook.Step).
 	if c.stop != nil {
@@ -277,7 +299,7 @@ func (f *Flow[In, Out]) run(ctx context.Context, store *agent.Journal, runID str
 			if inErr != nil {
 				return out, inErr
 			}
-			exitTarget, exitVal, loopErr := f.runLoop(ctx, store, runID, c, lp, in, results, live, branchOf, outEdges, headInput)
+			exitTarget, exitVal, loopErr := f.runLoop(ctx, store, runID, c, ts, lp, in, results, live, branchOf, outEdges, headInput)
 			if loopErr != nil {
 				return out, loopErr
 			}
@@ -314,7 +336,7 @@ func (f *Flow[In, Out]) run(ctx context.Context, store *agent.Journal, runID str
 		// exactly as for any node: it is a plain sequential step, so a non-idempotent
 		// merge halts on the ambiguous crash unless marked retry-safe.
 		// A gated node waits at its gate before it runs (see runGate).
-		if gateErr := runGate(ctx, store, runID, c, node, nodeKey(name), input); gateErr != nil {
+		if gateErr := runGate(ctx, store, runID, c, ts, node, nodeKey(name), input); gateErr != nil {
 			return out, gateErr
 		}
 		result, runErr := runNode(ctx, store, runID, c.model, node, nodeKey(name), input)
@@ -426,7 +448,7 @@ func decodeCompletion[Out any](flowName, runID string, raw json.RawMessage) (Out
 // arm, runLoop returns a runaway-loop error rather than looping forever. The runtime
 // iteration count is NOT part of the digest (it is runtime, like Safety); only the
 // loop structure and its max bound are.
-func (f *Flow[In, Out]) runLoop(ctx context.Context, store *agent.Journal, runID string, c *builderCore, lp *loopSpec, in In, results map[string]json.RawMessage, live map[string]bool, branchOf map[string]branch, outEdges map[string][]string, headInput any) (string, json.RawMessage, error) {
+func (f *Flow[In, Out]) runLoop(ctx context.Context, store *agent.Journal, runID string, c *builderCore, ts *taintState, lp *loopSpec, in In, results map[string]json.RawMessage, live map[string]bool, branchOf map[string]branch, outEdges map[string][]string, headInput any) (string, json.RawMessage, error) {
 	br := branchOf[lp.over]
 	for iter := 0; ; iter++ {
 		if iter >= lp.max {
@@ -458,7 +480,7 @@ func (f *Flow[In, Out]) runLoop(ctx context.Context, store *agent.Journal, runID
 
 			// A gated body node waits at its gate in each iteration, under the iteration's key:
 			// each iteration's input is its own subject, approved on its own.
-			if gateErr := runGate(ctx, store, runID, c, node, iterNodeKey(iter, name), input); gateErr != nil {
+			if gateErr := runGate(ctx, store, runID, c, ts, node, iterNodeKey(iter, name), input); gateErr != nil {
 				return "", nil, gateErr
 			}
 			result, runErr := runNode(ctx, store, runID, c.model, node, iterNodeKey(iter, name), input)

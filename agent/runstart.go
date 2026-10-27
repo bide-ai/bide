@@ -353,7 +353,7 @@ func beginRun(ctx context.Context, d *Journal, runID string, want RunStart) (con
 		return ctx, nil, false, fmt.Errorf("record %s (run %s): %w", runStartStep, runID, err)
 	}
 	if inserted {
-		return bindRun(ctx, want), nil, false, nil // a new run: nothing to hold it to, and no completion
+		return bindRun(ctx, runID, want), nil, false, nil // a new run: nothing to hold it to, and no completion
 	}
 	recs := []Record{rec}
 	end, ok, err := firstEndOf(ctx, d, runID, runCompleteStep, runCancelledStep)
@@ -364,7 +364,7 @@ func beginRun(ctx context.Context, d *Journal, runID string, want RunStart) (con
 	if err != nil {
 		return ctx, nil, false, err
 	}
-	ctx = bindRun(ctx, got)
+	ctx = bindRun(ctx, runID, got)
 	switch {
 	case ok && end.rec.Redacted:
 		// The end marker's content was erased: there is no completion to return, and the run, which holds a
@@ -489,7 +489,8 @@ func sameMessage(a, b Message) bool {
 // bindRun binds a flow run's principal chain, and its identity (the drive's Actor, the journaled
 // principal), to ctx for the code its nodes run and the runs they start, as openPlan does for an
 // agent run.
-func bindRun(ctx context.Context, start RunStart) context.Context {
+func bindRun(ctx context.Context, runID string, start RunStart) context.Context {
+	ctx = context.WithValue(ctx, boundStartKey{}, boundStart{runID: runID, start: start})
 	ctx = contextWithChain(ctx, runChain(start))
 	idn, _ := IdentityFrom(ctx)
 	if idn.Actor == "" && start.Principal == nil {
@@ -500,4 +501,22 @@ func bindRun(ctx context.Context, start RunStart) context.Context {
 		run.OnBehalfOf, run.AuthorityRef = pr.OnBehalfOf, pr.AuthorityRef
 	}
 	return contextWithIdentity(ctx, run)
+}
+
+// boundStartKey carries, in the context a drive of a flow runs under, the start the run is held to, so the flow
+// taint hooks read it without another read of the journal for every drive and every node.
+type boundStartKey struct{}
+
+type boundStart struct {
+	runID string
+	start RunStart
+}
+
+// recordedStartOf is the start the drive of runID is held to: the one bound to ctx by beginRun when it is for
+// this run, else the journal's.
+func recordedStartOf(ctx context.Context, j *Journal, runID string) (RunStart, bool, error) {
+	if b, ok := ctx.Value(boundStartKey{}).(boundStart); ok && b.runID == runID {
+		return b.start, true, nil
+	}
+	return RecordedStart(ctx, j, runID)
 }

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/bide-ai/bide/agent"
+	"github.com/bide-ai/bide/internal/journalhook"
 	"github.com/bide-ai/bide/internal/toolhook"
 )
 
@@ -155,11 +156,70 @@ func (c *builderCore) setTaintPolicy(p agent.TaintPolicy) {
 	c.taintPolicy = &p
 }
 
+// taintGuardOff turns the refusal below off. It is set only by tests of the enforcement (a _test.go file
+// assigns it; TestTaintGuardOffIsAssignedOnlyInTests holds every other file to that), and is removed with the
+// guard when enforcement is complete.
+var taintGuardOff bool
+
+// ErrTaintRefused is returned (wrapped, naming the node) by Flow.Run when the flow's taint policy is Refuse,
+// the run has read untrusted content, and the node can have a side effect: the node does not run, no record
+// is written for it, and every later drive refuses it again; the run stays unfinished until it is cancelled
+// (agent.Cancel). It wraps agent.ErrConfig.
+var ErrTaintRefused = fmt.Errorf("the taint policy refused the node: %w", agent.ErrConfig)
+
+// flowTaint is the flow's taint declarations as plain data for the engine: its policy and, by node name, what
+// each node declares. nil for a flow with no policy: node declarations alone gate nothing, as an agent's marks
+// do without a policy, and the run does not start under taint.
+func (c *builderCore) flowTaint() *journalhook.FlowTaint {
+	if c.taintPolicy == nil {
+		return nil
+	}
+	d := &journalhook.FlowTaint{Refuse: c.taintPolicy.Refuse, RequireProvenance: c.taintPolicy.RequireProvenance}
+	if c.taintPolicy.Gate != nil {
+		d.Gate = c.taintPolicy.Gate.Clone()
+	}
+	for _, n := range c.nodes {
+		if !n.taint.any() {
+			continue
+		}
+		if d.Nodes == nil {
+			d.Nodes = map[string]journalhook.FlowTaintNode{}
+		}
+		d.Nodes[n.name] = journalhook.FlowTaintNode{Untrusted: slices.Clone(n.taint.untrusted), Trusted: n.taint.trusted, Exempt: n.taint.exempt}
+	}
+	return d
+}
+
+// checkTaintPolicy holds a flow with a taint policy to what its enforcement needs: an m-of-n escalation Gate
+// needs approver verifiers (no decision could pass it without), and a policy that requires provenance needs a
+// declaration on every node: Untrusted, or Trusted with a reason. (A Run that states where its input came from
+// is checked when the run starts.)
+func (c *builderCore) checkTaintPolicy() error {
+	if c.taintPolicy == nil {
+		return nil
+	}
+	if g := c.taintPolicy.Gate; g != nil && !topologyGate(g).Single && c.approverVerifiers == nil {
+		return fmt.Errorf("plan: build %q: the taint policy's escalation gate (%s) is m-of-n but the flow has no approver verifiers; bind them with WithApproverVerifiers (or WithLoadedApproverVerifiers): %w", c.flowName, gateText(g), agent.ErrConfig)
+	}
+	if !c.taintPolicy.RequireProvenance {
+		return nil
+	}
+	for _, n := range c.nodes {
+		if len(n.taint.untrusted) == 0 && n.taint.trusted == "" {
+			return fmt.Errorf("plan: build %q: node %q declares no provenance, and the taint policy requires one: declare Untrusted(source) if its results come from outside, or Trusted(reason) if they are the host's own: %w", c.flowName, n.name, agent.ErrConfig)
+		}
+	}
+	return nil
+}
+
 // taintNotEnforced is the one function that refuses a flow for taint until the engine enforces it: a flow
 // with a policy, or with a node that declares a source, a trusted output or an exemption, whether in
 // Go or in the config. The refusal names the first node. Build and Validate call it; enforcement
 // removes it and both calls.
 func (c *builderCore) taintNotEnforced() error {
+	if taintGuardOff {
+		return nil
+	}
 	why := ""
 	for _, n := range c.nodes {
 		if n.taint.any() {

@@ -168,3 +168,12 @@ var FlowTaintNodeHook func(ctx context.Context, j any, runID, nodeKey string, sa
 // from: the source WithUntrustedInput names, or the reason WithTrustedInput gives (at most one is set; both
 // is ErrConfig). The agent package sets it in init.
 var RunProvenance func(opts []any) (untrusted, trusted *string, err error)
+
+// FlowTaintConform checks the taint records of a plan flow run against the flow (Flow.Conform): recs is the
+// run's journal (a []agent.Record), cur the flow's declarations (nil for a flow with no policy), and safeties
+// maps each declared node name to its agent.Safety. It returns the divergences, each naming the record: a
+// taint record in a run that did not start under taint, declarations that are not the flow's, a node that ran
+// though its requirement was not met (a refused node, or an escalation gate that was not passed before its
+// record), and a gate-reason or taint-mark record that does not read or names an undeclared node. The agent
+// package sets it in init.
+var FlowTaintConform func(recs any, cur *FlowTaint, safeties map[string]any) []string

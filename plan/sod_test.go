@@ -203,13 +203,13 @@ func TestSoDFlow_NodeRunsRecordTheFlowAsAncestor(t *testing.T) {
 	}
 }
 
-// A flow run takes agent.WithIdentity alone: any other run option is ErrConfig.
+// A flow run takes agent.WithIdentity, WithUntrustedInput and WithTrustedInput: any other run option is ErrConfig.
 func TestSoDFlow_RunTakesIdentityOnly(t *testing.T) {
 	_, vf := approvers(opsFinRisk...)
 	refunds := 0
 	f := refundFlow(t, sodGate(2), vf, &refunds)
 	_, err := f.Run(context.Background(), agenttest.MemJournal(), "r1", "order-42", agent.WithSaga())
-	if !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "WithIdentity only") {
+	if !errors.Is(err, agent.ErrConfig) || !strings.Contains(err.Error(), "a flow run takes agent.WithIdentity, WithUntrustedInput and WithTrustedInput only") {
 		t.Fatalf("Run with WithSaga = %v; want ErrConfig", err)
 	}
 	if _, err := f.Run(context.Background(), agenttest.MemJournal(), "r1", "order-42", nil); !errors.Is(err, agent.ErrConfig) {

@@ -76,7 +76,7 @@ func flowTaintEnter(ctx context.Context, j any, runID string, d *journalhook.Flo
 	if !ok {
 		return 0, fmt.Errorf("agent: FlowTaintEnter: %T is not a journal: %w", j, ErrConfig)
 	}
-	rec, has, err := RecordedStart(ctx, jr, runID)
+	rec, has, err := recordedStartOf(ctx, jr, runID)
 	if err != nil {
 		return 0, err
 	}
@@ -131,7 +131,7 @@ func flowTaintNode(ctx context.Context, j any, runID, nodeKey string, safety any
 	if !ok {
 		return journalhook.FlowTaintDecision{}, fmt.Errorf("agent: FlowTaintNode: %q is not a plan node key: %w", nodeKey, ErrConfig)
 	}
-	start, has, err := RecordedStart(ctx, jr, runID)
+	start, has, err := recordedStartOf(ctx, jr, runID)
 	if err != nil {
 		return journalhook.FlowTaintDecision{}, err
 	}
