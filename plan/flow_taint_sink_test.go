@@ -589,7 +589,7 @@ func TestFlowTaintSink_ConformChecksTheLinkRecords(t *testing.T) {
 		t.Fatal("the run did not wait at pay's gate")
 	}
 	for what, f := range map[string]struct{ name, body, want string }{
-		"a link that does not read":  {"taint-child:node%3Acall:c9", `1`, "taint-child record that does not read"},
+		"a link that does not read":    {"taint-child:node%3Acall:c9", `1`, "taint-child record that does not read"},
 		"a link of an undeclared node": {"taint-child:node%3Aghost:c9", `{"format":"bide.taint-child.v1","node_key":"node:ghost","run_id":"c9"}`, "taint-child record of an undeclared node"},
 		"a mark of an undeclared node": {"taint-mark:node%3Aghost:s", `{"format":"bide.taint-mark.v1","node_key":"node:ghost","source":"s"}`, "taint-mark record of an undeclared node"},
 	} {
